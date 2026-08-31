@@ -127,6 +127,8 @@ import { readFile } from 'node:fs/promises'
 
 打开 **设置 → 插件配置** 使用上面的设置卡片。卡片跟随 DSH 界面语言：界面设为 English 时显示英文，设为中文时显示中文。`enabled` 是即时生效的总开关：关闭后只保留卡片和这个开关，开启后恢复 session runtime 以及 `run_code`/`edit_run_code`。
 
+插件启用且会话使用 `ptc` preset 时，会话头部保留简洁、中性的 `PTC Plus` 标识。正文中的 `run_code` 与 `edit_run_code` 使用独立的 PTC Plus 行：源码和结果仍可展开查看；只有已有结果 metadata 能证明某项能力在该次执行中确实生效时，行下方才显示同设置卡一致的名称与有用细节，例如被适配的 import 模块、被剥离的 export、被拆分的混合重声明、安全编辑、成功的 `code.run`、本次确实完成的持久恢复、`repl.state` 操作、仅存于当前进程的状态或未保留的 cell 状态。这里不显示 REPL cell、程序内调用、可恢复 cell 或恢复边界等计数。关闭插件会注销两个 keyed row，恢复 DSH 原生 fallback。
+
 所有设置都会实时应用，并保留已有 binding。已提交的 cell 在完整执行期间使用同一份配置；执行期间发生的更新用于随后提交的 cell。更新失败会回滚。Node 在 worker 创建时固定 V8 old-generation 上限，因此活动 session worker 存在时修改这一项会被拒绝，释放 session 后才能修改。启用失败时，运行时会回滚并把设置保持为停用。
 
 `cordisToolsEnabled` 默认关闭。打开后，DSH 官方 Cordis 工具、owner guidance 与精确的 `cordis-plugin-development` companion Skill 会作为一个整体加入 PTC agent；同一 shipped preset 目录中的其他 Skill 不会随之暴露。关闭时这三项也会一起移除；它不切换 preset，也不改变 `run_code`/`edit_run_code` 的直接调用面。Cordis 能在实时 DSH runtime 中运行模型编写的插件，开启它需要接受 shell 级信任。
@@ -134,6 +136,8 @@ import { readFile } from 'node:fs/promises'
 如果 Cordis 调用在 cell 已经赋值大段 host 或 client 源码之后才失败，这些顶层 binding 仍会保留。后续只需在短 cell 中重试 Cordis 调用并复用该 binding，无需再次传输源码。
 
 cold recovery 或重新启用 Cordis 后，已记录的 Cordis value 仍是历史数据，但不能证明进程内 Plugin、Run、approval 或先前 Inspect observation 仍然存活。PTC Plus 会提供有界恢复 context，直到一次新的成功 Cordis Inspect 调用验证当前进程。
+
+正文 view 完全属于 client 展示层。它注册 DSH 公共的 keyed `tool.call.toolview`，只读取调用参数与已有 tool result presentation metadata，不增加工具、prompt 文本、runtime context、session event、journal 字段、历史读取请求或迁移步骤。损坏 metadata 不产生功能标记；来自其他 PTC Plus 版本的未知 metadata 会被忽略；旧日志没有某项 metadata 时仍保留源码、结果和执行状态。普通宽松重声明、规范化的顶层 native 调用、官方 Cordis owner 和实际选择的恢复提示都没有结果级 Client provenance，因此正文不会从源码形状、成员名前缀或设置值推测这些事件。因此安装或移除该 view 不会改变模型请求，也不会让原本可读取、可继续的会话变得不兼容。
 
 详见 [客户端 UI](docs/client-ui.md)、[ADR 0019](docs/adr/0019-plugin-settings-and-kill-switch.md) 与 [ADR 0020](docs/adr/0020-optional-cordis-tools-in-ptc-mode.md)。
 

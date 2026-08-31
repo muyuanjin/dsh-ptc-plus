@@ -1,4 +1,5 @@
 import { CONFIG_FIELDS, SETTINGS_NAMESPACE } from '../internal/config-spec.js'
+import { derivePtcToolView } from './client-activity.js'
 
 const CLIENT_STYLE_ID = 'ptc-plus-client-style'
 const CLIENT_CSS = `
@@ -8,9 +9,13 @@ const CLIENT_CSS = `
 .ptcPlusHeadText{display:flex;flex:1;min-width:0;flex-direction:column;align-items:flex-start;gap:1px}.ptcPlusName{font-size:14px;font-weight:600;line-height:20px}.ptcPlusDescription{color:var(--dsw-alias-label-tertiary,#74777d);font-size:12px;line-height:18px;overflow-wrap:anywhere}.ptcPlusStatus{display:inline-flex;align-items:center;flex:none;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:500;line-height:16px}.ptcPlusStatus[data-enabled=true]{color:var(--dsw-alias-state-success-primary,#16794f);background:var(--dsw-alias-state-success-tertiary,#e7f7ef)}.ptcPlusStatus[data-enabled=false]{color:var(--dsw-alias-label-tertiary,#74777d);background:var(--dsw-alias-interactive-bg-hover,rgba(38,49,72,.06))}
 .ptcPlusChevron{display:flex;color:var(--dsw-alias-label-tertiary,#74777d);transition:transform .18s ease}.ptcPlusChevron[data-open=true]{transform:rotate(180deg)}.ptcPlusBody{display:grid;grid-template-rows:0fr;transition:grid-template-rows .2s ease}.ptcPlusBody[data-open=true]{grid-template-rows:1fr}.ptcPlusBodyInner{min-height:0;overflow:hidden}.ptcPlusFields{margin:0 16px;padding:8px 0 12px;border-top:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1))}
 .ptcPlusRow{display:flex;align-items:center;gap:12px;min-height:48px;border-top:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1))}.ptcPlusRow:first-child{border-top:0}.ptcPlusMain{flex:1;min-width:0}.ptcPlusLabel{font-size:14px;font-weight:500;line-height:20px}.ptcPlusDetail,.ptcPlusMessage{color:var(--dsw-alias-label-tertiary,#74777d);font-size:12px;line-height:18px;overflow-wrap:anywhere}.ptcPlusInput{box-sizing:border-box;min-width:72px;width:140px;padding:5px 8px;border:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1));border-radius:6px;background:var(--dsw-alias-bg-layer-1,#fff);color:inherit;font:12px/18px ui-monospace,SFMono-Regular,Consolas,monospace}.ptcPlusCheck{width:18px;height:18px;accent-color:var(--dsw-alias-interactive-primary,#4d6bfe)}
-.ptcPlusFooter{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:8px}.ptcPlusButton{min-height:32px;padding:0 12px;border:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1));border-radius:6px;background:transparent;color:inherit;cursor:pointer;font:500 13px/20px inherit;transition:background-color .16s ease,border-color .16s ease}.ptcPlusButton:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover,rgba(38,49,72,.06))}.ptcPlusButton:disabled,.ptcPlusInput:disabled,.ptcPlusCheck:disabled{cursor:not-allowed;opacity:.55}.ptcPlusActive{display:inline-flex;align-items:center;gap:5px;color:var(--dsw-alias-state-success-primary,#16794f);font-size:12px;line-height:18px;white-space:nowrap}
-@media(max-width:560px){.ptcPlusHeader{padding:12px}.ptcPlusFields{margin:0 12px}.ptcPlusRow{align-items:flex-start;flex-direction:column;gap:6px;padding:10px 0}.ptcPlusInput{width:100%}.ptcPlusFooter{align-items:stretch;flex-direction:column}.ptcPlusButton{width:100%}}
-@media(prefers-reduced-motion:reduce){.ptcPlusHeader,.ptcPlusChevron,.ptcPlusBody,.ptcPlusButton{transition:none}}
+.ptcPlusFooter{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:8px}.ptcPlusButton{min-height:32px;padding:0 12px;border:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1));border-radius:6px;background:transparent;color:inherit;cursor:pointer;font:500 13px/20px inherit;transition:background-color .16s ease,border-color .16s ease}.ptcPlusButton:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover,rgba(38,49,72,.06))}.ptcPlusButton:disabled,.ptcPlusInput:disabled,.ptcPlusCheck:disabled{cursor:not-allowed;opacity:.55}
+.ptcPlusActive{display:inline-flex;align-items:center;gap:5px;color:var(--dsw-alias-label-secondary,#52565d);font-size:12px;line-height:18px;white-space:nowrap}
+.ptcPlusTool{display:flex;min-width:0;flex-direction:column}.ptcPlusToolSummary{display:flex;min-width:0;align-items:center;gap:7px;min-height:32px;padding:4px 0;color:inherit}.ptcPlusToolSummary[data-expandable=true]{cursor:pointer}.ptcPlusToolSummary[data-expandable=true]:hover .ptcPlusToolTitle{color:var(--dsw-alias-interactive-primary,#4d6bfe)}.ptcPlusToolSummary:focus-visible{outline:2px solid var(--dsw-alias-interactive-primary,#4d6bfe);outline-offset:2px}.ptcPlusToolLeading{display:flex;width:16px;flex:none;align-items:center;justify-content:center;color:var(--dsw-alias-label-tertiary,#74777d)}.ptcPlusToolChevron{transition:transform .16s ease}.ptcPlusToolChevron[data-open=true]{transform:rotate(180deg)}.ptcPlusToolTitle{flex:none;font-size:13px;font-weight:500;line-height:20px}.ptcPlusToolState{flex:none;color:var(--dsw-alias-label-tertiary,#74777d);font-size:11px;line-height:18px}.ptcPlusToolSummary[data-state=running] .ptcPlusToolState{color:var(--dsw-alias-interactive-primary,#4d6bfe)}.ptcPlusToolSummary[data-state=error] .ptcPlusToolState{color:var(--dsw-alias-state-danger-primary,#c43d3d)}.ptcPlusToolSummary[data-state=stopped] .ptcPlusToolState{color:var(--dsw-alias-state-warning-primary,#a15c00)}.ptcPlusToolSep{width:3px;height:3px;flex:none;border-radius:50%;background:var(--dsw-alias-label-tertiary,#74777d)}.ptcPlusToolDescription{min-width:0;overflow:hidden;color:var(--dsw-alias-label-secondary,#52565d);font-size:13px;line-height:20px;text-overflow:ellipsis;white-space:nowrap}.ptcPlusToolSummary[data-state=error] .ptcPlusToolDescription{color:var(--dsw-alias-state-danger-primary,#c43d3d)}.ptcPlusToolSummary[data-state=stopped] .ptcPlusToolDescription{color:var(--dsw-alias-state-warning-primary,#a15c00)}
+.ptcPlusFeatures{display:flex;min-width:0;flex-wrap:wrap;gap:3px 14px;margin:0 0 5px 23px}.ptcPlusFeature{display:inline-flex;min-width:0;align-items:baseline;gap:5px;color:var(--dsw-alias-label-secondary,#52565d);font-size:11px;line-height:17px}.ptcPlusFeature::before{width:4px;height:4px;flex:none;border-radius:50%;background:var(--dsw-alias-interactive-primary,#4d6bfe);content:''}.ptcPlusFeatureName{font-weight:500}.ptcPlusFeatureDetail{min-width:0;overflow:hidden;color:var(--dsw-alias-label-tertiary,#74777d);font-family:ui-monospace,SFMono-Regular,Consolas,monospace;text-overflow:ellipsis;white-space:nowrap}
+.ptcPlusToolBody{margin:4px 0 8px 23px;border-left:2px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1));background:var(--dsw-alias-bg-layer-2,rgba(38,49,72,.03))}.ptcPlusToolSection{display:flex;min-width:0;flex-direction:column;gap:4px;padding:9px 11px}.ptcPlusToolSection+.ptcPlusToolSection{border-top:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1))}.ptcPlusToolSectionLabel{color:var(--dsw-alias-label-tertiary,#74777d);font-size:10px;font-weight:600;line-height:16px;text-transform:uppercase}.ptcPlusToolCode{max-height:320px;margin:0;overflow:auto;color:inherit;font:12px/18px ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere}.ptcPlusInspect{display:inline-flex;align-self:flex-end;align-items:center;gap:5px;margin:0 9px 8px;padding:3px 7px;border:0;background:transparent;color:var(--dsw-alias-label-secondary,#52565d);cursor:pointer;font:500 11px/18px inherit}.ptcPlusInspect:hover{color:var(--dsw-alias-interactive-primary,#4d6bfe)}
+@media(max-width:560px){.ptcPlusHeader{padding:12px}.ptcPlusFields{margin:0 12px}.ptcPlusRow{align-items:flex-start;flex-direction:column;gap:6px;padding:10px 0}.ptcPlusInput{width:100%}.ptcPlusFooter{align-items:stretch;flex-direction:column}.ptcPlusButton{width:100%}.ptcPlusFeatures,.ptcPlusToolBody{margin-left:0}.ptcPlusToolDescription{white-space:normal;overflow-wrap:anywhere}}
+@media(prefers-reduced-motion:reduce){.ptcPlusHeader,.ptcPlusChevron,.ptcPlusBody,.ptcPlusButton,.ptcPlusToolChevron{transition:none}}
 `
 
 /** Locale namespace owning every settings-card string (field copy plus chrome). */
@@ -32,6 +37,24 @@ const CHROME_COPY = Object.freeze({
     'status.conflict': '设置未生效，请检查设置冲突',
     'status.failed': '设置失败：{error}',
     'indicator.title': 'PTC Plus 已启用',
+    'tool.runCode': 'PTC Plus',
+    'tool.editRunCode': 'PTC Plus 编辑',
+    'tool.code': '代码',
+    'tool.codeEdit': '代码编辑',
+    'tool.running': '正在运行',
+    'tool.completed': '执行完成',
+    'tool.failed': '执行失败',
+    'tool.stopped': '执行已中断',
+    'tool.source': '源码',
+    'tool.result': '结果',
+    'tool.inspect': '检查调用',
+    'feature.safeEdit': '安全编辑执行',
+    'feature.codeRun': '隔离执行 code.run',
+    'feature.stateSaved': '保存 REPL 状态',
+    'feature.stateRestored': '恢复 REPL 状态',
+    'feature.stateDeleted': '删除 REPL 状态',
+    'feature.volatile': '仅在当前进程保留状态',
+    'feature.discarded': '本次 cell 状态未保留',
   }),
   en: Object.freeze({
     'card.description': 'The session-bound TypeScript REPL for PTC mode.',
@@ -47,6 +70,24 @@ const CHROME_COPY = Object.freeze({
     'status.conflict': 'The setting did not take effect; check for conflicting settings.',
     'status.failed': 'Could not save: {error}',
     'indicator.title': 'PTC Plus is active',
+    'tool.runCode': 'PTC Plus',
+    'tool.editRunCode': 'PTC Plus edit',
+    'tool.code': 'Code',
+    'tool.codeEdit': 'Code edit',
+    'tool.running': 'Running',
+    'tool.completed': 'Completed',
+    'tool.failed': 'Failed',
+    'tool.stopped': 'Stopped',
+    'tool.source': 'Source',
+    'tool.result': 'Result',
+    'tool.inspect': 'Inspect call',
+    'feature.safeEdit': 'Safe edit execution',
+    'feature.codeRun': 'Isolated code.run execution',
+    'feature.stateSaved': 'Saved REPL state',
+    'feature.stateRestored': 'Restored REPL state',
+    'feature.stateDeleted': 'Deleted REPL state',
+    'feature.volatile': 'State retained only in this process',
+    'feature.discarded': 'Cell state was not retained',
   }),
 })
 
@@ -79,6 +120,7 @@ window.__ModuleLoader__.load({
     const {
       IconCheckOutline14,
       IconChevronDownOutline14,
+      IconInspectOutline12,
     } = require('@deepseek-ai/dsh-client-ui-primitives')
     const module = { exports: {} }
     const h = React.createElement
@@ -198,6 +240,102 @@ window.__ModuleLoader__.load({
         name: 'settings.plugin.item', key: SETTINGS_NAMESPACE, locale: LOCALE_NS,
       }, PTCPlusSettingsCard))
 
+      function PTCPlusToolRow({ toolName, block, sessionId, useSessions, inspect, t }) {
+        const [open, setOpen] = React.useState(false)
+        const sessionIsPtc = useSessions(state => sessionUsesPtcPreset(state.byId?.[sessionId]))
+        const view = derivePtcToolView(block, toolName)
+        const branded = sessionIsPtc || view.ptc
+        const expandable = view.code !== '' || view.output !== '' || typeof inspect === 'function'
+        const stateKey = {
+          running: 'tool.running',
+          ok: 'tool.completed',
+          error: 'tool.failed',
+          stopped: 'tool.stopped',
+        }[view.state]
+        const outputSummary = view.state === 'error' && view.output !== ''
+          ? view.output.split(/\r?\n/, 1)[0]
+          : ''
+        const summary = outputSummary || view.description || t(stateKey)
+        const toggle = () => {
+          if (expandable) setOpen(current => !current)
+        }
+        return h('div', { className: 'ptcPlusTool' },
+          h('div', {
+            className: 'ptcPlusToolSummary', 'data-state': view.state,
+            'data-expandable': expandable || undefined,
+            role: expandable ? 'button' : undefined,
+            tabIndex: expandable ? 0 : undefined,
+            'aria-expanded': expandable ? open : undefined,
+            onClick: expandable ? toggle : undefined,
+            onKeyDown: expandable ? (event) => {
+              if (event.key !== 'Enter' && event.key !== ' ') return
+              event.preventDefault()
+              toggle()
+            } : undefined,
+          },
+          h('span', { className: 'ptcPlusToolLeading', 'aria-hidden': true }, expandable
+            ? h(IconChevronDownOutline14, { size: 14, className: 'ptcPlusToolChevron', 'data-open': open })
+            : h(IconCheckOutline14, { size: 14 })),
+          h('span', { className: 'ptcPlusToolTitle' }, t(branded
+            ? toolName === 'edit_run_code' ? 'tool.editRunCode' : 'tool.runCode'
+            : toolName === 'edit_run_code' ? 'tool.codeEdit' : 'tool.code')),
+          view.state === 'ok' ? null
+            : h('span', { className: 'ptcPlusToolState', role: 'status' }, t(stateKey)),
+          h('span', { className: 'ptcPlusToolSep', 'aria-hidden': true }),
+          h('span', { className: 'ptcPlusToolDescription' }, summary)),
+          view.features.length === 0 ? null : h('div', { className: 'ptcPlusFeatures' },
+            view.features.map(feature => h('span', {
+              key: `${feature.key}:${feature.detail}`, className: 'ptcPlusFeature',
+            },
+            h('span', { className: 'ptcPlusFeatureName' }, t(feature.key)),
+            feature.detail === '' ? null
+              : h('span', { className: 'ptcPlusFeatureDetail', title: feature.detail }, feature.detail)))),
+          !open ? null : h('div', { className: 'ptcPlusToolBody' },
+            view.code === '' ? null : h('div', { className: 'ptcPlusToolSection' },
+              h('span', { className: 'ptcPlusToolSectionLabel' }, t('tool.source')),
+              h('pre', { className: 'ptcPlusToolCode' }, view.code)),
+            view.output === '' ? null : h('div', { className: 'ptcPlusToolSection' },
+              h('span', { className: 'ptcPlusToolSectionLabel' }, t('tool.result')),
+              h('pre', { className: 'ptcPlusToolCode' }, view.output)),
+            typeof inspect !== 'function' ? null : h('button', {
+              type: 'button', className: 'ptcPlusInspect', onClick: inspect,
+            }, h(IconInspectOutline12, { 'aria-hidden': true }), t('tool.inspect'))))
+      }
+
+      ctx.slots.inject('tool.call.toolview', () => {
+        let releaseRows
+        const release = () => {
+          releaseRows?.()
+          releaseRows = undefined
+        }
+        const sync = () => {
+          const snapshot = preferenceScope.getSnapshot()
+          const enabled = snapshot.status === 'ready' && snapshot.value?.enabled === true
+          if (enabled === (releaseRows !== undefined)) return
+          release()
+          if (!enabled) return
+          const disposers = []
+          try {
+            disposers.push(ctx.slots.register({
+              name: 'tool.call.toolview', key: 'run_code', locale: LOCALE_NS,
+            }, PTCPlusToolRow))
+            disposers.push(ctx.slots.register({
+              name: 'tool.call.toolview', key: 'edit_run_code', locale: LOCALE_NS,
+            }, PTCPlusToolRow))
+          } catch (error) {
+            disposers.reverse().forEach(dispose => dispose())
+            throw error
+          }
+          releaseRows = () => disposers.reverse().forEach(dispose => dispose())
+        }
+        sync()
+        const unsubscribe = preferenceScope.subscribe(sync)
+        return () => {
+          unsubscribe()
+          release()
+        }
+      })
+
       ctx.inject(['slots', 'sessions'], (scope) => {
         function PTCPlusSessionIndicator({ sessionId, t }) {
           const sessions = React.useSyncExternalStore(
@@ -213,7 +351,7 @@ window.__ModuleLoader__.load({
           if (!sessionUsesPtcPreset(sessions.byId?.[sessionId])
             || settings.status !== 'ready' || settings.value?.enabled !== true) return null
           return h('span', { className: 'ptcPlusActive', title: t('indicator.title') },
-            h(IconCheckOutline14, { size: 14 }), 'PTC Plus')
+            h(IconCheckOutline14, { size: 14, 'aria-hidden': true }), 'PTC Plus')
         }
         scope.slots.inject('conversation.session.header.actions', () => scope.slots.register({
           name: 'conversation.session.header.actions', id: 'ptc-plus-active', order: -9, locale: LOCALE_NS,

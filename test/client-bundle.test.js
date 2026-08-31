@@ -88,6 +88,10 @@ test('settings card copy follows the DSH locale dictionaries', async () => {
     subscribe: () => () => {},
     getSnapshot: () => ({ status: 'ready', writable: true, value: { enabled: true } }),
   }
+  const sessions = {
+    subscribe: () => () => {},
+    getSnapshot: () => ({ byId: { 'session-1': { agentPreset: 'code' } } }),
+  }
   const ctx = {
     settingsScope: { bind: () => preferenceScope },
     effect: register => register(),
@@ -95,7 +99,7 @@ test('settings card copy follows the DSH locale dictionaries', async () => {
       inject: (_key, factory) => { factory(); return () => {} },
       register: (options, component) => { slotEntries.push({ options, component }); return () => {} },
     },
-    inject: () => {},
+    inject: (_services, callback) => callback({ slots: ctx.slots, sessions: { list: sessions } }),
     locale: {
       register: (ns, dicts) => { dictionaries.push({ ns, dicts }); return () => {} },
       bind: () => key => key,
@@ -118,27 +122,52 @@ test('settings card copy follows the DSH locale dictionaries', async () => {
   assert.equal(dicts.en['card.description'], 'The session-bound TypeScript REPL for PTC mode.')
 
   const [card] = slotEntries.filter(({ options }) => options.name === 'settings.plugin.item')
+  const [indicator] = slotEntries.filter(({ options }) => options.name === 'conversation.session.header.actions')
   assert.equal(card.options.locale, ns)
   assert.equal(card.options.key, SETTINGS_NAMESPACE)
-  const texts = []
-  const collect = value => {
-    if (typeof value === 'string') { texts.push(value); return }
-    if (Array.isArray(value)) { value.forEach(collect); return }
-    if (value && typeof value === 'object' && 'children' in value) {
-      if (typeof value.props?.['aria-label'] === 'string') texts.push(value.props['aria-label'])
-      if (typeof value.props?.title === 'string') texts.push(value.props.title)
-      value.children.forEach(collect)
+  assert.equal(indicator.options.locale, ns)
+  const collectTexts = (value) => {
+    const texts = []
+    const collect = current => {
+      if (typeof current === 'string') { texts.push(current); return }
+      if (Array.isArray(current)) { current.forEach(collect); return }
+      if (current && typeof current === 'object' && 'children' in current) {
+        if (typeof current.props?.['aria-label'] === 'string') texts.push(current.props['aria-label'])
+        if (typeof current.props?.title === 'string') texts.push(current.props.title)
+        current.children.forEach(collect)
+      }
     }
+    collect(value)
+    return texts
   }
-  collect(card.component({ t: key => `[[${key}]]` }))
-  assert.ok(texts.includes('[[card.description]]'))
-  assert.ok(texts.includes('[[status.enabled]]'))
-  assert.ok(texts.includes('[[action.expand]]'))
-  assert.ok(texts.includes('[[footer.live]]'))
+  const keys = collectTexts(card.component({ t: key => `[[${key}]]` }))
+  assert.ok(keys.includes('[[card.description]]'))
+  assert.ok(keys.includes('[[status.enabled]]'))
+  assert.ok(keys.includes('[[action.expand]]'))
+  assert.ok(keys.includes('[[footer.live]]'))
   for (const field of CONFIG_FIELDS) {
-    assert.equal(texts.filter(text => text === `[[${field.key}.label]]`).length, 2)
-    if (field.description !== '') assert.ok(texts.includes(`[[${field.key}.description]]`))
-    else assert.equal(texts.includes(`[[${field.key}.description]]`), false)
-    assert.equal(texts.includes(field.label), false)
+    assert.equal(keys.filter(text => text === `[[${field.key}.label]]`).length, 2)
+    if (field.description !== '') assert.ok(keys.includes(`[[${field.key}.description]]`))
+    else assert.equal(keys.includes(`[[${field.key}.description]]`), false)
+    assert.equal(keys.includes(field.label), false)
+  }
+
+  for (const locale of ['zh', 'en']) {
+    const t = key => dicts[locale][key] ?? key
+    const texts = collectTexts(card.component({ t }))
+    const opposite = locale === 'zh' ? 'en' : 'zh'
+    assert.ok(texts.includes(dicts[locale]['card.description']))
+    assert.ok(texts.includes(dicts[locale]['status.enabled']))
+    assert.ok(texts.includes(dicts[locale]['action.expand']))
+    assert.ok(texts.includes(dicts[locale]['footer.live']))
+    assert.equal(texts.includes(dicts[opposite]['card.description']), false)
+    for (const field of CONFIG_FIELDS) {
+      assert.equal(texts.filter(text => text === dicts[locale][`${field.key}.label`]).length, 2)
+      if (field.description !== '') assert.ok(texts.includes(dicts[locale][`${field.key}.description`]))
+    }
+
+    const indicatorTexts = collectTexts(indicator.component({ sessionId: 'session-1', t }))
+    assert.ok(indicatorTexts.includes(dicts[locale]['indicator.title']))
+    assert.equal(indicatorTexts.includes(dicts[opposite]['indicator.title']), false)
   }
 })

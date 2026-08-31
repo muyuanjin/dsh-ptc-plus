@@ -258,6 +258,11 @@
   var DISPATCH_STATES = /* @__PURE__ */ new Set(["not-dispatched", "dispatched", "completed", "unknown"]);
   var REWRITE_FIELDS = /* @__PURE__ */ new Set(["kind", "description", "source"]);
   var REWRITE_KINDS = /* @__PURE__ */ new Set(["import", "redeclaration", "export"]);
+  var REWRITE_POLICY_BY_KIND = Object.freeze({
+    import: "autoRewriteImports",
+    redeclaration: "autoSplitRedeclarations",
+    export: "autoStripExports"
+  });
   var EDIT_TARGET_FIELDS = /* @__PURE__ */ new Set(["targetCallSeq"]);
   var DERIVED_RUN_FIELDS = /* @__PURE__ */ new Set(["code", "description"]);
   var RECOVERY_BOUNDARY_FIELDS = /* @__PURE__ */ new Set(["failedCallSeq", "frontierCallSeq"]);
@@ -446,9 +451,9 @@
       return false;
     }
   }
-  function isValidRewrites(value) {
+  function isValidRewrites(value, journal) {
     try {
-      return Array.isArray(value) && value.every((rewrite) => hasClosedFields(rewrite, REWRITE_FIELDS, ["kind", "description"]) && REWRITE_KINDS.has(rewrite.kind) && typeof rewrite.description === "string" && rewrite.description.length > 0 && (rewrite.source === void 0 || typeof rewrite.source === "string"));
+      return journal.status !== "noop" && isValidRewritePolicy(journal.rewritePolicy) && Array.isArray(value) && value.every((rewrite) => hasClosedFields(rewrite, REWRITE_FIELDS, ["kind", "description"]) && REWRITE_KINDS.has(rewrite.kind) && journal.rewritePolicy[REWRITE_POLICY_BY_KIND[rewrite.kind]] === true && typeof rewrite.description === "string" && rewrite.description.length > 0 && (rewrite.source === void 0 || typeof rewrite.source === "string"));
     } catch {
       return false;
     }
@@ -550,7 +555,7 @@
     if (journal === void 0) {
       return Object.freeze({ state, description, code, output, ptc: false, features: Object.freeze([]) });
     }
-    const rewrites = isValidRewrites(block.meta.dshPtcPlusRewrites) ? block.meta.dshPtcPlusRewrites : [];
+    const rewrites = isValidRewrites(block.meta.dshPtcPlusRewrites, journal) ? block.meta.dshPtcPlusRewrites : [];
     const resolvedToolName = typeof toolName === "string" ? toolName : typeof block.call?.name === "string" ? block.call.name : "";
     const recordedToolName = typeof block.call?.name === "string" ? block.call.name : void 0;
     const safeEdit = resolvedToolName === "edit_run_code" && (recordedToolName === void 0 || recordedToolName === "edit_run_code") && isValidEditRelation(block.meta, args, journal);

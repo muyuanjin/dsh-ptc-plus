@@ -255,7 +255,10 @@ test('does not present enabled defaults as feature events without provenance', (
 test('accepts self-contained legacy journals and both generations of tool argument fields', () => {
   const legacy = journal({ version: 1, calls: [], confirms: [], diagnostics: [] })
   delete legacy.rewritePolicy
-  const oldBlock = result({ dshPtcPlus: legacy })
+  const oldBlock = result({
+    dshPtcPlus: legacy,
+    dshPtcPlusRewrites: [{ kind: 'import', description: 'Adapted.' }],
+  })
   oldBlock.call.arguments = oldBlock.call.argsRaw
   delete oldBlock.call.argsRaw
   const view = derivePtcToolView(oldBlock)
@@ -371,6 +374,35 @@ test('suppresses a complete malformed adjunct instead of partially presenting it
     dshPtcPlusEdit: { targetCallSeq: -1 },
   }))
   assert.deepEqual(malformedEdit.features, [])
+})
+
+test('requires rewrite adjuncts to agree with execution status and recorded policy', () => {
+  const importRewrite = [{ kind: 'import', description: 'Adapted.', source: 'node:path' }]
+  const disabledImport = normalizeJournal(journal({
+    rewritePolicy: { ...REWRITE_POLICY, autoRewriteImports: false },
+  }))
+  assert.deepEqual(derivePtcToolView(result({
+    dshPtcPlus: disabledImport,
+    dshPtcPlusRewrites: importRewrite,
+  })).features, [])
+
+  const noop = journal({ status: 'noop', calls: [], diagnostics: [] })
+  delete noop.completion
+  assert.deepEqual(derivePtcToolView(result({
+    dshPtcPlus: normalizeJournal(noop),
+    dshPtcPlusRewrites: importRewrite,
+  })).features, [])
+
+  const partiallyDisabled = normalizeJournal(journal({
+    rewritePolicy: { ...REWRITE_POLICY, autoStripExports: false },
+  }))
+  assert.deepEqual(derivePtcToolView(result({
+    dshPtcPlus: partiallyDisabled,
+    dshPtcPlusRewrites: [
+      ...importRewrite,
+      { kind: 'export', description: 'Removed export.' },
+    ],
+  })).features, [])
 })
 
 test('preserves source, result, and lifecycle fallbacks for the replacement tool row', () => {

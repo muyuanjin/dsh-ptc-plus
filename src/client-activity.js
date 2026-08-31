@@ -28,6 +28,11 @@ const STATE_EFFECTS = new Set(['unchanged', 'partially-applied', 'rolled-back', 
 const DISPATCH_STATES = new Set(['not-dispatched', 'dispatched', 'completed', 'unknown'])
 const REWRITE_FIELDS = new Set(['kind', 'description', 'source'])
 const REWRITE_KINDS = new Set(['import', 'redeclaration', 'export'])
+const REWRITE_POLICY_BY_KIND = Object.freeze({
+  import: 'autoRewriteImports',
+  redeclaration: 'autoSplitRedeclarations',
+  export: 'autoStripExports',
+})
 const EDIT_TARGET_FIELDS = new Set(['targetCallSeq'])
 const DERIVED_RUN_FIELDS = new Set(['code', 'description'])
 const RECOVERY_BOUNDARY_FIELDS = new Set(['failedCallSeq', 'frontierCallSeq'])
@@ -273,14 +278,16 @@ function isReadableJournal(value) {
   }
 }
 
-function isValidRewrites(value) {
+function isValidRewrites(value, journal) {
   try {
-    return Array.isArray(value) && value.every(rewrite => (
+    return journal.status !== 'noop' && isValidRewritePolicy(journal.rewritePolicy)
+      && Array.isArray(value) && value.every(rewrite => (
       hasClosedFields(rewrite, REWRITE_FIELDS, ['kind', 'description'])
       && REWRITE_KINDS.has(rewrite.kind)
+      && journal.rewritePolicy[REWRITE_POLICY_BY_KIND[rewrite.kind]] === true
       && typeof rewrite.description === 'string' && rewrite.description.length > 0
       && (rewrite.source === undefined || typeof rewrite.source === 'string')
-    ))
+      ))
   } catch {
     return false
   }
@@ -417,7 +424,7 @@ export function derivePtcToolView(block, toolName = undefined) {
   if (journal === undefined) {
     return Object.freeze({ state, description, code, output, ptc: false, features: Object.freeze([]) })
   }
-  const rewrites = isValidRewrites(block.meta.dshPtcPlusRewrites)
+  const rewrites = isValidRewrites(block.meta.dshPtcPlusRewrites, journal)
     ? block.meta.dshPtcPlusRewrites
     : []
   const resolvedToolName = typeof toolName === 'string'

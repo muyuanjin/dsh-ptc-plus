@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/dsh-ptc-plus-banner.webp" width="100%" alt="dsh-ptc-plus banner">
+  <img src="assets/dsh-ptc-plus-banner-en.webp" width="100%" alt="dsh-ptc-plus banner">
 </p>
 
 <p align="center">
@@ -37,7 +37,7 @@
 > [!IMPORTANT]
 > Built for `danger-full-access`: direct Node.js and OS access with no extra sandbox. Use it only where that permission scope is acceptable.
 
-![PTC Plus settings card](assets/ptc-plus-settings.png)
+![PTC Plus settings card](assets/ptc-plus-settings-en.png)
 
 *The settings card exposes live configuration and the `enabled` kill switch.*
 

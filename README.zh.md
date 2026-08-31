@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/dsh-ptc-plus-banner.webp" width="100%" alt="dsh-ptc-plus 横幅">
+  <img src="assets/dsh-ptc-plus-banner-zh.webp" width="100%" alt="dsh-ptc-plus 横幅">
 </p>
 
 <p align="center">
@@ -37,7 +37,7 @@
 > [!IMPORTANT]
 > 面向 `danger-full-access` 设计：可直接访问 Node.js 与操作系统，不另加沙箱。仅在可接受此权限的环境使用。
 
-![PTC Plus 设置卡片](assets/ptc-plus-settings.png)
+![PTC Plus 设置卡片](assets/ptc-plus-settings-zh.png)
 
 *设置卡片展示即时配置和 `enabled` 开关。*
 

@@ -16,7 +16,8 @@ import {
   CONFIG_FIELDS,
   SETTINGS_NAMESPACE,
 } from './internal/config-spec.js'
-import { installSettingsSection, settingsNamespace } from '@deepseek-ai/dsh-settings'
+import { installSettingsSectionCompat } from './internal/settings-compat.js'
+import * as dshSettings from '@deepseek-ai/dsh-settings'
 
 const INSTALL_CLEANUP = Symbol('ptc-plus install cleanup')
 
@@ -473,7 +474,7 @@ export function apply(ctx, config = {}) {
         ? { enabled: false }
         : Object.fromEntries(CONFIG_FIELDS.map(field => [field.key, previousConfig[field.key]]))
       try {
-        await settingsWriter.update(settingsNamespace(SETTINGS_NAMESPACE), patch)
+        await settingsWriter.update(SETTINGS_NAMESPACE, patch)
       } catch (rollbackError) {
         reportActivationFailure(new Error(
           `ptc-plus: failed to roll back runtime configuration: ${rollbackError.message}`,
@@ -512,21 +513,22 @@ export function apply(ctx, config = {}) {
     }
   }
   if (typeof ctx.inject === 'function') {
-    ctx.inject(['settings'], settings => {
-      settingsWriter = settings.settings
-    })
-    installSettingsSection(
+    installSettingsSectionCompat({
       ctx,
-      settingsNamespace(SETTINGS_NAMESPACE),
-      Config,
-      resolvedConfig,
-      {
+      settingsModule: dshSettings,
+      namespace: SETTINGS_NAMESPACE,
+      schema: Config,
+      entry: resolvedConfig,
+      hooks: {
         setSource(source) {
           configSource = source
         },
         onChange: reconcile,
       },
-    )
+      onProvider(provider) {
+        settingsWriter = provider
+      },
+    })
   }
   if (configurationGeneration === 0) return reconcile(settingsWriter === undefined)
 }

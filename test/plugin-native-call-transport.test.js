@@ -221,7 +221,7 @@ test('rejects a later native assembly without changing the captured code request
   const nativeSignal = new AbortController().signal
   await assert.rejects(state.assemble(nativeAssembly, {
     agent, scope: agent, signal: nativeSignal,
-  }), /code agent composition assembled without run_code/)
+  }), /ptc agent composition assembled without run_code/)
 
   const execute = state.listeners.get('tools/execute')[0]
   let dispatched = false
@@ -327,14 +327,14 @@ test('preserves both as a distinct PTC presentation across native capability vie
     const signal = new AbortController().signal
     const assembly = {
       sections: [
-        { name: 'tools:code-only', text: '' },
+        { name: 'tools:ptc-only', text: '' },
         { name: 'tools:sdk', text: 'declare const tools: unknown' },
       ],
       contexts: [], variables: {}, tools: [state.runCodeDefinition, ...nativeSchemas],
     }
     const projected = await state.assemble(assembly, { agent, scope: agent, signal })
     assert.deepEqual(projected.tools.map(tool => tool.name), ['run_code', ...nativeSchemas.map(tool => tool.name)])
-    assert.equal(projected.sections.find(section => section.name === 'tools:code-only').text, '')
+    assert.equal(projected.sections.find(section => section.name === 'tools:ptc-only').text, '')
     assert.equal(agent.ctx.tools.get('edit_run_code'), undefined)
     const repeated = await state.assemble(assembly, {
       agent, scope: agent, signal: new AbortController().signal,
@@ -378,6 +378,44 @@ test('preserves both as a distinct PTC presentation across native capability vie
       assert.deepEqual(result, { value: 'native' })
       assert.equal(dispatched, true)
     }
+  }
+})
+
+test('prefers the current PTC collapse section when both generations are present', async (t) => {
+  const readSchema = { name: 'read', parameters: { type: 'object', properties: {} } }
+  for (const { id, currentText, legacyText, expectedTools } of [
+    {
+      id: 'current-both', currentText: '', legacyText: 'legacy PTC-only guidance',
+      expectedTools: ['run_code', 'read'],
+    },
+    {
+      id: 'current-ptc', currentText: 'current PTC-only guidance', legacyText: '',
+      expectedTools: ['run_code', 'edit_run_code'],
+    },
+  ]) {
+    const state = fixture({}, { scopedSchemas: [readSchema] })
+    t.after(() => state.dispose())
+    const session = { id: `${id}-session`, events: [] }
+    const agent = ptcAgent(`${id}-agent`, session)
+    const assembly = {
+      sections: [
+        { name: 'tools:code-only', text: legacyText },
+        { name: 'tools:ptc-only', text: currentText },
+      ],
+      contexts: [], variables: {}, tools: [state.runCodeDefinition, readSchema],
+    }
+    const projected = await state.assemble(assembly, { agent, scope: agent })
+    assert.deepEqual(projected.tools.map(tool => tool.name), expectedTools)
+    assert.equal(
+      projected.sections.find(section => section.name === 'tools:code-only').text,
+      legacyText,
+    )
+    assert.equal(
+      projected.sections.find(section => section.name === 'tools:ptc-only').text,
+      currentText === ''
+        ? ''
+        : '`run_code` and `edit_run_code` are the only tools callable directly. Call every native tool declared by the SDK from inside a program.',
+    )
   }
 })
 

@@ -84,13 +84,17 @@ test('settings card copy follows the DSH locale dictionaries', async () => {
   })
   const dictionaries = []
   const slotEntries = []
+  let settingsSnapshot = { status: 'ready', writable: true, value: { enabled: true } }
+  let sessionSnapshot = {
+    byId: { 'session-1': { projectionValues: { agentPreset: 'ptc' } } },
+  }
   const preferenceScope = {
     subscribe: () => () => {},
-    getSnapshot: () => ({ status: 'ready', writable: true, value: { enabled: true } }),
+    getSnapshot: () => settingsSnapshot,
   }
   const sessions = {
     subscribe: () => () => {},
-    getSnapshot: () => ({ byId: { 'session-1': { agentPreset: 'code' } } }),
+    getSnapshot: () => sessionSnapshot,
   }
   const ctx = {
     settingsScope: { bind: () => preferenceScope },
@@ -170,4 +174,20 @@ test('settings card copy follows the DSH locale dictionaries', async () => {
     assert.ok(indicatorTexts.includes(dicts[locale]['indicator.title']))
     assert.equal(indicatorTexts.includes(dicts[opposite]['indicator.title']), false)
   }
+
+  const renderIndicator = (session, enabled = true) => {
+    sessionSnapshot = { byId: { 'session-1': session } }
+    settingsSnapshot = { status: 'ready', writable: true, value: { enabled } }
+    return indicator.component({ sessionId: 'session-1', t: key => key })
+  }
+  assert.notEqual(renderIndicator({ projectionValues: { agentPreset: 'ptc' } }), null)
+  assert.notEqual(renderIndicator({ agentPreset: 'code' }), null)
+  assert.notEqual(renderIndicator({
+    projectionValues: { agentPreset: 'ptc' }, agentPreset: 'unrelated',
+  }), null)
+  assert.equal(renderIndicator({
+    projectionValues: { agentPreset: 'unrelated' }, agentPreset: 'code',
+  }), null)
+  assert.equal(renderIndicator({ projectionValues: { agentPreset: 'chat' } }), null)
+  assert.equal(renderIndicator({ projectionValues: { agentPreset: 'ptc' } }, false), null)
 })

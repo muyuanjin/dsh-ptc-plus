@@ -1,6 +1,6 @@
 # Installation
 
-PTC Plus requires Node.js `^22.19.0 || >=24.0.0` and the latest available DSH release with TypeScript PTC mode. Compatibility follows DSH's public extension surfaces rather than a version allowlist.
+PTC Plus requires Node.js `^22.19.0 || >=24.0.0` and targets the latest available DSH release with TypeScript PTC mode. Compatibility with the preceding Host contract is retained through public capability detection; when both generations expose competing presentation evidence, the current DSH contract wins. Compatibility follows those live extension surfaces rather than a version allowlist.
 
 Install the plugin into the profile that actually runs the target DSH surface. Do not assume a profile named `default` is active.
 
@@ -16,7 +16,7 @@ Install the plugin into the profile that actually runs the target DSH surface. D
 
 `danger-full-access` is the primary supported experience. The worker isolates the REPL lifecycle; it is not a malicious-code sandbox. DSH continues to own native-tool scope, policy, approval, cancellation, sandboxing, and scheduling. Narrower profiles expose only their available capabilities; PTC Plus does not simulate missing authority or add another permission system.
 
-The optional `cordisToolsEnabled` integration requires the current DSH installation to provide its shipped `cordis` preset plus the public preset, Skill, Cordis, settings, and tool-runtime packages. PTC Plus declares those host-owned DSH packages as required peers instead of installing private runtime copies; DSH's profile module fallback must resolve them from the active installation. Do not copy `SKILL.md` or add the Cordis preset's Skill directory to global roots. If the host surface is incomplete, plugin activation or enabling the setting fails instead of loading a second DSH core.
+The optional `cordisToolsEnabled` integration requires the current DSH installation to provide its shipped `cordis` preset plus the public preset, Skill, Cordis, settings, and tool-runtime packages. PTC Plus declares those host-owned DSH packages as unrestricted required peers instead of installing private runtime copies; runtime capability validation owns compatibility, and CI imports the packed plugin against both the current and preceding release channels. DSH's profile module fallback must resolve the peers from the active installation. Do not copy `SKILL.md` or add the Cordis preset's Skill directory to global roots. If the host surface is incomplete, plugin activation or enabling the setting fails instead of loading a second DSH core.
 
 ## npm Release
 

@@ -40,10 +40,24 @@ jobs:
         run: |
           set -euo pipefail
           pack_dir="$(mktemp -d)"
-          consumer_dir="$(mktemp -d)"
-          trap 'rm -rf -- "$pack_dir" "$consumer_dir"' EXIT
+          consumers_dir="$(mktemp -d)"
+          trap 'rm -rf -- "$pack_dir" "$consumers_dir"' EXIT
           archive="$(npm pack --silent --pack-destination "$pack_dir" --json | node scripts/npm-pack-filename.mjs)"
-          cd "$consumer_dir"
-          npm init --yes
-          npm install --ignore-scripts "$pack_dir/$archive"
-          node --input-type=module -e "const plugin = await import('dsh-ptc-plus'); if (plugin.name !== 'ptc-plus' || typeof plugin.apply !== 'function') throw new Error('invalid package exports')"
+          for channel in alpha next; do
+            consumer_dir="$consumers_dir/$channel"
+            mkdir "$consumer_dir"
+            cd "$consumer_dir"
+            npm init --yes
+            npm install --ignore-scripts \
+              "$pack_dir/$archive" \
+              "@deepseek-ai/dsh-settings@$channel" \
+              "@deepseek-ai/dsh-skill-filesystem@$channel" \
+              "@deepseek-ai/dsh-tool-cordis@$channel" \
+              "@deepseek-ai/dsh-tools@$channel"
+            npm ls --depth=0 \
+              @deepseek-ai/dsh-settings \
+              @deepseek-ai/dsh-skill-filesystem \
+              @deepseek-ai/dsh-tool-cordis \
+              @deepseek-ai/dsh-tools
+            node --input-type=module -e "const plugin = await import('dsh-ptc-plus'); if (plugin.name !== 'ptc-plus' || typeof plugin.apply !== 'function') throw new Error('invalid package exports')"
+          done

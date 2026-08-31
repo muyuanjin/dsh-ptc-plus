@@ -11,6 +11,7 @@ const RUN_CODE_TOOL_DESCRIPTION = 'Evaluate the next TypeScript cell in this ses
 const RUN_CODE_CODE_DESCRIPTION = 'Code for the next REPL cell, parsed as the body of an async TypeScript function.'
 const RUN_CODE_DESCRIPTION_DESCRIPTION = 'Short active-voice summary of what this cell does, 5-10 words (shown in the UI).'
 const CODE_TRANSPORT_INSTRUCTION = '`run_code` and `edit_run_code` are the only tools callable directly. Call every native tool declared by the SDK from inside a program.'
+const PTC_COLLAPSE_SECTION_NAMES = Object.freeze(['tools:ptc-only', 'tools:code-only'])
 
 function adaptRunCodeSchema(tool) {
   const parameters = tool.parameters
@@ -94,19 +95,21 @@ export function createCordisRecoveryPolicy(initiallyEnabled) {
 function presentationState(assembly) {
   const tools = Array.isArray(assembly?.tools) ? assembly.tools : []
   if (!tools.some(tool => tool?.name === RUN_CODE)) {
-    return { presentation: 'native', ownerProven: false }
+    return { presentation: 'native', ownerProven: false, collapseSectionName: undefined }
   }
-  const collapse = assembly?.sections?.find(section => section?.name === 'tools:code-only')
+  const collapse = PTC_COLLAPSE_SECTION_NAMES
+    .map(name => assembly?.sections?.find(section => section?.name === name))
+    .find(section => section !== undefined)
   if (collapse !== undefined) {
     const presentation = typeof collapse.text === 'string' && collapse.text.trim().length > 0
-      ? 'code'
+      ? 'ptc'
       : 'both'
-    return { presentation, ownerProven: true }
+    return { presentation, ownerProven: true, collapseSectionName: collapse.name }
   }
   const presentation = tools.every(tool => tool?.name === RUN_CODE || tool?.name === EDIT_RUN_CODE)
-    ? 'code'
+    ? 'ptc'
     : 'both'
-  return { presentation, ownerProven: false }
+  return { presentation, ownerProven: false, collapseSectionName: undefined }
 }
 
 async function* bindCallPolicies(source, policy, calls) {
@@ -219,10 +222,10 @@ export function createDirectSurfaceOwner({
       const initialState = presentationState(initialAssembly)
       let composition = compositions.get(agent)
       if (composition === undefined && id !== undefined
-        && (initialState.ownerProven || initialState.presentation === 'code')) {
+        && (initialState.ownerProven || initialState.presentation === 'ptc')) {
         composition = captureComposition(agent, id, initialState.presentation)
       }
-      if (composition?.presentation === 'code' && !editTransport.isInstalled(agent)) {
+      if (composition?.presentation === 'ptc' && !editTransport.isInstalled(agent)) {
         editTransport.ensureInstalled(agent)
       }
 
@@ -235,7 +238,7 @@ export function createDirectSurfaceOwner({
       if (composition === undefined && id !== undefined) {
         const state = initialState.ownerProven ? initialState : completedState
         composition = captureComposition(agent, id, state.presentation)
-        if (composition.presentation === 'code' && !editTransport.isInstalled(agent)) {
+        if (composition.presentation === 'ptc' && !editTransport.isInstalled(agent)) {
           editTransport.ensureInstalled(agent)
         }
       }
@@ -257,10 +260,10 @@ export function createDirectSurfaceOwner({
         throw new Error('ptc-plus: native agent composition assembled with run_code')
       }
       const sessionPtc = presentation !== 'native' && id !== undefined
-      const sessionCodeOnlyProjection = presentation === 'code' && id !== undefined
+      const sessionPtcProjection = presentation === 'ptc' && id !== undefined
       const runCode = tools.find(tool => tool?.name === RUN_CODE)
       let directTools = tools
-      if (sessionCodeOnlyProjection) {
+      if (sessionPtcProjection) {
         editTransport.ensureInstalled(agent)
         directTools = [adaptRunCodeSchema(runCode), editRunCodeSchema()]
       }
@@ -277,13 +280,13 @@ export function createDirectSurfaceOwner({
         : assembly.contexts
       const projectsSections = presentation !== 'native' && Array.isArray(assembly.sections)
         && assembly.sections.some(section => section?.name === 'tools:sdk'
-          || (sessionCodeOnlyProjection && section?.name === 'tools:code-only'))
+          || (sessionPtcProjection && section?.name === completedState.collapseSectionName))
       const sections = projectsSections
         ? assembly.sections.map(section => {
             if (section?.name === 'tools:sdk') {
               return { ...section, text: capabilitySdk(section.text) }
             }
-            if (sessionCodeOnlyProjection && section?.name === 'tools:code-only') {
+            if (sessionPtcProjection && section?.name === completedState.collapseSectionName) {
               return { ...section, text: CODE_TRANSPORT_INSTRUCTION }
             }
             return section
@@ -291,7 +294,7 @@ export function createDirectSurfaceOwner({
         : assembly.sections
 
       if (id !== undefined) {
-        const nativeSchemas = presentation === 'code'
+        const nativeSchemas = presentation === 'ptc'
           ? new Map(toolSchemasForAgent(agent)
             .filter(schema => typeof schema?.name === 'string'
               && schema.name !== RUN_CODE && schema.name !== EDIT_RUN_CODE)
@@ -302,7 +305,7 @@ export function createDirectSurfaceOwner({
 
       return {
         ...assembly,
-        tools: sessionCodeOnlyProjection
+        tools: sessionPtcProjection
           ? directTools
           : directTools.map(tool => tool?.name === RUN_CODE ? adaptRunCodeSchema(tool) : tool),
         sections,
@@ -313,7 +316,7 @@ export function createDirectSurfaceOwner({
       const optionSessionId = options.sessionId === undefined ? undefined : String(options.sessionId)
       const policy = requestPolicy(options?.signal, optionSessionId)
       if (policy === undefined || optionSessionId === undefined) return next()
-      const source = policy.presentation === 'code'
+      const source = policy.presentation === 'ptc'
         ? canonicalizeToolCallStream(next(), {
           tools: options.tools,
           nativeSchemas: currentCanonicalizeToolCalls ? policy.nativeSchemas : new Map(),
@@ -330,14 +333,14 @@ export function createDirectSurfaceOwner({
       const policy = executionPolicy(id, exec.callId)
         ?? requestPolicy(exec?.signal, id)
       if (exec.name === EDIT_RUN_CODE) {
-        return policy?.presentation === 'code'
+        return policy?.presentation === 'ptc'
           ? undefined
           : rejection(`tool ${EDIT_RUN_CODE} is not declared for this request`)
       }
       if (exec.name === RUN_CODE || exec.parent !== undefined) {
         return undefined
       }
-      if (policy?.presentation !== 'code') return undefined
+      if (policy?.presentation !== 'ptc') return undefined
       return rejection(`tool ${exec.name} is not a direct PTC tool; use run_code or edit_run_code directly, and call native tools from inside run_code`)
     },
     handleResult(exec) {

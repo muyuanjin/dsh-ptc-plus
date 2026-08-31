@@ -66,6 +66,11 @@ const SETTINGS_COPY = Object.freeze(Object.fromEntries(
   })]),
 ))
 
+function sessionUsesPtcPreset(session) {
+  const preset = session?.projectionValues?.agentPreset ?? session?.agentPreset
+  return preset === 'ptc' || preset === 'code'
+}
+
 window.__ModuleLoader__.load({
   // Replaced by the bundle entry with the package name from package.json.
   id: __PTC_PLUS_CLIENT_MODULE_ID__,
@@ -207,7 +212,7 @@ window.__ModuleLoader__.load({
             () => preferenceScope.getSnapshot(),
             () => preferenceScope.getSnapshot(),
           )
-          if (sessions.byId?.[sessionId]?.agentPreset !== 'code'
+          if (!sessionUsesPtcPreset(sessions.byId?.[sessionId])
             || settings.status !== 'ready' || settings.value?.enabled !== true) return null
           return h('span', { className: 'ptcPlusActive', title: t('indicator.title') },
             h(IconCheckOutline14, { size: 14 }), 'PTC Plus')

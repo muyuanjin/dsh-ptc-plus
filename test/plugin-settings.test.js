@@ -43,7 +43,7 @@ function settingsScope(value) {
 }
 
 function settingsContext(scope) {
-  return {
+  const context = {
     settings: {
       register: () => scope,
       update: (_namespace, patch) => scope.update(patch),
@@ -52,6 +52,21 @@ function settingsContext(scope) {
       register()
     },
   }
+  context.settings.installSection = (owner, _namespace, _schema, entry, hooks) => {
+    const registered = context.settings.register()
+    hooks.setSource(() => registered.get())
+    context.effect(() => () => {
+      if (owner.fiber.state === 4 || owner.fiber.state === 5) return
+      hooks.setSource(() => entry)
+      hooks.onChange()
+    })
+    hooks.onChange()
+    registered.watch(() => {
+      if (owner.fiber.state === 4 || owner.fiber.state === 5) return
+      hooks.onChange()
+    })
+  }
+  return context
 }
 
 function hostContext(settings = undefined, agents = [], options = {}) {

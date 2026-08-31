@@ -268,6 +268,10 @@
       ...Object.assign({}, ...CONFIG_FIELDS.map((field) => fieldCopy(field, locale)))
     })])
   ));
+  function sessionUsesPtcPreset(session) {
+    const preset = session?.projectionValues?.agentPreset ?? session?.agentPreset;
+    return preset === "ptc" || preset === "code";
+  }
   window.__ModuleLoader__.load({
     // Replaced by the bundle entry with the package name from package.json.
     id: "dsh-ptc-plus",
@@ -434,7 +438,7 @@
               () => preferenceScope.getSnapshot(),
               () => preferenceScope.getSnapshot()
             );
-            if (sessions.byId?.[sessionId]?.agentPreset !== "code" || settings.status !== "ready" || settings.value?.enabled !== true) return null;
+            if (!sessionUsesPtcPreset(sessions.byId?.[sessionId]) || settings.status !== "ready" || settings.value?.enabled !== true) return null;
             return h(
               "span",
               { className: "ptcPlusActive", title: t("indicator.title") },

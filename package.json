@@ -39,10 +39,10 @@
     "acorn": "^8.15.0"
   },
   "peerDependencies": {
-    "@deepseek-ai/dsh-settings": "next",
-    "@deepseek-ai/dsh-skill-filesystem": "next",
-    "@deepseek-ai/dsh-tool-cordis": "next",
-    "@deepseek-ai/dsh-tools": "next"
+    "@deepseek-ai/dsh-settings": "*",
+    "@deepseek-ai/dsh-skill-filesystem": "*",
+    "@deepseek-ai/dsh-tool-cordis": "*",
+    "@deepseek-ai/dsh-tools": "*"
   },
   "scripts": {
     "build": "node scripts/client-bundle.mjs build",
@@ -96,10 +96,10 @@
     }
   },
   "devDependencies": {
-    "@deepseek-ai/dsh-settings": "next",
-    "@deepseek-ai/dsh-skill-filesystem": "next",
-    "@deepseek-ai/dsh-tool-cordis": "next",
-    "@deepseek-ai/dsh-tools": "next",
+    "@deepseek-ai/dsh-settings": "alpha",
+    "@deepseek-ai/dsh-skill-filesystem": "alpha",
+    "@deepseek-ai/dsh-tool-cordis": "alpha",
+    "@deepseek-ai/dsh-tools": "alpha",
     "esbuild": "0.28.2",
     "yaml": "^2.9.0"
   }

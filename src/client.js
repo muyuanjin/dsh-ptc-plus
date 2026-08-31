@@ -13,6 +13,59 @@ const CLIENT_CSS = `
 @media(prefers-reduced-motion:reduce){.ptcPlusHeader,.ptcPlusChevron,.ptcPlusBody,.ptcPlusButton{transition:none}}
 `
 
+/** Locale namespace owning every settings-card string (field copy plus chrome). */
+const LOCALE_NS = 'settings.ptcPlus'
+
+/** Card chrome copy; field labels and hints ride the shared config spec. */
+const CHROME_COPY = Object.freeze({
+  zh: Object.freeze({
+    'card.description': 'PTC 模式的会话级 TypeScript REPL。',
+    'status.enabled': '已启用',
+    'status.disabled': '已停用',
+    'action.expand': '展开 PTC Plus 设置',
+    'action.collapse': '收起 PTC Plus 设置',
+    'state.syncing': '正在同步设置...',
+    'state.unavailable': '当前 DSH 实例未提供设置服务',
+    'footer.live': '设置会在修改后立即生效',
+    'footer.readOnly': '当前设置为只读',
+    'status.applied': '设置已立即生效',
+    'status.conflict': '设置未生效，请检查设置冲突',
+    'status.failed': '设置失败：{error}',
+    'indicator.title': 'PTC Plus 已启用',
+  }),
+  en: Object.freeze({
+    'card.description': 'The session-bound TypeScript REPL for PTC mode.',
+    'status.enabled': 'Enabled',
+    'status.disabled': 'Disabled',
+    'action.expand': 'Expand PTC Plus settings',
+    'action.collapse': 'Collapse PTC Plus settings',
+    'state.syncing': 'Syncing settings...',
+    'state.unavailable': 'This DSH instance does not provide a settings service',
+    'footer.live': 'Changes take effect immediately.',
+    'footer.readOnly': 'These settings are read-only.',
+    'status.applied': 'Setting applied immediately.',
+    'status.conflict': 'The setting did not take effect; check for conflicting settings.',
+    'status.failed': 'Could not save: {error}',
+    'indicator.title': 'PTC Plus is active',
+  }),
+})
+
+/** Project one field's copy into locale dictionary keys; an empty hint has no key. */
+function fieldCopy(field, locale) {
+  const copy = { [`${field.key}.label`]: locale === 'en' ? field.labelEn : field.label }
+  const description = locale === 'en' ? field.descriptionEn : field.description
+  if (description !== '') copy[`${field.key}.description`] = description
+  return copy
+}
+
+/** Complete dictionaries for both shipped locales, derived once from the spec. */
+const SETTINGS_COPY = Object.freeze(Object.fromEntries(
+  ['zh', 'en'].map(locale => [locale, Object.freeze({
+    ...CHROME_COPY[locale],
+    ...Object.assign({}, ...CONFIG_FIELDS.map(field => fieldCopy(field, locale))),
+  })]),
+))
+
 window.__ModuleLoader__.load({
   // Replaced by the bundle entry with the package name from package.json.
   id: __PTC_PLUS_CLIENT_MODULE_ID__,
@@ -35,18 +88,18 @@ window.__ModuleLoader__.load({
       return () => style.remove()
     }
 
-    function fieldInput(field, value, disabled, onChange) {
+    function fieldInput(field, value, disabled, onChange, label) {
       if (field.type === 'boolean') {
         return h('input', {
           type: 'checkbox', role: 'switch', className: 'ptcPlusCheck', checked: value === true,
-          disabled, 'aria-label': field.label,
+          disabled, 'aria-label': label,
           onChange: event => onChange(field, event.target.checked),
         })
       }
       return h('input', {
         type: 'number', className: 'ptcPlusInput',
         value: Number.isSafeInteger(value) ? String(value) : '',
-        min: field.min, max: field.max, step: 1, disabled, 'aria-label': field.label,
+        min: field.min, max: field.max, step: 1, disabled, 'aria-label': label,
         onChange: event => {
           const input = event.target.value
           const parsed = input === '' ? '' : Number(input)
@@ -57,11 +110,12 @@ window.__ModuleLoader__.load({
 
     function apply(ctx) {
       const preferenceScope = ctx.settingsScope.bind({ namespace: SETTINGS_NAMESPACE })
+      ctx.effect(() => ctx.locale.register(LOCALE_NS, SETTINGS_COPY), 'ptc-plus: settings dictionaries')
       ctx.effect(installStyles, 'ptc-plus: client styles')
 
-      function PTCPlusSettingsCard() {
+      function PTCPlusSettingsCard({ t }) {
         const [open, setOpen] = React.useState(false)
-        const [status, setStatus] = React.useState('')
+        const [status, setStatus] = React.useState(null)
         const [pending, setPending] = React.useState(() => new Set())
         const writeTail = React.useRef(Promise.resolve())
         const subscribe = React.useCallback(listener => preferenceScope.subscribe(listener), [])
@@ -78,17 +132,20 @@ window.__ModuleLoader__.load({
             if (field.key !== 'enabled' && before.value?.enabled !== true) return
             if (before.value?.[field.key] === nextValue) return
             setPending(current => new Set(current).add(field.key))
-            setStatus('')
+            setStatus(null)
             try {
               await preferenceScope.set(field.key, nextValue)
               const after = preferenceScope.getSnapshot()
               if (after.status !== 'ready' || after.value?.[field.key] !== nextValue) {
-                setStatus('设置未生效，请检查设置冲突')
+                setStatus({ key: 'status.conflict' })
               } else {
-                setStatus('设置已立即生效')
+                setStatus({ key: 'status.applied' })
               }
             } catch (error) {
-              setStatus('设置失败：' + (error instanceof Error ? error.message : String(error)))
+              setStatus({
+                key: 'status.failed',
+                params: { error: error instanceof Error ? error.message : String(error) },
+              })
             } finally {
               setPending(current => {
                 const next = new Set(current)
@@ -105,39 +162,41 @@ window.__ModuleLoader__.load({
         return h('li', { className: 'ptcPlusCard' },
           h('button', {
             type: 'button', className: 'ptcPlusHeader', 'aria-expanded': open,
-            'aria-label': open ? '收起 PTC Plus 设置' : '展开 PTC Plus 设置',
+            'aria-label': t(open ? 'action.collapse' : 'action.expand'),
             'aria-controls': 'ptc-plus-settings-body', onClick: () => setOpen(current => !current),
           },
           h(IconSettingsOutline16, { size: 16 }),
           h('span', { className: 'ptcPlusHeadText' },
             h('span', { className: 'ptcPlusName' }, 'PTC Plus'),
-            h('span', { className: 'ptcPlusDescription' }, 'PTC 模式的会话级 TypeScript REPL。')),
-          h('span', { className: 'ptcPlusStatus', 'data-enabled': enabled }, enabled ? '已启用' : '已停用'),
+            h('span', { className: 'ptcPlusDescription' }, t('card.description'))),
+          h('span', { className: 'ptcPlusStatus', 'data-enabled': enabled }, t(enabled ? 'status.enabled' : 'status.disabled')),
           h('span', { className: 'ptcPlusChevron', 'data-open': open, 'aria-hidden': true }, h(IconChevronDownOutline14, { size: 14 }))),
           h('div', { id: 'ptc-plus-settings-body', className: 'ptcPlusBody', 'data-open': open, 'aria-hidden': !open },
             h('div', { className: 'ptcPlusBodyInner' }, h('div', { className: 'ptcPlusFields' },
               snapshot.status === 'loading'
-                ? h('p', { className: 'ptcPlusMessage' }, '正在同步设置...')
+                ? h('p', { className: 'ptcPlusMessage' }, t('state.syncing'))
                 : snapshot.status === 'unavailable'
-                  ? h('p', { className: 'ptcPlusMessage' }, '当前 DSH 实例未提供设置服务')
+                  ? h('p', { className: 'ptcPlusMessage' }, t('state.unavailable'))
                   : [
                     ...CONFIG_FIELDS.map(field => h('div', { key: field.key, className: 'ptcPlusRow' },
                       h('div', { className: 'ptcPlusMain' },
-                        h('div', { className: 'ptcPlusLabel' }, field.label),
-                        field.description === '' ? null : h('div', { className: 'ptcPlusDetail' }, field.description)),
-                      fieldInput(field, value[field.key], fieldDisabled(field), persist))),
+                        h('div', { className: 'ptcPlusLabel' }, t(`${field.key}.label`)),
+                        field.description === '' ? null : h('div', { className: 'ptcPlusDetail' }, t(`${field.key}.description`))),
+                      fieldInput(field, value[field.key], fieldDisabled(field), persist, t(`${field.key}.label`)))),
                     h('div', { key: 'footer', className: 'ptcPlusFooter' },
-                      h('span', { className: 'ptcPlusMessage', role: 'status' }, status || (snapshot.writable ? '设置会在修改后立即生效' : '当前设置为只读'))),
+                      h('span', { className: 'ptcPlusMessage', role: 'status' }, status === null
+                        ? t(snapshot.writable ? 'footer.live' : 'footer.readOnly')
+                        : t(status.key, status.params))),
                   ]))),
         )
       }
 
       ctx.slots.inject('settings.plugin.item', () => ctx.slots.register({
-        name: 'settings.plugin.item', key: SETTINGS_NAMESPACE,
+        name: 'settings.plugin.item', key: SETTINGS_NAMESPACE, locale: LOCALE_NS,
       }, PTCPlusSettingsCard))
 
       ctx.inject(['slots', 'sessions'], (scope) => {
-        function PTCPlusSessionIndicator({ sessionId }) {
+        function PTCPlusSessionIndicator({ sessionId, t }) {
           const sessions = React.useSyncExternalStore(
             listener => scope.sessions.list.subscribe(listener),
             () => scope.sessions.list.getSnapshot(),
@@ -150,16 +209,16 @@ window.__ModuleLoader__.load({
           )
           if (sessions.byId?.[sessionId]?.agentPreset !== 'code'
             || settings.status !== 'ready' || settings.value?.enabled !== true) return null
-          return h('span', { className: 'ptcPlusActive', title: 'PTC Plus 已启用' },
+          return h('span', { className: 'ptcPlusActive', title: t('indicator.title') },
             h(IconCheckOutline14, { size: 14 }), 'PTC Plus')
         }
         scope.slots.inject('conversation.session.header.actions', () => scope.slots.register({
-          name: 'conversation.session.header.actions', id: 'ptc-plus-active', order: -9,
+          name: 'conversation.session.header.actions', id: 'ptc-plus-active', order: -9, locale: LOCALE_NS,
         }, PTCPlusSessionIndicator))
       })
     }
 
-    module.exports = { apply, inject: ['settingsScope', 'slots', 'sessions'] }
+    module.exports = { apply, inject: ['settingsScope', 'slots', 'sessions', 'locale'] }
     return module.exports
   },
 })

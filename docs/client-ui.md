@@ -27,7 +27,7 @@ Host half 通过 DSH 公共 `settings` 服务注册命名空间 `ptc-plus`。字
 
 `cordisToolsEnabled` 默认关闭并即时生效。它不切换 preset，而是把官方 Cordis 工具、owner guidance 与 `cordis-plugin-development` Skill 作为一个 agent-scoped mount 加入或移出 PTC agent；顶层仍为 `run_code` / `edit_run_code`，普通 agent 不继承。Host 缺少 official preset、Skill/Cordis service 或任一 contribution 加载失败时，启用会完整回滚。完整运行要求见 [运行时参考](runtime-reference.md)。
 
-设置卡片折叠头部显示 `PTC Plus`、`PTC 模式的会话级 TypeScript REPL。`、启用状态和可访问的展开/收起名称；稳定 REPL 指引不承载 UI 品牌名。启用且会话选择 `code` preset 时，`conversation.session.header.actions` 额外显示 `PTC Plus` 指示器。关闭时不注入任何 PTC 指引或工具 surface。
+设置卡片的全部文案（字段名称与说明、折叠头部副标题、启用状态、展开/收起名称、同步与错误提示）都注册到 DSH client locale 的 `settings.ptcPlus` 命名空间，随当前界面语言在中文与 English 之间切换；字段名称与说明的两种语言文本同样来自 `internal/config-spec.js`（`label`/`labelEn`、`description`/`descriptionEn`，某一字段的说明要么两种语言都有，要么都没有），卡片 chrome 文案由 client half 拥有。稳定 REPL 指引不承载 UI 品牌名。启用且会话选择 `code` preset 时，`conversation.session.header.actions` 额外显示 `PTC Plus` 指示器，其 tooltip 也跟随界面语言。关闭时不注入任何 PTC 指引或工具 surface。
 
 live 配置若因宿主能力缺失或 runtime 安装/重配置失败，会先回滚所有已创建或更新的 owner，再把持久设置回写为上一次已应用值；回滚写入失败时 Host 记录 activation diagnostic，避免静默把配置显示成不存在的 runtime。
 
@@ -39,7 +39,7 @@ live 配置若因宿主能力缺失或 runtime 安装/重配置失败，会先�
 npm run build
 ```
 
-`package.json` 声明 `dsh.client` 与 `./client` export。`npm run build` 从 `src/client.js` 生成 `client.js`，`npm run build:check` 比较确定性产物；`prepack` 会阻止陈旧 bundle 发布。Client half 只依赖 DSH 注入面提供的 settings、session、slot 与 UI primitive 模块。
+`package.json` 声明 `dsh.client` 与 `./client` export。`npm run build` 从 `src/client.js` 生成 `client.js`，`npm run build:check` 比较确定性产物；`prepack` 会阻止陈旧 bundle 发布。Client half 只依赖 DSH 注入面提供的 settings、locale、session、slot 与 UI primitive 模块。
 
 ## 回退
 

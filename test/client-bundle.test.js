@@ -32,7 +32,6 @@ test('checked client bundle is loadable through the DSH module loader contract',
   const primitives = {
     IconCheckOutline14() {},
     IconChevronDownOutline14() {},
-    IconSettingsOutline16() {},
   }
   const exported = loaded.factory(name => {
     if (name === 'react') return React
@@ -75,7 +74,6 @@ test('settings card copy follows the DSH locale dictionaries', async () => {
   const primitives = {
     IconCheckOutline14: 'IconCheck',
     IconChevronDownOutline14: 'IconChevron',
-    IconSettingsOutline16: 'IconSettings',
   }
   const exported = registrations[0].factory(name => {
     if (name === 'react') return React

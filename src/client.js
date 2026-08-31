@@ -79,7 +79,6 @@ window.__ModuleLoader__.load({
     const {
       IconCheckOutline14,
       IconChevronDownOutline14,
-      IconSettingsOutline16,
     } = require('@deepseek-ai/dsh-client-ui-primitives')
     const module = { exports: {} }
     const h = React.createElement
@@ -170,7 +169,6 @@ window.__ModuleLoader__.load({
             'aria-label': t(open ? 'action.collapse' : 'action.expand'),
             'aria-controls': 'ptc-plus-settings-body', onClick: () => setOpen(current => !current),
           },
-          h(IconSettingsOutline16, { size: 16 }),
           h('span', { className: 'ptcPlusHeadText' },
             h('span', { className: 'ptcPlusName' }, 'PTC Plus'),
             h('span', { className: 'ptcPlusDescription' }, t('card.description'))),

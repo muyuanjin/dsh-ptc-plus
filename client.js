@@ -279,8 +279,7 @@
       const React = require2("react");
       const {
         IconCheckOutline14,
-        IconChevronDownOutline14,
-        IconSettingsOutline16
+        IconChevronDownOutline14
       } = require2("@deepseek-ai/dsh-client-ui-primitives");
       const module = { exports: {} };
       const h = React.createElement;
@@ -383,7 +382,6 @@
                 "aria-controls": "ptc-plus-settings-body",
                 onClick: () => setOpen((current) => !current)
               },
-              h(IconSettingsOutline16, { size: 16 }),
               h(
                 "span",
                 { className: "ptcPlusHeadText" },

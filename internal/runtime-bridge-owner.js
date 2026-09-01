@@ -124,6 +124,7 @@ export function createRuntimeBridgeOwner({
   ctx,
   sessionConfig,
   maxNestedRunCodeDepth,
+  presentationGeneration,
   sessionId,
   toolSchemasForAgent,
 }) {
@@ -270,7 +271,7 @@ export function createRuntimeBridgeOwner({
         meta = withRecoveryBoundaries(meta, settlement.recoveryBoundaries)
       }
       if (settlement.rewrites !== undefined) meta = withRewrites(meta, settlement.rewrites)
-      return withReplMemorySnapshot(meta, settlement.replMemory)
+      return withReplMemorySnapshot(meta, settlement.replMemory, presentationGeneration)
     }
     try {
       Object.defineProperty(output, 'presentationMeta', {
@@ -365,7 +366,7 @@ export function createRuntimeBridgeOwner({
             meta = withRecoveryBoundaries(meta, settlement.recoveryBoundaries)
           }
           if (settlement.rewrites !== undefined) meta = withRewrites(meta, settlement.rewrites)
-          meta = withReplMemorySnapshot(meta, settlement.replMemory)
+          meta = withReplMemorySnapshot(meta, settlement.replMemory, presentationGeneration)
           return { ...result, meta }
         }
         return result

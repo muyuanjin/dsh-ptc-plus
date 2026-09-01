@@ -7,6 +7,7 @@
  */
 
 import Schema from '@deepseek-ai/schemastery'
+import { randomUUID } from 'node:crypto'
 import { createDirectSurfaceOwner } from './internal/direct-surface-owner.js'
 import { createCordisToolsOwner } from './internal/cordis-tools-owner.js'
 import { createEditTransportOwner, EDIT_RUN_CODE } from './internal/edit-transport-owner.js'
@@ -17,7 +18,7 @@ import {
   SETTINGS_NAMESPACE,
 } from './internal/config-spec.js'
 import { installSettingsSectionCompat } from './internal/settings-compat.js'
-import { replMemoryProjection } from './internal/repl-memory-projection.js'
+import { createReplMemoryProjection } from './internal/repl-memory-projection.js'
 import * as dshSettings from '@deepseek-ai/dsh-settings'
 
 const INSTALL_CLEANUP = Symbol('ptc-plus install cleanup')
@@ -82,6 +83,8 @@ Native tool availability, executable names, shells, and path syntax depend on th
 
 /** Register the session-bound REPL runtime. */
 function installPtCRuntime(ctx, resolvedConfig, toolSchemasForAgent, sessionId) {
+  const presentationGeneration = randomUUID()
+  const replMemoryProjection = createReplMemoryProjection(presentationGeneration)
   let activeConfig = resolvedConfig
   let cordisTools
   let runtimeBridge
@@ -185,12 +188,14 @@ function installPtCRuntime(ctx, resolvedConfig, toolSchemasForAgent, sessionId) 
       ctx,
       sessionConfig: activeConfig,
       maxNestedRunCodeDepth: activeConfig.maxNestedRunCodeDepth,
+      presentationGeneration,
       sessionId,
       toolSchemasForAgent,
     })
     editTransport = createEditTransportOwner(ctx, {
       durableReplay: activeConfig.durableReplay,
       executeTentative: runtimeBridge.executeTentative,
+      presentationGeneration,
       sessionId,
       toolSchemasForAgent,
     })

@@ -577,16 +577,14 @@
   }
 
   // internal/repl-memory-projection.js
-  var REPL_MEMORY_KEY = "ptcPlusRepl";
-  var REPL_MEMORY_META_KEY = "dshPtcPlusBindings";
   var BINDING_KINDS = /* @__PURE__ */ new Set(["variable", "function", "class", "import"]);
   var MAX_BINDINGS = 128;
   var MAX_BINDING_NAME_LENGTH = 128;
-  var MAX_PENDING_REPL_CALLS = 256;
+  var MAX_DEFINITION_SOURCE_LENGTH = 1024;
+  var MAX_DEFINITION_SOURCE_TOTAL_LENGTH = 16 * 1024;
   var SNAPSHOT_FIELDS = /* @__PURE__ */ new Set(["available", "entries", "total", "omitted"]);
-  var ENTRY_FIELDS = /* @__PURE__ */ new Set(["name", "kind"]);
-  var PROJECTION_STATE_FIELDS = /* @__PURE__ */ new Set(["memory", "pendingReplCallSeqs"]);
-  var REPL_TOOL_NAMES = /* @__PURE__ */ new Set(["run_code", "edit_run_code"]);
+  var ENTRY_FIELDS = /* @__PURE__ */ new Set(["name", "kind", "definition"]);
+  var DEFINITION_FIELDS = /* @__PURE__ */ new Set(["source", "line", "column"]);
   function exactFields(value, fields) {
     if (!isRecord2(value)) return false;
     const keys = Reflect.ownKeys(value);
@@ -598,12 +596,24 @@
     total: 0,
     omitted: 0
   });
-  var EMPTY_PROJECTION_STATE = Object.freeze({
-    memory: EMPTY_REPL_MEMORY,
-    pendingReplCallSeqs: Object.freeze([])
-  });
   function unavailableReplMemorySnapshot() {
     return EMPTY_REPL_MEMORY;
+  }
+  function normalizeDefinition(value) {
+    if (!exactFields(value, DEFINITION_FIELDS) || typeof value.source !== "string" || value.source.length === 0 || value.source.length > MAX_DEFINITION_SOURCE_LENGTH || !Number.isSafeInteger(value.line) || value.line < 1 || !Number.isSafeInteger(value.column) || value.column < 1) {
+      throw new Error("invalid dsh-ptc-plus REPL binding definition");
+    }
+    return Object.freeze({ source: value.source, line: value.line, column: value.column });
+  }
+  function normalizeBinding(value) {
+    if (!exactFields(value, ENTRY_FIELDS) || typeof value.name !== "string" || value.name.length === 0 || value.name.length > MAX_BINDING_NAME_LENGTH || !BINDING_KINDS.has(value.kind)) {
+      throw new Error("invalid dsh-ptc-plus REPL memory binding");
+    }
+    return Object.freeze({
+      name: value.name,
+      kind: value.kind,
+      definition: normalizeDefinition(value.definition)
+    });
   }
   function normalizeReplMemorySnapshot(value) {
     if (!exactFields(value, SNAPSHOT_FIELDS) || typeof value.available !== "boolean" || !Array.isArray(value.entries) || value.entries.length > MAX_BINDINGS || !Number.isSafeInteger(value.total) || value.total < 0 || !Number.isSafeInteger(value.omitted) || value.omitted < 0 || value.total !== value.entries.length + value.omitted) {
@@ -613,14 +623,18 @@
       throw new Error("unavailable dsh-ptc-plus REPL memory snapshot must be empty");
     }
     const names = /* @__PURE__ */ new Set();
-    let previous;
+    let sourceLength = 0;
     const entries = value.entries.map((entry) => {
-      if (!exactFields(entry, ENTRY_FIELDS) || typeof entry.name !== "string" || entry.name.length === 0 || entry.name.length > MAX_BINDING_NAME_LENGTH || !BINDING_KINDS.has(entry.kind) || names.has(entry.name) || previous !== void 0 && previous >= entry.name) {
+      const normalized = normalizeBinding(entry);
+      if (names.has(normalized.name)) {
         throw new Error("invalid dsh-ptc-plus REPL memory binding");
       }
-      names.add(entry.name);
-      previous = entry.name;
-      return Object.freeze({ name: entry.name, kind: entry.kind });
+      sourceLength += normalized.definition.source.length;
+      if (sourceLength > MAX_DEFINITION_SOURCE_TOTAL_LENGTH) {
+        throw new Error("dsh-ptc-plus REPL binding definitions exceed the presentation budget");
+      }
+      names.add(normalized.name);
+      return normalized;
     });
     return Object.freeze({
       available: value.available,
@@ -629,81 +643,6 @@
       omitted: value.omitted
     });
   }
-  function validatedReplMemorySnapshot(meta) {
-    if (!isRecord2(meta) || !Object.hasOwn(meta, REPL_MEMORY_META_KEY)) return void 0;
-    try {
-      return normalizeReplMemorySnapshot(meta[REPL_MEMORY_META_KEY]);
-    } catch {
-      return void 0;
-    }
-  }
-  function projectionState(memory, pendingReplCallSeqs) {
-    return Object.freeze({
-      memory,
-      pendingReplCallSeqs: pendingReplCallSeqs === null ? null : Object.freeze(pendingReplCallSeqs)
-    });
-  }
-  function normalizeProjectionState(value) {
-    if (!exactFields(value, PROJECTION_STATE_FIELDS)) {
-      throw new Error("invalid dsh-ptc-plus REPL memory projection state");
-    }
-    const memory = normalizeReplMemorySnapshot(value.memory);
-    if (value.pendingReplCallSeqs === null) {
-      if (memory.available) {
-        throw new Error("untracked dsh-ptc-plus REPL calls require unavailable memory");
-      }
-      return projectionState(memory, null);
-    }
-    if (!Array.isArray(value.pendingReplCallSeqs) || value.pendingReplCallSeqs.length > MAX_PENDING_REPL_CALLS) {
-      throw new Error("invalid dsh-ptc-plus pending REPL calls");
-    }
-    let previous;
-    const pendingReplCallSeqs = value.pendingReplCallSeqs.map((seq) => {
-      if (!Number.isSafeInteger(seq) || seq < 0 || previous !== void 0 && previous >= seq) {
-        throw new Error("invalid dsh-ptc-plus pending REPL call sequence");
-      }
-      previous = seq;
-      return seq;
-    });
-    return projectionState(memory, pendingReplCallSeqs);
-  }
-  function trackReplCall(state, event) {
-    if (!REPL_TOOL_NAMES.has(event.data?.name)) return state;
-    const seq = event.seq;
-    if (!Number.isSafeInteger(seq) || seq < 0) {
-      return projectionState(EMPTY_REPL_MEMORY, null);
-    }
-    const pending = state.pendingReplCallSeqs;
-    if (pending === null || pending.includes(seq)) return state;
-    if (pending.length >= MAX_PENDING_REPL_CALLS) {
-      return projectionState(EMPTY_REPL_MEMORY, null);
-    }
-    return projectionState(state.memory, [...pending, seq].sort((left, right) => left - right));
-  }
-  function settleReplCall(state, event) {
-    const pending = state.pendingReplCallSeqs;
-    if (pending === null || !Array.isArray(event.sourceEventSeqs)) return state;
-    const sources = new Set(event.sourceEventSeqs);
-    const remaining = pending.filter((seq) => !sources.has(seq));
-    if (remaining.length === pending.length) return state;
-    const memory = validatedReplMemorySnapshot(event.data?.meta) ?? EMPTY_REPL_MEMORY;
-    return projectionState(memory, remaining);
-  }
-  var replMemoryProjection = Object.freeze({
-    key: REPL_MEMORY_KEY,
-    stateVersion: 2,
-    stateSchema: Object.freeze({ parse: normalizeProjectionState }),
-    init: () => EMPTY_PROJECTION_STATE,
-    apply(state, event) {
-      if (event?.type === "tool/call") return trackReplCall(state, event);
-      if (event?.type === "tool/result") return settleReplCall(state, event);
-      return state;
-    },
-    wire: Object.freeze({
-      viewSchema: Object.freeze({ parse: normalizeReplMemorySnapshot }),
-      view: (state) => state.memory
-    })
-  });
 
   // src/client.js
   var CLIENT_STYLE_ID = "ptc-plus-client-style";
@@ -715,7 +654,8 @@
 .ptcPlusChevron{display:flex;color:var(--dsw-alias-label-tertiary,#74777d);transition:transform .18s ease}.ptcPlusChevron[data-open=true]{transform:rotate(180deg)}.ptcPlusBody{display:grid;grid-template-rows:0fr;transition:grid-template-rows .2s ease}.ptcPlusBody[data-open=true]{grid-template-rows:1fr}.ptcPlusBodyInner{min-height:0;overflow:hidden}.ptcPlusFields{margin:0 16px;padding:8px 0 12px;border-top:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1))}
 .ptcPlusRow{display:flex;align-items:center;gap:12px;min-height:48px;border-top:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1))}.ptcPlusRow:first-child{border-top:0}.ptcPlusMain{flex:1;min-width:0}.ptcPlusLabel{font-size:14px;font-weight:500;line-height:20px}.ptcPlusDetail,.ptcPlusMessage{color:var(--dsw-alias-label-tertiary,#74777d);font-size:12px;line-height:18px;overflow-wrap:anywhere}.ptcPlusInput{box-sizing:border-box;min-width:72px;width:140px;padding:5px 8px;border:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1));border-radius:6px;background:var(--dsw-alias-bg-layer-1,#fff);color:inherit;font:12px/18px ui-monospace,SFMono-Regular,Consolas,monospace}.ptcPlusCheck{width:18px;height:18px;accent-color:var(--dsw-alias-interactive-primary,#4d6bfe)}
 .ptcPlusFooter{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:8px}.ptcPlusButton{min-height:32px;padding:0 12px;border:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1));border-radius:6px;background:transparent;color:inherit;cursor:pointer;font:500 13px/20px inherit;transition:background-color .16s ease,border-color .16s ease}.ptcPlusButton:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover,rgba(38,49,72,.06))}.ptcPlusButton:disabled,.ptcPlusInput:disabled,.ptcPlusCheck:disabled{cursor:not-allowed;opacity:.55}
-.ptcPlusActiveShell{display:inline-flex;align-items:center}.ptcPlusActive{appearance:none;display:inline-flex;height:24px;align-items:center;gap:5px;padding:0 8px;border:1px solid color-mix(in srgb,var(--dsw-alias-state-success-primary,#16794f) 32%,transparent);border-radius:6px;background:var(--dsw-alias-state-success-tertiary,#e7f7ef);color:var(--dsw-alias-state-success-primary,#16794f);cursor:help;font:600 12px/18px inherit;white-space:nowrap;transition:background-color .14s ease,border-color .14s ease}.ptcPlusActive:hover,.ptcPlusActive[aria-expanded=true]{border-color:color-mix(in srgb,var(--dsw-alias-state-success-primary,#16794f) 48%,transparent);background:color-mix(in srgb,var(--dsw-alias-state-success-primary,#16794f) 16%,var(--dsw-alias-bg-layer-3,#fff))}.ptcPlusActive:focus-visible{outline:2px solid var(--dsw-alias-state-success-primary,#16794f);outline-offset:2px}.ptcPlusReplPopover{position:fixed;z-index:2147483000;inset:auto;display:none;box-sizing:border-box;margin:0;padding:0;border:0;overflow:visible;background:transparent;color:var(--dsw-alias-label-primary,#18191c)}.ptcPlusReplPopover:popover-open,.ptcPlusReplPopover[data-open=true]{display:block}.ptcPlusReplPopover::backdrop{background:transparent}.ptcPlusReplCard{display:flex;max-height:inherit;overflow:hidden;flex-direction:column;border:1px solid color-mix(in srgb,var(--dsw-alias-state-success-primary,#16794f) 22%,var(--dsw-alias-border-l2,rgba(0,0,0,.1)));border-top:3px solid var(--dsw-alias-state-success-primary,#16794f);border-radius:8px;background:var(--dsw-alias-bg-layer-3,#fff);box-shadow:0 14px 36px rgba(16,24,40,.2),0 3px 10px rgba(16,24,40,.1);color:var(--dsw-alias-label-primary,#18191c);white-space:normal}.ptcPlusReplHead{display:grid;grid-template-columns:auto minmax(0,1fr);align-items:center;column-gap:8px;padding:11px 13px 10px;border-bottom:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1));background:color-mix(in srgb,var(--dsw-alias-state-success-primary,#16794f) 7%,var(--dsw-alias-bg-layer-3,#fff))}.ptcPlusReplStatusDot{grid-row:1/3;width:8px;height:8px;border-radius:50%;background:var(--dsw-alias-state-success-primary,#16794f);box-shadow:0 0 0 3px color-mix(in srgb,var(--dsw-alias-state-success-primary,#16794f) 14%,transparent)}.ptcPlusReplTitle,.ptcPlusReplSummary{display:block;min-width:0}.ptcPlusReplTitle{font-size:13px;font-weight:600;line-height:19px}.ptcPlusReplSummary{color:var(--dsw-alias-label-tertiary,#74777d);font-size:11px;line-height:16px}.ptcPlusReplList{min-height:0;margin:0;padding:5px 0;overflow:auto;overscroll-behavior:contain;list-style:none;scrollbar-gutter:stable}.ptcPlusReplBinding{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:12px;padding:6px 12px}.ptcPlusReplBinding:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(38,49,72,.06))}.ptcPlusReplName{min-width:0;overflow:hidden;font:12px/18px ui-monospace,SFMono-Regular,Consolas,monospace;text-overflow:ellipsis;white-space:nowrap}.ptcPlusReplKind{padding:1px 6px;border:1px solid color-mix(in srgb,currentColor 22%,transparent);border-radius:999px;background:color-mix(in srgb,currentColor 10%,transparent);font-size:10px;font-weight:600;line-height:15px}.ptcPlusReplKind[data-kind=variable]{color:var(--dsw-alias-interactive-primary,#315fbd)}.ptcPlusReplKind[data-kind=function]{color:#7651b5}.ptcPlusReplKind[data-kind=class]{color:var(--dsw-alias-state-warning-primary,#946200)}.ptcPlusReplKind[data-kind=import]{color:#14766f}.ptcPlusReplEmpty,.ptcPlusReplMore{display:block;color:var(--dsw-alias-label-tertiary,#74777d)}.ptcPlusReplEmpty{padding:18px 13px;font-size:12px;line-height:18px}.ptcPlusReplMore{padding:8px 13px;border-top:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1));background:var(--dsw-alias-bg-layer-2,rgba(38,49,72,.03));font-size:11px;line-height:17px}
+.ptcPlusActiveShell{display:inline-flex;align-items:center}.ptcPlusActive{appearance:none;display:inline-flex;height:24px;align-items:center;gap:5px;padding:0 8px;border:1px solid color-mix(in srgb,var(--dsw-alias-state-success-primary,#16794f) 32%,transparent);border-radius:6px;background:var(--dsw-alias-state-success-tertiary,#e7f7ef);color:var(--dsw-alias-state-success-primary,#16794f);cursor:help;font:600 12px/18px inherit;white-space:nowrap;transition:background-color .14s ease,border-color .14s ease}.ptcPlusActive:hover,.ptcPlusActive[aria-expanded=true]{border-color:color-mix(in srgb,var(--dsw-alias-state-success-primary,#16794f) 48%,transparent);background:color-mix(in srgb,var(--dsw-alias-state-success-primary,#16794f) 16%,var(--dsw-alias-bg-layer-3,#fff))}.ptcPlusActive:focus-visible{outline:2px solid var(--dsw-alias-state-success-primary,#16794f);outline-offset:2px}.ptcPlusReplPopover{position:fixed;z-index:2147483000;inset:auto;display:none;box-sizing:border-box;margin:0;padding:0;border:0;overflow:visible;background:transparent;color:var(--dsw-alias-label-primary,#18191c)}.ptcPlusReplPopover:popover-open,.ptcPlusReplPopover[data-open=true]{display:block}.ptcPlusReplPopover::backdrop{background:transparent}.ptcPlusReplCard{display:flex;max-height:inherit;overflow:hidden;flex-direction:column;border:1px solid color-mix(in srgb,var(--dsw-alias-state-success-primary,#16794f) 22%,var(--dsw-alias-border-l2,rgba(0,0,0,.1)));border-top:3px solid var(--dsw-alias-state-success-primary,#16794f);border-radius:8px;background:var(--dsw-alias-bg-layer-3,#fff);box-shadow:0 14px 36px rgba(16,24,40,.2),0 3px 10px rgba(16,24,40,.1);color:var(--dsw-alias-label-primary,#18191c);white-space:normal}.ptcPlusReplHead{display:grid;grid-template-columns:auto minmax(0,1fr);align-items:center;column-gap:8px;padding:11px 13px 10px;border-bottom:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1));background:color-mix(in srgb,var(--dsw-alias-state-success-primary,#16794f) 7%,var(--dsw-alias-bg-layer-3,#fff))}.ptcPlusReplStatusDot{grid-row:1/3;width:8px;height:8px;border-radius:50%;background:var(--dsw-alias-state-success-primary,#16794f);box-shadow:0 0 0 3px color-mix(in srgb,var(--dsw-alias-state-success-primary,#16794f) 14%,transparent)}.ptcPlusReplTitle,.ptcPlusReplSummary{display:block;min-width:0}.ptcPlusReplTitle{font-size:13px;font-weight:600;line-height:19px}.ptcPlusReplSummary{color:var(--dsw-alias-label-tertiary,#74777d);font-size:11px;line-height:16px}.ptcPlusReplList{min-height:0;margin:0;padding:5px 0;overflow:auto;overscroll-behavior:contain;list-style:none;scrollbar-gutter:stable}.ptcPlusReplBinding{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:4px 10px;padding:7px 12px}.ptcPlusReplBinding:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(38,49,72,.06))}.ptcPlusReplIdentity{display:flex;min-width:0;align-items:center;gap:7px}.ptcPlusReplName{min-width:0;overflow:hidden;font:12px/18px ui-monospace,SFMono-Regular,Consolas,monospace;text-overflow:ellipsis;white-space:nowrap}.ptcPlusReplKind{flex:none;padding:1px 6px;border:1px solid color-mix(in srgb,currentColor 22%,transparent);border-radius:999px;background:color-mix(in srgb,currentColor 10%,transparent);font-size:10px;font-weight:600;line-height:15px}.ptcPlusReplKind[data-kind=variable]{color:var(--dsw-alias-interactive-primary,#315fbd)}.ptcPlusReplKind[data-kind=function]{color:#7651b5}.ptcPlusReplKind[data-kind=class]{color:var(--dsw-alias-state-warning-primary,#946200)}.ptcPlusReplKind[data-kind=import]{color:#14766f}.ptcPlusReplPreview{grid-column:1;min-width:0;overflow:hidden;color:var(--dsw-alias-label-tertiary,#74777d);font:11px/16px ui-monospace,SFMono-Regular,Consolas,monospace;text-overflow:ellipsis;white-space:nowrap}.ptcPlusReplInspect{grid-column:2;grid-row:1/3;display:inline-flex;align-items:center;gap:4px;padding:3px 5px;border:0;border-radius:4px;background:transparent;color:var(--dsw-alias-label-secondary,#52565d);cursor:pointer;font:500 11px/17px inherit;white-space:nowrap}.ptcPlusReplInspect:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(38,49,72,.06));color:var(--dsw-alias-interactive-primary,#4d6bfe)}.ptcPlusReplInspect:focus-visible{outline:2px solid var(--dsw-alias-interactive-primary,#4d6bfe);outline-offset:1px}.ptcPlusReplDefinition{grid-column:1/-1;min-width:0;margin-top:4px;padding:8px;border-left:2px solid var(--dsw-alias-interactive-primary,#4d6bfe);background:var(--dsw-alias-bg-layer-2,rgba(38,49,72,.03))}.ptcPlusReplLocation{display:block;margin-bottom:5px;color:var(--dsw-alias-label-tertiary,#74777d);font-size:10px;line-height:15px}.ptcPlusReplCode{max-height:180px;margin:0;overflow:auto;color:inherit;font:11px/16px ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere}.ptcPlusReplEmpty,.ptcPlusReplMore{display:block;color:var(--dsw-alias-label-tertiary,#74777d)}.ptcPlusReplEmpty{padding:18px 13px;font-size:12px;line-height:18px}.ptcPlusReplMore{padding:8px 13px;border-top:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1));background:var(--dsw-alias-bg-layer-2,rgba(38,49,72,.03));font-size:11px;line-height:17px}
+.ptcPlusReplBinding{grid-template-columns:56px minmax(0,1fr) auto}.ptcPlusReplKind{grid-column:1;grid-row:1;box-sizing:border-box;display:inline-flex;width:52px;align-items:center;justify-content:center;padding:1px 4px}.ptcPlusReplName{grid-column:2}.ptcPlusReplPreview{grid-column:2}.ptcPlusReplInspect{grid-column:3}
 .ptcPlusTool{display:flex;min-width:0;flex-direction:column}.ptcPlusToolSummary{box-sizing:border-box;display:flex;min-width:0;min-height:32px;align-items:center;gap:7px;padding:0;color:inherit;line-height:20px}.ptcPlusToolSummary[data-expandable=true]{cursor:pointer}.ptcPlusToolSummary[data-expandable=true]:hover .ptcPlusToolTitle{color:var(--dsw-alias-interactive-primary,#4d6bfe)}.ptcPlusToolSummary:focus-visible{outline:2px solid var(--dsw-alias-interactive-primary,#4d6bfe);outline-offset:2px}.ptcPlusToolLeading{display:flex;width:16px;height:20px;flex:none;align-items:center;justify-content:center;color:var(--dsw-alias-label-tertiary,#74777d)}.ptcPlusToolChevron{transition:transform .16s ease}.ptcPlusToolChevron[data-open=true]{transform:rotate(180deg)}.ptcPlusToolTitle{display:flex;height:20px;flex:none;align-items:center;font-size:13px;font-weight:500;line-height:20px}.ptcPlusToolState{display:flex;height:20px;flex:none;align-items:center;color:var(--dsw-alias-label-tertiary,#74777d);font-size:11px;line-height:20px}.ptcPlusToolSummary[data-state=running] .ptcPlusToolState{color:var(--dsw-alias-interactive-primary,#4d6bfe)}.ptcPlusToolSummary[data-state=error] .ptcPlusToolState{color:var(--dsw-alias-state-danger-primary,#c43d3d)}.ptcPlusToolSummary[data-state=stopped] .ptcPlusToolState{color:var(--dsw-alias-state-warning-primary,#a15c00)}.ptcPlusToolSep{width:3px;height:3px;flex:none;border-radius:50%;background:var(--dsw-alias-label-tertiary,#74777d)}.ptcPlusToolDescription{display:flex;min-width:0;min-height:20px;align-items:center;overflow:hidden;color:var(--dsw-alias-label-secondary,#52565d);font-size:13px;line-height:20px;text-overflow:ellipsis;white-space:nowrap}.ptcPlusToolSummary[data-state=error] .ptcPlusToolDescription{color:var(--dsw-alias-state-danger-primary,#c43d3d)}.ptcPlusToolSummary[data-state=stopped] .ptcPlusToolDescription{color:var(--dsw-alias-state-warning-primary,#a15c00)}
 .ptcPlusFeatures{display:flex;min-width:0;flex-wrap:wrap;gap:3px 14px;margin:0 0 5px 23px}.ptcPlusFeature{display:inline-flex;min-width:0;align-items:center;gap:5px;color:var(--dsw-alias-label-secondary,#52565d);font-size:11px;line-height:17px}.ptcPlusFeature::before{width:4px;height:4px;flex:none;border-radius:50%;background:var(--dsw-alias-interactive-primary,#4d6bfe);content:''}.ptcPlusFeatureName{font-weight:500}.ptcPlusFeatureDetail{min-width:0;overflow:hidden;color:var(--dsw-alias-label-tertiary,#74777d);font-family:ui-monospace,SFMono-Regular,Consolas,monospace;text-overflow:ellipsis;white-space:nowrap}
 .ptcPlusToolBody{margin:4px 0 8px 23px;border-left:2px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1));background:var(--dsw-alias-bg-layer-2,rgba(38,49,72,.03))}.ptcPlusToolSection{display:flex;min-width:0;flex-direction:column;gap:4px;padding:9px 11px}.ptcPlusToolSection+.ptcPlusToolSection{border-top:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1))}.ptcPlusToolSectionLabel{color:var(--dsw-alias-label-tertiary,#74777d);font-size:10px;font-weight:600;line-height:16px;text-transform:uppercase}.ptcPlusToolCode{max-height:320px;margin:0;overflow:auto;color:inherit;font:12px/18px ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere}.ptcPlusInspect{display:inline-flex;align-self:flex-end;align-items:center;gap:5px;margin:0 9px 8px;padding:3px 7px;border:0;background:transparent;color:var(--dsw-alias-label-secondary,#52565d);cursor:pointer;font:500 11px/18px inherit}.ptcPlusInspect:hover{color:var(--dsw-alias-interactive-primary,#4d6bfe)}
@@ -739,18 +679,21 @@
       "status.applied": "\u8BBE\u7F6E\u5DF2\u7ACB\u5373\u751F\u6548",
       "status.conflict": "\u8BBE\u7F6E\u672A\u751F\u6548\uFF0C\u8BF7\u68C0\u67E5\u8BBE\u7F6E\u51B2\u7A81",
       "status.failed": "\u8BBE\u7F6E\u5931\u8D25\uFF1A{error}",
-      "indicator.title": "PTC Plus \u5DF2\u542F\u7528\uFF1B\u67E5\u770B REPL \u5185\u5B58\u72B6\u6001",
-      "memory.title": "REPL \u5185\u5B58\u72B6\u6001",
-      "memory.count": "{count} \u4E2A\u6301\u4E45\u7ED1\u5B9A",
-      "memory.empty": "\u5F53\u524D\u8FD8\u6CA1\u6709\u6301\u4E45\u7ED1\u5B9A",
-      "memory.unavailable": "\u6267\u884C\u4E00\u4E2A\u5355\u5143\u683C\u540E\u53EF\u67E5\u770B\u5F53\u524D\u7ED1\u5B9A",
+      "indicator.title": "PTC Plus \u5DF2\u542F\u7528\uFF1B\u67E5\u770B\u5F53\u524D\u53EF\u590D\u7528\u7684 REPL \u7ED1\u5B9A",
+      "memory.title": "REPL \u53EF\u590D\u7528\u7ED1\u5B9A",
+      "memory.count": "{count} \u4E2A\u53EF\u590D\u7528\u7ED1\u5B9A",
+      "memory.empty": "\u5F53\u524D\u6CA1\u6709\u53EF\u590D\u7528\u7ED1\u5B9A",
+      "memory.unavailable": "\u5F53\u524D\u7ED1\u5B9A\u72B6\u6001\u5C1A\u4E0D\u53EF\u786E\u8BA4",
       "memory.more": "\u53E6\u6709 {count} \u4E2A\u7ED1\u5B9A\u672A\u663E\u793A",
       "memory.kind.variable": "\u53D8\u91CF",
       "memory.kind.function": "\u51FD\u6570",
       "memory.kind.class": "\u7C7B",
       "memory.kind.import": "\u5BFC\u5165",
-      "tool.code": "\u4EE3\u7801",
-      "tool.codeEdit": "\u4EE3\u7801\u7F16\u8F91",
+      "memory.inspect": "\u67E5\u770B\u5B9A\u4E49",
+      "memory.collapse": "\u6536\u8D77\u5B9A\u4E49",
+      "memory.location": "\u7B2C {line} \u884C\uFF0C\u7B2C {column} \u5217",
+      "tool.code": "\u6267\u884C",
+      "tool.codeEdit": "\u4FEE\u6B63\u6267\u884C",
       "tool.running": "\u6B63\u5728\u8FD0\u884C",
       "tool.completed": "\u6267\u884C\u5B8C\u6210",
       "tool.failed": "\u6267\u884C\u5931\u8D25",
@@ -779,16 +722,19 @@
       "status.applied": "Setting applied immediately.",
       "status.conflict": "The setting did not take effect; check for conflicting settings.",
       "status.failed": "Could not save: {error}",
-      "indicator.title": "PTC Plus is active; view REPL memory",
-      "memory.title": "REPL memory",
-      "memory.count": "{count} persistent bindings",
-      "memory.empty": "No persistent bindings yet",
-      "memory.unavailable": "Run a cell to inspect current bindings",
+      "indicator.title": "PTC Plus is active; view reusable REPL bindings",
+      "memory.title": "Reusable REPL bindings",
+      "memory.count": "{count} reusable bindings",
+      "memory.empty": "No reusable bindings",
+      "memory.unavailable": "Current binding state cannot be confirmed",
       "memory.more": "{count} more bindings not shown",
       "memory.kind.variable": "Variable",
       "memory.kind.function": "Function",
       "memory.kind.class": "Class",
       "memory.kind.import": "Import",
+      "memory.inspect": "Inspect definition",
+      "memory.collapse": "Collapse definition",
+      "memory.location": "Line {line}, column {column}",
       "tool.code": "Code",
       "tool.codeEdit": "Code edit",
       "tool.running": "Running",
@@ -1128,7 +1074,8 @@
             popover.style.left = `${left}px`;
             popover.style.top = opensAbove ? `${Math.max(margin, triggerRect.top - gap - Math.min(popover.offsetHeight, availableHeight))}px` : `${Math.min(viewportHeight - margin, triggerRect.bottom + gap)}px`;
           }
-          function ReplMemoryCard({ memory, t, id, titleId, popoverRef, onEnter, onLeave, onToggle }) {
+          function ReplMemoryCard({ memory, t, id, titleId, popoverRef, onEnter, onLeave }) {
+            const [expandedBinding, setExpandedBinding] = React.useState(null);
             return h(
               "div",
               {
@@ -1139,8 +1086,7 @@
                 role: "dialog",
                 "aria-labelledby": titleId,
                 onPointerEnter: onEnter,
-                onPointerLeave: onLeave,
-                onToggle
+                onPointerLeave: onLeave
               },
               h(
                 "div",
@@ -1152,15 +1098,48 @@
                   h("span", { className: "ptcPlusReplTitle", id: titleId }, t("memory.title")),
                   memory.available ? h("span", { className: "ptcPlusReplSummary" }, t("memory.count", { count: memory.total })) : null
                 ),
-                !memory.available ? h("span", { className: "ptcPlusReplEmpty" }, t("memory.unavailable")) : memory.entries.length === 0 ? h("span", { className: "ptcPlusReplEmpty" }, t("memory.empty")) : h("ul", { className: "ptcPlusReplList" }, memory.entries.map((binding) => h(
-                  "li",
-                  { className: "ptcPlusReplBinding", key: binding.name },
-                  h("span", { className: "ptcPlusReplName", title: binding.name }, binding.name),
-                  h("span", {
-                    className: "ptcPlusReplKind",
-                    "data-kind": binding.kind
-                  }, t(`memory.kind.${binding.kind}`))
-                ))),
+                !memory.available ? h("span", { className: "ptcPlusReplEmpty" }, t("memory.unavailable")) : memory.entries.length === 0 ? h("span", { className: "ptcPlusReplEmpty" }, t("memory.empty")) : h("ul", { className: "ptcPlusReplList" }, memory.entries.map((binding) => {
+                  const expanded = expandedBinding === binding.name;
+                  const preview = binding.definition.source.replace(/\s+/g, " ").trim();
+                  return h(
+                    "li",
+                    { className: "ptcPlusReplBinding", key: binding.name },
+                    h("span", {
+                      className: "ptcPlusReplKind",
+                      "data-kind": binding.kind
+                    }, t(`memory.kind.${binding.kind}`)),
+                    h("span", { className: "ptcPlusReplName", title: binding.name }, binding.name),
+                    h("span", { className: "ptcPlusReplPreview", title: preview }, preview),
+                    h(
+                      "button",
+                      {
+                        type: "button",
+                        className: "ptcPlusReplInspect",
+                        title: t(expanded ? "memory.collapse" : "memory.inspect"),
+                        "aria-label": t(expanded ? "memory.collapse" : "memory.inspect"),
+                        "aria-expanded": expanded,
+                        onClick: () => setExpandedBinding((current) => current === binding.name ? null : binding.name)
+                      },
+                      h(IconInspectOutline12, { "aria-hidden": true }),
+                      t(expanded ? "memory.collapse" : "memory.inspect")
+                    ),
+                    expanded ? h(
+                      "div",
+                      { className: "ptcPlusReplDefinition" },
+                      h("span", { className: "ptcPlusReplLocation" }, t("memory.location", {
+                        line: binding.definition.line,
+                        column: binding.definition.column
+                      })),
+                      typeof CodeBlock === "function" ? h(CodeBlock, {
+                        code: binding.definition.source,
+                        lang: "typescript",
+                        className: "ptcPlusReplCode",
+                        copyLabel: t("tool.copy"),
+                        copiedLabel: t("tool.copied")
+                      }) : h("pre", { className: "ptcPlusReplCode" }, binding.definition.source)
+                    ) : null
+                  );
+                })),
                 memory.omitted === 0 ? null : h("span", { className: "ptcPlusReplMore" }, t("memory.more", { count: memory.omitted }))
               )
             );
@@ -1225,12 +1204,18 @@
               }, 120);
             }, [hidePopover]);
             React.useEffect(() => {
+              const syncPopoverState = (event) => {
+                if (event.target !== popoverRef.current) return;
+                setExpanded(replPopoverIsOpen(popoverRef.current));
+              };
               window.addEventListener("resize", positionPopover);
               document.addEventListener("scroll", positionPopover, true);
+              document.addEventListener("toggle", syncPopoverState, true);
               return () => {
                 if (closeTimer.current !== void 0) clearTimeout(closeTimer.current);
                 window.removeEventListener("resize", positionPopover);
                 document.removeEventListener("scroll", positionPopover, true);
+                document.removeEventListener("toggle", syncPopoverState, true);
                 const popover = popoverRef.current;
                 if (popover?.dataset?.open === "true") delete popover.dataset.open;
                 if (typeof popover?.hidePopover === "function" && replPopoverIsOpen(popover)) {
@@ -1278,8 +1263,7 @@
                 titleId,
                 popoverRef,
                 onEnter: showPopover,
-                onLeave: scheduleHide,
-                onToggle: (event) => setExpanded(event.newState === "open")
+                onLeave: scheduleHide
               })
             );
           }

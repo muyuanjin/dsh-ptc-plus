@@ -115,6 +115,9 @@ test('checked client bundle is loadable through the DSH module loader contract',
   assert.match(sourceModule, /\.ptcPlusReplKind\[data-kind=function\]/)
   assert.match(sourceModule, /\.ptcPlusReplKind\[data-kind=class\]/)
   assert.match(sourceModule, /\.ptcPlusReplKind\[data-kind=import\]/)
+  assert.match(sourceModule, /\.ptcPlusReplBinding\{grid-template-columns:56px minmax\(0,1fr\) auto/)
+  assert.match(sourceModule, /\.ptcPlusReplKind\{grid-column:1[^}]*width:52px/)
+  assert.match(sourceModule, /\.ptcPlusReplName\{grid-column:2/)
   assert.match(sourceModule, /popover\.showPopover\(\)/)
   assert.match(sourceModule, /normalizeReplMemorySnapshot/)
   assert.match(sourceModule, /ptcPlusToolState/)
@@ -290,8 +293,14 @@ test('settings, header indicator, and tool rows follow the DSH locale dictionari
       ptcPlusRepl: {
         available: true,
         entries: [
-          { name: 'Widget', kind: 'class' },
-          { name: 'answer', kind: 'variable' },
+          {
+            name: 'Widget', kind: 'class',
+            definition: { source: 'class Widget {}', line: 2, column: 1 },
+          },
+          {
+            name: 'answer', kind: 'variable',
+            definition: { source: 'const answer = 42', line: 1, column: 1 },
+          },
         ],
         total: 2,
         omitted: 0,
@@ -314,6 +323,59 @@ test('settings, header indicator, and tool rows follow the DSH locale dictionari
   assert.ok(memoryTexts.includes('answer'))
   assert.ok(memoryTexts.includes('memory.kind.class'))
   assert.ok(memoryTexts.includes('memory.kind.variable'))
+  assert.ok(memoryTexts.includes('class Widget {}'))
+  assert.ok(memoryTexts.includes('const answer = 42'))
+  assert.ok(memoryTexts.includes('memory.inspect'))
+  assert.ok(memoryTexts.indexOf('Widget') < memoryTexts.indexOf('answer'))
+
+  const memoryUseState = React.useState
+  React.useState = initial => [initial === null ? 'Widget' : initial, () => {}]
+  const expandedMemoryCard = memoryComponent.type(memoryComponent.props)
+  React.useState = memoryUseState
+  const expandedMemoryTexts = collectTexts(expandedMemoryCard)
+  assert.ok(expandedMemoryTexts.includes('memory.collapse'))
+  assert.ok(expandedMemoryTexts.includes('memory.location'))
+
+  const originalUseRef = React.useRef
+  const originalUseEffect = React.useEffect
+  const originalDocumentAddEventListener = document.addEventListener
+  const originalDocumentRemoveEventListener = document.removeEventListener
+  const originalWindowAddEventListener = window.addEventListener
+  const originalWindowRemoveEventListener = window.removeEventListener
+  const popover = {
+    dataset: {},
+    matches: selector => selector === ':popover-open' ? false : undefined,
+  }
+  const refs = [{ current: null }, { current: popover }, { current: undefined }]
+  let indicatorExpanded = true
+  let toggleListener
+  React.useRef = () => refs.shift()
+  React.useState = initial => [initial, value => {
+    indicatorExpanded = typeof value === 'function' ? value(indicatorExpanded) : value
+  }]
+  React.useEffect = effect => effect()
+  document.addEventListener = (type, listener, capture) => {
+    if (type === 'toggle' && capture === true) toggleListener = listener
+  }
+  document.removeEventListener = () => {}
+  window.addEventListener = () => {}
+  window.removeEventListener = () => {}
+  try {
+    indicator.component({ sessionId: 'session-1', t: key => key })
+    assert.equal(typeof toggleListener, 'function')
+    toggleListener({ target: {} })
+    assert.equal(indicatorExpanded, true)
+    toggleListener({ target: popover })
+    assert.equal(indicatorExpanded, false)
+  } finally {
+    React.useState = memoryUseState
+    React.useRef = originalUseRef
+    React.useEffect = originalUseEffect
+    document.addEventListener = originalDocumentAddEventListener
+    document.removeEventListener = originalDocumentRemoveEventListener
+    window.addEventListener = originalWindowAddEventListener
+    window.removeEventListener = originalWindowRemoveEventListener
+  }
 
   const [runCodeView, editRunCodeView] = toolviews.map(({ component }) => component)
   const toolOwner = () => ({

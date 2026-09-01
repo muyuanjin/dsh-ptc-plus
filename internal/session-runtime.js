@@ -304,14 +304,14 @@ class SessionKernel {
           callSeq: request.callSeq,
           program: request.program,
           bindingCatalog: active.appliedBindingCatalog
-            ?? active.priorBindingCatalog.advance(prepared),
+            ?? active.priorBindingCatalog.advance(prepared, request.program),
           worker,
         })
       }
     }
     if (replay !== undefined && !terminate) {
       this.bindingCatalog = active.appliedBindingCatalog
-        ?? active.priorBindingCatalog.advance(prepared)
+        ?? active.priorBindingCatalog.advance(prepared, request.program)
     }
     this.active = undefined
     if (terminate) void this.client.reset(worker)
@@ -359,7 +359,7 @@ class SessionKernel {
 
   replMemoryFor(journal) {
     const tentative = this.tentatives.get(journal)
-    if (journal.status === 'discarded' || journal.status === 'volatile'
+    if (journal.status === 'discarded'
       || journal.operations.some(operation => operation.action === 'restore')) {
       return unavailableReplMemorySnapshot()
     }

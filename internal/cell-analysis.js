@@ -50,11 +50,12 @@ function addPatternBindings(pattern, names) {
   walkPattern(pattern, node => names.add(node.name))
 }
 
-function addPatternDeclarations(pattern, declarations, kind = 'variable') {
+function addPatternDeclarations(pattern, declarations, kind = 'variable', definitionSpan = undefined) {
   bindingNodes(pattern).forEach(node => declarations.push({
     name: node.name,
     kind,
     span: declarationSpan(node),
+    definitionSpan,
   }))
 }
 
@@ -66,13 +67,17 @@ function topLevelDeclarations(body) {
   const declarations = []
   for (const statement of body) {
     if (statement.type === 'VariableDeclaration') {
-      for (const declaration of statement.declarations) addPatternDeclarations(declaration.id, declarations)
+      const definitionSpan = declarationSpan(statement)
+      for (const declaration of statement.declarations) {
+        addPatternDeclarations(declaration.id, declarations, 'variable', definitionSpan)
+      }
     } else if ((statement.type === 'FunctionDeclaration' || statement.type === 'ClassDeclaration')
       && statement.id !== null) {
       declarations.push({
         name: statement.id.name,
         kind: statement.type === 'ClassDeclaration' ? 'class' : 'function',
         span: declarationSpan(statement.id),
+        definitionSpan: declarationSpan(statement),
       })
     }
   }
@@ -397,9 +402,19 @@ export function prepareProgram(program, knownBindings, looseTopLevelRedeclaratio
     }
   }
   const importedNames = new Set(moduleRewrite.imports.keys())
+  const originalDeclarationNames = new Set(moduleRewrite.exportDeclarations.map(declaration => declaration.name))
   const declarations = [
     ...moduleRewrite.importDeclarations,
-    ...generatedDeclarations.filter(declaration => !moduleRewrite.generatedNamespaces.has(declaration.name)),
+    ...moduleRewrite.exportDeclarations,
+    ...generatedDeclarations
+      .filter(declaration => !moduleRewrite.generatedNamespaces.has(declaration.name)
+        && !originalDeclarationNames.has(declaration.name))
+      .map(declaration => ({
+        ...declaration,
+        ...(declaration.definitionSpan === undefined ? {} : {
+          definitionSpan: mapSourceSpan(declaration.definitionSpan, code, program, sourceMap),
+        }),
+      })),
   ]
   const normalizeClassification = classification => {
     const imports = new Map(moduleRewrite.imports)

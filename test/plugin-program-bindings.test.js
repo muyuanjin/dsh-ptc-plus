@@ -645,6 +645,7 @@ test('binds nested code.run depth to the submitted cell generation', async (t) =
       maxNestedRunCodeDepth: 2,
     },
     maxNestedRunCodeDepth: 2,
+    presentationGeneration: 'nested-config-test-generation',
     sessionId: agent => agent.id,
     toolSchemasForAgent: () => [],
   })

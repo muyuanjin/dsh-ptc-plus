@@ -127,7 +127,9 @@ import { readFile } from 'node:fs/promises'
 
 打开 **设置 → 插件配置** 使用上面的设置卡片。卡片跟随 DSH 界面语言：界面设为 English 时显示英文，设为中文时显示中文。`enabled` 是即时生效的总开关：关闭后只保留卡片和这个开关，开启后恢复 session runtime 以及 `run_code`/`edit_run_code`。
 
-插件启用且会话使用 `ptc` preset 时，会话头部显示简洁的绿色 `PTC Plus` 活动标识。鼠标悬浮、键盘聚焦或点击这个标识，会显示当前持久 binding 的名称，并用不同色彩区分变量、函数、类和 import；卡片位于浏览器 top layer，不会被会话侧栏遮挡，列表较长时在卡片内部滚动。卡片不读取值，也不会执行代码。volatile、恢复或未完整结算的结果不会把无法冷恢复的 binding 宣称为当前状态，而是显示不可用；无关 native tool 的结果不会清空已经验证的列表。正文中的 `run_code` 与 `edit_run_code` 仍显示为“代码”和“代码编辑”：源码和结果仍可展开查看；当 DSH Client 提供 `CodeBlock` primitive 时，源码使用 TypeScript 语法高亮并支持复制。只有已有结果 metadata 能证明某项能力在该次执行中确实生效时，行下方才显示同设置卡一致的名称与有用细节，例如被适配的 import 模块、被剥离的 export、被拆分的混合重声明、安全编辑、成功的 `code.run`、本次确实完成的持久恢复或 `repl.state` 操作。这里不显示进程保留提示，也不显示 REPL cell、程序内调用、可恢复 cell 或恢复边界等计数。关闭插件会注销两个 keyed row，恢复 DSH 原生 fallback。
+插件启用且会话使用 `ptc` preset 时，会话头部显示简洁的绿色 `PTC Plus` 活动标识。鼠标悬浮、键盘聚焦或点击这个标识，会显示当前 agent 下一 cell 可复用的 binding，并用不同色彩区分变量、函数、类和 import；每项带有定义源码预览，“查看定义”可在卡片内展开有界源码和原始行列。卡片位于浏览器 top layer，不会被会话侧栏遮挡，列表较长时在卡片内部滚动。它只使用已经提交的 cell 文本，不读取运行时值、不触发 getter，也不会执行代码。volatile binding 只要仍在 live worker 中可复用就继续显示；restore、discard 或重启后，在新 runtime 重新证明当前 binding 前显示“尚不可确认”。无关或损坏的结果不会清空已经验证的列表。当前 DSH 公共 header slot 没有跳到来源调用的导航接口，因此插件不使用 DOM hack 伪造跳转。正文中的 `run_code` 与 `edit_run_code` 仍显示为“执行”和“修正执行”：源码和结果仍可展开查看；当 DSH Client 提供 `CodeBlock` primitive 时，源码使用 TypeScript 语法高亮并支持复制。只有已有结果 metadata 能证明某项能力在该次执行中确实生效时，行下方才显示同设置卡一致的名称与有用细节，例如被适配的 import 模块、被剥离的 export、被拆分的混合重声明、安全编辑、成功的 `code.run`、本次确实完成的持久恢复或 `repl.state` 操作。这里不显示进程保留提示，也不显示 REPL cell、程序内调用、可恢复 cell 或恢复边界等计数。关闭插件会注销两个 keyed row，恢复 DSH 原生 fallback。
+
+binding 清单按最近声明或重声明优先的栈顺序排列；固定宽度的类型列让变量、函数、类和 import 标识在各行对齐。
 
 所有设置都会实时应用，并保留已有 binding。已提交的 cell 在完整执行期间使用同一份配置；执行期间发生的更新用于随后提交的 cell。更新失败会回滚。Node 在 worker 创建时固定 V8 old-generation 上限，因此活动 session worker 存在时修改这一项会被拒绝，释放 session 后才能修改。启用失败时，运行时会回滚并把设置保持为停用。
 
@@ -137,7 +139,7 @@ import { readFile } from 'node:fs/promises'
 
 cold recovery 或重新启用 Cordis 后，已记录的 Cordis value 仍是历史数据，但不能证明进程内 Plugin、Run、approval 或先前 Inspect observation 仍然存活。PTC Plus 会提供有界恢复 context，直到一次新的成功 Cordis Inspect 调用验证当前进程。
 
-这些 view 属于展示层。正文注册 DSH 公共的 keyed `tool.call.toolview`；内存卡片读取公共 session projection，由随结果保存的 value-free binding snapshot 驱动。它们不增加工具、prompt 文本、runtime context、session event 类型、journal 字段、历史读取请求或迁移步骤，也不把 binding value 序列化进日志。损坏或未知的正文功能 metadata 会被忽略；与 REPL 调用关联的内存快照缺失或损坏时则 fail closed 为不可用。旧日志没有内存快照时显示不可用提示，同时仍保留源码、结果、执行状态和继续会话能力。普通宽松重声明、规范化的顶层 native 调用、官方 Cordis owner 和实际选择的恢复提示都没有结果级 Client provenance，因此正文不会从源码形状、成员名前缀或设置值推测这些事件。因此安装、移除或悬浮这些 view 都不会改变模型请求，也不会让原本可读取、可继续的会话变得不兼容。
+这些 view 属于展示层。正文注册 DSH 公共的 keyed `tool.call.toolview`；binding 卡片读取公共 session projection，由随结果保存的 value-independent snapshot 驱动。快照最多 128 项，每段定义源码至多 1024 个 UTF-16 code unit、合计至多 16384 个 code unit。它们不增加工具、prompt 文本、runtime context、session event 类型、journal 字段、历史读取请求或迁移步骤，也不把 binding value 序列化进日志。损坏或未知的正文功能 metadata 会被忽略；与 REPL 调用关联的当前版本快照缺失或损坏时只让展示层降级。旧日志无需迁移，仍保留源码、结果、执行状态和继续会话能力。普通宽松重声明、规范化的顶层 native 调用、官方 Cordis owner 和实际选择的恢复提示都没有结果级 Client provenance，因此正文不会从源码形状、成员名前缀或设置值推测这些事件。因此安装、移除或悬浮这些 view 都不会改变模型请求，也不会让原本可读取、可继续的会话变得不兼容。
 
 详见 [客户端 UI](docs/client-ui.md)、[ADR 0019](docs/adr/0019-plugin-settings-and-kill-switch.md) 与 [ADR 0020](docs/adr/0020-optional-cordis-tools-in-ptc-mode.md)。
 

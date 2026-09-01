@@ -720,7 +720,7 @@ test('fails edit execution at each owned boundary without changing the target', 
   })
   assert.deepEqual(primitiveMeta[REWRITES_KEY], rewriteFacts)
   assert.deepEqual(primitiveMeta[REPL_MEMORY_META_KEY], run.meta[REPL_MEMORY_META_KEY])
-  assert.equal(primitiveMeta[REPL_MEMORY_META_KEY].entries.every(entry => (
+  assert.equal(primitiveMeta[REPL_MEMORY_META_KEY].memory.entries.every(entry => (
     Object.keys(entry).sort().join(',') === 'kind,name'
   )), true)
   assert.equal(Object.hasOwn(primitiveMeta, 'foreignOwnerFact'), false)

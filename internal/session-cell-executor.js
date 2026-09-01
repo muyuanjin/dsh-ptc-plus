@@ -496,7 +496,7 @@ export class SessionCellExecutor {
       })
       active.appliedBindingCatalog = message.moduleLoadFailed === true
         ? active.priorBindingCatalog
-        : active.priorBindingCatalog.advance(active.prepared)
+        : active.priorBindingCatalog.advance(active.prepared, active.request.program)
       const recordedFailure = active.replay?.diagnostics?.find(item => item.code === 'PTC-X001')
       const failure = recordedFailure?.message === actualFailure.message ? recordedFailure : actualFailure
       const error = {
@@ -525,7 +525,10 @@ export class SessionCellExecutor {
         hasValue: message.hasValue,
         ...(message.hasValue ? { value } : {}),
       }
-      active.appliedBindingCatalog = active.priorBindingCatalog.advance(active.prepared)
+      active.appliedBindingCatalog = active.priorBindingCatalog.advance(
+        active.prepared,
+        active.request.program,
+      )
       if (active.replay?.completion?.kind === 'return'
         && (active.replay.completion.hasValue !== message.hasValue
           || (message.hasValue && !valueWiresEqual(active.replay.completion.value, value, active.valueLimits)))) {

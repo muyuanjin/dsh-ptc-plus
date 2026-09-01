@@ -192,6 +192,14 @@ function importEdits(
           column: specifier.local.loc.end.column + 1,
         },
       },
+      definitionSpan: {
+        line: node.loc.start.line,
+        column: node.loc.start.column + 1,
+        end: {
+          line: node.loc.end.line,
+          column: node.loc.end.column + 1,
+        },
+      },
       original: true,
     })
   }
@@ -421,7 +429,7 @@ function exportAllEdits(node, code, edits, rewrites, moduleLoads) {
   rewrites.push(record('export', `converted the re-export of ${JSON.stringify(source)} into a side-effect import`, node, source))
 }
 
-function exportDefaultEdits(node, code, edits, rewrites, defaultNameAvailable) {
+function exportDefaultEdits(node, code, edits, rewrites, defaultNameAvailable, exportDeclarations) {
   const declaration = node.declaration
   if (declaration.type === 'TSInterfaceDeclaration') {
     editNode(edits, node, code)
@@ -439,6 +447,29 @@ function exportDefaultEdits(node, code, edits, rewrites, defaultNameAvailable) {
       { line: node.loc.start.line, column: node.loc.start.column + 1 },
     )
   }
+  exportDeclarations.push({
+    name: '__default',
+    kind: declaration.type === 'FunctionDeclaration'
+      ? 'function'
+      : declaration.type === 'ClassDeclaration' ? 'class' : 'variable',
+    span: {
+      line: node.loc.start.line,
+      column: node.loc.start.column + 1,
+      end: {
+        line: node.loc.end.line,
+        column: node.loc.end.column + 1,
+      },
+    },
+    definitionSpan: {
+      line: node.loc.start.line,
+      column: node.loc.start.column + 1,
+      end: {
+        line: node.loc.end.line,
+        column: node.loc.end.column + 1,
+      },
+    },
+    original: true,
+  })
   const rewrite = record('export', 'converted the default export into a local __default binding', node)
   if (declaration.type === 'FunctionDeclaration' && declaration.id !== null) {
     const prefix = code.slice(node.start, declaration.start)
@@ -465,6 +496,7 @@ export function rewriteModuleImportsExports(program, enabled, existingImports = 
   const rewrites = []
   const imports = new Map(existingImports)
   const importDeclarations = []
+  const exportDeclarations = []
   const moduleLoads = []
   const importNamespaces = new Set(existingNamespaces)
   const allocateName = createGeneratedNameAllocator(tree, [...unavailableNames, ...importNamespaces])
@@ -500,7 +532,7 @@ export function rewriteModuleImportsExports(program, enabled, existingImports = 
       exportAllEdits(node, program, edits, rewrites, moduleLoads)
     }
     else if (node.type === 'ExportDefaultDeclaration' && enabled.autoStripExports) {
-      exportDefaultEdits(node, program, edits, rewrites, defaultNameAvailable)
+      exportDefaultEdits(node, program, edits, rewrites, defaultNameAvailable, exportDeclarations)
     }
   }
   assertNoDynamicImportResolution(tree, imports)
@@ -515,6 +547,7 @@ export function rewriteModuleImportsExports(program, enabled, existingImports = 
     importNamespaces,
     generatedNamespaces,
     importDeclarations,
+    exportDeclarations,
     moduleLoads,
     rewrites: rewrites.map(({ at: _at, ...rest }) => rest),
   }

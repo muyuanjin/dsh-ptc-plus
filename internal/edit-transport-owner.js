@@ -21,9 +21,8 @@ import { editTargetForCall, projectSessionLog } from './session-log-view.js'
 import { RUN_CODE } from './runtime-bridge-owner.js'
 import { isRecord } from './record-utils.js'
 import {
-  REPL_MEMORY_META_KEY,
-  normalizeReplMemorySnapshot,
   validatedReplMemorySnapshot,
+  withReplMemorySnapshot,
 } from './repl-memory-projection.js'
 
 export const EDIT_RUN_CODE = 'edit_run_code'
@@ -57,6 +56,7 @@ function derivedEditResult(inner) {
 export function createEditTransportOwner(ctx, {
   durableReplay,
   executeTentative,
+  presentationGeneration,
   sessionId,
   toolSchemasForAgent,
 }) {
@@ -96,10 +96,9 @@ export function createEditTransportOwner(ctx, {
     if (derived.recoveryBoundaries !== undefined) {
       meta[RECOVERY_BOUNDARY_KEY] = normalizeRecoveryBoundaries(derived.recoveryBoundaries)
     }
-    if (derived.replMemory !== undefined) {
-      meta[REPL_MEMORY_META_KEY] = normalizeReplMemorySnapshot(derived.replMemory)
-    }
-    return meta
+    return derived.replMemory === undefined
+      ? meta
+      : withReplMemorySnapshot(meta, derived.replMemory, presentationGeneration)
   }
   definition.output = {
     schema: {
@@ -186,7 +185,7 @@ export function createEditTransportOwner(ctx, {
         && Object.hasOwn(inner.meta, RECOVERY_BOUNDARY_KEY)
         ? normalizeRecoveryBoundaries(inner.meta[RECOVERY_BOUNDARY_KEY])
         : undefined
-      const replMemory = validatedReplMemorySnapshot(inner?.meta)
+      const replMemory = validatedReplMemorySnapshot(inner?.meta, presentationGeneration)
       const value = derivedEditResult(inner)
       const derived = {
         targetCallSeq: target.callSeq,

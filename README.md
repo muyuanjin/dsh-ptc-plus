@@ -1,19 +1,19 @@
 <p align="center">
-  <img src="assets/dsh-ptc-plus-banner-en.webp" width="100%" alt="dsh-ptc-plus banner">
+  <img src="assets/dsh-ptc-plus-banner-zh.webp" width="100%" alt="dsh-ptc-plus 横幅">
 </p>
 
 <p align="center">
-  <strong>English</strong> ·
-  <a href="README.zh.md">简体中文</a>
+  <strong>简体中文</strong> ·
+  <a href="README.en.md">English</a>
 </p>
 
 <p align="center">
-  <a href="#what-default-ptc-mode-gets-wrong">Problems</a> ·
-  <a href="#three-scenes-that-matter-most">Scenes</a> ·
-  <a href="#settings">Settings</a> ·
-  <a href="#scope">Scope</a> ·
-  <a href="#install">Install</a> ·
-  <a href="#documentation">Docs</a>
+  <a href="#%E9%BB%98%E8%AE%A4-ptc-%E6%A8%A1%E5%BC%8F%E7%9A%84%E9%97%AE%E9%A2%98">问题</a> ·
+  <a href="#%E4%B8%89%E4%B8%AA%E6%9C%80%E7%9B%B4%E6%8E%A5%E7%9A%84%E5%9C%BA%E6%99%AF">场景</a> ·
+  <a href="#%E8%AE%BE%E7%BD%AE">设置</a> ·
+  <a href="#%E8%8C%83%E5%9B%B4">范围</a> ·
+  <a href="#%E5%AE%89%E8%A3%85">安装</a> ·
+  <a href="#%E6%96%87%E6%A1%A3">文档</a>
 </p>
 
 <p align="center">
@@ -24,44 +24,44 @@
 </p>
 
 <p align="center">
-  <a href="https://awesome-dsh-plugin.com/"><img alt="Awesome DSH Plugin" src="https://awesome-dsh-plugin.com/badge.svg"></a>
+  <a href="https://awesome-dsh-plugin.com/zh/"><img alt="Awesome DSH Plugin" src="https://awesome-dsh-plugin.com/badge.svg"></a>
 </p>
 
 ---
 
-**PTC Plus gives DSH PTC mode a session-bound persistent TypeScript REPL.** Every `run_code` continues in the same session. Variables, imports, and results from one `run_code` are still available in the next one.
+**PTC Plus 给 DSH 的 PTC 模式一个会话绑定的持久 TypeScript REPL。** 每次 `run_code` 都在同一个会话里继续。上一次 `run_code` 的变量、导入和结果，下一次还能直接用。
 
 > [!NOTE]
-> Community plugin, no affiliation with or endorsement from DeepSeek or DSH.
+> 社区插件，与 DeepSeek 或 DSH 无隶属、无背书。
 
 > [!IMPORTANT]
-> Built for `danger-full-access`: direct Node.js and OS access with no extra sandbox. Use it only where that permission scope is acceptable.
+> 面向 `danger-full-access` 设计：可直接访问 Node.js 与操作系统，不另加沙箱。仅在可接受此权限的环境使用。
 
-![PTC Plus settings card](assets/ptc-plus-settings-en.png)
+![PTC Plus 设置卡片](assets/ptc-plus-settings-zh.png)
 
-*The settings card exposes live configuration and the `enabled` kill switch.*
+*设置卡片展示即时配置和 `enabled` 开关。*
 
-## What default PTC mode gets wrong
+## 默认 PTC 模式的问题
 
-DSH PTC mode starts every `run_code` in a fresh environment. The model computes something, then has to send the same setup code again. One bad line means the whole thing is resent. This plugin attaches `run_code` to a session-backed environment, so later calls reuse what was already there.
+DSH 的 PTC 模式让每次 `run_code` 都从新环境开始。模型算过的东西，下一次还要重发。写错一行，整段代码重发。这个插件把 `run_code` 接到一个会话级环境里，后面的调用直接复用之前的东西。
 
-| Situation | Default PTC mode | With PTC Plus |
-| --- | --- | --- |
-| State | starts from zero, setup resent ❌ | previous `run_code` results stay ✅ |
-| Fixing | wrong result resends the code ❌ | one diff ✅ |
-| Modules | `import` / `export` cannot be written ❌ | written normally, AST handles it ✅ |
-| Values | JSON changes or loses special values ❌ | those values stay intact ✅ |
-| Restart | everything is lost ❌ | recoverable parts come back ✅ |
-| Output and errors | printing floods, errors point elsewhere ❌ | output trimmed, errors map to your line ✅ |
-| Tools | list invisible, miscalls fail ❌ | can inspect; known miscalls become `run_code` ✅ |
-| Paths | relative paths can drift ❌ | session remembers the project directory ✅ |
-| Agent tools | tools needing the agent are rejected ❌ | context restored, goal works ✅ |
+| 场景 | 默认 PTC 模式 | PTC Plus 之后                |
+| --- | --- |----------------------------|
+| 状态 | 每次从零开始，setup 重发 ❌ | 上一次 `run_code` 的结果直接能用 ✅   |
+| 修错 | 结果不对或失败，整段重发 ❌ | 只发一行 diff ✅                |
+| 模块 | `import` / `export` 不能写 ❌ | 照常写，后台 AST 重写 ✅            |
+| 值 | JSON 改掉或丢失特殊值 ❌ | 这些值原样保留 ✅                  |
+| 重启 | 重启后一切丢失 ❌ | 能恢复的会回来 ✅                  |
+| 输出报错 | 大打印刷屏，报错指到别处 ❌ | 输出裁剪，报错回错的行 ✅              |
+| 工具 | 列表看不见，顶层误发失败 ❌ | 可查看；可确定的误发自动转 `run_code` ✅ |
+| 路径 | 相对路径可能跑偏 ❌ | session 记住项目目录 ✅           |
+| agent 工具 | 需要当前 agent 的工具被拒绝 ❌ | 恢复上下文，goal 等可调 ✅           |
 
-## Three scenes that matter most
+## 三个最直接的场景
 
-### State carries over
+### 状态跨调用
 
-First `run_code`:
+第一个 `run_code` 算完：
 
 ```ts
 import { readFile } from 'node:fs/promises'
@@ -70,96 +70,96 @@ const deps = Object.keys(manifest.dependencies ?? {})
 return deps.length
 ```
 
-The next one keeps going:
+第二个直接接着用：
 
 ```ts
 return deps.map(dep => dep + '@' + manifest.dependencies[dep])
 ```
 
-`deps` and `manifest` are still there. The setup code is sent only once.
+`deps` 和 `manifest` 还在。setup 代码只发一次。
 
-### Fix without resending
+### 修错不重发
 
-By default, a wrong result or a failure sends the whole code block again.
+默认情况下，结果不对或执行失败，模型只能把整个代码块再发一遍。
 
-With PTC Plus, it sends one line:
+PTC Plus 下它只发这一行：
 
 ```ts
 edit_run_code({ edits: [{ old_string: 'deps.length', new_string: 'deps' }] })
 ```
 
-Only the diff goes in. The full source stays out of the conversation. Exact replacements and regular expressions both have limits, so a bad pattern cannot hang.
+模型只发改动，完整源码留在对话之外。精确文本替换和正则替换都有限制，坏的正则不会卡住。
 
-When a rejected cell has exactly one validated missing closing token at the end, its diagnostic includes the complete `edit_run_code(...)` call needed to apply that correction and rerun the cell. That generated call carries an `expected_target_call_seq` precondition, so it is rejected without execution if another cell becomes the edit target first. PTC Plus never applies the suggestion automatically; ambiguous repairs or repairs without a persistent target identity still require corrected source.
+当被拒 cell 的末尾可唯一验证为缺少一个闭合符时，诊断会直接给出应用该修正并重运行所需的完整 `edit_run_code(...)` 调用。生成的调用带有 `expected_target_call_seq` 前置条件；如果另一个 cell 已先成为 edit 目标，它会拒绝且不执行。PTC Plus 不会自动应用这项建议；有歧义或没有持久目标身份的修复仍需提交修正后的源码。
 
-### Module syntax
+### 模块语法
 
-DSH PTC mode executes each `run_code` as an async function body, where static `import` and `export` declarations are invalid. PTC Plus adapts those forms before execution with AST analysis.
+DSH 的 PTC 模式把每个 `run_code` 当作 async function body 执行，静态 `import` 和 `export` 声明在这个函数体里无效。PTC Plus 会在执行前用 AST 分析适配这些形式。
 
-The model writes normally:
+模型照常写：
 
 ```ts
 import { readFile } from 'node:fs/promises'
 ```
 
-Imports resolve from your project, and named/default imports stay live and read-only. The model never has to know that a `run_code` is really a function body.
+依赖从项目解析，具名和默认导入保持 live 且只读。模型不需要知道 `run_code` 其实是一个函数体。
 
-## One measured A/B
+## 一次配对实测
 
-One identity-blind paired run used `opencode-go/deepseek-v4-flash`. Both arms used the same versioned fixture, task prompts, permissions, and two replicates per task, so 18 sessions per arm.
+一次身份盲化的配对实验使用了 `opencode-go/deepseek-v4-flash`。两个 arm 使用同一版本夹具、任务 prompt、权限，每个任务重复两次，每个 arm 共 18 个 session。
 
-| Across all 9 tasks | PTC Plus | DSH PTC mode (PTC Plus disabled) | Observed change |
+| 9 个任务合计 | PTC Plus | DSH PTC 模式（未启用 PTC Plus） | 本次观测变化 |
 | --- | ---: | ---: | ---: |
-| Model requests | 66 | 88 | 25.0% fewer |
-| Tool calls | 50 | 79 | 36.7% fewer |
-| Token traffic | 729,642 | 942,901 | 22.6% fewer |
-| Identity-blind rubric score | 138 / 162 | 118 / 162 | +12.3 percentage points |
+| 模型请求 | 66 | 88 | 减少 25.0% |
+| 工具调用 | 50 | 79 | 减少 36.7% |
+| Token 流量 | 729,642 | 942,901 | 减少 22.6% |
+| 身份盲评量表得分 | 138 / 162 | 118 / 162 | 提高 12.3 个百分点 |
 
-The module-syntax task separated the two arms most clearly. PTC Plus finished both replicates with one `run_code` each. DSH PTC mode without PTC Plus finished neither static-import requirement and used eight tool calls across its attempts.
+模块语法任务的区分最清楚：PTC Plus 两次都只用一次 `run_code` 完成；未启用 PTC Plus 的 DSH PTC 模式两次都未满足静态 import 要求，尝试过程合计用了 8 次工具调用。
 
-This is one stochastic paired observation, not a performance guarantee. Machine budgets were exceeded in 2 of the 18 PTC Plus sessions and 5 of the 18 sessions without PTC Plus, so the matrix as a whole did not pass machine acceptance. Token traffic includes input, cache-read, cache-write, and output tokens. The fixture, pairing rules, metrics, and blind-review protocol are documented in [Evaluation](docs/evaluation.md).
+这是一次有随机性的配对观测，不是性能保证。预设机器预算在 PTC Plus 的 18 个 session 中有 2 个超限，未启用 PTC Plus 的 18 个 session 中有 5 个超限，因此整组矩阵没有通过 machine acceptance。Token 流量包含 input、cache-read、cache-write 和 output token。夹具、配对规则、指标与盲评流程见[评测说明](docs/evaluation.md)。
 
-![Rejected run_code and the follow-up edit_run_code repair](assets/ptc-plus-repair-en.png)
+![被拒的 run_code 与随后的 edit_run_code 修复调用](assets/ptc-plus-repair-zh.png)
 
-*A real session: the long code and the truthful `edit_run_code` repair call. The repair never resends the source.*
+*真实会话：长代码与真实的 `edit_run_code` 修复调用；修复从未重发源码。*
 
-## Settings
+## 设置
 
-Open **Settings → Plugin configuration** to use the card shown above. The card follows the DSH UI language: it renders in English when the harness is set to English, and in 中文 when set to Chinese. The `enabled` switch is live: turning it off leaves only the card and that switch, while turning it on restores the session runtime and `run_code`/`edit_run_code`.
+打开 **设置 → 插件配置** 使用上面的设置卡片。卡片跟随 DSH 界面语言：界面设为 English 时显示英文，设为中文时显示中文。`enabled` 是即时生效的总开关：关闭后只保留卡片和这个开关，开启后恢复 session runtime 以及 `run_code`/`edit_run_code`。
 
-In an enabled `ptc` session, the header retains the simple, neutral `PTC Plus` indicator. `run_code` and `edit_run_code` remain titled Code and Code edit in the conversation body: source and result remain expandable, with TypeScript syntax highlighting and copy support when the DSH client exposes its `CodeBlock` primitive. A feature name and useful detail appear only when existing result metadata proves that the feature affected this execution. Examples include the imported module adapted for the REPL, stripped exports, a split mixed redeclaration, safe edit execution, a successful `code.run`, a completed durable recovery, or a `repl.state` operation. The UI does not show process-retention notices or counters for REPL cells, program calls, recoverable cells, or recovery boundaries. Turning the plugin off unregisters both keyed rows and restores DSH's native fallback.
+插件启用且会话使用 `ptc` preset 时，会话头部保留简洁、中性的 `PTC Plus` 标识。正文中的 `run_code` 与 `edit_run_code` 仍显示为“代码”和“代码编辑”：源码和结果仍可展开查看；当 DSH Client 提供 `CodeBlock` primitive 时，源码使用 TypeScript 语法高亮并支持复制。只有已有结果 metadata 能证明某项能力在该次执行中确实生效时，行下方才显示同设置卡一致的名称与有用细节，例如被适配的 import 模块、被剥离的 export、被拆分的混合重声明、安全编辑、成功的 `code.run`、本次确实完成的持久恢复或 `repl.state` 操作。这里不显示进程保留提示，也不显示 REPL cell、程序内调用、可恢复 cell 或恢复边界等计数。关闭插件会注销两个 keyed row，恢复 DSH 原生 fallback。
 
-Every setting applies live and keeps existing bindings. A submitted cell uses one configuration for its complete execution; changes made while it runs apply to cells submitted afterward. A failed change rolls back. Node fixes a worker's V8 old-generation limit when the worker starts, so that one setting is rejected while a session worker is active and can be changed after the session is disposed. A failed enable is rolled back and persisted as disabled.
+所有设置都会实时应用，并保留已有 binding。已提交的 cell 在完整执行期间使用同一份配置；执行期间发生的更新用于随后提交的 cell。更新失败会回滚。Node 在 worker 创建时固定 V8 old-generation 上限，因此活动 session worker 存在时修改这一项会被拒绝，释放 session 后才能修改。启用失败时，运行时会回滚并把设置保持为停用。
 
-`cordisToolsEnabled` is off by default. Turning it on atomically adds DSH's official Cordis tools, owner guidance, and exactly the `cordis-plugin-development` companion Skill to PTC agents; sibling Skills in the shipped preset are not exposed. Turning it off removes all three. It neither switches presets nor changes the direct `run_code`/`edit_run_code` surface. Cordis runs model-written plugins against the live DSH runtime, so enabling it requires shell-level trust.
+`cordisToolsEnabled` 默认关闭。打开后，DSH 官方 Cordis 工具、owner guidance 与精确的 `cordis-plugin-development` companion Skill 会作为一个整体加入 PTC agent；同一 shipped preset 目录中的其他 Skill 不会随之暴露。关闭时这三项也会一起移除；它不切换 preset，也不改变 `run_code`/`edit_run_code` 的直接调用面。Cordis 能在实时 DSH runtime 中运行模型编写的插件，开启它需要接受 shell 级信任。
 
-When a Cordis call rejects after a cell has assigned a large host or client source string, that top-level binding remains live. Retry only the Cordis call from a short later cell and reuse the binding instead of resending the source.
+如果 Cordis 调用在 cell 已经赋值大段 host 或 client 源码之后才失败，这些顶层 binding 仍会保留。后续只需在短 cell 中重试 Cordis 调用并复用该 binding，无需再次传输源码。
 
-After cold recovery or re-enabling Cordis, recorded Cordis values remain historical data but do not prove that process-local Plugins, Runs, approvals, or earlier Inspect observations are still live. PTC Plus adds a bounded recovery context until a new successful Cordis Inspect call validates the current process.
+cold recovery 或重新启用 Cordis 后，已记录的 Cordis value 仍是历史数据，但不能证明进程内 Plugin、Run、approval 或先前 Inspect observation 仍然存活。PTC Plus 会提供有界恢复 context，直到一次新的成功 Cordis Inspect 调用验证当前进程。
 
-The body view is client-only. It registers DSH's public keyed `tool.call.toolview` and reads only call arguments plus existing tool-result presentation metadata. It never adds a tool, prompt text, runtime context, session event, journal field, history request, or migration step. Malformed metadata produces no feature notice; unknown metadata from another PTC Plus version is ignored; an older log without a feature's metadata still retains source, result, and lifecycle state. The view does not infer ordinary loose redeclarations, canonicalized native calls, official Cordis ownership, or selected recovery tips from source text, member-name prefixes, or settings because the Client has no result-local provenance for them. Installing or removing the view therefore does not change model requests or make an otherwise readable or resumable session incompatible.
+正文 view 完全属于 client 展示层。它注册 DSH 公共的 keyed `tool.call.toolview`，只读取调用参数与已有 tool result presentation metadata，不增加工具、prompt 文本、runtime context、session event、journal 字段、历史读取请求或迁移步骤。损坏 metadata 不产生功能标记；来自其他 PTC Plus 版本的未知 metadata 会被忽略；旧日志没有某项 metadata 时仍保留源码、结果和执行状态。普通宽松重声明、规范化的顶层 native 调用、官方 Cordis owner 和实际选择的恢复提示都没有结果级 Client provenance，因此正文不会从源码形状、成员名前缀或设置值推测这些事件。因此安装或移除该 view 不会改变模型请求，也不会让原本可读取、可继续的会话变得不兼容。
 
-See [Client UI](docs/client-ui.md), [ADR 0019](docs/adr/0019-plugin-settings-and-kill-switch.md), and [ADR 0020](docs/adr/0020-optional-cordis-tools-in-ptc-mode.md).
+详见 [客户端 UI](docs/client-ui.md)、[ADR 0019](docs/adr/0019-plugin-settings-and-kill-switch.md) 与 [ADR 0020](docs/adr/0020-optional-cordis-tools-in-ptc-mode.md)。
 
-## Scope
+## 范围
 
-PTC Plus provides the session-bound persistent `run_code` layer. DSH and the operating system continue to own native-tool authority, policy, approval, cancellation, sandboxing and process governance.
+PTC Plus 提供会话绑定的持久 `run_code` 层。原生工具的权限、策略、审批、取消、sandbox 和进程治理仍由 DSH 与操作系统负责。
 
-## Install
+## 安装
 
-Requires Node.js `^22.19.0 || >=24.0.0` and DSH with TypeScript PTC mode. Install the published package from npm into the profile you use:
+要求 Node.js `^22.19.0 || >=24.0.0`，并已安装带 TypeScript PTC 模式的 DSH。把 npm 正式包安装到你实际使用的 profile：
 
 ```sh
 dsh plugin --profile <profile> add dsh-ptc-plus
 dsh --profile <profile> --dump-config
 ```
 
-Restart that DSH profile after installation. Version-pinned npm, GitHub, local-checkout, and tarball installs are covered in the [installation guide](docs/installation.md).
+安装后重启对应的 DSH profile。固定 npm 版本、GitHub、本地 checkout 和 tarball 安装方式见[安装指南](docs/installation.md)。
 
-`danger-full-access` is the primary supported experience. The worker isolates lifecycle, not malicious code.
+`danger-full-access` 是首要支持方式。worker 只隔离生命周期，不隔离恶意代码。
 
-## Documentation
+## 文档
 
-[Installation](docs/installation.md) · [Runtime reference](docs/runtime-reference.md) · [Architecture](docs/architecture.md) · [Publishing](docs/publishing.md) · [All docs](docs/README.md)
+[安装指南](docs/installation.md) · [运行时参考](docs/runtime-reference.md) · [架构](docs/architecture.md) · [发布](docs/publishing.md) · [全部文档](docs/README.md)
 
-MIT licensed. See [LICENSE](LICENSE).
+使用 [MIT License](LICENSE)。

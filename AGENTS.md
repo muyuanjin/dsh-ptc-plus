@@ -11,7 +11,7 @@ Read [CONTEXT.md](CONTEXT.md) before changing behavior. Use repository sources b
 - `CONTEXT.md` owns project boundaries and non-negotiable invariants.
 - ADRs own durable architecture, contracts, data formats, and project process decisions.
 - Code, schemas, tests, and scripts provide executable evidence.
-- `README.md` and `README.zh.md` serve users; `docs/` owns detailed integration, runtime, installation, publishing, and operational material.
+- `README.md` (Chinese default) and `README.en.md` (English) serve users; `docs/` owns detailed integration, runtime, installation, publishing, and operational material.
 
 When these sources disagree, resolve the canonical owner and update affected dependents. A passing test does not preserve behavior that contradicts the project contract.
 
@@ -28,7 +28,7 @@ When these sources disagree, resolve the canonical owner and update affected dep
 - Use maintained dependencies and platform primitives for parsers, protocols, state machines, and serializers when they cover the required semantics.
 - Comments and diagnostics state contracts, ownership, failure, and recovery consequences. They do not retain review discussion, implementation diaries, or local execution records.
 
-Add or update an ADR only when a durable architecture, contract, data-format, or project process decision changes. Update `README.md` and `README.zh.md` together for user-facing behavior. Installation and release procedures belong in [docs/installation.md](docs/installation.md) and [docs/publishing.md](docs/publishing.md).
+Add or update an ADR only when a durable architecture, contract, data-format, or project process decision changes. Update `README.md` (Chinese default) and `README.en.md` (English) together for user-facing behavior. Installation and release procedures belong in [docs/installation.md](docs/installation.md) and [docs/publishing.md](docs/publishing.md).
 
 ## Local Review Ledger
 

@@ -72,6 +72,7 @@ test('checked client bundle is loadable through the DSH module loader contract',
   assert.equal(loaded.id, packageJson.name)
   const React = { createElement() {}, useState() {}, useRef() {}, useCallback(value) { return value }, useSyncExternalStore() {}, useEffect() {} }
   const primitives = {
+    CodeBlock() {},
     IconCheckOutline14() {},
     IconChevronDownOutline14() {},
     IconInspectOutline12() {},
@@ -98,7 +99,9 @@ test('checked client bundle is loadable through the DSH module loader contract',
   assert.match(sourceModule, /Expand PTC Plus settings/)
   assert.doesNotMatch(sourceModule, /ptcPlusActivityPanel/)
   assert.doesNotMatch(sourceModule, /useConversation\b|useSession\b/)
-  assert.match(sourceModule, /useSessions/)
+  assert.match(sourceModule, /CodeBlock/)
+  assert.match(sourceModule, /align-items:center/)
+  assert.doesNotMatch(sourceModule, /feature\.volatile|feature\.discarded/)
   assert.doesNotMatch(sourceModule, /activity\.cells|activity\.recoveries/)
   assert.match(sourceModule, /\.ptcPlusActive\{[^}]*--dsw-alias-label-secondary/)
   assert.doesNotMatch(sourceModule, /\.ptcPlusActive\{[^}]*success/)
@@ -124,6 +127,7 @@ test('settings, header indicator, and tool rows follow the DSH locale dictionari
     useEffect: () => {},
   }
   const primitives = {
+    CodeBlock() {},
     IconCheckOutline14: 'IconCheck',
     IconChevronDownOutline14: 'IconChevron',
     IconInspectOutline12: 'IconInspect',
@@ -296,7 +300,7 @@ test('settings, header indicator, and tool rows follow the DSH locale dictionari
     const texts = collectTexts(runCodeView({
       ...toolOwner(), toolName: 'run_code', block: toolResult, t,
     }))
-    assert.ok(texts.includes(dicts[locale]['tool.runCode']))
+    assert.ok(texts.includes(dicts[locale]['tool.code']))
     assert.ok(texts.includes(dicts[locale]['autoRewriteImports.label']))
     assert.ok(texts.includes('node:path'))
     assert.equal(texts.some(text => /REPL cells|REPL 单元格|recovery bound|恢复边界/i.test(text)), false)
@@ -304,6 +308,9 @@ test('settings, header indicator, and tool rows follow the DSH locale dictionari
 
   const originalUseState = React.useState
   React.useState = () => [true, () => {}]
+  const highlighted = runCodeView({
+    ...toolOwner(), toolName: 'run_code', block: toolResult, t: key => key,
+  })
   const expanded = editRunCodeView({
     ...toolOwner(),
     toolName: 'edit_run_code',
@@ -328,6 +335,21 @@ test('settings, header indicator, and tool rows follow the DSH locale dictionari
   assert.ok(expandedTexts.includes('tool.source'))
   assert.ok(expandedTexts.includes('tool.result'))
   assert.ok(expandedTexts.includes('tool.inspect'))
+  const findElement = (value, type) => {
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        const found = findElement(item, type)
+        if (found !== undefined) return found
+      }
+      return undefined
+    }
+    if (!value || typeof value !== 'object') return undefined
+    if (value.type === type) return value
+    return findElement(value.children, type)
+  }
+  const codeBlock = findElement(highlighted, primitives.CodeBlock)
+  assert.equal(codeBlock?.props.lang, 'typescript')
+  assert.equal(codeBlock?.props.code, 'import path from "node:path"')
 
   const runningTexts = collectTexts(runCodeView({
     ...toolOwner(),
@@ -346,7 +368,7 @@ test('settings, header indicator, and tool rows follow the DSH locale dictionari
     t: key => key,
   }))
   assert.ok(neutralTexts.includes('tool.code'))
-  assert.equal(neutralTexts.includes('tool.runCode'), false)
+  assert.ok(neutralTexts.includes('tool.code'))
 
   const activeToolviews = () => slotEntries.filter(({ options, active }) => (
     options.name === 'tool.call.toolview' && active

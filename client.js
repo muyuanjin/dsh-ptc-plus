@@ -566,9 +566,7 @@
       rewriteFeature(rewrites, (rewrite) => rewrite.kind === "redeclaration" && rewrite.description === MIXED_REDECLARATION, "autoSplitRedeclarations.label"),
       journal.calls.some((call) => call.global === "code" && call.member === "run" && call.ok === true) ? { key: "feature.codeRun", detail: "" } : void 0,
       journal.diagnostics.some(isDurableRecoveryDiagnostic) ? { key: "durableReplay.label", detail: "" } : void 0,
-      ...operationFeatures(journal.operations),
-      journal.status === "volatile" ? { key: "feature.volatile", detail: "" } : void 0,
-      journal.status === "discarded" ? { key: "feature.discarded", detail: "" } : void 0
+      ...operationFeatures(journal.operations)
     ]);
     return Object.freeze({ state, description, code, output, ptc: true, features: Object.freeze(features) });
   }
@@ -585,7 +583,7 @@
 .ptcPlusFooter{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:8px}.ptcPlusButton{min-height:32px;padding:0 12px;border:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1));border-radius:6px;background:transparent;color:inherit;cursor:pointer;font:500 13px/20px inherit;transition:background-color .16s ease,border-color .16s ease}.ptcPlusButton:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover,rgba(38,49,72,.06))}.ptcPlusButton:disabled,.ptcPlusInput:disabled,.ptcPlusCheck:disabled{cursor:not-allowed;opacity:.55}
 .ptcPlusActive{display:inline-flex;align-items:center;gap:5px;color:var(--dsw-alias-label-secondary,#52565d);font-size:12px;line-height:18px;white-space:nowrap}
 .ptcPlusTool{display:flex;min-width:0;flex-direction:column}.ptcPlusToolSummary{display:flex;min-width:0;align-items:center;gap:7px;min-height:32px;padding:4px 0;color:inherit}.ptcPlusToolSummary[data-expandable=true]{cursor:pointer}.ptcPlusToolSummary[data-expandable=true]:hover .ptcPlusToolTitle{color:var(--dsw-alias-interactive-primary,#4d6bfe)}.ptcPlusToolSummary:focus-visible{outline:2px solid var(--dsw-alias-interactive-primary,#4d6bfe);outline-offset:2px}.ptcPlusToolLeading{display:flex;width:16px;flex:none;align-items:center;justify-content:center;color:var(--dsw-alias-label-tertiary,#74777d)}.ptcPlusToolChevron{transition:transform .16s ease}.ptcPlusToolChevron[data-open=true]{transform:rotate(180deg)}.ptcPlusToolTitle{flex:none;font-size:13px;font-weight:500;line-height:20px}.ptcPlusToolState{flex:none;color:var(--dsw-alias-label-tertiary,#74777d);font-size:11px;line-height:18px}.ptcPlusToolSummary[data-state=running] .ptcPlusToolState{color:var(--dsw-alias-interactive-primary,#4d6bfe)}.ptcPlusToolSummary[data-state=error] .ptcPlusToolState{color:var(--dsw-alias-state-danger-primary,#c43d3d)}.ptcPlusToolSummary[data-state=stopped] .ptcPlusToolState{color:var(--dsw-alias-state-warning-primary,#a15c00)}.ptcPlusToolSep{width:3px;height:3px;flex:none;border-radius:50%;background:var(--dsw-alias-label-tertiary,#74777d)}.ptcPlusToolDescription{min-width:0;overflow:hidden;color:var(--dsw-alias-label-secondary,#52565d);font-size:13px;line-height:20px;text-overflow:ellipsis;white-space:nowrap}.ptcPlusToolSummary[data-state=error] .ptcPlusToolDescription{color:var(--dsw-alias-state-danger-primary,#c43d3d)}.ptcPlusToolSummary[data-state=stopped] .ptcPlusToolDescription{color:var(--dsw-alias-state-warning-primary,#a15c00)}
-.ptcPlusFeatures{display:flex;min-width:0;flex-wrap:wrap;gap:3px 14px;margin:0 0 5px 23px}.ptcPlusFeature{display:inline-flex;min-width:0;align-items:baseline;gap:5px;color:var(--dsw-alias-label-secondary,#52565d);font-size:11px;line-height:17px}.ptcPlusFeature::before{width:4px;height:4px;flex:none;border-radius:50%;background:var(--dsw-alias-interactive-primary,#4d6bfe);content:''}.ptcPlusFeatureName{font-weight:500}.ptcPlusFeatureDetail{min-width:0;overflow:hidden;color:var(--dsw-alias-label-tertiary,#74777d);font-family:ui-monospace,SFMono-Regular,Consolas,monospace;text-overflow:ellipsis;white-space:nowrap}
+.ptcPlusFeatures{display:flex;min-width:0;flex-wrap:wrap;gap:3px 14px;margin:0 0 5px 23px}.ptcPlusFeature{display:inline-flex;min-width:0;align-items:center;gap:5px;color:var(--dsw-alias-label-secondary,#52565d);font-size:11px;line-height:17px}.ptcPlusFeature::before{width:4px;height:4px;flex:none;border-radius:50%;background:var(--dsw-alias-interactive-primary,#4d6bfe);content:''}.ptcPlusFeatureName{font-weight:500}.ptcPlusFeatureDetail{min-width:0;overflow:hidden;color:var(--dsw-alias-label-tertiary,#74777d);font-family:ui-monospace,SFMono-Regular,Consolas,monospace;text-overflow:ellipsis;white-space:nowrap}
 .ptcPlusToolBody{margin:4px 0 8px 23px;border-left:2px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1));background:var(--dsw-alias-bg-layer-2,rgba(38,49,72,.03))}.ptcPlusToolSection{display:flex;min-width:0;flex-direction:column;gap:4px;padding:9px 11px}.ptcPlusToolSection+.ptcPlusToolSection{border-top:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1))}.ptcPlusToolSectionLabel{color:var(--dsw-alias-label-tertiary,#74777d);font-size:10px;font-weight:600;line-height:16px;text-transform:uppercase}.ptcPlusToolCode{max-height:320px;margin:0;overflow:auto;color:inherit;font:12px/18px ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere}.ptcPlusInspect{display:inline-flex;align-self:flex-end;align-items:center;gap:5px;margin:0 9px 8px;padding:3px 7px;border:0;background:transparent;color:var(--dsw-alias-label-secondary,#52565d);cursor:pointer;font:500 11px/18px inherit}.ptcPlusInspect:hover{color:var(--dsw-alias-interactive-primary,#4d6bfe)}
 @media(max-width:560px){.ptcPlusHeader{padding:12px}.ptcPlusFields{margin:0 12px}.ptcPlusRow{align-items:flex-start;flex-direction:column;gap:6px;padding:10px 0}.ptcPlusInput{width:100%}.ptcPlusFooter{align-items:stretch;flex-direction:column}.ptcPlusButton{width:100%}.ptcPlusFeatures,.ptcPlusToolBody{margin-left:0}.ptcPlusToolDescription{white-space:normal;overflow-wrap:anywhere}}
 @media(prefers-reduced-motion:reduce){.ptcPlusHeader,.ptcPlusChevron,.ptcPlusBody,.ptcPlusButton,.ptcPlusToolChevron{transition:none}}
@@ -606,8 +604,6 @@
       "status.conflict": "\u8BBE\u7F6E\u672A\u751F\u6548\uFF0C\u8BF7\u68C0\u67E5\u8BBE\u7F6E\u51B2\u7A81",
       "status.failed": "\u8BBE\u7F6E\u5931\u8D25\uFF1A{error}",
       "indicator.title": "PTC Plus \u5DF2\u542F\u7528",
-      "tool.runCode": "PTC Plus",
-      "tool.editRunCode": "PTC Plus \u7F16\u8F91",
       "tool.code": "\u4EE3\u7801",
       "tool.codeEdit": "\u4EE3\u7801\u7F16\u8F91",
       "tool.running": "\u6B63\u5728\u8FD0\u884C",
@@ -616,14 +612,14 @@
       "tool.stopped": "\u6267\u884C\u5DF2\u4E2D\u65AD",
       "tool.source": "\u6E90\u7801",
       "tool.result": "\u7ED3\u679C",
+      "tool.copy": "\u590D\u5236\u4EE3\u7801",
+      "tool.copied": "\u5DF2\u590D\u5236",
       "tool.inspect": "\u68C0\u67E5\u8C03\u7528",
       "feature.safeEdit": "\u5B89\u5168\u7F16\u8F91\u6267\u884C",
       "feature.codeRun": "\u9694\u79BB\u6267\u884C code.run",
       "feature.stateSaved": "\u4FDD\u5B58 REPL \u72B6\u6001",
       "feature.stateRestored": "\u6062\u590D REPL \u72B6\u6001",
-      "feature.stateDeleted": "\u5220\u9664 REPL \u72B6\u6001",
-      "feature.volatile": "\u4EC5\u5728\u5F53\u524D\u8FDB\u7A0B\u4FDD\u7559\u72B6\u6001",
-      "feature.discarded": "\u672C\u6B21 cell \u72B6\u6001\u672A\u4FDD\u7559"
+      "feature.stateDeleted": "\u5220\u9664 REPL \u72B6\u6001"
     }),
     en: Object.freeze({
       "card.description": "The session-bound TypeScript REPL for PTC mode.",
@@ -639,8 +635,6 @@
       "status.conflict": "The setting did not take effect; check for conflicting settings.",
       "status.failed": "Could not save: {error}",
       "indicator.title": "PTC Plus is active",
-      "tool.runCode": "PTC Plus",
-      "tool.editRunCode": "PTC Plus edit",
       "tool.code": "Code",
       "tool.codeEdit": "Code edit",
       "tool.running": "Running",
@@ -655,8 +649,8 @@
       "feature.stateSaved": "Saved REPL state",
       "feature.stateRestored": "Restored REPL state",
       "feature.stateDeleted": "Deleted REPL state",
-      "feature.volatile": "State retained only in this process",
-      "feature.discarded": "Cell state was not retained"
+      "tool.copy": "Copy code",
+      "tool.copied": "Copied"
     })
   });
   function fieldCopy(field, locale) {
@@ -681,6 +675,7 @@
     factory: (require2) => {
       const React = require2("react");
       const {
+        CodeBlock,
         IconCheckOutline14,
         IconChevronDownOutline14,
         IconInspectOutline12
@@ -828,11 +823,9 @@
           key: SETTINGS_NAMESPACE,
           locale: LOCALE_NS
         }, PTCPlusSettingsCard));
-        function PTCPlusToolRow({ toolName, block, sessionId, useSessions, inspect, t }) {
+        function PTCPlusToolRow({ toolName, block, inspect, t }) {
           const [open, setOpen] = React.useState(false);
-          const sessionIsPtc = useSessions((state) => sessionUsesPtcPreset(state.byId?.[sessionId]));
           const view = derivePtcToolView(block, toolName);
-          const branded = sessionIsPtc || view.ptc;
           const expandable = view.code !== "" || view.output !== "" || typeof inspect === "function";
           const stateKey = {
             running: "tool.running",
@@ -865,7 +858,9 @@
                 } : void 0
               },
               h("span", { className: "ptcPlusToolLeading", "aria-hidden": true }, expandable ? h(IconChevronDownOutline14, { size: 14, className: "ptcPlusToolChevron", "data-open": open }) : h(IconCheckOutline14, { size: 14 })),
-              h("span", { className: "ptcPlusToolTitle" }, t(branded ? toolName === "edit_run_code" ? "tool.editRunCode" : "tool.runCode" : toolName === "edit_run_code" ? "tool.codeEdit" : "tool.code")),
+              h("span", { className: "ptcPlusToolTitle" }, t(
+                toolName === "edit_run_code" ? "tool.codeEdit" : "tool.code"
+              )),
               view.state === "ok" ? null : h("span", { className: "ptcPlusToolState", role: "status" }, t(stateKey)),
               h("span", { className: "ptcPlusToolSep", "aria-hidden": true }),
               h("span", { className: "ptcPlusToolDescription" }, summary)
@@ -890,7 +885,13 @@
                 "div",
                 { className: "ptcPlusToolSection" },
                 h("span", { className: "ptcPlusToolSectionLabel" }, t("tool.source")),
-                h("pre", { className: "ptcPlusToolCode" }, view.code)
+                typeof CodeBlock === "function" ? h(CodeBlock, {
+                  code: view.code,
+                  lang: "typescript",
+                  className: "ptcPlusToolCode",
+                  copyLabel: t("tool.copy"),
+                  copiedLabel: t("tool.copied")
+                }) : h("pre", { className: "ptcPlusToolCode" }, view.code)
               ),
               view.output === "" ? null : h(
                 "div",

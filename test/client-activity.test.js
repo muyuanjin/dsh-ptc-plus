@@ -126,7 +126,6 @@ test('derives useful feature events without exposing counters or recovery bounda
     { key: 'feature.stateSaved', detail: 'before-edit' },
     { key: 'feature.stateRestored', detail: '' },
     { key: 'feature.stateDeleted', detail: 'old' },
-    { key: 'feature.volatile', detail: '' },
   ])
   assert.equal(JSON.stringify(view).includes('recovery'), false)
   assert.equal(JSON.stringify(view).includes('cells'), false)
@@ -206,7 +205,7 @@ test('does not infer official Cordis ownership from a tool member prefix', () =>
   assert.deepEqual(derivePtcToolView(result({ dshPtcPlus: valid })).features, [])
 })
 
-test('distinguishes successful code.run, volatile retention, and discarded state', () => {
+test('distinguishes successful code.run from failed or discarded state', () => {
   const failed = normalizeJournal(journal({ calls: [failedCall('code', 'run', 0)] }))
   assert.deepEqual(derivePtcToolView(result({ dshPtcPlus: failed })).features, [])
 
@@ -214,7 +213,7 @@ test('distinguishes successful code.run, volatile retention, and discarded state
   delete discarded.completion
   assert.deepEqual(derivePtcToolView(result({
     dshPtcPlus: normalizeJournal(discarded),
-  })).features, [{ key: 'feature.discarded', detail: '' }])
+  })).features, [])
 })
 
 test('requires the complete durable recovery diagnostic tuple', () => {

@@ -449,12 +449,6 @@ export function derivePtcToolView(block, toolName = undefined) {
       ? { key: 'durableReplay.label', detail: '' }
       : undefined,
     ...operationFeatures(journal.operations),
-    journal.status === 'volatile'
-      ? { key: 'feature.volatile', detail: '' }
-      : undefined,
-    journal.status === 'discarded'
-      ? { key: 'feature.discarded', detail: '' }
-      : undefined,
   ])
   return Object.freeze({ state, description, code, output, ptc: true, features: Object.freeze(features) })
 }

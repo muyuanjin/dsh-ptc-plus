@@ -183,6 +183,7 @@ function importEdits(
     if (imported !== undefined && !requiredExports.includes(imported)) requiredExports.push(imported)
     importDeclarations.push({
       name: localName(specifier),
+      kind: 'import',
       span: {
         line: specifier.local.loc.start.line,
         column: specifier.local.loc.start.column + 1,

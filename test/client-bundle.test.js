@@ -101,10 +101,22 @@ test('checked client bundle is loadable through the DSH module loader contract',
   assert.doesNotMatch(sourceModule, /useConversation\b|useSession\b/)
   assert.match(sourceModule, /CodeBlock/)
   assert.match(sourceModule, /align-items:center/)
+  assert.match(sourceModule, /\.ptcPlusToolSummary\{[^}]*box-sizing:border-box[^}]*min-height:32px[^}]*align-items:center/)
+  assert.match(sourceModule, /\.ptcPlusToolState\{[^}]*height:20px[^}]*align-items:center[^}]*[^}]*line-height:20px/)
+  assert.match(sourceModule, /\.ptcPlusToolDescription\{[^}]*min-height:20px[^}]*align-items:center/)
+  assert.doesNotMatch(sourceModule, /\.ptcPlusToolDescription\{[^}]*;height:20px/)
   assert.doesNotMatch(sourceModule, /feature\.volatile|feature\.discarded/)
   assert.doesNotMatch(sourceModule, /activity\.cells|activity\.recoveries/)
-  assert.match(sourceModule, /\.ptcPlusActive\{[^}]*--dsw-alias-label-secondary/)
-  assert.doesNotMatch(sourceModule, /\.ptcPlusActive\{[^}]*success/)
+  assert.match(sourceModule, /\.ptcPlusActive\{[^}]*--dsw-alias-state-success-primary/)
+  assert.match(sourceModule, /\.ptcPlusReplPopover\{[^}]*position:fixed[^}]*z-index:2147483000/)
+  assert.match(sourceModule, /\.ptcPlusReplPopover:popover-open/)
+  assert.match(sourceModule, /\.ptcPlusReplList\{[^}]*overflow:auto[^}]*overscroll-behavior:contain/)
+  assert.match(sourceModule, /\.ptcPlusReplKind\[data-kind=variable\]/)
+  assert.match(sourceModule, /\.ptcPlusReplKind\[data-kind=function\]/)
+  assert.match(sourceModule, /\.ptcPlusReplKind\[data-kind=class\]/)
+  assert.match(sourceModule, /\.ptcPlusReplKind\[data-kind=import\]/)
+  assert.match(sourceModule, /popover\.showPopover\(\)/)
+  assert.match(sourceModule, /normalizeReplMemorySnapshot/)
   assert.match(sourceModule, /ptcPlusToolState/)
   assert.doesNotMatch(sourceModule, /ptcPlusVisuallyHidden/)
   assert.doesNotMatch(sourceModule, /saveSettings/)
@@ -271,6 +283,37 @@ test('settings, header indicator, and tool rows follow the DSH locale dictionari
   }), null)
   assert.equal(renderIndicator({ projectionValues: { agentPreset: 'chat' } }), null)
   assert.equal(renderIndicator({ projectionValues: { agentPreset: 'ptc' } }, false), null)
+
+  const memoryIndicator = renderIndicator({
+    projectionValues: {
+      agentPreset: 'ptc',
+      ptcPlusRepl: {
+        available: true,
+        entries: [
+          { name: 'Widget', kind: 'class' },
+          { name: 'answer', kind: 'variable' },
+        ],
+        total: 2,
+        omitted: 0,
+      },
+    },
+  })
+  const memoryTrigger = memoryIndicator.children.find(child => child?.props?.className === 'ptcPlusActive')
+  assert.equal(memoryTrigger.type, 'button')
+  assert.equal(memoryTrigger.props.type, 'button')
+  assert.equal(memoryTrigger.props['aria-expanded'], false)
+  assert.equal(memoryTrigger.props['aria-haspopup'], 'dialog')
+  assert.match(memoryTrigger.props['aria-controls'], /^ptc-plus-repl-/)
+  const memoryComponent = memoryIndicator.children.find(child => typeof child?.type === 'function')
+  const memoryCard = memoryComponent.type(memoryComponent.props)
+  assert.equal(memoryCard.props.popover, 'auto')
+  assert.equal(memoryCard.props.role, 'dialog')
+  const memoryTexts = collectTexts(memoryCard)
+  assert.ok(memoryTexts.includes('memory.title'))
+  assert.ok(memoryTexts.includes('Widget'))
+  assert.ok(memoryTexts.includes('answer'))
+  assert.ok(memoryTexts.includes('memory.kind.class'))
+  assert.ok(memoryTexts.includes('memory.kind.variable'))
 
   const [runCodeView, editRunCodeView] = toolviews.map(({ component }) => component)
   const toolOwner = () => ({

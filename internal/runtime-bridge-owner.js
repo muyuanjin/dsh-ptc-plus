@@ -19,6 +19,7 @@ import {
   toolCapabilityMetadata,
 } from './program-bindings.js'
 import { deepFreeze } from './record-utils.js'
+import { withReplMemorySnapshot } from './repl-memory-projection.js'
 
 export const RUN_CODE = 'run_code'
 
@@ -268,7 +269,8 @@ export function createRuntimeBridgeOwner({
       if (settlement.recoveryBoundaries !== undefined) {
         meta = withRecoveryBoundaries(meta, settlement.recoveryBoundaries)
       }
-      return settlement.rewrites === undefined ? meta : withRewrites(meta, settlement.rewrites)
+      if (settlement.rewrites !== undefined) meta = withRewrites(meta, settlement.rewrites)
+      return withReplMemorySnapshot(meta, settlement.replMemory)
     }
     try {
       Object.defineProperty(output, 'presentationMeta', {
@@ -363,6 +365,7 @@ export function createRuntimeBridgeOwner({
             meta = withRecoveryBoundaries(meta, settlement.recoveryBoundaries)
           }
           if (settlement.rewrites !== undefined) meta = withRewrites(meta, settlement.rewrites)
+          meta = withReplMemorySnapshot(meta, settlement.replMemory)
           return { ...result, meta }
         }
         return result

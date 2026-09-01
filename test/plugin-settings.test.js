@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { Context as CordisContext } from '@deepseek-ai/cordis'
 import { dirname, join } from 'node:path'
 import test from 'node:test'
 import { apply, Config } from '../index.js'
@@ -73,6 +74,8 @@ function hostContext(settings = undefined, agents = [], options = {}) {
   const listeners = new Map()
   const cleanups = []
   const sections = []
+  const projectionDefinitions = []
+  const projectionInjections = []
   const inheritedRun = async () => ({ logs: [] })
   const runtime = Object.assign(Object.create({ run: inheritedRun }), {
     language: options.language ?? 'typescript',
@@ -143,13 +146,67 @@ function hostContext(settings = undefined, agents = [], options = {}) {
     },
     ...(settings === undefined ? {} : {
       inject(services, callback) {
+        if (services.length === 1 && services[0] === 'sessionProjections') {
+          let disposed = false
+          let childDisposers = []
+          const unload = async () => {
+            for (const dispose of childDisposers.reverse()) await dispose()
+            childDisposers = []
+          }
+          const injection = {
+            async activate() {
+              await Promise.resolve()
+              if (disposed) return
+              callback({
+                sessionProjections: {
+                  register(definition) {
+                    if (options.invalidProjectionDisposer === true) return undefined
+                    projectionDefinitions.push(definition)
+                    let registered = true
+                    const unregister = () => {
+                      if (!registered) return
+                      registered = false
+                      const index = projectionDefinitions.indexOf(definition)
+                      if (index !== -1) projectionDefinitions.splice(index, 1)
+                    }
+                    childDisposers.push(unregister)
+                    return unregister
+                  },
+                },
+              })
+            },
+            async reload() {
+              await unload()
+              await this.activate()
+            },
+            async dispose() {
+              if (disposed) return
+              disposed = true
+              await unload()
+              const index = projectionInjections.indexOf(injection)
+              if (index !== -1) projectionInjections.splice(index, 1)
+            },
+          }
+          projectionInjections.push(injection)
+          void injection.activate()
+          return injection
+        }
         assert.deepEqual(services, ['settings'])
         settings.fiber ??= { state: 2 }
         callback(settings)
       },
     }),
   }
-  return { ctx, listeners, sections, cleanups, runtime, definition }
+  return {
+    ctx,
+    listeners,
+    sections,
+    cleanups,
+    runtime,
+    definition,
+    projectionDefinitions,
+    projectionInjections,
+  }
 }
 
 function cordisAgent(disposeGate = undefined, options = {}) {
@@ -287,12 +344,78 @@ async function openSessionWorker(host, agent) {
 
 test('settings kill switch leaves no runtime side effects when disabled', async () => {
   const scope = settingsScope({ enabled: false })
-  const { ctx, listeners, sections, cleanups, runtime } = hostContext(settingsContext(scope))
+  const {
+    ctx,
+    listeners,
+    sections,
+    cleanups,
+    runtime,
+    projectionDefinitions,
+    projectionInjections,
+  } = hostContext(settingsContext(scope))
   apply(ctx)
+  assert.deepEqual(projectionDefinitions, [])
+  assert.deepEqual(projectionInjections, [])
   assert.equal(Object.hasOwn(runtime, 'run'), false)
   assert.equal(listeners.size, 0)
   assert.equal(sections.length, 0)
   for (const cleanup of cleanups.reverse()) await cleanup()
+})
+
+test('degrades an incompatible session projection without disabling the runtime', async () => {
+  const scope = settingsScope({ enabled: true })
+  const host = hostContext(
+    settingsContext(scope),
+    [],
+    { invalidProjectionDisposer: true },
+  )
+  assert.doesNotThrow(() => apply(host.ctx))
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(scope.get().enabled, true)
+  assert.equal(Object.hasOwn(host.runtime, 'run'), true)
+  assert.ok(host.listeners.has('tools/execute'))
+  assert.ok(host.sections.some(section => section.name === 'tools:ptc-plus-repl'))
+  assert.deepEqual(host.projectionDefinitions, [])
+  assert.equal(host.projectionInjections.length, 1)
+  assert.match(
+    String(host.ctx.logger.warnings[0]?.[1]?.message),
+    /sessionProjections\.register did not return a disposer/,
+  )
+  for (const cleanup of host.cleanups.reverse()) await cleanup()
+  assert.equal(Object.hasOwn(host.runtime, 'run'), false)
+  assert.deepEqual(host.projectionInjections, [])
+})
+
+test('handles projection registration through the real asynchronous Cordis inject fiber', async (t) => {
+  const cordis = new CordisContext()
+  t.after(() => cordis.fiber.dispose())
+  let registerCalls = 0
+  const removeProjectionService = cordis.provide('sessionProjections', {
+    register() {
+      registerCalls += 1
+      return undefined
+    },
+  })
+  t.after(removeProjectionService)
+  const host = hostContext()
+  host.ctx.inject = cordis.inject.bind(cordis)
+
+  const activation = apply(host.ctx)
+  assert.equal(registerCalls, 0)
+  assert.equal(Object.hasOwn(host.runtime, 'run'), true)
+  await activation
+  await new Promise(resolve => setImmediate(resolve))
+
+  assert.equal(registerCalls, 1)
+  assert.equal(Object.hasOwn(host.runtime, 'run'), true)
+  assert.ok(host.listeners.has('tools/execute'))
+  assert.match(
+    String(host.ctx.logger.warnings[0]?.[1]?.message),
+    /sessionProjections\.register did not return a disposer/,
+  )
+
+  for (const cleanup of host.cleanups.reverse()) await cleanup()
+  assert.equal(Object.hasOwn(host.runtime, 'run'), false)
 })
 
 test('disabled settings can load on hosts without a TypeScript runtime', async () => {
@@ -330,8 +453,22 @@ test('settings kill switch installs and removes the runtime live', async () => {
     tipCooldownMessages: 3,
     tipEscalationFailures: 2,
   })
-  const { ctx, listeners, sections, cleanups, runtime } = hostContext(settingsContext(scope))
+  const {
+    ctx,
+    listeners,
+    sections,
+    cleanups,
+    runtime,
+    projectionDefinitions,
+    projectionInjections,
+  } = hostContext(settingsContext(scope))
   apply(ctx)
+  await new Promise(resolve => setImmediate(resolve))
+  assert.deepEqual(projectionDefinitions.map(definition => definition.key), ['ptcPlusRepl'])
+  assert.equal(projectionInjections.length, 1)
+  await projectionInjections[0].reload()
+  assert.deepEqual(projectionDefinitions.map(definition => definition.key), ['ptcPlusRepl'])
+  assert.equal(projectionInjections.length, 1)
   assert.equal(Object.hasOwn(runtime, 'run'), true)
   assert.ok(listeners.has('tools/execute'))
   assert.ok(sections.some(section => section.name === 'tools:ptc-plus-repl'))
@@ -341,20 +478,27 @@ test('settings kill switch installs and removes the runtime live', async () => {
   assert.equal(Object.hasOwn(runtime, 'run'), false)
   assert.equal(listeners.size, 0)
   assert.equal(sections.length, 0)
+  assert.deepEqual(projectionDefinitions, [])
+  assert.deepEqual(projectionInjections, [])
 
   scope.set({ ...scope.get(), enabled: true })
   await new Promise(resolve => setTimeout(resolve, 0))
   assert.equal(Object.hasOwn(runtime, 'run'), true)
   assert.ok(listeners.has('tools/execute'))
+  assert.deepEqual(projectionDefinitions.map(definition => definition.key), ['ptcPlusRepl'])
+  assert.equal(projectionInjections.length, 1)
 
   for (const cleanup of cleanups.reverse()) await cleanup()
   assert.equal(Object.hasOwn(runtime, 'run'), false)
+  assert.deepEqual(projectionDefinitions, [])
+  assert.deepEqual(projectionInjections, [])
 })
 
 test('late settings mount reconciles and detaches against composition config', async () => {
   const { ctx, listeners, sections, cleanups, runtime } = hostContext()
   let injectSettings
   ctx.inject = (services, callback) => {
+    if (services.length === 1 && services[0] === 'sessionProjections') return
     assert.deepEqual(services, ['settings'])
     injectSettings = callback
   }
@@ -382,7 +526,10 @@ test('late settings hydration applies persisted non-enabled configuration', asyn
   const { agent, definitions } = cordisAgent()
   const { ctx, cleanups } = hostContext(undefined, [agent])
   let injectSettings
-  ctx.inject = (_services, callback) => { injectSettings = callback }
+  ctx.inject = (services, callback) => {
+    if (services.length === 1 && services[0] === 'sessionProjections') return
+    injectSettings = callback
+  }
   apply(ctx)
   assert.equal(TEST_CORDIS_TOOL_NAMES.some(name => definitions.has(name)), false)
 

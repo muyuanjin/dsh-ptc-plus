@@ -50,9 +50,10 @@ function addPatternBindings(pattern, names) {
   walkPattern(pattern, node => names.add(node.name))
 }
 
-function addPatternDeclarations(pattern, declarations) {
+function addPatternDeclarations(pattern, declarations, kind = 'variable') {
   bindingNodes(pattern).forEach(node => declarations.push({
     name: node.name,
+    kind,
     span: declarationSpan(node),
   }))
 }
@@ -70,6 +71,7 @@ function topLevelDeclarations(body) {
       && statement.id !== null) {
       declarations.push({
         name: statement.id.name,
+        kind: statement.type === 'ClassDeclaration' ? 'class' : 'function',
         span: declarationSpan(statement.id),
       })
     }

@@ -13,6 +13,10 @@ import { resolveConfig } from './runtime-config.js'
 import { WorkerClient } from './worker-client.js'
 import { BindingCatalog, durabilityState, transitionDurability } from './session-state.js'
 import { SessionCellExecutor } from './session-cell-executor.js'
+import {
+  createReplMemorySnapshot,
+  unavailableReplMemorySnapshot,
+} from './repl-memory-projection.js'
 
 const WORKER_URL = new URL('./kernel-worker.js', import.meta.url)
 function recoveryDiagnostic(count) {
@@ -353,6 +357,18 @@ class SessionKernel {
     }
   }
 
+  replMemoryFor(journal) {
+    const tentative = this.tentatives.get(journal)
+    if (journal.status === 'discarded' || journal.status === 'volatile'
+      || journal.operations.some(operation => operation.action === 'restore')) {
+      return unavailableReplMemorySnapshot()
+    }
+    if (tentative === undefined) {
+      return createReplMemorySnapshot(this.bindingCatalog.snapshot())
+    }
+    return createReplMemorySnapshot(tentative.bindingCatalog.snapshot())
+  }
+
   finishStateOperations(operations, index, worker) {
     const transition = reduceStateOperations(this.history, operations, index)
     this.history.head = transition.head
@@ -487,6 +503,7 @@ export class SessionRuntime {
       journal,
       kernel,
       sessionId,
+      replMemory: kernel.replMemoryFor(journal),
       ...(result.recoveryBoundaries === undefined
         ? {}
         : { recoveryBoundaries: result.recoveryBoundaries }),

@@ -4,6 +4,7 @@ import { access, rm } from 'node:fs/promises'
 import { isAbsolute } from 'node:path'
 import test from 'node:test'
 import { Config } from '../index.js'
+import { REPL_MEMORY_META_KEY } from '../internal/repl-memory-projection.js'
 import { REWRITES_KEY, normalizeJournal } from '../internal/session-journal.js'
 import { SessionRuntime } from '../internal/session-runtime.js'
 import { decodeValue, encodeValue, renderValueWire } from '../internal/value-wire.js'
@@ -568,6 +569,54 @@ test('keeps optional rewrite metadata out of derived edit settlement', async (t)
   })
 })
 
+test('keeps malformed REPL memory metadata out of derived edit settlement', async (t) => {
+  const events = [{ type: 'turn/start', seq: 0, data: {} }]
+  const session = { id: 'edit-malformed-repl-memory', events }
+  const state = fixture()
+  t.after(() => state.dispose())
+  const agent = ptcAgent(session.id, session)
+  const requestSignal = new AbortController().signal
+  await state.assemble(
+    { sections: [], contexts: [], variables: {}, tools: [state.runCodeDefinition] },
+    { agent, scope: agent, signal: requestSignal },
+  )
+  const code = 'let memorySafeEdit = 1; return memorySafeEdit'
+  const setup = await state.runDurable(session.id, code, {}, { session, callId: 'memory-setup' })
+  appendRunCodeEvents(events, 'memory-setup', code, setup)
+
+  const execute = state.ctx.tools.execute
+  state.ctx.tools.execute = async (options) => {
+    const result = await execute(options)
+    if (options.name !== 'run_code' || !String(options.callId).endsWith(':derived')) return result
+    return {
+      ...result,
+      meta: { ...result.meta, [REPL_MEMORY_META_KEY]: { status: 'corrupt' } },
+    }
+  }
+  const args = { edits: [{ old_string: '1', new_string: '2' }] }
+  const callSeq = appendEditCall(events, 'memory-edit', args)
+  const edited = await state.ctx.tools.execute({
+    callId: 'memory-edit',
+    name: 'edit_run_code',
+    arguments: args,
+    agent,
+    signal: requestSignal,
+  })
+  assert.equal(edited.isError, false)
+  assert.deepEqual(edited.value, { edited: true, logs: [], value: 2 })
+  assert.equal(Object.hasOwn(edited.meta, REPL_MEMORY_META_KEY), false)
+  assert.deepEqual(edited.meta.dshPtcPlusEdit, { targetCallSeq: 1 })
+  appendEditResult(events, 'memory-edit', callSeq, edited.meta)
+  state.ctx.tools.execute = execute
+  await state.dispose()
+
+  const restored = fixture()
+  t.after(() => restored.dispose())
+  assert.deepEqual(await restored.run(session.id, 'return memorySafeEdit', {}, { session }), {
+    logs: [], value: 2,
+  })
+})
+
 test('fails edit execution at each owned boundary without changing the target', async (t) => {
   const events = [{ type: 'turn/start', seq: 0, data: {} }]
   const session = { id: 'edit-boundaries', events }
@@ -670,9 +719,13 @@ test('fails edit execution at each owned boundary without changing the target', 
     code: 'return 2', description: 'Edit and run TypeScript cell',
   })
   assert.deepEqual(primitiveMeta[REWRITES_KEY], rewriteFacts)
+  assert.deepEqual(primitiveMeta[REPL_MEMORY_META_KEY], run.meta[REPL_MEMORY_META_KEY])
+  assert.equal(primitiveMeta[REPL_MEMORY_META_KEY].entries.every(entry => (
+    Object.keys(entry).sort().join(',') === 'kind,name'
+  )), true)
   assert.equal(Object.hasOwn(primitiveMeta, 'foreignOwnerFact'), false)
   assert.deepEqual(Object.keys(primitiveMeta).sort(), [
-    'dshPtcPlus', 'dshPtcPlusDerivedRun', 'dshPtcPlusEdit', REWRITES_KEY,
+    'dshPtcPlus', 'dshPtcPlusDerivedRun', 'dshPtcPlusEdit', REPL_MEMORY_META_KEY, REWRITES_KEY,
   ].sort())
   const blockedArgs = { edits: [{ old_string: '1', new_string: '3' }] }
   const blockedCallSeq = appendEditCall(events, 'pre-persistence-window', blockedArgs)

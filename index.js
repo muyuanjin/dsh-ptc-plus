@@ -17,6 +17,7 @@ import {
   SETTINGS_NAMESPACE,
 } from './internal/config-spec.js'
 import { installSettingsSectionCompat } from './internal/settings-compat.js'
+import { replMemoryProjection } from './internal/repl-memory-projection.js'
 import * as dshSettings from '@deepseek-ai/dsh-settings'
 
 const INSTALL_CLEANUP = Symbol('ptc-plus install cleanup')
@@ -151,6 +152,25 @@ function installPtCRuntime(ctx, resolvedConfig, toolSchemasForAgent, sessionId) 
   }
   const cancelCordisActivation = () => pendingCordisActivation?.cancel()
   try {
+    if (typeof ctx.inject === 'function') {
+      const projectionInjection = ctx.inject(['sessionProjections'], (scope) => {
+        if (disposed) return
+        try {
+          const unregister = scope.sessionProjections?.register?.(replMemoryProjection)
+          if (typeof unregister !== 'function') {
+            throw new Error('ptc-plus: sessionProjections.register did not return a disposer')
+          }
+          disposers.push(unregister)
+        } catch (error) {
+          ctx.logger?.warn?.('ptc-plus: REPL memory projection unavailable', error)
+        }
+      })
+      if (typeof projectionInjection === 'function') {
+        disposers.push(projectionInjection)
+      } else if (typeof projectionInjection?.dispose === 'function') {
+        disposers.push(() => projectionInjection.dispose())
+      }
+    }
     cordisTools = activeConfig.cordisToolsEnabled
       ? createCordisToolsOwner(ctx)
       : undefined

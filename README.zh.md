@@ -119,7 +119,7 @@ import { readFile } from 'node:fs/promises'
 
 这是一次有随机性的配对观测，不是性能保证。预设机器预算在 PTC Plus 的 18 个 session 中有 2 个超限，未启用 PTC Plus 的 18 个 session 中有 5 个超限，因此整组矩阵没有通过 machine acceptance。Token 流量包含 input、cache-read、cache-write 和 output token。夹具、配对规则、指标与盲评流程见[评测说明](docs/evaluation.md)。
 
-![被拒的 run_code 与随后的 edit_run_code 修复调用](assets/ptc-plus-repair.png)
+![被拒的 run_code 与随后的 edit_run_code 修复调用](assets/ptc-plus-repair-zh.png)
 
 *真实会话：长代码与真实的 `edit_run_code` 修复调用；修复从未重发源码。*
 

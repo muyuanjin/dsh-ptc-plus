@@ -119,7 +119,7 @@ The module-syntax task separated the two arms most clearly. PTC Plus finished bo
 
 This is one stochastic paired observation, not a performance guarantee. Machine budgets were exceeded in 2 of the 18 PTC Plus sessions and 5 of the 18 sessions without PTC Plus, so the matrix as a whole did not pass machine acceptance. Token traffic includes input, cache-read, cache-write, and output tokens. The fixture, pairing rules, metrics, and blind-review protocol are documented in [Evaluation](docs/evaluation.md).
 
-![Rejected run_code and the follow-up edit_run_code repair](assets/ptc-plus-repair.png)
+![Rejected run_code and the follow-up edit_run_code repair](assets/ptc-plus-repair-en.png)
 
 *A real session: the long code and the truthful `edit_run_code` repair call. The repair never resends the source.*
 

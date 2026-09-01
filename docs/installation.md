@@ -23,7 +23,7 @@ The optional `cordisToolsEnabled` integration requires the current DSH installat
 Use this form after the selected version is available from the npm registry:
 
 ```sh
-dsh plugin --profile <profile> add dsh-ptc-plus@0.2.3
+dsh plugin --profile <profile> add dsh-ptc-plus@0.2.4
 dsh --profile <profile> --dump-config
 ```
 
@@ -60,7 +60,7 @@ pnpm dsh --profile <profile> --dump-config
 
 ```sh
 npm pack
-dsh plugin --profile <profile> add /absolute/path/to/dsh-ptc-plus-0.2.3.tgz
+dsh plugin --profile <profile> add /absolute/path/to/dsh-ptc-plus-0.2.4.tgz
 dsh --profile <profile> --dump-config
 ```
 
@@ -79,4 +79,4 @@ dsh plugin add github:muyuanjin/dsh-ptc-plus#main
 dsh --dump-config
 ```
 
-After an npm release, the package spec may instead be `dsh-ptc-plus@0.2.3`. For a local package, use its absolute tarball path. Restart DSH Desktop after installation. Linux Desktop is not a current DSH Desktop release target; use DSH CLI/Web on Linux.
+After an npm release, the package spec may instead be `dsh-ptc-plus@0.2.4`. For a local package, use its absolute tarball path. Restart DSH Desktop after installation. Linux Desktop is not a current DSH Desktop release target; use DSH CLI/Web on Linux.

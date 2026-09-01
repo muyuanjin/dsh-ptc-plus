@@ -1,6 +1,6 @@
 {
   "name": "dsh-ptc-plus",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "A session-bound agent-native REPL for DeepSeek Harness PTC mode.",
   "type": "module",
   "main": "./index.js",

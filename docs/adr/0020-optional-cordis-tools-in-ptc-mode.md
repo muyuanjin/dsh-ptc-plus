@@ -26,7 +26,7 @@ Cordis definitions and Runs are process-local, while PTC journals replay every s
 
 ## Alternatives Considered
 
-1. Add the Cordis row to the PTC preset. Rejected: PTC Plus is installed as a host plugin and does not own or fork DSH's shipped preset files; the operator asked for a plugin setting.
+1. Add the Cordis row to the PTC preset. Rejected: PTC Plus is installed as a host plugin and does not own or fork DSH's shipped preset files; a plugin setting keeps the optional mount within the plugin's ownership boundary.
 2. Register Cordis tools during `system-prompt/assemble` and continue with the existing assembly. Rejected: provider and schema collection has already happened, so waiting alone would still omit the tools. The selected barrier instead discards that stale snapshot and asks DSH's public assembler to recollect after the owner-controlled mount is ready.
 3. Copy the tool definitions or their current names. Rejected: DSH owns their schemas, guidance, lifecycle, authority, and compatibility. Even a names-only completeness list would drift when DSH evolves and create a second contract.
 4. Enable the tools by default. Rejected: the tools can execute model-written plugins against the live runtime and carry a fixed schema cost. That trust and context expansion must be explicit.

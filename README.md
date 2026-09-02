@@ -135,6 +135,10 @@ import { readFile } from 'node:fs/promises'
 
 插件启用且会话使用 `ptc` preset 时，会话头部显示绿色 `PTC Plus` 标识。悬浮、聚焦或点击后可以查看下一 cell 可复用的变量、函数、类和 import，并展开其有界定义源码。卡片只读取已提交的源码，不读取运行时值、不触发 getter，也不执行代码。正文中的 `run_code` 与 `edit_run_code` 仍可展开查看源码和结果；只有结果 metadata 能证明某项功能确实生效时，预览才显示对应标记。
 
+![REPL 可复用绑定](assets/ptc-plus-bindings-zh.png)
+
+*真实会话：“REPL 可复用绑定”卡片展示下一 cell 可直接复用的 binding。*
+
 所有设置都会实时应用，并保留已有 binding。已提交的 cell 在完整执行期间使用同一份配置；执行期间发生的更新用于随后提交的 cell。更新失败会回滚。Node 在 worker 创建时固定 V8 old-generation 上限，因此活动 session worker 存在时修改这一项会被拒绝，释放 session 后才能修改。启用失败时，运行时会回滚并把设置保持为停用。
 
 `cordisToolsEnabled` 默认关闭。打开后，DSH 官方 Cordis 工具、owner guidance 与精确的 `cordis-plugin-development` companion Skill 会作为一个整体加入 PTC agent；同一 shipped preset 目录中的其他 Skill 不会随之暴露。关闭时这三项也会一起移除；它不切换 preset，也不改变 `run_code`/`edit_run_code` 的直接调用面。Cordis 能在实时 DSH runtime 中运行模型编写的插件，开启它需要接受 shell 级信任。

@@ -135,6 +135,10 @@ Settings are separated into common and compatibility controls, optional capabili
 
 In an enabled `ptc` session, the header shows a green `PTC Plus` indicator. Hover, focus, or click it to inspect the variables, functions, classes, and imports available to the next cell and expand their bounded definition source. The card reads submitted source only; it does not inspect runtime values, trigger getters, or execute code. `run_code` and `edit_run_code` remain expandable in the conversation body. A feature marker appears only when result metadata proves that the feature affected that execution.
 
+![Reusable REPL bindings](assets/ptc-plus-bindings-en.png)
+
+*A real session: “Reusable REPL bindings” shows the bindings available to the next cell.*
+
 Every setting applies live and keeps existing bindings. A submitted cell uses one configuration for its complete execution; changes made while it runs apply to cells submitted afterward. A failed change rolls back. Node fixes a worker's V8 old-generation limit when the worker starts, so that one setting is rejected while a session worker is active and can be changed after the session is disposed. A failed enable is rolled back and persisted as disabled.
 
 `cordisToolsEnabled` is off by default. Turning it on atomically adds DSH's official Cordis tools, owner guidance, and exactly the `cordis-plugin-development` companion Skill to PTC agents; sibling Skills in the shipped preset are not exposed. Turning it off removes all three. It neither switches presets nor changes the direct `run_code`/`edit_run_code` surface. Cordis runs model-written plugins against the live DSH runtime, so enabling it requires shell-level trust.

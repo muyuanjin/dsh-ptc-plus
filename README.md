@@ -127,6 +127,8 @@ import { readFile } from 'node:fs/promises'
 
 打开 **设置 → 插件配置** 使用上面的设置卡片。卡片跟随 DSH 界面语言：界面设为 English 时显示英文，设为中文时显示中文。`enabled` 是即时生效的总开关：关闭后只保留卡片和这个开关，开启后恢复 session runtime 以及 `run_code`/`edit_run_code`。
 
+设置按常用与兼容性、可选能力、高级行为和资源限制分区；需要主动决策的选项位于前面，资源限制位于后面。
+
 设置中的“使用 PTC Plus 增强工具卡片”默认开启。开启时通过 DSH 公共 keyed tool-view 接口渲染增强 `run_code` / `edit_run_code` 卡片，可用时复用 Host primitive，缺失时自动降级；关闭时立即交还 DSH 原生 generic row，用户可以直接使用 Host 自己的最新视觉和交互。
 
 `autoDescribeRunCode` 默认开启。外层 `run_code.description` 缺失时，执行桥派生固定摘要供 DSH 校验，并只把持久副本写入展示 metadata；原始调用参数、已有摘要、cell 源码和嵌套 native 工具参数都不会被改写。关闭后仍由 DSH 严格校验外层摘要。

@@ -3,7 +3,7 @@ import { Context as CordisContext } from '@deepseek-ai/cordis'
 import { dirname, join } from 'node:path'
 import test from 'node:test'
 import { apply, Config } from '../index.js'
-import { CONFIG_FIELDS, SETTINGS_NAMESPACE } from '../internal/config-spec.js'
+import { CONFIG_FIELDS, CONFIG_GROUPS, SETTINGS_NAMESPACE } from '../internal/config-spec.js'
 import { resolveConfig } from '../internal/runtime-config.js'
 
 const TEST_CORDIS_TOOL_NAMES = Object.freeze([
@@ -1220,15 +1220,15 @@ test('config schema defaults expose the settings switches', async () => {
   const expectedOrder = [
     'enabled',
     'enhancedToolView',
-    'canonicalizeToolCalls',
     'autoDescribeRunCode',
+    'canonicalizeToolCalls',
+    'cordisToolsEnabled',
     'looseTopLevelRedeclarations',
     'autoRewriteImports',
     'autoStripExports',
     'autoSplitRedeclarations',
     'durableReplay',
     'tipsEnabled',
-    'cordisToolsEnabled',
     'computeMs',
     'maxWallMs',
     'maxOldGenerationSizeMb',
@@ -1242,27 +1242,19 @@ test('config schema defaults expose the settings switches', async () => {
     'tipEscalationFailures',
   ]
   assert.deepEqual(CONFIG_FIELDS.map(field => field.key), expectedOrder)
-  const firstInteger = CONFIG_FIELDS.findIndex(field => field.type === 'integer')
-  assert.ok(CONFIG_FIELDS.slice(0, firstInteger).every(field => field.type === 'boolean'))
-  assert.ok(CONFIG_FIELDS.slice(firstInteger).every(field => field.type === 'integer'))
-
-  const featuredSwitches = CONFIG_FIELDS.filter(field => [
-    'enhancedToolView',
-    'autoDescribeRunCode',
-    'cordisToolsEnabled',
-  ].includes(field.key))
+  assert.deepEqual(CONFIG_GROUPS.map(group => group.key), ['core', 'optional', 'advanced', 'limits'])
+  assert.deepEqual(CONFIG_GROUPS.flatMap(group => group.fields), expectedOrder)
+  const fieldByKey = new Map(CONFIG_FIELDS.map(field => [field.key, field]))
+  for (const group of CONFIG_GROUPS) {
+    assert.ok(group.fields.every(key => fieldByKey.has(key)))
+  }
+  const featuredSwitches = CONFIG_GROUPS[0].fields
+    .map(key => fieldByKey.get(key))
+    .filter(field => field.key !== 'enabled')
   assert.deepEqual(
     featuredSwitches.map(field => field.key),
-    ['enhancedToolView', 'autoDescribeRunCode', 'cordisToolsEnabled'],
+    ['enhancedToolView', 'autoDescribeRunCode', 'canonicalizeToolCalls'],
   )
-  const displayWidth = value => Array.from(value).reduce(
-    (width, character) => width + (character.codePointAt(0) <= 0xff ? 1 : 2),
-    0,
-  )
-  for (const property of ['label', 'labelEn', 'description', 'descriptionEn']) {
-    const widths = featuredSwitches.map(field => displayWidth(field[property]))
-    assert.ok(widths.every((width, index) => index === 0 || widths[index - 1] <= width))
-  }
   const defaults = await Config['~standard'].validate({})
   assert.equal(defaults.value.enabled, true)
   assert.equal(defaults.value.enhancedToolView, true)

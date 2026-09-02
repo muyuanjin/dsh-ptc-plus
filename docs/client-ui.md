@@ -5,7 +5,7 @@ PTC Plus 在 DSH Web/Desktop 的 Settings → Plugin configuration 中提供**�
 ## 设置命名空间
 
 Host half 通过 DSH 公共 `settings` 服务注册命名空间 `ptc-plus`。字段清单、默认值和校验来自 `internal/config-spec.js`，
-由 `index.js` 的 `Config` schema 与设置注册共用；client half 构建时把同一份字段清单打进 bundle，不在 UI 中复制默认值。卡片先连续显示布尔开关，再连续显示数值输入。
+由 `index.js` 的 `Config` schema 与设置注册共用；client half 构建时把同一份字段清单打进 bundle，不在 UI 中复制默认值。卡片按“常用与兼容性”“可选能力”“高级行为”“资源限制”分区显示，用户需要主动决策的选项位于前面。
 
 ## 可用设置
 
@@ -13,10 +13,9 @@ Host half 通过 DSH 公共 `settings` 服务注册命名空间 `ptc-plus`。字
 | --- | --- | --- |
 | 开关 | `enabled` | 关闭后不注册 `run_code`/`edit_run_code`、不修改 system prompt、不创建 session runtime；只保留设置 UI。 |
 | 展示 | `enhancedToolView` | 默认开启；关闭后注销 PTC Plus 的两个 keyed tool view，恢复 DSH 原生 generic row。 |
-| Transport | `canonicalizeToolCalls` / `autoDescribeRunCode` | 默认开启；修复 schema 可唯一确认的顶层 native 工具误调用，并为缺少外层摘要的 `run_code` 请求生成固定 UI 摘要。 |
-| REPL | `looseTopLevelRedeclarations` / `autoRewriteImports` / `autoStripExports` / `autoSplitRedeclarations` / `durableReplay` | 默认开启；控制跨 cell 重声明、模块语法适配与 worker 重启后的状态恢复。 |
-| 提示 | `tipsEnabled` | 默认开启；在符合条件的重复失败后显示恢复提示。 |
-| Cordis | `cordisToolsEnabled` | 默认关闭；开启后为 PTC agent 加入官方 Cordis 工具、指引与精确的 `cordis-plugin-development` companion Skill，不发布同目录 sibling。 |
+| 常用与兼容性 | `autoDescribeRunCode` / `canonicalizeToolCalls` | 默认开启；为缺少外层摘要的 `run_code` 请求生成固定 UI 摘要，并修复 schema 可唯一确认的顶层 native 工具误调用。 |
+| 可选能力 | `cordisToolsEnabled` | 默认关闭；开启后为 PTC agent 加入官方 Cordis 工具、指引与精确的 `cordis-plugin-development` companion Skill，不发布同目录 sibling。 |
+| 高级行为 | `looseTopLevelRedeclarations` / `autoRewriteImports` / `autoStripExports` / `autoSplitRedeclarations` / `durableReplay` / `tipsEnabled` | 默认开启；控制跨 cell 重声明、模块语法适配、worker 重启后的状态恢复与失败提示。 |
 | 计算 | `computeMs` / `maxWallMs` | 单 cell CPU 与总耗时预算。 |
 | Worker | `maxOldGenerationSizeMb` / `maxNestedRunCodeDepth` | kernel worker 内存与嵌套执行深度。 |
 | 输出 | `maxOutputBytes` | 单 cell 日志与返回结果的合计字节上限。 |

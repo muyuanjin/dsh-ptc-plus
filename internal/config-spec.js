@@ -30,6 +30,15 @@ export const CONFIG_FIELDS = Object.freeze([
     descriptionEn: 'When enabled, PTC Plus renders the tool cards; when disabled, run_code and edit_run_code use DSH native tool cards.',
   },
   {
+    key: 'autoDescribeRunCode',
+    type: 'boolean',
+    default: true,
+    label: '自动补全缺失的 run_code 摘要',
+    labelEn: 'Auto-fill missing run_code summaries',
+    description: '缺少外层摘要时生成固定的 UI 摘要；原始调用参数、已有摘要、代码和嵌套 native 工具参数保持不变。',
+    descriptionEn: 'Adds a fixed UI summary when the outer summary is missing; original call arguments, existing summaries, code, and nested native-tool arguments remain unchanged.',
+  },
+  {
     key: 'canonicalizeToolCalls',
     type: 'boolean',
     default: true,
@@ -39,13 +48,13 @@ export const CONFIG_FIELDS = Object.freeze([
     descriptionEn: 'Repairs a top-level native tool mis-call only when the current schema uniquely identifies the target and validates its arguments.',
   },
   {
-    key: 'autoDescribeRunCode',
+    key: 'cordisToolsEnabled',
     type: 'boolean',
-    default: true,
-    label: '自动补全缺失的 run_code 摘要',
-    labelEn: 'Auto-fill missing run_code summaries',
-    description: '缺少外层摘要时生成固定的 UI 摘要；原始调用参数、已有摘要、代码和嵌套 native 工具参数保持不变。',
-    descriptionEn: 'Adds a fixed UI summary when the outer summary is missing; original call arguments, existing summaries, code, and nested native-tool arguments remain unchanged.',
+    default: false,
+    label: '在 PTC 模式中启用官方 Cordis 工具',
+    labelEn: 'Enable official Cordis tools in PTC mode',
+    description: '开启后，PTC agent 可使用官方 Cordis 工具、配套指引和开发 Skill；关闭后移除这些能力。Cordis 工具以 DSH 进程权限运行。',
+    descriptionEn: 'When enabled, PTC agents can use the official Cordis tools, guidance, and development Skill; disabling removes them. Cordis tools run with the DSH process permissions.',
   },
   {
     key: 'looseTopLevelRedeclarations',
@@ -100,15 +109,6 @@ export const CONFIG_FIELDS = Object.freeze([
     labelEn: 'Enable failure recovery tips',
     description: '在符合条件的失败后显示有冷却间隔的恢复提示。',
     descriptionEn: 'Shows recovery tips with a cooldown after qualifying failures.',
-  },
-  {
-    key: 'cordisToolsEnabled',
-    type: 'boolean',
-    default: false,
-    label: '在 PTC 模式中启用官方 Cordis 工具',
-    labelEn: 'Enable official Cordis tools in PTC mode',
-    description: '开启后，PTC agent 可使用官方 Cordis 工具、配套指引和开发 Skill；关闭后移除这些能力。Cordis 工具以 DSH 进程权限运行。',
-    descriptionEn: 'When enabled, PTC agents can use the official Cordis tools, guidance, and development Skill; disabling removes them. Cordis tools run with the DSH process permissions.',
   },
   {
     key: 'computeMs',
@@ -230,6 +230,53 @@ export const CONFIG_FIELDS = Object.freeze([
     labelEn: 'Detailed recovery tip threshold (failures)',
     description: '连续失败达到此次数后显示更详细的恢复提示。',
     descriptionEn: 'After this many consecutive failures, a more detailed recovery tip is shown.',
+  },
+])
+
+/** Presentation groups keep high-attention decisions separate from advanced policy and limits. */
+export const CONFIG_GROUPS = Object.freeze([
+  {
+    key: 'core',
+    label: '常用与兼容性',
+    labelEn: 'Common and compatibility',
+    fields: Object.freeze(['enabled', 'enhancedToolView', 'autoDescribeRunCode', 'canonicalizeToolCalls']),
+  },
+  {
+    key: 'optional',
+    label: '可选能力',
+    labelEn: 'Optional capabilities',
+    fields: Object.freeze(['cordisToolsEnabled']),
+  },
+  {
+    key: 'advanced',
+    label: '高级行为',
+    labelEn: 'Advanced behavior',
+    fields: Object.freeze([
+      'looseTopLevelRedeclarations',
+      'autoRewriteImports',
+      'autoStripExports',
+      'autoSplitRedeclarations',
+      'durableReplay',
+      'tipsEnabled',
+    ]),
+  },
+  {
+    key: 'limits',
+    label: '资源限制',
+    labelEn: 'Resource limits',
+    fields: Object.freeze([
+      'computeMs',
+      'maxWallMs',
+      'maxOldGenerationSizeMb',
+      'maxNestedRunCodeDepth',
+      'maxOutputBytes',
+      'maxValueNodes',
+      'maxValueEdges',
+      'maxValueArrayLength',
+      'maxValueBigIntDigits',
+      'tipCooldownMessages',
+      'tipEscalationFailures',
+    ]),
   },
 ])
 

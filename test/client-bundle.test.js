@@ -4,7 +4,7 @@ import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 import { runInNewContext } from 'node:vm'
 import test from 'node:test'
-import { CONFIG_FIELDS, SETTINGS_NAMESPACE } from '../internal/config-spec.js'
+import { CONFIG_FIELDS, CONFIG_GROUPS, SETTINGS_NAMESPACE } from '../internal/config-spec.js'
 import assert from 'node:assert/strict'
 
 const require = createRequire(import.meta.url)
@@ -220,6 +220,10 @@ test('settings, header indicator, and tool rows follow the DSH locale dictionari
     assert.equal(dicts.en[`${field.key}.description`] ?? '', field.descriptionEn)
   }
   assert.equal(dicts.en['card.description'], 'The session-bound TypeScript REPL for PTC mode.')
+  for (const group of CONFIG_GROUPS) {
+    assert.equal(dicts.zh[`group.${group.key}`], group.label)
+    assert.equal(dicts.en[`group.${group.key}`], group.labelEn)
+  }
 
   const [card] = slotEntries.filter(({ options }) => options.name === 'settings.plugin.item')
   const [indicator] = slotEntries.filter(({ options }) => options.name === 'conversation.session.header.actions')

@@ -127,6 +127,8 @@ This is one stochastic paired observation, not a performance guarantee. Machine 
 
 Open **Settings → Plugin configuration** to use the card shown above. The card follows the DSH UI language: it renders in English when the harness is set to English, and in Chinese when set to Chinese. The `enabled` switch is live: turning it off leaves only the card and that switch, while turning it on restores the session runtime and `run_code`/`edit_run_code`.
 
+Settings are separated into common and compatibility controls, optional capabilities, advanced behavior, and resource limits. Decisions that need user attention appear before resource limits.
+
 The “Use enhanced PTC Plus tool cards” setting is on by default. When enabled, PTC Plus renders enhanced `run_code` / `edit_run_code` cards through DSH's public keyed tool-view surface, reusing available Host primitives and degrading when a primitive is unavailable. When disabled, it immediately hands the keyed views back to DSH's native generic row so users can use the Host's latest visual and interaction updates.
 
 `autoDescribeRunCode` is on by default. When the outer `run_code.description` is missing, the execution bridge derives the fixed summary required by the DSH validator and persists it only as presentation metadata; the original call arguments, existing summaries, cell source, and nested native-tool arguments are never rewritten. When disabled, DSH continues to enforce the outer summary field strictly.

@@ -22,6 +22,15 @@
       descriptionEn: "When enabled, PTC Plus renders the tool cards; when disabled, run_code and edit_run_code use DSH native tool cards."
     },
     {
+      key: "autoDescribeRunCode",
+      type: "boolean",
+      default: true,
+      label: "\u81EA\u52A8\u8865\u5168\u7F3A\u5931\u7684 run_code \u6458\u8981",
+      labelEn: "Auto-fill missing run_code summaries",
+      description: "\u7F3A\u5C11\u5916\u5C42\u6458\u8981\u65F6\u751F\u6210\u56FA\u5B9A\u7684 UI \u6458\u8981\uFF1B\u539F\u59CB\u8C03\u7528\u53C2\u6570\u3001\u5DF2\u6709\u6458\u8981\u3001\u4EE3\u7801\u548C\u5D4C\u5957 native \u5DE5\u5177\u53C2\u6570\u4FDD\u6301\u4E0D\u53D8\u3002",
+      descriptionEn: "Adds a fixed UI summary when the outer summary is missing; original call arguments, existing summaries, code, and nested native-tool arguments remain unchanged."
+    },
+    {
       key: "canonicalizeToolCalls",
       type: "boolean",
       default: true,
@@ -31,13 +40,13 @@
       descriptionEn: "Repairs a top-level native tool mis-call only when the current schema uniquely identifies the target and validates its arguments."
     },
     {
-      key: "autoDescribeRunCode",
+      key: "cordisToolsEnabled",
       type: "boolean",
-      default: true,
-      label: "\u81EA\u52A8\u8865\u5168\u7F3A\u5931\u7684 run_code \u6458\u8981",
-      labelEn: "Auto-fill missing run_code summaries",
-      description: "\u7F3A\u5C11\u5916\u5C42\u6458\u8981\u65F6\u751F\u6210\u56FA\u5B9A\u7684 UI \u6458\u8981\uFF1B\u539F\u59CB\u8C03\u7528\u53C2\u6570\u3001\u5DF2\u6709\u6458\u8981\u3001\u4EE3\u7801\u548C\u5D4C\u5957 native \u5DE5\u5177\u53C2\u6570\u4FDD\u6301\u4E0D\u53D8\u3002",
-      descriptionEn: "Adds a fixed UI summary when the outer summary is missing; original call arguments, existing summaries, code, and nested native-tool arguments remain unchanged."
+      default: false,
+      label: "\u5728 PTC \u6A21\u5F0F\u4E2D\u542F\u7528\u5B98\u65B9 Cordis \u5DE5\u5177",
+      labelEn: "Enable official Cordis tools in PTC mode",
+      description: "\u5F00\u542F\u540E\uFF0CPTC agent \u53EF\u4F7F\u7528\u5B98\u65B9 Cordis \u5DE5\u5177\u3001\u914D\u5957\u6307\u5F15\u548C\u5F00\u53D1 Skill\uFF1B\u5173\u95ED\u540E\u79FB\u9664\u8FD9\u4E9B\u80FD\u529B\u3002Cordis \u5DE5\u5177\u4EE5 DSH \u8FDB\u7A0B\u6743\u9650\u8FD0\u884C\u3002",
+      descriptionEn: "When enabled, PTC agents can use the official Cordis tools, guidance, and development Skill; disabling removes them. Cordis tools run with the DSH process permissions."
     },
     {
       key: "looseTopLevelRedeclarations",
@@ -92,15 +101,6 @@
       labelEn: "Enable failure recovery tips",
       description: "\u5728\u7B26\u5408\u6761\u4EF6\u7684\u5931\u8D25\u540E\u663E\u793A\u6709\u51B7\u5374\u95F4\u9694\u7684\u6062\u590D\u63D0\u793A\u3002",
       descriptionEn: "Shows recovery tips with a cooldown after qualifying failures."
-    },
-    {
-      key: "cordisToolsEnabled",
-      type: "boolean",
-      default: false,
-      label: "\u5728 PTC \u6A21\u5F0F\u4E2D\u542F\u7528\u5B98\u65B9 Cordis \u5DE5\u5177",
-      labelEn: "Enable official Cordis tools in PTC mode",
-      description: "\u5F00\u542F\u540E\uFF0CPTC agent \u53EF\u4F7F\u7528\u5B98\u65B9 Cordis \u5DE5\u5177\u3001\u914D\u5957\u6307\u5F15\u548C\u5F00\u53D1 Skill\uFF1B\u5173\u95ED\u540E\u79FB\u9664\u8FD9\u4E9B\u80FD\u529B\u3002Cordis \u5DE5\u5177\u4EE5 DSH \u8FDB\u7A0B\u6743\u9650\u8FD0\u884C\u3002",
-      descriptionEn: "When enabled, PTC agents can use the official Cordis tools, guidance, and development Skill; disabling removes them. Cordis tools run with the DSH process permissions."
     },
     {
       key: "computeMs",
@@ -222,6 +222,51 @@
       labelEn: "Detailed recovery tip threshold (failures)",
       description: "\u8FDE\u7EED\u5931\u8D25\u8FBE\u5230\u6B64\u6B21\u6570\u540E\u663E\u793A\u66F4\u8BE6\u7EC6\u7684\u6062\u590D\u63D0\u793A\u3002",
       descriptionEn: "After this many consecutive failures, a more detailed recovery tip is shown."
+    }
+  ]);
+  var CONFIG_GROUPS = Object.freeze([
+    {
+      key: "core",
+      label: "\u5E38\u7528\u4E0E\u517C\u5BB9\u6027",
+      labelEn: "Common and compatibility",
+      fields: Object.freeze(["enabled", "enhancedToolView", "autoDescribeRunCode", "canonicalizeToolCalls"])
+    },
+    {
+      key: "optional",
+      label: "\u53EF\u9009\u80FD\u529B",
+      labelEn: "Optional capabilities",
+      fields: Object.freeze(["cordisToolsEnabled"])
+    },
+    {
+      key: "advanced",
+      label: "\u9AD8\u7EA7\u884C\u4E3A",
+      labelEn: "Advanced behavior",
+      fields: Object.freeze([
+        "looseTopLevelRedeclarations",
+        "autoRewriteImports",
+        "autoStripExports",
+        "autoSplitRedeclarations",
+        "durableReplay",
+        "tipsEnabled"
+      ])
+    },
+    {
+      key: "limits",
+      label: "\u8D44\u6E90\u9650\u5236",
+      labelEn: "Resource limits",
+      fields: Object.freeze([
+        "computeMs",
+        "maxWallMs",
+        "maxOldGenerationSizeMb",
+        "maxNestedRunCodeDepth",
+        "maxOutputBytes",
+        "maxValueNodes",
+        "maxValueEdges",
+        "maxValueArrayLength",
+        "maxValueBigIntDigits",
+        "tipCooldownMessages",
+        "tipEscalationFailures"
+      ])
     }
   ]);
   var CONFIG_DEFAULTS = Object.freeze(
@@ -676,7 +721,7 @@
 .ptcPlusHeader:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(38,49,72,.06))}.ptcPlusHeader:focus-visible,.ptcPlusButton:focus-visible,.ptcPlusInput:focus-visible{outline:2px solid var(--dsw-alias-interactive-primary,#4d6bfe);outline-offset:-2px}
 .ptcPlusHeadText{display:flex;flex:1;min-width:0;flex-direction:column;align-items:flex-start;gap:1px}.ptcPlusName{font-size:14px;font-weight:600;line-height:20px}.ptcPlusDescription{color:var(--dsw-alias-label-tertiary,#74777d);font-size:12px;line-height:18px;overflow-wrap:anywhere}.ptcPlusStatus{display:inline-flex;align-items:center;flex:none;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:500;line-height:16px}.ptcPlusStatus[data-enabled=true]{color:var(--dsw-alias-state-success-primary,#16794f);background:var(--dsw-alias-state-success-tertiary,#e7f7ef)}.ptcPlusStatus[data-enabled=false]{color:var(--dsw-alias-label-tertiary,#74777d);background:var(--dsw-alias-interactive-bg-hover,rgba(38,49,72,.06))}
 .ptcPlusChevron{display:flex;color:var(--dsw-alias-label-tertiary,#74777d);transition:transform .18s ease}.ptcPlusChevron[data-open=true]{transform:rotate(180deg)}.ptcPlusBody{display:grid;grid-template-rows:0fr;transition:grid-template-rows .2s ease}.ptcPlusBody[data-open=true]{grid-template-rows:1fr}.ptcPlusBodyInner{min-height:0;overflow:hidden}.ptcPlusFields{margin:0 16px;padding:8px 0 12px;border-top:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1))}
-.ptcPlusRow{display:flex;align-items:center;gap:12px;min-height:48px;border-top:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1))}.ptcPlusRow:first-child{border-top:0}.ptcPlusMain{flex:1;min-width:0}.ptcPlusLabel{font-size:14px;font-weight:500;line-height:20px}.ptcPlusDetail,.ptcPlusMessage{color:var(--dsw-alias-label-tertiary,#74777d);font-size:12px;line-height:18px;overflow-wrap:anywhere}.ptcPlusInput{box-sizing:border-box;min-width:72px;width:140px;padding:5px 8px;border:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1));border-radius:6px;background:var(--dsw-alias-bg-layer-1,#fff);color:inherit;font:12px/18px ui-monospace,SFMono-Regular,Consolas,monospace}.ptcPlusCheck{width:18px;height:18px;accent-color:var(--dsw-alias-interactive-primary,#4d6bfe)}
+.ptcPlusGroup+.ptcPlusGroup{margin-top:14px}.ptcPlusGroupTitle{margin:0;padding:8px 0 5px;color:var(--dsw-alias-label-secondary,#52565d);font-size:11px;font-weight:600;letter-spacing:0;line-height:16px}.ptcPlusRow{display:flex;align-items:center;gap:12px;min-height:48px;border-top:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1))}.ptcPlusRow:first-child{border-top:0}.ptcPlusMain{flex:1;min-width:0}.ptcPlusLabel{font-size:14px;font-weight:500;line-height:20px}.ptcPlusDetail,.ptcPlusMessage{color:var(--dsw-alias-label-tertiary,#74777d);font-size:12px;line-height:18px;overflow-wrap:anywhere}.ptcPlusInput{box-sizing:border-box;min-width:72px;width:140px;padding:5px 8px;border:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1));border-radius:6px;background:var(--dsw-alias-bg-layer-1,#fff);color:inherit;font:12px/18px ui-monospace,SFMono-Regular,Consolas,monospace}.ptcPlusCheck{width:18px;height:18px;accent-color:var(--dsw-alias-interactive-primary,#4d6bfe)}
 .ptcPlusFooter{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:8px}.ptcPlusButton{min-height:32px;padding:0 12px;border:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1));border-radius:6px;background:transparent;color:inherit;cursor:pointer;font:500 13px/20px inherit;transition:background-color .16s ease,border-color .16s ease}.ptcPlusButton:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover,rgba(38,49,72,.06))}.ptcPlusButton:disabled,.ptcPlusInput:disabled,.ptcPlusCheck:disabled{cursor:not-allowed;opacity:.55}
 .ptcPlusActiveShell{display:inline-flex;align-items:center}.ptcPlusActive{appearance:none;display:inline-flex;height:24px;align-items:center;gap:5px;padding:0 8px;border:1px solid color-mix(in srgb,var(--dsw-alias-state-success-primary,#16794f) 32%,transparent);border-radius:6px;background:var(--dsw-alias-state-success-tertiary,#e7f7ef);color:var(--dsw-alias-state-success-primary,#16794f);cursor:help;font:600 12px/18px inherit;white-space:nowrap;transition:background-color .14s ease,border-color .14s ease}.ptcPlusActive:hover,.ptcPlusActive[aria-expanded=true]{border-color:color-mix(in srgb,var(--dsw-alias-state-success-primary,#16794f) 48%,transparent);background:color-mix(in srgb,var(--dsw-alias-state-success-primary,#16794f) 16%,var(--dsw-alias-bg-layer-3,#fff))}.ptcPlusActive:focus-visible{outline:2px solid var(--dsw-alias-state-success-primary,#16794f);outline-offset:2px}.ptcPlusReplPopover{position:fixed;z-index:2147483000;inset:auto;display:none;box-sizing:border-box;margin:0;padding:0;border:0;overflow:visible;background:transparent;color:var(--dsw-alias-label-primary,#18191c)}.ptcPlusReplPopover:popover-open,.ptcPlusReplPopover[data-open=true]{display:block}.ptcPlusReplPopover::backdrop{background:transparent}.ptcPlusReplCard{display:flex;max-height:inherit;overflow:hidden;flex-direction:column;border:1px solid color-mix(in srgb,var(--dsw-alias-state-success-primary,#16794f) 22%,var(--dsw-alias-border-l2,rgba(0,0,0,.1)));border-top:3px solid var(--dsw-alias-state-success-primary,#16794f);border-radius:8px;background:var(--dsw-alias-bg-layer-3,#fff);box-shadow:0 14px 36px rgba(16,24,40,.2),0 3px 10px rgba(16,24,40,.1);color:var(--dsw-alias-label-primary,#18191c);white-space:normal}.ptcPlusReplHead{display:grid;grid-template-columns:auto minmax(0,1fr);align-items:center;column-gap:8px;padding:11px 13px 10px;border-bottom:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1));background:color-mix(in srgb,var(--dsw-alias-state-success-primary,#16794f) 7%,var(--dsw-alias-bg-layer-3,#fff))}.ptcPlusReplStatusDot{grid-row:1/3;width:8px;height:8px;border-radius:50%;background:var(--dsw-alias-state-success-primary,#16794f);box-shadow:0 0 0 3px color-mix(in srgb,var(--dsw-alias-state-success-primary,#16794f) 14%,transparent)}.ptcPlusReplTitle,.ptcPlusReplSummary{display:block;min-width:0}.ptcPlusReplTitle{font-size:13px;font-weight:600;line-height:19px}.ptcPlusReplSummary{color:var(--dsw-alias-label-tertiary,#74777d);font-size:11px;line-height:16px}.ptcPlusReplList{min-height:0;margin:0;padding:5px 0;overflow:auto;overscroll-behavior:contain;list-style:none;scrollbar-gutter:stable}.ptcPlusReplBinding{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:4px 10px;padding:7px 12px}.ptcPlusReplBinding:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(38,49,72,.06))}.ptcPlusReplIdentity{display:flex;min-width:0;align-items:center;gap:7px}.ptcPlusReplName{min-width:0;overflow:hidden;font:12px/18px ui-monospace,SFMono-Regular,Consolas,monospace;text-overflow:ellipsis;white-space:nowrap}.ptcPlusReplKind{flex:none;padding:1px 6px;border:1px solid color-mix(in srgb,currentColor 22%,transparent);border-radius:999px;background:color-mix(in srgb,currentColor 10%,transparent);font-size:10px;font-weight:600;line-height:15px}.ptcPlusReplKind[data-kind=variable]{color:var(--dsw-alias-interactive-primary,#315fbd)}.ptcPlusReplKind[data-kind=function]{color:#7651b5}.ptcPlusReplKind[data-kind=class]{color:var(--dsw-alias-state-warning-primary,#946200)}.ptcPlusReplKind[data-kind=import]{color:#14766f}.ptcPlusReplPreview{grid-column:1;min-width:0;overflow:hidden;color:var(--dsw-alias-label-tertiary,#74777d);font:11px/16px ui-monospace,SFMono-Regular,Consolas,monospace;text-overflow:ellipsis;white-space:nowrap}.ptcPlusReplInspect{grid-column:2;grid-row:1/3;display:inline-flex;align-items:center;gap:4px;padding:3px 5px;border:0;border-radius:4px;background:transparent;color:var(--dsw-alias-label-secondary,#52565d);cursor:pointer;font:500 11px/17px inherit;white-space:nowrap}.ptcPlusReplInspect:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(38,49,72,.06));color:var(--dsw-alias-interactive-primary,#4d6bfe)}.ptcPlusReplInspect:focus-visible{outline:2px solid var(--dsw-alias-interactive-primary,#4d6bfe);outline-offset:1px}.ptcPlusReplDefinition{grid-column:1/-1;min-width:0;margin-top:4px;padding:8px;border-left:2px solid var(--dsw-alias-interactive-primary,#4d6bfe);background:var(--dsw-alias-bg-layer-2,rgba(38,49,72,.03))}.ptcPlusReplLocation{display:block;margin-bottom:5px;color:var(--dsw-alias-label-tertiary,#74777d);font-size:10px;line-height:15px}.ptcPlusReplCode{max-height:180px;margin:0;overflow:auto;color:inherit;font:11px/16px ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere}.ptcPlusReplEmpty,.ptcPlusReplMore{display:block;color:var(--dsw-alias-label-tertiary,#74777d)}.ptcPlusReplEmpty{padding:18px 13px;font-size:12px;line-height:18px}.ptcPlusReplMore{padding:8px 13px;border-top:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1));background:var(--dsw-alias-bg-layer-2,rgba(38,49,72,.03));font-size:11px;line-height:17px}
 .ptcPlusReplList{max-height:min(52vh,480px)}.ptcPlusReplBinding{grid-template-columns:minmax(0,1fr) 24px;gap:3px 8px;min-height:36px;padding:5px 12px;content-visibility:auto;contain-intrinsic-size:36px;cursor:pointer;transition:background-color .16s ease}.ptcPlusReplBinding:focus-visible{outline:2px solid var(--dsw-alias-interactive-primary,#4d6bfe);outline-offset:-2px}.ptcPlusReplBinding[data-expanded=true]{background:color-mix(in srgb,var(--dsw-alias-interactive-primary,#4d6bfe) 5%,transparent)}.ptcPlusReplName{grid-column:1}.ptcPlusReplName[data-kind=variable]{color:var(--dsw-alias-interactive-primary,#315fbd)}.ptcPlusReplName[data-kind=function]{color:#7651b5}.ptcPlusReplName[data-kind=class]{color:var(--dsw-alias-state-warning-primary,#946200)}.ptcPlusReplName[data-kind=import]{color:#14766f}.ptcPlusReplPreview{grid-column:1}.ptcPlusReplChevron{grid-column:2;grid-row:1/3;display:flex;align-items:center;justify-content:center;color:var(--dsw-alias-label-tertiary,#74777d);transition:transform .2s ease}.ptcPlusReplChevron[data-open=true]{transform:rotate(180deg)}.ptcPlusReplDefinitionWrap{grid-column:1/-1;display:grid;grid-template-rows:0fr;min-width:0;transition:grid-template-rows .24s cubic-bezier(.2,.7,.2,1)}.ptcPlusReplDefinitionWrap[data-open=true]{grid-template-rows:1fr}.ptcPlusReplDefinitionInner{min-height:0;overflow:hidden}
@@ -789,6 +834,9 @@
   var SETTINGS_COPY = Object.freeze(Object.fromEntries(
     ["zh", "en"].map((locale) => [locale, Object.freeze({
       ...CHROME_COPY[locale],
+      ...Object.assign({}, ...CONFIG_GROUPS.map((group) => ({
+        [`group.${group.key}`]: locale === "en" ? group.labelEn : group.label
+      }))),
       ...Object.assign({}, ...CONFIG_FIELDS.map((field) => fieldCopy(field, locale)))
     })])
   ));
@@ -896,6 +944,33 @@
             });
           };
           const fieldDisabled = (field) => unavailable || pending.has(field.key) || field.key !== "enabled" && !enabled;
+          const settingGroups = CONFIG_GROUPS.map((group) => h(
+            "section",
+            {
+              key: group.key,
+              className: "ptcPlusGroup",
+              "aria-labelledby": `ptc-plus-settings-group-${group.key}`
+            },
+            h("h3", {
+              id: `ptc-plus-settings-group-${group.key}`,
+              className: "ptcPlusGroupTitle"
+            }, t(`group.${group.key}`)),
+            ...group.fields.map((key) => {
+              const field = CONFIG_FIELDS.find((candidate) => candidate.key === key);
+              if (field === void 0) return null;
+              return h(
+                "div",
+                { key: field.key, className: "ptcPlusRow" },
+                h(
+                  "div",
+                  { className: "ptcPlusMain" },
+                  h("div", { className: "ptcPlusLabel" }, t(`${field.key}.label`)),
+                  field.description === "" ? null : h("div", { className: "ptcPlusDetail" }, t(`${field.key}.description`))
+                ),
+                fieldInput(field, value[field.key], fieldDisabled(field), persist, t(`${field.key}.label`))
+              );
+            })
+          ));
           return h(
             "li",
             { className: "ptcPlusCard" },
@@ -925,17 +1000,7 @@
                 "div",
                 { className: "ptcPlusFields" },
                 snapshot.status === "loading" ? h("p", { className: "ptcPlusMessage" }, t("state.syncing")) : snapshot.status === "unavailable" ? h("p", { className: "ptcPlusMessage" }, t("state.unavailable")) : [
-                  ...CONFIG_FIELDS.map((field) => h(
-                    "div",
-                    { key: field.key, className: "ptcPlusRow" },
-                    h(
-                      "div",
-                      { className: "ptcPlusMain" },
-                      h("div", { className: "ptcPlusLabel" }, t(`${field.key}.label`)),
-                      field.description === "" ? null : h("div", { className: "ptcPlusDetail" }, t(`${field.key}.description`))
-                    ),
-                    fieldInput(field, value[field.key], fieldDisabled(field), persist, t(`${field.key}.label`))
-                  )),
+                  ...settingGroups,
                   h(
                     "div",
                     { key: "footer", className: "ptcPlusFooter" },

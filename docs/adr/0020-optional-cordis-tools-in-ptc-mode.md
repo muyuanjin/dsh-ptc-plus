@@ -22,7 +22,7 @@ The official plugin also registers Host inspect providers in the process-global 
 
 Cordis tools remain native program bindings under `tools.*`. The PTC code-only direct-tool projection remains exactly `[run_code, edit_run_code]`; native agents and unrelated scopes do not inherit this option.
 
-Cordis definitions and Runs are process-local, while PTC journals replay every settled program binding as a recorded value without redispatch. On the first prompt for an agent or a new Cordis enable generation, PTC Plus derives whether normalized journals contain a Cordis transcript. If they do, it emits the fixed `tools:ptc-plus-cordis-recovery` runtime context: recorded values remain historical data, but the model must perform a live read-only Cordis Inspect before relying on prior IDs, state, approvals, or capability observations. The context remains until a newly settled successful `cordis_inspect*` call appears in the session log. It neither asserts that live state was lost nor reruns a mutating call.
+Cordis definitions and Runs are process-local, while PTC journals replay every settled program binding as a recorded value without redispatch. On the first prompt for an agent or a new Cordis enable generation, PTC Plus derives whether normalized journals contain a Cordis transcript. If they do, it emits the fixed `tools:ptc-plus-cordis-recovery` runtime context: recorded values remain journal data, but the model must perform a live read-only Cordis Inspect before relying on prior IDs, state, approvals, or capability observations. The context remains until a newly settled successful `cordis_inspect*` call appears in the session log. It neither asserts that live state was lost nor reruns a mutating call.
 
 ## Alternatives Considered
 

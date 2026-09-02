@@ -18,17 +18,17 @@
       default: true,
       label: "\u4F7F\u7528 PTC Plus \u589E\u5F3A\u5DE5\u5177\u5361\u7247",
       labelEn: "Use enhanced PTC Plus tool cards",
-      description: "\u5F00\u542F\u65F6\u4F7F\u7528 PTC Plus \u5DE5\u5177\u5361\u7247\uFF1B\u5173\u95ED\u540E\u4F7F\u7528 DSH \u539F\u751F run_code \u548C edit_run_code \u5DE5\u5177\u5361\u7247\u3002",
-      descriptionEn: "When enabled, PTC Plus renders the tool cards; when disabled, run_code and edit_run_code use DSH native tool cards."
+      description: "\u5F00\u542F\u65F6\u4F7F\u7528\u589E\u5F3A\u5DE5\u5177\u5361\u7247\uFF1B\u5173\u95ED\u540E\u4F7F\u7528 DSH \u539F\u751F\u5DE5\u5177\u5361\u7247\u3002",
+      descriptionEn: "Uses enhanced tool cards when enabled and DSH native tool cards when disabled."
     },
     {
       key: "autoDescribeRunCode",
       type: "boolean",
       default: true,
-      label: "\u81EA\u52A8\u8865\u5168\u7F3A\u5931\u7684 run_code \u6458\u8981",
-      labelEn: "Auto-fill missing run_code summaries",
-      description: "\u6267\u884C\u65F6\u5BBD\u5BB9\u7F3A\u5C11\u5916\u5C42\u6458\u8981\u7684 run_code \u8C03\u7528\u5E76\u751F\u6210\u56FA\u5B9A UI \u6458\u8981\uFF1B\u4E0D\u6539\u53D8\u6A21\u578B\u8BF7\u6C42\u3001\u539F\u59CB\u8C03\u7528\u53C2\u6570\u3001\u4EE3\u7801\u6216\u5D4C\u5957 native \u5DE5\u5177\u53C2\u6570\u3002",
-      descriptionEn: "Tolerates a missing outer run_code summary during execution and generates a fixed UI summary without changing the model request, original call arguments, code, or nested native-tool arguments."
+      label: "\u5141\u8BB8\u6267\u884C\u7F3A\u5C11\u6458\u8981\u7684 run_code",
+      labelEn: "Allow run_code execution without a summary",
+      description: "\u5141\u8BB8 run_code \u7F3A\u5C11\u5916\u5C42 description\uFF1B\u5173\u95ED\u540E\u6062\u590D DSH \u6821\u9A8C\u3002\u6A21\u578B\u8BF7\u6C42\u548C\u539F\u59CB\u8C03\u7528\u53C2\u6570\u4FDD\u6301\u4E0D\u53D8\u3002",
+      descriptionEn: "Allows run_code to omit its outer description; disabling restores DSH validation. Model requests and original call arguments remain unchanged."
     },
     {
       key: "canonicalizeToolCalls",
@@ -36,8 +36,8 @@
       default: true,
       label: "\u4FEE\u590D\u53EF\u8BC6\u522B\u7684\u9876\u5C42 native \u5DE5\u5177\u8BEF\u8C03\u7528",
       labelEn: "Repair recognizable top-level native tool mis-calls",
-      description: "\u4EC5\u5F53\u5F53\u524D schema \u80FD\u552F\u4E00\u786E\u8BA4\u76EE\u6807\u5DE5\u5177\u4E14\u53C2\u6570\u6709\u6548\u65F6\uFF0C\u4FEE\u590D\u9876\u5C42 native \u5DE5\u5177\u8BEF\u8C03\u7528\u3002",
-      descriptionEn: "Repairs a top-level native tool mis-call only when the current schema uniquely identifies the target and validates its arguments."
+      description: "\u4EC5\u5F53\u5F53\u524D schema \u80FD\u552F\u4E00\u786E\u8BA4\u76EE\u6807\u5DE5\u5177\u4E14\u53C2\u6570\u6709\u6548\u65F6\uFF0C\u624D\u628A\u9876\u5C42 native \u5DE5\u5177\u8BEF\u8C03\u7528\u4FEE\u590D\u4E3A\u5BF9\u5E94\u7684 run_code \u8C03\u7528\u3002",
+      descriptionEn: "Repairs a top-level native tool mis-call as the corresponding run_code call only when the current schema uniquely identifies the tool and validates its arguments."
     },
     {
       key: "cordisToolsEnabled",

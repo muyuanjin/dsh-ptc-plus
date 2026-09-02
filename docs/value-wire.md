@@ -52,7 +52,7 @@ DSH 的公共 `CodeRuntime`/tool output 只接受 JSON-safe structured value。�
 - renderer 只是模型展示，不参与 hydrate；需要继续计算时应保留 live REPL binding；
 - journal 保存 canonical graph envelope，不保存 renderer 反解析结果，也不把 decoded rich value 交给外层 `JSON.stringify`。
 
-unsupported value 或预算超限继续使用 `PTC-O001`，但帮助文本只要求返回受支持的 PTC value 或缩小结果；`undefined` 不再是错误，也不要求模型用 `null` 替换。
+unsupported value 或预算超限使用 `PTC-O001`，帮助文本只要求返回受支持的 PTC value 或缩小结果；`undefined` 属于受支持值，不要求模型用 `null` 替换。
 
 cell program binding 的参数和结果经过同一 graph IPC，因此 owner-provided binding 可以接收和返回
 完整 `PTCValueV1` 支持域，包括 `undefined`、special number、BigInt、hole、shared identity 与 cycle。

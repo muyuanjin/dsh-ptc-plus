@@ -47,7 +47,7 @@ The configuration uses `ptc-plus` as the DSH plugin ID and `dsh-ptc-plus` as the
 
 `enhancedToolView` defaults to `true` and controls only the browser presentation of `run_code` and `edit_run_code`. Turning it off unregisters PTC Plus's keyed tool views so DSH's native generic row renders the calls; turning it on restores the compatibility renderer without changing execution, prompt, or session behavior.
 
-`autoDescribeRunCode` defaults to `true`. When the outer `run_code.description` is missing, the execution bridge derives the fixed summary only for local DSH validation, and presentation metadata alone persists that UI-only summary. The original call arguments, existing summaries, cell source, and nested native-tool JSON remain unchanged. Toggling the setting does not change the model-visible tool schema, tool order, or system sections: both states retain DSH's native required `description` declaration. When disabled, DSH continues to enforce the required outer field.
+`autoDescribeRunCode` defaults to `true` and appears as “Allow run_code execution without a summary.” When enabled, a call that omits the outer `run_code.description` uses derived arguments for local DSH validation, and the fallback summary enters presentation metadata only. When disabled, DSH validates the original arguments. Both states expose byte-identical model requests with the required `description` declaration; original call arguments, existing summaries, cell source, and nested native-tool JSON remain unchanged.
 
 ```yaml
 - id: ptc-plus
@@ -83,9 +83,9 @@ The configuration uses `ptc-plus` as the DSH plugin ID and `dsh-ptc-plus` as the
 
 Keep large Cordis host or client source in a top-level binding before calling a Cordis tool. A parse or validation rejection is a runtime failure, so bindings assigned before it remain live for a short retry cell; reuse the binding instead of resending the source.
 
-Cordis Plugins and Runs are process-local. On a resumed agent or after Cordis is re-enabled, normalized journal calls can restore their recorded return values but do not prove that prior IDs, approvals, Runs, or Inspect observations are live. The fixed `tools:ptc-plus-cordis-recovery` context remains present until a new successful `cordis_inspect*` call is settled. Use that live read-only inspection before a stateful Cordis decision; do not rerun a mutating historical call merely to rebuild state.
+Cordis Plugins and Runs are process-local. On a resumed agent or after Cordis is re-enabled, normalized journal calls can restore their recorded return values but do not prove that prior IDs, approvals, Runs, or Inspect observations are live. The fixed `tools:ptc-plus-cordis-recovery` context remains present until a new successful `cordis_inspect*` call is settled. Use that live read-only inspection before a stateful Cordis decision; do not rerun a recorded mutating call merely to rebuild state.
 
-`durableReplay: false` starts new kernels without historical REPL state while preserving live bindings in the current process. It does not delete session logs.
+`durableReplay: false` starts new kernels without recorded REPL state while preserving live bindings in the current process. It does not delete session logs.
 
 Recovery tips are disabled with `tipsEnabled: false`. When enabled, a bounded runtime context in the reserved `tools:ptc-plus-tip/<trigger>/<ordinal>` name family may appear after a repeated binding failure or a diagnostic that identifies an executable, shell, or path problem in the current execution world. The trigger and per-trigger ordinal are reconstructed from canonical named system-prompt snapshots; repeated aggregate copies and visible wording do not advance the history. A tip is subject to `tipCooldownMessages` and becomes detailed only after `tipEscalationFailures` unresolved matches; it never changes the code-only direct-tool list or schema. `edit_run_code` does not emit a runtime context because its real call and result already carry the relevant fact.
 

@@ -6,6 +6,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+. (Join-Path $PSScriptRoot 'windows-lifecycle-path.ps1')
 
 function Get-ExecutablePath {
     param(
@@ -20,36 +21,21 @@ function Get-ExecutablePath {
     return $Command.Name
 }
 
-function Import-LatestWindowsPath {
-    $pathValues = @(
-        [Environment]::GetEnvironmentVariable('Path', 'Process')
-        [Environment]::GetEnvironmentVariable('Path', 'Machine')
-        [Environment]::GetEnvironmentVariable('Path', 'User')
-    )
-    $expandedValues = @($pathValues | Where-Object {
-        -not [string]::IsNullOrWhiteSpace($_)
-    } | ForEach-Object {
-        [Environment]::ExpandEnvironmentVariables($_)
-    })
-
-    if ($expandedValues.Count -gt 0) {
-        $env:Path = $expandedValues -join [IO.Path]::PathSeparator
-    }
-}
-
 function Invoke-ExternalCommand {
     param(
         [Parameter(Mandatory = $true)]
         [string] $FilePath,
 
-        [Parameter(Mandatory = $true)]
         [string[]] $ArgumentList
     )
 
-    & $FilePath @ArgumentList
-    $exitCode = $LASTEXITCODE
-    if ($exitCode -ne 0) {
-        throw "Command failed with exit code $exitCode`: $FilePath $($ArgumentList -join ' ')"
+    $commandState = [pscustomobject]@{ ExitCode = 0 }
+    Invoke-WithWindowsPathOverlay {
+        & $FilePath @ArgumentList
+        $commandState.ExitCode = $LASTEXITCODE
+    }
+    if ($commandState.ExitCode -ne 0) {
+        throw "Command failed with exit code $($commandState.ExitCode)`: $FilePath $($ArgumentList -join ' ')"
     }
 }
 
@@ -112,18 +98,14 @@ if ([string]::IsNullOrWhiteSpace($packageName)) {
     throw "package.json at $manifestPath does not declare a package name."
 }
 
+# Explorer can retain the PATH from before Desktop or npm installed the DSH shim.
+Import-LatestWindowsPath
 $npmCommand = Get-Command npm -ErrorAction SilentlyContinue
 $dshCommand = Get-Command dsh -ErrorAction SilentlyContinue
+$nodeCommand = Get-Command node -ErrorAction SilentlyContinue
 
-# Explorer can retain the PATH from before Desktop or npm installed the DSH shim.
-if ($null -eq $npmCommand -or $null -eq $dshCommand) {
-    Import-LatestWindowsPath
-    $npmCommand = Get-Command npm -ErrorAction SilentlyContinue
-    $dshCommand = Get-Command dsh -ErrorAction SilentlyContinue
-}
-
-if ($null -eq $npmCommand) {
-    throw 'npm was not found on PATH. Install Node.js before running this script.'
+if ($null -eq $npmCommand -or $null -eq $nodeCommand) {
+    throw 'Node.js and npm were not found on PATH. Install Node.js before running this script.'
 }
 
 if ($null -eq $dshCommand) {
@@ -132,6 +114,7 @@ if ($null -eq $dshCommand) {
 
 $npmPath = Get-ExecutablePath $npmCommand
 $dshPath = Get-ExecutablePath $dshCommand
+$nodePath = Get-ExecutablePath $nodeCommand
 $dshHome = Resolve-DshHome
 $stagingDirectory = Join-Path ([IO.Path]::GetTempPath()) ("dsh-plugin-pack-" + [Guid]::NewGuid().ToString('N'))
 $snapshotFile = $null

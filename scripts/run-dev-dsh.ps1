@@ -9,6 +9,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+. (Join-Path $PSScriptRoot 'windows-lifecycle-path.ps1')
 
 function Get-ExecutablePath {
     param(
@@ -23,36 +24,21 @@ function Get-ExecutablePath {
     return $Command.Name
 }
 
-function Import-LatestWindowsPath {
-    $pathValues = @(
-        [Environment]::GetEnvironmentVariable('Path', 'Process')
-        [Environment]::GetEnvironmentVariable('Path', 'Machine')
-        [Environment]::GetEnvironmentVariable('Path', 'User')
-    )
-    $expandedValues = @($pathValues | Where-Object {
-        -not [string]::IsNullOrWhiteSpace($_)
-    } | ForEach-Object {
-        [Environment]::ExpandEnvironmentVariables($_)
-    })
-
-    if ($expandedValues.Count -gt 0) {
-        $env:Path = $expandedValues -join [IO.Path]::PathSeparator
-    }
-}
-
 function Invoke-ExternalCommand {
     param(
         [Parameter(Mandatory = $true)]
         [string] $FilePath,
 
-        [Parameter(Mandatory = $true)]
         [string[]] $ArgumentList
     )
 
-    & $FilePath @ArgumentList
-    $exitCode = $LASTEXITCODE
-    if ($exitCode -ne 0) {
-        throw "Command failed with exit code $exitCode`: $FilePath $($ArgumentList -join ' ')"
+    $commandState = [pscustomobject]@{ ExitCode = 0 }
+    Invoke-WithWindowsPathOverlay {
+        & $FilePath @ArgumentList
+        $commandState.ExitCode = $LASTEXITCODE
+    }
+    if ($commandState.ExitCode -ne 0) {
+        throw "Command failed with exit code $($commandState.ExitCode)`: $FilePath $($ArgumentList -join ' ')"
     }
 }
 
@@ -115,8 +101,13 @@ function Get-NpmPackageVersion {
     )
 
     try {
-        $raw = & $NpmPath view $PackageSpec version --json 2>&1
-        if ($LASTEXITCODE -ne 0) {
+        $commandState = [pscustomobject]@{ ExitCode = 0 }
+        $raw = Invoke-WithWindowsPathOverlay {
+            $output = & $NpmPath view $PackageSpec version --json 2>&1
+            $commandState.ExitCode = $LASTEXITCODE
+            $output
+        }
+        if ($commandState.ExitCode -ne 0) {
             throw "npm view failed: $($raw -join ' ')"
         }
 
@@ -127,6 +118,9 @@ function Get-NpmPackageVersion {
         }
         return $version.Trim()
     } catch {
+        if ($_.Exception.Data['DshPtcPlusPathOverlayCleanup'] -eq $true) {
+            throw
+        }
         if (Test-Path -LiteralPath $FallbackVersionFile -PathType Leaf) {
             $cachedLines = @(Get-Content -LiteralPath $FallbackVersionFile)
             if ($cachedLines.Count -ge 2) {
@@ -266,7 +260,6 @@ if (-not (Test-Path -LiteralPath $dshCommandPath -PathType Leaf) -or
             Copy-Item -LiteralPath $nodePath -Destination $localNodePath -Force
         }
     }
-    $env:npm_config_script_shell = 'cmd.exe'
     Invoke-ExternalCommand $npmPath @(
         'install',
         '--prefix', $dshInstallDirectory,
@@ -389,5 +382,9 @@ if ($ProfileName -eq 'web' -and -not ($launchArguments | Where-Object { $_ -eq '
     $launchArguments += @('--port', $configuredPort)
     Write-Host "Using Web port $configuredPort."
 }
-& $dshCommandPath @launchArguments
-exit $LASTEXITCODE
+$launchState = [pscustomobject]@{ ExitCode = 0 }
+Invoke-WithWindowsPathOverlay {
+    & $dshCommandPath @launchArguments
+    $launchState.ExitCode = $LASTEXITCODE
+}
+exit $launchState.ExitCode

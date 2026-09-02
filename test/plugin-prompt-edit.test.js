@@ -254,7 +254,7 @@ test('renders long-cell recovery advice in the tool error without a runtime cont
   )
 })
 
-test('immutably adapts only the model-visible run_code schema wording', async (t) => {
+test('immutably adapts the model-visible run_code schema', async (t) => {
   const state = fixture()
   t.after(() => state.dispose())
   const runCode = {
@@ -293,7 +293,7 @@ test('immutably adapts only the model-visible run_code schema wording', async (t
   assert.deepEqual(adapted.tools[1].annotation, { retained: true })
   assert.equal(adapted.tools[1].parameters.additionalProperties, false)
   assert.equal(adapted.tools[1].parameters.comment, 'retained')
-  assert.deepEqual(adapted.tools[1].parameters.required, ['code', 'description'])
+  assert.deepEqual(adapted.tools[1].parameters.required, ['code'])
   assert.equal(adapted.tools[1].parameters.properties.code.minLength, 0)
   assert.equal(adapted.tools[1].parameters.properties.description.maxLength, 80)
 })

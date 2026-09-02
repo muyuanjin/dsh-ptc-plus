@@ -20,6 +20,7 @@ import {
 } from './program-bindings.js'
 import { deepFreeze } from './record-utils.js'
 import { withReplMemorySnapshot } from './repl-memory-projection.js'
+import { generatedRunCodeDescriptionMeta } from './run-code-description.js'
 
 export const RUN_CODE = 'run_code'
 
@@ -249,7 +250,7 @@ export function createRuntimeBridgeOwner({
     return { request: { ...request, bindings: projected }, release }
   }
 
-  const patchResultMetadata = (agent) => {
+  const patchRunCodeDefinition = (agent) => {
     const definition = ctx.tools.get(RUN_CODE, agent)
     if (definition === undefined) {
       throw new Error('ptc-plus: run_code definition is unavailable for the owning session')
@@ -259,29 +260,65 @@ export function createRuntimeBridgeOwner({
     }
     if (patchedDefinitions.has(definition)) return
     const output = definition.output
-    const original = output.presentationMeta
-    const patched = (args, value) => {
-      if (!active) return original === undefined ? undefined : original(args, value)
-      const base = original === undefined ? undefined : original(args, value)
+    const originalPresentationMeta = output.presentationMeta
+    const patchedPresentationMeta = (args, value) => {
+      if (!active) {
+        return originalPresentationMeta === undefined
+          ? undefined
+          : originalPresentationMeta(args, value)
+      }
+      const base = originalPresentationMeta === undefined
+        ? undefined
+        : originalPresentationMeta(args, value)
       const current = scope.getStore()
       const settlement = current?.settlement
-      if (settlement === undefined) return base
+      if (settlement === undefined) return generatedRunCodeDescriptionMeta(args, base)
       let meta = withJournal(base, settlement.journal)
       if (settlement.recoveryBoundaries !== undefined) {
         meta = withRecoveryBoundaries(meta, settlement.recoveryBoundaries)
       }
       if (settlement.rewrites !== undefined) meta = withRewrites(meta, settlement.rewrites)
+      meta = generatedRunCodeDescriptionMeta(args, meta)
       return withReplMemorySnapshot(meta, settlement.replMemory, presentationGeneration)
     }
+    const ownExecute = Object.getOwnPropertyDescriptor(definition, 'execute')
+    const originalExecute = definition.execute
+    const patchedExecute = typeof originalExecute !== 'function'
+      ? undefined
+      : function (args, exec) {
+          const executionArguments = scope.getStore()?.executionArguments ?? args
+          return originalExecute.call(this, executionArguments, exec)
+        }
+    let presentationPatched = false
     try {
       Object.defineProperty(output, 'presentationMeta', {
         configurable: true,
         enumerable: true,
         writable: true,
-        value: patched,
+        value: patchedPresentationMeta,
       })
-      patchedDefinitions.set(definition, { output, original, patched })
+      presentationPatched = true
+      if (patchedExecute !== undefined) {
+        Object.defineProperty(definition, 'execute', {
+          configurable: true,
+          enumerable: ownExecute?.enumerable ?? true,
+          writable: true,
+          value: patchedExecute,
+        })
+      }
+      patchedDefinitions.set(definition, {
+        definition,
+        output,
+        originalPresentationMeta,
+        patchedPresentationMeta,
+        ownExecute,
+        patchedExecute,
+      })
     } catch (error) {
+      if (presentationPatched && output.presentationMeta === patchedPresentationMeta) {
+        if (originalPresentationMeta === undefined) delete output.presentationMeta
+        else output.presentationMeta = originalPresentationMeta
+      }
       throw new Error(`ptc-plus: cannot attach the session journal to run_code results: ${error.message}`)
     }
   }
@@ -336,11 +373,11 @@ export function createRuntimeBridgeOwner({
         throw error
       }
     },
-    handleExecute(exec, next) {
+    handleExecute(exec, next, executionArguments = exec.arguments) {
       if (exec.parent !== undefined) return scope.run(undefined, next)
       const id = sessionId(exec.agent)
       if (id === undefined) return next()
-      patchResultMetadata(exec.agent)
+      patchRunCodeDefinition(exec.agent)
       const inherited = scope.getStore()
       const persistedCallSeq = inherited?.persistedCallSeq
       const current = {
@@ -352,6 +389,7 @@ export function createRuntimeBridgeOwner({
           : { deferredSettlement: inherited.deferredSettlement }),
         session: exec.agent?.session,
         agent: exec.agent,
+        executionArguments,
       }
       if (current.deferredSettlement !== undefined) {
         current.deferredSettlement.current = current
@@ -409,10 +447,16 @@ export function createRuntimeBridgeOwner({
         if (ownRun === undefined) delete runtime.run
         else Object.defineProperty(runtime, 'run', ownRun)
       }
-      for (const { output, original, patched } of patchedDefinitions.values()) {
-        if (output.presentationMeta !== patched) continue
-        if (original === undefined) delete output.presentationMeta
-        else output.presentationMeta = original
+      for (const patched of patchedDefinitions.values()) {
+        if (patched.output.presentationMeta === patched.patchedPresentationMeta) {
+          if (patched.originalPresentationMeta === undefined) delete patched.output.presentationMeta
+          else patched.output.presentationMeta = patched.originalPresentationMeta
+        }
+        if (patched.patchedExecute !== undefined
+          && patched.definition.execute === patched.patchedExecute) {
+          if (patched.ownExecute === undefined) delete patched.definition.execute
+          else Object.defineProperty(patched.definition, 'execute', patched.ownExecute)
+        }
       }
       patchedDefinitions.clear()
       await sessions.dispose()

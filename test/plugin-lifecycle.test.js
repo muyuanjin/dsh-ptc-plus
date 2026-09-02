@@ -57,6 +57,8 @@ test('exports a Cordis config schema with validated runtime defaults', async () 
   assert.deepEqual(defaults, {
     value: {
       enabled: true,
+      enhancedToolView: true,
+      autoDescribeRunCode: false,
       cordisToolsEnabled: false,
       computeMs: 60_000,
       maxWallMs: 600_000,
@@ -86,7 +88,7 @@ test('exports a Cordis config schema with validated runtime defaults', async () 
     (await Config['~standard'].validate({ maxWallMs: 2_147_483_648 })).issues[0].path,
     ['maxWallMs'],
   )
-  for (const key of ['cordisToolsEnabled', 'canonicalizeToolCalls', 'autoRewriteImports', 'autoStripExports', 'autoSplitRedeclarations', 'tipsEnabled']) {
+  for (const key of ['enhancedToolView', 'autoDescribeRunCode', 'cordisToolsEnabled', 'canonicalizeToolCalls', 'autoRewriteImports', 'autoStripExports', 'autoSplitRedeclarations', 'tipsEnabled']) {
     assert.throws(() => fixture({ [key]: 'yes' }), new RegExp(`${key} must be a boolean`))
   }
   for (const key of ['tipCooldownMessages', 'tipEscalationFailures']) {
@@ -96,17 +98,23 @@ test('exports a Cordis config schema with validated runtime defaults', async () 
 
 test('retired runtime and metadata wrappers stay transparent across outer wrapper teardown', async () => {
   const state = fixture()
+  const originalExecute = async args => args
+  state.runCodeDefinition.execute = originalExecute
   await state.run('composition', 'return 1')
   const ptcRun = state.runtime.run
   const ptcPresentation = state.runCodeDefinition.output.presentationMeta
+  const ptcExecute = state.runCodeDefinition.execute
   const outerRun = request => ptcRun(request)
   const outerPresentation = (args, value) => ptcPresentation(args, value)
+  const outerExecute = (args, exec) => ptcExecute(args, exec)
   state.runtime.run = outerRun
   state.runCodeDefinition.output.presentationMeta = outerPresentation
+  state.runCodeDefinition.execute = outerExecute
 
   await state.dispose()
   assert.equal(state.runtime.run, outerRun)
   assert.equal(state.runCodeDefinition.output.presentationMeta, outerPresentation)
+  assert.equal(state.runCodeDefinition.execute, outerExecute)
   assert.deepEqual(await state.runtime.run({ program: 'return 2', bindings: [] }), {
     logs: ['upstream'],
     value: 'upstream',
@@ -115,6 +123,7 @@ test('retired runtime and metadata wrappers stay transparent across outer wrappe
 
   state.runtime.run = ptcRun
   state.runCodeDefinition.output.presentationMeta = ptcPresentation
+  state.runCodeDefinition.execute = ptcExecute
   assert.deepEqual(await state.runtime.run({ program: 'return 3', bindings: [] }), {
     logs: ['upstream'],
     value: 'upstream',
@@ -124,18 +133,24 @@ test('retired runtime and metadata wrappers stay transparent across outer wrappe
 
 test('restores providers normally when an outer wrapper unloads first', async () => {
   const state = fixture()
+  const originalExecute = async args => args
+  state.runCodeDefinition.execute = originalExecute
   await state.run('composition', 'return 1')
   const ptcRun = state.runtime.run
   const ptcPresentation = state.runCodeDefinition.output.presentationMeta
+  const ptcExecute = state.runCodeDefinition.execute
   state.runtime.run = request => ptcRun(request)
   state.runCodeDefinition.output.presentationMeta = (args, value) => ptcPresentation(args, value)
+  state.runCodeDefinition.execute = (args, exec) => ptcExecute(args, exec)
 
   state.runtime.run = ptcRun
   state.runCodeDefinition.output.presentationMeta = ptcPresentation
+  state.runCodeDefinition.execute = ptcExecute
   await state.dispose()
 
   assert.notEqual(state.runtime.run, ptcRun)
   assert.equal(state.runCodeDefinition.output.presentationMeta, undefined)
+  assert.equal(state.runCodeDefinition.execute, originalExecute)
   assert.deepEqual(await state.runtime.run({ program: 'return 2', bindings: [] }), {
     logs: ['upstream'],
     value: 'upstream',

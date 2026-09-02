@@ -228,7 +228,11 @@ function installPtCRuntime(ctx, resolvedConfig, toolSchemasForAgent, sessionId) 
     disposers.push(ctx.on('tools/execute', (exec, next) => {
       const rejected = directSurface.executionRejection(exec)
       if (rejected !== undefined) return rejected
-      if (exec.name === RUN_CODE) return runtimeBridge.handleExecute(exec, next)
+      if (exec.name === RUN_CODE) {
+        const executionArguments = directSurface.executionArguments(exec)
+        return Promise.resolve(runtimeBridge.handleExecute(exec, next, executionArguments))
+          .then(result => directSurface.argumentDiagnostic(exec, result))
+      }
       return next()
     }))
     disposers.push(ctx.on('tools/result', (exec, result) => {

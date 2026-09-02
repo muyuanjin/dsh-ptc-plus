@@ -5,6 +5,8 @@ import {
   errorDetails,
   errorPosition,
   firstLine,
+  hasMissingDescriptionError,
+  missingDescriptionPath,
   limitLogs,
   markBindingFailure,
   messageOf,
@@ -46,6 +48,21 @@ test('normalizes hostile errors and extracts active-cell details', () => {
   assert.deepEqual(errorDetails(toolError, 'ptc-plus-repl-1'), {
     name: 'ToolCallError', message: 'denied', toolName: 'read',
   })
+  assert.equal(hasMissingDescriptionError({ message: 'invalid arguments: missing required property "description"' }), true)
+  assert.equal(missingDescriptionPath({ message: 'invalid arguments: missing required property "description"' }), 'description')
+  assert.equal(hasMissingDescriptionError({ message: 'invalid arguments: missing required property "options.description"' }), true)
+  assert.equal(missingDescriptionPath({ message: 'invalid arguments: missing required property "options.description"' }), 'options.description')
+  assert.equal(missingDescriptionPath({
+    message: 'invalid arguments: missing required property "command"; missing required property "description"',
+  }), 'description')
+  assert.equal(missingDescriptionPath({
+    message: 'invalid arguments: missing required property "command"\nmissing required property "options.description"',
+  }), 'options.description')
+  assert.equal(hasMissingDescriptionError({ message: 'invalid arguments: missing required property "command"' }), false)
+  assert.equal(hasMissingDescriptionError({
+    message: 'missing required property "command"; missing required property "options.cwd"',
+  }), false)
+  assert.equal(missingDescriptionPath({ message: 'invalid arguments: missing required property "options.command"' }), undefined)
 })
 
 test('bounds diagnostic logs and emits one repeat-failure hint', () => {

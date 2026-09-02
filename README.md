@@ -45,7 +45,7 @@
 
 DSH 的 PTC 模式让每次 `run_code` 都从新环境开始。模型算过的东西，下一次还要重发。写错一行，整段代码重发。这个插件把 `run_code` 接到一个会话级环境里，后面的调用直接复用之前的东西。
 
-| 场景 | 默认 PTC 模式 | PTC Plus 之后                |
+| 场景 | 默认 PTC 模式 | 使用 PTC Plus                 |
 | --- | --- |----------------------------|
 | 状态 | 每次从零开始，setup 重发 ❌ | 上一次 `run_code` 的结果直接能用 ✅   |
 | 修错 | 结果不对或失败，整段重发 ❌ | 只发一行 diff ✅                |
@@ -127,9 +127,13 @@ import { readFile } from 'node:fs/promises'
 
 打开 **设置 → 插件配置** 使用上面的设置卡片。卡片跟随 DSH 界面语言：界面设为 English 时显示英文，设为中文时显示中文。`enabled` 是即时生效的总开关：关闭后只保留卡片和这个开关，开启后恢复 session runtime 以及 `run_code`/`edit_run_code`。
 
-插件启用且会话使用 `ptc` preset 时，会话头部显示简洁的绿色 `PTC Plus` 活动标识。鼠标悬浮、键盘聚焦或点击这个标识，会显示当前 agent 下一 cell 可复用的 binding，并用不同色彩区分变量、函数、类和 import；每项带有定义源码预览，“查看定义”可在卡片内展开有界源码和原始行列。卡片位于浏览器 top layer，不会被会话侧栏遮挡，列表较长时在卡片内部滚动。它只使用已经提交的 cell 文本，不读取运行时值、不触发 getter，也不会执行代码。volatile binding 只要仍在 live worker 中可复用就继续显示；restore、discard 或重启后，在新 runtime 重新证明当前 binding 前显示“尚不可确认”。无关或损坏的结果不会清空已经验证的列表。当前 DSH 公共 header slot 没有跳到来源调用的导航接口，因此插件不使用 DOM hack 伪造跳转。正文中的 `run_code` 与 `edit_run_code` 仍显示为“执行”和“修正执行”：源码和结果仍可展开查看；当 DSH Client 提供 `CodeBlock` primitive 时，源码使用 TypeScript 语法高亮并支持复制。只有已有结果 metadata 能证明某项能力在该次执行中确实生效时，行下方才显示同设置卡一致的名称与有用细节，例如被适配的 import 模块、被剥离的 export、被拆分的混合重声明、安全编辑、成功的 `code.run`、本次确实完成的持久恢复或 `repl.state` 操作。这里不显示进程保留提示，也不显示 REPL cell、程序内调用、可恢复 cell 或恢复边界等计数。关闭插件会注销两个 keyed row，恢复 DSH 原生 fallback。
+设置中的“使用 PTC Plus 增强工具卡片”默认开启。开启时通过 DSH 公共 keyed tool-view 接口渲染增强 `run_code` / `edit_run_code` 卡片，可用时复用 Host primitive，缺失时自动降级；关闭时立即交还 DSH 原生 generic row，用户可以直接使用 Host 自己的最新视觉和交互。
 
-binding 清单按最近声明或重声明优先的栈顺序排列；固定宽度的类型列让变量、函数、类和 import 标识在各行对齐。
+`autoDescribeRunCode` 默认关闭。打开后，外层 `run_code.description` 可以省略，固定 UI 摘要只写入展示 metadata；原始调用参数、已有摘要、cell 源码和嵌套 native 工具参数都不会被改写。关闭时仍由 DSH 严格校验外层摘要。
+
+插件启用且会话使用 `ptc` preset 时，会话头部显示简洁的绿色 `PTC Plus` 活动标识。鼠标悬浮、键盘聚焦或点击这个标识，会显示当前 agent 下一 cell 可复用的 binding，并用不同色彩区分变量、函数、类和 import；每项带有定义源码预览，点击整行即可在卡片内展开有界源码和原始行列。卡片位于浏览器 top layer，不会被会话侧栏遮挡，列表较长时在卡片内部滚动。它只使用已经提交的 cell 文本，不读取运行时值、不触发 getter，也不会执行代码。volatile binding 只要仍在 live worker 中可复用就继续显示；restore、discard 或重启后，在新 runtime 重新证明当前 binding 前显示“尚不可确认”。无关或损坏的结果不会清空已经验证的列表。当前 DSH 公共 header slot 没有跳到来源调用的导航接口，因此插件不使用 DOM hack 伪造跳转。正文中的 `run_code` 与 `edit_run_code` 仍显示为“执行”和“修正执行”：源码和结果仍可展开查看；当 DSH Client 提供 `CodeBlock` primitive 时，源码使用 TypeScript 语法高亮并支持复制。只有已有结果 metadata 能证明某项能力在该次执行中确实生效时，预览行内才显示同设置卡一致的名称与有用细节，例如被适配的 import 模块、被剥离的 export、被拆分的混合重声明、安全编辑、成功的 `code.run`、本次确实完成的持久恢复或 `repl.state` 操作。这里不显示进程保留提示，也不显示 REPL cell、程序内调用、可恢复 cell 或恢复边界等计数。关闭插件会注销两个 keyed row，恢复 DSH 原生 fallback。
+
+binding 清单按最近声明或重声明优先的栈顺序排列；名称本身按类型着色，悬浮名称显示类型，点击整行或使用 Enter/空格键展开定义。绑定数量较多时卡片会限制高度并在内部滚动。
 
 所有设置都会实时应用，并保留已有 binding。已提交的 cell 在完整执行期间使用同一份配置；执行期间发生的更新用于随后提交的 cell。更新失败会回滚。Node 在 worker 创建时固定 V8 old-generation 上限，因此活动 session worker 存在时修改这一项会被拒绝，释放 session 后才能修改。启用失败时，运行时会回滚并把设置保持为停用。
 
@@ -139,7 +143,7 @@ binding 清单按最近声明或重声明优先的栈顺序排列；固定宽度
 
 cold recovery 或重新启用 Cordis 后，已记录的 Cordis value 仍是历史数据，但不能证明进程内 Plugin、Run、approval 或先前 Inspect observation 仍然存活。PTC Plus 会提供有界恢复 context，直到一次新的成功 Cordis Inspect 调用验证当前进程。
 
-这些 view 属于展示层。正文注册 DSH 公共的 keyed `tool.call.toolview`；binding 卡片读取公共 session projection，由随结果保存的 value-independent snapshot 驱动。快照最多 128 项，每段定义源码至多 1024 个 UTF-16 code unit、合计至多 16384 个 code unit。它们不增加工具、prompt 文本、runtime context、session event 类型、journal 字段、历史读取请求或迁移步骤，也不把 binding value 序列化进日志。损坏或未知的正文功能 metadata 会被忽略；与 REPL 调用关联的当前版本快照缺失或损坏时只让展示层降级。旧日志无需迁移，仍保留源码、结果、执行状态和继续会话能力。普通宽松重声明、规范化的顶层 native 调用、官方 Cordis owner 和实际选择的恢复提示都没有结果级 Client provenance，因此正文不会从源码形状、成员名前缀或设置值推测这些事件。因此安装、移除或悬浮这些 view 都不会改变模型请求，也不会让原本可读取、可继续的会话变得不兼容。
+这些 view 属于展示层。正文注册 DSH 公共的 keyed `tool.call.toolview`；binding 卡片读取公共 session projection，由随结果保存的 value-independent snapshot 驱动。增强行的运行/失败/中断状态、摘要和已证明功能标记位于同一单行预览中（完成态只由标题与摘要表达，不重复显示状态文字），间距由插件自有样式对称提供，源码、结果和 Inspect 仅在展开主体显示。展开主体把结果置于与 DSH 原生输入/输出卡片一致的灰色圆角矩形内；代码块的语言/复制栏与原生 CodeBlock 一样常亮；`检查调用` 采用原生 inspectButton 同款胶囊样式，只在鼠标移入卡片或键盘聚焦时淡入，不引起布局跳动。快照最多 128 项，每段定义源码至多 1024 个 UTF-16 code unit、合计至多 16384 个 code unit。它们不增加工具、prompt 文本、runtime context、session event 类型、journal 字段、历史读取请求或迁移步骤，也不把 binding value 序列化进日志。损坏或未知的正文功能 metadata 会被忽略；与 REPL 调用关联的当前版本快照缺失或损坏时只让展示层降级。旧日志无需迁移，仍保留源码、结果、执行状态和继续会话能力。普通宽松重声明、规范化的顶层 native 调用、官方 Cordis owner 和实际选择的恢复提示都没有结果级 Client provenance，因此正文不会从源码形状、成员名前缀或设置值推测这些事件。因此安装、移除或悬浮这些 view 都不会改变模型请求，也不会让原本可读取、可继续的会话变得不兼容。
 
 详见 [客户端 UI](docs/client-ui.md)、[ADR 0019](docs/adr/0019-plugin-settings-and-kill-switch.md) 与 [ADR 0020](docs/adr/0020-optional-cordis-tools-in-ptc-mode.md)。
 
@@ -157,6 +161,8 @@ dsh --profile <profile> --dump-config
 ```
 
 安装后重启对应的 DSH profile。固定 npm 版本、GitHub、本地 checkout 和 tarball 安装方式见[安装指南](docs/installation.md)。
+
+Windows 开发时可双击 `scripts\run-dev-dsh.cmd` 启动一个独立的 DSH alpha 最新版并只安装本插件。脚本会缓存 DSH、插件快照和 pnpm 依赖，仅在版本或源码内容变化时更新，并自动清理旧缓存；Web 未指定端口时会自动选择空闲回环端口，不会因 3080 被占用而失败。缓存默认位于 `%LOCALAPPDATA%\dsh-ptc-plus-dev`，不会写入本仓库。详细选项见[安装指南](docs/installation.md)。
 
 `danger-full-access` 是首要支持方式。worker 只隔离生命周期，不隔离恶意代码。
 

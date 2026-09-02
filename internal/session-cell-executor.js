@@ -12,6 +12,7 @@ import {
   LONG_CELL_CODE_UNITS,
   markBindingFailure,
   messageOf,
+  missingDescriptionPath,
   oneLineMessage,
   safeProperty,
 } from './failure-reporting.js'
@@ -128,7 +129,11 @@ function exceptionDiagnostic({
   declared,
   longCellFailure = false,
 }) {
-  const message = firstLine(error.message, 'Unknown exception')
+  const missingPath = error.name === 'ToolCallError' ? missingDescriptionPath(error) : undefined
+  const missingDescription = missingPath !== undefined
+  const message = missingDescription
+    ? `nested native tool arguments are missing required \`description\` at JSON path $.${missingPath} (${error.toolName ?? 'unknown tool'}); this does not satisfy the outer run_code transport`
+    : firstLine(error.message, 'Unknown exception')
   const rawName = typeof error.name === 'string' && error.name.length > 0
     ? error.name
     /* c8 ignore next */
@@ -147,7 +152,9 @@ function exceptionDiagnostic({
     ...(cause === undefined ? {} : { cause }),
     ...(source === undefined ? {} : { source }),
     help: [
-      'inspect existing bindings and retry only the failing expression',
+      ...(missingDescription
+        ? ['add a string `description` property to the nested native-tool argument object']
+        : ['inspect existing bindings and retry only the failing expression']),
       ...(error.name === 'ToolCallError'
         && typeof error.toolName === 'string'
         && error.toolName.startsWith('cordis_')

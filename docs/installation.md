@@ -70,6 +70,12 @@ Windows development checkouts can create and install an immutable content-addres
 scripts\install-dev.cmd <profile>
 ```
 
+## Isolated latest-DSH development launcher
+
+To test this checkout in a separate DSH installation, double-click `scripts\run-dev-dsh.cmd`. It resolves the current `@deepseek-ai/dsh@alpha` dist-tag, installs that exact version only when the cached version changes, creates the shipped `web` profile inside an isolated `DSH_HOME`, installs this checkout, and starts DSH. If no port is supplied, it selects a free loopback port automatically, so another DSH on port 3080 does not block the test instance. The launcher does not modify the repository or your normal DSH home.
+
+The default cache is `%LOCALAPPDATA%\dsh-ptc-plus-dev`. It contains the isolated `DSH_HOME`, DSH installations, immutable plugin snapshots, and a pnpm store. Only the newest three DSH versions and plugin snapshots are retained, and the dedicated pnpm store is pruned after each install. Set `DSH_DEV_CACHE` to move the cache, `DSH_DEV_PROFILE` to change the profile name, `DSH_DEV_VERSION` to select another npm dist-tag or version, `DSH_DEV_PORT` to choose a fixed Web port, or `DSH_DEV_MAX_VERSIONS` to change the retention count (1-10).
+
 ## DSH Desktop
 
 On Windows or macOS, choose **Open DSH Terminal** from the Desktop tray. Bare commands in that terminal target the active profile:

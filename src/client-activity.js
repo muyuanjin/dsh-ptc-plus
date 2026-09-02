@@ -278,6 +278,17 @@ function isReadableJournal(value) {
   }
 }
 
+// Keep the presentation fold closed over the journal contract. This guard is
+// intentionally separate from the schema reader so future counters cannot
+// accidentally treat an unknown status or partial arrays as activity.
+function isCountableJournal(value) {
+  return isReadableJournal(value)
+    && JOURNAL_STATUSES.has(value.status)
+    && Array.isArray(value.calls)
+    && Array.isArray(value.operations)
+    && Array.isArray(value.diagnostics)
+}
+
 function isValidRewrites(value, journal) {
   try {
     return journal.status !== 'noop' && isValidRewritePolicy(journal.rewritePolicy)
@@ -367,6 +378,7 @@ function resultText(block) {
 }
 
 const MIXED_REDECLARATION = 'split a mixed top-level declaration while preserving native pattern initialization'
+const GENERATED_RUN_CODE_DESCRIPTION_KEY = 'dshPtcPlusRunCodeDescription'
 
 function rewriteFeature(rewrites, predicate, key) {
   const matching = rewrites.filter(predicate)
@@ -411,14 +423,20 @@ export function derivePtcToolView(block, toolName = undefined) {
   const argsRaw = isRecord(block) ? rawArguments(block, settled) : ''
   const args = parseArguments(argsRaw)
   const code = typeof args?.code === 'string' ? args.code : argsRaw
-  const description = typeof args?.description === 'string' && args.description.length > 0
-    ? args.description.split(/\r?\n/, 1)[0]
-    : ''
+  const explicitDescription = typeof args?.description === 'string' && args.description.length > 0
+    ? args.description
+    : undefined
+  const generatedDescription = settled && isRecord(block.meta)
+    && typeof block.meta[GENERATED_RUN_CODE_DESCRIPTION_KEY] === 'string'
+    && block.meta[GENERATED_RUN_CODE_DESCRIPTION_KEY].length > 0
+    ? block.meta[GENERATED_RUN_CODE_DESCRIPTION_KEY]
+    : undefined
+  const description = (explicitDescription ?? generatedDescription)?.split(/\r?\n/, 1)[0] ?? ''
   const output = settled ? resultText(block) : ''
   const state = !settled ? 'running'
     : block.error?.code === 'interrupted' ? 'stopped'
       : block.isError === true ? 'error' : 'ok'
-  const journal = settled && isRecord(block.meta) && isReadableJournal(block.meta.dshPtcPlus)
+  const journal = settled && isRecord(block.meta) && isCountableJournal(block.meta.dshPtcPlus)
     ? block.meta.dshPtcPlus
     : undefined
   if (journal === undefined) {

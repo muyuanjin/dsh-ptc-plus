@@ -18,6 +18,8 @@ const BUDGET_KEYS = Object.freeze([
 
 /** Boolean runtime behavior switches. */
 const BOOLEAN_KEYS = Object.freeze([
+  'enhancedToolView',
+  'autoDescribeRunCode',
   'cordisToolsEnabled',
   'canonicalizeToolCalls',
   'looseTopLevelRedeclarations',

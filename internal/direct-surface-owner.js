@@ -6,6 +6,11 @@ import { projectProgramSdk } from './sdk-projection.js'
 import { EDIT_RUN_CODE } from './edit-transport-owner.js'
 import { RUN_CODE } from './runtime-bridge-owner.js'
 import { isRecord } from './record-utils.js'
+import { missingDescriptionPath } from './failure-reporting.js'
+import {
+  generatedRunCodeExecutionArguments,
+  generatedRunCodeDescriptionMeta,
+} from './run-code-description.js'
 
 const RUN_CODE_TOOL_DESCRIPTION = 'Evaluate the next TypeScript cell in this session-bound persistent REPL. Earlier top-level bindings remain available, so this call extends the current environment instead of creating a fresh one. Use `code` for the async-function body and `description` for its short UI summary. Successful image-bearing subtool results are attached after the cell.'
 const RUN_CODE_CODE_DESCRIPTION = 'Code for the next REPL cell, parsed as the body of an async TypeScript function.'
@@ -13,7 +18,7 @@ const RUN_CODE_DESCRIPTION_DESCRIPTION = 'Short active-voice summary of what thi
 const CODE_TRANSPORT_INSTRUCTION = '`run_code` and `edit_run_code` are the only tools callable directly. Call every native tool declared by the SDK from inside a program.'
 const PTC_COLLAPSE_SECTION_NAMES = Object.freeze(['tools:ptc-only', 'tools:code-only'])
 
-function adaptRunCodeSchema(tool) {
+function adaptRunCodeSchema(tool, allowMissingDescription = false) {
   const parameters = tool.parameters
   const properties = isRecord(parameters) ? parameters.properties : undefined
   const code = isRecord(properties) ? properties.code : undefined
@@ -28,6 +33,9 @@ function adaptRunCodeSchema(tool) {
     description: RUN_CODE_TOOL_DESCRIPTION,
     parameters: {
       ...parameters,
+      ...(allowMissingDescription && Array.isArray(parameters.required)
+        ? { required: parameters.required.filter(name => name !== 'description') }
+        : {}),
       properties: {
         ...properties,
         code: { ...code, description: RUN_CODE_CODE_DESCRIPTION },
@@ -147,6 +155,7 @@ export function createDirectSurfaceOwner({
   const sessions = new Map()
   const cordisRecovery = createCordisRecoveryPolicy(runtimeConfig.cordisToolsEnabled)
   let currentCanonicalizeToolCalls = canonicalizeToolCalls
+  let currentAutoDescribeRunCode = runtimeConfig.autoDescribeRunCode
   const tipConfig = {
     enabled: runtimeConfig.tipsEnabled,
     cooldownMessages: runtimeConfig.tipCooldownMessages,
@@ -187,9 +196,9 @@ export function createDirectSurfaceOwner({
     return undefined
   }
 
-  const rememberRequest = (id, signal, presentation, nativeSchemas) => {
+  const rememberRequest = (id, signal, presentation, nativeSchemas, autoDescribeRunCode) => {
     const owner = sessionOwner(id)
-    const request = { presentation, nativeSchemas, owner }
+    const request = { presentation, nativeSchemas, autoDescribeRunCode, owner }
     owner.latestRequest = request
     if (signal !== undefined) canonicalRequests.set(signal, request)
   }
@@ -211,12 +220,15 @@ export function createDirectSurfaceOwner({
   return Object.freeze({
     reconfigure(nextConfig) {
       currentCanonicalizeToolCalls = nextConfig.canonicalizeToolCalls
+      currentAutoDescribeRunCode = nextConfig.autoDescribeRunCode
       cordisRecovery.reconfigure(nextConfig.cordisToolsEnabled)
       tipConfig.enabled = nextConfig.tipsEnabled
       tipConfig.cooldownMessages = nextConfig.tipCooldownMessages
       tipConfig.escalationFailures = nextConfig.tipEscalationFailures
     },
     async assemble(initialAssembly, context, next) {
+      // Keep schema projection and later execution on one configuration snapshot.
+      const autoDescribeRunCode = currentAutoDescribeRunCode
       const agent = context?.agent
       const id = sessionId(agent)
       const initialState = presentationState(initialAssembly)
@@ -252,7 +264,7 @@ export function createDirectSurfaceOwner({
           throw new Error(`ptc-plus: ${presentation} agent composition assembled without run_code`)
         }
         if (id !== undefined) {
-          rememberRequest(id, requestSignal, 'native', new Map())
+          rememberRequest(id, requestSignal, 'native', new Map(), autoDescribeRunCode)
         }
         return assembly
       }
@@ -265,7 +277,7 @@ export function createDirectSurfaceOwner({
       let directTools = tools
       if (sessionPtcProjection) {
         editTransport.ensureInstalled(agent)
-        directTools = [adaptRunCodeSchema(runCode), editRunCodeSchema()]
+        directTools = [adaptRunCodeSchema(runCode, autoDescribeRunCode), editRunCodeSchema()]
       }
       const runtimeContexts = sessionPtc
         ? sessionRuntimeContexts(agent, tipConfig, {
@@ -300,14 +312,16 @@ export function createDirectSurfaceOwner({
               && schema.name !== RUN_CODE && schema.name !== EDIT_RUN_CODE)
             .map(schema => [schema.name, schema]))
           : new Map()
-        rememberRequest(id, requestSignal, presentation, nativeSchemas)
+        rememberRequest(id, requestSignal, presentation, nativeSchemas, autoDescribeRunCode)
       }
 
       return {
         ...assembly,
         tools: sessionPtcProjection
           ? directTools
-          : directTools.map(tool => tool?.name === RUN_CODE ? adaptRunCodeSchema(tool) : tool),
+          : directTools.map(tool => tool?.name === RUN_CODE
+            ? adaptRunCodeSchema(tool, autoDescribeRunCode)
+            : tool),
         sections,
         contexts,
       }
@@ -342,6 +356,48 @@ export function createDirectSurfaceOwner({
       }
       if (policy?.presentation !== 'ptc') return undefined
       return rejection(`tool ${exec.name} is not a direct PTC tool; use run_code or edit_run_code directly, and call native tools from inside run_code`)
+    },
+    executionArguments(exec) {
+      const id = sessionId(exec.agent)
+      const policy = executionPolicy(id, exec.callId)
+        ?? requestPolicy(exec?.signal, id)
+      const originalArguments = exec.arguments
+      if (exec.name !== RUN_CODE || exec.parent !== undefined
+        || policy?.autoDescribeRunCode !== true || policy.presentation === 'native'
+        || !isRecord(originalArguments) || Object.hasOwn(originalArguments, 'description')
+        || typeof originalArguments.code !== 'string') {
+        return originalArguments
+      }
+      return generatedRunCodeExecutionArguments(originalArguments)
+    },
+    argumentDiagnostic(exec, result) {
+      let diagnosed = result
+      if (result !== null && typeof result === 'object') {
+        const meta = generatedRunCodeDescriptionMeta(exec.arguments, result.meta)
+        diagnosed = {
+          ...result,
+          ...(meta === undefined ? {} : { meta }),
+        }
+      }
+      if (exec?.name !== RUN_CODE || diagnosed?.isError !== true) return diagnosed
+      const missingPath = missingDescriptionPath(diagnosed.error)
+      if (missingPath === undefined) return diagnosed
+      const id = sessionId(exec.agent)
+      const policy = executionPolicy(id, exec.callId)
+        ?? requestPolicy(exec?.signal, id)
+      const outer = missingPath === 'description'
+        && policy?.autoDescribeRunCode !== true
+        && !(isRecord(exec.arguments) && typeof exec.arguments.description === 'string')
+      const context = {
+        name: 'tools:ptc-plus-run-code-arguments',
+        text: outer
+          ? 'The run_code outer transport arguments are invalid at JSON path $.description. Add a sibling string `description` field to run_code; a description nested inside a native-tool argument does not satisfy this outer requirement.'
+          : `A nested native-tool argument is missing required property "${missingPath}". Add a string description at that path in the native-tool arguments; the outer run_code description does not satisfy this nested requirement.`,
+      }
+      return {
+        ...diagnosed,
+        additionalContexts: [...diagnosed.additionalContexts ?? [], context],
+      }
     },
     handleResult(exec) {
       const id = sessionId(exec.agent)

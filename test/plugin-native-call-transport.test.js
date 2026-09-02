@@ -3,7 +3,10 @@ import { AsyncLocalStorage } from 'node:async_hooks'
 import { access, rm } from 'node:fs/promises'
 import { isAbsolute } from 'node:path'
 import test from 'node:test'
+import { defineTool } from '@deepseek-ai/dsh-tools'
 import { Config } from '../index.js'
+import { CONFIG_DEFAULTS } from '../internal/config-spec.js'
+import { createDirectSurfaceOwner } from '../internal/direct-surface-owner.js'
 import { normalizeJournal } from '../internal/session-journal.js'
 import { projectSessionLog } from '../internal/session-log-view.js'
 import { SessionRuntime } from '../internal/session-runtime.js'
@@ -198,6 +201,201 @@ test('canonicalizes proven native miscalls while declared edit calls keep their 
   assert.deepEqual(await execute({ name: 'read', parent: {}, agent }, async () => ({ value: 'nested' })), {
     value: 'nested',
   })
+})
+
+test('keeps run_code description strict by default and derives valid execution arguments when enabled', async (t) => {
+  const session = { id: 'description-policy-session', events: [] }
+  let validatedArguments
+  const strictRunCode = defineTool({
+    name: 'run_code',
+    description: 'Execute one standalone program.',
+    parameters: {
+      code: { type: 'string', required: true },
+      description: { type: 'string', required: true },
+    },
+    output: {
+      schema: { type: 'integer' },
+      render: () => [],
+    },
+    async execute(args) {
+      validatedArguments = args
+      return args.code.length
+    },
+  })
+  for (const enabled of [false, true]) {
+    const state = fixture({ autoDescribeRunCode: enabled })
+    state.runCodeDefinition.execute = strictRunCode.execute
+    const agent = ptcAgent(`description-policy-agent-${enabled}`, session)
+    const signal = new AbortController().signal
+    const assembly = {
+      sections: [{ name: 'tools:code-only', text: 'code-only' }],
+      contexts: [], variables: {}, tools: [state.runCodeDefinition],
+    }
+    const projected = await state.assemble(assembly, { agent, scope: agent, signal })
+    const runSchema = projected.tools.find(tool => tool.name === 'run_code')
+    assert.equal(runSchema.parameters.required.includes('description'), !enabled)
+    const execute = state.listeners.get('tools/execute')[0]
+    const exec = {
+      name: 'run_code', callId: `missing-description-${enabled}`,
+      arguments: { code: 'return tools.read({ description: "inner" })' }, agent, signal,
+    }
+    const originalArguments = exec.arguments
+    validatedArguments = undefined
+    const result = await execute(exec, async () => {
+      assert.equal(exec.arguments, originalArguments)
+      assert.equal(Object.hasOwn(exec.arguments, 'description'), false)
+      try {
+        const value = await state.runCodeDefinition.execute(exec.arguments)
+        return { isError: false, value }
+      } catch (error) {
+        return {
+          isError: true,
+          error: { message: error.message },
+          content: [{ type: 'text', text: `Error: ${error.message}` }],
+        }
+      }
+    })
+    assert.equal(exec.arguments, originalArguments)
+    assert.equal(Object.hasOwn(exec.arguments, 'description'), false)
+    assert.equal(exec.arguments.code, 'return tools.read({ description: "inner" })')
+    assert.equal(result.isError, !enabled)
+    assert.deepEqual(
+      validatedArguments,
+      enabled
+        ? {
+            code: originalArguments.code,
+            description: 'Execute the next TypeScript cell in this session',
+          }
+        : undefined,
+    )
+    assert.equal(
+      result.meta?.dshPtcPlusRunCodeDescription,
+      enabled ? 'Execute the next TypeScript cell in this session' : undefined,
+    )
+    if (!enabled) {
+      assert.match(result.additionalContexts?.[0]?.text ?? '', /outer transport arguments.*nested inside a native-tool argument/)
+    }
+    await state.dispose()
+    assert.equal(state.runCodeDefinition.execute, strictRunCode.execute)
+  }
+})
+
+test('keeps generated run_code summaries in the supported success presentation projection', async (t) => {
+  const state = fixture({ autoDescribeRunCode: true })
+  t.after(() => state.dispose())
+  const session = { id: 'generated-description-success-session', events: [] }
+  const agent = ptcAgent('generated-description-success-agent', session)
+  const signal = new AbortController().signal
+  await state.assemble({
+    sections: [{ name: 'tools:code-only', text: 'code-only' }],
+    contexts: [], variables: {}, tools: [state.runCodeDefinition],
+  }, { agent, scope: agent, signal })
+  const execute = state.listeners.get('tools/execute')[0]
+  const exec = {
+    name: 'run_code', callId: 'generated-description-success-call',
+    arguments: { code: 'return 1' }, agent, signal,
+  }
+  const result = await execute(exec, async () => ({ isError: false, value: 1 }))
+  assert.equal(
+    result.meta.dshPtcPlusRunCodeDescription,
+    'Execute the next TypeScript cell in this session',
+  )
+  const persistedMeta = state.runCodeDefinition.output.presentationMeta(exec.arguments, 1)
+  assert.equal(
+    persistedMeta.dshPtcPlusRunCodeDescription,
+    'Execute the next TypeScript cell in this session',
+  )
+})
+
+test('annotates generated descriptions and nested missing-description paths', async (t) => {
+  const state = fixture({ autoDescribeRunCode: true })
+  t.after(() => state.dispose())
+  const session = { id: 'generated-description-meta-session', events: [] }
+  const agent = ptcAgent('generated-description-meta-agent', session)
+  const signal = new AbortController().signal
+  await state.assemble({
+    sections: [{ name: 'tools:code-only', text: 'code-only' }],
+    contexts: [], variables: {}, tools: [state.runCodeDefinition],
+  }, { agent, scope: agent, signal })
+  const execute = state.listeners.get('tools/execute')[0]
+  const result = await execute({
+    name: 'run_code', callId: 'generated-description-meta-call',
+    arguments: { code: 'return 1' }, agent, signal,
+  }, async () => ({
+    isError: true,
+    error: {
+      message: 'missing required property "options.command"; missing required property "options.description"',
+    },
+  }))
+  assert.equal(result.meta.dshPtcPlusRunCodeDescription, 'Execute the next TypeScript cell in this session')
+  assert.match(result.additionalContexts[0].text, /options\.description/)
+})
+
+test('pins auto-description behavior to the request assembly despite live setting changes', async (t) => {
+  const assembly = {
+    sections: [{ name: 'tools:code-only', text: 'code-only' }],
+    contexts: [], variables: {}, tools: [{
+      name: 'run_code',
+      description: 'Execute one standalone program.',
+      parameters: {
+        type: 'object',
+        properties: {
+          code: { type: 'string' },
+          description: { type: 'string' },
+        },
+        required: ['code', 'description'],
+      },
+    }],
+  }
+  for (const initiallyEnabled of [true, false]) {
+    const runtimeConfig = { ...CONFIG_DEFAULTS, autoDescribeRunCode: initiallyEnabled }
+    const owner = createDirectSurfaceOwner({
+      editTransport: {
+        isInstalled: () => true,
+        ensureInstalled() {},
+      },
+      runtimeConfig,
+      canonicalizeToolCalls: false,
+      sessionId: agent => agent.id,
+      toolSchemasForAgent: () => [],
+    })
+    t.after(() => owner.dispose())
+    const agent = { id: `description-race-${initiallyEnabled}` }
+    const signal = new AbortController().signal
+    const projected = await owner.assemble(assembly, { agent, signal }, async () => assembly)
+    assert.equal(
+      projected.tools[0].parameters.required.includes('description'),
+      !initiallyEnabled,
+    )
+
+    owner.reconfigure({ ...runtimeConfig, autoDescribeRunCode: !initiallyEnabled })
+    const exec = {
+      name: 'run_code',
+      callId: `description-race-call-${initiallyEnabled}`,
+      arguments: { code: 'return 1' },
+      agent,
+      signal,
+    }
+    const originalArguments = exec.arguments
+    owner.executionRejection(exec)
+    const executionArguments = owner.executionArguments(exec)
+    assert.equal(exec.arguments, originalArguments)
+    assert.equal(Object.hasOwn(exec.arguments, 'description'), false)
+    assert.equal(
+      executionArguments.description,
+      initiallyEnabled ? 'Execute the next TypeScript cell in this session' : undefined,
+    )
+    const result = owner.argumentDiagnostic(exec, { isError: false })
+    assert.equal(
+      result.meta?.dshPtcPlusRunCodeDescription,
+      initiallyEnabled ? 'Execute the next TypeScript cell in this session' : undefined,
+    )
+
+    const explicitArguments = { code: 'return 2', description: 'Keep this summary' }
+    const explicitExec = { ...exec, arguments: explicitArguments }
+    assert.equal(owner.executionArguments(explicitExec), explicitArguments)
+    assert.equal(explicitExec.arguments, explicitArguments)
+  }
 })
 
 test('rejects a later native assembly without changing the captured code request', async (t) => {

@@ -98,26 +98,37 @@ test('checked client bundle is loadable through the DSH module loader contract',
   assert.match(sourceModule, /The session-bound TypeScript REPL for PTC mode\./)
   assert.match(sourceModule, /Expand PTC Plus settings/)
   assert.doesNotMatch(sourceModule, /ptcPlusActivityPanel/)
-  assert.doesNotMatch(sourceModule, /useConversation\b|useSession\b/)
+  assert.doesNotMatch(sourceModule, /useConversation\b/)
+  assert.match(sourceModule, /useSession/)
   assert.match(sourceModule, /CodeBlock/)
+  assert.match(sourceModule, /DisclosureRow/)
+  assert.doesNotMatch(sourceModule, /rowClassName|leadingClassName|chevronClassName|titleClassName/)
   assert.match(sourceModule, /align-items:center/)
   assert.match(sourceModule, /\.ptcPlusToolSummary\{[^}]*box-sizing:border-box[^}]*min-height:32px[^}]*align-items:center/)
   assert.match(sourceModule, /\.ptcPlusToolState\{[^}]*height:20px[^}]*align-items:center[^}]*[^}]*line-height:20px/)
   assert.match(sourceModule, /\.ptcPlusToolDescription\{[^}]*min-height:20px[^}]*align-items:center/)
+  assert.match(sourceModule, /\.ptcPlusToolPreview\{[^}]*overflow:hidden/)
+  assert.match(sourceModule, /\.ptcPlusToolPreview \.ptcPlusFeatures\{[^}]*flex-wrap:nowrap[^}]*overflow:hidden/)
   assert.doesNotMatch(sourceModule, /\.ptcPlusToolDescription\{[^}]*;height:20px/)
+  assert.match(sourceModule, /\.ptcPlusIoCard\{[^}]*border-radius:12px[^}]*--dsw-alias-markdown-code-block/)
+  assert.match(sourceModule, /\.ptcPlusIoText\[data-error\]\{/)
+  assert.match(sourceModule, /\.ptcPlusInspect\{[^}]*border-radius:999px[^}]*opacity:0[^}]*transition:opacity/)
+  assert.match(sourceModule, /\.ptcPlusTool:hover \.ptcPlusInspect/)
+  assert.match(sourceModule, /\.ptcPlusInspect:focus-visible/)
+  assert.doesNotMatch(sourceModule, /\.ptcPlusToolCode\.md-code-block>:first-child:has\(button\)/)
   assert.doesNotMatch(sourceModule, /feature\.volatile|feature\.discarded/)
   assert.doesNotMatch(sourceModule, /activity\.cells|activity\.recoveries/)
   assert.match(sourceModule, /\.ptcPlusActive\{[^}]*--dsw-alias-state-success-primary/)
   assert.match(sourceModule, /\.ptcPlusReplPopover\{[^}]*position:fixed[^}]*z-index:2147483000/)
   assert.match(sourceModule, /\.ptcPlusReplPopover:popover-open/)
   assert.match(sourceModule, /\.ptcPlusReplList\{[^}]*overflow:auto[^}]*overscroll-behavior:contain/)
-  assert.match(sourceModule, /\.ptcPlusReplKind\[data-kind=variable\]/)
-  assert.match(sourceModule, /\.ptcPlusReplKind\[data-kind=function\]/)
-  assert.match(sourceModule, /\.ptcPlusReplKind\[data-kind=class\]/)
-  assert.match(sourceModule, /\.ptcPlusReplKind\[data-kind=import\]/)
-  assert.match(sourceModule, /\.ptcPlusReplBinding\{grid-template-columns:56px minmax\(0,1fr\) auto/)
-  assert.match(sourceModule, /\.ptcPlusReplKind\{grid-column:1[^}]*width:52px/)
-  assert.match(sourceModule, /\.ptcPlusReplName\{grid-column:2/)
+  assert.match(sourceModule, /\.ptcPlusReplName\[data-kind=variable\]/)
+  assert.match(sourceModule, /\.ptcPlusReplName\[data-kind=function\]/)
+  assert.match(sourceModule, /\.ptcPlusReplName\[data-kind=class\]/)
+  assert.match(sourceModule, /\.ptcPlusReplName\[data-kind=import\]/)
+  assert.match(sourceModule, /\.ptcPlusReplBinding\{grid-template-columns:minmax\(0,1fr\) 24px/)
+  assert.match(sourceModule, /\.ptcPlusReplDefinitionWrap\{[^}]*grid-template-rows:0fr[^}]*transition:grid-template-rows/)
+  assert.match(sourceModule, /content-visibility:auto/)
   assert.match(sourceModule, /popover\.showPopover\(\)/)
   assert.match(sourceModule, /normalizeReplMemorySnapshot/)
   assert.match(sourceModule, /ptcPlusToolState/)
@@ -143,6 +154,7 @@ test('settings, header indicator, and tool rows follow the DSH locale dictionari
   }
   const primitives = {
     CodeBlock() {},
+    DisclosureRow() {},
     IconCheckOutline14: 'IconCheck',
     IconChevronDownOutline14: 'IconChevron',
     IconInspectOutline12: 'IconInspect',
@@ -228,6 +240,10 @@ test('settings, header indicator, and tool rows follow the DSH locale dictionari
         if (typeof current.props?.['aria-label'] === 'string') texts.push(current.props['aria-label'])
         if (typeof current.props?.title === 'string') texts.push(current.props.title)
         current.children.forEach(collect)
+        if (current.props?.collapsedContent !== undefined) collect(current.props.collapsedContent)
+        if (current.props?.children !== undefined && current.props.children !== null) {
+          collect(current.props.children)
+        }
       }
     }
     collect(value)
@@ -287,6 +303,22 @@ test('settings, header indicator, and tool rows follow the DSH locale dictionari
   assert.equal(renderIndicator({ projectionValues: { agentPreset: 'chat' } }), null)
   assert.equal(renderIndicator({ projectionValues: { agentPreset: 'ptc' } }, false), null)
 
+  const standardKitSession = {
+    sessionId: 'session-1',
+    projectionValues: { agentPreset: 'ptc' },
+  }
+  settingsSnapshot = { status: 'ready', writable: true, value: { enabled: true } }
+  const standardKitIndicator = indicator.component({
+    sessionId: 'session-1',
+    t: key => key,
+    useSession: selector => selector(standardKitSession),
+    useProjection: key => key === 'ptcPlusRepl' ? {
+      available: true, entries: [], total: 0, omitted: 0,
+    } : undefined,
+    useSessions: selector => selector({ byId: {} }),
+  })
+  assert.notEqual(standardKitIndicator, null)
+
   const memoryIndicator = renderIndicator({
     projectionValues: {
       agentPreset: 'ptc',
@@ -321,11 +353,26 @@ test('settings, header indicator, and tool rows follow the DSH locale dictionari
   assert.ok(memoryTexts.includes('memory.title'))
   assert.ok(memoryTexts.includes('Widget'))
   assert.ok(memoryTexts.includes('answer'))
-  assert.ok(memoryTexts.includes('memory.kind.class'))
-  assert.ok(memoryTexts.includes('memory.kind.variable'))
-  assert.ok(memoryTexts.includes('class Widget {}'))
-  assert.ok(memoryTexts.includes('const answer = 42'))
-  assert.ok(memoryTexts.includes('memory.inspect'))
+  assert.equal(memoryTexts.includes('memory.kind.class'), false)
+  assert.equal(memoryTexts.includes('memory.kind.variable'), false)
+  const findByClass = (value, className) => {
+    if (Array.isArray(value)) return value.map(item => findByClass(item, className)).find(Boolean)
+    if (!value || typeof value !== 'object') return undefined
+    if (value.props?.className === className) return value
+    return findByClass(value.children, className)
+  }
+  const memoryName = findByClass(memoryCard, 'ptcPlusReplName')
+  assert.equal(memoryName.props['data-kind'], 'class')
+  assert.equal(memoryName.props.title, 'Widget - memory.kind.class')
+  const bindingRow = findByClass(memoryCard, 'ptcPlusReplBinding')
+  assert.equal(bindingRow.props.role, undefined)
+  const bindingTrigger = findByClass(memoryCard, 'ptcPlusReplBindingTrigger')
+  assert.equal(bindingTrigger.type, 'button')
+  assert.equal(bindingTrigger.props.type, 'button')
+  assert.equal(bindingTrigger.props['aria-expanded'], false)
+  assert.equal(bindingTrigger.props['aria-controls'], undefined)
+  assert.equal(findByClass(memoryCard, 'ptcPlusReplDefinitionWrap'), undefined)
+  assert.equal(memoryTexts.includes('memory.inspect'), false)
   assert.ok(memoryTexts.indexOf('Widget') < memoryTexts.indexOf('answer'))
 
   const memoryUseState = React.useState
@@ -333,8 +380,13 @@ test('settings, header indicator, and tool rows follow the DSH locale dictionari
   const expandedMemoryCard = memoryComponent.type(memoryComponent.props)
   React.useState = memoryUseState
   const expandedMemoryTexts = collectTexts(expandedMemoryCard)
-  assert.ok(expandedMemoryTexts.includes('memory.collapse'))
   assert.ok(expandedMemoryTexts.includes('memory.location'))
+  const expandedDefinition = findByClass(expandedMemoryCard, 'ptcPlusReplDefinitionWrap')
+  assert.equal(expandedDefinition.props.role, 'region')
+  assert.equal(expandedDefinition.props['aria-hidden'], undefined)
+  const expandedTrigger = findByClass(expandedMemoryCard, 'ptcPlusReplBindingTrigger')
+  assert.equal(expandedTrigger.props['aria-expanded'], true)
+  assert.match(expandedTrigger.props['aria-controls'], /-binding-0$/)
 
   const originalUseRef = React.useRef
   const originalUseEffect = React.useEffect
@@ -450,11 +502,37 @@ test('settings, header indicator, and tool rows follow the DSH locale dictionari
     }
     if (!value || typeof value !== 'object') return undefined
     if (value.type === type) return value
-    return findElement(value.children, type)
+    const fromChildren = findElement(value.children, type)
+    if (fromChildren !== undefined) return fromChildren
+    const fromCollapsed = findElement(value.props?.collapsedContent, type)
+    if (fromCollapsed !== undefined) return fromCollapsed
+    return findElement(value.props?.children, type)
   }
   const codeBlock = findElement(highlighted, primitives.CodeBlock)
   assert.equal(codeBlock?.props.lang, 'typescript')
   assert.equal(codeBlock?.props.code, 'import path from "node:path"')
+  const disclosure = findElement(highlighted, primitives.DisclosureRow)
+  assert.ok(disclosure)
+  assert.equal(disclosure.props.collapsedContent.type, 'div')
+  assert.equal(disclosure.props.collapsedContent.props.className, 'ptcPlusToolPreview')
+  assert.equal(disclosure.props.collapsedContent.children[0].props.className, 'ptcPlusToolSummaryLine')
+  assert.equal(disclosure.props.collapsedContent.children[1].props.className, 'ptcPlusFeatures')
+  assert.equal(disclosure.props.children.props.className, 'ptcPlusToolBody')
+  const expandedDisclosure = findElement(expanded, primitives.DisclosureRow)
+  assert.ok(expandedDisclosure)
+  assert.equal(expandedDisclosure.props.collapsedContent.props.className, 'ptcPlusToolPreview')
+  assert.equal(expandedDisclosure.props.collapsedContent.children[1].props.className, 'ptcPlusFeatures')
+  assert.equal(expandedDisclosure.props.children.props.className, 'ptcPlusToolBody')
+  const expandedBody = expandedDisclosure.props.children
+  const resultSection = expandedBody.children[1]
+  assert.equal(resultSection.props.className, 'ptcPlusToolSection')
+  const resultCard = resultSection.children[1]
+  assert.equal(resultCard.props.className, 'ptcPlusIoCard')
+  const resultText = resultCard.children[0]
+  assert.equal(resultText.props.className, 'ptcPlusIoText')
+  assert.equal(resultText.props['data-error'], undefined)
+  const inspectButton = expandedBody.children[2]
+  assert.equal(inspectButton.props.className, 'ptcPlusInspect')
 
   const runningTexts = collectTexts(runCodeView({
     ...toolOwner(),
@@ -480,6 +558,9 @@ test('settings, header indicator, and tool rows follow the DSH locale dictionari
   ))
   assert.equal(activeToolviews().length, 2)
   settingsSnapshot = { status: 'ready', writable: true, value: { enabled: false } }
+  preferenceListeners.forEach(listener => listener())
+  assert.equal(activeToolviews().length, 0)
+  settingsSnapshot = { status: 'ready', writable: true, value: { enabled: true, enhancedToolView: false } }
   preferenceListeners.forEach(listener => listener())
   assert.equal(activeToolviews().length, 0)
   settingsSnapshot = { status: 'ready', writable: true, value: { enabled: true } }

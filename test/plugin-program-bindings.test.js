@@ -855,3 +855,23 @@ test('ignores throwing diagnostic accessors on native tool errors', async (t) =>
   assert.match(observed.raw.error.message, /cause: original host failure/)
   assert.deepEqual(await state.run('host-hostile-error', 'return 42'), { logs: [], value: 42 })
 })
+
+test('distinguishes nested native missing descriptions from the outer run_code transport', async (t) => {
+  const state = fixture()
+  t.after(() => state.dispose())
+  const observed = await state.executeRun(
+    'nested-description-diagnostic',
+    'return await tools.read({ command: "pwd" })',
+    {
+      read: async () => {
+        throw new Error('invalid arguments: missing required property "options.description"')
+      },
+    },
+    {},
+  )
+  const failure = observed.result.meta.dshPtcPlus.diagnostics[0]
+  assert.equal(failure.code, 'PTC-X001')
+  assert.match(failure.message, /nested native tool arguments.*JSON path \$\.options\.description/)
+  assert.match(failure.message, /outer run_code transport/)
+  assert.ok(failure.help.some(item => /nested native-tool argument object/.test(item)))
+})

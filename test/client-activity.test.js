@@ -131,6 +131,14 @@ test('derives useful feature events without exposing counters or recovery bounda
   assert.equal(JSON.stringify(view).includes('cells'), false)
 })
 
+test('uses generated run_code summaries from persisted result metadata', () => {
+  const view = derivePtcToolView(result({
+    dshPtcPlus: normalizeJournal(journal()),
+    dshPtcPlusRunCodeDescription: 'Execute the next TypeScript cell in this session',
+  }, { description: '' }), 'run_code')
+  assert.equal(view.description, 'Execute the next TypeScript cell in this session')
+})
+
 test('does not infer canonicalizer provenance from model-copyable code and description', () => {
   const valid = normalizeJournal(journal())
   const canonical = derivePtcToolView(result(

@@ -13,6 +13,24 @@
       descriptionEn: ""
     },
     {
+      key: "enhancedToolView",
+      type: "boolean",
+      default: true,
+      label: "\u4F7F\u7528 PTC Plus \u589E\u5F3A\u5DE5\u5177\u5361\u7247",
+      labelEn: "Use enhanced PTC Plus tool cards",
+      description: "\u5173\u95ED\u540E\u4F7F\u7528 DSH \u539F\u751F run_code / edit_run_code \u5DE5\u5177\u5361\u7247\u3002",
+      descriptionEn: "When off, use DSH native run_code / edit_run_code tool cards."
+    },
+    {
+      key: "autoDescribeRunCode",
+      type: "boolean",
+      default: false,
+      label: "\u81EA\u52A8\u8865\u5168 run_code \u6458\u8981",
+      labelEn: "Auto-fill run_code summaries",
+      description: "\u4EC5\u5728\u7F3A\u5C11\u5916\u5C42\u6458\u8981\u65F6\u751F\u6210\u56FA\u5B9A\u7684 UI \u6458\u8981\uFF1B\u4E0D\u4F1A\u6539\u5199\u4EE3\u7801\u6216 native \u5DE5\u5177\u53C2\u6570\u3002",
+      descriptionEn: "Generate a fixed UI summary only when the outer summary is missing; code and native tool arguments stay unchanged."
+    },
+    {
       key: "cordisToolsEnabled",
       type: "boolean",
       default: false,
@@ -451,6 +469,9 @@
       return false;
     }
   }
+  function isCountableJournal(value) {
+    return isReadableJournal(value) && JOURNAL_STATUSES.has(value.status) && Array.isArray(value.calls) && Array.isArray(value.operations) && Array.isArray(value.diagnostics);
+  }
   function isValidRewrites(value, journal) {
     try {
       return journal.status !== "noop" && isValidRewritePolicy(journal.rewritePolicy) && Array.isArray(value) && value.every((rewrite) => hasClosedFields(rewrite, REWRITE_FIELDS, ["kind", "description"]) && REWRITE_KINDS.has(rewrite.kind) && journal.rewritePolicy[REWRITE_POLICY_BY_KIND[rewrite.kind]] === true && typeof rewrite.description === "string" && rewrite.description.length > 0 && (rewrite.source === void 0 || typeof rewrite.source === "string"));
@@ -513,6 +534,7 @@
     }
   }
   var MIXED_REDECLARATION = "split a mixed top-level declaration while preserving native pattern initialization";
+  var GENERATED_RUN_CODE_DESCRIPTION_KEY = "dshPtcPlusRunCodeDescription";
   function rewriteFeature(rewrites, predicate, key) {
     const matching = rewrites.filter(predicate);
     if (matching.length === 0) return void 0;
@@ -548,10 +570,12 @@
     const argsRaw = isRecord(block) ? rawArguments(block, settled) : "";
     const args = parseArguments(argsRaw);
     const code = typeof args?.code === "string" ? args.code : argsRaw;
-    const description = typeof args?.description === "string" && args.description.length > 0 ? args.description.split(/\r?\n/, 1)[0] : "";
+    const explicitDescription = typeof args?.description === "string" && args.description.length > 0 ? args.description : void 0;
+    const generatedDescription = settled && isRecord(block.meta) && typeof block.meta[GENERATED_RUN_CODE_DESCRIPTION_KEY] === "string" && block.meta[GENERATED_RUN_CODE_DESCRIPTION_KEY].length > 0 ? block.meta[GENERATED_RUN_CODE_DESCRIPTION_KEY] : void 0;
+    const description = (explicitDescription ?? generatedDescription)?.split(/\r?\n/, 1)[0] ?? "";
     const output = settled ? resultText(block) : "";
     const state = !settled ? "running" : block.error?.code === "interrupted" ? "stopped" : block.isError === true ? "error" : "ok";
-    const journal = settled && isRecord(block.meta) && isReadableJournal(block.meta.dshPtcPlus) ? block.meta.dshPtcPlus : void 0;
+    const journal = settled && isRecord(block.meta) && isCountableJournal(block.meta.dshPtcPlus) ? block.meta.dshPtcPlus : void 0;
     if (journal === void 0) {
       return Object.freeze({ state, description, code, output, ptc: false, features: Object.freeze([]) });
     }
@@ -655,12 +679,19 @@
 .ptcPlusRow{display:flex;align-items:center;gap:12px;min-height:48px;border-top:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1))}.ptcPlusRow:first-child{border-top:0}.ptcPlusMain{flex:1;min-width:0}.ptcPlusLabel{font-size:14px;font-weight:500;line-height:20px}.ptcPlusDetail,.ptcPlusMessage{color:var(--dsw-alias-label-tertiary,#74777d);font-size:12px;line-height:18px;overflow-wrap:anywhere}.ptcPlusInput{box-sizing:border-box;min-width:72px;width:140px;padding:5px 8px;border:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1));border-radius:6px;background:var(--dsw-alias-bg-layer-1,#fff);color:inherit;font:12px/18px ui-monospace,SFMono-Regular,Consolas,monospace}.ptcPlusCheck{width:18px;height:18px;accent-color:var(--dsw-alias-interactive-primary,#4d6bfe)}
 .ptcPlusFooter{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:8px}.ptcPlusButton{min-height:32px;padding:0 12px;border:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1));border-radius:6px;background:transparent;color:inherit;cursor:pointer;font:500 13px/20px inherit;transition:background-color .16s ease,border-color .16s ease}.ptcPlusButton:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover,rgba(38,49,72,.06))}.ptcPlusButton:disabled,.ptcPlusInput:disabled,.ptcPlusCheck:disabled{cursor:not-allowed;opacity:.55}
 .ptcPlusActiveShell{display:inline-flex;align-items:center}.ptcPlusActive{appearance:none;display:inline-flex;height:24px;align-items:center;gap:5px;padding:0 8px;border:1px solid color-mix(in srgb,var(--dsw-alias-state-success-primary,#16794f) 32%,transparent);border-radius:6px;background:var(--dsw-alias-state-success-tertiary,#e7f7ef);color:var(--dsw-alias-state-success-primary,#16794f);cursor:help;font:600 12px/18px inherit;white-space:nowrap;transition:background-color .14s ease,border-color .14s ease}.ptcPlusActive:hover,.ptcPlusActive[aria-expanded=true]{border-color:color-mix(in srgb,var(--dsw-alias-state-success-primary,#16794f) 48%,transparent);background:color-mix(in srgb,var(--dsw-alias-state-success-primary,#16794f) 16%,var(--dsw-alias-bg-layer-3,#fff))}.ptcPlusActive:focus-visible{outline:2px solid var(--dsw-alias-state-success-primary,#16794f);outline-offset:2px}.ptcPlusReplPopover{position:fixed;z-index:2147483000;inset:auto;display:none;box-sizing:border-box;margin:0;padding:0;border:0;overflow:visible;background:transparent;color:var(--dsw-alias-label-primary,#18191c)}.ptcPlusReplPopover:popover-open,.ptcPlusReplPopover[data-open=true]{display:block}.ptcPlusReplPopover::backdrop{background:transparent}.ptcPlusReplCard{display:flex;max-height:inherit;overflow:hidden;flex-direction:column;border:1px solid color-mix(in srgb,var(--dsw-alias-state-success-primary,#16794f) 22%,var(--dsw-alias-border-l2,rgba(0,0,0,.1)));border-top:3px solid var(--dsw-alias-state-success-primary,#16794f);border-radius:8px;background:var(--dsw-alias-bg-layer-3,#fff);box-shadow:0 14px 36px rgba(16,24,40,.2),0 3px 10px rgba(16,24,40,.1);color:var(--dsw-alias-label-primary,#18191c);white-space:normal}.ptcPlusReplHead{display:grid;grid-template-columns:auto minmax(0,1fr);align-items:center;column-gap:8px;padding:11px 13px 10px;border-bottom:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1));background:color-mix(in srgb,var(--dsw-alias-state-success-primary,#16794f) 7%,var(--dsw-alias-bg-layer-3,#fff))}.ptcPlusReplStatusDot{grid-row:1/3;width:8px;height:8px;border-radius:50%;background:var(--dsw-alias-state-success-primary,#16794f);box-shadow:0 0 0 3px color-mix(in srgb,var(--dsw-alias-state-success-primary,#16794f) 14%,transparent)}.ptcPlusReplTitle,.ptcPlusReplSummary{display:block;min-width:0}.ptcPlusReplTitle{font-size:13px;font-weight:600;line-height:19px}.ptcPlusReplSummary{color:var(--dsw-alias-label-tertiary,#74777d);font-size:11px;line-height:16px}.ptcPlusReplList{min-height:0;margin:0;padding:5px 0;overflow:auto;overscroll-behavior:contain;list-style:none;scrollbar-gutter:stable}.ptcPlusReplBinding{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:4px 10px;padding:7px 12px}.ptcPlusReplBinding:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(38,49,72,.06))}.ptcPlusReplIdentity{display:flex;min-width:0;align-items:center;gap:7px}.ptcPlusReplName{min-width:0;overflow:hidden;font:12px/18px ui-monospace,SFMono-Regular,Consolas,monospace;text-overflow:ellipsis;white-space:nowrap}.ptcPlusReplKind{flex:none;padding:1px 6px;border:1px solid color-mix(in srgb,currentColor 22%,transparent);border-radius:999px;background:color-mix(in srgb,currentColor 10%,transparent);font-size:10px;font-weight:600;line-height:15px}.ptcPlusReplKind[data-kind=variable]{color:var(--dsw-alias-interactive-primary,#315fbd)}.ptcPlusReplKind[data-kind=function]{color:#7651b5}.ptcPlusReplKind[data-kind=class]{color:var(--dsw-alias-state-warning-primary,#946200)}.ptcPlusReplKind[data-kind=import]{color:#14766f}.ptcPlusReplPreview{grid-column:1;min-width:0;overflow:hidden;color:var(--dsw-alias-label-tertiary,#74777d);font:11px/16px ui-monospace,SFMono-Regular,Consolas,monospace;text-overflow:ellipsis;white-space:nowrap}.ptcPlusReplInspect{grid-column:2;grid-row:1/3;display:inline-flex;align-items:center;gap:4px;padding:3px 5px;border:0;border-radius:4px;background:transparent;color:var(--dsw-alias-label-secondary,#52565d);cursor:pointer;font:500 11px/17px inherit;white-space:nowrap}.ptcPlusReplInspect:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(38,49,72,.06));color:var(--dsw-alias-interactive-primary,#4d6bfe)}.ptcPlusReplInspect:focus-visible{outline:2px solid var(--dsw-alias-interactive-primary,#4d6bfe);outline-offset:1px}.ptcPlusReplDefinition{grid-column:1/-1;min-width:0;margin-top:4px;padding:8px;border-left:2px solid var(--dsw-alias-interactive-primary,#4d6bfe);background:var(--dsw-alias-bg-layer-2,rgba(38,49,72,.03))}.ptcPlusReplLocation{display:block;margin-bottom:5px;color:var(--dsw-alias-label-tertiary,#74777d);font-size:10px;line-height:15px}.ptcPlusReplCode{max-height:180px;margin:0;overflow:auto;color:inherit;font:11px/16px ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere}.ptcPlusReplEmpty,.ptcPlusReplMore{display:block;color:var(--dsw-alias-label-tertiary,#74777d)}.ptcPlusReplEmpty{padding:18px 13px;font-size:12px;line-height:18px}.ptcPlusReplMore{padding:8px 13px;border-top:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1));background:var(--dsw-alias-bg-layer-2,rgba(38,49,72,.03));font-size:11px;line-height:17px}
-.ptcPlusReplBinding{grid-template-columns:56px minmax(0,1fr) auto}.ptcPlusReplKind{grid-column:1;grid-row:1;box-sizing:border-box;display:inline-flex;width:52px;align-items:center;justify-content:center;padding:1px 4px}.ptcPlusReplName{grid-column:2}.ptcPlusReplPreview{grid-column:2}.ptcPlusReplInspect{grid-column:3}
-.ptcPlusTool{display:flex;min-width:0;flex-direction:column}.ptcPlusToolSummary{box-sizing:border-box;display:flex;min-width:0;min-height:32px;align-items:center;gap:7px;padding:0;color:inherit;line-height:20px}.ptcPlusToolSummary[data-expandable=true]{cursor:pointer}.ptcPlusToolSummary[data-expandable=true]:hover .ptcPlusToolTitle{color:var(--dsw-alias-interactive-primary,#4d6bfe)}.ptcPlusToolSummary:focus-visible{outline:2px solid var(--dsw-alias-interactive-primary,#4d6bfe);outline-offset:2px}.ptcPlusToolLeading{display:flex;width:16px;height:20px;flex:none;align-items:center;justify-content:center;color:var(--dsw-alias-label-tertiary,#74777d)}.ptcPlusToolChevron{transition:transform .16s ease}.ptcPlusToolChevron[data-open=true]{transform:rotate(180deg)}.ptcPlusToolTitle{display:flex;height:20px;flex:none;align-items:center;font-size:13px;font-weight:500;line-height:20px}.ptcPlusToolState{display:flex;height:20px;flex:none;align-items:center;color:var(--dsw-alias-label-tertiary,#74777d);font-size:11px;line-height:20px}.ptcPlusToolSummary[data-state=running] .ptcPlusToolState{color:var(--dsw-alias-interactive-primary,#4d6bfe)}.ptcPlusToolSummary[data-state=error] .ptcPlusToolState{color:var(--dsw-alias-state-danger-primary,#c43d3d)}.ptcPlusToolSummary[data-state=stopped] .ptcPlusToolState{color:var(--dsw-alias-state-warning-primary,#a15c00)}.ptcPlusToolSep{width:3px;height:3px;flex:none;border-radius:50%;background:var(--dsw-alias-label-tertiary,#74777d)}.ptcPlusToolDescription{display:flex;min-width:0;min-height:20px;align-items:center;overflow:hidden;color:var(--dsw-alias-label-secondary,#52565d);font-size:13px;line-height:20px;text-overflow:ellipsis;white-space:nowrap}.ptcPlusToolSummary[data-state=error] .ptcPlusToolDescription{color:var(--dsw-alias-state-danger-primary,#c43d3d)}.ptcPlusToolSummary[data-state=stopped] .ptcPlusToolDescription{color:var(--dsw-alias-state-warning-primary,#a15c00)}
+.ptcPlusReplList{max-height:min(52vh,480px)}.ptcPlusReplBinding{grid-template-columns:minmax(0,1fr) 24px;gap:3px 8px;min-height:36px;padding:5px 12px;content-visibility:auto;contain-intrinsic-size:36px;cursor:pointer;transition:background-color .16s ease}.ptcPlusReplBinding:focus-visible{outline:2px solid var(--dsw-alias-interactive-primary,#4d6bfe);outline-offset:-2px}.ptcPlusReplBinding[data-expanded=true]{background:color-mix(in srgb,var(--dsw-alias-interactive-primary,#4d6bfe) 5%,transparent)}.ptcPlusReplName{grid-column:1}.ptcPlusReplName[data-kind=variable]{color:var(--dsw-alias-interactive-primary,#315fbd)}.ptcPlusReplName[data-kind=function]{color:#7651b5}.ptcPlusReplName[data-kind=class]{color:var(--dsw-alias-state-warning-primary,#946200)}.ptcPlusReplName[data-kind=import]{color:#14766f}.ptcPlusReplPreview{grid-column:1}.ptcPlusReplChevron{grid-column:2;grid-row:1/3;display:flex;align-items:center;justify-content:center;color:var(--dsw-alias-label-tertiary,#74777d);transition:transform .2s ease}.ptcPlusReplChevron[data-open=true]{transform:rotate(180deg)}.ptcPlusReplDefinitionWrap{grid-column:1/-1;display:grid;grid-template-rows:0fr;min-width:0;transition:grid-template-rows .24s cubic-bezier(.2,.7,.2,1)}.ptcPlusReplDefinitionWrap[data-open=true]{grid-template-rows:1fr}.ptcPlusReplDefinitionInner{min-height:0;overflow:hidden}
+.ptcPlusTool{display:flex;min-width:0;flex-direction:column}.ptcPlusToolPreview{display:flex;min-width:0;flex:1 1 auto;flex-direction:row;align-items:center;overflow:hidden;margin-left:7px}.ptcPlusToolPreview .ptcPlusFeatures{flex:0 1 auto;flex-wrap:nowrap;overflow:hidden;margin:0 0 0 7px}.ptcPlusToolSummaryLine{box-sizing:border-box;display:flex;min-width:0;min-height:20px;flex:1 1 auto;align-items:center;gap:7px;padding:0;color:inherit;line-height:20px}.ptcPlusToolSummary{box-sizing:border-box;display:flex;min-width:0;min-height:32px;align-items:center;gap:7px;padding:0;color:inherit;line-height:20px}.ptcPlusToolSummary[data-expandable=true]{cursor:pointer}.ptcPlusToolSummary[data-expandable=true]:hover .ptcPlusToolTitle{color:var(--dsw-alias-interactive-primary,#4d6bfe)}.ptcPlusToolSummary:focus-visible{outline:2px solid var(--dsw-alias-interactive-primary,#4d6bfe);outline-offset:2px}.ptcPlusToolLeading{display:flex;width:16px;height:20px;flex:none;align-items:center;justify-content:center;color:var(--dsw-alias-label-tertiary,#74777d)}.ptcPlusToolChevron{transition:transform .16s ease}.ptcPlusToolChevron[data-open=true]{transform:rotate(180deg)}.ptcPlusToolTitle{display:flex;height:20px;flex:none;align-items:center;font-size:13px;font-weight:500;line-height:20px}.ptcPlusToolState{display:flex;height:20px;flex:none;align-items:center;color:var(--dsw-alias-label-tertiary,#74777d);font-size:11px;line-height:20px}.ptcPlusToolSummaryLine[data-state=running] .ptcPlusToolState,.ptcPlusToolSummary[data-state=running] .ptcPlusToolState{color:var(--dsw-alias-interactive-primary,#4d6bfe)}.ptcPlusToolSummaryLine[data-state=error] .ptcPlusToolState,.ptcPlusToolSummary[data-state=error] .ptcPlusToolState{color:var(--dsw-alias-state-danger-primary,#c43d3d)}.ptcPlusToolSummaryLine[data-state=stopped] .ptcPlusToolState,.ptcPlusToolSummary[data-state=stopped] .ptcPlusToolState{color:var(--dsw-alias-state-warning-primary,#a15c00)}.ptcPlusToolSep{width:3px;height:3px;flex:none;border-radius:50%;background:var(--dsw-alias-label-tertiary,#74777d)}.ptcPlusToolDescription{display:flex;min-width:0;min-height:20px;flex:1 1 auto;align-items:center;overflow:hidden;color:var(--dsw-alias-label-secondary,#52565d);font-size:13px;line-height:20px;text-overflow:ellipsis;white-space:nowrap}.ptcPlusToolPreview .ptcPlusFeature{flex:none;max-width:180px;white-space:nowrap}.ptcPlusToolPreview .ptcPlusFeatureDetail{max-width:120px}.ptcPlusToolSummaryLine[data-state=error] .ptcPlusToolDescription,.ptcPlusToolSummary[data-state=error] .ptcPlusToolDescription{color:var(--dsw-alias-state-danger-primary,#c43d3d)}.ptcPlusToolSummaryLine[data-state=stopped] .ptcPlusToolDescription,.ptcPlusToolSummary[data-state=stopped] .ptcPlusToolDescription{color:var(--dsw-alias-state-warning-primary,#a15c00)}
 .ptcPlusFeatures{display:flex;min-width:0;flex-wrap:wrap;gap:3px 14px;margin:0 0 5px 23px}.ptcPlusFeature{display:inline-flex;min-width:0;align-items:center;gap:5px;color:var(--dsw-alias-label-secondary,#52565d);font-size:11px;line-height:17px}.ptcPlusFeature::before{width:4px;height:4px;flex:none;border-radius:50%;background:var(--dsw-alias-interactive-primary,#4d6bfe);content:''}.ptcPlusFeatureName{font-weight:500}.ptcPlusFeatureDetail{min-width:0;overflow:hidden;color:var(--dsw-alias-label-tertiary,#74777d);font-family:ui-monospace,SFMono-Regular,Consolas,monospace;text-overflow:ellipsis;white-space:nowrap}
-.ptcPlusToolBody{margin:4px 0 8px 23px;border-left:2px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1));background:var(--dsw-alias-bg-layer-2,rgba(38,49,72,.03))}.ptcPlusToolSection{display:flex;min-width:0;flex-direction:column;gap:4px;padding:9px 11px}.ptcPlusToolSection+.ptcPlusToolSection{border-top:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1))}.ptcPlusToolSectionLabel{color:var(--dsw-alias-label-tertiary,#74777d);font-size:10px;font-weight:600;line-height:16px;text-transform:uppercase}.ptcPlusToolCode{max-height:320px;margin:0;overflow:auto;color:inherit;font:12px/18px ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere}.ptcPlusInspect{display:inline-flex;align-self:flex-end;align-items:center;gap:5px;margin:0 9px 8px;padding:3px 7px;border:0;background:transparent;color:var(--dsw-alias-label-secondary,#52565d);cursor:pointer;font:500 11px/18px inherit}.ptcPlusInspect:hover{color:var(--dsw-alias-interactive-primary,#4d6bfe)}
-@media(max-width:560px){.ptcPlusHeader{padding:12px}.ptcPlusFields{margin:0 12px}.ptcPlusRow{align-items:flex-start;flex-direction:column;gap:6px;padding:10px 0}.ptcPlusInput{width:100%}.ptcPlusFooter{align-items:stretch;flex-direction:column}.ptcPlusButton{width:100%}.ptcPlusFeatures,.ptcPlusToolBody{margin-left:0}.ptcPlusToolDescription{white-space:normal;overflow-wrap:anywhere}}
-@media(prefers-reduced-motion:reduce){.ptcPlusHeader,.ptcPlusChevron,.ptcPlusBody,.ptcPlusButton,.ptcPlusActive,.ptcPlusToolChevron{transition:none}}
+.ptcPlusToolBody{margin:4px 0 8px 23px;border-left:2px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1));background:var(--dsw-alias-bg-layer-2,rgba(38,49,72,.03))}.ptcPlusToolSection{display:flex;min-width:0;flex-direction:column;gap:4px;padding:9px 11px}.ptcPlusToolSection+.ptcPlusToolSection{border-top:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1))}.ptcPlusToolSectionLabel{color:var(--dsw-alias-label-tertiary,#74777d);font-size:10px;font-weight:600;line-height:16px;text-transform:uppercase}.ptcPlusToolCode{max-height:320px;margin:0;overflow:auto;color:inherit;font:12px/18px ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere}.ptcPlusIoCard{display:flex;flex-direction:column;border:1px solid var(--dsw-alias-border-l1,rgba(0,0,0,.1));border-radius:12px;background:var(--dsw-alias-markdown-code-block,rgba(38,49,72,.06));overflow:hidden}.ptcPlusIoText{max-height:320px;margin:0;padding:12px 16px;overflow:auto;color:var(--dsw-alias-label-secondary,#52565d);font:12px/18px ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere}.ptcPlusIoText[data-error]{color:var(--dsw-alias-state-error-primary,#c43d3d)}.ptcPlusInspect{display:inline-flex;align-self:flex-start;align-items:center;gap:4px;margin:4px 0 2px 4px;padding:2px 8px;border:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1));border-radius:999px;background:var(--dsw-alias-bg-base,#fff);color:var(--dsw-alias-label-secondary,#52565d);cursor:pointer;opacity:0;font-size:11px;line-height:16px;transition:opacity .1s ease;display:inline-flex}.ptcPlusTool:hover .ptcPlusInspect,.ptcPlusInspect:focus-visible{opacity:1}.ptcPlusInspect:hover{background:var(--dsw-alias-interactive-bg-hover-solid,rgba(38,49,72,.06));color:var(--dsw-alias-label-primary,#18191c)}
+@media(max-width:560px){.ptcPlusHeader{padding:12px}.ptcPlusFields{margin:0 12px}.ptcPlusRow{align-items:flex-start;flex-direction:column;gap:6px;padding:10px 0}.ptcPlusInput{width:100%}.ptcPlusFooter{align-items:stretch;flex-direction:column}.ptcPlusButton{width:100%}.ptcPlusFeatures,.ptcPlusToolBody{margin-left:0}.ptcPlusToolSummary .ptcPlusToolDescription{white-space:normal;overflow-wrap:anywhere}}
+@media(prefers-reduced-motion:reduce){.ptcPlusHeader,.ptcPlusChevron,.ptcPlusBody,.ptcPlusButton,.ptcPlusActive,.ptcPlusToolChevron,.ptcPlusReplChevron,.ptcPlusReplDefinitionWrap,.ptcPlusInspect{transition:none}}
+/* The summary button owns disclosure; definition content is a separate grid item. */
+.ptcPlusReplBinding{padding:0;cursor:default}.ptcPlusReplBindingTrigger{appearance:none;display:grid;width:100%;grid-column:1/-1;grid-template-columns:minmax(0,1fr) 24px;gap:3px 8px;min-height:36px;padding:5px 12px;border:0;background:transparent;color:inherit;text-align:left;cursor:pointer;font:inherit;transition:background-color .16s ease}.ptcPlusReplBindingTrigger:hover,.ptcPlusReplBindingTrigger[aria-expanded=true]{background:color-mix(in srgb,var(--dsw-alias-interactive-primary,#4d6bfe) 5%,transparent)}.ptcPlusReplBindingTrigger:focus-visible{outline:2px solid var(--dsw-alias-interactive-primary,#4d6bfe);outline-offset:-2px}
+/* High-contrast TypeScript-like token colors adapt to the active text theme. */
+.ptcPlusReplCard .ptcPlusReplName[data-kind=variable]{color:color-mix(in srgb,#005cc5 78%,var(--dsw-alias-label-primary,#18191c))}
+.ptcPlusReplCard .ptcPlusReplName[data-kind=function]{color:color-mix(in srgb,#795e26 78%,var(--dsw-alias-label-primary,#18191c))}
+.ptcPlusReplCard .ptcPlusReplName[data-kind=class]{color:color-mix(in srgb,#267f99 78%,var(--dsw-alias-label-primary,#18191c))}
+.ptcPlusReplCard .ptcPlusReplName[data-kind=import]{color:color-mix(in srgb,#af00db 78%,var(--dsw-alias-label-primary,#18191c))}
 /* Keep the session-header action on the same compact 32px rhythm as DSH chrome. */
 .ptcPlusActiveShell{display:inline-flex;height:28px;align-items:center;justify-content:center;line-height:0;vertical-align:middle}.ptcPlusActive{box-sizing:border-box;height:28px;justify-content:center;gap:6px;padding:0 6px;border:0;background:transparent;font-family:inherit;font-size:13px;font-weight:500;line-height:18px}.ptcPlusActive::before{width:6px;height:6px;flex:none;border-radius:50%;background:currentColor;box-shadow:0 0 0 2px color-mix(in srgb,currentColor 18%,transparent);content:''}.ptcPlusActive:hover,.ptcPlusActive[aria-expanded=true]{background:var(--dsw-alias-interactive-bg-hover,rgba(38,49,72,.06))}.ptcPlusActiveLabel{display:inline-flex;height:18px;align-items:center;line-height:18px}
 `;
@@ -689,8 +720,6 @@
       "memory.kind.function": "\u51FD\u6570",
       "memory.kind.class": "\u7C7B",
       "memory.kind.import": "\u5BFC\u5165",
-      "memory.inspect": "\u67E5\u770B\u5B9A\u4E49",
-      "memory.collapse": "\u6536\u8D77\u5B9A\u4E49",
       "memory.location": "\u7B2C {line} \u884C\uFF0C\u7B2C {column} \u5217",
       "tool.code": "\u6267\u884C",
       "tool.codeEdit": "\u4FEE\u6B63\u6267\u884C",
@@ -732,8 +761,6 @@
       "memory.kind.function": "Function",
       "memory.kind.class": "Class",
       "memory.kind.import": "Import",
-      "memory.inspect": "Inspect definition",
-      "memory.collapse": "Collapse definition",
       "memory.location": "Line {line}, column {column}",
       "tool.code": "Code",
       "tool.codeEdit": "Code edit",
@@ -776,6 +803,7 @@
       const React = require2("react");
       const {
         CodeBlock,
+        DisclosureRow,
         IconCheckOutline14,
         IconChevronDownOutline14,
         IconInspectOutline12
@@ -934,10 +962,85 @@
             stopped: "tool.stopped"
           }[view.state];
           const outputSummary = view.state === "error" && view.output !== "" ? view.output.split(/\r?\n/, 1)[0] : "";
-          const summary = outputSummary || view.description || t(stateKey);
+          const summary = outputSummary || view.description;
+          const stateText = view.state === "ok" ? null : t(stateKey);
           const toggle = () => {
             if (expandable) setOpen((current) => !current);
           };
+          const summaryText = summary === "" ? null : summary;
+          const summaryLine = stateText === null && summaryText === null ? null : h(
+            "div",
+            { className: "ptcPlusToolSummaryLine", "data-state": view.state, role: "status" },
+            stateText === null ? null : h("span", { className: "ptcPlusToolState" }, stateText),
+            summaryText === null ? null : h("span", { className: "ptcPlusToolSep", "aria-hidden": true }),
+            summaryText === null ? null : h("span", { className: "ptcPlusToolDescription" }, summaryText)
+          );
+          const body = !open ? null : h(
+            "div",
+            { className: "ptcPlusToolBody" },
+            view.code === "" ? null : h(
+              "div",
+              { className: "ptcPlusToolSection" },
+              h("span", { className: "ptcPlusToolSectionLabel" }, t("tool.source")),
+              typeof CodeBlock === "function" ? h(CodeBlock, {
+                code: view.code,
+                lang: "typescript",
+                className: "ptcPlusToolCode",
+                copyLabel: t("tool.copy"),
+                copiedLabel: t("tool.copied")
+              }) : h("pre", { className: "ptcPlusToolCode" }, view.code)
+            ),
+            view.output === "" ? null : h(
+              "div",
+              { className: "ptcPlusToolSection" },
+              h("span", { className: "ptcPlusToolSectionLabel" }, t("tool.result")),
+              h(
+                "div",
+                { className: "ptcPlusIoCard" },
+                h("pre", {
+                  className: "ptcPlusIoText",
+                  "data-error": view.state === "error" || void 0
+                }, view.output)
+              )
+            ),
+            typeof inspect !== "function" ? null : h("button", {
+              type: "button",
+              className: "ptcPlusInspect",
+              onClick: inspect
+            }, h(IconInspectOutline12, { "aria-hidden": true }), t("tool.inspect"))
+          );
+          const features = view.features.length === 0 ? null : h(
+            "div",
+            { className: "ptcPlusFeatures" },
+            view.features.map((feature) => h(
+              "span",
+              {
+                key: `${feature.key}:${feature.detail}`,
+                className: "ptcPlusFeature"
+              },
+              h("span", { className: "ptcPlusFeatureName" }, t(feature.key)),
+              feature.detail === "" ? null : h("span", { className: "ptcPlusFeatureDetail", title: feature.detail }, feature.detail)
+            ))
+          );
+          const collapsedContent = h("div", { className: "ptcPlusToolPreview" }, summaryLine, features);
+          if (typeof DisclosureRow === "function") {
+            return h(
+              "div",
+              { className: "ptcPlusTool" },
+              h(DisclosureRow, {
+                icon: expandable ? h(IconChevronDownOutline14, { size: 14 }) : h(IconCheckOutline14, { size: 14 }),
+                title: t(toolName === "edit_run_code" ? "tool.codeEdit" : "tool.code"),
+                open,
+                expandable,
+                onToggle: toggle,
+                expandOnRowClick: true,
+                previewChevron: false,
+                keepContentWhenOpen: true,
+                collapsedContent,
+                children: body
+              })
+            );
+          }
           return h(
             "div",
             { className: "ptcPlusTool" },
@@ -965,46 +1068,8 @@
               h("span", { className: "ptcPlusToolSep", "aria-hidden": true }),
               h("span", { className: "ptcPlusToolDescription" }, summary)
             ),
-            view.features.length === 0 ? null : h(
-              "div",
-              { className: "ptcPlusFeatures" },
-              view.features.map((feature) => h(
-                "span",
-                {
-                  key: `${feature.key}:${feature.detail}`,
-                  className: "ptcPlusFeature"
-                },
-                h("span", { className: "ptcPlusFeatureName" }, t(feature.key)),
-                feature.detail === "" ? null : h("span", { className: "ptcPlusFeatureDetail", title: feature.detail }, feature.detail)
-              ))
-            ),
-            !open ? null : h(
-              "div",
-              { className: "ptcPlusToolBody" },
-              view.code === "" ? null : h(
-                "div",
-                { className: "ptcPlusToolSection" },
-                h("span", { className: "ptcPlusToolSectionLabel" }, t("tool.source")),
-                typeof CodeBlock === "function" ? h(CodeBlock, {
-                  code: view.code,
-                  lang: "typescript",
-                  className: "ptcPlusToolCode",
-                  copyLabel: t("tool.copy"),
-                  copiedLabel: t("tool.copied")
-                }) : h("pre", { className: "ptcPlusToolCode" }, view.code)
-              ),
-              view.output === "" ? null : h(
-                "div",
-                { className: "ptcPlusToolSection" },
-                h("span", { className: "ptcPlusToolSectionLabel" }, t("tool.result")),
-                h("pre", { className: "ptcPlusToolCode" }, view.output)
-              ),
-              typeof inspect !== "function" ? null : h("button", {
-                type: "button",
-                className: "ptcPlusInspect",
-                onClick: inspect
-              }, h(IconInspectOutline12, { "aria-hidden": true }), t("tool.inspect"))
-            )
+            features,
+            body
           );
         }
         ctx.slots.inject("tool.call.toolview", () => {
@@ -1015,7 +1080,7 @@
           };
           const sync = () => {
             const snapshot = preferenceScope.getSnapshot();
-            const enabled = snapshot.status === "ready" && snapshot.value?.enabled === true;
+            const enabled = snapshot.status === "ready" && snapshot.value?.enabled === true && snapshot.value?.enhancedToolView !== false;
             if (enabled === (releaseRows !== void 0)) return;
             release();
             if (!enabled) return;
@@ -1098,58 +1163,94 @@
                   h("span", { className: "ptcPlusReplTitle", id: titleId }, t("memory.title")),
                   memory.available ? h("span", { className: "ptcPlusReplSummary" }, t("memory.count", { count: memory.total })) : null
                 ),
-                !memory.available ? h("span", { className: "ptcPlusReplEmpty" }, t("memory.unavailable")) : memory.entries.length === 0 ? h("span", { className: "ptcPlusReplEmpty" }, t("memory.empty")) : h("ul", { className: "ptcPlusReplList" }, memory.entries.map((binding) => {
+                !memory.available ? h("span", { className: "ptcPlusReplEmpty" }, t("memory.unavailable")) : memory.entries.length === 0 ? h("span", { className: "ptcPlusReplEmpty" }, t("memory.empty")) : h("ul", { className: "ptcPlusReplList" }, memory.entries.map((binding, index) => {
                   const expanded = expandedBinding === binding.name;
                   const preview = binding.definition.source.replace(/\s+/g, " ").trim();
+                  const definitionId = `${id}-binding-${index}`;
+                  const toggle = () => setExpandedBinding((current) => current === binding.name ? null : binding.name);
                   return h(
                     "li",
-                    { className: "ptcPlusReplBinding", key: binding.name },
-                    h("span", {
-                      className: "ptcPlusReplKind",
-                      "data-kind": binding.kind
-                    }, t(`memory.kind.${binding.kind}`)),
-                    h("span", { className: "ptcPlusReplName", title: binding.name }, binding.name),
-                    h("span", { className: "ptcPlusReplPreview", title: preview }, preview),
+                    {
+                      className: "ptcPlusReplBinding",
+                      key: binding.name,
+                      "data-expanded": expanded
+                    },
                     h(
                       "button",
                       {
+                        className: "ptcPlusReplBindingTrigger",
                         type: "button",
-                        className: "ptcPlusReplInspect",
-                        title: t(expanded ? "memory.collapse" : "memory.inspect"),
-                        "aria-label": t(expanded ? "memory.collapse" : "memory.inspect"),
                         "aria-expanded": expanded,
-                        onClick: () => setExpandedBinding((current) => current === binding.name ? null : binding.name)
+                        "aria-controls": expanded ? definitionId : void 0,
+                        onClick: toggle
                       },
-                      h(IconInspectOutline12, { "aria-hidden": true }),
-                      t(expanded ? "memory.collapse" : "memory.inspect")
+                      h("span", {
+                        className: "ptcPlusReplName",
+                        "data-kind": binding.kind,
+                        title: `${binding.name} - ${t(`memory.kind.${binding.kind}`)}`
+                      }, binding.name),
+                      h("span", { className: "ptcPlusReplPreview", title: preview }, preview),
+                      h("span", {
+                        className: "ptcPlusReplChevron",
+                        "data-open": expanded,
+                        "aria-hidden": true
+                      }, h(IconChevronDownOutline14, { size: 14 }))
                     ),
-                    expanded ? h(
+                    expanded ? h("div", {
+                      className: "ptcPlusReplDefinitionWrap",
+                      "data-open": true,
+                      id: definitionId,
+                      role: "region",
+                      "aria-label": binding.name
+                    }, h(
                       "div",
-                      { className: "ptcPlusReplDefinition" },
-                      h("span", { className: "ptcPlusReplLocation" }, t("memory.location", {
-                        line: binding.definition.line,
-                        column: binding.definition.column
-                      })),
-                      typeof CodeBlock === "function" ? h(CodeBlock, {
-                        code: binding.definition.source,
-                        lang: "typescript",
-                        className: "ptcPlusReplCode",
-                        copyLabel: t("tool.copy"),
-                        copiedLabel: t("tool.copied")
-                      }) : h("pre", { className: "ptcPlusReplCode" }, binding.definition.source)
-                    ) : null
+                      { className: "ptcPlusReplDefinitionInner" },
+                      h(
+                        "div",
+                        { className: "ptcPlusReplDefinition" },
+                        h("span", { className: "ptcPlusReplLocation" }, t("memory.location", {
+                          line: binding.definition.line,
+                          column: binding.definition.column
+                        })),
+                        typeof CodeBlock === "function" ? h(CodeBlock, {
+                          code: binding.definition.source,
+                          lang: "typescript",
+                          className: "ptcPlusReplCode",
+                          copyLabel: t("tool.copy"),
+                          copiedLabel: t("tool.copied")
+                        }) : h("pre", { className: "ptcPlusReplCode" }, binding.definition.source)
+                      )
+                    )) : null
                   );
                 })),
                 memory.omitted === 0 ? null : h("span", { className: "ptcPlusReplMore" }, t("memory.more", { count: memory.omitted }))
               )
             );
           }
-          function PTCPlusSessionIndicator({ sessionId, t }) {
-            const sessions = React.useSyncExternalStore(
-              (listener) => scope.sessions.list.subscribe(listener),
-              () => scope.sessions.list.getSnapshot(),
-              () => scope.sessions.list.getSnapshot()
-            );
+          function PTCPlusSessionIndicator({ sessionId, t, useSession, useProjection, useSessions }) {
+            let conversation;
+            try {
+              conversation = typeof useSession === "function" ? useSession((snapshot) => snapshot) : void 0;
+            } catch {
+              conversation = void 0;
+            }
+            let projectionMemory;
+            try {
+              projectionMemory = typeof useProjection === "function" ? useProjection("ptcPlusRepl") : void 0;
+            } catch {
+              projectionMemory = void 0;
+            }
+            let sessions;
+            try {
+              sessions = typeof useSessions === "function" ? useSessions((snapshot) => snapshot) : React.useSyncExternalStore(
+                (listener) => scope.sessions?.list?.subscribe?.(listener) ?? (() => {
+                }),
+                () => scope.sessions?.list?.getSnapshot?.() ?? {},
+                () => scope.sessions?.list?.getSnapshot?.() ?? {}
+              );
+            } catch {
+              sessions = {};
+            }
             const settings = React.useSyncExternalStore(
               (listener) => preferenceScope.subscribe(listener),
               () => preferenceScope.getSnapshot(),
@@ -1226,15 +1327,16 @@
                 }
               };
             }, [hidePopover, positionPopover]);
-            const session = sessions.byId?.[sessionId];
+            const resolvedSessionId = sessionId ?? conversation?.sessionId;
+            const session = sessions?.byId?.[resolvedSessionId] ?? conversation;
             if (!sessionUsesPtcPreset(session) || settings.status !== "ready" || settings.value?.enabled !== true) return null;
             let memory;
             try {
-              memory = normalizeReplMemorySnapshot(session?.projectionValues?.ptcPlusRepl);
+              memory = normalizeReplMemorySnapshot(projectionMemory ?? session?.projectionValues?.ptcPlusRepl);
             } catch {
               memory = unavailableReplMemorySnapshot();
             }
-            const popoverId = `ptc-plus-repl-${String(sessionId).replace(/[^A-Za-z0-9_-]/g, "-")}`;
+            const popoverId = `ptc-plus-repl-${String(resolvedSessionId).replace(/[^A-Za-z0-9_-]/g, "-")}`;
             const titleId = `${popoverId}-title`;
             return h(
               "span",

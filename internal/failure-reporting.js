@@ -64,6 +64,21 @@ export function oneLineMessage(error) {
   return firstLine(messageOf(error), 'Unknown error').replace(/\s+\(\d+:\d+\)$/, '')
 }
 
+/** Return DSH's reported missing-description property path when it is actionable. */
+export function missingDescriptionPath(error) {
+  const violations = messageOf(error).matchAll(/missing required property ["']([^"']+)["']/g)
+  for (const match of violations) {
+    const path = match[1]
+    if (path === 'description' || path.endsWith('.description')) return path
+  }
+  return undefined
+}
+
+/** Identify DSH's stable missing-description validation fact without parsing arbitrary errors. */
+export function hasMissingDescriptionError(error) {
+  return missingDescriptionPath(error) !== undefined
+}
+
 /** Keep only the newest log entries so an output-limit error cannot flood the model. */
 export function limitLogs(logs) {
   let bytes = 0

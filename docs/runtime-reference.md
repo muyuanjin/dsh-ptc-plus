@@ -45,11 +45,17 @@ For commands, prefer project-declared scripts and use an available typed tool. W
 
 The configuration uses `ptc-plus` as the DSH plugin ID and `dsh-ptc-plus` as the package name. The distinction is intentional: the former is the runtime/settings identity, while the latter is the repository and npm package identity.
 
+`enhancedToolView` defaults to `true` and controls only the browser presentation of `run_code` and `edit_run_code`. Turning it off unregisters PTC Plus's keyed tool views so DSH's native generic row renders the calls; turning it on restores the compatibility renderer without changing execution, prompt, or session behavior.
+
+`autoDescribeRunCode` defaults to `false`. When enabled, the projected schema permits an omitted outer `run_code.description` and a fixed UI-only summary is added through presentation metadata; the original call arguments, existing summaries, cell source, and nested native-tool JSON remain unchanged. When disabled, DSH continues to enforce the required outer field.
+
 ```yaml
 - id: ptc-plus
   name: dsh-ptc-plus
   config:
     enabled: true
+    enhancedToolView: true
+    autoDescribeRunCode: false
     cordisToolsEnabled: false
     computeMs: 60000
     maxWallMs: 600000

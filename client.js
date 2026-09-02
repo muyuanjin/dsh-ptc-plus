@@ -18,8 +18,8 @@
       default: true,
       label: "\u4F7F\u7528 PTC Plus \u589E\u5F3A\u5DE5\u5177\u5361\u7247",
       labelEn: "Use enhanced PTC Plus tool cards",
-      description: "\u5173\u95ED\u540E\u4F7F\u7528 DSH \u539F\u751F run_code / edit_run_code \u5DE5\u5177\u5361\u7247\u3002",
-      descriptionEn: "When off, use DSH native run_code / edit_run_code tool cards."
+      description: "\u5173\u95ED\u540E\uFF0Crun_code \u548C edit_run_code \u4F7F\u7528 DSH \u539F\u751F\u5DE5\u5177\u5361\u7247\u3002",
+      descriptionEn: "When disabled, run_code and edit_run_code use DSH native tool cards."
     },
     {
       key: "cordisToolsEnabled",
@@ -27,17 +27,17 @@
       default: false,
       label: "\u5728 PTC \u6A21\u5F0F\u4E2D\u542F\u7528\u5B98\u65B9 Cordis \u5DE5\u5177",
       labelEn: "Enable official Cordis tools in PTC mode",
-      description: "\u5F00\u542F\u540E\u5373\u65F6\u4E3A PTC agent \u52A0\u5165\u5B98\u65B9 Cordis \u5DE5\u5177\u3001\u6307\u5F15\u548C companion Skill\uFF1B\u5173\u95ED\u540E\u5373\u65F6\u79FB\u9664\u3002",
-      descriptionEn: "When on, immediately add the official Cordis tools, guidance, and companion Skill to the PTC agent; remove them when off."
+      description: "\u5F00\u542F\u540E\uFF0CPTC agent \u53EF\u4F7F\u7528\u5B98\u65B9 Cordis \u5DE5\u5177\u3001\u914D\u5957\u6307\u5F15\u548C\u5F00\u53D1 Skill\uFF1B\u5173\u95ED\u540E\u79FB\u9664\u3002",
+      descriptionEn: "When enabled, PTC agents can use the official Cordis tools, guidance, and development Skill; disabling removes them."
     },
     {
       key: "autoDescribeRunCode",
       type: "boolean",
       default: false,
-      label: "\u5728\u7F3A\u5C11\u5916\u5C42\u6458\u8981\u65F6\u81EA\u52A8\u8865\u5168 run_code UI \u6458\u8981",
-      labelEn: "Auto-fill missing outer run_code summaries for the UI",
-      description: "\u4EC5\u5728\u7F3A\u5C11\u5916\u5C42\u6458\u8981\u65F6\u751F\u6210\u56FA\u5B9A\u7684 UI \u6458\u8981\uFF1B\u4E0D\u4F1A\u6539\u5199\u4EE3\u7801\u3001\u5DF2\u6709\u6458\u8981\u3001\u539F\u59CB\u8C03\u7528\u53C2\u6570\u6216\u5D4C\u5957 native \u5DE5\u5177\u53C2\u6570\u3002",
-      descriptionEn: "Generate a fixed UI summary only when the outer summary is missing; never rewrite code, existing summaries, original call arguments, or nested native tool arguments."
+      label: "\u4E3A\u7F3A\u5C11\u6458\u8981\u7684 run_code \u81EA\u52A8\u751F\u6210 UI \u6458\u8981",
+      labelEn: "Generate UI summaries for run_code calls without one",
+      description: "\u5F00\u542F\u540E\uFF0C\u4E3A\u7F3A\u5C11\u5916\u5C42\u6458\u8981\u7684 run_code \u663E\u793A\u56FA\u5B9A UI \u6458\u8981\uFF1B\u5DF2\u6709\u6458\u8981\u548C\u5DE5\u5177\u8C03\u7528\u5185\u5BB9\u4FDD\u6301\u4E0D\u53D8\u3002",
+      descriptionEn: "When enabled, run_code calls without an outer summary show a fixed UI summary; existing summaries and tool-call content remain unchanged."
     },
     {
       key: "computeMs",

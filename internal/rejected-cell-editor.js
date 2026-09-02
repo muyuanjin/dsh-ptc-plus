@@ -252,15 +252,29 @@ function assemble(source, replacements) {
   return changed ? { code: chunks.join('') } : { error: 'edits must change at least one matched fragment' }
 }
 
+function editRunCodeParameterBranch(operation, operationSchema) {
+  return {
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+      [operation]: operationSchema,
+      [EXPECTED_TARGET_CALL_SEQ]: {
+        type: 'integer', minimum: 0,
+        description: 'Optional target precondition copied from a validated diagnostic. The edit is rejected if the captured cell has another call sequence.',
+      },
+    },
+    required: [operation],
+  }
+}
+
 export function editRunCodeSchema() {
   return {
     name: 'edit_run_code',
     description: 'Make a small exact or regular-expression change to the most recent eligible cell captured when this edit call is dispatched, then run the complete corrected cell. A successful edit becomes the next eligible cell. Use this only when replaying the whole cell is safe. If earlier code may already have caused an external effect, use a new run_code cell and its existing variables instead; this tool does not resume at the error location. Send exactly one atomic edits or regex_edits array, plus expected_target_call_seq only when a diagnostic supplies it to bind a validated repair to its rejected cell. Choose edits for a few unique literal fragments; choose regex_edits when one counted pattern covers repeated fragments. Every resolved range must be non-overlapping in the original cell.',
     parameters: {
       type: 'object',
-      additionalProperties: false,
-      properties: {
-        edits: {
+      oneOf: [
+        editRunCodeParameterBranch('edits', {
           type: 'array', minItems: 1, maxItems: EDIT_LIMITS.exactEdits,
           description: 'Atomic exact replacements, all resolved against the original target cell.',
           items: {
@@ -271,8 +285,8 @@ export function editRunCodeSchema() {
             },
             required: ['old_string', 'new_string'],
           },
-        },
-        regex_edits: {
+        }),
+        editRunCodeParameterBranch('regex_edits', {
           type: 'array', minItems: 1, maxItems: EDIT_LIMITS.regexEdits,
           description: 'Atomic regular-expression replacements, all matched against the original target cell.',
           items: {
@@ -285,13 +299,8 @@ export function editRunCodeSchema() {
             },
             required: ['pattern', 'flags', 'replacement', 'expected_matches'],
           },
-        },
-        [EXPECTED_TARGET_CALL_SEQ]: {
-          type: 'integer', minimum: 0,
-          description: 'Optional target precondition copied from a validated diagnostic. The edit is rejected if the captured cell has another call sequence.',
-        },
-      },
-      oneOf: [{ required: ['edits'] }, { required: ['regex_edits'] }],
+        }),
+      ],
     },
   }
 }

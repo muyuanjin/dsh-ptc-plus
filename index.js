@@ -50,7 +50,7 @@ function replGuidance(
   cordisToolsEnabled,
 ) {
   const redeclaration = looseTopLevelRedeclarations
-    ? 'Repeated top-level `const`/`let` declarations replace existing bindings.'
+    ? 'Repeated top-level `const`/`let` declarations replace existing bindings. Repeated top-level `function`/`class` declarations are rejected; replace them with top-level `const`/`let` function or class expressions, or place one-off declarations inside a block.'
     : 'Redeclaring an existing top-level name fails before execution, so reuse it or place one-off declarations inside a block.'
   const moduleSyntax = autoRewriteImports && autoStripExports
     ? 'static `import` declarations are adapted with live, read-only bindings and top-level `export` modifiers are stripped automatically.'

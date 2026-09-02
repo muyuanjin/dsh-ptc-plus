@@ -47,6 +47,71 @@ test('preflights every cross-cell binding collision with one actionable diagnost
   })
 })
 
+test('gives declaration-specific recovery for function and class collisions', async (t) => {
+  const state = fixture()
+  t.after(() => state.dispose())
+
+  await state.run('declaration-collision-help', `
+function repeatedFunction() {}
+class RepeatedClass {}
+`)
+
+  const functionCollision = await state.run(
+    'declaration-collision-help',
+    'function repeatedFunction() {}',
+  )
+  assert.match(
+    functionCollision.error.message,
+    /help: replace repeated function declarations with top-level const\/let function expressions/,
+  )
+  assert.doesNotMatch(functionCollision.error.message, /help: reuse the existing bindings/)
+  assert.deepEqual(await state.run('declaration-collision-help', `
+const repeatedFunction = () => 'replacement'
+return repeatedFunction()
+`), { logs: [], value: 'replacement' })
+
+  const classCollision = await state.run(
+    'declaration-collision-help',
+    'class RepeatedClass {}',
+  )
+  assert.match(
+    classCollision.error.message,
+    /help: replace repeated class declarations with top-level const\/let class expressions/,
+  )
+  assert.doesNotMatch(classCollision.error.message, /help: reuse the existing bindings/)
+  assert.deepEqual(await state.run('declaration-collision-help', `
+const RepeatedClass = class { static value = 42 }
+return RepeatedClass.value
+`), { logs: [], value: 42 })
+})
+
+test('does not suggest loose declaration replacement for strict or reserved collisions', async (t) => {
+  const strict = fixture({ looseTopLevelRedeclarations: false })
+  t.after(() => strict.dispose())
+  await strict.run('strict-declaration-collision-help', 'function strictFunction() {}')
+  const strictCollision = await strict.run(
+    'strict-declaration-collision-help',
+    'function strictFunction() {}',
+  )
+  assert.match(strictCollision.error.message, /help: reuse the existing bindings/)
+  assert.doesNotMatch(strictCollision.error.message, /top-level const\/let function expressions/)
+
+  const loose = fixture()
+  t.after(() => loose.dispose())
+  await loose.run('mixed-declaration-collision-help', 'function replaceableFunction() {}')
+  const reservedCollision = await loose.run('reserved-declaration-collision-help', 'class tools {}')
+  assert.match(reservedCollision.error.message, /help: reuse the existing bindings/)
+  assert.doesNotMatch(reservedCollision.error.message, /top-level const\/let class expressions/)
+
+  const mixedCollision = await loose.run('mixed-declaration-collision-help', `
+function replaceableFunction() {}
+class tools {}
+`)
+  assert.match(mixedCollision.error.message, /help: reuse the existing bindings/)
+  assert.doesNotMatch(mixedCollision.error.message, /top-level const\/let function expressions/)
+  assert.doesNotMatch(mixedCollision.error.message, /top-level const\/let class expressions/)
+})
+
 test('replaces repeated top-level variables in default loose mode and cold-replays them', async (t) => {
   const events = []
   const session = { id: 'loose-redeclarations', events }

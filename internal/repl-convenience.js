@@ -117,7 +117,12 @@ export function rewriteLooseRedeclarations({
     if (statement.type !== 'VariableDeclaration') {
       if ((statement.type === 'FunctionDeclaration' || statement.type === 'ClassDeclaration')
         && statement.id !== null && knownBindings.has(statement.id.name)) {
-        rejected.push({ name: statement.id.name, span: declarationSpan(statement.id) })
+        rejected.push({
+          name: statement.id.name,
+          kind: statement.type === 'ClassDeclaration' ? 'class' : 'function',
+          replaceableByVariableDeclaration: true,
+          span: declarationSpan(statement.id),
+        })
       }
       continue
     }

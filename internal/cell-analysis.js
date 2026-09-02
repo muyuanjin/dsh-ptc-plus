@@ -376,6 +376,8 @@ export function prepareProgram(program, knownBindings, looseTopLevelRedeclaratio
       : mapSourceSpan(declaration.span, code, program, sourceMap)
     return {
       name: declaration.name,
+      kind: declaration.kind,
+      replaceableByVariableDeclaration: declaration.replaceableByVariableDeclaration === true,
       start: { line: mapped.line, column: mapped.column },
       /* c8 ignore next */
       ...(mapped.end === undefined ? {} : { end: mapped.end }),

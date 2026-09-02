@@ -107,7 +107,19 @@ function preflightDiagnostic(error) {
 
 function collisionDiagnostic(collisions) {
   const names = [...new Set(collisions.map(item => item.name))]
+  const kinds = new Set(collisions.map(item => item.kind))
+  const replaceable = collisions.every(item => item.replaceableByVariableDeclaration)
   const first = collisions[0]
+  const help = [
+    ...(replaceable && kinds.has('function')
+      ? ['replace repeated function declarations with top-level const/let function expressions']
+      : []),
+    ...(replaceable && kinds.has('class')
+      ? ['replace repeated class declarations with top-level const/let class expressions']
+      : []),
+    ...(replaceable && (kinds.has('function') || kinds.has('class')) ? [] : ['reuse the existing bindings']),
+    'place one-off declarations inside a block',
+  ]
   return diagnostic({
     code: 'PTC-N001',
     severity: 'error',
@@ -115,10 +127,7 @@ function collisionDiagnostic(collisions) {
     message: `top-level bindings already exist: ${names.join(', ')}. This cell was not executed; the REPL state is unchanged.`,
     stateEffect: 'unchanged',
     source: { cell: 'current', start: first.start, end: first.end },
-    help: [
-      'reuse the existing bindings',
-      'place one-off declarations inside a block',
-    ],
+    help,
   })
 }
 

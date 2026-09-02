@@ -23,6 +23,7 @@ const BOOLEAN_KEYS = Object.freeze([
   'cordisToolsEnabled',
   'canonicalizeToolCalls',
   'looseTopLevelRedeclarations',
+  'looseTopLevelFunctionClassRedeclarations',
   'durableReplay',
   'autoRewriteImports',
   'autoStripExports',

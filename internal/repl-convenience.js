@@ -1,4 +1,10 @@
 import { bindingNodes, createGeneratedNameAllocator } from './binding-pattern.js'
+import {
+  CLASS_REDECLARATION_REWRITE,
+  FUNCTION_REDECLARATION_REWRITE,
+  MIXED_REDECLARATION_REWRITE,
+  redeclarationCommitTarget,
+} from './repl-rewrite-contract.js'
 import { applySourceEdits, createMappedTextBuilder, identitySourceMap } from './source-position-map.js'
 import { SKIP_AST_CHILDREN, walkAst } from './ast-traversal.js'
 
@@ -88,16 +94,41 @@ function bindingEntries(pattern, declarationSpan) {
   }))
 }
 
-export function rewriteLooseRedeclarations({
+function existingFunctionText(statement, code, offset) {
+  const builder = createMappedTextBuilder(code, offset)
+  builder.append(';(')
+  builder.appendMapped(statement.id.name, statement.id.start, statement.id.end)
+  builder.append(' = ')
+  builder.appendSource(statement.start, statement.id.start)
+  builder.appendSource(statement.id.end, statement.end)
+  builder.append(');')
+  return builder.result()
+}
+
+function existingClassText(statement, code, offset) {
+  const builder = createMappedTextBuilder(code, offset)
+  builder.append(';(')
+  builder.appendMapped(statement.id.name, statement.id.start, statement.id.end)
+  builder.append(' = ')
+  builder.appendSource(statement.start, statement.end)
+  builder.append(');')
+  return builder.result()
+}
+
+export function rewriteReplRedeclarations({
   code,
   sourceMap = identitySourceMap(code.length),
   body,
   offset,
   knownBindings,
+  variableRedeclarationBindings = knownBindings,
+  writableBindings,
   declarations,
   declarationSpan,
   collisionFor,
+  bindingPolicy,
   autoSplitRedeclarations,
+  commitSignal,
 }) {
   const redeclared = []
   const rewrites = []
@@ -117,12 +148,47 @@ export function rewriteLooseRedeclarations({
     if (statement.type !== 'VariableDeclaration') {
       if ((statement.type === 'FunctionDeclaration' || statement.type === 'ClassDeclaration')
         && statement.id !== null && knownBindings.has(statement.id.name)) {
-        rejected.push({
-          name: statement.id.name,
-          kind: statement.type === 'ClassDeclaration' ? 'class' : 'function',
-          replaceableByVariableDeclaration: true,
-          span: declarationSpan(statement.id),
-        })
+        const kind = statement.type === 'ClassDeclaration' ? 'class' : 'function'
+        if (!writableBindings.has(statement.id.name)) {
+          rejected.push({
+            name: statement.id.name,
+            kind,
+            reason: 'binding-not-writable',
+            span: declarationSpan(statement.id),
+          })
+        } else if (!bindingPolicy.functionClassRedeclarations) {
+          rejected.push({
+            name: statement.id.name,
+            kind,
+            reason: 'function-class-redeclarations-disabled',
+            span: declarationSpan(statement.id),
+          })
+        } else {
+          const commitDependency = redeclarationCommitTarget(statement.id.name, statement.start)
+          const replacement = kind === 'class'
+            ? existingClassText(statement, code, offset)
+            : existingFunctionText(statement, code, offset)
+          replacement.text += ` void 0; this[${JSON.stringify(commitSignal)}](${JSON.stringify(commitDependency)});`
+          replacements.push({
+            start: statement.start - offset,
+            end: statement.end - offset,
+            text: replacement.text,
+            mappings: replacement.mappings,
+          })
+          redeclared.push(collisionFor({
+            name: statement.id.name,
+            kind,
+            commitDependency,
+            span: declarationSpan(statement.id),
+          }))
+          rewrites.push({
+            kind: 'redeclaration',
+            description: kind === 'class'
+              ? CLASS_REDECLARATION_REWRITE
+              : FUNCTION_REDECLARATION_REWRITE,
+            source: statement.id.name,
+          })
+        }
       }
       continue
     }
@@ -130,7 +196,24 @@ export function rewriteLooseRedeclarations({
     let statementRejected = false
     for (const declarator of statement.declarations) {
       const bindings = bindingEntries(declarator.id, declarationSpan)
-      const existing = bindings.filter(binding => knownBindings.has(binding.name))
+      const existing = bindings.filter(binding => variableRedeclarationBindings.has(binding.name))
+      const immutable = existing.filter(binding => !writableBindings.has(binding.name))
+      if (immutable.length > 0) {
+        rejected.push(...immutable.map(binding => ({
+          ...binding,
+          reason: 'binding-not-writable',
+        })))
+        statementRejected = true
+        continue
+      }
+      if (existing.length > 0 && !bindingPolicy.variableRedeclarations) {
+        rejected.push(...existing.map(binding => ({
+          ...binding,
+          reason: 'variable-redeclarations-disabled',
+        })))
+        statementRejected = true
+        continue
+      }
       if (existing.length > 0 && existing.length < bindings.length) {
         if (autoSplitRedeclarations) entries.push({ declarator, bindings, existing })
         else {
@@ -143,7 +226,7 @@ export function rewriteLooseRedeclarations({
     }
     if (statementRejected) continue
     if (!entries.some(entry => entry.existing.length > 0)) {
-      if (statement.kind === 'const') {
+      if (statement.kind === 'const' && bindingPolicy.variableRedeclarations) {
         replacements.push({
           start: statement.start - offset,
           end: statement.start - offset + statement.kind.length,
@@ -169,7 +252,7 @@ export function rewriteLooseRedeclarations({
         appendPart(mixedDeclaratorText(
           statement,
           declarator,
-          bindings.map(binding => ({ ...binding, existing: knownBindings.has(binding.name) })),
+          bindings.map(binding => ({ ...binding, existing: existing.includes(binding) })),
           code,
           offset,
           allocateName,
@@ -177,7 +260,7 @@ export function rewriteLooseRedeclarations({
         redeclared.push(...existing.map(collisionFor))
         rewrites.push({
           kind: 'redeclaration',
-          description: 'split a mixed top-level declaration while preserving native pattern initialization',
+          description: MIXED_REDECLARATION_REWRITE,
           source: existing.map(binding => binding.name).join(', '),
         })
       } else if (existing.length === bindings.length && bindings.length > 0) {

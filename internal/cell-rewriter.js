@@ -3,6 +3,10 @@ import { parse } from '@babel/parser'
 import traverseModule, { Hub, NodePath } from '@babel/traverse'
 import { bindingNodes, createGeneratedNameAllocator } from './binding-pattern.js'
 import { applySourceEdits, createMappedTextBuilder, identitySourceMap } from './source-position-map.js'
+import {
+  LEGACY_DEFAULT_EXPORT_BINDING,
+  LIVE_DEFAULT_EXPORT_BINDING,
+} from './repl-rewrite-contract.js'
 
 export const STRIP_PREFIX = 'async function __ptc_cell__(){\n'
 export const STRIP_SUFFIX = '\n}'
@@ -429,7 +433,96 @@ function exportAllEdits(node, code, edits, rewrites, moduleLoads) {
   rewrites.push(record('export', `converted the re-export of ${JSON.stringify(source)} into a side-effect import`, node, source))
 }
 
-function exportDefaultEdits(node, code, edits, rewrites, defaultNameAvailable, exportDeclarations) {
+function exportDefaultEdits({
+  node,
+  code,
+  edits,
+  rewrites,
+  defaultNameAvailable,
+  exportDeclarations,
+  imports,
+  allocateNamespace,
+  commitSignal,
+  commitTargets,
+}) {
+  const declaration = node.declaration
+  if (declaration.type === 'TSInterfaceDeclaration') {
+    editNode(edits, node, code)
+    rewrites.push(record('export', 'removed a type-only export declaration', node, 'interface'))
+    return
+  }
+  if (!defaultNameAvailable) {
+    throw new ModuleRewriteError(
+      'export default cannot be exposed as __default because that name is already declared',
+      { line: node.loc.start.line, column: node.loc.start.column + 1 },
+    )
+  }
+  const namedDeclaration = (declaration.type === 'FunctionDeclaration'
+    || declaration.type === 'ClassDeclaration') && declaration.id !== null
+  const retainedNamedDeclaration = namedDeclaration && declaration.id.name !== '__default'
+  const existingAlias = imports.get('__default')
+  const reuseAlias = existingAlias?.syntheticDefault === true
+  const namespace = reuseAlias ? existingAlias.namespace : allocateNamespace('default_namespace')
+  const member = importMember(namespace, 'default')
+  imports.set('__default', {
+    namespace,
+    imported: 'default',
+    syntheticDefault: true,
+    commitDependency: '__default',
+  })
+  commitTargets.add('__default')
+  if (declaration.type === 'ClassDeclaration' && declaration.id !== null) {
+    commitTargets.add(declaration.id.name)
+  }
+  exportDeclarations.push({
+    name: '__default',
+    kind: declaration.type === 'FunctionDeclaration'
+      ? 'function'
+      : declaration.type === 'ClassDeclaration' ? 'class' : 'variable',
+    commitDependency: '__default',
+    span: {
+      line: node.loc.start.line,
+      column: node.loc.start.column + 1,
+      end: {
+        line: node.loc.end.line,
+        column: node.loc.end.column + 1,
+      },
+    },
+    definitionSpan: {
+      line: node.loc.start.line,
+      column: node.loc.start.column + 1,
+      end: {
+        line: node.loc.end.line,
+        column: node.loc.end.column + 1,
+      },
+    },
+    original: true,
+  })
+  const rewrite = record('export', 'converted the default export into a local __default binding', node)
+  const commit = [...new Set([...(declaration.type === 'ClassDeclaration' && declaration.id !== null
+    ? [declaration.id.name]
+    : []), '__default'])]
+    .map(name => ` this[${JSON.stringify(commitSignal)}](${JSON.stringify(name)});`)
+    .join('')
+  const assignmentPrefix = reuseAlias ? `${member} = ` : `const ${namespace} = { default: `
+  const assignmentSuffix = reuseAlias ? '' : ' }'
+  if (retainedNamedDeclaration) {
+    edit(edits, node.start, declaration.start, preserveLines(code.slice(node.start, declaration.start)))
+    edit(edits, node.end, node.end,
+      `; ${assignmentPrefix}${declaration.id.name}${assignmentSuffix};${commit}`)
+  } else if (declaration.type === 'FunctionDeclaration' || declaration.type === 'ClassDeclaration') {
+    const prefix = code.slice(node.start, declaration.start)
+    edit(edits, node.start, declaration.start, preserveLines(prefix, assignmentPrefix))
+    edit(edits, node.end, node.end, `${assignmentSuffix};${commit}`)
+  } else {
+    const prefix = code.slice(node.start, declaration.start)
+    edit(edits, node.start, declaration.start, preserveLines(prefix, assignmentPrefix))
+    edit(edits, node.end, node.end, `${assignmentSuffix};${commit}`)
+  }
+  rewrites.push(rewrite)
+}
+
+function legacyExportDefaultEdits(node, code, edits, rewrites, defaultNameAvailable, exportDeclarations) {
   const declaration = node.declaration
   if (declaration.type === 'TSInterfaceDeclaration') {
     editNode(edits, node, code)
@@ -490,7 +583,11 @@ function exportDefaultEdits(node, code, edits, rewrites, defaultNameAvailable, e
 
 function ascending(left, right) { return left.at - right.at }
 
-export function rewriteModuleImportsExports(program, enabled, existingImports = new Map(), existingNamespaces = new Set(), unavailableNames = new Set()) {
+export function rewriteModuleImportsExports(program, enabled, existingImports = new Map(), existingNamespaces = new Set(), unavailableNames = new Set(), moduleSemantics = { defaultExportBinding: LIVE_DEFAULT_EXPORT_BINDING }) {
+  if (![LEGACY_DEFAULT_EXPORT_BINDING, LIVE_DEFAULT_EXPORT_BINDING]
+    .includes(moduleSemantics?.defaultExportBinding)) {
+    throw new TypeError('ptc-plus: unsupported default export binding semantics')
+  }
   const tree = parseCell(program)
   const edits = []
   const rewrites = []
@@ -500,6 +597,7 @@ export function rewriteModuleImportsExports(program, enabled, existingImports = 
   const moduleLoads = []
   const importNamespaces = new Set(existingNamespaces)
   const allocateName = createGeneratedNameAllocator(tree, [...unavailableNames, ...importNamespaces])
+  const commitSignal = allocateName('redeclaration_commit')
   const generatedNamespaces = new Set()
   const allocateImportName = purpose => {
     const name = allocateName(purpose)
@@ -508,7 +606,8 @@ export function rewriteModuleImportsExports(program, enabled, existingImports = 
     return name
   }
   const namespaceCaptures = []
-  const defaultNameAvailable = !tree.body.some((node) => {
+  const commitTargets = new Set()
+  const currentCellDefaultNameAvailable = !tree.body.some((node) => {
     const declaration = node.type === 'ExportNamedDeclaration' ? node.declaration : node
     if (declaration?.type === 'VariableDeclaration' && declaration.declare !== true) {
       return declaration.declarations.some(entry => bindingNodes(entry.id).some(binding => binding.name === '__default'))
@@ -520,6 +619,12 @@ export function rewriteModuleImportsExports(program, enabled, existingImports = 
       specifier.importKind !== 'type' && specifier.local.name === '__default'
     ))
   })
+  const existingDefault = existingImports.get('__default')
+  const persistentDefaultNameAvailable = !unavailableNames.has('__default')
+    || existingDefault?.syntheticDefault === true
+  const defaultNameAvailable = currentCellDefaultNameAvailable
+    && (moduleSemantics.defaultExportBinding === LEGACY_DEFAULT_EXPORT_BINDING
+      || persistentDefaultNameAvailable)
   for (const node of tree.body) {
     if (node.type === 'ImportDeclaration' && enabled.autoRewriteImports) {
       importEdits(node, program, edits, rewrites, imports, importDeclarations,
@@ -532,7 +637,24 @@ export function rewriteModuleImportsExports(program, enabled, existingImports = 
       exportAllEdits(node, program, edits, rewrites, moduleLoads)
     }
     else if (node.type === 'ExportDefaultDeclaration' && enabled.autoStripExports) {
-      exportDefaultEdits(node, program, edits, rewrites, defaultNameAvailable, exportDeclarations)
+      if (moduleSemantics.defaultExportBinding === LEGACY_DEFAULT_EXPORT_BINDING) {
+        legacyExportDefaultEdits(
+          node, program, edits, rewrites, defaultNameAvailable, exportDeclarations,
+        )
+      } else {
+        exportDefaultEdits({
+          node,
+          code: program,
+          edits,
+          rewrites,
+          defaultNameAvailable,
+          exportDeclarations,
+          imports,
+          allocateNamespace: allocateImportName,
+          commitSignal,
+          commitTargets,
+        })
+      }
     }
   }
   assertNoDynamicImportResolution(tree, imports)
@@ -549,6 +671,8 @@ export function rewriteModuleImportsExports(program, enabled, existingImports = 
     importDeclarations,
     exportDeclarations,
     moduleLoads,
+    commitSignal,
+    commitTargets,
     rewrites: rewrites.map(({ at: _at, ...rest }) => rest),
   }
 }

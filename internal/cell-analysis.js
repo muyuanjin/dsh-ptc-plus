@@ -6,6 +6,11 @@ import {
   rewriteModuleImportsExports,
 } from './cell-rewriter.js'
 import {
+  LEGACY_DEFAULT_EXPORT_BINDING,
+  LIVE_DEFAULT_EXPORT_BINDING,
+  redeclarationCommitTarget,
+} from './repl-rewrite-contract.js'
+import {
   bindingNodes,
   createGeneratedNameAllocator,
   walkBindingPattern as walkPattern,
@@ -17,7 +22,7 @@ import {
   renderDurabilityReason,
   renderDurabilityReasons,
 } from './module-policy.js'
-import { rewriteLooseRedeclarations } from './repl-convenience.js'
+import { rewriteReplRedeclarations } from './repl-convenience.js'
 import { applySourceEdits, mapSourceSpan } from './source-position-map.js'
 import { SKIP_AST_CHILDREN, walkAst } from './ast-traversal.js'
 
@@ -50,12 +55,13 @@ function addPatternBindings(pattern, names) {
   walkPattern(pattern, node => names.add(node.name))
 }
 
-function addPatternDeclarations(pattern, declarations, kind = 'variable', definitionSpan = undefined) {
+function addPatternDeclarations(pattern, declarations, kind = 'variable', definitionSpan = undefined, writable = false) {
   bindingNodes(pattern).forEach(node => declarations.push({
     name: node.name,
     kind,
     span: declarationSpan(node),
     definitionSpan,
+    writable,
   }))
 }
 
@@ -63,13 +69,19 @@ function topLevelBindings(body) {
   return new Set(topLevelDeclarations(body).map(declaration => declaration.name))
 }
 
-function topLevelDeclarations(body) {
+function topLevelDeclarations(body, variableRedeclarations = false) {
   const declarations = []
   for (const statement of body) {
     if (statement.type === 'VariableDeclaration') {
       const definitionSpan = declarationSpan(statement)
       for (const declaration of statement.declarations) {
-        addPatternDeclarations(declaration.id, declarations, 'variable', definitionSpan)
+        addPatternDeclarations(
+          declaration.id,
+          declarations,
+          'variable',
+          definitionSpan,
+          statement.kind !== 'const' || variableRedeclarations,
+        )
       }
     } else if ((statement.type === 'FunctionDeclaration' || statement.type === 'ClassDeclaration')
       && statement.id !== null) {
@@ -78,6 +90,8 @@ function topLevelDeclarations(body) {
         kind: statement.type === 'ClassDeclaration' ? 'class' : 'function',
         span: declarationSpan(statement.id),
         definitionSpan: declarationSpan(statement),
+        commitDependency: redeclarationCommitTarget(statement.id.name, statement.start),
+        writable: true,
       })
     }
   }
@@ -329,13 +343,30 @@ function rewriteCellReturns(code, sourceMap, unavailableNames) {
   return { ...applySourceEdits(code, sourceMap, edits), returnSignal }
 }
 
-export function prepareProgram(program, knownBindings, looseTopLevelRedeclarations, reservedBindings = new Set(), rewritesEnabled, importBindings = new Map(), importNamespaces = new Set()) {
+export function prepareProgram(program, knownBindings, bindingPolicy, reservedBindings = new Set(), rewritesEnabled, importBindings = new Map(), importNamespaces = new Set(), writableBindings = undefined, moduleSemantics = { defaultExportBinding: LIVE_DEFAULT_EXPORT_BINDING }) {
   if (typeof program !== 'string') throw new TypeError('ptc-plus: program must be a string')
+  if (typeof bindingPolicy === 'boolean') {
+    bindingPolicy = {
+      variableRedeclarations: bindingPolicy,
+      functionClassRedeclarations: false,
+    }
+  }
+  if (bindingPolicy === null || typeof bindingPolicy !== 'object' || Array.isArray(bindingPolicy)
+    || typeof bindingPolicy.variableRedeclarations !== 'boolean'
+    || typeof bindingPolicy.functionClassRedeclarations !== 'boolean') {
+    throw new TypeError('ptc-plus: binding policy must define variableRedeclarations and functionClassRedeclarations booleans')
+  }
+  writableBindings ??= bindingPolicy.variableRedeclarations ? new Set(knownBindings) : new Set()
   if (rewritesEnabled === null || typeof rewritesEnabled !== 'object' || Array.isArray(rewritesEnabled)
     || typeof rewritesEnabled.autoRewriteImports !== 'boolean'
     || typeof rewritesEnabled.autoStripExports !== 'boolean'
     || typeof rewritesEnabled.autoSplitRedeclarations !== 'boolean') {
     throw new TypeError('ptc-plus: rewrite policy must define autoRewriteImports, autoStripExports, and autoSplitRedeclarations booleans')
+  }
+  if (moduleSemantics === null || typeof moduleSemantics !== 'object' || Array.isArray(moduleSemantics)
+    || ![LEGACY_DEFAULT_EXPORT_BINDING, LIVE_DEFAULT_EXPORT_BINDING]
+      .includes(moduleSemantics.defaultExportBinding)) {
+    throw new TypeError('ptc-plus: module semantics must define a supported defaultExportBinding')
   }
   const unavailableGeneratedNames = new Set([
     ...knownBindings,
@@ -349,6 +380,7 @@ export function prepareProgram(program, knownBindings, looseTopLevelRedeclaratio
     importBindings,
     importNamespaces,
     unavailableGeneratedNames,
+    moduleSemantics,
   )
   const staticModuleReasons = staticModuleClassification(moduleRewrite.moduleLoads)
   const wrapped = STRIP_PREFIX + moduleRewrite.code + STRIP_SUFFIX
@@ -367,8 +399,11 @@ export function prepareProgram(program, knownBindings, looseTopLevelRedeclaratio
   const code = stripped.slice(STRIP_PREFIX.length, stripped.length - STRIP_SUFFIX.length)
   const sourceMap = moduleRewrite.sourceMap
   const outer = tree.body[0]
+  const commitSignal = moduleRewrite.commitSignal
   /* c8 ignore next */
-  const generatedDeclarations = outer?.type === 'FunctionDeclaration' ? topLevelDeclarations(outer.body.body) : []
+  const generatedDeclarations = outer?.type === 'FunctionDeclaration'
+    ? topLevelDeclarations(outer.body.body, bindingPolicy.variableRedeclarations)
+    : []
   const collisionFor = (declaration) => {
     /* c8 ignore next */
     const mapped = declaration.original === true ? declaration.span : declaration.span === undefined
@@ -378,6 +413,10 @@ export function prepareProgram(program, knownBindings, looseTopLevelRedeclaratio
       name: declaration.name,
       kind: declaration.kind,
       replaceableByVariableDeclaration: declaration.replaceableByVariableDeclaration === true,
+      ...(declaration.reason === undefined ? {} : { reason: declaration.reason }),
+      ...(declaration.commitDependency === undefined
+        ? {}
+        : { commitDependency: declaration.commitDependency }),
       start: { line: mapped.line, column: mapped.column },
       /* c8 ignore next */
       ...(mapped.end === undefined ? {} : { end: mapped.end }),
@@ -406,8 +445,11 @@ export function prepareProgram(program, knownBindings, looseTopLevelRedeclaratio
   const importedNames = new Set(moduleRewrite.imports.keys())
   const originalDeclarationNames = new Set(moduleRewrite.exportDeclarations.map(declaration => declaration.name))
   const declarations = [
-    ...moduleRewrite.importDeclarations,
-    ...moduleRewrite.exportDeclarations,
+    ...moduleRewrite.importDeclarations.map(declaration => ({ ...declaration, writable: false })),
+    ...moduleRewrite.exportDeclarations.map(declaration => ({
+      ...declaration,
+      writable: bindingPolicy.variableRedeclarations,
+    })),
     ...generatedDeclarations
       .filter(declaration => !moduleRewrite.generatedNamespaces.has(declaration.name)
         && !originalDeclarationNames.has(declaration.name))
@@ -430,7 +472,9 @@ export function prepareProgram(program, knownBindings, looseTopLevelRedeclaratio
     }
   }
   const reserved = declarations.filter(declaration => (
-    reservedBindings.has(declaration.name) || moduleRewrite.importNamespaces.has(declaration.name)
+    reservedBindings.has(declaration.name)
+    || moduleRewrite.importNamespaces.has(declaration.name)
+    || (declaration.kind === 'import' && knownBindings.has(declaration.name))
   ))
   if (reserved.length > 0) {
     const classification = normalizeClassification(classifyPrepared(code, sourceMap))
@@ -446,18 +490,30 @@ export function prepareProgram(program, knownBindings, looseTopLevelRedeclaratio
       moduleLoads: moduleRewrite.moduleLoads,
     }
   }
-  const convenience = rewriteLooseRedeclarations({
+  const convenience = rewriteReplRedeclarations({
     code,
     sourceMap,
-    body: looseTopLevelRedeclarations && outer?.type === 'FunctionDeclaration' ? outer.body.body : undefined,
+    body: outer?.type === 'FunctionDeclaration' ? outer.body.body : undefined,
     offset: STRIP_PREFIX.length,
-    knownBindings: new Set([...knownBindings].filter(name => !importBindings.has(name))),
+    knownBindings,
+    variableRedeclarationBindings: bindingPolicy.variableRedeclarations
+      ? new Set([...knownBindings].filter(name => !importBindings.has(name)))
+      : new Set(knownBindings),
+    writableBindings: new Set([...writableBindings].filter(name => !importBindings.has(name))),
     declarations,
     declarationSpan,
     collisionFor,
+    bindingPolicy,
     autoSplitRedeclarations: rewritesEnabled.autoSplitRedeclarations,
+    commitSignal,
   })
   const { executableCode, executableSourceMap, collisions, redeclared, rewrites } = convenience
+  const commitTargets = new Set(moduleRewrite.commitTargets)
+  for (const declaration of redeclared) {
+    if (declaration.kind === 'function' || declaration.kind === 'class') {
+      commitTargets.add(declaration.commitDependency)
+    }
+  }
   // Classification sees the rewritten program so declared bindings reflect the
   // split form; it must never see the return rewrite, whose computed
   // globalThis access would mark every returning cell volatile.
@@ -482,5 +538,7 @@ export function prepareProgram(program, knownBindings, looseTopLevelRedeclaratio
     redeclared,
     rewrites: [...moduleRewrite.rewrites, ...rewrites],
     moduleLoads: moduleRewrite.moduleLoads,
+    commitSignal,
+    commitTargets,
   }
 }

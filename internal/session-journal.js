@@ -2,22 +2,34 @@ import { decodeValue, encodeValue, normalizeValueWire } from './value-wire.js'
 import { normalizeDiagnostic } from './diagnostic.js'
 import { assertOwnFields, isRecord } from './record-utils.js'
 import { sessionEvents } from './session-events.js'
+import {
+  LEGACY_DEFAULT_EXPORT_BINDING,
+  LIVE_DEFAULT_EXPORT_BINDING,
+} from './repl-rewrite-contract.js'
 
 export const JOURNAL_KEY = 'dshPtcPlus'
 export const EDIT_TARGET_KEY = 'dshPtcPlusEdit'
 export const DERIVED_RUN_KEY = 'dshPtcPlusDerivedRun'
 export const REWRITES_KEY = 'dshPtcPlusRewrites'
 export const RECOVERY_BOUNDARY_KEY = 'dshPtcPlusRecoveryBoundaries'
-export const JOURNAL_VERSION = 3
+export const JOURNAL_VERSION = 4
 const LEGACY_JOURNAL_VERSION = 1
 const INTERMEDIATE_JOURNAL_VERSION = 2
+const PREVIOUS_JOURNAL_VERSION = 3
 export const RECOVERY_BOUNDARY_EVENT = 'ptc-plus/recovery-boundary'
 
 const STATUSES = new Set(['durable', 'volatile', 'discarded', 'noop'])
 const BINDING_MODES = new Set(['loose', 'strict'])
-const JOURNAL_FIELDS = new Set(['version', 'bindingMode', 'rewritePolicy', 'status', 'calls', 'operations', 'confirms', 'diagnostics', 'completion', 'volatileReason'])
-const LEGACY_JOURNAL_FIELDS = new Set([...JOURNAL_FIELDS].filter(field => field !== 'rewritePolicy'))
+const JOURNAL_FIELDS = new Set(['version', 'bindingPolicy', 'rewritePolicy', 'moduleSemantics', 'status', 'calls', 'operations', 'confirms', 'diagnostics', 'completion', 'volatileReason'])
+const PREDECESSOR_JOURNAL_FIELDS = new Set(['version', 'bindingMode', 'rewritePolicy', 'status', 'calls', 'operations', 'confirms', 'diagnostics', 'completion', 'volatileReason'])
+const LEGACY_JOURNAL_FIELDS = new Set([...PREDECESSOR_JOURNAL_FIELDS].filter(field => field !== 'rewritePolicy'))
+const BINDING_POLICY_FIELDS = new Set(['variableRedeclarations', 'functionClassRedeclarations'])
 const REWRITE_POLICY_FIELDS = new Set(['autoRewriteImports', 'autoStripExports', 'autoSplitRedeclarations'])
+const MODULE_SEMANTICS_FIELDS = new Set(['defaultExportBinding'])
+const DEFAULT_EXPORT_BINDINGS = new Set([
+  LEGACY_DEFAULT_EXPORT_BINDING,
+  LIVE_DEFAULT_EXPORT_BINDING,
+])
 const CALL_SUCCESS_FIELDS = new Set(['global', 'member', 'args', 'ok', 'value', 'settle'])
 const CALL_ERROR_FIELDS = new Set(['global', 'member', 'args', 'ok', 'error', 'settle'])
 const OPERATION_FIELDS = new Set(['action', 'name'])
@@ -167,28 +179,64 @@ function normalizeRewritePolicy(value) {
   })
 }
 
+function normalizeBindingPolicy(value) {
+  if (!isRecord(value)) throw new Error('invalid dsh-ptc-plus journal binding policy')
+  assertOwnFields(value, BINDING_POLICY_FIELDS, 'journal binding policy')
+  for (const key of BINDING_POLICY_FIELDS) {
+    if (typeof value[key] !== 'boolean') throw new Error(`invalid dsh-ptc-plus journal binding policy ${key}`)
+  }
+  return Object.freeze({
+    variableRedeclarations: value.variableRedeclarations,
+    functionClassRedeclarations: value.functionClassRedeclarations,
+  })
+}
+
+function normalizeModuleSemantics(value) {
+  if (!isRecord(value)) throw new Error('invalid dsh-ptc-plus journal module semantics')
+  assertOwnFields(value, MODULE_SEMANTICS_FIELDS, 'journal module semantics')
+  if (!DEFAULT_EXPORT_BINDINGS.has(value.defaultExportBinding)) {
+    throw new Error('invalid dsh-ptc-plus journal default export binding semantics')
+  }
+  return Object.freeze({ defaultExportBinding: value.defaultExportBinding })
+}
+
 function migrateJournal(value, resolveLegacyConfirm) {
-  if (value.version !== LEGACY_JOURNAL_VERSION) return value
-  assertOwnFields(value, LEGACY_JOURNAL_FIELDS, 'dsh-ptc-plus journal')
+  if (value.version === JOURNAL_VERSION) return value
+  const legacy = value.version === LEGACY_JOURNAL_VERSION
+  assertOwnFields(
+    value,
+    legacy ? LEGACY_JOURNAL_FIELDS : PREDECESSOR_JOURNAL_FIELDS,
+    'dsh-ptc-plus journal',
+  )
+  if (!BINDING_MODES.has(value.bindingMode)) throw new Error('invalid dsh-ptc-plus journal binding mode')
+  const { bindingMode, ...rest } = value
   return {
-    ...value,
+    ...rest,
     version: JOURNAL_VERSION,
-    rewritePolicy: LEGACY_REWRITE_POLICY,
-    confirms: normalizeLegacyConfirms(value.confirms, resolveLegacyConfirm),
+    bindingPolicy: {
+      variableRedeclarations: bindingMode === 'loose',
+      functionClassRedeclarations: false,
+    },
+    rewritePolicy: legacy ? LEGACY_REWRITE_POLICY : value.rewritePolicy,
+    moduleSemantics: { defaultExportBinding: LEGACY_DEFAULT_EXPORT_BINDING },
+    confirms: legacy
+      ? normalizeLegacyConfirms(value.confirms, resolveLegacyConfirm)
+      : value.confirms,
   }
 }
 
 /** Validate and detach one journal emitted by the runtime. */
 export function normalizeJournal(value, options = {}) {
   if (!isRecord(value)) throw new Error('invalid dsh-ptc-plus journal')
-  if (![LEGACY_JOURNAL_VERSION, INTERMEDIATE_JOURNAL_VERSION, JOURNAL_VERSION].includes(value.version)
+  if (![LEGACY_JOURNAL_VERSION, INTERMEDIATE_JOURNAL_VERSION, PREVIOUS_JOURNAL_VERSION, JOURNAL_VERSION].includes(value.version)
     || !STATUSES.has(value.status)) {
     throw new Error('invalid dsh-ptc-plus journal')
   }
   const migrated = migrateJournal(value, options.resolveLegacyConfirm)
   assertOwnFields(migrated, JOURNAL_FIELDS, 'dsh-ptc-plus journal')
-  if (!BINDING_MODES.has(migrated.bindingMode)) throw new Error('invalid dsh-ptc-plus journal binding mode')
+  const bindingPolicy = normalizeBindingPolicy(migrated.bindingPolicy)
   const rewritePolicy = normalizeRewritePolicy(migrated.rewritePolicy)
+  const moduleSemantics = normalizeModuleSemantics(migrated.moduleSemantics)
   const calls = normalizeCalls(migrated.calls)
   const operations = normalizeOperations(migrated.operations)
   const confirms = normalizeConfirms(migrated.confirms)
@@ -209,8 +257,9 @@ export function normalizeJournal(value, options = {}) {
   }
   return Object.freeze({
     version: JOURNAL_VERSION,
-    bindingMode: migrated.bindingMode,
+    bindingPolicy,
     rewritePolicy,
+    moduleSemantics,
     status: migrated.status,
     calls: Object.freeze(calls),
     operations: Object.freeze(operations),
@@ -394,12 +443,21 @@ export function liveToolCallSeq(session, callId, toolName) {
 }
 
 /** Start a mutable journal for one live cell. */
-export function createJournal(confirms = [], bindingMode, rewritePolicy) {
-  if (!BINDING_MODES.has(bindingMode)) throw new TypeError('invalid dsh-ptc-plus journal binding mode')
+export function createJournal(confirms = [], bindingPolicy, rewritePolicy) {
+  if (typeof bindingPolicy === 'string') {
+    if (!BINDING_MODES.has(bindingPolicy)) throw new TypeError('invalid dsh-ptc-plus journal binding mode')
+    bindingPolicy = {
+      variableRedeclarations: bindingPolicy === 'loose',
+      functionClassRedeclarations: false,
+    }
+  }
   return {
     version: JOURNAL_VERSION,
-    bindingMode,
+    bindingPolicy: normalizeBindingPolicy(bindingPolicy),
     rewritePolicy: normalizeRewritePolicy(rewritePolicy),
+    moduleSemantics: normalizeModuleSemantics({
+      defaultExportBinding: LIVE_DEFAULT_EXPORT_BINDING,
+    }),
     calls: [],
     operations: [],
     confirms: [...confirms],

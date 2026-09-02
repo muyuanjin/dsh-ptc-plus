@@ -58,6 +58,15 @@
       descriptionEn: "Allows top-level const or let declarations to replace existing variables; disabling rejects redeclarations before execution."
     },
     {
+      key: "looseTopLevelFunctionClassRedeclarations",
+      type: "boolean",
+      default: false,
+      label: "\u5141\u8BB8\u9876\u5C42\u51FD\u6570/\u7C7B\u91CD\u58F0\u660E",
+      labelEn: "Allow top-level function/class redeclarations",
+      description: "\u5141\u8BB8\u9876\u5C42 function \u6216 class \u58F0\u660E\u66FF\u6362\u5DF2\u6709\u7684\u53EF\u5199 binding\uFF1B\u4E0D\u53EF\u5199\u6216\u4FDD\u7559 binding \u4ECD\u4F1A\u5728\u6267\u884C\u524D\u88AB\u62D2\u7EDD\u3002",
+      descriptionEn: "Allows top-level function or class declarations to replace existing writable bindings; immutable and reserved bindings are still rejected before execution."
+    },
+    {
       key: "autoRewriteImports",
       type: "boolean",
       default: true,
@@ -243,6 +252,7 @@
       labelEn: "Advanced behavior",
       fields: Object.freeze([
         "looseTopLevelRedeclarations",
+        "looseTopLevelFunctionClassRedeclarations",
         "autoRewriteImports",
         "autoStripExports",
         "autoSplitRedeclarations",
@@ -274,10 +284,23 @@
   );
 
   // src/client-activity.js
-  var JOURNAL_VERSIONS = /* @__PURE__ */ new Set([1, 2, 3]);
+  var JOURNAL_VERSIONS = /* @__PURE__ */ new Set([1, 2, 3, 4]);
   var JOURNAL_STATUSES = /* @__PURE__ */ new Set(["durable", "volatile", "discarded", "noop"]);
   var BINDING_MODES = /* @__PURE__ */ new Set(["loose", "strict"]);
   var JOURNAL_FIELDS = /* @__PURE__ */ new Set([
+    "version",
+    "bindingPolicy",
+    "rewritePolicy",
+    "moduleSemantics",
+    "status",
+    "calls",
+    "operations",
+    "confirms",
+    "diagnostics",
+    "completion",
+    "volatileReason"
+  ]);
+  var PREDECESSOR_JOURNAL_FIELDS = /* @__PURE__ */ new Set([
     "version",
     "bindingMode",
     "rewritePolicy",
@@ -289,12 +312,15 @@
     "completion",
     "volatileReason"
   ]);
-  var LEGACY_JOURNAL_FIELDS = new Set([...JOURNAL_FIELDS].filter((key) => key !== "rewritePolicy"));
+  var LEGACY_JOURNAL_FIELDS = new Set([...PREDECESSOR_JOURNAL_FIELDS].filter((key) => key !== "rewritePolicy"));
+  var BINDING_POLICY_FIELDS = /* @__PURE__ */ new Set(["variableRedeclarations", "functionClassRedeclarations"]);
   var REWRITE_POLICY_FIELDS = /* @__PURE__ */ new Set([
     "autoRewriteImports",
     "autoStripExports",
     "autoSplitRedeclarations"
   ]);
+  var MODULE_SEMANTICS_FIELDS = /* @__PURE__ */ new Set(["defaultExportBinding"]);
+  var DEFAULT_EXPORT_BINDINGS = /* @__PURE__ */ new Set(["legacy-variable", "live-readonly"]);
   var CALL_SUCCESS_FIELDS = /* @__PURE__ */ new Set(["global", "member", "args", "ok", "value", "settle"]);
   var CALL_ERROR_FIELDS = /* @__PURE__ */ new Set(["global", "member", "args", "ok", "error", "settle"]);
   var OPERATION_FIELDS = /* @__PURE__ */ new Set(["action", "name"]);
@@ -323,9 +349,11 @@
   var REWRITE_KINDS = /* @__PURE__ */ new Set(["import", "redeclaration", "export"]);
   var REWRITE_POLICY_BY_KIND = Object.freeze({
     import: "autoRewriteImports",
-    redeclaration: "autoSplitRedeclarations",
     export: "autoStripExports"
   });
+  var MIXED_REDECLARATION = "split a mixed top-level declaration while preserving native pattern initialization";
+  var FUNCTION_REDECLARATION = "reassigned an existing top-level function declaration for REPL continuity";
+  var CLASS_REDECLARATION = "reassigned an existing top-level class declaration for REPL continuity";
   var EDIT_TARGET_FIELDS = /* @__PURE__ */ new Set(["targetCallSeq"]);
   var DERIVED_RUN_FIELDS = /* @__PURE__ */ new Set(["code", "description"]);
   var RECOVERY_BOUNDARY_FIELDS = /* @__PURE__ */ new Set(["failedCallSeq", "frontierCallSeq"]);
@@ -466,6 +494,12 @@
   function isValidRewritePolicy(value) {
     return hasExactFields(value, REWRITE_POLICY_FIELDS) && [...REWRITE_POLICY_FIELDS].every((key) => typeof value[key] === "boolean");
   }
+  function isValidBindingPolicy(value) {
+    return hasExactFields(value, BINDING_POLICY_FIELDS) && [...BINDING_POLICY_FIELDS].every((key) => typeof value[key] === "boolean");
+  }
+  function isValidModuleSemantics(value) {
+    return hasExactFields(value, MODULE_SEMANTICS_FIELDS) && DEFAULT_EXPORT_BINDINGS.has(value.defaultExportBinding);
+  }
   function isValidCall(value) {
     if (!isRecord(value) || value.ok !== true && value.ok !== false) return false;
     const fields = value.ok ? CALL_SUCCESS_FIELDS : CALL_ERROR_FIELDS;
@@ -495,10 +529,11 @@
     if (!isRecord(value) || !JOURNAL_VERSIONS.has(value.version) || !JOURNAL_STATUSES.has(value.status)) {
       return false;
     }
-    const fields = value.version === 1 ? LEGACY_JOURNAL_FIELDS : JOURNAL_FIELDS;
-    const required = ["version", "bindingMode", "status", "calls", "operations", "diagnostics"];
-    if (value.version !== 1) required.push("rewritePolicy");
-    if (!hasClosedFields(value, fields, required) || !BINDING_MODES.has(value.bindingMode) || value.version !== 1 && !isValidRewritePolicy(value.rewritePolicy) || !Array.isArray(value.calls) || !value.calls.every(isValidCall) || !Array.isArray(value.operations) || !value.operations.every(isValidOperation) || !isValidConfirms(value.confirms, value.version) || !Array.isArray(value.diagnostics) || !value.diagnostics.every(isValidDiagnostic)) return false;
+    const predecessor = value.version !== 4;
+    const fields = value.version === 1 ? LEGACY_JOURNAL_FIELDS : predecessor ? PREDECESSOR_JOURNAL_FIELDS : JOURNAL_FIELDS;
+    const required = predecessor ? ["version", "bindingMode", "status", "calls", "operations", "diagnostics"] : ["version", "bindingPolicy", "rewritePolicy", "moduleSemantics", "status", "calls", "operations", "diagnostics"];
+    if (value.version !== 1 && value.version !== 4) required.push("rewritePolicy");
+    if (!hasClosedFields(value, fields, required) || predecessor && !BINDING_MODES.has(value.bindingMode) || value.version === 4 && !isValidBindingPolicy(value.bindingPolicy) || value.version === 4 && !isValidModuleSemantics(value.moduleSemantics) || value.version !== 1 && !isValidRewritePolicy(value.rewritePolicy) || !Array.isArray(value.calls) || !value.calls.every(isValidCall) || !Array.isArray(value.operations) || !value.operations.every(isValidOperation) || !isValidConfirms(value.confirms, value.version) || !Array.isArray(value.diagnostics) || !value.diagnostics.every(isValidDiagnostic)) return false;
     const settlementOrder = value.calls.map((call) => call.settle).sort((left, right) => left - right);
     if (settlementOrder.some((settle, index) => settle !== index)) return false;
     const requiresCompletion = value.status === "durable" || value.status === "volatile";
@@ -519,7 +554,7 @@
   }
   function isValidRewrites(value, journal) {
     try {
-      return journal.status !== "noop" && isValidRewritePolicy(journal.rewritePolicy) && Array.isArray(value) && value.every((rewrite) => hasClosedFields(rewrite, REWRITE_FIELDS, ["kind", "description"]) && REWRITE_KINDS.has(rewrite.kind) && journal.rewritePolicy[REWRITE_POLICY_BY_KIND[rewrite.kind]] === true && typeof rewrite.description === "string" && rewrite.description.length > 0 && (rewrite.source === void 0 || typeof rewrite.source === "string"));
+      return journal.status !== "noop" && isValidRewritePolicy(journal.rewritePolicy) && Array.isArray(value) && value.every((rewrite) => hasClosedFields(rewrite, REWRITE_FIELDS, ["kind", "description"]) && REWRITE_KINDS.has(rewrite.kind) && (rewrite.kind === "redeclaration" ? rewrite.description === FUNCTION_REDECLARATION || rewrite.description === CLASS_REDECLARATION ? journal.version === 4 && isValidBindingPolicy(journal.bindingPolicy) && journal.bindingPolicy.functionClassRedeclarations === true : journal.rewritePolicy.autoSplitRedeclarations === true : journal.rewritePolicy[REWRITE_POLICY_BY_KIND[rewrite.kind]] === true) && typeof rewrite.description === "string" && rewrite.description.length > 0 && (rewrite.source === void 0 || typeof rewrite.source === "string"));
     } catch {
       return false;
     }
@@ -578,7 +613,6 @@
       return "";
     }
   }
-  var MIXED_REDECLARATION = "split a mixed top-level declaration while preserving native pattern initialization";
   var GENERATED_RUN_CODE_DESCRIPTION_KEY = "dshPtcPlusRunCodeDescription";
   function rewriteFeature(rewrites, predicate, key) {
     const matching = rewrites.filter(predicate);

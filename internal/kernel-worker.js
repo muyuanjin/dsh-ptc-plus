@@ -366,6 +366,7 @@ async function runCell(message) {
   pendingVolatileReason = undefined
   activeExecution = execution
   const cellGlobals = []
+  const committedRedeclarations = new Set()
 
   try {
     let completion
@@ -376,6 +377,13 @@ async function runCell(message) {
           value: CellReturn,
         })
         cellGlobals.push(message.returnSignal)
+        Object.defineProperty(context, message.commitSignal, {
+          configurable: true,
+          value(name) {
+            committedRedeclarations.add(name)
+          },
+        })
+        cellGlobals.push(message.commitSignal)
         for (const load of message.moduleLoads ?? []) {
           let namespace
           try {
@@ -421,6 +429,7 @@ async function runCell(message) {
         ...(position === undefined ? {} : { position }),
         ...(detail.cause === undefined ? {} : { cause: detail.cause }),
         ...completionDurability(execution),
+        committedRedeclarations: [...committedRedeclarations],
       })
       return
     }
@@ -437,6 +446,7 @@ async function runCell(message) {
         hasValue: completion.hasValue,
         ...(encodedValue === undefined ? {} : { value: encodedValue }),
         ...completionDurability(execution),
+        committedRedeclarations: [...committedRedeclarations],
       }
     } catch (error) {
       const detail = messageOf(error)
@@ -446,6 +456,7 @@ async function runCell(message) {
         logs: execution.logs,
         invalidOutput: detail,
         ...completionDurability(execution),
+        committedRedeclarations: [...committedRedeclarations],
       }
     }
     channel.postMessage(response)

@@ -27,12 +27,18 @@ PTC Plus 的正确承诺是：
 
 ```ts
 {
-  version: 3,
-  bindingMode: "loose" | "strict",
+  version: 4,
+  bindingPolicy: {
+    variableRedeclarations: boolean,
+    functionClassRedeclarations: boolean
+  },
   rewritePolicy: {
     autoRewriteImports: boolean,
     autoStripExports: boolean,
     autoSplitRedeclarations: boolean
+  },
+  moduleSemantics: {
+    defaultExportBinding: "legacy-variable" | "live-readonly"
   },
   status: "durable" | "volatile" | "discarded" | "noop",
   calls: CapabilityCall[],
@@ -50,8 +56,9 @@ PTC Plus 的正确承诺是：
 字段含义：
 
 - `durable`：创建可重放 node，推进 `durableHead`；
-- `bindingMode`：记录该 cell 实际采用的顶层 binding 语义；冷重放读取每个 node 的记录值，不读取恢复时的 profile 配置；
+- `bindingPolicy`：记录该 cell 实际采用的变量重声明和 function/class 重声明语义；冷重放读取每个 node 的完整记录值，并用它重建 binding 可写性，不读取恢复时的 profile 配置；
 - `rewritePolicy`：记录该 cell 解析和 lowering 时使用的三个 AST rewrite 开关；冷重放读取每个 node 的记录值，不读取恢复时的 profile 配置；
+- `moduleSemantics`：记录不可由 profile 选择的源码 lowering 代际；当前 cell 固定写入 `live-readonly`，冷重放按记录值恢复 `export default` 的公开 binding 模型；
 - `volatile`：只推进 live heap，不推进 `durableHead`；
 - `discarded`：基础设施失败，calls 和 operations 必须为空；若中止时仍有未结算的 program binding call，则以首个 `global.member` 保留 `volatileReason`，恢复时不能把这个 possible-effect boundary 折叠为 no-op；
 - `noop`：程序未执行，calls 和 operations 必须为空；
@@ -69,7 +76,7 @@ SessionRuntime 创建 kernel 时完全忽略历史 nodes、head、checkpoints �
 
 journal、diagnostic、source、cause、call、operation、completion 和 completion error 都使用封闭字段集合；未知、symbol 或非枚举自有字段会使 journal 无效。capability-call `args`/`value` 与 return completion `value` 都是封闭、规范化的 `ptc-value-graph/v1` envelope。诊断结构、source frame 依赖和稳定代码见[架构说明](architecture.md#journal-与恢复)。
 
-当前实现写入 `version: 3` schema。`version: 2` 且 `confirms` 为空的 journal 可无歧义规范化为 v3；v2 中非空的 call-id confirmation 无法可靠映射到可能重复的 session event，必须形成 unknown suffix，不能猜测迁移。包括 `bindingMode`、`rewritePolicy`、`diagnostics` 在内的必需字段缺失时 journal 必须失效，否则会削弱最终持久值与 tentative journal 的严格一致性确认。profile 后续切换宽松/严格模式或 AST rewrite 开关只影响新 cell，历史 node 始终按自身记录的模式重放。
+当前实现只写入 `version: 4` schema。v1-v3 作为封闭 predecessor 输入规范化为 v4：旧 `bindingMode` 精确映射到 `bindingPolicy.variableRedeclarations`，而 `functionClassRedeclarations` 固定为 `false`，因为旧 pipeline 不具备该语义；`moduleSemantics.defaultExportBinding` 固定迁移为 `legacy-variable`，使 loose 历史保留旧的可写生成 binding、strict 历史保留旧的 const 行为。v1 仍使用三个 rewrite 开关全关的历史默认值，并只在 session log 唯一证明 call identity 时迁移字符串 confirmation；v2/v3 保留自身 `rewritePolicy`，无法表示为非负 event sequence 的 confirmation 必须形成 unknown suffix。包括 `bindingPolicy`、`rewritePolicy`、`moduleSemantics`、`diagnostics` 在内的必需字段缺失时 journal 必须失效，否则会削弱最终持久值与 tentative journal 的严格一致性确认。profile 后续切换任一 binding 或 AST rewrite 开关只影响新 cell，历史 node 始终按自身记录的 policy 和 module semantics 重放。
 
 ## Capability Call Transcript
 
@@ -260,6 +267,6 @@ scope、policy 或 settlement。
 - Math intrinsic、局部 ambient 名称、CWD 相关 `node:path`；
 - 命名状态 save/restore/delete 与 volatile restore；
 - 深层 graph value、own `__proto__` key、`undefined`、special number、BigInt、hole、alias 与 cycle；
-- 宽松变量重声明与严格/混合名称 collision preflight；
+- 独立的变量与 function/class 重声明 policy、不可写目标 preflight、声明位置替换及 cold replay；
 - runtime throw、invalid output 和真实 recovery 的结构化诊断与模型可见投影；普通 volatile transition 保持安静；
 - 未修改 DSH 的真实公共扩展面，并在全新 session runtime 中从日志恢复。

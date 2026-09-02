@@ -1224,6 +1224,7 @@ test('config schema defaults expose the settings switches', async () => {
     'canonicalizeToolCalls',
     'cordisToolsEnabled',
     'looseTopLevelRedeclarations',
+    'looseTopLevelFunctionClassRedeclarations',
     'autoRewriteImports',
     'autoStripExports',
     'autoSplitRedeclarations',
@@ -1260,6 +1261,7 @@ test('config schema defaults expose the settings switches', async () => {
   assert.equal(defaults.value.enhancedToolView, true)
   assert.equal(defaults.value.autoDescribeRunCode, true)
   assert.equal(defaults.value.cordisToolsEnabled, false)
+  assert.equal(defaults.value.looseTopLevelFunctionClassRedeclarations, false)
   const invalid = await Config['~standard'].validate({ enabled: 'yes' })
   assert.equal(invalid.issues[0].path[0], 'enabled')
   const ns = await Config['~standard'].validate({ enabled: false })

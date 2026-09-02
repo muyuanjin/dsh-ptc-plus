@@ -5,6 +5,7 @@ import {
   classifyDurability,
   prepareProgram,
 } from '../internal/cell-analysis.js'
+import { rewriteReplRedeclarations } from '../internal/repl-convenience.js'
 import { renderDurabilityReasons } from '../internal/module-policy.js'
 import { SessionRuntime } from '../internal/session-runtime.js'
 
@@ -96,6 +97,93 @@ test('requires a complete explicit rewrite policy', () => {
       /rewrite policy must define/,
     )
   }
+})
+
+test('requires a complete explicit binding policy', () => {
+  for (const policy of [undefined, {}, {
+    variableRedeclarations: true,
+  }, {
+    variableRedeclarations: true,
+    functionClassRedeclarations: 'yes',
+  }]) {
+    assert.throws(
+      () => prepareProgram('return 1', new Set(), policy, new Set(), ENABLED),
+      /binding policy must define/,
+    )
+  }
+})
+
+test('requires supported module lowering semantics', () => {
+  assert.throws(
+    () => prepareProgram(
+      'return 1',
+      new Set(),
+      { variableRedeclarations: true, functionClassRedeclarations: true },
+      new Set(),
+      ENABLED,
+      new Map(),
+      new Set(),
+      new Set(),
+      { defaultExportBinding: 'unknown' },
+    ),
+    /module semantics must define/,
+  )
+})
+
+test('assigns distinct commit targets to same-name declaration occurrences', () => {
+  const result = prepareProgram(
+    'function current() { return 1 }\nfunction current() { return 2 }',
+    new Set(['current']),
+    { variableRedeclarations: true, functionClassRedeclarations: true },
+    new Set(),
+    ENABLED,
+  )
+  const declarations = result.declarations.filter(declaration => declaration.name === 'current')
+  assert.equal(declarations.length, 2)
+  assert.equal(new Set(declarations.map(declaration => declaration.commitDependency)).size, 2)
+  assert.deepEqual(
+    [...result.commitTargets],
+    declarations.map(declaration => declaration.commitDependency),
+  )
+})
+
+test('only lowers fresh const declarations under the variable redeclaration policy', () => {
+  const strict = prepareProgram(
+    'const stable = 1',
+    new Set(),
+    { variableRedeclarations: false, functionClassRedeclarations: true },
+    new Set(),
+    ENABLED,
+  )
+  assert.match(strict.code, /^const stable = 1$/)
+  assert.equal(strict.declarations[0].writable, false)
+
+  const loose = prepareProgram(
+    'const replaceable = 1',
+    new Set(),
+    { variableRedeclarations: true, functionClassRedeclarations: false },
+    new Set(),
+    ENABLED,
+  )
+  assert.match(loose.code, /^let replaceable = 1$/)
+  assert.equal(loose.declarations[0].writable, true)
+})
+
+test('keeps the compatibility path when no parsed body is available', () => {
+  const result = rewriteReplRedeclarations({
+    code: 'return 1',
+    body: undefined,
+    knownBindings: new Set(['value']),
+    declarations: [{ name: 'value' }],
+    declarationSpan: () => ({ line: 0, column: 1 }),
+    collisionFor: declaration => ({ name: declaration.name }),
+    bindingPolicy: { variableRedeclarations: true, functionClassRedeclarations: true },
+    autoSplitRedeclarations: true,
+  })
+  assert.equal(result.executableCode, 'return 1')
+  assert.deepEqual(result.collisions, [{ name: 'value' }])
+  assert.deepEqual(result.redeclared, [])
+  assert.deepEqual(result.rewrites, [])
 })
 
 test('preserves the async function body grammar through module preprocessing', () => {

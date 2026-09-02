@@ -43,15 +43,19 @@ export const inject = ['tools', 'codeRuntime', 'systemPrompt', 'agents', 'llm']
 
 function replGuidance(
   looseTopLevelRedeclarations,
+  looseTopLevelFunctionClassRedeclarations,
   durableReplay,
   autoRewriteImports,
   autoStripExports,
   autoSplitRedeclarations,
   cordisToolsEnabled,
 ) {
-  const redeclaration = looseTopLevelRedeclarations
-    ? 'Repeated top-level `const`/`let` declarations replace existing bindings. Repeated top-level `function`/`class` declarations are rejected; replace them with top-level `const`/`let` function or class expressions, or place one-off declarations inside a block.'
-    : 'Redeclaring an existing top-level name fails before execution, so reuse it or place one-off declarations inside a block.'
+  const variableRedeclaration = looseTopLevelRedeclarations
+    ? 'Repeated top-level `const`/`let` declarations replace existing bindings.'
+    : 'Repeated top-level variable declarations fail before execution, so reuse existing bindings or place one-off declarations inside a block.'
+  const functionClassRedeclaration = looseTopLevelFunctionClassRedeclarations
+    ? 'Repeated top-level named `function`/`class` declarations replace existing writable bindings at their declaration position.'
+    : 'Repeated top-level `function`/`class` declarations remain unsupported; assign a function or class expression to an existing writable binding, or place one-off declarations inside a block.'
   const moduleSyntax = autoRewriteImports && autoStripExports
     ? 'static `import` declarations are adapted with live, read-only bindings and top-level `export` modifiers are stripped automatically.'
     : autoRewriteImports
@@ -73,7 +77,7 @@ function replGuidance(
 The host may append a bounded recovery context after a qualifying failure. Treat that context as a session-log-derived diagnostic: use \`edit_run_code\` only when it explicitly proves a complete-cell rerun is safe; otherwise inspect live state in a new short \`run_code\` cell.
 
 ## Cell conventions
-Expressions that are neither returned nor printed produce no output. Keep large inspection results in bindings or reduce them to targeted excerpts: \`tools.read\` is bounded inspection, not a lossless whole-file reader. Cells are async function bodies; ${moduleSyntax} Use dynamic import or require explicitly when static module syntax is unsupported. ${redeclaration} ${splitSyntax}
+Expressions that are neither returned nor printed produce no output. Keep large inspection results in bindings or reduce them to targeted excerpts: \`tools.read\` is bounded inspection, not a lossless whole-file reader. Cells are async function bodies; ${moduleSyntax} Use dynamic import or require explicitly when static module syntax is unsupported. ${variableRedeclaration} ${functionClassRedeclaration} ${splitSyntax}
 
 ## Available capabilities
 Use \`capabilities.tree()\`, \`capabilities.find()\`, and \`capabilities.inspect()\` to discover the current request's live \`tools.*\` members before calling an unfamiliar binding. Prefer direct current-cell work; reserve \`code.run\` for source already held as data.
@@ -213,6 +217,7 @@ function installPtCRuntime(ctx, resolvedConfig, toolSchemasForAgent, sessionId) 
         if (ctx.tools.get(RUN_CODE, context?.scope) === undefined) return ''
         return replGuidance(
           activeConfig.looseTopLevelRedeclarations,
+          activeConfig.looseTopLevelFunctionClassRedeclarations,
           activeConfig.durableReplay,
           activeConfig.autoRewriteImports,
           activeConfig.autoStripExports,

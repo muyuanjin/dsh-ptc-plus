@@ -282,7 +282,15 @@ test('strips export modifiers, converts re-exports, and erases type-only exports
   const result = rewriteModuleImportsExports(code, ENABLED)
   assert.match(result.code, /const value = 42/)
   assert.match(result.code, /function f\(\) \{ return 1 \}/)
-  assert.match(result.code, /const __default = helper;\s+function helper\(\) \{ return 2 \}/)
+  assert.match(result.code, /function helper\(\) \{ return 2 \}; const __dsh_ptc_default_namespace_0__ = \{ default: helper \}/)
+  assert.equal(result.exportDeclarations[0].commitDependency, '__default')
+  assert.deepEqual([...result.commitTargets], ['__default'])
+  assert.deepEqual(result.imports.get('__default'), {
+    namespace: '__dsh_ptc_default_namespace_0__',
+    imported: 'default',
+    syntheticDefault: true,
+    commitDependency: '__default',
+  })
   assert.deepEqual(result.moduleLoads.map(load => load.source), ['node:util', 'node:path'])
   assert.match(result.code, /return 1/)
   const kinds = result.rewrites.map(record => record.kind)
@@ -306,11 +314,12 @@ test('converts namespace re-exports through the remote re-export path', () => {
 test('converts anonymous default exports to __default bindings', () => {
   for (const code of ['export default 42', 'export default function () {}', 'export default class {}']) {
     const result = rewriteModuleImportsExports(code, ENABLED)
-    assert.match(result.code, /const __default = /)
+    assert.match(result.code, /const __dsh_ptc_default_namespace_0__ = \{ default: /)
+    assert.deepEqual([...result.commitTargets], ['__default'])
   }
   const combined = rewriteModuleImportsExports("import x from 'node:util'\nexport default 42", ENABLED)
   assert.match(combined.code, /const __dsh_ptc_import_namespace_0__ = __dsh_ptc_import_global_0__/)
-  assert.match(combined.code, /const __default =\s+42/)
+  assert.match(combined.code, /const __dsh_ptc_default_namespace_0__ = \{ default:\s+42 \}/)
 
   for (const declaration of ['function () {}', 'class {}']) {
     const continued = rewriteModuleImportsExports(
@@ -327,18 +336,106 @@ test('converts anonymous default exports to __default bindings', () => {
 test('keeps named default classes reachable through __default', () => {
   const code = 'export default class Box { constructor() { this.v = 3 } }\nreturn 1'
   const result = rewriteModuleImportsExports(code, ENABLED)
-  assert.match(result.code, /class Box \{ constructor\(\) \{ this\.v = 3 \} \}; const __default = Box;/)
+  assert.match(result.code, /class Box \{ constructor\(\) \{ this\.v = 3 \} \}; const __dsh_ptc_default_namespace_0__ = \{ default: Box \}/)
+  assert.equal(result.exportDeclarations[0].commitDependency, '__default')
+  assert.deepEqual([...result.commitTargets], ['__default', 'Box'])
+})
+
+test('reuses one private slot for later default exports', () => {
+  const first = rewriteModuleImportsExports('export default function first() {}', ENABLED)
+  const second = rewriteModuleImportsExports(
+    'export default function second() {}\nreturn __default',
+    ENABLED,
+    first.imports,
+    first.importNamespaces,
+    new Set(['__default', 'first']),
+  )
+  const namespace = first.imports.get('__default').namespace
+  assert.equal(second.imports.get('__default').namespace, namespace)
+  assert.equal(second.importNamespaces.size, 1)
+  assert.match(second.code, new RegExp(`${namespace}\\.default = second`))
+  assert.doesNotMatch(second.code, new RegExp(`const ${namespace}`))
+  assert.match(second.code, new RegExp(`return ${namespace}\\.default`))
+})
+
+test('preserves predecessor default exports as ordinary declarations', () => {
+  const legacy = { defaultExportBinding: 'legacy-variable' }
+  const expression = rewriteModuleImportsExports(
+    'export default 42', ENABLED, new Map(), new Set(), new Set(), legacy,
+  )
+  assert.match(expression.code, /const __default =\s+42/)
+  assert.equal(expression.imports.has('__default'), false)
+  assert.deepEqual([...expression.commitTargets], [])
+
+  const namedFunction = rewriteModuleImportsExports(
+    'export default function helper() {}', ENABLED, new Map(), new Set(), new Set(), legacy,
+  )
+  assert.match(namedFunction.code, /const __default = helper; function helper\(\) \{\}/)
+  const namedClass = rewriteModuleImportsExports(
+    'export default class Box {}', ENABLED, new Map(), new Set(), new Set(), legacy,
+  )
+  assert.match(namedClass.code, /class Box \{\}; const __default = Box;/)
+  const anonymousFunction = rewriteModuleImportsExports(
+    'export default function () {}', ENABLED, new Map(), new Set(), new Set(), legacy,
+  )
+  assert.match(anonymousFunction.code, /const __default = function \(\) \{\};/)
+  const direct = rewriteModuleImportsExports(
+    'export default function __default() {}', ENABLED, new Map(), new Set(), new Set(), legacy,
+  )
+  assert.match(direct.code, /^\s*function __default\(\) \{\}/)
+  assert.doesNotMatch(direct.code, /const __default/)
+  const typeOnly = rewriteModuleImportsExports(
+    'export default interface Shape {}', ENABLED, new Map(), new Set(), new Set(), legacy,
+  )
+  assert.equal(typeOnly.code, '')
+  assert.equal(typeOnly.rewrites[0].source, 'interface')
+  assert.throws(
+    () => rewriteModuleImportsExports(
+      'const __default = 1; export default 2',
+      ENABLED,
+      new Map(),
+      new Set(),
+      new Set(),
+      legacy,
+    ),
+    /already declared/,
+  )
 })
 
 test('defines the public __default collision rule', () => {
   const sameName = rewriteModuleImportsExports('export default function __default() { return 1 }', ENABLED)
-  assert.equal(sameName.code, 'function __default() { return 1 }')
+  assert.match(sameName.code, /const __dsh_ptc_default_namespace_0__ = \{ default: function __default\(\) \{ return 1 \} \}/)
+  assert.match(sameName.code, /redeclaration_commit_0__"\]\("__default"\)/)
+  assert.deepEqual([...sameName.commitTargets], ['__default'])
+  assert.equal(sameName.exportDeclarations[0].commitDependency, '__default')
   assert.throws(
     () => rewriteModuleImportsExports('const __default = 1; export default 2', ENABLED),
     /already declared/,
   )
   assert.doesNotThrow(() => rewriteModuleImportsExports('import type { __default } from "types"; export default 2', ENABLED))
   assert.doesNotThrow(() => rewriteModuleImportsExports('declare const __default: number; export default 2', ENABLED))
+  assert.throws(
+    () => rewriteModuleImportsExports(
+      'export default 2', ENABLED, new Map(), new Set(), new Set(['__default']),
+    ),
+    /already declared/,
+  )
+  assert.throws(
+    () => rewriteModuleImportsExports(
+      'export default 2',
+      ENABLED,
+      new Map([['__default', { namespace: '__import__', imported: 'default' }]]),
+      new Set(['__import__']),
+      new Set(['__default']),
+    ),
+    /already declared/,
+  )
+  assert.throws(
+    () => rewriteModuleImportsExports(
+      'export default 2', ENABLED, new Map(), new Set(), new Set(), { defaultExportBinding: 'unknown' },
+    ),
+    /unsupported default export binding semantics/,
+  )
 })
 
 test('preserves a return that mentions return inside strings and templates', () => {

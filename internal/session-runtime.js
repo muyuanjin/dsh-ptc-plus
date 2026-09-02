@@ -41,6 +41,13 @@ function rewritePolicy(config) {
   }
 }
 
+function bindingPolicy(config) {
+  return {
+    variableRedeclarations: config.looseTopLevelRedeclarations,
+    functionClassRedeclarations: config.looseTopLevelFunctionClassRedeclarations,
+  }
+}
+
 function resolvedRuntimeConfig(config) {
   return Object.freeze(resolveConfig(config))
 }
@@ -489,7 +496,7 @@ export class SessionRuntime {
     const journal = createJournal(
       /* c8 ignore next */
       this.pendingNoops.get(sessionId) ?? [],
-      cellConfig.looseTopLevelRedeclarations ? 'loose' : 'strict',
+      bindingPolicy(cellConfig),
       rewritePolicy(cellConfig),
     )
     const workerReservation = kernel.reserveWorkerConfiguration(cellConfig)

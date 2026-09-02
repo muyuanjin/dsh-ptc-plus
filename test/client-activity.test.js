@@ -342,7 +342,11 @@ test('rejects non-canonical Value V1 property order', () => {
 test('ignores journals rejected by the complete closed metadata contract', () => {
   const valid = normalizeJournal(journal())
   const malformed = [
-    value => { delete value.bindingMode },
+    value => { delete value.bindingPolicy },
+    value => { delete value.rewritePolicy },
+    value => { delete value.moduleSemantics },
+    value => { value.moduleSemantics.defaultExportBinding = 'unknown' },
+    value => { value.rewritePolicy.autoRewriteImports = 'yes' },
     value => { value.status = 'corrupt' },
     value => { value.extra = true },
     value => { delete value.calls[0].member },
@@ -410,6 +414,35 @@ test('requires rewrite adjuncts to agree with execution status and recorded poli
       { kind: 'export', description: 'Removed export.' },
     ],
   })).features, [])
+})
+
+test('validates function/class provenance against its independent binding policy', () => {
+  const current = journal({
+    version: 4,
+    rewritePolicy: {
+      autoRewriteImports: true,
+      autoStripExports: true,
+      autoSplitRedeclarations: false,
+    },
+  })
+  delete current.bindingMode
+  current.bindingPolicy = { variableRedeclarations: false, functionClassRedeclarations: true }
+  current.moduleSemantics = { defaultExportBinding: 'live-readonly' }
+  const value = normalizeJournal(current)
+  const view = derivePtcToolView(result({
+    dshPtcPlus: value,
+    dshPtcPlusRewrites: [
+      {
+        kind: 'redeclaration',
+        description: 'reassigned an existing top-level function declaration for REPL continuity',
+        source: 'current',
+      },
+      { kind: 'import', description: 'Adapted import.', source: 'node:path' },
+    ],
+  }))
+  assert.deepEqual(view.features, [
+    { key: 'autoRewriteImports.label', detail: 'node:path' },
+  ])
 })
 
 test('preserves source, result, and lifecycle fallbacks for the replacement tool row', () => {

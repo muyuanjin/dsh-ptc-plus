@@ -23,6 +23,7 @@ export class BindingCatalog {
   #definitions
   #imports
   #namespaces
+  #writable
 
   constructor(
     known = new Set(),
@@ -30,6 +31,7 @@ export class BindingCatalog {
     namespaces = new Set(),
     kinds = new Map(),
     definitions = new Map(),
+    writable = new Set(),
   ) {
     this.#known = new Set(known)
     this.#kinds = new Map([...this.#known].map(name => [name, kinds.get(name) ?? 'variable']))
@@ -38,6 +40,7 @@ export class BindingCatalog {
       .map(name => [name, definitions.get(name)]))
     this.#imports = new Map(imports)
     this.#namespaces = new Set(namespaces)
+    this.#writable = new Set([...writable].filter(name => this.#known.has(name)))
     Object.freeze(this)
   }
 
@@ -46,28 +49,58 @@ export class BindingCatalog {
       knownBindings: new Set(this.#known),
       importBindings: new Map(this.#imports),
       importNamespaces: new Set(this.#namespaces),
+      writableBindings: new Set(this.#writable),
     }
   }
 
-  advance(prepared, source = undefined) {
+  advance(prepared, source = undefined, committedRedeclarations = undefined) {
     const known = new Set(this.#known)
     const kinds = new Map(this.#kinds)
     const definitions = new Map(this.#definitions)
+    const writable = new Set(this.#writable)
     const touched = new Set()
+    const redeclared = new Set((prepared.redeclared ?? []).map(declaration => declaration.name))
+    const commitGated = prepared.commitTargets
+    const committed = committedRedeclarations instanceof Set
+      ? committedRedeclarations
+      : new Set([...redeclared, ...commitGated])
+    const uncommitted = new Set()
     const extractDefinition = sourceDefinitionExtractor(source)
     for (const declaration of prepared.declarations ?? []) {
       if (typeof declaration?.name !== 'string') continue
+      const dependency = typeof declaration.commitDependency === 'string'
+        && commitGated.has(declaration.commitDependency)
+        ? declaration.commitDependency
+        : commitGated.has(declaration.name) ? declaration.name : undefined
+      if (dependency !== undefined && !committed.has(dependency)) {
+        uncommitted.add(declaration.name)
+        continue
+      }
       touched.add(declaration.name)
       kinds.set(declaration.name, declaration.kind ?? 'variable')
       const definition = extractDefinition(declaration.definitionSpan)
       if (definition !== undefined) definitions.set(declaration.name, definition)
+      if (!redeclared.has(declaration.name)) {
+        if (declaration.writable === true) writable.add(declaration.name)
+        else writable.delete(declaration.name)
+      }
     }
-    for (const name of prepared.declared) touched.add(name)
+    for (const name of prepared.declared) {
+      if (!uncommitted.has(name)) touched.add(name)
+    }
     for (const name of touched) {
       known.delete(name)
       known.add(name)
     }
-    return new BindingCatalog(known, prepared.imports, prepared.importNamespaces, kinds, definitions)
+    const imports = new Map(prepared.imports)
+    for (const [name, binding] of imports) {
+      if (typeof binding?.commitDependency !== 'string'
+        || !commitGated.has(binding.commitDependency)
+        || committed.has(binding.commitDependency)) continue
+      if (this.#imports.has(name)) imports.set(name, this.#imports.get(name))
+      else imports.delete(name)
+    }
+    return new BindingCatalog(known, imports, prepared.importNamespaces, kinds, definitions, writable)
   }
 
   snapshot() {

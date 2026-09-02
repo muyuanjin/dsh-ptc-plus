@@ -61,6 +61,7 @@ test('exports a Cordis config schema with validated runtime defaults', async () 
       canonicalizeToolCalls: true,
       autoDescribeRunCode: true,
       looseTopLevelRedeclarations: true,
+      looseTopLevelFunctionClassRedeclarations: false,
       autoRewriteImports: true,
       autoStripExports: true,
       autoSplitRedeclarations: true,
@@ -88,7 +89,7 @@ test('exports a Cordis config schema with validated runtime defaults', async () 
     (await Config['~standard'].validate({ maxWallMs: 2_147_483_648 })).issues[0].path,
     ['maxWallMs'],
   )
-  for (const key of ['enhancedToolView', 'autoDescribeRunCode', 'cordisToolsEnabled', 'canonicalizeToolCalls', 'autoRewriteImports', 'autoStripExports', 'autoSplitRedeclarations', 'tipsEnabled']) {
+  for (const key of ['enhancedToolView', 'autoDescribeRunCode', 'cordisToolsEnabled', 'canonicalizeToolCalls', 'looseTopLevelFunctionClassRedeclarations', 'autoRewriteImports', 'autoStripExports', 'autoSplitRedeclarations', 'tipsEnabled']) {
     assert.throws(() => fixture({ [key]: 'yes' }), new RegExp(`${key} must be a boolean`))
   }
   for (const key of ['tipCooldownMessages', 'tipEscalationFailures']) {
@@ -442,6 +443,7 @@ test('keeps queued journal and language policy on its submission generation', as
     maxWallMs: 1_000,
     durableReplay: true,
     looseTopLevelRedeclarations: true,
+    looseTopLevelFunctionClassRedeclarations: false,
     autoRewriteImports: true,
     autoStripExports: true,
     autoSplitRedeclarations: true,
@@ -478,7 +480,10 @@ test('keeps queued journal and language policy on its submission generation', as
 
   const execution = await queued
   assert.equal(execution.result.value, 'value')
-  assert.equal(execution.settlement.journal.bindingMode, 'loose')
+  assert.deepEqual(execution.settlement.journal.bindingPolicy, {
+    variableRedeclarations: true,
+    functionClassRedeclarations: false,
+  })
   assert.deepEqual(execution.settlement.journal.rewritePolicy, JOURNAL_POLICY)
   assert.equal(execution.settlement.journal.status, 'durable')
   runtime.finalize(execution.settlement, true)

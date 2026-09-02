@@ -353,3 +353,159 @@ test('does not attach rewrite provenance to preflight-rejected cells', async (t)
   assert.match(rejected.error.message, /PTC-N001/)
   assert.equal(rejected.meta.dshPtcPlusRewrites, undefined)
 })
+
+test('rejects read-only alias declarations before execution under the strict variable policy', async (t) => {
+  const state = fixture({ looseTopLevelRedeclarations: false })
+  t.after(() => state.dispose())
+  const sessionId = 'strict-alias-declaration'
+  await state.run(
+    sessionId,
+    "let executed = 0\nimport { sep as imported } from 'node:path'",
+  )
+
+  const importedCollision = await state.run(
+    sessionId,
+    "executed += 1\nconst imported = 'local'",
+  )
+  assert.equal(importedCollision.error.kind, 'exception')
+  assert.match(importedCollision.error.message, /PTC-N001.*immutable/s)
+  assert.deepEqual(
+    (await state.run(sessionId, 'return [executed, typeof imported]')).value,
+    [0, 'string'],
+  )
+
+  await state.run(sessionId, 'export default 1')
+  const defaultCollision = await state.run(
+    sessionId,
+    'executed += 1\nconst __default = 2',
+  )
+  assert.equal(defaultCollision.error.kind, 'exception')
+  assert.match(defaultCollision.error.message, /PTC-N001.*immutable/s)
+  assert.deepEqual(
+    (await state.run(sessionId, 'return [executed, __default]')).value,
+    [0, 1],
+  )
+})
+
+test('rejects default exports that would replace ordinary or imported __default bindings', async (t) => {
+  const state = fixture({ looseTopLevelRedeclarations: false })
+  t.after(() => state.dispose())
+
+  const ordinarySession = 'ordinary-default-export-collision'
+  await state.run(
+    ordinarySession,
+    'let executed = 0\nconst __default = 1\nconst readDefault = () => __default',
+  )
+  const ordinaryCollision = await state.run(
+    ordinarySession,
+    'executed += 1\nexport default function helper() { return 2 }',
+  )
+  assert.equal(ordinaryCollision.error.kind, 'exception')
+  assert.match(ordinaryCollision.error.message, /PTC-C001.*__default/s)
+  assert.deepEqual(
+    (await state.run(ordinarySession, 'return [executed, __default, readDefault()]')).value,
+    [0, 1, 1],
+  )
+
+  const importedSession = 'imported-default-export-collision'
+  await state.run(
+    importedSession,
+    "let executed = 0\nimport { inspect as __default } from 'node:util'\nconst readDefault = () => __default",
+  )
+  const importedCollision = await state.run(
+    importedSession,
+    'executed += 1\nexport default class Box {}',
+  )
+  assert.equal(importedCollision.error.kind, 'exception')
+  assert.match(importedCollision.error.message, /PTC-C001.*__default/s)
+  assert.deepEqual(
+    (await state.run(importedSession, 'return [executed, __default === readDefault()]')).value,
+    [0, true],
+  )
+})
+
+test('keeps explicit loose declarations replacing future alias reads only', async (t) => {
+  const state = fixture({ looseTopLevelRedeclarations: true })
+  t.after(() => state.dispose())
+  const sessionId = 'loose-alias-declaration'
+  await state.run(
+    sessionId,
+    "import { sep as imported } from 'node:path'\nconst readImported = () => imported",
+  )
+  const original = (await state.run(sessionId, 'return imported')).value
+  const replaced = await state.run(
+    sessionId,
+    "const imported = 'local'\nreturn [imported, readImported()]",
+  )
+  assert.deepEqual(replaced.value, ['local', original])
+  assert.deepEqual(
+    (await state.run(sessionId, 'return [imported, readImported()]')).value,
+    ['local', original],
+  )
+})
+
+test('persists mixed loose alias declarations across live and cold continuation', async (t) => {
+  const events = []
+  const session = { id: 'mixed-loose-alias-replay', events }
+  const writer = fixture({ looseTopLevelRedeclarations: true })
+  const setupSource = [
+    "import { inspect as imported } from 'node:util'",
+    "export default 'old-default'",
+    "let existing = 'old-existing'",
+    'const originalImported = imported',
+    'const readImported = () => imported',
+    'const readDefault = () => __default',
+  ].join('\n')
+  const setup = await writer.runDurable(session.id, setupSource, {}, { session })
+  appendRunCodeEvents(events, 'mixed-loose-alias-setup', setupSource, setup)
+
+  const replacementDeclaration = [
+    'const { imported, __default, existing, fresh } = {',
+    "  imported: 'local-import',",
+    "  __default: 'local-default',",
+    "  existing: 'new-existing',",
+    "  fresh: 'new-fresh',",
+    '}',
+  ].join('\n')
+  const observation = '[imported, __default, existing, fresh, readImported() === originalImported, readDefault()]'
+  const replacementSource = `${replacementDeclaration}\nreturn ${observation}`
+  const replacement = await writer.runDurable(session.id, replacementSource, {}, { session })
+  assert.deepEqual(replacement.value, [
+    'local-import',
+    'local-default',
+    'new-existing',
+    'new-fresh',
+    true,
+    'old-default',
+  ])
+  for (const name of ['imported', '__default']) {
+    const entry = replacement.meta.dshPtcPlusBindings.memory.entries
+      .find(candidate => candidate.name === name)
+    assert.equal(entry.kind, 'variable')
+    assert.equal(entry.definition.source, replacementDeclaration)
+  }
+  appendRunCodeEvents(events, 'mixed-loose-alias-replacement', replacementSource, replacement)
+
+  assert.deepEqual(
+    (await writer.run(session.id, `return ${observation}`, {}, { session })).value,
+    replacement.value,
+  )
+  await writer.dispose()
+
+  const reader = fixture({ looseTopLevelRedeclarations: true })
+  t.after(() => reader.dispose())
+  const recovered = await reader.runDurable(
+    session.id,
+    `return ${observation}`,
+    {},
+    { session },
+  )
+  assert.equal(recovered.error, undefined, JSON.stringify(recovered, null, 2))
+  assert.deepEqual(recovered.value, replacement.value)
+  for (const name of ['imported', '__default']) {
+    const entry = recovered.meta.dshPtcPlusBindings.memory.entries
+      .find(candidate => candidate.name === name)
+    assert.equal(entry.kind, 'variable')
+    assert.equal(entry.definition.source, replacementDeclaration)
+  }
+})

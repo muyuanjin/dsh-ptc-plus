@@ -25,9 +25,20 @@ class FakePort extends EventEmitter {
   }
 
   start(message) {
-    const base = { type: 'done', id: message.id, logs: [], durability: 'durable' }
+    const base = {
+      type: 'done', id: message.id, logs: [], durability: 'durable', committedRedeclarations: [],
+    }
     if (this.behavior === 'invalid-durability') {
       this.emit('message', { ...base, durability: 'invalid', hasValue: false })
+    } else if (this.behavior === 'missing-commits') {
+      const { committedRedeclarations: _committed, ...missing } = base
+      this.emit('message', { ...missing, hasValue: false })
+    } else if (this.behavior === 'malformed-commits') {
+      this.emit('message', { ...base, committedRedeclarations: true, hasValue: false })
+    } else if (this.behavior === 'unknown-commit') {
+      this.emit('message', { ...base, committedRedeclarations: ['unknown'], hasValue: false })
+    } else if (this.behavior === 'duplicate-commit') {
+      this.emit('message', { ...base, committedRedeclarations: ['x', 'x'], hasValue: false })
     } else if (this.behavior === 'oversized-completion') {
       this.emit('message', { ...base, logs: ['too large'], hasValue: false })
     } else if (this.behavior === 'invalid-envelope') {
@@ -48,7 +59,10 @@ class FakePort extends EventEmitter {
   }
 
   done() {
-    this.emit('message', { type: 'done', id: this.runId, logs: [], durability: 'durable', hasValue: false })
+    this.emit('message', {
+      type: 'done', id: this.runId, logs: [], durability: 'durable', hasValue: false,
+      committedRedeclarations: [],
+    })
   }
 
   close() {}
@@ -101,6 +115,15 @@ test('fails closed for every worker startup and private-protocol fault', async (
   const durability = new SessionRuntime()
   assert.equal((await durability.run('invalid-durability', { program: 'return 1', bindings: [] })).error.kind, 'worker-exit')
   await durability.dispose()
+
+  for (const behavior of ['missing-commits', 'malformed-commits', 'unknown-commit', 'duplicate-commit']) {
+    behaviors.push(behavior)
+    const runtime = new SessionRuntime()
+    const result = await runtime.run(behavior, { program: 'return 1', bindings: [] })
+    assert.equal(result.error.kind, 'worker-exit')
+    assert.match(result.error.message, /invalid committed redeclaration set/)
+    await runtime.dispose()
+  }
 
   behaviors.push('post-error')
   const postError = new SessionRuntime()

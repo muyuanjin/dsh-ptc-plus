@@ -31,10 +31,19 @@ function completion(value = 1) {
 }
 
 function journal(overrides = {}) {
+  const version = overrides.version ?? 4
   return {
-    version: 3,
-    bindingMode: 'loose',
-    rewritePolicy: { autoRewriteImports: true, autoStripExports: true, autoSplitRedeclarations: true },
+    version,
+    ...(version === 4 ? {
+      bindingPolicy: { variableRedeclarations: true, functionClassRedeclarations: false },
+      rewritePolicy: { autoRewriteImports: true, autoStripExports: true, autoSplitRedeclarations: true },
+      moduleSemantics: { defaultExportBinding: 'live-readonly' },
+    } : {
+      bindingMode: 'loose',
+      ...(version === 1 ? {} : {
+        rewritePolicy: { autoRewriteImports: true, autoStripExports: true, autoSplitRedeclarations: true },
+      }),
+    }),
     status: 'durable',
     calls: [],
     operations: [],
@@ -65,7 +74,7 @@ test('ignores an unjournaled edit call with an invalid historical sequence', () 
 
 test('normalizes complete journal values and detaches nested value wires', () => {
   const value = journal({
-    bindingMode: 'strict',
+    bindingPolicy: { variableRedeclarations: false, functionClassRedeclarations: false },
     calls: [
       { global: 'code', member: 'run', args: encodeValue({ code: 'child-a' }), ok: false, error: 'missing', settle: 1 },
       { global: 'code', member: 'run', args: encodeValue({ code: 'child-b' }), ok: true, value: encodeValue(undefined), settle: 0 },
@@ -89,6 +98,7 @@ test('normalizes complete journal values and detaches nested value wires', () =>
   assert.deepEqual(normalized.operations, value.operations)
   assert.notEqual(normalized.calls[0].args, value.calls[0].args)
   assert.equal(normalized.volatileReason, undefined)
+  assert.deepEqual(normalized.moduleSemantics, { defaultExportBinding: 'live-readonly' })
   assert.equal(normalizeJournal(journal({
     status: 'volatile',
     volatileReason: 'ambient Date',
@@ -111,8 +121,10 @@ test('rejects malformed journal schemas exhaustively', () => {
     [null, /invalid dsh-ptc-plus journal/],
     [{}, /invalid dsh-ptc-plus journal/],
     [journal({ version: 999 }), /invalid dsh-ptc-plus journal/],
-    [journal({ bindingMode: 'wide' }), /binding mode/],
+    [journal({ bindingPolicy: { variableRedeclarations: 'wide', functionClassRedeclarations: false } }), /binding policy/],
     [journal({ rewritePolicy: { autoRewriteImports: true } }), /rewrite policy/],
+    [journal({ moduleSemantics: { defaultExportBinding: 'unknown' } }), /default export binding semantics/],
+    [journal({ moduleSemantics: {} }), /binding semantics/],
     [{ ...journal(), extra: true }, /journal field extra/],
     [journal({ calls: null }), /journal calls/],
     [journal({ calls: [{}] }), /journal call at index 0/],
@@ -147,9 +159,10 @@ test('rejects malformed journal schemas exhaustively', () => {
 test('creates journals, compares semantics, validates names, and merges metadata', () => {
   const policy = { autoRewriteImports: true, autoStripExports: true, autoSplitRedeclarations: true }
   assert.deepEqual(createJournal([4], 'strict', policy), {
-    version: 3,
-    bindingMode: 'strict',
+    version: 4,
+    bindingPolicy: { variableRedeclarations: false, functionClassRedeclarations: false },
     rewritePolicy: { autoRewriteImports: true, autoStripExports: true, autoSplitRedeclarations: true },
+    moduleSemantics: { defaultExportBinding: 'live-readonly' },
     calls: [], operations: [], confirms: [4], diagnostics: [],
   })
   assert.throws(() => createJournal([], 'invalid', policy), /binding mode/)
@@ -539,9 +552,10 @@ test('migrates predecessor journals and only unambiguous legacy call identities'
   })
   delete legacy.rewritePolicy
   assert.deepEqual(normalizeJournal(legacy), {
-    version: 3,
-    bindingMode: 'loose',
+    version: 4,
+    bindingPolicy: { variableRedeclarations: true, functionClassRedeclarations: false },
     rewritePolicy: { autoRewriteImports: false, autoStripExports: false, autoSplitRedeclarations: false },
+    moduleSemantics: { defaultExportBinding: 'legacy-variable' },
     status: 'durable',
     calls: [],
     operations: [],
@@ -549,10 +563,15 @@ test('migrates predecessor journals and only unambiguous legacy call identities'
     diagnostics: [],
     completion: completion(),
   })
-  assert.equal(normalizeJournal(journal({ version: 2 })).version, 3)
+  const legacyV2 = journal({ version: 2 })
+  legacyV2.bindingMode = 'loose'
+  delete legacyV2.bindingPolicy
+  assert.deepEqual(normalizeJournal(legacyV2).moduleSemantics, {
+    defaultExportBinding: 'legacy-variable',
+  })
   assert.throws(
     () => normalizeJournal(journal({ version: 1, confirms: ['legacy-call-id'] })),
-    /journal field rewritePolicy/,
+    /session call identity/,
   )
   const legacyConfirmation = journal({ version: 1, confirms: ['legacy-call-id'] })
   delete legacyConfirmation.rewritePolicy

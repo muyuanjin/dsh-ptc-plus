@@ -23,7 +23,10 @@ return predecessorBinding
   const written = await writer.runDurable(session.id, source, {}, { session })
   const predecessor = structuredClone(written)
   predecessor.meta.dshPtcPlus.version = 1
+  predecessor.meta.dshPtcPlus.bindingMode = 'loose'
+  delete predecessor.meta.dshPtcPlus.bindingPolicy
   delete predecessor.meta.dshPtcPlus.rewritePolicy
+  delete predecessor.meta.dshPtcPlus.moduleSemantics
   appendRunCodeEvents(events, 'predecessor-cell', source, predecessor)
   await writer.dispose()
 
@@ -36,6 +39,49 @@ return { value: predecessorBinding, names: states.names }
     logs: [],
     value: { value: 41, names: ['predecessor-point'] },
   })
+})
+
+test('cold-replays predecessor default exports with their recorded writable binding semantics', async (t) => {
+  for (const version of [2, 3]) {
+    const events = []
+    const session = { id: `predecessor-default-export-v${version}`, events }
+    const writer = fixture()
+    const setupSource = 'export default 1'
+    const setup = await writer.runDurable(session.id, 'let __default = 1', {}, { session })
+    const assignmentSource = 'try { __default = 2 } catch {}\nreturn __default'
+    const assignment = await writer.runDurable(
+      session.id,
+      '__default = 2\nreturn __default',
+      {},
+      { session },
+    )
+    const predecessorSetup = structuredClone(setup)
+    const predecessorAssignment = structuredClone(assignment)
+    for (const result of [predecessorSetup, predecessorAssignment]) {
+      result.meta.dshPtcPlus.version = version
+      result.meta.dshPtcPlus.bindingMode = 'loose'
+      delete result.meta.dshPtcPlus.bindingPolicy
+      delete result.meta.dshPtcPlus.moduleSemantics
+    }
+    appendRunCodeEvents(
+      events,
+      `predecessor-default-v${version}-setup`,
+      setupSource,
+      predecessorSetup,
+    )
+    appendRunCodeEvents(
+      events,
+      `predecessor-default-v${version}-assignment`,
+      assignmentSource,
+      predecessorAssignment,
+    )
+    await writer.dispose()
+
+    const restored = fixture()
+    t.after(() => restored.dispose())
+    const recovered = await restored.run(session.id, 'return __default', {}, { session })
+    assert.deepEqual(recovered, { logs: [], value: 2 })
+  }
 })
 
 test('keeps non-journalable Node capabilities live in a volatile suffix', async (t) => {

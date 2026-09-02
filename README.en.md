@@ -133,6 +133,8 @@ Settings are separated into common and compatibility controls, optional capabili
 
 “Allow `run_code` execution without a summary” is on by default. Code still executes when the model omits the outer `description`; with enhanced tool cards enabled, the UI shows a fallback summary. When this setting is disabled, DSH validates the field normally. This setting does not change model requests or original call arguments.
 
+“Allow top-level function/class redeclarations” is independent from the existing variable-redeclaration switch and defaults to off. When enabled, a later cell can use an ordinary named `function` or `class` declaration to replace an existing writable binding. Replacement takes effect at the declaration position and does not emulate function hoisting. Imports, immutable `const` bindings, reserved names, and bindings with unknown provenance are still rejected before execution. Live changes affect subsequently submitted cells; cold recovery always uses the policy recorded for each cell.
+
 In an enabled `ptc` session, the header shows a green `PTC Plus` indicator. Hover, focus, or click it to inspect the variables, functions, classes, and imports available to the next cell and expand their bounded definition source. The card reads submitted source only; it does not inspect runtime values, trigger getters, or execute code. `run_code` and `edit_run_code` remain expandable in the conversation body. A feature marker appears only when result metadata proves that the feature affected that execution.
 
 ![Reusable REPL bindings](assets/ptc-plus-bindings-en.png)

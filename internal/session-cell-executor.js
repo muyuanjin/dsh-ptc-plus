@@ -18,6 +18,7 @@ import {
 } from './failure-reporting.js'
 import { assertStateName } from './session-journal.js'
 import { PreflightError, prepareProgram } from './cell-analysis.js'
+import { LIVE_DEFAULT_EXPORT_BINDING } from './repl-rewrite-contract.js'
 import { ModuleRewriteError } from './cell-rewriter.js'
 import { mapSourcePosition } from './source-position-map.js'
 import { durabilityState, transitionDurability } from './session-state.js'
@@ -105,19 +106,45 @@ function preflightDiagnostic(error) {
   })
 }
 
+function committedRedeclarationSet(message, prepared) {
+  if (!Array.isArray(message.committedRedeclarations)) {
+    throw new Error('kernel returned an invalid committed redeclaration set')
+  }
+  const allowed = prepared.commitTargets
+  const committed = new Set()
+  for (const name of message.committedRedeclarations) {
+    if (typeof name !== 'string' || committed.has(name) || !allowed.has(name)) {
+      throw new Error('kernel returned an invalid committed redeclaration set')
+    }
+    committed.add(name)
+  }
+  return committed
+}
+
 function collisionDiagnostic(collisions) {
   const names = [...new Set(collisions.map(item => item.name))]
-  const kinds = new Set(collisions.map(item => item.kind))
-  const replaceable = collisions.every(item => item.replaceableByVariableDeclaration)
+  const reasons = new Set(collisions.map(item => item.reason).filter(Boolean))
+  const disabledKinds = new Set(collisions
+    .filter(item => item.reason === 'function-class-redeclarations-disabled')
+    .map(item => item.kind))
   const first = collisions[0]
+  const alternatives = [
+    ...(disabledKinds.size === 2
+      ? ['assign function or class expressions to the existing writable bindings']
+      : disabledKinds.has('function')
+        ? ['assign a function expression to the existing writable binding']
+        : disabledKinds.has('class')
+          ? ['assign a class expression to the existing writable binding']
+          : []),
+    ...((reasons.size === 0 || reasons.has('variable-redeclarations-disabled'))
+      ? ['reuse the existing bindings']
+      : []),
+  ]
   const help = [
-    ...(replaceable && kinds.has('function')
-      ? ['replace repeated function declarations with top-level const/let function expressions']
+    ...(reasons.has('binding-not-writable')
+      ? ['use a fresh name because the existing binding is immutable']
       : []),
-    ...(replaceable && kinds.has('class')
-      ? ['replace repeated class declarations with top-level const/let class expressions']
-      : []),
-    ...(replaceable && (kinds.has('function') || kinds.has('class')) ? [] : ['reuse the existing bindings']),
+    ...(alternatives.length === 0 ? [] : [alternatives.join('; ')]),
     'place one-off declarations inside a block',
   ]
   return diagnostic({
@@ -227,22 +254,28 @@ export class SessionCellExecutor {
     }
 
     const catalog = kernel.bindingCatalog.inputs()
-    const looseTopLevelRedeclarations = replayRecord === undefined
-      ? config.looseTopLevelRedeclarations
-      : replayRecord.bindingMode === 'loose'
+    const bindingPolicy = replayRecord === undefined ? {
+      variableRedeclarations: config.looseTopLevelRedeclarations,
+      functionClassRedeclarations: config.looseTopLevelFunctionClassRedeclarations,
+    } : replayRecord.bindingPolicy
     const rewritesEnabled = replayRecord === undefined ? {
       autoRewriteImports: config.autoRewriteImports,
       autoStripExports: config.autoStripExports,
       autoSplitRedeclarations: config.autoSplitRedeclarations,
     } : replayRecord.rewritePolicy
+    const moduleSemantics = replayRecord === undefined ? {
+      defaultExportBinding: LIVE_DEFAULT_EXPORT_BINDING,
+    } : replayRecord.moduleSemantics
     const prepareCell = program => prepareProgram(
       program,
       catalog.knownBindings,
-      looseTopLevelRedeclarations,
+      bindingPolicy,
       request.bindingDescriptors.reservedNames,
       rewritesEnabled,
       catalog.importBindings,
       catalog.importNamespaces,
+      catalog.writableBindings,
+      moduleSemantics,
     )
     let prepared
     try {
@@ -357,6 +390,7 @@ export class SessionCellExecutor {
           type: 'run', id, program: prepared.code, namespaces: bindings.workerDescriptors,
           moduleLoads: prepared.moduleLoads,
           returnSignal: prepared.returnSignal,
+          commitSignal: prepared.commitSignal,
           maxOutputBytes: config.maxOutputBytes,
           valueLimits,
           durability,
@@ -489,6 +523,20 @@ export class SessionCellExecutor {
       }, true)
       return
     }
+    let committed
+    try {
+      committed = committedRedeclarationSet(message, active.prepared)
+    } catch (error) {
+      active.resolve(earlyResult('worker-exit', messageOf(error)), true)
+      return
+    }
+    active.appliedBindingCatalog = message.moduleLoadFailed === true
+      ? active.priorBindingCatalog
+      : active.priorBindingCatalog.advance(
+          active.prepared,
+          active.request.program,
+          committed,
+        )
     if (typeof message.error === 'string') {
       const rawError = {
         kind: 'exception',
@@ -510,9 +558,6 @@ export class SessionCellExecutor {
         declared: message.moduleLoadFailed === true ? new Set() : active.prepared.declared,
         longCellFailure: active.request.program.length >= LONG_CELL_CODE_UNITS,
       })
-      active.appliedBindingCatalog = message.moduleLoadFailed === true
-        ? active.priorBindingCatalog
-        : active.priorBindingCatalog.advance(active.prepared, active.request.program)
       const recordedFailure = active.replay?.diagnostics?.find(item => item.code === 'PTC-X001')
       const failure = recordedFailure?.message === actualFailure.message ? recordedFailure : actualFailure
       const error = {
@@ -541,10 +586,6 @@ export class SessionCellExecutor {
         hasValue: message.hasValue,
         ...(message.hasValue ? { value } : {}),
       }
-      active.appliedBindingCatalog = active.priorBindingCatalog.advance(
-        active.prepared,
-        active.request.program,
-      )
       if (active.replay?.completion?.kind === 'return'
         && (active.replay.completion.hasValue !== message.hasValue
           || (message.hasValue && !valueWiresEqual(active.replay.completion.value, value, active.valueLimits)))) {

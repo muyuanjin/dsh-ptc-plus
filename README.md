@@ -133,6 +133,8 @@ import { readFile } from 'node:fs/promises'
 
 “允许执行缺少摘要的 `run_code`”默认开启。模型没有提供外层 `description` 时，代码仍会执行；启用增强工具卡片时，界面显示备用摘要。关闭本设置后按 DSH 原生规则校验。这个开关不改变模型请求或原始调用参数。
 
+“允许顶层函数/类重声明”与已有的变量重声明开关相互独立，默认关闭。开启后，后续 cell 可以用普通 named `function` / `class` 声明替换已有的可写 binding；替换在声明所在位置生效，不模拟函数提升。import、不可写 `const`、保留名称和来源不明的 binding 仍会在执行前拒绝。开关变化只影响随后提交的 cell，cold recovery 始终按每个 cell 已记录的策略重放。
+
 插件启用且会话使用 `ptc` preset 时，会话头部显示绿色 `PTC Plus` 标识。悬浮、聚焦或点击后可以查看下一 cell 可复用的变量、函数、类和 import，并展开其有界定义源码。卡片只读取已提交的源码，不读取运行时值、不触发 getter，也不执行代码。正文中的 `run_code` 与 `edit_run_code` 仍可展开查看源码和结果；只有结果 metadata 能证明某项功能确实生效时，预览才显示对应标记。
 
 ![REPL 可复用绑定](assets/ptc-plus-bindings-zh.png)

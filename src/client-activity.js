@@ -1,14 +1,21 @@
-const JOURNAL_VERSIONS = new Set([1, 2, 3])
+const JOURNAL_VERSIONS = new Set([1, 2, 3, 4])
 const JOURNAL_STATUSES = new Set(['durable', 'volatile', 'discarded', 'noop'])
 const BINDING_MODES = new Set(['loose', 'strict'])
 const JOURNAL_FIELDS = new Set([
+  'version', 'bindingPolicy', 'rewritePolicy', 'moduleSemantics', 'status', 'calls', 'operations',
+  'confirms', 'diagnostics', 'completion', 'volatileReason',
+])
+const PREDECESSOR_JOURNAL_FIELDS = new Set([
   'version', 'bindingMode', 'rewritePolicy', 'status', 'calls', 'operations',
   'confirms', 'diagnostics', 'completion', 'volatileReason',
 ])
-const LEGACY_JOURNAL_FIELDS = new Set([...JOURNAL_FIELDS].filter(key => key !== 'rewritePolicy'))
+const LEGACY_JOURNAL_FIELDS = new Set([...PREDECESSOR_JOURNAL_FIELDS].filter(key => key !== 'rewritePolicy'))
+const BINDING_POLICY_FIELDS = new Set(['variableRedeclarations', 'functionClassRedeclarations'])
 const REWRITE_POLICY_FIELDS = new Set([
   'autoRewriteImports', 'autoStripExports', 'autoSplitRedeclarations',
 ])
+const MODULE_SEMANTICS_FIELDS = new Set(['defaultExportBinding'])
+const DEFAULT_EXPORT_BINDINGS = new Set(['legacy-variable', 'live-readonly'])
 const CALL_SUCCESS_FIELDS = new Set(['global', 'member', 'args', 'ok', 'value', 'settle'])
 const CALL_ERROR_FIELDS = new Set(['global', 'member', 'args', 'ok', 'error', 'settle'])
 const OPERATION_FIELDS = new Set(['action', 'name'])
@@ -30,9 +37,11 @@ const REWRITE_FIELDS = new Set(['kind', 'description', 'source'])
 const REWRITE_KINDS = new Set(['import', 'redeclaration', 'export'])
 const REWRITE_POLICY_BY_KIND = Object.freeze({
   import: 'autoRewriteImports',
-  redeclaration: 'autoSplitRedeclarations',
   export: 'autoStripExports',
 })
+const MIXED_REDECLARATION = 'split a mixed top-level declaration while preserving native pattern initialization'
+const FUNCTION_REDECLARATION = 'reassigned an existing top-level function declaration for REPL continuity'
+const CLASS_REDECLARATION = 'reassigned an existing top-level class declaration for REPL continuity'
 const EDIT_TARGET_FIELDS = new Set(['targetCallSeq'])
 const DERIVED_RUN_FIELDS = new Set(['code', 'description'])
 const RECOVERY_BOUNDARY_FIELDS = new Set(['failedCallSeq', 'frontierCallSeq'])
@@ -209,6 +218,16 @@ function isValidRewritePolicy(value) {
     && [...REWRITE_POLICY_FIELDS].every(key => typeof value[key] === 'boolean')
 }
 
+function isValidBindingPolicy(value) {
+  return hasExactFields(value, BINDING_POLICY_FIELDS)
+    && [...BINDING_POLICY_FIELDS].every(key => typeof value[key] === 'boolean')
+}
+
+function isValidModuleSemantics(value) {
+  return hasExactFields(value, MODULE_SEMANTICS_FIELDS)
+    && DEFAULT_EXPORT_BINDINGS.has(value.defaultExportBinding)
+}
+
 function isValidCall(value) {
   if (!isRecord(value) || (value.ok !== true && value.ok !== false)) return false
   const fields = value.ok ? CALL_SUCCESS_FIELDS : CALL_ERROR_FIELDS
@@ -249,10 +268,16 @@ function isReadableJournalUnchecked(value) {
   if (!isRecord(value) || !JOURNAL_VERSIONS.has(value.version) || !JOURNAL_STATUSES.has(value.status)) {
     return false
   }
-  const fields = value.version === 1 ? LEGACY_JOURNAL_FIELDS : JOURNAL_FIELDS
-  const required = ['version', 'bindingMode', 'status', 'calls', 'operations', 'diagnostics']
-  if (value.version !== 1) required.push('rewritePolicy')
-  if (!hasClosedFields(value, fields, required) || !BINDING_MODES.has(value.bindingMode)
+  const predecessor = value.version !== 4
+  const fields = value.version === 1 ? LEGACY_JOURNAL_FIELDS : predecessor ? PREDECESSOR_JOURNAL_FIELDS : JOURNAL_FIELDS
+  const required = predecessor
+    ? ['version', 'bindingMode', 'status', 'calls', 'operations', 'diagnostics']
+    : ['version', 'bindingPolicy', 'rewritePolicy', 'moduleSemantics', 'status', 'calls', 'operations', 'diagnostics']
+  if (value.version !== 1 && value.version !== 4) required.push('rewritePolicy')
+  if (!hasClosedFields(value, fields, required)
+    || (predecessor && !BINDING_MODES.has(value.bindingMode))
+    || (value.version === 4 && !isValidBindingPolicy(value.bindingPolicy))
+    || (value.version === 4 && !isValidModuleSemantics(value.moduleSemantics))
     || (value.version !== 1 && !isValidRewritePolicy(value.rewritePolicy))
     || !Array.isArray(value.calls) || !value.calls.every(isValidCall)
     || !Array.isArray(value.operations) || !value.operations.every(isValidOperation)
@@ -295,7 +320,12 @@ function isValidRewrites(value, journal) {
       && Array.isArray(value) && value.every(rewrite => (
       hasClosedFields(rewrite, REWRITE_FIELDS, ['kind', 'description'])
       && REWRITE_KINDS.has(rewrite.kind)
-      && journal.rewritePolicy[REWRITE_POLICY_BY_KIND[rewrite.kind]] === true
+      && (rewrite.kind === 'redeclaration'
+        ? (rewrite.description === FUNCTION_REDECLARATION || rewrite.description === CLASS_REDECLARATION)
+          ? journal.version === 4 && isValidBindingPolicy(journal.bindingPolicy)
+            && journal.bindingPolicy.functionClassRedeclarations === true
+          : journal.rewritePolicy.autoSplitRedeclarations === true
+        : journal.rewritePolicy[REWRITE_POLICY_BY_KIND[rewrite.kind]] === true)
       && typeof rewrite.description === 'string' && rewrite.description.length > 0
       && (rewrite.source === undefined || typeof rewrite.source === 'string')
       ))
@@ -377,7 +407,6 @@ function resultText(block) {
   }
 }
 
-const MIXED_REDECLARATION = 'split a mixed top-level declaration while preserving native pattern initialization'
 const GENERATED_RUN_CODE_DESCRIPTION_KEY = 'dshPtcPlusRunCodeDescription'
 
 function rewriteFeature(rewrites, predicate, key) {

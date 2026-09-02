@@ -66,6 +66,15 @@ export const CONFIG_FIELDS = Object.freeze([
     descriptionEn: 'Allows top-level const or let declarations to replace existing variables; disabling rejects redeclarations before execution.',
   },
   {
+    key: 'looseTopLevelFunctionClassRedeclarations',
+    type: 'boolean',
+    default: false,
+    label: '允许顶层函数/类重声明',
+    labelEn: 'Allow top-level function/class redeclarations',
+    description: '允许顶层 function 或 class 声明替换已有的可写 binding；不可写或保留 binding 仍会在执行前被拒绝。',
+    descriptionEn: 'Allows top-level function or class declarations to replace existing writable bindings; immutable and reserved bindings are still rejected before execution.',
+  },
+  {
     key: 'autoRewriteImports',
     type: 'boolean',
     default: true,
@@ -253,6 +262,7 @@ export const CONFIG_GROUPS = Object.freeze([
     labelEn: 'Advanced behavior',
     fields: Object.freeze([
       'looseTopLevelRedeclarations',
+      'looseTopLevelFunctionClassRedeclarations',
       'autoRewriteImports',
       'autoStripExports',
       'autoSplitRedeclarations',

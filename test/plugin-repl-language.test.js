@@ -22,7 +22,7 @@ test('preflights every cross-cell binding collision with one actionable diagnost
     '    |       ^^',
     'phase: preflight',
     'state: unchanged',
-    'help: reuse the existing bindings',
+    'help: use a fresh name because the existing binding is immutable',
     'help: place one-off declarations inside a block',
   ].join('\n')
 
@@ -39,7 +39,7 @@ test('preflights every cross-cell binding collision with one actionable diagnost
       start: { line: 2, column: 7 },
       end: { line: 2, column: 9 },
     },
-    help: ['reuse the existing bindings', 'place one-off declarations inside a block'],
+    help: ['use a fresh name because the existing binding is immutable', 'place one-off declarations inside a block'],
   }])
   assert.deepEqual(await state.run('collision-diagnostic', 'return { executed, fs, base }'), {
     logs: [],
@@ -62,7 +62,7 @@ class RepeatedClass {}
   )
   assert.match(
     functionCollision.error.message,
-    /help: replace repeated function declarations with top-level const\/let function expressions/,
+    /help: assign a function expression to the existing writable binding/,
   )
   assert.doesNotMatch(functionCollision.error.message, /help: reuse the existing bindings/)
   assert.deepEqual(await state.run('declaration-collision-help', `
@@ -76,7 +76,7 @@ return repeatedFunction()
   )
   assert.match(
     classCollision.error.message,
-    /help: replace repeated class declarations with top-level const\/let class expressions/,
+    /help: assign a class expression to the existing writable binding/,
   )
   assert.doesNotMatch(classCollision.error.message, /help: reuse the existing bindings/)
   assert.deepEqual(await state.run('declaration-collision-help', `
@@ -93,8 +93,7 @@ test('does not suggest loose declaration replacement for strict or reserved coll
     'strict-declaration-collision-help',
     'function strictFunction() {}',
   )
-  assert.match(strictCollision.error.message, /help: reuse the existing bindings/)
-  assert.doesNotMatch(strictCollision.error.message, /top-level const\/let function expressions/)
+  assert.match(strictCollision.error.message, /help: assign a function expression to the existing writable binding/)
 
   const loose = fixture()
   t.after(() => loose.dispose())
@@ -110,6 +109,328 @@ class tools {}
   assert.match(mixedCollision.error.message, /help: reuse the existing bindings/)
   assert.doesNotMatch(mixedCollision.error.message, /top-level const\/let function expressions/)
   assert.doesNotMatch(mixedCollision.error.message, /top-level const\/let class expressions/)
+})
+
+test('independently replaces top-level functions and classes when enabled', async (t) => {
+  const state = fixture({ looseTopLevelFunctionClassRedeclarations: true })
+  t.after(() => state.dispose())
+
+  await state.run('function-class-loose', `
+let mutable = 1
+function calculate(value) { return value + mutable }
+class Box { static value = 1; static self() { return Box } }
+`)
+  const replaced = await state.run('function-class-loose', `
+function calculate(value) { return value + mutable + 1 }
+class Box { static value = 2; static self() { return Box } }
+async function load(value) { return value * 2 }
+function* values() { yield calculate(1) }
+return { result: calculate(1), box: Box.value, self: Box.self() === Box, loaded: await load(3), yielded: values().next().value }
+`)
+  assert.deepEqual(replaced.value, {
+    result: 3,
+    box: 2,
+    self: true,
+    loaded: 6,
+    yielded: 3,
+  })
+  assert.deepEqual(replaced.rewrites.map(rewrite => rewrite.description), [
+    'reassigned an existing top-level function declaration for REPL continuity',
+    'reassigned an existing top-level class declaration for REPL continuity',
+  ])
+})
+
+test('keeps function/class policy independent and rejects immutable targets before execution', async (t) => {
+  const disabled = fixture({ looseTopLevelFunctionClassRedeclarations: false })
+  t.after(() => disabled.dispose())
+  await disabled.run('function-class-disabled', 'function helper() { return 1 }\nclass Thing {}')
+  const rejected = await disabled.run('function-class-disabled', 'function helper() { return 2 }\nclass Thing {}')
+  assert.equal(rejected.error.kind, 'exception')
+  assert.match(rejected.error.message, /helper, Thing/)
+  assert.match(rejected.error.message, /function or class expressions/)
+  assert.equal((await disabled.run('function-class-disabled', 'return helper()')).value, 1)
+
+  const immutable = fixture({
+    looseTopLevelRedeclarations: false,
+    looseTopLevelFunctionClassRedeclarations: true,
+  })
+  t.after(() => immutable.dispose())
+  await immutable.run('function-class-immutable', 'const helper = 1')
+  const immutableResult = await immutable.run('function-class-immutable', 'function helper() {}')
+  assert.equal(immutableResult.error.kind, 'exception')
+  assert.match(immutableResult.error.message, /immutable/)
+  assert.equal((await immutable.run('function-class-immutable', 'return helper')).value, 1)
+
+  await immutable.run('function-class-import', "import { inspect as render } from 'node:util'")
+  const importedResult = await immutable.run(
+    'function-class-import',
+    'function render() { return "replaced" }',
+  )
+  assert.equal(importedResult.error.kind, 'exception')
+  assert.match(importedResult.error.message, /immutable/)
+  assert.match((await immutable.run('function-class-import', 'return render({ answer: 42 })')).value, /answer: 42/)
+
+  const disabledImmutable = fixture({
+    looseTopLevelRedeclarations: false,
+    looseTopLevelFunctionClassRedeclarations: false,
+  })
+  t.after(() => disabledImmutable.dispose())
+  await disabledImmutable.run('function-class-disabled-immutable', 'const helper = 1')
+  const disabledResult = await disabledImmutable.run('function-class-disabled-immutable', 'function helper() {}')
+  assert.equal(disabledResult.error.kind, 'exception')
+  assert.match(disabledResult.error.message, /immutable/)
+  assert.doesNotMatch(disabledResult.error.message, /assign a function expression/)
+})
+
+test('keeps fresh const immutable when only function/class replacement is enabled', async (t) => {
+  const state = fixture({
+    looseTopLevelRedeclarations: false,
+    looseTopLevelFunctionClassRedeclarations: true,
+  })
+  t.after(() => state.dispose())
+
+  await state.run('strict-const-with-function-class-policy', 'const stable = 1')
+  const assignment = await state.run('strict-const-with-function-class-policy', 'stable = 2')
+  assert.equal(assignment.error.kind, 'exception')
+  assert.match(assignment.error.message, /constant variable|read only|readonly/i)
+  assert.equal((await state.run('strict-const-with-function-class-policy', 'return stable')).value, 1)
+})
+
+test('bounds guidance for combined variable, function, and class collisions', async (t) => {
+  const state = fixture({
+    looseTopLevelRedeclarations: false,
+    looseTopLevelFunctionClassRedeclarations: false,
+  })
+  t.after(() => state.dispose())
+
+  await state.run('combined-collision-guidance', `
+let existingValue = 1
+function existingFunction() {}
+class ExistingClass {}
+`)
+  const observed = await state.executeRun('combined-collision-guidance', `
+let existingValue = 2
+function existingFunction() {}
+class ExistingClass {}
+`, {}, {})
+  assert.equal(observed.raw.error.kind, 'exception')
+  assert.match(observed.raw.error.message, /error\[PTC-N001\]/)
+  assert.deepEqual(observed.result.meta.dshPtcPlus.diagnostics[0].help, [
+    'assign function or class expressions to the existing writable bindings; reuse the existing bindings',
+    'place one-off declarations inside a block',
+  ])
+})
+
+test('keeps mixed immutable and variable collision guidance within the schema bound', async (t) => {
+  const state = fixture({
+    looseTopLevelRedeclarations: false,
+    looseTopLevelFunctionClassRedeclarations: true,
+  })
+  t.after(() => state.dispose())
+
+  await state.run('mixed-collision-guidance', 'const immutable = 1\nlet existingValue = 1')
+  const observed = await state.executeRun(
+    'mixed-collision-guidance',
+    'function immutable() {}\nlet existingValue = 2',
+    {},
+    {},
+  )
+  assert.equal(observed.raw.error.kind, 'exception')
+  assert.deepEqual(observed.result.meta.dshPtcPlus.diagnostics[0].help, [
+    'use a fresh name because the existing binding is immutable',
+    'reuse the existing bindings',
+    'place one-off declarations inside a block',
+  ])
+})
+
+test('terminates function/class replacement statements before parenthesized expressions', async (t) => {
+  const state = fixture({ looseTopLevelFunctionClassRedeclarations: true })
+  t.after(() => state.dispose())
+  await state.run('function-class-statement-boundary', 'function current() { return 1 }\nclass Current {}')
+  const result = await state.run('function-class-statement-boundary', `
+function current() { return 2 }
+(function () {})()
+class Current { static value = 3 }
+({ value: Current.value })
+return current() + Current.value
+`)
+  assert.equal(result.value, 5)
+})
+
+test('commits function/class replacements at declaration position with stable inner references', async (t) => {
+  const state = fixture({ looseTopLevelFunctionClassRedeclarations: true })
+  t.after(() => state.dispose())
+  await state.run('function-class-position', `
+function current(value) { return value }
+class Current { static value = 1 }
+let replaceable = 'variable'
+`)
+  const result = await state.run('function-class-position', `
+const beforeFunction = current(3)
+const beforeClass = Current.value
+function current(value) { return value <= 1 ? 1 : value * current(value - 1) }
+class Current { static value = 2; static self() { return Current } }
+function replaceable() { return 'function' }
+return {
+  beforeFunction,
+  afterFunction: current(4),
+  beforeClass,
+  afterClass: Current.value,
+  self: Current.self() === Current,
+  crossKind: replaceable(),
+}
+`)
+  assert.deepEqual(result.value, {
+    beforeFunction: 3,
+    afterFunction: 24,
+    beforeClass: 1,
+    afterClass: 2,
+    self: true,
+    crossKind: 'function',
+  })
+})
+
+test('preserves the previous class when replacement evaluation throws', async (t) => {
+  const state = fixture({ looseTopLevelFunctionClassRedeclarations: true })
+  t.after(() => state.dispose())
+  await state.run('function-class-atomic-class', `
+class Current { static value = 1 }
+function fail() { throw new Error('class setup failed') }
+`)
+  const rejected = await state.run(
+    'function-class-atomic-class',
+    'class Current extends fail() { static value = 2 }',
+  )
+  assert.equal(rejected.error.kind, 'exception')
+  assert.match(rejected.error.message, /class setup failed/)
+  assert.equal((await state.run('function-class-atomic-class', 'return Current.value')).value, 1)
+})
+
+test('does not publish an uncommitted class replacement in binding inventory', async (t) => {
+  const state = fixture({ looseTopLevelFunctionClassRedeclarations: true })
+  t.after(() => state.dispose())
+  await state.run('function-class-inventory-failure', 'let Current = 1\nfunction fail() { throw new Error("boom") }')
+  const failed = await state.runDurable(
+    'function-class-inventory-failure',
+    'class Current extends fail() { static value = 2 }',
+  )
+  assert.equal(failed.isError, true)
+  const failedEntry = failed.meta.dshPtcPlusBindings.memory.entries.find(entry => entry.name === 'Current')
+  assert.equal(failedEntry.kind, 'variable')
+  assert.equal(failedEntry.definition.source, 'let Current = 1')
+
+  const invalidOutput = await state.runDurable(
+    'function-class-inventory-failure',
+    'return () => {}; class Current { static value = 2 }',
+  )
+  assert.equal(invalidOutput.isError, true)
+  assert.match(invalidOutput.error.message, /PTC-O001/)
+  const invalidEntry = invalidOutput.meta.dshPtcPlusBindings.memory.entries
+    .find(entry => entry.name === 'Current')
+  assert.equal(invalidEntry.kind, 'variable')
+  assert.equal(invalidEntry.definition.source, 'let Current = 1')
+
+  const earlyReturn = await state.runDurable(
+    'function-class-inventory-failure',
+    'return 2; class Current { static value = 2 }',
+  )
+  assert.equal(earlyReturn.value, 2)
+  const earlyEntry = earlyReturn.meta.dshPtcPlusBindings.memory.entries
+    .find(entry => entry.name === 'Current')
+  assert.equal(earlyEntry.kind, 'variable')
+  assert.equal(earlyEntry.definition.source, 'let Current = 1')
+
+  const committedThenFailed = await state.runDurable(
+    'function-class-inventory-failure',
+    'class Current { static value = 3 }\nthrow new Error("after commit")',
+  )
+  assert.equal(committedThenFailed.isError, true)
+  const committedEntry = committedThenFailed.meta.dshPtcPlusBindings.memory.entries.find(entry => entry.name === 'Current')
+  assert.equal(committedEntry.kind, 'class')
+  assert.match(committedEntry.definition.source, /^class Current/)
+})
+
+test('publishes only same-name function declarations that reached their commit point', async (t) => {
+  const events = []
+  const session = { id: 'same-name-function-commits', events }
+  const writer = fixture({ looseTopLevelFunctionClassRedeclarations: true })
+  const setupSource = 'function current() { return 0 }'
+  const setup = await writer.runDurable(session.id, setupSource, {}, { session })
+  appendRunCodeEvents(events, 'same-name-function-setup', setupSource, setup)
+
+  const earlySource = [
+    'function current() { return 1 }',
+    'return current()',
+    'function current() { return 2 }',
+  ].join('\n')
+  const early = await writer.runDurable(session.id, earlySource, {}, { session })
+  assert.equal(early.value, 1)
+  const earlyEntry = early.meta.dshPtcPlusBindings.memory.entries
+    .find(entry => entry.name === 'current')
+  assert.equal(earlyEntry.definition.source, 'function current() { return 1 }')
+  appendRunCodeEvents(events, 'same-name-function-early', earlySource, early)
+
+  const earlyReader = fixture({ looseTopLevelFunctionClassRedeclarations: false })
+  const earlyRecovered = await earlyReader.runDurable(
+    session.id,
+    'return current()',
+    {},
+    { session },
+  )
+  assert.equal(earlyRecovered.value, 1)
+  const earlyRecoveredEntry = earlyRecovered.meta.dshPtcPlusBindings.memory.entries
+    .find(entry => entry.name === 'current')
+  assert.equal(earlyRecoveredEntry.definition.source, 'function current() { return 1 }')
+  await earlyReader.dispose()
+
+  const completeSource = [
+    'function current() { return 3 }',
+    'function current() { return 4 }',
+  ].join('\n')
+  const complete = await writer.runDurable(session.id, completeSource, {}, { session })
+  const completeEntry = complete.meta.dshPtcPlusBindings.memory.entries
+    .find(entry => entry.name === 'current')
+  assert.equal(completeEntry.definition.source, 'function current() { return 4 }')
+  appendRunCodeEvents(events, 'same-name-function-complete', completeSource, complete)
+  await writer.dispose()
+
+  const restored = fixture({ looseTopLevelFunctionClassRedeclarations: false })
+  t.after(() => restored.dispose())
+  const recovered = await restored.runDurable(
+    session.id,
+    'return current()',
+    {},
+    { session },
+  )
+  assert.equal(recovered.value, 4)
+  const recoveredEntry = recovered.meta.dshPtcPlusBindings.memory.entries
+    .find(entry => entry.name === 'current')
+  assert.equal(recoveredEntry.definition.source, 'function current() { return 4 }')
+})
+
+test('cold-replays function/class redeclarations with their recorded binding policy', async (t) => {
+  const events = []
+  const session = { id: 'function-class-replay', events }
+  const writer = fixture({ looseTopLevelFunctionClassRedeclarations: true })
+  t.after(() => writer.dispose())
+  const firstSource = 'function current() { return 1 }\nclass Current { static value = 1 }'
+  const first = await writer.runDurable(session.id, firstSource, {}, { session })
+  appendRunCodeEvents(events, 'function-class-first', firstSource, first)
+  const secondSource = 'function current() { return 2 }\nclass Current { static value = 2 }'
+  const second = await writer.runDurable(session.id, secondSource, {}, { session })
+  appendRunCodeEvents(events, 'function-class-second', secondSource, second)
+  assert.deepEqual(second.meta.dshPtcPlus.bindingPolicy, {
+    variableRedeclarations: true,
+    functionClassRedeclarations: true,
+  })
+  await writer.dispose()
+
+  const restored = fixture({ looseTopLevelFunctionClassRedeclarations: false })
+  t.after(() => restored.dispose())
+  assert.deepEqual(await restored.run(session.id, 'return { value: current(), box: Current.value }', {}, { session }), {
+    logs: [],
+    value: { value: 2, box: 2 },
+  })
 })
 
 test('replaces repeated top-level variables in default loose mode and cold-replays them', async (t) => {
@@ -254,7 +575,10 @@ test('replays each journal node with its recorded binding mode', async (t) => {
   const looseSecondCode = 'const switchedBinding = switchedBinding + 1'
   const looseSecond = await looseWriter.runDurable(looseSession.id, looseSecondCode, {}, { session: looseSession })
   appendRunCodeEvents(looseEvents, 'loose-mode-second', looseSecondCode, looseSecond)
-  assert.equal(looseSecond.meta.dshPtcPlus.bindingMode, 'loose')
+  assert.deepEqual(looseSecond.meta.dshPtcPlus.bindingPolicy, {
+    variableRedeclarations: true,
+    functionClassRedeclarations: false,
+  })
   await looseWriter.dispose()
 
   const strictReader = fixture({ looseTopLevelRedeclarations: false })
@@ -267,17 +591,41 @@ test('replays each journal node with its recorded binding mode', async (t) => {
   const strictEvents = []
   const strictSession = { id: 'recorded-strict-mode', events: strictEvents }
   const strictWriter = fixture({ looseTopLevelRedeclarations: false })
-  const strictCode = 'const strictHistoryBinding = 3'
+  const strictCode = 'let strictHistorySide = 0\nconst strictHistoryBinding = 3'
   const strictResult = await strictWriter.runDurable(strictSession.id, strictCode, {}, { session: strictSession })
-  appendRunCodeEvents(strictEvents, 'strict-mode-cell', strictCode, strictResult)
-  assert.equal(strictResult.meta.dshPtcPlus.bindingMode, 'strict')
+  assert.deepEqual(strictResult.meta.dshPtcPlus.bindingPolicy, {
+    variableRedeclarations: false,
+    functionClassRedeclarations: false,
+  })
+  const strictPredecessor = structuredClone(strictResult)
+  strictPredecessor.meta.dshPtcPlus.version = 3
+  strictPredecessor.meta.dshPtcPlus.bindingMode = 'strict'
+  delete strictPredecessor.meta.dshPtcPlus.bindingPolicy
+  delete strictPredecessor.meta.dshPtcPlus.moduleSemantics
+  appendRunCodeEvents(strictEvents, 'strict-mode-cell', strictCode, strictPredecessor)
   await strictWriter.dispose()
 
   const looseReader = fixture()
   t.after(() => looseReader.dispose())
-  assert.deepEqual(await looseReader.run(strictSession.id, 'return strictHistoryBinding', {}, { session: strictSession }), {
+  const strictAssignment = await looseReader.run(
+    strictSession.id,
+    'strictHistoryBinding = 4',
+    {},
+    { session: strictSession },
+  )
+  assert.equal(strictAssignment.error.kind, 'exception')
+  assert.match(strictAssignment.error.message, /constant variable|read only|readonly/i)
+  const strictRedeclaration = await looseReader.run(
+    strictSession.id,
+    'strictHistorySide = 9\nconst strictHistoryBinding = 4',
+    {},
+    { session: strictSession },
+  )
+  assert.equal(strictRedeclaration.error.kind, 'exception')
+  assert.match(strictRedeclaration.error.message, /PTC-N001.*immutable/s)
+  assert.deepEqual(await looseReader.run(strictSession.id, 'return [strictHistoryBinding, strictHistorySide]', {}, { session: strictSession }), {
     logs: [],
-    value: 3,
+    value: [3, 0],
   })
 })
 
@@ -1081,4 +1429,267 @@ test('keeps named default declarations reachable after export stripping', async 
   assert.equal(conflict.isError, true)
   assert.match(conflict.error.message, /PTC-C001.*__default/s)
   assert.equal((await state.run('default-conflict', 'return typeof __default')).value, 'undefined')
+})
+
+test('updates directly named default declarations through one policy-independent live slot', async (t) => {
+  const policies = [
+    [false, false],
+    [false, true],
+    [true, false],
+    [true, true],
+  ]
+  for (const [variableRedeclarations, functionClassRedeclarations] of policies) {
+    const state = fixture({
+      looseTopLevelRedeclarations: variableRedeclarations,
+      looseTopLevelFunctionClassRedeclarations: functionClassRedeclarations,
+    })
+    t.after(() => state.dispose())
+    const sessionId = `direct-default-policy-${variableRedeclarations}-${functionClassRedeclarations}`
+    await state.run(
+      sessionId,
+      'export default function initialDefault() { return 1 }\nconst readDefault = () => __default',
+    )
+
+    const functionSource = 'export default function __default(value) { return value > 1 ? value * __default(value - 1) : 1 }'
+    const replacedFunction = await state.runDurable(
+      sessionId,
+      `${functionSource}\nreturn [__default(4), readDefault() === __default]`,
+    )
+    assert.deepEqual(replacedFunction.value, [24, true])
+    assert.equal(
+      replacedFunction.meta.dshPtcPlusBindings.memory.entries
+        .find(entry => entry.name === '__default').definition.source,
+      functionSource,
+    )
+
+    const classSource = 'export default class __default { static self() { return __default } }'
+    const replacedClass = await state.runDurable(
+      sessionId,
+      `${classSource}\nreturn [__default.self() === __default, readDefault() === __default]`,
+    )
+    assert.deepEqual(replacedClass.value, [true, true])
+    const alias = replacedClass.meta.dshPtcPlusBindings.memory.entries
+      .find(entry => entry.name === '__default')
+    assert.equal(alias.kind, 'class')
+    assert.equal(alias.definition.source, classSource)
+  }
+})
+
+test('cold-replays directly named default updates and their older live readers', async (t) => {
+  const events = []
+  const session = { id: 'direct-default-replay', events }
+  const writer = fixture({
+    looseTopLevelRedeclarations: false,
+    looseTopLevelFunctionClassRedeclarations: false,
+  })
+  const setupSource = 'export default function initialDefault() { return 1 }\nconst readDefault = () => __default'
+  const setup = await writer.runDurable(session.id, setupSource, {}, { session })
+  appendRunCodeEvents(events, 'direct-default-setup', setupSource, setup)
+  const replacementSource = 'export default function __default(value) { return value > 1 ? value * __default(value - 1) : 1 }'
+  const replacement = await writer.runDurable(session.id, replacementSource, {}, { session })
+  appendRunCodeEvents(events, 'direct-default-replacement', replacementSource, replacement)
+  await writer.dispose()
+
+  const reader = fixture({
+    looseTopLevelRedeclarations: false,
+    looseTopLevelFunctionClassRedeclarations: false,
+  })
+  t.after(() => reader.dispose())
+  const recovered = await reader.runDurable(
+    session.id,
+    'return [__default(5), readDefault() === __default]',
+    {},
+    { session },
+  )
+  assert.deepEqual(recovered.value, [120, true])
+  assert.equal(
+    recovered.meta.dshPtcPlusBindings.memory.entries
+      .find(entry => entry.name === '__default').definition.source,
+    replacementSource,
+  )
+})
+
+test('does not publish directly named default classes before their slot commits', async (t) => {
+  const failedState = fixture()
+  t.after(() => failedState.dispose())
+  await failedState.run(
+    'direct-default-class-failure',
+    "function fail() { throw new Error('direct default class failed') }",
+  )
+  for (const source of [
+    'export default class __default extends fail() {}',
+    'export default class __default { static value = fail() }',
+  ]) {
+    const failed = await failedState.runDurable('direct-default-class-failure', source)
+    assert.equal(failed.isError, true)
+    assert.match(failed.error.message, /direct default class failed/)
+    assert.equal(
+      failed.meta.dshPtcPlusBindings.memory.entries.some(entry => entry.name === '__default'),
+      false,
+    )
+  }
+  assert.equal((await failedState.run('direct-default-class-failure', 'return typeof __default')).value, 'undefined')
+
+  const events = []
+  const session = { id: 'direct-default-early-replay', events }
+  const writer = fixture()
+  const earlySource = "return 'early'\nexport default class __default { static value = 1 }"
+  const early = await writer.runDurable(session.id, earlySource, {}, { session })
+  assert.equal(early.value, 'early')
+  assert.equal(
+    early.meta.dshPtcPlusBindings.memory.entries.some(entry => entry.name === '__default'),
+    false,
+  )
+  appendRunCodeEvents(events, 'direct-default-early', earlySource, early)
+  await writer.dispose()
+
+  const reader = fixture()
+  t.after(() => reader.dispose())
+  const recovered = await reader.runDurable(session.id, 'return typeof __default', {}, { session })
+  assert.equal(recovered.value, 'undefined')
+  assert.equal(
+    recovered.meta.dshPtcPlusBindings.memory.entries.some(entry => entry.name === '__default'),
+    false,
+  )
+})
+
+test('refreshes named default aliases and inventory only after their declarations commit', async (t) => {
+  const state = fixture({ looseTopLevelFunctionClassRedeclarations: true })
+  t.after(() => state.dispose())
+
+  await state.run('default-function-replacement', 'export default function helper() { return 1 }')
+  const functionDeclaration = 'export default function helper() { return 2 }'
+  const sync = await state.runDurable(
+    'default-function-replacement',
+    `${functionDeclaration}\nreturn [helper(), __default()]`,
+  )
+  assert.deepEqual(sync.value, [2, 2])
+  const functionAlias = sync.meta.dshPtcPlusBindings.memory.entries
+    .find(entry => entry.name === '__default')
+  assert.equal(functionAlias.kind, 'function')
+  assert.equal(functionAlias.definition.source, functionDeclaration)
+
+  await state.run('default-async-function-replacement', 'export default async function load() { return 3 }')
+  const asynchronous = await state.run(
+    'default-async-function-replacement',
+    'export default async function load() { return 4 }\nreturn [await load(), await __default()]',
+  )
+  assert.deepEqual(asynchronous.value, [4, 4])
+
+  await state.run('default-class-replacement', 'export default class Box { static value = 1 }')
+  const classDeclaration = 'export default class Box { static value = 2 }'
+  const replacedClass = await state.runDurable(
+    'default-class-replacement',
+    `${classDeclaration}\nreturn [Box.value, __default.value]`,
+  )
+  assert.deepEqual(replacedClass.value, [2, 2])
+  const classAlias = replacedClass.meta.dshPtcPlusBindings.memory.entries
+    .find(entry => entry.name === '__default')
+  assert.equal(classAlias.kind, 'class')
+  assert.equal(classAlias.definition.source, classDeclaration)
+
+  const originalFailedClass = 'export default class FailedBox { static value = 1 }'
+  await state.run(
+    'default-class-failure',
+    `function fail() { throw new Error('class setup failed') }\n${originalFailedClass}`,
+  )
+  const failedClass = await state.runDurable(
+    'default-class-failure',
+    'export default class FailedBox extends fail() { static value = 2 }',
+  )
+  assert.equal(failedClass.isError, true)
+  assert.match(failedClass.error.message, /class setup failed/)
+  const failedAlias = failedClass.meta.dshPtcPlusBindings.memory.entries
+    .find(entry => entry.name === '__default')
+  assert.equal(failedAlias.kind, 'class')
+  assert.equal(failedAlias.definition.source, originalFailedClass)
+  assert.deepEqual(
+    (await state.run('default-class-failure', 'return [FailedBox.value, __default.value]')).value,
+    [1, 1],
+  )
+})
+
+test('keeps named default replacement independent from variable replacement', async (t) => {
+  const state = fixture({
+    looseTopLevelRedeclarations: false,
+    looseTopLevelFunctionClassRedeclarations: true,
+  })
+  t.after(() => state.dispose())
+
+  await state.run('strict-default-function', 'export default function helper() { return 1 }')
+  const replacedFunction = await state.runDurable(
+    'strict-default-function',
+    'export default function helper() { return 2 }\nreturn [helper(), __default()]',
+  )
+  assert.deepEqual(replacedFunction.value, [2, 2])
+
+  const readonly = await state.run('strict-default-function', '__default = () => 3')
+  assert.equal(readonly.error.kind, 'exception')
+  assert.match(readonly.error.message, /constant variable|read only|readonly/i)
+  assert.deepEqual((await state.run('strict-default-function', 'return [helper(), __default()]')).value, [2, 2])
+
+  await state.run('strict-default-class', 'export default class Box { static value = 1 }')
+  const replacedClass = await state.runDurable(
+    'strict-default-class',
+    'export default class Box { static value = 2 }\nreturn [Box.value, __default.value]',
+  )
+  assert.deepEqual(replacedClass.value, [2, 2])
+  assert.equal(
+    replacedClass.meta.dshPtcPlusBindings.memory.entries
+      .find(entry => entry.name === '__default').definition.source,
+    'export default class Box { static value = 2 }',
+  )
+})
+
+test('commits fresh named default aliases at their execution position across replay', async (t) => {
+  const events = []
+  const session = { id: 'fresh-default-commit-replay', events }
+  const writer = fixture({ looseTopLevelFunctionClassRedeclarations: true })
+  const original = 'export default function OriginalDefault() { return 1 }'
+  const first = await writer.runDurable(session.id, original, {}, { session })
+  appendRunCodeEvents(events, 'fresh-default-first', original, first)
+
+  const fresh = 'export default function FreshDefault() { return 2 }'
+  const earlySource = `return 'early'\n${fresh}`
+  const early = await writer.runDurable(session.id, earlySource, {}, { session })
+  appendRunCodeEvents(events, 'fresh-default-early', earlySource, early)
+  assert.equal(early.value, 'early')
+  const earlyEntries = early.meta.dshPtcPlusBindings.memory.entries
+  assert.equal(earlyEntries.find(entry => entry.name === '__default').definition.source, original)
+  assert.equal(earlyEntries.find(entry => entry.name === 'FreshDefault').definition.source,
+    'function FreshDefault() { return 2 }')
+  await writer.dispose()
+
+  const reader = fixture({ looseTopLevelFunctionClassRedeclarations: true })
+  t.after(() => reader.dispose())
+  const recovered = await reader.runDurable(
+    session.id,
+    'return [FreshDefault(), __default()]',
+    {},
+    { session },
+  )
+  assert.deepEqual(recovered.value, [2, 1])
+  assert.equal(
+    recovered.meta.dshPtcPlusBindings.memory.entries
+      .find(entry => entry.name === '__default').definition.source,
+    original,
+  )
+
+  const failedState = fixture({ looseTopLevelFunctionClassRedeclarations: true })
+  t.after(() => failedState.dispose())
+  const originalClass = 'export default class OriginalClass { static value = 1 }'
+  await failedState.run(
+    'fresh-default-class-failure',
+    `function fail() { throw new Error('fresh class failed') }\n${originalClass}`,
+  )
+  const failed = await failedState.runDurable(
+    'fresh-default-class-failure',
+    'export default class FreshClass extends fail() { static value = 2 }',
+  )
+  assert.equal(failed.isError, true)
+  assert.match(failed.error.message, /fresh class failed/)
+  const failedEntries = failed.meta.dshPtcPlusBindings.memory.entries
+  assert.equal(failedEntries.some(entry => entry.name === 'FreshClass'), false)
+  assert.equal(failedEntries.find(entry => entry.name === '__default').definition.source, originalClass)
+  assert.equal((await failedState.run('fresh-default-class-failure', 'return __default.value')).value, 1)
 })

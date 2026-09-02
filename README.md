@@ -129,7 +129,7 @@ import { readFile } from 'node:fs/promises'
 
 设置中的“使用 PTC Plus 增强工具卡片”默认开启。开启时通过 DSH 公共 keyed tool-view 接口渲染增强 `run_code` / `edit_run_code` 卡片，可用时复用 Host primitive，缺失时自动降级；关闭时立即交还 DSH 原生 generic row，用户可以直接使用 Host 自己的最新视觉和交互。
 
-`autoDescribeRunCode` 默认关闭。打开后，外层 `run_code.description` 可以省略，固定 UI 摘要只写入展示 metadata；原始调用参数、已有摘要、cell 源码和嵌套 native 工具参数都不会被改写。关闭时仍由 DSH 严格校验外层摘要。
+`autoDescribeRunCode` 默认开启。外层 `run_code.description` 缺失时，执行桥派生固定摘要供 DSH 校验，并只把持久副本写入展示 metadata；原始调用参数、已有摘要、cell 源码和嵌套 native 工具参数都不会被改写。关闭后仍由 DSH 严格校验外层摘要。
 
 插件启用且会话使用 `ptc` preset 时，会话头部显示简洁的绿色 `PTC Plus` 活动标识。鼠标悬浮、键盘聚焦或点击这个标识，会显示当前 agent 下一 cell 可复用的 binding，并用不同色彩区分变量、函数、类和 import；每项带有定义源码预览，点击整行即可在卡片内展开有界源码和原始行列。卡片位于浏览器 top layer，不会被会话侧栏遮挡，列表较长时在卡片内部滚动。它只使用已经提交的 cell 文本，不读取运行时值、不触发 getter，也不会执行代码。volatile binding 只要仍在 live worker 中可复用就继续显示；restore、discard 或重启后，在新 runtime 重新证明当前 binding 前显示“尚不可确认”。无关或损坏的结果不会清空已经验证的列表。当前 DSH 公共 header slot 没有跳到来源调用的导航接口，因此插件不使用 DOM hack 伪造跳转。正文中的 `run_code` 与 `edit_run_code` 仍显示为“执行”和“修正执行”：源码和结果仍可展开查看；当 DSH Client 提供 `CodeBlock` primitive 时，源码使用 TypeScript 语法高亮并支持复制。只有已有结果 metadata 能证明某项能力在该次执行中确实生效时，预览行内才显示同设置卡一致的名称与有用细节，例如被适配的 import 模块、被剥离的 export、被拆分的混合重声明、安全编辑、成功的 `code.run`、本次确实完成的持久恢复或 `repl.state` 操作。这里不显示进程保留提示，也不显示 REPL cell、程序内调用、可恢复 cell 或恢复边界等计数。关闭插件会注销两个 keyed row，恢复 DSH 原生 fallback。
 

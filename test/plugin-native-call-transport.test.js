@@ -203,7 +203,7 @@ test('canonicalizes proven native miscalls while declared edit calls keep their 
   })
 })
 
-test('keeps run_code description strict by default and derives valid execution arguments when enabled', async (t) => {
+test('derives missing run_code descriptions by default and preserves the strict opt-out', async (t) => {
   const session = { id: 'description-policy-session', events: [] }
   let validatedArguments
   const strictRunCode = defineTool({
@@ -222,8 +222,8 @@ test('keeps run_code description strict by default and derives valid execution a
       return args.code.length
     },
   })
-  for (const enabled of [false, true]) {
-    const state = fixture({ autoDescribeRunCode: enabled })
+  for (const enabled of [true, false]) {
+    const state = enabled ? fixture() : fixture({ autoDescribeRunCode: false })
     state.runCodeDefinition.execute = strictRunCode.execute
     const agent = ptcAgent(`description-policy-agent-${enabled}`, session)
     const signal = new AbortController().signal

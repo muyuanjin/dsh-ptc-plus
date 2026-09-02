@@ -18,8 +18,80 @@
       default: true,
       label: "\u4F7F\u7528 PTC Plus \u589E\u5F3A\u5DE5\u5177\u5361\u7247",
       labelEn: "Use enhanced PTC Plus tool cards",
-      description: "\u5173\u95ED\u540E\uFF0Crun_code \u548C edit_run_code \u4F7F\u7528 DSH \u539F\u751F\u5DE5\u5177\u5361\u7247\u3002",
-      descriptionEn: "When disabled, run_code and edit_run_code use DSH native tool cards."
+      description: "\u5F00\u542F\u65F6\u4F7F\u7528 PTC Plus \u5DE5\u5177\u5361\u7247\uFF1B\u5173\u95ED\u540E\u4F7F\u7528 DSH \u539F\u751F run_code \u548C edit_run_code \u5DE5\u5177\u5361\u7247\u3002",
+      descriptionEn: "When enabled, PTC Plus renders the tool cards; when disabled, run_code and edit_run_code use DSH native tool cards."
+    },
+    {
+      key: "canonicalizeToolCalls",
+      type: "boolean",
+      default: true,
+      label: "\u4FEE\u590D\u53EF\u8BC6\u522B\u7684\u9876\u5C42 native \u5DE5\u5177\u8BEF\u8C03\u7528",
+      labelEn: "Repair recognizable top-level native tool mis-calls",
+      description: "\u4EC5\u5F53\u5F53\u524D schema \u80FD\u552F\u4E00\u786E\u8BA4\u76EE\u6807\u5DE5\u5177\u4E14\u53C2\u6570\u6709\u6548\u65F6\uFF0C\u4FEE\u590D\u9876\u5C42 native \u5DE5\u5177\u8BEF\u8C03\u7528\u3002",
+      descriptionEn: "Repairs a top-level native tool mis-call only when the current schema uniquely identifies the target and validates its arguments."
+    },
+    {
+      key: "autoDescribeRunCode",
+      type: "boolean",
+      default: true,
+      label: "\u81EA\u52A8\u8865\u5168\u7F3A\u5931\u7684 run_code \u6458\u8981",
+      labelEn: "Auto-fill missing run_code summaries",
+      description: "\u7F3A\u5C11\u5916\u5C42\u6458\u8981\u65F6\u751F\u6210\u56FA\u5B9A\u7684 UI \u6458\u8981\uFF1B\u539F\u59CB\u8C03\u7528\u53C2\u6570\u3001\u5DF2\u6709\u6458\u8981\u3001\u4EE3\u7801\u548C\u5D4C\u5957 native \u5DE5\u5177\u53C2\u6570\u4FDD\u6301\u4E0D\u53D8\u3002",
+      descriptionEn: "Adds a fixed UI summary when the outer summary is missing; original call arguments, existing summaries, code, and nested native-tool arguments remain unchanged."
+    },
+    {
+      key: "looseTopLevelRedeclarations",
+      type: "boolean",
+      default: true,
+      label: "\u5141\u8BB8\u9876\u5C42\u53D8\u91CF\u91CD\u58F0\u660E",
+      labelEn: "Allow top-level variable redeclarations",
+      description: "\u5141\u8BB8\u9876\u5C42 const \u6216 let \u58F0\u660E\u66FF\u6362\u5DF2\u6709\u53D8\u91CF\uFF1B\u5173\u95ED\u540E\uFF0C\u91CD\u58F0\u660E\u4F1A\u5728\u6267\u884C\u524D\u88AB\u62D2\u7EDD\u3002",
+      descriptionEn: "Allows top-level const or let declarations to replace existing variables; disabling rejects redeclarations before execution."
+    },
+    {
+      key: "autoRewriteImports",
+      type: "boolean",
+      default: true,
+      label: "\u652F\u6301\u9759\u6001 import \u58F0\u660E",
+      labelEn: "Support static import declarations",
+      description: "\u5141\u8BB8\u5728 run_code \u4E2D\u4F7F\u7528\u9759\u6001 import\uFF0C\u5E76\u4FDD\u7559\u6A21\u5757\u89E3\u6790\u548C\u53EA\u8BFB binding \u8BED\u4E49\u3002",
+      descriptionEn: "Allows static import declarations in run_code while preserving module resolution and read-only binding semantics."
+    },
+    {
+      key: "autoStripExports",
+      type: "boolean",
+      default: true,
+      label: "\u652F\u6301\u9876\u5C42 export \u4FEE\u9970\u7B26",
+      labelEn: "Support top-level export modifiers",
+      description: "\u5141\u8BB8\u5728 run_code \u4E2D\u4F7F\u7528\u9876\u5C42 export\uFF0C\u5E76\u4FDD\u7559\u5BF9\u5E94\u7684\u672C\u5730\u58F0\u660E\u6216\u6A21\u5757\u526F\u4F5C\u7528\u3002",
+      descriptionEn: "Allows top-level export syntax in run_code while preserving the corresponding local declaration or module side effect."
+    },
+    {
+      key: "autoSplitRedeclarations",
+      type: "boolean",
+      default: true,
+      label: "\u652F\u6301\u6DF7\u5408\u89E3\u6784\u91CD\u58F0\u660E",
+      labelEn: "Support mixed destructuring redeclarations",
+      description: "\u5141\u8BB8\u9876\u5C42\u89E3\u6784\u58F0\u660E\u540C\u65F6\u5305\u542B\u65B0\u53D8\u91CF\u548C\u5DF2\u6709\u53D8\u91CF\u3002",
+      descriptionEn: "Allows top-level destructuring declarations to contain both new and existing variables."
+    },
+    {
+      key: "durableReplay",
+      type: "boolean",
+      default: true,
+      label: "\u542F\u7528\u6301\u4E45 REPL \u6062\u590D",
+      labelEn: "Enable durable REPL recovery",
+      description: "worker \u91CD\u542F\u540E\u4ECE session journal \u91CD\u5EFA\u53EF\u6062\u590D\u7684 REPL \u72B6\u6001\u3002",
+      descriptionEn: "Rebuilds recoverable REPL state from the session journal after a worker restart."
+    },
+    {
+      key: "tipsEnabled",
+      type: "boolean",
+      default: true,
+      label: "\u542F\u7528\u5931\u8D25\u6062\u590D\u63D0\u793A",
+      labelEn: "Enable failure recovery tips",
+      description: "\u5728\u7B26\u5408\u6761\u4EF6\u7684\u5931\u8D25\u540E\u663E\u793A\u6709\u51B7\u5374\u95F4\u9694\u7684\u6062\u590D\u63D0\u793A\u3002",
+      descriptionEn: "Shows recovery tips with a cooldown after qualifying failures."
     },
     {
       key: "cordisToolsEnabled",
@@ -27,17 +99,8 @@
       default: false,
       label: "\u5728 PTC \u6A21\u5F0F\u4E2D\u542F\u7528\u5B98\u65B9 Cordis \u5DE5\u5177",
       labelEn: "Enable official Cordis tools in PTC mode",
-      description: "\u5F00\u542F\u540E\uFF0CPTC agent \u53EF\u4F7F\u7528\u5B98\u65B9 Cordis \u5DE5\u5177\u3001\u914D\u5957\u6307\u5F15\u548C\u5F00\u53D1 Skill\uFF1B\u5173\u95ED\u540E\u79FB\u9664\u3002",
-      descriptionEn: "When enabled, PTC agents can use the official Cordis tools, guidance, and development Skill; disabling removes them."
-    },
-    {
-      key: "autoDescribeRunCode",
-      type: "boolean",
-      default: false,
-      label: "\u4E3A\u7F3A\u5C11\u6458\u8981\u7684 run_code \u81EA\u52A8\u751F\u6210 UI \u6458\u8981",
-      labelEn: "Generate UI summaries for run_code calls without one",
-      description: "\u5F00\u542F\u540E\uFF0C\u4E3A\u7F3A\u5C11\u5916\u5C42\u6458\u8981\u7684 run_code \u663E\u793A\u56FA\u5B9A UI \u6458\u8981\uFF1B\u5DF2\u6709\u6458\u8981\u548C\u5DE5\u5177\u8C03\u7528\u5185\u5BB9\u4FDD\u6301\u4E0D\u53D8\u3002",
-      descriptionEn: "When enabled, run_code calls without an outer summary show a fixed UI summary; existing summaries and tool-call content remain unchanged."
+      description: "\u5F00\u542F\u540E\uFF0CPTC agent \u53EF\u4F7F\u7528\u5B98\u65B9 Cordis \u5DE5\u5177\u3001\u914D\u5957\u6307\u5F15\u548C\u5F00\u53D1 Skill\uFF1B\u5173\u95ED\u540E\u79FB\u9664\u8FD9\u4E9B\u80FD\u529B\u3002Cordis \u5DE5\u5177\u4EE5 DSH \u8FDB\u7A0B\u6743\u9650\u8FD0\u884C\u3002",
+      descriptionEn: "When enabled, PTC agents can use the official Cordis tools, guidance, and development Skill; disabling removes them. Cordis tools run with the DSH process permissions."
     },
     {
       key: "computeMs",
@@ -45,10 +108,10 @@
       default: 6e4,
       min: 1,
       max: Number.MAX_SAFE_INTEGER,
-      label: "\u5355 cell \u6700\u5927 CPU \u65F6\u95F4 (ms)",
-      labelEn: "Max CPU time per cell (ms)",
-      description: "\u540C\u6B65\u8BA1\u7B97\u8D85\u8FC7\u8BE5\u9884\u7B97\u7684 cell \u4F1A\u88AB\u4E2D\u65AD\u3002",
-      descriptionEn: "Cells whose synchronous computation exceeds this budget are interrupted."
+      label: "\u5355 cell CPU \u65F6\u95F4\u4E0A\u9650 (ms)",
+      labelEn: "CPU time limit per cell (ms)",
+      description: "\u540C\u6B65\u8BA1\u7B97\u8D85\u8FC7\u8BE5\u4E0A\u9650\u65F6\u4E2D\u65AD\u5F53\u524D cell\u3002",
+      descriptionEn: "Interrupts the current cell when synchronous computation exceeds this limit."
     },
     {
       key: "maxWallMs",
@@ -56,21 +119,10 @@
       default: 6e5,
       min: 1,
       max: MAX_TIMER_DELAY_MS,
-      label: "\u5355 cell \u6700\u5927\u5899\u949F\u65F6\u95F4 (ms)",
-      labelEn: "Max wall-clock time per cell (ms)",
-      description: "\u5B8C\u6574 cell \u6267\u884C\uFF08\u542B\u5F02\u6B65\u7B49\u5F85\uFF09\u7684\u6700\u957F\u8017\u65F6\u3002",
-      descriptionEn: "The longest a full cell execution may take, including async waits."
-    },
-    {
-      key: "maxOutputBytes",
-      type: "integer",
-      default: 64 * 1024 * 1024,
-      min: 1,
-      max: Number.MAX_SAFE_INTEGER,
-      label: "\u6700\u5927\u8F93\u51FA\u5B57\u8282",
-      labelEn: "Max output bytes",
-      description: "\u9650\u5236\u5355\u4E2A cell \u7684\u8F93\u51FA\u548C\u7ED3\u679C\u6570\u636E\u603B\u5927\u5C0F\u3002",
-      descriptionEn: "Caps the combined size of one cell output and result data."
+      label: "\u5355 cell \u603B\u8017\u65F6\u4E0A\u9650 (ms)",
+      labelEn: "Elapsed time limit per cell (ms)",
+      description: "\u9650\u5236\u5B8C\u6574 cell \u6267\u884C\u7684\u8017\u65F6\uFF0C\u5305\u62EC\u5F02\u6B65\u7B49\u5F85\u3002",
+      descriptionEn: "Limits the complete cell execution time, including asynchronous waits."
     },
     {
       key: "maxOldGenerationSizeMb",
@@ -78,54 +130,10 @@
       default: 512,
       min: 1,
       max: Number.MAX_SAFE_INTEGER,
-      label: "worker \u65E7\u751F\u4EE3\u5185\u5B58\u4E0A\u9650 (MiB)",
-      labelEn: "Worker old-generation memory cap (MiB)",
-      description: "\u6BCF\u4E2A worker \u7684 V8 \u65E7\u751F\u4EE3\u4E0A\u9650\uFF1B\u6D3B\u52A8 worker \u5B58\u5728\u65F6\u4FEE\u6539\u4F1A\u88AB\u62D2\u7EDD\u3002",
-      descriptionEn: "Per-worker V8 old-generation limit; changes are rejected while an active worker exists."
-    },
-    {
-      key: "maxValueNodes",
-      type: "integer",
-      default: 1e5,
-      min: 1,
-      max: Number.MAX_SAFE_INTEGER,
-      label: "Value Graph \u6700\u5927\u8282\u70B9\u6570",
-      labelEn: "Max Value Graph nodes",
-      description: "\u9650\u5236\u5355\u6B21\u8FD4\u56DE\u503C\u7684\u8282\u70B9\u6570\u3002",
-      descriptionEn: "Caps the node count of a single returned value."
-    },
-    {
-      key: "maxValueEdges",
-      type: "integer",
-      default: 1e6,
-      min: 1,
-      max: Number.MAX_SAFE_INTEGER,
-      label: "Value Graph \u6700\u5927\u8FB9\u6570",
-      labelEn: "Max Value Graph edges",
-      description: "\u9650\u5236\u5355\u6B21\u8FD4\u56DE\u503C\u7684\u5F15\u7528\u5173\u7CFB\u6570\u3002",
-      descriptionEn: "Caps the reference-edge count of a single returned value."
-    },
-    {
-      key: "maxValueArrayLength",
-      type: "integer",
-      default: 1e6,
-      min: 1,
-      max: Number.MAX_SAFE_INTEGER,
-      label: "\u6570\u7EC4\u6700\u5927\u58F0\u660E\u957F\u5EA6",
-      labelEn: "Max declared array length",
-      description: "\u9650\u5236\u8FD4\u56DE\u6570\u7EC4\u7684\u6700\u5927\u957F\u5EA6\u3002",
-      descriptionEn: "Caps the maximum length of a returned array."
-    },
-    {
-      key: "maxValueBigIntDigits",
-      type: "integer",
-      default: 1e5,
-      min: 1,
-      max: Number.MAX_SAFE_INTEGER,
-      label: "BigInt \u6700\u5927\u5341\u8FDB\u5236\u4F4D\u6570",
-      labelEn: "Max BigInt decimal digits",
-      description: "\u9650\u5236\u8FD4\u56DE\u503C\u4E2D BigInt \u7684\u5341\u8FDB\u5236\u4F4D\u6570\u3002",
-      descriptionEn: "Caps the decimal digits of BigInt values in a returned value."
+      label: "\u6BCF\u4E2A worker \u65E7\u751F\u4EE3\u5185\u5B58\u4E0A\u9650 (MiB)",
+      labelEn: "Old-generation memory limit per worker (MiB)",
+      description: "\u9650\u5236\u6BCF\u4E2A worker \u7684 V8 \u65E7\u751F\u4EE3\uFF1B\u6D3B\u52A8 worker \u5B58\u5728\u65F6\u4E0D\u80FD\u4FEE\u6539\u3002",
+      descriptionEn: "Limits the V8 old generation for each worker; this setting cannot change while a worker is active."
     },
     {
       key: "maxNestedRunCodeDepth",
@@ -133,73 +141,65 @@
       default: 8,
       min: 1,
       max: Number.MAX_SAFE_INTEGER,
-      label: "code.run \u6700\u5927\u9012\u5F52\u6DF1\u5EA6",
-      labelEn: "Max code.run recursion depth",
-      description: "\u9650\u5236 code.run \u7684\u5D4C\u5957\u5C42\u6570\u3002",
-      descriptionEn: "Caps how deeply code.run may nest."
+      label: "code.run \u5D4C\u5957\u5C42\u6570\u4E0A\u9650",
+      labelEn: "code.run nesting depth limit",
+      description: "\u9650\u5236\u5355\u4E2A\u9876\u5C42 cell \u4E2D code.run \u7684\u6700\u5927\u5D4C\u5957\u5C42\u6570\u3002",
+      descriptionEn: "Limits the maximum code.run nesting depth within one top-level cell."
     },
     {
-      key: "canonicalizeToolCalls",
-      type: "boolean",
-      default: true,
-      label: "\u89C4\u8303\u9876\u5C42 native \u8BEF\u8C03",
-      labelEn: "Canonicalize top-level native mis-calls",
-      description: "\u4FEE\u6B63\u53EF\u4EE5\u660E\u786E\u8BC6\u522B\u7684\u9876\u5C42 native \u8BEF\u8C03\u3002",
-      descriptionEn: "Repairs top-level native mis-calls that can be identified unambiguously."
+      key: "maxOutputBytes",
+      type: "integer",
+      default: 64 * 1024 * 1024,
+      min: 1,
+      max: Number.MAX_SAFE_INTEGER,
+      label: "\u5355 cell \u8F93\u51FA\u4E0A\u9650 (bytes)",
+      labelEn: "Output limit per cell (bytes)",
+      description: "\u9650\u5236\u5355\u4E2A cell \u7684\u65E5\u5FD7\u548C\u8FD4\u56DE\u7ED3\u679C\u7684\u5408\u8BA1\u5927\u5C0F\u3002",
+      descriptionEn: "Limits the combined size of one cell's logs and returned result."
     },
     {
-      key: "looseTopLevelRedeclarations",
-      type: "boolean",
-      default: true,
-      label: "\u5BBD\u677E\u9876\u5C42\u91CD\u58F0\u660E",
-      labelEn: "Loose top-level redeclarations",
-      description: "\u5141\u8BB8\u9876\u5C42 const/let \u91CD\u58F0\u660E\u5DF2\u6709\u53D8\u91CF\u3002",
-      descriptionEn: "Allows top-level const/let to redeclare existing variables."
+      key: "maxValueNodes",
+      type: "integer",
+      default: 1e5,
+      min: 1,
+      max: Number.MAX_SAFE_INTEGER,
+      label: "\u8FD4\u56DE\u503C\u8282\u70B9\u6570\u4E0A\u9650",
+      labelEn: "Returned-value node limit",
+      description: "\u9650\u5236\u5355\u6B21\u8FD4\u56DE\u503C\u7684 Value Graph \u8282\u70B9\u6570\u3002",
+      descriptionEn: "Limits the Value Graph node count for one returned value."
     },
     {
-      key: "durableReplay",
-      type: "boolean",
-      default: true,
-      label: "\u6301\u4E45\u91CD\u653E",
-      labelEn: "Durable replay",
-      description: "worker \u91CD\u542F\u540E\u6062\u590D\u53EF\u4EE5\u91CD\u5EFA\u7684 REPL \u72B6\u6001\u3002",
-      descriptionEn: "Rebuilds recoverable REPL state after a worker restart."
+      key: "maxValueEdges",
+      type: "integer",
+      default: 1e6,
+      min: 1,
+      max: Number.MAX_SAFE_INTEGER,
+      label: "\u8FD4\u56DE\u503C\u5F15\u7528\u8FB9\u6570\u4E0A\u9650",
+      labelEn: "Returned-value reference-edge limit",
+      description: "\u9650\u5236\u5355\u6B21\u8FD4\u56DE\u503C\u7684 Value Graph \u5F15\u7528\u8FB9\u6570\u3002",
+      descriptionEn: "Limits the Value Graph reference-edge count for one returned value."
     },
     {
-      key: "autoRewriteImports",
-      type: "boolean",
-      default: true,
-      label: "\u81EA\u52A8\u6539\u5199 import",
-      labelEn: "Auto-rewrite import",
-      description: "\u5141\u8BB8\u5728 run_code \u4E2D\u4F7F\u7528\u9759\u6001 import\u3002",
-      descriptionEn: "Allows static import declarations inside run_code."
+      key: "maxValueArrayLength",
+      type: "integer",
+      default: 1e6,
+      min: 1,
+      max: Number.MAX_SAFE_INTEGER,
+      label: "\u8FD4\u56DE\u6570\u7EC4\u957F\u5EA6\u4E0A\u9650",
+      labelEn: "Returned-array length limit",
+      description: "\u9650\u5236\u8FD4\u56DE\u6570\u7EC4\u7684\u6700\u5927\u58F0\u660E\u957F\u5EA6\u3002",
+      descriptionEn: "Limits the maximum declared length of a returned array."
     },
     {
-      key: "autoStripExports",
-      type: "boolean",
-      default: true,
-      label: "\u81EA\u52A8\u5265\u79BB export",
-      labelEn: "Auto-strip export",
-      description: "\u5141\u8BB8\u5728 run_code \u4E2D\u4F7F\u7528\u9876\u5C42 export\u3002",
-      descriptionEn: "Allows top-level export modifiers inside run_code."
-    },
-    {
-      key: "autoSplitRedeclarations",
-      type: "boolean",
-      default: true,
-      label: "\u81EA\u52A8\u62C6\u5206\u6DF7\u5408\u91CD\u58F0\u660E",
-      labelEn: "Auto-split mixed redeclarations",
-      description: "\u5141\u8BB8\u9876\u5C42\u89E3\u6784\u58F0\u660E\u540C\u65F6\u5305\u542B\u65B0\u65E7\u53D8\u91CF\u3002",
-      descriptionEn: "Allows top-level destructuring declarations that mix new and existing variables."
-    },
-    {
-      key: "tipsEnabled",
-      type: "boolean",
-      default: true,
-      label: "\u542F\u7528\u6062\u590D\u63D0\u793A",
-      labelEn: "Enable recovery tips",
-      description: "\u5728\u7B26\u5408\u6761\u4EF6\u7684\u5931\u8D25\u540E\u663E\u793A\u6062\u590D\u63D0\u793A\u3002",
-      descriptionEn: "Shows recovery tips after qualifying failures."
+      key: "maxValueBigIntDigits",
+      type: "integer",
+      default: 1e5,
+      min: 1,
+      max: Number.MAX_SAFE_INTEGER,
+      label: "\u8FD4\u56DE\u503C BigInt \u5341\u8FDB\u5236\u4F4D\u6570\u4E0A\u9650",
+      labelEn: "Returned-value BigInt decimal-digit limit",
+      description: "\u9650\u5236\u8FD4\u56DE\u503C\u4E2D BigInt \u7684\u5341\u8FDB\u5236\u4F4D\u6570\u3002",
+      descriptionEn: "Limits the decimal-digit count of BigInt values in one returned value."
     },
     {
       key: "tipCooldownMessages",
@@ -207,8 +207,8 @@
       default: 3,
       min: 1,
       max: Number.MAX_SAFE_INTEGER,
-      label: "\u6062\u590D\u63D0\u793A\u51B7\u5374\u6B65\u6570",
-      labelEn: "Recovery tip cooldown (messages)",
+      label: "\u540C\u7C7B\u6062\u590D\u63D0\u793A\u95F4\u9694 (messages)",
+      labelEn: "Same-kind recovery tip interval (messages)",
       description: "\u540C\u7C7B\u6062\u590D\u63D0\u793A\u4E4B\u95F4\u7684\u6700\u5C0F\u95F4\u9694\u3002",
       descriptionEn: "The minimum gap between recovery tips of the same kind."
     },
@@ -218,8 +218,8 @@
       default: 2,
       min: 1,
       max: Number.MAX_SAFE_INTEGER,
-      label: "\u6062\u590D\u63D0\u793A\u5347\u7EA7\u5931\u8D25\u6B21\u6570",
-      labelEn: "Recovery tip escalation failures",
+      label: "\u8BE6\u7EC6\u6062\u590D\u63D0\u793A\u9608\u503C (failures)",
+      labelEn: "Detailed recovery tip threshold (failures)",
       description: "\u8FDE\u7EED\u5931\u8D25\u8FBE\u5230\u6B64\u6B21\u6570\u540E\u663E\u793A\u66F4\u8BE6\u7EC6\u7684\u6062\u590D\u63D0\u793A\u3002",
       descriptionEn: "After this many consecutive failures, a more detailed recovery tip is shown."
     }

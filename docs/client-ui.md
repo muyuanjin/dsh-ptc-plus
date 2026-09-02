@@ -1,11 +1,11 @@
 # Client UI
 
-PTC Plus 现在提供 DSH Web/Desktop 的**插件设置卡片**，位置在 Settings → Plugin configuration。
+PTC Plus 在 DSH Web/Desktop 的 Settings → Plugin configuration 中提供**插件设置卡片**。
 
 ## 设置命名空间
 
 Host half 通过 DSH 公共 `settings` 服务注册命名空间 `ptc-plus`。字段清单、默认值和校验来自 `internal/config-spec.js`，
-由 `index.js` 的 `Config` schema 与设置注册共用；client half 构建时把同一份字段清单打进 bundle，不在 UI 中复制默认值。
+由 `index.js` 的 `Config` schema 与设置注册共用；client half 构建时把同一份字段清单打进 bundle，不在 UI 中复制默认值。卡片先连续显示布尔开关，再连续显示数值输入。
 
 ## 可用设置
 
@@ -13,14 +13,15 @@ Host half 通过 DSH 公共 `settings` 服务注册命名空间 `ptc-plus`。字
 | --- | --- | --- |
 | 开关 | `enabled` | 关闭后不注册 `run_code`/`edit_run_code`、不修改 system prompt、不创建 session runtime；只保留设置 UI。 |
 | 展示 | `enhancedToolView` | 默认开启；关闭后注销 PTC Plus 的两个 keyed tool view，恢复 DSH 原生 generic row。 |
+| Transport | `canonicalizeToolCalls` / `autoDescribeRunCode` | 默认开启；修复 schema 可唯一确认的顶层 native 工具误调用，并为缺少外层摘要的 `run_code` 请求生成固定 UI 摘要。 |
+| REPL | `looseTopLevelRedeclarations` / `autoRewriteImports` / `autoStripExports` / `autoSplitRedeclarations` / `durableReplay` | 默认开启；控制跨 cell 重声明、模块语法适配与 worker 重启后的状态恢复。 |
+| 提示 | `tipsEnabled` | 默认开启；在符合条件的重复失败后显示恢复提示。 |
 | Cordis | `cordisToolsEnabled` | 默认关闭；开启后为 PTC agent 加入官方 Cordis 工具、指引与精确的 `cordis-plugin-development` companion Skill，不发布同目录 sibling。 |
-| Transport | `autoDescribeRunCode` | 默认关闭；开启后仅为缺少外层摘要的 `run_code` 请求生成固定 UI 摘要。 |
-| 计算 | `computeMs` / `maxWallMs` | 单 cell CPU 与墙钟预算。 |
-| 输出 | `maxOutputBytes` / `maxValueNodes` / `maxValueEdges` / `maxValueArrayLength` / `maxValueBigIntDigits` | Value Graph 与输出字节预算。 |
+| 计算 | `computeMs` / `maxWallMs` | 单 cell CPU 与总耗时预算。 |
 | Worker | `maxOldGenerationSizeMb` / `maxNestedRunCodeDepth` | kernel worker 内存与嵌套执行深度。 |
-| 行为 | `canonicalizeToolCalls` / `looseTopLevelRedeclarations` / `durableReplay` | REPL 与 transport 策略。 |
-| 模块 | `autoRewriteImports` / `autoStripExports` / `autoSplitRedeclarations` | AST 重写开关。 |
-| 提示 | `tipsEnabled` / `tipCooldownMessages` / `tipEscalationFailures` | 恢复提示策略。 |
+| 输出 | `maxOutputBytes` | 单 cell 日志与返回结果的合计字节上限。 |
+| 返回值 | `maxValueNodes` / `maxValueEdges` / `maxValueArrayLength` / `maxValueBigIntDigits` | Value Graph 与大数组、BigInt 的返回上限。 |
+| 提示阈值 | `tipCooldownMessages` / `tipEscalationFailures` | 同类提示间隔与详细提示阈值。 |
 
 ## enabled 开关与正文功能标记
 
@@ -31,7 +32,7 @@ Host half 通过 DSH 公共 `settings` 服务注册命名空间 `ptc-plus`。字
 
 `enhancedToolView` 默认开启并即时生效。开启时 PTC Plus 通过公共 keyed tool-view surface 为 `run_code` 与 `edit_run_code` 提供增强行，并在可用时使用 DSH 公共 `DisclosureRow`/`CodeBlock` primitive，缺少某项 capability 时使用插件自有的等价降级；关闭时立即注销这两个 keyed view，完全恢复 DSH 原生 generic row，让 Host 自己拥有布局、状态、代码高亮、输入/输出卡片和后续视觉更新。该开关只影响 Client 展示，不改变工具、prompt、runtime 或 session 语义。
 
-`autoDescribeRunCode` 默认关闭并即时生效。开启后，schema 投影允许省略顶层 `run_code.description`，固定摘要仅写入 presentation metadata；原始调用参数、已有摘要、cell 源码和嵌套 native 工具参数均保持原样。关闭时继续由 DSH schema 严格要求外层摘要。
+`autoDescribeRunCode` 默认开启并即时生效。schema 投影允许省略顶层 `run_code.description`，执行桥向 DSH 参数校验器提供派生的固定摘要，并仅将该摘要的持久副本写入 presentation metadata；原始调用参数、已有摘要、cell 源码和嵌套 native 工具参数均保持原样。关闭时继续由 DSH schema 严格要求外层摘要。
 
 设置卡片、正文 tool view 与 REPL 可复用 binding 卡片的全部文案都注册到 DSH client locale 的 `settings.ptcPlus` 命名空间，随当前界面语言在中文与 English 之间切换；字段名称与说明的两种语言文本同样来自 `internal/config-spec.js`（`label`/`labelEn`、`description`/`descriptionEn`，某一字段的说明要么两种语言都有，要么都没有），展示 chrome 文案由 client half 拥有。稳定 REPL 指引不承载 UI 品牌名。启用且会话选择当前 `ptc` 或旧 Host `code` preset 时，`conversation.session.header.actions` 以稳定 id `ptc-plus-active` 显示原有的简洁 `PTC Plus` 标识；当前 session projection 与旧顶层字段冲突时以前者为准。关闭时不注入任何 PTC 指引或工具 surface。
 

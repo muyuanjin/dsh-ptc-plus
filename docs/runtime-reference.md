@@ -47,7 +47,7 @@ The configuration uses `ptc-plus` as the DSH plugin ID and `dsh-ptc-plus` as the
 
 `enhancedToolView` defaults to `true` and controls only the browser presentation of `run_code` and `edit_run_code`. Turning it off unregisters PTC Plus's keyed tool views so DSH's native generic row renders the calls; turning it on restores the compatibility renderer without changing execution, prompt, or session behavior.
 
-`autoDescribeRunCode` defaults to `false`. When enabled, the projected schema permits an omitted outer `run_code.description` and a fixed UI-only summary is added through presentation metadata; the original call arguments, existing summaries, cell source, and nested native-tool JSON remain unchanged. When disabled, DSH continues to enforce the required outer field.
+`autoDescribeRunCode` defaults to `true`. When the outer `run_code.description` is missing, the projected schema permits the call, the execution bridge derives the fixed summary required by the DSH validator, and only presentation metadata persists that UI-only summary. The original call arguments, existing summaries, cell source, and nested native-tool JSON remain unchanged. When disabled, DSH continues to enforce the required outer field.
 
 ```yaml
 - id: ptc-plus
@@ -55,24 +55,24 @@ The configuration uses `ptc-plus` as the DSH plugin ID and `dsh-ptc-plus` as the
   config:
     enabled: true
     enhancedToolView: true
+    canonicalizeToolCalls: true
+    autoDescribeRunCode: true
+    looseTopLevelRedeclarations: true
+    autoRewriteImports: true
+    autoStripExports: true
+    autoSplitRedeclarations: true
+    durableReplay: true
+    tipsEnabled: true
     cordisToolsEnabled: false
-    autoDescribeRunCode: false
     computeMs: 60000
     maxWallMs: 600000
-    maxOutputBytes: 67108864
     maxOldGenerationSizeMb: 512
+    maxNestedRunCodeDepth: 8
+    maxOutputBytes: 67108864
     maxValueNodes: 100000
     maxValueEdges: 1000000
     maxValueArrayLength: 1000000
     maxValueBigIntDigits: 100000
-    maxNestedRunCodeDepth: 8
-    canonicalizeToolCalls: true
-    looseTopLevelRedeclarations: true
-    durableReplay: true
-    autoRewriteImports: true
-    autoStripExports: true
-    autoSplitRedeclarations: true
-    tipsEnabled: true
     tipCooldownMessages: 3
     tipEscalationFailures: 2
 ```

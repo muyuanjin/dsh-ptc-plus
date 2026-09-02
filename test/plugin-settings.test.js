@@ -1217,23 +1217,56 @@ test('rolls back consecutive failed Cordis updates to the committed configuratio
 })
 
 test('config schema defaults expose the settings switches', async () => {
-  const standaloneSwitches = CONFIG_FIELDS.slice(1, 4)
+  const expectedOrder = [
+    'enabled',
+    'enhancedToolView',
+    'canonicalizeToolCalls',
+    'autoDescribeRunCode',
+    'looseTopLevelRedeclarations',
+    'autoRewriteImports',
+    'autoStripExports',
+    'autoSplitRedeclarations',
+    'durableReplay',
+    'tipsEnabled',
+    'cordisToolsEnabled',
+    'computeMs',
+    'maxWallMs',
+    'maxOldGenerationSizeMb',
+    'maxNestedRunCodeDepth',
+    'maxOutputBytes',
+    'maxValueNodes',
+    'maxValueEdges',
+    'maxValueArrayLength',
+    'maxValueBigIntDigits',
+    'tipCooldownMessages',
+    'tipEscalationFailures',
+  ]
+  assert.deepEqual(CONFIG_FIELDS.map(field => field.key), expectedOrder)
+  const firstInteger = CONFIG_FIELDS.findIndex(field => field.type === 'integer')
+  assert.ok(CONFIG_FIELDS.slice(0, firstInteger).every(field => field.type === 'boolean'))
+  assert.ok(CONFIG_FIELDS.slice(firstInteger).every(field => field.type === 'integer'))
+
+  const featuredSwitches = CONFIG_FIELDS.filter(field => [
+    'enhancedToolView',
+    'autoDescribeRunCode',
+    'cordisToolsEnabled',
+  ].includes(field.key))
   assert.deepEqual(
-    standaloneSwitches.map(field => field.key),
-    ['enhancedToolView', 'cordisToolsEnabled', 'autoDescribeRunCode'],
+    featuredSwitches.map(field => field.key),
+    ['enhancedToolView', 'autoDescribeRunCode', 'cordisToolsEnabled'],
   )
   const displayWidth = value => Array.from(value).reduce(
     (width, character) => width + (character.codePointAt(0) <= 0xff ? 1 : 2),
     0,
   )
   for (const property of ['label', 'labelEn', 'description', 'descriptionEn']) {
-    const widths = standaloneSwitches.map(field => displayWidth(field[property]))
+    const widths = featuredSwitches.map(field => displayWidth(field[property]))
     assert.ok(widths.every((width, index) => index === 0 || widths[index - 1] <= width))
   }
   const defaults = await Config['~standard'].validate({})
   assert.equal(defaults.value.enabled, true)
   assert.equal(defaults.value.enhancedToolView, true)
-  assert.equal(defaults.value.autoDescribeRunCode, false)
+  assert.equal(defaults.value.autoDescribeRunCode, true)
   assert.equal(defaults.value.cordisToolsEnabled, false)
   const invalid = await Config['~standard'].validate({ enabled: 'yes' })
   assert.equal(invalid.issues[0].path[0], 'enabled')

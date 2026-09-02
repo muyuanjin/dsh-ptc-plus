@@ -1,6 +1,7 @@
 import {
   foldSessionTimeline,
 } from './session-journal.js'
+import { sessionEvents } from './session-events.js'
 
 const SYSTEM_PROMPT_PLUGIN = '@deepseek-ai/dsh-system-prompt'
 
@@ -43,7 +44,7 @@ function cordisTranscriptFacts(timeline) {
 
 /** Project session events into immutable facts consumed by prompt presentation. */
 export function projectSessionLog(agent, requestedEdit) {
-  const events = agent?.session?.events
+  const events = sessionEvents(agent?.session)
   if (!Array.isArray(events)) {
     return Object.freeze({
       openTurn: false,

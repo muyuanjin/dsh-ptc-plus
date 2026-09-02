@@ -306,6 +306,22 @@ test('resolves the unique unpaired live named tool call event', () => {
   )
 })
 
+test('reads the current snapshotEvents session API and keeps the legacy events fallback', () => {
+  const events = [
+    { seq: 0, type: 'turn/start', data: { turn: 1 } },
+    callEvent(1, 'current-api', 'return 1'),
+    resultEvent(1, journal()),
+    callEvent(3, 'current-api', 'return 2'),
+  ]
+  const current = {
+    snapshotEvents: () => Object.freeze([...events]),
+  }
+  assert.equal(liveToolCallSeq(current, 'current-api', 'run_code'), 3)
+  assert.equal(projectSessionLog({ session: current }).latestRun.callSeq, 1)
+  assert.equal(recoverJournal(current).nodes.length, 1)
+  assert.equal(liveToolCallSeq({ events }, 'current-api', 'run_code'), 3)
+})
+
 test('requires one complete target-linked relation for derived edit replay', () => {
   const runCall = callEvent(1, 'run', 'let edited = 1')
   const editCall = {

@@ -1,6 +1,7 @@
 import { decodeValue, encodeValue, normalizeValueWire } from './value-wire.js'
 import { normalizeDiagnostic } from './diagnostic.js'
 import { assertOwnFields, isRecord } from './record-utils.js'
+import { sessionEvents } from './session-events.js'
 
 export const JOURNAL_KEY = 'dshPtcPlus'
 export const EDIT_TARGET_KEY = 'dshPtcPlusEdit'
@@ -365,7 +366,7 @@ export function migrateRecoveryBoundaryEvents(events) {
 
 /** Resolve the persisted event identity for one named tool call being dispatched. */
 export function liveToolCallSeq(session, callId, toolName) {
-  const events = session?.events
+  const events = sessionEvents(session)
   if (!Array.isArray(events) || typeof callId !== 'string' || callId.length === 0
     || typeof toolName !== 'string' || toolName.length === 0) return undefined
 
@@ -741,7 +742,7 @@ export function foldSessionTimeline(events) {
 
 /** Fold the session log into the last exactly replayable frontier. */
 export function recoverJournal(session, currentCallSeq, options = {}) {
-  const events = session?.events
+  const events = sessionEvents(session)
   if (!Array.isArray(events)) {
     return { nodes: [], head: undefined, checkpoints: new Map(), volatileSuffix: [], available: true }
   }

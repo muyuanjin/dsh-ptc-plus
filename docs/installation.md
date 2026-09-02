@@ -23,7 +23,7 @@ The optional `cordisToolsEnabled` integration requires the current DSH installat
 Use this form after the selected version is available from the npm registry:
 
 ```sh
-dsh plugin --profile <profile> add dsh-ptc-plus@0.2.4
+dsh plugin --profile <profile> add dsh-ptc-plus@0.3.0
 dsh --profile <profile> --dump-config
 ```
 
@@ -60,7 +60,7 @@ pnpm dsh --profile <profile> --dump-config
 
 ```sh
 npm pack
-dsh plugin --profile <profile> add /absolute/path/to/dsh-ptc-plus-0.2.4.tgz
+dsh plugin --profile <profile> add /absolute/path/to/dsh-ptc-plus-0.3.0.tgz
 dsh --profile <profile> --dump-config
 ```
 
@@ -76,6 +76,8 @@ To test this checkout in a separate DSH installation, double-click `scripts\run-
 
 The default cache is `%LOCALAPPDATA%\dsh-ptc-plus-dev`. It contains the isolated `DSH_HOME`, DSH installations, immutable plugin snapshots, and a pnpm store. Only the newest three DSH versions and plugin snapshots are retained, and the dedicated pnpm store is pruned after each install. Set `DSH_DEV_CACHE` to move the cache, `DSH_DEV_PROFILE` to change the profile name, `DSH_DEV_VERSION` to select another npm dist-tag or version, `DSH_DEV_PORT` to choose a fixed Web port, or `DSH_DEV_MAX_VERSIONS` to change the retention count (1-10).
 
+The Windows launchers normalize the process, machine, and user `PATH` values in memory, remove duplicate entries, and add the Node/cache directories they need. They do not create drive mappings, junction trees, or persistent environment changes. If a genuinely unique PATH is still too long for `cmd.exe`, the launcher stops before npm or DSH runs and asks you to shorten the relevant PATH value.
+
 ## DSH Desktop
 
 On Windows or macOS, choose **Open DSH Terminal** from the Desktop tray. Bare commands in that terminal target the active profile:
@@ -85,4 +87,4 @@ dsh plugin add github:muyuanjin/dsh-ptc-plus#main
 dsh --dump-config
 ```
 
-After an npm release, the package spec may instead be `dsh-ptc-plus@0.2.4`. For a local package, use its absolute tarball path. Restart DSH Desktop after installation. Linux Desktop is not a current DSH Desktop release target; use DSH CLI/Web on Linux.
+After an npm release, the package spec may instead be `dsh-ptc-plus@0.3.0`. For a local package, use its absolute tarball path. Restart DSH Desktop after installation. Linux Desktop is not a current DSH Desktop release target; use DSH CLI/Web on Linux.

@@ -29,13 +29,10 @@ function Invoke-ExternalCommand {
         [string[]] $ArgumentList
     )
 
-    $commandState = [pscustomobject]@{ ExitCode = 0 }
-    Invoke-WithWindowsPathOverlay {
-        & $FilePath @ArgumentList
-        $commandState.ExitCode = $LASTEXITCODE
-    }
-    if ($commandState.ExitCode -ne 0) {
-        throw "Command failed with exit code $($commandState.ExitCode)`: $FilePath $($ArgumentList -join ' ')"
+    & $FilePath @ArgumentList
+    $exitCode = $LASTEXITCODE
+    if ($exitCode -ne 0) {
+        throw "Command failed with exit code $exitCode`: $FilePath $($ArgumentList -join ' ')"
     }
 }
 

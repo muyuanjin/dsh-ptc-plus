@@ -32,13 +32,10 @@ function Invoke-ExternalCommand {
         [string[]] $ArgumentList
     )
 
-    $commandState = [pscustomobject]@{ ExitCode = 0 }
-    Invoke-WithWindowsPathOverlay {
-        & $FilePath @ArgumentList
-        $commandState.ExitCode = $LASTEXITCODE
-    }
-    if ($commandState.ExitCode -ne 0) {
-        throw "Command failed with exit code $($commandState.ExitCode)`: $FilePath $($ArgumentList -join ' ')"
+    & $FilePath @ArgumentList
+    $exitCode = $LASTEXITCODE
+    if ($exitCode -ne 0) {
+        throw "Command failed with exit code $exitCode`: $FilePath $($ArgumentList -join ' ')"
     }
 }
 
@@ -101,13 +98,8 @@ function Get-NpmPackageVersion {
     )
 
     try {
-        $commandState = [pscustomobject]@{ ExitCode = 0 }
-        $raw = Invoke-WithWindowsPathOverlay {
-            $output = & $NpmPath view $PackageSpec version --json 2>&1
-            $commandState.ExitCode = $LASTEXITCODE
-            $output
-        }
-        if ($commandState.ExitCode -ne 0) {
+        $raw = & $NpmPath view $PackageSpec version --json 2>&1
+        if ($LASTEXITCODE -ne 0) {
             throw "npm view failed: $($raw -join ' ')"
         }
 
@@ -118,9 +110,6 @@ function Get-NpmPackageVersion {
         }
         return $version.Trim()
     } catch {
-        if ($_.Exception.Data['DshPtcPlusPathOverlayCleanup'] -eq $true) {
-            throw
-        }
         if (Test-Path -LiteralPath $FallbackVersionFile -PathType Leaf) {
             $cachedLines = @(Get-Content -LiteralPath $FallbackVersionFile)
             if ($cachedLines.Count -ge 2) {
@@ -196,11 +185,7 @@ if ($null -eq $npmCommand -or $null -eq $nodeCommand) {
 $npmPath = Get-ExecutablePath $npmCommand
 $nodePath = Get-ExecutablePath $nodeCommand
 $nodeDirectory = Split-Path -Parent $nodePath
-if (-not [string]::IsNullOrWhiteSpace($nodeDirectory)) {
-    $env:Path = $nodeDirectory + [IO.Path]::PathSeparator + $env:Path
-}
-$env:PATH = $env:Path
-[Environment]::SetEnvironmentVariable('Path', $env:Path, 'Process')
+Import-LatestWindowsPath -Prepend @($nodeDirectory)
 # Prefer npm.cmd so native install scripts inherit Windows command semantics,
 # even when PowerShell's npm.ps1 shim wins command resolution.
 $npmCmdCandidate = Join-Path $nodeDirectory 'npm.cmd'
@@ -235,9 +220,7 @@ if (Test-Path -LiteralPath (Join-Path $binRoot 'node.cmd') -PathType Leaf) {
     Remove-Item -LiteralPath (Join-Path $binRoot 'node.cmd') -Force
 }
 Set-Content -LiteralPath $npmShim -Encoding ASCII -Value "@echo off`r`ncall `"$npmPath`" %*`r`n"
-$env:Path = $binRoot + [IO.Path]::PathSeparator + $env:Path
-$env:PATH = $env:Path
-[Environment]::SetEnvironmentVariable('Path', $env:Path, 'Process')
+Import-LatestWindowsPath -Prepend @($binRoot, $nodeDirectory)
 
 $cachedVersionFile = Join-Path $cacheRoot 'dsh-version.txt'
 $packageSpec = "@deepseek-ai/dsh@$versionSpec"
@@ -300,9 +283,6 @@ if ($null -ne $corepackCommand) {
     }
     Set-Content -LiteralPath $pnpmShim -Encoding ASCII -Value "@echo off`r`ncall `"$nodePath`" `"$pnpmEntrypoint`" --store-dir `"$pnpmStore`" %*`r`n"
 }
-$env:Path = $binRoot + [IO.Path]::PathSeparator + $env:Path
-$env:PATH = $env:Path
-[Environment]::SetEnvironmentVariable('Path', $env:Path, 'Process')
 
 $stagingDirectory = Join-Path ([IO.Path]::GetTempPath()) ("dsh-ptc-plus-pack-" + [Guid]::NewGuid().ToString('N'))
 $snapshotFile = $null
@@ -382,9 +362,5 @@ if ($ProfileName -eq 'web' -and -not ($launchArguments | Where-Object { $_ -eq '
     $launchArguments += @('--port', $configuredPort)
     Write-Host "Using Web port $configuredPort."
 }
-$launchState = [pscustomobject]@{ ExitCode = 0 }
-Invoke-WithWindowsPathOverlay {
-    & $dshCommandPath @launchArguments
-    $launchState.ExitCode = $LASTEXITCODE
-}
-exit $launchState.ExitCode
+& $dshCommandPath @launchArguments
+exit $LASTEXITCODE

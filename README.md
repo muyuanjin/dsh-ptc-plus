@@ -160,7 +160,7 @@ dsh --profile <profile> --dump-config
 
 安装后重启对应的 DSH profile。固定 npm 版本、GitHub、本地 checkout 和 tarball 安装方式见[安装指南](docs/installation.md)。
 
-Windows 开发时可双击 `scripts\run-dev-dsh.cmd` 启动一个独立的 DSH alpha 最新版并只安装本插件。脚本会缓存 DSH、插件快照和 pnpm 依赖，仅在版本或源码内容变化时更新，并自动清理旧缓存；Web 未指定端口时会自动选择空闲回环端口，不会因 3080 被占用而失败。缓存默认位于 `%LOCALAPPDATA%\dsh-ptc-plus-dev`，不会写入本仓库。详细选项见[安装指南](docs/installation.md)。
+Windows 开发时可双击 `scripts\run-dev-dsh.cmd` 启动一个独立的 DSH alpha 最新版并只安装本插件。脚本会缓存 DSH、插件快照和 pnpm 依赖，仅在版本或源码内容变化时更新，并自动清理旧缓存；它会在当前进程内去重 Windows `PATH`，不会创建盘符映射、目录联接或修改系统环境；如果去重后仍超过 `cmd.exe` 限制，会在运行 npm/DSH 前直接提示缩短 PATH。Web 未指定端口时会自动选择空闲回环端口，不会因 3080 被占用而失败。缓存默认位于 `%LOCALAPPDATA%\dsh-ptc-plus-dev`，不会写入本仓库。详细选项见[安装指南](docs/installation.md)。
 
 `danger-full-access` 是首要支持方式。worker 只隔离生命周期，不隔离恶意代码。
 

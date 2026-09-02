@@ -3,15 +3,25 @@ import { AsyncLocalStorage } from 'node:async_hooks'
 import { access, rm } from 'node:fs/promises'
 import { isAbsolute } from 'node:path'
 import test from 'node:test'
-import { defineTool } from '@deepseek-ai/dsh-tools'
-import { Config } from '../index.js'
+import { Context as CordisContext } from '@deepseek-ai/cordis'
+import { createScope } from '@deepseek-ai/dsh-scope'
+import { SystemPrompt } from '@deepseek-ai/dsh-system-prompt'
+import { ToolRuntime, defineTool } from '@deepseek-ai/dsh-tools'
+import { snapshotJsonValue } from '@deepseek-ai/dsh-util-values'
+import { Config, apply } from '../index.js'
 import { CONFIG_DEFAULTS } from '../internal/config-spec.js'
 import { createDirectSurfaceOwner } from '../internal/direct-surface-owner.js'
 import { normalizeJournal } from '../internal/session-journal.js'
 import { projectSessionLog } from '../internal/session-log-view.js'
 import { SessionRuntime } from '../internal/session-runtime.js'
 import { decodeValue, encodeValue, renderValueWire } from '../internal/value-wire.js'
-import { JOURNAL_POLICY, appendRunCodeEvents, fixture, ptcAgent } from './plugin-fixture.js'
+import {
+  JOURNAL_POLICY,
+  appendOnlySession,
+  appendRunCodeEvents,
+  fixture,
+  ptcAgent,
+} from './plugin-fixture.js'
 
 test('canonicalizes proven native miscalls while declared edit calls keep their identity', async (t) => {
   const readSchema = {
@@ -203,7 +213,7 @@ test('canonicalizes proven native miscalls while declared edit calls keep their 
   })
 })
 
-test('derives missing run_code descriptions by default and preserves the strict opt-out', async (t) => {
+test('derives missing run_code descriptions locally without changing the required schema', async (t) => {
   const session = { id: 'description-policy-session', events: [] }
   let validatedArguments
   const strictRunCode = defineTool({
@@ -233,7 +243,7 @@ test('derives missing run_code descriptions by default and preserves the strict 
     }
     const projected = await state.assemble(assembly, { agent, scope: agent, signal })
     const runSchema = projected.tools.find(tool => tool.name === 'run_code')
-    assert.equal(runSchema.parameters.required.includes('description'), !enabled)
+    assert.equal(runSchema.parameters.required.includes('description'), true)
     const execute = state.listeners.get('tools/execute')[0]
     const exec = {
       name: 'run_code', callId: `missing-description-${enabled}`,
@@ -268,10 +278,7 @@ test('derives missing run_code descriptions by default and preserves the strict 
           }
         : undefined,
     )
-    assert.equal(
-      result.meta?.dshPtcPlusRunCodeDescription,
-      enabled ? 'Execute the next TypeScript cell in this session' : undefined,
-    )
+    assert.equal(result.meta?.dshPtcPlusRunCodeDescription, undefined)
     if (!enabled) {
       assert.match(result.additionalContexts?.[0]?.text ?? '', /outer transport arguments.*nested inside a native-tool argument/)
     }
@@ -295,11 +302,9 @@ test('keeps generated run_code summaries in the supported success presentation p
     name: 'run_code', callId: 'generated-description-success-call',
     arguments: { code: 'return 1' }, agent, signal,
   }
-  const result = await execute(exec, async () => ({ isError: false, value: 1 }))
-  assert.equal(
-    result.meta.dshPtcPlusRunCodeDescription,
-    'Execute the next TypeScript cell in this session',
-  )
+  const canonicalResult = { isError: false, value: 1 }
+  const result = await execute(exec, async () => canonicalResult)
+  assert.equal(result, canonicalResult)
   const persistedMeta = state.runCodeDefinition.output.presentationMeta(exec.arguments, 1)
   assert.equal(
     persistedMeta.dshPtcPlusRunCodeDescription,
@@ -347,6 +352,7 @@ test('pins auto-description behavior to the request assembly despite live settin
       },
     }],
   }
+  const modelRequests = []
   for (const initiallyEnabled of [true, false]) {
     const runtimeConfig = { ...CONFIG_DEFAULTS, autoDescribeRunCode: initiallyEnabled }
     const owner = createDirectSurfaceOwner({
@@ -363,10 +369,13 @@ test('pins auto-description behavior to the request assembly despite live settin
     const agent = { id: `description-race-${initiallyEnabled}` }
     const signal = new AbortController().signal
     const projected = await owner.assemble(assembly, { agent, signal }, async () => assembly)
-    assert.equal(
-      projected.tools[0].parameters.required.includes('description'),
-      !initiallyEnabled,
-    )
+    assert.equal(projected.tools[0].parameters.required.includes('description'), true)
+    modelRequests.push(JSON.stringify({
+      tools: projected.tools,
+      sections: projected.sections,
+      contexts: projected.contexts,
+      variables: projected.variables,
+    }))
 
     owner.reconfigure({ ...runtimeConfig, autoDescribeRunCode: !initiallyEnabled })
     const exec = {
@@ -385,17 +394,119 @@ test('pins auto-description behavior to the request assembly despite live settin
       executionArguments.description,
       initiallyEnabled ? 'Execute the next TypeScript cell in this session' : undefined,
     )
-    const result = owner.argumentDiagnostic(exec, { isError: false })
-    assert.equal(
-      result.meta?.dshPtcPlusRunCodeDescription,
-      initiallyEnabled ? 'Execute the next TypeScript cell in this session' : undefined,
-    )
+    const canonicalResult = { isError: false }
+    assert.equal(owner.argumentDiagnostic(exec, canonicalResult), canonicalResult)
 
     const explicitArguments = { code: 'return 2', description: 'Keep this summary' }
     const explicitExec = { ...exec, arguments: explicitArguments }
     assert.equal(owner.executionArguments(explicitExec), explicitArguments)
     assert.equal(explicitExec.arguments, explicitArguments)
   }
+  assert.equal(modelRequests[0], modelRequests[1])
+})
+
+test('preserves canonical run_code results through the real DSH ToolRuntime pipeline', async (t) => {
+  const ctx = new CordisContext()
+  new SystemPrompt(ctx, {
+    includeHarnessIdentity: false,
+    includeRuntimeContext: false,
+    persona: '',
+    toolOrder: undefined,
+  })
+  ctx.provide('codeRuntime', {
+    language: 'typescript',
+    isolation: 'worker-thread',
+    async run() { return { logs: ['upstream'], value: 'upstream' } },
+  })
+  new ToolRuntime(ctx, { mode: 'ptc' })
+  let echoCalls = 0
+  ctx.tools.register(defineTool({
+    name: 'echo',
+    description: 'Echo a value.',
+    parameters: { value: { type: 'string', required: true } },
+    output: {
+      schema: { type: 'string' },
+      render: (_args, value) => [{ type: 'text', text: value }],
+    },
+    async execute({ value }) {
+      echoCalls += 1
+      return value
+    },
+  }))
+  await apply(ctx, { computeMs: 500, maxWallMs: 2_000, maxOldGenerationSizeMb: 64 })
+
+  const session = appendOnlySession('real-tool-runtime')
+  const agent = { id: 'real-tool-runtime-agent', session }
+  const agentScope = createScope(ctx, agent)
+  agent.ctx = agentScope.ctx
+  t.after(async () => {
+    await agentScope.dispose()
+    await ctx.fiber.dispose()
+  })
+  const signal = new AbortController().signal
+  await ctx.systemPrompt.assemble({ agent, scope: agent, signal })
+
+  const executeRunCode = async (callId, args) => {
+    const call = session.append('tool/call', {
+      turn: 1,
+      step: 1,
+      callId,
+      name: 'run_code',
+      arguments: JSON.stringify(args),
+    })
+    const result = await ctx.tools.execute({
+      name: 'run_code',
+      callId,
+      arguments: args,
+      signal,
+      agent,
+    })
+    session.append('tool/result', {
+      turn: 1,
+      step: 1,
+      message: {
+        id: `message-${callId}`,
+        role: 'tool',
+        source: { kind: 'tool', callId },
+        content: [{ type: 'tool-result', toolCallId: callId, content: result.content }],
+      },
+      ...(result.meta === undefined ? {} : { meta: result.meta }),
+    }, { sourceEventSeqs: [call.seq] })
+    return result
+  }
+
+  const explicit = await executeRunCode('explicit-description', {
+    code: 'const echoed = await tools.echo({ value: "ok" })\nreturn echoed',
+    description: 'Echo through the persistent REPL',
+  })
+  assert.equal(explicit.isError, false)
+  assert.equal(echoCalls, 1)
+  assert.deepEqual(explicit.value, { logs: [], result: 'ok' })
+  assert.notEqual(snapshotJsonValue(explicit.meta), undefined)
+  assert.equal(normalizeJournal(explicit.meta.dshPtcPlus).status, 'durable')
+  assert.deepEqual(
+    explicit.meta.dshPtcPlusBindings.memory.entries.map(entry => entry.name),
+    ['echoed'],
+  )
+
+  const checkpoint = await executeRunCode('confirmed-checkpoint', {
+    code: 'return await repl.state({ action: "save", name: "confirmed" })',
+    description: 'Save the confirmed durable state',
+  })
+  assert.equal(checkpoint.isError, false)
+  assert.deepEqual(normalizeJournal(checkpoint.meta.dshPtcPlus).operations, [
+    { action: 'save', name: 'confirmed' },
+  ])
+
+  const generated = await executeRunCode('generated-description', {
+    code: 'return echoed',
+  })
+  assert.equal(generated.isError, false)
+  assert.equal(generated.value.result, 'ok')
+  assert.equal(
+    generated.meta.dshPtcPlusRunCodeDescription,
+    'Execute the next TypeScript cell in this session',
+  )
 })
 
 test('rejects a later native assembly without changing the captured code request', async (t) => {

@@ -35,8 +35,8 @@ export const CONFIG_FIELDS = Object.freeze([
     default: true,
     label: '自动补全缺失的 run_code 摘要',
     labelEn: 'Auto-fill missing run_code summaries',
-    description: '缺少外层摘要时生成固定的 UI 摘要；原始调用参数、已有摘要、代码和嵌套 native 工具参数保持不变。',
-    descriptionEn: 'Adds a fixed UI summary when the outer summary is missing; original call arguments, existing summaries, code, and nested native-tool arguments remain unchanged.',
+    description: '执行时宽容缺少外层摘要的 run_code 调用并生成固定 UI 摘要；不改变模型请求、原始调用参数、代码或嵌套 native 工具参数。',
+    descriptionEn: 'Tolerates a missing outer run_code summary during execution and generates a fixed UI summary without changing the model request, original call arguments, code, or nested native-tool arguments.',
   },
   {
     key: 'canonicalizeToolCalls',

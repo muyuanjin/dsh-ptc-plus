@@ -27,8 +27,8 @@
       default: true,
       label: "\u81EA\u52A8\u8865\u5168\u7F3A\u5931\u7684 run_code \u6458\u8981",
       labelEn: "Auto-fill missing run_code summaries",
-      description: "\u7F3A\u5C11\u5916\u5C42\u6458\u8981\u65F6\u751F\u6210\u56FA\u5B9A\u7684 UI \u6458\u8981\uFF1B\u539F\u59CB\u8C03\u7528\u53C2\u6570\u3001\u5DF2\u6709\u6458\u8981\u3001\u4EE3\u7801\u548C\u5D4C\u5957 native \u5DE5\u5177\u53C2\u6570\u4FDD\u6301\u4E0D\u53D8\u3002",
-      descriptionEn: "Adds a fixed UI summary when the outer summary is missing; original call arguments, existing summaries, code, and nested native-tool arguments remain unchanged."
+      description: "\u6267\u884C\u65F6\u5BBD\u5BB9\u7F3A\u5C11\u5916\u5C42\u6458\u8981\u7684 run_code \u8C03\u7528\u5E76\u751F\u6210\u56FA\u5B9A UI \u6458\u8981\uFF1B\u4E0D\u6539\u53D8\u6A21\u578B\u8BF7\u6C42\u3001\u539F\u59CB\u8C03\u7528\u53C2\u6570\u3001\u4EE3\u7801\u6216\u5D4C\u5957 native \u5DE5\u5177\u53C2\u6570\u3002",
+      descriptionEn: "Tolerates a missing outer run_code summary during execution and generates a fixed UI summary without changing the model request, original call arguments, code, or nested native-tool arguments."
     },
     {
       key: "canonicalizeToolCalls",

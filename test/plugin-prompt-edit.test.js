@@ -293,7 +293,7 @@ test('immutably adapts the model-visible run_code schema', async (t) => {
   assert.deepEqual(adapted.tools[1].annotation, { retained: true })
   assert.equal(adapted.tools[1].parameters.additionalProperties, false)
   assert.equal(adapted.tools[1].parameters.comment, 'retained')
-  assert.deepEqual(adapted.tools[1].parameters.required, ['code'])
+  assert.deepEqual(adapted.tools[1].parameters.required, ['code', 'description'])
   assert.equal(adapted.tools[1].parameters.properties.code.minLength, 0)
   assert.equal(adapted.tools[1].parameters.properties.description.maxLength, 80)
 })

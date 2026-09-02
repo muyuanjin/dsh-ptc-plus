@@ -18,7 +18,7 @@ const RUN_CODE_DESCRIPTION_DESCRIPTION = 'Short active-voice summary of what thi
 const CODE_TRANSPORT_INSTRUCTION = '`run_code` and `edit_run_code` are the only tools callable directly. Call every native tool declared by the SDK from inside a program.'
 const PTC_COLLAPSE_SECTION_NAMES = Object.freeze(['tools:ptc-only', 'tools:code-only'])
 
-function adaptRunCodeSchema(tool, allowMissingDescription = false) {
+function adaptRunCodeSchema(tool) {
   const parameters = tool.parameters
   const properties = isRecord(parameters) ? parameters.properties : undefined
   const code = isRecord(properties) ? properties.code : undefined
@@ -33,9 +33,6 @@ function adaptRunCodeSchema(tool, allowMissingDescription = false) {
     description: RUN_CODE_TOOL_DESCRIPTION,
     parameters: {
       ...parameters,
-      ...(allowMissingDescription && Array.isArray(parameters.required)
-        ? { required: parameters.required.filter(name => name !== 'description') }
-        : {}),
       properties: {
         ...properties,
         code: { ...code, description: RUN_CODE_CODE_DESCRIPTION },
@@ -277,7 +274,7 @@ export function createDirectSurfaceOwner({
       let directTools = tools
       if (sessionPtcProjection) {
         editTransport.ensureInstalled(agent)
-        directTools = [adaptRunCodeSchema(runCode, autoDescribeRunCode), editRunCodeSchema()]
+        directTools = [adaptRunCodeSchema(runCode), editRunCodeSchema()]
       }
       const runtimeContexts = sessionPtc
         ? sessionRuntimeContexts(agent, tipConfig, {
@@ -320,7 +317,7 @@ export function createDirectSurfaceOwner({
         tools: sessionPtcProjection
           ? directTools
           : directTools.map(tool => tool?.name === RUN_CODE
-            ? adaptRunCodeSchema(tool, autoDescribeRunCode)
+            ? adaptRunCodeSchema(tool)
             : tool),
         sections,
         contexts,
@@ -371,15 +368,13 @@ export function createDirectSurfaceOwner({
       return generatedRunCodeExecutionArguments(originalArguments)
     },
     argumentDiagnostic(exec, result) {
-      let diagnosed = result
-      if (result !== null && typeof result === 'object') {
-        const meta = generatedRunCodeDescriptionMeta(exec.arguments, result.meta)
-        diagnosed = {
-          ...result,
-          ...(meta === undefined ? {} : { meta }),
-        }
-      }
-      if (exec?.name !== RUN_CODE || diagnosed?.isError !== true) return diagnosed
+      // DSH uses success-result identity to avoid re-running output projectors
+      // after this middleware's settlement scope has ended.
+      if (exec?.name !== RUN_CODE || result?.isError !== true) return result
+      const meta = generatedRunCodeDescriptionMeta(exec.arguments, result.meta)
+      const diagnosed = meta === result.meta
+        ? result
+        : { ...result, ...(meta === undefined ? {} : { meta }) }
       const missingPath = missingDescriptionPath(diagnosed.error)
       if (missingPath === undefined) return diagnosed
       const id = sessionId(exec.agent)

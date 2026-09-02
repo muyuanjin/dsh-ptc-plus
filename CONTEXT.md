@@ -56,7 +56,7 @@ DSH 原生 tool guidance 与 typed SDK 保持 owner 提供的内容。PTC Plus �
 ## 设置 UI
 
 PTC Plus 注册 `ptc-plus` settings namespace，字段来源于 `internal/config-spec.js`，client half 通过 `settings.plugin.item` 卡片暴露全部配置。`enhancedToolView` 默认开启且只影响 Client 展示：开启时通过公共 keyed tool-view surface 组合可用的 DSH primitive，缺少某项 primitive 时使用插件自有的等价降级；关闭时注销 keyed view 并交还 DSH 原生 generic row。两种路径都不改变工具、prompt、runtime 或 session 语义。
-`autoDescribeRunCode` 默认开启且只影响 run_code 的 schema 投影与展示摘要：外层摘要缺失时，投影允许调用并在执行桥内部派生 DSH 参数校验所需的固定摘要，该摘要的持久副本仅进入 presentation metadata；关闭时维持 DSH 原生 required 字段。两种路径都原样保留原始调用参数，且不改变代码、native 工具参数、权限、journal 或 session 语义。
+`autoDescribeRunCode` 默认开启且只控制本地执行宽容度：无论开关状态如何，模型请求中的 run_code schema、tool order 和 system sections 都保持字节稳定，包括 DSH 原生 required `description` 字段。开启时，外层摘要缺失的调用只在执行桥内部使用派生参数通过 DSH 校验，固定摘要的持久副本仅进入 presentation metadata；关闭时保留 DSH 原生严格校验。两种路径都原样保留原始调用参数，且不改变代码、native 工具参数、权限、journal 或 session 语义。
 设置卡片按常用与兼容性、可选能力、高级行为和资源限制分区；需要主动决策的开关位于高级策略与数值限制之前。
 `enabled` 是 kill switch：关闭时宿主只保留 settings 注册和设置卡片，不安装 runtime、hook、tool surface 或 prompt section；
 关闭状态不产生 `run_code`/`edit_run_code` 模型表面，设置卡片只允许操作 `enabled`。所有配置字段都由 settings watch 即时生效；运行时 owner 更新配置时保留已有 session-bound REPL、binding、journal 和 native DSH authority，失败则回滚到上一个已应用配置。已提交的 cell 在完整生命周期内绑定提交时的同一份配置，更新后的限额和策略用于随后提交的 cell，不能让一次执行混用两个配置代际。Node worker 的 V8 old-generation 上限在创建时固定，因此活动 worker 存在时修改该字段会明确失败并回滚，而不会静默报告为已应用。

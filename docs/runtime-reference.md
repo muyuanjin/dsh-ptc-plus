@@ -47,7 +47,7 @@ The configuration uses `ptc-plus` as the DSH plugin ID and `dsh-ptc-plus` as the
 
 `enhancedToolView` defaults to `true` and controls only the browser presentation of `run_code` and `edit_run_code`. Turning it off unregisters PTC Plus's keyed tool views so DSH's native generic row renders the calls; turning it on restores the compatibility renderer without changing execution, prompt, or session behavior.
 
-`autoDescribeRunCode` defaults to `true`. When the outer `run_code.description` is missing, the projected schema permits the call, the execution bridge derives the fixed summary required by the DSH validator, and only presentation metadata persists that UI-only summary. The original call arguments, existing summaries, cell source, and nested native-tool JSON remain unchanged. When disabled, DSH continues to enforce the required outer field.
+`autoDescribeRunCode` defaults to `true`. When the outer `run_code.description` is missing, the execution bridge derives the fixed summary only for local DSH validation, and presentation metadata alone persists that UI-only summary. The original call arguments, existing summaries, cell source, and nested native-tool JSON remain unchanged. Toggling the setting does not change the model-visible tool schema, tool order, or system sections: both states retain DSH's native required `description` declaration. When disabled, DSH continues to enforce the required outer field.
 
 ```yaml
 - id: ptc-plus

@@ -13,7 +13,7 @@ Host half 通过 DSH 公共 `settings` 服务注册命名空间 `ptc-plus`。字
 | --- | --- | --- |
 | 开关 | `enabled` | 关闭后不注册 `run_code`/`edit_run_code`、不修改 system prompt、不创建 session runtime；只保留设置 UI。 |
 | 展示 | `enhancedToolView` | 默认开启；关闭后注销 PTC Plus 的两个 keyed tool view，恢复 DSH 原生 generic row。 |
-| 常用与兼容性 | `autoDescribeRunCode` / `canonicalizeToolCalls` | 默认开启；为缺少外层摘要的 `run_code` 请求生成固定 UI 摘要，并修复 schema 可唯一确认的顶层 native 工具误调用。 |
+| 常用与兼容性 | `autoDescribeRunCode` / `canonicalizeToolCalls` | 默认开启；在本地执行时宽容缺少外层摘要的 `run_code` 调用，并修复 schema 可唯一确认的顶层 native 工具误调用。 |
 | 可选能力 | `cordisToolsEnabled` | 默认关闭；开启后为 PTC agent 加入官方 Cordis 工具、指引与精确的 `cordis-plugin-development` companion Skill，不发布同目录 sibling。 |
 | 高级行为 | `looseTopLevelRedeclarations` / `autoRewriteImports` / `autoStripExports` / `autoSplitRedeclarations` / `durableReplay` / `tipsEnabled` | 默认开启；控制跨 cell 重声明、模块语法适配、worker 重启后的状态恢复与失败提示。 |
 | 计算 | `computeMs` / `maxWallMs` | 单 cell CPU 与总耗时预算。 |
@@ -31,7 +31,7 @@ Host half 通过 DSH 公共 `settings` 服务注册命名空间 `ptc-plus`。字
 
 `enhancedToolView` 默认开启并即时生效。开启时 PTC Plus 通过公共 keyed tool-view surface 为 `run_code` 与 `edit_run_code` 提供增强行，并在可用时使用 DSH 公共 `DisclosureRow`/`CodeBlock` primitive，缺少某项 capability 时使用插件自有的等价降级；关闭时立即注销这两个 keyed view，完全恢复 DSH 原生 generic row，让 Host 自己拥有布局、状态、代码高亮、输入/输出卡片和后续视觉更新。该开关只影响 Client 展示，不改变工具、prompt、runtime 或 session 语义。
 
-`autoDescribeRunCode` 默认开启并即时生效。schema 投影允许省略顶层 `run_code.description`，执行桥向 DSH 参数校验器提供派生的固定摘要，并仅将该摘要的持久副本写入 presentation metadata；原始调用参数、已有摘要、cell 源码和嵌套 native 工具参数均保持原样。关闭时继续由 DSH schema 严格要求外层摘要。
+`autoDescribeRunCode` 默认开启并即时生效。外层 `run_code.description` 缺失时，执行桥只向本地 DSH 参数校验器提供派生的固定摘要，并仅将该摘要的持久副本写入 presentation metadata；原始调用参数、已有摘要、cell 源码和嵌套 native 工具参数均保持原样。开关不改变模型可见的 tool schema、tool order 或 system sections，两种状态都保留 DSH 原生 required `description` 声明；关闭时继续由 DSH 严格校验外层摘要。
 
 设置卡片、正文 tool view 与 REPL 可复用 binding 卡片的全部文案都注册到 DSH client locale 的 `settings.ptcPlus` 命名空间，随当前界面语言在中文与 English 之间切换；字段名称与说明的两种语言文本同样来自 `internal/config-spec.js`（`label`/`labelEn`、`description`/`descriptionEn`，某一字段的说明要么两种语言都有，要么都没有），展示 chrome 文案由 client half 拥有。稳定 REPL 指引不承载 UI 品牌名。启用且会话选择当前 `ptc` 或旧 Host `code` preset 时，`conversation.session.header.actions` 以稳定 id `ptc-plus-active` 显示原有的简洁 `PTC Plus` 标识；当前 session projection 与旧顶层字段冲突时以前者为准。关闭时不注入任何 PTC 指引或工具 surface。
 

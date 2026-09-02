@@ -34,6 +34,20 @@ function windowsEnvironment(pathValue, additions = {}) {
   return { ...environment, Path: pathValue, ...additions }
 }
 
+function oversizedUniqueWindowsPath() {
+  const entries = []
+  let length = 0
+  for (let index = 0; length <= 8191; index += 1) {
+    const entry = `C:\\ptc-plus-path-${index.toString(16).padStart(4, '0')}`
+    entries.push(entry)
+    length += entry.length + (entries.length === 1 ? 0 : 1)
+  }
+  const value = entries.join(';')
+  assert.ok(value.length > 8191)
+  assert.ok(value.length < 12000)
+  return value
+}
+
 function npmCliPath() {
   return path.join(path.dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js')
 }
@@ -170,11 +184,7 @@ test('rejects a genuinely oversized unique PATH without creating system resource
 }, async t => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'ptc-plus-unique-path-'))
   t.after(() => rm(root, { recursive: true, force: true }))
-  const uniquePath = Array.from(
-    { length: 400 },
-    (_, index) => path.join(root, `unique-path-entry-${index.toString().padStart(4, '0')}`),
-  ).join(';')
-  assert.ok(uniquePath.length > 8191)
+  const uniquePath = oversizedUniqueWindowsPath()
   const substBefore = execFileSync('subst.exe', { encoding: 'utf8' })
   const command = String.raw`
 $ErrorActionPreference = 'Stop'
@@ -252,10 +262,7 @@ test('rejects an oversized PATH before using the cached DSH version', {
   await copyFile(new URL('../scripts/run-dev-dsh.ps1', import.meta.url), path.join(scriptRoot, 'run-dev-dsh.ps1'))
   await copyFile(new URL('../scripts/windows-lifecycle-path.ps1', import.meta.url), path.join(scriptRoot, 'windows-lifecycle-path.ps1'))
   await writeFile(path.join(cacheRoot, 'dsh-version.txt'), '@deepseek-ai/dsh@alpha\r\n0.1.2-test\r\n')
-  const uniquePath = Array.from(
-    { length: 400 },
-    (_, index) => path.join(root, `unique-path-entry-${index.toString().padStart(4, '0')}`),
-  ).join(';')
+  const uniquePath = oversizedUniqueWindowsPath()
   const result = spawnSync(resolveWindowsCommand('powershell.exe'), [
     '-NoLogo',
     '-NoProfile',

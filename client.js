@@ -22,22 +22,22 @@
       descriptionEn: "When off, use DSH native run_code / edit_run_code tool cards."
     },
     {
-      key: "autoDescribeRunCode",
-      type: "boolean",
-      default: false,
-      label: "\u81EA\u52A8\u8865\u5168 run_code \u6458\u8981",
-      labelEn: "Auto-fill run_code summaries",
-      description: "\u4EC5\u5728\u7F3A\u5C11\u5916\u5C42\u6458\u8981\u65F6\u751F\u6210\u56FA\u5B9A\u7684 UI \u6458\u8981\uFF1B\u4E0D\u4F1A\u6539\u5199\u4EE3\u7801\u6216 native \u5DE5\u5177\u53C2\u6570\u3002",
-      descriptionEn: "Generate a fixed UI summary only when the outer summary is missing; code and native tool arguments stay unchanged."
-    },
-    {
       key: "cordisToolsEnabled",
       type: "boolean",
       default: false,
-      label: "\u5728 PTC \u6A21\u5F0F\u4E2D\u542F\u7528 Cordis \u5DE5\u5177",
-      labelEn: "Enable Cordis tools in PTC mode",
-      description: "\u5373\u65F6\u4E3A PTC agent \u52A0\u5165\u6216\u79FB\u9664\u5B98\u65B9 Cordis \u5DE5\u5177\u3002",
-      descriptionEn: "Adds or removes the official Cordis tools for the PTC agent immediately."
+      label: "\u5728 PTC \u6A21\u5F0F\u4E2D\u542F\u7528\u5B98\u65B9 Cordis \u5DE5\u5177",
+      labelEn: "Enable official Cordis tools in PTC mode",
+      description: "\u5F00\u542F\u540E\u5373\u65F6\u4E3A PTC agent \u52A0\u5165\u5B98\u65B9 Cordis \u5DE5\u5177\u3001\u6307\u5F15\u548C companion Skill\uFF1B\u5173\u95ED\u540E\u5373\u65F6\u79FB\u9664\u3002",
+      descriptionEn: "When on, immediately add the official Cordis tools, guidance, and companion Skill to the PTC agent; remove them when off."
+    },
+    {
+      key: "autoDescribeRunCode",
+      type: "boolean",
+      default: false,
+      label: "\u5728\u7F3A\u5C11\u5916\u5C42\u6458\u8981\u65F6\u81EA\u52A8\u8865\u5168 run_code UI \u6458\u8981",
+      labelEn: "Auto-fill missing outer run_code summaries for the UI",
+      description: "\u4EC5\u5728\u7F3A\u5C11\u5916\u5C42\u6458\u8981\u65F6\u751F\u6210\u56FA\u5B9A\u7684 UI \u6458\u8981\uFF1B\u4E0D\u4F1A\u6539\u5199\u4EE3\u7801\u3001\u5DF2\u6709\u6458\u8981\u3001\u539F\u59CB\u8C03\u7528\u53C2\u6570\u6216\u5D4C\u5957 native \u5DE5\u5177\u53C2\u6570\u3002",
+      descriptionEn: "Generate a fixed UI summary only when the outer summary is missing; never rewrite code, existing summaries, original call arguments, or nested native tool arguments."
     },
     {
       key: "computeMs",

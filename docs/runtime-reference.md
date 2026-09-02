@@ -55,8 +55,8 @@ The configuration uses `ptc-plus` as the DSH plugin ID and `dsh-ptc-plus` as the
   config:
     enabled: true
     enhancedToolView: true
-    autoDescribeRunCode: false
     cordisToolsEnabled: false
+    autoDescribeRunCode: false
     computeMs: 60000
     maxWallMs: 600000
     maxOutputBytes: 67108864

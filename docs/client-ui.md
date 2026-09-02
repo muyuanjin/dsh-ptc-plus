@@ -13,8 +13,8 @@ Host half 通过 DSH 公共 `settings` 服务注册命名空间 `ptc-plus`。字
 | --- | --- | --- |
 | 开关 | `enabled` | 关闭后不注册 `run_code`/`edit_run_code`、不修改 system prompt、不创建 session runtime；只保留设置 UI。 |
 | 展示 | `enhancedToolView` | 默认开启；关闭后注销 PTC Plus 的两个 keyed tool view，恢复 DSH 原生 generic row。 |
-| Transport | `autoDescribeRunCode` | 默认关闭；开启后仅为缺少外层摘要的 `run_code` 请求生成固定 UI 摘要。 |
 | Cordis | `cordisToolsEnabled` | 默认关闭；开启后为 PTC agent 加入官方 Cordis 工具、指引与精确的 `cordis-plugin-development` companion Skill，不发布同目录 sibling。 |
+| Transport | `autoDescribeRunCode` | 默认关闭；开启后仅为缺少外层摘要的 `run_code` 请求生成固定 UI 摘要。 |
 | 计算 | `computeMs` / `maxWallMs` | 单 cell CPU 与墙钟预算。 |
 | 输出 | `maxOutputBytes` / `maxValueNodes` / `maxValueEdges` / `maxValueArrayLength` / `maxValueBigIntDigits` | Value Graph 与输出字节预算。 |
 | Worker | `maxOldGenerationSizeMb` / `maxNestedRunCodeDepth` | kernel worker 内存与嵌套执行深度。 |

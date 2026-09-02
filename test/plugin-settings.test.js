@@ -3,7 +3,7 @@ import { Context as CordisContext } from '@deepseek-ai/cordis'
 import { dirname, join } from 'node:path'
 import test from 'node:test'
 import { apply, Config } from '../index.js'
-import { SETTINGS_NAMESPACE } from '../internal/config-spec.js'
+import { CONFIG_FIELDS, SETTINGS_NAMESPACE } from '../internal/config-spec.js'
 import { resolveConfig } from '../internal/runtime-config.js'
 
 const TEST_CORDIS_TOOL_NAMES = Object.freeze([
@@ -1217,6 +1217,19 @@ test('rolls back consecutive failed Cordis updates to the committed configuratio
 })
 
 test('config schema defaults expose the settings switches', async () => {
+  const standaloneSwitches = CONFIG_FIELDS.slice(1, 4)
+  assert.deepEqual(
+    standaloneSwitches.map(field => field.key),
+    ['enhancedToolView', 'cordisToolsEnabled', 'autoDescribeRunCode'],
+  )
+  const displayWidth = value => Array.from(value).reduce(
+    (width, character) => width + (character.codePointAt(0) <= 0xff ? 1 : 2),
+    0,
+  )
+  for (const property of ['label', 'labelEn', 'description', 'descriptionEn']) {
+    const widths = standaloneSwitches.map(field => displayWidth(field[property]))
+    assert.ok(widths.every((width, index) => index === 0 || widths[index - 1] <= width))
+  }
   const defaults = await Config['~standard'].validate({})
   assert.equal(defaults.value.enabled, true)
   assert.equal(defaults.value.enhancedToolView, true)

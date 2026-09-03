@@ -49,6 +49,12 @@ return source.length
 
 普通已知程序优先 argv spawn；只有命令本身需要 shell 语义时才使用 shell。shell 不是权限系统，也不是 REPL 前置条件；PTY/ConPTY 只用于交互进程。Windows、WSL 与 POSIX 环境的 executable、路径、resolver、signal 和 TTY 必须分别探查，不能由一个 execution world 推断另一个。
 
+## Stateful visibility
+
+journal 值、模型请求和 Client 展示是三种不同的数据面。append-only session log 中存在完整 journal，只能证明插件有材料尝试重建；DSH ordered surface/derived request history 才证明生成当前调用的模型看到过哪些声明。Client 的 `meta.dshPtcPlusBindings` inventory 只对用户展示，不进入模型上下文；当前 `repl.state(list)` 只描述命名 checkpoint 与 durability mode，也不让隐藏 binding 自动变成模型可知状态。
+
+因此默认 REPL frontier 必须同时可重建且模型可知。result-only 剪裁若仍保留带精确源码的 assistant call，不改变该 cell 的模型 provenance；若 compaction 遮蔽了声明 call，raw journal 不足以继续暴露其 binding。插件不解析自然语言 summary 推断名称、值或依赖，而是收缩相关 cell 与依赖后缀，必要时从空 REPL 继续当前 cell。未来可以用显式选择、有界、结构化的 model-visible state projection 保留被压缩的状态，但它必须从 session log 重建、进入实际 request context，并遵守稳定 prompt prefix；不能仅为延长隐藏状态而默认注入，UI metadata 也不能替代它。
+
 ## Metadata boundaries
 
 能力 explorer 分别报告：

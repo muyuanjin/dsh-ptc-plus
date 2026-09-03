@@ -123,6 +123,10 @@ test('owns neutral config parsing and projection for both runners', () => {
   const restricted = parseConfigDump(headlessConfigPatch(rows, restrictedRuntime))
   assert.equal(restricted.find(row => row.id === 'approval').config.policy, 'ask')
   assert.equal(validateHeadlessRuntimeConfig(restricted, 'restricted config', restrictedRuntime), true)
+  const functionClassLoose = parseConfigDump(headlessConfigPatch(rows, runtime, {
+    looseTopLevelFunctionClassRedeclarations: true,
+  }))
+  assert.equal(functionClassLoose.find(row => row.id === 'ptc-plus').config.looseTopLevelFunctionClassRedeclarations, true)
   assert.throws(() => headlessConfigPatch(rows, { ...runtime, toolsMode: '' }), /toolsMode must be set explicitly/)
   assert.throws(() => headlessConfigPatch(rows, { ...runtime, permissionMode: undefined }), /permissionMode must be set explicitly/)
 })

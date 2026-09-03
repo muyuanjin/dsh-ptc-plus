@@ -2,19 +2,22 @@
 
 ## 状态
 
-本文描述 `dsh-ptc-plus` 的 journal、两阶段确认和冷恢复行为。代码事实源是 `internal/session-journal.js` 与 `internal/session-runtime.js`。
+本文拥有 `dsh-ptc-plus` 的 journal、两阶段确认和冷恢复契约；`internal/session-journal.js` 与 `internal/session-runtime.js` 提供实现证据。
 
 ## 恢复承诺
 
 PTC Plus 的正确承诺是：
 
-> **精确恢复 durable 部分，完整运行 volatile 部分，不自动重放 volatile 副作用。**
+> **只把可证明状态称为已恢复；历史最差可收缩到空 REPL，但当前合法 cell 仍可继续。**
 
 - durable cell 的源码、tool transcript、结算顺序和 completion 足以精确重放；
 - volatile cell 可使用 policy 允许但无法 journal 的 Node 能力，只保证当前 worker 生命周期内延续；
 - 一旦进入 volatile，整个 live 后缀保持 volatile；
 - restore 命名的 durable 状态可以显式丢弃 volatile 后缀；
-- abort、timeout、worker exit、OOM 和进程恢复都回到最后一个 durable frontier；
+- abort、timeout、worker exit、OOM、进程恢复和损坏的历史 PTC metadata 都收缩到最大可证明 frontier；没有非空 frontier 时从空 REPL 执行当前 cell；
+- 历史恢复拒绝不可信状态证据，不因这项插件自有历史损坏而永久拒绝后续 `run_code`；当前请求自身的 DSH validation、policy、authority、approval 和 cancellation 仍可拒绝执行；
+- 收缩不重新 dispatch、撤销或验证历史 effect；丢失的 binding 由一次 `PTC-R002` 明确提示模型按需重建；
+- 可重建不是默认暴露 binding 的充分条件：恢复 frontier 还必须让 binding 的精确 provenance 保留在生成当前调用的模型可见 surface 中，或由显式选择的有界、模型可见结构化投影公开；不能只为延长隐藏状态而默认注入该投影，raw log 与 UI-only inventory 也不满足这项条件；
 - `durableReplay: false` 时，新 kernel 从空状态开始且所有已执行 live cell 都是 volatile，作为
   用户怀疑恢复正确性时的显式逃生模式；
 - 被跳过的源码仍保存在原始 `tool/call` 中。
@@ -76,7 +79,7 @@ SessionRuntime 创建 kernel 时完全忽略历史 nodes、head、checkpoints �
 
 journal、diagnostic、source、cause、call、operation、completion 和 completion error 都使用封闭字段集合；未知、symbol 或非枚举自有字段会使 journal 无效。capability-call `args`/`value` 与 return completion `value` 都是封闭、规范化的 `ptc-value-graph/v1` envelope。诊断结构、source frame 依赖和稳定代码见[架构说明](architecture.md#journal-与恢复)。
 
-当前实现只写入 `version: 4` schema。v1-v3 作为封闭 predecessor 输入规范化为 v4：旧 `bindingMode` 精确映射到 `bindingPolicy.variableRedeclarations`，而 `functionClassRedeclarations` 固定为 `false`，因为旧 pipeline 不具备该语义；`moduleSemantics.defaultExportBinding` 固定迁移为 `legacy-variable`，使 loose 历史保留旧的可写生成 binding、strict 历史保留旧的 const 行为。v1 仍使用三个 rewrite 开关全关的历史默认值，并只在 session log 唯一证明 call identity 时迁移字符串 confirmation；v2/v3 保留自身 `rewritePolicy`，无法表示为非负 event sequence 的 confirmation 必须形成 unknown suffix。包括 `bindingPolicy`、`rewritePolicy`、`moduleSemantics`、`diagnostics` 在内的必需字段缺失时 journal 必须失效，否则会削弱最终持久值与 tentative journal 的严格一致性确认。profile 后续切换任一 binding 或 AST rewrite 开关只影响新 cell，历史 node 始终按自身记录的 policy 和 module semantics 重放。
+当前实现只写入 `version: 4` schema。v1-v3 作为封闭 predecessor 输入规范化为 v4：旧 `bindingMode` 精确映射到 `bindingPolicy.variableRedeclarations`，而 `functionClassRedeclarations` 固定为 `false`，因为旧 pipeline 不具备该语义；`moduleSemantics.defaultExportBinding` 固定迁移为 `legacy-variable`，使 loose 历史保留旧的可写生成 binding、strict 历史保留旧的 const 行为。v1 仍使用三个 rewrite 开关全关的历史默认值，并只在 session log 唯一证明 call identity 时迁移字符串 confirmation；v2/v3 保留自身 `rewritePolicy`，无法表示为非负 event sequence 的 confirmation 必须形成 unknown boundary 并触发状态收缩。包括 `bindingPolicy`、`rewritePolicy`、`moduleSemantics`、`diagnostics` 在内的必需字段缺失时 journal 必须失效，否则会削弱最终持久值与 tentative journal 的严格一致性确认；失效 journal 不证明旧 binding，但也不单独成为后续当前调用的 availability gate。profile 后续切换任一 binding 或 AST rewrite 开关只影响新 cell，历史 node 始终按自身记录的 policy 和 module semantics 重放。
 
 ## Capability Call Transcript
 
@@ -124,9 +127,9 @@ pre-execute -> tools/execute -> post-execute
 | 观察 | Live 行为 | 冷恢复行为 |
 | --- | --- | --- |
 | valid journal | 按 status 提交 | 按 journal 折叠 |
-| 已执行，最终 journal 被删除 | cell 与后缀 volatile | unknown boundary |
+| 已执行，最终 journal 被删除 | cell 与后缀 volatile | 收缩到此前可证明 frontier，继续当前 cell |
 | 未进入 runtime | pending no-op | 后续 `confirms` 存在时忽略 |
-| 无法判断且未被确认 | 保守处理 | 回到此前 durable frontier |
+| 无法判断且未被确认 | 保守处理 | 拒绝其状态证据；必要时空 REPL，继续当前 cell |
 
 比较先严格规范化 journal，再使用 PTC value graph 的扁平 wire 表示，不对深层参数做递归遍历。额外无关 metadata 不影响确认，但 `dshPtcPlus` 自身任何可观察差异都拒绝确认。
 
@@ -140,20 +143,32 @@ pre-execute -> tools/execute -> post-execute
 
 ## 日志折叠
 
-恢复按 session event 顺序处理外层 `run_code` 和带明确 derived-run metadata 的 `edit_run_code`。恢复入口先把当前 call id 解析为持久化 `tool/call.seq`，再把该序号作为 live boundary 传入折叠器；对应的在途 call event 不属于历史。每个 `edit_run_code` 在其 call event 处，根据此前已经结算的调用确定并固定可编辑目标；之后出现的 result 只影响随后发起的 edit：
+恢复以当前请求需要的 head 为目标，沿可证明 parent 关系向更早 frontier 收缩；实现可以前向折叠 event 建图，但不得把 unknown boundary 两侧的日志位置当作状态依赖证据。恢复入口先把当前 call id 解析为持久化 `tool/call.seq`，再把该序号作为 live boundary 传入折叠器；对应的在途 call event 不属于历史。每个 `edit_run_code` 在其 call event 处，根据此前已经结算的调用确定并固定可编辑目标；之后出现的 result 只影响随后发起的 edit：
 
 1. 用 `sourceEventSeqs[0]` 关联 `tool/result` 与 `tool/call`；
 2. 预收集 valid journal 中的 `confirms`；
 3. 排除与 live boundary 序号相同的在途 call，并让已确认 no-op 的无 journal call 不改变状态；
-4. 缺失源码、缺失/损坏 journal 进入 untrusted suffix；
+4. 缺失源码、缺失/损坏 journal 或无法验证的 call/result/prune 关联建立 untrusted boundary，不作为旧 binding 的证据；
 5. `noop` 与不含 `volatileReason` 的 `discarded` 不改变语言状态；带 `volatileReason` 的 `discarded` 表示 heap 已回滚但外部 effect 未知，进入 untrusted suffix；
 6. `volatile` 进入 untrusted suffix，只应用可独立持久的 delete/restore 操作；
 7. `restore` 命名状态重新建立 trusted durable head；
-8. untrusted suffix 后的首个 `durable` journal从当前 durable head 建立新分支，并清除旧 suffix；
+8. 只有 ancestry 或独立性有插件自有机械证据的 post-boundary durable 记录才可保留；否则整个受影响 cell 与依赖后缀收缩；
 9. durable node 保存 parent link，命名状态保存 node index；
-10. `meta.dshPtcPlusRecoveryBoundaries` 在 `tool/result` event sequence 参与排序前完成规范化；任一损坏 boundary 使恢复失败，合法 boundary 再通过失败 call seq 选择 node，并要求记录的 frontier 恰好是该 node 的 parent；折叠器剪除该 node 及依赖后代，按剩余记录重算 checkpoints，再把 head 设为记录的 frontier。
+10. `meta.dshPtcPlusRecoveryBoundaries` 在 `tool/result` event sequence 参与排序前完成规范化；损坏 boundary 被拒绝为状态证据并建立保守收缩点，合法 boundary 通过失败 call seq 选择 node，并要求记录的 frontier 恰好是该 node 的 parent；
+11. 折叠器剪除不可证明的 node、binding 与依赖后代，按剩余记录重算 checkpoints；runtime 重置 worker 并验证候选 frontier，逐级收缩到最大可重放 frontier，必要时到空 REPL；
+12. 当前 cell 只在 worker 实际拥有该 frontier 后执行，成为它的新 child 或空 REPL 的新 root；当前结果持久记录本次收缩并投影一次恢复诊断。
 
-第 8 步是必要不变量：冷恢复已经实际丢弃 volatile/unknown heap，因此此后执行成功的 durable cell 不依赖该 heap。如果不把它作为可信重基点，旧 unknown 调用会在每次重启时永久吞掉所有后续状态。
+当前 journal 没有完整的逐 binding 读写与传递依赖图。源码存在、重放未抛错或 completion 相同，都不足以证明闭包捕获、属性 mutation、动态名称访问或运行时值与原执行一致。因此恢复不能任意挑选 unknown boundary 后看似独立的 binding；缺少机械证明时以 cell 为原子并丢弃受影响后缀。将来若要保留更细粒度状态，必须通过版本化、owner-owned 的依赖证据扩展契约，不能从名称或成功重放猜测。
+
+第 12 步是可用性与真实性共同的不变量：旧 unknown 调用不能被伪装成已恢复 heap，也不能在每次重启时永久吞掉所有后续 `run_code`。当前 cell 是在已经实际物化的 frontier 上重新执行，所以它可以安全建立持久新分支；这不表示被剪除 cell 的外部 effect 没有发生。
+
+## 模型可知状态
+
+DSH session 同时提供两个不同投影：append-only event log 保存审计、journal 与 replay evidence；ordered surface/derived request history 是模型请求实际可见的消息历史。PTC Plus 的默认状态 frontier 是“结构可重建”和“模型可知”的交集，不能用 raw log 的存在替代 surface evidence。模型可知只采用外部可验证事实，不猜模型内部记忆：精确声明源码仍在当前 request surface，或插件/宿主通过有界结构把准确 binding identity 与 provenance 放入模型上下文。
+
+surface replacement 是否删除状态取决于模型失去了什么，而不取决于是否出现 `compaction/prune` 这个名字。只替换过长 tool result、仍保留 assistant `run_code`/`edit_run_code` 调用及源码时，模型仍知道该 cell，可继续使用其 journal。若 replacement 或 summary 遮蔽了声明 provenance，raw journal 即使完整也不能让 binding 默认继续存在；自然语言 summary 不解析为依赖或 binding 证明。当前没有模型可见的完整 binding inventory，因此缺少精确 provenance 时按 cell 与依赖后缀收缩。
+
+该规则也约束 live worker。runtime 在下一 cell 前观察 DSH public surface generation；发生 replacement 后，若现存 binding 超出模型可知 frontier，先重置 worker、重建交集 frontier，再执行当前 cell。Client header card 的 `dshPtcPlusBindings` 只帮助用户检查，不进入模型上下文，也不延长 binding 生命周期；相同 contraction 应让 UI inventory 进入不可确认状态。未来若新增模型可见状态投影，它必须由用户、模型或明确配置选择，有固定 schema、硬预算、append-only runtime-context 证据和明确清除条件，不能仅为延长隐藏状态而默认注入，也不能污染稳定 prompt prefix。
 
 ## Completion 校验
 
@@ -171,7 +186,7 @@ pre-execute -> tools/execute -> post-execute
 - recovery divergence；
 - durable replay 触发 volatile capability。
 
-基础设施失败会终止当前 worker，并把 log-only recovery boundary 放入当前已结算 `tool/result` 的私有 metadata。kernel 从失败 node 的 parent 重新重放；若该 frontier 仍失败则继续向 parent 收缩，直到某个 frontier 验证成功或到达空 REPL。触发恢复的当前 `run_code` 在验证成功前不执行，因此可以在同一次请求中安全继续；如果 boundary 无效或历史本身无法折叠，则返回 recovery error。结构损坏的日志没有可证明的 frontier，后续调用会重新读取日志而不会接受一个无法持久表达 ancestry 的新分支。已经写入旧版自定义 boundary event 的日志必须先通过显式迁移移除该事件并把 boundary 合并到后续 `tool/result` metadata，迁移失败时不得覆盖原始日志。
+基础设施失败会终止当前 worker，并把 log-only recovery boundary 放入当前已结算 `tool/result` 的私有 metadata。kernel 从失败 node 的 parent 重新重放；若该 frontier 仍失败则继续向 parent 收缩，直到最大可验证 frontier 或空 REPL。触发恢复的当前 `run_code` 在候选 frontier 验证成功前不执行，验证后在同一次请求中继续。boundary 无效或历史本身无法完整折叠时，相关记录和可能依赖它的状态不得进入 frontier；这类历史 PTC metadata 损坏本身不返回永久 recovery error，而是继续收缩，最差用空 worker 执行当前 cell，并在其最终 result 持久表达新 ancestry。已经写入旧版自定义 boundary event 的日志必须先通过显式、非破坏迁移转换为 DSH 可加载的 metadata；迁移失败时不得覆盖原始日志。
 
 ## State Operations
 
@@ -213,7 +228,7 @@ worker 不继承 Electron 的工作目录语义。插件通过现有 `tools/exec
 
 ## 恢复通知
 
-构造 kernel 时若折叠结果含 volatile/unknown suffix，或本次重放产生 recovery boundary，第一次实际执行的 `run_code` 记录并投影 `PTC-R002`。它只统计当前 call 之前实际跳过的历史 cell：
+构造 kernel 时若折叠结果含 volatile/unknown boundary、模型可见 surface 收缩，或本次重放产生 recovery contraction，第一次实际执行的 `run_code` 记录并投影 `PTC-R002`。它只统计当前 call 之前实际未恢复的历史 cell，并明确旧 binding 可能需要重新声明：
 
 ```text
 warning[PTC-R002]: restored the durable head and skipped N unreconstructable historical cells
@@ -222,7 +237,7 @@ state: ...
 help: ...
 ```
 
-通知进入正常 CodeRuntime logs，结构化值进入当前 journal，因此成功结果和错误结果都能呈现并从 session log 重建。每个 kernel 只发送一次，避免污染后续上下文。
+通知进入正常 CodeRuntime logs，结构化值进入当前 journal，因此成功结果和错误结果都能呈现并从 session log 重建。收缩边界随当前 result 持久化，后续 cold start 从新分支恢复，不重复撞击同一损坏历史；每个 kernel 只发送一次，避免污染后续上下文。
 
 live kernel 首次进入 volatile 只更新 journal 的 `status` / `volatileReason` 和 `repl.state(list)`，不向模型投影 warning/note。该转换不要求当前任务采取行动；只有 cold recovery 已实际跳过 volatile、unknown 或 replay-abandoned 历史时才发送 `PTC-R002`。worker 在首次观察到直接 Node/OS 边界时立即通知主线程，因此后续 hard abort、timeout 或 worker exit 仍能把原因写入 discarded journal。
 
@@ -251,7 +266,7 @@ live kernel 首次进入 volatile 只更新 journal 的 `status` / `volatileReas
 
 以上是当前已实现的 PTC journal 协议。native `tools.*` 保持 owner contract；cell program binding 不得变成新的模型 transport。
 
-任何公共扩展面无法持久确认的状态都必须收缩为 volatile/unknown 边界。修改或 fork DSH、patch 私有
+任何公共扩展面无法持久确认的状态都必须收缩为 volatile/unknown 边界，但边界否定的是旧状态证明，不是当前合法调用的可用性；最大可证明 frontier 为空时，插件仍应让当前 cell 从空 REPL 建立新分支。修改或 fork DSH、patch 私有
 scheduler、复制 policy/event protocol 或伪造事件不属于本协议。若上游以后提供 owner-declared
 typed binding，它可以使用 DSH nested dispatch，但不得伪装成 journal confirmation，也不得绕过
 scope、policy 或 settlement。
@@ -263,7 +278,7 @@ scope、policy 或 settlement。
 - volatile live continuation、冷恢复跳过和 durable 重基；
 - post-execute metadata 删除与 pre-dispatch no-op 确认；
 - hard abort、冷 worker 启动取消和未结算 program binding 的 possible-effect boundary；
-- replay timeout fail closed；
+- replay timeout 逐级收缩到可验证 frontier；
 - Math intrinsic、局部 ambient 名称、CWD 相关 `node:path`；
 - 命名状态 save/restore/delete 与 volatile restore；
 - 深层 graph value、own `__proto__` key、`undefined`、special number、BigInt、hole、alias 与 cycle；

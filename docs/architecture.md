@@ -122,7 +122,11 @@ CodeRuntime request 已携带的 owner-provided program namespace 会被原样�
 
 journal 通过 `run_code.output.presentationMeta` 附着到最终 result，再由 `tools/result` 做两阶段确认。缺失、损坏或被替换的 journal 形成 unknown/volatile 边界；未进入 runtime 的 call 由后续 `confirms` 以对应 `tool/call.seq` 证明为 no-op。volatile 源码保留在原 session log，但不参与 cold replay。
 
-durable replay 无法验证某个 node 时，当前已结算 `tool/result` 的私有 `meta.dshPtcPlusRecoveryBoundaries` 记录失败 call 与其 parent frontier，不修改冻结的历史 result。boundary 在进入排序前必须完成 schema 与 event-sequence validation；损坏 metadata 使恢复 fail closed，不能从 fold 中静默消失。折叠器剪除该 node 及依赖后代、重算可重建 checkpoints；kernel 重置 worker 并逐级验证更早 frontier，随后执行当前 live cell。新 durable node 的 parent 始终是 worker 实际拥有的 frontier。自定义 boundary event 不由运行时生成，迁移工具必须在 DSH restore 前显式转换它。
+恢复从当前请求对应的 head 沿 parent 关系向更早状态收缩，而不是越过损坏记录继续假定原 heap 存在。候选 frontier 同时受两种证据约束：append-only session log 中的 journal 证明状态可重建；生成当前调用的 DSH ordered surface/derived request history 证明模型可以知道其精确 binding provenance。raw event 未删除不等于模型仍可见，Client 的 `dshPtcPlusBindings` inventory 也只是 UI presentation。只裁剪 tool result、仍把携带源码的 assistant call 留在模型 surface 中时不必删除对应状态；assistant provenance 被遮蔽且没有显式、有界、模型可见的结构化状态投影时，live worker 与 cold replay 都必须收缩。插件不从自然语言 compaction summary 推断 binding。
+
+durable replay 无法验证某个 node 时，当前已结算 `tool/result` 的私有 `meta.dshPtcPlusRecoveryBoundaries` 记录失败 call 与其 parent frontier，不修改冻结的历史 result。boundary 在进入排序前必须完成 schema 与 event-sequence validation；损坏 metadata 不能从 fold 中静默消失，也不能证明任何旧状态。折叠器剪除结构不可证明或模型不可知的 node、binding 与依赖后代，重算可重建 checkpoints；只有 ancestry、独立性和模型可知 provenance 都有 owner evidence 的部分可以保留。现有 journal 没有完整的逐 binding 依赖图，因此不能证明细粒度剪枝时按 cell 与受影响后缀收缩。已经存在的 live kernel 在执行下一 cell 前检查 surface replacement generation；若模型可见历史已经收缩，先重置并物化对齐后的 frontier。
+
+kernel 重置 worker 并逐级验证更早 frontier；最大非空 frontier 仍不可证明时使用空 REPL。这个最差情况会丢失全部旧 binding，但历史 PTC Plus metadata 损坏本身不得阻止当前合法 cell 执行。当前 cell 在实际重建的 frontier 上建立新分支，并通过一次 `PTC-R002` 说明哪些历史状态未恢复；收缩不重新派发或撤销历史 program binding effect，也不把未知状态说成已恢复。DSH 对当前请求的 validation、policy、authority、approval 与 cancellation 错误不属于该可用性降级。新 durable node 的 parent 始终是 worker 实际拥有的 frontier。自定义 boundary event 不由运行时生成，迁移工具必须在 DSH restore 前显式转换它。
 
 诊断由封闭结构确定性渲染，包括语法、preflight、绑定冲突、输出、运行异常和恢复边界。普通成功与首次进入 volatile 不投影 warning/note；恢复分类保留在 journal 和 `repl.state(list)` 中。
 

@@ -507,6 +507,112 @@ test('preserves canonical run_code results through the real DSH ToolRuntime pipe
     generated.meta.dshPtcPlusRunCodeDescription,
     'Execute the next TypeScript cell in this session',
   )
+
+  const editableSource = 'const editable = 1\nreturn editable'
+  const editable = await executeRunCode('editable-cell', {
+    code: editableSource,
+    description: 'Create an editable cell',
+  })
+  assert.equal(editable.isError, false)
+  const editCall = session.append('tool/call', {
+    turn: 1,
+    step: 1,
+    callId: 'registered-edit-call',
+    name: 'edit_run_code',
+    arguments: JSON.stringify({ edits: [{ old_string: '= 1', new_string: '= 2' }] }),
+  })
+  const edit = await ctx.tools.execute({
+    name: 'edit_run_code',
+    callId: editCall.data.callId,
+    arguments: { edits: [{ old_string: '= 1', new_string: '= 2' }] },
+    signal,
+    agent,
+  })
+  assert.equal(edit.isError, false)
+  assert.equal(edit.value.edited, true)
+  assert.deepEqual(edit.value.value, 2)
+  session.append('tool/result', {
+    turn: 1,
+    step: 1,
+    message: { source: { kind: 'tool', callId: editCall.data.callId } },
+    ...(edit.meta === undefined ? {} : { meta: edit.meta }),
+  }, { sourceEventSeqs: [editCall.seq] })
+  const malformedEditCall = session.append('tool/call', {
+    turn: 1,
+    step: 1,
+    callId: 'registered-malformed-edit',
+    name: 'edit_run_code',
+    arguments: JSON.stringify({ edits: [{ old_string: '= 2', new_string: '= 2' }] }),
+  })
+  const malformedEdit = await ctx.tools.execute({
+    name: 'edit_run_code',
+    callId: malformedEditCall.data.callId,
+    arguments: { edits: [{ old_string: '= 2', new_string: '= 2' }] },
+    signal,
+    agent,
+  })
+  assert.equal(malformedEdit.isError, false)
+  assert.equal(malformedEdit.value.edited, false)
+  assert.match(malformedEdit.value.reason, /old_string and new_string must differ/)
+})
+
+test('preserves disabled derived edit bindings across visible surface generations', async (t) => {
+  const state = fixture({ durableReplay: false })
+  t.after(() => state.dispose())
+  const events = []
+  let generation = 0
+  let surfaceNodes = []
+  const session = appendOnlySession('disabled-derived-edit-transport', events)
+  session.surface = {
+    get replaceGeneration() { return generation },
+    get nodes() { return surfaceNodes },
+  }
+  const agent = ptcAgent('disabled-derived-edit-agent', session)
+  const signal = new AbortController().signal
+  await state.assemble(
+    { sections: [], contexts: [], variables: {}, tools: [state.runCodeDefinition] },
+    { agent, scope: agent, signal },
+  )
+  const run = async (callId, code) => {
+    const call = session.append('tool/call', {
+      callId,
+      name: 'run_code',
+      arguments: JSON.stringify({ code, description: 'test cell' }),
+    })
+    surfaceNodes = [...surfaceNodes, call.seq]
+    const result = await state.ctx.tools.execute({
+      name: 'run_code', callId, arguments: { code, description: 'test cell' }, signal, agent,
+    })
+    session.append('tool/result', {
+      message: { source: { callId } },
+      ...(result.meta === undefined ? {} : { meta: result.meta }),
+    })
+    return { call, result }
+  }
+  const source = await run('disabled-edit-source', 'let editableSurface = 1')
+  assert.equal(source.result.isError, false)
+  const editCall = session.append('tool/call', {
+    callId: 'disabled-edit-call',
+    name: 'edit_run_code',
+    arguments: JSON.stringify({ edits: [{ old_string: '1', new_string: '2' }] }),
+  })
+  surfaceNodes = [...surfaceNodes, editCall.seq]
+  const edit = await state.ctx.tools.execute({
+    name: 'edit_run_code',
+    callId: editCall.data.callId,
+    arguments: { edits: [{ old_string: '1', new_string: '2' }] },
+    signal,
+    agent,
+  })
+  assert.equal(edit.isError, false)
+  assert.equal(edit.value.edited, true)
+  generation = 1
+  const inspected = await run('disabled-edit-inspect', 'return editableSurface')
+  assert.equal(inspected.result.value, 2)
+  generation = 2
+  surfaceNodes = [inspected.call.seq]
+  const hidden = await run('disabled-edit-hidden', 'return typeof editableSurface')
+  assert.equal(hidden.result.value, 'undefined')
 })
 
 test('rejects a later native assembly without changing the captured code request', async (t) => {

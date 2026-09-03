@@ -7,6 +7,7 @@ import {
   pathToHead,
   reduceStateOperations,
   recoverJournal,
+  visibleExecutableCallSeqs,
 } from './session-journal.js'
 import { normalizeBindingDescriptors } from './binding-descriptors.js'
 import { resolveConfig } from './runtime-config.js'
@@ -74,12 +75,25 @@ class SessionKernel {
   constructor({ config, history, cwd, session, withInitiator }) {
     this.config = config
     this.history = history
+    this.initialRecoveryBoundary = history.available === false && history.volatileSuffix.length > 0
+      ? {
+          failedCallSeq: history.volatileSuffix[0].seq,
+          frontierCallSeq: history.head === undefined ? null : history.nodes[history.head]?.callSeq ?? null,
+        }
+      : undefined
+    this.surfaceGeneration = undefined
+    try {
+      this.surfaceGeneration = session?.surface?.replaceGeneration
+    } catch {
+      this.surfaceGeneration = undefined
+    }
     this.cwd = cwd
     this.session = session
     this.withInitiator = withInitiator
     this.durability = durabilityState()
     this.bindingCatalog = new BindingCatalog()
     this.replayed = false
+    this.liveCallSeqs = new Set()
     this.recoveryNotice = history.volatileSuffix.length === 0
       ? undefined
       : recoveryDiagnostic(history.volatileSuffix.length)
@@ -143,10 +157,62 @@ class SessionKernel {
   }
 
   async execute(request, config) {
-    const recoveryBoundaries = []
+    const recoveryBoundaries = this.initialRecoveryBoundary === undefined
+      ? []
+      : [this.initialRecoveryBoundary]
+    this.initialRecoveryBoundary = undefined
     const finishResult = result => recoveryBoundaries.length === 0
       ? result
       : { ...result, recoveryBoundaries: recoveryBoundaries.map(boundary => ({ ...boundary })) }
+    let currentGeneration
+    try {
+      currentGeneration = this.session?.surface?.replaceGeneration
+    } catch {
+      currentGeneration = undefined
+    }
+    if (currentGeneration !== undefined && currentGeneration !== this.surfaceGeneration) {
+      this.surfaceGeneration = currentGeneration
+      const visibleCallSeqs = visibleExecutableCallSeqs(this.session)
+      const contractsLiveState = [...this.liveCallSeqs].some(callSeq => (
+        !(visibleCallSeqs instanceof Set) || !visibleCallSeqs.has(callSeq)
+      ))
+      if ((config.durableReplay && !this.replayed) || contractsLiveState) {
+        const worker = this.client.worker
+        if (worker !== undefined) await this.client.reset(worker)
+        this.rollbackToDurable()
+        if (config.durableReplay) {
+          this.recoveryNotice = undefined
+          try {
+            this.history = recoverJournal(this.session, request.callSeq, {
+              visibleCallSeqs,
+            })
+          } catch (error) {
+            this.history = emptyHistory()
+            this.recoveryNotice = recoveryDiagnostic(1)
+            this.initialRecoveryBoundary = undefined
+          }
+          if (this.history.volatileSuffix.length > 0) {
+            this.recoveryNotice = recoveryDiagnostic(this.history.volatileSuffix.length)
+          }
+          this.initialRecoveryBoundary = this.history.available === false && this.history.volatileSuffix.length > 0
+            ? {
+                failedCallSeq: this.history.volatileSuffix[0].seq,
+                frontierCallSeq: this.history.head === undefined
+                  ? null
+                  : this.history.nodes[this.history.head]?.callSeq ?? null,
+              }
+            : undefined
+          if (this.initialRecoveryBoundary !== undefined) {
+            recoveryBoundaries.push(this.initialRecoveryBoundary)
+            this.initialRecoveryBoundary = undefined
+          }
+        } else {
+          this.history = emptyHistory()
+          this.replayed = true
+          this.recoveryNotice = recoveryDiagnostic(1)
+        }
+      }
+    }
     if (!this.replayed && config.durableReplay) {
       let skipped = 0
       while (!this.replayed) {
@@ -182,6 +248,7 @@ class SessionKernel {
             }
             const recovered = recoverJournal(this.session, request.callSeq, {
               extraBoundaries: [boundary],
+              visibleCallSeqs: visibleExecutableCallSeqs(this.session),
             })
             recoveryBoundaries.push(boundary)
             this.history = recovered
@@ -252,6 +319,7 @@ class SessionKernel {
         throw new ReplayFailure(node, error)
       }
     }
+    for (const node of path) this.liveCallSeqs.add(node.callSeq)
   }
 
   completeJournal(journal, status, result, volatileReason, diagnostics = [], completion = undefined) {
@@ -279,6 +347,7 @@ class SessionKernel {
     this.durability = durabilityState()
     this.replayed = false
     this.bindingCatalog = new BindingCatalog()
+    this.liveCallSeqs.clear()
   }
 
   settleCell(active, result, terminate = false) {
@@ -319,6 +388,9 @@ class SessionKernel {
     if (replay !== undefined && !terminate) {
       this.bindingCatalog = active.appliedBindingCatalog
         ?? active.priorBindingCatalog.advance(prepared, request.program)
+    }
+    if (replay === undefined && !terminate) {
+      this.liveCallSeqs.add(request.callSeq ?? request.sourceCallSeq)
     }
     this.active = undefined
     if (terminate) void this.client.reset(worker)
@@ -465,10 +537,13 @@ export class SessionRuntime {
         sourceCallSeq = liveToolCallSeq(session, callId, 'run_code')
         callSeq = persistedCallSeq ?? sourceCallSeq
       } else {
-        try {
-          sourceCallSeq = liveToolCallSeq(session, callId, 'run_code')
-        } catch {
-          sourceCallSeq = undefined
+        sourceCallSeq = persistedCallSeq
+        if (sourceCallSeq === undefined) {
+          try {
+            sourceCallSeq = liveToolCallSeq(session, callId, 'run_code')
+          } catch {
+            sourceCallSeq = undefined
+          }
         }
       }
     } catch (error) {
@@ -479,7 +554,9 @@ export class SessionRuntime {
       let history
       try {
         history = cellConfig.durableReplay
-          ? recoverJournal(session, callSeq)
+          ? recoverJournal(session, callSeq, {
+            visibleCallSeqs: visibleExecutableCallSeqs(session),
+          })
           : emptyHistory()
       } catch (error) {
         return completed({ logs: [], error: { kind: 'recovery', message: `cannot reconstruct REPL from session log: ${messageOf(error)}` } })

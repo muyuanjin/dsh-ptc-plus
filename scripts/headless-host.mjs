@@ -283,6 +283,13 @@ export function headlessConfigPatch(baseRows, runtime, options = {}) {
     '    providers:',
     `      ${JSON.stringify(runtime.provider)}:`,
     `        apiKeyEnv: ${JSON.stringify(runtime.apiKeyEnv)}`,
+    ...(options.looseTopLevelFunctionClassRedeclarations === true
+      ? [
+        '- id: ptc-plus',
+        '  config:',
+        '    looseTopLevelFunctionClassRedeclarations: true',
+      ]
+      : []),
     ...(options.disablePtcPlus === true ? ['- id: ptc-plus', '  disabled: true'] : []),
     '',
   ].join('\n')

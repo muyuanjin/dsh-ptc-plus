@@ -4,7 +4,7 @@ import { access, rm } from 'node:fs/promises'
 import { isAbsolute } from 'node:path'
 import test from 'node:test'
 import { Config, apply } from '../index.js'
-import { normalizeJournal } from '../internal/session-journal.js'
+import { RECOVERY_BOUNDARY_KEY, normalizeJournal } from '../internal/session-journal.js'
 import { SessionRuntime } from '../internal/session-runtime.js'
 import { decodeValue, encodeValue, renderValueWire } from '../internal/value-wire.js'
 import { JOURNAL_POLICY, appendRunCodeEvents, fixture } from './plugin-fixture.js'
@@ -588,20 +588,66 @@ test('handles direct runtime recovery, timeout, volatility, and lifecycle bounda
 
   const invalidHistory = new SessionRuntime()
   t.after(() => invalidHistory.dispose())
-  const duplicate = {
-    type: 'tool/result', sourceEventSeqs: [1], data: { meta: { dshPtcPlus: {
+  const events = []
+  appendRunCodeEvents(events, 'duplicate-history', 'const discardedHistory = 1', {
+    meta: { dshPtcPlus: {
       version: 3, bindingMode: 'loose', rewritePolicy: JOURNAL_POLICY, status: 'noop', calls: [], operations: [], confirms: [], diagnostics: [],
-    } } },
-  }
-  const recovered = await invalidHistory.run({ id: 'invalid-history', session: { events: [duplicate, duplicate] } }, {
-    program: 'return 1', bindings: [],
+    } },
   })
-  assert.equal(recovered.error.kind, 'recovery')
-  assert.match(recovered.error.message, /duplicate PTC journal/)
-  const context = { id: 'invalid-history', session: { events: [duplicate, duplicate] } }
-  const resumed = await invalidHistory.run(context, { program: 'return 1', bindings: [] })
-  assert.equal(resumed.error.kind, 'recovery')
-  assert.match(resumed.error.message, /duplicate PTC journal/)
+  events.push({ ...events[1], seq: 2 })
+  events.push({
+    seq: 3,
+    type: 'tool/call',
+    data: {
+      callId: 'recover-current',
+      name: 'run_code',
+      arguments: JSON.stringify({ code: 'const recoveredValue = 1', description: 'recover current' }),
+    },
+  })
+  const recovered = await invalidHistory.runTentative(
+    { id: 'invalid-history', session: { events }, callId: 'recover-current' },
+    { program: 'const recoveredValue = 1', bindings: [] },
+  )
+  assert.equal(recovered.result.error, undefined)
+  assert.deepEqual(recovered.settlement.recoveryBoundaries, [
+    { failedCallSeq: 0, frontierCallSeq: null },
+  ])
+  invalidHistory.finalize(recovered.settlement, true)
+  events.push({
+    seq: 4,
+    type: 'tool/result',
+    sourceEventSeqs: [3],
+    data: { meta: {
+      dshPtcPlus: normalizeJournal(recovered.settlement.journal),
+      [RECOVERY_BOUNDARY_KEY]: recovered.settlement.recoveryBoundaries,
+    } },
+  })
+
+  const restarted = new SessionRuntime()
+  t.after(() => restarted.dispose())
+  events.push({
+    seq: 5,
+    type: 'tool/call',
+    data: {
+      callId: 'recover-inspect',
+      name: 'run_code',
+      arguments: JSON.stringify({ code: 'return recoveredValue', description: 'inspect recovered value' }),
+    },
+  })
+  const resumed = await restarted.run(
+    { id: 'invalid-history', session: { events }, callId: 'recover-inspect' },
+    { program: 'return recoveredValue', bindings: [] },
+  )
+  assert.deepEqual(resumed, { logs: [], value: 1 })
+
+  const malformedTimeline = new SessionRuntime()
+  t.after(() => malformedTimeline.dispose())
+  const unrecoverable = await malformedTimeline.run({ id: 'malformed-timeline', session: { events: [
+    { seq: 7, type: 'tool/call', data: { name: 'run_code', callId: 'first', arguments: '{}' } },
+    { seq: 7, type: 'tool/call', data: { name: 'run_code', callId: 'second', arguments: '{}' } },
+  ] } }, { program: 'return 1', bindings: [] })
+  assert.equal(unrecoverable.error.kind, 'recovery')
+  assert.match(unrecoverable.error.message, /duplicate run_code call sequence/)
 
   const disposed = new SessionRuntime()
   await disposed.dispose()

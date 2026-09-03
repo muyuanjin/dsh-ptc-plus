@@ -158,6 +158,16 @@ test('validates a clean expensive-acceptance profile', () => {
     policy: never
 `)
   assert.equal(validateAcceptanceConfig(rows, headlessRuntime), true)
+  const functionClassLoose = structuredClone(rows)
+  functionClassLoose.find(row => row.id === 'ptc-plus').config = {
+    looseTopLevelFunctionClassRedeclarations: true,
+  }
+  assert.equal(validateAcceptanceConfig(functionClassLoose, headlessRuntime, {
+    looseTopLevelFunctionClassRedeclarations: true,
+  }), true)
+  assert.throws(() => validateAcceptanceConfig(rows, headlessRuntime, {
+    looseTopLevelFunctionClassRedeclarations: true,
+  }), /does not enable looseTopLevelFunctionClassRedeclarations/)
 
   const contaminated = structuredClone(rows)
   contaminated.find(row => row.id === 'agent-instructions').disabled = false
@@ -196,6 +206,7 @@ test('audits protocol values and randomized cross-cell reuse', () => {
       allowedJournalStatuses: ['durable'],
       continuityBinding: 'probe_random',
       declarationCellHasValue: false,
+      requiredSourceSequence: ['const probe_random', 'return probe_random'],
       requiredCalls: [{ global: 'tools', member: 'read', valueIncludes: ['sentinel'] }],
       completionEqualsAny: [42],
       finalAnswerIncludes: ['42'],
@@ -241,6 +252,39 @@ test('audits protocol values and randomized cross-cell reuse', () => {
     ptcPlusSectionChars: undefined,
     otherSectionChars: undefined,
   })
+})
+
+test('accepts ordered source fragments within one cell', () => {
+  const events = acceptanceEvents()
+  const initialCall = events.find(event => event.type === 'tool/call' && event.data.callId === 'one')
+  initialCall.data.arguments = JSON.stringify({
+    code: 'const probe_random = 20\nclass ProbeRandom {}',
+    description: 'Establish random binding',
+  })
+  const report = inspectLog(events, {
+    id: 'same-cell-source-order', title: 'Same-cell source order', task: 'task',
+    expect: { requiredSourceSequence: ['const probe_random', 'class ProbeRandom'] },
+  }, { provider: 'provider', model: 'model', cwd: 'X:\\fixture\\workspace' })
+  assert.deepEqual(report.failures, [])
+})
+
+test('requires acceptance source groups to land in distinct cells', () => {
+  const events = acceptanceEvents()
+  const initialCall = events.find(event => event.type === 'tool/call' && event.data.callId === 'one')
+  initialCall.data.arguments = JSON.stringify({
+    code: 'const probe_random = 20\nclass ProbeRandom {}',
+    description: 'Establish random binding',
+  })
+  const report = inspectLog(events, {
+    id: 'cross-cell-source-order', title: 'Cross-cell source order', task: 'task',
+    expect: {
+      requiredSourceCellSequence: [
+        { includes: ['const probe_random'] },
+        { includes: ['class ProbeRandom'] },
+      ],
+    },
+  }, { provider: 'provider', model: 'model', cwd: 'X:\\fixture\\workspace' })
+  assert.match(report.failures.join('\n'), /required source cell group is missing/)
 })
 
 test('counts cache-write tokens in expensive acceptance traffic budgets', () => {
@@ -416,6 +460,12 @@ test('rejects continuity that returns the established binding from its declarati
   }, { provider: 'provider', model: 'model', cwd: 'X:\\fixture\\workspace' })
 
   assert.match(report.failures.join('\n'), /binding declaration cell completion hasValue is true instead of false/)
+
+  const missingSource = inspectLog(events, {
+    id: 'missing-source-sequence', title: 'Missing source sequence', task: 'task',
+    expect: { requiredSourceSequence: ['not present'] },
+  }, { provider: 'provider', model: 'model', cwd: 'X:\\fixture\\workspace' })
+  assert.match(missingSource.failures.join('\n'), /required source fragment is missing/)
 })
 
 test('requires truthful edits for completed and rejected cells while keeping materialized source private', () => {
@@ -792,6 +842,9 @@ test('derives the five ADR-owned default workflows from scenario descriptors', a
   ])
   assert.deepEqual(selectScenarioDescriptors(descriptors, ['partial-redefinition-split']).map(item => item.id), [
     'partial-redefinition-split',
+  ])
+  assert.deepEqual(selectScenarioDescriptors(descriptors, ['function-class-redeclaration-iteration']).map(item => item.id), [
+    'function-class-redeclaration-iteration',
   ])
   assert.throws(() => selectScenarioDescriptors(descriptors, ['missing']), /unknown acceptance scenario/)
   assert.throws(() => validateEditTransports([{

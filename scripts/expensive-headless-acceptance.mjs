@@ -55,9 +55,16 @@ export function parseAcceptanceConfig(text, label = 'DSH config dump') {
   return parseConfigDump(text, label)
 }
 
-export function validateAcceptanceConfig(rows, runtime) {
+export function validateAcceptanceConfig(rows, runtime, expectations = {}) {
   validateNeutralConfig(rows, 'acceptance config', 'enabled')
-  return validateHeadlessRuntimeConfig(rows, 'acceptance config', runtime)
+  validateHeadlessRuntimeConfig(rows, 'acceptance config', runtime)
+  if (expectations.looseTopLevelFunctionClassRedeclarations === true) {
+    const ptcPlus = rows.find(row => row?.id === 'ptc-plus')
+    if (ptcPlus?.config?.looseTopLevelFunctionClassRedeclarations !== true) {
+      throw new Error('acceptance config does not enable looseTopLevelFunctionClassRedeclarations')
+    }
+  }
+  return true
 }
 
 export function valueContains(root, expected) {
@@ -131,6 +138,21 @@ function assertScenarioDescriptor(value, ids) {
       allowTemplates: true,
     })
   }
+  if (value.expect.requiredSourceCellSequence !== undefined) {
+    if (!Array.isArray(value.expect.requiredSourceCellSequence)
+      || value.expect.requiredSourceCellSequence.length === 0
+      || value.expect.requiredSourceCellSequence.some(group => group === null
+        || typeof group !== 'object'
+        || Array.isArray(group)
+        || Object.keys(group).some(key => !['includes', 'excludes'].includes(key))
+        || !Array.isArray(group.includes)
+        || group.includes.length === 0
+        || group.includes.some(fragment => typeof fragment !== 'string' || fragment === '')
+        || (group.excludes !== undefined && (!Array.isArray(group.excludes)
+          || group.excludes.some(fragment => typeof fragment !== 'string' || fragment === ''))))) {
+      throw new Error(`${value.id}.expect.requiredSourceCellSequence must contain include/exclude groups`)
+    }
+  }
 }
 
 export function selectScenarioDescriptors(descriptors, selectedIds) {
@@ -171,6 +193,8 @@ async function prepareScenarios(scenarioFile, artifactRoot, selectedIds) {
       longLiteral,
       expectedRepair: `${longLiteral.length}:${longLiteral.slice(-8)}`,
       expectedAdjustment: `adjusted:${longLiteral.length}:${longLiteral.slice(-8)}`,
+      functionName: `iterate_${nonce.slice(0, 10)}`,
+      className: `Iteration_${nonce.slice(0, 10)}`,
     }
     variables.completedSource = `const adjustmentSource = ${JSON.stringify(longLiteral)}\nreturn adjustmentSource.length`
     variables.adjustmentOld = 'return adjustmentSource.length'
@@ -312,6 +336,41 @@ export function inspectLog(events, scenario, expectedRuntime) {
     if (!timeline.some(cell => cell.description === description)) {
       failures.push('scenario did not produce a cell described as ' + JSON.stringify(description))
     }
+  }
+  let sourceSequenceCursor = 0
+  let sourceOffset = 0
+  for (const fragment of expect.requiredSourceSequence ?? []) {
+    let index = -1
+    let fragmentOffset = -1
+    for (let candidate = sourceSequenceCursor; candidate < timeline.length; candidate += 1) {
+      const code = timeline[candidate]?.code
+      if (typeof code !== 'string') continue
+      const offset = candidate === sourceSequenceCursor ? sourceOffset : 0
+      const found = code.indexOf(fragment, offset)
+      if (found >= 0) {
+        index = candidate
+        fragmentOffset = found
+        break
+      }
+    }
+    if (index < 0) {
+      failures.push('required source fragment is missing after cell ' + sourceSequenceCursor + ': ' + JSON.stringify(fragment))
+      break
+    }
+    sourceSequenceCursor = index
+    sourceOffset = fragmentOffset + fragment.length
+  }
+  let sourceCellCursor = 0
+  for (const group of expect.requiredSourceCellSequence ?? []) {
+    const index = timeline.findIndex((cell, candidate) => candidate >= sourceCellCursor
+      && typeof cell.code === 'string'
+      && group.includes.every(fragment => cell.code.includes(fragment))
+      && (group.excludes ?? []).every(fragment => !cell.code.includes(fragment)))
+    if (index < 0) {
+      failures.push('required source cell group is missing after cell ' + sourceCellCursor + ': ' + JSON.stringify(group))
+      break
+    }
+    sourceCellCursor = index + 1
   }
   const nestedCalls = timeline.flatMap(cell => cell.nestedCalls ?? [])
   for (const required of expect.requiredCalls ?? []) {
@@ -477,7 +536,12 @@ export async function main(env = process.env) {
     throw new Error(`base DSH config preflight failed; see ${relative(repoRoot, artifactRoot)}`)
   }
   const baseRows = parseAcceptanceConfig(baseDump.stdout, 'base DSH config')
-  await writeFile(overlay, headlessConfigPatch(baseRows, runtime))
+  const enableFunctionClassRedeclarations = scenarios.some(
+    scenario => scenario.id === 'function-class-redeclaration-iteration',
+  )
+  await writeFile(overlay, headlessConfigPatch(baseRows, runtime, {
+    looseTopLevelFunctionClassRedeclarations: enableFunctionClassRedeclarations,
+  }))
   const resolvedDump = await runProcess('pwsh.exe', [
     '-NoLogo', '-NoProfile', '-Command',
     `& dsh --profile '${powershellPath(runtime.profile)}' --patch '${powershellPath(windowsPath(overlay))}' --dump-config`,
@@ -487,7 +551,9 @@ export async function main(env = process.env) {
   if (resolvedDump.code !== 0 || resolvedDump.stderr.trim() !== '') {
     throw new Error(`acceptance DSH config preflight failed; see ${relative(repoRoot, artifactRoot)}`)
   }
-  validateAcceptanceConfig(parseAcceptanceConfig(resolvedDump.stdout, 'acceptance DSH config'), runtime)
+  validateAcceptanceConfig(parseAcceptanceConfig(resolvedDump.stdout, 'acceptance DSH config'), runtime, {
+    looseTopLevelFunctionClassRedeclarations: enableFunctionClassRedeclarations,
+  })
   if (env.DSH_PTC_ACCEPTANCE_CONFIG_ONLY === '1') {
     console.log(`expensive acceptance config preflight passed; artifacts: ${relative(repoRoot, artifactRoot)}`)
     return

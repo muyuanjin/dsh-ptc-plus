@@ -576,7 +576,7 @@ test('rejects an invalid explicit persisted call sequence before execution', asy
   assert.match(result.error.message, /persisted tool call sequence must be a non-negative safe integer/)
 })
 
-test('rejects a malformed recovery boundary before executing the current cell', async (t) => {
+test('contracts a legacy recovery boundary while executing the current cell', async (t) => {
   const callId = 'current-after-malformed-boundary'
   const session = {
     id: 'malformed-recovery-boundary',
@@ -606,9 +606,383 @@ test('rejects a malformed recovery boundary before executing the current cell', 
       signal: new AbortController().signal,
     },
   )
-  assert.equal(result.error.kind, 'recovery')
-  assert.match(result.error.message, /legacy recovery boundary requires migration/)
-  assert.equal(runtime.kernels.has(session.id), false)
+  assert.equal(result.error, undefined)
+  assert.equal(result.value, true)
+  assert.equal(runtime.kernels.has(session.id), true)
+})
+
+test('continues the current cell after an unprovable historical result', async (t) => {
+  const session = {
+    id: 'unprovable-history-current-cell',
+    events: [
+      {
+        seq: 0,
+        type: 'tool/call',
+        data: {
+          callId: 'historical',
+          name: 'run_code',
+          arguments: JSON.stringify({ code: 'const lost = 1', description: 'historical' }),
+        },
+      },
+      {
+        seq: 1,
+        type: 'tool/result',
+        sourceEventSeqs: [0],
+        surfaceOp: 'append',
+        data: { message: { source: { callId: 'historical' } } },
+      },
+      {
+        seq: 2,
+        type: 'tool/call',
+        data: {
+          callId: 'current',
+          name: 'run_code',
+          arguments: JSON.stringify({ code: 'return 42', description: 'current' }),
+        },
+      },
+    ],
+  }
+  const runtime = new SessionRuntime()
+  t.after(() => runtime.dispose())
+  const execution = await runtime.run(
+    { id: session.id, session, callId: 'current' },
+    {
+      program: 'return 42',
+      bindings: [],
+      signal: new AbortController().signal,
+    },
+  )
+  assert.equal(execution.value, 42)
+  assert.equal(execution.error, undefined)
+})
+
+test('keeps availability when the optional session surface is unavailable', async (t) => {
+  const session = {
+    id: 'surface-unavailable',
+    events: [{ seq: 0, type: 'tool/call', data: { callId: 'surface-call', name: 'run_code', arguments: '{"code":"return 7","description":"current"}' } }],
+    get surface() { throw new Error('surface unavailable') },
+  }
+  const runtime = new SessionRuntime()
+  t.after(() => runtime.dispose())
+  const execution = await runtime.run(
+    { id: session.id, session, callId: 'surface-call' },
+    { program: 'return 7', bindings: [], signal: new AbortController().signal },
+  )
+  assert.equal(execution.value, 7)
+})
+
+test('rebuilds history when the model-visible surface generation changes', async (t) => {
+  let generation = 0
+  let surfaceNodes = [1, 3]
+  const events = []
+  appendRunCodeEvents(events, 'surface-stable', 'const surfaceStable = 1', {
+    meta: { dshPtcPlus: normalizeJournal({
+      version: 3,
+      bindingMode: 'loose',
+      rewritePolicy: JOURNAL_POLICY,
+      status: 'durable',
+      calls: [],
+      operations: [],
+      confirms: [],
+      diagnostics: [],
+      completion: { kind: 'return', hasValue: false },
+    }) },
+  })
+  appendRunCodeEvents(events, 'surface-hidden', 'const surfaceHidden = 2', {
+    meta: { dshPtcPlus: normalizeJournal({
+      version: 3,
+      bindingMode: 'loose',
+      rewritePolicy: JOURNAL_POLICY,
+      status: 'durable',
+      calls: [],
+      operations: [],
+      confirms: [],
+      diagnostics: [],
+      completion: { kind: 'return', hasValue: false },
+    }) },
+  })
+  const session = {
+    id: 'surface-generation-change',
+    events,
+    surface: {
+      get replaceGeneration() { return generation },
+      get nodes() { return surfaceNodes },
+    },
+  }
+  const runtime = new SessionRuntime()
+  t.after(() => runtime.dispose())
+  events.push({
+    seq: 4,
+    type: 'tool/call',
+    data: {
+      callId: 'surface-before-replacement',
+      name: 'run_code',
+      arguments: JSON.stringify({ code: 'return [surfaceStable, surfaceHidden]', description: 'before replacement' }),
+    },
+  })
+  surfaceNodes = [1, 3, 4]
+  const first = await runtime.run(
+    { id: session.id, session, callId: 'surface-before-replacement' },
+    { program: 'return [surfaceStable, surfaceHidden]', bindings: [], signal: new AbortController().signal },
+  )
+  assert.deepEqual(first.value, [1, 2])
+  const firstWorker = runtime.kernels.get(session.id).client.worker
+  generation = 1
+  events.push({
+    seq: 5,
+    type: 'tool/call',
+    data: {
+      callId: 'surface-after-replacement',
+      name: 'run_code',
+      arguments: JSON.stringify({ code: 'return [surfaceStable, typeof surfaceHidden]', description: 'after replacement' }),
+    },
+  })
+  surfaceNodes = [1, 5]
+  const second = await runtime.run(
+    { id: session.id, session, callId: 'surface-after-replacement' },
+    { program: 'return [surfaceStable, typeof surfaceHidden]', bindings: [], signal: new AbortController().signal },
+  )
+  assert.deepEqual(second.value, [1, 'undefined'])
+  assert.match(second.logs[0], /Restored the durable head and skipped/)
+  assert.notEqual(runtime.kernels.get(session.id).client.worker, firstWorker)
+
+  let disabledGeneration = 0
+  let disabledNodes = [0]
+  const disabledEvents = [{
+    seq: 0,
+    type: 'tool/call',
+    data: {
+      callId: 'surface-disabled-first',
+      name: 'run_code',
+      arguments: JSON.stringify({ code: 'const disabledHidden = 1', description: 'declare hidden binding' }),
+    },
+  }]
+  const disabledSession = {
+    id: 'surface-generation-disabled-replay',
+    events: disabledEvents,
+    surface: {
+      get replaceGeneration() { return disabledGeneration },
+      get nodes() { return disabledNodes },
+    },
+  }
+  const disabledRuntime = new SessionRuntime({ durableReplay: false })
+  t.after(() => disabledRuntime.dispose())
+  assert.equal((await disabledRuntime.run(
+    { id: disabledSession.id, session: disabledSession, callId: 'surface-disabled-first' },
+    { program: 'const disabledHidden = 1', bindings: [], signal: new AbortController().signal },
+  )).error, undefined)
+  const disabledWorker = disabledRuntime.kernels.get(disabledSession.id).client.worker
+  disabledGeneration = 1
+  disabledEvents.push({
+    seq: 1,
+    type: 'tool/call',
+    data: {
+      callId: 'surface-disabled-second',
+      name: 'run_code',
+      arguments: JSON.stringify({ code: 'return typeof disabledHidden', description: 'inspect hidden binding' }),
+    },
+  })
+  disabledNodes = [0, 1]
+  const disabledVisibleResult = await disabledRuntime.run(
+    { id: disabledSession.id, session: disabledSession, callId: 'surface-disabled-second' },
+    { program: 'return typeof disabledHidden', bindings: [], signal: new AbortController().signal },
+  )
+  assert.equal(disabledVisibleResult.value, 'number')
+  assert.deepEqual(disabledVisibleResult.logs, [])
+  assert.equal(disabledRuntime.kernels.get(disabledSession.id).client.worker, disabledWorker)
+  disabledGeneration = 2
+  disabledEvents.push({
+    seq: 2,
+    type: 'tool/call',
+    data: {
+      callId: 'surface-disabled-third',
+      name: 'run_code',
+      arguments: JSON.stringify({ code: 'return typeof disabledHidden', description: 'inspect hidden binding' }),
+    },
+  })
+  disabledNodes = [2]
+  const disabledHiddenResult = await disabledRuntime.run(
+    { id: disabledSession.id, session: disabledSession, callId: 'surface-disabled-third' },
+    { program: 'return typeof disabledHidden', bindings: [], signal: new AbortController().signal },
+  )
+  assert.equal(disabledHiddenResult.value, 'undefined')
+  assert.notEqual(disabledRuntime.kernels.get(disabledSession.id).client.worker, disabledWorker)
+
+  let volatileGeneration = 0
+  let volatileNodes = []
+  const volatileEvents = []
+  const volatileSession = {
+    id: 'surface-generation-volatile',
+    events: volatileEvents,
+    surface: {
+      get replaceGeneration() { return volatileGeneration },
+      get nodes() { return volatileNodes },
+    },
+  }
+  const volatileRuntime = new SessionRuntime()
+  t.after(() => volatileRuntime.dispose())
+  const executeVolatile = async (seq, callId, program) => {
+    volatileEvents.push({
+      seq,
+      type: 'tool/call',
+      data: {
+        callId,
+        name: 'run_code',
+        arguments: JSON.stringify({ code: program, description: 'volatile surface cell' }),
+      },
+    })
+    volatileNodes = [...volatileNodes, seq]
+    const execution = await volatileRuntime.runTentative(
+      { id: volatileSession.id, session: volatileSession, callId },
+      { program, bindings: [], signal: new AbortController().signal },
+    )
+    volatileRuntime.finalize(execution.settlement, true)
+    return execution
+  }
+  const volatileFirst = await executeVolatile(0, 'surface-volatile-first', 'const surfaceVolatile = Date.now()')
+  assert.equal(volatileFirst.settlement.journal.status, 'volatile')
+  const volatileWorker = volatileRuntime.kernels.get(volatileSession.id).client.worker
+  volatileGeneration = 1
+  const volatileVisible = await executeVolatile(1, 'surface-volatile-second', 'return typeof surfaceVolatile')
+  assert.equal(volatileVisible.result.value, 'number')
+  assert.deepEqual(volatileVisible.result.logs, [])
+  assert.equal(volatileRuntime.kernels.get(volatileSession.id).client.worker, volatileWorker)
+})
+
+test('counts every historical cell excluded after an unavailable journal boundary', async (t) => {
+  const stable = normalizeJournal({
+    version: 3,
+    bindingMode: 'loose',
+    rewritePolicy: JOURNAL_POLICY,
+    status: 'durable',
+    calls: [],
+    operations: [],
+    confirms: [],
+    diagnostics: [],
+    completion: { kind: 'return', hasValue: false },
+  })
+  const malformed = { ...stable, unexpected: true }
+  const events = []
+  appendRunCodeEvents(events, 'count-stable', 'const countStable = 1', {
+    meta: { dshPtcPlus: stable },
+  })
+  appendRunCodeEvents(events, 'count-malformed', 'const countMalformed = 2', {
+    meta: { dshPtcPlus: malformed },
+  })
+  appendRunCodeEvents(events, 'count-dependent-one', 'const countDependentOne = 3', {
+    meta: { dshPtcPlus: stable },
+  })
+  appendRunCodeEvents(events, 'count-dependent-two', 'const countDependentTwo = 4', {
+    meta: { dshPtcPlus: stable },
+  })
+  events.push({
+    seq: 8,
+    type: 'tool/call',
+    data: {
+      callId: 'count-current',
+      name: 'run_code',
+      arguments: JSON.stringify({ code: 'return countStable', description: 'inspect recovered prefix' }),
+    },
+  })
+  const session = { id: 'count-unavailable-suffix', events }
+  const runtime = new SessionRuntime()
+  t.after(() => runtime.dispose())
+  const current = await runtime.run(
+    { id: session.id, session, callId: 'count-current' },
+    { program: 'return countStable', bindings: [], signal: new AbortController().signal },
+  )
+  assert.equal(current.value, 1)
+  assert.match(current.logs[0], /Restored the durable head and skipped 3 unreconstructable historical cell\(s\)/)
+})
+
+test('keeps disabled derived edit provenance through visible surface replacement', async (t) => {
+  let generation = 0
+  let surfaceNodes = [0]
+  const events = [{
+    seq: 0,
+    type: 'tool/call',
+    data: {
+      callId: 'disabled-edit-source',
+      name: 'run_code',
+      arguments: JSON.stringify({ code: 'let editableSurface = 1', description: 'editable source' }),
+    },
+  }]
+  const session = {
+    id: 'disabled-derived-edit-surface',
+    events,
+    surface: {
+      get replaceGeneration() { return generation },
+      get nodes() { return surfaceNodes },
+    },
+  }
+  const runtime = new SessionRuntime({ durableReplay: false })
+  t.after(() => runtime.dispose())
+  const first = await runtime.run(
+    { id: session.id, session, callId: 'disabled-edit-source' },
+    { program: 'let editableSurface = 1', bindings: [], signal: new AbortController().signal },
+  )
+  assert.equal(first.error, undefined)
+  const firstWorker = runtime.kernels.get(session.id).client.worker
+
+  events.push({
+    seq: 1,
+    type: 'tool/call',
+    data: {
+      callId: 'disabled-edit-call',
+      name: 'edit_run_code',
+      arguments: JSON.stringify({ edits: [{ old_string: '1', new_string: '2' }] }),
+    },
+  })
+  surfaceNodes = [0, 1]
+  const edited = await runtime.run(
+    {
+      id: session.id,
+      session,
+      callId: 'disabled-edit-call:derived',
+      persistedCallSeq: 1,
+    },
+    { program: 'editableSurface = 2', bindings: [], signal: new AbortController().signal },
+  )
+  assert.equal(edited.error, undefined)
+  assert.equal(runtime.kernels.get(session.id).client.worker, firstWorker)
+
+  generation = 1
+  events.push({
+    seq: 2,
+    type: 'tool/call',
+    data: {
+      callId: 'disabled-edit-inspect',
+      name: 'run_code',
+      arguments: JSON.stringify({ code: 'return editableSurface', description: 'inspect edited source' }),
+    },
+  })
+  surfaceNodes = [0, 1, 2]
+  const visible = await runtime.run(
+    { id: session.id, session, callId: 'disabled-edit-inspect' },
+    { program: 'return editableSurface', bindings: [], signal: new AbortController().signal },
+  )
+  assert.equal(visible.value, 2)
+  assert.deepEqual(visible.logs, [])
+  assert.equal(runtime.kernels.get(session.id).client.worker, firstWorker)
+
+  generation = 2
+  surfaceNodes = [2]
+  events.push({
+    seq: 3,
+    type: 'tool/call',
+    data: {
+      callId: 'disabled-edit-after-hide',
+      name: 'run_code',
+      arguments: JSON.stringify({ code: 'return typeof editableSurface', description: 'inspect hidden edit' }),
+    },
+  })
+  const hidden = await runtime.run(
+    { id: session.id, session, callId: 'disabled-edit-after-hide' },
+    { program: 'return typeof editableSurface', bindings: [], signal: new AbortController().signal },
+  )
+  assert.equal(hidden.value, 'undefined')
+  assert.match(hidden.logs[0], /Restored the durable head and skipped/)
+  assert.notEqual(runtime.kernels.get(session.id).client.worker, firstWorker)
 })
 
 test('attaches post-recovery cells to the verified frontier across restarts', async (t) => {

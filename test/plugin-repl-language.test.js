@@ -958,6 +958,143 @@ test('keeps loose REPL convenience out of strict cells and preserves session rep
   })
 })
 
+test('keeps same-name function/class declarations ordered across an intervening exception', async (t) => {
+  const state = fixture({ looseTopLevelFunctionClassRedeclarations: true })
+  t.after(() => state.dispose())
+  await state.run('same-name-order-exception', 'function layer() { return 0 }\nclass Layer { static value = 0 }')
+
+  const failed = await state.runDurable('same-name-order-exception', [
+    'function layer() { return 1 }',
+    'throw new Error("mid"); class Layer { static value = 1 }',
+    'function layer() { return 2 }',
+  ].join('\n'))
+  assert.equal(failed.isError, true)
+  assert.match(failed.error.message, /mid/)
+  const failedEntry = failed.meta.dshPtcPlusBindings.memory.entries.find(entry => entry.name === 'layer')
+  assert.equal(failedEntry.kind, 'function')
+  assert.equal(failedEntry.definition.source, 'function layer() { return 1 }')
+  const failedClassEntry = failed.meta.dshPtcPlusBindings.memory.entries.find(entry => entry.name === 'Layer')
+  assert.equal(failedClassEntry.kind, 'class')
+  assert.equal(failedClassEntry.definition.source, 'class Layer { static value = 0 }')
+
+  assert.deepEqual(await state.run('same-name-order-exception', 'return [layer(), Layer.value]'), {
+    logs: [],
+    value: [1, 0],
+  })
+  const completed = await state.runDurable('same-name-order-exception', [
+    'function layer() { return 3 }',
+    'class Layer { static value = 3 }',
+    'function layer() { return 4 }',
+    'return [layer(), Layer.value]',
+  ].join('\n'))
+  assert.deepEqual(completed.value, [4, 3])
+  const completedEntry = completed.meta.dshPtcPlusBindings.memory.entries.find(entry => entry.name === 'layer')
+  assert.equal(completedEntry.kind, 'function')
+  assert.equal(completedEntry.definition.source, 'function layer() { return 4 }')
+})
+
+test('replaces class bindings by functions and function bindings by classes with live inner references', async (t) => {
+  const state = fixture({ looseTopLevelFunctionClassRedeclarations: true })
+  t.after(() => state.dispose())
+  await state.run('cross-kind-replacement', [
+    'function machine(label) { return "fn-" + label }',
+    'class gadget { static kind() { return gadget } }',
+  ].join('\n'))
+
+  const replaced = await state.run('cross-kind-replacement', [
+    'function gadget(label) { return label === "deep" ? gadget("step") : "fn-" + label }',
+    'class machine { static kind() { return machine } }',
+    'return { fn: gadget("plain"), deep: gadget("deep"), cls: machine.kind() === machine }',
+  ].join('\n'))
+  assert.deepEqual(replaced.value, { fn: 'fn-plain', deep: 'fn-step', cls: true })
+  assert.deepEqual(replaced.rewrites.map(rewrite => rewrite.description), [
+    'reassigned an existing top-level function declaration for REPL continuity',
+    'reassigned an existing top-level class declaration for REPL continuity',
+  ])
+
+  const reads = await state.runDurable('cross-kind-replacement', 'return [gadget("again"), typeof machine.kind, machine.kind() === machine]')
+  assert.deepEqual(reads.value, ['fn-again', 'function', true])
+  const entries = reads.meta.dshPtcPlusBindings.memory.entries
+  assert.equal(entries.find(entry => entry.name === 'gadget').kind, 'function')
+  assert.equal(entries.find(entry => entry.name === 'machine').kind, 'class')
+})
+
+test('publishes kind and declaration source for every committed function/class replacement', async (t) => {
+  const state = fixture({ looseTopLevelFunctionClassRedeclarations: true })
+  t.after(() => state.dispose())
+  await state.run('function-class-inventory', 'function current() { return 0 }\nclass Current { static value = 0 }')
+
+  const result = await state.runDurable('function-class-inventory', [
+    'function current() { return 9 }',
+    'class Current { static value = 9 }',
+    'return [current(), Current.value]',
+  ].join('\n'))
+  assert.deepEqual(result.value, [9, 9])
+  const current = result.meta.dshPtcPlusBindings.memory.entries.find(entry => entry.name === 'current')
+  assert.equal(current.kind, 'function')
+  assert.deepEqual(current.definition, { source: 'function current() { return 9 }', line: 1, column: 1 })
+  const Current = result.meta.dshPtcPlusBindings.memory.entries.find(entry => entry.name === 'Current')
+  assert.equal(Current.kind, 'class')
+  assert.deepEqual(Current.definition, { source: 'class Current { static value = 9 }', line: 2, column: 1 })
+  assert.deepEqual(result.meta.dshPtcPlus.diagnostics, [])
+})
+
+test('keeps the function/class replacement provenance out of quiet adjacent cells and its policy recorded', async (t) => {
+  const state = fixture({ looseTopLevelFunctionClassRedeclarations: true })
+  t.after(() => state.dispose())
+  await state.run('quiet-function-class', 'function quiet() { return 1 }\nclass Quiet { static value = 1 }')
+  const source = 'function quiet() { return 2 }\nclass Quiet { static value = 2 }\nreturn quiet() + Quiet.value'
+  const observed = await state.executeRun('quiet-function-class', source, {}, {})
+  assert.deepEqual(observed.raw.value, 4)
+  assert.deepEqual(observed.raw.logs, [])
+  assert.deepEqual(observed.result.meta.dshPtcPlus.diagnostics, [])
+  assert.deepEqual(observed.result.meta.dshPtcPlus.bindingPolicy, {
+    variableRedeclarations: true,
+    functionClassRedeclarations: true,
+  })
+  assert.deepEqual(observed.result.meta.dshPtcPlusRewrites.map(rewrite => rewrite.source), ['quiet', 'Quiet'])
+})
+
+test('rejects a function/class replacement of an immutable target even when only the class policy is enabled', async (t) => {
+  const state = fixture({
+    looseTopLevelRedeclarations: false,
+    looseTopLevelFunctionClassRedeclarations: true,
+  })
+  t.after(() => state.dispose())
+  await state.run('only-class-policy-immutable', "import { format } from 'node:util'\nconst locked = 1")
+
+  const functionTarget = await state.run('only-class-policy-immutable', 'function format() {}')
+  assert.equal(functionTarget.error.kind, 'exception')
+  assert.match(functionTarget.error.message, /PTC-N001.*immutable/s)
+  assert.doesNotMatch(functionTarget.error.message, /assign a function expression/)
+  const classTarget = await state.run('only-class-policy-immutable', 'class locked {}')
+  assert.equal(classTarget.error.kind, 'exception')
+  assert.match(classTarget.error.message, /PTC-N001.*immutable/s)
+  assert.doesNotMatch(classTarget.error.message, /assign a class expression/)
+  assert.deepEqual(await state.run('only-class-policy-immutable', "return [typeof format, locked]"), {
+    logs: [],
+    value: ['function', 1],
+  })
+})
+
+test('rejects function/class declarations only when their policy is disabled despite loose variables', async (t) => {
+  const state = fixture({
+    looseTopLevelRedeclarations: true,
+    looseTopLevelFunctionClassRedeclarations: false,
+  })
+  t.after(() => state.dispose())
+  await state.run('disabled-function-class-loose-variables', 'function helper() { return 1 }\nclass Helper { static value = 1 }')
+
+  const rejected = await state.run('disabled-function-class-loose-variables', 'function helper() { return 2 }\nclass Helper { static value = 2 }')
+  assert.equal(rejected.error.kind, 'exception')
+  assert.match(rejected.error.message, /helper, Helper/)
+  assert.match(rejected.error.message, /assign function or class expressions to the existing writable bindings/)
+  assert.deepEqual(await state.run('disabled-function-class-loose-variables', 'return [helper(), Helper.value]'), {
+    logs: [],
+    value: [1, 1],
+  })
+})
+
 test('rejects goal-style host calls without an initiator boundary', async (t) => {
   const state = fixture()
   t.after(() => state.dispose())

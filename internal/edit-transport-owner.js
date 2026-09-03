@@ -147,7 +147,7 @@ export function createEditTransportOwner(ctx, {
     if (typeof ctx.tools.execute !== 'function') {
       throw new Error('ptc-plus: DSH tools.execute is required for derived edit execution')
     }
-    const persistedCallSeq = currentDurableReplay ? persistedTargetCallSeq : undefined
+    const persistedCallSeq = persistedTargetCallSeq
     const id = sessionId(agent)
     let claims = editClaims.get(id)
     if (claims === undefined) {

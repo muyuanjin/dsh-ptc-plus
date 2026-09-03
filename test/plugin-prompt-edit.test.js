@@ -179,7 +179,7 @@ test('presents one coherent persistent REPL contract to the model', async (t) =>
   assert.match(guidance, /Direct Node\/OS access remains live but is not replayed after a kernel restart/)
   const functionClassLoose = fixture({ looseTopLevelFunctionClassRedeclarations: true })
   t.after(() => functionClassLoose.dispose())
-  assert.match(functionClassLoose.sections[0].text({}), /Repeated top-level named `function`\/`class` declarations replace existing writable bindings at their declaration position/)
+  assert.match(functionClassLoose.sections[0].text({}), /Repeated top-level named `function`\/`class` declarations replace existing writable bindings at their declaration position\. Do not rely on function hoisting or class TDZ; define a replacement before using that name in the cell\./)
   const strict = fixture({ looseTopLevelRedeclarations: false })
   t.after(() => strict.dispose())
   assert.match(strict.sections[0].text({}), /Repeated top-level variable declarations fail before execution/)

@@ -58,11 +58,13 @@ assembly pattern remains available for future UI or host features. A plugin
 update alone cannot repair an already-running DSH process that has failed while
 loading legacy artifacts; the process must be stopped and the artifacts
 migrated before restore. Existing valid sessions are unaffected by the
-migration, while malformed legacy artifacts must fail closed and remain
-diagnosable.
+migration, while malformed legacy artifacts must remain unchanged and
+diagnosable. This migration rule rejects an unsafe overwrite of the source
+artifact; it does not authorize the session runtime to reject later valid cells
+once DSH has supplied a loadable session. Runtime contraction follows
+[ADR 0007](0007-separate-worker-transport-from-session-semantics.md).
 
 The long-term upstream requirement is one of: a restore-preflight migration
 hook, an atomic raw-artifact rewrite API, or a contract that isolates one bad
 session from workspace registry initialization. None of these is emulated by
 PTC Plus in the absence of a public DSH extension point.
-

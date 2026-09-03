@@ -54,7 +54,7 @@ function replGuidance(
     ? 'Repeated top-level `const`/`let` declarations replace existing bindings.'
     : 'Repeated top-level variable declarations fail before execution, so reuse existing bindings or place one-off declarations inside a block.'
   const functionClassRedeclaration = looseTopLevelFunctionClassRedeclarations
-    ? 'Repeated top-level named `function`/`class` declarations replace existing writable bindings at their declaration position.'
+    ? 'Repeated top-level named `function`/`class` declarations replace existing writable bindings at their declaration position. Do not rely on function hoisting or class TDZ; define a replacement before using that name in the cell.'
     : 'Repeated top-level `function`/`class` declarations remain unsupported; assign a function or class expression to an existing writable binding, or place one-off declarations inside a block.'
   const moduleSyntax = autoRewriteImports && autoStripExports
     ? 'static `import` declarations are adapted with live, read-only bindings and top-level `export` modifiers are stripped automatically.'

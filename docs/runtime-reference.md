@@ -88,6 +88,12 @@ Cordis Plugins and Runs are process-local. On a resumed agent or after Cordis is
 
 `durableReplay: false` starts new kernels without recorded REPL state while preserving live bindings in the current process. It does not delete session logs.
 
+With `durableReplay: true`, recovery claims only bindings backed by both verified journal ancestry and exact provenance available to the model that produced the current call. DSH's append-only event log proves reconstructability; its ordered model-visible surface proves awareness. Raw events shadowed from that surface and UI-only `dshPtcPlusBindings` metadata do not make a binding model-knowable. A result-only replacement may retain a cell when the assistant call containing its source remains visible. If compaction shadows that call, the live worker and cold recovery contract the affected state unless an explicitly selected bounded structured projection exposes the exact bindings in model context. Such a projection is not injected by default merely to retain hidden state. Natural-language summaries are not parsed as state evidence.
+
+An invalid historical association, prune replacement, or recovery boundary is also rejected as evidence for its bindings; it is not by itself a reason to reject every later valid `run_code`. Recovery takes the intersection of the model-knowable and structurally verified frontiers, then discards cells and bindings that may depend on an unknown boundary. Because the current journal does not contain a complete per-binding dependency graph, the conservative unit is an affected cell and suffix unless stronger owned evidence exists. If no non-empty frontier is provable, the worker starts from an empty REPL and executes the current cell as a new root.
+
+The first continued cell reports `PTC-R002` once so the model can redeclare any missing bindings, and its result persists the contraction for later cold starts. Recovery never redispatches, reverses, or certifies effects from discarded history. This availability fallback applies only to historical PTC Plus recovery data; validation, policy, authority, approval, cancellation, and other failures of the current request retain their normal DSH behavior.
+
 Recovery tips are disabled with `tipsEnabled: false`. When enabled, a bounded runtime context in the reserved `tools:ptc-plus-tip/<trigger>/<ordinal>` name family may appear after a repeated binding failure or a diagnostic that identifies an executable, shell, or path problem in the current execution world. The trigger and per-trigger ordinal are reconstructed from canonical named system-prompt snapshots; repeated aggregate copies and visible wording do not advance the history. A tip is subject to `tipCooldownMessages` and becomes detailed only after `tipEscalationFailures` unresolved matches; it never changes the code-only direct-tool list or schema. `edit_run_code` does not emit a runtime context because its real call and result already carry the relevant fact.
 
 The three `auto*` toggles control text-level AST rewriting applied before cell wrapping, all on by default:
@@ -109,7 +115,7 @@ Rewrites are recorded as `meta.dshPtcPlusRewrites` on the tool result (parallel 
 | `PTC-N001` | Top-level binding conflict | Not executed; REPL unchanged |
 | `PTC-O001` | Unsupported or over-budget output | Cell executed; earlier mutations may exist |
 | `PTC-X001` | Uncaught runtime exception, located at the cell source line | Mutations before the throw may exist |
-| `PTC-R002` | Cold recovery skipped volatile, unconfirmed, or replay-abandoned history | Restored the last reconstructable durable frontier |
+| `PTC-R002` | Cold recovery discarded volatile, unconfirmed, damaged, or replay-abandoned history | Continued from the greatest verified frontier, possibly an empty REPL; missing bindings may need redeclaration |
 | `PTC-W001` | The same cell failed 3 consecutive times with an identical binding error | One-shot binding-recovery warning appended to the failing cell's logs; no state change |
 | `PTC-W002` | The same cell failed 3 consecutive times with another identical error | One-shot cause-specific warning appended to the failing cell's logs; no state change |
 

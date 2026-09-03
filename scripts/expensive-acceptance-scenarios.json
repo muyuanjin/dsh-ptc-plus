@@ -1,5 +1,43 @@
 [
   {
+    "id": "function-class-redeclaration-iteration",
+    "title": "Function and class redeclaration iteration",
+    "default": false,
+    "task": "验证 PTC 模式中的函数和类迭代修改。第一步只调用一个 run_code cell，声明名为 {{functionName}} 的 function 和名为 {{className}} 的 class，不要依赖声明前使用，也不要返回值。第二步只调用一个新的 run_code cell，先同名重新声明这两个 function/class（先声明再使用），让 function 返回 `new-function`，让 class 实例方法返回 `new-class`，最后 return `${{{functionName}}()}-${new {{className}}().value()}`。第三步直接调用一个新的 run_code cell，不要重新发送任何声明，return 同名 function 和 class 的新实现结果。不要使用 edit_run_code，不要重复发送 setup 源码，最终只报告 `new-function-new-class`。",
+    "expect": {
+      "minCells": 3,
+      "maxCells": 4,
+      "allowedJournalStatuses": ["durable"],
+      "requiredJournalStatuses": ["durable"],
+      "requiredDirectToolSequence": ["run_code", "run_code", "run_code"],
+      "requiredSourceCellSequence": [
+        { "includes": ["function {{functionName}}", "class {{className}}"] },
+        { "includes": ["function {{functionName}}", "class {{className}}"] },
+        {
+          "includes": ["return", "{{functionName}}", "{{className}}"],
+          "excludes": ["function {{functionName}}", "class {{className}}"]
+        }
+      ],
+      "completionEqualsAny": ["new-function-new-class"],
+      "finalAnswerIncludes": ["new-function-new-class"],
+      "runtimeContexts": {
+        "allowed": [],
+        "requiredTransitions": [],
+        "maxSnapshotChars": 8192
+      },
+      "machineBudget": {
+        "maxModelRequests": 6,
+        "maxDirectCalls": 4,
+        "maxSourceChars": 12000,
+        "maxRepeatedSourceCalls": 0,
+        "maxResultChars": 30000,
+        "maxAssistantChars": 30000,
+        "maxTokenTraffic": 80000,
+        "maxRuntimeContextChars": 20000
+      }
+    }
+  },
+  {
     "id": "rejected-cell-editing",
     "title": "Completed and rejected cell delta repair",
     "default": true,

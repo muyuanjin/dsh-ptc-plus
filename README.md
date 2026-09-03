@@ -115,7 +115,7 @@ import { readFile } from 'node:fs/promises'
 | Token 流量 | 729,642 | 942,901 | 减少 22.6% |
 | 身份盲评量表得分 | 138 / 162 | 118 / 162 | 提高 12.3 个百分点 |
 
-模块语法任务的区分最清楚：PTC Plus 两次都只用一次 `run_code` 完成；未启用 PTC Plus 的 DSH PTC 模式两次都未满足静态 import 要求，尝试过程合计用了 8 次工具调用。
+模块语法任务的区分最清楚：PTC Plus 两次都只用一次 `run_code` 完成；未启用 PTC Plus 的 DSH PTC 模式两次都未满足静态 import 要求，合计使用了 8 次工具调用。
 
 这是一次有随机性的配对观测，不是性能保证。预设机器预算在 PTC Plus 的 18 个 session 中有 2 个超限，未启用 PTC Plus 的 18 个 session 中有 5 个超限，因此整组矩阵没有通过 machine acceptance。Token 流量包含 input、cache-read、cache-write 和 output token。夹具、配对规则、指标与盲评流程见[评测说明](docs/evaluation.md)。
 

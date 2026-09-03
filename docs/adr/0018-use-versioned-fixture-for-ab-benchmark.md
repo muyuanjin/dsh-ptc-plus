@@ -2,11 +2,11 @@
 
 ## Problem
 
-The ordinary-task A/B benchmark previously copied the active PTC Plus checkout into each arm. The workload therefore changed whenever the plugin repository grew, making absolute machine budgets and longitudinal comparisons unstable. The same source tree was also serving as the host, the treatment-under-test workspace, and the measurement workload, which mixes unrelated variables into one measurement.
+Using the active PTC Plus checkout as each ordinary-task A/B arm's workload would make the workload change whenever the plugin repository grows, destabilizing absolute machine budgets and longitudinal comparisons. It would also make one source tree serve as the host, treatment-under-test workspace, and measurement workload, mixing unrelated variables into one measurement.
 
 ## Decision
 
-The primary ordinary-task A/B workload is now a purpose-built, versioned, zero-dependency Node.js fixture in `fixtures/ab-node-project-v1`. The fixture manifest is the single owner of the fixture name, version, content SHA-256, deterministic Git identity/commit, and deterministic dirty state. The runner materializes the fixture independently into each arm workspace, initializes the same deterministic Git history, applies the same uncommitted changes, and never copies the active PTC Plus checkout as the model workload.
+The primary ordinary-task A/B workload is a purpose-built, versioned, zero-dependency Node.js fixture in `fixtures/ab-node-project-v1`. The fixture manifest is the single owner of the fixture name, version, content SHA-256, deterministic Git identity/commit, and deterministic dirty state. The runner materializes the fixture independently into each arm workspace, initializes the same deterministic Git history, applies the same uncommitted changes, and never copies the active PTC Plus checkout as the model workload.
 
 The A/B task set contains a fixed, cheap, machine-checkable canary that exercises `run_code` before the full paired matrix starts. Reports record the fixture path, version, and content hash so future runs are grouped by benchmark version. The current PTC Plus checkout is kept as a separate self-hosting acceptance surface; it is not the stable README headline benchmark.
 
@@ -22,4 +22,4 @@ The A/B task set contains a fixed, cheap, machine-checkable canary that exercise
 
 ## Consequences
 
-The benchmark workload is stable under unrelated PTC Plus source changes and has its own result series tied to `fixtureVersion` and content hash. Existing README totals from the checkout-based series are explicitly non-comparable to the new fixture series. Maintaining a benchmark now requires updating the fixture manifest together with the fixture content, and a materially different task set or fixture change starts a new series rather than reusing old totals.
+The benchmark workload is stable under unrelated PTC Plus source changes and has its own result series tied to `fixtureVersion` and content hash. Results produced from an active-checkout workload are not comparable to the versioned-fixture series. Maintaining the benchmark requires updating the fixture manifest together with the fixture content, and a materially different task set or fixture change starts a new series rather than reusing old totals.

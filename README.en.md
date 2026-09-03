@@ -115,7 +115,7 @@ One identity-blind paired run used `opencode-go/deepseek-v4-flash`. Both arms us
 | Token traffic | 729,642 | 942,901 | 22.6% fewer |
 | Identity-blind rubric score | 138 / 162 | 118 / 162 | +12.3 percentage points |
 
-The module-syntax task separated the two arms most clearly. PTC Plus finished both replicates with one `run_code` each. DSH PTC mode without PTC Plus finished neither static-import requirement and used eight tool calls across its attempts.
+The module-syntax task separated the two arms most clearly. PTC Plus finished both replicates with one `run_code` each. DSH PTC mode without PTC Plus satisfied neither static-import requirement and used eight tool calls in total.
 
 This is one stochastic paired observation, not a performance guarantee. Machine budgets were exceeded in 2 of the 18 PTC Plus sessions and 5 of the 18 sessions without PTC Plus, so the matrix as a whole did not pass machine acceptance. Token traffic includes input, cache-read, cache-write, and output tokens. The fixture, pairing rules, metrics, and blind-review protocol are documented in [Evaluation](docs/evaluation.md).
 

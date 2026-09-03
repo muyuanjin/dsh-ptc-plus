@@ -43,7 +43,7 @@ jobs:
           consumers_dir="$(mktemp -d)"
           trap 'rm -rf -- "$pack_dir" "$consumers_dir"' EXIT
           archive="$(npm pack --silent --pack-destination "$pack_dir" --json | node scripts/npm-pack-filename.mjs)"
-          for channel in alpha next; do
+          for channel in latest next; do
             consumer_dir="$consumers_dir/$channel"
             mkdir "$consumer_dir"
             cd "$consumer_dir"

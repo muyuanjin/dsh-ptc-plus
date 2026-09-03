@@ -18,7 +18,7 @@ test('keeps host-owned DSH runtime packages out of plugin dependencies', async (
   assert.deepEqual(ordinaryDshDependencies, [])
   for (const packageName of DSH_RUNTIME_PEERS) {
     assert.equal(manifest.peerDependencies?.[packageName], '*')
-    assert.equal(manifest.devDependencies?.[packageName], 'alpha')
+    assert.equal(manifest.devDependencies?.[packageName], 'next')
   }
 })
 
@@ -53,7 +53,7 @@ test('keeps npm release authority stage-only and bound to a verified tag', async
     step => step.name === 'Revalidate immutable release target',
   )
   assert.match(serializedCi, /node scripts\/npm-pack-filename\.mjs/)
-  assert.match(serializedCi, /for channel in alpha next/)
+  assert.match(serializedCi, /for channel in latest next/)
   for (const packageName of DSH_RUNTIME_PEERS) {
     assert.match(serializedCi, new RegExp(`${packageName.replaceAll('/', '\\/')}@\\\$channel`))
   }

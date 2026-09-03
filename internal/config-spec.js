@@ -68,7 +68,7 @@ export const CONFIG_FIELDS = Object.freeze([
   {
     key: 'looseTopLevelFunctionClassRedeclarations',
     type: 'boolean',
-    default: false,
+    default: true,
     label: '允许顶层函数/类重声明',
     labelEn: 'Allow top-level function/class redeclarations',
     description: '允许顶层 function 或 class 声明替换已有的可写 binding；不可写或保留 binding 仍会在执行前被拒绝。',

@@ -60,7 +60,7 @@
     {
       key: "looseTopLevelFunctionClassRedeclarations",
       type: "boolean",
-      default: false,
+      default: true,
       label: "\u5141\u8BB8\u9876\u5C42\u51FD\u6570/\u7C7B\u91CD\u58F0\u660E",
       labelEn: "Allow top-level function/class redeclarations",
       description: "\u5141\u8BB8\u9876\u5C42 function \u6216 class \u58F0\u660E\u66FF\u6362\u5DF2\u6709\u7684\u53EF\u5199 binding\uFF1B\u4E0D\u53EF\u5199\u6216\u4FDD\u7559 binding \u4ECD\u4F1A\u5728\u6267\u884C\u524D\u88AB\u62D2\u7EDD\u3002",

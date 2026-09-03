@@ -61,7 +61,7 @@ test('exports a Cordis config schema with validated runtime defaults', async () 
       canonicalizeToolCalls: true,
       autoDescribeRunCode: true,
       looseTopLevelRedeclarations: true,
-      looseTopLevelFunctionClassRedeclarations: false,
+      looseTopLevelFunctionClassRedeclarations: true,
       autoRewriteImports: true,
       autoStripExports: true,
       autoSplitRedeclarations: true,
@@ -732,7 +732,7 @@ test('contracts every semantic replay mismatch before continuing', async (t) => 
 })
 
 test('covers runtime worker setup and state-operation failures', async (t) => {
-  const state = fixture()
+  const state = fixture({ looseTopLevelFunctionClassRedeclarations: false })
   t.after(() => state.dispose())
   await state.runDurable('class-redeclare', 'class ExistingClass {}\nfunction existingFunction() {}')
   assert.equal((await state.run('class-redeclare', 'class ExistingClass {}')).error.kind, 'exception')

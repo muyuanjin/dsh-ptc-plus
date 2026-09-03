@@ -270,7 +270,7 @@ function editRunCodeParameterBranch(operation, operationSchema) {
 export function editRunCodeSchema() {
   return {
     name: 'edit_run_code',
-    description: 'Make a small exact or regular-expression change to the most recent eligible cell captured when this edit call is dispatched, then run the complete corrected cell. A successful edit becomes the next eligible cell. Use this only when replaying the whole cell is safe. If earlier code may already have caused an external effect, use a new run_code cell and its existing variables instead; this tool does not resume at the error location. Send exactly one atomic edits or regex_edits array, plus expected_target_call_seq only when a diagnostic supplies it to bind a validated repair to its rejected cell. Choose edits for a few unique literal fragments; choose regex_edits when one counted pattern covers repeated fragments. Every resolved range must be non-overlapping in the original cell.',
+    description: 'Make a small exact or regular-expression change to the most recent eligible cell captured when this edit call is dispatched, then run the complete corrected cell. A successful edit becomes the next eligible cell. Use this only when replaying the whole cell is safe. If earlier code may already have caused an external effect, use a new run_code cell and its existing variables instead; this tool does not resume at the error location. Send exactly one atomic edits or regex_edits array, plus expected_target_call_seq only when a diagnostic supplies it to bind a validated repair to its rejected cell. Choose edits for a few unique literal fragments; choose regex_edits when one counted pattern covers repeated fragments. regex_edits replacements use JavaScript template syntax: reference captures as $1/$<name>, never as backslash escapes such as \\1. Every resolved range must be non-overlapping in the original cell.',
     parameters: {
       type: 'object',
       oneOf: [
@@ -288,13 +288,13 @@ export function editRunCodeSchema() {
         }),
         editRunCodeParameterBranch('regex_edits', {
           type: 'array', minItems: 1, maxItems: EDIT_LIMITS.regexEdits,
-          description: 'Atomic regular-expression replacements, all matched against the original target cell.',
+          description: 'Atomic regular-expression replacements, all matched against the original target cell with JavaScript pattern and replacement semantics; each replacement is a JavaScript template (see replacement).',
           items: {
             type: 'object', additionalProperties: false,
             properties: {
-              pattern: { type: 'string', minLength: 1, description: 'JavaScript regular-expression source. Zero-length matches are rejected.' },
+              pattern: { type: 'string', minLength: 1, description: 'JavaScript regular-expression source without delimiters or flags (for example \\d+px, not /\\d+px/). Zero-length matches are rejected.' },
               flags: { type: 'string', pattern: '^(?!.*(.).*\\1)[gimsu]*$', description: 'Unique JavaScript g, i, m, s, or u flags. Global matching is always applied.' },
-              replacement: { type: 'string', description: 'JavaScript replacement template, including capture references such as $1 or $<name>.' },
+              replacement: { type: 'string', description: 'JavaScript replacement template. Reference captures as $1, $2, ... or $<name> (for example "<$1>" inserts capture 1); backslash escapes such as \\1 are NOT capture references and stay literal text; write a literal dollar sign as $$.' },
               expected_matches: { type: 'integer', minimum: 1, maximum: EDIT_LIMITS.regexMatches, description: 'Exact match count required before any replacement is applied.' },
             },
             required: ['pattern', 'flags', 'replacement', 'expected_matches'],

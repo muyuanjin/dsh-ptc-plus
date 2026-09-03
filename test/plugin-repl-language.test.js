@@ -48,7 +48,7 @@ test('preflights every cross-cell binding collision with one actionable diagnost
 })
 
 test('gives declaration-specific recovery for function and class collisions', async (t) => {
-  const state = fixture()
+  const state = fixture({ looseTopLevelFunctionClassRedeclarations: false })
   t.after(() => state.dispose())
 
   await state.run('declaration-collision-help', `
@@ -86,7 +86,10 @@ return RepeatedClass.value
 })
 
 test('does not suggest loose declaration replacement for strict or reserved collisions', async (t) => {
-  const strict = fixture({ looseTopLevelRedeclarations: false })
+  const strict = fixture({
+    looseTopLevelRedeclarations: false,
+    looseTopLevelFunctionClassRedeclarations: false,
+  })
   t.after(() => strict.dispose())
   await strict.run('strict-declaration-collision-help', 'function strictFunction() {}')
   const strictCollision = await strict.run(
@@ -568,7 +571,7 @@ return { first, second }
 test('replays each journal node with its recorded binding mode', async (t) => {
   const looseEvents = []
   const looseSession = { id: 'recorded-loose-mode', events: looseEvents }
-  const looseWriter = fixture()
+  const looseWriter = fixture({ looseTopLevelFunctionClassRedeclarations: false })
   const looseFirstCode = 'const switchedBinding = 1'
   const looseFirst = await looseWriter.runDurable(looseSession.id, looseFirstCode, {}, { session: looseSession })
   appendRunCodeEvents(looseEvents, 'loose-mode-first', looseFirstCode, looseFirst)
@@ -590,7 +593,10 @@ test('replays each journal node with its recorded binding mode', async (t) => {
 
   const strictEvents = []
   const strictSession = { id: 'recorded-strict-mode', events: strictEvents }
-  const strictWriter = fixture({ looseTopLevelRedeclarations: false })
+  const strictWriter = fixture({
+    looseTopLevelRedeclarations: false,
+    looseTopLevelFunctionClassRedeclarations: false,
+  })
   const strictCode = 'let strictHistorySide = 0\nconst strictHistoryBinding = 3'
   const strictResult = await strictWriter.runDurable(strictSession.id, strictCode, {}, { session: strictSession })
   assert.deepEqual(strictResult.meta.dshPtcPlus.bindingPolicy, {
@@ -861,7 +867,7 @@ return { existingPatternValue, newPatternType: typeof newPatternValue }
 })
 
 test('covers the complete REPL binding-pattern matrix and collision boundaries', async (t) => {
-  const state = fixture()
+  const state = fixture({ looseTopLevelFunctionClassRedeclarations: false })
   t.after(() => state.dispose())
 
   const initial = await state.run('repl-pattern-matrix', `

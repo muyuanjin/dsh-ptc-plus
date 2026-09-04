@@ -30,7 +30,7 @@ PTC Plus 的正确承诺是：
 
 ```ts
 {
-  version: 4,
+  version: 5,
   bindingPolicy: {
     variableRedeclarations: boolean,
     functionClassRedeclarations: boolean
@@ -43,6 +43,7 @@ PTC Plus 的正确承诺是：
   moduleSemantics: {
     defaultExportBinding: "legacy-variable" | "live-readonly"
   },
+  userBindingsFingerprint: string | null,
   status: "durable" | "volatile" | "discarded" | "noop",
   calls: CapabilityCall[],
   operations: StateOperation[],
@@ -62,6 +63,7 @@ PTC Plus 的正确承诺是：
 - `bindingPolicy`：记录该 cell 实际采用的变量重声明和 function/class 重声明语义；冷重放读取每个 node 的完整记录值，并用它重建 binding 可写性，不读取恢复时的 profile 配置；
 - `rewritePolicy`：记录该 cell 解析和 lowering 时使用的三个 AST rewrite 开关；冷重放读取每个 node 的记录值，不读取恢复时的 profile 配置；
 - `moduleSemantics`：记录不可由 profile 选择的源码 lowering 代际；当前 cell 固定写入 `live-readonly`，冷重放按记录值恢复 `export default` 的公开 binding 模型；
+- `userBindingsFingerprint`：`null` 明确表示该 cell 没有 Global User Binding 快照；SHA-256 值要求最终 result 同时携带 fingerprint 一致的私有快照，缺失或不一致时形成 unknown boundary；
 - `volatile`：只推进 live heap，不推进 `durableHead`；
 - `discarded`：基础设施失败，calls 和 operations 必须为空；若中止时仍有未结算的 program binding call，则以首个 `global.member` 保留 `volatileReason`，恢复时不能把这个 possible-effect boundary 折叠为 no-op；
 - `noop`：程序未执行，calls 和 operations 必须为空；
@@ -79,7 +81,7 @@ SessionRuntime 创建 kernel 时完全忽略历史 nodes、head、checkpoints �
 
 journal、diagnostic、source、cause、call、operation、completion 和 completion error 都使用封闭字段集合；未知、symbol 或非枚举自有字段会使 journal 无效。capability-call `args`/`value` 与 return completion `value` 都是封闭、规范化的 `ptc-value-graph/v1` envelope。诊断结构、source frame 依赖和稳定代码见[架构说明](architecture.md#journal-与恢复)。
 
-当前实现只写入 `version: 4` schema。v1-v3 作为封闭 predecessor 输入规范化为 v4：旧 `bindingMode` 精确映射到 `bindingPolicy.variableRedeclarations`，而 `functionClassRedeclarations` 固定为 `false`，因为旧 pipeline 不具备该语义；`moduleSemantics.defaultExportBinding` 固定迁移为 `legacy-variable`，使 loose 历史保留旧的可写生成 binding、strict 历史保留旧的 const 行为。v1 仍使用三个 rewrite 开关全关的历史默认值，并只在 session log 唯一证明 call identity 时迁移字符串 confirmation；v2/v3 保留自身 `rewritePolicy`，无法表示为非负 event sequence 的 confirmation 必须形成 unknown boundary 并触发状态收缩。包括 `bindingPolicy`、`rewritePolicy`、`moduleSemantics`、`diagnostics` 在内的必需字段缺失时 journal 必须失效，否则会削弱最终持久值与 tentative journal 的严格一致性确认；失效 journal 不证明旧 binding，但也不单独成为后续当前调用的 availability gate。profile 后续切换任一 binding 或 AST rewrite 开关只影响新 cell，历史 node 始终按自身记录的 policy 和 module semantics 重放。
+当前实现只写入 `version: 5` schema。v1-v4 作为封闭 predecessor 输入规范化为 v5：v1-v3 的旧 `bindingMode` 精确映射到 `bindingPolicy.variableRedeclarations`，而 `functionClassRedeclarations` 固定为 `false`，因为旧 pipeline 不具备该语义；`moduleSemantics.defaultExportBinding` 固定迁移为 `legacy-variable`，使 loose 历史保留旧的可写生成 binding、strict 历史保留旧的 const 行为。v1 仍使用三个 rewrite 开关全关的历史默认值，并只在 session log 唯一证明 call identity 时迁移字符串 confirmation；v2/v3 保留自身 `rewritePolicy`。v4 保留已有 binding/rewrite/module 语义。所有 predecessor 都把 `userBindingsFingerprint` 固定为 `null`，因为这些已发布格式早于 Global User Bindings 的持久关系；无法表示为非负 event sequence 的 confirmation 必须形成 unknown boundary 并触发状态收缩。包括 `bindingPolicy`、`rewritePolicy`、`moduleSemantics`、`userBindingsFingerprint`、`diagnostics` 在内的当前必需字段缺失时 journal 必须失效，否则会削弱最终持久值与 tentative journal 的严格一致性确认；失效 journal 不证明旧 binding，但也不单独成为后续当前调用的 availability gate。profile 后续切换任一 binding 或 AST rewrite 开关只影响新 cell，历史 node 始终按自身记录的 policy 和 module semantics 重放。
 
 ## Capability Call Transcript
 

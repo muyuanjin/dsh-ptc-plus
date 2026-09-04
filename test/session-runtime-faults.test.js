@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 import test from 'node:test'
+import { createUserBindingsSnapshot } from '../internal/user-bindings.js'
 
 const behaviors = []
 let workerCreated
@@ -55,6 +56,8 @@ class FakePort extends EventEmitter {
       this.emit('message', { type: 'call', runId: message.id, id: 1, global: 'api', member: 'call', args: { invalid: true } })
     } else if (this.behavior === 'expired-lease') {
       this.emit('message', { type: 'call', runId: message.id + 1, id: 1, global: 'api', member: 'call', args: { codec: 'ptc-value-graph/v1', root: null, nodes: [] } })
+    } else if (this.behavior === 'invalid-user-bindings') {
+      this.emit('message', { ...base, hasValue: false, activatedUserBindings: true })
     }
   }
 
@@ -100,7 +103,13 @@ class FakeWorker extends EventEmitter {
 }
 
 test('fails closed for every worker startup and private-protocol fault', async (t) => {
-  t.mock.module('node:worker_threads', { namedExports: { Worker: FakeWorker } })
+  t.mock.module('node:worker_threads', {
+    namedExports: {
+      Worker: FakeWorker,
+      parentPort: {},
+      workerData: { cwd: 'relative' },
+    },
+  })
   const { SessionRuntime } = await import('../internal/session-runtime.js')
 
   for (const behavior of ['error-before-ready', 'exit-before-ready', 'startup-error', 'invalid-channel']) {
@@ -175,6 +184,18 @@ test('fails closed for every worker startup and private-protocol fault', async (
     await runtime.dispose()
   }
 
+  behaviors.push('invalid-user-bindings')
+  const invalidUserBindings = new SessionRuntime()
+  const userBindings = createUserBindingsSnapshot({ entries: [{
+    id: 'global', name: 'globalHelpers', scope: 'namespace', purpose: '', enabled: true,
+    source: 'export const value = 1',
+  }] })
+  const invalidUserBindingsResult = await invalidUserBindings.run('invalid-user-bindings', {
+    program: 'return 1', bindings: [], userBindings,
+  })
+  assert.equal(invalidUserBindingsResult.error.kind, 'worker-exit')
+  await invalidUserBindings.dispose()
+
   behaviors.push('delayed-ready')
   let signalCreated
   const created = new Promise(resolve => { signalCreated = resolve })
@@ -189,6 +210,8 @@ test('fails closed for every worker startup and private-protocol fault', async (
   assert.equal((await pending).error.kind, 'abort')
   await duringStartup.dispose()
   workerCreated = undefined
+
+  await assert.rejects(import('../internal/user-binding-runner.js'), /absolute cwd/)
 
   behaviors.push('normal')
   let checks = 0

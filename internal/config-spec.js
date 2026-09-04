@@ -57,6 +57,15 @@ export const CONFIG_FIELDS = Object.freeze([
     descriptionEn: 'When enabled, PTC agents can use the official Cordis tools, guidance, and development Skill; disabling removes them. Cordis tools run with the DSH process permissions.',
   },
   {
+    key: 'userBindingsEnabled',
+    type: 'boolean',
+    default: false,
+    label: '启用全局用户 Binding',
+    labelEn: 'Enable Global User Bindings',
+    description: '从用户数据目录加载已启用的 TypeScript helper，并把它们作为跨会话的默认 REPL binding。候选代码以 DSH 进程权限运行。',
+    descriptionEn: 'Loads enabled TypeScript helpers from the user data directory as cross-session default REPL bindings. Candidate code runs with DSH process permissions.',
+  },
+  {
     key: 'looseTopLevelRedeclarations',
     type: 'boolean',
     default: true,
@@ -254,7 +263,7 @@ export const CONFIG_GROUPS = Object.freeze([
     key: 'optional',
     label: '可选能力',
     labelEn: 'Optional capabilities',
-    fields: Object.freeze(['cordisToolsEnabled']),
+    fields: Object.freeze(['cordisToolsEnabled', 'userBindingsEnabled']),
   },
   {
     key: 'advanced',

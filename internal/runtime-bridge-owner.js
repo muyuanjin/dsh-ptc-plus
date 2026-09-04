@@ -20,7 +20,13 @@ import {
 } from './program-bindings.js'
 import { deepFreeze } from './record-utils.js'
 import { withReplMemorySnapshot } from './repl-memory-projection.js'
+import { withUserBindingDraftCapability } from './user-binding-draft-projection.js'
 import { generatedRunCodeDescriptionMeta } from './run-code-description.js'
+import {
+  USER_BINDINGS_META_KEY,
+  userBindingsSnapshotsEqual,
+  withUserBindingsSnapshot,
+} from './user-bindings.js'
 
 export const RUN_CODE = 'run_code'
 
@@ -124,10 +130,12 @@ const PROGRAM_CAPABILITY_METADATA = deepFreeze([
 export function createRuntimeBridgeOwner({
   ctx,
   sessionConfig,
+  userBindingsCwd,
   maxNestedRunCodeDepth,
   presentationGeneration,
   sessionId,
   toolSchemasForAgent,
+  userBindingDraftForAgent,
 }) {
   const scope = new AsyncLocalStorage()
   // AgentRegistry.withInitiator is AsyncLocalStorage-based. The arrow preserves
@@ -135,7 +143,7 @@ export function createRuntimeBridgeOwner({
   const withInitiator = ctx.agents === undefined || typeof ctx.agents.withInitiator !== 'function'
     ? undefined
     : (agent, operation) => ctx.agents.withInitiator(agent, operation)
-  const sessions = new SessionRuntime(sessionConfig, { withInitiator })
+  const sessions = new SessionRuntime(sessionConfig, { withInitiator, userBindingsCwd })
   let currentConfig = sessions.config
   const runtime = ctx.codeRuntime
   const ownRun = Object.getOwnPropertyDescriptor(runtime, 'run')
@@ -143,6 +151,14 @@ export function createRuntimeBridgeOwner({
   const patchedDefinitions = new Map()
   const pending = new WeakMap()
   let active = true
+  const withDraftCapability = (meta, agent) => currentConfig.userBindingsEnabled !== true
+    || typeof userBindingDraftForAgent !== 'function'
+    ? meta
+    : withUserBindingDraftCapability(
+        meta,
+        userBindingDraftForAgent(agent),
+        presentationGeneration,
+      )
 
   const projectBindings = (
     request,
@@ -278,8 +294,12 @@ export function createRuntimeBridgeOwner({
         meta = withRecoveryBoundaries(meta, settlement.recoveryBoundaries)
       }
       if (settlement.rewrites !== undefined) meta = withRewrites(meta, settlement.rewrites)
+      if (settlement.userBindings !== undefined) {
+        meta = withUserBindingsSnapshot(meta, settlement.userBindings)
+      }
       meta = generatedRunCodeDescriptionMeta(args, meta)
-      return withReplMemorySnapshot(meta, settlement.replMemory, presentationGeneration)
+      meta = withReplMemorySnapshot(meta, settlement.replMemory, presentationGeneration)
+      return withDraftCapability(meta, current.agent)
     }
     const ownExecute = Object.getOwnPropertyDescriptor(definition, 'execute')
     const originalExecute = definition.execute
@@ -328,7 +348,11 @@ export function createRuntimeBridgeOwner({
     const current = scope.getStore()
     if (current === undefined) return upstreamRun.call(runtime, request)
     const projected = projectBindings(request, 0, current)
-    return sessions.runTentative(current, { ...projected.request, executionToken: current })
+    return sessions.runTentative(current, {
+      ...projected.request,
+      executionToken: current,
+      ...(current.userBindings === undefined ? {} : { userBindings: current.userBindings }),
+    })
       .then((execution) => {
         current.settlement = execution.settlement
         return execution.result
@@ -347,6 +371,12 @@ export function createRuntimeBridgeOwner({
     reconfigure(nextConfig) {
       sessions.reconfigure(nextConfig)
       currentConfig = sessions.config
+    },
+    modelVisibleUserBindings(agent, requested) {
+      return sessions.modelVisibleUserBindings({
+        id: sessionId(agent) ?? String(agent?.id),
+        session: agent?.session,
+      }, requested)
     },
     // A composite tool's outer result owns the final durability decision.
     async executeTentative(callSeq, operation) {
@@ -373,7 +403,7 @@ export function createRuntimeBridgeOwner({
         throw error
       }
     },
-    handleExecute(exec, next, executionArguments = exec.arguments) {
+    handleExecute(exec, next, executionArguments = exec.arguments, userBindings = undefined) {
       if (exec.parent !== undefined) return scope.run(undefined, next)
       const id = sessionId(exec.agent)
       if (id === undefined) return next()
@@ -390,6 +420,7 @@ export function createRuntimeBridgeOwner({
         session: exec.agent?.session,
         agent: exec.agent,
         executionArguments,
+        ...(userBindings === undefined ? {} : { userBindings }),
       }
       if (current.deferredSettlement !== undefined) {
         current.deferredSettlement.current = current
@@ -404,7 +435,11 @@ export function createRuntimeBridgeOwner({
             meta = withRecoveryBoundaries(meta, settlement.recoveryBoundaries)
           }
           if (settlement.rewrites !== undefined) meta = withRewrites(meta, settlement.rewrites)
+          if (settlement.userBindings !== undefined) {
+            meta = withUserBindingsSnapshot(meta, settlement.userBindings)
+          }
           meta = withReplMemorySnapshot(meta, settlement.replMemory, presentationGeneration)
+          meta = withDraftCapability(meta, current.agent)
           return { ...result, meta }
         }
         return result
@@ -428,6 +463,12 @@ export function createRuntimeBridgeOwner({
         && recoveryBoundariesEqual(
           Object.hasOwn(meta, RECOVERY_BOUNDARY_KEY) ? meta[RECOVERY_BOUNDARY_KEY] : undefined,
           settlement.recoveryBoundaries,
+        )
+        && userBindingsSnapshotsEqual(
+          Object.hasOwn(meta, USER_BINDINGS_META_KEY)
+            ? meta[USER_BINDINGS_META_KEY]
+            : undefined,
+          settlement.userBindings,
         )
       if (current.deferredSettlement !== undefined) {
         current.deferredSettlement.innerConfirmed = confirmed

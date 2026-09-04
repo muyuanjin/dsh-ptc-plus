@@ -1,3 +1,4 @@
+import { isAbsolute } from 'node:path'
 import { diagnostic, renderDiagnostic } from './diagnostic.js'
 import { createFailureTracker, messageOf } from './failure-reporting.js'
 import {
@@ -18,6 +19,10 @@ import {
   createReplMemorySnapshot,
   unavailableReplMemorySnapshot,
 } from './repl-memory-projection.js'
+import {
+  normalizeUserBindingsSnapshot,
+  selectUserBindingsSnapshot,
+} from './user-bindings.js'
 
 const WORKER_URL = new URL('./kernel-worker.js', import.meta.url)
 function recoveryDiagnostic(count) {
@@ -72,7 +77,7 @@ class ReplayCancelled extends Error {
 }
 
 class SessionKernel {
-  constructor({ config, history, cwd, session, withInitiator }) {
+  constructor({ config, history, cwd, session, userBindingsCwd, withInitiator }) {
     this.config = config
     this.history = history
     this.initialRecoveryBoundary = history.available === false && history.volatileSuffix.length > 0
@@ -88,10 +93,12 @@ class SessionKernel {
       this.surfaceGeneration = undefined
     }
     this.cwd = cwd
+    this.userBindingsCwd = userBindingsCwd
     this.session = session
     this.withInitiator = withInitiator
     this.durability = durabilityState()
     this.bindingCatalog = new BindingCatalog()
+    this.activeUserBindings = undefined
     this.replayed = false
     this.liveCallSeqs = new Set()
     this.recoveryNotice = history.volatileSuffix.length === 0
@@ -296,7 +303,12 @@ class SessionKernel {
     for (const node of path) {
       try {
         const result = await this.cellExecutor.executeCell(
-          { ...request, program: node.code, journal: undefined },
+          {
+            ...request,
+            program: node.code,
+            journal: undefined,
+            ...(node.userBindings === undefined ? { userBindings: undefined } : { userBindings: node.userBindings }),
+          },
           node.journal,
           config,
         )
@@ -347,6 +359,7 @@ class SessionKernel {
     this.durability = durabilityState()
     this.replayed = false
     this.bindingCatalog = new BindingCatalog()
+    this.activeUserBindings = undefined
     this.liveCallSeqs.clear()
   }
 
@@ -361,6 +374,9 @@ class SessionKernel {
       result = { ...result, rewrites: active.rewrites }
     }
     if (journal !== undefined && replay === undefined) {
+      journal.userBindingsFingerprint = terminate
+        ? null
+        : active.userBindingSnapshot?.fingerprint ?? null
       if (terminate) {
         const volatileReason = active.pendingBindings.values().next().value ?? active.durability.reason
         this.completeJournal(journal, 'discarded', result, volatileReason, active.diagnostics)
@@ -381,6 +397,7 @@ class SessionKernel {
           program: request.program,
           bindingCatalog: active.appliedBindingCatalog
             ?? active.priorBindingCatalog.advance(prepared, request.program),
+          userBindings: active.userBindingSnapshot,
           worker,
         })
       }
@@ -389,6 +406,7 @@ class SessionKernel {
       this.bindingCatalog = active.appliedBindingCatalog
         ?? active.priorBindingCatalog.advance(prepared, request.program)
     }
+    if (!terminate) this.activeUserBindings = active.userBindingSnapshot
     if (replay === undefined && !terminate) {
       this.liveCallSeqs.add(request.callSeq ?? request.sourceCallSeq)
     }
@@ -418,6 +436,7 @@ class SessionKernel {
         code: tentative.program,
         journal: normalized,
         ...(tentative.callSeq === undefined ? {} : { callSeq: tentative.callSeq }),
+        ...(tentative.userBindings === undefined ? {} : { userBindings: tentative.userBindings }),
         parent: this.history.head,
       })
       const index = this.history.nodes.push(node) - 1
@@ -446,6 +465,33 @@ class SessionKernel {
       return createReplMemorySnapshot(this.bindingCatalog.snapshot())
     }
     return createReplMemorySnapshot(tentative.bindingCatalog.snapshot())
+  }
+
+  userBindingsFor(journal) {
+    return this.tentatives.get(journal)?.userBindings
+  }
+
+  modelVisibleUserBindings(requested) {
+    if (this.client.worker === undefined || this.activeUserBindings === undefined) return undefined
+    let currentGeneration
+    try {
+      currentGeneration = this.session?.surface?.replaceGeneration
+    } catch {
+      return undefined
+    }
+    if (currentGeneration !== undefined && currentGeneration !== this.surfaceGeneration) return undefined
+    const desired = normalizeUserBindingsSnapshot(requested)
+    const activeById = new Map(this.activeUserBindings.entries.map(entry => [entry.id, entry]))
+    const origins = this.bindingCatalog.userGlobalOrigins()
+    const ids = new Set(desired.entries.filter((entry) => {
+      if (activeById.get(entry.id)?.fingerprint !== entry.fingerprint) return false
+      const names = entry.scope === 'namespace' ? [entry.name] : entry.symbols
+      return names.every((name) => {
+        const origin = origins.get(name)
+        return origin?.entryId === entry.id && origin.fingerprint === entry.fingerprint
+      })
+    }).map(entry => entry.id))
+    return selectUserBindingsSnapshot(desired, ids)
   }
 
   finishStateOperations(operations, index, worker) {
@@ -497,6 +543,10 @@ export class SessionRuntime {
     this.pendingNoops = new Map()
     this.settlements = new WeakSet()
     this.disposed = false
+    this.userBindingsCwd = options.userBindingsCwd ?? process.cwd()
+    if (typeof this.userBindingsCwd !== 'string' || !isAbsolute(this.userBindingsCwd)) {
+      throw new TypeError('userBindingsCwd must be an absolute path')
+    }
     this.withInitiator = typeof options.withInitiator === 'function' ? options.withInitiator : undefined
   }
 
@@ -512,6 +562,11 @@ export class SessionRuntime {
     for (const kernel of kernels) kernel.assertReconfigurationAllowed(resolved)
     for (const kernel of kernels) kernel.reconfigure(resolved)
     this.config = resolved
+  }
+
+  modelVisibleUserBindings(sessionContext, requested) {
+    const kernel = this.kernels.get(sessionOf(sessionContext).id)
+    return kernel?.modelVisibleUserBindings(requested)
   }
 
   async runTentative(sessionContext, request) {
@@ -566,6 +621,7 @@ export class SessionRuntime {
         history,
         cwd,
         session,
+        userBindingsCwd: this.userBindingsCwd,
         withInitiator: this.withInitiator,
       })
       this.kernels.set(sessionId, kernel)
@@ -588,6 +644,7 @@ export class SessionRuntime {
       kernel,
       sessionId,
       replMemory: kernel.replMemoryFor(journal),
+      userBindings: kernel.userBindingsFor(journal),
       ...(result.recoveryBoundaries === undefined
         ? {}
         : { recoveryBoundaries: result.recoveryBoundaries }),

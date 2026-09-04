@@ -21,6 +21,14 @@ import { editTargetForCall, projectSessionLog } from './session-log-view.js'
 import { RUN_CODE } from './runtime-bridge-owner.js'
 import { isRecord } from './record-utils.js'
 import {
+  userBindingDraftCapabilityFromMeta,
+  withUserBindingDraftCapability,
+} from './user-binding-draft-projection.js'
+import {
+  userBindingsSnapshotFromMeta,
+  withUserBindingsSnapshot,
+} from './user-bindings.js'
+import {
   validatedReplMemorySnapshot,
   withReplMemorySnapshot,
 } from './repl-memory-projection.js'
@@ -96,9 +104,19 @@ export function createEditTransportOwner(ctx, {
     if (derived.recoveryBoundaries !== undefined) {
       meta[RECOVERY_BOUNDARY_KEY] = normalizeRecoveryBoundaries(derived.recoveryBoundaries)
     }
-    return derived.replMemory === undefined
+    const withBindings = derived.userBindings === undefined
       ? meta
-      : withReplMemorySnapshot(meta, derived.replMemory, presentationGeneration)
+      : withUserBindingsSnapshot(meta, derived.userBindings)
+    const withDraft = derived.draftCapability === undefined
+      ? withBindings
+      : withUserBindingDraftCapability(
+          withBindings,
+          derived.draftCapability,
+          presentationGeneration,
+        )
+    return derived.replMemory === undefined
+      ? withDraft
+      : withReplMemorySnapshot(withDraft, derived.replMemory, presentationGeneration)
   }
   definition.output = {
     schema: {
@@ -186,6 +204,11 @@ export function createEditTransportOwner(ctx, {
         ? normalizeRecoveryBoundaries(inner.meta[RECOVERY_BOUNDARY_KEY])
         : undefined
       const replMemory = validatedReplMemorySnapshot(inner?.meta, presentationGeneration)
+      const userBindings = userBindingsSnapshotFromMeta(inner?.meta)
+      const draftCapability = userBindingDraftCapabilityFromMeta(
+        inner?.meta,
+        presentationGeneration,
+      )
       const value = derivedEditResult(inner)
       const derived = {
         targetCallSeq: target.callSeq,
@@ -193,6 +216,8 @@ export function createEditTransportOwner(ctx, {
         rewrites,
         recoveryBoundaries,
         replMemory,
+        userBindings,
+        draftCapability,
         code: edited.code,
         description: edited.description,
       }

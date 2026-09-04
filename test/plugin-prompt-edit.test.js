@@ -456,6 +456,35 @@ test('defers edit registration until the first code composition is captured', as
   assert.equal(agent.ctx.tools.get('edit_run_code')?.name, 'edit_run_code')
 })
 
+test('reclassifies an empty session after preset recomposition', async (t) => {
+  let agent
+  const state = fixture({}, {
+    agents: { get: id => id === agent?.session.id ? agent : undefined },
+  })
+  t.after(() => state.dispose())
+  agent = ptcAgent('recomposed-agent', { id: 'recomposed-session', events: [] })
+  const ptcAssembly = {
+    sections: [], contexts: [], variables: {}, tools: [state.runCodeDefinition],
+  }
+  await state.assemble(ptcAssembly, { agent, scope: agent })
+  assert.equal(agent.ctx.tools.get('edit_run_code')?.name, 'edit_run_code')
+
+  await state.emit('agent-preset/selected', agent.session.id)
+  assert.equal(agent.ctx.tools.get('edit_run_code'), undefined)
+  const nativeAssembly = {
+    sections: [], contexts: [], variables: {},
+    tools: [{ name: 'read', description: 'Read.', parameters: { type: 'object', properties: {} } }],
+  }
+  assert.equal(
+    await state.assemble(nativeAssembly, { agent, scope: agent }),
+    nativeAssembly,
+  )
+
+  await state.emit('agent-preset/selected', agent.session.id)
+  const recomposed = await state.assemble(ptcAssembly, { agent, scope: agent })
+  assert.deepEqual(recomposed.tools.map(tool => tool.name), ['run_code', 'edit_run_code'])
+})
+
 test('fails closed when a native edit_run_code name already occupies the agent scope', async (t) => {
   const nativeEdit = {
     name: 'edit_run_code',

@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
-import { registerHooks } from 'node:module'
+import { registerHooks, stripTypeScriptTypes } from 'node:module'
 import { isAbsolute, resolve } from 'node:path'
 import repl from 'node:repl'
 import { PassThrough } from 'node:stream'
@@ -13,6 +13,13 @@ import { decodeValue, encodeValue } from './value-wire.js'
 import { installWorkerCwdVirtualization } from './worker-cwd-virtualization.js'
 
 if (parentPort === null) throw new Error('ptc-plus kernel worker started without a parent port')
+const emitWarning = process.emitWarning
+try {
+  process.emitWarning = () => {}
+  stripTypeScriptTypes('')
+} finally {
+  process.emitWarning = emitWarning
+}
 const { port1, port2: channel } = new MessageChannel()
 
 const input = new PassThrough()
@@ -35,17 +42,23 @@ const REPL_IMPORT_CANARY = 'data:text/javascript,export default 1'
 let replParent
 const sessionReplParent = sessionCwd === undefined ? undefined : pathToFileURL(resolve(sessionCwd, 'repl')).href
 const staticAdapterParents = new Set()
+const userBindingModuleParents = new Map()
 registerHooks({
   resolve(specifier, context, nextResolve) {
     if (specifier === REPL_IMPORT_CANARY && replParent === undefined) replParent = context.parentURL
-    return nextResolve(specifier, context.parentURL === replParent || staticAdapterParents.has(context.parentURL)
-      ? { ...context, parentURL: sessionReplParent ?? replParent }
-      : context)
+    const userBindingParent = userBindingModuleParents.get(context.parentURL)
+    return nextResolve(specifier, userBindingParent !== undefined
+      ? { ...context, parentURL: userBindingParent }
+      : context.parentURL === replParent || staticAdapterParents.has(context.parentURL)
+        ? { ...context, parentURL: sessionReplParent ?? replParent }
+        : context)
   },
 })
 const logScope = new AsyncLocalStorage()
+const userBindingActivationScope = new AsyncLocalStorage()
 const pending = new Map()
 const installedGlobals = new Set()
+const installedGlobalOriginals = new Map()
 const PROCESS_CONTROLS = new Set(['exit', 'abort', 'kill', 'chdir'])
 const CELL_FRAME_SUFFIX = '\n;'
 let filenameSequence = 0
@@ -63,6 +76,13 @@ let activeExecution
 let pendingVolatileReason
 let nextCallId = 0
 let nextStaticAdapterId = 0
+let nextUserBindingModuleId = 0
+const userBindingEntries = new Map()
+const userBindingNames = new Map()
+const assignedUserBindingNames = new Set()
+const dynamicNamespaces = new Map()
+const originalDynamicNamespaceGlobals = new Map()
+let retainedUserBindingRuntime = false
 
 class StaticImportFailure {
   constructor(error, position) {
@@ -291,7 +311,14 @@ async function loadStaticModule(load) {
 }
 
 function callHost(runId, global, member, args, errorClass) {
-  if (activeRun !== runId) return Promise.reject(new Error('PTC execution lease expired'))
+  if (runId === undefined || activeRun !== runId) return Promise.reject(new Error('PTC execution lease expired'))
+  const activation = userBindingActivationScope.getStore()
+  if (activation !== undefined) {
+    activation.called = true
+    if (activation.failed) {
+      markVolatile(`failed user binding ${JSON.stringify(activation.id)} issued a host call`)
+    }
+  }
   const id = ++nextCallId
   let settle
   const result = new Promise((resolve, reject) => { settle = { resolve, reject, errorClass, member } })
@@ -309,13 +336,92 @@ function callHost(runId, global, member, args, errorClass) {
   return result
 }
 
+function dynamicNamespace(name) {
+  return new Proxy(Object.create(null), {
+    get(_target, property) {
+      if (typeof property !== 'string') return undefined
+      const descriptor = dynamicNamespaces.get(name)
+      if (descriptor === undefined || !descriptor.members.has(property)) return undefined
+      return (...args) => {
+        const current = dynamicNamespaces.get(name)
+        if (current === undefined || !current.members.has(property)) {
+          return Promise.reject(new Error(`unknown binding ${name}.${property}`))
+        }
+        return callHost(
+          logScope.getStore()?.id,
+          name,
+          property,
+          args.length === 0 && current.emptyObjectMembers.has(property) ? {} : args[0],
+          current.errorClass,
+        )
+      }
+    },
+    has(_target, property) {
+      return typeof property === 'string' && dynamicNamespaces.get(name)?.members.has(property) === true
+    },
+    ownKeys() {
+      return [...dynamicNamespaces.get(name)?.members ?? []]
+    },
+    getOwnPropertyDescriptor(_target, property) {
+      return typeof property === 'string' && dynamicNamespaces.get(name)?.members.has(property) === true
+        ? { configurable: true, enumerable: true }
+        : undefined
+    },
+    set() { return false },
+  })
+}
+
+function installDynamicNamespaceGlobals() {
+  const pendingGlobals = []
+  for (const name of dynamicNamespaces.keys()) {
+    if (originalDynamicNamespaceGlobals.has(name)) continue
+    const original = Object.getOwnPropertyDescriptor(globalThis, name)
+    if (original !== undefined) {
+      throw new Error(
+        `program namespace ${JSON.stringify(name)} cannot be bridged into Global User Binding modules because the worker global already exists`,
+      )
+    }
+    pendingGlobals.push(name)
+  }
+  for (const name of pendingGlobals) {
+    originalDynamicNamespaceGlobals.set(name, undefined)
+    Object.defineProperty(globalThis, name, {
+      configurable: true,
+      writable: false,
+      value: dynamicNamespace(name),
+    })
+  }
+}
+
+function restoreDynamicNamespaceGlobals() {
+  for (const [name, original] of originalDynamicNamespaceGlobals) {
+    if (original === undefined) delete globalThis[name]
+    else Object.defineProperty(globalThis, name, original)
+  }
+  originalDynamicNamespaceGlobals.clear()
+}
+
 function installBindings(message) {
-  for (const name of installedGlobals) delete context[name]
+  for (const name of installedGlobals) {
+    const original = installedGlobalOriginals.get(name)
+    if (original.userGlobalEntryId !== undefined
+      && userBindingNames.get(name) !== original.userGlobalEntryId) {
+      delete context[name]
+    } else if (original.descriptor === undefined) delete context[name]
+    else Object.defineProperty(context, name, original.descriptor)
+  }
   installedGlobals.clear()
+  installedGlobalOriginals.clear()
+  dynamicNamespaces.clear()
 
   for (const namespace of message.namespaces) {
     const view = Object.create(null)
     const emptyObjectMembers = new Set(namespace.emptyObjectMembers ?? [])
+    dynamicNamespaces.set(namespace.global, {
+      members: new Set(namespace.members),
+      emptyObjectMembers,
+      errorClass: namespace.errorClass,
+    })
     for (const member of namespace.members) {
       Object.defineProperty(view, member, {
         enumerable: true,
@@ -329,6 +435,7 @@ function installBindings(message) {
       })
     }
     Object.freeze(view)
+    installedGlobalOriginals.set(namespace.global, capturedGlobalDescriptor(namespace.global))
     Object.defineProperty(context, namespace.global, { configurable: true, value: view })
     installedGlobals.add(namespace.global)
 
@@ -342,15 +449,201 @@ function installBindings(message) {
           if (cause !== undefined) Object.defineProperty(this, 'ptcCause', { value: cause })
         }
       }
+      installedGlobalOriginals.set(descriptor.name, capturedGlobalDescriptor(descriptor.name))
       Object.defineProperty(context, descriptor.name, { configurable: true, value: BoundError })
       installedGlobals.add(descriptor.name)
     }
   }
 }
 
+function capturedGlobalDescriptor(name) {
+  const descriptor = Object.getOwnPropertyDescriptor(context, name)
+  const userGlobalEntryId = userBindingNames.get(name)
+  const installed = userBindingEntries.get(userGlobalEntryId)?.descriptors.get(name)
+  return {
+    descriptor,
+    ...(userGlobalEntryId !== undefined && descriptorsEqual(descriptor, installed)
+      ? { userGlobalEntryId }
+      : {}),
+  }
+}
+
+function removeUserBindingEntry(id, shadowedNames) {
+  const previous = userBindingEntries.get(id)
+  if (previous === undefined) return
+  for (const name of previous.names) {
+    if (userBindingNames.get(name) !== id) continue
+    userBindingNames.delete(name)
+    if (!shadowedNames.has(name)) delete context[name]
+  }
+  userBindingEntries.delete(id)
+}
+
+function descriptorsEqual(left, right) {
+  if (left === undefined || right === undefined) return left === right
+  return left.configurable === right.configurable
+    && left.enumerable === right.enumerable
+    && left.get === right.get
+    && left.set === right.set
+    && left.value === right.value
+    && left.writable === right.writable
+}
+
+function reconcileUserBindingShadows(shadowedNames) {
+  for (const [id, entry] of userBindingEntries) {
+    for (const name of entry.names) {
+      if (userBindingNames.get(name) !== id) continue
+      const installed = entry.descriptors.get(name)
+      const current = Object.getOwnPropertyDescriptor(context, name)
+      if (!descriptorsEqual(current, installed)) shadowedNames.add(name)
+    }
+  }
+}
+
+async function evaluateUserBinding(entry, cwd) {
+  if (typeof cwd !== 'string' || !isAbsolute(cwd)) {
+    throw new Error('user binding activation requires an absolute storage directory')
+  }
+  const javascript = stripTypeScriptTypes(entry.source, { mode: 'transform', sourceMap: false })
+  const url = `data:text/javascript,${encodeURIComponent(javascript)}#ptc-plus-${entry.fingerprint}-${++nextUserBindingModuleId}`
+  userBindingModuleParents.set(url, pathToFileURL(resolve(cwd, 'bindings.json')).href)
+  try {
+    return { namespace: await import(url), moduleUrl: url }
+  } catch (error) {
+    userBindingModuleParents.delete(url)
+    throw error
+  }
+}
+
+async function activateUserBindings(snapshot, shadowedNames, cwd, initialFailures = []) {
+  reconcileUserBindingShadows(shadowedNames)
+  const blockedIds = new Set(initialFailures.map(failure => failure.id))
+  const desired = new Map((snapshot?.entries ?? [])
+    .filter((entry) => {
+      const names = entry.scope === 'namespace' ? [entry.name] : entry.symbols
+      return !blockedIds.has(entry.id) && !names.some(name => shadowedNames.has(name))
+    })
+    .map(entry => [entry.id, entry]))
+  if (desired.size > 0 || retainedUserBindingRuntime) installDynamicNamespaceGlobals()
+  for (const id of [...userBindingEntries.keys()]) {
+    const current = userBindingEntries.get(id)
+    const next = desired.get(id)
+    if (next === undefined || next.fingerprint !== current.fingerprint) {
+      removeUserBindingEntry(id, shadowedNames)
+    }
+  }
+  const activated = []
+  const failures = [...initialFailures]
+  for (const entry of desired.values()) {
+    const current = userBindingEntries.get(entry.id)
+    if (current?.fingerprint === entry.fingerprint) {
+      activated.push(entry.id)
+      continue
+    }
+    let evaluated
+    const installedNames = []
+    const activation = { id: entry.id, called: false, failed: false }
+    try {
+      if (entry.durability === 'volatile') {
+        markVolatile(`user binding ${JSON.stringify(entry.id)}: ${entry.volatileReason ?? 'non-replayable source'}`)
+      }
+      evaluated = await userBindingActivationScope.run(
+        activation,
+        () => evaluateUserBinding(entry, cwd),
+      )
+      const namespace = evaluated.namespace
+      for (const symbol of entry.symbols) {
+        if (!Object.hasOwn(namespace, symbol)) {
+          throw new Error(`named export ${JSON.stringify(symbol)} is unavailable after evaluation`)
+        }
+      }
+      const names = []
+      if (entry.scope === 'namespace') {
+        const view = Object.create(null)
+        for (const symbol of entry.symbols) {
+          Object.defineProperty(view, symbol, {
+            enumerable: true,
+            get: () => namespace[symbol],
+          })
+        }
+        Object.freeze(view)
+        const descriptor = Object.getOwnPropertyDescriptor(context, entry.name)
+        Object.defineProperty(context, entry.name, {
+          configurable: true,
+          enumerable: true,
+          get: () => view,
+          set(value) {
+            assignedUserBindingNames.add(entry.name)
+            Object.defineProperty(context, entry.name, {
+              configurable: true,
+              enumerable: true,
+              writable: true,
+              value,
+            })
+          },
+        })
+        installedNames.push({
+          name: entry.name,
+          descriptor,
+        })
+        userBindingNames.set(entry.name, entry.id)
+        names.push(entry.name)
+      } else {
+        for (const symbol of entry.symbols) {
+          const descriptor = Object.getOwnPropertyDescriptor(context, symbol)
+          Object.defineProperty(context, symbol, {
+            configurable: true,
+            enumerable: true,
+            get: () => namespace[symbol],
+            set(value) {
+              assignedUserBindingNames.add(symbol)
+              Object.defineProperty(context, symbol, {
+                configurable: true,
+                enumerable: true,
+                writable: true,
+                value,
+              })
+            },
+          })
+          installedNames.push({ name: symbol, descriptor })
+          userBindingNames.set(symbol, entry.id)
+          names.push(symbol)
+        }
+      }
+      userBindingEntries.set(entry.id, {
+        fingerprint: entry.fingerprint,
+        moduleUrl: evaluated.moduleUrl,
+        names,
+        descriptors: new Map(names.map(name => [name, Object.getOwnPropertyDescriptor(context, name)])),
+      })
+      retainedUserBindingRuntime = true
+      activated.push(entry.id)
+    } catch (error) {
+      activation.failed = true
+      if (activation.called) {
+        markVolatile(`failed user binding ${JSON.stringify(entry.id)} issued a host call`)
+      }
+      for (const installed of installedNames.reverse()) {
+        userBindingNames.delete(installed.name)
+        if (installed.descriptor === undefined) delete context[installed.name]
+        else Object.defineProperty(context, installed.name, installed.descriptor)
+      }
+      if (evaluated !== undefined) userBindingModuleParents.delete(evaluated.moduleUrl)
+      removeUserBindingEntry(entry.id, shadowedNames)
+      failures.push({
+        id: entry.id,
+        error: messageOf(error),
+      })
+    }
+  }
+  if (userBindingEntries.size === 0 && !retainedUserBindingRuntime) restoreDynamicNamespaceGlobals()
+  return { activated, failures }
+}
+
 async function runCell(message) {
   if (activeRun !== undefined) throw new Error('kernel received overlapping cells')
   activeRun = message.id
+  assignedUserBindingNames.clear()
   installBindings(message)
   const execution = {
     id: message.id,
@@ -370,6 +663,7 @@ async function runCell(message) {
 
   try {
     let completion
+    let userBindings = { activated: [], failures: [] }
     try {
       completion = await logScope.run(execution, async () => {
         Object.defineProperty(context, message.returnSignal, {
@@ -384,6 +678,15 @@ async function runCell(message) {
           },
         })
         cellGlobals.push(message.commitSignal)
+        userBindings = await activateUserBindings(
+          message.userBindings,
+          new Set(message.shadowedUserBindingNames ?? []),
+          message.userBindingsCwd,
+          message.userBindingFailures,
+        )
+        for (const failure of userBindings.failures) {
+          appendText(execution, `Global binding ${JSON.stringify(failure.id)} was not activated: ${failure.error}`)
+        }
         for (const load of message.moduleLoads ?? []) {
           let namespace
           try {
@@ -415,6 +718,7 @@ async function runCell(message) {
     } catch (error) {
       activeRun = undefined
       execution.open = false
+      reconcileUserBindingShadows(assignedUserBindingNames)
       const failure = error instanceof StaticImportFailure ? error.error : error
       const detail = errorDetails(failure, activeFilename)
       const position = error instanceof StaticImportFailure ? error.position : detail.position
@@ -430,11 +734,17 @@ async function runCell(message) {
         ...(detail.cause === undefined ? {} : { cause: detail.cause }),
         ...completionDurability(execution),
         committedRedeclarations: [...committedRedeclarations],
+        ...(message.userBindings === undefined ? {} : {
+          activatedUserBindings: userBindings.activated,
+          userBindingFailures: userBindings.failures,
+          shadowedUserBindings: [...assignedUserBindingNames],
+        }),
       })
       return
     }
 
     let response
+    reconcileUserBindingShadows(assignedUserBindingNames)
     try {
       const encodedValue = completion.hasValue
         ? encodeValue(completion.value, execution.valueLimits)
@@ -447,6 +757,11 @@ async function runCell(message) {
         ...(encodedValue === undefined ? {} : { value: encodedValue }),
         ...completionDurability(execution),
         committedRedeclarations: [...committedRedeclarations],
+        ...(message.userBindings === undefined ? {} : {
+          activatedUserBindings: userBindings.activated,
+          userBindingFailures: userBindings.failures,
+          shadowedUserBindings: [...assignedUserBindingNames],
+        }),
       }
     } catch (error) {
       const detail = messageOf(error)
@@ -457,6 +772,11 @@ async function runCell(message) {
         invalidOutput: detail,
         ...completionDurability(execution),
         committedRedeclarations: [...committedRedeclarations],
+        ...(message.userBindings === undefined ? {} : {
+          activatedUserBindings: userBindings.activated,
+          userBindingFailures: userBindings.failures,
+          shadowedUserBindings: [...assignedUserBindingNames],
+        }),
       }
     }
     channel.postMessage(response)

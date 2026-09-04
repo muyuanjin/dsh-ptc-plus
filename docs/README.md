@@ -13,6 +13,7 @@
 - [Program Data Plane](program-data-plane.md): canonical values and result completeness.
 - [Durable / Volatile Recovery](durability-design.md): replay model and external-input boundaries.
 - [PTC Value Graph V1](value-wire.md): supported JavaScript value encoding.
+- [Global User Bindings](adr/0023-global-user-bindings.md): persistent helper ownership, model projection, runtime activation, recovery, and Agent-assisted authoring.
 - [Architecture Decisions](adr/): stable design constraints and their consequences.
 
 ## Maintenance

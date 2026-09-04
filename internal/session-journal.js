@@ -6,21 +6,24 @@ import {
   LEGACY_DEFAULT_EXPORT_BINDING,
   LIVE_DEFAULT_EXPORT_BINDING,
 } from './repl-rewrite-contract.js'
+import { userBindingsSnapshotFromMeta } from './user-bindings.js'
 
 export const JOURNAL_KEY = 'dshPtcPlus'
 export const EDIT_TARGET_KEY = 'dshPtcPlusEdit'
 export const DERIVED_RUN_KEY = 'dshPtcPlusDerivedRun'
 export const REWRITES_KEY = 'dshPtcPlusRewrites'
 export const RECOVERY_BOUNDARY_KEY = 'dshPtcPlusRecoveryBoundaries'
-export const JOURNAL_VERSION = 4
+export const JOURNAL_VERSION = 5
 const LEGACY_JOURNAL_VERSION = 1
 const INTERMEDIATE_JOURNAL_VERSION = 2
 const PREVIOUS_JOURNAL_VERSION = 3
+const USER_BINDING_RELATIONLESS_JOURNAL_VERSION = 4
 export const RECOVERY_BOUNDARY_EVENT = 'ptc-plus/recovery-boundary'
 
 const STATUSES = new Set(['durable', 'volatile', 'discarded', 'noop'])
 const BINDING_MODES = new Set(['loose', 'strict'])
-const JOURNAL_FIELDS = new Set(['version', 'bindingPolicy', 'rewritePolicy', 'moduleSemantics', 'status', 'calls', 'operations', 'confirms', 'diagnostics', 'completion', 'volatileReason'])
+const JOURNAL_FIELDS = new Set(['version', 'bindingPolicy', 'rewritePolicy', 'moduleSemantics', 'userBindingsFingerprint', 'status', 'calls', 'operations', 'confirms', 'diagnostics', 'completion', 'volatileReason'])
+const RELATIONLESS_JOURNAL_FIELDS = new Set([...JOURNAL_FIELDS].filter(field => field !== 'userBindingsFingerprint'))
 const PREDECESSOR_JOURNAL_FIELDS = new Set(['version', 'bindingMode', 'rewritePolicy', 'status', 'calls', 'operations', 'confirms', 'diagnostics', 'completion', 'volatileReason'])
 const LEGACY_JOURNAL_FIELDS = new Set([...PREDECESSOR_JOURNAL_FIELDS].filter(field => field !== 'rewritePolicy'))
 const BINDING_POLICY_FIELDS = new Set(['variableRedeclarations', 'functionClassRedeclarations'])
@@ -200,8 +203,19 @@ function normalizeModuleSemantics(value) {
   return Object.freeze({ defaultExportBinding: value.defaultExportBinding })
 }
 
+function normalizeUserBindingsFingerprint(value) {
+  if (value !== null && (typeof value !== 'string' || !/^[a-f0-9]{64}$/.test(value))) {
+    throw new Error('invalid dsh-ptc-plus journal user binding fingerprint')
+  }
+  return value
+}
+
 function migrateJournal(value, resolveLegacyConfirm) {
   if (value.version === JOURNAL_VERSION) return value
+  if (value.version === USER_BINDING_RELATIONLESS_JOURNAL_VERSION) {
+    assertOwnFields(value, RELATIONLESS_JOURNAL_FIELDS, 'dsh-ptc-plus journal')
+    return { ...value, version: JOURNAL_VERSION, userBindingsFingerprint: null }
+  }
   const legacy = value.version === LEGACY_JOURNAL_VERSION
   assertOwnFields(
     value,
@@ -219,6 +233,7 @@ function migrateJournal(value, resolveLegacyConfirm) {
     },
     rewritePolicy: legacy ? LEGACY_REWRITE_POLICY : value.rewritePolicy,
     moduleSemantics: { defaultExportBinding: LEGACY_DEFAULT_EXPORT_BINDING },
+    userBindingsFingerprint: null,
     confirms: legacy
       ? normalizeLegacyConfirms(value.confirms, resolveLegacyConfirm)
       : value.confirms,
@@ -228,7 +243,8 @@ function migrateJournal(value, resolveLegacyConfirm) {
 /** Validate and detach one journal emitted by the runtime. */
 export function normalizeJournal(value, options = {}) {
   if (!isRecord(value)) throw new Error('invalid dsh-ptc-plus journal')
-  if (![LEGACY_JOURNAL_VERSION, INTERMEDIATE_JOURNAL_VERSION, PREVIOUS_JOURNAL_VERSION, JOURNAL_VERSION].includes(value.version)
+  if (![LEGACY_JOURNAL_VERSION, INTERMEDIATE_JOURNAL_VERSION, PREVIOUS_JOURNAL_VERSION,
+    USER_BINDING_RELATIONLESS_JOURNAL_VERSION, JOURNAL_VERSION].includes(value.version)
     || !STATUSES.has(value.status)) {
     throw new Error('invalid dsh-ptc-plus journal')
   }
@@ -237,6 +253,7 @@ export function normalizeJournal(value, options = {}) {
   const bindingPolicy = normalizeBindingPolicy(migrated.bindingPolicy)
   const rewritePolicy = normalizeRewritePolicy(migrated.rewritePolicy)
   const moduleSemantics = normalizeModuleSemantics(migrated.moduleSemantics)
+  const userBindingsFingerprint = normalizeUserBindingsFingerprint(migrated.userBindingsFingerprint)
   const calls = normalizeCalls(migrated.calls)
   const operations = normalizeOperations(migrated.operations)
   const confirms = normalizeConfirms(migrated.confirms)
@@ -260,6 +277,7 @@ export function normalizeJournal(value, options = {}) {
     bindingPolicy,
     rewritePolicy,
     moduleSemantics,
+    userBindingsFingerprint,
     status: migrated.status,
     calls: Object.freeze(calls),
     operations: Object.freeze(operations),
@@ -292,13 +310,32 @@ export function normalizeDerivedEditResult(meta, expectedTargetCallSeq) {
   const recoveryBoundaries = meta[RECOVERY_BOUNDARY_KEY] === undefined
     ? undefined
     : normalizeRecoveryBoundaries(meta[RECOVERY_BOUNDARY_KEY])
+  const userBindings = userBindingsForJournal(meta, journal)
   return Object.freeze({
     targetCallSeq: target.targetCallSeq,
     code: derived.code,
     description: derived.description,
     journal,
     ...(recoveryBoundaries === undefined ? {} : { recoveryBoundaries }),
+    ...(userBindings === undefined ? {} : { userBindings }),
   })
+}
+
+function userBindingsForJournal(meta, journal) {
+  const userBindings = userBindingsSnapshotFromMeta(meta)
+  if (journal.userBindingsFingerprint === null) {
+    if (userBindings !== undefined) {
+      throw new Error('dsh-ptc-plus journal does not declare user binding metadata')
+    }
+    return undefined
+  }
+  if (userBindings === undefined) {
+    throw new Error('dsh-ptc-plus journal requires user binding metadata')
+  }
+  if (userBindings.fingerprint !== journal.userBindingsFingerprint) {
+    throw new Error('dsh-ptc-plus journal user binding fingerprint does not match metadata')
+  }
+  return userBindings
 }
 
 /** Compare only the required persisted relation for one derived edit. */
@@ -458,6 +495,7 @@ export function createJournal(confirms = [], bindingPolicy, rewritePolicy) {
     moduleSemantics: normalizeModuleSemantics({
       defaultExportBinding: LIVE_DEFAULT_EXPORT_BINDING,
     }),
+    userBindingsFingerprint: null,
     calls: [],
     operations: [],
     confirms: [...confirms],
@@ -538,6 +576,7 @@ function applyRecord(state, record, invalidCallSeqs) {
     journal,
     callSeq: call.seq,
     parent: state.head,
+    ...(result.userBindings === undefined ? {} : { userBindings: result.userBindings }),
   })
   const index = state.nodes.push(node) - 1
   state.head = index
@@ -868,7 +907,12 @@ export function foldSessionTimeline(events) {
       try {
         if (call.data.name === 'edit_run_code') {
           const derived = normalizeDerivedEditResult(meta, entry.editTarget?.callSeq)
-          normalized = { ...raw, journal: derived.journal, derived }
+          normalized = {
+            ...raw,
+            journal: derived.journal,
+            derived,
+            ...(derived.userBindings === undefined ? {} : { userBindings: derived.userBindings }),
+          }
         } else if (call.data.name === 'run_code') {
           const rawJournal = meta[JOURNAL_KEY]
           const resolveLegacyConfirm = rawJournal?.version === LEGACY_JOURNAL_VERSION
@@ -881,7 +925,13 @@ export function foldSessionTimeline(events) {
               return candidates.length === 1 ? candidates[0].event.seq : undefined
             }
             : undefined
-          normalized = { ...raw, journal: normalizeJournal(rawJournal, { resolveLegacyConfirm }) }
+          const journal = normalizeJournal(rawJournal, { resolveLegacyConfirm })
+          const userBindings = userBindingsForJournal(meta, journal)
+          normalized = {
+            ...raw,
+            journal,
+            ...(userBindings === undefined ? {} : { userBindings }),
+          }
         }
       } catch (error) {
         normalized = { ...raw, error: error.message }

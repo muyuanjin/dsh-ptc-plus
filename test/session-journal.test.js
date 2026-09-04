@@ -25,6 +25,10 @@ import {
   withRewrites,
 } from '../internal/session-journal.js'
 import { editTargetForCall, projectSessionLog } from '../internal/session-log-view.js'
+import {
+  createUserBindingsSnapshot,
+  USER_BINDINGS_META_KEY,
+} from '../internal/user-bindings.js'
 import { encodeValue } from '../internal/value-wire.js'
 
 function completion(value = 1) {
@@ -32,13 +36,14 @@ function completion(value = 1) {
 }
 
 function journal(overrides = {}) {
-  const version = overrides.version ?? 4
+  const version = overrides.version ?? 5
   return {
     version,
-    ...(version === 4 ? {
+    ...(version >= 4 ? {
       bindingPolicy: { variableRedeclarations: true, functionClassRedeclarations: false },
       rewritePolicy: { autoRewriteImports: true, autoStripExports: true, autoSplitRedeclarations: true },
       moduleSemantics: { defaultExportBinding: 'live-readonly' },
+      ...(version === 5 ? { userBindingsFingerprint: null } : {}),
     } : {
       bindingMode: 'loose',
       ...(version === 1 ? {} : {
@@ -126,6 +131,8 @@ test('rejects malformed journal schemas exhaustively', () => {
     [journal({ rewritePolicy: { autoRewriteImports: true } }), /rewrite policy/],
     [journal({ moduleSemantics: { defaultExportBinding: 'unknown' } }), /default export binding semantics/],
     [journal({ moduleSemantics: {} }), /binding semantics/],
+    [journal({ userBindingsFingerprint: 'not-a-fingerprint' }), /user binding fingerprint/],
+    [Object.fromEntries(Object.entries(journal()).filter(([key]) => key !== 'userBindingsFingerprint')), /user binding fingerprint/],
     [{ ...journal(), extra: true }, /journal field extra/],
     [journal({ calls: null }), /journal calls/],
     [journal({ calls: [{}] }), /journal call at index 0/],
@@ -160,10 +167,11 @@ test('rejects malformed journal schemas exhaustively', () => {
 test('creates journals, compares semantics, validates names, and merges metadata', () => {
   const policy = { autoRewriteImports: true, autoStripExports: true, autoSplitRedeclarations: true }
   assert.deepEqual(createJournal([4], 'strict', policy), {
-    version: 4,
+    version: 5,
     bindingPolicy: { variableRedeclarations: false, functionClassRedeclarations: false },
     rewritePolicy: { autoRewriteImports: true, autoStripExports: true, autoSplitRedeclarations: true },
     moduleSemantics: { defaultExportBinding: 'live-readonly' },
+    userBindingsFingerprint: null,
     calls: [], operations: [], confirms: [4], diagnostics: [],
   })
   assert.throws(() => createJournal([], 'invalid', policy), /binding mode/)
@@ -196,6 +204,34 @@ test('creates journals, compares semantics, validates names, and merges metadata
   ]
   for (const invalid of invalidRewrites) {
     assert.throws(() => normalizeRewrites(invalid), /rewrite/)
+  }
+})
+
+test('requires a journal-bound user binding snapshot for run_code recovery', () => {
+  const userBindings = createUserBindingsSnapshot({ entries: [] }, 7)
+  const call = callEvent(1, 'bound-run', 'const bound = 1')
+  const result = {
+    seq: 2,
+    type: 'tool/result',
+    sourceEventSeqs: [1],
+    data: { meta: {
+      [JOURNAL_KEY]: journal({ userBindingsFingerprint: userBindings.fingerprint }),
+      [USER_BINDINGS_META_KEY]: userBindings,
+    } },
+  }
+  const recovered = recoverJournal({ events: [call, result] })
+  assert.equal(pathToHead(recovered)[0].userBindings.fingerprint, userBindings.fingerprint)
+
+  for (const mutate of [
+    meta => { delete meta[USER_BINDINGS_META_KEY] },
+    meta => { meta[JOURNAL_KEY].userBindingsFingerprint = '0'.repeat(64) },
+    meta => { meta[JOURNAL_KEY].userBindingsFingerprint = null },
+  ]) {
+    const invalid = structuredClone(result)
+    mutate(invalid.data.meta)
+    const contracted = recoverJournal({ events: [call, invalid] })
+    assert.deepEqual(pathToHead(contracted), [])
+    assert.equal(contracted.available, false)
   }
 })
 
@@ -469,6 +505,27 @@ test('requires one complete target-linked relation for derived edit replay', () 
     [REWRITES_KEY]: [{ kind: 'export', description: 'changed rewrite' }],
   }, 1), true)
 
+  const userBindings = createUserBindingsSnapshot({ entries: [] }, 7)
+  const boundDerivedMeta = {
+    ...structuredClone(derivedMeta),
+    [JOURNAL_KEY]: journal({ userBindingsFingerprint: userBindings.fingerprint }),
+    [USER_BINDINGS_META_KEY]: userBindings,
+  }
+  assert.equal(
+    normalizeDerivedEditResult(boundDerivedMeta, 1).userBindings.fingerprint,
+    userBindings.fingerprint,
+  )
+  for (const mutate of [
+    meta => { delete meta[USER_BINDINGS_META_KEY] },
+    meta => { meta[JOURNAL_KEY].userBindingsFingerprint = '0'.repeat(64) },
+    meta => { meta[JOURNAL_KEY].userBindingsFingerprint = null },
+  ]) {
+    const invalid = structuredClone(boundDerivedMeta)
+    mutate(invalid)
+    assert.throws(() => normalizeDerivedEditResult(invalid, 1), /user binding/)
+    assert.equal(derivedEditResultsEqual(boundDerivedMeta, invalid, 1), false)
+  }
+
   const invalidRewriteEvents = structuredClone(events)
   invalidRewriteEvents[4].data.meta[REWRITES_KEY] = {}
   assert.deepEqual(pathToHead(recoverJournal({ events: invalidRewriteEvents })).map(node => node.code), [
@@ -620,16 +677,20 @@ test('uses event sequences when provider call ids repeat', () => {
 })
 
 test('migrates predecessor journals and only unambiguous legacy call identities', () => {
+  const relationless = normalizeJournal(journal({ version: 4 }))
+  assert.equal(relationless.version, 5)
+  assert.equal(relationless.userBindingsFingerprint, null)
   const legacy = journal({
     version: 1,
     confirms: [],
   })
   delete legacy.rewritePolicy
   assert.deepEqual(normalizeJournal(legacy), {
-    version: 4,
+    version: 5,
     bindingPolicy: { variableRedeclarations: true, functionClassRedeclarations: false },
     rewritePolicy: { autoRewriteImports: false, autoStripExports: false, autoSplitRedeclarations: false },
     moduleSemantics: { defaultExportBinding: 'legacy-variable' },
+    userBindingsFingerprint: null,
     status: 'durable',
     calls: [],
     operations: [],

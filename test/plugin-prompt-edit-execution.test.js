@@ -4,9 +4,17 @@ import { access, rm } from 'node:fs/promises'
 import { isAbsolute } from 'node:path'
 import test from 'node:test'
 import { Config } from '../index.js'
+import {
+  USER_BINDING_DRAFT_META_KEY,
+  withUserBindingDraftCapability,
+} from '../internal/user-binding-draft-projection.js'
 import { REPL_MEMORY_META_KEY } from '../internal/repl-memory-projection.js'
 import { REWRITES_KEY, normalizeJournal } from '../internal/session-journal.js'
 import { SessionRuntime } from '../internal/session-runtime.js'
+import {
+  USER_BINDINGS_META_KEY,
+  createUserBindingsSnapshot,
+} from '../internal/user-bindings.js'
 import { decodeValue, encodeValue, renderValueWire } from '../internal/value-wire.js'
 import { JOURNAL_POLICY, appendRunCodeEvents, fixture, ptcAgent } from './plugin-fixture.js'
 
@@ -590,7 +598,11 @@ test('keeps malformed REPL memory metadata out of derived edit settlement', asyn
     if (options.name !== 'run_code' || !String(options.callId).endsWith(':derived')) return result
     return {
       ...result,
-      meta: { ...result.meta, [REPL_MEMORY_META_KEY]: { status: 'corrupt' } },
+      meta: {
+        ...result.meta,
+        [REPL_MEMORY_META_KEY]: { status: 'corrupt' },
+        [USER_BINDING_DRAFT_META_KEY]: { status: 'corrupt' },
+      },
     }
   }
   const args = { edits: [{ old_string: '1', new_string: '2' }] }
@@ -605,6 +617,7 @@ test('keeps malformed REPL memory metadata out of derived edit settlement', asyn
   assert.equal(edited.isError, false)
   assert.deepEqual(edited.value, { edited: true, logs: [], value: 2 })
   assert.equal(Object.hasOwn(edited.meta, REPL_MEMORY_META_KEY), false)
+  assert.equal(Object.hasOwn(edited.meta, USER_BINDING_DRAFT_META_KEY), false)
   assert.deepEqual(edited.meta.dshPtcPlusEdit, { targetCallSeq: 1 })
   appendEditResult(events, 'memory-edit', callSeq, edited.meta)
   state.ctx.tools.execute = execute
@@ -702,10 +715,25 @@ test('fails edit execution at each owned boundary without changing the target', 
   appendEditResult(events, 'pre-runtime-rejection', preRuntimeCallSeq)
 
   const rewriteFacts = [{ kind: 'import', description: 'Adapt import declaration.' }]
+  const userBindings = createUserBindingsSnapshot({ entries: [{
+    id: 'edit-helper', name: 'editHelper', scope: 'namespace', purpose: '', enabled: true,
+    source: 'export const value = 1',
+  }] }, 4)
+  const draftCapability = 'derived-edit-draft-capability'
+  const presentationGeneration = run.meta[REPL_MEMORY_META_KEY].generation
   state.ctx.tools.execute = async () => ({
     isError: false,
     value: 7,
-    meta: { ...run.meta, [REWRITES_KEY]: rewriteFacts, foreignOwnerFact: { secret: true } },
+    meta: withUserBindingDraftCapability({
+      ...run.meta,
+      dshPtcPlus: {
+        ...run.meta.dshPtcPlus,
+        userBindingsFingerprint: userBindings.fingerprint,
+      },
+      [REWRITES_KEY]: rewriteFacts,
+      [USER_BINDINGS_META_KEY]: userBindings,
+      foreignOwnerFact: { secret: true },
+    }, draftCapability, presentationGeneration),
   })
   const primitiveArgs = { edits: [{ old_string: '1', new_string: '2' }] }
   const primitiveCallSeq = appendEditCall(events, 'primitive', primitiveArgs)
@@ -720,12 +748,19 @@ test('fails edit execution at each owned boundary without changing the target', 
   })
   assert.deepEqual(primitiveMeta[REWRITES_KEY], rewriteFacts)
   assert.deepEqual(primitiveMeta[REPL_MEMORY_META_KEY], run.meta[REPL_MEMORY_META_KEY])
+  assert.deepEqual(primitiveMeta[USER_BINDINGS_META_KEY], userBindings)
+  assert.equal(
+    primitiveMeta[USER_BINDING_DRAFT_META_KEY].capability,
+    draftCapability,
+  )
   assert.equal(primitiveMeta[REPL_MEMORY_META_KEY].memory.entries.every(entry => (
     Object.keys(entry).sort().join(',') === 'kind,name'
   )), true)
   assert.equal(Object.hasOwn(primitiveMeta, 'foreignOwnerFact'), false)
   assert.deepEqual(Object.keys(primitiveMeta).sort(), [
-    'dshPtcPlus', 'dshPtcPlusDerivedRun', 'dshPtcPlusEdit', REPL_MEMORY_META_KEY, REWRITES_KEY,
+    'dshPtcPlus', 'dshPtcPlusDerivedRun', 'dshPtcPlusEdit',
+    REPL_MEMORY_META_KEY, REWRITES_KEY, USER_BINDINGS_META_KEY,
+    USER_BINDING_DRAFT_META_KEY,
   ].sort())
   const blockedArgs = { edits: [{ old_string: '1', new_string: '3' }] }
   const blockedCallSeq = appendEditCall(events, 'pre-persistence-window', blockedArgs)

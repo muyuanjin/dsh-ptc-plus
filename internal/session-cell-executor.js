@@ -23,6 +23,10 @@ import { ModuleRewriteError } from './cell-rewriter.js'
 import { mapSourcePosition } from './source-position-map.js'
 import { durabilityState, transitionDurability } from './session-state.js'
 import { validatedEofClosureRepair } from './validated-parse-repair.js'
+import {
+  normalizeUserBindingsSnapshot,
+  selectUserBindingsSnapshot,
+} from './user-bindings.js'
 
 const OUTPUT_LIMIT_MESSAGE = bytes => `output exceeded ${bytes} bytes; reduce the returned value or keep it in a REPL binding`
 
@@ -253,7 +257,42 @@ export class SessionCellExecutor {
       return result
     }
 
-    const catalog = kernel.bindingCatalog.inputs()
+    let userBindings
+    let userBindingBaseCatalog = kernel.bindingCatalog
+    let userBindingPlan
+    let userBindingFailures = []
+    try {
+      userBindings = request.userBindings === undefined
+        ? undefined
+        : normalizeUserBindingsSnapshot(request.userBindings)
+      if (userBindings === undefined) {
+        const catalog = kernel.bindingCatalog.withoutUserBindings()
+        userBindingPlan = {
+          catalog,
+          shadowedNames: catalog.inputs().knownBindings,
+        }
+      } else {
+        const activeEntryIds = new Set()
+        for (const entry of userBindings.entries) {
+          const names = entry.scope === 'namespace' ? [entry.name] : entry.symbols
+          const conflict = names.find(name => request.bindingDescriptors.reservedNames.has(name))
+          if (conflict === undefined) activeEntryIds.add(entry.id)
+          else {
+            userBindingFailures.push(Object.freeze({
+              id: entry.id,
+              error: `conflicts with request-owned program binding ${JSON.stringify(conflict)}`,
+            }))
+          }
+        }
+        userBindingPlan = kernel.bindingCatalog.userBindings(userBindings, activeEntryIds)
+      }
+    } catch (error) {
+      const result = earlyResult('exception', `invalid user binding snapshot: ${messageOf(error)}`)
+      kernel.completeJournal(request.journal, 'noop', result)
+      return result
+    }
+    const priorBindingCatalog = userBindingPlan.catalog
+    const catalog = priorBindingCatalog.inputs()
     const bindingPolicy = replayRecord === undefined ? {
       variableRedeclarations: config.looseTopLevelRedeclarations,
       functionClassRedeclarations: config.looseTopLevelFunctionClassRedeclarations,
@@ -363,7 +402,10 @@ export class SessionCellExecutor {
         control: { names: new Set(kernel.history.checkpoints.keys()) },
         rewrites: prepared.rewrites,
         prepared,
-        priorBindingCatalog: kernel.bindingCatalog,
+        priorBindingCatalog,
+        userBindingBaseCatalog,
+        userBindings,
+        userBindingSnapshot: userBindings,
         worker,
       }
       active.resolve = (result, terminate = false) => kernel.settleCell(active, result, terminate)
@@ -394,6 +436,13 @@ export class SessionCellExecutor {
           maxOutputBytes: config.maxOutputBytes,
           valueLimits,
           durability,
+          userBindings,
+          ...(userBindings === undefined ? {} : { userBindingsCwd: kernel.userBindingsCwd }),
+          userBindingFailures,
+          shadowedUserBindingNames: [...new Set([
+            ...userBindingPlan.shadowedNames,
+            ...request.bindingDescriptors.reservedNames,
+          ])],
         })
       } catch (error) {
         active.resolve(earlyResult('worker-exit', messageOf(error)), true)
@@ -513,6 +562,48 @@ export class SessionCellExecutor {
     if (active.replay !== undefined
       && (active.replayIndex !== active.replay.calls.length || active.replayPending.size !== 0)) {
       active.resolve({ logs, error: { kind: 'recovery', message: 'session log replay consumed a different host-call transcript' } }, true)
+      return
+    }
+    let activatedUserBindings
+    try {
+      if (active.userBindings === undefined) {
+        active.userBindingSnapshot = undefined
+        active.priorBindingCatalog = active.userBindingBaseCatalog.withoutUserBindings()
+      } else {
+        const ids = Array.isArray(message.activatedUserBindings)
+          && message.activatedUserBindings.every(id => typeof id === 'string')
+          ? new Set(message.activatedUserBindings)
+          : undefined
+        if (ids === undefined || ids.size !== message.activatedUserBindings.length) {
+          throw new TypeError('kernel returned an invalid activated user binding set')
+        }
+        const expected = new Set(active.userBindings.entries.map(entry => entry.id))
+        if ([...ids].some(id => !expected.has(id))) {
+          throw new TypeError('kernel activated an unknown user binding entry')
+        }
+        activatedUserBindings = selectUserBindingsSnapshot(active.userBindings, ids)
+        active.userBindingSnapshot = activatedUserBindings
+        active.priorBindingCatalog = active.userBindingBaseCatalog.userBindings(active.userBindings, ids).catalog
+        const shadowed = Array.isArray(message.shadowedUserBindings)
+          && message.shadowedUserBindings.every(name => typeof name === 'string')
+          ? new Set(message.shadowedUserBindings)
+          : undefined
+        const activeNames = new Set(activatedUserBindings.entries.flatMap(entry => (
+          entry.scope === 'namespace' ? [entry.name] : entry.symbols
+        )))
+        if (shadowed === undefined || shadowed.size !== message.shadowedUserBindings.length
+          || [...shadowed].some(name => !activeNames.has(name))) {
+          throw new TypeError('kernel returned an invalid shadowed user binding set')
+        }
+        active.priorBindingCatalog = active.priorBindingCatalog.shadowUserBindings(shadowed)
+        if (active.replay !== undefined
+          && activatedUserBindings.fingerprint !== active.userBindings.fingerprint) {
+          active.resolve({ logs, error: { kind: 'recovery', message: 'recorded user bindings could not be reactivated' } }, true)
+          return
+        }
+      }
+    } catch (error) {
+      active.resolve(earlyResult('worker-exit', messageOf(error)), true)
       return
     }
     const bytes = Buffer.byteLength(JSON.stringify({ logs, value: message.value }), 'utf8')

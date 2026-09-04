@@ -405,6 +405,115 @@ test('pins auto-description behavior to the request assembly despite live settin
   assert.equal(modelRequests[0], modelRequests[1])
 })
 
+test('does not revive request policy from an assembly cleared while awaiting', async (t) => {
+  const assembly = {
+    sections: [{ name: 'tools:code-only', text: 'code-only' }],
+    contexts: [], variables: {}, tools: [{
+      name: 'run_code',
+      parameters: {
+        type: 'object',
+        properties: { code: { type: 'string' }, description: { type: 'string' } },
+      },
+    }],
+  }
+  let releaseNext
+  const nextGate = new Promise(resolve => { releaseNext = resolve })
+  const nextOwner = createDirectSurfaceOwner({
+    editTransport: { isInstalled: () => true, ensureInstalled() {} },
+    runtimeConfig: CONFIG_DEFAULTS,
+    canonicalizeToolCalls: false,
+    sessionId: agent => agent.id,
+    toolSchemasForAgent: () => [],
+  })
+  t.after(() => nextOwner.dispose())
+  const nextAgent = { id: 'cleared-during-next' }
+  const nextSignal = new AbortController().signal
+  const pendingNext = nextOwner.assemble(
+    assembly,
+    { agent: nextAgent, signal: nextSignal },
+    async () => (await nextGate, assembly),
+  )
+  nextOwner.disposeSession({ id: nextAgent.id })
+  releaseNext()
+  assert.equal(await pendingNext, assembly)
+  assert.equal(nextOwner.executionUserBindings({
+    name: 'run_code', agent: nextAgent, signal: nextSignal,
+  }), undefined)
+
+  let releaseSnapshot
+  let snapshotStarted
+  const snapshotGate = new Promise(resolve => { releaseSnapshot = resolve })
+  const snapshotStart = new Promise(resolve => { snapshotStarted = resolve })
+  const presentations = []
+  const snapshot = { fingerprint: 'f'.repeat(64), entries: [] }
+  const snapshotOwner = createDirectSurfaceOwner({
+    editTransport: { isInstalled: () => true, ensureInstalled() {} },
+    runtimeConfig: CONFIG_DEFAULTS,
+    canonicalizeToolCalls: false,
+    sessionId: agent => agent.id,
+    toolSchemasForAgent: () => [],
+    setAgentPresentation: async (_agent, presentation) => { presentations.push(presentation) },
+    userBindingsForAgent: async () => {
+      snapshotStarted()
+      await snapshotGate
+      return snapshot
+    },
+  })
+  t.after(() => snapshotOwner.dispose())
+  const snapshotAgent = { id: 'cleared-during-snapshot' }
+  const snapshotSignal = new AbortController().signal
+  const pendingSnapshot = snapshotOwner.assemble(
+    assembly,
+    { agent: snapshotAgent, signal: snapshotSignal },
+    async () => assembly,
+  )
+  await snapshotStart
+  snapshotOwner.resetSessionComposition(snapshotAgent.id)
+  presentations.push('cleared')
+  releaseSnapshot()
+  assert.equal(await pendingSnapshot, assembly)
+  assert.deepEqual(presentations, ['ptc', 'cleared'])
+  assert.equal(snapshotOwner.executionUserBindings({
+    name: 'run_code', agent: snapshotAgent, signal: snapshotSignal,
+  }), undefined)
+
+  let releaseNativePresentation
+  let nativePresentationStarted
+  const nativePresentationGate = new Promise(resolve => { releaseNativePresentation = resolve })
+  const nativePresentationStart = new Promise(resolve => { nativePresentationStarted = resolve })
+  const replacementOwner = createDirectSurfaceOwner({
+    editTransport: { isInstalled: () => true, ensureInstalled() {} },
+    runtimeConfig: CONFIG_DEFAULTS,
+    canonicalizeToolCalls: false,
+    sessionId: agent => agent.id,
+    toolSchemasForAgent: () => [],
+    setAgentPresentation: async (_agent, presentation) => {
+      if (presentation !== 'native') return
+      nativePresentationStarted()
+      await nativePresentationGate
+    },
+  })
+  t.after(() => replacementOwner.dispose())
+  const replacementAgent = { id: 'replaced-during-presentation' }
+  const staleNative = replacementOwner.assemble(
+    { sections: [], contexts: [], variables: {}, tools: [] },
+    { agent: replacementAgent },
+    async () => ({ sections: [], contexts: [], variables: {}, tools: [] }),
+  )
+  await nativePresentationStart
+  replacementOwner.resetSessionComposition(replacementAgent.id)
+  await replacementOwner.assemble(
+    assembly,
+    { agent: replacementAgent },
+    async () => assembly,
+  )
+  releaseNativePresentation()
+  await staleNative
+  assert.equal(replacementOwner.executionRejection({
+    name: 'edit_run_code', agent: replacementAgent,
+  }), undefined)
+})
+
 test('preserves canonical run_code results through the real DSH ToolRuntime pipeline', async (t) => {
   const ctx = new CordisContext()
   new SystemPrompt(ctx, {

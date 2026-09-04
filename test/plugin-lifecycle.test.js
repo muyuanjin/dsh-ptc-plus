@@ -68,6 +68,7 @@ test('exports a Cordis config schema with validated runtime defaults', async () 
       durableReplay: true,
       tipsEnabled: true,
       cordisToolsEnabled: false,
+      userBindingsEnabled: false,
       computeMs: 60_000,
       maxWallMs: 600_000,
       maxOldGenerationSizeMb: 512,

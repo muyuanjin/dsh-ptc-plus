@@ -21,6 +21,7 @@ const BOOLEAN_KEYS = Object.freeze([
   'enhancedToolView',
   'autoDescribeRunCode',
   'cordisToolsEnabled',
+  'userBindingsEnabled',
   'canonicalizeToolCalls',
   'looseTopLevelRedeclarations',
   'looseTopLevelFunctionClassRedeclarations',

@@ -15,6 +15,7 @@ Host half 通过 DSH 公共 `settings` 服务注册命名空间 `ptc-plus`。字
 | 展示 | `enhancedToolView` | 默认开启；关闭后注销 PTC Plus 的两个 keyed tool view，恢复 DSH 原生 generic row。 |
 | 常用与兼容性 | `autoDescribeRunCode` / `canonicalizeToolCalls` | 默认开启；允许缺少外层摘要的 `run_code` 执行，并修复 schema 可唯一确认的顶层 native 工具误调用。 |
 | 可选能力 | `cordisToolsEnabled` | 默认关闭；开启后为 PTC agent 加入官方 Cordis 工具、指引与精确的 `cordis-plugin-development` companion Skill，不发布同目录 sibling。 |
+| 可选能力 | `userBindingsEnabled` | 默认关闭；开启后加载跨会话 TypeScript helper，并显示设置工作台、会话 Global 页签与 `/binding` Agent 编写入口。 |
 | 高级行为 | `looseTopLevelRedeclarations` / `looseTopLevelFunctionClassRedeclarations` / `autoRewriteImports` / `autoStripExports` / `autoSplitRedeclarations` / `durableReplay` / `tipsEnabled` | function/class 重声明默认开启，其余默认开启；分别控制变量重声明、可写 function/class binding 的声明位置替换、模块语法适配、worker 重启后的状态恢复与失败提示。 |
 | 计算 | `computeMs` / `maxWallMs` | 单 cell CPU 与总耗时预算。 |
 | Worker | `maxOldGenerationSizeMb` / `maxNestedRunCodeDepth` | kernel worker 内存与嵌套执行深度。 |
@@ -28,6 +29,16 @@ Host half 通过 DSH 公共 `settings` 服务注册命名空间 `ptc-plus`。字
 保证设置卡片仍然可读；此时只有 `enabled` 可写，其他控件被禁用。运行时重配置失败时回滚到上一次已应用值。
 
 `cordisToolsEnabled` 默认关闭并即时生效。它不切换 preset，而是把官方 Cordis 工具、owner guidance 与 `cordis-plugin-development` Skill 作为一个 agent-scoped mount 加入或移出 PTC agent；顶层仍为 `run_code` / `edit_run_code`，普通 agent 不继承。Host 缺少 official preset、Skill/Cordis service 或任一 contribution 加载失败时，启用会完整回滚。完整运行要求见 [运行时参考](runtime-reference.md)。
+
+## 全局用户 Binding 工作台
+
+`userBindingsEnabled` 关闭时不渲染任何 Global User Binding 管理界面，Host 也不注册对应 RPC 或 Agent 命令。开启后，设置卡片追加完整工作台：条目列表、源码编辑、scope 和用途、派生声明预览、验证、revision-checked 保存、启停、删除、从本地 `.ts` 文件导入、以及候选导出调用。候选运行区始终显示 Node/OS effect 警告；独立 worker 不等于安全 sandbox。
+
+Client 的所有管理操作都通过 DSH Connection RPC `/ptc-plus-bindings` 发给 Host owner；Connection 在分派前执行 Host/Origin 检查与浏览器认证。Client 不直接读写 `$DSH_HOME/ptc-plus/bindings.json`，不自行判断冲突，也不把 settings 同步当作通用 RPC。Host 返回 revision、结构化条目视图和错误；外部文件变化或过期 revision 会拒绝写入，用户重新加载后再决定如何合并。
+
+PTC session 的头部弹窗在功能启用时增加 Session 与 Global 页签。Session 页签保留当前可复用 binding 的只读检查；Global 页签列出全局条目，可展开查看精确源码，也可把 `/binding new ` 或 `/binding edit <id> ` 预填到空 composer。composer 已有非空草稿时保留原文并显示反馈；公开接口不提供 focus 时，Client 不访问宿主 DOM 强制聚焦。窄弹窗不复制完整编辑器、候选运行、启停、导入或删除功能，这些操作由设置工作台拥有。
+
+Agent 提交的有效候选只显示为接受该提交的 session 的内存草稿。Connection RPC 的公共 handler 不提供 caller/session identity，因此 Host 不信任 Client 传入的 session ID：接受提交时生成不可猜测的 locator，只把 locator 放进外层 `run_code` 的私有 presentation metadata，再由该 session 的 `ptcPlusBindingDraft` projection 交给 Client；源码仍只存在 Host 内存。弹窗凭 locator 读取、丢弃草稿，或以当前 catalog revision 原子保存为停用条目；保存开始后同一草稿的并发丢弃会返回 busy conflict，而不会显示与持久状态矛盾的成功。保存并不运行或启用代码，Agent 也无法调用这些 UI 操作。会话结束、功能关闭或 agent disposal 会删除未保存草稿并使 locator 失效；轮次结束只撤销一次性交接能力，已经被接受的内存草稿继续等待用户决定。
 
 `enhancedToolView` 默认开启并即时生效。开启时 PTC Plus 通过公共 keyed tool-view surface 为 `run_code` 与 `edit_run_code` 提供增强行，并在可用时使用 DSH 公共 `DisclosureRow`/`CodeBlock` primitive，缺少某项 capability 时使用插件自有的等价降级；关闭时立即注销这两个 keyed view，由 DSH 原生 generic row 负责布局、状态、代码高亮和输入/输出卡片。该开关只影响 Client 展示，不改变工具、prompt、runtime 或 session 语义。
 
@@ -43,7 +54,7 @@ Host half 通过 DSH 公共 `settings` 服务注册命名空间 `ptc-plus`。字
 
 `enhancedToolView` 开启且插件启用时，Client 通过公共 keyed `tool.call.toolview` 注册 `run_code` 与 `edit_run_code`；任一开关关闭时实时 dispose 两个注册，让 owner 恢复 DSH 原生 fallback。这个正文 slot 只依赖 Host 提供的 key、`toolName`、`sessionId`、`useSessions`、运行中/已结算 `block` 与 `inspect` 公共契约。增强行保留 Code / Code edit 标题、可展开的原始源码（`arguments` 与 `argsRaw` 任一公共形态均可读）、结果、可见且可访问的运行/失败/中断状态和 Inspect 入口；在提供时优先使用公共 `DisclosureRow` 与 `CodeBlock`，缺少 `DisclosureRow` 时回退到插件自有行，缺少 `CodeBlock` 时回退为纯文本源码。`DisclosureRow` 路径把运行/失败/中断状态、摘要和已证明的功能标记放进同一行始终可见的单行预览；完成态由标题与摘要表达，运行/失败/中断状态由文字 chip 承担并保持可访问。预览间距由插件自有类对称提供，并按单行内容布局，不依赖 Host primitive 的行内几何；源码、结果和 Inspect 只出现在展开主体。结果内容与原生 ioCard 采用相同的灰色圆角背景（`--dsw-alias-markdown-code-block` 加 12px 圆角与边框），失败态使用错误色文字；代码块的语言/复制栏保持原生 CodeBlock 的常亮可见；`检查调用` 入口采用原生 inspectButton 同款胶囊样式，默认 opacity 0，仅在卡片 `:hover` 或 `:focus-visible` 时淡入（opacity .1s），不触发任何布局位移。窄屏下回退路径的摘要允许换行。
 
-功能标记不是计数，也不把“插件已启用”冒充成一次功能收益。Client 只在完整 v1-v4 journal 和对应附属 metadata 能证明时显示：自动改写 import（附模块名）、自动剥离 export、自动拆分混合重声明（附已有 binding）、带完整 target/derived-run/non-noop/可选恢复边界关系且与调用目标前置条件一致的安全编辑执行、成功的 `code.run`、由 `PTC-R002` 的 `warning/recover/rolled-back` 语义元组证明本次确实发生的持久重放，以及 `repl.state` 操作。Client 对 v4 同时封闭校验 `bindingPolicy`、`rewritePolicy` 与 `moduleSemantics`；任一缺失或畸形都不产生功能标记。进程保留或 discarded 状态不作为正文功能标记。普通变量或 function/class 重声明、顶层 native 调用是否来自 canonicalizer、`cordis_*` 成员是否由官方可选 Cordis mount 提供，以及是否实际选择了 prompt 恢复提示没有独立的 Client-only 事实，因此不根据可复制的代码形状、工具名前缀或设置默认值推测；恢复边界本身不展示。
+功能标记不是计数，也不把“插件已启用”冒充成一次功能收益。Client 只在完整 v1-v5 journal 和对应附属 metadata 能证明时显示：自动改写 import（附模块名）、自动剥离 export、自动拆分混合重声明（附已有 binding）、带完整 target/derived-run/non-noop/可选恢复边界关系且与调用目标前置条件一致的安全编辑执行、成功的 `code.run`、由 `PTC-R002` 的 `warning/recover/rolled-back` 语义元组证明本次确实发生的持久重放，以及 `repl.state` 操作。Client 对 v4 同时封闭校验 `bindingPolicy`、`rewritePolicy` 与 `moduleSemantics`，对 v5 还要求 `userBindingsFingerprint`；任一缺失或畸形都不产生功能标记。进程保留或 discarded 状态不作为正文功能标记。普通变量或 function/class 重声明、顶层 native 调用是否来自 canonicalizer、`cordis_*` 成员是否由官方可选 Cordis mount 提供，以及是否实际选择了 prompt 恢复提示没有独立的 Client-only 事实，因此不根据可复制的代码形状、工具名前缀或设置默认值推测；恢复边界本身不展示。
 
 这条路径不检查或改写宿主 DOM，不调用 Host、不主动加载历史。binding 卡片只消费随结果持久化的 value-independent presentation metadata，其中源码只是已提交 cell 的有界声明片段，不是运行时值；它不改变 canonical result、tool schema、system prompt、runtime context、journal schema 或迁移器，也不向模型公开状态。未知 journal 版本、未知 metadata 字段和损坏 metadata 只会让对应功能标记或 binding 列表缺席，不会隐藏源码或结果；无法脱离 session call identity 解析非空 v1 `confirms` 时同样只省略标记，不触发历史读取或迁移。因此 UI 是否安装、能否渲染以及用户是否悬浮、聚焦或展开正文行，都不会改变模型请求或会话继续语义，也不能作为在模型 surface 收缩后继续保留 runtime binding 的证据。
 

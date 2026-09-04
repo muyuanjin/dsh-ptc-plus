@@ -4,6 +4,9 @@ import test from 'node:test'
 import { parse } from 'yaml'
 
 const DSH_RUNTIME_PEERS = [
+  '@deepseek-ai/dsh-atomic-write',
+  '@deepseek-ai/dsh-home-paths',
+  '@deepseek-ai/dsh-llm',
   '@deepseek-ai/dsh-settings',
   '@deepseek-ai/dsh-skill-filesystem',
   '@deepseek-ai/dsh-tool-cordis',

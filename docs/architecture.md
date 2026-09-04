@@ -9,6 +9,7 @@ PTC Plus 把 DSH PTC 模式的顶层 `run_code` 变成与 session 绑定的连�
 | Authority / policy | DSH / 宿主 | 不复制；每次 native tool dispatch 仍经过原流水线 |
 | Capability view | DSH 当前 scope | 保留 native typed `tools.*`，为一个 cell 建立统一 lease |
 | Evaluation | session worker | 连续求值、顶层 binding、预算与输出编码 |
+| User-global defaults | PTC Plus Host + session worker | 原子存储、源码派生快照、请求激活与 session-local shadow |
 | Journal / replay | PTC Plus + session log | 记录 call transcript、settlement、completion 和恢复边界 |
 | Presentation | DSH + PTC Plus | 保留 native guidance，并追加 REPL 指引与最小 explorer 声明 |
 
@@ -58,6 +59,22 @@ Client half 通过 `settings.plugin.item` 卡片呈现全部配置。`enabled` �
 
 `cordisToolsEnabled` 默认关闭且即时生效。Host 只在可见 `run_code` 的 agent scope 中挂载官方 `@deepseek-ai/dsh-tool-cordis`，并通过公共 `agentPresets` service 定位 shipped `cordis` preset，再用维护中的 Skill filesystem plugin 把其 companion Skill 目录发布到同一 scope。两个 child fiber、tool guidance 与 `cordis-plugin-development` Skill 是一个 mount；首轮 request 等待完整发布和 scoped Skill load 验证，关闭、agent/runtime 释放或任一激活失败时逆序卸载。工具名、数量、schema 和 guidance 直接来自 official tool fiber，Skill 内容直接来自 shipped preset，Host 均不复制。官方插件同时向 process-global `cordisInspect` 注册 Host provider；owner 将 manifest 相同的 per-agent 注册合并为引用计数 lease，查询委托给当前仍存活的官方 registration，最后一份 lease 释放后才注销 provider。manifest 不一致时启用失败。该开关不切换 preset，也不改变 code-only direct-tool projection。
 
+## Global User Bindings
+
+`internal/user-bindings.js` 是条目、文档、请求快照和有界声明的严格规范化 owner。它从命名 value export 的 TypeScript 源码派生 symbols、binding kind、body-free declaration、durability 与 fingerprint，并封闭校验所有衍生字段；调用方不能提交一份与源码不一致的声明或 snapshot。`namespace` scope 产生一个条目名对象，`top-level` scope 产生选定导出；保留名称和启用集合中的调用标识符冲突在持久化或请求激活前拒绝。
+
+`internal/user-bindings-store.js` 独占 `$DSH_HOME/ptc-plus/bindings.json`。单一 JSON 文档避免源码与 metadata 双源；进程内队列、file lock、磁盘文本比较、expected revision 和 atomic replacement 共同防止并发覆盖。每次 mutation 在替换前验证完整 enabled snapshot 的声明预算；外部写入的超限文档按损坏输入处理。损坏输入保持显式 error，不会被空文档静默覆盖。候选与正式激活的相对 import 都以该文件所在目录为基准，因此 session cwd 不会改变 helper 的依赖解析。
+
+prompt assembly 为每个 PTC request 取得一次当前启用条目快照，作为随后 dispatch 的期望集合；命名 runtime context 则只取该集合与当前 session worker 已成功激活 snapshot 的交集，并要求完整条目的每个调用标识符仍具有相同的 `user-global` provenance。新启用或更新的条目因此先经过一个 cell 的 activation boundary，成功后才从下一轮进入 `tools:ptc-plus-user-bindings`；失败、请求 binding 冲突和 session-local shadow 不会产生虚假的模型声明。context 只包含调用名称、用途和无实现体声明；源码不进入普通模型输入，`tools:sdk` 与 direct-tool schema 继续保持稳定。runtime 在 cell preflight 前以整条 entry 为单位把期望集合映射到 BindingCatalog，再由 worker 激活；条目级失败产生诊断并从该 cell 排除，不阻塞独立代码。失败 initializer 一旦发起 program call，整个 cell 进入 volatile，因此只包含成功条目的结果 snapshot 不会被误作该调用的 cold replay source。
+
+worker 对 namespace 成员和 top-level 导出保留 ECMAScript module live read；对顶层名称的赋值或重声明将该名称转换为 session-local binding，并使整个来源条目退出后续模型投影。binding module 使用稳定 worker-global proxy 访问当前 request 的全部 program namespace；proxy 在调用时读取 AsyncLocalStorage 中的原 cell lease，因此旧 continuation 即使恰逢下一 cell 运行也不能借用其 authority。新 namespace 可在后续 request 安装，已消失 namespace 的 proxy 不再提供 member；与任何既有 worker global 冲突时，bridge 在写入 global 前拒绝整个安装，避免覆盖 Node intrinsic 或留下部分 namespace。一个导出闭包一旦可能被普通 session binding 保存，worker 就无法证明其不可达，因此相应 synthetic-module 解析基准与已安装 proxy 保守保留到 worker 结束。尚未成功暴露任何条目的 disabled、empty 或 failed-only worker 不安装该 bridge。
+
+每个结算 cell 把实际激活的完整 snapshot 放入私有 `meta.dshPtcPlusUserBindings`。cold replay 重新验证这份历史源码及其所有派生字段并从它激活，而不读取当前文件来替换过去状态；无法证明的 metadata 按 session recovery 的 unknown-boundary 规则收缩。这样持久化配置的跨会话可用性不会把当前磁盘值误当作历史执行证据。
+
+`internal/user-bindings-owner.js` 只在 `userBindingsEnabled` 开启时注册由 Connection Host/Origin fence 与浏览器认证保护的 RPC。它根据 `internal/direct-surface-owner.js` 已验证的 live prompt composition，在 PTC agent scope 注册 `/binding` 命令；空会话切换 preset 时先撤销旧命令，下一次 assembly 再按实际 composition 注册。Settings workbench 通过 RPC 拥有 CRUD、验证、候选运行和启停。`/binding new` 与 `/binding edit` 只发起普通 Agent turn，并为该请求挂载一个不可复用的 authoring Skill 和 `submitBindingDraft` tool；首个有效提交进入内存并生成 opaque capability，外层 `run_code` 只把 locator 写入 accepting session 的私有 metadata，再由 `ptcPlusBindingDraft` projection 交给该 session Client。Connection handler 没有 caller/session identity，因此 draft RPC 只接受 capability，不信任 payload session ID。Agent lifecycle 与功能关闭会撤销交接；agent/session disposal、功能关闭和 owner disposal 会删除 accepted draft。new draft 使用 create-only write，edit 保持原 ID，两者保存时都检查最新 revision；save 先原子认领 draft，并发 discard 返回 busy conflict。
+
+候选运行使用独立 worker、资源限额、输出预算、取消与超时，只隔离 live session state。候选源码和 import 仍以 DSH 进程权限执行，外部 Node/OS effect 不能回滚，也不进入 session journal。模型没有常驻 binding 管理 API，插件也不从 session binding 反推模块源码：缺少完整源码 provenance 时，session-to-global promotion 无法无损实现。
+
 ## Prompt 前缀稳定性
 
 对当前 DSH 公共扩展面的集成，模型 request 由重复的 system prompt、完整有序 tool schemas 和从 session log 派生的消息历史组成。缓存契约按变化位置分类，而不以某次 provider 是否命中作为判断依据：
@@ -69,7 +86,7 @@ Client half 通过 `settings.plugin.item` 卡片呈现全部配置。`enabled` �
 | Replacement | 只有 DSH 拥有的 compaction 或其他显式 surface replacement 可以替换已保留历史；PTC Plus 不用 replacement 表达瞬时状态。 |
 | Independent request | 新的辅助模型调用必须单独说明 route、prefix 和 token 影响，不能用它的缓存表现证明主会话前缀稳定。当前插件不发起辅助模型请求。 |
 
-一次性或会变化的 session 状态必须作为 `PromptAssembly.contexts` 的命名贡献交给 DSH。DSH 将完整快照记录为带来源的 `user/message` 并追加到历史尾部；值未变时不重复，值变化或全部消失时追加更新或 clearance。完整快照携带当时所有 owner 的命名 context，因此任一贡献变化都会使未变化贡献在新的尾部消息中再次出现；这会增加 append-only history token，但不会改写已有前缀。PTC Plus 不通过绕过 prompt assembly 的私有消息通道规避这项宿主聚合成本。Cordis 恢复 context 使用规范 journal 的历史 transcript 与当前 agent/enable generation 作为事实源，不能从进程内 Plugin registry 直接生成未记录输入。此类状态不得进入 `PromptAssembly.sections`，也不得通过增删 tool、改变 schema 字段或调整 tool order 传递。
+一次性或会变化的 session 状态必须作为 `PromptAssembly.contexts` 的命名贡献交给 DSH。DSH 将完整快照记录为带来源的 `user/message` 并追加到历史尾部；值未变时不重复，值变化或全部消失时追加更新或 clearance。完整快照携带当时所有 owner 的命名 context，因此任一贡献变化都会使未变化贡献在新的尾部消息中再次出现；这会增加 append-only history token，但不会改写已有前缀。PTC Plus 不通过绕过 prompt assembly 的私有消息通道规避这项宿主聚合成本。Cordis 恢复 context 使用规范 journal 的历史 transcript 与当前 agent/enable generation 作为事实源，Global User Binding context 使用请求的源码派生 snapshot；两者都不能从未记录的进程状态生成。此类状态不得进入 `PromptAssembly.sections`，也不得通过增删 tool、改变 schema 字段或调整 tool order 传递。
 
 所有模型可见输入都必须能从 session log 重建。静态 system/schema 由 `request/header` 保存，动态 context 由带来源的 `user/message` 保存；进程内临时状态不能直接成为未记录的模型输入。在同一插件版本与配置下，普通执行结果、可编辑目标、诊断和其他插件拥有的运行期变化都不得改变 header；`edit_run_code` 的身份与结果由真实 call/result 表达，不生成 edit feedback context。插件升级、显式配置变化、provider/model route 变化、真实 native capability schema 变化，以及 DSH 拥有的 history replacement 可以使缓存从首个变化 token 起失效。
 
@@ -101,13 +118,14 @@ CodeRuntime request 已携带的 owner-provided program namespace 会被原样�
 
 ```ts
 {
-  version: 4,
+  version: 5,
   bindingPolicy: {
     variableRedeclarations: boolean,
     functionClassRedeclarations: boolean
   },
   rewritePolicy: { autoRewriteImports, autoStripExports, autoSplitRedeclarations },
   moduleSemantics: { defaultExportBinding: "legacy-variable" | "live-readonly" },
+  userBindingsFingerprint: string | null,
   status: "durable" | "volatile" | "discarded" | "noop",
   calls: CallTranscript[],
   operations: StateOperation[],
@@ -118,7 +136,7 @@ CodeRuntime request 已携带的 owner-provided program namespace 会被原样�
 }
 ```
 
-`bindingPolicy` 与 `rewritePolicy` 固化可配置的 cell 语言行为；`moduleSemantics` 固化不可配置的 lowering 代际。当前 journal 写入 `live-readonly` default-export alias，v1-v3 迁移为 `legacy-variable`，因此 cold replay 不从当前实现或源码猜测历史 `__default` 的可写性。`calls` 只保存 global、member、PTC Value Graph 编码的 args/result 或 error，以及 settlement 序号。cold replay 校验调用名称、参数、数量和提交顺序，并按 recorded settlement order 释放 recorded result；不会重新 dispatch program binding 或重做外部 effect。该规则同样适用于 native tools、owner-provided namespace 和 `code.run`，不按名称分支。Cordis 的进程内对象不会因此被宣称已恢复；presentation 可以从已验证 transcript 派生重新检查要求，但不能改变 replay。若基础设施终止时仍有未结算 binding，heap 回滚到 durable frontier，discarded journal 以最先观察到的 `global.member` 保留 possible-effect boundary。effect、completeness 和 source metadata 属于 capability explorer，不伪装成 journal 字段。
+`bindingPolicy` 与 `rewritePolicy` 固化可配置的 cell 语言行为；`moduleSemantics` 固化不可配置的 lowering 代际。当前 journal 写入 `live-readonly` default-export alias，v1-v3 迁移为 `legacy-variable`，因此 cold replay 不从当前实现或源码猜测历史 `__default` 的可写性。`userBindingsFingerprint` 以 `null` 证明不存在 Global User Binding 输入，或以 SHA-256 绑定并行私有快照；声明存在但快照缺失或不一致时，node 形成 unknown boundary。`calls` 只保存 global、member、PTC Value Graph 编码的 args/result 或 error，以及 settlement 序号。cold replay 校验调用名称、参数、数量和提交顺序，并按 recorded settlement order 释放 recorded result；不会重新 dispatch program binding 或重做外部 effect。该规则同样适用于 native tools、owner-provided namespace 和 `code.run`，不按名称分支。Cordis 的进程内对象不会因此被宣称已恢复；presentation 可以从已验证 transcript 派生重新检查要求，但不能改变 replay。若基础设施终止时仍有未结算 binding，heap 回滚到 durable frontier，discarded journal 以最先观察到的 `global.member` 保留 possible-effect boundary。effect、completeness 和 source metadata 属于 capability explorer，不伪装成 journal 字段。
 
 journal 通过 `run_code.output.presentationMeta` 附着到最终 result，再由 `tools/result` 做两阶段确认。缺失、损坏或被替换的 journal 形成 unknown/volatile 边界；未进入 runtime 的 call 由后续 `confirms` 以对应 `tool/call.seq` 证明为 no-op。volatile 源码保留在原 session log，但不参与 cold replay。
 

@@ -135,6 +135,12 @@ import { readFile } from 'node:fs/promises'
 
 “允许顶层函数/类重声明”与已有的变量重声明开关相互独立，默认开启。后续 cell 可以用普通 named `function` / `class` 声明替换已有的可写 binding；替换在声明所在位置生效，不模拟函数提升。import、不可写 `const`、保留名称和来源不明的 binding 仍会在执行前拒绝。显式关闭后恢复原来的拒绝行为；开关变化只影响随后提交的 cell，cold recovery 始终按每个 cell 已记录的策略重放。
 
+“全局用户 Binding”默认关闭。开启后，设置卡片中的工作台可以创建、导入、验证、保存、启停、删除和试运行具名导出的 TypeScript helper；条目原子写入 `$DSH_HOME/ptc-plus/bindings.json`，revision 已变化时会拒绝覆盖。导出字段可显式限制公开符号，留空则根据当前源码重新推导。`namespace` scope 把条目名称作为对象注入，`top-level` scope 直接注入选定导出；启用冲突会在写入前拒绝。
+
+已启用条目在下一次 `run_code` 中尝试激活为普通可写 REPL binding；只有 worker 已成功激活、仍与当前配置同源且未被 session-local binding 覆盖的完整条目，才从随后一轮开始向模型公开有界声明和用途。请求自带的 program namespace 或 error class 优先于同名全局条目；该条目只在本次请求中激活失败并产生诊断，不会覆盖宿主值或阻止其他代码。binding module 所需的 program namespace 若与既有 worker global 同名，本次 cell 会显式失败且不会替换 Node intrinsic。失败 initializer 已发起 program call 时，cell 进入 volatile，避免 cold recovery 把缺少该源码的调用记录当作可重放历史。同名赋值或重声明只覆盖当前 session；cold recovery 使用结果 metadata 中记录的精确快照，不从当前磁盘内容猜测历史值。条目源码中的相对 import 在候选试运行和正式激活时都以 binding 存储目录为解析基准；已经保存到普通 session binding 的导出闭包会在当前 worker 生命周期内保留该解析基准和 program namespace bridge。
+
+PTC session 的全局页签可检查条目源码，并用 `/binding new <需求>` 或 `/binding edit <id> <需求>` 请求当前 Agent 生成一个内存草稿。Agent 只有一次性的草稿交接能力，不能保存、运行、启用、删除或导入；Host 以仅发布到当前 session 私有 projection 的 opaque locator 约束草稿 UI 操作，并在 session/agent 结束或功能关闭时删除草稿。草稿保存后仍是停用条目，候选运行和启用必须由用户在设置工作台分别执行。候选 worker 隔离 session 状态，但代码仍拥有 DSH 进程权限，可能产生不可回滚的 Node/OS effect。
+
 插件启用且会话使用 `ptc` preset 时，会话头部显示绿色 `PTC Plus` 标识。悬浮、聚焦或点击后可以查看下一 cell 可复用的变量、函数、类和 import，并展开其有界定义源码。卡片只读取已提交的源码，不读取运行时值、不触发 getter，也不执行代码。正文中的 `run_code` 与 `edit_run_code` 仍可展开查看源码和结果；只有结果 metadata 能证明某项功能确实生效时，预览才显示对应标记。
 
 ![REPL 可复用绑定](assets/ptc-plus-bindings-zh.png)
@@ -149,7 +155,7 @@ import { readFile } from 'node:fs/promises'
 
 cold recovery 或重新启用 Cordis 后，已记录的 Cordis value 仍是历史数据，但不能证明进程内 Plugin、Run、approval 或先前 Inspect observation 仍然存活。PTC Plus 会提供有界恢复 context，直到一次新的成功 Cordis Inspect 调用验证当前进程。
 
-详见 [客户端 UI](docs/client-ui.md)、[ADR 0019](docs/adr/0019-plugin-settings-and-kill-switch.md) 与 [ADR 0020](docs/adr/0020-optional-cordis-tools-in-ptc-mode.md)。
+详见 [客户端 UI](docs/client-ui.md)、[ADR 0019](docs/adr/0019-plugin-settings-and-kill-switch.md)、[ADR 0020](docs/adr/0020-optional-cordis-tools-in-ptc-mode.md) 与 [ADR 0023](docs/adr/0023-global-user-bindings.md)。
 
 ## 范围
 

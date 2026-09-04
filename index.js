@@ -19,6 +19,8 @@ import {
 } from './internal/config-spec.js'
 import { installSettingsSectionCompat } from './internal/settings-compat.js'
 import { createReplMemoryProjection } from './internal/repl-memory-projection.js'
+import { createUserBindingDraftProjection } from './internal/user-binding-draft-projection.js'
+import { createUserBindingsOwner } from './internal/user-bindings-owner.js'
 import * as dshSettings from '@deepseek-ai/dsh-settings'
 
 const INSTALL_CLEANUP = Symbol('ptc-plus install cleanup')
@@ -89,13 +91,18 @@ Native tool availability, executable names, shells, and path syntax depend on th
 function installPtCRuntime(ctx, resolvedConfig, toolSchemasForAgent, sessionId) {
   const presentationGeneration = randomUUID()
   const replMemoryProjection = createReplMemoryProjection(presentationGeneration)
+  const userBindingDraftProjection = createUserBindingDraftProjection(presentationGeneration)
   let activeConfig = resolvedConfig
   let cordisTools
   let runtimeBridge
   let editTransport
   let directSurface
+  let userBindings
   let ready
   let pendingCordisActivation
+  let draftProjectionRegistration
+  let draftProjectionAvailable = false
+  let projectionService
   const disposers = []
   let disposed = false
   async function dispose() {
@@ -111,7 +118,7 @@ function installPtCRuntime(ctx, resolvedConfig, toolSchemasForAgent, sessionId) 
         failures.push(error)
       }
     }
-    for (const owner of [directSurface, editTransport, runtimeBridge, cordisTools]) {
+    for (const owner of [directSurface, editTransport, runtimeBridge, userBindings, cordisTools]) {
       try {
         await owner?.dispose()
       } catch (error) {
@@ -158,19 +165,75 @@ function installPtCRuntime(ctx, resolvedConfig, toolSchemasForAgent, sessionId) 
     }
   }
   const cancelCordisActivation = () => pendingCordisActivation?.cancel()
+  const registerProjection = (projection, label) => {
+    try {
+      const unregister = projectionService?.register?.(projection)
+      if (typeof unregister !== 'function') {
+        throw new Error('ptc-plus: sessionProjections.register did not return a disposer')
+      }
+      return unregister
+    } catch (error) {
+      ctx.logger?.warn?.(`ptc-plus: ${label} projection unavailable`, error)
+      return undefined
+    }
+  }
+  const setDraftProjectionEnabled = async (enabled) => {
+    if (!enabled) {
+      const unregister = draftProjectionRegistration
+      draftProjectionRegistration = undefined
+      draftProjectionAvailable = false
+      const results = await Promise.allSettled([
+        Promise.resolve().then(() => userBindings?.setDraftProjectionAvailable(false)),
+        Promise.resolve().then(() => unregister?.()),
+      ])
+      const failures = results.filter(result => result.status === 'rejected').map(result => result.reason)
+      if (failures.length > 0) {
+        throw new AggregateError(failures, 'ptc-plus: binding draft projection cleanup failed')
+      }
+      return
+    }
+    if (draftProjectionRegistration !== undefined || projectionService === undefined) return
+    const unregister = registerProjection(userBindingDraftProjection, 'binding draft')
+    if (unregister === undefined) return
+    let active = true
+    const release = async () => {
+      if (!active) return
+      active = false
+      if (draftProjectionRegistration === release) draftProjectionRegistration = undefined
+      await unregister()
+    }
+    draftProjectionRegistration = release
+    disposers.push(release)
+    draftProjectionAvailable = true
+    try {
+      await userBindings?.setDraftProjectionAvailable(true)
+    } catch (error) {
+      draftProjectionAvailable = false
+      await Promise.allSettled([
+        Promise.resolve().then(() => userBindings?.setDraftProjectionAvailable(false)),
+        release(),
+      ])
+      throw error
+    }
+  }
   try {
     if (typeof ctx.inject === 'function') {
       const projectionInjection = ctx.inject(['sessionProjections'], (scope) => {
         if (disposed) return
-        try {
-          const unregister = scope.sessionProjections?.register?.(replMemoryProjection)
-          if (typeof unregister !== 'function') {
-            throw new Error('ptc-plus: sessionProjections.register did not return a disposer')
-          }
-          disposers.push(unregister)
-        } catch (error) {
-          ctx.logger?.warn?.('ptc-plus: REPL memory projection unavailable', error)
-        }
+        const service = scope.sessionProjections
+        projectionService = service
+        draftProjectionRegistration = undefined
+        draftProjectionAvailable = false
+        const unregisterMemory = registerProjection(replMemoryProjection, 'REPL memory')
+        if (unregisterMemory !== undefined) disposers.push(unregisterMemory)
+        void setDraftProjectionEnabled(activeConfig.userBindingsEnabled).catch(error => {
+          ctx.logger?.warn?.('ptc-plus: binding draft projection unavailable', error)
+        })
+        scope.effect?.(() => async () => {
+          if (projectionService !== service) return
+          projectionService = undefined
+          await setDraftProjectionEnabled(false)
+        }, 'ptc-plus: binding draft projection availability')
       })
       if (typeof projectionInjection === 'function') {
         disposers.push(projectionInjection)
@@ -188,13 +251,29 @@ function installPtCRuntime(ctx, resolvedConfig, toolSchemasForAgent, sessionId) 
         throw error
       })
     }
+    userBindings = createUserBindingsOwner(ctx, {
+      enabled: activeConfig.userBindingsEnabled,
+      draftProjectionAvailable,
+      maxWallMs: activeConfig.maxWallMs,
+      maxOutputBytes: activeConfig.maxOutputBytes,
+      maxOldGenerationSizeMb: activeConfig.maxOldGenerationSizeMb,
+      valueLimits: {
+        maxNodes: activeConfig.maxValueNodes,
+        maxEdges: activeConfig.maxValueEdges,
+        maxArrayLength: activeConfig.maxValueArrayLength,
+        maxBigIntDigits: activeConfig.maxValueBigIntDigits,
+        maxStringBytes: activeConfig.maxOutputBytes,
+      },
+    })
     runtimeBridge = createRuntimeBridgeOwner({
       ctx,
       sessionConfig: activeConfig,
+      userBindingsCwd: userBindings.cwd,
       maxNestedRunCodeDepth: activeConfig.maxNestedRunCodeDepth,
       presentationGeneration,
       sessionId,
       toolSchemasForAgent,
+      userBindingDraftForAgent: agent => userBindings.draftCapabilityForAgent(agent),
     })
     editTransport = createEditTransportOwner(ctx, {
       durableReplay: activeConfig.durableReplay,
@@ -209,6 +288,13 @@ function installPtCRuntime(ctx, resolvedConfig, toolSchemasForAgent, sessionId) 
       canonicalizeToolCalls: activeConfig.canonicalizeToolCalls,
       sessionId,
       toolSchemasForAgent,
+      userBindingsForAgent: () => userBindings.snapshot(),
+      modelVisibleUserBindingsForAgent: (agent, requested) => (
+        runtimeBridge.modelVisibleUserBindings(agent, requested)
+      ),
+      setAgentPresentation: (agent, presentation) => (
+        userBindings.setAgentPresentation(agent, presentation)
+      ),
     })
     disposers.push(ctx.systemPrompt.section({
       name: 'tools:ptc-plus-repl',
@@ -235,7 +321,13 @@ function installPtCRuntime(ctx, resolvedConfig, toolSchemasForAgent, sessionId) 
       if (rejected !== undefined) return rejected
       if (exec.name === RUN_CODE) {
         const executionArguments = directSurface.executionArguments(exec)
-        return Promise.resolve(runtimeBridge.handleExecute(exec, next, executionArguments))
+        const requestUserBindings = directSurface.executionUserBindings(exec)
+        return Promise.resolve(runtimeBridge.handleExecute(
+          exec,
+          next,
+          executionArguments,
+          requestUserBindings,
+        ))
           .then(result => directSurface.argumentDiagnostic(exec, result))
       }
       return next()
@@ -245,15 +337,32 @@ function installPtCRuntime(ctx, resolvedConfig, toolSchemasForAgent, sessionId) 
       if (exec.name === EDIT_RUN_CODE) return editTransport.handleResult(exec, result)
       if (exec.name === RUN_CODE) return runtimeBridge.handleResult(exec, result)
     }))
-    disposers.push(ctx.on('agent/disposed', ({ agent }) => {
+    disposers.push(ctx.on('agent/disposed', async ({ agent }) => {
       directSurface.disposeAgent(agent)
       editTransport.disposeAgent(agent)
-      return runtimeBridge.disposeAgent(agent)
+      await Promise.all([
+        runtimeBridge.disposeAgent(agent),
+        userBindings.clearSessionPresentation(sessionId(agent)),
+      ])
     }))
-    disposers.push(ctx.on('session/disposed', (session) => {
+    disposers.push(ctx.on('session/disposed', async (session) => {
       directSurface.disposeSession(session)
       editTransport.disposeSession(session)
-      return runtimeBridge.disposeSession(session)
+      await Promise.all([
+        runtimeBridge.disposeSession(session),
+        userBindings.clearSessionPresentation(session?.id ?? session),
+      ])
+    }))
+    disposers.push(ctx.on('agent-preset/selected', (sessionId) => {
+      directSurface.resetSessionComposition(sessionId)
+      const agent = ctx.agents?.get?.(String(sessionId))
+      if (agent !== undefined) editTransport.disposeAgent(agent)
+      const cleanup = userBindings.clearSessionPresentation(sessionId)
+      const report = ctx.logger?.warn?.bind(
+        ctx.logger,
+        'ptc-plus: failed to revoke Global User Bindings authoring after preset selection',
+      ) ?? console.warn
+      void cleanup.catch(report)
     }))
   } catch (error) {
     const cleanup = dispose()
@@ -273,6 +382,10 @@ function installPtCRuntime(ctx, resolvedConfig, toolSchemasForAgent, sessionId) 
       rollbacks.push(() => editTransport.reconfigure(previousConfig))
       directSurface.reconfigure(nextConfig)
       rollbacks.push(() => directSurface.reconfigure(previousConfig))
+      await userBindings.reconfigure(nextConfig)
+      rollbacks.push(() => userBindings.reconfigure(previousConfig))
+      await setDraftProjectionEnabled(nextConfig.userBindingsEnabled)
+      rollbacks.push(() => setDraftProjectionEnabled(previousConfig.userBindingsEnabled))
 
       if (nextConfig.cordisToolsEnabled && cordisTools === undefined) {
         await activateCordisToolsOwner()

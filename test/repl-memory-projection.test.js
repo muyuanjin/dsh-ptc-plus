@@ -10,6 +10,7 @@ import {
 } from '../internal/repl-memory-projection.js'
 import { prepareProgram } from '../internal/cell-analysis.js'
 import { BindingCatalog } from '../internal/session-state.js'
+import { createUserBindingsSnapshot } from '../internal/user-bindings.js'
 import { appendRunCodeEvents, fixture } from './plugin-fixture.js'
 
 const GENERATION = 'test-runtime-generation'
@@ -414,4 +415,15 @@ void await repl.state({ action: 'save', name: 'stable' })
   appendRunCodeEvents(events, 'materialized', materializeCode, materialized)
   assert.equal(materialized.value, 1)
   assert.deepEqual(projectedMemory(events, generation).entries.map(entry => entry.name), ['stableValue'])
+})
+
+test('removes and reports user-global binding provenance independently of session bindings', () => {
+  const snapshot = createUserBindingsSnapshot({ entries: [{
+    id: 'global', name: 'global', scope: 'top-level', purpose: '', enabled: true,
+    source: 'export const answer = 42',
+  }] })
+  const plan = new BindingCatalog().userBindings(snapshot)
+  assert.equal(plan.catalog.userGlobalOrigins().get('answer').entryId, 'global')
+  assert.equal(plan.catalog.snapshot()[0].name, 'answer')
+  assert.equal(plan.catalog.withoutUserBindings().snapshot().length, 0)
 })

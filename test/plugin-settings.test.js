@@ -138,7 +138,9 @@ function hostContext(settings = undefined, agents = [], options = {}) {
       }
     },
     effect(register) {
-      cleanups.push(register())
+      const cleanup = register()
+      cleanups.push(cleanup)
+      return cleanup
     },
     logger: {
       warnings: [],
@@ -157,10 +159,12 @@ function hostContext(settings = undefined, agents = [], options = {}) {
             async activate() {
               await Promise.resolve()
               if (disposed) return
-              callback({
+              const childScope = {
                 sessionProjections: {
                   register(definition) {
-                    if (options.invalidProjectionDisposer === true) return undefined
+                    if (options.invalidProjectionDisposer === true
+                      || (options.invalidDraftProjectionDisposer === true
+                        && definition.key === 'ptcPlusBindingDraft')) return undefined
                     projectionDefinitions.push(definition)
                     let registered = true
                     const unregister = () => {
@@ -173,8 +177,15 @@ function hostContext(settings = undefined, agents = [], options = {}) {
                     return unregister
                   },
                 },
-              })
+                effect(register) {
+                  const dispose = register()
+                  childDisposers.push(dispose)
+                  return dispose
+                },
+              }
+              callback(childScope)
             },
+            suspend: unload,
             async reload() {
               await unload()
               await this.activate()
@@ -190,6 +201,13 @@ function hostContext(settings = undefined, agents = [], options = {}) {
           projectionInjections.push(injection)
           void injection.activate()
           return injection
+        }
+        if (services.length === 1 && services[0] === 'connection') {
+          callback({ connection: { rpc: { handle: () => () => {} } } })
+          return () => {}
+        }
+        if (services.length === 2 && services[0] === 'commands' && services[1] === 'skills') {
+          return () => {}
         }
         assert.deepEqual(services, ['settings'])
         settings.fiber ??= { state: 2 }
@@ -342,6 +360,71 @@ async function openSessionWorker(host, agent) {
   assert.equal(result.isError, false)
 }
 
+function bindingCommandAgent(options = {}) {
+  let command
+  let commandDisposeFailures = options.commandDisposeFailures ?? 0
+  const agent = {
+    id: 'settings-binding-agent',
+    session: { id: 'settings-binding-session', header: { cwd: '/workspace' } },
+    inject() {},
+    steer() {},
+    ctx: {
+      effect(register) {
+        const dispose = register()
+        let active = true
+        return async () => {
+          if (!active) return
+          active = false
+          await dispose?.()
+        }
+      },
+      commands: {
+        register(definition) {
+          if (options.throwCommandRegister === true) {
+            throw new Error('binding command registration failed')
+          }
+          command = definition
+          return async () => {
+            if (command === definition) command = undefined
+            if (commandDisposeFailures > 0) {
+              commandDisposeFailures -= 1
+              throw new Error('binding command disposal failed')
+            }
+          }
+        },
+      },
+      tools: {
+        register: () => () => {},
+        presentAs: () => () => {},
+      },
+    },
+  }
+  return {
+    agent,
+    get command() { return command },
+  }
+}
+
+async function assemblePtc(host, agent) {
+  const assembly = {
+    sections: [{ name: 'tools:ptc-only', text: 'PTC mode' }],
+    contexts: [],
+    tools: [{
+      name: 'run_code',
+      parameters: {
+        type: 'object',
+        properties: {
+          code: { type: 'string' },
+          description: { type: 'string' },
+        },
+      },
+    }],
+    variables: {},
+  }
+  const listener = host.listeners.get('system-prompt/assemble')[0]
+  return listener(assembly, { agent, scope: agent }, () => Promise.resolve(assembly))
+}
+
 test('settings kill switch leaves no runtime side effects when disabled', async () => {
   const scope = settingsScope({ enabled: false })
   const {
@@ -384,6 +467,102 @@ test('degrades an incompatible session projection without disabling the runtime'
   for (const cleanup of host.cleanups.reverse()) await cleanup()
   assert.equal(Object.hasOwn(host.runtime, 'run'), false)
   assert.deepEqual(host.projectionInjections, [])
+})
+
+test('binds the session binding command to live draft projection availability', async () => {
+  const unavailableAgent = bindingCommandAgent()
+  const unavailable = hostContext(
+    settingsContext(settingsScope({ enabled: true, userBindingsEnabled: true })),
+    [unavailableAgent.agent],
+    { invalidDraftProjectionDisposer: true },
+  )
+  apply(unavailable.ctx)
+  await new Promise(resolve => setImmediate(resolve))
+  await assemblePtc(unavailable, unavailableAgent.agent)
+  assert.deepEqual(
+    unavailable.projectionDefinitions.map(definition => definition.key),
+    ['ptcPlusRepl'],
+  )
+  assert.equal(unavailableAgent.command, undefined)
+  assert.equal(Object.hasOwn(unavailable.runtime, 'run'), true)
+  assert.ok(unavailable.listeners.has('tools/execute'))
+  for (const cleanup of unavailable.cleanups.reverse()) await cleanup()
+
+  const availableAgent = bindingCommandAgent()
+  const available = hostContext(
+    settingsContext(settingsScope({ enabled: true, userBindingsEnabled: true })),
+    [availableAgent.agent],
+  )
+  apply(available.ctx)
+  await new Promise(resolve => setImmediate(resolve))
+  await assemblePtc(available, availableAgent.agent)
+  assert.equal(availableAgent.command?.name, 'binding')
+  assert.deepEqual(
+    available.projectionDefinitions.map(definition => definition.key),
+    ['ptcPlusRepl', 'ptcPlusBindingDraft'],
+  )
+
+  await available.projectionInjections[0].suspend()
+  assert.equal(availableAgent.command, undefined)
+  assert.deepEqual(available.projectionDefinitions, [])
+  assert.equal(Object.hasOwn(available.runtime, 'run'), true)
+  assert.ok(available.listeners.has('tools/execute'))
+
+  await available.projectionInjections[0].activate()
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(availableAgent.command?.name, 'binding')
+  assert.deepEqual(
+    available.projectionDefinitions.map(definition => definition.key),
+    ['ptcPlusRepl', 'ptcPlusBindingDraft'],
+  )
+  for (const cleanup of available.cleanups.reverse()) await cleanup()
+})
+
+test('contains binding command registration and projection cleanup failures', async () => {
+  const registrationOptions = { invalidDraftProjectionDisposer: true }
+  const registrationAgent = bindingCommandAgent({ throwCommandRegister: true })
+  const registrationHost = hostContext(
+    settingsContext(settingsScope({ enabled: true, userBindingsEnabled: true })),
+    [registrationAgent.agent],
+    registrationOptions,
+  )
+  apply(registrationHost.ctx)
+  await new Promise(resolve => setImmediate(resolve))
+  await assemblePtc(registrationHost, registrationAgent.agent)
+  registrationOptions.invalidDraftProjectionDisposer = false
+  await registrationHost.projectionInjections[0].reload()
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(registrationAgent.command, undefined)
+  assert.deepEqual(
+    registrationHost.projectionDefinitions.map(definition => definition.key),
+    ['ptcPlusRepl'],
+  )
+  assert.ok(registrationHost.ctx.logger.warnings.some(([message, error]) => (
+    message === 'ptc-plus: binding draft projection unavailable'
+      && error?.message === 'binding command registration failed'
+  )))
+  for (const cleanup of registrationHost.cleanups.reverse()) await cleanup()
+
+  const cleanupAgent = bindingCommandAgent({ commandDisposeFailures: 1 })
+  const cleanupHost = hostContext(
+    settingsContext(settingsScope({ enabled: true, userBindingsEnabled: true })),
+    [cleanupAgent.agent],
+  )
+  apply(cleanupHost.ctx)
+  await new Promise(resolve => setImmediate(resolve))
+  await assemblePtc(cleanupHost, cleanupAgent.agent)
+  await assert.rejects(
+    cleanupHost.projectionInjections[0].suspend(),
+    error => error instanceof AggregateError
+      && error.message === 'ptc-plus: binding draft projection cleanup failed'
+      && error.errors.some(cause => (
+        cause instanceof AggregateError
+          && cause.message === 'Global User Bindings command projection cleanup failed'
+      )),
+  )
+  assert.equal(cleanupAgent.command, undefined)
+  assert.equal(Object.hasOwn(cleanupHost.runtime, 'run'), true)
+  for (const cleanup of cleanupHost.cleanups.reverse()) await cleanup()
 })
 
 test('handles projection registration through the real asynchronous Cordis inject fiber', async (t) => {
@@ -472,6 +651,15 @@ test('settings kill switch installs and removes the runtime live', async () => {
   assert.equal(Object.hasOwn(runtime, 'run'), true)
   assert.ok(listeners.has('tools/execute'))
   assert.ok(sections.some(section => section.name === 'tools:ptc-plus-repl'))
+
+  scope.set({ ...scope.get(), userBindingsEnabled: true })
+  await new Promise(resolve => setTimeout(resolve, 0))
+  assert.deepEqual(projectionDefinitions.map(definition => definition.key), [
+    'ptcPlusRepl', 'ptcPlusBindingDraft',
+  ])
+  scope.set({ ...scope.get(), userBindingsEnabled: false })
+  await new Promise(resolve => setTimeout(resolve, 0))
+  assert.deepEqual(projectionDefinitions.map(definition => definition.key), ['ptcPlusRepl'])
 
   scope.set({ ...scope.get(), enabled: false })
   await new Promise(resolve => setTimeout(resolve, 0))
@@ -1223,6 +1411,7 @@ test('config schema defaults expose the settings switches', async () => {
     'autoDescribeRunCode',
     'canonicalizeToolCalls',
     'cordisToolsEnabled',
+    'userBindingsEnabled',
     'looseTopLevelRedeclarations',
     'looseTopLevelFunctionClassRedeclarations',
     'autoRewriteImports',
@@ -1261,6 +1450,7 @@ test('config schema defaults expose the settings switches', async () => {
   assert.equal(defaults.value.enhancedToolView, true)
   assert.equal(defaults.value.autoDescribeRunCode, true)
   assert.equal(defaults.value.cordisToolsEnabled, false)
+  assert.equal(defaults.value.userBindingsEnabled, false)
   assert.equal(defaults.value.looseTopLevelFunctionClassRedeclarations, true)
   const invalid = await Config['~standard'].validate({ enabled: 'yes' })
   assert.equal(invalid.issues[0].path[0], 'enabled')

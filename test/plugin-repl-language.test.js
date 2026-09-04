@@ -608,6 +608,7 @@ test('replays each journal node with its recorded binding mode', async (t) => {
   strictPredecessor.meta.dshPtcPlus.bindingMode = 'strict'
   delete strictPredecessor.meta.dshPtcPlus.bindingPolicy
   delete strictPredecessor.meta.dshPtcPlus.moduleSemantics
+  delete strictPredecessor.meta.dshPtcPlus.userBindingsFingerprint
   appendRunCodeEvents(strictEvents, 'strict-mode-cell', strictCode, strictPredecessor)
   await strictWriter.dispose()
 

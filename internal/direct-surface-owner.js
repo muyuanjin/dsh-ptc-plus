@@ -11,6 +11,7 @@ import {
   generatedRunCodeExecutionArguments,
   generatedRunCodeDescriptionMeta,
 } from './run-code-description.js'
+import { userBindingsContext } from './user-bindings.js'
 
 const RUN_CODE_TOOL_DESCRIPTION = 'Evaluate the next TypeScript cell in this session-bound persistent REPL. Earlier top-level bindings remain available, so this call extends the current environment instead of creating a fresh one. Use `code` for the async-function body and `description` for its short UI summary. Successful image-bearing subtool results are attached after the cell.'
 const RUN_CODE_CODE_DESCRIPTION = 'Code for the next REPL cell, parsed as the body of an async TypeScript function.'
@@ -141,6 +142,9 @@ export function createDirectSurfaceOwner({
   canonicalizeToolCalls,
   sessionId,
   toolSchemasForAgent,
+  userBindingsForAgent = async () => undefined,
+  modelVisibleUserBindingsForAgent,
+  setAgentPresentation = async () => {},
 }) {
   // Composition is anchored to Agent identity because DSH selects presentation
   // once per composed agent. Request signals bind the exact assembly to stream
@@ -151,6 +155,7 @@ export function createDirectSurfaceOwner({
   const canonicalRequests = new WeakMap()
   const sessions = new Map()
   const cordisRecovery = createCordisRecoveryPolicy(runtimeConfig.cordisToolsEnabled)
+  let disposed = false
   let currentCanonicalizeToolCalls = canonicalizeToolCalls
   let currentAutoDescribeRunCode = runtimeConfig.autoDescribeRunCode
   const tipConfig = {
@@ -193,9 +198,22 @@ export function createDirectSurfaceOwner({
     return undefined
   }
 
-  const rememberRequest = (id, signal, presentation, nativeSchemas, autoDescribeRunCode) => {
+  const rememberRequest = (
+    id,
+    signal,
+    presentation,
+    nativeSchemas,
+    autoDescribeRunCode,
+    userBindings,
+  ) => {
     const owner = sessionOwner(id)
-    const request = { presentation, nativeSchemas, autoDescribeRunCode, owner }
+    const request = {
+      presentation,
+      nativeSchemas,
+      autoDescribeRunCode,
+      owner,
+      ...(userBindings === undefined ? {} : { userBindings }),
+    }
     owner.latestRequest = request
     if (signal !== undefined) canonicalRequests.set(signal, request)
   }
@@ -228,6 +246,9 @@ export function createDirectSurfaceOwner({
       const autoDescribeRunCode = currentAutoDescribeRunCode
       const agent = context?.agent
       const id = sessionId(agent)
+      const requestOwner = id === undefined ? undefined : sessionOwner(id)
+      const isCurrent = () => !disposed && (requestOwner === undefined
+        || (requestOwner.active && sessions.get(id) === requestOwner))
       const initialState = presentationState(initialAssembly)
       let composition = compositions.get(agent)
       if (composition === undefined && id !== undefined
@@ -239,6 +260,7 @@ export function createDirectSurfaceOwner({
       }
 
       const assembly = await next()
+      if (!isCurrent()) return assembly
       const tools = assembly.tools
       if (!Array.isArray(tools)) {
         throw new Error('ptc-plus: incompatible prompt assembly; expected a tools array')
@@ -260,16 +282,25 @@ export function createDirectSurfaceOwner({
         if (presentation !== 'native') {
           throw new Error(`ptc-plus: ${presentation} agent composition assembled without run_code`)
         }
+        await setAgentPresentation(agent, presentation)
+        if (!isCurrent()) return assembly
         if (id !== undefined) {
-          rememberRequest(id, requestSignal, 'native', new Map(), autoDescribeRunCode)
+          rememberRequest(id, requestSignal, 'native', new Map(), autoDescribeRunCode, undefined)
         }
         return assembly
       }
       if (presentation === 'native') {
         throw new Error('ptc-plus: native agent composition assembled with run_code')
       }
+      await setAgentPresentation(agent, presentation)
+      if (!isCurrent()) return assembly
       const sessionPtc = presentation !== 'native' && id !== undefined
       const sessionPtcProjection = presentation === 'ptc' && id !== undefined
+      const userBindings = sessionPtc ? await userBindingsForAgent(agent) : undefined
+      if (!isCurrent()) return assembly
+      const modelVisibleUserBindings = userBindings === undefined
+        ? undefined
+        : modelVisibleUserBindingsForAgent?.(agent, userBindings)
       const runCode = tools.find(tool => tool?.name === RUN_CODE)
       let directTools = tools
       if (sessionPtcProjection) {
@@ -283,9 +314,16 @@ export function createDirectSurfaceOwner({
           },
         })
         : { contexts: [] }
+      const bindingContext = modelVisibleUserBindings === undefined
+        ? undefined
+        : userBindingsContext(modelVisibleUserBindings)
       const contexts = sessionPtc && Array.isArray(assembly.contexts)
-        && runtimeContexts.contexts.length > 0
-        ? [...assembly.contexts, ...runtimeContexts.contexts]
+        && (runtimeContexts.contexts.length > 0 || bindingContext !== undefined)
+        ? [
+            ...assembly.contexts,
+            ...runtimeContexts.contexts,
+            ...(bindingContext === undefined ? [] : [bindingContext]),
+          ]
         : assembly.contexts
       const projectsSections = presentation !== 'native' && Array.isArray(assembly.sections)
         && assembly.sections.some(section => section?.name === 'tools:sdk'
@@ -309,7 +347,14 @@ export function createDirectSurfaceOwner({
               && schema.name !== RUN_CODE && schema.name !== EDIT_RUN_CODE)
             .map(schema => [schema.name, schema]))
           : new Map()
-        rememberRequest(id, requestSignal, presentation, nativeSchemas, autoDescribeRunCode)
+        rememberRequest(
+          id,
+          requestSignal,
+          presentation,
+          nativeSchemas,
+          autoDescribeRunCode,
+          userBindings,
+        )
       }
 
       return {
@@ -367,6 +412,12 @@ export function createDirectSurfaceOwner({
       }
       return generatedRunCodeExecutionArguments(originalArguments)
     },
+    executionUserBindings(exec) {
+      const id = sessionId(exec.agent)
+      const policy = executionPolicy(id, exec.callId)
+        ?? requestPolicy(exec?.signal, id)
+      return policy?.presentation === 'native' ? undefined : policy?.userBindings
+    },
     argumentDiagnostic(exec, result) {
       // DSH uses success-result identity to avoid re-running output projectors
       // after this middleware's settlement scope has ended.
@@ -410,7 +461,13 @@ export function createDirectSurfaceOwner({
       clearCompositionsForSession(id)
       clearSession(id)
     },
+    resetSessionComposition(session) {
+      const id = String(session.id ?? session)
+      clearCompositionsForSession(id)
+      clearSession(id)
+    },
     dispose() {
+      disposed = true
       compositions.clear()
       for (const owner of sessions.values()) owner.active = false
       sessions.clear()

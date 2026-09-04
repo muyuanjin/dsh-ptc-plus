@@ -1,10 +1,13 @@
-const JOURNAL_VERSIONS = new Set([1, 2, 3, 4])
+const JOURNAL_VERSIONS = new Set([1, 2, 3, 4, 5])
 const JOURNAL_STATUSES = new Set(['durable', 'volatile', 'discarded', 'noop'])
 const BINDING_MODES = new Set(['loose', 'strict'])
 const JOURNAL_FIELDS = new Set([
   'version', 'bindingPolicy', 'rewritePolicy', 'moduleSemantics', 'status', 'calls', 'operations',
-  'confirms', 'diagnostics', 'completion', 'volatileReason',
+  'confirms', 'diagnostics', 'completion', 'volatileReason', 'userBindingsFingerprint',
 ])
+const RELATIONLESS_JOURNAL_FIELDS = new Set(
+  [...JOURNAL_FIELDS].filter(key => key !== 'userBindingsFingerprint'),
+)
 const PREDECESSOR_JOURNAL_FIELDS = new Set([
   'version', 'bindingMode', 'rewritePolicy', 'status', 'calls', 'operations',
   'confirms', 'diagnostics', 'completion', 'volatileReason',
@@ -268,16 +271,24 @@ function isReadableJournalUnchecked(value) {
   if (!isRecord(value) || !JOURNAL_VERSIONS.has(value.version) || !JOURNAL_STATUSES.has(value.status)) {
     return false
   }
-  const predecessor = value.version !== 4
-  const fields = value.version === 1 ? LEGACY_JOURNAL_FIELDS : predecessor ? PREDECESSOR_JOURNAL_FIELDS : JOURNAL_FIELDS
+  const predecessor = value.version < 4
+  const fields = value.version === 1
+    ? LEGACY_JOURNAL_FIELDS
+    : predecessor
+      ? PREDECESSOR_JOURNAL_FIELDS
+      : value.version === 4 ? RELATIONLESS_JOURNAL_FIELDS : JOURNAL_FIELDS
   const required = predecessor
     ? ['version', 'bindingMode', 'status', 'calls', 'operations', 'diagnostics']
     : ['version', 'bindingPolicy', 'rewritePolicy', 'moduleSemantics', 'status', 'calls', 'operations', 'diagnostics']
-  if (value.version !== 1 && value.version !== 4) required.push('rewritePolicy')
+  if (value.version !== 1 && value.version < 4) required.push('rewritePolicy')
+  if (value.version === 5) required.push('userBindingsFingerprint')
   if (!hasClosedFields(value, fields, required)
     || (predecessor && !BINDING_MODES.has(value.bindingMode))
-    || (value.version === 4 && !isValidBindingPolicy(value.bindingPolicy))
-    || (value.version === 4 && !isValidModuleSemantics(value.moduleSemantics))
+    || (value.version >= 4 && !isValidBindingPolicy(value.bindingPolicy))
+    || (value.version >= 4 && !isValidModuleSemantics(value.moduleSemantics))
+    || (value.version === 5 && value.userBindingsFingerprint !== null
+      && (typeof value.userBindingsFingerprint !== 'string'
+        || !/^[a-f0-9]{64}$/.test(value.userBindingsFingerprint)))
     || (value.version !== 1 && !isValidRewritePolicy(value.rewritePolicy))
     || !Array.isArray(value.calls) || !value.calls.every(isValidCall)
     || !Array.isArray(value.operations) || !value.operations.every(isValidOperation)
@@ -322,7 +333,7 @@ function isValidRewrites(value, journal) {
       && REWRITE_KINDS.has(rewrite.kind)
       && (rewrite.kind === 'redeclaration'
         ? (rewrite.description === FUNCTION_REDECLARATION || rewrite.description === CLASS_REDECLARATION)
-          ? journal.version === 4 && isValidBindingPolicy(journal.bindingPolicy)
+          ? journal.version >= 4 && isValidBindingPolicy(journal.bindingPolicy)
             && journal.bindingPolicy.functionClassRedeclarations === true
           : journal.rewritePolicy.autoSplitRedeclarations === true
         : journal.rewritePolicy[REWRITE_POLICY_BY_KIND[rewrite.kind]] === true)

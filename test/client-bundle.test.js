@@ -82,7 +82,7 @@ test('checked client bundle is loadable through the DSH module loader contract',
     if (name === '@deepseek-ai/dsh-client-ui-primitives') return primitives
     throw new Error(`unexpected client dependency ${name}`)
   })
-  assert.equal(Array.from(exported.inject).join(','), 'settingsScope,slots,sessions,locale')
+  assert.equal(Array.from(exported.inject).join(','), 'settingsScope,slots,sessions,locale,connection')
   assert.ok(packageJson.dsh.client.inject.includes('@deepseek-ai/dsh-client-locale'))
   assert.equal(typeof exported.apply, 'function')
   assert.match(source, /settings\.plugin\.item/)
@@ -96,6 +96,11 @@ test('checked client bundle is loadable through the DSH module loader contract',
   assert.match(sourceModule, /设置会在修改后立即生效/)
   assert.doesNotMatch(sourceModule, /仅 enabled 即时生效/)
   assert.match(sourceModule, /The session-bound TypeScript REPL for PTC mode\./)
+  assert.match(sourceModule, /bindings\.symbolsPlaceholder/)
+  assert.match(sourceModule, /留空则从源码推导/)
+  assert.match(sourceModule, /blank derives from source/)
+  assert.match(sourceModule, /symbolsText\.split\(','\)/)
+  assert.match(sourceModule, /entry: bindingPayload\(editableBinding\(normalized\)\)/)
   assert.match(sourceModule, /Expand PTC Plus settings/)
   assert.doesNotMatch(sourceModule, /ptcPlusActivityPanel/)
   assert.doesNotMatch(sourceModule, /useConversation\b/)
@@ -143,7 +148,15 @@ test('settings, header indicator, and tool rows follow the DSH locale dictionari
   const registrations = []
   const window = { __ModuleLoader__: { load(value) { registrations.push(value) } } }
   const document = { getElementById: () => ({ remove() {} }) }
-  runInNewContext(source, { window, document, TextEncoder })
+  runInNewContext(source, {
+    window,
+    document,
+    TextEncoder,
+    setInterval: () => 1,
+    clearInterval() {},
+    setTimeout: () => 1,
+    clearTimeout() {},
+  })
   const React = {
     createElement: (type, props, ...children) => ({ type, props, children }),
     useState: initial => [typeof initial === 'function' ? initial() : initial, () => {}],
@@ -205,6 +218,14 @@ test('settings, header indicator, and tool rows follow the DSH locale dictionari
       bind: () => key => key,
       subscribe: () => () => {},
       getSnapshot: () => ({ active: 'en', locales: [], revision: 0 }),
+    },
+    connection: {
+      rpc: {
+        call: async () => ({
+          ok: true,
+          value: { version: 1, revision: 0, fingerprint: '0'.repeat(64), entries: [] },
+        }),
+      },
     },
   }
   exported.apply(ctx)
@@ -323,6 +344,30 @@ test('settings, header indicator, and tool rows follow the DSH locale dictionari
   })
   assert.notEqual(standardKitIndicator, null)
 
+  const composerDrafts = []
+  settingsSnapshot = {
+    status: 'ready', writable: true, value: { enabled: true, userBindingsEnabled: true },
+  }
+  const authoringIndicator = indicator.component({
+    sessionId: 'session-1',
+    t: key => key,
+    useInput: selector => selector({ draft: '' }),
+    inputActions: { setDraft: value => composerDrafts.push(value) },
+  })
+  const authoringCard = authoringIndicator.children.find(child => typeof child?.type === 'function')
+  authoringCard.props.prefillAuthoring('/binding new ')
+  assert.deepEqual(composerDrafts, ['/binding new '])
+  const occupiedComposerIndicator = indicator.component({
+    sessionId: 'session-1',
+    t: key => key,
+    useInput: selector => selector({ draft: 'keep this text' }),
+    inputActions: { setDraft: value => composerDrafts.push(value) },
+  })
+  const occupiedComposerCard = occupiedComposerIndicator.children
+    .find(child => typeof child?.type === 'function')
+  occupiedComposerCard.props.prefillAuthoring('/binding edit alpha ')
+  assert.deepEqual(composerDrafts, ['/binding new '])
+
   const memoryIndicator = renderIndicator({
     projectionValues: {
       agentPreset: 'ptc',
@@ -355,6 +400,7 @@ test('settings, header indicator, and tool rows follow the DSH locale dictionari
   assert.equal(memoryCard.props.role, 'dialog')
   const memoryTexts = collectTexts(memoryCard)
   assert.ok(memoryTexts.includes('memory.title'))
+  assert.equal(memoryTexts.includes('memory.globalTab'), false)
   assert.ok(memoryTexts.includes('Widget'))
   assert.ok(memoryTexts.includes('answer'))
   assert.equal(memoryTexts.includes('memory.kind.class'), false)
@@ -364,6 +410,16 @@ test('settings, header indicator, and tool rows follow the DSH locale dictionari
     if (!value || typeof value !== 'object') return undefined
     if (value.props?.className === className) return value
     return findByClass(value.children, className)
+  }
+  const findAllByClass = (value, className, matches = []) => {
+    if (Array.isArray(value)) {
+      value.forEach(item => findAllByClass(item, className, matches))
+      return matches
+    }
+    if (!value || typeof value !== 'object') return matches
+    if (value.props?.className === className) matches.push(value)
+    findAllByClass(value.children, className, matches)
+    return matches
   }
   const memoryName = findByClass(memoryCard, 'ptcPlusReplName')
   assert.equal(memoryName.props['data-kind'], 'class')
@@ -378,6 +434,186 @@ test('settings, header indicator, and tool rows follow the DSH locale dictionari
   assert.equal(findByClass(memoryCard, 'ptcPlusReplDefinitionWrap'), undefined)
   assert.equal(memoryTexts.includes('memory.inspect'), false)
   assert.ok(memoryTexts.indexOf('Widget') < memoryTexts.indexOf('answer'))
+
+  const deferred = () => {
+    let resolve
+    let reject
+    const promise = new Promise((accept, decline) => {
+      resolve = accept
+      reject = decline
+    })
+    return { promise, resolve, reject }
+  }
+  const firstAlphaLoad = deferred()
+  const secondAlphaLoad = deferred()
+  const betaLoad = deferred()
+  const pendingLoads = new Map([
+    ['alpha', [firstAlphaLoad, secondAlphaLoad]],
+    ['beta', [betaLoad]],
+  ])
+  const globalEntries = [
+    { id: 'alpha', name: 'Alpha', scope: 'namespace', symbols: ['alpha'] },
+    { id: 'beta', name: 'Beta', scope: 'namespace', symbols: ['beta'] },
+  ]
+  const globalState = []
+  let globalStateCursor = 0
+  const globalUseState = React.useState
+  const renderGlobalCard = () => {
+    globalStateCursor = 0
+    React.useState = initial => {
+      const index = globalStateCursor++
+      if (!(index in globalState)) {
+        globalState[index] = typeof initial === 'function' ? initial() : initial
+      }
+      return [globalState[index], value => {
+        globalState[index] = typeof value === 'function' ? value(globalState[index]) : value
+      }]
+    }
+    try {
+      return authoringCard.type({
+        ...authoringCard.props,
+        globalEnabled: true,
+        globalBindings: { revision: 1, entries: globalEntries },
+        loadGlobalBinding: id => pendingLoads.get(id).shift().promise,
+      })
+    } finally {
+      React.useState = globalUseState
+    }
+  }
+  let globalCard = renderGlobalCard()
+  findAllByClass(globalCard, 'ptcPlusReplTab')[1].props.onClick()
+  globalCard = renderGlobalCard()
+  let globalSelectors = findAllByClass(globalCard, 'ptcPlusBindingSelect')
+  globalSelectors[0].props.onClick()
+  globalSelectors[1].props.onClick()
+  betaLoad.resolve({ entry: { source: 'export const beta = 2' } })
+  await betaLoad.promise
+  firstAlphaLoad.reject(new Error('alpha unavailable'))
+  await Promise.resolve()
+  globalCard = renderGlobalCard()
+  assert.deepEqual(
+    findAllByClass(globalCard, 'ptcPlusBindingSelect').map(item => item.props['aria-expanded']),
+    [false, true],
+  )
+  assert.ok(collectTexts(findByClass(globalCard, 'ptcPlusGlobalSource')).includes('export const beta = 2'))
+
+  globalSelectors = findAllByClass(globalCard, 'ptcPlusBindingSelect')
+  globalSelectors[1].props.onClick()
+  globalCard = renderGlobalCard()
+  globalSelectors = findAllByClass(globalCard, 'ptcPlusBindingSelect')
+  globalSelectors[0].props.onClick()
+  globalCard = renderGlobalCard()
+  findAllByClass(globalCard, 'ptcPlusBindingSelect')[0].props.onClick()
+  secondAlphaLoad.resolve({ entry: { source: 'export const alpha = 1' } })
+  await secondAlphaLoad.promise
+  globalCard = renderGlobalCard()
+  assert.deepEqual(
+    findAllByClass(globalCard, 'ptcPlusBindingSelect').map(item => item.props['aria-expanded']),
+    [false, false],
+  )
+  assert.equal(findByClass(globalCard, 'ptcPlusGlobalSource'), undefined)
+
+  const listA = deferred()
+  const listB = deferred()
+  const staleListB = deferred()
+  const draftA = deferred()
+  const draftB = deferred()
+  const staleDraftB = deferred()
+  const saveB = deferred()
+  const listLoads = [listA, listB, staleListB]
+  const draftLoads = new Map([
+    ['cap-a', [draftA]],
+    ['cap-b', [draftB, staleDraftB]],
+  ])
+  const originalRpcCall = ctx.connection.rpc.call
+  ctx.connection.rpc.call = async (_channel, endpoint, payload) => {
+    if (endpoint === 'list') return listLoads.shift().promise
+    if (endpoint === 'draft') return draftLoads.get(payload.capability).shift().promise
+    if (endpoint === 'save-draft') return saveB.promise
+    throw new Error(`unexpected binding endpoint ${endpoint}`)
+  }
+  settingsSnapshot = {
+    status: 'ready', writable: true, value: { enabled: true, userBindingsEnabled: true },
+  }
+  const indicatorState = []
+  const indicatorRefs = []
+  let indicatorStateCursor = 0
+  let indicatorRefCursor = 0
+  const renderRefreshIndicator = (sessionId, capability) => {
+    indicatorStateCursor = 0
+    indicatorRefCursor = 0
+    const effects = []
+    const previousUseState = React.useState
+    const previousUseRef = React.useRef
+    const previousUseEffect = React.useEffect
+    React.useState = initial => {
+      const index = indicatorStateCursor++
+      if (!(index in indicatorState)) {
+        indicatorState[index] = typeof initial === 'function' ? initial() : initial
+      }
+      return [indicatorState[index], value => {
+        indicatorState[index] = typeof value === 'function' ? value(indicatorState[index]) : value
+      }]
+    }
+    React.useRef = initial => {
+      const index = indicatorRefCursor++
+      if (!(index in indicatorRefs)) indicatorRefs[index] = { current: initial }
+      return indicatorRefs[index]
+    }
+    React.useEffect = effect => { effects.push(effect) }
+    try {
+      const rendered = indicator.component({
+        sessionId,
+        t: key => key,
+        useSession: selector => selector({ sessionId, projectionValues: { agentPreset: 'ptc' } }),
+        useProjection: key => key === 'ptcPlusRepl'
+          ? { available: true, entries: [], total: 0, omitted: 0 }
+          : key === 'ptcPlusBindingDraft' ? capability : undefined,
+        useSessions: selector => selector({ byId: {} }),
+      })
+      return { rendered, effects }
+    } finally {
+      React.useState = previousUseState
+      React.useRef = previousUseRef
+      React.useEffect = previousUseEffect
+    }
+  }
+  const refreshCard = rendered => rendered.children.find(child => typeof child?.type === 'function')
+  let refreshRender = renderRefreshIndicator('session-a', 'cap-a')
+  refreshRender.effects[0]()
+  refreshRender = renderRefreshIndicator('session-b', 'cap-b')
+  refreshRender.effects[0]()
+  listB.resolve({ ok: true, value: { revision: 2, entries: [] } })
+  draftB.resolve({ ok: true, value: {
+    version: 2,
+    entry: { id: 'beta', name: 'Beta', scope: 'namespace', source: 'export const beta = 2' },
+  } })
+  await new Promise(resolve => setImmediate(resolve))
+  listA.resolve({ ok: true, value: { revision: 1, entries: [] } })
+  draftA.resolve({ ok: true, value: {
+    version: 1,
+    entry: { id: 'alpha', name: 'Alpha', scope: 'namespace', source: 'export const alpha = 1' },
+  } })
+  await new Promise(resolve => setImmediate(resolve))
+  refreshRender = renderRefreshIndicator('session-b', 'cap-b')
+  assert.equal(refreshCard(refreshRender.rendered).props.globalBindings.revision, 2)
+  assert.equal(refreshCard(refreshRender.rendered).props.authoringDraft.entry.id, 'beta')
+
+  refreshRender.effects[0]()
+  refreshRender = renderRefreshIndicator('session-b', 'cap-b')
+  refreshCard(refreshRender.rendered).props.saveAuthoringDraft()
+  saveB.resolve({ ok: true, value: { revision: 3, entries: [] } })
+  await new Promise(resolve => setImmediate(resolve))
+  staleListB.resolve({ ok: true, value: { revision: 2, entries: [] } })
+  staleDraftB.resolve({ ok: true, value: {
+    version: 2,
+    entry: { id: 'beta', name: 'Beta', scope: 'namespace', source: 'export const beta = 2' },
+  } })
+  await new Promise(resolve => setImmediate(resolve))
+  refreshRender = renderRefreshIndicator('session-b', 'cap-b')
+  assert.equal(refreshCard(refreshRender.rendered).props.globalBindings.revision, 3)
+  assert.equal(refreshCard(refreshRender.rendered).props.authoringDraft, null)
+  ctx.connection.rpc.call = originalRpcCall
 
   const memoryUseState = React.useState
   React.useState = initial => [initial === null ? 'Widget' : initial, () => {}]
@@ -402,13 +638,20 @@ test('settings, header indicator, and tool rows follow the DSH locale dictionari
     dataset: {},
     matches: selector => selector === ':popover-open' ? false : undefined,
   }
-  const refs = [{ current: null }, { current: popover }, { current: undefined }]
+  const refs = [
+    { current: undefined },
+    { current: null },
+    { current: popover },
+    { current: undefined },
+  ]
   let indicatorExpanded = true
   let toggleListener
   React.useRef = () => refs.shift()
-  React.useState = initial => [initial, value => {
-    indicatorExpanded = typeof value === 'function' ? value(indicatorExpanded) : value
-  }]
+  React.useState = initial => typeof initial === 'boolean'
+    ? [indicatorExpanded, value => {
+        indicatorExpanded = typeof value === 'function' ? value(indicatorExpanded) : value
+      }]
+    : [initial, () => {}]
   React.useEffect = effect => effect()
   document.addEventListener = (type, listener, capture) => {
     if (type === 'toggle' && capture === true) toggleListener = listener

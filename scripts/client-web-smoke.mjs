@@ -25,6 +25,79 @@ let host
 let browser
 let page
 const bindingMeasurements = []
+const bindingScrollMeasurements = []
+
+async function captureBindingScroll(state) {
+  for (const fraction of [0, 0.5, 1]) {
+    await page.locator('[data-conversation-scroll]').evaluate((element, fraction) => {
+      element.scrollTop = fraction * (element.scrollHeight - element.clientHeight)
+    }, fraction)
+    await page.waitForTimeout(150)
+    const metrics = await page.evaluate(() => {
+      const scroller = document.querySelector('[data-conversation-scroll]')
+      const composer = document.querySelector('[data-composer-seat]')
+      const flow = document.querySelector('[data-chat-flow]')
+      const bounds = element => {
+        const { top, bottom, height } = element.getBoundingClientRect()
+        return { top, bottom, height }
+      }
+      const overflowingAncestors = []
+      for (let element = flow; element !== scroller; element = element.parentElement) {
+        if (getComputedStyle(element).display === 'contents') continue
+        if (element.scrollHeight > element.clientHeight + 1) overflowingAncestors.push(element.className)
+      }
+      return {
+        viewport: { width: innerWidth, height: innerHeight },
+        documentHeight: document.documentElement.scrollHeight,
+        scroller: { ...bounds(scroller), topOffset: scroller.scrollTop,
+          extent: scroller.scrollHeight - scroller.clientHeight },
+        composer: { ...bounds(composer), position: getComputedStyle(composer).position },
+        overflowingAncestors,
+      }
+    })
+    const label = `${state}/${metrics.viewport.width}x${metrics.viewport.height}/${fraction}`
+    assert.ok(metrics.documentHeight <= metrics.viewport.height + 1, `${label}: document overflow`)
+    assert.equal(metrics.composer.position, 'sticky', `${label}: composer positioning changed`)
+    assert.ok(Math.abs(metrics.composer.bottom - metrics.scroller.bottom) <= 1,
+      `${label}: composer left the scrollport floor: ${JSON.stringify(metrics)}`)
+    assert.deepEqual(metrics.overflowingAncestors, [], `${label}: transcript escaped its layout ancestors`)
+    bindingScrollMeasurements.push({ state, fraction, ...metrics })
+  }
+}
+
+async function verifyBindingScroll(rpc) {
+  for (const mode of ['enhanced', 'native-tool', 'native-client']) {
+    await rpc('settings/update', { ns: 'ptc-plus', patch: {
+      enabled: mode !== 'native-client', enhancedToolView: mode === 'enhanced',
+    } })
+    await page.locator('.ptcPlusBindingCommand').waitFor({ state: mode === 'native-client' ? 'detached' : 'visible' })
+    await page.locator('.ptcPlusTool').waitFor({ state: mode === 'enhanced' ? 'attached' : 'detached' })
+    for (const [width, height] of [[390, 1000], [1440, 1000], [1440, 1200]]) {
+      await page.setViewportSize({ width, height })
+      if (width < 1024) await page.locator('[data-sidebar-collapsed=true]').waitFor()
+      const process = page.locator('[data-turn-process]').first()
+      await process.waitFor()
+      const source = page.locator('.ptcPlusBindingSourceDetails').first()
+      const states = mode === 'native-client' ? [[false, false], [true, false], [false, false]]
+        : [[false, false], [true, false], [true, true], [true, false], [false, false]]
+      for (const [processOpen, sourceOpen] of states) {
+        if ((await process.getAttribute('aria-expanded') === 'true') !== processOpen) await process.click()
+        if (mode !== 'native-client' && (await source.getAttribute('open') !== null) !== sourceOpen) {
+          await source.locator('summary').click()
+        }
+        await captureBindingScroll(`${mode}/process-${processOpen}/source-${sourceOpen}`)
+      }
+    }
+  }
+  assert.ok(bindingScrollMeasurements.some(item => item.scroller.extent > 0), 'Scroll fixture never overflowed')
+  const desktop = bindingScrollMeasurements.filter(item => item.viewport.width === 1440 && item.viewport.height === 1200)
+  assert.ok(desktop.some(item => item.state === 'enhanced/process-false/source-false' && item.scroller.extent === 0),
+    'Collapsed desktop fixture did not fit the scrollport')
+  assert.ok(desktop.some(item => item.state === 'enhanced/process-true/source-false' && item.scroller.extent > 0),
+    'Process disclosure did not cross the desktop scroll boundary')
+  await rpc('settings/update', { ns: 'ptc-plus', patch: { enabled: true, enhancedToolView: true } })
+  await page.locator('.ptcPlusBindingCommand').waitFor()
+}
 
 async function captureBinding(state, width = 1440) {
   await page.setViewportSize({ width, height: 1000 })
@@ -206,6 +279,7 @@ try {
       assert.match(await cards.innerText(), /export function value/)
       for (const width of [390, 1440]) await captureBinding(`saved-${locale}`, width)
     }
+    await verifyBindingScroll(rpc)
     await submit('/binding edit workflow same helper')
     await page.getByRole('button', { name: 'Discard draft', exact: true }).waitFor({ timeout: 30000 })
     await page.getByRole('button', { name: 'Discard draft', exact: true }).click()
@@ -246,8 +320,10 @@ try {
   assert.equal(errors.length, 0, errors.join('\n'))
   await writeFile(join(evidence, 'result.json'), JSON.stringify({
     dshVersion: version, packageIntegrity,
+    browser: { version: browser.version(), channel: values['browser-channel'] ?? 'chromium' },
     settings: 'ready', conversation: 'ready', pageErrors: errors,
-    bindingWorkflow: values['binding-workflow'] ? { model: 'deterministic-local-adapter', measurements: bindingMeasurements } : null,
+    bindingWorkflow: values['binding-workflow'] ? { model: 'deterministic-local-adapter', measurements: bindingMeasurements,
+      scrollMeasurements: bindingScrollMeasurements } : null,
   }, null, 2) + '\n')
   console.log(`Packed Client Web smoke passed (${version})`)
 } catch (error) {

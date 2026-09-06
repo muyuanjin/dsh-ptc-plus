@@ -2,6 +2,8 @@ import { readFileSync } from 'node:fs'
 import { LlmAdapter } from '@deepseek-ai/dsh-llm'
 
 const scenario = JSON.parse(readFileSync(new URL('../scripts/binding-workflow-scenario.json', import.meta.url), 'utf8'))
+// A settled answer near the desktop viewport height exercises process disclosure across the scroll boundary.
+const answer = Array.from({ length: 14 }, (_, index) => `Review item ${index + 1}: the binding draft is ready for review.`).join('\n\n')
 export const inject = ['llm']
 
 /** Deterministic Web fixture: no HTTP provider, credentials, or model requests. */
@@ -23,8 +25,8 @@ export function apply(ctx) {
         yield { type: 'block-end', index: 0, block }
         yield { type: 'finish', reason: { kind: 'tool-calls' } }
       } else {
-        yield { type: 'text-delta', index: 0, text: 'Ready.' }
-        yield { type: 'block-end', index: 0, block: { type: 'text', text: 'Ready.' } }
+        yield { type: 'text-delta', index: 0, text: answer }
+        yield { type: 'block-end', index: 0, block: { type: 'text', text: answer } }
         yield { type: 'finish', reason: { kind: 'stop' } }
       }
     }

@@ -4,24 +4,39 @@ export const MAX_ERROR_LOG_BYTES = 4 * 1024
 export const FAILURE_HINT_THRESHOLD = 3
 export const LONG_CELL_CODE_UNITS = 2_000
 const BINDING_FAILURE = Symbol('binding failure')
+const PROGRAM_FAILURES = new WeakMap()
+const MAX_CAUSE_CODE_UNITS = 2048
 
-export function markBindingFailure(error) {
-  Object.defineProperty(error, BINDING_FAILURE, { value: true })
+export function markBindingFailure(error, kind = 'lexical') {
+  Object.defineProperty(error, BINDING_FAILURE, { value: kind })
   return error
 }
 
-function repeatedFailureDiagnostic(kind, streak) {
-  if (kind === 'binding') {
+/** Preserve worker-owned failure identity without trusting user exception text. */
+export function programBindingError(kind, message) {
+  const error = new Error(message)
+  PROGRAM_FAILURES.set(error, kind)
+  return error
+}
+
+function repeatedFailureDiagnostic(kind, streak, stateEffect) {
+  if (kind === 'lexical' || kind === 'capability') {
+    const capability = kind === 'capability'
     return diagnostic({
       code: 'PTC-W001',
       severity: 'warning',
       phase: 'execute',
-      message: `this cell failed ${streak} times with the same binding error; inspect the live binding names and change the expression before retrying`,
-      stateEffect: 'unchanged',
-      help: [
+      message: `this cell failed ${streak} times with the same ${capability ? 'capability' : 'lexical binding'} error; resolve the reported name before continuing`,
+      stateEffect,
+      cause: { code: capability ? 'PTC-CAPABILITY' : 'PTC-LOCAL', message: capability ? 'current program capability lookup failed' : 'local name or declaration conflict' },
+      help: capability ? [
         'inspect live bindings with capabilities.tree(), capabilities.find(), or capabilities.inspect()',
         'call available typed members through tools.*',
         'do not repeat the same unresolved binding expression',
+      ] : [
+        'inspect the visible cell source and results for the local declaration, scope, or initialization failure',
+        'correct the name or initialization; use a fresh name or block for a declaration conflict',
+        'capabilities describes program APIs, not session-local variables; discovery cannot prove local state',
       ],
     })
   }
@@ -30,7 +45,7 @@ function repeatedFailureDiagnostic(kind, streak) {
     severity: 'warning',
     phase: 'execute',
     message: `this cell failed ${streak} times with the same error; inspect the reported cause and change the approach before retrying`,
-    stateEffect: 'unchanged',
+    stateEffect,
     help: ['inspect the reported cause', 'change the inputs or approach before retrying'],
   })
 }
@@ -114,19 +129,28 @@ export function errorDetails(error, filename) {
   const candidate = safeProperty(error, 'ptcCause')
   const causeMessage = firstLine(safeProperty(candidate, 'message'))
   const causeCode = firstLine(safeProperty(candidate, 'code'))
+  const stderr = safeProperty(error, 'stderr')
+  const stderrText = typeof stderr === 'string' ? stderr.slice(0, MAX_CAUSE_CODE_UNITS)
+    : Buffer.isBuffer(stderr) ? stderr.subarray(0, MAX_CAUSE_CODE_UNITS).toString('utf8') : ''
+  const boundedMessage = message.slice(0, MAX_CAUSE_CODE_UNITS)
+  const continuation = boundedMessage.search(/[\r\n]/)
+  const detail = [continuation < 0 ? '' : boundedMessage.slice(continuation + 1), stderrText]
+    .join(' ').slice(0, MAX_CAUSE_CODE_UNITS).replace(/\s+/g, ' ').trim()
   const cause = causeMessage === undefined
-    ? undefined
+    ? detail.length === 0 ? undefined : { message: detail }
     : {
         ...(causeCode === undefined ? {} : { code: causeCode }),
         message: causeMessage,
       }
   const position = errorPosition(error, filename)
+  const failureOrigin = PROGRAM_FAILURES.get(error)
   return {
     name,
     message,
     ...(toolName === undefined ? {} : { toolName }),
     ...(position === undefined ? {} : { position }),
     ...(cause === undefined ? {} : { cause }),
+    ...(failureOrigin === undefined ? {} : { failureOrigin }),
   }
 }
 
@@ -140,16 +164,16 @@ export function createFailureTracker() {
       kind = undefined
       streak = 0
     },
-    hint(error) {
+    hint(error, stateEffect = 'unknown') {
       const nextFingerprint = `${error.kind}\u0000${error.message}`
       if (fingerprint === nextFingerprint) streak += 1
       else {
         fingerprint = nextFingerprint
-        kind = error[BINDING_FAILURE] === true ? 'binding' : 'generic'
+        kind = error[BINDING_FAILURE] ?? 'generic'
         streak = 1
       }
       if (streak !== FAILURE_HINT_THRESHOLD) return undefined
-      return repeatedFailureDiagnostic(kind, streak)
+      return repeatedFailureDiagnostic(kind, streak, stateEffect)
     },
   })
 }

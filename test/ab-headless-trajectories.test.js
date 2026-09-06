@@ -24,7 +24,7 @@ import { collectTrajectoryFacts, pendingBlindApproval } from '../scripts/accepta
 import { aggregateTrajectories } from '../scripts/ab-trajectory-report.mjs'
 
 const persona = 'You are a coding agent powered by the {{model}} model. Your working directory is {{cwd}}.'
-const runtime = { toolsMode: 'code', permissionMode: 'danger-full-access' }
+const runtime = { toolsMode: 'ptc', permissionMode: 'danger-full-access' }
 
 test('separates opaque arm scratch trees from evaluator artifacts', () => {
   const scratchRoot = join(tmpdir(), 'ptc-ab-scratch')
@@ -160,7 +160,7 @@ function rows(ptcDisabled, customIdentity = true) {
     },
     { id: 'ptc-plus', name: 'dsh-ptc-plus', ...(ptcDisabled ? { disabled: true } : {}) },
     ...(customIdentity ? [{ id: 'custom-harness-identity', disabled: true }] : []),
-    { id: 'tools', config: { mode: 'code' } },
+    { id: 'tools', config: { mode: 'ptc' } },
     { id: 'sandbox-policy', config: { mode: 'danger-full-access' } },
     { id: 'approval', config: { policy: 'never' } },
   ]
@@ -192,6 +192,9 @@ test('accepts an A/B config pair whose only treatment is ptc-plus.disabled', () 
   assert.equal(result.pluginSha256.length, 64)
   assert.equal(result.baselineSha256.length, 64)
   assert.doesNotThrow(() => validateConfigPair(rows(false, false), rows(true, false), runtime))
+  plugin.find(row => row.id === 'tools').config.mode = 'code'
+  baseline.find(row => row.id === 'tools').config.mode = 'code'
+  assert.throws(() => validateConfigPair(plugin, baseline, { ...runtime, toolsMode: 'code' }), /public DSH tools config/)
 })
 
 test('rejects missing isolation, fake headless rows, and any second treatment', () => {
@@ -221,7 +224,7 @@ test('rejects missing isolation, fake headless rows, and any second treatment', 
 
   const nativeTools = rows(false)
   nativeTools.find(row => row.id === 'tools').config.mode = 'native'
-  assert.throws(() => validateConfigPair(nativeTools, baseline, runtime), /does not use tools mode code/)
+  assert.throws(() => validateConfigPair(nativeTools, baseline, runtime), /does not use tools mode ptc/)
 })
 
 test('compares only injections visible before the first model request', () => {

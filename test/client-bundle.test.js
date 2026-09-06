@@ -9,6 +9,25 @@ import assert from 'node:assert/strict'
 
 const require = createRequire(import.meta.url)
 
+// Bundle smoke only. Reactive ownership is exercised by client-runtime.spec.js.
+function smokeComponent(options, component, defaultProps = () => ({})) {
+  const subscribed = new WeakSet()
+  return props => {
+    const injected = options.inject?.(props.sessionId ?? 'session-1') ?? {}
+    const { hooks = {}, ...callbacks } = injected
+    const bound = Object.fromEntries(Object.entries(hooks).map(([key, source]) => {
+      if (!subscribed.has(source)) {
+        subscribed.add(source)
+        source.subscribe(() => {})
+      }
+      return [`use${key[0].toUpperCase()}${key.slice(1)}`, (selector = value => value) => selector(source.getSnapshot())]
+    }))
+    let result = component({ ...defaultProps(props), ...callbacks, ...bound, ...props })
+    while (typeof result?.type === 'function') result = result.type(result.props)
+    return result
+  }
+}
+
 const EMPTY_VALUE_WIRE = Object.freeze({
   codec: 'ptc-value-graph/v1',
   root: Object.freeze({ tag: 'undefined' }),
@@ -76,13 +95,19 @@ test('checked client bundle is loadable through the DSH module loader contract',
     IconCheckOutline14() {},
     IconChevronDownOutline14() {},
     IconInspectOutline12() {},
+    IconSparkle16() {},
+    StateDot() {},
+    Toast() {},
+    Tooltip() {},
   }
   const exported = loaded.factory(name => {
     if (name === 'react') return React
     if (name === '@deepseek-ai/dsh-client-ui-primitives') return primitives
     throw new Error(`unexpected client dependency ${name}`)
   })
-  assert.equal(Array.from(exported.inject).join(','), 'settingsScope,slots,sessions,locale,connection')
+  assert.equal(Array.from(exported.inject).join(','), 'settingsScope,slots,locale,connection')
+  assert.doesNotMatch(sourceModule, /useSyncExternalStore|useConversation|scope\.sessions|conversationEvents/)
+  assert.ok(packageJson.dsh.client.inject.includes('@deepseek-ai/dsh-api-remotes'))
   assert.ok(packageJson.dsh.client.inject.includes('@deepseek-ai/dsh-client-locale'))
   assert.equal(typeof exported.apply, 'function')
   assert.match(source, /settings\.plugin\.item/)
@@ -97,14 +122,18 @@ test('checked client bundle is loadable through the DSH module loader contract',
   assert.doesNotMatch(sourceModule, /仅 enabled 即时生效/)
   assert.match(sourceModule, /The session-bound TypeScript REPL for PTC mode\./)
   assert.match(sourceModule, /bindings\.symbolsPlaceholder/)
+  assert.match(sourceModule, /bindings\.draftSaveEnable/)
+  assert.match(sourceModule, /hidden: !open/)
+  assert.match(sourceModule, /ptcPlusBindingSection/)
+  assert.match(sourceModule, /ptcPlusBindingDebug/)
+  assert.match(sourceModule, /StateDot/)
   assert.match(sourceModule, /留空则从源码推导/)
   assert.match(sourceModule, /blank derives from source/)
   assert.match(sourceModule, /symbolsText\.split\(','\)/)
   assert.match(sourceModule, /entry: bindingPayload\(editableBinding\(normalized\)\)/)
   assert.match(sourceModule, /Expand PTC Plus settings/)
   assert.doesNotMatch(sourceModule, /ptcPlusActivityPanel/)
-  assert.doesNotMatch(sourceModule, /useConversation\b/)
-  assert.match(sourceModule, /useSession/)
+  assert.match(sourceModule, /useProjection\('agentPreset'\)/)
   assert.match(sourceModule, /CodeBlock/)
   assert.match(sourceModule, /DisclosureRow/)
   assert.doesNotMatch(sourceModule, /rowClassName|leadingClassName|chevronClassName|titleClassName/)
@@ -146,11 +175,22 @@ test('checked client bundle is loadable through the DSH module loader contract',
 test('settings, header indicator, and tool rows follow the DSH locale dictionaries', async () => {
   const source = await readFile(new URL('../client.js', import.meta.url), 'utf8')
   const registrations = []
-  const window = { __ModuleLoader__: { load(value) { registrations.push(value) } } }
-  const document = { getElementById: () => ({ remove() {} }) }
+  const window = {
+    __ModuleLoader__: { load(value) { registrations.push(value) } },
+    addEventListener() {},
+    removeEventListener() {},
+  }
+  const document = {
+    getElementById: () => ({ remove() {} }),
+    addEventListener() {},
+    removeEventListener() {},
+    querySelector: () => null,
+    activeElement: null,
+  }
   runInNewContext(source, {
     window,
     document,
+    AbortController,
     TextEncoder,
     setInterval: () => 1,
     clearInterval() {},
@@ -163,7 +203,7 @@ test('settings, header indicator, and tool rows follow the DSH locale dictionari
     useRef: value => ({ current: value }),
     useCallback: value => value,
     useSyncExternalStore: (_subscribe, getSnapshot) => getSnapshot(),
-    useEffect: () => {},
+    useEffect: effect => effect(),
   }
   const primitives = {
     CodeBlock() {},
@@ -171,6 +211,10 @@ test('settings, header indicator, and tool rows follow the DSH locale dictionari
     IconCheckOutline14: 'IconCheck',
     IconChevronDownOutline14: 'IconChevron',
     IconInspectOutline12: 'IconInspect',
+    IconSparkle16() {},
+    StateDot: 'StateDot',
+    Toast() {},
+    Tooltip() {},
   }
   const exported = registrations[0].factory(name => {
     if (name === 'react') return React
@@ -179,8 +223,12 @@ test('settings, header indicator, and tool rows follow the DSH locale dictionari
   })
   const dictionaries = []
   const slotEntries = []
+  const conversationDefinitions = []
   const preferenceListeners = new Set()
-  let settingsSnapshot = { status: 'ready', writable: true, value: { enabled: true } }
+  const remoteListeners = new Map()
+  const clientListeners = new Map()
+  let commandDescriptors = [{ name: 'binding', description: 'Author a binding' }]
+  let settingsSnapshot = { status: 'ready', writable: true, value: { enabled: true, userBindingsEnabled: true } }
   let sessionSnapshot = {
     byId: { 'session-1': { projectionValues: { agentPreset: 'ptc' } } },
   }
@@ -207,12 +255,24 @@ test('settings, header indicator, and tool rows follow the DSH locale dictionari
         return () => {}
       },
       register: (options, component) => {
-        const entry = { options, component, active: true }
+        const entry = { options, component: smokeComponent(options, component, props => ({
+          useProjection: key => sessionSnapshot.byId?.[props.sessionId ?? 'session-1']?.projectionValues?.[key],
+          useInput: selector => selector({ draft: '' }),
+        })), active: true }
         slotEntries.push(entry)
         return () => { entry.active = false }
       },
     },
-    inject: (_services, callback) => callback({ slots: ctx.slots, sessions: { list: sessions } }),
+    inject: (_services, callback) => callback(ctx),
+    uiSession: {},
+    uiConversation: {
+      events: {
+        register: definition => {
+          conversationDefinitions.push(definition)
+          return () => {}
+        },
+      },
+    },
     locale: {
       register: (ns, dicts) => { dictionaries.push({ ns, dicts }); return () => {} },
       bind: () => key => key,
@@ -227,9 +287,17 @@ test('settings, header indicator, and tool rows follow the DSH locale dictionari
         }),
       },
     },
+    remote: {
+      commands: {
+        list: async () => ({ ok: true, value: commandDescriptors }),
+      },
+      $on(name, listener) { remoteListeners.set(name, listener) },
+    },
+    on(name, listener) { clientListeners.set(name, listener); return () => clientListeners.delete(name) },
   }
   exported.apply(ctx)
 
+  assert.deepEqual(conversationDefinitions, [])
   assert.equal(dictionaries.length, 1)
   const { ns, dicts } = dictionaries[0]
   assert.equal(ns, 'settings.ptcPlus')
@@ -248,11 +316,17 @@ test('settings, header indicator, and tool rows follow the DSH locale dictionari
 
   const [card] = slotEntries.filter(({ options }) => options.name === 'settings.plugin.item')
   const [indicator] = slotEntries.filter(({ options }) => options.name === 'conversation.session.header.actions')
+  const [authorButton] = slotEntries.filter(({ options }) => options.name === 'conversation.input.left')
+  const [bindingCommand] = slotEntries.filter(({ options }) => options.name === 'conversation.chat.commandview')
+  assert.equal(slotEntries.some(({ options }) => options.name === 'conversation.chat.turnTail'), false)
   const toolviews = slotEntries.filter(({ options }) => options.name === 'tool.call.toolview')
   assert.equal(card.options.locale, ns)
   assert.equal(card.options.key, SETTINGS_NAMESPACE)
   assert.equal(indicator.options.locale, ns)
   assert.equal(indicator.options.id, 'ptc-plus-active')
+  assert.equal(authorButton.options.id, 'ptc-plus-binding-author')
+  assert.equal(bindingCommand.options.key, 'binding')
+  assert.equal(bindingCommand.options.locale, ns)
   assert.deepEqual(toolviews.map(({ options }) => options.key), ['run_code', 'edit_run_code'])
   assert.equal(toolviews.every(({ options }) => options.locale === ns), true)
   const collectTexts = (value) => {
@@ -264,6 +338,7 @@ test('settings, header indicator, and tool rows follow the DSH locale dictionari
       if (current && typeof current === 'object' && 'children' in current) {
         if (typeof current.props?.['aria-label'] === 'string') texts.push(current.props['aria-label'])
         if (typeof current.props?.title === 'string') texts.push(current.props.title)
+        if (typeof current.props?.code === 'string') texts.push(current.props.code)
         current.children.forEach(collect)
         if (current.props?.collapsedContent !== undefined) collect(current.props.collapsedContent)
         if (current.props?.children !== undefined && current.props.children !== null) {
@@ -274,6 +349,120 @@ test('settings, header indicator, and tool rows follow the DSH locale dictionari
     collect(value)
     return texts
   }
+  const findComponent = (value, name) => {
+    if (Array.isArray(value)) {
+      return value.map(item => findComponent(item, name)).find(Boolean)
+    }
+    if (!value || typeof value !== 'object') return undefined
+    if (typeof value.type === 'function' && value.type.name === name) return value
+    return findComponent(value.children, name)
+      ?? findComponent(value.props?.children, name)
+  }
+
+  const commandCard = bindingCommand.component({
+    node: {
+      commandId: 'command-1', args: ' new 写一个只读文件工具',
+      outcome: { kind: 'success', text: 'Binding draft requested.' },
+    },
+    t: key => key,
+    useProjection: key => key === 'ptcPlusBindingDraft'
+      ? { phase: 'pending', capability: null, commandId: 'command-1' }
+      : undefined,
+  })
+  assert.ok(collectTexts(commandCard).includes('/binding new 写一个只读文件工具'))
+  assert.ok(collectTexts(commandCard).includes('bindings.commandPending'))
+
+  const failedCommandCard = bindingCommand.component({
+    node: {
+      commandId: 'command-error', args: ' new 失败的工具',
+      outcome: { kind: 'error', text: 'Authoring failed.' },
+    },
+    t: key => key,
+    useProjection: key => key === 'ptcPlusBindingDraft'
+      ? { phase: 'pending', capability: null, commandId: 'command-error' }
+      : undefined,
+  })
+  assert.equal(failedCommandCard.props['data-phase'], 'failed')
+  assert.ok(collectTexts(failedCommandCard).includes('bindings.commandFailed'))
+  assert.ok(collectTexts(failedCommandCard).includes('Authoring failed.'))
+  assert.equal(collectTexts(failedCommandCard).includes('bindings.commandPending'), false)
+
+  settingsSnapshot = {
+    status: 'ready', writable: true, value: { enabled: true, userBindingsEnabled: true },
+  }
+  const workbench = findComponent(card.component({ t: key => key }), 'UserBindingsWorkbench')
+  assert.notEqual(workbench, undefined)
+  const workbenchState = []
+  const workbenchRefs = []
+  let workbenchStateCursor = 0
+  let workbenchRefCursor = 0
+  const workbenchOriginalUseState = React.useState
+  const workbenchOriginalUseRef = React.useRef
+  const workbenchOriginalUseEffect = React.useEffect
+  const originalRpcCallForWorkbench = ctx.connection.rpc.call
+  const renderWorkbench = (runEffects) => {
+    workbenchStateCursor = 0
+    workbenchRefCursor = 0
+    const effects = []
+    React.useState = initial => {
+      const index = workbenchStateCursor++
+      if (!(index in workbenchState)) {
+        workbenchState[index] = typeof initial === 'function' ? initial() : initial
+      }
+      return [workbenchState[index], value => {
+        workbenchState[index] = typeof value === 'function' ? value(workbenchState[index]) : value
+      }]
+    }
+    React.useRef = initial => {
+      const index = workbenchRefCursor++
+      if (!(index in workbenchRefs)) workbenchRefs[index] = { current: initial }
+      return workbenchRefs[index]
+    }
+    React.useEffect = effect => { if (runEffects) effects.push(effect) }
+    try {
+      const rendered = workbench.type(workbench.props)
+      effects.forEach(effect => effect())
+      return rendered
+    } finally {
+      React.useState = workbenchOriginalUseState
+      React.useRef = workbenchOriginalUseRef
+      React.useEffect = workbenchOriginalUseEffect
+    }
+  }
+  ctx.connection.rpc.call = async () => ({
+    ok: false, error: { message: 'binding route unavailable' },
+  })
+  assert.ok(collectTexts(renderWorkbench(true)).includes('bindings.loading'))
+  await new Promise(resolve => setImmediate(resolve))
+  const failedWorkbench = collectTexts(renderWorkbench(false))
+  assert.ok(failedWorkbench.includes('bindings.failed'))
+  assert.equal(failedWorkbench.includes('bindings.loading'), false)
+  ctx.connection.rpc.call = originalRpcCallForWorkbench
+
+  const toggleState = [
+    {
+      revision: 4,
+      entries: [
+        { id: 'enabled', name: 'Enabled entry', scope: 'namespace', symbols: ['enabled'], enabled: true },
+        { id: 'disabled', name: 'Disabled entry', scope: 'namespace', symbols: ['disabled'], enabled: false },
+      ],
+    },
+    null, '', '', '', '[]', '', null, false,
+  ]
+  let toggleStateCursor = 0
+  React.useState = () => [toggleState[toggleStateCursor++], () => {}]
+  React.useRef = value => ({ current: value })
+  React.useEffect = () => {}
+  const toggleWorkbench = workbench.type(workbench.props)
+  React.useState = workbenchOriginalUseState
+  React.useRef = workbenchOriginalUseRef
+  React.useEffect = workbenchOriginalUseEffect
+  const toggleTexts = collectTexts(toggleWorkbench)
+  assert.ok(toggleTexts.includes('bindings.disableAction'))
+  assert.ok(toggleTexts.includes('bindings.enableAction'))
+  assert.ok(toggleTexts.includes('bindings.stateEnabled: bindings.disableAction'))
+  assert.ok(toggleTexts.includes('bindings.stateDisabled: bindings.enableAction'))
+
   const keys = collectTexts(card.component({ t: key => `[[${key}]]` }))
   assert.ok(keys.includes('[[card.description]]'))
   assert.ok(keys.includes('[[status.enabled]]'))
@@ -318,7 +507,7 @@ test('settings, header indicator, and tool rows follow the DSH locale dictionari
     })
   }
   assert.notEqual(renderIndicator({ projectionValues: { agentPreset: 'ptc' } }), null)
-  assert.notEqual(renderIndicator({ agentPreset: 'code' }), null)
+  assert.equal(renderIndicator({ agentPreset: 'code' }), null)
   assert.notEqual(renderIndicator({
     projectionValues: { agentPreset: 'ptc' }, agentPreset: 'unrelated',
   }), null)
@@ -339,7 +528,7 @@ test('settings, header indicator, and tool rows follow the DSH locale dictionari
     useSession: selector => selector(standardKitSession),
     useProjection: key => key === 'ptcPlusRepl' ? {
       available: true, entries: [], total: 0, omitted: 0,
-    } : undefined,
+    } : key === 'agentPreset' ? 'ptc' : undefined,
     useSessions: selector => selector({ byId: {} }),
   })
   assert.notEqual(standardKitIndicator, null)
@@ -367,6 +556,46 @@ test('settings, header indicator, and tool rows follow the DSH locale dictionari
     .find(child => typeof child?.type === 'function')
   occupiedComposerCard.props.prefillAuthoring('/binding edit alpha ')
   assert.deepEqual(composerDrafts, ['/binding new '])
+
+  sessionSnapshot = { byId: { 'session-1': { projectionValues: {} } } }
+  const authorProps = {
+    sessionId: 'session-1',
+    t: key => key,
+    useConversation: selector => selector({ sessionId: 'session-1' }),
+    useInput: selector => selector({ draft: '' }),
+    inputActions: { setDraft: value => composerDrafts.push(value) },
+  }
+  assert.equal(authorButton.component(authorProps), null)
+  await new Promise(resolve => setImmediate(resolve))
+  const authorControl = authorButton.component(authorProps)
+  assert.notEqual(authorControl, null)
+  const authorAction = authorControl.children[0].children[0]
+  assert.equal(authorAction.type, 'button')
+  assert.equal(authorAction.props['aria-label'], 'bindings.authorOpen')
+  let focusPreserved = false
+  authorAction.props.onMouseDown({ preventDefault() { focusPreserved = true } })
+  assert.equal(focusPreserved, true)
+  authorAction.props.onClick()
+  assert.deepEqual(composerDrafts, ['/binding new ', '/binding new '])
+  const occupiedAuthorControl = authorButton.component({
+    ...authorProps,
+    useInput: selector => selector({ draft: 'keep this text' }),
+  })
+  occupiedAuthorControl.children[0].children[0].props.onClick()
+  assert.deepEqual(composerDrafts, ['/binding new ', '/binding new '])
+
+  commandDescriptors = []
+  remoteListeners.get('commands/change')()
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(authorButton.component(authorProps), null)
+  commandDescriptors = [{ name: 'binding' }]
+  remoteListeners.get('agent-preset/selected')('session-1')
+  await new Promise(resolve => setImmediate(resolve))
+  assert.notEqual(authorButton.component(authorProps), null)
+  commandDescriptors = []
+  clientListeners.get('connection/reset')()
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(authorButton.component(authorProps), null)
 
   const memoryIndicator = renderIndicator({
     projectionValues: {
@@ -435,6 +664,7 @@ test('settings, header indicator, and tool rows follow the DSH locale dictionari
   assert.equal(memoryTexts.includes('memory.inspect'), false)
   assert.ok(memoryTexts.indexOf('Widget') < memoryTexts.indexOf('answer'))
 
+
   const deferred = () => {
     let resolve
     let reject
@@ -458,7 +688,7 @@ test('settings, header indicator, and tool rows follow the DSH locale dictionari
   const globalState = []
   let globalStateCursor = 0
   const globalUseState = React.useState
-  const renderGlobalCard = () => {
+  const renderGlobalCard = (authoringPhase = authoringCard.props.authoringPhase) => {
     globalStateCursor = 0
     React.useState = initial => {
       const index = globalStateCursor++
@@ -474,6 +704,7 @@ test('settings, header indicator, and tool rows follow the DSH locale dictionari
         ...authoringCard.props,
         globalEnabled: true,
         globalBindings: { revision: 1, entries: globalEntries },
+        authoringPhase,
         loadGlobalBinding: id => pendingLoads.get(id).shift().promise,
       })
     } finally {
@@ -483,6 +714,10 @@ test('settings, header indicator, and tool rows follow the DSH locale dictionari
   let globalCard = renderGlobalCard()
   findAllByClass(globalCard, 'ptcPlusReplTab')[1].props.onClick()
   globalCard = renderGlobalCard()
+  const pendingGlobalCard = renderGlobalCard('pending')
+  const failedGlobalCard = renderGlobalCard('failed')
+  assert.equal(collectTexts(pendingGlobalCard).includes('bindings.draftPending'), false)
+  assert.equal(collectTexts(failedGlobalCard).includes('bindings.draftFailed'), false)
   let globalSelectors = findAllByClass(globalCard, 'ptcPlusBindingSelect')
   globalSelectors[0].props.onClick()
   globalSelectors[1].props.onClick()
@@ -568,7 +803,9 @@ test('settings, header indicator, and tool rows follow the DSH locale dictionari
         useSession: selector => selector({ sessionId, projectionValues: { agentPreset: 'ptc' } }),
         useProjection: key => key === 'ptcPlusRepl'
           ? { available: true, entries: [], total: 0, omitted: 0 }
-          : key === 'ptcPlusBindingDraft' ? capability : undefined,
+          : key === 'ptcPlusBindingDraft'
+            ? { phase: capability === null ? 'idle' : 'ready', capability, commandId: null }
+            : key === 'agentPreset' ? 'ptc' : undefined,
         useSessions: selector => selector({ byId: {} }),
       })
       return { rendered, effects }
@@ -813,4 +1050,178 @@ test('settings, header indicator, and tool rows follow the DSH locale dictionari
   settingsSnapshot = { status: 'ready', writable: true, value: { enabled: true } }
   preferenceListeners.forEach(listener => listener())
   assert.deepEqual(activeToolviews().map(({ options }) => options.key), ['run_code', 'edit_run_code'])
+})
+
+test('renders authoring and memory surfaces when new UI primitives are absent', async () => {
+  const source = await readFile(new URL('../client.js', import.meta.url), 'utf8')
+  const registrations = []
+  const window = {
+    __ModuleLoader__: { load(value) { registrations.push(value) } },
+    addEventListener() {},
+    removeEventListener() {},
+  }
+  const document = {
+    getElementById: () => ({ remove() {} }),
+    addEventListener() {},
+    removeEventListener() {},
+    querySelector: () => null,
+    activeElement: null,
+  }
+  runInNewContext(source, {
+    window,
+    document,
+    AbortController,
+    TextEncoder,
+    setInterval: () => 1,
+    clearInterval() {},
+    setTimeout: () => 1,
+    clearTimeout() {},
+  })
+  const states = []
+  let stateCursor = 0
+  const React = {
+    createElement: (type, props, ...children) => ({ type, props, children }),
+    useState: initial => {
+      const index = stateCursor++
+      if (!(index in states)) {
+        states[index] = typeof initial === 'function' ? initial() : initial
+      }
+      return [states[index], value => {
+        states[index] = typeof value === 'function' ? value(states[index]) : value
+      }]
+    },
+    useRef: value => ({ current: value }),
+    useCallback: value => value,
+    useSyncExternalStore: (_subscribe, getSnapshot) => getSnapshot(),
+    useEffect: effect => effect(),
+  }
+  const renderAuthor = (props) => {
+    stateCursor = 0
+    return authorButton.component(props)
+  }
+  // The older UI kit line provides the stable icons and block components but
+  // not the newest Tooltip, Toast, or IconSparkle16 primitives.
+  const primitives = {
+    CodeBlock() {},
+    DisclosureRow() {},
+    IconCheckOutline14() {},
+    IconChevronDownOutline14() {},
+    IconInspectOutline12() {},
+    StateDot() {},
+  }
+  const exported = registrations[0].factory(name => {
+    if (name === 'react') return React
+    if (name === '@deepseek-ai/dsh-client-ui-primitives') return primitives
+    throw new Error(`unexpected client dependency ${name}`)
+  })
+  const slotEntries = []
+  const preferenceListeners = new Set()
+  const remoteListeners = new Map()
+  const clientListeners = new Map()
+  let commandDescriptors = [{ name: 'binding', description: 'Author a binding' }]
+  let settingsSnapshot = { status: 'ready', writable: true, value: { enabled: true, userBindingsEnabled: true } }
+  const sessions = { subscribe: () => () => {}, getSnapshot: () => ({ byId: {} }) }
+  const ctx = {
+    settingsScope: { bind: () => ({
+      subscribe: listener => { preferenceListeners.add(listener); return () => preferenceListeners.delete(listener) },
+      getSnapshot: () => settingsSnapshot,
+    }) },
+    effect: register => register(),
+    slots: {
+      inject: (_key, factory) => {
+        factory()
+        return () => {}
+      },
+      register: (options, component) => {
+        const entry = { options, component: smokeComponent(options, component, () => ({
+          useProjection: key => key === 'agentPreset' ? 'ptc' : undefined,
+          useInput: selector => selector({ draft: '' }),
+        })) }
+        slotEntries.push(entry)
+        return () => {}
+      },
+    },
+    inject: (_services, callback) => callback(ctx),
+    uiSession: {},
+    uiConversation: { events: { register: () => () => {} } },
+    locale: {
+      register: () => () => {},
+      bind: () => key => key,
+      subscribe: () => () => {},
+      getSnapshot: () => ({ active: 'en', locales: [], revision: 0 }),
+    },
+    connection: {
+      rpc: {
+        call: async (_channel, endpoint) => {
+          if (endpoint === 'list') return { ok: true, value: { revision: 1, entries: [] } }
+          if (endpoint === 'draft') return { ok: true, value: null }
+          throw new Error(`unexpected binding endpoint ${endpoint}`)
+        },
+      },
+    },
+    remote: {
+      commands: {
+        list: async () => ({ ok: true, value: commandDescriptors }),
+      },
+      $on(name, listener) { remoteListeners.set(name, listener) },
+    },
+    on(name, listener) { clientListeners.set(name, listener); return () => clientListeners.delete(name) },
+  }
+  exported.apply(ctx)
+
+  const [authorButton] = slotEntries.filter(({ options }) => options.name === 'conversation.input.left')
+  const [bindingCommand] = slotEntries.filter(({ options }) => options.name === 'conversation.chat.commandview')
+  const [indicator] = slotEntries.filter(({ options }) => options.name === 'conversation.session.header.actions')
+  const authorProps = {
+    sessionId: 'session-1',
+    t: key => key,
+    useConversation: selector => selector({ sessionId: 'session-1' }),
+    useInput: selector => selector({ draft: '' }),
+    inputActions: { setDraft: () => {} },
+  }
+  assert.equal(renderAuthor(authorProps), null)
+  await new Promise(resolve => setImmediate(resolve))
+  const authorControl = renderAuthor(authorProps)
+  assert.notEqual(authorControl, null)
+  // No Tooltip wrapper, no icon: the star entry degrades to a plain text button.
+  assert.equal(authorControl.props['data-text'], true)
+  const textButton = authorControl.children[0]
+  assert.equal(textButton.type, 'button')
+  assert.ok(Array.isArray(textButton.children))
+  assert.ok(textButton.children.some(child => child?.type === 'span'
+    && child.props?.className === 'ptcPlusAuthorButtonLabel'))
+  // The busy fallback is an inline status notice, not a Toast component.
+  const busyControl = renderAuthor({
+    ...authorProps,
+    useInput: selector => selector({ draft: 'keep me' }),
+  })
+  busyControl.children[0].props.onClick()
+  const afterBusy = renderAuthor(authorProps)
+  const notice = afterBusy.children.find(child => child?.props?.className === 'ptcPlusComposerNotice')
+  assert.notEqual(notice, undefined)
+  assert.equal(notice.props.role, 'status')
+  assert.ok(Array.isArray(notice.children))
+
+  const commandCard = bindingCommand.component({
+    node: { commandId: 'command-1', args: ' new helper', outcome: { kind: 'success', text: 'Authoring started.' } },
+    t: key => key,
+    useProjection: key => key === 'ptcPlusBindingDraft'
+      ? { phase: 'ready', capability: 'cap-1', commandId: 'command-1' }
+      : undefined,
+  })
+  assert.notEqual(commandCard, null)
+
+  const memoryIndicator = indicator.component({
+    sessionId: 'session-1',
+    t: key => key,
+    useSession: selector => selector({ sessionId: 'session-1', projectionValues: { agentPreset: 'ptc' } }),
+    useProjection: key => key === 'ptcPlusRepl'
+      ? { available: true, entries: [{ name: 'helper', kind: 'variable', definition: { source: 'const helper = 1', line: 1, column: 1 } }], total: 1, omitted: 0 }
+      : key === 'agentPreset' ? 'ptc' : undefined,
+    useSessions: selector => selector({ byId: {} }),
+  })
+  assert.notEqual(memoryIndicator, null)
+  const memoryComponent = memoryIndicator.children.find(child => typeof child?.type === 'function')
+  const memoryCard = memoryComponent.type(memoryComponent.props)
+  assert.notEqual(memoryCard, null)
 })

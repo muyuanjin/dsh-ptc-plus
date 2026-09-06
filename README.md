@@ -90,7 +90,7 @@ edit_run_code({ edits: [{ old_string: 'deps.length', new_string: 'deps' }] })
 
 模型只发改动，完整源码留在对话之外。精确文本替换和正则替换都有限制，坏的正则不会卡住。
 
-当被拒 cell 的末尾可唯一验证为缺少一个闭合符时，诊断会直接给出应用该修正并重运行所需的完整 `edit_run_code(...)` 调用。生成的调用带有 `expected_target_call_seq` 前置条件；如果另一个 cell 已先成为 edit 目标，它会拒绝且不执行。PTC Plus 不会自动应用这项建议；有歧义或没有持久目标身份的修复仍需提交修正后的源码。
+当被拒 cell 的末尾可唯一验证为缺少一个闭合符时，诊断会直接给出应用该修正并重运行所需的完整 `edit_run_code(...)` 调用，无需等待额外 recovery context。这只证明语法与 preflight 可接受，仍需确认修正符合任务意图；edit 会执行完整 cell。生成的调用带有 `expected_target_call_seq` 前置条件；如果另一个 cell 已先成为 edit 目标，它会拒绝且不执行。PTC Plus 不会自动应用这项建议；有歧义或没有持久目标身份的修复仍需提交修正后的源码。
 
 ### 模块语法
 
@@ -125,7 +125,7 @@ import { readFile } from 'node:fs/promises'
 
 ## 设置
 
-打开 **设置 → 插件配置** 使用上面的设置卡片。卡片跟随 DSH 界面语言：界面设为 English 时显示英文，设为中文时显示中文。`enabled` 是即时生效的总开关：关闭后只保留卡片和这个开关，开启后恢复 session runtime 以及 `run_code`/`edit_run_code`。
+打开 **设置 → 插件配置** 使用上面的设置卡片。卡片跟随 DSH 界面语言：界面设为 English 时显示英文，设为中文时显示中文。`enabled` 是即时生效的总开关：关闭后停用 runtime，保留卡片和这个开关，并在下一次宿主允许的请求中撤销先前的 PTC 状态声明；开启后恢复 session runtime 以及 `run_code`/`edit_run_code`。
 
 设置按常用与兼容性、可选能力、高级行为和资源限制分区；需要主动决策的选项位于前面，资源限制位于后面。
 
@@ -135,11 +135,15 @@ import { readFile } from 'node:fs/promises'
 
 “允许顶层函数/类重声明”与已有的变量重声明开关相互独立，默认开启。后续 cell 可以用普通 named `function` / `class` 声明替换已有的可写 binding；替换在声明所在位置生效，不模拟函数提升。import、不可写 `const`、保留名称和来源不明的 binding 仍会在执行前拒绝。显式关闭后恢复原来的拒绝行为；开关变化只影响随后提交的 cell，cold recovery 始终按每个 cell 已记录的策略重放。
 
-“全局用户 Binding”默认关闭。开启后，设置卡片中的工作台可以创建、导入、验证、保存、启停、删除和试运行具名导出的 TypeScript helper；条目原子写入 `$DSH_HOME/ptc-plus/bindings.json`，revision 已变化时会拒绝覆盖。导出字段可显式限制公开符号，留空则根据当前源码重新推导。`namespace` scope 把条目名称作为对象注入，`top-level` scope 直接注入选定导出；启用冲突会在写入前拒绝。
+“全局用户绑定”默认关闭。开启后，设置卡片中的工作台可以创建、导入、验证、保存、启停、删除和试运行具名导出的 TypeScript helper；编辑与源码预览、条目操作、候选测试分别分区显示，候选测试默认折叠并保留 effect 警告。条目原子写入 `$DSH_HOME/ptc-plus/bindings.json`，revision 已变化时会拒绝覆盖。导出字段可显式限制公开符号，留空则根据当前源码重新推导。`namespace` scope 把条目名称作为对象注入，`top-level` scope 直接注入选定导出；启用冲突会在写入前拒绝。
 
 已启用条目在下一次 `run_code` 中尝试激活为普通可写 REPL binding；只有 worker 已成功激活、仍与当前配置同源且未被 session-local binding 覆盖的完整条目，才从随后一轮开始向模型公开有界声明和用途。请求自带的 program namespace 或 error class 优先于同名全局条目；该条目只在本次请求中激活失败并产生诊断，不会覆盖宿主值或阻止其他代码。binding module 所需的 program namespace 若与既有 worker global 同名，本次 cell 会显式失败且不会替换 Node intrinsic。失败 initializer 已发起 program call 时，cell 进入 volatile，避免 cold recovery 把缺少该源码的调用记录当作可重放历史。同名赋值或重声明只覆盖当前 session；cold recovery 使用结果 metadata 中记录的精确快照，不从当前磁盘内容猜测历史值。条目源码中的相对 import 在候选试运行和正式激活时都以 binding 存储目录为解析基准；已经保存到普通 session binding 的导出闭包会在当前 worker 生命周期内保留该解析基准和 program namespace bridge。
 
-PTC session 的全局页签可检查条目源码，并用 `/binding new <需求>` 或 `/binding edit <id> <需求>` 请求当前 Agent 生成一个内存草稿。Agent 只有一次性的草稿交接能力，不能保存、运行、启用、删除或导入；Host 以仅发布到当前 session 私有 projection 的 opaque locator 约束草稿 UI 操作，并在 session/agent 结束或功能关闭时删除草稿。草稿保存后仍是停用条目，候选运行和启用必须由用户在设置工作台分别执行。候选 worker 隔离 session 状态，但代码仍拥有 DSH 进程权限，可能产生不可回滚的 Node/OS effect。
+开启后，只要当前 session 的实际命令目录提供 `/binding`，输入框工具栏就会在首轮前显示星光图标；点击可预填 `/binding new `，已有输入不会被覆盖。也可以直接输入 `/binding new <需求>` 或 `/binding edit <id> <需求>`，DSH 会提供命令匹配和参数提示。命令启动 Agent 编写后立即完成并清空输入框；对话中的唯一绑定命令卡片保留完整需求、编写状态与 TypeScript 源码，各阶段状态随界面语言切换。Agent 收到完整字段说明、调用范例和依赖解析基址，通过 `run_code` 内稳定的 `code.submitBindingDraft({requestId, entry})` 交接一个停用内存草稿；每次请求仅接受一次有效提交，普通 REPL 声明不会成为全局草稿。进入和结束编写不改变同配置下的 system 与工具声明。
+
+草稿就绪后，卡片提供“保存为停用”“保存并启用”和“丢弃草稿”，均由用户决定。保存或丢弃后仍可展开检视当时接受的精确源码，回执可随日志重建，后续同 ID 的修改不会替换这份历史。保存并启用原子写入启用条目，但当前会话是否成功激活仍由 runtime 证明。模型收到保存事实，只有成功激活且未被会话局部定义遮蔽的条目才产生活动声明；`repl.state` 管理命名 checkpoint，不能当作绑定目录。单纯询问是否可用不需要写删文件测试。目录版本冲突后，卡片重新读取权威状态，保留仍有效的草稿供用户检视并重试。
+
+PTC Plus 顶部弹窗包含 Session 和 Global 页签：Session 查看可复用的 REPL 绑定，Global 展示持久条目的启停状态、检查源码并预填 `/binding edit`；目录中的“启用”不代表当前会话已激活。完整管理仍在设置工作台。Host 通过当前 session 私有 projection 的 opaque locator 约束草稿 UI 操作；保存、丢弃或所属 Agent、session、功能、owner 结束都会撤销可写资格。候选 worker 隔离 session 状态，但代码仍拥有 DSH 进程权限，可能产生不可回滚的 Node/OS effect。
 
 插件启用且会话使用 `ptc` preset 时，会话头部显示绿色 `PTC Plus` 标识。悬浮、聚焦或点击后可以查看下一 cell 可复用的变量、函数、类和 import，并展开其有界定义源码。卡片只读取已提交的源码，不读取运行时值、不触发 getter，也不执行代码。正文中的 `run_code` 与 `edit_run_code` 仍可展开查看源码和结果；只有结果 metadata 能证明某项功能确实生效时，预览才显示对应标记。
 
@@ -151,13 +155,17 @@ PTC session 的全局页签可检查条目源码，并用 `/binding new <需求>
 
 `cordisToolsEnabled` 默认关闭。打开后，DSH 官方 Cordis 工具、owner guidance 与精确的 `cordis-plugin-development` companion Skill 会作为一个整体加入 PTC agent；同一 shipped preset 目录中的其他 Skill 不会随之暴露。关闭时这三项也会一起移除；它不切换 preset，也不改变 `run_code`/`edit_run_code` 的直接调用面。Cordis 能在实时 DSH runtime 中运行模型编写的插件，开启它需要接受 shell 级信任。
 
-如果 Cordis 调用在 cell 已经赋值大段 host 或 client 源码之后才失败，这些顶层 binding 仍会保留。后续只需在短 cell 中重试 Cordis 调用并复用该 binding，无需再次传输源码。
+如果 Cordis 调用失败但 worker 仍存活，失败前赋值的源码 binding 可以在后续短 cell 中复用。调用抛错可能发生在外部 effect 之后；是否重试应依据 Cordis owner 的执行状态和幂等契约，缩短 cell 本身不能证明安全重试。终止 worker 的 timeout 或合计输出超限则不能依赖失败 cell 的 binding。
 
-cold recovery 或重新启用 Cordis 后，已记录的 Cordis value 仍是历史数据，但不能证明进程内 Plugin、Run、approval 或先前 Inspect observation 仍然存活。PTC Plus 会提供有界恢复 context，直到一次新的成功 Cordis Inspect 调用验证当前进程。
+REPL 中捕获的 `tools` 对象或成员引用会随提交 cell 的 lease 到期。需要跨 cell 复用的 helper 应在调用时读取当前 namespace，例如 `async function inspectNow() { return tools.cordis_inspect_list({}) }`。全局用户绑定模块的动态 bridge 同样按调用所属 cell 检查 lease，旧 continuation 不能借用新 cell 的能力。
+
+cold recovery 或重新启用 Cordis 后，已记录的 Cordis value 仍是历史数据，但不能证明进程内 Plugin、Run、approval 或先前 Inspect observation 仍然存活。PTC Plus 会提供有界恢复声明，直到一次新的成功 Cordis Inspect 调用验证当前进程。恢复声明、已激活全局绑定声明和按需 tip 通过带 PTC Plus 来源的独立消息投递，遵守宿主的上下文抑制设置；自身变化不会重发其他插件未变的上下文，失效的状态声明会被明确撤销。
 
 详见 [客户端 UI](docs/client-ui.md)、[ADR 0019](docs/adr/0019-plugin-settings-and-kill-switch.md)、[ADR 0020](docs/adr/0020-optional-cordis-tools-in-ptc-mode.md) 与 [ADR 0023](docs/adr/0023-global-user-bindings.md)。
 
 ## 范围
+
+能力发现使用 SDK 已声明的 `capabilities.tree/find/inspect`。`find` 是确定性词法匹配：优先精确的 `namespace.member`，也支持 `read` 这样的完整短词；多个词必须连续出现，不能当作自然语言搜索。空结果可缩短查询或查看 `tree()` 的 namespace 与 members 层级，再只 inspect 当前视图中相关的 symbol。详见[能力发现](docs/runtime-reference.md#capability-discovery)。
 
 PTC Plus 提供会话绑定的持久 `run_code` 层。原生工具的权限、策略、审批、取消、sandbox 和进程治理仍由 DSH 与操作系统负责。
 

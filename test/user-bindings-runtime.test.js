@@ -14,6 +14,35 @@ function snapshot(entries, revision = 1) {
   return createUserBindingsSnapshot({ entries }, revision)
 }
 
+test('module-held members resolve current capabilities and report proved removal separately from lexical errors', async t => {
+  const runtime = new SessionRuntime()
+  t.after(() => runtime.dispose())
+  const userBindings = snapshot([
+    binding('current', 'current', 'namespace', 'const member = tools.value; export const invoke = () => member({})'),
+  ])
+  const run = async functions => {
+    const execution = await runtime.runTentative('current-capability', {
+      program: 'return current.invoke()', bindings: [{ global: 'tools', functions }], userBindings,
+    })
+    runtime.finalize(execution.settlement, true)
+    return execution
+  }
+  assert.equal((await run({ value: async () => 1 })).result.value, 1)
+  assert.equal((await run({ value: async () => 2 })).result.value, 2)
+  for (let index = 0; index < 3; index++) {
+    const missing = await run({})
+    assert.match(missing.result.error.message, /unknown binding tools.value/)
+    assert.match(missing.result.error.message, /availability may have changed/)
+    if (index === 2) {
+      const warning = missing.settlement.journal.diagnostics.at(-1)
+      assert.equal(warning.code, 'PTC-W001')
+      assert.equal(warning.cause.code, 'PTC-CAPABILITY')
+      assert.equal(warning.stateEffect, 'partially-applied')
+    }
+  }
+  assert.equal((await run({ value: async () => 3 })).result.value, 3)
+})
+
 test('activates namespace and top-level helpers as ordinary REPL values', async (t) => {
   const runtime = new SessionRuntime()
   t.after(() => runtime.dispose())

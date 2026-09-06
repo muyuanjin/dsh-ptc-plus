@@ -6,7 +6,7 @@ Recovery tips are a presentation policy, while PTC Plus owns the REPL, diagnosti
 
 ## Decision
 
-Keep the current deterministic recovery policy in `internal/recovery-tips.js` as a replaceable local provider. The provider consumes the immutable facts produced by `internal/session-log-view.js`; it does not traverse raw events, pair calls, parse journals, or query the core through callbacks. The core calls it only for a bounded named runtime context, and the provider does not change execution, journal semantics, tool schemas, or stable system text. Defer an external adapter until a public facts and decision contract exists; the adapter must be optional, fail closed, and leave the local provider or disabled mode available when absent.
+Keep the current deterministic recovery policy in `internal/recovery-tips.js` as a replaceable local provider. The provider consumes the immutable facts produced by `internal/session-log-view.js`; it does not traverse raw events, pair calls, parse journals, or query the core through callbacks. The core calls it for one bounded named tip, delivered as an independent PTC notice under [ADR 0010](0010-session-log-derived-recovery-tips.md). The provider does not change execution, journal semantics, tool schemas, or stable system text. Defer an external adapter until a public facts and decision contract exists; the adapter must be optional, fail closed, and leave the local provider or disabled mode available when absent.
 
 ## Alternatives considered
 

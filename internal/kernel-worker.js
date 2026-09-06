@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
+import { create as createDomain } from 'node:domain'
 import { registerHooks, stripTypeScriptTypes } from 'node:module'
 import { isAbsolute, resolve } from 'node:path'
 import repl from 'node:repl'
@@ -7,7 +8,7 @@ import { pathToFileURL } from 'node:url'
 import { formatWithOptions } from 'node:util'
 import { MessageChannel, parentPort, workerData } from 'node:worker_threads'
 import { synchronizeBuiltinEsmExports } from './builtin-esm-sync.js'
-import { errorDetails, messageOf } from './failure-reporting.js'
+import { errorDetails, messageOf, programBindingError } from './failure-reporting.js'
 import { AMBIENT_GLOBALS, DURABLE_IMPORTS, FORBIDDEN_IMPORTS } from './module-policy.js'
 import { decodeValue, encodeValue } from './value-wire.js'
 import { installWorkerCwdVirtualization } from './worker-cwd-virtualization.js'
@@ -25,6 +26,7 @@ const { port1, port2: channel } = new MessageChannel()
 const input = new PassThrough()
 const output = new PassThrough()
 output.resume()
+const evaluationScope = new AsyncLocalStorage()
 const sessionCwd = typeof workerData?.cwd === 'string' ? workerData.cwd : undefined
 if (sessionCwd !== undefined && !isAbsolute(sessionCwd)) {
   throw new Error(`ptc-plus session cwd must be absolute, got ${JSON.stringify(sessionCwd)}`)
@@ -36,7 +38,19 @@ const server = repl.start({
   prompt: '',
   useGlobal: false,
   ignoreUndefined: true,
+  // The writer is a fallback for REPL error paths not captured by the domain.
+  // Successful direct eval values arrive through its callback.
+  writer(error) {
+    evaluationScope.getStore()?.(true, error)
+    return ''
+  },
 })
+// domain.bind exposes its owner on a bound evaluator in older Node REPLs.
+// Newer REPLs honor an explicitly entered domain. Capture before REPL error
+// formatting can evaluate user-defined stack/name getters.
+const errorDomain = server.eval.domain ?? createDomain()
+errorDomain.removeAllListeners('error')
+errorDomain.on('error', error => evaluationScope.getStore()?.(true, error))
 const context = server.context
 const REPL_IMPORT_CANARY = 'data:text/javascript,export default 1'
 let replParent
@@ -95,6 +109,10 @@ class CellReturn extends Error {
   constructor(value) {
     super('cell returned')
     this.value = value
+  }
+
+  static complete() {
+    evaluationScope.getStore().completed = true
   }
 }
 function appendLog(...values) {
@@ -240,26 +258,18 @@ Object.defineProperty(context, 'Math', {
   value: Object.freeze(mathView),
 })
 
-function evaluate(program) {
+function evaluate(program, completionSignal) {
   return new Promise((resolve, reject) => {
-    // REPLServer routes runtime throws to its domain instead of the eval
-    // callback. Cells are serialized, so temporarily replacing that one error
-    // handler gives both syntax and runtime failures one settlement path.
-    const domain = server._domain
-    const prior = domain.listeners('error')
-    domain.removeAllListeners('error')
     let settled = false
-    const finish = (error, value) => {
+    const finish = (failed, value) => {
       if (settled) return
       settled = true
-      domain.removeListener('error', onError)
-      for (const listener of prior) domain.on('error', listener)
-      if (error instanceof CellReturn) {
-        Promise.resolve(error.value).then(
+      if (failed && value instanceof CellReturn) {
+        Promise.resolve(value.value).then(
           value => resolve({ hasValue: true, value }),
           reject,
         )
-      } else if (error) reject(error)
+      } else if (failed) reject(value)
       else {
         Promise.resolve(value).then(
           value => resolve({ hasValue: value !== undefined, value }),
@@ -267,11 +277,55 @@ function evaluate(program) {
         )
       }
     }
-    const onError = error => finish(error)
-    domain.on('error', onError)
     activeFilename = `ptc-plus-repl-${++filenameSequence}`
-    server.eval(program + CELL_FRAME_SUFFIX, context, activeFilename, finish)
+    evaluationScope.run(finish, () => errorDomain.run(() => {
+      // Older REPL callbacks conflate null/undefined await rejection with a
+      // successful empty result. A reached EOF distinguishes those outcomes.
+      // A block-scoped declaration has empty completion and preserves the
+      // preceding non-await expression value without adding a session binding.
+      // Keep the final semicolon so REPL cannot guess a block is an object literal.
+      const suffix = completionSignal === undefined ? CELL_FRAME_SUFFIX
+        : `${CELL_FRAME_SUFFIX}{ let completed = this[${JSON.stringify(completionSignal)}].complete(); }${CELL_FRAME_SUFFIX}`
+      server.eval(program + suffix, context, activeFilename, (error, value) => {
+        const failed = error !== null && error !== undefined || completionSignal !== undefined && finish.completed !== true
+        finish(failed, failed ? error : value)
+      })
+    }))
   })
+}
+
+async function verifyEvaluation() {
+  await evaluate(CONFORMANCE_CELL)
+  const marker = new Error('PTC Plus REPL settlement probe')
+  Object.defineProperty(marker, 'stack', { get() { throw new Error('REPL must not format an error before settlement') } })
+  context.__ptc_settlement_probe__ = marker
+  context.__ptc_completion_probe__ = CellReturn
+  try {
+    for (const value of [marker, null, undefined, false, 0]) {
+      context.__ptc_settlement_probe__ = value
+      for (const source of ['throw __ptc_settlement_probe__', 'await Promise.reject(__ptc_settlement_probe__)']) {
+        let caught = false
+        try { await evaluate(source, '__ptc_completion_probe__') } catch (error) {
+          if (error !== value) throw new Error('REPL did not preserve the original thrown value')
+          caught = true
+        }
+        if (!caught) throw new Error('REPL did not reject a failed evaluation')
+      }
+    }
+    let syntaxRejected = false
+    try { await evaluate('const =') } catch (error) { syntaxRejected = error?.name === 'SyntaxError' }
+    if (!syntaxRejected) throw new Error('REPL did not preserve syntax failure')
+    context.__ptc_settlement_probe__ = new CellReturn(Promise.resolve(marker))
+    const returned = await evaluate('throw __ptc_settlement_probe__')
+    if (!returned.hasValue || returned.value !== marker) throw new Error('REPL did not preserve cell return')
+    await evaluate(CONFORMANCE_CELL)
+    await evaluate('{ const value = await Promise.resolve(42); if (value !== 42) throw new Error("invalid block await") }', '__ptc_completion_probe__')
+    const expression = await evaluate('42', '__ptc_completion_probe__')
+    if (expression.value !== 42) throw new Error('REPL did not preserve expression completion')
+  } finally {
+    delete context.__ptc_settlement_probe__
+    delete context.__ptc_completion_probe__
+  }
 }
 
 function staticImportAttributes(options) {
@@ -311,7 +365,7 @@ async function loadStaticModule(load) {
 }
 
 function callHost(runId, global, member, args, errorClass) {
-  if (runId === undefined || activeRun !== runId) return Promise.reject(new Error('PTC execution lease expired'))
+  if (runId === undefined || activeRun !== runId) return Promise.reject(programBindingError('lease', 'PTC execution lease expired'))
   const activation = userBindingActivationScope.getStore()
   if (activation !== undefined) {
     activation.called = true
@@ -345,7 +399,7 @@ function dynamicNamespace(name) {
       return (...args) => {
         const current = dynamicNamespaces.get(name)
         if (current === undefined || !current.members.has(property)) {
-          return Promise.reject(new Error(`unknown binding ${name}.${property}`))
+          return Promise.reject(programBindingError('capability', `unknown binding ${name}.${property}`))
         }
         return callHost(
           logScope.getStore()?.id,
@@ -702,7 +756,7 @@ async function runCell(message) {
             cellGlobals.push(load.global)
           }
         }
-        return evaluate(message.program)
+        return evaluate(message.program, message.returnSignal)
       })
       activeRun = undefined
       execution.open = false
@@ -732,6 +786,7 @@ async function runCell(message) {
         ...(error instanceof StaticImportFailure ? { moduleLoadFailed: true } : {}),
         ...(position === undefined ? {} : { position }),
         ...(detail.cause === undefined ? {} : { cause: detail.cause }),
+        ...(detail.failureOrigin === undefined ? {} : { failureOrigin: detail.failureOrigin }),
         ...completionDurability(execution),
         committedRedeclarations: [...committedRedeclarations],
         ...(message.userBindings === undefined ? {} : {
@@ -804,12 +859,20 @@ channel.on('message', (message) => {
   if (message?.type === 'run') void runCell(message)
 })
 
+let startupTimer
 try {
-  await evaluate(CONFORMANCE_CELL)
+  await Promise.race([
+    verifyEvaluation(),
+    new Promise((_, reject) => {
+      startupTimer = setTimeout(() => reject(new Error('REPL settlement probe timed out')), 5000)
+    }),
+  ])
   parentPort.postMessage({ type: 'ready', port: port1 }, [port1])
 } catch (error) {
   parentPort.postMessage({
     type: 'startup-error',
-    error: `Node REPL does not satisfy the PTC Plus cell framing contract: ${messageOf(error)}`,
+    error: `PTC runtime prerequisite failed on Node ${process.version}: ${messageOf(error)}. No user cell executed; use a DSH-supported runtime that passes the REPL conformance probe. Editing the cell cannot fix this host failure.`,
   })
+} finally {
+  clearTimeout(startupTimer)
 }

@@ -13,6 +13,8 @@ import {
 } from '../scripts/expensive-headless-acceptance.mjs'
 import {
   auditModelRequests,
+  auditProgramWork,
+  collectTrajectoryFacts,
   auditRequestHeaders,
   auditRuntimeContexts,
   machineBudgetFailures,
@@ -20,9 +22,10 @@ import {
   validateRuntimeContextConfig,
   validateRequestHeaderPolicy,
 } from '../scripts/acceptance-contract.mjs'
-import { encodeValue } from '../internal/value-wire.js'
+import { decodeValue, encodeValue } from '../internal/value-wire.js'
+import { editRejectedCell } from '../internal/rejected-cell-editor.js'
 
-const headlessRuntime = { toolsMode: 'code', permissionMode: 'danger-full-access' }
+const headlessRuntime = { toolsMode: 'ptc', permissionMode: 'danger-full-access' }
 
 function journal({ calls = [], completion, diagnostics = [], status = 'durable' } = {}) {
   return {
@@ -33,7 +36,7 @@ function journal({ calls = [], completion, diagnostics = [], status = 'durable' 
     calls: calls.map((call, settle) => ({
       global: call.global,
       member: call.member,
-      args: encodeValue(call.args ?? {}),
+      args: encodeValue(Object.hasOwn(call, 'args') ? call.args : {}),
       ok: call.ok ?? true,
       ...((call.ok ?? true) ? { value: encodeValue(call.value) } : { error: call.error }),
       settle,
@@ -149,7 +152,7 @@ test('validates a clean expensive-acceptance profile', () => {
   name: dsh-ptc-plus
 - id: tools
   config:
-    mode: code
+    mode: ptc
 - id: sandbox-policy
   config:
     mode: danger-full-access
@@ -158,6 +161,9 @@ test('validates a clean expensive-acceptance profile', () => {
     policy: never
 `)
   assert.equal(validateAcceptanceConfig(rows, headlessRuntime), true)
+  const retired = structuredClone(rows)
+  retired.find(row => row.id === 'tools').config.mode = 'code'
+  assert.throws(() => validateAcceptanceConfig(retired, { ...headlessRuntime, toolsMode: 'code' }), /public DSH tools config/)
   const functionClassLoose = structuredClone(rows)
   functionClassLoose.find(row => row.id === 'ptc-plus').config = {
     looseTopLevelFunctionClassRedeclarations: true,
@@ -382,6 +388,147 @@ test('rejects repeated program binding calls above a scenario maximum', () => {
   ])
 })
 
+test('preserves exact nested arguments in memory and lossless report graphs', () => {
+  const cyclic = { count: 2n }
+  cyclic.self = cyclic
+  const argumentsList = [undefined, {}, { value: undefined }, null, cyclic]
+  const events = acceptanceEvents()
+  resultFor(events, 'one').data.meta.dshPtcPlus = journal({
+    calls: argumentsList.map(args => ({ global: 'tools', member: 'observe', args, value: 1 })),
+  })
+  const facts = collectTrajectoryFacts(events, { compareUsageChunks: false })
+  assert.deepEqual(facts.failures, [])
+  const calls = facts.timeline[0].nestedCalls
+  assert.deepEqual(calls.map(call => call.args), argumentsList)
+  const reported = JSON.parse(JSON.stringify(calls))
+  assert.deepEqual(reported.map(call => decodeValue(call.argsWire)), argumentsList)
+  assert.deepEqual(auditProgramWork([{ nestedCalls: reported }]).failures, [])
+  delete events.find(event => event.type === 'tool/result').data.meta.dshPtcPlus.calls[0].args
+  assert.match(collectTrajectoryFacts(events, { compareUsageChunks: false }).failures.join('\n'), /invalid PTC journal/)
+  delete reported[0].argsWire
+  assert.match(auditProgramWork([{ nestedCalls: reported }]).failures.join('\n'), /invalid argument evidence/)
+})
+
+test('enforces the typed fixture workload while allowing focused equivalent trajectories and explicit fresh reads', async () => {
+  const descriptors = JSON.parse(await readFile(new URL('../scripts/expensive-acceptance-scenarios.json', import.meta.url)))
+  const policy = descriptors.find(item => item.id === 'durable-program-surface').expect.programWork
+  const events = acceptanceEvents()
+  const inspect = { global: 'capabilities', member: 'inspect', args: { symbols: ['tools.read', 'code.run'] }, value: {} }
+  const read = { global: 'tools', member: 'read', args: { file_path: 'fixture.txt', limit: 10 }, value: 'sentinel' }
+  const run = { global: 'code', member: 'run', args: { source: 'return "sentinel:8"' }, value: {} }
+  resultFor(events, 'one').data.meta.dshPtcPlus = journal({ calls: [inspect, read] })
+  resultFor(events, 'two').data.meta.dshPtcPlus = journal({ calls: [run] })
+  const inspectScenario = { id: 'focused-work', title: 'Focused work', task: 'task', expect: { programWork: policy } }
+  const runtime = { provider: 'provider', model: 'model', cwd: 'X:\\fixture\\workspace' }
+  assert.deepEqual(inspectLog(events, inspectScenario, runtime).failures, [])
+
+  const split = structuredClone(events)
+  resultFor(split, 'one').data.meta.dshPtcPlus = journal({ calls: [
+    { ...inspect, args: { symbols: ['tools.read'] } }, read,
+  ] })
+  resultFor(split, 'two').data.meta.dshPtcPlus = journal({ calls: [
+    { ...inspect, args: { symbols: ['code.run'] } }, run,
+  ] })
+  assert.deepEqual(inspectLog(split, inspectScenario, runtime).failures, [])
+
+  resultFor(events, 'two').data.meta.dshPtcPlus = journal({ calls: [
+    { ...read, args: { limit: 10, file_path: 'fixture.txt' } }, run,
+  ] })
+  const repeated = inspectLog(events, inspectScenario, runtime)
+  assert.equal(repeated.machineMetrics.repeatedSourceCalls, 0)
+  assert.match(repeated.failures.join('\n'), /tools.read repeats identical arguments 2 times/)
+  const freshPolicy = structuredClone(policy)
+  Object.assign(freshPolicy.callLimits.find(limit => limit.global === 'tools'), { maxCalls: 2, maxCallsPerArguments: 2 })
+  assert.deepEqual(inspectLog(events, { ...inspectScenario, expect: { programWork: freshPolicy } }, runtime).failures, [])
+
+  for (const args of [{ symbols: ['tools.read', 'repl.state'] }, undefined, {}]) {
+    resultFor(events, 'one').data.meta.dshPtcPlus = journal({ calls: [{ ...inspect, args }, read] })
+    assert.match(inspectLog(events, inspectScenario, runtime).failures.join('\n'), /unrelated capability inspection|focused inspection requires/)
+  }
+  resultFor(events, 'one').data.meta.dshPtcPlus = journal({ calls: [
+    { global: 'capabilities', member: 'tree', args: undefined, value: [] },
+    { global: 'capabilities', member: 'tree', args: undefined, value: [] },
+  ] })
+  assert.match(inspectLog(events, inspectScenario, runtime).failures.join('\n'), /capabilities.tree has 2 calls/)
+  resultFor(events, 'two').data.meta.dshPtcPlus.calls[0].args = { corrupt: true }
+  assert.match(inspectLog(events, inspectScenario, runtime).failures.join('\n'), /invalid PTC journal/)
+})
+
+function editEvents(args) {
+  const source = 'const value = 1; return value'
+  const correction = editRejectedCell(args, source)
+  const events = acceptanceEvents().slice(0, 3)
+  events.push(
+    { type: 'turn/start', seq: 9, data: {} },
+    { type: 'tool/call', seq: 10, data: {
+      callId: 'source', name: 'run_code', arguments: JSON.stringify({ code: source, description: 'Return a value' }),
+    } },
+    { type: 'tool/result', seq: 11, data: {
+      message: { source: { callId: 'source' }, content: [{ type: 'text', text: '1' }] },
+      meta: { dshPtcPlus: journal({ completion: 1 }) },
+    } },
+    { type: 'tool/call', seq: 12, data: { callId: 'edit', name: 'edit_run_code', arguments: JSON.stringify(args) } },
+    { type: 'tool/result', seq: 13, data: {
+      message: { source: { callId: 'edit' }, content: [{ type: 'text', text: '{"edited":true,"logs":[],"value":2}' }] },
+      meta: {
+        dshPtcPlus: journal({ completion: 2 }),
+        dshPtcPlusEdit: { targetCallSeq: 10 },
+        dshPtcPlusDerivedRun: { code: correction.code, description: correction.description },
+      },
+    } },
+    { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: '2' }] } } },
+    { type: 'turn/end', seq: 14, data: { reason: { kind: 'completed' } } },
+  )
+  return events
+}
+
+test('audits both canonical delta forms with absent or correct guards and rejects invalid arguments', () => {
+  const scenario = { id: 'edit', title: 'Edit', task: 'task', expect: {} }
+  const runtime = { provider: 'provider', model: 'model', cwd: 'X:\\fixture\\workspace' }
+  for (const delta of [
+    { edits: [{ old_string: '1', new_string: '2' }] },
+    { regex_edits: [{ pattern: '1', flags: '', replacement: '2', expected_matches: 1 }] },
+  ]) {
+    for (const guard of [{}, { expected_target_call_seq: 10 }]) {
+      assert.deepEqual(inspectLog(editEvents({ ...delta, ...guard }), scenario, runtime).failures, [])
+    }
+    for (const invalid of [
+      { extra: true }, { expected_target_call_seq: -1 }, { expected_target_call_seq: 1.5 },
+      { expected_target_call_seq: '10' }, { expected_target_call_seq: null },
+      { expected_target_call_seq: Number.MAX_SAFE_INTEGER + 1 },
+    ]) {
+      const report = inspectLog(editEvents({ ...delta, ...invalid }), scenario, runtime)
+      assert.match(report.failures.join('\n'), /canonical edit validation/)
+    }
+    const events = editEvents({ ...delta, expected_target_call_seq: 10 })
+    resultFor(events, 'edit').data.meta.dshPtcPlusEdit.targetCallSeq = 11
+    assert.match(inspectLog(events, scenario, runtime).failures.join('\n'), /does not identify its captured target/)
+  }
+})
+
+test('recognizes only explicitly expected guard rejection without journal or derived execution', () => {
+  const args = { edits: [{ old_string: '1', new_string: '2' }], expected_target_call_seq: 8 }
+  const events = editEvents(args)
+  const result = resultFor(events, 'edit')
+  result.data.meta = {}
+  result.data.message.content = [{ type: 'text', text: JSON.stringify({
+    edited: false, reason: 'validated repair targets run_code call 8, but this edit captured call 10',
+  }) }]
+  const runtime = { provider: 'provider', model: 'model', cwd: 'X:\\fixture\\workspace' }
+  const scenario = { id: 'guard-rejection', title: 'Guard rejection', task: 'task', expect: { guardMismatchEdits: [1] } }
+  assert.deepEqual(inspectLog(events, scenario, runtime).failures, [])
+  assert.match(inspectLog(events, { ...scenario, expect: {} }, runtime).failures.join('\n'), /guard does not match/)
+  result.data.meta.dshPtcPlus = journal()
+  assert.match(inspectLog(events, scenario, runtime).failures.join('\n'), /did not prove guard rejection/)
+  result.data.meta = { dshPtcPlusDerivedRun: { code: 'return 2' } }
+  assert.match(inspectLog(events, scenario, runtime).failures.join('\n'), /did not prove guard rejection/)
+  result.data.meta = {}
+  result.data.message.content = [{ type: 'text', text: 'not JSON' }]
+  assert.match(inspectLog(events, scenario, runtime).failures.join('\n'), /did not prove guard rejection/)
+  result.data.message.content = [{ type: 'text', text: '{"edited":true}' }]
+  assert.match(inspectLog(events, scenario, runtime).failures.join('\n'), /did not prove guard rejection/)
+})
+
 test('records a handled nested error as a diagnostic instead of a product failure', () => {
   const events = acceptanceEvents()
   resultFor(events, 'one').data.meta.dshPtcPlus = journal({
@@ -475,6 +622,7 @@ test('requires truthful edits for completed and rejected cells while keeping mat
   const repairedSource = 'const repairSource = "long-source"\nreturn `${repairSource.length}:${repairSource.slice(-8)}`'
   const events = acceptanceEvents().slice(0, 3)
   events.push(
+    { type: 'turn/start', seq: 9, data: {} },
     {
       type: 'tool/call', seq: 10,
       data: { callId: 'completed', name: 'run_code', arguments: JSON.stringify({ code: completedSource, description: 'Run adjustable source' }) },
@@ -847,6 +995,20 @@ test('derives the five ADR-owned default workflows from scenario descriptors', a
     'function-class-redeclaration-iteration',
   ])
   assert.throws(() => selectScenarioDescriptors(descriptors, ['missing']), /unknown acceptance scenario/)
+  for (const programWork of [
+    { unknown: true }, { inspectionSymbols: [] }, { inspectionSymbols: ['tools.read', 'tools.read'] },
+    { callLimits: [{ global: 'tools', member: 'read', maxCalls: -1 }] },
+    { callLimits: [{ global: 'tools', member: 'read', maxCalls: 2, maxCallsPerArguments: 0 }] },
+  ]) {
+    assert.throws(() => selectScenarioDescriptors([{
+      ...descriptors[0], expect: { ...descriptors[0].expect, programWork },
+    }], [descriptors[0].id]), /programWork/)
+  }
+  for (const guardMismatchEdits of [[0], [1, 1], ['1']]) {
+    assert.throws(() => selectScenarioDescriptors([{
+      ...descriptors[0], expect: { ...descriptors[0].expect, guardMismatchEdits },
+    }], [descriptors[0].id]), /guardMismatchEdits/)
+  }
   assert.throws(() => validateEditTransports([{
     originalSource: 'return 1',
     oldString: '1',

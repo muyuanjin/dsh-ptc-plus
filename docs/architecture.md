@@ -32,28 +32,28 @@ DSH 为一个 agent composition 固定选择 `native`、`ptc` 或 `both`。首�
 
 `internal/session-log-view.js` 单次前向扫描 session events，分别投影最新执行、可编辑目标、rewrite metadata、规范 journal 中的 Cordis transcript 计数和恢复 tip
 所需事实。`edit_run_code` 不产生专用 runtime context：真实 call/result 已完整表达操作身份和结果，额外 contribution
-只会触发 DSH 聚合 runtime-context 全量快照并重复无关 policy 文本。只有失败或完成状态不可信的 rewrite feedback 才保留独立生命周期；成功的透明改写不产生 runtime context。
+会重复已有事实；此类信息不进入独立 PTC 消息。只有失败或完成状态不可信的 rewrite feedback 才保留独立生命周期；成功的透明改写不产生 runtime context。
 
 插件卸载时恢复仍由自己持有的 `CodeRuntime.run` 与 `presentationMeta` 属性；若外层插件仍持有旧 wrapper，已卸载 wrapper 会透明委托原 provider，不会恢复已释放的 session 状态。
 稳定 REPL 指引说明 cell 是 async function body、module 使用 dynamic import 或 require，并要求显式
-return 或打印需要展示的值。失败恢复先按状态分类：解析或 preflight 失败且 `state: unchanged`、无外部效果证据时，
-禁止重发完整源码，优先使用 `edit_run_code` 做精确修正并重放完整 cell；`state: partially-applied` 或可能已有外部 effect 时新建短
-`run_code` 并复用已有 binding，完整重写只保留给结构性改动或超出编辑预算的修正。能力和命令执行依赖当前 request
+return 或打印需要展示的值。失败恢复先按状态分类：result 已证明解析或 preflight 未执行且提供符合任务意图的 validated repair 时，
+优先直接使用带目标保护的 `edit_run_code`，无需等待 recovery context；该验证只证明语法/preflight 接受。其他小型修正可用 edit 执行完整 cell；
+已执行或可能产生外部 effect 的目标，则必须依据操作 owner 的 retry/idempotence 契约和执行事实判断重跑。短 `run_code` 可以复用仍存活的 binding，但缩短源码不能证明幂等。能力和命令执行依赖当前 request
 与 execution world，模型必须先探查 live binding、实际 executable 和路径语义，不假设某个平台、shell 或 package runner。
 
 live `PTC-C001` 若精确落在源码 EOF，独立的 bounded analyzer 只把追加单个 `}`、`)`、`]` 的三个源码分别送入该 cell 提交时的同一 preparation context。仅当唯一候选通过、无 binding collision，现有 exact editor 能从不超过固定预算的唯一尾部物化同一源码，并且 runtime 已取得该 rejected `run_code` 的持久 call sequence 时，诊断才输出一行可直接调用的 `edit_run_code({ edits: [...], expected_target_call_seq })`。edit transport 把该 sequence 与其 call event 捕获的目标比较，目标已变化时不编辑也不派生执行。这项 validated repair 优先于长度阈值，但只证明语法/preflight 接受；插件不自动 dispatch，也不改写原始 `run_code`。非 EOF、多候选、多 token、超预算、缺少目标身份或后续 preparation 拒绝均使用 length-adaptive help。
 
-稳定指引保留这些跨任务不变量和失败恢复的优先动作。长 cell 失败的短提示直接作为当前 `PTC-X001` 的结构化 `help` 输出，避免一次性建议触发完整 runtime-context 快照；重复绑定失败和当前 execution world 中由诊断确认的 executable、shell 或 path 错误仍由当前 session log 派生为 `tools:ptc-plus-tip/<trigger>/<ordinal>` runtime context，分别提示能力探查或重新确认环境。投影只接受 DSH system-prompt owner 的规范快照，并按命名 section 的有效状态变化重建提示；聚合快照重复同一 section 不增加次数，正文不参与身份判断。
+稳定指引保留这些跨任务不变量和失败恢复的优先动作。长 cell 失败的短提示直接作为当前 `PTC-X001` 的结构化 `help` 输出；重复绑定失败和当前 execution world 中由诊断确认的 executable、shell 或 path 错误仍由当前 session log 派生为以 `tools:ptc-plus-tip/<trigger>/<ordinal>` 标识的独立 notice，词法失败指向可见源码与初始化，worker-owned capability 失败才指向能力探查，平台错误则提示重新确认环境。投影合并规范 PTC notice 与历史 DSH system-prompt snapshot sections，同一已投递 identity 跨两种来源只计一次，正文不参与身份判断。
 相同提示受 `tipCooldownMessages` 间隔约束，连续未解决时才升级为详细版本，成功 cell 会重置未解决计数；提示不会改变
 system sections、tool schema 或 tool order，也不假设 Windows、WSL、POSIX、shell 或 package runner。
 
-当前策略位于独立的 `internal/recovery-tips.js` local provider，核心只消费其有界的 named context。另一个固定名称 `tools:ptc-plus-cordis-recovery` 只在新 agent 或 Cordis 重新启用代际观察到历史 Cordis transcript 时出现，将 replay value 限定为历史数据，并保持到 session log 出现新的成功 `cordis_inspect*` settlement；它不受疲劳阈值控制、不重放调用，也不推断 live process 是否实际丢失。外部决策插件必须提供稳定的 facts/decision contract 才能接入；缺少该契约时，核心不猜测跨插件 API，并继续使用 local provider。
+当前策略位于独立的 `internal/recovery-tips.js` local provider，核心消费其有界 named tip，并按 ADR 0010 的独立消息契约投递。另一个固定名称 `tools:ptc-plus-cordis-recovery` 只在新 agent 或 Cordis 重新启用代际观察到历史 Cordis transcript 时出现，将 replay value 限定为历史数据，并保持到 session log 出现新的成功 `cordis_inspect*` settlement；它不受疲劳阈值控制、不重放调用，也不推断 live process 是否实际丢失。外部决策插件必须提供稳定的 facts/decision contract 才能接入；缺少该契约时，核心不猜测跨插件 API，并继续使用 local provider。
 
 ## 设置与启用开关
 
 Host half 通过 DSH 公共 settings 服务注册 `ptc-plus` 命名空间，优先使用 provider-owned `installSection()`，并兼容根模块的 `installSettingsSection()`；两条路径共享同一 fallback、watch、rollback 与 disposal 语义。字段清单、默认值与校验来自 `internal/config-spec.js`。
-Client half 通过 `settings.plugin.item` 卡片呈现全部配置。`enabled` 是 kill switch：关闭时只保留 settings 注册和设置卡片；`enhancedToolView` 是默认开启的正文展示开关，关闭时只交还 DSH 原生 `run_code`/`edit_run_code` generic row，
-不注册 runtime、hook、tool surface 或 system prompt section；`ptc` 与兼容 `code` preset 会话在头部单独显示 `PTC Plus` 指示器。设置卡片显示“已启用/已停用”，稳定指引不包含 UI 品牌名。
+Client half 通过 `settings.plugin.item` 卡片呈现全部配置。`enabled` 是 kill switch：关闭时保留 settings 注册、设置卡片与撤销旧 PTC 声明所需的被动 presentation cleanup；`enhancedToolView` 是默认开启的正文展示开关，关闭时只交还 DSH 原生 `run_code`/`edit_run_code` generic row，
+总开关关闭时不注册 runtime、执行 hook、tool surface 或 system prompt section，也不读取 binding 存储；`ptc` 与兼容 `code` preset 会话在头部单独显示 `PTC Plus` 指示器。设置卡片显示“已启用/已停用”，稳定指引不包含 UI 品牌名。
 `autoDescribeRunCode` 默认开启且只控制请求绑定的本地执行策略。开启时，缺少外层 `run_code.description` 的调用使用派生参数通过本地 DSH 校验，备用摘要仅进入 presentation metadata；关闭时由 DSH 校验原始参数。两种状态的模型可见 tool schema、tool order 和 system sections 保持字节稳定并包含 required `description`；原始调用参数、cell 与嵌套 native 参数保持不变。
 所有字段都由 settings watch 即时交给各自 owner，且不替换已有 session-bound binding。每个已提交 cell 固定其提交时的配置代际，timer、worker 消息、program binding bridge、结果校验和诊断共同消费该快照；重配置更新随后提交 cell 的默认值。`maxOldGenerationSizeMb` 在活动 worker 存在时因 Node 的创建期限制而拒绝并回滚。settings 服务缺失时 Host 回退到 composition config，并保持相同的运行时语义。
 
@@ -65,13 +65,19 @@ Client half 通过 `settings.plugin.item` 卡片呈现全部配置。`enabled` �
 
 `internal/user-bindings-store.js` 独占 `$DSH_HOME/ptc-plus/bindings.json`。单一 JSON 文档避免源码与 metadata 双源；进程内队列、file lock、磁盘文本比较、expected revision 和 atomic replacement 共同防止并发覆盖。每次 mutation 在替换前验证完整 enabled snapshot 的声明预算；外部写入的超限文档按损坏输入处理。损坏输入保持显式 error，不会被空文档静默覆盖。候选与正式激活的相对 import 都以该文件所在目录为基准，因此 session cwd 不会改变 helper 的依赖解析。
 
-prompt assembly 为每个 PTC request 取得一次当前启用条目快照，作为随后 dispatch 的期望集合；命名 runtime context 则只取该集合与当前 session worker 已成功激活 snapshot 的交集，并要求完整条目的每个调用标识符仍具有相同的 `user-global` provenance。新启用或更新的条目因此先经过一个 cell 的 activation boundary，成功后才从下一轮进入 `tools:ptc-plus-user-bindings`；失败、请求 binding 冲突和 session-local shadow 不会产生虚假的模型声明。context 只包含调用名称、用途和无实现体声明；源码不进入普通模型输入，`tools:sdk` 与 direct-tool schema 继续保持稳定。runtime 在 cell preflight 前以整条 entry 为单位把期望集合映射到 BindingCatalog，再由 worker 激活；条目级失败产生诊断并从该 cell 排除，不阻塞独立代码。失败 initializer 一旦发起 program call，整个 cell 进入 volatile，因此只包含成功条目的结果 snapshot 不会被误作该调用的 cold replay source。
+prompt assembly 为每个 PTC request 取得一次当前启用条目快照，作为随后 dispatch 的期望集合；独立 PTC state snapshot 中的绑定声明只取该集合与当前 session worker 已成功激活 snapshot 的交集，并要求完整条目的每个调用标识符仍具有相同的 `user-global` provenance。新启用或更新的条目因此先经过一个 cell 的 activation boundary，成功后才从下一轮进入 `tools:ptc-plus-user-bindings`；失败、请求 binding 冲突和 session-local shadow 不会产生虚假的模型声明。该 section 只包含调用名称、用途和无实现体声明；源码不进入普通模型输入，`tools:sdk` 与 direct-tool schema 继续保持稳定。runtime 在 cell preflight 前以整条 entry 为单位把期望集合映射到 BindingCatalog，再由 worker 激活；条目级失败产生诊断并从该 cell 排除，不阻塞独立代码。失败 initializer 一旦发起 program call，整个 cell 进入 volatile，因此只包含成功条目的结果 snapshot 不会被误作该调用的 cold replay source。
 
 worker 对 namespace 成员和 top-level 导出保留 ECMAScript module live read；对顶层名称的赋值或重声明将该名称转换为 session-local binding，并使整个来源条目退出后续模型投影。binding module 使用稳定 worker-global proxy 访问当前 request 的全部 program namespace；proxy 在调用时读取 AsyncLocalStorage 中的原 cell lease，因此旧 continuation 即使恰逢下一 cell 运行也不能借用其 authority。新 namespace 可在后续 request 安装，已消失 namespace 的 proxy 不再提供 member；与任何既有 worker global 冲突时，bridge 在写入 global 前拒绝整个安装，避免覆盖 Node intrinsic 或留下部分 namespace。一个导出闭包一旦可能被普通 session binding 保存，worker 就无法证明其不可达，因此相应 synthetic-module 解析基准与已安装 proxy 保守保留到 worker 结束。尚未成功暴露任何条目的 disabled、empty 或 failed-only worker 不安装该 bridge。
 
 每个结算 cell 把实际激活的完整 snapshot 放入私有 `meta.dshPtcPlusUserBindings`。cold replay 重新验证这份历史源码及其所有派生字段并从它激活，而不读取当前文件来替换过去状态；无法证明的 metadata 按 session recovery 的 unknown-boundary 规则收缩。这样持久化配置的跨会话可用性不会把当前磁盘值误当作历史执行证据。
 
-`internal/user-bindings-owner.js` 只在 `userBindingsEnabled` 开启时注册由 Connection Host/Origin fence 与浏览器认证保护的 RPC。它根据 `internal/direct-surface-owner.js` 已验证的 live prompt composition，在 PTC agent scope 注册 `/binding` 命令；空会话切换 preset 时先撤销旧命令，下一次 assembly 再按实际 composition 注册。Settings workbench 通过 RPC 拥有 CRUD、验证、候选运行和启停。`/binding new` 与 `/binding edit` 只发起普通 Agent turn，并为该请求挂载一个不可复用的 authoring Skill 和 `submitBindingDraft` tool；首个有效提交进入内存并生成 opaque capability，外层 `run_code` 只把 locator 写入 accepting session 的私有 metadata，再由 `ptcPlusBindingDraft` projection 交给该 session Client。Connection handler 没有 caller/session identity，因此 draft RPC 只接受 capability，不信任 payload session ID。Agent lifecycle 与功能关闭会撤销交接；agent/session disposal、功能关闭和 owner disposal 会删除 accepted draft。new draft 使用 create-only write，edit 保持原 ID，两者保存时都检查最新 revision；save 先原子认领 draft，并发 discard 返回 busy conflict。
+`internal/user-bindings-owner.js` 只在 `userBindingsEnabled` 开启时以 `trusted-host` authority 注册由 Connection Host/Origin fence 与浏览器认证保护的 RPC。它从精确 agent scope 的公共 `run_code` tool view 判断资格，在 agent 创建和 `tools/change` 时协调 `/binding`，不依赖 preset 名称。命令 registration 由该 agent 的注入 fiber 持有；命令服务迟到时保留 pending fiber，回调若已失去资格则失败并清理占位。生命周期监听的安装代际独立于请求与 projection 代际，不能因 projection 就绪而跳过注册。Agent disposal 只清理该精确 Agent 的资源，session disposal 才按 session ID 清空。Client 从 Host command directory 判断首轮前的 composer 编写入口，已有文本不被覆盖。Settings workbench 通过 RPC 拥有完整管理。
+
+`/binding new` 与 `/binding edit` 经 `agent.steer` 追加完整编写指引并启动普通 turn 后完成 admission；该成功不宣称草稿已生成。`internal/user-binding-authoring.js` 拥有稳定 `code.submitBindingDraft({requestId, entry})` SDK、发现 schema 与字段说明，候选校验仍由 `user-bindings.js` normalizer 拥有。runtime bridge 在 cell 创建时捕获请求，提交时核验精确 agent、requestId、代际、lease 与单次提交资格，并在异步验证后重查。SDK 存在性由配置决定，瞬时资格不通过挂卸 tool 或 Skill 表达。program transcript 的 cold replay 只返回旧交接结果，不再提交或恢复草稿。
+
+接受结果的私有 metadata 同时保留 opaque locator 与完整 source-owned candidate，后者携带 requestId 和 commandId。`ptcPlusBindingDraft` projection 从真实 command、turn 和接受结果派生当前编写状态，并独立保存只读历史；历史可跨重挂载、seed 和 owner 代际重建，旧 locator 不恢复。Connection handler 没有 caller/session identity，因此草稿 RPC 只接受 capability。用户保存或丢弃完成后，Host 消费可写 locator，并用公共 `Session.append` 追加引用 accepting result 的结构化 action notice；正文只含身份与保存/启停事实，不含源码或 locator，也不宣称激活。回执 append 失败不能撤销已完成写入或恢复保存资格。`draft-review` 提供当前生命周期内的只读结果，持久关系由 projection 的精确 source relation 验证；不能用后来修改的同 ID 存储条目替换历史源码。完整格式由 [ADR 0023](adr/0023-global-user-bindings.md) 拥有。
+
+Client 遇到冲突后重读 catalog、draft 和 review；只有权威空 draft 才撤销操作，仍有效的候选保留供用户决定重试。new draft 使用 create-only write，edit 保持原 ID；用户保存为停用或保存并启用都原子认领草稿并校验 revision，并发 discard 返回 busy。Agent、session、功能或 owner 结束撤销相关 locator 与内存 review，迟到的存储结算不能复活它们。仅撤销未保存草稿不追加持久化回执。
 
 候选运行使用独立 worker、资源限额、输出预算、取消与超时，只隔离 live session state。候选源码和 import 仍以 DSH 进程权限执行，外部 Node/OS effect 不能回滚，也不进入 session journal。模型没有常驻 binding 管理 API，插件也不从 session binding 反推模块源码：缺少完整源码 provenance 时，session-to-global promotion 无法无损实现。
 
@@ -86,7 +92,7 @@ worker 对 namespace 成员和 top-level 导出保留 ECMAScript module live rea
 | Replacement | 只有 DSH 拥有的 compaction 或其他显式 surface replacement 可以替换已保留历史；PTC Plus 不用 replacement 表达瞬时状态。 |
 | Independent request | 新的辅助模型调用必须单独说明 route、prefix 和 token 影响，不能用它的缓存表现证明主会话前缀稳定。当前插件不发起辅助模型请求。 |
 
-一次性或会变化的 session 状态必须作为 `PromptAssembly.contexts` 的命名贡献交给 DSH。DSH 将完整快照记录为带来源的 `user/message` 并追加到历史尾部；值未变时不重复，值变化或全部消失时追加更新或 clearance。完整快照携带当时所有 owner 的命名 context，因此任一贡献变化都会使未变化贡献在新的尾部消息中再次出现；这会增加 append-only history token，但不会改写已有前缀。PTC Plus 不通过绕过 prompt assembly 的私有消息通道规避这项宿主聚合成本。Cordis 恢复 context 使用规范 journal 的历史 transcript 与当前 agent/enable generation 作为事实源，Global User Binding context 使用请求的源码派生 snapshot；两者都不能从未记录的进程状态生成。此类状态不得进入 `PromptAssembly.sections`，也不得通过增删 tool、改变 schema 字段或调整 tool order 传递。
+PTC 动态状态通过 DSH 公共 `agent/pre-step` 追加为 `source.plugin: ptc-plus` 的独立 `user/message`。rewrite feedback、Cordis recovery 与已激活 Global User Binding 声明构成有界 `snapshot`；恢复 tip 是以 trigger/ordinal 为 identity 的 `notice`。快照只替代 PTC 旧状态，空快照撤销旧声明，不替代 authoring task、Skill、tool result 或其他 producer。PTC 更新不重发其他 owner 文本，其他 owner 的 aggregate 更新也不重发未变 PTC 信息。`systemPrompt.context` 中的空 witness 受 `includeRuntimeContext` 与 scoped suppression 管理且不渲染 aggregate 文本；assembly 捕获精确请求事实，pre-step 委托宿主 waterfall 后只对匹配且未取消的 accepted step 提议消息。已提交记录与公共 ordered surface 共同决定去重和状态重申；缺少公共 surface 时不推断可见状态，不投递。raw history 只可用于 tip identity/cooldown，不能让隐藏 binding 变成模型知识。关闭 PTC 后仅保留撤销旧声明所需的被动 presentation cleanup，不安装 runtime 或读取 binding 存储。Cordis 恢复使用规范 journal 与当前 agent/enable generation；Global User Binding 声明还必须由当前 worker 激活与精确请求来源证明。此类状态不得进入 `PromptAssembly.sections`，也不得通过 tool/schema/order 变化传递。来源、边界与历史兼容由 [ADR 0010](adr/0010-session-log-derived-recovery-tips.md) 拥有。
 
 所有模型可见输入都必须能从 session log 重建。静态 system/schema 由 `request/header` 保存，动态 context 由带来源的 `user/message` 保存；进程内临时状态不能直接成为未记录的模型输入。在同一插件版本与配置下，普通执行结果、可编辑目标、诊断和其他插件拥有的运行期变化都不得改变 header；`edit_run_code` 的身份与结果由真实 call/result 表达，不生成 edit feedback context。插件升级、显式配置变化、provider/model route 变化、真实 native capability schema 变化，以及 DSH 拥有的 history replacement 可以使缓存从首个变化 token 起失效。
 
@@ -94,9 +100,9 @@ worker 对 namespace 成员和 top-level 导出保留 ECMAScript module live rea
 
 ## 能力表面
 
-cell 直接使用 DSH 为当前 request 提供的 `tools.*`，不按工具名过滤，不翻译已提供的 program-call 参数或 canonical result。只有完全省略参数且 DSH 的 live object schema 验证 `{}` 合法时，worker 才在 encoding 前把 omission 规范为 `{}`；显式 `undefined`、需要输入的 member 与其他 namespace 不变，调用方携带的内部 metadata 不能扩大这项集合。模型 direct-call 边界与这个 data-plane contract 分离：声明的顶层 transport 是 `run_code` 和 `edit_run_code`；可证明的误发 native call 可先规范为 `run_code`，native member 随后在 cell 内 nested dispatch。所有 native member、`capabilities.*`、`repl.state` 和 `code.run` 共享 cell lease；cell 结束后，捕获的函数统一失效。调用时仍由 DSH 检查 scope、policy、取消和 scheduler。
+cell 直接使用 DSH 为当前 request 提供的 `tools.*`，不按工具名过滤，不翻译已提供的 program-call 参数或 canonical result。只有完全省略参数且 DSH 的 live object schema 验证 `{}` 合法时，worker 才在 encoding 前把 omission 规范为 `{}`；显式 `undefined`、需要输入的 member 与其他 namespace 不变，调用方携带的内部 metadata 不能扩大这项集合。模型 direct-call 边界与这个 data-plane contract 分离：声明的顶层 transport 是 `run_code` 和 `edit_run_code`；可证明的误发 native call 可先规范为 `run_code`，native member 随后在 cell 内 nested dispatch。所有 native member、`capabilities.*`、`repl.state` 和 `code.*` 共享 cell lease；cell 结束后，捕获的函数统一失效。调用时仍由 DSH 检查 scope、policy、取消和 scheduler。
 
-`capabilities.tree/find/inspect` 是描述 API，不是反射调用入口。默认 SDK 只展开这个导航器；`repl.state` 与 `code.run` 保持可调用，但其完整契约只在 explorer 中按需返回。explorer 合并 live tool schema 与插件自有 program-binding 描述；可证明的 metadata 包括名称、描述、输入/输出 schema、authority 和 replay。effect 与 result completeness 没有 owner 证据时保持 `unknown`。探索不会授予权限或触发额外模型调用。
+`capabilities.tree/find/inspect` 是描述 API，不是反射调用入口。默认 SDK 展开这个导航器，Global User Bindings 开启时另声明稳定的 `code.submitBindingDraft`；`repl.state` 与 `code.run` 保持可调用，但其完整契约只在 explorer 中按需返回。explorer 合并 live tool schema 与插件自有 program-binding 描述；可证明的 metadata 包括名称、描述、输入/输出 schema、authority 和 replay。effect 与 result completeness 没有 owner 证据时保持 `unknown`。探索不会授予权限或触发额外模型调用。
 
 当前公共扩展面没有跨 prompt assembly 与 cell dispatch 的冻结 view token。PTC Plus 使用同一 agent scope 分别读取 prompt 和 runtime view，并让实际 request binding 成为执行事实；能力在两阶段之间变化时，不伪造原子快照保证。
 

@@ -126,10 +126,10 @@
       default: 6e4,
       min: 1,
       max: Number.MAX_SAFE_INTEGER,
-      label: "\u5355 cell CPU \u65F6\u95F4\u4E0A\u9650 (ms)",
-      labelEn: "CPU time limit per cell (ms)",
-      description: "\u540C\u6B65\u8BA1\u7B97\u8D85\u8FC7\u8BE5\u4E0A\u9650\u65F6\u4E2D\u65AD\u5F53\u524D cell\u3002",
-      descriptionEn: "Interrupts the current cell when synchronous computation exceeds this limit."
+      label: "\u5355 cell \u4E8B\u4EF6\u5FAA\u73AF\u6D3B\u8DC3\u65F6\u95F4\u4E0A\u9650 (ms)",
+      labelEn: "Event-loop active time limit per cell (ms)",
+      description: "\u5305\u542B\u540C\u6B65\u963B\u585E\u7B49\u5F85\uFF0C\u4E0D\u7B49\u540C\u4E8E CPU \u7528\u65F6\uFF1B\u8D85\u9650\u65F6\u4E22\u5F03\u5F53\u524D cell \u5E76\u91CD\u7F6E worker\u3002",
+      descriptionEn: "Includes synchronous blocking, not just CPU use; exceeding the limit discards the cell and resets the worker."
     },
     {
       key: "maxWallMs",
@@ -763,6 +763,61 @@
 
   // internal/user-binding-draft-projection.js
   var MAX_CAPABILITY_LENGTH = 128;
+  var MAX_COMMAND_ID_LENGTH = 256;
+  var VIEW_FIELDS = /* @__PURE__ */ new Set(["phase", "capability", "commandId"]);
+  var PHASES2 = /* @__PURE__ */ new Set(["idle", "pending", "ready", "failed"]);
+  function normalizeCandidate(value) {
+    if (!isRecord2(value) || typeof value.requestId !== "string" || value.requestId.length === 0 || value.requestId.length > 128 || !Number.isSafeInteger(value.version) || value.version < 1 || !["new", "edit"].includes(value.mode) || !isRecord2(value.entry) || !["namespace", "top-level"].includes(value.entry.scope) || value.entry.enabled !== false || !Array.isArray(value.entry.symbols) || value.entry.symbols.some((symbol) => typeof symbol !== "string") || ["id", "name", "purpose", "source"].some((key) => typeof value.entry[key] !== "string") || value.entry.source.length === 0 || value.entry.source.length > 65536) {
+      throw new Error("invalid dsh-ptc-plus accepted binding candidate");
+    }
+    return Object.freeze({
+      requestId: value.requestId,
+      commandId: normalizeCommandId(value.commandId),
+      version: value.version,
+      mode: value.mode,
+      entry: Object.freeze({
+        id: value.entry.id,
+        name: value.entry.name,
+        scope: value.entry.scope,
+        symbols: Object.freeze([...value.entry.symbols]),
+        purpose: value.entry.purpose,
+        source: value.entry.source,
+        enabled: false
+      })
+    });
+  }
+  function normalizeAction(value) {
+    if (!exactFields2(value, /* @__PURE__ */ new Set(["requestId", "id", "state", "enabled"])) || typeof value.requestId !== "string" || value.requestId.length === 0 || value.requestId.length > 128 || typeof value.id !== "string" || value.id.length === 0 || value.id.length > 64 || !["saved", "discarded"].includes(value.state) || typeof value.enabled !== "boolean" || value.state === "discarded" && value.enabled) throw new Error("invalid binding action receipt");
+    return Object.freeze({ requestId: value.requestId, id: value.id, state: value.state, enabled: value.enabled });
+  }
+  function normalizeHistory(value) {
+    if (!Array.isArray(value)) throw new Error("invalid binding review history");
+    return Object.freeze(value.map((record) => {
+      const candidate = normalizeCandidate(record.candidate);
+      const action = record.action === null ? null : normalizeAction(record.action);
+      if (action !== null && (action.requestId !== candidate.requestId || action.id !== candidate.entry.id)) {
+        throw new Error("binding action does not identify its candidate");
+      }
+      if (!Number.isSafeInteger(record.acceptedSeq) || record.acceptedSeq < 0) {
+        throw new Error("invalid binding acceptance sequence");
+      }
+      if (record.commandId !== candidate.commandId) throw new Error("binding review does not identify its command");
+      return Object.freeze({
+        commandId: normalizeCommandId(record.commandId),
+        acceptedSeq: record.acceptedSeq,
+        candidate,
+        action
+      });
+    }));
+  }
+  function historyFields(value) {
+    return value.history === void 0 ? {} : { history: normalizeHistory(value.history) };
+  }
+  function exactFields2(value, fields) {
+    if (!isRecord2(value)) return false;
+    const keys = Reflect.ownKeys(value);
+    return keys.length === fields.size && keys.every((key) => typeof key === "string" && fields.has(key) && Object.prototype.propertyIsEnumerable.call(value, key));
+  }
   function normalizeUserBindingDraftCapability(value) {
     if (value === null) return null;
     if (typeof value !== "string" || value.length === 0 || value.length > MAX_CAPABILITY_LENGTH) {
@@ -770,26 +825,55 @@
     }
     return value;
   }
+  function normalizePhase(value) {
+    if (typeof value !== "string" || !PHASES2.has(value)) {
+      throw new Error("invalid dsh-ptc-plus binding draft phase");
+    }
+    return value;
+  }
+  function normalizeCommandId(value) {
+    if (value === null) return null;
+    if (typeof value !== "string" || value.length === 0 || value.length > MAX_COMMAND_ID_LENGTH) {
+      throw new Error("invalid dsh-ptc-plus binding draft command id");
+    }
+    return value;
+  }
+  function normalizeUserBindingDraftView(value) {
+    if (!exactFields2(value, value?.history === void 0 ? VIEW_FIELDS : /* @__PURE__ */ new Set([...VIEW_FIELDS, "history"]))) {
+      throw new Error("invalid dsh-ptc-plus binding draft projection view");
+    }
+    return Object.freeze({
+      phase: normalizePhase(value.phase),
+      capability: normalizeUserBindingDraftCapability(value.capability),
+      commandId: normalizeCommandId(value.commandId ?? null),
+      ...historyFields(value)
+    });
+  }
 
   // src/client.js
   var CLIENT_STYLE_ID = "ptc-plus-client-style";
   var USER_BINDINGS_RPC_CHANNEL = "/ptc-plus-bindings";
   var CLIENT_CSS = `
-.ptcPlusCard{border:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1));background:var(--dsw-alias-bg-layer-3,#fff);border-radius:8px;list-style:none;overflow:hidden}
-.ptcPlusHeader{appearance:none;width:100%;display:flex;align-items:center;gap:12px;padding:14px 16px;border:0;background:transparent;color:inherit;font:inherit;text-align:left;cursor:pointer;transition:background-color .16s ease}
-.ptcPlusHeader:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(38,49,72,.06))}.ptcPlusHeader:focus-visible,.ptcPlusButton:focus-visible,.ptcPlusInput:focus-visible{outline:2px solid var(--dsw-alias-interactive-primary,#4d6bfe);outline-offset:-2px}
-.ptcPlusHeadText{display:flex;flex:1;min-width:0;flex-direction:column;align-items:flex-start;gap:1px}.ptcPlusName{font-size:14px;font-weight:600;line-height:20px}.ptcPlusDescription{color:var(--dsw-alias-label-tertiary,#74777d);font-size:12px;line-height:18px;overflow-wrap:anywhere}.ptcPlusStatus{display:inline-flex;align-items:center;flex:none;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:500;line-height:16px}.ptcPlusStatus[data-enabled=true]{color:var(--dsw-alias-state-success-primary,#16794f);background:var(--dsw-alias-state-success-tertiary,#e7f7ef)}.ptcPlusStatus[data-enabled=false]{color:var(--dsw-alias-label-tertiary,#74777d);background:var(--dsw-alias-interactive-bg-hover,rgba(38,49,72,.06))}
-.ptcPlusChevron{display:flex;color:var(--dsw-alias-label-tertiary,#74777d);transition:transform .18s ease}.ptcPlusChevron[data-open=true]{transform:rotate(180deg)}.ptcPlusBody{display:grid;grid-template-rows:0fr;transition:grid-template-rows .2s ease}.ptcPlusBody[data-open=true]{grid-template-rows:1fr}.ptcPlusBodyInner{min-height:0;overflow:hidden}.ptcPlusFields{margin:0 16px;padding:8px 0 12px;border-top:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1))}
-.ptcPlusGroup+.ptcPlusGroup{margin-top:14px}.ptcPlusGroupTitle{margin:0;padding:8px 0 5px;color:var(--dsw-alias-label-secondary,#52565d);font-size:11px;font-weight:600;letter-spacing:0;line-height:16px}.ptcPlusRow{display:flex;align-items:center;gap:12px;min-height:48px;border-top:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1))}.ptcPlusRow:first-child{border-top:0}.ptcPlusMain{flex:1;min-width:0}.ptcPlusLabel{font-size:14px;font-weight:500;line-height:20px}.ptcPlusDetail,.ptcPlusMessage{color:var(--dsw-alias-label-tertiary,#74777d);font-size:12px;line-height:18px;overflow-wrap:anywhere}.ptcPlusInput{box-sizing:border-box;min-width:72px;width:140px;padding:5px 8px;border:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1));border-radius:6px;background:var(--dsw-alias-bg-layer-1,#fff);color:inherit;font:12px/18px ui-monospace,SFMono-Regular,Consolas,monospace}.ptcPlusCheck{width:18px;height:18px;accent-color:var(--dsw-alias-interactive-primary,#4d6bfe)}
-.ptcPlusFooter{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:8px}.ptcPlusButton{min-height:32px;padding:0 12px;border:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1));border-radius:6px;background:transparent;color:inherit;cursor:pointer;font:500 13px/20px inherit;transition:background-color .16s ease,border-color .16s ease}.ptcPlusButton:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover,rgba(38,49,72,.06))}.ptcPlusButton:disabled,.ptcPlusInput:disabled,.ptcPlusCheck:disabled{cursor:not-allowed;opacity:.55}
-.ptcPlusBindings{margin-top:16px;padding-top:14px;border-top:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1))}.ptcPlusBindingsHead{display:flex;align-items:center;justify-content:space-between;gap:12px}.ptcPlusBindingsActions{display:flex;flex-wrap:wrap;gap:6px}.ptcPlusBindingsGrid{display:grid;grid-template-columns:minmax(190px,.7fr) minmax(320px,1.3fr);gap:16px;margin-top:10px}.ptcPlusBindingList{min-width:0;margin:0;padding:0;border-right:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1));list-style:none}.ptcPlusBindingItem{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:3px 8px;padding:8px 10px;border-bottom:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1))}.ptcPlusBindingSelect{min-width:0;padding:0;border:0;background:transparent;color:inherit;text-align:left;cursor:pointer}.ptcPlusBindingSelect:focus-visible,.ptcPlusTextarea:focus-visible,.ptcPlusSelect:focus-visible{outline:2px solid var(--dsw-alias-interactive-primary,#4d6bfe);outline-offset:1px}.ptcPlusBindingName{display:block;overflow:hidden;font:600 12px/18px ui-monospace,SFMono-Regular,Consolas,monospace;text-overflow:ellipsis;white-space:nowrap}.ptcPlusBindingMeta{display:block;color:var(--dsw-alias-label-tertiary,#74777d);font-size:11px;line-height:16px;overflow-wrap:anywhere}.ptcPlusBindingToggle{grid-column:2;grid-row:1/3;align-self:center}.ptcPlusBindingEditor{display:grid;min-width:0;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px 12px}.ptcPlusBindingField{display:flex;min-width:0;flex-direction:column;gap:4px}.ptcPlusBindingField[data-wide=true]{grid-column:1/-1}.ptcPlusBindingFieldLabel{color:var(--dsw-alias-label-secondary,#52565d);font-size:11px;font-weight:600;line-height:16px}.ptcPlusBindingEditor .ptcPlusInput,.ptcPlusSelect{box-sizing:border-box;width:100%;min-width:0;padding:6px 8px;border:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1));border-radius:6px;background:var(--dsw-alias-bg-layer-1,#fff);color:inherit;font:12px/18px inherit}.ptcPlusTextarea{box-sizing:border-box;width:100%;min-height:180px;resize:vertical;padding:9px;border:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1));border-radius:6px;background:var(--dsw-alias-bg-layer-1,#fff);color:inherit;font:12px/18px ui-monospace,SFMono-Regular,Consolas,monospace;tab-size:2}.ptcPlusDeclaration{box-sizing:border-box;max-height:180px;margin:0;padding:9px;overflow:auto;background:var(--dsw-alias-bg-layer-2,rgba(38,49,72,.03));color:inherit;font:11px/17px ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere}.ptcPlusBindingRun{display:flex;grid-column:1/-1;flex-wrap:wrap;align-items:end;gap:8px;padding-top:8px;border-top:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1))}.ptcPlusBindingRun .ptcPlusInput{width:min(240px,100%)}.ptcPlusBindingOutput{grid-column:1/-1;margin:0;color:var(--dsw-alias-label-secondary,#52565d);font:11px/17px ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere}.ptcPlusDanger{color:var(--dsw-alias-state-danger-primary,#c43d3d)}
-.ptcPlusActiveShell{display:inline-flex;align-items:center}.ptcPlusActive{appearance:none;display:inline-flex;height:24px;align-items:center;gap:5px;padding:0 8px;border:1px solid color-mix(in srgb,var(--dsw-alias-state-success-primary,#16794f) 32%,transparent);border-radius:6px;background:var(--dsw-alias-state-success-tertiary,#e7f7ef);color:var(--dsw-alias-state-success-primary,#16794f);cursor:help;font:600 12px/18px inherit;white-space:nowrap;transition:background-color .14s ease,border-color .14s ease}.ptcPlusActive:hover,.ptcPlusActive[aria-expanded=true]{border-color:color-mix(in srgb,var(--dsw-alias-state-success-primary,#16794f) 48%,transparent);background:color-mix(in srgb,var(--dsw-alias-state-success-primary,#16794f) 16%,var(--dsw-alias-bg-layer-3,#fff))}.ptcPlusActive:focus-visible{outline:2px solid var(--dsw-alias-state-success-primary,#16794f);outline-offset:2px}.ptcPlusReplPopover{position:fixed;z-index:2147483000;inset:auto;display:none;box-sizing:border-box;margin:0;padding:0;border:0;overflow:visible;background:transparent;color:var(--dsw-alias-label-primary,#18191c)}.ptcPlusReplPopover:popover-open,.ptcPlusReplPopover[data-open=true]{display:block}.ptcPlusReplPopover::backdrop{background:transparent}.ptcPlusReplCard{display:flex;max-height:inherit;overflow:hidden;flex-direction:column;border:1px solid color-mix(in srgb,var(--dsw-alias-state-success-primary,#16794f) 22%,var(--dsw-alias-border-l2,rgba(0,0,0,.1)));border-top:3px solid var(--dsw-alias-state-success-primary,#16794f);border-radius:8px;background:var(--dsw-alias-bg-layer-3,#fff);box-shadow:0 14px 36px rgba(16,24,40,.2),0 3px 10px rgba(16,24,40,.1);color:var(--dsw-alias-label-primary,#18191c);white-space:normal}.ptcPlusReplHead{display:grid;grid-template-columns:auto minmax(0,1fr);align-items:center;column-gap:8px;padding:11px 13px 10px;border-bottom:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1));background:color-mix(in srgb,var(--dsw-alias-state-success-primary,#16794f) 7%,var(--dsw-alias-bg-layer-3,#fff))}.ptcPlusReplStatusDot{grid-row:1/3;width:8px;height:8px;border-radius:50%;background:var(--dsw-alias-state-success-primary,#16794f);box-shadow:0 0 0 3px color-mix(in srgb,var(--dsw-alias-state-success-primary,#16794f) 14%,transparent)}.ptcPlusReplTitle,.ptcPlusReplSummary{display:block;min-width:0}.ptcPlusReplTitle{font-size:13px;font-weight:600;line-height:19px}.ptcPlusReplSummary{color:var(--dsw-alias-label-tertiary,#74777d);font-size:11px;line-height:16px}.ptcPlusReplList{min-height:0;margin:0;padding:5px 0;overflow:auto;overscroll-behavior:contain;list-style:none;scrollbar-gutter:stable}.ptcPlusReplBinding{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:4px 10px;padding:7px 12px}.ptcPlusReplBinding:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(38,49,72,.06))}.ptcPlusReplIdentity{display:flex;min-width:0;align-items:center;gap:7px}.ptcPlusReplName{min-width:0;overflow:hidden;font:12px/18px ui-monospace,SFMono-Regular,Consolas,monospace;text-overflow:ellipsis;white-space:nowrap}.ptcPlusReplKind{flex:none;padding:1px 6px;border:1px solid color-mix(in srgb,currentColor 22%,transparent);border-radius:999px;background:color-mix(in srgb,currentColor 10%,transparent);font-size:10px;font-weight:600;line-height:15px}.ptcPlusReplKind[data-kind=variable]{color:var(--dsw-alias-interactive-primary,#315fbd)}.ptcPlusReplKind[data-kind=function]{color:#7651b5}.ptcPlusReplKind[data-kind=class]{color:var(--dsw-alias-state-warning-primary,#946200)}.ptcPlusReplKind[data-kind=import]{color:#14766f}.ptcPlusReplPreview{grid-column:1;min-width:0;overflow:hidden;color:var(--dsw-alias-label-tertiary,#74777d);font:11px/16px ui-monospace,SFMono-Regular,Consolas,monospace;text-overflow:ellipsis;white-space:nowrap}.ptcPlusReplInspect{grid-column:2;grid-row:1/3;display:inline-flex;align-items:center;gap:4px;padding:3px 5px;border:0;border-radius:4px;background:transparent;color:var(--dsw-alias-label-secondary,#52565d);cursor:pointer;font:500 11px/17px inherit;white-space:nowrap}.ptcPlusReplInspect:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(38,49,72,.06));color:var(--dsw-alias-interactive-primary,#4d6bfe)}.ptcPlusReplInspect:focus-visible{outline:2px solid var(--dsw-alias-interactive-primary,#4d6bfe);outline-offset:1px}.ptcPlusReplDefinition{grid-column:1/-1;min-width:0;margin-top:4px;padding:8px;border-left:2px solid var(--dsw-alias-interactive-primary,#4d6bfe);background:var(--dsw-alias-bg-layer-2,rgba(38,49,72,.03))}.ptcPlusReplLocation{display:block;margin-bottom:5px;color:var(--dsw-alias-label-tertiary,#74777d);font-size:10px;line-height:15px}.ptcPlusReplCode{max-height:180px;margin:0;overflow:auto;color:inherit;font:11px/16px ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere}.ptcPlusReplEmpty,.ptcPlusReplMore{display:block;color:var(--dsw-alias-label-tertiary,#74777d)}.ptcPlusReplEmpty{padding:18px 13px;font-size:12px;line-height:18px}.ptcPlusReplMore{padding:8px 13px;border-top:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1));background:var(--dsw-alias-bg-layer-2,rgba(38,49,72,.03));font-size:11px;line-height:17px}
-.ptcPlusReplTabs{display:flex;padding:6px 8px 0;border-bottom:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1))}.ptcPlusReplTab{flex:1;padding:5px 6px;border:0;border-bottom:2px solid transparent;background:transparent;color:var(--dsw-alias-label-secondary,#52565d);cursor:pointer;font:600 11px/17px inherit}.ptcPlusReplTab[aria-selected=true]{border-bottom-color:var(--dsw-alias-interactive-primary,#4d6bfe);color:var(--dsw-alias-label-primary,#18191c)}.ptcPlusGlobalPane{display:flex;min-height:0;flex-direction:column;gap:8px;padding:8px 12px}.ptcPlusGlobalList{min-height:0;margin:0 -12px -8px;padding:5px 0;overflow:auto;list-style:none}.ptcPlusGlobalItem{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:6px;padding:7px 12px;border-bottom:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1))}.ptcPlusGlobalItem .ptcPlusGlobalSource,.ptcPlusGlobalItem .ptcPlusReplEmpty{grid-column:1/-1}.ptcPlusAuthoringDraft{display:flex;flex-direction:column;gap:5px;padding:8px;border:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1));border-radius:6px}.ptcPlusGlobalSource{max-height:180px;margin:6px 0 0;padding:7px;overflow:auto;background:var(--dsw-alias-bg-layer-2,rgba(38,49,72,.03));font:11px/16px ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere}
+.ptcPlusBindingCommand .ptcPlusMessage{margin:0}.ptcPlusBindingSourceDetails{min-width:0}.ptcPlusBindingSourceDetails>summary{cursor:pointer;font-size:12px;line-height:20px}.ptcPlusBindingItem>button,.ptcPlusGlobalItem>button{align-self:center}.ptcPlusAuthoringDraft>strong{font-size:13px;line-height:20px;overflow-wrap:anywhere}.ptcPlusBindingCommand .ptcPlusBindingCommandState{max-width:100%;box-sizing:border-box;white-space:normal}.ptcPlusBindingCommand .ptcPlusAuthoringDraft{min-width:0;padding:0;border:0;border-radius:0;background:transparent}
+.ptcPlusCard{list-style:none;border:0.5px solid var(--dsw-alias-border-l4);border-radius:16px;background:var(--dsw-alias-bg-layer-3);overflow:hidden;transition:border-color .16s ease,background-color .16s ease}
+.ptcPlusCard:hover{border-color:var(--dsw-alias-label-dimmed)}
+.ptcPlusCard[data-open=true]{background:var(--dsw-alias-bg-layer-2);border-color:var(--dsw-alias-label-dimmed)}
+.ptcPlusHeader{appearance:none;width:100%;display:flex;align-items:center;gap:12px;padding:14px 16px;border:0;background:transparent;color:inherit;font:inherit;text-align:left;cursor:pointer;border-radius:12px}
+.ptcPlusHeader:hover{background:var(--dsw-alias-interactive-bg-hover)}.ptcPlusHeader:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:-2px}
+.ptcPlusButton:focus-visible,.ptcPlusInput:focus-visible,.ptcPlusSelect:focus-visible,.ptcPlusTextarea:focus-visible,.ptcPlusBindingSelect:focus-visible,.ptcPlusReplBindingTrigger:focus-visible,.ptcPlusReplInspect:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px}
+.ptcPlusHeadText{display:flex;flex:1;min-width:0;flex-direction:column;align-items:flex-start;gap:3px}.ptcPlusName{font-size:15px;font-weight:600;line-height:1.4}.ptcPlusDescription{color:var(--dsw-alias-label-tertiary);font-size:13px;line-height:1.5;overflow-wrap:anywhere}.ptcPlusStatus{display:inline-flex;align-items:center;flex:none;padding:1px 8px;border-radius:999px;corner-shape:round;background:var(--dsw-alias-bg-module-platform);color:var(--dsw-alias-label-secondary);font-size:11px;font-weight:500;line-height:17px;white-space:nowrap}.ptcPlusStatus[data-enabled=true]{color:var(--dsw-alias-state-success-primary);background:var(--dsw-alias-state-success-tertiary)}.ptcPlusStatus[data-enabled=false]{color:var(--dsw-alias-label-secondary);background:var(--dsw-alias-bg-module-platform)}
+.ptcPlusChevron{display:flex;color:var(--dsw-alias-label-tertiary);transition:transform .18s ease}.ptcPlusChevron[data-open=true]{transform:rotate(180deg)}.ptcPlusBody{display:grid;grid-template-rows:0fr;transition:grid-template-rows .2s ease}.ptcPlusBody[data-open=true]{grid-template-rows:1fr}.ptcPlusBodyInner{min-height:0;overflow:hidden}.ptcPlusFields{margin:0 16px;padding:8px 0 12px;border-top:0.5px solid var(--dsw-alias-border-l2)}
+.ptcPlusGroup+.ptcPlusGroup{margin-top:14px}.ptcPlusGroupTitle{margin:0;padding:8px 0 5px;color:var(--dsw-alias-label-tertiary);font-size:11px;font-weight:600;letter-spacing:0;line-height:16px}.ptcPlusRow{display:flex;align-items:center;gap:12px;min-height:48px;border-top:0.5px solid var(--dsw-alias-border-l2)}.ptcPlusRow:first-child{border-top:0}.ptcPlusMain{flex:1;min-width:0}.ptcPlusLabel{font-size:13px;font-weight:500;line-height:1.5}.ptcPlusDetail,.ptcPlusMessage{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:1.5;overflow-wrap:anywhere}.ptcPlusInput{box-sizing:border-box;min-width:72px;width:140px;height:34px;padding:0 12px;border:0.5px solid var(--dsw-alias-border-l4);border-radius:8px;background:var(--dsw-alias-bg-layer-3);color:var(--dsw-alias-label-primary);font:inherit;font-size:13px;line-height:1.5}.ptcPlusInput:focus-visible{border-color:var(--dsw-alias-brand-primary);outline:none}.ptcPlusCheck{width:18px;height:18px;accent-color:var(--dsw-alias-brand-primary)}
+.ptcPlusFooter{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:8px}.ptcPlusButton{appearance:none;display:inline-flex;align-items:center;justify-content:center;gap:5px;min-height:32px;padding:4px 14px;border:0.5px solid var(--dsw-alias-border-l3);border-radius:8px;background:transparent;color:var(--dsw-alias-label-secondary);cursor:pointer;font:inherit;font-size:13px;line-height:1.5;transition:color .16s ease,border-color .16s ease,background-color .16s ease}.ptcPlusButton:hover:not(:disabled){border-color:var(--dsw-alias-label-dimmed);color:var(--dsw-alias-label-primary)}.ptcPlusButton[data-kind=primary]{background:var(--dsw-alias-label-primary);border-color:transparent;color:var(--dsw-alias-bg-layer-3)}.ptcPlusButton[data-kind=primary]:hover:not(:disabled){background:var(--dsw-alias-label-primary-dimmed);border-color:transparent;color:var(--dsw-alias-bg-layer-3)}.ptcPlusButton[data-kind=ghost]{border-color:transparent}.ptcPlusButton[data-kind=ghost]:hover:not(:disabled){border-color:var(--dsw-alias-border-l3)}.ptcPlusButton[data-kind=danger]{color:var(--dsw-alias-state-error-primary)}.ptcPlusButton[data-kind=danger]:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover-danger);border-color:var(--dsw-alias-state-error-primary);color:var(--dsw-alias-state-error-primary)}.ptcPlusButton:disabled,.ptcPlusInput:disabled,.ptcPlusCheck:disabled{cursor:not-allowed;opacity:.4}
+.ptcPlusDanger{color:var(--dsw-alias-state-error-primary)}
+.ptcPlusActiveShell{display:inline-flex;align-items:center}.ptcPlusActive{appearance:none;display:inline-flex;height:24px;align-items:center;gap:5px;padding:0 8px;border:1px solid color-mix(in srgb,var(--dsw-alias-state-success-primary,#16794f) 32%,transparent);border-radius:6px;background:var(--dsw-alias-state-success-tertiary,#e7f7ef);color:var(--dsw-alias-state-success-primary,#16794f);cursor:help;font-family:inherit;font-size:12px;font-weight:600;line-height:18px;white-space:nowrap;transition:background-color .14s ease,border-color .14s ease}.ptcPlusActive:hover,.ptcPlusActive[aria-expanded=true]{border-color:color-mix(in srgb,var(--dsw-alias-state-success-primary,#16794f) 48%,transparent);background:color-mix(in srgb,var(--dsw-alias-state-success-primary,#16794f) 16%,var(--dsw-alias-bg-layer-3,#fff))}.ptcPlusActive:focus-visible{outline:2px solid var(--dsw-alias-state-success-primary,#16794f);outline-offset:2px}.ptcPlusReplPopover{position:fixed;z-index:2147483000;inset:auto;display:none;box-sizing:border-box;margin:0;padding:0;border:0;overflow:visible;background:transparent;color:var(--dsw-alias-label-primary,#18191c)}.ptcPlusReplPopover:popover-open,.ptcPlusReplPopover[data-open=true]{display:block}.ptcPlusReplPopover::backdrop{background:transparent}.ptcPlusReplCard{display:flex;max-height:inherit;overflow:hidden;flex-direction:column;border:1px solid color-mix(in srgb,var(--dsw-alias-state-success-primary,#16794f) 22%,var(--dsw-alias-border-l2,rgba(0,0,0,.1)));border-top:3px solid var(--dsw-alias-state-success-primary,#16794f);border-radius:8px;background:var(--dsw-alias-bg-layer-3,#fff);box-shadow:0 14px 36px rgba(16,24,40,.2),0 3px 10px rgba(16,24,40,.1);color:var(--dsw-alias-label-primary,#18191c);white-space:normal}.ptcPlusReplHead{display:grid;grid-template-columns:auto minmax(0,1fr);align-items:center;column-gap:8px;padding:11px 13px 10px;border-bottom:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1));background:color-mix(in srgb,var(--dsw-alias-state-success-primary,#16794f) 7%,var(--dsw-alias-bg-layer-3,#fff))}.ptcPlusReplStatusDot{grid-row:1/3;width:8px;height:8px;border-radius:50%;background:var(--dsw-alias-state-success-primary,#16794f);box-shadow:0 0 0 3px color-mix(in srgb,var(--dsw-alias-state-success-primary,#16794f) 14%,transparent)}.ptcPlusReplTitle,.ptcPlusReplSummary{display:block;min-width:0}.ptcPlusReplTitle{font-size:13px;font-weight:600;line-height:19px}.ptcPlusReplSummary{color:var(--dsw-alias-label-tertiary,#74777d);font-size:11px;line-height:16px}.ptcPlusReplList{min-height:0;margin:0;padding:5px 0;overflow:auto;overscroll-behavior:contain;list-style:none;scrollbar-gutter:stable}.ptcPlusReplBinding{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:4px 10px;padding:7px 12px}.ptcPlusReplBinding:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(38,49,72,.06))}.ptcPlusReplIdentity{display:flex;min-width:0;align-items:center;gap:7px}.ptcPlusReplName{min-width:0;overflow:hidden;font:12px/18px ui-monospace,SFMono-Regular,Consolas,monospace;text-overflow:ellipsis;white-space:nowrap}.ptcPlusReplKind{flex:none;padding:1px 6px;border:1px solid color-mix(in srgb,currentColor 22%,transparent);border-radius:999px;background:color-mix(in srgb,currentColor 10%,transparent);font-size:10px;font-weight:600;line-height:15px}.ptcPlusReplKind[data-kind=variable]{color:var(--dsw-alias-interactive-primary,#315fbd)}.ptcPlusReplKind[data-kind=function]{color:#7651b5}.ptcPlusReplKind[data-kind=class]{color:var(--dsw-alias-state-warning-primary,#946200)}.ptcPlusReplKind[data-kind=import]{color:#14766f}.ptcPlusReplPreview{grid-column:1;min-width:0;overflow:hidden;color:var(--dsw-alias-label-tertiary,#74777d);font:11px/16px ui-monospace,SFMono-Regular,Consolas,monospace;text-overflow:ellipsis;white-space:nowrap}.ptcPlusReplInspect{grid-column:2;grid-row:1/3;display:inline-flex;align-items:center;gap:4px;padding:3px 5px;border:0;border-radius:4px;background:transparent;color:var(--dsw-alias-label-secondary,#52565d);cursor:pointer;font:500 11px/17px inherit;white-space:nowrap}.ptcPlusReplInspect:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(38,49,72,.06));color:var(--dsw-alias-interactive-primary,#4d6bfe)}.ptcPlusReplInspect:focus-visible{outline:2px solid var(--dsw-alias-interactive-primary,#4d6bfe);outline-offset:1px}.ptcPlusReplDefinition{grid-column:1/-1;min-width:0;margin-top:4px;padding:8px;border-left:2px solid var(--dsw-alias-interactive-primary,#4d6bfe);background:var(--dsw-alias-bg-layer-2,rgba(38,49,72,.03))}.ptcPlusReplLocation{display:block;margin-bottom:5px;color:var(--dsw-alias-label-tertiary,#74777d);font-size:10px;line-height:15px}.ptcPlusReplCode{max-height:180px;margin:0;overflow:auto;color:inherit;font:11px/16px ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere}.ptcPlusReplEmpty,.ptcPlusReplMore{display:block;color:var(--dsw-alias-label-tertiary,#74777d)}.ptcPlusReplEmpty{padding:18px 13px;font-size:12px;line-height:18px}.ptcPlusReplMore{padding:8px 13px;border-top:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1));background:var(--dsw-alias-bg-layer-2,rgba(38,49,72,.03));font-size:11px;line-height:17px}
+.ptcPlusReplTabs{display:flex;padding:6px 8px 0;border-bottom:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1))}.ptcPlusReplTab{flex:1;padding:5px 6px;border:0;border-bottom:2px solid transparent;background:transparent;color:var(--dsw-alias-label-secondary,#52565d);cursor:pointer;font-family:inherit;font-size:11px;font-weight:600;line-height:17px}.ptcPlusReplTab[aria-selected=true]{border-bottom-color:var(--dsw-alias-interactive-primary,#4d6bfe);color:var(--dsw-alias-label-primary,#18191c)}.ptcPlusGlobalPane{display:flex;min-height:0;flex-direction:column;gap:8px;padding:8px 12px}.ptcPlusGlobalList{min-height:0;margin:0 -12px -8px;padding:5px 0;overflow:auto;list-style:none}.ptcPlusGlobalItem{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:6px 10px;padding:7px 12px;border-radius:8px}.ptcPlusGlobalItem:hover{background:var(--dsw-alias-interactive-bg-hover)}.ptcPlusGlobalItem .ptcPlusGlobalSource,.ptcPlusGlobalItem .ptcPlusReplEmpty{grid-column:1/-1}.ptcPlusAuthoringDraft{display:flex;flex-direction:column;gap:6px;padding:10px 12px;border:0.5px solid var(--dsw-alias-border-l4);border-radius:12px;background:var(--dsw-alias-bg-layer-3)}.ptcPlusGlobalSource{max-height:180px;margin:6px 0 0;padding:8px 10px;overflow:auto;background:var(--dsw-alias-markdown-code-block);border-radius:8px;font:12px/18px ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere}
 .ptcPlusReplList{max-height:min(52vh,480px)}.ptcPlusReplBinding{grid-template-columns:minmax(0,1fr) 24px;gap:3px 8px;min-height:36px;padding:5px 12px;content-visibility:auto;contain-intrinsic-size:36px;cursor:pointer;transition:background-color .16s ease}.ptcPlusReplBinding:focus-visible{outline:2px solid var(--dsw-alias-interactive-primary,#4d6bfe);outline-offset:-2px}.ptcPlusReplBinding[data-expanded=true]{background:color-mix(in srgb,var(--dsw-alias-interactive-primary,#4d6bfe) 5%,transparent)}.ptcPlusReplName{grid-column:1}.ptcPlusReplName[data-kind=variable]{color:var(--dsw-alias-interactive-primary,#315fbd)}.ptcPlusReplName[data-kind=function]{color:#7651b5}.ptcPlusReplName[data-kind=class]{color:var(--dsw-alias-state-warning-primary,#946200)}.ptcPlusReplName[data-kind=import]{color:#14766f}.ptcPlusReplPreview{grid-column:1}.ptcPlusReplChevron{grid-column:2;grid-row:1/3;display:flex;align-items:center;justify-content:center;color:var(--dsw-alias-label-tertiary,#74777d);transition:transform .2s ease}.ptcPlusReplChevron[data-open=true]{transform:rotate(180deg)}.ptcPlusReplDefinitionWrap{grid-column:1/-1;display:grid;grid-template-rows:0fr;min-width:0;transition:grid-template-rows .24s cubic-bezier(.2,.7,.2,1)}.ptcPlusReplDefinitionWrap[data-open=true]{grid-template-rows:1fr}.ptcPlusReplDefinitionInner{min-height:0;overflow:hidden}
 .ptcPlusTool{display:flex;min-width:0;flex-direction:column}.ptcPlusToolPreview{display:flex;min-width:0;flex:1 1 auto;flex-direction:row;align-items:center;overflow:hidden;margin-left:7px}.ptcPlusToolPreview .ptcPlusFeatures{flex:0 1 auto;flex-wrap:nowrap;overflow:hidden;margin:0 0 0 7px}.ptcPlusToolSummaryLine{box-sizing:border-box;display:flex;min-width:0;min-height:20px;flex:1 1 auto;align-items:center;gap:7px;padding:0;color:inherit;line-height:20px}.ptcPlusToolSummary{box-sizing:border-box;display:flex;min-width:0;min-height:32px;align-items:center;gap:7px;padding:0;color:inherit;line-height:20px}.ptcPlusToolSummary[data-expandable=true]{cursor:pointer}.ptcPlusToolSummary[data-expandable=true]:hover .ptcPlusToolTitle{color:var(--dsw-alias-interactive-primary,#4d6bfe)}.ptcPlusToolSummary:focus-visible{outline:2px solid var(--dsw-alias-interactive-primary,#4d6bfe);outline-offset:2px}.ptcPlusToolLeading{display:flex;width:16px;height:20px;flex:none;align-items:center;justify-content:center;color:var(--dsw-alias-label-tertiary,#74777d)}.ptcPlusToolChevron{transition:transform .16s ease}.ptcPlusToolChevron[data-open=true]{transform:rotate(180deg)}.ptcPlusToolTitle{display:flex;height:20px;flex:none;align-items:center;font-size:13px;font-weight:500;line-height:20px}.ptcPlusToolState{display:flex;height:20px;flex:none;align-items:center;color:var(--dsw-alias-label-tertiary,#74777d);font-size:11px;line-height:20px}.ptcPlusToolSummaryLine[data-state=running] .ptcPlusToolState,.ptcPlusToolSummary[data-state=running] .ptcPlusToolState{color:var(--dsw-alias-interactive-primary,#4d6bfe)}.ptcPlusToolSummaryLine[data-state=error] .ptcPlusToolState,.ptcPlusToolSummary[data-state=error] .ptcPlusToolState{color:var(--dsw-alias-state-danger-primary,#c43d3d)}.ptcPlusToolSummaryLine[data-state=stopped] .ptcPlusToolState,.ptcPlusToolSummary[data-state=stopped] .ptcPlusToolState{color:var(--dsw-alias-state-warning-primary,#a15c00)}.ptcPlusToolSep{width:3px;height:3px;flex:none;border-radius:50%;background:var(--dsw-alias-label-tertiary,#74777d)}.ptcPlusToolDescription{display:flex;min-width:0;min-height:20px;flex:1 1 auto;align-items:center;overflow:hidden;color:var(--dsw-alias-label-secondary,#52565d);font-size:13px;line-height:20px;text-overflow:ellipsis;white-space:nowrap}.ptcPlusToolPreview .ptcPlusFeature{flex:none;max-width:180px;white-space:nowrap}.ptcPlusToolPreview .ptcPlusFeatureDetail{max-width:120px}.ptcPlusToolSummaryLine[data-state=error] .ptcPlusToolDescription,.ptcPlusToolSummary[data-state=error] .ptcPlusToolDescription{color:var(--dsw-alias-state-danger-primary,#c43d3d)}.ptcPlusToolSummaryLine[data-state=stopped] .ptcPlusToolDescription,.ptcPlusToolSummary[data-state=stopped] .ptcPlusToolDescription{color:var(--dsw-alias-state-warning-primary,#a15c00)}
 .ptcPlusFeatures{display:flex;min-width:0;flex-wrap:wrap;gap:3px 14px;margin:0 0 5px 23px}.ptcPlusFeature{display:inline-flex;min-width:0;align-items:center;gap:5px;color:var(--dsw-alias-label-secondary,#52565d);font-size:11px;line-height:17px}.ptcPlusFeature::before{width:4px;height:4px;flex:none;border-radius:50%;background:var(--dsw-alias-interactive-primary,#4d6bfe);content:''}.ptcPlusFeatureName{font-weight:500}.ptcPlusFeatureDetail{min-width:0;overflow:hidden;color:var(--dsw-alias-label-tertiary,#74777d);font-family:ui-monospace,SFMono-Regular,Consolas,monospace;text-overflow:ellipsis;white-space:nowrap}
 .ptcPlusToolBody{margin:4px 0 8px 23px;border-left:2px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1));background:var(--dsw-alias-bg-layer-2,rgba(38,49,72,.03))}.ptcPlusToolSection{display:flex;min-width:0;flex-direction:column;gap:4px;padding:9px 11px}.ptcPlusToolSection+.ptcPlusToolSection{border-top:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1))}.ptcPlusToolSectionLabel{color:var(--dsw-alias-label-tertiary,#74777d);font-size:10px;font-weight:600;line-height:16px;text-transform:uppercase}.ptcPlusToolCode{max-height:320px;margin:0;overflow:auto;color:inherit;font:12px/18px ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere}.ptcPlusIoCard{display:flex;flex-direction:column;border:1px solid var(--dsw-alias-border-l1,rgba(0,0,0,.1));border-radius:12px;background:var(--dsw-alias-markdown-code-block,rgba(38,49,72,.06));overflow:hidden}.ptcPlusIoText{max-height:320px;margin:0;padding:12px 16px;overflow:auto;color:var(--dsw-alias-label-secondary,#52565d);font:12px/18px ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere}.ptcPlusIoText[data-error]{color:var(--dsw-alias-state-error-primary,#c43d3d)}.ptcPlusInspect{display:inline-flex;align-self:flex-start;align-items:center;gap:4px;margin:4px 0 2px 4px;padding:2px 8px;border:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1));border-radius:999px;background:var(--dsw-alias-bg-base,#fff);color:var(--dsw-alias-label-secondary,#52565d);cursor:pointer;opacity:0;font-size:11px;line-height:16px;transition:opacity .1s ease;display:inline-flex}.ptcPlusTool:hover .ptcPlusInspect,.ptcPlusInspect:focus-visible{opacity:1}.ptcPlusInspect:hover{background:var(--dsw-alias-interactive-bg-hover-solid,rgba(38,49,72,.06));color:var(--dsw-alias-label-primary,#18191c)}
-@media(max-width:760px){.ptcPlusBindingsGrid{grid-template-columns:1fr}.ptcPlusBindingList{border-right:0}.ptcPlusBindingEditor{grid-template-columns:1fr}.ptcPlusBindingField[data-wide=true]{grid-column:1}.ptcPlusBindingRun{grid-column:1}}
+.ptcPlusAuthorButtonShell{display:inline-flex;width:28px;height:28px;flex:none;align-items:center;justify-content:center}.ptcPlusAuthorButton{appearance:none;display:inline-flex;box-sizing:border-box;width:28px;height:28px;align-items:center;justify-content:center;padding:0;border:0;border-radius:6px;background:transparent;color:var(--dsw-alias-label-secondary,#52565d);cursor:pointer}.ptcPlusAuthorButton:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(38,49,72,.06));color:var(--dsw-alias-interactive-primary,#4d6bfe)}.ptcPlusAuthorButton:focus-visible{outline:2px solid var(--dsw-alias-interactive-primary,#4d6bfe);outline-offset:1px}.ptcPlusAuthorButtonShell[data-text=true]{width:auto}.ptcPlusAuthorButtonLabel{padding:0 4px;font-size:12px;line-height:18px;font-weight:500}.ptcPlusComposerNotice{max-width:160px;color:var(--dsw-alias-label-secondary,#52565d);font-size:11px;line-height:17px;overflow-wrap:anywhere}.ptcPlusButton>svg{flex:none;margin-right:5px;vertical-align:-2px}
+@media(max-width:760px){.ptcPlusBindingsGrid{grid-template-columns:1fr}.ptcPlusBindingFields{grid-template-columns:1fr}.ptcPlusBindingField[data-wide=true]{grid-column:auto}.ptcPlusBindingSourceGrid{grid-template-columns:1fr}.ptcPlusBindingDebugBody{grid-template-columns:1fr}.ptcPlusBindingDebugBody .ptcPlusButton{width:100%}.ptcPlusBindingDebugWarning{grid-column:1}}
 @media(max-width:560px){.ptcPlusHeader{padding:12px}.ptcPlusFields{margin:0 12px}.ptcPlusRow{align-items:flex-start;flex-direction:column;gap:6px;padding:10px 0}.ptcPlusInput{width:100%}.ptcPlusFooter,.ptcPlusBindingsHead{align-items:stretch;flex-direction:column}.ptcPlusButton{width:100%}.ptcPlusFeatures,.ptcPlusToolBody{margin-left:0}.ptcPlusToolSummary .ptcPlusToolDescription{white-space:normal;overflow-wrap:anywhere}}
 @media(prefers-reduced-motion:reduce){.ptcPlusHeader,.ptcPlusChevron,.ptcPlusBody,.ptcPlusButton,.ptcPlusActive,.ptcPlusToolChevron,.ptcPlusReplChevron,.ptcPlusReplDefinitionWrap,.ptcPlusInspect{transition:none}}
 /* The summary button owns disclosure; definition content is a separate grid item. */
@@ -801,6 +885,15 @@
 .ptcPlusReplCard .ptcPlusReplName[data-kind=import]{color:color-mix(in srgb,#af00db 78%,var(--dsw-alias-label-primary,#18191c))}
 /* Keep the session-header action on the same compact 32px rhythm as DSH chrome. */
 .ptcPlusActiveShell{display:inline-flex;height:28px;align-items:center;justify-content:center;line-height:0;vertical-align:middle}.ptcPlusActive{box-sizing:border-box;height:28px;justify-content:center;gap:6px;padding:0 6px;border:0;background:transparent;font-family:inherit;font-size:13px;font-weight:500;line-height:18px}.ptcPlusActive::before{width:6px;height:6px;flex:none;border-radius:50%;background:currentColor;box-shadow:0 0 0 2px color-mix(in srgb,currentColor 18%,transparent);content:''}.ptcPlusActive:hover,.ptcPlusActive[aria-expanded=true]{background:var(--dsw-alias-interactive-bg-hover,rgba(38,49,72,.06))}.ptcPlusActiveLabel{display:inline-flex;height:18px;align-items:center;line-height:18px}
+@media(max-width:560px){.ptcPlusActive{width:28px;flex:none;padding:0}.ptcPlusActiveLabel{display:none}}
+`;
+  var BINDING_WORKBENCH_CSS = `
+.ptcPlusBindings{margin-top:16px;padding-top:14px;border-top:0.5px solid var(--dsw-alias-border-l2)}.ptcPlusBindingsHead{display:flex;align-items:center;justify-content:space-between;gap:12px}.ptcPlusBindingsTitle{margin:0;font-size:15px;font-weight:600;line-height:1.4}.ptcPlusBindingsActions{display:flex;flex-wrap:wrap;gap:8px}.ptcPlusBindingsGrid{display:grid;grid-template-columns:minmax(240px,.7fr) minmax(340px,1.3fr);gap:12px;margin-top:12px;align-items:start}.ptcPlusBindingPane{display:flex;min-width:0;flex-direction:column;gap:8px}
+.ptcPlusBindingList{display:flex;min-width:0;margin:0;padding:8px;flex-direction:column;gap:2px;border:0.5px solid var(--dsw-alias-border-l4);border-radius:16px;background:var(--dsw-alias-bg-layer-3);list-style:none}.ptcPlusBindingItem{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:2px 10px;padding:6px 8px;border-radius:8px;transition:background-color .12s ease}.ptcPlusBindingItem:hover{background:var(--dsw-alias-interactive-bg-hover)}.ptcPlusBindingItem[data-selected=true]{background:var(--dsw-alias-bg-module-platform)}.ptcPlusBindingSelect{display:flex;min-width:0;padding:0;border:0;background:transparent;color:inherit;text-align:left;cursor:pointer;flex-direction:column;align-items:flex-start;gap:1px}.ptcPlusBindingSelect:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px}.ptcPlusBindingName{display:block;min-width:0;max-width:100%;overflow:hidden;font:500 13px/20px ui-monospace,SFMono-Regular,Consolas,monospace;text-overflow:ellipsis;white-space:nowrap}.ptcPlusBindingMeta{display:block;min-width:0;max-width:100%;overflow:hidden;color:var(--dsw-alias-label-tertiary);font-size:11px;line-height:16px;text-overflow:ellipsis;white-space:nowrap}.ptcPlusBindingState{display:inline-flex;align-items:center;gap:5px;padding:1px 8px;border-radius:999px;corner-shape:round;font-size:11px;font-weight:500;line-height:17px;white-space:nowrap}.ptcPlusBindingState[data-enabled=true]{color:var(--dsw-alias-state-success-primary);background:var(--dsw-alias-state-success-tertiary)}.ptcPlusBindingState[data-enabled=false]{color:var(--dsw-alias-state-warn-primary);background:var(--dsw-alias-state-warn-tertiary)}.ptcPlusBindingStateDot{width:6px;height:6px;border-radius:50%;background:currentColor}.ptcPlusBindingToggle{grid-column:2;grid-row:1/3;align-self:center;justify-self:end;min-height:26px;padding:2px 10px;font-size:12px;line-height:17px;border-radius:999px;corner-shape:round}.ptcPlusBindingRun{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding-top:10px;border-top:0.5px solid var(--dsw-alias-border-l2)}.ptcPlusBindingRun .ptcPlusInput{flex:1;min-width:160px;width:auto}
+.ptcPlusBindingEditor{display:flex;min-width:0;flex-direction:column;border:0.5px solid var(--dsw-alias-border-l4);border-radius:16px;background:var(--dsw-alias-bg-layer-3);overflow:hidden}.ptcPlusBindingSection{display:flex;min-width:0;flex-direction:column;gap:12px;padding:14px 16px}.ptcPlusBindingSection+.ptcPlusBindingSection{border-top:0.5px solid var(--dsw-alias-border-l2)}.ptcPlusBindingSectionTitle{margin:0;font-size:13px;font-weight:600;line-height:1.5}.ptcPlusBindingFields{display:grid;min-width:0;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 12px}.ptcPlusBindingField{display:flex;min-width:0;flex-direction:column;gap:5px}.ptcPlusBindingField[data-wide=true]{grid-column:1/-1}.ptcPlusBindingFieldLabel{color:var(--dsw-alias-label-primary);font-size:13px;font-weight:500;line-height:1.5}.ptcPlusBindingEditor .ptcPlusInput,.ptcPlusSelect{box-sizing:border-box;width:100%;min-width:0;height:34px;padding:0 12px;border:0.5px solid var(--dsw-alias-border-l4);border-radius:8px;background:var(--dsw-alias-bg-layer-3);color:var(--dsw-alias-label-primary);font:inherit;font-size:13px;line-height:1.5}.ptcPlusBindingEditor .ptcPlusInput:focus-visible,.ptcPlusSelect:focus-visible{border-color:var(--dsw-alias-brand-primary);outline:none}.ptcPlusTextarea{box-sizing:border-box;width:100%;min-height:220px;resize:vertical;padding:10px 12px;border:0.5px solid var(--dsw-alias-border-l4);border-radius:8px;background:var(--dsw-alias-bg-layer-3);color:var(--dsw-alias-label-primary);font:12px/18px ui-monospace,SFMono-Regular,Consolas,monospace;tab-size:2}.ptcPlusTextarea:focus-visible{border-color:var(--dsw-alias-brand-primary);outline:none}.ptcPlusDeclaration{box-sizing:border-box;max-height:220px;margin:0;padding:12px;overflow:auto;background:var(--dsw-alias-markdown-code-block);border-radius:12px;color:var(--dsw-alias-label-primary);font:12px/18px ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere}.ptcPlusBindingSourceGrid{display:grid;min-width:0;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px}.ptcPlusBindingSourceEditor,.ptcPlusBindingSourcePreview{display:flex;min-width:0;flex-direction:column;gap:6px}.ptcPlusBindingSourcePreview .ptcPlusCodeBlock{max-height:220px;overflow:auto}
+.ptcPlusBindingLifecycle{display:flex;flex-wrap:wrap;align-items:center;justify-content:flex-end;gap:8px}.ptcPlusBindingDebug{display:flex;min-width:0;flex-direction:column;gap:10px;padding:12px 16px;border-top:0.5px solid var(--dsw-alias-border-l2)}.ptcPlusBindingDebugSummary{display:flex;align-items:center;gap:6px;margin:0;cursor:pointer;color:var(--dsw-alias-label-secondary);font-size:13px;font-weight:500;line-height:1.5;list-style:none}.ptcPlusBindingDebugSummary::-webkit-details-marker{display:none}.ptcPlusBindingDebugSummary::after{content:'';width:7px;height:7px;border-right:1.5px solid currentColor;border-bottom:1.5px solid currentColor;transform:rotate(45deg);transition:transform .16s ease}.ptcPlusBindingDebug[open] .ptcPlusBindingDebugSummary::after{transform:rotate(-135deg)}.ptcPlusBindingDebugBody{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) auto;align-items:end;gap:10px}.ptcPlusBindingDebugBody .ptcPlusBindingField{min-width:0}.ptcPlusBindingDebugBody .ptcPlusButton{align-self:end}.ptcPlusBindingDebugWarning{grid-column:1/-1;color:var(--dsw-alias-state-warn-label);font-size:12px;line-height:1.5}.ptcPlusBindingOutput{grid-column:1/-1;margin:0;padding:10px 12px;overflow:auto;background:var(--dsw-alias-markdown-code-block);border-radius:8px;color:var(--dsw-alias-label-secondary);font:12px/18px ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere}
+.ptcPlusBindingCommand{display:flex;min-width:0;flex-direction:column;gap:6px;margin:6px 0 10px;padding:10px 12px;border:0.5px solid var(--dsw-alias-border-l4);border-radius:8px;background:var(--dsw-alias-bg-layer-3)}.ptcPlusBindingCommandHeader{display:flex;min-width:0;flex-wrap:wrap;align-items:center;gap:8px}.ptcPlusBindingCommandTitle{margin:0;font-size:13px;font-weight:600;line-height:1.5}.ptcPlusBindingCommandState{display:inline-flex;align-items:center;gap:5px;padding:1px 8px;border-radius:999px;corner-shape:round;background:var(--dsw-alias-bg-module-platform);color:var(--dsw-alias-label-secondary);font-size:11px;font-weight:500;line-height:17px;white-space:nowrap}.ptcPlusBindingCommand[data-phase=pending] .ptcPlusBindingCommandState{background:var(--dsw-alias-state-business-tertiary);color:var(--dsw-alias-state-business-primary)}.ptcPlusBindingCommand[data-phase=ready] .ptcPlusBindingCommandState{background:var(--dsw-alias-state-success-tertiary);color:var(--dsw-alias-state-success-primary)}.ptcPlusBindingCommand[data-phase=failed] .ptcPlusBindingCommandState{background:var(--dsw-alias-interactive-bg-hover-danger);color:var(--dsw-alias-state-error-primary)}.ptcPlusBindingCommandStateDot{width:6px;height:6px;border-radius:50%;background:currentColor}.ptcPlusBindingCommandRequirement{margin:0;overflow:auto;color:var(--dsw-alias-label-primary);font:12px/18px ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere}.ptcPlusBindingCommandSource{max-height:280px;margin:0;padding:10px 12px;overflow:auto;background:var(--dsw-alias-markdown-code-block);border-radius:8px;color:var(--dsw-alias-label-primary);font:12px/18px ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere}.ptcPlusBindingCommandCode{max-height:300px;overflow:auto}.ptcPlusBindingCommandActions{display:flex;flex-wrap:wrap;align-items:center;justify-content:flex-end;gap:8px}
+
 `;
   var LOCALE_NS = "settings.ptcPlus";
   var CHROME_COPY = Object.freeze({
@@ -817,12 +910,12 @@
       "status.applied": "\u8BBE\u7F6E\u5DF2\u7ACB\u5373\u751F\u6548",
       "status.conflict": "\u8BBE\u7F6E\u672A\u751F\u6548\uFF0C\u8BF7\u68C0\u67E5\u8BBE\u7F6E\u51B2\u7A81",
       "status.failed": "\u8BBE\u7F6E\u5931\u8D25\uFF1A{error}",
-      "bindings.title": "\u5168\u5C40\u7528\u6237 Binding",
+      "bindings.title": "\u5168\u5C40\u7528\u6237\u7ED1\u5B9A",
       "bindings.reload": "\u91CD\u65B0\u52A0\u8F7D",
       "bindings.new": "\u65B0\u5EFA\u6761\u76EE",
       "bindings.empty": "\u5C1A\u65E0\u5168\u5C40\u6761\u76EE",
-      "bindings.loading": "\u6B63\u5728\u52A0\u8F7D\u5168\u5C40 Binding...",
-      "bindings.disabled": "\u5F00\u542F\u201C\u5168\u5C40\u7528\u6237 Binding\u201D\u540E\u53EF\u7BA1\u7406 TypeScript helper\u3002",
+      "bindings.loading": "\u6B63\u5728\u52A0\u8F7D\u5168\u5C40\u7528\u6237\u7ED1\u5B9A...",
+      "bindings.disabled": "\u5F00\u542F\u201C\u5168\u5C40\u7528\u6237\u7ED1\u5B9A\u201D\u540E\u53EF\u7BA1\u7406 TypeScript \u5DE5\u5177\u3002",
       "bindings.name": "\u540D\u79F0",
       "bindings.id": "\u7A33\u5B9A ID",
       "bindings.scope": "\u4F5C\u7528\u57DF",
@@ -830,31 +923,50 @@
       "bindings.symbolsPlaceholder": "\u9017\u53F7\u5206\u9694\uFF1B\u7559\u7A7A\u5219\u4ECE\u6E90\u7801\u63A8\u5BFC",
       "bindings.purpose": "\u7528\u9014",
       "bindings.source": "TypeScript \u6E90\u7801",
-      "bindings.declaration": "\u6A21\u578B\u53EF\u89C1\u58F0\u660E\u9884\u89C8",
+      "bindings.sourcePreview": "\u6E90\u7801\u9884\u89C8",
+      "bindings.declaration": "\u6A21\u578B\u58F0\u660E",
+      "bindings.lifecycle": "\u6761\u76EE\u64CD\u4F5C",
+      "bindings.debug": "\u5019\u9009\u4EE3\u7801\u6D4B\u8BD5",
       "bindings.enabled": "\u542F\u7528",
       "bindings.disabledEntry": "\u505C\u7528",
+      "bindings.enableAction": "\u542F\u7528",
+      "bindings.disableAction": "\u505C\u7528",
+      "bindings.stateEnabled": "\u5F53\u524D\u5DF2\u542F\u7528",
+      "bindings.stateDisabled": "\u5F53\u524D\u5DF2\u505C\u7528",
       "bindings.validate": "\u9A8C\u8BC1",
       "bindings.save": "\u4FDD\u5B58",
       "bindings.remove": "\u5220\u9664",
       "bindings.importPath": "\u672C\u5730 .ts \u8DEF\u5F84",
       "bindings.import": "\u5BFC\u5165",
       "bindings.run": "\u8FD0\u884C\u5019\u9009\u4EE3\u7801",
-      "bindings.runSymbol": "\u8C03\u7528\u5BFC\u51FA\uFF08\u53EF\u9009\uFF09",
-      "bindings.runArgs": "JSON \u53C2\u6570\u6570\u7EC4",
+      "bindings.runSymbol": "\u5BFC\u51FA\u51FD\u6570\uFF08\u53EF\u9009\uFF09",
+      "bindings.runArgs": "\u53C2\u6570 JSON \u6570\u7EC4",
       "bindings.effectWarning": "\u5019\u9009\u4EE3\u7801\u4EE5 DSH \u8FDB\u7A0B\u6743\u9650\u8FD0\u884C\uFF0C\u53EF\u80FD\u4EA7\u751F\u4E0D\u53EF\u56DE\u6EDA\u7684 Node/OS effect\u3002",
       "bindings.saved": "\u6761\u76EE\u5DF2\u4FDD\u5B58\uFF1B\u4ECE\u4E0B\u4E00\u6B21 run_code \u8BF7\u6C42\u751F\u6548\u3002",
       "bindings.valid": "\u6E90\u7801\u4E0E\u6D3E\u751F\u58F0\u660E\u6709\u6548\u3002",
       "bindings.removed": "\u6761\u76EE\u5DF2\u5220\u9664\u3002",
       "bindings.imported": "\u6E90\u7801\u5DF2\u5BFC\u5165\u4E3A\u505C\u7528\u6761\u76EE\u3002",
       "bindings.reloaded": "\u5DF2\u4ECE\u78C1\u76D8\u91CD\u65B0\u52A0\u8F7D\u3002",
-      "bindings.failed": "\u5168\u5C40 Binding \u64CD\u4F5C\u5931\u8D25\uFF1A{error}",
+      "bindings.failed": "\u5168\u5C40\u7528\u6237\u7ED1\u5B9A\u64CD\u4F5C\u5931\u8D25\uFF1A{error}",
       "bindings.authorNew": "\u8BA9 Agent \u7F16\u5199",
       "bindings.authorEdit": "Agent \u4FEE\u6539",
+      "bindings.authorOpen": "\u8BA9 Agent \u7F16\u5199\u5168\u5C40\u7528\u6237\u7ED1\u5B9A",
       "bindings.composerBusy": "\u8F93\u5165\u6846\u5DF2\u6709\u5185\u5BB9\uFF0C\u672A\u8986\u76D6\u73B0\u6709\u8349\u7A3F\u3002",
       "bindings.draftTitle": "Agent \u8349\u7A3F",
-      "bindings.draftSave": "\u4FDD\u5B58\u8349\u7A3F",
+      "bindings.draftSave": "\u4FDD\u5B58\u4E3A\u505C\u7528",
+      "bindings.draftSaveEnable": "\u4FDD\u5B58\u5E76\u542F\u7528",
       "bindings.draftDiscard": "\u4E22\u5F03\u8349\u7A3F",
+      "bindings.commandTitle": "\u7ED1\u5B9A\u7F16\u5199",
+      "bindings.commandPending": "Agent \u6B63\u5728\u7F16\u5199\u8349\u7A3F...",
+      "bindings.commandReady": "\u8349\u7A3F\u5DF2\u751F\u6210\uFF0C\u53EF\u4FDD\u5B58\u6216\u4E22\u5F03",
+      "bindings.commandFailed": "\u672A\u751F\u6210\u53EF\u4FDD\u5B58\u7684\u8349\u7A3F",
+      "bindings.commandSaved": "\u8349\u7A3F\u5DF2\u4FDD\u5B58\u4E3A\u505C\u7528\u6761\u76EE",
+      "bindings.commandSavedEnabled": "\u8349\u7A3F\u5DF2\u4FDD\u5B58\u5E76\u542F\u7528",
+      "bindings.commandDiscarded": "\u8349\u7A3F\u5DF2\u4E22\u5F03",
+      "bindings.commandUnavailable": "\u8349\u7A3F\u5DF2\u4E0D\u53EF\u64CD\u4F5C\uFF1B\u4FDD\u5B58\u72B6\u6001\u672A\u77E5",
       "bindings.draftSaved": "Agent \u8349\u7A3F\u5DF2\u4FDD\u5B58\u4E3A\u505C\u7528\u6761\u76EE\u3002",
+      "bindings.draftPending": "Agent \u6B63\u5728\u7F16\u5199\u8349\u7A3F...",
+      "bindings.draftFailed": "Agent \u672A\u751F\u6210\u53EF\u4FDD\u5B58\u7684\u8349\u7A3F\uFF1B\u8BF7\u67E5\u770B\u4F1A\u8BDD\u7ED3\u679C\u540E\u91CD\u8BD5\u3002",
       "indicator.title": "PTC Plus \u5DF2\u542F\u7528\uFF1B\u67E5\u770B\u5F53\u524D\u53EF\u590D\u7528\u7684 REPL \u7ED1\u5B9A",
       "memory.title": "REPL \u53EF\u590D\u7528\u7ED1\u5B9A",
       "memory.count": "{count} \u4E2A\u53EF\u590D\u7528\u7ED1\u5B9A",
@@ -866,10 +978,10 @@
       "memory.kind.class": "\u7C7B",
       "memory.kind.import": "\u5BFC\u5165",
       "memory.location": "\u7B2C {line} \u884C\uFF0C\u7B2C {column} \u5217",
-      "memory.sessionTab": "\u53EF\u590D\u7528 Binding",
-      "memory.globalTab": "\u5168\u5C40\u9ED8\u8BA4",
-      "memory.globalEmpty": "\u6CA1\u6709\u5168\u5C40\u9ED8\u8BA4 Binding",
-      "memory.globalUnavailable": "\u65E0\u6CD5\u8BFB\u53D6\u5168\u5C40\u9ED8\u8BA4 Binding",
+      "memory.sessionTab": "\u53EF\u590D\u7528\u7ED1\u5B9A",
+      "memory.globalTab": "\u5168\u5C40\u9ED8\u8BA4\u7ED1\u5B9A",
+      "memory.globalEmpty": "\u6CA1\u6709\u5168\u5C40\u9ED8\u8BA4\u7ED1\u5B9A",
+      "memory.globalUnavailable": "\u65E0\u6CD5\u8BFB\u53D6\u5168\u5C40\u9ED8\u8BA4\u7ED1\u5B9A",
       "tool.code": "\u6267\u884C",
       "tool.codeEdit": "\u4FEE\u6B63\u6267\u884C",
       "tool.running": "\u6B63\u5728\u8FD0\u884C",
@@ -913,16 +1025,23 @@
       "bindings.symbolsPlaceholder": "Comma-separated; blank derives from source",
       "bindings.purpose": "Purpose",
       "bindings.source": "TypeScript source",
-      "bindings.declaration": "Model-visible declaration preview",
+      "bindings.sourcePreview": "Source preview",
+      "bindings.declaration": "Model declaration",
+      "bindings.lifecycle": "Entry actions",
+      "bindings.debug": "Candidate test",
       "bindings.enabled": "Enabled",
       "bindings.disabledEntry": "Disabled",
+      "bindings.enableAction": "Enable",
+      "bindings.disableAction": "Disable",
+      "bindings.stateEnabled": "Currently enabled",
+      "bindings.stateDisabled": "Currently disabled",
       "bindings.validate": "Validate",
       "bindings.save": "Save",
       "bindings.remove": "Remove",
       "bindings.importPath": "Local .ts path",
       "bindings.import": "Import",
       "bindings.run": "Run candidate",
-      "bindings.runSymbol": "Export to call (optional)",
+      "bindings.runSymbol": "Export function (optional)",
       "bindings.runArgs": "JSON argument array",
       "bindings.effectWarning": "Candidate code runs with DSH process permissions and may produce irreversible Node/OS effects.",
       "bindings.saved": "Entry saved; it takes effect from the next run_code request.",
@@ -933,11 +1052,23 @@
       "bindings.failed": "Global User Binding operation failed: {error}",
       "bindings.authorNew": "Ask Agent to write",
       "bindings.authorEdit": "Ask Agent to revise",
+      "bindings.authorOpen": "Ask Agent to write a Global User Binding",
       "bindings.composerBusy": "The composer already has text, so its draft was not replaced.",
       "bindings.draftTitle": "Agent draft",
-      "bindings.draftSave": "Save draft",
+      "bindings.draftSave": "Save as disabled",
+      "bindings.draftSaveEnable": "Save and enable",
       "bindings.draftDiscard": "Discard draft",
+      "bindings.commandTitle": "Binding authoring",
+      "bindings.commandPending": "Agent is writing a draft...",
+      "bindings.commandReady": "Draft ready to save or discard",
+      "bindings.commandFailed": "No saveable draft was produced",
+      "bindings.commandSaved": "Draft saved as a disabled entry",
+      "bindings.commandSavedEnabled": "Draft saved and enabled",
+      "bindings.commandDiscarded": "Draft discarded",
+      "bindings.commandUnavailable": "Draft unavailable; save status unknown",
       "bindings.draftSaved": "Agent draft saved as a disabled entry.",
+      "bindings.draftPending": "The Agent is authoring a draft...",
+      "bindings.draftFailed": "The Agent did not produce a saveable draft; review the session result and try again.",
       "indicator.title": "PTC Plus is active; view reusable REPL bindings",
       "memory.title": "Reusable REPL bindings",
       "memory.count": "{count} reusable bindings",
@@ -986,8 +1117,7 @@
       ...Object.assign({}, ...CONFIG_FIELDS.map((field) => fieldCopy(field, locale)))
     })])
   ));
-  function sessionUsesPtcPreset(session) {
-    const preset = session?.projectionValues?.agentPreset ?? session?.agentPreset;
+  function sessionUsesPtcPreset(preset) {
     return preset === "ptc" || preset === "code";
   }
   window.__ModuleLoader__.load({
@@ -996,20 +1126,33 @@
     factory: (require2) => {
       const React = require2("react");
       const {
+        Button,
         CodeBlock,
         DisclosureRow,
         IconCheckOutline14,
         IconChevronDownOutline14,
-        IconInspectOutline12
+        IconInspectOutline12,
+        IconSparkle16,
+        StateDot,
+        Toast,
+        Tooltip
       } = require2("@deepseek-ai/dsh-client-ui-primitives");
       const module = { exports: {} };
       const h = React.createElement;
+      function ActionButton({ className = "", "data-kind": kind, ...props }) {
+        return typeof Button === "function" ? h(Button, {
+          ...props,
+          size: "sm",
+          variant: kind === "primary" ? "primary" : kind === "ghost" ? "ghost" : "outline",
+          className: className.split(" ").filter((name) => name !== "ptcPlusButton").join(" ")
+        }) : h("button", { ...props, className, "data-kind": kind });
+      }
       function installStyles() {
         if (document.getElementById(CLIENT_STYLE_ID) !== null) return () => {
         };
         const style = document.createElement("style");
         style.id = CLIENT_STYLE_ID;
-        style.textContent = CLIENT_CSS;
+        style.textContent = `${CLIENT_CSS}${BINDING_WORKBENCH_CSS}`;
         document.head.append(style);
         return () => style.remove();
       }
@@ -1057,6 +1200,96 @@
           if (typeof result?.error?.code === "string") error.code = result.error.code;
           throw error;
         }
+        function createBindingCommandAvailability(scope) {
+          const entries = /* @__PURE__ */ new Map();
+          const entryFor = (sessionId) => {
+            const id = String(sessionId);
+            let entry = entries.get(id);
+            if (entry === void 0) {
+              entry = { available: false, epoch: 0, listeners: /* @__PURE__ */ new Set() };
+              entry.source = {
+                getSnapshot: () => entry.available,
+                subscribe(listener) {
+                  entry.listeners.add(listener);
+                  if (entry.listeners.size === 1) void refresh(id);
+                  return () => {
+                    entry.listeners.delete(listener);
+                    if (entry.listeners.size === 0) {
+                      entry.epoch++;
+                      entry.available = false;
+                    }
+                  };
+                }
+              };
+              entries.set(id, entry);
+            }
+            return entry;
+          };
+          const publish = (entry, available) => {
+            if (entry.available === available) return;
+            entry.available = available;
+            for (const listener of entry.listeners) listener();
+          };
+          const refresh = async (sessionId) => {
+            if (sessionId === void 0 || sessionId === null) return;
+            const entry = entries.get(String(sessionId));
+            if (entry === void 0 || entry.listeners.size === 0) return;
+            const epoch = ++entry.epoch;
+            let available = false;
+            try {
+              const result = await scope.remote.commands.list(String(sessionId));
+              available = result?.ok === true && Array.isArray(result.value) && result.value.some((command) => command?.name === "binding");
+            } catch {
+            }
+            if (entry.epoch === epoch) publish(entry, available);
+          };
+          const reset = (sessionId) => {
+            if (sessionId === void 0 || sessionId === null) return;
+            const entry = entries.get(String(sessionId));
+            if (entry === void 0 || entry.listeners.size === 0) return;
+            entry.epoch += 1;
+            publish(entry, false);
+            void refresh(sessionId);
+          };
+          scope.effect(() => scope.remote.$on("commands/change", () => {
+            for (const sessionId of entries.keys()) void refresh(sessionId);
+          }));
+          scope.effect(() => scope.remote.$on("agent-preset/selected", reset));
+          scope.on("connection/reset", () => {
+            for (const sessionId of entries.keys()) reset(sessionId);
+          });
+          scope.effect(() => () => {
+            for (const entry of entries.values()) entry.epoch++;
+            entries.clear();
+          });
+          return Object.freeze({
+            source: (sessionId) => entryFor(sessionId).source
+          });
+        }
+        const settingsProps = () => ({ hooks: { ptcSettings: preferenceScope }, callUserBindings });
+        const updateSetting = async (key, value) => {
+          const before = preferenceScope.getSnapshot();
+          if (before.status !== "ready" || before.writable !== true || key !== "enabled" && before.value?.enabled !== true || before.value?.[key] === value) return null;
+          await preferenceScope.set(key, value);
+          const after = preferenceScope.getSnapshot();
+          return after.status === "ready" && after.value?.[key] === value ? "status.applied" : "status.conflict";
+        };
+        const registerEnabled = (scope, bindings, register) => scope.effect(() => {
+          let dispose;
+          const sync = () => {
+            const snapshot = preferenceScope.getSnapshot();
+            const enabled = snapshot.status === "ready" && snapshot.value?.enabled === true && (!bindings || snapshot.value?.userBindingsEnabled === true);
+            if (enabled === (dispose !== void 0)) return;
+            dispose?.();
+            dispose = enabled ? register() : void 0;
+          };
+          sync();
+          const unsubscribe = preferenceScope.subscribe(sync);
+          return () => {
+            unsubscribe();
+            dispose?.();
+          };
+        });
         const blankBinding = () => ({
           id: "",
           name: "",
@@ -1087,7 +1320,7 @@
             return String(value);
           }
         }
-        function UserBindingsWorkbench({ enabled, t }) {
+        function UserBindingsWorkbench({ enabled, t, callUserBindings: callUserBindings2 }) {
           const [catalog, setCatalog] = React.useState(null);
           const [draft, setDraft] = React.useState(null);
           const [declaration, setDeclaration] = React.useState("");
@@ -1103,7 +1336,7 @@
             params: { error: error instanceof Error ? error.message : String(error) }
           });
           const refresh = React.useCallback(async (reload = false, signal = void 0) => {
-            const next = await callUserBindings(reload ? "reload" : "list", {}, signal);
+            const next = await callUserBindings2(reload ? "reload" : "list", {}, signal);
             setCatalog(next);
             return next;
           }, []);
@@ -1135,7 +1368,7 @@
           const edit = (key, value) => setDraft((current) => ({ ...current, [key]: value }));
           const load = (id) => perform(async () => {
             const generation = ++requestGeneration.current;
-            const loaded = await callUserBindings("load", { id });
+            const loaded = await callUserBindings2("load", { id });
             if (generation !== requestGeneration.current) return;
             setDraft(editableBinding(loaded.entry));
             setDeclaration(loaded.entry.declaration);
@@ -1143,14 +1376,14 @@
             setOutput("");
           });
           const validate = () => perform(async () => {
-            const normalized = await callUserBindings("validate", { entry: bindingPayload(draft) });
+            const normalized = await callUserBindings2("validate", { entry: bindingPayload(draft) });
             setDraft(editableBinding(normalized));
             setDeclaration(normalized.declaration);
             setMessage({ key: "bindings.valid" });
           });
           const save = () => perform(async () => {
-            const normalized = await callUserBindings("validate", { entry: bindingPayload(draft) });
-            const next = await callUserBindings("save", {
+            const normalized = await callUserBindings2("validate", { entry: bindingPayload(draft) });
+            const next = await callUserBindings2("save", {
               entry: bindingPayload(editableBinding(normalized)),
               expectedRevision: catalog.revision
             });
@@ -1160,7 +1393,7 @@
             setMessage({ key: "bindings.saved" });
           });
           const toggle = (entry) => perform(async () => {
-            const next = await callUserBindings(entry.enabled ? "disable" : "enable", {
+            const next = await callUserBindings2(entry.enabled ? "disable" : "enable", {
               id: entry.id,
               expectedRevision: catalog.revision
             });
@@ -1168,7 +1401,7 @@
             if (draft?.id === entry.id) setDraft((current) => ({ ...current, enabled: !entry.enabled }));
           });
           const remove = (entry) => perform(async () => {
-            const next = await callUserBindings("remove", {
+            const next = await callUserBindings2("remove", {
               id: entry.id,
               expectedRevision: catalog.revision
             });
@@ -1180,7 +1413,7 @@
             setMessage({ key: "bindings.removed" });
           });
           const importSource = () => perform(async () => {
-            const next = await callUserBindings("import", {
+            const next = await callUserBindings2("import", {
               path: importPath,
               expectedRevision: catalog.revision
             });
@@ -1195,7 +1428,7 @@
               if (!Array.isArray(args)) throw new TypeError("Candidate arguments must be a JSON array");
               invocation = { symbol: runSymbol.trim(), args };
             }
-            const result = await callUserBindings("run", {
+            const result = await callUserBindings2("run", {
               source: draft.source,
               ...invocation === void 0 ? {} : { invocation }
             });
@@ -1208,11 +1441,11 @@
             h(
               "div",
               { className: "ptcPlusBindingsHead" },
-              h("h3", { className: "ptcPlusGroupTitle" }, t("bindings.title")),
+              h("h3", { className: "ptcPlusBindingsTitle" }, t("bindings.title")),
               h(
                 "div",
                 { className: "ptcPlusBindingsActions" },
-                h("button", {
+                h(ActionButton, {
                   type: "button",
                   className: "ptcPlusButton",
                   disabled: busy,
@@ -1221,9 +1454,10 @@
                     setMessage({ key: "bindings.reloaded" });
                   })
                 }, t("bindings.reload")),
-                h("button", {
+                h(ActionButton, {
                   type: "button",
                   className: "ptcPlusButton",
+                  "data-kind": "primary",
                   disabled: busy,
                   onClick: () => {
                     requestGeneration.current += 1;
@@ -1234,16 +1468,23 @@
                 }, t("bindings.new"))
               )
             ),
-            catalog === null ? h("p", { className: "ptcPlusMessage" }, t("bindings.loading")) : h(
+            catalog === null ? h("p", {
+              className: `ptcPlusMessage${message === null ? "" : " ptcPlusDanger"}`,
+              role: message === null ? void 0 : "status"
+            }, message === null ? t("bindings.loading") : t(message.key, message.params)) : h(
               "div",
               { className: "ptcPlusBindingsGrid" },
               h(
                 "div",
-                null,
+                { className: "ptcPlusBindingPane" },
                 catalog.error === void 0 ? null : h("p", { className: "ptcPlusMessage ptcPlusDanger" }, catalog.error),
                 catalog.entries.length === 0 ? h("p", { className: "ptcPlusMessage" }, t("bindings.empty")) : h("ul", { className: "ptcPlusBindingList" }, catalog.entries.map((entry) => h(
                   "li",
-                  { key: entry.id, className: "ptcPlusBindingItem" },
+                  {
+                    key: entry.id,
+                    className: "ptcPlusBindingItem",
+                    "data-selected": draft?.id === entry.id ? true : void 0
+                  },
                   h(
                     "button",
                     {
@@ -1253,14 +1494,21 @@
                       onClick: () => load(entry.id)
                     },
                     h("span", { className: "ptcPlusBindingName" }, entry.name),
-                    h("span", { className: "ptcPlusBindingMeta" }, `${entry.scope} - ${entry.symbols.join(", ")}`)
+                    h("span", { className: "ptcPlusBindingMeta" }, `${entry.scope} - ${entry.symbols.join(", ")}`),
+                    h(
+                      "span",
+                      { className: "ptcPlusBindingState", "data-enabled": entry.enabled },
+                      typeof StateDot === "function" ? h(StateDot, { state: entry.enabled ? "done" : "warning", size: 6 }) : h("span", { className: "ptcPlusBindingStateDot", "aria-hidden": true }),
+                      t(entry.enabled ? "bindings.stateEnabled" : "bindings.stateDisabled")
+                    )
                   ),
-                  h("button", {
+                  h(ActionButton, {
                     type: "button",
                     className: "ptcPlusButton ptcPlusBindingToggle",
                     disabled: busy,
+                    "aria-label": `${t(entry.enabled ? "bindings.stateEnabled" : "bindings.stateDisabled")}: ${t(entry.enabled ? "bindings.disableAction" : "bindings.enableAction")}`,
                     onClick: () => toggle(entry)
-                  }, t(entry.enabled ? "bindings.enabled" : "bindings.disabledEntry"))
+                  }, t(entry.enabled ? "bindings.disableAction" : "bindings.enableAction"))
                 ))),
                 h(
                   "div",
@@ -1273,7 +1521,7 @@
                     "aria-label": t("bindings.importPath"),
                     onChange: (event) => setImportPath(event.target.value)
                   }),
-                  h("button", {
+                  h(ActionButton, {
                     type: "button",
                     className: "ptcPlusButton",
                     disabled: busy || importPath.trim() === "",
@@ -1285,96 +1533,138 @@
                 "div",
                 { className: "ptcPlusBindingEditor" },
                 h(
-                  "label",
-                  { className: "ptcPlusBindingField" },
-                  h("span", { className: "ptcPlusBindingFieldLabel" }, t("bindings.id")),
-                  h("input", {
-                    className: "ptcPlusInput",
-                    value: draft.id,
-                    disabled: busy,
-                    onChange: (event) => edit("id", event.target.value)
-                  })
-                ),
-                h(
-                  "label",
-                  { className: "ptcPlusBindingField" },
-                  h("span", { className: "ptcPlusBindingFieldLabel" }, t("bindings.name")),
-                  h("input", {
-                    className: "ptcPlusInput",
-                    value: draft.name,
-                    disabled: busy,
-                    onChange: (event) => edit("name", event.target.value)
-                  })
-                ),
-                h(
-                  "label",
-                  { className: "ptcPlusBindingField" },
-                  h("span", { className: "ptcPlusBindingFieldLabel" }, t("bindings.scope")),
-                  h("select", {
-                    className: "ptcPlusSelect",
-                    value: draft.scope,
-                    disabled: busy,
-                    onChange: (event) => edit("scope", event.target.value)
-                  }, h("option", { value: "namespace" }, "namespace"), h("option", { value: "top-level" }, "top-level"))
-                ),
-                h(
-                  "label",
-                  { className: "ptcPlusBindingField" },
-                  h("span", { className: "ptcPlusBindingFieldLabel" }, t("bindings.symbols")),
-                  h("input", {
-                    className: "ptcPlusInput",
-                    value: draft.symbolsText,
-                    disabled: busy,
-                    placeholder: t("bindings.symbolsPlaceholder"),
-                    onChange: (event) => edit("symbolsText", event.target.value)
-                  })
-                ),
-                h(
-                  "label",
-                  { className: "ptcPlusBindingField" },
-                  h("span", { className: "ptcPlusBindingFieldLabel" }, t("bindings.purpose")),
-                  h("input", {
-                    className: "ptcPlusInput",
-                    value: draft.purpose,
-                    disabled: busy,
-                    onChange: (event) => edit("purpose", event.target.value)
-                  })
-                ),
-                h(
-                  "label",
-                  { className: "ptcPlusBindingField", "data-wide": true },
-                  h("span", { className: "ptcPlusBindingFieldLabel" }, t("bindings.source")),
-                  h("textarea", {
-                    className: "ptcPlusTextarea",
-                    value: draft.source,
-                    disabled: busy,
-                    spellCheck: false,
-                    onChange: (event) => edit("source", event.target.value)
-                  })
-                ),
-                h(
                   "div",
-                  { className: "ptcPlusBindingField", "data-wide": true },
-                  h("span", { className: "ptcPlusBindingFieldLabel" }, t("bindings.declaration")),
-                  h("pre", { className: "ptcPlusDeclaration" }, declaration)
-                ),
-                h(
-                  "div",
-                  { className: "ptcPlusBindingsActions" },
-                  h("button", { type: "button", className: "ptcPlusButton", disabled: busy, onClick: validate }, t("bindings.validate")),
-                  h("button", { type: "button", className: "ptcPlusButton", disabled: busy, onClick: save }, t("bindings.save")),
-                  catalog.entries.some((entry) => entry.id === draft.id) ? h("button", {
-                    type: "button",
-                    className: "ptcPlusButton ptcPlusDanger",
-                    disabled: busy,
-                    onClick: () => remove(draft)
-                  }, t("bindings.remove")) : null
-                ),
-                h(
-                  "div",
-                  { className: "ptcPlusBindingRun" },
+                  { className: "ptcPlusBindingSection" },
+                  h("h4", { className: "ptcPlusBindingSectionTitle" }, t("bindings.source")),
                   h(
                     "div",
+                    { className: "ptcPlusBindingFields" },
+                    h(
+                      "label",
+                      { className: "ptcPlusBindingField" },
+                      h("span", { className: "ptcPlusBindingFieldLabel" }, t("bindings.id")),
+                      h("input", {
+                        className: "ptcPlusInput",
+                        value: draft.id,
+                        disabled: busy,
+                        onChange: (event) => edit("id", event.target.value)
+                      })
+                    ),
+                    h(
+                      "label",
+                      { className: "ptcPlusBindingField" },
+                      h("span", { className: "ptcPlusBindingFieldLabel" }, t("bindings.name")),
+                      h("input", {
+                        className: "ptcPlusInput",
+                        value: draft.name,
+                        disabled: busy,
+                        onChange: (event) => edit("name", event.target.value)
+                      })
+                    ),
+                    h(
+                      "label",
+                      { className: "ptcPlusBindingField" },
+                      h("span", { className: "ptcPlusBindingFieldLabel" }, t("bindings.scope")),
+                      h("select", {
+                        className: "ptcPlusSelect",
+                        value: draft.scope,
+                        disabled: busy,
+                        onChange: (event) => edit("scope", event.target.value)
+                      }, h("option", { value: "namespace" }, "namespace"), h("option", { value: "top-level" }, "top-level"))
+                    ),
+                    h(
+                      "label",
+                      { className: "ptcPlusBindingField" },
+                      h("span", { className: "ptcPlusBindingFieldLabel" }, t("bindings.symbols")),
+                      h("input", {
+                        className: "ptcPlusInput",
+                        value: draft.symbolsText,
+                        disabled: busy,
+                        placeholder: t("bindings.symbolsPlaceholder"),
+                        onChange: (event) => edit("symbolsText", event.target.value)
+                      })
+                    ),
+                    h(
+                      "label",
+                      { className: "ptcPlusBindingField", "data-wide": true },
+                      h("span", { className: "ptcPlusBindingFieldLabel" }, t("bindings.purpose")),
+                      h("input", {
+                        className: "ptcPlusInput",
+                        value: draft.purpose,
+                        disabled: busy,
+                        onChange: (event) => edit("purpose", event.target.value)
+                      })
+                    )
+                  ),
+                  h(
+                    "div",
+                    { className: "ptcPlusBindingSourceGrid" },
+                    h(
+                      "label",
+                      { className: "ptcPlusBindingSourceEditor" },
+                      h("span", { className: "ptcPlusBindingFieldLabel" }, t("bindings.source")),
+                      h("textarea", {
+                        className: "ptcPlusTextarea",
+                        value: draft.source,
+                        disabled: busy,
+                        spellCheck: false,
+                        onChange: (event) => edit("source", event.target.value)
+                      })
+                    ),
+                    h(
+                      "div",
+                      { className: "ptcPlusBindingSourcePreview" },
+                      h("span", { className: "ptcPlusBindingFieldLabel" }, t("bindings.sourcePreview")),
+                      typeof CodeBlock === "function" ? h(CodeBlock, {
+                        code: draft.source,
+                        lang: "typescript",
+                        className: "ptcPlusCodeBlock",
+                        copyLabel: t("tool.copy"),
+                        copiedLabel: t("tool.copied")
+                      }) : h("pre", { className: "ptcPlusDeclaration" }, draft.source)
+                    )
+                  ),
+                  h(
+                    "div",
+                    { className: "ptcPlusBindingSourcePreview" },
+                    h("span", { className: "ptcPlusBindingFieldLabel" }, t("bindings.declaration")),
+                    typeof CodeBlock === "function" ? h(CodeBlock, {
+                      code: declaration,
+                      lang: "typescript",
+                      className: "ptcPlusCodeBlock",
+                      copyLabel: t("tool.copy"),
+                      copiedLabel: t("tool.copied")
+                    }) : h("pre", { className: "ptcPlusDeclaration" }, declaration)
+                  )
+                ),
+                h(
+                  "div",
+                  { className: "ptcPlusBindingSection" },
+                  h("h4", { className: "ptcPlusBindingSectionTitle" }, t("bindings.lifecycle")),
+                  h(
+                    "div",
+                    { className: "ptcPlusBindingLifecycle" },
+                    h(ActionButton, { type: "button", className: "ptcPlusButton", disabled: busy, onClick: validate }, t("bindings.validate")),
+                    h(ActionButton, { type: "button", className: "ptcPlusButton", "data-kind": "primary", disabled: busy, onClick: save }, t("bindings.save")),
+                    catalog.entries.some((entry) => entry.id === draft.id) ? h(ActionButton, {
+                      type: "button",
+                      className: "ptcPlusButton",
+                      "data-kind": "danger",
+                      disabled: busy,
+                      onClick: () => remove(draft)
+                    }, t("bindings.remove")) : null
+                  )
+                )
+              ),
+              h(
+                "details",
+                { className: "ptcPlusBindingDebug" },
+                h("summary", { className: "ptcPlusBindingDebugSummary" }, t("bindings.debug")),
+                h(
+                  "div",
+                  { className: "ptcPlusBindingDebugBody" },
+                  h(
+                    "label",
                     { className: "ptcPlusBindingField" },
                     h("span", { className: "ptcPlusBindingFieldLabel" }, t("bindings.runSymbol")),
                     h("input", {
@@ -1385,7 +1675,7 @@
                     })
                   ),
                   h(
-                    "div",
+                    "label",
                     { className: "ptcPlusBindingField" },
                     h("span", { className: "ptcPlusBindingFieldLabel" }, t("bindings.runArgs")),
                     h("input", {
@@ -1395,8 +1685,8 @@
                       onChange: (event) => setRunArgs(event.target.value)
                     })
                   ),
-                  h("button", { type: "button", className: "ptcPlusButton", disabled: busy, onClick: run }, t("bindings.run")),
-                  h("span", { className: "ptcPlusMessage ptcPlusDanger" }, t("bindings.effectWarning")),
+                  h(ActionButton, { type: "button", className: "ptcPlusButton", disabled: busy, onClick: run }, t("bindings.run")),
+                  h("span", { className: "ptcPlusBindingDebugWarning" }, t("bindings.effectWarning")),
                   output === "" ? null : h("pre", { className: "ptcPlusBindingOutput" }, output)
                 )
               ),
@@ -1404,34 +1694,23 @@
             )
           );
         }
-        function PTCPlusSettingsCard({ t }) {
+        function PTCPlusSettingsCard({ t, usePtcSettings, updateSetting: updateSetting2, callUserBindings: callUserBindings2 }) {
           const [open, setOpen] = React.useState(false);
           const [status, setStatus] = React.useState(null);
           const [pending, setPending] = React.useState(() => /* @__PURE__ */ new Set());
           const writeTail = React.useRef(Promise.resolve());
-          const subscribe = React.useCallback((listener) => preferenceScope.subscribe(listener), []);
-          const getSnapshot = React.useCallback(() => preferenceScope.getSnapshot(), []);
-          const snapshot = React.useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+          const snapshot = usePtcSettings((snapshot2) => snapshot2);
           const value = snapshot.status === "ready" ? snapshot.value ?? {} : {};
           const enabled = value.enabled === true;
           const unavailable = snapshot.status !== "ready" || snapshot.writable !== true;
           const persist = (field, nextValue) => {
             if (unavailable || pending.has(field.key)) return;
             const operation = writeTail.current.then(async () => {
-              const before = preferenceScope.getSnapshot();
-              if (before.status !== "ready" || before.writable !== true) return;
-              if (field.key !== "enabled" && before.value?.enabled !== true) return;
-              if (before.value?.[field.key] === nextValue) return;
               setPending((current) => new Set(current).add(field.key));
               setStatus(null);
               try {
-                await preferenceScope.set(field.key, nextValue);
-                const after = preferenceScope.getSnapshot();
-                if (after.status !== "ready" || after.value?.[field.key] !== nextValue) {
-                  setStatus({ key: "status.conflict" });
-                } else {
-                  setStatus({ key: "status.applied" });
-                }
+                const key = await updateSetting2(field.key, nextValue);
+                if (key !== null) setStatus({ key });
               } catch (error) {
                 setStatus({
                   key: "status.failed",
@@ -1500,13 +1779,13 @@
             ),
             h(
               "div",
-              { id: "ptc-plus-settings-body", className: "ptcPlusBody", "data-open": open, "aria-hidden": !open },
+              { id: "ptc-plus-settings-body", className: "ptcPlusBody", "data-open": open, hidden: !open },
               h("div", { className: "ptcPlusBodyInner" }, h(
                 "div",
                 { className: "ptcPlusFields" },
                 snapshot.status === "loading" ? h("p", { className: "ptcPlusMessage" }, t("state.syncing")) : snapshot.status === "unavailable" ? h("p", { className: "ptcPlusMessage" }, t("state.unavailable")) : [
                   ...settingGroups,
-                  enabled && value.userBindingsEnabled === true ? h(UserBindingsWorkbench, { key: "user-bindings", enabled: true, t }) : null,
+                  enabled && value.userBindingsEnabled === true ? h(UserBindingsWorkbench, { key: "user-bindings", enabled: true, t, callUserBindings: callUserBindings2 }) : null,
                   h(
                     "div",
                     { key: "footer", className: "ptcPlusFooter" },
@@ -1520,7 +1799,8 @@
         ctx.slots.inject("settings.plugin.item", () => ctx.slots.register({
           name: "settings.plugin.item",
           key: SETTINGS_NAMESPACE,
-          locale: LOCALE_NS
+          locale: LOCALE_NS,
+          inject: () => ({ ...settingsProps(), updateSetting })
         }, PTCPlusSettingsCard));
         function PTCPlusToolRow({ toolName, block, inspect, t }) {
           const [open, setOpen] = React.useState(false);
@@ -1680,7 +1960,63 @@
             release();
           };
         });
-        ctx.inject(["slots", "sessions"], (scope) => {
+        ctx.inject(["uiSession"], (scope) => {
+          function BindingAuthorButton({
+            t,
+            useInput,
+            inputActions,
+            usePtcSettings,
+            useBindingCommand
+          }) {
+            const input = useInput((snapshot) => snapshot);
+            const available = useBindingCommand((snapshot) => snapshot);
+            const settings = usePtcSettings((snapshot) => snapshot);
+            const anchorRef = React.useRef(null);
+            const toastSequence = React.useRef(0);
+            const [toast, setToast] = React.useState(null);
+            React.useEffect(() => {
+              if (toast === null || typeof Toast === "function") return void 0;
+              const timer = setTimeout(() => setToast(null), 2500);
+              return () => clearTimeout(timer);
+            }, [toast]);
+            const globalEnabled = settings.status === "ready" && settings.value?.enabled === true && settings.value?.userBindingsEnabled === true;
+            if (!globalEnabled || !available || typeof inputActions?.setDraft !== "function") return null;
+            const label = t("bindings.authorOpen");
+            const openAuthoring = () => {
+              if (typeof input?.draft === "string" && input.draft.trim() !== "") {
+                toastSequence.current += 1;
+                setToast({ sequence: toastSequence.current, text: t("bindings.composerBusy") });
+                return;
+              }
+              inputActions.setDraft("/binding new ");
+            };
+            const starButton = h("button", {
+              type: "button",
+              className: "ptcPlusAuthorButton",
+              "aria-label": label,
+              onMouseDown: (event) => event.preventDefault(),
+              onClick: openAuthoring
+            }, typeof IconSparkle16 === "function" ? h(IconSparkle16, { size: 16, "aria-hidden": true }) : h("span", { className: "ptcPlusAuthorButtonLabel", "aria-hidden": true }, t("bindings.authorNew")));
+            return h(
+              "span",
+              {
+                className: "ptcPlusAuthorButtonShell",
+                "data-text": typeof IconSparkle16 === "function" ? void 0 : true,
+                ref: anchorRef
+              },
+              typeof Tooltip === "function" ? h(Tooltip, { label, side: "top", delayMs: 400 }, starButton) : starButton,
+              toast === null ? null : typeof Toast === "function" ? h(Toast, {
+                key: toast.sequence,
+                text: toast.text,
+                anchor: anchorRef.current,
+                onDone: () => setToast(null)
+              }) : h("span", {
+                key: toast.sequence,
+                className: "ptcPlusComposerNotice",
+                role: "status"
+              }, toast.text)
+            );
+          }
           function replPopoverIsOpen(popover) {
             if (popover?.dataset?.open === "true") return true;
             try {
@@ -1715,6 +2051,7 @@
             globalEnabled,
             globalBindings,
             authoringDraft,
+            authoringPhase,
             loadGlobalBinding,
             prefillAuthoring,
             saveAuthoringDraft,
@@ -1785,37 +2122,6 @@
                 activeTab === "global" ? h(
                   "div",
                   { className: "ptcPlusGlobalPane" },
-                  h(
-                    "div",
-                    { className: "ptcPlusBindingsActions" },
-                    h("button", {
-                      type: "button",
-                      className: "ptcPlusButton",
-                      onClick: () => prefillAuthoring("/binding new ")
-                    }, t("bindings.authorNew"))
-                  ),
-                  authoringMessage === null ? null : h("span", { className: "ptcPlusMessage", role: "status" }, t(authoringMessage)),
-                  authoringDraft === null || authoringDraft === void 0 ? null : h(
-                    "section",
-                    { className: "ptcPlusAuthoringDraft" },
-                    h("strong", null, t("bindings.draftTitle")),
-                    h("span", { className: "ptcPlusBindingMeta" }, `${authoringDraft.entry.name} - ${authoringDraft.entry.scope}`),
-                    h("pre", { className: "ptcPlusGlobalSource" }, authoringDraft.entry.source),
-                    h(
-                      "div",
-                      { className: "ptcPlusBindingsActions" },
-                      h("button", {
-                        type: "button",
-                        className: "ptcPlusButton",
-                        onClick: saveAuthoringDraft
-                      }, t("bindings.draftSave")),
-                      h("button", {
-                        type: "button",
-                        className: "ptcPlusButton",
-                        onClick: discardAuthoringDraft
-                      }, t("bindings.draftDiscard"))
-                    )
-                  ),
                   globalBindings === void 0 ? h("span", { className: "ptcPlusReplEmpty" }, t("memory.globalUnavailable")) : globalBindings.entries.length === 0 ? h("span", { className: "ptcPlusReplEmpty" }, t("memory.globalEmpty")) : h("ul", { className: "ptcPlusGlobalList" }, globalBindings.entries.map((entry) => h(
                     "li",
                     { key: entry.id, className: "ptcPlusGlobalItem" },
@@ -1827,14 +2133,19 @@
                         "aria-expanded": globalSource?.id === entry.id,
                         onClick: () => inspectGlobal(entry)
                       },
-                      h("span", { className: "ptcPlusBindingName" }, entry.name),
-                      h("span", { className: "ptcPlusBindingMeta" }, `${entry.scope} - ${entry.symbols.join(", ")}`)
+                      h("span", { className: "ptcPlusBindingName", title: entry.name }, entry.name),
+                      h("span", { className: "ptcPlusBindingMeta", title: entry.symbols.join(", ") }, `${entry.scope} - ${entry.symbols.join(", ")}`),
+                      h(
+                        "span",
+                        { className: "ptcPlusBindingState", "data-enabled": entry.enabled },
+                        t(entry.enabled ? "bindings.enabled" : "bindings.disabledEntry")
+                      )
                     ),
-                    h("button", {
+                    h(ActionButton, {
                       type: "button",
                       className: "ptcPlusButton",
                       onClick: () => prefillAuthoring(`/binding edit ${entry.id} `)
-                    }, t("bindings.authorEdit")),
+                    }, typeof IconSparkle16 === "function" ? h(IconSparkle16, { size: 14, "aria-hidden": true }) : null, t("bindings.authorEdit")),
                     globalSource?.id !== entry.id ? null : globalSource.error === true ? h("span", { className: "ptcPlusReplEmpty" }, t("memory.globalUnavailable")) : h("pre", { className: "ptcPlusGlobalSource" }, globalSource.source)
                   )))
                 ) : !memory.available ? h("span", { className: "ptcPlusReplEmpty" }, t("memory.unavailable")) : memory.entries.length === 0 ? h("span", { className: "ptcPlusReplEmpty" }, t("memory.empty")) : h("ul", { className: "ptcPlusReplList" }, memory.entries.map((binding, index) => {
@@ -1901,67 +2212,216 @@
               )
             );
           }
+          function BindingCommandCard({ node, t, useProjection, callUserBindings: callUserBindings2 }) {
+            const projectionValue = useProjection("ptcPlusBindingDraft");
+            let projection;
+            try {
+              projection = normalizeUserBindingDraftView(projectionValue);
+            } catch {
+              projection = void 0;
+            }
+            const matches = projection?.commandId === node.commandId;
+            const capability = matches ? projection.capability : null;
+            const phase = matches ? projection.phase : node.outcome === null ? "pending" : "idle";
+            const [catalog, setCatalog] = React.useState(null);
+            const [draft, setDraft] = React.useState(null);
+            const [review, setReview] = React.useState(null);
+            const [message, setMessage] = React.useState(null);
+            const [busy, setBusy] = React.useState(false);
+            const [loaded, setLoaded] = React.useState(false);
+            React.useEffect(() => {
+              let active = true;
+              setCatalog(null);
+              setDraft(null);
+              setLoaded(false);
+              if (phase !== "ready" || capability === null) return () => {
+                active = false;
+              };
+              setMessage(null);
+              Promise.all([
+                callUserBindings2("list"),
+                callUserBindings2("draft", { capability }),
+                callUserBindings2("draft-review", { capability })
+              ]).then(([nextCatalog, nextDraft, nextReview]) => {
+                if (!active) return;
+                setCatalog(nextCatalog);
+                setDraft(nextDraft);
+                setReview(nextReview);
+                setLoaded(true);
+              }).catch((error) => {
+                if (!active) return;
+                setLoaded(true);
+                setMessage(error instanceof Error ? error.message : String(error));
+              });
+              return () => {
+                active = false;
+              };
+            }, [capability, phase]);
+            React.useEffect(() => {
+              if (draft === null || busy || phase !== "ready") return void 0;
+              let active = true;
+              let pending = false;
+              const timer = setInterval(async () => {
+                if (pending) return;
+                pending = true;
+                try {
+                  const [current, nextReview] = await Promise.all([
+                    callUserBindings2("draft", { capability }),
+                    callUserBindings2("draft-review", { capability })
+                  ]);
+                  if (active) {
+                    setDraft(current);
+                    setReview(nextReview);
+                  }
+                } catch {
+                } finally {
+                  pending = false;
+                }
+              }, 1500);
+              return () => {
+                active = false;
+                clearInterval(timer);
+              };
+            }, [capability, phase, draft, busy]);
+            const refresh = async () => {
+              const [nextCatalog, nextDraft, nextReview] = await Promise.all([
+                callUserBindings2("list"),
+                callUserBindings2("draft", { capability }),
+                callUserBindings2("draft-review", { capability })
+              ]);
+              setCatalog(nextCatalog);
+              setDraft(nextDraft);
+              setReview(nextReview);
+            };
+            const save = async (activate = false) => {
+              if (busy || draft === null || catalog === null || capability === null) return;
+              setBusy(true);
+              setMessage(null);
+              try {
+                await callUserBindings2("save-draft", {
+                  capability,
+                  version: draft.version,
+                  expectedRevision: catalog.revision,
+                  activate
+                });
+                setDraft(null);
+                await refresh();
+              } catch (error) {
+                await refresh().catch(() => {
+                });
+                setMessage(error instanceof Error ? error.message : String(error));
+              } finally {
+                setBusy(false);
+              }
+            };
+            const discard = async () => {
+              if (busy || draft === null || capability === null) return;
+              setBusy(true);
+              setMessage(null);
+              try {
+                await callUserBindings2("discard-draft", { capability, version: draft.version });
+                setDraft(null);
+                await refresh();
+              } catch (error) {
+                await refresh().catch(() => {
+                });
+                setMessage(error instanceof Error ? error.message : String(error));
+              } finally {
+                setBusy(false);
+              }
+            };
+            const outcome = node.outcome;
+            const outcomeText = outcome?.kind === "error" ? outcome.text ?? t("bindings.commandFailed") : void 0;
+            const historical = projection?.history?.find((record) => record.commandId === node.commandId);
+            const currentReview = historical?.action !== null && historical?.action !== void 0 ? historical : review ?? historical;
+            const candidate = currentReview?.candidate ?? draft;
+            const action = currentReview?.action;
+            const actionKey = action?.state === "discarded" ? "bindings.commandDiscarded" : action?.state === "saved" ? action.enabled ? "bindings.commandSavedEnabled" : "bindings.commandSaved" : null;
+            const failed = outcome?.kind === "error" || phase === "failed";
+            const displayPhase = action?.state ?? (failed ? "failed" : phase === "ready" && loaded && draft === null ? "idle" : phase);
+            return h(
+              "section",
+              {
+                className: "ptcPlusBindingCommand",
+                "data-phase": displayPhase,
+                "aria-label": t("bindings.commandTitle")
+              },
+              h(
+                "div",
+                { className: "ptcPlusBindingCommandHeader" },
+                h("strong", { className: "ptcPlusBindingCommandTitle" }, t("bindings.commandTitle")),
+                h(
+                  "span",
+                  { className: "ptcPlusBindingCommandState" },
+                  h("span", { className: "ptcPlusBindingCommandStateDot", "aria-hidden": true }),
+                  actionKey !== null ? t(actionKey) : displayPhase === "pending" ? t("bindings.commandPending") : displayPhase === "ready" ? t("bindings.commandReady") : displayPhase === "failed" ? t("bindings.commandFailed") : t("bindings.commandUnavailable")
+                )
+              ),
+              h("pre", { className: "ptcPlusBindingCommandRequirement" }, `/binding${node.args ?? ""}`),
+              outcomeText === void 0 ? null : h("p", {
+                className: `ptcPlusMessage${outcome?.kind === "error" ? " ptcPlusDanger" : ""}`
+              }, outcomeText),
+              phase === "ready" && draft === null && message === null && !loaded ? h("span", { className: "ptcPlusMessage" }, t("bindings.commandPending")) : null,
+              candidate === null || candidate === void 0 ? null : h(
+                "div",
+                { className: "ptcPlusAuthoringDraft" },
+                h("strong", null, candidate.entry.name),
+                h("span", { className: "ptcPlusBindingMeta" }, `${candidate.entry.scope} - ${candidate.entry.symbols.join(", ")}`),
+                h(
+                  "details",
+                  { className: "ptcPlusBindingSourceDetails", open: actionKey === null ? true : void 0 },
+                  h("summary", null, t("tool.source")),
+                  typeof CodeBlock === "function" ? h(CodeBlock, {
+                    code: candidate.entry.source,
+                    lang: "typescript",
+                    className: "ptcPlusBindingCommandCode",
+                    copyLabel: t("tool.copy"),
+                    copiedLabel: t("tool.copied")
+                  }) : h("pre", { className: "ptcPlusBindingCommandSource" }, candidate.entry.source)
+                ),
+                draft === null || actionKey !== null ? null : h(
+                  "div",
+                  { className: "ptcPlusBindingCommandActions" },
+                  h(ActionButton, { type: "button", className: "ptcPlusButton", disabled: busy, onClick: () => save(false) }, t("bindings.draftSave")),
+                  h(ActionButton, { type: "button", className: "ptcPlusButton", "data-kind": "primary", disabled: busy, onClick: () => save(true) }, t("bindings.draftSaveEnable")),
+                  h(ActionButton, { type: "button", className: "ptcPlusButton", "data-kind": "ghost", disabled: busy, onClick: discard }, t("bindings.draftDiscard"))
+                )
+              ),
+              message === null ? null : h("p", { className: "ptcPlusMessage", role: "status" }, message)
+            );
+          }
           function PTCPlusSessionIndicator({
             sessionId,
             t,
-            useSession,
             useProjection,
-            useSessions,
             useInput,
-            inputActions
+            inputActions,
+            usePtcSettings,
+            callUserBindings: callUserBindings2
           }) {
-            let conversation;
-            try {
-              conversation = typeof useSession === "function" ? useSession((snapshot) => snapshot) : void 0;
-            } catch {
-              conversation = void 0;
-            }
-            let projectionMemory;
-            try {
-              projectionMemory = typeof useProjection === "function" ? useProjection("ptcPlusRepl") : void 0;
-            } catch {
-              projectionMemory = void 0;
-            }
-            let projectionDraftCapability;
-            try {
-              projectionDraftCapability = typeof useProjection === "function" ? useProjection("ptcPlusBindingDraft") : void 0;
-            } catch {
-              projectionDraftCapability = void 0;
-            }
-            let sessions;
-            try {
-              sessions = typeof useSessions === "function" ? useSessions((snapshot) => snapshot) : React.useSyncExternalStore(
-                (listener) => scope.sessions?.list?.subscribe?.(listener) ?? (() => {
-                }),
-                () => scope.sessions?.list?.getSnapshot?.() ?? {},
-                () => scope.sessions?.list?.getSnapshot?.() ?? {}
-              );
-            } catch {
-              sessions = {};
-            }
-            const settings = React.useSyncExternalStore(
-              (listener) => preferenceScope.subscribe(listener),
-              () => preferenceScope.getSnapshot(),
-              () => preferenceScope.getSnapshot()
-            );
+            const preset = useProjection("agentPreset");
+            const projectionMemory = useProjection("ptcPlusRepl");
+            const projectionDraftCapability = useProjection("ptcPlusBindingDraft");
+            const settings = usePtcSettings((snapshot) => snapshot);
             let input;
             try {
               input = typeof useInput === "function" ? useInput((snapshot) => snapshot) : void 0;
             } catch {
               input = void 0;
             }
-            const resolvedSessionId = sessionId ?? conversation?.sessionId;
-            const session = sessions?.byId?.[resolvedSessionId] ?? conversation;
-            let draftCapability = null;
+            const resolvedSessionId = sessionId;
+            let draftProjection = { phase: "idle", capability: null, commandId: null };
             try {
-              draftCapability = normalizeUserBindingDraftCapability(
-                projectionDraftCapability === void 0 ? session?.projectionValues?.ptcPlusBindingDraft ?? null : projectionDraftCapability
+              draftProjection = normalizeUserBindingDraftView(
+                projectionDraftCapability ?? { phase: "idle", capability: null, commandId: null }
               );
             } catch {
             }
+            const draftCapability = draftProjection.capability;
             const globalEnabled = settings.status === "ready" && settings.value?.enabled === true && settings.value?.userBindingsEnabled === true;
             const refreshIdentity = JSON.stringify([
               resolvedSessionId === void 0 ? null : String(resolvedSessionId),
+              draftProjection.phase,
               draftCapability,
               globalEnabled
             ]);
@@ -1990,8 +2450,8 @@
               }
               const effectiveDraftCapability = control.draftConsumed ? null : draftCapability;
               return Promise.all([
-                callUserBindings("list"),
-                effectiveDraftCapability === null ? Promise.resolve(null) : callUserBindings("draft", { capability: effectiveDraftCapability })
+                callUserBindings2("list"),
+                effectiveDraftCapability === null ? Promise.resolve(null) : callUserBindings2("draft", { capability: effectiveDraftCapability })
               ]).then(([bindings, draft]) => {
                 if (refreshControl.current !== control || control.sequence !== sequence || control.mutating) return;
                 setGlobalBindingsState({ identity: refreshIdentity, value: bindings });
@@ -2077,7 +2537,7 @@
               if (control.identity !== refreshIdentity || control.mutating) return;
               control.mutating = true;
               control.sequence += 1;
-              void callUserBindings("save-draft", {
+              void callUserBindings2("save-draft", {
                 capability: draftCapability,
                 version: authoringDraft.version,
                 expectedRevision: globalBindings.revision
@@ -2099,7 +2559,7 @@
               if (control.identity !== refreshIdentity || control.mutating) return;
               control.mutating = true;
               control.sequence += 1;
-              void callUserBindings("discard-draft", {
+              void callUserBindings2("discard-draft", {
                 capability: draftCapability,
                 version: authoringDraft.version
               }).then(() => {
@@ -2136,10 +2596,10 @@
                 }
               };
             }, [hidePopover, positionPopover]);
-            if (!sessionUsesPtcPreset(session) || settings.status !== "ready" || settings.value?.enabled !== true) return null;
+            if (!sessionUsesPtcPreset(preset) || settings.status !== "ready" || settings.value?.enabled !== true) return null;
             let memory;
             try {
-              memory = normalizeReplMemorySnapshot(projectionMemory ?? session?.projectionValues?.ptcPlusRepl);
+              memory = normalizeReplMemorySnapshot(projectionMemory);
             } catch {
               memory = unavailableReplMemorySnapshot();
             }
@@ -2152,6 +2612,7 @@
                 type: "button",
                 className: "ptcPlusActive",
                 ref: triggerRef,
+                title: t("indicator.title"),
                 "aria-label": t("indicator.title"),
                 "aria-controls": popoverId,
                 "aria-expanded": expanded,
@@ -2170,7 +2631,8 @@
                 globalEnabled,
                 globalBindings,
                 authoringDraft,
-                loadGlobalBinding: (id) => callUserBindings("load", { id }),
+                authoringPhase: draftProjection.phase,
+                loadGlobalBinding: (id) => callUserBindings2("load", { id }),
                 prefillAuthoring,
                 saveAuthoringDraft,
                 discardAuthoringDraft,
@@ -2184,15 +2646,39 @@
               })
             );
           }
-          scope.slots.inject("conversation.session.header.actions", () => scope.slots.register({
+          scope.slots.inject("conversation.session.header.actions", () => registerEnabled(scope, false, () => scope.slots.register({
             name: "conversation.session.header.actions",
             id: "ptc-plus-active",
             order: -9,
-            locale: LOCALE_NS
-          }, PTCPlusSessionIndicator));
+            locale: LOCALE_NS,
+            inject: settingsProps
+          }, PTCPlusSessionIndicator)));
+          scope.inject(["uiConversation"], (conversationScope) => {
+            conversationScope.slots.inject("conversation.chat.commandview", () => registerEnabled(conversationScope, true, () => conversationScope.slots.register({
+              name: "conversation.chat.commandview",
+              key: "binding",
+              locale: LOCALE_NS,
+              inject: settingsProps
+            }, (props) => h(BindingCommandCard, { ...props, key: props.node.commandId }))));
+            conversationScope.inject(["remote", "remote.commands"], (commandScope) => {
+              const availability = createBindingCommandAvailability(commandScope);
+              commandScope.slots.inject("conversation.input.left", () => registerEnabled(commandScope, true, () => commandScope.slots.register({
+                name: "conversation.input.left",
+                id: "ptc-plus-binding-author",
+                order: 20,
+                locale: LOCALE_NS,
+                inject: (sessionId) => ({
+                  hooks: { ptcSettings: preferenceScope, bindingCommand: availability.source(sessionId) }
+                })
+              }, BindingAuthorButton)));
+            });
+          });
         });
       }
-      module.exports = { apply, inject: ["settingsScope", "slots", "sessions", "locale", "connection"] };
+      module.exports = {
+        apply,
+        inject: ["settingsScope", "slots", "locale", "connection"]
+      };
       return module.exports;
     }
   });

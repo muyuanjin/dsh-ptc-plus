@@ -53,22 +53,22 @@ test('keeps successful rewrites out of the prompt projection', async (t) => {
   const first = await state.runDurable(session.id, firstCode, {}, { session })
   assert.match(first.meta.dshPtcPlusRewrites[0].description, /adapted the static import of "node:path"/)
   appendRunCodeEvents(session.events, 'rewrite-first', firstCode, first)
-  assert.equal(await runtimeContexts(), stableContexts)
+  assert.deepEqual(await runtimeContexts(), stableContexts)
   assert.equal(await headerOf(), baseline)
 
   const secondCode = "import { fileURLToPath } from 'node:url'\nreturn typeof fileURLToPath"
   const second = await state.runDurable(session.id, secondCode, {}, { session })
   assert.match(second.meta.dshPtcPlusRewrites[0].description, /adapted the static import of "node:url"/)
   appendRunCodeEvents(session.events, 'rewrite-second', secondCode, second)
-  assert.equal(await runtimeContexts(), stableContexts)
+  assert.deepEqual(await runtimeContexts(), stableContexts)
   assert.equal(await headerOf(), baseline)
 
   const later = await state.runDurable(session.id, 'return 1', {}, { session })
   appendRunCodeEvents(session.events, 'rewrite-later', 'return 1', later)
-  assert.equal(await runtimeContexts(), stableContexts)
+  assert.deepEqual(await runtimeContexts(), stableContexts)
   assert.equal(await headerOf(), baseline)
   session.events.push({ type: 'turn/end' })
-  assert.equal(await runtimeContexts(), stableContexts)
+  assert.deepEqual(await runtimeContexts(), stableContexts)
   assert.equal(await headerOf(), baseline)
 })
 
@@ -130,11 +130,11 @@ test('keeps rewritten completion unknown without a valid journal', async (t) => 
       },
     ]
     const agent = ptcAgent(`${label}-rewrite-agent`, { id: `${label}-rewrite-session`, events })
-    const assembly = await state.assemble(
+    const assembly = await state.assembleStep(
       { sections: [], contexts: [], variables: {}, tools: [state.runCodeDefinition] },
       { agent, scope: agent, signal: new AbortController().signal },
     )
-    const context = assembly.contexts.find(item => item?.name === 'tools:ptc-plus-rewrite-info')
+    const context = assembly.ptcContexts.find(item => item?.name === 'tools:ptc-plus-rewrite-info')
     assert.ok(context)
     assert.match(context.text, /source adjustments: stripped the export modifier/)
     assert.match(context.text, /completion is unknown because no valid execution journal is available/)
@@ -154,11 +154,11 @@ test('keeps rewrite continuation truthful after a throwing cell', async (t) => {
   assert.ok(result.meta.dshPtcPlusRewrites?.length > 0)
   appendRunCodeEvents(session.events, 'rewrite-failure', code, result)
 
-  const assembly = await state.assemble(
+  const assembly = await state.assembleStep(
     { sections: [], contexts: [], variables: {}, tools: [state.runCodeDefinition] },
     { agent, scope: agent, signal: new AbortController().signal },
   )
-  const context = assembly.contexts.find(item => item?.name === 'tools:ptc-plus-rewrite-info')
+  const context = assembly.ptcContexts.find(item => item?.name === 'tools:ptc-plus-rewrite-info')
   assert.ok(context)
   assert.match(context.text, /failed after a source adjustment/)
   assert.match(context.text, /stripped the export modifier/)

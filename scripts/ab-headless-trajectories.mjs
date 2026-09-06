@@ -10,6 +10,7 @@ import {
   auditRuntimeContexts,
   collectModelText,
   collectTrajectoryFacts,
+  isRuntimeContextSource,
   machineBudgetFailures,
   pendingBlindApproval,
   positiveInteger,
@@ -20,6 +21,7 @@ import {
 import { aggregateTrajectories, duplicateParagraphs, multisetDifference, paragraphs, reportMarkdown, trajectoryDelta } from './ab-trajectory-report.mjs'
 import { orderCanaryFirst, runCanaryThenConcurrent } from './acceptance-orchestration.mjs'
 import {
+  HEADLESS_TOOLS_MODE,
   NEUTRAL_PERSONA,
   changedSessionLogs,
   cleanupOwnedPath,
@@ -28,6 +30,7 @@ import {
   headlessConfigPatch,
   parseConfigDump,
   powershellPath,
+  dshInvocation,
   preflightHeadlessHost,
   requiredModelRuntime,
   removeTree,
@@ -47,7 +50,6 @@ const defaultTasksFile = join(repoRoot, 'scripts', 'ab-trajectory-tasks.json')
 const defaultFixtureDir = join(repoRoot, 'fixtures', 'ab-node-project-v1')
 const fixtureManifestFile = 'benchmark-manifest.json'
 const pluginMarker = '## PTC Plus program capabilities'
-const runtimeSnapshotSource = 'plugin:@deepseek-ai/dsh-system-prompt:snapshot'
 const neutralPersona = NEUTRAL_PERSONA
 const WORKSPACE_EXECUTION_ROOTS = new Set(['.git', 'node_modules'])
 const WORKSPACE_EXCLUDED_ROOTS = new Set(['artifacts'])
@@ -337,7 +339,7 @@ export function assertTrajectoryInvariants(events, expected, audits) {
     .replace('{{model}}', expected.model)
     .replace('{{cwd}}', expected.cwd)
   if (!system.startsWith(expectedPersona)) failures.push('system prompt does not start with the neutral A/B persona')
-  if (injections.length !== 1 || injections[0]?.source !== runtimeSnapshotSource) {
+  if (injections.length === 0 || injections.some(item => !isRuntimeContextSource(item.source))) {
     failures.push('unexpected initial context sources: ' + (injections.map(item => item.source).join(', ') || '(none)'))
   }
   const prompts = userPrompts(events)
@@ -663,7 +665,7 @@ async function preflightConfigs({ env, runtime, artifactRoot, tasks, fixture }) 
 
   const baseDump = await runProcess('pwsh.exe', [
     '-NoLogo', '-NoProfile', '-Command',
-    `& dsh --profile '${powershellPath(runtime.profile)}' --dump-config`,
+    `${dshInvocation(runtime)} --profile '${powershellPath(runtime.profile)}' --dump-config`,
   ], { env, timeoutMs: runtime.wallMs })
   await checkedPhase(baseDump, {
     stdoutPath: join(artifactRoot, 'base-config.stdout.yml'),
@@ -679,7 +681,7 @@ async function preflightConfigs({ env, runtime, artifactRoot, tasks, fixture }) 
   for (const variant of ['plugin', 'baseline']) {
     const dump = await runProcess('pwsh.exe', [
       '-NoLogo', '-NoProfile', '-Command',
-      `& dsh --profile '${powershellPath(runtime.profile)}' --patch '${powershellPath(windowsPath(overlays[variant]))}' --dump-config`,
+      `${dshInvocation(runtime)} --profile '${powershellPath(runtime.profile)}' --patch '${powershellPath(windowsPath(overlays[variant]))}' --dump-config`,
     ], { env, timeoutMs: runtime.wallMs })
     await checkedPhase(dump, {
       stdoutPath: join(artifactRoot, `${variant}-config.stdout.yml`),
@@ -908,13 +910,17 @@ export async function main(env = process.env) {
   const runtime = {
     ...modelRuntime,
     profile: env.DSH_PTC_AB_PROFILE || 'headless',
-    toolsMode: 'code',
+    toolsMode: HEADLESS_TOOLS_MODE,
     permissionMode: env.DSH_PTC_AB_PERMISSION_MODE || 'danger-full-access',
     replicates: positiveInteger(env.DSH_PTC_AB_REPLICATES, 'DSH_PTC_AB_REPLICATES', 2),
     concurrency: positiveInteger(env.DSH_PTC_AB_CONCURRENCY, 'DSH_PTC_AB_CONCURRENCY', 4),
     wallMs: positiveInteger(env.DSH_PTC_AB_WALL_MS, 'DSH_PTC_AB_WALL_MS', 10 * 60 * 1000),
     cwd: host.repoRootWindows,
     dshVersion: host.dshVersion,
+    nodeVersion: host.nodeVersion,
+    nodeExecutable: host.nodeExecutable,
+    dshEntry: host.dshEntry,
+    dshCommand: host.dshCommand,
   }
   const tasksFile = resolve(repoRoot, env.DSH_PTC_AB_TASKS_FILE || defaultTasksFile)
   const tasks = await loadTasks(tasksFile)
@@ -953,7 +959,7 @@ export async function main(env = process.env) {
         try {
           process = await runProcess('pwsh.exe', [
             '-NoLogo', '-NoProfile', '-Command',
-            `& dsh --profile '${powershellPath(runtime.profile)}' --patch '${powershellPath(windowsPath(overlays[variant]))}' '${powershellPath(task.prompt)}'`,
+            `${dshInvocation(runtime)} --profile '${powershellPath(runtime.profile)}' --patch '${powershellPath(windowsPath(overlays[variant]))}' '${powershellPath(task.prompt)}'`,
           ], { cwd: workspace, env, timeoutMs: runtime.wallMs })
         } catch (error) {
           process = { code: 1, stdout: '', stderr: '', timedOut: false, durationMs: 0, infrastructureError: error.message }

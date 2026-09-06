@@ -47,6 +47,8 @@ export function scenarioMarkdown(report) {
     `- PTC direct calls/results: ${report.toolCallCount}/${report.toolResultCount}`,
     `- model tokens: input ${report.usage.inputTokens}, cache read ${report.usage.cacheReadTokens}, cache write ${report.usage.cacheWriteTokens}, output ${report.usage.outputTokens}`,
     `- final answer: ${report.finalAnswerChars} chars`,
+    ...(report.programWork?.observations ?? []).map(item =>
+      `- workload ${item.global}.${item.member}: ${item.calls} calls; ${item.repeatedArgumentCalls} repeated-argument calls`),
     '',
     '## Prompt Audit',
     '',
@@ -80,6 +82,7 @@ export function summaryMarkdown(summary) {
     '# Expensive DSH multi-scenario acceptance',
     '',
     `- model: ${summary.runtime.provider}/${summary.runtime.model}`,
+    `- DSH: ${summary.runtime.dshVersion ?? 'unrecorded'}; command: ${summary.runtime.dshCommand ?? 'unrecorded'}`,
     `- profile/tools mode: ${summary.runtime.profile}/${summary.runtime.toolsMode}`,
     `- permission mode: ${summary.runtime.permissionMode}`,
     `- concurrency: ${summary.runtime.concurrency}`,

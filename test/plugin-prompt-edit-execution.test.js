@@ -17,6 +17,7 @@ import {
 } from '../internal/user-bindings.js'
 import { decodeValue, encodeValue, renderValueWire } from '../internal/value-wire.js'
 import { JOURNAL_POLICY, appendRunCodeEvents, fixture, ptcAgent } from './plugin-fixture.js'
+import { auditEditCalls, collectTrajectoryFacts } from '../scripts/acceptance-contract.mjs'
 
 test('continues from bindings after a partial failure without redispatching a native call', async (t) => {
   const state = fixture()
@@ -111,7 +112,7 @@ test('keeps edit selection model-owned when a partial cell may have caused an ef
   assert.equal(replayed.edited, true)
   assert.equal(dispatches, 2)
   assert.match(definition.description, /complete corrected cell/)
-  assert.match(definition.description, /external effect/)
+  assert.match(definition.description, /retry\/idempotence contract and available execution facts/)
   appendEditResult(session.events, 'effect-edit', effectCallSeq, definition.output.presentationMeta(effectArgs, replayed))
 })
 
@@ -171,10 +172,10 @@ return longOutput.length`
   })
 })
 
-test('executes the validated EOF repair invocation projected by the diagnostic', async (t) => {
+test('executes the validated EOF repair invocation with recovery tips disabled', async (t) => {
   const events = [{ type: 'turn/start', seq: 0, data: {} }]
   const session = { id: 'validated-parse-edit', events }
-  const state = fixture()
+  const state = fixture({ tipsEnabled: false })
   t.after(() => state.dispose())
   const agent = ptcAgent(session.id, session)
   const signal = new AbortController().signal
@@ -197,7 +198,7 @@ test('executes the validated EOF repair invocation projected by the diagnostic',
   assert.deepEqual(diagnostic.help.slice(0, 1), [
     'this cell was not executed; validated syntax repair: append "}" at the end of this cell',
   ])
-  const invocation = /call edit_run_code\((\{.*\})\) to apply this correction/.exec(diagnostic.help[1])
+  const invocation = /call edit_run_code\((\{.*\})\)/.exec(diagnostic.help[1])
   assert.notEqual(invocation, null)
   const editArgs = JSON.parse(invocation[1])
   assert.equal(JSON.stringify(editArgs).includes(rejectedCode), false)
@@ -216,6 +217,8 @@ test('executes the validated EOF repair invocation projected by the diagnostic',
   assert.deepEqual(edited.value, { edited: true, logs: [], value: 42 })
   assert.equal(edited.meta.dshPtcPlusDerivedRun.code, `${rejectedCode}}`)
   appendEditResult(events, 'validated-parse-edit', editCallSeq, edited.meta)
+  events.at(-1).data.message.content = agent.ctx.tools.get('edit_run_code').output.render(editArgs, edited.value)
+  assert.deepEqual(auditEditCalls(events, collectTrajectoryFacts(events).timeline).failures, [])
 })
 
 test('rejects a validated EOF repair after a newer matching cell becomes editable', async (t) => {
@@ -238,7 +241,7 @@ test('rejects a validated EOF repair after a newer matching cell becomes editabl
     { session, callId: 'stale-parse' },
   )
   const diagnostic = rejected.meta.dshPtcPlus.diagnostics[0]
-  const invocation = /call edit_run_code\((\{.*\})\) to apply this correction/.exec(diagnostic.help[1])
+  const invocation = /call edit_run_code\((\{.*\})\)/.exec(diagnostic.help[1])
   assert.notEqual(invocation, null)
   const editArgs = JSON.parse(invocation[1])
   assert.equal(editArgs.expected_target_call_seq, rejectedCallSeq)
@@ -275,6 +278,10 @@ test('rejects a validated EOF repair after a newer matching cell becomes editabl
   assert.equal(derivedDispatches, 0)
   assert.deepEqual(edited.meta, {})
   appendEditResult(events, 'stale-parse-edit', editCallSeq)
+  events.at(-1).data.message.content = agent.ctx.tools.get('edit_run_code').output.render(editArgs, edited.value)
+  const audit = auditEditCalls(events, collectTrajectoryFacts(events).timeline, [1])
+  assert.deepEqual(audit.failures, [])
+  assert.deepEqual([...audit.rejectedCallIds], ['stale-parse-edit'])
 })
 
 test('suppresses a target-bound EOF repair for derived edit parse rejection', async (t) => {
@@ -923,7 +930,7 @@ test('keeps truthful run and edit transports with a stable prompt prefix', async
   }
   const session = { id: 'prefix-stability-session', events: [{ type: 'turn/start' }] }
   const agent = ptcAgent('prefix-stability-agent', session)
-  const assemble = () => state.assemble(codeOnlyAssembly, {
+  const assemble = () => state.assembleStep(codeOnlyAssembly, {
     agent, scope: agent, signal: new AbortController().signal,
   })
   const surface = assembly => JSON.stringify({
@@ -961,7 +968,7 @@ test('uses environment-neutral tips for command failures and escalates repeated 
   const session = { id: 'platform-tip-session', events: [{ type: 'turn/start' }] }
   const agent = ptcAgent('platform-tip-agent', session)
   const codeOnlyAssembly = { sections: [], contexts: [], variables: {}, tools: [state.runCodeDefinition] }
-  const assemble = () => state.assemble(codeOnlyAssembly, {
+  const assemble = () => state.assembleStep(codeOnlyAssembly, {
     agent, scope: agent, signal: new AbortController().signal,
   })
   const stableSurface = assembly => JSON.stringify({ sections: assembly.sections, tools: assembly.tools })
@@ -969,7 +976,7 @@ test('uses environment-neutral tips for command failures and escalates repeated 
   const tipOf = async () => {
     const assembly = await assemble()
     assert.equal(stableSurface(assembly), baselineSurface)
-    return assembly.contexts.find(item => item.name.startsWith('tools:ptc-plus-tip/'))
+    return assembly.ptcContexts.find(item => item.name.startsWith('tools:ptc-plus-tip/'))
   }
   let persistedSignature
   const snapshot = (tip, extraSections = []) => {
@@ -1028,9 +1035,9 @@ test('uses environment-neutral tips for command failures and escalates repeated 
   snapshot(secondBinding)
   nextRequest()
   const detailedBinding = await tipOf()
-  assert.match(detailedBinding.text, /Do not invent hidden bindings/)
-  assert.match(detailedBinding.text, /capabilities\.find\(\)/)
-  assert.match(detailedBinding.text, /capabilities\.inspect\(\)/)
+  assert.match(detailedBinding.text, /Earlier statements may have run/)
+  assert.match(detailedBinding.text, /local name, scope, initialization, or declaration conflict/)
+  assert.doesNotMatch(detailedBinding.text, /capabilities\.(find|inspect)\(\)/)
   assert.doesNotMatch(detailedBinding.text, /(?:^|[^.])\bfind\(\)/)
   assert.doesNotMatch(detailedBinding.text, /(?:^|[^.])\binspect\(\)/)
 })
@@ -1041,7 +1048,7 @@ test('recognizes platform diagnostics from structured causes and Windows wording
   const session = { id: 'structured-platform-tip', events: [{ type: 'turn/start' }] }
   const agent = ptcAgent('structured-platform-agent', session)
   const codeOnlyAssembly = { sections: [], contexts: [], variables: {}, tools: [state.runCodeDefinition] }
-  const assemble = () => state.assemble(codeOnlyAssembly, {
+  const assemble = () => state.assembleStep(codeOnlyAssembly, {
     agent, scope: agent, signal: new AbortController().signal,
   })
   const result = await state.executeRun(session.id, 'return await tools.run({})', {
@@ -1053,7 +1060,7 @@ test('recognizes platform diagnostics from structured causes and Windows wording
   }, { session })
   appendRunCodeEvents(session.events, 'structured-platform-failure', 'return await tools.run({})', result.result)
   const tip = assemble()
-  assert.match((await tip).contexts.find(item => item.name.startsWith('tools:ptc-plus-tip/')).text, /executable, shell, or path/)
+  assert.match((await tip).ptcContexts.find(item => item.name.startsWith('tools:ptc-plus-tip/')).text, /executable, shell, or path/)
 })
 
 test('does not turn an unrelated path error into an environment tip', async (t) => {

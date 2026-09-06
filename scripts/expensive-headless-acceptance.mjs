@@ -4,15 +4,21 @@ import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import {
   PTC_DIRECT_TOOLS,
+  auditEditCalls,
   auditEditTransports,
+  auditProgramWork,
   auditModelRequests,
   auditRequestHeaders,
   auditRuntimeContexts,
+  auditBindingWorkflow,
   collectModelText as collectText,
   collectTrajectoryFacts,
+  isRuntimeContextSource,
   machineBudgetFailures,
   positiveInteger,
   validateEditTransports,
+  validateGuardMismatchEdits,
+  validateProgramWork,
   validateMachineBudget,
   validateRequestHeaderPolicy,
   validateRuntimeContextConfig,
@@ -24,6 +30,7 @@ import {
   summaryMarkdown,
 } from './expensive-acceptance-report.mjs'
 import {
+  HEADLESS_TOOLS_MODE,
   NEUTRAL_PERSONA,
   changedSessionLogs,
   createProcessRunner,
@@ -32,6 +39,7 @@ import {
   parseConfigDump,
   parseEvents,
   powershellPath,
+  dshInvocation,
   preflightHeadlessHost,
   requiredModelRuntime,
   snapshotSessionLogs,
@@ -48,7 +56,6 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const runProcess = createProcessRunner(repoRoot)
 const defaultScenarioFile = join(repoRoot, 'scripts', 'expensive-acceptance-scenarios.json')
 const neutralPersona = NEUTRAL_PERSONA
-const runtimeSnapshotSource = 'plugin:@deepseek-ai/dsh-system-prompt:snapshot'
 export const MAX_MODEL_RESULT_CHARS = 8_192
 
 export function parseAcceptanceConfig(text, label = 'DSH config dump') {
@@ -133,6 +140,8 @@ function assertScenarioDescriptor(value, ids) {
   validateMachineBudget(value.expect.machineBudget, `${value.id}.expect.machineBudget`)
   validateRequestHeaderPolicy(value.expect.headerPolicy)
   validateRuntimeContextConfig(value.expect.runtimeContexts)
+  validateProgramWork(value.expect.programWork)
+  validateGuardMismatchEdits(value.expect.guardMismatchEdits)
   if (value.expect.editTransports !== undefined) {
     validateEditTransports(value.expect.editTransports, `${value.id}.expect.editTransports`, {
       allowTemplates: true,
@@ -237,6 +246,11 @@ export function inspectLog(events, scenario, expectedRuntime) {
   const failures = []
   const warnings = []
   const expect = scenario.expect
+  let bindingWorkflow
+  if (expect.bindingWorkflow !== undefined) {
+    bindingWorkflow = auditBindingWorkflow(events, expect.bindingWorkflow)
+    failures.push(...bindingWorkflow.failures)
+  }
   const allowedDiagnosticCodes = new Set(expect.allowedDiagnosticCodes ?? [])
   const headerAudit = auditRequestHeaders(events, expect.headerPolicy)
   const modelRequestAudit = auditModelRequests(events)
@@ -248,9 +262,13 @@ export function inspectLog(events, scenario, expectedRuntime) {
   } = facts
   const requestHeaders = headerAudit.headers.map(item => item.header)
   const requestHeader = requestHeaders[0]
-  const contextSources = contextAudit.sources
+  const contextSources = contextAudit.sources.filter(source => expect.bindingWorkflow === undefined
+    || source !== 'plugin:ptc-plus:instructions')
   const runtimeSnapshots = contextAudit.snapshots
   const header = events.find(event => event.type === 'session')
+  const editAudit = auditEditCalls(events, timeline, expect.guardMismatchEdits)
+  const programWork = auditProgramWork(timeline, expect.programWork)
+  failures.push(...editAudit.failures, ...programWork.failures)
 
   for (const call of calls.values()) {
     if (!PTC_DIRECT_TOOLS.includes(call.name)) {
@@ -261,16 +279,11 @@ export function inspectLog(events, scenario, expectedRuntime) {
       failures.push('run_code call ' + call.callId + ' lacks code or description')
       continue
     }
-    if (call.name === 'edit_run_code') {
-      const args = call.arguments
-      const keys = args !== null && typeof args === 'object' && !Array.isArray(args) ? Object.keys(args) : []
-      if (keys.length !== 1 || !['edits', 'regex_edits'].includes(keys[0]) || !Array.isArray(args[keys[0]])) {
-        failures.push('edit_run_code call ' + call.callId + ' does not contain exactly one edit delta array')
-      }
-    }
   }
   for (const result of results.values()) {
-    if (result.journalStatus === undefined) failures.push('PTC transport result ' + result.callId + ' has no journal')
+    if (result.journalStatus === undefined && !editAudit.rejectedCallIds.has(result.callId)) {
+      failures.push('PTC transport result ' + result.callId + ' has no journal')
+    }
     for (const nested of result.nestedCalls) {
       if (!nested.ok) warnings.push('handled nested error in ' + result.callId + ': ' + nested.global + '.' + nested.member + ': ' + nested.error)
     }
@@ -304,7 +317,7 @@ export function inspectLog(events, scenario, expectedRuntime) {
     .replace('{{model}}', expectedRuntime.model)
     .replace('{{cwd}}', expectedRuntime.cwd)
   if (!system.startsWith(expectedPersona)) failures.push('system prompt does not start with the neutral acceptance persona')
-  if (contextSources.length === 0 || contextSources.some(source => source !== runtimeSnapshotSource)) {
+  if (contextSources.length === 0 || contextSources.some(source => !isRuntimeContextSource(source))) {
     failures.push('unexpected initial context sources: ' + (contextSources.join(', ') || '(none)'))
   }
   if (!/declare const tools:/.test(system) || !/declare const capabilities:/.test(system)) {
@@ -473,10 +486,12 @@ export function inspectLog(events, scenario, expectedRuntime) {
     turnWallMs: turnStartedAt === undefined || turnEndedAt === undefined ? undefined : turnEndedAt - turnStartedAt,
     usage,
     machineMetrics,
+    programWork,
     toolCallCount: calls.size,
     toolResultCount: results.size,
     timeline,
     finalAnswerChars: finalAnswer.length,
+    ...(bindingWorkflow === undefined ? {} : { bindingWorkflow }),
     diagnostics: [...new Set(warnings)],
     failures: [...new Set(failures)],
   }
@@ -492,11 +507,15 @@ export async function main(env = process.env) {
   const runtime = {
     ...modelRuntime,
     profile: env.DSH_PTC_ACCEPTANCE_PROFILE || 'headless',
-    toolsMode: 'code',
+    toolsMode: HEADLESS_TOOLS_MODE,
     permissionMode: env.DSH_PTC_ACCEPTANCE_PERMISSION_MODE || 'danger-full-access',
     concurrency: positiveInteger(env.DSH_PTC_ACCEPTANCE_CONCURRENCY, 'DSH_PTC_ACCEPTANCE_CONCURRENCY', 3),
     wallMs: positiveInteger(env.DSH_PTC_ACCEPTANCE_WALL_MS, 'DSH_PTC_ACCEPTANCE_WALL_MS', 10 * 60 * 1000),
     dshVersion: host.dshVersion,
+    dshCommand: host.dshCommand,
+    nodeVersion: host.nodeVersion,
+    nodeExecutable: host.nodeExecutable,
+    dshEntry: host.dshEntry,
   }
   const scenarioFile = resolve(repoRoot, env.DSH_PTC_ACCEPTANCE_SCENARIO_FILE || defaultScenarioFile)
   const selectedIds = env.DSH_PTC_ACCEPTANCE_SCENARIOS === undefined
@@ -504,6 +523,7 @@ export async function main(env = process.env) {
     : env.DSH_PTC_ACCEPTANCE_SCENARIOS.split(',').map(value => value.trim()).filter(Boolean)
   const scenarios = await prepareScenarios(scenarioFile, artifactRoot, selectedIds)
   await writeFile(join(artifactRoot, 'manifest.json'), JSON.stringify({
+    runtime,
     scenarioFile,
     selectedIds: scenarios.map(scenario => scenario.id),
     scenarios: scenarios.map(scenario => ({
@@ -528,7 +548,7 @@ export async function main(env = process.env) {
 
   const baseDump = await runProcess('pwsh.exe', [
     '-NoLogo', '-NoProfile', '-Command',
-    `& dsh --profile '${powershellPath(runtime.profile)}' --dump-config`,
+    `${dshInvocation(runtime)} --profile '${powershellPath(runtime.profile)}' --dump-config`,
   ], { env, timeoutMs: runtime.wallMs })
   await writeFile(join(artifactRoot, 'base-config.stdout.yml'), baseDump.stdout)
   await writeFile(join(artifactRoot, 'base-config.stderr.log'), baseDump.stderr)
@@ -544,7 +564,7 @@ export async function main(env = process.env) {
   }))
   const resolvedDump = await runProcess('pwsh.exe', [
     '-NoLogo', '-NoProfile', '-Command',
-    `& dsh --profile '${powershellPath(runtime.profile)}' --patch '${powershellPath(windowsPath(overlay))}' --dump-config`,
+    `${dshInvocation(runtime)} --profile '${powershellPath(runtime.profile)}' --patch '${powershellPath(windowsPath(overlay))}' --dump-config`,
   ], { env, timeoutMs: runtime.wallMs })
   await writeFile(join(artifactRoot, 'acceptance-config.stdout.yml'), resolvedDump.stdout)
   await writeFile(join(artifactRoot, 'acceptance-config.stderr.log'), resolvedDump.stderr)
@@ -579,7 +599,7 @@ export async function main(env = process.env) {
     try {
       processResult = await runProcess('pwsh.exe', [
         '-NoLogo', '-NoProfile', '-Command',
-        `& dsh --profile '${powershellPath(runtime.profile)}' --patch '${powershellPath(windowsPath(overlay))}' '${powershellPath(scenario.task)}'`,
+        `${dshInvocation(runtime)} --profile '${powershellPath(runtime.profile)}' --patch '${powershellPath(windowsPath(overlay))}' '${powershellPath(scenario.task)}'`,
       ], {
         cwd: scenario.root,
         env,
@@ -646,6 +666,8 @@ export async function main(env = process.env) {
   }, { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 })
   const summary = {
     runtime: {
+      dshVersion: runtime.dshVersion,
+      dshCommand: runtime.dshCommand,
       provider: runtime.provider,
       model: runtime.model,
       profile: runtime.profile,

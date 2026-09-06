@@ -1,0 +1,20 @@
+{
+  "id": "binding-authoring-save-availability",
+  "command": "new 创建名为 workflow 的 namespace helper，导出 value(): number，返回 42。",
+  "statusQuestion": "你现在能使用它了吗？",
+  "entry": {
+    "id": "workflow",
+    "name": "workflow",
+    "scope": "namespace",
+    "purpose": "Return a number.",
+    "source": "export function value(): number { return 42 }"
+  },
+  "userAction": "save-and-enable",
+  "constantExports": [{ "member": "value", "value": 42 }],
+  "expected": {
+    "saved": true,
+    "enabled": true,
+    "availabilityExternalEffects": false,
+    "ordinaryHistoryPrefixStable": true
+  }
+}

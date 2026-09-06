@@ -85,6 +85,7 @@ export function fixture(config = {}, fixtureOptions = {}) {
   const cleanups = []
   let disposal
   const sections = []
+  const contexts = []
   const upstreamCalls = []
   let nextCallId = 0
   const runCodeDefinition = {
@@ -154,6 +155,10 @@ export function fixture(config = {}, fixtureOptions = {}) {
     },
     ...(fixtureOptions.agents === undefined ? {} : { agents: fixtureOptions.agents }),
     systemPrompt: {
+      context(value) {
+        contexts.push(value)
+        return () => contexts.splice(contexts.indexOf(value), 1)
+      },
       section(value) {
         sections.push(value)
         return () => sections.splice(sections.indexOf(value), 1)
@@ -235,7 +240,7 @@ export function fixture(config = {}, fixtureOptions = {}) {
     return result
   }
 
-  async function assemble(assembly, context = {}, next = async () => assembly) {
+  async function assemble(assembly, context = {}, next) {
     context.agent?.ctx?.tools?.bindFixtureRegistry?.(
       name => definitions.get(name),
       scope => [
@@ -244,8 +249,43 @@ export function fixture(config = {}, fixtureOptions = {}) {
         ...(scope === context.agent ? fixtureOptions.scopedSchemas ?? [] : []),
       ],
     )
-    const listener = listeners.get('system-prompt/assemble')?.[0]
-    return listener === undefined ? next() : listener(assembly, context, next)
+    const initial = Array.isArray(assembly.contexts) ? {
+      ...assembly, contexts: [...assembly.contexts, ...contexts],
+    } : assembly
+    const entries = [...listeners.get('system-prompt/assemble') ?? []]
+    const dispatch = index => entries[index] === undefined
+      ? next === undefined ? Promise.resolve(initial) : next()
+      : entries[index](initial, context, () => dispatch(index + 1))
+    return dispatch(0)
+  }
+
+  async function assembleStep(assembly, context) {
+    const session = context.agent?.session
+    // These legacy test fixtures declare an append-only, fully visible surface.
+    // Real compaction and admission behavior is covered with DSH Session/AgentLoop.
+    if (session !== undefined && session.surface === undefined && Array.isArray(session.events)) {
+      session.snapshotEvents = () => session.events.map((event, index) => ({ seq: index, ...event }))
+      session.surface = {
+        replaceGeneration: 0,
+        get nodes() {
+          return session.snapshotEvents().filter(event => ['user/message', 'assistant/message', 'tool/result'].includes(event.type))
+            .map(event => event.seq)
+        },
+      }
+    }
+    const result = await assemble(assembly, context)
+    const payload = { agent: context.agent, signal: context.signal, turn: 1, step: 1, messages: [] }
+    const entries = [...listeners.get('agent/pre-step') ?? []]
+    const dispatch = index => entries[index] === undefined
+      ? Promise.resolve({ kind: 'enter', messages: [] })
+      : entries[index](payload, () => dispatch(index + 1))
+    const decision = await dispatch(0)
+    return { ...result, messages: decision.messages, ptcContexts: decision.messages.flatMap(message => {
+      const source = message.source
+      if (source.plugin !== 'ptc-plus') return []
+      return source.form === 'snapshot' ? source.sections
+        : source.form === 'notice' ? [{ name: source.summary, text: message.content[0].text }] : []
+    }) }
   }
 
   async function stream(options, chunks) {
@@ -292,6 +332,7 @@ export function fixture(config = {}, fixtureOptions = {}) {
     sections,
     upstreamCalls,
     assemble,
+    assembleStep,
     stream,
     dispatchNestedRun,
     executeRun,

@@ -602,7 +602,7 @@ export function userBindingsContext(snapshot) {
   const declaration = normalized.entries.map(entry => entry.declaration).join('\n\n')
   return {
     name: 'tools:ptc-plus-user-bindings',
-    text: `The following user-global REPL bindings are active for this request: ${calls.join('; ')}. They are ordinary writable REPL values: reuse them directly, and keep any redeclaration session-local.\n\n\`\`\`ts\n${declaration}\n\`\`\``,
+    text: `The following saved, enabled user-global REPL bindings have successfully activated for this request: ${calls.join('; ')}. Disabled in-memory drafts cannot activate. These are ordinary writable REPL values: reuse them directly, and keep any redeclaration session-local. This proves the matching saved snapshot and current activation, not that disk cannot change afterward. For availability, use this declaration or a side-effect-free observation of the known name; do not run write/delete tests. repl.state is a function managing named checkpoints, not a binding inventory.\n\n\`\`\`ts\n${declaration}\n\`\`\``,
   }
 }
 

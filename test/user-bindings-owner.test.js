@@ -1,16 +1,121 @@
 import assert from 'node:assert/strict'
+import { once } from 'node:events'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { Worker } from 'node:worker_threads'
+import { Session } from '@deepseek-ai/dsh-session'
+import { assertObjectJsonSchema, assertSupportedJsonSchema } from '@deepseek-ai/dsh-tools'
 import {
   USER_BINDINGS_RPC_CHANNEL,
   createUserBindingsOwner,
 } from '../internal/user-bindings-owner.js'
 import { createUserBindingsSnapshot } from '../internal/user-bindings.js'
 
-function ownerFixture(handleArity = 2, authoring) {
+function injectedAgentContext(services) {
+  const context = {
+    inject(names, callback) {
+      const disposers = []
+      const scope = {}
+      for (const name of names) {
+        const service = services[name]
+        assert.notEqual(service, undefined, `missing injected ${name} service`)
+        scope[name] = Object.create(service)
+        if (typeof service.register === 'function') {
+          scope[name].register = (...args) => {
+          if (name === 'tools') {
+              assertObjectJsonSchema(args[0].parameters)
+              assertSupportedJsonSchema(args[0].output.schema)
+            }
+            return service.register(...args)
+          }
+        }
+      }
+      scope.effect = (factory) => {
+        const dispose = factory()
+        disposers.push(dispose)
+        return dispose
+      }
+      callback(scope)
+      let active = true
+      return {
+        async dispose() {
+          if (!active) return
+          active = false
+          for (const dispose of disposers.reverse()) await dispose?.()
+        },
+      }
+    },
+  }
+  for (const name of Object.keys(services)) {
+    Object.defineProperty(context, name, {
+      get() { throw new Error(`cannot get property ${JSON.stringify(name)} without inject`) },
+    })
+  }
+  return context
+}
+
+function nestedExecution(agent) {
+  return { agent, parent: { name: 'run_code' } }
+}
+
+test('submission identity and cell lease cannot be borrowed by a later request', async t => {
+  const state = await acceptedDraftFixture()
+  t.after(() => state.owner.dispose())
+  const entry = { id: 'lease', name: 'lease', scope: 'namespace', purpose: '', source: 'export const value = 1' }
+  await state.start('first')
+  let live = true
+  const submit = state.owner.submissionForAgent(state.agent, () => { if (!live) throw new Error('lease expired') }, () => {})
+  await assert.rejects(submit({ requestId: 'wrong', entry }), /request identity/)
+  await assert.rejects(submit({}), /invalid binding submission/)
+  await state.start('second')
+  await assert.rejects(submit({ requestId: 'old', entry }), /no longer active/)
+  live = false
+  await assert.rejects(submit({ requestId: 'old', entry }), /lease expired/)
+  const pending = state.start('disposed while beginning')
+  await state.owner.clearAgentPresentation(state.agent)
+  assert.equal((await pending).kind, 'error')
+})
+
+test('read-only review survives a consumed locator and is revoked on Agent cleanup', async t => {
+  const state = await acceptedDraftFixture()
+  t.after(() => state.owner.dispose())
+  state.target.ctx.logger = { warn() { throw new Error('reporter unavailable') } }
+  assert.equal((await call(state.target, 'draft-review', { capability: 'missing' })).value, null)
+  const { capability, draft } = await state.submit('review')
+  assert.equal((await call(state.target, 'draft-review', { capability })).value.action, null)
+  assert.equal((await call(state.target, 'save-draft', { capability, version: draft.version, expectedRevision: 1 })).ok, true)
+  const review = (await call(state.target, 'draft-review', { capability })).value
+  assert.equal(review.action.state, 'saved')
+  assert.equal(review.action.enabled, false)
+  assert.equal(review.candidate.entry.source, draft.entry.source)
+  await state.owner.clearAgentPresentation(state.agent)
+  assert.equal((await call(state.target, 'draft-review', { capability })).value, null)
+})
+
+test('Agent and projection cleanup revoke an incomplete authoring transaction', async t => {
+  for (const cleanup of ['clearAgentPresentation', 'setDraftProjectionAvailable']) {
+    const fixture = await acceptedDraftFixture()
+    t.after(() => fixture.owner.dispose())
+    await fixture.start('unfinished')
+    await fixture.owner[cleanup](cleanup === 'clearAgentPresentation' ? fixture.agent : false)
+    await assert.rejects(fixture.submitEntry({ id: 'late', name: 'late', scope: 'namespace',
+      purpose: '', source: 'export const value = 1' }), /no longer active/)
+  }
+})
+
+function captureSubmission(owner, agent, message) {
+  const requestId = JSON.parse(/requestId: ("[^"\n]+")/.exec(message.content[0].text)[1])
+  const submit = owner.submissionForAgent(agent, () => {}, () => {})
+  return {
+    requestId,
+    execute: (value, exec) => (exec?.agent === agent ? submit
+      : owner.submissionForAgent(exec?.agent, () => {}, () => {}))({ requestId, ...value }),
+  }
+}
+
+function ownerFixture(authoring) {
   let handler
   let handleOptions
   let handleArgumentCount
@@ -18,29 +123,33 @@ function ownerFixture(handleArity = 2, authoring) {
   let injectionDisposals = 0
   const effects = []
   const rpc = {
-    handle: handleArity === 3
-      ? function handle(channel, next, options) {
-          assert.equal(channel, USER_BINDINGS_RPC_CHANNEL)
-          handleArgumentCount = arguments.length
-          handler = next
-          handleOptions = options
-          return async () => { handleDisposals += 1 }
-        }
-      : function handle(channel, next) {
-          assert.equal(channel, USER_BINDINGS_RPC_CHANNEL)
-          handleArgumentCount = arguments.length
-          handler = next
-          handleOptions = arguments[2]
-          return async () => { handleDisposals += 1 }
-        },
+    handle(channel, next, options) {
+      assert.equal(channel, USER_BINDINGS_RPC_CHANNEL)
+      handleArgumentCount = arguments.length
+      handler = next
+      handleOptions = options
+      return async () => { handleDisposals += 1 }
+    },
   }
   const ctx = {
+    agents: authoring?.agents ?? { list: () => [] },
+    get(name) {
+      return name === 'commands' ? authoring?.commands : undefined
+    },
+    tools: {
+      get(name, agent) {
+        return name === 'run_code' && agent?.runCodeAvailable !== false
+          ? { name: 'run_code' }
+          : undefined
+      },
+    },
     inject(services, callback) {
       if (services.length === 1 && services[0] === 'connection') {
         callback({ connection: { rpc } })
+      } else if (services.length === 1 && services[0] === 'tools') {
+        callback({ tools: ctx.tools, on: authoring?.on?.bind(authoring) })
       } else {
-        assert.deepEqual(services, ['commands', 'skills'])
-        if (authoring !== undefined) callback(authoring)
+        assert.fail(`unexpected owner injection: ${services.join(',')}`)
       }
       return { dispose() { injectionDisposals += 1 } }
     },
@@ -90,16 +199,15 @@ async function call(target, endpoint, payload = {}, signal = new AbortController
   return target.handler(endpoint, payload, signal)
 }
 
-async function acceptedDraftFixture(store = fakeStore()) {
+async function acceptedDraftFixture(store = fakeStore(), ownerOptions = {}) {
   let command
   let draftTool
   const agent = {
     id: 'draft-agent',
     session: { id: 'draft-session' },
     inject() {},
-    steer() {},
-    ctx: {
-      effect(register) { return register() },
+    steer(message) { draftTool = captureSubmission(owner, agent, message) },
+    ctx: injectedAgentContext({
       commands: {
         register(definition) { command = definition; return () => {} },
       },
@@ -107,13 +215,13 @@ async function acceptedDraftFixture(store = fakeStore()) {
       tools: {
         register(definition) { draftTool = definition; return () => {} },
       },
-    },
+    }),
   }
   const authoring = {
     agents: { list: () => [agent] },
     on() { return () => {} },
   }
-  const target = ownerFixture(2, authoring)
+  const target = ownerFixture(authoring)
   const owner = createUserBindingsOwner(target.ctx, {
     enabled: true,
     store,
@@ -122,20 +230,21 @@ async function acceptedDraftFixture(store = fakeStore()) {
     maxOutputBytes: 1_024,
     maxOldGenerationSizeMb: 32,
     valueLimits: {},
+    ...ownerOptions,
   })
   await owner.setDraftProjectionAvailable(true)
   await owner.setAgentPresentation(agent, 'ptc')
-  const start = async (id) => {
-    assert.equal((await command.handler({
-      agent, rawInput: `new ${id}`, signal: new AbortController().signal,
-    })).kind, 'success')
-  }
-  const submitEntry = entry => draftTool.execute({ entry })
+  const start = id => command.handler({
+    agent, rawInput: `new ${id}`, signal: new AbortController().signal,
+  })
+  const submitEntry = entry => draftTool.execute({ entry }, nestedExecution(agent))
   const submit = async (id) => {
-    await start(id)
+    const commandResult = start(id)
+    await new Promise(resolve => setImmediate(resolve))
     await submitEntry({
       id, name: id, scope: 'namespace', purpose: '', source: 'export const value = 1',
     })
+    assert.equal((await commandResult).kind, 'success')
     const capability = owner.draftCapabilityForAgent(agent)
     const draft = (await call(target, 'draft', { capability })).value
     return { capability, draft }
@@ -178,17 +287,18 @@ test('rejects drafts that cannot fit the complete stored document', async () => 
       id: 'candidate', name: 'candidate', scope: 'namespace', purpose: '',
       source: scenario.candidateSource,
     }
-    await current.start('candidate')
+    const commandResult = current.start('candidate')
+    await new Promise(resolve => setImmediate(resolve))
     await assert.rejects(current.submitEntry(candidate), scenario.expected)
     await assert.rejects(current.submitEntry(candidate), scenario.expected)
     assert.equal(current.owner.draftCapabilityForAgent(current.agent), null)
     await current.owner.dispose()
+    assert.equal((await commandResult).kind, 'success')
   }
 })
 
-for (const arity of [2, 3]) {
-  test(`registers and disposes the authenticated Connection RPC on handle arity ${arity}`, async () => {
-    const target = ownerFixture(arity)
+test('registers and disposes the trusted-host Connection RPC', async () => {
+    const target = ownerFixture()
     const owner = createUserBindingsOwner(target.ctx, {
       enabled: true,
       store: fakeStore(),
@@ -198,8 +308,8 @@ for (const arity of [2, 3]) {
       maxOldGenerationSizeMb: 32,
       valueLimits: {},
     })
-    assert.equal(target.handleArgumentCount, 2)
-    assert.equal(target.handleOptions, undefined)
+    assert.equal(target.handleArgumentCount, 3)
+    assert.deepEqual(target.handleOptions, { authority: 'trusted-host' })
     assert.equal(owner.path, '/profile/ptc-plus/bindings.json')
     assert.equal((await call(target, 'list')).ok, true)
     await owner.dispose()
@@ -208,8 +318,7 @@ for (const arity of [2, 3]) {
     assert.equal((await call(target, 'list')).ok, false)
     await owner.dispose()
     assert.equal(target.handleDisposals, 1)
-  })
-}
+})
 
 test('routes management operations through one revision-aware store owner', async () => {
   const target = ownerFixture()
@@ -261,9 +370,8 @@ test('scopes agent authoring to PTC sessions and accepts one validated in-memory
     id: 'agent-1',
     session: { id: 'session-1', header: { agentPreset: 'ptc' } },
     inject: message => injected.push(message),
-    steer: message => steered.push(message),
-    ctx: {
-      effect(register) { return register() },
+    steer: message => { steered.push(message); draftTool = captureSubmission(owner, agent, message) },
+    ctx: injectedAgentContext({
       commands: {
         register(definition) {
           command = definition
@@ -282,7 +390,7 @@ test('scopes agent authoring to PTC sessions and accepts one validated in-memory
           return () => { toolDisposals += 1 }
         },
       },
-    },
+    }),
   }
   const listeners = new Map()
   const authoring = {
@@ -292,7 +400,7 @@ test('scopes agent authoring to PTC sessions and accepts one validated in-memory
       return () => listeners.delete(name)
     },
   }
-  const target = ownerFixture(2, authoring)
+  const target = ownerFixture(authoring)
   const owner = createUserBindingsOwner(target.ctx, {
     enabled: true,
     store: fakeStore(),
@@ -309,33 +417,39 @@ test('scopes agent authoring to PTC sessions and accepts one validated in-memory
   assert.equal((await command.handler({
     agent, rawInput: '', signal: new AbortController().signal,
   })).kind, 'error')
-  assert.equal((await command.handler({
+  const commandResult = command.handler({
     agent, rawInput: 'new format repository data', signal: new AbortController().signal,
-  })).kind, 'success')
-  assert.match(skill.name, /^ptc-plus-binding-authoring-/)
-  assert.equal(skill.invocation.modelInvocable, false)
-  assert.equal(draftTool.name, 'submitBindingDraft')
-  assert.match(draftTool.output.render({}, { id: 'repo-data' })[0].text, /repo-data/)
-  assert.equal(injected[0].source.kind, 'skill-invocation')
-  assert.equal(injected[0].role, 'user')
-  assert.notEqual(injected[0].id, steered[0].id)
-  assert.deepEqual(steered[0].source, { kind: 'plugin', plugin: 'ptc-plus' })
+  })
+  let commandSettled = false
+  void commandResult.then(() => { commandSettled = true })
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(commandSettled, true)
+  assert.equal(skill, undefined)
+  assert.deepEqual(injected, [])
+  assert.deepEqual(steered[0].source, { kind: 'plugin', plugin: 'ptc-plus', form: 'instructions' })
   assert.match(steered[0].content[0].text, /format repository data/)
 
-  const submitted = await draftTool.execute({ entry: {
+  const entry = {
     id: 'repo-data',
     name: 'repoData',
     scope: 'namespace',
     purpose: 'Format repository data.',
     source: 'export function format(value: string): string { return value.trim() }',
-  } })
-  assert.deepEqual(submitted, { accepted: true, id: 'repo-data' })
+  }
+  await assert.rejects(draftTool.execute({ entry }), /requesting Agent/)
+  await assert.rejects(
+    draftTool.execute({ entry }, nestedExecution({ id: 'foreign-agent' })),
+    /requesting Agent/,
+  )
+  const submitted = await draftTool.execute({ entry }, nestedExecution(agent))
+  assert.deepEqual(submitted, { accepted: true, id: 'repo-data', requestId: draftTool.requestId })
+  assert.equal((await commandResult).kind, 'success')
   const capability = owner.draftCapabilityForAgent(agent)
   const draft = (await call(target, 'draft', { capability })).value
   assert.equal(draft.entry.enabled, false)
   assert.equal(draft.entry.symbols[0], 'format')
-  assert.equal(skillDisposals, 1)
-  assert.equal(toolDisposals, 1)
+  assert.equal(skillDisposals, 0)
+  assert.equal(toolDisposals, 0)
   assert.equal((await call(target, 'discard-draft', {
     capability, version: draft.version + 1,
   })).error.code, 'BINDINGS_CONFLICT')
@@ -381,6 +495,37 @@ test('does not let discard overtake a draft save already in progress', async (t)
   assert.equal((await call(fixture.target, 'draft', { capability })).value, null)
 })
 
+test('a completed write cannot resurrect a locator revoked during storage settlement', async t => {
+  const store = fakeStore()
+  let finish
+  store.create = () => new Promise(resolve => { finish = resolve })
+  const fixture = await acceptedDraftFixture(store)
+  t.after(() => fixture.owner.dispose())
+  const { capability, draft } = await fixture.submit('revoked')
+  const saving = call(fixture.target, 'save-draft', { capability, version: draft.version, expectedRevision: 1 })
+  await fixture.owner.clearAgentPresentation(fixture.agent)
+  finish('created')
+  assert.equal((await saving).value, 'created')
+  assert.equal((await call(fixture.target, 'draft-review', { capability })).value, null)
+  assert.equal((await call(fixture.target, 'draft', { capability })).value, null)
+})
+
+test('save-draft can atomically enable only on an explicit user action', async (t) => {
+  const store = fakeStore()
+  const fixture = await acceptedDraftFixture(store)
+  t.after(() => fixture.owner.dispose())
+  const { capability, draft } = await fixture.submit('explicitEnable')
+  assert.equal((await call(fixture.target, 'save-draft', {
+    capability,
+    version: draft.version,
+    expectedRevision: 1,
+    activate: true,
+  })).value, 'created')
+  assert.equal(store.calls.at(-1)[0], 'create')
+  assert.equal(store.calls.at(-1)[1].enabled, true)
+  assert.equal((await call(fixture.target, 'draft', { capability })).value, null)
+})
+
 test('removes an accepted draft when its session presentation is disposed', async (t) => {
   const fixture = await acceptedDraftFixture()
   t.after(() => fixture.owner.dispose())
@@ -388,6 +533,287 @@ test('removes an accepted draft when its session presentation is disposed', asyn
   assert.equal((await call(fixture.target, 'draft', { sessionId: 'draft-session' })).ok, false)
   await fixture.owner.clearSessionPresentation('draft-session')
   assert.equal((await call(fixture.target, 'draft', { capability })).value, null)
+  assert.equal(fixture.owner.draftCapabilityForAgent(fixture.agent), null)
+})
+
+test('draft removal never appends presentation notifications to a Session', async t => {
+  for (const action of ['save', 'discard', 'agent', 'session', 'disable', 'dispose']) {
+    const fixture = await acceptedDraftFixture()
+    t.after(() => fixture.owner.dispose())
+    const session = Session.create('draft-session')
+    fixture.agent.session = session
+    const appends = t.mock.method(session, 'append')
+    const { capability, draft } = await fixture.submit(`draft_${action}`)
+    if (action === 'save' || action === 'discard') {
+      const result = await call(fixture.target, `${action}-draft`, {
+        capability, version: draft.version, ...(action === 'save' ? { expectedRevision: 1 } : {}),
+      })
+      assert.equal(result.ok, true)
+    } else if (action === 'agent') await fixture.owner.clearAgentPresentation(fixture.agent)
+    else if (action === 'session') await fixture.owner.clearSessionPresentation(session.id)
+    else if (action === 'disable') await fixture.owner.reconfigure({ userBindingsEnabled: false })
+    else await fixture.owner.dispose()
+    assert.equal(fixture.owner.draftCapabilityForAgent(fixture.agent), null)
+    assert.equal(appends.mock.callCount(), 0, action)
+    assert.deepEqual(session.snapshotEvents(), [])
+  }
+})
+
+
+test('session disposal revokes drafts left by an Agent replaced in the same session', async (t) => {
+  const fixture = await acceptedDraftFixture()
+  t.after(() => fixture.owner.dispose())
+  const { capability } = await fixture.submit('replacedDraft')
+  let replacementCommand
+  const replacement = {
+    id: 'replacement-draft-agent',
+    session: { id: 'draft-session' },
+    inject() {},
+    steer() {},
+    ctx: injectedAgentContext({
+      commands: {
+        register(definition) {
+          replacementCommand = definition
+          return () => {}
+        },
+      },
+      skills: { register() { return () => {} } },
+      tools: { register() { return () => {} } },
+    }),
+  }
+  await fixture.owner.setAgentPresentation(replacement)
+  assert.equal(replacementCommand.name, 'binding')
+  await fixture.owner.clearSessionPresentation('draft-session')
+  assert.equal((await call(fixture.target, 'draft', { capability })).value, null)
+  assert.equal(fixture.owner.draftCapabilityForAgent(replacement), null)
+})
+
+test('reports a session cleanup failure after revoking its Agent resources', async () => {
+  const agent = {
+    id: 'session-cleanup-failure-agent',
+    session: { id: 'session-cleanup-failure' },
+    inject() {},
+    steer() {},
+    ctx: injectedAgentContext({
+      commands: {
+        register() {
+          return () => { throw new Error('session command disposal failed') }
+        },
+      },
+      skills: { register() { return () => {} } },
+      tools: { register() { return () => {} } },
+    }),
+  }
+  const target = ownerFixture({ agents: { list: () => [agent] }, on() { return () => {} } })
+  const owner = createUserBindingsOwner(target.ctx, { enabled: true, store: fakeStore() })
+  await owner.setDraftProjectionAvailable(true)
+  await owner.setAgentPresentation(agent)
+  await assert.rejects(
+    owner.clearSessionPresentation(agent.session.id),
+    error => error instanceof AggregateError
+      && error.message === 'Global User Bindings session cleanup failed',
+  )
+  await owner.dispose()
+})
+
+
+
+test('Agent disposal invalidates command reconciliation awaiting replaced command cleanup', async () => {
+  let oldCommand
+  let newCommandRegistrations = 0
+  let releaseOldCommand
+  let oldCommandDisposalStarted
+  const oldCommandGate = new Promise(resolve => { releaseOldCommand = resolve })
+  const disposalStart = new Promise(resolve => { oldCommandDisposalStarted = resolve })
+  const session = { id: 'command-reconcile-session' }
+  const oldAgent = {
+    id: 'old-command-agent', session,
+    ctx: injectedAgentContext({
+      commands: {
+        register(definition) {
+          oldCommand = definition
+          return async () => {
+            oldCommandDisposalStarted()
+            await oldCommandGate
+          }
+        },
+      },
+    }),
+  }
+  const newAgent = {
+    id: 'new-command-agent', session,
+    ctx: injectedAgentContext({
+      commands: {
+        register() {
+          newCommandRegistrations += 1
+          return () => {}
+        },
+      },
+    }),
+  }
+  let agents = [oldAgent]
+  const target = ownerFixture({ agents: { list: () => agents }, on() { return () => {} } })
+  const owner = createUserBindingsOwner(target.ctx, {
+    enabled: true,
+    draftProjectionAvailable: true,
+    store: fakeStore(),
+  })
+  await owner.setAgentPresentation(oldAgent)
+  assert.equal(oldCommand.name, 'binding')
+  agents = [newAgent]
+  const replacement = owner.setAgentPresentation(newAgent)
+  await disposalStart
+  const cleanup = owner.clearAgentPresentation(newAgent)
+  releaseOldCommand()
+  await Promise.all([replacement, cleanup])
+  assert.equal(newCommandRegistrations, 0)
+  await owner.dispose()
+})
+
+test('serializes same-agent command reinstallation behind async disposal', async () => {
+  let registrations = 0
+  let release
+  let disposalStarted
+  const gate = new Promise(resolve => { release = resolve })
+  const started = new Promise(resolve => { disposalStarted = resolve })
+  const agent = {
+    id: 'same-agent-command-race', session: { id: 'same-agent-command-race-session' },
+    ctx: injectedAgentContext({
+      commands: {
+        register() {
+          registrations += 1
+          return async () => { disposalStarted(); await gate }
+        },
+      },
+    }),
+  }
+  const target = ownerFixture({ agents: { list: () => [agent] }, on() { return () => {} } })
+  const owner = createUserBindingsOwner(target.ctx, { enabled: true, draftProjectionAvailable: true, store: fakeStore() })
+  await owner.setAgentPresentation(agent)
+  agent.runCodeAvailable = false
+  const removing = owner.setAgentPresentation(agent)
+  await started
+  agent.runCodeAvailable = true
+  const reinstalling = owner.setAgentPresentation(agent)
+  release()
+  await Promise.all([removing, reinstalling])
+  assert.equal(registrations, 2)
+  await owner.dispose()
+})
+
+test('delayed command injection cannot resurrect a disposed Agent', async () => {
+  let releaseInjection
+  let command
+  const injectionGate = new Promise(resolve => { releaseInjection = resolve })
+  const agent = {
+    id: 'delayed-command-agent', session: { id: 'delayed-command-session' },
+    ctx: {
+      inject(services, callback) {
+        if (services[0] !== 'commands') throw new Error('unexpected injection')
+        const fiber = injectionGate.then(() => callback({
+          commands: { register(definition) { command = definition; return () => {} } },
+        }))
+        fiber.dispose = async () => {}
+        return fiber
+      },
+    },
+  }
+  const target = ownerFixture({ agents: { list: () => [agent] }, on() { return () => {} } })
+  const owner = createUserBindingsOwner(target.ctx, { enabled: true, draftProjectionAvailable: true, store: fakeStore() })
+  const installing = owner.setAgentPresentation(agent)
+  agent.runCodeAvailable = false
+  releaseInjection()
+  await installing
+  assert.equal(command, undefined)
+  await owner.clearAgentPresentation(agent)
+  await owner.dispose()
+})
+
+test('keeps a command registration while its fiber is pending and installs it later', async () => {
+  let command
+  let callback
+  const agent = {
+    id: 'agent-pending-command-fiber', session: { id: 'session-pending-command-fiber' },
+    ctx: {
+      inject(_services, next) {
+        callback = next
+        // A Cordis fiber may settle while still PENDING on the command service;
+        // its callback is invoked only after a later service notify. The
+        // registration must survive that settle window and let the later
+        // activation install the command.
+        return Promise.resolve(undefined)
+      },
+    },
+  }
+  const authoring = { agents: { list: () => [agent] }, on() { return () => {} } }
+  const target = ownerFixture(authoring)
+  const owner = createUserBindingsOwner(target.ctx, {
+    enabled: true, draftProjectionAvailable: true, store: fakeStore(),
+  })
+  await owner.setAgentPresentation(agent)
+  await new Promise(resolve => setImmediate(resolve))
+  callback({
+    commands: { register(definition) { command = definition; return () => {} } },
+    effect: factory => factory(),
+  })
+  assert.equal(command?.name, 'binding')
+  await owner.dispose()
+})
+
+test('fails a stale command fiber activation and removes its placeholder registration', async () => {
+  const warnings = []
+  let command
+  let releaseInjection
+  const injectionGate = new Promise(resolve => { releaseInjection = resolve })
+  const agent = {
+    id: 'stale-command-agent', session: { id: 'stale-command-session' },
+    ctx: {
+      inject(_services, next) {
+        const fiber = injectionGate.then(() => next({
+          commands: { register(definition) { command = definition; return () => {} } },
+          effect: factory => factory(),
+        }))
+        fiber.dispose = async () => {}
+        return fiber
+      },
+    },
+  }
+  const authoring = { agents: { list: () => [agent] }, on() { return () => {} } }
+  const target = ownerFixture(authoring)
+  target.ctx.logger = { warn: (...args) => warnings.push(args) }
+  const owner = createUserBindingsOwner(target.ctx, {
+    enabled: true, draftProjectionAvailable: true, store: fakeStore(),
+  })
+  await owner.setAgentPresentation(agent)
+  agent.runCodeAvailable = false
+  releaseInjection()
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(command, undefined)
+  assert.equal(warnings.at(-1)[0], 'ptc-plus: failed to roll back Global User Bindings command injection')
+  assert.match(warnings.at(-1)[1].message, /no longer eligible/)
+  agent.runCodeAvailable = true
+  await owner.setAgentPresentation(agent)
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(command?.name, 'binding')
+  await owner.dispose()
+})
+
+test('rejects command registration without a Cordis effect owner', async () => {
+  let command
+  const agent = {
+    id: 'missing-effect-command-agent', session: { id: 'missing-effect-command-session' },
+    ctx: {
+      inject(_services, callback) {
+        callback({ commands: { register(definition) { command = definition; return () => {} } } })
+        return { dispose() {} }
+      },
+    },
+  }
+  const target = ownerFixture({ agents: { list: () => [agent] }, on() { return () => {} } })
+  const owner = createUserBindingsOwner(target.ctx, { enabled: true, draftProjectionAvailable: true, store: fakeStore() })
+  await assert.rejects(owner.setAgentPresentation(agent), /registration requires an effect owner/)
+  assert.equal(command, undefined)
+  await owner.dispose()
 })
 
 test('restores only the exact failed saving draft and preserves a replacement', async (t) => {
@@ -428,44 +854,47 @@ test('restores only the exact failed saving draft and preserves a replacement', 
   )
 })
 
-test('follows live PTC presentation instead of preset labels', async () => {
+test('follows the fresh agent run_code view instead of preset labels or prompt assembly', async () => {
   const registrations = []
+  const listeners = new Map()
   let disposals = 0
   const agent = {
     id: 'agent-custom',
     session: { id: 'session-custom', header: { agentPreset: 'custom' } },
-    ctx: {
-      effect(register) { return register() },
+    ctx: injectedAgentContext({
       commands: {
         register(definition) {
           registrations.push(definition)
           return async () => { disposals += 1 }
         },
       },
-    },
+    }),
   }
   const authoring = {
     agents: { list: () => [agent] },
-    on() { return () => {} },
+    on(name, listener) {
+      listeners.set(name, listener)
+      return () => listeners.delete(name)
+    },
   }
-  const target = ownerFixture(2, authoring)
+  const target = ownerFixture(authoring)
   const owner = createUserBindingsOwner(target.ctx, {
     enabled: true,
     store: fakeStore(),
     cwd: process.cwd(),
   })
   assert.equal(registrations.length, 0)
-  await owner.setAgentPresentation(agent, 'ptc')
-  assert.equal(registrations.length, 0)
   await owner.setDraftProjectionAvailable(true)
   assert.equal(registrations.length, 1)
-  await owner.setAgentPresentation(agent, 'ptc')
-  assert.equal(registrations.length, 1)
-  await owner.setAgentPresentation(agent, 'both')
-  assert.equal(disposals, 1)
   await owner.setAgentPresentation(agent, 'native')
+  assert.equal(registrations.length, 1)
+  agent.runCodeAvailable = false
+  listeners.get('tools/change')()
+  await new Promise(resolve => setImmediate(resolve))
   assert.equal(disposals, 1)
-  await owner.setAgentPresentation(agent, 'ptc')
+  agent.runCodeAvailable = true
+  listeners.get('tools/change')()
+  await new Promise(resolve => setImmediate(resolve))
   assert.equal(registrations.length, 2)
   const unavailableCommand = registrations.at(-1)
   await owner.setDraftProjectionAvailable(false)
@@ -479,6 +908,176 @@ test('follows live PTC presentation instead of preset labels', async () => {
   assert.equal(disposals, 3)
   await owner.dispose()
 })
+
+
+test('rejects command registration when the injected scope lacks an effect owner', async () => {
+  const warnings = []
+  const agent = {
+    id: 'agent-missing-effect-owner',
+    session: { id: 'session-missing-effect-owner' },
+    ctx: {
+      inject(names, callback) {
+        assert.deepEqual(names, ['commands'])
+        callback({ commands: { register() { return () => {} } } })
+        return { dispose() {} }
+      },
+    },
+  }
+  const authoring = { agents: { list: () => [agent] }, on() { return () => {} } }
+  const target = ownerFixture(authoring)
+  target.ctx.logger = { warn: (...args) => warnings.push(args) }
+  const owner = createUserBindingsOwner(target.ctx, {
+    enabled: true,
+    draftProjectionAvailable: true,
+    store: fakeStore(),
+  })
+  await new Promise(resolve => setImmediate(resolve))
+  assert.match(warnings.at(-1)[1].message, /registration requires an effect owner/)
+  await owner.dispose()
+})
+
+test('cleans up a command injection that resolves without invoking its callback', async () => {
+  const agent = {
+    id: 'agent-empty-command-fiber',
+    session: { id: 'session-empty-command-fiber' },
+    ctx: {
+      inject(names) {
+        assert.deepEqual(names, ['commands'])
+        return Promise.resolve(undefined)
+      },
+    },
+  }
+  const authoring = { agents: { list: () => [agent] }, on() { return () => {} } }
+  const target = ownerFixture(authoring)
+  const owner = createUserBindingsOwner(target.ctx, {
+    enabled: true,
+    draftProjectionAvailable: true,
+    store: fakeStore(),
+  })
+  await new Promise(resolve => setImmediate(resolve))
+  await owner.dispose()
+})
+
+
+test('contains command-fiber activation and disposal failures', async () => {
+  const warnings = []
+  const syncFailureAgent = {
+    id: 'agent-sync-command-failure',
+    session: { id: 'session-sync-command-failure' },
+    ctx: {},
+  }
+  const syncAuthoring = {
+    agents: { list: () => [syncFailureAgent] },
+    on() { return () => {} },
+  }
+  const syncTarget = ownerFixture(syncAuthoring)
+  syncTarget.ctx.logger = { warn: (...args) => warnings.push(args) }
+  const syncOwner = createUserBindingsOwner(syncTarget.ctx, {
+    enabled: true,
+    draftProjectionAvailable: true,
+    store: fakeStore(),
+  })
+  await new Promise(resolve => setImmediate(resolve))
+  assert.match(warnings.at(-1)[1].message, /requires agent-scoped Cordis injection/)
+  await syncOwner.dispose()
+
+  let containedDisposals = 0
+  const containedFailureAgent = {
+    id: 'agent-contained-command-failure',
+    session: { id: 'session-contained-command-failure' },
+    ctx: {
+      inject() {
+        return {
+          then(_resolve, reject) { reject(new Error('contained command activation failed')) },
+          dispose() { containedDisposals += 1 },
+        }
+      },
+    },
+  }
+  const containedAuthoring = {
+    agents: { list: () => [containedFailureAgent] },
+    on() { return () => {} },
+  }
+  const containedTarget = ownerFixture(containedAuthoring)
+  containedTarget.ctx.logger = { warn: (...args) => warnings.push(args) }
+  const containedOwner = createUserBindingsOwner(containedTarget.ctx, {
+    enabled: true,
+    store: fakeStore(),
+  })
+  await containedOwner.setDraftProjectionAvailable(true)
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(containedDisposals, 1)
+  assert.equal(warnings.at(-1)[0], 'ptc-plus: failed to roll back Global User Bindings command injection')
+  assert.equal(warnings.at(-1)[1].message, 'contained command activation failed')
+  await containedOwner.dispose()
+
+  let asyncDisposed = 0
+  const asyncFailureAgent = {
+    id: 'agent-async-command-failure',
+    session: { id: 'session-async-command-failure' },
+    ctx: {
+      inject() {
+        return {
+          then(_resolve, reject) { reject(new Error('command activation failed')) },
+          dispose() {
+            asyncDisposed += 1
+            return Promise.reject(new Error('command rollback failed'))
+          },
+        }
+      },
+    },
+  }
+  const asyncAuthoring = {
+    agents: { list: () => [asyncFailureAgent] },
+    on() { return () => {} },
+  }
+  const asyncTarget = ownerFixture(asyncAuthoring)
+  asyncTarget.ctx.logger = { warn: (...args) => warnings.push(args) }
+  const asyncOwner = createUserBindingsOwner(asyncTarget.ctx, {
+    enabled: true,
+    store: fakeStore(),
+  })
+  await asyncOwner.setDraftProjectionAvailable(true)
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(asyncDisposed, 1)
+  assert.equal(warnings.at(-1)[0], 'ptc-plus: failed to roll back Global User Bindings command injection')
+  assert.deepEqual(
+    warnings.at(-1)[1].errors.map(error => error.message),
+    ['command activation failed', 'command rollback failed'],
+  )
+  await asyncOwner.dispose()
+
+  let disposedCommand
+  const listeners = new Map()
+  const disposalAgent = {
+    id: 'agent-command-disposal-failure',
+    session: { id: 'session-command-disposal-failure' },
+    ctx: injectedAgentContext({
+      commands: {
+        register(definition) {
+          disposedCommand = definition
+          return () => { throw new Error('command disposal failed') }
+        },
+      },
+    }),
+  }
+  const disposalAuthoring = {
+    agents: { list: () => [disposalAgent] },
+    on(name, listener) { listeners.set(name, listener); return () => listeners.delete(name) },
+  }
+  const disposalTarget = ownerFixture(disposalAuthoring)
+  disposalTarget.ctx.logger = { warn: (...args) => warnings.push(args) }
+  const disposalOwner = createUserBindingsOwner(disposalTarget.ctx, {
+    enabled: true,
+    store: fakeStore(),
+  })
+  await disposalOwner.setDraftProjectionAvailable(true)
+  assert.equal(disposedCommand.name, 'binding')
+  await listeners.get('agent/disposed')({ agent: disposalAgent })
+  assert.equal(warnings.at(-1)[0], 'ptc-plus: failed to dispose Global User Bindings authoring')
+  await disposalOwner.dispose()
+})
+
 
 test('keeps Agent authoring request-scoped across edits, conflicts, and lifecycle cleanup', async () => {
   let command
@@ -495,9 +1094,12 @@ test('keeps Agent authoring request-scoped across edits, conflicts, and lifecycl
       if (injectionFailure) throw new Error('injection unavailable')
       injected.push(message)
     },
-    steer: message => steered.push(message),
-    ctx: {
-      effect(register) { return register() },
+    steer: message => {
+      if (injectionFailure) throw new Error('injection unavailable')
+      steered.push(message)
+      draftTool = captureSubmission(owner, agent, message)
+    },
+    ctx: injectedAgentContext({
       commands: {
         register(definition) {
           command = definition
@@ -518,12 +1120,13 @@ test('keeps Agent authoring request-scoped across edits, conflicts, and lifecycl
           return () => {}
         },
       },
-    },
+    }),
   }
   const nativeAgent = {
     ...agent,
     id: 'agent-native',
     session: { id: 'session-native', header: { agentPreset: 'native' } },
+    runCodeAvailable: false,
   }
   const authoring = {
     agents: { list: () => [agent, nativeAgent] },
@@ -548,7 +1151,7 @@ test('keeps Agent authoring request-scoped across edits, conflicts, and lifecycl
   store.list = async () => ({ revision: 4, entries: [original, occupied] })
   store.snapshot = async () => createUserBindingsSnapshot({ entries: [original, occupied] }, 4)
   store.validationDocument = async () => ({ revision: 4, entries: [original, occupied] })
-  const target = ownerFixture(2, authoring)
+  const target = ownerFixture(authoring)
   const owner = createUserBindingsOwner(target.ctx, {
     enabled: true,
     store,
@@ -565,28 +1168,31 @@ test('keeps Agent authoring request-scoped across edits, conflicts, and lifecycl
     agent, rawInput: 'unsupported operation', signal: new AbortController().signal,
   })).kind, 'error')
 
-  assert.equal((await command.handler({
+  const editCommandResult = command.handler({
     agent, rawInput: 'edit alpha return a configurable value', signal: new AbortController().signal,
-  })).kind, 'success')
+  })
+  await new Promise(resolve => setImmediate(resolve))
   assert.match(steered.at(-1).content[0].text, /Original helper/)
   await assert.rejects(draftTool.execute({ entry: {
-    ...original, id: 'renamed', enabled: undefined,
-  } }), /id must remain/)
+    id: 'renamed', name: original.name, scope: original.scope,
+    purpose: original.purpose, source: original.source,
+  } }, nestedExecution(agent)), /id must remain/)
   await assert.rejects(draftTool.execute({ entry: {
     id: 'alpha', name: 'occupied', scope: 'namespace', purpose: '', source: 'export const other = 3',
-  } }), /conflicts between entries/)
+  } }, nestedExecution(agent)), /conflicts between entries/)
   const acceptedTool = draftTool
   const acceptedSubmission = acceptedTool.execute({ entry: {
     id: 'alpha', name: 'alpha', scope: 'namespace', purpose: 'Revised helper.',
     source: 'export function value(): number { return 3 }',
-  } })
+  } }, nestedExecution(agent))
   await assert.rejects(acceptedTool.execute({ entry: {
     id: 'alpha', name: 'alpha', scope: 'namespace', purpose: '', source: 'export const value = 4',
-  } }), /already processing/)
-  assert.deepEqual(await acceptedSubmission, { accepted: true, id: 'alpha' })
+  } }, nestedExecution(agent)), /already processing/)
+  assert.deepEqual(await acceptedSubmission, { accepted: true, id: 'alpha', requestId: acceptedTool.requestId })
+  assert.equal((await editCommandResult).kind, 'success')
   await assert.rejects(acceptedTool.execute({ entry: {
     id: 'alpha', name: 'alpha', scope: 'namespace', purpose: '', source: 'export const value = 4',
-  } }), /no longer active/)
+  } }, nestedExecution(agent)), /no longer active/)
   const editCapability = owner.draftCapabilityForAgent(agent)
   const editDraft = (await call(target, 'draft', { capability: editCapability })).value
   assert.equal((await call(target, 'save-draft', {
@@ -608,61 +1214,88 @@ test('keeps Agent authoring request-scoped across edits, conflicts, and lifecycl
   })).text, 'plain entry failure')
   store.entry = readEntry
 
-  await command.handler({
+  const turnCommandResult = command.handler({
     agent, rawInput: 'new another helper', signal: new AbortController().signal,
   })
+  await new Promise(resolve => setImmediate(resolve))
   await assert.rejects(draftTool.execute({ entry: {
     id: 'occupied', name: 'newName', scope: 'namespace', purpose: '', source: 'export const value = 1',
-  } }), /already exists/)
+  } }, nestedExecution(agent)), /already exists/)
   const turnTool = draftTool
-  listeners.get('agent/turn-stopping')({ agent })
+  await listeners.get('agent/turn-stopping')({ agent })
+  assert.deepEqual(await turnCommandResult, { kind: 'success' })
   await assert.rejects(turnTool.execute({ entry: {
     id: 'turn', name: 'turn', scope: 'namespace', purpose: '', source: 'export const value = 1',
-  } }), /no longer active/)
+  } }, nestedExecution(agent)), /no longer active/)
 
-  await command.handler({
+  const errorCommandResult = command.handler({
     agent, rawInput: 'new error cleanup', signal: new AbortController().signal,
   })
+  await new Promise(resolve => setImmediate(resolve))
   const errorTool = draftTool
-  listeners.get('agent/error')({ agent })
+  await listeners.get('agent/error')({ agent })
+  assert.deepEqual(await errorCommandResult, { kind: 'success' })
   await assert.rejects(errorTool.execute({ entry: {
     id: 'error', name: 'errorBinding', scope: 'namespace', purpose: '', source: 'export const value = 1',
-  } }), /no longer active/)
+  } }, nestedExecution(agent)), /no longer active/)
 
   const cancelledCommand = new AbortController()
-  await command.handler({
+  const cancelledResult = command.handler({
     agent, rawInput: 'new cancelled authoring', signal: cancelledCommand.signal,
   })
+  await new Promise(resolve => setImmediate(resolve))
   const cancelledTool = draftTool
   cancelledCommand.abort()
+  assert.deepEqual(await cancelledResult, { kind: 'success' })
+  await new Promise(resolve => setImmediate(resolve))
   await assert.rejects(cancelledTool.execute({ entry: {
     id: 'cancelled', name: 'cancelledBinding', scope: 'namespace', purpose: '', source: 'export const value = 1',
-  } }), /no longer active/)
+  } }, nestedExecution(agent)), /no longer active/)
 
-  await command.handler({
+  const unavailableResult = command.handler({
+    agent, rawInput: 'new unavailable surface', signal: new AbortController().signal,
+  })
+  await new Promise(resolve => setImmediate(resolve))
+  const unavailableTool = draftTool
+  agent.runCodeAvailable = false
+  await owner.setAgentPresentation(agent)
+  assert.deepEqual(await unavailableResult, { kind: 'success' })
+  await assert.rejects(unavailableTool.execute({ entry: {
+    id: 'unavailable', name: 'unavailable', scope: 'namespace', purpose: '',
+    source: 'export const value = 1',
+  } }, nestedExecution(agent)), /no longer active/)
+  agent.runCodeAvailable = true
+  await owner.setAgentPresentation(agent)
+
+  const disposalCommandResult = command.handler({
     agent, rawInput: 'new disposal cleanup', signal: new AbortController().signal,
   })
+  await new Promise(resolve => setImmediate(resolve))
   assert.deepEqual(await draftTool.execute({ entry: {
     id: 'disposal', name: 'disposal', scope: 'namespace', purpose: '', source: 'export const value = 1',
-  } }), { accepted: true, id: 'disposal' })
+  } }, nestedExecution(agent)), { accepted: true, id: 'disposal', requestId: draftTool.requestId })
+  assert.equal((await disposalCommandResult).kind, 'success')
   const disposalCapability = owner.draftCapabilityForAgent(agent)
   assert.notEqual((await call(target, 'draft', { capability: disposalCapability })).value, null)
-  listeners.get('agent/disposed')({ agent })
+  await listeners.get('agent/disposed')({ agent })
   assert.equal((await call(target, 'draft', { capability: disposalCapability })).value, null)
 
   listeners.get('agent/created')({ agent })
   await owner.setAgentPresentation(agent, 'ptc')
-  await command.handler({
+  const disabledDraftResult = command.handler({
     agent, rawInput: 'new disabled cleanup', signal: new AbortController().signal,
   })
+  await new Promise(resolve => setImmediate(resolve))
   await draftTool.execute({ entry: {
     id: 'disabled-draft', name: 'disabledDraft', scope: 'namespace', purpose: '',
     source: 'export const value = 1',
-  } })
+  } }, nestedExecution(agent))
+  assert.equal((await disabledDraftResult).kind, 'success')
   const disabledCapability = owner.draftCapabilityForAgent(agent)
-  await command.handler({
+  const disabledCommandResult = command.handler({
     agent, rawInput: 'new pending disablement', signal: new AbortController().signal,
   })
+  await new Promise(resolve => setImmediate(resolve))
   const disabledTool = draftTool
   await owner.reconfigure({
     userBindingsEnabled: false,
@@ -674,9 +1307,10 @@ test('keeps Agent authoring request-scoped across edits, conflicts, and lifecycl
     maxValueArrayLength: 100,
     maxValueBigIntDigits: 100,
   })
+  assert.deepEqual(await disabledCommandResult, { kind: 'success' })
   await assert.rejects(disabledTool.execute({ entry: {
     id: 'disabled', name: 'disabledBinding', scope: 'namespace', purpose: '', source: 'export const value = 1',
-  } }), /no longer active/)
+  } }, nestedExecution(agent)), /no longer active/)
   await owner.reconfigure({
     userBindingsEnabled: true,
     maxWallMs: 1_000,
@@ -688,7 +1322,7 @@ test('keeps Agent authoring request-scoped across edits, conflicts, and lifecycl
     maxValueBigIntDigits: 100,
   })
   assert.equal((await call(target, 'draft', { capability: disabledCapability })).value, null)
-  assert.equal(injected.length, 7)
+  assert.equal(injected.length, 0)
   await owner.dispose()
 })
 
@@ -700,9 +1334,8 @@ test('revokes authoring continuations that cross capability disablement', async 
     id: 'agent-race',
     session: { id: 'session-race', header: { agentPreset: 'ptc' } },
     inject() {},
-    steer() {},
-    ctx: {
-      effect(register) { return register() },
+    steer(message) { draftTool = captureSubmission(owner, agent, message) },
+    ctx: injectedAgentContext({
       commands: {
         register(definition) {
           command = definition
@@ -716,7 +1349,7 @@ test('revokes authoring continuations that cross capability disablement', async 
           return () => {}
         },
       },
-    },
+    }),
   }
   const authoring = {
     agents: { list: () => [agent] },
@@ -741,7 +1374,7 @@ test('revokes authoring continuations that cross capability disablement', async 
       },
     }
   }
-  const target = ownerFixture(2, authoring)
+  const target = ownerFixture(authoring)
   const owner = createUserBindingsOwner(target.ctx, {
     enabled: true,
     store,
@@ -776,11 +1409,12 @@ test('revokes authoring continuations that cross capability disablement', async 
   assert.equal(draftTool, undefined)
 
   await owner.reconfigure(runtimeConfig(true))
-  assert.equal((await command.handler({
+  const delayedCommand = command.handler({
     agent,
     rawInput: 'new delayed candidate',
     signal: new AbortController().signal,
-  })).kind, 'success')
+  })
+  await new Promise(resolve => setImmediate(resolve))
   const staleTool = draftTool
   let releaseDocument
   let documentStarted
@@ -794,11 +1428,12 @@ test('revokes authoring continuations that cross capability disablement', async 
   const pendingSubmission = staleTool.execute({ entry: {
     id: 'delayed', name: 'delayed', scope: 'namespace', purpose: '',
     source: 'export const value = 1',
-  } })
+  } }, nestedExecution(agent))
   await documentStart
   await owner.reconfigure(runtimeConfig(false))
   releaseDocument()
   await assert.rejects(pendingSubmission, /no longer active/)
+  assert.deepEqual(await delayedCommand, { kind: 'success' })
 
   await owner.reconfigure(runtimeConfig(true))
   assert.equal((await call(target, 'draft', { capability: 'missing' })).value, null)
@@ -961,6 +1596,90 @@ test('repairs RPC registrations after injection disposal fails during disablemen
   assert.equal((await [...activeHandlers][0]('list', {})).ok, true)
   await owner.reconfigure(disabled)
   assert.equal(activeHandlers.size, 0)
+  await owner.dispose()
+})
+
+test('repairs authoring injection after its disposer tears down then rejects', async () => {
+  let command
+  let commandActive = false
+  let draftTool
+  let failAuthoringDispose = true
+  let authoringMounts = 0
+  const activeAuthoringFibers = new Set()
+  const agent = {
+    id: 'authoring-rollback-agent',
+    session: { id: 'authoring-rollback-session' },
+    inject() {},
+    steer(message) { draftTool = captureSubmission(owner, agent, message) },
+    ctx: injectedAgentContext({
+      commands: {
+        register(definition) {
+          command = definition
+          commandActive = true
+          return () => { commandActive = false }
+        },
+      },
+      skills: { register() { return () => {} } },
+      tools: { register(definition) { draftTool = definition; return () => {} } },
+    }),
+  }
+  const ctx = {
+    agents: { list: () => [agent] },
+    tools: { get: (name, scope) => name === 'run_code' && scope === agent ? { name } : undefined },
+    inject(services, callback) {
+      if (services[0] === 'connection') {
+        callback({ connection: { rpc: { handle() { return () => {} } } } })
+        return () => {}
+      }
+      assert.deepEqual(services, ['tools'])
+      const fiber = ++authoringMounts
+      activeAuthoringFibers.add(fiber)
+      callback({ tools: ctx.tools, on() { return () => {} } })
+      return async () => {
+        activeAuthoringFibers.delete(fiber)
+        if (failAuthoringDispose) {
+          failAuthoringDispose = false
+          throw new Error('authoring injection disposal failed')
+        }
+      }
+    },
+    effect(register) { return register() },
+  }
+  const owner = createUserBindingsOwner(ctx, {
+    enabled: true,
+    draftProjectionAvailable: true,
+    store: fakeStore(),
+    cwd: process.cwd(),
+  })
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(authoringMounts, 1)
+  assert.equal(commandActive, true)
+
+  const disabled = {
+    userBindingsEnabled: false,
+    maxWallMs: 2_000,
+    maxOutputBytes: 2_048,
+    maxOldGenerationSizeMb: 64,
+    maxValueNodes: 200,
+    maxValueEdges: 200,
+    maxValueArrayLength: 200,
+    maxValueBigIntDigits: 200,
+  }
+  await assert.rejects(owner.reconfigure(disabled), /authoring unmount failed/)
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(authoringMounts, 2)
+  assert.deepEqual([...activeAuthoringFibers], [2])
+  assert.equal(commandActive, true)
+  assert.equal((await command.handler({
+    agent,
+    rawInput: 'new rollback helper',
+    signal: new AbortController().signal,
+  })).kind, 'success')
+  assert.equal(typeof draftTool.execute, 'function')
+
+  await owner.reconfigure(disabled)
+  assert.equal(activeAuthoringFibers.size, 0)
+  assert.equal(commandActive, false)
   await owner.dispose()
 })
 
@@ -1129,11 +1848,29 @@ test('cancels, times out, and bounds candidate output', async () => {
   await owner.dispose()
 })
 
-test('candidate runner rejects a non-absolute working directory', async () => {
+test('candidate workers settle non-callable exports and thrown values before natural exit', async t => {
+  for (const [source, error] of [
+    ['export const value = 1', 'TypeError: candidate export "value" is not callable'],
+    ['export function value() { throw "candidate failed" }', 'candidate failed'],
+  ]) {
+    const worker = new Worker(new URL('../internal/user-binding-runner.js', import.meta.url), {
+      workerData: { cwd: process.cwd(), source, invocation: { symbol: 'value', args: [] }, valueLimits: {} },
+    })
+    t.after(() => worker.terminate())
+    const [[message], [exitCode]] = await Promise.all([once(worker, 'message'), once(worker, 'exit')])
+    assert.deepEqual(message, { ok: false, error })
+    assert.equal(exitCode, 0)
+  }
+})
+
+test('candidate runner rejects a non-absolute working directory', async t => {
   const worker = new Worker(new URL('../internal/user-binding-runner.js', import.meta.url), {
     workerData: { cwd: 'relative', source: 'export const value = 1' },
   })
-  const error = await new Promise(resolve => worker.once('error', resolve))
+  t.after(() => worker.terminate())
+  const [[error], exitCode] = await Promise.all([
+    once(worker, 'error'), new Promise(resolve => worker.once('exit', resolve)),
+  ])
   assert.match(error.message, /absolute cwd/)
-  await worker.terminate()
+  assert.equal(exitCode, 1)
 })

@@ -2,11 +2,15 @@
 import { execFileSync, spawn } from 'node:child_process'
 import { readdir, readFile, rm, stat } from 'node:fs/promises'
 import { join, posix, win32 } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { parseDocument } from 'yaml'
+import { ToolRuntime } from '@deepseek-ai/dsh-tools'
+import { RUNTIME_PROBE_PREFIX } from './repl-preflight.mjs'
 
 export const NEUTRAL_PERSONA = 'You are a coding agent powered by the {{model}} model. Your working directory is {{cwd}}.'
 export const HEADLESS_PREREQUISITE_CODE = 'PTC-EVAL-PREREQ'
 export const HEADLESS_CONFIG_CODE = 'PTC-EVAL-CONFIG'
+export const HEADLESS_TOOLS_MODE = 'ptc'
 
 const jsYamlTag = {
   tag: 'tag:yaml.org,2002:js',
@@ -119,15 +123,19 @@ export function createProcessRunner(defaultCwd) {
 /** Resolve every host prerequisite without creating or modifying evaluation files. */
 export async function preflightHeadlessHost(repoRoot, options = {}) {
   const repoRootWindows = windowsPath(repoRoot)
+  const probeUrl = pathToFileURL(win32.join(repoRootWindows, 'scripts', 'repl-preflight.mjs'), { windows: true }).href
   const command = [
     "$ErrorActionPreference = 'Stop'",
-    '$version = (& dsh --version | Out-String).Trim()',
+    '$dshCommand = (Get-Command dsh -CommandType Application,ExternalScript -ErrorAction Stop | Select-Object -First 1).Source',
+    `$env:NODE_OPTIONS = ($env:NODE_OPTIONS + ' --import "${powershellPath(probeUrl)}"').Trim()`,
+    "$env:DSH_PTC_EVAL_PROBE = '1'",
+    '$version = (& $dshCommand --version | Out-String).Trim()',
     "if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($version)) { throw 'dsh --version failed' }",
     "$dshHomePath = [Environment]::GetEnvironmentVariable('DSH_HOME', 'Process')",
     "if ([string]::IsNullOrWhiteSpace($dshHomePath)) { $dshHomePath = Join-Path ([Environment]::GetFolderPath('UserProfile')) '.dsh' }",
     '$dshHomePath = [IO.Path]::GetFullPath($dshHomePath)',
     "if (-not (Test-Path -LiteralPath $dshHomePath -PathType Container)) { throw 'DSH home directory does not exist' }",
-    "[PSCustomObject]@{ dshVersion = $version; dshHome = $dshHomePath } | ConvertTo-Json -Compress",
+    "[PSCustomObject]@{ dshVersion = $version; dshCommand = $dshCommand; dshHome = $dshHomePath } | ConvertTo-Json -Compress",
   ].join('; ')
   let result
   try {
@@ -151,19 +159,38 @@ export async function preflightHeadlessHost(repoRoot, options = {}) {
     throw prerequisiteFailure('Windows DSH lookup returned invalid JSON', error)
   }
   if (typeof resolved?.dshVersion !== 'string' || resolved.dshVersion.trim() === ''
+    || typeof resolved?.dshCommand !== 'string' || resolved.dshCommand.trim() === ''
     || typeof resolved?.dshHome !== 'string' || resolved.dshHome.trim() === '') {
-    throw prerequisiteFailure('Windows DSH lookup did not return dshVersion and dshHome')
+    throw prerequisiteFailure('Windows DSH lookup did not return dshVersion, dshCommand and dshHome')
+  }
+  let nodeRuntime
+  try {
+    const records = result.stderr.split(/\r?\n/).filter(line => line.startsWith(RUNTIME_PROBE_PREFIX))
+    if (records.length !== 1) throw new Error('DSH must emit exactly one successful Node REPL probe')
+    nodeRuntime = JSON.parse(records[0].slice(RUNTIME_PROBE_PREFIX.length))
+    if (typeof nodeRuntime.nodeVersion !== 'string' || !nodeRuntime.nodeVersion.startsWith('v')) throw new Error('missing Node version')
+    nodeRuntime.nodeExecutable = windowsPath(nodeRuntime.nodeExecutable)
+    nodeRuntime.dshEntry = windowsPath(nodeRuntime.dshEntry)
+  } catch (error) {
+    throw prerequisiteFailure(`DSH runtime probe failed: ${error.message}`, error)
   }
   const dshHome = /^[a-zA-Z]:[\\/]/.test(repoRoot) ? windowsPath(resolved.dshHome) : wslPath(resolved.dshHome)
   return Object.freeze({
     repoRootWindows,
     dshVersion: resolved.dshVersion.trim(),
+    dshCommand: windowsPath(resolved.dshCommand),
+    ...nodeRuntime,
     dshHomeWindows: windowsPath(resolved.dshHome),
     dshHome,
     sessionsRoot: /^[a-zA-Z]:[\\/]/.test(dshHome)
       ? win32.join(dshHome, 'sessions')
       : posix.join(dshHome, 'sessions'),
   })
+}
+
+/** Reuse the exact Node and DSH entry whose real worker passed preflight. */
+export function dshInvocation(runtime) {
+  return `& '${powershellPath(runtime.nodeExecutable)}' '${powershellPath(runtime.dshEntry)}'`
 }
 
 export function parseConfigDump(text, label = 'DSH config dump') {
@@ -230,6 +257,11 @@ function headlessRuntimePolicy(runtime) {
 
 export function validateHeadlessRuntimeConfig(rows, label, runtime) {
   const policy = headlessRuntimePolicy(runtime)
+  try {
+    ToolRuntime.Config(structuredClone(configRow(rows, 'tools', label).config))
+  } catch (error) {
+    throw new Error(`${HEADLESS_CONFIG_CODE}: ${label} violates the public DSH tools config: ${error.message}`, { cause: error })
+  }
   if (configRow(rows, 'tools', label).config?.mode !== policy.toolsMode) {
     throw new Error(`${label} does not use tools mode ${policy.toolsMode}`)
   }

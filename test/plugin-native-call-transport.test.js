@@ -1375,7 +1375,7 @@ test('leaves absent run_code assemblies unchanged and rejects incompatible schem
     sections: [], contexts: [], variables: {},
     tools: [{ name: 'other', description: 'Other.', parameters: { type: 'object', properties: {} } }],
   }
-  assert.equal(await state.assemble(assembly), assembly)
+  assert.deepEqual(await state.assemble(assembly), assembly)
   await assert.rejects(state.assemble({
     ...assembly,
     tools: [{

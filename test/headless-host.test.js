@@ -6,8 +6,10 @@ import { join } from 'node:path'
 import { PassThrough } from 'node:stream'
 import test from 'node:test'
 import {
+  HEADLESS_TOOLS_MODE,
   HEADLESS_PREREQUISITE_CODE,
   changedSessionLogs,
+  dshInvocation,
   cleanupOwnedPath,
   formatHeadlessError,
   headlessConfigPatch,
@@ -22,12 +24,13 @@ import {
   windowsPath,
   wslPath,
 } from '../scripts/headless-host.mjs'
+import { probeReplRuntime, RUNTIME_PROBE_PREFIX } from '../scripts/repl-preflight.mjs'
 
 const runtime = {
   provider: 'provider',
   model: 'model',
   apiKeyEnv: 'API_KEY',
-  toolsMode: 'code',
+  toolsMode: HEADLESS_TOOLS_MODE,
   permissionMode: 'danger-full-access',
 }
 
@@ -83,8 +86,8 @@ test('resolves the Windows host before callers create artifacts', async () => {
       calls.push(args)
       return {
         code: 0,
-        stdout: JSON.stringify({ dshVersion: 'dsh 1.2.3', dshHome: 'X:\\fixture\\home\\.dsh' }),
-        stderr: '',
+        stdout: JSON.stringify({ dshVersion: 'dsh observed-release', dshCommand: 'X:\\fixture\\bin\\dsh.cmd', dshHome: 'X:\\fixture\\home\\.dsh' }),
+        stderr: RUNTIME_PROBE_PREFIX + JSON.stringify({ nodeVersion: 'v24.0.0', nodeExecutable: 'X:\\fixture\\node.exe', dshEntry: 'X:\\fixture\\dsh.js' }),
       }
     },
   })
@@ -92,6 +95,10 @@ test('resolves the Windows host before callers create artifacts', async () => {
   assert.equal(calls[0][0], 'pwsh.exe')
   assert.equal(calls[0][2].cwd, '/mnt/x/fixture/project')
   assert.equal(host.repoRootWindows, 'X:\\fixture\\project')
+  assert.equal(host.dshCommand, 'X:\\fixture\\bin\\dsh.cmd')
+  assert.equal(host.nodeExecutable, 'X:\\fixture\\node.exe')
+  assert.equal(host.nodeVersion, 'v24.0.0')
+  assert.equal(dshInvocation(host), "& 'X:\\fixture\\node.exe' 'X:\\fixture\\dsh.js'")
   assert.equal(host.dshHome, '/mnt/x/fixture/home/.dsh')
   assert.equal(host.sessionsRoot, '/mnt/x/fixture/home/.dsh/sessions')
 
@@ -105,13 +112,32 @@ test('resolves the Windows host before callers create artifacts', async () => {
   }), /PTC-EVAL-PREREQ:.*pwsh\.exe could not start: spawn ENOENT/)
 })
 
+test('missing runtime evidence prevents the paid runner from reaching model work', async () => {
+  let modelCalls = 0
+  await assert.rejects(async () => {
+    await preflightHeadlessHost('/mnt/x/fixture/project', {
+      runProcess: async () => ({ code: 0, stdout: JSON.stringify({
+        dshVersion: 'observed', dshCommand: 'X:/dsh.cmd', dshHome: 'X:/home',
+      }), stderr: '' }),
+    })
+    modelCalls++
+  }, /runtime probe failed/)
+  assert.equal(modelCalls, 0)
+})
+
+test('the keyless runtime probe executes real persistent cells with the current executable', async () => {
+  const observed = await probeReplRuntime()
+  assert.equal(observed.nodeExecutable, process.execPath)
+  assert.equal(observed.nodeVersion, process.version)
+})
+
 test('owns neutral config parsing and projection for both runners', () => {
   const rows = configRows()
   assert.equal(validateNeutralConfig(rows, 'acceptance config'), true)
   assert.equal(validateNeutralConfig(configRows(true), 'baseline config', 'disabled'), true)
   const projected = parseConfigDump(headlessConfigPatch(rows, runtime))
   assert.equal(projected.find(row => row.id === 'system-prompt').config.includeRuntimeContext, true)
-  assert.equal(projected.find(row => row.id === 'tools').config.mode, 'code')
+  assert.equal(projected.find(row => row.id === 'tools').config.mode, 'ptc')
   assert.equal(projected.find(row => row.id === 'sandbox-policy').config.mode, 'danger-full-access')
   assert.equal(projected.find(row => row.id === 'approval').config.policy, 'never')
   assert.equal(validateHeadlessRuntimeConfig(projected, 'projected config', runtime), true)
@@ -129,6 +155,17 @@ test('owns neutral config parsing and projection for both runners', () => {
   assert.equal(functionClassLoose.find(row => row.id === 'ptc-plus').config.looseTopLevelFunctionClassRedeclarations, true)
   assert.throws(() => headlessConfigPatch(rows, { ...runtime, toolsMode: '' }), /toolsMode must be set explicitly/)
   assert.throws(() => headlessConfigPatch(rows, { ...runtime, permissionMode: undefined }), /permissionMode must be set explicitly/)
+})
+
+test('checks generated tools settings against the public Host schema, independently of runner expectations', () => {
+  const rows = parseConfigDump(headlessConfigPatch(configRows(), runtime))
+  assert.equal(rows.find(row => row.id === 'tools').config.mode, 'ptc')
+  assert.equal(validateHeadlessRuntimeConfig(rows, 'accepted config', runtime), true)
+  const retired = { ...runtime, toolsMode: 'code' }
+  const retiredRows = parseConfigDump(headlessConfigPatch(configRows(), retired))
+  assert.throws(() => validateHeadlessRuntimeConfig(retiredRows, 'retired config', retired), /PTC-EVAL-CONFIG:.*public DSH tools config/)
+  rows.find(row => row.id === 'tools').config.maxParallelSubCalls = 0
+  assert.throws(() => validateHeadlessRuntimeConfig(rows, 'invalid tools settings', runtime), /public DSH tools config/)
 })
 
 test('returns one timeout result after terminating the owned process', async () => {

@@ -53,6 +53,9 @@
   "scripts": {
     "build": "node scripts/client-bundle.mjs build",
     "build:check": "node scripts/client-bundle.mjs check",
+    "test:client": "vitest run --config scripts/client-test.config.mjs",
+    "test:client:web": "node scripts/client-web-smoke.mjs",
+    "test:client:layout": "node scripts/client-binding-layout.mjs",
     "prepack": "npm run build:check",
     "hooks:install": "node scripts/review-findings.mjs install-hook",
     "review:new": "node scripts/review-findings.mjs create",
@@ -60,7 +63,7 @@
     "review:gate": "node scripts/review-findings.mjs gate",
     "session:migrate": "node scripts/migrate-session-log.mjs",
     "coverage": "node --test --experimental-test-module-mocks --experimental-test-coverage --test-concurrency=1 --test-coverage-include=\"index.js\" --test-coverage-include=\"internal/*.js\" --test-coverage-lines=100 --test-coverage-branches=95 --test-coverage-functions=100 \"test/*.test.js\"",
-    "verify": "npm run review:validate && npm run build:check && node --check index.js && node --check internal/kernel-worker.js && node --check scripts/migrate-session-log.mjs && node --check scripts/expensive-headless-acceptance.mjs && node --check scripts/ab-headless-trajectories.mjs && npm run coverage",
+    "verify": "npm run review:validate && npm run build:check && node --check index.js && node --check internal/kernel-worker.js && node --check scripts/migrate-session-log.mjs && node --check scripts/expensive-headless-acceptance.mjs && node --check scripts/ab-headless-trajectories.mjs && npm run test:client && npm run coverage",
     "check": "node scripts/review-findings.mjs check",
     "test:expensive": "node scripts/expensive-headless-acceptance.mjs",
     "test:ab": "node scripts/ab-headless-trajectories.mjs"
@@ -92,24 +95,45 @@
         "react"
       ],
       "inject": [
+        "@deepseek-ai/dsh-api-remotes",
         "@deepseek-ai/dsh-client-runtime",
         "@deepseek-ai/dsh-client-locale",
         "@deepseek-ai/dsh-client-ui-settings",
         "@deepseek-ai/dsh-client-ui-settings-plugins",
+        "@deepseek-ai/dsh-client-ui-session",
+        "@deepseek-ai/dsh-client-ui-conversation",
         "@deepseek-ai/dsh-client-connection",
         "@deepseek-ai/dsh-client-ui-primitives"
       ]
     }
   },
   "devDependencies": {
+    "@deepseek-ai/dsh-agent-loop": "next",
+    "@deepseek-ai/dsh-api-remotes": "next",
     "@deepseek-ai/dsh-atomic-write": "next",
+    "@deepseek-ai/dsh-client-locale": "next",
+    "@deepseek-ai/dsh-client-store": "next",
+    "@deepseek-ai/dsh-client-test-runtime": "next",
+    "@deepseek-ai/dsh-client-ui-conversation": "next",
+    "@deepseek-ai/dsh-client-ui-primitives": "next",
+    "@deepseek-ai/dsh-client-ui-renderer": "next",
+    "@deepseek-ai/dsh-client-ui-session": "next",
+    "@deepseek-ai/dsh-client-ui-slots": "next",
+    "@deepseek-ai/dsh-commands": "next",
     "@deepseek-ai/dsh-home-paths": "next",
     "@deepseek-ai/dsh-llm": "next",
+    "@deepseek-ai/dsh-session-persistence-jsonl": "next",
     "@deepseek-ai/dsh-settings": "next",
     "@deepseek-ai/dsh-skill-filesystem": "next",
     "@deepseek-ai/dsh-tool-cordis": "next",
     "@deepseek-ai/dsh-tools": "next",
+    "@testing-library/react": "^16.3.3",
     "esbuild": "0.28.2",
+    "jsdom": "^29.1.1",
+    "playwright": "^1.63.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "vitest": "^5.0.0",
     "yaml": "^2.9.0"
   }
 }

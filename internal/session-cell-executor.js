@@ -28,7 +28,7 @@ import {
   selectUserBindingsSnapshot,
 } from './user-bindings.js'
 
-const OUTPUT_LIMIT_MESSAGE = bytes => `output exceeded ${bytes} bytes; reduce the returned value or keep it in a REPL binding`
+const OUTPUT_LIMIT_MESSAGE = bytes => `output exceeded ${bytes} bytes; this cell was discarded and the worker reset. Only bindings in the verified recovery frontier can be restored. External effects may already have occurred and are not undone. For future cells, bound console output and return a smaller value; do not assume this cell's values remain available.`
 
 function earlyResult(kind, message) {
   return { logs: [], error: { kind, message } }
@@ -85,7 +85,7 @@ function parseDiagnostic(error, source, position, repair) {
         : ['this cell was not executed; correct the reported syntax and retry only this cell with run_code']
       : [
           `this cell was not executed; validated syntax repair: append ${JSON.stringify(repair.delimiter)} at the end of this cell`,
-          `when edit_run_code is declared for the current request, call ${repair.invocation} to apply this correction and rerun the cell; otherwise retry only this cell with the corrected source in run_code`,
+          `when this correction matches your intent and edit_run_code is declared, prefer the direct tool call ${repair.invocation} with its target guard to run the complete corrected cell; validation proves syntax/preflight acceptance, not intended behavior; otherwise submit corrected source in run_code`,
         ],
   })
 }
@@ -168,6 +168,7 @@ function exceptionDiagnostic({
   position,
   declared,
   longCellFailure = false,
+  failureOrigin,
 }) {
   const missingPath = error.name === 'ToolCallError' ? missingDescriptionPath(error) : undefined
   const missingDescription = missingPath !== undefined
@@ -192,20 +193,22 @@ function exceptionDiagnostic({
     ...(cause === undefined ? {} : { cause }),
     ...(source === undefined ? {} : { source }),
     help: [
-      ...(missingDescription
-        ? ['add a string `description` property to the nested native-tool argument object']
-        : ['inspect existing bindings and retry only the failing expression']),
+      'earlier statements or the failing operation may have caused effects; choose continuation using the operation owner\'s retry/idempotence contract and available execution facts; a thrown call or recorded-value replay does not prove a live retry is safe',
+      ...(failureOrigin === 'lease'
+        ? ['this REPL-captured capability reference belongs to an ended cell; obtain the member from the current program namespace, and have retained helpers resolve it at invocation']
+        : failureOrigin === 'capability'
+          ? ['inspect the current capability with capabilities.tree(), capabilities.find(), or capabilities.inspect(); availability may have changed']
+          : missingDescription
+            ? ['add a string `description` property to the nested native-tool argument object']
+            : []),
       ...(error.name === 'ToolCallError'
         && typeof error.toolName === 'string'
         && error.toolName.startsWith('cordis_')
         ? ['bindings assigned before this Cordis failure remain live; reuse them instead of resending large source']
-        : []),
-      ...(longCellFailure
-        ? ['execution may have occurred; inspect live state in a new short `run_code` cell before deciding whether a correction is safe']
-        : []),
-      ...(declared.size === 0 || longCellFailure
-        ? []
-        : ['use fresh names for one-off top-level bindings after partial execution; later declarations may be uninitialized']),
+        : longCellFailure
+          ? ['inspect relevant live state in a new short `run_code` cell; edit_run_code executes the complete corrected cell, not only the failing expression']
+          : declared.size === 0 ? []
+            : ['use fresh names for one-off top-level bindings after partial execution; later declarations may be uninitialized']),
     ],
   })
 }
@@ -218,10 +221,16 @@ function invalidOutputDiagnostic(detail) {
     message: `cell result could not cross the PTC Value V1 boundary: ${firstLine(detail, 'unknown output encoding failure')}`,
     stateEffect: 'partially-applied',
     help: [
-      'return a PTC Value V1 value or keep the live value in a REPL binding',
+      'the worker remains live; inspect a retained binding in a later cell without rerunning the failed cell',
       'reduce the returned graph when it exceeds the configured value budget',
     ],
   })
+}
+
+/** Retain validated recorded wording while still comparing the actual failure. */
+function replayFailureDiagnostic(actual, replay) {
+  const recorded = replay?.diagnostics?.find(item => item.code === actual.code)
+  return recorded?.message === actual.message ? recorded : actual
 }
 
 function stateArguments(value) {
@@ -415,7 +424,7 @@ export class SessionCellExecutor {
       )
       active.computeTimer = setInterval(() => {
         if (worker.performance.eventLoopUtilization(started).active > config.computeMs) {
-          active.resolve(earlyResult('timeout', `compute budget exhausted (${config.computeMs}ms busy); split the work into smaller cells`), true)
+          active.resolve(earlyResult('timeout', `compute budget exhausted (${config.computeMs}ms event-loop active, including synchronous blocking); this measure does not establish CPU use or the specific cause. Use asynchronous waiting for long waits, or a DSH-owned managed job if available. This cell was discarded and the worker reset; external effects or processes may continue.`), true)
         }
       }, Math.min(100, config.computeMs))
       active.wallTimer = setTimeout(() => {
@@ -648,20 +657,21 @@ export class SessionCellExecutor {
             ),
         declared: message.moduleLoadFailed === true ? new Set() : active.prepared.declared,
         longCellFailure: active.request.program.length >= LONG_CELL_CODE_UNITS,
+        failureOrigin: message.failureOrigin,
       })
-      const recordedFailure = active.replay?.diagnostics?.find(item => item.code === 'PTC-X001')
-      const failure = recordedFailure?.message === actualFailure.message ? recordedFailure : actualFailure
+      const failure = replayFailureDiagnostic(actualFailure, active.replay)
       const error = {
         kind: 'exception',
         message: renderDiagnostic(failure, active.request.program),
       }
       if (isBindingReferenceError(rawError)) markBindingFailure(error)
+      else if (message.failureOrigin === 'capability') markBindingFailure(error, 'capability')
       active.diagnostics.push(failure)
       active.resolve({ logs, error })
       return
     }
     if (typeof message.invalidOutput === 'string') {
-      const failure = invalidOutputDiagnostic(message.invalidOutput)
+      const failure = replayFailureDiagnostic(invalidOutputDiagnostic(message.invalidOutput), active.replay)
       const error = { kind: 'invalid-output', message: renderDiagnostic(failure, active.request.program) }
       active.diagnostics.push(failure)
       active.resolve({ logs, error })
@@ -688,7 +698,7 @@ export class SessionCellExecutor {
         ...(message.hasValue ? { value: projectValueWire(value, active.valueLimits) } : {}),
       })
     } catch (error) {
-      const failure = invalidOutputDiagnostic(messageOf(error))
+      const failure = replayFailureDiagnostic(invalidOutputDiagnostic(messageOf(error)), active.replay)
       const invalid = { kind: 'invalid-output', message: renderDiagnostic(failure, active.request.program) }
       active.diagnostics.push(failure)
       active.resolve({ logs, error: invalid })

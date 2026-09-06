@@ -2,14 +2,20 @@ import {
   foldSessionTimeline,
 } from './session-journal.js'
 import { sessionEvents } from './session-events.js'
+import { readRuntimeMessage } from './runtime-messages.js'
 
 const SYSTEM_PROMPT_PLUGIN = '@deepseek-ai/dsh-system-prompt'
+const SYSTEM_PROMPT_CLEARED = 'Current runtime context: none. Earlier runtime-context snapshots no longer apply.'
 
-function systemPromptSnapshot(event, index, contextStep) {
-  const source = event?.data?.source
-  if (event?.type !== 'user/message' || source?.kind !== 'plugin'
-    || source.plugin !== SYSTEM_PROMPT_PLUGIN || source.form !== 'snapshot'
-    || !Array.isArray(source.sections)) return undefined
+/** DSH's empty aggregate uses an exact owner marker without a snapshot form. */
+export function systemPromptSnapshotSections(message) {
+  const source = message?.source
+  if (source?.kind !== 'plugin' || source.plugin !== SYSTEM_PROMPT_PLUGIN) return undefined
+  if (source.form === undefined && Array.isArray(message.content) && message.content.length === 1
+    && message.content[0]?.type === 'text' && message.content[0].text === SYSTEM_PROMPT_CLEARED) {
+    return Object.freeze([])
+  }
+  if (source.form !== 'snapshot' || !Array.isArray(source.sections)) return undefined
   const names = new Set()
   const sections = []
   for (const section of source.sections) {
@@ -19,7 +25,7 @@ function systemPromptSnapshot(event, index, contextStep) {
     names.add(section.name)
     sections.push(Object.freeze({ name: section.name, text: section.text }))
   }
-  return Object.freeze({ index, contextStep, sections: Object.freeze(sections) })
+  return Object.freeze(sections)
 }
 
 function isContextStep(event) {
@@ -50,6 +56,8 @@ export function projectSessionLog(agent, requestedEdit) {
       openTurn: false,
       contextStep: 0,
       systemPromptSnapshots: Object.freeze([]),
+      ptcMessages: Object.freeze([]),
+      visibleRuntimeMessages: undefined,
       lastSuccessfulRunIndex: undefined,
       latestRun: undefined,
       editableRun: undefined,
@@ -59,10 +67,22 @@ export function projectSessionLog(agent, requestedEdit) {
   }
   let contextStep = 0
   const systemPromptSnapshots = []
+  const ptcMessages = []
+  const runtimeMessagesBySeq = new Map()
   for (let index = 0; index < events.length; index += 1) {
     const event = events[index]
-    const snapshot = systemPromptSnapshot(event, index, contextStep)
-    if (snapshot !== undefined) systemPromptSnapshots.push(snapshot)
+    const sections = event?.type === 'user/message' ? systemPromptSnapshotSections(event.data) : undefined
+    if (sections !== undefined) {
+      const snapshot = Object.freeze({ index, contextStep, sections })
+      systemPromptSnapshots.push(snapshot)
+      runtimeMessagesBySeq.set(event.seq, Object.freeze({ ...snapshot, producer: 'aggregate', form: 'snapshot' }))
+    }
+    const ptc = event?.type === 'user/message' ? readRuntimeMessage(event.data) : undefined
+    if (ptc !== undefined) {
+      const record = Object.freeze({ ...ptc, index, contextStep, producer: 'ptc-plus' })
+      ptcMessages.push(record)
+      runtimeMessagesBySeq.set(event.seq, record)
+    }
     if (isContextStep(event)) contextStep += 1
   }
   const timeline = foldSessionTimeline(events)
@@ -77,10 +97,23 @@ export function projectSessionLog(agent, requestedEdit) {
   const latestRun = timeline.openTurn ? timeline.latestRun : undefined
   const editableRun = timeline.openTurn ? timeline.editableRun : undefined
   const cordisTranscript = cordisTranscriptFacts(timeline)
+  let visibleRuntimeMessages
+  try {
+    const nodes = agent?.session?.surface?.nodes
+    const knownSeqs = new Set(events.map(event => event?.seq))
+    if (Array.isArray(nodes) && nodes.every(seq => Number.isSafeInteger(seq) && seq >= 0 && knownSeqs.has(seq))) {
+      visibleRuntimeMessages = Object.freeze(nodes.flatMap(seq => {
+        const record = runtimeMessagesBySeq.get(seq)
+        return record === undefined ? [] : [record]
+      }))
+    }
+  } catch {}
   return Object.freeze({
     openTurn: timeline.openTurn,
     contextStep,
     systemPromptSnapshots: Object.freeze(systemPromptSnapshots),
+    ptcMessages: Object.freeze(ptcMessages),
+    visibleRuntimeMessages,
     lastSuccessfulRunIndex: timeline.lastSuccessfulRunIndex,
     latestRun,
     editableRun,

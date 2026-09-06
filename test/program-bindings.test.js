@@ -93,6 +93,24 @@ test('rejects malformed metadata and replay classifications', () => {
   )
 })
 
+test('short lexical queries and tree member traversal discover capabilities after a prose miss', () => {
+  const metadata = [
+    { namespace: 'tools', members: [{ name: 'read', description: 'Read a bounded file window.' }] },
+    { namespace: 'code', members: [{ name: 'run', description: 'Run isolated source already held as data.' }] },
+  ]
+  assert.deepEqual(capabilityFind(metadata, 'read file content'), [])
+  assert.deepEqual(capabilityFind(metadata, 'isolated execution run code child'), [])
+  assert.deepEqual(capabilityFind(metadata, 'rea'), [])
+  assert.deepEqual(capabilityFind(metadata, 'read window'), [])
+  assert.deepEqual(capabilityFind(metadata, 'read').map(item => item.symbol), ['tools.read'])
+  assert.deepEqual(capabilityFind(metadata, 'CODE.RUN').map(item => item.symbol), ['code.run'])
+  assert.deepEqual(capabilityFind(metadata, 'bounded file').map(item => item.symbol), ['tools.read'])
+  const symbols = capabilityTree(metadata).flatMap(entry => entry.members.map(member => `${entry.namespace}.${member}`))
+  assert.deepEqual(symbols, ['tools.read', 'code.run'])
+  assert.deepEqual(capabilityInspect(metadata, [...symbols, 'tools.missing'], 3).unknown, ['tools.missing'])
+  assert.equal(capabilityFind(metadata, 'read')[0].completeness, 'unknown')
+})
+
 test('projects live tool schemas as unknown unless an explicit annotation proves more', () => {
   const metadata = toolCapabilityMetadata([
     { name: 'write', description: 'Write a file.', parameters: { type: 'object' }, output: { type: 'object' } },

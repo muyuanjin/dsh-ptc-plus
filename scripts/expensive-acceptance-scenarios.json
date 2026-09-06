@@ -147,7 +147,7 @@
       "name": "program-surface-input.txt",
       "content": "{{secret}}\n"
     },
-    "task": "在 run_code 中完成一次 typed program surface 验证：保持能力探索聚焦，只查找完成任务所需的读取文件、查看能力契约以及隔离执行 binding；按探索结果用读取能力读取 {{fixturePath}} 的唯一标记，再让隔离 child 返回“文件中实际标记的完整原文:该原文的字符数”（不要返回中文字面量“标记”）。只调用一次 code.run，并在同一个父 cell 中直接 return 该调用返回对象的 `.result`；不得先 return 整个对象再重试。最终回答也原样给出该字符串。不要绕过插件提供的 SDK binding；child 隔离 runtime 内只有 tools.* 等 SDK binding 可用，不要使用 require 或 Node 全局。",
+    "task": "在 run_code 中完成一次 typed program surface 验证：保持能力探索聚焦，只查看读取文件与隔离执行 binding 的契约；explorer 已在 SDK 中声明，不需要另查其契约，也不需要状态管理。若需要 tree，最多取一次并复用；find 最多三次且不重复相同查询，inspect 最多两次且显式选择相关 symbols。按探索结果用读取能力读取 {{fixturePath}} 的唯一标记；这个 fixture 在任务期间固定不变，只读取一次，在父 REPL 保留实际读到的标记并将它作为源码数据传入 child，不在 child 再读文件。让隔离 child 返回“文件中实际标记的完整原文:该原文的字符数”（不要返回中文字面量“标记”）。只调用一次 code.run，并在同一个父 cell 中直接 return 该调用返回对象的 `.result`；不得先 return 整个对象再重试。最终回答也原样给出该字符串。不要绕过插件提供的 SDK binding；child 隔离 runtime 内只有 tools.* 等 SDK binding 可用，不要使用 require 或 Node 全局。",
     "expect": {
       "minCells": 1,
       "maxCells": 8,
@@ -190,6 +190,16 @@
         { "global": "tools", "member": "read" },
         { "global": "code", "member": "run" }
       ],
+      "programWork": {
+        "inspectionSymbols": ["tools.read", "code.run"],
+        "callLimits": [
+          { "global": "capabilities", "member": "tree", "maxCalls": 1 },
+          { "global": "capabilities", "member": "find", "maxCalls": 3, "maxCallsPerArguments": 1 },
+          { "global": "capabilities", "member": "inspect", "maxCalls": 2, "maxCallsPerArguments": 1 },
+          { "global": "tools", "member": "read", "maxCalls": 1, "maxCallsPerArguments": 1 },
+          { "global": "code", "member": "run", "maxCalls": 1 }
+        ]
+      },
       "completionIncludes": [
         "{{expectedChild}}"
       ],

@@ -12,8 +12,9 @@ import {
   generatedRunCodeDescriptionMeta,
 } from './run-code-description.js'
 import { userBindingsContext } from './user-bindings.js'
+import { BINDING_AUTHORING_SDK } from './user-binding-authoring.js'
 
-const RUN_CODE_TOOL_DESCRIPTION = 'Evaluate the next TypeScript cell in this session-bound persistent REPL. Earlier top-level bindings remain available, so this call extends the current environment instead of creating a fresh one. Use `code` for the async-function body and `description` for its short UI summary. Successful image-bearing subtool results are attached after the cell.'
+const RUN_CODE_TOOL_DESCRIPTION = 'Evaluate the next TypeScript cell in this session-bound persistent REPL. Earlier top-level computation bindings remain available. REPL-captured program capability references expire with their cell; retained helpers should resolve current namespaces at invocation. Use `code` for the async-function body and `description` for its short UI summary. Successful image-bearing subtool results are attached after the cell.'
 const RUN_CODE_CODE_DESCRIPTION = 'Code for the next REPL cell, parsed as the body of an async TypeScript function.'
 const RUN_CODE_DESCRIPTION_DESCRIPTION = 'Short active-voice summary of what this cell does, 5-10 words (shown in the UI).'
 const CODE_TRANSPORT_INSTRUCTION = '`run_code` and `edit_run_code` are the only tools callable directly. Call every native tool declared by the SDK from inside a program.'
@@ -43,10 +44,13 @@ function adaptRunCodeSchema(tool) {
   }
 }
 
-function capabilitySdk(nativeSdk) {
+function capabilitySdk(nativeSdk, userBindingsEnabled) {
   return `${projectProgramSdk(nativeSdk)}
 
 ## PTC Plus program capabilities
+
+The explorer methods below are already declared; use them directly. Discovery is metadata-only.
+\`find\` is case-insensitive lexical search: exact symbols rank first, then namespace/member names and complete identifier or description tokens. Use a short token such as \`"read"\`; multiple tokens must occur contiguously, not as a natural-language request. CamelCase and punctuation separate tokens. A miss means no lexical match, not absent capability: narrow the query or read \`tree()\` once and traverse each namespace's \`members\` to form \`namespace.member\` symbols. Inspect only relevant symbols from the current view; unknown metadata stays unknown.
 
 \`\`\`ts
 declare class CapabilityExplorationError extends Error { readonly operation: "tree" | "find" | "inspect" }
@@ -55,7 +59,7 @@ declare const capabilities: {
   find(query: string): Promise<Array<{ symbol: string; description?: string; completeness: string; effect: string; replay: string }>>
   inspect(args?: { symbols?: string[]; budget?: number }): Promise<{ symbols: unknown[]; omitted: number; unknown: string[]; budget: number }>
 }
-\`\`\``
+\`\`\`${userBindingsEnabled ? `\n${BINDING_AUTHORING_SDK}` : ''}`
 }
 
 function rejection(message) {
@@ -205,6 +209,7 @@ export function createDirectSurfaceOwner({
     nativeSchemas,
     autoDescribeRunCode,
     userBindings,
+    contexts = [],
   ) => {
     const owner = sessionOwner(id)
     const request = {
@@ -212,6 +217,7 @@ export function createDirectSurfaceOwner({
       nativeSchemas,
       autoDescribeRunCode,
       owner,
+      contexts,
       ...(userBindings === undefined ? {} : { userBindings }),
     }
     owner.latestRequest = request
@@ -317,21 +323,17 @@ export function createDirectSurfaceOwner({
       const bindingContext = modelVisibleUserBindings === undefined
         ? undefined
         : userBindingsContext(modelVisibleUserBindings)
-      const contexts = sessionPtc && Array.isArray(assembly.contexts)
-        && (runtimeContexts.contexts.length > 0 || bindingContext !== undefined)
-        ? [
-            ...assembly.contexts,
-            ...runtimeContexts.contexts,
-            ...(bindingContext === undefined ? [] : [bindingContext]),
-          ]
-        : assembly.contexts
+      const contexts = [
+        ...runtimeContexts.contexts,
+        ...(bindingContext === undefined ? [] : [bindingContext]),
+      ]
       const projectsSections = presentation !== 'native' && Array.isArray(assembly.sections)
         && assembly.sections.some(section => section?.name === 'tools:sdk'
           || (sessionPtcProjection && section?.name === completedState.collapseSectionName))
       const sections = projectsSections
         ? assembly.sections.map(section => {
             if (section?.name === 'tools:sdk') {
-              return { ...section, text: capabilitySdk(section.text) }
+              return { ...section, text: capabilitySdk(section.text, userBindings !== undefined) }
             }
             if (sessionPtcProjection && section?.name === completedState.collapseSectionName) {
               return { ...section, text: CODE_TRANSPORT_INSTRUCTION }
@@ -354,6 +356,7 @@ export function createDirectSurfaceOwner({
           nativeSchemas,
           autoDescribeRunCode,
           userBindings,
+          contexts,
         )
       }
 
@@ -365,8 +368,10 @@ export function createDirectSurfaceOwner({
             ? adaptRunCodeSchema(tool)
             : tool),
         sections,
-        contexts,
       }
+    },
+    contextsForRequest(context) {
+      return requestPolicy(context.signal, sessionId(context.agent))?.contexts ?? []
     },
     stream(options, next) {
       const optionSessionId = options.sessionId === undefined ? undefined : String(options.sessionId)

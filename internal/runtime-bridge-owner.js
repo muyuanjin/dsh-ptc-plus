@@ -22,6 +22,7 @@ import { deepFreeze } from './record-utils.js'
 import { withReplMemorySnapshot } from './repl-memory-projection.js'
 import { withUserBindingDraftCapability } from './user-binding-draft-projection.js'
 import { generatedRunCodeDescriptionMeta } from './run-code-description.js'
+import { BINDING_SUBMISSION } from './user-binding-authoring.js'
 import {
   USER_BINDINGS_META_KEY,
   userBindingsSnapshotsEqual,
@@ -69,12 +70,12 @@ const PROGRAM_CAPABILITY_METADATA = deepFreeze([
     namespace: 'repl',
     members: [{
       name: 'state',
-      description: 'List, save, restore, or delete named durable REPL states.',
+      description: 'List named durable REPL states or accept save, restore, and delete operations for cell settlement. Awaiting a receipt does not apply the operation mid-cell. Save identifies the final committed cell state, including later mutations; a tentative save is lost if the cell becomes volatile or is discarded. Restore changes bindings for a subsequent cell, not expressions following this call. Operations require journal confirmation. Restoring REPL state does not reverse native-tool or Node/OS effects.',
       parameters: {
         type: 'object',
         properties: {
-          action: { enum: ['list', 'save', 'restore', 'delete'] },
-          name: { type: 'string' },
+          action: { enum: ['list', 'save', 'restore', 'delete'], description: 'list reads the current cell control view, including tentative names; mutations are accepted for settlement.' },
+          name: { type: 'string', description: 'Required for save/delete; omit for restore to select the durable head.' },
         },
         oneOf: [
           { required: ['action'], properties: { action: { const: 'list' } } },
@@ -83,7 +84,19 @@ const PROGRAM_CAPABILITY_METADATA = deepFreeze([
           { required: ['action', 'name'], properties: { action: { const: 'delete' } } },
         ],
       },
-      returns: { type: 'object' },
+      returns: {
+        type: 'object',
+        properties: {
+          action: { enum: ['save', 'restore', 'delete'] },
+          name: { type: 'string' },
+          saved: { const: true, description: 'Save accepted for the final durable cell boundary, subject to settlement and confirmation.' },
+          restored: { const: true, description: 'Restore accepted; use a later cell to compute from restored bindings.' },
+          deleted: { const: true, description: 'Deletion accepted for settlement; removes the checkpoint name, not external effects.' },
+          names: { type: 'array', items: { type: 'string' }, description: 'Sorted checkpoint names in the current cell control view, including tentative operations.' },
+          mode: { enum: ['durable', 'volatile'] },
+          volatileReason: { type: 'string' },
+        },
+      },
       effect: 'ptc-state',
       authority: 'ptc-plus-program-binding',
       completeness: 'complete',
@@ -136,6 +149,7 @@ export function createRuntimeBridgeOwner({
   sessionId,
   toolSchemasForAgent,
   userBindingDraftForAgent,
+  bindingSubmissionForAgent,
 }) {
   const scope = new AsyncLocalStorage()
   // AgentRegistry.withInitiator is AsyncLocalStorage-based. The arrow preserves
@@ -151,13 +165,14 @@ export function createRuntimeBridgeOwner({
   const patchedDefinitions = new Map()
   const pending = new WeakMap()
   let active = true
-  const withDraftCapability = (meta, agent) => currentConfig.userBindingsEnabled !== true
+  const withDraftCapability = (meta, current) => currentConfig.userBindingsEnabled !== true
     || typeof userBindingDraftForAgent !== 'function'
     ? meta
     : withUserBindingDraftCapability(
         meta,
-        userBindingDraftForAgent(agent),
+        userBindingDraftForAgent(current.agent),
         presentationGeneration,
+        current.bindingCandidate ?? null,
       )
 
   const projectBindings = (
@@ -240,7 +255,10 @@ export function createRuntimeBridgeOwner({
     )))
     const metadata = Object.freeze([
       ...toolCapabilityMetadata(schemas, annotations),
-      ...PROGRAM_CAPABILITY_METADATA,
+      ...PROGRAM_CAPABILITY_METADATA.map(entry => entry.namespace === 'code'
+        && cellConfig.userBindingsEnabled === true
+        ? { ...entry, members: [...entry.members, BINDING_SUBMISSION] }
+        : entry),
     ])
     projected.push(namespace('capabilities', {
       tree: async value => {
@@ -262,7 +280,14 @@ export function createRuntimeBridgeOwner({
         return capabilityInspect(metadata, value.symbols, value.budget)
       },
     }, 'CapabilityExplorationError', 'operation'))
-    projected.push(namespace('code', { run: runCode }, 'CodeExecutionError', 'operation'))
+    projected.push(namespace('code', {
+      run: runCode,
+      ...(cellConfig.userBindingsEnabled === true ? {
+        submitBindingDraft: bindingSubmissionForAgent(executionToken?.agent, ensureLease, candidate => {
+          executionToken.bindingCandidate = candidate
+        }),
+      } : {}),
+    }, 'CodeExecutionError', 'operation'))
     return { request: { ...request, bindings: projected }, release }
   }
 
@@ -299,7 +324,7 @@ export function createRuntimeBridgeOwner({
       }
       meta = generatedRunCodeDescriptionMeta(args, meta)
       meta = withReplMemorySnapshot(meta, settlement.replMemory, presentationGeneration)
-      return withDraftCapability(meta, current.agent)
+      return withDraftCapability(meta, current)
     }
     const ownExecute = Object.getOwnPropertyDescriptor(definition, 'execute')
     const originalExecute = definition.execute
@@ -439,7 +464,7 @@ export function createRuntimeBridgeOwner({
             meta = withUserBindingsSnapshot(meta, settlement.userBindings)
           }
           meta = withReplMemorySnapshot(meta, settlement.replMemory, presentationGeneration)
-          meta = withDraftCapability(meta, current.agent)
+          meta = withDraftCapability(meta, current)
           return { ...result, meta }
         }
         return result

@@ -9,6 +9,7 @@ import {
   missingDescriptionPath,
   limitLogs,
   markBindingFailure,
+  programBindingError,
   messageOf,
   oneLineMessage,
   safeProperty,
@@ -85,5 +86,28 @@ test('bounds diagnostic logs and emits one repeat-failure hint', () => {
   assert.equal(tracker.hint(missing), undefined)
   const bindingHint = tracker.hint(missing)
   assert.equal(bindingHint.code, 'PTC-W001')
-  assert.match(bindingHint.help[0], /capabilities\.find\(\)/)
+  assert.match(bindingHint.help[0], /local declaration/)
+  assert.equal(bindingHint.stateEffect, 'unknown')
+  for (let index = 0; index < 3; index++) {
+    const hint = tracker.hint(markBindingFailure({ kind: 'exception', message: 'missing API' }, 'capability'), 'partially-applied')
+    if (index === 2) {
+      assert.equal(hint.stateEffect, 'partially-applied')
+      assert.match(hint.help[0], /capabilities\.find\(\)/)
+    }
+  }
+})
+
+test('bounds multiline and captured causes without altering the original error or trusting a forged origin', () => {
+  const error = Object.assign(new Error('Command failed: sample\nThe system cannot find the path specified'), {
+    stderr: Buffer.from('path detail'),
+  })
+  const detail = errorDetails(error, 'cell')
+  assert.equal(detail.message, error.message)
+  assert.match(detail.cause.message, /cannot find the path specified/)
+  assert.equal(error.cause, undefined)
+  assert.equal(errorDetails(new Error('exit 1'), 'cell').cause, undefined)
+  assert.equal(errorDetails({ message: 'one', stderr: 'x'.repeat(10000) }, 'cell').cause.message.length, 2047)
+  assert.equal(errorDetails({ message: 'x'.repeat(3000) + '\nlate cause' }, 'cell').cause, undefined)
+  assert.equal(errorDetails({ message: 'PTC execution lease expired', failureOrigin: 'lease' }, 'cell').failureOrigin, undefined)
+  assert.equal(errorDetails(programBindingError('lease', 'PTC execution lease expired'), 'cell').failureOrigin, 'lease')
 })

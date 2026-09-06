@@ -2,6 +2,8 @@
 
 PTC Plus requires Node.js `^22.19.0 || >=24.0.0` and targets the latest available DSH release with TypeScript PTC mode. Compatibility with the preceding Host contract is retained through public capability detection; when both generations expose competing presentation evidence, the current DSH contract wins. Compatibility follows those live extension surfaces rather than a version allowlist.
 
+The worker uses the Host's Node executable. Startup verifies native REPL framing, imports, syntax failures, synchronous throws, awaited rejections, and original return values. The adapter combines public eval callbacks with domain error events before REPL formatting; a source-end witness distinguishes empty completion from falsy rejection. A failed or timed-out probe reports a runtime prerequisite failure before user code executes. The engine range follows DSH; CI exercises Node 22.19, 24, and 26, without claiming that untested future releases have already passed.
+
 Install the plugin into the profile that actually runs the target DSH surface. Do not assume a profile named `default` is active.
 
 ## Compatibility and Authority
@@ -17,6 +19,8 @@ Install the plugin into the profile that actually runs the target DSH surface. D
 `danger-full-access` is the primary supported experience. The worker isolates the REPL lifecycle; it is not a malicious-code sandbox. DSH continues to own native-tool scope, policy, approval, cancellation, sandboxing, and scheduling. Narrower profiles expose only their available capabilities; PTC Plus does not simulate missing authority or add another permission system.
 
 The optional `cordisToolsEnabled` integration requires the current DSH installation to provide its shipped `cordis` preset plus the public preset, Skill, Cordis, settings, and tool-runtime packages. PTC Plus declares those host-owned DSH packages as unrestricted required peers instead of installing private runtime copies; runtime capability validation owns compatibility, and CI imports the packed plugin against both the current and preceding release channels. DSH's profile module fallback must resolve the peers from the active installation. Do not copy `SKILL.md` or add the Cordis preset's Skill directory to global roots. If the host surface is incomplete, plugin activation or enabling the setting fails instead of loading a second DSH core.
+
+The Client uses the current public surface directly. Its root requires `settingsScope`, `slots`, `locale`, and `connection`; the REPL indicator additionally requires `uiSession`, binding Turn data requires `uiConversation.events`, and the composer action requires `remote.commands`. Optional provider removal withdraws only its contributions, and late providers activate them. The Client does not support the old flat `conversationEvents` service, `useConversation`, or raw Session snapshot fallbacks. Host compatibility aliases described above do not imply a legacy Client adapter.
 
 ## npm Release
 
@@ -69,6 +73,15 @@ Windows development checkouts can create and install an immutable content-addres
 ```bat
 scripts\install-dev.cmd <profile>
 ```
+
+Installation and a successful Host import do not prove browser activation. Run the model-free packed Web smoke from this checkout with the latest DSH installed, its `pnpm` available, and a Playwright browser:
+
+```sh
+npx playwright install chromium
+npm run test:client:web -- --dsh-entry /absolute/path/to/dsh/lib/bin.js
+```
+
+On Windows, `--browser-channel msedge` can use the existing Edge installation. The script packs the current source, installs the tarball through `dsh plugin` into a temporary `DSH_HOME`, starts Web on a free loopback port, and opens the conversation and PTC Plus settings surfaces. It closes its browser/Host and removes the temporary profile; screenshots and release evidence remain under ignored `artifacts/client-web-smoke/`. It makes no model request and does not use or update the normal profile. `npm run test:client` supplies the deterministic provider, renderer, projection, and disposal tests included in `verify`/`check`.
 
 ## Isolated latest-DSH development launcher
 

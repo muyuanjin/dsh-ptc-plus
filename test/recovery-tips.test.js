@@ -32,3 +32,20 @@ test('short failures and disabled tips remain silent', () => {
     enabled: false, cooldownMessages: 1, escalationFailures: 2,
   }), undefined)
 })
+
+test('only owner-classified capability failures recommend discovery at either detail level', () => {
+  for (const causeCode of ['PTC-LOCAL', 'PTC-CAPABILITY', undefined]) {
+    const failure = view('return retainedMember({})', 'durable')
+    failure.latestRun.journal.diagnostics = [{ code: 'PTC-W001', cause: { code: causeCode } }]
+    for (const escalationFailures of [0, 2]) {
+      const tip = latestRecoveryTip(failure, { enabled: true, cooldownMessages: 1, escalationFailures })
+      assert.match(tip.name, /repeated-binding-failure\/1$/)
+      if (causeCode === 'PTC-CAPABILITY') {
+        assert.match(tip.text, /capabilities\.inspect\(\)/)
+      } else {
+        assert.match(tip.text, /local name, scope, initialization/)
+        assert.doesNotMatch(tip.text, /capabilities\.inspect\(\)/)
+      }
+    }
+  }
+})

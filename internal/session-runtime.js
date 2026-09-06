@@ -288,7 +288,8 @@ class SessionKernel {
     if (result.error === undefined) {
       this.failures.reset()
     } else {
-      const hint = this.failures.hint(result.error)
+      const primary = request.journal?.diagnostics.find(item => item.severity === 'error')
+      const hint = this.failures.hint(result.error, primary?.stateEffect)
       if (hint !== undefined) {
         result.logs = [...result.logs, renderDiagnostic(hint, request.program)]
         if (request.journal !== undefined) request.journal.diagnostics.push(hint)

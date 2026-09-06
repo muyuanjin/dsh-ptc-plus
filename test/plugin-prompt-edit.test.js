@@ -155,7 +155,9 @@ test('presents one coherent persistent REPL contract to the model', async (t) =>
   assert.match(guidance, /Ordinary top-level bindings remain available to later cells, so reuse them instead of resending setup code/)
   assert.match(guidance, /Choose the smallest cell that answers the request/)
   assert.match(guidance, /return only the value the next step needs/)
-  assert.match(guidance, /host may append a bounded recovery context/)
+  assert.match(guidance, /result proves pre-execution rejection/)
+  assert.match(guidance, /No recovery context is required/)
+  assert.match(guidance, /namespaces and members carry the capturing cell's lease/)
   assert.doesNotMatch(guidance, /PTC-C001|state: partially-applied|do not resend the full source/)
   assert.match(guidance, /`tools\.read` is bounded inspection/)
   assert.match(guidance, /reduce them to targeted excerpts/)
@@ -262,11 +264,11 @@ test('renders long-cell recovery advice in the tool error without a runtime cont
   )
   assert.match(
     failed.raw.error.message,
-    /execution may have occurred; inspect live state in a new short `run_code` cell before deciding whether a correction is safe/,
+    /failing operation may have caused effects/,
   )
   assert.match(
     failed.result.meta.dshPtcPlus.diagnostics[0].help.join('\n'),
-    /execution may have occurred; inspect live state/,
+    /owner's retry\/idempotence contract/,
   )
 })
 
@@ -328,7 +330,7 @@ test('registers edit_run_code and preserves its model-authored stream', async (t
   assert.equal(definition.name, 'edit_run_code')
   assert.equal(typeof definition.execute, 'function')
   assert.match(definition.description, /run the complete corrected cell/)
-  assert.match(definition.description, /external effect/)
+  assert.match(definition.description, /owner's retry\/idempotence contract/)
   assert.deepEqual(agent.registration.calls, ['edit_run_code'])
 
   const chunks = [
@@ -379,6 +381,10 @@ interface ToolOutputMap {
   const sdk = assembly.sections.find(section => section.name === 'tools:sdk').text
   assert.doesNotMatch(sdk, /edit_run_code/)
   assert.match(sdk, /read: \{ file_path: string \}/)
+  assert.match(sdk, /case-insensitive lexical search/)
+  assert.match(sdk, /multiple tokens must occur contiguously/)
+  assert.match(sdk, /traverse each namespace's `members`/)
+  assert.doesNotMatch(sdk, /declare const (repl|code):/)
 })
 
 test('keeps the complete request projection byte-stable across edit registration lifecycles', async (t) => {
@@ -475,7 +481,7 @@ test('reclassifies an empty session after preset recomposition', async (t) => {
     sections: [], contexts: [], variables: {},
     tools: [{ name: 'read', description: 'Read.', parameters: { type: 'object', properties: {} } }],
   }
-  assert.equal(
+  assert.deepEqual(
     await state.assemble(nativeAssembly, { agent, scope: agent }),
     nativeAssembly,
   )
@@ -541,8 +547,8 @@ test('keeps edit registration inside each owning PTC agent scope', async () => {
     sections: [], contexts: [], variables: {},
     tools: [{ name: 'read', description: 'Read.', parameters: { type: 'object', properties: {} } }],
   }
-  assert.equal(await state.assemble(nativeAssembly, { agent: native, scope: native }), nativeAssembly)
-  assert.equal(await state.assemble(nativeAssembly, { agent: native, scope: native }), nativeAssembly)
+  assert.deepEqual(await state.assemble(nativeAssembly, { agent: native, scope: native }), nativeAssembly)
+  assert.deepEqual(await state.assemble(nativeAssembly, { agent: native, scope: native }), nativeAssembly)
   await assert.rejects(state.assemble({
     ...nativeAssembly,
     tools: [state.runCodeDefinition, ...nativeAssembly.tools],

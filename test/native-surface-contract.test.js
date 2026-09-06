@@ -42,6 +42,7 @@ function fixture() {
       },
     },
     systemPrompt: {
+      context: () => () => {},
       section(value) {
         sections.push(value)
         return () => sections.splice(sections.indexOf(value), 1)
@@ -86,8 +87,11 @@ function fixture() {
       return { raw, result }
     },
     async assemble(assembly) {
-      const listener = listeners.get('system-prompt/assemble')[0]
-      return listener(assembly, { scope: { id: 'native-surface' } }, async () => assembly)
+      const entries = listeners.get('system-prompt/assemble')
+      const context = { scope: { id: 'native-surface' } }
+      const dispatch = index => entries[index] === undefined ? Promise.resolve(assembly)
+        : entries[index](assembly, context, () => dispatch(index + 1))
+      return dispatch(0)
     },
     async dispose() {
       for (const cleanup of cleanups.reverse()) await cleanup()

@@ -75,7 +75,7 @@ export function reportMarkdown(report) {
     '# PTC Plus ordinary-task A/B trajectories',
     '',
     `- model: ${report.runtime.provider}/${report.runtime.model}`,
-    `- DSH: ${report.runtime.dshVersion}`,
+    `- DSH: ${report.runtime.dshVersion}; command: ${report.runtime.dshCommand ?? 'unrecorded'}`,
     `- permission: ${report.runtime.permissionMode}`,
     `- fixture: ${report.fixture?.path ?? 'unknown'} v${report.fixture?.version ?? 'unknown'} (${report.fixture?.contentSha256?.slice(0, 12) ?? 'unknown'})`,
     `- replicates: ${report.runtime.replicates}`,

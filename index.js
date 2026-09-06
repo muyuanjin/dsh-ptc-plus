@@ -9,6 +9,8 @@
 import Schema from '@deepseek-ai/schemastery'
 import { randomUUID } from 'node:crypto'
 import { createDirectSurfaceOwner } from './internal/direct-surface-owner.js'
+import { createRuntimeMessageOwner } from './internal/runtime-contexts.js'
+import { PTC_DELIVERY_CONTEXT } from './internal/runtime-messages.js'
 import { createCordisToolsOwner } from './internal/cordis-tools-owner.js'
 import { createEditTransportOwner, EDIT_RUN_CODE } from './internal/edit-transport-owner.js'
 import { createRuntimeBridgeOwner, RUN_CODE } from './internal/runtime-bridge-owner.js'
@@ -40,7 +42,7 @@ export const Config = Schema.object(Object.fromEntries(
   CONFIG_FIELDS.map(field => [field.key, configSchemaField(field)]),
 ))
 
-/** Services required by the plugin. */
+/** Core services required by the plugin. Optional authoring services are injected on demand. */
 export const inject = ['tools', 'codeRuntime', 'systemPrompt', 'agents', 'llm']
 
 function replGuidance(
@@ -72,17 +74,18 @@ function replGuidance(
     ? 'Direct Node/OS access remains live but is not replayed after a kernel restart.'
     : 'Durable replay is disabled for this profile. Bindings remain reusable only in the current process; a new kernel starts empty.'
   const cordisRecovery = cordisToolsEnabled
-    ? 'When using Cordis tools, keep large host or client source in a top-level binding before the Cordis call. A Cordis parse or validation error is a runtime failure: bindings assigned before that failure remain live, so retry only the Cordis call with the existing binding instead of resending the source. Treat that binding as the read-only input for the retry.'
+    ? 'When using Cordis tools, keep large host or client source in a top-level binding before the Cordis call. A Cordis parse or validation error is a runtime failure: bindings assigned before that failure remain live. Reuse that source when continuation is justified by the owner retry contract and available execution facts; a failure alone does not prove that no effect occurred.'
     : ''
   return `\`run_code\` continues one persistent PTC REPL. Ordinary top-level bindings remain available to later cells, so reuse them instead of resending setup code. Choose the smallest cell that answers the request and return only the value the next step needs.
 
-The host may append a bounded recovery context after a qualifying failure. Treat that context as a session-log-derived diagnostic: use \`edit_run_code\` only when it explicitly proves a complete-cell rerun is safe; otherwise inspect live state in a new short \`run_code\` cell.
+When a result proves pre-execution rejection and supplies a validated correction matching your intent, prefer its direct \`edit_run_code\` call with the supplied target guard. No recovery context is required. Editing executes the complete corrected cell; validation proves syntax/preflight acceptance, not intended behavior. After possible execution, use the operation owner's retry/idempotence contract and available execution facts to choose continuation; inspect relevant live state in a short \`run_code\` cell as needed.
 
 ## Cell conventions
 Expressions that are neither returned nor printed produce no output. Keep large inspection results in bindings or reduce them to targeted excerpts: \`tools.read\` is bounded inspection, not a lossless whole-file reader. Cells are async function bodies; ${moduleSyntax} Use dynamic import or require explicitly when static module syntax is unsupported. ${variableRedeclaration} ${functionClassRedeclaration} ${splitSyntax}
 
 ## Available capabilities
 Use \`capabilities.tree()\`, \`capabilities.find()\`, and \`capabilities.inspect()\` to discover the current request's live \`tools.*\` members before calling an unfamiliar binding. Prefer direct current-cell work; reserve \`code.run\` for source already held as data.
+REPL-captured program namespaces and members carry the capturing cell's lease and expire when it ends. Retain computation and helpers that resolve the current namespace at invocation, not captured capability aliases. Global User Binding modules use their existing invocation-context bridge; old asynchronous continuations still expire.
 
 Native tool availability, executable names, shells, and path syntax depend on the current DSH profile and execution world; inspect them instead of assuming Windows, WSL, POSIX, or a particular shell. ${recovery}${cordisToolsEnabled ? ` ${cordisRecovery}` : ''}`
 }
@@ -274,6 +277,7 @@ function installPtCRuntime(ctx, resolvedConfig, toolSchemasForAgent, sessionId) 
       sessionId,
       toolSchemasForAgent,
       userBindingDraftForAgent: agent => userBindings.draftCapabilityForAgent(agent),
+      bindingSubmissionForAgent: (agent, ensureLease, onAccepted) => userBindings.submissionForAgent(agent, ensureLease, onAccepted),
     })
     editTransport = createEditTransportOwner(ctx, {
       durableReplay: activeConfig.durableReplay,
@@ -342,7 +346,7 @@ function installPtCRuntime(ctx, resolvedConfig, toolSchemasForAgent, sessionId) 
       editTransport.disposeAgent(agent)
       await Promise.all([
         runtimeBridge.disposeAgent(agent),
-        userBindings.clearSessionPresentation(sessionId(agent)),
+        userBindings.clearAgentPresentation(agent),
       ])
     }))
     disposers.push(ctx.on('session/disposed', async (session) => {
@@ -357,10 +361,12 @@ function installPtCRuntime(ctx, resolvedConfig, toolSchemasForAgent, sessionId) 
       directSurface.resetSessionComposition(sessionId)
       const agent = ctx.agents?.get?.(String(sessionId))
       if (agent !== undefined) editTransport.disposeAgent(agent)
-      const cleanup = userBindings.clearSessionPresentation(sessionId)
+      const cleanup = agent === undefined
+        ? userBindings.clearSessionPresentation(sessionId)
+        : userBindings.setAgentPresentation(agent)
       const report = ctx.logger?.warn?.bind(
         ctx.logger,
-        'ptc-plus: failed to revoke Global User Bindings authoring after preset selection',
+        'ptc-plus: failed to reconcile Global User Bindings authoring after preset selection',
       ) ?? console.warn
       void cleanup.catch(report)
     }))
@@ -421,7 +427,10 @@ function installPtCRuntime(ctx, resolvedConfig, toolSchemasForAgent, sessionId) 
     }
   }
 
-  return Object.freeze({ cancelCordisActivation, dispose, reconfigure, ready })
+  return Object.freeze({
+    cancelCordisActivation, dispose, reconfigure, ready,
+    contextsForRequest: context => directSurface.contextsForRequest(context),
+  })
 }
 
 /** Register the session-bound REPL runtime. */
@@ -602,6 +611,21 @@ export function apply(ctx, config = {}) {
     },
   }
   ctx.effect(() => async () => controller.dispose(), 'ptc-plus runtime lifecycle')
+
+  const messageOwner = createRuntimeMessageOwner(context => (
+    committed?.runtime.contextsForRequest(context) ?? []
+  ))
+  ctx.effect(() => ctx.systemPrompt.context({
+    name: PTC_DELIVERY_CONTEXT, order: 98, text: '',
+  }), 'ptc-plus dynamic message delivery witness')
+  ctx.effect(() => ctx.on('system-prompt/assemble', (assembly, context, next) => (
+    messageOwner.assemble(assembly, context, next)
+  )), 'ptc-plus message assembly')
+  ctx.effect(() => ctx.on('agent/pre-step', (payload, next) => (
+    messageOwner.preStep(payload, next)
+  )), 'ptc-plus accepted messages')
+  ctx.effect(() => ctx.on('agent/disposed', ({ agent }) => messageOwner.disposeAgent(agent)), 'ptc-plus message agent disposal')
+  ctx.effect(() => () => messageOwner.dispose(), 'ptc-plus dynamic message lifecycle')
 
   let configSource = () => resolvedConfig
   let configurationGeneration = 0

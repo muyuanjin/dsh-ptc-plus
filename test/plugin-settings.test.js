@@ -1,10 +1,14 @@
 import assert from 'node:assert/strict'
 import { Context as CordisContext } from '@deepseek-ai/cordis'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import test from 'node:test'
-import { apply, Config } from '../index.js'
+import { apply, Config, inject } from '../index.js'
 import { CONFIG_FIELDS, CONFIG_GROUPS, SETTINGS_NAMESPACE } from '../internal/config-spec.js'
 import { resolveConfig } from '../internal/runtime-config.js'
+import { Session } from '@deepseek-ai/dsh-session'
+import { readRuntimeMessage, runtimeStateMessage } from '../internal/runtime-messages.js'
 
 const TEST_CORDIS_TOOL_NAMES = Object.freeze([
   'test_cordis_inspect',
@@ -74,6 +78,7 @@ function hostContext(settings = undefined, agents = [], options = {}) {
   const listeners = new Map()
   const cleanups = []
   const sections = []
+  const contexts = []
   const projectionDefinitions = []
   const projectionInjections = []
   const inheritedRun = async () => ({ logs: [] })
@@ -92,6 +97,10 @@ function hostContext(settings = undefined, agents = [], options = {}) {
       register: () => () => {},
     },
     systemPrompt: {
+      context(value) {
+        contexts.push(value)
+        return () => contexts.splice(contexts.indexOf(value), 1)
+      },
       section: value => {
         if (options.failPromptSection === true) throw new Error('prompt section unavailable')
         sections.push(value)
@@ -112,7 +121,7 @@ function hostContext(settings = undefined, agents = [], options = {}) {
             name: section.name,
             text: typeof section.text === 'function' ? section.text(context) : section.text,
           })),
-          contexts: [],
+          contexts: [...contexts],
           tools: TEST_CORDIS_TOOL_NAMES
             .filter(name => context.scope?.definitions.has(name))
             .map(name => ({ name })),
@@ -206,8 +215,19 @@ function hostContext(settings = undefined, agents = [], options = {}) {
           callback({ connection: { rpc: { handle: () => () => {} } } })
           return () => {}
         }
-        if (services.length === 2 && services[0] === 'commands' && services[1] === 'skills') {
-          return () => {}
+        if (services.length === 1 && services[0] === 'tools') {
+          const childDisposers = []
+          callback({
+            tools: ctx.tools,
+            on(name, listener) {
+              const dispose = ctx.on(name, listener)
+              childDisposers.push(dispose)
+              return dispose
+            },
+          })
+          return async () => {
+            for (const dispose of childDisposers.reverse()) await dispose()
+          }
         }
         assert.deepEqual(services, ['settings'])
         settings.fiber ??= { state: 2 }
@@ -219,6 +239,7 @@ function hostContext(settings = undefined, agents = [], options = {}) {
     ctx,
     listeners,
     sections,
+    contexts,
     cleanups,
     runtime,
     definition,
@@ -345,10 +366,10 @@ function cordisAgent(disposeGate = undefined, options = {}) {
   }
 }
 
-async function openSessionWorker(host, agent) {
+async function openSessionWorker(host, agent, program = 'return 1') {
   const exec = { name: 'run_code', callId: 'settings-worker', agent }
   const result = await host.listeners.get('tools/execute')[0](exec, async () => {
-    const raw = await host.runtime.run({ program: 'return 1', bindings: [] })
+    const raw = await host.runtime.run({ program, bindings: [] })
     return {
       isError: raw.error !== undefined,
       content: [],
@@ -362,13 +383,67 @@ async function openSessionWorker(host, agent) {
 
 function bindingCommandAgent(options = {}) {
   let command
+  let draftTool
+  const messages = []
   let commandDisposeFailures = options.commandDisposeFailures ?? 0
+  const events = []
   const agent = {
     id: 'settings-binding-agent',
-    session: { id: 'settings-binding-session', header: { cwd: '/workspace' } },
+    session: {
+      id: 'settings-binding-session',
+      header: { cwd: '/workspace' },
+      append(type, data) { events.push({ type, data }) },
+    },
     inject() {},
-    steer() {},
+    steer(message) { messages.push(message) },
     ctx: {
+      inject(services, callback) {
+        const disposers = []
+        const child = {}
+        for (const service of services) {
+          if (service === 'commands') {
+            child.commands = {
+              register(definition) {
+                if (options.throwCommandRegister === true) {
+                  throw new Error('binding command registration failed')
+                }
+                command = definition
+                const dispose = async () => {
+                  if (command === definition) command = undefined
+                  if (commandDisposeFailures > 0) {
+                    commandDisposeFailures -= 1
+                    throw new Error('binding command disposal failed')
+                  }
+                }
+                return dispose
+              },
+            }
+          } else if (service === 'skills') {
+            child.skills = { register: () => () => {} }
+          } else if (service === 'tools') {
+            child.tools = {
+              register(definition) {
+                draftTool = definition
+                return () => { if (draftTool === definition) draftTool = undefined }
+              },
+            }
+          }
+        }
+        child.effect = register => {
+          const dispose = register()
+          disposers.push(dispose)
+          return dispose
+        }
+        callback(child)
+        let active = true
+        return {
+          async dispose() {
+            if (!active) return
+            active = false
+            for (const dispose of disposers.reverse()) await dispose()
+          },
+        }
+      },
       effect(register) {
         const dispose = register()
         let active = true
@@ -401,14 +476,17 @@ function bindingCommandAgent(options = {}) {
   }
   return {
     agent,
+    events,
+    messages,
     get command() { return command },
+    get draftTool() { return draftTool },
   }
 }
 
-async function assemblePtc(host, agent) {
+async function assemblePtc(host, agent, signal) {
   const assembly = {
     sections: [{ name: 'tools:ptc-only', text: 'PTC mode' }],
-    contexts: [],
+    contexts: [...host.contexts],
     tools: [{
       name: 'run_code',
       parameters: {
@@ -421,8 +499,11 @@ async function assemblePtc(host, agent) {
     }],
     variables: {},
   }
-  const listener = host.listeners.get('system-prompt/assemble')[0]
-  return listener(assembly, { agent, scope: agent }, () => Promise.resolve(assembly))
+  const entries = host.listeners.get('system-prompt/assemble')
+  const context = { agent, scope: agent, signal }
+  const dispatch = index => entries[index] === undefined ? Promise.resolve(assembly)
+    : entries[index](assembly, context, () => dispatch(index + 1))
+  return dispatch(0)
 }
 
 test('settings kill switch leaves no runtime side effects when disabled', async () => {
@@ -440,9 +521,53 @@ test('settings kill switch leaves no runtime side effects when disabled', async 
   assert.deepEqual(projectionDefinitions, [])
   assert.deepEqual(projectionInjections, [])
   assert.equal(Object.hasOwn(runtime, 'run'), false)
-  assert.equal(listeners.size, 0)
+  assert.deepEqual([...listeners.keys()].sort(), ['agent/disposed', 'agent/pre-step', 'system-prompt/assemble'])
   assert.equal(sections.length, 0)
   for (const cleanup of cleanups.reverse()) await cleanup()
+})
+
+test('plugin disable clears committed declarations and re-enable reconciles current facts', async t => {
+  const scope = settingsScope({ enabled: true })
+  const host = hostContext(settingsContext(scope))
+  apply(host.ctx)
+  t.after(async () => { for (const cleanup of host.cleanups.reverse()) await cleanup() })
+  const agent = bindingCommandAgent().agent
+  agent.session = Session.create('settings-message-lifecycle')
+  const append = message => agent.session.append('user/message', message, { surfaceOp: 'append' })
+  append(runtimeStateMessage([{ name: 'tools:ptc-plus-user-bindings', text: 'Earlier activated helper.' }]))
+  async function step() {
+    const signal = new AbortController().signal
+    if (scope.get().enabled) await assemblePtc(host, agent, signal)
+    else await host.ctx.systemPrompt.assemble({ agent, signal })
+    const entries = [...host.listeners.get('agent/pre-step') ?? []]
+    const dispatch = index => entries[index] === undefined
+      ? Promise.resolve({ kind: 'enter', messages: [] })
+      : entries[index]({ agent, signal }, () => dispatch(index + 1))
+    const { messages } = await dispatch(0)
+    messages.forEach(append)
+    return messages.map(readRuntimeMessage)
+  }
+  scope.set({ enabled: false })
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(Object.hasOwn(host.runtime, 'run'), false)
+  assert.deepEqual(await step(), [{ form: 'snapshot', sections: [] }])
+  assert.deepEqual(await step(), [])
+  scope.set({ enabled: true })
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(Object.hasOwn(host.runtime, 'run'), true)
+  assert.deepEqual(await step(), [])
+  agent.session.append('turn/start', {})
+  agent.session.append('tool/call', { callId: 'rewrite', name: 'run_code', arguments: '{"code":"export const value = 1"}' })
+  agent.session.append('tool/result', { message: { source: { callId: 'rewrite' } }, meta: {
+    dshPtcPlusRewrites: [{ kind: 'export', description: 'export modifier removed' }],
+  } }, { surfaceOp: 'append' })
+  const current = await step()
+  assert.equal(current.length, 1)
+  assert.deepEqual(current[0].sections.map(section => section.name), ['tools:ptc-plus-rewrite-info'])
+  assert.deepEqual(await step(), [])
+  scope.set({ enabled: false })
+  await new Promise(resolve => setImmediate(resolve))
+  assert.deepEqual(await step(), [{ form: 'snapshot', sections: [] }])
 })
 
 test('degrades an incompatible session projection without disabling the runtime', async () => {
@@ -516,6 +641,48 @@ test('binds the session binding command to live draft projection availability', 
     ['ptcPlusRepl', 'ptcPlusBindingDraft'],
   )
   for (const cleanup of available.cleanups.reverse()) await cleanup()
+})
+
+test('invalidates a draft during Agent cleanup without appending presentation events', async (t) => {
+  const home = await mkdtemp(join(tmpdir(), 'ptc-plus-settings-bindings-'))
+  const previousHome = process.env.DSH_HOME
+  process.env.DSH_HOME = home
+  t.after(async () => {
+    if (previousHome === undefined) delete process.env.DSH_HOME
+    else process.env.DSH_HOME = previousHome
+    await rm(home, { recursive: true, force: true })
+  })
+  const binding = bindingCommandAgent()
+  const host = hostContext(
+    settingsContext(settingsScope({ enabled: true, userBindingsEnabled: true })),
+    [binding.agent],
+  )
+  apply(host.ctx)
+  t.after(async () => {
+    for (const cleanup of host.cleanups.reverse()) await cleanup()
+  })
+  await new Promise(resolve => setImmediate(resolve))
+  await assemblePtc(host, binding.agent)
+  const commandResult = binding.command.handler({
+    agent: binding.agent,
+    rawInput: 'new integration reset helper',
+    signal: new AbortController().signal,
+  })
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal((await commandResult).kind, 'success')
+  const requestId = JSON.parse(/requestId: ("[^"\n]+")/.exec(binding.messages.at(-1).content[0].text)[1])
+  await openSessionWorker(host, binding.agent, `return code.submitBindingDraft(${JSON.stringify({ requestId, entry: {
+    id: 'integration-reset',
+    name: 'integrationReset',
+    scope: 'namespace',
+    purpose: '',
+    source: 'export const value = 1',
+  } })})`)
+
+  for (const listener of [...host.listeners.get('agent/disposed') ?? []]) {
+    await listener({ agent: binding.agent })
+  }
+  assert.deepEqual(binding.events, [])
 })
 
 test('contains binding command registration and projection cleanup failures', async () => {
@@ -607,7 +774,7 @@ test('disabled settings can load on hosts without a TypeScript runtime', async (
 
   assert.doesNotThrow(() => apply(ctx))
   assert.equal(Object.hasOwn(runtime, 'run'), false)
-  assert.equal(listeners.size, 0)
+  assert.deepEqual([...listeners.keys()].sort(), ['agent/disposed', 'agent/pre-step', 'system-prompt/assemble'])
   assert.equal(sections.length, 0)
 
   scope.set({ ...scope.get(), enabled: true })
@@ -664,7 +831,7 @@ test('settings kill switch installs and removes the runtime live', async () => {
   scope.set({ ...scope.get(), enabled: false })
   await new Promise(resolve => setTimeout(resolve, 0))
   assert.equal(Object.hasOwn(runtime, 'run'), false)
-  assert.equal(listeners.size, 0)
+  assert.deepEqual([...listeners.keys()].sort(), ['agent/disposed', 'agent/pre-step', 'system-prompt/assemble'])
   assert.equal(sections.length, 0)
   assert.deepEqual(projectionDefinitions, [])
   assert.deepEqual(projectionInjections, [])
@@ -701,7 +868,7 @@ test('late settings mount reconciles and detaches against composition config', a
   injectSettings(settings)
   await new Promise(resolve => setTimeout(resolve, 0))
   assert.equal(Object.hasOwn(runtime, 'run'), false)
-  assert.equal(listeners.size, 0)
+  assert.deepEqual([...listeners.keys()].sort(), ['agent/disposed', 'agent/pre-step', 'system-prompt/assemble'])
   assert.equal(sections.length, 0)
 
   detach()
@@ -768,7 +935,8 @@ test('adds Cordis failed-cell binding reuse guidance only when Cordis is enabled
   apply(host.ctx)
   const guidance = host.sections.find(section => section.name === 'tools:ptc-plus-repl')?.text({})
   assert.match(guidance, /When using Cordis tools, keep large host or client source in a top-level binding before the Cordis call\./)
-  assert.match(guidance, /bindings assigned before that failure remain live, so retry only the Cordis call with the existing binding instead of resending the source/)
+  assert.match(guidance, /bindings assigned before that failure remain live/)
+  assert.match(guidance, /continuation is justified by the owner retry contract and available execution facts/)
   for (const cleanup of host.cleanups.reverse()) await cleanup()
 })
 
@@ -953,7 +1121,7 @@ test('continues rollback after one owner disposer rejects', async () => {
   const scope = settingsScope({ enabled: true, cordisToolsEnabled: true })
   const cordis = cordisAgent(undefined, { throwDispose: true })
   const host = hostContext(settingsContext(scope), [cordis.agent], {
-    failHook: 'system-prompt/assemble',
+    failHook: 'tools/execute',
     throwSectionDispose: true,
   })
   apply(host.ctx)
@@ -1446,6 +1614,7 @@ test('config schema defaults expose the settings switches', async () => {
     ['enhancedToolView', 'autoDescribeRunCode', 'canonicalizeToolCalls'],
   )
   const defaults = await Config['~standard'].validate({})
+  assert.equal(inject.includes('commands'), false)
   assert.equal(defaults.value.enabled, true)
   assert.equal(defaults.value.enhancedToolView, true)
   assert.equal(defaults.value.autoDescribeRunCode, true)

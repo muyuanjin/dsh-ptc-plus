@@ -43,7 +43,7 @@ npm.cmd stage approve '<stage-id>' --registry=https://registry.npmjs.org/
 1. 在 Node `22.19.0` 与 Node 24.x 上运行 `npm ci`、`npm run build:check` 和 `npm run check`；Node 24.x 还应覆盖 Windows、Linux 与 macOS。仓库 CI 定义同一矩阵。
 2. 运行 `npm audit`、`npx publint`、`git diff --check`、Markdown local-link check 和 `npm pack --silent --dry-run --json`。确认 tarball 只包含发布白名单内的运行时代码、文档和展示资产，不含凭据、本地路径、开发脚本或测试夹具，并从 tarball 安装到空目录执行 ESM import smoke。机器读取 `npm pack --json` 时保持 `--silent`，避免 lifecycle 输出混入 JSON stream。
 3. 更新到最新可用 DSH release 并记录 `dsh --version`。分别从 npm 包、固定 Git commit、源码 checkout 和 tarball 安装到临时 profile，再执行 `dsh --profile <profile> --dump-config`，确认只新增 `ptc-plus` row。每个上游 release 都重新验证公共扩展面、CLI/Web 集成和 profile 装配，不设置版本白名单。
-4. 在 Windows 与 Linux CLI/Web 实机启动临时 profile。macOS 由原生 runner 验证 CLI/Web；Windows 与 macOS Desktop 从托盘打开当前 profile 的 DSH Terminal 安装，重启 Desktop 后做一次 PTC 模式 smoke。Desktop 当前发布平台不包括 Linux。
+4. 在 Windows 与 Linux 运行无模型调用的 `npm run test:client:web -- --dsh-entry <latest-installed-dsh/lib/bin.js>`，验证 tarball 安装后的真实 Web Client、设置与对话 surface；浏览器前置条件见 [安装指南](installation.md)。`build:check`、Host ESM import 和 factory smoke 均不能替代浏览器激活验收。macOS 由原生 runner 验证 CLI/Web；Windows 与 macOS Desktop 从托盘打开当前 profile 的 DSH Terminal 安装，重启 Desktop 后做一次 PTC 模式 smoke。Desktop 当前发布平台不包括 Linux。
 5. 只有在明确授权模型消耗后才运行 `npm run test:expensive` 与 `npm run test:ab`。发布结论以结构化测试结果为准，不把一次模型样本推广为普遍保证。
 6. 确认 npm 包名可用、待发布版本高于 registry 版本、README 截图来自真实 DSH 会话，并核对 repository、homepage、bugs、license 与 `dsh-plugin` topic。
 7. 最后检查 `npm pack --silent --json` 的名称、版本、大小与文件列表，创建 annotated release tag，并确认 tag commit 已通过 `CI`。运行 `Release` workflow 将同一源码产生的 tarball送入 npm staging；人工检查并以 2FA approve 后，等待 registry 扫描完成，再创建 GitHub Release。

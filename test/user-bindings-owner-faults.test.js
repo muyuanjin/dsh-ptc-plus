@@ -20,7 +20,13 @@ test('rejects malformed candidate result wires', async t => {
   const { createUserBindingsOwner, USER_BINDINGS_RPC_CHANNEL } = await import('../internal/user-bindings-owner.js')
   let handler
   const ctx = {
+    agents: { list: () => [] },
+    tools: { get: () => undefined },
     inject(services, callback) {
+      if (services[0] === 'tools') {
+        callback({ tools: ctx.tools, on() { return () => {} } })
+        return () => {}
+      }
       if (services[0] !== 'connection') return () => {}
       callback({ connection: { rpc: {
         handle(channel, next) {

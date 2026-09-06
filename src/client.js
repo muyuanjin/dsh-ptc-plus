@@ -4,26 +4,31 @@ import {
   normalizeReplMemorySnapshot,
   unavailableReplMemorySnapshot,
 } from '../internal/repl-memory-projection.js'
-import { normalizeUserBindingDraftCapability } from '../internal/user-binding-draft-projection.js'
+import { normalizeUserBindingDraftView } from '../internal/user-binding-draft-projection.js'
 
 const CLIENT_STYLE_ID = 'ptc-plus-client-style'
 const USER_BINDINGS_RPC_CHANNEL = '/ptc-plus-bindings'
 const CLIENT_CSS = `
-.ptcPlusCard{border:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1));background:var(--dsw-alias-bg-layer-3,#fff);border-radius:8px;list-style:none;overflow:hidden}
-.ptcPlusHeader{appearance:none;width:100%;display:flex;align-items:center;gap:12px;padding:14px 16px;border:0;background:transparent;color:inherit;font:inherit;text-align:left;cursor:pointer;transition:background-color .16s ease}
-.ptcPlusHeader:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(38,49,72,.06))}.ptcPlusHeader:focus-visible,.ptcPlusButton:focus-visible,.ptcPlusInput:focus-visible{outline:2px solid var(--dsw-alias-interactive-primary,#4d6bfe);outline-offset:-2px}
-.ptcPlusHeadText{display:flex;flex:1;min-width:0;flex-direction:column;align-items:flex-start;gap:1px}.ptcPlusName{font-size:14px;font-weight:600;line-height:20px}.ptcPlusDescription{color:var(--dsw-alias-label-tertiary,#74777d);font-size:12px;line-height:18px;overflow-wrap:anywhere}.ptcPlusStatus{display:inline-flex;align-items:center;flex:none;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:500;line-height:16px}.ptcPlusStatus[data-enabled=true]{color:var(--dsw-alias-state-success-primary,#16794f);background:var(--dsw-alias-state-success-tertiary,#e7f7ef)}.ptcPlusStatus[data-enabled=false]{color:var(--dsw-alias-label-tertiary,#74777d);background:var(--dsw-alias-interactive-bg-hover,rgba(38,49,72,.06))}
-.ptcPlusChevron{display:flex;color:var(--dsw-alias-label-tertiary,#74777d);transition:transform .18s ease}.ptcPlusChevron[data-open=true]{transform:rotate(180deg)}.ptcPlusBody{display:grid;grid-template-rows:0fr;transition:grid-template-rows .2s ease}.ptcPlusBody[data-open=true]{grid-template-rows:1fr}.ptcPlusBodyInner{min-height:0;overflow:hidden}.ptcPlusFields{margin:0 16px;padding:8px 0 12px;border-top:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1))}
-.ptcPlusGroup+.ptcPlusGroup{margin-top:14px}.ptcPlusGroupTitle{margin:0;padding:8px 0 5px;color:var(--dsw-alias-label-secondary,#52565d);font-size:11px;font-weight:600;letter-spacing:0;line-height:16px}.ptcPlusRow{display:flex;align-items:center;gap:12px;min-height:48px;border-top:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1))}.ptcPlusRow:first-child{border-top:0}.ptcPlusMain{flex:1;min-width:0}.ptcPlusLabel{font-size:14px;font-weight:500;line-height:20px}.ptcPlusDetail,.ptcPlusMessage{color:var(--dsw-alias-label-tertiary,#74777d);font-size:12px;line-height:18px;overflow-wrap:anywhere}.ptcPlusInput{box-sizing:border-box;min-width:72px;width:140px;padding:5px 8px;border:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1));border-radius:6px;background:var(--dsw-alias-bg-layer-1,#fff);color:inherit;font:12px/18px ui-monospace,SFMono-Regular,Consolas,monospace}.ptcPlusCheck{width:18px;height:18px;accent-color:var(--dsw-alias-interactive-primary,#4d6bfe)}
-.ptcPlusFooter{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:8px}.ptcPlusButton{min-height:32px;padding:0 12px;border:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1));border-radius:6px;background:transparent;color:inherit;cursor:pointer;font:500 13px/20px inherit;transition:background-color .16s ease,border-color .16s ease}.ptcPlusButton:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover,rgba(38,49,72,.06))}.ptcPlusButton:disabled,.ptcPlusInput:disabled,.ptcPlusCheck:disabled{cursor:not-allowed;opacity:.55}
-.ptcPlusBindings{margin-top:16px;padding-top:14px;border-top:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1))}.ptcPlusBindingsHead{display:flex;align-items:center;justify-content:space-between;gap:12px}.ptcPlusBindingsActions{display:flex;flex-wrap:wrap;gap:6px}.ptcPlusBindingsGrid{display:grid;grid-template-columns:minmax(190px,.7fr) minmax(320px,1.3fr);gap:16px;margin-top:10px}.ptcPlusBindingList{min-width:0;margin:0;padding:0;border-right:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1));list-style:none}.ptcPlusBindingItem{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:3px 8px;padding:8px 10px;border-bottom:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1))}.ptcPlusBindingSelect{min-width:0;padding:0;border:0;background:transparent;color:inherit;text-align:left;cursor:pointer}.ptcPlusBindingSelect:focus-visible,.ptcPlusTextarea:focus-visible,.ptcPlusSelect:focus-visible{outline:2px solid var(--dsw-alias-interactive-primary,#4d6bfe);outline-offset:1px}.ptcPlusBindingName{display:block;overflow:hidden;font:600 12px/18px ui-monospace,SFMono-Regular,Consolas,monospace;text-overflow:ellipsis;white-space:nowrap}.ptcPlusBindingMeta{display:block;color:var(--dsw-alias-label-tertiary,#74777d);font-size:11px;line-height:16px;overflow-wrap:anywhere}.ptcPlusBindingToggle{grid-column:2;grid-row:1/3;align-self:center}.ptcPlusBindingEditor{display:grid;min-width:0;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px 12px}.ptcPlusBindingField{display:flex;min-width:0;flex-direction:column;gap:4px}.ptcPlusBindingField[data-wide=true]{grid-column:1/-1}.ptcPlusBindingFieldLabel{color:var(--dsw-alias-label-secondary,#52565d);font-size:11px;font-weight:600;line-height:16px}.ptcPlusBindingEditor .ptcPlusInput,.ptcPlusSelect{box-sizing:border-box;width:100%;min-width:0;padding:6px 8px;border:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1));border-radius:6px;background:var(--dsw-alias-bg-layer-1,#fff);color:inherit;font:12px/18px inherit}.ptcPlusTextarea{box-sizing:border-box;width:100%;min-height:180px;resize:vertical;padding:9px;border:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1));border-radius:6px;background:var(--dsw-alias-bg-layer-1,#fff);color:inherit;font:12px/18px ui-monospace,SFMono-Regular,Consolas,monospace;tab-size:2}.ptcPlusDeclaration{box-sizing:border-box;max-height:180px;margin:0;padding:9px;overflow:auto;background:var(--dsw-alias-bg-layer-2,rgba(38,49,72,.03));color:inherit;font:11px/17px ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere}.ptcPlusBindingRun{display:flex;grid-column:1/-1;flex-wrap:wrap;align-items:end;gap:8px;padding-top:8px;border-top:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1))}.ptcPlusBindingRun .ptcPlusInput{width:min(240px,100%)}.ptcPlusBindingOutput{grid-column:1/-1;margin:0;color:var(--dsw-alias-label-secondary,#52565d);font:11px/17px ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere}.ptcPlusDanger{color:var(--dsw-alias-state-danger-primary,#c43d3d)}
-.ptcPlusActiveShell{display:inline-flex;align-items:center}.ptcPlusActive{appearance:none;display:inline-flex;height:24px;align-items:center;gap:5px;padding:0 8px;border:1px solid color-mix(in srgb,var(--dsw-alias-state-success-primary,#16794f) 32%,transparent);border-radius:6px;background:var(--dsw-alias-state-success-tertiary,#e7f7ef);color:var(--dsw-alias-state-success-primary,#16794f);cursor:help;font:600 12px/18px inherit;white-space:nowrap;transition:background-color .14s ease,border-color .14s ease}.ptcPlusActive:hover,.ptcPlusActive[aria-expanded=true]{border-color:color-mix(in srgb,var(--dsw-alias-state-success-primary,#16794f) 48%,transparent);background:color-mix(in srgb,var(--dsw-alias-state-success-primary,#16794f) 16%,var(--dsw-alias-bg-layer-3,#fff))}.ptcPlusActive:focus-visible{outline:2px solid var(--dsw-alias-state-success-primary,#16794f);outline-offset:2px}.ptcPlusReplPopover{position:fixed;z-index:2147483000;inset:auto;display:none;box-sizing:border-box;margin:0;padding:0;border:0;overflow:visible;background:transparent;color:var(--dsw-alias-label-primary,#18191c)}.ptcPlusReplPopover:popover-open,.ptcPlusReplPopover[data-open=true]{display:block}.ptcPlusReplPopover::backdrop{background:transparent}.ptcPlusReplCard{display:flex;max-height:inherit;overflow:hidden;flex-direction:column;border:1px solid color-mix(in srgb,var(--dsw-alias-state-success-primary,#16794f) 22%,var(--dsw-alias-border-l2,rgba(0,0,0,.1)));border-top:3px solid var(--dsw-alias-state-success-primary,#16794f);border-radius:8px;background:var(--dsw-alias-bg-layer-3,#fff);box-shadow:0 14px 36px rgba(16,24,40,.2),0 3px 10px rgba(16,24,40,.1);color:var(--dsw-alias-label-primary,#18191c);white-space:normal}.ptcPlusReplHead{display:grid;grid-template-columns:auto minmax(0,1fr);align-items:center;column-gap:8px;padding:11px 13px 10px;border-bottom:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1));background:color-mix(in srgb,var(--dsw-alias-state-success-primary,#16794f) 7%,var(--dsw-alias-bg-layer-3,#fff))}.ptcPlusReplStatusDot{grid-row:1/3;width:8px;height:8px;border-radius:50%;background:var(--dsw-alias-state-success-primary,#16794f);box-shadow:0 0 0 3px color-mix(in srgb,var(--dsw-alias-state-success-primary,#16794f) 14%,transparent)}.ptcPlusReplTitle,.ptcPlusReplSummary{display:block;min-width:0}.ptcPlusReplTitle{font-size:13px;font-weight:600;line-height:19px}.ptcPlusReplSummary{color:var(--dsw-alias-label-tertiary,#74777d);font-size:11px;line-height:16px}.ptcPlusReplList{min-height:0;margin:0;padding:5px 0;overflow:auto;overscroll-behavior:contain;list-style:none;scrollbar-gutter:stable}.ptcPlusReplBinding{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:4px 10px;padding:7px 12px}.ptcPlusReplBinding:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(38,49,72,.06))}.ptcPlusReplIdentity{display:flex;min-width:0;align-items:center;gap:7px}.ptcPlusReplName{min-width:0;overflow:hidden;font:12px/18px ui-monospace,SFMono-Regular,Consolas,monospace;text-overflow:ellipsis;white-space:nowrap}.ptcPlusReplKind{flex:none;padding:1px 6px;border:1px solid color-mix(in srgb,currentColor 22%,transparent);border-radius:999px;background:color-mix(in srgb,currentColor 10%,transparent);font-size:10px;font-weight:600;line-height:15px}.ptcPlusReplKind[data-kind=variable]{color:var(--dsw-alias-interactive-primary,#315fbd)}.ptcPlusReplKind[data-kind=function]{color:#7651b5}.ptcPlusReplKind[data-kind=class]{color:var(--dsw-alias-state-warning-primary,#946200)}.ptcPlusReplKind[data-kind=import]{color:#14766f}.ptcPlusReplPreview{grid-column:1;min-width:0;overflow:hidden;color:var(--dsw-alias-label-tertiary,#74777d);font:11px/16px ui-monospace,SFMono-Regular,Consolas,monospace;text-overflow:ellipsis;white-space:nowrap}.ptcPlusReplInspect{grid-column:2;grid-row:1/3;display:inline-flex;align-items:center;gap:4px;padding:3px 5px;border:0;border-radius:4px;background:transparent;color:var(--dsw-alias-label-secondary,#52565d);cursor:pointer;font:500 11px/17px inherit;white-space:nowrap}.ptcPlusReplInspect:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(38,49,72,.06));color:var(--dsw-alias-interactive-primary,#4d6bfe)}.ptcPlusReplInspect:focus-visible{outline:2px solid var(--dsw-alias-interactive-primary,#4d6bfe);outline-offset:1px}.ptcPlusReplDefinition{grid-column:1/-1;min-width:0;margin-top:4px;padding:8px;border-left:2px solid var(--dsw-alias-interactive-primary,#4d6bfe);background:var(--dsw-alias-bg-layer-2,rgba(38,49,72,.03))}.ptcPlusReplLocation{display:block;margin-bottom:5px;color:var(--dsw-alias-label-tertiary,#74777d);font-size:10px;line-height:15px}.ptcPlusReplCode{max-height:180px;margin:0;overflow:auto;color:inherit;font:11px/16px ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere}.ptcPlusReplEmpty,.ptcPlusReplMore{display:block;color:var(--dsw-alias-label-tertiary,#74777d)}.ptcPlusReplEmpty{padding:18px 13px;font-size:12px;line-height:18px}.ptcPlusReplMore{padding:8px 13px;border-top:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1));background:var(--dsw-alias-bg-layer-2,rgba(38,49,72,.03));font-size:11px;line-height:17px}
-.ptcPlusReplTabs{display:flex;padding:6px 8px 0;border-bottom:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1))}.ptcPlusReplTab{flex:1;padding:5px 6px;border:0;border-bottom:2px solid transparent;background:transparent;color:var(--dsw-alias-label-secondary,#52565d);cursor:pointer;font:600 11px/17px inherit}.ptcPlusReplTab[aria-selected=true]{border-bottom-color:var(--dsw-alias-interactive-primary,#4d6bfe);color:var(--dsw-alias-label-primary,#18191c)}.ptcPlusGlobalPane{display:flex;min-height:0;flex-direction:column;gap:8px;padding:8px 12px}.ptcPlusGlobalList{min-height:0;margin:0 -12px -8px;padding:5px 0;overflow:auto;list-style:none}.ptcPlusGlobalItem{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:6px;padding:7px 12px;border-bottom:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1))}.ptcPlusGlobalItem .ptcPlusGlobalSource,.ptcPlusGlobalItem .ptcPlusReplEmpty{grid-column:1/-1}.ptcPlusAuthoringDraft{display:flex;flex-direction:column;gap:5px;padding:8px;border:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1));border-radius:6px}.ptcPlusGlobalSource{max-height:180px;margin:6px 0 0;padding:7px;overflow:auto;background:var(--dsw-alias-bg-layer-2,rgba(38,49,72,.03));font:11px/16px ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere}
+.ptcPlusBindingCommand .ptcPlusMessage{margin:0}.ptcPlusBindingSourceDetails{min-width:0}.ptcPlusBindingSourceDetails>summary{cursor:pointer;font-size:12px;line-height:20px}.ptcPlusBindingItem>button,.ptcPlusGlobalItem>button{align-self:center}.ptcPlusAuthoringDraft>strong{font-size:13px;line-height:20px;overflow-wrap:anywhere}.ptcPlusBindingCommand .ptcPlusBindingCommandState{max-width:100%;box-sizing:border-box;white-space:normal}.ptcPlusBindingCommand .ptcPlusAuthoringDraft{min-width:0;padding:0;border:0;border-radius:0;background:transparent}
+.ptcPlusCard{list-style:none;border:0.5px solid var(--dsw-alias-border-l4);border-radius:16px;background:var(--dsw-alias-bg-layer-3);overflow:hidden;transition:border-color .16s ease,background-color .16s ease}
+.ptcPlusCard:hover{border-color:var(--dsw-alias-label-dimmed)}
+.ptcPlusCard[data-open=true]{background:var(--dsw-alias-bg-layer-2);border-color:var(--dsw-alias-label-dimmed)}
+.ptcPlusHeader{appearance:none;width:100%;display:flex;align-items:center;gap:12px;padding:14px 16px;border:0;background:transparent;color:inherit;font:inherit;text-align:left;cursor:pointer;border-radius:12px}
+.ptcPlusHeader:hover{background:var(--dsw-alias-interactive-bg-hover)}.ptcPlusHeader:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:-2px}
+.ptcPlusButton:focus-visible,.ptcPlusInput:focus-visible,.ptcPlusSelect:focus-visible,.ptcPlusTextarea:focus-visible,.ptcPlusBindingSelect:focus-visible,.ptcPlusReplBindingTrigger:focus-visible,.ptcPlusReplInspect:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px}
+.ptcPlusHeadText{display:flex;flex:1;min-width:0;flex-direction:column;align-items:flex-start;gap:3px}.ptcPlusName{font-size:15px;font-weight:600;line-height:1.4}.ptcPlusDescription{color:var(--dsw-alias-label-tertiary);font-size:13px;line-height:1.5;overflow-wrap:anywhere}.ptcPlusStatus{display:inline-flex;align-items:center;flex:none;padding:1px 8px;border-radius:999px;corner-shape:round;background:var(--dsw-alias-bg-module-platform);color:var(--dsw-alias-label-secondary);font-size:11px;font-weight:500;line-height:17px;white-space:nowrap}.ptcPlusStatus[data-enabled=true]{color:var(--dsw-alias-state-success-primary);background:var(--dsw-alias-state-success-tertiary)}.ptcPlusStatus[data-enabled=false]{color:var(--dsw-alias-label-secondary);background:var(--dsw-alias-bg-module-platform)}
+.ptcPlusChevron{display:flex;color:var(--dsw-alias-label-tertiary);transition:transform .18s ease}.ptcPlusChevron[data-open=true]{transform:rotate(180deg)}.ptcPlusBody{display:grid;grid-template-rows:0fr;transition:grid-template-rows .2s ease}.ptcPlusBody[data-open=true]{grid-template-rows:1fr}.ptcPlusBodyInner{min-height:0;overflow:hidden}.ptcPlusFields{margin:0 16px;padding:8px 0 12px;border-top:0.5px solid var(--dsw-alias-border-l2)}
+.ptcPlusGroup+.ptcPlusGroup{margin-top:14px}.ptcPlusGroupTitle{margin:0;padding:8px 0 5px;color:var(--dsw-alias-label-tertiary);font-size:11px;font-weight:600;letter-spacing:0;line-height:16px}.ptcPlusRow{display:flex;align-items:center;gap:12px;min-height:48px;border-top:0.5px solid var(--dsw-alias-border-l2)}.ptcPlusRow:first-child{border-top:0}.ptcPlusMain{flex:1;min-width:0}.ptcPlusLabel{font-size:13px;font-weight:500;line-height:1.5}.ptcPlusDetail,.ptcPlusMessage{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:1.5;overflow-wrap:anywhere}.ptcPlusInput{box-sizing:border-box;min-width:72px;width:140px;height:34px;padding:0 12px;border:0.5px solid var(--dsw-alias-border-l4);border-radius:8px;background:var(--dsw-alias-bg-layer-3);color:var(--dsw-alias-label-primary);font:inherit;font-size:13px;line-height:1.5}.ptcPlusInput:focus-visible{border-color:var(--dsw-alias-brand-primary);outline:none}.ptcPlusCheck{width:18px;height:18px;accent-color:var(--dsw-alias-brand-primary)}
+.ptcPlusFooter{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:8px}.ptcPlusButton{appearance:none;display:inline-flex;align-items:center;justify-content:center;gap:5px;min-height:32px;padding:4px 14px;border:0.5px solid var(--dsw-alias-border-l3);border-radius:8px;background:transparent;color:var(--dsw-alias-label-secondary);cursor:pointer;font:inherit;font-size:13px;line-height:1.5;transition:color .16s ease,border-color .16s ease,background-color .16s ease}.ptcPlusButton:hover:not(:disabled){border-color:var(--dsw-alias-label-dimmed);color:var(--dsw-alias-label-primary)}.ptcPlusButton[data-kind=primary]{background:var(--dsw-alias-label-primary);border-color:transparent;color:var(--dsw-alias-bg-layer-3)}.ptcPlusButton[data-kind=primary]:hover:not(:disabled){background:var(--dsw-alias-label-primary-dimmed);border-color:transparent;color:var(--dsw-alias-bg-layer-3)}.ptcPlusButton[data-kind=ghost]{border-color:transparent}.ptcPlusButton[data-kind=ghost]:hover:not(:disabled){border-color:var(--dsw-alias-border-l3)}.ptcPlusButton[data-kind=danger]{color:var(--dsw-alias-state-error-primary)}.ptcPlusButton[data-kind=danger]:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover-danger);border-color:var(--dsw-alias-state-error-primary);color:var(--dsw-alias-state-error-primary)}.ptcPlusButton:disabled,.ptcPlusInput:disabled,.ptcPlusCheck:disabled{cursor:not-allowed;opacity:.4}
+.ptcPlusDanger{color:var(--dsw-alias-state-error-primary)}
+.ptcPlusActiveShell{display:inline-flex;align-items:center}.ptcPlusActive{appearance:none;display:inline-flex;height:24px;align-items:center;gap:5px;padding:0 8px;border:1px solid color-mix(in srgb,var(--dsw-alias-state-success-primary,#16794f) 32%,transparent);border-radius:6px;background:var(--dsw-alias-state-success-tertiary,#e7f7ef);color:var(--dsw-alias-state-success-primary,#16794f);cursor:help;font-family:inherit;font-size:12px;font-weight:600;line-height:18px;white-space:nowrap;transition:background-color .14s ease,border-color .14s ease}.ptcPlusActive:hover,.ptcPlusActive[aria-expanded=true]{border-color:color-mix(in srgb,var(--dsw-alias-state-success-primary,#16794f) 48%,transparent);background:color-mix(in srgb,var(--dsw-alias-state-success-primary,#16794f) 16%,var(--dsw-alias-bg-layer-3,#fff))}.ptcPlusActive:focus-visible{outline:2px solid var(--dsw-alias-state-success-primary,#16794f);outline-offset:2px}.ptcPlusReplPopover{position:fixed;z-index:2147483000;inset:auto;display:none;box-sizing:border-box;margin:0;padding:0;border:0;overflow:visible;background:transparent;color:var(--dsw-alias-label-primary,#18191c)}.ptcPlusReplPopover:popover-open,.ptcPlusReplPopover[data-open=true]{display:block}.ptcPlusReplPopover::backdrop{background:transparent}.ptcPlusReplCard{display:flex;max-height:inherit;overflow:hidden;flex-direction:column;border:1px solid color-mix(in srgb,var(--dsw-alias-state-success-primary,#16794f) 22%,var(--dsw-alias-border-l2,rgba(0,0,0,.1)));border-top:3px solid var(--dsw-alias-state-success-primary,#16794f);border-radius:8px;background:var(--dsw-alias-bg-layer-3,#fff);box-shadow:0 14px 36px rgba(16,24,40,.2),0 3px 10px rgba(16,24,40,.1);color:var(--dsw-alias-label-primary,#18191c);white-space:normal}.ptcPlusReplHead{display:grid;grid-template-columns:auto minmax(0,1fr);align-items:center;column-gap:8px;padding:11px 13px 10px;border-bottom:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1));background:color-mix(in srgb,var(--dsw-alias-state-success-primary,#16794f) 7%,var(--dsw-alias-bg-layer-3,#fff))}.ptcPlusReplStatusDot{grid-row:1/3;width:8px;height:8px;border-radius:50%;background:var(--dsw-alias-state-success-primary,#16794f);box-shadow:0 0 0 3px color-mix(in srgb,var(--dsw-alias-state-success-primary,#16794f) 14%,transparent)}.ptcPlusReplTitle,.ptcPlusReplSummary{display:block;min-width:0}.ptcPlusReplTitle{font-size:13px;font-weight:600;line-height:19px}.ptcPlusReplSummary{color:var(--dsw-alias-label-tertiary,#74777d);font-size:11px;line-height:16px}.ptcPlusReplList{min-height:0;margin:0;padding:5px 0;overflow:auto;overscroll-behavior:contain;list-style:none;scrollbar-gutter:stable}.ptcPlusReplBinding{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:4px 10px;padding:7px 12px}.ptcPlusReplBinding:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(38,49,72,.06))}.ptcPlusReplIdentity{display:flex;min-width:0;align-items:center;gap:7px}.ptcPlusReplName{min-width:0;overflow:hidden;font:12px/18px ui-monospace,SFMono-Regular,Consolas,monospace;text-overflow:ellipsis;white-space:nowrap}.ptcPlusReplKind{flex:none;padding:1px 6px;border:1px solid color-mix(in srgb,currentColor 22%,transparent);border-radius:999px;background:color-mix(in srgb,currentColor 10%,transparent);font-size:10px;font-weight:600;line-height:15px}.ptcPlusReplKind[data-kind=variable]{color:var(--dsw-alias-interactive-primary,#315fbd)}.ptcPlusReplKind[data-kind=function]{color:#7651b5}.ptcPlusReplKind[data-kind=class]{color:var(--dsw-alias-state-warning-primary,#946200)}.ptcPlusReplKind[data-kind=import]{color:#14766f}.ptcPlusReplPreview{grid-column:1;min-width:0;overflow:hidden;color:var(--dsw-alias-label-tertiary,#74777d);font:11px/16px ui-monospace,SFMono-Regular,Consolas,monospace;text-overflow:ellipsis;white-space:nowrap}.ptcPlusReplInspect{grid-column:2;grid-row:1/3;display:inline-flex;align-items:center;gap:4px;padding:3px 5px;border:0;border-radius:4px;background:transparent;color:var(--dsw-alias-label-secondary,#52565d);cursor:pointer;font:500 11px/17px inherit;white-space:nowrap}.ptcPlusReplInspect:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(38,49,72,.06));color:var(--dsw-alias-interactive-primary,#4d6bfe)}.ptcPlusReplInspect:focus-visible{outline:2px solid var(--dsw-alias-interactive-primary,#4d6bfe);outline-offset:1px}.ptcPlusReplDefinition{grid-column:1/-1;min-width:0;margin-top:4px;padding:8px;border-left:2px solid var(--dsw-alias-interactive-primary,#4d6bfe);background:var(--dsw-alias-bg-layer-2,rgba(38,49,72,.03))}.ptcPlusReplLocation{display:block;margin-bottom:5px;color:var(--dsw-alias-label-tertiary,#74777d);font-size:10px;line-height:15px}.ptcPlusReplCode{max-height:180px;margin:0;overflow:auto;color:inherit;font:11px/16px ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere}.ptcPlusReplEmpty,.ptcPlusReplMore{display:block;color:var(--dsw-alias-label-tertiary,#74777d)}.ptcPlusReplEmpty{padding:18px 13px;font-size:12px;line-height:18px}.ptcPlusReplMore{padding:8px 13px;border-top:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1));background:var(--dsw-alias-bg-layer-2,rgba(38,49,72,.03));font-size:11px;line-height:17px}
+.ptcPlusReplTabs{display:flex;padding:6px 8px 0;border-bottom:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1))}.ptcPlusReplTab{flex:1;padding:5px 6px;border:0;border-bottom:2px solid transparent;background:transparent;color:var(--dsw-alias-label-secondary,#52565d);cursor:pointer;font-family:inherit;font-size:11px;font-weight:600;line-height:17px}.ptcPlusReplTab[aria-selected=true]{border-bottom-color:var(--dsw-alias-interactive-primary,#4d6bfe);color:var(--dsw-alias-label-primary,#18191c)}.ptcPlusGlobalPane{display:flex;min-height:0;flex-direction:column;gap:8px;padding:8px 12px}.ptcPlusGlobalList{min-height:0;margin:0 -12px -8px;padding:5px 0;overflow:auto;list-style:none}.ptcPlusGlobalItem{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:6px 10px;padding:7px 12px;border-radius:8px}.ptcPlusGlobalItem:hover{background:var(--dsw-alias-interactive-bg-hover)}.ptcPlusGlobalItem .ptcPlusGlobalSource,.ptcPlusGlobalItem .ptcPlusReplEmpty{grid-column:1/-1}.ptcPlusAuthoringDraft{display:flex;flex-direction:column;gap:6px;padding:10px 12px;border:0.5px solid var(--dsw-alias-border-l4);border-radius:12px;background:var(--dsw-alias-bg-layer-3)}.ptcPlusGlobalSource{max-height:180px;margin:6px 0 0;padding:8px 10px;overflow:auto;background:var(--dsw-alias-markdown-code-block);border-radius:8px;font:12px/18px ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere}
 .ptcPlusReplList{max-height:min(52vh,480px)}.ptcPlusReplBinding{grid-template-columns:minmax(0,1fr) 24px;gap:3px 8px;min-height:36px;padding:5px 12px;content-visibility:auto;contain-intrinsic-size:36px;cursor:pointer;transition:background-color .16s ease}.ptcPlusReplBinding:focus-visible{outline:2px solid var(--dsw-alias-interactive-primary,#4d6bfe);outline-offset:-2px}.ptcPlusReplBinding[data-expanded=true]{background:color-mix(in srgb,var(--dsw-alias-interactive-primary,#4d6bfe) 5%,transparent)}.ptcPlusReplName{grid-column:1}.ptcPlusReplName[data-kind=variable]{color:var(--dsw-alias-interactive-primary,#315fbd)}.ptcPlusReplName[data-kind=function]{color:#7651b5}.ptcPlusReplName[data-kind=class]{color:var(--dsw-alias-state-warning-primary,#946200)}.ptcPlusReplName[data-kind=import]{color:#14766f}.ptcPlusReplPreview{grid-column:1}.ptcPlusReplChevron{grid-column:2;grid-row:1/3;display:flex;align-items:center;justify-content:center;color:var(--dsw-alias-label-tertiary,#74777d);transition:transform .2s ease}.ptcPlusReplChevron[data-open=true]{transform:rotate(180deg)}.ptcPlusReplDefinitionWrap{grid-column:1/-1;display:grid;grid-template-rows:0fr;min-width:0;transition:grid-template-rows .24s cubic-bezier(.2,.7,.2,1)}.ptcPlusReplDefinitionWrap[data-open=true]{grid-template-rows:1fr}.ptcPlusReplDefinitionInner{min-height:0;overflow:hidden}
 .ptcPlusTool{display:flex;min-width:0;flex-direction:column}.ptcPlusToolPreview{display:flex;min-width:0;flex:1 1 auto;flex-direction:row;align-items:center;overflow:hidden;margin-left:7px}.ptcPlusToolPreview .ptcPlusFeatures{flex:0 1 auto;flex-wrap:nowrap;overflow:hidden;margin:0 0 0 7px}.ptcPlusToolSummaryLine{box-sizing:border-box;display:flex;min-width:0;min-height:20px;flex:1 1 auto;align-items:center;gap:7px;padding:0;color:inherit;line-height:20px}.ptcPlusToolSummary{box-sizing:border-box;display:flex;min-width:0;min-height:32px;align-items:center;gap:7px;padding:0;color:inherit;line-height:20px}.ptcPlusToolSummary[data-expandable=true]{cursor:pointer}.ptcPlusToolSummary[data-expandable=true]:hover .ptcPlusToolTitle{color:var(--dsw-alias-interactive-primary,#4d6bfe)}.ptcPlusToolSummary:focus-visible{outline:2px solid var(--dsw-alias-interactive-primary,#4d6bfe);outline-offset:2px}.ptcPlusToolLeading{display:flex;width:16px;height:20px;flex:none;align-items:center;justify-content:center;color:var(--dsw-alias-label-tertiary,#74777d)}.ptcPlusToolChevron{transition:transform .16s ease}.ptcPlusToolChevron[data-open=true]{transform:rotate(180deg)}.ptcPlusToolTitle{display:flex;height:20px;flex:none;align-items:center;font-size:13px;font-weight:500;line-height:20px}.ptcPlusToolState{display:flex;height:20px;flex:none;align-items:center;color:var(--dsw-alias-label-tertiary,#74777d);font-size:11px;line-height:20px}.ptcPlusToolSummaryLine[data-state=running] .ptcPlusToolState,.ptcPlusToolSummary[data-state=running] .ptcPlusToolState{color:var(--dsw-alias-interactive-primary,#4d6bfe)}.ptcPlusToolSummaryLine[data-state=error] .ptcPlusToolState,.ptcPlusToolSummary[data-state=error] .ptcPlusToolState{color:var(--dsw-alias-state-danger-primary,#c43d3d)}.ptcPlusToolSummaryLine[data-state=stopped] .ptcPlusToolState,.ptcPlusToolSummary[data-state=stopped] .ptcPlusToolState{color:var(--dsw-alias-state-warning-primary,#a15c00)}.ptcPlusToolSep{width:3px;height:3px;flex:none;border-radius:50%;background:var(--dsw-alias-label-tertiary,#74777d)}.ptcPlusToolDescription{display:flex;min-width:0;min-height:20px;flex:1 1 auto;align-items:center;overflow:hidden;color:var(--dsw-alias-label-secondary,#52565d);font-size:13px;line-height:20px;text-overflow:ellipsis;white-space:nowrap}.ptcPlusToolPreview .ptcPlusFeature{flex:none;max-width:180px;white-space:nowrap}.ptcPlusToolPreview .ptcPlusFeatureDetail{max-width:120px}.ptcPlusToolSummaryLine[data-state=error] .ptcPlusToolDescription,.ptcPlusToolSummary[data-state=error] .ptcPlusToolDescription{color:var(--dsw-alias-state-danger-primary,#c43d3d)}.ptcPlusToolSummaryLine[data-state=stopped] .ptcPlusToolDescription,.ptcPlusToolSummary[data-state=stopped] .ptcPlusToolDescription{color:var(--dsw-alias-state-warning-primary,#a15c00)}
 .ptcPlusFeatures{display:flex;min-width:0;flex-wrap:wrap;gap:3px 14px;margin:0 0 5px 23px}.ptcPlusFeature{display:inline-flex;min-width:0;align-items:center;gap:5px;color:var(--dsw-alias-label-secondary,#52565d);font-size:11px;line-height:17px}.ptcPlusFeature::before{width:4px;height:4px;flex:none;border-radius:50%;background:var(--dsw-alias-interactive-primary,#4d6bfe);content:''}.ptcPlusFeatureName{font-weight:500}.ptcPlusFeatureDetail{min-width:0;overflow:hidden;color:var(--dsw-alias-label-tertiary,#74777d);font-family:ui-monospace,SFMono-Regular,Consolas,monospace;text-overflow:ellipsis;white-space:nowrap}
 .ptcPlusToolBody{margin:4px 0 8px 23px;border-left:2px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1));background:var(--dsw-alias-bg-layer-2,rgba(38,49,72,.03))}.ptcPlusToolSection{display:flex;min-width:0;flex-direction:column;gap:4px;padding:9px 11px}.ptcPlusToolSection+.ptcPlusToolSection{border-top:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1))}.ptcPlusToolSectionLabel{color:var(--dsw-alias-label-tertiary,#74777d);font-size:10px;font-weight:600;line-height:16px;text-transform:uppercase}.ptcPlusToolCode{max-height:320px;margin:0;overflow:auto;color:inherit;font:12px/18px ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere}.ptcPlusIoCard{display:flex;flex-direction:column;border:1px solid var(--dsw-alias-border-l1,rgba(0,0,0,.1));border-radius:12px;background:var(--dsw-alias-markdown-code-block,rgba(38,49,72,.06));overflow:hidden}.ptcPlusIoText{max-height:320px;margin:0;padding:12px 16px;overflow:auto;color:var(--dsw-alias-label-secondary,#52565d);font:12px/18px ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere}.ptcPlusIoText[data-error]{color:var(--dsw-alias-state-error-primary,#c43d3d)}.ptcPlusInspect{display:inline-flex;align-self:flex-start;align-items:center;gap:4px;margin:4px 0 2px 4px;padding:2px 8px;border:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1));border-radius:999px;background:var(--dsw-alias-bg-base,#fff);color:var(--dsw-alias-label-secondary,#52565d);cursor:pointer;opacity:0;font-size:11px;line-height:16px;transition:opacity .1s ease;display:inline-flex}.ptcPlusTool:hover .ptcPlusInspect,.ptcPlusInspect:focus-visible{opacity:1}.ptcPlusInspect:hover{background:var(--dsw-alias-interactive-bg-hover-solid,rgba(38,49,72,.06));color:var(--dsw-alias-label-primary,#18191c)}
-@media(max-width:760px){.ptcPlusBindingsGrid{grid-template-columns:1fr}.ptcPlusBindingList{border-right:0}.ptcPlusBindingEditor{grid-template-columns:1fr}.ptcPlusBindingField[data-wide=true]{grid-column:1}.ptcPlusBindingRun{grid-column:1}}
+.ptcPlusAuthorButtonShell{display:inline-flex;width:28px;height:28px;flex:none;align-items:center;justify-content:center}.ptcPlusAuthorButton{appearance:none;display:inline-flex;box-sizing:border-box;width:28px;height:28px;align-items:center;justify-content:center;padding:0;border:0;border-radius:6px;background:transparent;color:var(--dsw-alias-label-secondary,#52565d);cursor:pointer}.ptcPlusAuthorButton:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(38,49,72,.06));color:var(--dsw-alias-interactive-primary,#4d6bfe)}.ptcPlusAuthorButton:focus-visible{outline:2px solid var(--dsw-alias-interactive-primary,#4d6bfe);outline-offset:1px}.ptcPlusAuthorButtonShell[data-text=true]{width:auto}.ptcPlusAuthorButtonLabel{padding:0 4px;font-size:12px;line-height:18px;font-weight:500}.ptcPlusComposerNotice{max-width:160px;color:var(--dsw-alias-label-secondary,#52565d);font-size:11px;line-height:17px;overflow-wrap:anywhere}.ptcPlusButton>svg{flex:none;margin-right:5px;vertical-align:-2px}
+@media(max-width:760px){.ptcPlusBindingsGrid{grid-template-columns:1fr}.ptcPlusBindingFields{grid-template-columns:1fr}.ptcPlusBindingField[data-wide=true]{grid-column:auto}.ptcPlusBindingSourceGrid{grid-template-columns:1fr}.ptcPlusBindingDebugBody{grid-template-columns:1fr}.ptcPlusBindingDebugBody .ptcPlusButton{width:100%}.ptcPlusBindingDebugWarning{grid-column:1}}
 @media(max-width:560px){.ptcPlusHeader{padding:12px}.ptcPlusFields{margin:0 12px}.ptcPlusRow{align-items:flex-start;flex-direction:column;gap:6px;padding:10px 0}.ptcPlusInput{width:100%}.ptcPlusFooter,.ptcPlusBindingsHead{align-items:stretch;flex-direction:column}.ptcPlusButton{width:100%}.ptcPlusFeatures,.ptcPlusToolBody{margin-left:0}.ptcPlusToolSummary .ptcPlusToolDescription{white-space:normal;overflow-wrap:anywhere}}
 @media(prefers-reduced-motion:reduce){.ptcPlusHeader,.ptcPlusChevron,.ptcPlusBody,.ptcPlusButton,.ptcPlusActive,.ptcPlusToolChevron,.ptcPlusReplChevron,.ptcPlusReplDefinitionWrap,.ptcPlusInspect{transition:none}}
 /* The summary button owns disclosure; definition content is a separate grid item. */
@@ -35,6 +40,16 @@ const CLIENT_CSS = `
 .ptcPlusReplCard .ptcPlusReplName[data-kind=import]{color:color-mix(in srgb,#af00db 78%,var(--dsw-alias-label-primary,#18191c))}
 /* Keep the session-header action on the same compact 32px rhythm as DSH chrome. */
 .ptcPlusActiveShell{display:inline-flex;height:28px;align-items:center;justify-content:center;line-height:0;vertical-align:middle}.ptcPlusActive{box-sizing:border-box;height:28px;justify-content:center;gap:6px;padding:0 6px;border:0;background:transparent;font-family:inherit;font-size:13px;font-weight:500;line-height:18px}.ptcPlusActive::before{width:6px;height:6px;flex:none;border-radius:50%;background:currentColor;box-shadow:0 0 0 2px color-mix(in srgb,currentColor 18%,transparent);content:''}.ptcPlusActive:hover,.ptcPlusActive[aria-expanded=true]{background:var(--dsw-alias-interactive-bg-hover,rgba(38,49,72,.06))}.ptcPlusActiveLabel{display:inline-flex;height:18px;align-items:center;line-height:18px}
+@media(max-width:560px){.ptcPlusActive{width:28px;flex:none;padding:0}.ptcPlusActiveLabel{display:none}}
+`
+
+const BINDING_WORKBENCH_CSS = `
+.ptcPlusBindings{margin-top:16px;padding-top:14px;border-top:0.5px solid var(--dsw-alias-border-l2)}.ptcPlusBindingsHead{display:flex;align-items:center;justify-content:space-between;gap:12px}.ptcPlusBindingsTitle{margin:0;font-size:15px;font-weight:600;line-height:1.4}.ptcPlusBindingsActions{display:flex;flex-wrap:wrap;gap:8px}.ptcPlusBindingsGrid{display:grid;grid-template-columns:minmax(240px,.7fr) minmax(340px,1.3fr);gap:12px;margin-top:12px;align-items:start}.ptcPlusBindingPane{display:flex;min-width:0;flex-direction:column;gap:8px}
+.ptcPlusBindingList{display:flex;min-width:0;margin:0;padding:8px;flex-direction:column;gap:2px;border:0.5px solid var(--dsw-alias-border-l4);border-radius:16px;background:var(--dsw-alias-bg-layer-3);list-style:none}.ptcPlusBindingItem{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:2px 10px;padding:6px 8px;border-radius:8px;transition:background-color .12s ease}.ptcPlusBindingItem:hover{background:var(--dsw-alias-interactive-bg-hover)}.ptcPlusBindingItem[data-selected=true]{background:var(--dsw-alias-bg-module-platform)}.ptcPlusBindingSelect{display:flex;min-width:0;padding:0;border:0;background:transparent;color:inherit;text-align:left;cursor:pointer;flex-direction:column;align-items:flex-start;gap:1px}.ptcPlusBindingSelect:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px}.ptcPlusBindingName{display:block;min-width:0;max-width:100%;overflow:hidden;font:500 13px/20px ui-monospace,SFMono-Regular,Consolas,monospace;text-overflow:ellipsis;white-space:nowrap}.ptcPlusBindingMeta{display:block;min-width:0;max-width:100%;overflow:hidden;color:var(--dsw-alias-label-tertiary);font-size:11px;line-height:16px;text-overflow:ellipsis;white-space:nowrap}.ptcPlusBindingState{display:inline-flex;align-items:center;gap:5px;padding:1px 8px;border-radius:999px;corner-shape:round;font-size:11px;font-weight:500;line-height:17px;white-space:nowrap}.ptcPlusBindingState[data-enabled=true]{color:var(--dsw-alias-state-success-primary);background:var(--dsw-alias-state-success-tertiary)}.ptcPlusBindingState[data-enabled=false]{color:var(--dsw-alias-state-warn-primary);background:var(--dsw-alias-state-warn-tertiary)}.ptcPlusBindingStateDot{width:6px;height:6px;border-radius:50%;background:currentColor}.ptcPlusBindingToggle{grid-column:2;grid-row:1/3;align-self:center;justify-self:end;min-height:26px;padding:2px 10px;font-size:12px;line-height:17px;border-radius:999px;corner-shape:round}.ptcPlusBindingRun{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding-top:10px;border-top:0.5px solid var(--dsw-alias-border-l2)}.ptcPlusBindingRun .ptcPlusInput{flex:1;min-width:160px;width:auto}
+.ptcPlusBindingEditor{display:flex;min-width:0;flex-direction:column;border:0.5px solid var(--dsw-alias-border-l4);border-radius:16px;background:var(--dsw-alias-bg-layer-3);overflow:hidden}.ptcPlusBindingSection{display:flex;min-width:0;flex-direction:column;gap:12px;padding:14px 16px}.ptcPlusBindingSection+.ptcPlusBindingSection{border-top:0.5px solid var(--dsw-alias-border-l2)}.ptcPlusBindingSectionTitle{margin:0;font-size:13px;font-weight:600;line-height:1.5}.ptcPlusBindingFields{display:grid;min-width:0;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 12px}.ptcPlusBindingField{display:flex;min-width:0;flex-direction:column;gap:5px}.ptcPlusBindingField[data-wide=true]{grid-column:1/-1}.ptcPlusBindingFieldLabel{color:var(--dsw-alias-label-primary);font-size:13px;font-weight:500;line-height:1.5}.ptcPlusBindingEditor .ptcPlusInput,.ptcPlusSelect{box-sizing:border-box;width:100%;min-width:0;height:34px;padding:0 12px;border:0.5px solid var(--dsw-alias-border-l4);border-radius:8px;background:var(--dsw-alias-bg-layer-3);color:var(--dsw-alias-label-primary);font:inherit;font-size:13px;line-height:1.5}.ptcPlusBindingEditor .ptcPlusInput:focus-visible,.ptcPlusSelect:focus-visible{border-color:var(--dsw-alias-brand-primary);outline:none}.ptcPlusTextarea{box-sizing:border-box;width:100%;min-height:220px;resize:vertical;padding:10px 12px;border:0.5px solid var(--dsw-alias-border-l4);border-radius:8px;background:var(--dsw-alias-bg-layer-3);color:var(--dsw-alias-label-primary);font:12px/18px ui-monospace,SFMono-Regular,Consolas,monospace;tab-size:2}.ptcPlusTextarea:focus-visible{border-color:var(--dsw-alias-brand-primary);outline:none}.ptcPlusDeclaration{box-sizing:border-box;max-height:220px;margin:0;padding:12px;overflow:auto;background:var(--dsw-alias-markdown-code-block);border-radius:12px;color:var(--dsw-alias-label-primary);font:12px/18px ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere}.ptcPlusBindingSourceGrid{display:grid;min-width:0;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px}.ptcPlusBindingSourceEditor,.ptcPlusBindingSourcePreview{display:flex;min-width:0;flex-direction:column;gap:6px}.ptcPlusBindingSourcePreview .ptcPlusCodeBlock{max-height:220px;overflow:auto}
+.ptcPlusBindingLifecycle{display:flex;flex-wrap:wrap;align-items:center;justify-content:flex-end;gap:8px}.ptcPlusBindingDebug{display:flex;min-width:0;flex-direction:column;gap:10px;padding:12px 16px;border-top:0.5px solid var(--dsw-alias-border-l2)}.ptcPlusBindingDebugSummary{display:flex;align-items:center;gap:6px;margin:0;cursor:pointer;color:var(--dsw-alias-label-secondary);font-size:13px;font-weight:500;line-height:1.5;list-style:none}.ptcPlusBindingDebugSummary::-webkit-details-marker{display:none}.ptcPlusBindingDebugSummary::after{content:'';width:7px;height:7px;border-right:1.5px solid currentColor;border-bottom:1.5px solid currentColor;transform:rotate(45deg);transition:transform .16s ease}.ptcPlusBindingDebug[open] .ptcPlusBindingDebugSummary::after{transform:rotate(-135deg)}.ptcPlusBindingDebugBody{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) auto;align-items:end;gap:10px}.ptcPlusBindingDebugBody .ptcPlusBindingField{min-width:0}.ptcPlusBindingDebugBody .ptcPlusButton{align-self:end}.ptcPlusBindingDebugWarning{grid-column:1/-1;color:var(--dsw-alias-state-warn-label);font-size:12px;line-height:1.5}.ptcPlusBindingOutput{grid-column:1/-1;margin:0;padding:10px 12px;overflow:auto;background:var(--dsw-alias-markdown-code-block);border-radius:8px;color:var(--dsw-alias-label-secondary);font:12px/18px ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere}
+.ptcPlusBindingCommand{display:flex;min-width:0;flex-direction:column;gap:6px;margin:6px 0 10px;padding:10px 12px;border:0.5px solid var(--dsw-alias-border-l4);border-radius:8px;background:var(--dsw-alias-bg-layer-3)}.ptcPlusBindingCommandHeader{display:flex;min-width:0;flex-wrap:wrap;align-items:center;gap:8px}.ptcPlusBindingCommandTitle{margin:0;font-size:13px;font-weight:600;line-height:1.5}.ptcPlusBindingCommandState{display:inline-flex;align-items:center;gap:5px;padding:1px 8px;border-radius:999px;corner-shape:round;background:var(--dsw-alias-bg-module-platform);color:var(--dsw-alias-label-secondary);font-size:11px;font-weight:500;line-height:17px;white-space:nowrap}.ptcPlusBindingCommand[data-phase=pending] .ptcPlusBindingCommandState{background:var(--dsw-alias-state-business-tertiary);color:var(--dsw-alias-state-business-primary)}.ptcPlusBindingCommand[data-phase=ready] .ptcPlusBindingCommandState{background:var(--dsw-alias-state-success-tertiary);color:var(--dsw-alias-state-success-primary)}.ptcPlusBindingCommand[data-phase=failed] .ptcPlusBindingCommandState{background:var(--dsw-alias-interactive-bg-hover-danger);color:var(--dsw-alias-state-error-primary)}.ptcPlusBindingCommandStateDot{width:6px;height:6px;border-radius:50%;background:currentColor}.ptcPlusBindingCommandRequirement{margin:0;overflow:auto;color:var(--dsw-alias-label-primary);font:12px/18px ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere}.ptcPlusBindingCommandSource{max-height:280px;margin:0;padding:10px 12px;overflow:auto;background:var(--dsw-alias-markdown-code-block);border-radius:8px;color:var(--dsw-alias-label-primary);font:12px/18px ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere}.ptcPlusBindingCommandCode{max-height:300px;overflow:auto}.ptcPlusBindingCommandActions{display:flex;flex-wrap:wrap;align-items:center;justify-content:flex-end;gap:8px}
+
 `
 
 /** Locale namespace owning every settings-card string (field copy plus chrome). */
@@ -55,12 +70,12 @@ const CHROME_COPY = Object.freeze({
     'status.applied': '设置已立即生效',
     'status.conflict': '设置未生效，请检查设置冲突',
     'status.failed': '设置失败：{error}',
-    'bindings.title': '全局用户 Binding',
+    'bindings.title': '全局用户绑定',
     'bindings.reload': '重新加载',
     'bindings.new': '新建条目',
     'bindings.empty': '尚无全局条目',
-    'bindings.loading': '正在加载全局 Binding...',
-    'bindings.disabled': '开启“全局用户 Binding”后可管理 TypeScript helper。',
+    'bindings.loading': '正在加载全局用户绑定...',
+    'bindings.disabled': '开启“全局用户绑定”后可管理 TypeScript 工具。',
     'bindings.name': '名称',
     'bindings.id': '稳定 ID',
     'bindings.scope': '作用域',
@@ -68,31 +83,50 @@ const CHROME_COPY = Object.freeze({
     'bindings.symbolsPlaceholder': '逗号分隔；留空则从源码推导',
     'bindings.purpose': '用途',
     'bindings.source': 'TypeScript 源码',
-    'bindings.declaration': '模型可见声明预览',
+    'bindings.sourcePreview': '源码预览',
+    'bindings.declaration': '模型声明',
+    'bindings.lifecycle': '条目操作',
+    'bindings.debug': '候选代码测试',
     'bindings.enabled': '启用',
     'bindings.disabledEntry': '停用',
+    'bindings.enableAction': '启用',
+    'bindings.disableAction': '停用',
+    'bindings.stateEnabled': '当前已启用',
+    'bindings.stateDisabled': '当前已停用',
     'bindings.validate': '验证',
     'bindings.save': '保存',
     'bindings.remove': '删除',
     'bindings.importPath': '本地 .ts 路径',
     'bindings.import': '导入',
     'bindings.run': '运行候选代码',
-    'bindings.runSymbol': '调用导出（可选）',
-    'bindings.runArgs': 'JSON 参数数组',
+    'bindings.runSymbol': '导出函数（可选）',
+    'bindings.runArgs': '参数 JSON 数组',
     'bindings.effectWarning': '候选代码以 DSH 进程权限运行，可能产生不可回滚的 Node/OS effect。',
     'bindings.saved': '条目已保存；从下一次 run_code 请求生效。',
     'bindings.valid': '源码与派生声明有效。',
     'bindings.removed': '条目已删除。',
     'bindings.imported': '源码已导入为停用条目。',
     'bindings.reloaded': '已从磁盘重新加载。',
-    'bindings.failed': '全局 Binding 操作失败：{error}',
+    'bindings.failed': '全局用户绑定操作失败：{error}',
     'bindings.authorNew': '让 Agent 编写',
     'bindings.authorEdit': 'Agent 修改',
+    'bindings.authorOpen': '让 Agent 编写全局用户绑定',
     'bindings.composerBusy': '输入框已有内容，未覆盖现有草稿。',
     'bindings.draftTitle': 'Agent 草稿',
-    'bindings.draftSave': '保存草稿',
+    'bindings.draftSave': '保存为停用',
+    'bindings.draftSaveEnable': '保存并启用',
     'bindings.draftDiscard': '丢弃草稿',
+    'bindings.commandTitle': '绑定编写',
+    'bindings.commandPending': 'Agent 正在编写草稿...',
+    'bindings.commandReady': '草稿已生成，可保存或丢弃',
+    'bindings.commandFailed': '未生成可保存的草稿',
+    'bindings.commandSaved': '草稿已保存为停用条目',
+    'bindings.commandSavedEnabled': '草稿已保存并启用',
+    'bindings.commandDiscarded': '草稿已丢弃',
+    'bindings.commandUnavailable': '草稿已不可操作；保存状态未知',
     'bindings.draftSaved': 'Agent 草稿已保存为停用条目。',
+    'bindings.draftPending': 'Agent 正在编写草稿...',
+    'bindings.draftFailed': 'Agent 未生成可保存的草稿；请查看会话结果后重试。',
     'indicator.title': 'PTC Plus 已启用；查看当前可复用的 REPL 绑定',
     'memory.title': 'REPL 可复用绑定',
     'memory.count': '{count} 个可复用绑定',
@@ -104,10 +138,10 @@ const CHROME_COPY = Object.freeze({
     'memory.kind.class': '类',
     'memory.kind.import': '导入',
     'memory.location': '第 {line} 行，第 {column} 列',
-    'memory.sessionTab': '可复用 Binding',
-    'memory.globalTab': '全局默认',
-    'memory.globalEmpty': '没有全局默认 Binding',
-    'memory.globalUnavailable': '无法读取全局默认 Binding',
+    'memory.sessionTab': '可复用绑定',
+    'memory.globalTab': '全局默认绑定',
+    'memory.globalEmpty': '没有全局默认绑定',
+    'memory.globalUnavailable': '无法读取全局默认绑定',
     'tool.code': '执行',
     'tool.codeEdit': '修正执行',
     'tool.running': '正在运行',
@@ -151,16 +185,23 @@ const CHROME_COPY = Object.freeze({
     'bindings.symbolsPlaceholder': 'Comma-separated; blank derives from source',
     'bindings.purpose': 'Purpose',
     'bindings.source': 'TypeScript source',
-    'bindings.declaration': 'Model-visible declaration preview',
+    'bindings.sourcePreview': 'Source preview',
+    'bindings.declaration': 'Model declaration',
+    'bindings.lifecycle': 'Entry actions',
+    'bindings.debug': 'Candidate test',
     'bindings.enabled': 'Enabled',
     'bindings.disabledEntry': 'Disabled',
+    'bindings.enableAction': 'Enable',
+    'bindings.disableAction': 'Disable',
+    'bindings.stateEnabled': 'Currently enabled',
+    'bindings.stateDisabled': 'Currently disabled',
     'bindings.validate': 'Validate',
     'bindings.save': 'Save',
     'bindings.remove': 'Remove',
     'bindings.importPath': 'Local .ts path',
     'bindings.import': 'Import',
     'bindings.run': 'Run candidate',
-    'bindings.runSymbol': 'Export to call (optional)',
+    'bindings.runSymbol': 'Export function (optional)',
     'bindings.runArgs': 'JSON argument array',
     'bindings.effectWarning': 'Candidate code runs with DSH process permissions and may produce irreversible Node/OS effects.',
     'bindings.saved': 'Entry saved; it takes effect from the next run_code request.',
@@ -171,11 +212,23 @@ const CHROME_COPY = Object.freeze({
     'bindings.failed': 'Global User Binding operation failed: {error}',
     'bindings.authorNew': 'Ask Agent to write',
     'bindings.authorEdit': 'Ask Agent to revise',
+    'bindings.authorOpen': 'Ask Agent to write a Global User Binding',
     'bindings.composerBusy': 'The composer already has text, so its draft was not replaced.',
     'bindings.draftTitle': 'Agent draft',
-    'bindings.draftSave': 'Save draft',
+    'bindings.draftSave': 'Save as disabled',
+    'bindings.draftSaveEnable': 'Save and enable',
     'bindings.draftDiscard': 'Discard draft',
+    'bindings.commandTitle': 'Binding authoring',
+    'bindings.commandPending': 'Agent is writing a draft...',
+    'bindings.commandReady': 'Draft ready to save or discard',
+    'bindings.commandFailed': 'No saveable draft was produced',
+    'bindings.commandSaved': 'Draft saved as a disabled entry',
+    'bindings.commandSavedEnabled': 'Draft saved and enabled',
+    'bindings.commandDiscarded': 'Draft discarded',
+    'bindings.commandUnavailable': 'Draft unavailable; save status unknown',
     'bindings.draftSaved': 'Agent draft saved as a disabled entry.',
+    'bindings.draftPending': 'The Agent is authoring a draft...',
+    'bindings.draftFailed': 'The Agent did not produce a saveable draft; review the session result and try again.',
     'indicator.title': 'PTC Plus is active; view reusable REPL bindings',
     'memory.title': 'Reusable REPL bindings',
     'memory.count': '{count} reusable bindings',
@@ -229,8 +282,7 @@ const SETTINGS_COPY = Object.freeze(Object.fromEntries(
   })]),
 ))
 
-function sessionUsesPtcPreset(session) {
-  const preset = session?.projectionValues?.agentPreset ?? session?.agentPreset
+function sessionUsesPtcPreset(preset) {
   return preset === 'ptc' || preset === 'code'
 }
 
@@ -240,20 +292,34 @@ window.__ModuleLoader__.load({
   factory: (require) => {
     const React = require('react')
     const {
+      Button,
       CodeBlock,
       DisclosureRow,
       IconCheckOutline14,
       IconChevronDownOutline14,
       IconInspectOutline12,
+      IconSparkle16,
+      StateDot,
+      Toast,
+      Tooltip,
     } = require('@deepseek-ai/dsh-client-ui-primitives')
     const module = { exports: {} }
     const h = React.createElement
+
+    function ActionButton({ className = '', 'data-kind': kind, ...props }) {
+      return typeof Button === 'function'
+        ? h(Button, {
+          ...props, size: 'sm', variant: kind === 'primary' ? 'primary' : kind === 'ghost' ? 'ghost' : 'outline',
+          className: className.split(' ').filter(name => name !== 'ptcPlusButton').join(' '),
+        })
+        : h('button', { ...props, className, 'data-kind': kind })
+    }
 
     function installStyles() {
       if (document.getElementById(CLIENT_STYLE_ID) !== null) return () => {}
       const style = document.createElement('style')
       style.id = CLIENT_STYLE_ID
-      style.textContent = CLIENT_CSS
+      style.textContent = `${CLIENT_CSS}${BINDING_WORKBENCH_CSS}`
       document.head.append(style)
       return () => style.remove()
     }
@@ -296,6 +362,100 @@ window.__ModuleLoader__.load({
         throw error
       }
 
+      function createBindingCommandAvailability(scope) {
+        const entries = new Map()
+        const entryFor = (sessionId) => {
+          const id = String(sessionId)
+          let entry = entries.get(id)
+          if (entry === undefined) {
+            entry = { available: false, epoch: 0, listeners: new Set() }
+            entry.source = {
+              getSnapshot: () => entry.available,
+              subscribe(listener) {
+                entry.listeners.add(listener)
+                if (entry.listeners.size === 1) void refresh(id)
+                return () => {
+                  entry.listeners.delete(listener)
+                  if (entry.listeners.size === 0) {
+                    entry.epoch++
+                    entry.available = false
+                  }
+                }
+              },
+            }
+            entries.set(id, entry)
+          }
+          return entry
+        }
+        const publish = (entry, available) => {
+          if (entry.available === available) return
+          entry.available = available
+          for (const listener of entry.listeners) listener()
+        }
+        const refresh = async (sessionId) => {
+          if (sessionId === undefined || sessionId === null) return
+          const entry = entries.get(String(sessionId))
+          if (entry === undefined || entry.listeners.size === 0) return
+          const epoch = ++entry.epoch
+          let available = false
+          try {
+            const result = await scope.remote.commands.list(String(sessionId))
+            available = result?.ok === true
+              && Array.isArray(result.value)
+              && result.value.some(command => command?.name === 'binding')
+          } catch {}
+          if (entry.epoch === epoch) publish(entry, available)
+        }
+        const reset = (sessionId) => {
+          if (sessionId === undefined || sessionId === null) return
+          const entry = entries.get(String(sessionId))
+          if (entry === undefined || entry.listeners.size === 0) return
+          entry.epoch += 1
+          publish(entry, false)
+          void refresh(sessionId)
+        }
+        scope.effect(() => scope.remote.$on('commands/change', () => {
+          for (const sessionId of entries.keys()) void refresh(sessionId)
+        }))
+        scope.effect(() => scope.remote.$on('agent-preset/selected', reset))
+        scope.on('connection/reset', () => {
+          for (const sessionId of entries.keys()) reset(sessionId)
+        })
+        scope.effect(() => () => {
+          for (const entry of entries.values()) entry.epoch++
+          entries.clear()
+        })
+        return Object.freeze({
+          source: sessionId => entryFor(sessionId).source,
+        })
+      }
+
+      const settingsProps = () => ({ hooks: { ptcSettings: preferenceScope }, callUserBindings })
+      const updateSetting = async (key, value) => {
+        const before = preferenceScope.getSnapshot()
+        if (before.status !== 'ready' || before.writable !== true
+          || (key !== 'enabled' && before.value?.enabled !== true)
+          || before.value?.[key] === value) return null
+        await preferenceScope.set(key, value)
+        const after = preferenceScope.getSnapshot()
+        return after.status === 'ready' && after.value?.[key] === value
+          ? 'status.applied' : 'status.conflict'
+      }
+      const registerEnabled = (scope, bindings, register) => scope.effect(() => {
+        let dispose
+        const sync = () => {
+          const snapshot = preferenceScope.getSnapshot()
+          const enabled = snapshot.status === 'ready' && snapshot.value?.enabled === true
+            && (!bindings || snapshot.value?.userBindingsEnabled === true)
+          if (enabled === (dispose !== undefined)) return
+          dispose?.()
+          dispose = enabled ? register() : undefined
+        }
+        sync()
+        const unsubscribe = preferenceScope.subscribe(sync)
+        return () => { unsubscribe(); dispose?.() }
+      })
+
       const blankBinding = () => ({
         id: '',
         name: '',
@@ -330,7 +490,7 @@ window.__ModuleLoader__.load({
         }
       }
 
-      function UserBindingsWorkbench({ enabled, t }) {
+      function UserBindingsWorkbench({ enabled, t, callUserBindings }) {
         const [catalog, setCatalog] = React.useState(null)
         const [draft, setDraft] = React.useState(null)
         const [declaration, setDeclaration] = React.useState('')
@@ -450,17 +610,17 @@ window.__ModuleLoader__.load({
         if (!enabled) return null
         return h('section', { className: 'ptcPlusBindings', 'aria-label': t('bindings.title') },
           h('div', { className: 'ptcPlusBindingsHead' },
-            h('h3', { className: 'ptcPlusGroupTitle' }, t('bindings.title')),
+            h('h3', { className: 'ptcPlusBindingsTitle' }, t('bindings.title')),
             h('div', { className: 'ptcPlusBindingsActions' },
-              h('button', {
+              h(ActionButton, {
                 type: 'button', className: 'ptcPlusButton', disabled: busy,
                 onClick: () => perform(async () => {
                   await refresh(true)
                   setMessage({ key: 'bindings.reloaded' })
                 }),
               }, t('bindings.reload')),
-              h('button', {
-                type: 'button', className: 'ptcPlusButton', disabled: busy,
+              h(ActionButton, {
+                type: 'button', className: 'ptcPlusButton', 'data-kind': 'primary', disabled: busy,
                 onClick: () => {
                   requestGeneration.current += 1
                   setDraft(blankBinding())
@@ -469,26 +629,39 @@ window.__ModuleLoader__.load({
                 },
               }, t('bindings.new')))),
           catalog === null
-            ? h('p', { className: 'ptcPlusMessage' }, t('bindings.loading'))
+            ? h('p', {
+                className: `ptcPlusMessage${message === null ? '' : ' ptcPlusDanger'}`,
+                role: message === null ? undefined : 'status',
+              }, message === null ? t('bindings.loading') : t(message.key, message.params))
             : h('div', { className: 'ptcPlusBindingsGrid' },
-                h('div', null,
+                h('div', { className: 'ptcPlusBindingPane' },
                   catalog.error === undefined
                     ? null
                     : h('p', { className: 'ptcPlusMessage ptcPlusDanger' }, catalog.error),
                   catalog.entries.length === 0
                     ? h('p', { className: 'ptcPlusMessage' }, t('bindings.empty'))
                     : h('ul', { className: 'ptcPlusBindingList' }, catalog.entries.map(entry => (
-                        h('li', { key: entry.id, className: 'ptcPlusBindingItem' },
+                        h('li', {
+                          key: entry.id, className: 'ptcPlusBindingItem',
+                          'data-selected': draft?.id === entry.id ? true : undefined,
+                        },
                           h('button', {
                             type: 'button', className: 'ptcPlusBindingSelect', disabled: busy,
                             onClick: () => load(entry.id),
                           },
                           h('span', { className: 'ptcPlusBindingName' }, entry.name),
-                          h('span', { className: 'ptcPlusBindingMeta' }, `${entry.scope} - ${entry.symbols.join(', ')}`)),
-                          h('button', {
+                          h('span', { className: 'ptcPlusBindingMeta' }, `${entry.scope} - ${entry.symbols.join(', ')}`),
+                          h('span', { className: 'ptcPlusBindingState', 'data-enabled': entry.enabled },
+                            typeof StateDot === 'function'
+                              ? h(StateDot, { state: entry.enabled ? 'done' : 'warning', size: 6 })
+                              : h('span', { className: 'ptcPlusBindingStateDot', 'aria-hidden': true }),
+                            t(entry.enabled ? 'bindings.stateEnabled' : 'bindings.stateDisabled'))),
+                          h(ActionButton, {
                             type: 'button', className: 'ptcPlusButton ptcPlusBindingToggle',
-                            disabled: busy, onClick: () => toggle(entry),
-                          }, t(entry.enabled ? 'bindings.enabled' : 'bindings.disabledEntry')))
+                            disabled: busy,
+                            'aria-label': `${t(entry.enabled ? 'bindings.stateEnabled' : 'bindings.stateDisabled')}: ${t(entry.enabled ? 'bindings.disableAction' : 'bindings.enableAction')}`,
+                            onClick: () => toggle(entry),
+                          }, t(entry.enabled ? 'bindings.disableAction' : 'bindings.enableAction')))
                       ))),
                   h('div', { className: 'ptcPlusBindingRun' },
                     h('input', {
@@ -496,110 +669,120 @@ window.__ModuleLoader__.load({
                       placeholder: t('bindings.importPath'), 'aria-label': t('bindings.importPath'),
                       onChange: event => setImportPath(event.target.value),
                     }),
-                    h('button', {
+                    h(ActionButton, {
                       type: 'button', className: 'ptcPlusButton',
                       disabled: busy || importPath.trim() === '', onClick: importSource,
                     }, t('bindings.import')))),
                 draft === null ? null : h('div', { className: 'ptcPlusBindingEditor' },
-                  h('label', { className: 'ptcPlusBindingField' },
-                    h('span', { className: 'ptcPlusBindingFieldLabel' }, t('bindings.id')),
-                    h('input', {
-                      className: 'ptcPlusInput', value: draft.id, disabled: busy,
-                      onChange: event => edit('id', event.target.value),
-                    })),
-                  h('label', { className: 'ptcPlusBindingField' },
-                    h('span', { className: 'ptcPlusBindingFieldLabel' }, t('bindings.name')),
-                    h('input', {
-                      className: 'ptcPlusInput', value: draft.name, disabled: busy,
-                      onChange: event => edit('name', event.target.value),
-                    })),
-                  h('label', { className: 'ptcPlusBindingField' },
-                    h('span', { className: 'ptcPlusBindingFieldLabel' }, t('bindings.scope')),
-                    h('select', {
-                      className: 'ptcPlusSelect', value: draft.scope, disabled: busy,
-                      onChange: event => edit('scope', event.target.value),
-                    }, h('option', { value: 'namespace' }, 'namespace'), h('option', { value: 'top-level' }, 'top-level'))),
-                  h('label', { className: 'ptcPlusBindingField' },
-                    h('span', { className: 'ptcPlusBindingFieldLabel' }, t('bindings.symbols')),
-                    h('input', {
-                      className: 'ptcPlusInput', value: draft.symbolsText, disabled: busy,
-                      placeholder: t('bindings.symbolsPlaceholder'),
-                      onChange: event => edit('symbolsText', event.target.value),
-                    })),
-                  h('label', { className: 'ptcPlusBindingField' },
-                    h('span', { className: 'ptcPlusBindingFieldLabel' }, t('bindings.purpose')),
-                    h('input', {
-                      className: 'ptcPlusInput', value: draft.purpose, disabled: busy,
-                      onChange: event => edit('purpose', event.target.value),
-                    })),
-                  h('label', { className: 'ptcPlusBindingField', 'data-wide': true },
-                    h('span', { className: 'ptcPlusBindingFieldLabel' }, t('bindings.source')),
-                    h('textarea', {
-                      className: 'ptcPlusTextarea', value: draft.source, disabled: busy,
-                      spellCheck: false, onChange: event => edit('source', event.target.value),
-                    })),
-                  h('div', { className: 'ptcPlusBindingField', 'data-wide': true },
-                    h('span', { className: 'ptcPlusBindingFieldLabel' }, t('bindings.declaration')),
-                    h('pre', { className: 'ptcPlusDeclaration' }, declaration)),
-                  h('div', { className: 'ptcPlusBindingsActions' },
-                    h('button', { type: 'button', className: 'ptcPlusButton', disabled: busy, onClick: validate }, t('bindings.validate')),
-                    h('button', { type: 'button', className: 'ptcPlusButton', disabled: busy, onClick: save }, t('bindings.save')),
-                    catalog.entries.some(entry => entry.id === draft.id)
-                      ? h('button', {
-                          type: 'button', className: 'ptcPlusButton ptcPlusDanger',
-                          disabled: busy, onClick: () => remove(draft),
-                        }, t('bindings.remove'))
-                      : null),
-                  h('div', { className: 'ptcPlusBindingRun' },
-                    h('div', { className: 'ptcPlusBindingField' },
-                      h('span', { className: 'ptcPlusBindingFieldLabel' }, t('bindings.runSymbol')),
-                      h('input', {
-                        className: 'ptcPlusInput', value: runSymbol, disabled: busy,
-                        onChange: event => setRunSymbol(event.target.value),
-                      })),
-                    h('div', { className: 'ptcPlusBindingField' },
-                      h('span', { className: 'ptcPlusBindingFieldLabel' }, t('bindings.runArgs')),
-                      h('input', {
-                        className: 'ptcPlusInput', value: runArgs,
-                        disabled: busy || runSymbol.trim() === '',
-                        onChange: event => setRunArgs(event.target.value),
-                      })),
-                    h('button', { type: 'button', className: 'ptcPlusButton', disabled: busy, onClick: run }, t('bindings.run')),
-                    h('span', { className: 'ptcPlusMessage ptcPlusDanger' }, t('bindings.effectWarning')),
-                    output === '' ? null : h('pre', { className: 'ptcPlusBindingOutput' }, output))),
+                  h('div', { className: 'ptcPlusBindingSection' },
+                    h('h4', { className: 'ptcPlusBindingSectionTitle' }, t('bindings.source')),
+                    h('div', { className: 'ptcPlusBindingFields' },
+                      h('label', { className: 'ptcPlusBindingField' },
+                        h('span', { className: 'ptcPlusBindingFieldLabel' }, t('bindings.id')),
+                        h('input', {
+                          className: 'ptcPlusInput', value: draft.id, disabled: busy,
+                          onChange: event => edit('id', event.target.value),
+                        })),
+                      h('label', { className: 'ptcPlusBindingField' },
+                        h('span', { className: 'ptcPlusBindingFieldLabel' }, t('bindings.name')),
+                        h('input', {
+                          className: 'ptcPlusInput', value: draft.name, disabled: busy,
+                          onChange: event => edit('name', event.target.value),
+                        })),
+                      h('label', { className: 'ptcPlusBindingField' },
+                        h('span', { className: 'ptcPlusBindingFieldLabel' }, t('bindings.scope')),
+                        h('select', {
+                          className: 'ptcPlusSelect', value: draft.scope, disabled: busy,
+                          onChange: event => edit('scope', event.target.value),
+                        }, h('option', { value: 'namespace' }, 'namespace'), h('option', { value: 'top-level' }, 'top-level'))),
+                      h('label', { className: 'ptcPlusBindingField' },
+                        h('span', { className: 'ptcPlusBindingFieldLabel' }, t('bindings.symbols')),
+                        h('input', {
+                          className: 'ptcPlusInput', value: draft.symbolsText, disabled: busy,
+                          placeholder: t('bindings.symbolsPlaceholder'),
+                          onChange: event => edit('symbolsText', event.target.value),
+                        })),
+                      h('label', { className: 'ptcPlusBindingField', 'data-wide': true },
+                        h('span', { className: 'ptcPlusBindingFieldLabel' }, t('bindings.purpose')),
+                        h('input', {
+                          className: 'ptcPlusInput', value: draft.purpose, disabled: busy,
+                          onChange: event => edit('purpose', event.target.value),
+                        }))),
+                    h('div', { className: 'ptcPlusBindingSourceGrid' },
+                      h('label', { className: 'ptcPlusBindingSourceEditor' },
+                        h('span', { className: 'ptcPlusBindingFieldLabel' }, t('bindings.source')),
+                        h('textarea', {
+                          className: 'ptcPlusTextarea', value: draft.source, disabled: busy,
+                          spellCheck: false, onChange: event => edit('source', event.target.value),
+                        })),
+                      h('div', { className: 'ptcPlusBindingSourcePreview' },
+                        h('span', { className: 'ptcPlusBindingFieldLabel' }, t('bindings.sourcePreview')),
+                        typeof CodeBlock === 'function'
+                          ? h(CodeBlock, {
+                            code: draft.source, lang: 'typescript', className: 'ptcPlusCodeBlock',
+                            copyLabel: t('tool.copy'), copiedLabel: t('tool.copied'),
+                          })
+                          : h('pre', { className: 'ptcPlusDeclaration' }, draft.source))),
+                    h('div', { className: 'ptcPlusBindingSourcePreview' },
+                      h('span', { className: 'ptcPlusBindingFieldLabel' }, t('bindings.declaration')),
+                      typeof CodeBlock === 'function'
+                        ? h(CodeBlock, {
+                          code: declaration, lang: 'typescript', className: 'ptcPlusCodeBlock',
+                          copyLabel: t('tool.copy'), copiedLabel: t('tool.copied'),
+                        })
+                        : h('pre', { className: 'ptcPlusDeclaration' }, declaration))),
+                  h('div', { className: 'ptcPlusBindingSection' },
+                    h('h4', { className: 'ptcPlusBindingSectionTitle' }, t('bindings.lifecycle')),
+                    h('div', { className: 'ptcPlusBindingLifecycle' },
+                      h(ActionButton, { type: 'button', className: 'ptcPlusButton', disabled: busy, onClick: validate }, t('bindings.validate')),
+                      h(ActionButton, { type: 'button', className: 'ptcPlusButton', 'data-kind': 'primary', disabled: busy, onClick: save }, t('bindings.save')),
+                      catalog.entries.some(entry => entry.id === draft.id)
+                        ? h(ActionButton, {
+                            type: 'button', className: 'ptcPlusButton', 'data-kind': 'danger',
+                            disabled: busy, onClick: () => remove(draft),
+                          }, t('bindings.remove'))
+                        : null))),
+                  h('details', { className: 'ptcPlusBindingDebug' },
+                    h('summary', { className: 'ptcPlusBindingDebugSummary' }, t('bindings.debug')),
+                    h('div', { className: 'ptcPlusBindingDebugBody' },
+                      h('label', { className: 'ptcPlusBindingField' },
+                        h('span', { className: 'ptcPlusBindingFieldLabel' }, t('bindings.runSymbol')),
+                        h('input', {
+                          className: 'ptcPlusInput', value: runSymbol, disabled: busy,
+                          onChange: event => setRunSymbol(event.target.value),
+                        })),
+                      h('label', { className: 'ptcPlusBindingField' },
+                        h('span', { className: 'ptcPlusBindingFieldLabel' }, t('bindings.runArgs')),
+                        h('input', {
+                          className: 'ptcPlusInput', value: runArgs,
+                          disabled: busy || runSymbol.trim() === '',
+                          onChange: event => setRunArgs(event.target.value),
+                        })),
+                      h(ActionButton, { type: 'button', className: 'ptcPlusButton', disabled: busy, onClick: run }, t('bindings.run')),
+                      h('span', { className: 'ptcPlusBindingDebugWarning' }, t('bindings.effectWarning')),
+                      output === '' ? null : h('pre', { className: 'ptcPlusBindingOutput' }, output))),
                 message === null
                   ? null
                   : h('p', { className: 'ptcPlusMessage', role: 'status' }, t(message.key, message.params))))
       }
 
-      function PTCPlusSettingsCard({ t }) {
+      function PTCPlusSettingsCard({ t, usePtcSettings, updateSetting, callUserBindings }) {
         const [open, setOpen] = React.useState(false)
         const [status, setStatus] = React.useState(null)
         const [pending, setPending] = React.useState(() => new Set())
         const writeTail = React.useRef(Promise.resolve())
-        const subscribe = React.useCallback(listener => preferenceScope.subscribe(listener), [])
-        const getSnapshot = React.useCallback(() => preferenceScope.getSnapshot(), [])
-        const snapshot = React.useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
+        const snapshot = usePtcSettings(snapshot => snapshot)
         const value = snapshot.status === 'ready' ? (snapshot.value ?? {}) : {}
         const enabled = value.enabled === true
         const unavailable = snapshot.status !== 'ready' || snapshot.writable !== true
         const persist = (field, nextValue) => {
           if (unavailable || pending.has(field.key)) return
           const operation = writeTail.current.then(async () => {
-            const before = preferenceScope.getSnapshot()
-            if (before.status !== 'ready' || before.writable !== true) return
-            if (field.key !== 'enabled' && before.value?.enabled !== true) return
-            if (before.value?.[field.key] === nextValue) return
             setPending(current => new Set(current).add(field.key))
             setStatus(null)
             try {
-              await preferenceScope.set(field.key, nextValue)
-              const after = preferenceScope.getSnapshot()
-              if (after.status !== 'ready' || after.value?.[field.key] !== nextValue) {
-                setStatus({ key: 'status.conflict' })
-              } else {
-                setStatus({ key: 'status.applied' })
-              }
+              const key = await updateSetting(field.key, nextValue)
+              if (key !== null) setStatus({ key })
             } catch (error) {
               setStatus({
                 key: 'status.failed',
@@ -647,7 +830,7 @@ window.__ModuleLoader__.load({
             h('span', { className: 'ptcPlusDescription' }, t('card.description'))),
           h('span', { className: 'ptcPlusStatus', 'data-enabled': enabled }, t(enabled ? 'status.enabled' : 'status.disabled')),
           h('span', { className: 'ptcPlusChevron', 'data-open': open, 'aria-hidden': true }, h(IconChevronDownOutline14, { size: 14 }))),
-          h('div', { id: 'ptc-plus-settings-body', className: 'ptcPlusBody', 'data-open': open, 'aria-hidden': !open },
+          h('div', { id: 'ptc-plus-settings-body', className: 'ptcPlusBody', 'data-open': open, hidden: !open },
             h('div', { className: 'ptcPlusBodyInner' }, h('div', { className: 'ptcPlusFields' },
               snapshot.status === 'loading'
                 ? h('p', { className: 'ptcPlusMessage' }, t('state.syncing'))
@@ -656,7 +839,7 @@ window.__ModuleLoader__.load({
                   : [
                     ...settingGroups,
                     enabled && value.userBindingsEnabled === true
-                      ? h(UserBindingsWorkbench, { key: 'user-bindings', enabled: true, t })
+                      ? h(UserBindingsWorkbench, { key: 'user-bindings', enabled: true, t, callUserBindings })
                       : null,
                     h('div', { key: 'footer', className: 'ptcPlusFooter' },
                       h('span', { className: 'ptcPlusMessage', role: 'status' }, status === null
@@ -668,6 +851,7 @@ window.__ModuleLoader__.load({
 
       ctx.slots.inject('settings.plugin.item', () => ctx.slots.register({
         name: 'settings.plugin.item', key: SETTINGS_NAMESPACE, locale: LOCALE_NS,
+        inject: () => ({ ...settingsProps(), updateSetting }),
       }, PTCPlusSettingsCard))
 
       function PTCPlusToolRow({ toolName, block, inspect, t }) {
@@ -801,7 +985,61 @@ window.__ModuleLoader__.load({
         }
       })
 
-      ctx.inject(['slots', 'sessions'], (scope) => {
+      ctx.inject(['uiSession'], (scope) => {
+
+        function BindingAuthorButton({
+          t, useInput, inputActions, usePtcSettings, useBindingCommand,
+        }) {
+          const input = useInput(snapshot => snapshot)
+          const available = useBindingCommand(snapshot => snapshot)
+          const settings = usePtcSettings(snapshot => snapshot)
+          const anchorRef = React.useRef(null)
+          const toastSequence = React.useRef(0)
+          const [toast, setToast] = React.useState(null)
+          React.useEffect(() => {
+            if (toast === null || typeof Toast === 'function') return undefined
+            const timer = setTimeout(() => setToast(null), 2_500)
+            return () => clearTimeout(timer)
+          }, [toast])
+          const globalEnabled = settings.status === 'ready'
+            && settings.value?.enabled === true
+            && settings.value?.userBindingsEnabled === true
+          if (!globalEnabled || !available || typeof inputActions?.setDraft !== 'function') return null
+          const label = t('bindings.authorOpen')
+          const openAuthoring = () => {
+            if (typeof input?.draft === 'string' && input.draft.trim() !== '') {
+              toastSequence.current += 1
+              setToast({ sequence: toastSequence.current, text: t('bindings.composerBusy') })
+              return
+            }
+            inputActions.setDraft('/binding new ')
+          }
+          const starButton = h('button', {
+            type: 'button', className: 'ptcPlusAuthorButton', 'aria-label': label,
+            onMouseDown: event => event.preventDefault(), onClick: openAuthoring,
+          }, typeof IconSparkle16 === 'function'
+            ? h(IconSparkle16, { size: 16, 'aria-hidden': true })
+            : h('span', { className: 'ptcPlusAuthorButtonLabel', 'aria-hidden': true }, t('bindings.authorNew')))
+          return h('span', {
+            className: 'ptcPlusAuthorButtonShell',
+            'data-text': typeof IconSparkle16 === 'function' ? undefined : true,
+            ref: anchorRef,
+          },
+            typeof Tooltip === 'function'
+              ? h(Tooltip, { label, side: 'top', delayMs: 400 }, starButton)
+              : starButton,
+            toast === null ? null : typeof Toast === 'function'
+              ? h(Toast, {
+                key: toast.sequence,
+                text: toast.text,
+                anchor: anchorRef.current,
+                onDone: () => setToast(null),
+              })
+              : h('span', {
+                key: toast.sequence, className: 'ptcPlusComposerNotice', role: 'status',
+              }, toast.text))
+        }
+
         function replPopoverIsOpen(popover) {
           if (popover?.dataset?.open === 'true') return true
           try {
@@ -840,6 +1078,7 @@ window.__ModuleLoader__.load({
           globalEnabled,
           globalBindings,
           authoringDraft,
+          authoringPhase,
           loadGlobalBinding,
           prefillAuthoring,
           saveAuthoringDraft,
@@ -896,27 +1135,6 @@ window.__ModuleLoader__.load({
               : null,
             activeTab === 'global'
               ? h('div', { className: 'ptcPlusGlobalPane' },
-                  h('div', { className: 'ptcPlusBindingsActions' },
-                    h('button', {
-                      type: 'button', className: 'ptcPlusButton',
-                      onClick: () => prefillAuthoring('/binding new '),
-                    }, t('bindings.authorNew'))),
-                  authoringMessage === null
-                    ? null
-                    : h('span', { className: 'ptcPlusMessage', role: 'status' }, t(authoringMessage)),
-                  authoringDraft === null || authoringDraft === undefined
-                    ? null
-                    : h('section', { className: 'ptcPlusAuthoringDraft' },
-                        h('strong', null, t('bindings.draftTitle')),
-                        h('span', { className: 'ptcPlusBindingMeta' }, `${authoringDraft.entry.name} - ${authoringDraft.entry.scope}`),
-                        h('pre', { className: 'ptcPlusGlobalSource' }, authoringDraft.entry.source),
-                        h('div', { className: 'ptcPlusBindingsActions' },
-                          h('button', {
-                            type: 'button', className: 'ptcPlusButton', onClick: saveAuthoringDraft,
-                          }, t('bindings.draftSave')),
-                          h('button', {
-                            type: 'button', className: 'ptcPlusButton', onClick: discardAuthoringDraft,
-                          }, t('bindings.draftDiscard')))),
                   globalBindings === undefined
                     ? h('span', { className: 'ptcPlusReplEmpty' }, t('memory.globalUnavailable'))
                     : globalBindings.entries.length === 0
@@ -928,12 +1146,16 @@ window.__ModuleLoader__.load({
                           'aria-expanded': globalSource?.id === entry.id,
                           onClick: () => inspectGlobal(entry),
                         },
-                        h('span', { className: 'ptcPlusBindingName' }, entry.name),
-                        h('span', { className: 'ptcPlusBindingMeta' }, `${entry.scope} - ${entry.symbols.join(', ')}`)),
-                        h('button', {
+                        h('span', { className: 'ptcPlusBindingName', title: entry.name }, entry.name),
+                        h('span', { className: 'ptcPlusBindingMeta', title: entry.symbols.join(', ') }, `${entry.scope} - ${entry.symbols.join(', ')}`),
+                        h('span', { className: 'ptcPlusBindingState', 'data-enabled': entry.enabled },
+                          t(entry.enabled ? 'bindings.enabled' : 'bindings.disabledEntry'))),
+                        h(ActionButton, {
                           type: 'button', className: 'ptcPlusButton',
                           onClick: () => prefillAuthoring(`/binding edit ${entry.id} `),
-                        }, t('bindings.authorEdit')),
+                        }, typeof IconSparkle16 === 'function'
+                          ? h(IconSparkle16, { size: 14, 'aria-hidden': true })
+                          : null, t('bindings.authorEdit')),
                         globalSource?.id !== entry.id
                           ? null
                           : globalSource.error === true
@@ -995,73 +1217,190 @@ window.__ModuleLoader__.load({
               : h('span', { className: 'ptcPlusReplMore' }, t('memory.more', { count: memory.omitted }))))
         }
 
+        function BindingCommandCard({ node, t, useProjection, callUserBindings }) {
+          const projectionValue = useProjection('ptcPlusBindingDraft')
+          let projection
+          try {
+            projection = normalizeUserBindingDraftView(projectionValue)
+          } catch {
+            projection = undefined
+          }
+          const matches = projection?.commandId === node.commandId
+          const capability = matches ? projection.capability : null
+          const phase = matches ? projection.phase : node.outcome === null ? 'pending' : 'idle'
+          const [catalog, setCatalog] = React.useState(null)
+          const [draft, setDraft] = React.useState(null)
+          const [review, setReview] = React.useState(null)
+          const [message, setMessage] = React.useState(null)
+          const [busy, setBusy] = React.useState(false)
+          const [loaded, setLoaded] = React.useState(false)
+          React.useEffect(() => {
+            let active = true
+            setCatalog(null)
+            setDraft(null)
+            setLoaded(false)
+            if (phase !== 'ready' || capability === null) return () => { active = false }
+            setMessage(null)
+            Promise.all([
+              callUserBindings('list'),
+              callUserBindings('draft', { capability }),
+              callUserBindings('draft-review', { capability }),
+            ]).then(([nextCatalog, nextDraft, nextReview]) => {
+              if (!active) return
+              setCatalog(nextCatalog)
+              setDraft(nextDraft)
+              setReview(nextReview)
+              setLoaded(true)
+            }).catch(error => {
+              if (!active) return
+              setLoaded(true)
+              setMessage(error instanceof Error ? error.message : String(error))
+            })
+            return () => { active = false }
+          }, [capability, phase])
+          React.useEffect(() => {
+            if (draft === null || busy || phase !== 'ready') return undefined
+            let active = true
+            let pending = false
+            const timer = setInterval(async () => {
+              if (pending) return
+              pending = true
+              try {
+                const [current, nextReview] = await Promise.all([
+                  callUserBindings('draft', { capability }),
+                  callUserBindings('draft-review', { capability }),
+                ])
+                if (active) { setDraft(current); setReview(nextReview) }
+              } catch {
+                // A failed read proves neither revocation nor persistence.
+              } finally {
+                pending = false
+              }
+            }, 1500)
+            return () => { active = false; clearInterval(timer) }
+          }, [capability, phase, draft, busy])
+          const refresh = async () => {
+            const [nextCatalog, nextDraft, nextReview] = await Promise.all([
+              callUserBindings('list'), callUserBindings('draft', { capability }),
+              callUserBindings('draft-review', { capability }),
+            ])
+            setCatalog(nextCatalog)
+            setDraft(nextDraft)
+            setReview(nextReview)
+          }
+          const save = async (activate = false) => {
+            if (busy || draft === null || catalog === null || capability === null) return
+            setBusy(true)
+            setMessage(null)
+            try {
+              await callUserBindings('save-draft', {
+                capability, version: draft.version, expectedRevision: catalog.revision,
+                activate,
+              })
+              setDraft(null)
+              await refresh()
+            } catch (error) {
+              await refresh().catch(() => {})
+              setMessage(error instanceof Error ? error.message : String(error))
+            } finally {
+              setBusy(false)
+            }
+          }
+          const discard = async () => {
+            if (busy || draft === null || capability === null) return
+            setBusy(true)
+            setMessage(null)
+            try {
+              await callUserBindings('discard-draft', { capability, version: draft.version })
+              setDraft(null)
+              await refresh()
+            } catch (error) {
+              await refresh().catch(() => {})
+              setMessage(error instanceof Error ? error.message : String(error))
+            } finally {
+              setBusy(false)
+            }
+          }
+          const outcome = node.outcome
+          const outcomeText = outcome?.kind === 'error'
+            ? outcome.text ?? t('bindings.commandFailed')
+            : undefined
+          const historical = projection?.history?.find(record => record.commandId === node.commandId)
+          const currentReview = historical?.action !== null && historical?.action !== undefined
+            ? historical : review ?? historical
+          const candidate = currentReview?.candidate ?? draft
+          const action = currentReview?.action
+          const actionKey = action?.state === 'discarded' ? 'bindings.commandDiscarded'
+            : action?.state === 'saved'
+              ? action.enabled ? 'bindings.commandSavedEnabled' : 'bindings.commandSaved' : null
+          const failed = outcome?.kind === 'error' || phase === 'failed'
+          const displayPhase = action?.state ?? (failed ? 'failed' : phase === 'ready' && loaded && draft === null ? 'idle' : phase)
+          return h('section', {
+            className: 'ptcPlusBindingCommand', 'data-phase': displayPhase,
+            'aria-label': t('bindings.commandTitle'),
+          },
+            h('div', { className: 'ptcPlusBindingCommandHeader' },
+              h('strong', { className: 'ptcPlusBindingCommandTitle' }, t('bindings.commandTitle')),
+              h('span', { className: 'ptcPlusBindingCommandState' },
+                h('span', { className: 'ptcPlusBindingCommandStateDot', 'aria-hidden': true }),
+                actionKey !== null ? t(actionKey) : displayPhase === 'pending'
+                  ? t('bindings.commandPending')
+                  : displayPhase === 'ready'
+                    ? t('bindings.commandReady')
+                    : displayPhase === 'failed' ? t('bindings.commandFailed')
+                      : t('bindings.commandUnavailable'))),
+            h('pre', { className: 'ptcPlusBindingCommandRequirement' }, `/binding${node.args ?? ''}`),
+            outcomeText === undefined ? null : h('p', {
+              className: `ptcPlusMessage${outcome?.kind === 'error' ? ' ptcPlusDanger' : ''}`,
+            }, outcomeText),
+            phase === 'ready' && draft === null && message === null && !loaded
+              ? h('span', { className: 'ptcPlusMessage' }, t('bindings.commandPending'))
+              : null,
+            candidate === null || candidate === undefined ? null : h('div', { className: 'ptcPlusAuthoringDraft' },
+              h('strong', null, candidate.entry.name),
+              h('span', { className: 'ptcPlusBindingMeta' }, `${candidate.entry.scope} - ${candidate.entry.symbols.join(', ')}`),
+              h('details', { className: 'ptcPlusBindingSourceDetails', open: actionKey === null ? true : undefined },
+              h('summary', null, t('tool.source')),
+              typeof CodeBlock === 'function'
+                ? h(CodeBlock, {
+                  code: candidate.entry.source, lang: 'typescript', className: 'ptcPlusBindingCommandCode',
+                  copyLabel: t('tool.copy'), copiedLabel: t('tool.copied'),
+                })
+                : h('pre', { className: 'ptcPlusBindingCommandSource' }, candidate.entry.source)),
+              draft === null || actionKey !== null ? null : h('div', { className: 'ptcPlusBindingCommandActions' },
+                h(ActionButton, { type: 'button', className: 'ptcPlusButton', disabled: busy, onClick: () => save(false) }, t('bindings.draftSave')),
+                h(ActionButton, { type: 'button', className: 'ptcPlusButton', 'data-kind': 'primary', disabled: busy, onClick: () => save(true) }, t('bindings.draftSaveEnable')),
+                h(ActionButton, { type: 'button', className: 'ptcPlusButton', 'data-kind': 'ghost', disabled: busy, onClick: discard }, t('bindings.draftDiscard')))),
+            message === null ? null : h('p', { className: 'ptcPlusMessage', role: 'status' }, message))
+        }
+
         function PTCPlusSessionIndicator({
-          sessionId, t, useSession, useProjection, useSessions, useInput, inputActions,
+          sessionId, t, useProjection, useInput, inputActions, usePtcSettings, callUserBindings,
         }) {
-          // The session-scoped standard kit changed between DSH lines. Prefer its
-          // public hooks when present, then fall back to the older sessions list.
-          let conversation
-          try {
-            conversation = typeof useSession === 'function'
-              ? useSession(snapshot => snapshot)
-              : undefined
-          } catch {
-            conversation = undefined
-          }
-          let projectionMemory
-          try {
-            projectionMemory = typeof useProjection === 'function'
-              ? useProjection('ptcPlusRepl')
-              : undefined
-          } catch {
-            projectionMemory = undefined
-          }
-          let projectionDraftCapability
-          try {
-            projectionDraftCapability = typeof useProjection === 'function'
-              ? useProjection('ptcPlusBindingDraft')
-              : undefined
-          } catch {
-            projectionDraftCapability = undefined
-          }
-          let sessions
-          try {
-            sessions = typeof useSessions === 'function'
-              ? useSessions(snapshot => snapshot)
-              : React.useSyncExternalStore(
-                listener => scope.sessions?.list?.subscribe?.(listener) ?? (() => {}),
-                () => scope.sessions?.list?.getSnapshot?.() ?? {},
-                () => scope.sessions?.list?.getSnapshot?.() ?? {},
-              )
-          } catch {
-            sessions = {}
-          }
-          const settings = React.useSyncExternalStore(
-            listener => preferenceScope.subscribe(listener),
-            () => preferenceScope.getSnapshot(),
-            () => preferenceScope.getSnapshot(),
-          )
+          const preset = useProjection('agentPreset')
+          const projectionMemory = useProjection('ptcPlusRepl')
+          const projectionDraftCapability = useProjection('ptcPlusBindingDraft')
+          const settings = usePtcSettings(snapshot => snapshot)
           let input
           try {
             input = typeof useInput === 'function' ? useInput(snapshot => snapshot) : undefined
           } catch {
             input = undefined
           }
-          const resolvedSessionId = sessionId ?? conversation?.sessionId
-          const session = sessions?.byId?.[resolvedSessionId] ?? conversation
-          let draftCapability = null
+          const resolvedSessionId = sessionId
+          let draftProjection = { phase: 'idle', capability: null, commandId: null }
           try {
-            draftCapability = normalizeUserBindingDraftCapability(
-              projectionDraftCapability === undefined
-                ? session?.projectionValues?.ptcPlusBindingDraft ?? null
-                : projectionDraftCapability,
+            draftProjection = normalizeUserBindingDraftView(
+              projectionDraftCapability ?? { phase: 'idle', capability: null, commandId: null },
             )
           } catch {}
+          const draftCapability = draftProjection.capability
           const globalEnabled = settings.status === 'ready'
             && settings.value?.enabled === true
             && settings.value?.userBindingsEnabled === true
           const refreshIdentity = JSON.stringify([
             resolvedSessionId === undefined ? null : String(resolvedSessionId),
+            draftProjection.phase,
             draftCapability,
             globalEnabled,
           ])
@@ -1236,12 +1575,11 @@ window.__ModuleLoader__.load({
               }
             }
           }, [hidePopover, positionPopover])
-          if (!sessionUsesPtcPreset(session)
+          if (!sessionUsesPtcPreset(preset)
             || settings.status !== 'ready' || settings.value?.enabled !== true) return null
           let memory
           try {
-            memory = normalizeReplMemorySnapshot(projectionMemory
-              ?? session?.projectionValues?.ptcPlusRepl)
+            memory = normalizeReplMemorySnapshot(projectionMemory)
           } catch {
             memory = unavailableReplMemorySnapshot()
           }
@@ -1250,6 +1588,7 @@ window.__ModuleLoader__.load({
           return h('span', { className: 'ptcPlusActiveShell' },
             h('button', {
               type: 'button', className: 'ptcPlusActive', ref: triggerRef,
+              title: t('indicator.title'),
               'aria-label': t('indicator.title'), 'aria-controls': popoverId,
               'aria-expanded': expanded, 'aria-haspopup': 'dialog',
               onPointerEnter: showPopover, onPointerLeave: scheduleHide,
@@ -1261,6 +1600,7 @@ window.__ModuleLoader__.load({
               globalEnabled,
               globalBindings,
               authoringDraft,
+              authoringPhase: draftProjection.phase,
               loadGlobalBinding: id => callUserBindings('load', { id }),
               prefillAuthoring,
               saveAuthoringDraft,
@@ -1270,13 +1610,32 @@ window.__ModuleLoader__.load({
               onEnter: showPopover, onLeave: scheduleHide,
             }))
         }
-        scope.slots.inject('conversation.session.header.actions', () => scope.slots.register({
+        scope.slots.inject('conversation.session.header.actions', () => registerEnabled(scope, false, () => scope.slots.register({
           name: 'conversation.session.header.actions', id: 'ptc-plus-active', order: -9, locale: LOCALE_NS,
-        }, PTCPlusSessionIndicator))
+          inject: settingsProps,
+        }, PTCPlusSessionIndicator)))
+        scope.inject(['uiConversation'], (conversationScope) => {
+          conversationScope.slots.inject('conversation.chat.commandview', () => registerEnabled(conversationScope, true, () => conversationScope.slots.register({
+            name: 'conversation.chat.commandview', key: 'binding', locale: LOCALE_NS,
+            inject: settingsProps,
+          }, props => h(BindingCommandCard, { ...props, key: props.node.commandId }))))
+          conversationScope.inject(['remote', 'remote.commands'], (commandScope) => {
+            const availability = createBindingCommandAvailability(commandScope)
+            commandScope.slots.inject('conversation.input.left', () => registerEnabled(commandScope, true, () => commandScope.slots.register({
+              name: 'conversation.input.left', id: 'ptc-plus-binding-author', order: 20, locale: LOCALE_NS,
+              inject: sessionId => ({
+                hooks: { ptcSettings: preferenceScope, bindingCommand: availability.source(sessionId) },
+              }),
+            }, BindingAuthorButton)))
+          })
+        })
       })
     }
 
-    module.exports = { apply, inject: ['settingsScope', 'slots', 'sessions', 'locale', 'connection'] }
+    module.exports = {
+      apply,
+      inject: ['settingsScope', 'slots', 'locale', 'connection'],
+    }
     return module.exports
   },
 })

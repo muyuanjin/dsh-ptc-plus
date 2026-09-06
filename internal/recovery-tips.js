@@ -1,3 +1,5 @@
+import { recoveryTipIdentity } from './runtime-messages.js'
+
 const PLATFORM_CAUSE_CODES = new Set(['EACCES', 'EINVAL', 'ENOTDIR', 'ENOENT', 'UNKNOWN'])
 const TIP_CONTEXT_PREFIX = 'tools:ptc-plus-tip/'
 const TIP_PREFIXES = Object.freeze({
@@ -10,16 +12,20 @@ function tipHistory(view) {
   const active = new Map()
   const seen = new Set()
   const history = []
-  for (const snapshot of view.systemPromptSnapshots) {
+  const snapshots = [
+    ...view.systemPromptSnapshots,
+    ...(view.ptcMessages ?? []).filter(record => record.form === 'notice').map(record => ({
+      ...record, sections: [{ name: record.name, text: record.text }],
+    })),
+  ].sort((left, right) => left.index - right.index)
+  for (const snapshot of snapshots) {
     const next = new Map(snapshot.sections.map(section => [section.name, section.text]))
     for (const [name] of next) {
       if (active.has(name) || seen.has(name)) continue
-      const match = /^tools:ptc-plus-tip\/(repeated-binding-failure|platform-command-failure)\/([1-9][0-9]*)$/.exec(name)
-      if (match === null) continue
-      const ordinal = Number(match[2])
-      if (!Number.isSafeInteger(ordinal)) continue
+      const identity = recoveryTipIdentity(name)
+      if (identity === undefined) continue
       seen.add(name)
-      history.push({ id: match[1], ordinal, index: snapshot.index, contextStep: snapshot.contextStep })
+      history.push({ ...identity, index: snapshot.index, contextStep: snapshot.contextStep })
     }
     active.clear()
     for (const entry of next) active.set(...entry)
@@ -36,7 +42,7 @@ function hasPlatformCommandDiagnostic(diagnostics) {
     const causeCode = typeof diagnostic.cause?.code === 'string' ? diagnostic.cause.code.toUpperCase() : undefined
     if (causeCode !== undefined && PLATFORM_CAUSE_CODES.has(causeCode)
       && /\b(?:spawn|exec(?:ute)?|command|executable|shell|path|file)\b/i.test(text)) return true
-    return /(?:spawn|exec(?:ute)?|child process)\b.*(?:failed|error|not found|cannot find)/i.test(text)
+    return /\b(?:spawn|exec(?:ute)?|child process)\b.*\b(?:ENOENT|ENOTDIR|EACCES|EINVAL)\b/i.test(text)
       || /command not found|no such file|not recognized as (?:an )?internal|cannot find (?:the )?(?:path|file)/i.test(text)
   })
 }
@@ -45,7 +51,10 @@ function tipCandidate(view) {
   const { args, journal } = view.latestRun ?? {}
   if (args === undefined || journal === undefined) return undefined
   const codes = new Set(journal.diagnostics.map(diagnostic => diagnostic.code))
-  if (codes.has('PTC-W001')) return { id: 'repeated-binding-failure' }
+  if (codes.has('PTC-W001')) return {
+    id: 'repeated-binding-failure',
+    capability: journal.diagnostics.some(item => item.code === 'PTC-W001' && item.cause?.code === 'PTC-CAPABILITY'),
+  }
   if (hasPlatformCommandDiagnostic(journal.diagnostics)) return { id: 'platform-command-failure' }
   return undefined
 }
@@ -55,6 +64,9 @@ function renderTip(id, detailed, candidate = {}) {
     return detailed
       ? `${TIP_PREFIXES[id]} Re-check the active execution world and the actual executable before retrying. Use direct argv for a normal executable; use a shell only when its syntax or resolution is required. Windows, WSL, POSIX, and package shims have different paths and launch rules.`
       : `${TIP_PREFIXES[id]} Inspect the executable or path in the current execution world and choose direct argv or a shell only when required; do not assume Windows, WSL, POSIX, or one shell.`
+  }
+  if (!candidate.capability) {
+    return `${TIP_PREFIXES[id]} Inspect the visible cell source and results for the local name, scope, initialization, or declaration conflict. Correct that expression before continuing; capability discovery does not list session-local variables.${detailed ? ' Earlier statements may have run; use current expression evidence without assuming a failed declaration initialized its binding.' : ''}`
   }
   return detailed
     ? `${TIP_PREFIXES[id]} Inspect the live request with \`capabilities.tree()\`, \`capabilities.find()\`, or \`capabilities.inspect()\`, then call the typed member through \`tools.*\`. Do not invent hidden bindings or repeat the same failing expression.`
@@ -73,6 +85,7 @@ export function latestRecoveryTip(view, config) {
     (highest, item) => item.id === candidate.id ? Math.max(highest, item.ordinal) : highest,
     0,
   ) + 1
+  if (!Number.isSafeInteger(ordinal)) return undefined
   return {
     name: `${TIP_CONTEXT_PREFIX}${candidate.id}/${ordinal}`,
     text: renderTip(candidate.id, unresolved.length >= config.escalationFailures, candidate),

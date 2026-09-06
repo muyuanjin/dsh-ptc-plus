@@ -21,6 +21,20 @@ test('disposes a kernel with its owning agent session', async (t) => {
   })
 })
 
+test('does not reset the binding draft projection for an Agent with no owned draft', async (t) => {
+  const state = fixture()
+  t.after(() => state.dispose())
+  const events = []
+  const session = {
+    id: 'session-reset',
+    append(type, data) {
+      events.push({ type, data })
+    },
+  }
+  await state.emit('agent/disposed', { agent: { id: 'session-reset', session } })
+  assert.deepEqual(events, [])
+})
+
 test('delegates non-agent runtime calls and restores the provider on teardown', async () => {
   const state = fixture()
   const patched = state.runtime.run
@@ -162,7 +176,7 @@ test('restores providers normally when an outer wrapper unloads first', async ()
 test('rejects unsupported runtimes and invalid limits', () => {
   const base = {
     tools: {},
-    systemPrompt: { section() {} },
+    systemPrompt: { section() {}, context: () => () => {} },
     on() {},
     effect() {},
   }
@@ -900,8 +914,11 @@ test('restores an inherited runtime provider without leaving an own patch', asyn
   const ctx = {
     codeRuntime: runtime,
     tools: { get: () => definition, schemas: () => [], register: () => () => {} },
-    systemPrompt: { section() {} },
-    on(name, listener) { listeners.set(name, listener) },
+    systemPrompt: { section() {}, context: () => () => {} },
+    on(name, listener) {
+      listeners.set(name, listener)
+      return () => { if (listeners.get(name) === listener) listeners.delete(name) }
+    },
     effect(register) { cleanups.push(register()) },
   }
   apply(ctx)

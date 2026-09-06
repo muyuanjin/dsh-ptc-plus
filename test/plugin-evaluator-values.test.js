@@ -33,7 +33,7 @@ test('enforces the output budget before a cell can flood the host', async (t) =>
 for (let index = 0; index < 1000; index += 1) console.log("xxxxxxxxxxxxxxxx")
 `)
   assert.equal(result.error.kind, 'output-limit')
-  assert.match(result.error.message, /reduce the returned value or keep it in a REPL binding/)
+  assert.match(result.error.message, /cell was discarded and the worker reset/)
   assert.ok(result.logs.length < 10)
 })
 
@@ -80,6 +80,25 @@ test('reports runtime exceptions and invalid output without hanging the kernel',
   assert.deepEqual(await state.run('session-a', 'return 6'), { logs: [], value: 6 })
 })
 
+test('settles falsy thrown values and awaited rejection without losing continuous bindings', async t => {
+  const state = fixture()
+  t.after(() => state.dispose())
+  await state.run('settlement-values', 'let retainedAfterError = 41')
+  for (const value of ['null', 'undefined', 'false', '0']) {
+    for (const code of [`throw ${value}`, `await Promise.reject(${value})`]) {
+      assert.equal((await state.run('settlement-values', code)).error?.kind, 'exception', code)
+    }
+  }
+  assert.deepEqual(await state.run('settlement-values', 'return Promise.resolve(retainedAfterError + 1)'), { logs: [], value: 42 })
+})
+
+test('a late REPL exception cannot settle a subsequent cell', async t => {
+  const state = fixture()
+  t.after(() => state.dispose())
+  assert.deepEqual(await state.run('late-evaluation', 'setTimeout(() => { throw new Error("late") }, 30); return 1'), { logs: [], value: 1 })
+  assert.deepEqual(await state.run('late-evaluation', 'return await new Promise(resolve => setTimeout(() => resolve(42), 80))'), { logs: [], value: 42 })
+})
+
 test('reports runtime exceptions as partially applied and preserves earlier mutations', async (t) => {
   const state = fixture()
   t.after(() => state.dispose())
@@ -96,9 +115,7 @@ test('reports runtime exceptions as partially applied and preserves earlier muta
   assert.equal(diagnostic.severity, 'error')
   assert.equal(diagnostic.phase, 'execute')
   assert.equal(diagnostic.stateEffect, 'partially-applied')
-  assert.deepEqual(diagnostic.help, [
-    'inspect existing bindings and retry only the failing expression',
-  ])
+  assert.match(diagnostic.help[0], /operation owner's retry\/idempotence contract and available execution facts/)
   assert.match(diagnostic.message, /^uncaught TypeError: value\.trim is not a function/)
   assert.deepEqual(diagnostic.source, { cell: 'current', start: { line: 2, column: 7 } })
   assert.deepEqual(observed.raw.logs, [])
@@ -137,10 +154,9 @@ test('guides fresh helper names when partial execution may leave declarations un
     {},
   )
   assert.equal(observed.raw.error.kind, 'exception')
-  assert.deepEqual(observed.result.meta.dshPtcPlus.diagnostics[0].help, [
-    'inspect existing bindings and retry only the failing expression',
-    'use fresh names for one-off top-level bindings after partial execution; later declarations may be uninitialized',
-  ])
+  const help = observed.result.meta.dshPtcPlus.diagnostics[0].help
+  assert.match(help[0], /failing operation may have caused effects/)
+  assert.match(help[1], /later declarations may be uninitialized/)
 })
 
 test('points cross-cell stack failures at the current call site', async (t) => {
@@ -231,6 +247,13 @@ throw hostileThrown
   assert.equal(throwingCause.meta.dshPtcPlus.diagnostics[0].message, 'uncaught CustomError: semantic failure')
   assert.equal(Object.hasOwn(throwingCause.meta.dshPtcPlus.diagnostics[0], 'cause'), false)
   assert.deepEqual(await state.run('hostile-thrown-cause', 'return 42'), { logs: [], value: 42 })
+  const hostileStack = await state.run('hostile-thrown-stack', `
+const originalError = new Error('original failure')
+Object.defineProperty(originalError, 'stack', { get() { throw new Error('stack getter replaced original') } })
+throw originalError
+`)
+  assert.match(hostileStack.error.message, /original failure/)
+  assert.doesNotMatch(hostileStack.error.message, /uncaught Error: stack getter/)
 })
 
 test('replays a durable runtime exception from its persisted diagnostic', async (t) => {

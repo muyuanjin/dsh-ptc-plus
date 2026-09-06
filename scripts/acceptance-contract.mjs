@@ -1,7 +1,154 @@
 import { normalizeJournal } from '../internal/session-journal.js'
 import { decodeValue } from '../internal/value-wire.js'
+import { readRuntimeMessage, recoveryTipIdentity } from '../internal/runtime-messages.js'
+import { foldSurface } from '@deepseek-ai/dsh-session'
+import { isDeepStrictEqual } from 'node:util'
+import { editRejectedCell, EXPECTED_TARGET_CALL_SEQ } from '../internal/rejected-cell-editor.js'
+import { editTargetForCall } from '../internal/session-log-view.js'
+import { parse } from '@babel/parser'
+import traverseModule from '@babel/traverse'
+import { createUserBindingDraftProjection, readBindingAction } from '../internal/user-binding-draft-projection.js'
+import { normalizeUserBindingEntry, userBindingsSnapshotFromMeta } from '../internal/user-bindings.js'
+import { constantExportProof, proveStatusSource, workflowSymbol } from './binding-status-proof.mjs'
+
+const traverse = traverseModule.default ?? traverseModule
+
+/** Conservative scenario oracle, not runtime policy or inferred effect metadata. */
+export function auditBindingWorkflow(events, scenario = {}) {
+  const failures = []
+  const incomplete = []
+  const observations = []
+  const command = events.find(event => event.type === 'command/run' && event.data?.name === 'binding'
+    && (scenario.command === undefined || event.data.args?.trim() === scenario.command.trim()))
+  const authoringStart = command?.seq ?? -1
+  const question = events.find(event => event.type === 'user/message' && event.data?.source?.kind === 'user'
+    && event.seq > authoringStart && (scenario.statusQuestionSeq === undefined || event.seq === scenario.statusQuestionSeq)
+    && typeof scenario.statusQuestion === 'string' && collectModelText(event.data.content).join('\n') === scenario.statusQuestion)
+  const statusQuestionSeq = question?.seq
+  const statusEnd = events.find(event => event.seq > statusQuestionSeq && event.type === 'user/message'
+    && event.data?.source?.kind === 'user')?.seq ?? Infinity
+  const relevant = events.filter(event => event.seq >= authoringStart && event.seq < statusEnd)
+  const facts = collectTrajectoryFacts(relevant, { compareUsageChunks: false })
+  const calls = facts.timeline
+  failures.push(...facts.failures)
+  if (command === undefined) incomplete.push('binding workflow has no matching command')
+  if (!relevant.some(event => event.type === 'command/done' && event.data?.commandId === command?.data.commandId
+    && event.data.kind === 'success')) incomplete.push('binding workflow has no successful command admission')
+  if (question === undefined) incomplete.push('binding workflow did not ask its declared availability question')
+  const projection = createUserBindingDraftProjection('workflow-audit')
+  let state = projection.init()
+  const actions = []
+  for (const event of relevant) {
+    const next = projection.apply(state, event)
+    const action = event.type === 'user/message' ? readBindingAction(event.data) : undefined
+    if (action !== undefined && next.history?.some(record => record.action !== null
+      && record.candidate.requestId === action.requestId && event.sourceEventSeqs?.includes(record.acceptedSeq)
+      && !state.history?.some(previous => previous.candidate.requestId === action.requestId && previous.action !== null))) {
+      actions.push({ seq: event.seq, ...action })
+    }
+    state = next
+  }
+  const accepted = state.history?.find(record => record.commandId === command?.data.commandId
+    && (scenario.entry === undefined || record.candidate.entry.id === scenario.entry.id))
+  const acceptingCall = calls.find(call => call.resultSeq === accepted?.acceptedSeq)
+  const entry = accepted?.candidate.entry
+  const acceptedResult = relevant.find(event => event.seq === accepted?.acceptedSeq)
+  const candidateMatches = submitted => {
+    try {
+      const normalized = normalizeUserBindingEntry({ ...submitted, enabled: false })
+      return ['id', 'name', 'scope', 'source', 'purpose'].every(key => normalized[key] === entry[key])
+        && isDeepStrictEqual(normalized.symbols, entry.symbols)
+    } catch { return false }
+  }
+  const acceptanceProved = accepted !== undefined && acceptedResult !== undefined && acceptingCall !== undefined && !acceptingCall.isError
+    && acceptedResult.sourceEventSeqs?.includes(acceptingCall.seq)
+    && acceptingCall.nestedCalls.some(call => call.global === 'code' && call.member === 'submitBindingDraft'
+      && call.ok && call.value?.accepted === true && call.value.requestId === accepted.candidate.requestId
+      && call.args?.requestId === accepted.candidate.requestId && candidateMatches(call.args.entry)
+      && call.value.id === entry.id)
+  if (!acceptanceProved) incomplete.push('binding workflow has no verified accepted candidate and source call')
+  const saved = actions.find(action => action.requestId === accepted?.candidate.requestId && action.state === 'saved'
+    && action.enabled === (scenario.userAction !== 'save-disabled') && action.seq < statusQuestionSeq)
+  if (saved === undefined) incomplete.push('binding workflow has no verified user save receipt before the status question')
+  const closing = relevant.findLast(event => event.type === 'assistant/message' && event.seq > statusQuestionSeq
+    && event.data.message?.content?.some(block => block.type === 'text' && block.text.trim() !== '')
+    && !event.data.message.content.some(block => block.type === 'tool-call'))
+  const ended = relevant.find(event => event.type === 'turn/end' && event.seq > closing?.seq
+    && event.data?.turn === closing.data.turn)
+  if (closing === undefined || ended === undefined) incomplete.push('binding workflow has no completed availability answer')
+  if (calls.some(call => call.seq > statusQuestionSeq && (call.resultMissing || call.resultSeq >= statusEnd))) {
+    incomplete.push('binding workflow has unsettled availability calls')
+  }
+  for (const call of calls) {
+    if (call.seq < authoringStart || call.seq >= statusEnd) continue
+    const source = call.derivedRun?.code ?? call.code
+    const status = Number.isSafeInteger(statusQuestionSeq) && call.seq > statusQuestionSeq
+    if (typeof source !== 'string') {
+      if (status) {
+        observations.push({ seq: call.seq, target: call.name, evidence: 'recorded-dispatch' })
+        failures.push(`seq ${call.seq}: availability query has no provable cell source`)
+      }
+      continue
+    }
+    if (status && call.isError) failures.push(`seq ${call.seq}: availability cell failed`)
+    try {
+      const ast = parse(source, { sourceType: 'module', allowReturnOutsideFunction: true, plugins: ['typescript'] })
+      if (status) {
+        let activeEntry
+        let constants = new Map()
+        try {
+          const result = relevant.find(event => event.seq === call.resultSeq)
+          const snapshot = userBindingsSnapshotFromMeta(result?.data.meta)
+          if (acceptanceProved && saved !== undefined && result?.sourceEventSeqs?.includes(call.seq)
+            && snapshot?.fingerprint === call.journal?.userBindingsFingerprint) {
+            activeEntry = snapshot.entries.find(item => item.id === entry.id && item.name === entry.name
+              && item.scope === entry.scope && item.source === entry.source)
+          }
+          if (activeEntry !== undefined) constants = constantExportProof(activeEntry, scenario.constantExports)
+        } catch (error) {
+          failures.push(`seq ${call.seq}: invalid binding source evidence: ${error.message}`)
+        }
+        const proof = proveStatusSource(source, activeEntry, constants)
+        observations.push(...proof.observations.map(observation => ({ seq: call.seq, ...observation })))
+        failures.push(...proof.problems.map(problem => `seq ${call.seq}: availability effect evidence is insufficient: ${problem}`))
+      }
+      traverse(ast, {
+        StringLiteral(path) {
+          if (status || path.findParent(parent => parent.isCallExpression()
+            && ['code.submitBindingDraft', 'tools.submitBindingDraft'].includes(workflowSymbol(parent.node.callee)))) return
+          if (/(?:[\\/]\.dsh(?:[\\/]|$)|bindings\.json|deepseek-harness|dsh-ptc-plus)/i.test(path.node.value)) {
+            failures.push(`seq ${call.seq}: routine authoring inspects host or binding-storage implementation`)
+          }
+        },
+      })
+      for (const nested of call.nestedCalls ?? []) {
+        if (status) {
+          const target = `${nested.global}.${nested.member}`
+          observations.push({ seq: call.seq, target, evidence: 'recorded-dispatch' })
+          if (nested.global !== 'capabilities' || !['tree', 'find', 'inspect'].includes(nested.member)) {
+            failures.push(`seq ${call.seq}: availability query dispatches an unproved program capability ${target}`)
+          }
+        }
+      }
+    } catch {
+      failures.push(`seq ${call.seq}: source cannot prove the workflow effect boundary`)
+    }
+  }
+  failures.push(...incomplete)
+  return { status: incomplete.length > 0 ? 'incomplete' : failures.length > 0 ? 'unproved' : 'machine-passed',
+    failures: [...new Set(failures)], incomplete, actions, observations,
+    finalAnswer: { seq: closing?.seq ?? null, review: 'semantic-review-required' } }
+}
 
 export const PTC_DIRECT_TOOLS = Object.freeze(['run_code', 'edit_run_code'])
+
+export function isRuntimeContextSource(source) {
+  return [
+    'plugin:@deepseek-ai/dsh-system-prompt:snapshot',
+    'plugin:@deepseek-ai/dsh-system-prompt',
+    'plugin:ptc-plus:snapshot', 'plugin:ptc-plus:notice',
+  ].includes(source)
+}
 
 export const MACHINE_BUDGET_KEYS = Object.freeze([
   'maxModelRequests',
@@ -158,12 +305,16 @@ export function collectTrajectoryFacts(events, options = {}) {
         }
       }
       const nestedCalls = Array.isArray(journal?.calls)
-        ? journal.calls.map((call, index) => ({
+        ? journal.calls.map((call, index) => Object.defineProperty({
             global: String(call.global),
             member: String(call.member),
+            argsWire: call.args,
             ok: call.ok === true,
             ...(call.ok === true ? { value: decode(call.value, `journal call ${index + 1}`) } : {}),
             ...(call.ok === false ? { error: String(call.error ?? 'unknown error') } : {}),
+          }, 'args', {
+            // Reports retain the wire graph; decoded args may contain cycles or bigint.
+            value: decode(call.args, `journal call ${index + 1} arguments`),
           }))
         : []
       const completion = journal?.completion?.kind === 'return'
@@ -232,6 +383,138 @@ export function collectTrajectoryFacts(events, options = {}) {
 
 function isRecord(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
+}
+
+export function validateProgramWork(policy = {}) {
+  if (!isRecord(policy) || Object.keys(policy).some(key => !['inspectionSymbols', 'callLimits'].includes(key))) {
+    throw new TypeError('programWork must contain only inspectionSymbols and callLimits')
+  }
+  if (policy.inspectionSymbols !== undefined
+    && (!Array.isArray(policy.inspectionSymbols) || policy.inspectionSymbols.length === 0
+      || policy.inspectionSymbols.some(symbol => typeof symbol !== 'string' || symbol === '')
+      || new Set(policy.inspectionSymbols).size !== policy.inspectionSymbols.length)) {
+    throw new TypeError('programWork.inspectionSymbols must contain unique non-empty symbols')
+  }
+  const limits = policy.callLimits ?? []
+  if (!Array.isArray(limits)) throw new TypeError('programWork.callLimits must be an array')
+  const members = new Set()
+  for (const limit of limits) {
+    if (!isRecord(limit)
+      || Object.keys(limit).some(key => !['global', 'member', 'maxCalls', 'maxCallsPerArguments'].includes(key))
+      || typeof limit.global !== 'string' || limit.global === ''
+      || typeof limit.member !== 'string' || limit.member === ''
+      || !Number.isSafeInteger(limit.maxCalls) || limit.maxCalls < 0
+      || (limit.maxCallsPerArguments !== undefined
+        && (!Number.isSafeInteger(limit.maxCallsPerArguments) || limit.maxCallsPerArguments < 1))) {
+      throw new TypeError('programWork.callLimits requires global/member, non-negative maxCalls and optional positive maxCallsPerArguments')
+    }
+    const key = JSON.stringify([limit.global, limit.member])
+    if (members.has(key)) throw new TypeError('programWork.callLimits contains a duplicate member')
+    members.add(key)
+  }
+  return policy
+}
+
+/** Workload limits describe observations, never permission to suppress a live call. */
+export function auditProgramWork(timeline, policy = {}) {
+  validateProgramWork(policy)
+  const failures = []
+  const calls = timeline.flatMap(cell => cell.nestedCalls ?? [])
+  const decoded = new Map()
+  for (const [index, call] of calls.entries()) {
+    try {
+      decoded.set(call, decodeValue(call.argsWire))
+    } catch (error) {
+      failures.push(`program call ${index + 1} has invalid argument evidence: ${error.message}`)
+    }
+  }
+  if (policy.inspectionSymbols !== undefined) {
+    const allowed = new Set(policy.inspectionSymbols)
+    for (const call of calls.filter(call => call.global === 'capabilities' && call.member === 'inspect')) {
+      const args = decoded.get(call)
+      if (!isRecord(args) || !Array.isArray(args.symbols) || args.symbols.length === 0) {
+        failures.push('focused inspection requires explicit non-empty symbols')
+        continue
+      }
+      for (const symbol of args.symbols) {
+        if (!allowed.has(symbol)) failures.push(`unrelated capability inspection: ${String(symbol)}`)
+      }
+    }
+  }
+  const observations = (policy.callLimits ?? []).map(limit => {
+    const matching = calls.filter(call => call.global === limit.global && call.member === limit.member)
+    const groups = []
+    for (const call of matching) {
+      if (!decoded.has(call)) continue
+      const args = decoded.get(call)
+      const group = groups.find(group => isDeepStrictEqual(group.args, args))
+      if (group === undefined) groups.push({ args, count: 1 })
+      else group.count += 1
+    }
+    const symbol = `${limit.global}.${limit.member}`
+    if (matching.length > limit.maxCalls) {
+      failures.push(`${symbol} has ${matching.length} calls; workload maximum is ${limit.maxCalls}`)
+    }
+    const maxArgumentCalls = Math.max(0, ...groups.map(group => group.count))
+    if (limit.maxCallsPerArguments !== undefined && maxArgumentCalls > limit.maxCallsPerArguments) {
+      failures.push(`${symbol} repeats identical arguments ${maxArgumentCalls} times; workload maximum is ${limit.maxCallsPerArguments}`)
+    }
+    return {
+      global: limit.global, member: limit.member, calls: matching.length,
+      repeatedArgumentCalls: groups.reduce((total, group) => total + group.count - 1, 0),
+    }
+  })
+  return { observations, failures: [...new Set(failures)] }
+}
+
+export function validateGuardMismatchEdits(ordinals = []) {
+  if (!Array.isArray(ordinals) || ordinals.some(value => !Number.isSafeInteger(value) || value < 1)
+    || new Set(ordinals).size !== ordinals.length) {
+    throw new TypeError('guardMismatchEdits must contain unique positive edit ordinals')
+  }
+  return ordinals
+}
+
+/** Audit the canonical editor and dispatch-time target, independently of task deltas. */
+export function auditEditCalls(events, timeline, guardMismatchEdits = []) {
+  const expectedMismatches = new Set(validateGuardMismatchEdits(guardMismatchEdits))
+  const rejectedCallIds = new Set()
+  const failures = []
+  const edits = timeline.filter(call => call.name === 'edit_run_code')
+  for (const [index, edit] of edits.entries()) {
+    const label = `edit_run_code call ${edit.callId}`
+    const target = editTargetForCall({ session: { events } }, edit.callId, edit.seq)
+    const correction = editRejectedCell(edit.arguments, target?.source)
+    if (!correction.edited) {
+      failures.push(`${label} fails canonical edit validation: ${correction.reason}`)
+      continue
+    }
+    const guard = edit.arguments[EXPECTED_TARGET_CALL_SEQ]
+    const mismatch = guard !== undefined && guard !== target.callSeq
+    let value
+    try { value = JSON.parse(edit.output) } catch { /* The editor renders one JSON result. */ }
+    if (expectedMismatches.has(index + 1)) {
+      if (!mismatch || edit.isError || !isRecord(value) || value.edited !== false
+        || typeof value.reason !== 'string' || value.reason === ''
+        || Object.keys(value).some(key => !['edited', 'reason'].includes(key))
+        || edit.journal !== undefined || edit.editTarget !== undefined || edit.derivedRun !== undefined) {
+        failures.push(`${label} did not prove guard rejection without derived execution`)
+      } else rejectedCallIds.add(edit.callId)
+    } else {
+      if (mismatch) failures.push(`${label} guard does not match its captured target`)
+      if (!isRecord(value) || value.edited !== true) failures.push(`${label} result does not report an applied edit`)
+      if (edit.editTarget?.targetCallSeq !== target.callSeq) {
+        failures.push(`${label} result does not identify its captured target`)
+      }
+      if (edit.derivedRun?.code !== correction.code || edit.derivedRun?.description !== correction.description) {
+        failures.push(`${label} derived run does not match the canonical edit`)
+      }
+    }
+  }
+  for (const ordinal of expectedMismatches) {
+    if (ordinal > edits.length) failures.push(`guardMismatchEdits names missing edit ${ordinal}`)
+  }
+  return { failures, rejectedCallIds }
 }
 
 function canonicalRequestHeader(header) {
@@ -646,7 +929,7 @@ function snapshotSections(event, failures, allowed, maxSnapshotChars) {
   return sections
 }
 
-/** Audit aggregate runtime snapshots and project their effective state at every model request. */
+/** Audit independently owned state and notices alongside historical aggregates. */
 export function auditRuntimeContexts(events, config = {}) {
   const failures = []
   const { allowed, required, maxSnapshotChars } = validateRuntimeContextConfig(config)
@@ -654,40 +937,103 @@ export function auditRuntimeContexts(events, config = {}) {
   const requests = []
   const sources = []
   let effective = new Map()
-  let priorSignature
+  const priorSignatures = new Map()
+  const deliveredNotices = new Set()
+  const producerStates = new Map()
+  const committedSnapshots = new Map()
+  const sourceEvents = []
+  const combinedState = () => new Map([
+    ...[...(producerStates.get('aggregate') ?? [])].filter(([name]) => (
+      !producerStates.has('ptc-plus') || !name.startsWith('tools:ptc-plus-')
+    )),
+    ...(producerStates.get('ptc-plus') ?? []),
+  ])
+  const restoreSurface = nodes => {
+    producerStates.clear()
+    priorSignatures.clear()
+    for (const seq of nodes) {
+      const record = committedSnapshots.get(seq)
+      if (record === undefined) continue
+      producerStates.set(record.producer, record.state)
+      priorSignatures.set(record.producer, record.signature)
+    }
+  }
   let nextRequestIndex = 1
   for (const event of events) {
+    if (Number.isSafeInteger(event.seq)) sourceEvents.push(event)
+    let replacementNodes
+    if (event.surfaceOp?.op === 'replace') {
+      try {
+        replacementNodes = foldSurface(sourceEvents).nodes
+        restoreSurface(replacementNodes)
+        effective = combinedState()
+      } catch {
+        failures.push(`cannot verify runtime context surface at seq ${String(event.seq)}`)
+        producerStates.clear()
+        priorSignatures.clear()
+        effective.clear()
+      }
+    }
     const source = event.data?.source
-    const isSnapshot = event.type === 'user/message' && source?.kind === 'plugin'
-      && source.plugin === '@deepseek-ai/dsh-system-prompt' && source.form === 'snapshot'
+    const aggregate = event.type === 'user/message' && source?.kind === 'plugin'
+      && source.plugin === '@deepseek-ai/dsh-system-prompt'
+    const aggregateClear = aggregate && source.form === undefined
+      && collectModelText(event.data?.content).join('\n') === 'Current runtime context: none. Earlier runtime-context snapshots no longer apply.'
+    const ptc = event.type === 'user/message' ? readRuntimeMessage(event.data) : undefined
+    if (event.type === 'user/message' && source?.plugin === 'ptc-plus'
+      && ['snapshot', 'notice'].includes(source.form) && ptc === undefined
+      && readBindingAction(event.data) === undefined) {
+      failures.push(`malformed PTC runtime message at seq ${String(event.seq ?? 'unknown')}`)
+    }
+    const isSnapshot = aggregate && source.form === 'snapshot' || aggregateClear || ptc !== undefined
     if (event.type === 'user/message' && source?.kind !== 'user') sources.push(sourceLabel(source))
     if (isSnapshot) {
-      const sections = snapshotSections(event, failures, allowed, maxSnapshotChars)
+      const rawSections = aggregateClear ? [] : ptc?.form === 'notice' ? [{ name: ptc.name, text: ptc.text }]
+        : event.data.source.sections
+      const sections = snapshotSections({ ...event, data: { source: { sections: rawSections } } }, failures, allowed, maxSnapshotChars)
+      const producer = aggregate ? 'aggregate' : 'ptc-plus'
       const signature = JSON.stringify(sections.map(({ name, text }) => [name, text]))
-      if (signature === priorSignature) {
-        failures.push(`runtime snapshot at seq ${String(event.seq ?? 'unknown')} repeats an unchanged aggregate`)
+      if (ptc?.form === 'notice' ? deliveredNotices.has(ptc.name) : signature === priorSignatures.get(producer)) {
+        failures.push(ptc?.form === 'notice'
+          ? `PTC notice at seq ${String(event.seq ?? 'unknown')} repeats a delivered identity`
+          : `runtime snapshot at seq ${String(event.seq ?? 'unknown')} repeats an unchanged ${producer === 'aggregate' ? 'aggregate' : 'PTC state'}`)
       }
-      priorSignature = signature
+      if (ptc?.form === 'notice') deliveredNotices.add(ptc.name)
+      else priorSignatures.set(producer, signature)
+      if (aggregate) {
+        for (const section of sections) {
+          if (recoveryTipIdentity(section.name) !== undefined) deliveredNotices.add(section.name)
+        }
+      }
       const current = new Map(sections.map(section => [section.name, section]))
       const transitions = []
+      if (ptc?.form !== 'notice') {
+        producerStates.set(producer, current)
+        committedSnapshots.set(event.seq, { producer, state: current, signature })
+        if (replacementNodes !== undefined) restoreSurface(replacementNodes)
+      }
+      const combined = combinedState()
       const ptcNames = new Set([
         ...[...effective.keys()].filter(name => name.startsWith('tools:ptc-plus-')),
-        ...[...current.keys()].filter(name => name.startsWith('tools:ptc-plus-')),
+        ...[...combined.keys()].filter(name => name.startsWith('tools:ptc-plus-')),
       ])
       for (const name of ptcNames) {
         const before = effective.get(name)?.text
-        const after = current.get(name)?.text
+        const after = combined.get(name)?.text
         if (before === undefined && after !== undefined) transitions.push({ name, type: 'append' })
         else if (before !== undefined && after === undefined) transitions.push({ name, type: 'clear' })
         else if (before !== after) transitions.push({ name, type: 'update' })
       }
-      effective = current
+      if (ptc?.form === 'notice') transitions.push({ name: ptc.name, type: 'append' })
+      effective = combined
       const messageChars = collectModelText(event.data?.content).join('\n').length
       const ptcPlusSectionChars = sections
         .filter(section => section.owner === 'ptc-plus')
         .reduce((total, section) => total + section.chars, 0)
       snapshots.push({
         seq: event.seq,
+        producer,
+        form: ptc?.form ?? 'snapshot',
         nextRequestIndex,
         messageChars,
         ptcPlusSectionChars,

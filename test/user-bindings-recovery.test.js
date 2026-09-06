@@ -42,7 +42,7 @@ async function writeBindingsDocument(home, value) {
 }
 
 async function rememberRequest(state, session, agent, signal = new AbortController().signal) {
-  return state.assemble(codeOnlyAssembly(state), {
+  return state.assembleStep(codeOnlyAssembly(state), {
     agent,
     scope: agent,
     signal,
@@ -91,13 +91,13 @@ test('projects only worker-proved declarations and cold-replays the exact record
 
   const firstCode = 'const recordedDefault = defaults.value'
   const firstResult = await first.runDurable(session.id, firstCode, {}, { session })
+  appendRunCodeEvents(events, 'binding-one', firstCode, firstResult)
   const activatedAssembly = await rememberRequest(first, session, agent)
-  const context = activatedAssembly.contexts.find(item => item.name === 'tools:ptc-plus-user-bindings')
+  const context = activatedAssembly.ptcContexts.find(item => item.name === 'tools:ptc-plus-user-bindings')
   assert.match(context.text, /defaults \(value, label\)/)
   assert.match(context.text, /declare const defaults/)
   assert.doesNotMatch(context.text, /private-1|bindings\.json|validate|persist|remove/)
   assert.equal(firstResult.meta[USER_BINDINGS_META_KEY].entries[0].source, document(1).entries[0].source)
-  appendRunCodeEvents(events, 'binding-one', firstCode, firstResult)
   await first.dispose()
 
   await writeBindings(home, 2)

@@ -400,7 +400,8 @@ test('fails explicitly when a retained helper cannot bridge a program namespace 
     userBindings,
     bindings: [{ global: 'NaN', functions: { value: async () => 1 } }],
   })
-  assert.match(result.error.message, /namespace "NaN" cannot be bridged.*already exists/)
+  // Native non-configurable intrinsics can reject before the module bridge is reached.
+  assert.match(result.error.message, /namespace "NaN" cannot be bridged.*already exists|Cannot redefine property: NaN/)
 
   const bufferConflict = await runtime.run('namespace-conflict', {
     program: 'return conflictHelper.value',
@@ -408,9 +409,9 @@ test('fails explicitly when a retained helper cannot bridge a program namespace 
     bindings: [{ global: 'Buffer', functions: { value: async () => 1 } }],
   })
   assert.match(bufferConflict.error.message, /namespace "Buffer" cannot be bridged.*already exists/)
-  assert.equal((await runtime.run('namespace-conflict', {
-    program: 'return Buffer.byteLength("ok")', userBindings: snapshot([]), bindings: [],
-  })).value, 2)
+  assert.deepEqual((await runtime.run('namespace-conflict', {
+    program: 'return [Buffer.byteLength("ok"), Number.isNaN(NaN)]', userBindings: snapshot([]), bindings: [],
+  })).value, [2, true])
 })
 
 test('preserves mutable module exports until a session-local assignment shadows them', async (t) => {

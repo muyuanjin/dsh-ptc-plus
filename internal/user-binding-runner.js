@@ -1,17 +1,11 @@
-import { registerHooks, stripTypeScriptTypes } from 'node:module'
+import { registerHooks } from 'node:module'
 import { isAbsolute, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { parentPort, workerData } from 'node:worker_threads'
 import { encodeValue } from './value-wire.js'
+import { transformTypeScriptModule } from './typescript-transform.js'
 
 if (parentPort === null) throw new Error('user binding runner requires a parent port')
-const emitWarning = process.emitWarning
-try {
-  process.emitWarning = () => {}
-  stripTypeScriptTypes('')
-} finally {
-  process.emitWarning = emitWarning
-}
 const candidateCwd = workerData.cwd
 if (typeof candidateCwd !== 'string' || !isAbsolute(candidateCwd)) {
   /* c8 ignore next */
@@ -28,7 +22,7 @@ registerHooks({
 })
 
 try {
-  const javascript = stripTypeScriptTypes(workerData.source, { mode: 'transform', sourceMap: false })
+  const javascript = transformTypeScriptModule(workerData.source)
   candidateUrl = `data:text/javascript,${encodeURIComponent(javascript)}#candidate`
   const namespace = await import(candidateUrl)
   let value = { symbols: Object.keys(namespace).sort() }

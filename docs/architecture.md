@@ -63,7 +63,7 @@ Client half 通过 `settings.plugin.item` 卡片呈现全部配置。`enabled` �
 
 `internal/user-bindings.js` 是条目、文档、请求快照和有界声明的严格规范化 owner。它从命名 value export 的 TypeScript 源码派生 symbols、binding kind、body-free declaration、durability 与 fingerprint，并封闭校验所有衍生字段；调用方不能提交一份与源码不一致的声明或 snapshot。`namespace` scope 产生一个条目名对象，`top-level` scope 产生选定导出；保留名称和启用集合中的调用标识符冲突在持久化或请求激活前拒绝。
 
-可选 `modelContext` 与源码一起持久化，包含默认开启的接口注入开关 `includeDeclaration` 和独立注入的提示词 `instructions`。声明只有源码派生这一份，不另行编写。非空 metadata 参与条目 fingerprint；旧条目省略该字段时保持原序列化与 fingerprint，历史 v1 snapshot 无需迁移。此前保存的 `enabled` / `declaration` 字段保留规范化形式以验证旧 fingerprint，但旧自定义声明不用于展示或注入；旧关闭状态映射为声明关闭、提示词为空，下一次编辑保存使用新字段。Client 安全的结构校验和偏好映射由 `internal/user-binding-model-context.js` 复用，预算和完整 schema 见 [ADR 0023](adr/0023-global-user-bindings.md)。
+可选 `modelContext` 与源码一起持久化，包含默认开启的接口注入开关 `includeDeclaration` 和独立注入的提示词 `instructions`。声明只有源码派生这一份，不另行编写。非空 metadata 参与条目 fingerprint；旧条目省略该字段时保持原序列化与 fingerprint，存储文档无需迁移。此前保存的 `enabled` / `declaration` 字段保留规范化形式以验证旧 fingerprint，但旧自定义声明不用于展示或注入；旧关闭状态映射为声明关闭、提示词为空，下一次编辑保存使用新字段。Client 安全的结构校验和偏好映射由 `internal/user-binding-model-context.js` 复用，预算和完整 schema 见 [ADR 0023](adr/0023-global-user-bindings.md)。
 
 `internal/user-bindings-store.js` 独占 `$DSH_HOME/ptc-plus/bindings.json`。单一 JSON 文档避免源码与 metadata 双源；进程内队列、file lock、磁盘文本比较、expected revision 和 atomic replacement 共同防止并发覆盖。每次 mutation 在替换前验证完整 enabled snapshot 的声明预算；外部写入的超限文档按损坏输入处理。损坏输入保持显式 error，不会被空文档静默覆盖。候选与正式激活的相对 import 都以该文件所在目录为基准，因此 session cwd 不会改变 helper 的依赖解析。
 
@@ -75,7 +75,7 @@ worker 对 namespace 成员和 top-level 导出保留 ECMAScript module live rea
 
 配置段以消息文本直接投递，不进入 system renderer；提示词与声明中的 `{{...}}` 保持字面量，不被解释为宿主变量。投递遵守 runtime-context suppression、取消和步骤准入，解除屏蔽后的下一请求同步当前说明。worker 对同一条目 ID 只比较源码、scope、namespace 调用名和有序导出列表来决定模块复用；模型上下文、purpose 或 top-level 显示名称变化不重置模块状态，也不重复初始化。
 
-每个结算 cell 把实际激活的完整 snapshot 放入私有 `meta.dshPtcPlusUserBindings`。包含模型上下文的完整 fingerprint 继续拥有快照校验与 provenance。journal v6 的 `userBindingsReusePolicy` 为新 cell 记录 `implementation-v1`；v1-v5 则迁移为 `fingerprint-v1`，保留历史上因 purpose 或 top-level 显示名称变化而发生的模块重置。cold replay 重新验证历史源码及其所有派生字段，逐 cell 应用记录的复用策略；接续的 live cell 使用新策略，不因策略切换本身重置模块。恢复不读取当前文件来替换过去状态，也不重新派发初始化中的宿主调用。缺失或未知策略与其他无法证明的 metadata 一样，按 session recovery 的 unknown-boundary 规则收缩。
+每个结算 cell 把实际激活的完整 snapshot 放入私有 `meta.dshPtcPlusUserBindings`。包含模型上下文的完整 fingerprint 继续拥有快照校验与 provenance。snapshot v2 的 `transform` 由固定版本的 `internal/typescript-transform.js` 编译器 owner 提供，并参与快照 fingerprint；恢复先验证转换代际，不能用当前编译器替代未知历史转换器。未记录该代际的非空 v1 snapshot 按 unknown-boundary 规则收缩，空 v1 snapshot 保持原 fingerprint 和恢复资格。journal v6 的 `userBindingsReusePolicy` 为新 cell 记录 `implementation-v1`；v1-v5 则迁移为 `fingerprint-v1`。对仍可证明的历史，cold replay 重新验证源码及其所有派生字段，逐 cell 应用记录的复用策略，保留因 purpose 或 top-level 显示名称变化而发生的模块重置；接续的 live cell 使用新策略，不因策略切换本身重置模块。恢复不读取当前文件来替换过去状态，也不重新派发初始化中的宿主调用。缺失或未知策略与其他无法证明的 metadata 一样，按 session recovery 的 unknown-boundary 规则收缩。
 
 `internal/user-bindings-owner.js` 只在 `userBindingsEnabled` 开启时以 `trusted-host` authority 注册由 Connection Host/Origin fence 与浏览器认证保护的 RPC。它从精确 agent scope 的公共 `run_code` tool view 判断资格，在 agent 创建和 `tools/change` 时协调 `/binding`，不依赖 preset 名称。命令 registration 由该 agent 的注入 fiber 持有；命令服务迟到时保留 pending fiber，回调若已失去资格则失败并清理占位。生命周期监听的安装代际独立于请求与 projection 代际，不能因 projection 就绪而跳过注册。Agent disposal 只清理该精确 Agent 的资源，session disposal 才按 session ID 清空。Client 从 Host command directory 判断首轮前的 composer 编写入口，已有文本不被覆盖。REPL 全局绑定区和 Settings 管理弹窗复用完整工作台，通过 RPC 管理持久条目，不依赖当前存在 PTC 会话；会话观察及其独立 UI metadata 边界见 [ADR 0024](adr/0024-repl-console-observation.md)。
 

@@ -56,9 +56,11 @@ test('keeps npm release authority stage-only and bound to a verified tag', async
     step => step.name === 'Revalidate immutable release target',
   )
   assert.match(serializedCi, /node scripts\/npm-pack-filename\.mjs/)
-  assert.match(serializedCi, /for channel in latest next/)
+  assert.match(serializedCi, /for channel in latest alpha/)
+  assert.ok(serializedCi.includes('@deepseek-ai/dsh@$channel'))
   for (const packageName of DSH_RUNTIME_PEERS) {
-    assert.match(serializedCi, new RegExp(`${packageName.replaceAll('/', '\\/')}@\\\$channel`))
+    assert.ok(serializedCi.includes(packageName))
+    assert.ok(!serializedCi.includes(`${packageName}@$channel`))
   }
   assert.match(validateTarget.run, /GITHUB_REF/)
   assert.match(validateTarget.run, /GITHUB_SHA/)

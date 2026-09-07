@@ -1,13 +1,13 @@
 import { createHash } from 'node:crypto'
-import { stripTypeScriptTypes } from 'node:module'
 import { parse } from '@babel/parser'
 import { prepareProgram } from './cell-analysis.js'
 import { AMBIENT_GLOBALS } from './module-policy.js'
 import { assertOwnFields, isRecord } from './record-utils.js'
 import { bindingModelPreferences, normalizeBindingModelContext } from './user-binding-model-context.js'
+import { transformTypeScriptModule, USER_BINDING_TRANSFORM } from './typescript-transform.js'
 
 export const USER_BINDINGS_META_KEY = 'dshPtcPlusUserBindings'
-export const USER_BINDINGS_SNAPSHOT_VERSION = 1
+export const USER_BINDINGS_SNAPSHOT_VERSION = 2
 
 const MAX_ENTRIES = 64
 export const USER_BINDING_ID_MAX_LENGTH = 64
@@ -18,7 +18,8 @@ const MAX_SOURCE_TOTAL_LENGTH = 256 * 1024
 const MAX_DECLARATION_TOTAL_LENGTH = 16 * 1024
 const DOCUMENT_FIELDS = new Set(['entries'])
 const ENTRY_FIELDS = new Set(['id', 'name', 'scope', 'symbols', 'purpose', 'enabled', 'source', 'modelContext'])
-const SNAPSHOT_FIELDS = new Set(['version', 'revision', 'fingerprint', 'entries'])
+const LEGACY_SNAPSHOT_FIELDS = new Set(['version', 'revision', 'fingerprint', 'entries'])
+const SNAPSHOT_FIELDS = new Set([...LEGACY_SNAPSHOT_FIELDS, 'transform'])
 const SNAPSHOT_ENTRY_FIELDS = new Set([...ENTRY_FIELDS, 'fingerprint', 'declaration', 'bindings', 'durability', 'volatileReason'])
 const BINDING_FIELDS = new Set(['name', 'kind', 'declaration'])
 const SCOPES = new Set(['namespace', 'top-level'])
@@ -408,7 +409,7 @@ function selectedDescriptors(source, symbols) {
 }
 
 function sourceDurability(source) {
-  const javascript = stripTypeScriptTypes(source, { mode: 'transform', sourceMap: false })
+  const javascript = transformTypeScriptModule(source)
   const prepared = prepareProgram(
     javascript,
     new Set(),
@@ -542,8 +543,12 @@ export function normalizeUserBindingsDocument(value) {
   return Object.freeze({ entries: Object.freeze(entries) })
 }
 
-function snapshotFingerprint(revision, entries) {
-  return entryFingerprint({ revision, entries: entries.map(entry => entry.fingerprint) })
+function snapshotFingerprint(revision, entries, transform) {
+  return entryFingerprint({
+    revision,
+    entries: entries.map(entry => entry.fingerprint),
+    ...(transform === undefined ? {} : { transform }),
+  })
 }
 
 export function createUserBindingsSnapshot(document, revision = 0) {
@@ -553,20 +558,26 @@ export function createUserBindingsSnapshot(document, revision = 0) {
   validateAggregateBudgets(entries, true)
   return Object.freeze({
     version: USER_BINDINGS_SNAPSHOT_VERSION,
+    transform: USER_BINDING_TRANSFORM,
     revision,
-    fingerprint: snapshotFingerprint(revision, entries),
+    fingerprint: snapshotFingerprint(revision, entries, USER_BINDING_TRANSFORM),
     entries: Object.freeze(entries),
   })
 }
 
 export function normalizeUserBindingsSnapshot(value) {
   if (!isRecord(value)) throw new TypeError('user binding snapshot must be an object')
-  assertOwnFields(value, SNAPSHOT_FIELDS, 'user binding snapshot')
-  if (value.version !== USER_BINDINGS_SNAPSHOT_VERSION
+  const legacy = value.version === 1
+  assertOwnFields(value, legacy ? LEGACY_SNAPSHOT_FIELDS : SNAPSHOT_FIELDS, 'user binding snapshot')
+  if ((!legacy && value.version !== USER_BINDINGS_SNAPSHOT_VERSION)
     || !Number.isSafeInteger(value.revision) || value.revision < 0
     || typeof value.fingerprint !== 'string' || !/^[a-f0-9]{64}$/.test(value.fingerprint)
     || !Array.isArray(value.entries) || value.entries.length > MAX_ENTRIES) {
     throw new TypeError('invalid user binding snapshot')
+  }
+  // Unrecorded or unsupported lowering cannot prove historical module values.
+  if (legacy ? value.entries.length > 0 : value.transform !== USER_BINDING_TRANSFORM) {
+    throw new TypeError('user binding snapshot cannot prove its historical TypeScript transform')
   }
   const entries = value.entries.map((entry) => {
     if (!isRecord(entry)) throw new TypeError('invalid user binding snapshot entry')
@@ -593,11 +604,12 @@ export function normalizeUserBindingsSnapshot(value) {
   })
   validateAggregateBudgets(entries, true)
   validateConflicts(entries)
-  if (value.fingerprint !== snapshotFingerprint(value.revision, entries)) {
+  if (value.fingerprint !== snapshotFingerprint(value.revision, entries, value.transform)) {
     throw new TypeError('user binding snapshot fingerprint does not match its entries')
   }
   return Object.freeze({
-    version: USER_BINDINGS_SNAPSHOT_VERSION,
+    version: value.version,
+    ...(legacy ? {} : { transform: value.transform }),
     revision: value.revision,
     fingerprint: value.fingerprint,
     entries: Object.freeze(entries),
@@ -659,19 +671,12 @@ export function userBindingCatalogEntries(snapshot) {
 export function selectUserBindingsSnapshot(snapshot, entryIds) {
   const normalized = normalizeUserBindingsSnapshot(snapshot)
   const ids = entryIds instanceof Set ? entryIds : new Set(entryIds)
-  const document = {
-    entries: normalized.entries.filter(entry => ids.has(entry.id)).map(entry => ({
-      id: entry.id,
-      name: entry.name,
-      scope: entry.scope,
-      symbols: [...entry.symbols],
-      purpose: entry.purpose,
-      enabled: entry.enabled,
-      source: entry.source,
-      ...(entry.modelContext === undefined ? {} : { modelContext: entry.modelContext }),
-    })),
-  }
-  return createUserBindingsSnapshot(document, normalized.revision)
+  const entries = Object.freeze(normalized.entries.filter(entry => ids.has(entry.id)))
+  return Object.freeze({
+    ...normalized,
+    fingerprint: snapshotFingerprint(normalized.revision, entries, normalized.transform),
+    entries,
+  })
 }
 
 export function storedUserBindingsDocument(document) {

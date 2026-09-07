@@ -7,7 +7,7 @@ import test from 'node:test'
 import { renderPrompt } from '@deepseek-ai/dsh-system-prompt'
 import { JOURNAL_KEY } from '../internal/session-journal.js'
 import { USER_BINDING_DRAFT_META_KEY } from '../internal/user-binding-draft-projection.js'
-import { USER_BINDINGS_META_KEY } from '../internal/user-bindings.js'
+import { createUserBindingsSnapshot, storedUserBindingsDocument, USER_BINDINGS_META_KEY } from '../internal/user-bindings.js'
 import { appendRunCodeEvents, fixture, ptcAgent } from './plugin-fixture.js'
 
 const codeOnlyAssembly = state => ({
@@ -124,6 +124,88 @@ test('advertises configured APIs before activation, keeps the prefix stable and 
     { session },
   )
   assert.deepEqual(result.value, [1, 2])
+})
+
+test('preserves versioned parameter-property and enum state through live execution and cold replay', async t => {
+  const home = await mkdtemp(join(tmpdir(), 'ptc-typescript-recovery-'))
+  t.after(() => rm(home, { recursive: true, force: true }))
+  const previousHome = process.env.DSH_HOME
+  process.env.DSH_HOME = home
+  t.after(() => {
+    if (previousHome === undefined) delete process.env.DSH_HOME
+    else process.env.DSH_HOME = previousHome
+  })
+  const bindings = document(1)
+  bindings.entries[0].source = 'export class Counter { constructor(public value: number) {} next() { return ++this.value } }; enum E { A, B, C, D = ((C) => C)(10) }; export const out = E.D'
+  await writeBindingsDocument(home, bindings)
+  const events = []
+  const session = { id: 'typescript-binding-recovery', events }
+  const agent = ptcAgent('typescript-binding-agent', session)
+  const first = fixture({ userBindingsEnabled: true })
+  t.after(() => first.dispose())
+  await rememberRequest(first, session, agent)
+  const code = 'const counter = new defaults.Counter(40); const saved = defaults.out; return counter.next()'
+  const initial = await first.runDurable(session.id, code, {}, { session })
+  assert.equal(initial.value, 41)
+  assert.equal(initial.meta[JOURNAL_KEY].status, 'durable')
+  appendRunCodeEvents(events, 'typescript-binding', code, initial)
+  await first.dispose()
+  const restored = fixture({ userBindingsEnabled: true })
+  t.after(() => restored.dispose())
+  await rememberRequest(restored, session, agent)
+  const continued = await restored.runDurable(session.id, 'return [counter.next(), saved]', {}, { session })
+  assert.deepEqual(continued.value, [42, 10])
+  assert.deepEqual(continued.meta[JOURNAL_KEY].diagnostics, [])
+})
+
+test('contracts captured native transforms once without replaying effects or changing historical values', async t => {
+  const captured = JSON.parse(await readFile(new URL('./fixtures/user-binding-native-transform.json', import.meta.url), 'utf8'))
+  assert.deepEqual(captured.observed, [41, 2, 3])
+  assert.deepEqual(captured.records[1].journal.calls, [])
+  assert.equal(captured.records[1].journal.completion.value.root.tag, 'undefined')
+  for (const keepPrefix of [true, false]) await t.test(`verified prefix: ${keepPrefix}`, async t => {
+    const home = await mkdtemp(join(tmpdir(), 'ptc-transform-recovery-'))
+    t.after(() => rm(home, { recursive: true, force: true }))
+    const previousHome = process.env.DSH_HOME
+    process.env.DSH_HOME = home
+    t.after(() => {
+      if (previousHome === undefined) delete process.env.DSH_HOME
+      else process.env.DSH_HOME = previousHome
+    })
+    await writeBindingsDocument(home, storedUserBindingsDocument(captured.records[1].userBindings))
+    const session = { id: `transform-recovery-${keepPrefix}`, events: [] }
+    const agent = ptcAgent(session.id, session)
+    for (const [index, record] of captured.records.slice(keepPrefix ? 0 : 1).entries()) {
+      appendRunCodeEvents(session.events, `native-${index}`, record.code, { meta: {
+        [JOURNAL_KEY]: record.journal, [USER_BINDINGS_META_KEY]: record.userBindings,
+      } })
+    }
+    const historicalEvents = structuredClone(session.events)
+    let dispatches = 0
+    for (let generation = 0; generation < 2; generation++) {
+      const state = fixture({ userBindingsEnabled: true })
+      t.after(() => state.dispose())
+      await rememberRequest(state, session, agent)
+      const code = `return [${keepPrefix ? 'anchor' : 'typeof anchor'}, typeof saved, typeof after, enums.out]`
+      const current = await state.runDurable(session.id, code, {
+        observe: async () => { dispatches++; return 'unexpected' },
+      }, { session })
+      assert.equal(current.error, undefined)
+      assert.deepEqual(current.value, [keepPrefix ? 41 : 'undefined', 'undefined', 'undefined', 10])
+      assert.equal(current.meta[JOURNAL_KEY].status, 'durable')
+      assert.equal(current.meta[JOURNAL_KEY].diagnostics.filter(item => item.code === 'PTC-R002').length, generation === 0 ? 1 : 0)
+      if (generation === 0) {
+        assert.equal(current.meta.dshPtcPlusRecoveryBoundaries.length, 1)
+        assert.equal(current.meta.dshPtcPlusRecoveryBoundaries[0].frontierCallSeq, keepPrefix ? 0 : null)
+      } else {
+        assert.equal(current.meta.dshPtcPlusRecoveryBoundaries, undefined)
+      }
+      assert.equal(dispatches, 0)
+      appendRunCodeEvents(session.events, `continued-${generation}`, code, current)
+      await state.dispose()
+    }
+    assert.deepEqual(session.events.slice(0, historicalEvents.length), historicalEvents)
+  })
 })
 
 test('does not cold-replay a failed binding initializer that issued a host call', async (t) => {
@@ -334,9 +416,9 @@ test('model-context updates preserve live module state and recorded-value cold r
   assert.equal(result.meta[JOURNAL_KEY].status, 'durable')
 })
 
-test('replays captured version 5 module resets before continuing with current reuse semantics', async t => {
+test('contracts unversioned version 5 bindings and preserves resets when the transform is proved', async t => {
   const captured = JSON.parse(await readFile(new URL('./fixtures/user-binding-reuse-v5.json', import.meta.url), 'utf8'))
-  for (const scenario of captured.cases) await t.test(scenario.name, async t => {
+  for (const provedTransform of [false, true]) for (const scenario of captured.cases) await t.test(`${scenario.name}: proved transform ${provedTransform}`, async t => {
     const home = await mkdtemp(join(tmpdir(), 'ptc-plus-legacy-binding-reuse-'))
     t.after(() => rm(home, { recursive: true, force: true }))
     const previousHome = process.env.DSH_HOME
@@ -350,9 +432,13 @@ test('replays captured version 5 module resets before continuing with current re
     for (const [index, record] of scenario.records.entries()) {
       assert.equal(record.journal.version, 5)
       assert.deepEqual(record.journal.completion, { kind: 'return', hasValue: false })
+      // A synthetic current snapshot isolates the historical module-reuse policy.
+      const userBindings = provedTransform
+        ? createUserBindingsSnapshot(storedUserBindingsDocument(record.userBindings), record.userBindings.revision)
+        : record.userBindings
       appendRunCodeEvents(session.events, `legacy-${index}`, record.code, { meta: {
-        [JOURNAL_KEY]: record.journal,
-        [USER_BINDINGS_META_KEY]: record.userBindings,
+        [JOURNAL_KEY]: { ...record.journal, userBindingsFingerprint: userBindings.fingerprint },
+        [USER_BINDINGS_META_KEY]: userBindings,
       } })
     }
     assert.equal(scenario.records.reduce((total, record) => total + record.journal.calls.length, 0), scenario.initializations)
@@ -367,16 +453,20 @@ test('replays captured version 5 module resets before continuing with current re
       const state = fixture({ userBindingsEnabled: true })
       t.after(() => state.dispose())
       await rememberRequest(state, session, agent)
-      const current = await state.runDurable(session.id, scenario.probe, {
+      const probe = provedTransform ? scenario.probe : scenario.probe.replace('[earlier, later,', '[typeof earlier, typeof later,')
+      const current = await state.runDurable(session.id, probe, {
         observe: async () => { dispatches++; return null },
       }, { session })
       assert.equal(current.error, undefined)
-      assert.deepEqual(current.value, scenario.expected.map((value, index) => value + (index === 2 ? generation : 0)))
-      assert.deepEqual(current.meta[JOURNAL_KEY].diagnostics, [])
-      assert.equal(dispatches, 0)
+      assert.deepEqual(current.value, provedTransform
+        ? scenario.expected.map((value, index) => value + (index === 2 ? generation : 0))
+        : ['undefined', 'undefined', generation + 1])
+      assert.equal(current.meta[JOURNAL_KEY].diagnostics.filter(item => item.code === 'PTC-R002').length,
+        !provedTransform && generation === 0 ? 1 : 0)
+      assert.equal(dispatches, provedTransform || scenario.initializations === 0 ? 0 : 1)
       assert.equal(current.meta[JOURNAL_KEY].version, 6)
       assert.equal(current.meta[JOURNAL_KEY].userBindingsReusePolicy, 'implementation-v1')
-      appendRunCodeEvents(session.events, `current-${generation}`, scenario.probe, current)
+      appendRunCodeEvents(session.events, `current-${generation}`, probe, current)
       await state.dispose()
     }
   })
@@ -394,6 +484,10 @@ test('contracts missing or unknown reuse policies once and executes the current 
       else process.env.DSH_HOME = previousHome
     })
     const records = structuredClone(captured.cases[0].records)
+    for (const record of records) {
+      record.userBindings = createUserBindingsSnapshot(storedUserBindingsDocument(record.userBindings), record.userBindings.revision)
+      record.journal.userBindingsFingerprint = record.userBindings.fingerprint
+    }
     records[1].journal.version = 6
     if (policy !== undefined) records[1].journal.userBindingsReusePolicy = policy
     const session = { id: `invalid-policy-${policy}`, events: [] }
@@ -524,7 +618,7 @@ test('contracts a self-consistent historical snapshot with an invalid identifier
     .map(key => [key, entry[key]]))
   entry.fingerprint = createHash('sha256').update(JSON.stringify(stored)).digest('hex')
   snapshot.fingerprint = createHash('sha256')
-    .update(JSON.stringify({ revision: snapshot.revision, entries: [entry.fingerprint] })).digest('hex')
+    .update(JSON.stringify({ revision: snapshot.revision, entries: [entry.fingerprint], transform: snapshot.transform })).digest('hex')
   result.meta[JOURNAL_KEY].userBindingsFingerprint = snapshot.fingerprint
   appendRunCodeEvents(events, 'invalid-identifier', source, result)
   await first.dispose()

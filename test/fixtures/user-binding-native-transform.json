@@ -1,0 +1,242 @@
+{
+  "nodeVersion": "v24.14.0",
+  "observed": [
+    41,
+    2,
+    3
+  ],
+  "records": [
+    {
+      "code": "const anchor = await tools.observe({ value: 41 }); return undefined",
+      "journal": {
+        "version": 6,
+        "bindingPolicy": {
+          "variableRedeclarations": true,
+          "functionClassRedeclarations": true
+        },
+        "rewritePolicy": {
+          "autoRewriteImports": true,
+          "autoStripExports": true,
+          "autoSplitRedeclarations": true
+        },
+        "moduleSemantics": {
+          "defaultExportBinding": "live-readonly"
+        },
+        "userBindingsFingerprint": "948ea955f8dc06582a88dbce6b88b8141785a754770e9dc59675f246b93e0bf5",
+        "userBindingsReusePolicy": "implementation-v1",
+        "calls": [
+          {
+            "global": "tools",
+            "member": "observe",
+            "args": {
+              "codec": "ptc-value-graph/v1",
+              "root": {
+                "tag": "reference",
+                "index": 0
+              },
+              "nodes": [
+                {
+                  "type": "object",
+                  "prototype": "object",
+                  "entries": [
+                    [
+                      "value",
+                      41
+                    ]
+                  ]
+                }
+              ]
+            },
+            "ok": true,
+            "value": {
+              "codec": "ptc-value-graph/v1",
+              "root": 41,
+              "nodes": []
+            },
+            "settle": 0
+          }
+        ],
+        "operations": [],
+        "confirms": [],
+        "diagnostics": [],
+        "status": "durable",
+        "completion": {
+          "kind": "return",
+          "hasValue": true,
+          "value": {
+            "codec": "ptc-value-graph/v1",
+            "root": {
+              "tag": "undefined"
+            },
+            "nodes": []
+          }
+        }
+      },
+      "userBindings": {
+        "version": 1,
+        "revision": 0,
+        "fingerprint": "948ea955f8dc06582a88dbce6b88b8141785a754770e9dc59675f246b93e0bf5",
+        "entries": []
+      }
+    },
+    {
+      "code": "const saved = enums.out; return undefined",
+      "journal": {
+        "version": 6,
+        "bindingPolicy": {
+          "variableRedeclarations": true,
+          "functionClassRedeclarations": true
+        },
+        "rewritePolicy": {
+          "autoRewriteImports": true,
+          "autoStripExports": true,
+          "autoSplitRedeclarations": true
+        },
+        "moduleSemantics": {
+          "defaultExportBinding": "live-readonly"
+        },
+        "userBindingsFingerprint": "fa94a83c9285616e4048f23c0b613f5a3f3813a90dc106eb6bc52ddf4d326d65",
+        "userBindingsReusePolicy": "implementation-v1",
+        "calls": [],
+        "operations": [],
+        "confirms": [],
+        "diagnostics": [],
+        "status": "durable",
+        "completion": {
+          "kind": "return",
+          "hasValue": true,
+          "value": {
+            "codec": "ptc-value-graph/v1",
+            "root": {
+              "tag": "undefined"
+            },
+            "nodes": []
+          }
+        }
+      },
+      "userBindings": {
+        "version": 1,
+        "revision": 0,
+        "fingerprint": "fa94a83c9285616e4048f23c0b613f5a3f3813a90dc106eb6bc52ddf4d326d65",
+        "entries": [
+          {
+            "id": "enums",
+            "name": "enums",
+            "scope": "namespace",
+            "symbols": [
+              "out"
+            ],
+            "purpose": "",
+            "enabled": true,
+            "source": "enum E { A, B, C, D = ((C) => C)(10) }; export const out = E.D",
+            "fingerprint": "01917bd5269bce88a68d08e6e51cc5b553d86af2e0a5209acd9cbdbe53f4f486",
+            "declaration": "declare const enums: {\n  out: unknown;\n}",
+            "bindings": [
+              {
+                "name": "enums",
+                "kind": "variable",
+                "declaration": "declare const enums: {\n  out: unknown;\n}"
+              }
+            ],
+            "durability": "durable"
+          }
+        ]
+      }
+    },
+    {
+      "code": "await tools.observe({ value: 7 }); const after = saved + 1; return undefined",
+      "journal": {
+        "version": 6,
+        "bindingPolicy": {
+          "variableRedeclarations": true,
+          "functionClassRedeclarations": true
+        },
+        "rewritePolicy": {
+          "autoRewriteImports": true,
+          "autoStripExports": true,
+          "autoSplitRedeclarations": true
+        },
+        "moduleSemantics": {
+          "defaultExportBinding": "live-readonly"
+        },
+        "userBindingsFingerprint": "fa94a83c9285616e4048f23c0b613f5a3f3813a90dc106eb6bc52ddf4d326d65",
+        "userBindingsReusePolicy": "implementation-v1",
+        "calls": [
+          {
+            "global": "tools",
+            "member": "observe",
+            "args": {
+              "codec": "ptc-value-graph/v1",
+              "root": {
+                "tag": "reference",
+                "index": 0
+              },
+              "nodes": [
+                {
+                  "type": "object",
+                  "prototype": "object",
+                  "entries": [
+                    [
+                      "value",
+                      7
+                    ]
+                  ]
+                }
+              ]
+            },
+            "ok": true,
+            "value": {
+              "codec": "ptc-value-graph/v1",
+              "root": 7,
+              "nodes": []
+            },
+            "settle": 0
+          }
+        ],
+        "operations": [],
+        "confirms": [],
+        "diagnostics": [],
+        "status": "durable",
+        "completion": {
+          "kind": "return",
+          "hasValue": true,
+          "value": {
+            "codec": "ptc-value-graph/v1",
+            "root": {
+              "tag": "undefined"
+            },
+            "nodes": []
+          }
+        }
+      },
+      "userBindings": {
+        "version": 1,
+        "revision": 0,
+        "fingerprint": "fa94a83c9285616e4048f23c0b613f5a3f3813a90dc106eb6bc52ddf4d326d65",
+        "entries": [
+          {
+            "id": "enums",
+            "name": "enums",
+            "scope": "namespace",
+            "symbols": [
+              "out"
+            ],
+            "purpose": "",
+            "enabled": true,
+            "source": "enum E { A, B, C, D = ((C) => C)(10) }; export const out = E.D",
+            "fingerprint": "01917bd5269bce88a68d08e6e51cc5b553d86af2e0a5209acd9cbdbe53f4f486",
+            "declaration": "declare const enums: {\n  out: unknown;\n}",
+            "bindings": [
+              {
+                "name": "enums",
+                "kind": "variable",
+                "declaration": "declare const enums: {\n  out: unknown;\n}"
+              }
+            ],
+            "durability": "durable"
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -45,21 +45,14 @@ jobs:
           consumers_dir="$(mktemp -d)"
           trap 'rm -rf -- "$pack_dir" "$consumers_dir"' EXIT
           archive="$(npm pack --silent --pack-destination "$pack_dir" --json | node scripts/npm-pack-filename.mjs)"
-          for channel in latest next; do
+          for channel in latest alpha; do
             consumer_dir="$consumers_dir/$channel"
             mkdir "$consumer_dir"
             cd "$consumer_dir"
             npm init --yes
-            npm install --ignore-scripts \
-              "$pack_dir/$archive" \
-              "@deepseek-ai/dsh-settings@$channel" \
-              "@deepseek-ai/dsh-atomic-write@$channel" \
-              "@deepseek-ai/dsh-home-paths@$channel" \
-              "@deepseek-ai/dsh-llm@$channel" \
-              "@deepseek-ai/dsh-skill-filesystem@$channel" \
-              "@deepseek-ai/dsh-tool-cordis@$channel" \
-              "@deepseek-ai/dsh-tools@$channel"
-            npm ls --depth=0 \
+            npm install --ignore-scripts "@deepseek-ai/dsh@$channel"
+            npm install --ignore-scripts "$pack_dir/$archive"
+            npm ls \
               @deepseek-ai/dsh-settings \
               @deepseek-ai/dsh-atomic-write \
               @deepseek-ai/dsh-home-paths \

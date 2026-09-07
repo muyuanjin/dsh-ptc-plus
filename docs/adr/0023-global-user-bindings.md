@@ -12,7 +12,7 @@ Each entry is a TypeScript module with named value exports, a stable ID, display
 
 `modelContext` contains `includeDeclaration` (default `true`) and `instructions` (default empty, at most 4096 UTF-16 code units). The checkbox controls injection of the existing source-derived interface; a nonempty prompt is injected independently. There is no separately authored interface. Unchecking the declaration and clearing the prompt omits both without disabling execution. Source-derived declarations remain canonical for conflict checks and recovery. The enabled set's selected declarations and prompts have an aggregate 16384-code-unit budget in addition to the existing source-derived declaration budget. The shared Client-safe metadata normalizer preserves these fields in accepted draft history.
 
-Omitting `modelContext` preserves the existing entry serialization and fingerprint, so historical version 1 snapshots remain verifiable without rewriting journals. When present, normalized metadata participates in the existing fingerprint. Previously saved `enabled` and `declaration` fields retain their normalized representation for fingerprint verification, including the old declaration string limit of 8192 code units, but custom declarations no longer enter model or UI presentation. A legacy disabled prompt maps to `includeDeclaration: false` and empty instructions; otherwise its prompt is retained and the source-derived interface is included. An explicit `includeDeclaration` takes precedence. Editing and saving through the workbench writes current fields. Existing entries without metadata gain first-turn discovery through the default declaration setting.
+Omitting `modelContext` preserves the existing entry serialization and fingerprint; stored documents need no migration. Historical snapshot recovery additionally requires the transform evidence described below. When present, normalized metadata participates in the existing fingerprint. Previously saved `enabled` and `declaration` fields retain their normalized representation for fingerprint verification, including the old declaration string limit of 8192 code units, but custom declarations no longer enter model or UI presentation. A legacy disabled prompt maps to `includeDeclaration: false` and empty instructions; otherwise its prompt is retained and the source-derived interface is included. An explicit `includeDeclaration` takes precedence. Editing and saving through the workbench writes current fields. Existing entries without metadata gain first-turn discovery through the default declaration setting.
 
 For new cells, the complete snapshot fingerprint is an integrity check, not a module reuse key. For the same active entry ID, the worker reuses the module when its exact source, scope, namespace call name, and ordered selected exports match. Changes to model context, purpose, or a top-level entry's display name preserve module state and do not repeat initialization. Execution-input changes, removal, and disablement retain their activation and shadow rules. Each cell still records the complete current snapshot and fingerprint.
 
@@ -27,6 +27,30 @@ The Host owns one document at `$DSH_HOME/ptc-plus/bindings.json`. The store seri
 The workbench keeps a save revision with the loaded source. Catalog-only changes cannot advance it unless a successful compare-and-swap operation proves the source unchanged. Reload synchronizes a read-only selection's source, declaration and baseline; a removed entry clears the selection. While editing, explicit reload preserves the draft and updates its save revision and cancel baseline. Catalog and entry reads must agree on revision before applying the reload. Stale responses cannot change a newer workbench. Reload neither saves nor executes code; changing the selected source releases its temporary console environment, while unchanged source retains that environment.
 
 Source is the only implementation authority. Both candidate execution and session activation resolve relative imports from the directory containing `bindings.json`; a session cwd therefore cannot change a persistent helper's dependency graph. The parser accepts named value exports and rejects default exports, re-exports, reserved bindings, invalid selected symbols, and conflicting enabled call names. Model-visible declarations retain useful annotations and bounded inferred shapes but omit implementation bodies and private helpers.
+
+Binding-module transformation has one owner, `internal/typescript-transform.js`,
+shared by durability analysis, live and cold activation, candidate execution and
+the draft console. It uses the pinned standalone Amaro compiler instead of the
+Host's experimental transform API. Snapshot version 2 records the adapter's
+`transform` identity (`amaro@1.1.11`) and includes it in the snapshot fingerprint;
+entry fingerprints and the stored document format remain source-owned. Recovery
+validates this identity before deriving or activating any historical entry.
+Unsupported identities cannot be replaced by the current compiler. A compiler
+upgrade must change the identity and either retain its historical implementation
+or contract recovery at snapshots whose lowering is no longer supported.
+
+Version 1 snapshots did not record the native compiler. A matching source,
+declaration, durability classification or cell completion does not prove matching
+module values: an enum initializer can change a saved value while its cell returns
+`undefined`. Nonempty version 1 snapshots therefore cannot prove a recovery
+frontier. Existing journal recovery contracts at that cell and its dependent
+suffix, persists and reports the contraction once, and executes the current
+valid cell. It does not replay discarded effects, rewrite the historical log or
+modify stored binding entries. Empty version 1 snapshots retain their original
+fingerprint and remain usable as recovery evidence; subset selection preserves
+the snapshot version and transform identity. Reconstructable cells still obey
+their recorded module-reuse policy independently of the transform identity.
+Ordinary REPL cells retain their separate type-stripping and source-position contract.
 
 ## Runtime, Prompt, and Recovery
 

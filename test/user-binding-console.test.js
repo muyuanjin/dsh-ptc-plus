@@ -36,6 +36,8 @@ test('the draft console preserves declarations, await, expression values and ord
     assert.equal((await run(`throw ${value}`)).error, value === '"failed"' ? "'failed'" : value)
   }
   assert.equal((await run('await Promise.resolve(42)')).output, '42')
+  assert.equal((await run('enum Step { Start = 2, Next }; const box = new (class { constructor(public value: number) {} })(Step.Next); box.value')).output, '3')
+  assert.equal((await run('box.value += 1')).output, '4')
   assert.equal((await run('"use strict"')).output, "'use strict'")
   assert.equal((await run('// no statement')).output, 'undefined')
   const logged = await run('console.log("hello"); console.error("notice"); text')

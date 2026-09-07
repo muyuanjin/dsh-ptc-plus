@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import test from 'node:test'
 import { parse } from '@babel/parser'
+import { USER_BINDING_TRANSFORM } from '../internal/typescript-transform.js'
 import {
   USER_BINDINGS_META_KEY,
   createUserBindingsSnapshot,
@@ -41,12 +42,14 @@ export const truth = true
   }
 }
 
-function snapshotWire(entries, revision = 1) {
+function snapshotWire(entries, revision = 1, legacy = false) {
   return {
-    version: 1,
+    version: legacy ? 1 : 2,
+    ...(legacy ? {} : { transform: USER_BINDING_TRANSFORM }),
     revision,
     fingerprint: createHash('sha256')
-      .update(JSON.stringify({ revision, entries: entries.map(item => item.fingerprint) }))
+      .update(JSON.stringify({ revision, entries: entries.map(item => item.fingerprint),
+        ...(legacy ? {} : { transform: USER_BINDING_TRANSFORM }) }))
       .digest('hex'),
     entries,
   }
@@ -321,7 +324,9 @@ test('validates snapshots from source and rejects altered derived evidence', () 
 
   const malformed = [
     null,
-    { ...snapshot, version: 2 },
+    { ...snapshot, version: 3 },
+    { ...snapshot, transform: undefined },
+    { ...snapshot, transform: 'amaro@unknown' },
     { ...snapshot, fingerprint: 'bad' },
     { ...snapshot, entries: [null] },
     { ...snapshot, entries: [{ ...snapshot.entries[0], extra: true }] },
@@ -357,6 +362,24 @@ test('validates snapshots from source and rejects altered derived evidence', () 
     () => normalizeUserBindingsSnapshot(snapshotWire(declarationHeavy)),
     /model-context limit/,
   )
+})
+
+test('preserves empty legacy snapshots but refuses unproved historical transforms', () => {
+  const empty = snapshotWire([], 7, true)
+  assert.deepEqual(normalizeUserBindingsSnapshot(empty), empty)
+  assert.deepEqual(selectUserBindingsSnapshot(empty, []), empty)
+  assert.deepEqual(withUserBindingsSnapshot({}, empty)[USER_BINDINGS_META_KEY], empty)
+  assert.throws(() => normalizeUserBindingsSnapshot({ ...empty, transform: USER_BINDING_TRANSFORM }), /invalid user binding snapshot field/)
+  const legacy = snapshotWire([normalizeUserBindingEntry(entry())], 7, true)
+  assert.throws(() => normalizeUserBindingsSnapshot(legacy), /historical TypeScript transform/)
+  assert.throws(() => normalizeUserBindingsSnapshot({ ...legacy, version: 2, transform: USER_BINDING_TRANSFORM }), /fingerprint/)
+  const current = createUserBindingsSnapshot({ entries: [entry()] }, 7)
+  assert.notEqual(current.fingerprint, legacy.fingerprint)
+  assert.equal(current.transform, USER_BINDING_TRANSFORM)
+  const selected = selectUserBindingsSnapshot(current, [])
+  assert.equal(selected.transform, current.transform)
+  assert.deepEqual(normalizeUserBindingsSnapshot(selected), selected)
+  assert.throws(() => normalizeUserBindingsSnapshot({ ...current, version: 1 }), /invalid user binding snapshot field/)
 })
 
 test('round-trips stored documents and private result metadata without trusting identity', () => {

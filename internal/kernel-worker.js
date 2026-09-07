@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { create as createDomain } from 'node:domain'
-import { registerHooks, stripTypeScriptTypes } from 'node:module'
+import { registerHooks } from 'node:module'
 import { isAbsolute, resolve } from 'node:path'
 import repl from 'node:repl'
 import { PassThrough } from 'node:stream'
@@ -13,15 +13,9 @@ import { AMBIENT_GLOBALS, DURABLE_IMPORTS, FORBIDDEN_IMPORTS } from './module-po
 import { decodeValue, encodeValue } from './value-wire.js'
 import { installWorkerCwdVirtualization } from './worker-cwd-virtualization.js'
 import { createReplValueObserver } from './repl-value-observer.js'
+import { transformTypeScriptModule } from './typescript-transform.js'
 
 if (parentPort === null) throw new Error('ptc-plus kernel worker started without a parent port')
-const emitWarning = process.emitWarning
-try {
-  process.emitWarning = () => {}
-  stripTypeScriptTypes('')
-} finally {
-  process.emitWarning = emitWarning
-}
 const { port1, port2: channel } = new MessageChannel()
 
 const input = new PassThrough()
@@ -560,7 +554,7 @@ async function evaluateUserBinding(entry, cwd) {
   if (typeof cwd !== 'string' || !isAbsolute(cwd)) {
     throw new Error('user binding activation requires an absolute storage directory')
   }
-  const javascript = stripTypeScriptTypes(entry.source, { mode: 'transform', sourceMap: false })
+  const javascript = transformTypeScriptModule(entry.source)
   const url = `data:text/javascript,${encodeURIComponent(javascript)}#ptc-plus-${entry.fingerprint}-${++nextUserBindingModuleId}`
   userBindingModuleParents.set(url, pathToFileURL(resolve(cwd, 'bindings.json')).href)
   try {

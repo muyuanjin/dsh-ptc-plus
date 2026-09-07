@@ -293,9 +293,19 @@ try {
   page = await browser.newPage({ viewport: { width: 1440, height: 1000 } })
   page.setDefaultTimeout(10000)
   const errors = []
+  const consoleErrors = []
+  const hostIconFallbacks = new Set()
+  page.on('response', response => {
+    const target = new URL(response.url())
+    // The Host returns 404 for an unavailable application icon and renders a generic glyph.
+    if (response.status() === 404 && response.request().method() === 'GET'
+      && target.origin === new URL(url).origin && /^\/open-in-app\/icon\/[^/]+$/.test(target.pathname)) {
+      hostIconFallbacks.add(response.url())
+    }
+  })
   page.on('pageerror', error => errors.push(error.message))
   page.on('console', message => {
-    if (message.type() === 'error') errors.push(message.text().replace(/https?:\/\/\S+/g, '[URL]'))
+    if (message.type() === 'error') consoleErrors.push({ text: message.text(), url: message.location().url })
   })
   await page.goto(url)
   await page.waitForFunction(() => document.querySelector('[data-slot="root"]'), null, { timeout: 60000 })
@@ -529,6 +539,7 @@ try {
     if (handles.length > 0) assert.ok(await page.locator('[data-width-handle]').first().isVisible(), 'Chat width handles did not return')
     await page.getByRole('tab', { name: 'REPL', exact: true }).click()
     await composer.waitFor({ state: 'hidden' })
+    await page.waitForFunction(() => document.querySelector('.ptcPlusConsole .ptcPlusEntrySettings input')?.value === 'workflow')
     await rpc('settings/update', { ns: 'ptc-plus', patch: { enabled: false } })
     await page.getByRole('tab', { name: 'REPL', exact: true }).waitFor({ state: 'detached' })
     await composer.waitFor({ state: 'visible' })
@@ -576,11 +587,15 @@ try {
   await page.keyboard.press('Escape')
   await page.locator('.ptcPlusBindingsModal').waitFor({ state: 'detached' })
   await page.screenshot({ path: join(evidence, 'settings.png'), fullPage: true, animations: 'disabled' })
+  errors.push(...consoleErrors.filter(({ text, url }) => !(hostIconFallbacks.has(url)
+    && text === 'Failed to load resource: the server responded with a status of 404 (Not Found)'))
+    .map(({ text }) => text.replace(/https?:\/\/\S+/g, '[URL]')))
   assert.equal(errors.length, 0, errors.join('\n'))
   await writeFile(join(evidence, 'result.json'), JSON.stringify({
     dshVersion: version, packageIntegrity,
     browser: { version: browser.version(), channel: values['browser-channel'] ?? 'chromium' },
     settings: 'ready', conversation: 'ready', pageErrors: errors,
+    hostIconFallbacks: [...hostIconFallbacks].map(value => new URL(value).pathname),
     bindingWorkflow: values['binding-workflow'] ? { model: 'deterministic-local-adapter', measurements: bindingMeasurements,
       scrollMeasurements: bindingScrollMeasurements, replMeasurements, reloadMeasurements } : null,
   }, null, 2) + '\n')

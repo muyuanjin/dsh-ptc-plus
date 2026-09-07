@@ -149,7 +149,9 @@ import { readFile } from 'node:fs/promises'
 
 已启用条目在下一次 `run_code` 中尝试激活为普通可写 REPL binding；首轮接口描述的是已配置 API，不证明初始化成功。只有 worker 已成功激活、仍与当前配置同源且未被 session-local binding 覆盖的完整条目，才在随后一轮获得活动声明。请求自带的 program namespace 或 error class 优先于同名全局条目；该条目只在本次请求中激活失败并产生诊断，不会覆盖宿主值或阻止其他代码。binding module 所需的 program namespace 若与既有 worker global 同名，本次 cell 会显式失败且不会替换 Node intrinsic。失败 initializer 已发起 program call 时，cell 进入 volatile，避免 cold recovery 把缺少该源码的调用记录当作可重放历史。同名赋值或重声明只覆盖当前 session；cold recovery 使用结果 metadata 中记录的精确快照，不从当前磁盘内容猜测历史值。条目源码中的相对 import 在候选试运行和正式激活时都以 binding 存储目录为解析基准；已经保存到普通 session binding 的导出闭包会在当前 worker 生命周期内保留该解析基准和 program namespace bridge。
 
-提示词和接口中的 `{{name}}` 等示例会原样提供给模型。仅修改提示词、接口注入开关或用途说明，不会重置已激活模块的状态，也不会重复执行初始化；修改源码、scope、namespace 调用名或导出列表后，下一次执行会重新初始化。旧会话按每一步当时的复用规则恢复，升级前因修改说明或顶层显示名称而发生的模块重置也会保留。
+提示词和接口中的 `{{name}}` 等示例会原样提供给模型。仅修改提示词、接口注入开关或用途说明，不会重置已激活模块的状态，也不会重复执行初始化；修改源码、scope、namespace 调用名或导出列表后，下一次执行会重新初始化。可重建的历史按每一步记录的复用规则恢复。
+
+全局绑定快照会记录 TypeScript 转换代际。升级后，未记录转换代际的旧非空快照无法保证恢复值不变，恢复会退回此前最近的可验证状态，跳过受影响 cell 及其后续依赖，并给出一次诊断；没有可验证状态时从空 REPL 继续。历史工具调用不会因此重发，磁盘上的全局绑定源码和配置保留，当前合法 cell 仍按当前配置执行。没有激活全局绑定的旧快照不受此限制。
 
 开启后，只要当前 session 的实际命令目录提供 `/binding`，输入框工具栏就会在首轮前显示星光图标；点击可预填 `/binding new `，已有输入不会被覆盖。也可以直接输入 `/binding new <需求>` 或 `/binding edit <id> <需求>`，DSH 会提供命令匹配和参数提示。命令启动 Agent 编写后立即完成并清空输入框；对话中的唯一绑定命令卡片保留完整需求、编写状态与 TypeScript 源码，各阶段状态随界面语言切换。Agent 收到完整字段说明、调用范例和依赖解析基址，通过 `run_code` 内稳定的 `code.submitBindingDraft({requestId, entry})` 交接一个停用内存草稿；每次请求仅接受一次有效提交，普通 REPL 声明不会成为全局草稿。进入和结束编写不改变同配置下的 system 与工具声明。
 

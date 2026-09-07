@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { randomUUID } from 'node:crypto'
 import { create as createDomain } from 'node:domain'
-import { registerHooks, stripTypeScriptTypes } from 'node:module'
+import { registerHooks } from 'node:module'
 import { resolve } from 'node:path'
 import repl from 'node:repl'
 import { PassThrough } from 'node:stream'
@@ -9,10 +9,7 @@ import { inspect } from 'node:util'
 import { pathToFileURL } from 'node:url'
 import { parentPort, workerData } from 'node:worker_threads'
 import { parse } from 'acorn'
-
-const emitWarning = process.emitWarning
-try { process.emitWarning = () => {}; stripTypeScriptTypes('') }
-finally { process.emitWarning = emitWarning }
+import { transformTypeScriptModule } from './typescript-transform.js'
 
 const output = new PassThrough()
 output.resume()
@@ -46,7 +43,7 @@ const describe = value => inspect(value, {
 
 function evaluate(source) {
   return new Promise((resolve, reject) => {
-    const javascript = stripTypeScriptTypes(source, { mode: 'transform', sourceMap: false })
+    const javascript = transformTypeScriptModule(source)
     const program = parse(javascript, { ecmaVersion: 'latest', sourceType: 'module', allowAwaitOutsideFunction: true })
     const last = program.body.at(-1)
     const complete = `this[${JSON.stringify(completionKey)}]`
@@ -70,7 +67,7 @@ function evaluate(source) {
   })
 }
 try {
-  const javascript = stripTypeScriptTypes(workerData.source, { mode: 'transform', sourceMap: false })
+  const javascript = transformTypeScriptModule(workerData.source)
   moduleUrl = `data:text/javascript,${encodeURIComponent(javascript)}#binding`
   const namespace = await import(moduleUrl)
   await evaluate(`import(${JSON.stringify(importCanary)})`)

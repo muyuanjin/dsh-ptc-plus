@@ -202,6 +202,8 @@ Restart that DSH profile after installation. Version-pinned npm, GitHub, local-c
 
 For Windows development, double-click `scripts\run-dev-dsh.cmd` to launch an isolated DSH installation from the latest `alpha` dist-tag with only this plugin installed. DSH, plugin snapshots, and the pnpm store are cached and old entries are pruned automatically. The launcher de-duplicates Windows `PATH` in the current process only; it creates no drive mappings or junction trees and does not change the system environment. If a genuinely unique PATH remains too long for `cmd.exe`, it stops before npm or DSH runs and asks you to shorten PATH. When no Web port is supplied, the launcher selects a free loopback port so an existing service on 3080 cannot block the test instance. The default cache is `%LOCALAPPDATA%\dsh-ptc-plus-dev`, outside this repository. See the [installation guide](docs/installation.md) for overrides.
 
+The development launcher uses the official npm registry for queries and installs by default, avoiding missing dependencies while mirrors synchronize a new release. Set `DSH_DEV_REGISTRY` to select another registry. The choice applies to npm and DSH's pnpm subprocesses without changing global npm configuration.
+
 `danger-full-access` is the primary supported experience. The worker isolates lifecycle, not malicious code.
 
 ## Documentation

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { execFileSync, spawnSync } from 'node:child_process'
 import {
   copyFile,
+  link,
   mkdir,
   mkdtemp,
   readFile,
@@ -428,3 +429,158 @@ test('Windows launchers normalize PATH without persistent system resources', asy
   }
   assert.match(isolatedScript, /Import-LatestWindowsPath -Prepend @\(\$binRoot, \$nodeDirectory\)/u)
 })
+
+async function developmentRegistryFixture(t) {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'ptc-plus-dev-registry-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const projectRoot = path.join(root, 'project')
+  const scriptRoot = path.join(projectRoot, 'scripts')
+  const mockBin = path.join(root, 'bin')
+  const cacheRoot = path.join(root, 'cache')
+  await mkdir(scriptRoot, { recursive: true })
+  await mkdir(mockBin)
+  for (const filename of ['run-dev-dsh.ps1', 'windows-lifecycle-path.ps1']) {
+    await copyFile(new URL(`../scripts/${filename}`, import.meta.url), path.join(scriptRoot, filename))
+  }
+  await writeFile(path.join(projectRoot, 'package.json'), JSON.stringify({ name: 'registry-probe' }))
+  const registryConfig = [
+    'registry=https://stale-mirror.invalid/',
+    '@deepseek-ai:registry=https://stale-scope.invalid/',
+    '@private:registry=https://private.invalid/',
+    '',
+  ].join('\n')
+  const userConfig = path.join(root, 'user.npmrc')
+  await writeFile(userConfig, registryConfig)
+  await writeFile(path.join(projectRoot, '.npmrc'), registryConfig)
+  try {
+    await link(process.execPath, path.join(mockBin, 'node.exe'))
+  } catch {
+    await copyFile(process.execPath, path.join(mockBin, 'node.exe'))
+  }
+  const mockProgram = path.join(mockBin, 'mock.cjs')
+  const commandText = tool => `@"${process.execPath}" "${mockProgram}" ${tool} %*\r\n`
+  for (const tool of ['npm', 'corepack']) {
+    await writeFile(path.join(mockBin, `${tool}.cmd`), commandText(tool))
+  }
+  await writeFile(mockProgram, String.raw`
+const { appendFileSync, mkdirSync, writeFileSync } = require('node:fs')
+const { execFileSync, spawnSync } = require('node:child_process')
+const path = require('node:path')
+const [tool, ...args] = process.argv.slice(2)
+const report = {
+  tool, args,
+  registry: process.env.npm_config_registry,
+  scopeRegistry: process.env['npm_config_@deepseek-ai:registry'],
+}
+if (tool === 'npm' && args[0] === 'view') {
+  report.resolved = ['registry', '@deepseek-ai:registry', '@private:registry'].map(key =>
+    execFileSync(process.env.PTC_TEST_NODE, [process.env.PTC_TEST_NPM_CLI, 'config', 'get', key], {
+      encoding: 'utf8',
+    }).trim())
+}
+appendFileSync(process.env.PTC_REGISTRY_REPORT, JSON.stringify(report) + '\n')
+if (tool === 'npm' && args[0] === 'view') {
+  if (process.env.PTC_MOCK_VIEW_FAILURE === '1') {
+    console.error('npm error code ENETUNREACH')
+    process.exit(1)
+  }
+  console.log(JSON.stringify('0.0.0-test'))
+} else if (tool === 'npm' && args[0] === 'install') {
+  if ([report.registry, report.scopeRegistry].some(value => value.includes('stale-'))) {
+    console.error('npm error code ETARGET')
+    process.exit(1)
+  }
+  const directory = path.join(args[args.indexOf('--prefix') + 1], 'node_modules', '.bin')
+  mkdirSync(directory, { recursive: true })
+  writeFileSync(path.join(directory, 'dsh.cmd'),
+    '@"' + process.env.PTC_TEST_NODE + '" "' + __filename + '" dsh %*\r\n')
+} else if (tool === 'npm' && args[0] === 'pack') {
+  writeFileSync(path.join(args[args.indexOf('--pack-destination') + 1], 'registry-probe.tgz'), 'snapshot')
+} else if (tool === 'dsh' && args[0] === 'plugin') {
+  const pnpm = path.join(process.env.DSH_HOME, 'profiles', args[2], 'pnpm.cmd')
+  const result = spawnSync('"' + pnpm + '" install', { shell: process.env.ComSpec, stdio: 'inherit' })
+  process.exit(result.status ?? 1)
+}
+`)
+  const reportPath = path.join(root, 'commands.jsonl')
+  return {
+    async reports() {
+      return (await readFile(reportPath, 'utf8')).trim().split(/\r?\n/u).map(line => JSON.parse(line))
+    },
+    async assertConfigUnchanged() {
+      assert.equal(await readFile(userConfig, 'utf8'), registryConfig)
+      assert.equal(await readFile(path.join(projectRoot, '.npmrc'), 'utf8'), registryConfig)
+    },
+    run(shellPath, additions = {}) {
+      return spawnSync(shellPath, [
+        '-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass',
+        '-File', path.join(scriptRoot, 'run-dev-dsh.ps1'), 'web', '--version',
+      ], {
+        cwd: projectRoot,
+        encoding: 'utf8',
+        timeout: 30000,
+        env: windowsEnvironment([
+          mockBin, path.dirname(process.execPath), path.join(process.env.SystemRoot, 'System32'),
+        ].join(';'), {
+          DSH_DEV_CACHE: cacheRoot,
+          DSH_DEV_REGISTRY: '',
+          DSH_DEV_VERSION: 'alpha',
+          DSH_DEV_PORT: '0',
+          npm_config_registry: 'https://stale-mirror.invalid/',
+          'npm_config_@deepseek-ai:registry': 'https://stale-scope.invalid/',
+          npm_config_userconfig: userConfig,
+          PTC_TEST_NODE: process.execPath,
+          PTC_TEST_NPM_CLI: npmCliPath(),
+          PTC_REGISTRY_REPORT: reportPath,
+          PTC_MOCK_VIEW_FAILURE: '',
+          ...additions,
+        }),
+      })
+    },
+  }
+}
+
+for (const shellName of ['powershell.exe', 'pwsh.exe']) {
+  const shellPath = resolveWindowsCommand(shellName)
+  for (const override of ['', ' http://127.0.0.1:42123/npm ']) {
+    test(`isolated launcher uses ${override ? 'an explicit registry' : 'official npm'} throughout under ${shellName}`, {
+      skip: shellPath === null,
+    }, async t => {
+      const fixture = await developmentRegistryFixture(t)
+      const registry = override ? 'http://127.0.0.1:42123/npm/' : 'https://registry.npmjs.org/'
+      const result = fixture.run(shellPath, { DSH_DEV_REGISTRY: override })
+      assert.equal(result.status, 0, result.stderr || result.stdout || result.error?.message)
+      assert.ok(result.stdout.includes(`Using development npm registry: ${registry}`))
+      const reports = await fixture.reports()
+      assert.deepEqual(reports[0].resolved, [registry, registry, 'https://private.invalid/'])
+      assert.ok(reports[0].args.includes('--prefer-online'))
+      assert.ok(reports.some(entry => entry.tool === 'npm' && entry.args[0] === 'install'))
+      assert.ok(reports.some(entry => entry.tool === 'corepack' && entry.args.at(-1) === 'install'))
+      assert.ok(reports.some(entry => entry.tool === 'dsh' && entry.args.includes('--version')))
+      for (const entry of reports) {
+        assert.equal(entry.registry, registry)
+        assert.equal(entry.scopeRegistry, registry)
+      }
+      await fixture.assertConfigUnchanged()
+
+      const offline = fixture.run(shellPath, { DSH_DEV_REGISTRY: override, PTC_MOCK_VIEW_FAILURE: '1' })
+      assert.equal(offline.status, 0, offline.stderr || offline.stdout || offline.error?.message)
+      assert.match(offline.stdout, /reusing cached DSH 0\.0\.0-test/u)
+      const laterReports = (await fixture.reports()).slice(reports.length)
+      assert.equal(laterReports.some(entry => entry.tool === 'npm' && entry.args[0] === 'install'), false)
+      assert.ok(laterReports.some(entry => entry.tool === 'dsh' && entry.args.includes('--version')))
+      await fixture.assertConfigUnchanged()
+    })
+  }
+
+  test(`isolated launcher rejects an invalid registry before invoking npm under ${shellName}`, {
+    skip: shellPath === null,
+  }, async t => {
+    const fixture = await developmentRegistryFixture(t)
+    const result = fixture.run(shellPath, { DSH_DEV_REGISTRY: 'file:///registry' })
+    assert.notEqual(result.status, 0)
+    assert.match(result.stderr + result.stdout, /DSH_DEV_REGISTRY must be an absolute HTTP\(S\) registry URL/u)
+    await assert.rejects(fixture.reports(), { code: 'ENOENT' })
+    await fixture.assertConfigUnchanged()
+  })
+}

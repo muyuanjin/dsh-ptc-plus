@@ -98,7 +98,7 @@ function Get-NpmPackageVersion {
     )
 
     try {
-        $raw = & $NpmPath view $PackageSpec version --json 2>&1
+        $raw = & $NpmPath view $PackageSpec version --json --prefer-online 2>&1
         if ($LASTEXITCODE -ne 0) {
             throw "npm view failed: $($raw -join ' ')"
         }
@@ -159,6 +159,24 @@ function Get-FreeLoopbackPort {
 }
 
 Import-LatestWindowsPath
+
+$registry = if ([string]::IsNullOrWhiteSpace($env:DSH_DEV_REGISTRY)) {
+    'https://registry.npmjs.org/'
+} else {
+    $env:DSH_DEV_REGISTRY.Trim()
+}
+$registryUri = $null
+if (-not [Uri]::TryCreate($registry, [UriKind]::Absolute, [ref] $registryUri) -or
+    $registryUri.Scheme -notin @('https', 'http') -or
+    [string]::IsNullOrWhiteSpace($registryUri.Host) -or
+    $registryUri.UserInfo -ne '' -or $registryUri.Query -ne '' -or $registryUri.Fragment -ne '') {
+    throw 'DSH_DEV_REGISTRY must be an absolute HTTP(S) registry URL without credentials, a query, or a fragment.'
+}
+$registry = $registryUri.AbsoluteUri.TrimEnd('/') + '/'
+# Keep npm and DSH's pnpm subprocesses on the same registry, including scoped DSH packages.
+$env:npm_config_registry = $registry
+[Environment]::SetEnvironmentVariable('npm_config_@deepseek-ai:registry', $registry, 'Process')
+Write-Host "Using development npm registry: $registry"
 
 if ([string]::IsNullOrWhiteSpace($ProfileName)) {
     $ProfileName = 'web'

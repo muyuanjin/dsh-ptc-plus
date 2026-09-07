@@ -204,6 +204,10 @@ Windows 开发时可双击 `scripts\run-dev-dsh.cmd` 启动一个独立的 DSH a
 
 开发启动流程默认从 npm 官方源查询和安装，避免镜像尚未同步新版本依赖导致失败；可通过 `DSH_DEV_REGISTRY` 指定其他源。这个选择同时用于 npm 和 DSH 的 pnpm 子进程，不修改全局 npm 配置。
 
+旧缓存文件被占用或 pnpm store 清理失败时，脚本会警告并继续启动，始终保留本次选中的 DSH 和插件快照。安装时的 peer dependency 警告需结合后续加载结果判断；DSH 从活动安装提供这些宿主包，清理旧缓存失败不表示插件安装失败。
+
+兼容适配按公开能力选择旧、新工具模式和 Client 会话接口，不按 DSH 版本号分支。升级并继续旧会话前，请阅读[会话格式迁移](docs/installation.md#session-format-upgrades)：宿主重排事件编号时，需要同步迁移 PTC 的编辑目标和恢复引用；脚本保留原始日志，不重复执行历史工具调用。
+
 `danger-full-access` 是首要支持方式。worker 只隔离生命周期，不隔离恶意代码。
 
 ## 文档

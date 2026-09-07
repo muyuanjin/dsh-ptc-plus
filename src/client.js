@@ -402,6 +402,11 @@ function sessionUsesPtcPreset(preset) {
   return preset === 'ptc' || preset === 'code'
 }
 
+function sessionPresetValue(projected, summary) {
+  return projected !== undefined || Object.hasOwn(summary?.projectionValues ?? {}, 'agentPreset')
+    ? projected : summary?.agentPreset
+}
+
 window.__ModuleLoader__.load({
   // Replaced by the bundle entry with the package name from package.json.
   id: __PTC_PLUS_CLIENT_MODULE_ID__,
@@ -431,6 +436,13 @@ window.__ModuleLoader__.load({
     const module = { exports: {} }
     const h = React.createElement
     const TypeScriptEditor = createTypeScriptEditor(React)
+
+    function useSessionPreset({ sessionId, useProjection, useSessions }) {
+      const projected = useProjection('agentPreset')
+      return typeof useSessions === 'function'
+        ? useSessions(state => sessionPresetValue(projected, state.byId?.[sessionId]))
+        : projected
+    }
 
     function IconButton({ icon: Icon, label, ...props }) {
       const button = h('button', { ...props, type: 'button', className: 'ptcPlusIconButton',
@@ -1079,8 +1091,8 @@ window.__ModuleLoader__.load({
           memory.omitted > 0 ? h('p', { className: 'ptcPlusMessage' }, t('memory.more', { count: memory.omitted })) : null)
       }
 
-      function ReplConsole({ t, sessionId, useProjection, usePtcSettings, callUserBindings, hideComposer, observeRepl }) {
-        const preset = useProjection('agentPreset')
+      function ReplConsole({ t, sessionId, useProjection, useSessions, usePtcSettings, callUserBindings, hideComposer, observeRepl }) {
+        const preset = useSessionPreset({ sessionId, useProjection, useSessions })
         const projected = useProjection('ptcPlusRepl')
         const settings = usePtcSettings(snapshot => snapshot)
         const globalEnabled = settings.value?.userBindingsEnabled === true
@@ -1351,7 +1363,10 @@ window.__ModuleLoader__.load({
         const hideComposer = sessionId => viewScope.effect(() => viewScope.slots.inject(
           'conversation.composer', () => viewScope.slots.register({
             name: 'conversation.composer', priority: 100,
-            select: owner => owner.sessionId === sessionId && owner.pendingInteraction === undefined ? true : null,
+            select: owner => (Object.hasOwn(owner, 'sessionId')
+              ? owner.sessionId === sessionId && owner.pendingInteraction === undefined
+              : owner.session?.sessionId === sessionId && Array.isArray(owner.interactions) && owner.interactions.length === 0)
+              ? true : null,
           }, ReplComposer),
         ))
         viewScope.slots.inject('conversation.view', () => viewScope.effect(() => {
@@ -1370,7 +1385,8 @@ window.__ModuleLoader__.load({
             const settings = preferenceScope.getSnapshot()
             const eligible = settings.status === 'ready' && settings.value?.enabled === true
               && settings.value?.replViewEnabled !== false
-              && sessionUsesPtcPreset(source?.getSnapshot())
+              && sessionUsesPtcPreset(sessionPresetValue(source?.getSnapshot(),
+                viewScope.sessions.list.getSnapshot().byId?.[current]))
             if (eligible === (disposeView !== undefined)) return
             disposeView?.()
             disposeView = eligible ? viewScope.slots.register({
@@ -1792,9 +1808,9 @@ window.__ModuleLoader__.load({
       }
 
       function PTCPlusSessionIndicator({
-        sessionId, t, useProjection, useInput, inputActions, usePtcSettings, callUserBindings,
+        sessionId, t, useProjection, useSessions, useInput, inputActions, usePtcSettings, callUserBindings,
       }) {
-        const preset = useProjection('agentPreset')
+        const preset = useSessionPreset({ sessionId, useProjection, useSessions })
         const projectionMemory = useProjection('ptcPlusRepl')
         const projectionDraftCapability = useProjection('ptcPlusBindingDraft')
         const settings = usePtcSettings(snapshot => snapshot)
@@ -2031,21 +2047,19 @@ window.__ModuleLoader__.load({
         name: 'conversation.session.header.actions', id: 'ptc-plus-active', order: -9, locale: LOCALE_NS,
         inject: settingsProps,
       }, props => typeof props.useProjection === 'function' ? h(PTCPlusSessionIndicator, props) : null)))
-      ctx.inject(['uiConversation'], (conversationScope) => {
-        conversationScope.slots.inject('conversation.chat.commandview', () => registerEnabled(conversationScope, true, () => conversationScope.slots.register({
-          name: 'conversation.chat.commandview', key: 'binding', locale: LOCALE_NS,
-          inject: settingsProps,
-        }, props => h(BindingCommandCard, { ...props, key: props.node.commandId }))))
-        conversationScope.inject(['remote', 'remote.commands'], (commandScope) => {
-          const availability = createBindingCommandAvailability(commandScope)
-          commandScope.slots.inject('conversation.input.left', () => registerEnabled(commandScope, true, () => commandScope.slots.register({
-            name: 'conversation.input.left', id: 'ptc-plus-binding-author', order: 20, locale: LOCALE_NS,
-            inject: sessionId => ({
-              hooks: { ptcSettings: preferenceScope, bindingCommand: availability.source(sessionId) },
-            }),
-          }, props => typeof props.useInput === 'function' && typeof props.inputActions?.setDraft === 'function'
-            ? h(BindingAuthorButton, props) : null)))
-        })
+      ctx.slots.inject('conversation.chat.commandview', () => registerEnabled(ctx, true, () => ctx.slots.register({
+        name: 'conversation.chat.commandview', key: 'binding', locale: LOCALE_NS,
+        inject: settingsProps,
+      }, props => h(BindingCommandCard, { ...props, key: props.node.commandId }))))
+      ctx.inject(['remote', 'remote.commands'], (commandScope) => {
+        const availability = createBindingCommandAvailability(commandScope)
+        commandScope.slots.inject('conversation.input.left', () => registerEnabled(commandScope, true, () => commandScope.slots.register({
+          name: 'conversation.input.left', id: 'ptc-plus-binding-author', order: 20, locale: LOCALE_NS,
+          inject: sessionId => ({
+            hooks: { ptcSettings: preferenceScope, bindingCommand: availability.source(sessionId) },
+          }),
+        }, props => typeof props.useInput === 'function' && typeof props.inputActions?.setDraft === 'function'
+          ? h(BindingAuthorButton, props) : null)))
       })
     }
 

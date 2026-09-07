@@ -8,6 +8,14 @@ PTC Plus integrates with DSH services, request bindings, prompt assembly, sessio
 
 The compatibility target is the latest available DSH release. Production behavior, configuration, tests, installation guidance, and current compatibility claims depend on public extension contracts and observed live schemas, never on a DSH version allowlist or comparison. An upstream default projection is not an extension ceiling: when public scoped registration and presentation support a plugin-owned capability, PTC Plus preserves that capability and its model-visible identity instead of deleting or renaming it to match the default. Deterministic normalization remains valid for a call that is outside the declared direct surface when the live schema proves one native target and the lowering preserves arguments, call identity, authority, and result semantics. Deterministic tests exercise the consumed contracts; model-backed and packaging acceptance runners use the installed DSH and record `dsh --version` in generated reports so failures remain attributable without turning the observed value into policy. Concrete DSH release numbers may appear only in source comments that identify historical integration or evaluation evidence and cannot influence execution or acceptance.
 
+Preceding public contracts remain supported where capability detection is
+unambiguous. Tools presentation is selected by the installed public schema;
+Client contributions depend on their slots and supplied hooks rather than unused
+package gates. Preset projection evidence takes precedence over the preceding
+public session-summary field, and the current composer currency takes precedence
+over the earlier session/interactions currency. This compatibility does not
+extend to private stores or inferred binding state.
+
 ## Alternatives considered
 
 **Pin one verified DSH release.** A pin makes one historical environment reproducible but turns normal upstream progress into an artificial incompatibility and allows the implementation to drift from the release users actually install.

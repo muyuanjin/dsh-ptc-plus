@@ -20,7 +20,7 @@ Install the plugin into the profile that actually runs the target DSH surface. D
 
 The optional `cordisToolsEnabled` integration requires the current DSH installation to provide its shipped `cordis` preset plus the public preset, Skill, Cordis, settings, and tool-runtime packages. PTC Plus declares those host-owned DSH packages as unrestricted required peers instead of installing private runtime copies; runtime capability validation owns compatibility, and CI imports the packed plugin against both the current and preceding release channels. DSH's profile module fallback must resolve the peers from the active installation. Do not copy `SKILL.md` or add the Cordis preset's Skill directory to global roots. If the host surface is incomplete, plugin activation or enabling the setting fails instead of loading a second DSH core.
 
-The Client uses the current public surface directly. Its root requires `settingsScope`, `slots`, `locale`, and `connection`; the REPL indicator additionally requires `uiSession`, binding Turn data requires `uiConversation.events`, and the composer action requires `remote.commands`. Optional provider removal withdraws only its contributions, and late providers activate them. The Client does not support the old flat `conversationEvents` service, `useConversation`, or raw Session snapshot fallbacks. Host compatibility aliases described above do not imply a legacy Client adapter.
+The Client root requires `settingsScope`, `slots`, `locale`, and `connection`. Contributions wait for their public slots and consume the supplied session hooks; the composer action additionally requires `remote.commands`. Neither an unused `ui-session` module nor a renamed conversation registry gates activation. Preset selection prefers `agentPreset` projection evidence, falling back only to the preceding public session summary field when that projection is absent. Binding values and draft capabilities always require their own projections. No private store or raw-log fallback is used. Slot and provider disposal withdraw the contributions they own.
 
 ## npm Release
 
@@ -89,7 +89,7 @@ To test this checkout in a separate DSH installation, double-click `scripts\run-
 
 The launcher defaults to `https://registry.npmjs.org/` for version queries, npm installs and DSH's pnpm subprocesses, including the `@deepseek-ai` scope. This avoids mirror synchronization gaps where a new DSH package is available before its dependencies. It prints the selected registry and refreshes version metadata online; an unavailable version query can still reuse the previously cached version. Set `DSH_DEV_REGISTRY` to an absolute HTTP(S) registry URL to select another source explicitly. The choice applies only to the launcher process and its children; npm configuration files and persistent environment settings are unchanged. Other explicitly configured package scopes retain their own registries.
 
-The default cache is `%LOCALAPPDATA%\dsh-ptc-plus-dev`. It contains the isolated `DSH_HOME`, DSH installations, immutable plugin snapshots, and a pnpm store. Only the newest three DSH versions and plugin snapshots are retained, and the dedicated pnpm store is pruned after each install. Set `DSH_DEV_CACHE` to move the cache, `DSH_DEV_PROFILE` to change the profile name, `DSH_DEV_VERSION` to select another npm dist-tag or version, `DSH_DEV_PORT` to choose a fixed Web port, or `DSH_DEV_MAX_VERSIONS` to change the retention count (1-10).
+The default cache is `%LOCALAPPDATA%\dsh-ptc-plus-dev`. It contains the isolated `DSH_HOME`, DSH installations, immutable plugin snapshots, and a pnpm store. Cleanup aims to retain three DSH versions and plugin snapshots, always including the selected installation and snapshot even when another directory has a newer timestamp. Locked directories warn and remain for a later cleanup attempt; their installation marker is removed before deletion so partially deleted installations cannot be reused. Failed pnpm store pruning also warns and continues startup. Installation errors still stop the launcher. Set `DSH_DEV_CACHE` to move the cache, `DSH_DEV_PROFILE` to change the profile name, `DSH_DEV_VERSION` to select another npm dist-tag or version, `DSH_DEV_PORT` to choose a fixed Web port, or `DSH_DEV_MAX_VERSIONS` to change the retention count (1-10).
 
 The Windows launchers normalize the process, machine, and user `PATH` values in memory, remove duplicate entries, and add the Node/cache directories they need. They do not create drive mappings, junction trees, or persistent environment changes. If a genuinely unique PATH is still too long for `cmd.exe`, the launcher stops before npm or DSH runs and asks you to shorten the relevant PATH value.
 
@@ -103,3 +103,19 @@ dsh --dump-config
 ```
 
 After an npm release, the package spec may instead be `dsh-ptc-plus@0.3.1`. For a local package, use its absolute tarball path. Restart DSH Desktop after installation. Linux Desktop is not a current DSH Desktop release target; use DSH CLI/Web on Linux.
+
+## Session format upgrades
+
+The public DSH Session format catalog can renumber events when converting historical assistant streams. It treats plugin result metadata as opaque, so its automatic conversion alone cannot preserve PTC sequence references. Before opening historical PTC sessions in the new Host, stop the processes using that profile and retain a backup of each original log.
+
+From this source checkout, convert a source artifact with the destination Host's public catalog:
+
+```sh
+npm run session:migrate -- --dsh-entry /path/to/dsh/lib/bin.js --input /backup/session.jsonl --output /staging/session.v2.jsonl
+```
+
+The output header and command report identify the actual target **Session format**, independent of the DSH package version. Use the corresponding canonical filename `session.v<N>.jsonl` in that session's existing directory. Match the persistence provider's encoding: `.zstd` input/output uses the `zstd` executable, with separate header and event frames. The example names format 2; use the format reported by the selected catalog. Only place the validated output in the stopped profile after inspecting it. Keep the predecessor artifact for rollback; do not continue editing the same history through old and new Hosts in parallel.
+
+The converter verifies that ordered tool records retain their identities, maps journal confirmations, edit targets and recovery boundaries, and revalidates the output. It leaves original model arguments, source, results and recorded effects unchanged. Input files are never overwritten, including through hard links; existing destinations require explicit `--force`. A current-format source needs no output. A Host without the public catalog cannot perform Host format conversion.
+
+Already converted logs with stale PTC references cannot be repaired from their numeric values alone: use the original predecessor or backup. Preserve any newer activity separately. Logs containing retired `ptc-plus/recovery-boundary` events are refused by Host format conversion; the existing command without `--dsh-entry` remains the separate retired-event converter, whose output needs validation before a further upgrade. The migration tool does not modify a running persistence queue or silently repair unproved history.

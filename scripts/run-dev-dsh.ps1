@@ -131,7 +131,9 @@ function Remove-OldDirectories {
         [string] $Root,
 
         [Parameter(Mandatory = $true)]
-        [int] $Keep
+        [int] $Keep,
+
+        [string[]] $ProtectedPaths = @()
     )
 
     if (-not (Test-Path -LiteralPath $Root -PathType Container)) {
@@ -139,12 +141,26 @@ function Remove-OldDirectories {
     }
 
     $directories = @(Get-ChildItem -LiteralPath $Root -Directory | Sort-Object LastWriteTime -Descending)
-    if ($directories.Count -le $Keep) {
-        return
-    }
-
-    foreach ($directory in $directories[$Keep..($directories.Count - 1)]) {
-        Remove-Item -LiteralPath $directory.FullName -Recurse -Force
+    $protected = @($directories | Where-Object { $_.FullName -in $ProtectedPaths })
+    $remaining = [Math]::Max(0, $Keep - $protected.Count)
+    foreach ($directory in $directories) {
+        if ($directory.FullName -in $ProtectedPaths) {
+            continue
+        }
+        if ($remaining -gt 0) {
+            $remaining -= 1
+            continue
+        }
+        try {
+            # A partial deletion must not be reused as a complete installation.
+            $marker = Join-Path $directory.FullName '.install-complete'
+            if (Test-Path -LiteralPath $marker -PathType Leaf) {
+                Remove-Item -LiteralPath $marker -Force
+            }
+            Remove-Item -LiteralPath $directory.FullName -Recurse -Force
+        } catch {
+            Write-Warning "Unable to remove cached directory '$($directory.FullName)'; cleanup will retry on a later launch. $($_.Exception.Message)"
+        }
     }
 }
 
@@ -355,14 +371,18 @@ New-Item -ItemType Directory -Path $profileDirectory -Force | Out-Null
 Copy-Item -LiteralPath $pnpmShim -Destination (Join-Path $profileDirectory 'pnpm.cmd') -Force
 Write-Host "Installing $packageName into isolated DSH profile '$ProfileName' ..."
 Invoke-ExternalCommand $dshCommandPath @('plugin', '--profile', $ProfileName, 'add', $snapshotFile)
-Remove-OldDirectories $pluginSnapshotRoot $keepCount
+Remove-OldDirectories $pluginSnapshotRoot $keepCount @($snapshotDirectory)
 $dshInstallDirectoryItem = Get-Item -LiteralPath $dshInstallDirectory
 $dshInstallDirectoryItem.LastWriteTime = Get-Date
-Remove-OldDirectories $dshRoot $keepCount
+Remove-OldDirectories $dshRoot $keepCount @($dshInstallDirectory)
 
 # DSH forwards plugin management to pnpm. Pruning its dedicated store keeps
 # repeated DSH/plugin upgrades bounded without touching the user's global store.
-Invoke-ExternalCommand $pnpmShim @('store', 'prune')
+try {
+    Invoke-ExternalCommand $pnpmShim @('store', 'prune')
+} catch {
+    Write-Warning "Unable to prune the development pnpm store; continuing startup. $($_.Exception.Message)"
+}
 
 Write-Host "Starting DSH $dshVersion with profile '$ProfileName'."
 $launchArguments = @('--profile', $ProfileName)

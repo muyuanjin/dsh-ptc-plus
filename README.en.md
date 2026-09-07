@@ -204,6 +204,10 @@ For Windows development, double-click `scripts\run-dev-dsh.cmd` to launch an iso
 
 The development launcher uses the official npm registry for queries and installs by default, avoiding missing dependencies while mirrors synchronize a new release. Set `DSH_DEV_REGISTRY` to select another registry. The choice applies to npm and DSH's pnpm subprocesses without changing global npm configuration.
 
+Locked old cache files or failed pnpm store pruning produce warnings and startup continues, preserving the selected DSH installation and plugin snapshot. Interpret peer dependency warnings alongside the subsequent Host load: DSH supplies these packages from its active installation, and failed cache cleanup does not mean plugin installation failed.
+
+Compatibility selects the old or new tools mode and Client session interfaces through public capabilities, without DSH version branches. Before upgrading and continuing old sessions, read [Session format upgrades](docs/installation.md#session-format-upgrades): when the Host renumbers events, PTC edit targets and recovery references also need migration. The script preserves the original log and never re-executes historical tool calls.
+
 `danger-full-access` is the primary supported experience. The worker isolates lifecycle, not malicious code.
 
 ## Documentation

@@ -151,6 +151,25 @@ test('REPL tab follows the current PTC projection and releases every registratio
   expect(settings.listenerCount()).toBe(0)
 })
 
+test('legacy public preset summaries drive the REPL until a current projection is present', async () => {
+  const { runtime } = await fixture({ bindings: false, repl: true })
+  await runtime.sessions.add({ id: 'legacy-session', summary: { agentPreset: 'code' } })
+  await runtime.sessions.setCurrent('legacy-session')
+  const view = runtime.renderRoot()
+  await runtime.flush()
+  expect(runtime.slots.entries('conversation.view')).toHaveLength(1)
+  await runtime.sessions.updateSummary('legacy-session', { agentPreset: 'standard' })
+  await runtime.flush()
+  expect(runtime.slots.entries('conversation.view')).toHaveLength(0)
+  await runtime.sessions.updateSummary('legacy-session', { agentPreset: 'code' })
+  await runtime.flush()
+  expect(runtime.slots.entries('conversation.view')).toHaveLength(1)
+  runtime.sessions.behavior('legacy-session').projections.set('agentPreset', 'standard')
+  await runtime.flush()
+  expect(runtime.slots.entries('conversation.view')).toHaveLength(0)
+  expect(view.container.querySelector('.ptcPlusConsole')).toBeNull()
+})
+
 test('session contributions use public slot inputs without a shared uiSession prerequisite', async () => {
   const { runtime, feature, settings, conversationProvider } = await fixture({
     uiSession: false, repl: true,
@@ -165,7 +184,7 @@ test('session contributions use public slot inputs without a shared uiSession pr
   expect(runtime.slots.entries('conversation.chat.commandview')).toHaveLength(1)
   await conversationProvider.dispose()
   await runtime.flush()
-  expect(runtime.slots.entries('conversation.chat.commandview')).toHaveLength(0)
+  expect(runtime.slots.entries('conversation.chat.commandview')).toHaveLength(1)
   expect(view.container.querySelector('.ptcPlusActive')).not.toBeNull()
   expect(view.container.querySelector('.ptcPlusConsole')).not.toBeNull()
   expect(view.container.querySelector('.ptcPlusCard')).not.toBeNull()
@@ -607,6 +626,13 @@ test('REPL hides the resident composer only while mounted and preserves its draf
   expect(select({ sessionId: 'other-session' })).toBeNull()
   expect(select({ sessionId: 'client-session', pendingInteraction: { kind: 'approval' } })).toBeNull()
   expect(select({ sessionId: 'client-session', pendingInteraction: { kind: 'question' } })).toBeNull()
+  expect(select({ session: { sessionId: 'client-session' }, interactions: [] })).toBe(true)
+  expect(select({ session: { sessionId: 'other-session' }, interactions: [] })).toBeNull()
+  expect(select({ session: { sessionId: 'client-session' } })).toBeNull()
+  for (const kind of ['approval', 'question']) {
+    expect(select({ session: { sessionId: 'client-session' }, interactions: [{ kind }] })).toBeNull()
+  }
+  expect(select({ sessionId: 'other-session', session: { sessionId: 'client-session' }, interactions: [] })).toBeNull()
   const projection = runtime.sessions.behavior('client-session').projections
   projection.set('agentPreset', 'chat')
   await runtime.flush()
@@ -1175,9 +1201,10 @@ test.each(['empty', 'conflict'])('draft card distinguishes revoked locators from
   expect(rpc).toHaveBeenCalledTimes(calls)
 })
 
-test('missing optional conversation provider leaves settings active and can arrive later', async () => {
+test('conversation slots remain active independently of a renamed optional service', async () => {
   const { runtime, events, settings, provideConversation } = await fixture({ conversation: false })
   expect(events.entries()).toHaveLength(0)
+  expect(runtime.slots.entries('conversation.chat.commandview')).toHaveLength(1)
   const view = runtime.renderRoot()
   expect(view.container.textContent).toContain('PTC Plus')
   const provider = await provideConversation()
@@ -1185,6 +1212,7 @@ test('missing optional conversation provider leaves settings active and can arri
   expect(runtime.slots.entries('conversation.chat.commandview')).toHaveLength(1)
   await provider.dispose()
   expect(events.entries()).toHaveLength(0)
+  expect(runtime.slots.entries('conversation.chat.commandview')).toHaveLength(1)
   expect(view.container.textContent).toContain('PTC Plus')
   await provideConversation()
   expect(runtime.slots.entries('conversation.chat.commandview')).toHaveLength(1)
@@ -1193,7 +1221,7 @@ test('missing optional conversation provider leaves settings active and can arri
   expect(events.entries()).toHaveLength(0)
 })
 
-test('legacy-only providers do not select an incomplete Client path', async () => {
+test('legacy conversation registry uses public slots and releases them with their owner', async () => {
   const { runtime, events } = await fixture({ conversation: false })
   runtime.ctx.provide('conversationEvents', events)
   await runtime.flush()
@@ -1202,4 +1230,9 @@ test('legacy-only providers do not select an incomplete Client path', async () =
   expect(view.container.querySelector('.ptcPlusActive')).not.toBeNull()
   expect(events.entries()).toHaveLength(0)
   expect(runtime.slots.entries('conversation.chat.turnTail')).toHaveLength(0)
+  expect(runtime.slots.entries('conversation.chat.commandview')).toHaveLength(1)
+  view.unmount()
+  runtime.root.release()
+  await runtime.flush()
+  expect(runtime.slots.entries('conversation.chat.commandview')).toHaveLength(0)
 })

@@ -24,6 +24,7 @@ import {
 } from '../scripts/acceptance-contract.mjs'
 import { decodeValue, encodeValue } from '../internal/value-wire.js'
 import { editRejectedCell } from '../internal/rejected-cell-editor.js'
+import { ptcToolsMode } from '../scripts/dsh-host-contract.mjs'
 
 const headlessRuntime = { toolsMode: 'ptc', permissionMode: 'danger-full-access' }
 
@@ -152,7 +153,7 @@ test('validates a clean expensive-acceptance profile', () => {
   name: dsh-ptc-plus
 - id: tools
   config:
-    mode: ptc
+    mode: ${ptcToolsMode()}
 - id: sandbox-policy
   config:
     mode: danger-full-access
@@ -161,9 +162,9 @@ test('validates a clean expensive-acceptance profile', () => {
     policy: never
 `)
   assert.equal(validateAcceptanceConfig(rows, headlessRuntime), true)
-  const retired = structuredClone(rows)
-  retired.find(row => row.id === 'tools').config.mode = 'code'
-  assert.throws(() => validateAcceptanceConfig(retired, { ...headlessRuntime, toolsMode: 'code' }), /public DSH tools config/)
+  const unsupported = structuredClone(rows)
+  unsupported.find(row => row.id === 'tools').config.mode = 'unsupported-test-mode'
+  assert.throws(() => validateAcceptanceConfig(unsupported, { ...headlessRuntime, toolsMode: 'unsupported-test-mode' }), /public DSH tools config/)
   const functionClassLoose = structuredClone(rows)
   functionClassLoose.find(row => row.id === 'ptc-plus').config = {
     looseTopLevelFunctionClassRedeclarations: true,

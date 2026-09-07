@@ -12,6 +12,8 @@ import { SessionProjectionRegistry } from '@deepseek-ai/dsh-session-projection'
 import { SystemPrompt } from '@deepseek-ai/dsh-system-prompt'
 import { ToolRuntime } from '@deepseek-ai/dsh-tools'
 import * as ptc from '../index.js'
+import { ptcToolsMode } from '../scripts/dsh-host-contract.mjs'
+import { sessionEvents } from '../internal/session-events.js'
 
 export async function bindingWorkflowHost(t) {
   const home = await mkdtemp(join(tmpdir(), 'ptc-binding-workflow-'))
@@ -40,7 +42,7 @@ export async function bindingWorkflowHost(t) {
   } } })
   for (const plugin of [SystemPrompt, SessionStore, AgentRegistry, LlmRuntime,
     SessionProjectionRegistry, ToolRuntime, CommandRuntime, AgentLoop]) {
-    const config = plugin === ToolRuntime ? { mode: 'ptc' }
+    const config = plugin === ToolRuntime ? { mode: ptcToolsMode() }
       : plugin === SystemPrompt ? { includeHarnessIdentity: false, persona: '' } : undefined
     const fiber = ctx.plugin(plugin, config)
     fibers.push(fiber)
@@ -91,7 +93,7 @@ export async function bindingWorkflowHost(t) {
     })
     try { const value = await operation(); await idle; return value } finally { release() }
   }
-  const events = () => agent.session.snapshotEvents()
+  const events = () => sessionEvents(agent.session)
   const run = async (program, text = 'Execute the requested verification cell.') => {
     programs.push(program)
     await idleAfter(() => agent.followup(createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text }] })))

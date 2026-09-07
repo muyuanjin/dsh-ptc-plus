@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { sessionEvents } from '../internal/session-events.js'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -133,7 +134,7 @@ test('public binding lifecycle preserves each configured prompt and separates sa
   assert.equal(history[0].candidate.entry.source, entry.source)
   assert.equal(history[0].action.state, 'saved')
   const restored = Session.create('restored-binding-workflow', host.events())
-  assert.deepEqual(projection.wire.view(fold(restored.snapshotEvents())).history, history)
+  assert.deepEqual(projection.wire.view(fold(sessionEvents(restored))).history, history)
   const savedCatalog = (await host.rpc('list')).value
   assert.equal((await host.rpc('save', { expectedRevision: savedCatalog.revision,
     entry: { ...entry, enabled: true, source: 'export function value(): number { return 99 }' } })).ok, true)

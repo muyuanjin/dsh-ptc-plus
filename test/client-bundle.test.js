@@ -109,6 +109,7 @@ test('checked client bundle is loadable through the DSH module loader contract',
   assert.doesNotMatch(sourceModule, /useSyncExternalStore|useConversation|scope\.sessions|conversationEvents/)
   assert.ok(packageJson.dsh.client.inject.includes('@deepseek-ai/dsh-api-remotes'))
   assert.ok(packageJson.dsh.client.inject.includes('@deepseek-ai/dsh-client-locale'))
+  assert.equal(packageJson.dsh.client.inject.includes('@deepseek-ai/dsh-client-ui-session'), false)
   assert.equal(typeof exported.apply, 'function')
   assert.match(source, /settings\.plugin\.item/)
   assert.match(source, /conversation\.session\.header\.actions/)
@@ -258,6 +259,7 @@ test('settings, header indicator, and tool rows follow the DSH locale dictionari
       register: (options, component) => {
         const entry = { options, component: smokeComponent(options, component, props => ({
           useProjection: key => sessionSnapshot.byId?.[props.sessionId ?? 'session-1']?.projectionValues?.[key],
+          useSessions: selector => selector(sessionSnapshot),
           useInput: selector => selector({ draft: '' }),
         })), active: true }
         slotEntries.push(entry)
@@ -517,7 +519,9 @@ test('settings, header indicator, and tool rows follow the DSH locale dictionari
     })
   }
   assert.notEqual(renderIndicator({ projectionValues: { agentPreset: 'ptc' } }), null)
-  assert.equal(renderIndicator({ agentPreset: 'code' }), null)
+  assert.notEqual(renderIndicator({ agentPreset: 'code' }), null)
+  assert.equal(renderIndicator({ agentPreset: 'chat' }), null)
+  assert.equal(renderIndicator({ projectionValues: { agentPreset: undefined }, agentPreset: 'code' }), null)
   assert.notEqual(renderIndicator({
     projectionValues: { agentPreset: 'ptc' }, agentPreset: 'unrelated',
   }), null)

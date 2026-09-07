@@ -25,6 +25,7 @@ import {
   wslPath,
 } from '../scripts/headless-host.mjs'
 import { probeReplRuntime, RUNTIME_PROBE_PREFIX } from '../scripts/repl-preflight.mjs'
+import { ptcToolsMode } from '../scripts/dsh-host-contract.mjs'
 
 const runtime = {
   provider: 'provider',
@@ -137,7 +138,7 @@ test('owns neutral config parsing and projection for both runners', () => {
   assert.equal(validateNeutralConfig(configRows(true), 'baseline config', 'disabled'), true)
   const projected = parseConfigDump(headlessConfigPatch(rows, runtime))
   assert.equal(projected.find(row => row.id === 'system-prompt').config.includeRuntimeContext, true)
-  assert.equal(projected.find(row => row.id === 'tools').config.mode, 'ptc')
+  assert.equal(projected.find(row => row.id === 'tools').config.mode, ptcToolsMode())
   assert.equal(projected.find(row => row.id === 'sandbox-policy').config.mode, 'danger-full-access')
   assert.equal(projected.find(row => row.id === 'approval').config.policy, 'never')
   assert.equal(validateHeadlessRuntimeConfig(projected, 'projected config', runtime), true)
@@ -159,13 +160,34 @@ test('owns neutral config parsing and projection for both runners', () => {
 
 test('checks generated tools settings against the public Host schema, independently of runner expectations', () => {
   const rows = parseConfigDump(headlessConfigPatch(configRows(), runtime))
-  assert.equal(rows.find(row => row.id === 'tools').config.mode, 'ptc')
+  assert.equal(rows.find(row => row.id === 'tools').config.mode, ptcToolsMode())
   assert.equal(validateHeadlessRuntimeConfig(rows, 'accepted config', runtime), true)
-  const retired = { ...runtime, toolsMode: 'code' }
-  const retiredRows = parseConfigDump(headlessConfigPatch(configRows(), retired))
-  assert.throws(() => validateHeadlessRuntimeConfig(retiredRows, 'retired config', retired), /PTC-EVAL-CONFIG:.*public DSH tools config/)
+  const unsupported = { ...runtime, toolsMode: 'unsupported-test-mode' }
+  const unsupportedRows = parseConfigDump(headlessConfigPatch(configRows(), unsupported))
+  assert.throws(() => validateHeadlessRuntimeConfig(unsupportedRows, 'unsupported config', unsupported), /PTC-EVAL-CONFIG:.*public DSH tools config/)
   rows.find(row => row.id === 'tools').config.maxParallelSubCalls = 0
   assert.throws(() => validateHeadlessRuntimeConfig(rows, 'invalid tools settings', runtime), /public DSH tools config/)
+})
+
+test('replaces both parts of the split host persona while retaining legacy configuration', () => {
+  const rows = configRows()
+  const prompt = rows.find(row => row.id === 'system-prompt').config
+  const neutral = prompt.persona
+  delete prompt.persona
+  prompt.personaPrefix = 'Deployment prefix'
+  prompt.personaSuffix = 'Deployment suffix'
+  const patch = parseConfigDump(headlessConfigPatch(rows, runtime))
+  const updated = patch.find(row => row.id === 'system-prompt').config
+  assert.equal(updated.personaPrefix, neutral)
+  assert.equal(updated.personaSuffix, '')
+  assert.equal(Object.hasOwn(updated, 'persona'), false)
+  Object.assign(prompt, updated)
+  assert.equal(validateNeutralConfig(rows, 'split persona'), true)
+  prompt.personaSuffix = 'Unexpected suffix'
+  assert.throws(() => validateNeutralConfig(rows, 'split persona'), /neutral system-prompt contract/)
+  prompt.personaSuffix = ''
+  prompt.personaPrefix = 'Unexpected prefix'
+  assert.throws(() => validateNeutralConfig(rows, 'split persona'), /neutral system-prompt contract/)
 })
 
 test('returns one timeout result after terminating the owned process', async () => {

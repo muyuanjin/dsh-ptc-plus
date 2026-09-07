@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { sessionEvents } from '../internal/session-events.js'
 import test from 'node:test'
 import { Context } from '@deepseek-ai/cordis'
 import { AgentRegistry } from '@deepseek-ai/dsh-agent'
@@ -170,12 +171,12 @@ test('acceptance audits preserve independent ownership, notice identity, and sur
   append(session, runtimeStateMessage(state('current')))
   append(session, runtimeStateMessage([]))
   const config = { allowed: [...state('current'), tip(1)].map(item => ({ name: item.name, maxChars: 100 })) }
-  const audited = auditRuntimeContexts(session.snapshotEvents(), config)
+  const audited = auditRuntimeContexts(sessionEvents(session), config)
   assert.deepEqual(audited.failures, [])
   assert.deepEqual(audited.snapshots.map(item => item.producer), Array(4).fill('ptc-plus'))
   assert.ok(audited.snapshots.at(-1).transitions.some(item => item.type === 'clear'))
   append(session, runtimeNoticeMessage(tip(1)))
-  assert.match(auditRuntimeContexts(session.snapshotEvents(), config).failures.join('\n'), /delivered identity/)
+  assert.match(auditRuntimeContexts(sessionEvents(session), config).failures.join('\n'), /delivered identity/)
   assert.equal(isRuntimeContextSource('plugin:ptc-plus:snapshot'), true)
   assert.equal(isRuntimeContextSource('plugin:ptc-plus:notice'), true)
   assert.equal(isRuntimeContextSource('plugin:ptc-plus'), false)
@@ -190,7 +191,7 @@ test('replacement audits use public order and notice audits retain historical id
   })
   session.append('request/header', {})
   const config = { allowed: [...state('current'), tip(1)].map(item => ({ name: item.name, maxChars: 100 })) }
-  const audited = auditRuntimeContexts(session.snapshotEvents(), config)
+  const audited = auditRuntimeContexts(sessionEvents(session), config)
   assert.deepEqual(audited.failures, [])
   assert.equal(audited.requests[0].sections[0].text, 'current')
   assert.deepEqual(projectRuntimeMessages(viewOf(session), state('current')), [])
@@ -199,7 +200,7 @@ test('replacement audits use public order and notice audits retain historical id
     content: [{ type: 'text', text: tip(1).text }],
   }))
   append(session, runtimeNoticeMessage(tip(1)))
-  assert.match(auditRuntimeContexts(session.snapshotEvents(), config).failures.join('\n'), /delivered identity/)
+  assert.match(auditRuntimeContexts(sessionEvents(session), config).failures.join('\n'), /delivered identity/)
 })
 
 test('pending assembly and pre-step cannot reacquire delivery after disposal', async () => {
@@ -316,7 +317,7 @@ async function hostFixture(t, includeRuntimeContext = true) {
 
 test('real AgentLoop keeps PTC transitions independent and honors runtime suppression', { timeout: 15000 }, async t => {
   const host = await hostFixture(t)
-  const messages = () => host.agent.session.snapshotEvents().filter(event => event.type === 'user/message')
+  const messages = () => sessionEvents(host.agent.session).filter(event => event.type === 'user/message')
   const count = producer => messages().filter(event => event.data.source.plugin === producer).length
   host.setState(state('first'))
   await host.wake()

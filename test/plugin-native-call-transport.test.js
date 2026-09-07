@@ -8,6 +8,7 @@ import { createScope } from '@deepseek-ai/dsh-scope'
 import { SystemPrompt } from '@deepseek-ai/dsh-system-prompt'
 import { ToolRuntime, defineTool } from '@deepseek-ai/dsh-tools'
 import { snapshotJsonValue } from '@deepseek-ai/dsh-util-values'
+import { ptcToolsMode } from '../scripts/dsh-host-contract.mjs'
 import { Config, apply } from '../index.js'
 import { CONFIG_DEFAULTS } from '../internal/config-spec.js'
 import { createDirectSurfaceOwner } from '../internal/direct-surface-owner.js'
@@ -527,7 +528,7 @@ test('preserves canonical run_code results through the real DSH ToolRuntime pipe
     isolation: 'worker-thread',
     async run() { return { logs: ['upstream'], value: 'upstream' } },
   })
-  new ToolRuntime(ctx, { mode: 'ptc' })
+  new ToolRuntime(ctx, { mode: ptcToolsMode() })
   let echoCalls = 0
   ctx.tools.register(defineTool({
     name: 'echo',
@@ -637,7 +638,7 @@ test('preserves canonical run_code results through the real DSH ToolRuntime pipe
     signal,
     agent,
   })
-  assert.equal(edit.isError, false)
+  assert.equal(edit.isError, false, JSON.stringify(edit))
   assert.equal(edit.value.edited, true)
   assert.deepEqual(edit.value.value, 2)
   session.append('tool/result', {

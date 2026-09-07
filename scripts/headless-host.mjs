@@ -4,8 +4,8 @@ import { readdir, readFile, rm, stat } from 'node:fs/promises'
 import { join, posix, win32 } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { parseDocument } from 'yaml'
-import { ToolRuntime } from '@deepseek-ai/dsh-tools'
 import { RUNTIME_PROBE_PREFIX } from './repl-preflight.mjs'
+import { hostToolRuntime, ptcToolsMode } from './dsh-host-contract.mjs'
 
 export const NEUTRAL_PERSONA = 'You are a coding agent powered by the {{model}} model. Your working directory is {{cwd}}.'
 export const HEADLESS_PREREQUISITE_CODE = 'PTC-EVAL-PREREQ'
@@ -228,9 +228,12 @@ export function validateNeutralConfig(rows, label, ptcPlus = 'enabled') {
     if (rows.some(row => row.id === absent)) throw new Error(`${label} unexpectedly contains ${absent}`)
   }
   const systemPrompt = configRow(rows, 'system-prompt', label).config
+  const splitPersona = systemPrompt?.personaPrefix !== undefined || systemPrompt?.personaSuffix !== undefined
   if (systemPrompt?.includeHarnessIdentity !== false
     || systemPrompt?.includeRuntimeContext !== true
-    || systemPrompt?.persona !== NEUTRAL_PERSONA) {
+    || (splitPersona
+      ? systemPrompt.personaPrefix !== NEUTRAL_PERSONA || systemPrompt.personaSuffix !== ''
+      : systemPrompt?.persona !== NEUTRAL_PERSONA)) {
     throw new Error(`${label} does not use the neutral system-prompt contract`)
   }
   const disabled = configRow(rows, 'ptc-plus', label).disabled === true
@@ -249,7 +252,8 @@ function headlessRuntimePolicy(runtime) {
     throw new Error(`${HEADLESS_CONFIG_CODE}: permissionMode must be set explicitly`)
   }
   return Object.freeze({
-    toolsMode: toolsMode.trim(),
+    toolsMode: toolsMode.trim() === HEADLESS_TOOLS_MODE
+      ? ptcToolsMode(hostToolRuntime(runtime.dshEntry)) : toolsMode.trim(),
     permissionMode: permissionMode.trim(),
     approvalPolicy: permissionMode.trim() === 'danger-full-access' ? 'never' : 'ask',
   })
@@ -258,7 +262,7 @@ function headlessRuntimePolicy(runtime) {
 export function validateHeadlessRuntimeConfig(rows, label, runtime) {
   const policy = headlessRuntimePolicy(runtime)
   try {
-    ToolRuntime.Config(structuredClone(configRow(rows, 'tools', label).config))
+    hostToolRuntime(runtime.dshEntry).Config(structuredClone(configRow(rows, 'tools', label).config))
   } catch (error) {
     throw new Error(`${HEADLESS_CONFIG_CODE}: ${label} violates the public DSH tools config: ${error.message}`, { cause: error })
   }
@@ -276,6 +280,8 @@ export function validateHeadlessRuntimeConfig(rows, label, runtime) {
 
 export function headlessConfigPatch(baseRows, runtime, options = {}) {
   const policy = headlessRuntimePolicy(runtime)
+  const prompt = configRow(baseRows, 'system-prompt', 'base DSH config').config
+  const splitPersona = prompt?.personaPrefix !== undefined || prompt?.personaSuffix !== undefined
   return [
     '- id: settings',
     '  disabled: true',
@@ -296,7 +302,9 @@ export function headlessConfigPatch(baseRows, runtime, options = {}) {
     '  config:',
     '    includeHarnessIdentity: false',
     '    includeRuntimeContext: true',
-    `    persona: ${JSON.stringify(NEUTRAL_PERSONA)}`,
+    ...(splitPersona
+      ? [`    personaPrefix: ${JSON.stringify(NEUTRAL_PERSONA)}`, '    personaSuffix: ""']
+      : [`    persona: ${JSON.stringify(NEUTRAL_PERSONA)}`]),
     '- id: tools',
     '  config:',
     `    mode: ${JSON.stringify(policy.toolsMode)}`,

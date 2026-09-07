@@ -30,6 +30,18 @@ append/flush queue. Legacy `ptc-plus/recovery-boundary` artifacts therefore
 remain an explicit, startup-before-restore migration concern rather than a
 runtime event handler concern.
 
+Host format upgrades are also explicit pre-restore work. The migration CLI may
+resolve the selected Host's public Session format catalog and use its strict
+conversion and current validation. PTC result metadata remains opaque to that
+catalog. The CLI therefore proves an ordered one-to-one relation between the
+unchanged tool records, remaps only PTC-owned sequence references, and validates
+the resulting timeline. Original call arguments and recorded effects are never
+rewritten or executed. Ambiguous records, invalid PTC evidence and mixed retired
+event conversions are refused. The source artifact remains intact and output
+uses the target Host's encoder; already-renumbered metadata requires a retained
+predecessor rather than inference from numeric values. See the
+[upgrade procedure](../installation.md#session-format-upgrades).
+
 The EasyRewrite host/client split is an architectural reference only; its
 session and workspace UI APIs are not a persistence recovery mechanism.
 

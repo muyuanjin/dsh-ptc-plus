@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { execFileSync, spawnSync } from 'node:child_process'
+import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import {
   copyFile,
   link,
@@ -7,6 +7,8 @@ import {
   mkdtemp,
   readFile,
   rm,
+  stat,
+  utimes,
   writeFile,
 } from 'node:fs/promises'
 import os from 'node:os'
@@ -500,10 +502,14 @@ if (tool === 'npm' && args[0] === 'view') {
   const pnpm = path.join(process.env.DSH_HOME, 'profiles', args[2], 'pnpm.cmd')
   const result = spawnSync('"' + pnpm + '" install', { shell: process.env.ComSpec, stdio: 'inherit' })
   process.exit(result.status ?? 1)
+} else if (tool === 'corepack' && args.at(-1) === 'prune' && process.env.PTC_MOCK_PRUNE_FAILURE === '1') {
+  console.error('Store is in use')
+  process.exit(19)
 }
 `)
   const reportPath = path.join(root, 'commands.jsonl')
   return {
+    root, cacheRoot,
     async reports() {
       return (await readFile(reportPath, 'utf8')).trim().split(/\r?\n/u).map(line => JSON.parse(line))
     },
@@ -533,6 +539,7 @@ if (tool === 'npm' && args[0] === 'view') {
           PTC_TEST_NPM_CLI: npmCliPath(),
           PTC_REGISTRY_REPORT: reportPath,
           PTC_MOCK_VIEW_FAILURE: '',
+          PTC_MOCK_PRUNE_FAILURE: '',
           ...additions,
         }),
       })
@@ -542,6 +549,49 @@ if (tool === 'npm' && args[0] === 'view') {
 
 for (const shellName of ['powershell.exe', 'pwsh.exe']) {
   const shellPath = resolveWindowsCommand(shellName)
+  test(`isolated launcher continues after locked cache cleanup and prune failures under ${shellName}`, {
+    skip: shellPath === null,
+  }, async t => {
+    const fixture = await developmentRegistryFixture(t)
+    const locked = path.join(fixture.cacheRoot, 'dsh', 'retired-locked')
+    const removable = path.join(fixture.cacheRoot, 'dsh', 'retired-unlocked')
+    await mkdir(locked, { recursive: true })
+    await mkdir(removable, { recursive: true })
+    const lockedFile = path.join(locked, 'node.exe')
+    await writeFile(lockedFile, 'locked cache fixture')
+    await writeFile(path.join(locked, '.install-complete'), 'complete')
+    await utimes(removable, new Date('2030-01-01'), new Date('2030-01-01'))
+    const locker = spawn(shellPath, ['-NoLogo', '-NoProfile', '-Command', String.raw`
+$stream = [IO.File]::Open($env:PTC_LOCKED_FILE, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+try {
+    [Console]::Out.WriteLine('locked')
+    [Console]::Out.Flush()
+    [Console]::In.ReadLine() | Out-Null
+} finally { $stream.Dispose() }
+`], { env: { ...process.env, PTC_LOCKED_FILE: lockedFile }, stdio: ['pipe', 'pipe', 'pipe'] })
+    const closed = new Promise(resolve => locker.once('close', resolve))
+    try {
+      await new Promise((resolve, reject) => {
+        locker.once('error', reject)
+        locker.stdout.once('data', resolve)
+        locker.stderr.once('data', data => reject(new Error(String(data))))
+        locker.once('exit', code => reject(new Error(`lock process exited ${code}`)))
+      })
+      const result = fixture.run(shellPath, { DSH_DEV_MAX_VERSIONS: '1', PTC_MOCK_PRUNE_FAILURE: '1' })
+      assert.equal(result.status, 0, result.stderr || result.stdout || result.error?.message)
+      assert.match(result.stdout, /Unable to remove cached directory/u)
+      assert.match(result.stdout, /Unable to prune the development pnpm store/u)
+      assert.match(result.stdout, /Starting DSH/u)
+      assert.equal(await readFile(lockedFile, 'utf8'), 'locked cache fixture')
+      await assert.rejects(readFile(path.join(locked, '.install-complete')), { code: 'ENOENT' })
+      await assert.rejects(stat(removable), { code: 'ENOENT' })
+      assert.match(await readFile(path.join(fixture.cacheRoot, 'dsh', 'dsh-0.0.0-test', '.install-complete'), 'utf8'), /0\.0\.0-test/u)
+      assert.ok((await fixture.reports()).some(entry => entry.tool === 'dsh' && entry.args.includes('--version')))
+    } finally {
+      locker.stdin.end('\n')
+      await closed
+    }
+  })
   for (const override of ['', ' http://127.0.0.1:42123/npm ']) {
     test(`isolated launcher uses ${override ? 'an explicit registry' : 'official npm'} throughout under ${shellName}`, {
       skip: shellPath === null,

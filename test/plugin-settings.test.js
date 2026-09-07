@@ -1609,8 +1609,8 @@ test('config schema defaults expose the settings switches', async () => {
     'tipEscalationFailures',
   ]
   assert.deepEqual(CONFIG_FIELDS.map(field => field.key), expectedOrder)
-  assert.deepEqual(CONFIG_GROUPS.map(group => group.key), ['switch', 'interface', 'core', 'optional', 'advanced', 'limits'])
-  assert.deepEqual(CONFIG_GROUPS.flatMap(group => group.fields), expectedOrder)
+  assert.deepEqual(CONFIG_GROUPS.map(group => group.key), ['switch', 'calls', 'syntax', 'recovery', 'extensions', 'interface', 'limits'])
+  assert.deepEqual(CONFIG_GROUPS.flatMap(group => group.fields).sort(), [...expectedOrder].sort())
   const fieldByKey = new Map(CONFIG_FIELDS.map(field => [field.key, field]))
   for (const group of CONFIG_GROUPS) {
     assert.ok(group.fields.every(key => fieldByKey.has(key)))
@@ -1621,8 +1621,20 @@ test('config schema defaults expose the settings switches', async () => {
     ['enhancedToolView', 'replViewEnabled', 'bindingAuthorButtonVisible'],
   )
   assert.deepEqual(
-    CONFIG_GROUPS.find(group => group.key === 'core').fields,
+    CONFIG_GROUPS.find(group => group.key === 'calls').fields,
     ['autoDescribeRunCode', 'canonicalizeToolCalls'],
+  )
+  assert.deepEqual(
+    CONFIG_GROUPS.find(group => group.key === 'syntax').fields,
+    ['looseTopLevelRedeclarations', 'looseTopLevelFunctionClassRedeclarations', 'autoRewriteImports', 'autoStripExports', 'autoSplitRedeclarations'],
+  )
+  assert.deepEqual(
+    CONFIG_GROUPS.find(group => group.key === 'recovery').fields,
+    ['durableReplay', 'tipsEnabled', 'tipCooldownMessages', 'tipEscalationFailures'],
+  )
+  assert.deepEqual(
+    CONFIG_GROUPS.find(group => group.key === 'extensions').fields,
+    ['userBindingsEnabled', 'cordisToolsEnabled'],
   )
   const defaults = await Config['~standard'].validate({})
   assert.equal(inject.includes('commands'), false)

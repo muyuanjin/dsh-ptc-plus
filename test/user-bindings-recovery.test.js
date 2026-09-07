@@ -52,10 +52,7 @@ async function rememberRequest(state, session, agent, signal = new AbortControll
 }
 
 function configuredBindingPrompt(assembly) {
-  return renderPrompt({
-    ...assembly,
-    sections: assembly.sections.filter(item => item.name === 'tools:ptc-plus-user-binding-defaults'),
-  })
+  return assembly.ptcContexts.find(item => item.name === 'tools:ptc-plus-user-binding-defaults')?.text ?? ''
 }
 
 function appendEditCall(events, callId, args) {
@@ -241,10 +238,11 @@ test('new sessions discover opted-in API documentation without evaluating module
   const nextAgent = ptcAgent(nextSession.id, nextSession)
   const withoutInjection = await rememberRequest(next, nextSession, nextAgent)
   assert.equal(withoutInjection.sections.some(item => item.name === 'tools:ptc-plus-user-binding-defaults'), false)
+  assert.equal(configuredBindingPrompt(withoutInjection), '')
   assert.doesNotMatch(JSON.stringify(withoutInjection.sections), /fileTools/)
 })
 
-test('binding prompts and declarations remain literal through the host prompt renderer', async t => {
+test('binding prompts and declarations remain literal in appended context without changing host templates', async t => {
   const home = await mkdtemp(join(tmpdir(), 'ptc-plus-literal-prompt-'))
   t.after(() => rm(home, { recursive: true, force: true }))
   const previousHome = process.env.DSH_HOME
@@ -267,9 +265,11 @@ test('binding prompts and declarations remain literal through the host prompt re
   input.variables.known = 'expanded'
   const assembly = await state.assembleStep(input, { agent: ptcAgent(session.id, session) })
   const rendered = renderPrompt(assembly)
-  assert.ok(rendered.includes(instructions))
-  assert.ok(rendered.includes(purpose))
-  assert.ok(rendered.includes('value: "{{input}}" | "{{known}}"'))
+  const configured = configuredBindingPrompt(assembly)
+  assert.ok(configured.includes(instructions))
+  assert.ok(configured.includes(purpose))
+  assert.ok(configured.includes('value: "{{input}}" | "{{known}}"'))
+  assert.equal(rendered.includes(instructions), false)
   assert.ok(rendered.includes('Host expanded.'))
   assert.equal(input.variables.known, 'expanded')
   assert.deepEqual(Object.keys(input.variables), ['known'])
@@ -298,6 +298,7 @@ test('model-context updates preserve live module state and recorded-value cold r
   await writeBindingsDocument(home, { entries: [entry] })
   const code = 'return counter.next()'
   const fingerprints = new Set()
+  let prefix
   for (const [index, modelContext] of [undefined, undefined,
     { includeDeclaration: true, instructions: 'Use counter.next() for the next count.' },
     { includeDeclaration: false, instructions: 'Keep the current count.' }].entries()) {
@@ -309,7 +310,10 @@ test('model-context updates preserve live module state and recorded-value cold r
     }, new AbortController().signal)
     assert.equal(saved.ok, true)
     const assembly = await rememberRequest(first, session, agent)
-    if (modelContext !== undefined) assert.ok(renderPrompt(assembly).includes(modelContext.instructions))
+    const currentPrefix = JSON.stringify({ system: renderPrompt(assembly), tools: assembly.tools })
+    prefix ??= currentPrefix
+    assert.equal(currentPrefix, prefix)
+    if (modelContext !== undefined) assert.ok(configuredBindingPrompt(assembly).includes(modelContext.instructions))
     const result = await first.runDurable(session.id, code, functions, { session })
     assert.equal(result.value, index + 1)
     assert.equal(initializations, 1)

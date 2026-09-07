@@ -67,13 +67,13 @@ Client half 通过 `settings.plugin.item` 卡片呈现全部配置。`enabled` �
 
 `internal/user-bindings-store.js` 独占 `$DSH_HOME/ptc-plus/bindings.json`。单一 JSON 文档避免源码与 metadata 双源；进程内队列、file lock、磁盘文本比较、expected revision 和 atomic replacement 共同防止并发覆盖。每次 mutation 在替换前验证完整 enabled snapshot 的声明预算；外部写入的超限文档按损坏输入处理。损坏输入保持显式 error，不会被空文档静默覆盖。候选与正式激活的相对 import 都以该文件所在目录为基准，因此 session cwd 不会改变 helper 的依赖解析。
 
-prompt assembly 为每个 PTC request 取得一次当前启用条目快照，作为随后 dispatch 的期望集合。`tools:ptc-plus-user-binding-defaults` system section 从首轮展示条目提示词及按开关选择的源码派生接口，按稳定 ID 排序，只描述配置 API 与执行时初始化契约；组装不执行源码，也不读取激活状态或加入 revision。`/binding` 保存并启用、会话中途启用或修改模型上下文后，下一次 assembly 更新该段，无需等待激活；同配置下的编写或激活不改变其字节。停用条目不贡献内容，关闭声明且提示词为空的条目同样省略。
+prompt assembly 为每个 PTC request 取得一次当前启用条目快照，作为随后 dispatch 的期望集合。`tools:ptc-plus-user-binding-defaults` 从首轮通过追加的 PTC runtime snapshot 展示条目提示词及按开关选择的源码派生接口，按稳定 ID 排序，只描述配置 API 与执行时初始化契约；组装不执行源码，也不读取激活状态或加入 revision。`/binding` 保存并启用、会话中途启停、删除或修改模型上下文后，下一次宿主允许且接受的步骤追加当前说明或撤销旧说明，无需等待激活。条目变化不改写 system、tool schema、顺序或旧消息；未变说明按已提交日志与公共 ordered surface 去重，重启后继续使用相同证据。停用条目不贡献内容，关闭声明且提示词为空的条目同样省略。
 
 独立 PTC state snapshot 中的活动声明只取期望集合与当前 session worker 已成功激活 snapshot 的交集，并要求完整条目的每个调用标识符仍具有相同的 `user-global` provenance。新启用或更新的条目先经过一个 cell 的 activation boundary，成功后才从下一轮进入 `tools:ptc-plus-user-bindings`；失败、请求 binding 冲突和 session-local shadow 不会产生虚假的活动声明。两种声明都服从 `modelContext.includeDeclaration`，均不包含实现源码；`tools:sdk` 与 direct-tool schema 不随条目内容改变。配置 API 不证明当前值，也不延长被 compaction 遮蔽的 session-local 状态。runtime 在 cell preflight 前以整条 entry 为单位把期望集合映射到 BindingCatalog，再由 worker 激活；条目级失败产生诊断并从该 cell 排除，不阻塞独立代码。失败 initializer 一旦发起 program call，整个 cell 进入 volatile，因此只包含成功条目的结果 snapshot 不会被误作该调用的 cold replay source。
 
 worker 对 namespace 成员和 top-level 导出保留 ECMAScript module live read；对顶层名称的赋值或重声明将该名称转换为 session-local binding，并使整个来源条目退出后续活动声明。binding module 使用稳定 worker-global proxy 访问当前 request 的全部 program namespace；proxy 在调用时读取 AsyncLocalStorage 中的原 cell lease，因此旧 continuation 即使恰逢下一 cell 运行也不能借用其 authority。新 namespace 可在后续 request 安装，已消失 namespace 的 proxy 不再提供 member；与任何既有 worker global 冲突时，bridge 在写入 global 前拒绝整个安装，避免覆盖 Node intrinsic 或留下部分 namespace。一个导出闭包一旦可能被普通 session binding 保存，worker 就无法证明其不可达，因此相应 synthetic-module 解析基准与已安装 proxy 保守保留到 worker 结束。worker 从未成功暴露过条目时，disabled 或 empty activation 不安装 bridge；若本次尝试全部失败，则在执行 cell 前移除本次安装的 bridge。
 
-配置段整体通过宿主只展开一次的 `ptc_plus_user_binding_defaults` assembly variable 传入 renderer，提示词与声明中的 `{{...}}` 保持字面量，不被解释为宿主变量。worker 对同一条目 ID 只比较源码、scope、namespace 调用名和有序导出列表来决定模块复用；模型上下文、purpose 或 top-level 显示名称变化不重置模块状态，也不重复初始化。
+配置段以消息文本直接投递，不进入 system renderer；提示词与声明中的 `{{...}}` 保持字面量，不被解释为宿主变量。投递遵守 runtime-context suppression、取消和步骤准入，解除屏蔽后的下一请求同步当前说明。worker 对同一条目 ID 只比较源码、scope、namespace 调用名和有序导出列表来决定模块复用；模型上下文、purpose 或 top-level 显示名称变化不重置模块状态，也不重复初始化。
 
 每个结算 cell 把实际激活的完整 snapshot 放入私有 `meta.dshPtcPlusUserBindings`。包含模型上下文的完整 fingerprint 继续拥有快照校验与 provenance。journal v6 的 `userBindingsReusePolicy` 为新 cell 记录 `implementation-v1`；v1-v5 则迁移为 `fingerprint-v1`，保留历史上因 purpose 或 top-level 显示名称变化而发生的模块重置。cold replay 重新验证历史源码及其所有派生字段，逐 cell 应用记录的复用策略；接续的 live cell 使用新策略，不因策略切换本身重置模块。恢复不读取当前文件来替换过去状态，也不重新派发初始化中的宿主调用。缺失或未知策略与其他无法证明的 metadata 一样，按 session recovery 的 unknown-boundary 规则收缩。
 
@@ -101,6 +101,8 @@ Client 遇到冲突后重读 catalog、draft 和 review；只有权威空 draft 
 PTC 动态状态通过 DSH 公共 `agent/pre-step` 追加为 `source.plugin: ptc-plus` 的独立 `user/message`。rewrite feedback、Cordis recovery 与已激活 Global User Binding 声明构成有界 `snapshot`；恢复 tip 是以 trigger/ordinal 为 identity 的 `notice`。快照只替代 PTC 旧状态，空快照撤销旧声明，不替代 authoring task、Skill、tool result 或其他 producer。PTC 更新不重发其他 owner 文本，其他 owner 的 aggregate 更新也不重发未变 PTC 信息。`systemPrompt.context` 中的空 witness 受 `includeRuntimeContext` 与 scoped suppression 管理且不渲染 aggregate 文本；assembly 捕获精确请求事实，pre-step 委托宿主 waterfall 后只对匹配且未取消的 accepted step 提议消息。已提交记录与公共 ordered surface 共同决定去重和状态重申；缺少公共 surface 时不推断可见状态，不投递。raw history 只可用于 tip identity/cooldown，不能让隐藏 binding 变成模型知识。关闭 PTC 后仅保留撤销旧声明所需的被动 presentation cleanup，不安装 runtime 或读取 binding 存储。Cordis 恢复使用规范 journal 与当前 agent/enable generation；Global User Binding 声明还必须由当前 worker 激活与精确请求来源证明。此类状态不得进入 `PromptAssembly.sections`，也不得通过 tool/schema/order 变化传递。来源、边界与历史兼容由 [ADR 0010](adr/0010-session-log-derived-recovery-tips.md) 拥有。
 
 所有模型可见输入都必须能从 session log 重建。静态 system/schema 由 `request/header` 保存，动态 context 由带来源的 `user/message` 保存；进程内临时状态不能直接成为未记录的模型输入。在同一插件版本与配置下，普通执行结果、可编辑目标、诊断和其他插件拥有的运行期变化都不得改变 header；`edit_run_code` 的身份与结果由真实 call/result 表达，不生成 edit feedback context。插件升级、显式配置变化、provider/model route 变化、真实 native capability schema 变化，以及 DSH 拥有的 history replacement 可以使缓存从首个变化 token 起失效。
+
+全局绑定条目属于可变的用户计算输入；修改其提示词、接口、源码或启用集合通过上述追加通道同步，不能套用静态插件配置变化的例外来重写 header。配置说明与活动声明均可从已提交 PTC snapshot 重建，且不为保留隐藏的 session-local 状态提供额外证明。
 
 缓存稳定性必须有 keyless contract test：跨每个相关生命周期状态序列化并比较完整 system text 与有序 tool schemas，同时断言 edit 不增加 runtime context。真实模型的 `cacheReadTokens` 只作为端到端补充；“不破坏缓存”表示插件保留已有可复用前缀，不承诺 provider 建立、保留或命中缓存。
 

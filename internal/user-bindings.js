@@ -623,7 +623,7 @@ export function userBindingsContext(snapshot) {
   }
 }
 
-export function userBindingsPromptSection(snapshot) {
+export function userBindingsConfiguredContext(snapshot) {
   const entries = normalizeUserBindingsSnapshot(snapshot).entries
     .filter(entry => {
       const { includeDeclaration, instructions } = bindingModelPreferences(entry.modelContext)

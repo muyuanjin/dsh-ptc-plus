@@ -5,7 +5,7 @@ export const MAX_TIMER_DELAY_MS = 2_147_483_647
 export const SETTINGS_NAMESPACE = 'ptc-plus'
 
 /**
- * Ordered field definitions for the plugin configuration card. `label` and
+ * Shared field definitions for the Host schema and settings card. `label` and
  * `description` are the canonical Host schema copy; `labelEn` and
  * `descriptionEn` carry the English settings-card copy. A field's description
  * exists in both locales or in neither.
@@ -269,7 +269,7 @@ export const CONFIG_FIELDS = Object.freeze([
   },
 ])
 
-/** Presentation groups keep high-attention decisions separate from advanced policy and limits. */
+/** Purpose-based presentation groups are independent of Host schema field order. */
 export const CONFIG_GROUPS = Object.freeze([
   {
     key: 'switch',
@@ -278,36 +278,40 @@ export const CONFIG_GROUPS = Object.freeze([
     fields: Object.freeze(['enabled']),
   },
   {
-    key: 'interface',
-    label: '界面显示',
-    labelEn: 'Interface display',
-    fields: Object.freeze(['enhancedToolView', 'replViewEnabled', 'bindingAuthorButtonVisible']),
-  },
-  {
-    key: 'core',
-    label: '核心功能',
-    labelEn: 'Core features',
+    key: 'calls',
+    label: '调用容错',
+    labelEn: 'Tool call tolerance',
     fields: Object.freeze(['autoDescribeRunCode', 'canonicalizeToolCalls']),
   },
   {
-    key: 'optional',
-    label: '可选能力',
-    labelEn: 'Optional capabilities',
-    fields: Object.freeze(['cordisToolsEnabled', 'userBindingsEnabled']),
-  },
-  {
-    key: 'advanced',
-    label: '高级行为',
-    labelEn: 'Advanced behavior',
+    key: 'syntax',
+    label: 'REPL 语法',
+    labelEn: 'REPL syntax',
     fields: Object.freeze([
       'looseTopLevelRedeclarations',
       'looseTopLevelFunctionClassRedeclarations',
       'autoRewriteImports',
       'autoStripExports',
       'autoSplitRedeclarations',
-      'durableReplay',
-      'tipsEnabled',
     ]),
+  },
+  {
+    key: 'recovery',
+    label: '状态与恢复',
+    labelEn: 'State and recovery',
+    fields: Object.freeze(['durableReplay', 'tipsEnabled', 'tipCooldownMessages', 'tipEscalationFailures']),
+  },
+  {
+    key: 'extensions',
+    label: '工具扩展',
+    labelEn: 'Tool extensions',
+    fields: Object.freeze(['userBindingsEnabled', 'cordisToolsEnabled']),
+  },
+  {
+    key: 'interface',
+    label: '界面显示',
+    labelEn: 'Interface display',
+    fields: Object.freeze(['enhancedToolView', 'replViewEnabled', 'bindingAuthorButtonVisible']),
   },
   {
     key: 'limits',
@@ -323,8 +327,6 @@ export const CONFIG_GROUPS = Object.freeze([
       'maxValueEdges',
       'maxValueArrayLength',
       'maxValueBigIntDigits',
-      'tipCooldownMessages',
-      'tipEscalationFailures',
     ]),
   },
 ])

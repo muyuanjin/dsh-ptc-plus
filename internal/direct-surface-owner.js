@@ -11,7 +11,7 @@ import {
   generatedRunCodeExecutionArguments,
   generatedRunCodeDescriptionMeta,
 } from './run-code-description.js'
-import { userBindingsContext, userBindingsPromptSection } from './user-bindings.js'
+import { userBindingsConfiguredContext, userBindingsContext } from './user-bindings.js'
 import { BINDING_AUTHORING_SDK } from './user-binding-authoring.js'
 
 const RUN_CODE_TOOL_DESCRIPTION = 'Evaluate the next TypeScript cell in this session-bound persistent REPL. Earlier top-level computation bindings remain available. REPL-captured program capability references expire with their cell; retained helpers should resolve current namespaces at invocation. Use `code` for the async-function body and `description` for its short UI summary. Successful image-bearing subtool results are attached after the cell.'
@@ -323,14 +323,16 @@ export function createDirectSurfaceOwner({
       const bindingContext = modelVisibleUserBindings === undefined
         ? undefined
         : userBindingsContext(modelVisibleUserBindings)
+      const bindingDefaults = userBindings === undefined ? undefined : userBindingsConfiguredContext(userBindings)
       const contexts = [
         ...runtimeContexts.contexts,
+        ...(bindingDefaults === undefined ? [] : [bindingDefaults]),
         ...(bindingContext === undefined ? [] : [bindingContext]),
       ]
       const projectsSections = presentation !== 'native' && Array.isArray(assembly.sections)
         && assembly.sections.some(section => section?.name === 'tools:sdk'
           || (sessionPtcProjection && section?.name === completedState.collapseSectionName))
-      let sections = projectsSections
+      const sections = projectsSections
         ? assembly.sections.map(section => {
             if (section?.name === 'tools:sdk') {
               return { ...section, text: capabilitySdk(section.text, userBindings !== undefined) }
@@ -341,12 +343,6 @@ export function createDirectSurfaceOwner({
             return section
           })
         : assembly.sections
-      const bindingDefaults = userBindings === undefined ? undefined : userBindingsPromptSection(userBindings)
-      if (bindingDefaults !== undefined) {
-        // DSH expands variable values once, preserving literal user template syntax.
-        sections = [...(sections ?? []), { ...bindingDefaults, text: '{{ptc_plus_user_binding_defaults}}' }]
-      }
-
       if (id !== undefined) {
         const nativeSchemas = presentation === 'ptc'
           ? new Map(toolSchemasForAgent(agent)
@@ -373,9 +369,6 @@ export function createDirectSurfaceOwner({
             ? adaptRunCodeSchema(tool)
             : tool),
         sections,
-        ...(bindingDefaults === undefined ? {} : {
-          variables: { ...assembly.variables, ptc_plus_user_binding_defaults: bindingDefaults.text },
-        }),
       }
     },
     contextsForRequest(context) {

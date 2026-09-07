@@ -13,25 +13,26 @@ REPL 对 composer 的接管优先使用当前公开 `sessionId`/`pendingInteract
 ## 设置命名空间
 
 Host half 通过 DSH 公共 `settings` 服务注册命名空间 `ptc-plus`。字段清单、默认值和校验来自 `internal/config-spec.js`，
-由 `index.js` 的 `Config` schema 与设置注册共用；client half 构建时把同一份字段清单打进 bundle，不在 UI 中复制默认值。卡片按“插件开关”“界面显示”“核心功能”“可选能力”“高级行为”“资源限制”分区显示。纯界面开关与影响执行的核心功能使用独立标题、留白与分隔线。
+由 `index.js` 的 `Config` schema 与设置注册共用；client half 构建时把同一份字段清单打进 bundle，不在 UI 中复制默认值。`CONFIG_GROUPS` 独立拥有按用途排列的展示顺序：插件总开关单独置顶，其后为“调用容错”“REPL 语法”“状态与恢复”“工具扩展”“界面显示”“资源限制”。每个字段只展示一次，各组使用独立标题、留白与分隔线。
 
 ## 可用设置
 
 | 分组 | 字段 | 说明 |
 | --- | --- | --- |
 | 开关 | `enabled` | 关闭后不注册 `run_code`/`edit_run_code`、不修改 system prompt、不创建 session runtime；保留设置 UI，Host 在下一允许步骤撤销旧 PTC 声明。 |
-| 展示 | `enhancedToolView` | 默认开启；关闭后注销 PTC Plus 的两个 keyed tool view，恢复 DSH 原生 generic row。 |
-| 展示 | `replViewEnabled` | 默认开启；控制顶级 REPL 页签，关闭时释放观察订阅，不影响设置中的全局管理入口。 |
-| 展示 | `bindingAuthorButtonVisible` | 默认开启；控制输入框的绑定编写快捷按钮，不撤销 `/binding` 命令。 |
-| 核心功能 | `autoDescribeRunCode` / `canonicalizeToolCalls` | 默认开启；允许缺少外层摘要的 `run_code` 执行，并修复 schema 可唯一确认的顶层 native 工具误调用。 |
-| 可选能力 | `cordisToolsEnabled` | 默认关闭；开启后为 PTC agent 加入官方 Cordis 工具、指引与精确的 `cordis-plugin-development` companion Skill，不发布同目录 sibling。 |
-| 可选能力 | `userBindingsEnabled` | 默认关闭；开启后加载跨会话 TypeScript helper，并显示全局绑定工作台、设置管理按钮与 `/binding` Agent 编写入口。 |
-| 高级行为 | `looseTopLevelRedeclarations` / `looseTopLevelFunctionClassRedeclarations` / `autoRewriteImports` / `autoStripExports` / `autoSplitRedeclarations` / `durableReplay` / `tipsEnabled` | function/class 重声明默认开启，其余默认开启；分别控制变量重声明、可写 function/class binding 的声明位置替换、模块语法适配、worker 重启后的状态恢复与失败提示。 |
-| 计算 | `computeMs` / `maxWallMs` | 单 cell event-loop active（包括同步阻塞）与总耗时预算；前者不证明 CPU 消耗。 |
-| Worker | `maxOldGenerationSizeMb` / `maxNestedRunCodeDepth` | kernel worker 内存与嵌套执行深度。 |
-| 输出 | `maxOutputBytes` | 单 cell 日志与返回结果的合计字节上限。 |
-| 返回值 | `maxValueNodes` / `maxValueEdges` / `maxValueArrayLength` / `maxValueBigIntDigits` | Value Graph 与大数组、BigInt 的返回上限。 |
-| 提示阈值 | `tipCooldownMessages` / `tipEscalationFailures` | 同类提示间隔与详细提示阈值。 |
+| 调用容错 | `autoDescribeRunCode` / `canonicalizeToolCalls` | 默认开启；允许缺少外层摘要的 `run_code` 执行，并修复 schema 可唯一确认的顶层 native 工具误调用。 |
+| REPL 语法 | `looseTopLevelRedeclarations` / `looseTopLevelFunctionClassRedeclarations` / `autoRewriteImports` / `autoStripExports` / `autoSplitRedeclarations` | 默认开启；控制变量重声明、可写 function/class binding 的声明位置替换、模块语法适配与混合解构重声明。 |
+| 状态与恢复 | `durableReplay` / `tipsEnabled` | 默认开启；控制 worker 重启后的状态恢复与失败恢复提示。 |
+| 状态与恢复 | `tipCooldownMessages` / `tipEscalationFailures` | 同类提示间隔与详细提示阈值。 |
+| 工具扩展 | `userBindingsEnabled` | 默认关闭；开启后加载跨会话 TypeScript helper，并在开关下方显示管理按钮，同时启用全局绑定工作台与 `/binding` Agent 编写入口。 |
+| 工具扩展 | `cordisToolsEnabled` | 默认关闭；开启后为 PTC agent 加入官方 Cordis 工具、指引与精确的 `cordis-plugin-development` companion Skill，不发布同目录 sibling。 |
+| 界面显示 | `enhancedToolView` | 默认开启；关闭后注销 PTC Plus 的两个 keyed tool view，恢复 DSH 原生 generic row。 |
+| 界面显示 | `replViewEnabled` | 默认开启；控制顶级 REPL 页签，关闭时释放观察订阅，不影响设置中的全局管理入口。 |
+| 界面显示 | `bindingAuthorButtonVisible` | 默认开启；控制输入框的绑定编写快捷按钮，不撤销 `/binding` 命令。 |
+| 资源限制 | `computeMs` / `maxWallMs` | 单 cell event-loop active（包括同步阻塞）与总耗时预算；前者不证明 CPU 消耗。 |
+| 资源限制 | `maxOldGenerationSizeMb` / `maxNestedRunCodeDepth` | kernel worker 内存与嵌套执行深度。 |
+| 资源限制 | `maxOutputBytes` | 单 cell 日志与返回结果的合计字节上限。 |
+| 资源限制 | `maxValueNodes` / `maxValueEdges` / `maxValueArrayLength` / `maxValueBigIntDigits` | Value Graph 与大数组、BigInt 的返回上限。 |
 
 ## enabled 开关与正文功能标记
 

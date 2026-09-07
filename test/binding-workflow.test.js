@@ -7,9 +7,23 @@ import { Session } from '@deepseek-ai/dsh-session'
 import { bindingWorkflowHost } from './binding-workflow-fixture.js'
 import { createUserBindingDraftProjection, readBindingAction } from '../internal/user-binding-draft-projection.js'
 import { auditBindingWorkflow } from '../scripts/acceptance-contract.mjs'
+import { readRuntimeMessage } from '../internal/runtime-messages.js'
 
 const scenario = JSON.parse(await readFile(new URL('../scripts/binding-workflow-scenario.json', import.meta.url), 'utf8'))
 const { entry } = scenario
+
+function configuredBindingPrompt(request) {
+  const snapshot = request.messages.map(readRuntimeMessage).filter(record => record?.form === 'snapshot').at(-1)
+  return snapshot?.sections.find(section => section.name === 'tools:ptc-plus-user-binding-defaults')?.text ?? ''
+}
+
+function assertStablePrefix(host) {
+  for (const request of host.requests) {
+    assert.equal(request.system, host.requests[0].system)
+    assert.deepEqual(request.tools, host.requests[0].tools)
+  }
+  assert.equal(host.events().some(event => event.type === 'request/header' && event.data.reason === 'change'), false)
+}
 
 test('binding authoring and mid-session changes publish the prompt independently of the interface', { timeout: 20000 }, async t => {
   const host = await bindingWorkflowHost(t)
@@ -24,32 +38,90 @@ test('binding authoring and mid-session changes publish the prompt independently
   const saved = await host.rpc('save-draft', { capability, version: draft.version, expectedRevision: catalog.revision, activate: false })
   assert.equal(saved.ok, true)
   await host.run('return 1')
-  assert.doesNotMatch(host.requests.at(-1).system, /Use workflow.value|declare const workflow/)
+  assert.equal(configuredBindingPrompt(host.requests.at(-1)), '')
   const enabled = await host.rpc('enable', { id: entry.id, expectedRevision: saved.value.revision })
   assert.equal(enabled.ok, true)
   const firstEnabledRequest = host.requests.length
   await host.run('return workflow.value()')
-  assert.match(host.requests[firstEnabledRequest].system, /Use workflow.value/)
-  assert.ok(host.requests[firstEnabledRequest].system.includes(authored.modelContext.instructions))
-  assert.match(host.requests[firstEnabledRequest].system, /declare const workflow/)
-  assert.doesNotMatch(host.requests[firstEnabledRequest].system, /successfully activated/)
+  const firstPrompt = configuredBindingPrompt(host.requests[firstEnabledRequest])
+  assert.ok(firstPrompt.includes(authored.modelContext.instructions))
+  assert.match(firstPrompt, /declare const workflow/)
+  assert.doesNotMatch(firstPrompt, /successfully activated/)
+  const changedPrompt = { ...authored, enabled: true, modelContext: { ...authored.modelContext,
+    instructions: 'Use workflow.value() only when the task needs the saved value.' } }
+  catalog = (await host.rpc('list')).value
+  assert.equal((await host.rpc('save', { entry: changedPrompt, expectedRevision: catalog.revision })).ok, true)
+  const firstChangedRequest = host.requests.length
+  await host.run('return workflow.value()')
+  assert.ok(configuredBindingPrompt(host.requests[firstChangedRequest]).includes(changedPrompt.modelContext.instructions))
+  assert.match(configuredBindingPrompt(host.requests[firstChangedRequest]), /declare const workflow/)
+  assert.doesNotMatch(configuredBindingPrompt(host.requests[firstChangedRequest]), /Render/)
   const promptOnly = { ...authored, enabled: true, modelContext: { includeDeclaration: false, instructions: 'Prefer workflow.value() over guessing defaults. Keep {{not valid}} and {{{nested}}} literal.' } }
   catalog = (await host.rpc('list')).value
   assert.equal((await host.rpc('save', { entry: promptOnly, expectedRevision: catalog.revision })).ok, true)
   await host.run('return workflow.value()')
-  assert.match(host.requests.at(-1).system, /Prefer workflow.value/)
-  assert.ok(host.requests.at(-1).system.includes(promptOnly.modelContext.instructions))
-  assert.doesNotMatch(host.requests.at(-1).system, /declare const workflow|Use workflow.value/)
+  assert.ok(configuredBindingPrompt(host.requests.at(-1)).includes(promptOnly.modelContext.instructions))
+  assert.doesNotMatch(configuredBindingPrompt(host.requests.at(-1)), /declare const workflow|Use workflow.value/)
+  const snapshotCount = () => host.events().filter(event => event.type === 'user/message'
+    && readRuntimeMessage(event.data)?.form === 'snapshot').length
+  const beforeRepeat = snapshotCount()
+  await host.run('return workflow.value()')
+  assert.equal(snapshotCount(), beforeRepeat)
   catalog = (await host.rpc('list')).value
   const disabled = await host.rpc('disable', { id: entry.id, expectedRevision: catalog.revision })
   assert.equal(disabled.ok, true)
   await host.run('return 2')
-  assert.doesNotMatch(host.requests.at(-1).system, /Prefer workflow.value|declare const workflow/)
+  assert.equal(configuredBindingPrompt(host.requests.at(-1)), '')
   assert.equal((await host.rpc('enable', { id: entry.id, expectedRevision: disabled.value.revision })).ok, true)
   await host.run('return workflow.value()')
-  assert.match(host.requests.at(-1).system, /Prefer workflow.value/)
-  assert.doesNotMatch(host.requests.at(-1).system, /declare const workflow/)
-  for (const request of host.requests) assert.deepEqual(request.tools, host.requests[0].tools)
+  assert.match(configuredBindingPrompt(host.requests.at(-1)), /Prefer workflow.value/)
+  assert.doesNotMatch(configuredBindingPrompt(host.requests.at(-1)), /declare const workflow/)
+  await host.restart()
+  const beforeRestartRequest = snapshotCount()
+  await host.run('return workflow.value()')
+  assert.equal(snapshotCount(), beforeRestartRequest)
+  assert.match(configuredBindingPrompt(host.requests.at(-1)), /Prefer workflow.value/)
+  catalog = (await host.rpc('list')).value
+  assert.equal((await host.rpc('remove', { id: entry.id, expectedRevision: catalog.revision })).ok, true)
+  await host.run('return 3')
+  assert.equal(configuredBindingPrompt(host.requests.at(-1)), '')
+  const snapshots = host.requests.at(-1).messages.map(readRuntimeMessage).filter(record => record?.form === 'snapshot')
+  assert.deepEqual(snapshots.at(-1).sections, [])
+  assert.ok(snapshots.some(record => record.sections.some(section => section.text.includes(authored.modelContext.instructions))))
+  assertStablePrefix(host)
+  for (let index = 1; index < host.requests.length; index++) {
+    const previous = host.requests[index - 1].messages
+    assert.deepEqual(host.requests[index].messages.slice(0, previous.length), previous)
+  }
+})
+
+test('initial binding prompts and changed interfaces honor host runtime-context suppression', { timeout: 20000 }, async t => {
+  const host = await bindingWorkflowHost(t)
+  const savedEntry = { ...entry, enabled: true, modelContext: { includeDeclaration: true, instructions: 'First request instructions.' } }
+  let catalog = (await host.rpc('list')).value
+  assert.equal((await host.rpc('save', { entry: savedEntry, expectedRevision: catalog.revision })).ok, true)
+  await host.run('return 0')
+  assert.match(configuredBindingPrompt(host.requests[0]), /First request instructions/)
+  assert.match(configuredBindingPrompt(host.requests[0]), /declare const workflow/)
+  assert.doesNotMatch(host.requests[0].system, /First request instructions|declare const workflow/)
+  const release = host.agent.ctx.systemPrompt.suppressRuntimeContext()
+  t.after(release)
+  catalog = (await host.rpc('list')).value
+  assert.equal((await host.rpc('save', { expectedRevision: catalog.revision, entry: {
+    ...savedEntry, source: 'export function revised(): string { return "revised" }',
+    modelContext: { includeDeclaration: true, instructions: 'Updated {{name}} instructions.' },
+  } })).ok, true)
+  const beforeSuppression = host.events().filter(event => event.type === 'user/message' && readRuntimeMessage(event.data)).length
+  await host.run('return 1')
+  assert.equal(host.events().filter(event => event.type === 'user/message' && readRuntimeMessage(event.data)).length, beforeSuppression)
+  assert.doesNotMatch(configuredBindingPrompt(host.requests.at(-1)), /Updated|revised/)
+  release()
+  const nextRequest = host.requests.length
+  await host.run('return workflow.revised()')
+  assert.match(configuredBindingPrompt(host.requests[nextRequest]), /Updated \{\{name\}\} instructions/)
+  assert.match(configuredBindingPrompt(host.requests[nextRequest]), /revised\(\): string/)
+  assert.doesNotMatch(configuredBindingPrompt(host.requests[nextRequest]), /value\(\)|First request/)
+  assertStablePrefix(host)
 })
 
 test('file-helper availability observes the active export without write/delete probes', { timeout: 20000 }, async t => {
@@ -114,9 +186,9 @@ test('public binding lifecycle preserves each configured prompt and separates sa
   const configuredStart = host.requests.length
   const observed = await host.run('return typeof workflow !== "undefined" && typeof workflow.value === "function"', scenario.statusQuestion)
   const configuredPrefix = JSON.stringify({ system: host.requests[configuredStart].system, tools: host.requests[configuredStart].tools })
-  assert.notEqual(configuredPrefix, prefix)
-  assert.match(host.requests[configuredStart].system, /declare const workflow/)
-  assert.doesNotMatch(host.requests[configuredStart].system, /successfully activated/)
+  assert.equal(configuredPrefix, prefix)
+  assert.match(configuredBindingPrompt(host.requests[configuredStart]), /declare const workflow/)
+  assert.doesNotMatch(configuredBindingPrompt(host.requests[configuredStart]), /successfully activated/)
   assert.equal(observed.data.message.content[0].isError, false)
   assert.ok(host.requests.some(request => JSON.stringify(request.messages).includes('"state":"saved"')
     || JSON.stringify(request.messages).includes('\\"state\\":\\"saved\\"')))

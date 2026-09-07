@@ -12,6 +12,7 @@ import { ToolRuntime } from '@deepseek-ai/dsh-tools'
 import { auditRuntimeContexts, isRuntimeContextSource } from '../scripts/acceptance-contract.mjs'
 import { createRuntimeMessageOwner, projectRuntimeMessages, sessionRuntimeContexts } from '../internal/runtime-contexts.js'
 import { latestRecoveryTip } from '../internal/recovery-tips.js'
+import { createUserBindingsSnapshot, userBindingsConfiguredContext } from '../internal/user-bindings.js'
 import { projectSessionLog, systemPromptSnapshotSections } from '../internal/session-log-view.js'
 import {
   PTC_DELIVERY_CONTEXT, PTC_STATE_NAMES, readRuntimeMessage, recoveryTipIdentity,
@@ -41,7 +42,7 @@ test('bounded message forms separate current state, notices, tasks, and malforme
     { ...notice, content: [{ type: 'text', text: 'x'.repeat(8193) }] },
     { ...snapshot, source: { ...snapshot.source, sections: [null] } },
   ]) assert.equal(readRuntimeMessage(altered), undefined)
-  for (const sections of [undefined, Array(4).fill(state('x')[0]), [{ name: 'other', text: 'x' }],
+  for (const sections of [undefined, Array(PTC_STATE_NAMES.length + 1).fill(state('x')[0]), [{ name: 'other', text: 'x' }],
     [...state('x'), ...state('x')], state(''), state('x'.repeat(65537))]) {
     assert.throws(() => runtimeStateMessage(sections), /invalid PTC/)
   }
@@ -98,6 +99,37 @@ test('canonical historical aggregate sections coexist with independent PTC messa
   const damaged = { events: [], get surface() { throw new Error('unavailable') } }
   assert.equal(viewOf(damaged).visibleRuntimeMessages, undefined)
   assert.equal(viewOf({ events: [], surface: { nodes: [99] } }).visibleRuntimeMessages, undefined)
+})
+
+test('configured binding prompts reconstruct, reappear after compaction, and withdraw through persisted snapshots', () => {
+  const context = instructions => userBindingsConfiguredContext(createUserBindingsSnapshot({ entries: [{
+    id: 'helper', name: 'helper', scope: 'namespace', enabled: true, source: 'export const value = 1',
+    modelContext: { includeDeclaration: false, instructions },
+  }] }))
+  const first = [context('Use helper.value for the first task.')]
+  const revised = [context('Use helper.value for the revised task. Render {{name}} literally.')]
+  const session = Session.create('configured-binding-context')
+  append(session, projectRuntimeMessages(viewOf(session), first)[0])
+  const restored = Session.create('restored-configured-context', sessionEvents(session))
+  assert.deepEqual(projectRuntimeMessages(viewOf(restored), first), [])
+  const update = projectRuntimeMessages(viewOf(restored), revised)
+  assert.equal(update.length, 1)
+  append(restored, update[0])
+  assert.deepEqual(projectRuntimeMessages(viewOf(restored), revised), [])
+  assert.ok(restored.deriveMessages()[0].content[0].text.includes('first task'))
+  const nodes = restored.surface.nodes
+  restored.append('user/message', user('Compacted task summary.'), {
+    surfaceOp: { op: 'replace', start: nodes[0], end: nodes.at(-1) }, sourceEventSeqs: [...nodes],
+  })
+  const reaffirmed = projectRuntimeMessages(viewOf(restored), revised)
+  assert.equal(reaffirmed.length, 1)
+  append(restored, reaffirmed[0])
+  const clear = projectRuntimeMessages(viewOf(restored), [])
+  assert.equal(clear.length, 1)
+  assert.deepEqual(readRuntimeMessage(clear[0]).sections, [])
+  append(restored, clear[0])
+  const cleared = Session.create('restored-cleared-context', sessionEvents(restored))
+  assert.deepEqual(projectRuntimeMessages(viewOf(cleared), []), [])
 })
 
 test('historical aggregate clearance and pending replacement require current PTC declarations', () => {

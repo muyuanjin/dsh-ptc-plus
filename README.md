@@ -127,7 +127,7 @@ import { readFile } from 'node:fs/promises'
 
 打开 **设置 → 插件配置** 使用上面的设置卡片。卡片跟随 DSH 界面语言：界面设为 English 时显示英文，设为中文时显示中文。`enabled` 是即时生效的总开关：关闭后停用 runtime，保留卡片和这个开关，并在下一次宿主允许的请求中撤销先前的 PTC 状态声明；开启后恢复 session runtime 以及 `run_code`/`edit_run_code`。
 
-设置按插件开关、界面显示、核心功能、可选能力、高级行为和资源限制分区。增强工具卡片、REPL 页签和绑定编写按钮位于“界面显示”；缺少摘要的执行与顶层工具误调用修复位于独立的“核心功能”区。
+总开关单独置顶，其余设置按用途分为调用容错、REPL 语法、状态与恢复、工具扩展、界面显示和资源限制。缺少摘要的执行与顶层工具误调用修复位于“调用容错”；重声明和模块语法支持位于“REPL 语法”；恢复提示及其间隔、阈值集中在“状态与恢复”。全局绑定和官方 Cordis 工具位于“工具扩展”，全局绑定开关下方可直接打开管理工作台。
 
 “使用 PTC Plus 增强工具卡片”默认开启，提供可展开的源码、结果、执行状态和功能标记。关闭后，`run_code` 与 `edit_run_code` 使用 DSH 原生工具卡片；这个开关只影响显示。
 
@@ -145,7 +145,9 @@ import { readFile } from 'node:fs/promises'
 
 每个条目的“模型上下文”包含“将接口声明提供给模型”开关和“给模型的提示词”文本，可直接修改后保存或取消，无需先点击“编辑”源码。接口声明始终从源码生成，开关默认开启；提示词可描述何时使用这个工具、调用约束或示例，留空则不添加。两者独立配置：取消声明勾选仍会提供已填写的提示词，两者都清空或关闭才完全省略该条目的模型上下文，不影响绑定执行。已启用条目在新会话首轮就可见；通过 `/binding` 保存并启用、会话中途启用或修改提示词后，下一轮请求也会收到当前配置，无需新建会话或先执行一次工具。`/binding` 会要求 Agent 随源码填写提示词和声明开关，草稿卡片保留这些配置供检查。
 
-已启用条目在下一次 `run_code` 中尝试激活为普通可写 REPL binding；首轮接口描述的是已配置 API，不证明初始化成功。只有 worker 已成功激活、仍与当前配置同源且未被 session-local binding 覆盖的完整条目，才在随后一轮获得活动声明。提示词配置不变时，激活状态不会改变 system 前缀；保存、启停或修改提示词在下一请求生效。请求自带的 program namespace 或 error class 优先于同名全局条目；该条目只在本次请求中激活失败并产生诊断，不会覆盖宿主值或阻止其他代码。binding module 所需的 program namespace 若与既有 worker global 同名，本次 cell 会显式失败且不会替换 Node intrinsic。失败 initializer 已发起 program call 时，cell 进入 volatile，避免 cold recovery 把缺少该源码的调用记录当作可重放历史。同名赋值或重声明只覆盖当前 session；cold recovery 使用结果 metadata 中记录的精确快照，不从当前磁盘内容猜测历史值。条目源码中的相对 import 在候选试运行和正式激活时都以 binding 存储目录为解析基准；已经保存到普通 session binding 的导出闭包会在当前 worker 生命周期内保留该解析基准和 program namespace bridge。
+提示词和所选接口通过追加的会话上下文提供。中途保存、启停、删除条目或修改提示词会在下一次宿主允许的请求中更新或撤销旧说明，不改写已有系统提示词和消息历史；未变说明不重复追加。DSH 屏蔽 runtime context 时暂缓投递，解除屏蔽后同步当前配置。
+
+已启用条目在下一次 `run_code` 中尝试激活为普通可写 REPL binding；首轮接口描述的是已配置 API，不证明初始化成功。只有 worker 已成功激活、仍与当前配置同源且未被 session-local binding 覆盖的完整条目，才在随后一轮获得活动声明。请求自带的 program namespace 或 error class 优先于同名全局条目；该条目只在本次请求中激活失败并产生诊断，不会覆盖宿主值或阻止其他代码。binding module 所需的 program namespace 若与既有 worker global 同名，本次 cell 会显式失败且不会替换 Node intrinsic。失败 initializer 已发起 program call 时，cell 进入 volatile，避免 cold recovery 把缺少该源码的调用记录当作可重放历史。同名赋值或重声明只覆盖当前 session；cold recovery 使用结果 metadata 中记录的精确快照，不从当前磁盘内容猜测历史值。条目源码中的相对 import 在候选试运行和正式激活时都以 binding 存储目录为解析基准；已经保存到普通 session binding 的导出闭包会在当前 worker 生命周期内保留该解析基准和 program namespace bridge。
 
 提示词和接口中的 `{{name}}` 等示例会原样提供给模型。仅修改提示词、接口注入开关或用途说明，不会重置已激活模块的状态，也不会重复执行初始化；修改源码、scope、namespace 调用名或导出列表后，下一次执行会重新初始化。旧会话按每一步当时的复用规则恢复，升级前因修改说明或顶层显示名称而发生的模块重置也会保留。
 

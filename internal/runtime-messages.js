@@ -4,6 +4,7 @@ export const PTC_DELIVERY_CONTEXT = 'tools:ptc-plus-message-delivery'
 export const PTC_STATE_NAMES = Object.freeze([
   'tools:ptc-plus-rewrite-info',
   'tools:ptc-plus-cordis-recovery',
+  'tools:ptc-plus-user-binding-defaults',
   'tools:ptc-plus-user-bindings',
 ])
 const MAX_STATE_CODE_UNITS = 65536

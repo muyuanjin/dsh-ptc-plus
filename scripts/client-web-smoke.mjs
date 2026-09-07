@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { parseArgs } from 'node:util'
@@ -27,6 +27,35 @@ let page
 const bindingMeasurements = []
 const bindingScrollMeasurements = []
 const replMeasurements = []
+const reloadMeasurements = []
+
+async function verifyWorkbenchReload(workbench, label) {
+  await workbench.locator('.ptcPlusBindingEditor').waitFor()
+  await page.waitForFunction(() => document.querySelector('.ptcPlusBindings')?.getAttribute('aria-busy') === 'false')
+  const filename = join(env.DSH_HOME, 'ptc-plus', 'bindings.json')
+  const original = JSON.parse(await readFile(filename, 'utf8'))
+  const id = await workbench.locator('.ptcPlusEntrySettings input').first().inputValue()
+  const entry = original.entries.find(entry => entry.id === id)
+  assert.ok(entry)
+  const externalSource = 'export function value(): number { return 202 }'
+  const next = structuredClone(original)
+  next.entries.find(entry => entry.id === id).source = externalSource
+  await writeFile(filename, JSON.stringify(next, null, 2) + '\n')
+  await workbench.getByRole('button', { name: 'Reload', exact: true }).click()
+  await workbench.getByRole('status').filter({ hasText: 'Reloaded from disk.' }).waitFor()
+  await workbench.getByRole('button', { name: 'Edit', exact: true }).click()
+  const editor = workbench.locator('.ptcPlusSourceBody .cm-content')
+  await editor.waitFor()
+  assert.equal(await editor.innerText(), externalSource)
+  await workbench.getByRole('button', { name: 'Save', exact: true }).click()
+  await workbench.getByRole('status').filter({ hasText: 'Entry saved' }).waitFor()
+  const saved = JSON.parse(await readFile(filename, 'utf8'))
+  assert.equal(saved.entries.find(entry => entry.id === id).source, externalSource)
+  reloadMeasurements.push({ entry: label, source: externalSource, saved: true })
+  await writeFile(filename, JSON.stringify(original, null, 2) + '\n')
+  await workbench.getByRole('button', { name: 'Reload', exact: true }).click()
+  await workbench.getByRole('status').filter({ hasText: 'Reloaded from disk.' }).waitFor()
+}
 
 async function verifyReplLayout(state) {
   await page.locator('[data-composer-seat] [contenteditable=true]').waitFor({ state: 'hidden' })
@@ -380,6 +409,7 @@ try {
     const clipboardSource = await page.evaluate(() => navigator.clipboard.readText())
     assert.equal(clipboardSource.replace(/\r\n/g, '\n'), copiedSource.replace(/\r\n/g, '\n'))
     await page.locator('.ptcPlusBindingSelect').first().click()
+    await verifyWorkbenchReload(page.locator('.ptcPlusConsole .ptcPlusBindings'), 'repl')
     assert.equal(await page.locator('.ptcPlusSourceBody .cm-content').count(), 0)
     await page.locator('.ptcPlusSourceToggle').click()
     await page.locator('.ptcPlusSourceCode pre.shiki').waitFor()
@@ -503,6 +533,7 @@ try {
   const manage = page.getByRole('button', { name: /^(Manage global bindings|管理全局绑定)$/ })
   await manage.click()
   await page.locator('.ptcPlusBindingsModal .ptcPlusBindings').waitFor()
+  if (values['binding-workflow']) await verifyWorkbenchReload(page.locator('.ptcPlusBindingsModal .ptcPlusBindings'), 'settings')
   await page.getByRole('button', { name: /^(Close global bindings workbench|关闭全局绑定工作台)$/ }).click()
   const bindingsSwitch = page.getByRole('switch', { name: /Global User Binding|全局用户 Binding/ })
   await bindingsSwitch.click()
@@ -539,7 +570,7 @@ try {
     browser: { version: browser.version(), channel: values['browser-channel'] ?? 'chromium' },
     settings: 'ready', conversation: 'ready', pageErrors: errors,
     bindingWorkflow: values['binding-workflow'] ? { model: 'deterministic-local-adapter', measurements: bindingMeasurements,
-      scrollMeasurements: bindingScrollMeasurements, replMeasurements } : null,
+      scrollMeasurements: bindingScrollMeasurements, replMeasurements, reloadMeasurements } : null,
   }, null, 2) + '\n')
   console.log(`Packed Client Web smoke passed (${version})`)
 } catch (error) {

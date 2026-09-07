@@ -382,12 +382,14 @@ test('worker observations preserve getter and Proxy counters and canonical resul
   const result = await state.runDurable('observation-effects', `
 let reads = 0
 const object = { answer: 42, get value() { reads++; return 1 }, toJSON() { reads++; return 2 } }
+const array = [42]; Object.defineProperty(array, '1', { get() { reads++; return 1 } })
 const proxy = new Proxy({}, { ownKeys() { reads++; return [] }, get() { reads++; return 3 } })
 return 42
 `)
   assert.equal(result.value, 42)
   const previews = new Map(resultMemory(result).observation.entries.map(entry => [entry.name, entry]))
-  assert.match(previews.get('object').text, /accessor: unreadable/)
+  assert.equal(previews.get('object').status, 'unreadable')
+  assert.match(previews.get('array').text, /accessor: unreadable/)
   assert.equal(previews.get('proxy').status, 'unreadable')
   const continued = await state.runDurable('observation-effects', 'return reads')
   assert.equal(continued.value, 0)

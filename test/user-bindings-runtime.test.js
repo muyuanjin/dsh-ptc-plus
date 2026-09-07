@@ -62,6 +62,25 @@ test('activates namespace and top-level helpers as ordinary REPL values', async 
   }), { logs: [], value: [9, 'NEXT'] })
 })
 
+test('Unicode binding declarations identify the installed and reusable values exactly', async t => {
+  const runtime = new SessionRuntime()
+  t.after(() => runtime.dispose())
+  const userBindings = snapshot([
+    binding('unicode', '\u540d\u79f0', 'namespace', 'export const answer = 42'),
+    binding('unicode-export', 'Unicode exports', 'top-level', 'export const \u503c = 7'),
+  ])
+  assert.match(userBindings.entries[0].declaration, /declare const \u540d\u79f0:/)
+  assert.match(userBindings.entries[1].declaration, /declare const \u503c:/)
+  for (let index = 0; index < 2; index++) {
+    const result = await runtime.run('unicode', {
+      program: 'return [\u540d\u79f0.answer, \u503c, globalThis["\u540d\u79f0"] === \u540d\u79f0]',
+      bindings: [], userBindings,
+    })
+    assert.equal(result.error, undefined)
+    assert.deepEqual(result.value, [42, 7, true])
+  }
+})
+
 test('rolls back every top-level name when one entry name cannot be installed', async (t) => {
   const runtime = new SessionRuntime({ durableReplay: false })
   t.after(() => runtime.dispose())

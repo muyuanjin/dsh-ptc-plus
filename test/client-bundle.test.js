@@ -319,6 +319,7 @@ test('settings, header indicator, and tool rows follow the DSH locale dictionari
   const [indicator] = slotEntries.filter(({ options }) => options.name === 'conversation.session.header.actions')
   const [authorButton] = slotEntries.filter(({ options }) => options.name === 'conversation.input.left')
   const [bindingCommand] = slotEntries.filter(({ options }) => options.name === 'conversation.chat.commandview')
+  assert.equal(indicator.component({ useProjection: undefined }), null)
   assert.equal(slotEntries.some(({ options }) => options.name === 'conversation.chat.turnTail'), false)
   const toolviews = slotEntries.filter(({ options }) => options.name === 'tool.call.toolview')
   assert.equal(card.options.locale, ns)
@@ -456,7 +457,7 @@ test('settings, header indicator, and tool rows follow the DSH locale dictionari
         { id: 'disabled', name: 'Disabled entry', scope: 'namespace', symbols: ['disabled'], enabled: false },
       ],
     },
-    null, '', '', null, false, false, 0, null, false, '', false,
+    null, '', '', null, null, false, false, 0, null, false, '', false,
   ]
   let toggleStateCursor = 0
   React.useState = () => [toggleState[toggleStateCursor++], () => {}]
@@ -578,6 +579,7 @@ test('settings, header indicator, and tool rows follow the DSH locale dictionari
   await new Promise(resolve => setImmediate(resolve))
   const authorControl = authorButton.component(authorProps)
   assert.notEqual(authorControl, null)
+  assert.equal(authorButton.component({ ...authorProps, useInput: undefined }), null)
   const authorAction = authorControl.children[0].children[0]
   assert.equal(authorAction.type, 'button')
   assert.equal(authorAction.props['aria-label'], 'bindings.authorOpen')

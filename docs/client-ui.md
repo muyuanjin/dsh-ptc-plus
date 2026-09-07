@@ -2,7 +2,7 @@
 
 PTC Plus 在 DSH Web/Desktop 的 Settings → Plugin configuration 中提供**插件设置卡片**。
 
-Client 根入口只依赖 `settingsScope`、`slots`、`locale` 和 `connection`。会话贡献等待公共 `uiSession`；绑定编写的数据定义通过独立子 scope 使用 `uiConversation.events`，composer 入口再等待 `remote.commands`。缺失、卸载或迟到的可选 provider 只影响对应贡献，settings 和独立正文 tool view 继续可用；当前实现不保留旧 `conversationEvents` 或 raw Session snapshot 适配。
+Client 根入口只依赖 `settingsScope`、`slots`、`locale` 和 `connection`。头部贡献直接消费公开 session slot 提供的 `useProjection`；REPL 注册另依赖 `sessions` 的当前选择和 projection face。命令卡片在 `uiConversation` scope 中等待公开 command slot，composer 入口再等待 `remote.commands` 与公开输入 hooks。缺失、卸载或迟到的 provider 只影响需要它的贡献；没有 `useProjection` 时不挂载依赖它的会话视图，命令卡片保留宿主结果但不提供草稿操作。没有输入 hooks 时不挂载编写快捷按钮。设置和独立正文 tool view 继续可用；不读取旧顶层字段、私有 store 或自行重建会话状态。
 
 组件通过 renderer 提供的 `useProjection` 和注入 `hooks` 读取外部状态，设置写入与 RPC 由 apply 层注入 callback。业务组件不自行构造 external-store hook。设置、slot、provider 与插件释放共同拥有注册和订阅的生命周期；开关关闭时撤销相关贡献。
 
@@ -50,6 +50,8 @@ Host half 通过 DSH 公共 `settings` 服务注册命名空间 `ptc-plus`。字
 
 Client 的所有管理操作都通过 DSH Connection RPC `/ptc-plus-bindings` 发给 Host owner；Connection 在分派前执行 Host/Origin 检查与浏览器认证。Client 不直接读写 `$DSH_HOME/ptc-plus/bindings.json`，不自行判断冲突，也不把 settings 同步当作通用 RPC。Host 返回 revision、结构化条目视图和错误；外部文件变化或过期 revision 会拒绝写入。编辑中也可重新加载目录与 revision，保留未保存的源码、条目字段和编辑器状态，再由用户明确重试保存；刷新不自动重复写入，也不把磁盘内容覆盖到草稿。
 
+保存 revision 随已加载源码保存，单独更新目录不能使缓存源码取得更新的保存资格。非编辑状态重新加载时，同步选中条目的源码、声明和编辑基线；条目已删除则清除选中内容。编辑中重新加载会保留草稿，更新保存 revision 和取消编辑后的基线；取消时显示最近读到的磁盘条目。目录与条目读取的 revision 不一致时保留原状态，提示再次重新加载。过期请求和已释放工作台的响应不能覆盖当前内容。重新加载相同源码保留临时控制台环境，源码变化或条目删除则释放环境，不自动执行命令。
+
 PTC session 的头部弹窗在功能启用时增加 Session 与 Global 页签。Session 保留当前可复用 binding 的只读检查；Global 展示持久化目录的启停状态，可展开精确源码并预填 `/binding edit <id> `。目录“启用”不证明当前会话已成功激活。composer 已有非空草稿时保留原文并显示反馈；公开接口不提供 focus 时，Client 不访问宿主 DOM 强制聚焦。名称和成员被限制在各自 grid 列内，长名称与成员列表提供完整 title；编辑动作保持独立点击区域。窄弹窗不复制设置工作台的完整编辑、候选运行、启停、导入或删除功能。
 
 接受候选时，Host 生成不可猜测的 locator，并把 locator、精确 candidate 源码和请求/命令身份放入接受结果的私有 metadata。`ptcPlusBindingDraft` projection 分别拥有可写草稿定位与只读历史；历史源码不从当前 catalog 重读。Connection RPC 没有 caller/session identity，所有草稿操作凭 locator，不信任 payload session ID。Binding 命令卡片通过公共 `conversation.chat.commandview` 的 `binding` key 接管宿主命令行，直接读取宿主折叠后的 CommandNode，不注册 turn-tail 展示或重复关联命令事件。卡片使用公共 `Button` 和 `CodeBlock` 呈现保存、丢弃与源码；缺少原语时才降级。源码区不嵌套另一层卡片边框，已结束状态紧凑排列，源码可通过原生 details 继续展开。
@@ -90,11 +92,11 @@ REPL 是单页工作区，上方为“会话绑定”，下方直接展示完整
 
 成功执行后，Acorn 从不含 await 的实际 lowered program 中证明顶层变量的 storage：`var` 通过 REPL context 的自有 data descriptor 读取并拒绝根访问器；`let`/`const` 通过 `vm.runInContext` 读取合法裸标识符，其 lexical storage 优先于同名全局属性，包括未初始化时。失败 cell 不增加证明；含 await 的程序可能被 Node REPL 改变 storage，因此不推测其 binding 存储位置。未证明的名称不会展示碰巧同名的全局属性。该机制不调用 REPL evaluator、不改变最后求值结果、不开放调试连接。`node:util.types.isProxy` 在任何反射操作前排除 Proxy，包括 revoked Proxy；对象通过自有 descriptor 生成浅层预览，不触发 getter、原型读取、`toJSON` 或自定义 formatter。函数、Symbol、BigInt、模块 namespace 和无法证明 storage 的名称显示不可读取。
 
-最多观察 128 个名称，每项文本最多 512 个 UTF-16 code unit、对象最多展示 5 个自有属性；数组只读前 5 个槽位，空槽明确标识，嵌套值不展开。TypedArray（含 Buffer）与 String 包装对象分别通过 `node:util.types.isTypedArray`、`node:util.types.isStringObject` 在枚举前识别并标为不可读取，包括跨 realm 实例和子类，避免为预览分配全部二进制或字符索引；普通字符串仍提供有界文本预览。Worker 在 100 ms 后停止新的 lexical read，单项 VM 读取上限为 25 ms；普通对象的原生 key 枚举仍不能抢占，展示限额不宣称任意 heap 检查成本恒定。Host 最多等待 250 ms，随后显示没有预览的已结算结果。
+最多观察 128 个名称，每项文本最多 512 个 UTF-16 code unit。数组只按固定索引读取前 5 个自有槽位，空槽明确标识，嵌套值不展开。除数组外的对象统一显示不可读取，包括普通对象、TypedArray、Buffer、String 包装对象和模块 namespace；预览不枚举任何值的完整属性集合。普通字符串仍提供有界文本预览。Worker 在 100 ms 后停止新的 lexical read，单项 VM 读取上限为 25 ms。Host 最多等待 250 ms，随后显示没有预览的已结算结果。
 
 执行 `done` 与后续 `observation` 是独立的私有消息。待观察名称先由 `createReplMemorySnapshot` 按展示清单的名称、定义来源、条目数量和源码总预算筛选，被省略的 binding 不占用观察名额，也不影响其他条目的预览。Host 先结束 cell 的计算预算、lease 与 journal 结算，再接收可选预览；遗漏、迟到或畸形预览不改变执行结果，不触发 worker 重启。预览按最终 catalog 的名称过滤，只附加到私有 UI metadata，不进入模型上下文、canonical value 或 journal，不作为 replay 或保留隐藏 binding 的证据。cold replay 不采集历史观察，restore/discarded 与原有 generation、模型可见 frontier 失效规则共用。完整边界见 [ADR 0024](adr/0024-repl-console-observation.md)。
 
-250 ms 只是等待可选预览的上限，不表示 worker 已就绪。下一 cell 先经私有 `prepare` / `ready` 握手，匹配的首次 `ready` 才派发代码。`computeMs` / `maxWallMs` 预算通常在发送 `prepare` 前启动；同一 worker 尚未完成的观察暂缓计时，直到收到该观察的完成消息或匹配的 `ready`，且不重置已经启动的预算。观察身份独立于 250 ms 的展示等待记录。等待期间仍可取消，并保留 session disposal 与 worker failure 的处理；过期、畸形或重复的就绪消息不能启动额外执行。大型对象检查可能增加排队等待，但不消耗下一 cell 的执行预算；后台用户回调造成的非观察阻塞仍会正常超时和重置 worker。
+250 ms 只是等待可选预览的上限，不表示 worker 已就绪。下一 cell 先经私有 `prepare` / `ready` 握手，匹配的首次 `ready` 才派发代码。`computeMs` / `maxWallMs` 预算通常在发送 `prepare` 前启动；同一 worker 尚未完成的观察暂缓计时，直到收到该观察的完成消息或匹配的 `ready`，且不重置已经启动的预算。观察身份独立于 250 ms 的展示等待记录。等待期间仍可取消，并保留 session disposal 与 worker failure 的处理；过期、畸形或重复的就绪消息不能启动额外执行。观察不消耗下一 cell 的执行预算；后台用户回调造成的非观察阻塞仍会正常超时和重置 worker。
 
 live 配置若因宿主能力缺失或 runtime 安装/重配置失败，会先回滚所有已创建或更新的 owner，再把持久设置回写为上一次已应用值；回滚写入失败时 Host 记录 activation diagnostic，避免静默把配置显示成不存在的 runtime。
 

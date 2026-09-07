@@ -51,6 +51,28 @@ function snapshotWire(entries, revision = 1) {
   }
 }
 
+test('binding names are exact identifiers across entries, exports and snapshots', () => {
+  const source = 'export const answer = 42'
+  for (const name of ['helpers ', ' helpers', 'helpers/**/', 'helpers\n', '{ helpers }',
+    '[helpers]', 'helpers = 1, extra', 'helpers = 1; const extra', String.raw`h\u0065lpers`,
+    String.raw`\u0074ools`, 'tools/**/', 'await']) {
+    assert.throws(() => normalizeUserBindingEntry(entry({ name, source })), /identifier/, name)
+    assert.throws(() => normalizeUserBindingEntry(entry({ symbols: [name], source })), /identifier/, name)
+  }
+  assert.throws(() => normalizeUserBindingEntry(entry({
+    source: 'const answer = 42; export { answer as "helpers " }',
+  })), /identifier/)
+  assert.throws(() => normalizeUserBindingEntry(entry({ name: 'tools', source })), /reserved/)
+  for (const name of ['$', '_helpers', 'helpers2', '\u540d\u79f0', 'a\u200cb']) {
+    const normalized = normalizeUserBindingEntry(entry({ name, source }))
+    assert.equal(normalized.name, name)
+    assert.equal(normalized.bindings[0].name, name)
+    const ast = parse(normalized.declaration, { plugins: ['typescript'] })
+    assert.equal(ast.program.body[0].declarations[0].id.name, name)
+    assert.equal(normalizeUserBindingsSnapshot(snapshotWire([normalized])).entries[0].name, name)
+  }
+})
+
 test('derives bounded namespace and top-level declarations from named value exports', () => {
   const namespace = normalizeUserBindingEntry(entry({ purpose: '' }))
   assert.deepEqual(namespace.symbols, ['add', 'later', 'Counter', 'truth'])

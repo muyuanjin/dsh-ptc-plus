@@ -33,7 +33,7 @@ async function clientPlugin() {
   })
 }
 
-async function fixture({ enabled = true, bindings = true, conversation = true, repl = false, composer = false, rpc, watchRpc, commands, turn, setupEvents } = {}) {
+async function fixture({ enabled = true, bindings = true, conversation = true, repl = false, composer = false, uiSession = true, rpc, watchRpc, commands, turn, setupEvents } = {}) {
   const runtime = await SlotTestRuntime.create()
   cleanups.push(() => runtime.dispose())
   const settings = stubSettingsScope()
@@ -101,7 +101,10 @@ async function fixture({ enabled = true, bindings = true, conversation = true, r
       }) : null,
       turn ? props.renderSlotChain('conversation.chat.turnTail', { turn }) : null)))
   const plugin = await clientPlugin()
-  const feature = await runtime.mount(plugin)
+  const feature = await runtime.mount(uiSession ? plugin : {
+    inject: plugin.inject,
+    apply(ctx) { plugin.apply(ctx.isolate('uiSession')) },
+  })
   return { runtime, settings, value, events, feature, provideConversation, conversationProvider, remote, input, rpcCalls,
     setLocale(active) { localeSnapshot.active = active; localeSnapshot.revision++; for (const listener of localeListeners) listener() } }
 }
@@ -145,6 +148,31 @@ test('REPL tab follows the current PTC projection and releases every registratio
   expect(tabs()).toHaveLength(1)
   await feature.dispose()
   expect(tabs()).toHaveLength(0)
+  expect(settings.listenerCount()).toBe(0)
+})
+
+test('session contributions use public slot inputs without a shared uiSession prerequisite', async () => {
+  const { runtime, feature, settings, conversationProvider } = await fixture({
+    uiSession: false, repl: true,
+    commands: { list: async () => ({ ok: true, value: [{ name: 'binding' }] }) },
+    rpc: async () => ({ ok: true, value: { revision: 1, entries: [] } }),
+  })
+  const view = runtime.renderRoot()
+  await runtime.flush()
+  expect(view.container.querySelector('.ptcPlusActive')).not.toBeNull()
+  expect(view.container.querySelector('.ptcPlusConsole')).not.toBeNull()
+  expect(view.container.querySelector('.ptcPlusAuthorButton')).not.toBeNull()
+  expect(runtime.slots.entries('conversation.chat.commandview')).toHaveLength(1)
+  await conversationProvider.dispose()
+  await runtime.flush()
+  expect(runtime.slots.entries('conversation.chat.commandview')).toHaveLength(0)
+  expect(view.container.querySelector('.ptcPlusActive')).not.toBeNull()
+  expect(view.container.querySelector('.ptcPlusConsole')).not.toBeNull()
+  expect(view.container.querySelector('.ptcPlusCard')).not.toBeNull()
+  await feature.dispose()
+  for (const name of ['conversation.session.header.actions', 'conversation.view', 'conversation.input.left']) {
+    expect(runtime.slots.entries(name)).toHaveLength(0)
+  }
   expect(settings.listenerCount()).toBe(0)
 })
 
@@ -303,7 +331,7 @@ test.each([false, true])('catalog reload preserves conflicting edits before expl
     expect(editor.state.doc.toString()).toBe(source)
     expect(nameInput.value).toBe('myDraft')
     expect(rpcCalls.filter(call => call.endpoint === 'save')).toHaveLength(1)
-    expect(rpcCalls.filter(call => call.endpoint === 'load')).toHaveLength(1)
+    expect(rpcCalls.filter(call => call.endpoint === 'load')).toHaveLength(expected === 'reload failed' ? 1 : 2)
   }
   fireEvent.click(button('Save'))
   await runtime.flush()
@@ -312,6 +340,174 @@ test.each([false, true])('catalog reload preserves conflicting edits before expl
   expect(saves[1].payload.entry).toMatchObject({ source, name: 'myDraft' })
   expect(workbench().querySelector('.ptcPlusSourceBody .cm-content')).toBeNull()
   expect(workbench().textContent).toContain('Entry saved')
+})
+
+test.each([false, true])('read-only reload synchronizes source and its save revision (repl=%s)', async repl => {
+  let entry = { id: 'reload', name: 'helper', scope: 'namespace', purpose: '', enabled: false,
+    symbols: ['value'], source: 'export const value = 1', declaration: 'declare const helper: { value: number }' }
+  let revision = 1
+  let deleted = false
+  const { runtime, rpcCalls } = await fixture({ repl, rpc: async (endpoint, payload) => {
+    if (endpoint === 'list' || endpoint === 'reload') return { ok: true, value: {
+      revision, entries: deleted ? [] : [{ ...entry, source: undefined }],
+    } }
+    if (endpoint === 'load') return { ok: true, value: { revision, entry } }
+    if (endpoint === 'validate') return { ok: true, value: { ...payload.entry, declaration: entry.declaration } }
+    if (endpoint === 'save') {
+      expect(payload.expectedRevision).toBe(revision)
+      entry = { ...entry, ...payload.entry }
+      return { ok: true, value: { revision: ++revision, entries: [entry] } }
+    }
+    if (endpoint === 'console-release') return { ok: true, value: null }
+    if (endpoint === 'console-run') return { ok: true, value: { environment: 'reload-console', logs: [], output: '1', expiresAt: null } }
+    throw new Error(endpoint)
+  } })
+  const view = runtime.renderRoot()
+  await runtime.flush()
+  if (!repl) {
+    await runtime.sessions.setCurrent(undefined)
+    fireEvent.click(view.container.querySelector('.ptcPlusHeader'))
+    fireEvent.click([...view.container.querySelectorAll('button')].find(button => button.textContent === 'Manage global bindings'))
+    await runtime.flush()
+  }
+  const workbench = () => document.querySelector('.ptcPlusBindings')
+  const button = name => [...workbench().querySelectorAll('button')].find(button => button.textContent === name || button.getAttribute('aria-label') === name)
+  const consoleInput = EditorView.findFromDOM(workbench().querySelector('.ptcPlusExecutionInput .cm-content'))
+  consoleInput.dispatch({ changes: { from: 0, to: consoleInput.state.doc.length, insert: 'value' } })
+  await runtime.flush()
+  fireEvent.click(button('Run'))
+  await runtime.flush()
+  fireEvent.click(button('Reload'))
+  await runtime.flush()
+  expect(rpcCalls.filter(call => call.endpoint === 'console-release')).toHaveLength(0)
+  entry = { ...entry, source: 'export const value = "external"', declaration: 'declare const helper: { value: string }' }
+  revision++
+  fireEvent.click(button('Reload'))
+  await runtime.flush()
+  expect(workbench().textContent).toContain('value: string')
+  expect(rpcCalls.filter(call => call.endpoint === 'console-release')).toHaveLength(1)
+  fireEvent.click(button('Edit'))
+  await runtime.flush()
+  const editor = EditorView.findFromDOM(workbench().querySelector('.ptcPlusSourceBody .cm-content'))
+  expect(editor.state.doc.toString()).toBe(entry.source)
+  fireEvent.click(button('Save'))
+  await runtime.flush()
+  expect(rpcCalls.find(call => call.endpoint === 'save').payload).toMatchObject({
+    entry: { source: 'export const value = "external"' }, expectedRevision: 2,
+  })
+  fireEvent.click(button('Edit'))
+  await runtime.flush()
+  const nextEditor = EditorView.findFromDOM(workbench().querySelector('.ptcPlusSourceBody .cm-content'))
+  nextEditor.dispatch({ changes: { from: 0, to: nextEditor.state.doc.length, insert: 'export const value = "draft"' } })
+  entry = { ...entry, source: 'export const value = "new baseline"' }
+  revision++
+  fireEvent.click(button('Reload'))
+  await runtime.flush()
+  expect(nextEditor.state.doc.toString()).toBe('export const value = "draft"')
+  fireEvent.click(button('Cancel'))
+  await runtime.flush()
+  fireEvent.click(button('Edit'))
+  await runtime.flush()
+  expect(EditorView.findFromDOM(workbench().querySelector('.ptcPlusSourceBody .cm-content')).state.doc.toString()).toBe(entry.source)
+  fireEvent.click(button('Cancel'))
+  await runtime.flush()
+  deleted = true
+  revision++
+  fireEvent.click(button('Reload'))
+  await runtime.flush()
+  expect(workbench().querySelector('.ptcPlusBindingEditor')).toBeNull()
+  expect(rpcCalls.filter(call => call.endpoint === 'save')).toHaveLength(1)
+})
+
+test.each([false, true])('canceling an unexecuted source edit preserves the console environment (repl=%s)', async repl => {
+  const entry = { id: 'cancel', name: 'helper', scope: 'namespace', purpose: '', enabled: false,
+    symbols: ['value'], source: 'export const value = 42', declaration: 'declare const helper: { value: number }' }
+  const { runtime, rpcCalls } = await fixture({ repl, rpc: async (endpoint, payload) => {
+    if (endpoint === 'list') return { ok: true, value: { revision: 1, entries: [entry] } }
+    if (endpoint === 'load') return { ok: true, value: { revision: 1, entry } }
+    if (endpoint === 'console-release') return { ok: true, value: null }
+    if (endpoint === 'console-run') return { ok: true, value: {
+      environment: 'cancel-console', logs: [], output: payload.code === 'retained + 1' ? '43' : '42', expiresAt: null,
+    } }
+    throw new Error(endpoint)
+  } })
+  const view = runtime.renderRoot()
+  await runtime.flush()
+  if (!repl) {
+    await runtime.sessions.setCurrent(undefined)
+    fireEvent.click(view.container.querySelector('.ptcPlusHeader'))
+    fireEvent.click([...view.container.querySelectorAll('button')].find(button => button.textContent === 'Manage global bindings'))
+    await runtime.flush()
+  }
+  const workbench = document.querySelector('.ptcPlusBindings')
+  const button = name => [...workbench.querySelectorAll('button')]
+    .find(button => button.textContent === name || button.getAttribute('aria-label') === name)
+  const consoleInput = EditorView.findFromDOM(workbench.querySelector('.ptcPlusExecutionInput .cm-content'))
+  consoleInput.dispatch({ changes: { from: 0, insert: 'let retained = value; retained' } })
+  await runtime.flush()
+  fireEvent.click(button('Run'))
+  await runtime.flush()
+  consoleInput.dispatch({ changes: { from: 0, insert: 'retained + 1' } })
+  fireEvent.click(button('Edit'))
+  await runtime.flush()
+  const sourceEditor = EditorView.findFromDOM(workbench.querySelector('.ptcPlusSourceBody .cm-content'))
+  sourceEditor.dispatch({ changes: { from: 0, to: sourceEditor.state.doc.length, insert: 'export const value = 100' } })
+  await runtime.flush()
+  fireEvent.click(button('Cancel'))
+  await runtime.flush()
+  expect(rpcCalls.filter(call => call.endpoint === 'console-release')).toHaveLength(0)
+  expect(rpcCalls.filter(call => call.endpoint === 'console-run')).toHaveLength(1)
+  expect(consoleInput.state.doc.toString()).toBe('retained + 1')
+  expect(workbench.querySelectorAll('.ptcPlusExecutionRecord')).toHaveLength(1)
+  expect(workbench.querySelector('.ptcPlusSourceBody .cm-content')).toBeNull()
+  fireEvent.click(button('Run'))
+  await runtime.flush()
+  expect(rpcCalls.filter(call => call.endpoint === 'console-run').at(-1).payload).toEqual({
+    environment: 'cancel-console', source: entry.source, code: 'retained + 1',
+  })
+  expect(workbench.querySelectorAll('.ptcPlusExecutionRecord')).toHaveLength(2)
+})
+
+test('reload rejects mismatched revisions and ignores responses from a disposed workbench', async () => {
+  const entry = { id: 'race', name: 'race', scope: 'namespace', purpose: '', enabled: false,
+    symbols: ['value'], source: 'export const value = 1', declaration: 'declare const race: { value: number }' }
+  let revision = 1
+  let pending
+  const { runtime, settings, value, rpcCalls } = await fixture({ repl: true, rpc: async (endpoint, payload) => {
+    if (endpoint === 'list') return { ok: true, value: { revision, entries: [entry] } }
+    if (endpoint === 'reload') return { ok: true, value: { revision: ++revision, entries: [entry] } }
+    if (endpoint === 'load') {
+      if (revision === 1) return { ok: true, value: { revision, entry } }
+      pending = Promise.withResolvers()
+      return pending.promise
+    }
+    if (endpoint === 'validate') return { ok: true, value: { ...payload.entry, declaration: entry.declaration } }
+    if (endpoint === 'save') return { ok: false, error: { message: 'Catalog revision changed' } }
+    throw new Error(endpoint)
+  } })
+  const view = runtime.renderRoot()
+  await runtime.flush()
+  const button = name => [...view.container.querySelector('.ptcPlusBindings').querySelectorAll('button')]
+    .find(button => button.textContent === name || button.getAttribute('aria-label') === name)
+  fireEvent.click(button('Reload'))
+  await runtime.flush()
+  pending.resolve({ ok: true, value: { revision: 3, entry: { ...entry, source: 'export const value = 3' } } })
+  await runtime.flush()
+  expect(view.container.textContent).toContain('The catalog changed during reload. Reload again.')
+  fireEvent.click(button('Edit'))
+  await runtime.flush()
+  fireEvent.click(button('Save'))
+  await runtime.flush()
+  expect(rpcCalls.find(call => call.endpoint === 'save').payload.expectedRevision).toBe(1)
+  fireEvent.click(button('Reload'))
+  await runtime.flush()
+  settings.publish({ value: { ...value, userBindingsEnabled: false } })
+  await runtime.flush()
+  expect(view.container.querySelector('.ptcPlusBindings')).toBeNull()
+  pending.resolve({ ok: true, value: { revision, entry } })
+  await runtime.flush()
+  expect(view.container.querySelector('.ptcPlusBindings')).toBeNull()
+  expect(rpcCalls.filter(call => call.endpoint === 'save')).toHaveLength(1)
 })
 
 test('the code console uses the unsaved draft, retains history and releases only its temporary environment', async () => {

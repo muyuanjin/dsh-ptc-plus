@@ -26545,6 +26545,7 @@
       "bindings.imported": "\u6E90\u7801\u5DF2\u5BFC\u5165\u4E3A\u505C\u7528\u6761\u76EE\u3002",
       "bindings.reloaded": "\u5DF2\u4ECE\u78C1\u76D8\u91CD\u65B0\u52A0\u8F7D\u3002",
       "bindings.reloadedDraft": "\u76EE\u5F55\u5DF2\u91CD\u65B0\u52A0\u8F7D\uFF0C\u672A\u4FDD\u5B58\u7684\u7F16\u8F91\u5DF2\u4FDD\u7559\u3002",
+      "bindings.reloadConflict": "\u8BFB\u53D6\u671F\u95F4\u76EE\u5F55\u518D\u6B21\u53D1\u751F\u53D8\u5316\uFF0C\u8BF7\u91CD\u65B0\u52A0\u8F7D\u3002",
       "bindings.failed": "\u5168\u5C40\u7528\u6237\u7ED1\u5B9A\u64CD\u4F5C\u5931\u8D25\uFF1A{error}",
       "bindings.authorNew": "\u8BA9 Agent \u7F16\u5199",
       "bindings.authorEdit": "Agent \u4FEE\u6539",
@@ -26678,6 +26679,7 @@
       "bindings.imported": "Source imported as a disabled entry.",
       "bindings.reloaded": "Reloaded from disk.",
       "bindings.reloadedDraft": "Catalog reloaded; unsaved edits retained.",
+      "bindings.reloadConflict": "The catalog changed during reload. Reload again.",
       "bindings.failed": "Global User Binding operation failed: {error}",
       "bindings.authorNew": "Ask Agent to write",
       "bindings.authorEdit": "Ask Agent to revise",
@@ -27042,6 +27044,7 @@
           const [declaration, setDeclaration] = React.useState("");
           const [importPath, setImportPath] = React.useState("");
           const [original, setOriginal] = React.useState(null);
+          const [editRevision, setEditRevision] = React.useState(null);
           const [editing, setEditing] = React.useState(false);
           const [sourceOpen, setSourceOpen] = React.useState(false);
           const [consoleVersion, setConsoleVersion] = React.useState(0);
@@ -27050,109 +27053,152 @@
           const [catalogQuery, setCatalogQuery] = React.useState("");
           const [metadataOpen, setMetadataOpen] = React.useState(false);
           const requestGeneration = React.useRef(0);
+          const operationActive = React.useRef(false);
           const fail = (error) => setMessage({
             key: "bindings.failed",
             params: { error: error instanceof Error ? error.message : String(error) }
           });
-          const refresh = React.useCallback(async (reload = false, signal = void 0) => {
-            const next = await callUserBindings2(reload ? "reload" : "list", {}, signal);
-            setCatalog(next);
-            return next;
+          const refresh = React.useCallback(async (reload2 = false, signal = void 0) => {
+            return callUserBindings2(reload2 ? "reload" : "list", {}, signal);
           }, []);
+          const showEntry = (loaded, { resetConsole = true } = {}) => {
+            const entry = loaded?.entry ?? null;
+            if (resetConsole && draft?.source !== entry?.source) setConsoleVersion((current) => current + 1);
+            setDraft(entry === null ? null : editableBinding(entry));
+            setOriginal(entry);
+            setDeclaration(entry?.declaration ?? "");
+            setEditRevision(loaded?.revision ?? null);
+            setEditing(false);
+          };
           React.useEffect(() => {
             requestGeneration.current += 1;
-            setDraft(null);
-            setDeclaration("");
+            operationActive.current = false;
+            setBusy(false);
+            showEntry(null);
             setCatalog(null);
             setMessage(null);
             if (!enabled) return void 0;
             const controller = new AbortController();
-            refresh(false, controller.signal).then((next) => {
-              if (!controller.signal.aborted && next?.entries[0]) return load(next.entries[0].id);
-            }).catch((error) => {
-              if (!controller.signal.aborted) fail(error);
+            void perform(async (current) => {
+              const next = await refresh(false, controller.signal);
+              if (!current()) return;
+              setCatalog(next);
+              if (next.entries[0]) {
+                const loaded = await callUserBindings2("load", { id: next.entries[0].id }, controller.signal);
+                if (current()) showEntry(loaded);
+              }
             });
-            return () => controller.abort();
+            return () => {
+              requestGeneration.current += 1;
+              controller.abort();
+            };
           }, [enabled, refresh]);
           const perform = async (operation) => {
-            if (busy) return;
+            if (operationActive.current) return;
+            operationActive.current = true;
+            const generation = ++requestGeneration.current;
+            const current = () => generation === requestGeneration.current;
             setBusy(true);
             setMessage(null);
             try {
-              await operation();
+              await operation(current);
             } catch (error) {
-              fail(error);
+              if (current()) fail(error);
             } finally {
-              setBusy(false);
+              if (current()) {
+                operationActive.current = false;
+                setBusy(false);
+              }
             }
           };
           const edit = (key, value) => {
             setDraft((current) => ({ ...current, [key]: value }));
             setDeclaration("");
           };
-          const load = (id2) => perform(async () => {
-            const generation = ++requestGeneration.current;
+          const load = (id2) => perform(async (current) => {
             const loaded = await callUserBindings2("load", { id: id2 });
-            if (generation !== requestGeneration.current) return;
-            setDraft(editableBinding(loaded.entry));
-            setOriginal(loaded.entry);
-            setEditing(false);
+            if (!current()) return;
+            showEntry(loaded);
             setSourceOpen(false);
             setMetadataOpen(false);
-            setDeclaration(loaded.entry.declaration);
-            setCatalog((current) => current === null ? current : { ...current, revision: loaded.revision });
-            setConsoleVersion((current) => current + 1);
           });
-          const validate = () => perform(async () => {
+          const reload = () => perform(async (current) => {
+            const next = await refresh(true);
+            if (!current()) return;
+            const selected = next.entries.find((entry) => entry.id === original?.id);
+            const loaded = selected === void 0 ? null : await callUserBindings2("load", { id: selected.id });
+            if (!current()) return;
+            if (loaded !== null && loaded.revision !== next.revision) {
+              setMessage({ key: "bindings.reloadConflict" });
+              return;
+            }
+            setCatalog(next);
+            if (editing) {
+              setOriginal(loaded?.entry ?? null);
+              setEditRevision(loaded?.revision ?? next.revision);
+            } else showEntry(loaded);
+            setMessage({ key: editing ? "bindings.reloadedDraft" : "bindings.reloaded" });
+          });
+          const validate = () => perform(async (current) => {
             const normalized = await callUserBindings2("validate", { entry: bindingPayload(draft) });
+            if (!current()) return;
             setDraft(editableBinding(normalized));
             setDeclaration(normalized.declaration);
             setMessage({ key: "bindings.valid" });
           });
-          const save = () => perform(async () => {
+          const save = () => perform(async (current) => {
             const normalized = await callUserBindings2("validate", { entry: bindingPayload(draft) });
+            if (!current()) return;
             const next = await callUserBindings2("save", {
               entry: bindingPayload(editableBinding(normalized)),
-              expectedRevision: catalog.revision
+              expectedRevision: editRevision
             });
+            if (!current()) return;
             setCatalog(next);
             setDraft(editableBinding(normalized));
             setDeclaration(normalized.declaration);
             setMessage({ key: "bindings.saved" });
-            if (original?.source !== normalized.source) setConsoleVersion((current) => current + 1);
+            if (original?.source !== normalized.source) setConsoleVersion((current2) => current2 + 1);
             setOriginal(normalized);
+            setEditRevision(next.revision);
             setEditing(false);
             setSourceOpen(false);
           });
-          const toggle = (entry) => perform(async () => {
+          const acceptCatalogMutation = (next) => {
+            setCatalog(next);
+            setEditRevision((current) => current === catalog.revision ? next.revision : current);
+          };
+          const toggle = (entry) => perform(async (current) => {
             const next = await callUserBindings2(entry.enabled ? "disable" : "enable", {
               id: entry.id,
               expectedRevision: catalog.revision
             });
-            setCatalog(next);
+            if (!current()) return;
+            acceptCatalogMutation(next);
             if (draft?.id === entry.id) {
-              setDraft((current) => ({ ...current, enabled: !entry.enabled }));
-              setOriginal((current) => ({ ...current, enabled: !entry.enabled }));
+              setDraft((current2) => ({ ...current2, enabled: !entry.enabled }));
+              setOriginal((current2) => ({ ...current2, enabled: !entry.enabled }));
             }
           });
-          const remove2 = (entry) => perform(async () => {
+          const remove2 = (entry) => perform(async (current) => {
             const next = await callUserBindings2("remove", {
               id: entry.id,
               expectedRevision: catalog.revision
             });
-            setCatalog(next);
+            if (!current()) return;
+            acceptCatalogMutation(next);
             if (draft?.id === entry.id) {
-              setDraft(null);
-              setDeclaration("");
+              showEntry(null);
             }
             setMessage({ key: "bindings.removed" });
           });
-          const importSource = () => perform(async () => {
+          const importSource = () => perform(async (current) => {
             const next = await callUserBindings2("import", {
               path: importPath,
               expectedRevision: catalog.revision
             });
-            setCatalog(next);
+            if (!current()) return;
+            acceptCatalogMutation(next);
             setImportPath("");
             setMessage({ key: "bindings.imported" });
           });
@@ -27172,10 +27218,7 @@
                   icon: IconRefreshOutline16,
                   label: t2("bindings.reload"),
                   disabled: busy,
-                  onClick: () => perform(async () => {
-                    await refresh(true);
-                    setMessage({ key: editing ? "bindings.reloadedDraft" : "bindings.reloaded" });
-                  })
+                  onClick: reload
                 }),
                 h(ActionButton, {
                   type: "button",
@@ -27186,6 +27229,7 @@
                     requestGeneration.current += 1;
                     setDraft(blankBinding());
                     setOriginal(null);
+                    setEditRevision(catalog?.revision ?? null);
                     setEditing(true);
                     setSourceOpen(true);
                     setMetadataOpen(true);
@@ -27322,9 +27366,7 @@
                     ),
                     h(ActionButton, { "data-kind": "primary", disabled: busy, onClick: save }, t2("bindings.save")),
                     h(ActionButton, { disabled: busy, onClick: () => {
-                      setDraft(original === null ? null : editableBinding(original));
-                      setDeclaration(original?.declaration ?? "");
-                      setEditing(false);
+                      showEntry(original === null ? null : { entry: original, revision: editRevision }, { resetConsole: false });
                       setSourceOpen(false);
                       setMessage(null);
                     } }, t2("bindings.cancel"))
@@ -27922,763 +27964,761 @@
             release();
           };
         });
-        ctx.inject(["uiSession"], (scope) => {
-          scope.inject(["sessions"], (viewScope) => {
-            const hideComposer = (sessionId) => viewScope.effect(() => viewScope.slots.inject(
-              "conversation.composer",
-              () => viewScope.slots.register({
-                name: "conversation.composer",
-                priority: 100,
-                select: (owner) => owner.sessionId === sessionId && owner.pendingInteraction === void 0 ? true : null
-              }, ReplComposer)
-            ));
-            viewScope.slots.inject("conversation.view", () => viewScope.effect(() => {
-              let source;
-              let unsubscribeProjection;
-              let disposeView;
-              const sync = () => {
-                const current = viewScope.sessions.list.getSnapshot().current;
-                const next = current === void 0 ? void 0 : viewScope.sessions.binding(current)?.session.projections.faceOf("agentPreset");
-                if (source !== next) {
-                  unsubscribeProjection?.();
-                  source = next;
-                  unsubscribeProjection = source?.subscribe(sync);
-                }
-                const settings = preferenceScope.getSnapshot();
-                const eligible = settings.status === "ready" && settings.value?.enabled === true && settings.value?.replViewEnabled !== false && sessionUsesPtcPreset(source?.getSnapshot());
-                if (eligible === (disposeView !== void 0)) return;
-                disposeView?.();
-                disposeView = eligible ? viewScope.slots.register({
-                  name: "conversation.view",
-                  id: "ptc-plus-repl",
-                  label: "REPL",
-                  order: 20,
-                  locale: LOCALE_NS,
-                  inject: () => ({ ...settingsProps(), hideComposer, observeRepl })
-                }, ReplConsole) : void 0;
-              };
-              const unsubscribeList = viewScope.sessions.list.subscribe(sync);
-              const unsubscribeSettings = preferenceScope.subscribe(sync);
-              sync();
-              return () => {
-                unsubscribeList();
-                unsubscribeSettings();
+        ctx.inject(["sessions"], (viewScope) => {
+          const hideComposer = (sessionId) => viewScope.effect(() => viewScope.slots.inject(
+            "conversation.composer",
+            () => viewScope.slots.register({
+              name: "conversation.composer",
+              priority: 100,
+              select: (owner) => owner.sessionId === sessionId && owner.pendingInteraction === void 0 ? true : null
+            }, ReplComposer)
+          ));
+          viewScope.slots.inject("conversation.view", () => viewScope.effect(() => {
+            let source;
+            let unsubscribeProjection;
+            let disposeView;
+            const sync = () => {
+              const current = viewScope.sessions.list.getSnapshot().current;
+              const next = current === void 0 ? void 0 : viewScope.sessions.binding(current)?.session.projections?.faceOf?.("agentPreset");
+              if (source !== next) {
                 unsubscribeProjection?.();
-                disposeView?.();
-              };
-            }));
-          });
-          function BindingAuthorButton({
-            t: t2,
-            useInput,
-            inputActions,
-            usePtcSettings,
-            useBindingCommand
-          }) {
-            const input = useInput((snapshot) => snapshot);
-            const available = useBindingCommand((snapshot) => snapshot);
-            const settings = usePtcSettings((snapshot) => snapshot);
-            const anchorRef = React.useRef(null);
-            const toastSequence = React.useRef(0);
-            const [toast, setToast] = React.useState(null);
-            React.useEffect(() => {
-              if (toast === null || typeof Toast === "function") return void 0;
-              const timer = setTimeout(() => setToast(null), 2500);
-              return () => clearTimeout(timer);
-            }, [toast]);
-            const globalEnabled = settings.status === "ready" && settings.value?.enabled === true && settings.value?.userBindingsEnabled === true && settings.value?.bindingAuthorButtonVisible !== false;
-            if (!globalEnabled || !available || typeof inputActions?.setDraft !== "function") return null;
-            const label = t2("bindings.authorOpen");
-            const openAuthoring = () => {
-              if (typeof input?.draft === "string" && input.draft.trim() !== "") {
-                toastSequence.current += 1;
-                setToast({ sequence: toastSequence.current, text: t2("bindings.composerBusy") });
-                return;
+                source = next;
+                unsubscribeProjection = source?.subscribe(sync);
               }
-              inputActions.setDraft("/binding new ");
+              const settings = preferenceScope.getSnapshot();
+              const eligible = settings.status === "ready" && settings.value?.enabled === true && settings.value?.replViewEnabled !== false && sessionUsesPtcPreset(source?.getSnapshot());
+              if (eligible === (disposeView !== void 0)) return;
+              disposeView?.();
+              disposeView = eligible ? viewScope.slots.register({
+                name: "conversation.view",
+                id: "ptc-plus-repl",
+                label: "REPL",
+                order: 20,
+                locale: LOCALE_NS,
+                inject: () => ({ ...settingsProps(), hideComposer, observeRepl })
+              }, (props) => typeof props.useProjection === "function" ? h(ReplConsole, props) : null) : void 0;
             };
-            const starButton = h("button", {
-              type: "button",
-              className: "ptcPlusAuthorButton",
-              "aria-label": label,
-              onMouseDown: (event) => event.preventDefault(),
-              onClick: openAuthoring
-            }, typeof IconSparkle16 === "function" ? h(IconSparkle16, { size: 16, "aria-hidden": true }) : h("span", { className: "ptcPlusAuthorButtonLabel", "aria-hidden": true }, t2("bindings.authorNew")));
-            return h(
-              "span",
-              {
-                className: "ptcPlusAuthorButtonShell",
-                "data-text": typeof IconSparkle16 === "function" ? void 0 : true,
-                ref: anchorRef
-              },
-              typeof Tooltip === "function" ? h(Tooltip, { label, side: "top", delayMs: 400 }, starButton) : starButton,
-              toast === null ? null : typeof Toast === "function" ? h(Toast, {
-                key: toast.sequence,
-                text: toast.text,
-                anchor: anchorRef.current,
-                onDone: () => setToast(null)
-              }) : h("span", {
-                key: toast.sequence,
-                className: "ptcPlusComposerNotice",
-                role: "status"
-              }, toast.text)
-            );
-          }
-          function replPopoverIsOpen(popover) {
-            if (popover?.dataset?.open === "true") return true;
-            try {
-              return popover?.matches?.(":popover-open") === true;
-            } catch {
-              return false;
+            const unsubscribeList = viewScope.sessions.list.subscribe(sync);
+            const unsubscribeSettings = preferenceScope.subscribe(sync);
+            sync();
+            return () => {
+              unsubscribeList();
+              unsubscribeSettings();
+              unsubscribeProjection?.();
+              disposeView?.();
+            };
+          }));
+        });
+        function BindingAuthorButton({
+          t: t2,
+          useInput,
+          inputActions,
+          usePtcSettings,
+          useBindingCommand
+        }) {
+          const input = useInput((snapshot) => snapshot);
+          const available = useBindingCommand((snapshot) => snapshot);
+          const settings = usePtcSettings((snapshot) => snapshot);
+          const anchorRef = React.useRef(null);
+          const toastSequence = React.useRef(0);
+          const [toast, setToast] = React.useState(null);
+          React.useEffect(() => {
+            if (toast === null || typeof Toast === "function") return void 0;
+            const timer = setTimeout(() => setToast(null), 2500);
+            return () => clearTimeout(timer);
+          }, [toast]);
+          const globalEnabled = settings.status === "ready" && settings.value?.enabled === true && settings.value?.userBindingsEnabled === true && settings.value?.bindingAuthorButtonVisible !== false;
+          if (!globalEnabled || !available || typeof inputActions?.setDraft !== "function") return null;
+          const label = t2("bindings.authorOpen");
+          const openAuthoring = () => {
+            if (typeof input?.draft === "string" && input.draft.trim() !== "") {
+              toastSequence.current += 1;
+              setToast({ sequence: toastSequence.current, text: t2("bindings.composerBusy") });
+              return;
             }
+            inputActions.setDraft("/binding new ");
+          };
+          const starButton = h("button", {
+            type: "button",
+            className: "ptcPlusAuthorButton",
+            "aria-label": label,
+            onMouseDown: (event) => event.preventDefault(),
+            onClick: openAuthoring
+          }, typeof IconSparkle16 === "function" ? h(IconSparkle16, { size: 16, "aria-hidden": true }) : h("span", { className: "ptcPlusAuthorButtonLabel", "aria-hidden": true }, t2("bindings.authorNew")));
+          return h(
+            "span",
+            {
+              className: "ptcPlusAuthorButtonShell",
+              "data-text": typeof IconSparkle16 === "function" ? void 0 : true,
+              ref: anchorRef
+            },
+            typeof Tooltip === "function" ? h(Tooltip, { label, side: "top", delayMs: 400 }, starButton) : starButton,
+            toast === null ? null : typeof Toast === "function" ? h(Toast, {
+              key: toast.sequence,
+              text: toast.text,
+              anchor: anchorRef.current,
+              onDone: () => setToast(null)
+            }) : h("span", {
+              key: toast.sequence,
+              className: "ptcPlusComposerNotice",
+              role: "status"
+            }, toast.text)
+          );
+        }
+        function replPopoverIsOpen(popover) {
+          if (popover?.dataset?.open === "true") return true;
+          try {
+            return popover?.matches?.(":popover-open") === true;
+          } catch {
+            return false;
           }
-          function placeReplPopover(trigger, popover) {
-            if (trigger === null || popover === null) return;
-            const margin = 12;
-            const gap = 8;
-            const viewportWidth = document.documentElement.clientWidth || window.innerWidth;
-            const viewportHeight = document.documentElement.clientHeight || window.innerHeight;
-            const triggerRect = trigger.getBoundingClientRect();
-            const width = Math.min(344, Math.max(0, viewportWidth - margin * 2));
-            const left = Math.min(
-              Math.max(margin, triggerRect.right - width),
-              Math.max(margin, viewportWidth - width - margin)
+        }
+        function placeReplPopover(trigger, popover) {
+          if (trigger === null || popover === null) return;
+          const margin = 12;
+          const gap = 8;
+          const viewportWidth = document.documentElement.clientWidth || window.innerWidth;
+          const viewportHeight = document.documentElement.clientHeight || window.innerHeight;
+          const triggerRect = trigger.getBoundingClientRect();
+          const width = Math.min(344, Math.max(0, viewportWidth - margin * 2));
+          const left = Math.min(
+            Math.max(margin, triggerRect.right - width),
+            Math.max(margin, viewportWidth - width - margin)
+          );
+          const below = Math.max(0, viewportHeight - triggerRect.bottom - gap - margin);
+          const above = Math.max(0, triggerRect.top - gap - margin);
+          const opensAbove = below < 260 && above > below;
+          const availableHeight = Math.max(80, opensAbove ? above : below);
+          popover.style.width = `${width}px`;
+          popover.style.maxHeight = `${availableHeight}px`;
+          popover.style.left = `${left}px`;
+          popover.style.top = opensAbove ? `${Math.max(margin, triggerRect.top - gap - Math.min(popover.offsetHeight, availableHeight))}px` : `${Math.min(viewportHeight - margin, triggerRect.bottom + gap)}px`;
+        }
+        function ReplMemoryCard({
+          memory,
+          globalEnabled,
+          globalBindings,
+          authoringDraft,
+          authoringPhase,
+          loadGlobalBinding,
+          prefillAuthoring,
+          saveAuthoringDraft,
+          discardAuthoringDraft,
+          authoringMessage,
+          t: t2,
+          id: id2,
+          titleId,
+          popoverRef,
+          onEnter,
+          onLeave
+        }) {
+          const [expandedBinding, setExpandedBinding] = React.useState(null);
+          const [tab, setTab] = React.useState("session");
+          const [globalSource, setGlobalSource] = React.useState(null);
+          const activeTab = globalEnabled ? tab : "session";
+          const inspectGlobal = (entry) => {
+            if (globalSource?.id === entry.id) {
+              setGlobalSource(null);
+              return;
+            }
+            setGlobalSource({ id: entry.id, source: "" });
+            loadGlobalBinding(entry.id).then(
+              (loaded) => setGlobalSource((current) => current?.id === entry.id ? { id: entry.id, source: loaded.entry.source } : current),
+              () => setGlobalSource((current) => current?.id === entry.id ? { id: entry.id, error: true, source: "" } : current)
             );
-            const below = Math.max(0, viewportHeight - triggerRect.bottom - gap - margin);
-            const above = Math.max(0, triggerRect.top - gap - margin);
-            const opensAbove = below < 260 && above > below;
-            const availableHeight = Math.max(80, opensAbove ? above : below);
-            popover.style.width = `${width}px`;
-            popover.style.maxHeight = `${availableHeight}px`;
-            popover.style.left = `${left}px`;
-            popover.style.top = opensAbove ? `${Math.max(margin, triggerRect.top - gap - Math.min(popover.offsetHeight, availableHeight))}px` : `${Math.min(viewportHeight - margin, triggerRect.bottom + gap)}px`;
-          }
-          function ReplMemoryCard({
-            memory,
-            globalEnabled,
-            globalBindings,
-            authoringDraft,
-            authoringPhase,
-            loadGlobalBinding,
-            prefillAuthoring,
-            saveAuthoringDraft,
-            discardAuthoringDraft,
-            authoringMessage,
-            t: t2,
-            id: id2,
-            titleId,
-            popoverRef,
-            onEnter,
-            onLeave
-          }) {
-            const [expandedBinding, setExpandedBinding] = React.useState(null);
-            const [tab, setTab] = React.useState("session");
-            const [globalSource, setGlobalSource] = React.useState(null);
-            const activeTab = globalEnabled ? tab : "session";
-            const inspectGlobal = (entry) => {
-              if (globalSource?.id === entry.id) {
-                setGlobalSource(null);
-                return;
-              }
-              setGlobalSource({ id: entry.id, source: "" });
-              loadGlobalBinding(entry.id).then(
-                (loaded) => setGlobalSource((current) => current?.id === entry.id ? { id: entry.id, source: loaded.entry.source } : current),
-                () => setGlobalSource((current) => current?.id === entry.id ? { id: entry.id, error: true, source: "" } : current)
-              );
-            };
-            return h(
+          };
+          return h(
+            "div",
+            {
+              className: "ptcPlusReplPopover",
+              id: id2,
+              ref: popoverRef,
+              popover: "auto",
+              role: "dialog",
+              "aria-labelledby": titleId,
+              onPointerEnter: onEnter,
+              onPointerLeave: onLeave
+            },
+            h(
               "div",
-              {
-                className: "ptcPlusReplPopover",
-                id: id2,
-                ref: popoverRef,
-                popover: "auto",
-                role: "dialog",
-                "aria-labelledby": titleId,
-                onPointerEnter: onEnter,
-                onPointerLeave: onLeave
-              },
+              { className: "ptcPlusReplCard" },
               h(
                 "div",
-                { className: "ptcPlusReplCard" },
-                h(
-                  "div",
-                  { className: "ptcPlusReplHead" },
-                  h("span", { className: "ptcPlusReplStatusDot", "aria-hidden": true }),
-                  h("span", { className: "ptcPlusReplTitle", id: titleId }, t2("memory.title")),
-                  activeTab === "session" && memory.available ? h("span", { className: "ptcPlusReplSummary" }, t2("memory.count", { count: memory.total })) : null
-                ),
-                globalEnabled ? h(
-                  "div",
-                  { className: "ptcPlusReplTabs", role: "tablist" },
-                  h("button", {
-                    type: "button",
-                    role: "tab",
-                    className: "ptcPlusReplTab",
-                    "aria-selected": activeTab === "session",
-                    onClick: () => setTab("session")
-                  }, t2("memory.sessionTab")),
-                  h("button", {
-                    type: "button",
-                    role: "tab",
-                    className: "ptcPlusReplTab",
-                    "aria-selected": activeTab === "global",
-                    onClick: () => setTab("global")
-                  }, t2("memory.globalTab"))
-                ) : null,
-                activeTab === "global" ? h(
-                  "div",
-                  { className: "ptcPlusGlobalPane" },
-                  globalBindings === void 0 ? h("span", { className: "ptcPlusReplEmpty" }, t2("memory.globalUnavailable")) : globalBindings.entries.length === 0 ? h("span", { className: "ptcPlusReplEmpty" }, t2("memory.globalEmpty")) : h("ul", { className: "ptcPlusGlobalList" }, globalBindings.entries.map((entry) => h(
-                    "li",
-                    { key: entry.id, className: "ptcPlusGlobalItem" },
-                    h(
-                      "button",
-                      {
-                        type: "button",
-                        className: "ptcPlusBindingSelect",
-                        "aria-expanded": globalSource?.id === entry.id,
-                        onClick: () => inspectGlobal(entry)
-                      },
-                      h("span", { className: "ptcPlusBindingName", title: entry.name }, entry.name),
-                      h("span", { className: "ptcPlusBindingMeta", title: entry.symbols.join(", ") }, `${entry.scope} - ${entry.symbols.join(", ")}`),
-                      h(
-                        "span",
-                        { className: "ptcPlusBindingState", "data-enabled": entry.enabled },
-                        t2(entry.enabled ? "bindings.enabled" : "bindings.disabledEntry")
-                      )
-                    ),
-                    h(ActionButton, {
-                      type: "button",
-                      className: "ptcPlusButton",
-                      onClick: () => prefillAuthoring(`/binding edit ${entry.id} `)
-                    }, typeof IconSparkle16 === "function" ? h(IconSparkle16, { size: 14, "aria-hidden": true }) : null, t2("bindings.authorEdit")),
-                    globalSource?.id !== entry.id ? null : globalSource.error === true ? h("span", { className: "ptcPlusReplEmpty" }, t2("memory.globalUnavailable")) : h("pre", { className: "ptcPlusGlobalSource" }, globalSource.source)
-                  )))
-                ) : !memory.available ? h("span", { className: "ptcPlusReplEmpty" }, t2("memory.unavailable")) : memory.entries.length === 0 ? h("span", { className: "ptcPlusReplEmpty" }, t2("memory.empty")) : h("ul", { className: "ptcPlusReplList" }, memory.entries.map((binding, index) => {
-                  const expanded = expandedBinding === binding.name;
-                  const preview = binding.definition.source.replace(/\s+/g, " ").trim();
-                  const definitionId = `${id2}-binding-${index}`;
-                  const toggle = () => setExpandedBinding((current) => current === binding.name ? null : binding.name);
-                  return h(
-                    "li",
+                { className: "ptcPlusReplHead" },
+                h("span", { className: "ptcPlusReplStatusDot", "aria-hidden": true }),
+                h("span", { className: "ptcPlusReplTitle", id: titleId }, t2("memory.title")),
+                activeTab === "session" && memory.available ? h("span", { className: "ptcPlusReplSummary" }, t2("memory.count", { count: memory.total })) : null
+              ),
+              globalEnabled ? h(
+                "div",
+                { className: "ptcPlusReplTabs", role: "tablist" },
+                h("button", {
+                  type: "button",
+                  role: "tab",
+                  className: "ptcPlusReplTab",
+                  "aria-selected": activeTab === "session",
+                  onClick: () => setTab("session")
+                }, t2("memory.sessionTab")),
+                h("button", {
+                  type: "button",
+                  role: "tab",
+                  className: "ptcPlusReplTab",
+                  "aria-selected": activeTab === "global",
+                  onClick: () => setTab("global")
+                }, t2("memory.globalTab"))
+              ) : null,
+              activeTab === "global" ? h(
+                "div",
+                { className: "ptcPlusGlobalPane" },
+                globalBindings === void 0 ? h("span", { className: "ptcPlusReplEmpty" }, t2("memory.globalUnavailable")) : globalBindings.entries.length === 0 ? h("span", { className: "ptcPlusReplEmpty" }, t2("memory.globalEmpty")) : h("ul", { className: "ptcPlusGlobalList" }, globalBindings.entries.map((entry) => h(
+                  "li",
+                  { key: entry.id, className: "ptcPlusGlobalItem" },
+                  h(
+                    "button",
                     {
-                      className: "ptcPlusReplBinding",
-                      key: binding.name,
-                      "data-expanded": expanded
+                      type: "button",
+                      className: "ptcPlusBindingSelect",
+                      "aria-expanded": globalSource?.id === entry.id,
+                      onClick: () => inspectGlobal(entry)
                     },
+                    h("span", { className: "ptcPlusBindingName", title: entry.name }, entry.name),
+                    h("span", { className: "ptcPlusBindingMeta", title: entry.symbols.join(", ") }, `${entry.scope} - ${entry.symbols.join(", ")}`),
                     h(
-                      "button",
-                      {
-                        className: "ptcPlusReplBindingTrigger",
-                        type: "button",
-                        "aria-expanded": expanded,
-                        "aria-controls": expanded ? definitionId : void 0,
-                        onClick: toggle
-                      },
-                      h("span", {
-                        className: "ptcPlusReplName",
-                        "data-kind": binding.kind,
-                        title: `${binding.name} - ${t2(`memory.kind.${binding.kind}`)}`
-                      }, binding.name),
-                      h("span", { className: "ptcPlusReplPreview", title: preview }, preview),
-                      h("span", {
-                        className: "ptcPlusReplChevron",
-                        "data-open": expanded,
-                        "aria-hidden": true
-                      }, h(IconChevronDownOutline14, { size: 14 }))
-                    ),
-                    expanded ? h("div", {
-                      className: "ptcPlusReplDefinitionWrap",
-                      "data-open": true,
-                      id: definitionId,
-                      role: "region",
-                      "aria-label": binding.name
-                    }, h(
+                      "span",
+                      { className: "ptcPlusBindingState", "data-enabled": entry.enabled },
+                      t2(entry.enabled ? "bindings.enabled" : "bindings.disabledEntry")
+                    )
+                  ),
+                  h(ActionButton, {
+                    type: "button",
+                    className: "ptcPlusButton",
+                    onClick: () => prefillAuthoring(`/binding edit ${entry.id} `)
+                  }, typeof IconSparkle16 === "function" ? h(IconSparkle16, { size: 14, "aria-hidden": true }) : null, t2("bindings.authorEdit")),
+                  globalSource?.id !== entry.id ? null : globalSource.error === true ? h("span", { className: "ptcPlusReplEmpty" }, t2("memory.globalUnavailable")) : h("pre", { className: "ptcPlusGlobalSource" }, globalSource.source)
+                )))
+              ) : !memory.available ? h("span", { className: "ptcPlusReplEmpty" }, t2("memory.unavailable")) : memory.entries.length === 0 ? h("span", { className: "ptcPlusReplEmpty" }, t2("memory.empty")) : h("ul", { className: "ptcPlusReplList" }, memory.entries.map((binding, index) => {
+                const expanded = expandedBinding === binding.name;
+                const preview = binding.definition.source.replace(/\s+/g, " ").trim();
+                const definitionId = `${id2}-binding-${index}`;
+                const toggle = () => setExpandedBinding((current) => current === binding.name ? null : binding.name);
+                return h(
+                  "li",
+                  {
+                    className: "ptcPlusReplBinding",
+                    key: binding.name,
+                    "data-expanded": expanded
+                  },
+                  h(
+                    "button",
+                    {
+                      className: "ptcPlusReplBindingTrigger",
+                      type: "button",
+                      "aria-expanded": expanded,
+                      "aria-controls": expanded ? definitionId : void 0,
+                      onClick: toggle
+                    },
+                    h("span", {
+                      className: "ptcPlusReplName",
+                      "data-kind": binding.kind,
+                      title: `${binding.name} - ${t2(`memory.kind.${binding.kind}`)}`
+                    }, binding.name),
+                    h("span", { className: "ptcPlusReplPreview", title: preview }, preview),
+                    h("span", {
+                      className: "ptcPlusReplChevron",
+                      "data-open": expanded,
+                      "aria-hidden": true
+                    }, h(IconChevronDownOutline14, { size: 14 }))
+                  ),
+                  expanded ? h("div", {
+                    className: "ptcPlusReplDefinitionWrap",
+                    "data-open": true,
+                    id: definitionId,
+                    role: "region",
+                    "aria-label": binding.name
+                  }, h(
+                    "div",
+                    { className: "ptcPlusReplDefinitionInner" },
+                    h(
                       "div",
-                      { className: "ptcPlusReplDefinitionInner" },
-                      h(
-                        "div",
-                        { className: "ptcPlusReplDefinition" },
-                        h("span", { className: "ptcPlusReplLocation" }, t2("memory.location", {
-                          line: binding.definition.line,
-                          column: binding.definition.column
-                        })),
-                        typeof CodeBlock === "function" ? h(CodeBlock, {
-                          code: binding.definition.source,
-                          lang: "typescript",
-                          className: "ptcPlusReplCode",
-                          copyLabel: t2("tool.copy"),
-                          copiedLabel: t2("tool.copied")
-                        }) : h("pre", { className: "ptcPlusReplCode" }, binding.definition.source)
-                      )
-                    )) : null
-                  );
-                })),
-                tab !== "session" || memory.omitted === 0 ? null : h("span", { className: "ptcPlusReplMore" }, t2("memory.more", { count: memory.omitted }))
-              )
-            );
+                      { className: "ptcPlusReplDefinition" },
+                      h("span", { className: "ptcPlusReplLocation" }, t2("memory.location", {
+                        line: binding.definition.line,
+                        column: binding.definition.column
+                      })),
+                      typeof CodeBlock === "function" ? h(CodeBlock, {
+                        code: binding.definition.source,
+                        lang: "typescript",
+                        className: "ptcPlusReplCode",
+                        copyLabel: t2("tool.copy"),
+                        copiedLabel: t2("tool.copied")
+                      }) : h("pre", { className: "ptcPlusReplCode" }, binding.definition.source)
+                    )
+                  )) : null
+                );
+              })),
+              tab !== "session" || memory.omitted === 0 ? null : h("span", { className: "ptcPlusReplMore" }, t2("memory.more", { count: memory.omitted }))
+            )
+          );
+        }
+        function BindingCommandCard({ node, t: t2, useProjection, callUserBindings: callUserBindings2 }) {
+          const projectionValue = useProjection?.("ptcPlusBindingDraft");
+          let projection;
+          try {
+            projection = normalizeUserBindingDraftView(projectionValue);
+          } catch {
+            projection = void 0;
           }
-          function BindingCommandCard({ node, t: t2, useProjection, callUserBindings: callUserBindings2 }) {
-            const projectionValue = useProjection("ptcPlusBindingDraft");
-            let projection;
-            try {
-              projection = normalizeUserBindingDraftView(projectionValue);
-            } catch {
-              projection = void 0;
-            }
-            const matches = projection?.commandId === node.commandId;
-            const capability = matches ? projection.capability : null;
-            const phase = matches ? projection.phase : node.outcome === null ? "pending" : "idle";
-            const [catalog, setCatalog] = React.useState(null);
-            const [draft, setDraft] = React.useState(null);
-            const [review, setReview] = React.useState(null);
-            const [message, setMessage] = React.useState(null);
-            const [busy, setBusy] = React.useState(false);
-            const [loaded, setLoaded] = React.useState(false);
-            React.useEffect(() => {
-              let active = true;
-              setCatalog(null);
-              setDraft(null);
-              setLoaded(false);
-              if (phase !== "ready" || capability === null) return () => {
-                active = false;
-              };
-              setMessage(null);
-              Promise.all([
-                callUserBindings2("list"),
-                callUserBindings2("draft", { capability }),
-                callUserBindings2("draft-review", { capability })
-              ]).then(([nextCatalog, nextDraft, nextReview]) => {
-                if (!active) return;
-                setCatalog(nextCatalog);
-                setDraft(nextDraft);
-                setReview(nextReview);
-                setLoaded(true);
-              }).catch((error) => {
-                if (!active) return;
-                setLoaded(true);
-                setMessage(error instanceof Error ? error.message : String(error));
-              });
-              return () => {
-                active = false;
-              };
-            }, [capability, phase]);
-            React.useEffect(() => {
-              if (draft === null || busy || phase !== "ready") return void 0;
-              let active = true;
-              let pending = false;
-              const timer = setInterval(async () => {
-                if (pending) return;
-                pending = true;
-                try {
-                  const [current, nextReview] = await Promise.all([
-                    callUserBindings2("draft", { capability }),
-                    callUserBindings2("draft-review", { capability })
-                  ]);
-                  if (active) {
-                    setDraft(current);
-                    setReview(nextReview);
-                  }
-                } catch {
-                } finally {
-                  pending = false;
-                }
-              }, 1500);
-              return () => {
-                active = false;
-                clearInterval(timer);
-              };
-            }, [capability, phase, draft, busy]);
-            const refresh = async () => {
-              const [nextCatalog, nextDraft, nextReview] = await Promise.all([
-                callUserBindings2("list"),
-                callUserBindings2("draft", { capability }),
-                callUserBindings2("draft-review", { capability })
-              ]);
+          const matches = projection?.commandId === node.commandId;
+          const capability = matches ? projection.capability : null;
+          const phase = matches ? projection.phase : node.outcome === null ? "pending" : "idle";
+          const [catalog, setCatalog] = React.useState(null);
+          const [draft, setDraft] = React.useState(null);
+          const [review, setReview] = React.useState(null);
+          const [message, setMessage] = React.useState(null);
+          const [busy, setBusy] = React.useState(false);
+          const [loaded, setLoaded] = React.useState(false);
+          React.useEffect(() => {
+            let active = true;
+            setCatalog(null);
+            setDraft(null);
+            setLoaded(false);
+            if (phase !== "ready" || capability === null) return () => {
+              active = false;
+            };
+            setMessage(null);
+            Promise.all([
+              callUserBindings2("list"),
+              callUserBindings2("draft", { capability }),
+              callUserBindings2("draft-review", { capability })
+            ]).then(([nextCatalog, nextDraft, nextReview]) => {
+              if (!active) return;
               setCatalog(nextCatalog);
               setDraft(nextDraft);
               setReview(nextReview);
+              setLoaded(true);
+            }).catch((error) => {
+              if (!active) return;
+              setLoaded(true);
+              setMessage(error instanceof Error ? error.message : String(error));
+            });
+            return () => {
+              active = false;
             };
-            const save = async (activate = false) => {
-              if (busy || draft === null || catalog === null || capability === null) return;
-              setBusy(true);
-              setMessage(null);
+          }, [capability, phase]);
+          React.useEffect(() => {
+            if (draft === null || busy || phase !== "ready") return void 0;
+            let active = true;
+            let pending = false;
+            const timer = setInterval(async () => {
+              if (pending) return;
+              pending = true;
               try {
-                await callUserBindings2("save-draft", {
-                  capability,
-                  version: draft.version,
-                  expectedRevision: catalog.revision,
-                  activate
-                });
-                setDraft(null);
-                await refresh();
-              } catch (error) {
-                await refresh().catch(() => {
-                });
-                setMessage(error instanceof Error ? error.message : String(error));
+                const [current, nextReview] = await Promise.all([
+                  callUserBindings2("draft", { capability }),
+                  callUserBindings2("draft-review", { capability })
+                ]);
+                if (active) {
+                  setDraft(current);
+                  setReview(nextReview);
+                }
+              } catch {
               } finally {
-                setBusy(false);
+                pending = false;
               }
+            }, 1500);
+            return () => {
+              active = false;
+              clearInterval(timer);
             };
-            const discard = async () => {
-              if (busy || draft === null || capability === null) return;
-              setBusy(true);
-              setMessage(null);
-              try {
-                await callUserBindings2("discard-draft", { capability, version: draft.version });
-                setDraft(null);
-                await refresh();
-              } catch (error) {
-                await refresh().catch(() => {
-                });
-                setMessage(error instanceof Error ? error.message : String(error));
-              } finally {
-                setBusy(false);
-              }
-            };
-            const outcome = node.outcome;
-            const outcomeText = outcome?.kind === "error" ? outcome.text ?? t2("bindings.commandFailed") : void 0;
-            const historical = projection?.history?.find((record) => record.commandId === node.commandId);
-            const currentReview = historical?.action !== null && historical?.action !== void 0 ? historical : review ?? historical;
-            const candidate = currentReview?.candidate ?? draft;
-            const action = currentReview?.action;
-            const actionKey = action?.state === "discarded" ? "bindings.commandDiscarded" : action?.state === "saved" ? action.enabled ? "bindings.commandSavedEnabled" : "bindings.commandSaved" : null;
-            const failed = outcome?.kind === "error" || phase === "failed";
-            const displayPhase = action?.state ?? (failed ? "failed" : phase === "ready" && loaded && draft === null ? "idle" : phase);
-            return h(
-              "section",
-              {
-                className: "ptcPlusBindingCommand",
-                "data-phase": displayPhase,
-                "aria-label": t2("bindings.commandTitle")
-              },
-              h(
-                "div",
-                { className: "ptcPlusBindingCommandHeader" },
-                h("strong", { className: "ptcPlusBindingCommandTitle" }, t2("bindings.commandTitle")),
-                h(
-                  "span",
-                  { className: "ptcPlusBindingCommandState" },
-                  h("span", { className: "ptcPlusBindingCommandStateDot", "aria-hidden": true }),
-                  actionKey !== null ? t2(actionKey) : displayPhase === "pending" ? t2("bindings.commandPending") : displayPhase === "ready" ? t2("bindings.commandReady") : displayPhase === "failed" ? t2("bindings.commandFailed") : t2("bindings.commandUnavailable")
-                )
-              ),
-              h("pre", { className: "ptcPlusBindingCommandRequirement" }, `/binding${node.args ?? ""}`),
-              outcomeText === void 0 ? null : h("p", {
-                className: `ptcPlusMessage${outcome?.kind === "error" ? " ptcPlusDanger" : ""}`
-              }, outcomeText),
-              phase === "ready" && draft === null && message === null && !loaded ? h("span", { className: "ptcPlusMessage" }, t2("bindings.commandPending")) : null,
-              candidate === null || candidate === void 0 ? null : h(
-                "div",
-                { className: "ptcPlusAuthoringDraft" },
-                h("strong", null, candidate.entry.name),
-                h("span", { className: "ptcPlusBindingMeta" }, `${candidate.entry.scope} - ${candidate.entry.symbols.join(", ")}`),
-                h(
-                  "details",
-                  { className: "ptcPlusBindingSourceDetails", open: actionKey === null ? true : void 0 },
-                  h("summary", null, t2("tool.source")),
-                  typeof CodeBlock === "function" ? h(CodeBlock, {
-                    code: candidate.entry.source,
-                    lang: "typescript",
-                    className: "ptcPlusBindingCommandCode",
-                    copyLabel: t2("tool.copy"),
-                    copiedLabel: t2("tool.copied")
-                  }) : h("pre", { className: "ptcPlusBindingCommandSource" }, candidate.entry.source)
-                ),
-                draft === null || actionKey !== null ? null : h(
-                  "div",
-                  { className: "ptcPlusBindingCommandActions" },
-                  h(ActionButton, { type: "button", className: "ptcPlusButton", disabled: busy, onClick: () => save(false) }, t2("bindings.draftSave")),
-                  h(ActionButton, { type: "button", className: "ptcPlusButton", "data-kind": "primary", disabled: busy, onClick: () => save(true) }, t2("bindings.draftSaveEnable")),
-                  h(ActionButton, { type: "button", className: "ptcPlusButton", "data-kind": "ghost", disabled: busy, onClick: discard }, t2("bindings.draftDiscard"))
-                )
-              ),
-              message === null ? null : h("p", { className: "ptcPlusMessage", role: "status" }, message)
-            );
-          }
-          function PTCPlusSessionIndicator({
-            sessionId,
-            t: t2,
-            useProjection,
-            useInput,
-            inputActions,
-            usePtcSettings,
-            callUserBindings: callUserBindings2
-          }) {
-            const preset = useProjection("agentPreset");
-            const projectionMemory = useProjection("ptcPlusRepl");
-            const projectionDraftCapability = useProjection("ptcPlusBindingDraft");
-            const settings = usePtcSettings((snapshot) => snapshot);
-            let input;
-            try {
-              input = typeof useInput === "function" ? useInput((snapshot) => snapshot) : void 0;
-            } catch {
-              input = void 0;
-            }
-            const resolvedSessionId = sessionId;
-            let draftProjection = { phase: "idle", capability: null, commandId: null };
-            try {
-              draftProjection = normalizeUserBindingDraftView(
-                projectionDraftCapability ?? { phase: "idle", capability: null, commandId: null }
-              );
-            } catch {
-            }
-            const draftCapability = draftProjection.capability;
-            const globalEnabled = settings.status === "ready" && settings.value?.enabled === true && settings.value?.userBindingsEnabled === true;
-            const refreshIdentity = JSON.stringify([
-              resolvedSessionId === void 0 ? null : String(resolvedSessionId),
-              draftProjection.phase,
-              draftCapability,
-              globalEnabled
+          }, [capability, phase, draft, busy]);
+          const refresh = async () => {
+            const [nextCatalog, nextDraft, nextReview] = await Promise.all([
+              callUserBindings2("list"),
+              callUserBindings2("draft", { capability }),
+              callUserBindings2("draft-review", { capability })
             ]);
-            const refreshControl = React.useRef(void 0);
-            if (refreshControl.current?.identity !== refreshIdentity) {
-              refreshControl.current = {
-                identity: refreshIdentity,
-                sequence: 0,
-                mutating: false,
-                draftConsumed: false
-              };
-            }
-            const [globalBindingsState, setGlobalBindingsState] = React.useState(void 0);
-            const [authoringDraftState, setAuthoringDraftState] = React.useState(void 0);
-            const [authoringMessage, setAuthoringMessage] = React.useState(null);
-            const globalBindings = globalBindingsState?.identity === refreshIdentity ? globalBindingsState.value : void 0;
-            const authoringDraft = authoringDraftState?.identity === refreshIdentity ? authoringDraftState.value : null;
-            const refreshGlobalBindings = React.useCallback(() => {
-              const control = refreshControl.current;
-              if (control.identity !== refreshIdentity || control.mutating) return Promise.resolve();
-              const sequence = ++control.sequence;
-              if (!globalEnabled) {
-                setGlobalBindingsState({ identity: refreshIdentity, value: void 0 });
-                setAuthoringDraftState({ identity: refreshIdentity, value: null });
-                return Promise.resolve();
-              }
-              const effectiveDraftCapability = control.draftConsumed ? null : draftCapability;
-              return Promise.all([
-                callUserBindings2("list"),
-                effectiveDraftCapability === null ? Promise.resolve(null) : callUserBindings2("draft", { capability: effectiveDraftCapability })
-              ]).then(([bindings, draft]) => {
-                if (refreshControl.current !== control || control.sequence !== sequence || control.mutating) return;
-                setGlobalBindingsState({ identity: refreshIdentity, value: bindings });
-                setAuthoringDraftState({ identity: refreshIdentity, value: draft });
-              }).catch(() => {
-                if (refreshControl.current !== control || control.sequence !== sequence || control.mutating) return;
-                setGlobalBindingsState({ identity: refreshIdentity, value: void 0 });
-                setAuthoringDraftState({ identity: refreshIdentity, value: null });
+            setCatalog(nextCatalog);
+            setDraft(nextDraft);
+            setReview(nextReview);
+          };
+          const save = async (activate = false) => {
+            if (busy || draft === null || catalog === null || capability === null) return;
+            setBusy(true);
+            setMessage(null);
+            try {
+              await callUserBindings2("save-draft", {
+                capability,
+                version: draft.version,
+                expectedRevision: catalog.revision,
+                activate
               });
-            }, [draftCapability, globalEnabled, refreshIdentity]);
-            React.useEffect(() => {
+              setDraft(null);
+              await refresh();
+            } catch (error) {
+              await refresh().catch(() => {
+              });
+              setMessage(error instanceof Error ? error.message : String(error));
+            } finally {
+              setBusy(false);
+            }
+          };
+          const discard = async () => {
+            if (busy || draft === null || capability === null) return;
+            setBusy(true);
+            setMessage(null);
+            try {
+              await callUserBindings2("discard-draft", { capability, version: draft.version });
+              setDraft(null);
+              await refresh();
+            } catch (error) {
+              await refresh().catch(() => {
+              });
+              setMessage(error instanceof Error ? error.message : String(error));
+            } finally {
+              setBusy(false);
+            }
+          };
+          const outcome = node.outcome;
+          const outcomeText = outcome?.kind === "error" ? outcome.text ?? t2("bindings.commandFailed") : void 0;
+          const historical = projection?.history?.find((record) => record.commandId === node.commandId);
+          const currentReview = historical?.action !== null && historical?.action !== void 0 ? historical : review ?? historical;
+          const candidate = currentReview?.candidate ?? draft;
+          const action = currentReview?.action;
+          const actionKey = action?.state === "discarded" ? "bindings.commandDiscarded" : action?.state === "saved" ? action.enabled ? "bindings.commandSavedEnabled" : "bindings.commandSaved" : null;
+          const failed = outcome?.kind === "error" || phase === "failed";
+          const displayPhase = action?.state ?? (failed ? "failed" : phase === "ready" && loaded && draft === null ? "idle" : phase);
+          return h(
+            "section",
+            {
+              className: "ptcPlusBindingCommand",
+              "data-phase": displayPhase,
+              "aria-label": t2("bindings.commandTitle")
+            },
+            h(
+              "div",
+              { className: "ptcPlusBindingCommandHeader" },
+              h("strong", { className: "ptcPlusBindingCommandTitle" }, t2("bindings.commandTitle")),
+              h(
+                "span",
+                { className: "ptcPlusBindingCommandState" },
+                h("span", { className: "ptcPlusBindingCommandStateDot", "aria-hidden": true }),
+                actionKey !== null ? t2(actionKey) : displayPhase === "pending" ? t2("bindings.commandPending") : displayPhase === "ready" ? t2("bindings.commandReady") : displayPhase === "failed" ? t2("bindings.commandFailed") : t2("bindings.commandUnavailable")
+              )
+            ),
+            h("pre", { className: "ptcPlusBindingCommandRequirement" }, `/binding${node.args ?? ""}`),
+            outcomeText === void 0 ? null : h("p", {
+              className: `ptcPlusMessage${outcome?.kind === "error" ? " ptcPlusDanger" : ""}`
+            }, outcomeText),
+            phase === "ready" && draft === null && message === null && !loaded ? h("span", { className: "ptcPlusMessage" }, t2("bindings.commandPending")) : null,
+            candidate === null || candidate === void 0 ? null : h(
+              "div",
+              { className: "ptcPlusAuthoringDraft" },
+              h("strong", null, candidate.entry.name),
+              h("span", { className: "ptcPlusBindingMeta" }, `${candidate.entry.scope} - ${candidate.entry.symbols.join(", ")}`),
+              h(
+                "details",
+                { className: "ptcPlusBindingSourceDetails", open: actionKey === null ? true : void 0 },
+                h("summary", null, t2("tool.source")),
+                typeof CodeBlock === "function" ? h(CodeBlock, {
+                  code: candidate.entry.source,
+                  lang: "typescript",
+                  className: "ptcPlusBindingCommandCode",
+                  copyLabel: t2("tool.copy"),
+                  copiedLabel: t2("tool.copied")
+                }) : h("pre", { className: "ptcPlusBindingCommandSource" }, candidate.entry.source)
+              ),
+              draft === null || actionKey !== null ? null : h(
+                "div",
+                { className: "ptcPlusBindingCommandActions" },
+                h(ActionButton, { type: "button", className: "ptcPlusButton", disabled: busy, onClick: () => save(false) }, t2("bindings.draftSave")),
+                h(ActionButton, { type: "button", className: "ptcPlusButton", "data-kind": "primary", disabled: busy, onClick: () => save(true) }, t2("bindings.draftSaveEnable")),
+                h(ActionButton, { type: "button", className: "ptcPlusButton", "data-kind": "ghost", disabled: busy, onClick: discard }, t2("bindings.draftDiscard"))
+              )
+            ),
+            message === null ? null : h("p", { className: "ptcPlusMessage", role: "status" }, message)
+          );
+        }
+        function PTCPlusSessionIndicator({
+          sessionId,
+          t: t2,
+          useProjection,
+          useInput,
+          inputActions,
+          usePtcSettings,
+          callUserBindings: callUserBindings2
+        }) {
+          const preset = useProjection("agentPreset");
+          const projectionMemory = useProjection("ptcPlusRepl");
+          const projectionDraftCapability = useProjection("ptcPlusBindingDraft");
+          const settings = usePtcSettings((snapshot) => snapshot);
+          let input;
+          try {
+            input = typeof useInput === "function" ? useInput((snapshot) => snapshot) : void 0;
+          } catch {
+            input = void 0;
+          }
+          const resolvedSessionId = sessionId;
+          let draftProjection = { phase: "idle", capability: null, commandId: null };
+          try {
+            draftProjection = normalizeUserBindingDraftView(
+              projectionDraftCapability ?? { phase: "idle", capability: null, commandId: null }
+            );
+          } catch {
+          }
+          const draftCapability = draftProjection.capability;
+          const globalEnabled = settings.status === "ready" && settings.value?.enabled === true && settings.value?.userBindingsEnabled === true;
+          const refreshIdentity = JSON.stringify([
+            resolvedSessionId === void 0 ? null : String(resolvedSessionId),
+            draftProjection.phase,
+            draftCapability,
+            globalEnabled
+          ]);
+          const refreshControl = React.useRef(void 0);
+          if (refreshControl.current?.identity !== refreshIdentity) {
+            refreshControl.current = {
+              identity: refreshIdentity,
+              sequence: 0,
+              mutating: false,
+              draftConsumed: false
+            };
+          }
+          const [globalBindingsState, setGlobalBindingsState] = React.useState(void 0);
+          const [authoringDraftState, setAuthoringDraftState] = React.useState(void 0);
+          const [authoringMessage, setAuthoringMessage] = React.useState(null);
+          const globalBindings = globalBindingsState?.identity === refreshIdentity ? globalBindingsState.value : void 0;
+          const authoringDraft = authoringDraftState?.identity === refreshIdentity ? authoringDraftState.value : null;
+          const refreshGlobalBindings = React.useCallback(() => {
+            const control = refreshControl.current;
+            if (control.identity !== refreshIdentity || control.mutating) return Promise.resolve();
+            const sequence = ++control.sequence;
+            if (!globalEnabled) {
+              setGlobalBindingsState({ identity: refreshIdentity, value: void 0 });
+              setAuthoringDraftState({ identity: refreshIdentity, value: null });
+              return Promise.resolve();
+            }
+            const effectiveDraftCapability = control.draftConsumed ? null : draftCapability;
+            return Promise.all([
+              callUserBindings2("list"),
+              effectiveDraftCapability === null ? Promise.resolve(null) : callUserBindings2("draft", { capability: effectiveDraftCapability })
+            ]).then(([bindings, draft]) => {
+              if (refreshControl.current !== control || control.sequence !== sequence || control.mutating) return;
+              setGlobalBindingsState({ identity: refreshIdentity, value: bindings });
+              setAuthoringDraftState({ identity: refreshIdentity, value: draft });
+            }).catch(() => {
+              if (refreshControl.current !== control || control.sequence !== sequence || control.mutating) return;
+              setGlobalBindingsState({ identity: refreshIdentity, value: void 0 });
+              setAuthoringDraftState({ identity: refreshIdentity, value: null });
+            });
+          }, [draftCapability, globalEnabled, refreshIdentity]);
+          React.useEffect(() => {
+            void refreshGlobalBindings();
+          }, [refreshGlobalBindings]);
+          const triggerRef = React.useRef(null);
+          const popoverRef = React.useRef(null);
+          const closeTimer = React.useRef(void 0);
+          const [expanded, setExpanded] = React.useState(false);
+          React.useEffect(() => {
+            if (!expanded || !globalEnabled) return void 0;
+            const timer = setInterval(() => {
               void refreshGlobalBindings();
-            }, [refreshGlobalBindings]);
-            const triggerRef = React.useRef(null);
-            const popoverRef = React.useRef(null);
-            const closeTimer = React.useRef(void 0);
-            const [expanded, setExpanded] = React.useState(false);
-            React.useEffect(() => {
-              if (!expanded || !globalEnabled) return void 0;
-              const timer = setInterval(() => {
-                void refreshGlobalBindings();
-              }, 1500);
-              return () => clearInterval(timer);
-            }, [expanded, globalEnabled, refreshGlobalBindings]);
-            const positionPopover = React.useCallback(() => {
-              if (!replPopoverIsOpen(popoverRef.current)) return;
-              placeReplPopover(triggerRef.current, popoverRef.current);
-            }, []);
-            const showPopover = React.useCallback(() => {
-              if (closeTimer.current !== void 0) clearTimeout(closeTimer.current);
-              const popover = popoverRef.current;
-              if (popover === null) return;
-              popover.style.visibility = "hidden";
-              if (!replPopoverIsOpen(popover)) {
-                if (typeof popover.showPopover === "function") {
-                  try {
-                    popover.showPopover();
-                  } catch {
-                    popover.dataset.open = "true";
-                  }
-                } else {
+            }, 1500);
+            return () => clearInterval(timer);
+          }, [expanded, globalEnabled, refreshGlobalBindings]);
+          const positionPopover = React.useCallback(() => {
+            if (!replPopoverIsOpen(popoverRef.current)) return;
+            placeReplPopover(triggerRef.current, popoverRef.current);
+          }, []);
+          const showPopover = React.useCallback(() => {
+            if (closeTimer.current !== void 0) clearTimeout(closeTimer.current);
+            const popover = popoverRef.current;
+            if (popover === null) return;
+            popover.style.visibility = "hidden";
+            if (!replPopoverIsOpen(popover)) {
+              if (typeof popover.showPopover === "function") {
+                try {
+                  popover.showPopover();
+                } catch {
                   popover.dataset.open = "true";
                 }
+              } else {
+                popover.dataset.open = "true";
               }
-              placeReplPopover(triggerRef.current, popover);
-              popover.style.visibility = "visible";
-              setExpanded(true);
-              void refreshGlobalBindings();
-            }, [refreshGlobalBindings]);
-            const hidePopover = React.useCallback(() => {
+            }
+            placeReplPopover(triggerRef.current, popover);
+            popover.style.visibility = "visible";
+            setExpanded(true);
+            void refreshGlobalBindings();
+          }, [refreshGlobalBindings]);
+          const hidePopover = React.useCallback(() => {
+            const popover = popoverRef.current;
+            if (popover === null) return;
+            if (popover.dataset.open === "true") delete popover.dataset.open;
+            if (typeof popover.hidePopover === "function" && replPopoverIsOpen(popover)) {
+              try {
+                popover.hidePopover();
+              } catch {
+              }
+            }
+            setExpanded(false);
+          }, []);
+          const scheduleHide = React.useCallback(() => {
+            if (closeTimer.current !== void 0) clearTimeout(closeTimer.current);
+            closeTimer.current = setTimeout(() => {
+              closeTimer.current = void 0;
+              if (document.activeElement === triggerRef.current || popoverRef.current?.contains(document.activeElement)) return;
+              hidePopover();
+            }, 120);
+          }, [hidePopover]);
+          const prefillAuthoring = React.useCallback((value) => {
+            if (typeof inputActions?.setDraft !== "function") return;
+            if (typeof input?.draft === "string" && input.draft.trim() !== "") {
+              setAuthoringMessage("bindings.composerBusy");
+              return;
+            }
+            inputActions.setDraft(value);
+            setAuthoringMessage(null);
+            hidePopover();
+          }, [hidePopover, input?.draft, inputActions]);
+          const saveAuthoringDraft = React.useCallback(() => {
+            if (authoringDraft === null || globalBindings === void 0) return;
+            const control = refreshControl.current;
+            if (control.identity !== refreshIdentity || control.mutating) return;
+            control.mutating = true;
+            control.sequence += 1;
+            void callUserBindings2("save-draft", {
+              capability: draftCapability,
+              version: authoringDraft.version,
+              expectedRevision: globalBindings.revision
+            }).then((next) => {
+              if (refreshControl.current !== control) return;
+              control.draftConsumed = true;
+              setGlobalBindingsState({ identity: refreshIdentity, value: next });
+              setAuthoringDraftState({ identity: refreshIdentity, value: null });
+              setAuthoringMessage("bindings.draftSaved");
+            }).catch(() => {
+              if (refreshControl.current === control) setAuthoringMessage("memory.globalUnavailable");
+            }).finally(() => {
+              if (refreshControl.current === control) control.mutating = false;
+            });
+          }, [authoringDraft, draftCapability, globalBindings, refreshIdentity]);
+          const discardAuthoringDraft = React.useCallback(() => {
+            if (authoringDraft === null) return;
+            const control = refreshControl.current;
+            if (control.identity !== refreshIdentity || control.mutating) return;
+            control.mutating = true;
+            control.sequence += 1;
+            void callUserBindings2("discard-draft", {
+              capability: draftCapability,
+              version: authoringDraft.version
+            }).then(() => {
+              if (refreshControl.current !== control) return;
+              control.draftConsumed = true;
+              setAuthoringDraftState({ identity: refreshIdentity, value: null });
+              setAuthoringMessage(null);
+            }).catch(() => {
+              if (refreshControl.current === control) setAuthoringMessage("memory.globalUnavailable");
+            }).finally(() => {
+              if (refreshControl.current === control) control.mutating = false;
+            });
+          }, [authoringDraft, draftCapability, refreshIdentity]);
+          React.useEffect(() => {
+            const syncPopoverState = (event) => {
+              if (event.target !== popoverRef.current) return;
+              setExpanded(replPopoverIsOpen(popoverRef.current));
+            };
+            window.addEventListener("resize", positionPopover);
+            document.addEventListener("scroll", positionPopover, true);
+            document.addEventListener("toggle", syncPopoverState, true);
+            return () => {
+              if (closeTimer.current !== void 0) clearTimeout(closeTimer.current);
+              window.removeEventListener("resize", positionPopover);
+              document.removeEventListener("scroll", positionPopover, true);
+              document.removeEventListener("toggle", syncPopoverState, true);
               const popover = popoverRef.current;
-              if (popover === null) return;
-              if (popover.dataset.open === "true") delete popover.dataset.open;
-              if (typeof popover.hidePopover === "function" && replPopoverIsOpen(popover)) {
+              if (popover?.dataset?.open === "true") delete popover.dataset.open;
+              if (typeof popover?.hidePopover === "function" && replPopoverIsOpen(popover)) {
                 try {
                   popover.hidePopover();
                 } catch {
                 }
               }
-              setExpanded(false);
-            }, []);
-            const scheduleHide = React.useCallback(() => {
-              if (closeTimer.current !== void 0) clearTimeout(closeTimer.current);
-              closeTimer.current = setTimeout(() => {
-                closeTimer.current = void 0;
-                if (document.activeElement === triggerRef.current || popoverRef.current?.contains(document.activeElement)) return;
-                hidePopover();
-              }, 120);
-            }, [hidePopover]);
-            const prefillAuthoring = React.useCallback((value) => {
-              if (typeof inputActions?.setDraft !== "function") return;
-              if (typeof input?.draft === "string" && input.draft.trim() !== "") {
-                setAuthoringMessage("bindings.composerBusy");
-                return;
-              }
-              inputActions.setDraft(value);
-              setAuthoringMessage(null);
-              hidePopover();
-            }, [hidePopover, input?.draft, inputActions]);
-            const saveAuthoringDraft = React.useCallback(() => {
-              if (authoringDraft === null || globalBindings === void 0) return;
-              const control = refreshControl.current;
-              if (control.identity !== refreshIdentity || control.mutating) return;
-              control.mutating = true;
-              control.sequence += 1;
-              void callUserBindings2("save-draft", {
-                capability: draftCapability,
-                version: authoringDraft.version,
-                expectedRevision: globalBindings.revision
-              }).then((next) => {
-                if (refreshControl.current !== control) return;
-                control.draftConsumed = true;
-                setGlobalBindingsState({ identity: refreshIdentity, value: next });
-                setAuthoringDraftState({ identity: refreshIdentity, value: null });
-                setAuthoringMessage("bindings.draftSaved");
-              }).catch(() => {
-                if (refreshControl.current === control) setAuthoringMessage("memory.globalUnavailable");
-              }).finally(() => {
-                if (refreshControl.current === control) control.mutating = false;
-              });
-            }, [authoringDraft, draftCapability, globalBindings, refreshIdentity]);
-            const discardAuthoringDraft = React.useCallback(() => {
-              if (authoringDraft === null) return;
-              const control = refreshControl.current;
-              if (control.identity !== refreshIdentity || control.mutating) return;
-              control.mutating = true;
-              control.sequence += 1;
-              void callUserBindings2("discard-draft", {
-                capability: draftCapability,
-                version: authoringDraft.version
-              }).then(() => {
-                if (refreshControl.current !== control) return;
-                control.draftConsumed = true;
-                setAuthoringDraftState({ identity: refreshIdentity, value: null });
-                setAuthoringMessage(null);
-              }).catch(() => {
-                if (refreshControl.current === control) setAuthoringMessage("memory.globalUnavailable");
-              }).finally(() => {
-                if (refreshControl.current === control) control.mutating = false;
-              });
-            }, [authoringDraft, draftCapability, refreshIdentity]);
-            React.useEffect(() => {
-              const syncPopoverState = (event) => {
-                if (event.target !== popoverRef.current) return;
-                setExpanded(replPopoverIsOpen(popoverRef.current));
-              };
-              window.addEventListener("resize", positionPopover);
-              document.addEventListener("scroll", positionPopover, true);
-              document.addEventListener("toggle", syncPopoverState, true);
-              return () => {
-                if (closeTimer.current !== void 0) clearTimeout(closeTimer.current);
-                window.removeEventListener("resize", positionPopover);
-                document.removeEventListener("scroll", positionPopover, true);
-                document.removeEventListener("toggle", syncPopoverState, true);
-                const popover = popoverRef.current;
-                if (popover?.dataset?.open === "true") delete popover.dataset.open;
-                if (typeof popover?.hidePopover === "function" && replPopoverIsOpen(popover)) {
-                  try {
-                    popover.hidePopover();
-                  } catch {
-                  }
-                }
-              };
-            }, [hidePopover, positionPopover]);
-            if (!sessionUsesPtcPreset(preset) || settings.status !== "ready" || settings.value?.enabled !== true) return null;
-            let memory;
-            try {
-              memory = normalizeReplMemorySnapshot(projectionMemory);
-            } catch {
-              memory = unavailableReplMemorySnapshot();
-            }
-            const popoverId = `ptc-plus-repl-${String(resolvedSessionId).replace(/[^A-Za-z0-9_-]/g, "-")}`;
-            const titleId = `${popoverId}-title`;
-            return h(
-              "span",
-              { className: "ptcPlusActiveShell" },
-              h("button", {
-                type: "button",
-                className: "ptcPlusActive",
-                ref: triggerRef,
-                title: t2("indicator.title"),
-                "aria-label": t2("indicator.title"),
-                "aria-controls": popoverId,
-                "aria-expanded": expanded,
-                "aria-haspopup": "dialog",
-                onPointerEnter: showPopover,
-                onPointerLeave: scheduleHide,
-                onFocus: showPopover,
-                onBlur: scheduleHide,
-                onClick: showPopover,
-                onKeyDown: (event) => {
-                  if (event.key === "Escape") hidePopover();
-                }
-              }, h("span", { className: "ptcPlusActiveLabel" }, "PTC Plus")),
-              h(ReplMemoryCard, {
-                memory,
-                globalEnabled,
-                globalBindings,
-                authoringDraft,
-                authoringPhase: draftProjection.phase,
-                loadGlobalBinding: (id2) => callUserBindings2("load", { id: id2 }),
-                prefillAuthoring,
-                saveAuthoringDraft,
-                discardAuthoringDraft,
-                authoringMessage,
-                t: t2,
-                id: popoverId,
-                titleId,
-                popoverRef,
-                onEnter: showPopover,
-                onLeave: scheduleHide
-              })
-            );
+            };
+          }, [hidePopover, positionPopover]);
+          if (!sessionUsesPtcPreset(preset) || settings.status !== "ready" || settings.value?.enabled !== true) return null;
+          let memory;
+          try {
+            memory = normalizeReplMemorySnapshot(projectionMemory);
+          } catch {
+            memory = unavailableReplMemorySnapshot();
           }
-          scope.slots.inject("conversation.session.header.actions", () => registerEnabled(scope, false, () => scope.slots.register({
-            name: "conversation.session.header.actions",
-            id: "ptc-plus-active",
-            order: -9,
+          const popoverId = `ptc-plus-repl-${String(resolvedSessionId).replace(/[^A-Za-z0-9_-]/g, "-")}`;
+          const titleId = `${popoverId}-title`;
+          return h(
+            "span",
+            { className: "ptcPlusActiveShell" },
+            h("button", {
+              type: "button",
+              className: "ptcPlusActive",
+              ref: triggerRef,
+              title: t2("indicator.title"),
+              "aria-label": t2("indicator.title"),
+              "aria-controls": popoverId,
+              "aria-expanded": expanded,
+              "aria-haspopup": "dialog",
+              onPointerEnter: showPopover,
+              onPointerLeave: scheduleHide,
+              onFocus: showPopover,
+              onBlur: scheduleHide,
+              onClick: showPopover,
+              onKeyDown: (event) => {
+                if (event.key === "Escape") hidePopover();
+              }
+            }, h("span", { className: "ptcPlusActiveLabel" }, "PTC Plus")),
+            h(ReplMemoryCard, {
+              memory,
+              globalEnabled,
+              globalBindings,
+              authoringDraft,
+              authoringPhase: draftProjection.phase,
+              loadGlobalBinding: (id2) => callUserBindings2("load", { id: id2 }),
+              prefillAuthoring,
+              saveAuthoringDraft,
+              discardAuthoringDraft,
+              authoringMessage,
+              t: t2,
+              id: popoverId,
+              titleId,
+              popoverRef,
+              onEnter: showPopover,
+              onLeave: scheduleHide
+            })
+          );
+        }
+        ctx.slots.inject("conversation.session.header.actions", () => registerEnabled(ctx, false, () => ctx.slots.register({
+          name: "conversation.session.header.actions",
+          id: "ptc-plus-active",
+          order: -9,
+          locale: LOCALE_NS,
+          inject: settingsProps
+        }, (props) => typeof props.useProjection === "function" ? h(PTCPlusSessionIndicator, props) : null)));
+        ctx.inject(["uiConversation"], (conversationScope) => {
+          conversationScope.slots.inject("conversation.chat.commandview", () => registerEnabled(conversationScope, true, () => conversationScope.slots.register({
+            name: "conversation.chat.commandview",
+            key: "binding",
             locale: LOCALE_NS,
             inject: settingsProps
-          }, PTCPlusSessionIndicator)));
-          scope.inject(["uiConversation"], (conversationScope) => {
-            conversationScope.slots.inject("conversation.chat.commandview", () => registerEnabled(conversationScope, true, () => conversationScope.slots.register({
-              name: "conversation.chat.commandview",
-              key: "binding",
+          }, (props) => h(BindingCommandCard, { ...props, key: props.node.commandId }))));
+          conversationScope.inject(["remote", "remote.commands"], (commandScope) => {
+            const availability = createBindingCommandAvailability(commandScope);
+            commandScope.slots.inject("conversation.input.left", () => registerEnabled(commandScope, true, () => commandScope.slots.register({
+              name: "conversation.input.left",
+              id: "ptc-plus-binding-author",
+              order: 20,
               locale: LOCALE_NS,
-              inject: settingsProps
-            }, (props) => h(BindingCommandCard, { ...props, key: props.node.commandId }))));
-            conversationScope.inject(["remote", "remote.commands"], (commandScope) => {
-              const availability = createBindingCommandAvailability(commandScope);
-              commandScope.slots.inject("conversation.input.left", () => registerEnabled(commandScope, true, () => commandScope.slots.register({
-                name: "conversation.input.left",
-                id: "ptc-plus-binding-author",
-                order: 20,
-                locale: LOCALE_NS,
-                inject: (sessionId) => ({
-                  hooks: { ptcSettings: preferenceScope, bindingCommand: availability.source(sessionId) }
-                })
-              }, BindingAuthorButton)));
-            });
+              inject: (sessionId) => ({
+                hooks: { ptcSettings: preferenceScope, bindingCommand: availability.source(sessionId) }
+              })
+            }, (props) => typeof props.useInput === "function" && typeof props.inputActions?.setDraft === "function" ? h(BindingAuthorButton, props) : null)));
           });
         });
       }

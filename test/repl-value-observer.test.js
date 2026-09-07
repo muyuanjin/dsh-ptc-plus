@@ -27,6 +27,7 @@ test('observes bounded descriptors without invoking getters, Proxy traps or form
       get [Symbol.toStringTag]() { touched(); return 'Object' }
     }
     let array = [1, , { nested: true }]
+    Object.defineProperty(array, '3', { get() { touched(); return 3 } })
     let proxy = new Proxy({}, {
       get() { touched() }, ownKeys() { touched(); return [] },
       getOwnPropertyDescriptor() { touched() }, getPrototypeOf() { touched(); return null }
@@ -47,11 +48,11 @@ test('observes bounded descriptors without invoking getters, Proxy traps or form
     assert.equal(values.get(name).text, text)
   }
   assert.equal(values.get('text').truncated, true)
-  assert.match(values.get('object').text, /accessor: unreadable/)
-  assert.equal(values.get('object').truncated, true)
+  assert.match(values.get('array').text, /accessor: unreadable/)
+  assert.equal(values.get('array').truncated, true)
   assert.match(values.get('array').text, /\[object\]/)
   assert.match(values.get('array').text, /\[empty\]/)
-  for (const name of ['proxy', 'revokedProxy', 'accessor', 'unknown', 'touched()', 'symbol', 'fn', 'bigint']) {
+  for (const name of ['object', 'proxy', 'revokedProxy', 'accessor', 'unknown', 'touched()', 'symbol', 'fn', 'bigint']) {
     assert.equal(values.get(name).status, 'unreadable', name)
   }
   assert.ok(observed.entries.every(entry => entry.text.length <= 512))
@@ -64,7 +65,7 @@ test('observes bounded descriptors without invoking getters, Proxy traps or form
 
 test('previews remain shallow and reject module namespaces and nested unsafe objects', async () => {
   const proxy = Proxy.revocable({}, {}); proxy.revoke()
-  const preview = previewBindingValue({ a: 'hello', b: proxy.proxy, c: Symbol(), d: 1n, e: () => {}, f: 'omitted' })
+  const preview = previewBindingValue(['hello', proxy.proxy, Symbol(), 1n, () => {}, 'omitted'])
   for (const type of ['proxy', 'symbol', 'bigint', 'function']) assert.match(preview.text, new RegExp(`${type}: unreadable`))
   assert.doesNotMatch(preview.text, /omitted/)
   assert.equal(previewBindingValue(await import('node:path')).status, 'unreadable')
@@ -168,26 +169,30 @@ test('large boxed string previews preserve a 128 MiB worker and subsequent bindi
   assert.equal(child.signal, null)
 })
 
-test('slow object observation cannot consume the next cell execution budgets', () => {
+test('large plain objects preserve a 128 MiB worker, execution budgets and binding reuse', () => {
   const child = spawnSync(process.execPath, ['--input-type=module', '--eval', `
     import assert from 'node:assert/strict'
     import { SessionRuntime } from ${JSON.stringify(new URL('../internal/session-runtime.js', import.meta.url).href)}
-    const runtime = new SessionRuntime({ computeMs: 30000, maxWallMs: 30000 }, { observeSession: () => true })
-    const session = 'slow-observation'
+    for (const observing of [false, true]) {
+    const runtime = new SessionRuntime({ maxOldGenerationSizeMb: 128, computeMs: 30000, maxWallMs: 30000 }, { observeSession: () => observing })
+    const session = 'large-object'
     try {
-      const first = await runtime.run(session, {
-        program: 'let big = {}; for (let i = 0; i < 2000000; i++) big["key" + i] = i; return 1',
+      const first = await runtime.runTentative(session, {
+        program: 'let big = {}; for (let i = 0; i < 4000000; i++) big[i] = i; return 1',
         bindings: [],
       })
-      assert.equal(first.error, undefined)
-      assert.equal(first.value, 1)
+      assert.equal(first.result.error, undefined)
+      assert.equal(first.result.value, 1)
+      assert.deepEqual(first.settlement.replMemory.observation?.entries, observing
+        ? [{ name: 'big', status: 'unreadable', text: '', truncated: false }] : undefined)
+      runtime.finalize(first.settlement, true)
       const kernel = runtime.kernels.get(session)
       const worker = kernel.client.worker
-      runtime.reconfigure({ computeMs: 100, maxWallMs: 100 })
+      runtime.reconfigure({ maxOldGenerationSizeMb: 128, computeMs: 100, maxWallMs: 100 })
       for (const [program, value] of [
         ['let alias = big; return 2', 2],
         ['return 3', 3],
-        ['return alias === big && big.key1999999 === 1999999', true],
+        ['return alias === big && big[3999999] === 3999999', true],
       ]) {
         const next = await runtime.run(session, { program, bindings: [] })
         assert.equal(next.error, undefined)
@@ -196,6 +201,7 @@ test('slow object observation cannot consume the next cell execution budgets', (
       }
     } finally {
       await runtime.dispose()
+    }
     }
   `], { encoding: 'utf8', timeout: 60_000, maxBuffer: 256 * 1024 })
   assert.equal(child.error, undefined)

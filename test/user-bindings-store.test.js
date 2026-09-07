@@ -72,6 +72,21 @@ test('coalesces concurrent first-use reads into one revision', async (t) => {
   assert.equal((await store.save(binding(), listed.revision)).revision, 2)
 })
 
+test('rejects non-identifier names before persistence and deactivates malformed disk entries', async t => {
+  const { filename, store } = await fixture(t)
+  const saved = await store.save(binding(), (await store.list()).revision)
+  const before = await readFile(filename, 'utf8')
+  assert.throws(() => store.save(binding({ name: 'math ' }), saved.revision), /identifier/)
+  assert.equal(await readFile(filename, 'utf8'), before)
+  await writeFile(filename, JSON.stringify({ entries: [binding({ name: 'math ' })] }))
+  const damaged = await store.reload()
+  assert.match(damaged.error, /identifier/)
+  assert.deepEqual((await store.snapshot()).entries, [])
+  await writeFile(filename, before)
+  await store.reload()
+  assert.equal((await store.snapshot()).entries[0].name, 'math')
+})
+
 test('rejects stale and externally changed revisions without overwriting disk', async (t) => {
   const { filename, store } = await fixture(t)
   const initial = await store.list()

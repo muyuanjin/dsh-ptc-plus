@@ -58,7 +58,13 @@ function identifier(value, subject, reserved = false) {
     throw new TypeError(`${subject} must be a non-empty identifier of at most ${MAX_NAME_LENGTH} characters`)
   }
   try {
-    parse(`const ${value} = 0`, { sourceType: 'module' })
+    const { program } = parse(`const ${value} = 0`, { sourceType: 'module' })
+    const declaration = program.body[0]
+    const binding = declaration.declarations[0].id
+    if (program.body.length !== 1 || declaration.declarations.length !== 1
+      || binding.type !== 'Identifier' || binding.name !== value) {
+      throw new TypeError('identifier spelling must match the complete binding name')
+    }
   } catch {
     throw new TypeError(`${subject} must be a valid JavaScript identifier`)
   }

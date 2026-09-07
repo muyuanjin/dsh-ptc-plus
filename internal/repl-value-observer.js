@@ -8,12 +8,8 @@ const MAX_ENTRIES = 128
 const MAX_TEXT = 512
 const MAX_PROPERTIES = 5
 const ownDescriptor = Object.getOwnPropertyDescriptor
-const ownKeys = Reflect.ownKeys
 const isArray = Array.isArray
 const isProxy = types.isProxy
-const isTypedArray = types.isTypedArray
-const isStringObject = types.isStringObject
-const isModuleNamespace = types.isModuleNamespaceObject
 const stringify = JSON.stringify
 const now = Date.now
 const unreadable = () => ({ status: 'unreadable', text: '', truncated: false })
@@ -34,19 +30,16 @@ export function previewBindingValue(value) {
     const text = primitiveText(value)
     return { status: 'readable', text: text.slice(0, MAX_TEXT), truncated: text.length > MAX_TEXT }
   }
-  // TypedArrays and boxed strings allocate every index during key enumeration.
-  if (isProxy(value) || isTypedArray(value) || isStringObject(value) || isModuleNamespace(value)) return unreadable()
-  const array = isArray(value)
-  // Array slots are bounded without enumerating a potentially huge or sparse index space.
-  const keys = array ? Array.from({ length: Math.min(ownDescriptor(value, 'length').value, MAX_PROPERTIES) }, (_value, index) => String(index))
-    : ownKeys(value).slice(0, MAX_PROPERTIES)
+  // Only arrays provide a finite slot range without enumerating the whole object.
+  if (isProxy(value) || !isArray(value)) return unreadable()
+  const keys = Array.from({ length: Math.min(ownDescriptor(value, 'length').value, MAX_PROPERTIES) }, (_value, index) => String(index))
   const properties = keys.map(key => {
     const descriptor = ownDescriptor(value, key)
     const text = descriptor === undefined ? '[empty]'
       : Object.hasOwn(descriptor, 'value') ? primitiveText(descriptor.value) : '[accessor: unreadable]'
-    return `${typeof key === 'symbol' ? '[symbol]' : stringify(key.slice(0, MAX_TEXT))}: ${text}`
+    return `${stringify(key)}: ${text}`
   })
-  return { status: 'readable', text: `${array ? 'array' : 'object'} { ${properties.join(', ')} }`.slice(0, MAX_TEXT), truncated: true }
+  return { status: 'readable', text: `array { ${properties.join(', ')} }`.slice(0, MAX_TEXT), truncated: true }
 }
 
 /** A successful, non-await REPL program proves its lexical declarations exist, including TDZs. */

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -246,6 +247,53 @@ test('contracts a durable node when its declared binding snapshot is missing', a
   )
   assert.deepEqual(current.value, ['undefined', 2])
   assert.equal(current.meta.dshPtcPlusRecoveryBoundaries.length, 1)
+})
+
+test('contracts a self-consistent historical snapshot with an invalid identifier and continues once', async t => {
+  const home = await mkdtemp(join(tmpdir(), 'ptc-plus-identifier-recovery-'))
+  t.after(() => rm(home, { recursive: true, force: true }))
+  const previousHome = process.env.DSH_HOME
+  process.env.DSH_HOME = home
+  t.after(() => {
+    if (previousHome === undefined) delete process.env.DSH_HOME
+    else process.env.DSH_HOME = previousHome
+  })
+  await writeBindings(home, 1)
+  const events = []
+  const session = { id: 'identifier-recovery', events }
+  const agent = ptcAgent('identifier-recovery-agent', session)
+  const first = fixture({ userBindingsEnabled: true })
+  t.after(() => first.dispose())
+  await rememberRequest(first, session, agent)
+  const source = 'const historical = defaults.value; return historical'
+  const result = structuredClone(await first.runDurable(session.id, source, {}, { session }))
+  const snapshot = result.meta[USER_BINDINGS_META_KEY]
+  const entry = snapshot.entries[0]
+  entry.name = 'defaults '
+  entry.declaration = entry.declaration.replace('declare const defaults:', 'declare const defaults :')
+  entry.bindings[0] = { ...entry.bindings[0], name: entry.name, declaration: entry.declaration }
+  // Recreate the exact wire accepted by a parser that only validates its enclosing declaration.
+  const stored = Object.fromEntries(['id', 'name', 'scope', 'symbols', 'purpose', 'enabled', 'source']
+    .map(key => [key, entry[key]]))
+  entry.fingerprint = createHash('sha256').update(JSON.stringify(stored)).digest('hex')
+  snapshot.fingerprint = createHash('sha256')
+    .update(JSON.stringify({ revision: snapshot.revision, entries: [entry.fingerprint] })).digest('hex')
+  result.meta[JOURNAL_KEY].userBindingsFingerprint = snapshot.fingerprint
+  appendRunCodeEvents(events, 'invalid-identifier', source, result)
+  await first.dispose()
+
+  await writeBindings(home, 2)
+  const restored = fixture({ userBindingsEnabled: true })
+  t.after(() => restored.dispose())
+  await rememberRequest(restored, session, agent)
+  const currentSource = 'let current = defaults.value; return [typeof historical, current]'
+  const current = await restored.runDurable(session.id, currentSource, {}, { session })
+  assert.deepEqual(current.value, ['undefined', 2])
+  assert.equal(current.meta.dshPtcPlusRecoveryBoundaries.length, 1)
+  appendRunCodeEvents(events, 'continued-identifier', currentSource, current)
+  const next = await restored.runDurable(session.id, 'return current + 1', {}, { session })
+  assert.equal(next.value, 3)
+  assert.equal(next.meta.dshPtcPlusRecoveryBoundaries, undefined)
 })
 
 test('cold-replays the binding snapshot used by a derived edit cell', async (t) => {

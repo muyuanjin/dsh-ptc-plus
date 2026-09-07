@@ -86,7 +86,7 @@ try {
   }
   for (const width of [320, 390, 1440]) {
     await page.setViewportSize({ width, height: 900 })
-    for (const state of ['console-en', 'console-zh', 'workbench-en', 'workbench-zh', 'modal-en', 'modal-zh', 'empty-en', 'empty-zh', 'settings-en', 'settings-zh']) {
+    for (const state of ['console-en', 'console-zh', 'workbench-en', 'workbench-zh', 'modal-en', 'modal-zh', 'empty-en', 'empty-zh', 'settings-en', 'settings-zh', 'prompt-edit-en', 'prompt-edit-zh']) {
       await page.goto(pathToFileURL(resolve(directory, `${state}.html`)).href)
       const metrics = await page.evaluate(() => {
         const containers = [...document.querySelectorAll('.ptcPlusConsole,.ptcPlusBindingsSurface,.ptcPlusBindingsDialog,.ptcPlusBindingEditor')]

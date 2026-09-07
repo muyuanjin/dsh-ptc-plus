@@ -5,6 +5,7 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { validateJsonSchemaValue } from '@deepseek-ai/dsh-tools'
 import { BINDING_SUBMISSION, bindingAuthoringInstructions } from './user-binding-authoring.js'
 import { bindingActionNotice, USER_BINDING_DRAFT_META_KEY } from './user-binding-draft-projection.js'
+import { bindingModelPreferences } from './user-binding-model-context.js'
 import { sessionEvents } from './session-events.js'
 import { decodeValue } from './value-wire.js'
 import { UserBindingsStore } from './user-bindings-store.js'
@@ -66,7 +67,8 @@ function authoringTask(command, current) {
   if (command.kind === 'new') {
     return `Create a Global User Binding draft for this requirement:\n\n${command.requirement}`
   }
-  return `Revise the following Global User Binding for this requirement:\n\n${command.requirement}\n\nExisting entry:\n${JSON.stringify(current, null, 2)}`
+  const entry = { ...current, modelContext: bindingModelPreferences(current.modelContext) }
+  return `Revise the following Global User Binding for this requirement:\n\n${command.requirement}\n\nExisting entry:\n${JSON.stringify(entry, null, 2)}`
 }
 
 function taskMessage(text) {
@@ -359,6 +361,7 @@ export function createUserBindingsOwner(ctx, options = {}) {
           enabled: entry.enabled,
           source: entry.source,
           declaration: entry.declaration,
+          ...(entry.modelContext === undefined ? {} : { modelContext: entry.modelContext }),
         }
       } else if (endpoint === 'run') {
         value = await runCandidate(input.source, candidateInvocation(input.invocation), currentOptions, signal)

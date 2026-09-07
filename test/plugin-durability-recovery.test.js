@@ -28,6 +28,7 @@ return predecessorBinding
   delete predecessor.meta.dshPtcPlus.rewritePolicy
   delete predecessor.meta.dshPtcPlus.moduleSemantics
   delete predecessor.meta.dshPtcPlus.userBindingsFingerprint
+  delete predecessor.meta.dshPtcPlus.userBindingsReusePolicy
   appendRunCodeEvents(events, 'predecessor-cell', source, predecessor)
   await writer.dispose()
 
@@ -64,6 +65,7 @@ test('cold-replays predecessor default exports with their recorded writable bind
       delete result.meta.dshPtcPlus.bindingPolicy
       delete result.meta.dshPtcPlus.moduleSemantics
       delete result.meta.dshPtcPlus.userBindingsFingerprint
+      delete result.meta.dshPtcPlus.userBindingsReusePolicy
     }
     appendRunCodeEvents(
       events,

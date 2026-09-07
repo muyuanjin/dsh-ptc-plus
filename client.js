@@ -323,7 +323,7 @@
   );
 
   // src/client-activity.js
-  var JOURNAL_VERSIONS = /* @__PURE__ */ new Set([1, 2, 3, 4, 5]);
+  var JOURNAL_VERSIONS = /* @__PURE__ */ new Set([1, 2, 3, 4, 5, 6]);
   var JOURNAL_STATUSES = /* @__PURE__ */ new Set(["durable", "volatile", "discarded", "noop"]);
   var BINDING_MODES = /* @__PURE__ */ new Set(["loose", "strict"]);
   var JOURNAL_FIELDS = /* @__PURE__ */ new Set([
@@ -338,10 +338,14 @@
     "diagnostics",
     "completion",
     "volatileReason",
-    "userBindingsFingerprint"
+    "userBindingsFingerprint",
+    "userBindingsReusePolicy"
   ]);
+  var FINGERPRINT_REUSE_JOURNAL_FIELDS = new Set(
+    [...JOURNAL_FIELDS].filter((key) => key !== "userBindingsReusePolicy")
+  );
   var RELATIONLESS_JOURNAL_FIELDS = new Set(
-    [...JOURNAL_FIELDS].filter((key) => key !== "userBindingsFingerprint")
+    [...FINGERPRINT_REUSE_JOURNAL_FIELDS].filter((key) => key !== "userBindingsFingerprint")
   );
   var PREDECESSOR_JOURNAL_FIELDS = /* @__PURE__ */ new Set([
     "version",
@@ -573,11 +577,12 @@
       return false;
     }
     const predecessor = value.version < 4;
-    const fields = value.version === 1 ? LEGACY_JOURNAL_FIELDS : predecessor ? PREDECESSOR_JOURNAL_FIELDS : value.version === 4 ? RELATIONLESS_JOURNAL_FIELDS : JOURNAL_FIELDS;
+    const fields = value.version === 1 ? LEGACY_JOURNAL_FIELDS : predecessor ? PREDECESSOR_JOURNAL_FIELDS : value.version === 4 ? RELATIONLESS_JOURNAL_FIELDS : value.version === 5 ? FINGERPRINT_REUSE_JOURNAL_FIELDS : JOURNAL_FIELDS;
     const required = predecessor ? ["version", "bindingMode", "status", "calls", "operations", "diagnostics"] : ["version", "bindingPolicy", "rewritePolicy", "moduleSemantics", "status", "calls", "operations", "diagnostics"];
     if (value.version !== 1 && value.version < 4) required.push("rewritePolicy");
-    if (value.version === 5) required.push("userBindingsFingerprint");
-    if (!hasClosedFields(value, fields, required) || predecessor && !BINDING_MODES.has(value.bindingMode) || value.version >= 4 && !isValidBindingPolicy(value.bindingPolicy) || value.version >= 4 && !isValidModuleSemantics(value.moduleSemantics) || value.version === 5 && value.userBindingsFingerprint !== null && (typeof value.userBindingsFingerprint !== "string" || !/^[a-f0-9]{64}$/.test(value.userBindingsFingerprint)) || value.version !== 1 && !isValidRewritePolicy(value.rewritePolicy) || !Array.isArray(value.calls) || !value.calls.every(isValidCall) || !Array.isArray(value.operations) || !value.operations.every(isValidOperation) || !isValidConfirms(value.confirms, value.version) || !Array.isArray(value.diagnostics) || !value.diagnostics.every(isValidDiagnostic)) return false;
+    if (value.version >= 5) required.push("userBindingsFingerprint");
+    if (value.version === 6) required.push("userBindingsReusePolicy");
+    if (!hasClosedFields(value, fields, required) || predecessor && !BINDING_MODES.has(value.bindingMode) || value.version >= 4 && !isValidBindingPolicy(value.bindingPolicy) || value.version >= 4 && !isValidModuleSemantics(value.moduleSemantics) || value.version === 6 && !["fingerprint-v1", "implementation-v1"].includes(value.userBindingsReusePolicy) || value.version >= 5 && value.userBindingsFingerprint !== null && (typeof value.userBindingsFingerprint !== "string" || !/^[a-f0-9]{64}$/.test(value.userBindingsFingerprint)) || value.version !== 1 && !isValidRewritePolicy(value.rewritePolicy) || !Array.isArray(value.calls) || !value.calls.every(isValidCall) || !Array.isArray(value.operations) || !value.operations.every(isValidOperation) || !isValidConfirms(value.confirms, value.version) || !Array.isArray(value.diagnostics) || !value.diagnostics.every(isValidDiagnostic)) return false;
     const settlementOrder = value.calls.map((call) => call.settle).sort((left, right) => left - right);
     if (settlementOrder.some((settle, index) => settle !== index)) return false;
     const requiresCompletion = value.status === "durable" || value.status === "volatile";
@@ -26212,6 +26217,13 @@
   function isRecord2(value) {
     return value !== null && typeof value === "object" && !Array.isArray(value);
   }
+  function assertOwnFields(value, allowed, label) {
+    for (const key of Reflect.ownKeys(value)) {
+      if (typeof key !== "string" || !allowed.has(key) || !Object.prototype.propertyIsEnumerable.call(value, key)) {
+        throw new TypeError(`invalid ${label} field ${String(key)}`);
+      }
+    }
+  }
 
   // internal/repl-memory-projection.js
   var BINDING_KINDS = /* @__PURE__ */ new Set(["variable", "function", "class", "import"]);
@@ -26303,6 +26315,37 @@
     });
   }
 
+  // internal/user-binding-model-context.js
+  var FIELDS = /* @__PURE__ */ new Set(["includeDeclaration", "instructions", "enabled", "declaration"]);
+  function normalizeBindingModelContext(value) {
+    if (value === void 0) return void 0;
+    if (!isRecord2(value)) throw new TypeError("binding modelContext must be an object");
+    assertOwnFields(value, FIELDS, "binding modelContext");
+    const { includeDeclaration = true, instructions = "", enabled = true, declaration = "" } = value;
+    if (typeof includeDeclaration !== "boolean") throw new TypeError("binding modelContext.includeDeclaration must be a boolean");
+    if (typeof enabled !== "boolean") throw new TypeError("binding modelContext.enabled must be a boolean");
+    for (const [name2, text, limit] of [["instructions", instructions, 4096], ["declaration", declaration, 8192]]) {
+      if (typeof text !== "string" || text.length > limit) {
+        throw new TypeError(`binding modelContext.${name2} must be a string of at most ${limit} characters`);
+      }
+    }
+    if (Object.hasOwn(value, "enabled") || Object.hasOwn(value, "declaration")) {
+      return Object.freeze({
+        enabled,
+        instructions: instructions.trim(),
+        declaration: declaration.trim(),
+        ...Object.hasOwn(value, "includeDeclaration") ? { includeDeclaration } : {}
+      });
+    }
+    return Object.freeze({ includeDeclaration, instructions: instructions.trim() });
+  }
+  function bindingModelPreferences(value) {
+    return {
+      includeDeclaration: value?.includeDeclaration ?? value?.enabled ?? true,
+      instructions: value?.enabled === false && value.includeDeclaration === void 0 ? "" : value?.instructions ?? ""
+    };
+  }
+
   // internal/user-binding-draft-projection.js
   var MAX_CAPABILITY_LENGTH = 128;
   var MAX_COMMAND_ID_LENGTH = 256;
@@ -26312,6 +26355,7 @@
     if (!isRecord2(value) || typeof value.requestId !== "string" || value.requestId.length === 0 || value.requestId.length > 128 || !Number.isSafeInteger(value.version) || value.version < 1 || !["new", "edit"].includes(value.mode) || !isRecord2(value.entry) || !["namespace", "top-level"].includes(value.entry.scope) || value.entry.enabled !== false || !Array.isArray(value.entry.symbols) || value.entry.symbols.some((symbol) => typeof symbol !== "string") || ["id", "name", "purpose", "source"].some((key) => typeof value.entry[key] !== "string") || value.entry.source.length === 0 || value.entry.source.length > 65536) {
       throw new Error("invalid dsh-ptc-plus accepted binding candidate");
     }
+    const modelContext = normalizeBindingModelContext(value.entry.modelContext);
     return Object.freeze({
       requestId: value.requestId,
       commandId: normalizeCommandId(value.commandId),
@@ -26324,7 +26368,8 @@
         symbols: Object.freeze([...value.entry.symbols]),
         purpose: value.entry.purpose,
         source: value.entry.source,
-        enabled: false
+        enabled: false,
+        ...modelContext === void 0 ? {} : { modelContext }
       })
     });
   }
@@ -26438,6 +26483,7 @@
 
 `;
   var REPL_CONSOLE_CSS = `
+.ptcPlusBindingsSurface .ptcPlusBindingSection.ptcPlusModelPrompt{padding:12px 0}.ptcPlusModelPrompt .ptcPlusBindingSectionTitle{margin:0 0 10px}.ptcPlusModelPrompt textarea.ptcPlusInput{height:auto;min-height:80px;padding:8px 12px;resize:vertical}.ptcPlusModelPrompt .ptcPlusPromptToggle{flex-direction:row;align-items:center;justify-content:space-between;cursor:pointer}.ptcPlusModelPrompt .ptcPlusCheck{flex:none}.ptcPlusEditorHead .ptcPlusBindingLifecycle{min-width:0}.ptcPlusEditorHead .ptcPlusButton{width:auto}
 .ptcPlusConsole{box-sizing:border-box;flex:1;min-width:0;min-height:0;width:100%;height:100%;overflow:auto;padding:20px 24px;color:var(--dsw-alias-label-primary);container-type:inline-size}
 .ptcPlusConsoleSection{min-width:0}.ptcPlusConsoleSection+.ptcPlusConsoleSection{margin-top:22px;padding-top:20px;border-top:1px solid var(--dsw-alias-border-l2)}
 .ptcPlusObservationHead,.ptcPlusObservationTitle{display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px}.ptcPlusObservationHead{justify-content:space-between;margin-bottom:14px}
@@ -26521,6 +26567,10 @@
       "bindings.source": "TypeScript \u6E90\u7801",
       "bindings.sourcePreview": "\u5B9E\u73B0\u6E90\u7801",
       "bindings.declaration": "\u63A5\u53E3\u58F0\u660E",
+      "bindings.modelContext": "\u6A21\u578B\u4E0A\u4E0B\u6587",
+      "bindings.includeDeclaration": "\u5C06\u63A5\u53E3\u58F0\u660E\u63D0\u4F9B\u7ED9\u6A21\u578B",
+      "bindings.instructions": "\u7ED9\u6A21\u578B\u7684\u63D0\u793A\u8BCD",
+      "bindings.noInstructions": "\u672A\u8BBE\u7F6E\u63D0\u793A\u8BCD",
       "bindings.lifecycle": "\u6761\u76EE\u64CD\u4F5C",
       "bindings.debug": "\u4EE3\u7801\u63A7\u5236\u53F0",
       "bindings.edit": "\u7F16\u8F91",
@@ -26656,6 +26706,10 @@
       "bindings.source": "TypeScript source",
       "bindings.sourcePreview": "Implementation source",
       "bindings.declaration": "Interface declaration",
+      "bindings.modelContext": "Model context",
+      "bindings.includeDeclaration": "Include API declaration in model context",
+      "bindings.instructions": "Prompt for the model",
+      "bindings.noInstructions": "No prompt configured",
       "bindings.lifecycle": "Entry actions",
       "bindings.debug": "Code console",
       "bindings.edit": "Edit",
@@ -27036,7 +27090,8 @@
           symbolsText: "",
           purpose: "",
           enabled: false,
-          source: "export function helper() {\n  return undefined\n}\n"
+          source: "export function helper() {\n  return undefined\n}\n",
+          modelContext: bindingModelPreferences()
         });
         const editableBinding = (value) => ({
           id: value.id,
@@ -27045,7 +27100,8 @@
           symbolsText: Array.isArray(value.symbols) ? value.symbols.join(", ") : "",
           purpose: value.purpose,
           enabled: value.enabled,
-          source: value.source
+          source: value.source,
+          modelContext: bindingModelPreferences(value.modelContext)
         });
         const bindingPayload = (value) => {
           const { symbolsText, ...entry } = value;
@@ -27127,7 +27183,9 @@
           };
           const edit = (key, value) => {
             setDraft((current) => ({ ...current, [key]: value }));
-            setDeclaration("");
+            setEditing(true);
+            setMessage(null);
+            if (key !== "modelContext") setDeclaration("");
           };
           const load = (id2) => perform(async (current) => {
             const loaded = await callUserBindings2("load", { id: id2 });
@@ -27333,6 +27391,22 @@
                   h(
                     "div",
                     { className: "ptcPlusBindingLifecycle" },
+                    editing ? h(
+                      React.Fragment,
+                      null,
+                      h(
+                        ActionButton,
+                        { disabled: busy, onClick: validate },
+                        h(IconCheckOutline14, { size: 14 }),
+                        t2("bindings.validate")
+                      ),
+                      h(ActionButton, { "data-kind": "primary", disabled: busy, onClick: save }, t2("bindings.save")),
+                      h(ActionButton, { disabled: busy, onClick: () => {
+                        showEntry(original === null ? null : { entry: original, revision: editRevision }, { resetConsole: false });
+                        setSourceOpen(false);
+                        setMessage(null);
+                      } }, t2("bindings.cancel"))
+                    ) : null,
                     catalog.entries.some((entry) => entry.id === draft.id) ? h(IconButton, {
                       icon: IconTrashOutline16,
                       label: t2("bindings.remove"),
@@ -27355,6 +27429,40 @@
                   }) : h("pre", { className: "ptcPlusDeclaration" }, declaration)
                 ),
                 h(
+                  "section",
+                  { className: "ptcPlusBindingSection ptcPlusModelPrompt" },
+                  h("h4", { className: "ptcPlusBindingSectionTitle" }, t2("bindings.modelContext")),
+                  h(
+                    "div",
+                    { className: "ptcPlusBindingFields" },
+                    h(
+                      "label",
+                      { className: "ptcPlusBindingField ptcPlusPromptToggle", "data-wide": true },
+                      h("span", { className: "ptcPlusBindingFieldLabel" }, t2("bindings.includeDeclaration")),
+                      h("input", {
+                        className: "ptcPlusCheck",
+                        type: "checkbox",
+                        checked: draft.modelContext.includeDeclaration,
+                        disabled: busy,
+                        onChange: (event) => edit("modelContext", { ...draft.modelContext, includeDeclaration: event.target.checked })
+                      })
+                    ),
+                    h(
+                      "label",
+                      { className: "ptcPlusBindingField", "data-wide": true },
+                      h("span", { className: "ptcPlusBindingFieldLabel" }, t2("bindings.instructions")),
+                      h("textarea", {
+                        className: "ptcPlusInput",
+                        rows: 3,
+                        maxLength: 4096,
+                        value: draft.modelContext.instructions,
+                        disabled: busy,
+                        onChange: (event) => edit("modelContext", { ...draft.modelContext, instructions: event.target.value })
+                      })
+                    )
+                  )
+                ),
+                h(
                   "div",
                   { className: "ptcPlusSourceSection" },
                   h(
@@ -27369,22 +27477,7 @@
                     t2("bindings.sourcePreview"),
                     h("span", { className: "ptcPlusSourceFilename" }, draft.name ? `${draft.name}.ts` : "")
                   ),
-                  h("div", { className: "ptcPlusSourceActions" }, editing ? h(
-                    React.Fragment,
-                    null,
-                    h(
-                      ActionButton,
-                      { disabled: busy, onClick: validate },
-                      h(IconCheckOutline14, { size: 14 }),
-                      t2("bindings.validate")
-                    ),
-                    h(ActionButton, { "data-kind": "primary", disabled: busy, onClick: save }, t2("bindings.save")),
-                    h(ActionButton, { disabled: busy, onClick: () => {
-                      showEntry(original === null ? null : { entry: original, revision: editRevision }, { resetConsole: false });
-                      setSourceOpen(false);
-                      setMessage(null);
-                    } }, t2("bindings.cancel"))
-                  ) : h(
+                  h("div", { className: "ptcPlusSourceActions" }, editing ? null : h(
                     ActionButton,
                     { disabled: busy, onClick: () => {
                       setEditing(true);
@@ -28444,6 +28537,28 @@
                   copyLabel: t2("tool.copy"),
                   copiedLabel: t2("tool.copied")
                 }) : h("pre", { className: "ptcPlusBindingCommandSource" }, candidate.entry.source)
+              ),
+              h(
+                "details",
+                { className: "ptcPlusBindingPromptDetails" },
+                h("summary", null, t2("bindings.modelContext")),
+                h(
+                  "label",
+                  { className: "ptcPlusBindingFieldLabel" },
+                  h("input", {
+                    type: "checkbox",
+                    className: "ptcPlusCheck",
+                    disabled: true,
+                    checked: bindingModelPreferences(candidate.entry.modelContext).includeDeclaration
+                  }),
+                  t2("bindings.includeDeclaration")
+                ),
+                h("span", { className: "ptcPlusBindingFieldLabel" }, t2("bindings.instructions")),
+                h(
+                  "pre",
+                  { className: "ptcPlusBindingCommandRequirement" },
+                  bindingModelPreferences(candidate.entry.modelContext).instructions || t2("bindings.noInstructions")
+                )
               ),
               draft === null || actionKey !== null ? null : h(
                 "div",

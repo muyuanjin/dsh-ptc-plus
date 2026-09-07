@@ -63,13 +63,19 @@ Client half 通过 `settings.plugin.item` 卡片呈现全部配置。`enabled` �
 
 `internal/user-bindings.js` 是条目、文档、请求快照和有界声明的严格规范化 owner。它从命名 value export 的 TypeScript 源码派生 symbols、binding kind、body-free declaration、durability 与 fingerprint，并封闭校验所有衍生字段；调用方不能提交一份与源码不一致的声明或 snapshot。`namespace` scope 产生一个条目名对象，`top-level` scope 产生选定导出；保留名称和启用集合中的调用标识符冲突在持久化或请求激活前拒绝。
 
+可选 `modelContext` 与源码一起持久化，包含默认开启的接口注入开关 `includeDeclaration` 和独立注入的提示词 `instructions`。声明只有源码派生这一份，不另行编写。非空 metadata 参与条目 fingerprint；旧条目省略该字段时保持原序列化与 fingerprint，历史 v1 snapshot 无需迁移。此前保存的 `enabled` / `declaration` 字段保留规范化形式以验证旧 fingerprint，但旧自定义声明不用于展示或注入；旧关闭状态映射为声明关闭、提示词为空，下一次编辑保存使用新字段。Client 安全的结构校验和偏好映射由 `internal/user-binding-model-context.js` 复用，预算和完整 schema 见 [ADR 0023](adr/0023-global-user-bindings.md)。
+
 `internal/user-bindings-store.js` 独占 `$DSH_HOME/ptc-plus/bindings.json`。单一 JSON 文档避免源码与 metadata 双源；进程内队列、file lock、磁盘文本比较、expected revision 和 atomic replacement 共同防止并发覆盖。每次 mutation 在替换前验证完整 enabled snapshot 的声明预算；外部写入的超限文档按损坏输入处理。损坏输入保持显式 error，不会被空文档静默覆盖。候选与正式激活的相对 import 都以该文件所在目录为基准，因此 session cwd 不会改变 helper 的依赖解析。
 
-prompt assembly 为每个 PTC request 取得一次当前启用条目快照，作为随后 dispatch 的期望集合；独立 PTC state snapshot 中的绑定声明只取该集合与当前 session worker 已成功激活 snapshot 的交集，并要求完整条目的每个调用标识符仍具有相同的 `user-global` provenance。新启用或更新的条目因此先经过一个 cell 的 activation boundary，成功后才从下一轮进入 `tools:ptc-plus-user-bindings`；失败、请求 binding 冲突和 session-local shadow 不会产生虚假的模型声明。该 section 只包含调用名称、用途和无实现体声明；源码不进入普通模型输入，`tools:sdk` 与 direct-tool schema 继续保持稳定。runtime 在 cell preflight 前以整条 entry 为单位把期望集合映射到 BindingCatalog，再由 worker 激活；条目级失败产生诊断并从该 cell 排除，不阻塞独立代码。失败 initializer 一旦发起 program call，整个 cell 进入 volatile，因此只包含成功条目的结果 snapshot 不会被误作该调用的 cold replay source。
+prompt assembly 为每个 PTC request 取得一次当前启用条目快照，作为随后 dispatch 的期望集合。`tools:ptc-plus-user-binding-defaults` system section 从首轮展示条目提示词及按开关选择的源码派生接口，按稳定 ID 排序，只描述配置 API 与执行时初始化契约；组装不执行源码，也不读取激活状态或加入 revision。`/binding` 保存并启用、会话中途启用或修改模型上下文后，下一次 assembly 更新该段，无需等待激活；同配置下的编写或激活不改变其字节。停用条目不贡献内容，关闭声明且提示词为空的条目同样省略。
 
-worker 对 namespace 成员和 top-level 导出保留 ECMAScript module live read；对顶层名称的赋值或重声明将该名称转换为 session-local binding，并使整个来源条目退出后续模型投影。binding module 使用稳定 worker-global proxy 访问当前 request 的全部 program namespace；proxy 在调用时读取 AsyncLocalStorage 中的原 cell lease，因此旧 continuation 即使恰逢下一 cell 运行也不能借用其 authority。新 namespace 可在后续 request 安装，已消失 namespace 的 proxy 不再提供 member；与任何既有 worker global 冲突时，bridge 在写入 global 前拒绝整个安装，避免覆盖 Node intrinsic 或留下部分 namespace。一个导出闭包一旦可能被普通 session binding 保存，worker 就无法证明其不可达，因此相应 synthetic-module 解析基准与已安装 proxy 保守保留到 worker 结束。worker 从未成功暴露过条目时，disabled 或 empty activation 不安装 bridge；若本次尝试全部失败，则在执行 cell 前移除本次安装的 bridge。
+独立 PTC state snapshot 中的活动声明只取期望集合与当前 session worker 已成功激活 snapshot 的交集，并要求完整条目的每个调用标识符仍具有相同的 `user-global` provenance。新启用或更新的条目先经过一个 cell 的 activation boundary，成功后才从下一轮进入 `tools:ptc-plus-user-bindings`；失败、请求 binding 冲突和 session-local shadow 不会产生虚假的活动声明。两种声明都服从 `modelContext.includeDeclaration`，均不包含实现源码；`tools:sdk` 与 direct-tool schema 不随条目内容改变。配置 API 不证明当前值，也不延长被 compaction 遮蔽的 session-local 状态。runtime 在 cell preflight 前以整条 entry 为单位把期望集合映射到 BindingCatalog，再由 worker 激活；条目级失败产生诊断并从该 cell 排除，不阻塞独立代码。失败 initializer 一旦发起 program call，整个 cell 进入 volatile，因此只包含成功条目的结果 snapshot 不会被误作该调用的 cold replay source。
 
-每个结算 cell 把实际激活的完整 snapshot 放入私有 `meta.dshPtcPlusUserBindings`。cold replay 重新验证这份历史源码及其所有派生字段并从它激活，而不读取当前文件来替换过去状态；无法证明的 metadata 按 session recovery 的 unknown-boundary 规则收缩。这样持久化配置的跨会话可用性不会把当前磁盘值误当作历史执行证据。
+worker 对 namespace 成员和 top-level 导出保留 ECMAScript module live read；对顶层名称的赋值或重声明将该名称转换为 session-local binding，并使整个来源条目退出后续活动声明。binding module 使用稳定 worker-global proxy 访问当前 request 的全部 program namespace；proxy 在调用时读取 AsyncLocalStorage 中的原 cell lease，因此旧 continuation 即使恰逢下一 cell 运行也不能借用其 authority。新 namespace 可在后续 request 安装，已消失 namespace 的 proxy 不再提供 member；与任何既有 worker global 冲突时，bridge 在写入 global 前拒绝整个安装，避免覆盖 Node intrinsic 或留下部分 namespace。一个导出闭包一旦可能被普通 session binding 保存，worker 就无法证明其不可达，因此相应 synthetic-module 解析基准与已安装 proxy 保守保留到 worker 结束。worker 从未成功暴露过条目时，disabled 或 empty activation 不安装 bridge；若本次尝试全部失败，则在执行 cell 前移除本次安装的 bridge。
+
+配置段整体通过宿主只展开一次的 `ptc_plus_user_binding_defaults` assembly variable 传入 renderer，提示词与声明中的 `{{...}}` 保持字面量，不被解释为宿主变量。worker 对同一条目 ID 只比较源码、scope、namespace 调用名和有序导出列表来决定模块复用；模型上下文、purpose 或 top-level 显示名称变化不重置模块状态，也不重复初始化。
+
+每个结算 cell 把实际激活的完整 snapshot 放入私有 `meta.dshPtcPlusUserBindings`。包含模型上下文的完整 fingerprint 继续拥有快照校验与 provenance。journal v6 的 `userBindingsReusePolicy` 为新 cell 记录 `implementation-v1`；v1-v5 则迁移为 `fingerprint-v1`，保留历史上因 purpose 或 top-level 显示名称变化而发生的模块重置。cold replay 重新验证历史源码及其所有派生字段，逐 cell 应用记录的复用策略；接续的 live cell 使用新策略，不因策略切换本身重置模块。恢复不读取当前文件来替换过去状态，也不重新派发初始化中的宿主调用。缺失或未知策略与其他无法证明的 metadata 一样，按 session recovery 的 unknown-boundary 规则收缩。
 
 `internal/user-bindings-owner.js` 只在 `userBindingsEnabled` 开启时以 `trusted-host` authority 注册由 Connection Host/Origin fence 与浏览器认证保护的 RPC。它从精确 agent scope 的公共 `run_code` tool view 判断资格，在 agent 创建和 `tools/change` 时协调 `/binding`，不依赖 preset 名称。命令 registration 由该 agent 的注入 fiber 持有；命令服务迟到时保留 pending fiber，回调若已失去资格则失败并清理占位。生命周期监听的安装代际独立于请求与 projection 代际，不能因 projection 就绪而跳过注册。Agent disposal 只清理该精确 Agent 的资源，session disposal 才按 session ID 清空。Client 从 Host command directory 判断首轮前的 composer 编写入口，已有文本不被覆盖。REPL 全局绑定区和 Settings 管理弹窗复用完整工作台，通过 RPC 管理持久条目，不依赖当前存在 PTC 会话；会话观察及其独立 UI metadata 边界见 [ADR 0024](adr/0024-repl-console-observation.md)。
 
@@ -124,7 +130,7 @@ CodeRuntime request 已携带的 owner-provided program namespace 会被原样�
 
 ```ts
 {
-  version: 5,
+  version: 6,
   bindingPolicy: {
     variableRedeclarations: boolean,
     functionClassRedeclarations: boolean
@@ -132,6 +138,7 @@ CodeRuntime request 已携带的 owner-provided program namespace 会被原样�
   rewritePolicy: { autoRewriteImports, autoStripExports, autoSplitRedeclarations },
   moduleSemantics: { defaultExportBinding: "legacy-variable" | "live-readonly" },
   userBindingsFingerprint: string | null,
+  userBindingsReusePolicy: "fingerprint-v1" | "implementation-v1",
   status: "durable" | "volatile" | "discarded" | "noop",
   calls: CallTranscript[],
   operations: StateOperation[],

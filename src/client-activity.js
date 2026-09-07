@@ -1,12 +1,15 @@
-const JOURNAL_VERSIONS = new Set([1, 2, 3, 4, 5])
+const JOURNAL_VERSIONS = new Set([1, 2, 3, 4, 5, 6])
 const JOURNAL_STATUSES = new Set(['durable', 'volatile', 'discarded', 'noop'])
 const BINDING_MODES = new Set(['loose', 'strict'])
 const JOURNAL_FIELDS = new Set([
   'version', 'bindingPolicy', 'rewritePolicy', 'moduleSemantics', 'status', 'calls', 'operations',
-  'confirms', 'diagnostics', 'completion', 'volatileReason', 'userBindingsFingerprint',
+  'confirms', 'diagnostics', 'completion', 'volatileReason', 'userBindingsFingerprint', 'userBindingsReusePolicy',
 ])
+const FINGERPRINT_REUSE_JOURNAL_FIELDS = new Set(
+  [...JOURNAL_FIELDS].filter(key => key !== 'userBindingsReusePolicy'),
+)
 const RELATIONLESS_JOURNAL_FIELDS = new Set(
-  [...JOURNAL_FIELDS].filter(key => key !== 'userBindingsFingerprint'),
+  [...FINGERPRINT_REUSE_JOURNAL_FIELDS].filter(key => key !== 'userBindingsFingerprint'),
 )
 const PREDECESSOR_JOURNAL_FIELDS = new Set([
   'version', 'bindingMode', 'rewritePolicy', 'status', 'calls', 'operations',
@@ -276,17 +279,20 @@ function isReadableJournalUnchecked(value) {
     ? LEGACY_JOURNAL_FIELDS
     : predecessor
       ? PREDECESSOR_JOURNAL_FIELDS
-      : value.version === 4 ? RELATIONLESS_JOURNAL_FIELDS : JOURNAL_FIELDS
+      : value.version === 4 ? RELATIONLESS_JOURNAL_FIELDS
+        : value.version === 5 ? FINGERPRINT_REUSE_JOURNAL_FIELDS : JOURNAL_FIELDS
   const required = predecessor
     ? ['version', 'bindingMode', 'status', 'calls', 'operations', 'diagnostics']
     : ['version', 'bindingPolicy', 'rewritePolicy', 'moduleSemantics', 'status', 'calls', 'operations', 'diagnostics']
   if (value.version !== 1 && value.version < 4) required.push('rewritePolicy')
-  if (value.version === 5) required.push('userBindingsFingerprint')
+  if (value.version >= 5) required.push('userBindingsFingerprint')
+  if (value.version === 6) required.push('userBindingsReusePolicy')
   if (!hasClosedFields(value, fields, required)
     || (predecessor && !BINDING_MODES.has(value.bindingMode))
     || (value.version >= 4 && !isValidBindingPolicy(value.bindingPolicy))
     || (value.version >= 4 && !isValidModuleSemantics(value.moduleSemantics))
-    || (value.version === 5 && value.userBindingsFingerprint !== null
+    || (value.version === 6 && !['fingerprint-v1', 'implementation-v1'].includes(value.userBindingsReusePolicy))
+    || (value.version >= 5 && value.userBindingsFingerprint !== null
       && (typeof value.userBindingsFingerprint !== 'string'
         || !/^[a-f0-9]{64}$/.test(value.userBindingsFingerprint)))
     || (value.version !== 1 && !isValidRewritePolicy(value.rewritePolicy))

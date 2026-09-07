@@ -1,0 +1,429 @@
+{
+  "sourceRevision": "b9ed2d73674972cff2dcce571ca5b46f2b5959ac",
+  "cases": [
+    {
+      "name": "namespace-purpose",
+      "records": [
+        {
+          "code": "const earlier = counter.next()",
+          "journal": {
+            "version": 5,
+            "bindingPolicy": {
+              "variableRedeclarations": true,
+              "functionClassRedeclarations": true
+            },
+            "rewritePolicy": {
+              "autoRewriteImports": true,
+              "autoStripExports": true,
+              "autoSplitRedeclarations": true
+            },
+            "moduleSemantics": {
+              "defaultExportBinding": "live-readonly"
+            },
+            "userBindingsFingerprint": "758ed7039dc59b04b587f38531fbdd58cdd759f4be0c3f9dfc6458d5d2f8352a",
+            "calls": [],
+            "operations": [],
+            "confirms": [],
+            "diagnostics": [],
+            "status": "durable",
+            "completion": {
+              "kind": "return",
+              "hasValue": false
+            }
+          },
+          "userBindings": {
+            "version": 1,
+            "revision": 1,
+            "fingerprint": "758ed7039dc59b04b587f38531fbdd58cdd759f4be0c3f9dfc6458d5d2f8352a",
+            "entries": [
+              {
+                "id": "counter",
+                "name": "counter",
+                "scope": "namespace",
+                "symbols": [
+                  "next"
+                ],
+                "purpose": "",
+                "enabled": true,
+                "source": "let count = 0; export function next() { return ++count }",
+                "fingerprint": "88f33b3210c94990a1267de4356451f611df3b6fc847fadc2c17ade02f74d50a",
+                "declaration": "declare const counter: {\n  next(): unknown;\n}",
+                "bindings": [
+                  {
+                    "name": "counter",
+                    "kind": "variable",
+                    "declaration": "declare const counter: {\n  next(): unknown;\n}"
+                  }
+                ],
+                "durability": "durable"
+              }
+            ]
+          }
+        },
+        {
+          "code": "const later = counter.next()",
+          "journal": {
+            "version": 5,
+            "bindingPolicy": {
+              "variableRedeclarations": true,
+              "functionClassRedeclarations": true
+            },
+            "rewritePolicy": {
+              "autoRewriteImports": true,
+              "autoStripExports": true,
+              "autoSplitRedeclarations": true
+            },
+            "moduleSemantics": {
+              "defaultExportBinding": "live-readonly"
+            },
+            "userBindingsFingerprint": "577a19524c3aad054fd69674fb339345f7521c0b57f417cf3c5ea8937e45deee",
+            "calls": [],
+            "operations": [],
+            "confirms": [],
+            "diagnostics": [],
+            "status": "durable",
+            "completion": {
+              "kind": "return",
+              "hasValue": false
+            }
+          },
+          "userBindings": {
+            "version": 1,
+            "revision": 2,
+            "fingerprint": "577a19524c3aad054fd69674fb339345f7521c0b57f417cf3c5ea8937e45deee",
+            "entries": [
+              {
+                "id": "counter",
+                "name": "counter",
+                "scope": "namespace",
+                "symbols": [
+                  "next"
+                ],
+                "purpose": "Updated counter documentation.",
+                "enabled": true,
+                "source": "let count = 0; export function next() { return ++count }",
+                "fingerprint": "da87da4c0358920ee336e39a586de560b2245e44917acf5388055cd17f4d5f0d",
+                "declaration": "/** Updated counter documentation. */\ndeclare const counter: {\n  next(): unknown;\n}",
+                "bindings": [
+                  {
+                    "name": "counter",
+                    "kind": "variable",
+                    "declaration": "/** Updated counter documentation. */\ndeclare const counter: {\n  next(): unknown;\n}"
+                  }
+                ],
+                "durability": "durable"
+              }
+            ]
+          }
+        }
+      ],
+      "probe": "return [earlier, later, counter.next()]",
+      "expected": [
+        1,
+        1,
+        2
+      ],
+      "initializations": 0
+    },
+    {
+      "name": "top-level-name",
+      "records": [
+        {
+          "code": "const earlier = next()",
+          "journal": {
+            "version": 5,
+            "bindingPolicy": {
+              "variableRedeclarations": true,
+              "functionClassRedeclarations": true
+            },
+            "rewritePolicy": {
+              "autoRewriteImports": true,
+              "autoStripExports": true,
+              "autoSplitRedeclarations": true
+            },
+            "moduleSemantics": {
+              "defaultExportBinding": "live-readonly"
+            },
+            "userBindingsFingerprint": "9ae3a6512a172d3bf25f4440513667d76a97bfbacfadc8caf304b5a9473cb4f1",
+            "calls": [],
+            "operations": [],
+            "confirms": [],
+            "diagnostics": [],
+            "status": "durable",
+            "completion": {
+              "kind": "return",
+              "hasValue": false
+            }
+          },
+          "userBindings": {
+            "version": 1,
+            "revision": 1,
+            "fingerprint": "9ae3a6512a172d3bf25f4440513667d76a97bfbacfadc8caf304b5a9473cb4f1",
+            "entries": [
+              {
+                "id": "counter",
+                "name": "counter",
+                "scope": "top-level",
+                "symbols": [
+                  "next"
+                ],
+                "purpose": "",
+                "enabled": true,
+                "source": "let count = 0; export function next() { return ++count }",
+                "fingerprint": "6ac0187fce7800cf8db0d3da019ede97ce8433f4eaffecbda9f7c529ccd790f8",
+                "declaration": "declare function next(): unknown",
+                "bindings": [
+                  {
+                    "name": "next",
+                    "kind": "function",
+                    "declaration": "declare function next(): unknown"
+                  }
+                ],
+                "durability": "durable"
+              }
+            ]
+          }
+        },
+        {
+          "code": "const later = next()",
+          "journal": {
+            "version": 5,
+            "bindingPolicy": {
+              "variableRedeclarations": true,
+              "functionClassRedeclarations": true
+            },
+            "rewritePolicy": {
+              "autoRewriteImports": true,
+              "autoStripExports": true,
+              "autoSplitRedeclarations": true
+            },
+            "moduleSemantics": {
+              "defaultExportBinding": "live-readonly"
+            },
+            "userBindingsFingerprint": "cae39b1588bed8ab1d5a3ca9e772f55d8cf9cf03367d93ce7db2fefcbac84d64",
+            "calls": [],
+            "operations": [],
+            "confirms": [],
+            "diagnostics": [],
+            "status": "durable",
+            "completion": {
+              "kind": "return",
+              "hasValue": false
+            }
+          },
+          "userBindings": {
+            "version": 1,
+            "revision": 2,
+            "fingerprint": "cae39b1588bed8ab1d5a3ca9e772f55d8cf9cf03367d93ce7db2fefcbac84d64",
+            "entries": [
+              {
+                "id": "counter",
+                "name": "Updated display name",
+                "scope": "top-level",
+                "symbols": [
+                  "next"
+                ],
+                "purpose": "",
+                "enabled": true,
+                "source": "let count = 0; export function next() { return ++count }",
+                "fingerprint": "8daffda9f8e667f298e3fcd57fd1061b584935507df1a362071b473a140174d7",
+                "declaration": "declare function next(): unknown",
+                "bindings": [
+                  {
+                    "name": "next",
+                    "kind": "function",
+                    "declaration": "declare function next(): unknown"
+                  }
+                ],
+                "durability": "durable"
+              }
+            ]
+          }
+        }
+      ],
+      "probe": "return [earlier, later, next()]",
+      "expected": [
+        1,
+        1,
+        2
+      ],
+      "initializations": 0
+    },
+    {
+      "name": "initializer-transcript",
+      "records": [
+        {
+          "code": "const earlier = counter.next()",
+          "journal": {
+            "version": 5,
+            "bindingPolicy": {
+              "variableRedeclarations": true,
+              "functionClassRedeclarations": true
+            },
+            "rewritePolicy": {
+              "autoRewriteImports": true,
+              "autoStripExports": true,
+              "autoSplitRedeclarations": true
+            },
+            "moduleSemantics": {
+              "defaultExportBinding": "live-readonly"
+            },
+            "userBindingsFingerprint": "95cdae111a7cc02854f0949b8f6df43175fb2b083fff33f56ec59d6ec6ce7e51",
+            "calls": [
+              {
+                "global": "tools",
+                "member": "observe",
+                "args": {
+                  "codec": "ptc-value-graph/v1",
+                  "root": {
+                    "tag": "reference",
+                    "index": 0
+                  },
+                  "nodes": [
+                    {
+                      "type": "object",
+                      "prototype": "object",
+                      "entries": []
+                    }
+                  ]
+                },
+                "ok": true,
+                "value": {
+                  "codec": "ptc-value-graph/v1",
+                  "root": null,
+                  "nodes": []
+                },
+                "settle": 0
+              }
+            ],
+            "operations": [],
+            "confirms": [],
+            "diagnostics": [],
+            "status": "durable",
+            "completion": {
+              "kind": "return",
+              "hasValue": false
+            }
+          },
+          "userBindings": {
+            "version": 1,
+            "revision": 1,
+            "fingerprint": "95cdae111a7cc02854f0949b8f6df43175fb2b083fff33f56ec59d6ec6ce7e51",
+            "entries": [
+              {
+                "id": "counter",
+                "name": "counter",
+                "scope": "namespace",
+                "symbols": [
+                  "next"
+                ],
+                "purpose": "",
+                "enabled": true,
+                "source": "await tools.observe({}); let count = 0; export function next() { return ++count }",
+                "fingerprint": "e5d6d6604d62e188ef504b86f3daf1dfe92b9cbf3392ec1d7a89bed0d4f0f874",
+                "declaration": "declare const counter: {\n  next(): unknown;\n}",
+                "bindings": [
+                  {
+                    "name": "counter",
+                    "kind": "variable",
+                    "declaration": "declare const counter: {\n  next(): unknown;\n}"
+                  }
+                ],
+                "durability": "durable"
+              }
+            ]
+          }
+        },
+        {
+          "code": "const later = counter.next()",
+          "journal": {
+            "version": 5,
+            "bindingPolicy": {
+              "variableRedeclarations": true,
+              "functionClassRedeclarations": true
+            },
+            "rewritePolicy": {
+              "autoRewriteImports": true,
+              "autoStripExports": true,
+              "autoSplitRedeclarations": true
+            },
+            "moduleSemantics": {
+              "defaultExportBinding": "live-readonly"
+            },
+            "userBindingsFingerprint": "63290bf7edf058c97a44f9f404e6bfe361ea22763c32a82a7ce1b8c4ec3d625c",
+            "calls": [
+              {
+                "global": "tools",
+                "member": "observe",
+                "args": {
+                  "codec": "ptc-value-graph/v1",
+                  "root": {
+                    "tag": "reference",
+                    "index": 0
+                  },
+                  "nodes": [
+                    {
+                      "type": "object",
+                      "prototype": "object",
+                      "entries": []
+                    }
+                  ]
+                },
+                "ok": true,
+                "value": {
+                  "codec": "ptc-value-graph/v1",
+                  "root": null,
+                  "nodes": []
+                },
+                "settle": 0
+              }
+            ],
+            "operations": [],
+            "confirms": [],
+            "diagnostics": [],
+            "status": "durable",
+            "completion": {
+              "kind": "return",
+              "hasValue": false
+            }
+          },
+          "userBindings": {
+            "version": 1,
+            "revision": 2,
+            "fingerprint": "63290bf7edf058c97a44f9f404e6bfe361ea22763c32a82a7ce1b8c4ec3d625c",
+            "entries": [
+              {
+                "id": "counter",
+                "name": "counter",
+                "scope": "namespace",
+                "symbols": [
+                  "next"
+                ],
+                "purpose": "Updated counter documentation.",
+                "enabled": true,
+                "source": "await tools.observe({}); let count = 0; export function next() { return ++count }",
+                "fingerprint": "3374e63bf8b54e359c293c9b857a3de2cf9a68b6eb4be6c18e152b5e01a5a0ff",
+                "declaration": "/** Updated counter documentation. */\ndeclare const counter: {\n  next(): unknown;\n}",
+                "bindings": [
+                  {
+                    "name": "counter",
+                    "kind": "variable",
+                    "declaration": "/** Updated counter documentation. */\ndeclare const counter: {\n  next(): unknown;\n}"
+                  }
+                ],
+                "durability": "durable"
+              }
+            ]
+          }
+        }
+      ],
+      "probe": "return [earlier, later, counter.next()]",
+      "expected": [
+        1,
+        1,
+        2
+      ],
+      "initializations": 2
+    }
+  ]
+}

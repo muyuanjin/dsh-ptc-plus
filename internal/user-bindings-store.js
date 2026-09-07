@@ -71,6 +71,7 @@ function entryView(entry, includeSource = false) {
     origin: 'global',
     enabled: entry.enabled,
     declaration: entry.declaration,
+    ...(entry.modelContext === undefined ? {} : { modelContext: entry.modelContext }),
     ...(includeSource ? { source: entry.source } : {}),
   })
 }

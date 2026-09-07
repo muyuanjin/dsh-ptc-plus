@@ -441,6 +441,75 @@ export function incrementTop() { topCount += 1; return topCount }
   assert.equal(runtime.modelVisibleUserBindings('mutable-exports', userBindings).entries.length, 0)
 })
 
+test('reuses modules across presentation updates and reinitializes changed execution inputs', async t => {
+  for (const scope of ['namespace', 'top-level']) {
+    const runtime = new SessionRuntime()
+    t.after(() => runtime.dispose())
+    let initializations = 0
+    let revision = 0
+    let entry = binding('counter', 'counter', scope,
+      'await tools.observe({}); export let count = 0; export function next() { return ++count }')
+    const program = scope === 'namespace' ? 'return counter.next()' : 'return next()'
+    const run = async (source = program) => {
+      const userBindings = snapshot([entry], ++revision)
+      const execution = await runtime.runTentative(`presentation-${scope}`, {
+        program: source, userBindings,
+        bindings: [{ global: 'tools', functions: { observe: async () => { initializations++; return null } } }],
+      })
+      runtime.finalize(execution.settlement, true)
+      assert.equal(execution.result.error, undefined)
+      assert.deepEqual(execution.settlement.userBindings, userBindings)
+      assert.deepEqual(runtime.modelVisibleUserBindings(`presentation-${scope}`, userBindings), userBindings)
+      return execution.result.value
+    }
+    assert.equal(await run(), 1)
+    assert.equal(await run(), 2)
+    for (const [index, modelContext] of [
+      { includeDeclaration: true, instructions: 'Use next() for the next count.' },
+      { includeDeclaration: false, instructions: 'Use next() for the next count.' },
+      { includeDeclaration: false, instructions: '' },
+      { enabled: true, instructions: 'Legacy prompt.', declaration: 'declare const legacy: never' },
+      { enabled: false, instructions: 'Legacy prompt.', declaration: '' },
+      undefined,
+    ].entries()) {
+      entry = { ...entry, modelContext }
+      assert.equal(await run(), index + 3)
+      assert.equal(initializations, 1)
+    }
+    entry = { ...entry, purpose: 'Updated presentation.' }
+    assert.equal(await run(), 9)
+    if (scope === 'top-level') entry = { ...entry, name: 'Updated display name' }
+    assert.equal(await run(), 10)
+    assert.equal(initializations, 1)
+
+    entry = { ...entry, source: `${entry.source}\n// Updated source.` }
+    assert.equal(await run(), 1)
+    assert.equal(initializations, 2)
+    entry = { ...entry, symbols: ['next'] }
+    assert.equal(await run(), 1)
+    assert.equal(initializations, 3)
+    entry = { ...entry, symbols: ['count'] }
+    assert.equal(await run(scope === 'namespace' ? 'return counter.count' : 'return count'), 0)
+    assert.equal(initializations, 4)
+    entry = { ...entry, scope: scope === 'namespace' ? 'top-level' : 'namespace', name: 'renamed' }
+    assert.equal(await run(entry.scope === 'namespace' ? 'return renamed.count' : 'return count'), 0)
+    assert.equal(initializations, 5)
+    if (entry.scope === 'namespace') {
+      entry = { ...entry, name: 'renamedAgain' }
+      assert.deepEqual(await run('return [typeof renamed, renamedAgain.count]'), ['undefined', 0])
+      assert.equal(initializations, 6)
+    }
+    const installedName = entry.scope === 'namespace' ? entry.name : 'count'
+    const beforeDisable = initializations
+    entry = { ...entry, enabled: false }
+    assert.equal(await run(`return typeof ${installedName}`), 'undefined')
+    assert.equal(initializations, beforeDisable)
+    entry = { ...entry, enabled: true }
+    assert.equal(await run(`return ${installedName}${entry.scope === 'namespace' ? '.count' : ''}`), 0)
+    assert.equal(initializations, beforeDisable + 1)
+  }
+})
+
 test('retains closure support after a global entry is removed', async (t) => {
   const bindingsCwd = await mkdtemp(join(tmpdir(), 'ptc-plus-retained-binding-'))
   t.after(() => rm(bindingsCwd, { recursive: true, force: true }))

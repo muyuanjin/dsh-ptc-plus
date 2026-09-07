@@ -13,6 +13,7 @@ import {
   userBindingCatalogEntries,
   userBindingsContext,
   userBindingsDeclaration,
+  userBindingsPromptSection,
   userBindingsSnapshotFromMeta,
   userBindingsSnapshotsEqual,
   withUserBindingsSnapshot,
@@ -374,4 +375,70 @@ test('round-trips stored documents and private result metadata without trusting 
   assert.equal(userBindingsSnapshotsEqual(snapshot, { ...snapshot, fingerprint: 'x' }), false)
   assert.equal(withUserBindingsSnapshot('legacy', snapshot).value, 'legacy')
   assert.ok(Object.hasOwn(metadata, USER_BINDINGS_META_KEY))
+})
+
+test('injects the model prompt independently of the existing source-derived interface', () => {
+  const modelContext = {
+    includeDeclaration: true,
+    instructions: 'Use helpers.add for addition.\nKeep arguments in the same unit.',
+  }
+  const snapshot = createUserBindingsSnapshot({ entries: [entry({ modelContext })] }, 7)
+  const normalized = snapshot.entries[0]
+  assert.match(normalized.declaration, /later\(/)
+  assert.equal(normalized.modelContext.includeDeclaration, true)
+  assert.deepEqual(storedUserBindingsDocument(snapshot).entries[0].modelContext, modelContext)
+  assert.deepEqual(selectUserBindingsSnapshot(snapshot, ['helpers']), snapshot)
+  assert.deepEqual(normalizeUserBindingsSnapshot(structuredClone(snapshot)), snapshot)
+  assert.throws(() => normalizeUserBindingsSnapshot({ ...snapshot, entries: [{
+    ...normalized, modelContext: { ...modelContext, instructions: 'changed' },
+  }] }), /does not match its source/)
+  const prompt = userBindingsPromptSection(snapshot)
+  assert.match(prompt.text, /Use helpers.add/)
+  assert.ok(prompt.text.includes(normalized.declaration))
+  assert.doesNotMatch(prompt.text, /return left|successfully activated/)
+  assert.ok(userBindingsContext(snapshot).text.includes(normalized.declaration))
+  assert.equal(userBindingsPromptSection(createUserBindingsSnapshot({ entries: [entry({ modelContext })] }, 8)).text, prompt.text)
+  const promptOnly = createUserBindingsSnapshot({ entries: [entry({ modelContext: { ...modelContext, includeDeclaration: false } })] })
+  assert.match(userBindingsPromptSection(promptOnly).text, /Use helpers.add/)
+  assert.doesNotMatch(userBindingsPromptSection(promptOnly).text, /declare const helpers|later\(/)
+  assert.equal(userBindingsContext(promptOnly), undefined)
+  const hidden = createUserBindingsSnapshot({ entries: [entry({ modelContext: { includeDeclaration: false, instructions: '' } })] })
+  assert.equal(hidden.entries.length, 1)
+  assert.equal(userBindingsPromptSection(hidden), undefined)
+  assert.equal(userBindingsContext(hidden), undefined)
+  assert.equal(userBindingsPromptSection(createUserBindingsSnapshot({ entries: [] })), undefined)
+  const automatic = createUserBindingsSnapshot({ entries: [entry({ modelContext: {} })] })
+  assert.deepEqual(automatic.entries[0].modelContext, { includeDeclaration: true, instructions: '' })
+  assert.match(userBindingsPromptSection(automatic).text, /later\(/)
+  const another = entry({ id: 'another', name: 'another' })
+  assert.equal(userBindingsPromptSection(createUserBindingsSnapshot({ entries: [entry(), another] })).text,
+    userBindingsPromptSection(createUserBindingsSnapshot({ entries: [another, entry()] })).text)
+})
+
+test('rejects malformed and oversized model prompt settings', () => {
+  for (const modelContext of [null, [], { includeDeclaration: 'yes' }, { enabled: 'yes' }, { extra: true },
+    { instructions: 1 }, { instructions: 'x'.repeat(4097) },
+    { declaration: 1 }, { declaration: 'x'.repeat(8193) }]) {
+    assert.throws(() => normalizeUserBindingEntry(entry({ modelContext })), undefined, JSON.stringify(modelContext))
+  }
+  const heavy = Array.from({ length: 5 }, (_, index) => entry({
+    id: `doc-${index}`, name: `doc${index}`, source: 'export const value = 1',
+    modelContext: { instructions: 'x'.repeat(4096) },
+  }))
+  assert.throws(() => createUserBindingsSnapshot({ entries: heavy }), /model-context limit/)
+})
+
+test('reads previously saved model metadata without reusing custom declarations or changing fingerprints', () => {
+  for (const modelContext of [{ enabled: true, declaration: 'declare const helpers: never', instructions: 'Use helpers.add.' },
+    { enabled: false }, { declaration: '' }, { enabled: false, includeDeclaration: true, instructions: 'Use helpers.add.' }]) {
+    const snapshot = createUserBindingsSnapshot({ entries: [entry({ modelContext })] })
+    assert.deepEqual(normalizeUserBindingsSnapshot(structuredClone(snapshot)), snapshot)
+    const prompt = userBindingsPromptSection(snapshot)
+    if (modelContext.enabled === false && modelContext.includeDeclaration === undefined) {
+      assert.equal(prompt, undefined)
+    } else {
+      assert.match(prompt.text, /later\(/)
+      assert.doesNotMatch(prompt.text, /declare const helpers: never/)
+    }
+  }
 })

@@ -10,6 +10,47 @@ import { auditBindingWorkflow } from '../scripts/acceptance-contract.mjs'
 const scenario = JSON.parse(await readFile(new URL('../scripts/binding-workflow-scenario.json', import.meta.url), 'utf8'))
 const { entry } = scenario
 
+test('binding authoring and mid-session changes publish the prompt independently of the interface', { timeout: 20000 }, async t => {
+  const host = await bindingWorkflowHost(t)
+  const authored = { ...entry, modelContext: { includeDeclaration: true, instructions: 'Use workflow.value() for the configured value. Render {{name}} literally.' } }
+  await host.run('return 0')
+  await host.begin(scenario.command, () => `return code.submitBindingDraft(${JSON.stringify({ requestId: host.requestId(), entry: authored })})`)
+  const accepted = host.events().filter(event => event.type === 'tool/result').at(-1)
+  const { capability } = accepted.data.meta.dshPtcPlusBindingDraft
+  const draft = (await host.rpc('draft', { capability })).value
+  assert.deepEqual(draft.entry.modelContext, authored.modelContext)
+  let catalog = (await host.rpc('list')).value
+  const saved = await host.rpc('save-draft', { capability, version: draft.version, expectedRevision: catalog.revision, activate: false })
+  assert.equal(saved.ok, true)
+  await host.run('return 1')
+  assert.doesNotMatch(host.requests.at(-1).system, /Use workflow.value|declare const workflow/)
+  const enabled = await host.rpc('enable', { id: entry.id, expectedRevision: saved.value.revision })
+  assert.equal(enabled.ok, true)
+  const firstEnabledRequest = host.requests.length
+  await host.run('return workflow.value()')
+  assert.match(host.requests[firstEnabledRequest].system, /Use workflow.value/)
+  assert.ok(host.requests[firstEnabledRequest].system.includes(authored.modelContext.instructions))
+  assert.match(host.requests[firstEnabledRequest].system, /declare const workflow/)
+  assert.doesNotMatch(host.requests[firstEnabledRequest].system, /successfully activated/)
+  const promptOnly = { ...authored, enabled: true, modelContext: { includeDeclaration: false, instructions: 'Prefer workflow.value() over guessing defaults. Keep {{not valid}} and {{{nested}}} literal.' } }
+  catalog = (await host.rpc('list')).value
+  assert.equal((await host.rpc('save', { entry: promptOnly, expectedRevision: catalog.revision })).ok, true)
+  await host.run('return workflow.value()')
+  assert.match(host.requests.at(-1).system, /Prefer workflow.value/)
+  assert.ok(host.requests.at(-1).system.includes(promptOnly.modelContext.instructions))
+  assert.doesNotMatch(host.requests.at(-1).system, /declare const workflow|Use workflow.value/)
+  catalog = (await host.rpc('list')).value
+  const disabled = await host.rpc('disable', { id: entry.id, expectedRevision: catalog.revision })
+  assert.equal(disabled.ok, true)
+  await host.run('return 2')
+  assert.doesNotMatch(host.requests.at(-1).system, /Prefer workflow.value|declare const workflow/)
+  assert.equal((await host.rpc('enable', { id: entry.id, expectedRevision: disabled.value.revision })).ok, true)
+  await host.run('return workflow.value()')
+  assert.match(host.requests.at(-1).system, /Prefer workflow.value/)
+  assert.doesNotMatch(host.requests.at(-1).system, /declare const workflow/)
+  for (const request of host.requests) assert.deepEqual(request.tools, host.requests[0].tools)
+})
+
 test('file-helper availability observes the active export without write/delete probes', { timeout: 20000 }, async t => {
   const files = JSON.parse(await readFile(new URL('../scripts/binding-files-workflow-scenario.json', import.meta.url), 'utf8'))
   const host = await bindingWorkflowHost(t)
@@ -36,7 +77,7 @@ test('file-helper availability observes the active export without write/delete p
   assert.ok(rejected.observations.some(item => item.target === 'miniFiles.remove'))
 })
 
-test('public binding lifecycle preserves the prompt, records exact source and separates saving from activation', { timeout: 20000 }, async t => {
+test('public binding lifecycle preserves each configured prompt and separates saving from activation', { timeout: 20000 }, async t => {
   const host = await bindingWorkflowHost(t)
   const existingDirectory = join(host.home, '_miniFilesSmoke')
   await mkdir(existingDirectory)
@@ -69,7 +110,12 @@ test('public binding lifecycle preserves the prompt, records exact source and se
   const actionEvent = host.events().find(event => readBindingAction(event.data)?.state === 'saved')
   assert.ok(actionEvent.sourceEventSeqs.includes(result.seq))
   assert.equal(JSON.parse(await readFile(join(host.home, 'ptc-plus', 'bindings.json'), 'utf8')).entries[0].enabled, true)
+  const configuredStart = host.requests.length
   const observed = await host.run('return typeof workflow !== "undefined" && typeof workflow.value === "function"', scenario.statusQuestion)
+  const configuredPrefix = JSON.stringify({ system: host.requests[configuredStart].system, tools: host.requests[configuredStart].tools })
+  assert.notEqual(configuredPrefix, prefix)
+  assert.match(host.requests[configuredStart].system, /declare const workflow/)
+  assert.doesNotMatch(host.requests[configuredStart].system, /successfully activated/)
   assert.equal(observed.data.message.content[0].isError, false)
   assert.ok(host.requests.some(request => JSON.stringify(request.messages).includes('"state":"saved"')
     || JSON.stringify(request.messages).includes('\\"state\\":\\"saved\\"')))
@@ -104,14 +150,20 @@ test('public binding lifecycle preserves the prompt, records exact source and se
   await host.begin('new newer helper', `return code.submitBindingDraft(${JSON.stringify({ requestId: oldRequest, entry: { ...entry, id: 'another', name: 'another' } })})`)
   const rejected = host.events().filter(event => event.type === 'tool/result').at(-1)
   assert.equal(rejected.data.message.content[0].isError, true)
-  for (const request of host.requests) {
-    assert.equal(JSON.stringify({ system: request.system, tools: request.tools }), prefix)
+  for (const [index, request] of host.requests.entries()) {
+    assert.equal(JSON.stringify({ system: request.system, tools: request.tools }), index < configuredStart ? prefix : configuredPrefix)
     assert.deepEqual(request.tools.map(tool => tool.name), ['run_code', 'edit_run_code'])
   }
   await host.restart()
   const replayed = await host.run('return acceptedReceipt')
   assert.equal(replayed.data.message.content[0].isError, false)
   assert.equal((await host.rpc('draft', { capability })).value, null)
+  const currentCatalog = (await host.rpc('list')).value
+  assert.equal((await host.rpc('save', { expectedRevision: currentCatalog.revision,
+    entry: { ...entry, enabled: true, modelContext: { includeDeclaration: false } } })).ok, true)
+  await host.run('return 1')
+  assert.doesNotMatch(host.requests.at(-1).system, /declare const workflow/)
+  assert.deepEqual(host.requests.at(-1).tools, host.requests[0].tools)
   const afterReplay = await host.run(`return code.submitBindingDraft(${JSON.stringify({ requestId, entry })})`)
   assert.equal(afterReplay.data.message.content[0].isError, true)
 })

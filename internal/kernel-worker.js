@@ -571,7 +571,15 @@ async function evaluateUserBinding(entry, cwd) {
   }
 }
 
-async function activateUserBindings(snapshot, shadowedNames, cwd, initialFailures = []) {
+function userBindingImplementationMatches(left, right) {
+  return left.source === right.source
+    && left.scope === right.scope
+    && (left.scope !== 'namespace' || left.name === right.name)
+    && left.symbols.length === right.symbols.length
+    && left.symbols.every((symbol, index) => symbol === right.symbols[index])
+}
+
+async function activateUserBindings(snapshot, shadowedNames, cwd, reusePolicy, initialFailures = []) {
   reconcileUserBindingShadows(shadowedNames)
   const blockedIds = new Set(initialFailures.map(failure => failure.id))
   const desired = new Map((snapshot?.entries ?? [])
@@ -584,7 +592,11 @@ async function activateUserBindings(snapshot, shadowedNames, cwd, initialFailure
   for (const id of [...userBindingEntries.keys()]) {
     const current = userBindingEntries.get(id)
     const next = desired.get(id)
-    if (next === undefined || next.fingerprint !== current.fingerprint) {
+    // Historical cells retain fingerprint-based resets, including presentation edits.
+    const reusable = next !== undefined && (reusePolicy === 'fingerprint-v1'
+      ? next.fingerprint === current.entry.fingerprint
+      : userBindingImplementationMatches(next, current.entry))
+    if (!reusable) {
       removeUserBindingEntry(id, shadowedNames)
     }
   }
@@ -592,7 +604,8 @@ async function activateUserBindings(snapshot, shadowedNames, cwd, initialFailure
   const failures = [...initialFailures]
   for (const entry of desired.values()) {
     const current = userBindingEntries.get(entry.id)
-    if (current?.fingerprint === entry.fingerprint) {
+    if (current !== undefined) {
+      current.entry = entry
       activated.push(entry.id)
       continue
     }
@@ -667,7 +680,7 @@ async function activateUserBindings(snapshot, shadowedNames, cwd, initialFailure
         }
       }
       userBindingEntries.set(entry.id, {
-        fingerprint: entry.fingerprint,
+        entry,
         moduleUrl: evaluated.moduleUrl,
         names,
         descriptors: new Map(names.map(name => [name, Object.getOwnPropertyDescriptor(context, name)])),
@@ -747,6 +760,7 @@ async function runCell(message) {
           message.userBindings,
           new Set(message.shadowedUserBindingNames ?? []),
           message.userBindingsCwd,
+          message.userBindingsReusePolicy,
           message.userBindingFailures,
         )
         for (const failure of userBindings.failures) {

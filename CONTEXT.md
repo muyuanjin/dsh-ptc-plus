@@ -23,7 +23,7 @@ PTC Plus 是个人维护的社区实验插件。它把 DSH PTC 模式的顶层 `
 5. shell 是解释命令文本的通用入口，不是 REPL、权限系统或普通 argv spawn 的前置条件。PTY/ConPTY 只用于交互进程；Windows、WSL 与 POSIX execution world 必须分别探查。
 6. 透明性要求 action、authority、effect、result completeness、replay 与 settlement 不被混淆；不要求暴露无决策意义的 provider 内部细节。
 7. 插件提供的默认计算状态必须与模型可知状态对齐。binding 只有同时满足“journal ancestry 可重建”和“精确 provenance 仍在生成当前调用的 DSH model-visible surface 中，或由显式选择的有界、模型可见结构化状态投影公开”才默认保留；不能仅为延长隐藏状态而默认注入该投影。append-only raw log 与 UI-only inventory 都不构成模型知识；不得解析自然语言 compaction summary 猜测 binding。只替换 result、仍保留 assistant 源码 call 的剪裁不必丢弃对应状态；provenance 被遮蔽时收缩 live/cold runtime，最差从空 REPL 继续。
-8. Global User Bindings 是默认关闭的用户计算输入。关闭时不得读取存储、注入值或新声明、注册管理 RPC/命令或显示管理 UI；下一次宿主允许且接受的步骤可撤销已投递的旧声明；开启时，源码派生的严格快照共同拥有冲突校验、worker 激活和 journal evidence。模型可见声明只能来自当前 worker 已成功激活、仍与请求配置同源且没有 session-local shadow 的完整条目；尚未经过 activation boundary 的新值不提前进入模型上下文。失败 initializer 已发起 program call 时，整个 cell 进入 volatile，不能把缺少该 initializer 源码的成功子集用作 cold replay evidence。模型不获得持久化、候选执行或启停权限。
+8. Global User Bindings 是默认关闭的用户计算输入。关闭时不得读取存储、注入值或新声明、注册管理 RPC/命令或显示管理 UI；下一次宿主允许且接受的步骤可撤销已投递的旧声明；开启时，源码派生的严格快照共同拥有冲突校验、worker 激活和 journal evidence。每个条目可用 `modelContext.includeDeclaration` 选择是否注入已有的源码派生接口（默认开启），用 `instructions` 编写独立提供给模型的提示词（默认空）；不另行编写接口。已启用条目的非空提示词和所选接口从首轮进入稳定 system 配置段；`/binding` 保存并启用、会话中途启用或编辑后，下一请求同步当前配置。该段只描述配置 API 与执行时初始化契约，不证明当前值或成功激活，不为组装提示词执行源码。活动声明仍只能来自当前 worker 已成功激活、与请求配置同源且没有 session-local shadow 的完整条目，并通过独立 runtime context 投递；关闭接口注入同时省略两种声明，但不影响独立提示词或绑定执行。失败 initializer 已发起 program call 时，整个 cell 进入 volatile，不能把缺少该 initializer 源码的成功子集用作 cold replay evidence。模型不获得持久化、候选执行或启停权限。
 
 ## Program surface
 

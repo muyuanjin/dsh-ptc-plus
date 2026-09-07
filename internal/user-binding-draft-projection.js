@@ -1,4 +1,5 @@
 import { isRecord } from './record-utils.js'
+import { normalizeBindingModelContext } from './user-binding-model-context.js'
 
 export const USER_BINDING_DRAFT_KEY = 'ptcPlusBindingDraft'
 export const USER_BINDING_DRAFT_META_KEY = 'dshPtcPlusBindingDraft'
@@ -27,12 +28,14 @@ function normalizeCandidate(value) {
     || value.entry.source.length === 0 || value.entry.source.length > 65536) {
     throw new Error('invalid dsh-ptc-plus accepted binding candidate')
   }
+  const modelContext = normalizeBindingModelContext(value.entry.modelContext)
   return Object.freeze({
     requestId: value.requestId, commandId: normalizeCommandId(value.commandId), version: value.version, mode: value.mode,
     entry: Object.freeze({
       id: value.entry.id, name: value.entry.name, scope: value.entry.scope,
       symbols: Object.freeze([...value.entry.symbols]), purpose: value.entry.purpose,
       source: value.entry.source, enabled: false,
+      ...(modelContext === undefined ? {} : { modelContext }),
     }),
   })
 }

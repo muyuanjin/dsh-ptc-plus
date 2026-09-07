@@ -72,6 +72,20 @@ test('coalesces concurrent first-use reads into one revision', async (t) => {
   assert.equal((await store.save(binding(), listed.revision)).revision, 2)
 })
 
+test('persists model prompt preferences with source through reload and activation toggles', async t => {
+  const { filename, store } = await fixture(t)
+  const modelContext = { includeDeclaration: false, instructions: 'Use math.add for numeric sums.' }
+  const saved = await store.save(binding({ modelContext }), (await store.list()).revision)
+  assert.deepEqual(saved.entries[0].modelContext, modelContext)
+  assert.deepEqual(JSON.parse(await readFile(filename, 'utf8')).entries[0].modelContext, modelContext)
+  const fresh = new UserBindingsStore({ filename })
+  const loaded = await fresh.entry('math')
+  assert.deepEqual(loaded.entry.modelContext, modelContext)
+  const disabled = await fresh.setEnabled('math', false, loaded.revision)
+  await fresh.setEnabled('math', true, disabled.revision)
+  assert.deepEqual((await fresh.snapshot()).entries[0].modelContext, modelContext)
+})
+
 test('rejects non-identifier names before persistence and deactivates malformed disk entries', async t => {
   const { filename, store } = await fixture(t)
   const saved = await store.save(binding(), (await store.list()).revision)

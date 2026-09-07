@@ -1138,6 +1138,7 @@ test('keeps Agent authoring request-scoped across edits, conflicts, and lifecycl
   const original = {
     id: 'alpha', name: 'alpha', scope: 'namespace', purpose: 'Original helper.', enabled: true,
     source: 'export function value(): number { return 1 }',
+    modelContext: { includeDeclaration: false, instructions: 'Use alpha.value().' },
   }
   const occupied = {
     id: 'occupied', name: 'occupied', scope: 'namespace', purpose: '', enabled: true,
@@ -1173,6 +1174,8 @@ test('keeps Agent authoring request-scoped across edits, conflicts, and lifecycl
   })
   await new Promise(resolve => setImmediate(resolve))
   assert.match(steered.at(-1).content[0].text, /Original helper/)
+  assert.match(steered.at(-1).content[0].text, /modelContext\.instructions/)
+  assert.match(steered.at(-1).content[0].text, /preserve existing prompt preferences/)
   await assert.rejects(draftTool.execute({ entry: {
     id: 'renamed', name: original.name, scope: original.scope,
     purpose: original.purpose, source: original.source,
@@ -1184,6 +1187,7 @@ test('keeps Agent authoring request-scoped across edits, conflicts, and lifecycl
   const acceptedSubmission = acceptedTool.execute({ entry: {
     id: 'alpha', name: 'alpha', scope: 'namespace', purpose: 'Revised helper.',
     source: 'export function value(): number { return 3 }',
+    modelContext: { includeDeclaration: false, instructions: 'Use alpha.value() for the revised value.' },
   } }, nestedExecution(agent))
   await assert.rejects(acceptedTool.execute({ entry: {
     id: 'alpha', name: 'alpha', scope: 'namespace', purpose: '', source: 'export const value = 4',
@@ -1195,12 +1199,14 @@ test('keeps Agent authoring request-scoped across edits, conflicts, and lifecycl
   } }, nestedExecution(agent)), /no longer active/)
   const editCapability = owner.draftCapabilityForAgent(agent)
   const editDraft = (await call(target, 'draft', { capability: editCapability })).value
+  assert.equal(editDraft.entry.modelContext.includeDeclaration, false)
   assert.equal((await call(target, 'save-draft', {
     capability: editCapability, version: editDraft.version, expectedRevision: 4,
   })).value, 'save')
   assert.equal((await call(target, 'draft', { capability: editCapability })).value, null)
   assert.equal(store.calls.at(-1)[0], 'save')
   assert.equal(store.calls.at(-1)[1].enabled, false)
+  assert.equal(store.calls.at(-1)[1].modelContext.instructions, 'Use alpha.value() for the revised value.')
 
   injectionFailure = true
   assert.match((await command.handler({
@@ -1774,10 +1780,12 @@ export async function add(value: number) {
   const validated = await call(target, 'validate', {
     entry: {
       id: 'candidate', name: 'candidate', scope: 'namespace', purpose: '', enabled: false, source,
+      modelContext: { includeDeclaration: true, instructions: 'Use candidate.add(value).' },
     },
   })
   assert.equal(validated.ok, true)
   assert.match(validated.value.declaration, /add\(value: number\)/)
+  assert.equal(validated.value.modelContext.instructions, 'Use candidate.add(value).')
   const result = await call(target, 'run', {
     source,
     invocation: { symbol: 'add', args: [2] },

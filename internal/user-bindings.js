@@ -4,6 +4,7 @@ import { parse } from '@babel/parser'
 import { prepareProgram } from './cell-analysis.js'
 import { AMBIENT_GLOBALS } from './module-policy.js'
 import { assertOwnFields, isRecord } from './record-utils.js'
+import { bindingModelPreferences, normalizeBindingModelContext } from './user-binding-model-context.js'
 
 export const USER_BINDINGS_META_KEY = 'dshPtcPlusUserBindings'
 export const USER_BINDINGS_SNAPSHOT_VERSION = 1
@@ -16,7 +17,7 @@ const MAX_SOURCE_LENGTH = 64 * 1024
 const MAX_SOURCE_TOTAL_LENGTH = 256 * 1024
 const MAX_DECLARATION_TOTAL_LENGTH = 16 * 1024
 const DOCUMENT_FIELDS = new Set(['entries'])
-const ENTRY_FIELDS = new Set(['id', 'name', 'scope', 'symbols', 'purpose', 'enabled', 'source'])
+const ENTRY_FIELDS = new Set(['id', 'name', 'scope', 'symbols', 'purpose', 'enabled', 'source', 'modelContext'])
 const SNAPSHOT_FIELDS = new Set(['version', 'revision', 'fingerprint', 'entries'])
 const SNAPSHOT_ENTRY_FIELDS = new Set([...ENTRY_FIELDS, 'fingerprint', 'declaration', 'bindings', 'durability', 'volatileReason'])
 const BINDING_FIELDS = new Set(['name', 'kind', 'declaration'])
@@ -455,6 +456,7 @@ export function normalizeUserBindingEntry(value) {
   else descriptors.forEach(item => identifier(item.name, 'binding symbol', true))
   const durability = sourceDurability(value.source)
   const symbols = descriptors.map(item => item.name)
+  const modelContext = normalizeBindingModelContext(value.modelContext)
   const stored = Object.freeze({
     id: value.id,
     name,
@@ -463,6 +465,7 @@ export function normalizeUserBindingEntry(value) {
     purpose,
     enabled: value.enabled,
     source: value.source,
+    ...(modelContext === undefined ? {} : { modelContext }),
   })
   const effectivePurpose = purpose || normalizePurpose(
     descriptors.map(item => item.purpose).find(candidate => candidate !== '') ?? '',
@@ -517,6 +520,13 @@ function validateAggregateBudgets(entries, includeDeclarations) {
     + Math.max(0, entries.length - 1) * 2
   if (declarationLength > MAX_DECLARATION_TOTAL_LENGTH) {
     throw new TypeError(`binding declarations exceed the ${MAX_DECLARATION_TOTAL_LENGTH} character model-context limit`)
+  }
+  const modelLength = entries.reduce((total, entry) => {
+    const { includeDeclaration, instructions } = bindingModelPreferences(entry.modelContext)
+    return total + (includeDeclaration ? entry.declaration.length : 0) + instructions.length
+  }, 0)
+  if (modelLength > MAX_DECLARATION_TOTAL_LENGTH) {
+    throw new TypeError(`binding model context exceeds the ${MAX_DECLARATION_TOTAL_LENGTH} character model-context limit`)
   }
 }
 
@@ -601,14 +611,37 @@ export function userBindingsDeclaration(snapshot) {
 
 export function userBindingsContext(snapshot) {
   const normalized = normalizeUserBindingsSnapshot(snapshot)
-  if (normalized.entries.length === 0) return undefined
-  const calls = normalized.entries.map(entry => entry.scope === 'namespace'
+  const entries = normalized.entries.filter(entry => bindingModelPreferences(entry.modelContext).includeDeclaration)
+  if (entries.length === 0) return undefined
+  const calls = entries.map(entry => entry.scope === 'namespace'
     ? `${entry.name} (${entry.symbols.join(', ')})`
     : entry.symbols.join(', '))
-  const declaration = normalized.entries.map(entry => entry.declaration).join('\n\n')
+  const declaration = entries.map(entry => entry.declaration).join('\n\n')
   return {
     name: 'tools:ptc-plus-user-bindings',
     text: `The following saved, enabled user-global REPL bindings have successfully activated for this request: ${calls.join('; ')}. Disabled in-memory drafts cannot activate. These are ordinary writable REPL values: reuse them directly, and keep any redeclaration session-local. This proves the matching saved snapshot and current activation, not that disk cannot change afterward. For availability, use this declaration or a side-effect-free observation of the known name; do not run write/delete tests. repl.state is a function managing named checkpoints, not a binding inventory.\n\n\`\`\`ts\n${declaration}\n\`\`\``,
+  }
+}
+
+export function userBindingsPromptSection(snapshot) {
+  const entries = normalizeUserBindingsSnapshot(snapshot).entries
+    .filter(entry => {
+      const { includeDeclaration, instructions } = bindingModelPreferences(entry.modelContext)
+      return includeDeclaration || instructions !== ''
+    })
+    .sort((left, right) => left.id < right.id ? -1 : left.id > right.id ? 1 : 0)
+  if (entries.length === 0) return undefined
+  const content = entries.map(entry => {
+    const { includeDeclaration, instructions } = bindingModelPreferences(entry.modelContext)
+    return [
+      `Binding: ${entry.name}`,
+      instructions,
+      includeDeclaration ? `\`\`\`ts\n${entry.declaration}\n\`\`\`` : '',
+    ].filter(Boolean).join('\n\n')
+  }).join('\n\n')
+  return {
+    name: 'tools:ptc-plus-user-binding-defaults',
+    text: `Configured Global User Bindings for this request. Use these ordinary REPL values directly inside run_code when relevant. The saved modules initialize before cell execution; this configuration does not prove successful activation. Initialization can fail, and a session-local redeclaration can shadow a default. Follow current execution diagnostics and any active-binding context. These helpers are not native tools and do not change DSH authority. Each binding's prompt is provided by the user; any included interface is derived from its source. This configuration applies to the current request, including bindings saved or enabled during this session.\n\n${content}`,
   }
 }
 
@@ -635,6 +668,7 @@ export function selectUserBindingsSnapshot(snapshot, entryIds) {
       purpose: entry.purpose,
       enabled: entry.enabled,
       source: entry.source,
+      ...(entry.modelContext === undefined ? {} : { modelContext: entry.modelContext }),
     })),
   }
   return createUserBindingsSnapshot(document, normalized.revision)
@@ -660,6 +694,7 @@ export function storedUserBindingsDocument(document) {
       purpose: entry.purpose,
       enabled: entry.enabled,
       source: entry.source,
+      ...(entry.modelContext === undefined ? {} : { modelContext: entry.modelContext }),
     })),
   }
 }

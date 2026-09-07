@@ -16,7 +16,7 @@ import {
   oneLineMessage,
   safeProperty,
 } from './failure-reporting.js'
-import { assertStateName } from './session-journal.js'
+import { assertStateName, LIVE_USER_BINDINGS_REUSE_POLICY } from './session-journal.js'
 import { PreflightError, prepareProgram } from './cell-analysis.js'
 import { LIVE_DEFAULT_EXPORT_BINDING } from './repl-rewrite-contract.js'
 import { createReplMemorySnapshot } from './repl-memory-projection.js'
@@ -456,6 +456,9 @@ export class SessionCellExecutor {
                 ).entries.map(entry => entry.name)
               : [],
             userBindings,
+            userBindingsReusePolicy: replayRecord === undefined
+              ? LIVE_USER_BINDINGS_REUSE_POLICY
+              : replayRecord.userBindingsReusePolicy,
             ...(userBindings === undefined ? {} : { userBindingsCwd: kernel.userBindingsCwd }),
             userBindingFailures,
             shadowedUserBindingNames: [...new Set([

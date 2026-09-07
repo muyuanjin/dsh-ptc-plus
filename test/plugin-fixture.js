@@ -114,9 +114,13 @@ export function fixture(config = {}, fixtureOptions = {}) {
     },
   }
   const ctx = {
-    ...(fixtureOptions.observeSession === undefined ? {} : { inject(names, callback) {
+    ...(fixtureOptions.observeSession === undefined && fixtureOptions.bindingRpc === undefined ? {} : { inject(names, callback) {
       if (names[0] === 'connection') callback({ connection: { rpc: {
-        handle(_channel, handler) { observationHandler = handler; return () => {} },
+        handle(_channel, handler) {
+          observationHandler = handler
+          fixtureOptions.bindingRpc?.(handler)
+          return () => {}
+        },
       } } })
       return () => {}
     } }),
@@ -179,7 +183,14 @@ export function fixture(config = {}, fixtureOptions = {}) {
       return () => entries.splice(entries.indexOf(listener), 1)
     },
     effect(register) {
-      cleanups.push(register())
+      let cleanup = register()
+      const dispose = () => {
+        const current = cleanup
+        cleanup = undefined
+        return current?.()
+      }
+      cleanups.push(dispose)
+      return dispose
     },
   }
   apply(ctx, {

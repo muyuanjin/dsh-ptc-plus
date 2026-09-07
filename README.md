@@ -143,7 +143,11 @@ import { readFile } from 'node:fs/promises'
 
 “显示 REPL 页签”和“显示绑定编写按钮”默认开启，分别控制会话页签与输入框快捷入口。隐藏页签后仍可从设置管理全局绑定；隐藏编写按钮后仍可使用 `/binding` 命令。整个全局绑定能力仍由“全局用户绑定”开关控制。
 
-已启用条目在下一次 `run_code` 中尝试激活为普通可写 REPL binding；只有 worker 已成功激活、仍与当前配置同源且未被 session-local binding 覆盖的完整条目，才从随后一轮开始向模型公开有界声明和用途。请求自带的 program namespace 或 error class 优先于同名全局条目；该条目只在本次请求中激活失败并产生诊断，不会覆盖宿主值或阻止其他代码。binding module 所需的 program namespace 若与既有 worker global 同名，本次 cell 会显式失败且不会替换 Node intrinsic。失败 initializer 已发起 program call 时，cell 进入 volatile，避免 cold recovery 把缺少该源码的调用记录当作可重放历史。同名赋值或重声明只覆盖当前 session；cold recovery 使用结果 metadata 中记录的精确快照，不从当前磁盘内容猜测历史值。条目源码中的相对 import 在候选试运行和正式激活时都以 binding 存储目录为解析基准；已经保存到普通 session binding 的导出闭包会在当前 worker 生命周期内保留该解析基准和 program namespace bridge。
+每个条目的“模型上下文”包含“将接口声明提供给模型”开关和“给模型的提示词”文本，可直接修改后保存或取消，无需先点击“编辑”源码。接口声明始终从源码生成，开关默认开启；提示词可描述何时使用这个工具、调用约束或示例，留空则不添加。两者独立配置：取消声明勾选仍会提供已填写的提示词，两者都清空或关闭才完全省略该条目的模型上下文，不影响绑定执行。已启用条目在新会话首轮就可见；通过 `/binding` 保存并启用、会话中途启用或修改提示词后，下一轮请求也会收到当前配置，无需新建会话或先执行一次工具。`/binding` 会要求 Agent 随源码填写提示词和声明开关，草稿卡片保留这些配置供检查。
+
+已启用条目在下一次 `run_code` 中尝试激活为普通可写 REPL binding；首轮接口描述的是已配置 API，不证明初始化成功。只有 worker 已成功激活、仍与当前配置同源且未被 session-local binding 覆盖的完整条目，才在随后一轮获得活动声明。提示词配置不变时，激活状态不会改变 system 前缀；保存、启停或修改提示词在下一请求生效。请求自带的 program namespace 或 error class 优先于同名全局条目；该条目只在本次请求中激活失败并产生诊断，不会覆盖宿主值或阻止其他代码。binding module 所需的 program namespace 若与既有 worker global 同名，本次 cell 会显式失败且不会替换 Node intrinsic。失败 initializer 已发起 program call 时，cell 进入 volatile，避免 cold recovery 把缺少该源码的调用记录当作可重放历史。同名赋值或重声明只覆盖当前 session；cold recovery 使用结果 metadata 中记录的精确快照，不从当前磁盘内容猜测历史值。条目源码中的相对 import 在候选试运行和正式激活时都以 binding 存储目录为解析基准；已经保存到普通 session binding 的导出闭包会在当前 worker 生命周期内保留该解析基准和 program namespace bridge。
+
+提示词和接口中的 `{{name}}` 等示例会原样提供给模型。仅修改提示词、接口注入开关或用途说明，不会重置已激活模块的状态，也不会重复执行初始化；修改源码、scope、namespace 调用名或导出列表后，下一次执行会重新初始化。旧会话按每一步当时的复用规则恢复，升级前因修改说明或顶层显示名称而发生的模块重置也会保留。
 
 开启后，只要当前 session 的实际命令目录提供 `/binding`，输入框工具栏就会在首轮前显示星光图标；点击可预填 `/binding new `，已有输入不会被覆盖。也可以直接输入 `/binding new <需求>` 或 `/binding edit <id> <需求>`，DSH 会提供命令匹配和参数提示。命令启动 Agent 编写后立即完成并清空输入框；对话中的唯一绑定命令卡片保留完整需求、编写状态与 TypeScript 源码，各阶段状态随界面语言切换。Agent 收到完整字段说明、调用范例和依赖解析基址，通过 `run_code` 内稳定的 `code.submitBindingDraft({requestId, entry})` 交接一个停用内存草稿；每次请求仅接受一次有效提交，普通 REPL 声明不会成为全局草稿。进入和结束编写不改变同配置下的 system 与工具声明。
 

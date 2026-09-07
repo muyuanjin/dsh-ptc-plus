@@ -707,11 +707,17 @@ test('REPL observations and shared workbench remain separate from session execut
       return raw.replace(/\.([A-Za-z]+)\b/g, (token, name) => classes.has(name) ? `.${classes.get(name)}` : token)
     }))
     const editorStyles = [...document.styleSheets].flatMap(sheet => [...sheet.cssRules].map(rule => rule.cssText)).join('\n')
+    const snapshot = element.cloneNode(true)
+    const controls = element.querySelectorAll('input')
+    snapshot.querySelectorAll('input').forEach((input, index) => {
+      input.setAttribute('value', controls[index].value)
+      input.toggleAttribute('checked', controls[index].checked)
+    })
     const html = `<!doctype html><html><head><meta charset="utf-8"><style>
       :root{font-family:Arial,sans-serif;color:#202124;background:#fff;--dsw-alias-label-primary:#202124;--dsw-alias-label-secondary:#555;--dsw-alias-label-tertiary:#666;--dsw-alias-label-primary-foreground:#fff;--dsw-alias-bg-layer-2:#fff;--dsw-alias-bg-layer-3:#fff;--dsw-alias-border-l2:#e0e1e3;--dsw-alias-border-l3:#bbb;--dsw-alias-border-l4:#ddd;--dsw-alias-button-primary-fill:#242629;--dsw-alias-state-success-primary:#168052;--dsw-alias-markdown-code-block:#f6f7f8;--dsw-alias-interactive-primary:#365bbb;--dsw-alias-bg-mask-1:#0005}
       body{margin:0}button,input,textarea,select{font-family:inherit}*{box-sizing:border-box}
       ${css.join('\n')}\n${editorStyles}\n${document.getElementById('ptc-plus-client-style').textContent}
-      </style></head><body>${element.outerHTML}</body></html>`
+      </style></head><body>${snapshot.outerHTML}</body></html>`
     await mkdir(process.env.PTC_BINDING_UI_FIXTURE, { recursive: true })
     await writeFile(resolve(process.env.PTC_BINDING_UI_FIXTURE, `${state}.html`), html)
   }
@@ -753,6 +759,15 @@ test('REPL observations and shared workbench remain separate from session execut
   setLocale('zh')
   await runtime.flush()
   await saveLayout('workbench-zh', consolePane())
+  fireEvent.click(consolePane().querySelector('.ptcPlusModelPrompt input[type=checkbox]'))
+  fireEvent.change(consolePane().querySelector('.ptcPlusModelPrompt textarea'), { target: { value: 'Use fileTools.readText(path) to read text files.' } })
+  await runtime.flush()
+  await saveLayout('prompt-edit-zh', consolePane())
+  setLocale('en')
+  await runtime.flush()
+  await saveLayout('prompt-edit-en', consolePane())
+  fireEvent.click([...consolePane().querySelectorAll('button')].find(button => button.textContent === 'Cancel'))
+  await runtime.flush()
   const projection = runtime.sessions.behavior('client-session').projections
   for (const available of [false, true]) {
     setLocale(available ? 'zh' : 'en')
@@ -806,6 +821,60 @@ test('REPL observations and shared workbench remain separate from session execut
   expect(dialog()).toBeNull()
   expect(view.container.textContent).not.toContain('Manage global bindings')
   expect(rpcCalls).toHaveLength(calls)
+})
+
+test('workbench edits and saves per-entry model prompts while preserving cancel and reload semantics', async () => {
+  let entry = { id: 'files', name: 'fileTools', scope: 'namespace', symbols: ['readText'],
+    purpose: 'Read text.', enabled: true, source: 'export function readText(path: string): string { return path }',
+    declaration: 'declare const fileTools: { readText(path: string): string }' }
+  let revision = 1
+  const { runtime, rpcCalls, setLocale } = await fixture({ repl: true, rpc: async (endpoint, payload) => {
+    if (endpoint === 'list' || endpoint === 'reload') return { ok: true, value: { revision, entries: [entry] } }
+    if (endpoint === 'load') return { ok: true, value: { revision, entry } }
+    if (endpoint === 'validate') return { ok: true, value: { ...payload.entry, declaration: entry.declaration } }
+    if (endpoint === 'save') {
+      entry = { ...payload.entry, declaration: entry.declaration }
+      return { ok: true, value: { revision: ++revision, entries: [entry] } }
+    }
+    throw new Error(endpoint)
+  } })
+  const view = runtime.renderRoot()
+  await runtime.flush()
+  const pane = () => view.container.querySelector('.ptcPlusBindings')
+  const button = label => [...pane().querySelectorAll('button')].find(item => item.textContent === label)
+  const toggle = () => pane().querySelector('.ptcPlusModelPrompt input[type=checkbox]')
+  expect(toggle().checked).toBe(true)
+  expect(toggle().disabled).toBe(false)
+  fireEvent.click(toggle())
+  await runtime.flush()
+  expect(toggle().checked).toBe(false)
+  expect(pane().querySelector('.ptcPlusBindingSourcePreview').textContent).toContain(entry.declaration)
+  expect(pane().querySelector('.ptcPlusSourceBody').hidden).toBe(true)
+  expect(pane().querySelector('.ptcPlusModelPrompt .cm-content')).toBeNull()
+  fireEvent.change(view.getByLabelText('Prompt for the model'), { target: { value: 'Use fileTools.readText(path).' } })
+  await runtime.flush()
+  fireEvent.click(button('Validate'))
+  await runtime.flush()
+  fireEvent.click(button('Save'))
+  await runtime.flush()
+  expect(rpcCalls.find(call => call.endpoint === 'save').payload.entry.modelContext).toEqual({
+    includeDeclaration: false, instructions: 'Use fileTools.readText(path).',
+  })
+  expect(pane().querySelector('.ptcPlusBindingSourcePreview').textContent).toContain(entry.declaration)
+  fireEvent.click(toggle())
+  fireEvent.change(view.getByLabelText('Prompt for the model'), { target: { value: 'Unsaved' } })
+  fireEvent.click(pane().querySelector('button[aria-label="Reload"]'))
+  await runtime.flush()
+  expect(toggle().checked).toBe(true)
+  expect(view.getByLabelText('Prompt for the model').value).toBe('Unsaved')
+  fireEvent.click(button('Cancel'))
+  await runtime.flush()
+  expect(toggle().checked).toBe(false)
+  expect(view.getByLabelText('Prompt for the model').value).toBe('Use fileTools.readText(path).')
+  setLocale('zh')
+  await runtime.flush()
+  expect(view.getByLabelText('将接口声明提供给模型').checked).toBe(false)
+  expect(view.getByLabelText('给模型的提示词').value).toBe('Use fileTools.readText(path).')
 })
 
 test('saved cards retain exact source across remount and locale changes; catalog conflicts keep drafts actionable', async () => {

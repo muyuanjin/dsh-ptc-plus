@@ -339,12 +339,25 @@ test('rejects non-canonical Value V1 property order', () => {
   }
 })
 
+test('preserves feature evidence for versioned and legacy binding reuse policies', () => {
+  const current = normalizeJournal(journal())
+  for (const userBindingsReusePolicy of ['fingerprint-v1', 'implementation-v1']) {
+    assert.equal(derivePtcToolView(result({ dshPtcPlus: { ...current, userBindingsReusePolicy } })).ptc, true)
+  }
+  const legacy = { ...current, version: 5 }
+  delete legacy.userBindingsReusePolicy
+  assert.equal(derivePtcToolView(result({ dshPtcPlus: legacy })).ptc, true)
+  assert.equal(derivePtcToolView(result({ dshPtcPlus: { ...legacy, userBindingsReusePolicy: 'implementation-v1' } })).ptc, false)
+})
+
 test('ignores journals rejected by the complete closed metadata contract', () => {
   const valid = normalizeJournal(journal())
   const malformed = [
     value => { delete value.bindingPolicy },
     value => { delete value.rewritePolicy },
     value => { delete value.moduleSemantics },
+    value => { delete value.userBindingsReusePolicy },
+    value => { value.userBindingsReusePolicy = 'implementation-v2' },
     value => { value.moduleSemantics.defaultExportBinding = 'unknown' },
     value => { value.rewritePolicy.autoRewriteImports = 'yes' },
     value => { value.status = 'corrupt' },

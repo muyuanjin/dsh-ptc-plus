@@ -7,6 +7,7 @@ import {
   unavailableReplMemorySnapshot,
 } from '../internal/repl-memory-projection.js'
 import { normalizeUserBindingDraftView } from '../internal/user-binding-draft-projection.js'
+import { bindingModelPreferences } from '../internal/user-binding-model-context.js'
 
 const CLIENT_STYLE_ID = 'ptc-plus-client-style'
 const USER_BINDINGS_RPC_CHANNEL = '/ptc-plus-bindings'
@@ -55,6 +56,7 @@ const BINDING_WORKBENCH_CSS = `
 `
 
 const REPL_CONSOLE_CSS = `
+.ptcPlusBindingsSurface .ptcPlusBindingSection.ptcPlusModelPrompt{padding:12px 0}.ptcPlusModelPrompt .ptcPlusBindingSectionTitle{margin:0 0 10px}.ptcPlusModelPrompt textarea.ptcPlusInput{height:auto;min-height:80px;padding:8px 12px;resize:vertical}.ptcPlusModelPrompt .ptcPlusPromptToggle{flex-direction:row;align-items:center;justify-content:space-between;cursor:pointer}.ptcPlusModelPrompt .ptcPlusCheck{flex:none}.ptcPlusEditorHead .ptcPlusBindingLifecycle{min-width:0}.ptcPlusEditorHead .ptcPlusButton{width:auto}
 .ptcPlusConsole{box-sizing:border-box;flex:1;min-width:0;min-height:0;width:100%;height:100%;overflow:auto;padding:20px 24px;color:var(--dsw-alias-label-primary);container-type:inline-size}
 .ptcPlusConsoleSection{min-width:0}.ptcPlusConsoleSection+.ptcPlusConsoleSection{margin-top:22px;padding-top:20px;border-top:1px solid var(--dsw-alias-border-l2)}
 .ptcPlusObservationHead,.ptcPlusObservationTitle{display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px}.ptcPlusObservationHead{justify-content:space-between;margin-bottom:14px}
@@ -142,6 +144,10 @@ const CHROME_COPY = Object.freeze({
     'bindings.source': 'TypeScript 源码',
     'bindings.sourcePreview': '实现源码',
     'bindings.declaration': '接口声明',
+    'bindings.modelContext': '模型上下文',
+    'bindings.includeDeclaration': '将接口声明提供给模型',
+    'bindings.instructions': '给模型的提示词',
+    'bindings.noInstructions': '未设置提示词',
     'bindings.lifecycle': '条目操作',
     'bindings.debug': '代码控制台',
     'bindings.edit': '编辑',
@@ -277,6 +283,10 @@ const CHROME_COPY = Object.freeze({
     'bindings.source': 'TypeScript source',
     'bindings.sourcePreview': 'Implementation source',
     'bindings.declaration': 'Interface declaration',
+    'bindings.modelContext': 'Model context',
+    'bindings.includeDeclaration': 'Include API declaration in model context',
+    'bindings.instructions': 'Prompt for the model',
+    'bindings.noInstructions': 'No prompt configured',
     'bindings.lifecycle': 'Entry actions',
     'bindings.debug': 'Code console',
     'bindings.edit': 'Edit',
@@ -645,6 +655,7 @@ window.__ModuleLoader__.load({
         purpose: '',
         enabled: false,
         source: 'export function helper() {\n  return undefined\n}\n',
+        modelContext: bindingModelPreferences(),
       })
       const editableBinding = value => ({
         id: value.id,
@@ -654,6 +665,7 @@ window.__ModuleLoader__.load({
         purpose: value.purpose,
         enabled: value.enabled,
         source: value.source,
+        modelContext: bindingModelPreferences(value.modelContext),
       })
       const bindingPayload = (value) => {
         const { symbolsText, ...entry } = value
@@ -732,7 +744,9 @@ window.__ModuleLoader__.load({
         }
         const edit = (key, value) => {
           setDraft(current => ({ ...current, [key]: value }))
-          setDeclaration('')
+          setEditing(true)
+          setMessage(null)
+          if (key !== 'modelContext') setDeclaration('')
         }
         const load = id => perform(async current => {
           const loaded = await callUserBindings('load', { id })
@@ -898,6 +912,15 @@ window.__ModuleLoader__.load({
                   h('div', { className: 'ptcPlusEditorHead' },
                     h('strong', { className: 'ptcPlusEditorFile' }, draft.name || t('bindings.new')),
                     h('div', { className: 'ptcPlusBindingLifecycle' },
+                      editing ? h(React.Fragment, null,
+                        h(ActionButton, { disabled: busy, onClick: validate },
+                          h(IconCheckOutline14, { size: 14 }), t('bindings.validate')),
+                        h(ActionButton, { 'data-kind': 'primary', disabled: busy, onClick: save }, t('bindings.save')),
+                        h(ActionButton, { disabled: busy, onClick: () => {
+                          showEntry(original === null ? null : { entry: original, revision: editRevision }, { resetConsole: false })
+                          setSourceOpen(false)
+                          setMessage(null)
+                        } }, t('bindings.cancel'))) : null,
                       catalog.entries.some(entry => entry.id === draft.id)
                         ? h(IconButton, {
                             icon: IconTrashOutline16, label: t('bindings.remove'), 'data-kind': 'danger',
@@ -911,22 +934,25 @@ window.__ModuleLoader__.load({
                         ? h(CodeBlock, { code: declaration, lang: 'typescript', className: 'ptcPlusCodeBlock',
                           copyLabel: t('tool.copy'), copiedLabel: t('tool.copied') })
                         : h('pre', { className: 'ptcPlusDeclaration' }, declaration)),
+                  h('section', { className: 'ptcPlusBindingSection ptcPlusModelPrompt' },
+                    h('h4', { className: 'ptcPlusBindingSectionTitle' }, t('bindings.modelContext')),
+                    h('div', { className: 'ptcPlusBindingFields' },
+                      h('label', { className: 'ptcPlusBindingField ptcPlusPromptToggle', 'data-wide': true },
+                        h('span', { className: 'ptcPlusBindingFieldLabel' }, t('bindings.includeDeclaration')),
+                        h('input', { className: 'ptcPlusCheck', type: 'checkbox', checked: draft.modelContext.includeDeclaration, disabled: busy,
+                          onChange: event => edit('modelContext', { ...draft.modelContext, includeDeclaration: event.target.checked }) })),
+                      h('label', { className: 'ptcPlusBindingField', 'data-wide': true },
+                        h('span', { className: 'ptcPlusBindingFieldLabel' }, t('bindings.instructions')),
+                        h('textarea', { className: 'ptcPlusInput', rows: 3, maxLength: 4096,
+                          value: draft.modelContext.instructions, disabled: busy,
+                          onChange: event => edit('modelContext', { ...draft.modelContext, instructions: event.target.value }) })))),
                   h('div', { className: 'ptcPlusSourceSection' },
                     h('button', { type: 'button', className: 'ptcPlusSourceToggle',
                       'aria-expanded': sourceOpen, onClick: () => setSourceOpen(!sourceOpen) },
                       h(IconChevronDownOutline14, { size: 14, style: { transform: sourceOpen ? undefined : 'rotate(-90deg)' } }),
                       t('bindings.sourcePreview'),
                       h('span', { className: 'ptcPlusSourceFilename' }, draft.name ? `${draft.name}.ts` : '')),
-                    h('div', { className: 'ptcPlusSourceActions' }, editing
-                      ? h(React.Fragment, null,
-                        h(ActionButton, { disabled: busy, onClick: validate },
-                          h(IconCheckOutline14, { size: 14 }), t('bindings.validate')),
-                        h(ActionButton, { 'data-kind': 'primary', disabled: busy, onClick: save }, t('bindings.save')),
-                        h(ActionButton, { disabled: busy, onClick: () => {
-                          showEntry(original === null ? null : { entry: original, revision: editRevision }, { resetConsole: false })
-                          setSourceOpen(false)
-                          setMessage(null)
-                        } }, t('bindings.cancel')))
+                    h('div', { className: 'ptcPlusSourceActions' }, editing ? null
                       : h(ActionButton, { disabled: busy, onClick: () => { setEditing(true); setSourceOpen(true) } },
                         typeof IconEditOutline16 === 'function' ? h(IconEditOutline16, { size: 14 }) : null, t('bindings.edit'))),
                     h('div', { className: 'ptcPlusSourceBody', hidden: !sourceOpen },
@@ -1749,6 +1775,15 @@ window.__ModuleLoader__.load({
                 copyLabel: t('tool.copy'), copiedLabel: t('tool.copied'),
               })
               : h('pre', { className: 'ptcPlusBindingCommandSource' }, candidate.entry.source)),
+            h('details', { className: 'ptcPlusBindingPromptDetails' },
+              h('summary', null, t('bindings.modelContext')),
+              h('label', { className: 'ptcPlusBindingFieldLabel' },
+                h('input', { type: 'checkbox', className: 'ptcPlusCheck', disabled: true,
+                  checked: bindingModelPreferences(candidate.entry.modelContext).includeDeclaration }),
+                t('bindings.includeDeclaration')),
+              h('span', { className: 'ptcPlusBindingFieldLabel' }, t('bindings.instructions')),
+              h('pre', { className: 'ptcPlusBindingCommandRequirement' },
+                bindingModelPreferences(candidate.entry.modelContext).instructions || t('bindings.noInstructions'))),
             draft === null || actionKey !== null ? null : h('div', { className: 'ptcPlusBindingCommandActions' },
               h(ActionButton, { type: 'button', className: 'ptcPlusButton', disabled: busy, onClick: () => save(false) }, t('bindings.draftSave')),
               h(ActionButton, { type: 'button', className: 'ptcPlusButton', 'data-kind': 'primary', disabled: busy, onClick: () => save(true) }, t('bindings.draftSaveEnable')),

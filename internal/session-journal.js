@@ -13,17 +13,21 @@ export const EDIT_TARGET_KEY = 'dshPtcPlusEdit'
 export const DERIVED_RUN_KEY = 'dshPtcPlusDerivedRun'
 export const REWRITES_KEY = 'dshPtcPlusRewrites'
 export const RECOVERY_BOUNDARY_KEY = 'dshPtcPlusRecoveryBoundaries'
-export const JOURNAL_VERSION = 5
+export const JOURNAL_VERSION = 6
+export const LIVE_USER_BINDINGS_REUSE_POLICY = 'implementation-v1'
+const LEGACY_USER_BINDINGS_REUSE_POLICY = 'fingerprint-v1'
 const LEGACY_JOURNAL_VERSION = 1
 const INTERMEDIATE_JOURNAL_VERSION = 2
 const PREVIOUS_JOURNAL_VERSION = 3
 const USER_BINDING_RELATIONLESS_JOURNAL_VERSION = 4
+const FINGERPRINT_REUSE_JOURNAL_VERSION = 5
 export const RECOVERY_BOUNDARY_EVENT = 'ptc-plus/recovery-boundary'
 
 const STATUSES = new Set(['durable', 'volatile', 'discarded', 'noop'])
 const BINDING_MODES = new Set(['loose', 'strict'])
-const JOURNAL_FIELDS = new Set(['version', 'bindingPolicy', 'rewritePolicy', 'moduleSemantics', 'userBindingsFingerprint', 'status', 'calls', 'operations', 'confirms', 'diagnostics', 'completion', 'volatileReason'])
-const RELATIONLESS_JOURNAL_FIELDS = new Set([...JOURNAL_FIELDS].filter(field => field !== 'userBindingsFingerprint'))
+const JOURNAL_FIELDS = new Set(['version', 'bindingPolicy', 'rewritePolicy', 'moduleSemantics', 'userBindingsFingerprint', 'userBindingsReusePolicy', 'status', 'calls', 'operations', 'confirms', 'diagnostics', 'completion', 'volatileReason'])
+const FINGERPRINT_REUSE_JOURNAL_FIELDS = new Set([...JOURNAL_FIELDS].filter(field => field !== 'userBindingsReusePolicy'))
+const RELATIONLESS_JOURNAL_FIELDS = new Set([...FINGERPRINT_REUSE_JOURNAL_FIELDS].filter(field => field !== 'userBindingsFingerprint'))
 const PREDECESSOR_JOURNAL_FIELDS = new Set(['version', 'bindingMode', 'rewritePolicy', 'status', 'calls', 'operations', 'confirms', 'diagnostics', 'completion', 'volatileReason'])
 const LEGACY_JOURNAL_FIELDS = new Set([...PREDECESSOR_JOURNAL_FIELDS].filter(field => field !== 'rewritePolicy'))
 const BINDING_POLICY_FIELDS = new Set(['variableRedeclarations', 'functionClassRedeclarations'])
@@ -212,9 +216,18 @@ function normalizeUserBindingsFingerprint(value) {
 
 function migrateJournal(value, resolveLegacyConfirm) {
   if (value.version === JOURNAL_VERSION) return value
+  if (value.version === FINGERPRINT_REUSE_JOURNAL_VERSION) {
+    assertOwnFields(value, FINGERPRINT_REUSE_JOURNAL_FIELDS, 'dsh-ptc-plus journal')
+    return { ...value, version: JOURNAL_VERSION, userBindingsReusePolicy: LEGACY_USER_BINDINGS_REUSE_POLICY }
+  }
   if (value.version === USER_BINDING_RELATIONLESS_JOURNAL_VERSION) {
     assertOwnFields(value, RELATIONLESS_JOURNAL_FIELDS, 'dsh-ptc-plus journal')
-    return { ...value, version: JOURNAL_VERSION, userBindingsFingerprint: null }
+    return {
+      ...value,
+      version: JOURNAL_VERSION,
+      userBindingsFingerprint: null,
+      userBindingsReusePolicy: LEGACY_USER_BINDINGS_REUSE_POLICY,
+    }
   }
   const legacy = value.version === LEGACY_JOURNAL_VERSION
   assertOwnFields(
@@ -234,6 +247,7 @@ function migrateJournal(value, resolveLegacyConfirm) {
     rewritePolicy: legacy ? LEGACY_REWRITE_POLICY : value.rewritePolicy,
     moduleSemantics: { defaultExportBinding: LEGACY_DEFAULT_EXPORT_BINDING },
     userBindingsFingerprint: null,
+    userBindingsReusePolicy: LEGACY_USER_BINDINGS_REUSE_POLICY,
     confirms: legacy
       ? normalizeLegacyConfirms(value.confirms, resolveLegacyConfirm)
       : value.confirms,
@@ -244,7 +258,7 @@ function migrateJournal(value, resolveLegacyConfirm) {
 export function normalizeJournal(value, options = {}) {
   if (!isRecord(value)) throw new Error('invalid dsh-ptc-plus journal')
   if (![LEGACY_JOURNAL_VERSION, INTERMEDIATE_JOURNAL_VERSION, PREVIOUS_JOURNAL_VERSION,
-    USER_BINDING_RELATIONLESS_JOURNAL_VERSION, JOURNAL_VERSION].includes(value.version)
+    USER_BINDING_RELATIONLESS_JOURNAL_VERSION, FINGERPRINT_REUSE_JOURNAL_VERSION, JOURNAL_VERSION].includes(value.version)
     || !STATUSES.has(value.status)) {
     throw new Error('invalid dsh-ptc-plus journal')
   }
@@ -254,6 +268,10 @@ export function normalizeJournal(value, options = {}) {
   const rewritePolicy = normalizeRewritePolicy(migrated.rewritePolicy)
   const moduleSemantics = normalizeModuleSemantics(migrated.moduleSemantics)
   const userBindingsFingerprint = normalizeUserBindingsFingerprint(migrated.userBindingsFingerprint)
+  const userBindingsReusePolicy = migrated.userBindingsReusePolicy
+  if (![LEGACY_USER_BINDINGS_REUSE_POLICY, LIVE_USER_BINDINGS_REUSE_POLICY].includes(userBindingsReusePolicy)) {
+    throw new Error('invalid dsh-ptc-plus journal user binding reuse policy')
+  }
   const calls = normalizeCalls(migrated.calls)
   const operations = normalizeOperations(migrated.operations)
   const confirms = normalizeConfirms(migrated.confirms)
@@ -278,6 +296,7 @@ export function normalizeJournal(value, options = {}) {
     rewritePolicy,
     moduleSemantics,
     userBindingsFingerprint,
+    userBindingsReusePolicy,
     status: migrated.status,
     calls: Object.freeze(calls),
     operations: Object.freeze(operations),
@@ -496,6 +515,7 @@ export function createJournal(confirms = [], bindingPolicy, rewritePolicy) {
       defaultExportBinding: LIVE_DEFAULT_EXPORT_BINDING,
     }),
     userBindingsFingerprint: null,
+    userBindingsReusePolicy: LIVE_USER_BINDINGS_REUSE_POLICY,
     calls: [],
     operations: [],
     confirms: [...confirms],

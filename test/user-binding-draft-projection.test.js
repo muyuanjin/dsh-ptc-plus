@@ -16,6 +16,7 @@ test('historical review evidence requires a valid candidate, matching action and
   const candidate = { requestId: 'request', commandId: 'command', version: 1, mode: 'new', entry: {
     id: 'helper', name: 'helper', scope: 'namespace', symbols: ['value'], purpose: '', enabled: false,
     source: 'export const value = 1',
+    modelContext: { includeDeclaration: true, instructions: 'Use helper.value.' },
   } }
   const action = { requestId: 'request', id: 'helper', state: 'saved', enabled: true }
   const notice = bindingActionNotice(action)
@@ -37,6 +38,7 @@ test('historical review evidence requires a valid candidate, matching action and
   assert.deepEqual(projection.stateSchema.parse(settled).history, settled.history)
   assert.deepEqual(projection.stateSchema.parse({ ...settled, generation: 'old' }).history, settled.history)
   const view = projection.wire.view(settled)
+  assert.deepEqual(view.history[0].candidate.entry.modelContext, candidate.entry.modelContext)
   for (const history of [null, [{ ...view.history[0], candidate: null }],
     [{ ...view.history[0], acceptedSeq: -1 }],
     [{ ...view.history[0], commandId: 'unrelated-command' }],

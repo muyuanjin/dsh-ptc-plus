@@ -36,14 +36,15 @@ function completion(value = 1) {
 }
 
 function journal(overrides = {}) {
-  const version = overrides.version ?? 5
+  const version = overrides.version ?? 6
   return {
     version,
     ...(version >= 4 ? {
       bindingPolicy: { variableRedeclarations: true, functionClassRedeclarations: false },
       rewritePolicy: { autoRewriteImports: true, autoStripExports: true, autoSplitRedeclarations: true },
       moduleSemantics: { defaultExportBinding: 'live-readonly' },
-      ...(version === 5 ? { userBindingsFingerprint: null } : {}),
+      ...(version >= 5 ? { userBindingsFingerprint: null } : {}),
+      ...(version === 6 ? { userBindingsReusePolicy: 'implementation-v1' } : {}),
     } : {
       bindingMode: 'loose',
       ...(version === 1 ? {} : {
@@ -167,17 +168,19 @@ test('rejects malformed journal schemas exhaustively', () => {
 test('creates journals, compares semantics, validates names, and merges metadata', () => {
   const policy = { autoRewriteImports: true, autoStripExports: true, autoSplitRedeclarations: true }
   assert.deepEqual(createJournal([4], 'strict', policy), {
-    version: 5,
+    version: 6,
     bindingPolicy: { variableRedeclarations: false, functionClassRedeclarations: false },
     rewritePolicy: { autoRewriteImports: true, autoStripExports: true, autoSplitRedeclarations: true },
     moduleSemantics: { defaultExportBinding: 'live-readonly' },
     userBindingsFingerprint: null,
+    userBindingsReusePolicy: 'implementation-v1',
     calls: [], operations: [], confirms: [4], diagnostics: [],
   })
   assert.throws(() => createJournal([], 'invalid', policy), /binding mode/)
   const value = journal()
   assert.equal(journalsEqual(value, structuredClone(value)), true)
   assert.equal(journalsEqual(value, journal({ status: 'volatile' })), false)
+  assert.equal(journalsEqual(value, journal({ userBindingsReusePolicy: 'fingerprint-v1' })), false)
   assert.equal(journalsEqual(value, journal({ rewritePolicy: { ...value.rewritePolicy, autoStripExports: false } })), false)
   assert.equal(journalsEqual(value, null), false)
   assert.equal(assertStateName('A.state-1'), 'A.state-1')
@@ -676,9 +679,35 @@ test('uses event sequences when provider call ids repeat', () => {
   assert.equal(recovered.nodes[0].callSeq, 1)
 })
 
+test('versions binding reuse without admitting missing, unknown or backdated policies', () => {
+  for (const version of [1, 2, 3, 4, 5]) {
+    const legacy = journal({ version })
+    const normalized = normalizeJournal(legacy)
+    assert.equal(normalized.version, 6)
+    assert.equal(normalized.userBindingsReusePolicy, 'fingerprint-v1')
+    assert.deepEqual(normalizeJournal(normalized), normalized)
+    assert.throws(() => normalizeJournal({ ...legacy, userBindingsReusePolicy: 'implementation-v1' }), /journal field userBindingsReusePolicy/)
+  }
+  const fingerprint = 'a'.repeat(64)
+  assert.equal(normalizeJournal(journal({ version: 5, userBindingsFingerprint: fingerprint })).userBindingsFingerprint, fingerprint)
+  const missing = journal()
+  delete missing.userBindingsReusePolicy
+  for (const invalid of [missing, ...[null, 1, {}, 'implementation-v2'].map(userBindingsReusePolicy => journal({ userBindingsReusePolicy }))]) {
+    assert.throws(() => normalizeJournal(invalid), /user binding reuse policy/)
+    const history = recoverJournal({ events: [
+      callEvent(1, 'known', 'const known = 1'),
+      resultEvent(1, journal()),
+      callEvent(3, 'unknown', 'const unknown = 2'),
+      resultEvent(3, invalid),
+    ] })
+    assert.deepEqual(pathToHead(history).map(node => node.code), ['const known = 1'])
+    assert.equal(history.volatileSuffix.length, 1)
+  }
+})
+
 test('migrates predecessor journals and only unambiguous legacy call identities', () => {
   const relationless = normalizeJournal(journal({ version: 4 }))
-  assert.equal(relationless.version, 5)
+  assert.equal(relationless.version, 6)
   assert.equal(relationless.userBindingsFingerprint, null)
   const legacy = journal({
     version: 1,
@@ -686,11 +715,12 @@ test('migrates predecessor journals and only unambiguous legacy call identities'
   })
   delete legacy.rewritePolicy
   assert.deepEqual(normalizeJournal(legacy), {
-    version: 5,
+    version: 6,
     bindingPolicy: { variableRedeclarations: true, functionClassRedeclarations: false },
     rewritePolicy: { autoRewriteImports: false, autoStripExports: false, autoSplitRedeclarations: false },
     moduleSemantics: { defaultExportBinding: 'legacy-variable' },
     userBindingsFingerprint: null,
+    userBindingsReusePolicy: 'fingerprint-v1',
     status: 'durable',
     calls: [],
     operations: [],

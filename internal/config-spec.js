@@ -272,10 +272,22 @@ export const CONFIG_FIELDS = Object.freeze([
 /** Presentation groups keep high-attention decisions separate from advanced policy and limits. */
 export const CONFIG_GROUPS = Object.freeze([
   {
+    key: 'switch',
+    label: '插件开关',
+    labelEn: 'Plugin switch',
+    fields: Object.freeze(['enabled']),
+  },
+  {
+    key: 'interface',
+    label: '界面显示',
+    labelEn: 'Interface display',
+    fields: Object.freeze(['enhancedToolView', 'replViewEnabled', 'bindingAuthorButtonVisible']),
+  },
+  {
     key: 'core',
-    label: '常用与兼容性',
-    labelEn: 'Common and compatibility',
-    fields: Object.freeze(['enabled', 'enhancedToolView', 'replViewEnabled', 'bindingAuthorButtonVisible', 'autoDescribeRunCode', 'canonicalizeToolCalls']),
+    label: '核心功能',
+    labelEn: 'Core features',
+    fields: Object.freeze(['autoDescribeRunCode', 'canonicalizeToolCalls']),
   },
   {
     key: 'optional',

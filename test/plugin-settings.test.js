@@ -1609,18 +1609,20 @@ test('config schema defaults expose the settings switches', async () => {
     'tipEscalationFailures',
   ]
   assert.deepEqual(CONFIG_FIELDS.map(field => field.key), expectedOrder)
-  assert.deepEqual(CONFIG_GROUPS.map(group => group.key), ['core', 'optional', 'advanced', 'limits'])
+  assert.deepEqual(CONFIG_GROUPS.map(group => group.key), ['switch', 'interface', 'core', 'optional', 'advanced', 'limits'])
   assert.deepEqual(CONFIG_GROUPS.flatMap(group => group.fields), expectedOrder)
   const fieldByKey = new Map(CONFIG_FIELDS.map(field => [field.key, field]))
   for (const group of CONFIG_GROUPS) {
     assert.ok(group.fields.every(key => fieldByKey.has(key)))
   }
-  const featuredSwitches = CONFIG_GROUPS[0].fields
-    .map(key => fieldByKey.get(key))
-    .filter(field => field.key !== 'enabled')
+  assert.deepEqual(CONFIG_GROUPS.find(group => group.key === 'switch').fields, ['enabled'])
   assert.deepEqual(
-    featuredSwitches.map(field => field.key),
-    ['enhancedToolView', 'replViewEnabled', 'bindingAuthorButtonVisible', 'autoDescribeRunCode', 'canonicalizeToolCalls'],
+    CONFIG_GROUPS.find(group => group.key === 'interface').fields,
+    ['enhancedToolView', 'replViewEnabled', 'bindingAuthorButtonVisible'],
+  )
+  assert.deepEqual(
+    CONFIG_GROUPS.find(group => group.key === 'core').fields,
+    ['autoDescribeRunCode', 'canonicalizeToolCalls'],
   )
   const defaults = await Config['~standard'].validate({})
   assert.equal(inject.includes('commands'), false)

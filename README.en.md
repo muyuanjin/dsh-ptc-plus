@@ -127,7 +127,7 @@ This is one stochastic paired observation, not a performance guarantee. Machine 
 
 Open **Settings → Plugin configuration** to use the card shown above. The card follows the DSH UI language: it renders in English when the harness is set to English, and in Chinese when set to Chinese. The `enabled` switch is live: turning it off stops the runtime, keeps the card and that switch, and withdraws earlier PTC state declarations at the next Host-permitted request. Turning it on restores the session runtime and `run_code`/`edit_run_code`.
 
-Settings are separated into common and compatibility controls, optional capabilities, advanced behavior, and resource limits. Decisions that need user attention appear before resource limits.
+Settings are grouped into Plugin switch, Interface display, Core features, Optional capabilities, Advanced behavior, and Resource limits. Enhanced tool cards, the REPL tab, and the binding authoring button appear under Interface display; execution without a summary and top-level tool call repair have their own Core features section.
 
 “Use enhanced PTC Plus tool cards” is on by default and provides expandable source, results, execution state, and feature markers. When disabled, `run_code` and `edit_run_code` use DSH's native tool cards. This setting affects presentation only.
 
@@ -154,6 +154,10 @@ The PTC Plus header popover has Session and Global tabs. Session shows reusable 
 While the plugin is enabled and the current session uses the `ptc` or compatible `code` preset, a top-level **REPL** tab appears alongside Conversation and Trajectory. Switching to an ineligible session or disabling the plugin removes it. “Session bindings” shows names, definition sources, and bounded values observed after cell settlement, with observation time, truncation, and unreadable states. Entries outside display limits are omitted without suppressing previews for visible bindings. Value previews read only primitives and the first five own array slots. Plain objects, TypedArray, Buffer, boxed String and other unsupported values are unreadable; no preview enumerates the complete property set. Primitive strings retain their bounded text previews. Previews do not invoke getters, Proxy traps, user formatters, or session code. They are not complete live snapshots, never enter model context or the journal, and do not change recovery or binding retention rules.
 
 REPL shows session bindings and the complete global bindings workbench on one page, without internal tabs. Search session names or filter declaration kinds, then select a binding to inspect its highlighted, copyable definition and value preview. Empty inventories use a compact full-width state. Optional values are collected after subsequent execution only while the session observation region is visible; opening the page itself never evaluates observations. The workspace hides the ordinary message composer and disables transcript width dragging. Returning to Conversation restores the composer and unsent draft. Host approvals and questions remain available.
+
+![REPL workspace with session binding inspection and global binding management](assets/ptc-plus-repl-workspace-en.png)
+
+*The REPL workspace shows session bindings above global binding management and the TypeScript code console.*
 
 The settled result waits at most 250 ms for a preview. Only unfinished observation is exempt from the next cell's compute and wall budgets; other blocking work, including background user callbacks, retains timeout protection, and waiting remains cancellable. Preview time cannot cause the next cell to time out and lose its bindings.
 

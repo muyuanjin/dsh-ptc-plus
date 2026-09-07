@@ -24,7 +24,9 @@ try {
   const page = await browser.newPage()
   for (const width of [320, 390, 1440]) {
     await page.setViewportSize({ width, height: 900 })
-    for (const state of ['ready-en', 'ready-zh', 'saved-en', 'saved-zh']) {
+    const states = ['ready-en', 'ready-zh', 'saved-en', 'saved-zh',
+      ...['en', 'zh'].flatMap(locale => ['unavailable', 'session', 'global'].map(tab => `popover-${tab}-${locale}`))]
+    for (const state of states) {
       await page.goto(pathToFileURL(resolve(directory, `${state}.html`)).href)
       const details = page.locator('.ptcPlusBindingSourceDetails')
       const summary = details.locator('summary')
@@ -48,7 +50,13 @@ try {
           text: element.textContent, bounds: bounds(element), owner: bounds(element.parentElement),
           action: element.closest('.ptcPlusGlobalItem,.ptcPlusBindingCommandActions,.ptcPlusReplTabs') !== null,
         }))
-        return { collisions, containers, buttons, pageWidth: document.documentElement.scrollWidth,
+        const head = document.querySelector('.ptcPlusReplHead')
+        const headBounds = bounds(head)
+        const header = { height: headBounds.height,
+          titleOffset: bounds(head.querySelector('.ptcPlusReplTitle')).top - headBounds.top,
+          dotOffset: bounds(head.querySelector('.ptcPlusReplStatusDot')).top - headBounds.top,
+          tabsOffset: bounds(document.querySelector('.ptcPlusReplTabs')).top - headBounds.top }
+        return { collisions, containers, buttons, header, pageWidth: document.documentElement.scrollWidth,
           tabFont: getComputedStyle(document.querySelector('.ptcPlusReplTab')).fontSize }
       })
       assert.deepEqual(metrics.collisions, [], `${width}/${state}: overlapping list actions`)
@@ -68,10 +76,17 @@ try {
       await page.screenshot({ path: resolve(directory, `${width}-${state}-source.png`), fullPage: true })
       measurements.push({ width, state, collapsedHeight, ...metrics })
     }
+    for (const locale of ['en', 'zh']) {
+      const headers = measurements.filter(item => item.width === width
+        && item.state.startsWith('popover-') && item.state.endsWith(locale)).map(item => item.header)
+      assert.equal(headers.length, 3)
+      assert.deepEqual(headers[0], headers[1], `${width}/${locale}: header shifts when session data becomes available`)
+      assert.deepEqual(headers[1], headers[2], `${width}/${locale}: header shifts between Session and Global`)
+    }
   }
   for (const width of [320, 390, 1440]) {
     await page.setViewportSize({ width, height: 900 })
-    for (const state of ['console-en', 'console-zh', 'workbench-en', 'workbench-zh', 'modal-en', 'modal-zh', 'empty-en', 'empty-zh']) {
+    for (const state of ['console-en', 'console-zh', 'workbench-en', 'workbench-zh', 'modal-en', 'modal-zh', 'empty-en', 'empty-zh', 'settings-en', 'settings-zh']) {
       await page.goto(pathToFileURL(resolve(directory, `${state}.html`)).href)
       const metrics = await page.evaluate(() => {
         const containers = [...document.querySelectorAll('.ptcPlusConsole,.ptcPlusBindingsSurface,.ptcPlusBindingsDialog,.ptcPlusBindingEditor')]

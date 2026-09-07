@@ -9,7 +9,7 @@ Client 根入口只依赖 `settingsScope`、`slots`、`locale` 和 `connection`�
 ## 设置命名空间
 
 Host half 通过 DSH 公共 `settings` 服务注册命名空间 `ptc-plus`。字段清单、默认值和校验来自 `internal/config-spec.js`，
-由 `index.js` 的 `Config` schema 与设置注册共用；client half 构建时把同一份字段清单打进 bundle，不在 UI 中复制默认值。卡片按“常用与兼容性”“可选能力”“高级行为”“资源限制”分区显示，用户需要主动决策的选项位于前面。
+由 `index.js` 的 `Config` schema 与设置注册共用；client half 构建时把同一份字段清单打进 bundle，不在 UI 中复制默认值。卡片按“插件开关”“界面显示”“核心功能”“可选能力”“高级行为”“资源限制”分区显示。纯界面开关与影响执行的核心功能使用独立标题、留白与分隔线。
 
 ## 可用设置
 
@@ -19,7 +19,7 @@ Host half 通过 DSH 公共 `settings` 服务注册命名空间 `ptc-plus`。字
 | 展示 | `enhancedToolView` | 默认开启；关闭后注销 PTC Plus 的两个 keyed tool view，恢复 DSH 原生 generic row。 |
 | 展示 | `replViewEnabled` | 默认开启；控制顶级 REPL 页签，关闭时释放观察订阅，不影响设置中的全局管理入口。 |
 | 展示 | `bindingAuthorButtonVisible` | 默认开启；控制输入框的绑定编写快捷按钮，不撤销 `/binding` 命令。 |
-| 常用与兼容性 | `autoDescribeRunCode` / `canonicalizeToolCalls` | 默认开启；允许缺少外层摘要的 `run_code` 执行，并修复 schema 可唯一确认的顶层 native 工具误调用。 |
+| 核心功能 | `autoDescribeRunCode` / `canonicalizeToolCalls` | 默认开启；允许缺少外层摘要的 `run_code` 执行，并修复 schema 可唯一确认的顶层 native 工具误调用。 |
 | 可选能力 | `cordisToolsEnabled` | 默认关闭；开启后为 PTC agent 加入官方 Cordis 工具、指引与精确的 `cordis-plugin-development` companion Skill，不发布同目录 sibling。 |
 | 可选能力 | `userBindingsEnabled` | 默认关闭；开启后加载跨会话 TypeScript helper，并显示全局绑定工作台、设置管理按钮与 `/binding` Agent 编写入口。 |
 | 高级行为 | `looseTopLevelRedeclarations` / `looseTopLevelFunctionClassRedeclarations` / `autoRewriteImports` / `autoStripExports` / `autoSplitRedeclarations` / `durableReplay` / `tipsEnabled` | function/class 重声明默认开启，其余默认开启；分别控制变量重声明、可写 function/class binding 的声明位置替换、模块语法适配、worker 重启后的状态恢复与失败提示。 |
@@ -52,7 +52,7 @@ Client 的所有管理操作都通过 DSH Connection RPC `/ptc-plus-bindings` �
 
 保存 revision 随已加载源码保存，单独更新目录不能使缓存源码取得更新的保存资格。非编辑状态重新加载时，同步选中条目的源码、声明和编辑基线；条目已删除则清除选中内容。编辑中重新加载会保留草稿，更新保存 revision 和取消编辑后的基线；取消时显示最近读到的磁盘条目。目录与条目读取的 revision 不一致时保留原状态，提示再次重新加载。过期请求和已释放工作台的响应不能覆盖当前内容。重新加载相同源码保留临时控制台环境，源码变化或条目删除则释放环境，不自动执行命令。
 
-PTC session 的头部弹窗在功能启用时增加 Session 与 Global 页签。Session 保留当前可复用 binding 的只读检查；Global 展示持久化目录的启停状态，可展开精确源码并预填 `/binding edit <id> `。目录“启用”不证明当前会话已成功激活。composer 已有非空草稿时保留原文并显示反馈；公开接口不提供 focus 时，Client 不访问宿主 DOM 强制聚焦。名称和成员被限制在各自 grid 列内，长名称与成员列表提供完整 title；编辑动作保持独立点击区域。窄弹窗不复制设置工作台的完整编辑、候选运行、启停、导入或删除功能。
+PTC session 的头部弹窗在功能启用时增加 Session 与 Global 页签。Session 保留当前可复用 binding 的只读检查；Global 展示持久化目录的启停状态，可展开精确源码并预填 `/binding edit <id> `。头部摘要在 Session 显示可复用绑定总数，在 Global 显示目录条目数；数据不可用时保留空摘要行，切换页签不改变头部高度。目录条目数与“启用”状态不证明当前会话已成功激活。composer 已有非空草稿时保留原文并显示反馈；公开接口不提供 focus 时，Client 不访问宿主 DOM 强制聚焦。名称和成员被限制在各自 grid 列内，长名称与成员列表提供完整 title；编辑动作保持独立点击区域。窄弹窗不复制设置工作台的完整编辑、候选运行、启停、导入或删除功能。
 
 接受候选时，Host 生成不可猜测的 locator，并把 locator、精确 candidate 源码和请求/命令身份放入接受结果的私有 metadata。`ptcPlusBindingDraft` projection 分别拥有可写草稿定位与只读历史；历史源码不从当前 catalog 重读。Connection RPC 没有 caller/session identity，所有草稿操作凭 locator，不信任 payload session ID。Binding 命令卡片通过公共 `conversation.chat.commandview` 的 `binding` key 接管宿主命令行，直接读取宿主折叠后的 CommandNode，不注册 turn-tail 展示或重复关联命令事件。卡片使用公共 `Button` 和 `CodeBlock` 呈现保存、丢弃与源码；缺少原语时才降级。源码区不嵌套另一层卡片边框，已结束状态紧凑排列，源码可通过原生 details 继续展开。
 

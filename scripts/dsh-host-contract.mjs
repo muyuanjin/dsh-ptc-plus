@@ -25,3 +25,19 @@ export function ptcToolsMode(runtime = ToolRuntime) {
   }
   throw new Error('The DSH tools schema supports neither ptc nor code presentation')
 }
+
+function personaFields(config) {
+  return config?.personaPrefix !== undefined || config?.personaSuffix !== undefined
+    ? ['personaPrefix', 'personaSuffix'] : ['persona']
+}
+
+/** Preserve missing fields so callers can reject an incomplete Host configuration. */
+export function readHostPersona(config) {
+  const [prefix, suffix] = personaFields(config)
+  return { prefix: config?.[prefix], suffix: suffix === undefined ? '' : config[suffix] }
+}
+
+/** Replace the whole persona, including any deployment-supplied suffix. */
+export function hostPersonaPatch(config, text) {
+  return Object.fromEntries(personaFields(config).map((field, index) => [field, index === 0 ? text : '']))
+}

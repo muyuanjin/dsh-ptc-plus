@@ -3,6 +3,12 @@ import { derivePtcToolView } from './client-activity.js'
 import { createTypeScriptEditor } from './client-code-editor.js'
 import { createBindingConsole } from './client-console.js'
 import {
+  isIdleSessionComposer,
+  sessionUsesPtcPreset,
+  useSessionPreset,
+  watchCurrentSessionPreset,
+} from './client-host-compat.js'
+import {
   normalizeReplMemorySnapshot,
   unavailableReplMemorySnapshot,
 } from '../internal/repl-memory-projection.js'
@@ -398,15 +404,6 @@ const SETTINGS_COPY = Object.freeze(Object.fromEntries(
   })]),
 ))
 
-function sessionUsesPtcPreset(preset) {
-  return preset === 'ptc' || preset === 'code'
-}
-
-function sessionPresetValue(projected, summary) {
-  return projected !== undefined || Object.hasOwn(summary?.projectionValues ?? {}, 'agentPreset')
-    ? projected : summary?.agentPreset
-}
-
 window.__ModuleLoader__.load({
   // Replaced by the bundle entry with the package name from package.json.
   id: __PTC_PLUS_CLIENT_MODULE_ID__,
@@ -436,13 +433,6 @@ window.__ModuleLoader__.load({
     const module = { exports: {} }
     const h = React.createElement
     const TypeScriptEditor = createTypeScriptEditor(React)
-
-    function useSessionPreset({ sessionId, useProjection, useSessions }) {
-      const projected = useProjection('agentPreset')
-      return typeof useSessions === 'function'
-        ? useSessions(state => sessionPresetValue(projected, state.byId?.[sessionId]))
-        : projected
-    }
 
     function IconButton({ icon: Icon, label, ...props }) {
       const button = h('button', { ...props, type: 'button', className: 'ptcPlusIconButton',
@@ -1363,30 +1353,17 @@ window.__ModuleLoader__.load({
         const hideComposer = sessionId => viewScope.effect(() => viewScope.slots.inject(
           'conversation.composer', () => viewScope.slots.register({
             name: 'conversation.composer', priority: 100,
-            select: owner => (Object.hasOwn(owner, 'sessionId')
-              ? owner.sessionId === sessionId && owner.pendingInteraction === undefined
-              : owner.session?.sessionId === sessionId && Array.isArray(owner.interactions) && owner.interactions.length === 0)
-              ? true : null,
+            select: owner => isIdleSessionComposer(owner, sessionId) ? true : null,
           }, ReplComposer),
         ))
         viewScope.slots.inject('conversation.view', () => viewScope.effect(() => {
-          let source
-          let unsubscribeProjection
+          let preset
           let disposeView
           const sync = () => {
-            const current = viewScope.sessions.list.getSnapshot().current
-            const next = current === undefined ? undefined
-                : viewScope.sessions.binding(current)?.session.projections?.faceOf?.('agentPreset')
-            if (source !== next) {
-              unsubscribeProjection?.()
-              source = next
-              unsubscribeProjection = source?.subscribe(sync)
-            }
             const settings = preferenceScope.getSnapshot()
             const eligible = settings.status === 'ready' && settings.value?.enabled === true
               && settings.value?.replViewEnabled !== false
-              && sessionUsesPtcPreset(sessionPresetValue(source?.getSnapshot(),
-                viewScope.sessions.list.getSnapshot().byId?.[current]))
+              && sessionUsesPtcPreset(preset)
             if (eligible === (disposeView !== undefined)) return
             disposeView?.()
             disposeView = eligible ? viewScope.slots.register({
@@ -1394,13 +1371,14 @@ window.__ModuleLoader__.load({
               locale: LOCALE_NS, inject: () => ({ ...settingsProps(), hideComposer, observeRepl }),
             }, props => typeof props.useProjection === 'function' ? h(ReplConsole, props) : null) : undefined
           }
-          const unsubscribeList = viewScope.sessions.list.subscribe(sync)
+          const unsubscribePreset = watchCurrentSessionPreset(viewScope.sessions, value => {
+            preset = value
+            sync()
+          })
           const unsubscribeSettings = preferenceScope.subscribe(sync)
-          sync()
           return () => {
-            unsubscribeList()
+            unsubscribePreset()
             unsubscribeSettings()
-            unsubscribeProjection?.()
             disposeView?.()
           }
         }))

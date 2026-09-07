@@ -26213,6 +26213,48 @@
     };
   }
 
+  // src/client-host-compat.js
+  function sessionPresetValue(projected, summary) {
+    return projected !== void 0 || Object.hasOwn(summary?.projectionValues ?? {}, "agentPreset") ? projected : summary?.agentPreset;
+  }
+  function sessionUsesPtcPreset(preset) {
+    return preset === "ptc" || preset === "code";
+  }
+  function useSessionPreset({ sessionId, useProjection, useSessions }) {
+    const projected = useProjection("agentPreset");
+    return typeof useSessions === "function" ? useSessions((state) => sessionPresetValue(projected, state.byId?.[sessionId])) : projected;
+  }
+  function watchCurrentSessionPreset(sessions, listener) {
+    let source;
+    let unsubscribeProjection;
+    const sync = () => {
+      const snapshot = sessions.list.getSnapshot();
+      const current = snapshot.current;
+      const next = current === void 0 ? void 0 : sessions.binding(current)?.session.projections?.faceOf?.("agentPreset");
+      if (source !== next) {
+        unsubscribeProjection?.();
+        source = next;
+        unsubscribeProjection = source?.subscribe(sync);
+      }
+      listener(sessionPresetValue(source?.getSnapshot(), snapshot.byId?.[current]));
+    };
+    const unsubscribeList = sessions.list.subscribe(sync);
+    const dispose = () => {
+      unsubscribeList();
+      unsubscribeProjection?.();
+    };
+    try {
+      sync();
+    } catch (error) {
+      dispose();
+      throw error;
+    }
+    return dispose;
+  }
+  function isIdleSessionComposer(owner, sessionId) {
+    return Object.hasOwn(owner, "sessionId") ? owner.sessionId === sessionId && owner.pendingInteraction === void 0 : owner.session?.sessionId === sessionId && Array.isArray(owner.interactions) && owner.interactions.length === 0;
+  }
+
   // internal/record-utils.js
   function isRecord2(value) {
     return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -26816,12 +26858,6 @@
       ...Object.assign({}, ...CONFIG_FIELDS.map((field) => fieldCopy(field, locale)))
     })])
   ));
-  function sessionUsesPtcPreset(preset) {
-    return preset === "ptc" || preset === "code";
-  }
-  function sessionPresetValue(projected, summary) {
-    return projected !== void 0 || Object.hasOwn(summary?.projectionValues ?? {}, "agentPreset") ? projected : summary?.agentPreset;
-  }
   window.__ModuleLoader__.load({
     // Replaced by the bundle entry with the package name from package.json.
     id: "dsh-ptc-plus",
@@ -26851,10 +26887,6 @@
       const module = { exports: {} };
       const h = React.createElement;
       const TypeScriptEditor = createTypeScriptEditor(React);
-      function useSessionPreset({ sessionId, useProjection, useSessions }) {
-        const projected = useProjection("agentPreset");
-        return typeof useSessions === "function" ? useSessions((state) => sessionPresetValue(projected, state.byId?.[sessionId])) : projected;
-      }
       function IconButton({ icon: Icon, label, ...props }) {
         const button = h("button", {
           ...props,
@@ -28084,26 +28116,15 @@
             () => viewScope.slots.register({
               name: "conversation.composer",
               priority: 100,
-              select: (owner) => (Object.hasOwn(owner, "sessionId") ? owner.sessionId === sessionId && owner.pendingInteraction === void 0 : owner.session?.sessionId === sessionId && Array.isArray(owner.interactions) && owner.interactions.length === 0) ? true : null
+              select: (owner) => isIdleSessionComposer(owner, sessionId) ? true : null
             }, ReplComposer)
           ));
           viewScope.slots.inject("conversation.view", () => viewScope.effect(() => {
-            let source;
-            let unsubscribeProjection;
+            let preset;
             let disposeView;
             const sync = () => {
-              const current = viewScope.sessions.list.getSnapshot().current;
-              const next = current === void 0 ? void 0 : viewScope.sessions.binding(current)?.session.projections?.faceOf?.("agentPreset");
-              if (source !== next) {
-                unsubscribeProjection?.();
-                source = next;
-                unsubscribeProjection = source?.subscribe(sync);
-              }
               const settings = preferenceScope.getSnapshot();
-              const eligible = settings.status === "ready" && settings.value?.enabled === true && settings.value?.replViewEnabled !== false && sessionUsesPtcPreset(sessionPresetValue(
-                source?.getSnapshot(),
-                viewScope.sessions.list.getSnapshot().byId?.[current]
-              ));
+              const eligible = settings.status === "ready" && settings.value?.enabled === true && settings.value?.replViewEnabled !== false && sessionUsesPtcPreset(preset);
               if (eligible === (disposeView !== void 0)) return;
               disposeView?.();
               disposeView = eligible ? viewScope.slots.register({
@@ -28115,13 +28136,14 @@
                 inject: () => ({ ...settingsProps(), hideComposer, observeRepl })
               }, (props) => typeof props.useProjection === "function" ? h(ReplConsole, props) : null) : void 0;
             };
-            const unsubscribeList = viewScope.sessions.list.subscribe(sync);
+            const unsubscribePreset = watchCurrentSessionPreset(viewScope.sessions, (value) => {
+              preset = value;
+              sync();
+            });
             const unsubscribeSettings = preferenceScope.subscribe(sync);
-            sync();
             return () => {
-              unsubscribeList();
+              unsubscribePreset();
               unsubscribeSettings();
-              unsubscribeProjection?.();
               disposeView?.();
             };
           }));

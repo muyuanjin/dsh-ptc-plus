@@ -16,6 +16,18 @@ public session-summary field, and the current composer currency takes precedence
 over the earlier session/interactions currency. This compatibility does not
 extend to private stores or inferred binding state.
 
+Compatibility decisions have one owner per public contract and execution
+environment. `src/client-host-compat.js` owns Client preset reads and subscriptions
+and composer compatibility. UI consumers own feature eligibility and slot
+registration. `scripts/dsh-host-contract.mjs` owns selected-installation package
+resolution, tools presentation and persona field adaptation for development and
+acceptance commands. Host runtime contracts remain in their existing focused
+owners, including `internal/session-events.js` and `internal/settings-compat.js`.
+Consumers use these operations instead of repeating field-generation checks.
+Adapters preserve unknown evidence and public subscription disposal; they do not
+cache session capabilities globally. Test-only persistence fixtures and explicit
+offline journal migration retain their own lifecycles and validation contracts.
+
 ## Alternatives considered
 
 **Pin one verified DSH release.** A pin makes one historical environment reproducible but turns normal upstream progress into an artificial incompatibility and allows the implementation to drift from the release users actually install.

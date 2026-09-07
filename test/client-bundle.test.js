@@ -134,7 +134,6 @@ test('checked client bundle is loadable through the DSH module loader contract',
   assert.match(sourceModule, /entry: bindingPayload\(editableBinding\(normalized\)\)/)
   assert.match(sourceModule, /Expand PTC Plus settings/)
   assert.doesNotMatch(sourceModule, /ptcPlusActivityPanel/)
-  assert.match(sourceModule, /useProjection\('agentPreset'\)/)
   assert.match(sourceModule, /CodeBlock/)
   assert.match(sourceModule, /DisclosureRow/)
   assert.doesNotMatch(sourceModule, /rowClassName|leadingClassName|chevronClassName|titleClassName/)

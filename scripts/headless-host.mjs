@@ -5,7 +5,7 @@ import { join, posix, win32 } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { parseDocument } from 'yaml'
 import { RUNTIME_PROBE_PREFIX } from './repl-preflight.mjs'
-import { hostToolRuntime, ptcToolsMode } from './dsh-host-contract.mjs'
+import { hostPersonaPatch, hostToolRuntime, ptcToolsMode, readHostPersona } from './dsh-host-contract.mjs'
 
 export const NEUTRAL_PERSONA = 'You are a coding agent powered by the {{model}} model. Your working directory is {{cwd}}.'
 export const HEADLESS_PREREQUISITE_CODE = 'PTC-EVAL-PREREQ'
@@ -228,12 +228,10 @@ export function validateNeutralConfig(rows, label, ptcPlus = 'enabled') {
     if (rows.some(row => row.id === absent)) throw new Error(`${label} unexpectedly contains ${absent}`)
   }
   const systemPrompt = configRow(rows, 'system-prompt', label).config
-  const splitPersona = systemPrompt?.personaPrefix !== undefined || systemPrompt?.personaSuffix !== undefined
+  const persona = readHostPersona(systemPrompt)
   if (systemPrompt?.includeHarnessIdentity !== false
     || systemPrompt?.includeRuntimeContext !== true
-    || (splitPersona
-      ? systemPrompt.personaPrefix !== NEUTRAL_PERSONA || systemPrompt.personaSuffix !== ''
-      : systemPrompt?.persona !== NEUTRAL_PERSONA)) {
+    || persona.prefix !== NEUTRAL_PERSONA || persona.suffix !== '') {
     throw new Error(`${label} does not use the neutral system-prompt contract`)
   }
   const disabled = configRow(rows, 'ptc-plus', label).disabled === true
@@ -281,7 +279,6 @@ export function validateHeadlessRuntimeConfig(rows, label, runtime) {
 export function headlessConfigPatch(baseRows, runtime, options = {}) {
   const policy = headlessRuntimePolicy(runtime)
   const prompt = configRow(baseRows, 'system-prompt', 'base DSH config').config
-  const splitPersona = prompt?.personaPrefix !== undefined || prompt?.personaSuffix !== undefined
   return [
     '- id: settings',
     '  disabled: true',
@@ -302,9 +299,8 @@ export function headlessConfigPatch(baseRows, runtime, options = {}) {
     '  config:',
     '    includeHarnessIdentity: false',
     '    includeRuntimeContext: true',
-    ...(splitPersona
-      ? [`    personaPrefix: ${JSON.stringify(NEUTRAL_PERSONA)}`, '    personaSuffix: ""']
-      : [`    persona: ${JSON.stringify(NEUTRAL_PERSONA)}`]),
+    ...Object.entries(hostPersonaPatch(prompt, NEUTRAL_PERSONA))
+      .map(([field, value]) => `    ${field}: ${JSON.stringify(value)}`),
     '- id: tools',
     '  config:',
     `    mode: ${JSON.stringify(policy.toolsMode)}`,

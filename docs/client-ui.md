@@ -8,6 +8,8 @@ Client 根入口只依赖 `settingsScope`、`slots`、`locale` 和 `connection`�
 
 REPL 对 composer 的接管优先使用当前公开 `sessionId`/`pendingInteraction` 参数；旧宿主仅在 `session.sessionId` 匹配且 `interactions` 为空数组时允许接管。审批、提问和无法确认的交互状态继续显示宿主 composer，不通过 DOM 隐藏输入框。
 
+这些新旧接口差异由 `src/client-host-compat.js` 集中处理：组件使用 `useSessionPreset`，注册层使用 `watchCurrentSessionPreset` 跟随当前会话及其 projection，并用 `isIdleSessionComposer` 判断 composer 资格。适配模块负责证据优先级与订阅切换、释放；`src/client.js` 负责设置开关、PTC 功能资格和 slot 生命周期。当前会话变化时重新读取公共能力，不缓存全局宿主版本或会话能力。
+
 ## 设置命名空间
 
 Host half 通过 DSH 公共 `settings` 服务注册命名空间 `ptc-plus`。字段清单、默认值和校验来自 `internal/config-spec.js`，

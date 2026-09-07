@@ -314,9 +314,7 @@ function isReadableJournal(value) {
   }
 }
 
-// Keep the presentation fold closed over the journal contract. This guard is
-// intentionally separate from the schema reader so future counters cannot
-// accidentally treat an unknown status or partial arrays as activity.
+// Unknown statuses and incomplete journal arrays cannot establish feature evidence.
 function isCountableJournal(value) {
   return isReadableJournal(value)
     && JOURNAL_STATUSES.has(value.status)

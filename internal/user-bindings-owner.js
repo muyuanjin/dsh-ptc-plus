@@ -8,6 +8,7 @@ import { bindingActionNotice, USER_BINDING_DRAFT_META_KEY } from './user-binding
 import { sessionEvents } from './session-events.js'
 import { decodeValue } from './value-wire.js'
 import { UserBindingsStore } from './user-bindings-store.js'
+import { UserBindingConsole } from './user-binding-console.js'
 import {
   createUserBindingsSnapshot,
   normalizeUserBindingEntry,
@@ -176,6 +177,7 @@ export function createUserBindingsOwner(ctx, options = {}) {
     valueLimits: options.valueLimits,
   }
   let disposed = false
+  const codeConsole = new UserBindingConsole(currentOptions)
   const commandRegistrations = new Map()
   const sessionAgents = new Map()
   const sessionGenerations = new Map()
@@ -360,6 +362,11 @@ export function createUserBindingsOwner(ctx, options = {}) {
         }
       } else if (endpoint === 'run') {
         value = await runCandidate(input.source, candidateInvocation(input.invocation), currentOptions, signal)
+      } else if (endpoint === 'console-run') {
+        value = await codeConsole.run(input, signal)
+      } else if (endpoint === 'console-release') {
+        codeConsole.release(input.environment)
+        value = null
       } else if (endpoint === 'draft') value = draftView(draftFor(input.capability))
       else if (endpoint === 'draft-review') {
         const current = draftFor(input.capability)
@@ -912,10 +919,13 @@ export function createUserBindingsOwner(ctx, options = {}) {
       }
       if (nextEnabled === previousEnabled) {
         currentOptions = nextOptions
+        codeConsole.reconfigure(nextOptions)
         return
       }
       enabled = nextEnabled
       currentOptions = nextOptions
+      codeConsole.reconfigure(nextOptions)
+      if (!nextEnabled) codeConsole.dispose()
       lifecycleGeneration += 1
       if (nextEnabled) {
         try {
@@ -924,6 +934,7 @@ export function createUserBindingsOwner(ctx, options = {}) {
         } catch (error) {
           enabled = previousEnabled
           currentOptions = previousOptions
+          codeConsole.reconfigure(previousOptions)
           lifecycleGeneration += 1
           try {
             await Promise.all([unmountRpc(), unmountAuthoring()])
@@ -945,6 +956,7 @@ export function createUserBindingsOwner(ctx, options = {}) {
       } catch (error) {
         enabled = previousEnabled
         currentOptions = previousOptions
+        codeConsole.reconfigure(previousOptions)
         lifecycleGeneration += 1
         try {
           mountRpc()
@@ -961,6 +973,7 @@ export function createUserBindingsOwner(ctx, options = {}) {
     },
     async dispose() {
       disposed = true
+      codeConsole.dispose()
       enabled = false
       lifecycleGeneration += 1
       for (const draft of [...drafts.values()]) removeDraft(draft)

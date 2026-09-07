@@ -181,6 +181,7 @@ test('settings, header indicator, and tool rows follow the DSH locale dictionari
     removeEventListener() {},
   }
   const document = {
+    documentElement: { style: {} },
     getElementById: () => ({ remove() {} }),
     addEventListener() {},
     removeEventListener() {},
@@ -263,7 +264,7 @@ test('settings, header indicator, and tool rows follow the DSH locale dictionari
         return () => { entry.active = false }
       },
     },
-    inject: (_services, callback) => callback(ctx),
+    inject: (services, callback) => services.includes('sessions') ? undefined : callback(ctx),
     uiSession: {},
     uiConversation: {
       events: {
@@ -390,7 +391,15 @@ test('settings, header indicator, and tool rows follow the DSH locale dictionari
   settingsSnapshot = {
     status: 'ready', writable: true, value: { enabled: true, userBindingsEnabled: true },
   }
-  const workbench = findComponent(card.component({ t: key => key }), 'UserBindingsWorkbench')
+  assert.equal(findComponent(card.component({ t: key => key }), 'UserBindingsWorkbench'), undefined)
+  const beforeDialogState = React.useState
+  const beforeDialogEffect = React.useEffect
+  React.useState = initial => [typeof initial === 'boolean' ? true : typeof initial === 'function' ? initial() : initial, () => {}]
+  React.useEffect = () => {}
+  const dialog = findComponent(card.component({ t: key => key }), 'BindingsDialog')
+  const workbench = findComponent(dialog.type(dialog.props), 'UserBindingsWorkbench')
+  React.useState = beforeDialogState
+  React.useEffect = beforeDialogEffect
   assert.notEqual(workbench, undefined)
   const workbenchState = []
   const workbenchRefs = []
@@ -447,7 +456,7 @@ test('settings, header indicator, and tool rows follow the DSH locale dictionari
         { id: 'disabled', name: 'Disabled entry', scope: 'namespace', symbols: ['disabled'], enabled: false },
       ],
     },
-    null, '', '', '', '[]', '', null, false,
+    null, '', '', null, false, false, 0, null, false, '', false,
   ]
   let toggleStateCursor = 0
   React.useState = () => [toggleState[toggleStateCursor++], () => {}]
@@ -460,8 +469,8 @@ test('settings, header indicator, and tool rows follow the DSH locale dictionari
   const toggleTexts = collectTexts(toggleWorkbench)
   assert.ok(toggleTexts.includes('bindings.disableAction'))
   assert.ok(toggleTexts.includes('bindings.enableAction'))
-  assert.ok(toggleTexts.includes('bindings.stateEnabled: bindings.disableAction'))
-  assert.ok(toggleTexts.includes('bindings.stateDisabled: bindings.enableAction'))
+  assert.ok(toggleTexts.includes('Enabled entry: bindings.enabled'))
+  assert.ok(toggleTexts.includes('Disabled entry: bindings.enabled'))
 
   const keys = collectTexts(card.component({ t: key => `[[${key}]]` }))
   assert.ok(keys.includes('[[card.description]]'))
@@ -1061,6 +1070,7 @@ test('renders authoring and memory surfaces when new UI primitives are absent', 
     removeEventListener() {},
   }
   const document = {
+    documentElement: { style: {} },
     getElementById: () => ({ remove() {} }),
     addEventListener() {},
     removeEventListener() {},
@@ -1141,7 +1151,7 @@ test('renders authoring and memory surfaces when new UI primitives are absent', 
         return () => {}
       },
     },
-    inject: (_services, callback) => callback(ctx),
+    inject: (services, callback) => services.includes('sessions') ? undefined : callback(ctx),
     uiSession: {},
     uiConversation: { events: { register: () => () => {} } },
     locale: {

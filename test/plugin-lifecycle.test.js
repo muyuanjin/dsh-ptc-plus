@@ -21,6 +21,247 @@ test('disposes a kernel with its owning agent session', async (t) => {
   })
 })
 
+test('missing, stale, and malformed value observations cannot change a settled cell', async t => {
+  const runtime = new SessionRuntime({}, { observeSession: () => true })
+  t.after(() => runtime.dispose())
+  await runtime.run('observation-lifecycle', { program: 'let value = 1', bindings: [] })
+  const kernel = runtime.kernels.get('observation-lifecycle')
+  const onMessage = kernel.cellExecutor.onMessage.bind(kernel.cellExecutor)
+  let mode = 'missing'
+  kernel.cellExecutor.onMessage = message => {
+    if (message?.type === 'observation') {
+      onMessage({ ...message, id: message.id + 1000 })
+      if (mode === 'missing') return
+      if (mode === 'malformed') return onMessage({ ...message, observation: {} })
+    }
+    onMessage(message)
+  }
+  const missing = await runtime.runTentative('observation-lifecycle', { program: 'value += 1; return value', bindings: [] })
+  assert.equal(missing.result.value, 2)
+  assert.equal(missing.settlement.journal.status, 'durable')
+  assert.equal(missing.settlement.replMemory.observation, undefined)
+  runtime.finalize(missing.settlement, true)
+  mode = 'malformed'
+  const malformed = await runtime.runTentative('observation-lifecycle', { program: 'value += 1; return value', bindings: [] })
+  assert.equal(malformed.result.value, 3)
+  assert.equal(malformed.settlement.journal.status, 'durable')
+  assert.equal(malformed.settlement.replMemory.observation, undefined)
+  runtime.finalize(malformed.settlement, true)
+  mode = 'valid'
+  const valid = await runtime.runTentative('observation-lifecycle', { program: 'return value', bindings: [] })
+  assert.equal(valid.settlement.replMemory.observation.entries[0].text, '3')
+  runtime.finalize(valid.settlement, true)
+  onMessage({ type: 'observation', id: -1, observation: {} })
+})
+
+test('waits for worker readiness outside execution budgets after an observation timeout', async t => {
+  const runtime = new SessionRuntime({}, { observeSession: () => true })
+  t.after(() => runtime.dispose())
+  const session = 'observation-readiness'
+  await runtime.run(session, { program: 'let answer = 1', bindings: [] })
+  const kernel = runtime.kernels.get(session)
+  const worker = kernel.client.worker
+  const onMessage = kernel.cellExecutor.onMessage.bind(kernel.cellExecutor)
+  kernel.cellExecutor.onMessage = message => {
+    if (message.type !== 'observation') onMessage(message)
+  }
+  const timedOut = await runtime.runTentative(session, { program: 'answer += 1; return answer', bindings: [] })
+  assert.equal(timedOut.result.value, 2)
+  assert.equal(timedOut.settlement.replMemory.observation, undefined)
+  runtime.finalize(timedOut.settlement, true)
+  runtime.reconfigure({ computeMs: 100, maxWallMs: 100 })
+  const posted = Promise.withResolvers()
+  const post = kernel.client.post.bind(kernel.client)
+  kernel.client.post = message => { posted.resolve(message) }
+  let settled = false
+  const pending = runtime.run(session, { program: 'return answer + 1', bindings: [] })
+    .then(result => { settled = true; return result })
+  const held = await posted.promise
+  assert.equal(kernel.active.computeTimer, undefined)
+  assert.equal(kernel.active.wallTimer, undefined)
+  onMessage({ type: 'ready', id: held.id - 1 })
+  await new Promise(resolve => setTimeout(resolve, 150))
+  assert.equal(settled, false)
+  assert.equal(kernel.client.worker, worker)
+  let runs = 0
+  kernel.client.post = message => {
+    if (message.type === 'run') runs++
+    return post(message)
+  }
+  kernel.cellExecutor.onMessage = message => {
+    onMessage(message)
+    if (message.type === 'ready') onMessage(message)
+  }
+  post(held)
+  assert.deepEqual(await pending, { logs: [], value: 3 })
+  assert.equal(runs, 1)
+  assert.equal(kernel.client.worker, worker)
+  onMessage({ type: 'ready', id: held.id })
+  onMessage({ type: 'ready' })
+})
+
+test('background callbacks cannot disable readiness timeout recovery', async t => {
+  for (const [observe, computeMs, maxWallMs, message] of [
+    [false, 100, 2000, /compute budget exhausted/],
+    [true, 2000, 100, /wall-clock ceiling/],
+  ]) {
+    await t.test(observe ? 'after completed observation' : 'without observation', async t => {
+      const runtime = new SessionRuntime({}, { observeSession: () => observe })
+      t.after(() => runtime.dispose())
+      const session = 'background-block'
+      const first = await runtime.run(session, {
+        program: 'let value = 1; setTimeout(() => { while (true) {} }, 20); return value', bindings: [],
+      })
+      assert.equal(first.value, 1)
+      const kernel = runtime.kernels.get(session)
+      const worker = kernel.client.worker
+      await new Promise(resolve => setTimeout(resolve, 80))
+      runtime.reconfigure({ computeMs, maxWallMs })
+      const next = await runtime.runTentative(session, {
+        program: 'return 2', bindings: [], signal: AbortSignal.timeout(3000),
+      })
+      assert.equal(next.result.error.kind, 'timeout')
+      assert.match(next.result.error.message, message)
+      assert.equal(next.settlement.journal.status, 'discarded')
+      assert.equal(kernel.client.worker, undefined)
+      runtime.finalize(next.settlement, true)
+      assert.equal((await runtime.run(session, { program: 'return 3', bindings: [] })).value, 3)
+      assert.notEqual(kernel.client.worker, worker)
+    })
+  }
+})
+
+test('late observation completion restores budgets even when ready never arrives', async t => {
+  const runtime = new SessionRuntime({}, { observeSession: () => true })
+  t.after(() => runtime.dispose())
+  const session = 'observation-then-blocked'
+  await runtime.run(session, { program: 'let value = 1', bindings: [] })
+  const kernel = runtime.kernels.get(session)
+  const onMessage = kernel.cellExecutor.onMessage.bind(kernel.cellExecutor)
+  let observation
+  kernel.cellExecutor.onMessage = message => {
+    if (message.type === 'observation') observation = message
+    else onMessage(message)
+  }
+  await runtime.run(session, { program: 'value += 1', bindings: [] })
+  runtime.reconfigure({ computeMs: 2000, maxWallMs: 100 })
+  const posted = Promise.withResolvers()
+  kernel.client.post = message => posted.resolve(message)
+  const pending = runtime.run(session, {
+    program: 'return value', bindings: [], signal: AbortSignal.timeout(3000),
+  })
+  const prepare = await posted.promise
+  assert.equal(prepare.type, 'prepare')
+  onMessage({ ...observation, id: -1 })
+  await new Promise(resolve => setTimeout(resolve, 150))
+  assert.equal(kernel.active.wallTimer, undefined)
+  onMessage(observation)
+  assert.notEqual(kernel.active.wallTimer, undefined)
+  assert.equal(kernel.workerObservation, undefined)
+  const timer = kernel.active.wallTimer
+  onMessage(observation)
+  assert.equal(kernel.active.wallTimer, timer)
+  assert.equal((await pending).error.kind, 'timeout')
+})
+
+test('waiting for worker readiness remains cancellable and handles disposal and failure', async t => {
+  for (const action of ['abort', 'dispose', 'failure']) {
+    await t.test(action, async t => {
+      const runtime = new SessionRuntime()
+      t.after(() => runtime.dispose())
+      await runtime.run(action, { program: 'let answer = 1', bindings: [] })
+      const kernel = runtime.kernels.get(action)
+      const worker = kernel.client.worker
+      const post = kernel.client.post.bind(kernel.client)
+      const posted = Promise.withResolvers()
+      const messages = []
+      kernel.client.post = message => {
+        messages.push(message)
+        posted.resolve(message)
+      }
+      const controller = new AbortController()
+      const pending = runtime.runTentative(action, {
+        program: 'answer += 1; return answer', bindings: [], signal: controller.signal,
+      })
+      const held = await posted.promise
+      assert.equal(held.type, 'prepare')
+      assert.notEqual(kernel.active.computeTimer, undefined)
+      assert.notEqual(kernel.active.wallTimer, undefined)
+      if (action === 'abort') controller.abort('cancel waiting cell')
+      else if (action === 'dispose') await runtime.dispose()
+      else await worker.terminate()
+      const completed = await pending
+      assert.equal(completed.result.error.kind, action === 'failure' ? 'worker-exit' : 'abort')
+      assert.equal(completed.settlement.journal.status, 'discarded')
+      assert.equal(kernel.active, undefined)
+      assert.equal(kernel.client.worker, undefined)
+      kernel.cellExecutor.onMessage({ type: 'ready', id: held.id })
+      assert.deepEqual(messages, [held])
+      kernel.client.post = post
+      runtime.finalize(completed.settlement, true)
+      if (action !== 'dispose') {
+        const next = await runtime.run(action, { program: 'return answer', bindings: [] })
+        assert.equal(next.error, undefined)
+        assert.equal(next.value, 1)
+        assert.notEqual(kernel.client.worker, worker)
+      }
+    })
+  }
+})
+
+test('omitted long binding names do not suppress visible previews across cells', async t => {
+  const runtime = new SessionRuntime({}, { observeSession: () => true })
+  t.after(() => runtime.dispose())
+  const session = 'long-observation-name'
+  const longName = 'x'.repeat(129)
+  await runtime.run(session, { program: 'let answer = 42', bindings: [] })
+  const worker = runtime.kernels.get(session).client.worker
+  for (const [program, result, preview] of [
+    [`let ${longName} = 7; return answer`, 42, '42'],
+    ['answer += 1; return answer', 43, '43'],
+    [`return ${longName}`, 7, '43'],
+  ]) {
+    const observed = await runtime.runTentative(session, { program, bindings: [] })
+    assert.equal(observed.result.error, undefined)
+    assert.equal(observed.result.value, result)
+    assert.deepEqual(observed.settlement.replMemory.entries.map(entry => entry.name), ['answer'])
+    assert.deepEqual(observed.settlement.replMemory.observation?.entries, [
+      { name: 'answer', status: 'readable', text: preview, truncated: false },
+    ])
+    runtime.finalize(observed.settlement, true)
+    assert.equal(runtime.kernels.get(session).client.worker, worker)
+  }
+})
+
+test('observation requests respect inventory entry and definition-source budgets', async t => {
+  const runtime = new SessionRuntime({}, { observeSession: () => true })
+  t.after(() => runtime.dispose())
+  const declarations = Array.from({ length: 160 }, (_, index) => `value${index} = ${index}`)
+  for (const [session, program, expectedCount] of [
+    ['observation-source-budget', `let ${declarations.join(', ')}`, 16],
+    ['observation-entry-budget', declarations.map(declaration => `let ${declaration}`).join('\n'), 128],
+  ]) {
+    await runtime.run(session, { program: '0', bindings: [] })
+    const kernel = runtime.kernels.get(session)
+    const post = kernel.client.post.bind(kernel.client)
+    const requests = []
+    kernel.client.post = message => {
+      if (message.type === 'run') requests.push(message.observeNames)
+      return post(message)
+    }
+    const observed = await runtime.runTentative(session, { program, bindings: [] })
+    assert.equal(observed.result.error, undefined)
+    const memory = observed.settlement.replMemory
+    assert.equal(memory.entries.length, expectedCount)
+    assert.equal(memory.total, 160)
+    assert.equal(memory.omitted, 160 - expectedCount)
+    const names = memory.entries.map(entry => entry.name)
+    assert.deepEqual(requests, [names])
+    assert.deepEqual(memory.observation?.entries.map(entry => entry.name), names)
+    runtime.finalize(observed.settlement, true)
+  }
+})
+
 test('does not reset the binding draft projection for an Agent with no owned draft', async (t) => {
   const state = fixture()
   t.after(() => state.dispose())
@@ -72,6 +313,8 @@ test('exports a Cordis config schema with validated runtime defaults', async () 
     value: {
       enabled: true,
       enhancedToolView: true,
+      replViewEnabled: true,
+      bindingAuthorButtonVisible: true,
       canonicalizeToolCalls: true,
       autoDescribeRunCode: true,
       looseTopLevelRedeclarations: true,

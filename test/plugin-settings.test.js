@@ -570,13 +570,20 @@ test('plugin disable clears committed declarations and re-enable reconciles curr
   assert.deepEqual(await step(), [{ form: 'snapshot', sections: [] }])
 })
 
-test('degrades an incompatible session projection without disabling the runtime', async () => {
+test('degrades an incompatible session projection and releases its callable injection', async () => {
   const scope = settingsScope({ enabled: true })
   const host = hostContext(
     settingsContext(scope),
     [],
     { invalidProjectionDisposer: true },
   )
+  const injectService = host.ctx.inject.bind(host.ctx)
+  host.ctx.inject = (services, callback) => {
+    const injection = injectService(services, callback)
+    return services.length === 1 && services[0] === 'sessionProjections'
+      ? () => injection.dispose()
+      : injection
+  }
   assert.doesNotThrow(() => apply(host.ctx))
   await new Promise(resolve => setImmediate(resolve))
   assert.equal(scope.get().enabled, true)
@@ -853,7 +860,7 @@ test('late settings mount reconciles and detaches against composition config', a
   const { ctx, listeners, sections, cleanups, runtime } = hostContext()
   let injectSettings
   ctx.inject = (services, callback) => {
-    if (services.length === 1 && services[0] === 'sessionProjections') return
+    if (services.length === 1 && ['sessionProjections', 'connection'].includes(services[0])) return
     assert.deepEqual(services, ['settings'])
     injectSettings = callback
   }
@@ -882,7 +889,7 @@ test('late settings hydration applies persisted non-enabled configuration', asyn
   const { ctx, cleanups } = hostContext(undefined, [agent])
   let injectSettings
   ctx.inject = (services, callback) => {
-    if (services.length === 1 && services[0] === 'sessionProjections') return
+    if (services.length === 1 && ['sessionProjections', 'connection'].includes(services[0])) return
     injectSettings = callback
   }
   apply(ctx)
@@ -1576,6 +1583,8 @@ test('config schema defaults expose the settings switches', async () => {
   const expectedOrder = [
     'enabled',
     'enhancedToolView',
+    'replViewEnabled',
+    'bindingAuthorButtonVisible',
     'autoDescribeRunCode',
     'canonicalizeToolCalls',
     'cordisToolsEnabled',
@@ -1611,7 +1620,7 @@ test('config schema defaults expose the settings switches', async () => {
     .filter(field => field.key !== 'enabled')
   assert.deepEqual(
     featuredSwitches.map(field => field.key),
-    ['enhancedToolView', 'autoDescribeRunCode', 'canonicalizeToolCalls'],
+    ['enhancedToolView', 'replViewEnabled', 'bindingAuthorButtonVisible', 'autoDescribeRunCode', 'canonicalizeToolCalls'],
   )
   const defaults = await Config['~standard'].validate({})
   assert.equal(inject.includes('commands'), false)

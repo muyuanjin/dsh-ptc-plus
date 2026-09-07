@@ -14,6 +14,11 @@ class FakePort extends EventEmitter {
   }
 
   postMessage(message) {
+    if (message.type === 'prepare') {
+      if (this.behavior === 'prepare-post-error') throw new Error('private port rejected prepare message')
+      queueMicrotask(() => this.emit('message', { type: 'ready', id: message.id }))
+      return
+    }
     if (message.type === 'run') {
       if (this.behavior === 'post-error') throw new Error('private port rejected run message')
       this.runId = message.id
@@ -134,12 +139,14 @@ test('fails closed for every worker startup and private-protocol fault', async (
     await runtime.dispose()
   }
 
-  behaviors.push('post-error')
-  const postError = new SessionRuntime()
-  const postErrorResult = await postError.run('post-error', { program: 'return 1', bindings: [] })
-  assert.equal(postErrorResult.error.kind, 'worker-exit')
-  assert.match(postErrorResult.error.message, /private port rejected run message/)
-  await postError.dispose()
+  for (const [behavior, type] of [['post-error', 'run'], ['prepare-post-error', 'prepare']]) {
+    behaviors.push(behavior)
+    const postError = new SessionRuntime()
+    const postErrorResult = await postError.run(behavior, { program: 'return 1', bindings: [] })
+    assert.equal(postErrorResult.error.kind, 'worker-exit')
+    assert.match(postErrorResult.error.message, new RegExp(`private port rejected ${type} message`))
+    await postError.dispose()
+  }
 
   behaviors.push('oversized-completion')
   const oversized = new SessionRuntime({ maxOutputBytes: 8 })

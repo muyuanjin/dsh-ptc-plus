@@ -1,5 +1,7 @@
 import { CONFIG_FIELDS, CONFIG_GROUPS, SETTINGS_NAMESPACE } from '../internal/config-spec.js'
 import { derivePtcToolView } from './client-activity.js'
+import { createTypeScriptEditor } from './client-code-editor.js'
+import { createBindingConsole } from './client-console.js'
 import {
   normalizeReplMemorySnapshot,
   unavailableReplMemorySnapshot,
@@ -52,12 +54,67 @@ const BINDING_WORKBENCH_CSS = `
 
 `
 
+const REPL_CONSOLE_CSS = `
+.ptcPlusConsole{box-sizing:border-box;flex:1;min-width:0;min-height:0;width:100%;height:100%;overflow:auto;padding:20px 24px;color:var(--dsw-alias-label-primary);container-type:inline-size}
+.ptcPlusConsoleSection{min-width:0}.ptcPlusConsoleSection+.ptcPlusConsoleSection{margin-top:22px;padding-top:20px;border-top:1px solid var(--dsw-alias-border-l2)}
+.ptcPlusObservationHead,.ptcPlusObservationTitle{display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px}.ptcPlusObservationHead{justify-content:space-between;margin-bottom:14px}
+.ptcPlusObservationTitle h2{margin:0;font-size:15px;font-weight:600;line-height:22px}.ptcPlusObservationCount{font-size:13px;color:var(--dsw-alias-label-tertiary)}.ptcPlusObservationTime{font-size:11px;line-height:18px;color:var(--dsw-alias-label-tertiary)}
+.ptcPlusObservationGrid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:24px}.ptcPlusObservationCatalog{min-width:0}
+.ptcPlusObservationFilters{display:flex;gap:10px;align-items:center;margin-bottom:8px}.ptcPlusObservationFilters>.ptcPlusSelect{width:120px;height:32px;flex:none;font-size:12px}
+.ptcPlusSearch{display:flex;align-items:center;gap:8px;box-sizing:border-box;min-width:0;flex:1;height:32px;padding:0 10px;border:1px solid var(--dsw-alias-border-l2);border-radius:6px;color:var(--dsw-alias-label-tertiary)}
+.ptcPlusSearch>svg{flex:none}.ptcPlusSearch input{min-width:0;width:100%;height:100%;padding:0;border:0;outline:none;background:transparent;color:var(--dsw-alias-label-primary);font:12px/20px inherit}.ptcPlusSearch:focus-within{outline:2px solid var(--dsw-alias-interactive-primary,#4d6bfe);outline-offset:1px}
+.ptcPlusObservations{height:256px;overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable;min-width:0;border:1px solid var(--dsw-alias-border-l2);border-radius:6px}
+.ptcPlusObservationTable{width:100%;table-layout:fixed;border-collapse:separate;border-spacing:0;font-size:12px;text-align:left}.ptcPlusObservationTable th{position:sticky;top:0;z-index:1;height:32px;padding:0 10px;background:var(--dsw-alias-bg-layer-3);color:var(--dsw-alias-label-tertiary);font-weight:500;border-bottom:1px solid var(--dsw-alias-border-l2)}
+.ptcPlusObservationTable th:first-child{width:34%}.ptcPlusObservationTable th:nth-child(2){width:16%}.ptcPlusObservationTable td{height:34px;padding:0 10px;border-bottom:1px solid var(--dsw-alias-border-l2);overflow:hidden}.ptcPlusObservationTable tr:last-child td{border-bottom:0}.ptcPlusObservationTable tbody tr{cursor:pointer}.ptcPlusObservationTable tbody tr:hover{background:var(--dsw-alias-interactive-bg-hover)}.ptcPlusObservationTable tr[data-selected=true]{background:color-mix(in srgb,var(--dsw-alias-interactive-primary,#4d6bfe) 7%,transparent)}
+.ptcPlusObservationSelect{display:block;width:100%;min-width:0;height:34px;padding:0;border:0;background:transparent;color:inherit;cursor:pointer;text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:12px/20px ui-monospace,SFMono-Regular,Consolas,monospace}.ptcPlusObservationKind{color:var(--dsw-alias-label-tertiary);white-space:nowrap}
+.ptcPlusObservationValue{display:flex;min-width:0;align-items:center;gap:6px}.ptcPlusObservationValue code{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:11px/18px ui-monospace,SFMono-Regular,Consolas,monospace}.ptcPlusObservationState{color:var(--dsw-alias-label-tertiary);font-size:11px;line-height:18px}.ptcPlusObservationValue .ptcPlusObservationState{flex:none}.ptcPlusObservationEmpty{padding:12px}
+.ptcPlusBindingInspector{box-sizing:border-box;min-width:0;max-height:296px;overflow:auto;padding-left:24px;border-left:1px solid var(--dsw-alias-border-l2)}
+.ptcPlusInspectorHead{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:6px 12px;margin:0 0 12px}.ptcPlusInspectorHead strong{min-width:0;overflow-wrap:anywhere;font:600 13px/20px ui-monospace,SFMono-Regular,Consolas,monospace}.ptcPlusInspectorHead span{font-size:11px;color:var(--dsw-alias-label-tertiary)}
+.ptcPlusObservationLabel{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:12px 0 6px;font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary)}
+.ptcPlusObservationCode{max-height:184px;margin:0;overflow:auto;border-radius:6px;font:12px/20px ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere}.ptcPlusObservationPreview{margin:0;padding:10px 12px;border:1px solid var(--dsw-alias-border-l2);border-radius:6px;white-space:pre-wrap;overflow-wrap:anywhere;font:12px/20px ui-monospace,SFMono-Regular,Consolas,monospace}.ptcPlusObservationUnavailable{margin:0;color:var(--dsw-alias-label-tertiary);font-size:12px}
+.ptcPlusBindingsSurface{min-width:0;container-type:inline-size}.ptcPlusBindingsSurface .ptcPlusBindings{margin:0;padding:0;border:0}.ptcPlusBindingsSurface .ptcPlusBindingsGrid{grid-template-columns:220px minmax(0,1fr);gap:20px;margin-top:12px}.ptcPlusBindingsSurface .ptcPlusBindingsTitle{font-size:15px;line-height:22px}
+.ptcPlusBindingPane{min-width:0}.ptcPlusBindingPane>.ptcPlusSearch{flex:none;margin-bottom:2px}.ptcPlusBindingsSurface .ptcPlusBindingsHead{flex-direction:row;flex-wrap:wrap;align-items:center;gap:8px}.ptcPlusBindingsSurface .ptcPlusBindingList{max-height:350px;overflow:auto;gap:0;padding:0;border:0;border-radius:0;background:transparent}.ptcPlusBindingsSurface .ptcPlusBindingItem{min-height:52px;padding:8px;border-radius:4px;box-sizing:border-box;border-bottom:1px solid var(--dsw-alias-border-l2)}.ptcPlusBindingsSurface .ptcPlusBindingItem[data-selected=true]{background:color-mix(in srgb,var(--dsw-alias-interactive-primary,#4d6bfe) 7%,transparent)}
+.ptcPlusBindingsSurface .ptcPlusBindingName{font-size:12px;font-weight:500;white-space:normal;overflow-wrap:anywhere}.ptcPlusBindingsSurface .ptcPlusBindingMeta{font-size:11px;line-height:16px}.ptcPlusBindingsSurface .ptcPlusBindingEditor{border:0;border-radius:0;background:transparent;overflow:visible}
+.ptcPlusBindingSwitch{appearance:none;position:relative;align-self:center;flex:none;width:30px;height:18px;padding:2px;border:0;border-radius:9px;background:var(--dsw-alias-label-dimmed,#a5a7ad);cursor:pointer}.ptcPlusBindingSwitch span{display:block;width:14px;height:14px;border-radius:50%;background:#fff;box-shadow:0 1px 2px #0002;transition:transform .15s ease}.ptcPlusBindingSwitch[aria-checked=true]{background:var(--dsw-alias-interactive-primary,#4d6bfe)}.ptcPlusBindingSwitch[aria-checked=true] span{transform:translateX(12px)}.ptcPlusBindingSwitch:disabled{cursor:not-allowed;opacity:.5}
+.ptcPlusEditorHead{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px 12px;min-height:32px;margin-bottom:8px}.ptcPlusEditorFile{min-width:0;overflow-wrap:anywhere;font:600 13px/20px ui-monospace,SFMono-Regular,Consolas,monospace}.ptcPlusBindingLifecycle{gap:6px}
+.ptcPlusIconButton{display:inline-flex;align-items:center;justify-content:center;flex:none;box-sizing:border-box;width:30px;height:30px;padding:0;border:1px solid var(--dsw-alias-border-l2);border-radius:6px;background:transparent;color:var(--dsw-alias-label-secondary);cursor:pointer}.ptcPlusIconButton:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}.ptcPlusIconButton[data-kind=danger]:hover{color:var(--dsw-alias-state-error-primary)}.ptcPlusIconButton:disabled{opacity:.4;cursor:not-allowed}
+.ptcPlusCodeEditor{min-width:0;overflow:hidden;border:1px solid var(--dsw-alias-border-l2);border-radius:6px;--ptc-code-keyword:color-mix(in srgb,#a13d96 75%,var(--dsw-alias-label-primary));--ptc-code-string:color-mix(in srgb,#af643c 75%,var(--dsw-alias-label-primary));--ptc-code-number:color-mix(in srgb,#477ac2 75%,var(--dsw-alias-label-primary));--ptc-code-type:color-mix(in srgb,#258579 75%,var(--dsw-alias-label-primary));--ptc-code-function:color-mix(in srgb,#825bbe 75%,var(--dsw-alias-label-primary))}.ptcPlusCodeEditor:focus-within{border-color:var(--dsw-alias-interactive-primary,#4d6bfe)}.ptcPlusCodeEditor .cm-editor{height:336px}.ptcPlusCodeEditor .cm-scroller{min-height:0}.ptcPlusCodeEditor .cm-line{overflow-wrap:anywhere}
+.ptcPlusBindingsSurface .ptcPlusBindingSection{display:block;padding:0;margin-top:0;border:0;border-bottom:1px solid var(--dsw-alias-border-l2)}.ptcPlusBindingSection>summary,.ptcPlusBindingsSurface .ptcPlusBindingDebugSummary{padding:11px 0;cursor:pointer;font-size:12px;font-weight:500;color:var(--dsw-alias-label-secondary)}.ptcPlusEntrySettings .ptcPlusBindingFields{padding:0 0 14px}.ptcPlusBindingsSurface .ptcPlusBindingSourcePreview{display:block}.ptcPlusBindingSourcePreview>.ptcPlusCodeBlock{margin-bottom:12px}.ptcPlusBindingsSurface .ptcPlusBindingDebug{display:block;padding:0;border-top:0}.ptcPlusBindingsSurface .ptcPlusBindingDebugBody{grid-template-columns:minmax(0,1fr) minmax(0,1fr);padding-bottom:12px}
+.ptcPlusBindingsSurface .ptcPlusBindingRun{gap:6px;margin-top:10px}.ptcPlusBindingsSurface .ptcPlusBindingRun .ptcPlusInput{flex-basis:100%;min-width:0;width:100%;height:32px;font-size:12px}.ptcPlusBindingsSurface .ptcPlusMessage[role=status]{grid-column:1/-1;margin:0}
+.ptcPlusSessionEmpty{box-sizing:border-box;width:100%;padding:16px 18px;border:1px dashed var(--dsw-alias-border-l2);border-radius:6px;color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:20px}.ptcPlusObservationGrid[data-empty=true]{grid-template-columns:minmax(0,1fr)}.ptcPlusObservationGrid[data-empty=true] .ptcPlusObservations{height:auto;min-height:94px}
+.ptcPlusSourceSection{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:0 12px;border-bottom:1px solid var(--dsw-alias-border-l2)}.ptcPlusSourceToggle{display:flex;min-width:0;align-items:center;gap:6px;padding:12px 0;border:0;background:transparent;color:var(--dsw-alias-label-secondary);text-align:left;cursor:pointer;font:500 12px/20px inherit}.ptcPlusSourceToggle svg{flex:none}.ptcPlusSourceFilename{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dsw-alias-label-tertiary);font:11px/20px ui-monospace,SFMono-Regular,Consolas,monospace}.ptcPlusSourceActions{display:flex;flex-wrap:wrap;gap:6px;padding:6px 0}.ptcPlusSourceBody{grid-column:1/-1;min-width:0;margin-bottom:12px}.ptcPlusSourceCode{max-height:336px;overflow:auto;margin:0;border-radius:6px;font:12px/20px ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere}
+.ptcPlusWorkbenchFeedback{min-height:22px;padding:4px 0;color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px;overflow-wrap:anywhere}.ptcPlusBindings[aria-busy=true] button:disabled,.ptcPlusBindings[aria-busy=true] input:disabled{opacity:1}.ptcPlusBindings[aria-busy=true] button:disabled{cursor:wait}
+.ptcPlusExecution{min-width:0;margin:0 0 12px;border:1px solid var(--dsw-alias-border-l2);border-radius:6px;overflow:hidden;background:var(--dsw-alias-bg-layer-3)}.ptcPlusExecution>summary{padding:10px 12px;cursor:pointer;font-size:12px;font-weight:500;line-height:20px;color:var(--dsw-alias-label-secondary)}.ptcPlusExecutionToolbar{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:8px 12px;border-top:1px solid var(--dsw-alias-border-l2);border-bottom:1px solid var(--dsw-alias-border-l2)}.ptcPlusExecutionLanguage{font:11px/18px ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--dsw-alias-label-secondary)}.ptcPlusExecutionState{font-size:11px;line-height:18px;color:var(--dsw-alias-label-tertiary)}.ptcPlusExecutionActions{display:flex;align-items:center;gap:6px;margin-left:auto}.ptcPlusExecutionActions .ptcPlusButton{min-width:68px;min-height:30px;padding:3px 10px;font-size:12px}
+.ptcPlusExecutionHistory{min-height:48px;max-height:320px;overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable}.ptcPlusExecutionHistory:empty{min-height:0}.ptcPlusExecutionRecord{min-width:0;padding:10px 12px;border-bottom:1px solid var(--dsw-alias-border-l2)}.ptcPlusExecutionCommand,.ptcPlusExecutionOutput{margin:0;white-space:pre-wrap;overflow-wrap:anywhere;font:12px/20px ui-monospace,SFMono-Regular,Consolas,monospace}.ptcPlusExecutionCommand{color:var(--dsw-alias-label-secondary)}.ptcPlusExecutionCommand>span{color:var(--dsw-alias-label-tertiary)}.ptcPlusExecutionResult{flex-direction:row;gap:12px;margin-top:8px;padding:12px 16px}.ptcPlusExecutionOutputLabel{flex:none;color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:20px}.ptcPlusExecutionOutput{flex:1;min-width:0;max-height:240px;overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable;color:var(--dsw-alias-label-secondary)}.ptcPlusExecutionOutput:focus-visible{outline:2px solid var(--dsw-alias-interactive-primary);outline-offset:-2px}.ptcPlusExecutionOutput[data-error=true]{color:var(--dsw-alias-state-error-primary)}.ptcPlusExecutionDuration{display:block;margin-top:4px;color:var(--dsw-alias-label-tertiary);font-size:10px;line-height:16px}.ptcPlusExecutionInput .ptcPlusCodeEditor{border:0;border-radius:0}.ptcPlusExecutionInput .cm-editor{height:108px}.ptcPlusExecutionInput .cm-content{min-height:88px}
+@container(max-width:460px){.ptcPlusSourceSection{grid-template-columns:minmax(0,1fr)}.ptcPlusSourceToggle{padding-bottom:6px}.ptcPlusSourceActions{justify-content:flex-end}.ptcPlusExecutionToolbar{gap:6px;padding:8px}.ptcPlusExecutionActions{gap:4px}.ptcPlusSourceFilename{display:none}}
+.ptcPlusBindingsModal.ptcPlusBindingsModal{width:min(1200px,calc(100vw - 32px));max-width:none;max-height:calc(100dvh - 40px);border-radius:8px}.ptcPlusBindingsDialog{box-sizing:border-box;max-height:calc(100dvh - 40px);overflow:auto;padding:24px}.ptcPlusBindingsDialogHead{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:16px}.ptcPlusBindingsDialogHead h2{margin:0;font-size:17px;line-height:24px}.ptcPlusDialogClose{display:flex;flex:none;align-items:center;justify-content:center;width:32px;height:32px;padding:0;border:0;border-radius:4px;background:transparent;color:inherit;cursor:pointer}.ptcPlusDialogClose:hover{background:var(--dsw-alias-interactive-bg-hover)}.ptcPlusConsole button:focus-visible,.ptcPlusBindingsDialog button:focus-visible{outline:2px solid var(--dsw-alias-interactive-primary);outline-offset:-2px}
+@container(max-width:780px){.ptcPlusObservationGrid{grid-template-columns:minmax(0,1fr);gap:16px}.ptcPlusBindingInspector{max-height:none;padding:12px 0 0;border-left:0;border-top:1px solid var(--dsw-alias-border-l2)}.ptcPlusObservations{height:200px}.ptcPlusBindingsSurface .ptcPlusBindingsGrid{grid-template-columns:minmax(0,1fr);gap:18px}.ptcPlusBindingsSurface .ptcPlusBindingList{max-height:180px}.ptcPlusBindingsSurface .ptcPlusBindingFields,.ptcPlusBindingsSurface .ptcPlusBindingDebugBody{grid-template-columns:minmax(0,1fr)}.ptcPlusObservationTable th:first-child{width:35%}.ptcPlusObservationTable th:nth-child(2){width:64px}}
+@media(max-width:560px){.ptcPlusConsole{padding:14px 12px}.ptcPlusBindingsModal.ptcPlusBindingsModal{width:calc(100vw - 16px);max-height:calc(100dvh - 16px)}.ptcPlusBindingsDialog{padding:16px;max-height:calc(100dvh - 16px)}.ptcPlusObservationFilters>.ptcPlusSelect{width:105px}.ptcPlusObservationTable th,.ptcPlusObservationTable td{padding:0 6px}.ptcPlusObservationValue{gap:3px}.ptcPlusObservationState{font-size:10px}.ptcPlusEditorHead{align-items:flex-start}.ptcPlusEditorHead>.ptcPlusBindingLifecycle{margin-left:auto}.ptcPlusSourceBody .cm-editor{height:300px}}
+`
+
 /** Locale namespace owning every settings-card string (field copy plus chrome). */
 const LOCALE_NS = 'settings.ptcPlus'
 
 /** Card chrome copy; field labels and hints ride the shared config spec. */
 const CHROME_COPY = Object.freeze({
   zh: Object.freeze({
+    'console.session': '会话绑定',
+    'console.global': '全局绑定',
+    'console.definition': '定义',
+    'console.name': '名称',
+    'console.kind': '类型',
+    'console.search': '搜索绑定名称',
+    'console.allKinds': '全部类型',
+    'console.noMatches': '没有匹配的绑定',
+    'bindings.search': '搜索全局条目',
+    'console.value': '值预览',
+    'console.observed': '结算后观察：{time}',
+    'console.unobserved': '尚无值观察记录',
+    'console.unreadable': '不可读取',
+    'console.bounded': '已截断',
+    'bindings.manage': '管理全局绑定',
+    'bindings.entry': '条目配置',
+    'bindings.close': '关闭全局绑定工作台',
     'card.description': 'PTC 模式的会话级 TypeScript REPL。',
     'status.enabled': '已启用',
     'status.disabled': '已停用',
@@ -83,10 +140,14 @@ const CHROME_COPY = Object.freeze({
     'bindings.symbolsPlaceholder': '逗号分隔；留空则从源码推导',
     'bindings.purpose': '用途',
     'bindings.source': 'TypeScript 源码',
-    'bindings.sourcePreview': '源码预览',
-    'bindings.declaration': '模型声明',
+    'bindings.sourcePreview': '实现源码',
+    'bindings.declaration': '接口声明',
     'bindings.lifecycle': '条目操作',
-    'bindings.debug': '候选代码测试',
+    'bindings.debug': '代码控制台',
+    'bindings.edit': '编辑',
+    'bindings.cancel': '取消',
+    'bindings.unvalidated': '尚未验证当前草稿',
+    'bindings.working': '正在处理...',
     'bindings.enabled': '启用',
     'bindings.disabledEntry': '停用',
     'bindings.enableAction': '启用',
@@ -98,15 +159,25 @@ const CHROME_COPY = Object.freeze({
     'bindings.remove': '删除',
     'bindings.importPath': '本地 .ts 路径',
     'bindings.import': '导入',
-    'bindings.run': '运行候选代码',
-    'bindings.runSymbol': '导出函数（可选）',
-    'bindings.runArgs': '参数 JSON 数组',
-    'bindings.effectWarning': '候选代码以 DSH 进程权限运行，可能产生不可回滚的 Node/OS effect。',
+    'bindings.run': '运行',
+    'execution.ready': '就绪',
+    'execution.running': '运行中',
+    'execution.released': '环境已释放',
+    'execution.stopped': '已停止，环境已释放',
+    'execution.stop': '停止',
+    'execution.reset': '重置环境',
+    'execution.clear': '清空记录',
+    'execution.history': '执行记录',
+    'execution.output': '输出',
+    'execution.input': 'TypeScript 命令',
+    'execution.restarted': '已从当前草稿重新开始',
+    'execution.truncated': '记录已截断',
     'bindings.saved': '条目已保存；从下一次 run_code 请求生效。',
     'bindings.valid': '源码与派生声明有效。',
     'bindings.removed': '条目已删除。',
     'bindings.imported': '源码已导入为停用条目。',
     'bindings.reloaded': '已从磁盘重新加载。',
+    'bindings.reloadedDraft': '目录已重新加载，未保存的编辑已保留。',
     'bindings.failed': '全局用户绑定操作失败：{error}',
     'bindings.authorNew': '让 Agent 编写',
     'bindings.authorEdit': 'Agent 修改',
@@ -160,6 +231,23 @@ const CHROME_COPY = Object.freeze({
     'feature.stateDeleted': '删除 REPL 状态',
   }),
   en: Object.freeze({
+    'console.session': 'Session bindings',
+    'console.global': 'Global bindings',
+    'console.definition': 'Definition',
+    'console.name': 'Name',
+    'console.kind': 'Kind',
+    'console.search': 'Search binding names',
+    'console.allKinds': 'All kinds',
+    'console.noMatches': 'No matching bindings',
+    'bindings.search': 'Search global entries',
+    'console.value': 'Value preview',
+    'console.observed': 'Observed after settlement: {time}',
+    'console.unobserved': 'No value observation yet',
+    'console.unreadable': 'Unreadable',
+    'console.bounded': 'Truncated',
+    'bindings.manage': 'Manage global bindings',
+    'bindings.entry': 'Entry configuration',
+    'bindings.close': 'Close global bindings workbench',
     'card.description': 'The session-bound TypeScript REPL for PTC mode.',
     'status.enabled': 'Enabled',
     'status.disabled': 'Disabled',
@@ -185,10 +273,14 @@ const CHROME_COPY = Object.freeze({
     'bindings.symbolsPlaceholder': 'Comma-separated; blank derives from source',
     'bindings.purpose': 'Purpose',
     'bindings.source': 'TypeScript source',
-    'bindings.sourcePreview': 'Source preview',
-    'bindings.declaration': 'Model declaration',
+    'bindings.sourcePreview': 'Implementation source',
+    'bindings.declaration': 'Interface declaration',
     'bindings.lifecycle': 'Entry actions',
-    'bindings.debug': 'Candidate test',
+    'bindings.debug': 'Code console',
+    'bindings.edit': 'Edit',
+    'bindings.cancel': 'Cancel',
+    'bindings.unvalidated': 'Current draft has not been validated',
+    'bindings.working': 'Working...',
     'bindings.enabled': 'Enabled',
     'bindings.disabledEntry': 'Disabled',
     'bindings.enableAction': 'Enable',
@@ -200,15 +292,25 @@ const CHROME_COPY = Object.freeze({
     'bindings.remove': 'Remove',
     'bindings.importPath': 'Local .ts path',
     'bindings.import': 'Import',
-    'bindings.run': 'Run candidate',
-    'bindings.runSymbol': 'Export function (optional)',
-    'bindings.runArgs': 'JSON argument array',
-    'bindings.effectWarning': 'Candidate code runs with DSH process permissions and may produce irreversible Node/OS effects.',
+    'bindings.run': 'Run',
+    'execution.ready': 'Ready',
+    'execution.running': 'Running',
+    'execution.released': 'Environment released',
+    'execution.stopped': 'Stopped; environment released',
+    'execution.stop': 'Stop',
+    'execution.reset': 'Reset environment',
+    'execution.clear': 'Clear history',
+    'execution.history': 'Execution history',
+    'execution.output': 'Output',
+    'execution.input': 'TypeScript command',
+    'execution.restarted': 'Started again from the current draft',
+    'execution.truncated': 'Record truncated',
     'bindings.saved': 'Entry saved; it takes effect from the next run_code request.',
     'bindings.valid': 'Source and derived declaration are valid.',
     'bindings.removed': 'Entry removed.',
     'bindings.imported': 'Source imported as a disabled entry.',
     'bindings.reloaded': 'Reloaded from disk.',
+    'bindings.reloadedDraft': 'Catalog reloaded; unsaved edits retained.',
     'bindings.failed': 'Global User Binding operation failed: {error}',
     'bindings.authorNew': 'Ask Agent to write',
     'bindings.authorEdit': 'Ask Agent to revise',
@@ -299,12 +401,28 @@ window.__ModuleLoader__.load({
       IconChevronDownOutline14,
       IconInspectOutline12,
       IconSparkle16,
+      IconCloseOutline16,
+      IconSearchOutline16,
+      IconPlusOutline16,
+      IconRefreshOutline16,
+      IconTrashOutline16,
+      IconEditOutline16,
+      IconPlayOutline16,
+      IconStopFill16,
+      Modal,
       StateDot,
       Toast,
       Tooltip,
     } = require('@deepseek-ai/dsh-client-ui-primitives')
     const module = { exports: {} }
     const h = React.createElement
+    const TypeScriptEditor = createTypeScriptEditor(React)
+
+    function IconButton({ icon: Icon, label, ...props }) {
+      const button = h('button', { ...props, type: 'button', className: 'ptcPlusIconButton',
+        'aria-label': label, title: label }, typeof Icon === 'function' ? h(Icon, { size: 16 }) : label)
+      return typeof Tooltip === 'function' ? h(Tooltip, { label, delayMs: 400 }, button) : button
+    }
 
     function ActionButton({ className = '', 'data-kind': kind, ...props }) {
       return typeof Button === 'function'
@@ -315,11 +433,14 @@ window.__ModuleLoader__.load({
         : h('button', { ...props, className, 'data-kind': kind })
     }
 
+    const BindingConsole = createBindingConsole(React, { TypeScriptEditor, IconButton, ActionButton,
+      icons: { play: IconPlayOutline16, stop: IconStopFill16, reset: IconRefreshOutline16, clear: IconTrashOutline16 } })
+
     function installStyles() {
       if (document.getElementById(CLIENT_STYLE_ID) !== null) return () => {}
       const style = document.createElement('style')
       style.id = CLIENT_STYLE_ID
-      style.textContent = `${CLIENT_CSS}${BINDING_WORKBENCH_CSS}`
+      style.textContent = `${CLIENT_CSS}${BINDING_WORKBENCH_CSS}${REPL_CONSOLE_CSS}`
       document.head.append(style)
       return () => style.remove()
     }
@@ -350,6 +471,10 @@ window.__ModuleLoader__.load({
       ctx.effect(installStyles, 'ptc-plus: client styles')
 
       async function callUserBindings(endpoint, payload = {}, signal = undefined) {
+        const settings = preferenceScope.getSnapshot()
+        if (settings.status !== 'ready' || settings.value?.enabled !== true || settings.value?.userBindingsEnabled !== true) {
+          throw new Error('Global User Bindings are disabled')
+        }
         const result = await ctx.connection.rpc.call(
           USER_BINDINGS_RPC_CHANNEL,
           endpoint,
@@ -360,6 +485,58 @@ window.__ModuleLoader__.load({
         const error = new Error(result?.error?.message ?? 'Global User Binding request failed')
         if (typeof result?.error?.code === 'string') error.code = result.error.code
         throw error
+      }
+
+      function observeRepl(sessionId, element) {
+        let controller
+        let retryTimer
+        let retries = 0
+        let disposed = false
+        const retryDelays = [1000, 2000, 4000]
+        let visible = typeof IntersectionObserver !== 'function'
+        const stop = () => {
+          const previous = controller
+          controller = undefined
+          clearTimeout(retryTimer)
+          retryTimer = undefined
+          retries = 0
+          previous?.abort()
+        }
+        const watch = async current => {
+          try {
+            await ctx.connection.rpc.call('/ptc-plus-repl', 'watch', { sessionId }, current.signal)
+          } catch {}
+          if (disposed || controller !== current) return
+          controller = undefined
+          current.abort()
+          if (!visible || document.visibilityState === 'hidden') { stop(); return }
+          const delay = retryDelays[retries++]
+          if (delay === undefined) return
+          retryTimer = setTimeout(() => { retryTimer = undefined; sync() }, delay)
+        }
+        const sync = () => {
+          if (disposed) return
+          const active = visible && document.visibilityState !== 'hidden'
+          if (!active) { stop(); return }
+          if (controller !== undefined || retryTimer !== undefined || retries > retryDelays.length) return
+          controller = new AbortController()
+          void watch(controller)
+        }
+        const observer = typeof IntersectionObserver === 'function' ? new IntersectionObserver(entries => {
+          visible = entries.some(entry => entry.isIntersecting)
+          sync()
+        }) : undefined
+        observer?.observe(element)
+        const reset = ctx.on('connection/reset', () => { stop(); sync() })
+        document.addEventListener('visibilitychange', sync)
+        sync()
+        return () => {
+          disposed = true
+          stop()
+          observer?.disconnect()
+          document.removeEventListener('visibilitychange', sync)
+          reset()
+        }
       }
 
       function createBindingCommandAvailability(scope) {
@@ -480,26 +657,19 @@ window.__ModuleLoader__.load({
         return symbols.length === 0 ? entry : { ...entry, symbols }
       }
 
-      function formatCandidate(value) {
-        try {
-          return JSON.stringify(value, (_key, current) => (
-            typeof current === 'bigint' ? `${current}n` : current
-          ), 2)
-        } catch {
-          return String(value)
-        }
-      }
-
-      function UserBindingsWorkbench({ enabled, t, callUserBindings }) {
+      function UserBindingsWorkbench({ enabled, t, callUserBindings, heading = true, headingLabel }) {
         const [catalog, setCatalog] = React.useState(null)
         const [draft, setDraft] = React.useState(null)
         const [declaration, setDeclaration] = React.useState('')
         const [importPath, setImportPath] = React.useState('')
-        const [runSymbol, setRunSymbol] = React.useState('')
-        const [runArgs, setRunArgs] = React.useState('[]')
-        const [output, setOutput] = React.useState('')
+        const [original, setOriginal] = React.useState(null)
+        const [editing, setEditing] = React.useState(false)
+        const [sourceOpen, setSourceOpen] = React.useState(false)
+        const [consoleVersion, setConsoleVersion] = React.useState(0)
         const [message, setMessage] = React.useState(null)
         const [busy, setBusy] = React.useState(false)
+        const [catalogQuery, setCatalogQuery] = React.useState('')
+        const [metadataOpen, setMetadataOpen] = React.useState(false)
         const requestGeneration = React.useRef(0)
 
         const fail = error => setMessage({
@@ -519,7 +689,9 @@ window.__ModuleLoader__.load({
           setMessage(null)
           if (!enabled) return undefined
           const controller = new AbortController()
-          refresh(false, controller.signal).catch(error => {
+          refresh(false, controller.signal).then(next => {
+            if (!controller.signal.aborted && next?.entries[0]) return load(next.entries[0].id)
+          }).catch(error => {
             if (!controller.signal.aborted) fail(error)
           })
           return () => controller.abort()
@@ -537,15 +709,22 @@ window.__ModuleLoader__.load({
             setBusy(false)
           }
         }
-        const edit = (key, value) => setDraft(current => ({ ...current, [key]: value }))
+        const edit = (key, value) => {
+          setDraft(current => ({ ...current, [key]: value }))
+          setDeclaration('')
+        }
         const load = id => perform(async () => {
           const generation = ++requestGeneration.current
           const loaded = await callUserBindings('load', { id })
           if (generation !== requestGeneration.current) return
           setDraft(editableBinding(loaded.entry))
+          setOriginal(loaded.entry)
+          setEditing(false)
+          setSourceOpen(false)
+          setMetadataOpen(false)
           setDeclaration(loaded.entry.declaration)
           setCatalog(current => current === null ? current : { ...current, revision: loaded.revision })
-          setOutput('')
+          setConsoleVersion(current => current + 1)
         })
         const validate = () => perform(async () => {
           const normalized = await callUserBindings('validate', { entry: bindingPayload(draft) })
@@ -563,6 +742,10 @@ window.__ModuleLoader__.load({
           setDraft(editableBinding(normalized))
           setDeclaration(normalized.declaration)
           setMessage({ key: 'bindings.saved' })
+          if (original?.source !== normalized.source) setConsoleVersion(current => current + 1)
+          setOriginal(normalized)
+          setEditing(false)
+          setSourceOpen(false)
         })
         const toggle = entry => perform(async () => {
           const next = await callUserBindings(entry.enabled ? 'disable' : 'enable', {
@@ -570,7 +753,10 @@ window.__ModuleLoader__.load({
             expectedRevision: catalog.revision,
           })
           setCatalog(next)
-          if (draft?.id === entry.id) setDraft(current => ({ ...current, enabled: !entry.enabled }))
+          if (draft?.id === entry.id) {
+            setDraft(current => ({ ...current, enabled: !entry.enabled }))
+            setOriginal(current => ({ ...current, enabled: !entry.enabled }))
+          }
         })
         const remove = entry => perform(async () => {
           const next = await callUserBindings('remove', {
@@ -593,41 +779,33 @@ window.__ModuleLoader__.load({
           setImportPath('')
           setMessage({ key: 'bindings.imported' })
         })
-        const run = () => perform(async () => {
-          let invocation
-          if (runSymbol.trim() !== '') {
-            const args = JSON.parse(runArgs)
-            if (!Array.isArray(args)) throw new TypeError('Candidate arguments must be a JSON array')
-            invocation = { symbol: runSymbol.trim(), args }
-          }
-          const result = await callUserBindings('run', {
-            source: draft.source,
-            ...(invocation === undefined ? {} : { invocation }),
-          })
-          setOutput(formatCandidate(result))
-        })
-
         if (!enabled) return null
-        return h('section', { className: 'ptcPlusBindings', 'aria-label': t('bindings.title') },
+        const visibleEntries = catalog?.entries.filter(entry =>
+          entry.name.toLowerCase().includes(catalogQuery.trim().toLowerCase())) ?? []
+        return h('section', { className: 'ptcPlusBindings', 'aria-label': t('bindings.title'), 'aria-busy': busy },
           h('div', { className: 'ptcPlusBindingsHead' },
-            h('h3', { className: 'ptcPlusBindingsTitle' }, t('bindings.title')),
+            heading ? h('h3', { className: 'ptcPlusBindingsTitle' }, headingLabel ?? t('bindings.title')) : h('span'),
             h('div', { className: 'ptcPlusBindingsActions' },
-              h(ActionButton, {
-                type: 'button', className: 'ptcPlusButton', disabled: busy,
+              h(IconButton, {
+                icon: IconRefreshOutline16, label: t('bindings.reload'), disabled: busy,
                 onClick: () => perform(async () => {
                   await refresh(true)
-                  setMessage({ key: 'bindings.reloaded' })
+                  setMessage({ key: editing ? 'bindings.reloadedDraft' : 'bindings.reloaded' })
                 }),
-              }, t('bindings.reload')),
+              }),
               h(ActionButton, {
-                type: 'button', className: 'ptcPlusButton', 'data-kind': 'primary', disabled: busy,
+                type: 'button', className: 'ptcPlusButton', 'data-kind': 'primary', disabled: busy || editing,
                 onClick: () => {
                   requestGeneration.current += 1
                   setDraft(blankBinding())
+                  setOriginal(null)
+                  setEditing(true)
+                  setSourceOpen(true)
+                  setMetadataOpen(true)
                   setDeclaration('')
-                  setOutput('')
+                  setConsoleVersion(current => current + 1)
                 },
-              }, t('bindings.new')))),
+              }, typeof IconPlusOutline16 === 'function' ? h(IconPlusOutline16, { size: 16 }) : null, t('bindings.new')))),
           catalog === null
             ? h('p', {
                 className: `ptcPlusMessage${message === null ? '' : ' ptcPlusDanger'}`,
@@ -635,34 +813,36 @@ window.__ModuleLoader__.load({
               }, message === null ? t('bindings.loading') : t(message.key, message.params))
             : h('div', { className: 'ptcPlusBindingsGrid' },
                 h('div', { className: 'ptcPlusBindingPane' },
+                  h('label', { className: 'ptcPlusSearch' },
+                    typeof IconSearchOutline16 === 'function' ? h(IconSearchOutline16, { size: 16 }) : null,
+                    h('input', { value: catalogQuery, onChange: event => setCatalogQuery(event.target.value),
+                      placeholder: t('bindings.search'), 'aria-label': t('bindings.search') })),
                   catalog.error === undefined
                     ? null
                     : h('p', { className: 'ptcPlusMessage ptcPlusDanger' }, catalog.error),
                   catalog.entries.length === 0
                     ? h('p', { className: 'ptcPlusMessage' }, t('bindings.empty'))
-                    : h('ul', { className: 'ptcPlusBindingList' }, catalog.entries.map(entry => (
+                    : h('ul', { className: 'ptcPlusBindingList' }, visibleEntries.map(entry => (
                         h('li', {
                           key: entry.id, className: 'ptcPlusBindingItem',
                           'data-selected': draft?.id === entry.id ? true : undefined,
                         },
                           h('button', {
-                            type: 'button', className: 'ptcPlusBindingSelect', disabled: busy,
+                            type: 'button', className: 'ptcPlusBindingSelect', disabled: busy || editing,
                             onClick: () => load(entry.id),
                           },
-                          h('span', { className: 'ptcPlusBindingName' }, entry.name),
-                          h('span', { className: 'ptcPlusBindingMeta' }, `${entry.scope} - ${entry.symbols.join(', ')}`),
-                          h('span', { className: 'ptcPlusBindingState', 'data-enabled': entry.enabled },
-                            typeof StateDot === 'function'
-                              ? h(StateDot, { state: entry.enabled ? 'done' : 'warning', size: 6 })
-                              : h('span', { className: 'ptcPlusBindingStateDot', 'aria-hidden': true }),
-                            t(entry.enabled ? 'bindings.stateEnabled' : 'bindings.stateDisabled'))),
-                          h(ActionButton, {
-                            type: 'button', className: 'ptcPlusButton ptcPlusBindingToggle',
-                            disabled: busy,
-                            'aria-label': `${t(entry.enabled ? 'bindings.stateEnabled' : 'bindings.stateDisabled')}: ${t(entry.enabled ? 'bindings.disableAction' : 'bindings.enableAction')}`,
+                          h('span', { className: 'ptcPlusBindingName', title: entry.name }, entry.name),
+                          h('span', { className: 'ptcPlusBindingMeta', title: entry.symbols.join(', ') }, entry.scope)),
+                          h('button', {
+                            type: 'button', className: 'ptcPlusBindingSwitch', role: 'switch',
+                            disabled: busy || editing, 'aria-checked': entry.enabled,
+                            'aria-label': `${entry.name}: ${t('bindings.enabled')}`,
+                            title: t(entry.enabled ? 'bindings.disableAction' : 'bindings.enableAction'),
                             onClick: () => toggle(entry),
-                          }, t(entry.enabled ? 'bindings.disableAction' : 'bindings.enableAction')))
+                          }, h('span', { 'aria-hidden': true })))
                       ))),
+                  catalog.entries.length > 0 && visibleEntries.length === 0
+                    ? h('p', { className: 'ptcPlusMessage' }, t('console.noMatches')) : null,
                   h('div', { className: 'ptcPlusBindingRun' },
                     h('input', {
                       className: 'ptcPlusInput', value: importPath, disabled: busy,
@@ -671,109 +851,225 @@ window.__ModuleLoader__.load({
                     }),
                     h(ActionButton, {
                       type: 'button', className: 'ptcPlusButton',
-                      disabled: busy || importPath.trim() === '', onClick: importSource,
+                      disabled: busy || editing || importPath.trim() === '', onClick: importSource,
                     }, t('bindings.import')))),
                 draft === null ? null : h('div', { className: 'ptcPlusBindingEditor' },
-                  h('div', { className: 'ptcPlusBindingSection' },
-                    h('h4', { className: 'ptcPlusBindingSectionTitle' }, t('bindings.source')),
+                  h('div', { className: 'ptcPlusEditorHead' },
+                    h('strong', { className: 'ptcPlusEditorFile' }, draft.name || t('bindings.new')),
+                    h('div', { className: 'ptcPlusBindingLifecycle' },
+                      catalog.entries.some(entry => entry.id === draft.id)
+                        ? h(IconButton, {
+                            icon: IconTrashOutline16, label: t('bindings.remove'), 'data-kind': 'danger',
+                            disabled: busy || editing, onClick: () => remove(draft),
+                          })
+                        : null)),
+                  h('details', { className: 'ptcPlusBindingSection ptcPlusBindingSourcePreview', open: true },
+                    h('summary', { className: 'ptcPlusBindingFieldLabel' }, t('bindings.declaration')),
+                    declaration === '' ? h('p', { className: 'ptcPlusMessage' }, t('bindings.unvalidated'))
+                      : typeof CodeBlock === 'function'
+                        ? h(CodeBlock, { code: declaration, lang: 'typescript', className: 'ptcPlusCodeBlock',
+                          copyLabel: t('tool.copy'), copiedLabel: t('tool.copied') })
+                        : h('pre', { className: 'ptcPlusDeclaration' }, declaration)),
+                  h('div', { className: 'ptcPlusSourceSection' },
+                    h('button', { type: 'button', className: 'ptcPlusSourceToggle',
+                      'aria-expanded': sourceOpen, onClick: () => setSourceOpen(!sourceOpen) },
+                      h(IconChevronDownOutline14, { size: 14, style: { transform: sourceOpen ? undefined : 'rotate(-90deg)' } }),
+                      t('bindings.sourcePreview'),
+                      h('span', { className: 'ptcPlusSourceFilename' }, draft.name ? `${draft.name}.ts` : '')),
+                    h('div', { className: 'ptcPlusSourceActions' }, editing
+                      ? h(React.Fragment, null,
+                        h(ActionButton, { disabled: busy, onClick: validate },
+                          h(IconCheckOutline14, { size: 14 }), t('bindings.validate')),
+                        h(ActionButton, { 'data-kind': 'primary', disabled: busy, onClick: save }, t('bindings.save')),
+                        h(ActionButton, { disabled: busy, onClick: () => {
+                          setDraft(original === null ? null : editableBinding(original))
+                          setDeclaration(original?.declaration ?? '')
+                          setEditing(false)
+                          setSourceOpen(false)
+                          setMessage(null)
+                        } }, t('bindings.cancel')))
+                      : h(ActionButton, { disabled: busy, onClick: () => { setEditing(true); setSourceOpen(true) } },
+                        typeof IconEditOutline16 === 'function' ? h(IconEditOutline16, { size: 14 }) : null, t('bindings.edit'))),
+                    h('div', { className: 'ptcPlusSourceBody', hidden: !sourceOpen },
+                      editing ? h(TypeScriptEditor, { documentId: draft.id, value: draft.source, disabled: busy,
+                        label: t('bindings.source'), onChange: value => edit('source', value) })
+                        : sourceOpen && typeof CodeBlock === 'function'
+                          ? h(CodeBlock, { code: draft.source, lang: 'typescript', className: 'ptcPlusSourceCode',
+                            copyLabel: t('tool.copy'), copiedLabel: t('tool.copied') })
+                          : sourceOpen ? h('pre', { className: 'ptcPlusSourceCode' }, draft.source) : null)),
+                  h('div', { className: 'ptcPlusWorkbenchFeedback', role: 'status' },
+                    busy ? t('bindings.working') : message === null ? '' : t(message.key, message.params)),
+                  h(BindingConsole, { key: draft.id, entryId: draft.id, source: draft.source,
+                    resetVersion: consoleVersion, callUserBindings, t }),
+                  h('details', { className: 'ptcPlusBindingSection ptcPlusEntrySettings', open: metadataOpen,
+                    onToggle: event => setMetadataOpen(event.currentTarget.open) },
+                    h('summary', { className: 'ptcPlusBindingSectionTitle' }, t('bindings.entry')),
                     h('div', { className: 'ptcPlusBindingFields' },
                       h('label', { className: 'ptcPlusBindingField' },
                         h('span', { className: 'ptcPlusBindingFieldLabel' }, t('bindings.id')),
                         h('input', {
-                          className: 'ptcPlusInput', value: draft.id, disabled: busy,
+                          className: 'ptcPlusInput', value: draft.id, disabled: busy || !editing,
                           onChange: event => edit('id', event.target.value),
                         })),
                       h('label', { className: 'ptcPlusBindingField' },
                         h('span', { className: 'ptcPlusBindingFieldLabel' }, t('bindings.name')),
                         h('input', {
-                          className: 'ptcPlusInput', value: draft.name, disabled: busy,
+                          className: 'ptcPlusInput', value: draft.name, disabled: busy || !editing,
                           onChange: event => edit('name', event.target.value),
                         })),
                       h('label', { className: 'ptcPlusBindingField' },
                         h('span', { className: 'ptcPlusBindingFieldLabel' }, t('bindings.scope')),
                         h('select', {
-                          className: 'ptcPlusSelect', value: draft.scope, disabled: busy,
+                          className: 'ptcPlusSelect', value: draft.scope, disabled: busy || !editing,
                           onChange: event => edit('scope', event.target.value),
                         }, h('option', { value: 'namespace' }, 'namespace'), h('option', { value: 'top-level' }, 'top-level'))),
                       h('label', { className: 'ptcPlusBindingField' },
                         h('span', { className: 'ptcPlusBindingFieldLabel' }, t('bindings.symbols')),
                         h('input', {
-                          className: 'ptcPlusInput', value: draft.symbolsText, disabled: busy,
+                          className: 'ptcPlusInput', value: draft.symbolsText, disabled: busy || !editing,
                           placeholder: t('bindings.symbolsPlaceholder'),
                           onChange: event => edit('symbolsText', event.target.value),
                         })),
                       h('label', { className: 'ptcPlusBindingField', 'data-wide': true },
                         h('span', { className: 'ptcPlusBindingFieldLabel' }, t('bindings.purpose')),
                         h('input', {
-                          className: 'ptcPlusInput', value: draft.purpose, disabled: busy,
+                          className: 'ptcPlusInput', value: draft.purpose, disabled: busy || !editing,
                           onChange: event => edit('purpose', event.target.value),
-                        }))),
-                    h('div', { className: 'ptcPlusBindingSourceGrid' },
-                      h('label', { className: 'ptcPlusBindingSourceEditor' },
-                        h('span', { className: 'ptcPlusBindingFieldLabel' }, t('bindings.source')),
-                        h('textarea', {
-                          className: 'ptcPlusTextarea', value: draft.source, disabled: busy,
-                          spellCheck: false, onChange: event => edit('source', event.target.value),
-                        })),
-                      h('div', { className: 'ptcPlusBindingSourcePreview' },
-                        h('span', { className: 'ptcPlusBindingFieldLabel' }, t('bindings.sourcePreview')),
-                        typeof CodeBlock === 'function'
-                          ? h(CodeBlock, {
-                            code: draft.source, lang: 'typescript', className: 'ptcPlusCodeBlock',
-                            copyLabel: t('tool.copy'), copiedLabel: t('tool.copied'),
-                          })
-                          : h('pre', { className: 'ptcPlusDeclaration' }, draft.source))),
-                    h('div', { className: 'ptcPlusBindingSourcePreview' },
-                      h('span', { className: 'ptcPlusBindingFieldLabel' }, t('bindings.declaration')),
-                      typeof CodeBlock === 'function'
-                        ? h(CodeBlock, {
-                          code: declaration, lang: 'typescript', className: 'ptcPlusCodeBlock',
-                          copyLabel: t('tool.copy'), copiedLabel: t('tool.copied'),
-                        })
-                        : h('pre', { className: 'ptcPlusDeclaration' }, declaration))),
-                  h('div', { className: 'ptcPlusBindingSection' },
-                    h('h4', { className: 'ptcPlusBindingSectionTitle' }, t('bindings.lifecycle')),
-                    h('div', { className: 'ptcPlusBindingLifecycle' },
-                      h(ActionButton, { type: 'button', className: 'ptcPlusButton', disabled: busy, onClick: validate }, t('bindings.validate')),
-                      h(ActionButton, { type: 'button', className: 'ptcPlusButton', 'data-kind': 'primary', disabled: busy, onClick: save }, t('bindings.save')),
-                      catalog.entries.some(entry => entry.id === draft.id)
-                        ? h(ActionButton, {
-                            type: 'button', className: 'ptcPlusButton', 'data-kind': 'danger',
-                            disabled: busy, onClick: () => remove(draft),
-                          }, t('bindings.remove'))
-                        : null))),
-                  h('details', { className: 'ptcPlusBindingDebug' },
-                    h('summary', { className: 'ptcPlusBindingDebugSummary' }, t('bindings.debug')),
-                    h('div', { className: 'ptcPlusBindingDebugBody' },
-                      h('label', { className: 'ptcPlusBindingField' },
-                        h('span', { className: 'ptcPlusBindingFieldLabel' }, t('bindings.runSymbol')),
-                        h('input', {
-                          className: 'ptcPlusInput', value: runSymbol, disabled: busy,
-                          onChange: event => setRunSymbol(event.target.value),
-                        })),
-                      h('label', { className: 'ptcPlusBindingField' },
-                        h('span', { className: 'ptcPlusBindingFieldLabel' }, t('bindings.runArgs')),
-                        h('input', {
-                          className: 'ptcPlusInput', value: runArgs,
-                          disabled: busy || runSymbol.trim() === '',
-                          onChange: event => setRunArgs(event.target.value),
-                        })),
-                      h(ActionButton, { type: 'button', className: 'ptcPlusButton', disabled: busy, onClick: run }, t('bindings.run')),
-                      h('span', { className: 'ptcPlusBindingDebugWarning' }, t('bindings.effectWarning')),
-                      output === '' ? null : h('pre', { className: 'ptcPlusBindingOutput' }, output))),
-                message === null
+                        }))))),
+                message === null || draft !== null
                   ? null
                   : h('p', { className: 'ptcPlusMessage', role: 'status' }, t(message.key, message.params))))
       }
 
+      function ReplComposer() { return null }
+
+      function ReplBindingInspector({ entry, preview, t }) {
+        const readable = preview?.status === 'readable'
+        return h('aside', { className: 'ptcPlusBindingInspector', 'aria-label': entry.name },
+          h('header', { className: 'ptcPlusInspectorHead' },
+            h('strong', null, entry.name),
+            h('span', null, t('memory.location', entry.definition))),
+          h('div', { className: 'ptcPlusObservationLabel' }, t('console.definition')),
+          typeof CodeBlock === 'function'
+            ? h(CodeBlock, { code: entry.definition.source, lang: 'typescript', className: 'ptcPlusObservationCode',
+                copyLabel: t('tool.copy'), copiedLabel: t('tool.copied') })
+            : h('pre', { className: 'ptcPlusObservationCode' }, entry.definition.source),
+          h('div', { className: 'ptcPlusObservationLabel' }, t('console.value'),
+            preview?.truncated ? h('span', { className: 'ptcPlusObservationState' }, t('console.bounded')) : null),
+          readable ? h('pre', { className: 'ptcPlusObservationPreview' }, preview.text)
+            : h('p', { className: 'ptcPlusObservationUnavailable' }, t('console.unreadable')))
+      }
+
+      function ReplSessionBindings({ memory, t }) {
+        const [query, setQuery] = React.useState('')
+        const [kind, setKind] = React.useState('all')
+        const [selectedName, setSelectedName] = React.useState(null)
+        const entries = memory.entries.filter(entry => (kind === 'all' || entry.kind === kind)
+          && entry.name.toLowerCase().includes(query.trim().toLowerCase()))
+        const selected = entries.find(entry => entry.name === selectedName) ?? entries[0]
+        const observation = memory.observation
+        const previews = new Map(observation?.entries.map(entry => [entry.name, entry]) ?? [])
+        return h('section', { className: 'ptcPlusConsoleSection ptcPlusSessionBindings', 'aria-label': t('console.session') },
+          h('div', { className: 'ptcPlusObservationHead' },
+            h('div', { className: 'ptcPlusObservationTitle' },
+              h('h2', null, t('console.session')),
+              memory.available ? h('span', { className: 'ptcPlusObservationCount', title: t('memory.count', { count: memory.total }) },
+                query.trim() || kind !== 'all' ? `${entries.length} / ${memory.total}` : memory.total) : null),
+            h('span', { className: 'ptcPlusObservationTime' }, observation === undefined
+              ? t('console.unobserved') : t('console.observed', { time: new Date(observation.at).toLocaleString() }))),
+          memory.entries.length === 0 ? h('div', { className: 'ptcPlusSessionEmpty' },
+            t(memory.available ? 'memory.empty' : 'memory.unavailable'))
+            : h('div', { className: 'ptcPlusObservationGrid', 'data-empty': selected === undefined },
+            h('div', { className: 'ptcPlusObservationCatalog' },
+              h('div', { className: 'ptcPlusObservationFilters' },
+                h('label', { className: 'ptcPlusSearch' },
+                  typeof IconSearchOutline16 === 'function' ? h(IconSearchOutline16, { size: 16 }) : null,
+                  h('input', { value: query, onChange: event => setQuery(event.target.value),
+                    placeholder: t('console.search'), 'aria-label': t('console.search') })),
+                h('select', { className: 'ptcPlusSelect', value: kind, onChange: event => setKind(event.target.value),
+                  'aria-label': t('console.kind') },
+                  ['all', 'variable', 'function', 'class', 'import'].map(value => h('option', { key: value, value },
+                    t(value === 'all' ? 'console.allKinds' : `memory.kind.${value}`))))),
+              h('div', { className: 'ptcPlusObservations' },
+                h('table', { className: 'ptcPlusObservationTable', 'aria-label': t('console.session') },
+                  h('thead', null, h('tr', null,
+                    h('th', { scope: 'col' }, t('console.name')),
+                    h('th', { scope: 'col' }, t('console.kind')),
+                    h('th', { scope: 'col' }, t('console.value')))),
+                  h('tbody', null, entries.map(entry => {
+                    const preview = previews.get(entry.name)
+                    return h('tr', { key: entry.name, 'data-selected': entry === selected,
+                      onClick: () => setSelectedName(entry.name) },
+                      h('td', null, h('button', { type: 'button', className: 'ptcPlusObservationSelect',
+                        'aria-current': entry === selected ? 'true' : undefined, title: entry.name }, entry.name)),
+                      h('td', { className: 'ptcPlusObservationKind' }, t(`memory.kind.${entry.kind}`)),
+                      h('td', null, h('span', { className: 'ptcPlusObservationValue' },
+                        preview?.status === 'readable' ? h('code', null, preview.text)
+                          : h('span', { className: 'ptcPlusObservationState' }, t('console.unreadable')),
+                        preview?.truncated ? h('span', { className: 'ptcPlusObservationState' }, t('console.bounded')) : null)))
+                  }))),
+                entries.length === 0 ? h('p', { className: 'ptcPlusMessage ptcPlusObservationEmpty' },
+                  t(!memory.available ? 'memory.unavailable' : memory.entries.length === 0 ? 'memory.empty' : 'console.noMatches')) : null)),
+            selected ? h(ReplBindingInspector, { entry: selected, preview: previews.get(selected.name), t }) : null),
+          memory.omitted > 0 ? h('p', { className: 'ptcPlusMessage' }, t('memory.more', { count: memory.omitted })) : null)
+      }
+
+      function ReplConsole({ t, sessionId, useProjection, usePtcSettings, callUserBindings, hideComposer, observeRepl }) {
+        const preset = useProjection('agentPreset')
+        const projected = useProjection('ptcPlusRepl')
+        const settings = usePtcSettings(snapshot => snapshot)
+        const globalEnabled = settings.value?.userBindingsEnabled === true
+        const eligible = settings.status === 'ready' && settings.value?.enabled === true
+          && settings.value?.replViewEnabled !== false && sessionUsesPtcPreset(preset)
+        const observationRegion = React.useRef(null)
+        React.useEffect(() => eligible ? hideComposer(sessionId) : undefined, [eligible, hideComposer, sessionId])
+        React.useEffect(() => eligible ? observeRepl(sessionId, observationRegion.current) : undefined, [eligible, observeRepl, sessionId])
+        if (!eligible) return null
+        let memory
+        try { memory = normalizeReplMemorySnapshot(projected) } catch { memory = unavailableReplMemorySnapshot() }
+        return h('div', { className: 'ptcPlusConsole', 'data-conversation-composer-overlay': '' },
+          h('div', { className: 'ptcPlusConsoleSection', ref: observationRegion }, h(ReplSessionBindings, { key: sessionId, memory, t })),
+          globalEnabled ? h('div', { className: 'ptcPlusConsoleSection ptcPlusBindingsSurface' },
+            h(UserBindingsWorkbench, { enabled: true, t, callUserBindings, headingLabel: t('console.global') })) : null)
+      }
+
+      function BindingsDialog({ t, callUserBindings, onClose }) {
+        const content = React.useRef(null)
+        React.useEffect(() => {
+          const previous = document.activeElement
+          content.current.querySelector('button')?.focus()
+          return () => { if (previous?.isConnected) previous.focus() }
+        }, [])
+        const trapFocus = event => {
+          if (event.key !== 'Tab') return
+          const controls = [...content.current.querySelectorAll('button:not(:disabled),input:not(:disabled),textarea:not(:disabled),select:not(:disabled),[contenteditable=true],summary')]
+            .filter(element => element.getClientRects().length > 0)
+          const first = controls[0]
+          const last = controls.at(-1)
+          if ((event.shiftKey && document.activeElement === first) || (!event.shiftKey && document.activeElement === last)) {
+            event.preventDefault()
+            ;(event.shiftKey ? last : first)?.focus()
+          }
+        }
+        return h(Modal, { open: true, onClose, title: t('bindings.title'), headless: true, className: 'ptcPlusBindingsModal' },
+          h('div', { className: 'ptcPlusBindingsDialog', ref: content, onKeyDown: trapFocus },
+            h('div', { className: 'ptcPlusBindingsDialogHead' },
+              h('h2', null, t('bindings.title')),
+              h('button', { type: 'button', className: 'ptcPlusDialogClose', onClick: onClose, 'aria-label': t('bindings.close'), title: t('bindings.close') }, h(IconCloseOutline16, { size: 16 }))),
+            h('div', { className: 'ptcPlusBindingsSurface' }, h(UserBindingsWorkbench, { enabled: true, t, callUserBindings, heading: false }))))
+      }
+
       function PTCPlusSettingsCard({ t, usePtcSettings, updateSetting, callUserBindings }) {
         const [open, setOpen] = React.useState(false)
+        const [bindingsOpen, setBindingsOpen] = React.useState(false)
         const [status, setStatus] = React.useState(null)
         const [pending, setPending] = React.useState(() => new Set())
         const writeTail = React.useRef(Promise.resolve())
         const snapshot = usePtcSettings(snapshot => snapshot)
         const value = snapshot.status === 'ready' ? (snapshot.value ?? {}) : {}
         const enabled = value.enabled === true
+        const globalEnabled = enabled && value.userBindingsEnabled === true
+        React.useEffect(() => { if (!globalEnabled) setBindingsOpen(false) }, [globalEnabled])
         const unavailable = snapshot.status !== 'ready' || snapshot.writable !== true
         const persist = (field, nextValue) => {
           if (unavailable || pending.has(field.key)) return
@@ -838,14 +1134,15 @@ window.__ModuleLoader__.load({
                   ? h('p', { className: 'ptcPlusMessage' }, t('state.unavailable'))
                   : [
                     ...settingGroups,
-                    enabled && value.userBindingsEnabled === true
-                      ? h(UserBindingsWorkbench, { key: 'user-bindings', enabled: true, t, callUserBindings })
+                    globalEnabled
+                      ? h(ActionButton, { key: 'user-bindings', type: 'button', className: 'ptcPlusButton', onClick: () => setBindingsOpen(true) }, t('bindings.manage'))
                       : null,
                     h('div', { key: 'footer', className: 'ptcPlusFooter' },
                       h('span', { className: 'ptcPlusMessage', role: 'status' }, status === null
                         ? t(snapshot.writable ? 'footer.live' : 'footer.readOnly')
                         : t(status.key, status.params))),
                   ]))),
+          globalEnabled && bindingsOpen ? h(BindingsDialog, { t, callUserBindings, onClose: () => setBindingsOpen(false) }) : null,
         )
       }
 
@@ -986,6 +1283,48 @@ window.__ModuleLoader__.load({
       })
 
       ctx.inject(['uiSession'], (scope) => {
+        scope.inject(['sessions'], (viewScope) => {
+          const hideComposer = sessionId => viewScope.effect(() => viewScope.slots.inject(
+            'conversation.composer', () => viewScope.slots.register({
+              name: 'conversation.composer', priority: 100,
+              select: owner => owner.sessionId === sessionId && owner.pendingInteraction === undefined ? true : null,
+            }, ReplComposer),
+          ))
+          viewScope.slots.inject('conversation.view', () => viewScope.effect(() => {
+            let source
+            let unsubscribeProjection
+            let disposeView
+            const sync = () => {
+              const current = viewScope.sessions.list.getSnapshot().current
+              const next = current === undefined ? undefined
+                : viewScope.sessions.binding(current)?.session.projections.faceOf('agentPreset')
+              if (source !== next) {
+                unsubscribeProjection?.()
+                source = next
+                unsubscribeProjection = source?.subscribe(sync)
+              }
+              const settings = preferenceScope.getSnapshot()
+              const eligible = settings.status === 'ready' && settings.value?.enabled === true
+                && settings.value?.replViewEnabled !== false
+                && sessionUsesPtcPreset(source?.getSnapshot())
+              if (eligible === (disposeView !== undefined)) return
+              disposeView?.()
+              disposeView = eligible ? viewScope.slots.register({
+                name: 'conversation.view', id: 'ptc-plus-repl', label: 'REPL', order: 20,
+                locale: LOCALE_NS, inject: () => ({ ...settingsProps(), hideComposer, observeRepl }),
+              }, ReplConsole) : undefined
+            }
+            const unsubscribeList = viewScope.sessions.list.subscribe(sync)
+            const unsubscribeSettings = preferenceScope.subscribe(sync)
+            sync()
+            return () => {
+              unsubscribeList()
+              unsubscribeSettings()
+              unsubscribeProjection?.()
+              disposeView?.()
+            }
+          }))
+        })
 
         function BindingAuthorButton({
           t, useInput, inputActions, usePtcSettings, useBindingCommand,
@@ -1004,6 +1343,7 @@ window.__ModuleLoader__.load({
           const globalEnabled = settings.status === 'ready'
             && settings.value?.enabled === true
             && settings.value?.userBindingsEnabled === true
+            && settings.value?.bindingAuthorButtonVisible !== false
           if (!globalEnabled || !available || typeof inputActions?.setDraft !== 'function') return null
           const label = t('bindings.authorOpen')
           const openAuthoring = () => {

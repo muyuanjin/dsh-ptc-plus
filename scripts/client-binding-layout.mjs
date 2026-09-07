@@ -69,6 +69,50 @@ try {
       measurements.push({ width, state, collapsedHeight, ...metrics })
     }
   }
+  for (const width of [320, 390, 1440]) {
+    await page.setViewportSize({ width, height: 900 })
+    for (const state of ['console-en', 'console-zh', 'workbench-en', 'workbench-zh', 'modal-en', 'modal-zh', 'empty-en', 'empty-zh']) {
+      await page.goto(pathToFileURL(resolve(directory, `${state}.html`)).href)
+      const metrics = await page.evaluate(() => {
+        const containers = [...document.querySelectorAll('.ptcPlusConsole,.ptcPlusBindingsSurface,.ptcPlusBindingsDialog,.ptcPlusBindingEditor')]
+          .map(element => ({ name: element.className, client: element.clientWidth, scroll: element.scrollWidth }))
+        const collisions = []
+        for (const row of document.querySelectorAll('.ptcPlusBindingItem')) {
+          const [text, action] = [...row.children].map(element => element.getBoundingClientRect())
+          if (text.right > action.left + 1) collisions.push(row.textContent)
+        }
+        const controls = [...document.querySelectorAll('button,input,textarea,select,summary')]
+          .filter(element => element.getClientRects().length > 0)
+          .map(element => {
+            const { left, right, width, height } = element.getBoundingClientRect()
+            return { label: element.getAttribute('aria-label') ?? element.textContent, left, right, width, height }
+          })
+        return { containers, collisions, controls, pageWidth: document.documentElement.scrollWidth }
+      })
+      assert.ok(metrics.pageWidth <= width, `${width}/${state}: viewport overflow`)
+      assert.ok(metrics.containers.every(item => item.scroll <= item.client + 1), `${width}/${state}: ${JSON.stringify(metrics.containers)}`)
+      assert.deepEqual(metrics.collisions, [], `${width}/${state}: overlapping binding actions`)
+      assert.ok(metrics.controls.every(item => item.width > 0 && item.height >= 16 && item.left >= 0 && item.right <= width), `${width}/${state}: controls outside viewport`)
+      if (state.startsWith('empty')) {
+        const empty = await page.locator('.ptcPlusSessionEmpty').evaluate(element => ({
+          width: element.getBoundingClientRect().width,
+          parent: element.parentElement.getBoundingClientRect().width,
+          height: element.getBoundingClientRect().height,
+        }))
+        assert.ok(Math.abs(empty.width - empty.parent) <= 1, `${width}/${state}: partial-width empty state`)
+        assert.ok(empty.height <= 100, `${width}/${state}: oversized empty state`)
+        assert.equal(await page.locator('.ptcPlusBindingInspector').count(), 0)
+      }
+      if (state.startsWith('console') || state.startsWith('workbench')) {
+        assert.equal(await page.locator('.ptcPlusConsole [role=tab]').count(), 0)
+        assert.equal(await page.locator('.ptcPlusSessionBindings').count(), 1)
+        assert.equal(await page.locator('.ptcPlusConsole .ptcPlusBindings').count(), 1)
+        assert.equal(await page.locator('.ptcPlusObservationCode').count(), 1)
+      }
+      await page.screenshot({ path: resolve(directory, `${width}-${state}.png`), fullPage: true })
+      measurements.push({ width, state, ...metrics })
+    }
+  }
   await writeFile(resolve(directory, 'measurements.json'), JSON.stringify(measurements, null, 2) + '\n')
   console.log(`Binding layout passed: ${measurements.length} viewport/state combinations`)
 } finally {

@@ -38,8 +38,14 @@
     "@babel/code-frame": "^7.29.7",
     "@babel/parser": "^7.29.0",
     "@babel/traverse": "^7.29.0",
+    "@codemirror/lang-javascript": "^6.2.5",
+    "@codemirror/language": "^6.12.4",
+    "@codemirror/state": "^6.7.4",
+    "@codemirror/view": "^6.43.11",
     "@deepseek-ai/schemastery": "^3.18.1",
-    "acorn": "^8.15.0"
+    "@lezer/highlight": "^1.2.3",
+    "acorn": "^8.15.0",
+    "codemirror": "^6.0.2"
   },
   "peerDependencies": {
     "@deepseek-ai/dsh-atomic-write": "*",

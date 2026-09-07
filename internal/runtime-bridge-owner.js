@@ -144,6 +144,7 @@ export function createRuntimeBridgeOwner({
   ctx,
   sessionConfig,
   userBindingsCwd,
+  observeSession,
   maxNestedRunCodeDepth,
   presentationGeneration,
   sessionId,
@@ -157,7 +158,7 @@ export function createRuntimeBridgeOwner({
   const withInitiator = ctx.agents === undefined || typeof ctx.agents.withInitiator !== 'function'
     ? undefined
     : (agent, operation) => ctx.agents.withInitiator(agent, operation)
-  const sessions = new SessionRuntime(sessionConfig, { withInitiator, userBindingsCwd })
+  const sessions = new SessionRuntime(sessionConfig, { withInitiator, userBindingsCwd, observeSession })
   let currentConfig = sessions.config
   const runtime = ctx.codeRuntime
   const ownRun = Object.getOwnPropertyDescriptor(runtime, 'run')

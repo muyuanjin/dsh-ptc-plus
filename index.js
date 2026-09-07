@@ -23,6 +23,7 @@ import { installSettingsSectionCompat } from './internal/settings-compat.js'
 import { createReplMemoryProjection } from './internal/repl-memory-projection.js'
 import { createUserBindingDraftProjection } from './internal/user-binding-draft-projection.js'
 import { createUserBindingsOwner } from './internal/user-bindings-owner.js'
+import { createReplObservationInterest } from './internal/repl-observation-interest.js'
 import * as dshSettings from '@deepseek-ai/dsh-settings'
 
 const INSTALL_CLEANUP = Symbol('ptc-plus install cleanup')
@@ -101,6 +102,7 @@ function installPtCRuntime(ctx, resolvedConfig, toolSchemasForAgent, sessionId) 
   let editTransport
   let directSurface
   let userBindings
+  let observationInterest
   let ready
   let pendingCordisActivation
   let draftProjectionRegistration
@@ -220,6 +222,8 @@ function installPtCRuntime(ctx, resolvedConfig, toolSchemasForAgent, sessionId) 
     }
   }
   try {
+    observationInterest = createReplObservationInterest(ctx, activeConfig.replViewEnabled)
+    disposers.push(() => observationInterest.dispose())
     if (typeof ctx.inject === 'function') {
       const projectionInjection = ctx.inject(['sessionProjections'], (scope) => {
         if (disposed) return
@@ -270,6 +274,7 @@ function installPtCRuntime(ctx, resolvedConfig, toolSchemasForAgent, sessionId) 
     })
     runtimeBridge = createRuntimeBridgeOwner({
       ctx,
+      observeSession: id => observationInterest.has(id),
       sessionConfig: activeConfig,
       userBindingsCwd: userBindings.cwd,
       maxNestedRunCodeDepth: activeConfig.maxNestedRunCodeDepth,
@@ -412,6 +417,7 @@ function installPtCRuntime(ctx, resolvedConfig, toolSchemasForAgent, sessionId) 
         }
       }
       activeConfig = nextConfig
+      observationInterest.reconfigure(nextConfig.replViewEnabled)
     } catch (error) {
       const rollbackFailures = []
       /* c8 ignore next -- the rollback loop's rejection branch is host-specific. */

@@ -12,13 +12,16 @@ const MAX_PENDING_REPL_CALLS = 256
 const MAX_CALL_ID_LENGTH = 512
 const MAX_GENERATION_LENGTH = 128
 const SNAPSHOT_FIELDS = new Set(['available', 'entries', 'total', 'omitted'])
+const OBSERVED_SNAPSHOT_FIELDS = new Set([...SNAPSHOT_FIELDS, 'observation'])
+const OBSERVATION_FIELDS = new Set(['at', 'entries'])
+const PREVIEW_FIELDS = new Set(['name', 'status', 'text', 'truncated'])
 const ENTRY_FIELDS = new Set(['name', 'kind', 'definition'])
 const DEFINITION_FIELDS = new Set(['source', 'line', 'column'])
 const MEMORY_META_FIELDS = new Set(['version', 'generation', 'memory'])
 const PROJECTION_STATE_FIELDS = new Set(['generation', 'memory', 'pendingReplCalls'])
 const PENDING_CALL_FIELDS = new Set(['callId', 'seq'])
 const REPL_TOOL_NAMES = new Set(['run_code', 'edit_run_code'])
-const REPL_MEMORY_META_VERSION = 3
+const REPL_MEMORY_META_VERSION = 4
 
 function exactFields(value, fields) {
   if (!isRecord(value)) return false
@@ -71,8 +74,28 @@ function normalizeBinding(value) {
   })
 }
 
-/** Produce bounded, value-independent presentation metadata from the live binding catalog. */
-export function createReplMemorySnapshot(bindings) {
+export function normalizeReplObservation(value) {
+  if (!exactFields(value, OBSERVATION_FIELDS) || !Number.isSafeInteger(value.at) || value.at < 0
+    || !Array.isArray(value.entries) || value.entries.length > MAX_BINDINGS) {
+    throw new Error('invalid dsh-ptc-plus REPL observation')
+  }
+  const names = new Set()
+  const entries = value.entries.map(entry => {
+    if (!exactFields(entry, PREVIEW_FIELDS) || typeof entry.name !== 'string'
+      || entry.name.length === 0 || entry.name.length > MAX_BINDING_NAME_LENGTH || names.has(entry.name)
+      || !['readable', 'unreadable'].includes(entry.status)
+      || typeof entry.text !== 'string' || entry.text.length > 512 || typeof entry.truncated !== 'boolean'
+      || (entry.status === 'unreadable' && (entry.text !== '' || entry.truncated))) {
+      throw new Error('invalid dsh-ptc-plus REPL value preview')
+    }
+    names.add(entry.name)
+    return Object.freeze({ ...entry })
+  })
+  return Object.freeze({ at: value.at, entries: Object.freeze(entries) })
+}
+
+/** Source inventory and optional observation are UI-only; neither is recovery evidence. */
+export function createReplMemorySnapshot(bindings, observation = undefined) {
   const all = Array.isArray(bindings) ? bindings : []
   const candidates = []
   const names = new Set()
@@ -92,17 +115,26 @@ export function createReplMemorySnapshot(bindings) {
     entries.push(binding)
     sourceLength += binding.definition.source.length
   }
+  let observed
+  if (observation !== undefined) {
+    try {
+      const normalized = normalizeReplObservation(observation)
+      const visibleNames = new Set(entries.map(entry => entry.name))
+      observed = Object.freeze({ ...normalized, entries: Object.freeze(normalized.entries.filter(entry => visibleNames.has(entry.name))) })
+    } catch {}
+  }
   return Object.freeze({
     available: true,
     entries: Object.freeze(entries),
     total: candidates.length,
     omitted: candidates.length - entries.length,
+    ...(observed === undefined ? {} : { observation: observed }),
   })
 }
 
 /** Validate one complete session-projection value without accepting unknown fields. */
 export function normalizeReplMemorySnapshot(value) {
-  if (!exactFields(value, SNAPSHOT_FIELDS) || typeof value.available !== 'boolean'
+  if ((!exactFields(value, SNAPSHOT_FIELDS) && !exactFields(value, OBSERVED_SNAPSHOT_FIELDS)) || typeof value.available !== 'boolean'
     || !Array.isArray(value.entries) || value.entries.length > MAX_BINDINGS
     || !Number.isSafeInteger(value.total) || value.total < 0
     || !Number.isSafeInteger(value.omitted) || value.omitted < 0
@@ -126,16 +158,22 @@ export function normalizeReplMemorySnapshot(value) {
     names.add(normalized.name)
     return normalized
   })
+  const observation = value.observation === undefined ? undefined : normalizeReplObservation(value.observation)
+  if (observation !== undefined && (!value.available || observation.entries.some(entry => !names.has(entry.name)))) {
+    throw new Error('REPL observation requires a matching available inventory')
+  }
   return Object.freeze({
     available: value.available,
     entries: Object.freeze(entries),
     total: value.total,
     omitted: value.omitted,
+    ...(observation === undefined ? {} : { observation }),
   })
 }
 
 function normalizeReplMemoryMetadata(value) {
-  if (!exactFields(value, MEMORY_META_FIELDS) || value.version !== REPL_MEMORY_META_VERSION) {
+  if (!exactFields(value, MEMORY_META_FIELDS) || ![3, REPL_MEMORY_META_VERSION].includes(value.version)
+    || (value.version === 3 && value.memory?.observation !== undefined)) {
     throw new Error('invalid dsh-ptc-plus REPL memory metadata')
   }
   return Object.freeze({
@@ -253,12 +291,12 @@ export function withReplMemorySnapshot(meta, snapshot, generation) {
   return base
 }
 
-/** Build the current runtime owner's value-independent session projection. */
+/** Build the current runtime owner's model-invisible session projection. */
 export function createReplMemoryProjection(generation) {
   const currentGeneration = normalizeGeneration(generation)
   return Object.freeze({
     key: REPL_MEMORY_KEY,
-    stateVersion: 3,
+    stateVersion: 4,
     stateSchema: Object.freeze({
       parse: value => normalizeProjectionState(value, currentGeneration),
     }),

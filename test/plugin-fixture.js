@@ -80,6 +80,7 @@ export function ptcAgent(id, session = { id, events: [] }) {
 }
 
 export function fixture(config = {}, fixtureOptions = {}) {
+  let observationHandler
   const listeners = new Map()
   const listenerOptions = new Map()
   const cleanups = []
@@ -113,6 +114,12 @@ export function fixture(config = {}, fixtureOptions = {}) {
     },
   }
   const ctx = {
+    ...(fixtureOptions.observeSession === undefined ? {} : { inject(names, callback) {
+      if (names[0] === 'connection') callback({ connection: { rpc: {
+        handle(_channel, handler) { observationHandler = handler; return () => {} },
+      } } })
+      return () => {}
+    } }),
     codeRuntime: runtime,
     tools: {
       get: (name, scope) => scope?.ctx?.tools?.get(name) ?? definitions.get(name),
@@ -181,6 +188,9 @@ export function fixture(config = {}, fixtureOptions = {}) {
     maxOldGenerationSizeMb: 64,
     ...config,
   })
+  if (fixtureOptions.observeSession !== undefined) {
+    void observationHandler('watch', { sessionId: fixtureOptions.observeSession }, new AbortController().signal)
+  }
 
   async function executeRun(session, program, functions, options) {
     const execute = listeners.get('tools/execute')[0]

@@ -1788,6 +1788,15 @@ export async function add(value: number) {
   assert.deepEqual(symbols.value.value, { symbols: ['one'] })
   assert.equal((await call(target, 'run', { source, invocation: { symbol: 'missing', args: [] } })).ok, false)
   assert.equal((await call(target, 'run', { source, invocation: { symbol: 'add', args: 'bad' } })).ok, false)
+  const consoleResult = await call(target, 'console-run', { source, code: 'const total = await add(2); total' })
+  assert.equal(consoleResult.ok, true)
+  assert.equal(consoleResult.value.output, '42')
+  const environment = consoleResult.value.environment
+  assert.equal((await call(target, 'console-run', { environment, source, code: 'total + 1' })).value.output, '43')
+  assert.equal((await call(target, 'console-release', { environment })).value, null)
+  const recreated = await call(target, 'console-run', { environment, source, code: 'typeof total' })
+  assert.equal(recreated.value.reset, true)
+  assert.equal(recreated.value.output, "'undefined'")
   await owner.dispose()
 })
 
@@ -1873,4 +1882,26 @@ test('candidate runner rejects a non-absolute working directory', async t => {
   ])
   assert.match(error.message, /absolute cwd/)
   assert.equal(exitCode, 1)
+})
+
+test('disabling global bindings stops pending console execution and revokes its environment', async t => {
+  const target = ownerFixture()
+  const owner = createUserBindingsOwner(target.ctx, {
+    enabled: true, store: fakeStore(), cwd: process.cwd(), maxWallMs: 2000,
+    maxOutputBytes: 8192, maxOldGenerationSizeMb: 64, valueLimits: {},
+  })
+  t.after(() => owner.dispose())
+  const source = 'export const value = 42'
+  const first = await call(target, 'console-run', { source, code: 'let retained = value; retained' })
+  const environment = first.value.environment
+  const pending = call(target, 'console-run', { environment, source, code: 'await new Promise(() => {})' })
+  const config = { userBindingsEnabled: false, maxWallMs: 2000, maxOutputBytes: 8192,
+    maxOldGenerationSizeMb: 64, maxValueNodes: 100, maxValueEdges: 100,
+    maxValueArrayLength: 100, maxValueBigIntDigits: 100 }
+  await owner.reconfigure(config)
+  assert.equal((await pending).value.environment, null)
+  await owner.reconfigure({ ...config, userBindingsEnabled: true })
+  const resumed = await call(target, 'console-run', { environment, source, code: 'typeof retained' })
+  assert.equal(resumed.value.reset, true)
+  assert.equal(resumed.value.output, "'undefined'")
 })

@@ -5,6 +5,7 @@ import {
   createReplMemoryProjection,
   createReplMemorySnapshot,
   normalizeReplMemorySnapshot,
+  normalizeReplObservation,
   unavailableReplMemorySnapshot,
   withReplMemorySnapshot,
 } from '../internal/repl-memory-projection.js'
@@ -75,6 +76,31 @@ function resultMemory(result) {
 function binding(name, kind = 'variable', source = `const ${name} = 1`, line = 1, column = 1) {
   return { name, kind, definition: { source, line, column } }
 }
+
+test('bounds and validates UI observation independently of source inventory and journal evidence', () => {
+  const preview = { name: 'value', status: 'readable', text: '42', truncated: false }
+  const observation = { at: 1000, entries: [preview] }
+  const snapshot = createReplMemorySnapshot([binding('value')], observation)
+  assert.deepEqual(normalizeReplMemorySnapshot(snapshot).observation, observation)
+  assert.equal(createReplMemorySnapshot([binding('value')], { broken: true }).observation, undefined)
+  assert.deepEqual(createReplMemorySnapshot([], observation).observation.entries, [])
+  for (const bad of [null, {}, { ...observation, at: -1 }, { ...observation, at: 1.1 },
+    { ...observation, entries: {} }, { ...observation, entries: Array(129).fill(preview) }]) {
+    assert.throws(() => normalizeReplObservation(bad), /observation/)
+  }
+  for (const bad of [null, {}, { ...preview, name: '' }, { ...preview, name: 'x'.repeat(129) },
+    { ...preview, status: 'complete' }, { ...preview, text: 42 }, { ...preview, text: 'x'.repeat(513) },
+    { ...preview, truncated: null }, { ...preview, status: 'unreadable' },
+    { ...preview, status: 'unreadable', text: '', truncated: true }]) {
+    assert.throws(() => normalizeReplObservation({ ...observation, entries: [bad] }), /preview/)
+  }
+  assert.throws(() => normalizeReplObservation({ ...observation, entries: [preview, preview] }), /preview/)
+  assert.throws(() => normalizeReplMemorySnapshot({ ...snapshot, observation: { ...observation, entries: [{ ...preview, name: 'foreign' }] } }), /matching/)
+  assert.throws(() => normalizeReplMemorySnapshot({ ...unavailableReplMemorySnapshot(), observation: { ...observation, entries: [] } }), /matching/)
+  const legacy = { [REPL_MEMORY_META_KEY]: { version: 3, generation: GENERATION, memory: createReplMemorySnapshot([binding('value')]) } }
+  const events = [toolCall(1), toolResult(2, 'call-1', legacy)]
+  assert.deepEqual(projectedMemory(events), createReplMemorySnapshot([binding('value')]))
+})
 
 test('retains bounded definition provenance without reading runtime values', () => {
   const source = "import path from 'node:path'\nconst answer = 42\nfunction load() { return answer }\nclass Widget {}"
@@ -322,7 +348,7 @@ test('distinguishes unavailable memory from an observed empty REPL', () => {
 })
 
 test('publishes the complete post-cell reusable inventory as private metadata', async (t) => {
-  const state = fixture()
+  const state = fixture({}, { observeSession: 'memory-session' })
   t.after(() => state.dispose())
   const first = await state.runDurable('memory-session', `
 const answer = 42
@@ -330,13 +356,15 @@ function load() { return answer }
 class Widget {}
 return answer
 `)
-  assert.equal(first.meta[REPL_MEMORY_META_KEY].version, 3)
+  assert.equal(first.meta[REPL_MEMORY_META_KEY].version, 4)
   assert.equal(typeof first.meta[REPL_MEMORY_META_KEY].generation, 'string')
   assert.deepEqual(resultMemory(first).entries, [
     binding('Widget', 'class', 'class Widget {}', 4),
     binding('load', 'function', 'function load() { return answer }', 3),
     binding('answer', 'variable', 'const answer = 42', 2),
   ])
+  assert.equal(resultMemory(first).observation.entries.find(entry => entry.name === 'answer').text, '42')
+  assert.ok(Number.isSafeInteger(resultMemory(first).observation.at))
 
   const second = await state.runDurable('memory-session', 'const next = answer + 1; return next')
   assert.equal(
@@ -346,6 +374,24 @@ return answer
   assert.deepEqual(resultMemory(second).entries.map(entry => entry.name), [
     'next', 'Widget', 'load', 'answer',
   ])
+})
+
+test('worker observations preserve getter and Proxy counters and canonical results', async t => {
+  const state = fixture({}, { observeSession: 'observation-effects' })
+  t.after(() => state.dispose())
+  const result = await state.runDurable('observation-effects', `
+let reads = 0
+const object = { answer: 42, get value() { reads++; return 1 }, toJSON() { reads++; return 2 } }
+const proxy = new Proxy({}, { ownKeys() { reads++; return [] }, get() { reads++; return 3 } })
+return 42
+`)
+  assert.equal(result.value, 42)
+  const previews = new Map(resultMemory(result).observation.entries.map(entry => [entry.name, entry]))
+  assert.match(previews.get('object').text, /accessor: unreadable/)
+  assert.equal(previews.get('proxy').status, 'unreadable')
+  const continued = await state.runDurable('observation-effects', 'return reads')
+  assert.equal(continued.value, 0)
+  assert.equal(continued.meta.dshPtcPlus.status, 'durable')
 })
 
 test('shows volatile live bindings but rejects them after runtime reactivation', async (t) => {

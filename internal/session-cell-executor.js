@@ -19,6 +19,7 @@ import {
 import { assertStateName } from './session-journal.js'
 import { PreflightError, prepareProgram } from './cell-analysis.js'
 import { LIVE_DEFAULT_EXPORT_BINDING } from './repl-rewrite-contract.js'
+import { createReplMemorySnapshot } from './repl-memory-projection.js'
 import { ModuleRewriteError } from './cell-rewriter.js'
 import { mapSourcePosition } from './source-position-map.js'
 import { durabilityState, transitionDurability } from './session-state.js'
@@ -380,9 +381,9 @@ export class SessionCellExecutor {
     const bindings = this.withControlBinding(request.bindingDescriptors, journal, replayRecord)
     const id = ++kernel.sequence
     return new Promise((resolve) => {
-      const started = worker.performance.eventLoopUtilization()
       const active = {
         id,
+        started: false,
         request: { ...request, bindings: bindings.namespaces },
         finish: resolve,
         computeTimer: undefined,
@@ -422,14 +423,50 @@ export class SessionCellExecutor {
         earlyResult('abort', String(request.signal?.reason)),
         true,
       )
-      active.computeTimer = setInterval(() => {
-        if (worker.performance.eventLoopUtilization(started).active > config.computeMs) {
-          active.resolve(earlyResult('timeout', `compute budget exhausted (${config.computeMs}ms event-loop active, including synchronous blocking); this measure does not establish CPU use or the specific cause. Use asynchronous waiting for long waits, or a DSH-owned managed job if available. This cell was discarded and the worker reset; external effects or processes may continue.`), true)
+      active.startBudgets = () => {
+        if (active.computeTimer !== undefined) return
+        // Only an unfinished observation is exempt from the next cell's budgets.
+        const started = worker.performance.eventLoopUtilization()
+        active.computeTimer = setInterval(() => {
+          if (worker.performance.eventLoopUtilization(started).active > config.computeMs) {
+            active.resolve(earlyResult('timeout', `compute budget exhausted (${config.computeMs}ms event-loop active, including synchronous blocking); this measure does not establish CPU use or the specific cause. Use asynchronous waiting for long waits, or a DSH-owned managed job if available. This cell was discarded and the worker reset; external effects or processes may continue.`), true)
+          }
+        }, Math.min(100, config.computeMs))
+        active.wallTimer = setTimeout(() => {
+          active.resolve(earlyResult('timeout', `wall-clock ceiling reached (${config.maxWallMs}ms); split long-running work into smaller cells`), true)
+        }, config.maxWallMs)
+      }
+      active.start = () => {
+        if (active.started) return
+        active.started = true
+        kernel.workerObservation = undefined
+        active.startBudgets()
+        try {
+          kernel.client.post({
+            type: 'run', id, program: prepared.code, namespaces: bindings.workerDescriptors,
+            moduleLoads: prepared.moduleLoads,
+            returnSignal: prepared.returnSignal,
+            commitSignal: prepared.commitSignal,
+            maxOutputBytes: config.maxOutputBytes,
+            valueLimits,
+            durability,
+            observeNames: replayRecord === undefined && kernel.observeValues()
+              ? createReplMemorySnapshot(
+                  priorBindingCatalog.advance(prepared, request.program).snapshot(),
+                ).entries.map(entry => entry.name)
+              : [],
+            userBindings,
+            ...(userBindings === undefined ? {} : { userBindingsCwd: kernel.userBindingsCwd }),
+            userBindingFailures,
+            shadowedUserBindingNames: [...new Set([
+              ...userBindingPlan.shadowedNames,
+              ...request.bindingDescriptors.reservedNames,
+            ])],
+          })
+        } catch (error) {
+          active.resolve(earlyResult('worker-exit', messageOf(error)), true)
         }
-      }, Math.min(100, config.computeMs))
-      active.wallTimer = setTimeout(() => {
-        active.resolve(earlyResult('timeout', `wall-clock ceiling reached (${config.maxWallMs}ms); split long-running work into smaller cells`), true)
-      }, config.maxWallMs)
+      }
       kernel.active = active
       request.signal?.addEventListener('abort', active.onAbort, { once: true })
       if (request.signal?.aborted) {
@@ -437,22 +474,8 @@ export class SessionCellExecutor {
         return
       }
       try {
-        kernel.client.post({
-          type: 'run', id, program: prepared.code, namespaces: bindings.workerDescriptors,
-          moduleLoads: prepared.moduleLoads,
-          returnSignal: prepared.returnSignal,
-          commitSignal: prepared.commitSignal,
-          maxOutputBytes: config.maxOutputBytes,
-          valueLimits,
-          durability,
-          userBindings,
-          ...(userBindings === undefined ? {} : { userBindingsCwd: kernel.userBindingsCwd }),
-          userBindingFailures,
-          shadowedUserBindingNames: [...new Set([
-            ...userBindingPlan.shadowedNames,
-            ...request.bindingDescriptors.reservedNames,
-          ])],
-        })
+        if (kernel.workerObservation?.worker !== worker) active.startBudgets()
+        kernel.client.post({ type: 'prepare', id })
       } catch (error) {
         active.resolve(earlyResult('worker-exit', messageOf(error)), true)
       }
@@ -514,6 +537,21 @@ export class SessionCellExecutor {
   }
 
   onMessage(message) {
+    if (message?.type === 'ready') {
+      const active = this.kernel.active
+      if (active !== undefined && active.id === message.id) active.start()
+      return
+    }
+    if (message?.type === 'observation') {
+      const kernel = this.kernel
+      const observation = kernel.workerObservation
+      if (observation !== undefined && observation.id === message.id) {
+        kernel.workerObservation = undefined
+        if (kernel.active?.worker === observation.worker) kernel.active.startBudgets()
+      }
+      kernel.finishObservation(message)
+      return
+    }
     if (message === null || typeof message !== 'object') return
     const handler = {
       volatile: this.handleVolatile,
@@ -637,6 +675,7 @@ export class SessionCellExecutor {
           active.request.program,
           committed,
         )
+    active.observing = message.observing === true
     if (typeof message.error === 'string') {
       const rawError = {
         kind: 'exception',

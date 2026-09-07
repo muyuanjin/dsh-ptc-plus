@@ -12,6 +12,7 @@ import { errorDetails, messageOf, programBindingError } from './failure-reportin
 import { AMBIENT_GLOBALS, DURABLE_IMPORTS, FORBIDDEN_IMPORTS } from './module-policy.js'
 import { decodeValue, encodeValue } from './value-wire.js'
 import { installWorkerCwdVirtualization } from './worker-cwd-virtualization.js'
+import { createReplValueObserver } from './repl-value-observer.js'
 
 if (parentPort === null) throw new Error('ptc-plus kernel worker started without a parent port')
 const emitWarning = process.emitWarning
@@ -52,6 +53,7 @@ const errorDomain = server.eval.domain ?? createDomain()
 errorDomain.removeAllListeners('error')
 errorDomain.on('error', error => evaluationScope.getStore()?.(true, error))
 const context = server.context
+const valueObserver = createReplValueObserver(context)
 const REPL_IMPORT_CANARY = 'data:text/javascript,export default 1'
 let replParent
 const sessionReplParent = sessionCwd === undefined ? undefined : pathToFileURL(resolve(sessionCwd, 'repl')).href
@@ -694,6 +696,15 @@ async function activateUserBindings(snapshot, shadowedNames, cwd, initialFailure
   return { activated, failures }
 }
 
+function sendCompletion(response, message) {
+  const names = message.observeNames ?? []
+  channel.postMessage({ ...response, observing: names.length > 0 })
+  if (response.error === undefined) valueObserver.record(message.program)
+  if (names.length > 0) {
+    channel.postMessage({ type: 'observation', id: message.id, observation: valueObserver.observe(names) })
+  }
+}
+
 async function runCell(message) {
   if (activeRun !== undefined) throw new Error('kernel received overlapping cells')
   activeRun = message.id
@@ -776,7 +787,7 @@ async function runCell(message) {
       const failure = error instanceof StaticImportFailure ? error.error : error
       const detail = errorDetails(failure, activeFilename)
       const position = error instanceof StaticImportFailure ? error.position : detail.position
-      channel.postMessage({
+      sendCompletion({
         type: 'done',
         id: message.id,
         logs: execution.logs,
@@ -794,7 +805,7 @@ async function runCell(message) {
           userBindingFailures: userBindings.failures,
           shadowedUserBindings: [...assignedUserBindingNames],
         }),
-      })
+      }, message)
       return
     }
 
@@ -834,7 +845,7 @@ async function runCell(message) {
         }),
       }
     }
-    channel.postMessage(response)
+    sendCompletion(response, message)
   } finally {
     for (const name of cellGlobals) delete context[name]
     activeRun = undefined
@@ -844,6 +855,10 @@ async function runCell(message) {
 }
 
 channel.on('message', (message) => {
+  if (message?.type === 'prepare') {
+    channel.postMessage({ type: 'ready', id: message.id })
+    return
+  }
   if (message?.type === 'reply') {
     const call = pending.get(message.id)
     if (call === undefined || call.runId !== message.runId) return

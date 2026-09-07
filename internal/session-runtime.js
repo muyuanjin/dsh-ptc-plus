@@ -77,7 +77,7 @@ class ReplayCancelled extends Error {
 }
 
 class SessionKernel {
-  constructor({ config, history, cwd, session, userBindingsCwd, withInitiator }) {
+  constructor({ config, history, cwd, session, userBindingsCwd, withInitiator, observeValues }) {
     this.config = config
     this.history = history
     this.initialRecoveryBoundary = history.available === false && history.volatileSuffix.length > 0
@@ -94,6 +94,7 @@ class SessionKernel {
     }
     this.cwd = cwd
     this.userBindingsCwd = userBindingsCwd
+    this.observeValues = observeValues
     this.session = session
     this.withInitiator = withInitiator
     this.durability = durabilityState()
@@ -108,15 +109,18 @@ class SessionKernel {
     this.sequence = 0
     this.tail = Promise.resolve()
     this.tentatives = new WeakMap()
+    this.pendingObservation = undefined
+    this.workerObservation = undefined
     this.workerReservations = new Set()
     this.cellExecutor = new SessionCellExecutor(this)
     this.client = new WorkerClient({
       workerUrl: WORKER_URL,
       cwd,
       onMessage: message => this.cellExecutor.onMessage(message),
-      onFailure: message => this.active?.resolve({
-        logs: [], error: { kind: 'worker-exit', message },
-      }, true),
+      onFailure: message => {
+        this.workerObservation = undefined
+        this.active?.resolve({ logs: [], error: { kind: 'worker-exit', message } }, true)
+      },
     })
     this.failures = createFailureTracker()
     this.disposed = false
@@ -357,6 +361,7 @@ class SessionKernel {
   }
 
   rollbackToDurable() {
+    this.workerObservation = undefined
     this.durability = durabilityState()
     this.replayed = false
     this.bindingCatalog = new BindingCatalog()
@@ -412,8 +417,26 @@ class SessionKernel {
       this.liveCallSeqs.add(request.callSeq ?? request.sourceCallSeq)
     }
     this.active = undefined
-    if (terminate) void this.client.reset(worker)
-    active.finish(result)
+    if (terminate) {
+      this.workerObservation = undefined
+      void this.client.reset(worker)
+    }
+    if (!terminate && active.observing && replay === undefined) {
+      // Computation and journal settlement are complete. Observation cannot change either.
+      this.workerObservation = { id: active.id, worker }
+      const timer = setTimeout(() => this.finishObservation({ id: active.id }), 250)
+      this.pendingObservation = { id: active.id, timer, journal, finish: () => active.finish(result) }
+    } else active.finish(result)
+  }
+
+  finishObservation(message) {
+    const pending = this.pendingObservation
+    if (pending === undefined || pending.id !== message.id) return
+    this.pendingObservation = undefined
+    clearTimeout(pending.timer)
+    const tentative = this.tentatives.get(pending.journal)
+    if (tentative !== undefined) tentative.observation = message.observation
+    pending.finish()
   }
 
   finalizeJournal(journal, confirmed) {
@@ -465,7 +488,7 @@ class SessionKernel {
     if (tentative === undefined) {
       return createReplMemorySnapshot(this.bindingCatalog.snapshot())
     }
-    return createReplMemorySnapshot(tentative.bindingCatalog.snapshot())
+    return createReplMemorySnapshot(tentative.bindingCatalog.snapshot(), tentative.observation)
   }
 
   userBindingsFor(journal) {
@@ -507,6 +530,7 @@ class SessionKernel {
 
   async dispose() {
     this.disposed = true
+    this.workerObservation = undefined
     const worker = this.client.worker
     if (worker !== undefined) {
       /* c8 ignore next */
@@ -549,6 +573,7 @@ export class SessionRuntime {
       throw new TypeError('userBindingsCwd must be an absolute path')
     }
     this.withInitiator = typeof options.withInitiator === 'function' ? options.withInitiator : undefined
+    this.observeSession = options.observeSession ?? (() => false)
   }
 
   async run(sessionContext, request) {
@@ -624,6 +649,7 @@ export class SessionRuntime {
         session,
         userBindingsCwd: this.userBindingsCwd,
         withInitiator: this.withInitiator,
+        observeValues: () => this.config.replViewEnabled && this.observeSession(sessionId),
       })
       this.kernels.set(sessionId, kernel)
     }

@@ -17,9 +17,11 @@ Host half 通过 DSH 公共 `settings` 服务注册命名空间 `ptc-plus`。字
 | --- | --- | --- |
 | 开关 | `enabled` | 关闭后不注册 `run_code`/`edit_run_code`、不修改 system prompt、不创建 session runtime；保留设置 UI，Host 在下一允许步骤撤销旧 PTC 声明。 |
 | 展示 | `enhancedToolView` | 默认开启；关闭后注销 PTC Plus 的两个 keyed tool view，恢复 DSH 原生 generic row。 |
+| 展示 | `replViewEnabled` | 默认开启；控制顶级 REPL 页签，关闭时释放观察订阅，不影响设置中的全局管理入口。 |
+| 展示 | `bindingAuthorButtonVisible` | 默认开启；控制输入框的绑定编写快捷按钮，不撤销 `/binding` 命令。 |
 | 常用与兼容性 | `autoDescribeRunCode` / `canonicalizeToolCalls` | 默认开启；允许缺少外层摘要的 `run_code` 执行，并修复 schema 可唯一确认的顶层 native 工具误调用。 |
 | 可选能力 | `cordisToolsEnabled` | 默认关闭；开启后为 PTC agent 加入官方 Cordis 工具、指引与精确的 `cordis-plugin-development` companion Skill，不发布同目录 sibling。 |
-| 可选能力 | `userBindingsEnabled` | 默认关闭；开启后加载跨会话 TypeScript helper，并显示设置工作台、会话 Global 页签与 `/binding` Agent 编写入口。 |
+| 可选能力 | `userBindingsEnabled` | 默认关闭；开启后加载跨会话 TypeScript helper，并显示全局绑定工作台、设置管理按钮与 `/binding` Agent 编写入口。 |
 | 高级行为 | `looseTopLevelRedeclarations` / `looseTopLevelFunctionClassRedeclarations` / `autoRewriteImports` / `autoStripExports` / `autoSplitRedeclarations` / `durableReplay` / `tipsEnabled` | function/class 重声明默认开启，其余默认开启；分别控制变量重声明、可写 function/class binding 的声明位置替换、模块语法适配、worker 重启后的状态恢复与失败提示。 |
 | 计算 | `computeMs` / `maxWallMs` | 单 cell event-loop active（包括同步阻塞）与总耗时预算；前者不证明 CPU 消耗。 |
 | Worker | `maxOldGenerationSizeMb` / `maxNestedRunCodeDepth` | kernel worker 内存与嵌套执行深度。 |
@@ -36,13 +38,21 @@ Host half 通过 DSH 公共 `settings` 服务注册命名空间 `ptc-plus`。字
 
 ## 全局用户 Binding 工作台
 
-`userBindingsEnabled` 关闭时不渲染任何 Global User Binding 管理界面，Host 也不注册对应 RPC 或 Agent 命令。开启后，设置卡片追加完整工作台：条目列表、源码编辑与 TypeScript 预览、scope 和用途、派生模型声明、验证、revision-checked 保存、启停、删除、从本地 `.ts` 文件导入、以及候选导出调用。编辑、条目操作和候选测试分别位于独立区段；候选运行区折叠展示 Node/OS effect 警告与输出，独立 worker 不等于安全 sandbox。
+`userBindingsEnabled` 关闭时不渲染任何 Global User Binding 管理界面，Host 也不注册对应 RPC 或 Agent 命令。开启后，REPL 页签中的“全局绑定”和设置管理按钮打开的大尺寸应用内弹窗复用同一个 `UserBindingsWorkbench`。设置卡片保留开关与管理按钮，不嵌入编辑器。普通管理不依赖当前存在 PTC 会话；Agent 辅助编写仍使用当前可用会话的 `/binding` 入口。
 
-Client 的所有管理操作都通过 DSH Connection RPC `/ptc-plus-bindings` 发给 Host owner；Connection 在分派前执行 Host/Origin 检查与浏览器认证。Client 不直接读写 `$DSH_HOME/ptc-plus/bindings.json`，不自行判断冲突，也不把 settings 同步当作通用 RPC。Host 返回 revision、结构化条目视图和错误；外部文件变化或过期 revision 会拒绝写入，用户重新加载后再决定如何合并。
+工作台默认载入首个条目，目录支持名称过滤和启停开关。内容依次为“接口声明”“实现源码”“代码控制台”“条目配置”。接口声明优先展示；实现源码默认折叠、只读，展开后使用公共 `CodeBlock` 提供 TypeScript 高亮与复制。点击“编辑”后才挂载 CodeMirror，提供高亮、行号、撤销与重做，同时开放条目配置；保存或取消后恢复只读。草稿变化撤销旧派生声明，验证后再展示，草稿声明不证明模型已接收。操作反馈占用稳定位置，等待 RPC 不淡化整个工作台。目录保留 `.ts` 导入，保存保留 revision 校验。桌面使用目录与内容两列，窄容器改为单列；弹窗内部滚动，支持 Escape、关闭按钮和键盘焦点回环，关闭后恢复入口焦点。
+
+代码控制台直接执行当前条目的未保存源码草稿。用户可输入 `readText("./example.txt")`、声明变量或使用顶层 `await`，通过运行按钮或 Ctrl/Cmd+Enter 执行；下一条命令可继续使用临时变量。控制台通过 `console-run` 取得 Host 生成的 opaque environment handle，并以 `console-release` 释放；单次候选导出调用通过兼容的 `run` RPC 提供。基于 Node `repl.start` 与内置 TypeScript 转换，不连接 Agent kernel，也不写入其 journal。模块导出可直接按名称调用，相对 import 从 binding 存储目录解析。运行、停止、重置环境、清空记录分别是独立动作；折叠不重置环境。普通语法或运行错误保留状态和此前修改，停止、超时、输出超限与 worker 故障会释放环境。执行代码具有 DSH 进程的 Node/OS 权限，这种状态隔离不构成 sandbox。
+
+首次执行才创建 worker。源码草稿改动后的下一次执行、切换条目、保存修改后的源码、离开工作台或手动重置都会清空旧环境。连续 10 分钟没有执行代码时自动释放，输入输出记录保留；下一次从当前草稿开始，绝不自动重放旧命令。Host 最多保留 4 个临时环境，每个环境一次仅执行一个命令，并沿用 `maxWallMs`、`maxOutputBytes` 和 `maxOldGenerationSizeMb`。源码与单次命令各限制 1 MiB；Client 最多保留 40 条、合计 131072 个 UTF-16 code unit 的展示记录，单条最多 65536 个，截断有明确标记。关闭全局绑定功能或插件时释放全部临时环境。
+
+每次执行的命令与输出分开展示。输出沿用会话工具结果的灰色背景、边框和 12px 圆角，带独立标签；长结果在至多 240px 高的内容区内滚动，窄屏自动换行，错误使用错误色。设置弹窗与 REPL 页复用同一输出组件。
+
+Client 的所有管理操作都通过 DSH Connection RPC `/ptc-plus-bindings` 发给 Host owner；Connection 在分派前执行 Host/Origin 检查与浏览器认证。Client 不直接读写 `$DSH_HOME/ptc-plus/bindings.json`，不自行判断冲突，也不把 settings 同步当作通用 RPC。Host 返回 revision、结构化条目视图和错误；外部文件变化或过期 revision 会拒绝写入。编辑中也可重新加载目录与 revision，保留未保存的源码、条目字段和编辑器状态，再由用户明确重试保存；刷新不自动重复写入，也不把磁盘内容覆盖到草稿。
 
 PTC session 的头部弹窗在功能启用时增加 Session 与 Global 页签。Session 保留当前可复用 binding 的只读检查；Global 展示持久化目录的启停状态，可展开精确源码并预填 `/binding edit <id> `。目录“启用”不证明当前会话已成功激活。composer 已有非空草稿时保留原文并显示反馈；公开接口不提供 focus 时，Client 不访问宿主 DOM 强制聚焦。名称和成员被限制在各自 grid 列内，长名称与成员列表提供完整 title；编辑动作保持独立点击区域。窄弹窗不复制设置工作台的完整编辑、候选运行、启停、导入或删除功能。
 
-接受候选时，Host 生成不可猜测的 locator，并把 locator、精确 candidate 源码和请求/命令身份放入接受结果的私有 metadata。`ptcPlusBindingDraft` projection 分别拥有可写草稿定位与只读历史；历史源码不从当前 catalog 重读。Connection RPC 没有 caller/session identity，所有草稿操作凭 locator，不信任 payload session ID。Binding 命令卡片通过公共 `conversation.chat.commandview` 的 `binding` key 接管宿主命令行，直接读取宿主折叠后的 CommandNode；不再额外注册 turn-tail 展示或重复关联命令事件。卡片使用公共 `Button` 和 `CodeBlock` 呈现保存、丢弃与源码；缺少原语时才降级。源码区不嵌套另一层卡片边框，已结束状态紧凑排列，源码可通过原生 details 继续展开。
+接受候选时，Host 生成不可猜测的 locator，并把 locator、精确 candidate 源码和请求/命令身份放入接受结果的私有 metadata。`ptcPlusBindingDraft` projection 分别拥有可写草稿定位与只读历史；历史源码不从当前 catalog 重读。Connection RPC 没有 caller/session identity，所有草稿操作凭 locator，不信任 payload session ID。Binding 命令卡片通过公共 `conversation.chat.commandview` 的 `binding` key 接管宿主命令行，直接读取宿主折叠后的 CommandNode，不注册 turn-tail 展示或重复关联命令事件。卡片使用公共 `Button` 和 `CodeBlock` 呈现保存、丢弃与源码；缺少原语时才降级。源码区不嵌套另一层卡片边框，已结束状态紧凑排列，源码可通过原生 details 继续展开。
 
 “保存为停用”和“保存并启用”均原子认领草稿并校验 catalog revision，后者同时写入启用状态；两者都不运行候选。并发丢弃返回 busy。保存/丢弃后立即撤销操作入口，但保留精确源码和结果；Host 的公共 action notice 引用接受结果，供日志 projection 和卡片重挂载恢复。保存回执不宣称当前会话已激活。回执未持久化且 Host 已重启时保持未知，不凭空 locator 猜测保存。目录冲突会重读 catalog、draft 和 review，保留仍有效的草稿供用户重试，不自动重复写入；权威空 draft 才撤销操作。会话结束、功能关闭或 agent disposal 撤销内存 locator；正常轮次结束只撤销未完成交接资格，已经接受的草稿继续等待用户决定。
 
@@ -64,7 +74,27 @@ PTC session 的头部弹窗在功能启用时增加 Session 与 Global 页签。
 
 功能标记不是计数，也不把“插件已启用”冒充成一次功能收益。Client 只在完整 v1-v5 journal 和对应附属 metadata 能证明时显示：自动改写 import（附模块名）、自动剥离 export、自动拆分混合重声明（附已有 binding）、带完整 target/derived-run/non-noop/可选恢复边界关系且与调用目标前置条件一致的安全编辑执行、成功的 `code.run`、由 `PTC-R002` 的 `warning/recover/rolled-back` 语义元组证明本次确实发生的持久重放，以及 `repl.state` 操作。Client 对 v4 同时封闭校验 `bindingPolicy`、`rewritePolicy` 与 `moduleSemantics`，对 v5 还要求 `userBindingsFingerprint`；任一缺失或畸形都不产生功能标记。进程保留或 discarded 状态不作为正文功能标记。普通变量或 function/class 重声明、顶层 native 调用是否来自 canonicalizer、`cordis_*` 成员是否由官方可选 Cordis mount 提供，以及是否实际选择了 prompt 恢复提示没有独立的 Client-only 事实，因此不根据可复制的代码形状、工具名前缀或设置默认值推测；恢复边界本身不展示。
 
-这条路径不检查或改写宿主 DOM，不调用 Host、不主动加载历史。binding 卡片只消费随结果持久化的 value-independent presentation metadata，其中源码只是已提交 cell 的有界声明片段，不是运行时值；它不改变 canonical result、tool schema、system prompt、runtime context、journal schema 或迁移器，也不向模型公开状态。未知 journal 版本、未知 metadata 字段和损坏 metadata 只会让对应功能标记或 binding 列表缺席，不会隐藏源码或结果；无法脱离 session call identity 解析非空 v1 `confirms` 时同样只省略标记，不触发历史读取或迁移。因此 UI 是否安装、能否渲染以及用户是否悬浮、聚焦或展开正文行，都不会改变模型请求或会话继续语义，也不能作为在模型 surface 收缩后继续保留 runtime binding 的证据。
+正文工具行和头部 Session 清单不检查或改写宿主 DOM，不调用 Host、不主动加载历史。头部卡片只展示随结果持久化的名称与定义源码，不使用值预览；全局管理操作单独使用前述 Connection RPC。这些展示不改变 canonical result、tool schema、system prompt、runtime context、journal schema 或迁移器，也不向模型公开状态。未知 journal 版本、未知 metadata 字段和损坏 metadata 只会让对应功能标记或 binding 列表缺席，不会隐藏源码或结果；无法脱离 session call identity 解析非空 v1 `confirms` 时同样只省略标记，不触发历史读取或迁移。因此 UI 是否安装、能否渲染以及用户是否悬浮、聚焦或展开正文行，都不会改变模型请求或会话继续语义，也不能作为在模型 surface 收缩后继续保留 runtime binding 的证据。
+
+## REPL 顶级页签
+
+Client 通过公开 `conversation.view` 注册 `ptc-plus-repl`（标签 `REPL`，order 20），与对话、轨迹同级。注册作用域订阅 `sessions.list` 的当前会话及其 `agentPreset` projection face：插件与 `replViewEnabled` 开启且当前 preset 为 `ptc` 或 `code` 时注册，其余情况注销。会话切换、preset 改变、设置关闭和 provider/plugin 释放都会清理对应订阅与注册。DSH 拥有页签选择与注销后的回退；列表属于当前 browser Client，插件不创建多会话导航器。空会话的页签可见性仍由宿主 shell 决定。
+
+REPL 根元素使用官方轨迹页同样的 `data-conversation-composer-overlay` 布局标记，由宿主提供满高视口并禁用对话宽度拖拽条；工作区内部滚动。仅在该页挂载期间，通过公开 `conversation.composer` chain 注册当前 session 专属的空替代项，隐藏普通消息输入框。宿主 overlay 保留原输入框与草稿，离开 REPL、关闭插件或释放 provider 时恢复。存在 `pendingInteraction` 时替代项不参与选择，审批、提问等宿主交互保持优先。插件不查询或改写宿主 DOM，不覆盖宿主 CSS。
+
+REPL 是单页工作区，上方为“会话绑定”，下方直接展示完整“全局绑定”工作台，不设内部页签。会话区使用紧凑表格和相邻的绑定检查区；名称为普通等宽文字，类别为文字列。名称搜索与类型筛选只过滤已有展示清单，不请求更多观察数据；清单保留来源顺序，默认检查首个匹配条目。选中条目的定义、行列和值在检查区展示，定义使用公共 `CodeBlock` 的 TypeScript 高亮与复制按钮，缺少该原语时降级为原文。长清单在固定高度区域内滚动，窄屏将清单、检查区、全局目录和编辑器纵向排列；筛选或检查会话绑定不会重置全局编辑区。
+
+“会话绑定”使用 `useProjection('ptcPlusRepl')` 展示名称、类别、定义源码、原始行列和结算后的有界值预览。`dshPtcPlusBindings` metadata v4 与 projection state v4 包含来源清单及可选 `observation`；只含来源清单的 v3 metadata 仍可读。观察时间位于区块标题旁，值的截断状态标在对应预览旁，无法安全观察的值显示“不可读取”。定义仍为已记录的有界源码片段，复制只复制当前片段，不补读历史或执行代码。预览不表示完整快照，后续异步变化不会自动刷新这份历史观察。
+
+空清单或恢复后暂无清单时只显示紧凑的全宽空状态，不保留空的表格与检查区。会话观察区通过 IntersectionObserver 和文档可见性持有公开 Connection `/ptc-plus-repl` 的可取消 `watch` 请求，Host 最多接受 64 个观察订阅。只有 live cell 分派时仍有该 session 的可见订阅，才发送值观察名称；无订阅不采集，进入 UI 不执行观察。请求意外结束时清理该请求，并在仍可见时按 1、2、4 秒间隔最多重试三次；达到上限后停止计时，后续可见性或连接生命周期变化可重新尝试。区域离开视口、文档隐藏、连接替换、关闭页签开关或 provider 释放都撤销订阅和待重试计时器，旧请求结束不能撤销新请求。此通道只表达展示需求，不读取值，也不提供 session 操作权限。
+
+成功执行后，Acorn 从不含 await 的实际 lowered program 中证明顶层变量的 storage：`var` 通过 REPL context 的自有 data descriptor 读取并拒绝根访问器；`let`/`const` 通过 `vm.runInContext` 读取合法裸标识符，其 lexical storage 优先于同名全局属性，包括未初始化时。失败 cell 不增加证明；含 await 的程序可能被 Node REPL 改变 storage，因此不推测其 binding 存储位置。未证明的名称不会展示碰巧同名的全局属性。该机制不调用 REPL evaluator、不改变最后求值结果、不开放调试连接。`node:util.types.isProxy` 在任何反射操作前排除 Proxy，包括 revoked Proxy；对象通过自有 descriptor 生成浅层预览，不触发 getter、原型读取、`toJSON` 或自定义 formatter。函数、Symbol、BigInt、模块 namespace 和无法证明 storage 的名称显示不可读取。
+
+最多观察 128 个名称，每项文本最多 512 个 UTF-16 code unit、对象最多展示 5 个自有属性；数组只读前 5 个槽位，空槽明确标识，嵌套值不展开。TypedArray（含 Buffer）与 String 包装对象分别通过 `node:util.types.isTypedArray`、`node:util.types.isStringObject` 在枚举前识别并标为不可读取，包括跨 realm 实例和子类，避免为预览分配全部二进制或字符索引；普通字符串仍提供有界文本预览。Worker 在 100 ms 后停止新的 lexical read，单项 VM 读取上限为 25 ms；普通对象的原生 key 枚举仍不能抢占，展示限额不宣称任意 heap 检查成本恒定。Host 最多等待 250 ms，随后显示没有预览的已结算结果。
+
+执行 `done` 与后续 `observation` 是独立的私有消息。待观察名称先由 `createReplMemorySnapshot` 按展示清单的名称、定义来源、条目数量和源码总预算筛选，被省略的 binding 不占用观察名额，也不影响其他条目的预览。Host 先结束 cell 的计算预算、lease 与 journal 结算，再接收可选预览；遗漏、迟到或畸形预览不改变执行结果，不触发 worker 重启。预览按最终 catalog 的名称过滤，只附加到私有 UI metadata，不进入模型上下文、canonical value 或 journal，不作为 replay 或保留隐藏 binding 的证据。cold replay 不采集历史观察，restore/discarded 与原有 generation、模型可见 frontier 失效规则共用。完整边界见 [ADR 0024](adr/0024-repl-console-observation.md)。
+
+250 ms 只是等待可选预览的上限，不表示 worker 已就绪。下一 cell 先经私有 `prepare` / `ready` 握手，匹配的首次 `ready` 才派发代码。`computeMs` / `maxWallMs` 预算通常在发送 `prepare` 前启动；同一 worker 尚未完成的观察暂缓计时，直到收到该观察的完成消息或匹配的 `ready`，且不重置已经启动的预算。观察身份独立于 250 ms 的展示等待记录。等待期间仍可取消，并保留 session disposal 与 worker failure 的处理；过期、畸形或重复的就绪消息不能启动额外执行。大型对象检查可能增加排队等待，但不消耗下一 cell 的执行预算；后台用户回调造成的非观察阻塞仍会正常超时和重置 worker。
 
 live 配置若因宿主能力缺失或 runtime 安装/重配置失败，会先回滚所有已创建或更新的 owner，再把持久设置回写为上一次已应用值；回滚写入失败时 Host 记录 activation diagnostic，避免静默把配置显示成不存在的 runtime。
 
@@ -80,7 +110,7 @@ npm run build
 
 `npm run test:client` 使用 DSH 发布的 Cordis、SlotTestRuntime、renderer 和 conversation registry/assembler 验证激活、Location 关联、响应式更新和释放。测试 loader 只适配发布的 ModuleLoader 格式，并为上游 test-runtime 缺失的两个源码引用暴露同一发布 renderer 的函数，不复制其行为。打包后的浏览器启动另由 `npm run test:client:web` 验证，前置条件与命令见 [安装指南](installation.md)。
 
-`npm run test:client:layout -- --browser-channel msedge` 从真实 Client renderer 生成包含公共 Button/CodeBlock CSS 的固定视图，再用 Playwright 检查 320、390、1440 px viewport 下的长中英文条目、保存前后、源码展开、横向溢出、控件矩形与键盘展开。截图和测量保留在 ignored `artifacts/binding-layout/`。这是几何与原生 details 验收；RPC、冲突和 locale 行为由 `test:client` 执行，完整打包宿主由 `test:client:web` 执行。
+`npm run test:client:layout -- --browser-channel msedge` 从真实 Client renderer 生成包含公共 Button/CodeBlock/Modal 和 CodeMirror CSS 的固定视图，再用 Playwright 检查 320、390、1440 px viewport 下的长中英文条目、58 条会话绑定、横向溢出、控件矩形与折叠区，包含 REPL 观察区、完整工作台和设置弹窗。截图和测量保留在 ignored `artifacts/binding-layout/`。这是几何与原生 details 验收；筛选、选中、编辑撤销、RPC、冲突、页签生命周期和 locale 行为由 `test:client` 执行，真实编辑器高亮、键盘操作、保存、宿主布局和主题由 `test:client:web` 执行。
 
 ## 回退
 

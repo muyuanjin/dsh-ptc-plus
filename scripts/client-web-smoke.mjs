@@ -26,6 +26,39 @@ let browser
 let page
 const bindingMeasurements = []
 const bindingScrollMeasurements = []
+const replMeasurements = []
+
+async function verifyReplLayout(state) {
+  await page.locator('[data-composer-seat] [contenteditable=true]').waitFor({ state: 'hidden' })
+  assert.equal(await page.locator('.ptcPlusConsole [role=tab]').count(), 0)
+  assert.equal(await page.locator('.ptcPlusConsole .ptcPlusSessionBindings').count(), 1)
+  assert.equal(await page.locator('.ptcPlusConsole .ptcPlusBindings').count(), 1)
+  const metrics = await page.locator('.ptcPlusConsole').evaluate(element => {
+    const bounds = element.getBoundingClientRect()
+    const scroller = document.querySelector('[data-conversation-scroll]')
+    const frame = scroller.getBoundingClientRect()
+    const handles = [...document.querySelectorAll('[data-width-handle]')]
+      .map(handle => ({ display: getComputedStyle(handle).display, height: handle.getBoundingClientRect().height }))
+    const intercepted = []
+    for (const x of [0.05, 0.25, 0.5, 0.75, 0.95]) {
+      for (const y of [0.25, 0.5, 0.85]) {
+        const hit = document.elementFromPoint(bounds.left + bounds.width * x, bounds.top + bounds.height * y)
+        if (!element.contains(hit)) intercepted.push({ x, y, hit: hit?.className })
+      }
+    }
+    return { width: innerWidth, height: innerHeight, console: bounds.toJSON(), frame: frame.toJSON(),
+      scrollHeight: scroller.scrollHeight, clientHeight: scroller.clientHeight, handles, intercepted,
+      draft: document.querySelector('[data-composer-seat] [contenteditable=true]').textContent }
+  })
+  assert.ok(metrics.handles.length > 0, 'Missing host width handles in fixture')
+  assert.ok(metrics.handles.every(handle => handle.display === 'none' && handle.height === 0),
+    `${state}: transcript width handles remain active`)
+  assert.deepEqual(metrics.intercepted, [], `${state}: host chrome intercepts the REPL view`)
+  assert.ok(Math.abs(metrics.console.height - metrics.frame.height) <= 1, `${state}: REPL did not fill the view`)
+  assert.ok(metrics.scrollHeight <= metrics.clientHeight + 1, `${state}: REPL escaped its scrollport`)
+  assert.equal(metrics.draft, 'Unsent draft survives REPL navigation')
+  replMeasurements.push({ state, ...metrics })
+}
 
 async function captureBindingScroll(state) {
   for (const fraction of [0, 0.5, 1]) {
@@ -252,7 +285,7 @@ try {
     await rpc('workspace/create', { request: { path: workspace } })
     await page.getByText('workspace', { exact: true }).first().hover()
     await page.getByRole('button', { name: 'New session in workspace', exact: true }).click()
-    const composer = page.locator('[contenteditable=true]')
+    const composer = page.locator('[data-composer-seat] [contenteditable=true]')
     await composer.waitFor({ timeout: 30000 })
     const submit = async text => { await composer.fill(text); await composer.press('Enter') }
     await submit('/binding new constant workflow helper')
@@ -302,20 +335,203 @@ try {
     await page.locator('body[data-ds-dark-theme]').waitFor()
     await captureBinding('dark', 390)
     await page.setViewportSize({ width: 1440, height: 1000 })
+    await composer.fill('Unsent draft survives REPL navigation')
+    const handles = await page.locator('[data-width-handle]').evaluateAll(elements => elements.map(element => {
+      const bounds = element.getBoundingClientRect()
+      return { x: bounds.left + bounds.width / 2, y: bounds.top + bounds.height * 0.85, width: bounds.width }
+    }))
+    assert.ok(handles.some(handle => handle.width > 0), 'Chat width handles have no hit area')
+    const widthPreference = () => page.locator('[data-conversation-scroll]').evaluate(element => (
+      getComputedStyle(element).getPropertyValue('--dsh-chat-user-width')
+    ))
+    const originalWidth = await widthPreference()
+    await page.getByRole('tab', { name: 'REPL', exact: true }).click()
+    await page.locator('.ptcPlusConsole').waitFor()
+    await composer.waitFor({ state: 'hidden' })
+    for (const handle of handles.filter(handle => handle.width > 0)) {
+      await page.mouse.move(handle.x, handle.y)
+      await page.mouse.down()
+      await page.mouse.move(handle.x + 40, handle.y, { steps: 4 })
+      await page.mouse.up()
+    }
+    assert.equal(await widthPreference(), originalWidth, 'REPL drag changed the transcript width')
+    assert.ok(await page.getByRole('heading', { name: 'Session bindings', exact: true }).isVisible())
+    assert.ok(await page.getByRole('heading', { name: 'Global bindings', exact: true }).isVisible())
+    for (const width of [390, 1440]) {
+      await page.setViewportSize({ width, height: 1000 })
+      if (width < 1024) await page.locator('[data-sidebar-collapsed=true]').waitFor()
+      await verifyReplLayout('session')
+      await page.screenshot({ path: join(evidence, `repl-${width}.png`), fullPage: true, animations: 'disabled' })
+      assert.ok(await page.locator('.ptcPlusConsole').evaluate(element => element.clientWidth >= 240), 'REPL view remained squeezed after sidebar collapse')
+      assert.equal(await page.locator('.ptcPlusConsole').evaluate(element => element.scrollWidth <= element.clientWidth + 1), true)
+    }
+    const observationSelect = page.locator('.ptcPlusObservationSelect').first()
+    await observationSelect.focus()
+    await page.keyboard.press('Enter')
+    const definition = page.locator('.ptcPlusObservationCode').first()
+    await definition.locator('pre.shiki').waitFor()
+    const tokenColors = await definition.locator('pre.shiki span[style]').evaluateAll(elements => (
+      [...new Set(elements.map(element => getComputedStyle(element).color))]
+    ))
+    assert.ok(tokenColors.length > 1, 'Binding definition has no syntax highlighting')
+    const copiedSource = await definition.locator('pre').textContent()
+    await page.context().grantPermissions(['clipboard-read', 'clipboard-write'])
+    await definition.getByRole('button', { name: 'Copy code', exact: true }).click()
+    const clipboardSource = await page.evaluate(() => navigator.clipboard.readText())
+    assert.equal(clipboardSource.replace(/\r\n/g, '\n'), copiedSource.replace(/\r\n/g, '\n'))
+    await page.locator('.ptcPlusBindingSelect').first().click()
+    assert.equal(await page.locator('.ptcPlusSourceBody .cm-content').count(), 0)
+    await page.locator('.ptcPlusSourceToggle').click()
+    await page.locator('.ptcPlusSourceCode pre.shiki').waitFor()
+    const sourceColors = await page.locator('.ptcPlusSourceCode pre.shiki span[style]').evaluateAll(elements => (
+      [...new Set(elements.map(element => getComputedStyle(element).color))]
+    ))
+    assert.ok(sourceColors.length > 1, 'Read-only implementation source has no syntax highlighting')
+    await page.getByRole('button', { name: 'Edit', exact: true }).click()
+    const codeEditor = page.locator('.ptcPlusConsole .ptcPlusSourceBody .cm-content')
+    await codeEditor.waitFor()
+    const editorColors = await codeEditor.locator('span[class]').evaluateAll(elements => (
+      [...new Set(elements.map(element => getComputedStyle(element).color))]
+    ))
+    assert.ok(editorColors.length > 1, 'Editable TypeScript source has no syntax highlighting')
+    assert.ok(await page.locator('.ptcPlusCodeEditor .cm-lineNumbers').count() > 0, 'Editor has no line numbers')
+    const originalSource = await codeEditor.innerText()
+    await codeEditor.fill('export function value(): number { return 43 }')
+    await page.waitForFunction(() => [...document.querySelectorAll('.ptcPlusConsole .cm-line span')].some(node => node.textContent === '43'))
+    await codeEditor.press('ControlOrMeta+z')
+    assert.equal(await codeEditor.innerText(), originalSource)
+    const editedSource = [
+      'interface BindingSummary {',
+      '  name: string',
+      '  count: number',
+      '  values: readonly number[]',
+      '}',
+      '',
+      'function summarize(name: string, values: number[]): BindingSummary {',
+      '  return {',
+      '    name,',
+      '    count: values.length,',
+      '    values: values.filter(value => Number.isFinite(value)),',
+      '  }',
+      '}',
+      '',
+      '/** Return the current sample value. */',
+      'export function value(): number {',
+      '  const report = summarize("sample", [12, 15, 16])',
+      '  return report.values.reduce((sum, item) => sum + item, 0)',
+      '}',
+    ].join('\n')
+    await codeEditor.fill(editedSource)
+    if (await page.locator('.ptcPlusExecution').getAttribute('open') === null) {
+      await page.locator('.ptcPlusExecution > summary').click()
+    }
+    const consoleInput = page.locator('.ptcPlusExecutionInput .cm-content')
+    const execute = async (code, expected) => {
+      await consoleInput.fill(code)
+      await consoleInput.press('ControlOrMeta+Enter')
+      await page.locator('.ptcPlusExecutionOutput').last().filter({ hasText: expected }).waitFor()
+      await page.getByRole('button', { name: 'Run', exact: true }).waitFor()
+    }
+    await execute('const current: number = value(); current', '43')
+    await execute('current + 1', '44')
+    await execute('let changed = 1; changed = 2; throw new Error("ordinary failure")', 'ordinary failure')
+    await execute('changed', '2')
+    await page.getByRole('button', { name: 'Save', exact: true }).click()
+    await page.locator('.ptcPlusConsole [role=status]').filter({ hasText: 'Entry saved' }).waitFor()
+    assert.equal(await page.locator('.ptcPlusSourceBody .cm-content').count(), 0)
+    await execute('typeof current', 'undefined')
+    await page.locator('.ptcPlusSourceToggle').click()
+    await page.locator('.ptcPlusSourceCode').getByRole('button', { name: 'Copy code', exact: true }).click()
+    const savedSource = await page.evaluate(() => navigator.clipboard.readText())
+    assert.equal(savedSource.replace(/\r\n/g, '\n'), editedSource)
+    await consoleInput.fill('await new Promise(() => {})')
+    await page.getByRole('button', { name: 'Run', exact: true }).click()
+    await page.getByRole('button', { name: 'Stop', exact: true }).click()
+    await page.getByRole('button', { name: 'Run', exact: true }).waitFor()
+    await execute('value()', '43')
+    for (const width of [390, 1440]) {
+      await page.setViewportSize({ width, height: 1000 })
+      if (width < 1024) await page.locator('[data-sidebar-collapsed=true]').waitFor()
+      await page.locator('.ptcPlusConsole').evaluate(element => { element.scrollTop = 0 })
+      await verifyReplLayout('global')
+      await page.screenshot({ path: join(evidence, width === 1440 ? 'repl-global.png' : `repl-global-${width}.png`),
+        fullPage: true, animations: 'disabled' })
+      assert.equal(await page.locator('.ptcPlusBindings').evaluate(element => element.scrollWidth <= element.clientWidth + 1), true)
+    }
+    await rpc('settings/update', { ns: 'ui-theme', patch: { preference: 'light' } })
+    await page.locator('body[data-ds-dark-theme]').waitFor({ state: 'detached' })
+    for (const width of [390, 1440]) {
+      await page.setViewportSize({ width, height: 1000 })
+      if (width < 1024) await page.locator('[data-sidebar-collapsed=true]').waitFor()
+      await verifyReplLayout('global-light')
+      await page.screenshot({ path: join(evidence, `repl-global-light-${width}.png`), fullPage: true, animations: 'disabled' })
+    }
+    await rpc('settings/update', { ns: 'locale', patch: { preference: 'zh' } })
+    await page.getByRole('heading', { name: '会话绑定', exact: true }).waitFor()
+    for (const width of [390, 1440]) {
+      await page.setViewportSize({ width, height: 1000 })
+      if (width < 1024) await page.locator('[data-sidebar-collapsed=true]').waitFor()
+      await verifyReplLayout('session-light')
+      await page.screenshot({ path: join(evidence, `repl-light-${width}.png`), fullPage: true, animations: 'disabled' })
+      if (width < 1024) {
+        await page.locator('.ptcPlusConsole .ptcPlusCodeEditor').scrollIntoViewIfNeeded()
+        await page.screenshot({ path: join(evidence, `repl-editor-light-${width}.png`), fullPage: true, animations: 'disabled' })
+        await page.locator('.ptcPlusConsole').evaluate(element => { element.scrollTop = 0 })
+      }
+    }
+    await rpc('settings/update', { ns: 'locale', patch: { preference: 'en' } })
+    await page.getByRole('heading', { name: 'Session bindings', exact: true }).waitFor()
+    await page.getByRole('tab', { name: 'Chat', exact: true }).click()
+    await composer.waitFor({ state: 'visible' })
+    assert.equal(await composer.innerText(), 'Unsent draft survives REPL navigation')
+    assert.ok(await page.locator('[data-width-handle]').first().isVisible(), 'Chat width handles did not return')
+    await page.getByRole('tab', { name: 'REPL', exact: true }).click()
+    await composer.waitFor({ state: 'hidden' })
+    await rpc('settings/update', { ns: 'ptc-plus', patch: { enabled: false } })
+    await page.getByRole('tab', { name: 'REPL', exact: true }).waitFor({ state: 'detached' })
+    await composer.waitFor({ state: 'visible' })
+    assert.equal(await composer.innerText(), 'Unsent draft survives REPL navigation')
+    await composer.fill('')
+    await rpc('settings/update', { ns: 'ptc-plus', patch: { enabled: true } })
+    await page.getByRole('tab', { name: 'REPL', exact: true }).waitFor()
   }
   await page.screenshot({ path: join(evidence, 'conversation.png'), fullPage: true, animations: 'disabled' })
   await page.getByRole('button', { name: /^(Settings|设置)$/ }).first().click()
   await page.getByText(/^(Plugins|插件)$/).click()
   await page.locator('.ptcPlusCard').waitFor()
   await page.locator('.ptcPlusCard .ptcPlusHeader').click()
-  await page.locator('.ptcPlusBindings').waitFor()
+  const manage = page.getByRole('button', { name: /^(Manage global bindings|管理全局绑定)$/ })
+  await manage.click()
+  await page.locator('.ptcPlusBindingsModal .ptcPlusBindings').waitFor()
+  await page.getByRole('button', { name: /^(Close global bindings workbench|关闭全局绑定工作台)$/ }).click()
   const bindingsSwitch = page.getByRole('switch', { name: /Global User Binding|全局用户 Binding/ })
   await bindingsSwitch.click()
-  await page.locator('.ptcPlusBindings').waitFor({ state: 'detached' })
+  await manage.waitFor({ state: 'detached' })
   assert.equal(await bindingsSwitch.isChecked(), false)
   await bindingsSwitch.click()
-  await page.locator('.ptcPlusBindings').waitFor()
+  await manage.waitFor()
   assert.equal(await bindingsSwitch.isChecked(), true)
+  await manage.click()
+  if (values['binding-workflow']) {
+    const consolePane = page.locator('.ptcPlusBindingsModal .ptcPlusExecution')
+    await consolePane.waitFor()
+    if (await consolePane.getAttribute('open') === null) await consolePane.locator('summary').click()
+    assert.equal(await consolePane.locator('.ptcPlusExecutionRecord').count(), 0)
+    for (const [code, expected] of [['const saved = value(); saved', '43'], ['saved + 1', '44']]) {
+      await consolePane.locator('.cm-content').fill(code)
+      await consolePane.getByRole('button', { name: 'Run', exact: true }).click()
+      await consolePane.locator('.ptcPlusExecutionOutput').last().filter({ hasText: expected }).waitFor()
+    }
+    await consolePane.locator('summary').click()
+  }
+  for (const width of [390, 1440]) {
+    await page.setViewportSize({ width, height: 1000 })
+    await page.locator('.ptcPlusBindingsModal').waitFor()
+    assert.equal(await page.locator('.ptcPlusBindingsDialog').evaluate(element => element.scrollWidth <= element.clientWidth + 1), true)
+    await page.screenshot({ path: join(evidence, `bindings-modal-${width}.png`), fullPage: true, animations: 'disabled' })
+  }
+  await page.keyboard.press('Escape')
+  await page.locator('.ptcPlusBindingsModal').waitFor({ state: 'detached' })
   await page.screenshot({ path: join(evidence, 'settings.png'), fullPage: true, animations: 'disabled' })
   assert.equal(errors.length, 0, errors.join('\n'))
   await writeFile(join(evidence, 'result.json'), JSON.stringify({
@@ -323,7 +539,7 @@ try {
     browser: { version: browser.version(), channel: values['browser-channel'] ?? 'chromium' },
     settings: 'ready', conversation: 'ready', pageErrors: errors,
     bindingWorkflow: values['binding-workflow'] ? { model: 'deterministic-local-adapter', measurements: bindingMeasurements,
-      scrollMeasurements: bindingScrollMeasurements } : null,
+      scrollMeasurements: bindingScrollMeasurements, replMeasurements } : null,
   }, null, 2) + '\n')
   console.log(`Packed Client Web smoke passed (${version})`)
 } catch (error) {

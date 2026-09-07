@@ -2,6 +2,18 @@
 
 PTC Plus 是个人维护的社区实验插件。它把 DSH PTC 模式的顶层 `run_code` 变成 session-bound TypeScript REPL；它不复制 DSH 的权限、sandbox、nested dispatch、调度、取消、审批或跨平台进程治理。
 
+## Language
+
+**REPL 控制台**：用于只读观察当前会话 REPL 状态与管理 Global User Bindings 的用户工作台。会话观察面向会话内的计算状态，全局绑定管理面向跨会话的持久化计算输入。
+
+**有界值预览**：会话 binding 在明确观察时点、长度与结构限额内的只读值展示，与名称和定义来源共同描述该 binding。预览不为展示执行用户代码，截断或不可读取的部分保持明确标识，不代表完整值、可执行副本或模型已知状态。
+
+**全局绑定工作台**：Global User Bindings 的统一管理界面，由 REPL 控制台和设置入口共同提供。持久化条目的管理不依赖当前存在 PTC 会话，Agent 辅助编写仍需要可用会话。
+
+**全局绑定代码执行**：用户基于当前全局条目的源码草稿直接运行 TypeScript 并查看结果，无需先保存，临时变量可在多次执行之间连续复用，普通语法或运行错误不清空环境、不回滚此前发生的修改。执行环境与 Agent 会话的 REPL 状态分开，不读取或修改其会话变量，也不将执行记录写入该会话的 journal。
+
+**临时执行状态**：当前工作台为选中全局条目保留的一份连续计算状态，折叠或展开界面不改变它，连续 10 分钟没有执行代码时自动释放并保留界面上的输入输出记录。源码草稿改动后的下一次运行、切换条目、保存修改后的源码、离开工作台、手动重置或因停止、超时、运行环境故障而终止执行环境时会清空旧状态；运行从当前源码草稿重新开始，不恢复或自动重放此前输入，编辑本身不触发执行。
+
 ## Core constraints
 
 1. `danger-full-access` 是一等体验：保留模型熟悉的 Node、process、filesystem、network、shell、生态 SDK 与 DSH native typed `tools.*`。其他 profile 的 native tool surface 只按 live request 简单降级，不模拟缺失能力；更窄 tool view 不构成 Node ambient sandbox。
@@ -70,6 +82,16 @@ PTC Plus 注册 `ptc-plus` settings namespace，字段来源于 `internal/config
 `cordisToolsEnabled` 默认关闭且即时生效。开启时，官方 `@deepseek-ai/dsh-tool-cordis` 与 shipped `cordis` preset 的 `cordis-plugin-development` Skill 作为同一个 agent-scoped mount 进入可见 `run_code` 的 agent；Skill 根通过公共 `agentPresets.resolve()` 定位，官方 filesystem provider 继续拥有解析、资源基址、watch、invalidation 与加载，PTC Plus 只在公共 provider 注册边界精确保留 companion Skill，不能让同目录 sibling 自动扩展 PTC surface，也不复制内容或切换 preset。普通 agent 不继承，code-only direct-tool projection 仍为 `[run_code, edit_run_code]`。agent 创建早于 `run_code` 可见时，插件会在工具 surface 变化后重试挂载；preset、精确 Skill、所需服务或任一 child fiber 在首轮前不可用时，启用失败并完整回滚。Cordis 工具名、数量、schema 和 guidance 只由官方 tool fiber 的 live surface 拥有，PTC Plus 不复制或枚举。官方 fiber 的 Host inspect provider 注册属于进程级资源：PTC Plus 在自己的 runtime owner 内合并同一 manifest 的 agent-fiber lease，并在最后一份 lease 释放时注销，避免多 agent 或关闭后重开重复占用 provider ID；查询实现始终委托给仍存活的官方 fiber。
 `userBindingsEnabled` 默认关闭且即时生效。开启时，Host 才读取 `$DSH_HOME/ptc-plus/bindings.json`，注册经过 Host/Origin 检查与浏览器认证的 Connection RPC，并按实际 PTC prompt composition 注册 agent-scoped `/binding` 命令；空会话切换 preset 时先撤销旧命令与 edit surface，再由下一次 assembly 确认新 composition。Client 同时显示设置工作台与 session Global 页签。设置工作台拥有完整管理；命令卡片提供用户独占的草稿保存与丢弃。`code.submitBindingDraft({requestId, entry})` 是同配置下稳定的内部 program SDK，Host 在调用时核验精确 agent、请求代际、cell lease 和一次提交资格；编写指引通过追加 instructions 消息提供，开始和结束不挂卸 tool 或 Skill。首个有效提交成为停用内存草稿，不能执行或持久化候选。Connection RPC 没有 caller/session identity，因而 draft 操作必须持有 Host 生成并只经 accepting session 私有 result metadata/projection 发布的 opaque locator，不得信任 payload session ID；agent/session disposal、功能关闭或 owner disposal 撤销该 locator。已接受源码与命令身份作为独立只读历史保留；用户保存或丢弃完成后，通过公共 Session append 写入引用接受结果的事实回执，保存不等于成功激活，UI 源码也不构成模型状态知识。候选 worker 只隔离 session 状态，不降低 DSH 进程权限或承诺 effect 可回滚。
 设置卡片、正文 PTC Plus tool view 与 REPL binding 卡片的全部文案注册到 DSH client 的 `settings.ptcPlus` locale 命名空间，随界面语言在中文与 English 之间切换；字段名称与说明的双语文本由 `internal/config-spec.js` 拥有，展示 chrome 文案由 client half 拥有。稳定 REPL 指引保持插件拥有的协议文本，不携带 UI 品牌名。选择 `ptc` preset 或兼容的 `code` preset 且插件启用时，Client 会在会话头部以稳定 slot id `ptc-plus-active` 显示轻量 `PTC Plus` 标识；悬浮或键盘聚焦时，从公共 `sessionProjections` 的 `ptcPlusRepl` value 显示当前 runtime owner 已证明可供该 agent 后续 cell 复用的 binding、variable/function/class/import 类别及其有界原始声明源码与行列，用户可在卡片内展开查看定义。定义来源由 AST preparation 和 BindingCatalog 从已提交 cell 文本拥有，不读取、调用或序列化 worker 中的 binding value/getter；每段源码至多 1024 个 UTF-16 code unit、单个 snapshot 合计至多 16384 个 code unit，清单至多 128 项。运行时把该有界 inventory 与 presentation-only runtime generation 写入并行私有 `meta.dshPtcPlusBindings`；volatile 只是 cold recovery 分类，只要 live worker 仍保留且 model-visible provenance 未被遮蔽，才继续发布该 binding inventory。该 UI-only snapshot 不进入模型请求，也不能单独证明模型知道某个 binding 或延长其 runtime 生命周期。restore、discarded settlement 或 model-visible surface contraction 会重置/收缩 worker，因而在下一次 cell 物化并证明有效 binding surface 前显示不可确认。投影以 DSH 公共 `tool/call.data.callId` 与 `tool/result.data.message.source.callId` 配对 `run_code` / `edit_run_code`，不要求可选的 `sourceEventSeqs`；只接受当前 runtime generation 的完整 snapshot，并在 `session/end-seed` 清除上一 lifecycle 的 live 证明。相关结果缺少、损坏或属于其他 generation 的 snapshot 时不覆盖最后一个仍有效的已证明清单；无关 tool result 与仍保留声明 provenance 的 result-only replacement 同样不覆盖。若 replacement 收缩 model-visible state frontier，runtime 与 UI projection 必须使用同一 owner decision：相关 binding 从默认计算环境移除，inventory 在下一份对齐 snapshot 前显示不可确认。DSH 的 header-action 公共 kit 不提供从卡片打开 tool call/source location 的导航能力，因此 Client 使用卡片内检查，不访问私有 store 或宿主 DOM；来源跳转要求 Host 提供公共 capability。该路径不执行代码、不增加模型可见内容。插件启用期间，Client 还通过公共 keyed `tool.call.toolview` 为 `run_code` 与 `edit_run_code` 保留源码/结果视图，并只在已有 presentation metadata 能证明时展示具体功能事件；关闭时注销这两个 key，交还 DSH 原生 fallback。正文不显示 cell、call、恢复边界等计数。该展示不请求历史、不检查宿主 DOM，也不增加或改变 canonical result、tool、prompt、runtime context、封闭 journal schema、replay 或迁移；缺少有效 metadata 或兼容 projection service 时不显示当前 binding inventory，继续会话和核心 runtime 语义不变。Client 从公共 `uiSession` 的当前 snapshot/projectionValues 读取会话状态，不使用兼容顶层字段或私有 store。DSH settings 服务缺省时回退 composition config，运行时语义保持不变。
+
+## REPL 控制台
+
+REPL 控制台使用公开 `conversation.view`，由当前 Client 的会话选择、`agentPreset` projection 与插件开关共同决定注册；只有 `ptc` / `code` 会话拥有该页签，DSH 继续拥有导航与回退。会话观察只显示名称、定义来源及带观察时间、截断与不可读取状态的有界值预览。值检查属于 worker owner，只读取成功执行源码可证明 storage 的 lexical binding 或自有 data descriptor，并在反射前排除 Proxy；不触发 getter、Proxy trap 或用户 formatter，不使用 Inspector 连接。无法安全检查的值保持不可读取。
+
+cell 的执行结果与 journal 先结算，再以独立私有消息附加可选 UI 观察。预览失败、迟到或缺失不改变已结算结果、不重启 worker，也不构成模型知识、journal evidence 或保留隐藏 binding 的理由。它不是原子 heap snapshot 或实时监控，不增加会话代码输入、Agent 对象操作或克隆环境。`dshPtcPlusBindings` v4 的可选观察与名称清单共享原有 generation、seed、restore/discard 和模型可见 frontier 失效规则；旧 v3 源码清单仍可展示。
+
+Host 最多等待 250 ms 获取可选预览，但这不代表 worker 已结束原生检查。下一 cell 通过私有 `prepare` / `ready` 消息确认 worker 就绪后才派发代码。计算与墙钟预算通常从发送 `prepare` 前开始；只有同一 worker 尚未完成的观察可以暂缓计时，观察完成或匹配的 `ready` 到达时启动预算，已启动的预算不重置。观察的执行身份与展示等待期限分别记录，因此上一次观察不占用下一 cell 的执行预算，后台用户回调导致的其他阻塞仍会超时并按原契约恢复。等待同时受请求取消、session disposal 与 worker failure 约束，不能因为预览迟到重置连续 binding。
+
+完整全局管理由 REPL 全局绑定区和设置按钮打开的大尺寸应用内弹窗复用同一个工作台组件。设置卡片保留开关与管理按钮，普通管理不依赖当前 PTC 会话；Agent 编写仍需要会话命令资格。功能关闭时两处管理 UI 都释放，原有权限、revision 校验、持久化和激活语义继续由 Host owner 拥有。具体预算和协议见 [ADR 0024](docs/adr/0024-repl-console-observation.md)。
 
 ## Scope boundaries
 

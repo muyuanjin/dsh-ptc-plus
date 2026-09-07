@@ -1,6 +1,7 @@
 import { readFile, writeFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import { build } from 'esbuild'
+import { parse } from 'acorn'
 
 const entry = fileURLToPath(new URL('../src/client.js', import.meta.url))
 const output = fileURLToPath(new URL('../client.js', import.meta.url))
@@ -32,7 +33,18 @@ if (!['build', 'check'].includes(command)) {
 }
 
 const result = await build(options)
-const generated = result.outputFiles[0].text
+const bundled = result.outputFiles[0].text
+const parts = []
+let offset = 0
+// Dependency comments may contain trailing whitespace; literals must remain exact.
+parse(bundled, {
+  ecmaVersion: 'latest',
+  onComment(_block, _text, start, end) {
+    parts.push(bundled.slice(offset, start), bundled.slice(start, end).replace(/[\t ]+$/gm, ''))
+    offset = end
+  },
+})
+const generated = parts.join('') + bundled.slice(offset)
 if (command === 'build') {
   await writeFile(output, generated)
 } else {

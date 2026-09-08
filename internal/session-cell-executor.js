@@ -425,7 +425,7 @@ export class SessionCellExecutor {
       )
       active.startBudgets = () => {
         if (active.computeTimer !== undefined) return
-        // Only an unfinished observation is exempt from the next cell's budgets.
+        // Only worker-confirmed observation may defer these budgets; never restart them.
         const started = worker.performance.eventLoopUtilization()
         active.computeTimer = setInterval(() => {
           if (worker.performance.eventLoopUtilization(started).active > config.computeMs) {
@@ -477,7 +477,8 @@ export class SessionCellExecutor {
         return
       }
       try {
-        if (kernel.workerObservation?.worker !== worker) active.startBudgets()
+        if (kernel.workerObservation?.worker !== worker
+          || kernel.workerObservation.started !== true) active.startBudgets()
         kernel.client.post({ type: 'prepare', id })
       } catch (error) {
         active.resolve(earlyResult('worker-exit', messageOf(error)), true)
@@ -540,7 +541,16 @@ export class SessionCellExecutor {
   }
 
   onMessage(message) {
+    if (message?.type === 'observation-started') {
+      const kernel = this.kernel
+      const observation = kernel.workerObservation
+      if (observation !== undefined && observation.id === message.id
+        && observation.worker === kernel.client.worker) observation.started = true
+      return
+    }
     if (message?.type === 'ready') {
+      const inspection = this.kernel.pendingInspection
+      if (inspection !== undefined && inspection.id === message.id) inspection.start()
       const active = this.kernel.active
       if (active !== undefined && active.id === message.id) active.start()
       return

@@ -119,6 +119,7 @@ const CHROME_COPY = Object.freeze({
     'console.value': '值预览',
     'console.observed': '结算后观察：{time}',
     'console.unobserved': '尚无值观察记录',
+    'console.unobservedValue': '尚未观察',
     'console.unreadable': '不可读取',
     'console.bounded': '已截断',
     'bindings.manage': '管理全局绑定',
@@ -258,6 +259,7 @@ const CHROME_COPY = Object.freeze({
     'console.value': 'Value preview',
     'console.observed': 'Observed after settlement: {time}',
     'console.unobserved': 'No value observation yet',
+    'console.unobservedValue': 'Not observed yet',
     'console.unreadable': 'Unreadable',
     'console.bounded': 'Truncated',
     'bindings.manage': 'Manage global bindings',
@@ -504,7 +506,7 @@ window.__ModuleLoader__.load({
         throw error
       }
 
-      function observeRepl(sessionId, element) {
+      function observeRepl(sessionId, element, memory, onObservation) {
         let controller
         let retryTimer
         let retries = 0
@@ -531,6 +533,16 @@ window.__ModuleLoader__.load({
           if (delay === undefined) return
           retryTimer = setTimeout(() => { retryTimer = undefined; sync() }, delay)
         }
+        const read = async current => {
+          if (!memory.available || memory.entries.length === 0 || memory.observation !== undefined) return
+          try {
+            const result = await ctx.connection.rpc.call('/ptc-plus-repl', 'observe', { sessionId, memory }, current.signal)
+            if (disposed || controller !== current || current.signal.aborted || result?.ok !== true || result.value === null) return
+            const observed = normalizeReplMemorySnapshot(result.value)
+            const { observation, ...inventory } = observed
+            if (observation !== undefined && JSON.stringify(inventory) === JSON.stringify(memory)) onObservation(observed)
+          } catch {}
+        }
         const sync = () => {
           if (disposed) return
           const active = visible && document.visibilityState !== 'hidden'
@@ -538,6 +550,7 @@ window.__ModuleLoader__.load({
           if (controller !== undefined || retryTimer !== undefined || retries > retryDelays.length) return
           controller = new AbortController()
           void watch(controller)
+          void read(controller)
         }
         const observer = typeof IntersectionObserver === 'function' ? new IntersectionObserver(entries => {
           visible = entries.some(entry => entry.isIntersecting)
@@ -1025,7 +1038,7 @@ window.__ModuleLoader__.load({
           h('div', { className: 'ptcPlusObservationLabel' }, t('console.value'),
             preview?.truncated ? h('span', { className: 'ptcPlusObservationState' }, t('console.bounded')) : null),
           readable ? h('pre', { className: 'ptcPlusObservationPreview' }, preview.text)
-            : h('p', { className: 'ptcPlusObservationUnavailable' }, t('console.unreadable')))
+            : h('p', { className: 'ptcPlusObservationUnavailable' }, t(preview === undefined ? 'console.unobservedValue' : 'console.unreadable')))
       }
 
       function ReplSessionBindings({ memory, t }) {
@@ -1073,7 +1086,7 @@ window.__ModuleLoader__.load({
                       h('td', { className: 'ptcPlusObservationKind' }, t(`memory.kind.${entry.kind}`)),
                       h('td', null, h('span', { className: 'ptcPlusObservationValue' },
                         preview?.status === 'readable' ? h('code', null, preview.text)
-                          : h('span', { className: 'ptcPlusObservationState' }, t('console.unreadable')),
+                          : h('span', { className: 'ptcPlusObservationState' }, t(preview === undefined ? 'console.unobservedValue' : 'console.unreadable')),
                         preview?.truncated ? h('span', { className: 'ptcPlusObservationState' }, t('console.bounded')) : null)))
                   }))),
                 entries.length === 0 ? h('p', { className: 'ptcPlusMessage ptcPlusObservationEmpty' },
@@ -1089,14 +1102,18 @@ window.__ModuleLoader__.load({
         const globalEnabled = settings.value?.userBindingsEnabled === true
         const eligible = settings.status === 'ready' && settings.value?.enabled === true
           && settings.value?.replViewEnabled !== false && sessionUsesPtcPreset(preset)
+        const memory = React.useMemo(() => {
+          try { return normalizeReplMemorySnapshot(projected) } catch { return unavailableReplMemorySnapshot() }
+        }, [projected])
+        const [observed, setObserved] = React.useState(null)
         const observationRegion = React.useRef(null)
         React.useEffect(() => eligible ? hideComposer(sessionId) : undefined, [eligible, hideComposer, sessionId])
-        React.useEffect(() => eligible ? observeRepl(sessionId, observationRegion.current) : undefined, [eligible, observeRepl, sessionId])
+        React.useEffect(() => eligible ? observeRepl(sessionId, observationRegion.current, memory,
+          value => setObserved({ sessionId, source: memory, value })) : undefined, [eligible, observeRepl, sessionId, memory])
         if (!eligible) return null
-        let memory
-        try { memory = normalizeReplMemorySnapshot(projected) } catch { memory = unavailableReplMemorySnapshot() }
         return h('div', { className: 'ptcPlusConsole', 'data-conversation-composer-overlay': '' },
-          h('div', { className: 'ptcPlusConsoleSection', ref: observationRegion }, h(ReplSessionBindings, { key: sessionId, memory, t })),
+          h('div', { className: 'ptcPlusConsoleSection', ref: observationRegion }, h(ReplSessionBindings, {
+            key: sessionId, memory: observed?.sessionId === sessionId && observed.source === memory ? observed.value : memory, t })),
           globalEnabled ? h('div', { className: 'ptcPlusConsoleSection ptcPlusBindingsSurface' },
             h(UserBindingsWorkbench, { enabled: true, t, callUserBindings, headingLabel: t('console.global') })) : null)
       }

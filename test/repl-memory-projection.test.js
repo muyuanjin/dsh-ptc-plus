@@ -376,6 +376,20 @@ return answer
   ])
 })
 
+test('trusted-host observation supplies missing previews without writing projection or execution evidence', async t => {
+  const state = fixture({}, { bindingRpc: () => {} })
+  t.after(() => state.dispose())
+  const result = await state.runDurable('open-after-cell', 'const answer = await Promise.resolve(42); return answer')
+  const memory = resultMemory(result)
+  assert.equal(memory.observation, undefined)
+  const before = JSON.stringify(result)
+  const response = await state.observeRepl('open-after-cell', memory)
+  assert.equal(response.ok, true)
+  assert.equal(response.value.observation.entries[0].text, '42')
+  assert.equal(JSON.stringify(result), before)
+  assert.equal((await state.runDurable('open-after-cell', 'return answer')).value, 42)
+})
+
 test('worker observations preserve getter and Proxy counters and canonical results', async t => {
   const state = fixture({}, { observeSession: 'observation-effects' })
   t.after(() => state.dispose())

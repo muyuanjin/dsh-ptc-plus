@@ -408,6 +408,12 @@ try {
     assert.equal(await widthPreference(), originalWidth, 'REPL drag changed the transcript width')
     assert.ok(await page.getByRole('heading', { name: 'Session bindings', exact: true }).isVisible())
     assert.ok(await page.getByRole('heading', { name: 'Global bindings', exact: true }).isVisible())
+    for (const [name, value] of [['previewNumber', '42'], ['previewText', '"hello"'], ['previewBigint', '123n']]) {
+      const row = page.locator('.ptcPlusObservationTable tr').filter({ has: page.getByRole('button', { name, exact: true }) })
+      await row.locator('.ptcPlusObservationValue code').waitFor()
+      assert.equal(await row.locator('.ptcPlusObservationValue code').innerText(), value,
+        `${name}: opening REPL after execution did not obtain its value`)
+    }
     for (const width of [390, 1440]) {
       await page.setViewportSize({ width, height: 1000 })
       if (width < 1024) await page.locator('[data-sidebar-collapsed=true]').waitFor()

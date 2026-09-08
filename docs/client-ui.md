@@ -93,17 +93,19 @@ REPL 根元素使用官方轨迹页同样的 `data-conversation-composer-overlay
 
 REPL 是单页工作区，上方为“会话绑定”，下方直接展示完整“全局绑定”工作台，不设内部页签。会话区使用紧凑表格和相邻的绑定检查区；名称为普通等宽文字，类别为文字列。名称搜索与类型筛选只过滤已有展示清单，不请求更多观察数据；清单保留来源顺序，默认检查首个匹配条目。选中条目的定义、行列和值在检查区展示，定义使用公共 `CodeBlock` 的 TypeScript 高亮与复制按钮，缺少该原语时降级为原文。长清单在固定高度区域内滚动，窄屏将清单、检查区、全局目录和编辑器纵向排列；筛选或检查会话绑定不会重置全局编辑区。
 
-“会话绑定”使用 `useProjection('ptcPlusRepl')` 展示名称、类别、定义源码、原始行列和结算后的有界值预览。`dshPtcPlusBindings` metadata v4 与 projection state v4 包含来源清单及可选 `observation`；只含来源清单的 v3 metadata 仍可读。观察时间位于区块标题旁，值的截断状态标在对应预览旁，无法安全观察的值显示“不可读取”。定义仍为已记录的有界源码片段，复制只复制当前片段，不补读历史或执行代码。预览不表示完整快照，后续异步变化不会自动刷新这份历史观察。
+“会话绑定”使用 `useProjection('ptcPlusRepl')` 展示名称、类别、定义源码、原始行列和有界值预览。`dshPtcPlusBindings` metadata v4 与 projection state v4 包含来源清单及可选 `observation`；只含来源清单的 v3 metadata 仍可读。观察时间位于区块标题旁，值的截断状态标在对应预览旁，无法安全观察的值显示“不可读取”，尚无观察结果则显示“尚未观察”。定义仍为已记录的有界源码片段，复制只复制当前片段，不补读历史或执行代码。预览不表示完整快照，后续异步变化不会自动刷新这份观察。
 
-空清单或恢复后暂无清单时只显示紧凑的全宽空状态，不保留空的表格与检查区。会话观察区通过 IntersectionObserver 和文档可见性持有公开 Connection `/ptc-plus-repl` 的可取消 `watch` 请求，Host 最多接受 64 个观察订阅。只有 live cell 分派时仍有该 session 的可见订阅，才发送值观察名称；无订阅不采集，进入 UI 不执行观察。请求意外结束时清理该请求，并在仍可见时按 1、2、4 秒间隔最多重试三次；达到上限后停止计时，后续可见性或连接生命周期变化可重新尝试。区域离开视口、文档隐藏、连接替换、关闭页签开关或 provider 释放都撤销订阅和待重试计时器，旧请求结束不能撤销新请求。此通道只表达展示需求，不读取值，也不提供 session 操作权限。
+空清单或恢复后暂无清单时只显示紧凑的全宽空状态，不保留空的表格与检查区。会话观察区通过 IntersectionObserver 和文档可见性持有公开 Connection `/ptc-plus-repl` 的可取消 `watch` 请求，Host 最多接受 64 个观察订阅。只有 live cell 分派时仍有该 session 的可见订阅，才发送结算后的值观察名称。请求意外结束时清理该请求，并在仍可见时按 1、2、4 秒间隔最多重试三次；达到上限后停止计时，后续可见性或连接生命周期变化可重新尝试。区域离开视口、文档隐藏、连接替换、关闭页签开关或 provider 释放都撤销订阅和待重试计时器，旧请求结束不能撤销新请求。
 
-成功执行后，Acorn 从不含 await 的实际 lowered program 中证明顶层变量的 storage：`var` 通过 REPL context 的自有 data descriptor 读取并拒绝根访问器；`let`/`const` 通过 `vm.runInContext` 读取合法裸标识符，其 lexical storage 优先于同名全局属性，包括未初始化时。失败 cell 不增加证明；含 await 的程序可能被 Node REPL 改变 storage，因此不推测其 binding 存储位置。未证明的名称不会展示碰巧同名的全局属性。该机制不调用 REPL evaluator、不改变最后求值结果、不开放调试连接。`node:util.types.isProxy` 在任何反射操作前排除 Proxy，包括 revoked Proxy；对象通过自有 descriptor 生成浅层预览，不触发 getter、原型读取、`toJSON` 或自定义 formatter。函数、Symbol、BigInt、模块 namespace 和无法证明 storage 的名称显示不可读取。
+清单可见但没有观察时，同一 trusted-host RPC 通过 `observe` 请求一次有界读取。只接受现存、已结算且 surface generation 未改变的 worker，并校验请求清单与当前 binding catalog 一致；不启动 worker、不执行 cell、不恢复或重放历史。请求与 cell 共用队列及 readiness 握手，连同排队最多等待 250 ms。Host 最多接受 64 个按需请求，同一 worker 有活动读取时不再增加读取。结果只保存在对应 Client 清单的局部展示状态，不回写 metadata、projection 或日志；清单变化、取消及过期响应均不能恢复旧预览。不存在后台轮询。
 
-最多观察 128 个名称，每项文本最多 512 个 UTF-16 code unit。数组只按固定索引读取前 5 个自有槽位，空槽明确标识，嵌套值不展开。除数组外的对象统一显示不可读取，包括普通对象、TypedArray、Buffer、String 包装对象和模块 namespace；预览不枚举任何值的完整属性集合。普通字符串仍提供有界文本预览。Worker 在 100 ms 后停止新的 lexical read，单项 VM 读取上限为 25 ms。Host 最多等待 250 ms，随后显示没有预览的已结算结果。
+成功执行后，Acorn 从实际 lowered program 中证明顶层变量的 storage：`var` 通过 REPL context 的自有 data descriptor 读取并拒绝根访问器；`let`/`const` 通过 `vm.runInContext` 读取合法裸标识符，其 lexical storage 优先于同名全局属性，包括未初始化时。worker 在用户执行前对真实 evaluator 探测 await 程序的 lexical storage，通过后才支持顶层 await 的声明预览；探测失败只降级预览，不阻断执行，也不按 Node 版本分支。函数内部 await 不排除外层变量。失败 cell 不增加证明，未证明的名称不会展示碰巧同名的全局属性。值观察不调用 REPL evaluator、不改变最后求值结果、不开放调试连接。`node:util.types.isProxy` 在任何反射操作前排除 Proxy，包括 revoked Proxy；对象通过自有 descriptor 生成浅层预览，不触发 getter、原型读取、`toJSON` 或自定义 formatter。函数、Symbol、模块 namespace 和无法证明 storage 的名称显示不可读取。
+
+最多观察 128 个名称，每项文本最多 512 个 UTF-16 code unit。数组只按固定索引读取前 5 个自有槽位，空槽明确标识，嵌套值不展开；额外自有属性未被检查，因此即使短数组也保留不完整标记。除数组外的对象统一显示不可读取，包括普通对象、TypedArray、Buffer、String 包装对象和模块 namespace；预览不枚举任何值的完整属性集合。普通字符串提供有界文本预览；BigInt 在转换前比较固定范围，至多输出 128 位，超限只显示有界提示。Worker 在 100 ms 后停止新的 lexical read，单项 VM 读取上限为 25 ms。Host 最多等待 250 ms，随后显示没有预览的已结算结果。
 
 执行 `done` 与后续 `observation` 是独立的私有消息。待观察名称先由 `createReplMemorySnapshot` 按展示清单的名称、定义来源、条目数量和源码总预算筛选，被省略的 binding 不占用观察名额，也不影响其他条目的预览。Host 先结束 cell 的计算预算、lease 与 journal 结算，再接收可选预览；遗漏、迟到或畸形预览不改变执行结果，不触发 worker 重启。预览按最终 catalog 的名称过滤，只附加到私有 UI metadata，不进入模型上下文、canonical value 或 journal，不作为 replay 或保留隐藏 binding 的证据。cold replay 不采集历史观察，restore/discarded 与原有 generation、模型可见 frontier 失效规则共用。完整边界见 [ADR 0024](adr/0024-repl-console-observation.md)。
 
-250 ms 只是等待可选预览的上限，不表示 worker 已就绪。下一 cell 先经私有 `prepare` / `ready` 握手，匹配的首次 `ready` 才派发代码。`computeMs` / `maxWallMs` 预算通常在发送 `prepare` 前启动；同一 worker 尚未完成的观察暂缓计时，直到收到该观察的完成消息或匹配的 `ready`，且不重置已经启动的预算。观察身份独立于 250 ms 的展示等待记录。等待期间仍可取消，并保留 session disposal 与 worker failure 的处理；过期、畸形或重复的就绪消息不能启动额外执行。观察不消耗下一 cell 的执行预算；后台用户回调造成的非观察阻塞仍会正常超时和重置 worker。
+250 ms 只是等待可选预览的上限，不表示 worker 已就绪。下一 cell 先经私有 `prepare` / `ready` 握手，匹配的首次 `ready` 才派发代码。`computeMs` / `maxWallMs` 预算通常在发送 `prepare` 前启动；仅同一 worker 已确认开始且尚未完成的观察暂缓计时，直到收到该观察的完成消息或匹配的 `ready`。按需读取通过 `observation-started` 确认，发送请求本身不提供预算豁免；迟到确认不能暂停或重置已经启动的预算。观察身份独立于 250 ms 的展示等待记录。等待期间仍可取消，并保留 session disposal 与 worker failure 的处理；过期、畸形或重复的就绪消息不能启动额外执行。后台用户回调造成的非观察阻塞仍会正常超时和重置 worker。
 
 live 配置若因宿主能力缺失或 runtime 安装/重配置失败，会先回滚所有已创建或更新的 owner，再把持久设置回写为上一次已应用值；回滚写入失败时 Host 记录 activation diagnostic，避免静默把配置显示成不存在的 runtime。
 

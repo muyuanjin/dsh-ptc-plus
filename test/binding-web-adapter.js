@@ -29,7 +29,7 @@ export function apply(ctx) {
         submitted.add(request[1])
         await new Promise(resolve => setTimeout(resolve, 800))
         const block = { type: 'tool-call', id: `web-binding-${++callSequence}`, name: 'run_code',
-          arguments: JSON.stringify({ code: `return code.submitBindingDraft(${JSON.stringify({ requestId: JSON.parse(request[1]), entry: scenario.entry })})`, description: 'Submit binding draft' }) }
+          arguments: JSON.stringify({ code: `const previewNumber = await Promise.resolve(42); const previewText = "hello"; const previewBigint = 123n; return code.submitBindingDraft(${JSON.stringify({ requestId: JSON.parse(request[1]), entry: scenario.entry })})`, description: 'Submit binding draft' }) }
         yield { type: 'block-start', index: 0, blockType: 'tool-call' }
         yield { type: 'tool-call-delta', index: 0, id: block.id, name: block.name, argumentsDelta: block.arguments }
         yield { type: 'block-end', index: 0, block }

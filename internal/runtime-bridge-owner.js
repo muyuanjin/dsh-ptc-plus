@@ -398,6 +398,7 @@ export function createRuntimeBridgeOwner({
       sessions.reconfigure(nextConfig)
       currentConfig = sessions.config
     },
+    observeRepl(id, memory, signal) { return sessions.observe(id, memory, signal) },
     // A composite tool's outer result owns the final durability decision.
     async executeTentative(callSeq, operation) {
       const settlement = {

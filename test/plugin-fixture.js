@@ -358,6 +358,7 @@ export function fixture(config = {}, fixtureOptions = {}) {
     executeRun,
     rejectBeforeRuntime,
     runDurable,
+    observeRepl: (sessionId, memory, signal = new AbortController().signal) => observationHandler('observe', { sessionId, memory }, signal),
     run,
     async emit(name, value) {
       await Promise.all((listeners.get(name) ?? []).map(listener => listener(value)))

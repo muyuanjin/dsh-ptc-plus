@@ -1,4 +1,5 @@
 import { isAbsolute } from 'node:path'
+import { isDeepStrictEqual } from 'node:util'
 import { diagnostic, renderDiagnostic } from './diagnostic.js'
 import { createFailureTracker, messageOf } from './failure-reporting.js'
 import {
@@ -17,6 +18,7 @@ import { BindingCatalog, durabilityState, transitionDurability } from './session
 import { SessionCellExecutor } from './session-cell-executor.js'
 import {
   createReplMemorySnapshot,
+  normalizeReplMemorySnapshot,
   unavailableReplMemorySnapshot,
 } from './repl-memory-projection.js'
 
@@ -104,6 +106,8 @@ class SessionKernel {
     this.sequence = 0
     this.tail = Promise.resolve()
     this.tentatives = new WeakMap()
+    this.unsettledCells = 0
+    this.pendingInspection = undefined
     this.pendingObservation = undefined
     this.workerObservation = undefined
     this.workerReservations = new Set()
@@ -113,6 +117,7 @@ class SessionKernel {
       cwd,
       onMessage: message => this.cellExecutor.onMessage(message),
       onFailure: message => {
+        this.pendingInspection?.finish()
         this.workerObservation = undefined
         this.active?.resolve({ logs: [], error: { kind: 'worker-exit', message } }, true)
       },
@@ -160,6 +165,57 @@ class SessionKernel {
     const result = this.tail.then(execute, execute)
     this.tail = result.then(() => undefined, () => undefined)
     return result
+  }
+
+  /** Observe only the existing, settled live worker; never recover or execute a cell for the UI. */
+  observe(expected, signal) {
+    if (this.pendingInspection !== undefined) return Promise.resolve(undefined)
+    const current = () => {
+      if (this.disposed || !this.config.replViewEnabled || signal?.aborted
+        || this.client.worker === undefined || this.unsettledCells > 0) return false
+      try {
+        return this.session?.surface?.replaceGeneration === this.surfaceGeneration
+          && isDeepStrictEqual(expected, createReplMemorySnapshot(this.bindingCatalog.snapshot()))
+      } catch { return false }
+    }
+    return new Promise(resolve => {
+      let finished = false
+      let releaseQueue
+      const id = ++this.sequence
+      const finish = observation => {
+        if (finished) return
+        finished = true
+        clearTimeout(timer)
+        signal?.removeEventListener('abort', onAbort)
+        if (this.pendingInspection?.id === id) this.pendingInspection = undefined
+        resolve(current() && observation !== undefined
+          ? createReplMemorySnapshot(this.bindingCatalog.snapshot(), observation) : undefined)
+        releaseQueue?.()
+      }
+      const onAbort = () => finish()
+      const timer = setTimeout(onAbort, 250)
+      signal?.addEventListener('abort', onAbort, { once: true })
+      const inspect = () => {
+        if (finished) return
+        if (!current()) { finish(); return }
+        return new Promise(done => {
+          releaseQueue = done
+          const worker = this.client.worker
+          let started = false
+          this.pendingInspection = { id, finish, start: () => {
+            if (started) return
+            started = true
+            if (!current() || this.client.worker !== worker) { finish(); return }
+            try {
+              this.client.post({ type: 'observe', id, names: expected.entries.map(entry => entry.name) })
+              this.workerObservation = { id, worker, started: false }
+            } catch { finish() }
+          } }
+          try { this.client.post({ type: 'prepare', id }) } catch { finish() }
+        })
+      }
+      this.tail = this.tail.then(inspect, inspect)
+    })
   }
 
   async execute(request, config) {
@@ -400,6 +456,7 @@ class SessionKernel {
           userBindings: active.userBindingSnapshot,
           worker,
         })
+        this.unsettledCells++
       }
     }
     if (replay !== undefined && !terminate) {
@@ -416,13 +473,19 @@ class SessionKernel {
     }
     if (!terminate && active.observing && replay === undefined) {
       // Computation and journal settlement are complete. Observation cannot change either.
-      this.workerObservation = { id: active.id, worker }
+      // done with observing=true precedes synchronous observation in the same worker turn.
+      this.workerObservation = { id: active.id, worker, started: true }
       const timer = setTimeout(() => this.finishObservation({ id: active.id }), 250)
       this.pendingObservation = { id: active.id, timer, journal, finish: () => active.finish(result) }
     } else active.finish(result)
   }
 
   finishObservation(message) {
+    const inspection = this.pendingInspection
+    if (inspection !== undefined && inspection.id === message.id) {
+      inspection.finish(message.observation)
+      return
+    }
     const pending = this.pendingObservation
     if (pending === undefined || pending.id !== message.id) return
     this.pendingObservation = undefined
@@ -436,6 +499,7 @@ class SessionKernel {
     const tentative = this.tentatives.get(journal)
     if (tentative === undefined) return
     this.tentatives.delete(journal)
+    this.unsettledCells--
     if (!confirmed) {
       if (journal.status === 'durable' || journal.status === 'volatile') {
         const reason = journal.volatileReason ?? 'run_code journal was not preserved in the final tool result'
@@ -500,6 +564,7 @@ class SessionKernel {
 
   async dispose() {
     this.disposed = true
+    this.pendingInspection?.finish()
     this.workerObservation = undefined
     const worker = this.client.worker
     if (worker !== undefined) {
@@ -558,6 +623,13 @@ export class SessionRuntime {
     for (const kernel of kernels) kernel.assertReconfigurationAllowed(resolved)
     for (const kernel of kernels) kernel.reconfigure(resolved)
     this.config = resolved
+  }
+
+  async observe(sessionId, memory, signal) {
+    if (this.disposed || !this.config.replViewEnabled) return undefined
+    const { observation: _observation, ...expected } = normalizeReplMemorySnapshot(memory)
+    if (!expected.available || expected.entries.length === 0) return undefined
+    return this.kernels.get(sessionId)?.observe(expected, signal)
   }
 
   async runTentative(sessionContext, request) {

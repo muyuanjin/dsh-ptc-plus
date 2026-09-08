@@ -222,7 +222,8 @@ function installPtCRuntime(ctx, resolvedConfig, toolSchemasForAgent, sessionId) 
     }
   }
   try {
-    observationInterest = createReplObservationInterest(ctx, activeConfig.replViewEnabled)
+    observationInterest = createReplObservationInterest(ctx, activeConfig.replViewEnabled,
+      (id, memory, signal) => runtimeBridge?.observeRepl(id, memory, signal))
     disposers.push(() => observationInterest.dispose())
     if (typeof ctx.inject === 'function') {
       const projectionInjection = ctx.inject(['sessionProjections'], (scope) => {

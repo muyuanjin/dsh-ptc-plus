@@ -33,7 +33,7 @@ async function clientPlugin() {
   })
 }
 
-async function fixture({ enabled = true, bindings = true, conversation = true, repl = false, composer = false, uiSession = true, rpc, watchRpc, commands, turn, setupEvents } = {}) {
+async function fixture({ enabled = true, bindings = true, conversation = true, repl = false, composer = false, uiSession = true, rpc, watchRpc, observeRpc, commands, turn, setupEvents } = {}) {
   const runtime = await SlotTestRuntime.create()
   cleanups.push(() => runtime.dispose())
   const settings = stubSettingsScope()
@@ -44,6 +44,7 @@ async function fixture({ enabled = true, bindings = true, conversation = true, r
   runtime.ctx.provide('connection', { rpc: { call: async (channel, endpoint, payload, signal) => {
     if (channel === '/ptc-plus-repl') {
       rpcCalls.push({ endpoint, payload, signal })
+      if (endpoint === 'observe') return observeRpc ? observeRpc(payload, signal) : { ok: true, value: null }
       if (watchRpc) return watchRpc(payload, signal)
       return new Promise(resolve => {
         signal.addEventListener('abort', () => resolve({ ok: true, value: null }), { once: true })
@@ -227,6 +228,97 @@ test('preview interest follows the visible region, connection and tab setting', 
   expect(watches()[2].signal.aborted).toBe(true)
   expect(disconnected).toBe(true)
   expect(view.container.querySelector('.ptcPlusConsole')).toBeNull()
+})
+
+test('opening the visible REPL obtains missing values and rejects stale or mismatched observations', async () => {
+  let visibility
+  vi.stubGlobal('IntersectionObserver', class {
+    constructor(callback) { this.callback = callback }
+    observe(element) { if (element.querySelector('.ptcPlusSessionBindings')) visibility = this.callback }
+    unobserve() {}
+    disconnect() {}
+  })
+  cleanups.push(() => vi.unstubAllGlobals())
+  const requests = []
+  const { runtime, setLocale } = await fixture({ repl: true, bindings: false, observeRpc: (payload, signal) => {
+    const deferred = Promise.withResolvers()
+    requests.push({ ...deferred, payload, signal })
+    return deferred.promise
+  } })
+  const memory = { available: true, total: 1, omitted: 0, entries: [{ name: 'answer', kind: 'variable',
+    definition: { source: 'const answer = await Promise.resolve(42)', line: 1, column: 1 } }] }
+  const projection = runtime.sessions.behavior('client-session').projections
+  projection.set('ptcPlusRepl', memory)
+  const view = runtime.renderRoot()
+  await runtime.flush()
+  expect(view.container.querySelector('.ptcPlusObservationValue').textContent).toBe('Not observed yet')
+  expect(view.container.querySelector('.ptcPlusBindingInspector').textContent).not.toContain('Unreadable')
+  expect(requests).toHaveLength(0)
+  const value = number => ({ ...memory, observation: { at: 1788650000000, entries: [
+    { name: 'answer', status: 'readable', text: String(number), truncated: false },
+  ] } })
+  visibility([{ isIntersecting: true }])
+  await runtime.flush()
+  expect(requests).toHaveLength(1)
+  requests[0].resolve({ ok: true, value: value(42) })
+  await runtime.flush()
+  expect(view.container.querySelector('.ptcPlusObservationValue').textContent).toBe('42')
+  expect(view.container.querySelector('.ptcPlusObservationPreview').textContent).toBe('42')
+  await runtime.flush()
+  expect(requests).toHaveLength(1)
+  visibility([{ isIntersecting: false }])
+  visibility([{ isIntersecting: true }])
+  await runtime.flush()
+  expect(requests).toHaveLength(2)
+  projection.set('ptcPlusRepl', { ...memory, entries: [{ ...memory.entries[0], definition: { ...memory.entries[0].definition, source: 'const answer = 43' } }] })
+  await runtime.flush()
+  expect(requests[1].signal.aborted).toBe(true)
+  requests[1].resolve({ ok: true, value: value(999) })
+  visibility([{ isIntersecting: true }])
+  await runtime.flush()
+  expect(requests).toHaveLength(3)
+  requests[2].resolve({ ok: true, value: value(888) })
+  await runtime.flush()
+  expect(view.container.querySelector('.ptcPlusObservationValue').textContent).toBe('Not observed yet')
+  setLocale('zh')
+  await runtime.flush()
+  expect(view.container.querySelector('.ptcPlusObservationValue').textContent).toBe('尚未观察')
+  visibility([{ isIntersecting: false }])
+  visibility([{ isIntersecting: true }])
+  await runtime.flush()
+  requests[3].resolve({ ok: true, value: { ...value(43), ...requests[3].payload.memory, observation: value(43).observation } })
+  await runtime.flush()
+  expect(view.container.querySelector('.ptcPlusObservationValue').textContent).toBe('43')
+})
+
+test('failed or unavailable observation remains unobserved and never blocks the REPL', async () => {
+  let visibility
+  vi.stubGlobal('IntersectionObserver', class {
+    constructor(callback) { this.callback = callback }
+    observe(element) { if (element.querySelector('.ptcPlusSessionBindings')) visibility = this.callback }
+    unobserve() {}
+    disconnect() {}
+  })
+  cleanups.push(() => vi.unstubAllGlobals())
+  const outcomes = [{ ok: true, value: null }, { ok: false }, { ok: true, value: {} }, new Error('connection closed')]
+  const { runtime, rpcCalls } = await fixture({ repl: true, bindings: false, observeRpc: () => {
+    const outcome = outcomes.shift()
+    if (outcome instanceof Error) throw outcome
+    return outcome
+  } })
+  runtime.sessions.behavior('client-session').projections.set('ptcPlusRepl', {
+    available: true, total: 1, omitted: 0, entries: [{ name: 'answer', kind: 'variable',
+      definition: { source: 'const answer = 42', line: 1, column: 1 } }],
+  })
+  const view = runtime.renderRoot()
+  await runtime.flush()
+  for (let index = 0; index < 4; index++) {
+    visibility([{ isIntersecting: true }])
+    await runtime.flush()
+    expect(view.container.querySelector('.ptcPlusObservationValue').textContent).toBe('Not observed yet')
+    visibility([{ isIntersecting: false }])
+  }
+  expect(rpcCalls.filter(call => call.endpoint === 'observe')).toHaveLength(4)
 })
 
 test('observation retries unexpected completion with bounded backoff and cleans up stale requests', async () => {

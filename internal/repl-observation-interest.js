@@ -1,17 +1,34 @@
 export const REPL_OBSERVATION_RPC_CHANNEL = '/ptc-plus-repl'
 
 /** A visible Client holds a cancellable request; it never requests evaluation. */
-export function createReplObservationInterest(ctx, initiallyEnabled) {
+export function createReplObservationInterest(ctx, initiallyEnabled, observe = async () => undefined) {
   let enabled = initiallyEnabled
   const watchers = new Set()
+  const inspections = new Set()
   const registrations = new Set()
-  const clear = () => { for (const watcher of [...watchers]) watcher.release() }
+  const clear = () => {
+    for (const watcher of [...watchers]) watcher.release()
+    for (const controller of inspections) controller.abort()
+  }
   const handler = async (endpoint, payload, signal) => {
-    if (!enabled || endpoint !== 'watch' || typeof payload?.sessionId !== 'string'
+    if (!enabled || !['watch', 'observe'].includes(endpoint) || typeof payload?.sessionId !== 'string'
       || payload.sessionId.length === 0 || payload.sessionId.length > 256
-      || signal === undefined || watchers.size >= 64) return { ok: false, error: {
+      || signal === undefined || (endpoint === 'watch' && watchers.size >= 64)) return { ok: false, error: {
       code: 'repl/watch-unavailable', message: 'REPL observation unavailable', details: {},
     } }
+    if (endpoint === 'observe') {
+      if (inspections.size >= 64) return { ok: true, value: null }
+      const controller = new AbortController()
+      inspections.add(controller)
+      try {
+        const value = await observe(payload.sessionId, payload.memory, AbortSignal.any([signal, controller.signal]))
+        return { ok: true, value: value ?? null }
+      } catch {
+        return { ok: false, error: { code: 'repl/observation-unavailable', message: 'REPL observation unavailable', details: {} } }
+      } finally {
+        inspections.delete(controller)
+      }
+    }
     return new Promise(resolve => {
       const watcher = { sessionId: payload.sessionId, release() {
         signal.removeEventListener('abort', watcher.release)

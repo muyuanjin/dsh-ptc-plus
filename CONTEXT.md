@@ -87,9 +87,11 @@ PTC Plus 注册 `ptc-plus` settings namespace，字段来源于 `internal/config
 
 REPL 控制台使用公开 `conversation.view`，由当前 Client 的会话选择、`agentPreset` projection 与插件开关共同决定注册；只有 `ptc` / `code` 会话拥有该页签，DSH 继续拥有导航与回退。会话观察只显示名称、定义来源及带观察时间、截断与不可读取状态的有界值预览。值检查属于 worker owner，只读取成功执行源码可证明 storage 的 lexical binding 或自有 data descriptor，并在反射前排除 Proxy；不触发 getter、Proxy trap 或用户 formatter，不使用 Inspector 连接。值预览不枚举对象属性集合，只对基本值和数组前五个自有槽位提供有界读取，其余对象保持不可读取。
 
-cell 的执行结果与 journal 先结算，再以独立私有消息附加可选 UI 观察。预览失败、迟到或缺失不改变已结算结果、不重启 worker，也不构成模型知识、journal evidence 或保留隐藏 binding 的理由。它不是原子 heap snapshot 或实时监控，不增加会话代码输入、Agent 对象操作或克隆环境。`dshPtcPlusBindings` v4 的可选观察与名称清单共享原有 generation、seed、restore/discard 和模型可见 frontier 失效规则；旧 v3 源码清单仍可展示。
+cell 的执行结果与 journal 先结算，再以独立私有消息附加可选 UI 观察。可见 REPL 清单没有预览时，可经现有 trusted-host Connection RPC 请求一次有界观察：只读取现存、已结算且 surface generation 与清单一致的 worker，沿用 cell 队列与 readiness 握手，不启动 worker、不恢复或重放历史。按需结果只留在当前 Client 清单的展示状态，不回写日志；清单替换、取消或失效后丢弃旧响应。未采集与不可读取必须区分。预览失败、迟到或缺失不改变已结算结果、不重启 worker，也不构成模型知识、journal evidence 或保留隐藏 binding 的理由。它不是原子 heap snapshot 或实时监控，不增加会话代码输入、Agent 对象操作或克隆环境。`dshPtcPlusBindings` v4 的可选观察与名称清单共享原有 generation、seed、restore/discard 和模型可见 frontier 失效规则；旧 v3 源码清单仍可展示。
 
-Host 最多等待 250 ms 获取可选预览，但这不代表 worker 已结束原生检查。下一 cell 通过私有 `prepare` / `ready` 消息确认 worker 就绪后才派发代码。计算与墙钟预算通常从发送 `prepare` 前开始；只有同一 worker 尚未完成的观察可以暂缓计时，观察完成或匹配的 `ready` 到达时启动预算，已启动的预算不重置。观察的执行身份与展示等待期限分别记录，因此上一次观察不占用下一 cell 的执行预算，后台用户回调导致的其他阻塞仍会超时并按原契约恢复。等待同时受请求取消、session disposal 与 worker failure 约束，不能因为预览迟到重置连续 binding。
+异步 lexical storage 由当前 worker 的真实 REPL 探测决定，失败只关闭相应预览，不影响执行；函数内部 await 不影响外层变量证明。基本值预览含至多 128 位的 BigInt，超限只显示有界提示，不完整转换。数组的额外自有属性未被检查，即使所有索引都能展示也始终标记预览不完整。
+
+Host 最多等待 250 ms 获取可选预览，但这不代表 worker 已结束原生检查。下一 cell 通过私有 `prepare` / `ready` 消息确认 worker 就绪后才派发代码。计算与墙钟预算通常从发送 `prepare` 前开始；只有同一 worker 已确认开始且尚未完成的观察可以暂缓计时。按需请求的发送不构成开始证明，worker 处理 `observe` 时先发送 `observation-started`，再同步观察；cell 结束后的观察由同一 worker turn 内的 `done.observing` 证明。观察完成或匹配的 `ready` 到达时启动暂缓的预算；迟到的开始确认不能暂停或重置已启动的预算。观察的执行身份与展示等待期限分别记录，后台用户回调导致的其他阻塞仍会超时并按原契约恢复。等待同时受请求取消、session disposal 与 worker failure 约束，不能因为预览迟到重置连续 binding。
 
 完整全局管理由 REPL 全局绑定区和设置按钮打开的大尺寸应用内弹窗复用同一个工作台组件。设置卡片保留开关与管理按钮，普通管理不依赖当前 PTC 会话；Agent 编写仍需要会话命令资格。功能关闭时两处管理 UI 都释放，原有权限、revision 校验、持久化和激活语义继续由 Host owner 拥有。具体预算和协议见 [ADR 0024](docs/adr/0024-repl-console-observation.md)。
 

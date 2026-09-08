@@ -12,7 +12,7 @@ import { errorDetails, messageOf, programBindingError } from './failure-reportin
 import { AMBIENT_GLOBALS, DURABLE_IMPORTS, FORBIDDEN_IMPORTS } from './module-policy.js'
 import { decodeValue, encodeValue } from './value-wire.js'
 import { installWorkerCwdVirtualization } from './worker-cwd-virtualization.js'
-import { createReplValueObserver } from './repl-value-observer.js'
+import { createReplValueObserver, supportsAwaitLexicals } from './repl-value-observer.js'
 import { transformTypeScriptModule } from './typescript-transform.js'
 
 if (parentPort === null) throw new Error('ptc-plus kernel worker started without a parent port')
@@ -47,7 +47,7 @@ const errorDomain = server.eval.domain ?? createDomain()
 errorDomain.removeAllListeners('error')
 errorDomain.on('error', error => evaluationScope.getStore()?.(true, error))
 const context = server.context
-const valueObserver = createReplValueObserver(context)
+let valueObserver
 const REPL_IMPORT_CANARY = 'data:text/javascript,export default 1'
 let replParent
 const sessionReplParent = sessionCwd === undefined ? undefined : pathToFileURL(resolve(sessionCwd, 'repl')).href
@@ -867,6 +867,12 @@ channel.on('message', (message) => {
     channel.postMessage({ type: 'ready', id: message.id })
     return
   }
+  if (message?.type === 'observe') {
+    channel.postMessage({ type: 'observation-started', id: message.id })
+    channel.postMessage({ type: 'observation', id: message.id,
+      observation: valueObserver.observe(message.names) })
+    return
+  }
   if (message?.type === 'reply') {
     const call = pending.get(message.id)
     if (call === undefined || call.runId !== message.runId) return
@@ -890,6 +896,9 @@ try {
       startupTimer = setTimeout(() => reject(new Error('REPL settlement probe timed out')), 5000)
     }),
   ])
+  valueObserver = createReplValueObserver(context, {
+    awaitLexicals: await supportsAwaitLexicals(context, evaluate),
+  })
   parentPort.postMessage({ type: 'ready', port: port1 }, [port1])
 } catch (error) {
   parentPort.postMessage({

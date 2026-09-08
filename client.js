@@ -26580,6 +26580,7 @@
       "console.value": "\u503C\u9884\u89C8",
       "console.observed": "\u7ED3\u7B97\u540E\u89C2\u5BDF\uFF1A{time}",
       "console.unobserved": "\u5C1A\u65E0\u503C\u89C2\u5BDF\u8BB0\u5F55",
+      "console.unobservedValue": "\u5C1A\u672A\u89C2\u5BDF",
       "console.unreadable": "\u4E0D\u53EF\u8BFB\u53D6",
       "console.bounded": "\u5DF2\u622A\u65AD",
       "bindings.manage": "\u7BA1\u7406\u5168\u5C40\u7ED1\u5B9A",
@@ -26719,6 +26720,7 @@
       "console.value": "Value preview",
       "console.observed": "Observed after settlement: {time}",
       "console.unobserved": "No value observation yet",
+      "console.unobservedValue": "Not observed yet",
       "console.unreadable": "Unreadable",
       "console.bounded": "Truncated",
       "bindings.manage": "Manage global bindings",
@@ -26971,7 +26973,7 @@
           if (typeof result?.error?.code === "string") error.code = result.error.code;
           throw error;
         }
-        function observeRepl(sessionId, element) {
+        function observeRepl(sessionId, element, memory, onObservation) {
           let controller;
           let retryTimer;
           let retries = 0;
@@ -27005,6 +27007,17 @@
               sync();
             }, delay);
           };
+          const read = async (current) => {
+            if (!memory.available || memory.entries.length === 0 || memory.observation !== void 0) return;
+            try {
+              const result = await ctx.connection.rpc.call("/ptc-plus-repl", "observe", { sessionId, memory }, current.signal);
+              if (disposed || controller !== current || current.signal.aborted || result?.ok !== true || result.value === null) return;
+              const observed = normalizeReplMemorySnapshot(result.value);
+              const { observation, ...inventory } = observed;
+              if (observation !== void 0 && JSON.stringify(inventory) === JSON.stringify(memory)) onObservation(observed);
+            } catch {
+            }
+          };
           const sync = () => {
             if (disposed) return;
             const active = visible && document.visibilityState !== "hidden";
@@ -27015,6 +27028,7 @@
             if (controller !== void 0 || retryTimer !== void 0 || retries > retryDelays.length) return;
             controller = new AbortController();
             void watch(controller);
+            void read(controller);
           };
           const observer = typeof IntersectionObserver === "function" ? new IntersectionObserver((entries) => {
             visible = entries.some((entry) => entry.isIntersecting);
@@ -27661,7 +27675,7 @@
               t2("console.value"),
               preview?.truncated ? h("span", { className: "ptcPlusObservationState" }, t2("console.bounded")) : null
             ),
-            readable ? h("pre", { className: "ptcPlusObservationPreview" }, preview.text) : h("p", { className: "ptcPlusObservationUnavailable" }, t2("console.unreadable"))
+            readable ? h("pre", { className: "ptcPlusObservationPreview" }, preview.text) : h("p", { className: "ptcPlusObservationUnavailable" }, t2(preview === void 0 ? "console.unobservedValue" : "console.unreadable"))
           );
         }
         function ReplSessionBindings({ memory, t: t2 }) {
@@ -27761,7 +27775,7 @@
                         h("td", null, h(
                           "span",
                           { className: "ptcPlusObservationValue" },
-                          preview?.status === "readable" ? h("code", null, preview.text) : h("span", { className: "ptcPlusObservationState" }, t2("console.unreadable")),
+                          preview?.status === "readable" ? h("code", null, preview.text) : h("span", { className: "ptcPlusObservationState" }, t2(preview === void 0 ? "console.unobservedValue" : "console.unreadable")),
                           preview?.truncated ? h("span", { className: "ptcPlusObservationState" }, t2("console.bounded")) : null
                         ))
                       );
@@ -27785,20 +27799,31 @@
           const settings = usePtcSettings((snapshot) => snapshot);
           const globalEnabled = settings.value?.userBindingsEnabled === true;
           const eligible = settings.status === "ready" && settings.value?.enabled === true && settings.value?.replViewEnabled !== false && sessionUsesPtcPreset(preset);
+          const memory = React.useMemo(() => {
+            try {
+              return normalizeReplMemorySnapshot(projected);
+            } catch {
+              return unavailableReplMemorySnapshot();
+            }
+          }, [projected]);
+          const [observed, setObserved] = React.useState(null);
           const observationRegion = React.useRef(null);
           React.useEffect(() => eligible ? hideComposer(sessionId) : void 0, [eligible, hideComposer, sessionId]);
-          React.useEffect(() => eligible ? observeRepl2(sessionId, observationRegion.current) : void 0, [eligible, observeRepl2, sessionId]);
+          React.useEffect(() => eligible ? observeRepl2(
+            sessionId,
+            observationRegion.current,
+            memory,
+            (value) => setObserved({ sessionId, source: memory, value })
+          ) : void 0, [eligible, observeRepl2, sessionId, memory]);
           if (!eligible) return null;
-          let memory;
-          try {
-            memory = normalizeReplMemorySnapshot(projected);
-          } catch {
-            memory = unavailableReplMemorySnapshot();
-          }
           return h(
             "div",
             { className: "ptcPlusConsole", "data-conversation-composer-overlay": "" },
-            h("div", { className: "ptcPlusConsoleSection", ref: observationRegion }, h(ReplSessionBindings, { key: sessionId, memory, t: t2 })),
+            h("div", { className: "ptcPlusConsoleSection", ref: observationRegion }, h(ReplSessionBindings, {
+              key: sessionId,
+              memory: observed?.sessionId === sessionId && observed.source === memory ? observed.value : memory,
+              t: t2
+            })),
             globalEnabled ? h(
               "div",
               { className: "ptcPlusConsoleSection ptcPlusBindingsSurface" },

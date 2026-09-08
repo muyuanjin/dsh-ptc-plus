@@ -3,7 +3,7 @@ import test from 'node:test'
 import { createReplObservationInterest, REPL_OBSERVATION_RPC_CHANNEL } from '../internal/repl-observation-interest.js'
 import { SessionRuntime } from '../internal/session-runtime.js'
 
-function fixture(scoped = true) {
+function fixture(scoped = true, observe) {
   let handler
   let registered = false
   let connect
@@ -25,7 +25,7 @@ function fixture(scoped = true) {
         : async () => { for (const release of effects) await release() }
     },
   }
-  const owner = createReplObservationInterest(ctx, true)
+  const owner = createReplObservationInterest(ctx, true, observe)
   return { owner, effects, call: (...args) => handler(...args), get registered() { return registered },
     connect: scope => connect(scope) }
 }
@@ -65,6 +65,38 @@ test('visible observation interest is bounded, cancellable and scoped to its pub
     await target.owner.dispose()
   }
   await createReplObservationInterest({}, false).dispose()
+})
+
+test('one-shot observation validates requests and cancels reads on owner disablement', async () => {
+  let release
+  let captured
+  const target = fixture(true, async (sessionId, memory, signal) => {
+    captured = { sessionId, memory, signal }
+    if (memory === 'invalid') throw new Error('bad snapshot')
+    if (memory === 'value') return { observation: 'sample' }
+    return new Promise(resolve => {
+      release = resolve
+      signal.addEventListener('abort', () => resolve(), { once: true })
+    })
+  })
+  const call = memory => target.call('observe', { sessionId: 'preview', memory }, new AbortController().signal)
+  assert.deepEqual(await call('value'), { ok: true, value: { observation: 'sample' } })
+  assert.equal((await call('invalid')).ok, false)
+  const pending = call('pending')
+  assert.equal(captured.sessionId, 'preview')
+  assert.equal(captured.memory, 'pending')
+  target.owner.reconfigure(false)
+  assert.equal(captured.signal.aborted, true)
+  assert.deepEqual(await pending, { ok: true, value: null })
+  target.owner.reconfigure(true)
+  const bounded = Array.from({ length: 64 }, () => call('pending'))
+  assert.deepEqual(await call('overflow'), { ok: true, value: null })
+  release()
+  await target.owner.dispose()
+  await Promise.all(bounded)
+  const absent = fixture()
+  assert.deepEqual(await absent.call('observe', { sessionId: 'missing' }, new AbortController().signal), { ok: true, value: null })
+  await absent.owner.dispose()
 })
 
 test('observation interest changes only future live-cell previews and leaves execution evidence untouched', async t => {

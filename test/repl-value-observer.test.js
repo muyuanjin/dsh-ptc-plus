@@ -2,7 +2,8 @@ import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import test from 'node:test'
 import { createContext, runInContext } from 'node:vm'
-import { createReplValueObserver, previewBindingValue } from '../internal/repl-value-observer.js'
+import { createReplValueObserver, previewBindingValue, supportsAwaitLexicals } from '../internal/repl-value-observer.js'
+import { SessionRuntime } from '../internal/session-runtime.js'
 
 test('observes bounded descriptors without invoking getters, Proxy traps or formatters', () => {
   const calls = []
@@ -44,7 +45,7 @@ test('observes bounded descriptors without invoking getters, Proxy traps or form
   const before = Object.getOwnPropertyNames(context)
   const observed = observer.observe(names)
   const values = new Map(observed.entries.map(entry => [entry.name, entry]))
-  for (const [name, text] of [['scalar', '42'], ['own', '7'], ['missing', 'undefined'], ['nothing', 'null'], ['special', 'NaN'], ['negativeZero', '-0'], ['unicode名', '1'], ['lexicalAccessor', '3']]) {
+  for (const [name, text] of [['scalar', '42'], ['own', '7'], ['missing', 'undefined'], ['nothing', 'null'], ['special', 'NaN'], ['negativeZero', '-0'], ['unicode名', '1'], ['lexicalAccessor', '3'], ['bigint', '123n']]) {
     assert.equal(values.get(name).text, text)
   }
   assert.equal(values.get('text').truncated, true)
@@ -52,7 +53,7 @@ test('observes bounded descriptors without invoking getters, Proxy traps or form
   assert.equal(values.get('array').truncated, true)
   assert.match(values.get('array').text, /\[object\]/)
   assert.match(values.get('array').text, /\[empty\]/)
-  for (const name of ['object', 'proxy', 'revokedProxy', 'accessor', 'unknown', 'touched()', 'symbol', 'fn', 'bigint']) {
+  for (const name of ['object', 'proxy', 'revokedProxy', 'accessor', 'unknown', 'touched()', 'symbol', 'fn']) {
     assert.equal(values.get(name).status, 'unreadable', name)
   }
   assert.ok(observed.entries.every(entry => entry.text.length <= 512))
@@ -66,10 +67,98 @@ test('observes bounded descriptors without invoking getters, Proxy traps or form
 test('previews remain shallow and reject module namespaces and nested unsafe objects', async () => {
   const proxy = Proxy.revocable({}, {}); proxy.revoke()
   const preview = previewBindingValue(['hello', proxy.proxy, Symbol(), 1n, () => {}, 'omitted'])
-  for (const type of ['proxy', 'symbol', 'bigint', 'function']) assert.match(preview.text, new RegExp(`${type}: unreadable`))
+  for (const type of ['proxy', 'symbol', 'function']) assert.match(preview.text, new RegExp(`${type}: unreadable`))
+  assert.match(preview.text, /1n/)
   assert.doesNotMatch(preview.text, /omitted/)
   assert.equal(previewBindingValue(await import('node:path')).status, 'unreadable')
   assert.equal(previewBindingValue('short').truncated, false)
+})
+
+test('primitive previews bound BigInt conversion and array previews remain incomplete', () => {
+  for (const value of [0n, -123n, 10n ** 127n]) {
+    assert.deepEqual(previewBindingValue(value), { status: 'readable', text: `${value}n`, truncated: false })
+  }
+  for (const value of [10n ** 128n, -(10n ** 128n), 1n << 1000000n]) {
+    assert.deepEqual(previewBindingValue(value), { status: 'readable', text: '[bigint: more than 128 digits]', truncated: true })
+  }
+  assert.equal(previewBindingValue([1, 'two', null, , true]).truncated, true)
+  assert.equal(previewBindingValue([1n, -123n]).truncated, true)
+  assert.equal(previewBindingValue([10n ** 128n]).truncated, true)
+  assert.equal(previewBindingValue(['x'.repeat(512)]).truncated, true)
+  assert.equal(previewBindingValue(['x'.repeat(513)]).truncated, true)
+  assert.equal(previewBindingValue([{}, 1]).truncated, true)
+  assert.equal(previewBindingValue([]).truncated, true)
+})
+
+test('short array previews preserve uncertainty about uninspected own properties', () => {
+  let reads = 0
+  const extended = Object.assign([1], { meta: 42 })
+  Object.defineProperties(extended, {
+    hidden: { value: 'not enumerable' },
+    accessor: { get() { reads++; return 7 } },
+    [Symbol('metadata')]: { value: 'symbol property' },
+  })
+  for (const [value, text] of [
+    [/(?<letter>a)/.exec('cat'), 'array { "0": "a", "1": "a" }'],
+    [extended, 'array { "0": 1 }'],
+  ]) {
+    assert.deepEqual(previewBindingValue(value), { status: 'readable', text, truncated: true })
+  }
+  assert.equal(reads, 0)
+})
+
+test('await lexical capability is proved against the evaluator and degrades independently', async () => {
+  for (const mode of ['lexical', 'global', 'wrong', 'failure']) {
+    const context = createContext({ untouched: 7 })
+    const before = Object.getOwnPropertyNames(context)
+    const supported = await supportsAwaitLexicals(context, async program => {
+      if (mode === 'failure') throw new Error('unsupported evaluator')
+      let source = program.replace('await Promise.resolve(41)', mode === 'wrong' ? '99' : '41')
+      if (mode === 'global') source = source.replace('let ', 'var ').replace('const ', 'var ')
+      runInContext(source, context)
+    })
+    assert.equal(supported, mode === 'lexical')
+    assert.deepEqual(Object.getOwnPropertyNames(context), before)
+    assert.equal(context.untouched, 7)
+  }
+})
+
+test('real async REPL previews preserve lexical identity, values and side-effect counters', async t => {
+  const runtime = new SessionRuntime({}, { observeSession: () => true })
+  t.after(() => runtime.dispose())
+  const first = await runtime.runTentative('async-preview', { bindings: [], program: `
+let reads = 0
+const answer = await Promise.resolve(42)
+Object.defineProperty(globalThis, 'answer', { get() { reads++; return 99 } })
+const [text, count] = await Promise.resolve(['hello', 123n])
+var own = await Promise.resolve(7)
+const nullable = null
+const list = [1, 2, 3]
+return answer
+` })
+  assert.equal(first.result.value, 42)
+  const entries = new Map(first.settlement.replMemory.observation.entries.map(entry => [entry.name, entry]))
+  for (const [name, text] of [['answer', '42'], ['reads', '0'], ['text', '"hello"'], ['count', '123n'], ['own', '7'], ['nullable', 'null']]) {
+    assert.equal(entries.get(name).text, text, name)
+  }
+  assert.equal(entries.get('list').truncated, true)
+  runtime.finalize(first.settlement, true)
+  assert.deepEqual((await runtime.run('async-preview', { bindings: [], program: 'return [answer, reads, own]' })).value, [42, 0, 7])
+  const nested = await runtime.runTentative('nested-await', { bindings: [], program: `
+const answer = 42
+async function helper() { await Promise.resolve() }
+const arrow = async () => { await Promise.resolve() }
+const expression = async function() { await Promise.resolve() }
+return answer
+` })
+  assert.equal(nested.settlement.replMemory.observation.entries.find(entry => entry.name === 'answer').text, '42')
+  runtime.finalize(nested.settlement, true)
+  const context = createContext()
+  const observer = createReplValueObserver(context)
+  const program = 'const answer = 42; async function helper() { await 1 }; const arrow = async () => await 2; const expr = async function() { await 3 }'
+  runInContext(program, context)
+  observer.record(program)
+  assert.equal(observer.observe(['answer']).entries[0].text, '42')
 })
 
 test('typed arrays and buffers are unreadable without consulting user properties', () => {

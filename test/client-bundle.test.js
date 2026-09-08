@@ -106,7 +106,7 @@ test('checked client bundle is loadable through the DSH module loader contract',
     throw new Error(`unexpected client dependency ${name}`)
   })
   assert.equal(Array.from(exported.inject).join(','), 'settingsScope,slots,locale,connection')
-  assert.doesNotMatch(sourceModule, /useSyncExternalStore|useConversation|scope\.sessions|conversationEvents/)
+  assert.doesNotMatch(sourceModule, /useConversation|scope\.sessions|conversationEvents/)
   assert.ok(packageJson.dsh.client.inject.includes('@deepseek-ai/dsh-api-remotes'))
   assert.ok(packageJson.dsh.client.inject.includes('@deepseek-ai/dsh-client-locale'))
   assert.equal(packageJson.dsh.client.inject.includes('@deepseek-ai/dsh-client-ui-session'), false)
@@ -318,7 +318,7 @@ test('settings, header indicator, and tool rows follow the DSH locale dictionari
 
   const [card] = slotEntries.filter(({ options }) => options.name === 'settings.plugin.item')
   const [indicator] = slotEntries.filter(({ options }) => options.name === 'conversation.session.header.actions')
-  const [authorButton] = slotEntries.filter(({ options }) => options.name === 'conversation.input.left')
+  const [authorButton] = slotEntries.filter(({ options }) => options.id === 'ptc-plus-binding-author')
   const [bindingCommand] = slotEntries.filter(({ options }) => options.name === 'conversation.chat.commandview')
   assert.equal(indicator.component({ useProjection: undefined }), null)
   assert.equal(slotEntries.some(({ options }) => options.name === 'conversation.chat.turnTail'), false)
@@ -765,20 +765,10 @@ test('settings, header indicator, and tool rows follow the DSH locale dictionari
   const listA = deferred()
   const listB = deferred()
   const staleListB = deferred()
-  const draftA = deferred()
-  const draftB = deferred()
-  const staleDraftB = deferred()
-  const saveB = deferred()
   const listLoads = [listA, listB, staleListB]
-  const draftLoads = new Map([
-    ['cap-a', [draftA]],
-    ['cap-b', [draftB, staleDraftB]],
-  ])
   const originalRpcCall = ctx.connection.rpc.call
   ctx.connection.rpc.call = async (_channel, endpoint, payload) => {
     if (endpoint === 'list') return listLoads.shift().promise
-    if (endpoint === 'draft') return draftLoads.get(payload.capability).shift().promise
-    if (endpoint === 'save-draft') return saveB.promise
     throw new Error(`unexpected binding endpoint ${endpoint}`)
   }
   settingsSnapshot = {
@@ -835,35 +825,14 @@ test('settings, header indicator, and tool rows follow the DSH locale dictionari
   refreshRender = renderRefreshIndicator('session-b', 'cap-b')
   refreshRender.effects[0]()
   listB.resolve({ ok: true, value: { revision: 2, entries: [] } })
-  draftB.resolve({ ok: true, value: {
-    version: 2,
-    entry: { id: 'beta', name: 'Beta', scope: 'namespace', source: 'export const beta = 2' },
-  } })
   await new Promise(resolve => setImmediate(resolve))
   listA.resolve({ ok: true, value: { revision: 1, entries: [] } })
-  draftA.resolve({ ok: true, value: {
-    version: 1,
-    entry: { id: 'alpha', name: 'Alpha', scope: 'namespace', source: 'export const alpha = 1' },
-  } })
   await new Promise(resolve => setImmediate(resolve))
   refreshRender = renderRefreshIndicator('session-b', 'cap-b')
   assert.equal(refreshCard(refreshRender.rendered).props.globalBindings.revision, 2)
-  assert.equal(refreshCard(refreshRender.rendered).props.authoringDraft.entry.id, 'beta')
-
-  refreshRender.effects[0]()
-  refreshRender = renderRefreshIndicator('session-b', 'cap-b')
-  refreshCard(refreshRender.rendered).props.saveAuthoringDraft()
-  saveB.resolve({ ok: true, value: { revision: 3, entries: [] } })
-  await new Promise(resolve => setImmediate(resolve))
-  staleListB.resolve({ ok: true, value: { revision: 2, entries: [] } })
-  staleDraftB.resolve({ ok: true, value: {
-    version: 2,
-    entry: { id: 'beta', name: 'Beta', scope: 'namespace', source: 'export const beta = 2' },
-  } })
-  await new Promise(resolve => setImmediate(resolve))
-  refreshRender = renderRefreshIndicator('session-b', 'cap-b')
-  assert.equal(refreshCard(refreshRender.rendered).props.globalBindings.revision, 3)
-  assert.equal(refreshCard(refreshRender.rendered).props.authoringDraft, null)
+  assert.equal(refreshCard(refreshRender.rendered).props.authoringDraft, undefined)
+  assert.equal(refreshCard(refreshRender.rendered).props.saveAuthoringDraft, undefined)
+  assert.equal(refreshCard(refreshRender.rendered).props.discardAuthoringDraft, undefined)
   ctx.connection.rpc.call = originalRpcCall
 
   const memoryUseState = React.useState
@@ -1184,7 +1153,7 @@ test('renders authoring and memory surfaces when new UI primitives are absent', 
   }
   exported.apply(ctx)
 
-  const [authorButton] = slotEntries.filter(({ options }) => options.name === 'conversation.input.left')
+  const [authorButton] = slotEntries.filter(({ options }) => options.id === 'ptc-plus-binding-author')
   const [bindingCommand] = slotEntries.filter(({ options }) => options.name === 'conversation.chat.commandview')
   const [indicator] = slotEntries.filter(({ options }) => options.name === 'conversation.session.header.actions')
   const authorProps = {

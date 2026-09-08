@@ -12,12 +12,15 @@ import {
   normalizeReplMemorySnapshot,
   unavailableReplMemorySnapshot,
 } from '../internal/repl-memory-projection.js'
-import { normalizeUserBindingDraftView } from '../internal/user-binding-draft-projection.js'
+import { bindingDraftProjection, bindingReviewStatus, createBindingReviews } from './client-binding-review.js'
 import { bindingModelPreferences } from '../internal/user-binding-model-context.js'
 
 const CLIENT_STYLE_ID = 'ptc-plus-client-style'
 const USER_BINDINGS_RPC_CHANNEL = '/ptc-plus-bindings'
 const CLIENT_CSS = `
+.ptcPlusBindingDock{box-sizing:border-box;min-width:0;width:min(100%,44rem);margin-inline:auto;display:flex;flex-direction:column;gap:8px;padding:10px 12px;border:1px solid var(--dsw-alias-border-l3);border-radius:12px;background:var(--dsw-alias-bg-layer-3);color:var(--dsw-alias-label-primary)}
+.ptcPlusBindingDockHead{display:flex;align-items:center;gap:8px;min-width:0}.ptcPlusBindingDockHeading{flex:1;min-width:0;display:flex;flex-direction:column;gap:3px;font-size:13px;overflow-wrap:anywhere}.ptcPlusBindingDockHeading strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.ptcPlusBindingDockHeading span{font-size:11px;color:var(--dsw-alias-label-tertiary)}
+.ptcPlusBindingDockBody{min-width:0;max-block-size:min(40dvh,24rem,var(--ptc-plus-review-space,100dvh));overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable}.ptcPlusBindingDockBody:focus-visible{outline:2px solid var(--dsw-alias-interactive-primary);outline-offset:-2px}.ptcPlusBindingDockBody .ptcPlusAuthoringDraft{border:0;padding:0;background:transparent}.ptcPlusBindingDockBody .ptcPlusBindingCommandSource,.ptcPlusBindingDockBody .ptcPlusBindingCommandCode{max-height:none}.ptcPlusBindingDockActions{display:flex;flex-wrap:wrap;gap:6px}.ptcPlusBindingDockActions>button{min-width:0;white-space:normal}.ptcPlusBindingDock .ptcPlusMessage{margin:0}.ptcPlusDraftAccess{display:inline-flex;min-width:1px;min-height:1px}.ptcPlusDraftAccess button{font:inherit;font-size:12px;white-space:nowrap}
 .ptcPlusBindingCommand .ptcPlusMessage{margin:0}.ptcPlusBindingSourceDetails{min-width:0}.ptcPlusBindingSourceDetails>summary{cursor:pointer;font-size:12px;line-height:20px}.ptcPlusBindingItem>button,.ptcPlusGlobalItem>button{align-self:center}.ptcPlusAuthoringDraft>strong{font-size:13px;line-height:20px;overflow-wrap:anywhere}.ptcPlusBindingCommand .ptcPlusBindingCommandState{max-width:100%;box-sizing:border-box;white-space:normal}.ptcPlusBindingCommand .ptcPlusAuthoringDraft{min-width:0;padding:0;border:0;border-radius:0;background:transparent}
 .ptcPlusCard{list-style:none;border:0.5px solid var(--dsw-alias-border-l4);border-radius:16px;background:var(--dsw-alias-bg-layer-3);overflow:hidden;transition:border-color .16s ease,background-color .16s ease}
 .ptcPlusCard:hover{border-color:var(--dsw-alias-label-dimmed)}
@@ -199,6 +202,22 @@ const CHROME_COPY = Object.freeze({
     'bindings.authorOpen': '让 Agent 编写全局用户绑定',
     'bindings.composerBusy': '输入框已有内容，未覆盖现有草稿。',
     'bindings.draftTitle': 'Agent 草稿',
+    'bindings.reviewTitle': '绑定草稿',
+    'bindings.reviewExpand': '展开绑定草稿',
+    'bindings.reviewCollapse': '折叠绑定草稿',
+    'bindings.reviewClose': '关闭绑定草稿面板',
+    'bindings.reviewOpen': '打开草稿',
+    'bindings.reviewAccess': '草稿',
+    'bindings.reviewLoading': '正在确认草稿操作资格…',
+    'bindings.reviewSaving': '正在处理草稿…',
+    'bindings.reviewAttention': '有待查看的操作状态',
+    'bindings.reviewUnconfirmed': '操作结果尚未确认，请刷新状态后查看。',
+    'bindings.reviewReadOnly': '只读草稿，当前没有可确认的操作资格',
+    'bindings.reviewUnavailable': '草稿审阅面板暂不可用',
+    'bindings.reviewRetry': '刷新操作状态',
+    'bindings.commandAccepted': '请求已受理，编写结果未知',
+    'bindings.commandAdmitting': '正在处理编写请求…',
+    'bindings.commandGenerated': '草稿已生成',
     'bindings.draftSave': '保存为停用',
     'bindings.draftSaveEnable': '保存并启用',
     'bindings.draftDiscard': '丢弃草稿',
@@ -339,6 +358,22 @@ const CHROME_COPY = Object.freeze({
     'bindings.authorOpen': 'Ask Agent to write a Global User Binding',
     'bindings.composerBusy': 'The composer already has text, so its draft was not replaced.',
     'bindings.draftTitle': 'Agent draft',
+    'bindings.reviewTitle': 'Binding draft',
+    'bindings.reviewExpand': 'Expand binding draft',
+    'bindings.reviewCollapse': 'Collapse binding draft',
+    'bindings.reviewClose': 'Close binding draft panel',
+    'bindings.reviewOpen': 'Open draft',
+    'bindings.reviewAccess': 'Draft',
+    'bindings.reviewLoading': 'Confirming draft actions…',
+    'bindings.reviewSaving': 'Processing draft…',
+    'bindings.reviewAttention': 'Action status needs attention',
+    'bindings.reviewUnconfirmed': 'The action result is unconfirmed. Refresh its status to check.',
+    'bindings.reviewReadOnly': 'Read-only draft; current action eligibility is unconfirmed',
+    'bindings.reviewUnavailable': 'Draft review panel is temporarily unavailable',
+    'bindings.reviewRetry': 'Refresh action status',
+    'bindings.commandAccepted': 'Request admitted; authoring result unknown',
+    'bindings.commandAdmitting': 'Processing authoring request…',
+    'bindings.commandGenerated': 'Draft generated',
     'bindings.draftSave': 'Save as disabled',
     'bindings.draftSaveEnable': 'Save and enable',
     'bindings.draftDiscard': 'Discard draft',
@@ -1495,12 +1530,8 @@ window.__ModuleLoader__.load({
         memory,
         globalEnabled,
         globalBindings,
-        authoringDraft,
-        authoringPhase,
         loadGlobalBinding,
         prefillAuthoring,
-        saveAuthoringDraft,
-        discardAuthoringDraft,
         authoringMessage,
         t,
         id,
@@ -1557,6 +1588,7 @@ window.__ModuleLoader__.load({
             : null,
           activeTab === 'global'
             ? h('div', { className: 'ptcPlusGlobalPane' },
+                authoringMessage === null ? null : h('p', { className: 'ptcPlusMessage', role: 'status' }, t(authoringMessage)),
                 globalBindings === undefined
                   ? h('span', { className: 'ptcPlusReplEmpty' }, t('memory.globalUnavailable'))
                   : globalBindings.entries.length === 0
@@ -1639,170 +1671,198 @@ window.__ModuleLoader__.load({
             : h('span', { className: 'ptcPlusReplMore' }, t('memory.more', { count: memory.omitted }))))
       }
 
-      function BindingCommandCard({ node, t, useProjection, callUserBindings }) {
-        const projectionValue = useProjection?.('ptcPlusBindingDraft')
-        let projection
-        try {
-          projection = normalizeUserBindingDraftView(projectionValue)
-        } catch {
-          projection = undefined
+      const bindingReviews = createBindingReviews(callUserBindings)
+      ctx.effect(() => () => bindingReviews.dispose())
+      ctx.on('connection/reset', () => bindingReviews.reset())
+
+      function useBindingReview(sessionId) {
+        const review = bindingReviews.forSession(sessionId)
+        const view = React.useSyncExternalStore(review.subscribe, review.getSnapshot)
+        return [review, view]
+      }
+
+      function BindingCandidateContent({ candidate, t }) {
+        const preferences = bindingModelPreferences(candidate.entry.modelContext)
+        return h('div', { className: 'ptcPlusAuthoringDraft' },
+          h('strong', null, candidate.entry.name),
+          h('span', { className: 'ptcPlusBindingMeta' }, `${candidate.entry.scope} - ${candidate.entry.symbols.join(', ')}`),
+          candidate.entry.purpose ? h('p', { className: 'ptcPlusMessage' }, candidate.entry.purpose) : null,
+          typeof CodeBlock === 'function'
+            ? h(CodeBlock, { code: candidate.entry.source, lang: 'typescript', className: 'ptcPlusBindingCommandCode',
+              copyLabel: t('tool.copy'), copiedLabel: t('tool.copied') })
+            : h('pre', { className: 'ptcPlusBindingCommandSource' }, candidate.entry.source),
+          h('strong', null, t('bindings.modelContext')),
+          h('label', { className: 'ptcPlusBindingFieldLabel' },
+            h('input', { type: 'checkbox', className: 'ptcPlusCheck', disabled: true,
+              checked: preferences.includeDeclaration }), t('bindings.includeDeclaration')),
+          h('span', { className: 'ptcPlusBindingFieldLabel' }, t('bindings.instructions')),
+          h('pre', { className: 'ptcPlusBindingCommandRequirement' }, preferences.instructions || t('bindings.noInstructions')))
+      }
+
+      // Native editable semantics are enough to restore focus; no Host class, store or editor internals are used.
+      function focusComposer(anchor) {
+        if (!anchor || anchor.getClientRects().length === 0) return
+        for (let parent = anchor.parentElement; parent; parent = parent.parentElement) {
+          const editable = [...parent.querySelectorAll('textarea, [contenteditable="true"]')]
+            .find(element => element.getClientRects().length > 0 && !element.disabled)
+          if (editable) { editable.focus({ preventScroll: true }); return }
         }
-        const matches = projection?.commandId === node.commandId
-        const capability = matches ? projection.capability : null
-        const phase = matches ? projection.phase : node.outcome === null ? 'pending' : 'idle'
-        const [catalog, setCatalog] = React.useState(null)
-        const [draft, setDraft] = React.useState(null)
-        const [review, setReview] = React.useState(null)
-        const [message, setMessage] = React.useState(null)
-        const [busy, setBusy] = React.useState(false)
-        const [loaded, setLoaded] = React.useState(false)
+        anchor.focus({ preventScroll: true })
+      }
+
+      function openBindingReview(review) {
+        review.display('expanded')
+        requestAnimationFrame(() => {
+          if (review.panel?.getClientRects().length) review.panel.focus({ preventScroll: true })
+        })
+      }
+
+      function fitBindingReview(panel) {
+        const body = panel?.querySelector('.ptcPlusBindingDockBody')
+        if (!body || typeof ResizeObserver !== 'function') return undefined
+        const ancestors = []
+        let seat = panel
+        let viewport
+        for (let parent = panel.parentElement; parent; parent = parent.parentElement) {
+          ancestors.push(parent)
+          if (/auto|scroll|hidden|clip/.test(getComputedStyle(parent).overflowY)) {
+            viewport = parent
+            break
+          }
+          seat = parent
+        }
+        if (!viewport) return undefined
+        let frame
+        const update = () => {
+          if (!panel.getClientRects().length) return
+          const top = Math.max(viewport.getBoundingClientRect().top + viewport.clientTop,
+            window.visualViewport?.offsetTop ?? 0)
+          // Reserve the complete composer stack, including neighboring docks; only our body shrinks.
+          const available = Math.max(0, body.getBoundingClientRect().height + seat.getBoundingClientRect().top - top - 8)
+          body.style.setProperty('--ptc-plus-review-space', `${Math.floor(available)}px`)
+        }
+        const schedule = () => {
+          cancelAnimationFrame(frame)
+          frame = requestAnimationFrame(update)
+        }
+        const observer = new ResizeObserver(schedule)
+        for (const element of [panel, ...ancestors]) observer.observe(element)
+        window.visualViewport?.addEventListener('resize', schedule)
+        window.visualViewport?.addEventListener('scroll', schedule)
+        update()
+        return () => {
+          observer.disconnect()
+          cancelAnimationFrame(frame)
+          window.visualViewport?.removeEventListener('resize', schedule)
+          window.visualViewport?.removeEventListener('scroll', schedule)
+          body.style.removeProperty('--ptc-plus-review-space')
+        }
+      }
+
+      function BindingReviewAccess({ sessionId, t }) {
+        const [review, view] = useBindingReview(sessionId)
+        const anchor = React.useRef(null)
+        const focused = React.useRef(false)
+        const available = view.candidate !== null && view.action === null
         React.useEffect(() => {
-          let active = true
-          setCatalog(null)
-          setDraft(null)
-          setLoaded(false)
-          if (phase !== 'ready' || capability === null) return () => { active = false }
-          setMessage(null)
-          Promise.all([
-            callUserBindings('list'),
-            callUserBindings('draft', { capability }),
-            callUserBindings('draft-review', { capability }),
-          ]).then(([nextCatalog, nextDraft, nextReview]) => {
-            if (!active) return
-            setCatalog(nextCatalog)
-            setDraft(nextDraft)
-            setReview(nextReview)
-            setLoaded(true)
-          }).catch(error => {
-            if (!active) return
-            setLoaded(true)
-            setMessage(error instanceof Error ? error.message : String(error))
+          const observer = typeof IntersectionObserver === 'function'
+            ? new IntersectionObserver(entries => review.reachable(entries.some(entry => entry.isIntersecting))) : undefined
+          if (observer) observer.observe(anchor.current)
+          else review.reachable(true)
+          return () => { observer?.disconnect(); review.reachable(false) }
+        }, [review])
+        React.useLayoutEffect(() => {
+          if (!available && focused.current) { focused.current = false; focusComposer(anchor.current) }
+        }, [available])
+        return h('span', { className: 'ptcPlusDraftAccess', tabIndex: -1,
+          ref: element => { anchor.current = element; review.access = element } },
+          available ? h('button', { type: 'button', className: 'ptcPlusButton',
+            onFocus: () => { focused.current = true }, onBlur: () => { focused.current = false },
+            onClick: () => openBindingReview(review),
+            title: t(view.message ? 'bindings.reviewAttention' : 'bindings.reviewOpen'),
+          }, t('bindings.reviewAccess'), view.message ? ' · !' : '') : null)
+      }
+
+      function BindingReviewDock({ sessionId, useProjection, t }) {
+        const raw = useProjection('ptcPlusBindingDraft')
+        const projection = React.useMemo(() => bindingDraftProjection(raw), [raw])
+        const [review, view] = useBindingReview(sessionId)
+        React.useLayoutEffect(() => review.attach(), [review])
+        React.useLayoutEffect(() => { review.sync(projection) }, [review, projection])
+        const title = React.useId()
+        const content = React.useId()
+        const expanded = view.visibility === 'expanded'
+        React.useLayoutEffect(() => fitBindingReview(review.panel),
+          [review, view.candidate !== null, expanded, view.action !== null, view.visibility])
+        const close = () => {
+          review.display('hidden')
+          requestAnimationFrame(() => {
+            const anchor = review.access
+            const button = anchor?.querySelector('button')
+            if (button?.getClientRects().length) button.focus({ preventScroll: true })
+            else focusComposer(anchor)
           })
-          return () => { active = false }
-        }, [capability, phase])
-        React.useEffect(() => {
-          if (draft === null || busy || phase !== 'ready') return undefined
-          let active = true
-          let pending = false
-          const timer = setInterval(async () => {
-            if (pending) return
-            pending = true
-            try {
-              const [current, nextReview] = await Promise.all([
-                callUserBindings('draft', { capability }),
-                callUserBindings('draft-review', { capability }),
-              ])
-              if (active) { setDraft(current); setReview(nextReview) }
-            } catch {
-              // A failed read proves neither revocation nor persistence.
-            } finally {
-              pending = false
-            }
-          }, 1500)
-          return () => { active = false; clearInterval(timer) }
-        }, [capability, phase, draft, busy])
-        const refresh = async () => {
-          const [nextCatalog, nextDraft, nextReview] = await Promise.all([
-            callUserBindings('list'), callUserBindings('draft', { capability }),
-            callUserBindings('draft-review', { capability }),
-          ])
-          setCatalog(nextCatalog)
-          setDraft(nextDraft)
-          setReview(nextReview)
         }
-        const save = async (activate = false) => {
-          if (busy || draft === null || catalog === null || capability === null) return
-          setBusy(true)
-          setMessage(null)
-          try {
-            await callUserBindings('save-draft', {
-              capability, version: draft.version, expectedRevision: catalog.revision,
-              activate,
-            })
-            setDraft(null)
-            await refresh()
-          } catch (error) {
-            await refresh().catch(() => {})
-            setMessage(error instanceof Error ? error.message : String(error))
-          } finally {
-            setBusy(false)
-          }
-        }
-        const discard = async () => {
-          if (busy || draft === null || capability === null) return
-          setBusy(true)
-          setMessage(null)
-          try {
-            await callUserBindings('discard-draft', { capability, version: draft.version })
-            setDraft(null)
-            await refresh()
-          } catch (error) {
-            await refresh().catch(() => {})
-            setMessage(error instanceof Error ? error.message : String(error))
-          } finally {
-            setBusy(false)
-          }
-        }
-        const outcome = node.outcome
-        const outcomeText = outcome?.kind === 'error'
-          ? outcome.text ?? t('bindings.commandFailed')
-          : undefined
+        if (view.candidate === null || view.visibility === 'hidden') return null
+        return h('section', { className: 'ptcPlusBindingDock', 'aria-labelledby': title, tabIndex: -1,
+          ref: element => { review.panel = element }, 'data-phase': view.action?.state ?? 'ready',
+          'aria-busy': view.busy },
+          h('div', { className: 'ptcPlusBindingDockHead' },
+            h('div', { className: 'ptcPlusBindingDockHeading' },
+              h('strong', { id: title }, `${t('bindings.reviewTitle')} · ${view.candidate.entry.name}`),
+              h('span', { role: 'status' }, t(bindingReviewStatus(view)))),
+            h(IconButton, { icon: IconChevronDownOutline14,
+              label: t(expanded ? 'bindings.reviewCollapse' : 'bindings.reviewExpand'),
+              'aria-expanded': expanded, 'aria-controls': expanded ? content : undefined,
+              onClick: () => review.display(expanded ? 'collapsed' : 'expanded') }),
+            h(IconButton, { icon: IconCloseOutline16, label: t('bindings.reviewClose'), onClick: close })),
+          !expanded || view.action !== null ? null : h(React.Fragment, null,
+            h('div', { className: 'ptcPlusBindingDockBody', id: content, tabIndex: 0,
+              role: 'region', 'aria-label': t('bindings.source') },
+              h(BindingCandidateContent, { candidate: view.candidate, t })),
+            view.message === null ? null : h('p', { className: 'ptcPlusMessage ptcPlusDanger', role: 'status' }, t(view.message)),
+            h('div', { className: 'ptcPlusBindingDockActions' },
+              h(ActionButton, { disabled: !view.writable || view.busy,
+                onClick: () => review.act('save-draft', false) }, t('bindings.draftSave')),
+              h(ActionButton, { 'data-kind': 'primary', disabled: !view.writable || view.busy,
+                onClick: () => review.act('save-draft', true) }, t('bindings.draftSaveEnable')),
+              h(ActionButton, { 'data-kind': 'ghost', disabled: !view.writable || view.busy,
+                onClick: () => review.act('discard-draft') }, t('bindings.draftDiscard')),
+              view.message === null ? null : h(ActionButton, { disabled: view.busy,
+                onClick: () => review.reset() }, t('bindings.reviewRetry')))))
+      }
+
+      function BindingCommandCard({ node, sessionId, t, useProjection }) {
+        const projection = bindingDraftProjection(useProjection?.('ptcPlusBindingDraft'))
+        const [review, current] = useBindingReview(sessionId)
         const historical = projection?.history?.find(record => record.commandId === node.commandId)
-        const currentReview = historical?.action !== null && historical?.action !== undefined
-          ? historical : review ?? historical
-        const candidate = currentReview?.candidate ?? draft
-        const action = currentReview?.action
-        const actionKey = action?.state === 'discarded' ? 'bindings.commandDiscarded'
-          : action?.state === 'saved'
-            ? action.enabled ? 'bindings.commandSavedEnabled' : 'bindings.commandSaved' : null
-        const failed = outcome?.kind === 'error' || phase === 'failed'
-        const displayPhase = action?.state ?? (failed ? 'failed' : phase === 'ready' && loaded && draft === null ? 'idle' : phase)
-        return h('section', {
-          className: 'ptcPlusBindingCommand', 'data-phase': displayPhase,
-          'aria-label': t('bindings.commandTitle'),
-        },
+        const matches = projection?.commandId === node.commandId
+        const currentMatches = current.candidate?.commandId === node.commandId
+        const candidate = historical?.candidate ?? (currentMatches ? current.candidate : null)
+        const action = historical?.action ?? (currentMatches ? current.action : null)
+        const phase = action?.state ?? (candidate !== null ? 'ready'
+          : node.outcome?.kind === 'error' || (matches && projection.phase === 'failed') ? 'failed'
+            : matches && projection.phase === 'pending' ? 'pending' : 'idle')
+        const status = action != null ? bindingReviewStatus({ action })
+          : phase === 'ready' ? 'bindings.commandGenerated'
+            : phase === 'pending' ? 'bindings.commandPending'
+              : phase === 'failed' ? 'bindings.commandFailed'
+                : node.outcome === null ? 'bindings.commandAdmitting' : 'bindings.commandAccepted'
+        const canOpen = matches && currentMatches && action == null && current.mounted && current.reachable
+        return h('section', { className: 'ptcPlusBindingCommand', 'data-phase': phase,
+          'aria-label': t('bindings.commandTitle') },
           h('div', { className: 'ptcPlusBindingCommandHeader' },
             h('strong', { className: 'ptcPlusBindingCommandTitle' }, t('bindings.commandTitle')),
             h('span', { className: 'ptcPlusBindingCommandState' },
-              h('span', { className: 'ptcPlusBindingCommandStateDot', 'aria-hidden': true }),
-              actionKey !== null ? t(actionKey) : displayPhase === 'pending'
-                ? t('bindings.commandPending')
-                : displayPhase === 'ready'
-                  ? t('bindings.commandReady')
-                  : displayPhase === 'failed' ? t('bindings.commandFailed')
-                    : t('bindings.commandUnavailable'))),
+              h('span', { className: 'ptcPlusBindingCommandStateDot', 'aria-hidden': true }), t(status))),
           h('pre', { className: 'ptcPlusBindingCommandRequirement' }, `/binding${node.args ?? ''}`),
-          outcomeText === undefined ? null : h('p', {
-            className: `ptcPlusMessage${outcome?.kind === 'error' ? ' ptcPlusDanger' : ''}`,
-          }, outcomeText),
-          phase === 'ready' && draft === null && message === null && !loaded
-            ? h('span', { className: 'ptcPlusMessage' }, t('bindings.commandPending'))
-            : null,
-          candidate === null || candidate === undefined ? null : h('div', { className: 'ptcPlusAuthoringDraft' },
-            h('strong', null, candidate.entry.name),
-            h('span', { className: 'ptcPlusBindingMeta' }, `${candidate.entry.scope} - ${candidate.entry.symbols.join(', ')}`),
-            h('details', { className: 'ptcPlusBindingSourceDetails', open: actionKey === null ? true : undefined },
-            h('summary', null, t('tool.source')),
-            typeof CodeBlock === 'function'
-              ? h(CodeBlock, {
-                code: candidate.entry.source, lang: 'typescript', className: 'ptcPlusBindingCommandCode',
-                copyLabel: t('tool.copy'), copiedLabel: t('tool.copied'),
-              })
-              : h('pre', { className: 'ptcPlusBindingCommandSource' }, candidate.entry.source)),
-            h('details', { className: 'ptcPlusBindingPromptDetails' },
-              h('summary', null, t('bindings.modelContext')),
-              h('label', { className: 'ptcPlusBindingFieldLabel' },
-                h('input', { type: 'checkbox', className: 'ptcPlusCheck', disabled: true,
-                  checked: bindingModelPreferences(candidate.entry.modelContext).includeDeclaration }),
-                t('bindings.includeDeclaration')),
-              h('span', { className: 'ptcPlusBindingFieldLabel' }, t('bindings.instructions')),
-              h('pre', { className: 'ptcPlusBindingCommandRequirement' },
-                bindingModelPreferences(candidate.entry.modelContext).instructions || t('bindings.noInstructions'))),
-            draft === null || actionKey !== null ? null : h('div', { className: 'ptcPlusBindingCommandActions' },
-              h(ActionButton, { type: 'button', className: 'ptcPlusButton', disabled: busy, onClick: () => save(false) }, t('bindings.draftSave')),
-              h(ActionButton, { type: 'button', className: 'ptcPlusButton', 'data-kind': 'primary', disabled: busy, onClick: () => save(true) }, t('bindings.draftSaveEnable')),
-              h(ActionButton, { type: 'button', className: 'ptcPlusButton', 'data-kind': 'ghost', disabled: busy, onClick: discard }, t('bindings.draftDiscard')))),
-          message === null ? null : h('p', { className: 'ptcPlusMessage', role: 'status' }, message))
+          node.outcome?.kind !== 'error' ? null : h('p', { className: 'ptcPlusMessage ptcPlusDanger' },
+            node.outcome.text ?? t('bindings.commandFailed')),
+          canOpen ? h(ActionButton, { onClick: () => openBindingReview(review) }, t('bindings.reviewOpen')) : null,
+          !current.mounted && (candidate !== null || matches && projection.phase === 'ready')
+            ? h('p', { className: 'ptcPlusMessage' }, t('bindings.reviewUnavailable')) : null,
+          candidate === null ? null : h('details', { className: 'ptcPlusBindingSourceDetails' },
+            h('summary', null, t('tool.source')), h(BindingCandidateContent, { candidate, t })))
       }
 
       function PTCPlusSessionIndicator({
@@ -1810,78 +1870,31 @@ window.__ModuleLoader__.load({
       }) {
         const preset = useSessionPreset({ sessionId, useProjection, useSessions })
         const projectionMemory = useProjection('ptcPlusRepl')
-        const projectionDraftCapability = useProjection('ptcPlusBindingDraft')
         const settings = usePtcSettings(snapshot => snapshot)
-        let input
-        try {
-          input = typeof useInput === 'function' ? useInput(snapshot => snapshot) : undefined
-        } catch {
-          input = undefined
-        }
+        const input = typeof useInput === 'function' ? useInput(snapshot => snapshot) : undefined
         const resolvedSessionId = sessionId
-        let draftProjection = { phase: 'idle', capability: null, commandId: null }
-        try {
-          draftProjection = normalizeUserBindingDraftView(
-            projectionDraftCapability ?? { phase: 'idle', capability: null, commandId: null },
-          )
-        } catch {}
-        const draftCapability = draftProjection.capability
         const globalEnabled = settings.status === 'ready'
-          && settings.value?.enabled === true
-          && settings.value?.userBindingsEnabled === true
-        const refreshIdentity = JSON.stringify([
-          resolvedSessionId === undefined ? null : String(resolvedSessionId),
-          draftProjection.phase,
-          draftCapability,
-          globalEnabled,
-        ])
-        const refreshControl = React.useRef(undefined)
-        if (refreshControl.current?.identity !== refreshIdentity) {
-          refreshControl.current = {
-            identity: refreshIdentity,
-            sequence: 0,
-            mutating: false,
-            draftConsumed: false,
-          }
-        }
-        const [globalBindingsState, setGlobalBindingsState] = React.useState(undefined)
-        const [authoringDraftState, setAuthoringDraftState] = React.useState(undefined)
+          && settings.value?.enabled === true && settings.value?.userBindingsEnabled === true
+        const identity = JSON.stringify([sessionId, globalEnabled])
+        const refreshControl = React.useRef(null)
+        if (refreshControl.current?.identity !== identity) refreshControl.current = { identity, sequence: 0 }
+        const [globalBindingsState, setGlobalBindingsState] = React.useState(null)
         const [authoringMessage, setAuthoringMessage] = React.useState(null)
-        const globalBindings = globalBindingsState?.identity === refreshIdentity
-          ? globalBindingsState.value
-          : undefined
-        const authoringDraft = authoringDraftState?.identity === refreshIdentity
-          ? authoringDraftState.value
-          : null
-        const refreshGlobalBindings = React.useCallback(() => {
+        const globalBindings = globalBindingsState?.identity === identity ? globalBindingsState.value : undefined
+        const refreshGlobalBindings = React.useCallback(async () => {
           const control = refreshControl.current
-          if (control.identity !== refreshIdentity || control.mutating) return Promise.resolve()
+          if (!globalEnabled || control.identity !== identity) return
           const sequence = ++control.sequence
-          if (!globalEnabled) {
-            setGlobalBindingsState({ identity: refreshIdentity, value: undefined })
-            setAuthoringDraftState({ identity: refreshIdentity, value: null })
-            return Promise.resolve()
+          try {
+            const value = await callUserBindings('list')
+            if (refreshControl.current === control && control.sequence === sequence) setGlobalBindingsState({ identity, value })
+          } catch {
+            if (refreshControl.current === control && control.sequence === sequence) setGlobalBindingsState(null)
           }
-          const effectiveDraftCapability = control.draftConsumed ? null : draftCapability
-          return Promise.all([
-            callUserBindings('list'),
-            effectiveDraftCapability === null
-              ? Promise.resolve(null)
-              : callUserBindings('draft', { capability: effectiveDraftCapability }),
-          ]).then(([bindings, draft]) => {
-            if (refreshControl.current !== control || control.sequence !== sequence
-              || control.mutating) return
-            setGlobalBindingsState({ identity: refreshIdentity, value: bindings })
-            setAuthoringDraftState({ identity: refreshIdentity, value: draft })
-          }).catch(() => {
-            if (refreshControl.current !== control || control.sequence !== sequence
-              || control.mutating) return
-            setGlobalBindingsState({ identity: refreshIdentity, value: undefined })
-            setAuthoringDraftState({ identity: refreshIdentity, value: null })
-          })
-        }, [draftCapability, globalEnabled, refreshIdentity])
+        }, [identity, globalEnabled])
         React.useEffect(() => {
           void refreshGlobalBindings()
+          return () => { refreshControl.current.sequence++ }
         }, [refreshGlobalBindings])
         const triggerRef = React.useRef(null)
         const popoverRef = React.useRef(null)
@@ -1945,47 +1958,6 @@ window.__ModuleLoader__.load({
           setAuthoringMessage(null)
           hidePopover()
         }, [hidePopover, input?.draft, inputActions])
-        const saveAuthoringDraft = React.useCallback(() => {
-          if (authoringDraft === null || globalBindings === undefined) return
-          const control = refreshControl.current
-          if (control.identity !== refreshIdentity || control.mutating) return
-          control.mutating = true
-          control.sequence += 1
-          void callUserBindings('save-draft', {
-            capability: draftCapability,
-            version: authoringDraft.version,
-            expectedRevision: globalBindings.revision,
-          }).then(next => {
-            if (refreshControl.current !== control) return
-            control.draftConsumed = true
-            setGlobalBindingsState({ identity: refreshIdentity, value: next })
-            setAuthoringDraftState({ identity: refreshIdentity, value: null })
-            setAuthoringMessage('bindings.draftSaved')
-          }).catch(() => {
-            if (refreshControl.current === control) setAuthoringMessage('memory.globalUnavailable')
-          }).finally(() => {
-            if (refreshControl.current === control) control.mutating = false
-          })
-        }, [authoringDraft, draftCapability, globalBindings, refreshIdentity])
-        const discardAuthoringDraft = React.useCallback(() => {
-          if (authoringDraft === null) return
-          const control = refreshControl.current
-          if (control.identity !== refreshIdentity || control.mutating) return
-          control.mutating = true
-          control.sequence += 1
-          void callUserBindings('discard-draft', {
-            capability: draftCapability, version: authoringDraft.version,
-          }).then(() => {
-            if (refreshControl.current !== control) return
-            control.draftConsumed = true
-            setAuthoringDraftState({ identity: refreshIdentity, value: null })
-            setAuthoringMessage(null)
-          }).catch(() => {
-            if (refreshControl.current === control) setAuthoringMessage('memory.globalUnavailable')
-          }).finally(() => {
-            if (refreshControl.current === control) control.mutating = false
-          })
-        }, [authoringDraft, draftCapability, refreshIdentity])
         React.useEffect(() => {
           const syncPopoverState = (event) => {
             if (event.target !== popoverRef.current) return
@@ -2030,13 +2002,9 @@ window.__ModuleLoader__.load({
             memory,
             globalEnabled,
             globalBindings,
-            authoringDraft,
-            authoringPhase: draftProjection.phase,
-            loadGlobalBinding: id => callUserBindings('load', { id }),
+                loadGlobalBinding: id => callUserBindings('load', { id }),
             prefillAuthoring,
-            saveAuthoringDraft,
-            discardAuthoringDraft,
-            authoringMessage,
+                    authoringMessage,
             t, id: popoverId, titleId, popoverRef,
             onEnter: showPopover, onLeave: scheduleHide,
           }))
@@ -2049,6 +2017,17 @@ window.__ModuleLoader__.load({
         name: 'conversation.chat.commandview', key: 'binding', locale: LOCALE_NS,
         inject: settingsProps,
       }, props => h(BindingCommandCard, { ...props, key: props.node.commandId }))))
+      ctx.slots.inject('conversation.input.dock', () => ctx.slots.inject('conversation.input.left', () =>
+        registerEnabled(ctx, true, () => {
+          const dock = ctx.slots.register({
+            name: 'conversation.input.dock', id: 'ptc-plus-binding-review', order: 30, locale: LOCALE_NS,
+          }, props => typeof props.useProjection === 'function' && props.sessionId !== undefined
+            ? h(BindingReviewDock, { ...props, key: props.sessionId }) : null)
+          const access = ctx.slots.register({
+            name: 'conversation.input.left', id: 'ptc-plus-binding-draft', order: 21, locale: LOCALE_NS,
+          }, props => props.sessionId === undefined ? null : h(BindingReviewAccess, { ...props, key: props.sessionId }))
+          return () => { access(); dock() }
+        })))
       ctx.inject(['remote', 'remote.commands'], (commandScope) => {
         const availability = createBindingCommandAvailability(commandScope)
         commandScope.slots.inject('conversation.input.left', () => registerEnabled(commandScope, true, () => commandScope.slots.register({

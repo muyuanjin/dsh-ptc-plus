@@ -14,6 +14,7 @@
 - [Durable / Volatile Recovery](durability-design.md): replay model and external-input boundaries.
 - [PTC Value Graph V1](value-wire.md): supported JavaScript value encoding.
 - [Global User Bindings](adr/0023-global-user-bindings.md): persistent helper ownership, model projection, runtime activation, recovery, and Agent-assisted authoring.
+- [Binding Review Placement](binding-review-placement-design.md): the implemented full draft panel above the current composer, using the published input dock and one review controller.
 - [Architecture Decisions](adr/): stable design constraints and their consequences.
 
 ## Maintenance

@@ -26481,10 +26481,265 @@
     });
   }
 
+  // src/client-binding-review.js
+  function bindingDraftProjection(value) {
+    try {
+      return normalizeUserBindingDraftView(value);
+    } catch {
+      return void 0;
+    }
+  }
+  function candidateIdentity(candidate) {
+    return candidate ? JSON.stringify([candidate.requestId, candidate.commandId, candidate.version]) : null;
+  }
+  function entryIdentity(entry) {
+    return JSON.stringify([
+      entry?.id,
+      entry?.name,
+      entry?.scope,
+      entry?.purpose,
+      entry?.source,
+      entry?.symbols,
+      entry?.enabled,
+      bindingModelPreferences(entry?.modelContext)
+    ]);
+  }
+  function sameCandidate(left, right) {
+    return left != null && right != null && candidateIdentity(left) === candidateIdentity(right) && left.mode === right.mode && entryIdentity(left.entry) === entryIdentity(right.entry);
+  }
+  function matchesDraft(candidate, draft) {
+    return candidate != null && draft != null && candidate.version === draft.version && candidate.mode === draft.mode && entryIdentity(candidate.entry) === entryIdentity(draft.entry);
+  }
+  function matchesAction(candidate, action) {
+    return action != null && action.requestId === candidate?.requestId && action.id === candidate?.entry.id && (action.state === "saved" || action.state === "discarded") && typeof action.enabled === "boolean" && (action.state !== "discarded" || action.enabled === false);
+  }
+  function bindingReviewStatus(view) {
+    return view.action?.state === "saved" ? view.action.enabled ? "bindings.commandSavedEnabled" : "bindings.commandSaved" : view.action?.state === "discarded" ? "bindings.commandDiscarded" : view.busy ? "bindings.reviewSaving" : view.message ? "bindings.reviewAttention" : view.writable ? "bindings.commandReady" : view.loading ? "bindings.reviewLoading" : "bindings.reviewReadOnly";
+  }
+  function createBindingReviews(call) {
+    const sessions = /* @__PURE__ */ new Map();
+    let disposed = false;
+    function forSession(sessionId) {
+      if (sessions.has(sessionId)) return sessions.get(sessionId);
+      const listeners = /* @__PURE__ */ new Set();
+      const choices = /* @__PURE__ */ new Map();
+      let snapshot = {
+        candidate: null,
+        action: null,
+        writable: false,
+        busy: false,
+        loading: false,
+        message: null,
+        messageSource: null,
+        visibility: "expanded",
+        mounted: false,
+        reachable: false
+      };
+      let projection;
+      let authority = null;
+      let revoked = false;
+      let epoch = 0;
+      let reading;
+      const pending = /* @__PURE__ */ new Map();
+      let timer;
+      let attached = false;
+      const publish = (patch) => {
+        if (disposed) return;
+        snapshot = { ...snapshot, ...patch };
+        for (const listener of listeners) listener();
+      };
+      const invalidate = () => {
+        epoch++;
+        reading?.abort();
+        reading = void 0;
+        clearInterval(timer);
+        timer = void 0;
+      };
+      const select = (candidate, action = null) => {
+        const same = sameCandidate(candidate, snapshot.candidate);
+        const visibility = choices.get(candidateIdentity(candidate)) ?? "expanded";
+        publish({
+          candidate,
+          action: action ?? (same ? snapshot.action : null),
+          visibility,
+          ...!same ? { message: null, messageSource: null, writable: false, loading: false } : {},
+          busy: pending.has(candidateIdentity(candidate))
+        });
+      };
+      const refresh = async () => {
+        if (!attached || authority === null || reading || pending.has(candidateIdentity(snapshot.candidate)) || snapshot.action !== null || disposed) return;
+        const currentEpoch = epoch;
+        const capability = authority;
+        const commandId = projection.commandId;
+        const controller = new AbortController();
+        reading = controller;
+        const results = await Promise.allSettled(["list", "draft", "draft-review"].map((endpoint) => call(endpoint, endpoint === "list" ? {} : { capability }, controller.signal)));
+        if (disposed || epoch !== currentEpoch || controller.signal.aborted) return;
+        reading = void 0;
+        const [catalogResult, draftResult, reviewResult] = results;
+        const review2 = reviewResult.status === "fulfilled" ? reviewResult.value : null;
+        const candidate = review2?.candidate;
+        const known = snapshot.candidate;
+        const matches = candidate?.commandId === commandId && typeof candidate?.requestId === "string" && Number.isSafeInteger(candidate.version) && candidate.version > 0 && typeof candidate.entry?.source === "string" && (known === null || sameCandidate(known, candidate));
+        if (matches && matchesAction(candidate, review2.action)) {
+          clearInterval(timer);
+          timer = void 0;
+          publish({
+            ...known !== null ? { action: review2.action } : {},
+            writable: false,
+            loading: false,
+            message: null,
+            messageSource: null
+          });
+          return;
+        }
+        if (matches && known === null) select(candidate);
+        const draft = draftResult.status === "fulfilled" ? draftResult.value : null;
+        if (draftResult.status === "fulfilled" && draft === null) revoked = true;
+        const catalog = catalogResult.status === "fulfilled" ? catalogResult.value : null;
+        const writable = !revoked && matches && review2.action === null && matchesDraft(candidate, draft) && Number.isSafeInteger(catalog?.revision);
+        const error = results.find((result) => result.status === "rejected");
+        publish({
+          writable,
+          loading: false,
+          revision: writable ? catalog.revision : void 0,
+          ...snapshot.messageSource === "write" ? {} : {
+            message: error ? String(error.reason?.message ?? error.reason) : null,
+            messageSource: error ? "read" : null
+          }
+        });
+      };
+      const start = () => {
+        clearInterval(timer);
+        timer = void 0;
+        if (!attached || authority === null || snapshot.action !== null) return;
+        void refresh();
+        timer = setInterval(() => {
+          void refresh();
+        }, 1500);
+      };
+      const sync = (next) => {
+        projection = next;
+        const historical = next?.history?.find((record) => record.commandId === next.commandId);
+        const nextAuthority = next?.phase === "ready" && next.commandId !== null && !historical?.action ? next.capability : null;
+        const previousKey = candidateIdentity(snapshot.candidate);
+        const recorded = next?.history?.find((record) => sameCandidate(record.candidate, snapshot.candidate));
+        if (recorded?.action) publish({ action: recorded.action, writable: false, message: null, messageSource: null });
+        if (historical && next.phase === "ready") {
+          if (!historical.action || sameCandidate(historical.candidate, snapshot.candidate)) {
+            select(historical.candidate, historical.action);
+          } else select(null);
+        } else if (next?.commandId != null && next.commandId !== snapshot.candidate?.commandId) select(null);
+        else if (next === void 0 || next?.phase !== "ready" && snapshot.candidate !== null && snapshot.action === null && !next?.history?.some((record) => sameCandidate(record.candidate, snapshot.candidate))) {
+          select(null);
+        }
+        const nextKey = candidateIdentity(snapshot.candidate);
+        if (authority !== nextAuthority || previousKey !== nextKey) {
+          invalidate();
+          if (authority !== nextAuthority) revoked = false;
+          authority = nextAuthority;
+          publish({ writable: false, loading: nextAuthority !== null && snapshot.action === null });
+          start();
+        }
+      };
+      const act = async (operation, activate = false) => {
+        const key = candidateIdentity(snapshot.candidate);
+        if (!attached || disposed || !snapshot.writable || snapshot.action !== null || pending.has(key) || authority === null) return;
+        const transaction = { candidate: snapshot.candidate, capability: authority };
+        pending.set(key, transaction);
+        invalidate();
+        publish({ busy: true, writable: false, message: null, messageSource: null });
+        try {
+          await call(operation, {
+            capability: transaction.capability,
+            version: transaction.candidate.version,
+            ...operation === "save-draft" ? { expectedRevision: snapshot.revision, activate } : {}
+          });
+          const receipt = operation === "save-draft" ? { requestId: transaction.candidate.requestId, id: transaction.candidate.entry.id, state: "saved", enabled: activate } : await call("draft-review", { capability: transaction.capability });
+          const action = operation === "save-draft" ? receipt : sameCandidate(receipt?.candidate, transaction.candidate) && matchesAction(transaction.candidate, receipt?.action) ? receipt.action : null;
+          if (!disposed && sameCandidate(snapshot.candidate, transaction.candidate) && snapshot.action === null) {
+            publish({
+              action,
+              writable: false,
+              loading: false,
+              message: action === null ? "bindings.reviewUnconfirmed" : null,
+              messageSource: action === null ? "write" : null
+            });
+          }
+        } catch (error) {
+          if (!disposed && sameCandidate(snapshot.candidate, transaction.candidate) && snapshot.action === null) {
+            publish({ message: String(error?.message ?? error), messageSource: "write", writable: false, loading: false });
+          }
+        } finally {
+          pending.delete(key);
+          if (!disposed && sameCandidate(snapshot.candidate, transaction.candidate)) {
+            publish({ busy: false });
+            start();
+          }
+        }
+      };
+      const review = {
+        getSnapshot: () => snapshot,
+        subscribe(listener) {
+          listeners.add(listener);
+          return () => listeners.delete(listener);
+        },
+        sync,
+        attach() {
+          attached = true;
+          publish({ mounted: true });
+          start();
+          return () => {
+            attached = false;
+            invalidate();
+            publish({ mounted: false, reachable: false, writable: false });
+          };
+        },
+        reset() {
+          invalidate();
+          publish({ writable: false, loading: authority !== null && snapshot.action === null });
+          start();
+        },
+        reachable(value) {
+          if (snapshot.reachable !== value) publish({ reachable: value });
+        },
+        display(visibility) {
+          if (snapshot.candidate === null) return;
+          choices.set(candidateIdentity(snapshot.candidate), visibility);
+          publish({ visibility });
+        },
+        act,
+        refresh,
+        dispose() {
+          invalidate();
+          attached = false;
+          listeners.clear();
+          choices.clear();
+        }
+      };
+      sessions.set(sessionId, review);
+      return review;
+    }
+    return {
+      forSession,
+      reset() {
+        for (const review of sessions.values()) review.reset();
+      },
+      dispose() {
+        disposed = true;
+        for (const review of sessions.values()) review.dispose();
+        sessions.clear();
+      }
+    };
+  }
+
   // src/client.js
   var CLIENT_STYLE_ID = "ptc-plus-client-style";
   var USER_BINDINGS_RPC_CHANNEL = "/ptc-plus-bindings";
   var CLIENT_CSS = `
+.ptcPlusBindingDock{box-sizing:border-box;min-width:0;width:min(100%,44rem);margin-inline:auto;display:flex;flex-direction:column;gap:8px;padding:10px 12px;border:1px solid var(--dsw-alias-border-l3);border-radius:12px;background:var(--dsw-alias-bg-layer-3);color:var(--dsw-alias-label-primary)}
+.ptcPlusBindingDockHead{display:flex;align-items:center;gap:8px;min-width:0}.ptcPlusBindingDockHeading{flex:1;min-width:0;display:flex;flex-direction:column;gap:3px;font-size:13px;overflow-wrap:anywhere}.ptcPlusBindingDockHeading strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.ptcPlusBindingDockHeading span{font-size:11px;color:var(--dsw-alias-label-tertiary)}
+.ptcPlusBindingDockBody{min-width:0;max-block-size:min(40dvh,24rem,var(--ptc-plus-review-space,100dvh));overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable}.ptcPlusBindingDockBody:focus-visible{outline:2px solid var(--dsw-alias-interactive-primary);outline-offset:-2px}.ptcPlusBindingDockBody .ptcPlusAuthoringDraft{border:0;padding:0;background:transparent}.ptcPlusBindingDockBody .ptcPlusBindingCommandSource,.ptcPlusBindingDockBody .ptcPlusBindingCommandCode{max-height:none}.ptcPlusBindingDockActions{display:flex;flex-wrap:wrap;gap:6px}.ptcPlusBindingDockActions>button{min-width:0;white-space:normal}.ptcPlusBindingDock .ptcPlusMessage{margin:0}.ptcPlusDraftAccess{display:inline-flex;min-width:1px;min-height:1px}.ptcPlusDraftAccess button{font:inherit;font-size:12px;white-space:nowrap}
 .ptcPlusBindingCommand .ptcPlusMessage{margin:0}.ptcPlusBindingSourceDetails{min-width:0}.ptcPlusBindingSourceDetails>summary{cursor:pointer;font-size:12px;line-height:20px}.ptcPlusBindingItem>button,.ptcPlusGlobalItem>button{align-self:center}.ptcPlusAuthoringDraft>strong{font-size:13px;line-height:20px;overflow-wrap:anywhere}.ptcPlusBindingCommand .ptcPlusBindingCommandState{max-width:100%;box-sizing:border-box;white-space:normal}.ptcPlusBindingCommand .ptcPlusAuthoringDraft{min-width:0;padding:0;border:0;border-radius:0;background:transparent}
 .ptcPlusCard{list-style:none;border:0.5px solid var(--dsw-alias-border-l4);border-radius:16px;background:var(--dsw-alias-bg-layer-3);overflow:hidden;transition:border-color .16s ease,background-color .16s ease}
 .ptcPlusCard:hover{border-color:var(--dsw-alias-label-dimmed)}
@@ -26660,6 +26915,22 @@
       "bindings.authorOpen": "\u8BA9 Agent \u7F16\u5199\u5168\u5C40\u7528\u6237\u7ED1\u5B9A",
       "bindings.composerBusy": "\u8F93\u5165\u6846\u5DF2\u6709\u5185\u5BB9\uFF0C\u672A\u8986\u76D6\u73B0\u6709\u8349\u7A3F\u3002",
       "bindings.draftTitle": "Agent \u8349\u7A3F",
+      "bindings.reviewTitle": "\u7ED1\u5B9A\u8349\u7A3F",
+      "bindings.reviewExpand": "\u5C55\u5F00\u7ED1\u5B9A\u8349\u7A3F",
+      "bindings.reviewCollapse": "\u6298\u53E0\u7ED1\u5B9A\u8349\u7A3F",
+      "bindings.reviewClose": "\u5173\u95ED\u7ED1\u5B9A\u8349\u7A3F\u9762\u677F",
+      "bindings.reviewOpen": "\u6253\u5F00\u8349\u7A3F",
+      "bindings.reviewAccess": "\u8349\u7A3F",
+      "bindings.reviewLoading": "\u6B63\u5728\u786E\u8BA4\u8349\u7A3F\u64CD\u4F5C\u8D44\u683C\u2026",
+      "bindings.reviewSaving": "\u6B63\u5728\u5904\u7406\u8349\u7A3F\u2026",
+      "bindings.reviewAttention": "\u6709\u5F85\u67E5\u770B\u7684\u64CD\u4F5C\u72B6\u6001",
+      "bindings.reviewUnconfirmed": "\u64CD\u4F5C\u7ED3\u679C\u5C1A\u672A\u786E\u8BA4\uFF0C\u8BF7\u5237\u65B0\u72B6\u6001\u540E\u67E5\u770B\u3002",
+      "bindings.reviewReadOnly": "\u53EA\u8BFB\u8349\u7A3F\uFF0C\u5F53\u524D\u6CA1\u6709\u53EF\u786E\u8BA4\u7684\u64CD\u4F5C\u8D44\u683C",
+      "bindings.reviewUnavailable": "\u8349\u7A3F\u5BA1\u9605\u9762\u677F\u6682\u4E0D\u53EF\u7528",
+      "bindings.reviewRetry": "\u5237\u65B0\u64CD\u4F5C\u72B6\u6001",
+      "bindings.commandAccepted": "\u8BF7\u6C42\u5DF2\u53D7\u7406\uFF0C\u7F16\u5199\u7ED3\u679C\u672A\u77E5",
+      "bindings.commandAdmitting": "\u6B63\u5728\u5904\u7406\u7F16\u5199\u8BF7\u6C42\u2026",
+      "bindings.commandGenerated": "\u8349\u7A3F\u5DF2\u751F\u6210",
       "bindings.draftSave": "\u4FDD\u5B58\u4E3A\u505C\u7528",
       "bindings.draftSaveEnable": "\u4FDD\u5B58\u5E76\u542F\u7528",
       "bindings.draftDiscard": "\u4E22\u5F03\u8349\u7A3F",
@@ -26800,6 +27071,22 @@
       "bindings.authorOpen": "Ask Agent to write a Global User Binding",
       "bindings.composerBusy": "The composer already has text, so its draft was not replaced.",
       "bindings.draftTitle": "Agent draft",
+      "bindings.reviewTitle": "Binding draft",
+      "bindings.reviewExpand": "Expand binding draft",
+      "bindings.reviewCollapse": "Collapse binding draft",
+      "bindings.reviewClose": "Close binding draft panel",
+      "bindings.reviewOpen": "Open draft",
+      "bindings.reviewAccess": "Draft",
+      "bindings.reviewLoading": "Confirming draft actions\u2026",
+      "bindings.reviewSaving": "Processing draft\u2026",
+      "bindings.reviewAttention": "Action status needs attention",
+      "bindings.reviewUnconfirmed": "The action result is unconfirmed. Refresh its status to check.",
+      "bindings.reviewReadOnly": "Read-only draft; current action eligibility is unconfirmed",
+      "bindings.reviewUnavailable": "Draft review panel is temporarily unavailable",
+      "bindings.reviewRetry": "Refresh action status",
+      "bindings.commandAccepted": "Request admitted; authoring result unknown",
+      "bindings.commandAdmitting": "Processing authoring request\u2026",
+      "bindings.commandGenerated": "Draft generated",
       "bindings.draftSave": "Save as disabled",
       "bindings.draftSaveEnable": "Save and enable",
       "bindings.draftDiscard": "Discard draft",
@@ -28273,12 +28560,8 @@
           memory,
           globalEnabled,
           globalBindings,
-          authoringDraft,
-          authoringPhase,
           loadGlobalBinding,
           prefillAuthoring,
-          saveAuthoringDraft,
-          discardAuthoringDraft,
           authoringMessage,
           t: t2,
           id: id2,
@@ -28349,6 +28632,7 @@
               activeTab === "global" ? h(
                 "div",
                 { className: "ptcPlusGlobalPane" },
+                authoringMessage === null ? null : h("p", { className: "ptcPlusMessage", role: "status" }, t2(authoringMessage)),
                 globalBindings === void 0 ? h("span", { className: "ptcPlusReplEmpty" }, t2("memory.globalUnavailable")) : globalBindings.entries.length === 0 ? h("span", { className: "ptcPlusReplEmpty" }, t2("memory.globalEmpty")) : h("ul", { className: "ptcPlusGlobalList" }, globalBindings.entries.map((entry) => h(
                   "li",
                   { key: entry.id, className: "ptcPlusGlobalItem" },
@@ -28439,138 +28723,259 @@
             )
           );
         }
-        function BindingCommandCard({ node, t: t2, useProjection, callUserBindings: callUserBindings2 }) {
-          const projectionValue = useProjection?.("ptcPlusBindingDraft");
-          let projection;
-          try {
-            projection = normalizeUserBindingDraftView(projectionValue);
-          } catch {
-            projection = void 0;
+        const bindingReviews = createBindingReviews(callUserBindings);
+        ctx.effect(() => () => bindingReviews.dispose());
+        ctx.on("connection/reset", () => bindingReviews.reset());
+        function useBindingReview(sessionId) {
+          const review = bindingReviews.forSession(sessionId);
+          const view = React.useSyncExternalStore(review.subscribe, review.getSnapshot);
+          return [review, view];
+        }
+        function BindingCandidateContent({ candidate, t: t2 }) {
+          const preferences = bindingModelPreferences(candidate.entry.modelContext);
+          return h(
+            "div",
+            { className: "ptcPlusAuthoringDraft" },
+            h("strong", null, candidate.entry.name),
+            h("span", { className: "ptcPlusBindingMeta" }, `${candidate.entry.scope} - ${candidate.entry.symbols.join(", ")}`),
+            candidate.entry.purpose ? h("p", { className: "ptcPlusMessage" }, candidate.entry.purpose) : null,
+            typeof CodeBlock === "function" ? h(CodeBlock, {
+              code: candidate.entry.source,
+              lang: "typescript",
+              className: "ptcPlusBindingCommandCode",
+              copyLabel: t2("tool.copy"),
+              copiedLabel: t2("tool.copied")
+            }) : h("pre", { className: "ptcPlusBindingCommandSource" }, candidate.entry.source),
+            h("strong", null, t2("bindings.modelContext")),
+            h(
+              "label",
+              { className: "ptcPlusBindingFieldLabel" },
+              h("input", {
+                type: "checkbox",
+                className: "ptcPlusCheck",
+                disabled: true,
+                checked: preferences.includeDeclaration
+              }),
+              t2("bindings.includeDeclaration")
+            ),
+            h("span", { className: "ptcPlusBindingFieldLabel" }, t2("bindings.instructions")),
+            h("pre", { className: "ptcPlusBindingCommandRequirement" }, preferences.instructions || t2("bindings.noInstructions"))
+          );
+        }
+        function focusComposer(anchor) {
+          if (!anchor || anchor.getClientRects().length === 0) return;
+          for (let parent = anchor.parentElement; parent; parent = parent.parentElement) {
+            const editable2 = [...parent.querySelectorAll('textarea, [contenteditable="true"]')].find((element) => element.getClientRects().length > 0 && !element.disabled);
+            if (editable2) {
+              editable2.focus({ preventScroll: true });
+              return;
+            }
           }
-          const matches = projection?.commandId === node.commandId;
-          const capability = matches ? projection.capability : null;
-          const phase = matches ? projection.phase : node.outcome === null ? "pending" : "idle";
-          const [catalog, setCatalog] = React.useState(null);
-          const [draft, setDraft] = React.useState(null);
-          const [review, setReview] = React.useState(null);
-          const [message, setMessage] = React.useState(null);
-          const [busy, setBusy] = React.useState(false);
-          const [loaded, setLoaded] = React.useState(false);
+          anchor.focus({ preventScroll: true });
+        }
+        function openBindingReview(review) {
+          review.display("expanded");
+          requestAnimationFrame(() => {
+            if (review.panel?.getClientRects().length) review.panel.focus({ preventScroll: true });
+          });
+        }
+        function fitBindingReview(panel) {
+          const body = panel?.querySelector(".ptcPlusBindingDockBody");
+          if (!body || typeof ResizeObserver !== "function") return void 0;
+          const ancestors = [];
+          let seat = panel;
+          let viewport;
+          for (let parent = panel.parentElement; parent; parent = parent.parentElement) {
+            ancestors.push(parent);
+            if (/auto|scroll|hidden|clip/.test(getComputedStyle(parent).overflowY)) {
+              viewport = parent;
+              break;
+            }
+            seat = parent;
+          }
+          if (!viewport) return void 0;
+          let frame;
+          const update = () => {
+            if (!panel.getClientRects().length) return;
+            const top2 = Math.max(
+              viewport.getBoundingClientRect().top + viewport.clientTop,
+              window.visualViewport?.offsetTop ?? 0
+            );
+            const available = Math.max(0, body.getBoundingClientRect().height + seat.getBoundingClientRect().top - top2 - 8);
+            body.style.setProperty("--ptc-plus-review-space", `${Math.floor(available)}px`);
+          };
+          const schedule = () => {
+            cancelAnimationFrame(frame);
+            frame = requestAnimationFrame(update);
+          };
+          const observer = new ResizeObserver(schedule);
+          for (const element of [panel, ...ancestors]) observer.observe(element);
+          window.visualViewport?.addEventListener("resize", schedule);
+          window.visualViewport?.addEventListener("scroll", schedule);
+          update();
+          return () => {
+            observer.disconnect();
+            cancelAnimationFrame(frame);
+            window.visualViewport?.removeEventListener("resize", schedule);
+            window.visualViewport?.removeEventListener("scroll", schedule);
+            body.style.removeProperty("--ptc-plus-review-space");
+          };
+        }
+        function BindingReviewAccess({ sessionId, t: t2 }) {
+          const [review, view] = useBindingReview(sessionId);
+          const anchor = React.useRef(null);
+          const focused = React.useRef(false);
+          const available = view.candidate !== null && view.action === null;
           React.useEffect(() => {
-            let active = true;
-            setCatalog(null);
-            setDraft(null);
-            setLoaded(false);
-            if (phase !== "ready" || capability === null) return () => {
-              active = false;
-            };
-            setMessage(null);
-            Promise.all([
-              callUserBindings2("list"),
-              callUserBindings2("draft", { capability }),
-              callUserBindings2("draft-review", { capability })
-            ]).then(([nextCatalog, nextDraft, nextReview]) => {
-              if (!active) return;
-              setCatalog(nextCatalog);
-              setDraft(nextDraft);
-              setReview(nextReview);
-              setLoaded(true);
-            }).catch((error) => {
-              if (!active) return;
-              setLoaded(true);
-              setMessage(error instanceof Error ? error.message : String(error));
-            });
+            const observer = typeof IntersectionObserver === "function" ? new IntersectionObserver((entries) => review.reachable(entries.some((entry) => entry.isIntersecting))) : void 0;
+            if (observer) observer.observe(anchor.current);
+            else review.reachable(true);
             return () => {
-              active = false;
+              observer?.disconnect();
+              review.reachable(false);
             };
-          }, [capability, phase]);
-          React.useEffect(() => {
-            if (draft === null || busy || phase !== "ready") return void 0;
-            let active = true;
-            let pending = false;
-            const timer = setInterval(async () => {
-              if (pending) return;
-              pending = true;
-              try {
-                const [current, nextReview] = await Promise.all([
-                  callUserBindings2("draft", { capability }),
-                  callUserBindings2("draft-review", { capability })
-                ]);
-                if (active) {
-                  setDraft(current);
-                  setReview(nextReview);
-                }
-              } catch {
-              } finally {
-                pending = false;
+          }, [review]);
+          React.useLayoutEffect(() => {
+            if (!available && focused.current) {
+              focused.current = false;
+              focusComposer(anchor.current);
+            }
+          }, [available]);
+          return h(
+            "span",
+            {
+              className: "ptcPlusDraftAccess",
+              tabIndex: -1,
+              ref: (element) => {
+                anchor.current = element;
+                review.access = element;
               }
-            }, 1500);
-            return () => {
-              active = false;
-              clearInterval(timer);
-            };
-          }, [capability, phase, draft, busy]);
-          const refresh = async () => {
-            const [nextCatalog, nextDraft, nextReview] = await Promise.all([
-              callUserBindings2("list"),
-              callUserBindings2("draft", { capability }),
-              callUserBindings2("draft-review", { capability })
-            ]);
-            setCatalog(nextCatalog);
-            setDraft(nextDraft);
-            setReview(nextReview);
+            },
+            available ? h("button", {
+              type: "button",
+              className: "ptcPlusButton",
+              onFocus: () => {
+                focused.current = true;
+              },
+              onBlur: () => {
+                focused.current = false;
+              },
+              onClick: () => openBindingReview(review),
+              title: t2(view.message ? "bindings.reviewAttention" : "bindings.reviewOpen")
+            }, t2("bindings.reviewAccess"), view.message ? " \xB7 !" : "") : null
+          );
+        }
+        function BindingReviewDock({ sessionId, useProjection, t: t2 }) {
+          const raw = useProjection("ptcPlusBindingDraft");
+          const projection = React.useMemo(() => bindingDraftProjection(raw), [raw]);
+          const [review, view] = useBindingReview(sessionId);
+          React.useLayoutEffect(() => review.attach(), [review]);
+          React.useLayoutEffect(() => {
+            review.sync(projection);
+          }, [review, projection]);
+          const title = React.useId();
+          const content2 = React.useId();
+          const expanded = view.visibility === "expanded";
+          React.useLayoutEffect(
+            () => fitBindingReview(review.panel),
+            [review, view.candidate !== null, expanded, view.action !== null, view.visibility]
+          );
+          const close = () => {
+            review.display("hidden");
+            requestAnimationFrame(() => {
+              const anchor = review.access;
+              const button = anchor?.querySelector("button");
+              if (button?.getClientRects().length) button.focus({ preventScroll: true });
+              else focusComposer(anchor);
+            });
           };
-          const save = async (activate = false) => {
-            if (busy || draft === null || catalog === null || capability === null) return;
-            setBusy(true);
-            setMessage(null);
-            try {
-              await callUserBindings2("save-draft", {
-                capability,
-                version: draft.version,
-                expectedRevision: catalog.revision,
-                activate
-              });
-              setDraft(null);
-              await refresh();
-            } catch (error) {
-              await refresh().catch(() => {
-              });
-              setMessage(error instanceof Error ? error.message : String(error));
-            } finally {
-              setBusy(false);
-            }
-          };
-          const discard = async () => {
-            if (busy || draft === null || capability === null) return;
-            setBusy(true);
-            setMessage(null);
-            try {
-              await callUserBindings2("discard-draft", { capability, version: draft.version });
-              setDraft(null);
-              await refresh();
-            } catch (error) {
-              await refresh().catch(() => {
-              });
-              setMessage(error instanceof Error ? error.message : String(error));
-            } finally {
-              setBusy(false);
-            }
-          };
-          const outcome = node.outcome;
-          const outcomeText = outcome?.kind === "error" ? outcome.text ?? t2("bindings.commandFailed") : void 0;
+          if (view.candidate === null || view.visibility === "hidden") return null;
+          return h(
+            "section",
+            {
+              className: "ptcPlusBindingDock",
+              "aria-labelledby": title,
+              tabIndex: -1,
+              ref: (element) => {
+                review.panel = element;
+              },
+              "data-phase": view.action?.state ?? "ready",
+              "aria-busy": view.busy
+            },
+            h(
+              "div",
+              { className: "ptcPlusBindingDockHead" },
+              h(
+                "div",
+                { className: "ptcPlusBindingDockHeading" },
+                h("strong", { id: title }, `${t2("bindings.reviewTitle")} \xB7 ${view.candidate.entry.name}`),
+                h("span", { role: "status" }, t2(bindingReviewStatus(view)))
+              ),
+              h(IconButton, {
+                icon: IconChevronDownOutline14,
+                label: t2(expanded ? "bindings.reviewCollapse" : "bindings.reviewExpand"),
+                "aria-expanded": expanded,
+                "aria-controls": expanded ? content2 : void 0,
+                onClick: () => review.display(expanded ? "collapsed" : "expanded")
+              }),
+              h(IconButton, { icon: IconCloseOutline16, label: t2("bindings.reviewClose"), onClick: close })
+            ),
+            !expanded || view.action !== null ? null : h(
+              React.Fragment,
+              null,
+              h(
+                "div",
+                {
+                  className: "ptcPlusBindingDockBody",
+                  id: content2,
+                  tabIndex: 0,
+                  role: "region",
+                  "aria-label": t2("bindings.source")
+                },
+                h(BindingCandidateContent, { candidate: view.candidate, t: t2 })
+              ),
+              view.message === null ? null : h("p", { className: "ptcPlusMessage ptcPlusDanger", role: "status" }, t2(view.message)),
+              h(
+                "div",
+                { className: "ptcPlusBindingDockActions" },
+                h(ActionButton, {
+                  disabled: !view.writable || view.busy,
+                  onClick: () => review.act("save-draft", false)
+                }, t2("bindings.draftSave")),
+                h(ActionButton, {
+                  "data-kind": "primary",
+                  disabled: !view.writable || view.busy,
+                  onClick: () => review.act("save-draft", true)
+                }, t2("bindings.draftSaveEnable")),
+                h(ActionButton, {
+                  "data-kind": "ghost",
+                  disabled: !view.writable || view.busy,
+                  onClick: () => review.act("discard-draft")
+                }, t2("bindings.draftDiscard")),
+                view.message === null ? null : h(ActionButton, {
+                  disabled: view.busy,
+                  onClick: () => review.reset()
+                }, t2("bindings.reviewRetry"))
+              )
+            )
+          );
+        }
+        function BindingCommandCard({ node, sessionId, t: t2, useProjection }) {
+          const projection = bindingDraftProjection(useProjection?.("ptcPlusBindingDraft"));
+          const [review, current] = useBindingReview(sessionId);
           const historical = projection?.history?.find((record) => record.commandId === node.commandId);
-          const currentReview = historical?.action !== null && historical?.action !== void 0 ? historical : review ?? historical;
-          const candidate = currentReview?.candidate ?? draft;
-          const action = currentReview?.action;
-          const actionKey = action?.state === "discarded" ? "bindings.commandDiscarded" : action?.state === "saved" ? action.enabled ? "bindings.commandSavedEnabled" : "bindings.commandSaved" : null;
-          const failed = outcome?.kind === "error" || phase === "failed";
-          const displayPhase = action?.state ?? (failed ? "failed" : phase === "ready" && loaded && draft === null ? "idle" : phase);
+          const matches = projection?.commandId === node.commandId;
+          const currentMatches = current.candidate?.commandId === node.commandId;
+          const candidate = historical?.candidate ?? (currentMatches ? current.candidate : null);
+          const action = historical?.action ?? (currentMatches ? current.action : null);
+          const phase = action?.state ?? (candidate !== null ? "ready" : node.outcome?.kind === "error" || matches && projection.phase === "failed" ? "failed" : matches && projection.phase === "pending" ? "pending" : "idle");
+          const status = action != null ? bindingReviewStatus({ action }) : phase === "ready" ? "bindings.commandGenerated" : phase === "pending" ? "bindings.commandPending" : phase === "failed" ? "bindings.commandFailed" : node.outcome === null ? "bindings.commandAdmitting" : "bindings.commandAccepted";
+          const canOpen = matches && currentMatches && action == null && current.mounted && current.reachable;
           return h(
             "section",
             {
               className: "ptcPlusBindingCommand",
-              "data-phase": displayPhase,
+              "data-phase": phase,
               "aria-label": t2("bindings.commandTitle")
             },
             h(
@@ -28581,62 +28986,23 @@
                 "span",
                 { className: "ptcPlusBindingCommandState" },
                 h("span", { className: "ptcPlusBindingCommandStateDot", "aria-hidden": true }),
-                actionKey !== null ? t2(actionKey) : displayPhase === "pending" ? t2("bindings.commandPending") : displayPhase === "ready" ? t2("bindings.commandReady") : displayPhase === "failed" ? t2("bindings.commandFailed") : t2("bindings.commandUnavailable")
+                t2(status)
               )
             ),
             h("pre", { className: "ptcPlusBindingCommandRequirement" }, `/binding${node.args ?? ""}`),
-            outcomeText === void 0 ? null : h("p", {
-              className: `ptcPlusMessage${outcome?.kind === "error" ? " ptcPlusDanger" : ""}`
-            }, outcomeText),
-            phase === "ready" && draft === null && message === null && !loaded ? h("span", { className: "ptcPlusMessage" }, t2("bindings.commandPending")) : null,
-            candidate === null || candidate === void 0 ? null : h(
-              "div",
-              { className: "ptcPlusAuthoringDraft" },
-              h("strong", null, candidate.entry.name),
-              h("span", { className: "ptcPlusBindingMeta" }, `${candidate.entry.scope} - ${candidate.entry.symbols.join(", ")}`),
-              h(
-                "details",
-                { className: "ptcPlusBindingSourceDetails", open: actionKey === null ? true : void 0 },
-                h("summary", null, t2("tool.source")),
-                typeof CodeBlock === "function" ? h(CodeBlock, {
-                  code: candidate.entry.source,
-                  lang: "typescript",
-                  className: "ptcPlusBindingCommandCode",
-                  copyLabel: t2("tool.copy"),
-                  copiedLabel: t2("tool.copied")
-                }) : h("pre", { className: "ptcPlusBindingCommandSource" }, candidate.entry.source)
-              ),
-              h(
-                "details",
-                { className: "ptcPlusBindingPromptDetails" },
-                h("summary", null, t2("bindings.modelContext")),
-                h(
-                  "label",
-                  { className: "ptcPlusBindingFieldLabel" },
-                  h("input", {
-                    type: "checkbox",
-                    className: "ptcPlusCheck",
-                    disabled: true,
-                    checked: bindingModelPreferences(candidate.entry.modelContext).includeDeclaration
-                  }),
-                  t2("bindings.includeDeclaration")
-                ),
-                h("span", { className: "ptcPlusBindingFieldLabel" }, t2("bindings.instructions")),
-                h(
-                  "pre",
-                  { className: "ptcPlusBindingCommandRequirement" },
-                  bindingModelPreferences(candidate.entry.modelContext).instructions || t2("bindings.noInstructions")
-                )
-              ),
-              draft === null || actionKey !== null ? null : h(
-                "div",
-                { className: "ptcPlusBindingCommandActions" },
-                h(ActionButton, { type: "button", className: "ptcPlusButton", disabled: busy, onClick: () => save(false) }, t2("bindings.draftSave")),
-                h(ActionButton, { type: "button", className: "ptcPlusButton", "data-kind": "primary", disabled: busy, onClick: () => save(true) }, t2("bindings.draftSaveEnable")),
-                h(ActionButton, { type: "button", className: "ptcPlusButton", "data-kind": "ghost", disabled: busy, onClick: discard }, t2("bindings.draftDiscard"))
-              )
+            node.outcome?.kind !== "error" ? null : h(
+              "p",
+              { className: "ptcPlusMessage ptcPlusDanger" },
+              node.outcome.text ?? t2("bindings.commandFailed")
             ),
-            message === null ? null : h("p", { className: "ptcPlusMessage", role: "status" }, message)
+            canOpen ? h(ActionButton, { onClick: () => openBindingReview(review) }, t2("bindings.reviewOpen")) : null,
+            !current.mounted && (candidate !== null || matches && projection.phase === "ready") ? h("p", { className: "ptcPlusMessage" }, t2("bindings.reviewUnavailable")) : null,
+            candidate === null ? null : h(
+              "details",
+              { className: "ptcPlusBindingSourceDetails" },
+              h("summary", null, t2("tool.source")),
+              h(BindingCandidateContent, { candidate, t: t2 })
+            )
           );
         }
         function PTCPlusSessionIndicator({
@@ -28651,69 +29017,32 @@
         }) {
           const preset = useSessionPreset({ sessionId, useProjection, useSessions });
           const projectionMemory = useProjection("ptcPlusRepl");
-          const projectionDraftCapability = useProjection("ptcPlusBindingDraft");
           const settings = usePtcSettings((snapshot) => snapshot);
-          let input;
-          try {
-            input = typeof useInput === "function" ? useInput((snapshot) => snapshot) : void 0;
-          } catch {
-            input = void 0;
-          }
+          const input = typeof useInput === "function" ? useInput((snapshot) => snapshot) : void 0;
           const resolvedSessionId = sessionId;
-          let draftProjection = { phase: "idle", capability: null, commandId: null };
-          try {
-            draftProjection = normalizeUserBindingDraftView(
-              projectionDraftCapability ?? { phase: "idle", capability: null, commandId: null }
-            );
-          } catch {
-          }
-          const draftCapability = draftProjection.capability;
           const globalEnabled = settings.status === "ready" && settings.value?.enabled === true && settings.value?.userBindingsEnabled === true;
-          const refreshIdentity = JSON.stringify([
-            resolvedSessionId === void 0 ? null : String(resolvedSessionId),
-            draftProjection.phase,
-            draftCapability,
-            globalEnabled
-          ]);
-          const refreshControl = React.useRef(void 0);
-          if (refreshControl.current?.identity !== refreshIdentity) {
-            refreshControl.current = {
-              identity: refreshIdentity,
-              sequence: 0,
-              mutating: false,
-              draftConsumed: false
-            };
-          }
-          const [globalBindingsState, setGlobalBindingsState] = React.useState(void 0);
-          const [authoringDraftState, setAuthoringDraftState] = React.useState(void 0);
+          const identity = JSON.stringify([sessionId, globalEnabled]);
+          const refreshControl = React.useRef(null);
+          if (refreshControl.current?.identity !== identity) refreshControl.current = { identity, sequence: 0 };
+          const [globalBindingsState, setGlobalBindingsState] = React.useState(null);
           const [authoringMessage, setAuthoringMessage] = React.useState(null);
-          const globalBindings = globalBindingsState?.identity === refreshIdentity ? globalBindingsState.value : void 0;
-          const authoringDraft = authoringDraftState?.identity === refreshIdentity ? authoringDraftState.value : null;
-          const refreshGlobalBindings = React.useCallback(() => {
+          const globalBindings = globalBindingsState?.identity === identity ? globalBindingsState.value : void 0;
+          const refreshGlobalBindings = React.useCallback(async () => {
             const control = refreshControl.current;
-            if (control.identity !== refreshIdentity || control.mutating) return Promise.resolve();
+            if (!globalEnabled || control.identity !== identity) return;
             const sequence = ++control.sequence;
-            if (!globalEnabled) {
-              setGlobalBindingsState({ identity: refreshIdentity, value: void 0 });
-              setAuthoringDraftState({ identity: refreshIdentity, value: null });
-              return Promise.resolve();
+            try {
+              const value = await callUserBindings2("list");
+              if (refreshControl.current === control && control.sequence === sequence) setGlobalBindingsState({ identity, value });
+            } catch {
+              if (refreshControl.current === control && control.sequence === sequence) setGlobalBindingsState(null);
             }
-            const effectiveDraftCapability = control.draftConsumed ? null : draftCapability;
-            return Promise.all([
-              callUserBindings2("list"),
-              effectiveDraftCapability === null ? Promise.resolve(null) : callUserBindings2("draft", { capability: effectiveDraftCapability })
-            ]).then(([bindings, draft]) => {
-              if (refreshControl.current !== control || control.sequence !== sequence || control.mutating) return;
-              setGlobalBindingsState({ identity: refreshIdentity, value: bindings });
-              setAuthoringDraftState({ identity: refreshIdentity, value: draft });
-            }).catch(() => {
-              if (refreshControl.current !== control || control.sequence !== sequence || control.mutating) return;
-              setGlobalBindingsState({ identity: refreshIdentity, value: void 0 });
-              setAuthoringDraftState({ identity: refreshIdentity, value: null });
-            });
-          }, [draftCapability, globalEnabled, refreshIdentity]);
+          }, [identity, globalEnabled]);
           React.useEffect(() => {
             void refreshGlobalBindings();
+            return () => {
+              refreshControl.current.sequence++;
+            };
           }, [refreshGlobalBindings]);
           const triggerRef = React.useRef(null);
           const popoverRef = React.useRef(null);
@@ -28781,48 +29110,6 @@
             setAuthoringMessage(null);
             hidePopover();
           }, [hidePopover, input?.draft, inputActions]);
-          const saveAuthoringDraft = React.useCallback(() => {
-            if (authoringDraft === null || globalBindings === void 0) return;
-            const control = refreshControl.current;
-            if (control.identity !== refreshIdentity || control.mutating) return;
-            control.mutating = true;
-            control.sequence += 1;
-            void callUserBindings2("save-draft", {
-              capability: draftCapability,
-              version: authoringDraft.version,
-              expectedRevision: globalBindings.revision
-            }).then((next) => {
-              if (refreshControl.current !== control) return;
-              control.draftConsumed = true;
-              setGlobalBindingsState({ identity: refreshIdentity, value: next });
-              setAuthoringDraftState({ identity: refreshIdentity, value: null });
-              setAuthoringMessage("bindings.draftSaved");
-            }).catch(() => {
-              if (refreshControl.current === control) setAuthoringMessage("memory.globalUnavailable");
-            }).finally(() => {
-              if (refreshControl.current === control) control.mutating = false;
-            });
-          }, [authoringDraft, draftCapability, globalBindings, refreshIdentity]);
-          const discardAuthoringDraft = React.useCallback(() => {
-            if (authoringDraft === null) return;
-            const control = refreshControl.current;
-            if (control.identity !== refreshIdentity || control.mutating) return;
-            control.mutating = true;
-            control.sequence += 1;
-            void callUserBindings2("discard-draft", {
-              capability: draftCapability,
-              version: authoringDraft.version
-            }).then(() => {
-              if (refreshControl.current !== control) return;
-              control.draftConsumed = true;
-              setAuthoringDraftState({ identity: refreshIdentity, value: null });
-              setAuthoringMessage(null);
-            }).catch(() => {
-              if (refreshControl.current === control) setAuthoringMessage("memory.globalUnavailable");
-            }).finally(() => {
-              if (refreshControl.current === control) control.mutating = false;
-            });
-          }, [authoringDraft, draftCapability, refreshIdentity]);
           React.useEffect(() => {
             const syncPopoverState = (event) => {
               if (event.target !== popoverRef.current) return;
@@ -28880,12 +29167,8 @@
               memory,
               globalEnabled,
               globalBindings,
-              authoringDraft,
-              authoringPhase: draftProjection.phase,
               loadGlobalBinding: (id2) => callUserBindings2("load", { id: id2 }),
               prefillAuthoring,
-              saveAuthoringDraft,
-              discardAuthoringDraft,
               authoringMessage,
               t: t2,
               id: popoverId,
@@ -28909,6 +29192,24 @@
           locale: LOCALE_NS,
           inject: settingsProps
         }, (props) => h(BindingCommandCard, { ...props, key: props.node.commandId }))));
+        ctx.slots.inject("conversation.input.dock", () => ctx.slots.inject("conversation.input.left", () => registerEnabled(ctx, true, () => {
+          const dock = ctx.slots.register({
+            name: "conversation.input.dock",
+            id: "ptc-plus-binding-review",
+            order: 30,
+            locale: LOCALE_NS
+          }, (props) => typeof props.useProjection === "function" && props.sessionId !== void 0 ? h(BindingReviewDock, { ...props, key: props.sessionId }) : null);
+          const access = ctx.slots.register({
+            name: "conversation.input.left",
+            id: "ptc-plus-binding-draft",
+            order: 21,
+            locale: LOCALE_NS
+          }, (props) => props.sessionId === void 0 ? null : h(BindingReviewAccess, { ...props, key: props.sessionId }));
+          return () => {
+            access();
+            dock();
+          };
+        })));
         ctx.inject(["remote", "remote.commands"], (commandScope) => {
           const availability = createBindingCommandAvailability(commandScope);
           commandScope.slots.inject("conversation.input.left", () => registerEnabled(commandScope, true, () => commandScope.slots.register({

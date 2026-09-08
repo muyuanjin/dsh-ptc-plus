@@ -10,6 +10,7 @@ import { stringify } from 'yaml'
 import { npmCliCommand } from './npm-cli.mjs'
 import { extractPackFilename } from './npm-pack-filename.mjs'
 import { hostToolRuntime, ptcToolsMode } from './dsh-host-contract.mjs'
+import { snapshotSessionLogs, decodeSessionLog } from './headless-host.mjs'
 
 const { values } = parseArgs({ options: {
   'dsh-entry': { type: 'string' },
@@ -30,9 +31,58 @@ const bindingMeasurements = []
 const bindingScrollMeasurements = []
 const replMeasurements = []
 const reloadMeasurements = []
+const dockMeasurements = []
+let displayLogInvariant = false
 const composerSelector = '[data-composer-seat] :is(textarea, [contenteditable=true])'
 
 const composerValue = locator => locator.evaluate(element => 'value' in element ? element.value : element.textContent)
+
+async function sessionLogBytes() {
+  const files = await snapshotSessionLogs(join(env.DSH_HOME, 'sessions'))
+  assert.ok(files.size > 0, 'No real session log was produced')
+  return Promise.all([...files.keys()].sort().map(async file => [file, await decodeSessionLog(file)]))
+}
+
+async function verifyDock(label, width = 1440, height = 1000) {
+  await page.setViewportSize({ width, height })
+  if (width < 1024) await page.locator('[data-sidebar-collapsed=true]').waitFor()
+  const panel = page.locator('.ptcPlusBindingDock')
+  await panel.waitFor()
+  await panel.evaluate(async element => {
+    let previous
+    let stable = 0
+    for (let frame = 0; frame < 120 && stable < 6; frame++) {
+      await new Promise(requestAnimationFrame)
+      const current = JSON.stringify(element.getBoundingClientRect().toJSON())
+      stable = previous === current ? stable + 1 : 0
+      previous = current
+    }
+    assertLayout: if (stable < 6) throw new Error('Dock layout did not settle')
+  })
+  const metrics = await panel.evaluate(element => {
+    const body = element.querySelector('.ptcPlusBindingDockBody')
+    const composer = document.querySelector('[data-composer-seat] :is(textarea, [contenteditable=true])')
+    const bounds = node => node.getBoundingClientRect().toJSON()
+    return { panel: bounds(element), composer: bounds(composer), viewport: { width: innerWidth, height: innerHeight },
+      scrollWidth: document.documentElement.scrollWidth,
+      body: body ? { ...bounds(body), scrollHeight: body.scrollHeight, clientHeight: body.clientHeight } : null,
+      buttons: [...element.querySelectorAll('.ptcPlusBindingDockHead button,.ptcPlusBindingDockActions button')].map(button => {
+        const rect = bounds(button)
+        const hit = document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2)
+        return { ...rect, reachable: button.contains(hit), hit: hit?.outerHTML.slice(0, 350) }
+      }) }
+  })
+  assert.ok(metrics.panel.bottom <= metrics.composer.top + 1, `${label}: dock is not above the input`)
+  assert.ok(metrics.panel.top >= -1, `${label}: dock title is unreachable: ${JSON.stringify(metrics)}`)
+  assert.ok(metrics.composer.bottom <= height, `${label}: input is outside the viewport`)
+  assert.ok(metrics.scrollWidth <= width, `${label}: document overflows horizontally`)
+  for (const button of metrics.buttons) {
+    assert.ok(button.left >= 0 && button.right <= width + 1 && button.height >= 24 && button.bottom <= height && button.reachable,
+      `${label}: action is unreachable: ${JSON.stringify(button)}`)
+  }
+  dockMeasurements.push({ label, ...metrics })
+  await page.screenshot({ path: join(evidence, `dock-${label}-${width}-${height}.png`), animations: 'disabled' })
+}
 
 async function verifyWorkbenchReload(workbench, label) {
   await workbench.locator('.ptcPlusBindingEditor').waitFor()
@@ -193,7 +243,7 @@ async function captureBinding(state, width = 1440) {
       return { left, right, width, height }
     }
     return { phase: element.dataset.phase, bounds: bounds(element), client: element.clientWidth,
-      scroll: element.scrollWidth, buttons: [...element.querySelectorAll('button')].map(button => ({
+      scroll: element.scrollWidth, buttons: [...element.querySelectorAll('button')].filter(button => button.getClientRects().length > 0).map(button => ({
         text: button.textContent, bounds: bounds(button), owner: bounds(button.parentElement),
         action: button.closest('.ptcPlusBindingCommandActions') !== null,
       })) }
@@ -351,13 +401,76 @@ try {
       await page.getByRole('button', { name: locale === 'zh' ? '保存并启用' : 'Save and enable', exact: true }).waitFor()
       for (const width of [390, 1440]) await captureBinding(`ready-${locale}`, width)
     }
-    await page.getByRole('button', { name: 'Save and enable', exact: true }).click()
-    await page.locator('.ptcPlusBindingCommand[data-phase=saved]').waitFor()
+    const dock = page.locator('.ptcPlusBindingDock')
+    assert.equal(await cards.locator('.ptcPlusBindingDockActions').count(), 0)
+    assert.equal(await cards.locator('button').filter({ hasText: 'Save' }).count(), 0)
+    assert.equal(await cards.locator('.ptcPlusBindingSourceDetails').getAttribute('open'), null)
+    await dock.getByText('Model context', { exact: true }).waitFor()
+    for (const [width, height] of [[1440, 1000], [1280, 800], [1920, 1080], [390, 800], [320, 600], [640, 480]]) {
+      await verifyDock('ready', width, height)
+    }
+    // Reserve an adjacent dock's footprint in the real composer stack without changing Host code.
+    await dock.evaluate(element => {
+      const neighbor = document.createElement('div')
+      neighbor.dataset.ptcSmokeNeighbor = ''
+      neighbor.style.cssText = 'height:64px;flex:none;box-sizing:border-box;padding:8px'
+      neighbor.textContent = 'Neighbor dock layout fixture'
+      element.before(neighbor)
+    })
+    await verifyDock('neighbor', 640, 480)
+    await page.locator('[data-ptc-smoke-neighbor]').evaluate(element => {
+      const rect = element.getBoundingClientRect()
+      if (!element.contains(document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2))) {
+        throw new Error('Neighbor dock content is obscured')
+      }
+      element.remove()
+    })
+    await page.setViewportSize({ width: 1440, height: 1000 })
+    await page.getByText('Review item 14: the binding draft is ready for review.', { exact: true }).waitFor()
+    // Wait for the official persistence writer before comparing the unchanged log.
+    await page.waitForTimeout(300)
+    const beforeDisplay = await sessionLogBytes()
+    await dock.getByRole('button', { name: 'Collapse binding draft', exact: true }).click()
+    assert.equal(await dock.locator('.ptcPlusBindingDockBody').count(), 0)
+    await page.getByRole('tab', { name: 'REPL', exact: true }).click()
+    await dock.waitFor({ state: 'hidden' })
+    await page.getByRole('tab', { name: 'Chat', exact: true }).click()
+    await dock.getByRole('button', { name: 'Expand binding draft', exact: true }).waitFor()
+    await dock.getByRole('button', { name: 'Close binding draft panel', exact: true }).click()
+    await dock.waitFor({ state: 'detached' })
+    const reopen = page.locator('.ptcPlusDraftAccess button')
+    await reopen.waitFor()
+    await page.waitForFunction(() => document.activeElement?.closest('.ptcPlusDraftAccess') !== null)
+    await rpc('settings/update', { ns: 'ptc-plus', patch: { bindingAuthorButtonVisible: false } })
+    await page.locator('.ptcPlusAuthorButton').waitFor({ state: 'detached' })
+    await reopen.focus()
+    await page.keyboard.press('Enter')
+    await dock.waitFor()
+    await dock.locator('.ptcPlusBindingDockBody').focus()
+    await page.keyboard.press('End')
+    await dock.getByRole('button', { name: 'Close binding draft panel', exact: true }).click()
+    await dock.waitFor({ state: 'detached' })
+    await cards.getByRole('button', { name: 'Open draft', exact: true }).click()
+    await dock.waitFor()
+    await page.waitForTimeout(1800)
+    assert.deepEqual(await sessionLogBytes(), beforeDisplay, 'Display controls changed the real session log')
+    displayLogInvariant = true
+    await rpc('settings/update', { ns: 'ptc-plus', patch: { bindingAuthorButtonVisible: true } })
+    await page.waitForFunction(() => {
+      const button = [...document.querySelectorAll('.ptcPlusBindingDockActions button')]
+        .find(item => item.textContent?.includes('Save and enable'))
+      return button?.disabled === false
+    }, null, { timeout: 30000 })
+    await dock.getByRole('button', { name: 'Save and enable', exact: true }).scrollIntoViewIfNeeded()
+    await dock.getByRole('button', { name: 'Save and enable', exact: true }).click()
+    await page.locator('.ptcPlusBindingDock[data-phase=saved]').waitFor({ timeout: 30000 })
+    await page.locator('.ptcPlusBindingCommand[data-phase=saved]').waitFor({ timeout: 30000 })
     for (const locale of ['zh', 'en']) {
       await rpc('settings/update', { ns: 'locale', patch: { preference: locale } })
-      await page.getByText(locale === 'zh' ? '草稿已保存并启用' : 'Draft saved and enabled', { exact: true }).waitFor()
+      await page.getByText(locale === 'zh' ? '草稿已保存并启用' : 'Draft saved and enabled', { exact: true }).first().waitFor()
       await page.reload()
       await page.locator('.ptcPlusBindingCommand[data-phase=saved]').waitFor()
+      assert.equal(await page.locator('.ptcPlusBindingDock').count(), 0)
       assert.equal(await cards.count(), 1)
       await cards.locator('.ptcPlusBindingSourceDetails > summary').click()
       assert.match(await cards.innerText(), /export function value/)
@@ -371,9 +484,12 @@ try {
     assert.equal(await cards.count(), 2)
     for (const locale of ['zh', 'en']) {
       await rpc('settings/update', { ns: 'locale', patch: { preference: locale } })
-      await page.getByText(locale === 'zh' ? '草稿已丢弃' : 'Draft discarded', { exact: true }).waitFor()
+      await page.getByText(locale === 'zh' ? '草稿已丢弃' : 'Draft discarded', { exact: true }).first().waitFor()
       await captureBinding(`discarded-${locale}`)
     }
+    await page.reload()
+    await page.locator('.ptcPlusBindingCommand[data-phase=discarded]').waitFor()
+    assert.equal(await page.locator('.ptcPlusBindingDock').count(), 0)
     await submit('/binding edit missing-binding')
     await page.locator('.ptcPlusBindingCommand[data-phase=failed]').waitFor()
     assert.equal(await cards.count(), 3)
@@ -603,7 +719,7 @@ try {
     settings: 'ready', conversation: 'ready', pageErrors: errors,
     hostIconFallbacks: [...hostIconFallbacks].map(value => new URL(value).pathname),
     bindingWorkflow: values['binding-workflow'] ? { model: 'deterministic-local-adapter', measurements: bindingMeasurements,
-      scrollMeasurements: bindingScrollMeasurements, replMeasurements, reloadMeasurements } : null,
+      scrollMeasurements: bindingScrollMeasurements, replMeasurements, reloadMeasurements, dockMeasurements, displayLogInvariant } : null,
   }, null, 2) + '\n')
   console.log(`Packed Client Web smoke passed (${version})`)
 } catch (error) {

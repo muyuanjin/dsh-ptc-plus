@@ -18,7 +18,7 @@ PTC Plus 是个人维护的社区实验插件。它把 DSH PTC 模式的顶层 `
 
 1. `danger-full-access` 是一等体验：保留模型熟悉的 Node、process、filesystem、network、shell、生态 SDK 与 DSH native typed `tools.*`。其他 profile 的 native tool surface 只按 live request 简单降级，不模拟缺失能力；更窄 tool view 不构成 Node ambient sandbox。
 2. 后续 cell 直接复用 binding，不搬运源码、不嵌套转义、不增加普通继续求值的模型往返。
-3. DSH/宿主拥有 authority 和 policy。PTC Plus 始终面向最新可用 DSH release 的公共扩展面，不 fork DSH、不接入私有 scheduler、不伪造 session event，也不以版本号白名单替代能力和契约验收。验收脚本在运行时记录实际 DSH 版本；上游升级后，当前 release 立即成为兼容目标。
+3. DSH/宿主拥有 authority 和 policy。PTC Plus 是可独立分发的社区插件，始终面向未经修改的官方 DSH 最新可用 release 的已发布公共扩展面；不得修改 DSH 源码或安装包，或要求用户编译、安装定制宿主。插件可通过这些契约实现自有 UI、独立面板和 renderer 替换，不要求全部沿用原生组件或消息布局。宿主源码仅作为只读研究证据，缺失的公共能力不能通过本地补丁变成插件依赖。插件不接入私有 scheduler、不伪造 session event，也不以版本号白名单替代能力和契约验收。验收脚本在运行时记录实际 DSH 版本；上游升级后，当前 release 立即成为兼容目标。分发与交付判据见 [ADR 0017](docs/adr/0017-track-the-latest-dsh-public-surface.md)。
 4. 无法由 session log 重建的 Node/OS 输入与 effect 进入 sticky volatile；live worker 继续可用。cold recovery 只保留 ancestry 或独立性可由插件自有证据证明的最大 frontier，保守丢弃可能依赖 unknown boundary 的状态；没有非空 frontier 时从空 REPL 继续当前合法 cell。历史 PTC Plus metadata 损坏只能否定旧 binding 的恢复资格，不能成为永久拒绝后续 `run_code` 的 availability gate。volatile 是恢复分类，不是权限，收缩不表示历史 effect 被撤销或可安全重试。
 5. shell 是解释命令文本的通用入口，不是 REPL、权限系统或普通 argv spawn 的前置条件。PTY/ConPTY 只用于交互进程；Windows、WSL 与 POSIX execution world 必须分别探查。
 6. 透明性要求 action、authority、effect、result completeness、replay 与 settlement 不被混淆；不要求暴露无决策意义的 provider 内部细节。

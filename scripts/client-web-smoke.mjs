@@ -64,6 +64,11 @@ async function verifyDock(label, width = 1440, height = 1000) {
     const composer = document.querySelector('[data-composer-seat] :is(textarea, [contenteditable=true])')
     const bounds = node => node.getBoundingClientRect().toJSON()
     return { panel: bounds(element), composer: bounds(composer), viewport: { width: innerWidth, height: innerHeight },
+      scrollMode: element.dataset.scroll,
+      position: getComputedStyle(element).position, background: getComputedStyle(element).backgroundColor,
+      shadow: getComputedStyle(element).boxShadow,
+      anchor: bounds(element.parentElement),
+      seat: bounds(document.querySelector('[data-composer-seat]')),
       scrollWidth: document.documentElement.scrollWidth,
       body: body ? { ...bounds(body), scrollHeight: body.scrollHeight, clientHeight: body.clientHeight } : null,
       buttons: [...element.querySelectorAll('.ptcPlusBindingDockHead button,.ptcPlusBindingDockActions button')].map(button => {
@@ -73,9 +78,25 @@ async function verifyDock(label, width = 1440, height = 1000) {
       }) }
   })
   assert.ok(metrics.panel.bottom <= metrics.composer.top + 1, `${label}: dock is not above the input`)
+  assert.equal(metrics.position, 'absolute', `${label}: review grows the composer mask`)
+  assert.equal(metrics.anchor.height, 0, `${label}: review occupies transcript flow`)
+  assert.ok(metrics.panel.bottom <= metrics.seat.top - 7, `${label}: review covers other composer content`)
+  assert.notEqual(metrics.shadow, 'none', `${label}: floating review has no elevation`)
+  assert.ok(!/rgba\(.*,[\s]*0\)|transparent/.test(metrics.background), `${label}: review background is transparent`)
   assert.ok(metrics.panel.top >= -1, `${label}: dock title is unreachable: ${JSON.stringify(metrics)}`)
   assert.ok(metrics.composer.bottom <= height, `${label}: input is outside the viewport`)
   assert.ok(metrics.scrollWidth <= width, `${label}: document overflows horizontally`)
+  if (metrics.scrollMode === 'panel') {
+    metrics.buttons = []
+    for (const button of await panel.locator('.ptcPlusBindingDockHead button,.ptcPlusBindingDockActions button').all()) {
+      await button.focus()
+      metrics.buttons.push(await button.evaluate(element => {
+        const rect = element.getBoundingClientRect().toJSON()
+        return { ...rect, reachable: element.contains(document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2)) }
+      }))
+    }
+    await panel.evaluate(element => { element.scrollTop = 0 })
+  }
   for (const button of metrics.buttons) {
     assert.ok(button.left >= 0 && button.right <= width + 1 && button.height >= 24 && button.bottom <= height && button.reachable,
       `${label}: action is unreachable: ${JSON.stringify(button)}`)
@@ -264,8 +285,12 @@ async function captureBinding(state, width = 1440) {
     return [...document.querySelectorAll('button')].filter(button => {
       if (button === indicator) return false
       const rect = button.getBoundingClientRect()
-      return rect.width > 0 && rect.height > 0 && rect.left < own.right - 1 && rect.right > own.left + 1
-        && rect.top < own.bottom - 1 && rect.bottom > own.top + 1
+      if (!(rect.width > 0 && rect.height > 0 && rect.left < own.right - 1 && rect.right > own.left + 1
+        && rect.top < own.bottom - 1 && rect.bottom > own.top + 1)) return false
+      // Scrolled history may have overlapping bounds while clipped out by its scrollport.
+      const hit = document.elementFromPoint((Math.max(rect.left, own.left) + Math.min(rect.right, own.right)) / 2,
+        (Math.max(rect.top, own.top) + Math.min(rect.bottom, own.bottom)) / 2)
+      return button.contains(hit)
     }).map(button => button.textContent)
   })
   assert.deepEqual(headerCollisions, [], `${state}/${width}: overlapping session header actions`)
@@ -415,7 +440,7 @@ try {
       neighbor.dataset.ptcSmokeNeighbor = ''
       neighbor.style.cssText = 'height:64px;flex:none;box-sizing:border-box;padding:8px'
       neighbor.textContent = 'Neighbor dock layout fixture'
-      element.before(neighbor)
+      element.parentElement.before(neighbor)
     })
     await verifyDock('neighbor', 640, 480)
     await page.locator('[data-ptc-smoke-neighbor]').evaluate(element => {
@@ -423,27 +448,95 @@ try {
       if (!element.contains(document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2))) {
         throw new Error('Neighbor dock content is obscured')
       }
-      element.remove()
+      element.style.height = '128px'
     })
+    await verifyDock('tall-neighbor', 640, 480)
+    await page.locator('[data-ptc-smoke-neighbor]').evaluate(element => { element.remove() })
+    await composer.fill(Array.from({ length: 8 }, (_, index) => `Draft line ${index + 1}`).join('\n'))
+    await verifyDock('multiline-composer', 640, 480)
+    await composer.fill('')
     await page.setViewportSize({ width: 1440, height: 1000 })
     await page.getByText('Review item 14: the binding draft is ready for review.', { exact: true }).waitFor()
     // Wait for the official persistence writer before comparing the unchanged log.
     await page.waitForTimeout(300)
     const beforeDisplay = await sessionLogBytes()
+    const disclosureLayout = () => page.evaluate(() => ({
+      seat: document.querySelector('[data-composer-seat]').getBoundingClientRect().toJSON(),
+      extent: document.querySelector('[data-conversation-scroll]').scrollHeight,
+      transform: getComputedStyle(document.querySelector('.ptcPlusBindingDockChevron')).transform,
+    }))
+    const expandedLayout = await disclosureLayout()
     await dock.getByRole('button', { name: 'Collapse binding draft', exact: true }).click()
     assert.equal(await dock.locator('.ptcPlusBindingDockBody').count(), 0)
+    await verifyDock('collapsed')
+    const collapsedLayout = await disclosureLayout()
+    assert.deepEqual(collapsedLayout.seat, expandedLayout.seat, 'Disclosure moved the composer')
+    assert.equal(collapsedLayout.extent, expandedLayout.extent, 'Disclosure changed transcript height')
+    assert.notEqual(collapsedLayout.transform, expandedLayout.transform, 'Disclosure chevron did not change direction')
+    // Click the title itself; a tiny icon-only target must fail this acceptance check.
+    await dock.locator('.ptcPlusBindingDockHeading strong').click()
+    await dock.locator('.ptcPlusBindingDockBody').waitFor()
+    await dock.getByRole('button', { name: 'Collapse binding draft', exact: true }).focus()
+    await page.keyboard.press('Enter')
+    assert.equal(await dock.locator('.ptcPlusBindingDockBody').count(), 0)
+    await page.keyboard.press('Space')
+    await dock.locator('.ptcPlusBindingDockBody').waitFor()
+    await dock.locator('.ptcPlusBindingDockHeading strong').click()
     await page.getByRole('tab', { name: 'REPL', exact: true }).click()
     await dock.waitFor({ state: 'hidden' })
     await page.getByRole('tab', { name: 'Chat', exact: true }).click()
     await dock.getByRole('button', { name: 'Expand binding draft', exact: true }).waitFor()
     await dock.getByRole('button', { name: 'Close binding draft panel', exact: true }).click()
     await dock.waitFor({ state: 'detached' })
-    const reopen = page.locator('.ptcPlusDraftAccess button')
+    const reopen = page.locator('.ptcPlusAuthorButton')
     await reopen.waitFor()
-    await page.waitForFunction(() => document.activeElement?.closest('.ptcPlusDraftAccess') !== null)
+    await page.waitForFunction(() => document.activeElement?.matches('.ptcPlusAuthorButton'))
+    assert.equal(await page.locator('.ptcPlusDraftAccess').count(), 0)
+    assert.equal(await reopen.count(), 1)
+    assert.equal(await reopen.locator('.ptcPlusDraftBadge').innerText(), '1')
+    const draftItem = page.getByRole('menuitem').filter({ has: page.locator('.ptcPlusDraftMenuItem') })
+    for (const [width, height] of [[1440, 1000], [390, 800], [640, 480]]) {
+      await page.setViewportSize({ width, height })
+      await reopen.hover()
+      await draftItem.waitFor()
+      await draftItem.hover()
+      await page.waitForTimeout(500)
+      assert.equal(await draftItem.isVisible(), true, 'Hover transit dismissed the draft menu')
+      const bounds = await page.getByRole('menu').boundingBox()
+      assert.ok(bounds.x >= 0 && bounds.y >= 0 && bounds.x + bounds.width <= width && bounds.y + bounds.height <= height,
+        'Draft menu escaped the viewport')
+      await page.screenshot({ path: resolve(evidence, `draft-menu-${width}-${height}.png`) })
+      await draftItem.click()
+      await dock.waitFor()
+      await dock.getByRole('button', { name: 'Close binding draft panel', exact: true }).click()
+      await dock.waitFor({ state: 'detached' })
+    }
+    await page.setViewportSize({ width: 1440, height: 1000 })
+    await reopen.click()
+    await draftItem.waitFor()
+    await page.waitForFunction(() => document.activeElement?.getAttribute('role') === 'menuitem')
+    await page.keyboard.press('Tab')
+    await page.waitForFunction(() => document.activeElement?.textContent === 'Write a new binding')
+    await page.keyboard.press('Escape')
+    await draftItem.waitFor({ state: 'detached' })
+    await page.mouse.move(0, 0)
+    await reopen.hover()
+    await draftItem.waitFor()
+    await page.getByRole('tab', { name: 'REPL', exact: true }).click()
+    await draftItem.waitFor({ state: 'detached' })
+    await page.getByRole('tab', { name: 'Chat', exact: true }).click()
+    assert.equal(await page.getByRole('menu').count(), 0)
     await rpc('settings/update', { ns: 'ptc-plus', patch: { bindingAuthorButtonVisible: false } })
-    await page.locator('.ptcPlusAuthorButton').waitFor({ state: 'detached' })
     await reopen.focus()
+    await page.keyboard.press('Enter')
+    await draftItem.waitFor()
+    await page.getByRole('menuitem', { name: 'Write a new binding', exact: true }).waitFor({ state: 'detached' })
+    await page.waitForFunction(() => document.activeElement?.getAttribute('role') === 'menuitem')
+    await page.keyboard.press('Escape')
+    await draftItem.waitFor({ state: 'detached' })
+    await page.waitForFunction(() => document.activeElement?.matches('.ptcPlusAuthorButton'))
+    await page.keyboard.press('ArrowUp')
+    await draftItem.waitFor()
     await page.keyboard.press('Enter')
     await dock.waitFor()
     await dock.locator('.ptcPlusBindingDockBody').focus()
@@ -465,6 +558,7 @@ try {
     await dock.getByRole('button', { name: 'Save and enable', exact: true }).click()
     await page.locator('.ptcPlusBindingDock[data-phase=saved]').waitFor({ timeout: 30000 })
     await page.locator('.ptcPlusBindingCommand[data-phase=saved]').waitFor({ timeout: 30000 })
+    assert.equal(await reopen.locator('.ptcPlusDraftBadge').count(), 0)
     for (const locale of ['zh', 'en']) {
       await rpc('settings/update', { ns: 'locale', patch: { preference: locale } })
       await page.getByText(locale === 'zh' ? '草稿已保存并启用' : 'Draft saved and enabled', { exact: true }).first().waitFor()
@@ -479,6 +573,29 @@ try {
     await verifyBindingScroll(rpc)
     await submit('/binding edit workflow same helper')
     await page.getByRole('button', { name: 'Discard draft', exact: true }).waitFor({ timeout: 30000 })
+    for (const [width, height] of [[1440, 1000], [390, 800], [640, 480]]) {
+      await verifyDock('long-source', width, height)
+      const scroller = await dock.getAttribute('data-scroll') === 'panel' ? dock : dock.locator('.ptcPlusBindingDockBody')
+      await scroller.focus()
+      await scroller.press('Control+End')
+      await page.waitForFunction(() => {
+        const panel = document.querySelector('.ptcPlusBindingDock')
+        const scroller = panel.dataset.scroll === 'panel' ? panel : panel.querySelector('.ptcPlusBindingDockBody')
+        return scroller.scrollTop > 0
+      })
+      const instructions = dock.getByText('Use this helper to return a number.', { exact: true })
+      await instructions.scrollIntoViewIfNeeded()
+      assert.equal(await instructions.evaluate(element => {
+        const rect = element.getBoundingClientRect()
+        return element.contains(document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2))
+      }), true, 'Long-source model context cannot be reached')
+      assert.match(await dock.locator('.ptcPlusBindingCommandCode').innerText(), /End of long binding source/)
+    }
+    await rpc('settings/update', { ns: 'ui-theme', patch: { preference: 'dark' } })
+    await page.locator('body[data-ds-dark-theme]').waitFor()
+    await verifyDock('long-source-dark', 390, 800)
+    await rpc('settings/update', { ns: 'ui-theme', patch: { preference: 'light' } })
+    await page.locator('body:not([data-ds-dark-theme])').waitFor()
     await page.getByRole('button', { name: 'Discard draft', exact: true }).click()
     await page.locator('.ptcPlusBindingCommand[data-phase=discarded]').waitFor()
     assert.equal(await cards.count(), 2)

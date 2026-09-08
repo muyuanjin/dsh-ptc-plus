@@ -43,7 +43,7 @@ Host half 通过 DSH 公共 `settings` 服务注册命名空间 `ptc-plus`。字
 
 ## 全局用户 Binding 工作台
 
-`/binding new` 和 `/binding edit` 的历史命令处保留原始需求、状态和错误说明。候选被接受后，完整源码、模型上下文与保存/启用/丢弃操作由官方 `conversation.input.dock` 在当前输入框上方承载；历史条目只提供该请求自己的只读来源。面板默认展开，支持折叠、关闭和输入框旁重新打开；关闭只改变展示，不撤销候选或待决 RPC。候选身份、写资格和异步结算由一个 Client review controller 复用 draft projection 与现有 RPC owner，页头不再提供第二套当前写操作。实现细节与验收证据见[Binding 审阅位置设计](binding-review-placement-design.md)。
+`/binding new` 和 `/binding edit` 的历史命令处保留原始需求、状态和错误说明。候选被接受后，完整源码、模型上下文与保存/启用/丢弃操作由官方 `conversation.input.dock` 在当前输入框上方承载；历史条目只提供该请求自己的只读来源。面板通过 dock 内的零高度锚点悬浮在整个普通输入区上方，不顶高正文或宿主遮罩；默认展开，正文内部滚动。整条标题按钮支持点击与 Enter/Space，箭头随折叠状态变化；输入框只保留一个星光入口：无草稿时预填编写命令，有草稿时显示数量角标，并通过官方 Menu 提供悬停、点击和键盘选择。当前 Host 每会话只保留一份候选，菜单不列出过期历史；隐藏编写快捷入口或命令服务缺席不影响已有草稿的访问。关闭和重新打开只改变展示，不撤销候选或待决 RPC。候选身份、写资格和异步结算由一个 Client review controller 复用 draft projection 与现有 RPC owner，页头不再提供第二套当前写操作。实现细节与验收证据见[Binding 审阅位置设计](binding-review-placement-design.md)。
 
 `userBindingsEnabled` 关闭时不渲染任何 Global User Binding 管理界面，Host 也不注册对应 RPC 或 Agent 命令。开启后，REPL 页签中的“全局绑定”和设置管理按钮打开的大尺寸应用内弹窗复用同一个 `UserBindingsWorkbench`。设置卡片保留开关与管理按钮，不嵌入编辑器。普通管理不依赖当前存在 PTC 会话；Agent 辅助编写仍使用当前可用会话的 `/binding` 入口。
 
@@ -63,7 +63,7 @@ Client 的所有管理操作都通过 DSH Connection RPC `/ptc-plus-bindings` �
 
 PTC session 的头部弹窗在功能启用时增加 Session 与 Global 页签。Session 保留当前可复用 binding 的只读检查；Global 展示持久化目录的启停状态，可展开精确源码并预填 `/binding edit <id> `。头部摘要在 Session 显示可复用绑定总数，在 Global 显示目录条目数；数据不可用时保留空摘要行，切换页签不改变头部高度。目录条目数与“启用”状态不证明当前会话已成功激活。composer 已有非空草稿时保留原文并显示反馈；公开接口不提供 focus 时，Client 不访问宿主 DOM 强制聚焦。名称和成员被限制在各自 grid 列内，长名称与成员列表提供完整 title；编辑动作保持独立点击区域。窄弹窗不复制设置工作台的完整编辑、候选运行、启停、导入或删除功能。
 
-接受候选时，Host 生成不可猜测的 locator，并把 locator、精确 candidate 源码和请求/命令身份放入接受结果的私有 metadata。`ptcPlusBindingDraft` projection 分别拥有可写草稿定位与只读历史；历史源码不从当前 catalog 重读。Connection RPC 没有 caller/session identity，所有草稿操作凭 locator，不信任 payload session ID。Binding 命令卡片通过公共 `conversation.chat.commandview` 的 `binding` key 接管宿主命令行，直接读取宿主折叠后的 CommandNode，不注册 turn-tail 展示或重复关联命令事件。卡片使用公共 `Button` 和 `CodeBlock` 呈现保存、丢弃与源码；缺少原语时才降级。源码区不嵌套另一层卡片边框，已结束状态紧凑排列，源码可通过原生 details 继续展开。
+接受候选时，Host 生成不可猜测的 locator，并把 locator、精确 candidate 源码和请求/命令身份放入接受结果的私有 metadata。`ptcPlusBindingDraft` projection 分别拥有可写草稿定位与只读历史；历史源码不从当前 catalog 重读。Connection RPC 没有 caller/session identity，所有草稿操作凭 locator，不信任 payload session ID。Binding 命令卡片通过公共 `conversation.chat.commandview` 的 `binding` key 接管宿主命令行，直接读取宿主折叠后的 CommandNode，不注册 turn-tail 展示或重复关联命令事件。当前 dock 使用公共 `Button` 和 `CodeBlock` 呈现保存、丢弃与源码，历史请求复用只读源码展示；缺少原语时才降级。源码区不嵌套另一层卡片边框，已结束状态紧凑排列，源码可通过原生 details 继续展开。
 
 “保存为停用”和“保存并启用”均原子认领草稿并校验 catalog revision，后者同时写入启用状态；两者都不运行候选。并发丢弃返回 busy。保存/丢弃后立即撤销操作入口，但保留精确源码和结果；Host 的公共 action notice 引用接受结果，供日志 projection 和卡片重挂载恢复。保存回执不宣称当前会话已激活。回执未持久化且 Host 已重启时保持未知，不凭空 locator 猜测保存。目录冲突会重读 catalog、draft 和 review，保留仍有效的草稿供用户重试，不自动重复写入；权威空 draft 才撤销操作。会话结束、功能关闭或 agent disposal 撤销内存 locator；正常轮次结束只撤销未完成交接资格，已经接受的草稿继续等待用户决定。
 

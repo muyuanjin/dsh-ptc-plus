@@ -18,9 +18,10 @@ import { bindingModelPreferences } from '../internal/user-binding-model-context.
 const CLIENT_STYLE_ID = 'ptc-plus-client-style'
 const USER_BINDINGS_RPC_CHANNEL = '/ptc-plus-bindings'
 const CLIENT_CSS = `
-.ptcPlusBindingDock{box-sizing:border-box;min-width:0;width:min(100%,44rem);margin-inline:auto;display:flex;flex-direction:column;gap:8px;padding:10px 12px;border:1px solid var(--dsw-alias-border-l3);border-radius:12px;background:var(--dsw-alias-bg-layer-3);color:var(--dsw-alias-label-primary)}
-.ptcPlusBindingDockHead{display:flex;align-items:center;gap:8px;min-width:0}.ptcPlusBindingDockHeading{flex:1;min-width:0;display:flex;flex-direction:column;gap:3px;font-size:13px;overflow-wrap:anywhere}.ptcPlusBindingDockHeading strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.ptcPlusBindingDockHeading span{font-size:11px;color:var(--dsw-alias-label-tertiary)}
-.ptcPlusBindingDockBody{min-width:0;max-block-size:min(40dvh,24rem,var(--ptc-plus-review-space,100dvh));overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable}.ptcPlusBindingDockBody:focus-visible{outline:2px solid var(--dsw-alias-interactive-primary);outline-offset:-2px}.ptcPlusBindingDockBody .ptcPlusAuthoringDraft{border:0;padding:0;background:transparent}.ptcPlusBindingDockBody .ptcPlusBindingCommandSource,.ptcPlusBindingDockBody .ptcPlusBindingCommandCode{max-height:none}.ptcPlusBindingDockActions{display:flex;flex-wrap:wrap;gap:6px}.ptcPlusBindingDockActions>button{min-width:0;white-space:normal}.ptcPlusBindingDock .ptcPlusMessage{margin:0}.ptcPlusDraftAccess{display:inline-flex;min-width:1px;min-height:1px}.ptcPlusDraftAccess button{font:inherit;font-size:12px;white-space:nowrap}
+.ptcPlusBindingDockAnchor{position:relative;flex:none;block-size:0;min-width:0;width:min(calc(100% - 32px),44rem);margin-inline:auto}
+.ptcPlusBindingDock{position:absolute;inset-inline:0;bottom:var(--ptc-plus-review-offset,8px);box-sizing:border-box;min-width:0;display:flex;flex-direction:column;border:1px solid var(--dsw-alias-border-l3,rgba(0,0,0,.1));border-radius:14px;background:var(--dsw-alias-bg-base,#fff);color:var(--dsw-alias-label-primary,#18191c);box-shadow:0 8px 32px rgba(0,0,0,.14),0 2px 6px rgba(0,0,0,.06);max-block-size:var(--ptc-plus-review-height,80dvh);overflow:auto;overscroll-behavior:contain}
+.ptcPlusBindingDockHead{display:flex;flex:none;align-items:center;gap:4px;min-width:0;padding:0 10px 0 0}.ptcPlusBindingDockToggle{appearance:none;display:flex;flex:1;align-items:center;gap:10px;min-width:0;min-height:54px;padding:10px 12px;border:0;background:transparent;color:inherit;text-align:start;font:inherit;cursor:pointer}.ptcPlusBindingDockToggle:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(38,49,72,.06))}.ptcPlusBindingDockToggle:focus-visible{outline:2px solid var(--dsw-alias-interactive-primary,#4d6bfe);outline-offset:-3px}.ptcPlusBindingDockSymbol{display:grid;place-items:center;flex:none;width:30px;height:30px;border-radius:8px;background:var(--dsw-alias-bg-layer-2,#f3f4f6);color:var(--dsw-alias-label-secondary,#52565d);font:600 13px ui-monospace,monospace}.ptcPlusBindingDockHeading{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px;font-size:13px;line-height:18px}.ptcPlusBindingDockHeading strong,.ptcPlusBindingDockHeading>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.ptcPlusBindingDockHeading>span{font-size:11px;color:var(--dsw-alias-label-secondary,#52565d)}.ptcPlusBindingDockChevron{display:flex;flex:none;transform:rotate(180deg);transition:transform .16s ease}.ptcPlusBindingDockToggle[aria-expanded=true] .ptcPlusBindingDockChevron{transform:rotate(0deg)}
+.ptcPlusBindingDockBody{flex:none;min-width:0;max-block-size:min(32dvh,20rem,var(--ptc-plus-review-space,100dvh));overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable;border-top:1px solid var(--dsw-alias-border-l3,rgba(0,0,0,.1))}.ptcPlusBindingDock[data-scroll=panel] .ptcPlusBindingDockBody{max-block-size:none;overflow:visible;scrollbar-gutter:auto}.ptcPlusBindingDockBody:focus-visible{outline:2px solid var(--dsw-alias-interactive-primary);outline-offset:-2px}.ptcPlusBindingDockBody .ptcPlusAuthoringDraft{border:0;padding:12px 14px;background:transparent;gap:10px}.ptcPlusBindingDockBody .ptcPlusBindingCommandSource,.ptcPlusBindingDockBody .ptcPlusBindingCommandCode{max-height:none;margin:0}.ptcPlusBindingDockBody pre{font-size:12px;line-height:19px}.ptcPlusBindingDockBody .ptcPlusBindingMeta{font:11px/17px ui-monospace,monospace;overflow-wrap:anywhere}.ptcPlusBindingDockActions{display:flex;flex:none;flex-wrap:wrap;align-items:center;gap:6px;padding:10px 12px;border-top:1px solid var(--dsw-alias-border-l3,rgba(0,0,0,.1))}.ptcPlusBindingDockActions>button{min-width:0;white-space:normal}.ptcPlusBindingDockDiscard{margin-inline-end:auto}.ptcPlusBindingDock .ptcPlusMessage{margin:0;font-size:12px;line-height:19px}.ptcPlusBindingDock>.ptcPlusMessage{padding:8px 12px}.ptcPlusComposerBindingAnchor{display:inline-flex;min-width:1px;min-height:1px}.ptcPlusComposerBindingAnchor .ptcPlusAuthorButton{position:relative}.ptcPlusDraftBadge{position:absolute;top:-2px;right:-3px;display:grid;place-items:center;box-sizing:border-box;min-width:14px;height:14px;padding-inline:3px;border:1.5px solid var(--dsw-alias-bg-base,#fff);border-radius:8px;background:var(--dsw-alias-state-business-primary,#4d6bfe);color:#fff;font:600 9px/1 system-ui,sans-serif;pointer-events:none}.ptcPlusDraftBadge[data-attention=true]{background:var(--dsw-alias-state-warning-primary,#a15c00)}.ptcPlusDraftMenuItem{display:flex;min-width:0;max-width:240px;flex-direction:column;gap:3px;white-space:normal;overflow-wrap:anywhere}.ptcPlusDraftMenuItem strong{font-size:12px;font-weight:600}.ptcPlusDraftMenuItem>span{font-size:11px;color:var(--dsw-alias-label-secondary,#52565d)}.ptcPlusComposerBindingAnchor[data-text=true] .ptcPlusAuthorButtonShell{width:auto}
 .ptcPlusBindingCommand .ptcPlusMessage{margin:0}.ptcPlusBindingSourceDetails{min-width:0}.ptcPlusBindingSourceDetails>summary{cursor:pointer;font-size:12px;line-height:20px}.ptcPlusBindingItem>button,.ptcPlusGlobalItem>button{align-self:center}.ptcPlusAuthoringDraft>strong{font-size:13px;line-height:20px;overflow-wrap:anywhere}.ptcPlusBindingCommand .ptcPlusBindingCommandState{max-width:100%;box-sizing:border-box;white-space:normal}.ptcPlusBindingCommand .ptcPlusAuthoringDraft{min-width:0;padding:0;border:0;border-radius:0;background:transparent}
 .ptcPlusCard{list-style:none;border:0.5px solid var(--dsw-alias-border-l4);border-radius:16px;background:var(--dsw-alias-bg-layer-3);overflow:hidden;transition:border-color .16s ease,background-color .16s ease}
 .ptcPlusCard:hover{border-color:var(--dsw-alias-label-dimmed)}
@@ -43,7 +44,7 @@ const CLIENT_CSS = `
 .ptcPlusAuthorButtonShell{display:inline-flex;width:28px;height:28px;flex:none;align-items:center;justify-content:center}.ptcPlusAuthorButton{appearance:none;display:inline-flex;box-sizing:border-box;width:28px;height:28px;align-items:center;justify-content:center;padding:0;border:0;border-radius:6px;background:transparent;color:var(--dsw-alias-label-secondary,#52565d);cursor:pointer}.ptcPlusAuthorButton:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(38,49,72,.06));color:var(--dsw-alias-interactive-primary,#4d6bfe)}.ptcPlusAuthorButton:focus-visible{outline:2px solid var(--dsw-alias-interactive-primary,#4d6bfe);outline-offset:1px}.ptcPlusAuthorButtonShell[data-text=true]{width:auto}.ptcPlusAuthorButtonLabel{padding:0 4px;font-size:12px;line-height:18px;font-weight:500}.ptcPlusComposerNotice{max-width:160px;color:var(--dsw-alias-label-secondary,#52565d);font-size:11px;line-height:17px;overflow-wrap:anywhere}.ptcPlusButton>svg{flex:none;margin-right:5px;vertical-align:-2px}
 @media(max-width:760px){.ptcPlusBindingsGrid{grid-template-columns:1fr}.ptcPlusBindingFields{grid-template-columns:1fr}.ptcPlusBindingField[data-wide=true]{grid-column:auto}.ptcPlusBindingSourceGrid{grid-template-columns:1fr}.ptcPlusBindingDebugBody{grid-template-columns:1fr}.ptcPlusBindingDebugBody .ptcPlusButton{width:100%}.ptcPlusBindingDebugWarning{grid-column:1}}
 @media(max-width:560px){.ptcPlusHeader{padding:12px}.ptcPlusFields{margin:0 12px}.ptcPlusRow{align-items:flex-start;flex-direction:column;gap:6px;padding:10px 0}.ptcPlusInput{width:100%}.ptcPlusFooter,.ptcPlusBindingsHead{align-items:stretch;flex-direction:column}.ptcPlusButton{width:100%}.ptcPlusFeatures,.ptcPlusToolBody{margin-left:0}.ptcPlusToolSummary .ptcPlusToolDescription{white-space:normal;overflow-wrap:anywhere}}
-@media(prefers-reduced-motion:reduce){.ptcPlusHeader,.ptcPlusChevron,.ptcPlusBody,.ptcPlusButton,.ptcPlusActive,.ptcPlusToolChevron,.ptcPlusReplChevron,.ptcPlusReplDefinitionWrap,.ptcPlusInspect{transition:none}}
+@media(prefers-reduced-motion:reduce){.ptcPlusHeader,.ptcPlusChevron,.ptcPlusBody,.ptcPlusButton,.ptcPlusActive,.ptcPlusToolChevron,.ptcPlusReplChevron,.ptcPlusReplDefinitionWrap,.ptcPlusInspect,.ptcPlusBindingDockChevron{transition:none}}
 /* The summary button owns disclosure; definition content is a separate grid item. */
 .ptcPlusReplBinding{padding:0;cursor:default}.ptcPlusReplBindingTrigger{appearance:none;display:grid;width:100%;grid-column:1/-1;grid-template-columns:minmax(0,1fr) 24px;gap:3px 8px;min-height:36px;padding:5px 12px;border:0;background:transparent;color:inherit;text-align:left;cursor:pointer;font:inherit;transition:background-color .16s ease}.ptcPlusReplBindingTrigger:hover,.ptcPlusReplBindingTrigger[aria-expanded=true]{background:color-mix(in srgb,var(--dsw-alias-interactive-primary,#4d6bfe) 5%,transparent)}.ptcPlusReplBindingTrigger:focus-visible{outline:2px solid var(--dsw-alias-interactive-primary,#4d6bfe);outline-offset:-2px}
 /* High-contrast TypeScript-like token colors adapt to the active text theme. */
@@ -200,6 +201,7 @@ const CHROME_COPY = Object.freeze({
     'bindings.authorNew': '让 Agent 编写',
     'bindings.authorEdit': 'Agent 修改',
     'bindings.authorOpen': '让 Agent 编写全局用户绑定',
+    'bindings.authorNewDraft': '编写新绑定',
     'bindings.composerBusy': '输入框已有内容，未覆盖现有草稿。',
     'bindings.draftTitle': 'Agent 草稿',
     'bindings.reviewTitle': '绑定草稿',
@@ -207,7 +209,7 @@ const CHROME_COPY = Object.freeze({
     'bindings.reviewCollapse': '折叠绑定草稿',
     'bindings.reviewClose': '关闭绑定草稿面板',
     'bindings.reviewOpen': '打开草稿',
-    'bindings.reviewAccess': '草稿',
+    'bindings.reviewMenuLabel': '绑定草稿（{count}）',
     'bindings.reviewLoading': '正在确认草稿操作资格…',
     'bindings.reviewSaving': '正在处理草稿…',
     'bindings.reviewAttention': '有待查看的操作状态',
@@ -356,6 +358,7 @@ const CHROME_COPY = Object.freeze({
     'bindings.authorNew': 'Ask Agent to write',
     'bindings.authorEdit': 'Ask Agent to revise',
     'bindings.authorOpen': 'Ask Agent to write a Global User Binding',
+    'bindings.authorNewDraft': 'Write a new binding',
     'bindings.composerBusy': 'The composer already has text, so its draft was not replaced.',
     'bindings.draftTitle': 'Agent draft',
     'bindings.reviewTitle': 'Binding draft',
@@ -363,7 +366,7 @@ const CHROME_COPY = Object.freeze({
     'bindings.reviewCollapse': 'Collapse binding draft',
     'bindings.reviewClose': 'Close binding draft panel',
     'bindings.reviewOpen': 'Open draft',
-    'bindings.reviewAccess': 'Draft',
+    'bindings.reviewMenuLabel': 'Binding drafts ({count})',
     'bindings.reviewLoading': 'Confirming draft actions…',
     'bindings.reviewSaving': 'Processing draft…',
     'bindings.reviewAttention': 'Action status needs attention',
@@ -463,6 +466,7 @@ window.__ModuleLoader__.load({
       IconEditOutline16,
       IconPlayOutline16,
       IconStopFill16,
+      Menu,
       Modal,
       StateDot,
       Toast,
@@ -606,6 +610,7 @@ window.__ModuleLoader__.load({
 
       function createBindingCommandAvailability(scope) {
         const entries = new Map()
+        let commandRemote
         const entryFor = (sessionId) => {
           const id = String(sessionId)
           let entry = entries.get(id)
@@ -641,7 +646,7 @@ window.__ModuleLoader__.load({
           const epoch = ++entry.epoch
           let available = false
           try {
-            const result = await scope.remote.commands.list(String(sessionId))
+            const result = await commandRemote?.commands.list(String(sessionId))
             available = result?.ok === true
               && Array.isArray(result.value)
               && result.value.some(command => command?.name === 'binding')
@@ -656,10 +661,21 @@ window.__ModuleLoader__.load({
           publish(entry, false)
           void refresh(sessionId)
         }
-        scope.effect(() => scope.remote.$on('commands/change', () => {
+        scope.inject(['remote', 'remote.commands'], commandScope => {
+          commandRemote = commandScope.remote
+          commandScope.effect(() => commandScope.remote.$on('commands/change', () => {
+            for (const sessionId of entries.keys()) void refresh(sessionId)
+          }))
+          commandScope.effect(() => commandScope.remote.$on('agent-preset/selected', reset))
           for (const sessionId of entries.keys()) void refresh(sessionId)
-        }))
-        scope.effect(() => scope.remote.$on('agent-preset/selected', reset))
+          commandScope.effect(() => () => {
+            commandRemote = undefined
+            for (const entry of entries.values()) {
+              entry.epoch++
+              publish(entry, false)
+            }
+          })
+        })
         scope.on('connection/reset', () => {
           for (const sessionId of entries.keys()) reset(sessionId)
         })
@@ -1440,26 +1456,70 @@ window.__ModuleLoader__.load({
       })
 
       function BindingAuthorButton({
-        t, useInput, inputActions, usePtcSettings, useBindingCommand,
+        sessionId, t, useInput, inputActions, usePtcSettings, useBindingCommand,
       }) {
-        const input = useInput(snapshot => snapshot)
+        const input = useInput?.(snapshot => snapshot)
         const available = useBindingCommand(snapshot => snapshot)
         const settings = usePtcSettings(snapshot => snapshot)
+        const [review, view] = useBindingReview(sessionId)
         const anchorRef = React.useRef(null)
+        const firstItemRef = React.useRef(null)
+        const newItemRef = React.useRef(null)
+        const focused = React.useRef(false)
+        const [menu, setMenu] = React.useState(null)
         const toastSequence = React.useRef(0)
         const [toast, setToast] = React.useState(null)
+        const hasDraft = view.mounted && view.candidate !== null && view.action === null
+        const canAuthor = settings.status === 'ready' && settings.value?.enabled === true
+          && settings.value?.userBindingsEnabled === true && settings.value?.bindingAuthorButtonVisible !== false
+          && available && typeof useInput === 'function' && typeof inputActions?.setDraft === 'function'
+        const menuOpen = hasDraft && view.reachable && menu?.key === view.candidateKey
+        const showMenu = mode => setMenu({ key: view.candidateKey, mode })
+        const hideMenu = () => {
+          const itemHasFocus = firstItemRef.current?.closest('button') === document.activeElement
+            || newItemRef.current?.closest('button') === document.activeElement
+          setMenu(null)
+          if (itemHasFocus && anchorRef.current?.getClientRects().length) {
+            anchorRef.current.querySelector('.ptcPlusAuthorButton')?.focus({ preventScroll: true })
+          }
+        }
+        React.useEffect(() => {
+          const observer = typeof IntersectionObserver === 'function'
+            ? new IntersectionObserver(entries => review.reachable(entries.some(entry => entry.isIntersecting))) : undefined
+          if (observer) observer.observe(anchorRef.current)
+          else review.reachable(true)
+          return () => { observer?.disconnect(); review.reachable(false) }
+        }, [review])
+        React.useEffect(() => {
+          setMenu(null)
+        }, [hasDraft, view.reachable, view.candidateKey])
+        React.useLayoutEffect(() => {
+          if (focused.current && document.activeElement === document.body) {
+            focused.current = false
+            const anchor = anchorRef.current
+            const button = anchor?.querySelector('.ptcPlusAuthorButton')
+            if (button?.getClientRects().length) button.focus({ preventScroll: true })
+            else focusComposer(anchor)
+          }
+        }, [hasDraft, canAuthor, view.candidateKey])
+        React.useEffect(() => {
+          if (!menuOpen || menu.mode === 'hover') return
+          // The public portal Menu measures hidden content before placing it.
+          const frame = requestAnimationFrame(() => {
+            if (anchorRef.current?.getClientRects().length) firstItemRef.current?.closest('button')?.focus({ preventScroll: true })
+          })
+          return () => cancelAnimationFrame(frame)
+        }, [menuOpen, menu?.mode])
         React.useEffect(() => {
           if (toast === null || typeof Toast === 'function') return undefined
           const timer = setTimeout(() => setToast(null), 2_500)
           return () => clearTimeout(timer)
         }, [toast])
-        const globalEnabled = settings.status === 'ready'
-          && settings.value?.enabled === true
-          && settings.value?.userBindingsEnabled === true
-          && settings.value?.bindingAuthorButtonVisible !== false
-        if (!globalEnabled || !available || typeof inputActions?.setDraft !== 'function') return null
-        const label = t('bindings.authorOpen')
+        const label = hasDraft ? t('bindings.reviewMenuLabel', { count: 1 })
+          + (view.message ? ` · ${t('bindings.reviewAttention')}` : '') : t('bindings.authorOpen')
         const openAuthoring = () => {
+          hideMenu()
+          if (!canAuthor) return
           if (typeof input?.draft === 'string' && input.draft.trim() !== '') {
             toastSequence.current += 1
             setToast({ sequence: toastSequence.current, text: t('bindings.composerBusy') })
@@ -1469,18 +1529,46 @@ window.__ModuleLoader__.load({
         }
         const starButton = h('button', {
           type: 'button', className: 'ptcPlusAuthorButton', 'aria-label': label,
-          onMouseDown: event => event.preventDefault(), onClick: openAuthoring,
+          'aria-haspopup': hasDraft ? 'menu' : undefined, 'aria-expanded': hasDraft ? menuOpen : undefined,
+          onPointerEnter: event => { if (hasDraft && event.pointerType !== 'touch') showMenu('hover') },
+          onKeyDown: event => {
+            if (hasDraft && ['ArrowUp', 'ArrowDown'].includes(event.key)) { event.preventDefault(); showMenu('keyboard') }
+          },
+          onMouseDown: event => { if (!hasDraft) event.preventDefault() },
+          onClick: () => {
+            if (!hasDraft) openAuthoring()
+            else if (menuOpen && menu.mode !== 'hover') hideMenu()
+            else showMenu('click')
+          },
         }, typeof IconSparkle16 === 'function'
           ? h(IconSparkle16, { size: 16, 'aria-hidden': true })
-          : h('span', { className: 'ptcPlusAuthorButtonLabel', 'aria-hidden': true }, t('bindings.authorNew')))
+          : h('span', { className: 'ptcPlusAuthorButtonLabel', 'aria-hidden': true }, t('bindings.authorNew')),
+          hasDraft ? h('span', { className: 'ptcPlusDraftBadge', 'aria-hidden': true,
+            'data-attention': view.message !== null }, '1') : null)
+        const trigger = !hasDraft && typeof Tooltip === 'function'
+          ? h(Tooltip, { label, side: 'top', delayMs: 400 }, starButton) : starButton
         return h('span', {
-          className: 'ptcPlusAuthorButtonShell',
+          className: 'ptcPlusComposerBindingAnchor', tabIndex: -1,
+          onFocusCapture: () => { focused.current = true }, onBlurCapture: () => { focused.current = false },
           'data-text': typeof IconSparkle16 === 'function' ? undefined : true,
-          ref: anchorRef,
+          ref: element => { anchorRef.current = element; review.access = element },
         },
-          typeof Tooltip === 'function'
-            ? h(Tooltip, { label, side: 'top', delayMs: 400 }, starButton)
-            : starButton,
+          !hasDraft ? (canAuthor ? h('span', { className: 'ptcPlusAuthorButtonShell' }, trigger) : null) : h(Menu, {
+            className: 'ptcPlusAuthorButtonShell', open: menuOpen,
+            anchor: trigger, portal: true, side: 'top', compact: true,
+            closeOnPointerLeave: menu?.mode === 'hover', onClose: hideMenu,
+            items: hasDraft ? [{ id: view.candidateKey,
+              label: h('span', { className: 'ptcPlusDraftMenuItem', ref: firstItemRef },
+                h('strong', null, view.candidate.entry.name),
+                h('span', null, t(bindingReviewStatus(view)))) }] : [],
+            footer: canAuthor ? [{ id: 'new', label: h('span', { ref: newItemRef }, t('bindings.authorNewDraft')) }] : [],
+            onSelect: id => {
+              if (!anchorRef.current?.getClientRects().length) return
+              hideMenu()
+              if (id === 'new') openAuthoring()
+              else if (id === view.candidateKey) openBindingReview(review, view.candidate)
+            },
+          }),
           toast === null ? null : typeof Toast === 'function'
             ? h(Toast, {
               key: toast.sequence,
@@ -1681,10 +1769,10 @@ window.__ModuleLoader__.load({
         return [review, view]
       }
 
-      function BindingCandidateContent({ candidate, t }) {
+      function BindingCandidateContent({ candidate, t, showName = true }) {
         const preferences = bindingModelPreferences(candidate.entry.modelContext)
         return h('div', { className: 'ptcPlusAuthoringDraft' },
-          h('strong', null, candidate.entry.name),
+          showName ? h('strong', null, candidate.entry.name) : null,
           h('span', { className: 'ptcPlusBindingMeta' }, `${candidate.entry.scope} - ${candidate.entry.symbols.join(', ')}`),
           candidate.entry.purpose ? h('p', { className: 'ptcPlusMessage' }, candidate.entry.purpose) : null,
           typeof CodeBlock === 'function'
@@ -1710,16 +1798,19 @@ window.__ModuleLoader__.load({
         anchor.focus({ preventScroll: true })
       }
 
-      function openBindingReview(review) {
-        review.display('expanded')
+      function openBindingReview(review, candidate = review.getSnapshot().candidate) {
+        if (!review.display('expanded', candidate)) return
         requestAnimationFrame(() => {
-          if (review.panel?.getClientRects().length) review.panel.focus({ preventScroll: true })
+          if (review.getSnapshot().candidate === candidate && review.panel?.getClientRects().length) {
+            review.panel.focus({ preventScroll: true })
+          }
         })
       }
 
       function fitBindingReview(panel) {
         const body = panel?.querySelector('.ptcPlusBindingDockBody')
-        if (!body || typeof ResizeObserver !== 'function') return undefined
+        const anchor = panel?.parentElement
+        if (!anchor || typeof ResizeObserver !== 'function') return undefined
         const ancestors = []
         let seat = panel
         let viewport
@@ -1737,16 +1828,25 @@ window.__ModuleLoader__.load({
           if (!panel.getClientRects().length) return
           const top = Math.max(viewport.getBoundingClientRect().top + viewport.clientTop,
             window.visualViewport?.offsetTop ?? 0)
-          // Reserve the complete composer stack, including neighboring docks; only our body shrinks.
-          const available = Math.max(0, body.getBoundingClientRect().height + seat.getBoundingClientRect().top - top - 8)
-          body.style.setProperty('--ptc-plus-review-space', `${Math.floor(available)}px`)
+          // Float above the complete composer stack without changing its height or covering other docks.
+          const offset = anchor.getBoundingClientRect().bottom - seat.getBoundingClientRect().top + 8
+          panel.style.setProperty('--ptc-plus-review-offset', `${Math.max(8, Math.ceil(offset))}px`)
+          const room = Math.max(0, seat.getBoundingClientRect().top - top - 16)
+          panel.style.setProperty('--ptc-plus-review-height', `${Math.floor(room)}px`)
+          if (body) {
+            const chrome = panel.scrollHeight - body.offsetHeight + 2
+            const available = Math.max(0, room - chrome)
+            // In short viewports one scroller keeps source and actions reachable together.
+            panel.dataset.scroll = available < 80 ? 'panel' : 'body'
+            body.style.setProperty('--ptc-plus-review-space', `${Math.floor(available)}px`)
+          }
         }
         const schedule = () => {
           cancelAnimationFrame(frame)
           frame = requestAnimationFrame(update)
         }
         const observer = new ResizeObserver(schedule)
-        for (const element of [panel, ...ancestors]) observer.observe(element)
+        for (const element of [panel, ...panel.children, ...ancestors]) observer.observe(element)
         window.visualViewport?.addEventListener('resize', schedule)
         window.visualViewport?.addEventListener('scroll', schedule)
         update()
@@ -1755,32 +1855,11 @@ window.__ModuleLoader__.load({
           cancelAnimationFrame(frame)
           window.visualViewport?.removeEventListener('resize', schedule)
           window.visualViewport?.removeEventListener('scroll', schedule)
-          body.style.removeProperty('--ptc-plus-review-space')
+          panel.style.removeProperty('--ptc-plus-review-offset')
+          panel.style.removeProperty('--ptc-plus-review-height')
+          delete panel.dataset.scroll
+          body?.style.removeProperty('--ptc-plus-review-space')
         }
-      }
-
-      function BindingReviewAccess({ sessionId, t }) {
-        const [review, view] = useBindingReview(sessionId)
-        const anchor = React.useRef(null)
-        const focused = React.useRef(false)
-        const available = view.candidate !== null && view.action === null
-        React.useEffect(() => {
-          const observer = typeof IntersectionObserver === 'function'
-            ? new IntersectionObserver(entries => review.reachable(entries.some(entry => entry.isIntersecting))) : undefined
-          if (observer) observer.observe(anchor.current)
-          else review.reachable(true)
-          return () => { observer?.disconnect(); review.reachable(false) }
-        }, [review])
-        React.useLayoutEffect(() => {
-          if (!available && focused.current) { focused.current = false; focusComposer(anchor.current) }
-        }, [available])
-        return h('span', { className: 'ptcPlusDraftAccess', tabIndex: -1,
-          ref: element => { anchor.current = element; review.access = element } },
-          available ? h('button', { type: 'button', className: 'ptcPlusButton',
-            onFocus: () => { focused.current = true }, onBlur: () => { focused.current = false },
-            onClick: () => openBindingReview(review),
-            title: t(view.message ? 'bindings.reviewAttention' : 'bindings.reviewOpen'),
-          }, t('bindings.reviewAccess'), view.message ? ' · !' : '') : null)
       }
 
       function BindingReviewDock({ sessionId, useProjection, t }) {
@@ -1792,8 +1871,9 @@ window.__ModuleLoader__.load({
         const title = React.useId()
         const content = React.useId()
         const expanded = view.visibility === 'expanded'
+        const candidateKey = view.candidateKey
         React.useLayoutEffect(() => fitBindingReview(review.panel),
-          [review, view.candidate !== null, expanded, view.action !== null, view.visibility])
+          [review, candidateKey, expanded, view.action !== null, view.visibility, view.message])
         const close = () => {
           review.display('hidden')
           requestAnimationFrame(() => {
@@ -1804,32 +1884,38 @@ window.__ModuleLoader__.load({
           })
         }
         if (view.candidate === null || view.visibility === 'hidden') return null
-        return h('section', { className: 'ptcPlusBindingDock', 'aria-labelledby': title, tabIndex: -1,
+        return h('div', { className: 'ptcPlusBindingDockAnchor' },
+          h('section', { key: candidateKey, className: 'ptcPlusBindingDock', 'aria-labelledby': title, tabIndex: -1,
           ref: element => { review.panel = element }, 'data-phase': view.action?.state ?? 'ready',
           'aria-busy': view.busy },
           h('div', { className: 'ptcPlusBindingDockHead' },
-            h('div', { className: 'ptcPlusBindingDockHeading' },
-              h('strong', { id: title }, `${t('bindings.reviewTitle')} · ${view.candidate.entry.name}`),
-              h('span', { role: 'status' }, t(bindingReviewStatus(view)))),
-            h(IconButton, { icon: IconChevronDownOutline14,
-              label: t(expanded ? 'bindings.reviewCollapse' : 'bindings.reviewExpand'),
-              'aria-expanded': expanded, 'aria-controls': expanded ? content : undefined,
-              onClick: () => review.display(expanded ? 'collapsed' : 'expanded') }),
+            h('button', { type: 'button', className: 'ptcPlusBindingDockToggle',
+              'aria-label': t(expanded ? 'bindings.reviewCollapse' : 'bindings.reviewExpand'),
+              'aria-expanded': expanded, 'aria-controls': expanded && view.action === null ? content : undefined,
+              onClick: () => review.display(expanded ? 'collapsed' : 'expanded') },
+              h('span', { className: 'ptcPlusBindingDockSymbol', 'aria-hidden': true }, '</>'),
+              h('span', { className: 'ptcPlusBindingDockHeading' },
+                h('strong', { id: title, title: view.candidate.entry.name }, view.candidate.entry.name),
+                h('span', { role: 'status', title: t(bindingReviewStatus(view)) },
+                  `${t('bindings.reviewTitle')} · ${t(bindingReviewStatus(view))}`)),
+              h('span', { className: 'ptcPlusBindingDockChevron', 'aria-hidden': true },
+                h(IconChevronDownOutline14, { size: 16 }))),
             h(IconButton, { icon: IconCloseOutline16, label: t('bindings.reviewClose'), onClick: close })),
           !expanded || view.action !== null ? null : h(React.Fragment, null,
             h('div', { className: 'ptcPlusBindingDockBody', id: content, tabIndex: 0,
               role: 'region', 'aria-label': t('bindings.source') },
-              h(BindingCandidateContent, { candidate: view.candidate, t })),
+              h(BindingCandidateContent, { candidate: view.candidate, t, showName: false })),
             view.message === null ? null : h('p', { className: 'ptcPlusMessage ptcPlusDanger', role: 'status' }, t(view.message)),
             h('div', { className: 'ptcPlusBindingDockActions' },
+              h(ActionButton, { className: 'ptcPlusBindingDockDiscard', 'data-kind': 'ghost',
+                disabled: !view.writable || view.busy,
+                onClick: () => review.act('discard-draft') }, t('bindings.draftDiscard')),
               h(ActionButton, { disabled: !view.writable || view.busy,
                 onClick: () => review.act('save-draft', false) }, t('bindings.draftSave')),
               h(ActionButton, { 'data-kind': 'primary', disabled: !view.writable || view.busy,
                 onClick: () => review.act('save-draft', true) }, t('bindings.draftSaveEnable')),
-              h(ActionButton, { 'data-kind': 'ghost', disabled: !view.writable || view.busy,
-                onClick: () => review.act('discard-draft') }, t('bindings.draftDiscard')),
               view.message === null ? null : h(ActionButton, { disabled: view.busy,
-                onClick: () => review.reset() }, t('bindings.reviewRetry')))))
+                onClick: () => review.reset() }, t('bindings.reviewRetry'))))))
       }
 
       function BindingCommandCard({ node, sessionId, t, useProjection }) {
@@ -2023,21 +2109,15 @@ window.__ModuleLoader__.load({
             name: 'conversation.input.dock', id: 'ptc-plus-binding-review', order: 30, locale: LOCALE_NS,
           }, props => typeof props.useProjection === 'function' && props.sessionId !== undefined
             ? h(BindingReviewDock, { ...props, key: props.sessionId }) : null)
-          const access = ctx.slots.register({
-            name: 'conversation.input.left', id: 'ptc-plus-binding-draft', order: 21, locale: LOCALE_NS,
-          }, props => props.sessionId === undefined ? null : h(BindingReviewAccess, { ...props, key: props.sessionId }))
-          return () => { access(); dock() }
+          return dock
         })))
-      ctx.inject(['remote', 'remote.commands'], (commandScope) => {
-        const availability = createBindingCommandAvailability(commandScope)
-        commandScope.slots.inject('conversation.input.left', () => registerEnabled(commandScope, true, () => commandScope.slots.register({
+      const availability = createBindingCommandAvailability(ctx)
+      ctx.slots.inject('conversation.input.left', () => registerEnabled(ctx, true, () => ctx.slots.register({
           name: 'conversation.input.left', id: 'ptc-plus-binding-author', order: 20, locale: LOCALE_NS,
           inject: sessionId => ({
             hooks: { ptcSettings: preferenceScope, bindingCommand: availability.source(sessionId) },
           }),
-        }, props => typeof props.useInput === 'function' && typeof props.inputActions?.setDraft === 'function'
-          ? h(BindingAuthorButton, props) : null)))
-      })
+        }, props => props.sessionId === undefined ? null : h(BindingAuthorButton, { ...props, key: props.sessionId }))))
     }
 
     module.exports = {

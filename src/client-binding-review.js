@@ -47,7 +47,7 @@ export function createBindingReviews(call) {
     if (sessions.has(sessionId)) return sessions.get(sessionId)
     const listeners = new Set()
     const choices = new Map()
-    let snapshot = { candidate: null, action: null, writable: false, busy: false, loading: false,
+    let snapshot = { candidate: null, candidateKey: null, action: null, writable: false, busy: false, loading: false,
       message: null, messageSource: null, visibility: 'expanded', mounted: false, reachable: false }
     let projection
     let authority = null
@@ -72,7 +72,7 @@ export function createBindingReviews(call) {
     const select = (candidate, action = null) => {
       const same = sameCandidate(candidate, snapshot.candidate)
       const visibility = choices.get(candidateIdentity(candidate)) ?? 'expanded'
-      publish({ candidate, action: action ?? (same ? snapshot.action : null), visibility,
+      publish({ candidate, candidateKey: candidateIdentity(candidate), action: action ?? (same ? snapshot.action : null), visibility,
         ...(!same ? { message: null, messageSource: null, writable: false, loading: false } : {}),
         busy: pending.has(candidateIdentity(candidate)) })
     }
@@ -207,10 +207,11 @@ export function createBindingReviews(call) {
         start()
       },
       reachable(value) { if (snapshot.reachable !== value) publish({ reachable: value }) },
-      display(visibility) {
-        if (snapshot.candidate === null) return
+      display(visibility, candidate = snapshot.candidate) {
+        if (snapshot.candidate === null || !sameCandidate(snapshot.candidate, candidate)) return false
         choices.set(candidateIdentity(snapshot.candidate), visibility)
         publish({ visibility })
+        return true
       },
       act,
       refresh,

@@ -8,6 +8,7 @@ import * as primitives from '@deepseek-ai/dsh-client-ui-primitives'
 import { ConversationEventRegistry } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import { SlotTestRuntime, stubSettingsScope, TestRemote } from '@deepseek-ai/dsh-client-test-runtime'
 import { CONFIG_FIELDS } from '../internal/config-spec.js'
+import { createBindingReviews } from '../src/client-binding-review.js'
 
 const cleanups = []
 // JSDOM has no text layout. Editor geometry is exercised in the real browser.
@@ -1374,6 +1375,175 @@ function deferred() {
   return { promise, resolve, reject }
 }
 
+async function openDraftMenu(view, runtime, mode = 'click') {
+  const trigger = view.getByRole('button', { name: /Binding drafts \(1\)/ })
+  // JSDOM has no layout; actual visibility and Host takeovers are browser checks.
+  trigger.closest('.ptcPlusComposerBindingAnchor').getClientRects = () => [new DOMRect(20, 500, 24, 24)]
+  if (mode === 'hover') fireEvent.pointerEnter(trigger, { pointerType: 'mouse' })
+  else if (mode === 'keyboard') fireEvent.keyDown(trigger, { key: 'ArrowUp' })
+  else fireEvent.click(trigger)
+  await runtime.flush()
+  if (mode === 'keyboard') await new Promise(requestAnimationFrame)
+  return trigger
+}
+
+test('one authoring icon owns the draft badge and hover, click and keyboard menu', async () => {
+  const candidate = reviewCandidate('menu-draft')
+  const rpc = vi.fn(reviewRpc(candidate))
+  const { runtime, input, settings, value } = await fixture({ rpc,
+    commands: { list: async () => ({ ok: true, value: [{ name: 'binding' }] }) } })
+  runtime.sessions.behavior('client-session').projections.set('ptcPlusBindingDraft', reviewProjection(candidate))
+  const view = runtime.renderRoot()
+  await runtime.flush()
+  expect(runtime.slots.entries('conversation.input.left').map(entry => entry.options.id)).toEqual(['ptc-plus-binding-author'])
+  expect(view.container.querySelectorAll('.ptcPlusAuthorButton')).toHaveLength(1)
+  expect(view.container.querySelector('.ptcPlusDraftBadge').textContent).toBe('1')
+  fireEvent.click(view.getByRole('button', { name: 'Close binding draft panel' }))
+  await runtime.flush()
+  const trigger = await openDraftMenu(view, runtime, 'hover')
+  const menu = view.getByRole('menu')
+  expect(view.container.contains(menu)).toBe(false)
+  expect(view.getAllByRole('menuitem').map(item => item.textContent)).toEqual([
+    'menu-draftDraft ready to save or discard', 'Write a new binding',
+  ])
+  expect(view.container.querySelector('.ptcPlusBindingDock')).toBeNull()
+  fireEvent.click(view.getAllByRole('menuitem')[0])
+  await runtime.flush()
+  expect(view.queryByRole('menu')).toBeNull()
+  expect(view.container.querySelector('.ptcPlusBindingDock').textContent).toContain(candidate.entry.source)
+  await openDraftMenu(view, runtime, 'keyboard')
+  expect(document.activeElement).toBe(view.getAllByRole('menuitem')[0])
+  fireEvent.keyDown(document, { key: 'Escape' })
+  await runtime.flush()
+  expect(view.queryByRole('menu')).toBeNull()
+  expect(document.activeElement).toBe(trigger)
+  await openDraftMenu(view, runtime)
+  fireEvent.click(view.getByRole('menuitem', { name: 'Write a new binding' }))
+  await runtime.flush()
+  expect(input.scope.getSnapshot().draft).toBe('/binding new ')
+  input.publish({ draft: 'Unsent user text' })
+  await openDraftMenu(view, runtime)
+  fireEvent.click(view.getByRole('menuitem', { name: 'Write a new binding' }))
+  await runtime.flush()
+  expect(input.scope.getSnapshot().draft).toBe('Unsent user text')
+  expect(rpc.mock.calls.every(([endpoint]) => ['list', 'draft', 'draft-review'].includes(endpoint))).toBe(true)
+  await openDraftMenu(view, runtime)
+  trigger.getClientRects = () => [new DOMRect(20, 500, 24, 24)]
+  view.getByRole('menuitem', { name: 'Write a new binding' }).focus()
+  settings.publish({ value: { ...value, bindingAuthorButtonVisible: false } })
+  await runtime.flush()
+  expect(view.getAllByRole('menuitem')).toHaveLength(1)
+  expect(view.queryByRole('menuitem', { name: 'Write a new binding' })).toBeNull()
+  expect(document.activeElement).toBe(trigger)
+})
+
+test('a receipt arriving while a draft menu has focus returns focus to its authoring icon', async () => {
+  const rects = vi.spyOn(HTMLElement.prototype, 'getClientRects').mockImplementation(function () {
+    return this.matches('.ptcPlusAuthorButton, .ptcPlusComposerBindingAnchor') ? [new DOMRect(20, 500, 24, 24)] : []
+  })
+  cleanups.push(() => rects.mockRestore())
+  const candidate = reviewCandidate('menu-receipt')
+  const { runtime } = await fixture({ rpc: reviewRpc(candidate),
+    commands: { list: async () => ({ ok: true, value: [{ name: 'binding' }] }) } })
+  const projection = runtime.sessions.behavior('client-session').projections
+  projection.set('ptcPlusBindingDraft', reviewProjection(candidate))
+  const view = runtime.renderRoot()
+  await runtime.flush()
+  await openDraftMenu(view, runtime, 'keyboard')
+  expect(document.activeElement.getAttribute('role')).toBe('menuitem')
+  projection.set('ptcPlusBindingDraft', reviewProjection(candidate, 'menu-receipt-capability', {
+    requestId: candidate.requestId, id: candidate.entry.id, state: 'saved', enabled: true,
+  }))
+  await runtime.flush()
+  expect(view.queryByRole('menu')).toBeNull()
+  expect(view.container.querySelector('.ptcPlusDraftBadge')).toBeNull()
+  expect(document.activeElement).toBe(view.getByRole('button', { name: 'Ask Agent to write a Global User Binding' }))
+})
+
+test('draft menu works without commands and revokes late command availability when the provider leaves', async () => {
+  const candidate = reviewCandidate('no-command')
+  const { runtime } = await fixture({ rpc: reviewRpc(candidate) })
+  runtime.sessions.behavior('client-session').projections.set('ptcPlusBindingDraft', reviewProjection(candidate))
+  const view = runtime.renderRoot()
+  await runtime.flush()
+  await openDraftMenu(view, runtime)
+  expect(view.getAllByRole('menuitem')).toHaveLength(1)
+  const pending = deferred()
+  const provider = await runtime.mount({ apply(ctx) {
+    new TestRemote(ctx, { commands: { list: () => pending.promise } })
+  } })
+  await provider.dispose()
+  pending.resolve({ ok: true, value: [{ name: 'binding' }] })
+  await runtime.flush()
+  expect(view.getAllByRole('menuitem')).toHaveLength(1)
+  const live = await runtime.mount({ apply(ctx) {
+    new TestRemote(ctx, { commands: { list: async () => ({ ok: true, value: [{ name: 'binding' }] }) } })
+  } })
+  await runtime.flush()
+  expect(view.getAllByRole('menuitem')).toHaveLength(2)
+  await live.dispose()
+  await runtime.flush()
+  expect(view.getAllByRole('menuitem')).toHaveLength(1)
+})
+
+test('draft menus close on candidate replacement, session navigation, feature disablement and disposal', async () => {
+  const first = reviewCandidate('menu-first')
+  const second = reviewCandidate('menu-second')
+  const { runtime, settings, value, feature } = await fixture({ rpc: reviewRpc(first) })
+  const projection = runtime.sessions.behavior('client-session').projections
+  projection.set('ptcPlusBindingDraft', reviewProjection(first))
+  const view = runtime.renderRoot()
+  await runtime.flush()
+  await openDraftMenu(view, runtime)
+  projection.set('ptcPlusBindingDraft', structuredClone(reviewProjection(first)))
+  await runtime.flush()
+  expect(view.getByRole('menuitem').textContent).toContain('menu-first')
+  projection.set('ptcPlusBindingDraft', { ...reviewProjection(second), history: [
+    ...reviewProjection(first).history, ...reviewProjection(second).history,
+  ] })
+  await runtime.flush()
+  expect(view.queryByRole('menu')).toBeNull()
+  await openDraftMenu(view, runtime)
+  expect(view.getAllByRole('menuitem')).toHaveLength(1)
+  expect(view.getByRole('menuitem').textContent).toContain('menu-second')
+  await runtime.sessions.add({ id: 'menu-other' })
+  await runtime.sessions.setCurrent('menu-other')
+  await runtime.flush()
+  expect(view.queryByRole('menu')).toBeNull()
+  await runtime.sessions.setCurrent('client-session')
+  await runtime.flush()
+  expect(view.queryByRole('menu')).toBeNull()
+  await openDraftMenu(view, runtime)
+  settings.publish({ value: { ...value, userBindingsEnabled: false } })
+  await runtime.flush()
+  expect(view.queryByRole('menu')).toBeNull()
+  expect(view.container.querySelector('.ptcPlusDraftBadge')).toBeNull()
+  settings.publish({ value })
+  await runtime.flush()
+  await openDraftMenu(view, runtime)
+  await feature.dispose()
+  await runtime.flush()
+  expect(view.queryByRole('menu')).toBeNull()
+  expect(settings.listenerCount()).toBe(0)
+})
+
+test('display actions reject stale candidates including same-version source mismatches', () => {
+  const reviews = createBindingReviews(() => { throw new Error('Display must not call Host') })
+  const review = reviews.forSession('exact-display')
+  const first = reviewCandidate('display-first')
+  const second = reviewCandidate('display-second')
+  review.sync(reviewProjection(first))
+  review.sync(reviewProjection(second))
+  review.display('hidden')
+  expect(review.display('expanded', first)).toBe(false)
+  expect(review.getSnapshot().visibility).toBe('hidden')
+  expect(review.display('expanded', { ...second, entry: { ...second.entry, source: 'other code' } })).toBe(false)
+  expect(review.getSnapshot().visibility).toBe('hidden')
+  expect(review.display('expanded', structuredClone(second))).toBe(true)
+  expect(review.getSnapshot().visibility).toBe('expanded')
+  reviews.dispose()
+})
+
 test('accepted source is immediate and only dock writes; display choices survive refresh, reset and session navigation', async () => {
   const candidate = reviewCandidate('placement')
   const catalog = deferred()
@@ -1398,6 +1568,17 @@ test('accepted source is immediate and only dock writes; display choices survive
   fireEvent.click(view.getByRole('button', { name: 'Collapse binding draft' }))
   await runtime.flush()
   expect(panel().querySelector('.ptcPlusBindingDockBody')).toBeNull()
+  const disclosure = view.getByRole('button', { name: 'Expand binding draft' })
+  expect(disclosure.contains(panel().querySelector('.ptcPlusBindingDockHeading'))).toBe(true)
+  expect(disclosure.querySelector('.ptcPlusBindingDockChevron')).not.toBeNull()
+  fireEvent.click(panel().querySelector('.ptcPlusBindingDockHeading strong'))
+  await runtime.flush()
+  expect(panel().querySelector('.ptcPlusBindingDockBody')).not.toBeNull()
+  expect(view.getByRole('button', { name: 'Collapse binding draft' }).getAttribute('aria-expanded')).toBe('true')
+  expect(panel().querySelector('.ptcPlusAuthoringDraft>strong').textContent).toBe('Model context')
+  fireEvent.click(panel().querySelector('.ptcPlusBindingDockHeading'))
+  await runtime.flush()
+  expect(panel().querySelector('.ptcPlusBindingDockBody')).toBeNull()
   slow = false
   catalog.resolve({ ok: true, value: { revision: 1, entries: [] } })
   await runtime.flush()
@@ -1417,11 +1598,26 @@ test('accepted source is immediate and only dock writes; display choices survive
   projection.set('ptcPlusBindingDraft', structuredClone(reviewProjection(candidate)))
   await runtime.flush()
   expect(panel()).toBeNull()
-  fireEvent.click(view.getByRole('button', { name: 'Draft', exact: true }))
+  await openDraftMenu(view, runtime)
+  fireEvent.click(view.getAllByRole('menuitem')[0])
   await runtime.flush()
   expect(panel().textContent).toContain(candidate.entry.source)
   expect(view.getAllByRole('button', { name: 'Save and enable' })).toHaveLength(1)
   expect(rpc.mock.calls.every(([endpoint]) => ['list', 'draft', 'draft-review'].includes(endpoint))).toBe(true)
+  const body = panel().querySelector('.ptcPlusBindingDockBody')
+  body.scrollTop = 500
+  panel().scrollTop = 150
+  projection.set('ptcPlusBindingDraft', structuredClone(reviewProjection(candidate)))
+  await runtime.flush()
+  expect(panel().querySelector('.ptcPlusBindingDockBody')).toBe(body)
+  expect(body.scrollTop).toBe(500)
+  expect(panel().scrollTop).toBe(150)
+  const replacement = { ...candidate, version: candidate.version + 1 }
+  projection.set('ptcPlusBindingDraft', reviewProjection(replacement))
+  await runtime.flush()
+  expect(panel().querySelector('.ptcPlusBindingDockBody')).not.toBe(body)
+  expect(panel().querySelector('.ptcPlusBindingDockBody').scrollTop).toBe(0)
+  expect(panel().scrollTop).toBe(0)
 })
 
 test.each(['saved', 'failed', 'unconfirmed'])('hidden pending action retains %s settlement without resubmission', async result => {
@@ -1444,7 +1640,8 @@ test.each(['saved', 'failed', 'unconfirmed'])('hidden pending action retains %s 
   fireEvent.click(view.getByRole('button', { name: 'Save and enable' }))
   fireEvent.click(view.getByRole('button', { name: 'Close binding draft panel' }))
   await runtime.flush()
-  fireEvent.click(view.getByRole('button', { name: 'Draft', exact: true }))
+  await openDraftMenu(view, runtime)
+  fireEvent.click(view.getAllByRole('menuitem')[0])
   await runtime.flush()
   expect(view.getByRole('button', { name: 'Save and enable' }).disabled).toBe(true)
   fireEvent.click(view.getByRole('button', { name: 'Close binding draft panel' }))
@@ -1461,11 +1658,12 @@ test.each(['saved', 'failed', 'unconfirmed'])('hidden pending action retains %s 
   expect(view.container.querySelector('.ptcPlusBindingDock')).toBeNull()
   expect(rpc.mock.calls.filter(([endpoint]) => endpoint === 'save-draft')).toHaveLength(1)
   if (result === 'saved') {
-    expect(view.queryByRole('button', { name: 'Draft', exact: true })).toBeNull()
+    expect(view.queryByRole('button', { name: /Binding drafts \(1\)/ })).toBeNull()
     expect(view.queryByRole('button', { name: 'Open draft' })).toBeNull()
     expect(view.container.querySelector('.ptcPlusBindingCommand').textContent).toContain('Draft saved and enabled')
   } else {
-    fireEvent.click(view.getByRole('button', { name: /Draft · !/ }))
+    await openDraftMenu(view, runtime)
+    fireEvent.click(view.getAllByRole('menuitem')[0])
     await runtime.flush()
     expect(view.container.querySelector('.ptcPlusBindingDock').textContent).toContain('Connection lost')
     expect(view.getByRole('button', { name: 'Save and enable' }).disabled).toBe(result === 'unconfirmed')
@@ -1507,7 +1705,7 @@ test.each(['expanded', 'collapsed', 'hidden'].flatMap(visibility => ['empty', 'e
     expect(view.getByRole('button', { name: visibility === 'collapsed' ? 'Expand binding draft' : 'Collapse binding draft' })).not.toBeNull()
     expect(panel.textContent).not.toContain('Connection lost')
   }
-  expect(view.queryByRole('button', { name: /^Draft( · !)?$/ })).toBeNull()
+  expect(view.queryByRole('button', { name: /Binding drafts \(1\)/ })).toBeNull()
   expect(view.queryByRole('button', { name: 'Save and enable' })).toBeNull()
 })
 
@@ -1529,12 +1727,13 @@ test('a successful eligibility refresh clears a transient read error while the d
   expect(view.container.querySelector('.ptcPlusBindingDock').textContent).toContain('Connection lost')
   fireEvent.click(view.getByRole('button', { name: 'Close binding draft panel' }))
   await runtime.flush()
-  expect(view.getByRole('button', { name: 'Draft · !' })).not.toBeNull()
+  expect(view.getByRole('button', { name: 'Binding drafts (1) · Action status needs attention' })).not.toBeNull()
   failed = false
   await vi.advanceTimersByTimeAsync(1500)
   await runtime.flush()
   expect(view.container.querySelector('.ptcPlusBindingDock')).toBeNull()
-  fireEvent.click(view.getByRole('button', { name: 'Draft', exact: true }))
+  await openDraftMenu(view, runtime)
+  fireEvent.click(view.getAllByRole('menuitem')[0])
   await runtime.flush()
   expect(view.container.querySelector('.ptcPlusBindingDock').textContent).not.toContain('Connection lost')
   expect(view.getByRole('button', { name: 'Save and enable' }).disabled).toBe(false)
@@ -1611,7 +1810,8 @@ test('pending writes isolate candidates within one session and late settlement c
   await runtime.flush()
   writes.get(first.commandId).resolve({ ok: true, value: { revision: 2, entries: [] } })
   await runtime.flush()
-  fireEvent.click(view.getByRole('button', { name: 'Draft', exact: true }))
+  await openDraftMenu(view, runtime)
+  fireEvent.click(view.getAllByRole('menuitem')[0])
   await runtime.flush()
   expect(view.container.querySelector('.ptcPlusBindingDock').textContent).toContain('Use pending-second.value')
   expect(view.container.querySelector('.ptcPlusBindingDock').getAttribute('aria-busy')).toBe('true')
@@ -1635,7 +1835,7 @@ test.each(['saved', 'discarded'])('fresh review keeps %s history out of the dock
   const view = runtime.renderRoot()
   await runtime.flush()
   expect(view.container.querySelector('.ptcPlusBindingDock')).toBeNull()
-  expect(view.queryByRole('button', { name: 'Draft', exact: true })).toBeNull()
+  expect(view.queryByRole('button', { name: /Binding drafts \(1\)/ })).toBeNull()
   const request = view.container.querySelector('.ptcPlusBindingCommand')
   expect(request.getAttribute('data-phase')).toBe(state)
   expect(request.textContent).toContain(candidate.entry.source)
@@ -1657,7 +1857,7 @@ test('fresh review does not open a completed legacy RPC candidate', async () => 
   const view = runtime.renderRoot()
   await runtime.flush()
   expect(view.container.querySelector('.ptcPlusBindingDock')).toBeNull()
-  expect(view.queryByRole('button', { name: 'Draft', exact: true })).toBeNull()
+  expect(view.queryByRole('button', { name: /Binding drafts \(1\)/ })).toBeNull()
 })
 
 test('history never borrows another request status or permission, including fallback to an older ready draft', async () => {
@@ -1702,7 +1902,7 @@ test('missing dock retains compact requests and read-only history without a phan
   await runtime.flush()
   expect(view.container.querySelector('.ptcPlusBindingCommand').textContent).toContain('Draft review panel is temporarily unavailable')
   expect(view.queryByRole('button', { name: 'Open draft' })).toBeNull()
-  expect(view.queryByRole('button', { name: 'Draft', exact: true })).toBeNull()
+  expect(view.queryByRole('button', { name: /Binding drafts \(1\)/ })).toBeNull()
   expect(view.queryByRole('button', { name: 'Save and enable' })).toBeNull()
   expect(rpcCalls.every(call => call.endpoint === 'list')).toBe(true)
 })

@@ -3,8 +3,26 @@ import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
-import { hostPersonaPatch, hostToolRuntime, ptcToolsMode, readHostPersona } from '../scripts/dsh-host-contract.mjs'
+import { hostAssistantUsageEvents, hostPersonaPatch, hostToolRuntime, ptcToolsMode, readHostPersona } from '../scripts/dsh-host-contract.mjs'
 import { headlessConfigPatch, parseConfigDump, validateHeadlessRuntimeConfig } from '../scripts/headless-host.mjs'
+
+test('compact usage inspection rejects malformed evidence and delegates to the public stream reader', async t => {
+  assert.equal(hostAssistantUsageEvents({ type: 'user/message' }), undefined)
+  for (const stream of [
+    [{ type: 'text-chunks', time0: 0, index: 0, texts: ['text'], dt: [1] }],
+    [{ type: 'reasoning-chunks', time0: 0, index: 0, texts: [], dt: [] }],
+    [{ type: 'tool-call-chunks', time0: 0, index: 0, args: ['{}'], dt: [], id: '' }],
+  ]) assert.throws(() => hostAssistantUsageEvents({ type: 'assistant/message', data: { stream } }))
+  const { default: defaultExport, ...llm } = await import('@deepseek-ai/dsh-llm')
+  const stream = [{ type: 'future-public-record' }]
+  t.mock.module('@deepseek-ai/dsh-llm', { defaultExport, namedExports: { ...llm, expandAssistantStream(value) {
+    assert.equal(value, stream)
+    return [{ time: 1, chunk: { type: 'text-delta', text: 'hello' } },
+      { time: 2, chunk: { type: 'usage', usage: { inputTokens: 5 } } }]
+  } } })
+  const current = await import('../scripts/dsh-host-contract.mjs?public-stream-reader')
+  assert.deepEqual(current.hostAssistantUsageEvents({ type: 'assistant/message', data: { stream } }), [{ inputTokens: 5 }])
+})
 
 test('public tool schemas choose current presentation, then legacy, and reject unsupported hosts', () => {
   const runtime = allowed => ({ Config({ mode }) {

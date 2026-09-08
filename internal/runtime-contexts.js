@@ -1,8 +1,8 @@
 import { latestRecoveryTip } from './recovery-tips.js'
 import { projectSessionLog, systemPromptSnapshotSections } from './session-log-view.js'
 import {
-  PTC_DELIVERY_CONTEXT, PTC_STATE_NAMES, readRuntimeMessage,
-  runtimeNoticeMessage, runtimeStateMessage,
+  PTC_BINDING_CATALOG, PTC_DELIVERY_CONTEXT, PTC_STATE_NAMES, readRuntimeMessage,
+  runtimeBindingCatalogMessage, runtimeNoticeMessage, runtimeStateMessage,
 } from './runtime-messages.js'
 
 const REWRITE_FEEDBACK = 'tools:ptc-plus-rewrite-info'
@@ -12,17 +12,11 @@ const CORDIS_RECOVERY_TEXT = 'Recorded Cordis values in the recovered REPL are h
 function continuationFeedback(view) {
   const run = view.latestRun
   const rewrites = run?.rewrites
-  if (rewrites === undefined || rewrites.length === 0) return undefined
+  if (rewrites === undefined || rewrites.length === 0 || run.journal !== undefined) return undefined
   const descriptions = rewrites.map(rewrite => rewrite.description).join('; ')
   const details = descriptions.length <= 2048 ? descriptions
     : `${descriptions.slice(0, 2048)}... (source-adjustment list truncated)`
-  if (run.journal === undefined) {
-    return `The preceding run_code cell had these source adjustments: ${details}. Its completion is unknown because no valid execution journal is available. Inspect its tool result and live bindings before continuing; do not assume it completed or failed, and do not replay it automatically.`
-  }
-  if (run.journal.completion?.kind !== 'return') {
-    return `The preceding run_code cell failed after a source adjustment: ${details}. Treat it as failed; inspect its tool result and live bindings before continuing, and do not replay it automatically.`
-  }
-  return undefined
+  return `The preceding run_code cell had these source adjustments: ${details}. Its completion is unknown because no valid execution journal is available. Inspect its tool result and live bindings before continuing; do not assume it completed or failed, and do not replay it automatically.`
 }
 
 /** Build all dynamic PTC contexts from one session-log projection. */
@@ -45,7 +39,8 @@ export function sessionRuntimeContexts(agent, tipConfig, options = {}) {
 /** Project messages without treating an uncommitted proposal as delivery. */
 export function projectRuntimeMessages(view, contexts, pending = []) {
   if (view.visibleRuntimeMessages === undefined) return []
-  const sections = contexts.filter(context => PTC_STATE_NAMES.includes(context.name))
+  const sections = contexts.filter(context => PTC_STATE_NAMES.includes(context.name) && context.name !== PTC_BINDING_CATALOG)
+  const catalog = contexts.find(context => context.name === PTC_BINDING_CATALOG)
   const records = view.visibleRuntimeMessages
   const owned = records.filter(record => record.producer === 'ptc-plus' && record.form === 'snapshot').at(-1)
   const legacy = records.filter(record => record.producer === 'aggregate').at(-1)
@@ -58,9 +53,16 @@ export function projectRuntimeMessages(view, contexts, pending = []) {
   const proposed = pending.map(readRuntimeMessage).filter(record => record !== undefined)
   const pendingState = proposed.filter(record => record.form === 'snapshot').at(-1)
   const previous = pendingState?.sections ?? retained
-  if ((sections.length > 0 || previous !== undefined || hadState)
+  if ((sections.length > 0 || (previous !== undefined && previous.length > 0) || (previous === undefined && hadState))
     && JSON.stringify(previous) !== JSON.stringify(sections)) {
     messages.push(runtimeStateMessage(sections))
+  }
+  const previousCatalog = proposed.filter(record => record.form === 'catalog').at(-1)
+    ?? records.filter(record => record.form === 'catalog').at(-1)
+  const hadCatalog = view.ptcMessages.some(record => record.form === 'catalog')
+  if ((catalog !== undefined || previousCatalog !== undefined || hadCatalog)
+    && JSON.stringify(previousCatalog?.sections) !== JSON.stringify(catalog === undefined ? [] : [catalog])) {
+    messages.push(runtimeBindingCatalogMessage(catalog))
   }
   for (const tip of contexts.filter(context => context.name.startsWith('tools:ptc-plus-tip/'))) {
     if (proposed.some(record => record.form === 'notice' && record.name === tip.name)) continue

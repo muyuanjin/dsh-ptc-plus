@@ -15,8 +15,8 @@ import { latestRecoveryTip } from '../internal/recovery-tips.js'
 import { createUserBindingsSnapshot, userBindingsConfiguredContext } from '../internal/user-bindings.js'
 import { projectSessionLog, systemPromptSnapshotSections } from '../internal/session-log-view.js'
 import {
-  PTC_DELIVERY_CONTEXT, PTC_STATE_NAMES, readRuntimeMessage, recoveryTipIdentity,
-  runtimeNoticeMessage, runtimeStateMessage,
+  PTC_BINDING_CATALOG, PTC_DELIVERY_CONTEXT, PTC_STATE_NAMES, readRuntimeMessage, recoveryTipIdentity,
+  runtimeBindingCatalogMessage, runtimeNoticeMessage, runtimeStateMessage,
 } from '../internal/runtime-messages.js'
 
 const state = text => [{ name: PTC_STATE_NAMES[0], text }]
@@ -50,6 +50,64 @@ test('bounded message forms separate current state, notices, tasks, and malforme
   for (const value of [undefined, 'other', 'tools:ptc-plus-tip/platform-command-failure/9007199254740992']) {
     assert.equal(recoveryTipIdentity(value), undefined)
   }
+})
+
+test('binding catalogs use bounded literal text and preserve historical snapshot recognition', () => {
+  const context = { name: PTC_BINDING_CATALOG, text: 'Use helper. Render {{name}} literally.' }
+  const message = runtimeBindingCatalogMessage(context)
+  assert.deepEqual(readRuntimeMessage(message), { form: 'catalog', sections: [context] })
+  assert.deepEqual(readRuntimeMessage(runtimeBindingCatalogMessage()), { form: 'catalog', sections: [] })
+  for (const invalid of [null, { name: 'other', text: 'x' }, { name: PTC_BINDING_CATALOG },
+    { name: PTC_BINDING_CATALOG, text: '' }, { name: PTC_BINDING_CATALOG, text: 'x'.repeat(65537) }]) {
+    assert.throws(() => runtimeBindingCatalogMessage(invalid), /invalid PTC binding catalog/)
+  }
+  const prefix = message.content[0].text.slice(0, -context.text.length)
+  for (const text of ['unrelated catalog', prefix, prefix + 'x'.repeat(65537)]) {
+    assert.equal(readRuntimeMessage({ ...message, content: [{ type: 'text', text }] }), undefined)
+  }
+  const legacy = structuredClone(runtimeStateMessage(state('legacy')))
+  legacy.content[0].text = 'PTC Plus current state. This replaces only earlier PTC state snapshots and PTC sections in historical aggregate snapshots; it does not replace tasks, Skill instructions, tool results, or other producers.\n\nlegacy'
+  assert.deepEqual(readRuntimeMessage(legacy), { form: 'snapshot', sections: state('legacy') })
+})
+
+test('recovery snapshots never resend or withdraw a retained API catalog', () => {
+  const catalog = { name: PTC_BINDING_CATALOG, text: 'declare const helper: { next(): number };' }
+  const session = Session.create('catalog-recovery-lifecycle')
+  const deliver = contexts => {
+    const messages = projectRuntimeMessages(viewOf(session), contexts)
+    assert.deepEqual(projectRuntimeMessages(viewOf(session), contexts, messages), [])
+    messages.forEach(message => append(session, message))
+    return messages.map(readRuntimeMessage)
+  }
+  assert.deepEqual(deliver([catalog]).map(message => message.form), ['catalog'])
+  for (const name of ['tools:ptc-plus-cordis-recovery', 'tools:ptc-plus-rewrite-info']) {
+    assert.deepEqual(deliver([catalog, { name, text: 'Inspect the uncertain state.' }]), [
+      { form: 'snapshot', sections: [{ name, text: 'Inspect the uncertain state.' }] },
+    ])
+    assert.deepEqual(deliver([catalog]), [{ form: 'snapshot', sections: [] }])
+  }
+  const config = { allowed: [catalog, ...PTC_STATE_NAMES.slice(0, 2).map(name => ({ name }))]
+    .map(({ name }) => ({ name, maxChars: 1000 })) }
+  assert.deepEqual(auditRuntimeContexts(sessionEvents(session), config).failures, [])
+  assert.deepEqual(deliver([]), [{ form: 'catalog', sections: [] }])
+  assert.deepEqual(deliver([]), [])
+  const nodes = session.surface.nodes
+  session.append('user/message', user('Summary'), {
+    surfaceOp: { op: 'replace', start: nodes[0], end: nodes.at(-1) }, sourceEventSeqs: nodes,
+  })
+  assert.deepEqual(deliver([]).map(message => message.form), ['snapshot', 'catalog'])
+  assert.deepEqual(deliver([]), [])
+})
+
+test('audit detects unchanged binding sections inside otherwise changed snapshots', () => {
+  const session = Session.create('legacy-section-repetition')
+  const catalog = { name: PTC_BINDING_CATALOG, text: 'declare const helper: unknown;' }
+  append(session, runtimeStateMessage([catalog]))
+  append(session, runtimeStateMessage([catalog, ...state('unknown completion')]))
+  const audit = auditRuntimeContexts(sessionEvents(session), {
+    allowed: [catalog, ...state('unknown completion')].map(({ name }) => ({ name, maxChars: 1000 })),
+  })
+  assert.match(audit.failures.join('\n'), /repeats unchanged binding documentation/)
 })
 
 test('committed history deduplicates notices while public surface controls retained state', () => {
@@ -130,6 +188,37 @@ test('configured binding prompts reconstruct, reappear after compaction, and wit
   append(restored, clear[0])
   const cleared = Session.create('restored-cleared-context', sessionEvents(restored))
   assert.deepEqual(projectRuntimeMessages(viewOf(cleared), []), [])
+})
+
+test('historical activation claims are withdrawn once without retaining duplicate interfaces', () => {
+  const configured = userBindingsConfiguredContext(createUserBindingsSnapshot({ entries: [{
+    id: 'files', name: 'fileTools', scope: 'namespace', enabled: true,
+    source: 'export function next(): number { return 1 }',
+  }] }))
+  const active = { name: 'tools:ptc-plus-user-bindings',
+    text: 'Previously activated bindings.\n\n```ts\ndeclare const fileTools: { next(): number; };\n```' }
+  for (const producer of ['ptc-plus', '@deepseek-ai/dsh-system-prompt']) {
+    for (const current of [[configured], []]) {
+      const session = Session.create(`historical-activation-${producer}-${current.length}`)
+      const sections = [configured, active]
+      const historical = producer === 'ptc-plus' ? runtimeStateMessage(sections) : createUserMessage({
+        source: { kind: 'plugin', plugin: producer, form: 'snapshot', sections },
+        content: [{ type: 'text', text: sections.map(section => section.text).join('\n\n') }],
+      })
+      append(session, historical)
+      const restored = Session.create('restored-activation-claims', sessionEvents(session))
+      const proposed = projectRuntimeMessages(viewOf(restored), current)
+      assert.equal(proposed.length, current.length + 1)
+      assert.deepEqual(readRuntimeMessage(proposed[0]).sections, [])
+      assert.equal(proposed.map(message => message.content[0].text).join('\n').split('declare const fileTools: {').length - 1, current.length)
+      assert.match(proposed[0].content[0].text, /replaces only earlier PTC state snapshots/)
+      assert.deepEqual(projectRuntimeMessages(viewOf(restored), current, proposed), [])
+      proposed.forEach(message => append(restored, message))
+      assert.deepEqual(projectRuntimeMessages(viewOf(restored), current), [])
+      assert.deepEqual(projectRuntimeMessages(viewOf(Session.create('after-clearance', sessionEvents(restored))), current), [])
+      assert.equal(restored.deriveMessages()[0].id, historical.id)
+    }
+  }
 })
 
 test('historical aggregate clearance and pending replacement require current PTC declarations', () => {
@@ -399,6 +488,39 @@ test('real AgentLoop rejection and cancellation do not mark a proposed notice de
   assert.equal(host.calls.length, 1)
   await host.wake()
   assert.equal(viewOf(host.agent.session).ptcMessages.length, 1)
+})
+
+test('real Host clearance leaves an explicitly scoped catalog valid across unchanged suppression', { timeout: 15000 }, async t => {
+  const host = await hostFixture(t)
+  const catalog = { name: PTC_BINDING_CATALOG, text: 'COUNTER_BETA. declare const counter: { next(): number };' }
+  host.setState([catalog])
+  await host.wake()
+  const first = viewOf(host.agent.session).ptcMessages[0]
+  assert.equal(first.form, 'catalog')
+  const release = host.agent.ctx.systemPrompt.suppressRuntimeContext()
+  await host.wake()
+  assert.equal(viewOf(host.agent.session).ptcMessages.length, 1)
+  const suppressed = host.calls.at(-1).messages
+  assert.ok(suppressed.some(message => message.content.some(block => block.text ===
+    'Current runtime context: none. Earlier runtime-context snapshots no longer apply.')))
+  const retained = suppressed.find(message => readRuntimeMessage(message)?.form === 'catalog')
+  assert.match(retained.content[0].text, /Host runtime-context snapshots and PTC recovery snapshots do not withdraw it/)
+  assert.match(retained.content[0].text, /COUNTER_BETA/)
+  release()
+  await host.wake()
+  assert.equal(viewOf(host.agent.session).ptcMessages.length, 1)
+  const pause = host.agent.ctx.systemPrompt.suppressRuntimeContext()
+  host.setState([{ ...catalog, text: 'COUNTER_GAMMA' }])
+  await host.wake()
+  assert.equal(viewOf(host.agent.session).ptcMessages.length, 1)
+  pause()
+  await host.wake()
+  await host.wake()
+  assert.equal(viewOf(host.agent.session).ptcMessages.length, 2)
+  for (const call of host.calls) {
+    assert.equal(call.system, host.calls[0].system)
+    assert.deepEqual(call.tools, host.calls[0].tools)
+  }
 })
 
 test('real AgentLoop migrates an active historical aggregate section during unrelated replacement', { timeout: 15000 }, async t => {

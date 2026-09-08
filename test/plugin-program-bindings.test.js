@@ -143,7 +143,7 @@ test('keeps rewritten completion unknown without a valid journal', async (t) => 
   }
 })
 
-test('keeps rewrite continuation truthful after a throwing cell', async (t) => {
+test('a throwing rewritten cell explains its continuation in the result alone', async (t) => {
   const state = fixture()
   t.after(() => state.dispose())
   const session = { id: 'rewrite-failure-context', events: [{ type: 'turn/start' }] }
@@ -159,10 +159,9 @@ test('keeps rewrite continuation truthful after a throwing cell', async (t) => {
     { agent, scope: agent, signal: new AbortController().signal },
   )
   const context = assembly.ptcContexts.find(item => item?.name === 'tools:ptc-plus-rewrite-info')
-  assert.ok(context)
-  assert.match(context.text, /failed after a source adjustment/)
-  assert.match(context.text, /stripped the export modifier/)
-  assert.doesNotMatch(context.text, /completed in this session/)
+  assert.equal(context, undefined)
+  assert.match(JSON.stringify(result.meta.dshPtcPlus.diagnostics), /partially-applied/)
+  assert.match(JSON.stringify(result.meta.dshPtcPlus.diagnostics), /retry\/idempotence/)
 })
 
 test('rebinds native tools for old functions and expires captured closures', async (t) => {

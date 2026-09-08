@@ -106,10 +106,6 @@ return right
   assert.deepEqual(execution.result.value, ['undefined', 'session'])
   assert.match(execution.result.logs[0], /Global binding "pair" was not activated/)
   assert.deepEqual(execution.settlement.userBindings.entries, [])
-  assert.deepEqual(
-    runtime.modelVisibleUserBindings('atomic-activation', userBindings)?.entries ?? [],
-    [],
-  )
   assert.deepEqual((await runtime.run('atomic-activation', {
     program: 'return [typeof left, right]', bindings: [], userBindings: snapshot([]),
   })).value, ['undefined', 'session'])
@@ -218,13 +214,15 @@ test('keeps request-owned namespaces and error classes authoritative across cell
   })
 
   for (const marker of ['first', 'second']) {
-    const result = await runtime.run('reserved-user-bindings', request(marker))
+    const execution = await runtime.runTentative('reserved-user-bindings', request(marker))
+    runtime.finalize(execution.settlement, true)
+    const result = execution.result
     assert.deepEqual(result.value, [marker, 'ServiceError', 7])
     assert.equal(result.logs.length, 2)
     assert.match(result.logs[0], /request-owned program binding "service"/)
     assert.match(result.logs[1], /request-owned program binding "ServiceError"/)
     assert.deepEqual(
-      runtime.modelVisibleUserBindings('reserved-user-bindings', userBindings).entries.map(entry => entry.id),
+      execution.settlement.userBindings.entries.map(entry => entry.id),
       ['healthy'],
     )
   }
@@ -439,7 +437,6 @@ export function incrementTop() { topCount += 1; return topCount }
     userBindings,
   })
   assert.deepEqual(shadow.value, [9, 20])
-  assert.equal(runtime.modelVisibleUserBindings('mutable-exports', userBindings).entries.length, 0)
 })
 
 test('reuses modules across presentation updates and reinitializes changed execution inputs', async t => {
@@ -460,7 +457,6 @@ test('reuses modules across presentation updates and reinitializes changed execu
       runtime.finalize(execution.settlement, true)
       assert.equal(execution.result.error, undefined)
       assert.deepEqual(execution.settlement.userBindings, userBindings)
-      assert.deepEqual(runtime.modelVisibleUserBindings(`presentation-${scope}`, userBindings), userBindings)
       return execution.result.value
     }
     assert.equal(await run(), 1)
@@ -543,7 +539,7 @@ export async function invoke(value: string) {
   assert.equal(removed.value, 'second:two:dependency')
 })
 
-test('exposes only complete worker-proved entries to later model requests', async (t) => {
+test('records only complete worker-proved entries in settled snapshots', async (t) => {
   const runtime = new SessionRuntime({ durableReplay: false })
   t.after(() => runtime.dispose())
   const userBindings = snapshot([
@@ -551,27 +547,33 @@ test('exposes only complete worker-proved entries to later model requests', asyn
     binding('healthy', 'healthy', 'namespace', 'export const value = 2'),
     binding('pair', 'pair', 'top-level', 'export const left = 1; export const right = 2'),
   ])
-  assert.equal(runtime.modelVisibleUserBindings('model-visible', userBindings), undefined)
-  const activated = await runtime.run('model-visible', {
-    program: 'return healthy.value + left + right', bindings: [], userBindings,
-  })
-  assert.equal(activated.value, 5)
+  const run = async (program, requested = userBindings) => {
+    const execution = await runtime.runTentative('proved-bindings', {
+      program, bindings: [], userBindings: requested,
+    })
+    runtime.finalize(execution.settlement, true)
+    return execution
+  }
+  const activated = await run('return healthy.value + left + right')
+  assert.equal(activated.result.value, 5)
   assert.deepEqual(
-    runtime.modelVisibleUserBindings('model-visible', userBindings).entries.map(entry => entry.id),
+    activated.settlement.userBindings.entries.map(entry => entry.id),
     ['healthy', 'pair'],
   )
-  await runtime.run('model-visible', {
-    program: 'const left = 10; return left', bindings: [], userBindings,
-  })
+  const shadowed = await run('const left = 10; return left')
+  assert.equal(shadowed.result.value, 10)
+  const continued = await run('return healthy.value + left')
   assert.deepEqual(
-    runtime.modelVisibleUserBindings('model-visible', userBindings).entries.map(entry => entry.id),
+    continued.settlement.userBindings.entries.map(entry => entry.id),
     ['healthy'],
   )
   const updated = snapshot([
     binding('healthy', 'healthy', 'namespace', 'export const value = 3'),
     binding('pair', 'pair', 'top-level', 'export const left = 1; export const right = 2'),
   ], 2)
-  assert.equal(runtime.modelVisibleUserBindings('model-visible', updated).entries.length, 0)
+  const changed = await run('return healthy.value + left', updated)
+  assert.equal(changed.result.value, 13)
+  assert.deepEqual(changed.settlement.userBindings.entries.map(entry => entry.id), ['healthy'])
 })
 
 test('treats reflective deletion and redefinition as session-local shadows', async (t) => {
@@ -601,29 +603,11 @@ test('treats reflective deletion and redefinition as session-local shadows', asy
     userBindings,
   })
   assert.deepEqual(shadowed.value, ['undefined', 10, 'undefined'])
-  assert.equal(runtime.modelVisibleUserBindings('reflective-shadow', userBindings).entries.length, 0)
 
   const retained = await runtime.run('reflective-shadow', {
     program: 'return [typeof shared, left, typeof right]', bindings: [], userBindings,
   })
   assert.deepEqual(retained.value, ['undefined', 10, 'undefined'])
-  assert.equal(runtime.modelVisibleUserBindings('reflective-shadow', userBindings).entries.length, 0)
-})
-
-test('suppresses a model projection when the session surface generation is unreadable', async (t) => {
-  const runtime = new SessionRuntime({ durableReplay: false })
-  t.after(() => runtime.dispose())
-  const session = {
-    get surface() { throw new Error('surface unavailable') },
-  }
-  const userBindings = snapshot([
-    binding('visible', 'visible', 'namespace', 'export const value = 1'),
-  ])
-  const context = { id: 'unreadable-surface', session }
-  assert.equal((await runtime.run(context, {
-    program: 'return visible.value', bindings: [], userBindings,
-  })).value, 1)
-  assert.equal(runtime.modelVisibleUserBindings(context, userBindings), undefined)
 })
 
 test('keeps worker-global namespaces dark until a binding value has been exposed', async (t) => {

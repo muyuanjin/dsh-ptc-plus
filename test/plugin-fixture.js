@@ -1,4 +1,5 @@
 import { apply } from '../index.js'
+import { readRuntimeMessage } from '../internal/runtime-messages.js'
 
 export const JOURNAL_POLICY = { autoRewriteImports: true, autoStripExports: true, autoSplitRedeclarations: true }
 
@@ -302,10 +303,8 @@ export function fixture(config = {}, fixtureOptions = {}) {
       : entries[index](payload, () => dispatch(index + 1))
     const decision = await dispatch(0)
     return { ...result, messages: decision.messages, ptcContexts: decision.messages.flatMap(message => {
-      const source = message.source
-      if (source.plugin !== 'ptc-plus') return []
-      return source.form === 'snapshot' ? source.sections
-        : source.form === 'notice' ? [{ name: source.summary, text: message.content[0].text }] : []
+      const record = readRuntimeMessage(message)
+      return record?.sections ?? (record?.form === 'notice' ? [{ name: record.name, text: record.text }] : [])
     }) }
   }
 

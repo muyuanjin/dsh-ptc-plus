@@ -145,9 +145,9 @@ import { readFile } from 'node:fs/promises'
 
 每个条目的“模型上下文”包含“将接口声明提供给模型”开关和“给模型的提示词”文本，可直接修改后保存或取消，无需先点击“编辑”源码。接口声明始终从源码生成，开关默认开启；提示词可描述何时使用这个工具、调用约束或示例，留空则不添加。两者独立配置：取消声明勾选仍会提供已填写的提示词，两者都清空或关闭才完全省略该条目的模型上下文，不影响绑定执行。已启用条目在新会话首轮就可见；通过 `/binding` 保存并启用、会话中途启用或修改提示词后，下一轮请求也会收到当前配置，无需新建会话或先执行一次工具。`/binding` 会要求 Agent 随源码填写提示词和声明开关，草稿卡片保留这些配置供检查。
 
-提示词和所选接口通过追加的会话上下文提供。中途保存、启停、删除条目或修改提示词会在下一次宿主允许的请求中更新或撤销旧说明，不改写已有系统提示词和消息历史；未变说明不重复追加。DSH 屏蔽 runtime context 时暂缓投递，解除屏蔽后同步当前配置。
+提示词和所选接口通过追加的全局绑定 API 目录提供，与临时恢复提示分别更新；错误及恢复不会重发未变接口。中途保存、启停、删除条目或修改提示词会在下一次宿主允许的请求中更新或撤销旧目录，不改写已有系统提示词和消息历史。DSH 屏蔽 runtime context 时暂缓新投递，已在上下文中的目录仍表示当时的配置；解除屏蔽后同步当前配置。目录说明 API，不证明初始化成功或当前变量值。
 
-已启用条目在下一次 `run_code` 中尝试激活为普通可写 REPL binding；首轮接口描述的是已配置 API，不证明初始化成功。只有 worker 已成功激活、仍与当前配置同源且未被 session-local binding 覆盖的完整条目，才在随后一轮获得活动声明。请求自带的 program namespace 或 error class 优先于同名全局条目；该条目只在本次请求中激活失败并产生诊断，不会覆盖宿主值或阻止其他代码。binding module 所需的 program namespace 若与既有 worker global 同名，本次 cell 会显式失败且不会替换 Node intrinsic。失败 initializer 已发起 program call 时，cell 进入 volatile，避免 cold recovery 把缺少该源码的调用记录当作可重放历史。同名赋值或重声明只覆盖当前 session；cold recovery 使用结果 metadata 中记录的精确快照，不从当前磁盘内容猜测历史值。条目源码中的相对 import 在候选试运行和正式激活时都以 binding 存储目录为解析基准；已经保存到普通 session binding 的导出闭包会在当前 worker 生命周期内保留该解析基准和 program namespace bridge。
+已启用条目在下一次 `run_code` 中尝试激活为普通可写 REPL binding；首轮接口描述的是已配置 API，不证明初始化成功。提示词和接口仅由配置说明提供，成功初始化不会再追加一条激活公告或重复接口；配置说明未变且仍在模型上下文中时不重复注入。实际可用性以执行结果和诊断为准。请求自带的 program namespace 或 error class 优先于同名全局条目；该条目只在本次请求中激活失败并产生诊断，不会覆盖宿主值或阻止其他代码。binding module 所需的 program namespace 若与既有 worker global 同名，本次 cell 会显式失败且不会替换 Node intrinsic。失败 initializer 已发起 program call 时，cell 进入 volatile，避免 cold recovery 把缺少该源码的调用记录当作可重放历史。同名赋值或重声明只覆盖当前 session；cold recovery 使用结果 metadata 中记录的精确快照，不从当前磁盘内容猜测历史值。条目源码中的相对 import 在候选试运行和正式激活时都以 binding 存储目录为解析基准；已经保存到普通 session binding 的导出闭包会在当前 worker 生命周期内保留该解析基准和 program namespace bridge。
 
 提示词和接口中的 `{{name}}` 等示例会原样提供给模型。仅修改提示词、接口注入开关或用途说明，不会重置已激活模块的状态，也不会重复执行初始化；修改源码、scope、namespace 调用名或导出列表后，下一次执行会重新初始化。可重建的历史按每一步记录的复用规则恢复。
 
@@ -155,7 +155,7 @@ import { readFile } from 'node:fs/promises'
 
 开启后，只要当前 session 的实际命令目录提供 `/binding`，输入框工具栏就会在首轮前显示星光图标；点击可预填 `/binding new `，已有输入不会被覆盖。也可以直接输入 `/binding new <需求>` 或 `/binding edit <id> <需求>`，DSH 会提供命令匹配和参数提示。命令启动 Agent 编写后立即完成并清空输入框；对话中的唯一绑定命令卡片保留完整需求、编写状态与 TypeScript 源码，各阶段状态随界面语言切换。Agent 收到完整字段说明、调用范例和依赖解析基址，通过 `run_code` 内稳定的 `code.submitBindingDraft({requestId, entry})` 交接一个停用内存草稿；每次请求仅接受一次有效提交，普通 REPL 声明不会成为全局草稿。进入和结束编写不改变同配置下的 system 与工具声明。
 
-草稿就绪后，卡片提供“保存为停用”“保存并启用”和“丢弃草稿”，均由用户决定。保存或丢弃后仍可展开检视当时接受的精确源码，回执可随日志重建，后续同 ID 的修改不会替换这份历史。保存并启用原子写入启用条目，但当前会话是否成功激活仍由 runtime 证明。模型收到保存事实，只有成功激活且未被会话局部定义遮蔽的条目才产生活动声明；`repl.state` 管理命名 checkpoint，不能当作绑定目录。目录版本冲突后，卡片重新读取权威状态，保留仍有效的草稿供用户检视并重试。
+草稿就绪后，卡片提供“保存为停用”“保存并启用”和“丢弃草稿”，均由用户决定。保存或丢弃后仍可展开检视当时接受的精确源码，回执可随日志重建，后续同 ID 的修改不会替换这份历史。保存并启用原子写入启用条目，但当前会话是否成功激活仍由 runtime 证明。模型收到保存事实，下一次允许的请求获得当前配置说明，初始化失败由执行结果报告；`repl.state` 管理命名 checkpoint，不能当作绑定目录。目录版本冲突后，卡片重新读取权威状态，保留仍有效的草稿供用户检视并重试。
 
 PTC Plus 顶部弹窗包含 Session 和 Global 页签：Session 查看可复用的 REPL 绑定，Global 展示持久条目的启停状态、检查源码并预填 `/binding edit`；目录中的“启用”不代表当前会话已激活。完整管理在 REPL 页签和设置管理弹窗中提供，Agent 辅助编写仍需要可用会话。Host 通过当前 session 私有 projection 的 opaque locator 约束草稿 UI 操作；保存、丢弃或所属 Agent、session、功能、owner 结束都会撤销可写资格。候选 worker 隔离 session 状态，但代码仍拥有 DSH 进程权限，可能产生不可回滚的 Node/OS effect。
 
@@ -183,7 +183,7 @@ REPL 在同一页展示会话绑定和完整全局绑定工作台，无需切换
 
 REPL 中捕获的 `tools` 对象或成员引用会随提交 cell 的 lease 到期。需要跨 cell 复用的 helper 应在调用时读取当前 namespace，例如 `async function inspectNow() { return tools.cordis_inspect_list({}) }`。全局用户绑定模块的动态 bridge 同样按调用所属 cell 检查 lease，旧 continuation 不能借用新 cell 的能力。
 
-cold recovery 或重新启用 Cordis 后，已记录的 Cordis value 仍是历史数据，但不能证明进程内 Plugin、Run、approval 或先前 Inspect observation 仍然存活。PTC Plus 会提供有界恢复声明，直到一次新的成功 Cordis Inspect 调用验证当前进程。恢复声明、已激活全局绑定声明和按需 tip 通过带 PTC Plus 来源的独立消息投递，遵守宿主的上下文抑制设置；自身变化不会重发其他插件未变的上下文，失效的状态声明会被明确撤销。
+cold recovery 或重新启用 Cordis 后，已记录的 Cordis value 仍是历史数据，但不能证明进程内 Plugin、Run、approval 或先前 Inspect observation 仍然存活。PTC Plus 会提供有界恢复声明，直到一次新的成功 Cordis Inspect 调用验证当前进程。恢复声明、全局绑定配置说明和按需 tip 通过带 PTC Plus 来源的独立消息投递，遵守宿主的上下文抑制设置；自身变化不会重发其他插件未变的上下文，失效的状态声明会被明确撤销。
 
 详见 [客户端 UI](docs/client-ui.md)、[ADR 0019](docs/adr/0019-plugin-settings-and-kill-switch.md)、[ADR 0020](docs/adr/0020-optional-cordis-tools-in-ptc-mode.md) 与 [ADR 0023](docs/adr/0023-global-user-bindings.md)。
 

@@ -465,13 +465,12 @@ void await repl.state({ action: 'save', name: 'stable' })
   assert.deepEqual(projectedMemory(events, generation).entries.map(entry => entry.name), ['stableValue'])
 })
 
-test('removes and reports user-global binding provenance independently of session bindings', () => {
+test('removes user-global bindings independently of session bindings', () => {
   const snapshot = createUserBindingsSnapshot({ entries: [{
     id: 'global', name: 'global', scope: 'top-level', purpose: '', enabled: true,
     source: 'export const answer = 42',
   }] })
   const plan = new BindingCatalog().userBindings(snapshot)
-  assert.equal(plan.catalog.userGlobalOrigins().get('answer').entryId, 'global')
   assert.equal(plan.catalog.snapshot()[0].name, 'answer')
   assert.equal(plan.catalog.withoutUserBindings().snapshot().length, 0)
 })

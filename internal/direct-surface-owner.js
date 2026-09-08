@@ -11,7 +11,7 @@ import {
   generatedRunCodeExecutionArguments,
   generatedRunCodeDescriptionMeta,
 } from './run-code-description.js'
-import { userBindingsConfiguredContext, userBindingsContext } from './user-bindings.js'
+import { userBindingsConfiguredContext } from './user-bindings.js'
 import { BINDING_AUTHORING_SDK } from './user-binding-authoring.js'
 
 const RUN_CODE_TOOL_DESCRIPTION = 'Evaluate the next TypeScript cell in this session-bound persistent REPL. Earlier top-level computation bindings remain available. REPL-captured program capability references expire with their cell; retained helpers should resolve current namespaces at invocation. Use `code` for the async-function body and `description` for its short UI summary. Successful image-bearing subtool results are attached after the cell.'
@@ -147,7 +147,6 @@ export function createDirectSurfaceOwner({
   sessionId,
   toolSchemasForAgent,
   userBindingsForAgent = async () => undefined,
-  modelVisibleUserBindingsForAgent,
   setAgentPresentation = async () => {},
 }) {
   // Composition is anchored to Agent identity because DSH selects presentation
@@ -304,9 +303,6 @@ export function createDirectSurfaceOwner({
       const sessionPtcProjection = presentation === 'ptc' && id !== undefined
       const userBindings = sessionPtc ? await userBindingsForAgent(agent) : undefined
       if (!isCurrent()) return assembly
-      const modelVisibleUserBindings = userBindings === undefined
-        ? undefined
-        : modelVisibleUserBindingsForAgent?.(agent, userBindings)
       const runCode = tools.find(tool => tool?.name === RUN_CODE)
       let directTools = tools
       if (sessionPtcProjection) {
@@ -320,14 +316,10 @@ export function createDirectSurfaceOwner({
           },
         })
         : { contexts: [] }
-      const bindingContext = modelVisibleUserBindings === undefined
-        ? undefined
-        : userBindingsContext(modelVisibleUserBindings)
       const bindingDefaults = userBindings === undefined ? undefined : userBindingsConfiguredContext(userBindings)
       const contexts = [
         ...runtimeContexts.contexts,
         ...(bindingDefaults === undefined ? [] : [bindingDefaults]),
-        ...(bindingContext === undefined ? [] : [bindingContext]),
       ]
       const projectsSections = presentation !== 'native' && Array.isArray(assembly.sections)
         && assembly.sections.some(section => section?.name === 'tools:sdk'

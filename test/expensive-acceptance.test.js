@@ -28,6 +28,59 @@ import { ptcToolsMode } from '../scripts/dsh-host-contract.mjs'
 
 const headlessRuntime = { toolsMode: 'ptc', permissionMode: 'danger-full-access' }
 
+test('public series headers keep exact prefix checks while bundled streams retain accounting', () => {
+  const header = { system: 'stable', config: { provider: 'fixture', model: 'fixture' }, tools: [] }
+  const headers = [
+    { type: 'request/header', seq: 0, data: { reason: 'initial', header } },
+    { type: 'request/header', seq: 1, data: { reason: 'series', header: structuredClone(header) } },
+  ]
+  assert.deepEqual(auditRequestHeaders(headers).failures, [])
+  const changed = structuredClone(headers)
+  changed[1].data.header.system += '!'
+  assert.match(auditRequestHeaders(changed).failures.join('\n'), /reason series.*changed/)
+  assert.match(auditRequestHeaders([headers[1]]).failures.join('\n'), /epoch 1 cannot have reason series/)
+  const usage = { inputTokens: 10, outputTokens: 2, cacheReadTokens: 40 }
+  const other = { inputTokens: 3, outputTokens: 1, cacheReadTokens: 20 }
+  const chunk = (seq, value) => ({ type: 'assistant/chunk', seq, data: { chunk: { type: 'usage', usage: value } } })
+  const message = (seq, value, stream) => ({ type: 'assistant/message', seq, data: {
+    turn: 1, step: seq, message: { content: [{ type: 'text', text: 'done' }] }, usage: value,
+    ...(stream === undefined ? {} : { stream }),
+  } })
+  const packed = value => [
+    { type: 'text-chunks', time0: 1, index: 0, dt: [], texts: ['done'] },
+    { type: 'chunk', time: 2, chunk: { type: 'usage', usage: value } },
+  ]
+  for (const events of [
+    [chunk(0, usage), message(1, usage)],
+    [message(0, usage, packed(usage))],
+    [chunk(0, usage), { ...message(1, usage, packed(usage)), sourceEventSeqs: [0] }],
+  ]) {
+    const facts = collectTrajectoryFacts(events)
+    assert.deepEqual(facts.failures, [])
+    assert.equal(facts.usage.inputTokens, 10)
+    assert.deepEqual(facts.chunkUsages, [usage])
+  }
+  const mixed = collectTrajectoryFacts([chunk(0, usage), message(1, usage), message(2, other, packed(other))])
+  assert.deepEqual(mixed.failures, [])
+  assert.equal(mixed.usage.inputTokens, 13)
+  const attempts = collectTrajectoryFacts([
+    { type: 'assistant/attempt', seq: 0, data: { turn: 1, step: 1, stream: packed(other) } },
+    message(1, usage, packed(usage)),
+  ])
+  assert.deepEqual(attempts.failures, [])
+  assert.equal(attempts.usage.inputTokens, 13)
+  assert.deepEqual(collectTrajectoryFacts([message(1, undefined, [])]).failures, [])
+  for (const events of [
+    [message(1, usage, packed(other))],
+    [message(1, usage, [])],
+    [message(1, usage, {})],
+    [message(1, usage, [null])],
+    [message(1, usage, [{ type: 'chunk', time: NaN, chunk: { type: 'usage', usage } }])],
+    [message(1, usage, packed({ inputTokens: -1 }))],
+    [chunk(0, usage), { ...message(1, other, packed(other)), sourceEventSeqs: [0] }],
+  ]) assert.ok(collectTrajectoryFacts(events).failures.length > 0)
+})
+
 function journal({ calls = [], completion, diagnostics = [], status = 'durable' } = {}) {
   return {
     version: 3,

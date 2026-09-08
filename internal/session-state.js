@@ -201,10 +201,6 @@ export class BindingCatalog {
     )
   }
 
-  userGlobalOrigins() {
-    return new Map([...this.#origins].filter(([, origin]) => origin?.kind === 'user-global'))
-  }
-
   snapshot() {
     return [...this.#known].reverse()
       .filter(name => !this.#namespaces.has(name))

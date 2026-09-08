@@ -298,9 +298,6 @@ function installPtCRuntime(ctx, resolvedConfig, toolSchemasForAgent, sessionId) 
       sessionId,
       toolSchemasForAgent,
       userBindingsForAgent: () => userBindings.snapshot(),
-      modelVisibleUserBindingsForAgent: (agent, requested) => (
-        runtimeBridge.modelVisibleUserBindings(agent, requested)
-      ),
       setAgentPresentation: (agent, presentation) => (
         userBindings.setAgentPresentation(agent, presentation)
       ),

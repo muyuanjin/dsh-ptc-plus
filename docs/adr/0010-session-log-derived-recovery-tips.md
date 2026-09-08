@@ -7,13 +7,24 @@ The persistent REPL contract must stay short enough for every request, while som
 ## Decision
 
 PTC-owned dynamic information uses independently sourced, accepted DSH messages.
-The three current-state contributions (rewrite failure feedback, Cordis recovery,
-and activated Global User Binding declarations) form a bounded `ptc-plus`
-`snapshot` with named sections. A recovery tip is a `ptc-plus` `notice` whose
+Unproved rewrite completion and Cordis recovery form a bounded `ptc-plus`
+`snapshot` with named sections. Configured Global User Binding documentation uses
+DSH's existing `catalog` form, independently of transient recovery state. A recovery tip is a `ptc-plus` `notice` whose
 structured summary is its trigger/ordinal name. A snapshot supersedes only prior
 PTC state snapshots, including PTC sections in historical DSH aggregate snapshots;
-it never supersedes an authoring task, Skill instructions, a tool result, or
+it never supersedes a binding catalog, authoring task, Skill instructions, a tool result, or
 another producer. An empty snapshot explicitly invalidates earlier PTC state.
+
+The binding catalog contains one bounded literal configuration document with a
+fixed owner prefix; its reader recognizes that prefix only within a `ptc-plus`
+`catalog` source. Only a later binding catalog replaces it; an explicit empty
+catalog withdraws it. Host runtime-context clearances and PTC recovery snapshots
+do not withdraw catalogs. Suppression prevents new delivery without changing the
+meaning of a retained catalog. This is API documentation, not proof of successful
+initialization, current values, or recoverable session-local state. The historical
+snapshot reader remains intact: an accepted recovery snapshot retires old binding
+sections once, while a catalog supplies the current configuration. No history or
+journal is rewritten. Catalog and recovery changes never resend each other's text.
 
 The public `systemPrompt.context` registry contains one empty PTC delivery witness.
 DSH omits this contribution when `includeRuntimeContext` is false or a scoped
@@ -38,7 +49,7 @@ clear previously delivered claims without mounting runtime tools, reading bindin
 storage, or publishing new declarations. Plugin/agent disposal releases pending
 assembly ownership. Resume reconstructs from the same durable source records.
 
-PTC Plus keeps the stable REPL guidance limited to invariants, discovery entry points, and environment-neutral boundaries. `internal/session-log-view.js` projects immutable facts for edit targeting, successful-run reset, context distance, normalized Cordis call/inspection counts, canonical historical DSH snapshots, and formed PTC messages. `internal/runtime-contexts.js` renders rewrite feedback only when the rewritten cell failed or lacks a valid journal, Cordis recovery while historical transcript lacks a newer successful live Inspect, and at most one recovery tip. `internal/runtime-messages.js` owns the bounded message forms: four known, unique state sections (rewrite feedback, Cordis recovery, configured Global User Bindings and active Global User Bindings) totaling at most 65536 UTF-16 code units, and a notice of at most 8192 code units with a valid trigger/ordinal identity. Malformed records are not delivery evidence. Successful transparent rewrites remain result metadata. Edit provenance and target lifecycle remain in real call/results and private derived-execution metadata. These messages never change the tool list, tool schemas, or system sections.
+PTC Plus keeps the stable REPL guidance limited to invariants, discovery entry points, and environment-neutral boundaries. `internal/session-log-view.js` projects immutable facts for edit targeting, successful-run reset, context distance, normalized Cordis call/inspection counts, canonical historical DSH snapshots, and formed PTC messages. `internal/runtime-contexts.js` renders rewrite feedback only when the rewritten cell lacks a valid journal, Cordis recovery while historical transcript lacks a newer successful live Inspect, and at most one recovery tip. Known failures already carry partial-execution and retry guidance in their result, so they do not generate duplicate rewrite feedback. `internal/runtime-messages.js` owns bounded message forms: snapshot sections total at most 65536 UTF-16 code units and recognize the two historical binding sections for retirement; a catalog body is at most 65536 code units, with the tighter configured-declaration budget still enforced by the binding owner; a notice is at most 8192 code units with a valid trigger/ordinal identity. Malformed records are not delivery evidence. Transparent rewrites remain result metadata. Edit provenance and target lifecycle remain in real call/results and private derived-execution metadata. These messages never change the tool list, tool schemas, or system sections.
 
 The default triggers are a repeated binding failure and a failure whose diagnostic or structured cause identifies an executable, shell, or path problem. The first tip is concise. A matching trigger may produce another tip only after `tipCooldownMessages` model-context steps; unresolved matching tips reach the detailed form after `tipEscalationFailures` occurrences. A successful cell resets the unresolved escalation count. Every emitted tip name carries its stable trigger identity and next per-trigger ordinal. Reconstruction merges valid PTC notices and canonical historical sections from DSH's system-prompt owner, counting each delivered identity once across both sources. Unformed tasks and malformed plugin prose are not tip evidence. Visible wording does not determine cooldown or escalation identity; an exhausted safe-integer ordinal yields no further tip.
 
@@ -49,6 +60,7 @@ The Cordis recovery context is not a failure tip and is not controlled by fatigu
 ## Alternatives considered
 
 - **Keep all recovery instructions in the stable system prompt.** This makes every request pay for rare failures and makes platform-specific text look universally applicable.
+- **Keep configured APIs inside recovery snapshots.** A short-lived recovery fact would resend unchanged interfaces on both entry and withdrawal. Catalogs already express the required public Host semantics; a new delta protocol or producer registry is unnecessary.
 - **Emit a tip after every matching failure.** This repeats stale advice, consumes context, and can encourage blind retry loops.
 - **Store mutable tip counters only in the kernel.** A worker restart or replay would then change model-visible behavior without a session-log source.
 - **Infer tip identity from rendered prose or one fixed section name.** Wording changes would reset history, unrelated plugin text could create false matches, and an unchanged aggregate context would not persist repeated occurrences.

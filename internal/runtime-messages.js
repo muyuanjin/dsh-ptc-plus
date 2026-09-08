@@ -1,15 +1,20 @@
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 
 export const PTC_DELIVERY_CONTEXT = 'tools:ptc-plus-message-delivery'
+export const PTC_BINDING_CATALOG = 'tools:ptc-plus-user-binding-defaults'
 export const PTC_STATE_NAMES = Object.freeze([
   'tools:ptc-plus-rewrite-info',
   'tools:ptc-plus-cordis-recovery',
   'tools:ptc-plus-user-binding-defaults',
+  // Historical active declarations remain readable so a new snapshot can withdraw them.
   'tools:ptc-plus-user-bindings',
 ])
 const MAX_STATE_CODE_UNITS = 65536
 const MAX_NOTICE_CODE_UNITS = 8192
-const STATE_PREFIX = 'PTC Plus current state. This replaces only earlier PTC state snapshots and PTC sections in historical aggregate snapshots; it does not replace tasks, Skill instructions, tool results, or other producers.'
+const LEGACY_STATE_PREFIX = 'PTC Plus current state. This replaces only earlier PTC state snapshots and PTC sections in historical aggregate snapshots; it does not replace tasks, Skill instructions, tool results, or other producers.'
+const STATE_PREFIX = 'PTC Plus runtime recovery state. This replaces only earlier PTC state snapshots and PTC sections in historical aggregate snapshots; it does not replace the global binding API catalog, tasks, Skill instructions, tool results, or other producers.'
+const CATALOG_PREFIX = 'Global binding API catalog (PTC Plus). Only a later global binding API catalog replaces this catalog. Host runtime-context snapshots and PTC recovery snapshots do not withdraw it. This describes configured APIs, not successful initialization or current runtime values.'
+const EMPTY_CATALOG = 'No global binding API documentation is currently configured. Earlier binding catalogs no longer apply.'
 
 export function recoveryTipIdentity(name) {
   if (typeof name !== 'string') return undefined
@@ -34,8 +39,8 @@ function stateSections(value) {
   return Object.freeze(sections)
 }
 
-function stateText(sections) {
-  return `${STATE_PREFIX}\n\n${sections.length === 0
+function stateText(sections, prefix = STATE_PREFIX) {
+  return `${prefix}\n\n${sections.length === 0
     ? 'No current PTC state declarations remain. Earlier PTC state claims no longer apply.'
     : sections.map(section => section.text).join('\n\n')}`
 }
@@ -49,12 +54,33 @@ export function readRuntimeMessage(message) {
   const text = message.content[0].text
   if (source.form === 'snapshot') {
     const sections = stateSections(source.sections)
-    if (sections !== undefined && text === stateText(sections)) return { form: 'snapshot', sections }
+    if (sections !== undefined && (text === stateText(sections) || text === stateText(sections, LEGACY_STATE_PREFIX))) {
+      return { form: 'snapshot', sections }
+    }
+  } else if (source.form === 'catalog' && typeof text === 'string'
+    && text.startsWith(`${CATALOG_PREFIX}\n\n`)) {
+    const body = text.slice(CATALOG_PREFIX.length + 2)
+    if (body.length > 0 && body.length <= MAX_STATE_CODE_UNITS) {
+      return { form: 'catalog', sections: stateSections(body === EMPTY_CATALOG ? [] : [{ name: PTC_BINDING_CATALOG, text: body }]) }
+    }
   } else if (source.form === 'notice' && recoveryTipIdentity(source.summary) !== undefined
     && typeof text === 'string' && text.length > 0 && text.length <= MAX_NOTICE_CODE_UNITS) {
     return { form: 'notice', name: source.summary, text }
   }
   return undefined
+}
+
+/** One literal configuration document, independent of runtime recovery state. */
+export function runtimeBindingCatalogMessage(context) {
+  if (context !== undefined && (context?.name !== PTC_BINDING_CATALOG
+    || typeof context.text !== 'string' || context.text.length === 0
+    || context.text.length > MAX_STATE_CODE_UNITS || context.text === EMPTY_CATALOG)) {
+    throw new Error('invalid PTC binding catalog')
+  }
+  return createUserMessage({
+    source: { kind: 'plugin', plugin: 'ptc-plus', form: 'catalog' },
+    content: [{ type: 'text', text: `${CATALOG_PREFIX}\n\n${context?.text ?? EMPTY_CATALOG}` }],
+  })
 }
 
 export function runtimeStateMessage(value) {

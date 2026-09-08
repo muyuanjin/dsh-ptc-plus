@@ -6,14 +6,15 @@ import test from 'node:test'
 import { Session } from '@deepseek-ai/dsh-session'
 import { bindingWorkflowHost } from './binding-workflow-fixture.js'
 import { createUserBindingDraftProjection, readBindingAction } from '../internal/user-binding-draft-projection.js'
-import { auditBindingWorkflow } from '../scripts/acceptance-contract.mjs'
+import { auditBindingWorkflow, auditRuntimeContexts } from '../scripts/acceptance-contract.mjs'
 import { readRuntimeMessage } from '../internal/runtime-messages.js'
+import { decodeValue } from '../internal/value-wire.js'
 
 const scenario = JSON.parse(await readFile(new URL('../scripts/binding-workflow-scenario.json', import.meta.url), 'utf8'))
 const { entry } = scenario
 
 function configuredBindingPrompt(request) {
-  const snapshot = request.messages.map(readRuntimeMessage).filter(record => record?.form === 'snapshot').at(-1)
+  const snapshot = request.messages.map(readRuntimeMessage).filter(record => record?.form === 'catalog').at(-1)
   return snapshot?.sections.find(section => section.name === 'tools:ptc-plus-user-binding-defaults')?.text ?? ''
 }
 
@@ -24,6 +25,91 @@ function assertStablePrefix(host) {
   }
   assert.equal(host.events().some(event => event.type === 'request/header' && event.data.reason === 'change'), false)
 }
+
+test('successful activation does not repeat configured prompts or interfaces in model requests', { timeout: 20000 }, async t => {
+  const host = await bindingWorkflowHost(t)
+  const configured = {
+    id: 'files', name: 'fileTools', scope: 'namespace', enabled: true,
+    source: 'let count = 0; export function next(): number { return ++count }',
+    modelContext: { includeDeclaration: true, instructions: 'Use fileTools.next() for the next count.' },
+  }
+  const catalog = (await host.rpc('list')).value
+  assert.equal((await host.rpc('save', { entry: configured, expectedRevision: catalog.revision })).ok, true)
+  const snapshots = () => host.events().filter(event => event.type === 'user/message'
+    && readRuntimeMessage(event.data)?.form === 'catalog')
+  const declarations = request => request.messages.flatMap(message => message.content)
+    .filter(part => part.type === 'text')
+    .reduce((count, part) => count + part.text.split('declare const fileTools: {').length - 1, 0)
+  await host.run('return fileTools.next()')
+  assert.equal(snapshots().length, 1)
+  assert.equal(host.requests.length, 2)
+  for (const request of host.requests) {
+    assert.equal(declarations(request), 1)
+    assert.equal(configuredBindingPrompt(request).split(configured.modelContext.instructions).length - 1, 1)
+  }
+  await host.run('return fileTools.next()')
+  assert.equal(snapshots().length, 1)
+  await host.run('const fileTools = { next: () => 99 }; return fileTools.next()')
+  assert.equal(snapshots().length, 1)
+  await host.restart()
+  await host.run('return 0')
+  assert.equal(snapshots().length, 1)
+  for (const request of host.requests) assert.equal(declarations(request), 1)
+  assertStablePrefix(host)
+})
+
+test('initializer failure stays in the tool result without an activation announcement', { timeout: 20000 }, async t => {
+  const host = await bindingWorkflowHost(t)
+  const configured = {
+    id: 'broken', name: 'brokenTools', scope: 'namespace', enabled: true,
+    source: 'throw new Error("initializer failed"); export const value = 1',
+    modelContext: { includeDeclaration: true, instructions: 'Use brokenTools.value when available.' },
+  }
+  const catalog = (await host.rpc('list')).value
+  assert.equal((await host.rpc('save', { entry: configured, expectedRevision: catalog.revision })).ok, true)
+  const result = await host.run('return 0')
+  assert.match(JSON.stringify(result.data.message.content), /initializer failed/)
+  assert.deepEqual(result.data.meta.dshPtcPlusUserBindings.entries, [])
+  const snapshots = host.events().filter(event => event.type === 'user/message'
+    && readRuntimeMessage(event.data)?.form === 'catalog')
+  assert.equal(snapshots.length, 1)
+  assert.equal(snapshots[0].data.content[0].text.split('declare const brokenTools: {').length - 1, 1)
+  for (const request of host.requests) {
+    assert.match(configuredBindingPrompt(request), /does not prove successful activation/)
+    assert.doesNotMatch(configuredBindingPrompt(request), /successfully activated/)
+  }
+  assertStablePrefix(host)
+})
+
+test('export failure and continuation retain values without repeating the binding catalog', { timeout: 20000 }, async t => {
+  const host = await bindingWorkflowHost(t)
+  const configured = {
+    id: 'counter', name: 'auditCounter', scope: 'namespace', enabled: true,
+    source: 'let value = 0; export function next(): number { return ++value }',
+  }
+  const catalog = (await host.rpc('list')).value
+  assert.equal((await host.rpc('save', { entry: configured, expectedRevision: catalog.revision })).ok, true)
+  await host.run('return auditCounter.next()')
+  const failed = await host.run('export const exportProbe = 42; throw new Error("audit-export-failure")')
+  assert.match(JSON.stringify(failed.data.message.content), /partially-applied/)
+  const resumed = await host.run('return [exportProbe, auditCounter.next()]')
+  assert.deepEqual(decodeValue(resumed.data.meta.dshPtcPlus.completion.value), [42, 2])
+  await host.restart()
+  const recovered = await host.run('return [exportProbe, auditCounter.next()]')
+  assert.deepEqual(decodeValue(recovered.data.meta.dshPtcPlus.completion.value), [42, 3])
+  const messages = host.events().filter(event => event.type === 'user/message').map(event => readRuntimeMessage(event.data))
+    .filter(Boolean)
+  assert.deepEqual(messages.map(message => message.form), ['catalog'])
+  for (const request of host.requests) {
+    const text = request.messages.flatMap(message => message.content).filter(block => block.type === 'text')
+      .map(block => block.text).join('\n')
+    assert.equal(text.split('declare const auditCounter: {').length - 1, 1)
+  }
+  assert.deepEqual(auditRuntimeContexts(host.events(), { allowed: [
+    { name: 'tools:ptc-plus-user-binding-defaults', maxChars: 16384 },
+  ] }).failures, [])
+  assertStablePrefix(host)
+})
 
 test('binding authoring and mid-session changes publish the prompt independently of the interface', { timeout: 20000 }, async t => {
   const host = await bindingWorkflowHost(t)
@@ -63,7 +149,7 @@ test('binding authoring and mid-session changes publish the prompt independently
   assert.ok(configuredBindingPrompt(host.requests.at(-1)).includes(promptOnly.modelContext.instructions))
   assert.doesNotMatch(configuredBindingPrompt(host.requests.at(-1)), /declare const workflow|Use workflow.value/)
   const snapshotCount = () => host.events().filter(event => event.type === 'user/message'
-    && readRuntimeMessage(event.data)?.form === 'snapshot').length
+    && readRuntimeMessage(event.data)?.form === 'catalog').length
   const beforeRepeat = snapshotCount()
   await host.run('return workflow.value()')
   assert.equal(snapshotCount(), beforeRepeat)
@@ -85,7 +171,7 @@ test('binding authoring and mid-session changes publish the prompt independently
   assert.equal((await host.rpc('remove', { id: entry.id, expectedRevision: catalog.revision })).ok, true)
   await host.run('return 3')
   assert.equal(configuredBindingPrompt(host.requests.at(-1)), '')
-  const snapshots = host.requests.at(-1).messages.map(readRuntimeMessage).filter(record => record?.form === 'snapshot')
+  const snapshots = host.requests.at(-1).messages.map(readRuntimeMessage).filter(record => record?.form === 'catalog')
   assert.deepEqual(snapshots.at(-1).sections, [])
   assert.ok(snapshots.some(record => record.sections.some(section => section.text.includes(authored.modelContext.instructions))))
   assertStablePrefix(host)
@@ -192,7 +278,8 @@ test('public binding lifecycle preserves each configured prompt and separates sa
   assert.equal(observed.data.message.content[0].isError, false)
   assert.ok(host.requests.some(request => JSON.stringify(request.messages).includes('"state":"saved"')
     || JSON.stringify(request.messages).includes('\\"state\\":\\"saved\\"')))
-  assert.ok(host.requests.some(request => JSON.stringify(request.messages).includes('successfully activated')))
+  assert.ok(host.requests.every(request => !JSON.stringify(request.messages).includes('successfully activated')))
+  assert.equal(observed.data.meta.dshPtcPlusUserBindings.entries[0].id, entry.id)
   const question = host.events().find(event => event.type === 'user/message' && event.data.source.kind === 'user'
     && event.data.content[0].text === scenario.statusQuestion)
   assert.deepEqual(auditBindingWorkflow(host.events(), {

@@ -398,12 +398,6 @@ export function createRuntimeBridgeOwner({
       sessions.reconfigure(nextConfig)
       currentConfig = sessions.config
     },
-    modelVisibleUserBindings(agent, requested) {
-      return sessions.modelVisibleUserBindings({
-        id: sessionId(agent) ?? String(agent?.id),
-        session: agent?.session,
-      }, requested)
-    },
     // A composite tool's outer result owns the final durability decision.
     async executeTentative(callSeq, operation) {
       const settlement = {

@@ -621,20 +621,6 @@ export function userBindingsDeclaration(snapshot) {
   return normalized.entries.map(entry => entry.declaration).join('\n\n')
 }
 
-export function userBindingsContext(snapshot) {
-  const normalized = normalizeUserBindingsSnapshot(snapshot)
-  const entries = normalized.entries.filter(entry => bindingModelPreferences(entry.modelContext).includeDeclaration)
-  if (entries.length === 0) return undefined
-  const calls = entries.map(entry => entry.scope === 'namespace'
-    ? `${entry.name} (${entry.symbols.join(', ')})`
-    : entry.symbols.join(', '))
-  const declaration = entries.map(entry => entry.declaration).join('\n\n')
-  return {
-    name: 'tools:ptc-plus-user-bindings',
-    text: `The following saved, enabled user-global REPL bindings have successfully activated for this request: ${calls.join('; ')}. Disabled in-memory drafts cannot activate. These are ordinary writable REPL values: reuse them directly, and keep any redeclaration session-local. This proves the matching saved snapshot and current activation, not that disk cannot change afterward. For availability, use this declaration or a side-effect-free observation of the known name; do not run write/delete tests. repl.state is a function managing named checkpoints, not a binding inventory.\n\n\`\`\`ts\n${declaration}\n\`\`\``,
-  }
-}
-
 export function userBindingsConfiguredContext(snapshot) {
   const entries = normalizeUserBindingsSnapshot(snapshot).entries
     .filter(entry => {
@@ -653,7 +639,7 @@ export function userBindingsConfiguredContext(snapshot) {
   }).join('\n\n')
   return {
     name: 'tools:ptc-plus-user-binding-defaults',
-    text: `Configured Global User Bindings for this request. Use these ordinary REPL values directly inside run_code when relevant. The saved modules initialize before cell execution; this configuration does not prove successful activation. Initialization can fail, and a session-local redeclaration can shadow a default. Follow current execution diagnostics and any active-binding context. These helpers are not native tools and do not change DSH authority. Each binding's prompt is provided by the user; any included interface is derived from its source. This configuration applies to the current request, including bindings saved or enabled during this session.\n\n${content}`,
+    text: `Configured Global User Bindings for this request. Use these ordinary REPL values directly inside run_code when relevant. The saved modules initialize before cell execution; this configuration does not prove successful activation. Initialization can fail, and a session-local redeclaration can shadow a default. Follow current execution results and diagnostics. For availability, use a side-effect-free observation of the known name; do not run write/delete tests. repl.state manages named checkpoints, not a binding inventory. These helpers are not native tools and do not change DSH authority. Each binding's prompt is provided by the user; any included interface is derived from its source. This configuration applies to the current request, including bindings saved or enabled during this session.\n\n${content}`,
   }
 }
 

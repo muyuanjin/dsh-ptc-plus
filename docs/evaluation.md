@@ -41,6 +41,10 @@ Acceptance metrics follow durable session-log semantics. `modelRequests` counts 
 
 Stable-header acceptance canonicalizes empty fields by DSH rules and compares the exact system value and ordered complete tool-schema JSON across every header epoch. Any unapproved change fails with the first differing field. `headerPolicy.allowedTransitions` names the exact epoch and route, configuration, or capability condition; `headerPolicy.historyReplacements` declares an exact replacement count and never permits header drift. Hashes remain diagnostic report data rather than the correctness test.
 
+The shared Host contract recognizes `series` as an unchanged request header beginning a distinct message series, not a new schema or an inferred provider call. Usage evidence supports both historical standalone `assistant/chunk` events and compact streams in `assistant/message` or `assistant/attempt`. An embedded stream's last usage agrees with its message's accounting; formally linked duplicate storage is counted once, conflicting evidence fails, and reported usage from attempts without a surface message remains part of quota consumption. Logical steps, header epochs and physical attempts remain distinct. Missing usage is not a zero-cost claim.
+
+Runtime-context audits track the binding catalog independently of recovery snapshots. They detect unchanged binding text repeated inside an otherwise changed snapshot, while allowing one reassertion after a formal surface replacement removed its evidence. Model-authored ambient declarations are not plugin catalog injections.
+
 ### Focused Program Work
 
 The typed program-surface descriptor owns `expect.programWork`: `inspectionSymbols` limits schema expansion, and each `callLimits` entry declares a namespace/member's `maxCalls` and optional `maxCallsPerArguments`. Counts include unsuccessful calls. The fixed fixture is immutable during this task, so its native read is limited to one observation; the parent passes the observed marker into the isolated child as source data. Tree retrieval is limited to one, and find/inspect counts are bounded without requiring one exact source or cell sequence.

@@ -12,7 +12,6 @@ import {
   selectUserBindingsSnapshot,
   storedUserBindingsDocument,
   userBindingCatalogEntries,
-  userBindingsContext,
   userBindingsDeclaration,
   userBindingsConfiguredContext,
   userBindingsSnapshotFromMeta,
@@ -217,7 +216,7 @@ boolean { return Boolean(value && mode) }
   const normalized = normalizeUserBindingEntry(raw)
   assert.doesNotMatch(normalized.declaration, /private implementation note|hidden return note/)
   assert.match(normalized.declaration, /'\/\* literal type text \*\/'/)
-  const context = userBindingsContext(createUserBindingsSnapshot({ entries: [raw] }))
+  const context = userBindingsConfiguredContext(createUserBindingsSnapshot({ entries: [raw] }))
   assert.doesNotMatch(context.text, /private implementation note|hidden return note/)
 })
 
@@ -311,7 +310,7 @@ test('validates snapshots from source and rejects altered derived evidence', () 
   assert.equal(snapshot.entries.length, 1)
   assert.equal(normalizeUserBindingsSnapshot(snapshot).fingerprint, snapshot.fingerprint)
   assert.equal(userBindingsDeclaration(snapshot), snapshot.entries[0].declaration)
-  assert.match(userBindingsContext(snapshot).text, /helpers \(add, later, Counter, truth\)/)
+  assert.match(userBindingsConfiguredContext(snapshot).text, /Binding: helpers/)
   assert.equal(userBindingCatalogEntries(snapshot)[0].entryId, 'helpers')
 
   const selected = selectUserBindingsSnapshot(snapshot, new Set(['helpers']))
@@ -319,7 +318,7 @@ test('validates snapshots from source and rejects altered derived evidence', () 
   assert.equal(selected.entries[0].id, 'helpers')
   const empty = selectUserBindingsSnapshot(snapshot, new Set())
   assert.equal(empty.entries.length, 0)
-  assert.equal(userBindingsContext(empty), undefined)
+  assert.equal(userBindingsConfiguredContext(empty), undefined)
   assert.throws(() => createUserBindingsSnapshot({ entries: [] }, -1), /revision/)
 
   const malformed = [
@@ -419,16 +418,13 @@ test('injects the model prompt independently of the existing source-derived inte
   assert.match(prompt.text, /Use helpers.add/)
   assert.ok(prompt.text.includes(normalized.declaration))
   assert.doesNotMatch(prompt.text, /return left|successfully activated/)
-  assert.ok(userBindingsContext(snapshot).text.includes(normalized.declaration))
   assert.equal(userBindingsConfiguredContext(createUserBindingsSnapshot({ entries: [entry({ modelContext })] }, 8)).text, prompt.text)
   const promptOnly = createUserBindingsSnapshot({ entries: [entry({ modelContext: { ...modelContext, includeDeclaration: false } })] })
   assert.match(userBindingsConfiguredContext(promptOnly).text, /Use helpers.add/)
   assert.doesNotMatch(userBindingsConfiguredContext(promptOnly).text, /declare const helpers|later\(/)
-  assert.equal(userBindingsContext(promptOnly), undefined)
   const hidden = createUserBindingsSnapshot({ entries: [entry({ modelContext: { includeDeclaration: false, instructions: '' } })] })
   assert.equal(hidden.entries.length, 1)
   assert.equal(userBindingsConfiguredContext(hidden), undefined)
-  assert.equal(userBindingsContext(hidden), undefined)
   assert.equal(userBindingsConfiguredContext(createUserBindingsSnapshot({ entries: [] })), undefined)
   const automatic = createUserBindingsSnapshot({ entries: [entry({ modelContext: {} })] })
   assert.deepEqual(automatic.entries[0].modelContext, { includeDeclaration: true, instructions: '' })

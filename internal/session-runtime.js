@@ -19,10 +19,6 @@ import {
   createReplMemorySnapshot,
   unavailableReplMemorySnapshot,
 } from './repl-memory-projection.js'
-import {
-  normalizeUserBindingsSnapshot,
-  selectUserBindingsSnapshot,
-} from './user-bindings.js'
 
 const WORKER_URL = new URL('./kernel-worker.js', import.meta.url)
 function recoveryDiagnostic(count) {
@@ -99,7 +95,6 @@ class SessionKernel {
     this.withInitiator = withInitiator
     this.durability = durabilityState()
     this.bindingCatalog = new BindingCatalog()
-    this.activeUserBindings = undefined
     this.replayed = false
     this.liveCallSeqs = new Set()
     this.recoveryNotice = history.volatileSuffix.length === 0
@@ -365,7 +360,6 @@ class SessionKernel {
     this.durability = durabilityState()
     this.replayed = false
     this.bindingCatalog = new BindingCatalog()
-    this.activeUserBindings = undefined
     this.liveCallSeqs.clear()
   }
 
@@ -412,7 +406,6 @@ class SessionKernel {
       this.bindingCatalog = active.appliedBindingCatalog
         ?? active.priorBindingCatalog.advance(prepared, request.program)
     }
-    if (!terminate) this.activeUserBindings = active.userBindingSnapshot
     if (replay === undefined && !terminate) {
       this.liveCallSeqs.add(request.callSeq ?? request.sourceCallSeq)
     }
@@ -495,29 +488,6 @@ class SessionKernel {
     return this.tentatives.get(journal)?.userBindings
   }
 
-  modelVisibleUserBindings(requested) {
-    if (this.client.worker === undefined || this.activeUserBindings === undefined) return undefined
-    let currentGeneration
-    try {
-      currentGeneration = this.session?.surface?.replaceGeneration
-    } catch {
-      return undefined
-    }
-    if (currentGeneration !== undefined && currentGeneration !== this.surfaceGeneration) return undefined
-    const desired = normalizeUserBindingsSnapshot(requested)
-    const activeById = new Map(this.activeUserBindings.entries.map(entry => [entry.id, entry]))
-    const origins = this.bindingCatalog.userGlobalOrigins()
-    const ids = new Set(desired.entries.filter((entry) => {
-      if (activeById.get(entry.id)?.fingerprint !== entry.fingerprint) return false
-      const names = entry.scope === 'namespace' ? [entry.name] : entry.symbols
-      return names.every((name) => {
-        const origin = origins.get(name)
-        return origin?.entryId === entry.id && origin.fingerprint === entry.fingerprint
-      })
-    }).map(entry => entry.id))
-    return selectUserBindingsSnapshot(desired, ids)
-  }
-
   finishStateOperations(operations, index, worker) {
     const transition = reduceStateOperations(this.history, operations, index)
     this.history.head = transition.head
@@ -588,11 +558,6 @@ export class SessionRuntime {
     for (const kernel of kernels) kernel.assertReconfigurationAllowed(resolved)
     for (const kernel of kernels) kernel.reconfigure(resolved)
     this.config = resolved
-  }
-
-  modelVisibleUserBindings(sessionContext, requested) {
-    const kernel = this.kernels.get(sessionOf(sessionContext).id)
-    return kernel?.modelVisibleUserBindings(requested)
   }
 
   async runTentative(sessionContext, request) {

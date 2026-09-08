@@ -106,10 +106,7 @@ test('advertises configured APIs before activation, keeps the prefix stable and 
   assert.deepEqual(activatedAssembly.sections, assembly.sections)
   assert.equal(renderPrompt(activatedAssembly), renderPrompt(assembly))
   assert.deepEqual(activatedAssembly.tools, assembly.tools)
-  const context = activatedAssembly.ptcContexts.find(item => item.name === 'tools:ptc-plus-user-bindings')
-  assert.match(context.text, /defaults \(value, label\)/)
-  assert.match(context.text, /declare const defaults/)
-  assert.doesNotMatch(context.text, /private-1|bindings\.json|validate|persist|remove/)
+  assert.deepEqual(activatedAssembly.ptcContexts, assembly.ptcContexts)
   assert.equal(firstResult.meta[USER_BINDINGS_META_KEY].entries[0].source, document(1).entries[0].source)
   await first.dispose()
 
@@ -308,9 +305,8 @@ test('new sessions discover opted-in API documentation without evaluating module
   const after = await rememberRequest(state, session, agent)
   assert.deepEqual(after.sections, assembly.sections)
   assert.equal(renderPrompt(after), renderPrompt(assembly))
-  const active = after.ptcContexts.find(item => item.name === 'tools:ptc-plus-user-bindings').text
-  assert.match(active, /Read text/)
-  assert.doesNotMatch(active, /brokenTools|quietTools/)
+  assert.deepEqual(after.ptcContexts, assembly.ptcContexts)
+  assert.deepEqual(result.meta[USER_BINDINGS_META_KEY].entries.map(entry => entry.id), ['files', 'hidden'])
   await state.dispose()
 
   await writeBindingsDocument(home, { entries: [{ ...entry, modelContext: { includeDeclaration: false, instructions: '' } }] })

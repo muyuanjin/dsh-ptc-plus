@@ -1,6 +1,7 @@
 import { normalizeJournal } from '../internal/session-journal.js'
 import { decodeValue } from '../internal/value-wire.js'
-import { readRuntimeMessage, recoveryTipIdentity } from '../internal/runtime-messages.js'
+import { PTC_BINDING_CATALOG, readRuntimeMessage, recoveryTipIdentity } from '../internal/runtime-messages.js'
+import { HOST_HEADER_REASONS, hostAssistantUsageEvents } from './dsh-host-contract.mjs'
 import { foldSurface } from '@deepseek-ai/dsh-session'
 import { isDeepStrictEqual } from 'node:util'
 import { editRejectedCell, EXPECTED_TARGET_CALL_SEQ } from '../internal/rejected-cell-editor.js'
@@ -146,7 +147,7 @@ export function isRuntimeContextSource(source) {
   return [
     'plugin:@deepseek-ai/dsh-system-prompt:snapshot',
     'plugin:@deepseek-ai/dsh-system-prompt',
-    'plugin:ptc-plus:snapshot', 'plugin:ptc-plus:notice',
+    'plugin:ptc-plus:snapshot', 'plugin:ptc-plus:notice', 'plugin:ptc-plus:catalog',
   ].includes(source)
 }
 
@@ -173,7 +174,6 @@ const BUDGET_METRICS = Object.freeze({
 })
 
 const EDIT_NARRATION = /\bedit_run_code\b|dshPtcPlusEdit|derived run_code|edit target|repair target/i
-const HEADER_REASONS = Object.freeze(['initial', 'resume', 'change'])
 const HEADER_TRANSITION_CONDITIONS = Object.freeze(['route', 'configuration', 'capability'])
 const TRAJECTORY_USAGE_KEYS = Object.freeze([
   'inputTokens',
@@ -236,6 +236,7 @@ export function collectTrajectoryFacts(events, options = {}) {
   const usage = Object.fromEntries(usageKeys.map(key => [key, 0]))
   const messageUsages = []
   const chunkUsages = []
+  const standaloneUsages = []
   let turnStartedAt
   let turnEndedAt
   let finalTurn
@@ -258,7 +259,45 @@ export function collectTrajectoryFacts(events, options = {}) {
         if (Number.isSafeInteger(value) && value >= 0) usage[key] += value
       }
     }
+    if (['assistant/message', 'assistant/attempt'].includes(event?.type)) {
+      try {
+        const bundled = hostAssistantUsageEvents(event)
+        if (bundled !== undefined) {
+          const linked = standaloneUsages.filter(item => !item.claimed && event.sourceEventSeqs?.includes(item.seq))
+          if (linked.length > 0) {
+            if (!isDeepStrictEqual(linked.map(item => item.usage), bundled)) {
+              failures.push(`assistant stream at seq ${event.seq} conflicts with linked usage chunks`)
+            }
+            for (const item of linked) {
+              item.claimed = true
+              chunkUsages.splice(chunkUsages.indexOf(item.usage), 1)
+            }
+          }
+          for (const item of bundled) {
+            if (!isRecord(item) || usageKeys.some(key => item[key] !== undefined
+              && (!Number.isSafeInteger(item[key]) || item[key] < 0))) {
+              throw new TypeError('usage must contain non-negative safe integer token counts')
+            }
+          }
+          const last = bundled.at(-1)
+          if (event.type === 'assistant/message') {
+            if (compareUsageChunks && !isDeepStrictEqual(event.data.usage, last)) {
+              failures.push(`assistant message usage does not match usage chunks at seq ${event.seq}`)
+            }
+            if (last !== undefined) chunkUsages.push(last)
+          } else if (last !== undefined) {
+            // Attempts without a surface message still consume reported quota.
+            for (const key of usageKeys) {
+              if (Number.isSafeInteger(last[key]) && last[key] >= 0) usage[key] += last[key]
+            }
+          }
+        }
+      } catch (error) {
+        failures.push(`invalid assistant stream at seq ${event.seq}: ${error.message}`)
+      }
+    }
     if (event?.type === 'assistant/chunk' && event.data?.chunk?.type === 'usage') {
+      standaloneUsages.push({ seq: event.seq, usage: event.data.chunk.usage, claimed: false })
       chunkUsages.push(event.data.chunk.usage)
     }
     if (event?.type === 'turn/start' && Number.isFinite(event.time)) turnStartedAt ??= event.time
@@ -353,7 +392,7 @@ export function collectTrajectoryFacts(events, options = {}) {
     else if (result.resultSeq <= call.seq) failures.push(`tool result ${callId} does not follow its call`)
   }
   for (const callId of results.keys()) if (!calls.has(callId)) failures.push(`tool result ${callId} has no matching call`)
-  if (compareUsageChunks && JSON.stringify(messageUsages) !== JSON.stringify(chunkUsages)) {
+  if (compareUsageChunks && !isDeepStrictEqual(messageUsages, chunkUsages)) {
     failures.push('assistant message usage does not match usage chunks')
   }
   if (events.some(event => event?.type === 'session/title-llm-request')) {
@@ -678,10 +717,10 @@ export function auditRequestHeaders(events, policy = {}) {
       continue
     }
     headers.push({ epoch, seq: event.seq, reason, header })
-    if (!HEADER_REASONS.includes(reason)) {
+    if (!HOST_HEADER_REASONS.includes(reason)) {
       failures.push(`request header epoch ${epoch} has invalid reason ${String(reason)}`)
-    } else if (epoch === 1 && reason === 'change') {
-      failures.push('request header epoch 1 cannot have reason change')
+    } else if (epoch === 1 && ['change', 'series'].includes(reason)) {
+      failures.push(`request header epoch 1 cannot have reason ${reason}`)
     } else if (epoch > 1 && reason === 'initial') {
       failures.push(`request header epoch ${epoch} cannot have reason initial`)
     }
@@ -692,6 +731,7 @@ export function auditRequestHeaders(events, policy = {}) {
       if (difference === undefined && reason === 'change') {
         failures.push(`request header epoch ${epoch} has reason change but its canonical header is unchanged`)
       } else if (difference !== undefined) {
+        if (reason === 'series') failures.push(`request header epoch ${epoch} has reason series but its canonical header changed`)
         const unapproved = changed.filter(condition => !approved.has(condition))
         const unused = [...approved].filter(condition => !changed.includes(condition))
         if (unapproved.length > 0 || unused.length > 0) {
@@ -947,6 +987,7 @@ export function auditRuntimeContexts(events, config = {}) {
       !producerStates.has('ptc-plus') || !name.startsWith('tools:ptc-plus-')
     )),
     ...(producerStates.get('ptc-plus') ?? []),
+    ...(producerStates.get('ptc-plus/catalog') ?? []),
   ])
   const restoreSurface = nodes => {
     producerStates.clear()
@@ -981,7 +1022,7 @@ export function auditRuntimeContexts(events, config = {}) {
       && collectModelText(event.data?.content).join('\n') === 'Current runtime context: none. Earlier runtime-context snapshots no longer apply.'
     const ptc = event.type === 'user/message' ? readRuntimeMessage(event.data) : undefined
     if (event.type === 'user/message' && source?.plugin === 'ptc-plus'
-      && ['snapshot', 'notice'].includes(source.form) && ptc === undefined
+      && ['snapshot', 'notice', 'catalog'].includes(source.form) && ptc === undefined
       && readBindingAction(event.data) === undefined) {
       failures.push(`malformed PTC runtime message at seq ${String(event.seq ?? 'unknown')}`)
     }
@@ -989,9 +1030,9 @@ export function auditRuntimeContexts(events, config = {}) {
     if (event.type === 'user/message' && source?.kind !== 'user') sources.push(sourceLabel(source))
     if (isSnapshot) {
       const rawSections = aggregateClear ? [] : ptc?.form === 'notice' ? [{ name: ptc.name, text: ptc.text }]
-        : event.data.source.sections
+        : ptc?.sections ?? event.data.source.sections
       const sections = snapshotSections({ ...event, data: { source: { sections: rawSections } } }, failures, allowed, maxSnapshotChars)
-      const producer = aggregate ? 'aggregate' : 'ptc-plus'
+      const producer = aggregate ? 'aggregate' : ptc?.form === 'catalog' ? 'ptc-plus/catalog' : 'ptc-plus'
       const signature = JSON.stringify(sections.map(({ name, text }) => [name, text]))
       if (ptc?.form === 'notice' ? deliveredNotices.has(ptc.name) : signature === priorSignatures.get(producer)) {
         failures.push(ptc?.form === 'notice'
@@ -1007,6 +1048,10 @@ export function auditRuntimeContexts(events, config = {}) {
       }
       const current = new Map(sections.map(section => [section.name, section]))
       const transitions = []
+      const previousBinding = effective.get(PTC_BINDING_CATALOG)?.text
+      if (previousBinding !== undefined && current.get(PTC_BINDING_CATALOG)?.text === previousBinding) {
+        failures.push(`runtime context at seq ${event.seq} repeats unchanged binding documentation`)
+      }
       if (ptc?.form !== 'notice') {
         producerStates.set(producer, current)
         committedSnapshots.set(event.seq, { producer, state: current, signature })

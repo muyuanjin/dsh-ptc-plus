@@ -26547,6 +26547,7 @@
       const publish = (patch) => {
         if (disposed) return;
         snapshot = { ...snapshot, ...patch };
+        if (snapshot.action !== null) snapshot.visibility = "hidden";
         for (const listener of listeners) listener();
       };
       const invalidate = () => {
@@ -26706,7 +26707,7 @@
           if (snapshot.reachable !== value) publish({ reachable: value });
         },
         display(visibility, candidate = snapshot.candidate) {
-          if (snapshot.candidate === null || !sameCandidate(snapshot.candidate, candidate)) return false;
+          if (snapshot.candidate === null || snapshot.action !== null || !sameCandidate(snapshot.candidate, candidate)) return false;
           choices.set(candidateIdentity(snapshot.candidate), visibility);
           publish({ visibility });
           return true;
@@ -26779,6 +26780,7 @@
 @media(max-width:560px){.ptcPlusActive{width:28px;flex:none;padding:0}.ptcPlusActiveLabel{display:none}}
 `;
   var BINDING_WORKBENCH_CSS = `
+.ptcPlusCandidateContext{min-width:0;margin-top:4px;padding:12px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-module-platform)}.ptcPlusCandidateContext h4{margin:0 0 10px;color:var(--dsw-alias-label-primary);font-size:12px;font-weight:600;line-height:18px}.ptcPlusCandidateContext dl{display:grid;gap:12px;margin:0}.ptcPlusCandidateContext dt{color:var(--dsw-alias-label-secondary);font-size:12px;line-height:20px}.ptcPlusCandidateContext dd{min-width:0;margin:0}.ptcPlusCandidateDeclaration{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:4px 12px}.ptcPlusCandidateDeclaration dd{display:inline-flex;align-items:center;gap:4px;max-width:100%;box-sizing:border-box;padding:2px 8px;border-radius:6px;background:var(--dsw-alias-bg-layer-3);color:var(--dsw-alias-label-secondary);font-size:11px;line-height:18px;overflow-wrap:anywhere}.ptcPlusCandidateDeclaration dd[data-included=true]{background:var(--dsw-alias-state-business-tertiary);color:var(--dsw-alias-state-business-primary)}.ptcPlusCandidateDeclaration svg{flex:none}.ptcPlusCandidatePrompt{display:grid;gap:6px}.ptcPlusCandidatePrompt dd{padding:8px 10px;border:1px solid var(--dsw-alias-border-l2);border-radius:6px;background:var(--dsw-alias-bg-layer-3);color:var(--dsw-alias-label-primary);font-size:12px;line-height:20px;white-space:pre-wrap;overflow-wrap:anywhere}.ptcPlusCandidatePrompt dd[data-empty=true]{padding:0;border:0;background:transparent;color:var(--dsw-alias-label-tertiary)}
 .ptcPlusBindings{margin-top:16px;padding-top:14px;border-top:0.5px solid var(--dsw-alias-border-l2)}.ptcPlusBindingsHead{display:flex;align-items:center;justify-content:space-between;gap:12px}.ptcPlusBindingsTitle{margin:0;font-size:15px;font-weight:600;line-height:1.4}.ptcPlusBindingsActions{display:flex;flex-wrap:wrap;gap:8px}.ptcPlusBindingsGrid{display:grid;grid-template-columns:minmax(240px,.7fr) minmax(340px,1.3fr);gap:12px;margin-top:12px;align-items:start}.ptcPlusBindingPane{display:flex;min-width:0;flex-direction:column;gap:8px}
 .ptcPlusBindingList{display:flex;min-width:0;margin:0;padding:8px;flex-direction:column;gap:2px;border:0.5px solid var(--dsw-alias-border-l4);border-radius:16px;background:var(--dsw-alias-bg-layer-3);list-style:none}.ptcPlusBindingItem{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:2px 10px;padding:6px 8px;border-radius:8px;transition:background-color .12s ease}.ptcPlusBindingItem:hover{background:var(--dsw-alias-interactive-bg-hover)}.ptcPlusBindingItem[data-selected=true]{background:var(--dsw-alias-bg-module-platform)}.ptcPlusBindingSelect{display:flex;min-width:0;padding:0;border:0;background:transparent;color:inherit;text-align:left;cursor:pointer;flex-direction:column;align-items:flex-start;gap:1px}.ptcPlusBindingSelect:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px}.ptcPlusBindingName{display:block;min-width:0;max-width:100%;overflow:hidden;font:500 13px/20px ui-monospace,SFMono-Regular,Consolas,monospace;text-overflow:ellipsis;white-space:nowrap}.ptcPlusBindingMeta{display:block;min-width:0;max-width:100%;overflow:hidden;color:var(--dsw-alias-label-tertiary);font-size:11px;line-height:16px;text-overflow:ellipsis;white-space:nowrap}.ptcPlusBindingState{display:inline-flex;align-items:center;gap:5px;padding:1px 8px;border-radius:999px;corner-shape:round;font-size:11px;font-weight:500;line-height:17px;white-space:nowrap}.ptcPlusBindingState[data-enabled=true]{color:var(--dsw-alias-state-success-primary);background:var(--dsw-alias-state-success-tertiary)}.ptcPlusBindingState[data-enabled=false]{color:var(--dsw-alias-state-warn-primary);background:var(--dsw-alias-state-warn-tertiary)}.ptcPlusBindingStateDot{width:6px;height:6px;border-radius:50%;background:currentColor}.ptcPlusBindingToggle{grid-column:2;grid-row:1/3;align-self:center;justify-self:end;min-height:26px;padding:2px 10px;font-size:12px;line-height:17px;border-radius:999px;corner-shape:round}.ptcPlusBindingRun{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding-top:10px;border-top:0.5px solid var(--dsw-alias-border-l2)}.ptcPlusBindingRun .ptcPlusInput{flex:1;min-width:160px;width:auto}
 .ptcPlusBindingEditor{display:flex;min-width:0;flex-direction:column;border:0.5px solid var(--dsw-alias-border-l4);border-radius:16px;background:var(--dsw-alias-bg-layer-3);overflow:hidden}.ptcPlusBindingSection{display:flex;min-width:0;flex-direction:column;gap:12px;padding:14px 16px}.ptcPlusBindingSection+.ptcPlusBindingSection{border-top:0.5px solid var(--dsw-alias-border-l2)}.ptcPlusBindingSectionTitle{margin:0;font-size:13px;font-weight:600;line-height:1.5}.ptcPlusBindingFields{display:grid;min-width:0;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 12px}.ptcPlusBindingField{display:flex;min-width:0;flex-direction:column;gap:5px}.ptcPlusBindingField[data-wide=true]{grid-column:1/-1}.ptcPlusBindingFieldLabel{color:var(--dsw-alias-label-primary);font-size:13px;font-weight:500;line-height:1.5}.ptcPlusBindingEditor .ptcPlusInput,.ptcPlusSelect{box-sizing:border-box;width:100%;min-width:0;height:34px;padding:0 12px;border:0.5px solid var(--dsw-alias-border-l4);border-radius:8px;background:var(--dsw-alias-bg-layer-3);color:var(--dsw-alias-label-primary);font:inherit;font-size:13px;line-height:1.5}.ptcPlusBindingEditor .ptcPlusInput:focus-visible,.ptcPlusSelect:focus-visible{border-color:var(--dsw-alias-brand-primary);outline:none}.ptcPlusTextarea{box-sizing:border-box;width:100%;min-height:220px;resize:vertical;padding:10px 12px;border:0.5px solid var(--dsw-alias-border-l4);border-radius:8px;background:var(--dsw-alias-bg-layer-3);color:var(--dsw-alias-label-primary);font:12px/18px ui-monospace,SFMono-Regular,Consolas,monospace;tab-size:2}.ptcPlusTextarea:focus-visible{border-color:var(--dsw-alias-brand-primary);outline:none}.ptcPlusDeclaration{box-sizing:border-box;max-height:220px;margin:0;padding:12px;overflow:auto;background:var(--dsw-alias-markdown-code-block);border-radius:12px;color:var(--dsw-alias-label-primary);font:12px/18px ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere}.ptcPlusBindingSourceGrid{display:grid;min-width:0;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px}.ptcPlusBindingSourceEditor,.ptcPlusBindingSourcePreview{display:flex;min-width:0;flex-direction:column;gap:6px}.ptcPlusBindingSourcePreview .ptcPlusCodeBlock{max-height:220px;overflow:auto}
@@ -26874,6 +26876,8 @@
       "bindings.declaration": "\u63A5\u53E3\u58F0\u660E",
       "bindings.modelContext": "\u6A21\u578B\u4E0A\u4E0B\u6587",
       "bindings.includeDeclaration": "\u5C06\u63A5\u53E3\u58F0\u660E\u63D0\u4F9B\u7ED9\u6A21\u578B",
+      "bindings.declarationIncluded": "\u5411\u6A21\u578B\u63D0\u4F9B",
+      "bindings.declarationExcluded": "\u4E0D\u5411\u6A21\u578B\u63D0\u4F9B",
       "bindings.instructions": "\u7ED9\u6A21\u578B\u7684\u63D0\u793A\u8BCD",
       "bindings.noInstructions": "\u672A\u8BBE\u7F6E\u63D0\u793A\u8BCD",
       "bindings.lifecycle": "\u6761\u76EE\u64CD\u4F5C",
@@ -27031,6 +27035,8 @@
       "bindings.declaration": "Interface declaration",
       "bindings.modelContext": "Model context",
       "bindings.includeDeclaration": "Include API declaration in model context",
+      "bindings.declarationIncluded": "Include in model context",
+      "bindings.declarationExcluded": "Exclude from model context",
       "bindings.instructions": "Prompt for the model",
       "bindings.noInstructions": "No prompt configured",
       "bindings.lifecycle": "Entry actions",
@@ -28859,6 +28865,7 @@
         }
         function BindingCandidateContent({ candidate, t: t2, showName = true }) {
           const preferences = bindingModelPreferences(candidate.entry.modelContext);
+          const contextTitle = React.useId();
           return h(
             "div",
             { className: "ptcPlusAuthoringDraft" },
@@ -28872,20 +28879,36 @@
               copyLabel: t2("tool.copy"),
               copiedLabel: t2("tool.copied")
             }) : h("pre", { className: "ptcPlusBindingCommandSource" }, candidate.entry.source),
-            h("strong", null, t2("bindings.modelContext")),
             h(
-              "label",
-              { className: "ptcPlusBindingFieldLabel" },
-              h("input", {
-                type: "checkbox",
-                className: "ptcPlusCheck",
-                disabled: true,
-                checked: preferences.includeDeclaration
-              }),
-              t2("bindings.includeDeclaration")
-            ),
-            h("span", { className: "ptcPlusBindingFieldLabel" }, t2("bindings.instructions")),
-            h("pre", { className: "ptcPlusBindingCommandRequirement" }, preferences.instructions || t2("bindings.noInstructions"))
+              "section",
+              { className: "ptcPlusCandidateContext", "aria-labelledby": contextTitle },
+              h("h4", { id: contextTitle }, t2("bindings.modelContext")),
+              h(
+                "dl",
+                null,
+                h(
+                  "div",
+                  { className: "ptcPlusCandidateDeclaration" },
+                  h("dt", null, t2("bindings.declaration")),
+                  h(
+                    "dd",
+                    { "data-included": preferences.includeDeclaration },
+                    preferences.includeDeclaration ? h(IconCheckOutline14, { size: 14, "aria-hidden": true }) : null,
+                    t2(preferences.includeDeclaration ? "bindings.declarationIncluded" : "bindings.declarationExcluded")
+                  )
+                ),
+                h(
+                  "div",
+                  { className: "ptcPlusCandidatePrompt" },
+                  h("dt", null, t2("bindings.instructions")),
+                  h(
+                    "dd",
+                    { "data-empty": preferences.instructions === "" },
+                    preferences.instructions || t2("bindings.noInstructions")
+                  )
+                )
+              )
+            )
           );
         }
         function focusComposer(anchor) {
@@ -28906,6 +28929,12 @@
               review.panel.focus({ preventScroll: true });
             }
           });
+        }
+        function focusBindingReviewAccess(review) {
+          const anchor = review.access;
+          const button = anchor?.querySelector("button");
+          if (button?.getClientRects().length) button.focus({ preventScroll: true });
+          else focusComposer(anchor);
         }
         function fitBindingReview(panel) {
           const body = panel?.querySelector(".ptcPlusBindingDockBody");
@@ -28965,6 +28994,14 @@
           const raw = useProjection("ptcPlusBindingDraft");
           const projection = React.useMemo(() => bindingDraftProjection(raw), [raw]);
           const [review, view] = useBindingReview(sessionId);
+          const focused = React.useRef(false);
+          React.useEffect(() => {
+            if (view.visibility !== "hidden") return;
+            if (view.action !== null && focused.current && document.activeElement === document.body) {
+              focusBindingReviewAccess(review);
+            }
+            focused.current = false;
+          }, [review, view.visibility, view.action]);
           React.useLayoutEffect(() => review.attach(), [review]);
           React.useLayoutEffect(() => {
             review.sync(projection);
@@ -28975,16 +29012,15 @@
           const candidateKey = view.candidateKey;
           React.useLayoutEffect(
             () => fitBindingReview(review.panel),
-            [review, candidateKey, expanded, view.action !== null, view.visibility, view.message]
+            [review, candidateKey, expanded, view.visibility, view.message]
           );
           const close = () => {
             review.display("hidden");
-            requestAnimationFrame(() => {
-              const anchor = review.access;
-              const button = anchor?.querySelector("button");
-              if (button?.getClientRects().length) button.focus({ preventScroll: true });
-              else focusComposer(anchor);
-            });
+            requestAnimationFrame(() => focusBindingReviewAccess(review));
+          };
+          const act = (operation, activate = false) => {
+            if (review.panel?.contains(document.activeElement)) review.panel.focus({ preventScroll: true });
+            void review.act(operation, activate);
           };
           if (view.candidate === null || view.visibility === "hidden") return null;
           return h(
@@ -29000,7 +29036,12 @@
                 ref: (element) => {
                   review.panel = element;
                 },
-                "data-phase": view.action?.state ?? "ready",
+                onFocusCapture: () => {
+                  focused.current = true;
+                },
+                onBlurCapture: (event) => {
+                  if (event.relatedTarget || review.getSnapshot().action === null) focused.current = false;
+                },
                 "aria-busy": view.busy
               },
               h(
@@ -29013,7 +29054,7 @@
                     className: "ptcPlusBindingDockToggle",
                     "aria-label": t2(expanded ? "bindings.reviewCollapse" : "bindings.reviewExpand"),
                     "aria-expanded": expanded,
-                    "aria-controls": expanded && view.action === null ? content2 : void 0,
+                    "aria-controls": expanded ? content2 : void 0,
                     onClick: () => review.display(expanded ? "collapsed" : "expanded")
                   },
                   h("span", { className: "ptcPlusBindingDockSymbol", "aria-hidden": true }, "</>"),
@@ -29035,7 +29076,7 @@
                 ),
                 h(IconButton, { icon: IconCloseOutline16, label: t2("bindings.reviewClose"), onClick: close })
               ),
-              !expanded || view.action !== null ? null : h(
+              !expanded ? null : h(
                 React.Fragment,
                 null,
                 h(
@@ -29057,16 +29098,16 @@
                     className: "ptcPlusBindingDockDiscard",
                     "data-kind": "ghost",
                     disabled: !view.writable || view.busy,
-                    onClick: () => review.act("discard-draft")
+                    onClick: () => act("discard-draft")
                   }, t2("bindings.draftDiscard")),
                   h(ActionButton, {
                     disabled: !view.writable || view.busy,
-                    onClick: () => review.act("save-draft", false)
+                    onClick: () => act("save-draft", false)
                   }, t2("bindings.draftSave")),
                   h(ActionButton, {
                     "data-kind": "primary",
                     disabled: !view.writable || view.busy,
-                    onClick: () => review.act("save-draft", true)
+                    onClick: () => act("save-draft", true)
                   }, t2("bindings.draftSaveEnable")),
                   view.message === null ? null : h(ActionButton, {
                     disabled: view.busy,

@@ -60,6 +60,8 @@ export function createBindingReviews(call) {
     const publish = patch => {
       if (disposed) return
       snapshot = { ...snapshot, ...patch }
+      // Completed candidates belong to history, regardless of which Host evidence settled them.
+      if (snapshot.action !== null) snapshot.visibility = 'hidden'
       for (const listener of listeners) listener()
     }
     const invalidate = () => {
@@ -208,7 +210,7 @@ export function createBindingReviews(call) {
       },
       reachable(value) { if (snapshot.reachable !== value) publish({ reachable: value }) },
       display(visibility, candidate = snapshot.candidate) {
-        if (snapshot.candidate === null || !sameCandidate(snapshot.candidate, candidate)) return false
+        if (snapshot.candidate === null || snapshot.action !== null || !sameCandidate(snapshot.candidate, candidate)) return false
         choices.set(candidateIdentity(snapshot.candidate), visibility)
         publish({ visibility })
         return true

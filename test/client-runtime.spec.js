@@ -94,8 +94,8 @@ async function fixture({ enabled = true, bindings = true, conversation = true, r
     props.renderSlot('settings.plugin.item', {}, { entryKey: 'ptc-plus' }),
     React.createElement(props.SessionProvider, null,
       props.renderSlot('conversation.session.header.actions', {}),
-      props.renderSlot('conversation.input.left', {}),
       dock ? props.renderSlot('conversation.input.dock', {}) : null,
+      props.renderSlot('conversation.input.left', {}),
       repl ? props.renderSlot('conversation.view', {}, { entryId: 'ptc-plus-repl' }) : null,
       composer ? props.renderSlotChain('conversation.composer', { sessionId: 'client-session' }, {
         overlay: true, fallback: React.createElement('textarea', { 'aria-label': 'Message draft', defaultValue: 'keep this draft' }),
@@ -1387,6 +1387,132 @@ async function openDraftMenu(view, runtime, mode = 'click') {
   return trigger
 }
 
+test.each([true, false])('history and dock share read-only model context with declaration included=%s', async includeDeclaration => {
+  const candidate = reviewCandidate('context')
+  candidate.entry.modelContext = { includeDeclaration, instructions: includeDeclaration ? 'Render {{name}} literally\n<script>sample</script>' : '' }
+  const turn = { data: new Map([['ptc-binding-authoring', { commandId: candidate.commandId, args: ' new helper', outcome: null }]]) }
+  const { runtime } = await fixture({ rpc: reviewRpc(candidate), turn })
+  runtime.sessions.behavior('client-session').projections.set('ptcPlusBindingDraft', reviewProjection(candidate))
+  const view = runtime.renderRoot()
+  await runtime.flush()
+  const contexts = view.container.querySelectorAll('.ptcPlusCandidateContext')
+  expect(contexts).toHaveLength(2)
+  for (const context of contexts) {
+    expect(context.querySelector('input,button,script')).toBeNull()
+    expect(context.querySelector('.ptcPlusCandidateDeclaration dd').textContent).toBe(
+      includeDeclaration ? 'Include in model context' : 'Exclude from model context')
+    expect(context.querySelector('.ptcPlusCandidatePrompt dd').textContent).toBe(
+      candidate.entry.modelContext.instructions || 'No prompt configured')
+    expect(document.getElementById(context.getAttribute('aria-labelledby')).textContent).toBe('Model context')
+  }
+})
+
+test.each(['expanded', 'collapsed', 'hidden'].flatMap(visibility => [
+  ['Save as disabled', 'save-draft', 'saved'], ['Save and enable', 'save-draft', 'saved'], ['Discard draft', 'discard-draft', 'discarded'],
+].map(action => [visibility, ...action])))('%s panel closes after %s succeeds', async (visibility, label, endpoint, state) => {
+  const candidate = reviewCandidate('auto-close')
+  const write = deferred()
+  let action = null
+  const { runtime } = await fixture({
+    commands: { list: async () => ({ ok: true, value: [{ name: 'binding' }] }) },
+    rpc: async name => name === endpoint ? write.promise
+      : name === 'draft-review' ? { ok: true, value: { candidate, action } } : reviewRpc(candidate)(name),
+  })
+  const projection = runtime.sessions.behavior('client-session').projections
+  projection.set('ptcPlusBindingDraft', reviewProjection(candidate))
+  const view = runtime.renderRoot()
+  await runtime.flush()
+  const geometry = vi.spyOn(HTMLElement.prototype, 'getClientRects').mockReturnValue([new DOMRect(20, 500, 24, 24)])
+  cleanups.push(() => geometry.mockRestore())
+  // Blink dispatches focusout while removing a focused subtree; JSDOM omits it.
+  const removeChild = Node.prototype.removeChild
+  const removal = vi.spyOn(Node.prototype, 'removeChild').mockImplementation(function (child) {
+    if (child.contains(document.activeElement)) fireEvent.focusOut(document.activeElement, { relatedTarget: null })
+    return removeChild.call(this, child)
+  })
+  cleanups.push(() => removal.mockRestore())
+  const button = view.getByRole('button', { name: label })
+  button.focus()
+  fireEvent.click(button)
+  if (visibility !== 'expanded') {
+    const control = view.getByRole('button', { name: visibility === 'collapsed' ? 'Collapse binding draft' : 'Close binding draft panel' })
+    control.focus()
+    fireEvent.click(control)
+  }
+  await runtime.flush()
+  action = { requestId: candidate.requestId, id: candidate.entry.id, state, enabled: label === 'Save and enable' }
+  write.resolve({ ok: true, value: null })
+  await runtime.flush()
+  expect(view.container.querySelector('.ptcPlusBindingDock')).toBeNull()
+  expect(view.queryByRole('button', { name: /Binding drafts \(1\)/ })).toBeNull()
+  if (visibility !== 'hidden') expect(document.activeElement).toBe(view.container.querySelector('.ptcPlusAuthorButton'))
+  projection.set('ptcPlusBindingDraft', structuredClone(reviewProjection(candidate)))
+  runtime.ctx.emit('connection/reset')
+  await runtime.flush()
+  expect(view.container.querySelector('.ptcPlusBindingDock')).toBeNull()
+})
+
+test('refresh completion hides the exact candidate and cannot be reopened or hide its replacement', async () => {
+  const candidate = reviewCandidate('refresh-completion')
+  let action = null
+  const reviews = createBindingReviews(async endpoint => endpoint === 'list' ? { revision: 1, entries: [] }
+    : endpoint === 'draft-review' ? { candidate, action } : candidate)
+  cleanups.push(() => reviews.dispose())
+  const review = reviews.forSession('session')
+  review.sync(reviewProjection(candidate))
+  review.attach()
+  await new Promise(resolve => setTimeout(resolve, 0))
+  expect(review.getSnapshot().writable).toBe(true)
+  action = { requestId: candidate.requestId, id: candidate.entry.id, state: 'saved', enabled: false }
+  await review.refresh()
+  expect(review.getSnapshot().visibility).toBe('hidden')
+  expect(review.display('expanded', candidate)).toBe(false)
+  const next = reviewCandidate('next')
+  review.sync({ ...reviewProjection(next), history: [
+    ...reviewProjection(candidate, 'old', action).history, ...reviewProjection(next).history,
+  ] })
+  expect(review.getSnapshot()).toMatchObject({ candidate: next, action: null, visibility: 'expanded' })
+})
+
+test('automatic closure preserves focus moved outside the pending review', async () => {
+  const candidate = reviewCandidate('focus-outside')
+  const write = deferred()
+  const { runtime } = await fixture({ rpc: async endpoint => endpoint === 'save-draft' ? write.promise : reviewRpc(candidate)(endpoint) })
+  runtime.sessions.behavior('client-session').projections.set('ptcPlusBindingDraft', reviewProjection(candidate))
+  const view = runtime.renderRoot()
+  await runtime.flush()
+  const save = view.getByRole('button', { name: 'Save and enable' })
+  save.focus()
+  fireEvent.click(save)
+  await runtime.flush()
+  expect(document.activeElement).toBe(view.container.querySelector('.ptcPlusBindingDock'))
+  const outside = view.container.querySelector('.ptcPlusHeader')
+  outside.focus()
+  write.resolve({ ok: true, value: null })
+  await runtime.flush()
+  expect(view.container.querySelector('.ptcPlusBindingDock')).toBeNull()
+  expect(document.activeElement).toBe(outside)
+})
+
+test.each(['expanded', 'collapsed', 'hidden'])('unconfirmed discard retains %s display without claiming success', async visibility => {
+  const candidate = reviewCandidate('unconfirmed-discard')
+  let discarded = false
+  const reviews = createBindingReviews(async endpoint => {
+    if (endpoint === 'discard-draft') { discarded = true; return null }
+    if (endpoint === 'list') return { revision: 1, entries: [] }
+    if (endpoint === 'draft-review') return discarded ? null : { candidate, action: null }
+    return discarded ? null : candidate
+  })
+  cleanups.push(() => reviews.dispose())
+  const review = reviews.forSession('session')
+  review.sync(reviewProjection(candidate))
+  review.attach()
+  await new Promise(resolve => setTimeout(resolve, 0))
+  review.display(visibility)
+  await review.act('discard-draft')
+  expect(review.getSnapshot()).toMatchObject({ visibility, action: null, writable: false, message: 'bindings.reviewUnconfirmed' })
+})
+
 test('one authoring icon owns the draft badge and hover, click and keyboard menu', async () => {
   const candidate = reviewCandidate('menu-draft')
   const rpc = vi.fn(reviewRpc(candidate))
@@ -1428,6 +1554,7 @@ test('one authoring icon owns the draft badge and hover, click and keyboard menu
   expect(input.scope.getSnapshot().draft).toBe('Unsent user text')
   expect(rpc.mock.calls.every(([endpoint]) => ['list', 'draft', 'draft-review'].includes(endpoint))).toBe(true)
   await openDraftMenu(view, runtime)
+  await new Promise(requestAnimationFrame)
   trigger.getClientRects = () => [new DOMRect(20, 500, 24, 24)]
   view.getByRole('menuitem', { name: 'Write a new binding' }).focus()
   settings.publish({ value: { ...value, bindingAuthorButtonVisible: false } })
@@ -1575,7 +1702,7 @@ test('accepted source is immediate and only dock writes; display choices survive
   await runtime.flush()
   expect(panel().querySelector('.ptcPlusBindingDockBody')).not.toBeNull()
   expect(view.getByRole('button', { name: 'Collapse binding draft' }).getAttribute('aria-expanded')).toBe('true')
-  expect(panel().querySelector('.ptcPlusAuthoringDraft>strong').textContent).toBe('Model context')
+  expect(panel().querySelector('.ptcPlusCandidateContext h4').textContent).toBe('Model context')
   fireEvent.click(panel().querySelector('.ptcPlusBindingDockHeading'))
   await runtime.flush()
   expect(panel().querySelector('.ptcPlusBindingDockBody')).toBeNull()
@@ -1698,13 +1825,7 @@ test.each(['expanded', 'collapsed', 'hidden'].flatMap(visibility => ['empty', 'e
   await runtime.flush()
   write.resolve({ ok: true, value: null })
   await runtime.flush()
-  const panel = view.container.querySelector('.ptcPlusBindingDock')
-  if (visibility === 'hidden') expect(panel).toBeNull()
-  else {
-    expect(panel.getAttribute('data-phase')).toBe('discarded')
-    expect(view.getByRole('button', { name: visibility === 'collapsed' ? 'Expand binding draft' : 'Collapse binding draft' })).not.toBeNull()
-    expect(panel.textContent).not.toContain('Connection lost')
-  }
+  expect(view.container.querySelector('.ptcPlusBindingDock')).toBeNull()
   expect(view.queryByRole('button', { name: /Binding drafts \(1\)/ })).toBeNull()
   expect(view.queryByRole('button', { name: 'Save and enable' })).toBeNull()
 })
@@ -1776,7 +1897,7 @@ test('a late draft read or write cannot replace a new candidate or another sessi
   expect(view.getByRole('button', { name: 'Save and enable' }).disabled).toBe(false)
   await runtime.sessions.setCurrent('client-session')
   await runtime.flush()
-  expect(view.container.querySelector('.ptcPlusBindingDock').textContent).toContain('Draft saved and enabled')
+  expect(view.container.querySelector('.ptcPlusBindingDock')).toBeNull()
   expect(view.queryByRole('button', { name: 'Save and enable' })).toBeNull()
 })
 
@@ -1820,7 +1941,7 @@ test('pending writes isolate candidates within one session and late settlement c
   expect(rpc.mock.calls.filter(([endpoint]) => endpoint === 'save-draft')).toHaveLength(2)
   writes.get(second.commandId).resolve({ ok: true, value: { revision: 3, entries: [] } })
   await runtime.flush()
-  expect(view.container.querySelector('.ptcPlusBindingDock').textContent).toContain('Draft saved and enabled')
+  expect(view.container.querySelector('.ptcPlusBindingDock')).toBeNull()
   expect(view.queryByRole('button', { name: 'Save and enable' })).toBeNull()
 })
 

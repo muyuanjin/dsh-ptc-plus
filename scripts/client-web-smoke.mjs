@@ -105,6 +105,18 @@ async function verifyDock(label, width = 1440, height = 1000) {
   await page.screenshot({ path: join(evidence, `dock-${label}-${width}-${height}.png`), animations: 'disabled' })
 }
 
+async function captureCandidateContext(owner, label, width, prompt = null) {
+  await page.setViewportSize({ width, height: 1000 })
+  const context = owner.locator('.ptcPlusCandidateContext')
+  await context.scrollIntoViewIfNeeded()
+  assert.equal(await context.locator('input,button,textarea').count(), 0, `${label}: read-only context contains form controls`)
+  const text = context.locator('.ptcPlusCandidatePrompt dd')
+  if (prompt === null) assert.equal(await text.getAttribute('data-empty'), 'true')
+  else assert.equal(await text.textContent(), prompt)
+  assert.equal(await context.evaluate(element => element.scrollWidth <= element.clientWidth + 1), true, `${label}: context overflows`)
+  await context.screenshot({ path: join(evidence, `model-context-${label}-${width}.png`), animations: 'disabled' })
+}
+
 async function verifyWorkbenchReload(workbench, label) {
   await workbench.locator('.ptcPlusBindingEditor').waitFor()
   await page.waitForFunction(() => document.querySelector('.ptcPlusBindings')?.getAttribute('aria-busy') === 'false')
@@ -424,7 +436,10 @@ try {
     for (const locale of ['zh', 'en']) {
       await rpc('settings/update', { ns: 'locale', patch: { preference: locale } })
       await page.getByRole('button', { name: locale === 'zh' ? '保存并启用' : 'Save and enable', exact: true }).waitFor()
-      for (const width of [390, 1440]) await captureBinding(`ready-${locale}`, width)
+      for (const width of [390, 1440]) {
+        await captureBinding(`ready-${locale}`, width)
+        await captureCandidateContext(page.locator('.ptcPlusBindingDock'), `dock-${locale}`, width)
+      }
     }
     const dock = page.locator('.ptcPlusBindingDock')
     assert.equal(await cards.locator('.ptcPlusBindingDockActions').count(), 0)
@@ -556,8 +571,9 @@ try {
     }, null, { timeout: 30000 })
     await dock.getByRole('button', { name: 'Save and enable', exact: true }).scrollIntoViewIfNeeded()
     await dock.getByRole('button', { name: 'Save and enable', exact: true }).click()
-    await page.locator('.ptcPlusBindingDock[data-phase=saved]').waitFor({ timeout: 30000 })
+    await dock.waitFor({ state: 'detached', timeout: 30000 })
     await page.locator('.ptcPlusBindingCommand[data-phase=saved]').waitFor({ timeout: 30000 })
+    await page.waitForFunction(() => document.activeElement?.matches('.ptcPlusAuthorButton'))
     assert.equal(await reopen.locator('.ptcPlusDraftBadge').count(), 0)
     for (const locale of ['zh', 'en']) {
       await rpc('settings/update', { ns: 'locale', patch: { preference: locale } })
@@ -568,7 +584,10 @@ try {
       assert.equal(await cards.count(), 1)
       await cards.locator('.ptcPlusBindingSourceDetails > summary').click()
       assert.match(await cards.innerText(), /export function value/)
-      for (const width of [390, 1440]) await captureBinding(`saved-${locale}`, width)
+      for (const width of [390, 1440]) {
+        await captureBinding(`saved-${locale}`, width)
+        await captureCandidateContext(cards, `history-${locale}`, width)
+      }
     }
     await verifyBindingScroll(rpc)
     await submit('/binding edit workflow same helper')
@@ -594,10 +613,13 @@ try {
     await rpc('settings/update', { ns: 'ui-theme', patch: { preference: 'dark' } })
     await page.locator('body[data-ds-dark-theme]').waitFor()
     await verifyDock('long-source-dark', 390, 800)
+    await captureCandidateContext(dock, 'dock-dark', 390, 'Use this helper to return a number.')
     await rpc('settings/update', { ns: 'ui-theme', patch: { preference: 'light' } })
     await page.locator('body:not([data-ds-dark-theme])').waitFor()
     await page.getByRole('button', { name: 'Discard draft', exact: true }).click()
+    await dock.waitFor({ state: 'detached', timeout: 30000 })
     await page.locator('.ptcPlusBindingCommand[data-phase=discarded]').waitFor()
+    await page.waitForFunction(() => document.activeElement?.matches('.ptcPlusAuthorButton'))
     assert.equal(await cards.count(), 2)
     for (const locale of ['zh', 'en']) {
       await rpc('settings/update', { ns: 'locale', patch: { preference: locale } })

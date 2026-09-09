@@ -32,25 +32,22 @@ import {
 import {
   HEADLESS_TOOLS_MODE,
   NEUTRAL_PERSONA,
-  changedSessionLogs,
   createProcessRunner,
+  dshInvocation,
   formatHeadlessError,
-  headlessConfigPatch,
   parseConfigDump,
   parseEvents,
-  powershellPath,
-  dshInvocation,
   preflightHeadlessHost,
+  preflightKeylessVerify,
+  prepareHeadlessConfigs,
   requiredModelRuntime,
   resolveHeadlessProvider,
-  redactHeadlessConfig,
-  snapshotSessionLogs,
+  runHeadlessTask,
   validateHeadlessRuntimeConfig,
   validateNeutralConfig,
   windowsPath,
   withOwnedPath,
 } from './headless-host.mjs'
-import { npmCliCommand } from './npm-cli.mjs'
 
 export { summarizeRuntimeSnapshots } from './expensive-acceptance-report.mjs'
 export { parseEvents } from './headless-host.mjs'
@@ -544,86 +541,48 @@ async function runAcceptance(env, modelRuntime, host, overlayRoot) {
       expect: scenario.expect,
     })),
   }, null, 2) + '\n')
-  const overlay = join(overlayRoot, 'acceptance.patch.yml')
-
-  const install = await runProcess('pwsh.exe', [
-    '-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass',
-    '-File', windowsPath(join(repoRoot, 'scripts', 'install-dev.ps1')), runtime.profile,
-  ], {
-    env: { ...env, DSH_DEV_INSTALL_NO_PAUSE: '1' },
-    timeoutMs: runtime.wallMs,
-  })
-  await writeFile(join(artifactRoot, 'install.stdout.log'), install.stdout)
-  await writeFile(join(artifactRoot, 'install.stderr.log'), install.stderr)
-  if (install.code !== 0) throw new Error(`plugin installation failed; see ${relative(repoRoot, artifactRoot)}/install.*.log`)
-
-  const baseDump = await runProcess('pwsh.exe', [
-    '-NoLogo', '-NoProfile', '-Command',
-    `${dshInvocation(runtime)} --profile '${powershellPath(runtime.profile)}' --dump-config`,
-  ], { env, timeoutMs: runtime.wallMs })
-  if (baseDump.code === 0) await writeFile(join(artifactRoot, 'base-config.stdout.yml'), redactHeadlessConfig(baseDump.stdout))
-  await writeFile(join(artifactRoot, 'base-config.stderr.log'), baseDump.stderr)
-  if (baseDump.code !== 0 || baseDump.stderr.trim() !== '') {
-    throw new Error(`base DSH config preflight failed; see ${relative(repoRoot, artifactRoot)}`)
-  }
-  const baseRows = parseAcceptanceConfig(baseDump.stdout, 'base DSH config')
-  await resolveHeadlessProvider(baseRows, runtime, host.dshHome)
   const enableFunctionClassRedeclarations = scenarios.some(
     scenario => scenario.id === 'function-class-redeclaration-iteration',
   )
-  await writeFile(overlay, headlessConfigPatch(baseRows, runtime, {
-    looseTopLevelFunctionClassRedeclarations: enableFunctionClassRedeclarations,
-  }))
-  await writeFile(join(artifactRoot, 'acceptance.patch.yml'), redactHeadlessConfig(await readFile(overlay, 'utf8')))
-  const resolvedDump = await runProcess('pwsh.exe', [
-    '-NoLogo', '-NoProfile', '-Command',
-    `${dshInvocation(runtime)} --profile '${powershellPath(runtime.profile)}' --patch '${powershellPath(windowsPath(overlay))}' --dump-config`,
-  ], { env, timeoutMs: runtime.wallMs })
-  if (resolvedDump.code === 0) await writeFile(join(artifactRoot, 'acceptance-config.stdout.yml'), redactHeadlessConfig(resolvedDump.stdout))
-  await writeFile(join(artifactRoot, 'acceptance-config.stderr.log'), resolvedDump.stderr)
-  if (resolvedDump.code !== 0 || resolvedDump.stderr.trim() !== '') {
-    throw new Error(`acceptance DSH config preflight failed; see ${relative(repoRoot, artifactRoot)}`)
-  }
-  validateAcceptanceConfig(parseAcceptanceConfig(resolvedDump.stdout, 'acceptance DSH config'), runtime, {
-    looseTopLevelFunctionClassRedeclarations: enableFunctionClassRedeclarations,
+  const { overlays } = await prepareHeadlessConfigs({
+    repoRoot,
+    env,
+    runtime,
+    host,
+    artifactRoot,
+    overlayRoot,
+    variants: [{
+      id: 'acceptance',
+      patchOptions: { looseTopLevelFunctionClassRedeclarations: enableFunctionClassRedeclarations },
+    }],
+    validate: configs => validateAcceptanceConfig(configs.acceptance, runtime, {
+      looseTopLevelFunctionClassRedeclarations: enableFunctionClassRedeclarations,
+    }),
+    label: 'acceptance',
+    invoke: dshInvocation,
+    resolveProvider: resolveHeadlessProvider,
+    runProcess,
   })
   if (env.DSH_PTC_ACCEPTANCE_CONFIG_ONLY === '1') {
     console.log(`expensive acceptance config preflight passed; artifacts: ${relative(repoRoot, artifactRoot)}`)
     return
   }
-
-  const keylessCommand = npmCliCommand(['run', 'verify'])
-  const keyless = await runProcess(keylessCommand.executable, keylessCommand.args, {
-    cwd: repoRoot,
-    env,
-    timeoutMs: runtime.wallMs,
-  })
-  await writeFile(join(artifactRoot, 'keyless.stdout.log'), keyless.stdout)
-  await writeFile(join(artifactRoot, 'keyless.stderr.log'), keyless.stderr)
-  if (keyless.code !== 0 || keyless.timedOut) {
-    throw new Error(`keyless request-contract preflight failed; see ${relative(repoRoot, artifactRoot)}/keyless.*.log`)
-  }
+  await preflightKeylessVerify({ repoRoot, env, runtime, artifactRoot, label: 'expensive acceptance', runProcess })
 
   const sessionsRoot = host.sessionsRoot
   const executeScenario = async (scenario) => {
-    const before = await snapshotSessionLogs(sessionsRoot)
-    const startedAt = Date.now()
-    let processResult
-    try {
-      processResult = await runProcess('pwsh.exe', [
-        '-NoLogo', '-NoProfile', '-Command',
-        `${dshInvocation(runtime)} --profile '${powershellPath(runtime.profile)}' --patch '${powershellPath(windowsPath(overlay))}' '${powershellPath(scenario.task)}'`,
-      ], {
-        cwd: scenario.root,
-        env,
-        timeoutMs: runtime.wallMs,
-      })
-    } catch (error) {
-      processResult = { code: 1, stdout: '', stderr: '', timedOut: false, infrastructureError: error.message }
-    }
+    const { process: processResult, decoded } = await runHeadlessTask({
+      env,
+      runtime,
+      sessionsRoot,
+      task: scenario.task,
+      cwd: scenario.root,
+      overlay: overlays.acceptance,
+      invoke: dshInvocation,
+      runProcess,
+    })
     await writeFile(join(scenario.root, 'dsh.stdout.log'), processResult.stdout)
     await writeFile(join(scenario.root, 'dsh.stderr.log'), processResult.stderr)
-    const decoded = await changedSessionLogs(sessionsRoot, before, startedAt)
     const scenarioCwd = windowsPath(scenario.root)
     const matches = decoded.filter(item => item.events !== undefined
       && item.events.some(event => event.type === 'session' && event.cwd === scenarioCwd)

@@ -20,6 +20,7 @@ import {
   SETTINGS_NAMESPACE,
 } from './internal/config-spec.js'
 import { installSettingsSectionCompat } from './internal/settings-compat.js'
+import { valueLimitsFromConfig } from './internal/value-wire-schema.js'
 import { createReplMemoryProjection } from './internal/repl-memory-projection.js'
 import { createUserBindingDraftProjection } from './internal/user-binding-draft-projection.js'
 import { createUserBindingsOwner } from './internal/user-bindings-owner.js'
@@ -268,13 +269,7 @@ function installPtCRuntime(ctx, resolvedConfig, toolSchemasForAgent, sessionId) 
       maxWallMs: activeConfig.maxWallMs,
       maxOutputBytes: activeConfig.maxOutputBytes,
       maxOldGenerationSizeMb: activeConfig.maxOldGenerationSizeMb,
-      valueLimits: {
-        maxNodes: activeConfig.maxValueNodes,
-        maxEdges: activeConfig.maxValueEdges,
-        maxArrayLength: activeConfig.maxValueArrayLength,
-        maxBigIntDigits: activeConfig.maxValueBigIntDigits,
-        maxStringBytes: activeConfig.maxOutputBytes,
-      },
+      valueLimits: valueLimitsFromConfig(activeConfig),
     })
     runtimeBridge = createRuntimeBridgeOwner({
       ctx,

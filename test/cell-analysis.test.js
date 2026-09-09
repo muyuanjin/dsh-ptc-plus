@@ -8,6 +8,7 @@ import {
 import { rewriteReplRedeclarations } from '../internal/repl-convenience.js'
 import { renderDurabilityReasons } from '../internal/module-policy.js'
 import { SessionRuntime } from '../internal/session-runtime.js'
+import { parseExecutableCell } from '../internal/cell-parser.js'
 
 const ENABLED = {
   autoRewriteImports: true,
@@ -16,7 +17,7 @@ const ENABLED = {
 }
 
 function prepare(code, knownBindings = new Set(), options = {}) {
-  return prepareProgram(code, knownBindings, true, new Set(), { ...ENABLED, ...options })
+  return prepareProgram(code, { knownBindings: knownBindings, bindingPolicy: true, reservedBindings: new Set(), rewritesEnabled: { ...ENABLED, ...options } })
 }
 
 test('composes TypeScript erasure, module rewrites, REPL lowering, and return control flow', () => {
@@ -70,19 +71,19 @@ test('allocates return control outside persistent REPL bindings', () => {
 
 test('preserves source when module rewrites are disabled and reports the parse boundary', () => {
   assert.throws(
-    () => prepareProgram("import value from 'node:path'\nreturn value", new Set(), true, new Set(), {
+    () => prepareProgram("import value from 'node:path'\nreturn value", { knownBindings: new Set(), bindingPolicy: true, reservedBindings: new Set(), rewritesEnabled: {
       autoRewriteImports: false,
       autoStripExports: true,
       autoSplitRedeclarations: true,
-    }),
+    } }),
     /Unexpected token|Cannot use import statement outside a module|import/,
   )
   assert.throws(
-    () => prepareProgram('export const value = 1\nreturn value', new Set(), true, new Set(), {
+    () => prepareProgram('export const value = 1\nreturn value', { knownBindings: new Set(), bindingPolicy: true, reservedBindings: new Set(), rewritesEnabled: {
       autoRewriteImports: true,
       autoStripExports: false,
       autoSplitRedeclarations: true,
-    }),
+    } }),
     /Unexpected token|Unexpected keyword 'export'|export/,
   )
 })
@@ -93,7 +94,7 @@ test('requires a complete explicit rewrite policy', () => {
     autoStripExports: true,
   }]) {
     assert.throws(
-      () => prepareProgram('return 1', new Set(), true, new Set(), policy),
+      () => prepareProgram('return 1', { knownBindings: new Set(), bindingPolicy: true, reservedBindings: new Set(), rewritesEnabled: policy }),
       /rewrite policy must define/,
     )
   }
@@ -107,7 +108,7 @@ test('requires a complete explicit binding policy', () => {
     functionClassRedeclarations: 'yes',
   }]) {
     assert.throws(
-      () => prepareProgram('return 1', new Set(), policy, new Set(), ENABLED),
+      () => prepareProgram('return 1', { knownBindings: new Set(), bindingPolicy: policy, reservedBindings: new Set(), rewritesEnabled: ENABLED }),
       /binding policy must define/,
     )
   }
@@ -115,29 +116,13 @@ test('requires a complete explicit binding policy', () => {
 
 test('requires supported module lowering semantics', () => {
   assert.throws(
-    () => prepareProgram(
-      'return 1',
-      new Set(),
-      { variableRedeclarations: true, functionClassRedeclarations: true },
-      new Set(),
-      ENABLED,
-      new Map(),
-      new Set(),
-      new Set(),
-      { defaultExportBinding: 'unknown' },
-    ),
+    () => prepareProgram('return 1', { knownBindings: new Set(), bindingPolicy: { variableRedeclarations: true, functionClassRedeclarations: true }, reservedBindings: new Set(), rewritesEnabled: ENABLED, importBindings: new Map(), importNamespaces: new Set(), writableBindings: new Set(), moduleSemantics: { defaultExportBinding: 'unknown' } }),
     /module semantics must define/,
   )
 })
 
 test('assigns distinct commit targets to same-name declaration occurrences', () => {
-  const result = prepareProgram(
-    'function current() { return 1 }\nfunction current() { return 2 }',
-    new Set(['current']),
-    { variableRedeclarations: true, functionClassRedeclarations: true },
-    new Set(),
-    ENABLED,
-  )
+  const result = prepareProgram('function current() { return 1 }\nfunction current() { return 2 }', { knownBindings: new Set(['current']), bindingPolicy: { variableRedeclarations: true, functionClassRedeclarations: true }, reservedBindings: new Set(), rewritesEnabled: ENABLED })
   const declarations = result.declarations.filter(declaration => declaration.name === 'current')
   assert.equal(declarations.length, 2)
   assert.equal(new Set(declarations.map(declaration => declaration.commitDependency)).size, 2)
@@ -148,23 +133,11 @@ test('assigns distinct commit targets to same-name declaration occurrences', () 
 })
 
 test('only lowers fresh const declarations under the variable redeclaration policy', () => {
-  const strict = prepareProgram(
-    'const stable = 1',
-    new Set(),
-    { variableRedeclarations: false, functionClassRedeclarations: true },
-    new Set(),
-    ENABLED,
-  )
+  const strict = prepareProgram('const stable = 1', { knownBindings: new Set(), bindingPolicy: { variableRedeclarations: false, functionClassRedeclarations: true }, reservedBindings: new Set(), rewritesEnabled: ENABLED })
   assert.match(strict.code, /^const stable = 1$/)
   assert.equal(strict.declarations[0].writable, false)
 
-  const loose = prepareProgram(
-    'const replaceable = 1',
-    new Set(),
-    { variableRedeclarations: true, functionClassRedeclarations: false },
-    new Set(),
-    ENABLED,
-  )
+  const loose = prepareProgram('const replaceable = 1', { knownBindings: new Set(), bindingPolicy: { variableRedeclarations: true, functionClassRedeclarations: false }, reservedBindings: new Set(), rewritesEnabled: ENABLED })
   assert.match(loose.code, /^let replaceable = 1$/)
   assert.equal(loose.declarations[0].writable, true)
 })
@@ -240,6 +213,75 @@ const value = Math.max(1, 2)
   assert.throws(() => classifyDurability("require('node:worker_threads')"), PreflightError)
 })
 
+test('recognizes Annex B function bindings without merging lexical scopes or parameter environments', () => {
+  const bodies = [
+    'if (true) { function process() { return 1 } }',
+    'if (false) { function process() { return 1 } }',
+    'if (true) function process() { return 1 }',
+    'label: function process() { return 1 }',
+    '{ label: function process() { return 1 } }',
+    'while (false) { function process() { return 1 } }',
+    'for (const value of [1]) { function process() { return value } }',
+    'switch (1) { case 1: function process() { return 1 } }',
+    'switch (1) { case 0: break; default: function process() { return 1 } }',
+    'try { throw 1 } catch (process) { { function process() { return 1 } } }',
+    'try {} catch { function process() { return 1 } }',
+    '{ let process; } { function process() { return 1 } }',
+    'function process() { return 1 }',
+  ]
+  for (const body of bodies) {
+    const source = `function f() { ${body}; return process } const saved = f()`
+    assert.equal(classifyDurability(source).durability, 'durable', source)
+  }
+  for (const source of [
+    'const f = () => { { function process() {} }; return process }',
+    'const f = function () { { function process() {} }; return process }',
+    'async function f() { { function process() {} }; return process }',
+    'function* f() { { function process() {} }; return process }',
+    'const f = { method() { { function process() {} }; return process } }',
+    'function f() { "use\\x20strict"; { function process() {} }; return process }',
+    'function f(process = 1) { { function process() {} }; return process }',
+    'function f(value = () => 1) { { function process() {} }; return process }',
+    'function f(value = () => { { function process() {} }; return process }) { return value }',
+    'function f() { "use strict"; function process() {}; return process }',
+    'function f() { "use strict"; { function process() {}; return process } }',
+    'function f() { { function require() {}; } return require("node:worker_threads") }',
+  ]) assert.equal(classifyDurability(source).durability, 'durable', source)
+})
+
+test('does not hoist block functions through strict, lexical, class or nested function boundaries', () => {
+  for (const source of [
+    'function f() { "use strict"; { function process() {} }; return process }',
+    '"use strict"; function f() { { function process() {} }; return process }',
+    'function outer() { "use strict"; return function f() { { function process() {} }; return process } }',
+    'class C { method() { { function process() {} }; return process } }',
+    'class C { static { { function process() {} }; process } }',
+    'class C { field = () => { { function process() {} }; return process } }',
+    'class C extends (function () { { function process() {} }; return process })() {}',
+    'function f() { { async function process() {} }; return process }',
+    'function f() { { function* process() {} }; return process }',
+    'function f() { { let process; { function process() {} } }; return process }',
+    'function f() { { const process = 1; { function process() {} } }; return process }',
+    'function f() { { class process {}; { function process() {} } }; return process }',
+    'function f() { { function* process() {}; { function process() {} } }; return process }',
+    'function f() { for (let process of [1]) { function process() {} }; return process }',
+    'function f() { for (const process in {}) { function process() {} }; return process }',
+    'function f() { for (let process = 0; false;) { function process() {} }; return process }',
+    'function f() { switch (1) { case 1: let process; { function process() {} } }; return process }',
+    'function f() { try { throw {} } catch ({ process }) { { function process() {} } }; return process }',
+    'function f() { try { throw [] } catch ([process]) { { function process() {} } }; return process }',
+    'function f() { function nested() { { function process() {} } }; return process }',
+    'function f() { class C { static { function process() {} } }; return process }',
+    'function f(value = process) { { function process() {} }; return value }',
+    'function f(value = () => process) { { function process() {} }; return value }',
+    'function f(value = process) { function process() {}; return value }',
+  ]) {
+    const classified = classifyDurability(source)
+    assert.equal(classified.durability, 'volatile', source)
+    assert.deepEqual(classified.reasons, [{ kind: 'ambient', name: 'process' }], source)
+  }
+})
+
 test('uses one structured module classification across static, dynamic, and require forms', () => {
   const source = 'package,with-comma'
   const prepared = [
@@ -262,6 +304,97 @@ test('uses one structured module classification across static, dynamic, and requ
 
 test('renders the computed-global durability reason', () => {
   assert.equal(renderDurabilityReasons([{ kind: 'computed-global-access' }]), 'computed global access')
+})
+
+test('classifies global-object aliases and escapes without treating local shadows as ambient inputs', () => {
+  for (const source of [
+    'global.Date.now()',
+    'global["crypto"].randomUUID()',
+    'global.Math.random()',
+    'global.globalThis.Date.now()',
+    'globalThis.global.Date.now()',
+    'const root = global; root.Date.now()',
+    'const { Date: Clock } = globalThis; Clock.now()',
+    'const { process: hostProcess } = global; hostProcess.cwd()',
+    'const math = globalThis.Math; math.random()',
+    'const math = global.Math; math.random()',
+    'const math = Math; math.random()',
+    'const { random } = Math; random()',
+    'globalThis.Math[key]()',
+    'class Local { static { var global = {} } }; global.Date.now()',
+    'function local(value = global.Date.now()) { var global = {}; return value }',
+    'function local() { { function global() {} }; return globalThis.Date.now() }',
+    'switch (global.Date.now()) { case 1: const global = {} }',
+  ]) assert.equal(classifyDurability(source).durability, 'volatile', source)
+  for (const source of [
+    'function local(global) { return global.Date.now() }',
+    'const globalThis = { Date: { now: () => 1 } }; globalThis.Date.now()',
+    'if (true) { var global = { Date: { now: () => 1 } } }; global.Date.now()',
+    '{ const global = { Date: { now: () => 1 } }; global.Date.now() }',
+    'global.Math.max(1, 2)',
+    'globalThis.Math["max"](1, 2)',
+    'class Local { static { var global = { Date: { now: () => 1 } }; global.Date.now() } }',
+    'function local() { if (true) { var global = { Date: { now: () => 1 } } }; return global.Date.now() }',
+    'const Local = class global { static Date = { now: () => 1 }; static value = global.Date.now() }',
+    'switch (1) { case 1: const global = { Date: { now: () => 1 } }; global.Date.now() }',
+  ]) assert.equal(classifyDurability(source).durability, 'durable', source)
+})
+
+test('normalizes executable AST ranges and parser failures to the cell source', () => {
+  for (const separator of ['\n', '\r\n', '\r', '\u2028', '\u2029']) {
+    const source = `const first = /x/;${separator}const second: number = 2`
+    const parsed = parseExecutableCell(source, { eraseTypes: true })
+    const second = parsed.body.body[1]
+    assert.equal(second.start, source.indexOf('const second'))
+    assert.equal(second.loc.start.line, 2)
+    assert.equal(second.loc.start.column, 0)
+    assert.equal(second.loc.end.line, 2)
+    assert.equal(second.declarations[0].id.loc.start.line, 2)
+    assert.equal(second.declarations[0].init.loc.end.line, 2)
+    assert.equal(parsed.code.length, source.length)
+    assert.equal(parsed.body.start, 0)
+    assert.equal(parsed.body.end, source.length)
+  }
+  assert.throws(() => parseExecutableCell('return ('), error => {
+    assert.deepEqual(error.cellPosition, { line: 1, column: 9 })
+    assert.doesNotMatch(error.message, /\(\d+:\d+\)/)
+    return true
+  })
+})
+
+test('maps rewritten parser failures through original module positions', () => {
+  for (const [source, line] of [
+    ['import type { T } from "./t"; enum E { A }', 1],
+    ['import type { T } from "./t"; /*字*/ enum E { A }', 1],
+    ['import type { T } from "./t";\r\n enum E { A }', 2],
+    ['import type { T } from "./t";\u2028 enum E { A }', 2],
+  ]) {
+    const column = source.split(/\r\n|[\n\r\u2028\u2029]/u).at(-1).indexOf('enum') + 1
+    assert.throws(() => prepare(source), error => {
+      assert.deepEqual(error.cellPosition, { line, column })
+      assert.doesNotMatch(error.message, /\(\d+:\d+\)/)
+      return true
+    })
+  }
+})
+
+test('returns one preparation shape for successful, policy-colliding and reserved declarations', () => {
+  const options = { bindingPolicy: true, rewritesEnabled: ENABLED }
+  const success = prepareProgram('const value = 1; return value', options)
+  const protectedCollision = prepareProgram('const value = 1', {
+    ...options, knownBindings: new Set(['value']), bindingPolicy: false,
+  })
+  const reservedCollision = prepareProgram('const tools = 1', {
+    ...options, reservedBindings: new Set(['tools']),
+  })
+  for (const rejected of [protectedCollision, reservedCollision]) {
+    assert.deepEqual(Object.keys(rejected).sort(), Object.keys(success).sort())
+    assert.equal(rejected.collisions.length, 1)
+    assert.equal(rejected.returnSignal, undefined)
+    assert.ok(rejected.commitTargets instanceof Set)
+    assert.ok(Array.isArray(rejected.sourceMap))
+  }
+  assert.throws(() => prepareProgram(null, options), /program must be a string/)
 })
 
 test('keeps return rewriting at the cell boundary across every catch binding shape', () => {

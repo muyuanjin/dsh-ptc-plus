@@ -69,13 +69,13 @@ Client half 通过 `settings.plugin.item` 卡片呈现全部配置。`enabled` �
 
 prompt assembly 为每个 PTC request 取得一次当前启用条目快照，作为随后 dispatch 的期望集合。`tools:ptc-plus-user-binding-defaults` 从首轮通过追加的 PTC API catalog 展示条目提示词及按开关选择的源码派生接口，按稳定 ID 排序，只描述配置 API 与执行时初始化契约；组装不执行源码，也不读取激活状态或加入 revision。`/binding` 保存并启用、会话中途启停、删除或修改模型上下文后，下一次宿主允许且接受的步骤追加当前说明或撤销旧说明，无需等待激活。条目变化不改写 system、tool schema、顺序或旧消息；未变说明按已提交日志与公共 ordered surface 去重，重启后继续使用相同证据。停用条目不贡献内容，关闭声明且提示词为空的条目同样省略。
 
-配置段是全局绑定提示词与接口的唯一注入来源，不包含实现源码；成功初始化、session-local shadow 和 worker 重建本身不生成活动公告，也不触发相同配置重发。执行结果与诊断拥有实际行为证据；需要验证可用性时只对已知名称做无副作用观察。历史 `tools:ptc-plus-user-bindings` 活动段保留读取支持，下一次允许且接受的快照撤销旧活动声明一次。`tools:sdk` 与 direct-tool schema 不随条目内容改变。配置 API 不证明当前值，也不延长被 compaction 遮蔽的 session-local 状态。runtime 在 cell preflight 前以整条 entry 为单位把期望集合映射到 BindingCatalog，再由 worker 激活；条目级失败产生诊断并从该 cell 排除，不阻塞独立代码。失败 initializer 一旦发起 program call，整个 cell 进入 volatile，因此只包含成功条目的结果 snapshot 不会被误作该调用的 cold replay source。
+配置段是全局绑定提示词与接口的唯一注入来源，不包含实现源码；成功初始化、session-local shadow 和 worker 重建本身不生成活动公告，也不触发相同配置重发。执行结果与诊断拥有实际行为证据；需要验证可用性时只对已知名称做无副作用观察。历史 `tools:ptc-plus-user-bindings` 活动段保留读取支持，下一次允许且接受的快照撤销旧活动声明一次。`tools:sdk` 与 direct-tool schema 不随条目内容改变。配置 API 不证明当前值，也不延长被 compaction 遮蔽的 session-local 状态。runtime 在 cell preflight 前把期望集合映射到 BindingCatalog，再由 worker 激活：当前覆盖粒度为 `per-name`，同名 session-local binding 只覆盖对应全局名称，同条目的其他名称继续激活；v1-v7 历史 cell 保留整条 entry 退出的旧粒度。条目级失败产生诊断并从该 cell 排除，不阻塞独立代码。失败 initializer 一旦发起 program call，整个 cell 进入 volatile，因此只包含成功条目的结果 snapshot 不会被误作该调用的 cold replay source。
 
-worker 对 namespace 成员和 top-level 导出保留 ECMAScript module live read；对顶层名称的赋值或重声明将该名称转换为 session-local binding，并使整个来源条目退出后续全局激活。binding module 使用稳定 worker-global proxy 访问当前 request 的全部 program namespace；proxy 在调用时读取 AsyncLocalStorage 中的原 cell lease，因此旧 continuation 即使恰逢下一 cell 运行也不能借用其 authority。新 namespace 可在后续 request 安装，已消失 namespace 的 proxy 不再提供 member；与任何既有 worker global 冲突时，bridge 在写入 global 前拒绝整个安装，避免覆盖 Node intrinsic 或留下部分 namespace。一个导出闭包一旦可能被普通 session binding 保存，worker 就无法证明其不可达，因此相应 synthetic-module 解析基准与已安装 proxy 保守保留到 worker 结束。worker 从未成功暴露过条目时，disabled 或 empty activation 不安装 bridge；若本次尝试全部失败，则在执行 cell 前移除本次安装的 bridge。
+worker 对 namespace 成员和 top-level 导出保留 ECMAScript module live read；对顶层名称的赋值或重声明将该名称转换为 session-local binding，并使该名称在后续全局激活中保持 session-local 覆盖，同一条目的其他名称不受影响；v1-v7 历史 cell 仍按整条来源条目退出。binding module 使用稳定 worker-global proxy 访问当前 request 的全部 program namespace；proxy 在调用时读取 AsyncLocalStorage 中的原 cell lease，因此旧 continuation 即使恰逢下一 cell 运行也不能借用其 authority。新 namespace 可在后续 request 安装，已消失 namespace 的 proxy 不再提供 member；与任何既有 worker global 冲突时，bridge 在写入 global 前拒绝整个安装，避免覆盖 Node intrinsic 或留下部分 namespace。一个导出闭包一旦可能被普通 session binding 保存，worker 就无法证明其不可达，因此相应 synthetic-module 解析基准与已安装 proxy 保守保留到 worker 结束。worker 从未成功暴露过条目时，disabled 或 empty activation 不安装 bridge；若本次尝试全部失败，则在执行 cell 前移除本次安装的 bridge。
 
 配置段以消息文本直接投递，不进入 system renderer；提示词与声明中的 `{{...}}` 保持字面量，不被解释为宿主变量。投递遵守 runtime-context suppression、取消和步骤准入，解除屏蔽后的下一请求同步当前说明。worker 对同一条目 ID 只比较源码、scope、namespace 调用名和有序导出列表来决定模块复用；模型上下文、purpose 或 top-level 显示名称变化不重置模块状态，也不重复初始化。
 
-每个结算 cell 把实际激活的完整 snapshot 放入私有 `meta.dshPtcPlusUserBindings`。包含模型上下文的完整 fingerprint 继续拥有快照校验与 provenance。snapshot v2 的 `transform` 由固定版本的 `internal/typescript-transform.js` 编译器 owner 提供，并参与快照 fingerprint；恢复先验证转换代际，不能用当前编译器替代未知历史转换器。未记录该代际的非空 v1 snapshot 按 unknown-boundary 规则收缩，空 v1 snapshot 保持原 fingerprint 和恢复资格。journal v6 的 `userBindingsReusePolicy` 为新 cell 记录 `implementation-v1`；v1-v5 则迁移为 `fingerprint-v1`。对仍可证明的历史，cold replay 重新验证源码及其所有派生字段，逐 cell 应用记录的复用策略，保留因 purpose 或 top-level 显示名称变化而发生的模块重置；接续的 live cell 使用新策略，不因策略切换本身重置模块。恢复不读取当前文件来替换过去状态，也不重新派发初始化中的宿主调用。缺失或未知策略与其他无法证明的 metadata 一样，按 session recovery 的 unknown-boundary 规则收缩。
+每个结算 cell 把实际激活的完整 snapshot 放入私有 `meta.dshPtcPlusUserBindings`。包含模型上下文的完整 fingerprint 继续拥有快照校验与 provenance。snapshot v2 的 `transform` 由固定版本的 `internal/typescript-transform.js` 编译器 owner 提供，并参与快照 fingerprint；恢复先验证转换代际，不能用当前编译器替代未知历史转换器。未记录该代际的非空 v1 snapshot 按 unknown-boundary 规则收缩，空 v1 snapshot 保持原 fingerprint 和恢复资格。journal 的 `userBindingsReusePolicy` 为新 cell 记录 `implementation-v1`；v1-v5 则迁移为 `fingerprint-v1`，v6 保留其记录值。覆盖粒度与复用代际相互独立：`userBindingsShadowPolicy` 为新 cell 记录 `per-name`，v1-v7 迁移为 `whole-entry`；`userBindingNames` 按名称记录该 cell 结算时的 provider/local/absent/unknown 事实，provider 事实另带 `entryId`，`whole-entry`、noop 与 discarded cell 为显式 `null`，并与并行快照共同校验名称证据的完整性与来源。对仍可证明的历史，cold replay 重新验证源码及其所有派生字段，逐 cell 应用记录的复用策略，保留因 purpose 或 top-level 显示名称变化而发生的模块重置；接续的 live cell 使用新策略，不因策略切换本身重置模块。恢复不读取当前文件来替换过去状态，也不重新派发初始化中的宿主调用。缺失或未知策略与其他无法证明的 metadata 一样，按 session recovery 的 unknown-boundary 规则收缩。
 
 `internal/user-bindings-owner.js` 只在 `userBindingsEnabled` 开启时经 `internal/host-rpc.js` 注册由宿主 Gateway、Host/Origin fence 与浏览器认证保护的管理 Remote。它从精确 agent scope 的公共 `run_code` tool view 判断资格，在 agent 创建和 `tools/change` 时协调 `/binding`，不依赖 preset 名称。命令 registration 由该 agent 的注入 fiber 持有；命令服务迟到时保留 pending fiber，回调若已失去资格则失败并清理占位。生命周期监听的安装代际独立于请求与 projection 代际，不能因 projection 就绪而跳过注册。Agent disposal 只清理该精确 Agent 的资源，session disposal 才按 session ID 清空。Client 从 Host command directory 判断首轮前的 composer 编写入口，已有文本不被覆盖。REPL 全局绑定区和 Settings 管理弹窗复用完整工作台，通过 RPC 管理持久条目，不依赖当前存在 PTC 会话；会话观察及其独立 UI metadata 边界见 [ADR 0024](adr/0024-repl-console-observation.md)。
 
@@ -132,15 +132,20 @@ CodeRuntime request 已携带的 owner-provided program namespace 会被原样�
 
 ```ts
 {
-  version: 6,
+  version: 8,
   bindingPolicy: {
     variableRedeclarations: boolean,
     functionClassRedeclarations: boolean
   },
   rewritePolicy: { autoRewriteImports, autoStripExports, autoSplitRedeclarations },
-  moduleSemantics: { defaultExportBinding: "legacy-variable" | "live-readonly" },
+  moduleSemantics: {
+    defaultExportBinding: "legacy-variable" | "live-readonly",
+    importExpressionBoundary: "legacy" | "statement-safe"
+  },
   userBindingsFingerprint: string | null,
   userBindingsReusePolicy: "fingerprint-v1" | "implementation-v1",
+  userBindingsShadowPolicy: "whole-entry" | "per-name",
+  userBindingNames: { name, state, entryId? }[] | null,
   status: "durable" | "volatile" | "discarded" | "noop",
   calls: CallTranscript[],
   operations: StateOperation[],
@@ -151,7 +156,7 @@ CodeRuntime request 已携带的 owner-provided program namespace 会被原样�
 }
 ```
 
-`bindingPolicy` 与 `rewritePolicy` 固化可配置的 cell 语言行为；`moduleSemantics` 固化不可配置的 lowering 代际。当前 journal 写入 `live-readonly` default-export alias，v1-v3 迁移为 `legacy-variable`，因此 cold replay 不从当前实现或源码猜测历史 `__default` 的可写性。`userBindingsFingerprint` 以 `null` 证明不存在 Global User Binding 输入，或以 SHA-256 绑定并行私有快照；声明存在但快照缺失或不一致时，node 形成 unknown boundary。`calls` 只保存 global、member、PTC Value Graph 编码的 args/result 或 error，以及 settlement 序号。cold replay 校验调用名称、参数、数量和提交顺序，并按 recorded settlement order 释放 recorded result；不会重新 dispatch program binding 或重做外部 effect。该规则同样适用于 native tools、owner-provided namespace 和 `code.run`，不按名称分支。Cordis 的进程内对象不会因此被宣称已恢复；presentation 可以从已验证 transcript 派生重新检查要求，但不能改变 replay。若基础设施终止时仍有未结算 binding，heap 回滚到 durable frontier，discarded journal 以最先观察到的 `global.member` 保留 possible-effect boundary。effect、completeness 和 source metadata 属于 capability explorer，不伪装成 journal 字段。
+`bindingPolicy` 与 `rewritePolicy` 固化可配置的 cell 语言行为；`moduleSemantics` 固化不可配置的 lowering 代际。当前 journal 写入 `live-readonly` default-export alias 与 `statement-safe` 模块引用写入 lowering，v1-v3 迁移为 `legacy-variable`，v1-v6 的 `importExpressionBoundary` 迁移为 `legacy`，因此 cold replay 不从当前实现或源码猜测历史 `__default` 的可写性，也不猜测历史写入与前一语句的关系。`userBindingsFingerprint` 以 `null` 证明不存在 Global User Binding 输入，或以 SHA-256 绑定并行私有快照；声明存在但快照缺失或不一致时，node 形成 unknown boundary。`userBindingsShadowPolicy` 固化该 cell 的 session-local 覆盖粒度，`userBindingNames` 以按名称排序的 `{name, state}` 记录结算时的 provider/local/absent/unknown 事实，因此 cold replay 按历史粒度重放覆盖关系，不从当前实现推断 v1-v7 cell 的整条 entry 语义；provider 事实必须对应并行快照的条目 ID，并覆盖该快照公开的每个名称，否则 node 形成 unknown boundary。`calls` 只保存 global、member、PTC Value Graph 编码的 args/result 或 error，以及 settlement 序号。cold replay 校验调用名称、参数、数量和提交顺序，并按 recorded settlement order 释放 recorded result；不会重新 dispatch program binding 或重做外部 effect。该规则同样适用于 native tools、owner-provided namespace 和 `code.run`，不按名称分支。Cordis 的进程内对象不会因此被宣称已恢复；presentation 可以从已验证 transcript 派生重新检查要求，但不能改变 replay。若基础设施终止时仍有未结算 binding，heap 回滚到 durable frontier，discarded journal 以最先观察到的 `global.member` 保留 possible-effect boundary。effect、completeness 和 source metadata 属于 capability explorer，不伪装成 journal 字段。
 
 journal 通过 `run_code.output.presentationMeta` 附着到最终 result，再由 `tools/result` 做两阶段确认。缺失、损坏或被替换的 journal 形成 unknown/volatile 边界；未进入 runtime 的 call 由后续 `confirms` 以对应 `tool/call.seq` 证明为 no-op。volatile 源码保留在原 session log，但不参与 cold replay。
 

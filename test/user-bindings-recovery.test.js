@@ -5,7 +5,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { renderPrompt } from '@deepseek-ai/dsh-system-prompt'
+import { readRuntimeMessage } from '../internal/runtime-messages.js'
 import { JOURNAL_KEY } from '../internal/session-journal.js'
+import { JOURNAL_VERSION } from '../internal/session-journal-schema.js'
 import { USER_BINDING_DRAFT_META_KEY } from '../internal/user-binding-draft-projection.js'
 import { createUserBindingsSnapshot, storedUserBindingsDocument, USER_BINDINGS_META_KEY } from '../internal/user-bindings.js'
 import { appendRunCodeEvents, fixture, ptcAgent } from './plugin-fixture.js'
@@ -55,6 +57,29 @@ function configuredBindingPrompt(assembly) {
   return assembly.ptcContexts.find(item => item.name === 'tools:ptc-plus-user-binding-defaults')?.text ?? ''
 }
 
+// A configured module records its own evaluation through the worker realm, so the
+// observation stays valid before any cell supplies host program bindings.
+async function evaluationCount(log) {
+  try {
+    return (await readFile(log, 'utf8')).split('\n').filter(line => line.length > 0).length
+  } catch (error) {
+    if (error.code === 'ENOENT') return 0
+    throw error
+  }
+}
+
+function evaluationWitness(log) {
+  return {
+    id: 'witness',
+    name: 'evaluationWitness',
+    scope: 'namespace',
+    purpose: '',
+    enabled: true,
+    modelContext: { includeDeclaration: false, instructions: '' },
+    source: `import { appendFileSync } from "node:fs"\nappendFileSync(${JSON.stringify(log)}, "evaluated\\n")\nexport const value = 7`,
+  }
+}
+
 function appendEditCall(events, callId, args) {
   const seq = events.length
   events.push({
@@ -96,7 +121,13 @@ test('advertises configured APIs before activation, keeps the prefix stable and 
   assert.equal(assembly.contexts.some(item => item.name === 'tools:ptc-plus-user-bindings'), false)
   const defaults = configuredBindingPrompt(assembly)
   assert.match(defaults, /declare const defaults/)
-  assert.doesNotMatch(defaults, /initialization can fail|runtime.context|DSH authority/)
+  // The configured API reference is delivered as the binding catalog, not as recovery
+  // status, a notice, or a diagnostic, and it carries no entry source or error text.
+  const catalog = assembly.messages.map(message => readRuntimeMessage(message))
+    .find(record => record?.form === 'catalog')
+  assert.deepEqual(catalog?.sections.map(section => section.name), ['tools:ptc-plus-user-binding-defaults'])
+  assert.equal(assembly.messages.some(message => readRuntimeMessage(message)?.form === 'snapshot'), false)
+  assert.doesNotMatch(defaults, /PTC Plus recovery status|Global binding API reference for run_code|error\[PTC-|^help: |^phase: |^state: /m)
   assert.doesNotMatch(defaults, /private-1/)
 
   const firstCode = 'const recordedDefault = defaults.value'
@@ -283,7 +314,9 @@ test('new sessions discover opted-in API documentation without evaluating module
     modelContext: { includeDeclaration: false, instructions: '' } }
   const broken = { ...entry, id: 'broken', name: 'brokenTools', source: 'throw new Error("initializer failed"); export const value = 3',
     modelContext: { includeDeclaration: true, instructions: '' } }
-  await writeBindingsDocument(home, { entries: [entry, hidden, broken, { ...entry, id: 'disabled', name: 'disabledTools',
+  const evaluationLog = join(home, 'binding-evaluations.log')
+  const witness = evaluationWitness(evaluationLog)
+  await writeBindingsDocument(home, { entries: [entry, hidden, broken, witness, { ...entry, id: 'disabled', name: 'disabledTools',
     enabled: false, modelContext: {} }] })
   const state = fixture({ userBindingsEnabled: true })
   t.after(() => state.dispose())
@@ -295,18 +328,24 @@ test('new sessions discover opted-in API documentation without evaluating module
   assert.match(prompt, /Use fileTools.readText\(path\)/)
   assert.match(prompt, /readText\(path: string\): Promise<string>/)
   assert.match(prompt, /brokenTools/)
-  assert.doesNotMatch(prompt, /quietTools|Hidden instructions|disabledTools|tools.observe|initializer failed/)
-  assert.equal(initializations, 0)
-  const code = 'return [await fileTools.readText("example.txt"), quietTools.value]'
+  assert.doesNotMatch(prompt, /quietTools|evaluationWitness|disabledTools|tools\.observe|initializer failed/)
+  assert.doesNotMatch(prompt, /PTC Plus recovery status|Global binding API reference for run_code|error\[PTC-|^help: |^phase: |^state: /m)
+  // The witness is configured before assembly, so a module evaluation triggered by
+  // prompt assembly itself would already be observable here.
+  assert.equal(await evaluationCount(evaluationLog), 0)
+  const code = 'return [await fileTools.readText("example.txt"), quietTools.value, evaluationWitness.value]'
   const result = await state.runDurable(session.id, code, { observe: async () => { initializations++; return null } }, { session })
-  assert.deepEqual(result.value, ['example.txt', 2])
+  assert.deepEqual(result.value, ['example.txt', 2, 7])
   assert.equal(initializations, 1)
+  assert.equal(await evaluationCount(evaluationLog), 1)
   appendRunCodeEvents(session.events, 'first-use', code, result)
   const after = await rememberRequest(state, session, agent)
   assert.deepEqual(after.sections, assembly.sections)
   assert.equal(renderPrompt(after), renderPrompt(assembly))
   assert.deepEqual(after.ptcContexts, assembly.ptcContexts)
-  assert.deepEqual(result.meta[USER_BINDINGS_META_KEY].entries.map(entry => entry.id), ['files', 'hidden'])
+  assert.equal(initializations, 1)
+  assert.equal(await evaluationCount(evaluationLog), 1)
+  assert.deepEqual(result.meta[USER_BINDINGS_META_KEY].entries.map(entry => entry.id), ['files', 'hidden', 'witness'])
   await state.dispose()
 
   await writeBindingsDocument(home, { entries: [{ ...entry, modelContext: { includeDeclaration: false, instructions: '' } }] })
@@ -383,6 +422,7 @@ test('model-context updates preserve live module state and recorded-value cold r
     const catalog = await rpc('list', {}, new AbortController().signal)
     assert.equal(catalog.ok, true)
     const saved = await rpc('save', {
+      intent: 'update', originalId: entry.id,
       entry: { ...entry, ...(modelContext === undefined ? {} : { modelContext }) },
       expectedRevision: catalog.value.revision,
     }, new AbortController().signal)
@@ -410,6 +450,72 @@ test('model-context updates preserve live module state and recorded-value cold r
   assert.equal(result.value, 5)
   assert.equal(initializations, 1)
   assert.equal(result.meta[JOURNAL_KEY].status, 'durable')
+})
+
+test('keeps per-name overrides through configured entry removal, replacement and cold recovery', async t => {
+  const home = await mkdtemp(join(tmpdir(), 'ptc-plus-name-recovery-'))
+  t.after(() => rm(home, { recursive: true, force: true }))
+  const previousHome = process.env.DSH_HOME
+  process.env.DSH_HOME = home
+  t.after(() => {
+    if (previousHome === undefined) delete process.env.DSH_HOME
+    else process.env.DSH_HOME = previousHome
+  })
+  const entry = {
+    id: 'pair', name: 'pair', scope: 'top-level', enabled: true,
+    source: 'await tools.observe({}); export const alpha = 1; export let beta = 2',
+  }
+  await writeBindingsDocument(home, { entries: [entry] })
+  const session = { id: 'configured-name-recovery', events: [] }
+  const agent = ptcAgent(session.id, session)
+  let initializations = 0
+  const functions = { observe: async () => { initializations++; return 'initialized' } }
+  let rpc
+  const first = fixture({ userBindingsEnabled: true }, { bindingRpc: handler => { rpc = handler } })
+  t.after(() => first.dispose())
+  await rememberRequest(first, session, agent)
+  const code = 'alpha = { local: true }; const localAlpha = alpha; const savedBeta = beta; void 0'
+  const executed = await first.runDurable(session.id, code, functions, { session })
+  assert.equal(executed.isError, false)
+  assert.deepEqual(executed.meta[JOURNAL_KEY].completion, { kind: 'return', hasValue: false })
+  assert.deepEqual(executed.meta[JOURNAL_KEY].userBindingNames, [
+    { name: 'alpha', state: 'local' }, { name: 'beta', state: 'provider', entryId: 'pair' },
+  ])
+  assert.deepEqual(executed.meta[USER_BINDINGS_META_KEY].entries[0].symbols, ['alpha', 'beta'])
+  appendRunCodeEvents(session.events, 'local-alpha', code, executed)
+  const catalog = await rpc('list', {}, new AbortController().signal)
+  assert.equal(catalog.ok, true)
+  const removed = await rpc('remove', { id: 'pair', expectedRevision: catalog.value.revision }, new AbortController().signal)
+  assert.equal(removed.ok, true)
+  await rememberRequest(first, session, agent)
+  const absentCode = 'return [alpha === localAlpha, typeof beta, savedBeta]'
+  const absent = await first.runDurable(session.id, absentCode, functions, { session })
+  assert.deepEqual(absent.value, [true, 'undefined', 2])
+  appendRunCodeEvents(session.events, 'removed-pair', absentCode, absent)
+  assert.equal(initializations, 1)
+  const emptyCatalog = await rpc('list', {}, new AbortController().signal)
+  const replaced = await rpc('save', {
+    intent: 'create', entry: { ...entry, source: entry.source.replace('beta = 2', 'beta = 20') },
+    expectedRevision: emptyCatalog.value.revision,
+  }, new AbortController().signal)
+  assert.equal(replaced.ok, true)
+  await rememberRequest(first, session, agent)
+  const replacementCode = 'return [alpha === localAlpha, beta, savedBeta]'
+  const replacement = await first.runDurable(session.id, replacementCode, functions, { session })
+  assert.deepEqual(replacement.value, [true, 20, 2])
+  assert.equal(initializations, 2)
+  assert.deepEqual(replacement.meta[USER_BINDINGS_META_KEY].entries[0].symbols, ['alpha', 'beta'])
+  appendRunCodeEvents(session.events, 'replacement-pair', replacementCode, replacement)
+  await first.dispose()
+  const restored = fixture({ userBindingsEnabled: true })
+  t.after(() => restored.dispose())
+  await rememberRequest(restored, session, agent)
+  const continued = await restored.runDurable(session.id, replacementCode, functions, { session })
+  assert.deepEqual(continued.value, [true, 20, 2])
+  assert.equal(initializations, 2)
+  assert.deepEqual(continued.meta[JOURNAL_KEY].calls, [])
+  assert.deepEqual(continued.meta[JOURNAL_KEY].diagnostics, [])
+  assert.equal(continued.meta.dshPtcPlusRecoveryBoundaries, undefined)
 })
 
 test('contracts unversioned version 5 bindings and preserves resets when the transform is proved', async t => {
@@ -460,7 +566,7 @@ test('contracts unversioned version 5 bindings and preserves resets when the tra
       assert.equal(current.meta[JOURNAL_KEY].diagnostics.filter(item => item.code === 'PTC-R002').length,
         !provedTransform && generation === 0 ? 1 : 0)
       assert.equal(dispatches, provedTransform || scenario.initializations === 0 ? 0 : 1)
-      assert.equal(current.meta[JOURNAL_KEY].version, 6)
+      assert.equal(current.meta[JOURNAL_KEY].version, JOURNAL_VERSION)
       assert.equal(current.meta[JOURNAL_KEY].userBindingsReusePolicy, 'implementation-v1')
       appendRunCodeEvents(session.events, `current-${generation}`, probe, current)
       await state.dispose()
@@ -631,6 +737,55 @@ test('contracts a self-consistent historical snapshot with an invalid identifier
   const next = await restored.runDurable(session.id, 'return current + 1', {}, { session })
   assert.equal(next.value, 3)
   assert.equal(next.meta.dshPtcPlusRecoveryBoundaries, undefined)
+})
+
+test('contracts ambient module history before cold initialization and keeps the current calculation available', async t => {
+  const home = await mkdtemp(join(tmpdir(), 'ptc-plus-ambient-recovery-'))
+  t.after(() => rm(home, { recursive: true, force: true }))
+  const previousHome = process.env.DSH_HOME
+  process.env.DSH_HOME = home
+  t.after(() => {
+    if (previousHome === undefined) delete process.env.DSH_HOME
+    else process.env.DSH_HOME = previousHome
+  })
+  for (const [index, bindingSource] of [
+    'export const value = global.Date.now()',
+    'const { Date: Clock } = globalThis; export const value = Clock.now()',
+  ].entries()) {
+    const configured = document(1)
+    configured.entries[0].source = bindingSource
+    await writeBindingsDocument(home, configured)
+    const session = { id: `ambient-module-recovery-${index}`, events: [] }
+    const agent = ptcAgent(`ambient-module-agent-${index}`, session)
+    const first = fixture({ userBindingsEnabled: true })
+    t.after(() => first.dispose())
+    await rememberRequest(first, session, agent)
+    const source = 'const saved = defaults.value; return undefined'
+    const executed = await first.executeRun(session.id, source, {}, { session })
+    assert.equal(executed.raw.error, undefined)
+    assert.equal(executed.result.meta[JOURNAL_KEY].status, 'volatile')
+    assert.equal(executed.result.meta[USER_BINDINGS_META_KEY].entries[0].durability, 'volatile')
+    assert.equal(typeof (await first.run(session.id, 'return saved', {}, { session })).value, 'number')
+    const historical = structuredClone(executed.result)
+    historical.meta[JOURNAL_KEY].status = 'durable'
+    delete historical.meta[JOURNAL_KEY].volatileReason
+    historical.meta[USER_BINDINGS_META_KEY].entries[0].durability = 'durable'
+    delete historical.meta[USER_BINDINGS_META_KEY].entries[0].volatileReason
+    appendRunCodeEvents(session.events, 'ambient-module', source, historical)
+    await first.dispose()
+    await writeBindings(home, 2)
+    const restored = fixture({ userBindingsEnabled: true })
+    t.after(() => restored.dispose())
+    await rememberRequest(restored, session, agent)
+    const currentSource = 'const current = defaults.value; return [typeof saved, current]'
+    const current = await restored.runDurable(session.id, currentSource, {}, { session })
+    assert.deepEqual(current.value, ['undefined', 2])
+    assert.equal(current.meta.dshPtcPlusRecoveryBoundaries.length, 1)
+    appendRunCodeEvents(session.events, 'after-ambient-boundary', currentSource, current)
+    const next = await restored.runDurable(session.id, 'return current + 1', {}, { session })
+    assert.equal(next.value, 3)
+    assert.equal(next.meta.dshPtcPlusRecoveryBoundaries, undefined)
+  }
 })
 
 test('cold-replays the binding snapshot used by a derived edit cell', async (t) => {

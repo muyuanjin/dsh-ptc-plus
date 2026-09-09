@@ -1,22 +1,17 @@
 import { assertFields, isRecord } from './record-utils.js'
+import {
+  VALUE_CODEC,
+  DEFAULT_VALUE_LIMITS,
+  VALUE_ENVELOPE_FIELDS as ENVELOPE_FIELDS,
+  VALUE_OBJECT_FIELDS as OBJECT_NODE_FIELDS,
+  VALUE_ARRAY_FIELDS as ARRAY_NODE_FIELDS,
+  VALUE_UNDEFINED_FIELDS as UNDEFINED_FIELDS,
+  VALUE_NUMBER_FIELDS as NUMBER_FIELDS,
+  VALUE_BIGINT_FIELDS as BIGINT_FIELDS,
+  VALUE_REFERENCE_FIELDS as REFERENCE_FIELDS,
+} from './value-wire-schema.js'
 
-export const VALUE_CODEC = 'ptc-value-graph/v1'
-
-export const DEFAULT_VALUE_LIMITS = Object.freeze({
-  maxNodes: 100_000,
-  maxEdges: 1_000_000,
-  maxArrayLength: 1_000_000,
-  maxBigIntDigits: 100_000,
-  maxStringBytes: 64 * 1024 * 1024,
-})
-
-const ENVELOPE_FIELDS = new Set(['codec', 'root', 'nodes'])
-const OBJECT_NODE_FIELDS = new Set(['type', 'prototype', 'entries'])
-const ARRAY_NODE_FIELDS = new Set(['type', 'length', 'entries'])
-const UNDEFINED_FIELDS = new Set(['tag'])
-const NUMBER_FIELDS = new Set(['tag', 'value'])
-const BIGINT_FIELDS = new Set(['tag', 'value'])
-const REFERENCE_FIELDS = new Set(['tag', 'index'])
+export { VALUE_CODEC, DEFAULT_VALUE_LIMITS } from './value-wire-schema.js'
 const IDENTIFIER = /^[A-Za-z_$][A-Za-z0-9_$]*$/
 
 function limitsOf(options = {}) {
@@ -338,7 +333,10 @@ function atomText(atom) {
 /** Deterministic bounded TS-like presentation. It is never a decode format. */
 export function renderValueWire(wire, options = {}) {
   const limits = limitsOf(options)
-  const normalized = normalizeValueWire(wire, limits)
+  return renderCanonicalValue(decodeCanonicalValue(wire, limits).wire, limits)
+}
+
+function renderCanonicalValue(normalized, limits) {
   const references = new Array(normalized.nodes.length).fill(0)
   const count = (atom) => {
     if (isRecord(atom) && atom.tag === 'reference') references[atom.index] += 1
@@ -416,6 +414,17 @@ export function renderValueWire(wire, options = {}) {
  * text. The untagged ranges overlap because a plain JSON root may itself be a string.
  */
 export function projectValueWire(wire, options = {}) {
-  const value = decodeValue(wire, options)
-  return isPlainJsonTree(value) ? value : renderValueWire(wire, options)
+  return prepareValueWire(wire, options).projectedValue
+}
+
+/** Validate once when canonical storage and outer presentation are both required. */
+export function prepareValueWire(wire, options = {}) {
+  const limits = limitsOf(options)
+  const canonical = decodeCanonicalValue(wire, limits)
+  return {
+    wire: canonical.wire,
+    projectedValue: isPlainJsonTree(canonical.value)
+      ? canonical.value
+      : renderCanonicalValue(canonical.wire, limits),
+  }
 }

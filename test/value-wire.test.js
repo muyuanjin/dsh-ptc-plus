@@ -7,14 +7,55 @@ import {
   encodeValue,
   isPlainJsonTree,
   normalizeValueWire,
+  prepareValueWire,
   projectValueWire,
   renderValueWire,
   valueWiresEqual,
 } from '../internal/value-wire.js'
+import { valueLimitsFromConfig } from '../internal/value-wire-schema.js'
 
 const ref = index => ({ tag: 'reference', index })
 
 const envelope = (root, nodes = []) => ({ codec: VALUE_CODEC, root, nodes })
+
+test('maps non-default runtime budgets without substituting codec defaults', () => {
+  const config = {
+    maxValueNodes: 7,
+    maxValueEdges: 11,
+    maxValueArrayLength: 13,
+    maxValueBigIntDigits: 17,
+    maxOutputBytes: 19,
+  }
+  assert.deepEqual(valueLimitsFromConfig(config), {
+    maxNodes: 7, maxEdges: 11, maxArrayLength: 13, maxBigIntDigits: 17, maxStringBytes: 19,
+  })
+  assert.throws(() => prepareValueWire(encodeValue('x'.repeat(20)), valueLimitsFromConfig(config)), /string budget/)
+})
+
+test('prepares owned canonical storage and rich presentation in a single validation', () => {
+  const shared = { value: 7 }
+  const source = encodeValue([shared, shared])
+  let rootReads = 0
+  const input = { ...source }
+  Object.defineProperty(input, 'root', {
+    enumerable: true,
+    get() { rootReads += 1; return source.root },
+  })
+  const prepared = prepareValueWire(input)
+  assert.deepEqual(prepared.wire, source)
+  assert.equal(prepared.projectedValue, '[<ref *1> {value: 7}, [Reference *1]]')
+  // Decode and canonical serialization each read the input root once.
+  assert.equal(rootReads, 2)
+  source.nodes[1].entries[0][1] = 99
+  assert.equal(decodeValue(prepared.wire)[0].value, 7)
+
+  const plain = prepareValueWire(encodeValue({ nested: [1, 2] }))
+  plain.projectedValue.nested[0] = 3
+  assert.deepEqual(decodeValue(plain.wire), { nested: [1, 2] })
+  for (const read of [decodeValue, normalizeValueWire, renderValueWire, projectValueWire, prepareValueWire]) {
+    assert.throws(() => read({ ...prepared.wire, extra: true }), /invalid PTC value envelope field extra/)
+  }
+})
 
 function expectInvalidWire(wire, pattern) {
   assert.throws(

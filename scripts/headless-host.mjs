@@ -1,10 +1,11 @@
 /** Shared Windows/WSL host facts for model-backed acceptance runners. */
 import { execFileSync, spawn } from 'node:child_process'
-import { readdir, readFile, rm, stat } from 'node:fs/promises'
-import { join, posix, win32 } from 'node:path'
+import { readdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { join, posix, relative, win32 } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { isDeepStrictEqual } from 'node:util'
 import { parseDocument, stringify } from 'yaml'
+import { npmCliCommand } from './npm-cli.mjs'
 import { RUNTIME_PROBE_PREFIX } from './repl-preflight.mjs'
 import { hostPersonaPatch, hostProviderConfig, hostToolRuntime, ptcToolsMode, readHostPersona } from './dsh-host-contract.mjs'
 
@@ -12,6 +13,10 @@ export const NEUTRAL_PERSONA = 'You are a coding agent powered by the {{model}} 
 export const HEADLESS_PREREQUISITE_CODE = 'PTC-EVAL-PREREQ'
 export const HEADLESS_CONFIG_CODE = 'PTC-EVAL-CONFIG'
 export const HEADLESS_TOOLS_MODE = 'ptc'
+/** Bounded grace for one owned process tree to exit after a termination request. */
+export const TERMINATION_GRACE_MS = 5_000
+/** Bounded grace for the owned tree killer itself to finish before it is abandoned. */
+export const TERMINATION_KILLER_MS = 2_000
 
 const jsYamlTag = {
   tag: 'tag:yaml.org,2002:js',
@@ -67,16 +72,136 @@ export function powershellPath(value) {
   return value.replaceAll("'", "''")
 }
 
-function terminateProcessTree(child, platform = process.platform) {
-  if (platform !== 'win32') {
-    child.kill()
-    return
+function hasExited(child) {
+  // Spawned children expose null before exit; injected fakes may omit the field entirely.
+  return child.exitCode != null || child.signalCode != null
+}
+
+/**
+ * Observe one owned child's exit and close boundaries from before an exit request can race them.
+ * Exit only proves the process ended; close is the stdio boundary that carries complete output,
+ * and a child that handed its pipes to a surviving descendant can exit long before it closes.
+ * `dispose` removes every listener and timer this observation owns.
+ */
+function observeProcessLifecycle(child) {
+  let exited = hasExited(child)
+  let closed = false
+  const waiters = new Set()
+  const onExit = () => { exited = true }
+  const onClose = () => {
+    exited = true
+    closed = true
+    for (const waiter of waiters) {
+      clearTimeout(waiter.timer)
+      waiter.resolve(true)
+    }
+    waiters.clear()
   }
-  const killer = spawn('taskkill.exe', ['/PID', String(child.pid), '/T', '/F'], {
-    stdio: 'ignore',
-    windowsHide: true,
+  child.on('exit', onExit)
+  child.on('close', onClose)
+  return {
+    exited: () => exited || hasExited(child),
+    closed: () => closed,
+    waitForClose(timeoutMs) {
+      if (closed) return Promise.resolve(true)
+      return new Promise((resolve) => {
+        const waiter = { resolve, timer: undefined }
+        waiter.timer = setTimeout(() => {
+          waiters.delete(waiter)
+          resolve(false)
+        }, timeoutMs)
+        waiter.timer.unref()
+        waiters.add(waiter)
+      })
+    },
+    dispose() {
+      child.removeListener('exit', onExit)
+      child.removeListener('close', onClose)
+      for (const waiter of waiters) {
+        clearTimeout(waiter.timer)
+        waiter.resolve(false)
+      }
+      waiters.clear()
+    },
+  }
+}
+
+/**
+ * Request one owned tree's exit within a bounded window. A tree killer that stalls, fails, or
+ * cannot start falls back to the direct child; the killer is itself owned and is terminated
+ * rather than awaited once it outlives `killerMs`.
+ */
+function requestProcessTreeExit(child, platform, spawnProcess, killerMs) {
+  if (platform !== 'win32') {
+    child.kill('SIGTERM')
+    return Promise.resolve()
+  }
+  let killer
+  try {
+    killer = spawnProcess('taskkill.exe', ['/PID', String(child.pid), '/T', '/F'], {
+      stdio: 'ignore',
+      windowsHide: true,
+    })
+  } catch {
+    child.kill()
+    return Promise.resolve()
+  }
+  return new Promise((resolve) => {
+    let settled = false
+    let timer
+    const finish = (failed) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      killer.removeListener('close', onClose)
+      killer.removeListener('error', onError)
+      // A killer we abandoned may still fail after we stop watching it.
+      killer.on('error', () => {})
+      if (failed) child.kill()
+      resolve()
+    }
+    const onError = () => finish(true)
+    const onClose = code => finish(code !== 0)
+    killer.once('error', onError)
+    killer.once('close', onClose)
+    timer = setTimeout(() => {
+      killer.kill()
+      killer.unref?.()
+      finish(true)
+    }, killerMs)
+    timer.unref()
   })
-  killer.once('error', () => child.kill())
+}
+
+/**
+ * Terminate one owned process tree within bounded waits. `terminated` reports observed exit;
+ * `closed` reports the stdio boundary that carries complete output; `escalated` records that the
+ * graceful request did not end the process before a forced kill was attempted. A process that
+ * already exited is never signalled again, and no wait here is unbounded.
+ */
+export async function terminateProcessTree(child, options = {}) {
+  const platform = options.platform ?? process.platform
+  const graceMs = options.graceMs ?? TERMINATION_GRACE_MS
+  const killerMs = options.killerMs ?? TERMINATION_KILLER_MS
+  const lifecycle = observeProcessLifecycle(child)
+  try {
+    if (lifecycle.closed()) return Object.freeze({ terminated: true, escalated: false, closed: true })
+    if (lifecycle.exited()) {
+      // Only the output boundary is still unknown; the process itself must not be signalled.
+      return Object.freeze({ terminated: true, escalated: false, closed: await lifecycle.waitForClose(graceMs) })
+    }
+    await requestProcessTreeExit(child, platform, options.spawn ?? spawn, killerMs)
+    if (await lifecycle.waitForClose(graceMs)) return Object.freeze({ terminated: true, escalated: false, closed: true })
+    if (lifecycle.exited()) {
+      // A retained pipe keeps the output boundary open after the process itself is gone.
+      return Object.freeze({ terminated: true, escalated: false, closed: false })
+    }
+    child.kill(platform === 'win32' ? undefined : 'SIGKILL')
+    const forcedClose = await lifecycle.waitForClose(graceMs)
+    return Object.freeze({ terminated: lifecycle.exited(), escalated: true, closed: forcedClose })
+  } finally {
+    lifecycle.dispose()
+  }
 }
 
 export async function runProcess(command, args, options = {}) {
@@ -92,25 +217,76 @@ export async function runProcess(command, args, options = {}) {
     let stderr = ''
     let timedOut = false
     let settled = false
-    const timeout = options.timeoutMs === undefined ? undefined : setTimeout(() => {
+    let timeout
+    const releaseStreams = () => {
+      child.stdout?.removeAllListeners('data')
+      child.stderr?.removeAllListeners('data')
+    }
+    const settle = (result) => {
+      if (settled) return
+      settled = true
+      if (timeout !== undefined) clearTimeout(timeout)
+      releaseStreams()
+      resolveProcess(result)
+    }
+    const fail = (error) => {
+      if (settled) return
+      settled = true
+      if (timeout !== undefined) clearTimeout(timeout)
+      releaseStreams()
+      reject(error)
+    }
+    const abandonProcess = () => {
+      // The owned process outlived its bounded cleanup window. Release our handles instead of
+      // keeping the runner alive, and stop pretending its stdio will still deliver output.
+      child.removeListener('close', onClose)
+      child.on('error', () => {})
+      for (const stream of [child.stdout, child.stderr]) {
+        if (stream === undefined || stream === null) continue
+        stream.on('error', () => {})
+        stream.destroy?.()
+      }
+      child.unref?.()
+    }
+    const unconfirmed = (detail) => {
+      // Bounded cleanup could not confirm the boundary this result needs; say so instead of waiting.
+      abandonProcess()
+      settle({
+        code: 1,
+        signal: undefined,
+        stdout,
+        stderr,
+        timedOut: true,
+        termination: 'unconfirmed',
+        ...(detail === undefined ? {} : { terminationError: detail }),
+        durationMs: Date.now() - startedAt,
+      })
+    }
+    function onClose(code, signal) {
+      settle({ code: code ?? 1, signal: signal ?? undefined, stdout, stderr, timedOut, durationMs: Date.now() - startedAt })
+    }
+    timeout = options.timeoutMs === undefined ? undefined : setTimeout(() => {
       timedOut = true
-      terminateProcessTree(child, options.platform)
+      terminateProcessTree(child, {
+        platform: options.platform,
+        graceMs: options.graceMs,
+        killerMs: options.killerMs,
+        spawn: options.spawn,
+      }).then((outcome) => {
+        if (settled) return
+        // Only an observed close settles through the close event with the real exit code and
+        // complete output; an observed exit alone does not prove the output boundary.
+        if (!outcome.terminated) unconfirmed('the owned process did not exit within the bounded termination grace')
+        else if (!outcome.closed) unconfirmed('the owned process exited but its stdio did not close within the bounded termination grace')
+      }, (error) => {
+        if (!settled) unconfirmed(error.message)
+      })
     }, options.timeoutMs)
     timeout?.unref()
     child.stdout.on('data', chunk => { stdout += chunk })
     child.stderr.on('data', chunk => { stderr += chunk })
-    child.once('error', (error) => {
-      if (settled) return
-      settled = true
-      if (timeout !== undefined) clearTimeout(timeout)
-      reject(error)
-    })
-    child.once('close', code => {
-      if (settled) return
-      settled = true
-      if (timeout !== undefined) clearTimeout(timeout)
-      resolveProcess({ code: code ?? 1, stdout, stderr, timedOut, durationMs: Date.now() - startedAt })
-    })
+    child.once('error', (error) => { fail(error) })
+    child.once('close', onClose)
   })
 }
 
@@ -466,15 +642,20 @@ export function removeTree(path) {
   return rm(path, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 })
 }
 
+/** Attach a cleanup failure to the primary error the shared formatter reports. */
+export function recordCleanupFailure(primaryError, cleanupError) {
+  if (primaryError !== null && (typeof primaryError === 'object' || typeof primaryError === 'function')) {
+    cleanupErrors.set(primaryError, cleanupError)
+  }
+}
+
 /** Remove one temporary tree while retaining an earlier failure as the primary diagnostic. */
 export async function cleanupOwnedPath(path, primaryError, options = {}) {
   try {
     await (options.removeTree ?? removeTree)(path)
   } catch (cleanupError) {
     if (primaryError === undefined) throw cleanupError
-    if (primaryError !== null && (typeof primaryError === 'object' || typeof primaryError === 'function')) {
-      cleanupErrors.set(primaryError, cleanupError)
-    }
+    recordCleanupFailure(primaryError, cleanupError)
   }
 }
 
@@ -498,4 +679,141 @@ export function formatHeadlessError(error) {
   return cleanup === undefined
     ? primary
     : `${primary}\nCleanup also failed: ${cleanup.stack ?? cleanup.message ?? String(cleanup)}`
+}
+
+/** Persist one process phase's output and reject the run when the phase itself failed. */
+export async function checkedPhase(result, { stdoutPath, stderrPath, failed, failureMessage }) {
+  await writeFile(stdoutPath, result.stdout)
+  await writeFile(stderrPath, result.stderr)
+  if (failed(result)) throw new Error(failureMessage)
+  return result
+}
+
+/** Redacted stdout is only meaningful when the dump itself succeeded. */
+function dumpArtifact(result) {
+  return { ...result, stdout: result.code === 0 ? redactHeadlessConfig(result.stdout) : '' }
+}
+
+function dumpFailure(result) {
+  return result.code !== 0 || result.stderr.trim() !== ''
+}
+
+/**
+ * Install the development plugin and resolve the neutral isolated configuration for every
+ * runner-declared variant. `host.dshHome` is the isolated home whose settings seed the route;
+ * the runner passes the host-session collaborators it imported so its own injected host contract
+ * stays authoritative; each runner keeps its variant patch options, validation oracle and report.
+ */
+export async function prepareHeadlessConfigs({
+  repoRoot,
+  env,
+  runtime,
+  host,
+  artifactRoot,
+  overlayRoot,
+  variants,
+  validate,
+  label,
+  invoke = dshInvocation,
+  resolveProvider = resolveHeadlessProvider,
+  runProcess: runProcessOption = runProcess,
+}) {
+  const relativeRoot = relative(repoRoot, artifactRoot)
+  const invocation = invoke(runtime)
+  const overlays = Object.fromEntries(variants.map(variant => [variant.id, join(overlayRoot, `${variant.id}.patch.yml`)]))
+  const install = await runProcessOption('pwsh.exe', [
+    '-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass',
+    '-File', windowsPath(join(repoRoot, 'scripts', 'install-dev.ps1')), runtime.profile,
+  ], { env: { ...env, DSH_DEV_INSTALL_NO_PAUSE: '1' }, timeoutMs: runtime.wallMs })
+  await checkedPhase(install, {
+    stdoutPath: join(artifactRoot, 'install.stdout.log'),
+    stderrPath: join(artifactRoot, 'install.stderr.log'),
+    failed: result => result.code !== 0,
+    failureMessage: `${label} plugin installation failed; see ${relativeRoot}/install.*.log`,
+  })
+
+  const baseDump = await runProcessOption('pwsh.exe', [
+    '-NoLogo', '-NoProfile', '-Command',
+    `${invocation} --profile '${powershellPath(runtime.profile)}' --dump-config`,
+  ], { env, timeoutMs: runtime.wallMs })
+  await checkedPhase(dumpArtifact(baseDump), {
+    stdoutPath: join(artifactRoot, 'base-config.stdout.yml'),
+    stderrPath: join(artifactRoot, 'base-config.stderr.log'),
+    failed: dumpFailure,
+    failureMessage: `${label} base DSH config preflight failed; see ${relativeRoot}`,
+  })
+  const baseRows = parseConfigDump(baseDump.stdout, 'base DSH config')
+  await resolveProvider(baseRows, runtime, host.dshHome)
+
+  const configs = {}
+  for (const variant of variants) {
+    await writeFile(overlays[variant.id], headlessConfigPatch(baseRows, runtime, variant.patchOptions))
+    await writeFile(
+      join(artifactRoot, `${variant.id}.patch.yml`),
+      redactHeadlessConfig(await readFile(overlays[variant.id], 'utf8')),
+    )
+    const dump = await runProcessOption('pwsh.exe', [
+      '-NoLogo', '-NoProfile', '-Command',
+      `${invocation} --profile '${powershellPath(runtime.profile)}' --patch '${powershellPath(windowsPath(overlays[variant.id]))}' --dump-config`,
+    ], { env, timeoutMs: runtime.wallMs })
+    await checkedPhase(dumpArtifact(dump), {
+      stdoutPath: join(artifactRoot, `${variant.id}-config.stdout.yml`),
+      stderrPath: join(artifactRoot, `${variant.id}-config.stderr.log`),
+      failed: dumpFailure,
+      failureMessage: `${label} ${variant.id} config preflight failed; see ${relativeRoot}`,
+    })
+    configs[variant.id] = parseConfigDump(dump.stdout, `${variant.id} DSH config`)
+  }
+  return Object.freeze({ baseRows, overlays, configs, evidence: await validate(configs, baseRows) })
+}
+
+/** Run the keyless request-contract preflight both model-backed runners require before paid work. */
+export async function preflightKeylessVerify({
+  repoRoot,
+  env,
+  runtime,
+  artifactRoot,
+  label,
+  runProcess: runProcessOption = runProcess,
+}) {
+  const command = npmCliCommand(['run', 'verify'])
+  const result = await runProcessOption(command.executable, command.args, {
+    cwd: repoRoot,
+    env,
+    timeoutMs: runtime.wallMs,
+  })
+  await checkedPhase(result, {
+    stdoutPath: join(artifactRoot, 'keyless.stdout.log'),
+    stderrPath: join(artifactRoot, 'keyless.stderr.log'),
+    failed: value => value.code !== 0 || value.timedOut,
+    failureMessage: `${label} keyless request-contract preflight failed; see ${relative(repoRoot, artifactRoot)}/keyless.*.log`,
+  })
+}
+
+/**
+ * Run one isolated DSH task and collect the session logs it produced.
+ * The caller keeps its own match conditions, scenario oracle and report rendering.
+ */
+export async function runHeadlessTask({
+  env,
+  runtime,
+  sessionsRoot,
+  task,
+  cwd,
+  overlay,
+  invoke = dshInvocation,
+  runProcess: runProcessOption = runProcess,
+}) {
+  const before = await snapshotSessionLogs(sessionsRoot)
+  const startedAt = Date.now()
+  let process
+  try {
+    process = await runProcessOption('pwsh.exe', [
+      '-NoLogo', '-NoProfile', '-Command',
+      `${invoke(runtime)} --profile '${powershellPath(runtime.profile)}' --patch '${powershellPath(windowsPath(overlay))}' '${powershellPath(task)}'`,
+    ], { cwd, env, timeoutMs: runtime.wallMs })
+  } catch (error) {
+    process = { code: 1, stdout: '', stderr: '', timedOut: false, durationMs: 0, infrastructureError: error.message }
+  }
+  return Object.freeze({ process, decoded: await changedSessionLogs(sessionsRoot, before, startedAt) })
 }

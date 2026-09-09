@@ -2,7 +2,9 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { derivePtcToolView } from '../src/client-activity.js'
 import { normalizeJournal } from '../internal/session-journal.js'
+import { JOURNAL_VERSION, JOURNAL_VERSIONS, PER_NAME_USER_BINDINGS_JOURNAL_VERSION } from '../internal/session-journal-schema.js'
 import { encodeValue } from '../internal/value-wire.js'
+import { DEFAULT_VALUE_LIMITS } from '../internal/value-wire-schema.js'
 
 const REWRITE_POLICY = Object.freeze({
   autoRewriteImports: true,
@@ -339,15 +341,110 @@ test('rejects non-canonical Value V1 property order', () => {
   }
 })
 
+test('keeps presentation validation bounded when a cell uses larger runtime limits', () => {
+  const length = DEFAULT_VALUE_LIMITS.maxArrayLength + 1
+  const wire = encodeValue(new Array(length), { maxArrayLength: length })
+  const candidate = normalizeJournal(journal())
+  const view = derivePtcToolView(result({
+    dshPtcPlus: { ...candidate, completion: { kind: 'return', hasValue: true, value: wire } },
+  }))
+  assert.equal(view.ptc, false)
+  assert.equal(view.code, 'return 1')
+  assert.equal(view.output, '1')
+  assert.deepEqual(view.features, [])
+})
+
 test('preserves feature evidence for versioned and legacy binding reuse policies', () => {
   const current = normalizeJournal(journal())
   for (const userBindingsReusePolicy of ['fingerprint-v1', 'implementation-v1']) {
     assert.equal(derivePtcToolView(result({ dshPtcPlus: { ...current, userBindingsReusePolicy } })).ptc, true)
   }
-  const legacy = { ...current, version: 5 }
+  const legacy = { ...current, version: 5, moduleSemantics: { defaultExportBinding: 'live-readonly' } }
   delete legacy.userBindingsReusePolicy
+  delete legacy.userBindingsShadowPolicy
+  delete legacy.userBindingNames
   assert.equal(derivePtcToolView(result({ dshPtcPlus: legacy })).ptc, true)
   assert.equal(derivePtcToolView(result({ dshPtcPlus: { ...legacy, userBindingsReusePolicy: 'implementation-v1' } })).ptc, false)
+})
+
+test('validates current and historical import-expression semantics independently', () => {
+  const current = normalizeJournal(journal())
+  for (const importExpressionBoundary of ['legacy', 'statement-safe']) {
+    assert.equal(derivePtcToolView(result({ dshPtcPlus: {
+      ...current,
+      moduleSemantics: { defaultExportBinding: 'live-readonly', importExpressionBoundary },
+    } })).ptc, true)
+  }
+  for (const importExpressionBoundary of [undefined, null, 'unknown']) {
+    assert.equal(derivePtcToolView(result({ dshPtcPlus: {
+      ...current,
+      moduleSemantics: { defaultExportBinding: 'live-readonly', importExpressionBoundary },
+    } })).ptc, false)
+  }
+  const historical = { ...current, version: 6, moduleSemantics: { defaultExportBinding: 'live-readonly' } }
+  delete historical.userBindingsShadowPolicy
+  delete historical.userBindingNames
+  assert.equal(derivePtcToolView(result({ dshPtcPlus: historical })).ptc, true)
+  assert.equal(derivePtcToolView(result({ dshPtcPlus: {
+    ...historical,
+    moduleSemantics: { ...historical.moduleSemantics, importExpressionBoundary: 'legacy' },
+  } })).ptc, false)
+})
+
+test('validates per-name facts while preserving historical whole-entry presentation', () => {
+  const current = {
+    ...normalizeJournal(journal()),
+    version: JOURNAL_VERSION,
+    userBindingsShadowPolicy: 'per-name',
+    userBindingNames: [
+      { name: 'alpha', state: 'local' },
+      { name: 'beta', state: 'provider', entryId: 'pair' },
+      { name: 'removed', state: 'absent' },
+      { name: 'uncertain', state: 'unknown' },
+    ],
+  }
+  assert.equal(derivePtcToolView(result({ dshPtcPlus: current })).ptc, true)
+  const malformed = [
+    { ...current, userBindingsShadowPolicy: undefined },
+    { ...current, userBindingsShadowPolicy: 'partial' },
+    { ...current, userBindingsShadowPolicy: 'whole-entry' },
+    ...[undefined, null, {}, [{}], [current.userBindingNames[0], current.userBindingNames[0]],
+      [{ name: 'beta', state: 'provider' }],
+      [{ name: 'beta', state: 'provider', entryId: 'pair', value: 2 }],
+      [{ name: 'alpha', state: 'local', entryId: 'pair' }],
+      [{ name: 'removed', state: 'absent', value: undefined }],
+      [{ name: 'uncertain', state: 'unknown', readable: true }],
+    ].map(userBindingNames => ({ ...current, userBindingNames })),
+  ]
+  for (const candidate of malformed) {
+    const view = derivePtcToolView(result({ dshPtcPlus: candidate }))
+    assert.equal(view.ptc, false)
+    assert.deepEqual(view.features, [])
+    assert.equal(view.code, 'return 1')
+    assert.equal(view.output, '1')
+  }
+  for (const version of JOURNAL_VERSIONS) {
+    if (version >= PER_NAME_USER_BINDINGS_JOURNAL_VERSION) continue
+    const historical = version < 4 ? journal({ version }) : {
+      ...current, version,
+      moduleSemantics: { defaultExportBinding: 'live-readonly', ...(version >= 7 ? { importExpressionBoundary: 'legacy' } : {}) },
+      userBindingsFingerprint: null,
+    }
+    delete historical.userBindingNames
+    delete historical.userBindingsShadowPolicy
+    if (version === 1) delete historical.rewritePolicy
+    if (version < 6) delete historical.userBindingsReusePolicy
+    if (version < 5) delete historical.userBindingsFingerprint
+    assert.equal(derivePtcToolView(result({ dshPtcPlus: historical })).ptc, true)
+    for (const extra of [{ userBindingsShadowPolicy: 'whole-entry' }, { userBindingNames: null }]) {
+      assert.equal(derivePtcToolView(result({ dshPtcPlus: { ...historical, ...extra } })).ptc, false)
+    }
+  }
+  for (const status of ['noop', 'discarded']) {
+    const settled = { ...current, status, calls: [], operations: [], userBindingNames: null }
+    assert.equal(derivePtcToolView(result({ dshPtcPlus: settled })).ptc, true)
+    assert.equal(derivePtcToolView(result({ dshPtcPlus: { ...settled, userBindingNames: [] } })).ptc, false)
+  }
 })
 
 test('ignores journals rejected by the complete closed metadata contract', () => {

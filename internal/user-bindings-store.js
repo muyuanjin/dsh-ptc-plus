@@ -239,6 +239,18 @@ export class UserBindingsStore {
     })
   }
 
+  /** Replace one existing entry; a missing id is a conflict, never a creation. */
+  update(value, expectedRevision) {
+    const entry = normalizeUserBindingEntry(value)
+    return this.mutate(expectedRevision, (document) => {
+      const index = document.entries.findIndex(candidate => candidate.id === entry.id)
+      if (index < 0) throw new Error(`binding entry ${JSON.stringify(entry.id)} does not exist`)
+      const entries = [...document.entries]
+      entries[index] = entry
+      return { entries }
+    })
+  }
+
   setEnabled(id, enabled, expectedRevision) {
     if (typeof enabled !== 'boolean') throw new TypeError('enabled must be a boolean')
     return this.mutate(expectedRevision, (document) => {

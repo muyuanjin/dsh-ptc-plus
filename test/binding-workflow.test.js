@@ -82,7 +82,9 @@ test('successful activation does not repeat configured prompts or interfaces in 
     modelContext: { includeDeclaration: true, instructions: 'Use fileTools.next() for the next count.' },
   }
   const catalog = (await host.rpc('list')).value
-  assert.equal((await host.rpc('save', { entry: configured, expectedRevision: catalog.revision })).ok, true)
+  assert.equal((await host.rpc('save', {
+    intent: 'create', originalId: null, entry: configured, expectedRevision: catalog.revision,
+  })).ok, true)
   const snapshots = () => host.events().filter(event => event.type === 'user/message'
     && readRuntimeMessage(event.data)?.form === 'catalog')
   const declarations = request => request.messages.flatMap(message => message.content)
@@ -117,7 +119,9 @@ test('initializer failure stays in the tool result without an activation announc
     modelContext: { includeDeclaration: true, instructions: 'Use brokenTools.value when available.' },
   }
   const catalog = (await host.rpc('list')).value
-  assert.equal((await host.rpc('save', { entry: configured, expectedRevision: catalog.revision })).ok, true)
+  assert.equal((await host.rpc('save', {
+    intent: 'create', originalId: null, entry: configured, expectedRevision: catalog.revision,
+  })).ok, true)
   const result = await host.run('return 0')
   assert.match(JSON.stringify(result.data.message.content), /initializer failed/)
   assert.deepEqual(result.data.meta.dshPtcPlusUserBindings.entries, [])
@@ -139,7 +143,9 @@ test('export failure and continuation retain values without repeating the bindin
     source: 'let value = 0; export function next(): number { return ++value }',
   }
   const catalog = (await host.rpc('list')).value
-  assert.equal((await host.rpc('save', { entry: configured, expectedRevision: catalog.revision })).ok, true)
+  assert.equal((await host.rpc('save', {
+    intent: 'create', originalId: null, entry: configured, expectedRevision: catalog.revision,
+  })).ok, true)
   await host.run('return auditCounter.next()')
   const failed = await host.run('export const exportProbe = 42; throw new Error("audit-export-failure")')
   assert.match(JSON.stringify(failed.data.message.content), /partially-applied/)
@@ -187,7 +193,9 @@ test('binding authoring and mid-session changes publish the prompt independently
   const changedPrompt = { ...authored, enabled: true, modelContext: { ...authored.modelContext,
     instructions: 'Use workflow.value() only when the task needs the saved value.' } }
   catalog = (await host.rpc('list')).value
-  assert.equal((await host.rpc('save', { entry: changedPrompt, expectedRevision: catalog.revision })).ok, true)
+  assert.equal((await host.rpc('save', {
+    intent: 'update', originalId: entry.id, entry: changedPrompt, expectedRevision: catalog.revision,
+  })).ok, true)
   const firstChangedRequest = host.requests.length
   await host.run('return workflow.value()')
   assert.ok(configuredBindingPrompt(host.requests[firstChangedRequest]).includes(changedPrompt.modelContext.instructions))
@@ -195,7 +203,9 @@ test('binding authoring and mid-session changes publish the prompt independently
   assert.doesNotMatch(configuredBindingPrompt(host.requests[firstChangedRequest]), /Render/)
   const promptOnly = { ...authored, enabled: true, modelContext: { includeDeclaration: false, instructions: 'Prefer workflow.value() over guessing defaults. Keep {{not valid}} and {{{nested}}} literal.' } }
   catalog = (await host.rpc('list')).value
-  assert.equal((await host.rpc('save', { entry: promptOnly, expectedRevision: catalog.revision })).ok, true)
+  assert.equal((await host.rpc('save', {
+    intent: 'update', originalId: entry.id, entry: promptOnly, expectedRevision: catalog.revision,
+  })).ok, true)
   await host.run('return workflow.value()')
   assert.ok(configuredBindingPrompt(host.requests.at(-1)).includes(promptOnly.modelContext.instructions))
   assert.doesNotMatch(configuredBindingPrompt(host.requests.at(-1)), /declare const workflow|Use workflow.value/)
@@ -236,7 +246,9 @@ test('initial binding prompts and changed interfaces honor host runtime-context 
   const host = await bindingWorkflowHost(t)
   const savedEntry = { ...entry, enabled: true, modelContext: { includeDeclaration: true, instructions: 'First request instructions.' } }
   let catalog = (await host.rpc('list')).value
-  assert.equal((await host.rpc('save', { entry: savedEntry, expectedRevision: catalog.revision })).ok, true)
+  assert.equal((await host.rpc('save', {
+    intent: 'create', originalId: null, entry: savedEntry, expectedRevision: catalog.revision,
+  })).ok, true)
   await host.run('return 0')
   assert.match(configuredBindingPrompt(host.requests[0]), /First request instructions/)
   assert.match(configuredBindingPrompt(host.requests[0]), /declare const workflow/)
@@ -244,10 +256,11 @@ test('initial binding prompts and changed interfaces honor host runtime-context 
   const release = host.agent.ctx.systemPrompt.suppressRuntimeContext()
   t.after(release)
   catalog = (await host.rpc('list')).value
-  assert.equal((await host.rpc('save', { expectedRevision: catalog.revision, entry: {
-    ...savedEntry, source: 'export function revised(): string { return "revised" }',
-    modelContext: { includeDeclaration: true, instructions: 'Updated {{name}} instructions.' },
-  } })).ok, true)
+  assert.equal((await host.rpc('save', { intent: 'update', originalId: entry.id,
+    expectedRevision: catalog.revision, entry: {
+      ...savedEntry, source: 'export function revised(): string { return "revised" }',
+      modelContext: { includeDeclaration: true, instructions: 'Updated {{name}} instructions.' },
+    } })).ok, true)
   const beforeSuppression = host.events().filter(event => event.type === 'user/message' && readRuntimeMessage(event.data)).length
   await host.run('return 1')
   assert.equal(host.events().filter(event => event.type === 'user/message' && readRuntimeMessage(event.data)).length, beforeSuppression)
@@ -346,7 +359,8 @@ test('public binding lifecycle preserves each configured prompt and separates sa
   const restored = Session.create('restored-binding-workflow', host.events())
   assert.deepEqual(projection.wire.view(fold(sessionEvents(restored))).history, history)
   const savedCatalog = (await host.rpc('list')).value
-  assert.equal((await host.rpc('save', { expectedRevision: savedCatalog.revision,
+  assert.equal((await host.rpc('save', { intent: 'update', originalId: entry.id,
+    expectedRevision: savedCatalog.revision,
     entry: { ...entry, enabled: true, source: 'export function value(): number { return 99 }' } })).ok, true)
   assert.equal((await host.rpc('draft-review', { capability })).value.candidate.entry.source, entry.source)
   assert.equal(projection.wire.view(fold(host.events())).history[0].candidate.entry.source, entry.source)
@@ -370,7 +384,8 @@ test('public binding lifecycle preserves each configured prompt and separates sa
   assert.equal(replayed.data.message.content[0].isError, false)
   assert.equal((await host.rpc('draft', { capability })).value, null)
   const currentCatalog = (await host.rpc('list')).value
-  assert.equal((await host.rpc('save', { expectedRevision: currentCatalog.revision,
+  assert.equal((await host.rpc('save', { intent: 'update', originalId: entry.id,
+    expectedRevision: currentCatalog.revision,
     entry: { ...entry, enabled: true, modelContext: { includeDeclaration: false } } })).ok, true)
   await host.run('return 1')
   assert.doesNotMatch(host.requests.at(-1).system, /declare const workflow/)

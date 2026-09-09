@@ -4,8 +4,11 @@ import { link, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createAssistantMessage, createToolResultMessage } from '@deepseek-ai/dsh-llm'
-import { pathToHead, recoverJournal } from '../internal/session-journal.js'
-import { fixture } from './plugin-fixture.js'
+import { pathToHead, recoverJournal } from '../internal/session-journal-recovery.js'
+import { JOURNAL_VERSION, JOURNAL_VERSIONS, PER_NAME_USER_BINDINGS_JOURNAL_VERSION } from '../internal/session-journal-schema.js'
+import { createUserBindingsSnapshot, USER_BINDINGS_META_KEY } from '../internal/user-bindings.js'
+import { encodeValue } from '../internal/value-wire.js'
+import { appendRunCodeEvents, fixture } from './plugin-fixture.js'
 import {
   main,
   migrateSessionLogFile,
@@ -209,7 +212,7 @@ test('the installed public DSH format catalog preserves historical edited state'
 
 test('format migration preserves confirmed no-ops across every historical journal format', async t => {
   const history = await historicalTranscript(t)
-  for (const version of [1, 2, 3, 4, 5, 6]) {
+  for (const version of JOURNAL_VERSIONS) {
     const events = structuredClone(history.events)
     const calls = events.filter(event => event.type === 'tool/call')
     delete events.find(event => event.type === 'tool/result').data.meta.dshPtcPlus
@@ -221,6 +224,11 @@ test('format migration preserves confirmed no-ops across every historical journa
     const journal = result.data.meta.dshPtcPlus
     journal.version = version
     journal.confirms = [version === 1 ? calls[0].data.callId : calls[0].seq]
+    if (version < PER_NAME_USER_BINDINGS_JOURNAL_VERSION) {
+      delete journal.userBindingsShadowPolicy
+      delete journal.userBindingNames
+    }
+    if (version < 7) delete journal.moduleSemantics.importExpressionBoundary
     if (version < 6) delete journal.userBindingsReusePolicy
     if (version < 5) delete journal.userBindingsFingerprint
     if (version < 4) {
@@ -240,6 +248,123 @@ test('format migration preserves confirmed no-ops across every historical journa
     assert.equal(restored.available, true, `converted journal v${version}`)
     assert.equal(pathToHead(restored).length, 1)
   }
+})
+
+test('cold replay preserves import boundary effects across journal and session format generations', async t => {
+  // Each boundary cell ends with an explicit empty-completion statement so the
+  // recorded `hasValue: false` envelope stays true for both lowering
+  // generations. Without it, legacy lowering turns the guarded call into its own
+  // statement and the resulting value would contradict the record.
+  const sources = [
+    'import { format as fmt } from "node:util"; const trace = []',
+    'if (false) fmt(trace.push("called"))\nvoid 0',
+    'try { []\nfmt = (trace.push("rhs"), 1) } catch { trace.push("caught") }\nvoid 0',
+  ]
+  for (const version of [6, 7]) {
+    const events = [{ seq: 0, type: 'assistant/chunk', data: {} }]
+    for (const [index, code] of sources.entries()) {
+      appendRunCodeEvents(events, `boundary-${index}`, code, { meta: { dshPtcPlus: {
+        version,
+        bindingPolicy: { variableRedeclarations: true, functionClassRedeclarations: true },
+        rewritePolicy: { autoRewriteImports: true, autoStripExports: true, autoSplitRedeclarations: true },
+        moduleSemantics: { defaultExportBinding: 'live-readonly',
+          ...(version === 7 ? { importExpressionBoundary: 'statement-safe' } : {}),
+        },
+        userBindingsFingerprint: null,
+        userBindingsReusePolicy: 'implementation-v1',
+        status: 'durable',
+        calls: [], operations: [], confirms: [], diagnostics: [],
+        completion: { kind: 'return', hasValue: false },
+      } } })
+    }
+    const source = logText([sessionHeader, ...events])
+    const migration = migrateSessionLogText(source, { catalog: renumberingCatalog() })
+    const [, ...migratedEvents] = migration.text.trim().split('\n').map(line => JSON.parse(line))
+    assert.equal(migration.changed, true)
+    const before = events.filter(event => event.type === 'tool/result').map(event => event.data.meta.dshPtcPlus)
+    const after = migratedEvents.filter(event => event.type === 'tool/result').map(event => event.data.meta.dshPtcPlus)
+    assert.deepEqual(after, before)
+    for (const history of [events, migratedEvents]) {
+      const state = fixture()
+      t.after(() => state.dispose())
+      const session = { id: `boundary-v${version}`, events: history }
+      const result = await state.runDurable(session.id, 'return trace', {}, { session })
+      assert.equal(result.error, undefined)
+      assert.deepEqual(result.value, version === 6 ? ['called', 'caught'] : ['rhs', 'caught'])
+      assert.equal(result.meta.dshPtcPlus.diagnostics.length, 0)
+      assert.equal(result.meta.dshPtcPlus.version, JOURNAL_VERSION)
+      assert.equal(result.meta.dshPtcPlus.moduleSemantics.importExpressionBoundary, 'statement-safe')
+      await state.dispose()
+    }
+  }
+})
+
+test('format migration preserves whole-entry and per-name saved values with empty completions', async t => {
+  const full = createUserBindingsSnapshot({ entries: [{
+    id: 'pair', name: 'pair', scope: 'top-level', enabled: true,
+    source: 'await tools.observe({}); export const alpha = 1; export const beta = 2',
+  }] }, 1)
+  const empty = createUserBindingsSnapshot({ entries: [] }, 1)
+  for (const version of [6, 7, JOURNAL_VERSION]) await t.test(`journal ${version}`, async t => {
+    const perName = version >= PER_NAME_USER_BINDINGS_JOURNAL_VERSION
+    const events = [{ seq: 0, type: 'assistant/chunk', data: {} }]
+    for (const [index, code] of [
+      'const before = beta; void 0',
+      'alpha = 9; const inside = beta; void 0',
+      'const after = typeof beta; void 0',
+    ].entries()) {
+      // Whole-entry removal was applied on the next activation, so its third
+      // snapshot is empty while the per-name record retains both exports.
+      const userBindings = !perName && index === 2 ? empty : full
+      const journal = {
+        version,
+        bindingPolicy: { variableRedeclarations: true, functionClassRedeclarations: true },
+        rewritePolicy: { autoRewriteImports: true, autoStripExports: true, autoSplitRedeclarations: true },
+        moduleSemantics: { defaultExportBinding: 'live-readonly',
+          ...(version >= 7 ? { importExpressionBoundary: 'statement-safe' } : {}),
+        },
+        userBindingsFingerprint: userBindings.fingerprint,
+        userBindingsReusePolicy: 'implementation-v1',
+        ...(perName ? {
+          userBindingsShadowPolicy: 'per-name',
+          userBindingNames: [
+            index === 0 ? { name: 'alpha', state: 'provider', entryId: 'pair' } : { name: 'alpha', state: 'local' },
+            { name: 'beta', state: 'provider', entryId: 'pair' },
+          ],
+        } : {}),
+        status: 'durable',
+        calls: index === 0 ? [{ global: 'tools', member: 'observe', args: encodeValue({}),
+          ok: true, value: encodeValue('initialized'), settle: 0 }] : [],
+        operations: [], confirms: [], diagnostics: [],
+        completion: { kind: 'return', hasValue: false },
+      }
+      appendRunCodeEvents(events, `shadow-${index}`, code, { meta: {
+        dshPtcPlus: journal, [USER_BINDINGS_META_KEY]: userBindings,
+      } })
+    }
+    const original = structuredClone(events)
+    const migration = migrateSessionLogText(logText([sessionHeader, ...events]), { catalog: renumberingCatalog() })
+    const [, ...migrated] = migration.text.trim().split('\n').map(line => JSON.parse(line))
+    assert.equal(migration.changed, true)
+    assert.deepEqual(events, original)
+    assert.deepEqual(migrated.filter(event => event.type === 'tool/result').map(event => event.data.meta),
+      events.filter(event => event.type === 'tool/result').map(event => event.data.meta))
+    let dispatches = 0
+    for (const history of [events, migrated]) {
+      const state = fixture()
+      t.after(() => state.dispose())
+      const session = { id: `shadow-migration-${version}`, events: history }
+      const current = await state.runDurable(session.id, 'return [before, inside, after]', {
+        observe: async () => { dispatches++; return 'unexpected' },
+      }, { session })
+      assert.equal(current.isError, false)
+      assert.deepEqual(current.value, [2, 2, perName ? 'number' : 'undefined'])
+      assert.deepEqual(current.meta.dshPtcPlus.diagnostics, [])
+      assert.equal(current.meta.dshPtcPlusRecoveryBoundaries, undefined)
+      assert.equal(dispatches, 0)
+      await state.dispose()
+    }
+  })
 })
 
 test('format migration rejects confirmations of already journaled calls', async t => {

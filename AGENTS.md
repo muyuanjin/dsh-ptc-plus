@@ -15,6 +15,12 @@ Read [CONTEXT.md](CONTEXT.md) before changing behavior. Use repository sources b
 
 When these sources disagree, resolve the canonical owner and update affected dependents. A passing test does not preserve behavior that contradicts the project contract.
 
+## Product Philosophy
+
+**PTC Plus exists so the model can perform stateful computation conveniently and continuously. The REPL is an implementation device that lowers implementation cost, not a semantic goal the product must obey.**
+
+Name adaptation, state continuity, and execution preparation are the plugin's complexity to carry. Any semantically unambiguous JavaScript or TypeScript cell is adapted rather than rejected: valid source never fails because of the plugin's own representation, and an unusual but unambiguous form gets the same treatment as a conventional one. Only genuinely ambiguous input may be refused, and the refusal must say what the plugin cannot determine. A cell that fails for an implementation limitation is a product defect, not a caller error; the model must not have to rename, wrap in blocks, query existing bindings, or spend an extra turn to work around one.
+
 ## Product Obligations
 
 - DSH owns authorization, native-tool scope, policy, scheduling, cancellation, approval, and sandboxing. `danger-full-access` is the primary supported experience, but the worker is not a malicious-code sandbox.

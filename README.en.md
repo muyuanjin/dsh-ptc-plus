@@ -117,7 +117,7 @@ The panel can be collapsed or closed; the sparkle button's badge reopens it. A s
 
 Before the first message, hover over or click the sparkle button to view and toggle global bindings. These choices apply to all sessions. The menu also provides authoring and full management entries.
 
-Enabled binding interfaces are supplied to the model in new sessions and updated at the next permitted request in an existing session. Each binding can include a separate usage prompt or omit its interface. Changing only the prompt preserves the helper's runtime state. See the [global binding guide](docs/user-bindings.en.md) for details.
+Enabled binding interfaces are supplied to the model in new sessions and updated at the next permitted request in an existing session. Each binding can include a separate usage prompt or omit its interface. Changing only the prompt preserves the helper's runtime state. Assigning or redeclaring one name in a session overrides only that name; the entry's other names keep working, and the session-local override never writes back to the saved entry. See the [global binding guide](docs/user-bindings.en.md) for details.
 
 ## Settings
 

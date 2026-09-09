@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { dirname, join } from 'node:path'
 import test from 'node:test'
 import { createCordisToolsOwner as createCordisToolsOwnerRaw } from '../internal/cordis-tools-owner.js'
+import { createHostContext, describeSections, runHookChain } from './host-fixture.js'
 
 const TEST_CORDIS_TOOL_NAMES = Object.freeze([
   'test_cordis_inspect',
@@ -279,22 +280,28 @@ function scopedAgent(id, options = {}) {
 }
 
 function ownerContext(initialAgents = [], options = {}) {
-  const listeners = new Map()
+  const host = createHostContext()
+  const { listeners } = host
   const warnings = []
   const cordisInspect = options.cordisInspect ?? inspectRegistry()
-  const host = {
+  return {
     ctx: {
       agents: { list: () => initialAgents },
       get(name) {
         return name === 'cordisInspect' ? cordisInspect : undefined
       },
-      on(name, listener) {
-        const entries = listeners.get(name) ?? []
-        entries.push(listener)
-        listeners.set(name, entries)
-        return () => entries.splice(entries.indexOf(listener), 1)
-      },
+      on: host.ctx.on,
       logger: { warn(message, error) { warnings.push([message, error]) } },
+      systemPrompt: {
+        async assemble(context = {}) {
+          const assembly = {
+            sections: describeSections(context.scope?.promptSections.values() ?? [], context),
+            tools: TEST_CORDIS_TOOL_NAMES.filter(name => context.scope?.definitions.has(name)),
+          }
+          const entries = [...listeners.get('system-prompt/assemble') ?? []]
+          return runHookChain(entries, [assembly, context], () => Promise.resolve(assembly))
+        },
+      },
     },
     cordisInspect,
     listeners,
@@ -303,25 +310,6 @@ function ownerContext(initialAgents = [], options = {}) {
       for (const listener of [...listeners.get(name) ?? []]) await listener(payload, next)
     },
   }
-  host.ctx.systemPrompt = {
-    async assemble(context = {}) {
-      const assembly = {
-        sections: [...context.scope?.promptSections.values() ?? []].map(section => ({
-          name: section.name,
-          text: typeof section.text === 'function' ? section.text(context) : section.text,
-        })),
-        tools: TEST_CORDIS_TOOL_NAMES.filter(name => context.scope?.definitions.has(name)),
-      }
-      const entries = [...listeners.get('system-prompt/assemble') ?? []]
-      const dispatch = index => entries[index]?.(
-        assembly,
-        context,
-        () => dispatch(index + 1),
-      ) ?? Promise.resolve(assembly)
-      return dispatch(0)
-    },
-  }
-  return host
 }
 
 test('Cordis owner scopes official tools to current and future PTC agents', async () => {

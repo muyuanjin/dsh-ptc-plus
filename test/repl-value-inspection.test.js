@@ -3,6 +3,18 @@ import test from 'node:test'
 import { setImmediate as nextTurn, setTimeout as delay } from 'node:timers/promises'
 import { SessionRuntime } from '../internal/session-runtime.js'
 import { unavailableReplMemorySnapshot, createReplMemorySnapshot } from '../internal/repl-memory-projection.js'
+import {
+  activeTimers,
+  durableHistorySnapshot,
+  hasSessionKernel,
+  holdKernelQueue,
+  interceptWorkerMessages,
+  interceptWorkerPosts,
+  setSessionSurface,
+  terminateWorker,
+  workerObservationOf,
+  workerOf,
+} from './runtime-observation.js'
 
 async function fixture(t) {
   const runtime = new SessionRuntime()
@@ -12,23 +24,22 @@ async function fixture(t) {
   })
   assert.equal(first.result.value, 42)
   runtime.finalize(first.settlement, true)
-  return { runtime, kernel: runtime.kernels.get('preview'), memory: first.settlement.replMemory, first }
+  return { runtime, memory: first.settlement.replMemory, first }
 }
 
 test('opening after execution observes the settled worker without execution or journal changes', async t => {
-  const { runtime, kernel, memory, first } = await fixture(t)
-  const worker = kernel.client.worker
-  const history = JSON.stringify(kernel.history)
+  const { runtime, memory, first } = await fixture(t)
+  const worker = workerOf(runtime, 'preview')
+  const history = durableHistorySnapshot(runtime, 'preview')
   const journal = JSON.stringify(first.settlement.journal)
-  const post = kernel.client.post.bind(kernel.client)
   const messages = []
-  kernel.client.post = message => { messages.push(message.type); post(message) }
+  interceptWorkerPosts(runtime, 'preview', message => { messages.push(message.type); return message })
   assert.equal(memory.observation, undefined)
   const observed = await runtime.observe('preview', memory, new AbortController().signal)
   assert.equal(observed.observation.entries[0].text, '42')
   assert.deepEqual(messages, ['prepare', 'observe'])
-  assert.equal(kernel.client.worker, worker)
-  assert.equal(JSON.stringify(kernel.history), history)
+  assert.equal(workerOf(runtime, 'preview'), worker)
+  assert.equal(durableHistorySnapshot(runtime, 'preview'), history)
   assert.equal(JSON.stringify(first.settlement.journal), journal)
   assert.equal(memory.observation, undefined)
   assert.equal((await runtime.run('preview', { program: 'answer++; return answer', bindings: [] })).value, 43)
@@ -36,9 +47,9 @@ test('opening after execution observes the settled worker without execution or j
 })
 
 test('inspection rejects unavailable, uncommitted and mismatched state without creating workers', async t => {
-  const { runtime, kernel, memory } = await fixture(t)
+  const { runtime, memory } = await fixture(t)
   assert.equal(await runtime.observe('missing', memory), undefined)
-  assert.equal(runtime.kernels.has('missing'), false)
+  assert.equal(hasSessionKernel(runtime, 'missing'), false)
   await assert.rejects(runtime.observe('preview', {}), /snapshot/)
   assert.equal(await runtime.observe('preview', unavailableReplMemorySnapshot()), undefined)
   assert.equal(await runtime.observe('preview', createReplMemorySnapshot([])), undefined)
@@ -48,11 +59,12 @@ test('inspection rejects unavailable, uncommitted and mismatched state without c
   assert.equal(await runtime.observe('preview', memory), undefined)
   runtime.finalize(second.settlement, true)
   assert.equal((await runtime.observe('preview', memory)).observation.entries[0].text, '43')
-  kernel.session = { surface: { replaceGeneration: 1 } }
-  kernel.surfaceGeneration = 1
-  kernel.session.surface.replaceGeneration++
+  setSessionSurface(runtime, 'preview', { replaceGeneration: 1 })
+  setSessionSurface(runtime, 'preview', { replaceGeneration: 2 }, false)
   assert.equal(await runtime.observe('preview', memory), undefined)
-  Object.defineProperty(kernel.session, 'surface', { get() { throw new Error('surface unavailable') } })
+  setSessionSurface(runtime, 'preview', {
+    get replaceGeneration() { throw new Error('surface unavailable') },
+  }, false)
   assert.equal(await runtime.observe('preview', memory), undefined)
   runtime.reconfigure({ replViewEnabled: false })
   assert.equal(await runtime.observe('preview', memory), undefined)
@@ -61,51 +73,50 @@ test('inspection rejects unavailable, uncommitted and mismatched state without c
 })
 
 test('cancelled, timed-out and failed inspections preserve subsequent execution', async t => {
-  const { runtime, kernel, memory } = await fixture(t)
-  const worker = kernel.client.worker
-  const post = kernel.client.post.bind(kernel.client)
+  const { runtime, memory } = await fixture(t)
+  const worker = workerOf(runtime, 'preview')
+  const frames = interceptWorkerMessages(runtime, 'preview', (message, deliver) => deliver(message))
   for (const mode of ['abort', 'timeout', 'prepare-error', 'observe-error', 'stale', 'duplicate-ready']) {
     const controller = new AbortController()
     let ready
-    kernel.client.post = message => {
+    const link = interceptWorkerPosts(runtime, 'preview', message => {
       if (message.type === 'prepare' && ['abort', 'timeout', 'stale', 'duplicate-ready'].includes(mode)) { ready = message; return }
       if (message.type === 'prepare' && mode === 'prepare-error') throw new Error('prepare failed')
       if (message.type === 'observe' && mode === 'observe-error') throw new Error('observe failed')
-      post(message)
-    }
+      return message
+    })
     const pending = runtime.observe('preview', memory, controller.signal)
     await nextTurn()
     if (mode === 'abort') controller.abort()
     if (mode === 'timeout') assert.equal(await runtime.observe('preview', memory), undefined)
     if (mode === 'stale') {
-      kernel.session = { surface: { replaceGeneration: 9 } }
-      kernel.cellExecutor.onMessage({ type: 'ready', id: ready.id })
+      setSessionSurface(runtime, 'preview', { replaceGeneration: 9 }, false)
+      frames.deliver({ type: 'ready', id: ready.id })
     }
     if (mode === 'duplicate-ready') {
-      kernel.cellExecutor.onMessage({ type: 'ready', id: ready.id })
-      kernel.cellExecutor.onMessage({ type: 'ready', id: ready.id })
+      frames.deliver({ type: 'ready', id: ready.id })
+      frames.deliver({ type: 'ready', id: ready.id })
     }
     const observed = await pending
     if (mode === 'duplicate-ready') assert.equal(observed.observation.entries[0].text, '42')
     else assert.equal(observed, undefined, mode)
-    kernel.session = undefined
-    if (ready !== undefined) kernel.cellExecutor.onMessage({ type: 'ready', id: ready.id })
-    kernel.client.post = post
+    setSessionSurface(runtime, 'preview', undefined)
+    if (ready !== undefined) frames.deliver({ type: 'ready', id: ready.id })
+    link.restore()
     assert.equal((await runtime.run('preview', { program: 'return answer', bindings: [] })).value, 42, mode)
-    assert.equal(kernel.client.worker, worker)
+    assert.equal(workerOf(runtime, 'preview'), worker)
   }
 })
 
 test('inspection waiting is bounded even before the queue is available', async t => {
-  const { runtime, kernel, memory } = await fixture(t)
-  let release
-  kernel.tail = new Promise(resolve => { release = resolve })
+  const { runtime, memory } = await fixture(t)
+  const queue = holdKernelQueue(runtime, 'preview')
   const controller = new AbortController()
   const pending = runtime.observe('preview', memory, controller.signal)
   controller.abort()
   assert.equal(await pending, undefined)
-  release()
-  await kernel.tail
+  queue.release()
+  await queue.tail
   assert.equal((await runtime.run('preview', { program: 'return answer', bindings: [] })).value, 42)
 })
 
@@ -115,22 +126,21 @@ test('an unstarted inspection cannot exempt background blocking from either exec
     [2000, 100, /wall-clock ceiling/],
   ]) {
     await t.test(expected.source, async t => {
-      const { runtime, kernel, memory } = await fixture(t)
-      const worker = kernel.client.worker
+      const { runtime, memory } = await fixture(t)
+      const worker = workerOf(runtime, 'preview')
       await runtime.run('preview', {
         program: 'setTimeout(() => { while (true) {} }, 100)', bindings: [],
       })
-      const post = kernel.client.post.bind(kernel.client)
       let request
-      kernel.client.post = message => {
+      const link = interceptWorkerPosts(runtime, 'preview', message => {
         // Hold observe after the real ready reply until the old callback blocks.
         if (message.type === 'observe') { request = message; return }
-        post(message)
-      }
+        return message
+      })
       assert.equal(await runtime.observe('preview', memory), undefined)
       assert.equal(request.type, 'observe')
-      post(request)
-      kernel.client.post = post
+      link.post(request)
+      link.restore()
       runtime.reconfigure({ computeMs, maxWallMs })
       const next = await runtime.runTentative('preview', {
         program: 'return answer', bindings: [], signal: AbortSignal.timeout(3000),
@@ -138,95 +148,91 @@ test('an unstarted inspection cannot exempt background blocking from either exec
       assert.equal(next.result.error.kind, 'timeout')
       assert.match(next.result.error.message, expected)
       assert.equal(next.settlement.journal.status, 'discarded')
-      assert.equal(kernel.client.worker, undefined)
+      assert.equal(workerOf(runtime, 'preview'), undefined)
       runtime.finalize(next.settlement, true)
       assert.equal((await runtime.run('preview', { program: 'return 3', bindings: [] })).value, 3)
-      assert.notEqual(kernel.client.worker, worker)
+      assert.notEqual(workerOf(runtime, 'preview'), worker)
     })
   }
 })
 
 test('confirmed on-demand observation defers budgets beyond the presentation deadline', async t => {
-  const { runtime, kernel, memory } = await fixture(t)
-  const worker = kernel.client.worker
-  const onMessage = kernel.cellExecutor.onMessage.bind(kernel.cellExecutor)
+  const { runtime, memory } = await fixture(t)
+  const worker = workerOf(runtime, 'preview')
   let observation
   let acknowledged = false
-  kernel.cellExecutor.onMessage = message => {
+  const frames = interceptWorkerMessages(runtime, 'preview', (message, deliver) => {
     if (message.type === 'observation') { observation = message; return }
     if (message.type === 'observation-started') acknowledged = true
-    onMessage(message)
-  }
+    deliver(message)
+  })
   assert.equal(await runtime.observe('preview', memory), undefined)
   assert.equal(acknowledged, true)
   assert.equal(observation.observation.entries[0].text, '42')
   runtime.reconfigure({ computeMs: 100, maxWallMs: 100 })
-  const post = kernel.client.post.bind(kernel.client)
   const posted = Promise.withResolvers()
-  kernel.client.post = message => posted.resolve(message)
+  const link = interceptWorkerPosts(runtime, 'preview', message => { posted.resolve(message); return undefined })
   const next = runtime.run('preview', {
     program: 'return answer', bindings: [], signal: AbortSignal.timeout(3000),
   })
   const prepare = await posted.promise
   await delay(150)
-  assert.equal(kernel.active.computeTimer, undefined)
-  assert.equal(kernel.active.wallTimer, undefined)
-  kernel.client.post = post
-  post(prepare)
+  assert.equal(activeTimers(runtime, 'preview').compute, undefined)
+  assert.equal(activeTimers(runtime, 'preview').wall, undefined)
+  link.restore()
+  link.post(prepare)
   assert.equal((await next).value, 42)
-  onMessage({ type: 'observation-started', id: observation.id })
-  onMessage(observation)
-  assert.equal(kernel.workerObservation, undefined)
-  assert.equal(kernel.client.worker, worker)
+  frames.deliver({ type: 'observation-started', id: observation.id })
+  frames.deliver(observation)
+  assert.equal(workerObservationOf(runtime, 'preview'), undefined)
+  assert.equal(workerOf(runtime, 'preview'), worker)
 })
 
 test('late observation acknowledgements never suspend or reset running budgets', async t => {
-  const { runtime, kernel, memory } = await fixture(t)
-  const onMessage = kernel.cellExecutor.onMessage.bind(kernel.cellExecutor)
+  const { runtime, memory } = await fixture(t)
   const held = []
-  kernel.cellExecutor.onMessage = message => {
+  const frames = interceptWorkerMessages(runtime, 'preview', (message, deliver) => {
     if (['observation-started', 'observation'].includes(message.type)) { held.push(message); return }
-    onMessage(message)
-  }
+    deliver(message)
+  })
   assert.equal(await runtime.observe('preview', memory), undefined)
   assert.deepEqual(held.map(message => message.type), ['observation-started', 'observation'])
-  const post = kernel.client.post.bind(kernel.client)
   const posted = Promise.withResolvers()
-  kernel.client.post = message => posted.resolve(message)
+  const link = interceptWorkerPosts(runtime, 'preview', message => { posted.resolve(message); return undefined })
   const next = runtime.run('preview', { program: 'return answer', bindings: [] })
   const prepare = await posted.promise
-  const { computeTimer, wallTimer } = kernel.active
-  assert.notEqual(computeTimer, undefined)
-  assert.notEqual(wallTimer, undefined)
+  const { compute, wall } = activeTimers(runtime, 'preview')
+  assert.notEqual(compute, undefined)
+  assert.notEqual(wall, undefined)
   for (const message of [
     { type: 'observation-started' }, { ...held[0], id: -1 },
     held[0], held[0], held[1], held[0], held[1],
   ]) {
-    onMessage(message)
-    assert.equal(kernel.active.computeTimer, computeTimer)
-    assert.equal(kernel.active.wallTimer, wallTimer)
+    frames.deliver(message)
+    assert.equal(activeTimers(runtime, 'preview').compute, compute)
+    assert.equal(activeTimers(runtime, 'preview').wall, wall)
   }
-  kernel.client.post = post
-  post(prepare)
+  link.restore()
+  link.post(prepare)
   assert.equal((await next).value, 42)
-  assert.equal(kernel.workerObservation, undefined)
+  assert.equal(workerObservationOf(runtime, 'preview'), undefined)
 })
 
 test('late observations and worker disposal cannot resurrect a preview', async t => {
-  const { runtime, kernel, memory } = await fixture(t)
-  const post = kernel.client.post.bind(kernel.client)
+  const { runtime, memory } = await fixture(t)
   let observe
-  kernel.client.post = message => {
+  const link = interceptWorkerPosts(runtime, 'preview', message => {
     if (message.type === 'observe') { observe = message; return }
-    post(message)
-  }
+    return message
+  })
   const pending = runtime.observe('preview', memory)
   while (observe === undefined) await nextTurn()
   assert.equal(await pending, undefined)
-  kernel.client.post = post
+  link.restore()
   assert.equal((await runtime.run('preview', { program: 'return answer', bindings: [] })).value, 42)
-  kernel.cellExecutor.onMessage({ type: 'observation', id: observe.id, observation: { at: 1, entries: [] } })
-  kernel.client.post = () => {}
+  const frames = interceptWorkerMessages(runtime, 'preview', (message, deliver) => deliver(message))
+  frames.deliver({ type: 'observation', id: observe.id, observation: { at: 1, entries: [] } })
+  interceptWorkerPosts(runtime, 'preview', () => undefined)
   const disposed = runtime.observe('preview', memory)
   await nextTurn()
   await runtime.disposeSession('preview')
@@ -235,24 +241,24 @@ test('late observations and worker disposal cannot resurrect a preview', async t
 })
 
 test('an observation rejects worker failure and malformed replies without affecting an existing result', async t => {
-  const { runtime, kernel, memory, first } = await fixture(t)
-  const post = kernel.client.post.bind(kernel.client)
+  const { runtime, memory, first } = await fixture(t)
   let request
-  kernel.client.post = message => {
+  const link = interceptWorkerPosts(runtime, 'preview', message => {
     if (message.type === 'observe') { request = message; return }
-    post(message)
-  }
+    return message
+  })
   const pending = runtime.observe('preview', memory)
   while (request === undefined) await nextTurn()
-  kernel.cellExecutor.onMessage({ type: 'observation' })
-  kernel.cellExecutor.onMessage({ type: 'observation', id: request.id, observation: { invalid: true } })
+  const frames = interceptWorkerMessages(runtime, 'preview', (message, deliver) => deliver(message))
+  frames.deliver({ type: 'observation' })
+  frames.deliver({ type: 'observation', id: request.id, observation: { invalid: true } })
   assert.equal((await pending).observation, undefined)
   request = undefined
   const failed = runtime.observe('preview', memory)
   while (request === undefined) await nextTurn()
-  await kernel.client.worker.terminate()
+  await terminateWorker(runtime, 'preview')
   assert.equal(await failed, undefined)
   assert.equal(first.result.value, 42)
-  kernel.client.post = post
+  link.restore()
   assert.equal(await runtime.observe('preview', memory), undefined)
 })

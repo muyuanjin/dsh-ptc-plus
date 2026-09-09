@@ -5,11 +5,12 @@ import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { isRecord } from '../internal/record-utils.js'
 import {
-  foldSessionTimeline,
   migrateRecoveryBoundaryEvents,
   normalizeRecoveryBoundaries,
   RECOVERY_BOUNDARY_EVENT,
 } from '../internal/session-journal.js'
+import { foldSessionTimeline, isConfirmableNoop } from '../internal/session-journal-recovery.js'
+import { REPL_TOOL_NAMES, usesCallSequenceConfirms } from '../internal/session-journal-schema.js'
 import { hostRequire } from './dsh-host-contract.mjs'
 
 function parseJsonLines(text) {
@@ -42,8 +43,7 @@ function validatePtcTimeline(events) {
   for (const result of timeline.results.values()) {
     if (result.error !== undefined) throw new Error(`unproved PTC history: ${result.error}`)
     for (const callSeq of result.journal?.confirms ?? []) {
-      const call = timeline.executableCalls.get(callSeq)
-      if (call === undefined || call.eventIndex >= result.eventIndex || timeline.results.has(callSeq)) {
+      if (!isConfirmableNoop(timeline, callSeq, result.eventIndex)) {
         throw new Error(`unproved PTC confirmation of call ${callSeq}`)
       }
     }
@@ -75,7 +75,7 @@ function remapPtcReferences(source, target) {
     if (old.type !== 'tool/result' || !isRecord(next.data.meta)) continue
     const mapCall = seq => {
       const call = calls.get(seq)
-      if (call === undefined || !['run_code', 'edit_run_code'].includes(call.old.data.name)
+      if (call === undefined || !REPL_TOOL_NAMES.has(call.old.data.name)
         || call.old.seq >= old.seq || call.next.seq >= next.seq) {
         throw new Error(`unproved PTC call reference ${JSON.stringify(seq)} at result ${old.seq}`)
       }
@@ -83,7 +83,7 @@ function remapPtcReferences(source, target) {
     }
     const meta = next.data.meta
     const journal = meta.dshPtcPlus
-    if (journal?.version >= 2 && journal.confirms !== undefined) {
+    if (usesCallSequenceConfirms(journal) && journal.confirms !== undefined) {
       journal.confirms = journal.confirms.map(mapCall)
     }
     if (meta.dshPtcPlusEdit !== undefined) {

@@ -183,21 +183,26 @@ export function applySourceEdits(code, sourceMap, edits) {
   return { code: chunks.join(''), sourceMap: mappings }
 }
 
+const LINE_TERMINATORS = /\r\n|[\n\r\u2028\u2029]/gu
+
 function lineStartOffset(source, line) {
-  let offset = 0
-  for (let current = 1; current < line; current += 1) {
-    const newline = source.indexOf('\n', offset)
-    if (newline < 0) return source.length
-    offset = newline + 1
+  if (line === 1) return 0
+  let current = 1
+  for (const match of source.matchAll(LINE_TERMINATORS)) {
+    current += 1
+    if (current === line) return match.index + match[0].length
   }
-  return offset
+  return source.length
 }
 
 function positionAtOffset(source, offset) {
-  const prefix = source.slice(0, offset)
-  const line = prefix.split(/\r?\n/).length
-  const lastBreak = prefix.lastIndexOf('\n')
-  return { line, column: offset - lastBreak }
+  let line = 1
+  let start = 0
+  for (const match of source.slice(0, offset).matchAll(LINE_TERMINATORS)) {
+    line += 1
+    start = match.index + match[0].length
+  }
+  return { line, column: offset - start + 1 }
 }
 
 export function mapSourcePosition(position, generatedSource, originalSource, sourceMap) {

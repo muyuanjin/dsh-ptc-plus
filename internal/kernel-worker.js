@@ -7,10 +7,12 @@ import { PassThrough } from 'node:stream'
 import { pathToFileURL } from 'node:url'
 import { formatWithOptions } from 'node:util'
 import { MessageChannel, parentPort, workerData } from 'node:worker_threads'
+import { runInContext } from 'node:vm'
 import { synchronizeBuiltinEsmExports } from './builtin-esm-sync.js'
 import { errorDetails, messageOf, programBindingError } from './failure-reporting.js'
 import { AMBIENT_GLOBALS, DURABLE_IMPORTS, FORBIDDEN_IMPORTS } from './module-policy.js'
 import { decodeValue, encodeValue } from './value-wire.js'
+import { LEGACY_USER_BINDINGS_REUSE_POLICY, LIVE_USER_BINDINGS_SHADOW_POLICY, normalizeUserBindingNames } from './session-journal-schema.js'
 import { installWorkerCwdVirtualization } from './worker-cwd-virtualization.js'
 import { createReplValueObserver, supportsAwaitLexicals } from './repl-value-observer.js'
 import { transformTypeScriptModule } from './typescript-transform.js'
@@ -47,6 +49,7 @@ const errorDomain = server.eval.domain ?? createDomain()
 errorDomain.removeAllListeners('error')
 errorDomain.on('error', error => evaluationScope.getStore()?.(true, error))
 const context = server.context
+const contextGlobal = runInContext('globalThis', context)
 let valueObserver
 const REPL_IMPORT_CANARY = 'data:text/javascript,export default 1'
 let replParent
@@ -89,7 +92,7 @@ let nextStaticAdapterId = 0
 let nextUserBindingModuleId = 0
 const userBindingEntries = new Map()
 const userBindingNames = new Map()
-const assignedUserBindingNames = new Set()
+const userBindingSources = new Map()
 const dynamicNamespaces = new Map()
 const originalDynamicNamespaceGlobals = new Map()
 let retainedUserBindingRuntime = false
@@ -360,8 +363,13 @@ async function loadStaticModule(load) {
   }
 }
 
-function callHost(runId, global, member, args, errorClass) {
-  if (runId === undefined || activeRun !== runId) return Promise.reject(programBindingError('lease', 'PTC execution lease expired'))
+// BoundError is the error class installed by this cell's wrapper, not a name
+// looked up later: the cell can replace or delete the context binding while a
+// call is pending, and the call must keep its submitted error identity.
+function callHost(runId, global, member, args, BoundError) {
+  if (runId === undefined || activeRun !== runId || logScope.getStore()?.id !== runId) {
+    return Promise.reject(programBindingError('lease', 'PTC execution lease expired'))
+  }
   const activation = userBindingActivationScope.getStore()
   if (activation !== undefined) {
     activation.called = true
@@ -370,14 +378,15 @@ function callHost(runId, global, member, args, errorClass) {
     }
   }
   const id = ++nextCallId
+  const valueLimits = activeExecution.valueLimits
   let settle
-  const result = new Promise((resolve, reject) => { settle = { resolve, reject, errorClass, member } })
-  void result.catch(() => {})
-  pending.set(id, { ...settle, runId })
+  const result = new Promise((resolve, reject) => { settle = { resolve, reject } })
+  const settled = result.then(() => {}, () => {})
+  pending.set(id, { ...settle, runId, valueLimits, settled, member, BoundError })
   try {
     channel.postMessage({
       type: 'call', runId, id, global, member,
-      args: encodeValue(args, activeExecution?.valueLimits),
+      args: encodeValue(args, valueLimits),
     })
   } catch (error) {
     pending.delete(id)
@@ -402,7 +411,7 @@ function dynamicNamespace(name) {
           name,
           property,
           args.length === 0 && current.emptyObjectMembers.has(property) ? {} : args[0],
-          current.errorClass,
+          current.BoundError,
         )
       }
     },
@@ -455,7 +464,8 @@ function installBindings(message) {
   for (const name of installedGlobals) {
     const original = installedGlobalOriginals.get(name)
     if (original.userGlobalEntryId !== undefined
-      && userBindingNames.get(name) !== original.userGlobalEntryId) {
+      && (userBindingNames.get(name) !== original.userGlobalEntryId
+        || userBindingEntries.get(original.userGlobalEntryId)?.descriptors.get(name) !== original.attachment)) {
       delete context[name]
     } else if (original.descriptor === undefined) delete context[name]
     else Object.defineProperty(context, name, original.descriptor)
@@ -465,12 +475,23 @@ function installBindings(message) {
   dynamicNamespaces.clear()
 
   for (const namespace of message.namespaces) {
+    const descriptor = namespace.errorClass
+    // The wrapper owns the constructor, so a pending call keeps its submitted
+    // error identity even after the cell shadows the context binding.
+    const BoundError = descriptor === undefined ? undefined : class extends Error {
+      constructor(member, detail, cause) {
+        super(detail)
+        this.name = descriptor.name
+        Object.defineProperty(this, descriptor.memberNameProperty, { enumerable: true, value: member })
+        if (cause !== undefined) Object.defineProperty(this, 'ptcCause', { value: cause })
+      }
+    }
     const view = Object.create(null)
     const emptyObjectMembers = new Set(namespace.emptyObjectMembers ?? [])
     dynamicNamespaces.set(namespace.global, {
       members: new Set(namespace.members),
       emptyObjectMembers,
-      errorClass: namespace.errorClass,
+      BoundError,
     })
     for (const member of namespace.members) {
       Object.defineProperty(view, member, {
@@ -480,7 +501,7 @@ function installBindings(message) {
           namespace.global,
           member,
           args.length === 0 && emptyObjectMembers.has(member) ? {} : args[0],
-          namespace.errorClass,
+          BoundError,
         ),
       })
     }
@@ -489,16 +510,7 @@ function installBindings(message) {
     Object.defineProperty(context, namespace.global, { configurable: true, value: view })
     installedGlobals.add(namespace.global)
 
-    if (namespace.errorClass !== undefined) {
-      const descriptor = namespace.errorClass
-      const BoundError = class extends Error {
-        constructor(member, detail, cause) {
-          super(detail)
-          this.name = descriptor.name
-          Object.defineProperty(this, descriptor.memberNameProperty, { enumerable: true, value: member })
-          if (cause !== undefined) Object.defineProperty(this, 'ptcCause', { value: cause })
-        }
-      }
+    if (descriptor !== undefined) {
       installedGlobalOriginals.set(descriptor.name, capturedGlobalDescriptor(descriptor.name))
       Object.defineProperty(context, descriptor.name, { configurable: true, value: BoundError })
       installedGlobals.add(descriptor.name)
@@ -513,9 +525,196 @@ function capturedGlobalDescriptor(name) {
   return {
     descriptor,
     ...(userGlobalEntryId !== undefined && descriptorsEqual(descriptor, installed)
-      ? { userGlobalEntryId }
+      ? { userGlobalEntryId, attachment: installed }
       : {}),
   }
+}
+
+function underlyingUserBindingDescriptor(name) {
+  return installedGlobals.has(name)
+    ? installedGlobalOriginals.get(name).descriptor
+    : Object.getOwnPropertyDescriptor(context, name)
+}
+
+function recordUserBindingAssignment(name, legacy = false) {
+  if (!legacy || activeExecution?.userBindingsShadowPolicy === LIVE_USER_BINDINGS_SHADOW_POLICY) {
+    if (!installedGlobals.has(name)) {
+      userBindingNames.delete(name)
+      userBindingSources.set(name, { state: 'local' })
+    }
+  } else {
+    // Historical setters record invocation before defining the property. A
+    // restored accessor does not erase that operation, even for the same value.
+    activeExecution?.legacyAssignedUserBindingNames.add(name)
+  }
+}
+
+// A temporary private getter distinguishes native lexical storage without
+// invoking provider/user getters or comparing arbitrary values. A failed read
+// proves no initialized value; it must never be promoted from the static catalog.
+function rootBindingStorage(name) {
+  const original = Object.getOwnPropertyDescriptor(context, name)
+  if (original?.configurable === false) {
+    if (!Object.hasOwn(original, 'value')) return 'unknown'
+    try {
+      // Both an own data property and an initialized lexical can be read
+      // without executing an accessor. Either proves an available local name.
+      runInContext(name, context, { displayErrors: false })
+      return 'local'
+    } catch {
+      return 'unknown'
+    }
+  }
+  let propertyRead = false
+  try {
+    Object.defineProperty(context, name, { configurable: true, get() { propertyRead = true } })
+    runInContext(name, context, { displayErrors: false })
+    return propertyRead ? 'property' : 'lexical'
+  } catch {
+    return 'unknown'
+  } finally {
+    if (original === undefined) delete context[name]
+    else Object.defineProperty(context, name, original)
+  }
+}
+
+function userBindingRootStorage(name) {
+  const namespace = activeExecution.importBindingNamespaces?.get(name)
+  if (namespace === undefined) return rootBindingStorage(name)
+  // Compiler-validated imports use native namespace slots, not public alias
+  // properties. Probe only the slot; reading an export could invoke user code.
+  return rootBindingStorage(namespace) === 'lexical' ? 'lexical' : 'unknown'
+}
+
+function reconcileUserBindingNames() {
+  for (const name of userBindingSources.keys()) {
+    const storage = userBindingRootStorage(name)
+    const descriptor = underlyingUserBindingDescriptor(name)
+    const id = userBindingNames.get(name)
+    const installed = userBindingEntries.get(id)?.descriptors.get(name)
+    const state = storage === 'lexical' || storage === 'local' ? 'local'
+      : storage === 'unknown' ? 'unknown'
+        : descriptor === undefined ? 'absent'
+          : installed !== undefined && descriptorsEqual(descriptor, installed) ? 'provider' : 'local'
+    userBindingSources.set(name, { state, ...(state === 'provider' ? { entryId: id } : {}) })
+    if (state !== 'provider') userBindingNames.delete(name)
+  }
+}
+
+function removePerNameUserBindingEntry(id) {
+  const entry = userBindingEntries.get(id)
+  for (const name of entry.names) {
+    if (userBindingNames.get(name) !== id) continue
+    const installed = entry.descriptors.get(name)
+    userBindingNames.delete(name)
+    if (installedGlobals.has(name)) {
+      const original = installedGlobalOriginals.get(name)
+      if (original.attachment === installed) original.descriptor = undefined
+    } else if (descriptorsEqual(Object.getOwnPropertyDescriptor(context, name), installed)) delete context[name]
+    // Lifecycle removal permits reattachment; explicit deletion retains absent.
+    userBindingSources.delete(name)
+  }
+  userBindingEntries.delete(id)
+}
+
+async function activatePerNameUserBindings(snapshot, shadowedNames, cwd, reusePolicy, initialFailures = []) {
+  // Import preceding legacy attachments into the new source owner once.
+  for (const [name, entryId] of userBindingNames) {
+    if (userBindingSources.has(name)) continue
+    userBindingSources.set(name, { state: 'provider', entryId })
+    // The legacy catalog includes actual setter writes as well as descriptor
+    // changes. Do not reattach a restored local accessor by descriptor equality.
+    if (shadowedNames.has(name) && !installedGlobals.has(name)) userBindingNames.delete(name)
+  }
+  reconcileUserBindingNames()
+  const blockedIds = new Set(initialFailures.map(failure => failure.id))
+  const desired = new Map((snapshot?.entries ?? []).filter(entry => !blockedIds.has(entry.id)).map(entry => [entry.id, entry]))
+  try {
+    if (desired.size > 0 || retainedUserBindingRuntime) installDynamicNamespaceGlobals()
+  } catch (error) {
+    for (const id of userBindingEntries.keys()) removePerNameUserBindingEntry(id)
+    return { activated: [], failures: [...initialFailures, ...[...desired.keys()].map(id => ({ id, error: messageOf(error) }))], error }
+  }
+  for (const [id, current] of userBindingEntries) {
+    const next = desired.get(id)
+    if (next === undefined || !(reusePolicy === LEGACY_USER_BINDINGS_REUSE_POLICY
+      ? next.fingerprint === current.entry.fingerprint : userBindingImplementationMatches(next, current.entry))) {
+      removePerNameUserBindingEntry(id)
+    }
+  }
+  const activated = []
+  const failures = [...initialFailures]
+  for (const entry of desired.values()) {
+    const current = userBindingEntries.get(entry.id)
+    if (current !== undefined) {
+      current.entry = entry
+      activated.push(entry.id)
+      continue
+    }
+    const names = entry.scope === 'namespace' ? [entry.name] : entry.symbols
+    const previousSources = new Map(names.map(name => [name, userBindingSources.get(name)]))
+    const installedNames = []
+    let evaluated
+    const activation = { id: entry.id, called: false, failed: false }
+    try {
+      if (entry.durability === 'volatile') markVolatile(`user binding ${JSON.stringify(entry.id)}: ${entry.volatileReason ?? 'non-replayable source'}`)
+      evaluated = await userBindingActivationScope.run(activation, () => evaluateUserBinding(entry, cwd))
+      const namespace = evaluated.namespace
+      for (const symbol of entry.symbols) {
+        if (!Object.hasOwn(namespace, symbol)) throw new Error(`named export ${JSON.stringify(symbol)} is unavailable after evaluation`)
+      }
+      const view = Object.create(null)
+      for (const symbol of entry.symbols) Object.defineProperty(view, symbol, { enumerable: true, get: () => namespace[symbol] })
+      Object.freeze(view)
+      const descriptors = new Map()
+      for (const name of names) {
+        const storage = userBindingRootStorage(name)
+        const prior = userBindingSources.get(name)
+        if (storage === 'lexical' || storage === 'unknown') {
+          userBindingSources.set(name, { state: storage === 'lexical' ? 'local' : 'unknown' })
+        } else if (prior === undefined && shadowedNames.has(name)) {
+          const descriptor = underlyingUserBindingDescriptor(name)
+          userBindingSources.set(name, { state: descriptor === undefined ? 'unknown' : 'local' })
+        }
+        const source = userBindingSources.get(name)
+        if (source !== undefined && source.state !== 'provider') continue
+        const descriptor = Object.getOwnPropertyDescriptor(context, name)
+        Object.defineProperty(context, name, {
+          configurable: true,
+          enumerable: true,
+          get: () => entry.scope === 'namespace' ? view : namespace[name],
+          set(value) {
+            const receiver = this === contextGlobal ? context : this
+            Object.defineProperty(receiver, name, { configurable: true, enumerable: true, writable: true, value })
+            if (receiver === context) recordUserBindingAssignment(name)
+          },
+        })
+        installedNames.push({ name, descriptor })
+        descriptors.set(name, Object.getOwnPropertyDescriptor(context, name))
+        userBindingNames.set(name, entry.id)
+        userBindingSources.set(name, { state: 'provider', entryId: entry.id })
+      }
+      userBindingEntries.set(entry.id, { entry, moduleUrl: evaluated.moduleUrl, names, descriptors })
+      retainedUserBindingRuntime = true
+      activated.push(entry.id)
+    } catch (error) {
+      activation.failed = true
+      if (activation.called) markVolatile(`failed user binding ${JSON.stringify(entry.id)} issued a host call`)
+      for (const installed of installedNames.reverse()) {
+        userBindingNames.delete(installed.name)
+        if (installed.descriptor === undefined) delete context[installed.name]
+        else Object.defineProperty(context, installed.name, installed.descriptor)
+      }
+      for (const [name, prior] of previousSources) {
+        if (prior === undefined) userBindingSources.delete(name)
+        else userBindingSources.set(name, prior)
+      }
+      if (evaluated !== undefined) userBindingModuleParents.delete(evaluated.moduleUrl)
+      failures.push({ id: entry.id, error: messageOf(error) })
+    }
+  }
+  if (userBindingEntries.size === 0 && !retainedUserBindingRuntime) restoreDynamicNamespaceGlobals()
+  return { activated, failures }
 }
 
 function removeUserBindingEntry(id, shadowedNames) {
@@ -587,7 +786,7 @@ async function activateUserBindings(snapshot, shadowedNames, cwd, reusePolicy, i
     const current = userBindingEntries.get(id)
     const next = desired.get(id)
     // Historical cells retain fingerprint-based resets, including presentation edits.
-    const reusable = next !== undefined && (reusePolicy === 'fingerprint-v1'
+    const reusable = next !== undefined && (reusePolicy === LEGACY_USER_BINDINGS_REUSE_POLICY
       ? next.fingerprint === current.entry.fingerprint
       : userBindingImplementationMatches(next, current.entry))
     if (!reusable) {
@@ -636,7 +835,7 @@ async function activateUserBindings(snapshot, shadowedNames, cwd, reusePolicy, i
           enumerable: true,
           get: () => view,
           set(value) {
-            assignedUserBindingNames.add(entry.name)
+            recordUserBindingAssignment(entry.name, true)
             Object.defineProperty(context, entry.name, {
               configurable: true,
               enumerable: true,
@@ -659,7 +858,7 @@ async function activateUserBindings(snapshot, shadowedNames, cwd, reusePolicy, i
             enumerable: true,
             get: () => namespace[symbol],
             set(value) {
-              assignedUserBindingNames.add(symbol)
+              recordUserBindingAssignment(symbol, true)
               Object.defineProperty(context, symbol, {
                 configurable: true,
                 enumerable: true,
@@ -703,22 +902,68 @@ async function activateUserBindings(snapshot, shadowedNames, cwd, reusePolicy, i
   return { activated, failures }
 }
 
-function sendCompletion(response, message) {
+async function closeExecution(execution) {
+  activeRun = undefined
+  execution.open = false
+  await Promise.all([...pending.values()]
+    .filter(call => call.runId === execution.id)
+    .map(call => call.settled))
+}
+
+function failureOutcome(error, phase) {
+  if (phase === 'encode') return { invalidOutput: messageOf(error) }
+  const failure = error instanceof StaticImportFailure ? error.error : error
+  const detail = errorDetails(failure, activeFilename)
+  const position = error instanceof StaticImportFailure ? error.position : detail.position
+  return {
+    error: detail.message,
+    errorName: detail.name,
+    ...(detail.toolName === undefined ? {} : { toolName: detail.toolName }),
+    ...(error instanceof StaticImportFailure ? { moduleLoadFailed: true } : {}),
+    ...(position === undefined ? {} : { position }),
+    ...(detail.cause === undefined ? {} : { cause: detail.cause }),
+    ...(detail.failureOrigin === undefined ? {} : { failureOrigin: detail.failureOrigin }),
+  }
+}
+
+function sendCompletion(message, execution, userBindings, committedRedeclarations, outcome) {
+  const shadowedNames = execution.legacyAssignedUserBindingNames
+  const perName = message.userBindingsShadowPolicy === LIVE_USER_BINDINGS_SHADOW_POLICY
+  if (perName) reconcileUserBindingNames()
+  else reconcileUserBindingShadows(shadowedNames)
   const names = message.observeNames ?? []
-  channel.postMessage({ ...response, observing: names.length > 0 })
-  if (response.error === undefined) valueObserver.record(message.program)
+  channel.postMessage({
+    type: 'done',
+    id: message.id,
+    logs: execution.logs,
+    ...completionDurability(execution),
+    committedRedeclarations: [...committedRedeclarations],
+    ...(perName ? { userBindingNames: normalizeUserBindingNames([...userBindingSources].map(([name, source]) => ({
+      name, state: source.state, ...(source.state === 'provider' ? { entryId: source.entryId } : {}),
+    }))) } : {}),
+    ...(message.userBindings === undefined ? {} : {
+      activatedUserBindings: userBindings.activated,
+      userBindingFailures: userBindings.failures,
+      ...(perName ? {} : { shadowedUserBindings: [...shadowedNames] }),
+    }),
+    ...outcome,
+    observing: names.length > 0,
+  })
+  if (outcome.error === undefined) valueObserver.record(message.program)
   if (names.length > 0) {
     channel.postMessage({ type: 'observation', id: message.id, observation: valueObserver.observe(names) })
   }
 }
 
 async function runCell(message) {
-  if (activeRun !== undefined) throw new Error('kernel received overlapping cells')
+  if (activeExecution !== undefined) throw new Error('kernel received overlapping cells')
   activeRun = message.id
-  assignedUserBindingNames.clear()
   installBindings(message)
   const execution = {
     id: message.id,
+    userBindingsShadowPolicy: message.userBindingsShadowPolicy,
+    importBindingNamespaces: message.importBindingNamespaces,
+    legacyAssignedUserBindingNames: new Set(),
     logs: [],
     open: true,
     outputLimited: false,
@@ -735,6 +980,7 @@ async function runCell(message) {
 
   try {
     let completion
+    let outcome
     let userBindings = { activated: [], failures: [] }
     try {
       completion = await logScope.run(execution, async () => {
@@ -750,13 +996,16 @@ async function runCell(message) {
           },
         })
         cellGlobals.push(message.commitSignal)
-        userBindings = await activateUserBindings(
+        const activate = message.userBindingsShadowPolicy === LIVE_USER_BINDINGS_SHADOW_POLICY
+          ? activatePerNameUserBindings : activateUserBindings
+        userBindings = await activate(
           message.userBindings,
           new Set(message.shadowedUserBindingNames ?? []),
           message.userBindingsCwd,
           message.userBindingsReusePolicy,
           message.userBindingFailures,
         )
+        if (userBindings.error !== undefined) throw userBindings.error
         for (const failure of userBindings.failures) {
           appendText(execution, `Global binding ${JSON.stringify(failure.id)} was not activated: ${failure.error}`)
         }
@@ -775,85 +1024,31 @@ async function runCell(message) {
             cellGlobals.push(load.global)
           }
         }
+        // Preload failure leaves prior aliases authoritative. Once evaluation
+        // starts, new slots must prove their own initialization, including TDZ.
+        execution.importBindingNamespaces = message.preparedImportBindingNamespaces
         return evaluate(message.program, message.returnSignal)
       })
-      activeRun = undefined
-      execution.open = false
-      const calls = [...pending.values()]
-        .filter(call => call.runId === message.id)
-        .map(call => new Promise(resolve => {
-          const originalResolve = call.resolve
-          const originalReject = call.reject
-          call.resolve = value => { originalResolve(value); resolve() }
-          call.reject = error => { originalReject(error); resolve() }
-        }))
-      if (calls.length > 0) await Promise.all(calls)
     } catch (error) {
-      activeRun = undefined
-      execution.open = false
-      reconcileUserBindingShadows(assignedUserBindingNames)
-      const failure = error instanceof StaticImportFailure ? error.error : error
-      const detail = errorDetails(failure, activeFilename)
-      const position = error instanceof StaticImportFailure ? error.position : detail.position
-      sendCompletion({
-        type: 'done',
-        id: message.id,
-        logs: execution.logs,
-        error: detail.message,
-        errorName: detail.name,
-        ...(detail.toolName === undefined ? {} : { toolName: detail.toolName }),
-        ...(error instanceof StaticImportFailure ? { moduleLoadFailed: true } : {}),
-        ...(position === undefined ? {} : { position }),
-        ...(detail.cause === undefined ? {} : { cause: detail.cause }),
-        ...(detail.failureOrigin === undefined ? {} : { failureOrigin: detail.failureOrigin }),
-        ...completionDurability(execution),
-        committedRedeclarations: [...committedRedeclarations],
-        ...(message.userBindings === undefined ? {} : {
-          activatedUserBindings: userBindings.activated,
-          userBindingFailures: userBindings.failures,
-          shadowedUserBindings: [...assignedUserBindingNames],
-        }),
-      }, message)
-      return
+      outcome = failureOutcome(error, 'execute')
+    } finally {
+      await closeExecution(execution)
     }
 
-    let response
-    reconcileUserBindingShadows(assignedUserBindingNames)
-    try {
-      const encodedValue = completion.hasValue
-        ? encodeValue(completion.value, execution.valueLimits)
-        : undefined
-      response = {
-        type: 'done',
-        id: message.id,
-        logs: execution.logs,
-        hasValue: completion.hasValue,
-        ...(encodedValue === undefined ? {} : { value: encodedValue }),
-        ...completionDurability(execution),
-        committedRedeclarations: [...committedRedeclarations],
-        ...(message.userBindings === undefined ? {} : {
-          activatedUserBindings: userBindings.activated,
-          userBindingFailures: userBindings.failures,
-          shadowedUserBindings: [...assignedUserBindingNames],
-        }),
-      }
-    } catch (error) {
-      const detail = messageOf(error)
-      response = {
-        type: 'done',
-        id: message.id,
-        logs: execution.logs,
-        invalidOutput: detail,
-        ...completionDurability(execution),
-        committedRedeclarations: [...committedRedeclarations],
-        ...(message.userBindings === undefined ? {} : {
-          activatedUserBindings: userBindings.activated,
-          userBindingFailures: userBindings.failures,
-          shadowedUserBindings: [...assignedUserBindingNames],
-        }),
+    if (outcome === undefined) {
+      try {
+        const encodedValue = completion.hasValue
+          ? encodeValue(completion.value, execution.valueLimits)
+          : undefined
+        outcome = {
+          hasValue: completion.hasValue,
+          ...(encodedValue === undefined ? {} : { value: encodedValue }),
+        }
+      } catch (error) {
+        outcome = failureOutcome(error, 'encode')
       }
     }
-    sendCompletion(response, message)
+    sendCompletion(message, execution, userBindings, committedRedeclarations, outcome)
   } finally {
     for (const name of cellGlobals) delete context[name]
     activeRun = undefined
@@ -877,12 +1072,16 @@ channel.on('message', (message) => {
     const call = pending.get(message.id)
     if (call === undefined || call.runId !== message.runId) return
     pending.delete(message.id)
-    if (message.ok) call.resolve(decodeValue(message.value, activeExecution?.valueLimits))
-    else if (call.errorClass === undefined) {
-      const error = new Error(message.error)
-      if (message.cause !== undefined) error.ptcCause = message.cause
+    try {
+      if (message.ok) call.resolve(decodeValue(message.value, call.valueLimits))
+      else if (call.BoundError === undefined) {
+        const error = new Error(message.error)
+        if (message.cause !== undefined) error.ptcCause = message.cause
+        call.reject(error)
+      } else call.reject(new call.BoundError(call.member, message.error, message.cause))
+    } catch (error) {
       call.reject(error)
-    } else call.reject(new context[call.errorClass.name](call.member, message.error, message.cause))
+    }
     return
   }
   if (message?.type === 'run') void runCell(message)

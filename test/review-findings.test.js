@@ -340,6 +340,59 @@ test('fingerprints checkout content independently of staging state', async (t) =
   assert.equal(indexTreeFingerprint(root), withoutRemovedAddition)
 })
 
+test('fingerprints staged renames independently of Git rename detection', async (t) => {
+  const root = await repository(t, 'ptc-review-rename-')
+  const large = `${Array.from({ length: 40 }, (_unused, index) => `line ${index}`).join('\n')}\n`
+  await writeFile(path.join(root, 'before.txt'), 'before\n')
+  await writeFile(path.join(root, 'bulk.txt'), large)
+  execFileSync('git', ['add', 'before.txt', 'bulk.txt'], { cwd: root })
+  execFileSync('git', ['-c', 'user.name=PTC Test', '-c', 'user.email=ptc@example.test',
+    'commit', '--quiet', '-m', 'base'], { cwd: root })
+
+  execFileSync('git', ['mv', 'before.txt', 'after.txt'], { cwd: root })
+  assert.match(execFileSync('git', ['diff', '--cached', '--name-status'], { cwd: root, encoding: 'utf8' }), /^R100\tbefore\.txt\tafter\.txt$/m)
+  const renamedTree = indexTreeFingerprint(root)
+  const renamedIndex = await gitIndexBytes(root)
+  assert.equal(await sourceTreeFingerprint(root), renamedTree)
+  assert.equal(indexTreeFingerprint(root), renamedTree)
+  assert.deepEqual(await gitIndexBytes(root), renamedIndex)
+
+  execFileSync('git', ['mv', 'bulk.txt', 'bulk-renamed.txt'], { cwd: root })
+  await writeFile(path.join(root, 'bulk-renamed.txt'), large.replace('line 20', 'line twenty'))
+  execFileSync('git', ['add', 'bulk-renamed.txt'], { cwd: root })
+  assert.match(execFileSync('git', ['diff', '--cached', '--name-status'], { cwd: root, encoding: 'utf8' }), /^R\d+\tbulk\.txt\tbulk-renamed\.txt$/m)
+  assert.equal(await sourceTreeFingerprint(root), indexTreeFingerprint(root))
+
+  await writeFile(path.join(root, 'bulk-renamed.txt'), `${large.replace('line 20', 'line twenty')}unstaged\n`)
+  assert.notEqual(await sourceTreeFingerprint(root), indexTreeFingerprint(root))
+  execFileSync('git', ['add', 'bulk-renamed.txt'], { cwd: root })
+  assert.equal(await sourceTreeFingerprint(root), indexTreeFingerprint(root))
+})
+
+test('fingerprints renames into special and nested paths through the commit gate', async (t) => {
+  const root = await repository(t, 'ptc-review-rename-gate-')
+  await mkdir(path.join(root, 'plain'))
+  await writeFile(path.join(root, 'plain', 'spaced name.txt'), 'spaced\n')
+  await writeFile(path.join(root, 'plain', 'naïve-ß.txt'), 'unicode\n')
+  execFileSync('git', ['add', '--all'], { cwd: root })
+  execFileSync('git', ['-c', 'user.name=PTC Test', '-c', 'user.email=ptc@example.test',
+    'commit', '--quiet', '-m', 'base'], { cwd: root })
+
+  await mkdir(path.join(root, 'moved', 'deeper'), { recursive: true })
+  execFileSync('git', ['mv', 'plain/spaced name.txt', 'moved/deeper/spaced name.txt'], { cwd: root })
+  execFileSync('git', ['mv', 'plain/naïve-ß.txt', 'moved/naïve-ß.txt'], { cwd: root })
+
+  const active = await createReviewLedger(root)
+  await writeFile(active, resolvedLedger())
+  const renamedTree = indexTreeFingerprint(root)
+  const indexBytes = await gitIndexBytes(root)
+  await checkReviewLedger(root, { verify: async () => {} })
+  assert.equal(await sourceTreeFingerprint(root), renamedTree)
+  assert.equal(indexTreeFingerprint(root), renamedTree)
+  assert.equal((await preCommitReviewLedger(root)).state, 'verified')
+  assert.deepEqual(await gitIndexBytes(root), indexBytes)
+})
+
 test('rejects scratch administration failures before touching the target index', async (t) => {
   const root = await repository(t, 'ptc-review-scratch-failure-')
   await writeFile(path.join(root, 'tracked.txt'), 'base\n')

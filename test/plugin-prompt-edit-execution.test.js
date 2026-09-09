@@ -694,7 +694,18 @@ test('fails edit execution at each owned boundary without changing the target', 
     callId: 'missing-journal', agent,
   }), /did not contain a valid execution journal/)
   appendEditResult(events, 'missing-journal', missingJournalCallSeq)
-  const noopJournal = { ...run.meta.dshPtcPlus, status: 'noop' }
+  // A noop settlement retains no calls, operations, or user binding name evidence.
+  const noopJournal = {
+    ...run.meta.dshPtcPlus,
+    status: 'noop',
+    calls: [],
+    operations: [],
+    userBindingNames: null,
+    completion: { kind: 'return', hasValue: false },
+  }
+  const normalizedNoop = normalizeJournal(noopJournal)
+  assert.equal(normalizedNoop.status, 'noop')
+  assert.equal(normalizedNoop.userBindingNames, null)
   state.ctx.tools.execute = async () => ({
     isError: true, error: { message: 'rejected by runtime' }, meta: { dshPtcPlus: noopJournal },
   })
@@ -736,6 +747,8 @@ test('fails edit execution at each owned boundary without changing the target', 
       dshPtcPlus: {
         ...run.meta.dshPtcPlus,
         userBindingsFingerprint: userBindings.fingerprint,
+        // Name evidence must match the snapshot this derived run reports.
+        userBindingNames: [{ name: 'editHelper', state: 'provider', entryId: 'edit-helper' }],
       },
       [REWRITES_KEY]: rewriteFacts,
       [USER_BINDINGS_META_KEY]: userBindings,

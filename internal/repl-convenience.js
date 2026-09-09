@@ -24,7 +24,7 @@ function containsTopLevelAwait(node) {
   return found
 }
 
-function mixedDeclaratorText(statement, declarator, bindings, code, offset, allocateName) {
+function mixedDeclaratorText(statement, declarator, bindings, code, allocateName) {
   const fresh = bindings.filter(binding => !binding.existing)
   const existing = bindings.filter(binding => binding.existing)
   const valueName = allocateName('mixed_value')
@@ -32,7 +32,7 @@ function mixedDeclaratorText(statement, declarator, bindings, code, offset, allo
   const valuesName = allocateName('mixed_values')
   const positions = new Map(bindings.map((binding, index) => [binding.name, index]))
   const asynchronous = containsTopLevelAwait(declarator.id)
-  const builder = createMappedTextBuilder(code, offset)
+  const builder = createMappedTextBuilder(code)
   const appendBindingName = binding => builder.appendMapped(binding.name, binding.start, binding.end)
   builder.append(statement.kind === 'var' ? 'var [' : 'let [')
   fresh.forEach((binding, index) => {
@@ -66,8 +66,8 @@ function mixedDeclaratorText(statement, declarator, bindings, code, offset, allo
   return builder.result()
 }
 
-function existingDeclaratorText(declarator, code, offset) {
-  const builder = createMappedTextBuilder(code, offset)
+function existingDeclaratorText(declarator, code) {
+  const builder = createMappedTextBuilder(code)
   builder.append(';(')
   builder.appendSource(declarator.id.start, declarator.id.end)
   builder.append(' = ')
@@ -77,8 +77,8 @@ function existingDeclaratorText(declarator, code, offset) {
   return builder.result()
 }
 
-function freshDeclaratorText(statement, declarator, code, offset) {
-  const builder = createMappedTextBuilder(code, offset)
+function freshDeclaratorText(statement, declarator, code) {
+  const builder = createMappedTextBuilder(code)
   builder.append(statement.kind === 'var' ? 'var ' : 'let ')
   builder.appendSource(declarator.start, declarator.end)
   builder.append(';')
@@ -94,8 +94,8 @@ function bindingEntries(pattern, declarationSpan) {
   }))
 }
 
-function existingFunctionText(statement, code, offset) {
-  const builder = createMappedTextBuilder(code, offset)
+function existingFunctionText(statement, code) {
+  const builder = createMappedTextBuilder(code)
   builder.append(';(')
   builder.appendMapped(statement.id.name, statement.id.start, statement.id.end)
   builder.append(' = ')
@@ -105,8 +105,8 @@ function existingFunctionText(statement, code, offset) {
   return builder.result()
 }
 
-function existingClassText(statement, code, offset) {
-  const builder = createMappedTextBuilder(code, offset)
+function existingClassText(statement, code) {
+  const builder = createMappedTextBuilder(code)
   builder.append(';(')
   builder.appendMapped(statement.id.name, statement.id.start, statement.id.end)
   builder.append(' = ')
@@ -119,7 +119,6 @@ export function rewriteReplRedeclarations({
   code,
   sourceMap = identitySourceMap(code.length),
   body,
-  offset,
   knownBindings,
   variableRedeclarationBindings = knownBindings,
   writableBindings,
@@ -166,12 +165,12 @@ export function rewriteReplRedeclarations({
         } else {
           const commitDependency = redeclarationCommitTarget(statement.id.name, statement.start)
           const replacement = kind === 'class'
-            ? existingClassText(statement, code, offset)
-            : existingFunctionText(statement, code, offset)
+            ? existingClassText(statement, code)
+            : existingFunctionText(statement, code)
           replacement.text += ` void 0; this[${JSON.stringify(commitSignal)}](${JSON.stringify(commitDependency)});`
           replacements.push({
-            start: statement.start - offset,
-            end: statement.end - offset,
+            start: statement.start,
+            end: statement.end,
             text: replacement.text,
             mappings: replacement.mappings,
           })
@@ -228,8 +227,8 @@ export function rewriteReplRedeclarations({
     if (!entries.some(entry => entry.existing.length > 0)) {
       if (statement.kind === 'const' && bindingPolicy.variableRedeclarations) {
         replacements.push({
-          start: statement.start - offset,
-          end: statement.start - offset + statement.kind.length,
+          start: statement.start,
+          end: statement.start + statement.kind.length,
           text: 'let',
         })
       }
@@ -254,7 +253,6 @@ export function rewriteReplRedeclarations({
           declarator,
           bindings.map(binding => ({ ...binding, existing: existing.includes(binding) })),
           code,
-          offset,
           allocateName,
         ))
         redeclared.push(...existing.map(collisionFor))
@@ -265,14 +263,14 @@ export function rewriteReplRedeclarations({
         })
       } else if (existing.length === bindings.length && bindings.length > 0) {
         redeclared.push(...existing.map(collisionFor))
-        appendPart(existingDeclaratorText(declarator, code, offset))
+        appendPart(existingDeclaratorText(declarator, code))
       } else {
-        appendPart(freshDeclaratorText(statement, declarator, code, offset))
+        appendPart(freshDeclaratorText(statement, declarator, code))
       }
     }
     replacements.push({
-      start: statement.start - offset,
-      end: statement.end - offset,
+      start: statement.start,
+      end: statement.end,
       text: replacementText,
       mappings: replacementMappings,
     })

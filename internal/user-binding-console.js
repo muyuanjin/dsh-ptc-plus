@@ -1,11 +1,22 @@
 import { randomUUID } from 'node:crypto'
 import { Worker } from 'node:worker_threads'
+import {
+  createBoundedWorkerRound,
+  ROUND_CANCELLED,
+  ROUND_OUTPUT_LIMIT,
+  ROUND_TIMEOUT,
+} from './bounded-worker-round.js'
 import { normalizeWorkerEnvironment } from './worker-client.js'
 
 export const CONSOLE_IDLE_MS = 10 * 60 * 1000
 const WORKER_URL = new URL('./user-binding-console-worker.js', import.meta.url)
 const MAX_CONSOLES = 4
 const MAX_SOURCE_BYTES = 1024 * 1024
+const ROUND_REASONS = Object.freeze({
+  [ROUND_TIMEOUT]: 'execution timed out',
+  [ROUND_CANCELLED]: 'stopped',
+  [ROUND_OUTPUT_LIMIT]: 'console output limit exceeded',
+})
 
 /** Own only user workbench workers; no Agent state, replay or persistence. */
 export class UserBindingConsole {
@@ -56,16 +67,11 @@ export class UserBindingConsole {
         resourceLimits: { maxOldGenerationSizeMb: this.options.maxOldGenerationSizeMb },
         stdout: true, stderr: true,
       })
-      environment = { worker, source, logs: [], outputBytes: 0, sequence: 0 }
+      environment = { worker, source, round: undefined, active: undefined, sequence: 0 }
       this.environments.set(capability, environment)
       const fail = reason => this.release(capability, reason)
       for (const [stream, channel] of [[worker.stdout, 'stdout'], [worker.stderr, 'stderr']]) {
-        stream.on('data', chunk => {
-          const text = String(chunk)
-          environment.outputBytes += Buffer.byteLength(text)
-          if (environment.outputBytes > this.options.maxOutputBytes) fail('console output limit exceeded')
-          else environment.logs.push({ channel, text })
-        })
+        stream.on('data', chunk => environment.round?.capture(channel, String(chunk)))
       }
       worker.on('error', error => fail(error.message))
       worker.on('exit', code => fail(`console worker exited (${code})`))
@@ -77,20 +83,16 @@ export class UserBindingConsole {
           fail('invalid console result'); return
         }
         const result = typeof message.error === 'string' ? { error: message.error } : { output: message.output }
-        const bytes = Buffer.byteLength(JSON.stringify(result)) + environment.outputBytes
-        if (bytes > this.options.maxOutputBytes) fail('console output limit exceeded')
+        if (environment.round.exceeds(result)) fail('console output limit exceeded')
         else environment.active.finish(result)
       })
     }
     clearTimeout(environment.idleTimer)
     const id = ++environment.sequence
+    const started = Date.now()
     return new Promise(resolve => {
-      const abort = () => this.release(capability, 'stopped')
-      const timer = setTimeout(() => this.release(capability, 'execution timed out'), this.options.maxWallMs)
-      const started = Date.now()
-      environment.active = { id, finish: result => {
-        clearTimeout(timer)
-        signal?.removeEventListener('abort', abort)
+      const finish = result => {
+        environment.round = undefined
         environment.active = undefined
         const live = this.environments.get(capability) === environment
         const expiresAt = live ? Date.now() + CONSOLE_IDLE_MS : null
@@ -98,13 +100,21 @@ export class UserBindingConsole {
           environment.idleTimer = setTimeout(() => this.release(capability, 'idle'), CONSOLE_IDLE_MS)
           environment.idleTimer.unref()
         }
-        const logs = environment.logs
-        environment.logs = []
-        environment.outputBytes = 0
         resolve({ ...result, id: undefined, environment: live ? capability : null,
-          reset, expiresAt, logs, durationMs: Date.now() - started })
-      } }
-      signal?.addEventListener('abort', abort, { once: true })
+          reset, expiresAt, logs: round.logs, durationMs: Date.now() - started })
+      }
+      const round = createBoundedWorkerRound({
+        maxOutputBytes: this.options.maxOutputBytes,
+        maxWallMs: this.options.maxWallMs,
+        signal,
+        settle: ({ ok, result, reason }) => {
+          if (ok) { finish(result); return }
+          this.release(capability, ROUND_REASONS[reason])
+          finish({ error: ROUND_REASONS[reason], released: true })
+        },
+      })
+      environment.round = round
+      environment.active = { id, finish: result => round.succeed(result) }
       try { environment.worker.postMessage({ id, code }) }
       catch (error) { this.release(capability, error.message) }
     })

@@ -2,7 +2,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { afterEach, beforeAll, expect, test, vi } from 'vitest'
 import { EditorView } from '@codemirror/view'
-import { fireEvent } from '@testing-library/react'
+import { act, fireEvent, render } from '@testing-library/react'
 import * as React from 'react'
 import * as primitives from '@deepseek-ai/dsh-client-ui-primitives'
 import { ConversationEventRegistry } from '@deepseek-ai/dsh-client-ui-conversation/client'
@@ -10,10 +10,27 @@ import { SlotTestRuntime, stubSettingsScope, TestRemote } from '@deepseek-ai/dsh
 import { Context } from '@deepseek-ai/cordis'
 import * as gatewayClient from '@deepseek-ai/dsh-api-gateway/client'
 import { TypertRegistry } from '@deepseek-ai/dsh-typert-registry'
-import { CONFIG_FIELDS } from '../internal/config-spec.js'
+import { CONFIG_FIELDS, CONFIG_GROUPS } from '../internal/config-spec.js'
 import { createClientRpc } from '../src/client-rpc.js'
 import { RPC_CONTRACTS } from '../internal/rpc-contract.js'
 import { createBindingReviews } from '../src/client-binding-review.js'
+import { LOCALE_NS, SETTINGS_COPY } from '../src/client-copy.js'
+import { featureEnabled, registerGated } from '../src/client-feature-gates.js'
+import { createCatalogOwner } from '../src/client-catalog.js'
+import { createUserBindingsWorkbench } from '../src/client-workbench.js'
+
+// apply() creates one catalog owner per mount; capturing it proves the owner's
+// disposer is registered with the plugin scope instead of leaking sources.
+const catalogOwners = vi.hoisted(() => [])
+vi.mock('../src/client-catalog.js', async importOriginal => {
+  const actual = await importOriginal()
+  return { ...actual,
+    createCatalogOwner: options => {
+      const owner = actual.createCatalogOwner(options)
+      catalogOwners.push(owner)
+      return owner
+    } }
+})
 
 const cleanups = []
 // JSDOM has no text layout. Editor geometry is exercised in the real browser.
@@ -26,20 +43,24 @@ afterEach(async () => {
   vi.useRealTimers()
 })
 
-async function clientPlugin() {
-  let definition
-  const source = await readFile(resolve('client.js'), 'utf8')
-  const previous = window.__ModuleLoader__
-  window.__ModuleLoader__ = { load(value) { definition = value } }
-  try { new Function('window', source)(window) } finally { window.__ModuleLoader__ = previous }
-  return definition.factory(name => {
+let clientDefinition
+async function clientPlugin(ui = primitives) {
+  if (clientDefinition === undefined) {
+    // The plugin factory keeps every mutable registration in its own apply()
+    // closure, so one module instance serves every fixture.
+    const previous = window.__ModuleLoader__
+    window.__ModuleLoader__ = { load(value) { clientDefinition = value } }
+    globalThis.__PTC_PLUS_CLIENT_MODULE_ID__ = 'dsh-ptc-plus'
+    try { await import('../src/client.js') } finally { window.__ModuleLoader__ = previous }
+  }
+  return clientDefinition.factory(name => {
     if (name === 'react') return React
-    if (name === '@deepseek-ai/dsh-client-ui-primitives') return primitives
+    if (name === '@deepseek-ai/dsh-client-ui-primitives') return ui
     throw new Error(`Unexpected Client module ${name}`)
   })
 }
 
-async function fixture({ enabled = true, bindings = true, conversation = true, repl = false, composer = false, dock = true, uiSession = true, rpc, watchRpc, observeRpc, commands, turn, setupEvents } = {}) {
+async function fixture({ enabled = true, bindings = true, conversation = true, repl = false, composer = false, dock = true, uiSession = true, rpc, watchRpc, observeRpc, commands, turn, tool, ui, setupEvents } = {}) {
   const runtime = await SlotTestRuntime.create()
   cleanups.push(() => runtime.dispose())
   const settings = stubSettingsScope()
@@ -122,8 +143,9 @@ async function fixture({ enabled = true, bindings = true, conversation = true, r
       turn ? props.renderSlot('conversation.chat.commandview', { node: turn.data.get('ptc-binding-authoring') }, {
         entryKey: 'binding', fallback: React.createElement('p', { 'data-generic-command': true }, 'Generic admission'),
       }) : null,
-      turn ? props.renderSlotChain('conversation.chat.turnTail', { turn }) : null)))
-  const plugin = await clientPlugin()
+      turn ? props.renderSlotChain('conversation.chat.turnTail', { turn }) : null,
+      tool ? props.renderSlot('tool.call.toolview', tool, { entryKey: tool.toolName }) : null)))
+  const plugin = await clientPlugin(ui)
   const feature = await runtime.mount(uiSession ? plugin : {
     inject: plugin.inject,
     apply(ctx) { return plugin.apply(ctx.isolate('uiSession')) },
@@ -599,6 +621,88 @@ test.each([false, true])('canceling an unexecuted source edit preserves the cons
     environment: 'cancel-console', source: entry.source, code: 'retained + 1',
   })
   expect(workbench.querySelectorAll('.ptcPlusExecutionRecord')).toHaveLength(2)
+})
+
+test('ending a new draft keeps the stored document and its console environment through reload and cancel', async () => {
+  let entry = { id: 'cancel', name: 'helper', scope: 'namespace', purpose: '', enabled: false,
+    symbols: ['value'], source: 'export const value = 42', declaration: 'declare const helper: { value: number }' }
+  const other = { id: 'other', name: 'otherTools', scope: 'namespace', purpose: '', enabled: false,
+    symbols: ['value'], source: 'export const value = 7', declaration: 'declare const otherTools: { value: number }' }
+  let revision = 1
+  const { runtime, rpcCalls } = await fixture({ repl: true, rpc: async (endpoint, payload) => {
+    if (endpoint === 'list' || endpoint === 'reload') {
+      return { ok: true, value: { revision, entries: [entry, other] } }
+    }
+    if (endpoint === 'load') return { ok: true, value: { revision, entry: payload.id === other.id ? other : entry } }
+    if (endpoint === 'console-release') return { ok: true, value: null }
+    if (endpoint === 'console-run') return { ok: true, value: {
+      environment: 'creating-console', logs: [], output: payload.code === 'retained + 1' ? '43' : '42', expiresAt: null,
+    } }
+    throw new Error(endpoint)
+  } })
+  const view = runtime.renderRoot()
+  await runtime.flush()
+  const workbench = () => document.querySelector('.ptcPlusBindings')
+  const button = name => [...workbench().querySelectorAll('button')]
+    .find(button => button.textContent === name || button.getAttribute('aria-label') === name)
+  const releases = () => rpcCalls.filter(call => call.endpoint === 'console-release').length
+  const consoleDocument = () => EditorView.findFromDOM(workbench().querySelector('.ptcPlusExecutionInput .cm-content'))
+  const run = async code => {
+    consoleDocument().dispatch({ changes: { from: 0, insert: code } })
+    await runtime.flush()
+    fireEvent.click(button('Run'))
+    await runtime.flush()
+  }
+  // New -> Cancel -> load the stored entry. Ending the new draft must not leave the
+  // next reload or cancel of the unchanged entry on a different document identity.
+  fireEvent.click(button('New entry'))
+  await runtime.flush()
+  fireEvent.click(button('Cancel'))
+  await runtime.flush()
+  fireEvent.click(workbench().querySelector('.ptcPlusBindingSelect'))
+  await runtime.flush()
+  expect(workbench().querySelector('.ptcPlusEntrySettings input').value).toBe('cancel')
+  const consoleInput = consoleDocument()
+  await run('let retained = value; retained')
+  expect(workbench().querySelectorAll('.ptcPlusExecutionRecord')).toHaveLength(1)
+  fireEvent.click(button('Reload'))
+  await runtime.flush()
+  expect(consoleDocument()).toBe(consoleInput)
+  expect(workbench().querySelectorAll('.ptcPlusExecutionRecord')).toHaveLength(1)
+  expect(releases()).toBe(0)
+  fireEvent.click(button('Edit'))
+  await runtime.flush()
+  expect(EditorView.findFromDOM(workbench().querySelector('.ptcPlusSourceBody .cm-content'))
+    .state.doc.toString()).toBe(entry.source)
+  fireEvent.click(button('Cancel'))
+  await runtime.flush()
+  expect(consoleDocument()).toBe(consoleInput)
+  expect(workbench().querySelectorAll('.ptcPlusExecutionRecord')).toHaveLength(1)
+  expect(releases()).toBe(0)
+  // The temporary environment is still live, so the next run continues it.
+  await run('retained + 1')
+  expect(rpcCalls.filter(call => call.endpoint === 'console-run').at(-1).payload)
+    .toEqual({ environment: 'creating-console', source: entry.source, code: 'retained + 1' })
+  expect(workbench().querySelectorAll('.ptcPlusExecutionRecord')).toHaveLength(2)
+  // A genuinely changed stored source still releases the temporary environment while
+  // keeping the one document identity and its on-screen execution history.
+  entry = { ...entry, source: 'export const value = 100' }
+  revision = 2
+  fireEvent.click(button('Reload'))
+  await runtime.flush()
+  expect(releases()).toBe(1)
+  expect(consoleDocument()).toBe(consoleInput)
+  expect(workbench().querySelectorAll('.ptcPlusExecutionRecord')).toHaveLength(2)
+  await run('value')
+  expect(rpcCalls.filter(call => call.endpoint === 'console-run').at(-1).payload)
+    .toEqual({ source: 'export const value = 100', code: 'value' })
+  // A genuinely different stored entry is a new document: it releases the environment
+  // and rebuilds the console with empty history.
+  fireEvent.click(workbench().querySelectorAll('.ptcPlusBindingSelect')[1])
+  await runtime.flush()
+  expect(releases()).toBe(2)
+  expect(consoleDocument()).not.toBe(consoleInput)
+  expect(workbench().querySelectorAll('.ptcPlusExecutionRecord')).toHaveLength(0)
 })
 
 test('reload rejects mismatched revisions and ignores responses from a disposed workbench', async () => {
@@ -2289,4 +2393,1137 @@ test('Client Remote owns cancellation, unwraps Gateway failures and revokes call
   await expect(rpc.call(RPC_CONTRACTS.bindings, 'list', {})).rejects.toThrow('unavailable')
   expect(calls).toHaveLength(3)
   expect(calls.every(call => call.channel === '/api')).toBe(true)
+})
+
+test('locale dictionaries derive every settings string from the shared config spec', () => {
+  expect(LOCALE_NS).toBe('settings.ptcPlus')
+  expect(Object.keys(SETTINGS_COPY.zh).sort()).toEqual(Object.keys(SETTINGS_COPY.en).sort())
+  for (const field of CONFIG_FIELDS) {
+    expect(SETTINGS_COPY.zh[`${field.key}.label`]).toBe(field.label)
+    expect(SETTINGS_COPY.en[`${field.key}.label`]).toBe(field.labelEn)
+    expect(SETTINGS_COPY.zh[`${field.key}.description`] ?? '').toBe(field.description)
+    expect(SETTINGS_COPY.en[`${field.key}.description`] ?? '').toBe(field.descriptionEn)
+  }
+  for (const group of CONFIG_GROUPS) {
+    expect(SETTINGS_COPY.zh[`group.${group.key}`]).toBe(group.label)
+    expect(SETTINGS_COPY.en[`group.${group.key}`]).toBe(group.labelEn)
+  }
+})
+
+test('manual saves carry explicit create or update intent and keep a duplicate draft on conflict', async () => {
+  let entry = { id: 'files', name: 'fileTools', scope: 'namespace', purpose: 'Read text.',
+    enabled: false, symbols: ['readText'], source: 'export const value = 1' }
+  let revision = 1
+  let createConflicts = true
+  const { runtime, rpcCalls } = await fixture({ rpc: async (endpoint, payload) => {
+    if (endpoint === 'list' || endpoint === 'reload') return { ok: true, value: { revision, entries: [entry] } }
+    if (endpoint === 'load') return { ok: true, value: { revision, entry } }
+    if (endpoint === 'validate') return { ok: true, value: { ...payload.entry, declaration: 'declare const value: number' } }
+    if (endpoint === 'save') {
+      if (payload.intent === 'create' && createConflicts) {
+        createConflicts = false
+        revision++
+        return { ok: false, error: { code: 'BINDINGS_CONFLICT', message: 'A binding with this ID already exists' } }
+      }
+      entry = { ...entry, ...payload.entry }
+      return { ok: true, value: { revision: ++revision, entries: [entry] } }
+    }
+    throw new Error(endpoint)
+  } })
+  const view = runtime.renderRoot()
+  await runtime.flush()
+  await runtime.sessions.setCurrent(undefined)
+  fireEvent.click(view.container.querySelector('.ptcPlusHeader'))
+  fireEvent.click([...view.container.querySelectorAll('button')].find(button => button.textContent === 'Manage global bindings'))
+  await runtime.flush()
+  const workbench = () => document.querySelector('.ptcPlusBindings')
+  const button = name => [...workbench().querySelectorAll('button')]
+    .find(button => button.textContent === name || button.getAttribute('aria-label') === name)
+  const fields = () => [...workbench().querySelectorAll('.ptcPlusEntrySettings input')]
+  const source = () => EditorView.findFromDOM(workbench().querySelector('.ptcPlusSourceBody .cm-content'))
+  fireEvent.click(button('Edit'))
+  await runtime.flush()
+  // A stored entry is addressed by its stable ID, so the form keeps it read-only.
+  expect(fields()[0].value).toBe('files')
+  expect(fields()[0].disabled).toBe(true)
+  source().dispatch({ changes: { from: 0, to: source().state.doc.length, insert: 'export const value = 2' } })
+  await runtime.flush()
+  fireEvent.click(button('Save'))
+  await runtime.flush()
+  expect(rpcCalls.find(call => call.endpoint === 'save').payload).toMatchObject({
+    intent: 'update', originalId: 'files', expectedRevision: 1,
+    entry: { id: 'files', source: 'export const value = 2' },
+  })
+  // A new draft may choose its ID; a rejected duplicate keeps the draft intact.
+  fireEvent.click(button('New entry'))
+  await runtime.flush()
+  expect(fields()[0].disabled).toBe(false)
+  fireEvent.change(fields()[0], { target: { value: 'files' } })
+  source().dispatch({ changes: { from: 0, to: source().state.doc.length, insert: 'export const value = 3' } })
+  await runtime.flush()
+  fireEvent.click(button('Save'))
+  await runtime.flush()
+  const creates = rpcCalls.filter(call => call.endpoint === 'save' && call.payload.intent === 'create')
+  expect(creates).toHaveLength(1)
+  expect(creates[0].payload).toMatchObject({ originalId: null, expectedRevision: 2, entry: { id: 'files' } })
+  expect(workbench().textContent).toContain('A binding with this ID already exists')
+  expect(fields()[0].value).toBe('files')
+  expect(source().state.doc.toString()).toBe('export const value = 3')
+  fireEvent.click(button('Reload'))
+  await runtime.flush()
+  fireEvent.click(button('Save'))
+  await runtime.flush()
+  expect(rpcCalls.filter(call => call.endpoint === 'save').at(-1).payload)
+    .toMatchObject({ intent: 'create', originalId: null, expectedRevision: 3 })
+})
+
+test('the first catalog read gates creation and the new draft saves against the confirmed revision', async () => {
+  // The store owns the baseline: a null or stale expectedRevision is a conflict.
+  const firstRead = deferred()
+  let revision = 0
+  const stored = []
+  const { runtime, rpcCalls } = await fixture({ rpc: async (endpoint, payload) => {
+    if (endpoint === 'list') return firstRead.promise
+    if (endpoint === 'validate') return { ok: true, value: { ...payload.entry,
+      declaration: 'declare const freshTools: { value: number }' } }
+    if (endpoint === 'save') {
+      if (payload.expectedRevision !== revision) {
+        return { ok: false, error: { code: 'BINDINGS_CONFLICT',
+          message: `bindings document moved from revision ${payload.expectedRevision} to ${revision}` } }
+      }
+      // The store normalizes a saved entry, so the catalog always carries symbols.
+      stored.push({ ...payload.entry, symbols: payload.entry.symbols ?? [] })
+      revision += 1
+      return { ok: true, value: { revision, entries: [...stored] } }
+    }
+    throw new Error(endpoint)
+  } })
+  const view = runtime.renderRoot()
+  await runtime.flush()
+  await runtime.sessions.setCurrent(undefined)
+  fireEvent.click(view.container.querySelector('.ptcPlusHeader'))
+  fireEvent.click([...view.container.querySelectorAll('button')]
+    .find(button => button.textContent === 'Manage global bindings'))
+  await runtime.flush()
+  const workbench = () => document.querySelector('.ptcPlusBindings')
+  const button = name => [...workbench().querySelectorAll('button')]
+    .find(button => button.textContent === name || button.getAttribute('aria-label') === name)
+  const fields = () => [...workbench().querySelectorAll('.ptcPlusEntrySettings input')]
+  const source = () => EditorView.findFromDOM(workbench().querySelector('.ptcPlusSourceBody .cm-content'))
+  // The first catalog read has not answered, so no revision is confirmed and the
+  // New entry button must not start a draft that would carry a null baseline.
+  expect(workbench().textContent).toContain('Loading Global User Bindings...')
+  expect(button('New entry').disabled).toBe(true)
+  fireEvent.click(button('New entry'))
+  await runtime.flush()
+  expect(rpcCalls.filter(call => call.endpoint === 'validate' || call.endpoint === 'save')).toHaveLength(0)
+  // An empty catalog is a valid baseline: revision 0.
+  firstRead.resolve({ ok: true, value: { revision: 0, entries: [] } })
+  await runtime.flush()
+  expect(workbench().textContent).toContain('No global entries yet')
+  expect(button('New entry').disabled).toBe(false)
+  expect(workbench().querySelector('.ptcPlusBindingEditor')).toBeNull()
+  fireEvent.click(button('New entry'))
+  await runtime.flush()
+  fireEvent.change(fields()[0], { target: { value: 'fresh' } })
+  fireEvent.change(fields()[1], { target: { value: 'freshTools' } })
+  source().dispatch({ changes: { from: 0, to: source().state.doc.length, insert: 'export const value = 7' } })
+  await runtime.flush()
+  fireEvent.click(button('Save'))
+  await runtime.flush()
+  const saves = rpcCalls.filter(call => call.endpoint === 'save')
+  expect(saves).toHaveLength(1)
+  expect(saves[0].payload).toMatchObject({ intent: 'create', originalId: null, expectedRevision: 0,
+    entry: { id: 'fresh', name: 'freshTools', source: 'export const value = 7' } })
+  // The confirmed baseline made the first save succeed; no reload was needed.
+  expect(rpcCalls.filter(call => call.endpoint === 'reload')).toHaveLength(0)
+  expect(workbench().textContent).toContain('Entry saved; it takes effect from the next run_code request.')
+  expect(workbench().querySelector('.ptcPlusBindingName').textContent).toBe('freshTools')
+})
+
+test('a failed first catalog read keeps creation unavailable until a retry confirms a revision', async () => {
+  const stored = []
+  const { runtime, rpcCalls } = await fixture({ rpc: async (endpoint, payload) => {
+    if (endpoint === 'list') return { ok: false, error: { message: 'bindings transport failed' } }
+    if (endpoint === 'reload') return { ok: true, value: { revision: 3, entries: [] } }
+    if (endpoint === 'validate') return { ok: true, value: { ...payload.entry,
+      declaration: 'declare const freshTools: { value: number }' } }
+    if (endpoint === 'save') {
+      if (payload.expectedRevision !== 3) {
+        return { ok: false, error: { code: 'BINDINGS_CONFLICT',
+          message: `bindings document moved from revision ${payload.expectedRevision} to 3` } }
+      }
+      stored.push({ ...payload.entry, symbols: payload.entry.symbols ?? [] })
+      return { ok: true, value: { revision: 4, entries: [...stored] } }
+    }
+    throw new Error(endpoint)
+  } })
+  const view = runtime.renderRoot()
+  await runtime.flush()
+  await runtime.sessions.setCurrent(undefined)
+  fireEvent.click(view.container.querySelector('.ptcPlusHeader'))
+  fireEvent.click([...view.container.querySelectorAll('button')]
+    .find(button => button.textContent === 'Manage global bindings'))
+  await runtime.flush()
+  const workbench = () => document.querySelector('.ptcPlusBindings')
+  const button = name => [...workbench().querySelectorAll('button')]
+    .find(button => button.textContent === name || button.getAttribute('aria-label') === name)
+  const fields = () => [...workbench().querySelectorAll('.ptcPlusEntrySettings input')]
+  const source = () => EditorView.findFromDOM(workbench().querySelector('.ptcPlusSourceBody .cm-content'))
+  expect(workbench().textContent).toContain('Global User Binding operation failed: bindings transport failed')
+  expect(button('New entry').disabled).toBe(true)
+  fireEvent.click(button('New entry'))
+  await runtime.flush()
+  expect(rpcCalls.filter(call => call.endpoint === 'validate' || call.endpoint === 'save')).toHaveLength(0)
+  // The retry confirms a revision; only then may a draft exist.
+  fireEvent.click(button('Reload'))
+  await runtime.flush()
+  expect(button('New entry').disabled).toBe(false)
+  expect(workbench().querySelector('.ptcPlusBindingEditor')).toBeNull()
+  fireEvent.click(button('New entry'))
+  await runtime.flush()
+  fireEvent.change(fields()[0], { target: { value: 'fresh' } })
+  fireEvent.change(fields()[1], { target: { value: 'freshTools' } })
+  source().dispatch({ changes: { from: 0, to: source().state.doc.length, insert: 'export const value = 7' } })
+  await runtime.flush()
+  fireEvent.click(button('Save'))
+  await runtime.flush()
+  const saves = rpcCalls.filter(call => call.endpoint === 'save')
+  expect(saves).toHaveLength(1)
+  expect(saves[0].payload).toMatchObject({ intent: 'create', originalId: null, expectedRevision: 3 })
+  expect(workbench().textContent).toContain('Entry saved; it takes effect from the next run_code request.')
+})
+
+test('a background catalog refresh keeps an edited draft baseline and surfaces the real conflict', async () => {
+  const entry = { id: 'files', name: 'fileTools', scope: 'namespace', purpose: 'Read text.',
+    enabled: false, symbols: ['readText'], source: 'export const value = 1' }
+  let revision = 1
+  const { runtime, setVisible, rpcCalls } = await focusWorkbenchFixture({ rpc: async (endpoint, payload) => {
+    if (endpoint === 'list' || endpoint === 'reload') return { ok: true, value: { revision, entries: [entry] } }
+    if (endpoint === 'load') return { ok: true, value: { revision, entry } }
+    if (endpoint === 'validate') return { ok: true, value: { ...payload.entry,
+      declaration: 'declare const fileTools: { value: number }' } }
+    if (endpoint === 'save') {
+      return payload.expectedRevision === revision
+        ? { ok: true, value: { revision: ++revision, entries: [entry] } }
+        : { ok: false, error: { code: 'BINDINGS_CONFLICT',
+            message: `bindings document moved from revision ${payload.expectedRevision} to ${revision}` } }
+    }
+    throw new Error(endpoint)
+  } })
+  const workbench = () => document.querySelector('.ptcPlusBindings')
+  const button = name => [...workbench().querySelectorAll('button')]
+    .find(button => button.textContent === name || button.getAttribute('aria-label') === name)
+  const source = () => EditorView.findFromDOM(workbench().querySelector('.ptcPlusSourceBody .cm-content'))
+  fireEvent.click(button('Edit'))
+  await runtime.flush()
+  source().dispatch({ changes: { from: 0, to: source().state.doc.length, insert: 'export const value = 2' } })
+  await runtime.flush()
+  // Another writer advances the document while the draft is being edited. A Host
+  // takeover hides the dialog and resuming re-reads the catalog.
+  revision = 5
+  await setVisible(false)
+  await setVisible(true)
+  expect(source().state.doc.toString()).toBe('export const value = 2')
+  fireEvent.click(button('Save'))
+  await runtime.flush()
+  const saves = rpcCalls.filter(call => call.endpoint === 'save')
+  expect(saves).toHaveLength(1)
+  // The refresh published a newer catalog but never rebased the edited draft: the
+  // save is still compared against the revision this draft was loaded from.
+  expect(saves[0].payload).toMatchObject({ intent: 'update', originalId: 'files', expectedRevision: 1 })
+  // The moved document is a real conflict, reported instead of silently accepted.
+  expect(workbench().textContent).toContain('bindings document moved from revision 1 to 5')
+  expect(source().state.doc.toString()).toBe('export const value = 2')
+  expect(button('Save')).toBeDefined()
+})
+
+test('the workbench controller refuses a draft without a confirmed catalog revision', async () => {
+  const firstRead = deferred()
+  const { useWorkbenchController } = createUserBindingsWorkbench(React, {
+    catalogOwner: createCatalogOwner({ callUserBindings: async (endpoint) => {
+      if (endpoint === 'list') return firstRead.promise
+      throw new Error(endpoint)
+    } }),
+  })
+  let controller
+  function Probe() {
+    controller = useWorkbenchController({ enabled: true, active: true,
+      callUserBindings: async () => { throw new Error('unused') } })
+    return null
+  }
+  const rendered = render(React.createElement(Probe))
+  cleanups.push(() => rendered.unmount())
+  expect(controller.canCreate).toBe(false)
+  // The transition itself is guarded, so no caller can create an unsaveable draft.
+  act(() => controller.create())
+  expect(controller.state.draft).toBeNull()
+  expect(controller.state.creating).toBe(false)
+  expect(controller.state.revision).toBeNull()
+  firstRead.resolve({ revision: 0, entries: [] })
+  await act(async () => {})
+  expect(controller.canCreate).toBe(true)
+  act(() => controller.create())
+  expect(controller.state.creating).toBe(true)
+  expect(controller.state.revision).toBe(0)
+  expect(controller.state.draft).not.toBeNull()
+})
+
+test('typing draft fields keeps one source editor and one console environment', async () => {
+  const entry = { id: 'files', name: 'fileTools', scope: 'namespace', purpose: 'Read text.',
+    enabled: false, symbols: ['readText'], source: 'export const value = 1' }
+  const { runtime, rpcCalls } = await fixture({ rpc: async endpoint => {
+    if (endpoint === 'list') return { ok: true, value: { revision: 1, entries: [entry] } }
+    if (endpoint === 'load') return { ok: true, value: { revision: 1, entry } }
+    if (endpoint === 'console-run') return { ok: true, value: { environment: 'workbench-console', logs: [], output: '42', expiresAt: null } }
+    if (endpoint === 'console-release') return { ok: true, value: null }
+    throw new Error(endpoint)
+  } })
+  const view = runtime.renderRoot()
+  await runtime.flush()
+  await runtime.sessions.setCurrent(undefined)
+  fireEvent.click(view.container.querySelector('.ptcPlusHeader'))
+  fireEvent.click([...view.container.querySelectorAll('button')].find(button => button.textContent === 'Manage global bindings'))
+  await runtime.flush()
+  const workbench = () => document.querySelector('.ptcPlusBindings')
+  const button = name => [...workbench().querySelectorAll('button')]
+    .find(button => button.textContent === name || button.getAttribute('aria-label') === name)
+  const fields = () => [...workbench().querySelectorAll('.ptcPlusEntrySettings input')]
+  fireEvent.click(button('New entry'))
+  await runtime.flush()
+  const editor = EditorView.findFromDOM(workbench().querySelector('.ptcPlusSourceBody .cm-content'))
+  const consoleInput = EditorView.findFromDOM(workbench().querySelector('.ptcPlusExecutionInput .cm-content'))
+  consoleInput.dispatch({ changes: { from: 0, to: consoleInput.state.doc.length, insert: 'value' } })
+  await runtime.flush()
+  fireEvent.click(button('Run'))
+  await runtime.flush()
+  expect(rpcCalls.filter(call => call.endpoint === 'console-run')).toHaveLength(1)
+  editor.dispatch({ selection: { anchor: 7 } })
+  for (const letter of 'files') {
+    fireEvent.change(fields()[0], { target: { value: fields()[0].value + letter } })
+    await runtime.flush()
+  }
+  fireEvent.change(fields()[1], { target: { value: 'fileTools' } })
+  fireEvent.change(fields()[3], { target: { value: 'Read text.' } })
+  await runtime.flush()
+  expect(fields()[0].value).toBe('files')
+  // Form text is data, not document identity: no keystroke rebuilds the editor,
+  // drops its selection or releases the temporary console environment.
+  expect(EditorView.findFromDOM(workbench().querySelector('.ptcPlusSourceBody .cm-content'))).toBe(editor)
+  expect(EditorView.findFromDOM(workbench().querySelector('.ptcPlusExecutionInput .cm-content'))).toBe(consoleInput)
+  expect(editor.state.selection.main.anchor).toBe(7)
+  expect(rpcCalls.filter(call => call.endpoint === 'console-release')).toHaveLength(0)
+  expect(rpcCalls.filter(call => call.endpoint === 'console-run')).toHaveLength(1)
+  expect(workbench().querySelectorAll('.ptcPlusExecutionRecord')).toHaveLength(1)
+})
+
+async function focusWorkbenchFixture(options = {}) {
+  let visibility
+  vi.stubGlobal('IntersectionObserver', class {
+    constructor(callback) { this.callback = callback }
+    observe(element) { if (element.querySelector('.ptcPlusAuthorButton')) visibility = this.callback }
+    unobserve() {}
+    disconnect() {}
+  })
+  cleanups.push(() => vi.unstubAllGlobals())
+  const fixtureState = await fixture({ rpc: reviewRpc(reviewCandidate('focus')), ...options })
+  const { runtime } = fixtureState
+  const view = runtime.renderRoot()
+  await runtime.flush()
+  const trigger = view.container.querySelector('.ptcPlusAuthorButton')
+  const anchor = trigger.closest('.ptcPlusComposerBindingAnchor')
+  // Visibility and focus ordering are injected; native approval is a browser check.
+  let visible = true
+  anchor.getClientRects = trigger.getClientRects = () => visible ? [new DOMRect(20, 500, 24, 24)] : []
+  const setVisible = async next => {
+    visible = next
+    visibility([{ isIntersecting: next }])
+    await runtime.flush()
+  }
+  await setVisible(true)
+  const open = async () => {
+    await openGlobalMenu(view, runtime, 'click')
+    fireEvent.click(view.getByRole('menuitem', { name: 'Manage global bindings' }))
+    await runtime.flush()
+  }
+  await open()
+  const close = async () => {
+    fireEvent.click(view.getByRole('button', { name: 'Close global bindings workbench' }))
+    await runtime.flush()
+  }
+  const controls = document.createElement('div')
+  const chat = document.createElement('button')
+  chat.setAttribute('role', 'tab')
+  chat.textContent = 'Chat'
+  const host = document.createElement('button')
+  host.textContent = 'Allow'
+  for (const button of [chat, host]) button.getClientRects = () => [new DOMRect(0, 0, 40, 24)]
+  controls.append(chat, host)
+  document.body.append(controls)
+  cleanups.push(() => controls.remove())
+  return { ...fixtureState, view, trigger, anchor, chat, host, setVisible, open, close }
+}
+
+test('explicit workbench close restores the composer entry and keeps management closed', async () => {
+  const { runtime, view, trigger, setVisible, close, rpcCalls } = await focusWorkbenchFixture()
+  expect(document.activeElement).toBe(view.getByRole('button', { name: 'Close global bindings workbench' }))
+  await close()
+  expect(document.activeElement).toBe(trigger)
+  const calls = rpcCalls.length
+  await setVisible(false)
+  await setVisible(true)
+  expect(view.queryByRole('dialog')).toBeNull()
+  expect(rpcCalls).toHaveLength(calls)
+})
+
+test('a Chat control reopening the workbench becomes its close target', async () => {
+  const { view, trigger, chat, host, setVisible, close } = await focusWorkbenchFixture()
+  const triggerFocus = vi.spyOn(trigger, 'focus')
+  host.focus()
+  await setVisible(false)
+  expect(document.activeElement).toBe(host)
+  expect(triggerFocus).not.toHaveBeenCalled()
+  chat.focus()
+  await setVisible(true)
+  expect(document.activeElement).toBe(view.getByRole('button', { name: 'Close global bindings workbench' }))
+  await close()
+  expect(document.activeElement).toBe(chat)
+})
+
+test('approval-style hiding preserves Host focus and a body-focused resume keeps the entry target', async () => {
+  const { view, trigger, host, setVisible, close, open, chat } = await focusWorkbenchFixture()
+  const triggerFocus = vi.spyOn(trigger, 'focus')
+  host.focus()
+  await setVisible(false)
+  expect(view.queryByRole('dialog')).toBeNull()
+  expect(document.activeElement).toBe(host)
+  expect(triggerFocus).not.toHaveBeenCalled()
+  host.blur()
+  expect(document.activeElement).toBe(document.body)
+  await setVisible(true)
+  await close()
+  expect(document.activeElement).toBe(trigger)
+  await open()
+  await setVisible(false)
+  chat.focus()
+  await setVisible(true)
+  await setVisible(false)
+  expect(document.activeElement).toBe(document.body)
+  await setVisible(true)
+  await close()
+  expect(document.activeElement).toBe(chat)
+})
+
+test.each(['disconnected', 'disabled', 'hidden', 'inert', 'visibility', 'untabbable', 'aria-disabled'])
+('workbench close rejects a %s return control and falls back to its live composer entry', async state => {
+  const { trigger, chat, setVisible, close } = await focusWorkbenchFixture()
+  await setVisible(false)
+  chat.focus()
+  await setVisible(true)
+  if (state === 'disconnected') chat.remove()
+  else if (state === 'disabled') chat.disabled = true
+  else if (state === 'hidden') chat.parentElement.hidden = true
+  else if (state === 'inert') chat.parentElement.setAttribute('inert', '')
+  else if (state === 'visibility') chat.style.visibility = 'hidden'
+  else if (state === 'untabbable') chat.tabIndex = -1
+  else chat.setAttribute('aria-disabled', 'true')
+  const focus = vi.spyOn(chat, 'focus')
+  await close()
+  expect(focus).not.toHaveBeenCalled()
+  expect(document.activeElement).toBe(trigger)
+})
+
+test('workbench close leaves a hidden fallback entry unfocused', async () => {
+  const { trigger, anchor, setVisible, close } = await focusWorkbenchFixture()
+  await setVisible(false)
+  await setVisible(true)
+  anchor.hidden = true
+  const focus = vi.spyOn(trigger, 'focus')
+  await close()
+  expect(focus).not.toHaveBeenCalled()
+})
+
+test('settings workbench Escape restores its own management entry', async () => {
+  const { runtime } = await fixture({ rpc: reviewRpc(reviewCandidate('settings-focus')) })
+  const view = runtime.renderRoot()
+  await runtime.flush()
+  fireEvent.click(view.container.querySelector('.ptcPlusHeader'))
+  await runtime.flush()
+  const entry = view.getByRole('button', { name: 'Manage global bindings' })
+  entry.getClientRects = () => [new DOMRect(20, 100, 100, 24)]
+  entry.focus()
+  fireEvent.click(entry)
+  await runtime.flush()
+  expect(document.activeElement).toBe(view.getByRole('button', { name: 'Close global bindings workbench' }))
+  fireEvent.keyDown(document, { key: 'Escape' })
+  await runtime.flush()
+  expect(view.queryByRole('dialog')).toBeNull()
+  expect(document.activeElement).toBe(entry)
+})
+
+test.each(['disabled', 'disposed'])('a %s workbench leaves Host focus and drops pending write authority', async ending => {
+  const entry = reviewCandidate('focus-save').entry
+  const validation = deferred()
+  const { runtime, view, trigger, host, settings, value, feature, setVisible, rpcCalls } = await focusWorkbenchFixture({
+    rpc: async endpoint => {
+      if (endpoint === 'list') return { ok: true, value: { revision: 1, entries: [entry] } }
+      if (endpoint === 'load') return { ok: true, value: { revision: 1, entry } }
+      if (endpoint === 'validate') return validation.promise
+      throw new Error(endpoint)
+    },
+  })
+  fireEvent.click(view.getByRole('button', { name: 'Edit', exact: true }))
+  await runtime.flush()
+  fireEvent.click(view.getByRole('button', { name: 'Save', exact: true }))
+  await runtime.flush()
+  expect(rpcCalls.filter(call => call.endpoint === 'validate')).toHaveLength(1)
+  const focus = vi.spyOn(trigger, 'focus')
+  host.focus()
+  if (ending === 'disabled') settings.publish({ value: { ...value, userBindingsEnabled: false } })
+  else await feature.dispose()
+  await runtime.flush()
+  expect(view.queryByRole('dialog')).toBeNull()
+  expect(document.activeElement).toBe(host)
+  expect(focus).not.toHaveBeenCalled()
+  validation.resolve({ ok: true, value: entry })
+  await runtime.flush()
+  expect(rpcCalls.filter(call => call.endpoint === 'save')).toHaveLength(0)
+  settings.publish({ value })
+  await runtime.flush()
+  await setVisible(true)
+  expect(view.queryByRole('dialog')).toBeNull()
+  expect(document.activeElement).toBe(host)
+})
+
+test('a hidden input surface suspends the workbench dialog without losing its draft', async () => {
+  let visibility
+  vi.stubGlobal('IntersectionObserver', class {
+    constructor(callback) { this.callback = callback }
+    observe(element) { if (element.querySelector('.ptcPlusAuthorButton')) visibility = this.callback }
+    unobserve() {}
+    disconnect() {}
+  })
+  cleanups.push(() => vi.unstubAllGlobals())
+  const entry = { ...reviewCandidate('takeover').entry, name: 'takeoverTools' }
+  const { runtime } = await fixture({ rpc: async endpoint => ({ ok: true,
+    value: endpoint === 'load' ? { revision: 1, entry } : { revision: 1, entries: [entry] } }) })
+  const view = runtime.renderRoot()
+  await runtime.flush()
+  visibility([{ isIntersecting: true }])
+  await runtime.flush()
+  await openGlobalMenu(view, runtime)
+  fireEvent.click(view.getByRole('menuitem', { name: 'Manage global bindings' }))
+  await runtime.flush()
+  const dialog = () => document.querySelector('.ptcPlusBindings')
+  expect(dialog()).not.toBeNull()
+  fireEvent.click([...dialog().querySelectorAll('button')].find(button => button.textContent === 'Edit'))
+  await runtime.flush()
+  const source = () => EditorView.findFromDOM(dialog().querySelector('.ptcPlusSourceBody .cm-content'))
+  source().dispatch({ changes: { from: 0, to: source().state.doc.length, insert: 'export const unsaved = true' } })
+  await runtime.flush()
+  // The Host composer takes the input surface: the dialog hides, the draft stays.
+  visibility([{ isIntersecting: false }])
+  await runtime.flush()
+  expect(document.querySelector('.ptcPlusBindingsModal')).toBeNull()
+  visibility([{ isIntersecting: true }])
+  await runtime.flush()
+  expect(document.querySelector('.ptcPlusBindingsModal')).not.toBeNull()
+  expect(source().state.doc.toString()).toBe('export const unsaved = true')
+  // Explicit close still ends the management session.
+  fireEvent.click(document.querySelector('.ptcPlusBindingsModal button[aria-label="Close global bindings workbench"]'))
+  await runtime.flush()
+  expect(document.querySelector('.ptcPlusBindingsModal')).toBeNull()
+  // Reopening starts a new baseline: the stored source, not the released draft.
+  await openGlobalMenu(view, runtime)
+  fireEvent.click(view.getByRole('menuitem', { name: 'Manage global bindings' }))
+  await runtime.flush()
+  expect(dialog()).not.toBeNull()
+  fireEvent.click(dialog().querySelector('.ptcPlusSourceToggle'))
+  await runtime.flush()
+  expect(dialog().querySelector('.ptcPlusSourceCode').textContent).toContain('export const value = 1')
+  expect(dialog().querySelector('.ptcPlusSourceBody .cm-content')).toBeNull()
+})
+
+test('closing the workbench during validation drops the pending save and reopens a fresh baseline', async () => {
+  const entry = { id: 'files', name: 'fileTools', scope: 'namespace', purpose: 'Read text.',
+    enabled: false, symbols: ['readText'], source: 'export const value = 1',
+    declaration: 'declare const fileTools: { value: number }' }
+  const validation = deferred()
+  const { runtime, rpcCalls } = await fixture({ rpc: async endpoint => {
+    if (endpoint === 'list' || endpoint === 'reload') return { ok: true, value: { revision: 1, entries: [entry] } }
+    if (endpoint === 'load') return { ok: true, value: { revision: 1, entry } }
+    if (endpoint === 'validate') return validation.promise
+    if (endpoint === 'save') return { ok: true, value: { revision: 2, entries: [entry] } }
+    throw new Error(endpoint)
+  } })
+  const view = runtime.renderRoot()
+  await runtime.flush()
+  await runtime.sessions.setCurrent(undefined)
+  fireEvent.click(view.container.querySelector('.ptcPlusHeader'))
+  const manage = () => [...view.container.querySelectorAll('button')]
+    .find(button => button.textContent === 'Manage global bindings')
+  fireEvent.click(manage())
+  await runtime.flush()
+  const workbench = () => document.querySelector('.ptcPlusBindings')
+  const button = name => [...workbench().querySelectorAll('button')]
+    .find(button => button.textContent === name || button.getAttribute('aria-label') === name)
+  const source = () => EditorView.findFromDOM(workbench().querySelector('.ptcPlusSourceBody .cm-content'))
+  fireEvent.click(button('Edit'))
+  await runtime.flush()
+  source().dispatch({ changes: { from: 0, to: source().state.doc.length, insert: 'export const value = 2' } })
+  await runtime.flush()
+  fireEvent.click(button('Save'))
+  await runtime.flush()
+  expect(rpcCalls.filter(call => call.endpoint === 'validate')).toHaveLength(1)
+  // The user closes the workbench while the host is still validating the draft.
+  fireEvent.click(document.querySelector('.ptcPlusBindingsModal button[aria-label="Close global bindings workbench"]'))
+  await runtime.flush()
+  expect(document.querySelector('.ptcPlusBindingsModal')).toBeNull()
+  validation.resolve({ ok: true, value: { ...entry, source: 'export const value = 2', declaration: entry.declaration } })
+  await runtime.flush()
+  // A validation answered after the close never becomes a write.
+  expect(rpcCalls.filter(call => call.endpoint === 'save')).toHaveLength(0)
+  const reads = rpcCalls.filter(call => call.endpoint === 'list').length
+  fireEvent.click(manage())
+  await runtime.flush()
+  expect(rpcCalls.filter(call => call.endpoint === 'list')).toHaveLength(reads + 1)
+  expect(button('Save')).toBeUndefined()
+  expect(button('Validate')).toBeUndefined()
+  fireEvent.click(workbench().querySelector('.ptcPlusSourceToggle'))
+  await runtime.flush()
+  expect(workbench().querySelector('.ptcPlusSourceCode').textContent).toContain('export const value = 1')
+  expect(workbench().querySelector('.ptcPlusSourceCode').textContent).not.toContain('export const value = 2')
+})
+
+test('a workbench closed during an in-flight save ignores the late answer and reads the host state', async () => {
+  const stored = { id: 'files', name: 'fileTools', scope: 'namespace', purpose: 'Read text.',
+    enabled: false, symbols: ['readText'], source: 'export const value = 1',
+    declaration: 'declare const fileTools: { value: number }' }
+  const external = { ...stored, name: 'freshTools', source: 'export const value = 9' }
+  let catalog = { revision: 1, entries: [stored] }
+  const write = deferred()
+  const { runtime, rpcCalls } = await fixture({ rpc: async (endpoint, payload) => {
+    if (endpoint === 'list' || endpoint === 'reload') return { ok: true, value: catalog }
+    if (endpoint === 'load') return { ok: true, value: { revision: catalog.revision, entry: catalog.entries[0] } }
+    if (endpoint === 'validate') return { ok: true, value: { ...payload.entry, declaration: stored.declaration } }
+    if (endpoint === 'save') return write.promise
+    throw new Error(endpoint)
+  } })
+  const view = runtime.renderRoot()
+  await runtime.flush()
+  await runtime.sessions.setCurrent(undefined)
+  fireEvent.click(view.container.querySelector('.ptcPlusHeader'))
+  const manage = () => [...view.container.querySelectorAll('button')]
+    .find(button => button.textContent === 'Manage global bindings')
+  fireEvent.click(manage())
+  await runtime.flush()
+  const workbench = () => document.querySelector('.ptcPlusBindings')
+  const button = name => [...workbench().querySelectorAll('button')]
+    .find(button => button.textContent === name || button.getAttribute('aria-label') === name)
+  const source = () => EditorView.findFromDOM(workbench().querySelector('.ptcPlusSourceBody .cm-content'))
+  fireEvent.click(button('Edit'))
+  await runtime.flush()
+  source().dispatch({ changes: { from: 0, to: source().state.doc.length, insert: 'export const value = 2' } })
+  await runtime.flush()
+  fireEvent.click(button('Save'))
+  await runtime.flush()
+  expect(rpcCalls.filter(call => call.endpoint === 'save')).toHaveLength(1)
+  // The write already reached the host when the user closes the workbench.
+  fireEvent.click(document.querySelector('.ptcPlusBindingsModal button[aria-label="Close global bindings workbench"]'))
+  await runtime.flush()
+  catalog = { revision: 5, entries: [external] }
+  fireEvent.click(manage())
+  await runtime.flush()
+  // The released session no longer blocks the reopened surface: it reads and
+  // selects the host's current entry instead of the draft the user closed with.
+  expect(workbench().textContent).toContain('freshTools')
+  expect(workbench().querySelector('.ptcPlusEditorFile').textContent).toBe('freshTools')
+  fireEvent.click(workbench().querySelector('.ptcPlusSourceToggle'))
+  await runtime.flush()
+  expect(workbench().querySelector('.ptcPlusSourceCode').textContent).toContain('export const value = 9')
+  expect(workbench().querySelector('.ptcPlusSourceCode').textContent).not.toContain('export const value = 2')
+  // The late answer belongs to the session the user closed.
+  write.resolve({ ok: true, value: { revision: 2, entries: [{ ...stored, name: 'staleTools' }] } })
+  await runtime.flush()
+  expect(workbench().textContent).toContain('freshTools')
+  expect(workbench().textContent).not.toContain('staleTools')
+  expect(workbench().querySelector('.ptcPlusSourceCode').textContent).toContain('export const value = 9')
+  expect(rpcCalls.filter(call => call.endpoint === 'save')).toHaveLength(1)
+})
+
+test('a temporarily hidden workbench still settles a pending save from its draft', async () => {
+  let visibility
+  vi.stubGlobal('IntersectionObserver', class {
+    constructor(callback) { this.callback = callback }
+    observe(element) { if (element.querySelector('.ptcPlusAuthorButton')) visibility = this.callback }
+    unobserve() {}
+    disconnect() {}
+  })
+  cleanups.push(() => vi.unstubAllGlobals())
+  const entry = { ...reviewCandidate('takeover').entry, name: 'takeoverTools', source: 'export const value = 1' }
+  const validation = deferred()
+  const { runtime, rpcCalls } = await fixture({ rpc: async (endpoint, payload) => {
+    if (endpoint === 'list' || endpoint === 'reload') return { ok: true, value: { revision: 1, entries: [entry] } }
+    if (endpoint === 'load') return { ok: true, value: { revision: 1, entry } }
+    if (endpoint === 'validate') return validation.promise
+    if (endpoint === 'save') return { ok: true, value: { revision: 2, entries: [payload.entry] } }
+    throw new Error(endpoint)
+  } })
+  const view = runtime.renderRoot()
+  await runtime.flush()
+  visibility([{ isIntersecting: true }])
+  await runtime.flush()
+  await openGlobalMenu(view, runtime)
+  fireEvent.click(view.getByRole('menuitem', { name: 'Manage global bindings' }))
+  await runtime.flush()
+  const dialog = () => document.querySelector('.ptcPlusBindings')
+  const button = name => [...dialog().querySelectorAll('button')]
+    .find(button => button.textContent === name || button.getAttribute('aria-label') === name)
+  const source = () => EditorView.findFromDOM(dialog().querySelector('.ptcPlusSourceBody .cm-content'))
+  fireEvent.click(button('Edit'))
+  await runtime.flush()
+  source().dispatch({ changes: { from: 0, to: source().state.doc.length, insert: 'export const value = 2' } })
+  await runtime.flush()
+  fireEvent.click(button('Save'))
+  await runtime.flush()
+  expect(rpcCalls.filter(call => call.endpoint === 'validate')).toHaveLength(1)
+  // The Host composer takes the input surface while the host is still validating.
+  visibility([{ isIntersecting: false }])
+  await runtime.flush()
+  expect(document.querySelector('.ptcPlusBindingsModal')).toBeNull()
+  validation.resolve({ ok: true, value: { ...entry, source: 'export const value = 2',
+    declaration: 'declare const takeoverTools: { value: number }' } })
+  await runtime.flush()
+  // Hiding is not closing: the pending save settles against the retained draft.
+  const saves = rpcCalls.filter(call => call.endpoint === 'save')
+  expect(saves).toHaveLength(1)
+  expect(saves[0].payload).toMatchObject({ intent: 'update', originalId: 'takeover', expectedRevision: 1 })
+  expect(saves[0].payload.entry.source).toBe('export const value = 2')
+  visibility([{ isIntersecting: true }])
+  await runtime.flush()
+  expect(document.querySelector('.ptcPlusBindingsModal')).not.toBeNull()
+  expect(dialog().textContent).toContain('takeoverTools')
+  expect(button('Save')).toBeUndefined()
+})
+
+test('menu and workbench catalogs read independently and a late menu read stays on the menu', async () => {
+  const entryA = { ...reviewCandidate('alpha').entry, name: 'alphaTools' }
+  const entryB = { ...reviewCandidate('beta').entry, name: 'betaTools' }
+  const menuRead = deferred()
+  let menuPhase = false
+  const { runtime } = await fixture({ rpc: async endpoint => {
+    if (endpoint === 'list') {
+      if (menuPhase) { menuPhase = false; return menuRead.promise }
+      return { ok: true, value: { revision: 1, entries: [entryA] } }
+    }
+    if (endpoint === 'load') return { ok: true, value: { revision: 1, entry: entryA } }
+    throw new Error(endpoint)
+  } })
+  const view = runtime.renderRoot()
+  await runtime.flush()
+  menuPhase = true
+  await openGlobalMenu(view, runtime)
+  expect(view.getByText('Loading bindings…')).not.toBeNull()
+  fireEvent.click(view.getByRole('menuitem', { name: 'Manage global bindings' }))
+  await runtime.flush()
+  const workbench = () => document.querySelector('.ptcPlusBindings')
+  expect(workbench().textContent).toContain('alphaTools')
+  menuRead.resolve({ ok: true, value: { revision: 1, entries: [entryB] } })
+  await runtime.flush()
+  // The workbench owns its own read: a menu response never replaces its catalog.
+  expect(workbench().textContent).toContain('alphaTools')
+  expect(workbench().textContent).not.toContain('betaTools')
+})
+
+test('a failed menu catalog read reports only inside the menu', async () => {
+  const entry = { ...reviewCandidate('alpha').entry, name: 'alphaTools' }
+  let menuPhase = false
+  const { runtime } = await fixture({ rpc: async endpoint => {
+    if (endpoint === 'list') {
+      if (menuPhase) { menuPhase = false; throw new Error('menu catalog failed') }
+      return { ok: true, value: { revision: 1, entries: [entry] } }
+    }
+    if (endpoint === 'load') return { ok: true, value: { revision: 1, entry } }
+    throw new Error(endpoint)
+  } })
+  const view = runtime.renderRoot()
+  await runtime.flush()
+  menuPhase = true
+  await openGlobalMenu(view, runtime)
+  expect(view.getByText(/Global User Binding operation failed: .*menu catalog failed/)).not.toBeNull()
+  fireEvent.click(view.getByRole('menuitem', { name: 'Manage global bindings' }))
+  await runtime.flush()
+  expect(document.querySelector('.ptcPlusBindings').textContent).toContain('alphaTools')
+})
+
+test('an entry removed outside the workbench keeps the draft as an update, never a creation', async () => {
+  const stored = { id: 'files', name: 'fileTools', scope: 'namespace', purpose: 'Read text.',
+    enabled: false, symbols: ['readText'], source: 'export const value = 1' }
+  let present = true
+  let revision = 1
+  const { runtime, rpcCalls } = await fixture({ rpc: async (endpoint, payload) => {
+    if (endpoint === 'list' || endpoint === 'reload') {
+      return { ok: true, value: { revision, entries: present ? [stored] : [] } }
+    }
+    if (endpoint === 'load') return { ok: true, value: { revision, entry: stored } }
+    if (endpoint === 'validate') return { ok: true, value: { ...payload.entry, declaration: 'declare const value: number' } }
+    if (endpoint === 'save') {
+      // The store owns identity: updating a missing entry is a conflict, not a creation.
+      if (payload.intent === 'update') {
+        return { ok: false, error: { code: 'BINDINGS_CONFLICT', message: 'binding entry "files" does not exist' } }
+      }
+      // The store normalizes a saved entry, so the catalog always carries symbols.
+      return { ok: true, value: { revision: ++revision, entries: [{ ...payload.entry, symbols: payload.entry.symbols ?? [] }] } }
+    }
+    throw new Error(endpoint)
+  } })
+  const view = runtime.renderRoot()
+  await runtime.flush()
+  await runtime.sessions.setCurrent(undefined)
+  fireEvent.click(view.container.querySelector('.ptcPlusHeader'))
+  fireEvent.click([...view.container.querySelectorAll('button')].find(button => button.textContent === 'Manage global bindings'))
+  await runtime.flush()
+  const workbench = () => document.querySelector('.ptcPlusBindings')
+  const button = name => [...workbench().querySelectorAll('button')]
+    .find(button => button.textContent === name || button.getAttribute('aria-label') === name)
+  const fields = () => [...workbench().querySelectorAll('.ptcPlusEntrySettings input')]
+  const source = () => EditorView.findFromDOM(workbench().querySelector('.ptcPlusSourceBody .cm-content'))
+  fireEvent.click(button('Edit'))
+  await runtime.flush()
+  source().dispatch({ changes: { from: 0, to: source().state.doc.length, insert: 'export const value = 2' } })
+  await runtime.flush()
+  // The stored entry disappears while the draft is still unsaved.
+  present = false
+  revision = 2
+  fireEvent.click(button('Reload'))
+  await runtime.flush()
+  expect(fields()[0].value).toBe('files')
+  expect(fields()[0].disabled).toBe(true)
+  expect(source().state.doc.toString()).toBe('export const value = 2')
+  // The next save is still an update of that identity; the host owns the missing-entry conflict.
+  fireEvent.click(button('Save'))
+  await runtime.flush()
+  const saves = rpcCalls.filter(call => call.endpoint === 'save')
+  expect(saves).toHaveLength(1)
+  expect(saves[0].payload).toMatchObject({ intent: 'update', originalId: 'files', expectedRevision: 2,
+    entry: { id: 'files', source: 'export const value = 2' } })
+  expect(workbench().textContent).toContain('does not exist')
+  expect(fields()[0].disabled).toBe(true)
+  expect(source().state.doc.toString()).toBe('export const value = 2')
+  // Only an explicit new draft may create an entry.
+  fireEvent.click(button('Cancel'))
+  await runtime.flush()
+  fireEvent.click(button('New entry'))
+  await runtime.flush()
+  expect(fields()[0].disabled).toBe(false)
+  fireEvent.change(fields()[0], { target: { value: 'fresh' } })
+  fireEvent.change(fields()[1], { target: { value: 'freshTools' } })
+  await runtime.flush()
+  fireEvent.click(button('Save'))
+  await runtime.flush()
+  expect(rpcCalls.filter(call => call.endpoint === 'save')).toHaveLength(2)
+  expect(rpcCalls.filter(call => call.endpoint === 'save')[1].payload)
+    .toMatchObject({ intent: 'create', originalId: null, entry: { id: 'fresh' } })
+  expect(workbench().textContent).toContain('Entry saved')
+})
+
+test('a confirmed toggle updates the selected draft from the response catalog and keeps unsaved fields', async () => {
+  let stored = { id: 'files', name: 'fileTools', scope: 'namespace', purpose: 'Read text.',
+    enabled: false, symbols: ['readText'], source: 'export const value = 1' }
+  let revision = 1
+  const { runtime, rpcCalls } = await fixture({ rpc: async (endpoint, payload) => {
+    if (endpoint === 'list' || endpoint === 'reload') return { ok: true, value: { revision, entries: [stored] } }
+    if (endpoint === 'load') return { ok: true, value: { revision, entry: stored } }
+    if (endpoint === 'enable' || endpoint === 'disable') {
+      stored = { ...stored, enabled: endpoint === 'enable' }
+      return { ok: true, value: { revision: ++revision, entries: [stored] } }
+    }
+    if (endpoint === 'validate') return { ok: true, value: { ...payload.entry, declaration: 'declare const value: number' } }
+    if (endpoint === 'save') {
+      stored = { ...stored, ...payload.entry }
+      return { ok: true, value: { revision: ++revision, entries: [stored] } }
+    }
+    throw new Error(endpoint)
+  } })
+  const view = runtime.renderRoot()
+  await runtime.flush()
+  await runtime.sessions.setCurrent(undefined)
+  fireEvent.click(view.container.querySelector('.ptcPlusHeader'))
+  fireEvent.click([...view.container.querySelectorAll('button')].find(button => button.textContent === 'Manage global bindings'))
+  await runtime.flush()
+  const workbench = () => document.querySelector('.ptcPlusBindings')
+  const button = name => [...workbench().querySelectorAll('button')]
+    .find(button => button.textContent === name || button.getAttribute('aria-label') === name)
+  const toggle = () => workbench().querySelector('.ptcPlusBindingSwitch')
+  fireEvent.click(toggle())
+  await runtime.flush()
+  expect(toggle().getAttribute('aria-checked')).toBe('true')
+  fireEvent.click(toggle())
+  await runtime.flush()
+  expect(toggle().getAttribute('aria-checked')).toBe('false')
+  // The draft tracks the confirmed stored state, so a later save cannot revert the toggle.
+  fireEvent.click(button('Edit'))
+  await runtime.flush()
+  fireEvent.click(button('Save'))
+  await runtime.flush()
+  expect(rpcCalls.filter(call => call.endpoint === 'save')).toHaveLength(1)
+  expect(rpcCalls.find(call => call.endpoint === 'save').payload.entry).toMatchObject({
+    id: 'files', name: 'fileTools', purpose: 'Read text.', enabled: false, source: 'export const value = 1',
+  })
+})
+
+test('catalog sources stay inside owner disposal across release, revival and late responses', async () => {
+  const reads = []
+  const owner = createCatalogOwner({ callUserBindings: (endpoint, payload, signal) => {
+    const next = deferred()
+    reads.push({ next, signal })
+    return next.promise
+  } })
+  const source = owner.claim()
+  const statuses = []
+  const unsubscribe = source.subscribe(() => statuses.push(source.getSnapshot().status))
+  const released = source.read()
+  source.release()
+  reads[0].next.resolve({ revision: 1, entries: [] })
+  expect(await released).toBeUndefined()
+  expect(statuses).toEqual(['loading'])
+  // A released source refuses further work and keeps its last published state.
+  expect(await source.read()).toBeUndefined()
+  expect(reads).toHaveLength(1)
+  // A replayed subscription (StrictMode cleanup then effect) makes it live again.
+  unsubscribe()
+  source.subscribe(() => statuses.push(source.getSnapshot().status))
+  const revived = source.read()
+  expect(reads).toHaveLength(2)
+  // Owner disposal still reaches that revived source and drops its late response.
+  owner.dispose()
+  expect(reads[1].signal.aborted).toBe(true)
+  reads[1].next.resolve({ revision: 2, entries: [] })
+  expect(await revived).toBeUndefined()
+  expect(statuses).toEqual(['loading', 'loading'])
+  // A source that was never released is inside disposal from the start.
+  const claimed = owner.claim()
+  const pending = claimed.read()
+  owner.dispose()
+  expect(reads[2].signal.aborted).toBe(true)
+  reads[2].next.resolve({ revision: 3, entries: [] })
+  expect(await pending).toBeUndefined()
+})
+
+test('disposing the client plugin disposes its catalog owner and drops in-flight reads', async () => {
+  catalogOwners.length = 0
+  const aborted = []
+  const { runtime, feature } = await fixture({ rpc: (endpoint, payload, signal) => {
+    if (endpoint !== 'list') throw new Error(endpoint)
+    return new Promise(resolve => {
+      signal.addEventListener('abort', () => { aborted.push(endpoint); resolve({ ok: true, value: null }) }, { once: true })
+    })
+  } })
+  const view = runtime.renderRoot()
+  await runtime.flush()
+  await openGlobalMenu(view, runtime)
+  expect(catalogOwners).toHaveLength(1)
+  const dispose = vi.spyOn(catalogOwners[0], 'dispose')
+  expect(aborted).toHaveLength(0)
+  await feature.dispose()
+  await runtime.flush()
+  // The plugin scope, not only the consumer unmount, owns the sources it created.
+  expect(dispose).toHaveBeenCalledTimes(1)
+  expect(aborted.length).toBeGreaterThan(0)
+})
+
+test('missing optional primitives fall back to native controls and text labels', async () => {
+  const reducedUi = {
+    Menu: primitives.Menu, Modal: primitives.Modal,
+    IconCheckOutline14: primitives.IconCheckOutline14,
+    IconChevronDownOutline14: primitives.IconChevronDownOutline14,
+    IconCloseOutline16: primitives.IconCloseOutline16,
+    IconInspectOutline12: primitives.IconInspectOutline12,
+  }
+  const entry = { ...reviewCandidate('reduced').entry, name: 'reducedTools' }
+  const inspect = vi.fn()
+  const block = { kind: 'tool-result', callId: 'call-1',
+    call: { name: 'run_code', argsRaw: JSON.stringify({ code: 'return 41 + 1', description: 'Compute the answer' }) },
+    content: [{ type: 'text', text: '42' }], isError: false, subCalls: [], meta: undefined }
+  const { runtime, input } = await fixture({ ui: reducedUi, tool: { toolName: 'run_code', block, inspect },
+    commands: { list: async () => ({ ok: true, value: [{ name: 'binding' }] }) },
+    rpc: async endpoint => ({ ok: true,
+      value: endpoint === 'load' ? { revision: 1, entry } : { revision: 1, entries: [entry] } }) })
+  const view = runtime.renderRoot()
+  await runtime.flush()
+  // ActionButton loses the primitive but keeps a native button with its copy.
+  const manage = view.container.querySelector('.ptcPlusSettingAction button')
+  expect(manage.tagName).toBe('BUTTON')
+  expect(manage.textContent).toBe('Manage global bindings')
+  // The tool row keeps a keyboard-operable summary instead of DisclosureRow.
+  const row = view.container.querySelector('.ptcPlusTool')
+  const summary = row.querySelector('.ptcPlusToolSummary')
+  expect(summary.getAttribute('role')).toBe('button')
+  expect(summary.getAttribute('aria-expanded')).toBe('false')
+  fireEvent.keyDown(summary, { key: ' ' })
+  await runtime.flush()
+  expect(summary.getAttribute('aria-expanded')).toBe('true')
+  expect(row.querySelector('.ptcPlusToolCode').textContent).toContain('return 41 + 1')
+  expect(row.querySelector('.ptcPlusIoText').textContent).toBe('42')
+  fireEvent.click(row.querySelector('.ptcPlusInspect'))
+  expect(inspect).toHaveBeenCalledTimes(1)
+  // The authoring trigger keeps a text label, a native hint and the busy notice.
+  const anchor = view.container.querySelector('.ptcPlusComposerBindingAnchor')
+  expect(anchor.getAttribute('data-text')).toBe('true')
+  expect(anchor.querySelector('.ptcPlusAuthorButtonLabel').textContent).toBe('Global bindings')
+  expect(anchor.querySelector('.ptcPlusAuthorButton').getAttribute('title'))
+    .toBe('PTC Plus plugin · Open the Global User Binding menu to author, toggle, or manage')
+  input.publish({ draft: 'keep my text' })
+  await runtime.flush()
+  await openGlobalMenu(view, runtime, 'click')
+  fireEvent.click(view.getByRole('menuitem', { name: 'Write a new binding' }))
+  await runtime.flush()
+  const notice = view.container.querySelector('.ptcPlusComposerNotice')
+  expect(notice.getAttribute('role')).toBe('status')
+  expect(notice.textContent).toBe('The composer already has text, so its draft was not replaced.')
+  expect(input.scope.getSnapshot().draft).toBe('keep my text')
+})
+
+test('memory card expands session definitions and loads global sources on demand', async () => {
+  const entry = { id: 'alpha', name: 'alphaTools', scope: 'namespace', symbols: ['read'],
+    purpose: 'Read files.', enabled: true }
+  const { runtime, input } = await fixture({ rpc: async (endpoint, payload) => {
+    if (endpoint === 'list') return { ok: true, value: { revision: 1, entries: [entry] } }
+    if (endpoint === 'load') {
+      expect(payload).toEqual({ id: 'alpha' })
+      return { ok: true, value: { revision: 1, entry: { ...entry, source: 'export const read = 1' } } }
+    }
+    throw new Error(endpoint)
+  } })
+  runtime.sessions.behavior('client-session').projections.set('ptcPlusRepl', {
+    available: true, total: 4, omitted: 2, entries: [
+      { name: 'answer', kind: 'variable', definition: { source: 'const answer = 42', line: 1, column: 1 } },
+      { name: 'helper', kind: 'function', definition: { source: 'function helper() {}', line: 4, column: 1 } },
+    ],
+  })
+  const view = runtime.renderRoot()
+  await runtime.flush()
+  fireEvent.click(view.container.querySelector('.ptcPlusActive'))
+  await runtime.flush()
+  const rows = () => view.container.querySelectorAll('.ptcPlusReplBinding')
+  expect(rows()).toHaveLength(2)
+  expect(rows()[0].getAttribute('data-expanded')).toBe('false')
+  fireEvent.click(rows()[0].querySelector('.ptcPlusReplBindingTrigger'))
+  await runtime.flush()
+  expect(rows()[0].getAttribute('data-expanded')).toBe('true')
+  expect(rows()[0].querySelector('.ptcPlusReplDefinition').textContent).toContain('const answer = 42')
+  expect(rows()[0].querySelector('.ptcPlusReplLocation').textContent).toBe('Line 1, column 1')
+  expect(view.container.querySelector('.ptcPlusReplMore').textContent).toBe('2 more bindings not shown')
+  // The global tab loads one entry's source on demand and can hand it to the composer.
+  fireEvent.click(view.container.querySelectorAll('.ptcPlusReplTab')[1])
+  await runtime.flush()
+  const item = view.container.querySelector('.ptcPlusGlobalItem')
+  expect(item.querySelector('.ptcPlusBindingState').textContent).toBe('Enabled')
+  fireEvent.click(item.querySelector('.ptcPlusBindingSelect'))
+  await runtime.flush()
+  expect(item.querySelector('.ptcPlusGlobalSource').textContent).toBe('export const read = 1')
+  fireEvent.click([...item.querySelectorAll('button')].find(button => button.textContent === 'Ask Agent to revise'))
+  await runtime.flush()
+  expect(input.scope.getSnapshot().draft).toBe('/binding edit alpha ')
+})
+
+test('one settings mapping and one gated registration own every conditional contribution', () => {
+  const settings = { status: 'ready', writable: true, value: { enabled: true } }
+  expect(featureEnabled(settings, 'plugin')).toBe(true)
+  expect(featureEnabled(settings, 'bindings')).toBe(false)
+  expect(featureEnabled({ ...settings, value: { ...settings.value, userBindingsEnabled: true } }, 'bindings')).toBe(true)
+  // Default-on settings stay on unless explicitly turned off.
+  expect(featureEnabled(settings, 'toolView')).toBe(true)
+  expect(featureEnabled({ ...settings, value: { ...settings.value, enhancedToolView: false } }, 'toolView')).toBe(false)
+  expect(featureEnabled({ status: 'loading', value: { enabled: true } }, 'plugin')).toBe(false)
+  expect(featureEnabled({ ...settings, writable: false }, 'plugin')).toBe(true)
+  expect(featureEnabled({ status: 'ready', value: { enabled: false } }, 'plugin')).toBe(false)
+  expect(() => featureEnabled(settings, 'unknown')).toThrow('Unknown client feature')
+
+  const listeners = new Set()
+  const registered = []
+  const scope = { effect: callback => { const dispose = callback(); return () => dispose?.() } }
+  const gate = {
+    subscribe: listener => { listeners.add(listener); return () => listeners.delete(listener) },
+    isEnabled: () => enabled,
+    register: () => { registered.push('entry'); return () => { registered.pop() } },
+  }
+  let enabled = false
+  const release = registerGated(scope, gate)
+  expect(registered).toHaveLength(0)
+  expect(listeners.size).toBe(1)
+  enabled = true
+  for (const listener of [...listeners]) listener()
+  expect(registered).toHaveLength(1)
+  // Eligibility notifications repeat; registration must not.
+  for (const listener of [...listeners]) listener()
+  expect(registered).toHaveLength(1)
+  enabled = false
+  for (const listener of [...listeners]) listener()
+  expect(registered).toHaveLength(0)
+  enabled = true
+  for (const listener of [...listeners]) listener()
+  expect(registered).toHaveLength(1)
+  release()
+  expect(registered).toHaveLength(0)
+  expect(listeners.size).toBe(0)
+})
+
+test('a refused registration leaves nothing registered and keeps its subscription', () => {
+  const listeners = new Set()
+  const registered = []
+  const scope = { effect: callback => { const dispose = callback(); return () => dispose?.() } }
+  let refuse = false
+  let enabled = false
+  const gate = {
+    subscribe: listener => { listeners.add(listener); return () => listeners.delete(listener) },
+    isEnabled: () => enabled,
+    register: () => {
+      if (refuse) throw new Error('slot refused')
+      registered.push('entry')
+      return () => { registered.pop() }
+    },
+  }
+  // A refused registration propagates and registers nothing.
+  refuse = true
+  enabled = true
+  expect(() => registerGated(scope, gate)).toThrow('slot refused')
+  expect(registered).toHaveLength(0)
+  refuse = false
+  const release = registerGated(scope, gate)
+  expect(registered).toHaveLength(1)
+  // A later refusal must not leave a half-registered contribution behind.
+  enabled = false
+  for (const listener of [...listeners]) listener()
+  expect(registered).toHaveLength(0)
+  refuse = true
+  enabled = true
+  expect(() => { for (const listener of [...listeners]) listener() }).toThrow('slot refused')
+  expect(registered).toHaveLength(0)
+  release()
+  expect(listeners.size).toBe(0)
+})
+
+test('tool rows project the recorded call and expose expansion and inspection', async () => {
+  const inspect = vi.fn()
+  const block = { kind: 'tool-result', callId: 'call-1',
+    call: { name: 'run_code', argsRaw: JSON.stringify({ code: 'return 41 + 1', description: 'Compute the answer' }) },
+    content: [{ type: 'text', text: '42' }], isError: false, subCalls: [], meta: undefined }
+  const { runtime } = await fixture({ tool: { toolName: 'run_code', block, inspect } })
+  const view = runtime.renderRoot()
+  await runtime.flush()
+  const row = view.container.querySelector('.ptcPlusTool')
+  const header = row.querySelector('[data-disclosure-row]')
+  expect(header.textContent).toContain('Code')
+  expect(row.querySelector('.ptcPlusToolDescription').textContent).toBe('Compute the answer')
+  expect(row.querySelector('.ptcPlusToolState')).toBeNull()
+  expect(row.querySelector('.ptcPlusToolBody')).toBeNull()
+  expect(header.getAttribute('aria-expanded')).toBe('false')
+  fireEvent.click(header)
+  await runtime.flush()
+  expect(header.getAttribute('aria-expanded')).toBe('true')
+  expect(row.querySelector('.ptcPlusToolCode').textContent).toContain('return 41 + 1')
+  expect(row.querySelector('.ptcPlusIoText').textContent).toBe('42')
+  fireEvent.click(row.querySelector('.ptcPlusInspect'))
+  expect(inspect).toHaveBeenCalledTimes(1)
 })

@@ -77,6 +77,22 @@ function binding(name, kind = 'variable', source = `const ${name} = 1`, line = 1
   return { name, kind, definition: { source, line, column } }
 }
 
+// A visible Client holds one cancellable `watch` request while it inspects the
+// session, then requests bounded observations through the same RPC contract.
+function observedFixture() {
+  let rpc
+  const state = fixture({}, { bindingRpc: handler => { rpc = handler } })
+  return {
+    state,
+    watch(sessionId) {
+      void rpc('watch', { sessionId }, new AbortController().signal)
+    },
+    observe(sessionId, memory) {
+      return rpc('observe', { sessionId, memory }, new AbortController().signal)
+    },
+  }
+}
+
 test('bounds and validates UI observation independently of source inventory and journal evidence', () => {
   const preview = { name: 'value', status: 'readable', text: '42', truncated: false }
   const observation = { at: 1000, entries: [preview] }
@@ -104,7 +120,7 @@ test('bounds and validates UI observation independently of source inventory and 
 
 test('retains bounded definition provenance without reading runtime values', () => {
   const source = "import path from 'node:path'\nconst answer = 42\nfunction load() { return answer }\nclass Widget {}"
-  const prepared = prepareProgram(source, new Set(), true, new Set(), REWRITES)
+  const prepared = prepareProgram(source, { knownBindings: new Set(), bindingPolicy: true, reservedBindings: new Set(), rewritesEnabled: REWRITES })
   const snapshot = new BindingCatalog().advance(prepared, source).snapshot()
   assert.deepEqual(snapshot, [
     binding('Widget', 'class', 'class Widget {}', 4),
@@ -122,7 +138,7 @@ test('retains original provenance for every synthetic default-export binding', (
     ['export default class {}', 'class'],
     ['export default 42', 'variable'],
   ]) {
-    const prepared = prepareProgram(source, new Set(), true, new Set(), REWRITES)
+    const prepared = prepareProgram(source, { knownBindings: new Set(), bindingPolicy: true, reservedBindings: new Set(), rewritesEnabled: REWRITES })
     const entry = new BindingCatalog().advance(prepared, source).snapshot()
       .find(bindingEntry => bindingEntry.name === '__default')
     assert.deepEqual(entry, binding('__default', kind, source), source)
@@ -132,7 +148,7 @@ test('retains original provenance for every synthetic default-export binding', (
 test('indexes source once and reuses bounded definitions shared by many bindings', () => {
   const names = Array.from({ length: 160 }, (_, index) => `value${index}`)
   const source = `let ${names.map((name, index) => `${name} = ${index}`).join(', ')}`
-  const prepared = prepareProgram(source, new Set(), true, new Set(), REWRITES)
+  const prepared = prepareProgram(source, { knownBindings: new Set(), bindingPolicy: true, reservedBindings: new Set(), rewritesEnabled: REWRITES })
   const snapshot = new BindingCatalog().advance(prepared, source).snapshot()
   const firstDefinition = snapshot[0].definition
 
@@ -144,16 +160,39 @@ test('indexes source once and reuses bounded definitions shared by many bindings
 test('presents bindings as a LIFO stack and moves redeclarations to the top', () => {
   const firstSource = 'const first = 1\nconst second = 2'
   const first = new BindingCatalog().advance(
-    prepareProgram(firstSource, new Set(), true, new Set(), REWRITES),
+    prepareProgram(firstSource, { knownBindings: new Set(), bindingPolicy: true, reservedBindings: new Set(), rewritesEnabled: REWRITES }),
     firstSource,
   )
   const secondSource = 'const third = 3\nconst first = 4'
   const second = first.advance(
-    prepareProgram(secondSource, first.inputs().knownBindings, true, new Set(), REWRITES),
+    prepareProgram(secondSource, { knownBindings: first.inputs().knownBindings, bindingPolicy: true, reservedBindings: new Set(), rewritesEnabled: REWRITES }),
     secondSource,
   )
   assert.deepEqual(second.snapshot().map(entry => entry.name), ['first', 'third', 'second'])
   assert.equal(second.snapshot()[0].definition.source, 'const first = 4')
+})
+
+test('keeps catalog facts detached and removes complete global entries without losing session overrides', () => {
+  const origin = { kind: 'user-global', entryId: 'helpers', fingerprint: 'source' }
+  const entries = new Map([
+    ['local', { kind: 'variable', writable: true, definition: { source: 'let local = 1', line: 1, column: 1 } }],
+    ['first', { kind: 'function', writable: true, origin }],
+    ['second', { kind: 'variable', writable: true, origin }],
+    ['alias', { kind: 'import', writable: false, import: { namespace: 'privateSource', imported: 'value' } }],
+  ])
+  const catalog = new BindingCatalog({ entries, namespaces: new Set(['privateSource']) })
+  entries.clear()
+  const detached = catalog.inputs()
+  detached.knownBindings.clear()
+  detached.importBindings.clear()
+  detached.writableBindings.clear()
+  assert.deepEqual([...catalog.inputs().knownBindings], ['local', 'first', 'second', 'alias'])
+  const shadowed = catalog.shadowUserBindings(new Set(['first', 'missing', 'local']))
+  const remaining = shadowed.withoutUserBindings()
+  assert.deepEqual(remaining.snapshot().map(entry => entry.name), ['alias', 'first', 'local'])
+  assert.deepEqual([...remaining.inputs().writableBindings], ['local', 'first'])
+  assert.deepEqual([...remaining.inputs().importBindings], [['alias', { namespace: 'privateSource', imported: 'value' }]])
+  assert.deepEqual(catalog.snapshot().map(entry => entry.name), ['alias', 'second', 'first', 'local'])
 })
 
 test('projects a bounded value-independent binding inventory through formal call identity', () => {
@@ -348,8 +387,9 @@ test('distinguishes unavailable memory from an observed empty REPL', () => {
 })
 
 test('publishes the complete post-cell reusable inventory as private metadata', async (t) => {
-  const state = fixture({}, { observeSession: 'memory-session' })
+  const { state, watch } = observedFixture()
   t.after(() => state.dispose())
+  watch('memory-session')
   const first = await state.runDurable('memory-session', `
 const answer = 42
 function load() { return answer }
@@ -377,13 +417,13 @@ return answer
 })
 
 test('trusted-host observation supplies missing previews without writing projection or execution evidence', async t => {
-  const state = fixture({}, { bindingRpc: () => {} })
+  const { state, observe } = observedFixture()
   t.after(() => state.dispose())
   const result = await state.runDurable('open-after-cell', 'const answer = await Promise.resolve(42); return answer')
   const memory = resultMemory(result)
   assert.equal(memory.observation, undefined)
   const before = JSON.stringify(result)
-  const response = await state.observeRepl('open-after-cell', memory)
+  const response = await observe('open-after-cell', memory)
   assert.equal(response.ok, true)
   assert.equal(response.value.observation.entries[0].text, '42')
   assert.equal(JSON.stringify(result), before)
@@ -391,8 +431,9 @@ test('trusted-host observation supplies missing previews without writing project
 })
 
 test('worker observations preserve getter and Proxy counters and canonical results', async t => {
-  const state = fixture({}, { observeSession: 'observation-effects' })
+  const { state, watch } = observedFixture()
   t.after(() => state.dispose())
+  watch('observation-effects')
   const result = await state.runDurable('observation-effects', `
 let reads = 0
 const object = { answer: 42, get value() { reads++; return 1 }, toJSON() { reads++; return 2 } }

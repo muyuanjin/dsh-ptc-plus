@@ -200,6 +200,13 @@ export function createDirectSurfaceOwner({
     return undefined
   }
 
+  // One dispatch resolves the policy captured for its exact call, then the
+  // request bound to its signal, then the session's latest request.
+  const dispatchPolicy = (exec) => {
+    const id = sessionId(exec.agent)
+    return executionPolicy(id, exec.callId) ?? requestPolicy(exec?.signal, id)
+  }
+
   const rememberRequest = (
     id,
     signal,
@@ -382,9 +389,7 @@ export function createDirectSurfaceOwner({
       if (exec.name === EDIT_RUN_CODE && exec.parent !== undefined) {
         return rejection(`tool ${EDIT_RUN_CODE} is only callable directly in PTC mode; call native tools from inside run_code`)
       }
-      const id = sessionId(exec.agent)
-      const policy = executionPolicy(id, exec.callId)
-        ?? requestPolicy(exec?.signal, id)
+      const policy = dispatchPolicy(exec)
       if (exec.name === EDIT_RUN_CODE) {
         return policy?.presentation === 'ptc'
           ? undefined
@@ -397,9 +402,7 @@ export function createDirectSurfaceOwner({
       return rejection(`tool ${exec.name} is not a direct PTC tool; use run_code or edit_run_code directly, and call native tools from inside run_code`)
     },
     executionArguments(exec) {
-      const id = sessionId(exec.agent)
-      const policy = executionPolicy(id, exec.callId)
-        ?? requestPolicy(exec?.signal, id)
+      const policy = dispatchPolicy(exec)
       const originalArguments = exec.arguments
       if (exec.name !== RUN_CODE || exec.parent !== undefined
         || policy?.autoDescribeRunCode !== true || policy.presentation === 'native'
@@ -410,9 +413,7 @@ export function createDirectSurfaceOwner({
       return generatedRunCodeExecutionArguments(originalArguments)
     },
     executionUserBindings(exec) {
-      const id = sessionId(exec.agent)
-      const policy = executionPolicy(id, exec.callId)
-        ?? requestPolicy(exec?.signal, id)
+      const policy = dispatchPolicy(exec)
       return policy?.presentation === 'native' ? undefined : policy?.userBindings
     },
     argumentDiagnostic(exec, result) {
@@ -425,9 +426,7 @@ export function createDirectSurfaceOwner({
         : { ...result, ...(meta === undefined ? {} : { meta }) }
       const missingPath = missingDescriptionPath(diagnosed.error)
       if (missingPath === undefined) return diagnosed
-      const id = sessionId(exec.agent)
-      const policy = executionPolicy(id, exec.callId)
-        ?? requestPolicy(exec?.signal, id)
+      const policy = dispatchPolicy(exec)
       const outer = missingPath === 'description'
         && policy?.autoDescribeRunCode !== true
         && !(isRecord(exec.arguments) && typeof exec.arguments.description === 'string')

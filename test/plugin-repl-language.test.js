@@ -5,6 +5,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { LONG_CELL_CODE_UNITS } from '../internal/failure-reporting.js'
+import { normalizeJournal } from '../internal/session-journal.js'
+import { PREDECESSOR_JOURNAL_FIELDS } from '../internal/session-journal-schema.js'
 import { appendRunCodeEvents, fixture, ptcAgent } from './plugin-fixture.js'
 import { writeRawFilenameFixture } from './raw-filename-fixture.js'
 
@@ -86,6 +88,23 @@ return RepeatedClass.value
 })
 
 test('does not suggest loose declaration replacement for strict or reserved collisions', async (t) => {
+  // The loose-replacement advice has three emitted forms; the negative
+  // assertions below must rule out all of them.
+  const replacementAdvice = /assign (?:a (?:function|class) expression|function or class expressions)/
+  // Control: a genuinely writable function/class collision receives exactly that
+  // advice, so those assertions can fail if the wrong branch is chosen.
+  const writable = fixture({ looseTopLevelFunctionClassRedeclarations: false })
+  t.after(() => writable.dispose())
+  await writable.run('writable-declaration-collision-help', `
+function writableFunction() {}
+class WritableClass {}
+`)
+  for (const source of ['function writableFunction() {}', 'class WritableClass {}',
+    'function writableFunction() {}\nclass WritableClass {}']) {
+    const collision = await writable.run('writable-declaration-collision-help', source)
+    assert.match(collision.error.message, replacementAdvice)
+  }
+
   const strict = fixture({
     looseTopLevelRedeclarations: false,
     looseTopLevelFunctionClassRedeclarations: false,
@@ -103,15 +122,14 @@ test('does not suggest loose declaration replacement for strict or reserved coll
   await loose.run('mixed-declaration-collision-help', 'function replaceableFunction() {}')
   const reservedCollision = await loose.run('reserved-declaration-collision-help', 'class tools {}')
   assert.match(reservedCollision.error.message, /help: reuse the existing bindings/)
-  assert.doesNotMatch(reservedCollision.error.message, /top-level const\/let class expressions/)
+  assert.doesNotMatch(reservedCollision.error.message, replacementAdvice)
 
   const mixedCollision = await loose.run('mixed-declaration-collision-help', `
 function replaceableFunction() {}
 class tools {}
 `)
   assert.match(mixedCollision.error.message, /help: reuse the existing bindings/)
-  assert.doesNotMatch(mixedCollision.error.message, /top-level const\/let function expressions/)
-  assert.doesNotMatch(mixedCollision.error.message, /top-level const\/let class expressions/)
+  assert.doesNotMatch(mixedCollision.error.message, replacementAdvice)
 })
 
 test('independently replaces top-level functions and classes when enabled', async (t) => {
@@ -597,12 +615,15 @@ test('replays each journal node with its recorded binding mode', async (t) => {
     looseTopLevelRedeclarations: false,
     looseTopLevelFunctionClassRedeclarations: false,
   })
+  t.after(() => strictWriter.dispose())
   const strictCode = 'let strictHistorySide = 0\nconst strictHistoryBinding = 3'
   const strictResult = await strictWriter.runDurable(strictSession.id, strictCode, {}, { session: strictSession })
   assert.deepEqual(strictResult.meta.dshPtcPlus.bindingPolicy, {
     variableRedeclarations: false,
     functionClassRedeclarations: false,
   })
+  // Downgrading the live record must leave exactly the historical v3 field
+  // set; the shared journal schema rejects any field introduced after it.
   const strictPredecessor = structuredClone(strictResult)
   strictPredecessor.meta.dshPtcPlus.version = 3
   strictPredecessor.meta.dshPtcPlus.bindingMode = 'strict'
@@ -610,6 +631,13 @@ test('replays each journal node with its recorded binding mode', async (t) => {
   delete strictPredecessor.meta.dshPtcPlus.moduleSemantics
   delete strictPredecessor.meta.dshPtcPlus.userBindingsFingerprint
   delete strictPredecessor.meta.dshPtcPlus.userBindingsReusePolicy
+  delete strictPredecessor.meta.dshPtcPlus.userBindingsShadowPolicy
+  delete strictPredecessor.meta.dshPtcPlus.userBindingNames
+  for (const field of Reflect.ownKeys(strictPredecessor.meta.dshPtcPlus)) {
+    assert.ok(PREDECESSOR_JOURNAL_FIELDS.has(field),
+      `v3 predecessor must not carry the ${String(field)} field`)
+  }
+  assert.doesNotThrow(() => normalizeJournal(strictPredecessor.meta.dshPtcPlus))
   appendRunCodeEvents(strictEvents, 'strict-mode-cell', strictCode, strictPredecessor)
   await strictWriter.dispose()
 
@@ -868,10 +896,9 @@ return { existingPatternValue, newPatternType: typeof newPatternValue }
   })
 })
 
-test('covers the complete REPL binding-pattern matrix and collision boundaries', async (t) => {
+test('destructures existing and fresh bindings in one cell', async (t) => {
   const state = fixture({ looseTopLevelFunctionClassRedeclarations: false })
   t.after(() => state.dispose())
-
   const initial = await state.run('repl-pattern-matrix', `
 const existingValue = 1
 let existingObject = { old: true }
@@ -880,6 +907,7 @@ function existingFunction() { return 'original' }
 class ExistingClass {}
 `)
   assert.deepEqual(initial.logs, [])
+  assert.equal(initial.error, undefined)
 
   const destructured = await state.run('repl-pattern-matrix', `
 const key = 'renamed'
@@ -914,8 +942,16 @@ return { existingValue, computedFresh, nestedFresh, firstFresh, tailFresh, restF
     },
   })
   assert.equal(destructured.rewrites.length, 1)
+})
 
-  const replaced = await state.run('repl-pattern-matrix', `
+test('replaces existing var and let bindings through destructuring', async (t) => {
+  const state = fixture({ looseTopLevelFunctionClassRedeclarations: false })
+  t.after(() => state.dispose())
+  await state.run('repl-pattern-replace', `
+let existingObject = { old: true }
+var existingVar = 3
+`)
+  const replaced = await state.run('repl-pattern-replace', `
 var { existingVar, newVar = existingVar + 1 } = { existingVar: 20 }
 let { existingObject, newObject } = { existingObject: { next: true }, newObject: 21 }
 return { existingVar, newVar, existingObject, newObject }
@@ -924,14 +960,32 @@ return { existingVar, newVar, existingObject, newObject }
     logs: [],
     value: { existingVar: 20, newVar: 21, existingObject: { next: true }, newObject: 21 },
   })
+})
 
-  assert.equal((await state.run('repl-pattern-matrix', 'function existingFunction() {}')).error.kind, 'exception')
-  assert.equal((await state.run('repl-pattern-matrix', 'class ExistingClass {}')).error.kind, 'exception')
-  assert.deepEqual(await state.run('repl-pattern-matrix', 'var existingVar = 30\nreturn existingVar'), {
+test('rejects redeclaring a durable function or class when the policy is disabled', async (t) => {
+  const state = fixture({ looseTopLevelFunctionClassRedeclarations: false })
+  t.after(() => state.dispose())
+  const setup = await state.run('repl-pattern-declare', `
+function existingFunction() { return 'original' }
+class ExistingClass {}
+`)
+  assert.equal(setup.error, undefined)
+  assert.equal((await state.run('repl-pattern-declare', 'function existingFunction() {}')).error.kind, 'exception')
+  assert.equal((await state.run('repl-pattern-declare', 'class ExistingClass {}')).error.kind, 'exception')
+})
+
+test('replaces existing variables regardless of the function and class policy', async (t) => {
+  const state = fixture({ looseTopLevelFunctionClassRedeclarations: false })
+  t.after(() => state.dispose())
+  await state.run('repl-pattern-variables', `
+let existingObject = { old: true }
+var existingVar = 3
+`)
+  assert.deepEqual(await state.run('repl-pattern-variables', 'var existingVar = 30\nreturn existingVar'), {
     logs: [],
     value: 30,
   })
-  assert.deepEqual(await state.run('repl-pattern-matrix', 'let existingObject = {}\nreturn existingObject'), {
+  assert.deepEqual(await state.run('repl-pattern-variables', 'let existingObject = {}\nreturn existingObject'), {
     logs: [],
     value: {},
   })

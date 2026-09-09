@@ -6,15 +6,78 @@ import { tmpdir } from 'node:os'
 import test from 'node:test'
 import { Config } from '../index.js'
 import { normalizeJournal } from '../internal/session-journal.js'
+import { LEGACY_USER_BINDINGS_SHADOW_POLICY } from '../internal/session-journal-schema.js'
 import { SessionRuntime } from '../internal/session-runtime.js'
 import { decodeValue, encodeValue, renderValueWire } from '../internal/value-wire.js'
 import { JOURNAL_POLICY, appendOnlySession, appendRunCodeEvents, fixture } from './plugin-fixture.js'
 import { assertSameFilesystemEntry } from './filesystem-identity.js'
 
+test('checkpoints and cold replay retain Annex B local computation without redispatching calls', async t => {
+  const session = { id: 'annex-b-checkpoint', events: [] }
+  const writer = fixture()
+  t.after(() => writer.dispose())
+  let calls = 0
+  const source = `
+function f() { if (true) { function process() { return 1 } } return process() }
+const saved = f()
+const branchTypes = [
+  (() => { if (false) { function process() {} } return typeof process })(),
+  ({ method() { { function process() {} } return typeof process } }).method(),
+  await (async () => { { function process() {} } return typeof process })(),
+  (function* () { { function process() {} } return typeof process })().next().value,
+  (() => { try { throw 1 } catch (process) { { function process() {} } } return typeof process })(),
+  (() => { switch (1) { case 1: function process() {} } return typeof process })(),
+]
+const receipt = await tools.record({ saved })
+void await repl.state({ action: 'save', name: 'local-computation' })
+return { saved, branchTypes, receipt }
+`
+  const { raw, result: written } = await writer.executeRun(session.id, source, { record: async () => ++calls }, { session })
+  assert.deepEqual(raw, {
+    logs: [], value: { saved: 1, branchTypes: ['undefined', 'function', 'function', 'function', 'function', 'function'], receipt: 1 },
+  })
+  assert.equal(written.meta.dshPtcPlus.status, 'durable')
+  assert.equal(written.meta.dshPtcPlus.calls.filter(call => call.global === 'tools').length, 1)
+  assert.deepEqual(written.meta.dshPtcPlus.operations, [{ action: 'save', name: 'local-computation' }])
+  appendRunCodeEvents(session.events, 'annex-b-source', source, written)
+  await writer.dispose()
+  const restored = fixture()
+  t.after(() => restored.dispose())
+  const continued = await restored.executeRun(session.id, `
+const checkpoints = await repl.state({ action: 'list' })
+return { saved, branchTypes, receipt, mode: checkpoints.mode, names: checkpoints.names }
+`, { record: async () => ++calls }, { session })
+  assert.deepEqual(continued.raw, {
+    logs: [], value: { ...written.value, mode: 'durable', names: ['local-computation'] },
+  })
+  assert.equal(continued.result.meta.dshPtcPlus.status, 'durable')
+  assert.equal(continued.result.meta.dshPtcPlusRecoveryBoundaries, undefined)
+  assert.equal(calls, 1)
+})
+
+test('unpromoted block declarations leave actual ambient access volatile in the worker', async t => {
+  for (const [label, source] of [
+    ['strict function', 'function f() { "use strict"; { function process() {} } return typeof process } return f()'],
+    ['inherited strict', 'function outer() { "use strict"; function f() { { function process() {} } return typeof process } return f() } return outer()'],
+    ['lexical blocker', 'function f() { { let process; { function process() {} } } return typeof process } return f()'],
+    ['class method', 'class C { method() { { function process() {} } return typeof process } } return new C().method()'],
+    ['destructured catch', 'function f() { try { throw {} } catch ({ process }) { { function process() {} } } return typeof process } return f()'],
+    ['parameter environment', 'function f(value = process) { { function process() {} } return typeof value } return f()'],
+  ]) await t.test(label, async t => {
+    const state = fixture()
+    t.after(() => state.dispose())
+    const actual = await state.executeRun(`unpromoted-${label}`, source, {}, {})
+    assert.deepEqual(actual.raw, { logs: [], value: 'object' })
+    assert.equal(actual.result.meta.dshPtcPlus.status, 'volatile')
+    assert.match(actual.result.meta.dshPtcPlus.volatileReason, /ambient process/)
+  })
+})
+
 test('cold-replays predecessor journals with bindings and named states intact', async (t) => {
   const events = []
   const session = { id: 'predecessor-journal', events }
   const writer = fixture()
+  t.after(() => writer.dispose())
   const source = `
 let predecessorBinding = 41
 void await repl.state({ action: 'save', name: 'predecessor-point' })
@@ -29,6 +92,12 @@ return predecessorBinding
   delete predecessor.meta.dshPtcPlus.moduleSemantics
   delete predecessor.meta.dshPtcPlus.userBindingsFingerprint
   delete predecessor.meta.dshPtcPlus.userBindingsReusePolicy
+  // v1 records never carried per-name shadow policy or name evidence.
+  delete predecessor.meta.dshPtcPlus.userBindingsShadowPolicy
+  delete predecessor.meta.dshPtcPlus.userBindingNames
+  const normalizedPredecessor = normalizeJournal(predecessor.meta.dshPtcPlus)
+  assert.equal(normalizedPredecessor.userBindingsShadowPolicy, LEGACY_USER_BINDINGS_SHADOW_POLICY)
+  assert.equal(normalizedPredecessor.userBindingNames, null)
   appendRunCodeEvents(events, 'predecessor-cell', source, predecessor)
   await writer.dispose()
 
@@ -48,6 +117,7 @@ test('cold-replays predecessor default exports with their recorded writable bind
     const events = []
     const session = { id: `predecessor-default-export-v${version}`, events }
     const writer = fixture()
+    t.after(() => writer.dispose())
     const setupSource = 'export default 1'
     const setup = await writer.runDurable(session.id, 'let __default = 1', {}, { session })
     const assignmentSource = 'try { __default = 2 } catch {}\nreturn __default'
@@ -66,6 +136,12 @@ test('cold-replays predecessor default exports with their recorded writable bind
       delete result.meta.dshPtcPlus.moduleSemantics
       delete result.meta.dshPtcPlus.userBindingsFingerprint
       delete result.meta.dshPtcPlus.userBindingsReusePolicy
+      // v2/v3 records never carried per-name shadow policy or name evidence.
+      delete result.meta.dshPtcPlus.userBindingsShadowPolicy
+      delete result.meta.dshPtcPlus.userBindingNames
+      const normalized = normalizeJournal(result.meta.dshPtcPlus)
+      assert.equal(normalized.userBindingsShadowPolicy, LEGACY_USER_BINDINGS_SHADOW_POLICY)
+      assert.equal(normalized.userBindingNames, null)
     }
     appendRunCodeEvents(
       events,
@@ -473,11 +549,14 @@ test('attributes inherited async callbacks to the currently active cell', async 
   const session = { id: 'async-volatility', events }
   const first = fixture()
   t.after(() => first.dispose())
+  // Top-level this is the REPL context global; capturing it keeps this setup statically
+  // durable while the delayed callback still reaches ambient input and marks volatility at runtime.
   const setupCode = `
 let asyncValue = 0
 let releaseAsyncValue
+const ambientRoot = this
 const deferredAsyncValue = new Promise(resolve => { releaseAsyncValue = resolve })
-void deferredAsyncValue.then(() => { asyncValue = Math['ran' + 'dom']() })
+void deferredAsyncValue.then(() => { asyncValue = ambientRoot['Math']['ran' + 'dom']() })
 `
   const setup = await first.runDurable(session.id, setupCode, {}, { session })
   assert.equal(setup.meta.dshPtcPlus.status, 'durable')
@@ -491,6 +570,7 @@ return asyncValue
   const triggered = await first.runDurable(session.id, triggerCode, {}, { session })
   assert.equal(typeof triggered.value, 'number')
   assert.equal(triggered.meta.dshPtcPlus.status, 'volatile')
+  assert.equal(triggered.meta.dshPtcPlus.volatileReason, 'Math.random')
   appendRunCodeEvents(events, 'async-trigger', triggerCode, triggered)
   await first.dispose()
 
@@ -505,22 +585,30 @@ test('keeps result and error conversion inside the active execution', async (t) 
   const state = fixture()
   t.after(() => state.dispose())
 
+  // Top-level this is the REPL context global; the capture stays statically durable, so an
+  // accessor invocation would only ever be observed by the runtime worker.
   const returned = await state.runDurable('result-conversion-volatility', `
-let resultConversionState = 0
+let accessorInvocations = 0
+const ambientRoot = this
 return {
   get value() {
-    resultConversionState = Math['ran' + 'dom']()
-    return resultConversionState
+    accessorInvocations += 1
+    return ambientRoot['Math']['ran' + 'dom']()
   }
 }
 `)
   assert.match(returned.error.message, /^error\[PTC-O001\]: cell result could not cross the PTC Value V1 boundary:/)
   assert.equal(returned.meta.dshPtcPlus.status, 'durable')
+  assert.equal(returned.meta.dshPtcPlus.volatileReason, undefined)
+  const accessor = await state.runDurable('result-conversion-volatility', 'return accessorInvocations')
+  assert.equal(accessor.value, 0)
+  assert.equal(accessor.meta.dshPtcPlus.status, 'durable')
 
   const thrown = await state.runDurable('error-conversion-volatility', `
+const ambientRoot = this
 throw {
   toString() {
-    void Math['ran' + 'dom']()
+    void ambientRoot['Math']['ran' + 'dom']()
     return 'converted failure'
   }
 }
@@ -577,8 +665,11 @@ test('does not contract durable history when cold replay is already cancelled', 
 test('preserves an observed direct volatile boundary when the cell times out', async (t) => {
   const state = fixture({ computeMs: 1_000, maxWallMs: 100 })
   t.after(() => state.dispose())
+  // Top-level this is the REPL context global; the indirect read stays statically durable and
+  // the ambient access is observed only when the worker resolves it at runtime.
   const result = await state.runDurable('direct-volatile-timeout', `
-Reflect.get(globalThis, String.fromCharCode(68, 97, 116, 101)).now()
+const ambientRoot = this
+Reflect.get(ambientRoot, 'Date').now()
 await new Promise(() => {})
 `)
   assert.equal(result.isError, true)

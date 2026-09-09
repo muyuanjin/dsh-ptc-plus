@@ -33,6 +33,7 @@ class FakePort extends EventEmitter {
   start(message) {
     const base = {
       type: 'done', id: message.id, logs: [], durability: 'durable', committedRedeclarations: [],
+      activatedUserBindings: [], userBindingFailures: [], userBindingNames: [],
     }
     if (this.behavior === 'invalid-durability') {
       this.emit('message', { ...base, durability: 'invalid', hasValue: false })
@@ -63,13 +64,42 @@ class FakePort extends EventEmitter {
       this.emit('message', { type: 'call', runId: message.id + 1, id: 1, global: 'api', member: 'call', args: { codec: 'ptc-value-graph/v1', root: null, nodes: [] } })
     } else if (this.behavior === 'invalid-user-bindings') {
       this.emit('message', { ...base, hasValue: false, activatedUserBindings: true })
+    } else if (this.behavior === 'missing-user-binding-names') {
+      const { userBindingNames: _names, ...missing } = base
+      this.emit('message', { ...missing, hasValue: false })
+    } else if (this.behavior === 'malformed-user-binding-names') {
+      this.emit('message', { ...base, hasValue: false, userBindingNames: [{ name: 'globalHelpers' }] })
+    } else if (this.behavior === 'incomplete-user-binding-names') {
+      this.emit('message', {
+        ...base, hasValue: false, activatedUserBindings: ['global'], userBindingNames: [],
+      })
+    } else if (this.behavior === 'invalid-user-binding-ownership') {
+      this.emit('message', {
+        ...base,
+        hasValue: false,
+        activatedUserBindings: ['global'],
+        userBindingNames: [{ name: 'globalHelpers', state: 'provider', entryId: 'other' }],
+      })
+    } else if (this.behavior === 'invalid-user-binding-failures') {
+      this.emit('message', {
+        ...base, hasValue: false, activatedUserBindings: ['global'], userBindingFailures: 'none',
+      })
+    } else if (this.behavior === 'omitted-user-binding-outcomes') {
+      this.emit('message', {
+        ...base, hasValue: false, activatedUserBindings: [], userBindingNames: [],
+      })
+    } else if (this.behavior === 'activated-request-owned-user-binding') {
+      this.emit('message', {
+        ...base, hasValue: false, activatedUserBindings: ['api-entry'], userBindingNames: [],
+      })
     }
   }
 
   done() {
     this.emit('message', {
       type: 'done', id: this.runId, logs: [], durability: 'durable', hasValue: false,
-      committedRedeclarations: [],
+      committedRedeclarations: [], activatedUserBindings: [], userBindingFailures: [],
+      userBindingNames: [],
     })
   }
 
@@ -191,17 +221,46 @@ test('fails closed for every worker startup and private-protocol fault', async (
     await runtime.dispose()
   }
 
-  behaviors.push('invalid-user-bindings')
-  const invalidUserBindings = new SessionRuntime()
   const userBindings = createUserBindingsSnapshot({ entries: [{
     id: 'global', name: 'globalHelpers', scope: 'namespace', purpose: '', enabled: true,
     source: 'export const value = 1',
   }] })
+
+  behaviors.push('invalid-user-bindings')
+  const invalidUserBindings = new SessionRuntime()
   const invalidUserBindingsResult = await invalidUserBindings.run('invalid-user-bindings', {
     program: 'return 1', bindings: [], userBindings,
   })
   assert.equal(invalidUserBindingsResult.error.kind, 'worker-exit')
+  assert.match(invalidUserBindingsResult.error.message, /invalid activated user binding set/)
   await invalidUserBindings.dispose()
+
+  // Every completion carries closed per-name source facts and a complete
+  // activation partition; each injected fault must fail at its own check.
+  for (const [behavior, expected, options = {}] of [
+    ['missing-user-binding-names', /invalid user binding name evidence/],
+    ['malformed-user-binding-names', /invalid user binding name evidence/],
+    ['incomplete-user-binding-names', /incomplete user binding name evidence/, { userBindings }],
+    ['invalid-user-binding-ownership', /user binding name evidence with invalid ownership/, { userBindings }],
+    ['invalid-user-binding-failures', /invalid user binding failures/, { userBindings }],
+    ['omitted-user-binding-outcomes', /omitted user binding activation outcomes/, { userBindings }],
+    ['activated-request-owned-user-binding', /activated a request-owned user binding name/, {
+      userBindings: createUserBindingsSnapshot({ entries: [{
+        id: 'api-entry', name: 'api', scope: 'namespace', purpose: '', enabled: true,
+        source: 'export const value = 1',
+      }] }),
+      bindings: [{ global: 'api', functions: { call: async () => null } }],
+    }],
+  ]) {
+    behaviors.push(behavior)
+    const runtime = new SessionRuntime()
+    const result = await runtime.run(behavior, {
+      program: 'return 1', bindings: options.bindings ?? [], userBindings: options.userBindings,
+    })
+    assert.equal(result.error.kind, 'worker-exit')
+    assert.match(result.error.message, expected)
+    await runtime.dispose()
+  }
 
   behaviors.push('delayed-ready')
   let signalCreated

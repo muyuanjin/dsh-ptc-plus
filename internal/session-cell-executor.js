@@ -2,7 +2,7 @@ import {
   decodeValue,
   encodeValue,
   normalizeValueWire,
-  projectValueWire,
+  prepareValueWire,
   valueWiresEqual,
 } from './value-wire.js'
 import { diagnostic, renderDiagnostic } from './diagnostic.js'
@@ -17,8 +17,9 @@ import {
   safeProperty,
 } from './failure-reporting.js'
 import { assertStateName, LIVE_USER_BINDINGS_REUSE_POLICY } from './session-journal.js'
+import { LIVE_USER_BINDINGS_SHADOW_POLICY, normalizeUserBindingNames } from './session-journal-schema.js'
 import { PreflightError, prepareProgram } from './cell-analysis.js'
-import { LIVE_DEFAULT_EXPORT_BINDING } from './repl-rewrite-contract.js'
+import { LIVE_MODULE_SEMANTICS } from './repl-rewrite-contract.js'
 import { createReplMemorySnapshot } from './repl-memory-projection.js'
 import { ModuleRewriteError } from './cell-rewriter.js'
 import { mapSourcePosition } from './source-position-map.js'
@@ -57,16 +58,15 @@ function isBindingReferenceError(error) {
       || /Cannot access ['"][^'"]+['"] before initialization/.test(error.message))
 }
 
+/**
+ * Parse failures carry original cell coordinates in ModuleRewriteError.cellPosition; the rewriter
+ * owns any generated-source mapping, so the executor never re-applies wrapper offsets.
+ */
 function parseCellPosition(error) {
   const cellPosition = error instanceof ModuleRewriteError ? error.cellPosition : undefined
-  const line = Number.isSafeInteger(cellPosition?.line)
-    ? cellPosition.line
-    : Number.isSafeInteger(error?.loc?.line) ? error.loc.line - 1 : undefined
-  const column = Number.isSafeInteger(cellPosition?.column)
-    ? cellPosition.column
-    : Number.isSafeInteger(error?.loc?.column) ? error.loc.column + 1 : undefined
-  return line !== undefined && line >= 1 && column !== undefined
-    ? { line, column }
+  return Number.isSafeInteger(cellPosition?.line) && cellPosition.line >= 1
+    && Number.isSafeInteger(cellPosition?.column) && cellPosition.column >= 1
+    ? { line: cellPosition.line, column: cellPosition.column }
     : undefined
 }
 
@@ -124,6 +124,43 @@ function committedRedeclarationSet(message, prepared) {
     committed.add(name)
   }
   return committed
+}
+
+function completedUserBindingNames(active, message, snapshot) {
+  const facts = normalizeUserBindingNames(message.userBindingNames)
+  const required = active.userBindingBaseCatalog.userBindingNameSet(snapshot)
+  const allowed = active.userBindingBaseCatalog.userBindingNameSet(snapshot, true)
+  const providers = new Map((snapshot?.entries ?? []).flatMap(entry => (
+    (entry.scope === 'namespace' ? [entry.name] : entry.symbols).map(name => [name, entry.id])
+  )))
+  for (const fact of facts) {
+    if (!allowed.has(fact.name) || (fact.state === 'provider'
+      && (providers.get(fact.name) !== fact.entryId || active.request.bindingDescriptors.reservedNames.has(fact.name)))) {
+      throw new TypeError('kernel returned user binding name evidence with invalid ownership')
+    }
+    required.delete(fact.name)
+  }
+  if (required.size !== 0) throw new TypeError('kernel returned incomplete user binding name evidence')
+  if (active.replay !== undefined && JSON.stringify(facts) !== JSON.stringify(active.replay.userBindingNames)) {
+    throw new TypeError('cell replay produced different user binding name evidence')
+  }
+  return facts
+}
+
+function validateUserBindingActivation(active, message, ids) {
+  if (!Array.isArray(message.userBindingFailures)) throw new TypeError('kernel returned invalid user binding failures')
+  const expected = new Set(active.userBindings.entries.map(entry => entry.id))
+  for (const id of ids) expected.delete(id)
+  for (const failure of message.userBindingFailures) {
+    if (failure === null || typeof failure !== 'object' || Object.keys(failure).length !== 2
+      || typeof failure.error !== 'string' || !expected.delete(failure.id)) {
+      throw new TypeError('kernel returned invalid user binding failures')
+    }
+  }
+  if (expected.size !== 0) throw new TypeError('kernel omitted user binding activation outcomes')
+  if ([...ids].some(id => active.userBindingFailures.some(failure => failure.id === id))) {
+    throw new TypeError('kernel activated a request-owned user binding name')
+  }
 }
 
 function collisionDiagnostic(collisions) {
@@ -268,6 +305,8 @@ export class SessionCellExecutor {
     }
 
     let userBindings
+    const userBindingsShadowPolicy = replayRecord?.userBindingsShadowPolicy ?? LIVE_USER_BINDINGS_SHADOW_POLICY
+    const perNameUserBindings = userBindingsShadowPolicy === LIVE_USER_BINDINGS_SHADOW_POLICY
     let userBindingBaseCatalog = kernel.bindingCatalog
     let userBindingPlan
     let userBindingFailures = []
@@ -277,7 +316,7 @@ export class SessionCellExecutor {
         : normalizeUserBindingsSnapshot(request.userBindings)
       if (userBindings === undefined) {
         const catalog = kernel.bindingCatalog.withoutUserBindings()
-        userBindingPlan = {
+        userBindingPlan = perNameUserBindings ? kernel.bindingCatalog.userBindings(undefined, undefined, userBindingsShadowPolicy) : {
           catalog,
           shadowedNames: catalog.inputs().knownBindings,
         }
@@ -294,7 +333,7 @@ export class SessionCellExecutor {
             }))
           }
         }
-        userBindingPlan = kernel.bindingCatalog.userBindings(userBindings, activeEntryIds)
+        userBindingPlan = kernel.bindingCatalog.userBindings(userBindings, activeEntryIds, userBindingsShadowPolicy)
       }
     } catch (error) {
       const result = earlyResult('exception', `invalid user binding snapshot: ${messageOf(error)}`)
@@ -312,20 +351,19 @@ export class SessionCellExecutor {
       autoStripExports: config.autoStripExports,
       autoSplitRedeclarations: config.autoSplitRedeclarations,
     } : replayRecord.rewritePolicy
-    const moduleSemantics = replayRecord === undefined ? {
-      defaultExportBinding: LIVE_DEFAULT_EXPORT_BINDING,
-    } : replayRecord.moduleSemantics
-    const prepareCell = program => prepareProgram(
-      program,
-      catalog.knownBindings,
+    const moduleSemantics = replayRecord === undefined
+      ? LIVE_MODULE_SEMANTICS
+      : replayRecord.moduleSemantics
+    const prepareCell = program => prepareProgram(program, {
+      knownBindings: catalog.knownBindings,
       bindingPolicy,
-      request.bindingDescriptors.reservedNames,
+      reservedBindings: request.bindingDescriptors.reservedNames,
       rewritesEnabled,
-      catalog.importBindings,
-      catalog.importNamespaces,
-      catalog.writableBindings,
+      importBindings: catalog.importBindings,
+      importNamespaces: catalog.importNamespaces,
+      writableBindings: catalog.writableBindings,
       moduleSemantics,
-    )
+    })
     let prepared
     try {
       prepared = prepareCell(request.program)
@@ -415,6 +453,8 @@ export class SessionCellExecutor {
         priorBindingCatalog,
         userBindingBaseCatalog,
         userBindings,
+        userBindingsShadowPolicy,
+        userBindingFailures,
         userBindingSnapshot: userBindings,
         worker,
       }
@@ -445,6 +485,8 @@ export class SessionCellExecutor {
           kernel.client.post({
             type: 'run', id, program: prepared.code, namespaces: bindings.workerDescriptors,
             moduleLoads: prepared.moduleLoads,
+            importBindingNamespaces: new Map([...catalog.importBindings].map(([name, binding]) => [name, binding.namespace])),
+            preparedImportBindingNamespaces: new Map([...prepared.imports].map(([name, binding]) => [name, binding.namespace])),
             returnSignal: prepared.returnSignal,
             commitSignal: prepared.commitSignal,
             maxOutputBytes: config.maxOutputBytes,
@@ -456,6 +498,7 @@ export class SessionCellExecutor {
                 ).entries.map(entry => entry.name)
               : [],
             userBindings,
+            userBindingsShadowPolicy,
             userBindingsReusePolicy: replayRecord === undefined
               ? LIVE_USER_BINDINGS_REUSE_POLICY
               : replayRecord.userBindingsReusePolicy,
@@ -625,6 +668,7 @@ export class SessionCellExecutor {
       return
     }
     let activatedUserBindings
+    const perNameUserBindings = active.userBindingsShadowPolicy === LIVE_USER_BINDINGS_SHADOW_POLICY
     try {
       if (active.userBindings === undefined) {
         active.userBindingSnapshot = undefined
@@ -641,27 +685,31 @@ export class SessionCellExecutor {
         if ([...ids].some(id => !expected.has(id))) {
           throw new TypeError('kernel activated an unknown user binding entry')
         }
+        if (perNameUserBindings) validateUserBindingActivation(active, message, ids)
         activatedUserBindings = selectUserBindingsSnapshot(active.userBindings, ids)
         active.userBindingSnapshot = activatedUserBindings
-        active.priorBindingCatalog = active.userBindingBaseCatalog.userBindings(active.userBindings, ids).catalog
-        const shadowed = Array.isArray(message.shadowedUserBindings)
-          && message.shadowedUserBindings.every(name => typeof name === 'string')
-          ? new Set(message.shadowedUserBindings)
-          : undefined
-        const activeNames = new Set(activatedUserBindings.entries.flatMap(entry => (
-          entry.scope === 'namespace' ? [entry.name] : entry.symbols
-        )))
-        if (shadowed === undefined || shadowed.size !== message.shadowedUserBindings.length
-          || [...shadowed].some(name => !activeNames.has(name))) {
-          throw new TypeError('kernel returned an invalid shadowed user binding set')
+        active.priorBindingCatalog = active.userBindingBaseCatalog.userBindings(active.userBindings, ids, active.userBindingsShadowPolicy).catalog
+        if (!perNameUserBindings) {
+          const shadowed = Array.isArray(message.shadowedUserBindings)
+            && message.shadowedUserBindings.every(name => typeof name === 'string')
+            ? new Set(message.shadowedUserBindings)
+            : undefined
+          const activeNames = new Set(activatedUserBindings.entries.flatMap(entry => (
+            entry.scope === 'namespace' ? [entry.name] : entry.symbols
+          )))
+          if (shadowed === undefined || shadowed.size !== message.shadowedUserBindings.length
+            || [...shadowed].some(name => !activeNames.has(name))) {
+            throw new TypeError('kernel returned an invalid shadowed user binding set')
+          }
+          active.priorBindingCatalog = active.priorBindingCatalog.shadowUserBindings(shadowed)
         }
-        active.priorBindingCatalog = active.priorBindingCatalog.shadowUserBindings(shadowed)
         if (active.replay !== undefined
           && activatedUserBindings.fingerprint !== active.userBindings.fingerprint) {
           active.resolve({ logs, error: { kind: 'recovery', message: 'recorded user bindings could not be reactivated' } }, true)
           return
         }
       }
+      if (perNameUserBindings) active.userBindingNames = completedUserBindingNames(active, message, activatedUserBindings)
     } catch (error) {
       active.resolve(earlyResult('worker-exit', messageOf(error)), true)
       return
@@ -688,6 +736,11 @@ export class SessionCellExecutor {
           active.request.program,
           committed,
         )
+    if (perNameUserBindings) {
+      active.appliedBindingCatalog = active.appliedBindingCatalog.reconcileUserBindingNames(
+        activatedUserBindings, active.userBindingNames, active.request.program,
+      )
+    }
     active.observing = message.observing === true
     if (typeof message.error === 'string') {
       const rawError = {
@@ -734,20 +787,20 @@ export class SessionCellExecutor {
         || (message.hasValue ? message.value === undefined : message.value !== undefined)) {
         throw new TypeError('invalid PTC completion envelope')
       }
-      const value = message.hasValue ? normalizeValueWire(message.value, active.valueLimits) : undefined
+      const completion = message.hasValue ? prepareValueWire(message.value, active.valueLimits) : undefined
       active.completion = {
         hasValue: message.hasValue,
-        ...(message.hasValue ? { value } : {}),
+        ...(message.hasValue ? { value: completion.wire } : {}),
       }
       if (active.replay?.completion?.kind === 'return'
         && (active.replay.completion.hasValue !== message.hasValue
-          || (message.hasValue && !valueWiresEqual(active.replay.completion.value, value, active.valueLimits)))) {
+          || (message.hasValue && !valueWiresEqual(active.replay.completion.value, completion.wire, active.valueLimits)))) {
         active.resolve({ logs, error: { kind: 'recovery', message: 'cell replay produced a different completion value' } }, true)
         return
       }
       active.resolve({
         logs,
-        ...(message.hasValue ? { value: projectValueWire(value, active.valueLimits) } : {}),
+        ...(message.hasValue ? { value: completion.projectedValue } : {}),
       })
     } catch (error) {
       const failure = replayFailureDiagnostic(invalidOutputDiagnostic(messageOf(error)), active.replay)

@@ -9,6 +9,12 @@ export const CLASS_REDECLARATION_REWRITE =
 
 export const LEGACY_DEFAULT_EXPORT_BINDING = 'legacy-variable'
 export const LIVE_DEFAULT_EXPORT_BINDING = 'live-readonly'
+export const LEGACY_IMPORT_EXPRESSION_BOUNDARY = 'legacy'
+export const LIVE_IMPORT_EXPRESSION_BOUNDARY = 'statement-safe'
+export const LIVE_MODULE_SEMANTICS = Object.freeze({
+  defaultExportBinding: LIVE_DEFAULT_EXPORT_BINDING,
+  importExpressionBoundary: LIVE_IMPORT_EXPRESSION_BOUNDARY,
+})
 
 export function redeclarationCommitTarget(name, statementStart) {
   return `redeclaration:${statementStart}:${name}`

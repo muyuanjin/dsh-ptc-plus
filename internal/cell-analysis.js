@@ -1,13 +1,11 @@
-import { stripTypeScriptTypes } from 'node:module'
-import { parse } from 'acorn'
-import {
-  STRIP_PREFIX,
-  STRIP_SUFFIX,
-  rewriteModuleImportsExports,
-} from './cell-rewriter.js'
+import { ModuleRewriteError, rewriteModuleImportsExports } from './cell-rewriter.js'
+import { parseExecutableCell } from './cell-parser.js'
 import {
   LEGACY_DEFAULT_EXPORT_BINDING,
   LIVE_DEFAULT_EXPORT_BINDING,
+  LIVE_MODULE_SEMANTICS,
+  LEGACY_IMPORT_EXPRESSION_BOUNDARY,
+  LIVE_IMPORT_EXPRESSION_BOUNDARY,
   redeclarationCommitTarget,
 } from './repl-rewrite-contract.js'
 import {
@@ -23,7 +21,7 @@ import {
   renderDurabilityReasons,
 } from './module-policy.js'
 import { rewriteReplRedeclarations } from './repl-convenience.js'
-import { applySourceEdits, mapSourceSpan } from './source-position-map.js'
+import { applySourceEdits, mapSourcePosition, mapSourceSpan } from './source-position-map.js'
 import { SKIP_AST_CHILDREN, walkAst } from './ast-traversal.js'
 
 /**
@@ -39,12 +37,12 @@ export function declarationSpan(node) {
   /* c8 ignore next */
   if (start === undefined) return undefined
   return {
-    line: Math.max(1, start.line - 1),
+    line: start.line,
     column: start.column + 1,
     /* c8 ignore next */
     ...(end === undefined ? {} : {
       end: {
-        line: Math.max(1, end.line - 1),
+        line: end.line,
         column: end.column + 1,
       },
     }),
@@ -111,21 +109,56 @@ function directBlockBindings(body) {
   return names
 }
 
-function functionBindings(node) {
+function functionParameterBindings(node) {
   const names = new Set()
   if (node.id !== null && node.id !== undefined) names.add(node.id.name)
   /* c8 ignore next */
   for (const param of node.params ?? []) addPatternBindings(param, names)
-  walkAst(node.body, (current) => {
-    if (current !== node && isFunction(current)) {
-      if (current.type === 'FunctionDeclaration' && current.id !== null) names.add(current.id.name)
+  return names
+}
+
+function hasStrictDirective(body) {
+  if (body.type !== 'BlockStatement') return false
+  for (const statement of body.body) {
+    if (statement.directive === undefined) break
+    if (statement.directive === 'use strict') return true
+  }
+  return false
+}
+
+function addFunctionVariables(body, names, strict) {
+  const addBlockFunction = (node, blocked) => {
+    if (!strict && node.type === 'FunctionDeclaration' && !node.async && !node.generator
+      && !blocked.has(node.id.name)) names.add(node.id.name)
+  }
+  walkAst(body, (current, parent, key, blocked) => {
+    if (isFunction(current)) {
+      addBlockFunction(current, blocked)
       return SKIP_AST_CHILDREN
     }
+    if (current.type === 'StaticBlock') return SKIP_AST_CHILDREN
     if (current.type === 'VariableDeclaration' && current.kind === 'var') {
       for (const declaration of current.declarations) addPatternBindings(declaration.id, names)
     }
-  })
-  return names
+    const statements = current.type === 'BlockStatement' ? current.body
+      : current.type === 'SwitchCase' ? parent.cases.flatMap(branch => branch.consequent) : undefined
+    if (statements !== undefined) {
+      // Annex B creates a function-scope var only when intervening lexical
+      // declarations permit it. The declaration's own block binding is excluded.
+      for (const statement of statements) addBlockFunction(statement, blocked)
+      return new Set([...blocked, ...directBlockBindings(statements)])
+    }
+    if (['ForStatement', 'ForInStatement', 'ForOfStatement'].includes(current.type)) {
+      return new Set([...blocked, ...loopBindings(current)])
+    }
+    if (current.type === 'CatchClause' && current.param !== null && current.param.type !== 'Identifier') {
+      // The Annex B catch exception admits var names through a simple parameter,
+      // but a destructured catch binding still blocks function-scope promotion.
+      const nested = new Set(blocked)
+      addPatternBindings(current.param, nested)
+      return nested
+    }
+  }, undefined, new Set())
 }
 
 function loopBindings(node) {
@@ -171,10 +204,10 @@ function staticMemberName(node) {
   return undefined
 }
 
-function globalThisMember(node) {
+function globalObjectMember(node) {
   return node?.type === 'MemberExpression'
     && node.object?.type === 'Identifier'
-    && node.object.name === 'globalThis'
+    && ['global', 'globalThis'].includes(node.object.name)
     ? staticMemberName(node)
     : undefined
 }
@@ -212,12 +245,11 @@ function staticModuleClassification(moduleLoads) {
 
 /** Conservatively classify a cell before giving it non-journalable capability. */
 export function classifyDurability(code, knownBindings = new Set()) {
-  const tree = parse(`${STRIP_PREFIX}${code}${STRIP_SUFFIX}`, { ecmaVersion: 'latest', sourceType: 'script', locations: true })
-  const outer = tree.body[0]
-  /* c8 ignore next */
-  if (outer?.type !== 'FunctionDeclaration') throw new Error('ptc-plus: failed to parse cell wrapper')
-  const declared = topLevelBindings(outer.body.body)
+  const { body } = parseExecutableCell(code)
+  const declared = topLevelBindings(body.body)
   const rootBindings = new Set([...knownBindings, ...declared])
+  const rootStrict = hasStrictDirective(body)
+  addFunctionVariables(body, rootBindings, rootStrict)
   const reasons = new Map()
   const addReason = reason => reasons.set(renderDurabilityReason(reason), reason)
   const classifyModule = (source) => {
@@ -237,12 +269,25 @@ export function classifyDurability(code, knownBindings = new Set()) {
     }
     return false
   }
-  walkAst(outer.body, (node, parent, parentKey, scopes) => {
+  walkAst(body, (node, parent, parentKey, { scopes, strict }) => {
     let nestedScopes = scopes
     if (isFunction(node)) {
-      nestedScopes = [...scopes, functionBindings(node)]
-    } else if (node.type === 'BlockStatement' && node !== outer.body) {
-      nestedScopes = [...scopes, directBlockBindings(node.body)]
+      strict ||= hasStrictDirective(node.body)
+      nestedScopes = [...scopes, functionParameterBindings(node)]
+    } else if (node.type === 'BlockStatement' && node !== body) {
+      const names = directBlockBindings(node.body)
+      if (isFunction(parent)) addFunctionVariables(node, names, strict)
+      nestedScopes = [...scopes, names]
+    } else if (node.type === 'StaticBlock') {
+      const names = directBlockBindings(node.body)
+      for (const statement of node.body) addFunctionVariables(statement, names, true)
+      strict = true
+      nestedScopes = [...scopes, names]
+    } else if (node.type === 'ClassDeclaration' || node.type === 'ClassExpression') {
+      strict = true
+      nestedScopes = [...scopes, new Set(node.id === null ? [] : [node.id.name])]
+    } else if (node.type === 'SwitchCase') {
+      nestedScopes = [...scopes, directBlockBindings(parent.cases.flatMap(branch => branch.consequent))]
     } else if (node.type === 'CatchClause') {
       const names = new Set()
       addPatternBindings(node.param, names)
@@ -266,21 +311,36 @@ export function classifyDurability(code, knownBindings = new Set()) {
       && !isBound('process', nestedScopes) && node.name === 'process' && !isStableProcessMember(node, parent)) {
       addReason(Object.freeze({ kind: 'ambient', name: 'process' }))
     }
+    if (node.type === 'Identifier' && ['global', 'globalThis'].includes(node.name)
+      && isReferenceIdentifier(node, parent, parentKey) && !isBound(node.name, nestedScopes)
+      && !(parent?.type === 'MemberExpression' && parent.object === node)) {
+      addReason(Object.freeze({ kind: 'ambient', name: node.name }))
+    }
+    if (node.type === 'Identifier' && node.name === 'Math'
+      && isReferenceIdentifier(node, parent, parentKey) && !isBound('Math', nestedScopes)
+      && !(parent?.type === 'MemberExpression' && parent.object === node && staticMemberName(parent) !== undefined)) {
+      addReason(Object.freeze({ kind: 'ambient', name: 'Math' }))
+    }
     if (node.type === 'MemberExpression'
       && ((node.object?.type === 'Identifier' && node.object.name === 'Math' && !isBound('Math', nestedScopes))
-        || (globalThisMember(node.object) === 'Math' && !isBound('globalThis', nestedScopes)))
+        || (globalObjectMember(node.object) === 'Math' && !isBound(node.object.object.name, nestedScopes)))
       && staticMemberName(node) === 'random') {
       addReason(Object.freeze({ kind: 'math-random' }))
     }
     if (node.type === 'MemberExpression' && node.object?.type === 'Identifier'
-      && node.object.name === 'globalThis' && !isBound('globalThis', nestedScopes)) {
+      && ['global', 'globalThis'].includes(node.object.name) && !isBound(node.object.name, nestedScopes)) {
       const member = staticMemberName(node)
       if (member === undefined) addReason(Object.freeze({ kind: 'computed-global-access' }))
       else if (member === 'process') addReason(Object.freeze({ kind: 'ambient', name: 'process' }))
       else if (AMBIENT_GLOBALS.has(member)) addReason(Object.freeze({ kind: 'ambient', name: member }))
+      else if (member === 'global' || member === 'globalThis') addReason(Object.freeze({ kind: 'ambient', name: member }))
+      else if (member === 'Math' && !(parent?.type === 'MemberExpression' && parent.object === node
+        && staticMemberName(parent) !== undefined)) {
+        addReason(Object.freeze({ kind: 'ambient', name: 'Math' }))
+      }
     }
-    return nestedScopes
-  }, undefined, [rootBindings], outer, 'body')
+    return { scopes: nestedScopes, strict }
+  }, undefined, { scopes: [rootBindings], strict: rootStrict })
   return {
     durability: reasons.size === 0 ? 'durable' : 'volatile',
     reasons: Object.freeze([...reasons.values()]),
@@ -289,25 +349,20 @@ export function classifyDurability(code, knownBindings = new Set()) {
 }
 
 function rewriteCellReturns(code, sourceMap, unavailableNames) {
-  const wrapped = STRIP_PREFIX + code + STRIP_SUFFIX
-  const tree = parse(wrapped, { ecmaVersion: 'latest', sourceType: 'script' })
-  const outer = tree.body[0]
-  /* c8 ignore next */
-  if (outer?.type !== 'FunctionDeclaration') throw new Error('ptc-plus: failed to parse cell wrapper')
-  const offset = STRIP_PREFIX.length
+  const { body } = parseExecutableCell(code)
   const edits = []
-  const allocateName = createGeneratedNameAllocator(tree, unavailableNames)
+  const allocateName = createGeneratedNameAllocator(body, unavailableNames)
   const returnSignal = allocateName('return_signal')
   const signalReference = `this[${JSON.stringify(returnSignal)}]`
 
-  walkAst(outer.body, (node) => {
-    if (node !== outer.body && isFunction(node)) return SKIP_AST_CHILDREN
+  walkAst(body, (node) => {
+    if (node !== body && isFunction(node)) return SKIP_AST_CHILDREN
     if (node.type === 'ReturnStatement') {
-      const start = node.start - offset
-      const end = node.end - offset
+      const start = node.start
+      const end = node.end
       const argument = node.argument === null
         ? ''
-        : code.slice(node.argument.start - offset, node.argument.end - offset)
+        : code.slice(node.argument.start, node.argument.end)
       // A ReturnStatement may be the last clause body in a switch case. The
       // generated throw must terminate explicitly because the original return
       // statement's semicolon is part of the replaced AST range.
@@ -315,10 +370,10 @@ function rewriteCellReturns(code, sourceMap, unavailableNames) {
       return SKIP_AST_CHILDREN
     }
     if (node.type === 'CatchClause') {
-      const bodyStart = node.body.start - offset + 1
+      const bodyStart = node.body.start + 1
       const temporary = allocateName('caught')
       if (node.param === null) {
-        edits.push({ start: node.start - offset + 5, end: node.start - offset + 5, text: ` (${temporary})` })
+        edits.push({ start: node.start + 5, end: node.start + 5, text: ` (${temporary})` })
         edits.push({ start: bodyStart, end: bodyStart, text: `\nif (${temporary} instanceof ${signalReference}) throw ${temporary};` })
       } else if (node.param.type === 'Identifier') {
         edits.push({
@@ -327,8 +382,8 @@ function rewriteCellReturns(code, sourceMap, unavailableNames) {
           text: `\nif (${node.param.name} instanceof ${signalReference}) throw ${node.param.name};`,
         })
       } else {
-        const pattern = code.slice(node.param.start - offset, node.param.end - offset)
-        edits.push({ start: node.param.start - offset, end: node.param.end - offset, text: temporary })
+        const pattern = code.slice(node.param.start, node.param.end)
+        edits.push({ start: node.param.start, end: node.param.end, text: temporary })
         edits.push({
           start: bodyStart,
           end: bodyStart,
@@ -343,8 +398,16 @@ function rewriteCellReturns(code, sourceMap, unavailableNames) {
   return { ...applySourceEdits(code, sourceMap, edits), returnSignal }
 }
 
-export function prepareProgram(program, knownBindings, bindingPolicy, reservedBindings = new Set(), rewritesEnabled, importBindings = new Map(), importNamespaces = new Set(), writableBindings = undefined, moduleSemantics = { defaultExportBinding: LIVE_DEFAULT_EXPORT_BINDING }) {
-  if (typeof program !== 'string') throw new TypeError('ptc-plus: program must be a string')
+function normalizePreparationOptions({
+  knownBindings = new Set(),
+  bindingPolicy,
+  reservedBindings = new Set(),
+  rewritesEnabled,
+  importBindings = new Map(),
+  importNamespaces = new Set(),
+  writableBindings,
+  moduleSemantics = LIVE_MODULE_SEMANTICS,
+}) {
   if (typeof bindingPolicy === 'boolean') {
     bindingPolicy = {
       variableRedeclarations: bindingPolicy,
@@ -365,46 +428,28 @@ export function prepareProgram(program, knownBindings, bindingPolicy, reservedBi
   }
   if (moduleSemantics === null || typeof moduleSemantics !== 'object' || Array.isArray(moduleSemantics)
     || ![LEGACY_DEFAULT_EXPORT_BINDING, LIVE_DEFAULT_EXPORT_BINDING]
-      .includes(moduleSemantics.defaultExportBinding)) {
-    throw new TypeError('ptc-plus: module semantics must define a supported defaultExportBinding')
+      .includes(moduleSemantics.defaultExportBinding)
+    || ![LEGACY_IMPORT_EXPRESSION_BOUNDARY, LIVE_IMPORT_EXPRESSION_BOUNDARY]
+      .includes(moduleSemantics.importExpressionBoundary)) {
+    throw new TypeError('ptc-plus: module semantics must define supported default-export and import-expression rules')
   }
-  const unavailableGeneratedNames = new Set([
-    ...knownBindings,
-    ...reservedBindings,
-    ...importBindings.keys(),
-    ...importNamespaces,
-  ])
-  const moduleRewrite = rewriteModuleImportsExports(
-    program,
-    rewritesEnabled,
-    importBindings,
-    importNamespaces,
-    unavailableGeneratedNames,
-    moduleSemantics,
-  )
-  const staticModuleReasons = staticModuleClassification(moduleRewrite.moduleLoads)
-  const wrapped = STRIP_PREFIX + moduleRewrite.code + STRIP_SUFFIX
-  let stripped = wrapped
-  let tree
+  return { knownBindings, bindingPolicy, reservedBindings, rewritesEnabled,
+    importBindings, importNamespaces, writableBindings, moduleSemantics }
+}
+
+function parseMappedCell(moduleRewrite, program) {
   try {
-    tree = parse(wrapped, { ecmaVersion: 'latest', sourceType: 'script', locations: true })
-  } catch (javascriptError) {
-    try {
-      stripped = stripTypeScriptTypes(wrapped)
-      tree = parse(stripped, { ecmaVersion: 'latest', sourceType: 'script', locations: true })
-    } catch {
-      throw javascriptError
+    return parseExecutableCell(moduleRewrite.code, { eraseTypes: true })
+  } catch (error) {
+    if (error instanceof ModuleRewriteError) {
+      error.cellPosition = mapSourcePosition(error.cellPosition, moduleRewrite.code, program, moduleRewrite.sourceMap)
     }
+    throw error
   }
-  const code = stripped.slice(STRIP_PREFIX.length, stripped.length - STRIP_SUFFIX.length)
-  const sourceMap = moduleRewrite.sourceMap
-  const outer = tree.body[0]
-  const commitSignal = moduleRewrite.commitSignal
-  /* c8 ignore next */
-  const generatedDeclarations = outer?.type === 'FunctionDeclaration'
-    ? topLevelDeclarations(outer.body.body, bindingPolicy.variableRedeclarations)
-    : []
-  const collisionFor = (declaration) => {
+}
+
+function collisionMapper(code, program, sourceMap) {
+  return declaration => {
     /* c8 ignore next */
     const mapped = declaration.original === true ? declaration.span : declaration.span === undefined
       ? { line: 1, column: 1 }
@@ -422,29 +467,12 @@ export function prepareProgram(program, knownBindings, bindingPolicy, reservedBi
       ...(mapped.end === undefined ? {} : { end: mapped.end }),
     }
   }
-  const classifyPrepared = (preparedCode, preparedSourceMap) => {
-    try {
-      const classification = classifyDurability(preparedCode, knownBindings)
-      const reasons = new Map()
-      for (const reason of [...staticModuleReasons, ...classification.reasons]) {
-        reasons.set(renderDurabilityReason(reason), reason)
-      }
-      return {
-        ...classification,
-        durability: reasons.size === 0 ? 'durable' : 'volatile',
-        reasons: Object.freeze([...reasons.values()]),
-        reason: renderDurabilityReasons([...reasons.values()]),
-      }
-    } catch (error) {
-      if (error instanceof PreflightError && error.span !== undefined) {
-        error.span = mapSourceSpan(error.span, preparedCode, program, preparedSourceMap)
-      }
-      throw error
-    }
-  }
-  const importedNames = new Set(moduleRewrite.imports.keys())
+}
+
+function preparedDeclarations(moduleRewrite, parsed, program, bindingPolicy) {
+  const generatedDeclarations = topLevelDeclarations(parsed.body.body, bindingPolicy.variableRedeclarations)
   const originalDeclarationNames = new Set(moduleRewrite.exportDeclarations.map(declaration => declaration.name))
-  const declarations = [
+  return [
     ...moduleRewrite.importDeclarations.map(declaration => ({ ...declaration, writable: false })),
     ...moduleRewrite.exportDeclarations.map(declaration => ({
       ...declaration,
@@ -456,45 +484,68 @@ export function prepareProgram(program, knownBindings, bindingPolicy, reservedBi
       .map(declaration => ({
         ...declaration,
         ...(declaration.definitionSpan === undefined ? {} : {
-          definitionSpan: mapSourceSpan(declaration.definitionSpan, code, program, sourceMap),
+          definitionSpan: mapSourceSpan(declaration.definitionSpan, parsed.code, program, moduleRewrite.sourceMap),
         }),
       })),
   ]
-  const normalizeClassification = classification => {
-    const imports = new Map(moduleRewrite.imports)
-    for (const name of classification.declared) {
-      if (!moduleRewrite.generatedNamespaces.has(name)) imports.delete(name)
+}
+
+function classifyPrepared({ code, sourceMap }, program, knownBindings, moduleRewrite, staticModuleReasons) {
+  let classification
+  try {
+    classification = classifyDurability(code, knownBindings)
+  } catch (error) {
+    if (error instanceof PreflightError && error.span !== undefined) {
+      error.span = mapSourceSpan(error.span, code, program, sourceMap)
     }
-    return {
-      ...classification,
-      imports,
-      declared: new Set([...classification.declared, ...importedNames]),
-    }
+    throw error
   }
+  const reasons = new Map()
+  for (const reason of [...staticModuleReasons, ...classification.reasons]) {
+    reasons.set(renderDurabilityReason(reason), reason)
+  }
+  const imports = new Map(moduleRewrite.imports)
+  for (const name of classification.declared) {
+    if (!moduleRewrite.generatedNamespaces.has(name)) imports.delete(name)
+  }
+  return {
+    ...classification,
+    durability: reasons.size === 0 ? 'durable' : 'volatile',
+    reasons: Object.freeze([...reasons.values()]),
+    reason: renderDurabilityReasons([...reasons.values()]),
+    imports,
+    declared: new Set([...classification.declared, ...moduleRewrite.imports.keys()]),
+  }
+}
+
+export function prepareProgram(program, options = {}) {
+  if (typeof program !== 'string') throw new TypeError('ptc-plus: program must be a string')
+  const { knownBindings, bindingPolicy, reservedBindings, rewritesEnabled,
+    importBindings, importNamespaces, writableBindings, moduleSemantics } = normalizePreparationOptions(options)
+  const unavailableGeneratedNames = new Set([
+    ...knownBindings, ...reservedBindings, ...importBindings.keys(), ...importNamespaces,
+  ])
+  const moduleRewrite = rewriteModuleImportsExports(
+    program, rewritesEnabled, importBindings, importNamespaces, unavailableGeneratedNames, moduleSemantics,
+  )
+  const staticModuleReasons = staticModuleClassification(moduleRewrite.moduleLoads)
+  const parsed = parseMappedCell(moduleRewrite, program)
+  const { code } = parsed
+  const { sourceMap, commitSignal } = moduleRewrite
+  const declarations = preparedDeclarations(moduleRewrite, parsed, program, bindingPolicy)
+  const collisionFor = collisionMapper(code, program, sourceMap)
   const reserved = declarations.filter(declaration => (
     reservedBindings.has(declaration.name)
     || moduleRewrite.importNamespaces.has(declaration.name)
     || (declaration.kind === 'import' && knownBindings.has(declaration.name))
   ))
-  if (reserved.length > 0) {
-    const classification = normalizeClassification(classifyPrepared(code, sourceMap))
-    return {
-      code,
-      ...classification,
-      declarations,
-      imports: classification.imports,
-      importNamespaces: moduleRewrite.importNamespaces,
-      collisions: reserved.map(collisionFor),
-      redeclared: [],
-      rewrites: moduleRewrite.rewrites,
-      moduleLoads: moduleRewrite.moduleLoads,
-    }
-  }
-  const convenience = rewriteReplRedeclarations({
+  const convenience = reserved.length > 0 ? {
+    executableCode: code, executableSourceMap: sourceMap,
+    collisions: reserved.map(collisionFor), redeclared: [], rewrites: [],
+  } : rewriteReplRedeclarations({
     code,
     sourceMap,
-    body: outer?.type === 'FunctionDeclaration' ? outer.body.body : undefined,
-    offset: STRIP_PREFIX.length,
+    body: parsed.body.body,
     knownBindings,
     variableRedeclarationBindings: bindingPolicy.variableRedeclarations
       ? new Set([...knownBindings].filter(name => !importBindings.has(name)))
@@ -514,10 +565,11 @@ export function prepareProgram(program, knownBindings, bindingPolicy, reservedBi
       commitTargets.add(declaration.commitDependency)
     }
   }
-  // Classification sees the rewritten program so declared bindings reflect the
-  // split form; it must never see the return rewrite, whose computed
-  // globalThis access would mark every returning cell volatile.
-  const classification = normalizeClassification(classifyPrepared(executableCode, executableSourceMap))
+  // Generated control helpers are not ambient inputs from the user's program.
+  const classification = classifyPrepared(
+    { code: executableCode, sourceMap: executableSourceMap },
+    program, knownBindings, moduleRewrite, staticModuleReasons,
+  )
   let lowered = { code, sourceMap }
   if (collisions.length === 0) {
     lowered = rewriteCellReturns(
@@ -529,7 +581,7 @@ export function prepareProgram(program, knownBindings, bindingPolicy, reservedBi
   return {
     code: lowered.code,
     sourceMap: lowered.sourceMap,
-    ...(lowered.returnSignal === undefined ? {} : { returnSignal: lowered.returnSignal }),
+    returnSignal: lowered.returnSignal,
     ...classification,
     declarations,
     imports: classification.imports,

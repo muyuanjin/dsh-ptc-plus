@@ -1,69 +1,45 @@
 import {
   CONFIG_DEFAULTS,
+  CONFIG_FIELDS,
   MAX_TIMER_DELAY_MS,
 } from './config-spec.js'
 
 export { MAX_TIMER_DELAY_MS }
 
-/** Positive-safe-integer limits applied to runtime budget fields. */
-const BUDGET_KEYS = Object.freeze([
-  'computeMs',
-  'maxOutputBytes',
-  'maxOldGenerationSizeMb',
-  'maxValueNodes',
-  'maxValueEdges',
-  'maxValueArrayLength',
-  'maxValueBigIntDigits',
-])
+/** The wall-clock ceiling field carries the platform timer limit as its maximum. */
+const MAX_WALL_MS_FIELD = CONFIG_FIELDS.find(field => field.key === 'maxWallMs')
 
-/** Boolean runtime behavior switches. */
-const BOOLEAN_KEYS = Object.freeze([
-  'replViewEnabled',
-  'bindingAuthorButtonVisible',
-  'enhancedToolView',
-  'autoDescribeRunCode',
-  'cordisToolsEnabled',
-  'userBindingsEnabled',
-  'canonicalizeToolCalls',
-  'looseTopLevelRedeclarations',
-  'looseTopLevelFunctionClassRedeclarations',
-  'durableReplay',
-  'autoRewriteImports',
-  'autoStripExports',
-  'autoSplitRedeclarations',
-  'tipsEnabled',
-])
+/** Validate one integer field against the bounds declared in CONFIG_FIELDS. */
+function assertIntegerField(field, value) {
+  if (!Number.isSafeInteger(value) || value < field.min) {
+    throw new TypeError(`ptc-plus: ${field.key} must be a positive safe integer`)
+  }
+  if (value > field.max) {
+    throw new TypeError(`ptc-plus: ${field.key} must not exceed ${field.max}`)
+  }
+}
 
-/** Positive-safe-integer field groups that validate like budgets. */
-const POSITIVE_KEYS = Object.freeze([
-  'maxNestedRunCodeDepth',
-  'tipCooldownMessages',
-  'tipEscalationFailures',
-])
+/** Validate one field against its CONFIG_FIELDS declaration. */
+function assertField(field, value) {
+  if (field.type === 'boolean') {
+    if (typeof value !== 'boolean') {
+      throw new TypeError(`ptc-plus: ${field.key} must be a boolean`)
+    }
+    return
+  }
+  assertIntegerField(field, value)
+}
 
 /**
  * Resolve plugin/runtime config from raw input, applying the shared defaults
- * and the same validation the Host Config schema exposes.
- * @param config - raw config object; unknown keys are preserved for forwards compatibility.
+ * and validating every declared field with the rules the Host Config schema
+ * exposes. Unknown keys are preserved for forwards compatibility.
+ * @param config - raw config object.
  * @returns a resolved config object.
  */
 export function resolveConfig(config = {}) {
   const resolved = { ...CONFIG_DEFAULTS, ...config }
-  if (typeof resolved.enabled !== 'boolean') {
-    throw new TypeError('ptc-plus: enabled must be a boolean')
-  }
-  for (const key of [...BUDGET_KEYS, ...POSITIVE_KEYS]) {
-    const value = resolved[key]
-    if (!Number.isSafeInteger(value) || value < 1) {
-      throw new TypeError(`ptc-plus: ${key} must be a positive safe integer`)
-    }
-  }
-  validateMaxWallMs(resolved.maxWallMs)
-  for (const key of BOOLEAN_KEYS) {
-    if (typeof resolved[key] !== 'boolean') {
-      throw new TypeError(`ptc-plus: ${key} must be a boolean`)
-    }
-  }
+  for (const field of CONFIG_FIELDS) assertField(field, resolved[field.key])
   return resolved
 }
 
@@ -73,11 +49,6 @@ export function resolveConfig(config = {}) {
  * @returns the validated value.
  */
 export function validateMaxWallMs(value) {
-  if (!Number.isSafeInteger(value) || value < 1) {
-    throw new TypeError('ptc-plus: maxWallMs must be a positive safe integer')
-  }
-  if (value > MAX_TIMER_DELAY_MS) {
-    throw new TypeError(`ptc-plus: maxWallMs must not exceed ${MAX_TIMER_DELAY_MS}`)
-  }
+  assertIntegerField(MAX_WALL_MS_FIELD, value)
   return value
 }

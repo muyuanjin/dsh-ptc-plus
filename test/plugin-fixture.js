@@ -1,5 +1,6 @@
 import { apply } from '../index.js'
 import { readRuntimeMessage } from '../internal/runtime-messages.js'
+import { createHostContext, runHookChain } from './host-fixture.js'
 
 export const JOURNAL_POLICY = { autoRewriteImports: true, autoStripExports: true, autoSplitRedeclarations: true }
 
@@ -81,13 +82,9 @@ export function ptcAgent(id, session = { id, events: [] }) {
 }
 
 export function fixture(config = {}, fixtureOptions = {}) {
-  let observationHandler
-  const listeners = new Map()
-  const listenerOptions = new Map()
-  const cleanups = []
+  const host = createHostContext({ onListener: fixtureOptions.onListener })
+  const { listeners, sections, contexts, cleanups } = host
   let disposal
-  const sections = []
-  const contexts = []
   const upstreamCalls = []
   let nextCallId = 0
   const runCodeDefinition = {
@@ -104,7 +101,8 @@ export function fixture(config = {}, fixtureOptions = {}) {
     },
     output: {},
   }
-  const definitions = new Map([['run_code', runCodeDefinition]])
+  const definitions = host.toolDefinitions
+  definitions.set('run_code', runCodeDefinition)
   const runtime = {
     language: 'typescript',
     isolation: 'worker-thread',
@@ -115,11 +113,10 @@ export function fixture(config = {}, fixtureOptions = {}) {
     },
   }
   const ctx = {
-    ...(fixtureOptions.observeSession === undefined && fixtureOptions.bindingRpc === undefined ? {} : { inject(names, callback) {
+    ...(fixtureOptions.bindingRpc === undefined ? {} : { inject(names, callback) {
       if (names[0] === 'ptcPlusRpc') callback({ ptcPlusRpc: {
         register(_channel, handler) {
-          observationHandler = handler
-          fixtureOptions.bindingRpc?.(handler)
+          fixtureOptions.bindingRpc(handler)
           return () => {}
         },
       } })
@@ -128,12 +125,7 @@ export function fixture(config = {}, fixtureOptions = {}) {
     codeRuntime: runtime,
     tools: {
       get: (name, scope) => scope?.ctx?.tools?.get(name) ?? definitions.get(name),
-      register(definition) {
-        definitions.set(definition.name, definition)
-        return () => {
-          if (definitions.get(definition.name) === definition) definitions.delete(definition.name)
-        }
-      },
+      register: host.ctx.tools.register,
       async execute(options) {
         const definition = options.agent?.ctx?.tools?.get(options.name) ?? definitions.get(options.name)
         if (options.name === 'run_code') {
@@ -167,32 +159,11 @@ export function fixture(config = {}, fixtureOptions = {}) {
     },
     ...(fixtureOptions.agents === undefined ? {} : { agents: fixtureOptions.agents }),
     systemPrompt: {
-      context(value) {
-        contexts.push(value)
-        return () => contexts.splice(contexts.indexOf(value), 1)
-      },
-      section(value) {
-        sections.push(value)
-        return () => sections.splice(sections.indexOf(value), 1)
-      },
+      context: host.ctx.systemPrompt.context,
+      section: host.ctx.systemPrompt.section,
     },
-    on(name, listener, options) {
-      const entries = listeners.get(name) ?? []
-      entries.push(listener)
-      listeners.set(name, entries)
-      listenerOptions.set(listener, options)
-      return () => entries.splice(entries.indexOf(listener), 1)
-    },
-    effect(register) {
-      let cleanup = register()
-      const dispose = () => {
-        const current = cleanup
-        cleanup = undefined
-        return current?.()
-      }
-      cleanups.push(dispose)
-      return dispose
-    },
+    on: host.ctx.on,
+    effect: host.ctx.effect,
   }
   apply(ctx, {
     computeMs: 500,
@@ -200,9 +171,6 @@ export function fixture(config = {}, fixtureOptions = {}) {
     maxOldGenerationSizeMb: 64,
     ...config,
   })
-  if (fixtureOptions.observeSession !== undefined) {
-    void observationHandler('watch', { sessionId: fixtureOptions.observeSession }, new AbortController().signal)
-  }
 
   async function executeRun(session, program, functions, options) {
     const execute = listeners.get('tools/execute')[0]
@@ -245,23 +213,6 @@ export function fixture(config = {}, fixtureOptions = {}) {
     return (await executeRun(session, program, functions, options)).result
   }
 
-  async function rejectBeforeRuntime(session, options = {}) {
-    const execute = listeners.get('tools/execute')[0]
-    const exec = {
-      name: 'run_code',
-      callId: options.callId ?? `fixture-call-${++nextCallId}`,
-      agent: { id: session, session: options.session },
-    }
-    let result = await execute(exec, async () => ({
-      isError: true,
-      content: [],
-      error: { message: options.message ?? 'rejected before runtime dispatch' },
-    }))
-    if (options.finalizeResult !== undefined) result = options.finalizeResult(result)
-    for (const listener of listeners.get('tools/result') ?? []) await listener(exec, result)
-    return result
-  }
-
   async function assemble(assembly, context = {}, next) {
     context.agent?.ctx?.tools?.bindFixtureRegistry?.(
       name => definitions.get(name),
@@ -275,10 +226,9 @@ export function fixture(config = {}, fixtureOptions = {}) {
       ...assembly, contexts: [...assembly.contexts, ...contexts],
     } : assembly
     const entries = [...listeners.get('system-prompt/assemble') ?? []]
-    const dispatch = index => entries[index] === undefined
-      ? next === undefined ? Promise.resolve(initial) : next()
-      : entries[index](initial, context, () => dispatch(index + 1))
-    return dispatch(0)
+    return runHookChain(entries, [initial, context], () => (
+      next === undefined ? Promise.resolve(initial) : next()
+    ))
   }
 
   async function assembleStep(assembly, context) {
@@ -317,36 +267,9 @@ export function fixture(config = {}, fixtureOptions = {}) {
     return output
   }
 
-  async function dispatchNestedRun(session, args, options = {}) {
-    const execute = listeners.get('tools/execute')[0]
-    const controller = options.controller ?? new AbortController()
-    const exec = {
-      name: 'run_code',
-      callId: options.callId ?? `fixture-nested-${++nextCallId}`,
-      rootCallId: options.rootCallId ?? 'fixture-root',
-      parent: options.parent ?? { id: 'fixture-parent-token' },
-      agent: { id: session, session: options.session },
-    }
-    let result = await execute(exec, async () => {
-      const raw = await runtime.run({ program: args.code, bindings: options.bindings ?? [], signal: controller.signal })
-      if (raw.error !== undefined) {
-        return { isError: true, content: [], error: { message: raw.error.message } }
-      }
-      return {
-        isError: false,
-        content: [],
-        value: { logs: raw.logs, ...(raw.value === undefined ? {} : { result: raw.value }) },
-      }
-    })
-    if (options.finalizeResult !== undefined) result = options.finalizeResult(result)
-    for (const listener of listeners.get('tools/result') ?? []) await listener(exec, result)
-    return result
-  }
-
   return {
     ctx,
     listeners,
-    listenerOptions,
     runtime,
     runCodeDefinition,
     sections,
@@ -354,11 +277,8 @@ export function fixture(config = {}, fixtureOptions = {}) {
     assemble,
     assembleStep,
     stream,
-    dispatchNestedRun,
     executeRun,
-    rejectBeforeRuntime,
     runDurable,
-    observeRepl: (sessionId, memory, signal = new AbortController().signal) => observationHandler('observe', { sessionId, memory }, signal),
     run,
     async emit(name, value) {
       await Promise.all((listeners.get(name) ?? []).map(listener => listener(value)))

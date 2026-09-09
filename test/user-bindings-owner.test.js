@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { sessionEvents } from '../internal/session-events.js'
 import { once } from 'node:events'
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -13,6 +13,8 @@ import {
   createUserBindingsOwner,
 } from '../internal/user-bindings-owner.js'
 import { createUserBindingsSnapshot } from '../internal/user-bindings.js'
+import { UserBindingsStore } from '../internal/user-bindings-store.js'
+import { decodeValue } from '../internal/value-wire.js'
 
 function injectedAgentContext(services) {
   const context = {
@@ -186,6 +188,7 @@ function fakeStore() {
     reload: async () => 'reload',
     save: async (...args) => (calls.push(['save', ...args]), 'save'),
     create: async (...args) => (calls.push(['create', ...args]), 'created'),
+    update: async (...args) => (calls.push(['update', ...args]), 'updated'),
     setEnabled: async (...args) => (calls.push(['setEnabled', ...args]), 'enabled'),
     remove: async (...args) => (calls.push(['remove', ...args]), 'removed'),
     importFile: async (...args) => (calls.push(['importFile', ...args]), 'imported'),
@@ -329,28 +332,152 @@ test('routes management operations through one revision-aware store owner', asyn
     maxOldGenerationSizeMb: 32,
     valueLimits: {},
   })
+  const entry = {
+    id: 'x', name: 'x', scope: 'namespace', purpose: '', enabled: false,
+    source: 'export const value = 1',
+  }
   assert.equal((await owner.snapshot()).version, 1)
   assert.equal((await owner.list()).revision, 1)
   assert.deepEqual((await call(target, 'load', { id: 'x' })).value, { id: 'x' })
   assert.equal((await call(target, 'reload')).value, 'reload')
-  assert.equal((await call(target, 'save', { entry: { id: 'x' }, expectedRevision: 1 })).value, 'save')
-  assert.equal((await call(target, 'enable', { id: 'x', expectedRevision: 2 })).value, 'enabled')
-  assert.equal((await call(target, 'disable', { id: 'x', expectedRevision: 3 })).value, 'enabled')
-  assert.equal((await call(target, 'remove', { id: 'x', expectedRevision: 4 })).value, 'removed')
-  assert.equal((await call(target, 'import', { path: 'x.ts', expectedRevision: 5, options: {} })).value, 'imported')
-  assert.deepEqual(store.calls, [
-    ['save', { id: 'x' }, 1],
-    ['setEnabled', 'x', true, 2],
-    ['setEnabled', 'x', false, 3],
-    ['remove', 'x', 4],
-    ['importFile', 'x.ts', 5, {}],
+  assert.equal((await call(target, 'save', { intent: 'create', entry, expectedRevision: 1 })).value, 'created')
+  assert.equal((await call(target, 'save', {
+    intent: 'update', originalId: 'x', entry, expectedRevision: 2,
+  })).value, 'updated')
+  assert.equal((await call(target, 'enable', { id: 'x', expectedRevision: 3 })).value, 'enabled')
+  assert.equal((await call(target, 'disable', { id: 'x', expectedRevision: 4 })).value, 'enabled')
+  assert.equal((await call(target, 'remove', { id: 'x', expectedRevision: 5 })).value, 'removed')
+  assert.equal((await call(target, 'import', { path: 'x.ts', expectedRevision: 6, options: {} })).value, 'imported')
+  assert.deepEqual(store.calls[0], ['create', entry, 1])
+  assert.equal(store.calls[1][0], 'update')
+  assert.equal(store.calls[1][1].id, 'x')
+  assert.equal(store.calls[1][1].source, entry.source)
+  assert.equal(store.calls[1][2], 2)
+  assert.deepEqual(store.calls.slice(2), [
+    ['setEnabled', 'x', true, 3],
+    ['setEnabled', 'x', false, 4],
+    ['remove', 'x', 5],
+    ['importFile', 'x.ts', 6, {}],
   ])
   assert.equal((await call(target, 'unknown')).ok, false)
   assert.equal((await call(target, 'persist', {})).ok, false)
   assert.equal((await call(target, 'revert', {})).ok, false)
+  for (const inherited of ['toString', 'constructor', '__proto__', 'hasOwnProperty']) {
+    const rejected = await call(target, inherited, { entry })
+    assert.equal(rejected.ok, false)
+    assert.match(rejected.error.message, /unknown user binding operation/)
+  }
   assert.equal((await call(target, 'draft', { capability: 'missing' })).value, null)
   assert.equal((await call(target, 'draft')).ok, false)
   assert.equal((await call(target, 'discard-draft', { capability: 'missing', version: 1 })).value, null)
+  await owner.dispose()
+})
+
+test('a created entry can be edited through the real store without a second normalization', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'ptc-plus-owner-store-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const filename = join(root, 'profile', 'ptc-plus', 'bindings.json')
+  const store = new UserBindingsStore({ filename })
+  const target = ownerFixture()
+  const owner = createUserBindingsOwner(target.ctx, {
+    enabled: true,
+    store,
+    cwd: process.cwd(),
+    maxWallMs: 1_000,
+    maxOutputBytes: 1_024,
+    maxOldGenerationSizeMb: 32,
+    valueLimits: {},
+  })
+  t.after(() => owner.dispose())
+  const entry = {
+    id: 'math', name: 'math', scope: 'namespace', purpose: 'Math helpers.', enabled: false,
+    source: 'export function add(left: number, right: number): number { return left + right }',
+  }
+  const created = await call(target, 'save', {
+    intent: 'create', originalId: null, entry, expectedRevision: (await call(target, 'list')).value.revision,
+  })
+  assert.equal(created.ok, true)
+  const edited = {
+    ...entry,
+    purpose: 'Revised math helpers.',
+    source: 'export function add(left: number, right: number): number { return left + right + 1 }',
+  }
+  const catalog = (await call(target, 'list')).value
+  const updated = await call(target, 'save', {
+    intent: 'update', originalId: entry.id, entry: edited, expectedRevision: catalog.revision,
+  })
+  assert.equal(updated.ok, true, updated.error?.message)
+  const listed = (await call(target, 'list')).value
+  assert.equal(listed.revision, catalog.revision + 1)
+  assert.equal(listed.entries.length, 1)
+  assert.equal(listed.entries[0].purpose, edited.purpose)
+  const loaded = (await call(target, 'load', { id: entry.id })).value
+  assert.equal(loaded.entry.source, edited.source)
+  assert.equal(Object.hasOwn(loaded.entry, 'fingerprint'), false)
+  const persisted = JSON.parse(await readFile(filename, 'utf8'))
+  assert.equal(persisted.entries.length, 1)
+  assert.equal(persisted.entries[0].source, edited.source)
+  const renamed = await call(target, 'save', {
+    intent: 'update', originalId: entry.id, entry: { ...edited, id: 'algebra' }, expectedRevision: listed.revision,
+  })
+  assert.equal(renamed.ok, false)
+  assert.match(renamed.error.message, /original id/)
+  const duplicate = await call(target, 'save', {
+    intent: 'create', originalId: null, entry, expectedRevision: listed.revision,
+  })
+  assert.equal(duplicate.ok, false)
+  assert.match(duplicate.error.message, /already exists/)
+  const intact = (await call(target, 'load', { id: entry.id })).value
+  assert.equal(intact.entry.source, edited.source)
+})
+
+test('requires an explicit save intent and never falls back to an unsafe upsert', async () => {
+  const target = ownerFixture()
+  const store = fakeStore()
+  const entry = {
+    id: 'math', name: 'math', scope: 'namespace', purpose: '', enabled: false,
+    source: 'export const value = 1',
+  }
+  const owner = createUserBindingsOwner(target.ctx, {
+    enabled: true,
+    store,
+    cwd: process.cwd(),
+    maxWallMs: 1_000,
+    maxOutputBytes: 1_024,
+    maxOldGenerationSizeMb: 32,
+    valueLimits: {},
+  })
+  for (const payload of [
+    { entry, expectedRevision: 1 },
+    { entry, expectedRevision: 1, intent: 'upsert' },
+    { entry, expectedRevision: 1, intent: null },
+  ]) {
+    const rejected = await call(target, 'save', payload)
+    assert.equal(rejected.ok, false)
+    assert.match(rejected.error.message, /explicit create or update intent/)
+  }
+  assert.deepEqual(store.calls, [])
+
+  for (const payload of [
+    { intent: 'update', entry, expectedRevision: 1 },
+    { intent: 'update', originalId: 'other', entry, expectedRevision: 1 },
+    { intent: 'update', originalId: 7, entry, expectedRevision: 1 },
+  ]) {
+    const rejected = await call(target, 'save', payload)
+    assert.equal(rejected.ok, false)
+    assert.match(rejected.error.message, /original id/)
+  }
+  assert.deepEqual(store.calls, [])
+
+  store.update = async () => { throw new Error('binding entry "math" does not exist') }
+  const missing = await call(target, 'save', { intent: 'update', originalId: 'math', entry, expectedRevision: 1 })
+  assert.equal(missing.ok, false)
+  assert.match(missing.error.message, /does not exist/)
+
+  store.create = async () => { throw new Error('binding entry "math" already exists') }
+  const duplicate = await call(target, 'save', { intent: 'create', entry, expectedRevision: 1 })
+  assert.equal(duplicate.ok, false)
+  assert.match(duplicate.error.message, /already exists/)
   await owner.dispose()
 })
 
@@ -1199,9 +1326,9 @@ test('keeps Agent authoring request-scoped across edits, conflicts, and lifecycl
   assert.equal(editDraft.entry.modelContext.includeDeclaration, false)
   assert.equal((await call(target, 'save-draft', {
     capability: editCapability, version: editDraft.version, expectedRevision: 4,
-  })).value, 'save')
+  })).value, 'updated')
   assert.equal((await call(target, 'draft', { capability: editCapability })).value, null)
-  assert.equal(store.calls.at(-1)[0], 'save')
+  assert.equal(store.calls.at(-1)[0], 'update')
   assert.equal(store.calls.at(-1)[1].enabled, false)
   assert.equal(store.calls.at(-1)[1].modelContext.instructions, 'Use alpha.value() for the revised value.')
 
@@ -1862,6 +1989,96 @@ test('cancels, times out, and bounds candidate output', async () => {
   await owner.dispose()
 })
 
+test('candidate runs budget the returned envelope including escaped log bytes', async t => {
+  const run = async (maxOutputBytes, source) => {
+    const target = ownerFixture()
+    const owner = createUserBindingsOwner(target.ctx, {
+      enabled: true, store: fakeStore(), cwd: process.cwd(),
+      maxWallMs: 2_000, maxOldGenerationSizeMb: 32, valueLimits: {}, maxOutputBytes,
+    })
+    t.after(() => owner.dispose())
+    return call(target, 'run', { source, invocation: { symbol: 'value', args: [] } })
+  }
+  // The log write precedes the result, so the parent captures it before settling.
+  const source = body => `
+process.stdout.write(String.fromCharCode(34).repeat(150))
+export async function value() {
+  await new Promise(resolve => setTimeout(resolve, 100))
+  ${body}
+}
+`
+  const bounded = await run(512, source('return 1'))
+  assert.equal(bounded.ok, true)
+  assert.equal(bounded.value.value, 1)
+  const overflow = await run(300, source('return 1'))
+  assert.equal(overflow.ok, false)
+  assert.match(overflow.error.message, /output exceeded/)
+  const thrown = await run(300, source("throw new Error('candidate failed')"))
+  assert.equal(thrown.ok, false)
+  assert.match(thrown.error.message, /output exceeded/)
+})
+
+test('reconfigured runtime budgets reach candidate value limits through the shared mapping', async t => {
+  const target = ownerFixture()
+  const owner = createUserBindingsOwner(target.ctx, {
+    enabled: true, store: fakeStore(), cwd: process.cwd(),
+    maxWallMs: 2_000, maxOutputBytes: 8_192, maxOldGenerationSizeMb: 32, valueLimits: {},
+  })
+  t.after(() => owner.dispose())
+  const config = {
+    userBindingsEnabled: true, maxWallMs: 2_000, maxOutputBytes: 8_192, maxOldGenerationSizeMb: 32,
+    maxValueNodes: 1, maxValueEdges: 1_000, maxValueArrayLength: 1_000, maxValueBigIntDigits: 1_000,
+  }
+  await owner.reconfigure(config)
+  const bounded = await call(target, 'run', {
+    source: 'export function value() { return [{ n: 1 }] }',
+    invocation: { symbol: 'value', args: [] },
+  })
+  assert.equal(bounded.ok, false)
+  assert.match(bounded.error.message, /node budget exceeds 1/)
+  await owner.reconfigure({ ...config, maxValueNodes: 100 })
+  const restored = await call(target, 'run', {
+    source: 'export function value() { return [{ n: 1 }] }',
+    invocation: { symbol: 'value', args: [] },
+  })
+  assert.equal(restored.ok, true)
+  assert.deepEqual(restored.value.value, [{ n: 1 }])
+})
+
+test('runs candidates with a normalized host environment and no inherited exec arguments', async () => {
+  const target = ownerFixture()
+  const owner = createUserBindingsOwner(target.ctx, {
+    enabled: true,
+    store: fakeStore(),
+    cwd: process.cwd(),
+    maxWallMs: 2_000,
+    maxOutputBytes: 8_192,
+    maxOldGenerationSizeMb: 32,
+    valueLimits: {},
+  })
+  const previousContext = process.env.NODE_TEST_CONTEXT
+  process.env.NODE_TEST_CONTEXT = 'host-test-context'
+  process.env.PTC_PLUS_CANDIDATE_PROBE = 'kept'
+  try {
+    const source = `
+export function inspect() {
+  return {
+    context: process.env.NODE_TEST_CONTEXT ?? null,
+    probe: process.env.PTC_PLUS_CANDIDATE_PROBE ?? null,
+    execArgv: process.execArgv,
+  }
+}
+`
+    const result = await call(target, 'run', { source, invocation: { symbol: 'inspect', args: [] } })
+    assert.deepEqual(result.value.value, { context: null, probe: 'kept', execArgv: [] })
+  } finally {
+    if (previousContext === undefined) delete process.env.NODE_TEST_CONTEXT
+    else process.env.NODE_TEST_CONTEXT = previousContext
+    delete process.env.PTC_PLUS_CANDIDATE_PROBE
+    await owner.dispose()
+  }
+})
+
 test('candidate workers settle non-callable exports and thrown values before natural exit', async t => {
   for (const [source, error] of [
     ['export const value = 1', 'TypeError: candidate export "value" is not callable'],
@@ -1877,6 +2094,38 @@ test('candidate workers settle non-callable exports and thrown values before nat
   }
 })
 
+test('candidate runner encodes invoked values, symbol listings, and bounded failures', async t => {
+  const run = async (workerData) => {
+    const worker = new Worker(new URL('../internal/user-binding-runner.js', import.meta.url), { workerData })
+    t.after(() => worker.terminate())
+    const [[message], [exitCode]] = await Promise.all([once(worker, 'message'), once(worker, 'exit')])
+    assert.equal(exitCode, 0)
+    return message
+  }
+  const invoked = await run({
+    cwd: process.cwd(),
+    source: 'export function add(value: number) { return value + 1 }',
+    invocation: { symbol: 'add', args: [41] },
+    valueLimits: {},
+  })
+  assert.equal(invoked.ok, true)
+  assert.equal(decodeValue(invoked.value, {}), 42)
+  const listing = await run({
+    cwd: process.cwd(), source: 'export const one = 1\nexport function two() {}', valueLimits: {},
+  })
+  assert.deepEqual(decodeValue(listing.value, {}), { symbols: ['one', 'two'] })
+  const bounded = await run({
+    cwd: process.cwd(),
+    source: 'export function value() { return 12345n }',
+    invocation: { symbol: 'value', args: [] },
+    valueLimits: { maxBigIntDigits: 3 },
+  })
+  assert.deepEqual(bounded, {
+    ok: false,
+    error: 'TypeError: value at $ is not PTC Value V1: BigInt exceeds 3 digits',
+  })
+})
+
 test('candidate runner rejects a non-absolute working directory', async t => {
   const worker = new Worker(new URL('../internal/user-binding-runner.js', import.meta.url), {
     workerData: { cwd: 'relative', source: 'export const value = 1' },
@@ -1887,6 +2136,23 @@ test('candidate runner rejects a non-absolute working directory', async t => {
   ])
   assert.match(error.message, /absolute cwd/)
   assert.equal(exitCode, 1)
+})
+
+test('candidate worker startup errors settle once as a controlled failure and leave the owner serving', async t => {
+  const target = ownerFixture()
+  const owner = createUserBindingsOwner(target.ctx, {
+    enabled: true, store: fakeStore(), cwd: 'relative-candidate-cwd', maxWallMs: 2_000,
+    maxOutputBytes: 8_192, maxOldGenerationSizeMb: 32, valueLimits: {},
+  })
+  t.after(() => owner.dispose())
+  // The runner refuses a non-absolute cwd before it imports the candidate, so a
+  // worker round reaching this point can only settle through the error callback;
+  // without it the worker error is unhandled and fails the run.
+  const failed = await call(target, 'run', { source: 'export const value = 1' })
+  assert.equal(failed.ok, false)
+  assert.equal(failed.error.code, 'bindings/error')
+  assert.equal(failed.error.message, 'user binding runner requires an absolute cwd')
+  assert.equal((await call(target, 'list')).ok, true)
 })
 
 test('disabling global bindings stops pending console execution and revokes its environment', async t => {

@@ -4,10 +4,36 @@ import { access, rm } from 'node:fs/promises'
 import { isAbsolute } from 'node:path'
 import test from 'node:test'
 import { Config, apply } from '../index.js'
+import {
+  GENERATED_RUN_CODE_DESCRIPTION,
+  GENERATED_RUN_CODE_DESCRIPTION_KEY,
+  markGeneratedRunCodeArguments,
+} from '../internal/run-code-description.js'
 import { RECOVERY_BOUNDARY_KEY, normalizeJournal } from '../internal/session-journal.js'
 import { SessionRuntime } from '../internal/session-runtime.js'
 import { decodeValue, encodeValue, renderValueWire } from '../internal/value-wire.js'
 import { JOURNAL_POLICY, appendRunCodeEvents, fixture } from './plugin-fixture.js'
+import {
+  activeTimers,
+  awaitKernelTail,
+  detachWorker,
+  durableHistoryNodeCount,
+  failKernelExecute,
+  failScratchDirectory,
+  failWorker,
+  interceptWorkerMessages,
+  interceptWorkerPosts,
+  isCellActive,
+  restartWorker,
+  runKernelRequest,
+  scratchDirectoryOf,
+  sessionCellExecutor,
+  sessionKernel,
+  workerLimitOf,
+  workerMemoryLimitMb,
+  workerObservationOf,
+  workerOf,
+} from './runtime-observation.js'
 
 test('disposes a kernel with its owning agent session', async (t) => {
   const state = fixture()
@@ -25,17 +51,15 @@ test('missing, stale, and malformed value observations cannot change a settled c
   const runtime = new SessionRuntime({}, { observeSession: () => true })
   t.after(() => runtime.dispose())
   await runtime.run('observation-lifecycle', { program: 'let value = 1', bindings: [] })
-  const kernel = runtime.kernels.get('observation-lifecycle')
-  const onMessage = kernel.cellExecutor.onMessage.bind(kernel.cellExecutor)
   let mode = 'missing'
-  kernel.cellExecutor.onMessage = message => {
+  const { deliver } = interceptWorkerMessages(runtime, 'observation-lifecycle', (message, forward) => {
     if (message?.type === 'observation') {
-      onMessage({ ...message, id: message.id + 1000 })
+      forward({ ...message, id: message.id + 1000 })
       if (mode === 'missing') return
-      if (mode === 'malformed') return onMessage({ ...message, observation: {} })
+      if (mode === 'malformed') return forward({ ...message, observation: {} })
     }
-    onMessage(message)
-  }
+    forward(message)
+  })
   const missing = await runtime.runTentative('observation-lifecycle', { program: 'value += 1; return value', bindings: [] })
   assert.equal(missing.result.value, 2)
   assert.equal(missing.settlement.journal.status, 'durable')
@@ -51,7 +75,7 @@ test('missing, stale, and malformed value observations cannot change a settled c
   const valid = await runtime.runTentative('observation-lifecycle', { program: 'return value', bindings: [] })
   assert.equal(valid.settlement.replMemory.observation.entries[0].text, '3')
   runtime.finalize(valid.settlement, true)
-  onMessage({ type: 'observation', id: -1, observation: {} })
+  deliver({ type: 'observation', id: -1, observation: {} })
 })
 
 test('waits for worker readiness outside execution budgets after an observation timeout', async t => {
@@ -59,45 +83,44 @@ test('waits for worker readiness outside execution budgets after an observation 
   t.after(() => runtime.dispose())
   const session = 'observation-readiness'
   await runtime.run(session, { program: 'let answer = 1', bindings: [] })
-  const kernel = runtime.kernels.get(session)
-  const worker = kernel.client.worker
-  const onMessage = kernel.cellExecutor.onMessage.bind(kernel.cellExecutor)
-  kernel.cellExecutor.onMessage = message => {
-    if (message.type !== 'observation') onMessage(message)
-  }
+  const worker = workerOf(runtime, session)
+  const { deliver } = interceptWorkerMessages(runtime, session, (message, forward) => {
+    if (message.type !== 'observation') forward(message)
+  })
   const timedOut = await runtime.runTentative(session, { program: 'answer += 1; return answer', bindings: [] })
   assert.equal(timedOut.result.value, 2)
   assert.equal(timedOut.settlement.replMemory.observation, undefined)
   runtime.finalize(timedOut.settlement, true)
   runtime.reconfigure({ computeMs: 100, maxWallMs: 100 })
   const posted = Promise.withResolvers()
-  const post = kernel.client.post.bind(kernel.client)
-  kernel.client.post = message => { posted.resolve(message) }
+  const held = interceptWorkerPosts(runtime, session, message => {
+    posted.resolve(message)
+    return undefined
+  })
   let settled = false
   const pending = runtime.run(session, { program: 'return answer + 1', bindings: [] })
     .then(result => { settled = true; return result })
-  const held = await posted.promise
-  assert.equal(kernel.active.computeTimer, undefined)
-  assert.equal(kernel.active.wallTimer, undefined)
-  onMessage({ type: 'ready', id: held.id - 1 })
+  const prepare = await posted.promise
+  assert.deepEqual(activeTimers(runtime, session), { compute: undefined, wall: undefined })
+  deliver({ type: 'ready', id: prepare.id - 1 })
   await new Promise(resolve => setTimeout(resolve, 150))
   assert.equal(settled, false)
-  assert.equal(kernel.client.worker, worker)
+  assert.equal(workerOf(runtime, session), worker)
   let runs = 0
-  kernel.client.post = message => {
+  interceptWorkerPosts(runtime, session, message => {
     if (message.type === 'run') runs++
-    return post(message)
-  }
-  kernel.cellExecutor.onMessage = message => {
-    onMessage(message)
-    if (message.type === 'ready') onMessage(message)
-  }
-  post(held)
+    return message
+  })
+  interceptWorkerMessages(runtime, session, (message, forward) => {
+    forward(message)
+    if (message.type === 'ready') forward(message)
+  })
+  held.post(prepare)
   assert.deepEqual(await pending, { logs: [], value: 3 })
   assert.equal(runs, 1)
-  assert.equal(kernel.client.worker, worker)
-  onMessage({ type: 'ready', id: held.id })
-  onMessage({ type: 'ready' })
+  assert.equal(workerOf(runtime, session), worker)
+  deliver({ type: 'ready', id: prepare.id })
+  deliver({ type: 'ready' })
 })
 
 test('background callbacks cannot disable readiness timeout recovery', async t => {
@@ -113,8 +136,7 @@ test('background callbacks cannot disable readiness timeout recovery', async t =
         program: 'let value = 1; setTimeout(() => { while (true) {} }, 20); return value', bindings: [],
       })
       assert.equal(first.value, 1)
-      const kernel = runtime.kernels.get(session)
-      const worker = kernel.client.worker
+      const worker = workerOf(runtime, session)
       await new Promise(resolve => setTimeout(resolve, 80))
       runtime.reconfigure({ computeMs, maxWallMs })
       const next = await runtime.runTentative(session, {
@@ -123,10 +145,10 @@ test('background callbacks cannot disable readiness timeout recovery', async t =
       assert.equal(next.result.error.kind, 'timeout')
       assert.match(next.result.error.message, message)
       assert.equal(next.settlement.journal.status, 'discarded')
-      assert.equal(kernel.client.worker, undefined)
+      assert.equal(workerOf(runtime, session), undefined)
       runtime.finalize(next.settlement, true)
       assert.equal((await runtime.run(session, { program: 'return 3', bindings: [] })).value, 3)
-      assert.notEqual(kernel.client.worker, worker)
+      assert.notEqual(workerOf(runtime, session), worker)
     })
   }
 })
@@ -136,31 +158,32 @@ test('late observation completion restores budgets even when ready never arrives
   t.after(() => runtime.dispose())
   const session = 'observation-then-blocked'
   await runtime.run(session, { program: 'let value = 1', bindings: [] })
-  const kernel = runtime.kernels.get(session)
-  const onMessage = kernel.cellExecutor.onMessage.bind(kernel.cellExecutor)
   let observation
-  kernel.cellExecutor.onMessage = message => {
+  const { deliver } = interceptWorkerMessages(runtime, session, (message, forward) => {
     if (message.type === 'observation') observation = message
-    else onMessage(message)
-  }
+    else forward(message)
+  })
   await runtime.run(session, { program: 'value += 1', bindings: [] })
   runtime.reconfigure({ computeMs: 2000, maxWallMs: 100 })
   const posted = Promise.withResolvers()
-  kernel.client.post = message => posted.resolve(message)
+  interceptWorkerPosts(runtime, session, message => {
+    posted.resolve(message)
+    return undefined
+  })
   const pending = runtime.run(session, {
     program: 'return value', bindings: [], signal: AbortSignal.timeout(3000),
   })
   const prepare = await posted.promise
   assert.equal(prepare.type, 'prepare')
-  onMessage({ ...observation, id: -1 })
+  deliver({ ...observation, id: -1 })
   await new Promise(resolve => setTimeout(resolve, 150))
-  assert.equal(kernel.active.wallTimer, undefined)
-  onMessage(observation)
-  assert.notEqual(kernel.active.wallTimer, undefined)
-  assert.equal(kernel.workerObservation, undefined)
-  const timer = kernel.active.wallTimer
-  onMessage(observation)
-  assert.equal(kernel.active.wallTimer, timer)
+  assert.equal(activeTimers(runtime, session).wall, undefined)
+  deliver(observation)
+  assert.notEqual(activeTimers(runtime, session).wall, undefined)
+  assert.equal(workerObservationOf(runtime, session), undefined)
+  const timer = activeTimers(runtime, session).wall
+  deliver(observation)
+  assert.equal(activeTimers(runtime, session).wall, timer)
   assert.equal((await pending).error.kind, 'timeout')
 })
 
@@ -170,40 +193,40 @@ test('waiting for worker readiness remains cancellable and handles disposal and 
       const runtime = new SessionRuntime()
       t.after(() => runtime.dispose())
       await runtime.run(action, { program: 'let answer = 1', bindings: [] })
-      const kernel = runtime.kernels.get(action)
-      const worker = kernel.client.worker
-      const post = kernel.client.post.bind(kernel.client)
+      const worker = workerOf(runtime, action)
+      const executor = sessionCellExecutor(runtime, action)
       const posted = Promise.withResolvers()
       const messages = []
-      kernel.client.post = message => {
+      const heldPosts = interceptWorkerPosts(runtime, action, message => {
         messages.push(message)
         posted.resolve(message)
-      }
+        return undefined
+      })
       const controller = new AbortController()
       const pending = runtime.runTentative(action, {
         program: 'answer += 1; return answer', bindings: [], signal: controller.signal,
       })
       const held = await posted.promise
       assert.equal(held.type, 'prepare')
-      assert.notEqual(kernel.active.computeTimer, undefined)
-      assert.notEqual(kernel.active.wallTimer, undefined)
+      assert.notEqual(activeTimers(runtime, action).compute, undefined)
+      assert.notEqual(activeTimers(runtime, action).wall, undefined)
       if (action === 'abort') controller.abort('cancel waiting cell')
       else if (action === 'dispose') await runtime.dispose()
       else await worker.terminate()
       const completed = await pending
       assert.equal(completed.result.error.kind, action === 'failure' ? 'worker-exit' : 'abort')
       assert.equal(completed.settlement.journal.status, 'discarded')
-      assert.equal(kernel.active, undefined)
-      assert.equal(kernel.client.worker, undefined)
-      kernel.cellExecutor.onMessage({ type: 'ready', id: held.id })
+      assert.equal(activeTimers(runtime, action), undefined)
+      assert.equal(workerOf(runtime, action), undefined)
+      executor.onMessage({ type: 'ready', id: held.id })
       assert.deepEqual(messages, [held])
-      kernel.client.post = post
+      heldPosts.restore()
       runtime.finalize(completed.settlement, true)
       if (action !== 'dispose') {
         const next = await runtime.run(action, { program: 'return answer', bindings: [] })
         assert.equal(next.error, undefined)
         assert.equal(next.value, 1)
-        assert.notEqual(kernel.client.worker, worker)
+        assert.notEqual(workerOf(runtime, action), worker)
       }
     })
   }
@@ -215,7 +238,7 @@ test('omitted long binding names do not suppress visible previews across cells',
   const session = 'long-observation-name'
   const longName = 'x'.repeat(129)
   await runtime.run(session, { program: 'let answer = 42', bindings: [] })
-  const worker = runtime.kernels.get(session).client.worker
+  const worker = workerOf(runtime, session)
   for (const [program, result, preview] of [
     [`let ${longName} = 7; return answer`, 42, '42'],
     ['answer += 1; return answer', 43, '43'],
@@ -229,7 +252,7 @@ test('omitted long binding names do not suppress visible previews across cells',
       { name: 'answer', status: 'readable', text: preview, truncated: false },
     ])
     runtime.finalize(observed.settlement, true)
-    assert.equal(runtime.kernels.get(session).client.worker, worker)
+    assert.equal(workerOf(runtime, session), worker)
   }
 })
 
@@ -242,13 +265,11 @@ test('observation requests respect inventory entry and definition-source budgets
     ['observation-entry-budget', declarations.map(declaration => `let ${declaration}`).join('\n'), 128],
   ]) {
     await runtime.run(session, { program: '0', bindings: [] })
-    const kernel = runtime.kernels.get(session)
-    const post = kernel.client.post.bind(kernel.client)
     const requests = []
-    kernel.client.post = message => {
+    interceptWorkerPosts(runtime, session, message => {
       if (message.type === 'run') requests.push(message.observeNames)
-      return post(message)
-    }
+      return message
+    })
     const observed = await runtime.runTentative(session, { program, bindings: [] })
     assert.equal(observed.result.error, undefined)
     const memory = observed.settlement.replMemory
@@ -529,19 +550,36 @@ test('validates state requests and classifies computed ambient access', async (t
   }
 })
 
-test('covers plugin hook early exits and metadata installation failures', async (t) => {
+test('leaves unrelated, nested, and anonymous tool calls on the native path', async (t) => {
   const state = fixture()
   t.after(() => state.dispose())
   const execute = state.listeners.get('tools/execute')[0]
-  const result = state.listeners.get('tools/result')[0]
   assert.equal(await execute({ name: 'other' }, async () => 'next'), 'next')
   assert.equal(await execute({ name: 'run_code', parent: {}, agent: { id: 'a' } }, async () => 'nested'), 'nested')
   assert.equal(await execute({ name: 'run_code', agent: {} }, async () => 'anonymous'), 'anonymous')
-  result({ name: 'other' }, {})
-  result({ name: 'run_code', parent: {}, agent: { id: 'a' } }, {})
-  result({ name: 'run_code', agent: {} }, {})
-  await state.emit('session/disposed', { id: 'absent' })
+})
 
+test('ignores tool results that own no session journal', async (t) => {
+  const state = fixture()
+  t.after(() => state.dispose())
+  const result = state.listeners.get('tools/result')[0]
+  assert.equal(result({ name: 'other' }, {}), undefined)
+  assert.equal(result({ name: 'run_code', parent: {}, agent: { id: 'a' } }, {}), undefined)
+  assert.equal(result({ name: 'run_code', agent: {} }, {}), undefined)
+})
+
+test('disposing an unknown session leaves live bindings untouched', async (t) => {
+  const state = fixture()
+  t.after(() => state.dispose())
+  await state.run('dispose-unknown-live', 'const disposeSurvivor = 1')
+  await state.emit('session/disposed', { id: 'absent' })
+  assert.deepEqual(await state.run('dispose-unknown-live', 'return disposeSurvivor'), {
+    logs: [],
+    value: 1,
+  })
+})
+
+test('rejects a run_code definition that is unavailable, unprojected, or frozen', async (t) => {
   const missing = fixture()
   t.after(() => missing.dispose())
   missing.ctx.tools.get = () => undefined
@@ -556,13 +594,20 @@ test('covers plugin hook early exits and metadata installation failures', async 
   t.after(() => frozen.dispose())
   Object.freeze(frozen.runCodeDefinition.output)
   await assert.rejects(() => frozen.executeRun('frozen-output', 'return 1', {}, {}), /cannot attach the session journal/)
+})
 
-  const original = fixture()
-  original.runCodeDefinition.output.presentationMeta = () => ({ original: true })
-  await original.runDurable('original-metadata', 'return 1')
-  await original.dispose()
-  assert.deepEqual(original.runCodeDefinition.output.presentationMeta(), { original: true })
+test('keeps an outer presentation projection across plugin teardown', async (t) => {
+  const state = fixture()
+  t.after(() => state.dispose())
+  state.runCodeDefinition.output.presentationMeta = () => ({ original: true })
+  await state.runDurable('original-metadata', 'return 1')
+  await state.dispose()
+  assert.deepEqual(state.runCodeDefinition.output.presentationMeta(), { original: true })
+})
 
+test('rejects a tool assembly without a tools array', async (t) => {
+  const state = fixture()
+  t.after(() => state.dispose())
   await assert.rejects(() => state.assemble({ tools: null }), /expected a tools array/)
 })
 
@@ -624,7 +669,7 @@ test('binds wall-clock configuration to the submitted cell generation', async (t
     program: 'await new Promise(() => {})', bindings: [],
   })
 
-  while (runtime.kernels.get('wall-config-generation')?.active === undefined) {
+  while (!isCellActive(runtime, 'wall-config-generation')) {
     await new Promise(resolve => setImmediate(resolve))
   }
   runtime.reconfigure({ computeMs: 1_000, maxWallMs: 1_000 })
@@ -760,12 +805,10 @@ test('does not replay durable history after durable replay is disabled', async (
   assert.equal((await runtime.run('replay-disabled', {
     program: 'const replayOnlyBinding = 7', bindings: [],
   })).error, undefined)
-  const kernel = runtime.kernels.get('replay-disabled')
-  assert.equal(kernel.history.nodes.length, 1)
+  assert.equal(durableHistoryNodeCount(runtime, 'replay-disabled'), 1)
   runtime.reconfigure({ durableReplay: false })
-  assert.equal(kernel.history.nodes.length, 1)
-  await kernel.client.reset(kernel.client.worker)
-  kernel.rollbackToDurable()
+  assert.equal(durableHistoryNodeCount(runtime, 'replay-disabled'), 1)
+  await restartWorker(runtime, 'replay-disabled')
   const result = await runtime.run('replay-disabled', {
     program: 'return typeof replayOnlyBinding', bindings: [],
   })
@@ -784,12 +827,10 @@ test('preserves durable ancestors across a temporary replay disable', async (t) 
     program: 'const replayDescendant = replayAncestor + 1', bindings: [],
   })
   assert.equal(dependent.error, undefined)
-  const kernel = runtime.kernels.get(sessionId)
-  assert.equal(kernel.history.nodes.length, 1)
+  assert.equal(durableHistoryNodeCount(runtime, sessionId), 1)
 
   runtime.reconfigure({ durableReplay: true })
-  await kernel.client.reset(kernel.client.worker)
-  kernel.rollbackToDurable()
+  await restartWorker(runtime, sessionId)
   const restored = await runtime.run(sessionId, {
     program: 'return [replayAncestor, typeof replayDescendant]', bindings: [],
   })
@@ -820,16 +861,14 @@ test('reserves the submitted cell memory limit before queued worker creation', a
     /maxOldGenerationSizeMb cannot change while a session worker is active/,
   )
   assert.equal((await submitted).value, 1)
-  const firstKernel = runtime.kernels.get('queued-memory-limit')
-  assert.equal(firstKernel.client.workerLimit, 64)
-  assert.equal(firstKernel.client.worker.resourceLimits.maxOldGenerationSizeMb, 64)
+  assert.equal(workerLimitOf(runtime, 'queued-memory-limit'), 64)
+  assert.equal(workerMemoryLimitMb(workerOf(runtime, 'queued-memory-limit')), 64)
 
   await runtime.disposeSession('queued-memory-limit')
   runtime.reconfigure({ maxOldGenerationSizeMb: 128 })
   assert.equal((await runtime.run('new-memory-limit', { program: 'return 2', bindings: [] })).value, 2)
-  const secondKernel = runtime.kernels.get('new-memory-limit')
-  assert.equal(secondKernel.client.workerLimit, 128)
-  assert.equal(secondKernel.client.worker.resourceLimits.maxOldGenerationSizeMb, 128)
+  assert.equal(workerLimitOf(runtime, 'new-memory-limit'), 128)
+  assert.equal(workerMemoryLimitMb(workerOf(runtime, 'new-memory-limit')), 128)
 })
 
 test('handles direct runtime recovery, timeout, volatility, and lifecycle boundaries', async (t) => {
@@ -989,20 +1028,39 @@ test('contracts every semantic replay mismatch before continuing', async (t) => 
   assert.equal((await state.run(session.id, 'return 1', { call: async () => null }, { session })).error, undefined)
 })
 
-test('covers runtime worker setup and state-operation failures', async (t) => {
+test('rejects redeclaring a durable function or class when the policy is disabled', async (t) => {
   const state = fixture({ looseTopLevelFunctionClassRedeclarations: false })
   t.after(() => state.dispose())
-  await state.runDurable('class-redeclare', 'class ExistingClass {}\nfunction existingFunction() {}')
+  const setup = await state.runDurable('class-redeclare', 'class ExistingClass {}\nfunction existingFunction() {}')
+  assert.equal(setup.isError, false)
   assert.equal((await state.run('class-redeclare', 'class ExistingClass {}')).error.kind, 'exception')
   assert.equal((await state.run('class-redeclare', 'function existingFunction() {}')).error.kind, 'exception')
-  assert.equal((await state.run('array-parameter', 'function take([first, ...rest] = []) { return [first, rest] }\nreturn take([1, 2])')).error, undefined)
+})
 
-  const volatileSave = await state.run('volatile-save-error', `
+test('accepts destructured parameters in a durable function declaration', async (t) => {
+  const state = fixture()
+  t.after(() => state.dispose())
+  const result = await state.run('array-parameter', `
+function take([first, ...rest] = []) { return [first, rest] }
+return take([1, 2])
+`)
+  assert.deepEqual(result, { logs: [], value: [1, [2]] })
+})
+
+test('rejects a durable state save from a volatile cell', async (t) => {
+  const state = fixture()
+  t.after(() => state.dispose())
+  const result = await state.run('volatile-save-error', `
 void Date.now()
 return repl.state({ action: 'save', name: 'not-durable' })
 `)
-  assert.equal(volatileSave.error.kind, 'exception')
+  assert.equal(result.error.kind, 'exception')
+  assert.match(result.error.message, /cannot save a durable REPL state from a volatile segment/)
+})
 
+test('deletes a durable state entry through repl.state', async (t) => {
+  const state = fixture()
+  t.after(() => state.dispose())
   await state.runDurable('delete-state', `
 void await repl.state({ action: 'save', name: 'temporary' })
 `)
@@ -1010,10 +1068,12 @@ void await repl.state({ action: 'save', name: 'temporary' })
 return repl.state({ action: 'delete', name: 'temporary' })
 `)
   assert.deepEqual(deleted.value, { action: 'delete', name: 'temporary', deleted: true })
+})
 
-  const invalidErrorClass = new SessionRuntime()
-  t.after(() => invalidErrorClass.dispose())
-  const invalidErrorClassResult = await invalidErrorClass.run('invalid-error-class', {
+test('rejects a binding errorClass without a member-name property', async (t) => {
+  const runtime = new SessionRuntime()
+  t.after(() => runtime.dispose())
+  const result = await runtime.run('invalid-error-class', {
     program: 'return api.call({})',
     bindings: [{
       global: 'api',
@@ -1021,16 +1081,18 @@ return repl.state({ action: 'delete', name: 'temporary' })
       errorClass: { name: 'ApiError', invalid: () => {} },
     }],
   })
-  assert.equal(invalidErrorClassResult.error.kind, 'exception')
-  assert.match(invalidErrorClassResult.error.message, /errorClass\.memberNameProperty/)
+  assert.equal(result.error.kind, 'exception')
+  assert.match(result.error.message, /errorClass\.memberNameProperty/)
+})
 
+test('reports a worker exit when the temporary directory is not absolute', async (t) => {
   const tempKeys = ['TMPDIR', 'TEMP', 'TMP']
   const priorTemp = Object.fromEntries(tempKeys.map(key => [key, process.env[key]]))
   for (const key of tempKeys) process.env[key] = 'relative-temp'
   try {
-    const invalidTemp = new SessionRuntime()
-    t.after(() => invalidTemp.dispose())
-    const result = await invalidTemp.run('invalid-temp', { program: 'return 1', bindings: [] })
+    const runtime = new SessionRuntime()
+    t.after(() => runtime.dispose())
+    const result = await runtime.run('invalid-temp', { program: 'return 1', bindings: [] })
     assert.equal(result.error.kind, 'worker-exit')
     assert.match(result.error.message, /temporary directory must be absolute/)
   } finally {
@@ -1039,47 +1101,65 @@ return repl.state({ action: 'delete', name: 'temporary' })
       else process.env[key] = priorTemp[key]
     }
   }
-
-  const exiting = new SessionRuntime({ computeMs: 1_000, maxWallMs: 1_000 })
-  t.after(() => exiting.dispose())
-  const exited = await exiting.run('worker-exit', { program: 'process.reallyExit(7)', bindings: [] })
-  assert.equal(exited.error.kind, 'worker-exit')
-
-  const direct = new SessionRuntime()
-  t.after(() => direct.dispose())
-  const context = { id: 'inactive-control', callId: 'one' }
-  await direct.run(context, { program: 'return 1', bindings: [] })
-  const kernel = direct.kernels.get(context.id)
-  assert.throws(() => kernel.cellExecutor.controlState({ action: 'list' }), /unavailable outside a cell/)
-
-  assert.deepEqual(kernel.cellExecutor.withControlBinding([], undefined, undefined), [])
-  kernel.completeJournal(undefined, 'noop', { logs: [] })
-  kernel.cellExecutor.onMessage(null)
-  kernel.cellExecutor.onMessage({ type: 'ignored' })
-  kernel.client.fail({}, 'stale worker')
-  const savedWorker = kernel.client.worker
-  kernel.client.worker = {}
-  kernel.client.port = undefined
-  kernel.active = undefined
-  kernel.client.fail(kernel.client.worker, 'detached worker')
-  kernel.client.worker = savedWorker
-
-  const cleanupFailure = new SessionRuntime()
-  const cleanupContext = { id: 'scratch-cleanup', callId: 'one' }
-  await cleanupFailure.run(cleanupContext, { program: 'return 1', bindings: [] })
-  const cleanupKernel = cleanupFailure.kernels.get(cleanupContext.id)
-  const cleanupDirectory = await cleanupKernel.client.scratchReady
-  cleanupKernel.client.scratchReady = Promise.reject(new Error('scratch unavailable'))
-  void cleanupKernel.client.scratchReady.catch(() => {})
-  await cleanupFailure.dispose()
-  await rm(cleanupDirectory, { recursive: true, force: true })
-
-  kernel.execute = async () => { throw new Error('tail rejection') }
-  await assert.rejects(() => kernel.run({}), /tail rejection/)
-  await kernel.tail
 })
 
-test('covers remaining schema defaults, no-value children, and expired leases', async (t) => {
+test('reports a worker exit when a cell calls process.reallyExit', async (t) => {
+  const runtime = new SessionRuntime({ computeMs: 1_000, maxWallMs: 1_000 })
+  t.after(() => runtime.dispose())
+  const result = await runtime.run('worker-exit', { program: 'process.reallyExit(7)', bindings: [] })
+  assert.equal(result.error.kind, 'worker-exit')
+})
+
+test('rejects cell controls outside a running cell', async (t) => {
+  const runtime = new SessionRuntime()
+  t.after(() => runtime.dispose())
+  const context = { id: 'inactive-control', callId: 'one' }
+  assert.deepEqual(await runtime.run(context, { program: 'return 1', bindings: [] }), { logs: [], value: 1 })
+  const executor = sessionCellExecutor(runtime, context.id)
+  assert.throws(() => executor.controlState({ action: 'list' }), /unavailable outside a cell/)
+  assert.deepEqual(executor.withControlBinding([], undefined, undefined), [])
+})
+
+test('tolerates journal and frame input for a session without a live cell', async (t) => {
+  const runtime = new SessionRuntime()
+  t.after(() => runtime.dispose())
+  const context = { id: 'inactive-frames', callId: 'one' }
+  assert.deepEqual(await runtime.run(context, { program: 'return 1', bindings: [] }), { logs: [], value: 1 })
+  const kernel = sessionKernel(runtime, context.id)
+  const executor = sessionCellExecutor(runtime, context.id)
+  const worker = workerOf(runtime, context.id)
+  assert.doesNotThrow(() => kernel.completeJournal(undefined, 'noop', { logs: [] }))
+  assert.doesNotThrow(() => executor.onMessage(null))
+  assert.doesNotThrow(() => executor.onMessage({ type: 'ignored' }))
+  failWorker(runtime, context.id, {}, 'stale worker')
+  assert.equal(workerOf(runtime, context.id), worker)
+  const restore = detachWorker(runtime, context.id, 'detached worker')
+  assert.equal(workerOf(runtime, context.id), undefined)
+  restore()
+  assert.equal(workerOf(runtime, context.id), worker)
+})
+
+test('disposes a kernel whose scratch directory cannot be read', async () => {
+  const runtime = new SessionRuntime()
+  const context = { id: 'scratch-cleanup', callId: 'one' }
+  assert.deepEqual(await runtime.run(context, { program: 'return 1', bindings: [] }), { logs: [], value: 1 })
+  const directory = await scratchDirectoryOf(runtime, context.id)
+  failScratchDirectory(runtime, context.id, new Error('scratch unavailable'))
+  await assert.doesNotReject(() => runtime.dispose())
+  await rm(directory, { recursive: true, force: true })
+})
+
+test('settles the kernel queue after a rejected raw request', async (t) => {
+  const runtime = new SessionRuntime()
+  t.after(() => runtime.dispose())
+  const context = { id: 'kernel-tail', callId: 'one' }
+  assert.deepEqual(await runtime.run(context, { program: 'return 1', bindings: [] }), { logs: [], value: 1 })
+  failKernelExecute(runtime, context.id, new Error('tail rejection'))
+  await assert.rejects(() => runKernelRequest(runtime, context.id, {}), /tail rejection/)
+  await awaitKernelTail(runtime, context.id)
+})
+
+test('rejects run_code definitions with an incompatible schema', async (t) => {
   const state = fixture()
   t.after(() => state.dispose())
   const assembly = tool => ({ sections: [], tools: [tool] })
@@ -1091,46 +1171,89 @@ test('covers remaining schema defaults, no-value children, and expired leases', 
     { name: 'run_code', parameters: { type: 'object', properties: { code: { type: 'string' } } } },
   ]
   for (const tool of malformed) await assert.rejects(() => state.assemble(assembly(tool)), /incompatible run_code schema/)
+})
 
+test('passes a child cell without a completion value through the nested result', async (t) => {
   const noValue = fixture({}, { upstreamRun: async () => ({ logs: [] }) })
   t.after(() => noValue.dispose())
-  assert.deepEqual((await noValue.run('child-no-value', `
+  const result = await noValue.run('child-no-value', `
 return code.run({ code: 'void 0', description: 'No value' })
-`)).value, { logs: [] })
+`)
+  assert.deepEqual(result.value, { logs: [] })
+})
 
+test('rejects a captured tool lease after its cell settles', async (t) => {
   let expired
   const capture = fixture({}, { upstreamRun: async request => {
     expired = request.bindings.find(binding => binding.global === 'tools').functions.echo
     return { logs: [] }
   } })
   t.after(() => capture.dispose())
-  await capture.run('capture-expired', `return code.run({ code: 'void 0', description: 'Capture' })`, {
+  const nested = await capture.run('capture-expired', `return code.run({ code: 'void 0', description: 'Capture' })`, {
     echo: async value => value,
   })
+  assert.deepEqual(nested, { logs: [], value: { logs: [] } })
   await assert.rejects(expired(null), /lease expired/)
+})
 
+test('rejects raw run requests whose bindings are malformed', async (t) => {
+  const state = fixture()
+  t.after(() => state.dispose())
   const execute = state.listeners.get('tools/execute')[0]
   await assert.rejects(execute(
     { name: 'run_code', callId: 'raw', agent: { id: 'raw-bindings' } },
     () => state.runtime.run({ program: 'return 1', bindings: null }),
   ), /bindings must be an array/)
-
   await assert.rejects(execute(
     { name: 'run_code', callId: 'raw-2', agent: { id: 'raw-functions' } },
     () => state.runtime.run({ program: 'return 1', bindings: [{ global: 'tools' }] }),
   ), /binding tools functions must be an object/)
-
-  state.runCodeDefinition.output.presentationMeta({}, undefined)
-  await state.emit('agent/disposed', { agent: {} })
-  state.runCodeDefinition.output.presentationMeta = () => ({ replaced: true })
 })
 
-test('covers remaining AST scope and loose replacement forms', async (t) => {
+test('annotates generated run_code calls and leaves other calls untouched', async (t) => {
+  const state = fixture()
+  t.after(() => state.dispose())
+  const execute = state.listeners.get('tools/execute')[0]
+  await assert.rejects(execute(
+    { name: 'run_code', callId: 'presentation-patch', agent: { id: 'presentation-patch' } },
+    () => state.runtime.run({ program: 'return 1', bindings: null }),
+  ), /bindings must be an array/)
+  const presentationMeta = state.runCodeDefinition.output.presentationMeta
+  assert.equal(presentationMeta({}, undefined), undefined)
+  assert.equal(presentationMeta({}, { value: 1 }), undefined)
+  assert.deepEqual(
+    presentationMeta(markGeneratedRunCodeArguments({ code: 'return 1', description: 'Generated' }), undefined),
+    { [GENERATED_RUN_CODE_DESCRIPTION_KEY]: GENERATED_RUN_CODE_DESCRIPTION },
+  )
+})
+
+test('disposes an anonymous agent without disturbing a live session', async (t) => {
+  const state = fixture()
+  t.after(() => state.dispose())
+  await state.run('anonymous-agent', 'const anonymousSurvivor = 1')
+  await state.emit('agent/disposed', { agent: {} })
+  assert.deepEqual(await state.run('anonymous-agent', 'return anonymousSurvivor'), {
+    logs: [],
+    value: 1,
+  })
+})
+
+test('resets a bare let redeclaration and replaces an existing var declaration', async (t) => {
   const state = fixture()
   t.after(() => state.dispose())
   await state.runDurable('replacement-forms', 'let noInitializer = 1\nvar existingVar = 2')
-  assert.equal((await state.run('replacement-forms', 'let noInitializer')).error, undefined)
-  assert.equal((await state.run('replacement-forms', 'var existingVar = 3')).error, undefined)
+  assert.deepEqual(await state.run('replacement-forms', 'let noInitializer'), { logs: [] })
+  assert.deepEqual(await state.run('replacement-forms', 'return noInitializer'), {
+    logs: [],
+    value: 'undefined',
+  })
+  assert.deepEqual(await state.run('replacement-forms', 'var existingVar = 3'), { logs: [], value: 3 })
+  assert.deepEqual(await state.run('replacement-forms', 'return existingVar'), { logs: [], value: 3 })
+})
+
+test('accepts labeled loops, computed ambient access, and destructured parameters', async (t) => {
+  const state = fixture()
+  t.after(() => state.dispose())
   const result = await state.run('ast-forms', `
 function arrayParam([head, ...tail]) { return [head, tail] }
 outer: for (const value of [1]) {
@@ -1143,7 +1266,7 @@ const property = 'platform'
 void process[property]
 return arrayParam([1, 2])
 `)
-  assert.equal(result.error, undefined)
+  assert.deepEqual(result, { logs: [], value: [1, [2]] })
 })
 
 test('restores an inherited runtime provider without leaving an own patch', async () => {

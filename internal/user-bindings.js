@@ -410,13 +410,12 @@ function selectedDescriptors(source, symbols) {
 
 function sourceDurability(source) {
   const javascript = transformTypeScriptModule(source)
-  const prepared = prepareProgram(
-    javascript,
-    new Set(),
-    { variableRedeclarations: true, functionClassRedeclarations: true },
-    new Set(),
-    { autoRewriteImports: true, autoStripExports: true, autoSplitRedeclarations: true },
-  )
+  const prepared = prepareProgram(javascript, {
+    knownBindings: new Set(),
+    bindingPolicy: { variableRedeclarations: true, functionClassRedeclarations: true },
+    reservedBindings: new Set(),
+    rewritesEnabled: { autoRewriteImports: true, autoStripExports: true, autoSplitRedeclarations: true },
+  })
   return {
     durability: prepared.durability,
     ...(prepared.reason === '' ? {} : { volatileReason: prepared.reason }),

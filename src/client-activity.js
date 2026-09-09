@@ -1,33 +1,47 @@
-const JOURNAL_VERSIONS = new Set([1, 2, 3, 4, 5, 6])
-const JOURNAL_STATUSES = new Set(['durable', 'volatile', 'discarded', 'noop'])
-const BINDING_MODES = new Set(['loose', 'strict'])
-const JOURNAL_FIELDS = new Set([
-  'version', 'bindingPolicy', 'rewritePolicy', 'moduleSemantics', 'status', 'calls', 'operations',
-  'confirms', 'diagnostics', 'completion', 'volatileReason', 'userBindingsFingerprint', 'userBindingsReusePolicy',
-])
-const FINGERPRINT_REUSE_JOURNAL_FIELDS = new Set(
-  [...JOURNAL_FIELDS].filter(key => key !== 'userBindingsReusePolicy'),
-)
-const RELATIONLESS_JOURNAL_FIELDS = new Set(
-  [...FINGERPRINT_REUSE_JOURNAL_FIELDS].filter(key => key !== 'userBindingsFingerprint'),
-)
-const PREDECESSOR_JOURNAL_FIELDS = new Set([
-  'version', 'bindingMode', 'rewritePolicy', 'status', 'calls', 'operations',
-  'confirms', 'diagnostics', 'completion', 'volatileReason',
-])
-const LEGACY_JOURNAL_FIELDS = new Set([...PREDECESSOR_JOURNAL_FIELDS].filter(key => key !== 'rewritePolicy'))
-const BINDING_POLICY_FIELDS = new Set(['variableRedeclarations', 'functionClassRedeclarations'])
-const REWRITE_POLICY_FIELDS = new Set([
-  'autoRewriteImports', 'autoStripExports', 'autoSplitRedeclarations',
-])
-const MODULE_SEMANTICS_FIELDS = new Set(['defaultExportBinding'])
-const DEFAULT_EXPORT_BINDINGS = new Set(['legacy-variable', 'live-readonly'])
-const CALL_SUCCESS_FIELDS = new Set(['global', 'member', 'args', 'ok', 'value', 'settle'])
-const CALL_ERROR_FIELDS = new Set(['global', 'member', 'args', 'ok', 'error', 'settle'])
-const OPERATION_FIELDS = new Set(['action', 'name'])
-const RETURN_FIELDS = new Set(['kind', 'hasValue', 'value'])
-const THROW_FIELDS = new Set(['kind', 'error'])
-const ERROR_FIELDS = new Set(['kind', 'message'])
+import {
+  JOURNAL_VERSIONS,
+  STATUSES as JOURNAL_STATUSES,
+  BINDING_MODES,
+  JOURNAL_FIELDS,
+  WHOLE_ENTRY_JOURNAL_FIELDS,
+  PER_NAME_USER_BINDINGS_JOURNAL_VERSION,
+  normalizeJournalUserBindingNames,
+  FINGERPRINT_REUSE_JOURNAL_FIELDS,
+  RELATIONLESS_JOURNAL_FIELDS,
+  PREDECESSOR_JOURNAL_FIELDS,
+  LEGACY_JOURNAL_FIELDS,
+  BINDING_POLICY_FIELDS,
+  REWRITE_POLICY_FIELDS,
+  MODULE_SEMANTICS_FIELDS,
+  LEGACY_MODULE_SEMANTICS_FIELDS,
+  VERSIONED_BINDING_REUSE_JOURNAL_VERSION,
+  IMPORT_EXPRESSION_BOUNDARIES,
+  DEFAULT_EXPORT_BINDINGS,
+  CALL_SUCCESS_FIELDS,
+  CALL_ERROR_FIELDS,
+  OPERATION_FIELDS,
+  RETURN_FIELDS,
+  THROW_FIELDS,
+  ERROR_FIELDS,
+  EDIT_TARGET_FIELDS,
+  DERIVED_RUN_FIELDS,
+  RECOVERY_BOUNDARY_FIELDS,
+  REWRITE_FIELDS,
+  REWRITE_KINDS,
+  USER_BINDINGS_REUSE_POLICIES,
+} from '../internal/session-journal-schema.js'
+import {
+  VALUE_CODEC,
+  DEFAULT_VALUE_LIMITS,
+  VALUE_ENVELOPE_FIELDS,
+  VALUE_OBJECT_FIELDS,
+  VALUE_ARRAY_FIELDS,
+  VALUE_UNDEFINED_FIELDS,
+  VALUE_NUMBER_FIELDS,
+  VALUE_BIGINT_FIELDS,
+  VALUE_REFERENCE_FIELDS,
+} from '../internal/value-wire-schema.js'
+
 const DIAGNOSTIC_FIELDS = new Set([
   'code', 'severity', 'phase', 'message', 'stateEffect', 'dispatchState',
   'source', 'cause', 'help',
@@ -39,8 +53,6 @@ const SEVERITIES = new Set(['error', 'warning', 'note'])
 const PHASES = new Set(['parse', 'preflight', 'execute', 'tool-dispatch', 'replay', 'recover'])
 const STATE_EFFECTS = new Set(['unchanged', 'partially-applied', 'rolled-back', 'unknown'])
 const DISPATCH_STATES = new Set(['not-dispatched', 'dispatched', 'completed', 'unknown'])
-const REWRITE_FIELDS = new Set(['kind', 'description', 'source'])
-const REWRITE_KINDS = new Set(['import', 'redeclaration', 'export'])
 const REWRITE_POLICY_BY_KIND = Object.freeze({
   import: 'autoRewriteImports',
   export: 'autoStripExports',
@@ -48,21 +60,14 @@ const REWRITE_POLICY_BY_KIND = Object.freeze({
 const MIXED_REDECLARATION = 'split a mixed top-level declaration while preserving native pattern initialization'
 const FUNCTION_REDECLARATION = 'reassigned an existing top-level function declaration for REPL continuity'
 const CLASS_REDECLARATION = 'reassigned an existing top-level class declaration for REPL continuity'
-const EDIT_TARGET_FIELDS = new Set(['targetCallSeq'])
-const DERIVED_RUN_FIELDS = new Set(['code', 'description'])
-const RECOVERY_BOUNDARY_FIELDS = new Set(['failedCallSeq', 'frontierCallSeq'])
-const VALUE_ENVELOPE_FIELDS = new Set(['codec', 'root', 'nodes'])
-const VALUE_OBJECT_FIELDS = new Set(['type', 'prototype', 'entries'])
-const VALUE_ARRAY_FIELDS = new Set(['type', 'length', 'entries'])
-const VALUE_UNDEFINED_FIELDS = new Set(['tag'])
-const VALUE_NUMBER_FIELDS = new Set(['tag', 'value'])
-const VALUE_BIGINT_FIELDS = new Set(['tag', 'value'])
-const VALUE_REFERENCE_FIELDS = new Set(['tag', 'index'])
-const MAX_VALUE_NODES = 100_000
-const MAX_VALUE_EDGES = 1_000_000
-const MAX_ARRAY_LENGTH = 1_000_000
-const MAX_BIGINT_DIGITS = 100_000
-const MAX_STRING_BYTES = 64 * 1024 * 1024
+// Presentation validation stays bounded independently of configured runtime budgets.
+const {
+  maxNodes: MAX_VALUE_NODES,
+  maxEdges: MAX_VALUE_EDGES,
+  maxArrayLength: MAX_ARRAY_LENGTH,
+  maxBigIntDigits: MAX_BIGINT_DIGITS,
+  maxStringBytes: MAX_STRING_BYTES,
+} = DEFAULT_VALUE_LIMITS
 const textEncoder = new TextEncoder()
 
 function isRecord(value) {
@@ -171,7 +176,7 @@ function isValidValueAtom(value, state) {
 }
 
 function isValidValueWire(value) {
-  if (!hasExactOrderedFields(value, VALUE_ENVELOPE_FIELDS) || value.codec !== 'ptc-value-graph/v1'
+  if (!hasExactOrderedFields(value, VALUE_ENVELOPE_FIELDS) || value.codec !== VALUE_CODEC
     || !Array.isArray(value.nodes) || value.nodes.length > MAX_VALUE_NODES) return false
   const state = {
     nodeCount: value.nodes.length,
@@ -229,9 +234,11 @@ function isValidBindingPolicy(value) {
     && [...BINDING_POLICY_FIELDS].every(key => typeof value[key] === 'boolean')
 }
 
-function isValidModuleSemantics(value) {
-  return hasExactFields(value, MODULE_SEMANTICS_FIELDS)
+function isValidModuleSemantics(value, version) {
+  const legacy = version <= VERSIONED_BINDING_REUSE_JOURNAL_VERSION
+  return hasExactFields(value, legacy ? LEGACY_MODULE_SEMANTICS_FIELDS : MODULE_SEMANTICS_FIELDS)
     && DEFAULT_EXPORT_BINDINGS.has(value.defaultExportBinding)
+    && (legacy || IMPORT_EXPRESSION_BOUNDARIES.has(value.importExpressionBoundary))
 }
 
 function isValidCall(value) {
@@ -280,18 +287,23 @@ function isReadableJournalUnchecked(value) {
     : predecessor
       ? PREDECESSOR_JOURNAL_FIELDS
       : value.version === 4 ? RELATIONLESS_JOURNAL_FIELDS
-        : value.version === 5 ? FINGERPRINT_REUSE_JOURNAL_FIELDS : JOURNAL_FIELDS
+        : value.version === 5 ? FINGERPRINT_REUSE_JOURNAL_FIELDS
+          : value.version < PER_NAME_USER_BINDINGS_JOURNAL_VERSION ? WHOLE_ENTRY_JOURNAL_FIELDS : JOURNAL_FIELDS
   const required = predecessor
     ? ['version', 'bindingMode', 'status', 'calls', 'operations', 'diagnostics']
     : ['version', 'bindingPolicy', 'rewritePolicy', 'moduleSemantics', 'status', 'calls', 'operations', 'diagnostics']
   if (value.version !== 1 && value.version < 4) required.push('rewritePolicy')
   if (value.version >= 5) required.push('userBindingsFingerprint')
-  if (value.version === 6) required.push('userBindingsReusePolicy')
+  if (value.version >= VERSIONED_BINDING_REUSE_JOURNAL_VERSION) required.push('userBindingsReusePolicy')
+  if (value.version >= PER_NAME_USER_BINDINGS_JOURNAL_VERSION) {
+    required.push('userBindingsShadowPolicy', 'userBindingNames')
+    normalizeJournalUserBindingNames(value)
+  }
   if (!hasClosedFields(value, fields, required)
     || (predecessor && !BINDING_MODES.has(value.bindingMode))
     || (value.version >= 4 && !isValidBindingPolicy(value.bindingPolicy))
-    || (value.version >= 4 && !isValidModuleSemantics(value.moduleSemantics))
-    || (value.version === 6 && !['fingerprint-v1', 'implementation-v1'].includes(value.userBindingsReusePolicy))
+    || (value.version >= 4 && !isValidModuleSemantics(value.moduleSemantics, value.version))
+    || (value.version >= VERSIONED_BINDING_REUSE_JOURNAL_VERSION && !USER_BINDINGS_REUSE_POLICIES.has(value.userBindingsReusePolicy))
     || (value.version >= 5 && value.userBindingsFingerprint !== null
       && (typeof value.userBindingsFingerprint !== 'string'
         || !/^[a-f0-9]{64}$/.test(value.userBindingsFingerprint)))

@@ -6,11 +6,15 @@ import {
   createJournal,
   liveToolCallSeq,
   normalizeJournal,
-  pathToHead,
   reduceStateOperations,
+} from './session-journal.js'
+import {
+  pathToHead,
+  recoveryBoundaryForHistory,
   recoverJournal,
   visibleExecutableCallSeqs,
-} from './session-journal.js'
+} from './session-journal-recovery.js'
+import { valueLimitsFromConfig } from './value-wire-schema.js'
 import { normalizeBindingDescriptors } from './binding-descriptors.js'
 import { resolveConfig } from './runtime-config.js'
 import { WorkerClient } from './worker-client.js'
@@ -78,12 +82,7 @@ class SessionKernel {
   constructor({ config, history, cwd, session, userBindingsCwd, withInitiator, observeValues }) {
     this.config = config
     this.history = history
-    this.initialRecoveryBoundary = history.available === false && history.volatileSuffix.length > 0
-      ? {
-          failedCallSeq: history.volatileSuffix[0].seq,
-          frontierCallSeq: history.head === undefined ? null : history.nodes[history.head]?.callSeq ?? null,
-        }
-      : undefined
+    this.initialRecoveryBoundary = recoveryBoundaryForHistory(history)
     this.surfaceGeneration = undefined
     try {
       this.surfaceGeneration = session?.surface?.replaceGeneration
@@ -127,13 +126,7 @@ class SessionKernel {
   }
 
   valueLimits(config = this.config) {
-    return {
-      maxNodes: config.maxValueNodes,
-      maxEdges: config.maxValueEdges,
-      maxArrayLength: config.maxValueArrayLength,
-      maxBigIntDigits: config.maxValueBigIntDigits,
-      maxStringBytes: config.maxOutputBytes,
-    }
+    return valueLimitsFromConfig(config)
   }
 
   assertReconfigurationAllowed(config) {
@@ -256,14 +249,7 @@ class SessionKernel {
           if (this.history.volatileSuffix.length > 0) {
             this.recoveryNotice = recoveryDiagnostic(this.history.volatileSuffix.length)
           }
-          this.initialRecoveryBoundary = this.history.available === false && this.history.volatileSuffix.length > 0
-            ? {
-                failedCallSeq: this.history.volatileSuffix[0].seq,
-                frontierCallSeq: this.history.head === undefined
-                  ? null
-                  : this.history.nodes[this.history.head]?.callSeq ?? null,
-              }
-            : undefined
+          this.initialRecoveryBoundary = recoveryBoundaryForHistory(this.history)
           if (this.initialRecoveryBoundary !== undefined) {
             recoveryBoundaries.push(this.initialRecoveryBoundary)
             this.initialRecoveryBoundary = undefined
@@ -299,15 +285,9 @@ class SessionKernel {
             this.completeJournal(request.journal, 'noop', result)
             return finishResult(result)
           }
-          const frontier = error.node.parent === undefined
-            ? undefined
-            : this.history.nodes[error.node.parent]
           const previousPathLength = pathToHead(this.history).length
           try {
-            const boundary = {
-              failedCallSeq: error.node.callSeq,
-              frontierCallSeq: frontier?.callSeq ?? null,
-            }
+            const boundary = recoveryBoundaryForHistory(this.history, error.node)
             const recovered = recoverJournal(this.session, request.callSeq, {
               extraBoundaries: [boundary],
               visibleCallSeqs: visibleExecutableCallSeqs(this.session),
@@ -406,6 +386,7 @@ class SessionKernel {
       journal.operations = journal.operations.filter(operation => operation.action !== 'save')
     }
     if (status === 'discarded' || status === 'noop') {
+      journal.userBindingNames = null
       journal.calls.length = 0
       journal.operations.length = 0
     }
@@ -422,7 +403,7 @@ class SessionKernel {
   settleCell(active, result, terminate = false) {
     /* c8 ignore next */
     if (this.active !== active) return
-    const { request, journal, replay, prepared, worker } = active
+    const { request, journal, replay, worker } = active
     clearInterval(active.computeTimer)
     clearTimeout(active.wallTimer)
     request.signal?.removeEventListener('abort', active.onAbort)
@@ -433,6 +414,7 @@ class SessionKernel {
       journal.userBindingsFingerprint = terminate
         ? null
         : active.userBindingSnapshot?.fingerprint ?? null
+      journal.userBindingNames = terminate ? null : active.userBindingNames ?? null
       if (terminate) {
         const volatileReason = active.pendingBindings.values().next().value ?? active.durability.reason
         this.completeJournal(journal, 'discarded', result, volatileReason, active.diagnostics)
@@ -451,8 +433,7 @@ class SessionKernel {
         this.tentatives.set(journal, {
           callSeq: request.callSeq,
           program: request.program,
-          bindingCatalog: active.appliedBindingCatalog
-            ?? active.priorBindingCatalog.advance(prepared, request.program),
+          bindingCatalog: active.appliedBindingCatalog,
           userBindings: active.userBindingSnapshot,
           worker,
         })
@@ -461,7 +442,6 @@ class SessionKernel {
     }
     if (replay !== undefined && !terminate) {
       this.bindingCatalog = active.appliedBindingCatalog
-        ?? active.priorBindingCatalog.advance(prepared, request.program)
     }
     if (replay === undefined && !terminate) {
       this.liveCallSeqs.add(request.callSeq ?? request.sourceCallSeq)

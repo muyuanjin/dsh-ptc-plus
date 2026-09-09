@@ -143,7 +143,7 @@ PTC Plus 必须独立安装到未经修改的官方 DSH，不能修改宿主源�
 
 ## 集中兼容与实施顺序
 
-一项公共能力由一个执行环境中的 owner 管理。Client 入口通过既有 `ctx.slots.inject` 等待 `conversation.input.dock`，沿用 `registerEnabled`、`ctx.effect()` 与 disposer 释放注册。root `apply` 注册 session-scoped contribution，由 renderer 的公共会话 props、projection hooks 和现有 RPC 注入提供数据；不另起 session coordinator。
+一项公共能力由一个执行环境中的 owner 管理。Client 入口通过既有 `ctx.slots.inject` 等待 `conversation.input.dock`，沿用 `src/client-feature-gates.js` 的 `registerGated`（订阅设置 → 判定资格 → 注册/注销 → 回滚）、`ctx.effect()` 与 disposer 释放注册。root `apply` 注册 session-scoped contribution，由 renderer 的公共会话 props、projection hooks 和现有 RPC 注入提供数据；不另起 session coordinator。
 
 本方案不消费 Conversation event registry，因此无需为了旧 `conversationEvents` 与后续 `uiConversation.events` 增加适配。确有公共 props 形态差异时集中到 `src/client-host-compat.js`，组件使用统一语义；不能以 DSH 版本号分支，也不为没有差异的 dock 包一层泛化框架。
 

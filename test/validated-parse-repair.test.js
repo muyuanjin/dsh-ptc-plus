@@ -19,7 +19,7 @@ function endPosition(source) {
 }
 
 function prepare(source, knownBindings = new Set()) {
-  return prepareProgram(source, knownBindings, true, new Set(), REWRITES)
+  return prepareProgram(source, { knownBindings: knownBindings, bindingPolicy: true, reservedBindings: new Set(), rewritesEnabled: REWRITES })
 }
 
 function repair(source, prepareCandidate = candidate => prepare(candidate), targetCallSeq = 7) {
@@ -92,13 +92,7 @@ test('declines ambiguous, non-local, preflight-rejected, or unexpressible repair
 
   assert.equal(repair('unique;', () => ({ collisions: [] })), undefined)
   assert.equal(repair('throwing;', () => { throw new Error('candidate rejected') }), undefined)
-  assert.equal(repair('const existing = (1', candidate => prepareProgram(
-    candidate,
-    new Set(),
-    true,
-    new Set(['existing']),
-    REWRITES,
-  )), undefined)
+  assert.equal(repair('const existing = (1', candidate => prepareProgram(candidate, { knownBindings: new Set(), bindingPolicy: true, reservedBindings: new Set(['existing']), rewritesEnabled: REWRITES })), undefined)
   assert.equal(repair('', code => ({ collisions: code.endsWith('}') ? [] : [{}] })), undefined)
 
   const repeated = 'a'.repeat(MAX_PARSE_REPAIR_ANCHOR_CODE_UNITS + 1)

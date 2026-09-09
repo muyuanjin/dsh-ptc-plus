@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { rewriteModuleImportsExports } from '../internal/cell-rewriter.js'
+import { LIVE_MODULE_SEMANTICS } from '../internal/repl-rewrite-contract.js'
 
 const ENABLED = { autoRewriteImports: true, autoStripExports: true }
 
@@ -359,7 +360,7 @@ test('reuses one private slot for later default exports', () => {
 })
 
 test('preserves predecessor default exports as ordinary declarations', () => {
-  const legacy = { defaultExportBinding: 'legacy-variable' }
+  const legacy = { defaultExportBinding: 'legacy-variable', importExpressionBoundary: 'legacy' }
   const expression = rewriteModuleImportsExports(
     'export default 42', ENABLED, new Map(), new Set(), new Set(), legacy,
   )
@@ -509,6 +510,114 @@ test('lowers imported reads and writes through one namespace-backed binding mode
     "import { value } from 'pkg'\nconst eval = () => value\neval()",
     ENABLED,
   ))
+})
+
+async function evaluateImported(source, namespace, semantics = LIVE_MODULE_SEMANTICS) {
+  const imports = new Map(Object.keys(namespace).map(name => [name, {
+    namespace: '__existing_namespace__', imported: name,
+  }]))
+  const rewritten = rewriteModuleImportsExports(source, ENABLED,
+    imports, new Set(['__existing_namespace__']), new Set(), semantics)
+  const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor
+  return new AsyncFunction('__existing_namespace__', rewritten.code)(namespace)
+}
+
+test('keeps imported writes separate from preceding semicolonless initializers', async () => {
+  for (const initializer of ['[0]', '() => 7']) {
+    for (const [expression, value, rightCalls] of [
+      ['value = mark()', 1, 1],
+      ['value += mark()', 1, 1],
+      ['value &&= mark()', 1, 1],
+      ['value ||= mark()', 0, 1],
+      ['value ??= mark()', null, 1],
+      ['++value', 1, 0],
+      ['value++', 1, 0],
+      ['--value', 1, 0],
+      ['value--', 1, 0],
+    ]) {
+      let effects = 0
+      const result = await evaluateImported([
+        'let previous, failure',
+        'try {',
+        `previous = ${initializer}`,
+        expression,
+        '} catch (error) { failure = error.message }',
+        'return [previous !== undefined, failure]',
+      ].join('\n'), { value, mark: () => ++effects })
+      assert.deepEqual(result, [true, 'Assignment to constant variable.'], `${initializer}: ${expression}`)
+      assert.equal(effects, rightCalls, expression)
+    }
+  }
+})
+
+test('retains logical short circuiting, nested writes, and existing separators', async () => {
+  let effects = 0
+  assert.deepEqual(await evaluateImported([
+    'const before = [0]',
+    'value ||= mark()',
+    'value ??= mark()',
+    'zero &&= mark()',
+    'let failure',
+    'try { void (value = mark()); } catch (error) { failure = error.message }',
+    'return [before[0], failure]',
+  ].join('\n'), { value: 1, zero: 0, mark: () => ++effects }), [0, 'Assignment to constant variable.'])
+  assert.equal(effects, 1)
+})
+
+test('preserves single-statement control flow for imported calls and writes', async () => {
+  const calls = []
+  const result = await evaluateImported([
+    'if (false) call("hidden")',
+    'if (true) call("if"); else call("else")',
+    'if (false) call?.("optional")',
+    'if (false) tag`hidden`',
+    'if (false) value = call("assignment")',
+    'if (false) ++value',
+    'if (false) value--',
+    'let count = 0',
+    'while (count++ < 2) call("while")',
+    'for (let index = 0; index < 2; index++) call("for")',
+    'do call("do"); while (false)',
+    'label: call("label")',
+    'switch (1) { case 1: call("switch"); break }',
+    'return count',
+  ].join('\n'), { value: 1, call: value => calls.push(value), tag: () => calls.push('tag') })
+  assert.equal(result, 3)
+  assert.deepEqual(calls, ['if', 'while', 'while', 'for', 'for', 'do', 'label', 'switch'])
+})
+
+test('keeps call receivers and ASI boundaries for imported calls and tags', async () => {
+  const receivers = []
+  await evaluateImported([
+    'const array = []',
+    'call()',
+    'const callable = () => 1',
+    'call?.()',
+    'const another = []',
+    'tag`text`',
+  ].join('\n'), {
+    call() { receivers.push(this) },
+    tag() { receivers.push(this) },
+  })
+  assert.deepEqual(receivers, [undefined, undefined, undefined])
+})
+
+test('retains the recorded import expression boundary for historical compilation', async () => {
+  const historical = { ...LIVE_MODULE_SEMANTICS, importExpressionBoundary: 'legacy' }
+  for (const [semantics, expected] of [[historical, 1], [LIVE_MODULE_SEMANTICS, 0]]) {
+    let calls = 0
+    await evaluateImported('if (false) call()', { call: () => calls++ }, semantics)
+    assert.equal(calls, expected)
+  }
+  assert.equal(await evaluateImported([
+    'let previous',
+    'try { previous = []',
+    'value = 2 } catch {}',
+    'return previous === undefined',
+  ].join('\n'), { value: 1 }, historical), true)
+  assert.throws(() => rewriteModuleImportsExports('return 1', ENABLED,
+    new Map(), new Set(), new Set(), { ...LIVE_MODULE_SEMANTICS, importExpressionBoundary: 'unknown' }),
+  /unsupported import expression boundary semantics/)
 })
 
 test('removes empty local exports and comment-separated export modifiers', () => {

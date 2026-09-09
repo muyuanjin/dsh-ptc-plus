@@ -9,6 +9,12 @@ import { RECOVERY_BOUNDARY_KEY, normalizeJournal } from '../internal/session-jou
 import { SessionRuntime } from '../internal/session-runtime.js'
 import { decodeValue, encodeValue, renderValueWire } from '../internal/value-wire.js'
 import { JOURNAL_POLICY, appendOnlySession, appendRunCodeEvents, fixture } from './plugin-fixture.js'
+import {
+  hasSessionKernel,
+  restartWorker,
+  sessionKernel,
+  workerOf,
+} from './runtime-observation.js'
 
 test('rejects replaced, corrupt, or extended persisted journals during confirmation', async (t) => {
   const state = fixture()
@@ -103,10 +109,20 @@ test('confirms pre-dispatch no-ops in the next durable journal', async (t) => {
       arguments: JSON.stringify({ code: rejectedCode, description: 'test cell' }),
     },
   })
-  const rejected = await first.rejectBeforeRuntime(session.id, {
+  // The host rejects the call inside the top-level run_code hook, before the
+  // runtime is dispatched.
+  const execute = first.listeners.get('tools/execute')[0]
+  const rejectedCall = {
+    name: 'run_code',
     callId: 'pre-denied-call',
-    session,
-  })
+    agent: { id: session.id, session },
+  }
+  const rejected = await execute(rejectedCall, async () => ({
+    isError: true,
+    content: [],
+    error: { message: 'rejected before runtime dispatch' },
+  }))
+  for (const listener of first.listeners.get('tools/result') ?? []) await listener(rejectedCall, rejected)
   events.push({ seq: 1, type: 'tool/result', sourceEventSeqs: [0], data: { meta: rejected.meta } })
 
   const durableCode = 'const acceptedBinding = 2'
@@ -226,11 +242,15 @@ test('drops a tentative save when the cell becomes volatile at runtime', async (
   const state = fixture()
   t.after(() => state.dispose())
 
+  // Top-level this is the REPL context global; the capture stays statically durable, so only the
+  // runtime access can discard the tentative save.
   const result = await state.runDurable('late-volatile-save', `
+const ambientRoot = this
 void await repl.state({ action: 'save', name: 'must-not-persist' })
-return Math['ran' + 'dom']()
+return ambientRoot['Math']['ran' + 'dom']()
 `)
   assert.equal(result.meta.dshPtcPlus.status, 'volatile')
+  assert.equal(result.meta.dshPtcPlus.volatileReason, 'Math.random')
   assert.deepEqual(result.meta.dshPtcPlus.operations, [])
   assert.deepEqual(await state.run('late-volatile-save', `
 return await repl.state({ action: 'list' })
@@ -463,7 +483,7 @@ test('contracts a live derived edit node by its persisted outer call sequence', 
         },
       },
     }))
-    return { call, context, result, kernel: execution.settlement.kernel }
+    return { call, context, result, kernel: sessionKernel(runtime, session.id) }
   }
 
   const parent = await executeConfirmed('live-parent', 'const stableHead = 3')
@@ -491,8 +511,7 @@ test('contracts a live derived edit node by its persisted outer call sequence', 
       completion: { kind: 'return', hasValue: true, value: encodeValue(999) },
     }),
   })
-  await child.kernel.client.reset(child.kernel.client.worker)
-  child.kernel.rollbackToDurable()
+  await restartWorker(runtime, session.id)
 
   const fresh = await executeConfirmed(
     'live-fresh',
@@ -608,7 +627,7 @@ test('contracts a legacy recovery boundary while executing the current cell', as
   )
   assert.equal(result.error, undefined)
   assert.equal(result.value, true)
-  assert.equal(runtime.kernels.has(session.id), true)
+  assert.equal(hasSessionKernel(runtime, session.id), true)
 })
 
 test('continues the current cell after an unprovable historical result', async (t) => {
@@ -726,7 +745,7 @@ test('rebuilds history when the model-visible surface generation changes', async
     { program: 'return [surfaceStable, surfaceHidden]', bindings: [], signal: new AbortController().signal },
   )
   assert.deepEqual(first.value, [1, 2])
-  const firstWorker = runtime.kernels.get(session.id).client.worker
+  const firstWorker = workerOf(runtime, session.id)
   generation = 1
   events.push({
     seq: 5,
@@ -744,7 +763,7 @@ test('rebuilds history when the model-visible surface generation changes', async
   )
   assert.deepEqual(second.value, [1, 'undefined'])
   assert.match(second.logs[0], /Restored the durable head and skipped/)
-  assert.notEqual(runtime.kernels.get(session.id).client.worker, firstWorker)
+  assert.notEqual(workerOf(runtime, session.id), firstWorker)
 
   let disabledGeneration = 0
   let disabledNodes = [0]
@@ -771,7 +790,7 @@ test('rebuilds history when the model-visible surface generation changes', async
     { id: disabledSession.id, session: disabledSession, callId: 'surface-disabled-first' },
     { program: 'const disabledHidden = 1', bindings: [], signal: new AbortController().signal },
   )).error, undefined)
-  const disabledWorker = disabledRuntime.kernels.get(disabledSession.id).client.worker
+  const disabledWorker = workerOf(disabledRuntime, disabledSession.id)
   disabledGeneration = 1
   disabledEvents.push({
     seq: 1,
@@ -789,7 +808,7 @@ test('rebuilds history when the model-visible surface generation changes', async
   )
   assert.equal(disabledVisibleResult.value, 'number')
   assert.deepEqual(disabledVisibleResult.logs, [])
-  assert.equal(disabledRuntime.kernels.get(disabledSession.id).client.worker, disabledWorker)
+  assert.equal(workerOf(disabledRuntime, disabledSession.id), disabledWorker)
   disabledGeneration = 2
   disabledEvents.push({
     seq: 2,
@@ -806,7 +825,7 @@ test('rebuilds history when the model-visible surface generation changes', async
     { program: 'return typeof disabledHidden', bindings: [], signal: new AbortController().signal },
   )
   assert.equal(disabledHiddenResult.value, 'undefined')
-  assert.notEqual(disabledRuntime.kernels.get(disabledSession.id).client.worker, disabledWorker)
+  assert.notEqual(workerOf(disabledRuntime, disabledSession.id), disabledWorker)
 
   let volatileGeneration = 0
   let volatileNodes = []
@@ -841,12 +860,12 @@ test('rebuilds history when the model-visible surface generation changes', async
   }
   const volatileFirst = await executeVolatile(0, 'surface-volatile-first', 'const surfaceVolatile = Date.now()')
   assert.equal(volatileFirst.settlement.journal.status, 'volatile')
-  const volatileWorker = volatileRuntime.kernels.get(volatileSession.id).client.worker
+  const volatileWorker = workerOf(volatileRuntime, volatileSession.id)
   volatileGeneration = 1
   const volatileVisible = await executeVolatile(1, 'surface-volatile-second', 'return typeof surfaceVolatile')
   assert.equal(volatileVisible.result.value, 'number')
   assert.deepEqual(volatileVisible.result.logs, [])
-  assert.equal(volatileRuntime.kernels.get(volatileSession.id).client.worker, volatileWorker)
+  assert.equal(workerOf(volatileRuntime, volatileSession.id), volatileWorker)
 })
 
 test('counts every historical cell excluded after an unavailable journal boundary', async (t) => {
@@ -922,7 +941,7 @@ test('keeps disabled derived edit provenance through visible surface replacement
     { program: 'let editableSurface = 1', bindings: [], signal: new AbortController().signal },
   )
   assert.equal(first.error, undefined)
-  const firstWorker = runtime.kernels.get(session.id).client.worker
+  const firstWorker = workerOf(runtime, session.id)
 
   events.push({
     seq: 1,
@@ -944,7 +963,7 @@ test('keeps disabled derived edit provenance through visible surface replacement
     { program: 'editableSurface = 2', bindings: [], signal: new AbortController().signal },
   )
   assert.equal(edited.error, undefined)
-  assert.equal(runtime.kernels.get(session.id).client.worker, firstWorker)
+  assert.equal(workerOf(runtime, session.id), firstWorker)
 
   generation = 1
   events.push({
@@ -963,7 +982,7 @@ test('keeps disabled derived edit provenance through visible surface replacement
   )
   assert.equal(visible.value, 2)
   assert.deepEqual(visible.logs, [])
-  assert.equal(runtime.kernels.get(session.id).client.worker, firstWorker)
+  assert.equal(workerOf(runtime, session.id), firstWorker)
 
   generation = 2
   surfaceNodes = [2]
@@ -982,7 +1001,7 @@ test('keeps disabled derived edit provenance through visible surface replacement
   )
   assert.equal(hidden.value, 'undefined')
   assert.match(hidden.logs[0], /Restored the durable head and skipped/)
-  assert.notEqual(runtime.kernels.get(session.id).client.worker, firstWorker)
+  assert.notEqual(workerOf(runtime, session.id), firstWorker)
 })
 
 test('attaches post-recovery cells to the verified frontier across restarts', async (t) => {

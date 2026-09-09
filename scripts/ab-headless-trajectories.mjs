@@ -23,20 +23,19 @@ import { orderCanaryFirst, runCanaryThenConcurrent } from './acceptance-orchestr
 import {
   HEADLESS_TOOLS_MODE,
   NEUTRAL_PERSONA,
-  changedSessionLogs,
+  checkedPhase,
   cleanupOwnedPath,
   createProcessRunner,
-  formatHeadlessError,
-  headlessConfigPatch,
-  parseConfigDump,
-  powershellPath,
   dshInvocation,
+  formatHeadlessError,
+  parseConfigDump,
   preflightHeadlessHost,
+  preflightKeylessVerify,
+  prepareHeadlessConfigs,
+  removeTree,
   requiredModelRuntime,
   resolveHeadlessProvider,
-  redactHeadlessConfig,
-  removeTree,
-  snapshotSessionLogs,
+  runHeadlessTask,
   validateHeadlessRuntimeConfig,
   validateNeutralConfig,
   withOwnedPath,
@@ -638,66 +637,25 @@ export async function validateTask(task, oracle, analysis, workspace) {
   return taskValidation({ status: changed ? 'pass' : 'fail', source: 'workspace', expected: oracle })
 }
 
-async function checkedPhase(result, {
-  stdoutPath,
-  stderrPath,
-  failed = value => value.code !== 0,
-  failureMessage,
-}) {
-  await writeFile(stdoutPath, result.stdout)
-  await writeFile(stderrPath, result.stderr)
-  if (failed(result)) throw new Error(failureMessage)
-  return result
-}
-
-async function preflightConfigs({ env, runtime, artifactRoot, tasks, fixture, dshHome, scratchRoot }) {
-  const overlays = {
-    plugin: join(scratchRoot, 'plugin.patch.yml'),
-    baseline: join(scratchRoot, 'baseline.patch.yml'),
-  }
-  const install = await runProcess('pwsh.exe', [
-    '-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass',
-    '-File', windowsPath(join(repoRoot, 'scripts', 'install-dev.ps1')), runtime.profile,
-  ], { env: { ...env, DSH_DEV_INSTALL_NO_PAUSE: '1' }, timeoutMs: runtime.wallMs })
-  await checkedPhase(install, {
-    stdoutPath: join(artifactRoot, 'install.stdout.log'),
-    stderrPath: join(artifactRoot, 'install.stderr.log'),
-    failureMessage: `plugin installation failed; see ${relative(repoRoot, artifactRoot)}`,
+/** Install the plugin and resolve both A/B configurations through the shared isolated-host sequence. */
+async function preflightConfigs({ env, runtime, artifactRoot, tasks, fixture, host, scratchRoot }) {
+  const { overlays, evidence: configPreflight } = await prepareHeadlessConfigs({
+    repoRoot,
+    env,
+    runtime,
+    host,
+    artifactRoot,
+    overlayRoot: scratchRoot,
+    variants: [
+      { id: 'plugin' },
+      { id: 'baseline', patchOptions: { disablePtcPlus: true } },
+    ],
+    validate: configs => validateConfigPair(configs.plugin, configs.baseline, runtime),
+    label: 'A/B',
+    invoke: dshInvocation,
+    resolveProvider: resolveHeadlessProvider,
+    runProcess,
   })
-
-  const baseDump = await runProcess('pwsh.exe', [
-    '-NoLogo', '-NoProfile', '-Command',
-    `${dshInvocation(runtime)} --profile '${powershellPath(runtime.profile)}' --dump-config`,
-  ], { env, timeoutMs: runtime.wallMs })
-  await checkedPhase({ ...baseDump, stdout: baseDump.code === 0 ? redactHeadlessConfig(baseDump.stdout) : '' }, {
-    stdoutPath: join(artifactRoot, 'base-config.stdout.yml'),
-    stderrPath: join(artifactRoot, 'base-config.stderr.log'),
-    failed: value => value.code !== 0 || value.stderr.trim() !== '',
-    failureMessage: `base DSH config preflight failed; see ${relative(repoRoot, artifactRoot)}`,
-  })
-  const baseRows = parseConfigDump(baseDump.stdout, 'base DSH config')
-  await resolveHeadlessProvider(baseRows, runtime, dshHome)
-  await writeFile(overlays.plugin, headlessConfigPatch(baseRows, runtime))
-  await writeFile(overlays.baseline, headlessConfigPatch(baseRows, runtime, { disablePtcPlus: true }))
-  for (const variant of ['plugin', 'baseline']) {
-    await writeFile(join(artifactRoot, `${variant}.patch.yml`), redactHeadlessConfig(await readFile(overlays[variant], 'utf8')))
-  }
-
-  const resolvedConfigs = {}
-  for (const variant of ['plugin', 'baseline']) {
-    const dump = await runProcess('pwsh.exe', [
-      '-NoLogo', '-NoProfile', '-Command',
-      `${dshInvocation(runtime)} --profile '${powershellPath(runtime.profile)}' --patch '${powershellPath(windowsPath(overlays[variant]))}' --dump-config`,
-    ], { env, timeoutMs: runtime.wallMs })
-    await checkedPhase({ ...dump, stdout: dump.code === 0 ? redactHeadlessConfig(dump.stdout) : '' }, {
-      stdoutPath: join(artifactRoot, `${variant}-config.stdout.yml`),
-      stderrPath: join(artifactRoot, `${variant}-config.stderr.log`),
-      failed: value => value.code !== 0 || value.stderr.trim() !== '',
-      failureMessage: `${variant} DSH config preflight failed; see ${relative(repoRoot, artifactRoot)}`,
-    })
-    resolvedConfigs[variant] = parseConfigDump(dump.stdout, `${variant} DSH config`)
-  }
-  const configPreflight = validateConfigPair(resolvedConfigs.plugin, resolvedConfigs.baseline, runtime)
   await writeFile(join(artifactRoot, 'manifest.json'), JSON.stringify({
     runtime,
     fixture,
@@ -705,21 +663,6 @@ async function preflightConfigs({ env, runtime, artifactRoot, tasks, fixture, ds
     configPreflight,
   }, null, 2) + '\n')
   return overlays
-}
-
-async function preflightKeyless({ env, runtime, artifactRoot }) {
-  const command = npmCliCommand(['run', 'verify'])
-  const result = await runProcess(command.executable, command.args, {
-    cwd: repoRoot,
-    env,
-    timeoutMs: runtime.wallMs,
-  })
-  await checkedPhase(result, {
-    stdoutPath: join(artifactRoot, 'keyless.stdout.log'),
-    stderrPath: join(artifactRoot, 'keyless.stderr.log'),
-    failed: value => value.code !== 0 || value.timedOut,
-    failureMessage: `keyless request-contract preflight failed; see ${relative(repoRoot, artifactRoot)}/keyless.*.log`,
-  })
 }
 
 async function runAllPairs({ tasks, runtime, runId, artifactRoot, runArm }) {
@@ -938,12 +881,12 @@ export async function main(env = process.env) {
   try {
     await mkdir(scratchRoot, { recursive: true })
     await materializeFixture(fixtureDir, frozenWorkspace)
-    const overlays = await preflightConfigs({ env, runtime, artifactRoot, tasks, fixture, dshHome: host.dshHome, scratchRoot })
+    const overlays = await preflightConfigs({ env, runtime, artifactRoot, tasks, fixture, host, scratchRoot })
     if (env.DSH_PTC_AB_CONFIG_ONLY === '1') {
       console.log(`A/B config preflight completed; artifacts: ${relative(repoRoot, artifactRoot)}`)
       return
     }
-    await preflightKeyless({ env, runtime, artifactRoot })
+    await preflightKeylessVerify({ repoRoot, env, runtime, artifactRoot, label: 'A/B', runProcess })
     const oracles = new Map()
     for (const task of tasks) oracles.set(task.id, await taskOracle(task, frozenWorkspace))
 
@@ -959,20 +902,18 @@ export async function main(env = process.env) {
       return await withOwnedPath(scratch.directory, async () => {
         await copyWorkspace(frozenWorkspace, workspace)
         const cwd = windowsPath(workspace)
-        const before = await snapshotSessionLogs(sessionsRoot)
-        const startedAt = Date.now()
-        let process
-        try {
-          process = await runProcess('pwsh.exe', [
-            '-NoLogo', '-NoProfile', '-Command',
-            `${dshInvocation(runtime)} --profile '${powershellPath(runtime.profile)}' --patch '${powershellPath(windowsPath(overlays[variant]))}' '${powershellPath(task.prompt)}'`,
-          ], { cwd: workspace, env, timeoutMs: runtime.wallMs })
-        } catch (error) {
-          process = { code: 1, stdout: '', stderr: '', timedOut: false, durationMs: 0, infrastructureError: error.message }
-        }
+        const { process, decoded } = await runHeadlessTask({
+          env,
+          runtime,
+          sessionsRoot,
+          task: task.prompt,
+          cwd: workspace,
+          overlay: overlays[variant],
+          invoke: dshInvocation,
+          runProcess,
+        })
         await writeFile(join(directory, 'dsh.stdout.log'), process.stdout)
         await writeFile(join(directory, 'dsh.stderr.log'), process.stderr)
-        const decoded = await changedSessionLogs(sessionsRoot, before, startedAt)
         const matches = decoded.filter(candidate => {
           if (candidate.events === undefined || !userPrompts(candidate.events).includes(task.prompt)) return false
           const system = candidate.events.find(event => event.type === 'request/header')?.data?.header?.system ?? ''

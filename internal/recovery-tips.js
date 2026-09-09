@@ -77,14 +77,13 @@ export function latestRecoveryTip(view, config) {
   if (!config.enabled) return undefined
   const candidate = tipCandidate(view)
   if (candidate === undefined) return undefined
-  const history = tipHistory(view)
-  const lastTip = history.at(-1)
+  // Cooldown, escalation, and ordinal are per trigger kind: one kind's tip must
+  // not suppress a different kind.
+  const matching = tipHistory(view).filter(item => item.id === candidate.id)
+  const lastTip = matching.at(-1)
   if (lastTip !== undefined && view.contextStep - lastTip.contextStep < config.cooldownMessages) return undefined
-  const unresolved = history.filter(item => item.id === candidate.id && item.index > (view.lastSuccessfulRunIndex ?? -1))
-  const ordinal = history.reduce(
-    (highest, item) => item.id === candidate.id ? Math.max(highest, item.ordinal) : highest,
-    0,
-  ) + 1
+  const unresolved = matching.filter(item => item.index > (view.lastSuccessfulRunIndex ?? -1))
+  const ordinal = matching.reduce((highest, item) => Math.max(highest, item.ordinal), 0) + 1
   if (!Number.isSafeInteger(ordinal)) return undefined
   return {
     name: `${TIP_CONTEXT_PREFIX}${candidate.id}/${ordinal}`,

@@ -197,6 +197,7 @@ test('large binary previews preserve the worker and subsequent REPL binding reus
   const child = spawnSync(process.execPath, ['--input-type=module', '--eval', `
     import assert from 'node:assert/strict'
     import { SessionRuntime } from ${JSON.stringify(new URL('../internal/session-runtime.js', import.meta.url).href)}
+    import { workerOf } from ${JSON.stringify(new URL('./runtime-observation.js', import.meta.url).href)}
     const runtime = new SessionRuntime({ maxOldGenerationSizeMb: 512 }, { observeSession: () => true })
     try {
       for (const allocation of ['new Uint8Array(12000000)', 'Buffer.alloc(12000000)']) {
@@ -209,13 +210,13 @@ test('large binary previews preserve the worker and subsequent REPL binding reus
           { name: 'bytes', status: 'unreadable', text: '', truncated: false },
         ])
         runtime.finalize(first.settlement, true)
-        const worker = runtime.kernels.get(allocation).client.worker
+        const worker = workerOf(runtime, allocation)
         const next = await runtime.run(allocation, {
           program: 'bytes[0] = 7; return [bytes.length, bytes[0], bytes[11999999]]', bindings: [],
         })
         assert.equal(next.error, undefined)
         assert.deepEqual(next.value, [12000000, 7, 0])
-        assert.equal(runtime.kernels.get(allocation).client.worker, worker)
+        assert.equal(workerOf(runtime, allocation), worker)
       }
     } finally {
       await runtime.dispose()
@@ -231,6 +232,7 @@ test('large boxed string previews preserve a 128 MiB worker and subsequent bindi
   const child = spawnSync(process.execPath, ['--input-type=module', '--eval', `
     import assert from 'node:assert/strict'
     import { SessionRuntime } from ${JSON.stringify(new URL('../internal/session-runtime.js', import.meta.url).href)}
+    import { workerOf } from ${JSON.stringify(new URL('./runtime-observation.js', import.meta.url).href)}
     const runtime = new SessionRuntime({ maxOldGenerationSizeMb: 128 }, { observeSession: () => true })
     try {
       const first = await runtime.runTentative('boxed-string', {
@@ -242,13 +244,13 @@ test('large boxed string previews preserve a 128 MiB worker and subsequent bindi
         { name: 'boxed', status: 'unreadable', text: '', truncated: false },
       ])
       runtime.finalize(first.settlement, true)
-      const worker = runtime.kernels.get('boxed-string').client.worker
+      const worker = workerOf(runtime, 'boxed-string')
       const next = await runtime.run('boxed-string', {
         program: 'boxed.marker = 7; return [boxed.length, boxed[0], boxed[4999999], boxed.marker]', bindings: [],
       })
       assert.equal(next.error, undefined)
       assert.deepEqual(next.value, [5000000, 'x', 'x', 7])
-      assert.equal(runtime.kernels.get('boxed-string').client.worker, worker)
+      assert.equal(workerOf(runtime, 'boxed-string'), worker)
     } finally {
       await runtime.dispose()
     }
@@ -262,6 +264,7 @@ test('large plain objects preserve a 128 MiB worker, execution budgets and bindi
   const child = spawnSync(process.execPath, ['--input-type=module', '--eval', `
     import assert from 'node:assert/strict'
     import { SessionRuntime } from ${JSON.stringify(new URL('../internal/session-runtime.js', import.meta.url).href)}
+    import { workerOf } from ${JSON.stringify(new URL('./runtime-observation.js', import.meta.url).href)}
     for (const observing of [false, true]) {
     const runtime = new SessionRuntime({ maxOldGenerationSizeMb: 128, computeMs: 30000, maxWallMs: 30000 }, { observeSession: () => observing })
     const session = 'large-object'
@@ -275,8 +278,7 @@ test('large plain objects preserve a 128 MiB worker, execution budgets and bindi
       assert.deepEqual(first.settlement.replMemory.observation?.entries, observing
         ? [{ name: 'big', status: 'unreadable', text: '', truncated: false }] : undefined)
       runtime.finalize(first.settlement, true)
-      const kernel = runtime.kernels.get(session)
-      const worker = kernel.client.worker
+      const worker = workerOf(runtime, session)
       runtime.reconfigure({ maxOldGenerationSizeMb: 128, computeMs: 100, maxWallMs: 100 })
       for (const [program, value] of [
         ['let alias = big; return 2', 2],
@@ -286,7 +288,7 @@ test('large plain objects preserve a 128 MiB worker, execution budgets and bindi
         const next = await runtime.run(session, { program, bindings: [] })
         assert.equal(next.error, undefined)
         assert.equal(next.value, value)
-        assert.equal(kernel.client.worker, worker)
+        assert.equal(workerOf(runtime, session), worker)
       }
     } finally {
       await runtime.dispose()

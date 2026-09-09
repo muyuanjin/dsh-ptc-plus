@@ -64,7 +64,7 @@ test('acceptance config-only uses a shared private overlay and cleans it on succ
   }
   for (failPreflight of [false, true]) {
     calls = 0
-    if (failPreflight) await assert.rejects(main(env), /acceptance DSH config preflight failed/)
+    if (failPreflight) await assert.rejects(main(env), /acceptance config preflight failed/)
     else await main(env)
     assert.equal(calls, 3)
     await assert.rejects(fs.stat(dirname(overlay)), { code: 'ENOENT' })

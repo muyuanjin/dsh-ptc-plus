@@ -1179,58 +1179,111 @@
     Object.fromEntries(CONFIG_FIELDS.map((field) => [field.key, field.default]))
   );
 
-  // src/client-activity.js
-  var JOURNAL_VERSIONS = /* @__PURE__ */ new Set([1, 2, 3, 4, 5, 6]);
-  var JOURNAL_STATUSES = /* @__PURE__ */ new Set(["durable", "volatile", "discarded", "noop"]);
+  // internal/repl-rewrite-contract.js
+  var LEGACY_DEFAULT_EXPORT_BINDING = "legacy-variable";
+  var LIVE_DEFAULT_EXPORT_BINDING = "live-readonly";
+  var LEGACY_IMPORT_EXPRESSION_BOUNDARY = "legacy";
+  var LIVE_IMPORT_EXPRESSION_BOUNDARY = "statement-safe";
+  var LIVE_MODULE_SEMANTICS = Object.freeze({
+    defaultExportBinding: LIVE_DEFAULT_EXPORT_BINDING,
+    importExpressionBoundary: LIVE_IMPORT_EXPRESSION_BOUNDARY
+  });
+
+  // internal/session-journal-schema.js
+  var IMPORT_BOUNDARY_JOURNAL_VERSION = 7;
+  var PER_NAME_USER_BINDINGS_JOURNAL_VERSION = 8;
+  var JOURNAL_VERSION = PER_NAME_USER_BINDINGS_JOURNAL_VERSION;
+  var LIVE_USER_BINDINGS_SHADOW_POLICY = "per-name";
+  var LEGACY_USER_BINDINGS_SHADOW_POLICY = "whole-entry";
+  var LIVE_USER_BINDINGS_REUSE_POLICY = "implementation-v1";
+  var LEGACY_USER_BINDINGS_REUSE_POLICY = "fingerprint-v1";
+  var LEGACY_JOURNAL_VERSION = 1;
+  var INTERMEDIATE_JOURNAL_VERSION = 2;
+  var PREVIOUS_JOURNAL_VERSION = 3;
+  var USER_BINDING_RELATIONLESS_JOURNAL_VERSION = 4;
+  var FINGERPRINT_REUSE_JOURNAL_VERSION = 5;
+  var VERSIONED_BINDING_REUSE_JOURNAL_VERSION = 6;
+  var STATUSES = /* @__PURE__ */ new Set(["durable", "volatile", "discarded", "noop"]);
   var BINDING_MODES = /* @__PURE__ */ new Set(["loose", "strict"]);
-  var JOURNAL_FIELDS = /* @__PURE__ */ new Set([
-    "version",
-    "bindingPolicy",
-    "rewritePolicy",
-    "moduleSemantics",
-    "status",
-    "calls",
-    "operations",
-    "confirms",
-    "diagnostics",
-    "completion",
-    "volatileReason",
-    "userBindingsFingerprint",
-    "userBindingsReusePolicy"
-  ]);
-  var FINGERPRINT_REUSE_JOURNAL_FIELDS = new Set(
-    [...JOURNAL_FIELDS].filter((key) => key !== "userBindingsReusePolicy")
-  );
-  var RELATIONLESS_JOURNAL_FIELDS = new Set(
-    [...FINGERPRINT_REUSE_JOURNAL_FIELDS].filter((key) => key !== "userBindingsFingerprint")
-  );
-  var PREDECESSOR_JOURNAL_FIELDS = /* @__PURE__ */ new Set([
-    "version",
-    "bindingMode",
-    "rewritePolicy",
-    "status",
-    "calls",
-    "operations",
-    "confirms",
-    "diagnostics",
-    "completion",
-    "volatileReason"
-  ]);
-  var LEGACY_JOURNAL_FIELDS = new Set([...PREDECESSOR_JOURNAL_FIELDS].filter((key) => key !== "rewritePolicy"));
+  var WHOLE_ENTRY_JOURNAL_FIELDS = /* @__PURE__ */ new Set(["version", "bindingPolicy", "rewritePolicy", "moduleSemantics", "userBindingsFingerprint", "userBindingsReusePolicy", "status", "calls", "operations", "confirms", "diagnostics", "completion", "volatileReason"]);
+  var JOURNAL_FIELDS = /* @__PURE__ */ new Set([...WHOLE_ENTRY_JOURNAL_FIELDS, "userBindingsShadowPolicy", "userBindingNames"]);
+  var FINGERPRINT_REUSE_JOURNAL_FIELDS = new Set([...WHOLE_ENTRY_JOURNAL_FIELDS].filter((field) => field !== "userBindingsReusePolicy"));
+  var RELATIONLESS_JOURNAL_FIELDS = new Set([...FINGERPRINT_REUSE_JOURNAL_FIELDS].filter((field) => field !== "userBindingsFingerprint"));
+  var PREDECESSOR_JOURNAL_FIELDS = /* @__PURE__ */ new Set(["version", "bindingMode", "rewritePolicy", "status", "calls", "operations", "confirms", "diagnostics", "completion", "volatileReason"]);
+  var LEGACY_JOURNAL_FIELDS = new Set([...PREDECESSOR_JOURNAL_FIELDS].filter((field) => field !== "rewritePolicy"));
   var BINDING_POLICY_FIELDS = /* @__PURE__ */ new Set(["variableRedeclarations", "functionClassRedeclarations"]);
-  var REWRITE_POLICY_FIELDS = /* @__PURE__ */ new Set([
-    "autoRewriteImports",
-    "autoStripExports",
-    "autoSplitRedeclarations"
+  var REWRITE_POLICY_FIELDS = /* @__PURE__ */ new Set(["autoRewriteImports", "autoStripExports", "autoSplitRedeclarations"]);
+  var LEGACY_MODULE_SEMANTICS_FIELDS = /* @__PURE__ */ new Set(["defaultExportBinding"]);
+  var MODULE_SEMANTICS_FIELDS = /* @__PURE__ */ new Set([...LEGACY_MODULE_SEMANTICS_FIELDS, "importExpressionBoundary"]);
+  var IMPORT_EXPRESSION_BOUNDARIES = /* @__PURE__ */ new Set([
+    LEGACY_IMPORT_EXPRESSION_BOUNDARY,
+    LIVE_IMPORT_EXPRESSION_BOUNDARY
   ]);
-  var MODULE_SEMANTICS_FIELDS = /* @__PURE__ */ new Set(["defaultExportBinding"]);
-  var DEFAULT_EXPORT_BINDINGS = /* @__PURE__ */ new Set(["legacy-variable", "live-readonly"]);
+  var DEFAULT_EXPORT_BINDINGS = /* @__PURE__ */ new Set([
+    LEGACY_DEFAULT_EXPORT_BINDING,
+    LIVE_DEFAULT_EXPORT_BINDING
+  ]);
   var CALL_SUCCESS_FIELDS = /* @__PURE__ */ new Set(["global", "member", "args", "ok", "value", "settle"]);
   var CALL_ERROR_FIELDS = /* @__PURE__ */ new Set(["global", "member", "args", "ok", "error", "settle"]);
   var OPERATION_FIELDS = /* @__PURE__ */ new Set(["action", "name"]);
   var RETURN_FIELDS = /* @__PURE__ */ new Set(["kind", "hasValue", "value"]);
   var THROW_FIELDS = /* @__PURE__ */ new Set(["kind", "error"]);
   var ERROR_FIELDS = /* @__PURE__ */ new Set(["kind", "message"]);
+  var EDIT_TARGET_FIELDS = /* @__PURE__ */ new Set(["targetCallSeq"]);
+  var DERIVED_RUN_FIELDS = /* @__PURE__ */ new Set(["code", "description"]);
+  var JOURNAL_VERSIONS = /* @__PURE__ */ new Set([LEGACY_JOURNAL_VERSION, INTERMEDIATE_JOURNAL_VERSION, PREVIOUS_JOURNAL_VERSION, USER_BINDING_RELATIONLESS_JOURNAL_VERSION, FINGERPRINT_REUSE_JOURNAL_VERSION, VERSIONED_BINDING_REUSE_JOURNAL_VERSION, IMPORT_BOUNDARY_JOURNAL_VERSION, JOURNAL_VERSION]);
+  var USER_BINDINGS_REUSE_POLICIES = /* @__PURE__ */ new Set([LEGACY_USER_BINDINGS_REUSE_POLICY, LIVE_USER_BINDINGS_REUSE_POLICY]);
+  var USER_BINDINGS_SHADOW_POLICIES = /* @__PURE__ */ new Set([LEGACY_USER_BINDINGS_SHADOW_POLICY, LIVE_USER_BINDINGS_SHADOW_POLICY]);
+  var USER_BINDING_NAME_STATES = /* @__PURE__ */ new Set(["provider", "local", "absent", "unknown"]);
+  function normalizeUserBindingNames(value) {
+    if (!Array.isArray(value)) throw new TypeError("invalid user binding name evidence");
+    const names = /* @__PURE__ */ new Set();
+    return Object.freeze(value.map((fact) => {
+      if (fact === null || typeof fact !== "object" || !USER_BINDING_NAME_STATES.has(fact.state) || typeof fact.name !== "string" || fact.name.length > 128 || !/^[$_\p{ID_Start}][$\u200c\u200d\p{ID_Continue}]*$/u.test(fact.name) || names.has(fact.name)) throw new TypeError("invalid user binding name evidence");
+      const fields = fact.state === "provider" ? ["name", "state", "entryId"] : ["name", "state"];
+      if (Reflect.ownKeys(fact).length !== fields.length || !fields.every((key) => Object.prototype.propertyIsEnumerable.call(fact, key)) || fact.state === "provider" && (typeof fact.entryId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(fact.entryId))) {
+        throw new TypeError("invalid user binding name evidence");
+      }
+      names.add(fact.name);
+      return Object.freeze({
+        name: fact.name,
+        state: fact.state,
+        ...fact.state === "provider" ? { entryId: fact.entryId } : {}
+      });
+    }).sort((left, right) => left.name < right.name ? -1 : left.name > right.name ? 1 : 0));
+  }
+  function normalizeJournalUserBindingNames(journal) {
+    if (!USER_BINDINGS_SHADOW_POLICIES.has(journal.userBindingsShadowPolicy)) {
+      throw new TypeError("invalid user binding shadow policy");
+    }
+    if (journal.userBindingsShadowPolicy === LEGACY_USER_BINDINGS_SHADOW_POLICY || journal.status === "noop" || journal.status === "discarded") {
+      if (journal.userBindingNames !== null) throw new TypeError("unexpected user binding name evidence");
+      return null;
+    }
+    return normalizeUserBindingNames(journal.userBindingNames);
+  }
+  var RECOVERY_BOUNDARY_FIELDS = /* @__PURE__ */ new Set(["failedCallSeq", "frontierCallSeq"]);
+  var REWRITE_FIELDS = /* @__PURE__ */ new Set(["kind", "description", "source"]);
+  var REWRITE_KINDS = /* @__PURE__ */ new Set(["import", "redeclaration", "export"]);
+
+  // internal/value-wire-schema.js
+  var VALUE_CODEC = "ptc-value-graph/v1";
+  var DEFAULT_VALUE_LIMITS = Object.freeze({
+    maxNodes: 1e5,
+    maxEdges: 1e6,
+    maxArrayLength: 1e6,
+    maxBigIntDigits: 1e5,
+    maxStringBytes: 64 * 1024 * 1024
+  });
+  var VALUE_ENVELOPE_FIELDS = /* @__PURE__ */ new Set(["codec", "root", "nodes"]);
+  var VALUE_OBJECT_FIELDS = /* @__PURE__ */ new Set(["type", "prototype", "entries"]);
+  var VALUE_ARRAY_FIELDS = /* @__PURE__ */ new Set(["type", "length", "entries"]);
+  var VALUE_UNDEFINED_FIELDS = /* @__PURE__ */ new Set(["tag"]);
+  var VALUE_NUMBER_FIELDS = /* @__PURE__ */ new Set(["tag", "value"]);
+  var VALUE_BIGINT_FIELDS = /* @__PURE__ */ new Set(["tag", "value"]);
+  var VALUE_REFERENCE_FIELDS = /* @__PURE__ */ new Set(["tag", "index"]);
+
+  // src/client-activity.js
   var DIAGNOSTIC_FIELDS = /* @__PURE__ */ new Set([
     "code",
     "severity",
@@ -1249,8 +1302,6 @@
   var PHASES = /* @__PURE__ */ new Set(["parse", "preflight", "execute", "tool-dispatch", "replay", "recover"]);
   var STATE_EFFECTS = /* @__PURE__ */ new Set(["unchanged", "partially-applied", "rolled-back", "unknown"]);
   var DISPATCH_STATES = /* @__PURE__ */ new Set(["not-dispatched", "dispatched", "completed", "unknown"]);
-  var REWRITE_FIELDS = /* @__PURE__ */ new Set(["kind", "description", "source"]);
-  var REWRITE_KINDS = /* @__PURE__ */ new Set(["import", "redeclaration", "export"]);
   var REWRITE_POLICY_BY_KIND = Object.freeze({
     import: "autoRewriteImports",
     export: "autoStripExports"
@@ -1258,21 +1309,13 @@
   var MIXED_REDECLARATION = "split a mixed top-level declaration while preserving native pattern initialization";
   var FUNCTION_REDECLARATION = "reassigned an existing top-level function declaration for REPL continuity";
   var CLASS_REDECLARATION = "reassigned an existing top-level class declaration for REPL continuity";
-  var EDIT_TARGET_FIELDS = /* @__PURE__ */ new Set(["targetCallSeq"]);
-  var DERIVED_RUN_FIELDS = /* @__PURE__ */ new Set(["code", "description"]);
-  var RECOVERY_BOUNDARY_FIELDS = /* @__PURE__ */ new Set(["failedCallSeq", "frontierCallSeq"]);
-  var VALUE_ENVELOPE_FIELDS = /* @__PURE__ */ new Set(["codec", "root", "nodes"]);
-  var VALUE_OBJECT_FIELDS = /* @__PURE__ */ new Set(["type", "prototype", "entries"]);
-  var VALUE_ARRAY_FIELDS = /* @__PURE__ */ new Set(["type", "length", "entries"]);
-  var VALUE_UNDEFINED_FIELDS = /* @__PURE__ */ new Set(["tag"]);
-  var VALUE_NUMBER_FIELDS = /* @__PURE__ */ new Set(["tag", "value"]);
-  var VALUE_BIGINT_FIELDS = /* @__PURE__ */ new Set(["tag", "value"]);
-  var VALUE_REFERENCE_FIELDS = /* @__PURE__ */ new Set(["tag", "index"]);
-  var MAX_VALUE_NODES = 1e5;
-  var MAX_VALUE_EDGES = 1e6;
-  var MAX_ARRAY_LENGTH = 1e6;
-  var MAX_BIGINT_DIGITS = 1e5;
-  var MAX_STRING_BYTES = 64 * 1024 * 1024;
+  var {
+    maxNodes: MAX_VALUE_NODES,
+    maxEdges: MAX_VALUE_EDGES,
+    maxArrayLength: MAX_ARRAY_LENGTH,
+    maxBigIntDigits: MAX_BIGINT_DIGITS,
+    maxStringBytes: MAX_STRING_BYTES
+  } = DEFAULT_VALUE_LIMITS;
   var textEncoder = new TextEncoder();
   function isRecord(value) {
     return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -1354,7 +1397,7 @@
     return true;
   }
   function isValidValueWire(value) {
-    if (!hasExactOrderedFields(value, VALUE_ENVELOPE_FIELDS) || value.codec !== "ptc-value-graph/v1" || !Array.isArray(value.nodes) || value.nodes.length > MAX_VALUE_NODES) return false;
+    if (!hasExactOrderedFields(value, VALUE_ENVELOPE_FIELDS) || value.codec !== VALUE_CODEC || !Array.isArray(value.nodes) || value.nodes.length > MAX_VALUE_NODES) return false;
     const state = {
       nodeCount: value.nodes.length,
       discovered: /* @__PURE__ */ new Set(),
@@ -1401,8 +1444,9 @@
   function isValidBindingPolicy(value) {
     return hasExactFields(value, BINDING_POLICY_FIELDS) && [...BINDING_POLICY_FIELDS].every((key) => typeof value[key] === "boolean");
   }
-  function isValidModuleSemantics(value) {
-    return hasExactFields(value, MODULE_SEMANTICS_FIELDS) && DEFAULT_EXPORT_BINDINGS.has(value.defaultExportBinding);
+  function isValidModuleSemantics(value, version) {
+    const legacy = version <= VERSIONED_BINDING_REUSE_JOURNAL_VERSION;
+    return hasExactFields(value, legacy ? LEGACY_MODULE_SEMANTICS_FIELDS : MODULE_SEMANTICS_FIELDS) && DEFAULT_EXPORT_BINDINGS.has(value.defaultExportBinding) && (legacy || IMPORT_EXPRESSION_BOUNDARIES.has(value.importExpressionBoundary));
   }
   function isValidCall(value) {
     if (!isRecord(value) || value.ok !== true && value.ok !== false) return false;
@@ -1430,16 +1474,20 @@
     return value.every(isSafeSequence);
   }
   function isReadableJournalUnchecked(value) {
-    if (!isRecord(value) || !JOURNAL_VERSIONS.has(value.version) || !JOURNAL_STATUSES.has(value.status)) {
+    if (!isRecord(value) || !JOURNAL_VERSIONS.has(value.version) || !STATUSES.has(value.status)) {
       return false;
     }
     const predecessor = value.version < 4;
-    const fields = value.version === 1 ? LEGACY_JOURNAL_FIELDS : predecessor ? PREDECESSOR_JOURNAL_FIELDS : value.version === 4 ? RELATIONLESS_JOURNAL_FIELDS : value.version === 5 ? FINGERPRINT_REUSE_JOURNAL_FIELDS : JOURNAL_FIELDS;
+    const fields = value.version === 1 ? LEGACY_JOURNAL_FIELDS : predecessor ? PREDECESSOR_JOURNAL_FIELDS : value.version === 4 ? RELATIONLESS_JOURNAL_FIELDS : value.version === 5 ? FINGERPRINT_REUSE_JOURNAL_FIELDS : value.version < PER_NAME_USER_BINDINGS_JOURNAL_VERSION ? WHOLE_ENTRY_JOURNAL_FIELDS : JOURNAL_FIELDS;
     const required = predecessor ? ["version", "bindingMode", "status", "calls", "operations", "diagnostics"] : ["version", "bindingPolicy", "rewritePolicy", "moduleSemantics", "status", "calls", "operations", "diagnostics"];
     if (value.version !== 1 && value.version < 4) required.push("rewritePolicy");
     if (value.version >= 5) required.push("userBindingsFingerprint");
-    if (value.version === 6) required.push("userBindingsReusePolicy");
-    if (!hasClosedFields(value, fields, required) || predecessor && !BINDING_MODES.has(value.bindingMode) || value.version >= 4 && !isValidBindingPolicy(value.bindingPolicy) || value.version >= 4 && !isValidModuleSemantics(value.moduleSemantics) || value.version === 6 && !["fingerprint-v1", "implementation-v1"].includes(value.userBindingsReusePolicy) || value.version >= 5 && value.userBindingsFingerprint !== null && (typeof value.userBindingsFingerprint !== "string" || !/^[a-f0-9]{64}$/.test(value.userBindingsFingerprint)) || value.version !== 1 && !isValidRewritePolicy(value.rewritePolicy) || !Array.isArray(value.calls) || !value.calls.every(isValidCall) || !Array.isArray(value.operations) || !value.operations.every(isValidOperation) || !isValidConfirms(value.confirms, value.version) || !Array.isArray(value.diagnostics) || !value.diagnostics.every(isValidDiagnostic)) return false;
+    if (value.version >= VERSIONED_BINDING_REUSE_JOURNAL_VERSION) required.push("userBindingsReusePolicy");
+    if (value.version >= PER_NAME_USER_BINDINGS_JOURNAL_VERSION) {
+      required.push("userBindingsShadowPolicy", "userBindingNames");
+      normalizeJournalUserBindingNames(value);
+    }
+    if (!hasClosedFields(value, fields, required) || predecessor && !BINDING_MODES.has(value.bindingMode) || value.version >= 4 && !isValidBindingPolicy(value.bindingPolicy) || value.version >= 4 && !isValidModuleSemantics(value.moduleSemantics, value.version) || value.version >= VERSIONED_BINDING_REUSE_JOURNAL_VERSION && !USER_BINDINGS_REUSE_POLICIES.has(value.userBindingsReusePolicy) || value.version >= 5 && value.userBindingsFingerprint !== null && (typeof value.userBindingsFingerprint !== "string" || !/^[a-f0-9]{64}$/.test(value.userBindingsFingerprint)) || value.version !== 1 && !isValidRewritePolicy(value.rewritePolicy) || !Array.isArray(value.calls) || !value.calls.every(isValidCall) || !Array.isArray(value.operations) || !value.operations.every(isValidOperation) || !isValidConfirms(value.confirms, value.version) || !Array.isArray(value.diagnostics) || !value.diagnostics.every(isValidDiagnostic)) return false;
     const settlementOrder = value.calls.map((call) => call.settle).sort((left, right) => left - right);
     if (settlementOrder.some((settle, index) => settle !== index)) return false;
     const requiresCompletion = value.status === "durable" || value.status === "volatile";
@@ -1456,7 +1504,7 @@
     }
   }
   function isCountableJournal(value) {
-    return isReadableJournal(value) && JOURNAL_STATUSES.has(value.status) && Array.isArray(value.calls) && Array.isArray(value.operations) && Array.isArray(value.diagnostics);
+    return isReadableJournal(value) && STATUSES.has(value.status) && Array.isArray(value.calls) && Array.isArray(value.operations) && Array.isArray(value.diagnostics);
   }
   function isValidRewrites(value, journal) {
     try {
@@ -1578,6 +1626,1921 @@
       ...operationFeatures(journal.operations)
     ]);
     return Object.freeze({ state, description, code: code2, output, ptc: true, features: Object.freeze(features) });
+  }
+
+  // src/client-tool-view.js
+  function createPtcToolView(React, deps) {
+    const { CodeBlock, DisclosureRow, icons } = deps;
+    const h = React.createElement;
+    function PTCPlusToolRow({ toolName, block, inspect, t: t2 }) {
+      const [open, setOpen] = React.useState(false);
+      const view = derivePtcToolView(block, toolName);
+      const expandable = view.code !== "" || view.output !== "" || typeof inspect === "function";
+      const stateKey = {
+        running: "tool.running",
+        ok: "tool.completed",
+        error: "tool.failed",
+        stopped: "tool.stopped"
+      }[view.state];
+      const outputSummary = view.state === "error" && view.output !== "" ? view.output.split(/\r?\n/, 1)[0] : "";
+      const summary = outputSummary || view.description;
+      const stateText = view.state === "ok" ? null : t2(stateKey);
+      const toggle = () => {
+        if (expandable) setOpen((current) => !current);
+      };
+      const summaryText = summary === "" ? null : summary;
+      const summaryLine = stateText === null && summaryText === null ? null : h(
+        "div",
+        { className: "ptcPlusToolSummaryLine", "data-state": view.state, role: "status" },
+        stateText === null ? null : h("span", { className: "ptcPlusToolState" }, stateText),
+        summaryText === null ? null : h("span", { className: "ptcPlusToolSep", "aria-hidden": true }),
+        summaryText === null ? null : h("span", { className: "ptcPlusToolDescription" }, summaryText)
+      );
+      const body = !open ? null : h(
+        "div",
+        { className: "ptcPlusToolBody" },
+        view.code === "" ? null : h(
+          "div",
+          { className: "ptcPlusToolSection" },
+          h("span", { className: "ptcPlusToolSectionLabel" }, t2("tool.source")),
+          typeof CodeBlock === "function" ? h(CodeBlock, {
+            code: view.code,
+            lang: "typescript",
+            className: "ptcPlusToolCode",
+            copyLabel: t2("tool.copy"),
+            copiedLabel: t2("tool.copied")
+          }) : h("pre", { className: "ptcPlusToolCode" }, view.code)
+        ),
+        view.output === "" ? null : h(
+          "div",
+          { className: "ptcPlusToolSection" },
+          h("span", { className: "ptcPlusToolSectionLabel" }, t2("tool.result")),
+          h(
+            "div",
+            { className: "ptcPlusIoCard" },
+            h("pre", {
+              className: "ptcPlusIoText",
+              "data-error": view.state === "error" || void 0
+            }, view.output)
+          )
+        ),
+        typeof inspect !== "function" ? null : h("button", {
+          type: "button",
+          className: "ptcPlusInspect",
+          onClick: inspect
+        }, h(icons.inspect, { "aria-hidden": true }), t2("tool.inspect"))
+      );
+      const features = view.features.length === 0 ? null : h(
+        "div",
+        { className: "ptcPlusFeatures" },
+        view.features.map((feature) => h(
+          "span",
+          {
+            key: `${feature.key}:${feature.detail}`,
+            className: "ptcPlusFeature"
+          },
+          h("span", { className: "ptcPlusFeatureName" }, t2(feature.key)),
+          feature.detail === "" ? null : h("span", { className: "ptcPlusFeatureDetail", title: feature.detail }, feature.detail)
+        ))
+      );
+      const collapsedContent = h("div", { className: "ptcPlusToolPreview" }, summaryLine, features);
+      if (typeof DisclosureRow === "function") {
+        return h(
+          "div",
+          { className: "ptcPlusTool" },
+          h(DisclosureRow, {
+            icon: expandable ? h(icons.chevron, { size: 14 }) : h(icons.check, { size: 14 }),
+            title: t2(toolName === "edit_run_code" ? "tool.codeEdit" : "tool.code"),
+            open,
+            expandable,
+            onToggle: toggle,
+            expandOnRowClick: true,
+            previewChevron: false,
+            keepContentWhenOpen: true,
+            collapsedContent,
+            children: body
+          })
+        );
+      }
+      return h(
+        "div",
+        { className: "ptcPlusTool" },
+        h(
+          "div",
+          {
+            className: "ptcPlusToolSummary",
+            "data-state": view.state,
+            "data-expandable": expandable || void 0,
+            role: expandable ? "button" : void 0,
+            tabIndex: expandable ? 0 : void 0,
+            "aria-expanded": expandable ? open : void 0,
+            onClick: expandable ? toggle : void 0,
+            onKeyDown: expandable ? (event) => {
+              if (event.key !== "Enter" && event.key !== " ") return;
+              event.preventDefault();
+              toggle();
+            } : void 0
+          },
+          h("span", { className: "ptcPlusToolLeading", "aria-hidden": true }, expandable ? h(icons.chevron, { size: 14, className: "ptcPlusToolChevron", "data-open": open }) : h(icons.check, { size: 14 })),
+          h("span", { className: "ptcPlusToolTitle" }, t2(
+            toolName === "edit_run_code" ? "tool.codeEdit" : "tool.code"
+          )),
+          view.state === "ok" ? null : h("span", { className: "ptcPlusToolState", role: "status" }, t2(stateKey)),
+          h("span", { className: "ptcPlusToolSep", "aria-hidden": true }),
+          h("span", { className: "ptcPlusToolDescription" }, summary)
+        ),
+        features,
+        body
+      );
+    }
+    return { PTCPlusToolRow };
+  }
+
+  // src/client-feature-gates.js
+  var FEATURE_SETTINGS = Object.freeze({
+    // The plugin master switch plus every contribution that only needs it.
+    plugin: { required: [], defaultOn: [] },
+    // Global User Bindings: the workbench, its command renderer and the author menu.
+    bindings: { required: ["userBindingsEnabled"], defaultOn: [] },
+    // Enhanced run_code tool rows.
+    toolView: { required: [], defaultOn: ["enhancedToolView"] },
+    // The REPL view tab; the session preset condition is added by its registration.
+    replView: { required: [], defaultOn: ["replViewEnabled"] },
+    // The composer authoring menu.
+    authorButton: { required: ["userBindingsEnabled"], defaultOn: ["bindingAuthorButtonVisible"] }
+  });
+  function featureEnabled(snapshot, feature) {
+    const rule = FEATURE_SETTINGS[feature];
+    if (rule === void 0) throw new Error(`Unknown client feature: ${feature}`);
+    if (snapshot?.status !== "ready" || snapshot.value?.enabled !== true) return false;
+    const value = snapshot.value;
+    return rule.required.every((key) => value[key] === true) && rule.defaultOn.every((key) => value[key] !== false);
+  }
+  function registerGated(scope, { subscribe, isEnabled, register }) {
+    return scope.effect(() => {
+      let dispose;
+      const sync = () => {
+        const enabled = isEnabled();
+        if (enabled === (dispose !== void 0)) return;
+        if (!enabled) {
+          dispose?.();
+          dispose = void 0;
+          return;
+        }
+        dispose = register();
+      };
+      sync();
+      const unsubscribe = subscribe(sync);
+      return () => {
+        unsubscribe?.();
+        dispose?.();
+      };
+    });
+  }
+
+  // src/client-settings-view.js
+  function createPtcSettingsView(React, deps) {
+    const { ActionButton, BindingsDialog, useWorkbenchController, icons } = deps;
+    const h = React.createElement;
+    function fieldInput(field, value, disabled, onChange, label) {
+      if (field.type === "boolean") {
+        return h("input", {
+          type: "checkbox",
+          role: "switch",
+          className: "ptcPlusCheck",
+          checked: value === true,
+          disabled,
+          "aria-label": label,
+          onChange: (event) => onChange(field, event.target.checked)
+        });
+      }
+      return h("input", {
+        type: "number",
+        className: "ptcPlusInput",
+        value: Number.isSafeInteger(value) ? String(value) : "",
+        min: field.min,
+        max: field.max,
+        step: 1,
+        disabled,
+        "aria-label": label,
+        onChange: (event) => {
+          const input = event.target.value;
+          const parsed = input === "" ? "" : Number(input);
+          onChange(field, Number.isSafeInteger(parsed) ? parsed : input);
+        }
+      });
+    }
+    function PTCPlusSettingsCard({ t: t2, usePtcSettings, updateSetting, callUserBindings }) {
+      const [open, setOpen] = React.useState(false);
+      const [bindingsOpen, setBindingsOpen] = React.useState(false);
+      const [status, setStatus] = React.useState(null);
+      const [pending, setPending] = React.useState(() => /* @__PURE__ */ new Set());
+      const writeTail = React.useRef(Promise.resolve());
+      const snapshot = usePtcSettings((snapshot2) => snapshot2);
+      const value = snapshot.status === "ready" ? snapshot.value ?? {} : {};
+      const enabled = featureEnabled(snapshot, "plugin");
+      const globalEnabled = featureEnabled(snapshot, "bindings");
+      const workbench = useWorkbenchController({ enabled: globalEnabled && bindingsOpen, callUserBindings });
+      React.useEffect(() => {
+        if (!globalEnabled) setBindingsOpen(false);
+      }, [globalEnabled]);
+      const unavailable = snapshot.status !== "ready" || snapshot.writable !== true;
+      const persist = (field, nextValue) => {
+        if (unavailable || pending.has(field.key)) return;
+        const operation = writeTail.current.then(async () => {
+          setPending((current) => new Set(current).add(field.key));
+          setStatus(null);
+          try {
+            const key = await updateSetting(field.key, nextValue);
+            if (key !== null) setStatus({ key });
+          } catch (error) {
+            setStatus({
+              key: "status.failed",
+              params: { error: error instanceof Error ? error.message : String(error) }
+            });
+          } finally {
+            setPending((current) => {
+              const next = new Set(current);
+              next.delete(field.key);
+              return next;
+            });
+          }
+        });
+        writeTail.current = operation.catch(() => {
+        });
+      };
+      const fieldDisabled = (field) => unavailable || pending.has(field.key) || field.key !== "enabled" && !enabled;
+      const settingGroups = CONFIG_GROUPS.map((group) => h(
+        "section",
+        {
+          key: group.key,
+          className: "ptcPlusGroup",
+          "aria-labelledby": `ptc-plus-settings-group-${group.key}`
+        },
+        h("h3", {
+          id: `ptc-plus-settings-group-${group.key}`,
+          className: "ptcPlusGroupTitle"
+        }, t2(`group.${group.key}`)),
+        ...group.fields.map((key) => {
+          const field = CONFIG_FIELDS.find((candidate) => candidate.key === key);
+          if (field === void 0) return null;
+          return h(
+            React.Fragment,
+            { key: field.key },
+            h(
+              "div",
+              { className: "ptcPlusRow" },
+              h(
+                "div",
+                { className: "ptcPlusMain" },
+                h("div", { className: "ptcPlusLabel" }, t2(`${field.key}.label`)),
+                field.description === "" ? null : h("div", { className: "ptcPlusDetail" }, t2(`${field.key}.description`))
+              ),
+              fieldInput(field, value[field.key], fieldDisabled(field), persist, t2(`${field.key}.label`))
+            ),
+            field.key === "userBindingsEnabled" && globalEnabled ? h(
+              "div",
+              { className: "ptcPlusSettingAction" },
+              h(ActionButton, { type: "button", className: "ptcPlusButton", onClick: () => setBindingsOpen(true) }, t2("bindings.manage"))
+            ) : null
+          );
+        })
+      ));
+      return h(
+        "li",
+        { className: "ptcPlusCard" },
+        h(
+          "button",
+          {
+            type: "button",
+            className: "ptcPlusHeader",
+            "aria-expanded": open,
+            "aria-label": t2(open ? "action.collapse" : "action.expand"),
+            "aria-controls": "ptc-plus-settings-body",
+            onClick: () => setOpen((current) => !current)
+          },
+          h(
+            "span",
+            { className: "ptcPlusHeadText" },
+            h("span", { className: "ptcPlusName" }, "PTC Plus"),
+            h("span", { className: "ptcPlusDescription" }, t2("card.description"))
+          ),
+          h("span", { className: "ptcPlusStatus", "data-enabled": enabled }, t2(enabled ? "status.enabled" : "status.disabled")),
+          h("span", { className: "ptcPlusChevron", "data-open": open, "aria-hidden": true }, h(icons.chevron, { size: 14 }))
+        ),
+        h(
+          "div",
+          { id: "ptc-plus-settings-body", className: "ptcPlusBody", "data-open": open, hidden: !open },
+          h("div", { className: "ptcPlusBodyInner" }, h(
+            "div",
+            { className: "ptcPlusFields" },
+            snapshot.status === "loading" ? h("p", { className: "ptcPlusMessage" }, t2("state.syncing")) : snapshot.status === "unavailable" ? h("p", { className: "ptcPlusMessage" }, t2("state.unavailable")) : [
+              ...settingGroups,
+              h(
+                "div",
+                { key: "footer", className: "ptcPlusFooter" },
+                h("span", { className: "ptcPlusMessage", role: "status" }, status === null ? t2(snapshot.writable ? "footer.live" : "footer.readOnly") : t2(status.key, status.params))
+              )
+            ]
+          ))
+        ),
+        globalEnabled && bindingsOpen ? h(BindingsDialog, { controller: workbench, t: t2, onClose: () => setBindingsOpen(false) }) : null
+      );
+    }
+    return { PTCPlusSettingsCard };
+  }
+
+  // src/client-repl-view.js
+  function createReplView(React, deps) {
+    const {
+      ActionButton,
+      CodeBlock,
+      featureEnabled: featureEnabled2,
+      normalizeReplMemorySnapshot: normalizeReplMemorySnapshot2,
+      unavailableReplMemorySnapshot: unavailableReplMemorySnapshot2,
+      useSessionPreset: useSessionPreset2,
+      sessionUsesPtcPreset: sessionUsesPtcPreset2,
+      useWorkbenchController,
+      UserBindingsWorkbench,
+      icons: { search: IconSearchOutline16, chevron: IconChevronDownOutline14, sparkle: IconSparkle16 }
+    } = deps;
+    const h = React.createElement;
+    function ReplComposer() {
+      return null;
+    }
+    function ReplBindingInspector({ entry, preview, t: t2 }) {
+      const readable = preview?.status === "readable";
+      return h(
+        "aside",
+        { className: "ptcPlusBindingInspector", "aria-label": entry.name },
+        h(
+          "header",
+          { className: "ptcPlusInspectorHead" },
+          h("strong", null, entry.name),
+          h("span", null, t2("memory.location", entry.definition))
+        ),
+        h("div", { className: "ptcPlusObservationLabel" }, t2("console.definition")),
+        typeof CodeBlock === "function" ? h(CodeBlock, {
+          code: entry.definition.source,
+          lang: "typescript",
+          className: "ptcPlusObservationCode",
+          copyLabel: t2("tool.copy"),
+          copiedLabel: t2("tool.copied")
+        }) : h("pre", { className: "ptcPlusObservationCode" }, entry.definition.source),
+        h(
+          "div",
+          { className: "ptcPlusObservationLabel" },
+          t2("console.value"),
+          preview?.truncated ? h("span", { className: "ptcPlusObservationState" }, t2("console.bounded")) : null
+        ),
+        readable ? h("pre", { className: "ptcPlusObservationPreview" }, preview.text) : h("p", { className: "ptcPlusObservationUnavailable" }, t2(preview === void 0 ? "console.unobservedValue" : "console.unreadable"))
+      );
+    }
+    function ReplSessionBindings({ memory, t: t2 }) {
+      const [query, setQuery] = React.useState("");
+      const [kind, setKind] = React.useState("all");
+      const [selectedName, setSelectedName] = React.useState(null);
+      const entries = memory.entries.filter((entry) => (kind === "all" || entry.kind === kind) && entry.name.toLowerCase().includes(query.trim().toLowerCase()));
+      const selected = entries.find((entry) => entry.name === selectedName) ?? entries[0];
+      const observation = memory.observation;
+      const previews = new Map(observation?.entries.map((entry) => [entry.name, entry]) ?? []);
+      return h(
+        "section",
+        { className: "ptcPlusConsoleSection ptcPlusSessionBindings", "aria-label": t2("console.session") },
+        h(
+          "div",
+          { className: "ptcPlusObservationHead" },
+          h(
+            "div",
+            { className: "ptcPlusObservationTitle" },
+            h("h2", null, t2("console.session")),
+            memory.available ? h(
+              "span",
+              { className: "ptcPlusObservationCount", title: t2("memory.count", { count: memory.total }) },
+              query.trim() || kind !== "all" ? `${entries.length} / ${memory.total}` : memory.total
+            ) : null
+          ),
+          h("span", { className: "ptcPlusObservationTime" }, observation === void 0 ? t2("console.unobserved") : t2("console.observed", { time: new Date(observation.at).toLocaleString() }))
+        ),
+        memory.entries.length === 0 ? h(
+          "div",
+          { className: "ptcPlusSessionEmpty" },
+          t2(memory.available ? "memory.empty" : "memory.unavailable")
+        ) : h(
+          "div",
+          { className: "ptcPlusObservationGrid", "data-empty": selected === void 0 },
+          h(
+            "div",
+            { className: "ptcPlusObservationCatalog" },
+            h(
+              "div",
+              { className: "ptcPlusObservationFilters" },
+              h(
+                "label",
+                { className: "ptcPlusSearch" },
+                typeof IconSearchOutline16 === "function" ? h(IconSearchOutline16, { size: 16 }) : null,
+                h("input", {
+                  value: query,
+                  onChange: (event) => setQuery(event.target.value),
+                  placeholder: t2("console.search"),
+                  "aria-label": t2("console.search")
+                })
+              ),
+              h(
+                "select",
+                {
+                  className: "ptcPlusSelect",
+                  value: kind,
+                  onChange: (event) => setKind(event.target.value),
+                  "aria-label": t2("console.kind")
+                },
+                ["all", "variable", "function", "class", "import"].map((value) => h(
+                  "option",
+                  { key: value, value },
+                  t2(value === "all" ? "console.allKinds" : `memory.kind.${value}`)
+                ))
+              )
+            ),
+            h(
+              "div",
+              { className: "ptcPlusObservations" },
+              h(
+                "table",
+                { className: "ptcPlusObservationTable", "aria-label": t2("console.session") },
+                h("thead", null, h(
+                  "tr",
+                  null,
+                  h("th", { scope: "col" }, t2("console.name")),
+                  h("th", { scope: "col" }, t2("console.kind")),
+                  h("th", { scope: "col" }, t2("console.value"))
+                )),
+                h("tbody", null, entries.map((entry) => {
+                  const preview = previews.get(entry.name);
+                  return h(
+                    "tr",
+                    {
+                      key: entry.name,
+                      "data-selected": entry === selected,
+                      onClick: () => setSelectedName(entry.name)
+                    },
+                    h("td", null, h("button", {
+                      type: "button",
+                      className: "ptcPlusObservationSelect",
+                      "aria-current": entry === selected ? "true" : void 0,
+                      title: entry.name
+                    }, entry.name)),
+                    h("td", { className: "ptcPlusObservationKind" }, t2(`memory.kind.${entry.kind}`)),
+                    h("td", null, h(
+                      "span",
+                      { className: "ptcPlusObservationValue" },
+                      preview?.status === "readable" ? h("code", null, preview.text) : h("span", { className: "ptcPlusObservationState" }, t2(preview === void 0 ? "console.unobservedValue" : "console.unreadable")),
+                      preview?.truncated ? h("span", { className: "ptcPlusObservationState" }, t2("console.bounded")) : null
+                    ))
+                  );
+                }))
+              ),
+              entries.length === 0 ? h(
+                "p",
+                { className: "ptcPlusMessage ptcPlusObservationEmpty" },
+                t2(!memory.available ? "memory.unavailable" : memory.entries.length === 0 ? "memory.empty" : "console.noMatches")
+              ) : null
+            )
+          ),
+          selected ? h(ReplBindingInspector, { entry: selected, preview: previews.get(selected.name), t: t2 }) : null
+        ),
+        memory.omitted > 0 ? h("p", { className: "ptcPlusMessage" }, t2("memory.more", { count: memory.omitted })) : null
+      );
+    }
+    function ReplConsole({ t: t2, sessionId, useProjection, useSessions, usePtcSettings, callUserBindings, hideComposer, observeRepl }) {
+      const preset = useSessionPreset2({ sessionId, useProjection, useSessions });
+      const projected = useProjection("ptcPlusRepl");
+      const settings = usePtcSettings((snapshot) => snapshot);
+      const globalEnabled = featureEnabled2(settings, "bindings");
+      const workbench = useWorkbenchController({ enabled: globalEnabled, active: true, callUserBindings });
+      const eligible = featureEnabled2(settings, "replView") && sessionUsesPtcPreset2(preset);
+      const memory = React.useMemo(() => {
+        try {
+          return normalizeReplMemorySnapshot2(projected);
+        } catch {
+          return unavailableReplMemorySnapshot2();
+        }
+      }, [projected]);
+      const [observed, setObserved] = React.useState(null);
+      const observationRegion = React.useRef(null);
+      React.useEffect(() => eligible ? hideComposer(sessionId) : void 0, [eligible, hideComposer, sessionId]);
+      React.useEffect(() => eligible ? observeRepl(
+        sessionId,
+        observationRegion.current,
+        memory,
+        (value) => setObserved({ sessionId, source: memory, value })
+      ) : void 0, [eligible, observeRepl, sessionId, memory]);
+      if (!eligible) return null;
+      return h(
+        "div",
+        { className: "ptcPlusConsole", "data-conversation-composer-overlay": "" },
+        h("div", { className: "ptcPlusConsoleSection", ref: observationRegion }, h(ReplSessionBindings, {
+          key: sessionId,
+          memory: observed?.sessionId === sessionId && observed.source === memory ? observed.value : memory,
+          t: t2
+        })),
+        globalEnabled ? h(
+          "div",
+          { className: "ptcPlusConsoleSection ptcPlusBindingsSurface" },
+          h(UserBindingsWorkbench, { controller: workbench, t: t2, headingLabel: t2("console.global") })
+        ) : null
+      );
+    }
+    function replPopoverIsOpen(popover) {
+      if (popover?.dataset?.open === "true") return true;
+      try {
+        return popover?.matches?.(":popover-open") === true;
+      } catch {
+        return false;
+      }
+    }
+    function placeReplPopover(trigger, popover) {
+      if (trigger === null || popover === null) return;
+      const margin = 12;
+      const gap = 8;
+      const viewportWidth = document.documentElement.clientWidth || window.innerWidth;
+      const viewportHeight = document.documentElement.clientHeight || window.innerHeight;
+      const triggerRect = trigger.getBoundingClientRect();
+      const width = Math.min(344, Math.max(0, viewportWidth - margin * 2));
+      const left = Math.min(
+        Math.max(margin, triggerRect.right - width),
+        Math.max(margin, viewportWidth - width - margin)
+      );
+      const below = Math.max(0, viewportHeight - triggerRect.bottom - gap - margin);
+      const above = Math.max(0, triggerRect.top - gap - margin);
+      const opensAbove = below < 260 && above > below;
+      const availableHeight = Math.max(80, opensAbove ? above : below);
+      popover.style.width = `${width}px`;
+      popover.style.maxHeight = `${availableHeight}px`;
+      popover.style.left = `${left}px`;
+      popover.style.top = opensAbove ? `${Math.max(margin, triggerRect.top - gap - Math.min(popover.offsetHeight, availableHeight))}px` : `${Math.min(viewportHeight - margin, triggerRect.bottom + gap)}px`;
+    }
+    function ReplMemoryCard({
+      memory,
+      globalEnabled,
+      globalBindings,
+      loadGlobalBinding,
+      prefillAuthoring,
+      authoringMessage,
+      t: t2,
+      id: id2,
+      titleId,
+      popoverRef,
+      onEnter,
+      onLeave
+    }) {
+      const [expandedBinding, setExpandedBinding] = React.useState(null);
+      const [tab, setTab] = React.useState("session");
+      const [globalSource, setGlobalSource] = React.useState(null);
+      const activeTab = globalEnabled ? tab : "session";
+      const summary = activeTab === "session" ? memory.available ? t2("memory.count", { count: memory.total }) : "" : globalBindings === void 0 ? "" : t2("memory.globalCount", { count: globalBindings.entries.length });
+      const inspectGlobal = (entry) => {
+        if (globalSource?.id === entry.id) {
+          setGlobalSource(null);
+          return;
+        }
+        setGlobalSource({ id: entry.id, source: "" });
+        loadGlobalBinding(entry.id).then(
+          (loaded) => setGlobalSource((current) => current?.id === entry.id ? { id: entry.id, source: loaded.entry.source } : current),
+          () => setGlobalSource((current) => current?.id === entry.id ? { id: entry.id, error: true, source: "" } : current)
+        );
+      };
+      return h(
+        "div",
+        {
+          className: "ptcPlusReplPopover",
+          id: id2,
+          ref: popoverRef,
+          popover: "auto",
+          role: "dialog",
+          "aria-labelledby": titleId,
+          onPointerEnter: onEnter,
+          onPointerLeave: onLeave
+        },
+        h(
+          "div",
+          { className: "ptcPlusReplCard" },
+          h(
+            "div",
+            { className: "ptcPlusReplHead" },
+            h("span", { className: "ptcPlusReplStatusDot", "aria-hidden": true }),
+            h("span", { className: "ptcPlusReplTitle", id: titleId }, t2("memory.title")),
+            h("span", {
+              className: "ptcPlusReplSummary",
+              "aria-hidden": summary === "" ? true : void 0
+            }, summary)
+          ),
+          globalEnabled ? h(
+            "div",
+            { className: "ptcPlusReplTabs", role: "tablist" },
+            h("button", {
+              type: "button",
+              role: "tab",
+              className: "ptcPlusReplTab",
+              "aria-selected": activeTab === "session",
+              onClick: () => setTab("session")
+            }, t2("memory.sessionTab")),
+            h("button", {
+              type: "button",
+              role: "tab",
+              className: "ptcPlusReplTab",
+              "aria-selected": activeTab === "global",
+              onClick: () => setTab("global")
+            }, t2("memory.globalTab"))
+          ) : null,
+          activeTab === "global" ? h(
+            "div",
+            { className: "ptcPlusGlobalPane" },
+            authoringMessage === null ? null : h("p", { className: "ptcPlusMessage", role: "status" }, t2(authoringMessage)),
+            globalBindings === void 0 ? h("span", { className: "ptcPlusReplEmpty" }, t2("memory.globalUnavailable")) : globalBindings.entries.length === 0 ? h("span", { className: "ptcPlusReplEmpty" }, t2("memory.globalEmpty")) : h("ul", { className: "ptcPlusGlobalList" }, globalBindings.entries.map((entry) => h(
+              "li",
+              { key: entry.id, className: "ptcPlusGlobalItem" },
+              h(
+                "button",
+                {
+                  type: "button",
+                  className: "ptcPlusBindingSelect",
+                  "aria-expanded": globalSource?.id === entry.id,
+                  onClick: () => inspectGlobal(entry)
+                },
+                h("span", { className: "ptcPlusBindingName", title: entry.name }, entry.name),
+                h("span", { className: "ptcPlusBindingMeta", title: entry.symbols.join(", ") }, `${entry.scope} - ${entry.symbols.join(", ")}`),
+                h(
+                  "span",
+                  { className: "ptcPlusBindingState", "data-enabled": entry.enabled },
+                  t2(entry.enabled ? "bindings.enabled" : "bindings.disabledEntry")
+                )
+              ),
+              h(ActionButton, {
+                type: "button",
+                className: "ptcPlusButton",
+                onClick: () => prefillAuthoring(`/binding edit ${entry.id} `)
+              }, typeof IconSparkle16 === "function" ? h(IconSparkle16, { size: 14, "aria-hidden": true }) : null, t2("bindings.authorEdit")),
+              globalSource?.id !== entry.id ? null : globalSource.error === true ? h("span", { className: "ptcPlusReplEmpty" }, t2("memory.globalUnavailable")) : h("pre", { className: "ptcPlusGlobalSource" }, globalSource.source)
+            )))
+          ) : !memory.available ? h("span", { className: "ptcPlusReplEmpty" }, t2("memory.unavailable")) : memory.entries.length === 0 ? h("span", { className: "ptcPlusReplEmpty" }, t2("memory.empty")) : h("ul", { className: "ptcPlusReplList" }, memory.entries.map((binding, index) => {
+            const expanded = expandedBinding === binding.name;
+            const preview = binding.definition.source.replace(/\s+/g, " ").trim();
+            const definitionId = `${id2}-binding-${index}`;
+            const toggle = () => setExpandedBinding((current) => current === binding.name ? null : binding.name);
+            return h(
+              "li",
+              {
+                className: "ptcPlusReplBinding",
+                key: binding.name,
+                "data-expanded": expanded
+              },
+              h(
+                "button",
+                {
+                  className: "ptcPlusReplBindingTrigger",
+                  type: "button",
+                  "aria-expanded": expanded,
+                  "aria-controls": expanded ? definitionId : void 0,
+                  onClick: toggle
+                },
+                h("span", {
+                  className: "ptcPlusReplName",
+                  "data-kind": binding.kind,
+                  title: `${binding.name} - ${t2(`memory.kind.${binding.kind}`)}`
+                }, binding.name),
+                h("span", { className: "ptcPlusReplPreview", title: preview }, preview),
+                h("span", {
+                  className: "ptcPlusReplChevron",
+                  "data-open": expanded,
+                  "aria-hidden": true
+                }, h(IconChevronDownOutline14, { size: 14 }))
+              ),
+              expanded ? h("div", {
+                className: "ptcPlusReplDefinitionWrap",
+                "data-open": true,
+                id: definitionId,
+                role: "region",
+                "aria-label": binding.name
+              }, h(
+                "div",
+                { className: "ptcPlusReplDefinitionInner" },
+                h(
+                  "div",
+                  { className: "ptcPlusReplDefinition" },
+                  h("span", { className: "ptcPlusReplLocation" }, t2("memory.location", {
+                    line: binding.definition.line,
+                    column: binding.definition.column
+                  })),
+                  typeof CodeBlock === "function" ? h(CodeBlock, {
+                    code: binding.definition.source,
+                    lang: "typescript",
+                    className: "ptcPlusReplCode",
+                    copyLabel: t2("tool.copy"),
+                    copiedLabel: t2("tool.copied")
+                  }) : h("pre", { className: "ptcPlusReplCode" }, binding.definition.source)
+                )
+              )) : null
+            );
+          })),
+          tab !== "session" || memory.omitted === 0 ? null : h("span", { className: "ptcPlusReplMore" }, t2("memory.more", { count: memory.omitted }))
+        )
+      );
+    }
+    return { ReplComposer, ReplConsole, ReplMemoryCard, replPopoverIsOpen, placeReplPopover };
+  }
+
+  // internal/record-utils.js
+  function isRecord2(value) {
+    return value !== null && typeof value === "object" && !Array.isArray(value);
+  }
+  function assertOwnFields(value, allowed, label) {
+    for (const key of Reflect.ownKeys(value)) {
+      if (typeof key !== "string" || !allowed.has(key) || !Object.prototype.propertyIsEnumerable.call(value, key)) {
+        throw new TypeError(`invalid ${label} field ${String(key)}`);
+      }
+    }
+  }
+
+  // internal/user-binding-model-context.js
+  var FIELDS = /* @__PURE__ */ new Set(["includeDeclaration", "instructions", "enabled", "declaration"]);
+  function normalizeBindingModelContext(value) {
+    if (value === void 0) return void 0;
+    if (!isRecord2(value)) throw new TypeError("binding modelContext must be an object");
+    assertOwnFields(value, FIELDS, "binding modelContext");
+    const { includeDeclaration = true, instructions = "", enabled = true, declaration = "" } = value;
+    if (typeof includeDeclaration !== "boolean") throw new TypeError("binding modelContext.includeDeclaration must be a boolean");
+    if (typeof enabled !== "boolean") throw new TypeError("binding modelContext.enabled must be a boolean");
+    for (const [name2, text, limit] of [["instructions", instructions, 4096], ["declaration", declaration, 8192]]) {
+      if (typeof text !== "string" || text.length > limit) {
+        throw new TypeError(`binding modelContext.${name2} must be a string of at most ${limit} characters`);
+      }
+    }
+    if (Object.hasOwn(value, "enabled") || Object.hasOwn(value, "declaration")) {
+      return Object.freeze({
+        enabled,
+        instructions: instructions.trim(),
+        declaration: declaration.trim(),
+        ...Object.hasOwn(value, "includeDeclaration") ? { includeDeclaration } : {}
+      });
+    }
+    return Object.freeze({ includeDeclaration, instructions: instructions.trim() });
+  }
+  function bindingModelPreferences(value) {
+    return {
+      includeDeclaration: value?.includeDeclaration ?? value?.enabled ?? true,
+      instructions: value?.enabled === false && value.includeDeclaration === void 0 ? "" : value?.instructions ?? ""
+    };
+  }
+
+  // internal/user-binding-draft-projection.js
+  var MAX_CAPABILITY_LENGTH = 128;
+  var MAX_COMMAND_ID_LENGTH = 256;
+  var VIEW_FIELDS = /* @__PURE__ */ new Set(["phase", "capability", "commandId"]);
+  var PHASES2 = /* @__PURE__ */ new Set(["idle", "pending", "ready", "failed"]);
+  function normalizeCandidate(value) {
+    if (!isRecord2(value) || typeof value.requestId !== "string" || value.requestId.length === 0 || value.requestId.length > 128 || !Number.isSafeInteger(value.version) || value.version < 1 || !["new", "edit"].includes(value.mode) || !isRecord2(value.entry) || !["namespace", "top-level"].includes(value.entry.scope) || value.entry.enabled !== false || !Array.isArray(value.entry.symbols) || value.entry.symbols.some((symbol) => typeof symbol !== "string") || ["id", "name", "purpose", "source"].some((key) => typeof value.entry[key] !== "string") || value.entry.source.length === 0 || value.entry.source.length > 65536) {
+      throw new Error("invalid dsh-ptc-plus accepted binding candidate");
+    }
+    const modelContext = normalizeBindingModelContext(value.entry.modelContext);
+    return Object.freeze({
+      requestId: value.requestId,
+      commandId: normalizeCommandId(value.commandId),
+      version: value.version,
+      mode: value.mode,
+      entry: Object.freeze({
+        id: value.entry.id,
+        name: value.entry.name,
+        scope: value.entry.scope,
+        symbols: Object.freeze([...value.entry.symbols]),
+        purpose: value.entry.purpose,
+        source: value.entry.source,
+        enabled: false,
+        ...modelContext === void 0 ? {} : { modelContext }
+      })
+    });
+  }
+  function normalizeAction(value) {
+    if (!exactFields(value, /* @__PURE__ */ new Set(["requestId", "id", "state", "enabled"])) || typeof value.requestId !== "string" || value.requestId.length === 0 || value.requestId.length > 128 || typeof value.id !== "string" || value.id.length === 0 || value.id.length > 64 || !["saved", "discarded"].includes(value.state) || typeof value.enabled !== "boolean" || value.state === "discarded" && value.enabled) throw new Error("invalid binding action receipt");
+    return Object.freeze({ requestId: value.requestId, id: value.id, state: value.state, enabled: value.enabled });
+  }
+  function normalizeHistory(value) {
+    if (!Array.isArray(value)) throw new Error("invalid binding review history");
+    return Object.freeze(value.map((record) => {
+      const candidate = normalizeCandidate(record.candidate);
+      const action = record.action === null ? null : normalizeAction(record.action);
+      if (action !== null && (action.requestId !== candidate.requestId || action.id !== candidate.entry.id)) {
+        throw new Error("binding action does not identify its candidate");
+      }
+      if (!Number.isSafeInteger(record.acceptedSeq) || record.acceptedSeq < 0) {
+        throw new Error("invalid binding acceptance sequence");
+      }
+      if (record.commandId !== candidate.commandId) throw new Error("binding review does not identify its command");
+      return Object.freeze({
+        commandId: normalizeCommandId(record.commandId),
+        acceptedSeq: record.acceptedSeq,
+        candidate,
+        action
+      });
+    }));
+  }
+  function historyFields(value) {
+    return value.history === void 0 ? {} : { history: normalizeHistory(value.history) };
+  }
+  function exactFields(value, fields) {
+    if (!isRecord2(value)) return false;
+    const keys2 = Reflect.ownKeys(value);
+    return keys2.length === fields.size && keys2.every((key) => typeof key === "string" && fields.has(key) && Object.prototype.propertyIsEnumerable.call(value, key));
+  }
+  function normalizeUserBindingDraftCapability(value) {
+    if (value === null) return null;
+    if (typeof value !== "string" || value.length === 0 || value.length > MAX_CAPABILITY_LENGTH) {
+      throw new Error("invalid dsh-ptc-plus binding draft capability");
+    }
+    return value;
+  }
+  function normalizePhase(value) {
+    if (typeof value !== "string" || !PHASES2.has(value)) {
+      throw new Error("invalid dsh-ptc-plus binding draft phase");
+    }
+    return value;
+  }
+  function normalizeCommandId(value) {
+    if (value === null) return null;
+    if (typeof value !== "string" || value.length === 0 || value.length > MAX_COMMAND_ID_LENGTH) {
+      throw new Error("invalid dsh-ptc-plus binding draft command id");
+    }
+    return value;
+  }
+  function normalizeUserBindingDraftView(value) {
+    if (!exactFields(value, value?.history === void 0 ? VIEW_FIELDS : /* @__PURE__ */ new Set([...VIEW_FIELDS, "history"]))) {
+      throw new Error("invalid dsh-ptc-plus binding draft projection view");
+    }
+    return Object.freeze({
+      phase: normalizePhase(value.phase),
+      capability: normalizeUserBindingDraftCapability(value.capability),
+      commandId: normalizeCommandId(value.commandId ?? null),
+      ...historyFields(value)
+    });
+  }
+
+  // src/client-binding-review.js
+  function bindingDraftProjection(value) {
+    try {
+      return normalizeUserBindingDraftView(value);
+    } catch {
+      return void 0;
+    }
+  }
+  function candidateIdentity(candidate) {
+    return candidate ? JSON.stringify([candidate.requestId, candidate.commandId, candidate.version]) : null;
+  }
+  function entryIdentity(entry) {
+    return JSON.stringify([
+      entry?.id,
+      entry?.name,
+      entry?.scope,
+      entry?.purpose,
+      entry?.source,
+      entry?.symbols,
+      entry?.enabled,
+      bindingModelPreferences(entry?.modelContext)
+    ]);
+  }
+  function sameCandidate(left, right) {
+    return left != null && right != null && candidateIdentity(left) === candidateIdentity(right) && left.mode === right.mode && entryIdentity(left.entry) === entryIdentity(right.entry);
+  }
+  function matchesDraft(candidate, draft) {
+    return candidate != null && draft != null && candidate.version === draft.version && candidate.mode === draft.mode && entryIdentity(candidate.entry) === entryIdentity(draft.entry);
+  }
+  function matchesAction(candidate, action) {
+    return action != null && action.requestId === candidate?.requestId && action.id === candidate?.entry.id && (action.state === "saved" || action.state === "discarded") && typeof action.enabled === "boolean" && (action.state !== "discarded" || action.enabled === false);
+  }
+  function bindingReviewStatus(view) {
+    return view.action?.state === "saved" ? view.action.enabled ? "bindings.commandSavedEnabled" : "bindings.commandSaved" : view.action?.state === "discarded" ? "bindings.commandDiscarded" : view.busy ? "bindings.reviewSaving" : view.message ? "bindings.reviewAttention" : view.writable ? "bindings.commandReady" : view.loading ? "bindings.reviewLoading" : "bindings.reviewReadOnly";
+  }
+  function createBindingReviews(call) {
+    const sessions = /* @__PURE__ */ new Map();
+    let disposed = false;
+    function forSession(sessionId) {
+      if (sessions.has(sessionId)) return sessions.get(sessionId);
+      const listeners = /* @__PURE__ */ new Set();
+      const choices = /* @__PURE__ */ new Map();
+      let snapshot = {
+        candidate: null,
+        candidateKey: null,
+        action: null,
+        writable: false,
+        busy: false,
+        loading: false,
+        message: null,
+        messageSource: null,
+        visibility: "expanded",
+        mounted: false,
+        reachable: false
+      };
+      let projection;
+      let authority = null;
+      let revoked = false;
+      let epoch = 0;
+      let reading;
+      const pending = /* @__PURE__ */ new Map();
+      let timer;
+      let attached = false;
+      const publish = (patch) => {
+        if (disposed) return;
+        snapshot = { ...snapshot, ...patch };
+        if (snapshot.action !== null) snapshot.visibility = "hidden";
+        for (const listener of listeners) listener();
+      };
+      const invalidate = () => {
+        epoch++;
+        reading?.abort();
+        reading = void 0;
+        clearInterval(timer);
+        timer = void 0;
+      };
+      const select = (candidate, action = null) => {
+        const same = sameCandidate(candidate, snapshot.candidate);
+        const visibility = choices.get(candidateIdentity(candidate)) ?? "expanded";
+        publish({
+          candidate,
+          candidateKey: candidateIdentity(candidate),
+          action: action ?? (same ? snapshot.action : null),
+          visibility,
+          ...!same ? { message: null, messageSource: null, writable: false, loading: false } : {},
+          busy: pending.has(candidateIdentity(candidate))
+        });
+      };
+      const refresh = async () => {
+        if (!attached || authority === null || reading || pending.has(candidateIdentity(snapshot.candidate)) || snapshot.action !== null || disposed) return;
+        const currentEpoch = epoch;
+        const capability = authority;
+        const commandId = projection.commandId;
+        const controller = new AbortController();
+        reading = controller;
+        const results = await Promise.allSettled(["list", "draft", "draft-review"].map((endpoint) => call(endpoint, endpoint === "list" ? {} : { capability }, controller.signal)));
+        if (disposed || epoch !== currentEpoch || controller.signal.aborted) return;
+        reading = void 0;
+        const [catalogResult, draftResult, reviewResult] = results;
+        const review2 = reviewResult.status === "fulfilled" ? reviewResult.value : null;
+        const candidate = review2?.candidate;
+        const known = snapshot.candidate;
+        const matches = candidate?.commandId === commandId && typeof candidate?.requestId === "string" && Number.isSafeInteger(candidate.version) && candidate.version > 0 && typeof candidate.entry?.source === "string" && (known === null || sameCandidate(known, candidate));
+        if (matches && matchesAction(candidate, review2.action)) {
+          clearInterval(timer);
+          timer = void 0;
+          publish({
+            ...known !== null ? { action: review2.action } : {},
+            writable: false,
+            loading: false,
+            message: null,
+            messageSource: null
+          });
+          return;
+        }
+        if (matches && known === null) select(candidate);
+        const draft = draftResult.status === "fulfilled" ? draftResult.value : null;
+        if (draftResult.status === "fulfilled" && draft === null) revoked = true;
+        const catalog = catalogResult.status === "fulfilled" ? catalogResult.value : null;
+        const writable = !revoked && matches && review2.action === null && matchesDraft(candidate, draft) && Number.isSafeInteger(catalog?.revision);
+        const error = results.find((result) => result.status === "rejected");
+        publish({
+          writable,
+          loading: false,
+          revision: writable ? catalog.revision : void 0,
+          ...snapshot.messageSource === "write" ? {} : {
+            message: error ? String(error.reason?.message ?? error.reason) : null,
+            messageSource: error ? "read" : null
+          }
+        });
+      };
+      const start = () => {
+        clearInterval(timer);
+        timer = void 0;
+        if (!attached || authority === null || snapshot.action !== null) return;
+        void refresh();
+        timer = setInterval(() => {
+          void refresh();
+        }, 1500);
+      };
+      const sync = (next) => {
+        projection = next;
+        const historical = next?.history?.find((record) => record.commandId === next.commandId);
+        const nextAuthority = next?.phase === "ready" && next.commandId !== null && !historical?.action ? next.capability : null;
+        const previousKey = candidateIdentity(snapshot.candidate);
+        const recorded = next?.history?.find((record) => sameCandidate(record.candidate, snapshot.candidate));
+        if (recorded?.action) publish({ action: recorded.action, writable: false, message: null, messageSource: null });
+        if (historical && next.phase === "ready") {
+          if (!historical.action || sameCandidate(historical.candidate, snapshot.candidate)) {
+            select(historical.candidate, historical.action);
+          } else select(null);
+        } else if (next?.commandId != null && next.commandId !== snapshot.candidate?.commandId) select(null);
+        else if (next === void 0 || next?.phase !== "ready" && snapshot.candidate !== null && snapshot.action === null && !next?.history?.some((record) => sameCandidate(record.candidate, snapshot.candidate))) {
+          select(null);
+        }
+        const nextKey = candidateIdentity(snapshot.candidate);
+        if (authority !== nextAuthority || previousKey !== nextKey) {
+          invalidate();
+          if (authority !== nextAuthority) revoked = false;
+          authority = nextAuthority;
+          publish({ writable: false, loading: nextAuthority !== null && snapshot.action === null });
+          start();
+        }
+      };
+      const act = async (operation, activate = false) => {
+        const key = candidateIdentity(snapshot.candidate);
+        if (!attached || disposed || !snapshot.writable || snapshot.action !== null || pending.has(key) || authority === null) return;
+        const transaction = { candidate: snapshot.candidate, capability: authority };
+        pending.set(key, transaction);
+        invalidate();
+        publish({ busy: true, writable: false, message: null, messageSource: null });
+        try {
+          await call(operation, {
+            capability: transaction.capability,
+            version: transaction.candidate.version,
+            ...operation === "save-draft" ? { expectedRevision: snapshot.revision, activate } : {}
+          });
+          const receipt = operation === "save-draft" ? { requestId: transaction.candidate.requestId, id: transaction.candidate.entry.id, state: "saved", enabled: activate } : await call("draft-review", { capability: transaction.capability });
+          const action = operation === "save-draft" ? receipt : sameCandidate(receipt?.candidate, transaction.candidate) && matchesAction(transaction.candidate, receipt?.action) ? receipt.action : null;
+          if (!disposed && sameCandidate(snapshot.candidate, transaction.candidate) && snapshot.action === null) {
+            publish({
+              action,
+              writable: false,
+              loading: false,
+              message: action === null ? "bindings.reviewUnconfirmed" : null,
+              messageSource: action === null ? "write" : null
+            });
+          }
+        } catch (error) {
+          if (!disposed && sameCandidate(snapshot.candidate, transaction.candidate) && snapshot.action === null) {
+            publish({ message: String(error?.message ?? error), messageSource: "write", writable: false, loading: false });
+          }
+        } finally {
+          pending.delete(key);
+          if (!disposed && sameCandidate(snapshot.candidate, transaction.candidate)) {
+            publish({ busy: false });
+            start();
+          }
+        }
+      };
+      const review = {
+        getSnapshot: () => snapshot,
+        subscribe(listener) {
+          listeners.add(listener);
+          return () => listeners.delete(listener);
+        },
+        sync,
+        attach() {
+          attached = true;
+          publish({ mounted: true });
+          start();
+          return () => {
+            attached = false;
+            invalidate();
+            publish({ mounted: false, reachable: false, writable: false });
+          };
+        },
+        reset() {
+          invalidate();
+          publish({ writable: false, loading: authority !== null && snapshot.action === null });
+          start();
+        },
+        reachable(value) {
+          if (snapshot.reachable !== value) publish({ reachable: value });
+        },
+        display(visibility, candidate = snapshot.candidate) {
+          if (snapshot.candidate === null || snapshot.action !== null || !sameCandidate(snapshot.candidate, candidate)) return false;
+          choices.set(candidateIdentity(snapshot.candidate), visibility);
+          publish({ visibility });
+          return true;
+        },
+        act,
+        refresh,
+        dispose() {
+          invalidate();
+          attached = false;
+          listeners.clear();
+          choices.clear();
+        }
+      };
+      sessions.set(sessionId, review);
+      return review;
+    }
+    return {
+      forSession,
+      reset() {
+        for (const review of sessions.values()) review.reset();
+      },
+      dispose() {
+        disposed = true;
+        for (const review of sessions.values()) review.dispose();
+        sessions.clear();
+      }
+    };
+  }
+
+  // src/client-authoring-view.js
+  function createAuthoringView(React, deps) {
+    const {
+      ActionButton,
+      IconButton,
+      Menu,
+      Toast,
+      Tooltip,
+      CodeBlock,
+      BindingsDialog,
+      useWorkbenchController,
+      useBindingReview,
+      catalogOwner,
+      callUserBindings,
+      subscribeReset,
+      icons: {
+        sparkle: IconSparkle16,
+        chevron: IconChevronDownOutline14,
+        close: IconCloseOutline16,
+        check: IconCheckOutline14
+      }
+    } = deps;
+    const h = React.createElement;
+    function BindingAuthorButton({
+      sessionId,
+      t: t2,
+      useInput,
+      inputActions,
+      usePtcSettings,
+      useBindingCommand
+    }) {
+      const input = useInput?.((snapshot) => snapshot);
+      const available = useBindingCommand((snapshot) => snapshot);
+      const settings = usePtcSettings((snapshot) => snapshot);
+      const [review, view] = useBindingReview(sessionId);
+      const anchorRef = React.useRef(null);
+      const attachAnchor = React.useCallback((element) => {
+        anchorRef.current = element;
+        review.access = element;
+      }, [review]);
+      const firstItemRef = React.useRef(null);
+      const manageItemRef = React.useRef(null);
+      const reloadItemRef = React.useRef(null);
+      const focused = React.useRef(false);
+      const dialogReturnFocus = React.useRef(null);
+      const [menu, setMenu] = React.useState(null);
+      const [managing, setManaging] = React.useState(false);
+      const catalogSource = React.useMemo(() => catalogOwner.claim(), [catalogOwner]);
+      const catalogState = React.useSyncExternalStore(catalogSource.subscribe, catalogSource.getSnapshot);
+      const catalog = catalogState.catalog;
+      const catalogStatus = catalogState.status;
+      const catalogError = catalogState.error;
+      const catalogFocus = React.useRef(null);
+      const toastSequence = React.useRef(0);
+      const [toast, setToast] = React.useState(null);
+      const hasDraft = view.mounted && view.candidate !== null && view.action === null;
+      const quickAccess = featureEnabled(settings, "authorButton");
+      const canAuthor = quickAccess && available && typeof useInput === "function" && typeof inputActions?.setDraft === "function";
+      const menuOpen = (hasDraft || quickAccess) && view.reachable && !managing && menu !== null && menu.key === view.candidateKey;
+      const workbench = useWorkbenchController({
+        enabled: quickAccess && managing,
+        active: view.reachable,
+        callUserBindings
+      });
+      const refreshCatalog = React.useCallback(async (reload = false) => {
+        if (reload) captureCatalogFocus();
+        await catalogSource.read({ reload });
+      }, [catalogSource]);
+      React.useEffect(() => {
+        const reset = () => {
+          catalogSource.reset();
+          setMenu(null);
+          setManaging(false);
+        };
+        const unsubscribe = subscribeReset(reset);
+        return () => {
+          unsubscribe();
+          catalogSource.release();
+        };
+      }, [catalogSource]);
+      const toggleBinding = async (entry) => {
+        if (catalogStatus !== "ready" || !quickAccess || catalog === null) return;
+        captureCatalogFocus();
+        await catalogSource.write(() => callUserBindings(entry.enabled ? "disable" : "enable", {
+          id: entry.id,
+          expectedRevision: catalog.revision
+        }));
+      };
+      const showMenu = (mode) => {
+        if (!menuOpen && quickAccess) void refreshCatalog();
+        setMenu({ key: view.candidateKey, mode });
+      };
+      const menuElement = () => manageItemRef.current?.closest("[role=menu]") ?? firstItemRef.current?.closest("[role=menu]");
+      const captureCatalogFocus = () => {
+        catalogFocus.current = menuElement()?.contains(document.activeElement) ? document.activeElement : null;
+      };
+      const menuAnchorRect = () => {
+        const anchor = anchorRef.current;
+        if (!anchor) return null;
+        const rect = anchor.getBoundingClientRect();
+        let top2 = rect.top;
+        for (let parent = anchor.parentElement; parent; parent = parent.parentElement) {
+          if (!parent.querySelector('textarea, [contenteditable="true"]')) continue;
+          top2 = Math.min(top2, parent.getBoundingClientRect().top);
+          break;
+        }
+        menuElement()?.style.setProperty("--ptc-plus-menu-space", `${Math.max(0, top2 - 16)}px`);
+        return new DOMRect(rect.x, top2, rect.width, 0);
+      };
+      const hideMenu = () => {
+        const itemHasFocus = menuElement()?.contains(document.activeElement) || catalogFocus.current !== null && document.activeElement === document.body;
+        setMenu(null);
+        if (itemHasFocus && anchorRef.current?.getClientRects().length) {
+          anchorRef.current.querySelector(".ptcPlusAuthorButton")?.focus({ preventScroll: true });
+        }
+      };
+      React.useEffect(() => {
+        const observer = typeof IntersectionObserver === "function" ? new IntersectionObserver((entries) => review.reachable(entries.some((entry) => entry.isIntersecting))) : void 0;
+        if (observer) observer.observe(anchorRef.current);
+        else review.reachable(true);
+        return () => {
+          observer?.disconnect();
+          review.reachable(false);
+        };
+      }, [review]);
+      React.useEffect(() => {
+        setMenu(null);
+      }, [hasDraft, view.reachable, view.candidateKey]);
+      React.useLayoutEffect(() => {
+        if (focused.current && document.activeElement === document.body) {
+          focused.current = false;
+          const anchor = anchorRef.current;
+          const button = anchor?.querySelector(".ptcPlusAuthorButton");
+          if (button?.getClientRects().length) button.focus({ preventScroll: true });
+          else focusComposer(anchor);
+        }
+      }, [hasDraft, canAuthor, view.candidateKey]);
+      React.useLayoutEffect(() => {
+        if (!menuOpen) {
+          catalogFocus.current = null;
+          return;
+        }
+        if (catalogStatus === "writing" || catalogStatus === "loading") return;
+        const target = catalogFocus.current;
+        catalogFocus.current = null;
+        if (!target || document.activeElement !== document.body) return;
+        const root = menuElement();
+        const next = root?.contains(target) && !target.disabled ? target : reloadItemRef.current?.closest("button") ?? root?.querySelector("button:not(:disabled)");
+        next?.focus({ preventScroll: true });
+      }, [catalogStatus, menuOpen]);
+      React.useLayoutEffect(() => {
+        if (!menuOpen || menu.mode === "hover") return;
+        let cancelled = false;
+        queueMicrotask(() => {
+          if (!cancelled && anchorRef.current?.getClientRects().length) menuElement()?.querySelector("button:not(:disabled)")?.focus({ preventScroll: true });
+        });
+        return () => {
+          cancelled = true;
+        };
+      }, [menuOpen, menu?.mode]);
+      React.useEffect(() => {
+        if (toast === null || typeof Toast === "function") return void 0;
+        const timer = setTimeout(() => setToast(null), 2500);
+        return () => clearTimeout(timer);
+      }, [toast]);
+      const label = hasDraft ? t2("bindings.reviewMenuLabel", { count: 1 }) + (view.message ? ` \xB7 ${t2("bindings.reviewAttention")}` : "") : t2("bindings.open");
+      const hint = t2(hasDraft ? "bindings.draftHint" : "bindings.openHint");
+      const openAuthoring = () => {
+        hideMenu();
+        if (!canAuthor) return;
+        if (typeof input?.draft === "string" && input.draft.trim() !== "") {
+          toastSequence.current += 1;
+          setToast({ sequence: toastSequence.current, text: t2("bindings.composerBusy") });
+          return;
+        }
+        inputActions.setDraft("/binding new ");
+      };
+      const starButton = h(
+        "button",
+        {
+          type: "button",
+          className: "ptcPlusAuthorButton",
+          "aria-label": label,
+          // Older UI-kit lines ship no Tooltip primitive; the native title carries the hint there.
+          title: typeof Tooltip === "function" ? void 0 : hint,
+          "aria-haspopup": "menu",
+          "aria-expanded": menuOpen,
+          onPointerEnter: (event) => {
+            if (event.pointerType !== "touch") showMenu("hover");
+          },
+          onKeyDown: (event) => {
+            if (["ArrowUp", "ArrowDown"].includes(event.key)) {
+              event.preventDefault();
+              showMenu("keyboard");
+            }
+          },
+          onClick: () => {
+            if (menuOpen && menu.mode !== "hover") hideMenu();
+            else showMenu("click");
+          }
+        },
+        typeof IconSparkle16 === "function" ? h(IconSparkle16, { size: 16, "aria-hidden": true }) : h("span", { className: "ptcPlusAuthorButtonLabel", "aria-hidden": true }, t2("bindings.open")),
+        hasDraft ? h("span", {
+          className: "ptcPlusDraftBadge",
+          "aria-hidden": true,
+          "data-attention": view.message !== null
+        }, "1") : null
+      );
+      const catalogItems = !quickAccess ? [] : [
+        { id: "global-heading", type: "label", text: t2("bindings.quickHeading") },
+        ...(catalog?.entries ?? []).map((entry) => ({
+          id: `global:${entry.id}`,
+          disabled: catalogStatus !== "ready",
+          label: h(
+            "span",
+            { className: "ptcPlusBindingQuickRow", "data-enabled": entry.enabled },
+            h(
+              "span",
+              { className: "ptcPlusBindingQuickName" },
+              h("strong", { title: entry.name }, entry.name),
+              h("span", { className: "ptcPlusBindingQuickState" }, t2(entry.enabled ? "bindings.enabled" : "bindings.disabledEntry"))
+            ),
+            h("span", { className: "ptcPlusBindingQuickPurpose", title: entry.purpose }, entry.purpose)
+          )
+        })),
+        ...catalogStatus === "ready" && !catalog?.entries?.length ? [{ id: "empty", type: "label", text: t2("memory.globalEmpty") }] : [],
+        ...catalogStatus === "loading" || catalogStatus === "writing" ? [{ id: "pending", type: "label", text: t2(catalogStatus === "writing" ? "bindings.quickSaving" : "bindings.quickLoading") }] : [],
+        ...catalogError === null ? [] : [{ id: "error", type: "label", text: t2("bindings.failed", { error: catalogError }) }]
+      ];
+      return h(
+        "span",
+        {
+          className: "ptcPlusComposerBindingAnchor",
+          tabIndex: -1,
+          onFocusCapture: () => {
+            focused.current = true;
+          },
+          onBlurCapture: () => {
+            focused.current = false;
+          },
+          "data-text": typeof IconSparkle16 === "function" ? void 0 : true,
+          ref: attachAnchor
+        },
+        !hasDraft && !quickAccess ? null : h(Menu, {
+          className: "ptcPlusAuthorButtonShell",
+          open: menuOpen,
+          anchor: typeof Tooltip === "function" ? h(Tooltip, { label: hint, delayMs: 400 }, starButton) : starButton,
+          portal: true,
+          side: "top",
+          dense: true,
+          getAnchorRect: menuAnchorRect,
+          selectedIds: (catalog?.entries ?? []).filter((entry) => entry.enabled).map((entry) => `global:${entry.id}`),
+          onClose: hideMenu,
+          items: [
+            ...hasDraft ? [
+              { id: "draft-heading", type: "label", text: t2("bindings.quickDrafts") },
+              {
+                id: view.candidateKey,
+                label: h(
+                  "span",
+                  { className: "ptcPlusDraftMenuItem", ref: firstItemRef },
+                  h("strong", null, view.candidate.entry.name),
+                  h("span", null, t2(bindingReviewStatus(view)))
+                )
+              },
+              ...quickAccess ? [{ id: "draft-separator", type: "separator" }] : []
+            ] : [],
+            ...catalogItems,
+            ...quickAccess ? [{ id: "actions-separator", type: "separator" }] : [],
+            ...canAuthor ? [{ id: "new", label: h("span", { className: "ptcPlusBindingMenuAction" }, t2("bindings.authorNewDraft")) }] : [],
+            ...quickAccess ? [
+              ...catalogError === null ? [] : [{ id: "reload", label: h("span", { ref: reloadItemRef }, t2("bindings.reload")) }],
+              { id: "manage", label: h("span", { ref: manageItemRef, className: "ptcPlusBindingMenuAction" }, t2("bindings.manage")) }
+            ] : []
+          ],
+          onSelect: (id2) => {
+            if (!anchorRef.current?.getClientRects().length) return;
+            if (id2.startsWith("global:")) {
+              const entry = catalog?.entries.find((entry2) => `global:${entry2.id}` === id2);
+              if (entry) void toggleBinding(entry);
+              return;
+            }
+            if (id2 === "reload") {
+              void refreshCatalog(true);
+              return;
+            }
+            hideMenu();
+            if (id2 === "new") openAuthoring();
+            else if (id2 === "manage") {
+              dialogReturnFocus.current = null;
+              setManaging(true);
+            } else if (id2 === view.candidateKey) openBindingReview(review, view.candidate);
+          }
+        }),
+        // Hiding the composer unmounts the dialog, not the controller: the draft survives.
+        managing && quickAccess && view.reachable ? h(BindingsDialog, {
+          controller: workbench,
+          t: t2,
+          onClose: () => setManaging(false),
+          returnFocusRef: dialogReturnFocus,
+          getReturnFocus: () => anchorRef.current?.querySelector(".ptcPlusAuthorButton")
+        }) : null,
+        toast === null ? null : typeof Toast === "function" ? h(Toast, {
+          key: toast.sequence,
+          text: toast.text,
+          anchor: anchorRef.current,
+          onDone: () => setToast(null)
+        }) : h("span", {
+          key: toast.sequence,
+          className: "ptcPlusComposerNotice",
+          role: "status"
+        }, toast.text)
+      );
+    }
+    function BindingCandidateContent({ candidate, t: t2, showName = true }) {
+      const preferences = bindingModelPreferences(candidate.entry.modelContext);
+      const contextTitle = React.useId();
+      return h(
+        "div",
+        { className: "ptcPlusAuthoringDraft" },
+        showName ? h("strong", null, candidate.entry.name) : null,
+        h("span", { className: "ptcPlusBindingMeta" }, `${candidate.entry.scope} - ${candidate.entry.symbols.join(", ")}`),
+        candidate.entry.purpose ? h("p", { className: "ptcPlusMessage" }, candidate.entry.purpose) : null,
+        typeof CodeBlock === "function" ? h(CodeBlock, {
+          code: candidate.entry.source,
+          lang: "typescript",
+          className: "ptcPlusBindingCommandCode",
+          copyLabel: t2("tool.copy"),
+          copiedLabel: t2("tool.copied")
+        }) : h("pre", { className: "ptcPlusBindingCommandSource" }, candidate.entry.source),
+        h(
+          "section",
+          { className: "ptcPlusCandidateContext", "aria-labelledby": contextTitle },
+          h("h4", { id: contextTitle }, t2("bindings.modelContext")),
+          h(
+            "dl",
+            null,
+            h(
+              "div",
+              { className: "ptcPlusCandidateDeclaration" },
+              h("dt", null, t2("bindings.declaration")),
+              h(
+                "dd",
+                { "data-included": preferences.includeDeclaration },
+                preferences.includeDeclaration ? h(IconCheckOutline14, { size: 14, "aria-hidden": true }) : null,
+                t2(preferences.includeDeclaration ? "bindings.declarationIncluded" : "bindings.declarationExcluded")
+              )
+            ),
+            h(
+              "div",
+              { className: "ptcPlusCandidatePrompt" },
+              h("dt", null, t2("bindings.instructions")),
+              h(
+                "dd",
+                { "data-empty": preferences.instructions === "" },
+                preferences.instructions || t2("bindings.noInstructions")
+              )
+            )
+          )
+        )
+      );
+    }
+    function focusComposer(anchor) {
+      if (!anchor || anchor.getClientRects().length === 0) return;
+      for (let parent = anchor.parentElement; parent; parent = parent.parentElement) {
+        const editable2 = [...parent.querySelectorAll('textarea, [contenteditable="true"]')].find((element) => element.getClientRects().length > 0 && !element.disabled);
+        if (editable2) {
+          editable2.focus({ preventScroll: true });
+          return;
+        }
+      }
+      anchor.focus({ preventScroll: true });
+    }
+    function openBindingReview(review, candidate = review.getSnapshot().candidate) {
+      if (!review.display("expanded", candidate)) return;
+      requestAnimationFrame(() => {
+        if (review.getSnapshot().candidate === candidate && review.panel?.getClientRects().length) {
+          review.panel.focus({ preventScroll: true });
+        }
+      });
+    }
+    function focusBindingReviewAccess(review) {
+      const anchor = review.access;
+      const button = anchor?.querySelector("button");
+      if (button?.getClientRects().length) button.focus({ preventScroll: true });
+      else focusComposer(anchor);
+    }
+    function fitBindingReview(panel) {
+      const body = panel?.querySelector(".ptcPlusBindingDockBody");
+      const anchor = panel?.parentElement;
+      if (!anchor || typeof ResizeObserver !== "function") return void 0;
+      const ancestors = [];
+      let seat = panel;
+      let viewport;
+      for (let parent = panel.parentElement; parent; parent = parent.parentElement) {
+        ancestors.push(parent);
+        if (/auto|scroll|hidden|clip/.test(getComputedStyle(parent).overflowY)) {
+          viewport = parent;
+          break;
+        }
+        seat = parent;
+      }
+      if (!viewport) return void 0;
+      let frame;
+      const update = () => {
+        if (!panel.getClientRects().length) return;
+        const top2 = Math.max(
+          viewport.getBoundingClientRect().top + viewport.clientTop,
+          window.visualViewport?.offsetTop ?? 0
+        );
+        const offset = anchor.getBoundingClientRect().bottom - seat.getBoundingClientRect().top + 8;
+        panel.style.setProperty("--ptc-plus-review-offset", `${Math.max(8, Math.ceil(offset))}px`);
+        const room = Math.max(0, seat.getBoundingClientRect().top - top2 - 16);
+        panel.style.setProperty("--ptc-plus-review-height", `${Math.floor(room)}px`);
+        if (body) {
+          const chrome2 = panel.scrollHeight - body.offsetHeight + 2;
+          const available = Math.max(0, room - chrome2);
+          panel.dataset.scroll = available < 80 ? "panel" : "body";
+          body.style.setProperty("--ptc-plus-review-space", `${Math.floor(available)}px`);
+        }
+      };
+      const schedule = () => {
+        cancelAnimationFrame(frame);
+        frame = requestAnimationFrame(update);
+      };
+      const observer = new ResizeObserver(schedule);
+      for (const element of [panel, ...panel.children, ...ancestors]) observer.observe(element);
+      window.visualViewport?.addEventListener("resize", schedule);
+      window.visualViewport?.addEventListener("scroll", schedule);
+      update();
+      return () => {
+        observer.disconnect();
+        cancelAnimationFrame(frame);
+        window.visualViewport?.removeEventListener("resize", schedule);
+        window.visualViewport?.removeEventListener("scroll", schedule);
+        panel.style.removeProperty("--ptc-plus-review-offset");
+        panel.style.removeProperty("--ptc-plus-review-height");
+        delete panel.dataset.scroll;
+        body?.style.removeProperty("--ptc-plus-review-space");
+      };
+    }
+    function BindingReviewDock({ sessionId, useProjection, t: t2 }) {
+      const raw = useProjection("ptcPlusBindingDraft");
+      const projection = React.useMemo(() => bindingDraftProjection(raw), [raw]);
+      const [review, view] = useBindingReview(sessionId);
+      const focused = React.useRef(false);
+      React.useEffect(() => {
+        if (view.visibility !== "hidden") return;
+        if (view.action !== null && focused.current && document.activeElement === document.body) {
+          focusBindingReviewAccess(review);
+        }
+        focused.current = false;
+      }, [review, view.visibility, view.action]);
+      React.useLayoutEffect(() => review.attach(), [review]);
+      React.useLayoutEffect(() => {
+        review.sync(projection);
+      }, [review, projection]);
+      const title = React.useId();
+      const content2 = React.useId();
+      const expanded = view.visibility === "expanded";
+      const candidateKey = view.candidateKey;
+      React.useLayoutEffect(
+        () => fitBindingReview(review.panel),
+        [review, candidateKey, expanded, view.visibility, view.message]
+      );
+      const close = () => {
+        review.display("hidden");
+        requestAnimationFrame(() => focusBindingReviewAccess(review));
+      };
+      const act = (operation, activate = false) => {
+        if (review.panel?.contains(document.activeElement)) review.panel.focus({ preventScroll: true });
+        void review.act(operation, activate);
+      };
+      if (view.candidate === null || view.visibility === "hidden") return null;
+      return h(
+        "div",
+        { className: "ptcPlusBindingDockAnchor" },
+        h(
+          "section",
+          {
+            key: candidateKey,
+            className: "ptcPlusBindingDock",
+            "aria-labelledby": title,
+            tabIndex: -1,
+            ref: (element) => {
+              review.panel = element;
+            },
+            onFocusCapture: () => {
+              focused.current = true;
+            },
+            onBlurCapture: (event) => {
+              if (event.relatedTarget || review.getSnapshot().action === null) focused.current = false;
+            },
+            "aria-busy": view.busy
+          },
+          h(
+            "div",
+            { className: "ptcPlusBindingDockHead" },
+            h(
+              "button",
+              {
+                type: "button",
+                className: "ptcPlusBindingDockToggle",
+                "aria-label": t2(expanded ? "bindings.reviewCollapse" : "bindings.reviewExpand"),
+                "aria-expanded": expanded,
+                "aria-controls": expanded ? content2 : void 0,
+                onClick: () => review.display(expanded ? "collapsed" : "expanded")
+              },
+              h("span", { className: "ptcPlusBindingDockSymbol", "aria-hidden": true }, "</>"),
+              h(
+                "span",
+                { className: "ptcPlusBindingDockHeading" },
+                h("strong", { id: title, title: view.candidate.entry.name }, view.candidate.entry.name),
+                h(
+                  "span",
+                  { role: "status", title: t2(bindingReviewStatus(view)) },
+                  `${t2("bindings.reviewTitle")} \xB7 ${t2(bindingReviewStatus(view))}`
+                )
+              ),
+              h(
+                "span",
+                { className: "ptcPlusBindingDockChevron", "aria-hidden": true },
+                h(IconChevronDownOutline14, { size: 16 })
+              )
+            ),
+            h(IconButton, { icon: IconCloseOutline16, label: t2("bindings.reviewClose"), onClick: close })
+          ),
+          !expanded ? null : h(
+            React.Fragment,
+            null,
+            h(
+              "div",
+              {
+                className: "ptcPlusBindingDockBody",
+                id: content2,
+                tabIndex: 0,
+                role: "region",
+                "aria-label": t2("bindings.source")
+              },
+              h(BindingCandidateContent, { candidate: view.candidate, t: t2, showName: false })
+            ),
+            view.message === null ? null : h("p", { className: "ptcPlusMessage ptcPlusDanger", role: "status" }, t2(view.message)),
+            h(
+              "div",
+              { className: "ptcPlusBindingDockActions" },
+              h(ActionButton, {
+                className: "ptcPlusBindingDockDiscard",
+                "data-kind": "ghost",
+                disabled: !view.writable || view.busy,
+                onClick: () => act("discard-draft")
+              }, t2("bindings.draftDiscard")),
+              h(ActionButton, {
+                disabled: !view.writable || view.busy,
+                onClick: () => act("save-draft", false)
+              }, t2("bindings.draftSave")),
+              h(ActionButton, {
+                "data-kind": "primary",
+                disabled: !view.writable || view.busy,
+                onClick: () => act("save-draft", true)
+              }, t2("bindings.draftSaveEnable")),
+              view.message === null ? null : h(ActionButton, {
+                disabled: view.busy,
+                onClick: () => review.reset()
+              }, t2("bindings.reviewRetry"))
+            )
+          )
+        )
+      );
+    }
+    function BindingCommandCard({ node, sessionId, t: t2, useProjection }) {
+      const projection = bindingDraftProjection(useProjection?.("ptcPlusBindingDraft"));
+      const [review, current] = useBindingReview(sessionId);
+      const historical = projection?.history?.find((record) => record.commandId === node.commandId);
+      const matches = projection?.commandId === node.commandId;
+      const currentMatches = current.candidate?.commandId === node.commandId;
+      const candidate = historical?.candidate ?? (currentMatches ? current.candidate : null);
+      const action = historical?.action ?? (currentMatches ? current.action : null);
+      const phase = action?.state ?? (candidate !== null ? "ready" : node.outcome?.kind === "error" || matches && projection.phase === "failed" ? "failed" : matches && projection.phase === "pending" ? "pending" : "idle");
+      const status = action != null ? bindingReviewStatus({ action }) : phase === "ready" ? "bindings.commandGenerated" : phase === "pending" ? "bindings.commandPending" : phase === "failed" ? "bindings.commandFailed" : node.outcome === null ? "bindings.commandAdmitting" : "bindings.commandAccepted";
+      const canOpen = matches && currentMatches && action == null && current.mounted && current.reachable;
+      return h(
+        "section",
+        {
+          className: "ptcPlusBindingCommand",
+          "data-phase": phase,
+          "aria-label": t2("bindings.commandTitle")
+        },
+        h(
+          "div",
+          { className: "ptcPlusBindingCommandHeader" },
+          h("strong", { className: "ptcPlusBindingCommandTitle" }, t2("bindings.commandTitle")),
+          h(
+            "span",
+            { className: "ptcPlusBindingCommandState" },
+            h("span", { className: "ptcPlusBindingCommandStateDot", "aria-hidden": true }),
+            t2(status)
+          )
+        ),
+        h("pre", { className: "ptcPlusBindingCommandRequirement" }, `/binding${node.args ?? ""}`),
+        node.outcome?.kind !== "error" ? null : h(
+          "p",
+          { className: "ptcPlusMessage ptcPlusDanger" },
+          node.outcome.text ?? t2("bindings.commandFailed")
+        ),
+        canOpen ? h(ActionButton, { onClick: () => openBindingReview(review) }, t2("bindings.reviewOpen")) : null,
+        !current.mounted && (candidate !== null || matches && projection.phase === "ready") ? h("p", { className: "ptcPlusMessage" }, t2("bindings.reviewUnavailable")) : null,
+        candidate === null ? null : h(
+          "details",
+          { className: "ptcPlusBindingSourceDetails" },
+          h("summary", null, t2("tool.source")),
+          h(BindingCandidateContent, { candidate, t: t2 })
+        )
+      );
+    }
+    return { BindingAuthorButton, BindingReviewDock, BindingCommandCard };
+  }
+
+  // src/client-indicator-view.js
+  function createIndicatorView(React, deps) {
+    const {
+      featureEnabled: featureEnabled2,
+      useSessionPreset: useSessionPreset2,
+      sessionUsesPtcPreset: sessionUsesPtcPreset2,
+      normalizeReplMemorySnapshot: normalizeReplMemorySnapshot2,
+      unavailableReplMemorySnapshot: unavailableReplMemorySnapshot2,
+      ReplMemoryCard,
+      replPopoverIsOpen,
+      placeReplPopover,
+      catalogOwner,
+      subscribeReset
+    } = deps;
+    const h = React.createElement;
+    function PTCPlusSessionIndicator({
+      sessionId,
+      t: t2,
+      useProjection,
+      useSessions,
+      useInput,
+      inputActions,
+      usePtcSettings,
+      callUserBindings
+    }) {
+      const preset = useSessionPreset2({ sessionId, useProjection, useSessions });
+      const projectionMemory = useProjection("ptcPlusRepl");
+      const settings = usePtcSettings((snapshot) => snapshot);
+      const input = typeof useInput === "function" ? useInput((snapshot) => snapshot) : void 0;
+      const resolvedSessionId = sessionId;
+      const globalEnabled = featureEnabled2(settings, "bindings");
+      const identity = JSON.stringify([sessionId, globalEnabled]);
+      const catalogSource = React.useMemo(() => catalogOwner.claim(), [catalogOwner]);
+      const catalogState = React.useSyncExternalStore(catalogSource.subscribe, catalogSource.getSnapshot);
+      const globalBindings = catalogState.catalog ?? void 0;
+      const [authoringMessage, setAuthoringMessage] = React.useState(null);
+      const refreshGlobalBindings = React.useCallback(() => {
+        if (!globalEnabled) return;
+        void catalogSource.read();
+      }, [globalEnabled, catalogSource]);
+      React.useEffect(() => () => catalogSource.release(), [catalogSource]);
+      React.useEffect(() => {
+        if (!globalEnabled) {
+          catalogSource.reset();
+          return;
+        }
+        void catalogSource.read();
+      }, [identity, globalEnabled, catalogSource]);
+      React.useEffect(() => subscribeReset(() => catalogSource.reset()), [catalogSource]);
+      const triggerRef = React.useRef(null);
+      const popoverRef = React.useRef(null);
+      const closeTimer = React.useRef(void 0);
+      const [expanded, setExpanded] = React.useState(false);
+      React.useEffect(() => {
+        if (!expanded || !globalEnabled) return void 0;
+        const timer = setInterval(() => {
+          void refreshGlobalBindings();
+        }, 1500);
+        return () => clearInterval(timer);
+      }, [expanded, globalEnabled, refreshGlobalBindings]);
+      const positionPopover = React.useCallback(() => {
+        if (!replPopoverIsOpen(popoverRef.current)) return;
+        placeReplPopover(triggerRef.current, popoverRef.current);
+      }, []);
+      const showPopover = React.useCallback(() => {
+        if (closeTimer.current !== void 0) clearTimeout(closeTimer.current);
+        const popover = popoverRef.current;
+        if (popover === null) return;
+        popover.style.visibility = "hidden";
+        if (!replPopoverIsOpen(popover)) {
+          if (typeof popover.showPopover === "function") {
+            try {
+              popover.showPopover();
+            } catch {
+              popover.dataset.open = "true";
+            }
+          } else {
+            popover.dataset.open = "true";
+          }
+        }
+        placeReplPopover(triggerRef.current, popover);
+        popover.style.visibility = "visible";
+        setExpanded(true);
+        void refreshGlobalBindings();
+      }, [refreshGlobalBindings]);
+      const hidePopover = React.useCallback(() => {
+        const popover = popoverRef.current;
+        if (popover === null) return;
+        if (popover.dataset.open === "true") delete popover.dataset.open;
+        if (typeof popover.hidePopover === "function" && replPopoverIsOpen(popover)) {
+          try {
+            popover.hidePopover();
+          } catch {
+          }
+        }
+        setExpanded(false);
+      }, []);
+      const scheduleHide = React.useCallback(() => {
+        if (closeTimer.current !== void 0) clearTimeout(closeTimer.current);
+        closeTimer.current = setTimeout(() => {
+          closeTimer.current = void 0;
+          if (document.activeElement === triggerRef.current || popoverRef.current?.contains(document.activeElement)) return;
+          hidePopover();
+        }, 120);
+      }, [hidePopover]);
+      const prefillAuthoring = React.useCallback((value) => {
+        if (typeof inputActions?.setDraft !== "function") return;
+        if (typeof input?.draft === "string" && input.draft.trim() !== "") {
+          setAuthoringMessage("bindings.composerBusy");
+          return;
+        }
+        inputActions.setDraft(value);
+        setAuthoringMessage(null);
+        hidePopover();
+      }, [hidePopover, input?.draft, inputActions]);
+      React.useEffect(() => {
+        const syncPopoverState = (event) => {
+          if (event.target !== popoverRef.current) return;
+          setExpanded(replPopoverIsOpen(popoverRef.current));
+        };
+        window.addEventListener("resize", positionPopover);
+        document.addEventListener("scroll", positionPopover, true);
+        document.addEventListener("toggle", syncPopoverState, true);
+        return () => {
+          if (closeTimer.current !== void 0) clearTimeout(closeTimer.current);
+          window.removeEventListener("resize", positionPopover);
+          document.removeEventListener("scroll", positionPopover, true);
+          document.removeEventListener("toggle", syncPopoverState, true);
+          const popover = popoverRef.current;
+          if (popover?.dataset?.open === "true") delete popover.dataset.open;
+          if (typeof popover?.hidePopover === "function" && replPopoverIsOpen(popover)) {
+            try {
+              popover.hidePopover();
+            } catch {
+            }
+          }
+        };
+      }, [hidePopover, positionPopover]);
+      if (!sessionUsesPtcPreset2(preset) || !featureEnabled2(settings, "plugin")) return null;
+      let memory;
+      try {
+        memory = normalizeReplMemorySnapshot2(projectionMemory);
+      } catch {
+        memory = unavailableReplMemorySnapshot2();
+      }
+      const popoverId = `ptc-plus-repl-${String(resolvedSessionId).replace(/[^A-Za-z0-9_-]/g, "-")}`;
+      const titleId = `${popoverId}-title`;
+      return h(
+        "span",
+        { className: "ptcPlusActiveShell" },
+        h("button", {
+          type: "button",
+          className: "ptcPlusActive",
+          ref: triggerRef,
+          title: t2("indicator.title"),
+          "aria-label": t2("indicator.title"),
+          "aria-controls": popoverId,
+          "aria-expanded": expanded,
+          "aria-haspopup": "dialog",
+          onPointerEnter: showPopover,
+          onPointerLeave: scheduleHide,
+          onFocus: showPopover,
+          onBlur: scheduleHide,
+          onClick: showPopover,
+          onKeyDown: (event) => {
+            if (event.key === "Escape") hidePopover();
+          }
+        }, h("span", { className: "ptcPlusActiveLabel" }, "PTC Plus")),
+        h(ReplMemoryCard, {
+          memory,
+          globalEnabled,
+          globalBindings,
+          loadGlobalBinding: (id2) => callUserBindings("load", { id: id2 }),
+          prefillAuthoring,
+          authoringMessage,
+          t: t2,
+          id: popoverId,
+          titleId,
+          popoverRef,
+          onEnter: showPopover,
+          onLeave: scheduleHide
+        })
+      );
+    }
+    return { PTCPlusSessionIndicator };
   }
 
   // node_modules/@marijn/find-cluster-break/src/index.js
@@ -27112,18 +29075,6 @@
     return Object.hasOwn(owner, "sessionId") ? owner.sessionId === sessionId && owner.pendingInteraction === void 0 : owner.session?.sessionId === sessionId && Array.isArray(owner.interactions) && owner.interactions.length === 0;
   }
 
-  // internal/record-utils.js
-  function isRecord2(value) {
-    return value !== null && typeof value === "object" && !Array.isArray(value);
-  }
-  function assertOwnFields(value, allowed, label) {
-    for (const key of Reflect.ownKeys(value)) {
-      if (typeof key !== "string" || !allowed.has(key) || !Object.prototype.propertyIsEnumerable.call(value, key)) {
-        throw new TypeError(`invalid ${label} field ${String(key)}`);
-      }
-    }
-  }
-
   // internal/repl-memory-projection.js
   var BINDING_KINDS = /* @__PURE__ */ new Set(["variable", "function", "class", "import"]);
   var MAX_BINDINGS = 128;
@@ -27136,7 +29087,7 @@
   var PREVIEW_FIELDS = /* @__PURE__ */ new Set(["name", "status", "text", "truncated"]);
   var ENTRY_FIELDS = /* @__PURE__ */ new Set(["name", "kind", "definition"]);
   var DEFINITION_FIELDS = /* @__PURE__ */ new Set(["source", "line", "column"]);
-  function exactFields(value, fields) {
+  function exactFields2(value, fields) {
     if (!isRecord2(value)) return false;
     const keys2 = Reflect.ownKeys(value);
     return keys2.length === fields.size && keys2.every((key) => typeof key === "string" && fields.has(key) && Object.prototype.propertyIsEnumerable.call(value, key));
@@ -27151,13 +29102,13 @@
     return EMPTY_REPL_MEMORY;
   }
   function normalizeDefinition(value) {
-    if (!exactFields(value, DEFINITION_FIELDS) || typeof value.source !== "string" || value.source.length === 0 || value.source.length > MAX_DEFINITION_SOURCE_LENGTH || !Number.isSafeInteger(value.line) || value.line < 1 || !Number.isSafeInteger(value.column) || value.column < 1) {
+    if (!exactFields2(value, DEFINITION_FIELDS) || typeof value.source !== "string" || value.source.length === 0 || value.source.length > MAX_DEFINITION_SOURCE_LENGTH || !Number.isSafeInteger(value.line) || value.line < 1 || !Number.isSafeInteger(value.column) || value.column < 1) {
       throw new Error("invalid dsh-ptc-plus REPL binding definition");
     }
     return Object.freeze({ source: value.source, line: value.line, column: value.column });
   }
   function normalizeBinding(value) {
-    if (!exactFields(value, ENTRY_FIELDS) || typeof value.name !== "string" || value.name.length === 0 || value.name.length > MAX_BINDING_NAME_LENGTH || !BINDING_KINDS.has(value.kind)) {
+    if (!exactFields2(value, ENTRY_FIELDS) || typeof value.name !== "string" || value.name.length === 0 || value.name.length > MAX_BINDING_NAME_LENGTH || !BINDING_KINDS.has(value.kind)) {
       throw new Error("invalid dsh-ptc-plus REPL memory binding");
     }
     return Object.freeze({
@@ -27167,12 +29118,12 @@
     });
   }
   function normalizeReplObservation(value) {
-    if (!exactFields(value, OBSERVATION_FIELDS) || !Number.isSafeInteger(value.at) || value.at < 0 || !Array.isArray(value.entries) || value.entries.length > MAX_BINDINGS) {
+    if (!exactFields2(value, OBSERVATION_FIELDS) || !Number.isSafeInteger(value.at) || value.at < 0 || !Array.isArray(value.entries) || value.entries.length > MAX_BINDINGS) {
       throw new Error("invalid dsh-ptc-plus REPL observation");
     }
     const names = /* @__PURE__ */ new Set();
     const entries = value.entries.map((entry) => {
-      if (!exactFields(entry, PREVIEW_FIELDS) || typeof entry.name !== "string" || entry.name.length === 0 || entry.name.length > MAX_BINDING_NAME_LENGTH || names.has(entry.name) || !["readable", "unreadable"].includes(entry.status) || typeof entry.text !== "string" || entry.text.length > 512 || typeof entry.truncated !== "boolean" || entry.status === "unreadable" && (entry.text !== "" || entry.truncated)) {
+      if (!exactFields2(entry, PREVIEW_FIELDS) || typeof entry.name !== "string" || entry.name.length === 0 || entry.name.length > MAX_BINDING_NAME_LENGTH || names.has(entry.name) || !["readable", "unreadable"].includes(entry.status) || typeof entry.text !== "string" || entry.text.length > 512 || typeof entry.truncated !== "boolean" || entry.status === "unreadable" && (entry.text !== "" || entry.truncated)) {
         throw new Error("invalid dsh-ptc-plus REPL value preview");
       }
       names.add(entry.name);
@@ -27181,7 +29132,7 @@
     return Object.freeze({ at: value.at, entries: Object.freeze(entries) });
   }
   function normalizeReplMemorySnapshot(value) {
-    if (!exactFields(value, SNAPSHOT_FIELDS) && !exactFields(value, OBSERVED_SNAPSHOT_FIELDS) || typeof value.available !== "boolean" || !Array.isArray(value.entries) || value.entries.length > MAX_BINDINGS || !Number.isSafeInteger(value.total) || value.total < 0 || !Number.isSafeInteger(value.omitted) || value.omitted < 0 || value.total !== value.entries.length + value.omitted) {
+    if (!exactFields2(value, SNAPSHOT_FIELDS) && !exactFields2(value, OBSERVED_SNAPSHOT_FIELDS) || typeof value.available !== "boolean" || !Array.isArray(value.entries) || value.entries.length > MAX_BINDINGS || !Number.isSafeInteger(value.total) || value.total < 0 || !Number.isSafeInteger(value.omitted) || value.omitted < 0 || value.total !== value.entries.length + value.omitted) {
       throw new Error("invalid dsh-ptc-plus REPL memory snapshot");
     }
     if (!value.available && (value.total !== 0 || value.entries.length !== 0)) {
@@ -27214,385 +29165,337 @@
     });
   }
 
-  // internal/user-binding-model-context.js
-  var FIELDS = /* @__PURE__ */ new Set(["includeDeclaration", "instructions", "enabled", "declaration"]);
-  function normalizeBindingModelContext(value) {
-    if (value === void 0) return void 0;
-    if (!isRecord2(value)) throw new TypeError("binding modelContext must be an object");
-    assertOwnFields(value, FIELDS, "binding modelContext");
-    const { includeDeclaration = true, instructions = "", enabled = true, declaration = "" } = value;
-    if (typeof includeDeclaration !== "boolean") throw new TypeError("binding modelContext.includeDeclaration must be a boolean");
-    if (typeof enabled !== "boolean") throw new TypeError("binding modelContext.enabled must be a boolean");
-    for (const [name2, text, limit] of [["instructions", instructions, 4096], ["declaration", declaration, 8192]]) {
-      if (typeof text !== "string" || text.length > limit) {
-        throw new TypeError(`binding modelContext.${name2} must be a string of at most ${limit} characters`);
-      }
-    }
-    if (Object.hasOwn(value, "enabled") || Object.hasOwn(value, "declaration")) {
-      return Object.freeze({
-        enabled,
-        instructions: instructions.trim(),
-        declaration: declaration.trim(),
-        ...Object.hasOwn(value, "includeDeclaration") ? { includeDeclaration } : {}
-      });
-    }
-    return Object.freeze({ includeDeclaration, instructions: instructions.trim() });
+  // src/client-copy.js
+  var LOCALE_NS = "settings.ptcPlus";
+  var CHROME_COPY = Object.freeze({
+    zh: Object.freeze({
+      "console.session": "\u4F1A\u8BDD\u7ED1\u5B9A",
+      "console.global": "\u5168\u5C40\u7ED1\u5B9A",
+      "console.definition": "\u5B9A\u4E49",
+      "console.name": "\u540D\u79F0",
+      "console.kind": "\u7C7B\u578B",
+      "console.search": "\u641C\u7D22\u7ED1\u5B9A\u540D\u79F0",
+      "console.allKinds": "\u5168\u90E8\u7C7B\u578B",
+      "console.noMatches": "\u6CA1\u6709\u5339\u914D\u7684\u7ED1\u5B9A",
+      "bindings.search": "\u641C\u7D22\u5168\u5C40\u6761\u76EE",
+      "console.value": "\u503C\u9884\u89C8",
+      "console.observed": "\u7ED3\u7B97\u540E\u89C2\u5BDF\uFF1A{time}",
+      "console.unobserved": "\u5C1A\u65E0\u503C\u89C2\u5BDF\u8BB0\u5F55",
+      "console.unobservedValue": "\u5C1A\u672A\u89C2\u5BDF",
+      "console.unreadable": "\u4E0D\u53EF\u8BFB\u53D6",
+      "console.bounded": "\u5DF2\u622A\u65AD",
+      "bindings.manage": "\u7BA1\u7406\u5168\u5C40\u7ED1\u5B9A",
+      "bindings.entry": "\u6761\u76EE\u914D\u7F6E",
+      "bindings.close": "\u5173\u95ED\u5168\u5C40\u7ED1\u5B9A\u5DE5\u4F5C\u53F0",
+      "card.description": "PTC \u6A21\u5F0F\u7684\u4F1A\u8BDD\u7EA7 TypeScript REPL\u3002",
+      "status.enabled": "\u5DF2\u542F\u7528",
+      "status.disabled": "\u5DF2\u505C\u7528",
+      "action.expand": "\u5C55\u5F00 PTC Plus \u8BBE\u7F6E",
+      "action.collapse": "\u6536\u8D77 PTC Plus \u8BBE\u7F6E",
+      "state.syncing": "\u6B63\u5728\u540C\u6B65\u8BBE\u7F6E...",
+      "state.unavailable": "\u5F53\u524D DSH \u5B9E\u4F8B\u672A\u63D0\u4F9B\u8BBE\u7F6E\u670D\u52A1",
+      "footer.live": "\u8BBE\u7F6E\u4F1A\u5728\u4FEE\u6539\u540E\u7ACB\u5373\u751F\u6548",
+      "footer.readOnly": "\u5F53\u524D\u8BBE\u7F6E\u4E3A\u53EA\u8BFB",
+      "status.applied": "\u8BBE\u7F6E\u5DF2\u7ACB\u5373\u751F\u6548",
+      "status.conflict": "\u8BBE\u7F6E\u672A\u751F\u6548\uFF0C\u8BF7\u68C0\u67E5\u8BBE\u7F6E\u51B2\u7A81",
+      "status.failed": "\u8BBE\u7F6E\u5931\u8D25\uFF1A{error}",
+      "bindings.title": "\u5168\u5C40\u7528\u6237\u7ED1\u5B9A",
+      "bindings.reload": "\u91CD\u65B0\u52A0\u8F7D",
+      "bindings.new": "\u65B0\u5EFA\u6761\u76EE",
+      "bindings.empty": "\u5C1A\u65E0\u5168\u5C40\u6761\u76EE",
+      "bindings.loading": "\u6B63\u5728\u52A0\u8F7D\u5168\u5C40\u7528\u6237\u7ED1\u5B9A...",
+      "bindings.name": "\u540D\u79F0",
+      "bindings.id": "\u7A33\u5B9A ID",
+      "bindings.scope": "\u4F5C\u7528\u57DF",
+      "bindings.symbols": "\u5BFC\u51FA\u7B26\u53F7",
+      "bindings.symbolsPlaceholder": "\u9017\u53F7\u5206\u9694\uFF1B\u7559\u7A7A\u5219\u4ECE\u6E90\u7801\u63A8\u5BFC",
+      "bindings.purpose": "\u7528\u9014",
+      "bindings.source": "TypeScript \u6E90\u7801",
+      "bindings.sourcePreview": "\u5B9E\u73B0\u6E90\u7801",
+      "bindings.declaration": "\u63A5\u53E3\u58F0\u660E",
+      "bindings.modelContext": "\u6A21\u578B\u4E0A\u4E0B\u6587",
+      "bindings.includeDeclaration": "\u5C06\u63A5\u53E3\u58F0\u660E\u63D0\u4F9B\u7ED9\u6A21\u578B",
+      "bindings.declarationIncluded": "\u5411\u6A21\u578B\u63D0\u4F9B",
+      "bindings.declarationExcluded": "\u4E0D\u5411\u6A21\u578B\u63D0\u4F9B",
+      "bindings.instructions": "\u7ED9\u6A21\u578B\u7684\u63D0\u793A\u8BCD",
+      "bindings.noInstructions": "\u672A\u8BBE\u7F6E\u63D0\u793A\u8BCD",
+      "bindings.debug": "\u4EE3\u7801\u63A7\u5236\u53F0",
+      "bindings.edit": "\u7F16\u8F91",
+      "bindings.cancel": "\u53D6\u6D88",
+      "bindings.unvalidated": "\u5C1A\u672A\u9A8C\u8BC1\u5F53\u524D\u8349\u7A3F",
+      "bindings.working": "\u6B63\u5728\u5904\u7406...",
+      "bindings.enabled": "\u542F\u7528",
+      "bindings.disabledEntry": "\u505C\u7528",
+      "bindings.enableAction": "\u542F\u7528",
+      "bindings.disableAction": "\u505C\u7528",
+      "bindings.validate": "\u9A8C\u8BC1",
+      "bindings.save": "\u4FDD\u5B58",
+      "bindings.remove": "\u5220\u9664",
+      "bindings.importPath": "\u672C\u5730 .ts \u8DEF\u5F84",
+      "bindings.import": "\u5BFC\u5165",
+      "bindings.run": "\u8FD0\u884C",
+      "execution.ready": "\u5C31\u7EEA",
+      "execution.running": "\u8FD0\u884C\u4E2D",
+      "execution.released": "\u73AF\u5883\u5DF2\u91CA\u653E",
+      "execution.stopped": "\u5DF2\u505C\u6B62\uFF0C\u73AF\u5883\u5DF2\u91CA\u653E",
+      "execution.stop": "\u505C\u6B62",
+      "execution.reset": "\u91CD\u7F6E\u73AF\u5883",
+      "execution.clear": "\u6E05\u7A7A\u8BB0\u5F55",
+      "execution.history": "\u6267\u884C\u8BB0\u5F55",
+      "execution.output": "\u8F93\u51FA",
+      "execution.input": "TypeScript \u547D\u4EE4",
+      "execution.restarted": "\u5DF2\u4ECE\u5F53\u524D\u8349\u7A3F\u91CD\u65B0\u5F00\u59CB",
+      "execution.truncated": "\u8BB0\u5F55\u5DF2\u622A\u65AD",
+      "bindings.saved": "\u6761\u76EE\u5DF2\u4FDD\u5B58\uFF1B\u4ECE\u4E0B\u4E00\u6B21 run_code \u8BF7\u6C42\u751F\u6548\u3002",
+      "bindings.valid": "\u6E90\u7801\u4E0E\u6D3E\u751F\u58F0\u660E\u6709\u6548\u3002",
+      "bindings.removed": "\u6761\u76EE\u5DF2\u5220\u9664\u3002",
+      "bindings.imported": "\u6E90\u7801\u5DF2\u5BFC\u5165\u4E3A\u505C\u7528\u6761\u76EE\u3002",
+      "bindings.reloaded": "\u5DF2\u4ECE\u78C1\u76D8\u91CD\u65B0\u52A0\u8F7D\u3002",
+      "bindings.reloadedDraft": "\u76EE\u5F55\u5DF2\u91CD\u65B0\u52A0\u8F7D\uFF0C\u672A\u4FDD\u5B58\u7684\u7F16\u8F91\u5DF2\u4FDD\u7559\u3002",
+      "bindings.reloadConflict": "\u8BFB\u53D6\u671F\u95F4\u76EE\u5F55\u518D\u6B21\u53D1\u751F\u53D8\u5316\uFF0C\u8BF7\u91CD\u65B0\u52A0\u8F7D\u3002",
+      "bindings.failed": "\u5168\u5C40\u7528\u6237\u7ED1\u5B9A\u64CD\u4F5C\u5931\u8D25\uFF1A{error}",
+      "bindings.authorEdit": "Agent \u4FEE\u6539",
+      "bindings.open": "\u5168\u5C40\u7ED1\u5B9A",
+      "bindings.openHint": "PTC Plus \u63D2\u4EF6 \xB7 \u6253\u5F00\u5168\u5C40\u7528\u6237\u7ED1\u5B9A\u83DC\u5355\uFF0C\u53EF\u7F16\u5199\u3001\u542F\u505C\u6216\u7BA1\u7406",
+      "bindings.draftHint": "PTC Plus \u63D2\u4EF6 \xB7 \u7ED1\u5B9A\u8349\u7A3F\u5F85\u5904\u7406\uFF0C\u70B9\u51FB\u67E5\u770B",
+      "bindings.quickHeading": "\u5168\u5C40\u7528\u6237\u7ED1\u5B9A \xB7 \u5BF9\u6240\u6709\u4F1A\u8BDD\u751F\u6548",
+      "bindings.quickDrafts": "\u5F85\u5904\u7406\u8349\u7A3F",
+      "bindings.quickLoading": "\u6B63\u5728\u8BFB\u53D6\u7ED1\u5B9A\u2026",
+      "bindings.quickSaving": "\u6B63\u5728\u4FDD\u5B58\u2026",
+      "bindings.authorNewDraft": "\u7F16\u5199\u65B0\u7ED1\u5B9A",
+      "bindings.composerBusy": "\u8F93\u5165\u6846\u5DF2\u6709\u5185\u5BB9\uFF0C\u672A\u8986\u76D6\u73B0\u6709\u8349\u7A3F\u3002",
+      "bindings.reviewTitle": "\u7ED1\u5B9A\u8349\u7A3F",
+      "bindings.reviewExpand": "\u5C55\u5F00\u7ED1\u5B9A\u8349\u7A3F",
+      "bindings.reviewCollapse": "\u6298\u53E0\u7ED1\u5B9A\u8349\u7A3F",
+      "bindings.reviewClose": "\u5173\u95ED\u7ED1\u5B9A\u8349\u7A3F\u9762\u677F",
+      "bindings.reviewOpen": "\u6253\u5F00\u8349\u7A3F",
+      "bindings.reviewMenuLabel": "\u7ED1\u5B9A\u8349\u7A3F\uFF08{count}\uFF09",
+      "bindings.reviewLoading": "\u6B63\u5728\u786E\u8BA4\u8349\u7A3F\u64CD\u4F5C\u8D44\u683C\u2026",
+      "bindings.reviewSaving": "\u6B63\u5728\u5904\u7406\u8349\u7A3F\u2026",
+      "bindings.reviewAttention": "\u6709\u5F85\u67E5\u770B\u7684\u64CD\u4F5C\u72B6\u6001",
+      "bindings.reviewUnconfirmed": "\u64CD\u4F5C\u7ED3\u679C\u5C1A\u672A\u786E\u8BA4\uFF0C\u8BF7\u5237\u65B0\u72B6\u6001\u540E\u67E5\u770B\u3002",
+      "bindings.reviewReadOnly": "\u53EA\u8BFB\u8349\u7A3F\uFF0C\u5F53\u524D\u6CA1\u6709\u53EF\u786E\u8BA4\u7684\u64CD\u4F5C\u8D44\u683C",
+      "bindings.reviewUnavailable": "\u8349\u7A3F\u5BA1\u9605\u9762\u677F\u6682\u4E0D\u53EF\u7528",
+      "bindings.reviewRetry": "\u5237\u65B0\u64CD\u4F5C\u72B6\u6001",
+      "bindings.commandAccepted": "\u8BF7\u6C42\u5DF2\u53D7\u7406\uFF0C\u7F16\u5199\u7ED3\u679C\u672A\u77E5",
+      "bindings.commandAdmitting": "\u6B63\u5728\u5904\u7406\u7F16\u5199\u8BF7\u6C42\u2026",
+      "bindings.commandGenerated": "\u8349\u7A3F\u5DF2\u751F\u6210",
+      "bindings.draftSave": "\u4FDD\u5B58\u4E3A\u505C\u7528",
+      "bindings.draftSaveEnable": "\u4FDD\u5B58\u5E76\u542F\u7528",
+      "bindings.draftDiscard": "\u4E22\u5F03\u8349\u7A3F",
+      "bindings.commandTitle": "\u7ED1\u5B9A\u7F16\u5199",
+      "bindings.commandPending": "Agent \u6B63\u5728\u7F16\u5199\u8349\u7A3F...",
+      "bindings.commandReady": "\u8349\u7A3F\u5DF2\u751F\u6210\uFF0C\u53EF\u4FDD\u5B58\u6216\u4E22\u5F03",
+      "bindings.commandFailed": "\u672A\u751F\u6210\u53EF\u4FDD\u5B58\u7684\u8349\u7A3F",
+      "bindings.commandSaved": "\u8349\u7A3F\u5DF2\u4FDD\u5B58\u4E3A\u505C\u7528\u6761\u76EE",
+      "bindings.commandSavedEnabled": "\u8349\u7A3F\u5DF2\u4FDD\u5B58\u5E76\u542F\u7528",
+      "bindings.commandDiscarded": "\u8349\u7A3F\u5DF2\u4E22\u5F03",
+      "indicator.title": "PTC Plus \u5DF2\u542F\u7528\uFF1B\u67E5\u770B\u5F53\u524D\u53EF\u590D\u7528\u7684 REPL \u7ED1\u5B9A",
+      "memory.title": "REPL \u53EF\u590D\u7528\u7ED1\u5B9A",
+      "memory.count": "{count} \u4E2A\u53EF\u590D\u7528\u7ED1\u5B9A",
+      "memory.globalCount": "{count} \u4E2A\u5168\u5C40\u6761\u76EE",
+      "memory.empty": "\u5F53\u524D\u6CA1\u6709\u53EF\u590D\u7528\u7ED1\u5B9A",
+      "memory.unavailable": "\u5F53\u524D\u7ED1\u5B9A\u72B6\u6001\u5C1A\u4E0D\u53EF\u786E\u8BA4",
+      "memory.more": "\u53E6\u6709 {count} \u4E2A\u7ED1\u5B9A\u672A\u663E\u793A",
+      "memory.kind.variable": "\u53D8\u91CF",
+      "memory.kind.function": "\u51FD\u6570",
+      "memory.kind.class": "\u7C7B",
+      "memory.kind.import": "\u5BFC\u5165",
+      "memory.location": "\u7B2C {line} \u884C\uFF0C\u7B2C {column} \u5217",
+      "memory.sessionTab": "\u53EF\u590D\u7528\u7ED1\u5B9A",
+      "memory.globalTab": "\u5168\u5C40\u9ED8\u8BA4\u7ED1\u5B9A",
+      "memory.globalEmpty": "\u6CA1\u6709\u5168\u5C40\u9ED8\u8BA4\u7ED1\u5B9A",
+      "memory.globalUnavailable": "\u65E0\u6CD5\u8BFB\u53D6\u5168\u5C40\u9ED8\u8BA4\u7ED1\u5B9A",
+      "tool.code": "\u6267\u884C",
+      "tool.codeEdit": "\u4FEE\u6B63\u6267\u884C",
+      "tool.running": "\u6B63\u5728\u8FD0\u884C",
+      "tool.completed": "\u6267\u884C\u5B8C\u6210",
+      "tool.failed": "\u6267\u884C\u5931\u8D25",
+      "tool.stopped": "\u6267\u884C\u5DF2\u4E2D\u65AD",
+      "tool.source": "\u6E90\u7801",
+      "tool.result": "\u7ED3\u679C",
+      "tool.copy": "\u590D\u5236\u4EE3\u7801",
+      "tool.copied": "\u5DF2\u590D\u5236",
+      "tool.inspect": "\u68C0\u67E5\u8C03\u7528",
+      "feature.safeEdit": "\u5B89\u5168\u7F16\u8F91\u6267\u884C",
+      "feature.codeRun": "\u9694\u79BB\u6267\u884C code.run",
+      "feature.stateSaved": "\u4FDD\u5B58 REPL \u72B6\u6001",
+      "feature.stateRestored": "\u6062\u590D REPL \u72B6\u6001",
+      "feature.stateDeleted": "\u5220\u9664 REPL \u72B6\u6001"
+    }),
+    en: Object.freeze({
+      "console.session": "Session bindings",
+      "console.global": "Global bindings",
+      "console.definition": "Definition",
+      "console.name": "Name",
+      "console.kind": "Kind",
+      "console.search": "Search binding names",
+      "console.allKinds": "All kinds",
+      "console.noMatches": "No matching bindings",
+      "bindings.search": "Search global entries",
+      "console.value": "Value preview",
+      "console.observed": "Observed after settlement: {time}",
+      "console.unobserved": "No value observation yet",
+      "console.unobservedValue": "Not observed yet",
+      "console.unreadable": "Unreadable",
+      "console.bounded": "Truncated",
+      "bindings.manage": "Manage global bindings",
+      "bindings.entry": "Entry configuration",
+      "bindings.close": "Close global bindings workbench",
+      "card.description": "The session-bound TypeScript REPL for PTC mode.",
+      "status.enabled": "Enabled",
+      "status.disabled": "Disabled",
+      "action.expand": "Expand PTC Plus settings",
+      "action.collapse": "Collapse PTC Plus settings",
+      "state.syncing": "Syncing settings...",
+      "state.unavailable": "This DSH instance does not provide a settings service",
+      "footer.live": "Changes take effect immediately.",
+      "footer.readOnly": "These settings are read-only.",
+      "status.applied": "Setting applied immediately.",
+      "status.conflict": "The setting did not take effect; check for conflicting settings.",
+      "status.failed": "Could not save: {error}",
+      "bindings.title": "Global User Bindings",
+      "bindings.reload": "Reload",
+      "bindings.new": "New entry",
+      "bindings.empty": "No global entries yet",
+      "bindings.loading": "Loading Global User Bindings...",
+      "bindings.name": "Name",
+      "bindings.id": "Stable ID",
+      "bindings.scope": "Scope",
+      "bindings.symbols": "Selected exports",
+      "bindings.symbolsPlaceholder": "Comma-separated; blank derives from source",
+      "bindings.purpose": "Purpose",
+      "bindings.source": "TypeScript source",
+      "bindings.sourcePreview": "Implementation source",
+      "bindings.declaration": "Interface declaration",
+      "bindings.modelContext": "Model context",
+      "bindings.includeDeclaration": "Include API declaration in model context",
+      "bindings.declarationIncluded": "Include in model context",
+      "bindings.declarationExcluded": "Exclude from model context",
+      "bindings.instructions": "Prompt for the model",
+      "bindings.noInstructions": "No prompt configured",
+      "bindings.debug": "Code console",
+      "bindings.edit": "Edit",
+      "bindings.cancel": "Cancel",
+      "bindings.unvalidated": "Current draft has not been validated",
+      "bindings.working": "Working...",
+      "bindings.enabled": "Enabled",
+      "bindings.disabledEntry": "Disabled",
+      "bindings.enableAction": "Enable",
+      "bindings.disableAction": "Disable",
+      "bindings.validate": "Validate",
+      "bindings.save": "Save",
+      "bindings.remove": "Remove",
+      "bindings.importPath": "Local .ts path",
+      "bindings.import": "Import",
+      "bindings.run": "Run",
+      "execution.ready": "Ready",
+      "execution.running": "Running",
+      "execution.released": "Environment released",
+      "execution.stopped": "Stopped; environment released",
+      "execution.stop": "Stop",
+      "execution.reset": "Reset environment",
+      "execution.clear": "Clear history",
+      "execution.history": "Execution history",
+      "execution.output": "Output",
+      "execution.input": "TypeScript command",
+      "execution.restarted": "Started again from the current draft",
+      "execution.truncated": "Record truncated",
+      "bindings.saved": "Entry saved; it takes effect from the next run_code request.",
+      "bindings.valid": "Source and derived declaration are valid.",
+      "bindings.removed": "Entry removed.",
+      "bindings.imported": "Source imported as a disabled entry.",
+      "bindings.reloaded": "Reloaded from disk.",
+      "bindings.reloadedDraft": "Catalog reloaded; unsaved edits retained.",
+      "bindings.reloadConflict": "The catalog changed during reload. Reload again.",
+      "bindings.failed": "Global User Binding operation failed: {error}",
+      "bindings.authorEdit": "Ask Agent to revise",
+      "bindings.open": "Global bindings",
+      "bindings.openHint": "PTC Plus plugin \xB7 Open the Global User Binding menu to author, toggle, or manage",
+      "bindings.draftHint": "PTC Plus plugin \xB7 Binding draft pending; click to review",
+      "bindings.quickHeading": "Global bindings \xB7 Applies to all sessions",
+      "bindings.quickDrafts": "Pending drafts",
+      "bindings.quickLoading": "Loading bindings\u2026",
+      "bindings.quickSaving": "Saving\u2026",
+      "bindings.authorNewDraft": "Write a new binding",
+      "bindings.composerBusy": "The composer already has text, so its draft was not replaced.",
+      "bindings.reviewTitle": "Binding draft",
+      "bindings.reviewExpand": "Expand binding draft",
+      "bindings.reviewCollapse": "Collapse binding draft",
+      "bindings.reviewClose": "Close binding draft panel",
+      "bindings.reviewOpen": "Open draft",
+      "bindings.reviewMenuLabel": "Binding drafts ({count})",
+      "bindings.reviewLoading": "Confirming draft actions\u2026",
+      "bindings.reviewSaving": "Processing draft\u2026",
+      "bindings.reviewAttention": "Action status needs attention",
+      "bindings.reviewUnconfirmed": "The action result is unconfirmed. Refresh its status to check.",
+      "bindings.reviewReadOnly": "Read-only draft; current action eligibility is unconfirmed",
+      "bindings.reviewUnavailable": "Draft review panel is temporarily unavailable",
+      "bindings.reviewRetry": "Refresh action status",
+      "bindings.commandAccepted": "Request admitted; authoring result unknown",
+      "bindings.commandAdmitting": "Processing authoring request\u2026",
+      "bindings.commandGenerated": "Draft generated",
+      "bindings.draftSave": "Save as disabled",
+      "bindings.draftSaveEnable": "Save and enable",
+      "bindings.draftDiscard": "Discard draft",
+      "bindings.commandTitle": "Binding authoring",
+      "bindings.commandPending": "Agent is writing a draft...",
+      "bindings.commandReady": "Draft ready to save or discard",
+      "bindings.commandFailed": "No saveable draft was produced",
+      "bindings.commandSaved": "Draft saved as a disabled entry",
+      "bindings.commandSavedEnabled": "Draft saved and enabled",
+      "bindings.commandDiscarded": "Draft discarded",
+      "indicator.title": "PTC Plus is active; view reusable REPL bindings",
+      "memory.title": "Reusable REPL bindings",
+      "memory.count": "{count} reusable bindings",
+      "memory.globalCount": "{count} global entries",
+      "memory.empty": "No reusable bindings",
+      "memory.unavailable": "Current binding state cannot be confirmed",
+      "memory.more": "{count} more bindings not shown",
+      "memory.kind.variable": "Variable",
+      "memory.kind.function": "Function",
+      "memory.kind.class": "Class",
+      "memory.kind.import": "Import",
+      "memory.location": "Line {line}, column {column}",
+      "memory.sessionTab": "Reusable bindings",
+      "memory.globalTab": "Global defaults",
+      "memory.globalEmpty": "No global default bindings",
+      "memory.globalUnavailable": "Global default bindings are unavailable",
+      "tool.code": "Code",
+      "tool.codeEdit": "Code edit",
+      "tool.running": "Running",
+      "tool.completed": "Completed",
+      "tool.failed": "Failed",
+      "tool.stopped": "Stopped",
+      "tool.source": "Source",
+      "tool.result": "Result",
+      "tool.inspect": "Inspect call",
+      "feature.safeEdit": "Safe edit execution",
+      "feature.codeRun": "Isolated code.run execution",
+      "feature.stateSaved": "Saved REPL state",
+      "feature.stateRestored": "Restored REPL state",
+      "feature.stateDeleted": "Deleted REPL state",
+      "tool.copy": "Copy code",
+      "tool.copied": "Copied"
+    })
+  });
+  function fieldCopy(field, locale) {
+    const copy = { [`${field.key}.label`]: locale === "en" ? field.labelEn : field.label };
+    const description = locale === "en" ? field.descriptionEn : field.description;
+    if (description !== "") copy[`${field.key}.description`] = description;
+    return copy;
   }
-  function bindingModelPreferences(value) {
-    return {
-      includeDeclaration: value?.includeDeclaration ?? value?.enabled ?? true,
-      instructions: value?.enabled === false && value.includeDeclaration === void 0 ? "" : value?.instructions ?? ""
-    };
-  }
+  var SETTINGS_COPY = Object.freeze(Object.fromEntries(
+    ["zh", "en"].map((locale) => [locale, Object.freeze({
+      ...CHROME_COPY[locale],
+      ...Object.assign({}, ...CONFIG_GROUPS.map((group) => ({
+        [`group.${group.key}`]: locale === "en" ? group.labelEn : group.label
+      }))),
+      ...Object.assign({}, ...CONFIG_FIELDS.map((field) => fieldCopy(field, locale)))
+    })])
+  ));
 
-  // internal/user-binding-draft-projection.js
-  var MAX_CAPABILITY_LENGTH = 128;
-  var MAX_COMMAND_ID_LENGTH = 256;
-  var VIEW_FIELDS = /* @__PURE__ */ new Set(["phase", "capability", "commandId"]);
-  var PHASES2 = /* @__PURE__ */ new Set(["idle", "pending", "ready", "failed"]);
-  function normalizeCandidate(value) {
-    if (!isRecord2(value) || typeof value.requestId !== "string" || value.requestId.length === 0 || value.requestId.length > 128 || !Number.isSafeInteger(value.version) || value.version < 1 || !["new", "edit"].includes(value.mode) || !isRecord2(value.entry) || !["namespace", "top-level"].includes(value.entry.scope) || value.entry.enabled !== false || !Array.isArray(value.entry.symbols) || value.entry.symbols.some((symbol) => typeof symbol !== "string") || ["id", "name", "purpose", "source"].some((key) => typeof value.entry[key] !== "string") || value.entry.source.length === 0 || value.entry.source.length > 65536) {
-      throw new Error("invalid dsh-ptc-plus accepted binding candidate");
-    }
-    const modelContext = normalizeBindingModelContext(value.entry.modelContext);
-    return Object.freeze({
-      requestId: value.requestId,
-      commandId: normalizeCommandId(value.commandId),
-      version: value.version,
-      mode: value.mode,
-      entry: Object.freeze({
-        id: value.entry.id,
-        name: value.entry.name,
-        scope: value.entry.scope,
-        symbols: Object.freeze([...value.entry.symbols]),
-        purpose: value.entry.purpose,
-        source: value.entry.source,
-        enabled: false,
-        ...modelContext === void 0 ? {} : { modelContext }
-      })
-    });
-  }
-  function normalizeAction(value) {
-    if (!exactFields2(value, /* @__PURE__ */ new Set(["requestId", "id", "state", "enabled"])) || typeof value.requestId !== "string" || value.requestId.length === 0 || value.requestId.length > 128 || typeof value.id !== "string" || value.id.length === 0 || value.id.length > 64 || !["saved", "discarded"].includes(value.state) || typeof value.enabled !== "boolean" || value.state === "discarded" && value.enabled) throw new Error("invalid binding action receipt");
-    return Object.freeze({ requestId: value.requestId, id: value.id, state: value.state, enabled: value.enabled });
-  }
-  function normalizeHistory(value) {
-    if (!Array.isArray(value)) throw new Error("invalid binding review history");
-    return Object.freeze(value.map((record) => {
-      const candidate = normalizeCandidate(record.candidate);
-      const action = record.action === null ? null : normalizeAction(record.action);
-      if (action !== null && (action.requestId !== candidate.requestId || action.id !== candidate.entry.id)) {
-        throw new Error("binding action does not identify its candidate");
-      }
-      if (!Number.isSafeInteger(record.acceptedSeq) || record.acceptedSeq < 0) {
-        throw new Error("invalid binding acceptance sequence");
-      }
-      if (record.commandId !== candidate.commandId) throw new Error("binding review does not identify its command");
-      return Object.freeze({
-        commandId: normalizeCommandId(record.commandId),
-        acceptedSeq: record.acceptedSeq,
-        candidate,
-        action
-      });
-    }));
-  }
-  function historyFields(value) {
-    return value.history === void 0 ? {} : { history: normalizeHistory(value.history) };
-  }
-  function exactFields2(value, fields) {
-    if (!isRecord2(value)) return false;
-    const keys2 = Reflect.ownKeys(value);
-    return keys2.length === fields.size && keys2.every((key) => typeof key === "string" && fields.has(key) && Object.prototype.propertyIsEnumerable.call(value, key));
-  }
-  function normalizeUserBindingDraftCapability(value) {
-    if (value === null) return null;
-    if (typeof value !== "string" || value.length === 0 || value.length > MAX_CAPABILITY_LENGTH) {
-      throw new Error("invalid dsh-ptc-plus binding draft capability");
-    }
-    return value;
-  }
-  function normalizePhase(value) {
-    if (typeof value !== "string" || !PHASES2.has(value)) {
-      throw new Error("invalid dsh-ptc-plus binding draft phase");
-    }
-    return value;
-  }
-  function normalizeCommandId(value) {
-    if (value === null) return null;
-    if (typeof value !== "string" || value.length === 0 || value.length > MAX_COMMAND_ID_LENGTH) {
-      throw new Error("invalid dsh-ptc-plus binding draft command id");
-    }
-    return value;
-  }
-  function normalizeUserBindingDraftView(value) {
-    if (!exactFields2(value, value?.history === void 0 ? VIEW_FIELDS : /* @__PURE__ */ new Set([...VIEW_FIELDS, "history"]))) {
-      throw new Error("invalid dsh-ptc-plus binding draft projection view");
-    }
-    return Object.freeze({
-      phase: normalizePhase(value.phase),
-      capability: normalizeUserBindingDraftCapability(value.capability),
-      commandId: normalizeCommandId(value.commandId ?? null),
-      ...historyFields(value)
-    });
-  }
-
-  // src/client-binding-review.js
-  function bindingDraftProjection(value) {
-    try {
-      return normalizeUserBindingDraftView(value);
-    } catch {
-      return void 0;
-    }
-  }
-  function candidateIdentity(candidate) {
-    return candidate ? JSON.stringify([candidate.requestId, candidate.commandId, candidate.version]) : null;
-  }
-  function entryIdentity(entry) {
-    return JSON.stringify([
-      entry?.id,
-      entry?.name,
-      entry?.scope,
-      entry?.purpose,
-      entry?.source,
-      entry?.symbols,
-      entry?.enabled,
-      bindingModelPreferences(entry?.modelContext)
-    ]);
-  }
-  function sameCandidate(left, right) {
-    return left != null && right != null && candidateIdentity(left) === candidateIdentity(right) && left.mode === right.mode && entryIdentity(left.entry) === entryIdentity(right.entry);
-  }
-  function matchesDraft(candidate, draft) {
-    return candidate != null && draft != null && candidate.version === draft.version && candidate.mode === draft.mode && entryIdentity(candidate.entry) === entryIdentity(draft.entry);
-  }
-  function matchesAction(candidate, action) {
-    return action != null && action.requestId === candidate?.requestId && action.id === candidate?.entry.id && (action.state === "saved" || action.state === "discarded") && typeof action.enabled === "boolean" && (action.state !== "discarded" || action.enabled === false);
-  }
-  function bindingReviewStatus(view) {
-    return view.action?.state === "saved" ? view.action.enabled ? "bindings.commandSavedEnabled" : "bindings.commandSaved" : view.action?.state === "discarded" ? "bindings.commandDiscarded" : view.busy ? "bindings.reviewSaving" : view.message ? "bindings.reviewAttention" : view.writable ? "bindings.commandReady" : view.loading ? "bindings.reviewLoading" : "bindings.reviewReadOnly";
-  }
-  function createBindingReviews(call) {
-    const sessions = /* @__PURE__ */ new Map();
-    let disposed = false;
-    function forSession(sessionId) {
-      if (sessions.has(sessionId)) return sessions.get(sessionId);
-      const listeners = /* @__PURE__ */ new Set();
-      const choices = /* @__PURE__ */ new Map();
-      let snapshot = {
-        candidate: null,
-        candidateKey: null,
-        action: null,
-        writable: false,
-        busy: false,
-        loading: false,
-        message: null,
-        messageSource: null,
-        visibility: "expanded",
-        mounted: false,
-        reachable: false
-      };
-      let projection;
-      let authority = null;
-      let revoked = false;
-      let epoch = 0;
-      let reading;
-      const pending = /* @__PURE__ */ new Map();
-      let timer;
-      let attached = false;
-      const publish = (patch) => {
-        if (disposed) return;
-        snapshot = { ...snapshot, ...patch };
-        if (snapshot.action !== null) snapshot.visibility = "hidden";
-        for (const listener of listeners) listener();
-      };
-      const invalidate = () => {
-        epoch++;
-        reading?.abort();
-        reading = void 0;
-        clearInterval(timer);
-        timer = void 0;
-      };
-      const select = (candidate, action = null) => {
-        const same = sameCandidate(candidate, snapshot.candidate);
-        const visibility = choices.get(candidateIdentity(candidate)) ?? "expanded";
-        publish({
-          candidate,
-          candidateKey: candidateIdentity(candidate),
-          action: action ?? (same ? snapshot.action : null),
-          visibility,
-          ...!same ? { message: null, messageSource: null, writable: false, loading: false } : {},
-          busy: pending.has(candidateIdentity(candidate))
-        });
-      };
-      const refresh = async () => {
-        if (!attached || authority === null || reading || pending.has(candidateIdentity(snapshot.candidate)) || snapshot.action !== null || disposed) return;
-        const currentEpoch = epoch;
-        const capability = authority;
-        const commandId = projection.commandId;
-        const controller = new AbortController();
-        reading = controller;
-        const results = await Promise.allSettled(["list", "draft", "draft-review"].map((endpoint) => call(endpoint, endpoint === "list" ? {} : { capability }, controller.signal)));
-        if (disposed || epoch !== currentEpoch || controller.signal.aborted) return;
-        reading = void 0;
-        const [catalogResult, draftResult, reviewResult] = results;
-        const review2 = reviewResult.status === "fulfilled" ? reviewResult.value : null;
-        const candidate = review2?.candidate;
-        const known = snapshot.candidate;
-        const matches = candidate?.commandId === commandId && typeof candidate?.requestId === "string" && Number.isSafeInteger(candidate.version) && candidate.version > 0 && typeof candidate.entry?.source === "string" && (known === null || sameCandidate(known, candidate));
-        if (matches && matchesAction(candidate, review2.action)) {
-          clearInterval(timer);
-          timer = void 0;
-          publish({
-            ...known !== null ? { action: review2.action } : {},
-            writable: false,
-            loading: false,
-            message: null,
-            messageSource: null
-          });
-          return;
-        }
-        if (matches && known === null) select(candidate);
-        const draft = draftResult.status === "fulfilled" ? draftResult.value : null;
-        if (draftResult.status === "fulfilled" && draft === null) revoked = true;
-        const catalog = catalogResult.status === "fulfilled" ? catalogResult.value : null;
-        const writable = !revoked && matches && review2.action === null && matchesDraft(candidate, draft) && Number.isSafeInteger(catalog?.revision);
-        const error = results.find((result) => result.status === "rejected");
-        publish({
-          writable,
-          loading: false,
-          revision: writable ? catalog.revision : void 0,
-          ...snapshot.messageSource === "write" ? {} : {
-            message: error ? String(error.reason?.message ?? error.reason) : null,
-            messageSource: error ? "read" : null
-          }
-        });
-      };
-      const start = () => {
-        clearInterval(timer);
-        timer = void 0;
-        if (!attached || authority === null || snapshot.action !== null) return;
-        void refresh();
-        timer = setInterval(() => {
-          void refresh();
-        }, 1500);
-      };
-      const sync = (next) => {
-        projection = next;
-        const historical = next?.history?.find((record) => record.commandId === next.commandId);
-        const nextAuthority = next?.phase === "ready" && next.commandId !== null && !historical?.action ? next.capability : null;
-        const previousKey = candidateIdentity(snapshot.candidate);
-        const recorded = next?.history?.find((record) => sameCandidate(record.candidate, snapshot.candidate));
-        if (recorded?.action) publish({ action: recorded.action, writable: false, message: null, messageSource: null });
-        if (historical && next.phase === "ready") {
-          if (!historical.action || sameCandidate(historical.candidate, snapshot.candidate)) {
-            select(historical.candidate, historical.action);
-          } else select(null);
-        } else if (next?.commandId != null && next.commandId !== snapshot.candidate?.commandId) select(null);
-        else if (next === void 0 || next?.phase !== "ready" && snapshot.candidate !== null && snapshot.action === null && !next?.history?.some((record) => sameCandidate(record.candidate, snapshot.candidate))) {
-          select(null);
-        }
-        const nextKey = candidateIdentity(snapshot.candidate);
-        if (authority !== nextAuthority || previousKey !== nextKey) {
-          invalidate();
-          if (authority !== nextAuthority) revoked = false;
-          authority = nextAuthority;
-          publish({ writable: false, loading: nextAuthority !== null && snapshot.action === null });
-          start();
-        }
-      };
-      const act = async (operation, activate = false) => {
-        const key = candidateIdentity(snapshot.candidate);
-        if (!attached || disposed || !snapshot.writable || snapshot.action !== null || pending.has(key) || authority === null) return;
-        const transaction = { candidate: snapshot.candidate, capability: authority };
-        pending.set(key, transaction);
-        invalidate();
-        publish({ busy: true, writable: false, message: null, messageSource: null });
-        try {
-          await call(operation, {
-            capability: transaction.capability,
-            version: transaction.candidate.version,
-            ...operation === "save-draft" ? { expectedRevision: snapshot.revision, activate } : {}
-          });
-          const receipt = operation === "save-draft" ? { requestId: transaction.candidate.requestId, id: transaction.candidate.entry.id, state: "saved", enabled: activate } : await call("draft-review", { capability: transaction.capability });
-          const action = operation === "save-draft" ? receipt : sameCandidate(receipt?.candidate, transaction.candidate) && matchesAction(transaction.candidate, receipt?.action) ? receipt.action : null;
-          if (!disposed && sameCandidate(snapshot.candidate, transaction.candidate) && snapshot.action === null) {
-            publish({
-              action,
-              writable: false,
-              loading: false,
-              message: action === null ? "bindings.reviewUnconfirmed" : null,
-              messageSource: action === null ? "write" : null
-            });
-          }
-        } catch (error) {
-          if (!disposed && sameCandidate(snapshot.candidate, transaction.candidate) && snapshot.action === null) {
-            publish({ message: String(error?.message ?? error), messageSource: "write", writable: false, loading: false });
-          }
-        } finally {
-          pending.delete(key);
-          if (!disposed && sameCandidate(snapshot.candidate, transaction.candidate)) {
-            publish({ busy: false });
-            start();
-          }
-        }
-      };
-      const review = {
-        getSnapshot: () => snapshot,
-        subscribe(listener) {
-          listeners.add(listener);
-          return () => listeners.delete(listener);
-        },
-        sync,
-        attach() {
-          attached = true;
-          publish({ mounted: true });
-          start();
-          return () => {
-            attached = false;
-            invalidate();
-            publish({ mounted: false, reachable: false, writable: false });
-          };
-        },
-        reset() {
-          invalidate();
-          publish({ writable: false, loading: authority !== null && snapshot.action === null });
-          start();
-        },
-        reachable(value) {
-          if (snapshot.reachable !== value) publish({ reachable: value });
-        },
-        display(visibility, candidate = snapshot.candidate) {
-          if (snapshot.candidate === null || snapshot.action !== null || !sameCandidate(snapshot.candidate, candidate)) return false;
-          choices.set(candidateIdentity(snapshot.candidate), visibility);
-          publish({ visibility });
-          return true;
-        },
-        act,
-        refresh,
-        dispose() {
-          invalidate();
-          attached = false;
-          listeners.clear();
-          choices.clear();
-        }
-      };
-      sessions.set(sessionId, review);
-      return review;
-    }
-    return {
-      forSession,
-      reset() {
-        for (const review of sessions.values()) review.reset();
-      },
-      dispose() {
-        disposed = true;
-        for (const review of sessions.values()) review.dispose();
-        sessions.clear();
-      }
-    };
-  }
-
-  // src/client.js
+  // src/client-styles.js
   var CLIENT_STYLE_ID = "ptc-plus-client-style";
   var CLIENT_CSS = `
 .ptcPlusBindingDockAnchor{position:relative;flex:none;block-size:0;min-width:0;width:min(calc(100% - 32px),44rem);margin-inline:auto}
@@ -27681,352 +29584,990 @@
 @container(max-width:780px){.ptcPlusObservationGrid{grid-template-columns:minmax(0,1fr);gap:16px}.ptcPlusBindingInspector{max-height:none;padding:12px 0 0;border-left:0;border-top:1px solid var(--dsw-alias-border-l2)}.ptcPlusObservations{height:200px}.ptcPlusBindingsSurface .ptcPlusBindingsGrid{grid-template-columns:minmax(0,1fr);gap:18px}.ptcPlusBindingsSurface .ptcPlusBindingList{max-height:180px}.ptcPlusBindingsSurface .ptcPlusBindingFields,.ptcPlusBindingsSurface .ptcPlusBindingDebugBody{grid-template-columns:minmax(0,1fr)}.ptcPlusObservationTable th:first-child{width:35%}.ptcPlusObservationTable th:nth-child(2){width:64px}}
 @media(max-width:560px){.ptcPlusConsole{padding:14px 12px}.ptcPlusBindingsModal.ptcPlusBindingsModal{width:calc(100vw - 16px);max-height:calc(100dvh - 16px)}.ptcPlusBindingsDialog{padding:16px;max-height:calc(100dvh - 16px)}.ptcPlusObservationFilters>.ptcPlusSelect{width:105px}.ptcPlusObservationTable th,.ptcPlusObservationTable td{padding:0 6px}.ptcPlusObservationValue{gap:3px}.ptcPlusObservationState{font-size:10px}.ptcPlusEditorHead{align-items:flex-start}.ptcPlusEditorHead>.ptcPlusBindingLifecycle{margin-left:auto}.ptcPlusSourceBody .cm-editor{height:300px}}
 `;
-  var LOCALE_NS = "settings.ptcPlus";
-  var CHROME_COPY = Object.freeze({
-    zh: Object.freeze({
-      "console.session": "\u4F1A\u8BDD\u7ED1\u5B9A",
-      "console.global": "\u5168\u5C40\u7ED1\u5B9A",
-      "console.definition": "\u5B9A\u4E49",
-      "console.name": "\u540D\u79F0",
-      "console.kind": "\u7C7B\u578B",
-      "console.search": "\u641C\u7D22\u7ED1\u5B9A\u540D\u79F0",
-      "console.allKinds": "\u5168\u90E8\u7C7B\u578B",
-      "console.noMatches": "\u6CA1\u6709\u5339\u914D\u7684\u7ED1\u5B9A",
-      "bindings.search": "\u641C\u7D22\u5168\u5C40\u6761\u76EE",
-      "console.value": "\u503C\u9884\u89C8",
-      "console.observed": "\u7ED3\u7B97\u540E\u89C2\u5BDF\uFF1A{time}",
-      "console.unobserved": "\u5C1A\u65E0\u503C\u89C2\u5BDF\u8BB0\u5F55",
-      "console.unobservedValue": "\u5C1A\u672A\u89C2\u5BDF",
-      "console.unreadable": "\u4E0D\u53EF\u8BFB\u53D6",
-      "console.bounded": "\u5DF2\u622A\u65AD",
-      "bindings.manage": "\u7BA1\u7406\u5168\u5C40\u7ED1\u5B9A",
-      "bindings.entry": "\u6761\u76EE\u914D\u7F6E",
-      "bindings.close": "\u5173\u95ED\u5168\u5C40\u7ED1\u5B9A\u5DE5\u4F5C\u53F0",
-      "card.description": "PTC \u6A21\u5F0F\u7684\u4F1A\u8BDD\u7EA7 TypeScript REPL\u3002",
-      "status.enabled": "\u5DF2\u542F\u7528",
-      "status.disabled": "\u5DF2\u505C\u7528",
-      "action.expand": "\u5C55\u5F00 PTC Plus \u8BBE\u7F6E",
-      "action.collapse": "\u6536\u8D77 PTC Plus \u8BBE\u7F6E",
-      "state.syncing": "\u6B63\u5728\u540C\u6B65\u8BBE\u7F6E...",
-      "state.unavailable": "\u5F53\u524D DSH \u5B9E\u4F8B\u672A\u63D0\u4F9B\u8BBE\u7F6E\u670D\u52A1",
-      "footer.live": "\u8BBE\u7F6E\u4F1A\u5728\u4FEE\u6539\u540E\u7ACB\u5373\u751F\u6548",
-      "footer.readOnly": "\u5F53\u524D\u8BBE\u7F6E\u4E3A\u53EA\u8BFB",
-      "status.applied": "\u8BBE\u7F6E\u5DF2\u7ACB\u5373\u751F\u6548",
-      "status.conflict": "\u8BBE\u7F6E\u672A\u751F\u6548\uFF0C\u8BF7\u68C0\u67E5\u8BBE\u7F6E\u51B2\u7A81",
-      "status.failed": "\u8BBE\u7F6E\u5931\u8D25\uFF1A{error}",
-      "bindings.title": "\u5168\u5C40\u7528\u6237\u7ED1\u5B9A",
-      "bindings.reload": "\u91CD\u65B0\u52A0\u8F7D",
-      "bindings.new": "\u65B0\u5EFA\u6761\u76EE",
-      "bindings.empty": "\u5C1A\u65E0\u5168\u5C40\u6761\u76EE",
-      "bindings.loading": "\u6B63\u5728\u52A0\u8F7D\u5168\u5C40\u7528\u6237\u7ED1\u5B9A...",
-      "bindings.disabled": "\u5F00\u542F\u201C\u5168\u5C40\u7528\u6237\u7ED1\u5B9A\u201D\u540E\u53EF\u7BA1\u7406 TypeScript \u5DE5\u5177\u3002",
-      "bindings.name": "\u540D\u79F0",
-      "bindings.id": "\u7A33\u5B9A ID",
-      "bindings.scope": "\u4F5C\u7528\u57DF",
-      "bindings.symbols": "\u5BFC\u51FA\u7B26\u53F7",
-      "bindings.symbolsPlaceholder": "\u9017\u53F7\u5206\u9694\uFF1B\u7559\u7A7A\u5219\u4ECE\u6E90\u7801\u63A8\u5BFC",
-      "bindings.purpose": "\u7528\u9014",
-      "bindings.source": "TypeScript \u6E90\u7801",
-      "bindings.sourcePreview": "\u5B9E\u73B0\u6E90\u7801",
-      "bindings.declaration": "\u63A5\u53E3\u58F0\u660E",
-      "bindings.modelContext": "\u6A21\u578B\u4E0A\u4E0B\u6587",
-      "bindings.includeDeclaration": "\u5C06\u63A5\u53E3\u58F0\u660E\u63D0\u4F9B\u7ED9\u6A21\u578B",
-      "bindings.declarationIncluded": "\u5411\u6A21\u578B\u63D0\u4F9B",
-      "bindings.declarationExcluded": "\u4E0D\u5411\u6A21\u578B\u63D0\u4F9B",
-      "bindings.instructions": "\u7ED9\u6A21\u578B\u7684\u63D0\u793A\u8BCD",
-      "bindings.noInstructions": "\u672A\u8BBE\u7F6E\u63D0\u793A\u8BCD",
-      "bindings.lifecycle": "\u6761\u76EE\u64CD\u4F5C",
-      "bindings.debug": "\u4EE3\u7801\u63A7\u5236\u53F0",
-      "bindings.edit": "\u7F16\u8F91",
-      "bindings.cancel": "\u53D6\u6D88",
-      "bindings.unvalidated": "\u5C1A\u672A\u9A8C\u8BC1\u5F53\u524D\u8349\u7A3F",
-      "bindings.working": "\u6B63\u5728\u5904\u7406...",
-      "bindings.enabled": "\u542F\u7528",
-      "bindings.disabledEntry": "\u505C\u7528",
-      "bindings.enableAction": "\u542F\u7528",
-      "bindings.disableAction": "\u505C\u7528",
-      "bindings.stateEnabled": "\u5F53\u524D\u5DF2\u542F\u7528",
-      "bindings.stateDisabled": "\u5F53\u524D\u5DF2\u505C\u7528",
-      "bindings.validate": "\u9A8C\u8BC1",
-      "bindings.save": "\u4FDD\u5B58",
-      "bindings.remove": "\u5220\u9664",
-      "bindings.importPath": "\u672C\u5730 .ts \u8DEF\u5F84",
-      "bindings.import": "\u5BFC\u5165",
-      "bindings.run": "\u8FD0\u884C",
-      "execution.ready": "\u5C31\u7EEA",
-      "execution.running": "\u8FD0\u884C\u4E2D",
-      "execution.released": "\u73AF\u5883\u5DF2\u91CA\u653E",
-      "execution.stopped": "\u5DF2\u505C\u6B62\uFF0C\u73AF\u5883\u5DF2\u91CA\u653E",
-      "execution.stop": "\u505C\u6B62",
-      "execution.reset": "\u91CD\u7F6E\u73AF\u5883",
-      "execution.clear": "\u6E05\u7A7A\u8BB0\u5F55",
-      "execution.history": "\u6267\u884C\u8BB0\u5F55",
-      "execution.output": "\u8F93\u51FA",
-      "execution.input": "TypeScript \u547D\u4EE4",
-      "execution.restarted": "\u5DF2\u4ECE\u5F53\u524D\u8349\u7A3F\u91CD\u65B0\u5F00\u59CB",
-      "execution.truncated": "\u8BB0\u5F55\u5DF2\u622A\u65AD",
-      "bindings.saved": "\u6761\u76EE\u5DF2\u4FDD\u5B58\uFF1B\u4ECE\u4E0B\u4E00\u6B21 run_code \u8BF7\u6C42\u751F\u6548\u3002",
-      "bindings.valid": "\u6E90\u7801\u4E0E\u6D3E\u751F\u58F0\u660E\u6709\u6548\u3002",
-      "bindings.removed": "\u6761\u76EE\u5DF2\u5220\u9664\u3002",
-      "bindings.imported": "\u6E90\u7801\u5DF2\u5BFC\u5165\u4E3A\u505C\u7528\u6761\u76EE\u3002",
-      "bindings.reloaded": "\u5DF2\u4ECE\u78C1\u76D8\u91CD\u65B0\u52A0\u8F7D\u3002",
-      "bindings.reloadedDraft": "\u76EE\u5F55\u5DF2\u91CD\u65B0\u52A0\u8F7D\uFF0C\u672A\u4FDD\u5B58\u7684\u7F16\u8F91\u5DF2\u4FDD\u7559\u3002",
-      "bindings.reloadConflict": "\u8BFB\u53D6\u671F\u95F4\u76EE\u5F55\u518D\u6B21\u53D1\u751F\u53D8\u5316\uFF0C\u8BF7\u91CD\u65B0\u52A0\u8F7D\u3002",
-      "bindings.failed": "\u5168\u5C40\u7528\u6237\u7ED1\u5B9A\u64CD\u4F5C\u5931\u8D25\uFF1A{error}",
-      "bindings.authorEdit": "Agent \u4FEE\u6539",
-      "bindings.open": "\u5168\u5C40\u7ED1\u5B9A",
-      "bindings.openHint": "PTC Plus \u63D2\u4EF6 \xB7 \u6253\u5F00\u5168\u5C40\u7528\u6237\u7ED1\u5B9A\u83DC\u5355\uFF0C\u53EF\u7F16\u5199\u3001\u542F\u505C\u6216\u7BA1\u7406",
-      "bindings.draftHint": "PTC Plus \u63D2\u4EF6 \xB7 \u7ED1\u5B9A\u8349\u7A3F\u5F85\u5904\u7406\uFF0C\u70B9\u51FB\u67E5\u770B",
-      "bindings.quickHeading": "\u5168\u5C40\u7528\u6237\u7ED1\u5B9A \xB7 \u5BF9\u6240\u6709\u4F1A\u8BDD\u751F\u6548",
-      "bindings.quickDrafts": "\u5F85\u5904\u7406\u8349\u7A3F",
-      "bindings.quickLoading": "\u6B63\u5728\u8BFB\u53D6\u7ED1\u5B9A\u2026",
-      "bindings.quickSaving": "\u6B63\u5728\u4FDD\u5B58\u2026",
-      "bindings.authorNewDraft": "\u7F16\u5199\u65B0\u7ED1\u5B9A",
-      "bindings.composerBusy": "\u8F93\u5165\u6846\u5DF2\u6709\u5185\u5BB9\uFF0C\u672A\u8986\u76D6\u73B0\u6709\u8349\u7A3F\u3002",
-      "bindings.draftTitle": "Agent \u8349\u7A3F",
-      "bindings.reviewTitle": "\u7ED1\u5B9A\u8349\u7A3F",
-      "bindings.reviewExpand": "\u5C55\u5F00\u7ED1\u5B9A\u8349\u7A3F",
-      "bindings.reviewCollapse": "\u6298\u53E0\u7ED1\u5B9A\u8349\u7A3F",
-      "bindings.reviewClose": "\u5173\u95ED\u7ED1\u5B9A\u8349\u7A3F\u9762\u677F",
-      "bindings.reviewOpen": "\u6253\u5F00\u8349\u7A3F",
-      "bindings.reviewMenuLabel": "\u7ED1\u5B9A\u8349\u7A3F\uFF08{count}\uFF09",
-      "bindings.reviewLoading": "\u6B63\u5728\u786E\u8BA4\u8349\u7A3F\u64CD\u4F5C\u8D44\u683C\u2026",
-      "bindings.reviewSaving": "\u6B63\u5728\u5904\u7406\u8349\u7A3F\u2026",
-      "bindings.reviewAttention": "\u6709\u5F85\u67E5\u770B\u7684\u64CD\u4F5C\u72B6\u6001",
-      "bindings.reviewUnconfirmed": "\u64CD\u4F5C\u7ED3\u679C\u5C1A\u672A\u786E\u8BA4\uFF0C\u8BF7\u5237\u65B0\u72B6\u6001\u540E\u67E5\u770B\u3002",
-      "bindings.reviewReadOnly": "\u53EA\u8BFB\u8349\u7A3F\uFF0C\u5F53\u524D\u6CA1\u6709\u53EF\u786E\u8BA4\u7684\u64CD\u4F5C\u8D44\u683C",
-      "bindings.reviewUnavailable": "\u8349\u7A3F\u5BA1\u9605\u9762\u677F\u6682\u4E0D\u53EF\u7528",
-      "bindings.reviewRetry": "\u5237\u65B0\u64CD\u4F5C\u72B6\u6001",
-      "bindings.commandAccepted": "\u8BF7\u6C42\u5DF2\u53D7\u7406\uFF0C\u7F16\u5199\u7ED3\u679C\u672A\u77E5",
-      "bindings.commandAdmitting": "\u6B63\u5728\u5904\u7406\u7F16\u5199\u8BF7\u6C42\u2026",
-      "bindings.commandGenerated": "\u8349\u7A3F\u5DF2\u751F\u6210",
-      "bindings.draftSave": "\u4FDD\u5B58\u4E3A\u505C\u7528",
-      "bindings.draftSaveEnable": "\u4FDD\u5B58\u5E76\u542F\u7528",
-      "bindings.draftDiscard": "\u4E22\u5F03\u8349\u7A3F",
-      "bindings.commandTitle": "\u7ED1\u5B9A\u7F16\u5199",
-      "bindings.commandPending": "Agent \u6B63\u5728\u7F16\u5199\u8349\u7A3F...",
-      "bindings.commandReady": "\u8349\u7A3F\u5DF2\u751F\u6210\uFF0C\u53EF\u4FDD\u5B58\u6216\u4E22\u5F03",
-      "bindings.commandFailed": "\u672A\u751F\u6210\u53EF\u4FDD\u5B58\u7684\u8349\u7A3F",
-      "bindings.commandSaved": "\u8349\u7A3F\u5DF2\u4FDD\u5B58\u4E3A\u505C\u7528\u6761\u76EE",
-      "bindings.commandSavedEnabled": "\u8349\u7A3F\u5DF2\u4FDD\u5B58\u5E76\u542F\u7528",
-      "bindings.commandDiscarded": "\u8349\u7A3F\u5DF2\u4E22\u5F03",
-      "bindings.commandUnavailable": "\u8349\u7A3F\u5DF2\u4E0D\u53EF\u64CD\u4F5C\uFF1B\u4FDD\u5B58\u72B6\u6001\u672A\u77E5",
-      "bindings.draftSaved": "Agent \u8349\u7A3F\u5DF2\u4FDD\u5B58\u4E3A\u505C\u7528\u6761\u76EE\u3002",
-      "bindings.draftPending": "Agent \u6B63\u5728\u7F16\u5199\u8349\u7A3F...",
-      "bindings.draftFailed": "Agent \u672A\u751F\u6210\u53EF\u4FDD\u5B58\u7684\u8349\u7A3F\uFF1B\u8BF7\u67E5\u770B\u4F1A\u8BDD\u7ED3\u679C\u540E\u91CD\u8BD5\u3002",
-      "indicator.title": "PTC Plus \u5DF2\u542F\u7528\uFF1B\u67E5\u770B\u5F53\u524D\u53EF\u590D\u7528\u7684 REPL \u7ED1\u5B9A",
-      "memory.title": "REPL \u53EF\u590D\u7528\u7ED1\u5B9A",
-      "memory.count": "{count} \u4E2A\u53EF\u590D\u7528\u7ED1\u5B9A",
-      "memory.globalCount": "{count} \u4E2A\u5168\u5C40\u6761\u76EE",
-      "memory.empty": "\u5F53\u524D\u6CA1\u6709\u53EF\u590D\u7528\u7ED1\u5B9A",
-      "memory.unavailable": "\u5F53\u524D\u7ED1\u5B9A\u72B6\u6001\u5C1A\u4E0D\u53EF\u786E\u8BA4",
-      "memory.more": "\u53E6\u6709 {count} \u4E2A\u7ED1\u5B9A\u672A\u663E\u793A",
-      "memory.kind.variable": "\u53D8\u91CF",
-      "memory.kind.function": "\u51FD\u6570",
-      "memory.kind.class": "\u7C7B",
-      "memory.kind.import": "\u5BFC\u5165",
-      "memory.location": "\u7B2C {line} \u884C\uFF0C\u7B2C {column} \u5217",
-      "memory.sessionTab": "\u53EF\u590D\u7528\u7ED1\u5B9A",
-      "memory.globalTab": "\u5168\u5C40\u9ED8\u8BA4\u7ED1\u5B9A",
-      "memory.globalEmpty": "\u6CA1\u6709\u5168\u5C40\u9ED8\u8BA4\u7ED1\u5B9A",
-      "memory.globalUnavailable": "\u65E0\u6CD5\u8BFB\u53D6\u5168\u5C40\u9ED8\u8BA4\u7ED1\u5B9A",
-      "tool.code": "\u6267\u884C",
-      "tool.codeEdit": "\u4FEE\u6B63\u6267\u884C",
-      "tool.running": "\u6B63\u5728\u8FD0\u884C",
-      "tool.completed": "\u6267\u884C\u5B8C\u6210",
-      "tool.failed": "\u6267\u884C\u5931\u8D25",
-      "tool.stopped": "\u6267\u884C\u5DF2\u4E2D\u65AD",
-      "tool.source": "\u6E90\u7801",
-      "tool.result": "\u7ED3\u679C",
-      "tool.copy": "\u590D\u5236\u4EE3\u7801",
-      "tool.copied": "\u5DF2\u590D\u5236",
-      "tool.inspect": "\u68C0\u67E5\u8C03\u7528",
-      "feature.safeEdit": "\u5B89\u5168\u7F16\u8F91\u6267\u884C",
-      "feature.codeRun": "\u9694\u79BB\u6267\u884C code.run",
-      "feature.stateSaved": "\u4FDD\u5B58 REPL \u72B6\u6001",
-      "feature.stateRestored": "\u6062\u590D REPL \u72B6\u6001",
-      "feature.stateDeleted": "\u5220\u9664 REPL \u72B6\u6001"
-    }),
-    en: Object.freeze({
-      "console.session": "Session bindings",
-      "console.global": "Global bindings",
-      "console.definition": "Definition",
-      "console.name": "Name",
-      "console.kind": "Kind",
-      "console.search": "Search binding names",
-      "console.allKinds": "All kinds",
-      "console.noMatches": "No matching bindings",
-      "bindings.search": "Search global entries",
-      "console.value": "Value preview",
-      "console.observed": "Observed after settlement: {time}",
-      "console.unobserved": "No value observation yet",
-      "console.unobservedValue": "Not observed yet",
-      "console.unreadable": "Unreadable",
-      "console.bounded": "Truncated",
-      "bindings.manage": "Manage global bindings",
-      "bindings.entry": "Entry configuration",
-      "bindings.close": "Close global bindings workbench",
-      "card.description": "The session-bound TypeScript REPL for PTC mode.",
-      "status.enabled": "Enabled",
-      "status.disabled": "Disabled",
-      "action.expand": "Expand PTC Plus settings",
-      "action.collapse": "Collapse PTC Plus settings",
-      "state.syncing": "Syncing settings...",
-      "state.unavailable": "This DSH instance does not provide a settings service",
-      "footer.live": "Changes take effect immediately.",
-      "footer.readOnly": "These settings are read-only.",
-      "status.applied": "Setting applied immediately.",
-      "status.conflict": "The setting did not take effect; check for conflicting settings.",
-      "status.failed": "Could not save: {error}",
-      "bindings.title": "Global User Bindings",
-      "bindings.reload": "Reload",
-      "bindings.new": "New entry",
-      "bindings.empty": "No global entries yet",
-      "bindings.loading": "Loading Global User Bindings...",
-      "bindings.disabled": "Enable Global User Bindings to manage TypeScript helpers.",
-      "bindings.name": "Name",
-      "bindings.id": "Stable ID",
-      "bindings.scope": "Scope",
-      "bindings.symbols": "Selected exports",
-      "bindings.symbolsPlaceholder": "Comma-separated; blank derives from source",
-      "bindings.purpose": "Purpose",
-      "bindings.source": "TypeScript source",
-      "bindings.sourcePreview": "Implementation source",
-      "bindings.declaration": "Interface declaration",
-      "bindings.modelContext": "Model context",
-      "bindings.includeDeclaration": "Include API declaration in model context",
-      "bindings.declarationIncluded": "Include in model context",
-      "bindings.declarationExcluded": "Exclude from model context",
-      "bindings.instructions": "Prompt for the model",
-      "bindings.noInstructions": "No prompt configured",
-      "bindings.lifecycle": "Entry actions",
-      "bindings.debug": "Code console",
-      "bindings.edit": "Edit",
-      "bindings.cancel": "Cancel",
-      "bindings.unvalidated": "Current draft has not been validated",
-      "bindings.working": "Working...",
-      "bindings.enabled": "Enabled",
-      "bindings.disabledEntry": "Disabled",
-      "bindings.enableAction": "Enable",
-      "bindings.disableAction": "Disable",
-      "bindings.stateEnabled": "Currently enabled",
-      "bindings.stateDisabled": "Currently disabled",
-      "bindings.validate": "Validate",
-      "bindings.save": "Save",
-      "bindings.remove": "Remove",
-      "bindings.importPath": "Local .ts path",
-      "bindings.import": "Import",
-      "bindings.run": "Run",
-      "execution.ready": "Ready",
-      "execution.running": "Running",
-      "execution.released": "Environment released",
-      "execution.stopped": "Stopped; environment released",
-      "execution.stop": "Stop",
-      "execution.reset": "Reset environment",
-      "execution.clear": "Clear history",
-      "execution.history": "Execution history",
-      "execution.output": "Output",
-      "execution.input": "TypeScript command",
-      "execution.restarted": "Started again from the current draft",
-      "execution.truncated": "Record truncated",
-      "bindings.saved": "Entry saved; it takes effect from the next run_code request.",
-      "bindings.valid": "Source and derived declaration are valid.",
-      "bindings.removed": "Entry removed.",
-      "bindings.imported": "Source imported as a disabled entry.",
-      "bindings.reloaded": "Reloaded from disk.",
-      "bindings.reloadedDraft": "Catalog reloaded; unsaved edits retained.",
-      "bindings.reloadConflict": "The catalog changed during reload. Reload again.",
-      "bindings.failed": "Global User Binding operation failed: {error}",
-      "bindings.authorEdit": "Ask Agent to revise",
-      "bindings.open": "Global bindings",
-      "bindings.openHint": "PTC Plus plugin \xB7 Open the Global User Binding menu to author, toggle, or manage",
-      "bindings.draftHint": "PTC Plus plugin \xB7 Binding draft pending; click to review",
-      "bindings.quickHeading": "Global bindings \xB7 Applies to all sessions",
-      "bindings.quickDrafts": "Pending drafts",
-      "bindings.quickLoading": "Loading bindings\u2026",
-      "bindings.quickSaving": "Saving\u2026",
-      "bindings.authorNewDraft": "Write a new binding",
-      "bindings.composerBusy": "The composer already has text, so its draft was not replaced.",
-      "bindings.draftTitle": "Agent draft",
-      "bindings.reviewTitle": "Binding draft",
-      "bindings.reviewExpand": "Expand binding draft",
-      "bindings.reviewCollapse": "Collapse binding draft",
-      "bindings.reviewClose": "Close binding draft panel",
-      "bindings.reviewOpen": "Open draft",
-      "bindings.reviewMenuLabel": "Binding drafts ({count})",
-      "bindings.reviewLoading": "Confirming draft actions\u2026",
-      "bindings.reviewSaving": "Processing draft\u2026",
-      "bindings.reviewAttention": "Action status needs attention",
-      "bindings.reviewUnconfirmed": "The action result is unconfirmed. Refresh its status to check.",
-      "bindings.reviewReadOnly": "Read-only draft; current action eligibility is unconfirmed",
-      "bindings.reviewUnavailable": "Draft review panel is temporarily unavailable",
-      "bindings.reviewRetry": "Refresh action status",
-      "bindings.commandAccepted": "Request admitted; authoring result unknown",
-      "bindings.commandAdmitting": "Processing authoring request\u2026",
-      "bindings.commandGenerated": "Draft generated",
-      "bindings.draftSave": "Save as disabled",
-      "bindings.draftSaveEnable": "Save and enable",
-      "bindings.draftDiscard": "Discard draft",
-      "bindings.commandTitle": "Binding authoring",
-      "bindings.commandPending": "Agent is writing a draft...",
-      "bindings.commandReady": "Draft ready to save or discard",
-      "bindings.commandFailed": "No saveable draft was produced",
-      "bindings.commandSaved": "Draft saved as a disabled entry",
-      "bindings.commandSavedEnabled": "Draft saved and enabled",
-      "bindings.commandDiscarded": "Draft discarded",
-      "bindings.commandUnavailable": "Draft unavailable; save status unknown",
-      "bindings.draftSaved": "Agent draft saved as a disabled entry.",
-      "bindings.draftPending": "The Agent is authoring a draft...",
-      "bindings.draftFailed": "The Agent did not produce a saveable draft; review the session result and try again.",
-      "indicator.title": "PTC Plus is active; view reusable REPL bindings",
-      "memory.title": "Reusable REPL bindings",
-      "memory.count": "{count} reusable bindings",
-      "memory.globalCount": "{count} global entries",
-      "memory.empty": "No reusable bindings",
-      "memory.unavailable": "Current binding state cannot be confirmed",
-      "memory.more": "{count} more bindings not shown",
-      "memory.kind.variable": "Variable",
-      "memory.kind.function": "Function",
-      "memory.kind.class": "Class",
-      "memory.kind.import": "Import",
-      "memory.location": "Line {line}, column {column}",
-      "memory.sessionTab": "Reusable bindings",
-      "memory.globalTab": "Global defaults",
-      "memory.globalEmpty": "No global default bindings",
-      "memory.globalUnavailable": "Global default bindings are unavailable",
-      "tool.code": "Code",
-      "tool.codeEdit": "Code edit",
-      "tool.running": "Running",
-      "tool.completed": "Completed",
-      "tool.failed": "Failed",
-      "tool.stopped": "Stopped",
-      "tool.source": "Source",
-      "tool.result": "Result",
-      "tool.inspect": "Inspect call",
-      "feature.safeEdit": "Safe edit execution",
-      "feature.codeRun": "Isolated code.run execution",
-      "feature.stateSaved": "Saved REPL state",
-      "feature.stateRestored": "Restored REPL state",
-      "feature.stateDeleted": "Deleted REPL state",
-      "tool.copy": "Copy code",
-      "tool.copied": "Copied"
-    })
-  });
-  function fieldCopy(field, locale) {
-    const copy = { [`${field.key}.label`]: locale === "en" ? field.labelEn : field.label };
-    const description = locale === "en" ? field.descriptionEn : field.description;
-    if (description !== "") copy[`${field.key}.description`] = description;
-    return copy;
+  function installStyles() {
+    if (document.getElementById(CLIENT_STYLE_ID) !== null) return () => {
+    };
+    const style = document.createElement("style");
+    style.id = CLIENT_STYLE_ID;
+    style.textContent = `${CLIENT_CSS}${BINDING_WORKBENCH_CSS}${REPL_CONSOLE_CSS}`;
+    document.head.append(style);
+    return () => style.remove();
   }
-  var SETTINGS_COPY = Object.freeze(Object.fromEntries(
-    ["zh", "en"].map((locale) => [locale, Object.freeze({
-      ...CHROME_COPY[locale],
-      ...Object.assign({}, ...CONFIG_GROUPS.map((group) => ({
-        [`group.${group.key}`]: locale === "en" ? group.labelEn : group.label
-      }))),
-      ...Object.assign({}, ...CONFIG_FIELDS.map((field) => fieldCopy(field, locale)))
-    })])
-  ));
+
+  // src/client-catalog.js
+  function createCatalogOwner({ callUserBindings }) {
+    const sources = /* @__PURE__ */ new Set();
+    const createSource = () => {
+      let state = Object.freeze({ status: "loading", catalog: null, error: null });
+      let epoch = 0;
+      let controller;
+      let writing = false;
+      let inactive = false;
+      const listeners = /* @__PURE__ */ new Set();
+      const publish = (next) => {
+        state = Object.freeze({ ...state, ...next });
+        for (const listener of [...listeners]) listener();
+      };
+      const invalidate = () => {
+        epoch += 1;
+        const previous = controller;
+        controller = void 0;
+        previous?.abort();
+        return epoch;
+      };
+      const message = (error) => error instanceof Error ? error.message : String(error);
+      const source = {
+        getSnapshot: () => state,
+        subscribe(listener) {
+          if (inactive) {
+            inactive = false;
+            sources.add(source);
+          }
+          listeners.add(listener);
+          return () => {
+            listeners.delete(listener);
+            if (listeners.size === 0) invalidate();
+          };
+        },
+        /** Latest-wins catalog read; resolves to the catalog only when it still owns the source. */
+        async read({ reload = false } = {}) {
+          if (inactive || writing) return void 0;
+          const current = invalidate();
+          const read = new AbortController();
+          controller = read;
+          publish({ status: "loading", error: null });
+          try {
+            const catalog = await callUserBindings(reload ? "reload" : "list", {}, read.signal);
+            if (epoch !== current || controller !== read) return void 0;
+            controller = void 0;
+            if (catalog?.error !== void 0) {
+              publish({ status: "error", catalog: null, error: String(catalog.error) });
+              return void 0;
+            }
+            publish({ status: "ready", catalog, error: null });
+            return catalog;
+          } catch (error) {
+            if (epoch !== current || controller !== read) return void 0;
+            controller = void 0;
+            publish({ status: "error", catalog: null, error: message(error) });
+            return void 0;
+          }
+        },
+        /** Serialized compare-and-swap write; a failed write becomes the source error state. */
+        async write(operation) {
+          if (inactive || writing) return void 0;
+          writing = true;
+          const current = invalidate();
+          publish({ status: "writing", error: null });
+          try {
+            const catalog = await operation();
+            if (epoch !== current) return void 0;
+            publish({ status: "ready", catalog, error: null });
+            return catalog;
+          } catch (error) {
+            if (epoch !== current) return void 0;
+            publish({ status: "error", catalog: null, error: message(error) });
+            return void 0;
+          } finally {
+            writing = false;
+            if (!inactive && epoch !== current) void source.read();
+          }
+        },
+        /** Publish a catalog produced outside this source (the workbench owns its own writes). */
+        accept(catalog) {
+          if (inactive) return;
+          invalidate();
+          publish({ status: "ready", catalog, error: null });
+        },
+        /** Drop in-flight work and require a fresh read before the next render trusts the catalog. */
+        reset() {
+          if (inactive) return;
+          invalidate();
+          publish({ status: "loading", catalog: null, error: null });
+        },
+        release() {
+          if (inactive) return;
+          inactive = true;
+          invalidate();
+          listeners.clear();
+          sources.delete(source);
+        }
+      };
+      sources.add(source);
+      return source;
+    };
+    return {
+      /** Claim an independent catalog source; the consumer releases it when it unmounts. */
+      claim() {
+        return createSource();
+      },
+      dispose() {
+        for (const source of [...sources]) source.release();
+      }
+    };
+  }
+
+  // src/client-bindings-data.js
+  var blankBinding = () => ({
+    id: "",
+    name: "",
+    scope: "namespace",
+    symbolsText: "",
+    purpose: "",
+    enabled: false,
+    source: "export function helper() {\n  return undefined\n}\n",
+    modelContext: bindingModelPreferences()
+  });
+  var editableBinding = (value) => ({
+    id: value.id,
+    name: value.name,
+    scope: value.scope,
+    symbolsText: Array.isArray(value.symbols) ? value.symbols.join(", ") : "",
+    purpose: value.purpose,
+    enabled: value.enabled,
+    source: value.source,
+    modelContext: bindingModelPreferences(value.modelContext)
+  });
+  var bindingPayload = (value) => {
+    const { symbolsText, ...entry } = value;
+    const symbols = symbolsText.split(",").map((symbol) => symbol.trim()).filter(Boolean);
+    return symbols.length === 0 ? entry : { ...entry, symbols };
+  };
+
+  // src/client-workbench.js
+  function createUserBindingsWorkbench(React, deps) {
+    const { TypeScriptEditor, BindingConsole, IconButton, ActionButton, CodeBlock, Modal, icons, catalogOwner } = deps;
+    const h = React.createElement;
+    const initialState = Object.freeze({
+      documentId: 0,
+      consoleVersion: 0,
+      catalog: null,
+      catalogStatus: "loading",
+      catalogError: null,
+      draft: null,
+      declaration: "",
+      original: null,
+      revision: null,
+      editing: false,
+      creating: false,
+      query: "",
+      importPath: "",
+      sourceOpen: false,
+      metadataOpen: false,
+      message: null,
+      busy: false
+    });
+    const selectDocument = (state, loaded, resetConsole) => {
+      const entry = loaded?.entry ?? null;
+      const sameDocument = entry !== null && state.draft !== null && !state.creating && state.original?.id === entry.id;
+      const replaced = resetConsole !== false && state.draft?.source !== entry?.source;
+      return {
+        ...state,
+        documentId: sameDocument ? state.documentId : state.documentId + 1,
+        consoleVersion: replaced ? state.consoleVersion + 1 : state.consoleVersion,
+        draft: entry === null ? null : editableBinding(entry),
+        original: entry,
+        declaration: entry?.declaration ?? "",
+        revision: loaded?.revision ?? null,
+        editing: false,
+        creating: false
+      };
+    };
+    function reducer(state, action) {
+      switch (action.type) {
+        case "begin":
+          return { ...state, busy: true, message: null };
+        case "settle":
+          return { ...state, busy: false };
+        case "failed":
+          return { ...state, message: action.message };
+        case "catalog":
+          return {
+            ...state,
+            catalog: action.snapshot.catalog ?? state.catalog,
+            catalogStatus: action.snapshot.status,
+            catalogError: action.snapshot.error
+          };
+        case "patch":
+          return { ...state, ...action.patch };
+        case "loaded":
+          return selectDocument(state, action.loaded, action.resetConsole);
+        case "create":
+          return {
+            ...state,
+            documentId: state.documentId + 1,
+            consoleVersion: state.consoleVersion + 1,
+            draft: blankBinding(),
+            original: null,
+            revision: action.revision,
+            editing: true,
+            creating: true,
+            sourceOpen: true,
+            metadataOpen: true,
+            declaration: "",
+            message: null,
+            busy: false
+          };
+        case "edit":
+          return {
+            ...state,
+            draft: { ...state.draft, [action.key]: action.value },
+            editing: true,
+            message: null,
+            declaration: action.key === "modelContext" ? state.declaration : ""
+          };
+        case "validated":
+          return {
+            ...state,
+            draft: editableBinding(action.normalized),
+            declaration: action.normalized.declaration ?? "",
+            message: { key: "bindings.valid" }
+          };
+        case "saved":
+          return {
+            ...state,
+            catalog: action.next,
+            catalogStatus: "ready",
+            catalogError: null,
+            documentId: state.draft?.id === action.normalized.id ? state.documentId : state.documentId + 1,
+            consoleVersion: state.original?.source !== action.normalized.source ? state.consoleVersion + 1 : state.consoleVersion,
+            draft: editableBinding(action.normalized),
+            declaration: action.normalized.declaration ?? "",
+            message: { key: "bindings.saved" },
+            original: action.normalized,
+            revision: action.next.revision,
+            editing: false,
+            creating: false,
+            sourceOpen: false
+          };
+        case "mutated": {
+          const next = {
+            ...state,
+            catalog: action.next,
+            catalogStatus: "ready",
+            catalogError: null,
+            // A successful CAS on this baseline proves metadata-only changes preserve its source.
+            revision: state.revision === state.catalog?.revision ? action.next.revision : state.revision
+          };
+          const stored = action.entry === void 0 ? void 0 : action.next.entries.find((entry) => entry.id === action.entry.id);
+          if (stored !== void 0 && state.draft?.id === stored.id) {
+            next.draft = { ...state.draft, enabled: stored.enabled };
+            next.original = state.original === null ? null : { ...state.original, enabled: stored.enabled };
+          }
+          if (action.removed === true && state.draft?.id === action.entry.id) {
+            next.draft = null;
+            next.original = null;
+            next.declaration = "";
+            next.revision = null;
+            next.editing = false;
+            next.creating = false;
+            next.documentId = state.documentId + 1;
+            next.consoleVersion = state.consoleVersion + 1;
+          }
+          if (action.imported === true) next.importPath = "";
+          next.message = action.removed === true ? { key: "bindings.removed" } : action.imported === true ? { key: "bindings.imported" } : state.message;
+          return next;
+        }
+        case "reloadResult": {
+          if (action.loaded !== null && action.loaded.revision !== action.next.revision) {
+            return { ...state, message: { key: "bindings.reloadConflict" } };
+          }
+          const base2 = { ...state, catalog: action.next, catalogStatus: "ready", catalogError: null };
+          if (state.editing) {
+            return {
+              ...base2,
+              original: action.loaded?.entry ?? state.original,
+              revision: action.loaded?.revision ?? action.next.revision,
+              message: { key: "bindings.reloadedDraft" }
+            };
+          }
+          return { ...selectDocument(base2, action.loaded, true), message: { key: "bindings.reloaded" } };
+        }
+        case "reset":
+          return {
+            ...initialState,
+            documentId: state.documentId + 1,
+            consoleVersion: state.consoleVersion + 1
+          };
+        default:
+          return state;
+      }
+    }
+    function useWorkbenchController({ enabled, active = true, callUserBindings }) {
+      const [state, dispatch] = React.useReducer(reducer, initialState);
+      const generation = React.useRef(0);
+      const running = React.useRef(null);
+      const autoLoaded = React.useRef(false);
+      const source = React.useMemo(() => catalogOwner.claim(), [catalogOwner]);
+      const snapshot = React.useSyncExternalStore(source.subscribe, source.getSnapshot);
+      React.useEffect(() => () => {
+        generation.current += 1;
+        source.release();
+      }, [source]);
+      React.useEffect(() => {
+        dispatch({ type: "catalog", snapshot });
+        if (snapshot.status === "error" && snapshot.error !== null) {
+          dispatch({ type: "failed", message: { key: "bindings.failed", params: { error: snapshot.error } } });
+        }
+      }, [snapshot]);
+      const perform = React.useCallback(async (operation) => {
+        if (running.current === generation.current) return;
+        const current = ++generation.current;
+        running.current = current;
+        const alive = () => current === generation.current;
+        dispatch({ type: "begin" });
+        try {
+          await operation(alive);
+        } catch (error) {
+          if (alive()) dispatch({ type: "failed", message: {
+            key: "bindings.failed",
+            params: { error: error instanceof Error ? error.message : String(error) }
+          } });
+        } finally {
+          if (running.current === current) running.current = null;
+          if (alive()) dispatch({ type: "settle" });
+        }
+      }, []);
+      const load = React.useCallback((id2) => perform(async (alive) => {
+        const loaded = await callUserBindings("load", { id: id2 });
+        if (!alive()) return;
+        dispatch({ type: "loaded", loaded, resetConsole: true });
+      }), [perform, callUserBindings]);
+      React.useEffect(() => {
+        if (!enabled) {
+          autoLoaded.current = false;
+          generation.current += 1;
+          source.reset();
+          dispatch({ type: "reset" });
+          return;
+        }
+        if (!active) return;
+        autoLoaded.current = false;
+        void source.read();
+      }, [enabled, active, source]);
+      React.useEffect(() => {
+        if (!enabled || !active || autoLoaded.current) return;
+        if (state.draft !== null || state.original !== null) {
+          autoLoaded.current = true;
+          return;
+        }
+        const entries = snapshot.status === "ready" ? snapshot.catalog?.entries : void 0;
+        if (entries === void 0 || entries.length === 0) return;
+        autoLoaded.current = true;
+        void load(entries[0].id);
+      }, [enabled, active, snapshot, state.draft, state.original, load]);
+      const edit = (key, value) => dispatch({ type: "edit", key, value });
+      const patch = (value) => dispatch({ type: "patch", patch: value });
+      const catalogRevision = state.catalog !== null && Number.isInteger(state.catalog.revision) ? state.catalog.revision : null;
+      const canCreate = catalogRevision !== null && !state.busy && !state.editing;
+      const create = () => {
+        if (!canCreate) return;
+        generation.current += 1;
+        dispatch({ type: "create", revision: catalogRevision });
+      };
+      const cancel = () => {
+        dispatch({
+          type: "loaded",
+          loaded: state.original === null ? null : { entry: state.original, revision: state.revision },
+          resetConsole: false
+        });
+        patch({ sourceOpen: false, message: null });
+      };
+      const validate = () => perform(async (alive) => {
+        const normalized = await callUserBindings("validate", { entry: bindingPayload(state.draft) });
+        if (!alive()) return;
+        dispatch({ type: "validated", normalized });
+      });
+      const save = () => perform(async (alive) => {
+        const normalized = await callUserBindings("validate", { entry: bindingPayload(state.draft) });
+        if (!alive()) return;
+        const next = await callUserBindings("save", {
+          intent: state.original === null ? "create" : "update",
+          originalId: state.original?.id ?? null,
+          entry: bindingPayload(editableBinding(normalized)),
+          expectedRevision: state.revision
+        });
+        if (!alive()) return;
+        source.accept(next);
+        dispatch({ type: "saved", normalized, next });
+      });
+      const reload = () => perform(async (alive) => {
+        const next = await source.read({ reload: true });
+        if (next === void 0 || !alive()) return;
+        const selected = next.entries.find((entry) => entry.id === state.original?.id);
+        const loaded = selected === void 0 ? null : await callUserBindings("load", { id: selected.id });
+        if (!alive()) return;
+        dispatch({ type: "reloadResult", next, loaded });
+      });
+      const toggle = (entry) => perform(async (alive) => {
+        const next = await callUserBindings(entry.enabled ? "disable" : "enable", {
+          id: entry.id,
+          expectedRevision: state.catalog.revision
+        });
+        if (!alive()) return;
+        source.accept(next);
+        dispatch({ type: "mutated", next, entry });
+      });
+      const remove2 = (entry) => perform(async (alive) => {
+        const next = await callUserBindings("remove", {
+          id: entry.id,
+          expectedRevision: state.catalog.revision
+        });
+        if (!alive()) return;
+        source.accept(next);
+        dispatch({ type: "mutated", next, entry, removed: true });
+      });
+      const importSource = () => perform(async (alive) => {
+        const next = await callUserBindings("import", {
+          path: state.importPath,
+          expectedRevision: state.catalog.revision
+        });
+        if (!alive()) return;
+        source.accept(next);
+        dispatch({ type: "mutated", next, imported: true });
+      });
+      return {
+        state,
+        source,
+        snapshot,
+        callUserBindings,
+        canCreate,
+        edit,
+        patch,
+        create,
+        cancel,
+        load,
+        validate,
+        save,
+        reload,
+        toggle,
+        remove: remove2,
+        importSource
+      };
+    }
+    function UserBindingsWorkbench({ controller, enabled = true, t: t2, heading: heading2 = true, headingLabel }) {
+      const { state, canCreate } = controller;
+      const { edit, patch, create, cancel, load, validate, save, reload, toggle, remove: remove2, importSource } = controller;
+      if (!enabled) return null;
+      const visibleEntries = state.catalog?.entries.filter((entry) => entry.name.toLowerCase().includes(state.query.trim().toLowerCase())) ?? [];
+      return h(
+        "section",
+        { className: "ptcPlusBindings", "aria-label": t2("bindings.title"), "aria-busy": state.busy },
+        h(
+          "div",
+          { className: "ptcPlusBindingsHead" },
+          heading2 ? h("h3", { className: "ptcPlusBindingsTitle" }, headingLabel ?? t2("bindings.title")) : h("span"),
+          h(
+            "div",
+            { className: "ptcPlusBindingsActions" },
+            h(IconButton, {
+              icon: icons.refresh,
+              label: t2("bindings.reload"),
+              disabled: state.busy,
+              onClick: reload
+            }),
+            h(ActionButton, {
+              type: "button",
+              className: "ptcPlusButton",
+              "data-kind": "primary",
+              disabled: !canCreate,
+              onClick: create
+            }, typeof icons.plus === "function" ? h(icons.plus, { size: 16 }) : null, t2("bindings.new"))
+          )
+        ),
+        state.catalog === null ? h("p", {
+          // A failed read publishes its error on the shared source; without it
+          // the surface would keep announcing that it is still loading.
+          className: `ptcPlusMessage${state.message === null && state.catalogError === null ? "" : " ptcPlusDanger"}`,
+          role: state.message === null && state.catalogError === null ? void 0 : "status"
+        }, state.message !== null ? t2(state.message.key, state.message.params) : state.catalogError !== null ? t2("bindings.failed", { error: state.catalogError }) : t2("bindings.loading")) : h(
+          "div",
+          { className: "ptcPlusBindingsGrid" },
+          h(
+            "div",
+            { className: "ptcPlusBindingPane" },
+            h(
+              "label",
+              { className: "ptcPlusSearch" },
+              typeof icons.search === "function" ? h(icons.search, { size: 16 }) : null,
+              h("input", {
+                value: state.query,
+                onChange: (event) => patch({ query: event.target.value }),
+                placeholder: t2("bindings.search"),
+                "aria-label": t2("bindings.search")
+              })
+            ),
+            state.catalog.error === void 0 ? null : h("p", { className: "ptcPlusMessage ptcPlusDanger" }, state.catalog.error),
+            state.catalog.entries.length === 0 ? h("p", { className: "ptcPlusMessage" }, t2("bindings.empty")) : h("ul", { className: "ptcPlusBindingList" }, visibleEntries.map((entry) => h(
+              "li",
+              {
+                key: entry.id,
+                className: "ptcPlusBindingItem",
+                "data-selected": state.draft?.id === entry.id ? true : void 0
+              },
+              h(
+                "button",
+                {
+                  type: "button",
+                  className: "ptcPlusBindingSelect",
+                  disabled: state.busy || state.editing,
+                  onClick: () => load(entry.id)
+                },
+                h("span", { className: "ptcPlusBindingName", title: entry.name }, entry.name),
+                h("span", { className: "ptcPlusBindingMeta", title: entry.symbols.join(", ") }, entry.scope)
+              ),
+              h("button", {
+                type: "button",
+                className: "ptcPlusBindingSwitch",
+                role: "switch",
+                disabled: state.busy || state.editing,
+                "aria-checked": entry.enabled,
+                "aria-label": `${entry.name}: ${t2("bindings.enabled")}`,
+                title: t2(entry.enabled ? "bindings.disableAction" : "bindings.enableAction"),
+                onClick: () => toggle(entry)
+              }, h("span", { "aria-hidden": true }))
+            ))),
+            state.catalog.entries.length > 0 && visibleEntries.length === 0 ? h("p", { className: "ptcPlusMessage" }, t2("console.noMatches")) : null,
+            h(
+              "div",
+              { className: "ptcPlusBindingRun" },
+              h("input", {
+                className: "ptcPlusInput",
+                value: state.importPath,
+                disabled: state.busy,
+                placeholder: t2("bindings.importPath"),
+                "aria-label": t2("bindings.importPath"),
+                onChange: (event) => patch({ importPath: event.target.value })
+              }),
+              h(ActionButton, {
+                type: "button",
+                className: "ptcPlusButton",
+                disabled: state.busy || state.editing || state.importPath.trim() === "",
+                onClick: importSource
+              }, t2("bindings.import"))
+            )
+          ),
+          state.draft === null ? null : h(
+            "div",
+            { className: "ptcPlusBindingEditor" },
+            h(
+              "div",
+              { className: "ptcPlusEditorHead" },
+              h("strong", { className: "ptcPlusEditorFile" }, state.draft.name || t2("bindings.new")),
+              h(
+                "div",
+                { className: "ptcPlusBindingLifecycle" },
+                state.editing ? h(
+                  React.Fragment,
+                  null,
+                  h(
+                    ActionButton,
+                    { disabled: state.busy, onClick: validate },
+                    h(icons.check, { size: 14 }),
+                    t2("bindings.validate")
+                  ),
+                  h(ActionButton, { "data-kind": "primary", disabled: state.busy, onClick: save }, t2("bindings.save")),
+                  h(ActionButton, { disabled: state.busy, onClick: cancel }, t2("bindings.cancel"))
+                ) : null,
+                state.catalog.entries.some((entry) => entry.id === state.draft.id) ? h(IconButton, {
+                  icon: icons.trash,
+                  label: t2("bindings.remove"),
+                  "data-kind": "danger",
+                  disabled: state.busy || state.editing,
+                  onClick: () => remove2(state.draft)
+                }) : null
+              )
+            ),
+            h(
+              "details",
+              { className: "ptcPlusBindingSection ptcPlusBindingSourcePreview", open: true },
+              h("summary", { className: "ptcPlusBindingFieldLabel" }, t2("bindings.declaration")),
+              state.declaration === "" ? h("p", { className: "ptcPlusMessage" }, t2("bindings.unvalidated")) : typeof CodeBlock === "function" ? h(CodeBlock, {
+                code: state.declaration,
+                lang: "typescript",
+                className: "ptcPlusCodeBlock",
+                copyLabel: t2("tool.copy"),
+                copiedLabel: t2("tool.copied")
+              }) : h("pre", { className: "ptcPlusDeclaration" }, state.declaration)
+            ),
+            h(
+              "section",
+              { className: "ptcPlusBindingSection ptcPlusModelPrompt" },
+              h("h4", { className: "ptcPlusBindingSectionTitle" }, t2("bindings.modelContext")),
+              h(
+                "div",
+                { className: "ptcPlusBindingFields" },
+                h(
+                  "label",
+                  { className: "ptcPlusBindingField ptcPlusPromptToggle", "data-wide": true },
+                  h("span", { className: "ptcPlusBindingFieldLabel" }, t2("bindings.includeDeclaration")),
+                  h("input", {
+                    className: "ptcPlusCheck",
+                    type: "checkbox",
+                    checked: state.draft.modelContext.includeDeclaration,
+                    disabled: state.busy,
+                    onChange: (event) => edit("modelContext", { ...state.draft.modelContext, includeDeclaration: event.target.checked })
+                  })
+                ),
+                h(
+                  "label",
+                  { className: "ptcPlusBindingField", "data-wide": true },
+                  h("span", { className: "ptcPlusBindingFieldLabel" }, t2("bindings.instructions")),
+                  h("textarea", {
+                    className: "ptcPlusInput",
+                    rows: 3,
+                    maxLength: 4096,
+                    value: state.draft.modelContext.instructions,
+                    disabled: state.busy,
+                    onChange: (event) => edit("modelContext", { ...state.draft.modelContext, instructions: event.target.value })
+                  })
+                )
+              )
+            ),
+            h(
+              "div",
+              { className: "ptcPlusSourceSection" },
+              h(
+                "button",
+                {
+                  type: "button",
+                  className: "ptcPlusSourceToggle",
+                  "aria-expanded": state.sourceOpen,
+                  onClick: () => patch({ sourceOpen: !state.sourceOpen })
+                },
+                h(icons.chevron, { size: 14, style: { transform: state.sourceOpen ? void 0 : "rotate(-90deg)" } }),
+                t2("bindings.sourcePreview"),
+                h("span", { className: "ptcPlusSourceFilename" }, state.draft.name ? `${state.draft.name}.ts` : "")
+              ),
+              h("div", { className: "ptcPlusSourceActions" }, state.editing ? null : h(
+                ActionButton,
+                { disabled: state.busy, onClick: () => patch({ editing: true, sourceOpen: true }) },
+                typeof icons.edit === "function" ? h(icons.edit, { size: 14 }) : null,
+                t2("bindings.edit")
+              )),
+              h(
+                "div",
+                { className: "ptcPlusSourceBody", hidden: !state.sourceOpen },
+                state.editing ? h(TypeScriptEditor, {
+                  documentId: state.documentId,
+                  value: state.draft.source,
+                  disabled: state.busy,
+                  label: t2("bindings.source"),
+                  onChange: (value) => edit("source", value)
+                }) : state.sourceOpen && typeof CodeBlock === "function" ? h(CodeBlock, {
+                  code: state.draft.source,
+                  lang: "typescript",
+                  className: "ptcPlusSourceCode",
+                  copyLabel: t2("tool.copy"),
+                  copiedLabel: t2("tool.copied")
+                }) : state.sourceOpen ? h("pre", { className: "ptcPlusSourceCode" }, state.draft.source) : null
+              )
+            ),
+            h(
+              "div",
+              { className: "ptcPlusWorkbenchFeedback", role: "status" },
+              state.busy ? t2("bindings.working") : state.message === null ? "" : t2(state.message.key, state.message.params)
+            ),
+            h(BindingConsole, {
+              key: state.documentId,
+              entryId: `workbench:${state.documentId}`,
+              source: state.draft.source,
+              resetVersion: state.consoleVersion,
+              callUserBindings: controller.callUserBindings,
+              t: t2
+            }),
+            h(
+              "details",
+              {
+                className: "ptcPlusBindingSection ptcPlusEntrySettings",
+                open: state.metadataOpen,
+                onToggle: (event) => patch({ metadataOpen: event.currentTarget.open })
+              },
+              h("summary", { className: "ptcPlusBindingSectionTitle" }, t2("bindings.entry")),
+              h(
+                "div",
+                { className: "ptcPlusBindingFields" },
+                h(
+                  "label",
+                  { className: "ptcPlusBindingField" },
+                  h("span", { className: "ptcPlusBindingFieldLabel" }, t2("bindings.id")),
+                  h("input", {
+                    className: "ptcPlusInput",
+                    value: state.draft.id,
+                    // A stored entry is addressed by this id; only a new draft may choose it.
+                    disabled: state.busy || !state.editing || state.original !== null,
+                    onChange: (event) => edit("id", event.target.value)
+                  })
+                ),
+                h(
+                  "label",
+                  { className: "ptcPlusBindingField" },
+                  h("span", { className: "ptcPlusBindingFieldLabel" }, t2("bindings.name")),
+                  h("input", {
+                    className: "ptcPlusInput",
+                    value: state.draft.name,
+                    disabled: state.busy || !state.editing,
+                    onChange: (event) => edit("name", event.target.value)
+                  })
+                ),
+                h(
+                  "label",
+                  { className: "ptcPlusBindingField" },
+                  h("span", { className: "ptcPlusBindingFieldLabel" }, t2("bindings.scope")),
+                  h("select", {
+                    className: "ptcPlusSelect",
+                    value: state.draft.scope,
+                    disabled: state.busy || !state.editing,
+                    onChange: (event) => edit("scope", event.target.value)
+                  }, h("option", { value: "namespace" }, "namespace"), h("option", { value: "top-level" }, "top-level"))
+                ),
+                h(
+                  "label",
+                  { className: "ptcPlusBindingField" },
+                  h("span", { className: "ptcPlusBindingFieldLabel" }, t2("bindings.symbols")),
+                  h("input", {
+                    className: "ptcPlusInput",
+                    value: state.draft.symbolsText,
+                    disabled: state.busy || !state.editing,
+                    placeholder: t2("bindings.symbolsPlaceholder"),
+                    onChange: (event) => edit("symbolsText", event.target.value)
+                  })
+                ),
+                h(
+                  "label",
+                  { className: "ptcPlusBindingField", "data-wide": true },
+                  h("span", { className: "ptcPlusBindingFieldLabel" }, t2("bindings.purpose")),
+                  h("input", {
+                    className: "ptcPlusInput",
+                    value: state.draft.purpose,
+                    disabled: state.busy || !state.editing,
+                    onChange: (event) => edit("purpose", event.target.value)
+                  })
+                )
+              )
+            )
+          ),
+          state.message === null || state.draft !== null ? null : h("p", { className: "ptcPlusMessage", role: "status" }, t2(state.message.key, state.message.params))
+        )
+      );
+    }
+    function canReturnFocus(element) {
+      return element instanceof HTMLElement && element.isConnected && element !== document.body && (element.tabIndex >= 0 || element.isContentEditable) && !element.matches(':disabled, [aria-disabled="true"]') && !element.closest('[hidden], [inert], [aria-hidden="true"]') && element.getClientRects().length > 0 && getComputedStyle(element).visibility === "visible";
+    }
+    function BindingsDialog({ controller, t: t2, onClose, returnFocusRef, getReturnFocus }) {
+      const content2 = React.useRef(null);
+      const localReturnFocus = React.useRef(null);
+      const returnFocus = returnFocusRef ?? localReturnFocus;
+      React.useEffect(() => {
+        const previous = document.activeElement;
+        if (!content2.current.contains(previous) && canReturnFocus(previous)) returnFocus.current = previous;
+        content2.current.querySelector("button")?.focus();
+      }, [returnFocus]);
+      const close = () => {
+        const target = canReturnFocus(returnFocus.current) ? returnFocus.current : getReturnFocus?.();
+        returnFocus.current = null;
+        onClose();
+        if (canReturnFocus(target)) target.focus({ preventScroll: true });
+      };
+      const trapFocus = (event) => {
+        if (event.key !== "Tab") return;
+        const controls = [...content2.current.querySelectorAll("button:not(:disabled),input:not(:disabled),textarea:not(:disabled),select:not(:disabled),[contenteditable=true],summary")].filter((element) => element.getClientRects().length > 0);
+        const first = controls[0];
+        const last2 = controls.at(-1);
+        if (event.shiftKey && document.activeElement === first || !event.shiftKey && document.activeElement === last2) {
+          event.preventDefault();
+          (event.shiftKey ? last2 : first)?.focus();
+        }
+      };
+      return h(
+        Modal,
+        { open: true, onClose: close, title: t2("bindings.title"), headless: true, className: "ptcPlusBindingsModal" },
+        h(
+          "div",
+          { className: "ptcPlusBindingsDialog", ref: content2, onKeyDown: trapFocus },
+          h(
+            "div",
+            { className: "ptcPlusBindingsDialogHead" },
+            h("h2", null, t2("bindings.title")),
+            h("button", {
+              type: "button",
+              className: "ptcPlusDialogClose",
+              onClick: close,
+              "aria-label": t2("bindings.close"),
+              title: t2("bindings.close")
+            }, h(icons.close, { size: 16 }))
+          ),
+          h(
+            "div",
+            { className: "ptcPlusBindingsSurface" },
+            h(UserBindingsWorkbench, { controller, t: t2, heading: false })
+          )
+        )
+      );
+    }
+    return { useWorkbenchController, UserBindingsWorkbench, BindingsDialog };
+  }
+
+  // src/client-transport.js
+  function createReplObserver({ rpc, ctx }) {
+    function observeRepl(sessionId, element, memory, onObservation) {
+      let controller;
+      let retryTimer;
+      let retries = 0;
+      let disposed = false;
+      const retryDelays = [1e3, 2e3, 4e3];
+      let visible = typeof IntersectionObserver !== "function";
+      const stop = () => {
+        const previous = controller;
+        controller = void 0;
+        clearTimeout(retryTimer);
+        retryTimer = void 0;
+        retries = 0;
+        previous?.abort();
+      };
+      const watch = async (current) => {
+        try {
+          await rpc.call(RPC_CONTRACTS.repl, "watch", { sessionId }, current.signal);
+        } catch {
+        }
+        if (disposed || controller !== current) return;
+        controller = void 0;
+        current.abort();
+        if (!visible || document.visibilityState === "hidden") {
+          stop();
+          return;
+        }
+        const delay = retryDelays[retries++];
+        if (delay === void 0) return;
+        retryTimer = setTimeout(() => {
+          retryTimer = void 0;
+          sync();
+        }, delay);
+      };
+      const read = async (current) => {
+        if (!memory.available || memory.entries.length === 0 || memory.observation !== void 0) return;
+        try {
+          const result = await rpc.call(RPC_CONTRACTS.repl, "observe", { sessionId, memory }, current.signal);
+          if (disposed || controller !== current || current.signal.aborted || result?.ok !== true || result.value === null) return;
+          const observed = normalizeReplMemorySnapshot(result.value);
+          const { observation, ...inventory } = observed;
+          if (observation !== void 0 && JSON.stringify(inventory) === JSON.stringify(memory)) onObservation(observed);
+        } catch {
+        }
+      };
+      const sync = () => {
+        if (disposed) return;
+        const active = visible && document.visibilityState !== "hidden";
+        if (!active) {
+          stop();
+          return;
+        }
+        if (controller !== void 0 || retryTimer !== void 0 || retries > retryDelays.length) return;
+        controller = new AbortController();
+        void watch(controller);
+        void read(controller);
+      };
+      const observer = typeof IntersectionObserver === "function" ? new IntersectionObserver((entries) => {
+        visible = entries.some((entry) => entry.isIntersecting);
+        sync();
+      }) : void 0;
+      observer?.observe(element);
+      const reset = ctx.on("connection/reset", () => {
+        stop();
+        sync();
+      });
+      document.addEventListener("visibilitychange", sync);
+      sync();
+      return () => {
+        disposed = true;
+        stop();
+        observer?.disconnect();
+        document.removeEventListener("visibilitychange", sync);
+        reset();
+      };
+    }
+    return { observeRepl };
+  }
+  function createBindingCommandAvailability(scope) {
+    const entries = /* @__PURE__ */ new Map();
+    let commandRemote;
+    const entryFor = (sessionId) => {
+      const id2 = String(sessionId);
+      let entry = entries.get(id2);
+      if (entry === void 0) {
+        entry = { available: false, epoch: 0, listeners: /* @__PURE__ */ new Set() };
+        entry.source = {
+          getSnapshot: () => entry.available,
+          subscribe(listener) {
+            entry.listeners.add(listener);
+            if (entry.listeners.size === 1) void refresh(id2);
+            return () => {
+              entry.listeners.delete(listener);
+              if (entry.listeners.size === 0) {
+                entry.epoch++;
+                entry.available = false;
+              }
+            };
+          }
+        };
+        entries.set(id2, entry);
+      }
+      return entry;
+    };
+    const publish = (entry, available) => {
+      if (entry.available === available) return;
+      entry.available = available;
+      for (const listener of entry.listeners) listener();
+    };
+    const refresh = async (sessionId) => {
+      if (sessionId === void 0 || sessionId === null) return;
+      const entry = entries.get(String(sessionId));
+      if (entry === void 0 || entry.listeners.size === 0) return;
+      const epoch = ++entry.epoch;
+      let available = false;
+      try {
+        const result = await commandRemote?.commands.list(String(sessionId));
+        available = result?.ok === true && Array.isArray(result.value) && result.value.some((command2) => command2?.name === "binding");
+      } catch {
+      }
+      if (entry.epoch === epoch) publish(entry, available);
+    };
+    const reset = (sessionId) => {
+      if (sessionId === void 0 || sessionId === null) return;
+      const entry = entries.get(String(sessionId));
+      if (entry === void 0 || entry.listeners.size === 0) return;
+      entry.epoch += 1;
+      publish(entry, false);
+      void refresh(sessionId);
+    };
+    scope.inject(["remote", "remote.commands"], (commandScope) => {
+      commandRemote = commandScope.remote;
+      commandScope.effect(() => commandScope.remote.$on("commands/change", () => {
+        for (const sessionId of entries.keys()) void refresh(sessionId);
+      }));
+      commandScope.effect(() => commandScope.remote.$on("agent-preset/selected", reset));
+      for (const sessionId of entries.keys()) void refresh(sessionId);
+      commandScope.effect(() => () => {
+        commandRemote = void 0;
+        for (const entry of entries.values()) {
+          entry.epoch++;
+          publish(entry, false);
+        }
+      });
+    });
+    scope.on("connection/reset", () => {
+      for (const sessionId of entries.keys()) reset(sessionId);
+    });
+    scope.effect(() => () => {
+      for (const entry of entries.values()) entry.epoch++;
+      entries.clear();
+    });
+    return Object.freeze({
+      source: (sessionId) => entryFor(sessionId).source
+    });
+  }
+
+  // src/client.js
   window.__ModuleLoader__.load({
     // Replaced by the bundle entry with the package name from package.json.
     id: "dsh-ptc-plus",
@@ -28050,7 +30591,6 @@
         IconStopFill16,
         Menu,
         Modal,
-        StateDot,
         Toast,
         Tooltip
       } = require2("@deepseek-ai/dsh-client-ui-primitives");
@@ -28081,51 +30621,18 @@
         ActionButton,
         icons: { play: IconPlayOutline16, stop: IconStopFill16, reset: IconRefreshOutline16, clear: IconTrashOutline16 }
       });
-      function installStyles() {
-        if (document.getElementById(CLIENT_STYLE_ID) !== null) return () => {
-        };
-        const style = document.createElement("style");
-        style.id = CLIENT_STYLE_ID;
-        style.textContent = `${CLIENT_CSS}${BINDING_WORKBENCH_CSS}${REPL_CONSOLE_CSS}`;
-        document.head.append(style);
-        return () => style.remove();
-      }
-      function fieldInput(field, value, disabled, onChange, label) {
-        if (field.type === "boolean") {
-          return h("input", {
-            type: "checkbox",
-            role: "switch",
-            className: "ptcPlusCheck",
-            checked: value === true,
-            disabled,
-            "aria-label": label,
-            onChange: (event) => onChange(field, event.target.checked)
-          });
-        }
-        return h("input", {
-          type: "number",
-          className: "ptcPlusInput",
-          value: Number.isSafeInteger(value) ? String(value) : "",
-          min: field.min,
-          max: field.max,
-          step: 1,
-          disabled,
-          "aria-label": label,
-          onChange: (event) => {
-            const input = event.target.value;
-            const parsed = input === "" ? "" : Number(input);
-            onChange(field, Number.isSafeInteger(parsed) ? parsed : input);
-          }
-        });
-      }
+      const { PTCPlusToolRow } = createPtcToolView(React, {
+        CodeBlock,
+        DisclosureRow,
+        icons: { chevron: IconChevronDownOutline14, check: IconCheckOutline14, inspect: IconInspectOutline12 }
+      });
       async function apply(ctx) {
         const rpc = await createClientRpc(ctx);
         const preferenceScope = ctx.settingsScope.bind({ namespace: SETTINGS_NAMESPACE });
         ctx.effect(() => ctx.locale.register(LOCALE_NS, SETTINGS_COPY), "ptc-plus: settings dictionaries");
         ctx.effect(installStyles, "ptc-plus: client styles");
         async function callUserBindings(endpoint, payload = {}, signal = void 0) {
-          const settings = preferenceScope.getSnapshot();
-          if (settings.status !== "ready" || settings.value?.enabled !== true || settings.value?.userBindingsEnabled !== true) {
+          if (!featureEnabled(preferenceScope.getSnapshot(), "bindings")) {
             throw new Error("Global User Bindings are disabled");
           }
           const result = await rpc.call(
@@ -28139,1191 +30646,84 @@
           if (typeof result?.error?.code === "string") error.code = result.error.code;
           throw error;
         }
-        function observeRepl(sessionId, element, memory, onObservation) {
-          let controller;
-          let retryTimer;
-          let retries = 0;
-          let disposed = false;
-          const retryDelays = [1e3, 2e3, 4e3];
-          let visible = typeof IntersectionObserver !== "function";
-          const stop = () => {
-            const previous = controller;
-            controller = void 0;
-            clearTimeout(retryTimer);
-            retryTimer = void 0;
-            retries = 0;
-            previous?.abort();
-          };
-          const watch = async (current) => {
-            try {
-              await rpc.call(RPC_CONTRACTS.repl, "watch", { sessionId }, current.signal);
-            } catch {
-            }
-            if (disposed || controller !== current) return;
-            controller = void 0;
-            current.abort();
-            if (!visible || document.visibilityState === "hidden") {
-              stop();
-              return;
-            }
-            const delay = retryDelays[retries++];
-            if (delay === void 0) return;
-            retryTimer = setTimeout(() => {
-              retryTimer = void 0;
-              sync();
-            }, delay);
-          };
-          const read = async (current) => {
-            if (!memory.available || memory.entries.length === 0 || memory.observation !== void 0) return;
-            try {
-              const result = await rpc.call(RPC_CONTRACTS.repl, "observe", { sessionId, memory }, current.signal);
-              if (disposed || controller !== current || current.signal.aborted || result?.ok !== true || result.value === null) return;
-              const observed = normalizeReplMemorySnapshot(result.value);
-              const { observation, ...inventory } = observed;
-              if (observation !== void 0 && JSON.stringify(inventory) === JSON.stringify(memory)) onObservation(observed);
-            } catch {
-            }
-          };
-          const sync = () => {
-            if (disposed) return;
-            const active = visible && document.visibilityState !== "hidden";
-            if (!active) {
-              stop();
-              return;
-            }
-            if (controller !== void 0 || retryTimer !== void 0 || retries > retryDelays.length) return;
-            controller = new AbortController();
-            void watch(controller);
-            void read(controller);
-          };
-          const observer = typeof IntersectionObserver === "function" ? new IntersectionObserver((entries) => {
-            visible = entries.some((entry) => entry.isIntersecting);
-            sync();
-          }) : void 0;
-          observer?.observe(element);
-          const reset = ctx.on("connection/reset", () => {
-            stop();
-            sync();
-          });
-          document.addEventListener("visibilitychange", sync);
-          sync();
-          return () => {
-            disposed = true;
-            stop();
-            observer?.disconnect();
-            document.removeEventListener("visibilitychange", sync);
-            reset();
-          };
-        }
-        function createBindingCommandAvailability(scope) {
-          const entries = /* @__PURE__ */ new Map();
-          let commandRemote;
-          const entryFor = (sessionId) => {
-            const id2 = String(sessionId);
-            let entry = entries.get(id2);
-            if (entry === void 0) {
-              entry = { available: false, epoch: 0, listeners: /* @__PURE__ */ new Set() };
-              entry.source = {
-                getSnapshot: () => entry.available,
-                subscribe(listener) {
-                  entry.listeners.add(listener);
-                  if (entry.listeners.size === 1) void refresh(id2);
-                  return () => {
-                    entry.listeners.delete(listener);
-                    if (entry.listeners.size === 0) {
-                      entry.epoch++;
-                      entry.available = false;
-                    }
-                  };
-                }
-              };
-              entries.set(id2, entry);
-            }
-            return entry;
-          };
-          const publish = (entry, available) => {
-            if (entry.available === available) return;
-            entry.available = available;
-            for (const listener of entry.listeners) listener();
-          };
-          const refresh = async (sessionId) => {
-            if (sessionId === void 0 || sessionId === null) return;
-            const entry = entries.get(String(sessionId));
-            if (entry === void 0 || entry.listeners.size === 0) return;
-            const epoch = ++entry.epoch;
-            let available = false;
-            try {
-              const result = await commandRemote?.commands.list(String(sessionId));
-              available = result?.ok === true && Array.isArray(result.value) && result.value.some((command2) => command2?.name === "binding");
-            } catch {
-            }
-            if (entry.epoch === epoch) publish(entry, available);
-          };
-          const reset = (sessionId) => {
-            if (sessionId === void 0 || sessionId === null) return;
-            const entry = entries.get(String(sessionId));
-            if (entry === void 0 || entry.listeners.size === 0) return;
-            entry.epoch += 1;
-            publish(entry, false);
-            void refresh(sessionId);
-          };
-          scope.inject(["remote", "remote.commands"], (commandScope) => {
-            commandRemote = commandScope.remote;
-            commandScope.effect(() => commandScope.remote.$on("commands/change", () => {
-              for (const sessionId of entries.keys()) void refresh(sessionId);
-            }));
-            commandScope.effect(() => commandScope.remote.$on("agent-preset/selected", reset));
-            for (const sessionId of entries.keys()) void refresh(sessionId);
-            commandScope.effect(() => () => {
-              commandRemote = void 0;
-              for (const entry of entries.values()) {
-                entry.epoch++;
-                publish(entry, false);
-              }
-            });
-          });
-          scope.on("connection/reset", () => {
-            for (const sessionId of entries.keys()) reset(sessionId);
-          });
-          scope.effect(() => () => {
-            for (const entry of entries.values()) entry.epoch++;
-            entries.clear();
-          });
-          return Object.freeze({
-            source: (sessionId) => entryFor(sessionId).source
-          });
-        }
+        const catalogOwner = createCatalogOwner({ callUserBindings });
+        ctx.effect(() => () => catalogOwner.dispose(), "ptc-plus: binding catalog sources");
+        const { useWorkbenchController, UserBindingsWorkbench, BindingsDialog } = createUserBindingsWorkbench(React, {
+          TypeScriptEditor,
+          BindingConsole,
+          IconButton,
+          ActionButton,
+          CodeBlock,
+          Modal,
+          catalogOwner,
+          icons: {
+            refresh: IconRefreshOutline16,
+            plus: IconPlusOutline16,
+            check: IconCheckOutline14,
+            trash: IconTrashOutline16,
+            edit: IconEditOutline16,
+            search: IconSearchOutline16,
+            chevron: IconChevronDownOutline14,
+            close: IconCloseOutline16
+          }
+        });
+        const { observeRepl } = createReplObserver({ rpc, ctx });
+        const { PTCPlusSettingsCard } = createPtcSettingsView(React, {
+          ActionButton,
+          BindingsDialog,
+          useWorkbenchController,
+          icons: { chevron: IconChevronDownOutline14 }
+        });
+        const { ReplComposer, ReplConsole, ReplMemoryCard, replPopoverIsOpen, placeReplPopover } = createReplView(React, {
+          ActionButton,
+          CodeBlock,
+          featureEnabled,
+          normalizeReplMemorySnapshot,
+          unavailableReplMemorySnapshot,
+          useSessionPreset,
+          sessionUsesPtcPreset,
+          useWorkbenchController,
+          UserBindingsWorkbench,
+          icons: { search: IconSearchOutline16, chevron: IconChevronDownOutline14, sparkle: IconSparkle16 }
+        });
         const settingsProps = () => ({ hooks: { ptcSettings: preferenceScope }, callUserBindings });
         const updateSetting = async (key, value) => {
           const before = preferenceScope.getSnapshot();
-          if (before.status !== "ready" || before.writable !== true || key !== "enabled" && before.value?.enabled !== true || before.value?.[key] === value) return null;
+          if (before.status !== "ready" || before.writable !== true || key !== "enabled" && !featureEnabled(before, "plugin") || before.value?.[key] === value) return null;
           await preferenceScope.set(key, value);
           const after = preferenceScope.getSnapshot();
           return after.status === "ready" && after.value?.[key] === value ? "status.applied" : "status.conflict";
         };
-        const registerEnabled = (scope, bindings, register) => scope.effect(() => {
-          let dispose;
-          const sync = () => {
-            const snapshot = preferenceScope.getSnapshot();
-            const enabled = snapshot.status === "ready" && snapshot.value?.enabled === true && (!bindings || snapshot.value?.userBindingsEnabled === true);
-            if (enabled === (dispose !== void 0)) return;
-            dispose?.();
-            dispose = enabled ? register() : void 0;
-          };
-          sync();
-          const unsubscribe = preferenceScope.subscribe(sync);
-          return () => {
-            unsubscribe();
-            dispose?.();
-          };
+        const settingsGate = (feature, register) => ({
+          subscribe: (listener) => preferenceScope.subscribe(listener),
+          isEnabled: () => featureEnabled(preferenceScope.getSnapshot(), feature),
+          register
         });
-        const blankBinding = () => ({
-          id: "",
-          name: "",
-          scope: "namespace",
-          symbolsText: "",
-          purpose: "",
-          enabled: false,
-          source: "export function helper() {\n  return undefined\n}\n",
-          modelContext: bindingModelPreferences()
-        });
-        const editableBinding = (value) => ({
-          id: value.id,
-          name: value.name,
-          scope: value.scope,
-          symbolsText: Array.isArray(value.symbols) ? value.symbols.join(", ") : "",
-          purpose: value.purpose,
-          enabled: value.enabled,
-          source: value.source,
-          modelContext: bindingModelPreferences(value.modelContext)
-        });
-        const bindingPayload = (value) => {
-          const { symbolsText, ...entry } = value;
-          const symbols = symbolsText.split(",").map((symbol) => symbol.trim()).filter(Boolean);
-          return symbols.length === 0 ? entry : { ...entry, symbols };
-        };
-        function UserBindingsWorkbench({ enabled, t: t2, callUserBindings: callUserBindings2, heading: heading2 = true, headingLabel }) {
-          const [catalog, setCatalog] = React.useState(null);
-          const [draft, setDraft] = React.useState(null);
-          const [declaration, setDeclaration] = React.useState("");
-          const [importPath, setImportPath] = React.useState("");
-          const [original, setOriginal] = React.useState(null);
-          const [editRevision, setEditRevision] = React.useState(null);
-          const [editing, setEditing] = React.useState(false);
-          const [sourceOpen, setSourceOpen] = React.useState(false);
-          const [consoleVersion, setConsoleVersion] = React.useState(0);
-          const [message, setMessage] = React.useState(null);
-          const [busy, setBusy] = React.useState(false);
-          const [catalogQuery, setCatalogQuery] = React.useState("");
-          const [metadataOpen, setMetadataOpen] = React.useState(false);
-          const requestGeneration = React.useRef(0);
-          const operationActive = React.useRef(false);
-          const fail = (error) => setMessage({
-            key: "bindings.failed",
-            params: { error: error instanceof Error ? error.message : String(error) }
-          });
-          const refresh = React.useCallback(async (reload2 = false, signal = void 0) => {
-            return callUserBindings2(reload2 ? "reload" : "list", {}, signal);
-          }, []);
-          const showEntry = (loaded, { resetConsole = true } = {}) => {
-            const entry = loaded?.entry ?? null;
-            if (resetConsole && draft?.source !== entry?.source) setConsoleVersion((current) => current + 1);
-            setDraft(entry === null ? null : editableBinding(entry));
-            setOriginal(entry);
-            setDeclaration(entry?.declaration ?? "");
-            setEditRevision(loaded?.revision ?? null);
-            setEditing(false);
-          };
-          React.useEffect(() => {
-            requestGeneration.current += 1;
-            operationActive.current = false;
-            setBusy(false);
-            showEntry(null);
-            setCatalog(null);
-            setMessage(null);
-            if (!enabled) return void 0;
-            const controller = new AbortController();
-            void perform(async (current) => {
-              const next = await refresh(false, controller.signal);
-              if (!current()) return;
-              setCatalog(next);
-              if (next.entries[0]) {
-                const loaded = await callUserBindings2("load", { id: next.entries[0].id }, controller.signal);
-                if (current()) showEntry(loaded);
-              }
-            });
-            return () => {
-              requestGeneration.current += 1;
-              controller.abort();
-            };
-          }, [enabled, refresh]);
-          const perform = async (operation) => {
-            if (operationActive.current) return;
-            operationActive.current = true;
-            const generation = ++requestGeneration.current;
-            const current = () => generation === requestGeneration.current;
-            setBusy(true);
-            setMessage(null);
-            try {
-              await operation(current);
-            } catch (error) {
-              if (current()) fail(error);
-            } finally {
-              if (current()) {
-                operationActive.current = false;
-                setBusy(false);
-              }
-            }
-          };
-          const edit = (key, value) => {
-            setDraft((current) => ({ ...current, [key]: value }));
-            setEditing(true);
-            setMessage(null);
-            if (key !== "modelContext") setDeclaration("");
-          };
-          const load = (id2) => perform(async (current) => {
-            const loaded = await callUserBindings2("load", { id: id2 });
-            if (!current()) return;
-            showEntry(loaded);
-            setSourceOpen(false);
-            setMetadataOpen(false);
-          });
-          const reload = () => perform(async (current) => {
-            const next = await refresh(true);
-            if (!current()) return;
-            const selected = next.entries.find((entry) => entry.id === original?.id);
-            const loaded = selected === void 0 ? null : await callUserBindings2("load", { id: selected.id });
-            if (!current()) return;
-            if (loaded !== null && loaded.revision !== next.revision) {
-              setMessage({ key: "bindings.reloadConflict" });
-              return;
-            }
-            setCatalog(next);
-            if (editing) {
-              setOriginal(loaded?.entry ?? null);
-              setEditRevision(loaded?.revision ?? next.revision);
-            } else showEntry(loaded);
-            setMessage({ key: editing ? "bindings.reloadedDraft" : "bindings.reloaded" });
-          });
-          const validate = () => perform(async (current) => {
-            const normalized = await callUserBindings2("validate", { entry: bindingPayload(draft) });
-            if (!current()) return;
-            setDraft(editableBinding(normalized));
-            setDeclaration(normalized.declaration);
-            setMessage({ key: "bindings.valid" });
-          });
-          const save = () => perform(async (current) => {
-            const normalized = await callUserBindings2("validate", { entry: bindingPayload(draft) });
-            if (!current()) return;
-            const next = await callUserBindings2("save", {
-              entry: bindingPayload(editableBinding(normalized)),
-              expectedRevision: editRevision
-            });
-            if (!current()) return;
-            setCatalog(next);
-            setDraft(editableBinding(normalized));
-            setDeclaration(normalized.declaration);
-            setMessage({ key: "bindings.saved" });
-            if (original?.source !== normalized.source) setConsoleVersion((current2) => current2 + 1);
-            setOriginal(normalized);
-            setEditRevision(next.revision);
-            setEditing(false);
-            setSourceOpen(false);
-          });
-          const acceptCatalogMutation = (next) => {
-            setCatalog(next);
-            setEditRevision((current) => current === catalog.revision ? next.revision : current);
-          };
-          const toggle = (entry) => perform(async (current) => {
-            const next = await callUserBindings2(entry.enabled ? "disable" : "enable", {
-              id: entry.id,
-              expectedRevision: catalog.revision
-            });
-            if (!current()) return;
-            acceptCatalogMutation(next);
-            if (draft?.id === entry.id) {
-              setDraft((current2) => ({ ...current2, enabled: !entry.enabled }));
-              setOriginal((current2) => ({ ...current2, enabled: !entry.enabled }));
-            }
-          });
-          const remove2 = (entry) => perform(async (current) => {
-            const next = await callUserBindings2("remove", {
-              id: entry.id,
-              expectedRevision: catalog.revision
-            });
-            if (!current()) return;
-            acceptCatalogMutation(next);
-            if (draft?.id === entry.id) {
-              showEntry(null);
-            }
-            setMessage({ key: "bindings.removed" });
-          });
-          const importSource = () => perform(async (current) => {
-            const next = await callUserBindings2("import", {
-              path: importPath,
-              expectedRevision: catalog.revision
-            });
-            if (!current()) return;
-            acceptCatalogMutation(next);
-            setImportPath("");
-            setMessage({ key: "bindings.imported" });
-          });
-          if (!enabled) return null;
-          const visibleEntries = catalog?.entries.filter((entry) => entry.name.toLowerCase().includes(catalogQuery.trim().toLowerCase())) ?? [];
-          return h(
-            "section",
-            { className: "ptcPlusBindings", "aria-label": t2("bindings.title"), "aria-busy": busy },
-            h(
-              "div",
-              { className: "ptcPlusBindingsHead" },
-              heading2 ? h("h3", { className: "ptcPlusBindingsTitle" }, headingLabel ?? t2("bindings.title")) : h("span"),
-              h(
-                "div",
-                { className: "ptcPlusBindingsActions" },
-                h(IconButton, {
-                  icon: IconRefreshOutline16,
-                  label: t2("bindings.reload"),
-                  disabled: busy,
-                  onClick: reload
-                }),
-                h(ActionButton, {
-                  type: "button",
-                  className: "ptcPlusButton",
-                  "data-kind": "primary",
-                  disabled: busy || editing,
-                  onClick: () => {
-                    requestGeneration.current += 1;
-                    setDraft(blankBinding());
-                    setOriginal(null);
-                    setEditRevision(catalog?.revision ?? null);
-                    setEditing(true);
-                    setSourceOpen(true);
-                    setMetadataOpen(true);
-                    setDeclaration("");
-                    setConsoleVersion((current) => current + 1);
-                  }
-                }, typeof IconPlusOutline16 === "function" ? h(IconPlusOutline16, { size: 16 }) : null, t2("bindings.new"))
-              )
-            ),
-            catalog === null ? h("p", {
-              className: `ptcPlusMessage${message === null ? "" : " ptcPlusDanger"}`,
-              role: message === null ? void 0 : "status"
-            }, message === null ? t2("bindings.loading") : t2(message.key, message.params)) : h(
-              "div",
-              { className: "ptcPlusBindingsGrid" },
-              h(
-                "div",
-                { className: "ptcPlusBindingPane" },
-                h(
-                  "label",
-                  { className: "ptcPlusSearch" },
-                  typeof IconSearchOutline16 === "function" ? h(IconSearchOutline16, { size: 16 }) : null,
-                  h("input", {
-                    value: catalogQuery,
-                    onChange: (event) => setCatalogQuery(event.target.value),
-                    placeholder: t2("bindings.search"),
-                    "aria-label": t2("bindings.search")
-                  })
-                ),
-                catalog.error === void 0 ? null : h("p", { className: "ptcPlusMessage ptcPlusDanger" }, catalog.error),
-                catalog.entries.length === 0 ? h("p", { className: "ptcPlusMessage" }, t2("bindings.empty")) : h("ul", { className: "ptcPlusBindingList" }, visibleEntries.map((entry) => h(
-                  "li",
-                  {
-                    key: entry.id,
-                    className: "ptcPlusBindingItem",
-                    "data-selected": draft?.id === entry.id ? true : void 0
-                  },
-                  h(
-                    "button",
-                    {
-                      type: "button",
-                      className: "ptcPlusBindingSelect",
-                      disabled: busy || editing,
-                      onClick: () => load(entry.id)
-                    },
-                    h("span", { className: "ptcPlusBindingName", title: entry.name }, entry.name),
-                    h("span", { className: "ptcPlusBindingMeta", title: entry.symbols.join(", ") }, entry.scope)
-                  ),
-                  h("button", {
-                    type: "button",
-                    className: "ptcPlusBindingSwitch",
-                    role: "switch",
-                    disabled: busy || editing,
-                    "aria-checked": entry.enabled,
-                    "aria-label": `${entry.name}: ${t2("bindings.enabled")}`,
-                    title: t2(entry.enabled ? "bindings.disableAction" : "bindings.enableAction"),
-                    onClick: () => toggle(entry)
-                  }, h("span", { "aria-hidden": true }))
-                ))),
-                catalog.entries.length > 0 && visibleEntries.length === 0 ? h("p", { className: "ptcPlusMessage" }, t2("console.noMatches")) : null,
-                h(
-                  "div",
-                  { className: "ptcPlusBindingRun" },
-                  h("input", {
-                    className: "ptcPlusInput",
-                    value: importPath,
-                    disabled: busy,
-                    placeholder: t2("bindings.importPath"),
-                    "aria-label": t2("bindings.importPath"),
-                    onChange: (event) => setImportPath(event.target.value)
-                  }),
-                  h(ActionButton, {
-                    type: "button",
-                    className: "ptcPlusButton",
-                    disabled: busy || editing || importPath.trim() === "",
-                    onClick: importSource
-                  }, t2("bindings.import"))
-                )
-              ),
-              draft === null ? null : h(
-                "div",
-                { className: "ptcPlusBindingEditor" },
-                h(
-                  "div",
-                  { className: "ptcPlusEditorHead" },
-                  h("strong", { className: "ptcPlusEditorFile" }, draft.name || t2("bindings.new")),
-                  h(
-                    "div",
-                    { className: "ptcPlusBindingLifecycle" },
-                    editing ? h(
-                      React.Fragment,
-                      null,
-                      h(
-                        ActionButton,
-                        { disabled: busy, onClick: validate },
-                        h(IconCheckOutline14, { size: 14 }),
-                        t2("bindings.validate")
-                      ),
-                      h(ActionButton, { "data-kind": "primary", disabled: busy, onClick: save }, t2("bindings.save")),
-                      h(ActionButton, { disabled: busy, onClick: () => {
-                        showEntry(original === null ? null : { entry: original, revision: editRevision }, { resetConsole: false });
-                        setSourceOpen(false);
-                        setMessage(null);
-                      } }, t2("bindings.cancel"))
-                    ) : null,
-                    catalog.entries.some((entry) => entry.id === draft.id) ? h(IconButton, {
-                      icon: IconTrashOutline16,
-                      label: t2("bindings.remove"),
-                      "data-kind": "danger",
-                      disabled: busy || editing,
-                      onClick: () => remove2(draft)
-                    }) : null
-                  )
-                ),
-                h(
-                  "details",
-                  { className: "ptcPlusBindingSection ptcPlusBindingSourcePreview", open: true },
-                  h("summary", { className: "ptcPlusBindingFieldLabel" }, t2("bindings.declaration")),
-                  declaration === "" ? h("p", { className: "ptcPlusMessage" }, t2("bindings.unvalidated")) : typeof CodeBlock === "function" ? h(CodeBlock, {
-                    code: declaration,
-                    lang: "typescript",
-                    className: "ptcPlusCodeBlock",
-                    copyLabel: t2("tool.copy"),
-                    copiedLabel: t2("tool.copied")
-                  }) : h("pre", { className: "ptcPlusDeclaration" }, declaration)
-                ),
-                h(
-                  "section",
-                  { className: "ptcPlusBindingSection ptcPlusModelPrompt" },
-                  h("h4", { className: "ptcPlusBindingSectionTitle" }, t2("bindings.modelContext")),
-                  h(
-                    "div",
-                    { className: "ptcPlusBindingFields" },
-                    h(
-                      "label",
-                      { className: "ptcPlusBindingField ptcPlusPromptToggle", "data-wide": true },
-                      h("span", { className: "ptcPlusBindingFieldLabel" }, t2("bindings.includeDeclaration")),
-                      h("input", {
-                        className: "ptcPlusCheck",
-                        type: "checkbox",
-                        checked: draft.modelContext.includeDeclaration,
-                        disabled: busy,
-                        onChange: (event) => edit("modelContext", { ...draft.modelContext, includeDeclaration: event.target.checked })
-                      })
-                    ),
-                    h(
-                      "label",
-                      { className: "ptcPlusBindingField", "data-wide": true },
-                      h("span", { className: "ptcPlusBindingFieldLabel" }, t2("bindings.instructions")),
-                      h("textarea", {
-                        className: "ptcPlusInput",
-                        rows: 3,
-                        maxLength: 4096,
-                        value: draft.modelContext.instructions,
-                        disabled: busy,
-                        onChange: (event) => edit("modelContext", { ...draft.modelContext, instructions: event.target.value })
-                      })
-                    )
-                  )
-                ),
-                h(
-                  "div",
-                  { className: "ptcPlusSourceSection" },
-                  h(
-                    "button",
-                    {
-                      type: "button",
-                      className: "ptcPlusSourceToggle",
-                      "aria-expanded": sourceOpen,
-                      onClick: () => setSourceOpen(!sourceOpen)
-                    },
-                    h(IconChevronDownOutline14, { size: 14, style: { transform: sourceOpen ? void 0 : "rotate(-90deg)" } }),
-                    t2("bindings.sourcePreview"),
-                    h("span", { className: "ptcPlusSourceFilename" }, draft.name ? `${draft.name}.ts` : "")
-                  ),
-                  h("div", { className: "ptcPlusSourceActions" }, editing ? null : h(
-                    ActionButton,
-                    { disabled: busy, onClick: () => {
-                      setEditing(true);
-                      setSourceOpen(true);
-                    } },
-                    typeof IconEditOutline16 === "function" ? h(IconEditOutline16, { size: 14 }) : null,
-                    t2("bindings.edit")
-                  )),
-                  h(
-                    "div",
-                    { className: "ptcPlusSourceBody", hidden: !sourceOpen },
-                    editing ? h(TypeScriptEditor, {
-                      documentId: draft.id,
-                      value: draft.source,
-                      disabled: busy,
-                      label: t2("bindings.source"),
-                      onChange: (value) => edit("source", value)
-                    }) : sourceOpen && typeof CodeBlock === "function" ? h(CodeBlock, {
-                      code: draft.source,
-                      lang: "typescript",
-                      className: "ptcPlusSourceCode",
-                      copyLabel: t2("tool.copy"),
-                      copiedLabel: t2("tool.copied")
-                    }) : sourceOpen ? h("pre", { className: "ptcPlusSourceCode" }, draft.source) : null
-                  )
-                ),
-                h(
-                  "div",
-                  { className: "ptcPlusWorkbenchFeedback", role: "status" },
-                  busy ? t2("bindings.working") : message === null ? "" : t2(message.key, message.params)
-                ),
-                h(BindingConsole, {
-                  key: draft.id,
-                  entryId: draft.id,
-                  source: draft.source,
-                  resetVersion: consoleVersion,
-                  callUserBindings: callUserBindings2,
-                  t: t2
-                }),
-                h(
-                  "details",
-                  {
-                    className: "ptcPlusBindingSection ptcPlusEntrySettings",
-                    open: metadataOpen,
-                    onToggle: (event) => setMetadataOpen(event.currentTarget.open)
-                  },
-                  h("summary", { className: "ptcPlusBindingSectionTitle" }, t2("bindings.entry")),
-                  h(
-                    "div",
-                    { className: "ptcPlusBindingFields" },
-                    h(
-                      "label",
-                      { className: "ptcPlusBindingField" },
-                      h("span", { className: "ptcPlusBindingFieldLabel" }, t2("bindings.id")),
-                      h("input", {
-                        className: "ptcPlusInput",
-                        value: draft.id,
-                        disabled: busy || !editing,
-                        onChange: (event) => edit("id", event.target.value)
-                      })
-                    ),
-                    h(
-                      "label",
-                      { className: "ptcPlusBindingField" },
-                      h("span", { className: "ptcPlusBindingFieldLabel" }, t2("bindings.name")),
-                      h("input", {
-                        className: "ptcPlusInput",
-                        value: draft.name,
-                        disabled: busy || !editing,
-                        onChange: (event) => edit("name", event.target.value)
-                      })
-                    ),
-                    h(
-                      "label",
-                      { className: "ptcPlusBindingField" },
-                      h("span", { className: "ptcPlusBindingFieldLabel" }, t2("bindings.scope")),
-                      h("select", {
-                        className: "ptcPlusSelect",
-                        value: draft.scope,
-                        disabled: busy || !editing,
-                        onChange: (event) => edit("scope", event.target.value)
-                      }, h("option", { value: "namespace" }, "namespace"), h("option", { value: "top-level" }, "top-level"))
-                    ),
-                    h(
-                      "label",
-                      { className: "ptcPlusBindingField" },
-                      h("span", { className: "ptcPlusBindingFieldLabel" }, t2("bindings.symbols")),
-                      h("input", {
-                        className: "ptcPlusInput",
-                        value: draft.symbolsText,
-                        disabled: busy || !editing,
-                        placeholder: t2("bindings.symbolsPlaceholder"),
-                        onChange: (event) => edit("symbolsText", event.target.value)
-                      })
-                    ),
-                    h(
-                      "label",
-                      { className: "ptcPlusBindingField", "data-wide": true },
-                      h("span", { className: "ptcPlusBindingFieldLabel" }, t2("bindings.purpose")),
-                      h("input", {
-                        className: "ptcPlusInput",
-                        value: draft.purpose,
-                        disabled: busy || !editing,
-                        onChange: (event) => edit("purpose", event.target.value)
-                      })
-                    )
-                  )
-                )
-              ),
-              message === null || draft !== null ? null : h("p", { className: "ptcPlusMessage", role: "status" }, t2(message.key, message.params))
-            )
-          );
-        }
-        function ReplComposer() {
-          return null;
-        }
-        function ReplBindingInspector({ entry, preview, t: t2 }) {
-          const readable = preview?.status === "readable";
-          return h(
-            "aside",
-            { className: "ptcPlusBindingInspector", "aria-label": entry.name },
-            h(
-              "header",
-              { className: "ptcPlusInspectorHead" },
-              h("strong", null, entry.name),
-              h("span", null, t2("memory.location", entry.definition))
-            ),
-            h("div", { className: "ptcPlusObservationLabel" }, t2("console.definition")),
-            typeof CodeBlock === "function" ? h(CodeBlock, {
-              code: entry.definition.source,
-              lang: "typescript",
-              className: "ptcPlusObservationCode",
-              copyLabel: t2("tool.copy"),
-              copiedLabel: t2("tool.copied")
-            }) : h("pre", { className: "ptcPlusObservationCode" }, entry.definition.source),
-            h(
-              "div",
-              { className: "ptcPlusObservationLabel" },
-              t2("console.value"),
-              preview?.truncated ? h("span", { className: "ptcPlusObservationState" }, t2("console.bounded")) : null
-            ),
-            readable ? h("pre", { className: "ptcPlusObservationPreview" }, preview.text) : h("p", { className: "ptcPlusObservationUnavailable" }, t2(preview === void 0 ? "console.unobservedValue" : "console.unreadable"))
-          );
-        }
-        function ReplSessionBindings({ memory, t: t2 }) {
-          const [query, setQuery] = React.useState("");
-          const [kind, setKind] = React.useState("all");
-          const [selectedName, setSelectedName] = React.useState(null);
-          const entries = memory.entries.filter((entry) => (kind === "all" || entry.kind === kind) && entry.name.toLowerCase().includes(query.trim().toLowerCase()));
-          const selected = entries.find((entry) => entry.name === selectedName) ?? entries[0];
-          const observation = memory.observation;
-          const previews = new Map(observation?.entries.map((entry) => [entry.name, entry]) ?? []);
-          return h(
-            "section",
-            { className: "ptcPlusConsoleSection ptcPlusSessionBindings", "aria-label": t2("console.session") },
-            h(
-              "div",
-              { className: "ptcPlusObservationHead" },
-              h(
-                "div",
-                { className: "ptcPlusObservationTitle" },
-                h("h2", null, t2("console.session")),
-                memory.available ? h(
-                  "span",
-                  { className: "ptcPlusObservationCount", title: t2("memory.count", { count: memory.total }) },
-                  query.trim() || kind !== "all" ? `${entries.length} / ${memory.total}` : memory.total
-                ) : null
-              ),
-              h("span", { className: "ptcPlusObservationTime" }, observation === void 0 ? t2("console.unobserved") : t2("console.observed", { time: new Date(observation.at).toLocaleString() }))
-            ),
-            memory.entries.length === 0 ? h(
-              "div",
-              { className: "ptcPlusSessionEmpty" },
-              t2(memory.available ? "memory.empty" : "memory.unavailable")
-            ) : h(
-              "div",
-              { className: "ptcPlusObservationGrid", "data-empty": selected === void 0 },
-              h(
-                "div",
-                { className: "ptcPlusObservationCatalog" },
-                h(
-                  "div",
-                  { className: "ptcPlusObservationFilters" },
-                  h(
-                    "label",
-                    { className: "ptcPlusSearch" },
-                    typeof IconSearchOutline16 === "function" ? h(IconSearchOutline16, { size: 16 }) : null,
-                    h("input", {
-                      value: query,
-                      onChange: (event) => setQuery(event.target.value),
-                      placeholder: t2("console.search"),
-                      "aria-label": t2("console.search")
-                    })
-                  ),
-                  h(
-                    "select",
-                    {
-                      className: "ptcPlusSelect",
-                      value: kind,
-                      onChange: (event) => setKind(event.target.value),
-                      "aria-label": t2("console.kind")
-                    },
-                    ["all", "variable", "function", "class", "import"].map((value) => h(
-                      "option",
-                      { key: value, value },
-                      t2(value === "all" ? "console.allKinds" : `memory.kind.${value}`)
-                    ))
-                  )
-                ),
-                h(
-                  "div",
-                  { className: "ptcPlusObservations" },
-                  h(
-                    "table",
-                    { className: "ptcPlusObservationTable", "aria-label": t2("console.session") },
-                    h("thead", null, h(
-                      "tr",
-                      null,
-                      h("th", { scope: "col" }, t2("console.name")),
-                      h("th", { scope: "col" }, t2("console.kind")),
-                      h("th", { scope: "col" }, t2("console.value"))
-                    )),
-                    h("tbody", null, entries.map((entry) => {
-                      const preview = previews.get(entry.name);
-                      return h(
-                        "tr",
-                        {
-                          key: entry.name,
-                          "data-selected": entry === selected,
-                          onClick: () => setSelectedName(entry.name)
-                        },
-                        h("td", null, h("button", {
-                          type: "button",
-                          className: "ptcPlusObservationSelect",
-                          "aria-current": entry === selected ? "true" : void 0,
-                          title: entry.name
-                        }, entry.name)),
-                        h("td", { className: "ptcPlusObservationKind" }, t2(`memory.kind.${entry.kind}`)),
-                        h("td", null, h(
-                          "span",
-                          { className: "ptcPlusObservationValue" },
-                          preview?.status === "readable" ? h("code", null, preview.text) : h("span", { className: "ptcPlusObservationState" }, t2(preview === void 0 ? "console.unobservedValue" : "console.unreadable")),
-                          preview?.truncated ? h("span", { className: "ptcPlusObservationState" }, t2("console.bounded")) : null
-                        ))
-                      );
-                    }))
-                  ),
-                  entries.length === 0 ? h(
-                    "p",
-                    { className: "ptcPlusMessage ptcPlusObservationEmpty" },
-                    t2(!memory.available ? "memory.unavailable" : memory.entries.length === 0 ? "memory.empty" : "console.noMatches")
-                  ) : null
-                )
-              ),
-              selected ? h(ReplBindingInspector, { entry: selected, preview: previews.get(selected.name), t: t2 }) : null
-            ),
-            memory.omitted > 0 ? h("p", { className: "ptcPlusMessage" }, t2("memory.more", { count: memory.omitted })) : null
-          );
-        }
-        function ReplConsole({ t: t2, sessionId, useProjection, useSessions, usePtcSettings, callUserBindings: callUserBindings2, hideComposer, observeRepl: observeRepl2 }) {
-          const preset = useSessionPreset({ sessionId, useProjection, useSessions });
-          const projected = useProjection("ptcPlusRepl");
-          const settings = usePtcSettings((snapshot) => snapshot);
-          const globalEnabled = settings.value?.userBindingsEnabled === true;
-          const eligible = settings.status === "ready" && settings.value?.enabled === true && settings.value?.replViewEnabled !== false && sessionUsesPtcPreset(preset);
-          const memory = React.useMemo(() => {
-            try {
-              return normalizeReplMemorySnapshot(projected);
-            } catch {
-              return unavailableReplMemorySnapshot();
-            }
-          }, [projected]);
-          const [observed, setObserved] = React.useState(null);
-          const observationRegion = React.useRef(null);
-          React.useEffect(() => eligible ? hideComposer(sessionId) : void 0, [eligible, hideComposer, sessionId]);
-          React.useEffect(() => eligible ? observeRepl2(
-            sessionId,
-            observationRegion.current,
-            memory,
-            (value) => setObserved({ sessionId, source: memory, value })
-          ) : void 0, [eligible, observeRepl2, sessionId, memory]);
-          if (!eligible) return null;
-          return h(
-            "div",
-            { className: "ptcPlusConsole", "data-conversation-composer-overlay": "" },
-            h("div", { className: "ptcPlusConsoleSection", ref: observationRegion }, h(ReplSessionBindings, {
-              key: sessionId,
-              memory: observed?.sessionId === sessionId && observed.source === memory ? observed.value : memory,
-              t: t2
-            })),
-            globalEnabled ? h(
-              "div",
-              { className: "ptcPlusConsoleSection ptcPlusBindingsSurface" },
-              h(UserBindingsWorkbench, { enabled: true, t: t2, callUserBindings: callUserBindings2, headingLabel: t2("console.global") })
-            ) : null
-          );
-        }
-        function BindingsDialog({ t: t2, callUserBindings: callUserBindings2, onClose }) {
-          const content2 = React.useRef(null);
-          React.useEffect(() => {
-            const previous = document.activeElement;
-            content2.current.querySelector("button")?.focus();
-            return () => {
-              if (previous?.isConnected) previous.focus();
-            };
-          }, []);
-          const trapFocus = (event) => {
-            if (event.key !== "Tab") return;
-            const controls = [...content2.current.querySelectorAll("button:not(:disabled),input:not(:disabled),textarea:not(:disabled),select:not(:disabled),[contenteditable=true],summary")].filter((element) => element.getClientRects().length > 0);
-            const first = controls[0];
-            const last2 = controls.at(-1);
-            if (event.shiftKey && document.activeElement === first || !event.shiftKey && document.activeElement === last2) {
-              event.preventDefault();
-              (event.shiftKey ? last2 : first)?.focus();
-            }
-          };
-          return h(
-            Modal,
-            { open: true, onClose, title: t2("bindings.title"), headless: true, className: "ptcPlusBindingsModal" },
-            h(
-              "div",
-              { className: "ptcPlusBindingsDialog", ref: content2, onKeyDown: trapFocus },
-              h(
-                "div",
-                { className: "ptcPlusBindingsDialogHead" },
-                h("h2", null, t2("bindings.title")),
-                h("button", { type: "button", className: "ptcPlusDialogClose", onClick: onClose, "aria-label": t2("bindings.close"), title: t2("bindings.close") }, h(IconCloseOutline16, { size: 16 }))
-              ),
-              h("div", { className: "ptcPlusBindingsSurface" }, h(UserBindingsWorkbench, { enabled: true, t: t2, callUserBindings: callUserBindings2, heading: false }))
-            )
-          );
-        }
-        function PTCPlusSettingsCard({ t: t2, usePtcSettings, updateSetting: updateSetting2, callUserBindings: callUserBindings2 }) {
-          const [open, setOpen] = React.useState(false);
-          const [bindingsOpen, setBindingsOpen] = React.useState(false);
-          const [status, setStatus] = React.useState(null);
-          const [pending, setPending] = React.useState(() => /* @__PURE__ */ new Set());
-          const writeTail = React.useRef(Promise.resolve());
-          const snapshot = usePtcSettings((snapshot2) => snapshot2);
-          const value = snapshot.status === "ready" ? snapshot.value ?? {} : {};
-          const enabled = value.enabled === true;
-          const globalEnabled = enabled && value.userBindingsEnabled === true;
-          React.useEffect(() => {
-            if (!globalEnabled) setBindingsOpen(false);
-          }, [globalEnabled]);
-          const unavailable = snapshot.status !== "ready" || snapshot.writable !== true;
-          const persist = (field, nextValue) => {
-            if (unavailable || pending.has(field.key)) return;
-            const operation = writeTail.current.then(async () => {
-              setPending((current) => new Set(current).add(field.key));
-              setStatus(null);
-              try {
-                const key = await updateSetting2(field.key, nextValue);
-                if (key !== null) setStatus({ key });
-              } catch (error) {
-                setStatus({
-                  key: "status.failed",
-                  params: { error: error instanceof Error ? error.message : String(error) }
-                });
-              } finally {
-                setPending((current) => {
-                  const next = new Set(current);
-                  next.delete(field.key);
-                  return next;
-                });
-              }
-            });
-            writeTail.current = operation.catch(() => {
-            });
-          };
-          const fieldDisabled = (field) => unavailable || pending.has(field.key) || field.key !== "enabled" && !enabled;
-          const settingGroups = CONFIG_GROUPS.map((group) => h(
-            "section",
-            {
-              key: group.key,
-              className: "ptcPlusGroup",
-              "aria-labelledby": `ptc-plus-settings-group-${group.key}`
-            },
-            h("h3", {
-              id: `ptc-plus-settings-group-${group.key}`,
-              className: "ptcPlusGroupTitle"
-            }, t2(`group.${group.key}`)),
-            ...group.fields.map((key) => {
-              const field = CONFIG_FIELDS.find((candidate) => candidate.key === key);
-              if (field === void 0) return null;
-              return h(
-                React.Fragment,
-                { key: field.key },
-                h(
-                  "div",
-                  { className: "ptcPlusRow" },
-                  h(
-                    "div",
-                    { className: "ptcPlusMain" },
-                    h("div", { className: "ptcPlusLabel" }, t2(`${field.key}.label`)),
-                    field.description === "" ? null : h("div", { className: "ptcPlusDetail" }, t2(`${field.key}.description`))
-                  ),
-                  fieldInput(field, value[field.key], fieldDisabled(field), persist, t2(`${field.key}.label`))
-                ),
-                field.key === "userBindingsEnabled" && globalEnabled ? h(
-                  "div",
-                  { className: "ptcPlusSettingAction" },
-                  h(ActionButton, { type: "button", className: "ptcPlusButton", onClick: () => setBindingsOpen(true) }, t2("bindings.manage"))
-                ) : null
-              );
-            })
-          ));
-          return h(
-            "li",
-            { className: "ptcPlusCard" },
-            h(
-              "button",
-              {
-                type: "button",
-                className: "ptcPlusHeader",
-                "aria-expanded": open,
-                "aria-label": t2(open ? "action.collapse" : "action.expand"),
-                "aria-controls": "ptc-plus-settings-body",
-                onClick: () => setOpen((current) => !current)
-              },
-              h(
-                "span",
-                { className: "ptcPlusHeadText" },
-                h("span", { className: "ptcPlusName" }, "PTC Plus"),
-                h("span", { className: "ptcPlusDescription" }, t2("card.description"))
-              ),
-              h("span", { className: "ptcPlusStatus", "data-enabled": enabled }, t2(enabled ? "status.enabled" : "status.disabled")),
-              h("span", { className: "ptcPlusChevron", "data-open": open, "aria-hidden": true }, h(IconChevronDownOutline14, { size: 14 }))
-            ),
-            h(
-              "div",
-              { id: "ptc-plus-settings-body", className: "ptcPlusBody", "data-open": open, hidden: !open },
-              h("div", { className: "ptcPlusBodyInner" }, h(
-                "div",
-                { className: "ptcPlusFields" },
-                snapshot.status === "loading" ? h("p", { className: "ptcPlusMessage" }, t2("state.syncing")) : snapshot.status === "unavailable" ? h("p", { className: "ptcPlusMessage" }, t2("state.unavailable")) : [
-                  ...settingGroups,
-                  h(
-                    "div",
-                    { key: "footer", className: "ptcPlusFooter" },
-                    h("span", { className: "ptcPlusMessage", role: "status" }, status === null ? t2(snapshot.writable ? "footer.live" : "footer.readOnly") : t2(status.key, status.params))
-                  )
-                ]
-              ))
-            ),
-            globalEnabled && bindingsOpen ? h(BindingsDialog, { t: t2, callUserBindings: callUserBindings2, onClose: () => setBindingsOpen(false) }) : null
-          );
-        }
         ctx.slots.inject("settings.plugin.item", () => ctx.slots.register({
           name: "settings.plugin.item",
           key: SETTINGS_NAMESPACE,
           locale: LOCALE_NS,
           inject: () => ({ ...settingsProps(), updateSetting })
         }, PTCPlusSettingsCard));
-        function PTCPlusToolRow({ toolName, block, inspect, t: t2 }) {
-          const [open, setOpen] = React.useState(false);
-          const view = derivePtcToolView(block, toolName);
-          const expandable = view.code !== "" || view.output !== "" || typeof inspect === "function";
-          const stateKey = {
-            running: "tool.running",
-            ok: "tool.completed",
-            error: "tool.failed",
-            stopped: "tool.stopped"
-          }[view.state];
-          const outputSummary = view.state === "error" && view.output !== "" ? view.output.split(/\r?\n/, 1)[0] : "";
-          const summary = outputSummary || view.description;
-          const stateText = view.state === "ok" ? null : t2(stateKey);
-          const toggle = () => {
-            if (expandable) setOpen((current) => !current);
-          };
-          const summaryText = summary === "" ? null : summary;
-          const summaryLine = stateText === null && summaryText === null ? null : h(
-            "div",
-            { className: "ptcPlusToolSummaryLine", "data-state": view.state, role: "status" },
-            stateText === null ? null : h("span", { className: "ptcPlusToolState" }, stateText),
-            summaryText === null ? null : h("span", { className: "ptcPlusToolSep", "aria-hidden": true }),
-            summaryText === null ? null : h("span", { className: "ptcPlusToolDescription" }, summaryText)
-          );
-          const body = !open ? null : h(
-            "div",
-            { className: "ptcPlusToolBody" },
-            view.code === "" ? null : h(
-              "div",
-              { className: "ptcPlusToolSection" },
-              h("span", { className: "ptcPlusToolSectionLabel" }, t2("tool.source")),
-              typeof CodeBlock === "function" ? h(CodeBlock, {
-                code: view.code,
-                lang: "typescript",
-                className: "ptcPlusToolCode",
-                copyLabel: t2("tool.copy"),
-                copiedLabel: t2("tool.copied")
-              }) : h("pre", { className: "ptcPlusToolCode" }, view.code)
-            ),
-            view.output === "" ? null : h(
-              "div",
-              { className: "ptcPlusToolSection" },
-              h("span", { className: "ptcPlusToolSectionLabel" }, t2("tool.result")),
-              h(
-                "div",
-                { className: "ptcPlusIoCard" },
-                h("pre", {
-                  className: "ptcPlusIoText",
-                  "data-error": view.state === "error" || void 0
-                }, view.output)
-              )
-            ),
-            typeof inspect !== "function" ? null : h("button", {
-              type: "button",
-              className: "ptcPlusInspect",
-              onClick: inspect
-            }, h(IconInspectOutline12, { "aria-hidden": true }), t2("tool.inspect"))
-          );
-          const features = view.features.length === 0 ? null : h(
-            "div",
-            { className: "ptcPlusFeatures" },
-            view.features.map((feature) => h(
-              "span",
-              {
-                key: `${feature.key}:${feature.detail}`,
-                className: "ptcPlusFeature"
-              },
-              h("span", { className: "ptcPlusFeatureName" }, t2(feature.key)),
-              feature.detail === "" ? null : h("span", { className: "ptcPlusFeatureDetail", title: feature.detail }, feature.detail)
-            ))
-          );
-          const collapsedContent = h("div", { className: "ptcPlusToolPreview" }, summaryLine, features);
-          if (typeof DisclosureRow === "function") {
-            return h(
-              "div",
-              { className: "ptcPlusTool" },
-              h(DisclosureRow, {
-                icon: expandable ? h(IconChevronDownOutline14, { size: 14 }) : h(IconCheckOutline14, { size: 14 }),
-                title: t2(toolName === "edit_run_code" ? "tool.codeEdit" : "tool.code"),
-                open,
-                expandable,
-                onToggle: toggle,
-                expandOnRowClick: true,
-                previewChevron: false,
-                keepContentWhenOpen: true,
-                collapsedContent,
-                children: body
-              })
-            );
+        ctx.slots.inject("tool.call.toolview", () => registerGated(ctx, settingsGate("toolView", () => {
+          const disposers = [];
+          try {
+            disposers.push(ctx.slots.register({
+              name: "tool.call.toolview",
+              key: "run_code",
+              locale: LOCALE_NS
+            }, PTCPlusToolRow));
+            disposers.push(ctx.slots.register({
+              name: "tool.call.toolview",
+              key: "edit_run_code",
+              locale: LOCALE_NS
+            }, PTCPlusToolRow));
+          } catch (error) {
+            disposers.reverse().forEach((dispose) => dispose());
+            throw error;
           }
-          return h(
-            "div",
-            { className: "ptcPlusTool" },
-            h(
-              "div",
-              {
-                className: "ptcPlusToolSummary",
-                "data-state": view.state,
-                "data-expandable": expandable || void 0,
-                role: expandable ? "button" : void 0,
-                tabIndex: expandable ? 0 : void 0,
-                "aria-expanded": expandable ? open : void 0,
-                onClick: expandable ? toggle : void 0,
-                onKeyDown: expandable ? (event) => {
-                  if (event.key !== "Enter" && event.key !== " ") return;
-                  event.preventDefault();
-                  toggle();
-                } : void 0
-              },
-              h("span", { className: "ptcPlusToolLeading", "aria-hidden": true }, expandable ? h(IconChevronDownOutline14, { size: 14, className: "ptcPlusToolChevron", "data-open": open }) : h(IconCheckOutline14, { size: 14 })),
-              h("span", { className: "ptcPlusToolTitle" }, t2(
-                toolName === "edit_run_code" ? "tool.codeEdit" : "tool.code"
-              )),
-              view.state === "ok" ? null : h("span", { className: "ptcPlusToolState", role: "status" }, t2(stateKey)),
-              h("span", { className: "ptcPlusToolSep", "aria-hidden": true }),
-              h("span", { className: "ptcPlusToolDescription" }, summary)
-            ),
-            features,
-            body
-          );
-        }
-        ctx.slots.inject("tool.call.toolview", () => {
-          let releaseRows;
-          const release = () => {
-            releaseRows?.();
-            releaseRows = void 0;
-          };
-          const sync = () => {
-            const snapshot = preferenceScope.getSnapshot();
-            const enabled = snapshot.status === "ready" && snapshot.value?.enabled === true && snapshot.value?.enhancedToolView !== false;
-            if (enabled === (releaseRows !== void 0)) return;
-            release();
-            if (!enabled) return;
-            const disposers = [];
-            try {
-              disposers.push(ctx.slots.register({
-                name: "tool.call.toolview",
-                key: "run_code",
-                locale: LOCALE_NS
-              }, PTCPlusToolRow));
-              disposers.push(ctx.slots.register({
-                name: "tool.call.toolview",
-                key: "edit_run_code",
-                locale: LOCALE_NS
-              }, PTCPlusToolRow));
-            } catch (error) {
-              disposers.reverse().forEach((dispose) => dispose());
-              throw error;
-            }
-            releaseRows = () => disposers.reverse().forEach((dispose) => dispose());
-          };
-          sync();
-          const unsubscribe = preferenceScope.subscribe(sync);
-          return () => {
-            unsubscribe();
-            release();
-          };
-        });
+          return () => disposers.reverse().forEach((dispose) => dispose());
+        })));
         ctx.inject(["sessions"], (viewScope) => {
           const hideComposer = (sessionId) => viewScope.effect(() => viewScope.slots.inject(
             "conversation.composer",
@@ -29333,553 +30733,32 @@
               select: (owner) => isIdleSessionComposer(owner, sessionId) ? true : null
             }, ReplComposer)
           ));
-          viewScope.slots.inject("conversation.view", () => viewScope.effect(() => {
+          viewScope.slots.inject("conversation.view", () => {
             let preset;
-            let disposeView;
-            const sync = () => {
-              const settings = preferenceScope.getSnapshot();
-              const eligible = settings.status === "ready" && settings.value?.enabled === true && settings.value?.replViewEnabled !== false && sessionUsesPtcPreset(preset);
-              if (eligible === (disposeView !== void 0)) return;
-              disposeView?.();
-              disposeView = eligible ? viewScope.slots.register({
+            return registerGated(viewScope, {
+              subscribe: (listener) => {
+                const unsubscribePreset = watchCurrentSessionPreset(viewScope.sessions, (value) => {
+                  preset = value;
+                  listener();
+                });
+                const unsubscribeSettings = preferenceScope.subscribe(listener);
+                return () => {
+                  unsubscribePreset();
+                  unsubscribeSettings();
+                };
+              },
+              isEnabled: () => featureEnabled(preferenceScope.getSnapshot(), "replView") && sessionUsesPtcPreset(preset),
+              register: () => viewScope.slots.register({
                 name: "conversation.view",
                 id: "ptc-plus-repl",
                 label: "REPL",
                 order: 20,
                 locale: LOCALE_NS,
                 inject: () => ({ ...settingsProps(), hideComposer, observeRepl })
-              }, (props) => typeof props.useProjection === "function" ? h(ReplConsole, props) : null) : void 0;
-            };
-            const unsubscribePreset = watchCurrentSessionPreset(viewScope.sessions, (value) => {
-              preset = value;
-              sync();
+              }, (props) => typeof props.useProjection === "function" ? h(ReplConsole, props) : null)
             });
-            const unsubscribeSettings = preferenceScope.subscribe(sync);
-            return () => {
-              unsubscribePreset();
-              unsubscribeSettings();
-              disposeView?.();
-            };
-          }));
+          });
         });
-        function BindingAuthorButton({
-          sessionId,
-          t: t2,
-          useInput,
-          inputActions,
-          usePtcSettings,
-          useBindingCommand
-        }) {
-          const input = useInput?.((snapshot) => snapshot);
-          const available = useBindingCommand((snapshot) => snapshot);
-          const settings = usePtcSettings((snapshot) => snapshot);
-          const [review, view] = useBindingReview(sessionId);
-          const anchorRef = React.useRef(null);
-          const attachAnchor = React.useCallback((element) => {
-            anchorRef.current = element;
-            review.access = element;
-          }, [review]);
-          const firstItemRef = React.useRef(null);
-          const manageItemRef = React.useRef(null);
-          const reloadItemRef = React.useRef(null);
-          const focused = React.useRef(false);
-          const [menu, setMenu] = React.useState(null);
-          const [managing, setManaging] = React.useState(false);
-          const [catalog, setCatalog] = React.useState(null);
-          const [catalogStatus, setCatalogStatus] = React.useState("loading");
-          const [catalogError, setCatalogError] = React.useState(null);
-          const catalogControl = React.useRef({ active: true, epoch: 0, writing: false, read: null });
-          const catalogFocus = React.useRef(null);
-          const toastSequence = React.useRef(0);
-          const [toast, setToast] = React.useState(null);
-          const hasDraft = view.mounted && view.candidate !== null && view.action === null;
-          const quickAccess = settings.status === "ready" && settings.value?.enabled === true && settings.value?.userBindingsEnabled === true && settings.value?.bindingAuthorButtonVisible !== false;
-          const canAuthor = quickAccess && available && typeof useInput === "function" && typeof inputActions?.setDraft === "function";
-          const menuOpen = (hasDraft || quickAccess) && view.reachable && !managing && menu !== null && menu.key === view.candidateKey;
-          const refreshCatalog = React.useCallback(async (reload = false) => {
-            const control = catalogControl.current;
-            if (!control.active || control.writing) return;
-            control.read?.abort();
-            const read = new AbortController();
-            control.read = read;
-            const epoch = ++control.epoch;
-            if (reload) captureCatalogFocus();
-            setCatalogStatus("loading");
-            setCatalogError(null);
-            try {
-              const next = await callUserBindings(reload ? "reload" : "list", {}, read.signal);
-              if (!control.active || control.epoch !== epoch) return;
-              if (next?.error) throw new Error(next.error);
-              setCatalog(next);
-              setCatalogStatus("ready");
-            } catch (error) {
-              if (!control.active || control.epoch !== epoch) return;
-              setCatalog(null);
-              setCatalogStatus("error");
-              setCatalogError(error instanceof Error ? error.message : String(error));
-            }
-          }, []);
-          React.useEffect(() => {
-            const control = catalogControl.current;
-            control.active = true;
-            const reset = () => {
-              control.epoch++;
-              control.read?.abort();
-              setCatalog(null);
-              setCatalogStatus("loading");
-              setCatalogError(null);
-              setMenu(null);
-              setManaging(false);
-            };
-            const unsubscribe = ctx.on("connection/reset", reset);
-            return () => {
-              control.active = false;
-              control.epoch++;
-              control.read?.abort();
-              unsubscribe();
-            };
-          }, []);
-          const toggleBinding = async (entry) => {
-            const control = catalogControl.current;
-            if (control.writing || catalogStatus !== "ready" || !quickAccess || catalog === null) return;
-            control.writing = true;
-            const epoch = ++control.epoch;
-            control.read?.abort();
-            captureCatalogFocus();
-            setCatalogStatus("writing");
-            setCatalogError(null);
-            try {
-              const next = await callUserBindings(entry.enabled ? "disable" : "enable", {
-                id: entry.id,
-                expectedRevision: catalog.revision
-              });
-              if (!control.active || control.epoch !== epoch) return;
-              setCatalog(next);
-              setCatalogStatus("ready");
-            } catch (error) {
-              if (!control.active || control.epoch !== epoch) return;
-              setCatalog(null);
-              setCatalogStatus("error");
-              setCatalogError(error instanceof Error ? error.message : String(error));
-            } finally {
-              control.writing = false;
-              if (control.active && control.epoch !== epoch) void refreshCatalog();
-            }
-          };
-          const showMenu = (mode) => {
-            if (!menuOpen && quickAccess) void refreshCatalog();
-            setMenu({ key: view.candidateKey, mode });
-          };
-          const menuElement = () => manageItemRef.current?.closest("[role=menu]") ?? firstItemRef.current?.closest("[role=menu]");
-          const captureCatalogFocus = () => {
-            catalogFocus.current = menuElement()?.contains(document.activeElement) ? document.activeElement : null;
-          };
-          const menuAnchorRect = () => {
-            const anchor = anchorRef.current;
-            if (!anchor) return null;
-            const rect = anchor.getBoundingClientRect();
-            let top2 = rect.top;
-            for (let parent = anchor.parentElement; parent; parent = parent.parentElement) {
-              if (!parent.querySelector('textarea, [contenteditable="true"]')) continue;
-              top2 = Math.min(top2, parent.getBoundingClientRect().top);
-              break;
-            }
-            menuElement()?.style.setProperty("--ptc-plus-menu-space", `${Math.max(0, top2 - 16)}px`);
-            return new DOMRect(rect.x, top2, rect.width, 0);
-          };
-          const hideMenu = () => {
-            const itemHasFocus = menuElement()?.contains(document.activeElement) || catalogFocus.current !== null && document.activeElement === document.body;
-            setMenu(null);
-            if (itemHasFocus && anchorRef.current?.getClientRects().length) {
-              anchorRef.current.querySelector(".ptcPlusAuthorButton")?.focus({ preventScroll: true });
-            }
-          };
-          React.useEffect(() => {
-            const observer = typeof IntersectionObserver === "function" ? new IntersectionObserver((entries) => review.reachable(entries.some((entry) => entry.isIntersecting))) : void 0;
-            if (observer) observer.observe(anchorRef.current);
-            else review.reachable(true);
-            return () => {
-              observer?.disconnect();
-              review.reachable(false);
-            };
-          }, [review]);
-          React.useEffect(() => {
-            setMenu(null);
-            if (!view.reachable) setManaging(false);
-          }, [hasDraft, view.reachable, view.candidateKey]);
-          React.useLayoutEffect(() => {
-            if (focused.current && document.activeElement === document.body) {
-              focused.current = false;
-              const anchor = anchorRef.current;
-              const button = anchor?.querySelector(".ptcPlusAuthorButton");
-              if (button?.getClientRects().length) button.focus({ preventScroll: true });
-              else focusComposer(anchor);
-            }
-          }, [hasDraft, canAuthor, view.candidateKey]);
-          React.useLayoutEffect(() => {
-            if (!menuOpen) {
-              catalogFocus.current = null;
-              return;
-            }
-            if (catalogStatus === "writing" || catalogStatus === "loading") return;
-            const target = catalogFocus.current;
-            catalogFocus.current = null;
-            if (!target || document.activeElement !== document.body) return;
-            const root = menuElement();
-            const next = root?.contains(target) && !target.disabled ? target : reloadItemRef.current?.closest("button") ?? root?.querySelector("button:not(:disabled)");
-            next?.focus({ preventScroll: true });
-          }, [catalogStatus, menuOpen]);
-          React.useLayoutEffect(() => {
-            if (!menuOpen || menu.mode === "hover") return;
-            let cancelled = false;
-            queueMicrotask(() => {
-              if (!cancelled && anchorRef.current?.getClientRects().length) menuElement()?.querySelector("button:not(:disabled)")?.focus({ preventScroll: true });
-            });
-            return () => {
-              cancelled = true;
-            };
-          }, [menuOpen, menu?.mode]);
-          React.useEffect(() => {
-            if (toast === null || typeof Toast === "function") return void 0;
-            const timer = setTimeout(() => setToast(null), 2500);
-            return () => clearTimeout(timer);
-          }, [toast]);
-          const label = hasDraft ? t2("bindings.reviewMenuLabel", { count: 1 }) + (view.message ? ` \xB7 ${t2("bindings.reviewAttention")}` : "") : t2("bindings.open");
-          const hint = t2(hasDraft ? "bindings.draftHint" : "bindings.openHint");
-          const openAuthoring = () => {
-            hideMenu();
-            if (!canAuthor) return;
-            if (typeof input?.draft === "string" && input.draft.trim() !== "") {
-              toastSequence.current += 1;
-              setToast({ sequence: toastSequence.current, text: t2("bindings.composerBusy") });
-              return;
-            }
-            inputActions.setDraft("/binding new ");
-          };
-          const starButton = h(
-            "button",
-            {
-              type: "button",
-              className: "ptcPlusAuthorButton",
-              "aria-label": label,
-              // Older UI-kit lines ship no Tooltip primitive; the native title carries the hint there.
-              title: typeof Tooltip === "function" ? void 0 : hint,
-              "aria-haspopup": "menu",
-              "aria-expanded": menuOpen,
-              onPointerEnter: (event) => {
-                if (event.pointerType !== "touch") showMenu("hover");
-              },
-              onKeyDown: (event) => {
-                if (["ArrowUp", "ArrowDown"].includes(event.key)) {
-                  event.preventDefault();
-                  showMenu("keyboard");
-                }
-              },
-              onClick: () => {
-                if (menuOpen && menu.mode !== "hover") hideMenu();
-                else showMenu("click");
-              }
-            },
-            typeof IconSparkle16 === "function" ? h(IconSparkle16, { size: 16, "aria-hidden": true }) : h("span", { className: "ptcPlusAuthorButtonLabel", "aria-hidden": true }, t2("bindings.open")),
-            hasDraft ? h("span", {
-              className: "ptcPlusDraftBadge",
-              "aria-hidden": true,
-              "data-attention": view.message !== null
-            }, "1") : null
-          );
-          const catalogItems = !quickAccess ? [] : [
-            { id: "global-heading", type: "label", text: t2("bindings.quickHeading") },
-            ...(catalog?.entries ?? []).map((entry) => ({
-              id: `global:${entry.id}`,
-              disabled: catalogStatus !== "ready",
-              label: h(
-                "span",
-                { className: "ptcPlusBindingQuickRow", "data-enabled": entry.enabled },
-                h(
-                  "span",
-                  { className: "ptcPlusBindingQuickName" },
-                  h("strong", { title: entry.name }, entry.name),
-                  h("span", { className: "ptcPlusBindingQuickState" }, t2(entry.enabled ? "bindings.enabled" : "bindings.disabledEntry"))
-                ),
-                h("span", { className: "ptcPlusBindingQuickPurpose", title: entry.purpose }, entry.purpose)
-              )
-            })),
-            ...catalogStatus === "ready" && !catalog?.entries?.length ? [{ id: "empty", type: "label", text: t2("memory.globalEmpty") }] : [],
-            ...catalogStatus === "loading" || catalogStatus === "writing" ? [{ id: "pending", type: "label", text: t2(catalogStatus === "writing" ? "bindings.quickSaving" : "bindings.quickLoading") }] : [],
-            ...catalogError === null ? [] : [{ id: "error", type: "label", text: t2("bindings.failed", { error: catalogError }) }]
-          ];
-          return h(
-            "span",
-            {
-              className: "ptcPlusComposerBindingAnchor",
-              tabIndex: -1,
-              onFocusCapture: () => {
-                focused.current = true;
-              },
-              onBlurCapture: () => {
-                focused.current = false;
-              },
-              "data-text": typeof IconSparkle16 === "function" ? void 0 : true,
-              ref: attachAnchor
-            },
-            !hasDraft && !quickAccess ? null : h(Menu, {
-              className: "ptcPlusAuthorButtonShell",
-              open: menuOpen,
-              anchor: typeof Tooltip === "function" ? h(Tooltip, { label: hint, delayMs: 400 }, starButton) : starButton,
-              portal: true,
-              side: "top",
-              dense: true,
-              getAnchorRect: menuAnchorRect,
-              selectedIds: (catalog?.entries ?? []).filter((entry) => entry.enabled).map((entry) => `global:${entry.id}`),
-              onClose: hideMenu,
-              items: [
-                ...hasDraft ? [
-                  { id: "draft-heading", type: "label", text: t2("bindings.quickDrafts") },
-                  {
-                    id: view.candidateKey,
-                    label: h(
-                      "span",
-                      { className: "ptcPlusDraftMenuItem", ref: firstItemRef },
-                      h("strong", null, view.candidate.entry.name),
-                      h("span", null, t2(bindingReviewStatus(view)))
-                    )
-                  },
-                  ...quickAccess ? [{ id: "draft-separator", type: "separator" }] : []
-                ] : [],
-                ...catalogItems,
-                ...quickAccess ? [{ id: "actions-separator", type: "separator" }] : [],
-                ...canAuthor ? [{ id: "new", label: h("span", { className: "ptcPlusBindingMenuAction" }, t2("bindings.authorNewDraft")) }] : [],
-                ...quickAccess ? [
-                  ...catalogError === null ? [] : [{ id: "reload", label: h("span", { ref: reloadItemRef }, t2("bindings.reload")) }],
-                  { id: "manage", label: h("span", { ref: manageItemRef, className: "ptcPlusBindingMenuAction" }, t2("bindings.manage")) }
-                ] : []
-              ],
-              onSelect: (id2) => {
-                if (!anchorRef.current?.getClientRects().length) return;
-                if (id2.startsWith("global:")) {
-                  const entry = catalog?.entries.find((entry2) => `global:${entry2.id}` === id2);
-                  if (entry) void toggleBinding(entry);
-                  return;
-                }
-                if (id2 === "reload") {
-                  void refreshCatalog(true);
-                  return;
-                }
-                hideMenu();
-                if (id2 === "new") openAuthoring();
-                else if (id2 === "manage") setManaging(true);
-                else if (id2 === view.candidateKey) openBindingReview(review, view.candidate);
-              }
-            }),
-            managing && quickAccess && view.reachable ? h(BindingsDialog, { t: t2, callUserBindings, onClose: () => setManaging(false) }) : null,
-            toast === null ? null : typeof Toast === "function" ? h(Toast, {
-              key: toast.sequence,
-              text: toast.text,
-              anchor: anchorRef.current,
-              onDone: () => setToast(null)
-            }) : h("span", {
-              key: toast.sequence,
-              className: "ptcPlusComposerNotice",
-              role: "status"
-            }, toast.text)
-          );
-        }
-        function replPopoverIsOpen(popover) {
-          if (popover?.dataset?.open === "true") return true;
-          try {
-            return popover?.matches?.(":popover-open") === true;
-          } catch {
-            return false;
-          }
-        }
-        function placeReplPopover(trigger, popover) {
-          if (trigger === null || popover === null) return;
-          const margin = 12;
-          const gap = 8;
-          const viewportWidth = document.documentElement.clientWidth || window.innerWidth;
-          const viewportHeight = document.documentElement.clientHeight || window.innerHeight;
-          const triggerRect = trigger.getBoundingClientRect();
-          const width = Math.min(344, Math.max(0, viewportWidth - margin * 2));
-          const left = Math.min(
-            Math.max(margin, triggerRect.right - width),
-            Math.max(margin, viewportWidth - width - margin)
-          );
-          const below = Math.max(0, viewportHeight - triggerRect.bottom - gap - margin);
-          const above = Math.max(0, triggerRect.top - gap - margin);
-          const opensAbove = below < 260 && above > below;
-          const availableHeight = Math.max(80, opensAbove ? above : below);
-          popover.style.width = `${width}px`;
-          popover.style.maxHeight = `${availableHeight}px`;
-          popover.style.left = `${left}px`;
-          popover.style.top = opensAbove ? `${Math.max(margin, triggerRect.top - gap - Math.min(popover.offsetHeight, availableHeight))}px` : `${Math.min(viewportHeight - margin, triggerRect.bottom + gap)}px`;
-        }
-        function ReplMemoryCard({
-          memory,
-          globalEnabled,
-          globalBindings,
-          loadGlobalBinding,
-          prefillAuthoring,
-          authoringMessage,
-          t: t2,
-          id: id2,
-          titleId,
-          popoverRef,
-          onEnter,
-          onLeave
-        }) {
-          const [expandedBinding, setExpandedBinding] = React.useState(null);
-          const [tab, setTab] = React.useState("session");
-          const [globalSource, setGlobalSource] = React.useState(null);
-          const activeTab = globalEnabled ? tab : "session";
-          const summary = activeTab === "session" ? memory.available ? t2("memory.count", { count: memory.total }) : "" : globalBindings === void 0 ? "" : t2("memory.globalCount", { count: globalBindings.entries.length });
-          const inspectGlobal = (entry) => {
-            if (globalSource?.id === entry.id) {
-              setGlobalSource(null);
-              return;
-            }
-            setGlobalSource({ id: entry.id, source: "" });
-            loadGlobalBinding(entry.id).then(
-              (loaded) => setGlobalSource((current) => current?.id === entry.id ? { id: entry.id, source: loaded.entry.source } : current),
-              () => setGlobalSource((current) => current?.id === entry.id ? { id: entry.id, error: true, source: "" } : current)
-            );
-          };
-          return h(
-            "div",
-            {
-              className: "ptcPlusReplPopover",
-              id: id2,
-              ref: popoverRef,
-              popover: "auto",
-              role: "dialog",
-              "aria-labelledby": titleId,
-              onPointerEnter: onEnter,
-              onPointerLeave: onLeave
-            },
-            h(
-              "div",
-              { className: "ptcPlusReplCard" },
-              h(
-                "div",
-                { className: "ptcPlusReplHead" },
-                h("span", { className: "ptcPlusReplStatusDot", "aria-hidden": true }),
-                h("span", { className: "ptcPlusReplTitle", id: titleId }, t2("memory.title")),
-                h("span", {
-                  className: "ptcPlusReplSummary",
-                  "aria-hidden": summary === "" ? true : void 0
-                }, summary)
-              ),
-              globalEnabled ? h(
-                "div",
-                { className: "ptcPlusReplTabs", role: "tablist" },
-                h("button", {
-                  type: "button",
-                  role: "tab",
-                  className: "ptcPlusReplTab",
-                  "aria-selected": activeTab === "session",
-                  onClick: () => setTab("session")
-                }, t2("memory.sessionTab")),
-                h("button", {
-                  type: "button",
-                  role: "tab",
-                  className: "ptcPlusReplTab",
-                  "aria-selected": activeTab === "global",
-                  onClick: () => setTab("global")
-                }, t2("memory.globalTab"))
-              ) : null,
-              activeTab === "global" ? h(
-                "div",
-                { className: "ptcPlusGlobalPane" },
-                authoringMessage === null ? null : h("p", { className: "ptcPlusMessage", role: "status" }, t2(authoringMessage)),
-                globalBindings === void 0 ? h("span", { className: "ptcPlusReplEmpty" }, t2("memory.globalUnavailable")) : globalBindings.entries.length === 0 ? h("span", { className: "ptcPlusReplEmpty" }, t2("memory.globalEmpty")) : h("ul", { className: "ptcPlusGlobalList" }, globalBindings.entries.map((entry) => h(
-                  "li",
-                  { key: entry.id, className: "ptcPlusGlobalItem" },
-                  h(
-                    "button",
-                    {
-                      type: "button",
-                      className: "ptcPlusBindingSelect",
-                      "aria-expanded": globalSource?.id === entry.id,
-                      onClick: () => inspectGlobal(entry)
-                    },
-                    h("span", { className: "ptcPlusBindingName", title: entry.name }, entry.name),
-                    h("span", { className: "ptcPlusBindingMeta", title: entry.symbols.join(", ") }, `${entry.scope} - ${entry.symbols.join(", ")}`),
-                    h(
-                      "span",
-                      { className: "ptcPlusBindingState", "data-enabled": entry.enabled },
-                      t2(entry.enabled ? "bindings.enabled" : "bindings.disabledEntry")
-                    )
-                  ),
-                  h(ActionButton, {
-                    type: "button",
-                    className: "ptcPlusButton",
-                    onClick: () => prefillAuthoring(`/binding edit ${entry.id} `)
-                  }, typeof IconSparkle16 === "function" ? h(IconSparkle16, { size: 14, "aria-hidden": true }) : null, t2("bindings.authorEdit")),
-                  globalSource?.id !== entry.id ? null : globalSource.error === true ? h("span", { className: "ptcPlusReplEmpty" }, t2("memory.globalUnavailable")) : h("pre", { className: "ptcPlusGlobalSource" }, globalSource.source)
-                )))
-              ) : !memory.available ? h("span", { className: "ptcPlusReplEmpty" }, t2("memory.unavailable")) : memory.entries.length === 0 ? h("span", { className: "ptcPlusReplEmpty" }, t2("memory.empty")) : h("ul", { className: "ptcPlusReplList" }, memory.entries.map((binding, index) => {
-                const expanded = expandedBinding === binding.name;
-                const preview = binding.definition.source.replace(/\s+/g, " ").trim();
-                const definitionId = `${id2}-binding-${index}`;
-                const toggle = () => setExpandedBinding((current) => current === binding.name ? null : binding.name);
-                return h(
-                  "li",
-                  {
-                    className: "ptcPlusReplBinding",
-                    key: binding.name,
-                    "data-expanded": expanded
-                  },
-                  h(
-                    "button",
-                    {
-                      className: "ptcPlusReplBindingTrigger",
-                      type: "button",
-                      "aria-expanded": expanded,
-                      "aria-controls": expanded ? definitionId : void 0,
-                      onClick: toggle
-                    },
-                    h("span", {
-                      className: "ptcPlusReplName",
-                      "data-kind": binding.kind,
-                      title: `${binding.name} - ${t2(`memory.kind.${binding.kind}`)}`
-                    }, binding.name),
-                    h("span", { className: "ptcPlusReplPreview", title: preview }, preview),
-                    h("span", {
-                      className: "ptcPlusReplChevron",
-                      "data-open": expanded,
-                      "aria-hidden": true
-                    }, h(IconChevronDownOutline14, { size: 14 }))
-                  ),
-                  expanded ? h("div", {
-                    className: "ptcPlusReplDefinitionWrap",
-                    "data-open": true,
-                    id: definitionId,
-                    role: "region",
-                    "aria-label": binding.name
-                  }, h(
-                    "div",
-                    { className: "ptcPlusReplDefinitionInner" },
-                    h(
-                      "div",
-                      { className: "ptcPlusReplDefinition" },
-                      h("span", { className: "ptcPlusReplLocation" }, t2("memory.location", {
-                        line: binding.definition.line,
-                        column: binding.definition.column
-                      })),
-                      typeof CodeBlock === "function" ? h(CodeBlock, {
-                        code: binding.definition.source,
-                        lang: "typescript",
-                        className: "ptcPlusReplCode",
-                        copyLabel: t2("tool.copy"),
-                        copiedLabel: t2("tool.copied")
-                      }) : h("pre", { className: "ptcPlusReplCode" }, binding.definition.source)
-                    )
-                  )) : null
-                );
-              })),
-              tab !== "session" || memory.omitted === 0 ? null : h("span", { className: "ptcPlusReplMore" }, t2("memory.more", { count: memory.omitted }))
-            )
-          );
-        }
         const bindingReviews = createBindingReviews(callUserBindings);
         ctx.effect(() => () => bindingReviews.dispose());
         ctx.on("connection/reset", () => bindingReviews.reset());
@@ -29888,504 +30767,60 @@
           const view = React.useSyncExternalStore(review.subscribe, review.getSnapshot);
           return [review, view];
         }
-        function BindingCandidateContent({ candidate, t: t2, showName = true }) {
-          const preferences = bindingModelPreferences(candidate.entry.modelContext);
-          const contextTitle = React.useId();
-          return h(
-            "div",
-            { className: "ptcPlusAuthoringDraft" },
-            showName ? h("strong", null, candidate.entry.name) : null,
-            h("span", { className: "ptcPlusBindingMeta" }, `${candidate.entry.scope} - ${candidate.entry.symbols.join(", ")}`),
-            candidate.entry.purpose ? h("p", { className: "ptcPlusMessage" }, candidate.entry.purpose) : null,
-            typeof CodeBlock === "function" ? h(CodeBlock, {
-              code: candidate.entry.source,
-              lang: "typescript",
-              className: "ptcPlusBindingCommandCode",
-              copyLabel: t2("tool.copy"),
-              copiedLabel: t2("tool.copied")
-            }) : h("pre", { className: "ptcPlusBindingCommandSource" }, candidate.entry.source),
-            h(
-              "section",
-              { className: "ptcPlusCandidateContext", "aria-labelledby": contextTitle },
-              h("h4", { id: contextTitle }, t2("bindings.modelContext")),
-              h(
-                "dl",
-                null,
-                h(
-                  "div",
-                  { className: "ptcPlusCandidateDeclaration" },
-                  h("dt", null, t2("bindings.declaration")),
-                  h(
-                    "dd",
-                    { "data-included": preferences.includeDeclaration },
-                    preferences.includeDeclaration ? h(IconCheckOutline14, { size: 14, "aria-hidden": true }) : null,
-                    t2(preferences.includeDeclaration ? "bindings.declarationIncluded" : "bindings.declarationExcluded")
-                  )
-                ),
-                h(
-                  "div",
-                  { className: "ptcPlusCandidatePrompt" },
-                  h("dt", null, t2("bindings.instructions")),
-                  h(
-                    "dd",
-                    { "data-empty": preferences.instructions === "" },
-                    preferences.instructions || t2("bindings.noInstructions")
-                  )
-                )
-              )
-            )
-          );
-        }
-        function focusComposer(anchor) {
-          if (!anchor || anchor.getClientRects().length === 0) return;
-          for (let parent = anchor.parentElement; parent; parent = parent.parentElement) {
-            const editable2 = [...parent.querySelectorAll('textarea, [contenteditable="true"]')].find((element) => element.getClientRects().length > 0 && !element.disabled);
-            if (editable2) {
-              editable2.focus({ preventScroll: true });
-              return;
-            }
+        const subscribeReset = (listener) => ctx.on("connection/reset", listener);
+        const { BindingAuthorButton, BindingReviewDock, BindingCommandCard } = createAuthoringView(React, {
+          ActionButton,
+          IconButton,
+          Menu,
+          Toast,
+          Tooltip,
+          CodeBlock,
+          BindingsDialog,
+          useWorkbenchController,
+          useBindingReview,
+          catalogOwner,
+          callUserBindings,
+          subscribeReset,
+          icons: {
+            sparkle: IconSparkle16,
+            chevron: IconChevronDownOutline14,
+            close: IconCloseOutline16,
+            check: IconCheckOutline14
           }
-          anchor.focus({ preventScroll: true });
-        }
-        function openBindingReview(review, candidate = review.getSnapshot().candidate) {
-          if (!review.display("expanded", candidate)) return;
-          requestAnimationFrame(() => {
-            if (review.getSnapshot().candidate === candidate && review.panel?.getClientRects().length) {
-              review.panel.focus({ preventScroll: true });
-            }
-          });
-        }
-        function focusBindingReviewAccess(review) {
-          const anchor = review.access;
-          const button = anchor?.querySelector("button");
-          if (button?.getClientRects().length) button.focus({ preventScroll: true });
-          else focusComposer(anchor);
-        }
-        function fitBindingReview(panel) {
-          const body = panel?.querySelector(".ptcPlusBindingDockBody");
-          const anchor = panel?.parentElement;
-          if (!anchor || typeof ResizeObserver !== "function") return void 0;
-          const ancestors = [];
-          let seat = panel;
-          let viewport;
-          for (let parent = panel.parentElement; parent; parent = parent.parentElement) {
-            ancestors.push(parent);
-            if (/auto|scroll|hidden|clip/.test(getComputedStyle(parent).overflowY)) {
-              viewport = parent;
-              break;
-            }
-            seat = parent;
-          }
-          if (!viewport) return void 0;
-          let frame;
-          const update = () => {
-            if (!panel.getClientRects().length) return;
-            const top2 = Math.max(
-              viewport.getBoundingClientRect().top + viewport.clientTop,
-              window.visualViewport?.offsetTop ?? 0
-            );
-            const offset = anchor.getBoundingClientRect().bottom - seat.getBoundingClientRect().top + 8;
-            panel.style.setProperty("--ptc-plus-review-offset", `${Math.max(8, Math.ceil(offset))}px`);
-            const room = Math.max(0, seat.getBoundingClientRect().top - top2 - 16);
-            panel.style.setProperty("--ptc-plus-review-height", `${Math.floor(room)}px`);
-            if (body) {
-              const chrome2 = panel.scrollHeight - body.offsetHeight + 2;
-              const available = Math.max(0, room - chrome2);
-              panel.dataset.scroll = available < 80 ? "panel" : "body";
-              body.style.setProperty("--ptc-plus-review-space", `${Math.floor(available)}px`);
-            }
-          };
-          const schedule = () => {
-            cancelAnimationFrame(frame);
-            frame = requestAnimationFrame(update);
-          };
-          const observer = new ResizeObserver(schedule);
-          for (const element of [panel, ...panel.children, ...ancestors]) observer.observe(element);
-          window.visualViewport?.addEventListener("resize", schedule);
-          window.visualViewport?.addEventListener("scroll", schedule);
-          update();
-          return () => {
-            observer.disconnect();
-            cancelAnimationFrame(frame);
-            window.visualViewport?.removeEventListener("resize", schedule);
-            window.visualViewport?.removeEventListener("scroll", schedule);
-            panel.style.removeProperty("--ptc-plus-review-offset");
-            panel.style.removeProperty("--ptc-plus-review-height");
-            delete panel.dataset.scroll;
-            body?.style.removeProperty("--ptc-plus-review-space");
-          };
-        }
-        function BindingReviewDock({ sessionId, useProjection, t: t2 }) {
-          const raw = useProjection("ptcPlusBindingDraft");
-          const projection = React.useMemo(() => bindingDraftProjection(raw), [raw]);
-          const [review, view] = useBindingReview(sessionId);
-          const focused = React.useRef(false);
-          React.useEffect(() => {
-            if (view.visibility !== "hidden") return;
-            if (view.action !== null && focused.current && document.activeElement === document.body) {
-              focusBindingReviewAccess(review);
-            }
-            focused.current = false;
-          }, [review, view.visibility, view.action]);
-          React.useLayoutEffect(() => review.attach(), [review]);
-          React.useLayoutEffect(() => {
-            review.sync(projection);
-          }, [review, projection]);
-          const title = React.useId();
-          const content2 = React.useId();
-          const expanded = view.visibility === "expanded";
-          const candidateKey = view.candidateKey;
-          React.useLayoutEffect(
-            () => fitBindingReview(review.panel),
-            [review, candidateKey, expanded, view.visibility, view.message]
-          );
-          const close = () => {
-            review.display("hidden");
-            requestAnimationFrame(() => focusBindingReviewAccess(review));
-          };
-          const act = (operation, activate = false) => {
-            if (review.panel?.contains(document.activeElement)) review.panel.focus({ preventScroll: true });
-            void review.act(operation, activate);
-          };
-          if (view.candidate === null || view.visibility === "hidden") return null;
-          return h(
-            "div",
-            { className: "ptcPlusBindingDockAnchor" },
-            h(
-              "section",
-              {
-                key: candidateKey,
-                className: "ptcPlusBindingDock",
-                "aria-labelledby": title,
-                tabIndex: -1,
-                ref: (element) => {
-                  review.panel = element;
-                },
-                onFocusCapture: () => {
-                  focused.current = true;
-                },
-                onBlurCapture: (event) => {
-                  if (event.relatedTarget || review.getSnapshot().action === null) focused.current = false;
-                },
-                "aria-busy": view.busy
-              },
-              h(
-                "div",
-                { className: "ptcPlusBindingDockHead" },
-                h(
-                  "button",
-                  {
-                    type: "button",
-                    className: "ptcPlusBindingDockToggle",
-                    "aria-label": t2(expanded ? "bindings.reviewCollapse" : "bindings.reviewExpand"),
-                    "aria-expanded": expanded,
-                    "aria-controls": expanded ? content2 : void 0,
-                    onClick: () => review.display(expanded ? "collapsed" : "expanded")
-                  },
-                  h("span", { className: "ptcPlusBindingDockSymbol", "aria-hidden": true }, "</>"),
-                  h(
-                    "span",
-                    { className: "ptcPlusBindingDockHeading" },
-                    h("strong", { id: title, title: view.candidate.entry.name }, view.candidate.entry.name),
-                    h(
-                      "span",
-                      { role: "status", title: t2(bindingReviewStatus(view)) },
-                      `${t2("bindings.reviewTitle")} \xB7 ${t2(bindingReviewStatus(view))}`
-                    )
-                  ),
-                  h(
-                    "span",
-                    { className: "ptcPlusBindingDockChevron", "aria-hidden": true },
-                    h(IconChevronDownOutline14, { size: 16 })
-                  )
-                ),
-                h(IconButton, { icon: IconCloseOutline16, label: t2("bindings.reviewClose"), onClick: close })
-              ),
-              !expanded ? null : h(
-                React.Fragment,
-                null,
-                h(
-                  "div",
-                  {
-                    className: "ptcPlusBindingDockBody",
-                    id: content2,
-                    tabIndex: 0,
-                    role: "region",
-                    "aria-label": t2("bindings.source")
-                  },
-                  h(BindingCandidateContent, { candidate: view.candidate, t: t2, showName: false })
-                ),
-                view.message === null ? null : h("p", { className: "ptcPlusMessage ptcPlusDanger", role: "status" }, t2(view.message)),
-                h(
-                  "div",
-                  { className: "ptcPlusBindingDockActions" },
-                  h(ActionButton, {
-                    className: "ptcPlusBindingDockDiscard",
-                    "data-kind": "ghost",
-                    disabled: !view.writable || view.busy,
-                    onClick: () => act("discard-draft")
-                  }, t2("bindings.draftDiscard")),
-                  h(ActionButton, {
-                    disabled: !view.writable || view.busy,
-                    onClick: () => act("save-draft", false)
-                  }, t2("bindings.draftSave")),
-                  h(ActionButton, {
-                    "data-kind": "primary",
-                    disabled: !view.writable || view.busy,
-                    onClick: () => act("save-draft", true)
-                  }, t2("bindings.draftSaveEnable")),
-                  view.message === null ? null : h(ActionButton, {
-                    disabled: view.busy,
-                    onClick: () => review.reset()
-                  }, t2("bindings.reviewRetry"))
-                )
-              )
-            )
-          );
-        }
-        function BindingCommandCard({ node, sessionId, t: t2, useProjection }) {
-          const projection = bindingDraftProjection(useProjection?.("ptcPlusBindingDraft"));
-          const [review, current] = useBindingReview(sessionId);
-          const historical = projection?.history?.find((record) => record.commandId === node.commandId);
-          const matches = projection?.commandId === node.commandId;
-          const currentMatches = current.candidate?.commandId === node.commandId;
-          const candidate = historical?.candidate ?? (currentMatches ? current.candidate : null);
-          const action = historical?.action ?? (currentMatches ? current.action : null);
-          const phase = action?.state ?? (candidate !== null ? "ready" : node.outcome?.kind === "error" || matches && projection.phase === "failed" ? "failed" : matches && projection.phase === "pending" ? "pending" : "idle");
-          const status = action != null ? bindingReviewStatus({ action }) : phase === "ready" ? "bindings.commandGenerated" : phase === "pending" ? "bindings.commandPending" : phase === "failed" ? "bindings.commandFailed" : node.outcome === null ? "bindings.commandAdmitting" : "bindings.commandAccepted";
-          const canOpen = matches && currentMatches && action == null && current.mounted && current.reachable;
-          return h(
-            "section",
-            {
-              className: "ptcPlusBindingCommand",
-              "data-phase": phase,
-              "aria-label": t2("bindings.commandTitle")
-            },
-            h(
-              "div",
-              { className: "ptcPlusBindingCommandHeader" },
-              h("strong", { className: "ptcPlusBindingCommandTitle" }, t2("bindings.commandTitle")),
-              h(
-                "span",
-                { className: "ptcPlusBindingCommandState" },
-                h("span", { className: "ptcPlusBindingCommandStateDot", "aria-hidden": true }),
-                t2(status)
-              )
-            ),
-            h("pre", { className: "ptcPlusBindingCommandRequirement" }, `/binding${node.args ?? ""}`),
-            node.outcome?.kind !== "error" ? null : h(
-              "p",
-              { className: "ptcPlusMessage ptcPlusDanger" },
-              node.outcome.text ?? t2("bindings.commandFailed")
-            ),
-            canOpen ? h(ActionButton, { onClick: () => openBindingReview(review) }, t2("bindings.reviewOpen")) : null,
-            !current.mounted && (candidate !== null || matches && projection.phase === "ready") ? h("p", { className: "ptcPlusMessage" }, t2("bindings.reviewUnavailable")) : null,
-            candidate === null ? null : h(
-              "details",
-              { className: "ptcPlusBindingSourceDetails" },
-              h("summary", null, t2("tool.source")),
-              h(BindingCandidateContent, { candidate, t: t2 })
-            )
-          );
-        }
-        function PTCPlusSessionIndicator({
-          sessionId,
-          t: t2,
-          useProjection,
-          useSessions,
-          useInput,
-          inputActions,
-          usePtcSettings,
-          callUserBindings: callUserBindings2
-        }) {
-          const preset = useSessionPreset({ sessionId, useProjection, useSessions });
-          const projectionMemory = useProjection("ptcPlusRepl");
-          const settings = usePtcSettings((snapshot) => snapshot);
-          const input = typeof useInput === "function" ? useInput((snapshot) => snapshot) : void 0;
-          const resolvedSessionId = sessionId;
-          const globalEnabled = settings.status === "ready" && settings.value?.enabled === true && settings.value?.userBindingsEnabled === true;
-          const identity = JSON.stringify([sessionId, globalEnabled]);
-          const refreshControl = React.useRef(null);
-          if (refreshControl.current?.identity !== identity) refreshControl.current = { identity, sequence: 0 };
-          const [globalBindingsState, setGlobalBindingsState] = React.useState(null);
-          const [authoringMessage, setAuthoringMessage] = React.useState(null);
-          const globalBindings = globalBindingsState?.identity === identity ? globalBindingsState.value : void 0;
-          const refreshGlobalBindings = React.useCallback(async () => {
-            const control = refreshControl.current;
-            if (!globalEnabled || control.identity !== identity) return;
-            const sequence = ++control.sequence;
-            try {
-              const value = await callUserBindings2("list");
-              if (refreshControl.current === control && control.sequence === sequence) setGlobalBindingsState({ identity, value });
-            } catch {
-              if (refreshControl.current === control && control.sequence === sequence) setGlobalBindingsState(null);
-            }
-          }, [identity, globalEnabled]);
-          React.useEffect(() => {
-            void refreshGlobalBindings();
-            return () => {
-              refreshControl.current.sequence++;
-            };
-          }, [refreshGlobalBindings]);
-          const triggerRef = React.useRef(null);
-          const popoverRef = React.useRef(null);
-          const closeTimer = React.useRef(void 0);
-          const [expanded, setExpanded] = React.useState(false);
-          React.useEffect(() => {
-            if (!expanded || !globalEnabled) return void 0;
-            const timer = setInterval(() => {
-              void refreshGlobalBindings();
-            }, 1500);
-            return () => clearInterval(timer);
-          }, [expanded, globalEnabled, refreshGlobalBindings]);
-          const positionPopover = React.useCallback(() => {
-            if (!replPopoverIsOpen(popoverRef.current)) return;
-            placeReplPopover(triggerRef.current, popoverRef.current);
-          }, []);
-          const showPopover = React.useCallback(() => {
-            if (closeTimer.current !== void 0) clearTimeout(closeTimer.current);
-            const popover = popoverRef.current;
-            if (popover === null) return;
-            popover.style.visibility = "hidden";
-            if (!replPopoverIsOpen(popover)) {
-              if (typeof popover.showPopover === "function") {
-                try {
-                  popover.showPopover();
-                } catch {
-                  popover.dataset.open = "true";
-                }
-              } else {
-                popover.dataset.open = "true";
-              }
-            }
-            placeReplPopover(triggerRef.current, popover);
-            popover.style.visibility = "visible";
-            setExpanded(true);
-            void refreshGlobalBindings();
-          }, [refreshGlobalBindings]);
-          const hidePopover = React.useCallback(() => {
-            const popover = popoverRef.current;
-            if (popover === null) return;
-            if (popover.dataset.open === "true") delete popover.dataset.open;
-            if (typeof popover.hidePopover === "function" && replPopoverIsOpen(popover)) {
-              try {
-                popover.hidePopover();
-              } catch {
-              }
-            }
-            setExpanded(false);
-          }, []);
-          const scheduleHide = React.useCallback(() => {
-            if (closeTimer.current !== void 0) clearTimeout(closeTimer.current);
-            closeTimer.current = setTimeout(() => {
-              closeTimer.current = void 0;
-              if (document.activeElement === triggerRef.current || popoverRef.current?.contains(document.activeElement)) return;
-              hidePopover();
-            }, 120);
-          }, [hidePopover]);
-          const prefillAuthoring = React.useCallback((value) => {
-            if (typeof inputActions?.setDraft !== "function") return;
-            if (typeof input?.draft === "string" && input.draft.trim() !== "") {
-              setAuthoringMessage("bindings.composerBusy");
-              return;
-            }
-            inputActions.setDraft(value);
-            setAuthoringMessage(null);
-            hidePopover();
-          }, [hidePopover, input?.draft, inputActions]);
-          React.useEffect(() => {
-            const syncPopoverState = (event) => {
-              if (event.target !== popoverRef.current) return;
-              setExpanded(replPopoverIsOpen(popoverRef.current));
-            };
-            window.addEventListener("resize", positionPopover);
-            document.addEventListener("scroll", positionPopover, true);
-            document.addEventListener("toggle", syncPopoverState, true);
-            return () => {
-              if (closeTimer.current !== void 0) clearTimeout(closeTimer.current);
-              window.removeEventListener("resize", positionPopover);
-              document.removeEventListener("scroll", positionPopover, true);
-              document.removeEventListener("toggle", syncPopoverState, true);
-              const popover = popoverRef.current;
-              if (popover?.dataset?.open === "true") delete popover.dataset.open;
-              if (typeof popover?.hidePopover === "function" && replPopoverIsOpen(popover)) {
-                try {
-                  popover.hidePopover();
-                } catch {
-                }
-              }
-            };
-          }, [hidePopover, positionPopover]);
-          if (!sessionUsesPtcPreset(preset) || settings.status !== "ready" || settings.value?.enabled !== true) return null;
-          let memory;
-          try {
-            memory = normalizeReplMemorySnapshot(projectionMemory);
-          } catch {
-            memory = unavailableReplMemorySnapshot();
-          }
-          const popoverId = `ptc-plus-repl-${String(resolvedSessionId).replace(/[^A-Za-z0-9_-]/g, "-")}`;
-          const titleId = `${popoverId}-title`;
-          return h(
-            "span",
-            { className: "ptcPlusActiveShell" },
-            h("button", {
-              type: "button",
-              className: "ptcPlusActive",
-              ref: triggerRef,
-              title: t2("indicator.title"),
-              "aria-label": t2("indicator.title"),
-              "aria-controls": popoverId,
-              "aria-expanded": expanded,
-              "aria-haspopup": "dialog",
-              onPointerEnter: showPopover,
-              onPointerLeave: scheduleHide,
-              onFocus: showPopover,
-              onBlur: scheduleHide,
-              onClick: showPopover,
-              onKeyDown: (event) => {
-                if (event.key === "Escape") hidePopover();
-              }
-            }, h("span", { className: "ptcPlusActiveLabel" }, "PTC Plus")),
-            h(ReplMemoryCard, {
-              memory,
-              globalEnabled,
-              globalBindings,
-              loadGlobalBinding: (id2) => callUserBindings2("load", { id: id2 }),
-              prefillAuthoring,
-              authoringMessage,
-              t: t2,
-              id: popoverId,
-              titleId,
-              popoverRef,
-              onEnter: showPopover,
-              onLeave: scheduleHide
-            })
-          );
-        }
-        ctx.slots.inject("conversation.session.header.actions", () => registerEnabled(ctx, false, () => ctx.slots.register({
+        });
+        const { PTCPlusSessionIndicator } = createIndicatorView(React, {
+          featureEnabled,
+          useSessionPreset,
+          sessionUsesPtcPreset,
+          normalizeReplMemorySnapshot,
+          unavailableReplMemorySnapshot,
+          ReplMemoryCard,
+          replPopoverIsOpen,
+          placeReplPopover,
+          catalogOwner,
+          subscribeReset
+        });
+        ctx.slots.inject("conversation.session.header.actions", () => registerGated(ctx, settingsGate("plugin", () => ctx.slots.register({
           name: "conversation.session.header.actions",
           id: "ptc-plus-active",
           order: -9,
           locale: LOCALE_NS,
           inject: settingsProps
-        }, (props) => typeof props.useProjection === "function" ? h(PTCPlusSessionIndicator, props) : null)));
-        ctx.slots.inject("conversation.chat.commandview", () => registerEnabled(ctx, true, () => ctx.slots.register({
+        }, (props) => typeof props.useProjection === "function" ? h(PTCPlusSessionIndicator, props) : null))));
+        ctx.slots.inject("conversation.chat.commandview", () => registerGated(ctx, settingsGate("bindings", () => ctx.slots.register({
           name: "conversation.chat.commandview",
           key: "binding",
           locale: LOCALE_NS,
           inject: settingsProps
-        }, (props) => h(BindingCommandCard, { ...props, key: props.node.commandId }))));
-        ctx.slots.inject("conversation.input.dock", () => ctx.slots.inject("conversation.input.left", () => registerEnabled(ctx, true, () => {
-          const dock = ctx.slots.register({
-            name: "conversation.input.dock",
-            id: "ptc-plus-binding-review",
-            order: 30,
-            locale: LOCALE_NS
-          }, (props) => typeof props.useProjection === "function" && props.sessionId !== void 0 ? h(BindingReviewDock, { ...props, key: props.sessionId }) : null);
-          return dock;
-        })));
+        }, (props) => h(BindingCommandCard, { ...props, key: props.node.commandId })))));
+        ctx.slots.inject("conversation.input.dock", () => ctx.slots.inject("conversation.input.left", () => registerGated(ctx, settingsGate("bindings", () => ctx.slots.register({
+          name: "conversation.input.dock",
+          id: "ptc-plus-binding-review",
+          order: 30,
+          locale: LOCALE_NS
+        }, (props) => typeof props.useProjection === "function" && props.sessionId !== void 0 ? h(BindingReviewDock, { ...props, key: props.sessionId }) : null)))));
         const availability = createBindingCommandAvailability(ctx);
-        ctx.slots.inject("conversation.input.left", () => registerEnabled(ctx, true, () => ctx.slots.register({
+        ctx.slots.inject("conversation.input.left", () => registerGated(ctx, settingsGate("bindings", () => ctx.slots.register({
           name: "conversation.input.left",
           id: "ptc-plus-binding-author",
           order: 20,
@@ -30393,7 +30828,7 @@
           inject: (sessionId) => ({
             hooks: { ptcSettings: preferenceScope, bindingCommand: availability.source(sessionId) }
           })
-        }, (props) => props.sessionId === void 0 ? null : h(BindingAuthorButton, { ...props, key: props.sessionId }))));
+        }, (props) => props.sessionId === void 0 ? null : h(BindingAuthorButton, { ...props, key: props.sessionId })))));
       }
       module.exports = {
         apply,

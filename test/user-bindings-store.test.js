@@ -186,6 +186,28 @@ test('creates a new entry without overwriting an existing stable id', async (t) 
   assert.equal((await store.entry('math')).entry.purpose, 'Math helpers.')
 })
 
+test('updates one existing entry without creating a missing stable id', async (t) => {
+  const { filename, store } = await fixture(t)
+  const created = await store.create(binding(), (await store.list()).revision)
+  const updated = await store.update(binding({ purpose: 'Revised helpers.' }), created.revision)
+  assert.equal(updated.entries[0].purpose, 'Revised helpers.')
+  assert.equal((await store.entry('math')).entry.purpose, 'Revised helpers.')
+
+  await assert.rejects(
+    store.update(binding({ id: 'missing' }), updated.revision),
+    /does not exist/,
+  )
+  assert.equal((await store.list()).revision, updated.revision)
+  assert.equal((await store.snapshot()).entries[0].id, 'math')
+
+  await writeFile(filename, `${JSON.stringify({ entries: [binding({ purpose: 'external' })] }, null, 2)}\n`)
+  await assert.rejects(
+    store.update(binding({ purpose: 'local' }), updated.revision),
+    error => error.code === 'BINDINGS_CONFLICT' && /outside this process/.test(error.message),
+  )
+  assert.equal((await store.reload()).entries[0].purpose, 'external')
+})
+
 test('imports local TypeScript with collision-free ids and validates import options', async (t) => {
   const { root, store } = await fixture(t)
   const source = join(root, 'my helpers.ts')

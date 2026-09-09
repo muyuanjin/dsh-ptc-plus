@@ -5,11 +5,11 @@ import { bindingNodes, createGeneratedNameAllocator } from './binding-pattern.js
 import { applySourceEdits, createMappedTextBuilder, identitySourceMap } from './source-position-map.js'
 import {
   LEGACY_DEFAULT_EXPORT_BINDING,
+  LEGACY_IMPORT_EXPRESSION_BOUNDARY,
   LIVE_DEFAULT_EXPORT_BINDING,
+  LIVE_IMPORT_EXPRESSION_BOUNDARY,
+  LIVE_MODULE_SEMANTICS,
 } from './repl-rewrite-contract.js'
-
-export const STRIP_PREFIX = 'async function __ptc_cell__(){\n'
-export const STRIP_SUFFIX = '\n}'
 
 export class ModuleRewriteError extends SyntaxError {
   constructor(message, cellPosition) {
@@ -263,9 +263,10 @@ function assertNoImportedWriteAncestor(path, imports) {
   }
 }
 
-function preserveExpressionStatementBoundary(path, edits) {
+function preserveExpressionStatementBoundary(path, edits, boundary) {
   const statement = path.findParent(parent => parent.isExpressionStatement())
-  if (statement?.node.expression.start === path.node.start) {
+  if (statement?.node.expression.start === path.node.start
+    && (boundary !== LIVE_IMPORT_EXPRESSION_BOUNDARY || statement.inList)) {
     edits.push({ start: path.node.start, end: path.node.start, text: ';' })
   }
 }
@@ -285,7 +286,7 @@ function assertNoDynamicImportResolution(tree, imports) {
   })
 }
 
-function rewriteImportReferences(code, sourceMap, imports) {
+function rewriteImportReferences(code, sourceMap, imports, boundary) {
   if (imports.size === 0) return { code, sourceMap }
   const parseRewritten = source => parse(source, {
       sourceType: 'script',
@@ -307,6 +308,7 @@ function rewriteImportReferences(code, sourceMap, imports) {
       const binding = importedBindingFor(path, path.node.left, imports)
       if (binding === undefined) return
       assertNoImportedWriteAncestor(path, imports)
+      if (boundary === LIVE_IMPORT_EXPRESSION_BOUNDARY) preserveExpressionStatementBoundary(path, writeEdits, boundary)
       const member = importMember(binding.namespace, binding.imported)
       const builder = createMappedTextBuilder(code)
       const appendMember = () => builder.appendMapped(member, path.node.left.start, path.node.left.end)
@@ -336,6 +338,7 @@ function rewriteImportReferences(code, sourceMap, imports) {
       const binding = importedBindingFor(path, path.node.argument, imports)
       if (binding === undefined) return
       assertNoImportedWriteAncestor(path, imports)
+      if (boundary === LIVE_IMPORT_EXPRESSION_BOUNDARY) preserveExpressionStatementBoundary(path, writeEdits, boundary)
       const member = importMember(binding.namespace, binding.imported)
       const builder = createMappedTextBuilder(code)
       builder.append('((__dsh_ptc_import_value__) => { ')
@@ -381,7 +384,7 @@ function rewriteImportReferences(code, sourceMap, imports) {
       const parent = path.parent
       if (((parent.type === 'CallExpression' || parent.type === 'OptionalCallExpression') && parent.callee === path.node)
         || (parent.type === 'TaggedTemplateExpression' && parent.tag === path.node)) {
-        preserveExpressionStatementBoundary(path, readEdits)
+        preserveExpressionStatementBoundary(path, readEdits, boundary)
         readEdits.push({ start: path.node.start, end: path.node.end, text: `(0, ${member})` })
         return
       }
@@ -433,23 +436,17 @@ function exportAllEdits(node, code, edits, rewrites, moduleLoads) {
   rewrites.push(record('export', `converted the re-export of ${JSON.stringify(source)} into a side-effect import`, node, source))
 }
 
-function exportDefaultEdits({
-  node,
-  code,
-  edits,
-  rewrites,
-  defaultNameAvailable,
-  exportDeclarations,
-  imports,
-  allocateNamespace,
-  commitSignal,
-  commitTargets,
-}) {
+function prepareDefaultExport(node, code, edits, rewrites, defaultNameAvailable, exportDeclarations, semantics) {
   const declaration = node.declaration
   if (declaration.type === 'TSInterfaceDeclaration') {
     editNode(edits, node, code)
     rewrites.push(record('export', 'removed a type-only export declaration', node, 'interface'))
-    return
+    return false
+  }
+  if (semantics === LEGACY_DEFAULT_EXPORT_BINDING && declaration.id?.name === '__default') {
+    edit(edits, node.start, declaration.start, preserveLines(code.slice(node.start, declaration.start)))
+    rewrites.push(record('export', 'stripped the export modifier from the __default declaration', node))
+    return false
   }
   if (!defaultNameAvailable) {
     throw new ModuleRewriteError(
@@ -457,6 +454,35 @@ function exportDefaultEdits({
       { line: node.loc.start.line, column: node.loc.start.column + 1 },
     )
   }
+  const span = {
+    line: node.loc.start.line,
+    column: node.loc.start.column + 1,
+    end: { line: node.loc.end.line, column: node.loc.end.column + 1 },
+  }
+  exportDeclarations.push({
+    name: '__default',
+    kind: declaration.type === 'FunctionDeclaration'
+      ? 'function'
+      : declaration.type === 'ClassDeclaration' ? 'class' : 'variable',
+    ...(semantics === LIVE_DEFAULT_EXPORT_BINDING ? { commitDependency: '__default' } : {}),
+    span,
+    definitionSpan: span,
+    original: true,
+  })
+  rewrites.push(record('export', 'converted the default export into a local __default binding', node))
+  return true
+}
+
+function exportDefaultEdits({
+  node,
+  code,
+  edits,
+  imports,
+  allocateNamespace,
+  commitSignal,
+  commitTargets,
+}) {
+  const declaration = node.declaration
   const namedDeclaration = (declaration.type === 'FunctionDeclaration'
     || declaration.type === 'ClassDeclaration') && declaration.id !== null
   const retainedNamedDeclaration = namedDeclaration && declaration.id.name !== '__default'
@@ -474,31 +500,6 @@ function exportDefaultEdits({
   if (declaration.type === 'ClassDeclaration' && declaration.id !== null) {
     commitTargets.add(declaration.id.name)
   }
-  exportDeclarations.push({
-    name: '__default',
-    kind: declaration.type === 'FunctionDeclaration'
-      ? 'function'
-      : declaration.type === 'ClassDeclaration' ? 'class' : 'variable',
-    commitDependency: '__default',
-    span: {
-      line: node.loc.start.line,
-      column: node.loc.start.column + 1,
-      end: {
-        line: node.loc.end.line,
-        column: node.loc.end.column + 1,
-      },
-    },
-    definitionSpan: {
-      line: node.loc.start.line,
-      column: node.loc.start.column + 1,
-      end: {
-        line: node.loc.end.line,
-        column: node.loc.end.column + 1,
-      },
-    },
-    original: true,
-  })
-  const rewrite = record('export', 'converted the default export into a local __default binding', node)
   const commit = [...new Set([...(declaration.type === 'ClassDeclaration' && declaration.id !== null
     ? [declaration.id.name]
     : []), '__default'])]
@@ -510,60 +511,15 @@ function exportDefaultEdits({
     edit(edits, node.start, declaration.start, preserveLines(code.slice(node.start, declaration.start)))
     edit(edits, node.end, node.end,
       `; ${assignmentPrefix}${declaration.id.name}${assignmentSuffix};${commit}`)
-  } else if (declaration.type === 'FunctionDeclaration' || declaration.type === 'ClassDeclaration') {
-    const prefix = code.slice(node.start, declaration.start)
-    edit(edits, node.start, declaration.start, preserveLines(prefix, assignmentPrefix))
-    edit(edits, node.end, node.end, `${assignmentSuffix};${commit}`)
   } else {
     const prefix = code.slice(node.start, declaration.start)
     edit(edits, node.start, declaration.start, preserveLines(prefix, assignmentPrefix))
     edit(edits, node.end, node.end, `${assignmentSuffix};${commit}`)
   }
-  rewrites.push(rewrite)
 }
 
-function legacyExportDefaultEdits(node, code, edits, rewrites, defaultNameAvailable, exportDeclarations) {
+function legacyExportDefaultEdits(node, code, edits) {
   const declaration = node.declaration
-  if (declaration.type === 'TSInterfaceDeclaration') {
-    editNode(edits, node, code)
-    rewrites.push(record('export', 'removed a type-only export declaration', node, 'interface'))
-    return
-  }
-  if (declaration.id?.name === '__default') {
-    edit(edits, node.start, declaration.start, preserveLines(code.slice(node.start, declaration.start)))
-    rewrites.push(record('export', 'stripped the export modifier from the __default declaration', node))
-    return
-  }
-  if (!defaultNameAvailable) {
-    throw new ModuleRewriteError(
-      'export default cannot be exposed as __default because that name is already declared',
-      { line: node.loc.start.line, column: node.loc.start.column + 1 },
-    )
-  }
-  exportDeclarations.push({
-    name: '__default',
-    kind: declaration.type === 'FunctionDeclaration'
-      ? 'function'
-      : declaration.type === 'ClassDeclaration' ? 'class' : 'variable',
-    span: {
-      line: node.loc.start.line,
-      column: node.loc.start.column + 1,
-      end: {
-        line: node.loc.end.line,
-        column: node.loc.end.column + 1,
-      },
-    },
-    definitionSpan: {
-      line: node.loc.start.line,
-      column: node.loc.start.column + 1,
-      end: {
-        line: node.loc.end.line,
-        column: node.loc.end.column + 1,
-      },
-    },
-    original: true,
-  })
-  const rewrite = record('export', 'converted the default export into a local __default binding', node)
   if (declaration.type === 'FunctionDeclaration' && declaration.id !== null) {
     const prefix = code.slice(node.start, declaration.start)
     edit(edits, node.start, declaration.start, preserveLines(prefix, `const __default = ${declaration.id.name}; `))
@@ -578,15 +534,18 @@ function legacyExportDefaultEdits(node, code, edits, rewrites, defaultNameAvaila
     const prefix = code.slice(node.start, declaration.start)
     edit(edits, node.start, declaration.start, preserveLines(prefix, 'const __default = '))
   }
-  rewrites.push(rewrite)
 }
 
 function ascending(left, right) { return left.at - right.at }
 
-export function rewriteModuleImportsExports(program, enabled, existingImports = new Map(), existingNamespaces = new Set(), unavailableNames = new Set(), moduleSemantics = { defaultExportBinding: LIVE_DEFAULT_EXPORT_BINDING }) {
+export function rewriteModuleImportsExports(program, enabled, existingImports = new Map(), existingNamespaces = new Set(), unavailableNames = new Set(), moduleSemantics = LIVE_MODULE_SEMANTICS) {
   if (![LEGACY_DEFAULT_EXPORT_BINDING, LIVE_DEFAULT_EXPORT_BINDING]
     .includes(moduleSemantics?.defaultExportBinding)) {
     throw new TypeError('ptc-plus: unsupported default export binding semantics')
+  }
+  if (![LEGACY_IMPORT_EXPRESSION_BOUNDARY, LIVE_IMPORT_EXPRESSION_BOUNDARY]
+    .includes(moduleSemantics.importExpressionBoundary)) {
+    throw new TypeError('ptc-plus: unsupported import expression boundary semantics')
   }
   const tree = parseCell(program)
   const edits = []
@@ -637,18 +596,15 @@ export function rewriteModuleImportsExports(program, enabled, existingImports = 
       exportAllEdits(node, program, edits, rewrites, moduleLoads)
     }
     else if (node.type === 'ExportDefaultDeclaration' && enabled.autoStripExports) {
+      if (!prepareDefaultExport(node, program, edits, rewrites, defaultNameAvailable,
+        exportDeclarations, moduleSemantics.defaultExportBinding)) continue
       if (moduleSemantics.defaultExportBinding === LEGACY_DEFAULT_EXPORT_BINDING) {
-        legacyExportDefaultEdits(
-          node, program, edits, rewrites, defaultNameAvailable, exportDeclarations,
-        )
+        legacyExportDefaultEdits(node, program, edits)
       } else {
         exportDefaultEdits({
           node,
           code: program,
           edits,
-          rewrites,
-          defaultNameAvailable,
-          exportDeclarations,
           imports,
           allocateNamespace: allocateImportName,
           commitSignal,
@@ -661,7 +617,7 @@ export function rewriteModuleImportsExports(program, enabled, existingImports = 
   const prologue = importPrologueEdit(program, tree, namespaceCaptures)
   if (prologue !== undefined) edits.push(prologue)
   const applied = applySourceEdits(program, identitySourceMap(program.length), edits)
-  const rewritten = rewriteImportReferences(applied.code, applied.sourceMap, imports)
+  const rewritten = rewriteImportReferences(applied.code, applied.sourceMap, imports, moduleSemantics.importExpressionBoundary)
   rewrites.sort(ascending)
   return {
     ...rewritten,

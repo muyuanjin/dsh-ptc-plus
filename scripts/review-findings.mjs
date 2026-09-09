@@ -190,8 +190,9 @@ export async function sourceTreeFingerprint(root) {
     const key = gitPathKey(relative)
     return !missingPathKeys.has(key) && !skipWorktreePaths.has(key)
   })
+  // Rename detection would hide a staged rename's old path, leaving it in the scratch tree.
   const removedPaths = new Map(splitGitRecords(gitBytes(root, [
-    'diff', '--cached', '--diff-filter=D', '--name-only', '-z',
+    'diff', '--cached', '--no-renames', '--diff-filter=D', '--name-only', '-z',
   ])).map(relative => [gitPathKey(relative), relative]))
   for (const relative of missingPaths) removedPaths.set(gitPathKey(relative), relative)
   const metadataDirectory = path.resolve(root, git(root, [

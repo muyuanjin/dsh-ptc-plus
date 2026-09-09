@@ -560,8 +560,37 @@ return { parentOnly, childOnly: typeof childOnly }
 test('preserves an existing native run_code binding', async (t) => {
   const state = fixture()
   t.after(() => state.dispose())
+  // A host-dispatched nested call re-enters the plugin through the same
+  // top-level run_code hook DSH uses for a model-issued call.
+  const dispatchNestedRun = async args => {
+    const execute = state.listeners.get('tools/execute')[0]
+    const exec = {
+      name: 'run_code',
+      callId: 'fixture-nested',
+      rootCallId: 'fixture-root',
+      parent: { id: 'fixture-parent-token' },
+      agent: { id: 'host-recursion' },
+    }
+    const result = await execute(exec, async () => {
+      const raw = await state.runtime.run({
+        program: args.code,
+        bindings: [],
+        signal: new AbortController().signal,
+      })
+      if (raw.error !== undefined) {
+        return { isError: true, content: [], error: { message: raw.error.message } }
+      }
+      return {
+        isError: false,
+        content: [],
+        value: { logs: raw.logs, ...(raw.value === undefined ? {} : { result: raw.value }) },
+      }
+    })
+    for (const listener of state.listeners.get('tools/result') ?? []) await listener(exec, result)
+    return result
+  }
   const hostRunCode = async args => {
-    const result = await state.dispatchNestedRun('host-recursion', args)
+    const result = await dispatchNestedRun(args)
     if (result.isError) throw new Error(result.error.message)
     return result.value
   }

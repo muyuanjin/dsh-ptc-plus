@@ -1,6 +1,6 @@
 import {
   foldSessionTimeline,
-} from './session-journal.js'
+} from './session-journal-recovery.js'
 import { sessionEvents } from './session-events.js'
 import { readRuntimeMessage } from './runtime-messages.js'
 

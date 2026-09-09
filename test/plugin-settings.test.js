@@ -9,6 +9,7 @@ import { CONFIG_FIELDS, CONFIG_GROUPS, SETTINGS_NAMESPACE } from '../internal/co
 import { resolveConfig } from '../internal/runtime-config.js'
 import { Session } from '@deepseek-ai/dsh-session'
 import { readRuntimeMessage, runtimeStateMessage } from '../internal/runtime-messages.js'
+import { createHostContext, describeSections, runHookChain } from './host-fixture.js'
 
 const TEST_CORDIS_TOOL_NAMES = Object.freeze([
   'test_cordis_inspect',
@@ -75,10 +76,8 @@ function settingsContext(scope) {
 }
 
 function hostContext(settings = undefined, agents = [], options = {}) {
-  const listeners = new Map()
-  const cleanups = []
-  const sections = []
-  const contexts = []
+  const host = createHostContext()
+  const { listeners, cleanups, sections, contexts } = host
   const projectionDefinitions = []
   const projectionInjections = []
   const inheritedRun = async () => ({ logs: [] })
@@ -87,6 +86,26 @@ function hostContext(settings = undefined, agents = [], options = {}) {
     isolation: 'worker-thread',
   })
   const definition = { name: 'run_code', output: {} }
+  const on = options.failHook === undefined
+    ? host.ctx.on
+    : (name, listener, registrationOptions) => {
+        if (options.failHook === name) throw new Error(`hook unavailable: ${name}`)
+        return host.ctx.on(name, listener, registrationOptions)
+      }
+  const section = value => {
+    if (options.failPromptSection === true) throw new Error('prompt section unavailable')
+    const dispose = host.ctx.systemPrompt.section(value)
+    return () => {
+      const finish = () => {
+        if (options.throwSectionDispose === true) throw new Error('prompt section disposal failed')
+        return dispose()
+      }
+      options.onSectionDispose?.()
+      return options.sectionDisposeGate === undefined
+        ? finish()
+        : Promise.resolve(options.sectionDisposeGate).then(finish)
+    }
+  }
   const ctx = {
     fiber: { state: 2 },
     agents: { list: () => agents },
@@ -94,33 +113,14 @@ function hostContext(settings = undefined, agents = [], options = {}) {
     tools: {
       get: () => definition,
       schemas: () => [],
-      register: () => () => {},
+      register: host.ctx.tools.register,
     },
     systemPrompt: {
-      context(value) {
-        contexts.push(value)
-        return () => contexts.splice(contexts.indexOf(value), 1)
-      },
-      section: value => {
-        if (options.failPromptSection === true) throw new Error('prompt section unavailable')
-        sections.push(value)
-        return () => {
-          const finish = () => {
-            if (options.throwSectionDispose === true) throw new Error('prompt section disposal failed')
-            sections.splice(sections.indexOf(value), 1)
-          }
-          options.onSectionDispose?.()
-          return options.sectionDisposeGate === undefined
-            ? finish()
-            : Promise.resolve(options.sectionDisposeGate).then(finish)
-        }
-      },
+      context: host.ctx.systemPrompt.context,
+      section,
       async assemble(context = {}) {
         const assembly = {
-          sections: sections.map(section => ({
-            name: section.name,
-            text: typeof section.text === 'function' ? section.text(context) : section.text,
-          })),
+          sections: describeSections(sections, context),
           contexts: [...contexts],
           tools: TEST_CORDIS_TOOL_NAMES
             .filter(name => context.scope?.definitions.has(name))
@@ -128,29 +128,11 @@ function hostContext(settings = undefined, agents = [], options = {}) {
           variables: {},
         }
         const entries = [...listeners.get('system-prompt/assemble') ?? []]
-        const dispatch = index => entries[index]?.(
-          assembly,
-          context,
-          () => dispatch(index + 1),
-        ) ?? Promise.resolve(assembly)
-        return dispatch(0)
+        return runHookChain(entries, [assembly, context], () => Promise.resolve(assembly))
       },
     },
-    on(name, listener) {
-      if (options.failHook === name) throw new Error(`hook unavailable: ${name}`)
-      const entries = listeners.get(name) ?? []
-      entries.push(listener)
-      listeners.set(name, entries)
-      return () => {
-        entries.splice(entries.indexOf(listener), 1)
-        if (entries.length === 0) listeners.delete(name)
-      }
-    },
-    effect(register) {
-      const cleanup = register()
-      cleanups.push(cleanup)
-      return cleanup
-    },
+    on,
+    effect: host.ctx.effect,
     logger: {
       warnings: [],
       warn(message, error) { this.warnings.push([message, error]) },
@@ -502,9 +484,7 @@ async function assemblePtc(host, agent, signal) {
   }
   const entries = host.listeners.get('system-prompt/assemble')
   const context = { agent, scope: agent, signal }
-  const dispatch = index => entries[index] === undefined ? Promise.resolve(assembly)
-    : entries[index](assembly, context, () => dispatch(index + 1))
-  return dispatch(0)
+  return runHookChain(entries, [assembly, context], () => Promise.resolve(assembly))
 }
 
 test('settings kill switch leaves no runtime side effects when disabled', async () => {

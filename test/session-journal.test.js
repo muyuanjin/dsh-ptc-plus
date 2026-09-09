@@ -15,15 +15,27 @@ import {
   normalizeDerivedEditResult,
   normalizeJournal,
   normalizeRewrites,
-  pathToHead,
   recoveryBoundariesEqual,
   reduceStateOperations,
-  recoverJournal,
-  visibleExecutableCallSeqs,
+  userBindingsForJournal,
   withJournal,
   withRecoveryBoundaries,
   withRewrites,
 } from '../internal/session-journal.js'
+import {
+  pathToHead,
+  recoverJournal,
+  recoveryBoundaryForHistory,
+  visibleExecutableCallSeqs,
+} from '../internal/session-journal-recovery.js'
+import {
+  IMPORT_BOUNDARY_JOURNAL_VERSION,
+  JOURNAL_VERSION,
+  JOURNAL_VERSIONS,
+  PER_NAME_USER_BINDINGS_JOURNAL_VERSION,
+  normalizeUserBindingNames,
+  usesCallSequenceConfirms,
+} from '../internal/session-journal-schema.js'
 import { editTargetForCall, projectSessionLog } from '../internal/session-log-view.js'
 import {
   createUserBindingsSnapshot,
@@ -35,22 +47,56 @@ function completion(value = 1) {
   return { kind: 'return', hasValue: true, value: encodeValue(value) }
 }
 
+test('only recognized journal generations use persisted sequence confirmations', () => {
+  for (const version of JOURNAL_VERSIONS) {
+    assert.equal(usesCallSequenceConfirms({ version }), version !== 1)
+  }
+  for (const value of [undefined, null, {}, { version: 0 }, { version: 999 }]) {
+    assert.equal(usesCallSequenceConfirms(value), false)
+  }
+})
+
+test('derives recovery boundaries from the selected frontier and consumes no history', () => {
+  const first = { callSeq: 3, parent: undefined }
+  const second = { callSeq: 7, parent: 0 }
+  const history = { available: true, nodes: [first, second], head: 1, volatileSuffix: [] }
+  assert.equal(recoveryBoundaryForHistory(history), undefined)
+  assert.equal(recoveryBoundaryForHistory({ ...history, available: false }), undefined)
+  assert.deepEqual(recoveryBoundaryForHistory(history, second), { failedCallSeq: 7, frontierCallSeq: 3 })
+  assert.deepEqual(recoveryBoundaryForHistory(history, first), { failedCallSeq: 3, frontierCallSeq: null })
+  const unavailable = { ...history, available: false, volatileSuffix: [{ seq: 11, reason: 'missing result' }] }
+  assert.deepEqual(recoveryBoundaryForHistory(unavailable), { failedCallSeq: 11, frontierCallSeq: 7 })
+  assert.deepEqual(recoveryBoundaryForHistory({ ...unavailable, head: undefined }), {
+    failedCallSeq: 11, frontierCallSeq: null,
+  })
+  assert.deepEqual(recoveryBoundaryForHistory({ ...unavailable, head: 99 }), {
+    failedCallSeq: 11, frontierCallSeq: null,
+  })
+  assert.deepEqual(history, { available: true, nodes: [first, second], head: 1, volatileSuffix: [] })
+})
+
 function journal(overrides = {}) {
-  const version = overrides.version ?? 6
+  const version = overrides.version ?? JOURNAL_VERSION
   return {
     version,
     ...(version >= 4 ? {
       bindingPolicy: { variableRedeclarations: true, functionClassRedeclarations: false },
       rewritePolicy: { autoRewriteImports: true, autoStripExports: true, autoSplitRedeclarations: true },
-      moduleSemantics: { defaultExportBinding: 'live-readonly' },
+      moduleSemantics: { defaultExportBinding: 'live-readonly',
+        ...(version >= IMPORT_BOUNDARY_JOURNAL_VERSION ? { importExpressionBoundary: 'statement-safe' } : {}),
+      },
       ...(version >= 5 ? { userBindingsFingerprint: null } : {}),
-      ...(version === 6 ? { userBindingsReusePolicy: 'implementation-v1' } : {}),
+      ...(version >= 6 ? { userBindingsReusePolicy: 'implementation-v1' } : {}),
     } : {
       bindingMode: 'loose',
       ...(version === 1 ? {} : {
         rewritePolicy: { autoRewriteImports: true, autoStripExports: true, autoSplitRedeclarations: true },
       }),
     }),
+    ...(version >= PER_NAME_USER_BINDINGS_JOURNAL_VERSION ? {
+      userBindingsShadowPolicy: 'per-name',
+      userBindingNames: ['noop', 'discarded'].includes(overrides.status) ? null : [],
+    } : {}),
     status: 'durable',
     calls: [],
     operations: [],
@@ -105,7 +151,7 @@ test('normalizes complete journal values and detaches nested value wires', () =>
   assert.deepEqual(normalized.operations, value.operations)
   assert.notEqual(normalized.calls[0].args, value.calls[0].args)
   assert.equal(normalized.volatileReason, undefined)
-  assert.deepEqual(normalized.moduleSemantics, { defaultExportBinding: 'live-readonly' })
+  assert.deepEqual(normalized.moduleSemantics, { defaultExportBinding: 'live-readonly', importExpressionBoundary: 'statement-safe' })
   assert.equal(normalizeJournal(journal({
     status: 'volatile',
     volatileReason: 'ambient Date',
@@ -168,12 +214,14 @@ test('rejects malformed journal schemas exhaustively', () => {
 test('creates journals, compares semantics, validates names, and merges metadata', () => {
   const policy = { autoRewriteImports: true, autoStripExports: true, autoSplitRedeclarations: true }
   assert.deepEqual(createJournal([4], 'strict', policy), {
-    version: 6,
+    version: JOURNAL_VERSION,
     bindingPolicy: { variableRedeclarations: false, functionClassRedeclarations: false },
     rewritePolicy: { autoRewriteImports: true, autoStripExports: true, autoSplitRedeclarations: true },
-    moduleSemantics: { defaultExportBinding: 'live-readonly' },
+    moduleSemantics: { defaultExportBinding: 'live-readonly', importExpressionBoundary: 'statement-safe' },
     userBindingsFingerprint: null,
     userBindingsReusePolicy: 'implementation-v1',
+    userBindingsShadowPolicy: 'per-name',
+    userBindingNames: null,
     calls: [], operations: [], confirms: [4], diagnostics: [],
   })
   assert.throws(() => createJournal([], 'invalid', policy), /binding mode/)
@@ -683,7 +731,7 @@ test('versions binding reuse without admitting missing, unknown or backdated pol
   for (const version of [1, 2, 3, 4, 5]) {
     const legacy = journal({ version })
     const normalized = normalizeJournal(legacy)
-    assert.equal(normalized.version, 6)
+    assert.equal(normalized.version, JOURNAL_VERSION)
     assert.equal(normalized.userBindingsReusePolicy, 'fingerprint-v1')
     assert.deepEqual(normalizeJournal(normalized), normalized)
     assert.throws(() => normalizeJournal({ ...legacy, userBindingsReusePolicy: 'implementation-v1' }), /journal field userBindingsReusePolicy/)
@@ -705,9 +753,156 @@ test('versions binding reuse without admitting missing, unknown or backdated pol
   }
 })
 
+test('versions import-expression boundaries without backdating current lowering semantics', () => {
+  for (const version of [1, 2, 3, 4, 5, 6]) {
+    const historical = journal({ version })
+    const normalized = normalizeJournal(historical)
+    assert.equal(normalized.version, JOURNAL_VERSION)
+    assert.equal(normalized.moduleSemantics.importExpressionBoundary, 'legacy')
+    assert.equal(normalized.userBindingsReusePolicy, version === 6 ? 'implementation-v1' : 'fingerprint-v1')
+    assert.deepEqual(normalizeJournal(normalized), normalized)
+    if (version >= 4) {
+      assert.throws(() => normalizeJournal({
+        ...historical,
+        moduleSemantics: { ...historical.moduleSemantics, importExpressionBoundary: 'statement-safe' },
+      }), /module semantics field importExpressionBoundary/)
+      assert.throws(() => normalizeJournal({ ...historical, moduleSemantics: null }), /module semantics/)
+    }
+  }
+  assert.equal(normalizeJournal(journal()).moduleSemantics.importExpressionBoundary, 'statement-safe')
+  for (const importExpressionBoundary of [undefined, null, false, 'unknown']) {
+    assert.throws(() => normalizeJournal(journal({
+      moduleSemantics: { defaultExportBinding: 'live-readonly', importExpressionBoundary },
+    })), /import expression boundary semantics/)
+  }
+  assert.throws(() => normalizeJournal(journal({
+    moduleSemantics: { defaultExportBinding: 'live-readonly' },
+  })), /import expression boundary semantics/)
+  assert.equal(journalsEqual(journal(), journal({
+    moduleSemantics: { defaultExportBinding: 'live-readonly', importExpressionBoundary: 'legacy' },
+  })), false)
+})
+
+test('records per-name shadow evidence without changing any historical whole-entry generation', () => {
+  for (const version of JOURNAL_VERSIONS) {
+    const recorded = journal({ version })
+    const normalized = normalizeJournal(recorded)
+    assert.equal(normalized.userBindingsShadowPolicy,
+      version < PER_NAME_USER_BINDINGS_JOURNAL_VERSION ? 'whole-entry' : 'per-name')
+    assert.deepEqual(normalized.userBindingNames,
+      version < PER_NAME_USER_BINDINGS_JOURNAL_VERSION ? null : [])
+    assert.deepEqual(normalizeJournal(normalized), normalized)
+    if (version < PER_NAME_USER_BINDINGS_JOURNAL_VERSION) {
+      for (const extra of [{ userBindingsShadowPolicy: 'per-name' }, { userBindingNames: [] }]) {
+        assert.throws(() => normalizeJournal({ ...recorded, ...extra }), /journal field/)
+      }
+    }
+  }
+  for (const status of ['durable', 'volatile', 'noop', 'discarded']) {
+    const historical = journal({ status, userBindingsShadowPolicy: 'whole-entry', userBindingNames: null })
+    assert.equal(normalizeJournal(historical).userBindingNames, null)
+    assert.throws(() => normalizeJournal({ ...historical, userBindingNames: [] }), /unexpected user binding name evidence/)
+    const current = journal({ status })
+    assert.deepEqual(normalizeJournal(current).userBindingNames,
+      ['noop', 'discarded'].includes(status) ? null : [])
+    assert.throws(() => normalizeJournal({ ...current,
+      userBindingNames: ['noop', 'discarded'].includes(status) ? [] : null,
+    }), /user binding name evidence/)
+  }
+  for (const value of [undefined, null, false, 'entry', 'per-name-v2']) {
+    assert.throws(() => normalizeJournal(journal({ userBindingsShadowPolicy: value })), /shadow policy/)
+  }
+  for (const field of ['userBindingsShadowPolicy', 'userBindingNames']) {
+    const missing = journal()
+    delete missing[field]
+    assert.throws(() => normalizeJournal(missing), /user binding (shadow policy|name evidence)/)
+  }
+})
+
+test('normalizes closed unique name facts and distinguishes source changes under identical void completions', () => {
+  const facts = [
+    { name: 'beta', state: 'provider', entryId: 'pair' },
+    { name: 'alpha', state: 'local' },
+    { name: 'removed', state: 'absent' },
+    { name: 'uncertain', state: 'unknown' },
+    { name: '值', state: 'provider', entryId: 'unicode' },
+  ]
+  const recorded = journal({ userBindingNames: facts, completion: { kind: 'return', hasValue: false } })
+  const normalized = normalizeJournal(recorded)
+  assert.deepEqual(normalized.userBindingNames.map(fact => fact.name), ['alpha', 'beta', 'removed', 'uncertain', '值'])
+  assert.ok(Object.isFrozen(normalized.userBindingNames))
+  assert.ok(normalized.userBindingNames.every(Object.isFrozen))
+  assert.notEqual(normalized.userBindingNames[1], facts[0])
+  assert.equal(journalsEqual(recorded, { ...recorded, userBindingNames: [...facts].reverse() }), true)
+  for (const replacement of [
+    { name: 'beta', state: 'local' },
+    { name: 'beta', state: 'absent' },
+    { name: 'beta', state: 'unknown' },
+    { name: 'beta', state: 'provider', entryId: 'other' },
+  ]) {
+    assert.equal(journalsEqual(recorded, { ...recorded, userBindingNames: [replacement, ...facts.slice(1)] }), false)
+  }
+  const hiddenField = Object.defineProperty({ name: 'alpha', state: 'local' }, 'extra', { value: true })
+  const nonEnumerableName = Object.defineProperty({ state: 'local' }, 'name', { value: 'alpha' })
+  for (const invalid of [
+    undefined, null, {}, [null], [1], [{}], [facts[0], facts[0]],
+    [{ name: '', state: 'local' }], [{ name: '1invalid', state: 'local' }],
+    [{ name: 'x'.repeat(129), state: 'local' }], [{ name: 'alpha', state: 'missing' }],
+    [{ name: 'alpha', state: 'provider' }], [{ name: 'alpha', state: 'provider', entryId: '' }],
+    [{ name: 'alpha', state: 'provider', entryId: 1 }],
+    [{ name: 'alpha', state: 'provider', entryId: 'x'.repeat(65) }],
+    [{ name: 'alpha', state: 'local', entryId: 'pair' }],
+    [{ name: 'alpha', state: 'absent', value: undefined }],
+    [{ name: 'alpha', state: 'unknown', [Symbol('extra')]: true }],
+    [hiddenField], [nonEnumerableName],
+  ]) assert.throws(() => normalizeUserBindingNames(invalid), /invalid user binding name evidence/)
+})
+
+test('requires complete name evidence tied to the full activated snapshot before recovering history', () => {
+  const snapshot = createUserBindingsSnapshot({ entries: [
+    { id: 'pair', name: 'pair', scope: 'top-level', enabled: true, source: 'export const alpha = 1; export const beta = 2' },
+    { id: 'box', name: 'box', scope: 'namespace', enabled: true, source: 'export const value = 3' },
+  ] }, 1)
+  const validFacts = [
+    { name: 'alpha', state: 'local' },
+    { name: 'beta', state: 'provider', entryId: 'pair' },
+    { name: 'box', state: 'provider', entryId: 'box' },
+  ]
+  const recorded = journal({ userBindingsFingerprint: snapshot.fingerprint, userBindingNames: validFacts })
+  const meta = { [USER_BINDINGS_META_KEY]: snapshot, [JOURNAL_KEY]: recorded }
+  assert.deepEqual(userBindingsForJournal(meta, normalizeJournal(recorded)), snapshot)
+  assert.deepEqual(snapshot.entries.find(entry => entry.id === 'pair').symbols, ['alpha', 'beta'])
+  for (const state of ['local', 'absent', 'unknown']) {
+    assert.deepEqual(userBindingsForJournal(meta, normalizeJournal({ ...recorded,
+      userBindingNames: validFacts.map(fact => fact.name === 'alpha' ? { name: 'alpha', state } : fact),
+    })), snapshot)
+  }
+  for (const userBindingNames of [
+    [], validFacts.slice(1),
+    validFacts.map(fact => fact.name === 'beta' ? { ...fact, entryId: 'box' } : fact),
+    [...validFacts, { name: 'value', state: 'provider', entryId: 'box' }],
+  ]) {
+    const invalid = { ...recorded, userBindingNames }
+    assert.throws(() => userBindingsForJournal(meta, normalizeJournal(invalid)), /user binding name evidence/)
+    const invalidResult = resultEvent(2, invalid)
+    invalidResult.data.meta[USER_BINDINGS_META_KEY] = snapshot
+    const recovered = recoverJournal({ events: [
+      callEvent(0, 'anchor', 'const anchor = 1'), resultEvent(0, journal()),
+      callEvent(2, 'unproved', 'const saved = beta'), invalidResult,
+      callEvent(4, 'dependent', 'const dependent = saved'), resultEvent(4, journal()),
+    ] })
+    assert.equal(recovered.available, false)
+    assert.deepEqual(pathToHead(recovered).map(node => node.callSeq), [0])
+    assert.deepEqual(recoveryBoundaryForHistory(recovered), { failedCallSeq: 2, frontierCallSeq: 0 })
+  }
+  assert.throws(() => userBindingsForJournal({}, normalizeJournal(journal({
+    userBindingNames: [{ name: 'alpha', state: 'provider', entryId: 'pair' }],
+  }))), /matching provider/)
+})
+
 test('migrates predecessor journals and only unambiguous legacy call identities', () => {
   const relationless = normalizeJournal(journal({ version: 4 }))
-  assert.equal(relationless.version, 6)
+  assert.equal(relationless.version, JOURNAL_VERSION)
   assert.equal(relationless.userBindingsFingerprint, null)
   const legacy = journal({
     version: 1,
@@ -715,12 +910,14 @@ test('migrates predecessor journals and only unambiguous legacy call identities'
   })
   delete legacy.rewritePolicy
   assert.deepEqual(normalizeJournal(legacy), {
-    version: 6,
+    version: JOURNAL_VERSION,
     bindingPolicy: { variableRedeclarations: true, functionClassRedeclarations: false },
     rewritePolicy: { autoRewriteImports: false, autoStripExports: false, autoSplitRedeclarations: false },
-    moduleSemantics: { defaultExportBinding: 'legacy-variable' },
+    moduleSemantics: { defaultExportBinding: 'legacy-variable', importExpressionBoundary: 'legacy' },
     userBindingsFingerprint: null,
     userBindingsReusePolicy: 'fingerprint-v1',
+    userBindingsShadowPolicy: 'whole-entry',
+    userBindingNames: null,
     status: 'durable',
     calls: [],
     operations: [],
@@ -733,6 +930,7 @@ test('migrates predecessor journals and only unambiguous legacy call identities'
   delete legacyV2.bindingPolicy
   assert.deepEqual(normalizeJournal(legacyV2).moduleSemantics, {
     defaultExportBinding: 'legacy-variable',
+    importExpressionBoundary: 'legacy',
   })
   assert.throws(
     () => normalizeJournal(journal({ version: 1, confirms: ['legacy-call-id'] })),
@@ -935,7 +1133,7 @@ test('requires an adjacent, uniquely identified prune replacement', () => {
   const call = callEvent(10, 'call_10', 'return 1')
   const clone = {
     ...resultEvent(11, journal()),
-    seq: 30,
+    seq: 21,
     data: {
       ...resultEvent(11, journal()).data,
       message: { source: { callId: 'call_10' } },
@@ -944,22 +1142,40 @@ test('requires an adjacent, uniquely identified prune replacement', () => {
   }
   const prune = { seq: 20, type: 'compaction/prune', data: { shadowedSeqs: [11] } }
 
+  const accepted = recoverJournal({ events: [call, prune, clone] })
+  assert.equal(accepted.available, true)
+  assert.deepEqual(pathToHead(accepted).map(node => node.code), ['return 1'])
+
   for (const malformed of [
     [call, prune, { type: 'tool/call', data: { name: 'read', callId: 'gap' } }, clone],
     [call, { ...prune, data: { shadowedSeqs: [99] } }, clone],
     [call, { ...prune, data: { shadowedSeqs: [11, 'malformed'] } }, clone],
     [call, { ...prune, data: { shadowedSeqs: [11, 10] } }, clone],
+    [call, { ...prune, data: { shadowedSeqs: [11, 11] } }, clone],
+    [call, { ...prune, data: { shadowedSeqs: [] } }, clone],
     [call, { ...prune, data: { shadowedSeqs: [11], shadowedRange: { start: 10, end: 11 } } }, clone],
     [call, { ...prune, seq: 21 }, clone],
+    [call, { ...prune, seq: -1 }, clone],
+    [call, { ...prune, seq: 10 }, { ...clone, seq: 11 }],
+    [call, prune, { ...clone, seq: 30 }],
+    [call, prune, { ...clone, seq: undefined }],
+    [{ ...call, seq: -1 }, prune, clone],
+    [{ ...call, seq: 12 }, prune, clone],
+    [{ ...call, data: { ...call.data, name: 'read' } }, prune, clone],
+    [call, { ...call, seq: 9 }, prune, clone],
     [call, prune, { ...clone, surfaceOp: { op: 'append' } }],
     [call, prune, { ...clone, surfaceOp: { op: 'replace', start: 10, end: 10 } }],
     [call, prune, {
-    ...clone,
-    sourceEventSeqs: [11, 12],
+      ...clone,
+      sourceEventSeqs: [11, 12],
     }],
     [call, prune, {
-    ...clone,
-    data: { ...clone.data, message: { source: { callId: 'other' } } },
+      ...clone,
+      data: { ...clone.data, message: { source: { callId: 'other' } } },
+    }],
+    [call, prune, {
+      ...clone,
+      data: { ...clone.data, message: { source: { callId: 10 } } },
     }],
   ]) {
     const rejected = recoverJournal({ events: malformed })
@@ -1065,6 +1281,24 @@ test('counts every record blocked by an unavailable journal result', () => {
   assert.equal(recovered.available, false)
   assert.deepEqual(pathToHead(recovered).map(node => node.code), ['const stable = 1'])
   assert.deepEqual(recovered.volatileSuffix.map(item => item.seq), [2, 4, 6])
+})
+
+test('contracts at an earlier missing result even when a later malformed result was found first', () => {
+  const malformed = journal({ unexpected: true })
+  const recovered = recoverJournal({ events: [
+    callEvent(0, 'stable', 'const stable = 1'),
+    resultEvent(0, journal()),
+    callEvent(2, 'missing', 'const missing = 2'),
+    callEvent(4, 'dependent', 'const dependent = missing + 1'),
+    resultEvent(4, journal()),
+    callEvent(6, 'malformed', 'const later = 6'),
+    resultEvent(6, malformed),
+  ] })
+  assert.equal(recovered.available, false)
+  assert.deepEqual(pathToHead(recovered).map(node => node.callSeq), [0])
+  assert.deepEqual(recovered.volatileSuffix.map(item => item.seq), [2, 4, 6])
+  assert.deepEqual(recoveryBoundaryForHistory(recovered), { failedCallSeq: 2, frontierCallSeq: 0 })
+  for (const item of recovered.volatileSuffix) assert.match(item.reason, /missing dsh-ptc-plus journal result/)
 })
 
 test('persists malformed and invalid-operation contractions in a later cell', () => {

@@ -4,11 +4,19 @@ import { dirname } from 'node:path'
 import { Worker } from 'node:worker_threads'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { validateJsonSchemaValue } from '@deepseek-ai/dsh-tools'
+import {
+  createBoundedWorkerRound,
+  ROUND_CANCELLED,
+  ROUND_OUTPUT_LIMIT,
+  ROUND_TIMEOUT,
+} from './bounded-worker-round.js'
 import { BINDING_SUBMISSION, bindingAuthoringInstructions } from './user-binding-authoring.js'
 import { bindingActionNotice, USER_BINDING_DRAFT_META_KEY } from './user-binding-draft-projection.js'
 import { bindingModelPreferences } from './user-binding-model-context.js'
 import { sessionEvents } from './session-events.js'
 import { decodeValue } from './value-wire.js'
+import { valueLimitsFromConfig } from './value-wire-schema.js'
+import { normalizeWorkerEnvironment } from './worker-client.js'
 import { UserBindingsStore } from './user-bindings-store.js'
 import { UserBindingConsole } from './user-binding-console.js'
 import {
@@ -90,57 +98,39 @@ function candidateInvocation(value) {
 function runCandidate(source, invocation, options, signal) {
   if (typeof source !== 'string' || source.length === 0) throw new TypeError('candidate source must be a non-empty string')
   return new Promise((resolve, reject) => {
-    let settled = false
-    let outputBytes = 0
-    const logs = []
     const worker = new Worker(RUNNER_URL, {
       workerData: { source, invocation, valueLimits: options.valueLimits, cwd: options.cwd },
+      env: normalizeWorkerEnvironment(process.env),
+      execArgv: [],
       resourceLimits: { maxOldGenerationSizeMb: options.maxOldGenerationSizeMb },
       stdout: true,
       stderr: true,
     })
-    const finish = (operation) => {
-      if (settled) return
-      settled = true
-      clearTimeout(timer)
-      signal?.removeEventListener('abort', abort)
-      void worker.terminate()
-      operation()
-    }
-    const fail = error => finish(() => reject(error))
     const outputLimitError = () => Object.assign(
       new Error('candidate output exceeded the configured limit'),
       { code: 'bindings/output-limit' },
     )
-    const exceedsOutputLimit = payload => (
-      Buffer.byteLength(JSON.stringify(payload), 'utf8') > options.maxOutputBytes
-    )
-    const timer = setTimeout(() => fail(
-      new Error(`candidate execution exceeded ${options.maxWallMs}ms`),
-    ), options.maxWallMs)
-    const abort = () => {
-      fail(Object.assign(new Error('candidate execution was cancelled'), { code: 'gateway/cancelled' }))
-    }
-    signal?.addEventListener('abort', abort, { once: true })
-    if (signal?.aborted === true) {
-      abort()
-      return
-    }
-    const capture = (stream, channel) => stream?.on('data', chunk => {
-      const text = String(chunk)
-      outputBytes += Buffer.byteLength(text, 'utf8')
-      if (outputBytes > options.maxOutputBytes) {
-        fail(outputLimitError())
-        return
-      }
-      logs.push({ channel, text })
+    const round = createBoundedWorkerRound({
+      maxOutputBytes: options.maxOutputBytes,
+      maxWallMs: options.maxWallMs,
+      signal,
+      settle: ({ ok, result, reason }) => {
+        void worker.terminate()
+        if (ok) { resolve(result); return }
+        if (reason === ROUND_TIMEOUT) reject(new Error(`candidate execution exceeded ${options.maxWallMs}ms`))
+        else if (reason === ROUND_CANCELLED) {
+          reject(Object.assign(new Error('candidate execution was cancelled'), { code: 'gateway/cancelled' }))
+        } else if (reason === ROUND_OUTPUT_LIMIT) reject(outputLimitError())
+        else reject(reason)
+      },
     })
+    const capture = (stream, channel) => stream?.on('data', chunk => round.capture(channel, String(chunk)))
     capture(worker.stdout, 'stdout')
     capture(worker.stderr, 'stderr')
     worker.once('message', (message) => {
       if (message?.ok === true) {
-        if (exceedsOutputLimit({ logs, value: message.value })) {
-          fail(outputLimitError())
+        if (round.exceeds({ value: message.value }, { envelope: true })) {
+          round.fail(ROUND_OUTPUT_LIMIT)
           return
         }
         let value
@@ -148,20 +138,20 @@ function runCandidate(source, invocation, options, signal) {
           value = decodeValue(message.value, options.valueLimits)
         } catch (error) {
           /* c8 ignore next */
-          fail(error)
+          round.fail(error)
           /* c8 ignore next */
           return
         }
-        finish(() => resolve({ logs, value }))
+        round.succeed({ logs: round.logs, value })
       } else {
         const error = typeof message?.error === 'string' ? message.error : 'candidate execution failed'
-        if (exceedsOutputLimit({ logs, error })) fail(outputLimitError())
-        else fail(new Error(error))
+        if (round.exceeds({ error }, { envelope: true })) round.fail(ROUND_OUTPUT_LIMIT)
+        else round.fail(new Error(error))
       }
     })
-    worker.once('error', fail)
+    worker.once('error', error => round.fail(error))
     worker.once('exit', code => {
-      if (!settled) fail(new Error(`candidate worker exited before returning a result (code ${code})`))
+      round.fail(new Error(`candidate worker exited before returning a result (code ${code})`))
     })
   })
 }
@@ -327,7 +317,7 @@ export function createUserBindingsOwner(ctx, options = {}) {
     try {
       const result = current.mode === 'new'
         ? await store.create(entry, expectedRevision)
-        : await store.save(entry, expectedRevision)
+        : await store.update(entry, expectedRevision)
       settleDraft(current, 'saved', activate === true)
       return result
     } catch (error) {
@@ -337,58 +327,95 @@ export function createUserBindingsOwner(ctx, options = {}) {
       throw error
     }
   }
+  const validateEntry = (value) => {
+    const entry = normalizeUserBindingEntry(value)
+    return {
+      id: entry.id,
+      name: entry.name,
+      scope: entry.scope,
+      symbols: [...entry.symbols],
+      purpose: entry.purpose,
+      enabled: entry.enabled,
+      source: entry.source,
+      declaration: entry.declaration,
+      ...(entry.modelContext === undefined ? {} : { modelContext: entry.modelContext }),
+    }
+  }
+  const saveEntry = async (input) => {
+    if (input.intent === 'create') return store.create(input.entry, input.expectedRevision)
+    if (input.intent !== 'update') {
+      throw new TypeError('binding save requires an explicit create or update intent')
+    }
+    const entry = normalizeUserBindingEntry(input.entry)
+    if (typeof input.originalId !== 'string' || input.originalId !== entry.id) {
+      throw new Error('binding update requires the original id of the entry it replaces')
+    }
+    // The store owns entry normalization and accepts only raw entry fields;
+    // the normalized product carries derived fingerprint/declaration state.
+    return store.update(input.entry, input.expectedRevision)
+  }
+  const reviewDraft = (capability) => {
+    const current = draftFor(capability)
+    if (current !== null) return { candidate: candidateView(current), action: null }
+    const review = reviewsByCapability.get(capability)
+    return review === undefined ? null : { candidate: review.candidate, action: review.action }
+  }
+  // Fixed endpoint tables grouped by domain; the dispatcher only looks up the
+  // operation, rejects unknown endpoints and hands over the validated input.
+  const storageEndpoints = Object.freeze({
+    list: () => store.list(),
+    load: input => store.entry(input.id),
+    reload: () => store.reload(),
+    save: saveEntry,
+    enable: input => store.setEnabled(input.id, true, input.expectedRevision),
+    disable: input => store.setEnabled(input.id, false, input.expectedRevision),
+    remove: input => store.remove(input.id, input.expectedRevision),
+    import: input => store.importFile(input.path, input.expectedRevision, input.options),
+    validate: input => validateEntry(input.entry),
+  })
+  const candidateEndpoints = Object.freeze({
+    run: (input, signal) => runCandidate(
+      input.source,
+      candidateInvocation(input.invocation),
+      currentOptions,
+      signal,
+    ),
+  })
+  const consoleEndpoints = Object.freeze({
+    'console-run': (input, signal) => codeConsole.run(input, signal),
+    'console-release': (input) => {
+      codeConsole.release(input.environment)
+      return null
+    },
+  })
+  const draftEndpoints = Object.freeze({
+    draft: input => draftView(draftFor(input.capability)),
+    'draft-review': input => reviewDraft(input.capability),
+    'save-draft': input => saveDraft(
+      input.capability,
+      input.version,
+      input.expectedRevision,
+      input.activate === true,
+    ),
+    'discard-draft': input => clearDraft(input.capability, input.version),
+  })
+  const ENDPOINTS = Object.freeze(Object.assign(
+    Object.create(null),
+    storageEndpoints,
+    candidateEndpoints,
+    consoleEndpoints,
+    draftEndpoints,
+  ))
+
   const handler = async (endpoint, payload, signal) => {
     try {
       if (disposed) throw new Error('Global User Bindings owner is disposed')
       requireEnabled()
-      const input = isRecord(payload) ? payload : {}
-      let value
-      if (endpoint === 'list') value = await store.list()
-      else if (endpoint === 'load') value = await store.entry(input.id)
-      else if (endpoint === 'reload') value = await store.reload()
-      else if (endpoint === 'save') value = await store.save(input.entry, input.expectedRevision)
-      else if (endpoint === 'enable') value = await store.setEnabled(input.id, true, input.expectedRevision)
-      else if (endpoint === 'disable') value = await store.setEnabled(input.id, false, input.expectedRevision)
-      else if (endpoint === 'remove') value = await store.remove(input.id, input.expectedRevision)
-      else if (endpoint === 'import') value = await store.importFile(input.path, input.expectedRevision, input.options)
-      else if (endpoint === 'validate') {
-        const entry = normalizeUserBindingEntry(input.entry)
-        value = {
-          id: entry.id,
-          name: entry.name,
-          scope: entry.scope,
-          symbols: [...entry.symbols],
-          purpose: entry.purpose,
-          enabled: entry.enabled,
-          source: entry.source,
-          declaration: entry.declaration,
-          ...(entry.modelContext === undefined ? {} : { modelContext: entry.modelContext }),
-        }
-      } else if (endpoint === 'run') {
-        value = await runCandidate(input.source, candidateInvocation(input.invocation), currentOptions, signal)
-      } else if (endpoint === 'console-run') {
-        value = await codeConsole.run(input, signal)
-      } else if (endpoint === 'console-release') {
-        codeConsole.release(input.environment)
-        value = null
-      } else if (endpoint === 'draft') value = draftView(draftFor(input.capability))
-      else if (endpoint === 'draft-review') {
-        const current = draftFor(input.capability)
-        const review = reviewsByCapability.get(input.capability)
-        value = current !== null ? { candidate: candidateView(current), action: null }
-          : review === undefined ? null : { candidate: review.candidate, action: review.action }
+      const operation = ENDPOINTS[endpoint]
+      if (typeof operation !== 'function') {
+        throw new Error(`unknown user binding operation ${JSON.stringify(endpoint)}`)
       }
-      else if (endpoint === 'save-draft') {
-        value = await saveDraft(
-          input.capability,
-          input.version,
-          input.expectedRevision,
-          input.activate === true,
-        )
-      }
-      else if (endpoint === 'discard-draft') value = clearDraft(input.capability, input.version)
-      else throw new Error(`unknown user binding operation ${JSON.stringify(endpoint)}`)
-      return { ok: true, value }
+      return { ok: true, value: await operation(isRecord(payload) ? payload : {}, signal) }
     } catch (error) {
       return errorResult(error)
     }
@@ -914,13 +941,7 @@ export function createUserBindingsOwner(ctx, options = {}) {
         maxWallMs: nextConfig.maxWallMs,
         maxOutputBytes: nextConfig.maxOutputBytes,
         maxOldGenerationSizeMb: nextConfig.maxOldGenerationSizeMb,
-        valueLimits: {
-          maxNodes: nextConfig.maxValueNodes,
-          maxEdges: nextConfig.maxValueEdges,
-          maxArrayLength: nextConfig.maxValueArrayLength,
-          maxBigIntDigits: nextConfig.maxValueBigIntDigits,
-          maxStringBytes: nextConfig.maxOutputBytes,
-        },
+        valueLimits: valueLimitsFromConfig(nextConfig),
       }
       if (nextEnabled === previousEnabled) {
         currentOptions = nextOptions

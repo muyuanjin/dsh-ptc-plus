@@ -1,4 +1,5 @@
 import { isRecord } from './record-utils.js'
+import { REPL_TOOL_NAMES } from './session-journal-schema.js'
 
 export const REPL_MEMORY_KEY = 'ptcPlusRepl'
 export const REPL_MEMORY_META_KEY = 'dshPtcPlusBindings'
@@ -20,7 +21,6 @@ const DEFINITION_FIELDS = new Set(['source', 'line', 'column'])
 const MEMORY_META_FIELDS = new Set(['version', 'generation', 'memory'])
 const PROJECTION_STATE_FIELDS = new Set(['generation', 'memory', 'pendingReplCalls'])
 const PENDING_CALL_FIELDS = new Set(['callId', 'seq'])
-const REPL_TOOL_NAMES = new Set(['run_code', 'edit_run_code'])
 const REPL_MEMORY_META_VERSION = 4
 
 function exactFields(value, fields) {

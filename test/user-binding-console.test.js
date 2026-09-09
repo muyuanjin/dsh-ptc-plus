@@ -1,12 +1,96 @@
 import assert from 'node:assert/strict'
+import { getEventListeners } from 'node:events'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
+import {
+  createBoundedWorkerRound,
+  ROUND_CANCELLED,
+  ROUND_OUTPUT_LIMIT,
+} from '../internal/bounded-worker-round.js'
 import { UserBindingConsole } from '../internal/user-binding-console.js'
 
 const options = { cwd: process.cwd(), maxWallMs: 10_000, maxOutputBytes: 64 * 1024, maxOldGenerationSizeMb: 128 }
 const source = 'export const answer: number = 42'
+
+test('one bounded worker round captures output, budgets bytes and settles exactly once', () => {
+  const settlements = []
+  const round = createBoundedWorkerRound({
+    maxOutputBytes: 16,
+    maxWallMs: 10_000,
+    settle: outcome => settlements.push(outcome),
+  })
+  round.capture('stdout', 'abc')
+  round.capture('stderr', 'de')
+  assert.deepEqual(round.logs, [{ channel: 'stdout', text: 'abc' }, { channel: 'stderr', text: 'de' }])
+  assert.equal(round.exceeds({ value: 4 }), false)
+  assert.equal(round.exceeds({ value: 'x'.repeat(8) }), true)
+  assert.equal(round.succeed({ value: 42 }), true)
+  assert.deepEqual(settlements, [{ ok: true, result: { value: 42 } }])
+  assert.equal(round.capture('stdout', 'late'), undefined)
+  assert.equal(round.fail(ROUND_OUTPUT_LIMIT), false)
+  assert.deepEqual(round.logs, [{ channel: 'stdout', text: 'abc' }, { channel: 'stderr', text: 'de' }])
+  assert.deepEqual(settlements, [{ ok: true, result: { value: 42 } }])
+
+  const bounded = createBoundedWorkerRound({
+    maxOutputBytes: 4, maxWallMs: 10_000, settle: outcome => settlements.push(outcome),
+  })
+  bounded.capture('stderr', '12345')
+  assert.deepEqual(settlements.at(-1), { ok: false, reason: ROUND_OUTPUT_LIMIT })
+  assert.deepEqual(bounded.logs, [])
+
+  const controller = new AbortController()
+  const cancelled = createBoundedWorkerRound({
+    maxOutputBytes: 16, maxWallMs: 10_000, signal: controller.signal,
+    settle: outcome => settlements.push(outcome),
+  })
+  controller.abort()
+  assert.deepEqual(settlements.at(-1), { ok: false, reason: ROUND_CANCELLED })
+  assert.equal(cancelled.succeed({ value: 1 }), false)
+})
+
+test('the candidate envelope budget counts log wrappers and escaping, the console budget stays raw', () => {
+  const round = createBoundedWorkerRound({
+    maxOutputBytes: 200, maxWallMs: 10_000, settle: () => {},
+  })
+  round.capture('stdout', '"'.repeat(100))
+  assert.equal(round.exceeds({ value: 1 }), false)
+  assert.equal(round.exceeds({ value: 1 }, { envelope: true }), true)
+  assert.equal(round.exceeds({ error: 'candidate failed' }, { envelope: true }), true)
+  assert.equal(round.succeed({ value: 1 }), true)
+
+  const metadata = createBoundedWorkerRound({
+    maxOutputBytes: 200, maxWallMs: 10_000, settle: () => {},
+  })
+  for (let index = 0; index < 8; index += 1) metadata.capture('stdout', 'ab')
+  assert.equal(metadata.exceeds({ value: 1 }), false)
+  assert.equal(metadata.exceeds({ value: 1 }, { envelope: true }), true)
+
+  const generous = createBoundedWorkerRound({
+    maxOutputBytes: 512, maxWallMs: 10_000, settle: () => {},
+  })
+  generous.capture('stdout', '"'.repeat(100))
+  assert.equal(generous.exceeds({ value: 1 }, { envelope: true }), false)
+})
+
+test('a settled round releases its wall-clock deadline and abort listener', () => {
+  const timeouts = () => process.getActiveResourcesInfo().filter(name => name === 'Timeout').length
+  const controller = new AbortController()
+  const settlements = []
+  const before = timeouts()
+  const round = createBoundedWorkerRound({
+    maxOutputBytes: 16, maxWallMs: 60_000, signal: controller.signal,
+    settle: outcome => settlements.push(outcome),
+  })
+  assert.equal(timeouts(), before + 1)
+  assert.equal(getEventListeners(controller.signal, 'abort').length, 1)
+  assert.equal(round.fail(ROUND_OUTPUT_LIMIT), true)
+  assert.equal(timeouts(), before)
+  assert.deepEqual(getEventListeners(controller.signal, 'abort'), [])
+  controller.abort()
+  assert.deepEqual(settlements, [{ ok: false, reason: ROUND_OUTPUT_LIMIT }])
+})
 
 test('the draft console preserves declarations, await, expression values and ordinary error effects', async t => {
   const cwd = await mkdtemp(join(tmpdir(), 'ptc-console-'))

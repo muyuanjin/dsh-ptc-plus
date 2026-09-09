@@ -1,0 +1,726 @@
+import assert from 'node:assert/strict'
+import { setImmediate as nextTurn } from 'node:timers/promises'
+import test from 'node:test'
+import { prepareProgram } from '../internal/cell-analysis.js'
+import { JOURNAL_KEY, normalizeJournal } from '../internal/session-journal.js'
+import { SessionRuntime } from '../internal/session-runtime.js'
+import { USER_BINDINGS_META_KEY, createUserBindingsSnapshot } from '../internal/user-bindings.js'
+import { decodeValue, encodeValue } from '../internal/value-wire.js'
+import { WorkerClient } from '../internal/worker-client.js'
+import { appendRunCodeEvents, fixture } from './plugin-fixture.js'
+import {
+  activeTimers,
+  interceptWorkerMessages,
+  interceptWorkerPosts,
+  isCellActive,
+  workerOf,
+} from './runtime-observation.js'
+
+/** One enabled namespace entry whose module value is the snapshot revision. */
+function sharedNamespaceSnapshot(value) {
+  return createUserBindingsSnapshot({ entries: [{
+    id: 'shared', name: 'shared', scope: 'namespace',
+    source: `export const value = ${value}`, enabled: true,
+  }] }, value)
+}
+
+/**
+ * Run one cell with user bindings and append its durable record to the session,
+ * so the same session can later replay the record and continue live.
+ */
+async function recordUserBindingCell(runtime, session, program, userBindings, functions = {}) {
+  const callSeq = Math.max(-1, ...session.events.map(event => event.seq)) + 1
+  const execution = await runtime.runTentative(
+    { id: session.id, session, persistedCallSeq: callSeq },
+    { program, userBindings, bindings: [{ global: 'tools', functions }] },
+  )
+  const { settlement } = execution
+  const journal = normalizeJournal(settlement.journal)
+  runtime.finalize(settlement, true)
+  const recorded = []
+  appendRunCodeEvents(recorded, `user-binding-${callSeq}`, program, { meta: {
+    [JOURNAL_KEY]: journal,
+    ...(settlement.userBindings === undefined ? {} : { [USER_BINDINGS_META_KEY]: settlement.userBindings }),
+  } })
+  for (const [index, event] of recorded.entries()) event.seq = callSeq + index
+  recorded[1].sourceEventSeqs = [callSeq]
+  session.events.push(...recorded)
+  return { result: execution.result, journal, recoveryBoundaries: settlement.recoveryBoundaries }
+}
+
+test('success and body failure drain every issued call in settlement order and replay no effects', async t => {
+  for (const fails of [false, true]) {
+    await t.test(fails ? 'body throws' : 'body returns', async t => {
+      const session = { id: `settlement-${fails}`, events: [] }
+      const writer = fixture()
+      t.after(() => writer.dispose())
+      const started = Promise.withResolvers()
+      const gates = [Promise.withResolvers(), Promise.withResolvers()]
+      const secondFinished = Promise.withResolvers()
+      let calls = 0
+      let completed = false
+      const source = `
+let settledLabels = []
+void tools.slow({ index: 0 }).then(value => settledLabels.push(value))
+void tools.slow({ index: 1 }).catch(error => settledLabels.push(error.message))
+${fails ? 'throw new Error("body failed")' : 'return 7'}
+`
+      const pending = writer.runDurable(session.id, source, {
+        slow: async ({ index }) => {
+          if (++calls === 2) started.resolve()
+          await gates[index].promise
+          if (index === 1) {
+            secondFinished.resolve()
+            throw new Error('second rejected')
+          }
+          return 'first completed'
+        },
+      }, { session }).then(result => { completed = true; return result })
+      await started.promise
+      gates[1].resolve()
+      await secondFinished.promise
+      await nextTurn()
+      assert.equal(completed, false)
+      gates[0].resolve()
+      const written = await pending
+      assert.equal(written.isError, fails)
+      if (fails) assert.match(written.error.message, /body failed/)
+      else assert.equal(written.value, 7)
+      const journal = normalizeJournal(written.meta.dshPtcPlus)
+      assert.equal(journal.status, 'durable')
+      assert.deepEqual(journal.calls.map(call => [call.ok, call.settle]), [[true, 1], [false, 0]])
+      assert.equal(decodeValue(journal.calls[0].value), 'first completed')
+      assert.equal(journal.calls[1].error, 'second rejected')
+      appendRunCodeEvents(session.events, 'settled-calls', source, written)
+      assert.deepEqual((await writer.run(session.id, 'return settledLabels', {}, { session })).value,
+        ['second rejected', 'first completed'])
+      await writer.dispose()
+
+      const restored = fixture()
+      t.after(() => restored.dispose())
+      const result = await restored.run(session.id, 'return settledLabels', {
+        slow: async () => { calls += 1; return 'unexpected replay dispatch' },
+      }, { session })
+      assert.equal(result.error, undefined)
+      assert.deepEqual(result.value, ['second rejected', 'first completed'])
+      assert.equal(calls, 2)
+    })
+  }
+})
+
+test('closing a failed cell prevents settled callbacks from issuing another host call', async t => {
+  const runtime = new SessionRuntime()
+  t.after(() => runtime.dispose())
+  const gate = Promise.withResolvers()
+  const started = Promise.withResolvers()
+  let extraCalls = 0
+  const execution = runtime.runTentative('closed-cell', {
+    program: `
+let lateMessage
+void tools.first({}).then(async () => {
+  try { await tools.second({}) } catch (error) { lateMessage = error.message }
+})
+throw new Error('body failed')
+`,
+    bindings: [{ global: 'tools', functions: {
+      first: async () => { started.resolve(); await gate.promise; return 1 },
+      second: async () => { extraCalls += 1; return 2 },
+    } }],
+  })
+  await started.promise
+  gate.resolve()
+  const settled = await execution
+  runtime.finalize(settled.settlement, true)
+  assert.match(settled.result.error.message, /body failed/)
+  assert.equal(normalizeJournal(settled.settlement.journal).calls.length, 1)
+  assert.equal(extraCalls, 0)
+  assert.equal((await runtime.run('closed-cell', {
+    program: 'return lateMessage', bindings: [],
+  })).value, 'PTC execution lease expired')
+})
+
+test('a prior cell continuation cannot borrow the next cell native namespace', async t => {
+  const runtime = new SessionRuntime()
+  t.after(() => runtime.dispose())
+  const seeded = await runtime.run('continuation-owner', {
+    program: `
+let releaseContinuation
+let continuationResult
+const continuationGate = new Promise(resolve => { releaseContinuation = resolve })
+const continuation = continuationGate.then(async () => {
+  try { continuationResult = await tools.secret({}) }
+  catch (error) { continuationResult = error.message }
+})
+return undefined
+`, bindings: [],
+  })
+  assert.equal(seeded.error, undefined)
+  let calls = 0
+  const resumed = await runtime.run('continuation-owner', {
+    program: 'releaseContinuation(); await continuation; return continuationResult',
+    bindings: [{ global: 'tools', functions: { secret: async () => { calls += 1; return 9 } } }],
+  })
+  assert.equal(resumed.error, undefined)
+  assert.equal(resumed.value, 'PTC execution lease expired')
+  assert.equal(calls, 0)
+})
+
+test('draining a failed cell keeps the original wall budget and cancellation boundary', async t => {
+  for (const cancel of [false, true]) {
+    await t.test(cancel ? 'cancel pending call' : 'wall budget expires', async t => {
+      const runtime = new SessionRuntime({ computeMs: 2_000, maxWallMs: 2_000 })
+      t.after(() => runtime.dispose())
+      const id = `drain-boundary-${cancel}`
+      await runtime.run(id, { program: 'let retained = 4', bindings: [] })
+      runtime.reconfigure({ computeMs: 2_000, maxWallMs: cancel ? 2_000 : 150 })
+      const oldWorker = workerOf(runtime, id)
+      const started = Promise.withResolvers()
+      const gate = Promise.withResolvers()
+      const controller = new AbortController()
+      const pending = runtime.runTentative(id, {
+        program: 'void tools.wait({}); throw new Error("body failed")',
+        signal: controller.signal,
+        bindings: [{ global: 'tools', functions: { wait: async () => {
+          started.resolve()
+          await gate.promise
+          return 'old reply'
+        } } }],
+      })
+      await started.promise
+      const wallTimer = activeTimers(runtime, id).wall
+      await nextTurn()
+      assert.equal(activeTimers(runtime, id).wall, wallTimer)
+      if (cancel) controller.abort('cancel pending call')
+      const settled = await pending
+      runtime.finalize(settled.settlement, true)
+      assert.equal(settled.result.error.kind, cancel ? 'abort' : 'timeout')
+      assert.match(settled.result.error.message, cancel ? /cancel pending call/ : /wall-clock ceiling/)
+      const journal = normalizeJournal(settled.settlement.journal)
+      assert.equal(journal.status, 'discarded')
+      assert.equal(journal.volatileReason, 'tools.wait')
+      assert.deepEqual(journal.calls, [])
+
+      runtime.reconfigure({ computeMs: 2_000, maxWallMs: 2_000 })
+      const nextStarted = Promise.withResolvers()
+      const nextGate = Promise.withResolvers()
+      const continued = runtime.run(id, {
+        program: 'await tools.wait({}); return retained',
+        bindings: [{ global: 'tools', functions: { wait: async () => {
+          nextStarted.resolve()
+          await nextGate.promise
+          return 'new reply'
+        } } }],
+      })
+      await nextStarted.promise
+      assert.notEqual(workerOf(runtime, id), oldWorker)
+      gate.resolve()
+      await nextTurn()
+      assert.equal(isCellActive(runtime, id), true)
+      nextGate.resolve()
+      assert.equal((await continued).value, 4)
+    })
+  }
+})
+
+test('a callback blocking during failed-cell drain remains subject to the compute budget', async t => {
+  const runtime = new SessionRuntime({ computeMs: 2_000, maxWallMs: 2_000 })
+  t.after(() => runtime.dispose())
+  await runtime.run('drain-compute', { program: 'let retained = 4', bindings: [] })
+  runtime.reconfigure({ computeMs: 80, maxWallMs: 2_000 })
+  const started = Promise.withResolvers()
+  const gate = Promise.withResolvers()
+  const pending = runtime.runTentative('drain-compute', {
+    program: 'void tools.wait({}).then(() => { while (true) {} }); throw new Error("body failed")',
+    bindings: [{ global: 'tools', functions: { wait: async () => {
+      started.resolve()
+      await gate.promise
+      return null
+    } } }],
+  })
+  await started.promise
+  gate.resolve()
+  const settled = await pending
+  runtime.finalize(settled.settlement, true)
+  assert.equal(settled.result.error.kind, 'timeout')
+  assert.match(settled.result.error.message, /compute budget exhausted/)
+  assert.equal(normalizeJournal(settled.settlement.journal).status, 'discarded')
+})
+
+test('malformed and over-budget replies reject their call without killing the worker', async t => {
+  for (const value of [{ codec: 'invalid', root: null, nodes: [] }, encodeValue([{}, {}])]) {
+    const runtime = new SessionRuntime({ maxValueNodes: 2 })
+    t.after(() => runtime.dispose())
+    await runtime.run('decode-reply', { program: 'let retained = 4', bindings: [] })
+    const worker = workerOf(runtime, 'decode-reply')
+    const link = interceptWorkerPosts(runtime, 'decode-reply', message => (
+      message.type === 'reply' && message.ok ? { ...message, value } : message
+    ))
+    const rejected = await runtime.runTentative('decode-reply', {
+      program: 'await tools.read({})',
+      bindings: [{ global: 'tools', functions: { read: async () => null } }],
+    })
+    runtime.finalize(rejected.settlement, true)
+    assert.equal(rejected.result.error.kind, 'exception')
+    assert.match(rejected.result.error.message, /PTC value/)
+    assert.equal(normalizeJournal(rejected.settlement.journal).calls[0].ok, true)
+    link.restore()
+    assert.equal((await runtime.run('decode-reply', { program: 'return retained + 1', bindings: [] })).value, 5)
+    assert.equal(workerOf(runtime, 'decode-reply'), worker)
+  }
+})
+
+test('a pending reply retains its submitted value budget across configuration changes', async t => {
+  const runtime = new SessionRuntime({ maxValueNodes: 3 })
+  t.after(() => runtime.dispose())
+  const started = Promise.withResolvers()
+  const gate = Promise.withResolvers()
+  const pending = runtime.run('reply-budget', {
+    program: 'const received = await tools.read({}); return received[0].value',
+    bindings: [{ global: 'tools', functions: { read: async () => {
+      started.resolve()
+      await gate.promise
+      return [{ value: 7 }]
+    } } }],
+  })
+  await started.promise
+  runtime.reconfigure({ maxValueNodes: 1 })
+  gate.resolve()
+  assert.equal((await pending).value, 7)
+  const worker = workerOf(runtime, 'reply-budget')
+  const rejected = await runtime.run('reply-budget', {
+    program: 'return await tools.read({})',
+    bindings: [{ global: 'tools', functions: { read: async () => [{ value: 8 }] } }],
+  })
+  assert.equal(rejected.error.kind, 'exception')
+  assert.match(rejected.error.message, /node budget exceeds 1/)
+  assert.equal(workerOf(runtime, 'reply-budget'), worker)
+})
+
+test('over-budget recorded replies contract recovery and still execute the current cell', async t => {
+  const writer = fixture()
+  t.after(() => writer.dispose())
+  const session = { id: 'recorded-reply-budget', events: [] }
+  let calls = 0
+  const source = 'const saved = await tools.read({}); return undefined'
+  const written = await writer.runDurable(session.id, source, {
+    read: async () => { calls += 1; return [{ value: 7 }] },
+  }, { session })
+  assert.equal(written.isError, false)
+  appendRunCodeEvents(session.events, 'recorded-large-reply', source, written)
+  await writer.dispose()
+  const restored = fixture({ maxValueNodes: 1 })
+  t.after(() => restored.dispose())
+  const recovered = await restored.runDurable(session.id, 'return 42', {
+    read: async () => { calls += 1; return null },
+  }, { session })
+  assert.equal(recovered.isError, false)
+  assert.equal(recovered.value, 42)
+  assert.equal(calls, 1)
+  assert.equal(recovered.meta.dshPtcPlusRecoveryBoundaries.length, 1)
+  assert.equal(normalizeJournal(recovered.meta.dshPtcPlus).status, 'durable')
+})
+
+test('every completion reports the same committed declarations, activation and source facts', async t => {
+  for (const [phase, end, kind] of [
+    ['return', 'return previous()', undefined],
+    ['throw', 'throw new Error("body failed")', 'exception'],
+    ['encode', 'return () => previous', 'invalid-output'],
+  ]) {
+    await t.test(phase, async t => {
+      const runtime = new SessionRuntime({ computeMs: 2_000, maxWallMs: 2_000 })
+      t.after(() => runtime.dispose())
+      const userBindings = createUserBindingsSnapshot({ entries: [
+        { id: 'ns', name: 'shared', scope: 'namespace', source: 'export const value = 1', enabled: true },
+        { id: 'top', name: 'top', scope: 'top-level', source: 'export const item = 1', enabled: true },
+        { id: 'failed', name: 'failed', scope: 'namespace', source: 'throw new Error("initializer"); export const value = 1', enabled: true },
+      ] }, 1)
+      await runtime.run(phase, { program: 'function previous() { return 1 }', bindings: [], userBindings })
+      const done = []
+      interceptWorkerMessages(runtime, phase, (message, deliver) => {
+        if (message.type === 'done') done.push(message)
+        deliver(message)
+      })
+      const settled = await runtime.runTentative(phase, {
+        program: `function previous() { return 2 }; shared = 17; item = 19; console.log('body'); ${end}`,
+        bindings: [], userBindings,
+      })
+      runtime.finalize(settled.settlement, true)
+      assert.equal(settled.result.error?.kind, kind)
+      assert.equal(done.length, 1)
+      assert.equal(done[0].committedRedeclarations.length, 1)
+      assert.match(done[0].committedRedeclarations[0], /^redeclaration:\d+:previous$/)
+      // Activation and failure outcomes partition every requested entry.
+      assert.deepEqual(done[0].activatedUserBindings, ['ns', 'top'])
+      assert.deepEqual(done[0].userBindingFailures, [{ id: 'failed', error: 'initializer' }])
+      // Each completion carries per-name source facts and no whole-entry field.
+      assert.deepEqual(done[0].userBindingNames, [
+        { name: 'item', state: 'local' },
+        { name: 'shared', state: 'local' },
+      ])
+      assert.equal('shadowedUserBindings' in done[0], false)
+      assert.equal(done[0].logs.at(-1), 'body')
+      assert.equal(done[0].durability, 'durable')
+      assert.equal(normalizeJournal(settled.settlement.journal).status, 'durable')
+      assert.deepEqual((await runtime.run(phase, {
+        program: 'return [previous(), shared, item]', bindings: [], userBindings,
+      })).value, [2, 17, 19])
+    })
+  }
+})
+
+test('a pending rejection keeps the error class installed when the call started', async t => {
+  for (const shadow of ['replace', 'delete']) {
+    await t.test(shadow, async t => {
+      const runtime = new SessionRuntime({ computeMs: 2_000, maxWallMs: 2_000 })
+      t.after(() => runtime.dispose())
+      const id = `reply-error-class-${shadow}`
+      await runtime.run(id, { program: 'let captured', bindings: [] })
+      const worker = workerOf(runtime, id)
+      const shadowStatement = shadow === 'replace'
+        ? 'Object.defineProperty(globalThis, "ToolCallError", { configurable: true, value: replacement })'
+        : 'delete globalThis.ToolCallError'
+      const errorClass = { name: 'ToolCallError', memberNameProperty: 'toolName' }
+      const started = Promise.withResolvers()
+      const gate = Promise.withResolvers()
+      const pending = runtime.run(id, {
+        program: `
+const original = ToolCallError
+const replacement = ${shadow === 'replace' ? 'class Replaced extends Error {}' : 'undefined'}
+void tools.read({}).then(
+  () => { captured = 'unexpected resolution' },
+  error => { captured = {
+    name: error.name,
+    toolName: error.toolName,
+    message: error.message,
+    original: error instanceof original,
+    replacement: replacement !== undefined && error instanceof replacement,
+  } },
+)
+${shadowStatement}
+return 'cell finished'
+`,
+        bindings: [{ global: 'tools', functions: { read: async () => {
+          started.resolve()
+          await gate.promise
+          throw new Error('denied')
+        } }, errorClass }],
+      })
+      await started.promise
+      gate.resolve()
+      const settled = await pending
+      assert.equal(settled.error, undefined)
+      assert.equal(settled.value, 'cell finished')
+      assert.deepEqual((await runtime.run(id, { program: 'return captured', bindings: [] })).value, {
+        name: 'ToolCallError',
+        toolName: 'read',
+        message: 'denied',
+        original: true,
+        replacement: false,
+      })
+      const propagated = await runtime.run(id, {
+        program: `
+const replacement = ${shadow === 'replace' ? 'class Replaced extends Error {}' : 'undefined'}
+const call = tools.read({})
+${shadowStatement}
+await call
+return 'unreachable'
+`,
+        bindings: [{ global: 'tools', functions: { read: async () => { throw new Error('denied') } }, errorClass }],
+      })
+      assert.match(propagated.error.message, /uncaught ToolCallError: denied/)
+      assert.equal(workerOf(runtime, id), worker)
+    })
+  }
+})
+
+// `this` is the cell's global object. Unlike the ambient `globalThis` name it
+// does not mark the cell volatile, so the same program can also be recorded.
+function restoreInstalledDescriptor(write, completion = 'return shared.value') {
+  return `const installed = Object.getOwnPropertyDescriptor(this, 'shared')
+${write}
+Object.defineProperty(this, 'shared', installed)
+${completion}`
+}
+
+test('an actual assignment stays local when the installed descriptor is restored', async t => {
+  for (const [label, write] of [
+    ['value write', 'shared = 17'],
+    ['same-value write', 'shared = shared'],
+  ]) {
+    for (const completion of ['return shared.value', 'void 0']) await t.test(`${label}, ${completion}`, async t => {
+      const runtime = new SessionRuntime()
+      t.after(() => runtime.dispose())
+      const session = { id: `restored-descriptor-${label.replaceAll(' ', '-')}`, events: [] }
+      const initializations = []
+      const functions = { observe: async ({ value }) => { initializations.push(value); return 'initialized' } }
+      const assigned = await recordUserBindingCell(runtime, session,
+        restoreInstalledDescriptor(write, completion), assignmentSnapshot('namespace', 1), functions)
+      assert.equal(assigned.result.error, undefined)
+      assert.equal(assigned.result.value, completion === 'void 0' ? undefined : 1)
+      assert.deepEqual(assigned.journal.userBindingNames, [{ name: 'shared', state: 'local' }])
+      // The recorded assignment survives a provider source update: the restored
+      // accessor still reads its own module instance instead of the new one.
+      const updated = await recordUserBindingCell(runtime, session,
+        'return shared.value', assignmentSnapshot('namespace', 2), functions)
+      assert.equal(updated.result.error, undefined)
+      assert.equal(updated.result.value, 1)
+      assert.deepEqual(updated.journal.userBindingNames, [{ name: 'shared', state: 'local' }])
+      assert.deepEqual(initializations, [1, 2])
+      await runtime.dispose()
+      const restored = new SessionRuntime()
+      t.after(() => restored.dispose())
+      const cold = await recordUserBindingCell(restored, session,
+        'return shared.value', assignmentSnapshot('namespace', 2), functions)
+      assert.equal(cold.result.error, undefined)
+      assert.equal(cold.result.value, 1)
+      assert.equal(cold.recoveryBoundaries, undefined)
+      assert.deepEqual(cold.journal.userBindingNames, [{ name: 'shared', state: 'local' }])
+      assert.deepEqual(initializations, [1, 2])
+    })
+  }
+})
+
+test('restoring the installed descriptor without an assignment keeps provider ownership', async t => {
+  const runtime = new SessionRuntime()
+  t.after(() => runtime.dispose())
+  const session = { id: 'restored-descriptor-unwritten', events: [] }
+  const restored = await recordUserBindingCell(runtime, session,
+    restoreInstalledDescriptor(''), sharedNamespaceSnapshot(1))
+  assert.equal(restored.result.value, 1)
+  assert.deepEqual(restored.journal.userBindingNames, [
+    { name: 'shared', state: 'provider', entryId: 'shared' },
+  ])
+  const updated = await recordUserBindingCell(runtime, session,
+    'return shared.value', sharedNamespaceSnapshot(2))
+  assert.equal(updated.result.value, 2)
+})
+
+// Owned synthetic program and transcript captured from the version-6 writer.
+// These literal snapshot/compiler identities and completions preserve that
+// writer's evidence independently of the current serializer and checkout.
+function historicalDescriptorSession(hasValue) {
+  const declaration = 'declare const shared: {\n  value: number;\n}'
+  const userBindings = {
+    version: 2, transform: 'amaro@1.1.11', revision: 1,
+    fingerprint: 'b8b5fb9737db9330bb0b4a1c54dd5c4b143a6f181ad396b72f8400dcbfd873cb',
+    entries: [{
+      id: 'shared', name: 'shared', scope: 'namespace', symbols: ['value'], purpose: '', enabled: true,
+      source: 'await tools.observe({ value: 1 }); export const value = 1',
+      fingerprint: '2a9a19d50c075c555d39237b737fb6b779fc890f9e248153fdd5e4a96896706e',
+      declaration, bindings: [{ name: 'shared', kind: 'variable', declaration }], durability: 'durable',
+    }],
+  }
+  const program = `const installed = Object.getOwnPropertyDescriptor(this, 'shared')
+shared = 17
+Object.defineProperty(this, 'shared', installed)
+${hasValue ? 'return shared.value' : 'void 0'}`
+  const journal = {
+    version: 6,
+    bindingPolicy: { variableRedeclarations: true, functionClassRedeclarations: true },
+    rewritePolicy: { autoRewriteImports: true, autoStripExports: true, autoSplitRedeclarations: true },
+    moduleSemantics: { defaultExportBinding: 'live-readonly' },
+    userBindingsFingerprint: userBindings.fingerprint, userBindingsReusePolicy: 'implementation-v1',
+    status: 'durable',
+    calls: [{ global: 'tools', member: 'observe',
+      args: { codec: 'ptc-value-graph/v1', root: { tag: 'reference', index: 0 },
+        nodes: [{ type: 'object', prototype: 'object', entries: [['value', 1]] }] },
+      ok: true, settle: 0, value: { codec: 'ptc-value-graph/v1', root: 'initialized', nodes: [] },
+    }],
+    operations: [], confirms: [], diagnostics: [],
+    completion: { kind: 'return', hasValue,
+      ...(hasValue ? { value: { codec: 'ptc-value-graph/v1', root: 1, nodes: [] } } : {}),
+    },
+  }
+  const session = { id: `historical-descriptor-${hasValue}`, events: [] }
+  appendRunCodeEvents(session.events, 'historical-descriptor', program, { meta: {
+    [JOURNAL_KEY]: journal, [USER_BINDINGS_META_KEY]: userBindings,
+  } })
+  return session
+}
+
+test('version-6 assignment evidence retains the restored accessor through recovery and policy transition', async t => {
+  for (const hasValue of [true, false]) await t.test(hasValue ? 'return' : 'void', async t => {
+    const session = historicalDescriptorSession(hasValue)
+    const historical = structuredClone(session.events)
+    const userBindings = session.events[1].data.meta[USER_BINDINGS_META_KEY]
+    const updated = createUserBindingsSnapshot({ entries: [{
+      id: 'shared', name: 'shared', scope: 'namespace', enabled: true,
+      source: 'await tools.observe({ value: 2 }); export const value = 2',
+    }] }, 2)
+    const initializations = []
+    const functions = { observe: async ({ value }) => { initializations.push(value); return 'initialized' } }
+    const runtime = new SessionRuntime()
+    t.after(() => runtime.dispose())
+    const same = await recordUserBindingCell(runtime, session,
+      'return [shared.value, Object.getOwnPropertyDescriptor(this, "shared").get === installed.get]', userBindings, functions)
+    assert.equal(same.result.error, undefined)
+    assert.deepEqual(same.result.value, [1, true])
+    assert.equal(same.recoveryBoundaries, undefined)
+    assert.deepEqual(same.journal.userBindingNames, [{ name: 'shared', state: 'local' }])
+    assert.deepEqual(initializations, [])
+    const changed = await recordUserBindingCell(runtime, session, 'return shared.value', updated, functions)
+    assert.equal(changed.result.error, undefined)
+    assert.equal(changed.result.value, 1)
+    assert.equal(changed.recoveryBoundaries, undefined)
+    assert.deepEqual(changed.journal.userBindingNames, [{ name: 'shared', state: 'local' }])
+    // New per-name cells still initialize a changed module whose public names
+    // are all local. The historical initializer is never dispatched again.
+    assert.deepEqual(initializations, [2])
+    await runtime.dispose()
+    const restored = new SessionRuntime()
+    t.after(() => restored.dispose())
+    const cold = await recordUserBindingCell(restored, session, 'return shared.value', updated, functions)
+    assert.equal(cold.result.error, undefined)
+    assert.equal(cold.result.value, 1)
+    assert.equal(cold.recoveryBoundaries, undefined)
+    assert.deepEqual(initializations, [2])
+    assert.deepEqual(session.events.slice(0, historical.length), historical)
+  })
+})
+
+/** Exercise both worker policies directly without inventing a historical journal. */
+async function bindingWorker(t) {
+  let pending
+  let nextId = 0
+  const initializations = []
+  const client = new WorkerClient({
+    workerUrl: new URL('../internal/kernel-worker.js', import.meta.url), cwd: process.cwd(),
+    onFailure: error => pending.reject(new Error(error)),
+    onMessage(message) {
+      if (message.type === 'done') pending.resolve(message)
+      if (message.type === 'call') {
+        initializations.push(decodeValue(message.args).value)
+        client.post({ type: 'reply', runId: message.runId, id: message.id,
+          ok: true, value: encodeValue('initialized') })
+      }
+    },
+  })
+  t.after(() => client.dispose())
+  await client.ensure(128)
+  const shadowedNames = new Set()
+  return {
+    initializations,
+    async run(program, userBindings, policy) {
+      pending = Promise.withResolvers()
+      const prepared = prepareProgram(program, {
+        bindingPolicy: { variableRedeclarations: true, functionClassRedeclarations: true },
+        rewritesEnabled: { autoRewriteImports: true, autoStripExports: true, autoSplitRedeclarations: true },
+      })
+      client.post({ type: 'run', id: ++nextId, program: prepared.code,
+        returnSignal: prepared.returnSignal, commitSignal: prepared.commitSignal,
+        moduleLoads: prepared.moduleLoads, namespaces: [{ global: 'tools', members: ['observe'] }],
+        maxOutputBytes: 65_536, durability: 'durable', userBindings,
+        userBindingsCwd: process.cwd(), userBindingsReusePolicy: 'implementation-v1',
+        userBindingsShadowPolicy: policy, shadowedUserBindingNames: [...shadowedNames],
+      })
+      const done = await pending.promise
+      for (const name of done.shadowedUserBindings ?? []) shadowedNames.add(name)
+      return done
+    },
+  }
+}
+
+function assignmentSnapshot(scope, value) {
+  return createUserBindingsSnapshot({ entries: [{
+    id: 'shared', name: 'shared', scope, enabled: true,
+    source: `await tools.observe({ value: ${value} }); export const ${scope === 'namespace' ? 'value' : 'shared'} = ${value}`,
+  }] }, value)
+}
+
+test('both policies combine actual assignments with descriptors across return and void completion', async t => {
+  for (const policy of ['whole-entry', 'per-name']) {
+    for (const scope of ['namespace', 'top-level']) {
+      for (const write of ['shared = 17', 'shared = shared', '']) {
+        for (const hasValue of [true, false]) await t.test(`${policy}, ${scope}, ${write || 'unwritten'}, ${hasValue}`, async t => {
+          const worker = await bindingWorker(t)
+          const read = scope === 'namespace' ? 'shared.value' : 'shared'
+          const initial = assignmentSnapshot(scope, 1)
+          const done = await worker.run(`const installed = Object.getOwnPropertyDescriptor(this, 'shared')
+${write}
+Object.defineProperty(this, 'shared', installed)
+${hasValue ? `return ${read}` : 'void 0'}`, initial, policy)
+          assert.equal(done.error, undefined)
+          assert.equal(done.hasValue, hasValue)
+          if (hasValue) assert.equal(decodeValue(done.value), 1)
+          if (policy === 'whole-entry') assert.deepEqual(done.shadowedUserBindings, write ? ['shared'] : [])
+          else assert.deepEqual(done.userBindingNames, [write
+            ? { name: 'shared', state: 'local' } : { name: 'shared', state: 'provider', entryId: 'shared' }])
+          const same = await worker.run(`return ${read}`, initial, policy)
+          assert.equal(same.error, undefined)
+          assert.equal(decodeValue(same.value), 1)
+          assert.deepEqual(worker.initializations, [1])
+          const changed = await worker.run(`return ${read}`, assignmentSnapshot(scope, 2), policy)
+          assert.equal(changed.error, undefined)
+          assert.equal(decodeValue(changed.value), write ? 1 : 2)
+          assert.deepEqual(worker.initializations, policy === 'whole-entry' && write ? [1] : [1, 2])
+          assert.deepEqual(changed.activatedUserBindings, policy === 'whole-entry' && write ? [] : ['shared'])
+        })
+      }
+    }
+  }
+})
+
+test('legacy assignment and descriptor evidence share every completion envelope', async t => {
+  for (const scope of ['namespace', 'top-level']) {
+    for (const end of ['throw new Error("body failed")', 'return () => 1']) await t.test(`${scope}, ${end}`, async t => {
+      const worker = await bindingWorker(t)
+      const done = await worker.run(`const installed = Object.getOwnPropertyDescriptor(this, 'shared')
+shared = shared
+Object.defineProperty(this, 'shared', installed)
+${end}`, assignmentSnapshot(scope, 1), 'whole-entry')
+      assert.deepEqual(done.shadowedUserBindings, ['shared'])
+      assert.deepEqual(done.activatedUserBindings, ['shared'])
+      if (end.startsWith('throw')) assert.match(done.error, /body failed/)
+      else assert.match(done.invalidOutput, /function/)
+      const continued = await worker.run(`return ${scope === 'namespace' ? 'shared.value' : 'shared'}`,
+        assignmentSnapshot(scope, 2), 'whole-entry')
+      assert.equal(continued.error, undefined)
+      assert.equal(decodeValue(continued.value), 1)
+      assert.deepEqual(worker.initializations, [1])
+    })
+  }
+})
+
+test('legacy completion unions actual writes with independent descriptor changes', async t => {
+  const worker = await bindingWorker(t)
+  const userBindings = createUserBindingsSnapshot({ entries: [{
+    id: 'shared', name: 'shared', scope: 'top-level', enabled: true,
+    source: 'export const shared = 1; export const other = 1; export const sibling = 1',
+  }] }, 1)
+  const done = await worker.run(`const installed = Object.getOwnPropertyDescriptor(this, 'shared')
+shared = shared
+Object.defineProperty(this, 'shared', installed)
+Object.defineProperty(this, 'other', { configurable: true, writable: true, value: 1 })
+void 0`, userBindings, 'whole-entry')
+  assert.equal(done.error, undefined)
+  assert.deepEqual(done.shadowedUserBindings, ['shared', 'other'])
+  const continued = await worker.run('return [shared, other, typeof sibling]', userBindings, 'whole-entry')
+  assert.equal(continued.error, undefined)
+  assert.deepEqual(decodeValue(continued.value), [1, 1, 'undefined'])
+})
+
+test('retained setters keep their original receiver and same-value assignment semantics after transition', async t => {
+  for (const policy of ['whole-entry', 'per-name']) {
+    for (const scope of ['namespace', 'top-level']) await t.test(`${policy}, ${scope}`, async t => {
+      const worker = await bindingWorker(t)
+      const initial = assignmentSnapshot(scope, 1)
+      const seeded = await worker.run('const installed = Object.getOwnPropertyDescriptor(this, "shared"); void 0', initial, policy)
+      assert.equal(seeded.error, undefined)
+      const transitioned = await worker.run('return Object.getOwnPropertyDescriptor(this, "shared").set === installed.set', initial, 'per-name')
+      assert.equal(decodeValue(transitioned.value), true)
+      const assigned = await worker.run(`const receiver = {}
+installed.set.call(receiver, shared)
+Object.defineProperty(this, 'shared', installed)
+return Object.hasOwn(receiver, 'shared')`, initial, 'per-name')
+      assert.equal(assigned.error, undefined)
+      assert.equal(decodeValue(assigned.value), policy === 'per-name')
+      assert.deepEqual(assigned.userBindingNames, [policy === 'whole-entry'
+        ? { name: 'shared', state: 'local' } : { name: 'shared', state: 'provider', entryId: 'shared' }])
+      const updated = await worker.run(`return ${scope === 'namespace' ? 'shared.value' : 'shared'}`,
+        assignmentSnapshot(scope, 2), 'per-name')
+      assert.equal(updated.error, undefined)
+      assert.equal(decodeValue(updated.value), policy === 'whole-entry' ? 1 : 2)
+      assert.deepEqual(worker.initializations, [1, 2])
+    })
+  }
+})

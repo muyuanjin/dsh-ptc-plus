@@ -33,10 +33,14 @@ test('canonicalizes proven native miscalls while declared edit calls keep their 
       required: ['file_path'],
     },
   }
-  const state = fixture({}, { scopedSchemas: [readSchema] })
+  const listenerOptions = new Map()
+  const state = fixture({}, {
+    scopedSchemas: [readSchema],
+    onListener: (name, listener, options) => listenerOptions.set(listener, options),
+  })
   t.after(() => state.dispose())
   assert.equal(state.listeners.has('llm/stream'), true)
-  assert.deepEqual(state.listenerOptions.get(state.listeners.get('llm/stream')[0]), { global: true })
+  assert.deepEqual(listenerOptions.get(state.listeners.get('llm/stream')[0]), { global: true })
   const sessionId = 'direct-call-session'
   const signal = new AbortController().signal
   const agent = ptcAgent('agent-id', { id: sessionId, events: [] })

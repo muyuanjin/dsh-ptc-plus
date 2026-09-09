@@ -1,5 +1,5 @@
 import { createHash, randomInt, randomUUID } from 'node:crypto'
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import {
@@ -42,10 +42,13 @@ import {
   dshInvocation,
   preflightHeadlessHost,
   requiredModelRuntime,
+  resolveHeadlessProvider,
+  redactHeadlessConfig,
   snapshotSessionLogs,
   validateHeadlessRuntimeConfig,
   validateNeutralConfig,
   windowsPath,
+  withOwnedPath,
 } from './headless-host.mjs'
 import { npmCliCommand } from './npm-cli.mjs'
 
@@ -258,7 +261,7 @@ export function inspectLog(events, scenario, expectedRuntime) {
   const facts = collectTrajectoryFacts(events, { compareUsageChunks: false })
   failures.push(...headerAudit.failures, ...contextAudit.failures, ...facts.failures)
   const {
-    calls, results, assistantTexts, usage, finalTurn, turnStartedAt, turnEndedAt, timeline,
+    calls, results, assistantTexts, finalAnswer, reasoningChars, usage, finalTurn, turnStartedAt, turnEndedAt, timeline,
   } = facts
   const requestHeaders = headerAudit.headers.map(item => item.header)
   const requestHeader = requestHeaders[0]
@@ -441,7 +444,6 @@ export function inspectLog(events, scenario, expectedRuntime) {
     failures.push('turn ended as ' + (finalTurn?.data?.reason?.kind ?? 'missing'))
   }
   if (header?.cwd !== expectedRuntime.cwd) failures.push('session cwd is ' + String(header?.cwd) + ' instead of ' + expectedRuntime.cwd)
-  const finalAnswer = assistantTexts.at(-1) ?? ''
   if (finalAnswer.trim() === '') failures.push('final answer is empty')
   for (const expected of expect.finalAnswerIncludes ?? []) {
     if (!finalAnswer.includes(expected)) failures.push('final answer omits expected value ' + JSON.stringify(expected))
@@ -491,6 +493,7 @@ export function inspectLog(events, scenario, expectedRuntime) {
     toolResultCount: results.size,
     timeline,
     finalAnswerChars: finalAnswer.length,
+    reasoningChars,
     ...(bindingWorkflow === undefined ? {} : { bindingWorkflow }),
     diagnostics: [...new Set(warnings)],
     failures: [...new Set(failures)],
@@ -501,6 +504,14 @@ export function inspectLog(events, scenario, expectedRuntime) {
 export async function main(env = process.env) {
   const modelRuntime = requiredModelRuntime(env, 'DSH_PTC_ACCEPTANCE')
   const host = await preflightHeadlessHost(repoRoot, { env })
+  const scratchParent = join(resolve(repoRoot, '..'), '.dsh-ptc-plus-acceptance')
+  await mkdir(scratchParent, { recursive: true })
+  const overlayRoot = await mkdtemp(join(scratchParent, 'config-'))
+  return withOwnedPath(overlayRoot,
+    () => runAcceptance(env, modelRuntime, host, overlayRoot))
+}
+
+async function runAcceptance(env, modelRuntime, host, overlayRoot) {
   const runId = `${new Date().toISOString().replaceAll(':', '').replaceAll('.', '-')}-${randomUUID().slice(0, 8)}`
   const artifactRoot = join(repoRoot, 'artifacts', 'expensive', runId)
   await mkdir(artifactRoot, { recursive: true })
@@ -533,7 +544,7 @@ export async function main(env = process.env) {
       expect: scenario.expect,
     })),
   }, null, 2) + '\n')
-  const overlay = join(artifactRoot, 'acceptance.patch.yml')
+  const overlay = join(overlayRoot, 'acceptance.patch.yml')
 
   const install = await runProcess('pwsh.exe', [
     '-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass',
@@ -550,23 +561,25 @@ export async function main(env = process.env) {
     '-NoLogo', '-NoProfile', '-Command',
     `${dshInvocation(runtime)} --profile '${powershellPath(runtime.profile)}' --dump-config`,
   ], { env, timeoutMs: runtime.wallMs })
-  await writeFile(join(artifactRoot, 'base-config.stdout.yml'), baseDump.stdout)
+  if (baseDump.code === 0) await writeFile(join(artifactRoot, 'base-config.stdout.yml'), redactHeadlessConfig(baseDump.stdout))
   await writeFile(join(artifactRoot, 'base-config.stderr.log'), baseDump.stderr)
   if (baseDump.code !== 0 || baseDump.stderr.trim() !== '') {
     throw new Error(`base DSH config preflight failed; see ${relative(repoRoot, artifactRoot)}`)
   }
   const baseRows = parseAcceptanceConfig(baseDump.stdout, 'base DSH config')
+  await resolveHeadlessProvider(baseRows, runtime, host.dshHome)
   const enableFunctionClassRedeclarations = scenarios.some(
     scenario => scenario.id === 'function-class-redeclaration-iteration',
   )
   await writeFile(overlay, headlessConfigPatch(baseRows, runtime, {
     looseTopLevelFunctionClassRedeclarations: enableFunctionClassRedeclarations,
   }))
+  await writeFile(join(artifactRoot, 'acceptance.patch.yml'), redactHeadlessConfig(await readFile(overlay, 'utf8')))
   const resolvedDump = await runProcess('pwsh.exe', [
     '-NoLogo', '-NoProfile', '-Command',
     `${dshInvocation(runtime)} --profile '${powershellPath(runtime.profile)}' --patch '${powershellPath(windowsPath(overlay))}' --dump-config`,
   ], { env, timeoutMs: runtime.wallMs })
-  await writeFile(join(artifactRoot, 'acceptance-config.stdout.yml'), resolvedDump.stdout)
+  if (resolvedDump.code === 0) await writeFile(join(artifactRoot, 'acceptance-config.stdout.yml'), redactHeadlessConfig(resolvedDump.stdout))
   await writeFile(join(artifactRoot, 'acceptance-config.stderr.log'), resolvedDump.stderr)
   if (resolvedDump.code !== 0 || resolvedDump.stderr.trim() !== '') {
     throw new Error(`acceptance DSH config preflight failed; see ${relative(repoRoot, artifactRoot)}`)

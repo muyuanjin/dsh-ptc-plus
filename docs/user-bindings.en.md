@@ -11,7 +11,7 @@ Global bindings save reusable TypeScript helpers for use across sessions. For ex
 3. Inspect the draft's source, interface, and model prompt in the panel above the composer.
 4. Choose **Save and enable**. Subsequent `run_code` calls load the binding; initialization failures appear in execution results.
 
-During authoring, the Agent can test and revise code with in-memory examples, retaining temporary variables for subsequent tests. These tests must not modify external files or services. File and network helpers can use in-memory substitutes to test their logic; the answer should identify integration behavior that remains untested. Submission delivers a draft for your review. You decide whether to save and enable it.
+During authoring, the Agent starts with a small in-memory check of the core behavior, then adds normal, edge, and failure assertions with `node:assert/strict`. Bulk tests report totals and a few representative failures instead of printing every successful case into the context. Tests must not modify external files or services. File and network helpers use in-memory substitutes to verify argument forwarding and error propagation; the answer identifies integration behavior that remains untested. Submission delivers a draft for your review. You decide whether to save and enable it.
 
 To revise a saved binding, use `/binding edit <id> <requirement>`. Its storage `id`, shown in the workbench, may differ from its call name. You can also select the Agent editing action from the binding list.
 

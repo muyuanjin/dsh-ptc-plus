@@ -3,9 +3,10 @@ import { execFileSync, spawn } from 'node:child_process'
 import { readdir, readFile, rm, stat } from 'node:fs/promises'
 import { join, posix, win32 } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { parseDocument } from 'yaml'
+import { isDeepStrictEqual } from 'node:util'
+import { parseDocument, stringify } from 'yaml'
 import { RUNTIME_PROBE_PREFIX } from './repl-preflight.mjs'
-import { hostPersonaPatch, hostToolRuntime, ptcToolsMode, readHostPersona } from './dsh-host-contract.mjs'
+import { hostPersonaPatch, hostProviderConfig, hostToolRuntime, ptcToolsMode, readHostPersona } from './dsh-host-contract.mjs'
 
 export const NEUTRAL_PERSONA = 'You are a coding agent powered by the {{model}} model. Your working directory is {{cwd}}.'
 export const HEADLESS_PREREQUISITE_CODE = 'PTC-EVAL-PREREQ'
@@ -257,6 +258,73 @@ function headlessRuntimePolicy(runtime) {
   })
 }
 
+function mergeProviderLayers(base, user) {
+  const record = value => value !== null && typeof value === 'object' && !Array.isArray(value)
+  if (user === undefined) return structuredClone(base)
+  if (!record(base) || !record(user)) return structuredClone(user)
+  return Object.fromEntries([...new Set([...Object.keys(base), ...Object.keys(user)])]
+    .map(key => [key, mergeProviderLayers(base[key], user[key])]))
+}
+
+/** Freeze only the chosen route before disabling unrelated user settings. */
+export async function resolveHeadlessProvider(baseRows, runtime, dshHome, options = {}) {
+  const settingsRow = baseRows.find(row => row.id === 'settings')
+  let settings = {}
+  if (settingsRow !== undefined && settingsRow.disabled !== true) {
+    if (settingsRow.name !== '@deepseek-ai/dsh-settings-file'
+      || Object.keys(settingsRow.config ?? {}).length > 0) {
+      throw new Error(`${HEADLESS_CONFIG_CODE}: provider resolution requires the default DSH settings-file source or settings disabled with a complete provider in the profile`)
+    }
+    try {
+      const document = parseDocument(await (options.readFile ?? readFile)(join(dshHome, 'settings.yaml'), 'utf8'))
+      if (document.errors.length || document.warnings.length) throw new Error('invalid settings document')
+      settings = document.toJS() ?? {}
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw new Error(`${HEADLESS_CONFIG_CODE}: cannot read provider settings; check settings.yaml syntax`)
+    }
+  }
+  const base = configRow(baseRows, 'llm-pi-ai', 'base DSH config')
+  if (base.disabled === true) throw new Error(`${HEADLESS_CONFIG_CODE}: llm-pi-ai is disabled`)
+  const selected = mergeProviderLayers(base.config?.providers?.[runtime.provider], settings['llm-pi-ai']?.providers?.[runtime.provider])
+  if (selected === null || typeof selected !== 'object' || Array.isArray(selected)) {
+    throw new Error(`${HEADLESS_CONFIG_CODE}: selected provider must be configured in llm-pi-ai.providers`)
+  }
+  let providerConfig
+  try {
+    const Config = options.Config ?? hostProviderConfig(runtime.dshEntry)
+    providerConfig = Config({ providers: { [runtime.provider]: { ...selected, apiKeyEnv: runtime.apiKeyEnv } } }).providers[runtime.provider]
+  } catch {
+    // Validator errors can quote private configuration values, including in their causes.
+    throw new Error(`${HEADLESS_CONFIG_CODE}: selected provider configuration violates the installed DSH provider schema`)
+  }
+  let headers
+  try {
+    headers = new Headers(providerConfig.headers ?? {})
+  } catch {
+    throw new Error(`${HEADLESS_CONFIG_CODE}: selected provider headers must contain valid HTTP names and values`)
+  }
+  if (runtime.provider === 'opencode-go' && !headers.has('x-opencode-session')) {
+    throw new Error(`${HEADLESS_CONFIG_CODE}: opencode-go requires an explicit x-opencode-session header`)
+  }
+  if (providerConfig.models?.length > 0 && !providerConfig.models.some(model => model.id === runtime.model)) {
+    throw new Error(`${HEADLESS_CONFIG_CODE}: selected model absent from the provider's explicit model list`)
+  }
+  // Deployment values may contain private headers; manifests serialize only route identity.
+  return Object.defineProperty(runtime, 'providerConfig', { value: providerConfig })
+}
+
+/** Configuration evidence retains header names without copying their values. */
+export function redactHeadlessConfig(text) {
+  const rows = parseConfigDump(text)
+  for (const row of rows) {
+    if (row.id !== 'llm-pi-ai') continue
+    for (const provider of Object.values(row.config?.providers ?? {})) {
+      if (provider.headers) provider.headers = Object.fromEntries(Object.keys(provider.headers).map(name => [name, '[redacted]']))
+    }
+  }
+  return stringify(rows)
+}
+
 export function validateHeadlessRuntimeConfig(rows, label, runtime) {
   const policy = headlessRuntimePolicy(runtime)
   try {
@@ -272,6 +340,10 @@ export function validateHeadlessRuntimeConfig(rows, label, runtime) {
   }
   if (configRow(rows, 'approval', label).config?.policy !== policy.approvalPolicy) {
     throw new Error(`${label} does not use approval policy ${policy.approvalPolicy}`)
+  }
+  if (runtime.providerConfig !== undefined
+    && !isDeepStrictEqual(configRow(rows, 'llm-pi-ai', label).config?.providers?.[runtime.provider], runtime.providerConfig)) {
+    throw new Error(`${HEADLESS_CONFIG_CODE}: ${label} changed the resolved provider configuration`)
   }
   return true
 }
@@ -318,7 +390,7 @@ export function headlessConfigPatch(baseRows, runtime, options = {}) {
     '  config:',
     '    providers:',
     `      ${JSON.stringify(runtime.provider)}:`,
-    `        apiKeyEnv: ${JSON.stringify(runtime.apiKeyEnv)}`,
+    ...stringify(runtime.providerConfig ?? { apiKeyEnv: runtime.apiKeyEnv }).trimEnd().split('\n').map(line => `        ${line}`),
     ...(options.looseTopLevelFunctionClassRedeclarations === true
       ? [
         '- id: ptc-plus',

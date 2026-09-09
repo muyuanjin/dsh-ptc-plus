@@ -60,6 +60,12 @@ npm run test:ab
 
 Do not claim checks that were not run. Never commit generated `artifacts/`, coverage output, the active ledger, credentials, local paths, or local evaluation records. Commit or rewrite history only when explicitly authorized; never push without explicit authorization.
 
+### Real model evaluation configuration
+
+Run paid evaluations in an isolated DSH home and workspace. Resolve the selected provider from the user's existing DSH configuration, then copy only the selected provider's validated API, endpoint, model list, and provider-specific routing fields into the isolated settings. Keep the credential variable name unchanged and let the child process resolve its value from the inherited environment; never read, print, serialize, or store credential values. Generate a fresh routing/session header for providers that require one, and use the same resolved provider configuration for every comparison arm.
+
+Run `DSH_PTC_ACCEPTANCE_CONFIG_ONLY=1` first to validate the isolated configuration, then run the chosen paid scenario through `npm run test:expensive` or `npm run test:ab`. If the normal profile lacks a required provider field, repair the isolated copy or use the repository's existing isolated audit driver; do not weaken the provider check or edit the normal profile. Inspect only redacted session-log and report artifacts, and record model usage without request headers or credential material.
+
 ## Repository Conventions
 
 - `index.js`: public plugin entry point and Cordis integration.

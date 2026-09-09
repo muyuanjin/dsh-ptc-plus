@@ -50,9 +50,11 @@ declare namespace code {
 export function bindingAuthoringInstructions(requestId, cwd) {
   return `Create exactly one Global User Binding candidate for the user's requirement.
 
-Develop and check the helper in small run_code cells before submission. Use in-memory inputs and assertions for normal cases, edge cases and failures; compare implementations when behavior is uncertain, and correct them from observed results. Temporary REPL variables and functions are allowed. Keep tests free of external side effects: do not write or delete files, change external services, or call effectful tools. For filesystem or network helpers, test pure logic with in-memory substitutes and report the untested integration. Check imported code and initializers before executing them; when their effects are unknown, review them without running them.
+Develop and check the helper in small run_code cells before submission. Start with a small executable check of the core behavior, then extend it using in-memory inputs and assertions for normal cases, edge cases and failures. Use node:assert/strict for comparisons. Keep the candidate and reusable test inputs in REPL variables; correct them from observed results and recheck changed behavior. For bulk tests, print totals and a few representative failures, keeping successful cases out of the output.
 
-Review the final source, selected exports, types and usage prompt against the requirement and test results. Keep test scaffolding out of the submitted module. In the answer, summarize verified behavior and remaining limits briefly.
+Tests must not write or delete files, change external services, or call effectful tools. For filesystem or network helpers, use in-memory substitutes and check argument forwarding and error propagation. Check imports and initializers before executing them; review unknown effects without running them. A substitute verifies only the behavior its assertions cover; real integration remains untested.
+
+Review the final source, selected exports, types and usage prompt against the requirement and tested implementation. Keep test scaffolding out of the submitted module. In the answer, briefly report verified behavior and remaining limits; distinguish test-harness errors from helper errors and cite only behavior supported by the checks.
 
 Submit from run_code with code.submitBindingDraft({ requestId: ${JSON.stringify(requestId)}, entry }). One valid submission completes this request; correct validation errors and retry only rejected submissions. The receipt confirms a disabled draft awaiting the user's save decision. Saving and enabling belong to the user.
 

@@ -255,6 +255,32 @@ test('matches unescaped primitive values inside nested and cyclic graphs', () =>
   assert.throws(() => valueContains(cyclic, 0), /fragment must be a string/)
 })
 
+test('requires a visible completed answer and accounts for reasoning separately', () => {
+  const response = content => ({ type: 'assistant/message', data: { turn: 1, message: { content } } })
+  const end = { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } }
+  const thought = { type: 'reasoning', text: 'Synthetic private text.' }
+  const visible = { type: 'text', text: 'Answer' }
+  for (const events of [
+    [response([thought]), end],
+    [response([visible]), response([thought]), end],
+    [response([visible, { type: 'tool-call', name: 'run_code' }]), end],
+    [response([visible])],
+    [response([visible]), { ...end, data: { ...end.data, reason: { kind: 'error' } } }],
+    [response([visible]), { type: 'turn/start', data: { turn: 2 } }, { ...end, data: { ...end.data, turn: 2 } }],
+  ]) assert.equal(collectTrajectoryFacts(events).finalAnswer, '')
+  const mixed = collectTrajectoryFacts([response([thought, visible, { type: 'text', text: 'continued' }]), end])
+  assert.equal(mixed.finalAnswer, 'Answer\ncontinued')
+  assert.deepEqual(mixed.assistantTexts, ['Answer\ncontinued'])
+  assert.equal(mixed.reasoningChars, thought.text.length)
+  assert.equal(JSON.stringify(mixed).includes(thought.text), false)
+  const events = acceptanceEvents()
+  const last = events.findLast(event => event.type === 'assistant/message')
+  last.data.message.content = [thought]
+  const report = inspectLog(events, { id: 'visible-answer', expect: {} }, { provider: 'provider', model: 'model' })
+  assert.match(report.failures.join('\n'), /final answer is empty/)
+  assert.equal(report.finalAnswerChars, 0)
+})
+
 test('audits protocol values and randomized cross-cell reuse', () => {
   const report = inspectLog(acceptanceEvents(), {
     id: 'continuity',

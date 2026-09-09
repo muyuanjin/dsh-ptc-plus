@@ -48,8 +48,10 @@ test('validates exact edit sets and applies them atomically', () => {
     [null, 'x', /expects an object/],
     [[], 'x', /expects an object/],
     [{}, 'x', /expects exactly one/],
-    [{ edits: [], extra: true }, 'x', /expects exactly one/],
-    [{ edits: 'x' }, 'x', /expects exactly one/],
+    [{ edits: [], extra: true }, 'x', /does not accept field "extra"/],
+    [{ edits: [], regex_edits: [] }, 'x', /supply one operation and omit the other/],
+    [{ edits: 'x' }, 'x', /edits must be an array/],
+    [{ regex_edits: null }, 'x', /regex_edits must be an array/],
     [{ edits: [], expected_target_call_seq: '1' }, 'x', /non-negative safe integer/],
     [{ edits: [], expected_target_call_seq: -1 }, 'x', /non-negative safe integer/],
     [{ edits: [] }, 'x', /at least one/],
@@ -92,6 +94,14 @@ test('validates exact edit sets and applies them atomically', () => {
   assert.match(rejected({ edits: Array.from({ length: 16 }, (_, index) => ({
     old_string: `missing-${index}`, new_string: 'y',
   })) }, expensive), /search budget/)
+})
+
+test('identifies extra edit fields without applying or changing the requested edit', () => {
+  const request = { edits: [{ old_string: 'return 1', new_string: 'return 2' }], description: 'Adjust return' }
+  const before = structuredClone(request)
+  assert.match(rejected(request, 'return 1'), /does not accept field "description"; remove it and retry/)
+  assert.deepEqual(request, before)
+  assert.equal(editRejectedCell({ edits: request.edits }, 'return 1').code, 'return 2')
 })
 
 test('implements JavaScript regex replacement templates', () => {

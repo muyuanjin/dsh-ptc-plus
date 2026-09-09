@@ -33,6 +33,8 @@ import {
   dshInvocation,
   preflightHeadlessHost,
   requiredModelRuntime,
+  resolveHeadlessProvider,
+  redactHeadlessConfig,
   removeTree,
   snapshotSessionLogs,
   validateHeadlessRuntimeConfig,
@@ -334,7 +336,7 @@ export function assertTrajectoryInvariants(events, expected, audits) {
   const session = events.find(event => event.type === 'session')
   const system = typeof header?.system === 'string' ? header.system : ''
   const hasPlugin = system.includes(pluginMarker)
-  const { calls, results, assistantTexts, finalTurn, timeline } = facts
+  const { calls, results, finalAnswer, finalTurn, timeline } = facts
   const expectedPersona = neutralPersona
     .replace('{{model}}', expected.model)
     .replace('{{cwd}}', expected.cwd)
@@ -359,7 +361,7 @@ export function assertTrajectoryInvariants(events, expected, audits) {
   if (hasPlugin !== (expected.variant === 'plugin')) failures.push('session resolved to ' + (hasPlugin ? 'plugin' : 'baseline') + ' prompt')
   if (session?.cwd !== expected.cwd) failures.push('session cwd is ' + String(session?.cwd) + ' instead of ' + expected.cwd)
   if (finalTurn?.data?.reason?.kind !== 'completed') failures.push('turn ended as ' + (finalTurn?.data?.reason?.kind ?? 'missing'))
-  if (assistantTexts.length === 0 || (assistantTexts.at(-1) ?? '').trim() === '') failures.push('final answer is empty')
+  if (finalAnswer.trim() === '') failures.push('final answer is empty')
   const journals = [...results.values()].map(result => result.journal).filter(Boolean)
   const runCodeCallIds = new Set([...calls.values()].filter(call => call.name === 'run_code').map(call => call.callId))
   if (expected.variant === 'plugin' && [...runCodeCallIds].some(callId => results.get(callId)?.journal === undefined)) {
@@ -390,13 +392,12 @@ export function assertTrajectoryInvariants(events, expected, audits) {
 
 export function computeMetrics(facts, audits) {
   const { modelRequestAudit, contextAudit } = audits
-  const { calls, results, assistantTexts, usage, timeline } = facts
+  const { calls, results, assistantTexts, finalAnswer, usage, timeline } = facts
   const source = timeline.map(item => item.code).filter(value => typeof value === 'string')
   const sourceCounts = new Map()
   for (const value of source) sourceCounts.set(value.trim(), (sourceCounts.get(value.trim()) ?? 0) + 1)
   const repeatedSourceCalls = [...sourceCounts.values()].reduce((sum, count) => sum + Math.max(0, count - 1), 0)
   const allAssistantText = assistantTexts.join('\n')
-  const finalAnswer = assistantTexts.at(-1) ?? ''
   const namespaceMentions = Object.fromEntries(['tools', 'repl', 'capabilities', 'code'].map(namespace => [
     namespace,
     source.reduce((sum, value) => sum + [...value.matchAll(new RegExp(`\\b${namespace}\\s*[.[]`, 'g'))].length, 0),
@@ -488,6 +489,7 @@ export function analyzeSession(events, expected) {
     machineMetrics: metrics.machineMetrics,
     timeline,
     finalAnswerChars: metrics.finalAnswer.length,
+    reasoningChars: facts.reasoningChars,
     finalAnswer: metrics.finalAnswer,
     questionMarks: (metrics.allAssistantText.match(/[?？]/g) ?? []).length,
     uncertaintySignals: uncertaintySignals(metrics.allAssistantText),
@@ -648,10 +650,10 @@ async function checkedPhase(result, {
   return result
 }
 
-async function preflightConfigs({ env, runtime, artifactRoot, tasks, fixture }) {
+async function preflightConfigs({ env, runtime, artifactRoot, tasks, fixture, dshHome, scratchRoot }) {
   const overlays = {
-    plugin: join(artifactRoot, 'plugin.patch.yml'),
-    baseline: join(artifactRoot, 'baseline.patch.yml'),
+    plugin: join(scratchRoot, 'plugin.patch.yml'),
+    baseline: join(scratchRoot, 'baseline.patch.yml'),
   }
   const install = await runProcess('pwsh.exe', [
     '-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass',
@@ -667,15 +669,19 @@ async function preflightConfigs({ env, runtime, artifactRoot, tasks, fixture }) 
     '-NoLogo', '-NoProfile', '-Command',
     `${dshInvocation(runtime)} --profile '${powershellPath(runtime.profile)}' --dump-config`,
   ], { env, timeoutMs: runtime.wallMs })
-  await checkedPhase(baseDump, {
+  await checkedPhase({ ...baseDump, stdout: baseDump.code === 0 ? redactHeadlessConfig(baseDump.stdout) : '' }, {
     stdoutPath: join(artifactRoot, 'base-config.stdout.yml'),
     stderrPath: join(artifactRoot, 'base-config.stderr.log'),
     failed: value => value.code !== 0 || value.stderr.trim() !== '',
     failureMessage: `base DSH config preflight failed; see ${relative(repoRoot, artifactRoot)}`,
   })
   const baseRows = parseConfigDump(baseDump.stdout, 'base DSH config')
+  await resolveHeadlessProvider(baseRows, runtime, dshHome)
   await writeFile(overlays.plugin, headlessConfigPatch(baseRows, runtime))
   await writeFile(overlays.baseline, headlessConfigPatch(baseRows, runtime, { disablePtcPlus: true }))
+  for (const variant of ['plugin', 'baseline']) {
+    await writeFile(join(artifactRoot, `${variant}.patch.yml`), redactHeadlessConfig(await readFile(overlays[variant], 'utf8')))
+  }
 
   const resolvedConfigs = {}
   for (const variant of ['plugin', 'baseline']) {
@@ -683,7 +689,7 @@ async function preflightConfigs({ env, runtime, artifactRoot, tasks, fixture }) 
       '-NoLogo', '-NoProfile', '-Command',
       `${dshInvocation(runtime)} --profile '${powershellPath(runtime.profile)}' --patch '${powershellPath(windowsPath(overlays[variant]))}' --dump-config`,
     ], { env, timeoutMs: runtime.wallMs })
-    await checkedPhase(dump, {
+    await checkedPhase({ ...dump, stdout: dump.code === 0 ? redactHeadlessConfig(dump.stdout) : '' }, {
       stdoutPath: join(artifactRoot, `${variant}-config.stdout.yml`),
       stderrPath: join(artifactRoot, `${variant}-config.stderr.log`),
       failed: value => value.code !== 0 || value.stderr.trim() !== '',
@@ -932,7 +938,7 @@ export async function main(env = process.env) {
   try {
     await mkdir(scratchRoot, { recursive: true })
     await materializeFixture(fixtureDir, frozenWorkspace)
-    const overlays = await preflightConfigs({ env, runtime, artifactRoot, tasks, fixture })
+    const overlays = await preflightConfigs({ env, runtime, artifactRoot, tasks, fixture, dshHome: host.dshHome, scratchRoot })
     if (env.DSH_PTC_AB_CONFIG_ONLY === '1') {
       console.log(`A/B config preflight completed; artifacts: ${relative(repoRoot, artifactRoot)}`)
       return

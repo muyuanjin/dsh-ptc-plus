@@ -38,8 +38,11 @@ test('binding authoring develops, compares and checks exact candidate source in 
       const task = options.messages.findLast(message => message.source?.form === 'instructions').content[0].text
       assert.match(task, /small run_code cells before submission/)
       assert.match(task, /in-memory inputs and assertions/)
-      assert.match(task, /do not write or delete files/)
-      assert.match(task, /effects are unknown, review them without running/)
+      assert.match(task, /must not write or delete files/)
+      assert.match(task, /review unknown effects without running/)
+      assert.match(task, /node:assert\/strict/)
+      assert.match(task, /print totals and a few representative failures/)
+      assert.match(task, /substitute verifies only the behavior its assertions cover/)
       assert.match(task, /final source, selected exports, types and usage prompt/)
       assert.match(task, /leave instructions empty when the interface is sufficient/)
       assert.doesNotMatch(task, /Do not persist, enable, execute|Only the user can save, enable or run|chain.of.thought|think step by step|repl\.state|recovery snapshot/)

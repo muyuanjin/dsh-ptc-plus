@@ -310,11 +310,16 @@ export function editRejectedCell(value, source, timeoutMs = DEFAULT_REGEX_TIMEOU
     return rejection('edit_run_code expects an object with exactly one edits or regex_edits array')
   }
   const keys = Object.keys(value)
+  const unsupported = keys.find(key => !['edits', 'regex_edits', EXPECTED_TARGET_CALL_SEQ].includes(key))
+  if (unsupported !== undefined) {
+    return rejection(`edit_run_code does not accept field ${JSON.stringify(unsupported)}; remove it and retry the edit`)
+  }
   const operationKeys = keys.filter(key => key === 'edits' || key === 'regex_edits')
-  if (operationKeys.length !== 1 || keys.length > 2
-    || keys.some(key => !['edits', 'regex_edits', EXPECTED_TARGET_CALL_SEQ].includes(key))
-    || !Array.isArray(value[operationKeys[0]])) {
-    return rejection('edit_run_code expects exactly one edits or regex_edits array')
+  if (operationKeys.length !== 1) {
+    return rejection('edit_run_code expects exactly one of edits or regex_edits; supply one operation and omit the other')
+  }
+  if (!Array.isArray(value[operationKeys[0]])) {
+    return rejection(`edit_run_code ${operationKeys[0]} must be an array`)
   }
   if (Object.hasOwn(value, EXPECTED_TARGET_CALL_SEQ)
     && (!Number.isSafeInteger(value[EXPECTED_TARGET_CALL_SEQ])

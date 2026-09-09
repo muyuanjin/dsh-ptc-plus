@@ -233,6 +233,10 @@ export function collectTrajectoryFacts(events, options = {}) {
   const calls = new Map()
   const results = new Map()
   const assistantTexts = []
+  let reasoningChars = 0
+  let pendingAnswer = ''
+  let pendingAnswerTurn
+  let finalAnswer = ''
   const usage = Object.fromEntries(usageKeys.map(key => [key, 0]))
   const messageUsages = []
   const chunkUsages = []
@@ -252,7 +256,13 @@ export function collectTrajectoryFacts(events, options = {}) {
 
   for (const event of events) {
     if (event?.type === 'assistant/message') {
-      assistantTexts.push(...collectModelText(event.data?.message?.content))
+      const content = Array.isArray(event.data?.message?.content) ? event.data.message.content : []
+      const text = content.filter(block => block.type === 'text').map(block => block.text).join('\n')
+      assistantTexts.push(text)
+      reasoningChars += content.filter(block => block.type === 'reasoning')
+        .reduce((sum, block) => sum + (block.text?.length ?? 0), 0)
+      pendingAnswer = content.some(block => block.type === 'tool-call') ? '' : text
+      pendingAnswerTurn = event.data.turn
       if (event.data?.usage !== undefined) messageUsages.push(event.data.usage)
       for (const key of usageKeys) {
         const value = event.data?.usage?.[key]
@@ -300,12 +310,18 @@ export function collectTrajectoryFacts(events, options = {}) {
       standaloneUsages.push({ seq: event.seq, usage: event.data.chunk.usage, claimed: false })
       chunkUsages.push(event.data.chunk.usage)
     }
-    if (event?.type === 'turn/start' && Number.isFinite(event.time)) turnStartedAt ??= event.time
+    if (event?.type === 'turn/start') {
+      if (Number.isFinite(event.time)) turnStartedAt ??= event.time
+      pendingAnswer = ''
+      finalAnswer = ''
+    }
     if (event?.type === 'turn/end') {
       finalTurn = event
+      finalAnswer = event.data?.reason?.kind === 'completed' && pendingAnswerTurn === event.data.turn ? pendingAnswer : ''
       if (Number.isFinite(event.time)) turnEndedAt = event.time
     }
     if (event?.type === 'tool/call') {
+      pendingAnswer = ''
       const data = event.data ?? {}
       if (typeof data.callId !== 'string') {
         failures.push(`tool call at seq ${event.seq} has no call id`)
@@ -407,6 +423,8 @@ export function collectTrajectoryFacts(events, options = {}) {
     calls,
     results,
     assistantTexts,
+    finalAnswer,
+    reasoningChars,
     usage,
     messageUsages,
     chunkUsages,

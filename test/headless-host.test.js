@@ -16,6 +16,8 @@ import {
   parseConfigDump,
   preflightHeadlessHost,
   requiredModelRuntime,
+  resolveHeadlessProvider,
+  redactHeadlessConfig,
   runProcess,
   snapshotSessionLogs,
   validateHeadlessRuntimeConfig,
@@ -77,6 +79,107 @@ test('requires an explicit configured model route before host evaluation', () =>
   assert.throws(() => requiredModelRuntime({
     TEST_PROVIDER: 'provider', TEST_MODEL: 'model', TEST_API_KEY_ENV: 'TEST_SECRET',
   }, 'TEST'), /TEST_SECRET must contain/)
+})
+
+test('materializes only the selected provider before neutralizing settings', async () => {
+  const rows = [...configRows(), { id: 'settings', name: '@deepseek-ai/dsh-settings-file' }, {
+    id: 'llm-pi-ai', config: { providers: {
+      provider: { apiKeyEnv: 'OLD_KEY', baseURL: 'https://example.invalid',
+        headers: { 'x-base': 'base', 'x-route': 'old' }, compat: { retained: true, changed: false }, models: [{ id: 'old' }] },
+      unrelated: { headers: { authorization: 'unrelated-private-value' } },
+    } },
+  }]
+  const options = { Config: value => value, readFile: async () => `llm-pi-ai:
+  providers:
+    provider:
+      headers: { x-route: selected-route }
+      compat: { changed: true }
+      models: [{ id: model }]
+` }
+  const selected = await resolveHeadlessProvider(rows, { ...runtime }, '/unused', options)
+  assert.deepEqual(selected.providerConfig, {
+    apiKeyEnv: 'API_KEY', baseURL: 'https://example.invalid',
+    headers: { 'x-base': 'base', 'x-route': 'selected-route' }, compat: { retained: true, changed: true }, models: [{ id: 'model' }],
+  })
+  assert.equal(JSON.stringify(selected).includes('selected-route'), false)
+  const patch = headlessConfigPatch(rows, selected)
+  const projected = parseConfigDump(patch)
+  assert.deepEqual(projected.find(row => row.id === 'llm-pi-ai').config.providers, { provider: selected.providerConfig })
+  assert.equal(validateHeadlessRuntimeConfig(projected, 'selected', selected), true)
+  const baseline = parseConfigDump(headlessConfigPatch(rows, selected, { disablePtcPlus: true }))
+  assert.deepEqual(baseline.find(row => row.id === 'llm-pi-ai'), projected.find(row => row.id === 'llm-pi-ai'))
+  assert.equal(redactHeadlessConfig(patch).includes('selected-route'), false)
+  delete projected.find(row => row.id === 'llm-pi-ai').config.providers.provider.headers
+  assert.throws(() => validateHeadlessRuntimeConfig(projected, 'changed', selected), /changed the resolved provider configuration/)
+  for (const document of ['[', 'llm-pi-ai: { providers: { provider: null } }',
+    'llm-pi-ai: { providers: { provider: { models: [{ id: other }] } } }',
+    'llm-pi-ai: { providers: { provider: { headers: { "bad name": value } } } }']) {
+    await assert.rejects(resolveHeadlessProvider(rows, { ...runtime }, '/unused', { ...options, readFile: async () => document }), /PTC-EVAL-CONFIG/)
+  }
+  const absent = { ...options, readFile: async () => { throw Object.assign(new Error(), { code: 'ENOENT' }) } }
+  await assert.rejects(resolveHeadlessProvider(rows, { ...runtime, provider: 'missing' }, '/unused', absent), /selected provider must be configured/)
+  await assert.rejects(resolveHeadlessProvider(rows.map(row => row.id === 'settings' ? { ...row, name: 'custom' } : row),
+    { ...runtime }, '/unused', options), /default DSH settings-file/)
+})
+
+test('requires provider-specific routing headers before paid model work', async () => {
+  const rows = [...configRows(), { id: 'settings', name: '@deepseek-ai/dsh-settings-file' }, {
+    id: 'llm-pi-ai', config: { providers: {
+      'opencode-go': { api: 'openai-completions', baseURL: 'https://example.invalid', models: [{ id: 'model' }] },
+    } },
+  }]
+  const options = { Config: value => value, readFile: async () => '' }
+  await assert.rejects(resolveHeadlessProvider(rows, { ...runtime, provider: 'opencode-go' }, '/unused', options), /x-opencode-session/)
+  rows.find(row => row.id === 'llm-pi-ai').config.providers['opencode-go'].headers = { 'X-Opencode-Session': 'session' }
+  const resolved = await resolveHeadlessProvider(rows, { ...runtime, provider: 'opencode-go' }, '/unused', options)
+  assert.equal(resolved.providerConfig.headers['X-Opencode-Session'], 'session')
+})
+
+test('provider validation errors never retain private values in diagnostics or causes', async () => {
+  const secret = 'synthetic-private-header-value'
+  const rows = headers => [{ id: 'llm-pi-ai', config: { providers: { provider: { headers } } } }]
+  for (const headers of [
+    { Authorization: `Bearer ${secret}\ninvalid` },
+    { Cookie: `${secret}\rbroken` },
+    { 'x-session': `${secret}\u0100` },
+    { [`${secret} invalid-name`]: 'value' },
+  ]) {
+    await assert.rejects(resolveHeadlessProvider(rows(headers), { ...runtime }, '/unused', { Config: value => value }), error => {
+      assert.match(error.message, /PTC-EVAL-CONFIG: selected provider headers/)
+      assert.equal(error.cause, undefined)
+      assert.equal(formatHeadlessError(error).includes(secret), false)
+      return true
+    })
+  }
+  await assert.rejects(resolveHeadlessProvider(rows({ Authorization: secret }), { ...runtime }, '/unused', {
+    Config() { throw new Error(`invalid field: ${secret}`, { cause: new Error(secret) }) },
+  }), error => {
+    assert.match(error.message, /PTC-EVAL-CONFIG: selected provider configuration.*schema/)
+    assert.equal(error.cause, undefined)
+    assert.equal(formatHeadlessError(error).includes(secret), false)
+    return true
+  })
+})
+
+test('empty and absent model lists preserve the host catalog and model overrides', async () => {
+  for (const models of [undefined, [], [{ id: runtime.model }], [{ id: 'other' }]]) {
+    const provider = {
+      ...(models === undefined ? {} : { models }),
+      ...(models?.length ? {} : { modelOverrides: { [runtime.model]: { maxTokens: 512 } } }),
+    }
+    const rows = [...configRows(), { id: 'llm-pi-ai', config: { providers: { provider } } }]
+    const resolveProvider = () => resolveHeadlessProvider(rows, { ...runtime }, '/unused', { Config: value => value })
+    if (models?.[0]?.id === 'other') {
+      await assert.rejects(resolveProvider(), /selected model absent/)
+      continue
+    }
+    const selected = await resolveProvider()
+    assert.deepEqual(selected.providerConfig, { ...provider, apiKeyEnv: runtime.apiKeyEnv })
+    for (const disablePtcPlus of [false, true]) {
+      const patch = parseConfigDump(headlessConfigPatch(rows, selected, { disablePtcPlus }))
+      assert.deepEqual(patch.find(row => row.id === 'llm-pi-ai').config.providers.provider, selected.providerConfig)
+    }
+  }
 })
 
 test('resolves the Windows host before callers create artifacts', async () => {

@@ -54,6 +54,11 @@ export function hostToolRuntime(dshEntry) {
   return dshEntry === undefined ? ToolRuntime : hostRequire(dshEntry)('@deepseek-ai/dsh-tools').ToolRuntime
 }
 
+/** The installed adapter owns provider configuration fields and defaults. */
+export function hostProviderConfig(dshEntry) {
+  return hostRequire(dshEntry)('@deepseek-ai/dsh-llm-pi-ai').Config
+}
+
 /** PTC presentation was previously named code; the host schema owns the spelling. */
 export function ptcToolsMode(runtime = ToolRuntime) {
   for (const mode of ['ptc', 'code']) {

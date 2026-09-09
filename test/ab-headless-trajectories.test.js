@@ -11,6 +11,7 @@ import {
   armScratchPaths,
   copyWorkspace,
   createBlindPacket,
+  computeMetrics,
   hashFixtureTree,
   initialInjections,
   materializeFixture,
@@ -58,6 +59,22 @@ test('redacts workspace identity from every blind packet text field', () => {
   assert.equal(serialized.includes('scratch-root'), false)
   assert.equal(serialized.includes('opaque-123'), false)
   assert.equal(serialized.match(/<WORKSPACE>/g)?.length, 4)
+})
+
+test('keeps reasoning outside answer metrics and blind packets', () => {
+  const facts = collectTrajectoryFacts([
+    { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: 'Earlier prose' }] } } },
+    { type: 'assistant/message', data: { message: { content: [{ type: 'reasoning', text: 'Synthetic private text.' }] } } },
+    { type: 'turn/end', data: { reason: { kind: 'completed' } } },
+  ])
+  const metrics = computeMetrics(facts, { modelRequestAudit: { modelRequests: 2 }, contextAudit: { totalMessageChars: 0 } })
+  assert.equal(metrics.finalAnswer, '')
+  assert.equal(metrics.machineMetrics.assistantChars, 'Earlier prose\n'.length)
+  const packet = createBlindPacket('answer', 'task', {
+    session: { cwd: 'X:\\workspace' }, timeline: [], finalAnswer: metrics.finalAnswer,
+  })
+  assert.equal(packet.finalAnswer, '')
+  assert.equal(JSON.stringify(packet).includes('Synthetic private text'), false)
 })
 
 test('freezes only repository source and explicit execution prerequisites', async (t) => {

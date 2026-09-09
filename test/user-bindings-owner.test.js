@@ -1176,7 +1176,7 @@ test('keeps Agent authoring request-scoped across edits, conflicts, and lifecycl
   await new Promise(resolve => setImmediate(resolve))
   assert.match(steered.at(-1).content[0].text, /Original helper/)
   assert.match(steered.at(-1).content[0].text, /modelContext\.instructions/)
-  assert.match(steered.at(-1).content[0].text, /preserve existing prompt preferences/)
+  assert.match(steered.at(-1).content[0].text, /preserve the entry ID and existing prompt preferences/)
   await assert.rejects(draftTool.execute({ entry: {
     id: 'renamed', name: original.name, scope: original.scope,
     purpose: original.purpose, source: original.source,

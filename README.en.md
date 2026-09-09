@@ -29,41 +29,51 @@
 
 ---
 
-**PTC Plus gives DSH PTC mode a session-bound persistent TypeScript REPL.** Every `run_code` continues in the same session. Variables, imports, and results from one `run_code` are still available in the next one.
+**PTC Plus gives DSH PTC mode a persistent TypeScript REPL.** Variables, imports, and computed results from one `run_code` remain available to the next.
 
 > [!NOTE]
-> Community plugin, no affiliation with or endorsement from DeepSeek or DSH.
-
-The plugin installs and runs through published public extension interfaces in official DSH distributions. It does not modify DSH source or installed packages or require a custom Host. See the [installation guide](docs/installation.md) for integration requirements.
+> Community plugin, with no affiliation with or endorsement from DeepSeek or DSH.
 
 > [!IMPORTANT]
-> Built for `danger-full-access`: direct Node.js and OS access with no extra sandbox. Use it only where that permission scope is acceptable.
+> Built for `danger-full-access`: code can access Node.js and the operating system directly. The plugin adds no sandbox. Use it where that permission scope is acceptable.
 
-![PTC Plus settings card](assets/ptc-plus-settings-en.png)
+## Install
 
-*The settings card exposes live configuration and the `enabled` kill switch.*
+Requires Node.js `^22.19.0 || >=24.0.0` and official DSH with TypeScript PTC mode. Install into your profile, restart DSH, and select PTC mode:
+
+```sh
+dsh plugin --profile <profile> add dsh-ptc-plus
+```
+
+No DSH modifications or custom build are required. See the [installation guide](docs/installation.md) for other installation methods, upgrades, and troubleshooting.
 
 ## What default PTC mode gets wrong
 
-DSH PTC mode starts every `run_code` in a fresh environment. The model computes something, then has to send the same setup code again. One bad line means the whole thing is resent. This plugin attaches `run_code` to a session-backed environment, so later calls reuse what was already there.
+Default PTC mode starts each execution in a fresh environment, so the model must resend setup code. PTC Plus keeps the session's computation state available for subsequent calls.
 
-| Situation | Default PTC mode | With PTC Plus |
+| Scenario | Default PTC mode | With PTC Plus |
 | --- | --- | --- |
-| State | starts from zero, setup resent ❌ | previous `run_code` results stay ✅ |
-| Fixing | wrong result resends the code ❌ | one diff ✅ |
-| Modules | `import` / `export` cannot be written ❌ | written normally, AST handles it ✅ |
-| Values | JSON changes or loses special values ❌ | those values stay intact ✅ |
-| Restart | everything is lost ❌ | recoverable parts come back ✅ |
-| Output and errors | printing floods, errors point elsewhere ❌ | output trimmed, errors map to your line ✅ |
-| Tools | list invisible, miscalls fail ❌ | can inspect; known miscalls become `run_code` ✅ |
-| Paths | relative paths can drift ❌ | session remembers the project directory ✅ |
-| Agent tools | tools needing the agent are rejected ❌ | context restored, goal works ✅ |
+| Continue a calculation | Each call starts fresh and needs the setup code again | Reuse existing variables, functions, imports, and results directly |
+| Fix one mistake | Resend the complete corrected code | Send only the changes with `edit_run_code`, then execute the complete corrected cell |
+| Use module syntax | Static `import` and `export` are invalid inside the function body | Write them directly in cells; the plugin adapts them |
+| Pass special values | JSON cannot fully represent `undefined`, BigInt, cycles, and similar values | Preserve supported special values and reference relationships for further computation and recovery |
+| Find an available tool | Look through the tool interfaces supplied to the model | List and search tools from code, then inspect their parameters as needed |
+| Omit a call summary | Missing `run_code.description` fails validation | Supply a display summary automatically so valid code can proceed |
+| Recover a top-level tool miscall | Undeclared top-level calls are rejected in PTC mode | Convert a miscall to `run_code` when current tool definitions uniquely identify its target and validate the arguments |
+| Access project files | Relative Node paths depend on the host process directory | Resolve file paths, modules, and the default child-process directory from the recorded session project |
+| Locate a code error | Return the native error and stack | Map errors to cell source positions; suggest an edit when a single missing closing delimiter has one verified correction |
+| Inspect computation state | No reusable session variables remain after execution | Inspect retained variables, definitions, and bounded value previews in the REPL tab |
+| Author and reuse helpers | Save the code yourself and load it again in later calls | Author drafts with `/binding`, review them above the composer, and save; enabled bindings work across sessions and supply their interfaces to the model |
+| Try a helper manually | No dedicated code workbench for global bindings | Run unsaved source, test it across successive inputs, and inspect results in a workbench with temporary state separate from the Agent session |
+| Continue after a restart | No computation state spans calls for recovery | Restore verifiable state from the session record and report what could not be recovered |
+
+Global bindings must be enabled in settings. See [Settings](#settings) and [Scope](#scope) below for optional behavior and recovery limits.
 
 ## Three scenes that matter most
 
 ### State carries over
 
-First `run_code`:
+The model first executes:
 
 ```ts
 import { readFile } from 'node:fs/promises'
@@ -72,152 +82,74 @@ const deps = Object.keys(manifest.dependencies ?? {})
 return deps.length
 ```
 
-The next one keeps going:
+The next call continues directly:
 
 ```ts
 return deps.map(dep => dep + '@' + manifest.dependencies[dep])
 ```
 
-`deps` and `manifest` are still there. The setup code is sent only once.
+`deps` and `manifest` remain in the current session. No repeated setup is needed.
 
 ### Fix without resending
 
-By default, a wrong result or a failure sends the whole code block again.
-
-With PTC Plus, it sends one line:
+The model can submit just the replacement:
 
 ```ts
 edit_run_code({ edits: [{ old_string: 'deps.length', new_string: 'deps' }] })
 ```
 
-The model submits only delta arguments. The plugin materializes and executes the complete cell in the Host, retaining its full source in private recovery metadata without sending it back to the model in the tool result body. Exact replacements and regular expressions both have limits, so a bad pattern cannot hang.
+Editing reruns the entire cell. Code that has written files or called external services still requires a safe retry. Syntax errors identify the location; an unambiguous missing closing delimiter can also receive a correction suggestion.
 
-When a rejected cell has exactly one validated missing closing token at the end, its diagnostic includes the complete `edit_run_code(...)` call without requiring a separate recovery context. Validation proves syntax and preflight acceptance; the correction still needs to match the task's intent, and edit executes the complete cell. The generated call carries an `expected_target_call_seq` precondition, so it is rejected without execution if another cell becomes the edit target first. PTC Plus never applies the suggestion automatically; ambiguous repairs or repairs without a persistent target identity still require corrected source.
+![Rejected run_code followed by an edit_run_code correction](assets/ptc-plus-repair-en.png)
 
-### Module syntax
+### Have the Agent author a reusable helper
 
-DSH PTC mode executes each `run_code` as an async function body, where static `import` and `export` declarations are invalid. PTC Plus adapts those forms before execution with AST analysis.
+Enable **Global User Bindings** in settings, then enter:
 
-The model writes normally:
-
-```ts
-import { readFile } from 'node:fs/promises'
+```text
+/binding new Create textTools to trim outer whitespace while preserving interior spaces
+/binding edit <id> Add line-by-line trimming
 ```
 
-Imports resolve from your project, and named/default imports stay live and read-only. After module syntax adaptation, the cell still executes as an async function body, supports top-level `await`, and exposes results through explicit `return` or printed values.
+The Agent can test and revise the helper incrementally with in-memory REPL examples before submitting a draft. Authoring tests must not modify external files or services. The draft opens above the composer, where you can inspect its source and model prompt, then choose **Save as disabled**, **Save and enable**, or **Discard draft**. Testing and submission do not save a global binding.
 
-## One measured A/B
+The panel can be collapsed or closed; the sparkle button's badge reopens it. A successful save or discard closes the panel automatically. The original request retains its source and outcome in history.
 
-One identity-blind paired run used `opencode-go/deepseek-v4-flash`. Both arms used the same versioned fixture, task prompts, permissions, and two replicates per task, so 18 sessions per arm.
-
-| Across all 9 tasks | PTC Plus | DSH PTC mode (PTC Plus disabled) | Observed change |
-| --- | ---: | ---: | ---: |
-| Model requests | 66 | 88 | 25.0% fewer |
-| Tool calls | 50 | 79 | 36.7% fewer |
-| Token traffic | 729,642 | 942,901 | 22.6% fewer |
-| Identity-blind rubric score | 138 / 162 | 118 / 162 | +12.3 percentage points |
-
-The module-syntax task separated the two arms most clearly. PTC Plus finished both replicates with one `run_code` each. DSH PTC mode without PTC Plus satisfied neither static-import requirement and used eight tool calls in total.
-
-This is one stochastic paired observation, not a performance guarantee. Machine budgets were exceeded in 2 of the 18 PTC Plus sessions and 5 of the 18 sessions without PTC Plus, so the matrix as a whole did not pass machine acceptance. Token traffic includes input, cache-read, cache-write, and output tokens. The fixture, pairing rules, metrics, and blind-review protocol are documented in [Evaluation](docs/evaluation.md).
-
-![Rejected run_code and the follow-up edit_run_code repair](assets/ptc-plus-repair-en.png)
-
-*A real session: the `edit_run_code` call carries only the repair delta, which the plugin uses to execute the complete cell.*
+Enabled binding interfaces are supplied to the model in new sessions and updated at the next permitted request in an existing session. Each binding can include a separate usage prompt or omit its interface. Changing only the prompt preserves the helper's runtime state. See the [global binding guide](docs/user-bindings.en.md) for details.
 
 ## Settings
 
-Open **Settings → Plugin configuration** to use the card shown above. The card follows the DSH UI language: it renders in English when the harness is set to English, and in Chinese when set to Chinese. The `enabled` switch is live: turning it off stops the runtime, keeps the card and that switch, and withdraws earlier PTC state declarations at the next Host-permitted request. Turning it on restores the session runtime and `run_code`/`edit_run_code`.
+Open **Settings → Plugin configuration → PTC Plus**. The main switch controls the plugin; other settings are grouped by purpose:
 
-The plugin switch appears first, followed by settings grouped by purpose: Tool call tolerance, REPL syntax, State and recovery, Tool extensions, Interface display, and Resource limits. Execution without a summary and top-level tool call repair belong to Tool call tolerance; redeclarations and module syntax belong to REPL syntax. Recovery tips, their interval, and their threshold appear together under State and recovery. Global bindings and official Cordis tools belong to Tool extensions, with the binding management action directly below the global bindings switch.
+- **Tool call tolerance**: accept `run_code` without a summary and repair uniquely identifiable top-level native-tool miscalls.
+- **REPL syntax**: control redeclarations, module syntax, and destructuring support.
+- **State and recovery**: control restart recovery and contextual error tips.
+- **Tool extensions**: enable global bindings or official Cordis tools for advanced use.
+- **Interface display**: control enhanced tool cards, the REPL tab, and the binding authoring shortcut.
+- **Resource limits**: adjust execution time, memory, and output limits.
 
-“Use enhanced PTC Plus tool cards” is on by default and provides expandable source, results, execution state, and feature markers. When disabled, `run_code` and `edit_run_code` use DSH's native tool cards. This setting affects presentation only.
+Global bindings and Cordis tools default to off. Settings generally apply immediately; a worker's memory limit cannot change while it is active. See the [configuration reference](docs/runtime-reference.md#configuration) for fields, defaults, and limits.
 
-“Allow `run_code` execution without a summary” is on by default. Code still executes when the model omits the outer `description`; with enhanced tool cards enabled, the UI shows a fallback summary. When this setting is disabled, DSH validates the field normally. This setting does not change model requests or original call arguments.
+![PTC Plus settings card](assets/ptc-plus-settings-en.png)
 
-“Allow top-level function/class redeclarations” is independent from the variable-redeclaration switch and defaults to on. A later cell can use an ordinary named `function` or `class` declaration to replace an existing writable binding. Replacement takes effect at the declaration position and does not emulate function hoisting. Imports, immutable `const` bindings, reserved names, and bindings with unknown provenance are still rejected before execution. Disabling the setting rejects top-level function and class redeclarations before execution. Live changes affect subsequently submitted cells; cold recovery always uses the policy recorded for each cell.
+The **REPL** tab lets you search session bindings, inspect definitions, and manage global bindings. The global binding workbench's code console can run unsaved source with independent temporary state. File and network operations performed there still have real effects.
 
-“Global User Bindings” is off by default. When enabled, the Settings card's “Manage global bindings” button opens a large in-app modal sharing the complete workbench with the REPL tab's global bindings section. Management works without a current PTC session. The workbench can create, import, validate, save, enable, disable, remove and execute TypeScript helpers with named exports. The interface declaration appears first; implementation source is collapsed and read-only with syntax highlighting. Edit enables changes to source and entry configuration. Entries are written atomically to `$DSH_HOME/ptc-plus/bindings.json`, and a changed revision rejects an overwrite. The exports field can explicitly limit exposed symbols; leaving it blank derives them again from the current source. `namespace` scope injects an object under the entry name; `top-level` scope injects selected exports directly. Activation conflicts are rejected before a write.
+![REPL workspace with session inspection and global binding management](assets/ptc-plus-repl-workspace-en.png)
 
-In read-only mode, Reload synchronizes the selected source, declaration and save revision; a deleted entry clears the editor. During editing, Reload retains unsaved source and fields while updating the save revision and the baseline restored by Cancel. Review the draft and click Save again to retry; reload never submits it automatically. A catalog change during the read requires another reload. Namespace and selected export names must be exact valid identifiers, including supported Unicode names, without added whitespace, comments or escaped spellings.
-
-The Code console runs the current entry's unsaved draft: enter `readText("./example.txt")` to inspect its result, or use declarations and top-level `await`. Later commands can reuse temporary variables. Ordinary errors preserve prior changes; stop, reset, entry switching, saving changed source or leaving the workbench releases the environment. The next execution after a source change also starts fresh. The environment is created on first execution and released after ten minutes without execution; displayed history remains and is never replayed automatically. Clear history and Reset environment are separate actions. The console does not access Agent session variables or write to its journal; code still runs file, network and other Node/OS operations with DSH process permissions.
-
-“Show REPL tab” and “Show binding authoring button” default to on and control the session tab and composer shortcut separately. Hiding the tab leaves Settings management available; hiding the authoring button leaves `/binding` commands available. The existing Global User Bindings switch controls the whole capability.
-
-Each entry's Model context section contains Include API declaration in model context and Prompt for the model. Both can be edited directly, then saved or cancelled without first editing source. The interface always comes from the source, and its checkbox defaults to on. The prompt can describe when to use the tool, constraints or examples; leave it empty to omit it. These settings are independent: unchecking the declaration still supplies a nonempty prompt. Uncheck it and clear the prompt to omit both without disabling execution. Enabled entries are visible from the first turn of a new session. Saving and enabling a `/binding` draft, enabling an entry mid-session or changing its prompt also updates the next request, without requiring a new session or a preliminary tool execution. `/binding` asks the Agent to write the prompt and choose the declaration setting alongside the source; the draft card preserves both for review.
-
-Prompts and selected interfaces arrive as an appended global binding API catalog, updated independently of transient recovery guidance. Errors and recovery do not resend unchanged interfaces. Saving, toggling, removing entries or editing prompts updates or withdraws the catalog on the next Host-permitted request without rewriting the system prompt or message history. DSH runtime-context suppression defers new delivery; a retained catalog still describes its recorded configuration. Delivery resumes with the current configuration. The catalog documents APIs, not successful initialization or current variable values.
-
-Enabled entries attempt activation as ordinary writable REPL bindings in the next `run_code`. First-turn declarations describe configured APIs and do not prove successful initialization. Configured documentation is the single source of binding prompts and interfaces. Successful initialization does not append an activation announcement or repeat the interface; unchanged documentation is not reinjected while it remains model-visible. Execution results and diagnostics describe actual availability. A request-owned program namespace or error class takes precedence over a same-name global entry; that entry fails activation for the request with a diagnostic but cannot replace the Host value or block independent code. If a program namespace needed by a binding module has the same name as an existing worker global, the cell fails explicitly without replacing the Node intrinsic. A failed initializer that issued a program call makes the cell volatile, so cold recovery cannot treat a call record without that initializer's source as replayable history. A same-name assignment or redeclaration shadows the default for the current session only. Cold recovery uses the exact snapshot recorded in result metadata instead of guessing from current disk content. Relative imports in entry source resolve from the binding-storage directory during both candidate runs and activation; an exported closure saved in an ordinary session binding retains that resolution base and the program-namespace bridge for the current worker lifetime.
-
-Examples such as `{{name}}` in prompts and interfaces reach the model literally. Changing only the prompt, declaration checkbox or purpose preserves the active module's state and does not repeat initialization. Changing source, scope, namespace call name or selected exports reinitializes the module at the next execution. Reconstructable history uses each cell's recorded reuse policy.
-
-Global binding snapshots record the TypeScript transform generation. Older nonempty snapshots without that identity cannot guarantee unchanged recovered values after an upgrade. Recovery returns to the nearest earlier verified state, skips the affected cell and its dependent suffix, and reports the contraction once; it continues from an empty REPL when no state is provable. Historical tool calls are not redispatched, saved binding source and configuration remain on disk, and the current valid cell still executes with current configuration. Older snapshots with no activated global bindings are unaffected by this restriction.
-
-When enabled, a sparkle action appears in the composer toolbar before the first turn whenever the exact session command directory provides `/binding`. It prefills `/binding new ` without replacing an existing draft. You can also type `/binding new <requirement>` or `/binding edit <id> <requirement>` directly; DSH provides command matching and the argument hint. The command completes and clears the composer as soon as Agent authoring starts. The historical command entry preserves the requirement and status; once a candidate is accepted, the complete draft moves to one panel above the current composer. Lifecycle labels follow the interface language. The Agent receives field definitions, a complete example, and the dependency resolution base, then hands off one disabled memory draft through the stable `code.submitBindingDraft({requestId, entry})` API inside `run_code`. Each request accepts one valid submission; ordinary REPL declarations do not create global drafts. Starting and ending authoring preserve the system and tool declarations under unchanged configuration.
-
-The panel above the current composer opens expanded and offers Save as disabled, Save and enable, and Discard draft as explicit user actions. The panel floats above the input area without changing transcript height, with internal scrolling for long content. Click anywhere on its title button, or use Enter/Space, to collapse or expand it; the chevron follows that state. Pending drafts add a count badge to the existing sparkle action. Hover or click to open its menu, then select the draft to reopen the panel; keyboard access is also supported. The same menu includes Write a new binding, without a separate draft button. Each session currently retains one current draft. Hiding the authoring shortcut still leaves existing drafts accessible. Closing the panel never saves, discards, or cancels the draft. A confirmed save or discard automatically closes the panel; failures or unconfirmed results preserve its display state. The original history request retains the exact accepted source and the receipt can be reconstructed from the log; later changes to the same ID do not replace that history. Save and enable atomically persists an enabled entry, while the runtime separately proves session activation. The model receives the persistence fact and current configured documentation on the next permitted request; execution results report initialization failures. `repl.state` manages named checkpoints, not a binding inventory. Catalog conflicts refresh authoritative state and retain valid drafts for user review and retry.
-
-The PTC Plus header popover has Session and Global tabs. Session shows reusable REPL bindings; Global shows stored enabled/disabled state, inspects source, and prefills `/binding edit`. Enabled in the catalog does not mean activated in this session. Complete management is available in the REPL tab and the Settings management modal; Agent-assisted authoring still requires an available session. An opaque locator in the current session's private projection controls draft UI operations; saving, discarding, or ending the owning Agent, session, feature, or owner revokes writable access. The candidate worker isolates session state, but code retains DSH process authority and may produce irreversible Node/OS effects.
-
-While the plugin is enabled and the current session uses the `ptc` or compatible `code` preset, a top-level **REPL** tab appears alongside Conversation and Trajectory. Switching to an ineligible session or disabling the plugin removes it. “Session bindings” shows names, definition sources, bounded value previews, observation time and truncation. Missing previews say “Not observed yet”; values that cannot be read safely say “Unreadable”. Entries outside display limits are omitted without suppressing other previews. Numbers, booleans, strings, null, undefined and BigInts of up to 128 digits can be previewed; larger BigInts show a size-limit marker. Variables created with top-level `await` are readable when the current Node REPL passes the storage probe. Arrays show their first five own slots and always remain marked incomplete because additional properties are uninspected. Plain objects, TypedArray, Buffer, boxed String and other unsupported values are unreadable; no preview enumerates the complete property set. Previews do not invoke getters, Proxy traps or user formatters, or rerun session code. They are not complete live snapshots, never enter model context or the journal, and do not change recovery or binding retention rules.
-
-REPL shows session bindings and the complete global bindings workbench on one page, without internal tabs. Search session names or filter declaration kinds, then select a binding to inspect its highlighted, copyable definition and value preview. Empty inventories use a compact full-width state. While the observation region is visible, subsequent execution collects optional previews. Opening the page or receiving a new inventory without previews also requests one bounded read from the existing worker. The read waits at most 250 ms, never starts or recovers a worker, never replays history, and does not poll in the background. The workspace hides the ordinary message composer and disables transcript width dragging. Returning to Conversation restores the composer and unsent draft. Host approvals and questions remain available.
-
-![REPL workspace with session binding inspection and global binding management](assets/ptc-plus-repl-workspace-en.png)
-
-*The REPL workspace shows session bindings above global binding management and the TypeScript code console.*
-
-The settled result waits at most 250 ms for a preview. Only observation confirmed as started and still unfinished by the worker may defer the next cell's compute and wall budgets; running budgets are never suspended or reset. Other blocking work, including background user callbacks, retains timeout protection, and waiting remains cancellable. Expiry of the preview's presentation deadline does not clear bindings.
-
-In an enabled `ptc` session, the header shows a green `PTC Plus` indicator. Hover, focus, or click it to inspect the variables, functions, classes, and imports available to the next cell and expand their bounded definition source. The card reads submitted source only; it does not inspect runtime values, trigger getters, or execute code. `run_code` and `edit_run_code` remain expandable in the conversation body. A feature marker appears only when result metadata proves that the feature affected that execution.
+The green **PTC Plus** indicator in the conversation header offers a quick binding list:
 
 ![Reusable REPL bindings](assets/ptc-plus-bindings-en.png)
 
-*A real session: “Reusable REPL bindings” shows the bindings available to the next cell.*
-
-Every setting applies live and keeps existing bindings. A submitted cell uses one configuration for its complete execution; changes made while it runs apply to cells submitted afterward. A failed change rolls back. Node fixes a worker's V8 old-generation limit when the worker starts, so that one setting is rejected while a session worker is active and can be changed after the session is disposed. A failed enable is rolled back and persisted as disabled.
-
-`cordisToolsEnabled` is off by default. Turning it on atomically adds DSH's official Cordis tools, owner guidance, and exactly the `cordis-plugin-development` companion Skill to PTC agents; sibling Skills in the shipped preset are not exposed. Turning it off removes all three. It neither switches presets nor changes the direct `run_code`/`edit_run_code` surface. Cordis runs model-written plugins against the live DSH runtime, so enabling it requires shell-level trust.
-
-When a Cordis call fails while the worker stays live, source bindings assigned before the failure can be reused in a later short cell. A call may throw after an external effect; retry decisions must follow the Cordis owner's execution facts and idempotence contract. A smaller cell does not itself prove retry safety. Timeouts and aggregate output overflow terminate the worker, so bindings from the failed cell cannot be relied on.
-
-Objects and member references captured from `tools` in the REPL expire with the submitting cell's lease. Reusable helpers should resolve the current namespace when called, for example `async function inspectNow() { return tools.cordis_inspect_list({}) }`. The dynamic bridge in Global User Binding modules also checks the invoking cell's lease; an old continuation cannot borrow a new cell's capabilities.
-
-After cold recovery or re-enabling Cordis, recorded Cordis values remain journal data but do not prove that process-local Plugins, Runs, approvals, or earlier Inspect observations are still live. PTC Plus adds a bounded recovery declaration until a new successful Cordis Inspect call validates the current process. Recovery declarations, configured global-binding documentation, and on-demand tips use independently sourced PTC Plus messages that honor Host runtime-context suppression. Their changes do not resend other plugins' unchanged context, and obsolete state declarations are explicitly withdrawn.
-
-See [Client UI](docs/client-ui.md), [ADR 0019](docs/adr/0019-plugin-settings-and-kill-switch.md), [ADR 0020](docs/adr/0020-optional-cordis-tools-in-ptc-mode.md), and [ADR 0023](docs/adr/0023-global-user-bindings.md).
-
 ## Scope
 
-Capability discovery uses the SDK's declared `capabilities.tree/find/inspect`. `find` is deterministic lexical matching: exact `namespace.member` symbols rank first, and short complete tokens such as `read` also work. Multiple tokens must occur contiguously. After an empty match, narrow the query or traverse `tree()` namespace entries and their members, then inspect only relevant symbols in the current view. See [Capability Discovery](docs/runtime-reference.md#capability-discovery).
+DSH continues to own tool permissions, approvals, cancellation, and sandbox policy. PTC Plus cannot recover every state across restarts: external inputs, unverifiable history, and context compaction can reduce the recovered state. Recovery neither repeats nor reverses historical external operations.
 
-PTC Plus provides the session-bound persistent `run_code` layer. DSH and the operating system continue to own native-tool authority, policy, approval, cancellation, sandboxing and process governance.
+Value previews have size and type limits; objects that cannot be read reliably appear as unavailable. An enabled binding can also fail initialization, with failures reported in execution results. See the [runtime reference](docs/runtime-reference.md) for details.
 
-## Install
-
-Requires Node.js `^22.19.0 || >=24.0.0` and DSH with TypeScript PTC mode. Install the published package from npm into the profile you use:
-
-```sh
-dsh plugin --profile <profile> add dsh-ptc-plus
-dsh --profile <profile> --dump-config
-```
-
-Restart that DSH profile after installation. Version-pinned npm, GitHub, local-checkout, and tarball installs are covered in the [installation guide](docs/installation.md).
-
-For Windows development, double-click `scripts\run-dev-dsh.cmd` to launch an isolated DSH installation from the latest `alpha` dist-tag with only this plugin installed. DSH, plugin snapshots, and the pnpm store are cached and old entries are pruned automatically. The launcher de-duplicates Windows `PATH` in the current process only; it creates no drive mappings or junction trees and does not change the system environment. If a genuinely unique PATH remains too long for `cmd.exe`, it stops before npm or DSH runs and asks you to shorten PATH. When no Web port is supplied, the launcher selects a free loopback port so an existing service on 3080 cannot block the test instance. The default cache is `%LOCALAPPDATA%\dsh-ptc-plus-dev`, outside this repository. See the [installation guide](docs/installation.md) for overrides.
-
-The development launcher uses the official npm registry for queries and installs by default, avoiding missing dependencies while mirrors synchronize a new release. Set `DSH_DEV_REGISTRY` to select another registry. The choice applies to npm and DSH's pnpm subprocesses without changing global npm configuration.
-
-Locked old cache files or failed pnpm store pruning produce warnings and startup continues, preserving the selected DSH installation and plugin snapshot. Interpret peer dependency warnings alongside the subsequent Host load: DSH supplies these packages from its active installation, and failed cache cleanup does not mean plugin installation failed.
-
-Compatibility selects the old or new tools mode and Client session interfaces through public capabilities, without DSH version branches. Before upgrading and continuing old sessions, read [Session format upgrades](docs/installation.md#session-format-upgrades): when the Host renumbers events, PTC edit targets and recovery references also need migration. The script preserves the original log and never re-executes historical tool calls.
-
-`danger-full-access` is the primary supported experience. The worker isolates lifecycle, not malicious code.
+Model calls and token usage depend on the task and model. A recorded paired observation and its limitations are in the [evaluation guide](docs/evaluation.md#recorded-paired-observation).
 
 ## Documentation
 
-[Installation](docs/installation.md) · [Runtime reference](docs/runtime-reference.md) · [Architecture](docs/architecture.md) · [Publishing](docs/publishing.md) · [All docs](docs/README.md)
+[Global binding guide](docs/user-bindings.en.md) · [Installation and upgrades](docs/installation.md) · [Runtime reference](docs/runtime-reference.md) · [Development and architecture](docs/architecture.md) · [All documentation](docs/README.md)
 
-MIT licensed. See [LICENSE](LICENSE).
+[MIT License](LICENSE).

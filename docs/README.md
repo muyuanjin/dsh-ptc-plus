@@ -3,6 +3,7 @@
 ## Getting Started
 
 - [Installation](installation.md): npm, Git, source, tarball, development snapshot, and Desktop installation.
+- [Global binding guide](user-bindings.en.md) ([中文](user-bindings.md)): author, review, save, configure, and test reusable helpers.
 - [Runtime Reference](runtime-reference.md): cell behavior, capability discovery, configuration, diagnostics, and limits.
 - [Evaluation](evaluation.md): paired ordinary-task protocol, metrics, configuration, and limitations.
 

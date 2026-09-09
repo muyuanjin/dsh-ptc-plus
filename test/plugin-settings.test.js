@@ -941,9 +941,9 @@ test('adds Cordis failed-cell binding reuse guidance only when Cordis is enabled
   const host = hostContext(settingsContext(scope), [agent])
   apply(host.ctx)
   const guidance = host.sections.find(section => section.name === 'tools:ptc-plus-repl')?.text({})
-  assert.match(guidance, /When using Cordis tools, keep large host or client source in a top-level binding before the Cordis call\./)
-  assert.match(guidance, /bindings assigned before that failure remain live/)
-  assert.match(guidance, /continuation is justified by the owner retry contract and available execution facts/)
+  assert.match(guidance, /Keep large Cordis plugin source in a binding before the tool call/)
+  assert.match(guidance, /can be reused after an error/)
+  assert.match(guidance, /repeat the call only when its retry rules and current results establish that it is safe/)
   for (const cleanup of host.cleanups.reverse()) await cleanup()
 })
 
@@ -953,7 +953,7 @@ test('keeps disabled REPL guidance byte-stable without Cordis recovery text', as
   apply(host.ctx)
   const guidance = host.sections.find(section => section.name === 'tools:ptc-plus-repl')?.text({})
   assert.equal(guidance.endsWith(' '), false)
-  assert.doesNotMatch(guidance, /When using Cordis tools/)
+  assert.doesNotMatch(guidance, /Cordis plugin source|Cordis parse/)
   for (const cleanup of host.cleanups.reverse()) await cleanup()
 })
 

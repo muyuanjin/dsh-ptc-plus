@@ -75,18 +75,18 @@ function replGuidance(
     ? 'Direct Node/OS access remains live but is not replayed after a kernel restart.'
     : 'Durable replay is disabled for this profile. Bindings remain reusable only in the current process; a new kernel starts empty.'
   const cordisRecovery = cordisToolsEnabled
-    ? 'When using Cordis tools, keep large host or client source in a top-level binding before the Cordis call. A Cordis parse or validation error is a runtime failure: bindings assigned before that failure remain live. Reuse that source when continuation is justified by the owner retry contract and available execution facts; a failure alone does not prove that no effect occurred.'
+    ? 'Keep large Cordis plugin source in a binding before the tool call so it can be reused after an error. A Cordis parse or validation failure can follow external effects; repeat the call only when its retry rules and current results establish that it is safe.'
     : ''
   return `\`run_code\` continues one persistent PTC REPL. Ordinary top-level bindings remain available to later cells, so reuse them instead of resending setup code. Choose the smallest cell that answers the request and return only the value the next step needs.
 
-When a result proves pre-execution rejection and supplies a validated correction matching your intent, prefer its direct \`edit_run_code\` call with the supplied target guard. No recovery context is required. Editing executes the complete corrected cell; validation proves syntax/preflight acceptance, not intended behavior. After possible execution, use the operation owner's retry/idempotence contract and available execution facts to choose continuation; inspect relevant live state in a short \`run_code\` cell as needed.
+After an execution error, earlier statements may have taken effect. Inspect relevant values in a short cell and continue from them; repeat external operations only when their retry rules and current results establish that it is safe. \`edit_run_code\` edits and reruns a complete cell.
 
 ## Cell conventions
 Expressions that are neither returned nor printed produce no output. Keep large inspection results in bindings or reduce them to targeted excerpts: \`tools.read\` is bounded inspection, not a lossless whole-file reader. Cells are async function bodies; ${moduleSyntax} Use dynamic import or require explicitly when static module syntax is unsupported. ${variableRedeclaration} ${functionClassRedeclaration} ${splitSyntax}
 
 ## Available capabilities
-Use \`capabilities.tree()\`, \`capabilities.find()\`, and \`capabilities.inspect()\` to discover the current request's live \`tools.*\` members before calling an unfamiliar binding. Prefer direct current-cell work; reserve \`code.run\` for source already held as data.
-REPL-captured program namespaces and members carry the capturing cell's lease and expire when it ends. Retain computation and helpers that resolve the current namespace at invocation, not captured capability aliases. Global User Binding modules use their existing invocation-context bridge; old asynchronous continuations still expire.
+Use \`capabilities.tree()\`, \`capabilities.find()\`, and \`capabilities.inspect()\` for unfamiliar program APIs. Prefer direct current-cell work; reserve \`code.run\` for isolated execution of source held as data.
+Program API references expire when their cell ends. Reusable helpers must read the current namespace when called, for example \`async function readNow(args) { return tools.read(args) }\`, rather than retaining an earlier \`tools\` object or method. Background callbacks from completed cells cannot call program APIs.
 
 Native tool availability, executable names, shells, and path syntax depend on the current DSH profile and execution world; inspect them instead of assuming Windows, WSL, POSIX, or a particular shell. ${recovery}${cordisToolsEnabled ? ` ${cordisRecovery}` : ''}`
 }

@@ -38,9 +38,9 @@ test('publishes the closed edit tool schema', () => {
   assert.equal(exactBranch.properties.edits.maxItems, EDIT_LIMITS.exactEdits)
   assert.equal(regexBranch.properties.regex_edits.maxItems, EDIT_LIMITS.regexEdits)
   assert.match(schema.description, /most recent eligible cell captured at dispatch/)
-  assert.match(schema.description, /successful edit becomes the next eligible cell/)
+  assert.match(schema.description, /successful edit becomes the next target/)
   assert.match(schema.description, /run the complete corrected cell/)
-  assert.match(schema.description, /does not resume at the error location/)
+  assert.match(schema.description, /reruns the entire cell, including prior effects/)
 })
 
 test('validates exact edit sets and applies them atomically', () => {

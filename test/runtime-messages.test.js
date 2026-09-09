@@ -70,6 +70,31 @@ test('binding catalogs use bounded literal text and preserve historical snapshot
   assert.deepEqual(readRuntimeMessage(legacy), { form: 'snapshot', sections: state('legacy') })
 })
 
+test('historical catalog and recovery wrappers retain their exact bounded recognition and delivery state', () => {
+  const catalogPrefix = 'Global binding API catalog (PTC Plus). Only a later global binding API catalog replaces this catalog. Host runtime-context snapshots and PTC recovery snapshots do not withdraw it. This describes configured APIs, not successful initialization or current runtime values.'
+  const statePrefix = 'PTC Plus runtime recovery state. This replaces only earlier PTC state snapshots and PTC sections in historical aggregate snapshots; it does not replace the global binding API catalog, tasks, Skill instructions, tool results, or other producers.'
+  const context = { name: PTC_BINDING_CATALOG, text: 'Use helper. {{name}}\n```ts\ndeclare const helper: number;\n```' }
+  const session = Session.create('historical-wrapper-delivery')
+  const recovery = structuredClone(runtimeStateMessage(state('Inspect the uncertain state.')))
+  recovery.content[0].text = statePrefix + '\n\nInspect the uncertain state.'
+  append(session, recovery)
+  assert.deepEqual(readRuntimeMessage(recovery), { form: 'snapshot', sections: state('Inspect the uncertain state.') })
+  for (const current of [context, undefined]) {
+    const message = structuredClone(runtimeBindingCatalogMessage(current))
+    const body = message.content[0].text.split('\n\n').slice(1).join('\n\n')
+    message.content[0].text = catalogPrefix + '\n\n' + body
+    assert.deepEqual(readRuntimeMessage(message), { form: 'catalog', sections: current === undefined ? [] : [context] })
+    append(session, message)
+    assert.deepEqual(projectRuntimeMessages(viewOf(session), [...state('Inspect the uncertain state.'), ...(current === undefined ? [] : [context])]), [])
+    for (const invalid of ['', 'x'.repeat(65537)]) {
+      assert.equal(readRuntimeMessage({ ...message, content: [{ type: 'text', text: catalogPrefix + '\n\n' + invalid }] }), undefined)
+    }
+  }
+  const malformed = structuredClone(runtimeBindingCatalogMessage(context))
+  malformed.content[0].text = null
+  assert.equal(readRuntimeMessage(malformed), undefined)
+})
+
 test('recovery snapshots never resend or withdraw a retained API catalog', () => {
   const catalog = { name: PTC_BINDING_CATALOG, text: 'declare const helper: { next(): number };' }
   const session = Session.create('catalog-recovery-lifecycle')
@@ -211,7 +236,7 @@ test('historical activation claims are withdrawn once without retaining duplicat
       assert.equal(proposed.length, current.length + 1)
       assert.deepEqual(readRuntimeMessage(proposed[0]).sections, [])
       assert.equal(proposed.map(message => message.content[0].text).join('\n').split('declare const fileTools: {').length - 1, current.length)
-      assert.match(proposed[0].content[0].text, /replaces only earlier PTC state snapshots/)
+      assert.match(proposed[0].content[0].text, /Replaces earlier PTC recovery status/)
       assert.deepEqual(projectRuntimeMessages(viewOf(restored), current, proposed), [])
       proposed.forEach(message => append(restored, message))
       assert.deepEqual(projectRuntimeMessages(viewOf(restored), current), [])
@@ -504,7 +529,7 @@ test('real Host clearance leaves an explicitly scoped catalog valid across uncha
   assert.ok(suppressed.some(message => message.content.some(block => block.text ===
     'Current runtime context: none. Earlier runtime-context snapshots no longer apply.')))
   const retained = suppressed.find(message => readRuntimeMessage(message)?.form === 'catalog')
-  assert.match(retained.content[0].text, /Host runtime-context snapshots and PTC recovery snapshots do not withdraw it/)
+  assert.match(retained.content[0].text, /remains applicable until the next binding catalog/)
   assert.match(retained.content[0].text, /COUNTER_BETA/)
   release()
   await host.wake()

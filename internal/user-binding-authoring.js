@@ -2,11 +2,11 @@ import { deepFreeze } from './record-utils.js'
 
 export const BINDING_SUBMISSION = deepFreeze({
   name: 'submitBindingDraft',
-  description: 'Submit one disabled in-memory Global User Binding candidate for the current /binding request. Requires its requestId and an active cell. This cannot persist, enable, or execute the candidate.',
+  description: 'Submit a Global User Binding draft for user review during /binding. Call inside run_code with the supplied requestId. Validates source and accepts one draft per request; does not save, enable or run it.',
   parameters: {
     type: 'object', additionalProperties: false, required: ['requestId', 'entry'],
     properties: {
-      requestId: { type: 'string', description: 'Exact request identity supplied by /binding; old requests cannot submit to a new one.' },
+      requestId: { type: 'string', description: 'Copy from the active /binding request.' },
       entry: {
         type: 'object', additionalProperties: false,
         required: ['id', 'name', 'scope', 'purpose', 'source'],
@@ -18,10 +18,10 @@ export const BINDING_SUBMISSION = deepFreeze({
           purpose: { type: 'string', description: 'One factual line explaining the API.' },
           modelContext: {
             type: 'object', additionalProperties: false,
-            description: 'Per-entry model context. Author instructions as the prompt supplied to the model whenever this saved binding is enabled, and choose whether to include its source-derived API declaration. Applies from the first turn in new sessions and the next request after saving or enabling during an existing session.',
+            description: 'Model documentation when enabled: includeDeclaration selects the source-derived interface (default true); instructions supplies a separate usage prompt (default empty, at most 4096 characters).',
             properties: {
-              includeDeclaration: { type: 'boolean', description: 'Include the existing source-derived API declaration in model context (default true). Independent of instructions; does not enable or execute the binding.' },
-              instructions: { type: 'string', maxLength: 4096, description: 'Prompt injected for this binding: when to use it, constraints and examples addressed directly to the model. Empty omits this prompt; independent of includeDeclaration.' },
+              includeDeclaration: { type: 'boolean', description: 'Include the source-derived interface (default true), independently of instructions.' },
+              instructions: { type: 'string', maxLength: 4096, description: 'Usage prompt for the model: when to call this API and any constraints absent from its types. Empty omits the prompt.' },
             },
           },
           source: { type: 'string', description: 'Complete TypeScript module with named value exports, explicit useful types, no default exports or re-exports.' },
@@ -37,7 +37,7 @@ export const BINDING_SUBMISSION = deepFreeze({
 })
 
 export const BINDING_AUTHORING_SDK = `
-Global User Binding authoring is available only for an explicit /binding request. Its requestId is a transaction prerequisite, not persistence authority.
+During /binding, submit a draft for user review from run_code using the supplied requestId. Submission does not save, enable or execute it.
 \`\`\`ts
 declare namespace code {
   function submitBindingDraft(args: {
@@ -50,15 +50,19 @@ declare namespace code {
 export function bindingAuthoringInstructions(requestId, cwd) {
   return `Create exactly one Global User Binding candidate for the user's requirement.
 
-Submit from run_code with code.submitBindingDraft({ requestId: ${JSON.stringify(requestId)}, entry }). This request identity expires on acceptance, cancellation, replacement or Agent disposal. A successful receipt means only a disabled memory draft ready for user review. Only the user can save, enable or run it. Ordinary REPL declarations do not create this draft.
+Develop and check the helper in small run_code cells before submission. Use in-memory inputs and assertions for normal cases, edge cases and failures; compare implementations when behavior is uncertain, and correct them from observed results. Temporary REPL variables and functions are allowed. Keep tests free of external side effects: do not write or delete files, change external services, or call effectful tools. For filesystem or network helpers, test pure logic with in-memory substitutes and report the untested integration. Check imported code and initializers before executing them; when their effects are unknown, review them without running them.
+
+Review the final source, selected exports, types and usage prompt against the requirement and test results. Keep test scaffolding out of the submitted module. In the answer, summarize verified behavior and remaining limits briefly.
+
+Submit from run_code with code.submitBindingDraft({ requestId: ${JSON.stringify(requestId)}, entry }). One valid submission completes this request; correct validation errors and retry only rejected submissions. The receipt confirms a disabled draft awaiting the user's save decision. Saving and enabling belong to the user.
 
 Candidate contract:
 ${Object.entries(BINDING_SUBMISSION.parameters.properties.entry.properties).map(([name, field]) => `- ${name}: ${field.description ?? field.enum.join(' | ')}`).join('\n')}
 
-Use namespace scope for a compact reusable API. For name "textHelpers" and exported function "trim", later cells call textHelpers.trim(...); top-level scope exposes the selected exports directly. Do not supply entry.enabled or derived entry.declaration. Write useful argument and return types, generics and API comments in source; the interface is generated from that source, never authored separately. Include modelContext.includeDeclaration (normally true) and modelContext.instructions, the prompt future model requests receive about when and how to use this binding. The declaration checkbox and prompt are independent: false omits the interface, empty instructions omits the prompt. These settings apply after the user saves and enables the entry, including in the current session's next request; acceptance alone does not publish a disabled draft. The user can edit both settings directly. On edit, preserve existing prompt preferences unless the requirement changes them. Source is data for the handoff, not a cell to execute. Relative imports resolve from ${JSON.stringify(cwd)}, the bindings storage directory, during candidate execution and activation; session cwd is not that base. Prefer Node built-ins for self-contained helpers. Investigate a dependency only when the requirement needs it. This contract is complete: routine authoring does not require scanning the host installation, .dsh, bindings.json or unrelated entries. For edit, the complete selected entry is supplied below.
+Use namespace scope for a compact API: name "textHelpers" with export "trim" is called as textHelpers.trim(...). Top-level scope exposes selected exports directly. Supply complete TypeScript module source with useful types and API comments; the interface is generated from it. Do not supply entry.enabled or entry.declaration. Include modelContext.includeDeclaration and modelContext.instructions; leave instructions empty when the interface is sufficient, otherwise add only usage information missing from it. On edit, preserve the entry ID and existing prompt preferences unless the requirement changes them.
 
-Minimal example (adapt names, source and purpose to the requirement):
-await code.submitBindingDraft({ requestId: ${JSON.stringify(requestId)}, entry: { id: "text-helpers", name: "textHelpers", scope: "namespace", purpose: "Trim surrounding whitespace.", source: "export function trim(value: string): string { return value.trim() }", modelContext: { includeDeclaration: true, instructions: "Use textHelpers.trim(value) to remove surrounding whitespace without changing the interior." } } })
+Relative imports in saved modules resolve from ${JSON.stringify(cwd)}, the binding storage directory, rather than the session cwd used by ordinary REPL cells. Prefer Node built-ins when sufficient; inspect dependencies only as needed. The selected entry is supplied for edits. Do not read or modify binding storage or unrelated entries, or scan the host installation to discover this API.
 
-Submit once after validation succeeds; fix a rejected candidate using the concrete error. Do not persist, enable, execute or import the candidate, or read or mutate unrelated stored entries. After acceptance, the user reviews the command card. A later save receipt proves persistence only; the global binding API catalog describes configuration, not successful initialization or current values. Execution results establish what actually initialized and ran. repl.state is a checkpoint function, not a binding inventory, and its names are checkpoint names. For an availability question use the catalog to describe configured APIs, or a side-effect-free observation of the known binding when actual runtime availability matters; do not turn it into filesystem write/delete tests. Effectful tests require task authorization and exclusively created temporary resources; clean only resources owned by that test.`
+Submission example:
+await code.submitBindingDraft({ requestId: ${JSON.stringify(requestId)}, entry: { id: "text-helpers", name: "textHelpers", scope: "namespace", purpose: "Trim surrounding whitespace.", source: "export function trim(value: string): string { return value.trim() }", modelContext: { includeDeclaration: true, instructions: "" } } })`
 }

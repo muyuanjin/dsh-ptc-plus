@@ -57,11 +57,28 @@ Every edit is validated by the canonical editor against the target reconstructed
 
 `expect.guardMismatchEdits` lists the one-based edit ordinals intentionally targeting a different call. Such an edit passes only with the structured `{ edited: false, reason }` result and no journal or derived execution metadata. Other edits still require their execution journal. Deterministic tests execute diagnostic-generated EOF closures and reject stale guards through the existing Host tool pipeline; the default paid cohort stays at five workflows.
 
+## Recorded paired observation
+
+One identity-blinded paired experiment used `opencode-go/deepseek-v4-flash`, the same versioned fixture, task prompts and permissions in both arms, and two repetitions of each of nine tasks: 18 sessions per arm.
+
+| Nine tasks, two repetitions | PTC Plus | DSH PTC mode without PTC Plus | Observed difference |
+| --- | ---: | ---: | ---: |
+| Model requests | 66 | 88 | 25.0% fewer |
+| Tool calls | 50 | 79 | 36.7% fewer |
+| Token traffic | 729,642 | 942,901 | 22.6% lower |
+| Identity-blinded rubric score | 138 / 162 | 118 / 162 | 12.3 percentage points higher |
+
+In the module-syntax task, PTC Plus completed each repetition in one `run_code`. The other arm failed the static-import requirement in both repetitions, using eight tool calls in total. This stochastic observation is not a performance guarantee. Two PTC Plus sessions and five sessions in the other arm exceeded preset machine budgets, so the overall matrix did not pass machine acceptance. Token traffic includes input, cache-read, cache-write and output tokens. These measurements describe that experiment, not acceptance of subsequent plugin changes.
+
 ## Reporting
 
 ### Binding Workflow
 
 `scripts/binding-workflow-scenario.json` owns the constant-helper authoring, user save, and availability scenario. `scripts/binding-files-workflow-scenario.json` separately covers a file helper with write/delete capabilities and a pre-existing directory and sentinel. `test/binding-workflow.test.js` runs both through public CommandRuntime, AgentLoop, ToolRuntime, Session, and prompt assembly with a deterministic adapter. It checks saving, availability observation, preservation of pre-existing content, and rejection of write/delete probes. The constant workflow also checks ordinary history, stable system/tools, and restart. These fixtures prove the Host and audit contracts, not stochastic model behavior or provider cache gains.
+
+The deterministic authoring test additionally keeps one command turn active across several real REPL cells: an in-memory comparison exposes a wrong result, corrected source passes assertions, and that exact source is submitted as a disabled draft without a store write. It checks the generated task's test scope and final-source review guidance alongside stable system text and tool schemas. This proves the execution path is available, not that an unconstrained model chooses it.
+
+For model-backed authoring evaluation, include both new and edit requests, normal and edge inputs, and a helper whose external integration must remain untested. Inspect submitted source, tool calls and results for tests before acceptance, correct use of feedback, unnecessary discovery, external effects and unsupported completion claims. Compare first-call latency, total time, request count and token usage under the same explicit route; a shorter reasoning block or more calls alone is not a quality criterion. Use concise result evidence when reviewing final answers, not reasoning transcripts as correctness proof.
 
 The packed Client can also be checked in a real isolated DSH Web profile without model requests:
 

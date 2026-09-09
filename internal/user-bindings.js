@@ -639,7 +639,7 @@ export function userBindingsConfiguredContext(snapshot) {
   }).join('\n\n')
   return {
     name: 'tools:ptc-plus-user-binding-defaults',
-    text: `Configured Global User Bindings for this request. Use these ordinary REPL values directly inside run_code when relevant. The saved modules initialize before cell execution; this configuration does not prove successful activation. Initialization can fail, and a session-local redeclaration can shadow a default. Follow current execution results and diagnostics. For availability, use a side-effect-free observation of the known name; do not run write/delete tests. repl.state manages named checkpoints, not a binding inventory. These helpers are not native tools and do not change DSH authority. Each binding's prompt is provided by the user; any included interface is derived from its source. This configuration applies to the current request, including bindings saved or enabled during this session.\n\n${content}`,
+    text: `Call these helpers by name inside run_code. Enabled modules initialize before cell execution; initialization can fail, and session-local assignments or redeclarations can override a listed name.\n\n${content}`,
   }
 }
 

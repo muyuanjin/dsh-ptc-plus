@@ -26,6 +26,51 @@ function assertStablePrefix(host) {
   assert.equal(host.events().some(event => event.type === 'request/header' && event.data.reason === 'change'), false)
 }
 
+test('binding authoring develops, compares and checks exact candidate source in memory before submission', { timeout: 20000 }, async t => {
+  const host = await bindingWorkflowHost(t)
+  await host.run('const existingValue = 42; return existingValue')
+  const before = (await host.rpc('list')).value
+  const source = 'export function clean(value: string): string { return value.trim() }'
+  const lastValue = () => decodeValue(host.events().filter(event => event.type === 'tool/result')
+    .at(-1).data.meta.dshPtcPlus.completion.value)
+  await host.begin('new Trim outer whitespace while preserving interior spaces. Test empty and whitespace-only input.', [
+    options => {
+      const task = options.messages.findLast(message => message.source?.form === 'instructions').content[0].text
+      assert.match(task, /small run_code cells before submission/)
+      assert.match(task, /in-memory inputs and assertions/)
+      assert.match(task, /do not write or delete files/)
+      assert.match(task, /effects are unknown, review them without running/)
+      assert.match(task, /final source, selected exports, types and usage prompt/)
+      assert.match(task, /leave instructions empty when the interface is sufficient/)
+      assert.doesNotMatch(task, /Do not persist, enable, execute|Only the user can save, enable or run|chain.of.thought|think step by step|repl\.state|recovery snapshot/)
+      return 'const samples = ["  a  b  ", "", "   "]; const trial = (s: string) => s.replace(/\\s+/g, " ").trim(); return samples.map(trial)'
+    },
+    () => {
+      assert.deepEqual(lastValue(), ['a b', '', ''])
+      return `const draftSource = ${JSON.stringify(source)}; ${source}; return samples.map(clean)`
+    },
+    () => {
+      assert.deepEqual(lastValue(), ['a  b', '', ''])
+      return 'const expected = ["a  b", "", ""]; if (!samples.every((value, i) => clean(value) === expected[i])) throw new Error("trim contract failed"); return { passed: samples.length, preserved: existingValue }'
+    },
+    () => {
+      assert.deepEqual(lastValue(), { passed: 3, preserved: 42 })
+      return `return code.submitBindingDraft({ requestId: ${JSON.stringify(host.requestId())}, entry: { id: "cleaner", name: "cleaner", scope: "namespace", purpose: "Trim outer whitespace.", source: draftSource, modelContext: { includeDeclaration: true, instructions: "" } } })`
+    },
+  ])
+  const accepted = host.events().filter(event => event.type === 'tool/result').at(-1)
+  const capability = accepted.data.meta.dshPtcPlusBindingDraft.capability
+  const draft = (await host.rpc('draft', { capability })).value
+  assert.equal(draft.entry.source, source)
+  assert.equal(draft.entry.enabled, false)
+  assert.deepEqual(draft.entry.modelContext, { includeDeclaration: true, instructions: '' })
+  assert.deepEqual((await host.rpc('list')).value, before)
+  assert.equal(host.events().filter(event => event.type === 'command/run').length, 1)
+  assert.equal(host.events().filter(event => event.type === 'tool/call').length, 5)
+  assert.equal(host.requests.flatMap(request => request.messages).some(message => readRuntimeMessage(message)?.form === 'catalog'), false)
+  assertStablePrefix(host)
+})
+
 test('successful activation does not repeat configured prompts or interfaces in model requests', { timeout: 20000 }, async t => {
   const host = await bindingWorkflowHost(t)
   const configured = {
@@ -75,7 +120,7 @@ test('initializer failure stays in the tool result without an activation announc
   assert.equal(snapshots.length, 1)
   assert.equal(snapshots[0].data.content[0].text.split('declare const brokenTools: {').length - 1, 1)
   for (const request of host.requests) {
-    assert.match(configuredBindingPrompt(request), /does not prove successful activation/)
+    assert.match(configuredBindingPrompt(request), /initialization can fail/)
     assert.doesNotMatch(configuredBindingPrompt(request), /successfully activated/)
   }
   assertStablePrefix(host)

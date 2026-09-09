@@ -112,7 +112,7 @@ test('keeps edit selection model-owned when a partial cell may have caused an ef
   assert.equal(replayed.edited, true)
   assert.equal(dispatches, 2)
   assert.match(definition.description, /complete corrected cell/)
-  assert.match(definition.description, /retry\/idempotence contract and available execution facts/)
+  assert.match(definition.description, /repeating those effects is safe under the called API's retry rules/)
   appendEditResult(session.events, 'effect-edit', effectCallSeq, definition.output.presentationMeta(effectArgs, replayed))
 })
 

@@ -12,8 +12,10 @@ export const PTC_STATE_NAMES = Object.freeze([
 const MAX_STATE_CODE_UNITS = 65536
 const MAX_NOTICE_CODE_UNITS = 8192
 const LEGACY_STATE_PREFIX = 'PTC Plus current state. This replaces only earlier PTC state snapshots and PTC sections in historical aggregate snapshots; it does not replace tasks, Skill instructions, tool results, or other producers.'
-const STATE_PREFIX = 'PTC Plus runtime recovery state. This replaces only earlier PTC state snapshots and PTC sections in historical aggregate snapshots; it does not replace the global binding API catalog, tasks, Skill instructions, tool results, or other producers.'
-const CATALOG_PREFIX = 'Global binding API catalog (PTC Plus). Only a later global binding API catalog replaces this catalog. Host runtime-context snapshots and PTC recovery snapshots do not withdraw it. This describes configured APIs, not successful initialization or current runtime values.'
+const PREVIOUS_STATE_PREFIX = 'PTC Plus runtime recovery state. This replaces only earlier PTC state snapshots and PTC sections in historical aggregate snapshots; it does not replace the global binding API catalog, tasks, Skill instructions, tool results, or other producers.'
+const PREVIOUS_CATALOG_PREFIX = 'Global binding API catalog (PTC Plus). Only a later global binding API catalog replaces this catalog. Host runtime-context snapshots and PTC recovery snapshots do not withdraw it. This describes configured APIs, not successful initialization or current runtime values.'
+const STATE_PREFIX = 'PTC Plus recovery status. Replaces earlier PTC recovery status, including PTC state in runtime-context snapshots. Global binding APIs are unchanged.'
+const CATALOG_PREFIX = 'Global binding API catalog (PTC Plus). Replaces earlier binding catalogs only; remains applicable until the next binding catalog.'
 const EMPTY_CATALOG = 'No global binding API documentation is currently configured. Earlier binding catalogs no longer apply.'
 
 export function recoveryTipIdentity(name) {
@@ -54,12 +56,14 @@ export function readRuntimeMessage(message) {
   const text = message.content[0].text
   if (source.form === 'snapshot') {
     const sections = stateSections(source.sections)
-    if (sections !== undefined && (text === stateText(sections) || text === stateText(sections, LEGACY_STATE_PREFIX))) {
+    if (sections !== undefined && [STATE_PREFIX, PREVIOUS_STATE_PREFIX, LEGACY_STATE_PREFIX]
+      .some(prefix => text === stateText(sections, prefix))) {
       return { form: 'snapshot', sections }
     }
-  } else if (source.form === 'catalog' && typeof text === 'string'
-    && text.startsWith(`${CATALOG_PREFIX}\n\n`)) {
-    const body = text.slice(CATALOG_PREFIX.length + 2)
+  } else if (source.form === 'catalog' && typeof text === 'string') {
+    const prefix = [CATALOG_PREFIX, PREVIOUS_CATALOG_PREFIX].find(prefix => text.startsWith(`${prefix}\n\n`))
+    if (prefix === undefined) return undefined
+    const body = text.slice(prefix.length + 2)
     if (body.length > 0 && body.length <= MAX_STATE_CODE_UNITS) {
       return { form: 'catalog', sections: stateSections(body === EMPTY_CATALOG ? [] : [{ name: PTC_BINDING_CATALOG, text: body }]) }
     }

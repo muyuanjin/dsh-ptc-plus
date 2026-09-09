@@ -14,7 +14,7 @@ import {
 import { userBindingsConfiguredContext } from './user-bindings.js'
 import { BINDING_AUTHORING_SDK } from './user-binding-authoring.js'
 
-const RUN_CODE_TOOL_DESCRIPTION = 'Evaluate the next TypeScript cell in this session-bound persistent REPL. Earlier top-level computation bindings remain available. REPL-captured program capability references expire with their cell; retained helpers should resolve current namespaces at invocation. Use `code` for the async-function body and `description` for its short UI summary. Successful image-bearing subtool results are attached after the cell.'
+const RUN_CODE_TOOL_DESCRIPTION = 'Evaluate the next TypeScript cell in this session-bound persistent REPL, reusing earlier top-level bindings. Use `code` for the async-function body and `description` for its short UI summary. Successful image-bearing subtool results are attached after the cell.'
 const RUN_CODE_CODE_DESCRIPTION = 'Code for the next REPL cell, parsed as the body of an async TypeScript function.'
 const RUN_CODE_DESCRIPTION_DESCRIPTION = 'Short active-voice summary of what this cell does, 5-10 words (shown in the UI).'
 const CODE_TRANSPORT_INSTRUCTION = '`run_code` and `edit_run_code` are the only tools callable directly. Call every native tool declared by the SDK from inside a program.'
@@ -49,8 +49,7 @@ function capabilitySdk(nativeSdk, userBindingsEnabled) {
 
 ## PTC Plus program capabilities
 
-The explorer methods below are already declared; use them directly. Discovery is metadata-only.
-\`find\` is case-insensitive lexical search: exact symbols rank first, then namespace/member names and complete identifier or description tokens. Use a short token such as \`"read"\`; multiple tokens must occur contiguously, not as a natural-language request. CamelCase and punctuation separate tokens. A miss means no lexical match, not absent capability: narrow the query or read \`tree()\` once and traverse each namespace's \`members\` to form \`namespace.member\` symbols. Inspect only relevant symbols from the current view; unknown metadata stays unknown.
+Discover program APIs without calling them. \`tree()\` lists namespaces and members; \`inspect()\` describes selected \`namespace.member\` symbols. \`find()\` matches case-insensitive symbols or contiguous words, separating CamelCase and punctuation. Use short queries such as \`"read"\`; if none match, shorten the query or check \`tree()\`. Missing metadata is unknown.
 
 \`\`\`ts
 declare class CapabilityExplorationError extends Error { readonly operation: "tree" | "find" | "inspect" }

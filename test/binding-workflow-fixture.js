@@ -100,7 +100,7 @@ export async function bindingWorkflowHost(t) {
     return events().filter(event => event.type === 'tool/result').at(-1)
   }
   const begin = async (requirement = 'new simple helper', program) => {
-    if (program !== undefined) programs.push(program)
+    if (program !== undefined) programs.push(...(Array.isArray(program) ? program : [program]))
     return idleAfter(() => ctx.commands.execute(agent, `/binding ${requirement}`, [], new AbortController().signal))
   }
   const requestId = () => {

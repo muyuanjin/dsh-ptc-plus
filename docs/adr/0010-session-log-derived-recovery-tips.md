@@ -26,6 +26,14 @@ snapshot reader remains intact: an accepted recovery snapshot retires old bindin
 sections once, while a catalog supplies the current configuration. No history or
 journal is rewritten. Catalog and recovery changes never resend each other's text.
 
+Model-visible wrappers state only the replacement scope. Binding entries supply
+their call guidance, optional user prompt and selected declaration; checkpoint
+instructions belong to `repl.state` discovery, and authoring instructions belong
+to the `/binding` task. Readers accept the exact bounded historical wrappers as
+well as the emitted form. A wording change does not reinterpret old records or
+require journal migration. Catalog bodies are compared literally, so revised
+documentation can cause one replacement on upgrade and is then deduplicated.
+
 The public `systemPrompt.context` registry contains one empty PTC delivery witness.
 DSH omits this contribution when `includeRuntimeContext` is false or a scoped
 runtime-context suppressor applies; the empty text never enters its rendered

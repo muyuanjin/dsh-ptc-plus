@@ -26,10 +26,12 @@ snapshot reader remains intact: an accepted recovery snapshot retires old bindin
 sections once, while a catalog supplies the current configuration. No history or
 journal is rewritten. Catalog and recovery changes never resend each other's text.
 
-Model-visible wrappers state only the replacement scope. Binding entries supply
-their call guidance, optional user prompt and selected declaration; checkpoint
+The binding catalog wrapper names `run_code` as the invocation location and
+limits replacement to the previous global binding API reference. Its body contains
+only entry labels, optional user prompts and selected declarations; checkpoint
 instructions belong to `repl.state` discovery, and authoring instructions belong
-to the `/binding` task. Readers accept the exact bounded historical wrappers as
+to the `/binding` task. Initialization failures are reported by execution results.
+Readers accept the exact bounded historical wrappers and empty marker as
 well as the emitted form. A wording change does not reinterpret old records or
 require journal migration. Catalog bodies are compared literally, so revised
 documentation can cause one replacement on upgrade and is then deduplicated.

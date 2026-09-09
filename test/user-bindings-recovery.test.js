@@ -96,7 +96,7 @@ test('advertises configured APIs before activation, keeps the prefix stable and 
   assert.equal(assembly.contexts.some(item => item.name === 'tools:ptc-plus-user-bindings'), false)
   const defaults = configuredBindingPrompt(assembly)
   assert.match(defaults, /declare const defaults/)
-  assert.match(defaults, /initialization can fail/)
+  assert.doesNotMatch(defaults, /initialization can fail|runtime.context|DSH authority/)
   assert.doesNotMatch(defaults, /private-1/)
 
   const firstCode = 'const recordedDefault = defaults.value'

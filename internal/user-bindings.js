@@ -639,7 +639,7 @@ export function userBindingsConfiguredContext(snapshot) {
   }).join('\n\n')
   return {
     name: 'tools:ptc-plus-user-binding-defaults',
-    text: `Call these helpers by name inside run_code. Enabled modules initialize before cell execution; initialization can fail, and session-local assignments or redeclarations can override a listed name.\n\n${content}`,
+    text: content,
   }
 }
 

@@ -39,6 +39,8 @@ Each entry has two independent settings:
 
 For example, a size formatter might add: “Input is in bytes; display using IEC units.” Usage already clear from the interface need not be repeated.
 
+The model receives one line identifying `run_code` and the updated API reference, followed by entry names, configured prompts and selected interfaces. Ordinary calls do not resend unchanged documentation.
+
 Omitting the interface leaves a separate prompt available. Omitting both does not disable execution. Enabled entries are described from the first request in a new session. Saving, enabling, disabling, deleting, or editing an entry updates the next permitted request. DSH runtime-context suppression defers delivery.
 
 Changing only the prompt, interface switch, purpose, or top-level display name preserves loaded module state. Changing implementation source, scope, namespace call name, or selected exports reloads the module on subsequent execution.

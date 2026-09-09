@@ -94,6 +94,9 @@ test('successful activation does not repeat configured prompts or interfaces in 
   for (const request of host.requests) {
     assert.equal(declarations(request), 1)
     assert.equal(configuredBindingPrompt(request).split(configured.modelContext.instructions).length - 1, 1)
+    const message = request.messages.find(message => readRuntimeMessage(message)?.form === 'catalog')
+    assert.match(message.content[0].text, /^Global binding API reference for run_code \(replaces the previous global binding reference\):\n\nBinding: fileTools\n\n/)
+    assert.doesNotMatch(message.content[0].text, /runtime.context|recovery|initializ|shadow|repl\.state|DSH authority|Configured Global User Bindings/)
   }
   await host.run('return fileTools.next()')
   assert.equal(snapshots().length, 1)
@@ -123,7 +126,7 @@ test('initializer failure stays in the tool result without an activation announc
   assert.equal(snapshots.length, 1)
   assert.equal(snapshots[0].data.content[0].text.split('declare const brokenTools: {').length - 1, 1)
   for (const request of host.requests) {
-    assert.match(configuredBindingPrompt(request), /initialization can fail/)
+    assert.match(configuredBindingPrompt(request), /^Binding: brokenTools\n\nUse brokenTools.value when available\./)
     assert.doesNotMatch(configuredBindingPrompt(request), /successfully activated/)
   }
   assertStablePrefix(host)

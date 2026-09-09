@@ -115,6 +115,8 @@ The Agent can test and revise the helper incrementally with in-memory REPL examp
 
 The panel can be collapsed or closed; the sparkle button's badge reopens it. A successful save or discard closes the panel automatically. The original request retains its source and outcome in history.
 
+Before the first message, hover over or click the sparkle button to view and toggle global bindings. These choices apply to all sessions. The menu also provides authoring and full management entries.
+
 Enabled binding interfaces are supplied to the model in new sessions and updated at the next permitted request in an existing session. Each binding can include a separate usage prompt or omit its interface. Changing only the prompt preserves the helper's runtime state. See the [global binding guide](docs/user-bindings.en.md) for details.
 
 ## Settings
@@ -136,7 +138,7 @@ The **REPL** tab lets you search session bindings, inspect definitions, and mana
 
 ![REPL workspace with session inspection and global binding management](assets/ptc-plus-repl-workspace-en.png)
 
-The green **PTC Plus** indicator in the conversation header offers a quick binding list:
+On wide screens, the green **PTC Plus** header indicator offers a quick binding list. On narrow screens, use the **REPL** tab:
 
 ![Reusable REPL bindings](assets/ptc-plus-bindings-en.png)
 

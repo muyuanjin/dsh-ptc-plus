@@ -44,8 +44,8 @@ export const CONFIG_FIELDS = Object.freeze([
     default: true,
     label: '显示绑定编写按钮',
     labelEn: 'Show binding authoring button',
-    description: '在输入框旁显示全局绑定编写入口；隐藏后仍可使用 /binding 命令。',
-    descriptionEn: 'Shows the binding authoring button beside the composer. Hiding it keeps /binding commands available.',
+    description: '在输入框旁显示全局绑定的查看、启停和编写入口；隐藏后仍可使用 /binding 命令。',
+    descriptionEn: 'Shows global binding access, toggles and authoring beside the composer. Hiding it keeps /binding commands available.',
   },
   {
     key: 'autoDescribeRunCode',

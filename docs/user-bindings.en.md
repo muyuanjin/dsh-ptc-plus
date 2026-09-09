@@ -7,7 +7,7 @@ Global bindings save reusable TypeScript helpers for use across sessions. For ex
 ## Create and use a binding
 
 1. Open **Settings → Plugin configuration → PTC Plus** and enable **Global User Bindings**.
-2. In a PTC session, click the sparkle button by the composer or enter `/binding new <requirement>`.
+2. In a PTC session, open the sparkle menu by the composer and choose **Write a new binding**, or enter `/binding new <requirement>`.
 3. Inspect the draft's source, interface, and model prompt in the panel above the composer.
 4. Choose **Save and enable**. Subsequent `run_code` calls load the binding; initialization failures appear in execution results.
 
@@ -24,7 +24,9 @@ A new draft opens above the composer. Click the title bar or use Enter/Space to 
 - **Discard draft**: abandon this unsaved candidate.
 - **Close panel**: hide it without saving or discarding.
 
-The sparkle button shows a badge for pending drafts. Open its menu by hovering, clicking, or using the keyboard, then select the draft to show it again. Each session retains one current candidate. A confirmed save or discard closes the panel; failures leave the draft available for retry.
+The sparkle button shows a PTC Plus tooltip on hover or focus that names it as the Global User Binding entry; a pending draft changes the tooltip to the draft state. The button shows a badge for pending drafts. Open its menu by hovering, clicking, or using the keyboard, then select the draft to show it again. Each session retains one current candidate. A confirmed save or discard closes the panel; failures leave the draft available for retry.
+
+The sparkle menu is available before the first message. Global bindings show their names, purposes, and enabled states using text and a checkmark. Click an entry to toggle it for all sessions. Toggles are disabled while saving; reload after a conflict or failure before trying again. **Manage global bindings** opens the full workbench. **Write a new binding** appears when the authoring command is available.
 
 The original binding request retains its requirement, status, and accepted source in history. Historical inspection does not restore permission to save that draft. When another edit changes the catalog, reload its current state before deciding whether to save.
 

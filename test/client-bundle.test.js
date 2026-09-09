@@ -214,6 +214,7 @@ test('settings, header indicator, and tool rows follow the DSH locale dictionari
     IconChevronDownOutline14: 'IconChevron',
     IconInspectOutline12: 'IconInspect',
     IconSparkle16() {},
+    Menu() {},
     StateDot: 'StateDot',
     Toast() {},
     Tooltip() {},
@@ -304,7 +305,11 @@ test('settings, header indicator, and tool rows follow the DSH locale dictionari
       },
       $on(name, listener) { remoteListeners.set(name, listener) },
     },
-    on(name, listener) { clientListeners.set(name, listener); return () => clientListeners.delete(name) },
+    on(name, listener) {
+      if (!clientListeners.has(name)) clientListeners.set(name, new Set())
+      clientListeners.get(name).add(listener)
+      return () => clientListeners.get(name).delete(listener)
+    },
   }
   await exported.apply(ctx)
 
@@ -587,38 +592,48 @@ test('settings, header indicator, and tool rows follow the DSH locale dictionari
     useInput: selector => selector({ draft: '' }),
     inputActions: { setDraft: value => composerDrafts.push(value) },
   }
-  assert.equal(authorButton.component(authorProps).children[0], null)
+  const initialMenu = authorButton.component(authorProps).children[0]
+  assert.equal(initialMenu.type, primitives.Menu)
+  assert.equal(initialMenu.props.items.some(item => item.id === 'new'), false)
   await new Promise(resolve => setImmediate(resolve))
   const authorControl = authorButton.component(authorProps)
   assert.notEqual(authorControl, null)
-  assert.equal(authorButton.component({ ...authorProps, useInput: undefined }).children[0], null)
-  const authorAction = authorControl.children[0].children[0].children[0]
+  assert.equal(authorButton.component({ ...authorProps, useInput: undefined }).children[0]
+    .props.items.some(item => item.id === 'new'), false)
+  const authorMenu = authorControl.children[0]
+  const authorAnchor = authorMenu.props.anchor
+  assert.equal(authorAnchor.type, primitives.Tooltip)
+  assert.equal(authorAnchor.props.label, 'bindings.openHint')
+  const authorAction = authorAnchor.children[0]
   assert.equal(authorAction.type, 'button')
-  assert.equal(authorAction.props['aria-label'], 'bindings.authorOpen')
-  let focusPreserved = false
-  authorAction.props.onMouseDown({ preventDefault() { focusPreserved = true } })
-  assert.equal(focusPreserved, true)
+  assert.equal(authorAction.props['aria-label'], 'bindings.open')
+  assert.equal(authorAction.props.title, undefined)
   authorAction.props.onClick()
+  assert.deepEqual(composerDrafts, ['/binding new '])
+  assert.ok(authorMenu.props.items.some(item => item.id === 'new'))
+  authorControl.props.ref({ getClientRects: () => [{}], querySelector: () => null })
+  authorMenu.props.onSelect('new')
   assert.deepEqual(composerDrafts, ['/binding new ', '/binding new '])
   const occupiedAuthorControl = authorButton.component({
     ...authorProps,
     useInput: selector => selector({ draft: 'keep this text' }),
   })
-  occupiedAuthorControl.children[0].children[0].children[0].props.onClick()
+  occupiedAuthorControl.props.ref({ getClientRects: () => [{}], querySelector: () => null })
+  occupiedAuthorControl.children[0].props.onSelect('new')
   assert.deepEqual(composerDrafts, ['/binding new ', '/binding new '])
 
   commandDescriptors = []
   remoteListeners.get('commands/change')()
   await new Promise(resolve => setImmediate(resolve))
-  assert.equal(authorButton.component(authorProps).children[0], null)
+  assert.equal(authorButton.component(authorProps).children[0].props.items.some(item => item.id === 'new'), false)
   commandDescriptors = [{ name: 'binding' }]
   remoteListeners.get('agent-preset/selected')('session-1')
   await new Promise(resolve => setImmediate(resolve))
   assert.notEqual(authorButton.component(authorProps), null)
   commandDescriptors = []
-  clientListeners.get('connection/reset')()
+  for (const listener of [...clientListeners.get('connection/reset')]) listener()
   await new Promise(resolve => setImmediate(resolve))
-  assert.equal(authorButton.component(authorProps).children[0], null)
+  assert.equal(authorButton.component(authorProps).children[0].props.items.some(item => item.id === 'new'), false)
 
   const memoryIndicator = renderIndicator({
     projectionValues: {
@@ -1101,6 +1116,7 @@ test('renders authoring and memory surfaces when new UI primitives are absent', 
     IconCheckOutline14() {},
     IconChevronDownOutline14() {},
     IconInspectOutline12() {},
+    Menu() {},
     StateDot() {},
   }
   const exported = registrations[0].factory(name => {
@@ -1181,14 +1197,16 @@ test('renders authoring and memory surfaces when new UI primitives are absent', 
     useInput: selector => selector({ draft: '' }),
     inputActions: { setDraft: () => {} },
   }
-  assert.equal(renderAuthor(authorProps).children[0], null)
+  assert.equal(renderAuthor(authorProps).children[0].type, primitives.Menu)
   await new Promise(resolve => setImmediate(resolve))
   const authorControl = renderAuthor(authorProps)
   assert.notEqual(authorControl, null)
-  // No Tooltip wrapper, no icon: the star entry degrades to a plain text button.
+  // No Tooltip wrapper, no icon: the star entry degrades to a plain text button
+  // whose native title still carries the plugin hint.
   assert.equal(authorControl.props['data-text'], true)
-  const textButton = authorControl.children[0].children[0]
+  const textButton = authorControl.children[0].props.anchor
   assert.equal(textButton.type, 'button')
+  assert.equal(textButton.props.title, 'bindings.openHint')
   assert.ok(Array.isArray(textButton.children))
   assert.ok(textButton.children.some(child => child?.type === 'span'
     && child.props?.className === 'ptcPlusAuthorButtonLabel'))
@@ -1197,7 +1215,8 @@ test('renders authoring and memory surfaces when new UI primitives are absent', 
     ...authorProps,
     useInput: selector => selector({ draft: 'keep me' }),
   })
-  busyControl.children[0].children[0].props.onClick()
+  busyControl.props.ref({ getClientRects: () => [{}], querySelector: () => null })
+  busyControl.children[0].props.onSelect('new')
   const afterBusy = renderAuthor(authorProps)
   const notice = afterBusy.children.find(child => child?.props?.className === 'ptcPlusComposerNotice')
   assert.notEqual(notice, undefined)

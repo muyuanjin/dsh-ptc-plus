@@ -306,6 +306,16 @@ async function captureBinding(state, width = 1440) {
     }).map(button => button.textContent)
   })
   assert.deepEqual(headerCollisions, [], `${state}/${width}: overlapping session header actions`)
+  if (width <= 560) {
+    assert.equal(await page.locator('.ptcPlusActive').isVisible(), false)
+    const unreachable = await page.locator('.ptcPlusActive').evaluate(indicator =>
+      [...indicator.closest('header').querySelectorAll('button')].filter(button => {
+        const rect = button.getBoundingClientRect()
+        return rect.width > 0 && rect.height > 0 && !button.disabled
+          && !button.contains(document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2))
+      }).map(button => button.getAttribute('aria-label') || button.textContent))
+    assert.deepEqual(unreachable, [], `${state}/${width}: native header action is unreachable`)
+  }
   await page.screenshot({ path: join(evidence, `binding-${state}-${width}.png`), fullPage: true, animations: 'disabled' })
   bindingMeasurements.push({ state, width, cards })
 }
@@ -337,6 +347,15 @@ try {
   const patch = join(temporary, 'smoke.patch.yml')
   const adapterEntry = join(temporary, 'fixture', 'index.mjs')
   if (values['binding-workflow']) {
+    await mkdir(join(env.DSH_HOME, 'ptc-plus'), { recursive: true })
+    await writeFile(join(env.DSH_HOME, 'ptc-plus', 'bindings.json'), JSON.stringify({ entries: [
+      { id: 'fileTools', name: 'fileTools', scope: 'namespace', enabled: false,
+        source: 'throw new Error("Menu must not initialize bindings"); export const value = 1', purpose: 'Read and write files.' },
+      { id: 'textTools', name: 'textTools', scope: 'namespace', enabled: true,
+        source: 'export const value = 2', purpose: 'Format and compare text.' },
+      { id: 'jsonTools', name: 'jsonTools', scope: 'namespace', enabled: true,
+        source: 'export const value = 3', purpose: 'Read structured data.' },
+    ] }))
     await mkdir(join(temporary, 'fixture'))
     await writeFile(join(temporary, 'fixture', 'package.json'), JSON.stringify({ name: 'ptc-binding-web-fixture', type: 'module' }))
     await writeFile(adapterEntry, `export { apply, inject } from ${JSON.stringify(pathToFileURL(join(repository, 'test/binding-web-adapter.js')).href)}\n`)
@@ -434,6 +453,135 @@ try {
     await page.getByRole('button', { name: 'New session in workspace', exact: true }).click()
     const composer = page.locator(composerSelector)
     await composer.waitFor({ timeout: 30000 })
+    const beforeMenu = await sessionLogBytes()
+    const entry = page.locator('.ptcPlusAuthorButton')
+    const verifyPendingMenuDismissal = async operation => {
+      const matches = request => request.url().endsWith('/api/ptcPlusBindings/invoke')
+        && request.postDataJSON()?.payload?.args?.operation === operation
+      let release
+      const held = new Promise(resolve => { release = resolve })
+      const routePattern = '**/api/ptcPlusBindings/invoke'
+      const handler = async route => { if (matches(route.request())) await held; await route.continue() }
+      await page.route(routePattern, handler)
+      const requested = page.waitForRequest(matches)
+      const response = page.waitForResponse(response => matches(response.request()))
+      try {
+        await page.keyboard.press('Enter')
+        await requested
+        await page.keyboard.press('Escape')
+        await page.getByRole('menu').waitFor({ state: 'detached' })
+        await page.waitForFunction(() => document.activeElement?.matches('.ptcPlusAuthorButton'))
+      } finally {
+        release()
+        await response
+        await page.unroute(routePattern, handler)
+      }
+    }
+    const bindingsFile = join(env.DSH_HOME, 'ptc-plus', 'bindings.json')
+    const bindingsSource = await readFile(bindingsFile, 'utf8')
+    await writeFile(bindingsFile, '{')
+    await page.evaluate(async () => {
+      const method = 'ptcPlusBindings/invoke'
+      const response = await fetch(`/api/${method}`, { method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ type: 'client-request', rpcId: crypto.randomUUID(), method,
+          payload: { args: { operation: 'reload', payload: {} } } }) })
+      if (!response.ok) throw new Error(`Binding reload setup failed: HTTP ${response.status}`)
+      await response.json()
+    })
+    await entry.hover()
+    await page.getByRole('menuitem', { name: 'Reload', exact: true }).focus()
+    await verifyPendingMenuDismissal('reload')
+    await page.keyboard.press('ArrowUp')
+    await page.getByRole('menuitem', { name: 'Reload', exact: true }).focus()
+    await page.keyboard.press('Enter')
+    await page.waitForFunction(() => document.activeElement?.getAttribute('role') === 'menuitem'
+      && document.activeElement.textContent === 'Reload')
+    await writeFile(bindingsFile, bindingsSource)
+    await page.keyboard.press('Enter')
+    await page.getByRole('menuitem', { name: /fileTools/ }).waitFor()
+    await page.waitForFunction(() => document.activeElement?.getAttribute('role') === 'menuitem'
+      && document.activeElement.textContent.includes('fileTools'))
+    await entry.hover()
+    await page.getByRole('menuitem', { name: /fileTools/ }).waitFor()
+    assert.equal(await page.locator('.ptcPlusBindingCommand').count(), 0)
+    const globalToggle = page.getByRole('menuitem', { name: /fileTools/ })
+    await globalToggle.focus()
+    await page.keyboard.press('Enter')
+    await page.locator('.ptcPlusBindingQuickRow[data-enabled=true]').filter({ hasText: 'fileTools' }).waitFor()
+    await page.waitForFunction(() => document.activeElement?.getAttribute('role') === 'menuitem'
+      && document.activeElement.textContent.includes('fileTools'))
+    await page.keyboard.press('Enter')
+    await page.locator('.ptcPlusBindingQuickRow[data-enabled=false]').filter({ hasText: 'fileTools' }).waitFor()
+    await page.waitForFunction(() => document.activeElement?.getAttribute('role') === 'menuitem'
+      && document.activeElement.textContent.includes('fileTools'))
+    await page.keyboard.press('Enter')
+    await page.locator('.ptcPlusBindingQuickRow[data-enabled=true]').filter({ hasText: 'fileTools' }).waitFor()
+    await globalToggle.focus()
+    await verifyPendingMenuDismissal('disable')
+    await page.keyboard.press('ArrowUp')
+    await globalToggle.focus()
+    await page.keyboard.press('Enter')
+    await page.locator('.ptcPlusBindingQuickRow[data-enabled=true]').filter({ hasText: 'fileTools' }).waitFor()
+    const storedBindings = () => readFile(join(env.DSH_HOME, 'ptc-plus', 'bindings.json'), 'utf8').then(JSON.parse)
+    assert.equal((await storedBindings()).entries.find(entry => entry.id === 'fileTools').enabled, true)
+    for (const width of [1440, 390]) {
+      await page.keyboard.press('Escape')
+      await page.setViewportSize({ width, height: 1000 })
+      if (width < 1024) await page.locator('[data-sidebar-collapsed=true]').waitFor()
+      await page.mouse.move(0, 0)
+      await entry.hover()
+      await page.getByRole('menuitem', { name: /fileTools/ }).waitFor()
+      const menu = page.getByRole('menu').filter({ has: page.locator('.ptcPlusBindingQuickRow') })
+      const bounds = await menu.boundingBox()
+      assert.ok(bounds.x >= 0 && bounds.x + bounds.width <= width + 1)
+      assert.ok(bounds.y >= 0 && bounds.y + bounds.height <= (await composer.boundingBox()).y,
+        'Global menu obscures the composer input')
+      for (const item of await menu.getByRole('menuitem').all()) {
+        assert.equal(await item.evaluate(element => {
+          const rect = element.getBoundingClientRect()
+          return element.contains(document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2))
+        }), true)
+      }
+      await page.screenshot({ path: join(evidence, `binding-entry-blank-${width}.png`), animations: 'disabled' })
+    }
+    await page.getByRole('menuitem', { name: /fileTools/ }).click()
+    await page.locator('.ptcPlusBindingQuickRow[data-enabled=false]').filter({ hasText: 'fileTools' }).waitFor()
+    assert.equal((await storedBindings()).entries.find(entry => entry.id === 'fileTools').enabled, false)
+    await page.keyboard.press('Escape')
+    await page.setViewportSize({ width: 390, height: 400 })
+    await composer.fill(Array.from({ length: 8 }, (_, index) => `Message line ${index + 1}`).join('\n'))
+    await entry.click()
+    const shortMenu = page.getByRole('menu').filter({ has: page.locator('.ptcPlusBindingQuickRow') })
+    await shortMenu.waitFor()
+    for (const item of await shortMenu.getByRole('menuitem').all()) {
+      await item.scrollIntoViewIfNeeded()
+      assert.equal(await item.evaluate(element => {
+        const rect = element.getBoundingClientRect()
+        return element.contains(document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2))
+      }), true, 'Global menu action is unreachable in a short viewport')
+    }
+    const shortBounds = await shortMenu.boundingBox()
+    const inputBounds = await composer.boundingBox()
+    assert.ok(inputBounds.y < 156, 'Short viewport does not exercise limited space above the input')
+    assert.ok(shortBounds.y >= 0 && shortBounds.y + shortBounds.height <= inputBounds.y,
+      'Global menu obscures the expanded composer input in a short viewport')
+    await page.screenshot({ path: join(evidence, 'binding-entry-short-390.png'), animations: 'disabled' })
+    await page.keyboard.press('Escape')
+    await composer.fill('')
+    await page.setViewportSize({ width: 390, height: 1000 })
+    await entry.hover()
+    await page.getByRole('menuitem', { name: /fileTools/ }).waitFor()
+    assert.equal(await composerValue(composer), '')
+    assert.deepEqual(await sessionLogBytes(), beforeMenu, 'Global menu actions before a turn alter the session log')
+    await page.getByRole('menuitem', { name: 'Manage global bindings', exact: true }).click()
+    const quickManager = page.getByRole('dialog')
+    for (const name of ['fileTools', 'textTools', 'jsonTools']) {
+      await quickManager.getByRole('button', { name: `${name} namespace`, exact: true }).click()
+      await quickManager.getByRole('button', { name: 'Remove', exact: true }).click()
+      await quickManager.getByRole('button', { name: `${name} namespace`, exact: true }).waitFor({ state: 'detached' })
+    }
+    await quickManager.getByRole('button', { name: 'Close global bindings workbench' }).click()
+    await page.setViewportSize({ width: 1440, height: 1000 })
     const submit = async text => { await composer.fill(text); await composer.press('Enter') }
     await submit('/binding new constant workflow helper')
     const cards = page.locator('.ptcPlusBindingCommand')
@@ -551,6 +699,24 @@ try {
     await page.getByRole('tab', { name: 'Chat', exact: true }).click()
     assert.equal(await page.getByRole('menu').count(), 0)
     await rpc('settings/update', { ns: 'ptc-plus', patch: { bindingAuthorButtonVisible: false } })
+    await page.setViewportSize({ width: 390, height: 400 })
+    await composer.fill(Array.from({ length: 9 }, (_, index) => `Draft message line ${index + 1}`).join('\n'))
+    await reopen.hover()
+    await draftItem.waitFor()
+    await draftItem.scrollIntoViewIfNeeded()
+    const draftMenuBounds = await page.getByRole('menu').boundingBox()
+    const draftInputBounds = await composer.boundingBox()
+    assert.ok(draftInputBounds.y < 156, 'Draft menu check needs limited space above the input')
+    assert.ok(draftMenuBounds.y >= 0 && draftMenuBounds.y + draftMenuBounds.height <= draftInputBounds.y,
+      'Draft-only menu obscures the composer input')
+    assert.equal(await draftItem.evaluate(element => {
+      const rect = element.getBoundingClientRect()
+      return element.contains(document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2))
+    }), true, 'Draft-only menu item is unreachable')
+    await page.screenshot({ path: join(evidence, 'binding-draft-menu-short-390.png'), animations: 'disabled' })
+    await page.keyboard.press('Escape')
+    await composer.fill('')
+    await page.setViewportSize({ width: 1440, height: 1000 })
     await reopen.focus()
     await page.keyboard.press('Enter')
     await draftItem.waitFor()

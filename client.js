@@ -891,8 +891,8 @@
       default: true,
       label: "\u663E\u793A\u7ED1\u5B9A\u7F16\u5199\u6309\u94AE",
       labelEn: "Show binding authoring button",
-      description: "\u5728\u8F93\u5165\u6846\u65C1\u663E\u793A\u5168\u5C40\u7ED1\u5B9A\u7F16\u5199\u5165\u53E3\uFF1B\u9690\u85CF\u540E\u4ECD\u53EF\u4F7F\u7528 /binding \u547D\u4EE4\u3002",
-      descriptionEn: "Shows the binding authoring button beside the composer. Hiding it keeps /binding commands available."
+      description: "\u5728\u8F93\u5165\u6846\u65C1\u663E\u793A\u5168\u5C40\u7ED1\u5B9A\u7684\u67E5\u770B\u3001\u542F\u505C\u548C\u7F16\u5199\u5165\u53E3\uFF1B\u9690\u85CF\u540E\u4ECD\u53EF\u4F7F\u7528 /binding \u547D\u4EE4\u3002",
+      descriptionEn: "Shows global binding access, toggles and authoring beside the composer. Hiding it keeps /binding commands available."
     },
     {
       key: "autoDescribeRunCode",
@@ -27631,7 +27631,8 @@
 .ptcPlusReplCard .ptcPlusReplName[data-kind=import]{color:color-mix(in srgb,#af00db 78%,var(--dsw-alias-label-primary,#18191c))}
 /* Keep the session-header action on the same compact 32px rhythm as DSH chrome. */
 .ptcPlusActiveShell{display:inline-flex;height:28px;align-items:center;justify-content:center;line-height:0;vertical-align:middle}.ptcPlusActive{box-sizing:border-box;height:28px;justify-content:center;gap:6px;padding:0 6px;border:0;background:transparent;font-family:inherit;font-size:13px;font-weight:500;line-height:18px}.ptcPlusActive::before{width:6px;height:6px;flex:none;border-radius:50%;background:currentColor;box-shadow:0 0 0 2px color-mix(in srgb,currentColor 18%,transparent);content:''}.ptcPlusActive:hover,.ptcPlusActive[aria-expanded=true]{background:var(--dsw-alias-interactive-bg-hover,rgba(38,49,72,.06))}.ptcPlusActiveLabel{display:inline-flex;height:18px;align-items:center;line-height:18px}
-@media(max-width:560px){.ptcPlusActive{width:28px;flex:none;padding:0}.ptcPlusActiveLabel{display:none}}
+@media(max-width:560px){.ptcPlusActiveShell{display:none}}
+[role=menu]:has(.ptcPlusBindingMenuAction,.ptcPlusDraftMenuItem){width:min(320px,calc(100vw - 24px));min-width:0;max-height:min(440px,60dvh,var(--ptc-plus-menu-space,100dvh));border-radius:12px}.ptcPlusBindingQuickRow{display:flex;min-width:0;flex-direction:column;gap:3px;white-space:normal}.ptcPlusBindingQuickName{display:flex;align-items:center;justify-content:space-between;gap:12px;font-size:13px}.ptcPlusBindingQuickName strong{min-width:0;overflow:hidden;text-overflow:ellipsis;font-weight:500;white-space:nowrap}.ptcPlusBindingQuickState{flex:none;font-size:11px;color:var(--dsw-alias-label-tertiary)}.ptcPlusBindingQuickRow[data-enabled=true] .ptcPlusBindingQuickState{color:var(--dsw-alias-state-success-primary)}.ptcPlusBindingQuickPurpose{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dsw-alias-label-tertiary);font-size:12px}.ptcPlusBindingMenuAction{font-size:13px}
 `;
   var BINDING_WORKBENCH_CSS = `
 .ptcPlusCandidateContext{min-width:0;margin-top:4px;padding:12px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-module-platform)}.ptcPlusCandidateContext h4{margin:0 0 10px;color:var(--dsw-alias-label-primary);font-size:12px;font-weight:600;line-height:18px}.ptcPlusCandidateContext dl{display:grid;gap:12px;margin:0}.ptcPlusCandidateContext dt{color:var(--dsw-alias-label-secondary);font-size:12px;line-height:20px}.ptcPlusCandidateContext dd{min-width:0;margin:0}.ptcPlusCandidateDeclaration{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:4px 12px}.ptcPlusCandidateDeclaration dd{display:inline-flex;align-items:center;gap:4px;max-width:100%;box-sizing:border-box;padding:2px 8px;border-radius:6px;background:var(--dsw-alias-bg-layer-3);color:var(--dsw-alias-label-secondary);font-size:11px;line-height:18px;overflow-wrap:anywhere}.ptcPlusCandidateDeclaration dd[data-included=true]{background:var(--dsw-alias-state-business-tertiary);color:var(--dsw-alias-state-business-primary)}.ptcPlusCandidateDeclaration svg{flex:none}.ptcPlusCandidatePrompt{display:grid;gap:6px}.ptcPlusCandidatePrompt dd{padding:8px 10px;border:1px solid var(--dsw-alias-border-l2);border-radius:6px;background:var(--dsw-alias-bg-layer-3);color:var(--dsw-alias-label-primary);font-size:12px;line-height:20px;white-space:pre-wrap;overflow-wrap:anywhere}.ptcPlusCandidatePrompt dd[data-empty=true]{padding:0;border:0;background:transparent;color:var(--dsw-alias-label-tertiary)}
@@ -27772,9 +27773,14 @@
       "bindings.reloadedDraft": "\u76EE\u5F55\u5DF2\u91CD\u65B0\u52A0\u8F7D\uFF0C\u672A\u4FDD\u5B58\u7684\u7F16\u8F91\u5DF2\u4FDD\u7559\u3002",
       "bindings.reloadConflict": "\u8BFB\u53D6\u671F\u95F4\u76EE\u5F55\u518D\u6B21\u53D1\u751F\u53D8\u5316\uFF0C\u8BF7\u91CD\u65B0\u52A0\u8F7D\u3002",
       "bindings.failed": "\u5168\u5C40\u7528\u6237\u7ED1\u5B9A\u64CD\u4F5C\u5931\u8D25\uFF1A{error}",
-      "bindings.authorNew": "\u8BA9 Agent \u7F16\u5199",
       "bindings.authorEdit": "Agent \u4FEE\u6539",
-      "bindings.authorOpen": "\u8BA9 Agent \u7F16\u5199\u5168\u5C40\u7528\u6237\u7ED1\u5B9A",
+      "bindings.open": "\u5168\u5C40\u7ED1\u5B9A",
+      "bindings.openHint": "PTC Plus \u63D2\u4EF6 \xB7 \u6253\u5F00\u5168\u5C40\u7528\u6237\u7ED1\u5B9A\u83DC\u5355\uFF0C\u53EF\u7F16\u5199\u3001\u542F\u505C\u6216\u7BA1\u7406",
+      "bindings.draftHint": "PTC Plus \u63D2\u4EF6 \xB7 \u7ED1\u5B9A\u8349\u7A3F\u5F85\u5904\u7406\uFF0C\u70B9\u51FB\u67E5\u770B",
+      "bindings.quickHeading": "\u5168\u5C40\u7528\u6237\u7ED1\u5B9A \xB7 \u5BF9\u6240\u6709\u4F1A\u8BDD\u751F\u6548",
+      "bindings.quickDrafts": "\u5F85\u5904\u7406\u8349\u7A3F",
+      "bindings.quickLoading": "\u6B63\u5728\u8BFB\u53D6\u7ED1\u5B9A\u2026",
+      "bindings.quickSaving": "\u6B63\u5728\u4FDD\u5B58\u2026",
       "bindings.authorNewDraft": "\u7F16\u5199\u65B0\u7ED1\u5B9A",
       "bindings.composerBusy": "\u8F93\u5165\u6846\u5DF2\u6709\u5185\u5BB9\uFF0C\u672A\u8986\u76D6\u73B0\u6709\u8349\u7A3F\u3002",
       "bindings.draftTitle": "Agent \u8349\u7A3F",
@@ -27931,9 +27937,14 @@
       "bindings.reloadedDraft": "Catalog reloaded; unsaved edits retained.",
       "bindings.reloadConflict": "The catalog changed during reload. Reload again.",
       "bindings.failed": "Global User Binding operation failed: {error}",
-      "bindings.authorNew": "Ask Agent to write",
       "bindings.authorEdit": "Ask Agent to revise",
-      "bindings.authorOpen": "Ask Agent to write a Global User Binding",
+      "bindings.open": "Global bindings",
+      "bindings.openHint": "PTC Plus plugin \xB7 Open the Global User Binding menu to author, toggle, or manage",
+      "bindings.draftHint": "PTC Plus plugin \xB7 Binding draft pending; click to review",
+      "bindings.quickHeading": "Global bindings \xB7 Applies to all sessions",
+      "bindings.quickDrafts": "Pending drafts",
+      "bindings.quickLoading": "Loading bindings\u2026",
+      "bindings.quickSaving": "Saving\u2026",
       "bindings.authorNewDraft": "Write a new binding",
       "bindings.composerBusy": "The composer already has text, so its draft was not replaced.",
       "bindings.draftTitle": "Agent draft",
@@ -29364,18 +29375,120 @@
           const settings = usePtcSettings((snapshot) => snapshot);
           const [review, view] = useBindingReview(sessionId);
           const anchorRef = React.useRef(null);
+          const attachAnchor = React.useCallback((element) => {
+            anchorRef.current = element;
+            review.access = element;
+          }, [review]);
           const firstItemRef = React.useRef(null);
-          const newItemRef = React.useRef(null);
+          const manageItemRef = React.useRef(null);
+          const reloadItemRef = React.useRef(null);
           const focused = React.useRef(false);
           const [menu, setMenu] = React.useState(null);
+          const [managing, setManaging] = React.useState(false);
+          const [catalog, setCatalog] = React.useState(null);
+          const [catalogStatus, setCatalogStatus] = React.useState("loading");
+          const [catalogError, setCatalogError] = React.useState(null);
+          const catalogControl = React.useRef({ active: true, epoch: 0, writing: false, read: null });
+          const catalogFocus = React.useRef(null);
           const toastSequence = React.useRef(0);
           const [toast, setToast] = React.useState(null);
           const hasDraft = view.mounted && view.candidate !== null && view.action === null;
-          const canAuthor = settings.status === "ready" && settings.value?.enabled === true && settings.value?.userBindingsEnabled === true && settings.value?.bindingAuthorButtonVisible !== false && available && typeof useInput === "function" && typeof inputActions?.setDraft === "function";
-          const menuOpen = hasDraft && view.reachable && menu?.key === view.candidateKey;
-          const showMenu = (mode) => setMenu({ key: view.candidateKey, mode });
+          const quickAccess = settings.status === "ready" && settings.value?.enabled === true && settings.value?.userBindingsEnabled === true && settings.value?.bindingAuthorButtonVisible !== false;
+          const canAuthor = quickAccess && available && typeof useInput === "function" && typeof inputActions?.setDraft === "function";
+          const menuOpen = (hasDraft || quickAccess) && view.reachable && !managing && menu !== null && menu.key === view.candidateKey;
+          const refreshCatalog = React.useCallback(async (reload = false) => {
+            const control = catalogControl.current;
+            if (!control.active || control.writing) return;
+            control.read?.abort();
+            const read = new AbortController();
+            control.read = read;
+            const epoch = ++control.epoch;
+            if (reload) captureCatalogFocus();
+            setCatalogStatus("loading");
+            setCatalogError(null);
+            try {
+              const next = await callUserBindings(reload ? "reload" : "list", {}, read.signal);
+              if (!control.active || control.epoch !== epoch) return;
+              if (next?.error) throw new Error(next.error);
+              setCatalog(next);
+              setCatalogStatus("ready");
+            } catch (error) {
+              if (!control.active || control.epoch !== epoch) return;
+              setCatalog(null);
+              setCatalogStatus("error");
+              setCatalogError(error instanceof Error ? error.message : String(error));
+            }
+          }, []);
+          React.useEffect(() => {
+            const control = catalogControl.current;
+            control.active = true;
+            const reset = () => {
+              control.epoch++;
+              control.read?.abort();
+              setCatalog(null);
+              setCatalogStatus("loading");
+              setCatalogError(null);
+              setMenu(null);
+              setManaging(false);
+            };
+            const unsubscribe = ctx.on("connection/reset", reset);
+            return () => {
+              control.active = false;
+              control.epoch++;
+              control.read?.abort();
+              unsubscribe();
+            };
+          }, []);
+          const toggleBinding = async (entry) => {
+            const control = catalogControl.current;
+            if (control.writing || catalogStatus !== "ready" || !quickAccess || catalog === null) return;
+            control.writing = true;
+            const epoch = ++control.epoch;
+            control.read?.abort();
+            captureCatalogFocus();
+            setCatalogStatus("writing");
+            setCatalogError(null);
+            try {
+              const next = await callUserBindings(entry.enabled ? "disable" : "enable", {
+                id: entry.id,
+                expectedRevision: catalog.revision
+              });
+              if (!control.active || control.epoch !== epoch) return;
+              setCatalog(next);
+              setCatalogStatus("ready");
+            } catch (error) {
+              if (!control.active || control.epoch !== epoch) return;
+              setCatalog(null);
+              setCatalogStatus("error");
+              setCatalogError(error instanceof Error ? error.message : String(error));
+            } finally {
+              control.writing = false;
+              if (control.active && control.epoch !== epoch) void refreshCatalog();
+            }
+          };
+          const showMenu = (mode) => {
+            if (!menuOpen && quickAccess) void refreshCatalog();
+            setMenu({ key: view.candidateKey, mode });
+          };
+          const menuElement = () => manageItemRef.current?.closest("[role=menu]") ?? firstItemRef.current?.closest("[role=menu]");
+          const captureCatalogFocus = () => {
+            catalogFocus.current = menuElement()?.contains(document.activeElement) ? document.activeElement : null;
+          };
+          const menuAnchorRect = () => {
+            const anchor = anchorRef.current;
+            if (!anchor) return null;
+            const rect = anchor.getBoundingClientRect();
+            let top2 = rect.top;
+            for (let parent = anchor.parentElement; parent; parent = parent.parentElement) {
+              if (!parent.querySelector('textarea, [contenteditable="true"]')) continue;
+              top2 = Math.min(top2, parent.getBoundingClientRect().top);
+              break;
+            }
+            menuElement()?.style.setProperty("--ptc-plus-menu-space", `${Math.max(0, top2 - 16)}px`);
+            return new DOMRect(rect.x, top2, rect.width, 0);
+          };
           const hideMenu = () => {
-            const itemHasFocus = firstItemRef.current?.closest("button") === document.activeElement || newItemRef.current?.closest("button") === document.activeElement;
+            const itemHasFocus = menuElement()?.contains(document.activeElement) || catalogFocus.current !== null && document.activeElement === document.body;
             setMenu(null);
             if (itemHasFocus && anchorRef.current?.getClientRects().length) {
               anchorRef.current.querySelector(".ptcPlusAuthorButton")?.focus({ preventScroll: true });
@@ -29392,6 +29505,7 @@
           }, [review]);
           React.useEffect(() => {
             setMenu(null);
+            if (!view.reachable) setManaging(false);
           }, [hasDraft, view.reachable, view.candidateKey]);
           React.useLayoutEffect(() => {
             if (focused.current && document.activeElement === document.body) {
@@ -29402,19 +29516,36 @@
               else focusComposer(anchor);
             }
           }, [hasDraft, canAuthor, view.candidateKey]);
-          React.useEffect(() => {
+          React.useLayoutEffect(() => {
+            if (!menuOpen) {
+              catalogFocus.current = null;
+              return;
+            }
+            if (catalogStatus === "writing" || catalogStatus === "loading") return;
+            const target = catalogFocus.current;
+            catalogFocus.current = null;
+            if (!target || document.activeElement !== document.body) return;
+            const root = menuElement();
+            const next = root?.contains(target) && !target.disabled ? target : reloadItemRef.current?.closest("button") ?? root?.querySelector("button:not(:disabled)");
+            next?.focus({ preventScroll: true });
+          }, [catalogStatus, menuOpen]);
+          React.useLayoutEffect(() => {
             if (!menuOpen || menu.mode === "hover") return;
-            const frame = requestAnimationFrame(() => {
-              if (anchorRef.current?.getClientRects().length) firstItemRef.current?.closest("button")?.focus({ preventScroll: true });
+            let cancelled = false;
+            queueMicrotask(() => {
+              if (!cancelled && anchorRef.current?.getClientRects().length) menuElement()?.querySelector("button:not(:disabled)")?.focus({ preventScroll: true });
             });
-            return () => cancelAnimationFrame(frame);
+            return () => {
+              cancelled = true;
+            };
           }, [menuOpen, menu?.mode]);
           React.useEffect(() => {
             if (toast === null || typeof Toast === "function") return void 0;
             const timer = setTimeout(() => setToast(null), 2500);
             return () => clearTimeout(timer);
           }, [toast]);
-          const label = hasDraft ? t2("bindings.reviewMenuLabel", { count: 1 }) + (view.message ? ` \xB7 ${t2("bindings.reviewAttention")}` : "") : t2("bindings.authorOpen");
+          const label = hasDraft ? t2("bindings.reviewMenuLabel", { count: 1 }) + (view.message ? ` \xB7 ${t2("bindings.reviewAttention")}` : "") : t2("bindings.open");
+          const hint = t2(hasDraft ? "bindings.draftHint" : "bindings.openHint");
           const openAuthoring = () => {
             hideMenu();
             if (!canAuthor) return;
@@ -29431,34 +29562,52 @@
               type: "button",
               className: "ptcPlusAuthorButton",
               "aria-label": label,
-              "aria-haspopup": hasDraft ? "menu" : void 0,
-              "aria-expanded": hasDraft ? menuOpen : void 0,
+              // Older UI-kit lines ship no Tooltip primitive; the native title carries the hint there.
+              title: typeof Tooltip === "function" ? void 0 : hint,
+              "aria-haspopup": "menu",
+              "aria-expanded": menuOpen,
               onPointerEnter: (event) => {
-                if (hasDraft && event.pointerType !== "touch") showMenu("hover");
+                if (event.pointerType !== "touch") showMenu("hover");
               },
               onKeyDown: (event) => {
-                if (hasDraft && ["ArrowUp", "ArrowDown"].includes(event.key)) {
+                if (["ArrowUp", "ArrowDown"].includes(event.key)) {
                   event.preventDefault();
                   showMenu("keyboard");
                 }
               },
-              onMouseDown: (event) => {
-                if (!hasDraft) event.preventDefault();
-              },
               onClick: () => {
-                if (!hasDraft) openAuthoring();
-                else if (menuOpen && menu.mode !== "hover") hideMenu();
+                if (menuOpen && menu.mode !== "hover") hideMenu();
                 else showMenu("click");
               }
             },
-            typeof IconSparkle16 === "function" ? h(IconSparkle16, { size: 16, "aria-hidden": true }) : h("span", { className: "ptcPlusAuthorButtonLabel", "aria-hidden": true }, t2("bindings.authorNew")),
+            typeof IconSparkle16 === "function" ? h(IconSparkle16, { size: 16, "aria-hidden": true }) : h("span", { className: "ptcPlusAuthorButtonLabel", "aria-hidden": true }, t2("bindings.open")),
             hasDraft ? h("span", {
               className: "ptcPlusDraftBadge",
               "aria-hidden": true,
               "data-attention": view.message !== null
             }, "1") : null
           );
-          const trigger = !hasDraft && typeof Tooltip === "function" ? h(Tooltip, { label, side: "top", delayMs: 400 }, starButton) : starButton;
+          const catalogItems = !quickAccess ? [] : [
+            { id: "global-heading", type: "label", text: t2("bindings.quickHeading") },
+            ...(catalog?.entries ?? []).map((entry) => ({
+              id: `global:${entry.id}`,
+              disabled: catalogStatus !== "ready",
+              label: h(
+                "span",
+                { className: "ptcPlusBindingQuickRow", "data-enabled": entry.enabled },
+                h(
+                  "span",
+                  { className: "ptcPlusBindingQuickName" },
+                  h("strong", { title: entry.name }, entry.name),
+                  h("span", { className: "ptcPlusBindingQuickState" }, t2(entry.enabled ? "bindings.enabled" : "bindings.disabledEntry"))
+                ),
+                h("span", { className: "ptcPlusBindingQuickPurpose", title: entry.purpose }, entry.purpose)
+              )
+            })),
+            ...catalogStatus === "ready" && !catalog?.entries?.length ? [{ id: "empty", type: "label", text: t2("memory.globalEmpty") }] : [],
+            ...catalogStatus === "loading" || catalogStatus === "writing" ? [{ id: "pending", type: "label", text: t2(catalogStatus === "writing" ? "bindings.quickSaving" : "bindings.quickLoading") }] : [],
+            ...catalogError === null ? [] : [{ id: "error", type: "label", text: t2("bindings.failed", { error: catalogError }) }]
+          ];
           return h(
             "span",
             {
@@ -29471,37 +29620,58 @@
                 focused.current = false;
               },
               "data-text": typeof IconSparkle16 === "function" ? void 0 : true,
-              ref: (element) => {
-                anchorRef.current = element;
-                review.access = element;
-              }
+              ref: attachAnchor
             },
-            !hasDraft ? canAuthor ? h("span", { className: "ptcPlusAuthorButtonShell" }, trigger) : null : h(Menu, {
+            !hasDraft && !quickAccess ? null : h(Menu, {
               className: "ptcPlusAuthorButtonShell",
               open: menuOpen,
-              anchor: trigger,
+              anchor: typeof Tooltip === "function" ? h(Tooltip, { label: hint, delayMs: 400 }, starButton) : starButton,
               portal: true,
               side: "top",
-              compact: true,
-              closeOnPointerLeave: menu?.mode === "hover",
+              dense: true,
+              getAnchorRect: menuAnchorRect,
+              selectedIds: (catalog?.entries ?? []).filter((entry) => entry.enabled).map((entry) => `global:${entry.id}`),
               onClose: hideMenu,
-              items: hasDraft ? [{
-                id: view.candidateKey,
-                label: h(
-                  "span",
-                  { className: "ptcPlusDraftMenuItem", ref: firstItemRef },
-                  h("strong", null, view.candidate.entry.name),
-                  h("span", null, t2(bindingReviewStatus(view)))
-                )
-              }] : [],
-              footer: canAuthor ? [{ id: "new", label: h("span", { ref: newItemRef }, t2("bindings.authorNewDraft")) }] : [],
+              items: [
+                ...hasDraft ? [
+                  { id: "draft-heading", type: "label", text: t2("bindings.quickDrafts") },
+                  {
+                    id: view.candidateKey,
+                    label: h(
+                      "span",
+                      { className: "ptcPlusDraftMenuItem", ref: firstItemRef },
+                      h("strong", null, view.candidate.entry.name),
+                      h("span", null, t2(bindingReviewStatus(view)))
+                    )
+                  },
+                  ...quickAccess ? [{ id: "draft-separator", type: "separator" }] : []
+                ] : [],
+                ...catalogItems,
+                ...quickAccess ? [{ id: "actions-separator", type: "separator" }] : [],
+                ...canAuthor ? [{ id: "new", label: h("span", { className: "ptcPlusBindingMenuAction" }, t2("bindings.authorNewDraft")) }] : [],
+                ...quickAccess ? [
+                  ...catalogError === null ? [] : [{ id: "reload", label: h("span", { ref: reloadItemRef }, t2("bindings.reload")) }],
+                  { id: "manage", label: h("span", { ref: manageItemRef, className: "ptcPlusBindingMenuAction" }, t2("bindings.manage")) }
+                ] : []
+              ],
               onSelect: (id2) => {
                 if (!anchorRef.current?.getClientRects().length) return;
+                if (id2.startsWith("global:")) {
+                  const entry = catalog?.entries.find((entry2) => `global:${entry2.id}` === id2);
+                  if (entry) void toggleBinding(entry);
+                  return;
+                }
+                if (id2 === "reload") {
+                  void refreshCatalog(true);
+                  return;
+                }
                 hideMenu();
                 if (id2 === "new") openAuthoring();
+                else if (id2 === "manage") setManaging(true);
                 else if (id2 === view.candidateKey) openBindingReview(review, view.candidate);
               }
             }),
+            managing && quickAccess && view.reachable ? h(BindingsDialog, { t: t2, callUserBindings, onClose: () => setManaging(false) }) : null,
             toast === null ? null : typeof Toast === "function" ? h(Toast, {
               key: toast.sequence,
               text: toast.text,

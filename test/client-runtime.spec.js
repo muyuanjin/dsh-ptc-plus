@@ -1251,7 +1251,10 @@ test('command availability uses a stable Session source and survives renderer re
   expect(entry.inject('client-session').hooks.bindingCommand).toBe(source)
   const release = source.subscribe(() => {})
   expect(list).toHaveBeenCalledTimes(1)
-  fireEvent.click(view.getByRole('button', { name: 'Ask Agent to write a Global User Binding' }))
+  fireEvent.click(view.getByRole('button', { name: 'Global bindings' }))
+  await runtime.flush()
+  view.container.querySelector('.ptcPlusComposerBindingAnchor').getClientRects = () => [new DOMRect(20, 500, 24, 24)]
+  fireEvent.click(view.getByRole('menuitem', { name: 'Write a new binding' }))
   expect(input.scope.getSnapshot().draft).toBe('/binding new ')
   release()
   await runtime.sessions.setCurrent(undefined)
@@ -1266,19 +1269,22 @@ test('command availability uses a stable Session source and survives renderer re
   list.mockResolvedValue({ ok: true, value: [] })
   runtime.ctx.emit('connection/reset')
   await runtime.flush()
-  expect(view.queryByRole('button', { name: 'Ask Agent to write a Global User Binding' })).toBeNull()
+  fireEvent.click(view.getByRole('button', { name: 'Global bindings' }))
+  await runtime.flush()
+  expect(view.queryByRole('menuitem', { name: 'Write a new binding' })).toBeNull()
+  expect(view.getByRole('menuitem', { name: 'Manage global bindings' })).not.toBeNull()
   list.mockResolvedValue({ ok: true, value: [{ name: 'binding' }] })
   remote.emit('commands/change', [])
   await runtime.flush()
-  expect(view.queryByRole('button', { name: 'Ask Agent to write a Global User Binding' })).not.toBeNull()
+  expect(view.queryByRole('button', { name: 'Global bindings' })).not.toBeNull()
   settings.publish({ value: { ...value, bindingAuthorButtonVisible: false } })
   await runtime.flush()
-  expect(view.queryByRole('button', { name: 'Ask Agent to write a Global User Binding' })).toBeNull()
+  expect(view.queryByRole('button', { name: 'Global bindings' })).toBeNull()
   expect(input.scope.getSnapshot().draft).toBe('/binding new ')
   expect(source.getSnapshot()).toBe(true)
   settings.publish({ value })
   await runtime.flush()
-  expect(view.queryByRole('button', { name: 'Ask Agent to write a Global User Binding' })).not.toBeNull()
+  expect(view.queryByRole('button', { name: 'Global bindings' })).not.toBeNull()
   await feature.dispose()
   const disposedCount = list.mock.calls.length
   remote.emit('commands/change', [])
@@ -1405,6 +1411,193 @@ async function openDraftMenu(view, runtime, mode = 'click') {
   if (mode === 'keyboard') await new Promise(requestAnimationFrame)
   return trigger
 }
+
+async function openGlobalMenu(view, runtime, mode = 'hover') {
+  const trigger = view.container.querySelector('.ptcPlusAuthorButton')
+  trigger.closest('.ptcPlusComposerBindingAnchor').getClientRects = () => [new DOMRect(20, 500, 24, 24)]
+  if (mode === 'hover') fireEvent.pointerEnter(trigger, { pointerType: 'mouse' })
+  else fireEvent.click(trigger)
+  await runtime.flush()
+  return trigger
+}
+
+test('global binding menu works before authoring is available and preserves the input', async () => {
+  const entry = { ...reviewCandidate('fileTools').entry, enabled: false }
+  let catalog = { revision: 'r1', entries: [entry] }
+  const rpc = vi.fn(async (endpoint, payload) => {
+    if (endpoint === 'enable') {
+      expect(payload).toEqual({ id: 'fileTools', expectedRevision: 'r1' })
+      catalog = { revision: 'r2', entries: [{ ...entry, enabled: true }] }
+    }
+    return { ok: true, value: endpoint === 'load' ? { revision: catalog.revision, entry: catalog.entries[0] } : catalog }
+  })
+  const { runtime, input, feature } = await fixture({ rpc })
+  input.publish({ draft: 'Keep my message' })
+  const view = runtime.renderRoot()
+  await runtime.flush()
+  await openGlobalMenu(view, runtime)
+  expect(view.getByText('Global bindings · Applies to all sessions')).not.toBeNull()
+  expect(view.queryByRole('menuitem', { name: 'Write a new binding' })).toBeNull()
+  fireEvent.click(view.getByRole('menuitem', { name: /fileTools/ }))
+  await runtime.flush()
+  expect(view.getByRole('menuitem', { name: /fileTools/ }).textContent).toContain('Enabled')
+  expect(rpc.mock.calls.filter(([endpoint]) => endpoint === 'enable')).toHaveLength(1)
+  expect(input.scope.getSnapshot().draft).toBe('Keep my message')
+  fireEvent.click(view.getByRole('menuitem', { name: 'Manage global bindings' }))
+  await runtime.flush()
+  expect(view.getByRole('dialog')).not.toBeNull()
+  expect(view.queryByRole('menu')).toBeNull()
+  fireEvent.click(view.getByRole('button', { name: 'Close global bindings workbench' }))
+  await runtime.flush()
+  expect(view.queryByRole('dialog')).toBeNull()
+  expect(rpc.mock.calls.every(([endpoint]) => ['list', 'enable', 'load'].includes(endpoint))).toBe(true)
+  await feature.dispose()
+})
+
+test('global toggles settle while closed, prevent duplicate writes and require reread after conflict', async () => {
+  const entry = { ...reviewCandidate('toggle').entry, enabled: false }
+  let catalog = { revision: 'r1', entries: [entry] }
+  const pending = deferred()
+  const rpc = vi.fn(async endpoint => {
+    if (endpoint === 'enable') { await pending.promise; catalog = { revision: 'r2', entries: [{ ...entry, enabled: true }] } }
+    if (endpoint === 'disable') return { ok: false, error: { code: 'CONFLICT', message: 'Revision conflict', details: null } }
+    return { ok: true, value: catalog }
+  })
+  const { runtime } = await fixture({ rpc })
+  const view = runtime.renderRoot()
+  await runtime.flush()
+  await openGlobalMenu(view, runtime, 'click')
+  const row = view.getByRole('menuitem', { name: /toggle/ })
+  fireEvent.click(row)
+  fireEvent.click(row)
+  await runtime.flush()
+  expect(row.disabled).toBe(true)
+  fireEvent.keyDown(document, { key: 'Escape' })
+  await runtime.flush()
+  await openGlobalMenu(view, runtime, 'click')
+  expect(view.getByRole('menuitem', { name: /toggle/ }).disabled).toBe(true)
+  pending.resolve()
+  await runtime.flush()
+  expect(rpc.mock.calls.filter(([endpoint]) => endpoint === 'enable')).toHaveLength(1)
+  expect(view.getByRole('menuitem', { name: /toggle/ }).textContent).toContain('Enabled')
+  fireEvent.click(view.getByRole('menuitem', { name: /toggle/ }))
+  await runtime.flush()
+  expect(view.getByText(/Revision conflict/)).not.toBeNull()
+  expect(view.queryByRole('menuitem', { name: /toggle/ })).toBeNull()
+  fireEvent.click(view.getByRole('menuitem', { name: 'Reload' }))
+  await runtime.flush()
+  expect(view.getByRole('menuitem', { name: /toggle/ }).textContent).toContain('Enabled')
+  expect(rpc.mock.calls.filter(([endpoint]) => endpoint === 'disable')).toHaveLength(1)
+})
+
+test('global menu rejects old reads after connection reset, navigation and feature disposal', async () => {
+  const entry = reviewCandidate('obsolete').entry
+  let pending
+  const rpc = async () => ({ ok: true, value: pending ? await pending.promise : { revision: 'r2', entries: [] } })
+  const { runtime, feature } = await fixture({ rpc })
+  const view = runtime.renderRoot()
+  await runtime.flush()
+  pending = deferred()
+  await openGlobalMenu(view, runtime)
+  runtime.ctx.emit('connection/reset')
+  await runtime.flush()
+  pending.resolve({ revision: 'r1', entries: [entry] })
+  await runtime.flush()
+  expect(view.queryByRole('menu')).toBeNull()
+  pending = null
+  await openGlobalMenu(view, runtime)
+  expect(view.queryByRole('menuitem', { name: /obsolete/ })).toBeNull()
+  expect(view.getByText('No global default bindings')).not.toBeNull()
+  fireEvent.keyDown(document, { key: 'Escape' })
+  await runtime.flush()
+  pending = deferred()
+  await openGlobalMenu(view, runtime)
+  await runtime.sessions.add({ id: 'fresh' })
+  await runtime.sessions.setCurrent('fresh')
+  await runtime.flush()
+  pending.resolve({ revision: 'r1', entries: [entry] })
+  await runtime.flush()
+  expect(view.queryByRole('menu')).toBeNull()
+  pending = null
+  await openGlobalMenu(view, runtime)
+  expect(view.queryByRole('menuitem', { name: /obsolete/ })).toBeNull()
+  await feature.dispose()
+  await runtime.flush()
+  expect(view.queryByRole('menu')).toBeNull()
+})
+
+test.each(['toggle', 'reload'].flatMap(operation => ['settled', 'closed', 'moved', 'moved-closed', 'failed'].map(outcome => [operation, outcome])))
+('global %s preserves menu focus after %s', async (operation, outcome) => {
+  const entry = { ...reviewCandidate('keyboard').entry, enabled: false }
+  const pending = deferred()
+  const rpc = async endpoint => endpoint === (operation === 'reload' ? 'reload' : 'enable') ? pending.promise
+    : { ok: true, value: operation === 'reload'
+      ? { revision: null, entries: [], error: 'Invalid bindings document' }
+      : { revision: 'r1', entries: [entry] } }
+  const { runtime } = await fixture({ rpc,
+    commands: { list: async () => ({ ok: true, value: [{ name: 'binding' }] }) },
+  })
+  const view = runtime.renderRoot()
+  await runtime.flush()
+  await openGlobalMenu(view, runtime, 'click')
+  const row = view.getByRole('menuitem', { name: operation === 'reload' ? 'Reload' : /keyboard/ })
+  row.focus()
+  fireEvent.click(row)
+  await runtime.flush()
+  if (operation === 'reload') expect(row.isConnected).toBe(false)
+  else expect(row.disabled).toBe(true)
+  // Chromium blurs disabled buttons; JSDOM needs that browser transition explicitly.
+  row.blur()
+  let expectedFocus = row
+  if (outcome === 'closed') {
+    fireEvent.keyDown(document, { key: 'Escape' })
+    await runtime.flush()
+    expectedFocus = view.container.querySelector('.ptcPlusAuthorButton')
+    expect(document.activeElement).toBe(expectedFocus)
+  } else if (outcome.startsWith('moved')) {
+    const otherInput = document.createElement('input')
+    view.container.appendChild(otherInput)
+    otherInput.focus()
+    expectedFocus = otherInput
+    if (outcome === 'moved-closed') {
+      fireEvent.keyDown(document, { key: 'Escape' })
+      await runtime.flush()
+      expect(document.activeElement).toBe(otherInput)
+    }
+  }
+  pending.resolve(outcome === 'failed'
+    ? { ok: false, error: { code: 'CONFLICT', message: 'Revision conflict', details: null } }
+    : { ok: true, value: { revision: 'r2', entries: [{ ...entry, enabled: true }] } })
+  await runtime.flush()
+  if (outcome === 'failed') expectedFocus = view.getByRole('menuitem', { name: 'Reload' })
+  else if (operation === 'reload' && outcome === 'settled') expectedFocus = view.getByRole('menuitem', { name: /keyboard/ })
+  expect(document.activeElement).toBe(expectedFocus)
+})
+
+test('explicit global menu reload clears a cached storage error', async () => {
+  const entry = reviewCandidate('repaired').entry
+  let cached = { revision: null, entries: [], error: 'Invalid bindings document' }
+  const rpc = vi.fn(async endpoint => {
+    if (endpoint === 'reload') cached = { revision: 'r1', entries: [entry] }
+    return { ok: true, value: cached }
+  })
+  const { runtime } = await fixture({ rpc })
+  const view = runtime.renderRoot()
+  await runtime.flush()
+  await openGlobalMenu(view, runtime)
+  expect(view.getByText(/Invalid bindings document/)).not.toBeNull()
+  fireEvent.keyDown(document, { key: 'Escape' })
+  await runtime.flush()
+  await openGlobalMenu(view, runtime)
+  expect(view.getByText(/Invalid bindings document/)).not.toBeNull()
+  fireEvent.click(view.getByRole('menuitem', { name: 'Reload' }))
+  await runtime.flush()
+  expect(view.getByRole('menuitem', { name: /repaired/ })).not.toBeNull()
+  expect(view.queryByText(/Invalid bindings document/)).toBeNull()
+  expect(rpc.mock.calls.at(-1)[0]).toBe('reload')
+  expect(rpc.mock.calls.filter(([endpoint]) => endpoint === 'reload')).toHaveLength(1)
+  expect(rpc.mock.calls.every(([endpoint]) => ['list', 'reload'].includes(endpoint))).toBe(true)
+})
 
 test.each([true, false])('history and dock share read-only model context with declaration included=%s', async includeDeclaration => {
   const candidate = reviewCandidate('context')
@@ -1549,7 +1742,7 @@ test('one authoring icon owns the draft badge and hover, click and keyboard menu
   const menu = view.getByRole('menu')
   expect(view.container.contains(menu)).toBe(false)
   expect(view.getAllByRole('menuitem').map(item => item.textContent)).toEqual([
-    'menu-draftDraft ready to save or discard', 'Write a new binding',
+    'menu-draftDraft ready to save or discard', 'Write a new binding', 'Manage global bindings',
   ])
   expect(view.container.querySelector('.ptcPlusBindingDock')).toBeNull()
   fireEvent.click(view.getAllByRole('menuitem')[0])
@@ -1583,6 +1776,24 @@ test('one authoring icon owns the draft badge and hover, click and keyboard menu
   expect(document.activeElement).toBe(trigger)
 })
 
+test('the composer entry carries a plugin-signed tooltip that follows the draft state', async () => {
+  const candidate = reviewCandidate('tooltip-entry')
+  const { runtime } = await fixture({ rpc: reviewRpc(candidate),
+    commands: { list: async () => ({ ok: true, value: [] }) } })
+  const view = runtime.renderRoot()
+  await runtime.flush()
+  const trigger = view.container.querySelector('.ptcPlusAuthorButton')
+  expect(trigger.getAttribute('aria-label')).toBe('Global bindings')
+  fireEvent.focus(trigger)
+  await runtime.flush()
+  expect(view.getByRole('tooltip').textContent)
+    .toBe('PTC Plus plugin · Open the Global User Binding menu to author, toggle, or manage')
+  runtime.sessions.behavior('client-session').projections.set('ptcPlusBindingDraft', reviewProjection(candidate))
+  await runtime.flush()
+  expect(trigger.getAttribute('aria-label')).toBe('Binding drafts (1)')
+  expect(view.getByRole('tooltip').textContent).toBe('PTC Plus plugin · Binding draft pending; click to review')
+})
+
 test('a receipt arriving while a draft menu has focus returns focus to its authoring icon', async () => {
   const rects = vi.spyOn(HTMLElement.prototype, 'getClientRects').mockImplementation(function () {
     return this.matches('.ptcPlusAuthorButton, .ptcPlusComposerBindingAnchor') ? [new DOMRect(20, 500, 24, 24)] : []
@@ -1603,7 +1814,7 @@ test('a receipt arriving while a draft menu has focus returns focus to its autho
   await runtime.flush()
   expect(view.queryByRole('menu')).toBeNull()
   expect(view.container.querySelector('.ptcPlusDraftBadge')).toBeNull()
-  expect(document.activeElement).toBe(view.getByRole('button', { name: 'Ask Agent to write a Global User Binding' }))
+  expect(document.activeElement).toBe(view.getByRole('button', { name: 'Global bindings' }))
 })
 
 test('draft menu works without commands and revokes late command availability when the provider leaves', async () => {
@@ -1613,7 +1824,7 @@ test('draft menu works without commands and revokes late command availability wh
   const view = runtime.renderRoot()
   await runtime.flush()
   await openDraftMenu(view, runtime)
-  expect(view.getAllByRole('menuitem')).toHaveLength(1)
+  expect(view.getAllByRole('menuitem')).toHaveLength(2)
   const pending = deferred()
   const provider = await runtime.mount({ apply(ctx) {
     const commands = { list: () => pending.promise }
@@ -1622,16 +1833,16 @@ test('draft menu works without commands and revokes late command availability wh
   await provider.dispose()
   pending.resolve({ ok: true, value: [{ name: 'binding' }] })
   await runtime.flush()
-  expect(view.getAllByRole('menuitem')).toHaveLength(1)
+  expect(view.getAllByRole('menuitem')).toHaveLength(2)
   const live = await runtime.mount({ apply(ctx) {
     const commands = { list: async () => ({ ok: true, value: [{ name: 'binding' }] }) }
     ctx.provide('remote.commands', commands)
   } })
   await runtime.flush()
-  expect(view.getAllByRole('menuitem')).toHaveLength(2)
+  expect(view.getAllByRole('menuitem')).toHaveLength(3)
   await live.dispose()
   await runtime.flush()
-  expect(view.getAllByRole('menuitem')).toHaveLength(1)
+  expect(view.getAllByRole('menuitem')).toHaveLength(2)
 })
 
 test('draft menus close on candidate replacement, session navigation, feature disablement and disposal', async () => {
@@ -1645,15 +1856,15 @@ test('draft menus close on candidate replacement, session navigation, feature di
   await openDraftMenu(view, runtime)
   projection.set('ptcPlusBindingDraft', structuredClone(reviewProjection(first)))
   await runtime.flush()
-  expect(view.getByRole('menuitem').textContent).toContain('menu-first')
+  expect(view.getByRole('menuitem', { name: /menu-first/ }).textContent).toContain('menu-first')
   projection.set('ptcPlusBindingDraft', { ...reviewProjection(second), history: [
     ...reviewProjection(first).history, ...reviewProjection(second).history,
   ] })
   await runtime.flush()
   expect(view.queryByRole('menu')).toBeNull()
   await openDraftMenu(view, runtime)
-  expect(view.getAllByRole('menuitem')).toHaveLength(1)
-  expect(view.getByRole('menuitem').textContent).toContain('menu-second')
+  expect(view.getAllByRole('menuitem')).toHaveLength(2)
+  expect(view.getByRole('menuitem', { name: /menu-second/ }).textContent).toContain('menu-second')
   await runtime.sessions.add({ id: 'menu-other' })
   await runtime.sessions.setCurrent('menu-other')
   await runtime.flush()

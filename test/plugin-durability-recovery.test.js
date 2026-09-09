@@ -184,7 +184,7 @@ return { exposed: process.cwd(), native: fs.realpathSync('.'), resolved: path.re
 })
 
 test('provides an isolated scratch directory while preserving the host environment', async (t) => {
-  const state = fixture()
+  const state = fixture({ computeMs: 10_000, maxWallMs: 15_000 })
   t.after(() => state.dispose())
 
   const result = await state.run('session-scratch', `
@@ -203,6 +203,7 @@ return {
   resolvedExecutable: resolveExecutable(executable, ['-e', 'process.stdout.write("resolved")'], { encoding: 'utf8' }),
 }
 `)
+  assert.equal(result.error, undefined)
   assert.equal(isAbsolute(result.value.directory), true)
   assert.equal(result.value.directory.includes('undefined'), false)
   assert.equal(result.value.temp, result.value.directory)

@@ -1,3 +1,5 @@
+import { createClientRpc } from './client-rpc.js'
+import { RPC_CONTRACTS } from '../internal/rpc-contract.js'
 import { CONFIG_FIELDS, CONFIG_GROUPS, SETTINGS_NAMESPACE } from '../internal/config-spec.js'
 import { derivePtcToolView } from './client-activity.js'
 import { createTypeScriptEditor } from './client-code-editor.js'
@@ -16,7 +18,6 @@ import { bindingDraftProjection, bindingReviewStatus, createBindingReviews } fro
 import { bindingModelPreferences } from '../internal/user-binding-model-context.js'
 
 const CLIENT_STYLE_ID = 'ptc-plus-client-style'
-const USER_BINDINGS_RPC_CHANNEL = '/ptc-plus-bindings'
 const CLIENT_CSS = `
 .ptcPlusBindingDockAnchor{position:relative;flex:none;block-size:0;min-width:0;width:min(calc(100% - 32px),44rem);margin-inline:auto}
 .ptcPlusBindingDock{position:absolute;inset-inline:0;bottom:var(--ptc-plus-review-offset,8px);box-sizing:border-box;min-width:0;display:flex;flex-direction:column;border:1px solid var(--dsw-alias-border-l3,rgba(0,0,0,.1));border-radius:14px;background:var(--dsw-alias-bg-base,#fff);color:var(--dsw-alias-label-primary,#18191c);box-shadow:0 8px 32px rgba(0,0,0,.14),0 2px 6px rgba(0,0,0,.06);max-block-size:var(--ptc-plus-review-height,80dvh);overflow:auto;overscroll-behavior:contain}
@@ -528,7 +529,8 @@ window.__ModuleLoader__.load({
       })
     }
 
-    function apply(ctx) {
+    async function apply(ctx) {
+      const rpc = await createClientRpc(ctx)
       const preferenceScope = ctx.settingsScope.bind({ namespace: SETTINGS_NAMESPACE })
       ctx.effect(() => ctx.locale.register(LOCALE_NS, SETTINGS_COPY), 'ptc-plus: settings dictionaries')
       ctx.effect(installStyles, 'ptc-plus: client styles')
@@ -538,8 +540,8 @@ window.__ModuleLoader__.load({
         if (settings.status !== 'ready' || settings.value?.enabled !== true || settings.value?.userBindingsEnabled !== true) {
           throw new Error('Global User Bindings are disabled')
         }
-        const result = await ctx.connection.rpc.call(
-          USER_BINDINGS_RPC_CHANNEL,
+        const result = await rpc.call(
+          RPC_CONTRACTS.bindings,
           endpoint,
           payload,
           signal,
@@ -567,7 +569,7 @@ window.__ModuleLoader__.load({
         }
         const watch = async current => {
           try {
-            await ctx.connection.rpc.call('/ptc-plus-repl', 'watch', { sessionId }, current.signal)
+            await rpc.call(RPC_CONTRACTS.repl, 'watch', { sessionId }, current.signal)
           } catch {}
           if (disposed || controller !== current) return
           controller = undefined
@@ -580,7 +582,7 @@ window.__ModuleLoader__.load({
         const read = async current => {
           if (!memory.available || memory.entries.length === 0 || memory.observation !== undefined) return
           try {
-            const result = await ctx.connection.rpc.call('/ptc-plus-repl', 'observe', { sessionId, memory }, current.signal)
+            const result = await rpc.call(RPC_CONTRACTS.repl, 'observe', { sessionId, memory }, current.signal)
             if (disposed || controller !== current || current.signal.aborted || result?.ok !== true || result.value === null) return
             const observed = normalizeReplMemorySnapshot(result.value)
             const { observation, ...inventory } = observed
@@ -2155,7 +2157,7 @@ window.__ModuleLoader__.load({
 
     module.exports = {
       apply,
-      inject: ['settingsScope', 'slots', 'locale', 'connection'],
+      inject: ['settingsScope', 'slots', 'locale', 'connection', 'remote'],
     }
     return module.exports
   },

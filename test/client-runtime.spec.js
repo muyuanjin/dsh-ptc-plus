@@ -7,7 +7,12 @@ import * as React from 'react'
 import * as primitives from '@deepseek-ai/dsh-client-ui-primitives'
 import { ConversationEventRegistry } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import { SlotTestRuntime, stubSettingsScope, TestRemote } from '@deepseek-ai/dsh-client-test-runtime'
+import { Context } from '@deepseek-ai/cordis'
+import * as gatewayClient from '@deepseek-ai/dsh-api-gateway/client'
+import { TypertRegistry } from '@deepseek-ai/dsh-typert-registry'
 import { CONFIG_FIELDS } from '../internal/config-spec.js'
+import { createClientRpc } from '../src/client-rpc.js'
+import { RPC_CONTRACTS } from '../internal/rpc-contract.js'
 import { createBindingReviews } from '../src/client-binding-review.js'
 
 const cleanups = []
@@ -42,8 +47,14 @@ async function fixture({ enabled = true, bindings = true, conversation = true, r
   settings.publish({ status: 'ready', writable: true, value })
   runtime.ctx.provide('settingsScope', { bind: () => settings.scope })
   const rpcCalls = []
-  runtime.ctx.provide('connection', { rpc: { call: async (channel, endpoint, payload, signal) => {
-    if (channel === '/ptc-plus-repl') {
+  runtime.ctx.provide('connection', {
+    start: () => ({ stop() {} }),
+    registerGenerationSource: () => () => {},
+    rpc: { open: async function* () {}, call: async (channel, method, wire, signal) => {
+    expect(channel).toBe('/api')
+    const { operation: endpoint, payload } = wire.args
+    const value = await (async () => {
+    if (method === 'ptcPlusRepl/invoke') {
       rpcCalls.push({ endpoint, payload, signal })
       if (endpoint === 'observe') return observeRpc ? observeRpc(payload, signal) : { ok: true, value: null }
       if (watchRpc) return watchRpc(payload, signal)
@@ -53,7 +64,11 @@ async function fixture({ enabled = true, bindings = true, conversation = true, r
     }
     rpcCalls.push({ endpoint, payload })
     return rpc ? rpc(endpoint, payload, signal) : { ok: true, value: null }
+    })()
+    return { ok: true, value }
   } } })
+  await runtime.mount(TypertRegistry)
+  await runtime.mount(gatewayClient)
   const dictionaries = new Map()
   const localeSnapshot = { active: 'en', locales: [], revision: 0 }
   const localeListeners = new Set()
@@ -69,7 +84,11 @@ async function fixture({ enabled = true, bindings = true, conversation = true, r
   setupEvents?.(events)
   const provideConversation = () => runtime.mount({ apply(ctx) { ctx.provide('uiConversation', { events }) } })
   const conversationProvider = conversation ? await provideConversation() : undefined
-  const remote = commands ? new TestRemote(runtime.ctx, { commands }) : undefined
+  const remote = commands ? new TestRemote(new Context(), { commands }) : undefined
+  if (remote) {
+    runtime.ctx.provide('remote.commands', commands)
+    Object.assign(runtime.ctx.remote, { $on: remote.$on.bind(remote) })
+  }
   const input = stubSettingsScope()
   input.publish({ draft: '' })
   runtime.ctx.uiSession.provide({
@@ -107,7 +126,7 @@ async function fixture({ enabled = true, bindings = true, conversation = true, r
   const plugin = await clientPlugin()
   const feature = await runtime.mount(uiSession ? plugin : {
     inject: plugin.inject,
-    apply(ctx) { plugin.apply(ctx.isolate('uiSession')) },
+    apply(ctx) { return plugin.apply(ctx.isolate('uiSession')) },
   })
   return { runtime, settings, value, events, feature, provideConversation, conversationProvider, remote, input, rpcCalls,
     setLocale(active) { localeSnapshot.active = active; localeSnapshot.revision++; for (const listener of localeListeners) listener() } }
@@ -1597,14 +1616,16 @@ test('draft menu works without commands and revokes late command availability wh
   expect(view.getAllByRole('menuitem')).toHaveLength(1)
   const pending = deferred()
   const provider = await runtime.mount({ apply(ctx) {
-    new TestRemote(ctx, { commands: { list: () => pending.promise } })
+    const commands = { list: () => pending.promise }
+    ctx.provide('remote.commands', commands)
   } })
   await provider.dispose()
   pending.resolve({ ok: true, value: [{ name: 'binding' }] })
   await runtime.flush()
   expect(view.getAllByRole('menuitem')).toHaveLength(1)
   const live = await runtime.mount({ apply(ctx) {
-    new TestRemote(ctx, { commands: { list: async () => ({ ok: true, value: [{ name: 'binding' }] }) } })
+    const commands = { list: async () => ({ ok: true, value: [{ name: 'binding' }] }) }
+    ctx.provide('remote.commands', commands)
   } })
   await runtime.flush()
   expect(view.getAllByRole('menuitem')).toHaveLength(2)
@@ -2026,4 +2047,35 @@ test('missing dock retains compact requests and read-only history without a phan
   expect(view.queryByRole('button', { name: /Binding drafts \(1\)/ })).toBeNull()
   expect(view.queryByRole('button', { name: 'Save and enable' })).toBeNull()
   expect(rpcCalls.every(call => call.endpoint === 'list')).toBe(true)
+})
+
+
+test('Client Remote owns cancellation, unwraps Gateway failures and revokes calls on disposal', async () => {
+  const runtime = await SlotTestRuntime.create()
+  cleanups.push(() => runtime.dispose())
+  const calls = []
+  runtime.ctx.provide('connection', {
+    start: () => ({ stop() {} }), registerGenerationSource: () => () => {},
+    rpc: { open: async function* () {}, async call(channel, endpoint, wire, signal) {
+      calls.push({ channel, endpoint, wire, signal })
+      if (wire.args.operation === 'failure') return { ok: false, error: { code: 'gateway/unavailable', message: 'Unavailable', details: {} } }
+      if (wire.args.operation === 'wait') return new Promise(resolve => {
+        signal.addEventListener('abort', () => resolve({ ok: true, value: { ok: true, value: null } }), { once: true })
+      })
+      return { ok: true, value: { ok: true, value: wire.args.payload } }
+    } },
+  })
+  await runtime.mount(TypertRegistry)
+  await runtime.mount(gatewayClient)
+  let rpc
+  const feature = await runtime.mount({ inject: ['remote'], async apply(ctx) { rpc = await createClientRpc(ctx) } })
+  expect(await rpc.call(RPC_CONTRACTS.bindings, 'list', { text: '{{literal}}' })).toEqual({ ok: true, value: { text: '{{literal}}' } })
+  expect((await rpc.call(RPC_CONTRACTS.bindings, 'failure', {})).error.code).toBe('gateway/unavailable')
+  const pending = rpc.call(RPC_CONTRACTS.repl, 'wait', {})
+  await feature.dispose()
+  expect((await pending).ok).toBe(false)
+  expect(calls.at(-1).signal.aborted).toBe(true)
+  await expect(rpc.call(RPC_CONTRACTS.bindings, 'list', {})).rejects.toThrow('unavailable')
+  expect(calls).toHaveLength(3)
+  expect(calls.every(call => call.channel === '/api')).toBe(true)
 })

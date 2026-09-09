@@ -116,13 +116,13 @@ export function fixture(config = {}, fixtureOptions = {}) {
   }
   const ctx = {
     ...(fixtureOptions.observeSession === undefined && fixtureOptions.bindingRpc === undefined ? {} : { inject(names, callback) {
-      if (names[0] === 'connection') callback({ connection: { rpc: {
-        handle(_channel, handler) {
+      if (names[0] === 'ptcPlusRpc') callback({ ptcPlusRpc: {
+        register(_channel, handler) {
           observationHandler = handler
           fixtureOptions.bindingRpc?.(handler)
           return () => {}
         },
-      } } })
+      } })
       return () => {}
     } }),
     codeRuntime: runtime,

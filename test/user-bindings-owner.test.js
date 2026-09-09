@@ -9,7 +9,7 @@ import { Worker } from 'node:worker_threads'
 import { Session } from '@deepseek-ai/dsh-session'
 import { assertObjectJsonSchema, assertSupportedJsonSchema } from '@deepseek-ai/dsh-tools'
 import {
-  USER_BINDINGS_RPC_CHANNEL,
+  USER_BINDINGS_RPC_CONTRACT,
   createUserBindingsOwner,
 } from '../internal/user-bindings-owner.js'
 import { createUserBindingsSnapshot } from '../internal/user-bindings.js'
@@ -118,17 +118,15 @@ function captureSubmission(owner, agent, message) {
 
 function ownerFixture(authoring) {
   let handler
-  let handleOptions
   let handleArgumentCount
   let handleDisposals = 0
   let injectionDisposals = 0
   const effects = []
   const rpc = {
-    handle(channel, next, options) {
-      assert.equal(channel, USER_BINDINGS_RPC_CHANNEL)
+    register(channel, next) {
+      assert.equal(channel, USER_BINDINGS_RPC_CONTRACT)
       handleArgumentCount = arguments.length
       handler = next
-      handleOptions = options
       return async () => { handleDisposals += 1 }
     },
   }
@@ -145,8 +143,8 @@ function ownerFixture(authoring) {
       },
     },
     inject(services, callback) {
-      if (services.length === 1 && services[0] === 'connection') {
-        callback({ connection: { rpc } })
+      if (services.length === 1 && services[0] === 'ptcPlusRpc') {
+        callback({ ptcPlusRpc: rpc })
       } else if (services.length === 1 && services[0] === 'tools') {
         callback({ tools: ctx.tools, on: authoring?.on?.bind(authoring) })
       } else {
@@ -170,7 +168,6 @@ function ownerFixture(authoring) {
     ctx,
     effects,
     get handler() { return handler },
-    get handleOptions() { return handleOptions },
     get handleArgumentCount() { return handleArgumentCount },
     get handleDisposals() { return handleDisposals },
     get injectionDisposals() { return injectionDisposals },
@@ -298,7 +295,7 @@ test('rejects drafts that cannot fit the complete stored document', async () => 
   }
 })
 
-test('registers and disposes the trusted-host Connection RPC', async () => {
+test('registers and disposes binding operations through the shared RPC port', async () => {
     const target = ownerFixture()
     const owner = createUserBindingsOwner(target.ctx, {
       enabled: true,
@@ -309,8 +306,7 @@ test('registers and disposes the trusted-host Connection RPC', async () => {
       maxOldGenerationSizeMb: 32,
       valueLimits: {},
     })
-    assert.equal(target.handleArgumentCount, 3)
-    assert.deepEqual(target.handleOptions, { authority: 'trusted-host' })
+    assert.equal(target.handleArgumentCount, 2)
     assert.equal(owner.path, '/profile/ptc-plus/bindings.json')
     assert.equal((await call(target, 'list')).ok, true)
     await owner.dispose()
@@ -1478,9 +1474,9 @@ test('rolls back a failed user-binding enablement before allowing retry', async 
   const store = fakeStore()
   const ctx = {
     inject(services, callback) {
-      if (services[0] === 'connection') {
+      if (services[0] === 'ptcPlusRpc') {
         if (failMount) throw new Error('connection mount failed')
-        callback({ connection: { rpc: { handle(_channel, next) { handler = next; return () => {} } } } })
+        callback({ ptcPlusRpc: { register(_channel, next) { handler = next; return () => {} } } })
       }
       return () => {}
     },
@@ -1508,8 +1504,8 @@ test('rolls back a failed user-binding enablement before allowing retry', async 
 test('rejects an RPC registration that provides no disposer', () => {
   const ctx = {
     inject(services, callback) {
-      if (services[0] === 'connection') {
-        callback({ connection: { rpc: { handle() { return () => {} } } } })
+      if (services[0] === 'ptcPlusRpc') {
+        callback({ ptcPlusRpc: { register() { return () => {} } } })
       }
       return () => {}
     },
@@ -1530,8 +1526,8 @@ test('restores the enabled owner state when user-binding disposal fails', async 
   const store = fakeStore()
   const ctx = {
     inject(services, callback) {
-      if (services[0] === 'connection') {
-        callback({ connection: { rpc: { handle(_channel, next) { handler = next; return () => {} } } } })
+      if (services[0] === 'ptcPlusRpc') {
+        callback({ ptcPlusRpc: { register(_channel, next) { handler = next; return () => {} } } })
         return async () => {
           if (failDispose) {
             failDispose = false
@@ -1568,14 +1564,14 @@ test('repairs RPC registrations after injection disposal fails during disablemen
   const activeHandlers = new Set()
   const ctx = {
     inject(services, callback) {
-      if (services[0] !== 'connection') return () => {}
-      callback({ connection: { rpc: {
-        handle(_channel, handler) {
+      if (services[0] !== 'ptcPlusRpc') return () => {}
+      callback({ ptcPlusRpc: {
+        register(_channel, handler) {
           handleCalls += 1
           activeHandlers.add(handler)
           return async () => { activeHandlers.delete(handler) }
         },
-      } } })
+      } })
       return async () => {
         if (failInjectionDispose) {
           failInjectionDispose = false
@@ -1634,8 +1630,8 @@ test('repairs authoring injection after its disposer tears down then rejects', a
     agents: { list: () => [agent] },
     tools: { get: (name, scope) => name === 'run_code' && scope === agent ? { name } : undefined },
     inject(services, callback) {
-      if (services[0] === 'connection') {
-        callback({ connection: { rpc: { handle() { return () => {} } } } })
+      if (services[0] === 'ptcPlusRpc') {
+        callback({ ptcPlusRpc: { register() { return () => {} } } })
         return () => {}
       }
       assert.deepEqual(services, ['tools'])
@@ -1694,8 +1690,8 @@ test('reports enablement together with failed partial-mount cleanup', async () =
   let cleanupFails = true
   const ctx = {
     inject(services, callback) {
-      if (services[0] === 'connection') {
-        callback({ connection: { rpc: { handle() { return () => {} } } } })
+      if (services[0] === 'ptcPlusRpc') {
+        callback({ ptcPlusRpc: { register() { return () => {} } } })
         return async () => {
           if (cleanupFails) {
             cleanupFails = false
@@ -1727,8 +1723,8 @@ test('reports disablement together with failed previous-surface restoration', as
   let authoringMounts = 0
   const ctx = {
     inject(services, callback) {
-      if (services[0] === 'connection') {
-        callback({ connection: { rpc: { handle() { return () => {} } } } })
+      if (services[0] === 'ptcPlusRpc') {
+        callback({ ptcPlusRpc: { register() { return () => {} } } })
         return async () => {
           if (connectionDisposeFails) {
             connectionDisposeFails = false

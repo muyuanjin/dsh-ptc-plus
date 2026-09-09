@@ -211,8 +211,8 @@ function hostContext(settings = undefined, agents = [], options = {}) {
           void injection.activate()
           return injection
         }
-        if (services.length === 1 && services[0] === 'connection') {
-          callback({ connection: { rpc: { handle: () => () => {} } } })
+        if (services.length === 1 && services[0] === 'ptcPlusRpc') {
+          callback({ ptcPlusRpc: { register: () => () => {} } })
           return () => {}
         }
         if (services.length === 1 && services[0] === 'tools') {
@@ -229,6 +229,7 @@ function hostContext(settings = undefined, agents = [], options = {}) {
             for (const dispose of childDisposers.reverse()) await dispose()
           }
         }
+        if (services[0] === 'typert') return () => {}
         assert.deepEqual(services, ['settings'])
         settings.fiber ??= { state: 2 }
         callback(settings)
@@ -860,7 +861,7 @@ test('late settings mount reconciles and detaches against composition config', a
   const { ctx, listeners, sections, cleanups, runtime } = hostContext()
   let injectSettings
   ctx.inject = (services, callback) => {
-    if (services.length === 1 && ['sessionProjections', 'connection'].includes(services[0])) return
+    if (services.length === 1 && ['sessionProjections', 'ptcPlusRpc', 'typert'].includes(services[0])) return
     assert.deepEqual(services, ['settings'])
     injectSettings = callback
   }
@@ -889,7 +890,7 @@ test('late settings hydration applies persisted non-enabled configuration', asyn
   const { ctx, cleanups } = hostContext(undefined, [agent])
   let injectSettings
   ctx.inject = (services, callback) => {
-    if (services.length === 1 && ['sessionProjections', 'connection'].includes(services[0])) return
+    if (services.length === 1 && ['sessionProjections', 'ptcPlusRpc', 'typert'].includes(services[0])) return
     injectSettings = callback
   }
   apply(ctx)

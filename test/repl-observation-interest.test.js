@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createReplObservationInterest, REPL_OBSERVATION_RPC_CHANNEL } from '../internal/repl-observation-interest.js'
+import { createReplObservationInterest, REPL_OBSERVATION_RPC_CONTRACT } from '../internal/repl-observation-interest.js'
 import { SessionRuntime } from '../internal/session-runtime.js'
 
 function fixture(scoped = true, observe) {
@@ -12,15 +12,14 @@ function fixture(scoped = true, observe) {
   const ctx = {
     effect,
     inject(names, callback) {
-      assert.deepEqual(names, ['connection'])
+      assert.deepEqual(names, ['ptcPlusRpc'])
       connect = callback
-      callback({ ...(scoped ? { effect } : {}), connection: { rpc: { handle(channel, next, options) {
-        assert.equal(channel, REPL_OBSERVATION_RPC_CHANNEL)
-        assert.equal(options.authority, 'trusted-host')
+      callback({ ...(scoped ? { effect } : {}), ptcPlusRpc: { register(channel, next) {
+        assert.equal(channel, REPL_OBSERVATION_RPC_CONTRACT)
         registered = true
         handler = next
         return () => { registered = false }
-      } } } })
+      } } })
       return scoped ? { dispose: async () => { for (const release of effects) await release() } }
         : async () => { for (const release of effects) await release() }
     },
@@ -60,7 +59,7 @@ test('visible observation interest is bounded, cancellable and scoped to its pub
     await disconnected
     assert.equal(target.registered, false)
     assert.equal(target.owner.has('session'), false)
-    target.connect({ connection: {} })
+    target.connect({ ptcPlusRpc: {} })
     await target.owner.dispose()
     await target.owner.dispose()
   }

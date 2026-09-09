@@ -1,4 +1,6 @@
-export const REPL_OBSERVATION_RPC_CHANNEL = '/ptc-plus-repl'
+import { RPC_CONTRACTS } from './rpc-contract.js'
+
+export const REPL_OBSERVATION_RPC_CONTRACT = RPC_CONTRACTS.repl
 
 /** A visible Client holds a cancellable request; it never requests evaluation. */
 export function createReplObservationInterest(ctx, initiallyEnabled, observe = async () => undefined) {
@@ -40,11 +42,11 @@ export function createReplObservationInterest(ctx, initiallyEnabled, observe = a
       if (signal.aborted) watcher.release()
     })
   }
-  const injection = ctx.inject?.(['connection'], scope => {
-    if (typeof scope.connection?.rpc?.handle !== 'function') return
+  const injection = ctx.inject?.(['ptcPlusRpc'], scope => {
+    if (typeof scope.ptcPlusRpc?.register !== 'function') return
     const owner = typeof scope.effect === 'function' ? scope : ctx
     owner.effect(() => {
-      const unregister = scope.connection.rpc.handle(REPL_OBSERVATION_RPC_CHANNEL, handler, { authority: 'trusted-host' })
+      const unregister = scope.ptcPlusRpc.register(REPL_OBSERVATION_RPC_CONTRACT, handler)
       const release = async () => {
         if (!registrations.delete(release)) return
         clear()

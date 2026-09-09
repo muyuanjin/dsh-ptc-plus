@@ -1,3 +1,4 @@
+import { RPC_CONTRACTS } from './rpc-contract.js'
 import { randomUUID } from 'node:crypto'
 import { dirname } from 'node:path'
 import { Worker } from 'node:worker_threads'
@@ -17,7 +18,7 @@ import {
   storedUserBindingsDocument,
 } from './user-bindings.js'
 
-const RPC_CHANNEL = '/ptc-plus-bindings'
+const RPC_CONTRACT = RPC_CONTRACTS.bindings
 const RUNNER_URL = new URL('./user-binding-runner.js', import.meta.url)
 const COMMAND_USAGE = '/binding new <requirement> or /binding edit <id> <requirement>'
 
@@ -788,11 +789,11 @@ export function createUserBindingsOwner(ctx, options = {}) {
 
   const mountRpcRegistration = (state, record) => {
     if (!enabled || disposed || rpcMount !== state || record.registration !== undefined
-      || typeof record.scope.connection?.rpc?.handle !== 'function') return
-    const registration = ctx.effect(() => record.scope.connection.rpc.handle(
-      RPC_CHANNEL,
+      || typeof record.scope.ptcPlusRpc?.register !== 'function') return
+    const effectOwner = typeof record.scope.effect === 'function' ? record.scope : ctx
+    const registration = effectOwner.effect(() => record.scope.ptcPlusRpc.register(
+      RPC_CONTRACT,
       handler,
-      { authority: 'trusted-host' },
     ), 'ptc-plus user bindings RPC')
     if (typeof registration !== 'function') {
       throw new Error('Global User Bindings RPC registration did not return a disposer')
@@ -807,10 +808,11 @@ export function createUserBindingsOwner(ctx, options = {}) {
     }
     const state = { injection: undefined, records: new Set() }
     rpcMount = state
-    state.injection = ctx.inject(['connection'], (scope) => {
+    state.injection = ctx.inject(['ptcPlusRpc'], (scope) => {
       if (!enabled || disposed || rpcMount !== state) return
       const record = { scope, registration: undefined }
       state.records.add(record)
+      scope.effect?.(() => () => { state.records.delete(record) }, 'ptc-plus: binding RPC scope')
       try {
         mountRpcRegistration(state, record)
       } catch (error) {
@@ -986,4 +988,4 @@ export function createUserBindingsOwner(ctx, options = {}) {
   })
 }
 
-export { RPC_CHANNEL as USER_BINDINGS_RPC_CHANNEL }
+export { RPC_CONTRACT as USER_BINDINGS_RPC_CONTRACT }

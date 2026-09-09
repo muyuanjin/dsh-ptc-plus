@@ -23,6 +23,7 @@ import { installSettingsSectionCompat } from './internal/settings-compat.js'
 import { createReplMemoryProjection } from './internal/repl-memory-projection.js'
 import { createUserBindingDraftProjection } from './internal/user-binding-draft-projection.js'
 import { createUserBindingsOwner } from './internal/user-bindings-owner.js'
+import { createHostRpc } from './internal/host-rpc.js'
 import { createReplObservationInterest } from './internal/repl-observation-interest.js'
 import * as dshSettings from '@deepseek-ai/dsh-settings'
 
@@ -222,6 +223,8 @@ function installPtCRuntime(ctx, resolvedConfig, toolSchemasForAgent, sessionId) 
     }
   }
   try {
+    const hostRpc = createHostRpc(ctx)
+    disposers.push(() => hostRpc.dispose())
     observationInterest = createReplObservationInterest(ctx, activeConfig.replViewEnabled,
       (id, memory, signal) => runtimeBridge?.observeRepl(id, memory, signal))
     disposers.push(() => observationInterest.dispose())

@@ -382,6 +382,15 @@ try {
   const errors = []
   const consoleErrors = []
   const hostIconFallbacks = new Set()
+  const pluginRpc = []
+  page.on('request', request => {
+    const path = new URL(request.url()).pathname
+    if (/^\/ptc-plus-(bindings|repl)\//.test(path)) errors.push(`Unexpected dedicated plugin route: ${path}`)
+    if (/^\/api\/ptcPlus(Bindings|Repl)\/invoke$/.test(path)) {
+      const wire = request.postDataJSON()
+      pluginRpc.push({ path, operation: wire.payload?.args?.operation })
+    }
+  })
   page.on('response', response => {
     const target = new URL(response.url())
     // The Host returns 404 for an unavailable application icon and renders a generic glyph.
@@ -409,8 +418,8 @@ try {
   if (await skipCredentials.isVisible()) await skipCredentials.click()
   if (values['binding-workflow']) {
     const rpc = (method, args) => page.evaluate(async ({ method, args }) => {
-      const response = await fetch('/ptc-web-fixture/' + method, { method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ type: 'client-request', rpcId: crypto.randomUUID(), method, payload: { args } }) })
+      const response = await fetch('/api/ptcWebFixture/invoke', { method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ type: 'client-request', rpcId: crypto.randomUUID(), method: 'ptcWebFixture/invoke', payload: { args: { operation: method, payload: args } } }) })
       if (!response.ok) throw new Error(`Fixture ${method} failed: HTTP ${response.status}`)
       const result = (await response.json()).result
       if (!result.ok) throw new Error(JSON.stringify(result))
@@ -852,10 +861,18 @@ try {
     && text === 'Failed to load resource: the server responded with a status of 404 (Not Found)'))
     .map(({ text }) => text.replace(/https?:\/\/\S+/g, '[URL]')))
   assert.equal(errors.length, 0, errors.join('\n'))
+  if (values['binding-workflow']) {
+    for (const operation of ['list', 'save-draft', 'watch', 'observe']) {
+      assert.ok(pluginRpc.some(request => request.operation === operation), `Missing Remote operation: ${operation}`)
+    }
+    const unauthorized = await fetch(new URL('/api/ptcPlusBindings/invoke', url), { method: 'POST', body: '{}' })
+    assert.equal(unauthorized.status, 401, 'Plugin Remote requires Host authentication')
+  }
   await writeFile(join(evidence, 'result.json'), JSON.stringify({
     dshVersion: version, packageIntegrity,
     browser: { version: browser.version(), channel: values['browser-channel'] ?? 'chromium' },
     settings: 'ready', conversation: 'ready', pageErrors: errors,
+    pluginRpc,
     hostIconFallbacks: [...hostIconFallbacks].map(value => new URL(value).pathname),
     bindingWorkflow: values['binding-workflow'] ? { model: 'deterministic-local-adapter', measurements: bindingMeasurements,
       scrollMeasurements: bindingScrollMeasurements, replMeasurements, reloadMeasurements, dockMeasurements, displayLogInvariant } : null,

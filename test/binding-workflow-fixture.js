@@ -11,6 +11,7 @@ import { SessionStore } from '@deepseek-ai/dsh-session'
 import { SessionProjectionRegistry } from '@deepseek-ai/dsh-session-projection'
 import { SystemPrompt } from '@deepseek-ai/dsh-system-prompt'
 import { ToolRuntime } from '@deepseek-ai/dsh-tools'
+import { TypertRegistry } from '@deepseek-ai/dsh-typert-registry'
 import * as ptc from '../index.js'
 import { ptcToolsMode } from '../scripts/dsh-host-contract.mjs'
 import { sessionEvents } from '../internal/session-events.js'
@@ -33,14 +34,7 @@ export async function bindingWorkflowHost(t) {
     language: 'typescript', isolation: 'worker-thread',
     async run() { throw new Error('unexpected isolated runtime') },
   })
-  let rpc
-  ctx.provide('connection', { rpc: { handle(channel, handler, options) {
-    assert.equal(channel, '/ptc-plus-bindings')
-    assert.equal(options.authority, 'trusted-host')
-    rpc = handler
-    return () => { rpc = undefined }
-  } } })
-  for (const plugin of [SystemPrompt, SessionStore, AgentRegistry, LlmRuntime,
+  for (const plugin of [TypertRegistry, SystemPrompt, SessionStore, AgentRegistry, LlmRuntime,
     SessionProjectionRegistry, ToolRuntime, CommandRuntime, AgentLoop]) {
     const config = plugin === ToolRuntime ? { mode: ptcToolsMode() }
       : plugin === SystemPrompt ? { includeHarnessIdentity: false, persona: '' } : undefined
@@ -116,5 +110,5 @@ export async function bindingWorkflowHost(t) {
       await feature.await()
       await new Promise(resolve => setImmediate(resolve))
     },
-    rpc: (endpoint, payload = {}) => rpc(endpoint, payload, new AbortController().signal) }
+    rpc: (endpoint, payload = {}) => ctx.get('ptcPlusBindings').invoke(endpoint, payload, new AbortController().signal) }
 }

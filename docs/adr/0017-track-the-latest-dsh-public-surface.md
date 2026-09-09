@@ -25,10 +25,32 @@ registration. `scripts/dsh-host-contract.mjs` owns selected-installation package
 resolution, tools presentation and persona field adaptation for development and
 acceptance commands. Host runtime contracts remain in their existing focused
 owners, including `internal/session-events.js` and `internal/settings-compat.js`.
-Consumers use these operations instead of repeating field-generation checks.
+`internal/host-rpc.js` owns UI Remote service registration and withdrawal;
+`src/client-rpc.js` owns Client mounting and result unwrapping. Both consume the
+executable wire definitions in `internal/rpc-contract.js`. Binding and observation
+owners supply operation handlers and retain their domain validation. Consumers
+use these operations instead of repeating transport or field-generation checks.
 Adapters preserve unknown evidence and public subscription disposal; they do not
 cache session capabilities globally. Test-only persistence fixtures and explicit
 offline journal migration retain their own lifecycles and validation contracts.
+
+## UI communication
+
+Plugin UI calls use DSH's public Typert Remote and Gateway over the existing
+`/api` carrier. The shared contract defines `ptcPlusBindings.invoke` and
+`ptcPlusRepl.invoke`, each with an operation string, JSON payload, optional
+cancellation signal and the domain result envelope. The Client unwraps only the
+Gateway result layer. The Host owns authentication, origin checks, transport
+cancellation and dispatch; a connection identity does not confer a draft locator.
+
+The communication owner contributes one package definition containing the active
+services. Disabling Global User Bindings withdraws its service and invocation;
+REPL observation has its own eligibility checks. Service removal aborts pending
+calls and invalidates retained references. Provider replacement cancels the old
+requests and republishes active definitions through Cordis injection. Client
+Remote mounting belongs to its calling fiber and is released with that fiber.
+Writes are never retried by the adapter. Business owners preserve revision,
+capability, storage and observation rules independently of transport.
 
 ## Alternatives considered
 

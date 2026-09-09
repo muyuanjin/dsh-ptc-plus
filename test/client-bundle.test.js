@@ -105,7 +105,7 @@ test('checked client bundle is loadable through the DSH module loader contract',
     if (name === '@deepseek-ai/dsh-client-ui-primitives') return primitives
     throw new Error(`unexpected client dependency ${name}`)
   })
-  assert.equal(Array.from(exported.inject).join(','), 'settingsScope,slots,locale,connection')
+  assert.equal(Array.from(exported.inject).join(','), 'settingsScope,slots,locale,connection,remote')
   assert.doesNotMatch(sourceModule, /useConversation|scope\.sessions|conversationEvents/)
   assert.ok(packageJson.dsh.client.inject.includes('@deepseek-ai/dsh-api-remotes'))
   assert.ok(packageJson.dsh.client.inject.includes('@deepseek-ai/dsh-client-locale'))
@@ -291,6 +291,14 @@ test('settings, header indicator, and tool rows follow the DSH locale dictionari
       },
     },
     remote: {
+      async $mount({ descriptors }) {
+        for (const { namespace } of descriptors) ctx.remote[namespace] = {
+          invoke: async (operation, payload, signal) => ({
+            ok: true, value: await ctx.connection.rpc.call('/api', operation, payload, signal),
+          }),
+        }
+        return () => {}
+      },
       commands: {
         list: async () => ({ ok: true, value: commandDescriptors }),
       },
@@ -298,7 +306,7 @@ test('settings, header indicator, and tool rows follow the DSH locale dictionari
     },
     on(name, listener) { clientListeners.set(name, listener); return () => clientListeners.delete(name) },
   }
-  exported.apply(ctx)
+  await exported.apply(ctx)
 
   assert.deepEqual(conversationDefinitions, [])
   assert.equal(dictionaries.length, 1)
@@ -1146,6 +1154,14 @@ test('renders authoring and memory surfaces when new UI primitives are absent', 
       },
     },
     remote: {
+      async $mount({ descriptors }) {
+        for (const { namespace } of descriptors) ctx.remote[namespace] = {
+          invoke: async (operation, payload, signal) => ({
+            ok: true, value: await ctx.connection.rpc.call('/api', operation, payload, signal),
+          }),
+        }
+        return () => {}
+      },
       commands: {
         list: async () => ({ ok: true, value: commandDescriptors }),
       },
@@ -1153,7 +1169,7 @@ test('renders authoring and memory surfaces when new UI primitives are absent', 
     },
     on(name, listener) { clientListeners.set(name, listener); return () => clientListeners.delete(name) },
   }
-  exported.apply(ctx)
+  await exported.apply(ctx)
 
   const [authorButton] = slotEntries.filter(({ options }) => options.id === 'ptc-plus-binding-author')
   const [bindingCommand] = slotEntries.filter(({ options }) => options.name === 'conversation.chat.commandview')

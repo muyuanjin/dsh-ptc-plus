@@ -57,7 +57,8 @@
     "@deepseek-ai/dsh-settings": "*",
     "@deepseek-ai/dsh-skill-filesystem": "*",
     "@deepseek-ai/dsh-tool-cordis": "*",
-    "@deepseek-ai/dsh-tools": "*"
+    "@deepseek-ai/dsh-tools": "*",
+    "@deepseek-ai/dsh-typert-protocol": "*"
   },
   "scripts": {
     "build": "node scripts/client-bundle.mjs build",
@@ -104,6 +105,7 @@
         "react"
       ],
       "inject": [
+        "@deepseek-ai/dsh-api-gateway",
         "@deepseek-ai/dsh-api-remotes",
         "@deepseek-ai/dsh-client-runtime",
         "@deepseek-ai/dsh-client-locale",
@@ -117,6 +119,7 @@
   },
   "devDependencies": {
     "@deepseek-ai/dsh-agent-loop": "next",
+    "@deepseek-ai/dsh-api-gateway": "next",
     "@deepseek-ai/dsh-api-remotes": "next",
     "@deepseek-ai/dsh-atomic-write": "next",
     "@deepseek-ai/dsh-client-locale": "next",
@@ -135,6 +138,8 @@
     "@deepseek-ai/dsh-skill-filesystem": "next",
     "@deepseek-ai/dsh-tool-cordis": "next",
     "@deepseek-ai/dsh-tools": "next",
+    "@deepseek-ai/dsh-typert-protocol": "next",
+    "@deepseek-ai/dsh-typert-registry": "next",
     "@testing-library/react": "^16.3.3",
     "esbuild": "0.28.2",
     "jsdom": "^29.1.1",

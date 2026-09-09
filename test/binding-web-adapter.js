@@ -1,14 +1,16 @@
+import { bindTypertRemote } from '@deepseek-ai/dsh-typert-protocol'
+import { rpcDescriptor } from '../internal/rpc-contract.js'
 import { readFileSync } from 'node:fs'
 import { LlmAdapter } from '@deepseek-ai/dsh-llm'
 
 const scenario = JSON.parse(readFileSync(new URL('../scripts/binding-workflow-scenario.json', import.meta.url), 'utf8'))
 // A settled answer near the desktop viewport height exercises process disclosure across the scroll boundary.
 const answer = Array.from({ length: 14 }, (_, index) => `Review item ${index + 1}: the binding draft is ready for review.`).join('\n\n')
-export const inject = ['llm', 'connection', 'settings', 'workspaceRegistry']
+export const inject = ['llm', 'typert', 'settings', 'workspaceRegistry']
 
 /** Deterministic Web fixture: no HTTP provider, credentials, or model requests. */
 export function apply(ctx) {
-  ctx.effect(() => ctx.connection.rpc.handle('/ptc-web-fixture', async (method, { args }) => {
+  const service = { async invoke(method, args) {
     if (method === 'settings/update') {
       await ctx.settings.update(args.ns, args.patch)
     } else if (method === 'workspace/create') {
@@ -17,7 +19,14 @@ export function apply(ctx) {
       throw new Error(`Unknown Web fixture method: ${method}`)
     }
     return { ok: true, value: null }
-  }, { authority: 'loopback' }))
+  } }
+  service.typertRemote = bindTypertRemote(service, 'ptcWebFixture')
+  ctx.effect(() => ctx.provide('ptcWebFixture', service))
+  ctx.effect(() => ctx.typert.register({
+    package: 'ptc-binding-web-fixture', face: 'host', schemas: [],
+    model: { services: [], events: [], objects: [] },
+    invocations: [{ ...rpcDescriptor({ service: 'ptcWebFixture' }), id: 'ptc-binding-web-fixture#ptcWebFixture/invoke' }],
+  }))
   const submitted = new Set()
   let callSequence = 0
   class Adapter extends LlmAdapter {

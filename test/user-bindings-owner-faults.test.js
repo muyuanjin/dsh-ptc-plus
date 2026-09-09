@@ -17,7 +17,7 @@ class MalformedWorker extends EventEmitter {
 
 test('rejects malformed candidate result wires', async t => {
   t.mock.module('node:worker_threads', { namedExports: { Worker: MalformedWorker } })
-  const { createUserBindingsOwner, USER_BINDINGS_RPC_CHANNEL } = await import('../internal/user-bindings-owner.js')
+  const { createUserBindingsOwner, USER_BINDINGS_RPC_CONTRACT } = await import('../internal/user-bindings-owner.js')
   let handler
   const ctx = {
     agents: { list: () => [] },
@@ -27,14 +27,14 @@ test('rejects malformed candidate result wires', async t => {
         callback({ tools: ctx.tools, on() { return () => {} } })
         return () => {}
       }
-      if (services[0] !== 'connection') return () => {}
-      callback({ connection: { rpc: {
-        handle(channel, next) {
-          assert.equal(channel, USER_BINDINGS_RPC_CHANNEL)
+      if (services[0] !== 'ptcPlusRpc') return () => {}
+      callback({ ptcPlusRpc: {
+        register(channel, next) {
+          assert.equal(channel, USER_BINDINGS_RPC_CONTRACT)
           handler = next
           return () => {}
         },
-      } } })
+      } })
       return () => {}
     },
     effect(register) {

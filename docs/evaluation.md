@@ -8,6 +8,23 @@ Both entrypoints validate path conversion, PowerShell startup, the installed DSH
 
 The actual `process.version`, `process.execPath`, DSH JavaScript entry, and observed release are recorded in manifests; subsequent DSH invocations use that exact Node executable and entry. Do not launch a probe through `npm exec node`, which can resolve a different runtime. The release is evidence, not a behavior selector or compatibility gate. Keep the selected installation and repository DSH dependencies current.
 
+## Configuration Preflight
+
+Model-backed evaluation requires explicit authorization and an explicit provider, model, and credential-variable name. Run it in an isolated DSH home and workspace. Resolve the selected provider from the user's existing DSH configuration, then copy only its validated API, endpoint, model list, and provider-specific routing fields into the isolated settings. Keep the credential variable name unchanged and let the child process resolve its value from the inherited environment; never read, print, serialize, or store credential values.
+
+Generate a fresh routing/session header for providers that require one, and use the same resolved provider configuration for every comparison arm. If the normal profile lacks a required provider field, repair the isolated copy or use the repository's existing isolated audit driver. Do not weaken the provider check or edit the normal profile.
+
+After configuring the selected runner's route, set its configuration-only variable to `1` before invoking the command:
+
+| Command | Configuration-only variable |
+| --- | --- |
+| `npm run test:expensive` | `DSH_PTC_ACCEPTANCE_CONFIG_ONLY` |
+| `npm run test:ab` | `DSH_PTC_AB_CONFIG_ONLY` |
+
+Each runner reads its own configuration-only variable; the names are not interchangeable. When that variable is set to `1`, the runner returns after its isolated configuration checks. Preflight may create local artifacts and isolated configuration; it does not invoke the model. A successful preflight establishes configuration readiness, not model behavior or semantic correctness. Remove the configuration-only setting only when proceeding to the explicitly authorized paid run.
+
+Inspect only redacted session-log and report artifacts, and record model usage without request headers or credential material. Both commands invoke the configured model and consume quota when run without their configuration-only setting.
+
 ## Stable ordinary-task A/B fixture
 
 `npm run test:ab` uses a versioned, zero-dependency Node.js fixture as the primary ordinary-task workload. The fixture lives in `fixtures/ab-node-project-v1` and is copied independently into each arm workspace. Both arms receive byte-identical working trees, the same deterministic Git history, and the same deterministic uncommitted dirty state prepared by the runner.
@@ -96,22 +113,22 @@ The oracle rejects routine host/storage scanning and checkpoint reflection. `con
 
 An effectful follow-up test needs separate task authorization. Its fixture must acquire an exclusive temporary directory with the platform primitive, preserve any pre-existing same-name directory and unrelated sentinel, and clean only its owned directory. For a status-only workflow any write/delete test is a failure, regardless of cleanup success. Historical logs can be audited offline; stochastic model quality and cache improvements remain unmeasured until an explicitly configured model run is performed.
 
-Both runners require an explicit model route and credential-variable name before any host probing or artifact creation. The referenced credential variable must also contain a value:
+Both runners require an explicit model route and credential-variable name before any host probing or artifact creation. The referenced credential variable must already be available in the inherited environment. These configuration-only examples name it without reading or assigning its value:
 
 ```sh
 DSH_PTC_ACCEPTANCE_PROVIDER=<provider> \
 DSH_PTC_ACCEPTANCE_MODEL=<model> \
 DSH_PTC_ACCEPTANCE_API_KEY_ENV=PROVIDER_API_KEY \
-PROVIDER_API_KEY=<credential> \
+DSH_PTC_ACCEPTANCE_CONFIG_ONLY=1 \
 npm run test:expensive
 
 DSH_PTC_AB_PROVIDER=<provider> \
 DSH_PTC_AB_MODEL=<model> \
 DSH_PTC_AB_API_KEY_ENV=PROVIDER_API_KEY \
-PROVIDER_API_KEY=<credential> \
+DSH_PTC_AB_CONFIG_ONLY=1 \
 npm run test:ab
 ```
 
-`npm run test:ab` writes `report.json`, `report.md`, per-session trajectory artifacts, and blind-review packets under `artifacts/ab-trajectories/`. Both commands invoke the configured model and consume quota.
+For the authorized model run, remove the corresponding configuration-only assignment after preflight succeeds. `npm run test:ab` then writes `report.json`, `report.md`, per-session trajectory artifacts, and blind-review packets under `artifacts/ab-trajectories/`. Both commands invoke the configured model and consume quota outside configuration-only mode.
 
 Token traffic is the sum of input, cache-read, cache-write, and output tokens. Model behavior is stochastic, so comparable new results establish a reproducible observation rather than a universal performance claim.

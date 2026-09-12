@@ -10,6 +10,7 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 . (Join-Path $PSScriptRoot 'windows-lifecycle-path.ps1')
+. (Join-Path $PSScriptRoot 'semver-compare.ps1')
 
 function Get-ExecutablePath {
     param(
@@ -85,7 +86,7 @@ function Resolve-Directory {
     return [IO.Path]::GetFullPath((Join-Path (Get-Location) $ConfiguredPath))
 }
 
-function Get-NpmPackageVersion {
+function Get-NpmPublishedVersion {
     param(
         [Parameter(Mandatory = $true)]
         [string] $NpmPath,
@@ -94,19 +95,44 @@ function Get-NpmPackageVersion {
         [string] $PackageSpec,
 
         [Parameter(Mandatory = $true)]
-        [string] $FallbackVersionFile
+        [AllowEmptyString()]
+        [string] $VersionSpec,
+
+        [Parameter(Mandatory = $true)]
+        [string] $FallbackVersionFile,
+
+        [string[]] $LegacySpecs = @()
     )
 
+    $spec = if ([string]::IsNullOrWhiteSpace($VersionSpec)) { $PackageSpec } else { "$PackageSpec@$VersionSpec" }
+
     try {
-        $raw = & $NpmPath view $PackageSpec version --json --prefer-online 2>&1
+        if ([string]::IsNullOrWhiteSpace($VersionSpec)) {
+            # No explicit spec follows every published release, prereleases included,
+            # so a build that stops tagging its dist-tag channel cannot pin this launcher
+            # to an older release.
+            $raw = & $NpmPath view $PackageSpec versions --json --prefer-online 2>&1
+        } else {
+            $raw = & $NpmPath view $spec version --json --prefer-online 2>&1
+        }
         if ($LASTEXITCODE -ne 0) {
             throw "npm view failed: $($raw -join ' ')"
         }
 
-        $parsed = ($raw -join "`n") | ConvertFrom-Json
-        $version = [string] $parsed
-        if ([string]::IsNullOrWhiteSpace($version)) {
-            throw "npm view returned no version for $PackageSpec"
+        # The launcher exports npm configuration for its isolated pnpm store, so
+        # an npm warning can arrive on the merged stream. Only the JSON document
+        # itself may become the version answer.
+        $json = (@($raw | Where-Object { $_ -is [string] }) -join "`n")
+        if ([string]::IsNullOrWhiteSpace($VersionSpec)) {
+            # ConvertFrom-Json emits the published versions as one array object;
+            # enumerate it explicitly so the selector sees each version.
+            $published = @(($json | ConvertFrom-Json) | ForEach-Object { [string] $_ })
+            $version = Select-HighestVersion -Versions $published
+        } else {
+            $version = [string] ($json | ConvertFrom-Json)
+            if ([string]::IsNullOrWhiteSpace($version)) {
+                throw "npm view returned no version for $spec"
+            }
         }
         return $version.Trim()
     } catch {
@@ -115,8 +141,9 @@ function Get-NpmPackageVersion {
             if ($cachedLines.Count -ge 2) {
                 $cachedSpec = [string] $cachedLines[0]
                 $cachedVersion = [string] $cachedLines[1]
-                if ($cachedSpec -eq $PackageSpec -and -not [string]::IsNullOrWhiteSpace($cachedVersion)) {
-                    Write-Warning "Unable to query $PackageSpec; reusing cached DSH $cachedVersion."
+                $acceptedSpecs = @($spec) + @($LegacySpecs)
+                if ($acceptedSpecs -contains $cachedSpec -and -not [string]::IsNullOrWhiteSpace($cachedVersion)) {
+                    Write-Warning "Unable to query $spec; reusing cached DSH $cachedVersion."
                     return $cachedVersion.Trim()
                 }
             }
@@ -236,7 +263,8 @@ $dshHome = Join-Path $cacheRoot 'dsh-home'
 $pluginSnapshotRoot = Join-Path (Join-Path $cacheRoot 'plugin-snapshots') $packageName
 $pnpmStore = Join-Path $cacheRoot 'pnpm-store'
 $binRoot = Join-Path $cacheRoot 'bin'
-$versionSpec = if ([string]::IsNullOrWhiteSpace($env:DSH_DEV_VERSION)) { 'alpha' } else { $env:DSH_DEV_VERSION.Trim() }
+# Empty means "newest published"; any other value is an npm dist-tag or version.
+$versionSpec = if ([string]::IsNullOrWhiteSpace($env:DSH_DEV_VERSION)) { '' } else { $env:DSH_DEV_VERSION.Trim() }
 $keepCount = 3
 if (-not [string]::IsNullOrWhiteSpace($env:DSH_DEV_MAX_VERSIONS)) {
     $parsedKeep = 0
@@ -257,8 +285,18 @@ Set-Content -LiteralPath $npmShim -Encoding ASCII -Value "@echo off`r`ncall `"$n
 Import-LatestWindowsPath -Prepend @($binRoot, $nodeDirectory)
 
 $cachedVersionFile = Join-Path $cacheRoot 'dsh-version.txt'
-$packageSpec = "@deepseek-ai/dsh@$versionSpec"
-$dshVersion = Get-NpmPackageVersion $npmPath $packageSpec $cachedVersionFile
+# An explicit spec keeps its dist-tag or version meaning; the default resolves
+# every published version so the launcher always installs the newest release.
+$packageSpec = if ([string]::IsNullOrWhiteSpace($versionSpec)) { '@deepseek-ai/dsh' } else { "@deepseek-ai/dsh@$versionSpec" }
+$legacyDefaultSpecs = if ([string]::IsNullOrWhiteSpace($versionSpec)) {
+    # The previous launcher used the alpha dist-tag as its default cache key.
+    @('@deepseek-ai/dsh@alpha')
+} else {
+    @()
+}
+$dshVersion = Get-NpmPublishedVersion -NpmPath $npmPath -PackageSpec '@deepseek-ai/dsh' -VersionSpec $versionSpec `
+    -FallbackVersionFile $cachedVersionFile -LegacySpecs $legacyDefaultSpecs
+Write-Host "Resolved @deepseek-ai/dsh $dshVersion."
 $dshInstallDirectory = Join-Path $dshRoot ("dsh-" + ($dshVersion -replace '[^A-Za-z0-9._-]', '_'))
 $dshCommandPath = Join-Path $dshInstallDirectory 'node_modules\.bin\dsh.cmd'
 $dshInstallMarker = Join-Path $dshInstallDirectory '.install-complete'

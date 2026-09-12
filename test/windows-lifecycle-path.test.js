@@ -33,6 +33,10 @@ function windowsEnvironment(pathValue, additions = {}) {
   const environment = { ...process.env }
   for (const key of Object.keys(environment)) {
     if (key.toLowerCase() === 'path') delete environment[key]
+    // The launcher's own pnpm store must not leak into unrelated npm
+    // invocations: npm reports it as an unknown configuration and writes the
+    // warning to stderr, which would replace the JSON these fixtures read.
+    if (key.toLowerCase() === 'npm_config_store_dir') delete environment[key]
   }
   return { ...environment, Path: pathValue, ...additions }
 }
@@ -264,7 +268,8 @@ test('rejects an oversized PATH before using the cached DSH version', {
   await mkdir(cacheRoot)
   await copyFile(new URL('../scripts/run-dev-dsh.ps1', import.meta.url), path.join(scriptRoot, 'run-dev-dsh.ps1'))
   await copyFile(new URL('../scripts/windows-lifecycle-path.ps1', import.meta.url), path.join(scriptRoot, 'windows-lifecycle-path.ps1'))
-  await writeFile(path.join(cacheRoot, 'dsh-version.txt'), '@deepseek-ai/dsh@alpha\r\n0.1.2-test\r\n')
+  await copyFile(new URL('../scripts/semver-compare.ps1', import.meta.url), path.join(scriptRoot, 'semver-compare.ps1'))
+  await writeFile(path.join(cacheRoot, 'dsh-version.txt'), '@deepseek-ai/dsh\r\n0.1.2-test\r\n')
   const uniquePath = oversizedUniqueWindowsPath()
   const result = spawnSync(resolveWindowsCommand('powershell.exe'), [
     '-NoLogo',
@@ -441,7 +446,7 @@ async function developmentRegistryFixture(t) {
   const cacheRoot = path.join(root, 'cache')
   await mkdir(scriptRoot, { recursive: true })
   await mkdir(mockBin)
-  for (const filename of ['run-dev-dsh.ps1', 'windows-lifecycle-path.ps1']) {
+  for (const filename of ['run-dev-dsh.ps1', 'windows-lifecycle-path.ps1', 'semver-compare.ps1']) {
     await copyFile(new URL(`../scripts/${filename}`, import.meta.url), path.join(scriptRoot, filename))
   }
   await writeFile(path.join(projectRoot, 'package.json'), JSON.stringify({ name: 'registry-probe' }))
@@ -486,7 +491,13 @@ if (tool === 'npm' && args[0] === 'view') {
     console.error('npm error code ENETUNREACH')
     process.exit(1)
   }
-  console.log(JSON.stringify('0.0.0-test'))
+  if (args.some(value => value === 'versions')) {
+    console.log(JSON.stringify(process.env.PTC_MOCK_VIEW_VERSIONS === undefined
+      ? ['0.0.0-test', '0.0.0-old']
+      : JSON.parse(process.env.PTC_MOCK_VIEW_VERSIONS)))
+  } else {
+    console.log(JSON.stringify('0.0.0-test'))
+  }
 } else if (tool === 'npm' && args[0] === 'install') {
   if ([report.registry, report.scopeRegistry].some(value => value.includes('stale-'))) {
     console.error('npm error code ETARGET')
@@ -530,7 +541,8 @@ if (tool === 'npm' && args[0] === 'view') {
         ].join(';'), {
           DSH_DEV_CACHE: cacheRoot,
           DSH_DEV_REGISTRY: '',
-          DSH_DEV_VERSION: 'alpha',
+          // Empty selects the newest published version, which is the launcher default.
+          DSH_DEV_VERSION: '',
           DSH_DEV_PORT: '0',
           npm_config_registry: 'https://stale-mirror.invalid/',
           'npm_config_@deepseek-ai:registry': 'https://stale-scope.invalid/',
@@ -549,6 +561,39 @@ if (tool === 'npm' && args[0] === 'view') {
 
 for (const shellName of ['powershell.exe', 'pwsh.exe']) {
   const shellPath = resolveWindowsCommand(shellName)
+
+  test(`isolated launcher selects the newest published DSH among all versions under ${shellName}`, {
+    skip: shellPath === null,
+  }, async t => {
+    const fixture = await developmentRegistryFixture(t)
+    const newest = '0.1.5-rc.1'
+    const result = fixture.run(shellPath, {
+      // The newest release is not last, and semver precedence — not the order
+      // npm returns — decides which release the launcher installs.
+      PTC_MOCK_VIEW_VERSIONS: JSON.stringify(['0.1.5-alpha.2', newest, '0.1.4', '0.1.5-alpha.10', '0.1.5-alpha.1']),
+    })
+
+    assert.equal(result.status, 0, result.stderr || result.stdout || result.error?.message)
+    assert.match(await readFile(path.join(fixture.cacheRoot, 'dsh-version.txt'), 'utf8'), /0\.1\.5-rc\.1/u)
+  })
+
+  test(`isolated launcher reuses the cached newest DSH version offline under ${shellName}`, {
+    skip: shellPath === null,
+  }, async t => {
+    const fixture = await developmentRegistryFixture(t)
+    const online = fixture.run(shellPath)
+    assert.equal(online.status, 0, online.stderr || online.stdout || online.error?.message)
+
+    // The preceding launcher recorded its alpha default in this cache file.
+    // A current default launch must keep that installation usable offline.
+    await writeFile(path.join(fixture.cacheRoot, 'dsh-version.txt'), '@deepseek-ai/dsh@alpha\r\n0.0.0-test\r\n')
+
+    const offline = fixture.run(shellPath, { PTC_MOCK_VIEW_FAILURE: '1' })
+
+    assert.equal(offline.status, 0, offline.stderr || offline.stdout || offline.error?.message)
+    assert.match(offline.stdout, /reusing cached DSH 0\.0\.0-test/u)
+  })
+
   test(`isolated launcher continues after locked cache cleanup and prune failures under ${shellName}`, {
     skip: shellPath === null,
   }, async t => {

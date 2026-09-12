@@ -13,6 +13,7 @@ import {
   installHook,
   parseReviewLedger,
   preCommitReviewLedger,
+  recordReviewVerdict,
   indexTreeFingerprint,
   sourceTreeFingerprint,
   validateReviewLedger,
@@ -62,6 +63,31 @@ async function repository(t, prefix) {
   t.after(() => rm(root, { recursive: true, force: true }))
   execFileSync('git', ['init', '--quiet'], { cwd: root })
   return root
+}
+
+async function committedRepository(t, prefix) {
+  const root = await repository(t, prefix)
+  await writeFile(path.join(root, 'base.txt'), 'base\n')
+  execFileSync('git', ['add', 'base.txt'], { cwd: root })
+  execFileSync('git', ['-c', 'user.name=PTC Test', '-c', 'user.email=ptc@example.test',
+    'commit', '--quiet', '-m', 'base'], { cwd: root })
+  return root
+}
+
+function headOf(root) {
+  return execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim()
+}
+
+async function recordCleanVerdict(root, fingerprint = sourceTreeFingerprint) {
+  const report = path.join(root, '.git', 'review-report.txt')
+  await writeFile(report, 'the frozen candidate has no findings\nVERDICT: NO FINDINGS\n')
+  return recordReviewVerdict(root, {
+    base: headOf(root),
+    expectHead: headOf(root),
+    evidence: report,
+    expectFingerprint: await fingerprint(root),
+    fingerprint: () => fingerprint(root),
+  })
 }
 
 function usesWindowsGitPathSemantics(root) {
@@ -170,17 +196,19 @@ test('validates open and resolved ledgers without applying readiness or archive'
 })
 
 test('archives only after verification of an unchanged source tree', async (t) => {
-  const root = await repository(t, 'ptc-review-check-')
+  const root = await committedRepository(t, 'ptc-review-check-')
   const archiveDirectory = path.join(root, 'archive')
   const active = await createReviewLedger(root)
   await writeFile(active, resolvedLedger())
+  const head = headOf(root)
+  const fingerprint = async () => 'a'.repeat(40)
   let verificationRuns = 0
 
   const result = await checkReviewLedger(root, {
     archiveDirectory,
     now: new Date('2026-08-22T10:20:30.456Z'),
-    fingerprint: async () => 'stable-tree',
-    head: () => 'checked-head',
+    fingerprint,
+    head: () => head,
     verify: async () => { verificationRuns += 1 },
   })
   assert.equal(verificationRuns, 1)
@@ -188,21 +216,22 @@ test('archives only after verification of an unchanged source tree', async (t) =
   assert.equal(await readFile(result.destination, 'utf8'), resolvedLedger())
   await assert.rejects(() => readFile(active, 'utf8'), { code: 'ENOENT' })
 
+  await recordCleanVerdict(root, fingerprint)
   assert.equal((await preCommitReviewLedger(root, {
-    fingerprint: async () => 'stable-tree',
-    indexFingerprint: async () => 'stable-tree',
-    head: () => 'checked-head',
+    fingerprint,
+    indexFingerprint: fingerprint,
+    head: () => head,
   })).state, 'verified')
   assert.equal((await preCommitReviewLedger(root, {
-    fingerprint: async () => 'stable-tree',
-    indexFingerprint: async () => 'stable-tree',
-    head: () => 'checked-head',
+    fingerprint,
+    indexFingerprint: fingerprint,
+    head: () => head,
   })).state, 'verified')
-  assert.equal((await preCommitReviewLedger(root, {
-    fingerprint: async () => 'stable-tree',
+  await assert.rejects(() => preCommitReviewLedger(root, {
+    fingerprint,
     head: () => 'committed-head',
-  })).state, 'retired')
-  assert.equal((await preCommitReviewLedger(root)).state, 'absent')
+  }), /HEAD moved after npm run check/)
+  await assert.rejects(() => preCommitReviewLedger(root), /no review verification proof exists/)
 })
 
 test('preserves the ledger when verification fails or changes the source tree', async (t) => {
@@ -244,24 +273,25 @@ test('rejects an open ledger before running final deterministic verification', a
 })
 
 test('rejects a commit when the checked source tree changes', async (t) => {
-  const root = await repository(t, 'ptc-review-proof-')
+  const root = await committedRepository(t, 'ptc-review-proof-')
   const active = await createReviewLedger(root)
   await writeFile(active, resolvedLedger())
+  const head = headOf(root)
   await checkReviewLedger(root, {
     fingerprint: async () => 'checked-tree',
-    head: () => 'checked-head',
+    head: () => head,
     verify: async () => {},
   })
   await assert.rejects(() => preCommitReviewLedger(root, {
     fingerprint: async () => 'changed-tree',
-    head: () => 'checked-head',
+    head: () => head,
   }), /source tree changed after npm run check/)
 
-  assert.equal((await preCommitReviewLedger(root, {
+  await assert.rejects(() => preCommitReviewLedger(root, {
     fingerprint: async () => 'changed-tree',
     head: () => 'committed-head',
-  })).state, 'retired')
-  assert.equal((await preCommitReviewLedger(root)).state, 'absent')
+  }), /HEAD moved after npm run check/)
+  await assert.rejects(() => preCommitReviewLedger(root), /no review verification proof exists/)
 })
 
 test('rejects a commit whose index omits part of the verified source tree', async (t) => {
@@ -279,6 +309,7 @@ test('rejects a commit whose index omits part of the verified source tree', asyn
   await writeFile(first, 'fixed-a\n')
   await writeFile(second, 'fixed-b\n')
   await checkReviewLedger(root, { verify: async () => {} })
+  await recordCleanVerdict(root)
 
   execFileSync('git', ['add', 'fix-a.txt'], { cwd: root })
   await assert.rejects(
@@ -292,13 +323,14 @@ test('rejects a commit whose index omits part of the verified source tree', asyn
 
   await unlink(second)
   await checkReviewLedger(root, { verify: async () => {} })
+  await recordCleanVerdict(root)
   execFileSync('git', ['add', 'fix-b.txt'], { cwd: root })
   assert.equal((await preCommitReviewLedger(root)).state, 'verified')
   assert.equal(await indexTreeFingerprint(root), await sourceTreeFingerprint(root))
 })
 
 test('rejects malformed verification proof instead of treating it as absent', async (t) => {
-  const root = await repository(t, 'ptc-review-malformed-proof-')
+  const root = await committedRepository(t, 'ptc-review-malformed-proof-')
   const proof = path.join(root, '.git/review-findings/verified-tree')
   await mkdir(path.dirname(proof), { recursive: true })
 
@@ -387,6 +419,7 @@ test('fingerprints renames into special and nested paths through the commit gate
   const renamedTree = indexTreeFingerprint(root)
   const indexBytes = await gitIndexBytes(root)
   await checkReviewLedger(root, { verify: async () => {} })
+  await recordCleanVerdict(root)
   assert.equal(await sourceTreeFingerprint(root), renamedTree)
   assert.equal(indexTreeFingerprint(root), renamedTree)
   assert.equal((await preCommitReviewLedger(root)).state, 'verified')
@@ -578,28 +611,30 @@ test('lets Git reject an unmerged prospective tree', async (t) => {
 })
 
 test('refreshes a stale proof after a later check without an active ledger', async (t) => {
-  const root = await repository(t, 'ptc-review-refresh-')
+  const root = await committedRepository(t, 'ptc-review-refresh-')
   const active = await createReviewLedger(root)
   await writeFile(active, resolvedLedger())
+  const head = headOf(root)
   await checkReviewLedger(root, {
-    fingerprint: async () => 'first-tree',
-    head: () => 'same-head',
+    fingerprint: async () => 'a'.repeat(40),
+    head: () => head,
     verify: async () => {},
   })
   await assert.rejects(() => preCommitReviewLedger(root, {
-    fingerprint: async () => 'second-tree',
-    head: () => 'same-head',
+    fingerprint: async () => 'b'.repeat(40),
+    head: () => head,
   }), /source tree changed after npm run check/)
 
   assert.equal((await checkReviewLedger(root, {
-    fingerprint: async () => 'second-tree',
-    head: () => 'same-head',
+    fingerprint: async () => 'b'.repeat(40),
+    head: () => head,
     verify: async () => {},
   })).state, 'absent')
+  await recordCleanVerdict(root, async () => 'b'.repeat(40))
   assert.equal((await preCommitReviewLedger(root, {
-    fingerprint: async () => 'second-tree',
-    indexFingerprint: async () => 'second-tree',
-    head: () => 'same-head',
+    fingerprint: async () => 'b'.repeat(40),
+    indexFingerprint: async () => 'b'.repeat(40),
+    head: () => head,
   })).state, 'verified')
 })
 

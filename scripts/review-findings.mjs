@@ -11,6 +11,12 @@ const SCRIPT_DIRECTORY = path.dirname(fileURLToPath(import.meta.url))
 export const TEMPLATE_PATH = path.resolve(SCRIPT_DIRECTORY, '../.agents/templates/REVIEW_FINDINGS.md')
 export const ACTIVE_LEDGER = 'REVIEW_FINDINGS.md'
 const VERIFICATION_PROOF = 'review-findings/verified-tree'
+const VERIFICATION_VERDICT = 'review-findings/verdict'
+const VERDICT_EVIDENCE_DIRECTORY = 'review-findings/evidence'
+const VERDICT_SCHEMA = 'dsh-review-verdict/v1'
+const CLEAN_VERDICT_MARKER = 'VERDICT: NO FINDINGS'
+const VERDICT_FIELDS = new Set(['schema', 'status', 'head', 'fingerprint', 'base', 'evidence'])
+const VERDICT_EVIDENCE_FIELDS = new Set(['name', 'sha256'])
 const TERMINAL_STATUSES = new Set(['resolved', 'invalid', 'accepted'])
 const FINDING_STATUSES = new Set(['unresolved', ...TERMINAL_STATUSES])
 const PLACEHOLDER_FIELDS = new Set(['owner', 'condition', 'impact', 'requiredOutcome'])
@@ -168,6 +174,84 @@ async function ensureLocalExclude(root) {
 
 function verificationProofPath(root) {
   return path.resolve(root, git(root, ['rev-parse', '--git-path', VERIFICATION_PROOF]))
+}
+
+function verificationVerdictPath(root) {
+  return path.resolve(root, git(root, ['rev-parse', '--git-path', VERIFICATION_VERDICT]))
+}
+
+function verdictEvidenceDirectory(root) {
+  return path.resolve(root, git(root, ['rev-parse', '--git-path', VERDICT_EVIDENCE_DIRECTORY]))
+}
+
+async function fileSha256(filename) {
+  return createHash('sha256').update(await readFile(filename)).digest('hex')
+}
+
+function objectId(value, label) {
+  if (typeof value !== 'string' || !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(value)) {
+    throw new Error(`invalid review verdict ${label}`)
+  }
+  return value
+}
+
+function normalizeVerdict(value) {
+  if (value === null || typeof value !== 'object' || Array.isArray(value) || !sameKeys(value, VERDICT_FIELDS)
+    || value.schema !== VERDICT_SCHEMA || value.status !== 'clean') {
+    throw new Error('review verdict is malformed')
+  }
+  objectId(value.head, 'head')
+  objectId(value.fingerprint, 'fingerprint')
+  objectId(value.base, 'scope base')
+  const evidence = value.evidence
+  if (evidence === null || typeof evidence !== 'object' || Array.isArray(evidence)
+    || !sameKeys(evidence, VERDICT_EVIDENCE_FIELDS)
+    || !/^[0-9a-f]{40,64}-[0-9a-f]{40,64}\.txt$/i.test(evidence.name)
+    || !/^[0-9a-f]{64}$/.test(evidence.sha256)) {
+    throw new Error('review verdict is malformed')
+  }
+  return value
+}
+
+async function readCleanEvidence(filename) {
+  let text
+  try {
+    text = await readFile(filename, 'utf8')
+  } catch (error) {
+    throw new Error(`independent review evidence cannot be read: ${error.message}`)
+  }
+  const lines = text.split(/\r?\n/).map(line => line.trim()).filter(line => line.length > 0)
+  const last = lines.at(-1)
+  if (last !== CLEAN_VERDICT_MARKER) {
+    if (last === 'VERDICT: INCOMPLETE') {
+      throw new Error('the independent review reported an incomplete verdict; the delivery gate stays closed')
+    }
+    if (lines.every(line => !/^VERDICT:/.test(line))) {
+      throw new Error(`independent review evidence must end with "${CLEAN_VERDICT_MARKER}"`)
+    }
+    throw new Error(`the independent review did not end with "${CLEAN_VERDICT_MARKER}"`)
+  }
+  return text
+}
+
+async function readVerdict(root) {
+  const filename = verificationVerdictPath(root)
+  if (!await exists(filename)) return undefined
+  let value
+  try {
+    value = JSON.parse(await readFile(filename, 'utf8'))
+  } catch {
+    throw new Error('review verdict is malformed; record it again')
+  }
+  return normalizeVerdict(value)
+}
+
+async function removeIfPresent(filename) {
+  try {
+    await unlink(filename)
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error
+  }
 }
 
 function sourceHead(root) {
@@ -374,9 +458,90 @@ export async function checkReviewLedger(root, options = {}) {
     throw new Error('review findings ledger changed during deterministic verification')
   }
   const head = (options.head ?? sourceHead)(root)
-  await writeVerificationProof(root, { head, fingerprint: after })
-  if (ready.state === 'absent') return ready
-  return archiveResolvedLedger({ root, ...options })
+  const proof = await writeVerificationProof(root, { head, fingerprint: after })
+  const verified = Object.freeze({ head, fingerprint: after, proof })
+  if (ready.state === 'absent') return Object.freeze({ ...ready, ...verified })
+  return Object.freeze({ ...(await archiveResolvedLedger({ root, ...options })), ...verified })
+}
+
+/** Record the controlled clean verdict for one frozen candidate. */
+export async function recordReviewVerdict(root, options = {}) {
+  assertNotTracked(root)
+  if (!nonEmptyString(options.base)) throw new Error('a review verdict requires the scope base commit')
+  if (!nonEmptyString(options.evidence)) throw new Error('a review verdict requires the independent review report')
+  if (!nonEmptyString(options.expectFingerprint)) throw new Error('a review verdict requires the fingerprint captured before the review')
+  if (typeof options.expectHead !== 'string' || !/^[0-9a-f]{7,64}$/i.test(options.expectHead)) {
+    throw new Error('a review verdict requires the full or abbreviated HEAD commit id captured before the review')
+  }
+  const head = (options.head ?? sourceHead)(root)
+  if (head === 'unborn') throw new Error('a review verdict requires a commit at HEAD')
+  if (head !== sourceHead(root) || !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(head)) {
+    throw new Error('a review verdict must bind the current HEAD')
+  }
+  let expectedHead
+  try {
+    expectedHead = git(root, ['rev-parse', '--verify', `${options.expectHead}^{commit}`])
+  } catch {
+    throw new Error('the review HEAD is not a commit in this repository')
+  }
+  if (head !== expectedHead) {
+    throw new Error('HEAD moved while the independent review ran; review the frozen candidate again')
+  }
+  const fingerprint = await (options.fingerprint ?? sourceTreeFingerprint)(root)
+  if (fingerprint !== options.expectFingerprint) {
+    throw new Error('the candidate changed while the independent review ran; review the frozen candidate again')
+  }
+  let base
+  try {
+    base = git(root, ['rev-parse', '--verify', `${options.base}^{commit}`])
+  } catch {
+    throw new Error('the review scope base is not a commit in this repository')
+  }
+  objectId(base, 'scope base')
+  if (git(root, ['merge-base', '--is-ancestor', base, head], { allowFailure: true }) === undefined) {
+    throw new Error('the review scope base is not an ancestor of HEAD')
+  }
+  let evidenceText
+  try {
+    evidenceText = await readCleanEvidence(options.evidence)
+  } catch (error) {
+    await removeIfPresent(verificationVerdictPath(root))
+    await removeIfPresent(verificationProofPath(root))
+    throw new Error(`${error.message}; the standing verification and verdict were retired for this candidate`)
+  }
+  const digest = createHash('sha256').update(evidenceText, 'utf8').digest('hex')
+  const directory = verdictEvidenceDirectory(root)
+  await mkdir(directory, { recursive: true })
+  const name = `${head}-${fingerprint}.txt`
+  const evidencePath = path.join(directory, name)
+  await writeFile(evidencePath, evidenceText)
+  if (await fileSha256(evidencePath) !== digest) {
+    throw new Error('the retained review evidence changed while it was recorded; record the verdict again')
+  }
+  const verdict = Object.freeze({
+    schema: VERDICT_SCHEMA,
+    status: 'clean',
+    head,
+    fingerprint,
+    base,
+    evidence: Object.freeze({ name, sha256: digest }),
+  })
+  const filename = verificationVerdictPath(root)
+  await mkdir(path.dirname(filename), { recursive: true })
+  await writeFile(filename, `${JSON.stringify(verdict)}\n`)
+  return Object.freeze({ state: 'recorded', verdict, path: filename, evidencePath })
+}
+
+export async function readReviewVerdict(root) {
+  assertNotTracked(root)
+  return readVerdict(root)
+}
+
+export async function clearReviewVerdict(root) {
+  assertNotTracked(root)
+  await removeIfPresent(verificationVerdictPath(root))
+  await removeIfPresent(verificationProofPath(root))
+  return Object.freeze({ state: 'cleared' })
 }
 
 export async function preCommitReviewLedger(root, options = {}) {
@@ -388,8 +553,10 @@ export async function preCommitReviewLedger(root, options = {}) {
   if (active.state === 'ready') {
     throw new Error(`${ACTIVE_LEDGER} is resolved but unverified; run npm run check before committing`)
   }
+  const head = (options.head ?? sourceHead)(root)
+  if (head === 'unborn') throw new Error('the review gate requires a commit at HEAD')
   const proof = verificationProofPath(root)
-  if (!await exists(proof)) return Object.freeze({ state: 'absent' })
+  if (!await exists(proof)) throw new Error('no review verification proof exists; run npm run check before committing')
   let expected
   try {
     expected = JSON.parse(await readFile(proof, 'utf8'))
@@ -399,18 +566,41 @@ export async function preCommitReviewLedger(root, options = {}) {
   if (typeof expected?.head !== 'string' || typeof expected.fingerprint !== 'string') {
     throw new Error('review verification proof is malformed; run npm run check again')
   }
-  const head = (options.head ?? sourceHead)(root)
   if (head !== expected.head) {
-    await unlink(proof)
-    return Object.freeze({ state: 'retired' })
+    await removeIfPresent(proof)
+    await removeIfPresent(verificationVerdictPath(root))
+    throw new Error('HEAD moved after npm run check; run it again and record a new clean verdict before committing')
   }
   const actual = await (options.fingerprint ?? sourceTreeFingerprint)(root)
   if (actual !== expected.fingerprint) {
     throw new Error('source tree changed after npm run check; run it again before committing')
   }
   const prospective = await (options.indexFingerprint ?? indexTreeFingerprint)(root)
-  if (prospective === expected.fingerprint) return Object.freeze({ state: 'verified' })
-  throw new Error('staged tree differs from the source tree verified by npm run check; stage the complete verified fix or run it again')
+  if (prospective !== expected.fingerprint) {
+    throw new Error('staged tree differs from the source tree verified by npm run check; stage the complete verified fix or run it again')
+  }
+  const verdict = await readVerdict(root)
+  if (verdict === undefined) {
+    throw new Error('no clean independent review verdict exists; record one with scripts/review-findings.mjs verdict')
+  }
+  if (verdict.head !== head || verdict.fingerprint !== expected.fingerprint) {
+    await removeIfPresent(verificationVerdictPath(root))
+    throw new Error('the clean verdict does not belong to the verified candidate; it was retired, re-review the frozen candidate')
+  }
+  if (git(root, ['merge-base', '--is-ancestor', verdict.base, head], { allowFailure: true }) === undefined) {
+    throw new Error('the clean verdict scope does not cover the current candidate; re-review it')
+  }
+  const evidencePath = path.join(verdictEvidenceDirectory(root), verdict.evidence.name)
+  let evidenceHash
+  try {
+    evidenceHash = await exists(evidencePath) ? await fileSha256(evidencePath) : undefined
+  } catch {
+    evidenceHash = undefined
+  }
+  if (evidenceHash !== verdict.evidence.sha256) {
+    throw new Error('the recorded independent review evidence is missing or changed; record the verdict again')
+  }
+  return Object.freeze({ state: 'verified', verdict })
 }
 
 export function installHook(root) {
@@ -465,6 +655,9 @@ async function main() {
   if (command === 'check') {
     const result = await checkReviewLedger(root, { verify: () => runVerification(root) })
     if (result.state === 'archived') console.log(`archived resolved review findings at ${result.destination}`)
+    if (typeof result.head === 'string' && typeof result.fingerprint === 'string') {
+      console.log(`verified ${result.head} ${result.fingerprint}`)
+    }
     return
   }
   if (command === 'pre-commit') {
@@ -473,6 +666,21 @@ async function main() {
   }
   if (command === 'install-hook') {
     installHook(root)
+    return
+  }
+  if (command === 'verdict') {
+    const recorded = await recordReviewVerdict(root, {
+      base: option(args, '--base'),
+      evidence: option(args, '--evidence'),
+      expectFingerprint: option(args, '--expect-fingerprint'),
+      expectHead: option(args, '--expect-head'),
+
+    })
+    console.log(`recorded clean verdict for ${recorded.verdict.head} ${recorded.verdict.fingerprint}`)
+    return
+  }
+  if (command === 'verdict-clear') {
+    await clearReviewVerdict(root)
     return
   }
   throw new Error(`unknown review findings command ${JSON.stringify(command)}`)

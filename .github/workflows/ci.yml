@@ -36,7 +36,39 @@ jobs:
           cache: npm
           registry-url: https://registry.npmjs.org
       - run: npm ci
-      - run: npm run check
+      # Coverage-instrumented runs of this worker- and VM-heavy suite abort
+      # whole test files natively on the macOS and Windows runners: a local
+      # Windows reproduction records exitCode 3221225477 (an access violation)
+      # in the coverage TAP, and it appears only with coverage and the compiler
+      # bytecode snapshot together. The macOS runner already runs one file at a
+      # time, so this step pins DSH_PTC_TEST_CONCURRENCY for every platform and
+      # retries only a TAP file-level entry whose process ended abnormally (a
+      # signal or an exit code other than 1), printing that excerpt. Any other
+      # failure, including a file that cannot load, leaves without retrying.
+      # docs/verification.md owns this accepted limitation.
+      - name: Verify the reviewed candidate
+        env:
+          DSH_PTC_TEST_CONCURRENCY: 1
+        shell: bash
+        run: |
+          # An aborted file produces a file-level TAP entry at line 1 and an
+          # abnormal process exit; a file that only fails to load exits 1, and
+          # an ordinary failing test carries its own location instead.
+          whole_file_abort() {
+            grep -h -A7 -E "location: '.*\.test\.js:1:1'" coverage/*.tap 2>/dev/null \
+              | grep -qE "^  (signal: '?SIG.*|exitCode: ([2-9]|[1-9][0-9]+))$"
+          }
+          for attempt in 1 2 3; do
+            rm -f coverage/*.tap
+            if npm run check; then exit 0; fi
+            echo "::warning::npm run check failed on attempt ${attempt}"
+            if ! whole_file_abort; then
+              echo "no abnormal test-file exit; not retrying"
+              exit 1
+            fi
+            grep -h -B2 -A8 -E "location: '.*\.test\.js:1:1'" coverage/*.tap 2>/dev/null | tail -40 || true
+          done
+          exit 1
       - name: Pack and import from a clean consumer
         shell: bash
         run: |

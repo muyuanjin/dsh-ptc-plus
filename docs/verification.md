@@ -40,4 +40,14 @@ Optional-chain transforms allocate temporary names through the complete compilat
 
 Callable catalogs compress windows containing referenced source ranges. Ranges separated by at most one source block share a window, preserving compression across nearby functions; large unreferenced gaps and unused buffers are omitted. Empty catalogs retain no source buffers. Entries keep their registration order and exact UTF-16 text in the existing catalog format.
 
+Cell preparation traverses parsed trees and edit mappings without allocating a
+temporary object per unit of work. The namespace walk reads a node's own keys
+once and indexes node arrays directly instead of materializing an entry pair
+per property; the source-map builder validates and writes its four offsets
+positionally, and replacement runs reach that builder through a direct emitter
+instead of a generator and a per-run segment object. Rehomed compiler messages
+write their owned data descriptor directly rather than copying a generic
+descriptor first. Every one of these paths produced identical output before and
+after the change; only the immediately discarded allocations are gone.
+
 For focused diagnostics, use `npm run test:client`, `npm run test:semantics`, or Node's test runner with selected test files. These do not replace the final complete command. Model-backed evaluation remains separate and opt-in; see [Evaluation](evaluation.md).

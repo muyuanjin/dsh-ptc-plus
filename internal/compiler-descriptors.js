@@ -22,6 +22,18 @@ export function createCompilerDescriptors(object, reflect) {
     },
     defineProperty: (target, key, fields) => define(target, key, descriptor(fields)),
     reflectDefineProperty: (target, key, fields) => reflectDefine(target, key, descriptor(fields)),
+    // Rehomed compiler data always writes an owned data field. The null
+    // prototype still keeps native descriptor conversion from reaching an
+    // inherited field, and this writer reaches it without the intermediate
+    // own-field descriptor the generic path copies for every property.
+    defineDataProperty(target, key, value, enumerable) {
+      const fields = { __proto__: null }
+      fields.value = value
+      fields.enumerable = enumerable
+      fields.writable = true
+      fields.configurable = true
+      return define(target, key, fields)
+    },
     defineProperties(target, fields) {
       const table = { __proto__: null }, keys = ownKeys(fields)
       for (let index = 0; index < keys.length; index++) {

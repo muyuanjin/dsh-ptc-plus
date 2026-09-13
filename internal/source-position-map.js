@@ -16,21 +16,33 @@ export class SourceMapRuns {
 
 const isSourceMap = value => Array.isArray(value) || value instanceof SourceMapRuns
 
+const validMappingOffset = value => Number.isSafeInteger(value) && value >= 0 && value <= 0xffffffff
+
 /** Numeric mapping runs avoid retaining an object for every copied token. */
 export function createSourceMapBuilder() {
   const blocks = []
   const blockLength = 4096
   let size = 0
+  // Positional writes keep the hot mapping paths from allocating a segment
+  // object that is immediately taken apart again.
+  const pushValues = (generatedStart, generatedEnd, originalStart, originalEnd) => {
+    if (!validMappingOffset(generatedStart) || !validMappingOffset(generatedEnd)
+      || !validMappingOffset(originalStart) || !validMappingOffset(originalEnd)) {
+      throw new RangeError('source mapping offsets must fit a source buffer')
+    }
+    if (size % blockLength === 0) blocks.push(new Uint32Array(blockLength))
+    const block = blocks.at(-1), offset = size % blockLength
+    block[offset] = generatedStart
+    block[offset + 1] = generatedEnd
+    block[offset + 2] = originalStart
+    block[offset + 3] = originalEnd
+    size += 4
+  }
   return {
     push({ generatedStart, generatedEnd, originalStart, originalEnd }) {
-      const values = [generatedStart, generatedEnd, originalStart, originalEnd]
-      if (values.some(value => !Number.isSafeInteger(value) || value < 0 || value > 0xffffffff)) {
-        throw new RangeError('source mapping offsets must fit a source buffer')
-      }
-      if (size % blockLength === 0) blocks.push(new Uint32Array(blockLength))
-      blocks.at(-1).set(values, size % blockLength)
-      size += 4
+      pushValues(generatedStart, generatedEnd, originalStart, originalEnd)
     },
+    pushValues,
     finish(compact = false) {
       const data = new Uint32Array(size)
       for (let index = 0; index < blocks.length; index++) {
@@ -118,9 +130,9 @@ function segmentOffsetAt(segment, generatedOffset) {
 
 /** A copied interval is already bounded by this segment. Its endpoints need
  * no additional search through the complete source map. */
-function copiedSegmentRange(segment, start, end) {
-  return { originalStart: segmentOffsetAt(segment, start),
-    originalEnd: segmentOffsetAt(segment, end - 1) + (segment.originalEnd > segment.originalStart ? 1 : 0) }
+function copiedSegmentOriginal(segment, start, end) {
+  return [segmentOffsetAt(segment, start),
+    segmentOffsetAt(segment, end - 1) + (segment.originalEnd > segment.originalStart ? 1 : 0)]
 }
 
 function mappedOffsetRange(sourceMap, start, end) {
@@ -134,15 +146,12 @@ function mappedOffsetRange(sourceMap, start, end) {
   }
 }
 
-function* replacementSegments(sourceMap, start, end, replacementLength, mappings) {
+/** Replacement runs reach the mapping builder as positional writes. The
+ * generator this replaced allocated a segment object for every emitted run. */
+function emitReplacementSegments(sourceMap, start, end, replacementLength, mappings, emit) {
   const { originalStart: startOriginal, originalEnd: endOriginal } = mappedOffsetRange(sourceMap, start, end)
   if (!isSourceMap(mappings) || mappings.length === 0) {
-    if (replacementLength !== 0) yield {
-      generatedStart: start,
-      generatedEnd: start + replacementLength,
-      originalStart: startOriginal,
-      originalEnd: endOriginal,
-    }
+    if (replacementLength !== 0) emit(start, start + replacementLength, startOriginal, endOriginal)
     return
   }
   let cursor = 0
@@ -150,12 +159,7 @@ function* replacementSegments(sourceMap, start, end, replacementLength, mappings
   for (const mapping of mappings) {
     if (mapping.generatedStart > cursor) {
       const nextAnchor = sourceOffsetAt(sourceMap, mapping.originalStart)
-      yield {
-        generatedStart: start + cursor,
-        generatedEnd: start + mapping.generatedStart,
-        originalStart: nextAnchor,
-        originalEnd: nextAnchor,
-      }
+      emit(start + cursor, start + mapping.generatedStart, nextAnchor, nextAnchor)
     }
     if (mapping.generatedEnd - mapping.generatedStart === mapping.originalEnd - mapping.originalStart
       && mapping.originalEnd > mapping.originalStart) {
@@ -167,29 +171,20 @@ function* replacementSegments(sourceMap, start, end, replacementLength, mappings
         if (segment.generatedStart >= mapping.originalEnd) break
         const from = Math.max(mapping.originalStart, segment.generatedStart)
         const to = Math.min(mapping.originalEnd, segment.generatedEnd)
-        yield { generatedStart: start + mapping.generatedStart + from - mapping.originalStart,
-          generatedEnd: start + mapping.generatedStart + to - mapping.originalStart,
-          ...copiedSegmentRange(segment, from, to) }
+        const [originalStart, originalEnd] = copiedSegmentOriginal(segment, from, to)
+        emit(start + mapping.generatedStart + from - mapping.originalStart,
+          start + mapping.generatedStart + to - mapping.originalStart, originalStart, originalEnd)
       }
     } else {
-      const original = mappedOffsetRange(sourceMap, mapping.originalStart, mapping.originalEnd)
-      yield {
-        generatedStart: start + mapping.generatedStart,
-        generatedEnd: start + mapping.generatedEnd,
-        ...original,
-      }
+      const { originalStart, originalEnd } = mappedOffsetRange(sourceMap, mapping.originalStart, mapping.originalEnd)
+      emit(start + mapping.generatedStart, start + mapping.generatedEnd, originalStart, originalEnd)
     }
     cursor = mapping.generatedEnd
     anchorOffset = mapping.originalEnd
   }
   if (cursor < replacementLength) {
     const anchor = sourceOffsetAt(sourceMap, anchorOffset)
-    yield {
-      generatedStart: start + cursor,
-      generatedEnd: start + replacementLength,
-      originalStart: anchor,
-      originalEnd: anchor,
-    }
+    emit(start + cursor, start + replacementLength, anchor, anchor)
   }
 }
 
@@ -241,13 +236,9 @@ export function applySourceEdits(code, sourceMap, edits) {
       const start = Math.max(sourceOffset, segment.generatedStart)
       const stop = Math.min(end, segment.generatedEnd)
       if (stop <= start) continue
-      const { originalStart, originalEnd } = copiedSegmentRange(segment, start, stop)
-      mappings.push({
-        generatedStart: generatedOffset + start - sourceOffset,
-        generatedEnd: generatedOffset + stop - sourceOffset,
-        originalStart,
-        originalEnd,
-      })
+      const [originalStart, originalEnd] = copiedSegmentOriginal(segment, start, stop)
+      mappings.pushValues(generatedOffset + start - sourceOffset, generatedOffset + stop - sourceOffset,
+        originalStart, originalEnd)
     }
     generatedOffset += end - sourceOffset
     sourceOffset = end
@@ -257,10 +248,10 @@ export function applySourceEdits(code, sourceMap, edits) {
     appendUnchanged(item.start)
     const { text } = item
     chunks.push(text)
-    for (const segment of replacementSegments(sourceMap, item.start, item.end, text.length, item.mappings)) {
-      mappings.push({ ...segment, generatedStart: segment.generatedStart - item.start + generatedOffset,
-        generatedEnd: segment.generatedEnd - item.start + generatedOffset })
-    }
+    emitReplacementSegments(sourceMap, item.start, item.end, text.length, item.mappings,
+      (generatedStart, generatedEnd, originalStart, originalEnd) => mappings.pushValues(
+        generatedStart - item.start + generatedOffset, generatedEnd - item.start + generatedOffset,
+        originalStart, originalEnd))
     generatedOffset += text.length
     sourceOffset = item.end
   }

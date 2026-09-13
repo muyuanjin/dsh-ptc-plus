@@ -5,7 +5,7 @@ import { compilerDescriptors } from './compiler-descriptors.js'
 const { isMap, isSet, isUint32Array } = types
 const ownKeys = Reflect.ownKeys
 const descriptor = Object.getOwnPropertyDescriptor
-const define = compilerDescriptors.defineProperty
+const defineData = compilerDescriptors.defineDataProperty
 const setPrototypeOf = Object.setPrototypeOf
 const stringify = JSON.stringify
 const array = Array.isArray
@@ -51,8 +51,7 @@ function copyData(value, json) {
     if (key === 'length' && array(value)) continue
     const field = descriptor(value, key)
     if (!('value' in field)) throw new NativeTypeError('compiler messages must not contain accessors')
-    define(result, key, { value: copyData(field.value, json), enumerable: field.enumerable,
-      writable: true, configurable: true })
+    defineData(result, key, copyData(field.value, json), field.enumerable)
   }
   if (array(value)) result.length = value.length
   return result

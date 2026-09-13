@@ -8,10 +8,13 @@ export function walkAst(node, enter, leave = undefined, context = undefined, par
   const entered = enter(node, parent, parentKey, context)
   if (entered === SKIP_AST_CHILDREN) return
   const childContext = entered === undefined ? context : entered
-  for (const [key, value] of Object.entries(node)) {
+  const keys = Object.keys(node)
+  for (let index = 0; index < keys.length; index++) {
+    const key = keys[index]
     if (AST_METADATA_KEYS.has(key)) continue
+    const value = node[key]
     if (Array.isArray(value)) {
-      for (const child of value) walkAst(child, enter, leave, childContext, node, key)
+      for (let child = 0; child < value.length; child++) walkAst(value[child], enter, leave, childContext, node, key)
     } else {
       walkAst(value, enter, leave, childContext, node, key)
     }

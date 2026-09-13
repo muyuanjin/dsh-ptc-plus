@@ -86,6 +86,7 @@ export function normalizeBindingDescriptors(bindings) {
     workerDescriptors: Object.freeze(namespaces.map(namespace => Object.freeze({
       global: namespace.global,
       members: namespace.members,
+      ...(reservedNames.has(namespace.global) ? {} : { shadowable: true }),
       ...(namespace.emptyObjectMembers === undefined
         ? {}
         : { emptyObjectMembers: namespace.emptyObjectMembers }),

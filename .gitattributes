@@ -3,3 +3,11 @@
 
 # The versioned A/B fixture is hashed byte-for-byte before materialization.
 /fixtures/ab-node-project-v1/** text eol=lf
+
+# Preserve upstream fixtures, licenses and generated dependency literals exactly.
+# Their trailing spaces are data; source files retain normal whitespace checks.
+/test/fixtures/test262/** text eol=lf whitespace=-blank-at-eol
+/compiler-*.cjs text eol=lf whitespace=-blank-at-eol
+/compiler-*.cjs.map text eol=lf
+/compiler-asset-*.txt text eol=lf
+/compiler-assets.json text eol=lf

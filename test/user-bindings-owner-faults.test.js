@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
+import { workerData } from 'node:worker_threads'
 import test from 'node:test'
 
 class MalformedWorker extends EventEmitter {
@@ -16,7 +17,7 @@ class MalformedWorker extends EventEmitter {
 }
 
 test('rejects malformed candidate result wires', async t => {
-  t.mock.module('node:worker_threads', { namedExports: { Worker: MalformedWorker } })
+  t.mock.module('node:worker_threads', { namedExports: { Worker: MalformedWorker, workerData } })
   const { createUserBindingsOwner, USER_BINDINGS_RPC_CONTRACT } = await import('../internal/user-bindings-owner.js')
   let handler
   const ctx = {

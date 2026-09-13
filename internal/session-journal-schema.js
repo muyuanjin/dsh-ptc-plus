@@ -12,7 +12,8 @@ export const REWRITES_KEY = 'dshPtcPlusRewrites'
 export const RECOVERY_BOUNDARY_KEY = 'dshPtcPlusRecoveryBoundaries'
 export const IMPORT_BOUNDARY_JOURNAL_VERSION = 7
 export const PER_NAME_USER_BINDINGS_JOURNAL_VERSION = 8
-export const JOURNAL_VERSION = PER_NAME_USER_BINDINGS_JOURNAL_VERSION
+export const LANGUAGE_SEMANTICS_JOURNAL_VERSION = 9
+export const JOURNAL_VERSION = LANGUAGE_SEMANTICS_JOURNAL_VERSION
 export const LIVE_USER_BINDINGS_SHADOW_POLICY = 'per-name'
 export const LEGACY_USER_BINDINGS_SHADOW_POLICY = 'whole-entry'
 export const LIVE_USER_BINDINGS_REUSE_POLICY = 'implementation-v1'
@@ -28,7 +29,8 @@ export const RECOVERY_BOUNDARY_EVENT = 'ptc-plus/recovery-boundary'
 export const STATUSES = new Set(['durable', 'volatile', 'discarded', 'noop'])
 export const BINDING_MODES = new Set(['loose', 'strict'])
 export const WHOLE_ENTRY_JOURNAL_FIELDS = new Set(['version', 'bindingPolicy', 'rewritePolicy', 'moduleSemantics', 'userBindingsFingerprint', 'userBindingsReusePolicy', 'status', 'calls', 'operations', 'confirms', 'diagnostics', 'completion', 'volatileReason'])
-export const JOURNAL_FIELDS = new Set([...WHOLE_ENTRY_JOURNAL_FIELDS, 'userBindingsShadowPolicy', 'userBindingNames'])
+export const PER_NAME_JOURNAL_FIELDS = new Set([...WHOLE_ENTRY_JOURNAL_FIELDS, 'userBindingsShadowPolicy', 'userBindingNames'])
+export const JOURNAL_FIELDS = new Set([...PER_NAME_JOURNAL_FIELDS, 'languageSemantics'])
 export const FINGERPRINT_REUSE_JOURNAL_FIELDS = new Set([...WHOLE_ENTRY_JOURNAL_FIELDS].filter(field => field !== 'userBindingsReusePolicy'))
 export const RELATIONLESS_JOURNAL_FIELDS = new Set([...FINGERPRINT_REUSE_JOURNAL_FIELDS].filter(field => field !== 'userBindingsFingerprint'))
 export const PREDECESSOR_JOURNAL_FIELDS = new Set(['version', 'bindingMode', 'rewritePolicy', 'status', 'calls', 'operations', 'confirms', 'diagnostics', 'completion', 'volatileReason'])
@@ -54,7 +56,7 @@ export const ERROR_FIELDS = new Set(['kind', 'message'])
 export const EDIT_TARGET_FIELDS = new Set(['targetCallSeq'])
 export const DERIVED_RUN_FIELDS = new Set(['code', 'description'])
 
-export const JOURNAL_VERSIONS = new Set([LEGACY_JOURNAL_VERSION, INTERMEDIATE_JOURNAL_VERSION, PREVIOUS_JOURNAL_VERSION, USER_BINDING_RELATIONLESS_JOURNAL_VERSION, FINGERPRINT_REUSE_JOURNAL_VERSION, VERSIONED_BINDING_REUSE_JOURNAL_VERSION, IMPORT_BOUNDARY_JOURNAL_VERSION, JOURNAL_VERSION])
+export const JOURNAL_VERSIONS = new Set([LEGACY_JOURNAL_VERSION, INTERMEDIATE_JOURNAL_VERSION, PREVIOUS_JOURNAL_VERSION, USER_BINDING_RELATIONLESS_JOURNAL_VERSION, FINGERPRINT_REUSE_JOURNAL_VERSION, VERSIONED_BINDING_REUSE_JOURNAL_VERSION, IMPORT_BOUNDARY_JOURNAL_VERSION, PER_NAME_USER_BINDINGS_JOURNAL_VERSION, JOURNAL_VERSION])
 export const USER_BINDINGS_REUSE_POLICIES = new Set([LEGACY_USER_BINDINGS_REUSE_POLICY, LIVE_USER_BINDINGS_REUSE_POLICY])
 export const USER_BINDINGS_SHADOW_POLICIES = new Set([LEGACY_USER_BINDINGS_SHADOW_POLICY, LIVE_USER_BINDINGS_SHADOW_POLICY])
 const USER_BINDING_NAME_STATES = new Set(['provider', 'local', 'absent', 'unknown'])

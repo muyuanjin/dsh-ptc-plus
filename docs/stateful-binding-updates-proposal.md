@@ -1,8 +1,8 @@
 # 面向 Agent 的有状态计算语言提案：从核心哲学推导语义、实现与验收
 
-状态：调研与设计，尚未实施。本文替代原 `HANDOFF-import-collision.md`，保留已复现问题与研究证据。零重声明错误是必须满足的计算契约之一；完整目标是让模型以熟悉的语法持续修订计算，减少记忆负担，并在失败或上下文变化后正确继续。
+本文定义 PTC Plus 自有执行边界内的有状态计算契约；实现决策由 [ADR 0025](adr/0025-use-versioned-logical-binding-identities.md) 拥有，第 11 节索引当前实现和验收证据。本文替代原 `HANDOFF-import-collision.md`，保留问题与研究依据。零重声明错误是必须满足的计算契约之一；目标是让模型以熟悉的语法持续修订计算，减少记忆负担，并在失败或上下文变化后正确继续。
 
-本文只规定提案目标与实施要求，不把未来行为写成现有能力。涉及代码、规范、配置、journal 和用户文档的后续变更由第 10 节列出 owner；本提案本身不改变运行时或授权。
+本文规定目标语言、配置和恢复契约；是否已落实以执行证据为准。用户主动动态编译的边界见第 2.1 节；涉及代码、规范、配置、journal 和用户文档的变更由第 10 节列出 owner。
 
 ## 1. 从核心哲学到可检验的设计约束
 
@@ -58,6 +58,7 @@ C1–C6 共同约束结果。“没有错误”不能通过破坏 C2/C3/C4/C5 �
 | 无值的裸名称声明只保证存在 | C1/C2/C3：未提供新值时不悄悄抹掉已有值；清空使用显式赋值。 | 第 5.1 节 |
 | 声明按 declarator 完成后发布，赋值按实际写入生效 | C2/C3：新声明不制造半初始化公开状态，显式写入不假装可回滚。 | 第 5.3 节 |
 | import 跟随模块，写入形成局部覆盖 | C1/C2/C3：复用值来源与修订名称兼容，不修改模块对象。 | 第 5.4 节 |
+| PTC 管理模块 namespace，Node 拥有链接与执行 | C2/C3/C6：导出读取直接关联逻辑身份，避免将动态来源复制成陈旧快照；原生获取路径有明确互操作边界。 | 第 5.4 节 |
 | 全局条目完整激活、公开名称分别覆盖 | C2/C3/C5：覆盖一个名称不撤销兄弟名称，不获得存储管理权。 | 第 5.6 节 |
 | 模块语法成为默认语言能力，普通设置仅保留一个更新开关 | C1/C5/C6：语法实现方式没有独立用户价值；保护性选择与旧配置仍有明确表达。 | 第 4 节 |
 | 独立编译单元与连续逻辑状态 | C2/C6：跨次持久性不再依赖原生重复声明限制。 | 第 6 节 |
@@ -70,20 +71,22 @@ C1–C6 共同约束结果。“没有错误”不能通过破坏 C2/C3/C4/C5 �
 
 依据 C1–C6，默认 PTC 计算应满足：**语义明确的代码不因插件的内部表示限制而失败；同名修订可直接进行；真实计算失败后，可继续状态与已发生效果仍有准确含义。**
 
-### 2.1 完整覆盖责任
+### 2.1 PTC Plus 执行边界
 
 | 计算区域 | 本方案承担的责任 |
 | --- | --- |
 | run_code、edit_run_code 的派生执行 | 同一语言入口、状态机制、原始参数与 call identity。 |
 | 同 cell、跨 cell、函数、块、参数、catch、switch、循环、类初始化 | 全部声明命名空间归一化，保留各自 scope 和 activation。 |
-| eval、Function 家族、vm、alias、原型构造器、bound callable | 动态源码递归适配，不要求模型改写调用姿势。 |
-| 模块图、静态/动态/data URL、ESM/CJS、模块内动态代码 | 在 PTC 执行环境内统一接入；不修改磁盘模块或安装包。 |
+| 用户绑定 initializer、候选、工作台及插件创建的 worker/bootstrap | 通过 PTC Plus 编译与状态契约适配，拥有独立 root 和生命周期。 |
+| 用户主动调用的 eval、Function 家族及其 alias、原型构造器、bound callable | 保留原生语法目标、编译错误与效果；适配其所属逻辑环境和源码反射，具体契约见第 5.7 节。 |
+| 用户自行创建的 vm、新 realm、native addon 或外部引擎 | 保留该引擎的原生编译与所属环境，不把独立环境映射到调用者的会话 root，也不声称 module hook 接管了这些编译器。 |
+| PTC Plus 自有模块加载（静态/动态/data URL、ESM/CJS） | 在 PTC 执行环境内统一接入；不修改磁盘模块或安装包。模块内的 eval/Function 同样保持所属逻辑环境。 |
 | 插件自有子计算、用户绑定 initializer、候选与工作台 | 编译契约一致，状态、权限与生命周期各自独立。 |
 | 失败继续、配置切换、cold replay、模型可见状态收缩 | 实际状态与证据一致，不留下永久占位、混用语义或未知历史门禁。 |
 
-这张表是覆盖责任索引，不是允许实现只支持所列示例的白名单。新语法节点和新编译入口由共同 owner 补齐；普通局部或动态代码不能被划为产品例外。
+这张表是覆盖责任索引，不是允许实现只支持所列示例的白名单。PTC Plus 自有入口中的新语法节点和编译路径由共同 owner 补齐；eval/Function 的原生语法目标与逻辑环境适配分别由第 5.7 节规定，用户自行创建的独立引擎保留自己的环境。
 
-零重声明包括 parser/scope/native compiler 的重复名称拒绝、模块重复导出、参数/私有名称/标签冲突、生成代码碰撞与插件 preflight 的同类拒绝。把错误换成 `EvalError`、“不支持”或其他 PTC 错误码，不算完成。
+零重声明包括 PTC Plus 方言编译边界内 parser/scope/native compiler 的重复名称拒绝、模块重复导出、生成代码碰撞与插件 preflight 的同类拒绝。显式 eval/Function 的字符串仍按原生语法目标解析，其环境和源码反射适配属于插件责任；独立外部引擎返回自己的原生结果。
 
 ### 2.2 内部保证与无界命题必须分开
 
@@ -110,37 +113,39 @@ C1–C6 共同约束结果。“没有错误”不能通过破坏 C2/C3/C4/C5 �
 
 ## 3. 当前问题与证据
 
-### 3.1 已复现的行为
+### 3.1 历史实现的反例
 
-下表中的两个源码片段按顺序在同一会话执行。除特别说明外，现有变量重声明、函数/类重声明、混合解构开关均开启，静态 import 与 export 适配也开启。
+下表记录统一逻辑身份实现之前的反例，不是新代际的行为规范。两个源码片段按顺序在同一会话执行，旧变量、函数/类、混合解构及模块开关均开启。新代际由 [ADR 0025](adr/0025-use-versioned-logical-binding-identities.md) 固定编译与恢复契约。
 
-| 场景 | 第一个 cell | 第二个 cell | 当前结果 |
+| 场景 | 第一个 cell | 第二个 cell | 历史结果 |
 | --- | --- | --- | --- |
-| 重复 import | `import { basename as item } from 'node:path'` | 同一 import | `PTC-N001` |
-| 变量变为 import | `let item = 2` | `import { basename as item } from 'node:path'` | `PTC-N001` |
+| 重复 import | `import { basename as item } from 'node:path'` | 同一 import | 成功，沿用最新模块来源 |
+| 变量变为 import | `let item = 2` | `import { basename as item } from 'node:path'` | `PTC-N001`；`item` 已是共享 REPL 根 lexical，alias 无法遮蔽它 |
 | import 变为变量 | `import { basename as item } from 'node:path'` | `const item = 2` | 成功 |
-| import 变为函数 | 同上 | `function item() { return 2 }` | `PTC-N001`，旧目标不可写 |
-| 控制流内 var 后声明 let | `if (true) { var item = 1 }` | `let item = 2` | worker 原生 `Identifier 'item' has already been declared` |
-| let 后使用控制流内 var | `let item = 1` | `if (true) { var item = 2 }` | 同上 |
-| let 后使用循环 var | `let item = 1` | `for (var item = 0; item < 1; item++) {}` | 同上 |
-| 普通默认名称变为默认导出 | `let __default = 1` | `export default 2` | `PTC-C001`，名称已声明 |
+| import 变为函数 | 同上 | `function item() { return 2 }` | 成功，建立新的本地函数 binding |
+| class 变为 import | `class item { static tag = 'c' }` | 同一 import | `PTC-N001`，原因与“变量变为 import”相同 |
+| 控制流内 var 后声明 let | `if (true) { var item = 1 }` | `let item = 2` | 成功，后续读取为 2 |
+| let 后使用控制流内 var | `let item = 1` | `if (true) { var item = 2 }` | 成功，后续读取为 2 |
+| let 后使用循环 var | `let item = 1` | `for (var item = 0; item < 1; item++) {}` | 成功，后续读取为 1 |
+| 普通默认名称变为默认导出 | `let __default = 1` | `export default 2; return __default` | 成功，读取为 2 |
+| 同一 cell 内重复声明 | `let item = 1; let item = 2; return item` | — | 成功，读取为 2 |
 
 重复 `import { readFile } from 'node:fs/promises'` 同样复现 `PTC-N001`。旧交接对三个重声明开关的全部八种组合进行了 preparation 探针，重复 import 的冲突路径不受这些开关影响。该结论说明配置没有覆盖 import，不能据此推断所有 import 转换都失败。
 
-旧交接的部分探针只传入 `knownBindings`，没有传入真实的 `importBindings`。其中“`const` 覆盖 import 不可写”的输出不代表宽松模式下的真实会话行为。真实会话已允许变量声明接替 import，见 [import 语言测试](../test/plugin-repl-language-imports.test.js) 中 `keeps explicit loose declarations replacing future alias reads only`；旧闭包仍读取旧 namespace。这里必须区分探针构造与实际 catalog。
+“变量/class 变为 import”的拒绝来自共享 REPL 的物理 lexical 表示，属于 C1/C2/C6 要求消除的实现缺口，不属于外部编译边界。新代际必须通过独立 cell 与稳定逻辑身份适配该轨迹。
 
-这些证据验证的是现有缺陷和不一致。新的绑定存储、同 cell 更新、动态作用域适配与恢复方案尚未实现或验证，不得把现有探针写成新机制的通过证明。
+统一实现以 [stateful-root-bindings.test.js](../test/stateful-root-bindings.test.js)、[stateful-local-scopes.test.js](../test/stateful-local-scopes.test.js) 和 [stateful-module-compiler.test.js](../test/stateful-module-compiler.test.js) 验证逻辑身份、局部 activation、候选发布及模块入口。历史 import 闭包与裸声明行为由 [legacy-language-replay.test.js](../test/legacy-language-replay.test.js) 保留，不能把旧结果当作新语言的验收期望。
 
-### 3.2 根因与代码 owner
+### 3.2 历史根因与 owner 分离
 
-| Owner | 当前机制及问题 |
+| 历史 Owner | 需消除的机制问题 |
 | --- | --- |
-| [cell-analysis.js](../internal/cell-analysis.js) 的 `topLevelDeclarations` | 主要扫描直接位于 body 的声明，遗漏属于同一会话作用域的控制流内 `var`。 |
+| [legacy-cell-analysis.js](../internal/legacy-cell-analysis.js) 的 `topLevelDeclarations` | 主要扫描直接位于 body 的声明，遗漏属于同一会话作用域的控制流内 `var`。 |
 | 同文件的 `prepareProgram` | 把 request 保留名、私有 namespace 与“import 名称已存在”合在提前拒绝分支；import 冲突在便利策略之前返回。 |
-| [repl-convenience.js](../internal/repl-convenience.js) | 分别处理变量、函数/类、混合解构，用旧存储可写性决定能否替换，声明位置与类别成为额外限制。 |
-| [cell-rewriter.js](../internal/cell-rewriter.js) 的 `importEdits`、`rewriteImportReferences` | import 被转成私有 namespace 捕获与引用映射，公开 alias 不等于同名 worker lexical binding；写入被转换为只读错误，部分写入形式在 preparation 拒绝。 |
+| [legacy-repl-convenience.js](../internal/legacy-repl-convenience.js) | 分别处理变量、函数/类、混合解构，用旧存储可写性决定能否替换，声明位置与类别成为额外限制。 |
+| [legacy-cell-rewriter.js](../internal/legacy-cell-rewriter.js) 的 `importEdits`、`rewriteImportReferences` | import 被转成私有 namespace 捕获与引用映射，公开 alias 不等于同名 worker lexical binding；写入被转换为只读错误，部分写入形式在 preparation 拒绝。 |
 | 同文件的 `exportDefaultEdits` | 合成 `__default` 有独立可用性与提交规则，普通同名绑定会使 export 在解析阶段失败。 |
-| [session-state.js](../internal/session-state.js) 的 `BindingCatalog` | 已持有名称、来源、类别、可写性和 import 映射。`advance` 只对具有提交依赖的声明检查实际提交，其他名称会从 `prepared.declarations` / `prepared.declared` 加入目录；需要将所有声明统一纳入执行证据，防止未执行名称影响下一次准备。 |
+| [legacy-binding-catalog.js](../internal/legacy-binding-catalog.js) 的 `advanceLegacyBindings` | 从原目录条目、准备结果和提交事实计算历史代际的目录更新，由 `BindingCatalog` 保存返回的条目与 import 映射。只对具有提交依赖的声明检查实际提交，其他名称会从 `prepared.declarations` / `prepared.declared` 加入目录；新代际需要将所有声明统一纳入执行证据，防止未执行名称影响下一次准备。 |
 | [session-cell-executor.js](../internal/session-cell-executor.js) | preflight 冲突转为 `PTC-N001`；遗漏的 worker 编译错误落入执行错误路径，增加错误阶段与状态解释的摩擦。 |
 
 删除 import 的提前拒绝只能修一个症状。把所有 `const` 改回不可写则会产生新的退化。源头修正是：完整识别声明所属的逻辑作用域，并让名称更新和实际执行证据通过同一套状态机制。声明尚未执行却被目录当成已有名称，也必须作为独立反例验证，例如提前 `return` 或抛错之后的 `const later = 1`；只修 parser 和 worker lexical 冲突不能防止这种误判。
@@ -158,10 +163,10 @@ C1–C6 共同约束结果。“没有错误”不能通过破坏 C2/C3/C4/C5 �
 | 重复私有字段/私有方法与字段 | 保留 AST，报告 `PrivateNameRedeclaration`。 | 普通 lexical scope 不负责消除私有名称冲突。 |
 | 嵌套重复标签 | 保留 AST，报告 `LabelRedeclaration`。 | 普通 lexical scope 不负责标签命名空间。 |
 | 重复 default/export/constructor | 在当前宽松解析配置下可能保留 AST 且没有 error。 | 不能据此推断输出代码能被 Node 编译。 |
-| 裸 `const x;` | 保留 VariableDeclaration AST，报告 `DeclarationMissingInitializer`。 | 该扩展的完整 scope/执行转换尚未验证。 |
+| 裸 `const x;` | 保留 VariableDeclaration AST，报告 `DeclarationMissingInitializer`。 | 原生 scope 不提供“保证名称存在”的方言规则；由后续逻辑绑定转换承担。 |
 | `const x=1; const x=;` | `UnexpectedToken`，不能得到完整可用 AST。 | 不能把它按重复声明放行。 |
 
-进一步对函数局部、重复参数、catch、var/lexical 区域重叠、import/local、解构和 switch 七类输入，在不创建 scope 的 AST 遍历中给每个声明 occurrence 分配临时唯一名称，再调用 Babel scope。七类均能建立 scope，且 var 与 block lexical 仍归属于不同 owner。这验证了“先唯一化声明，再利用维护中的 scope 实现归属分析”的可行切入点；尚未验证完整引用重定向、执行语义或全部语法。
+早期对函数局部、重复参数、catch、var/lexical 区域重叠、import/local、解构和 switch 七类输入，在不创建 scope 的 AST 遍历中给每个声明 occurrence 分配临时唯一名称，再调用 Babel scope。七类均能建立 scope，且 var 与 block lexical 仍归属于不同 owner。这项探针只验证了可行切入点。当前引用、候选发布与裸声明行为由 [repl-scope-normalizer.js](../internal/repl-scope-normalizer.js) 的共同转换及 [stateful-local-scopes.test.js](../test/stateful-local-scopes.test.js)、[stateful-root-bindings.test.js](../test/stateful-root-bindings.test.js) 验证。
 
 结论：不能只检查 parser error 列表，也不能仅开启错误恢复。必须遍历所有声明命名空间，在归一化后重新做 parser、scope 和 native 编译验证。[Babel 官方文档](https://babeljs.io/docs/babel-parser#errorrecovery) 也明确说明错误恢复仍可能遇到不可恢复错误，并提供 `reasonCode`，而不是保证所有不合法程序都可修复。
 
@@ -183,15 +188,15 @@ C1–C6 共同约束结果。“没有错误”不能通过破坏 C2/C3/C4/C5 �
 
 ### 3.5 连续计算的其他实现事实
 
-下列是当前源码提供的静态机制证据，不等于已完成对应的端到端复现。目标行为应由核心约束重新判断，不能仅因现有契约曾选择这些机制就永久保留。表中结算排空、回复解码与 name 级覆盖三项已作为独立修复先行落地，只描述当前实现事实，不构成本提案语言范围已经实施的证据：
+下列是当前源码的机制及其兼容边界，不构成本提案全部语言范围已经实施的证据。历史机制只用于解释旧 journal，不能作为新代际的默认规则：
 
 | 当前 owner | 观察到的机制 | 对目标设计的含义 |
 | --- | --- | --- |
-| BindingCatalog.advance | 非提交门控的 prepared 声明可以直接进入目录。 | 第 7 节统一覆盖实际 scope instantiation、初始化和更新证据。 |
+| [session-state.js](../internal/session-state.js) 的 BindingCatalog | 新代际结合 declaration commit 与 worker 的 root binding facts 更新目录；解析出的潜在写入计划单独保留。 | 未执行声明或赋值不能成为当前 binding 来源；第 7 节要求来源与实际执行一致。 |
 | [kernel-worker.js](../internal/kernel-worker.js) 的 runCell | 成功与失败都先排空本 cell 已发起的 program calls，再由同一次 `sendCompletion` 发送结算；异常只写入 outcome，不从 catch 直接发送。 | 成功与失败需要共同结算，不能让失败生成不完整 journal。 |
 | 同文件的 reply listener | 解码使用该 call 创建时记录的 limits；解码失败在本地拒绝该 call，不向 message listener 抛出。 | 需要 call 所属配置与受控解码失败通道，防止迟到回复和异常终止破坏连续性。 |
-| 同文件的 activateUserBindings | 任一公开名称被 shadow 时排除整个 entry；这是旧 ADR 的明确选择，现只由 v1-v7 迁移记录沿用。 | name 级覆盖已落地：只抑制同名覆盖，同条目其他名称继续激活，并按名称记录覆盖/来源事实。 |
-| [cell-rewriter.js](../internal/cell-rewriter.js) | import 写入有单独只读异常和不支持路径，活动 import 还限制 eval/with。 | 需要共同读写与动态环境适配，消除与声明错误同源的其他摩擦。 |
+| 同文件的 activatePerNameUserBindings | 新代际完整激活条目，按名称保留会话覆盖；历史整条目遮蔽由 activateUserBindings 沿用。 | 激活与覆盖各有独立证据，同条目其他名称继续可用。 |
+| [legacy-cell-rewriter.js](../internal/legacy-cell-rewriter.js) | 历史 import 写入有单独只读异常和不支持路径，活动 import 还限制 eval/with。 | 新代际由共同身份承担读写；动态环境适配仍须保持源码中的环境关系，不能沿用历史拒绝来回避。 |
 
 ## 4. 设置设计：用户选择语义，插件承担适配
 
@@ -203,7 +208,7 @@ C1–C6 共同约束结果。“没有错误”不能通过破坏 C2/C3/C4/C5 �
 
 | 名称 | 默认值 | 说明 |
 | --- | --- | --- |
-| **允许重声明和覆盖** / Allow redeclarations and overrides | 开启 | 在同一作用域中重复声明或赋值可更新变量、函数、类和导入。局部作用域与动态代码使用同一规则。 |
+| **允许重声明和覆盖** / Allow redeclarations and overrides | 开启 | 在同一作用域中重复声明或赋值可更新变量、函数、类和导入，适用于 root 和各局部作用域。显式 eval/Function 按第 5.7 节保留原生语法目标并适配逻辑环境。 |
 
 默认支持静态 import、顶层 export、TypeScript、顶层 await 和 cell return。具体入口仍有自己的语法目标，例如普通 Function body 不自动变成 async body，真正的模块仍由模块 linker 处理。不存在“同时开启三个修复开关才得到完整语言”的普通使用路径。
 
@@ -215,7 +220,7 @@ C1–C6 共同约束结果。“没有错误”不能通过破坏 C2/C3/C4/C5 �
 
 ### 4.2 内部策略与稳定边界
 
-建议将新执行策略规范化为单一字段 `bindingUpdates: 'stateful' | 'protected'`，同时记录固定语言语义代际。旧五个开关由入口的兼容 adapter 解码，不在新编译器各处组合。
+新执行策略规范化为单一字段 `bindingUpdates: 'stateful' | 'protected'`，同时记录固定语言语义代际。旧五个开关由入口的兼容 adapter 解码，不在新编译器各处组合。
 
 以下不是新的便利开关：局部声明、import 赋值、混合解构、动态代码、失败后继续、正确 source map、准确结算。它们均为所选语义的完整实现责任。作用域隔离、真实结果、DSH authority 和模型可知性也不能被更新开关关闭。
 
@@ -244,7 +249,7 @@ return readCount() // 5
 
 已有值可以在替换 RHS 中读取；替换成功才发布其候选值。若 RHS 自己执行了其他赋值或外部效果，它们仍按真实执行保留，不能把“候选未发布”误称为整段回滚。
 
-对于没有 initializer 的裸标识符声明，选择一致的“保证存在”规则：`let x;`、`var x;`、`const x;` 在已有值时保留它，新建时为 undefined。明确清空使用 `x = undefined`。这减少模型重述名称时无意丢值的风险，也消除关键字带来的隐含历史差异；它是新语义代际，不能反用于旧 journal。第 3.3 节已证明裸 const 可恢复 AST，完整转换仍需 G1/G2 验证。
+对于没有 initializer 的裸标识符声明，选择一致的“保证存在”规则：`let x;`、`var x;`、`const x;` 在已有值时保留它，新建时为 undefined。明确清空使用 `x = undefined`。这减少模型重述名称时无意丢值的风险，也消除关键字带来的隐含历史差异；它是新语义代际，不能反用于旧 journal。第 3.3 节说明裸 const 的 AST 恢复；[root 测试](../test/stateful-root-bindings.test.js)和[局部作用域测试](../test/stateful-local-scopes.test.js)验证实际转换与值的保留。
 
 `const x = ;` 缺少表达式，不能猜成 undefined；没有 RHS 的解构也不能臆造输入。for-in/of 提供的迭代值则是明确输入。对一个从未初始化、也没有旧值的名称先做读取，仍可能缺少计算输入，不能为消除 TDZ 字样凭空补值。
 
@@ -328,9 +333,11 @@ import 是值来源，不是另一套永久不可更新的名称。每个 alias 
 
 `ns = replacement` 更新名称；`ns.member = value` 操作对象。后者不通过复制 namespace 或绕过属性契约伪造成功。此区别来自更新目标不同，不来自偏好遵守模块规范。
 
+函数、类与变量接替 alias 使用共同逻辑身份及声明 occurrence 的 commit 目标。提交前读取已有模块来源，成功提交后读取本地值；提前 return 或初始化抛出保留旧来源。同一新代际中既有闭包继续通过该身份观察后续值。尚未执行的 var initializer 也不能因提升而退役已有 alias；首次新 var 的实例化证据与赋值证据分别表达。该规则不依赖原生 REPL lexical 能否再次声明。
+
 静态模块依赖在 body 前准备，保留 Node 的解析、链接、缓存、attributes 和模块图身份。cell 的多个 import 按声明顺序准备；全部成功后安装本 cell 的 alias 更新。同名多次 import 全部参与链接，最后一项决定 body 开始时的来源，body 中普通声明再按执行位置更新。准备中已经发生的模块效果不能回滚或忽略。
 
-`const item = 1; import { sep as item } from 'node:path'` 的最终 item 为 1，因为 import 安装发生在 body 前。重复导入不清缓存，也不声称模块一定再次执行。
+同一 cell 的静态 import 在 body 前准备，同名普通声明在其执行位置更新该身份；跨 cell 的普通声明也可由后续 import 改为模块来源。重复导入不清缓存，也不声称模块一定再次执行。保护策略按第 4.1 节检测声明冲突。
 
 cell 的 export 修饰符保留本地声明；remote re-export 保留模块依赖效果。default 通过普通可更新身份 `__default` 暴露：
 
@@ -339,7 +346,15 @@ cell 的 export 修饰符保留本地声明；remote re-export 保留模块依�
 - 默认声明本身就叫 __default 时使用同一身份，不能生成自引用读取环。
 - 之前存在普通 __default、import 或 default 都不构成冲突；求值失败不发布尚未完成的替换。
 
-真实模块仍需要 native export/linker，不能把 cell 的 __default 展示约定强加给模块用户。重复显式导出名映射到一个 native export，以最后一项映射为准，较早表达式初始化与依赖加载仍按声明语义执行。星号再导出的真实缺失或歧义需由模块图解决，不能吞掉链接结果。
+真实模块通过 **PTC 管理的 namespace** 暴露导出，不能把 cell 的 __default 展示约定强加给模块用户。一个实际模块身份对应稳定的公开 namespace；每次读取沿正式来源关联取得当前值，覆盖前跟随 provider，成功覆盖后取得本地值。保存一次读取所得的函数或对象仍保存那个原值，不会被换成转发代理。把 namespace 传给外部函数后，外部函数保存、读取这个对象也遵守同一契约。
+
+Node 继续拥有实际 URL、解析、attributes、模块缓存、依赖链接与一次真实执行。原生导出可承载编译器的绑定访问器，PTC 自有静态/动态导入、所提供的 require、编译后的 CommonJS require、绑定激活、候选、工作台和子计算入口共同消费这个表示。来源关系由编译器和 loader 证明，不能根据普通函数的名称或形状猜测。循环中的提升函数可在模块 body 前读取；lexical 仍在相应初始化成功前保持 TDZ。重复显式导出名以最后一项映射为准，较早表达式初始化与依赖加载仍执行；星号导出的缺失和歧义由真实模块图决定。
+
+只有 session-owned 模块源码进入 PTC 的 session transform。解析到 `node_modules` 下的外部依赖时，Node 继续拥有其原生编译、加载、执行和缓存；PTC 入口仍通过 managed namespace 适配其结果，因此外部包不会获得连续绑定更新语义，PTC 内部读取仍遵守本节的实时 namespace 契约。
+
+CommonJS 的原始具名导出证据随编译结果保留，在实际加载时交由 Node 自己分析；不能因执行代码改写而丢失原有具名导入，也不能为发现导出执行模块或 getter。私有证据源码只参与链接，重导出沿原始模块的解析上下文经过完整 public hook chain。实际值、具名导出快照、default 与执行次数仍遵循 CommonJS 原生规则；具体表示由 [ADR 0025](adr/0025-use-versioned-logical-binding-identities.md#managed-module-interface) 拥有。
+
+managed namespace 保持只读属性、稳定成员集合和实时读值，但不承诺它就是 Node 的原生 module namespace exotic object。未经 PTC 适配的代码自行原生 import 同一 URL，或自行创建并调用原生 createRequire 获取模块，属于独立原生获取路径，可能看到传输表示，不享有 PTC 可切换导出来源和 namespace 身份保证。PTC 传出的普通值和传入外部函数的 managed namespace 不受此边界豁免；仍须保持真实值、实时读取和效果。使用该边界不允许漏掉任何插件自有入口。
 
 ### 5.5 类型与其他命名空间
 
@@ -347,14 +362,14 @@ C1/C6 要求扫描所有声明命名空间，不能只处理普通 lexical；C3 
 
 | 命名空间 | 选定的扩展规则与实现责任 |
 | --- | --- |
-| TypeScript 类型 | 擦除的重复类型不阻断计算。类型空间和值空间分离；合法声明合并复用维护中的工具，enum/namespace 等运行值仍进入更新计划。 |
+| TypeScript 类型 | 擦除的重复类型不阻断计算。类型空间和值空间分离；合法声明合并复用维护中的工具，enum、const enum、namespace 等运行值仍进入更新计划，成员读取不依赖跨编译单元的常量内联。 |
 | private 成员 | 同类同 target 的同名成员统一解析；重复定义采用最后定义的成员形态，字段 initializer 与 decorator 求值不因定义被替代而漏掉。实例与 static storage 分开，生成私有名唯一。 |
 | private 的跨 target 重名 | 按接收者实际 brand 选择相应实例或 static storage，接收者只求值一次；若对象同时满足两个 target，采用该类中源码位置较后的目标。无匹配 brand 仍是真实访问失败。 |
 | getter/setter | 合法配对保留；同种 accessor 的重复采用最后定义。字段、方法、accessor 混合组必须生成完整成员定义计划，不能直接让 Babel 的重复检查决定行为。 |
 | constructor | 无 body 的 TS 签名属于类型；多个实现采用最后一个构造函数体。定义较早的函数体不因“保留效果”而被执行。 |
 | label | 每个 label occurrence 有唯一物理标签；break/continue 解析到最近的同名有效目标，保留控制流归属。 |
 
-“最后定义”来自模型修订定义的明确策略，不是对意图的猜测。成员定义、字段初始化、decorator 和实例构造是不同阶段；应在 G1/G2 原型中固化其完整交叉矩阵，再依赖维护中的 class transforms 生成代码。表中选择尚未由执行原型验证，不得宣称 Babel 自带这些扩展。
+“最后定义”来自模型修订定义的明确策略，不是对意图的猜测。成员定义、字段初始化、decorator 和实例构造是不同阶段；共同归一化先落实这些规则，再交由维护中的 class transforms 生成代码。[stateful-local-scopes.test.js](../test/stateful-local-scopes.test.js) 验证特殊名称空间、接收者 brand 与原值，[stateful-class-normalization.test.js](../test/stateful-class-normalization.test.js) 验证 decorator、字段、参数属性与各阶段的效果次序；这些扩展由 PTC 拥有，不是 Babel 自带的语言规则。
 
 除已明确更改的声明、写入与重复规则外，普通 JS/TS 的对象、表达式、算术和控制流继续使用已有语义。依赖 const 赋值抛错的代码会观察到本方案主动改变的行为，不能声称与标准 JS 完全等价；也不能因此把所有源代码绑定重新设为只读。
 
@@ -373,13 +388,13 @@ namespace 形式只有一个公开 namespace 名称，覆盖该名称自然替�
 
 ### 5.7 动态源码、反射与入口组合
 
-动态源码使用同一语言代际和更新语义；语法目标仍由原调用定义。直接 eval 使用调用点逻辑环境，间接 eval 使用所属 realm 的 root，Function 家族使用构造器所属全局环境。非字符串 eval 输入、参数字符串转换、同步异常和 completion 都按明确契约执行一次。
+第 2.1 节中的用户主动动态编译保留原调用的原生语法目标；PTC 自有子计算使用选定语言代际。外部编译边界不豁免调用环境的正确性：直接 eval 仍使用调用点逻辑环境，间接 eval 使用所属 realm 的 root，Function 家族使用构造器所属全局环境。非字符串 eval 输入、参数字符串转换、同步异常和 completion 都按原生契约执行一次。
 
 eval 的 var 进入相应 var environment，lexical 按 eval 生命周期隔离；严格与普通环境的原有隔离规则不能被粗暴合并。with 使用真正的 object environment，保留 unscopables、receiver、getter/Proxy 的查找次数；不把所有引用静态指向外层槽。
 
-别名、成员调用、call/apply/bind/Reflect、构造器原型和递归生成源码都要接入。识别依据是 callable identity 与 realm，不是 callee 的字符串拼写。普通同名函数不被劫持。
+别名、成员调用、call/apply/bind/Reflect、构造器原型和递归生成源码仍遵守其 callable identity 与 realm 所确定的原生编译行为。环境适配不能仅按 callee 的字符串拼写劫持普通同名函数，也不能把间接 eval 错当作直接 eval。
 
-反射同样属于组合能力：函数 name/length、源码位置以及 Function.prototype.toString 被用于再次编译时，不能暴露无法解析的内部槽引用并制造新的执行失败。需要保留源码来源及再编译所需的映射；不能伪造 native 函数可重建，也不能自动捕获原本不会被字符串携带的用户闭包。相关 adapter 的覆盖属于 G2/G3，尚无全量证明。
+反射同样属于组合能力：函数 name/length、源码位置以及 Function.prototype.toString 被用于再次编译时，不能暴露无法解析的内部槽引用并制造新的执行失败。[callable-source-facts.js](../internal/callable-source-facts.js)记录编译器拥有的源码关联，[dynamic-native-runtime.js](../internal/dynamic-native-runtime.js)按实际 intrinsic 身份提供源码观察与再编译接口；不能伪造 native 函数可重建，也不能自动捕获原本不会被字符串携带的用户闭包。用户自行编译的 VM 源码若独立取得未适配的原生 toString，仍观察引擎物理源码；把 PTC 源码观察接口传给外部函数时，该接口保留原始源码语义。
 
 ### 5.8 普通名称与 request-owned 能力
 
@@ -394,6 +409,8 @@ DSH 的 tools 与 request-owned program namespace 由宿主契约拥有，普通
 C2 要求稳定身份，C6 要求一个 owner 完整处理，C3 要求执行与证据一致。因此选定主方案为：**作用域归一化编译器、独立原生编译单元、连续逻辑状态和统一提交事实**。继续使用现有 worker、transport、lease 和 DSH 调度，不增加第二套 session coordinator。
 
 ### 6.1 编译与执行的数据流
+
+`compiler-service.js` 在私有 VM realm 中同步执行共同编译器及其 JavaScript 依赖。`compiler-data.js` 负责数据复制，服务重建调用方诊断；平台 bridge 固定捕获编译所需的 Node 操作，realm 内的依赖负责路径与压缩，转换不读取外部配置。用户值、模块图、执行状态与 DSH authority 不进入编译 realm，动态源码的字符串查询接口保持同步。
 
 ```text
 原始源码 + 语法目标 + 语言代际 + 有效策略 + 可用逻辑环境
@@ -410,6 +427,8 @@ C2 要求稳定身份，C6 要求一个 owner 完整处理，C3 要求执行与�
 ```
 
 CompiledUnit 至少携带生成代码、语法目标、源映射、环境需求、静态依赖、声明/写入操作身份和校验结果。所有消费者使用同一计划；分析器、import lowering、worker 和 UI 不能分别猜测名称是否存在或可写。
+
+模块源码由 `module-compilation.js` 生成代码和 link、导出、源码注册事实；`stateful-module-compiler.js` 在编译器外消费这些事实，对接 Node 公共 hooks、文件格式选择和运行时注册。编译过程不安装 hook 或分配 live module identity。
 
 原始调用参数和模型源码保持原样。适配只形成内部可追踪产物；不改写磁盘文件、第三方安装包、DSH 源码或模型已经发出的 call。
 
@@ -443,28 +462,25 @@ cell 使用公开 Node 编译能力创建与当前 context 对齐的 async body�
 
 内部 helper 与 storage 访问有来源标记，durability 分析识别其已知语义，不把所有生成的 globalThis 访问都当成用户外部效果，也不能把原始用户 global/globalThis、动态输入或未知模块效果错判为可恢复纯值。
 
+`compiler-operations.js` 为每次编译建立一次绑定索引，各 AST 分区独立记录新增名称与 operation plan，静态与动态调用适配据此区分生成操作外壳、私有传输与用户值。helper 的参数仍可能包含用户表达式，不能因外层操作属于编译器就跳过这些子树；新生成的 helper 也不能再次被当作用户调用扩展。
+
 ### 6.5 每个产物独立检查
 
 输出必须通过另一条只读 AST 检查路径，验证所有声明、引用、命名空间和逻辑操作都有 owner，生成的名称不冲突；随后通过相应语法目标的 parser 和 native 编译。TS 变换及 class transforms 生成的声明也要检查。
 
-这些检查针对编译缺陷，不是新的用户准入规则。检查发现遗漏意味着版本未达到产品契约；不能把拒绝内部产物包装成“已经消除重声明错误”。不得先执行失败，再自动改源码重跑。
+这些检查针对编译缺陷，不是新的用户准入规则。检查发现遗漏意味着版本未达到产品契约；不能把拒绝内部产物包装成“已经消除重声明错误”。不得先执行失败，再自动改源码重跑。共同 owner 负责补齐 PTC Plus 自有入口；用户主动动态编译不属于此保证。
 
 校验结果绑定精确源码、目标、语义代际与环境结构。运行 transport 的临时 id 与可恢复计算身份分开；后者从已证明的前序状态和源码确定，不能依赖随机 worker 名称或 UI generation。
 
-### 6.6 所有内部执行入口共同接入
+### 6.6 PTC Plus 内部入口共同接入
 
 | 入口 | 适配 owner 与关键证据 |
 | --- | --- |
 | run_code / edit_run_code | 同一 preparation 与 CompiledUnit；保留原始参数、派生关系、call identity 和 cell lease。 |
 | code.run、插件子 worker | bootstrap 安装编译器，拥有独立 root；父子状态与原有能力关系不变。 |
 | 用户绑定 initializer、候选、工作台 | 在类型变换和 native 编译之前接入；工作台独立状态，不写 Agent journal。 |
-| 直接 / 间接 eval | 区分调用点 frame 与 realm root，保持同步性、非字符串输入和完成值。 |
-| Function / AsyncFunction / GeneratorFunction / AsyncGeneratorFunction | 参数串和 body 作为一个编译请求；保持转换顺序、call/construct、new.target 与返回类型。 |
-| constructor 原型、alias、call/apply/bind、Reflect | 按真实 callable identity 与 realm 路由；参数、callee、receiver 各求值一次。 |
-| vm.Script、compileFunction、各 runIn* API | 对 context 关联逻辑环境，在 native 编译前适配，保持 filename、offset、timeout、options 与实例行为。 |
-| vm.SourceTextModule 和字符串模块 | module 目标适配后交给真实 linker，保留 identity、循环依赖与 live export。 |
-| ESM、动态/data URL、CJS、require/createRequire | 同步 load hook 处理实际读取的 source；保留原 URL、解析条件、缓存及同步/异步行为。 |
-| 新 realm、子 worker、模块内再次动态编译 | 用户源码运行前递归 bootstrap，不能假定父环境 hook 自动继承。 |
+| eval、Function 家族及其间接调用 | 动态环境 owner 保留所属逻辑环境、原生语法目标、转换次序与反射；不把普通同名函数当作原生编译器。 |
+| 用户自行创建的 vm、new realm、native addon 或外部引擎 | 使用独立引擎的原生编译和环境；不继承 PTC 会话 root。 |
 
 Node 的公开 module.registerHooks 是模块入口工具，不能被描述成全部编译器的总入口。模块图缓存仍由 Node 的 URL/条件规则拥有；编译缓存另含源码、语法目标、语义代际和环境结构，不能把不同 context 的闭包混用。
 
@@ -474,7 +490,7 @@ Node 的公开 module.registerHooks 是模块入口工具，不能被描述成�
 
 worker 先加载自身固定 bootstrap 与编译器，再安装当前 realm 的模块和 callable 适配，最后运行模型代码。内部捕获的原语只供实现使用，不作为 SDK 泄露；正常用户值保持原值，不以通用对象代理替代 Node 生态。
 
-直接 eval 显式携带逻辑环境；替换全局 eval 为普通函数不能保留它的词法契约。Function 家族要覆盖原型 constructor 与 bound callable；vm context 在首次源码执行前建立映射。
+直接 eval 显式携带逻辑环境；替换全局 eval 为普通函数不能保留它的词法契约。Function 家族要覆盖原型 constructor 与 bound callable；插件创建的执行 realm 在源码执行前接入所属环境，用户自行创建的 vm context 保留独立环境。
 
 旧 journal 使用独立旧语义 adapter，旧闭包不重造。新代码不因为共享旧 worker 而退回 raw REPL 路径；旧代码持有的编译器引用仍需审计。全局对象的替换不能使已缓存原生引用自动失效。
 
@@ -486,18 +502,18 @@ worker 先加载自身固定 bootstrap 与编译器，再安装当前 realm 的�
 | 机械把全部声明改成 var/赋值 | 缺少 scope、求值顺序、模块与恢复契约，不能单独使用。 |
 | 每个 cell 独立执行但不共享逻辑身份 | 避开跨次冲突，却使旧闭包和后续名称脱节。 |
 | 要求模型显式使用 state 对象、先查变量或先重置 | 将 bookkeeping 和内部限制转给模型。 |
-| 共同编译器 + 独立单元 + 连续环境 | 主方案。复用 Node 计算与生态，统一名称及执行事实；完整动态封闭性仍待证明。 |
+| 共同编译器 + 独立单元 + 连续环境 | 主方案。复用 Node 计算与生态，统一名称及执行事实；动态调用与模块来源各有共同适配 owner，见 ADR 0025。 |
 | 自有闭合解释器或可控嵌入引擎 | 能使内部语义和入口证明更直接，但增加生态桥接、语义、性能与维护成本；哲学不自动要求采用。 |
 
 选择主方案不等于已经证明它足以覆盖所有内部入口。若原型证明现有公共能力无法完成 G3，就必须重新评估执行器或获得 owner 的公开能力；不能通过删去目标内入口把主方案宣告完成。
 
-### 6.9 已知平台限制与待证明项
+### 6.9 平台边界与验证义务
 
-第 3 节已确认 load hook 不接管 eval、Function、vm 的所有源码。任意 native addon、缓存的原生编译引用或未接入 realm 可能绕过 JavaScript wrapper。当前研究没有证明普通 Node 插件能封闭全部内部可达入口。
+第 3 节已确认 load hook 不接管 eval、Function、vm 的所有源码。PTC 自有 realm 中的动态编译由独立的 callable 与环境适配承担，不能把别名、缓存引用或原生 callback 消费者当成豁免。历史编译单元继续使用其原始环境和 intrinsic 身份；用户自行创建的独立 realm、native addon 或外部引擎按第 2.1 节保留自己的编译行为。公开 module hook 只证明模块入口的接入。
 
 V8 的 SetModifyCodeGenerationFromStringsCallback 属于 embedder API。Node 已安装自己的 callback 并用于 context 决策；直接覆盖它既不保证接管全部 vm 编译，也可能破坏 owner 检查。它不能成为普通插件的万能 hook，也不能要求用户修改 DSH 安装包。
 
-本方案的 G1 是前端完整性，G2 是转换与环境正确性，G3 是内部动态入口封闭，G4 是生命周期与边界一致性。每项都有第 11 节的完成证据。无界外部零错误已在第 2 节判定不成立，不能与这四项混为一个永远等待更多测试的任务。
+本方案的 G1 是前端完整性，G2 是转换与环境正确性，G3 是 PTC Plus 自有动态入口封闭，G4 是生命周期与边界一致性。每项都有第 11 节的完成证据。无界外部零错误已在第 2 节判定不成立，不能与这四项混为一个永远等待更多测试的任务。
 
 ## 7. 将低摩擦推广到失败、结算与资源
 
@@ -600,19 +616,21 @@ C2/C3/C4 要求分别描述：
 | 旧三个更新项全部关闭，模块语法开启 | 映射为保护策略，保持主动防止覆盖的选择。 |
 | 旧更新项混合，或显式关闭 import/export | 保留有名称的旧分项兼容状态，展示其有效值；用户选择新语义后整体迁移，不用 OR/AND 或删除字段静默改变选择。 |
 
-旧兼容状态不伪装成已获得完整新语言，也不成为新安装的常驻五开关 UI。它是同一设置区的迁移状态，支持明确选择完整更新或保护语义；选择新语义也明确接受默认模块语法。不能通过默认布尔值掩盖尚未完成的迁移。
+旧兼容状态不伪装成已获得完整新语言，也不成为新安装的常驻五开关 UI。运行时通过 `legacyBindingSettings` 迁移标记识别旧配置；只有标记为真时，设置区才展示旧字段的有效值并允许明确迁移为完整更新或保护语义。选择新语义也明确接受默认模块语法。不能通过默认布尔值掩盖尚未完成的迁移。
 
 一次 cell 从准备到结算绑定同一配置代际，配置改变只影响后续提交。当前 profile 畸形在最早可解析处报告；历史配置证据损坏依第 8.2 节收缩，二者不能混为永久 availability gate。
 
 ### 8.4 journal 代际与旧代码
 
-当前封闭 schema 的版本常量与字段集由 [session-journal-schema.js](../internal/session-journal-schema.js) 拥有，JOURNAL_VERSION 为 8；schema 包含 bindingPolicy、rewritePolicy、moduleSemantics（含 `importExpressionBoundary`）、userBindingsFingerprint、userBindingsReusePolicy、userBindingsShadowPolicy 与 userBindingNames 等字段。字段校验、journal 创建与旧代际迁移由 [session-journal.js](../internal/session-journal.js) 拥有，事件关联与折叠恢复由 [session-journal-recovery.js](../internal/session-journal-recovery.js) 拥有。旧 ADR 描述其决策发生时的版本，不能用历史版本叙述替代当前 schema 事实。
+当前封闭 schema 的版本常量与字段集由 [session-journal-schema.js](../internal/session-journal-schema.js) 拥有，JOURNAL_VERSION 为 9；schema 包含 languageSemantics、bindingPolicy、rewritePolicy、moduleSemantics（含 `importExpressionBoundary`）、userBindingsFingerprint、userBindingsReusePolicy、userBindingsShadowPolicy 与 userBindingNames 等字段。字段校验、journal 创建与旧代际迁移由 [session-journal.js](../internal/session-journal.js) 拥有，事件关联与折叠恢复由 [session-journal-recovery.js](../internal/session-journal-recovery.js) 拥有。旧 ADR 描述其决策发生时的版本，不能用历史版本叙述替代当前 schema 事实。
 
 新代际必须区分：所有作用域可写规则、裸声明、声明 pattern 提交、import/default 来源关联、特殊命名空间、动态 grammar goal、独立单元、name 级用户绑定覆盖和实际操作证据。只重解释原有两个布尔值无法表达这些变化。
 
 旧 journal 按其记录的规则 replay，包括旧 const 可写性、旧 import 闭包、旧 default 关联、旧 pattern 部分更新和 whole-entry shadow。cold replay 返回 recorded program values，不重复派发外部效果。新的 bug 修正不能被用于伪造“历史其实按新语言运行”。
 
 live 切换不重新执行旧源码制造闭包。可证明可写的旧 storage 可桥接；新代际代码可使用逻辑身份接替不可写旧存储。旧代码已经捕获的引用与策略保持其事实，不承诺原地改造 V8 闭包。后续新代际代码必须内部一致；这种迁移事实不能成为纯新环境的常驻例外。
+
+切回 legacy 时，后续 cell 按目录和实际存储证据接入已有逻辑绑定；已初始化的原生 lexical 仍保留旧规则下的优先级。只在逻辑 root 中建立的名称不会因设置切换而断开，读写和已保存的新代际闭包继续共享状态。原生声明接替 import 或恢复已删除名称后，实际初始化与结算证据共同更新目录，失败也保留已经发生的写入。[跨代际切换测试](../test/stateful-legacy-root-transitions.test.js)覆盖公开设置更新、动态入口和混合 journal 重放。
 
 如果桥接或历史源码无法证明，按既有状态边界收缩而非猜测；普通重声明本身不触发自动清空。新的语义代际、迁移器、源码映射、旧 fixture 与 UI 状态证据必须一起更新。
 
@@ -630,23 +648,25 @@ UI 清单和观察继续有界、只读并具有 generation/来源证据。无�
 
 ## 10. 规范与实现 owner 的完整迁移
 
-本文只更新提案。实施时每项语义都要从同一个规范 owner 传播到代码、配置、日志、文档与测试；不能仅新增一段核心哲学而让旧准入规则继续决定行为。
+每项语义从同一个规范 owner 传播到代码、配置、日志、文档与测试；不能仅新增一段核心哲学而让旧准入规则继续决定行为。下表标明规范与执行证据的责任关系。
 
 | Owner / 依赖 | 目标变更与原因 |
 | --- | --- |
 | [CONTEXT.md](../CONTEXT.md)、[AGENTS.md](../AGENTS.md) | 对齐面向 Agent 的目的、执行与知识边界；保留其项目责任，不堆放全部语言细节。 |
-| [ADR 0013](adr/0013-isolate-repl-redeclaration-convenience.md) 与新的语言 ADR | 固化完整作用域、可写、裸声明、提升、pattern 提交与保护策略；旧便利策略有明确后继关系。 |
+| [ADR 0025](adr/0025-use-versioned-logical-binding-identities.md)、[ADR 0013](adr/0013-isolate-repl-redeclaration-convenience.md) | ADR 0025 固化完整作用域、可写、裸声明、提升、pattern 提交与保护策略；ADR 0013 保留旧便利策略及其后继关系。 |
 | [ADR 0006](adr/0006-rewrite-module-syntax-with-an-ast.md) | 固化全部名称空间、import/default 的可更新来源、模块图与动态编译适配。 |
 | [ADR 0014](adr/0014-persist-cell-rewrite-policy.md)、session journal owner | 新语言代际、旧五项配置、声明提交、name 级 shadow 与 replay 迁移。 |
 | [ADR 0015](adr/0015-preserve-source-positions-through-rewrites.md) | 保持原始源码映射与生成边界契约；发生契约变化时记录其理由。 |
 | [ADR 0023](adr/0023-global-user-bindings.md) | 完整条目激活与 name 级覆盖分离，旧 whole-entry 语义仅用于历史；管理权与源码 owner 不变。 |
 | [ADR 0024](adr/0024-repl-console-observation.md) | 观察消费新 storage 证据，区分编码、展示与真实终止；不扩大读取权限。 |
-| internal/cell-analysis.js、cell-rewriter.js、repl-convenience.js、typescript-transform.js | 一个解析/作用域/更新计划，移除按声明位置和旧可写性分散拒绝的路径。 |
+| internal/compiler-service.js、compiler-entry.js、compiler-data.js、compiler-platform.js、compiler-platform-factory.js | 同步私有编译 realm、显式数据与平台边界；维护中的编译依赖不使用用户可修改的 realm，可选 Amaro/TypeScript 依赖按需在同一 realm 初始化，空闲缓存允许回收，构建核验必需平台成员；既有 worker 继续拥有预算和生命周期。 |
+| internal/cell-analysis.js、repl-scope-normalizer.js、dynamic-scope-analysis.js、stateful-root-compiler.js、module-compilation.js、typescript-transform.js | 共同解析/作用域/更新事实；compiler-operations.js 为一次 AST 编译统一记录生成操作与用户值边界，legacy-* 文件保留历史编译。 |
+| internal/stateful-module-compiler.js、stateful-module-runtime.js | 消费纯编译结果，对接公共 Node hooks、模块格式、解析证据与 live namespace；不把模块图放进编译 realm。 |
 | internal/session-state.js、kernel-worker.js、session-cell-executor.js、worker-client.js | 连续身份、独立单元、真实初始化与更新、共同结算、call 所属配置及恢复。 |
 | 用户绑定 runner、owner、console worker 与插件子计算 | 所有源码共同编译、分别持有状态和生命周期；激活与覆盖使用不同粒度。 |
 | internal/config-spec.js、runtime-config.js、session-runtime.js、Client | 一个普通更新开关、默认模块语法和显式旧兼容状态；保持一次 cell 的配置快照。 |
 | [README.md](../README.md)、[README.en.md](../README.en.md)、[runtime-reference.md](runtime-reference.md)、[architecture.md](architecture.md) | 同步完整用户契约、配置迁移、计算方言与真实保证；实现前不宣传尚未交付能力。 |
-| schema、fixture、迁移脚本、SDK/guidance、测试与生成 Client | 共享代际和行为事实，旧行为只在历史兼容测试中保留，产物由现有构建生成。 |
+| schema、fixture、迁移脚本、SDK/guidance、测试与生成 Client/编译器 bundle | 共享代际和行为事实，旧行为只在历史兼容测试中保留，产物及 source maps 由现有构建生成并检查一致性。 |
 
 涉及持久架构和语义的选择在实际实施时新增或修订 ADR，记录已选方案与取舍。不能篡改历史记录来假装旧语言一直如此，也不能以旧测试通过为由保留与新契约冲突的默认行为。
 
@@ -658,12 +678,12 @@ UI 清单和观察继续有界、只读并具有 generation/来源证据。无�
 
 这是一项安全性性质，可以对语法结构和执行步骤归纳，不要求枚举无限程序或证明所有计算都会终止。缺少真实输入或 owner 拒绝仍按其实际原因失败；不能把目标源码“有重声明”作为排除前提。
 
-| 义务 | 必须证明的内容 | 当前证据与缺口 |
+| 义务 | 必须证明的内容 | 实现与判别式证据 |
 | --- | --- | --- |
-| G1：前端完整性 | 定义语法中的声明/名称空间都能形成计划，扩展输入可解析，生成产物无冲突；同名输入不会因 parser/tooling 限制拒绝。 | 已有错误恢复、七类 occurrence 唯一化和裸 const AST 探针；尚未证明全语法归一化完整性。 |
-| G2：语义与环境正确性 | 归一化保持定义的 scope、activation、候选提交、值、控制流、反射、资源和效果次数。 | 已有旧实现行为证据；新统一编译器、特殊名称空间和动态环境尚未验证。 |
-| G3：内部入口封闭 | 所有内部可达编译路径，包括动态递归、原型、缓存引用、native 调用及 realm 都进入同一流程。 | load hook 和简单 wrapper 已有绕行反例；尚无完整封闭证明。 |
-| G4：生命周期与边界一致性 | 初始状态、执行、失败、配置、恢复均保持不变量；外部结果与 DSH authority 如实保留。 | 有既有契约和测试基础；新语义的结算、桥接与恢复尚未实施。 |
+| G1：前端完整性 | 定义语法中的声明/名称空间都能形成计划，扩展输入可解析，生成产物无冲突；同名输入不会因 parser/tooling 限制拒绝。 | [scope normalizer](../internal/repl-scope-normalizer.js)共同生成作用域计划；[局部作用域](../test/stateful-local-scopes.test.js)、[class](../test/stateful-class-normalization.test.js)、[root](../test/stateful-root-bindings.test.js)、[箭头 token 边界](../test/stateful-arrow-token-boundaries.test.js)及[类型 import](../test/stateful-type-imports.test.js)测试区分名称空间、activation 与候选发布。 |
+| G2：语义与环境正确性 | 归一化保持定义的 scope、activation、候选提交、值、控制流、反射、资源和效果次数。 | [root runtime](../internal/stateful-root-runtime.js)与[动态环境](../internal/dynamic-environment-runtime.js)拥有执行状态；[pattern/delete](../test/stateful-root-pattern-delete.test.js)、[动态编译与反射](../test/dynamic-native-compilation.test.js)、[模块源码身份](../test/stateful-callable-source-identity.test.js)、[TypeScript 反射](../test/stateful-typescript-source-reflection.test.js)、[可选链边界](../test/stateful-optional-chain-boundaries.test.js)、[赋值与属性语义](../test/stateful-assignment-source-semantics.test.js)、[模块链接](../test/stateful-module-linking.test.js)及[namespace 反射](../test/stateful-managed-namespace-reflection.test.js)验证值、真实写入与效果。 |
+| G3：内部入口封闭 | 第 2.1 节中插件拥有的 cell、模块、绑定、候选、工作台与子计算入口共同消费所选编译规则，包括它们继续加载的源码；用户修改不能选择后续准备所用的编译器操作。 | [同步编译服务](../internal/compiler-service.js)统一执行源码准备，[纯模块转换](../internal/module-compilation.js)与[模块 hooks](../internal/stateful-module-compiler.js)分离；[服务隔离](../test/compiler-service.test.js)、[平台捕获](../test/compiler-platform.test.js)及[共同 operation plan](../test/compiler-operations.test.js)验证跨边界操作，[实际 worker](../test/stateful-managed-module-workers.test.js)、[CommonJS 包装环境](../test/stateful-commonjs-context.test.js)、[模块代际](../test/stateful-module-entry-generation.test.js)、[适配器缓存](../test/stateful-module-adapter-cache.test.js)、[动态导入所属模块](../test/stateful-module-dynamic-owner.test.js)、[工作台](../test/user-binding-console.test.js)及[子计算](../test/stateful-child-computation.test.js)验证不同入口。独立原生获取边界见第 5.4 节，动态语法与环境边界见第 5.7 节。 |
+| G4：生命周期与边界一致性 | 初始状态、执行、失败、配置、恢复均保持不变量；外部结果与 DSH authority 如实保留。 | [journal schema](../internal/session-journal-schema.js)固定代际，[session state](../internal/session-state.js)与既有执行 owner 共同结算；[历史重放](../test/legacy-language-replay.test.js)、[旧绑定的解构更新](../test/stateful-legacy-pattern-publication.test.js)、[原生 await 对照](../test/native-await-scope.test.js)、[排队执行与确认](../test/plugin-lifecycle.test.js)、[配置迁移](../test/runtime-config.test.js)、[恢复边界](../test/plugin-durability-recovery-boundaries.test.js)及[namespace lease](../test/program-namespace-lease.test.js)测试验证跨代际与失败路径。 |
 
 G1/G2 给出单元性质，G3 使动态新单元继续满足它，G4 使状态迁移保持它。四者组合才能推出任意长轨迹的性质。错误文案消失、有限样例通过、100% 覆盖率都不能单独替代这个证明。
 
@@ -682,6 +702,7 @@ G1/G2 给出单元性质，G3 使动态新单元继续满足它，G4 使状态�
 | import/export | 多 alias、同/不同模块重导入、覆盖后恢复 live read、短路与失败、具名 default 关联、同名 __default、重复导出、循环依赖。 |
 | 动态与反射 | eval 捕获与 var 注入、Function 参数串、with、alias/bind/Reflect/prototype、vm context、两层以上动态编译、toString 再编译。 |
 | 模块与入口 | ESM/CJS/createRequire/data URL、已缓存模块、native/realm 绕行；run/edit/code.run/initializer/候选/工作台共同契约。 |
+| 编译隔离与操作来源 | 首次与后续编译经历用户原型修改、Node ESM 导出同步更新后仍使用自己的操作；静态与动态转换保留 helper 参数中的用户调用、receiver、值身份与效果次数，不重复适配生成操作。 |
 | 失败与结算 | 未执行声明不发布；提升初始化确实发布；工具 pending 后抛错、取消、迟到 reply、call 所属预算、解码失败与有效 journal。 |
 | 状态和知识 | live volatile 可继续；恢复损坏收缩一次；来源被遮蔽与 result-only replacement 区分；显式投影不冒充完整 heap。 |
 | 配置与历史 | 两种新策略的全部语义；旧五开关 32 组合；同 cell 配置固定；旧 pattern/闭包/whole-entry shadow 的混合代际。 |
@@ -690,11 +711,15 @@ G1/G2 给出单元性质，G3 使动态新单元继续满足它，G4 使状态�
 
 以独立的目标语义模型、手写反例与生成式程序为 oracle。不得把 lowering 的产物再执行一次当作独立语义证明，也不能拿标准 REPL 的拒绝结果判断新语言是否正确。
 
+[三层语义验证](semantic-validation.md)通过 `npm run test:semantics` 执行固定 Test262 子集、PTC 方言身份/发布矩阵和带原生对照的编译器边界矩阵。上游用例保持原文；适用策略由规范差异决定并有配对断言。子集不构成完整 Test262 合规声明，也不替代本节其余专项验收。
+
 每个用例同时断言正确值、名称归属、后续状态和效果次数。等价程序在 cell、局部、动态与模块入口交叉运行，包含“不该改写的同名普通函数”“应该保持的原值身份”等反例。未覆盖项有 owner 和补齐条件，不能仅在测试中 skip 后宣称完成。
 
 ### 11.3 实际效用与仓库验证
 
 C1–C4 的效用指标包括：完成任务所需调用数、因内部表示而改名/包块/查库存的次数、恢复后错误引用状态的次数、错误值与重复外部效果次数。报错减少但结果变错不算改善，源码更少但隐藏状态更多也不算改善。
+
+[大型依赖验收](../test/stateful-large-dependency.test.js)在默认 worker 内存和执行预算下加载 TypeScript、实际调用编译 API，并验证重复加载身份与后续 cell 的状态连续性，覆盖更新、保护及两种历史设置。资源验收使用未启用覆盖率采集的独立 Node 进程，测量正常执行条件；编译器语义由常规覆盖率测试验证。不以提高预算或跳过依赖编译替代通过。
 
 针对当前 proposal 的文档验证检查链接、源码事实、推导索引、相互引用与历史语义界限。后续实现按仓库 ledger 流程登记 correction、owner、dependents 与判别式验证；本提案不自动解决已记录的运行时 finding。
 
@@ -727,4 +752,4 @@ C1–C4 的效用指标包括：完成任务所需调用数、因内部表示而
 - [Node vm：编译 API、context 与代码生成选项](https://nodejs.org/api/vm.html)：Script、compileFunction、SourceTextModule 是独立入口；禁止 strings 只产生 EvalError，不进行归一化。
 - [V8 embedder callback 声明](https://github.com/nodejs/node/blob/main/deps/v8/include/v8-isolate.h)、[Node isolate 初始化](https://github.com/nodejs/node/blob/main/src/api/environment.cc)、[Node context 代码生成控制](https://github.com/nodejs/node/blob/main/src/node_contextify.cc)：callback 由 embedder/Node 拥有，不能作为普通插件可任意替换的统一编译 hook。
 
-研究证据包括 parser/scope 与 Node 编译入口的隔离内存探针，支持第 3 节的具体事实；它们没有实现本提案的编译器，也没有证明 G1–G4 已完成。本文为设计文档，不表示运行时代码、测试、依赖或宿主配置已经按方案调整。
+早期 parser/scope 与 Node 编译入口的隔离内存探针支持第 3 节的研究事实。当前实现由第 10 节列出的 owner 与仓库测试提供证据；历史探针、测试覆盖率或单项检查都不单独构成 G1–G4 的完整证明。

@@ -43,7 +43,7 @@ try {
   assert.match(result.reason, /module node:path/)
   assert.doesNotMatch(result.code, /^\s*(?:import|export)\b/m)
   assert.doesNotMatch(result.code, /:\s*(number|string)\b/)
-  assert.match(result.code, /throw new this\["__dsh_ptc_return_signal_0__"\]/)
+  assert.match(result.code, /throw .*this\["__dsh_ptc_return_signal_0__"\]/)
   assert.equal(result.returnSignal, '__dsh_ptc_return_signal_0__')
   assert.deepEqual(result.rewrites.map(item => item.kind), ['import', 'export', 'redeclaration'])
 })
@@ -53,20 +53,28 @@ test('allocates private import namespaces outside persistent REPL bindings', () 
     "import { basename } from 'node:path'; return basename('/a/b')",
     new Set(['__dsh_ptc_import_namespace_0__']),
   )
-  assert.deepEqual([...result.importNamespaces], ['__dsh_ptc_import_namespace_1__'])
+  assert.equal(result.importNamespaces.has('__dsh_ptc_import_namespace_1__'), true)
+  assert.equal(result.importNamespaces.has('__dsh_ptc_import_namespace_0__'), false)
   assert.deepEqual(result.redeclared, [])
   assert.match(result.code, /__dsh_ptc_import_namespace_1__/)
   assert.doesNotMatch(result.code, /__dsh_ptc_import_namespace_0__/)
 })
 
-test('allocates return control outside persistent REPL bindings', () => {
+test('allocates return control outside persistent REPL bindings', async t => {
   const result = prepare(
     'try { return 1 } catch { return 2 }',
     new Set(['__dsh_ptc_return_signal_0__']),
   )
   assert.equal(result.returnSignal, '__dsh_ptc_return_signal_1__')
-  assert.match(result.code, /throw new this\["__dsh_ptc_return_signal_1__"\]\(1\)/)
+  assert.match(result.code, /this\["__dsh_ptc_return_signal_1__"\]/)
+  assert.doesNotMatch(result.code, /__dsh_ptc_return_signal_0__/)
   assert.doesNotMatch(result.code, /(?:globalThis|throw new __dsh_ptc).*return_signal/)
+  const runtime = new SessionRuntime({ legacyBindingSettings: true })
+  t.after(() => runtime.dispose())
+  const run = program => runtime.run('private-return-control', { program, bindings: [] })
+  assert.deepEqual(await run('let __dsh_ptc_return_signal_0__ = 7; return __dsh_ptc_return_signal_0__'), { logs: [], value: 7 })
+  assert.deepEqual(await run('try { return 1 } catch { return 2 }'), { logs: [], value: 1 })
+  assert.deepEqual(await run('return __dsh_ptc_return_signal_0__'), { logs: [], value: 7 })
 })
 
 test('preserves source when module rewrites are disabled and reports the parse boundary', () => {
@@ -134,12 +142,43 @@ test('assigns distinct commit targets to same-name declaration occurrences', () 
 
 test('only lowers fresh const declarations under the variable redeclaration policy', () => {
   const strict = prepareProgram('const stable = 1', { knownBindings: new Set(), bindingPolicy: { variableRedeclarations: false, functionClassRedeclarations: true }, reservedBindings: new Set(), rewritesEnabled: ENABLED })
-  assert.match(strict.code, /^const stable = 1$/)
+  assert.match(strict.code, /^const stable = 1;?$/m)
   assert.equal(strict.declarations[0].writable, false)
 
   const loose = prepareProgram('const replaceable = 1', { knownBindings: new Set(), bindingPolicy: { variableRedeclarations: true, functionClassRedeclarations: false }, reservedBindings: new Set(), rewritesEnabled: ENABLED })
-  assert.match(loose.code, /^let replaceable = 1$/)
+  assert.match(loose.code, /^let replaceable = 1;?$/m)
   assert.equal(loose.declarations[0].writable, true)
+})
+
+test('selects only the recorded production compiler generation', () => {
+  const options = { knownBindings: new Set(['item']), bindingPolicy: true, rewritesEnabled: ENABLED }
+  const historical = prepareProgram('let item', options)
+  assert.equal(historical.languageSemantics, 'legacy-v1')
+  assert.equal(historical.code, prepareProgram('let item', {
+    ...options, languageSemantics: 'legacy-v1',
+  }).code)
+  const current = prepareProgram('const item=1; const item=2; return item', {
+    languageSemantics: 'stateful-v1', reservedBindings: new Set(),
+  })
+  assert.deepEqual(current.collisions, [])
+  assert.equal(current.languageSemantics, 'stateful-v1')
+  assert.throws(() => prepareProgram('return 1', { languageSemantics: 'unknown' }), /unsupported language semantics/)
+})
+
+test('module durability uses native import scope and checks every static dependency', () => {
+  const module = { sourceType: 'module' }
+  for (const source of [
+    'import {parse as Date} from "node:url"; export const value=Date',
+    'export {parse} from "node:url"',
+    'export * from "node:url"',
+    'export default class Named {}',
+    'export default function () { return 1 }',
+  ]) assert.equal(classifyDurability(source, new Set(), module).durability, 'durable', source)
+  assert.deepEqual(classifyDurability('export default () => Date.now()', new Set(), module).reasons,
+    [{ kind: 'ambient', name: 'Date' }])
+  assert.deepEqual(classifyDurability('export * from "node:fs"', new Set(), module).reasons,
+    [{ kind: 'module', source: 'node:fs' }])
+  assert.throws(() => classifyDurability('export * from "node:worker_threads"', new Set(), module), /forbidden/)
 })
 
 test('keeps the compatibility path when no parsed body is available', () => {
@@ -387,12 +426,14 @@ test('returns one preparation shape for successful, policy-colliding and reserve
   const reservedCollision = prepareProgram('const tools = 1', {
     ...options, reservedBindings: new Set(['tools']),
   })
+  assert.ok(success.nativeLexicals.has('value'))
   for (const rejected of [protectedCollision, reservedCollision]) {
     assert.deepEqual(Object.keys(rejected).sort(), Object.keys(success).sort())
     assert.equal(rejected.collisions.length, 1)
     assert.equal(rejected.returnSignal, undefined)
     assert.ok(rejected.commitTargets instanceof Set)
     assert.ok(Array.isArray(rejected.sourceMap))
+    assert.deepEqual(rejected.nativeLexicals, new Set())
   }
   assert.throws(() => prepareProgram(null, options), /program must be a string/)
 })
@@ -417,8 +458,14 @@ try {
   return arrow()
 }
 `)
-  assert.match(result.code, /function nested\(\) \{ return 'nested' \}/)
-  assert.match(result.code, /let arrow = \(\) => \{ return 'arrow' \}/)
+  const body = parseExecutableCell(result.code).body.body
+  const nested = body.find(node => node.type === 'FunctionDeclaration' && node.id.name === 'nested')
+  const arrow = body.filter(node => node.type === 'VariableDeclaration')
+    .flatMap(node => node.declarations).find(node => node.id.name === 'arrow').init
+  assert.equal(nested.body.body.at(-1).type, 'ReturnStatement')
+  assert.equal(arrow.body.body.at(-1).type, 'ReturnStatement')
+  assert.equal(nested.body.body.at(-1).argument.value, 'nested')
+  assert.equal(arrow.body.body.at(-1).argument.value, 'arrow')
   assert.doesNotMatch(result.code, /catch \(error\) \{\s*return/)
   assert.match(result.code, /__dsh_ptc_caught_1__/)
   assert.match(result.code, /__dsh_ptc_caught_2__/)

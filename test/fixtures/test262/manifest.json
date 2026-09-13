@@ -1,0 +1,134 @@
+{
+  "repository": "https://github.com/tc39/test262",
+  "revision": "72faf8ec1445c55149615e8b35187830783aba1a",
+  "harness": {
+    "LICENSE": "4dd9244dfe8197c75348c4b24ab53d29d3b1cfad143ac76b5a3d8942aa354ce0",
+    "harness/assert.js": "206e274ca325eb8a652e3911c3fbd090e2480d11ed7579dc17a5d17a2360ed48",
+    "harness/sta.js": "1930c54af79455c484799f43e9a28e2b2f15c40d0917c9941ca54e26db243f35",
+    "harness/compareArray.js": "3330423fe116cd96db70077d194471319ae9767ba1c8e2f73d7c133c5204509d"
+  },
+  "cases": [
+    {
+      "path": "test/language/statements/let/block-local-closure-get-before-initialization.js",
+      "topic": "lexical-initialization",
+      "sha256": "5cf850a15f38a8cdcba2008cb0d52b55c0ad80a7379c145a3a2fc40c1c37b8c1"
+    },
+    {
+      "path": "test/language/statements/let/block-local-closure-set-before-initialization.js",
+      "topic": "lexical-initialization",
+      "policies": ["protected"],
+      "dialectContract": "Proposal 5.1: stateful assignment establishes the identity; a later bare declaration preserves its value. Verified in semantic-dialect.test.js.",
+      "sha256": "0e74795f26a3ba9321a19a2fc3e61ae59b73f22b0b1879223b7ddd5a20096865"
+    },
+    {
+      "path": "test/language/statements/let/function-local-use-before-initialization-in-declaration-statement.js",
+      "topic": "lexical-initialization",
+      "sha256": "4a20503d5508886f4818a78fdb3e8fea3819cb3e681e3a9650e0335b034532ed"
+    },
+    {
+      "path": "test/language/statements/let/syntax/let-iteration-variable-is-freshly-allocated-for-each-iteration-multi-let-binding.js",
+      "topic": "lexical-initialization",
+      "sha256": "bf82e8ff1a5b418146d7d251c2647165f645d023e38be725fd5864cb357b16cb"
+    },
+    {
+      "path": "test/language/expressions/function/scope-body-lex-distinct.js",
+      "topic": "function-environments",
+      "sha256": "268af0e81ce46a00ad7124e24e4cff505318dfaecf4872561e30d5af35c4c552"
+    },
+    {
+      "path": "test/language/expressions/function/scope-name-var-close.js",
+      "topic": "function-environments",
+      "sha256": "4b739b7fcf3c4f3e7f23df79c7060bfe1942042694ab2eb675ea10071292b67f"
+    },
+    {
+      "path": "test/language/expressions/function/scope-param-elem-var-close.js",
+      "topic": "function-environments",
+      "sha256": "d17e848f263e500ece1bd311dff485c952112a74151c907ea765bd330cd337eb"
+    },
+    {
+      "path": "test/language/expressions/function/scope-param-elem-var-open.js",
+      "topic": "function-environments",
+      "sha256": "689470bd619e2a54b9510904d8cf2995da5b2474eee57af658fad38371fedc6c"
+    },
+    {
+      "path": "test/language/expressions/function/scope-paramsbody-var-close.js",
+      "topic": "function-environments",
+      "sha256": "1d8c4e15953080369d4c9a93d51b90c84c6263a95faa132fa9f48aa7e5ec39d6"
+    },
+    {
+      "path": "test/language/expressions/function/scope-paramsbody-var-open.js",
+      "topic": "function-environments",
+      "sha256": "d3db2c5a48aa6077b0dd104042ad71bc5b7cf523ae94abd5ce5e5657c16e35b5"
+    },
+    {
+      "path": "test/language/expressions/assignment/destructuring/iterator-destructuring-property-reference-target-evaluation-order.js",
+      "topic": "reference-evaluation",
+      "sha256": "7c1c0c18ff337cc30318cb7cb12dbd6d63e8bfb2cddea54ac77aed0cc65c2bbf"
+    },
+    {
+      "path": "test/language/expressions/assignment/destructuring/keyed-destructuring-property-reference-target-evaluation-order.js",
+      "topic": "reference-evaluation",
+      "sha256": "cce2bf12e70f0ae3e97e97ba27f56c7ea24bdfc0c9a9598b8c63144060e742a3"
+    },
+    {
+      "path": "test/language/expressions/assignment/target-member-computed-reference.js",
+      "topic": "reference-evaluation",
+      "sha256": "ca57bd69ceae22dad49e9b1f8461352003deed7635c338fa0d45b30ceea976ef"
+    },
+    {
+      "path": "test/language/expressions/assignment/dstr/obj-prop-put-order.js",
+      "topic": "reference-evaluation",
+      "sha256": "5a862624923eec969f18c09133f991ec4628edae6e56f3bb5c3c13726be38ebf"
+    },
+    {
+      "path": "test/language/expressions/assignment/dstr/array-elem-iter-nrml-close.js",
+      "topic": "iterator-completion",
+      "sha256": "97ffa7699e04bc2202b4e2769779df73b54fceda93259bdd85f32661881ed34a"
+    },
+    {
+      "path": "test/language/expressions/assignment/dstr/array-elem-iter-thrw-close.js",
+      "topic": "iterator-completion",
+      "sha256": "104e4bf2bf396d91021df8636ea7a910a256967ad7bca3957b07b2edd9e00944"
+    },
+    {
+      "path": "test/language/expressions/assignment/dstr/array-elem-iter-thrw-close-err.js",
+      "topic": "iterator-completion",
+      "sha256": "0f54fe56bc97399ae53f1387aa2f5fd7b2b91da431e09cc00b5b9f69bc893f63"
+    },
+    {
+      "path": "test/language/expressions/assignment/dstr/array-rest-iter-thrw-close-skip.js",
+      "topic": "iterator-completion",
+      "sha256": "3907b5bf6fea09333a6cec6ddd08794d4aae538a63aa4f6d11152ca65741f063"
+    },
+    {
+      "path": "test/language/expressions/optional-chaining/optional-call-preserves-this.js",
+      "topic": "call-receivers",
+      "sha256": "e62500065fc7ddabffdf446723a8ae42a723202e0a8611dd7d73646187281b03"
+    },
+    {
+      "path": "test/language/expressions/optional-chaining/eval-optional-call.js",
+      "topic": "call-receivers",
+      "sha256": "8ee86992e92b85c7155b8adf6c84d6923099693407792ca0100c81d8cc626f39"
+    },
+    {
+      "path": "test/language/expressions/optional-chaining/super-property-optional-call.js",
+      "topic": "call-receivers",
+      "sha256": "7a9d656f1fa1b77f1057c841aed086ca13db42135106833f6de09e02571564da"
+    },
+    {
+      "path": "test/language/statements/try/completion-values-fn-finally-abrupt.js",
+      "topic": "completion",
+      "sha256": "67cc09876139af0ab7562a0ef1265d04c2a58d26b3de84c79927c9e45be7681b"
+    },
+    {
+      "path": "test/language/statements/try/completion-values-fn-finally-normal.js",
+      "topic": "completion",
+      "sha256": "bdfeff24b8a22b61da6d658d297ab99b16900356a716628c62d3f95d81e85efb"
+    },
+    {
+      "path": "test/language/statements/try/completion-values-fn-finally-return.js",
+      "topic": "completion",
+      "sha256": "e5d15192edf61c61e8fc21c68f223571a7a0a809557cad5342d286829670af74"
+    }
+  ]
+}

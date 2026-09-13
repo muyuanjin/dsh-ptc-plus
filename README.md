@@ -29,7 +29,7 @@
 
 ---
 
-**PTC Plus 让 DSH 的 PTC 模式拥有连续的 TypeScript REPL。** 上一次 `run_code` 的变量、导入和计算结果，下一次可以直接复用。
+**PTC Plus 让 DSH 的 PTC 模式拥有连续的 TypeScript REPL。** 上一次 `run_code` 的变量、导入和计算结果，下一次可以直接复用。默认允许直接同名修订：已有闭包读取更新后的绑定，导入可被局部覆盖再重新导入，失败的声明不会永久占住名称。
 
 > [!NOTE]
 > 社区插件，与 DeepSeek 或 DSH 无隶属、无背书。
@@ -124,13 +124,20 @@ Agent 可以在会话 REPL 中用内存样例逐步测试和修正，再交出�
 打开 **设置 → 插件配置 → PTC Plus**。总开关控制插件，其余设置按用途分组：
 
 - **调用容错**：允许缺少摘要的 `run_code`，修复可以准确识别的顶层工具误调用。
-- **REPL 语法**：控制重声明、模块语法和解构支持。
+- **REPL 语法**：`bindingUpdates` 默认是 `stateful`，允许跨 cell 更新变量、函数、类和 import alias，也允许同一 cell 内同一逻辑 scope 的重复声明更新同一身份；`protected` 可选择名称保护。`tools` 与注入的错误类是请求保留的程序绑定，既不能重声明也不能写入：冲突在 preflight 报 `PTC-N001`，赋值在执行时以指明该名称的错误失败，不会静默丢弃。旧版五个细分开关仅在迁移旧配置时生效；设置页明确显示尚未迁移的状态，可直接选择任一种统一策略。模块语法默认可用。
+- **模块互操作**：PTC 管理的 namespace 支持实时读取和局部覆盖，传给外部函数后仍保留这些语义。外部代码自行原生导入编译模块不承诺同一 namespace 或可写导出语义，详见[运行时说明](docs/runtime-reference.md#cell-semantics)。
 - **状态与恢复**：控制重启恢复和按需错误提示。
 - **工具扩展**：开启全局绑定，或供高级用户使用的官方 Cordis 工具。
 - **界面显示**：控制增强工具卡片、REPL 页签和绑定编写快捷入口。
 - **资源限制**：调整执行时间、内存和输出上限。
 
 全局绑定与 Cordis 工具默认关闭。设置通常即时生效；活动 worker 存在时不能更改其内存上限。字段、默认值和限制见[配置参考](docs/runtime-reference.md#configuration)。
+
+PTC Plus 对 `run_code`、`edit_run_code`、插件自有子计算及用户绑定入口使用共同的有状态计算契约。用户主动调用 `eval`、`Function`、`node:vm` 或其他外部引擎时，动态源码保留对应的原生语法规则与结果；直接 `eval` 仍须访问调用处的逻辑作用域，间接 `eval` 和 `Function` 使用所属 realm 的逻辑根环境，不能因内部名称改写而读错状态。模块接口与原生互操作边界见 [ADR 0025](docs/adr/0025-use-versioned-logical-binding-identities.md#managed-module-interface)。
+
+间接 `eval` 和四种 `Function` 构造器使用所属 realm 的 root，作为原生回调传递时也一样，例如 `const value=41` 后的 `["typeof value"].map(eval)` 返回 `["number"]`。函数源码观察保留原始 JavaScript 源码及其真实依赖，自包含函数可用 `Function` 重新编译；函数值本身、用户改写和另外创建的 realm 保持各自语义。
+
+切换计算模式时，旧闭包仍保留原有执行环境和已保存的函数身份，包括异步继续执行中的直接 `eval` 与 `Function.prototype.toString`。各代源码取得稳定的回调接口，全局和原型属性保持原值；兼容模式通过原生 REPL 环境复用已有逻辑绑定，原有原生声明仍优先，其模块导入也通过 PTC 管理的 namespace 读取。
 
 ![PTC Plus 设置卡片](assets/ptc-plus-settings-zh.png)
 
@@ -152,6 +159,6 @@ DSH 继续负责工具权限、审批、取消和沙箱策略。PTC Plus 不保�
 
 ## 文档
 
-[全局绑定使用指南](docs/user-bindings.md) · [安装与升级](docs/installation.md) · [运行时参考](docs/runtime-reference.md) · [开发与架构](docs/architecture.md) · [全部文档](docs/README.md)
+[全局绑定使用指南](docs/user-bindings.md) · [安装与升级](docs/installation.md) · [运行时参考](docs/runtime-reference.md) · [开发与架构](docs/architecture.md) · [验证与测试并发](docs/verification.md) · [全部文档](docs/README.md)
 
 使用 [MIT License](LICENSE)。

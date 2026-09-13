@@ -6,8 +6,10 @@ import {
   valueWiresEqual,
 } from './value-wire.js'
 import { diagnostic, renderDiagnostic } from './diagnostic.js'
+import { normalizeBindingDescriptors } from './binding-descriptors.js'
 import {
   firstLine,
+  exceptionOriginPosition,
   limitLogs,
   LONG_CELL_CODE_UNITS,
   markBindingFailure,
@@ -18,12 +20,13 @@ import {
 } from './failure-reporting.js'
 import { assertStateName, LIVE_USER_BINDINGS_REUSE_POLICY } from './session-journal.js'
 import { LIVE_USER_BINDINGS_SHADOW_POLICY, normalizeUserBindingNames } from './session-journal-schema.js'
-import { PreflightError, prepareProgram } from './cell-analysis.js'
-import { LIVE_MODULE_SEMANTICS } from './repl-rewrite-contract.js'
+import { PreflightError, prepareProgram } from './compiler-service.js'
+import { executionPolicies } from './binding-update-policy.js'
 import { createReplMemorySnapshot } from './repl-memory-projection.js'
-import { ModuleRewriteError } from './cell-rewriter.js'
+import { ModuleRewriteError } from './cell-error.js'
 import { mapSourcePosition } from './source-position-map.js'
 import { durabilityState, transitionDurability } from './session-state.js'
+import { dynamicBindingOrigin } from './dynamic-binding-evidence.js'
 import { validatedEofClosureRepair } from './validated-parse-repair.js'
 import {
   normalizeUserBindingsSnapshot,
@@ -126,6 +129,44 @@ function committedRedeclarationSet(message, prepared) {
   return committed
 }
 
+/** Accept value-free worker facts only for this compilation's logical root. */
+function completedRootBindingFacts(message, prepared, committed) {
+  if (prepared.rootRuntimeName === undefined && prepared.rootBindingFacts !== true) return undefined
+  if (!Array.isArray(message.rootBindingFacts)) throw new TypeError('kernel returned invalid root binding facts')
+  const established = new Map(prepared.rootBindings.established)
+  const initialized = new Set(prepared.declarations.filter(declaration => committed.has(declaration.commitDependency)
+    && (prepared.languageSemantics !== 'legacy-v1' || established.has(declaration.name)))
+    .map(declaration => declaration.name))
+  const candidates = new Map(prepared.rootBindings.candidates)
+  const dynamicOrigins = new Set(prepared.rootBindings.dynamicOrigins)
+  const available = new Set([...prepared.rootBindings.known, ...established.keys(), ...initialized])
+  const allowed = new Set([...available, ...candidates.values()])
+  const required = new Set([...established.keys(), ...initialized])
+  const imports = new Set([...prepared.rootBindings.legacyImports.map(([name]) => name),
+    ...[...established].filter(([, source]) => source === 'import').map(([name]) => name),
+    ...prepared.declarations.filter(declaration => declaration.kind === 'import' && committed.has(declaration.commitDependency))
+      .map(declaration => declaration.name)])
+  const seen = new Set()
+  const facts = message.rootBindingFacts.map(fact => {
+    const dynamicOrigin = dynamicBindingOrigin(fact?.write, fact?.name, dynamicOrigins)
+    if (fact === null || typeof fact !== 'object' || Array.isArray(fact)
+      || Object.keys(fact).length !== (Object.hasOwn(fact, 'write') ? 3 : 2)
+      || !Object.hasOwn(fact, 'name') || !Object.hasOwn(fact, 'source')
+      || typeof fact.name !== 'string' || !allowed.has(fact.name) && dynamicOrigin === undefined || seen.has(fact.name)
+      || !['local', 'import', 'absent'].includes(fact.source)
+      || Object.hasOwn(fact, 'write') && (typeof fact.write !== 'string'
+        || candidates.get(fact.write) !== fact.name && dynamicOrigin === undefined || fact.source === 'import')
+      || !available.has(fact.name) && !Object.hasOwn(fact, 'write')
+      || fact.source === 'import' && !imports.has(fact.name)
+      || fact.source === 'absent' && initialized.has(fact.name)) throw new TypeError('kernel returned invalid root binding facts')
+    seen.add(fact.name)
+    required.delete(fact.name)
+    return { name: fact.name, source: fact.source, ...(Object.hasOwn(fact, 'write') ? { write: fact.write } : {}) }
+  })
+  if (required.size !== 0) throw new TypeError('kernel returned incomplete root binding facts')
+  return facts
+}
+
 function completedUserBindingNames(active, message, snapshot) {
   const facts = normalizeUserBindingNames(message.userBindingNames)
   const required = active.userBindingBaseCatalog.userBindingNameSet(snapshot)
@@ -163,6 +204,31 @@ function validateUserBindingActivation(active, message, ids) {
   }
 }
 
+/** A reserved program binding (`tools` and the injected error classes) is not shadowable at the
+ * session root, so a collision on it is not a repeated declaration. The collision producer records
+ * that reason, and rendering the recorded reason keeps "top-level bindings already exist" from
+ * implying the cell redeclared a name the session never created. */
+const RESERVED_BINDING_REASON = 'reserved-program-binding-not-shadowable'
+/** Reasons whose only remaining guidance is to reuse the binding already in session state. */
+const REUSE_BINDING_REASONS = new Set([
+  'variable-redeclarations-disabled', 'redeclaration-splitting-disabled', 'protected-root-redeclaration',
+  'import-binding-redeclaration', RESERVED_BINDING_REASON,
+])
+
+function reservedBindingNote(collisions) {
+  const reserved = [...new Set(collisions.filter(collision => collision.reason === RESERVED_BINDING_REASON)
+    .map(collision => collision.name))]
+  return reserved.length === 0
+    ? ''
+    : ` ${reserved.join(', ')} cannot be redeclared or overwritten because reserved program bindings are not shadowable.`
+}
+
+/** The model-visible structured form of every recorded collision, reduced to public fields. */
+function collisionRecords(collisions) {
+  return collisions.map(collision => ({ name: collision.name, kind: collision.kind,
+    reason: collision.reason, start: collision.start, end: collision.end }))
+}
+
 function collisionDiagnostic(collisions) {
   const names = [...new Set(collisions.map(item => item.name))]
   const reasons = new Set(collisions.map(item => item.reason).filter(Boolean))
@@ -178,7 +244,7 @@ function collisionDiagnostic(collisions) {
         : disabledKinds.has('class')
           ? ['assign a class expression to the existing writable binding']
           : []),
-    ...((reasons.size === 0 || reasons.has('variable-redeclarations-disabled'))
+    ...((reasons.size === 0 || [...reasons].some(reason => REUSE_BINDING_REASONS.has(reason)))
       ? ['reuse the existing bindings']
       : []),
   ]
@@ -189,14 +255,16 @@ function collisionDiagnostic(collisions) {
     ...(alternatives.length === 0 ? [] : [alternatives.join('; ')]),
     'place one-off declarations inside a block',
   ]
+  const reservedNote = reservedBindingNote(collisions)
   return diagnostic({
     code: 'PTC-N001',
     severity: 'error',
     phase: 'preflight',
-    message: `top-level bindings already exist: ${names.join(', ')}. This cell was not executed; the REPL state is unchanged.`,
+    message: `top-level bindings already exist: ${names.join(', ')}.${reservedNote} This cell was not executed; the REPL state is unchanged.`,
     stateEffect: 'unchanged',
     source: { cell: 'current', start: first.start, end: first.end },
     help,
+    collisions: collisionRecords(collisions),
   })
 }
 
@@ -207,6 +275,7 @@ function exceptionDiagnostic({
   declared,
   longCellFailure = false,
   failureOrigin,
+  languageSemantics = 'legacy-v1',
 }) {
   const missingPath = error.name === 'ToolCallError' ? missingDescriptionPath(error) : undefined
   const missingDescription = missingPath !== undefined
@@ -245,6 +314,8 @@ function exceptionDiagnostic({
         ? ['bindings assigned before this Cordis failure remain live; reuse them instead of resending large source']
         : longCellFailure
           ? ['inspect relevant live state in a new short `run_code` cell; edit_run_code executes the complete corrected cell, not only the failing expression']
+          : languageSemantics !== 'legacy-v1'
+            ? ['completed declarations and actual assignments remain available; correct the failed initializer and continue with the same binding names']
           : declared.size === 0 ? []
             : ['use fresh names for one-off top-level bindings after partial execution; later declarations may be uninitialized']),
     ],
@@ -342,26 +413,21 @@ export class SessionCellExecutor {
     }
     const priorBindingCatalog = userBindingPlan.catalog
     const catalog = priorBindingCatalog.inputs()
-    const bindingPolicy = replayRecord === undefined ? {
-      variableRedeclarations: config.looseTopLevelRedeclarations,
-      functionClassRedeclarations: config.looseTopLevelFunctionClassRedeclarations,
-    } : replayRecord.bindingPolicy
-    const rewritesEnabled = replayRecord === undefined ? {
-      autoRewriteImports: config.autoRewriteImports,
-      autoStripExports: config.autoStripExports,
-      autoSplitRedeclarations: config.autoSplitRedeclarations,
-    } : replayRecord.rewritePolicy
-    const moduleSemantics = replayRecord === undefined
-      ? LIVE_MODULE_SEMANTICS
-      : replayRecord.moduleSemantics
+    const { bindingPolicy, rewritesEnabled, moduleSemantics, languageSemantics } = executionPolicies(config, replayRecord)
     const prepareCell = program => prepareProgram(program, {
       knownBindings: catalog.knownBindings,
       bindingPolicy,
+      languageSemantics,
       reservedBindings: request.bindingDescriptors.reservedNames,
       rewritesEnabled,
       importBindings: catalog.importBindings,
       importNamespaces: catalog.importNamespaces,
       writableBindings: catalog.writableBindings,
+      nativeBindings: catalog.nativeBindings,
+      nativeLexicalBindings: catalog.nativeLexicalBindings,
+      rootCandidates: catalog.rootCandidates,
+      dynamicOrigins: catalog.dynamicOrigins,
+      establishedRoots: catalog.establishedRoots,
       moduleSemantics,
     })
     let prepared
@@ -485,9 +551,13 @@ export class SessionCellExecutor {
           kernel.client.post({
             type: 'run', id, program: prepared.code, namespaces: bindings.workerDescriptors,
             moduleLoads: prepared.moduleLoads,
+            languageSemantics,
+            rootRuntimeName: prepared.rootRuntimeName,
+            rootBindings: prepared.rootBindings,
             importBindingNamespaces: new Map([...catalog.importBindings].map(([name, binding]) => [name, binding.namespace])),
             preparedImportBindingNamespaces: new Map([...prepared.imports].map(([name, binding]) => [name, binding.namespace])),
             returnSignal: prepared.returnSignal,
+            asyncCompletion: prepared.asyncCompletion,
             commitSignal: prepared.commitSignal,
             maxOutputBytes: config.maxOutputBytes,
             valueLimits,
@@ -546,7 +616,7 @@ export class SessionCellExecutor {
       reservedNames: bindingDescriptors.reservedNames,
       workerDescriptors: Object.freeze([
         ...bindingDescriptors.workerDescriptors,
-        Object.freeze({ global: 'repl', members: namespace.members }),
+        ...normalizeBindingDescriptors([namespace]).workerDescriptors,
       ]),
     })
   }
@@ -723,8 +793,10 @@ export class SessionCellExecutor {
       return
     }
     let committed
+    let rootBindingFacts
     try {
       committed = committedRedeclarationSet(message, active.prepared)
+      rootBindingFacts = completedRootBindingFacts(message, active.prepared, committed)
     } catch (error) {
       active.resolve(earlyResult('worker-exit', messageOf(error)), true)
       return
@@ -735,6 +807,7 @@ export class SessionCellExecutor {
           active.prepared,
           active.request.program,
           committed,
+          rootBindingFacts,
         )
     if (perNameUserBindings) {
       active.appliedBindingCatalog = active.appliedBindingCatalog.reconcileUserBindingNames(
@@ -759,8 +832,9 @@ export class SessionCellExecutor {
               active.prepared.code,
               active.request.program,
               active.prepared.sourceMap,
-            ),
+            ) ?? exceptionOriginPosition(message.exceptionOrigins, active.request.program),
         declared: message.moduleLoadFailed === true ? new Set() : active.prepared.declared,
+        languageSemantics: active.prepared.languageSemantics,
         longCellFailure: active.request.program.length >= LONG_CELL_CODE_UNITS,
         failureOrigin: message.failureOrigin,
       })

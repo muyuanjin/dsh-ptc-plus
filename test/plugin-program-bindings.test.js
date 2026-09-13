@@ -5,10 +5,36 @@ import { isAbsolute } from 'node:path'
 import test from 'node:test'
 import { Config } from '../index.js'
 import { createRuntimeBridgeOwner } from '../internal/runtime-bridge-owner.js'
-import { normalizeJournal } from '../internal/session-journal.js'
+import { normalizeJournal, RECOVERY_BOUNDARY_KEY } from '../internal/session-journal.js'
 import { SessionRuntime } from '../internal/session-runtime.js'
+import { createUserBindingsSnapshot, USER_BINDINGS_META_KEY } from '../internal/user-bindings.js'
 import { decodeValue, encodeValue, renderValueWire } from '../internal/value-wire.js'
 import { JOURNAL_POLICY, appendRunCodeEvents, fixture, ptcAgent } from './plugin-fixture.js'
+
+test('failed host results retain recovery boundaries and activated binding snapshots for journal confirmation', async t => {
+  const definition = { name: 'run_code', output: {} }
+  const runtime = { async run() { throw Error('unexpected upstream execution') } }
+  const owner = createRuntimeBridgeOwner({
+    ctx: { codeRuntime: runtime, tools: { get: () => definition } },
+    sessionConfig: {}, presentationGeneration: 'binding-error-result',
+    sessionId: agent => agent.id, toolSchemasForAgent: () => [],
+  })
+  t.after(() => owner.dispose())
+  const selected = createUserBindingsSnapshot({ entries: [{ id: 'helper', name: 'helper',
+    scope: 'namespace', purpose: '', enabled: true, source: 'export const value=42' }] })
+  const events = []
+  appendRunCodeEvents(events, 'unproved-history', 'let old=1', { meta: { dshPtcPlus: { version: 999 } } })
+  const exec = { name: 'run_code', callId: 'binding-error', agent: { id: 'binding-error', session: { events } } }
+  const result = await owner.handleExecute(exec, async () => {
+    const raw = await runtime.run({ program: 'throw Error(String(helper.value))', bindings: [] })
+    assert.match(raw.error.message, /42/)
+    return { isError: true, content: [], error: { message: raw.error.message } }
+  }, undefined, selected)
+  assert.deepEqual(result.meta[USER_BINDINGS_META_KEY], selected)
+  assert.deepEqual(result.meta[RECOVERY_BOUNDARY_KEY], [{ failedCallSeq: 0, frontierCallSeq: null }])
+  assert.equal(result.meta.dshPtcPlus.completion.kind, 'throw')
+  owner.handleResult(exec, result)
+})
 
 test('keeps successful rewrites out of the prompt projection', async (t) => {
   const state = fixture()
@@ -496,7 +522,7 @@ const ownerRichValue = await domain.transform(ownerRichInput)
   assert.equal(replayDispatches, 0)
 })
 
-test('injects code.run and routes it to the isolated upstream runtime', async (t) => {
+test('injects code.run and routes it to an isolated PTC runtime', async (t) => {
   const state = fixture()
   t.after(() => state.dispose())
   const discovery = await state.run('capability-discovery-contract', `
@@ -522,7 +548,7 @@ return inspected.symbols[0].description
 `)
   assert.match(description.value, /top-level code\.run binding/)
   assert.match(description.value, /do not use tools\.code\.run/)
-  const childCode = 'const childOnly = 1; return childOnly'
+  const childCode = 'const childOnly = 1; return [childOnly, await tools.read({})]'
   const functions = { read: async () => 'visible' }
 
   const observed = await state.executeRun('recursive-isolation', `
@@ -536,16 +562,10 @@ return { parentOnly, nestedOutcome }
 
   assert.deepEqual(observed.raw.value, {
     parentOnly: 41,
-    nestedOutcome: { logs: ['upstream'], result: 'upstream' },
+    nestedOutcome: { logs: [], result: [1, 'visible'] },
   })
   assert.deepEqual(observed.raw.logs, [])
-  assert.equal(state.upstreamCalls.length, 1)
-  assert.equal(state.upstreamCalls[0].program, childCode)
-  assert.equal(state.upstreamCalls[0].signal instanceof AbortSignal, true)
-  const childTools = state.upstreamCalls[0].bindings.find(binding => binding.global === 'tools')
-  assert.equal(typeof childTools.functions.read, 'function')
-  const childCodeBinding = state.upstreamCalls[0].bindings.find(binding => binding.global === 'code')
-  assert.equal(typeof childCodeBinding.functions.run, 'function')
+  assert.equal(state.upstreamCalls.length, 0)
   assert.equal(Object.hasOwn(functions, 'run_code'), false)
   assert.equal(observed.result.meta.dshPtcPlus.status, 'durable')
   assert.equal(observed.result.meta.dshPtcPlus.volatileReason, undefined)
@@ -559,6 +579,7 @@ return { parentOnly, childOnly: typeof childOnly }
 
 test('preserves an existing native run_code binding', async (t) => {
   const state = fixture()
+  const nativeCalls = []
   t.after(() => state.dispose())
   // A host-dispatched nested call re-enters the plugin through the same
   // top-level run_code hook DSH uses for a model-issued call.
@@ -590,6 +611,7 @@ test('preserves an existing native run_code binding', async (t) => {
     return result
   }
   const hostRunCode = async args => {
+    nativeCalls.push(args)
     const result = await dispatchNestedRun(args)
     if (result.isError) throw new Error(result.error.message)
     return result.value
@@ -598,38 +620,26 @@ test('preserves an existing native run_code binding', async (t) => {
   const result = await state.run('host-recursion', `
 return code.run({ code: 'return 1', description: 'Use host recursion' })
   `, { run_code: hostRunCode })
-  assert.deepEqual(result.value, { logs: ['upstream'], result: 'upstream' })
+  assert.deepEqual(result.value, { logs: [], result: 1 })
   assert.deepEqual(result.logs, [])
-  assert.equal(state.upstreamCalls.length, 1)
+  assert.deepEqual(nativeCalls, [{ code: 'return 1', description: 'Use host recursion' }])
+  assert.equal(state.upstreamCalls.length, 0)
 })
 
 test('supports bounded recursive run_code and leaves the parent usable after overflow', async (t) => {
-  const state = fixture({ maxNestedRunCodeDepth: 2 }, {
-    async upstreamRun(request) {
-      const remaining = Number(request.program)
-      if (remaining === 0) return { logs: ['leaf'], value: 0 }
-      const runCode = request.bindings.find(binding => binding.global === 'code').functions.run
-      try {
-        const result = await runCode({
-          code: String(remaining - 1),
-          description: 'Continue recursive evaluation',
-        })
-        return { logs: [], value: result }
-      } catch (error) {
-        return { logs: [], error: { kind: 'exception', message: error.message } }
-      }
-    },
-  })
+  const state = fixture({ maxNestedRunCodeDepth: 2 })
   t.after(() => state.dispose())
+  const leaf = 'console.log("leaf"); return 0'
+  const nested = `return code.run({code: ${JSON.stringify(leaf)}, description: 'Compute leaf'})`
 
   const bounded = await state.run('recursive-depth-ok', `
-return code.run({ code: '1', description: 'Evaluate two child levels' })
+return code.run({ code: ${JSON.stringify(nested)}, description: 'Evaluate two child levels' })
   `)
   assert.deepEqual(bounded.value, { logs: [], result: { logs: ['leaf'], result: 0 } })
   assert.deepEqual(bounded.logs, [])
 
   const overflow = await state.run('recursive-depth-overflow', `
-return code.run({ code: '2', description: 'Exceed child depth limit' })
+return code.run({ code: ${JSON.stringify(`return code.run({code: ${JSON.stringify(nested)}, description: 'Add depth'})`)}, description: 'Exceed child depth limit' })
 `)
   assert.equal(overflow.error.kind, 'exception')
   assert.match(overflow.error.message, /recursion depth exceeds configured maximum 2/)
@@ -637,6 +647,7 @@ return code.run({ code: '2', description: 'Exceed child depth limit' })
 })
 
 test('binds nested code.run depth to the submitted cell generation', async (t) => {
+  const childCode = `return code.run({code: 'console.log("leaf"); return 0', description: 'Compute leaf'})`
   let releaseGate
   let gateStarted
   const gate = new Promise(resolve => { releaseGate = resolve })
@@ -645,22 +656,7 @@ test('binds nested code.run depth to the submitted cell generation', async (t) =
   const runtime = {
     language: 'typescript',
     isolation: 'worker-thread',
-    async run(request) {
-      const remaining = Number(request.program)
-      if (remaining === 0) return { logs: ['leaf'], value: 0 }
-      const runCode = request.bindings.find(binding => binding.global === 'code').functions.run
-      try {
-        return {
-          logs: [],
-          value: await runCode({
-            code: String(remaining - 1),
-            description: 'Continue recursive evaluation',
-          }),
-        }
-      } catch (error) {
-        return { logs: [], error: { kind: 'exception', message: error.message } }
-      }
-    },
+    async run() { throw new Error('A PTC child must use its selected compiler') },
   }
   const owner = createRuntimeBridgeOwner({
     ctx: {
@@ -696,7 +692,7 @@ test('binds nested code.run depth to the submitted cell generation', async (t) =
 
   const active = execute('nested-generation-active', `
 await tools.wait({})
-return code.run({ code: '1', description: 'Use submitted depth limit' })
+return code.run({ code: ${JSON.stringify(childCode)}, description: 'Use submitted depth limit' })
 `, [{ global: 'tools', functions: { wait: async () => { gateStarted(); await gate } } }])
   await started
   owner.reconfigure({
@@ -711,7 +707,7 @@ return code.run({ code: '1', description: 'Use submitted depth limit' })
     result: { logs: ['leaf'], result: 0 },
   })
   const next = await execute('nested-generation-next', `
-return code.run({ code: '1', description: 'Use next depth limit' })
+return code.run({ code: ${JSON.stringify(childCode)}, description: 'Use next depth limit' })
 `)
   assert.equal(next.error.kind, 'exception')
   assert.match(next.error.message, /recursion depth exceeds configured maximum 1/)
@@ -736,12 +732,7 @@ return message
 
 test('turns child runtime failure into a normal binding error and keeps the parent usable', async (t) => {
   const controller = new AbortController()
-  const state = fixture({}, {
-    async upstreamRun(request) {
-      assert.equal(request.signal, controller.signal)
-      return { logs: ['child log'], error: { kind: 'timeout', message: 'child budget exhausted' } }
-    },
-  })
+  const state = fixture()
   t.after(() => state.dispose())
 
   const result = await state.run('recursive-child-failure', `
@@ -753,11 +744,9 @@ try {
 }
 return childFailure
 `, {}, { controller })
-  assert.deepEqual(result.value, {
-    name: 'CodeExecutionError',
-    operation: 'run',
-    message: 'nested run_code failed (timeout): child budget exhausted',
-  })
+  assert.equal(result.value.name, 'CodeExecutionError')
+  assert.equal(result.value.operation, 'run')
+  assert.match(result.value.message, /nested run_code failed \(timeout\): compute budget exhausted/)
   assert.deepEqual(result.logs, [])
   assert.deepEqual(await state.run('recursive-child-failure', 'return 42'), { logs: [], value: 42 })
 })
@@ -765,17 +754,12 @@ return childFailure
 test('preserves the external-effect boundary when code.run is cancelled', async (t) => {
   let childStarted
   const started = new Promise(resolve => { childStarted = resolve })
-  const state = fixture({ computeMs: 1_000, maxWallMs: 2_000 }, {
-    async upstreamRun() {
-      childStarted()
-      return new Promise(() => {})
-    },
-  })
+  const state = fixture({ computeMs: 1_000, maxWallMs: 2_000 })
   t.after(() => state.dispose())
   const controller = new AbortController()
   const pending = state.runDurable('recursive-cancel', `
-return code.run({ code: 'await new Promise(() => {})', description: 'Wait in child' })
-`, {}, { controller })
+return code.run({ code: 'await tools.started({}); await new Promise(() => {})', description: 'Wait in child' })
+`, { started: async () => { childStarted(); return null } }, { controller })
   await started
   controller.abort('cancel child')
   const cancelled = await pending
@@ -789,24 +773,27 @@ return code.run({ code: 'await new Promise(() => {})', description: 'Wait in chi
 })
 
 test('cold-replays a settled code.run result without dispatching the child again', async (t) => {
+  let calls = 0
+  const functions = { read: async () => { calls++; return 42 } }
   const events = []
   const session = { id: 'recursive-replay', events }
   const first = fixture()
   t.after(() => first.dispose())
   const code = `const recursiveReplayResult = await code.run({
-  code: 'return 42',
+  code: 'return tools.read({})',
   description: 'Compute isolated child value',
 })`
-  const recorded = await first.runDurable(session.id, code, {}, { session })
-  assert.equal(first.upstreamCalls.length, 1)
+  const recorded = await first.runDurable(session.id, code, functions, { session })
+  assert.equal(calls, 1)
   assert.equal(recorded.meta.dshPtcPlus.calls[0].member, 'run')
   appendRunCodeEvents(events, 'recursive-parent', code, recorded)
   await first.dispose()
 
   const restored = fixture()
   t.after(() => restored.dispose())
-  const result = await restored.run(session.id, 'return recursiveReplayResult', {}, { session })
-  assert.deepEqual(result, { logs: [], value: { logs: ['upstream'], result: 'upstream' } })
+  const result = await restored.run(session.id, 'return recursiveReplayResult', functions, { session })
+  assert.deepEqual(result, { logs: [], value: { logs: [], result: 42 } })
+  assert.equal(calls, 1)
   assert.equal(restored.upstreamCalls.length, 0)
 })
 

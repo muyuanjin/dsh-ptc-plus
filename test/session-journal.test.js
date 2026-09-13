@@ -30,6 +30,7 @@ import {
 } from '../internal/session-journal-recovery.js'
 import {
   IMPORT_BOUNDARY_JOURNAL_VERSION,
+  LANGUAGE_SEMANTICS_JOURNAL_VERSION,
   JOURNAL_VERSION,
   JOURNAL_VERSIONS,
   PER_NAME_USER_BINDINGS_JOURNAL_VERSION,
@@ -79,6 +80,7 @@ function journal(overrides = {}) {
   const version = overrides.version ?? JOURNAL_VERSION
   return {
     version,
+    ...(version >= LANGUAGE_SEMANTICS_JOURNAL_VERSION ? { languageSemantics: 'legacy-v1' } : {}),
     ...(version >= 4 ? {
       bindingPolicy: { variableRedeclarations: true, functionClassRedeclarations: false },
       rewritePolicy: { autoRewriteImports: true, autoStripExports: true, autoSplitRedeclarations: true },
@@ -215,6 +217,7 @@ test('creates journals, compares semantics, validates names, and merges metadata
   const policy = { autoRewriteImports: true, autoStripExports: true, autoSplitRedeclarations: true }
   assert.deepEqual(createJournal([4], 'strict', policy), {
     version: JOURNAL_VERSION,
+    languageSemantics: 'legacy-v1',
     bindingPolicy: { variableRedeclarations: false, functionClassRedeclarations: false },
     rewritePolicy: { autoRewriteImports: true, autoStripExports: true, autoSplitRedeclarations: true },
     moduleSemantics: { defaultExportBinding: 'live-readonly', importExpressionBoundary: 'statement-safe' },
@@ -783,6 +786,25 @@ test('versions import-expression boundaries without backdating current lowering 
   })), false)
 })
 
+test('records a closed language generation and migrates old cells without reinterpreting their source', () => {
+  for (const version of JOURNAL_VERSIONS) {
+    const historical = journal({ version })
+    assert.equal(normalizeJournal(historical).languageSemantics, 'legacy-v1')
+    if (version < LANGUAGE_SEMANTICS_JOURNAL_VERSION) {
+      assert.throws(() => normalizeJournal({ ...historical, languageSemantics: 'stateful-v1' }), /journal field/)
+    }
+  }
+  for (const languageSemantics of ['legacy-v1', 'stateful-v1', 'protected-v1']) {
+    const normalized = normalizeJournal(journal({ languageSemantics }))
+    assert.equal(normalized.languageSemantics, languageSemantics)
+    assert.deepEqual(normalizeJournal(normalized), normalized)
+  }
+  for (const languageSemantics of [undefined, null, 'unknown', {}, true]) {
+    assert.throws(() => normalizeJournal(journal({ languageSemantics })), /language semantics/)
+  }
+  assert.equal(journalsEqual(journal({ languageSemantics: 'stateful-v1' }), journal()), false)
+})
+
 test('records per-name shadow evidence without changing any historical whole-entry generation', () => {
   for (const version of JOURNAL_VERSIONS) {
     const recorded = journal({ version })
@@ -911,6 +933,7 @@ test('migrates predecessor journals and only unambiguous legacy call identities'
   delete legacy.rewritePolicy
   assert.deepEqual(normalizeJournal(legacy), {
     version: JOURNAL_VERSION,
+    languageSemantics: 'legacy-v1',
     bindingPolicy: { variableRedeclarations: true, functionClassRedeclarations: false },
     rewritePolicy: { autoRewriteImports: false, autoStripExports: false, autoSplitRedeclarations: false },
     moduleSemantics: { defaultExportBinding: 'legacy-variable', importExpressionBoundary: 'legacy' },
@@ -1096,10 +1119,14 @@ test('rejects confirmation sequences that are not earlier unjournaled run_code c
   assert.equal(unavailable.available, false)
   assert.equal(unavailable.volatileSuffix[0].seq, 7)
 
-  assert.throws(() => recoverJournal({ events: [
+  const ambiguous = recoverJournal({ events: [
     callEvent(7, 'first', 'return 1'),
     callEvent(7, 'second', 'return 2'),
-  ] }), /duplicate run_code call sequence/)
+  ] })
+  assert.equal(ambiguous.available, false)
+  assert.deepEqual(pathToHead(ambiguous), [])
+  assert.equal(ambiguous.volatileSuffix[0].seq, 7)
+  assert.deepEqual(recoveryBoundaryForHistory(ambiguous), { failedCallSeq: 7, frontierCallSeq: null })
 })
 
 test('ignores pruned journal-result clones while retaining fail-closed corruption detection', () => {

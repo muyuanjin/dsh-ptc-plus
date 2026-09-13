@@ -35,8 +35,7 @@ DSH 为一个 agent composition 固定选择 `native`、`ptc` 或 `both`。首�
 会重复已有事实；此类信息不进入独立 PTC 消息。只有缺少有效 journal、无法确认完成状态的 rewrite feedback 才保留独立生命周期；已结算失败的恢复指引由当前结果表达；成功的透明改写不产生 runtime context。
 
 插件卸载时恢复仍由自己持有的 `CodeRuntime.run` 与 `presentationMeta` 属性；若外层插件仍持有旧 wrapper，已卸载 wrapper 会透明委托原 provider，不会恢复已释放的 session 状态。
-稳定 REPL 指引说明 cell 是 async function body、module 使用 dynamic import 或 require，并要求显式
-return 或打印需要展示的值。失败恢复先按状态分类：result 已证明解析或 preflight 未执行且提供符合任务意图的 validated repair 时，
+稳定 REPL 指引与执行共同从 `binding-update-policy.js` 取得语言代际。新代际说明 TypeScript、顶层 await/return、静态 import/export 与所选绑定更新策略；旧兼容态才按其独立开关说明支持的模块语法。显式结果使用 return，日志使用 console；原生表达式 completion 同样可以提供结果值。失败恢复先按状态分类：result 已证明解析或 preflight 未执行且提供符合任务意图的 validated repair 时，
 优先直接使用带目标保护的 `edit_run_code`，无需等待 recovery context；该验证只证明语法/preflight 接受。其他小型修正可用 edit 执行完整 cell；
 已执行或可能产生外部 effect 的目标，则必须依据操作 owner 的 retry/idempotence 契约和执行事实判断重跑。短 `run_code` 可以复用仍存活的 binding，但缩短源码不能证明幂等。能力和命令执行依赖当前 request
 与 execution world，模型必须先探查 live binding、实际 executable 和路径语义，不假设某个平台、shell 或 package runner。
@@ -56,6 +55,8 @@ Client half 通过 `settings.plugin.item` 卡片呈现全部配置。`enabled` �
 总开关关闭时不注册 runtime、执行 hook、tool surface 或 system prompt section，也不读取 binding 存储；`ptc` 与兼容 `code` preset 会话在头部单独显示 `PTC Plus` 指示器。设置卡片显示“已启用/已停用”，稳定指引不包含 UI 品牌名。
 `autoDescribeRunCode` 默认开启且只控制请求绑定的本地执行策略。开启时，缺少外层 `run_code.description` 的调用使用派生参数通过本地 DSH 校验，备用摘要仅进入 presentation metadata；关闭时由 DSH 校验原始参数。两种状态的模型可见 tool schema、tool order 和 system sections 保持字节稳定并包含 required `description`；原始调用参数、cell 与嵌套 native 参数保持不变。
 所有字段都由 settings watch 即时交给各自 owner，且不替换已有 session-bound binding。每个已提交 cell 固定其提交时的配置代际，timer、worker 消息、program binding bridge、结果校验和诊断共同消费该快照；重配置更新随后提交 cell 的默认值。`maxOldGenerationSizeMb` 在活动 worker 存在时因 Node 的创建期限制而拒绝并回滚。settings 服务缺失时 Host 回退到 composition config，并保持相同的运行时语义。
+
+`bindingUpdates` 是新配置的统一入口，默认 `stateful`，也可选择 `protected`。Host schema 保留该字段原始缺省状态，再由 `runtime-config.js` 把完整旧策略映射到相应新策略；混合旧开关保留显式 `legacyBindingSettings` 兼容态。Client 复用同一 resolver，仅在兼容态展示旧开关；用户选择统一开关时，一次 settings update 同时写入新策略并清除兼容标记。
 
 `cordisToolsEnabled` 默认关闭且即时生效。Host 只在可见 `run_code` 的 agent scope 中挂载官方 `@deepseek-ai/dsh-tool-cordis`，并通过公共 `agentPresets` service 定位 shipped `cordis` preset，再用维护中的 Skill filesystem plugin 把其 companion Skill 目录发布到同一 scope。两个 child fiber、tool guidance 与 `cordis-plugin-development` Skill 是一个 mount；首轮 request 等待完整发布和 scoped Skill load 验证，关闭、agent/runtime 释放或任一激活失败时逆序卸载。工具名、数量、schema 和 guidance 直接来自 official tool fiber，Skill 内容直接来自 shipped preset，Host 均不复制。官方插件同时向 process-global `cordisInspect` 注册 Host provider；owner 将 manifest 相同的 per-agent 注册合并为引用计数 lease，查询委托给当前仍存活的官方 registration，最后一份 lease 释放后才注销 provider。manifest 不一致时启用失败。该开关不切换 preset，也不改变 code-only direct-tool projection。
 
@@ -118,9 +119,17 @@ CodeRuntime request 已携带的 owner-provided program namespace 会被原样�
 
 ## REPL 生命周期
 
-每个顶层 `run_code` 是同一 session kernel 的下一格。顶层 binding 跨 cell 保留；默认开启的变量策略允许一个完整 declarator 全部替换已有变量，关闭时拒绝变量重声明，关闭 `autoSplitRedeclarations` 时混合新旧名称的解构也在执行前拒绝。独立的 `looseTopLevelFunctionClassRedeclarations` 默认开启；开启后，重复的 named function/class 声明只在已有 binding 经源码 provenance 证明可写时，于声明位置 lowering 为赋值。函数使用匿名 function expression，使递归读取可替换的 outer binding；class 使用 named class expression，保留内部 self-reference，且 class 求值失败不会覆盖旧值。该 lowering 不保留函数声明 hoisting；不可写 const/import、保留名称与来源不明目标在执行前拒绝。cell 始终作为 async function body 求值，支持 block scope、top-level `await` 和普通控制流 return；return lowering 通过顶层 `this` receiver 访问每个 cell 独立生成并在 settlement 清理的 worker-global signal property，因此 lexical `globalThis` 与 `with` object environment 都不能重定向控制流。worker 启动时验证该 receiver 指向 evaluator 的 global context。跨 cell 重声明是 REPL 便利策略，由 `internal/repl-convenience.js` 独立实现；它不是 cell 语言或原生 JavaScript 语义的组成部分。
+每个顶层 `run_code` 在独立 native frame 中执行，session root 的逻辑身份跨 cell 保留。`repl-scope-normalizer.js` 用正式作用域归属归一化局部 activation；`stateful-root-compiler.js` 生成 root 读写、候选提交、模块依赖和源码映射，`stateful-root-runtime.js` 持有实际来源和值。`stateful` 下同 scope 的声明与赋值更新同一身份，包括 const、function、class 和 import；不同 block、function 与 iteration 保留各自身份。完整 declarator 成功后才发布，普通赋值保留真实部分写入。旧闭包观察同一逻辑身份的新值，保存的函数值保持自身身份。`protected` 保留原生局部限制并检测跨 cell 覆盖。详细语言与代际契约由 [ADR 0025](adr/0025-use-versioned-logical-binding-identities.md) 拥有。
 
-包裹前的 AST 重写适配模块语法（cell 是 async function body，模块声明在函数体内非法）：全部默认开启且可用 config 关闭（`autoRewriteImports` / `autoStripExports` / `autoSplitRedeclarations`）。原始 Babel Program 在任何 lowering 或 preload 前完成 scope validation；同一 cell 的 value import 与 lexical、hoisted `var`、function 或其他 import 重名会按模块 binding 规则拒绝，block shadow 和 type-only 名称仍合法。静态 `import` 声明产生有序 module preload record；worker 通过短生命周期 ESM adapter 让 Node 从 session cwd 完成解析和 export linkage，再在 cell 编译前通过生成的临时 global identifier 把 namespace 交给另一个持久 lexical identifier。两者都避开当前源码、持久 binding、program binding 与活跃 private namespace，生成的 prologue 直接引用临时 identifier，因此 lexical `globalThis` shadowing 不参与 host capture；临时 global 在 cell settlement 清理。session 未记录 cwd 时，解析基准回退到 worker process cwd；目标模块的依赖保持各自的自然 parent。scope-aware alias lowering 保留 named/default binding 的 live read、只读、shadowing 和跨 cell 重放语义。`export default` 的固定公开名 `__default` 通过同一 alias lowering 指向持久 private slot；只有既有 binding 明确带有 synthetic-default provenance 时才可复用该 slot，普通 binding、import alias 或 reserved name 冲突都在执行前拒绝。后续合法 default export 在原声明位置更新该 slot，不依赖变量重声明开关，并且只有 worker 在更新后发出 commit signal，BindingCatalog 才更新公开定义来源。function/class replacement 的 commit identity 进一步绑定到每个 declaration occurrence，同一 cell 的同名后续声明若因 return 或异常未执行，不会覆盖 inventory 中最后实际提交的定义。提前 return 或 class 求值失败因此不会发布未执行的 alias 或 replacement 更新。value alias 活跃时，原始 Program 上的 direct `eval` 与 `WithStatement` 在任何 preload record 生效前拒绝，因为生成的 namespace property read 无法复现它们的动态 lexical resolution；没有 value alias 的非严格 `with`、type-only import 和局部 shadow 的 `eval` 仍使用普通 JavaScript 语义。顶层 `export` 修饰符剥离（声明保留、`export default` 转为 `__default` 绑定、re-export 转预加载的副作用模块、type-only 擦除）；REPL 便利层在 `autoSplitRedeclarations` 开启时按插件定义的兼容规则 lowering 混合新旧名称的顶层解构，关闭时保持原文走既有解析失败路径。无法精确适配的形态在执行前拒绝。改写来源以 `meta.dshPtcPlusRewrites` 平行记录（journal schema 封闭）。成功改写不改变下一步决策，因此不产生 runtime context；已结算失败由结果中的 partial-execution 与重试指引表达；仅缺少有效 journal 时，`tools:ptc-plus-rewrite-info` 在下一轮说明未知完成边界。
+`compiler-service.js` 是 cell、模块、动态源码、工作台 completion 与 binding-source metadata 的同步准备入口。编译器及其维护中的 JavaScript 依赖在私有 VM realm 中运行；`compiler-data.js` 复制数据集合与紧凑 source map，服务重建调用方诊断，`compiler-platform.js` 和 realm 内的 factory 只提供编译所需的捕获操作。平台原语在用户执行前固定，路径和压缩由编译器私有依赖处理，转换不发现外部配置。该 realm 不持有用户程序值、模块图、journal 或权限，源码反射查询只允许同步的字符串回调；编译仍受既有 worker 预算和生命周期约束。
+
+纯模块转换由 `module-compilation.js` 返回代码、映射、导出描述和静态 link/source-registration 事实；`stateful-module-compiler.js` 在编译器外消费这些事实，负责 Node 公共 hooks、文件格式判定和运行时注册。`compiler-operations.js` 每次编译建立一次绑定索引，各 AST 分区独立记录新增名称、私有传输操作、生成调用外壳与用户值边界。静态和动态调用适配消费同一 planner；helper 参数中的用户表达式仍按源码处理，生成操作不会被重复当作用户调用适配。运行时的模块图、逻辑 root 和 legacy adapter 通过 `compiler-intrinsics.js` 消费内部事实，不重新进入用户的集合协议。可选 TypeScript 编译依赖由私有平台按需加载到同一 realm；平台成员、产物一致性和原预算下的实际执行分别由构建契约与行为测试核验，详细生命周期见 ADR 0025。
+
+cell 的静态 import 与 remote re-export 产生有序 preload，Node 继续拥有解析、链接、attributes、缓存和模块效果。import 为逻辑身份提供 live 来源；成功写入形成局部覆盖，重新导入恢复模块来源。模块、绑定候选、正式激活、工作台和隔离 `code.run` 接入共同编译契约，各自保留独立状态与生命周期。模块公开接口选择 PTC 管理的稳定 namespace：读取沿正式来源关系取得逻辑值，原生导出仅承担所需传输，不把 provider 的动态来源复制成值镜像。传给外部函数的 namespace 同样保持实时读取；外部代码独立原生导入 compiled URL 的传输接口不承诺同一可写语义。实例化、TDZ、反射、全部入口与原生获取边界由 [ADR 0025](adr/0025-use-versioned-logical-binding-identities.md#managed-module-interface) 拥有。
+
+用户主动动态编译保留原生语法目标与结果；调用环境仍须与源码一致。直接 eval 解析到调用处逻辑作用域，间接 eval 和 Function 家族使用各自 realm 的 root。`dynamic-scope-analysis.js` 为归一化和编译提供共同的声明归属、初始化查找与 eval activation 路径事实；`dynamic-environment-compiler.js`、`dynamic-environment-runtime.js` 与入口适配负责实际环境，`dynamic-binding-evidence.js` 核验动态声明的来源。这些职责不能用“外部编译”豁免，尚未通过的动态反例仍是实现缺陷。
+
+`dynamic-native-runtime.js` 为 eval、四种 Function 构造器和 Function.prototype.toString 持有每个 owned realm 与语言代际的稳定接口。`dynamic-native-calls.js` 在源码的取值与调用边界选取接口，包括属性读取、原生调用结果和异步恢复结果；源码传出的接口在原生或不透明回调中继续使用所属环境和源码事实。`native-root-dynamic.js` 在冻结的 legacy 声明转换之后准备动态入口，通过既有 import namespace owner 保留 helper ancestry：legacy 动态源码使用原生 REPL 环境，并为缺少已初始化原生 lexical 存储的名称桥接目录证明的逻辑绑定；新代使用逻辑 root，两者均消费 managed module namespace。legacy 的实际初始化与结算同样回传逻辑来源和写入证据。全部全局与原型属性保持原生，kernel ambient getter 也只返回原值并记录 volatile 读取，因此旧闭包跨模式、异步与模块继续执行时仍保留原来的环境和已保存的接口身份。direct eval 以原始 intrinsic 执行显式调用环境；普通用户函数保持 canonical identity，用户改写不被接口准备覆盖。`callable-source-facts.js` 的编译器源码事实和已拥有 realm 的 intrinsic 关联跨 realm 共享；另外创建的用户 realm 保持独立。未编译 VM 源码自行读取原生 toString 时仍由原生引擎返回源码；要由不透明 observer 观察原始源码，可以向其传入所属代际的源码观察接口。
 
 可确定的计算和 recorded-value capability call 可以推进 durable head。未进入 journal 的 Node/OS 能力、环境输入、时钟、随机数和 timer 进入 sticky `volatile`；live worker 继续可用，cold replay 回到最后 durable frontier。`require(...)` 与动态导入按同一白名单分类：白名单内置模块（assert/buffer/querystring/string_decoder/stream/util/url/zlib）保持 durable，其余 volatile，`worker_threads`/`cluster` 等内核控制模块在执行前以 PTC-C002 拒绝。durable 只描述冷恢复对已结算历史的重放能力；失败 cell 仍可能已经修改 binding 或产生外部 effect，不能由 durability 推导出安全重试。worker thread 是生命周期隔离，不是安全沙箱。
 
@@ -132,7 +141,8 @@ CodeRuntime request 已携带的 owner-provided program namespace 会被原样�
 
 ```ts
 {
-  version: 8,
+  version: 9,
+  languageSemantics: "legacy-v1" | "stateful-v1" | "protected-v1",
   bindingPolicy: {
     variableRedeclarations: boolean,
     functionClassRedeclarations: boolean
@@ -156,9 +166,9 @@ CodeRuntime request 已携带的 owner-provided program namespace 会被原样�
 }
 ```
 
-`bindingPolicy` 与 `rewritePolicy` 固化可配置的 cell 语言行为；`moduleSemantics` 固化不可配置的 lowering 代际。当前 journal 写入 `live-readonly` default-export alias 与 `statement-safe` 模块引用写入 lowering，v1-v3 迁移为 `legacy-variable`，v1-v6 的 `importExpressionBoundary` 迁移为 `legacy`，因此 cold replay 不从当前实现或源码猜测历史 `__default` 的可写性，也不猜测历史写入与前一语句的关系。`userBindingsFingerprint` 以 `null` 证明不存在 Global User Binding 输入，或以 SHA-256 绑定并行私有快照；声明存在但快照缺失或不一致时，node 形成 unknown boundary。`userBindingsShadowPolicy` 固化该 cell 的 session-local 覆盖粒度，`userBindingNames` 以按名称排序的 `{name, state}` 记录结算时的 provider/local/absent/unknown 事实，因此 cold replay 按历史粒度重放覆盖关系，不从当前实现推断 v1-v7 cell 的整条 entry 语义；provider 事实必须对应并行快照的条目 ID，并覆盖该快照公开的每个名称，否则 node 形成 unknown boundary。`calls` 只保存 global、member、PTC Value Graph 编码的 args/result 或 error，以及 settlement 序号。cold replay 校验调用名称、参数、数量和提交顺序，并按 recorded settlement order 释放 recorded result；不会重新 dispatch program binding 或重做外部 effect。该规则同样适用于 native tools、owner-provided namespace 和 `code.run`，不按名称分支。Cordis 的进程内对象不会因此被宣称已恢复；presentation 可以从已验证 transcript 派生重新检查要求，但不能改变 replay。若基础设施终止时仍有未结算 binding，heap 回滚到 durable frontier，discarded journal 以最先观察到的 `global.member` 保留 possible-effect boundary。effect、completeness 和 source metadata 属于 capability explorer，不伪装成 journal 字段。
+`languageSemantics` 选择完整编译代际；v1–v8 固定迁移为 `legacy-v1`，不能按当前新语言重新解释。`bindingPolicy`、`rewritePolicy` 与 `moduleSemantics` 保留历史细分契约；新代际从统一策略派生它们，旧代际由冻结编译器消费。`userBindingsFingerprint` 以 `null` 证明不存在 Global User Binding 输入，或以 SHA-256 绑定并行私有快照；声明存在但快照缺失或不一致时，node 形成 unknown boundary。`userBindingsShadowPolicy` 固化该 cell 的 session-local 覆盖粒度，`userBindingNames` 以按名称排序的 `{name, state}` 记录结算时的 provider/local/absent/unknown 事实，因此 cold replay 按历史粒度重放覆盖关系，不从当前实现推断 v1-v7 cell 的整条 entry 语义；provider 事实必须对应并行快照的条目 ID，并覆盖该快照公开的每个名称，否则 node 形成 unknown boundary。`calls` 只保存 global、member、PTC Value Graph 编码的 args/result 或 error，以及 settlement 序号。cold replay 校验调用名称、参数、数量和提交顺序，并按 recorded settlement order 释放 recorded result；不会重新 dispatch program binding 或重做外部 effect。该规则同样适用于 native tools、owner-provided namespace 和 `code.run`，不按名称分支。Cordis 的进程内对象不会因此被宣称已恢复；presentation 可以从已验证 transcript 派生重新检查要求，但不能改变 replay。若基础设施终止时仍有未结算 binding，heap 回滚到 durable frontier，discarded journal 以最先观察到的 `global.member` 保留 possible-effect boundary。effect、completeness 和 source metadata 属于 capability explorer，不伪装成 journal 字段。
 
-journal 通过 `run_code.output.presentationMeta` 附着到最终 result，再由 `tools/result` 做两阶段确认。缺失、损坏或被替换的 journal 形成 unknown/volatile 边界；未进入 runtime 的 call 由后续 `confirms` 以对应 `tool/call.seq` 证明为 no-op。volatile 源码保留在原 session log，但不参与 cold replay。
+journal 通过 `run_code.output.presentationMeta` 附着到最终 result，再由 `tools/result` 做两阶段确认。live binding catalog 在 worker 结算时随实际状态更新，下一条排队 cell 使用这份目录准备；journal 确认只推进持久历史，迟到或逆序的确认不能覆盖较新的 live 目录，也不能恢复已重置的状态。缺失、损坏或被替换的 journal 形成 unknown/volatile 边界；未进入 runtime 的 call 由后续 `confirms` 以对应 `tool/call.seq` 证明为 no-op。volatile 源码保留在原 session log，但不参与 cold replay。
 
 恢复从当前请求对应的 head 沿 parent 关系向更早状态收缩，而不是越过损坏记录继续假定原 heap 存在。候选 frontier 同时受两种证据约束：append-only session log 中的 journal 证明状态可重建；生成当前调用的 DSH ordered surface/derived request history 证明模型可以知道其精确 binding provenance。raw event 未删除不等于模型仍可见，Client 的 `dshPtcPlusBindings` inventory 也只是 UI presentation。只裁剪 tool result、仍把携带源码的 assistant call 留在模型 surface 中时不必删除对应状态；assistant provenance 被遮蔽且没有显式、有界、模型可见的结构化状态投影时，live worker 与 cold replay 都必须收缩。插件不从自然语言 compaction summary 推断 binding。
 
@@ -181,3 +191,5 @@ kernel 重置 worker 并逐级验证更早 frontier；最大非空 frontier 仍�
 - [Plugin Settings UI and Enabled Kill Switch](adr/0019-plugin-settings-and-kill-switch.md)
 - [Optional Cordis Tools in PTC Mode](adr/0020-optional-cordis-tools-in-ptc-mode.md)
 - [Separate Host Bootstrap From Session Runtime](adr/0021-separate-host-bootstrap-from-session-runtime.md)
+
+- [Use Versioned Logical Binding Identities](adr/0025-use-versioned-logical-binding-identities.md)

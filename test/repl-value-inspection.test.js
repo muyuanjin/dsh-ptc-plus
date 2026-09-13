@@ -42,8 +42,12 @@ test('opening after execution observes the settled worker without execution or j
   assert.equal(durableHistorySnapshot(runtime, 'preview'), history)
   assert.equal(JSON.stringify(first.settlement.journal), journal)
   assert.equal(memory.observation, undefined)
-  assert.equal((await runtime.run('preview', { program: 'answer++; return answer', bindings: [] })).value, 43)
-  assert.equal((await runtime.observe('preview', observed)).observation.entries[0].text, '43')
+  const second = await runtime.runTentative('preview', { program: 'answer++; return answer', bindings: [] })
+  assert.equal(second.result.value, 43)
+  runtime.finalize(second.settlement, true)
+  assert.equal(await runtime.observe('preview', observed), undefined)
+  assert.equal((await runtime.observe('preview', second.settlement.replMemory)).observation.entries[0].text, '43')
+  assert.equal(observed.observation.entries[0].text, '42')
 })
 
 test('inspection rejects unavailable, uncommitted and mismatched state without creating workers', async t => {
@@ -58,18 +62,20 @@ test('inspection rejects unavailable, uncommitted and mismatched state without c
   const second = await runtime.runTentative('preview', { program: 'answer++; return answer', bindings: [] })
   assert.equal(await runtime.observe('preview', memory), undefined)
   runtime.finalize(second.settlement, true)
-  assert.equal((await runtime.observe('preview', memory)).observation.entries[0].text, '43')
+  assert.equal(await runtime.observe('preview', memory), undefined)
+  const currentMemory = second.settlement.replMemory
+  assert.equal((await runtime.observe('preview', currentMemory)).observation.entries[0].text, '43')
   setSessionSurface(runtime, 'preview', { replaceGeneration: 1 })
   setSessionSurface(runtime, 'preview', { replaceGeneration: 2 }, false)
-  assert.equal(await runtime.observe('preview', memory), undefined)
+  assert.equal(await runtime.observe('preview', currentMemory), undefined)
   setSessionSurface(runtime, 'preview', {
     get replaceGeneration() { throw new Error('surface unavailable') },
   }, false)
-  assert.equal(await runtime.observe('preview', memory), undefined)
+  assert.equal(await runtime.observe('preview', currentMemory), undefined)
   runtime.reconfigure({ replViewEnabled: false })
-  assert.equal(await runtime.observe('preview', memory), undefined)
+  assert.equal(await runtime.observe('preview', currentMemory), undefined)
   await runtime.dispose()
-  assert.equal(await runtime.observe('preview', memory), undefined)
+  assert.equal(await runtime.observe('preview', currentMemory), undefined)
 })
 
 test('cancelled, timed-out and failed inspections preserve subsequent execution', async t => {

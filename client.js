@@ -859,6 +859,15 @@
   var SETTINGS_NAMESPACE = "ptc-plus";
   var CONFIG_FIELDS = Object.freeze([
     {
+      key: "legacyBindingSettings",
+      type: "boolean",
+      default: false,
+      label: "\u65E7\u7ED1\u5B9A\u8BBE\u7F6E\u8FC1\u79FB\u72B6\u6001",
+      labelEn: "Legacy binding settings migration state",
+      description: "",
+      descriptionEn: ""
+    },
+    {
       key: "enabled",
       type: "boolean",
       default: true,
@@ -902,6 +911,16 @@
       labelEn: "Allow run_code execution without a summary",
       description: "\u5141\u8BB8 run_code \u7F3A\u5C11\u5916\u5C42 description\uFF1B\u5173\u95ED\u540E\u6062\u590D DSH \u6821\u9A8C\u3002\u6A21\u578B\u8BF7\u6C42\u548C\u539F\u59CB\u8C03\u7528\u53C2\u6570\u4FDD\u6301\u4E0D\u53D8\u3002",
       descriptionEn: "Allows run_code to omit its outer description; disabling restores DSH validation. Model requests and original call arguments remain unchanged."
+    },
+    {
+      key: "bindingUpdates",
+      type: "enum",
+      options: Object.freeze(["stateful", "protected"]),
+      default: "stateful",
+      label: "\u5141\u8BB8\u91CD\u58F0\u660E\u548C\u8986\u76D6",
+      labelEn: "Allow redeclarations and overrides",
+      description: "\u540C\u4E00\u4F5C\u7528\u57DF\u7684\u58F0\u660E\u548C\u8D4B\u503C\u53EF\u66F4\u65B0\u53D8\u91CF\u3001\u51FD\u6570\u3001\u7C7B\u53CA\u5BFC\u5165\u3002\u5173\u95ED\u540E\u68C0\u6D4B\u8DE8 cell \u91CD\u58F0\u660E\uFF0C\u5E76\u4FDD\u62A4\u65B0\u5EFA\u7684 const \u548C import\uFF1B\u9759\u6001 import/export \u59CB\u7EC8\u53EF\u7528\u3002",
+      descriptionEn: "Declarations and assignments update variables, functions, classes and imports in the same scope. Disabling detects cross-cell redeclarations and protects newly created const and import bindings; static import/export remains available."
     },
     {
       key: "canonicalizeToolCalls",
@@ -1133,11 +1152,7 @@
       label: "REPL \u8BED\u6CD5",
       labelEn: "REPL syntax",
       fields: Object.freeze([
-        "looseTopLevelRedeclarations",
-        "looseTopLevelFunctionClassRedeclarations",
-        "autoRewriteImports",
-        "autoStripExports",
-        "autoSplitRedeclarations"
+        "bindingUpdates"
       ])
     },
     {
@@ -1192,7 +1207,8 @@
   // internal/session-journal-schema.js
   var IMPORT_BOUNDARY_JOURNAL_VERSION = 7;
   var PER_NAME_USER_BINDINGS_JOURNAL_VERSION = 8;
-  var JOURNAL_VERSION = PER_NAME_USER_BINDINGS_JOURNAL_VERSION;
+  var LANGUAGE_SEMANTICS_JOURNAL_VERSION = 9;
+  var JOURNAL_VERSION = LANGUAGE_SEMANTICS_JOURNAL_VERSION;
   var LIVE_USER_BINDINGS_SHADOW_POLICY = "per-name";
   var LEGACY_USER_BINDINGS_SHADOW_POLICY = "whole-entry";
   var LIVE_USER_BINDINGS_REUSE_POLICY = "implementation-v1";
@@ -1206,7 +1222,8 @@
   var STATUSES = /* @__PURE__ */ new Set(["durable", "volatile", "discarded", "noop"]);
   var BINDING_MODES = /* @__PURE__ */ new Set(["loose", "strict"]);
   var WHOLE_ENTRY_JOURNAL_FIELDS = /* @__PURE__ */ new Set(["version", "bindingPolicy", "rewritePolicy", "moduleSemantics", "userBindingsFingerprint", "userBindingsReusePolicy", "status", "calls", "operations", "confirms", "diagnostics", "completion", "volatileReason"]);
-  var JOURNAL_FIELDS = /* @__PURE__ */ new Set([...WHOLE_ENTRY_JOURNAL_FIELDS, "userBindingsShadowPolicy", "userBindingNames"]);
+  var PER_NAME_JOURNAL_FIELDS = /* @__PURE__ */ new Set([...WHOLE_ENTRY_JOURNAL_FIELDS, "userBindingsShadowPolicy", "userBindingNames"]);
+  var JOURNAL_FIELDS = /* @__PURE__ */ new Set([...PER_NAME_JOURNAL_FIELDS, "languageSemantics"]);
   var FINGERPRINT_REUSE_JOURNAL_FIELDS = new Set([...WHOLE_ENTRY_JOURNAL_FIELDS].filter((field) => field !== "userBindingsReusePolicy"));
   var RELATIONLESS_JOURNAL_FIELDS = new Set([...FINGERPRINT_REUSE_JOURNAL_FIELDS].filter((field) => field !== "userBindingsFingerprint"));
   var PREDECESSOR_JOURNAL_FIELDS = /* @__PURE__ */ new Set(["version", "bindingMode", "rewritePolicy", "status", "calls", "operations", "confirms", "diagnostics", "completion", "volatileReason"]);
@@ -1231,7 +1248,7 @@
   var ERROR_FIELDS = /* @__PURE__ */ new Set(["kind", "message"]);
   var EDIT_TARGET_FIELDS = /* @__PURE__ */ new Set(["targetCallSeq"]);
   var DERIVED_RUN_FIELDS = /* @__PURE__ */ new Set(["code", "description"]);
-  var JOURNAL_VERSIONS = /* @__PURE__ */ new Set([LEGACY_JOURNAL_VERSION, INTERMEDIATE_JOURNAL_VERSION, PREVIOUS_JOURNAL_VERSION, USER_BINDING_RELATIONLESS_JOURNAL_VERSION, FINGERPRINT_REUSE_JOURNAL_VERSION, VERSIONED_BINDING_REUSE_JOURNAL_VERSION, IMPORT_BOUNDARY_JOURNAL_VERSION, JOURNAL_VERSION]);
+  var JOURNAL_VERSIONS = /* @__PURE__ */ new Set([LEGACY_JOURNAL_VERSION, INTERMEDIATE_JOURNAL_VERSION, PREVIOUS_JOURNAL_VERSION, USER_BINDING_RELATIONLESS_JOURNAL_VERSION, FINGERPRINT_REUSE_JOURNAL_VERSION, VERSIONED_BINDING_REUSE_JOURNAL_VERSION, IMPORT_BOUNDARY_JOURNAL_VERSION, PER_NAME_USER_BINDINGS_JOURNAL_VERSION, JOURNAL_VERSION]);
   var USER_BINDINGS_REUSE_POLICIES = /* @__PURE__ */ new Set([LEGACY_USER_BINDINGS_REUSE_POLICY, LIVE_USER_BINDINGS_REUSE_POLICY]);
   var USER_BINDINGS_SHADOW_POLICIES = /* @__PURE__ */ new Set([LEGACY_USER_BINDINGS_SHADOW_POLICY, LIVE_USER_BINDINGS_SHADOW_POLICY]);
   var USER_BINDING_NAME_STATES = /* @__PURE__ */ new Set(["provider", "local", "absent", "unknown"]);
@@ -1265,6 +1282,20 @@
   var RECOVERY_BOUNDARY_FIELDS = /* @__PURE__ */ new Set(["failedCallSeq", "frontierCallSeq"]);
   var REWRITE_FIELDS = /* @__PURE__ */ new Set(["kind", "description", "source"]);
   var REWRITE_KINDS = /* @__PURE__ */ new Set(["import", "redeclaration", "export"]);
+
+  // internal/language-semantics.js
+  var LEGACY_LANGUAGE_SEMANTICS = "legacy-v1";
+  var STATEFUL_LANGUAGE_SEMANTICS = "stateful-v1";
+  var PROTECTED_LANGUAGE_SEMANTICS = "protected-v1";
+  var LANGUAGE_SEMANTICS = /* @__PURE__ */ new Set([
+    LEGACY_LANGUAGE_SEMANTICS,
+    STATEFUL_LANGUAGE_SEMANTICS,
+    PROTECTED_LANGUAGE_SEMANTICS
+  ]);
+  function normalizeLanguageSemantics(value) {
+    if (!LANGUAGE_SEMANTICS.has(value)) throw new TypeError("invalid dsh-ptc-plus language semantics");
+    return value;
+  }
 
   // internal/value-wire-schema.js
   var VALUE_CODEC = "ptc-value-graph/v1";
@@ -1478,7 +1509,7 @@
       return false;
     }
     const predecessor = value.version < 4;
-    const fields = value.version === 1 ? LEGACY_JOURNAL_FIELDS : predecessor ? PREDECESSOR_JOURNAL_FIELDS : value.version === 4 ? RELATIONLESS_JOURNAL_FIELDS : value.version === 5 ? FINGERPRINT_REUSE_JOURNAL_FIELDS : value.version < PER_NAME_USER_BINDINGS_JOURNAL_VERSION ? WHOLE_ENTRY_JOURNAL_FIELDS : JOURNAL_FIELDS;
+    const fields = value.version === 1 ? LEGACY_JOURNAL_FIELDS : predecessor ? PREDECESSOR_JOURNAL_FIELDS : value.version === 4 ? RELATIONLESS_JOURNAL_FIELDS : value.version === 5 ? FINGERPRINT_REUSE_JOURNAL_FIELDS : value.version < PER_NAME_USER_BINDINGS_JOURNAL_VERSION ? WHOLE_ENTRY_JOURNAL_FIELDS : value.version < LANGUAGE_SEMANTICS_JOURNAL_VERSION ? PER_NAME_JOURNAL_FIELDS : JOURNAL_FIELDS;
     const required = predecessor ? ["version", "bindingMode", "status", "calls", "operations", "diagnostics"] : ["version", "bindingPolicy", "rewritePolicy", "moduleSemantics", "status", "calls", "operations", "diagnostics"];
     if (value.version !== 1 && value.version < 4) required.push("rewritePolicy");
     if (value.version >= 5) required.push("userBindingsFingerprint");
@@ -1486,6 +1517,10 @@
     if (value.version >= PER_NAME_USER_BINDINGS_JOURNAL_VERSION) {
       required.push("userBindingsShadowPolicy", "userBindingNames");
       normalizeJournalUserBindingNames(value);
+    }
+    if (value.version >= LANGUAGE_SEMANTICS_JOURNAL_VERSION) {
+      required.push("languageSemantics");
+      normalizeLanguageSemantics(value.languageSemantics);
     }
     if (!hasClosedFields(value, fields, required) || predecessor && !BINDING_MODES.has(value.bindingMode) || value.version >= 4 && !isValidBindingPolicy(value.bindingPolicy) || value.version >= 4 && !isValidModuleSemantics(value.moduleSemantics, value.version) || value.version >= VERSIONED_BINDING_REUSE_JOURNAL_VERSION && !USER_BINDINGS_REUSE_POLICIES.has(value.userBindingsReusePolicy) || value.version >= 5 && value.userBindingsFingerprint !== null && (typeof value.userBindingsFingerprint !== "string" || !/^[a-f0-9]{64}$/.test(value.userBindingsFingerprint)) || value.version !== 1 && !isValidRewritePolicy(value.rewritePolicy) || !Array.isArray(value.calls) || !value.calls.every(isValidCall) || !Array.isArray(value.operations) || !value.operations.every(isValidOperation) || !isValidConfirms(value.confirms, value.version) || !Array.isArray(value.diagnostics) || !value.diagnostics.every(isValidDiagnostic)) return false;
     const settlementOrder = value.calls.map((call) => call.settle).sort((left, right) => left - right);
@@ -1756,6 +1791,51 @@
     return { PTCPlusToolRow };
   }
 
+  // internal/runtime-config.js
+  var MAX_WALL_MS_FIELD = CONFIG_FIELDS.find((field) => field.key === "maxWallMs");
+  function assertIntegerField(field, value) {
+    if (!Number.isSafeInteger(value) || value < field.min) {
+      throw new TypeError(`ptc-plus: ${field.key} must be a positive safe integer`);
+    }
+    if (value > field.max) {
+      throw new TypeError(`ptc-plus: ${field.key} must not exceed ${field.max}`);
+    }
+  }
+  function assertField(field, value) {
+    if (field.type === "boolean") {
+      if (typeof value !== "boolean") {
+        throw new TypeError(`ptc-plus: ${field.key} must be a boolean`);
+      }
+      return;
+    }
+    if (field.type === "enum") {
+      if (!field.options.includes(value)) {
+        throw new TypeError(`ptc-plus: ${field.key} must be one of ${field.options.join(", ")}`);
+      }
+      return;
+    }
+    assertIntegerField(field, value);
+  }
+  function resolveConfig(config2 = {}) {
+    const resolved = { ...CONFIG_DEFAULTS, ...config2 };
+    for (const field of CONFIG_FIELDS) assertField(field, resolved[field.key]);
+    const legacyKeys = [
+      "looseTopLevelRedeclarations",
+      "looseTopLevelFunctionClassRedeclarations",
+      "autoRewriteImports",
+      "autoStripExports",
+      "autoSplitRedeclarations"
+    ];
+    if (!Object.hasOwn(config2, "bindingUpdates") && legacyKeys.some((key) => Object.hasOwn(config2, key))) {
+      if (legacyKeys.every((key) => resolved[key] === true)) {
+        resolved.bindingUpdates = "stateful";
+      } else if (legacyKeys.slice(0, 2).every((key) => resolved[key] === false) && resolved.autoSplitRedeclarations === false && resolved.autoRewriteImports && resolved.autoStripExports) {
+        resolved.bindingUpdates = "protected";
+      } else resolved.legacyBindingSettings = true;
+    }
+    return resolved;
+  }
+
   // src/client-feature-gates.js
   var FEATURE_SETTINGS = Object.freeze({
     // The plugin master switch plus every contribution that only needs it.
@@ -1814,6 +1894,17 @@
           onChange: (event) => onChange(field, event.target.checked)
         });
       }
+      if (field.type === "enum") {
+        return h("input", {
+          type: "checkbox",
+          role: "switch",
+          className: "ptcPlusCheck",
+          checked: value !== "protected",
+          disabled,
+          "aria-label": label,
+          onChange: (event) => onChange(field, event.target.checked ? "stateful" : "protected")
+        });
+      }
       return h("input", {
         type: "number",
         className: "ptcPlusInput",
@@ -1837,7 +1928,15 @@
       const [pending, setPending] = React.useState(() => /* @__PURE__ */ new Set());
       const writeTail = React.useRef(Promise.resolve());
       const snapshot = usePtcSettings((snapshot2) => snapshot2);
-      const value = snapshot.status === "ready" ? snapshot.value ?? {} : {};
+      const value = snapshot.status === "ready" ? resolveConfig(snapshot.value ?? {}) : {};
+      const legacyKeys = [
+        "looseTopLevelRedeclarations",
+        "looseTopLevelFunctionClassRedeclarations",
+        "autoRewriteImports",
+        "autoStripExports",
+        "autoSplitRedeclarations"
+      ];
+      const legacyMigration = value.legacyBindingSettings === true;
       const enabled = featureEnabled(snapshot, "plugin");
       const globalEnabled = featureEnabled(snapshot, "bindings");
       const workbench = useWorkbenchController({ enabled: globalEnabled && bindingsOpen, callUserBindings });
@@ -1870,42 +1969,61 @@
         });
       };
       const fieldDisabled = (field) => unavailable || pending.has(field.key) || field.key !== "enabled" && !enabled;
-      const settingGroups = CONFIG_GROUPS.map((group) => h(
-        "section",
-        {
-          key: group.key,
-          className: "ptcPlusGroup",
-          "aria-labelledby": `ptc-plus-settings-group-${group.key}`
-        },
-        h("h3", {
-          id: `ptc-plus-settings-group-${group.key}`,
-          className: "ptcPlusGroupTitle"
-        }, t2(`group.${group.key}`)),
-        ...group.fields.map((key) => {
-          const field = CONFIG_FIELDS.find((candidate) => candidate.key === key);
-          if (field === void 0) return null;
-          return h(
-            React.Fragment,
-            { key: field.key },
-            h(
-              "div",
-              { className: "ptcPlusRow" },
+      const settingGroups = CONFIG_GROUPS.map((group) => {
+        const fields = group.key === "syntax" && legacyMigration ? [...group.fields, ...legacyKeys] : group.fields;
+        return h(
+          "section",
+          {
+            key: group.key,
+            className: "ptcPlusGroup",
+            "aria-labelledby": `ptc-plus-settings-group-${group.key}`
+          },
+          h("h3", {
+            id: `ptc-plus-settings-group-${group.key}`,
+            className: "ptcPlusGroupTitle"
+          }, t2(`group.${group.key}`)),
+          ...fields.map((key) => {
+            const field = CONFIG_FIELDS.find((candidate) => candidate.key === key);
+            if (field === void 0) return null;
+            const migratingPolicy = field.key === "bindingUpdates" && legacyMigration;
+            return h(
+              React.Fragment,
+              { key: field.key },
               h(
                 "div",
-                { className: "ptcPlusMain" },
-                h("div", { className: "ptcPlusLabel" }, t2(`${field.key}.label`)),
-                field.description === "" ? null : h("div", { className: "ptcPlusDetail" }, t2(`${field.key}.description`))
+                { className: "ptcPlusRow" },
+                h(
+                  "div",
+                  { className: "ptcPlusMain" },
+                  h("div", { className: "ptcPlusLabel" }, t2(`${field.key}.label`)),
+                  field.description === "" ? null : h(
+                    "div",
+                    { className: "ptcPlusDetail" },
+                    t2(migratingPolicy ? "bindingPolicy.migrationDescription" : `${field.key}.description`)
+                  )
+                ),
+                migratingPolicy ? h(
+                  "select",
+                  {
+                    className: "ptcPlusSelect",
+                    value: "legacy",
+                    disabled: fieldDisabled(field),
+                    "aria-label": t2(`${field.key}.label`),
+                    onChange: (event) => persist(field, event.target.value)
+                  },
+                  h("option", { value: "legacy", disabled: true }, t2("bindingPolicy.legacy")),
+                  ...field.options.map((policy) => h("option", { key: policy, value: policy }, t2(`bindingPolicy.${policy}`)))
+                ) : fieldInput(field, value[field.key], fieldDisabled(field), persist, t2(`${field.key}.label`))
               ),
-              fieldInput(field, value[field.key], fieldDisabled(field), persist, t2(`${field.key}.label`))
-            ),
-            field.key === "userBindingsEnabled" && globalEnabled ? h(
-              "div",
-              { className: "ptcPlusSettingAction" },
-              h(ActionButton, { type: "button", className: "ptcPlusButton", onClick: () => setBindingsOpen(true) }, t2("bindings.manage"))
-            ) : null
-          );
-        })
-      ));
+              field.key === "userBindingsEnabled" && globalEnabled ? h(
+                "div",
+                { className: "ptcPlusSettingAction" },
+                h(ActionButton, { type: "button", className: "ptcPlusButton", onClick: () => setBindingsOpen(true) }, t2("bindings.manage"))
+              ) : null
+            );
+          })
+        );
+      });
       return h(
         "li",
         { className: "ptcPlusCard" },
@@ -29193,6 +29311,10 @@
       "action.expand": "\u5C55\u5F00 PTC Plus \u8BBE\u7F6E",
       "action.collapse": "\u6536\u8D77 PTC Plus \u8BBE\u7F6E",
       "state.syncing": "\u6B63\u5728\u540C\u6B65\u8BBE\u7F6E...",
+      "bindingPolicy.legacy": "\u6CBF\u7528\u65E7\u7248\u8BBE\u7F6E\uFF08\u5C1A\u672A\u8FC1\u79FB\uFF09",
+      "bindingPolicy.stateful": "\u5141\u8BB8\u91CD\u58F0\u660E\u548C\u8986\u76D6",
+      "bindingPolicy.protected": "\u542F\u7528\u540D\u79F0\u4FDD\u62A4",
+      "bindingPolicy.migrationDescription": "\u5F53\u524D\u6309\u4E0B\u65B9\u65E7\u7248\u5F00\u5173\u6267\u884C\u3002\u9009\u62E9\u7EDF\u4E00\u7B56\u7565\u540E\u505C\u7528\u65E7\u7248\u5F00\u5173\uFF0C\u5E76\u5BF9\u540E\u7EED\u4EE3\u7801\u751F\u6548\u3002",
       "state.unavailable": "\u5F53\u524D DSH \u5B9E\u4F8B\u672A\u63D0\u4F9B\u8BBE\u7F6E\u670D\u52A1",
       "footer.live": "\u8BBE\u7F6E\u4F1A\u5728\u4FEE\u6539\u540E\u7ACB\u5373\u751F\u6548",
       "footer.readOnly": "\u5F53\u524D\u8BBE\u7F6E\u4E3A\u53EA\u8BFB",
@@ -29348,6 +29470,10 @@
       "action.expand": "Expand PTC Plus settings",
       "action.collapse": "Collapse PTC Plus settings",
       "state.syncing": "Syncing settings...",
+      "bindingPolicy.legacy": "Legacy settings (not migrated)",
+      "bindingPolicy.stateful": "Allow redeclarations and overrides",
+      "bindingPolicy.protected": "Protect names",
+      "bindingPolicy.migrationDescription": "The legacy switches below currently apply. Choosing a unified policy replaces those switches for subsequent code.",
       "state.unavailable": "This DSH instance does not provide a settings service",
       "footer.live": "Changes take effect immediately.",
       "footer.readOnly": "These settings are read-only.",
@@ -29505,6 +29631,7 @@
 .ptcPlusBindingCommand .ptcPlusMessage{margin:0}.ptcPlusBindingSourceDetails{min-width:0}.ptcPlusBindingSourceDetails>summary{cursor:pointer;font-size:12px;line-height:20px}.ptcPlusBindingItem>button,.ptcPlusGlobalItem>button{align-self:center}.ptcPlusAuthoringDraft>strong{font-size:13px;line-height:20px;overflow-wrap:anywhere}.ptcPlusBindingCommand .ptcPlusBindingCommandState{max-width:100%;box-sizing:border-box;white-space:normal}.ptcPlusBindingCommand .ptcPlusAuthoringDraft{min-width:0;padding:0;border:0;border-radius:0;background:transparent}
 .ptcPlusCard{list-style:none;border:0.5px solid var(--dsw-alias-border-l4);border-radius:16px;background:var(--dsw-alias-bg-layer-3);overflow:hidden;transition:border-color .16s ease,background-color .16s ease}
 .ptcPlusCard:hover{border-color:var(--dsw-alias-label-dimmed)}
+.ptcPlusRow>.ptcPlusSelect{width:auto;max-width:100%;flex:none}
 .ptcPlusCard[data-open=true]{background:var(--dsw-alias-bg-layer-2);border-color:var(--dsw-alias-label-dimmed)}
 .ptcPlusHeader{appearance:none;width:100%;display:flex;align-items:center;gap:12px;padding:14px 16px;border:0;background:transparent;color:inherit;font:inherit;text-align:left;cursor:pointer;border-radius:12px}
 .ptcPlusHeader:hover{background:var(--dsw-alias-interactive-bg-hover)}.ptcPlusHeader:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:-2px}
@@ -30689,10 +30816,15 @@
         const settingsProps = () => ({ hooks: { ptcSettings: preferenceScope }, callUserBindings });
         const updateSetting = async (key, value) => {
           const before = preferenceScope.getSnapshot();
-          if (before.status !== "ready" || before.writable !== true || key !== "enabled" && !featureEnabled(before, "plugin") || before.value?.[key] === value) return null;
-          await preferenceScope.set(key, value);
+          if (before.status !== "ready" || before.writable !== true || key !== "enabled" && !featureEnabled(before, "plugin") || before.value?.[key] === value && !(key === "bindingUpdates" && before.value.legacyBindingSettings === true)) return null;
+          if (key === "bindingUpdates") {
+            await preferenceScope.mutate([
+              { op: "set", path: ["bindingUpdates"], value },
+              { op: "set", path: ["legacyBindingSettings"], value: false }
+            ]);
+          } else await preferenceScope.set(key, value);
           const after = preferenceScope.getSnapshot();
-          return after.status === "ready" && after.value?.[key] === value ? "status.applied" : "status.conflict";
+          return after.status === "ready" && after.value?.[key] === value && (key !== "bindingUpdates" || after.value.legacyBindingSettings !== true) ? "status.applied" : "status.conflict";
         };
         const settingsGate = (feature, register) => ({
           subscribe: (listener) => preferenceScope.subscribe(listener),

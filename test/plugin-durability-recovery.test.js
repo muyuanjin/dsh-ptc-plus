@@ -76,7 +76,7 @@ test('unpromoted block declarations leave actual ambient access volatile in the 
 test('cold-replays predecessor journals with bindings and named states intact', async (t) => {
   const events = []
   const session = { id: 'predecessor-journal', events }
-  const writer = fixture()
+  const writer = fixture({ legacyBindingSettings: true })
   t.after(() => writer.dispose())
   const source = `
 let predecessorBinding = 41
@@ -84,6 +84,7 @@ void await repl.state({ action: 'save', name: 'predecessor-point' })
 return predecessorBinding
 `
   const written = await writer.runDurable(session.id, source, {}, { session })
+  assert.equal(written.meta.dshPtcPlus.languageSemantics, 'legacy-v1')
   const predecessor = structuredClone(written)
   predecessor.meta.dshPtcPlus.version = 1
   predecessor.meta.dshPtcPlus.bindingMode = 'loose'
@@ -95,7 +96,9 @@ return predecessorBinding
   // v1 records never carried per-name shadow policy or name evidence.
   delete predecessor.meta.dshPtcPlus.userBindingsShadowPolicy
   delete predecessor.meta.dshPtcPlus.userBindingNames
+  delete predecessor.meta.dshPtcPlus.languageSemantics
   const normalizedPredecessor = normalizeJournal(predecessor.meta.dshPtcPlus)
+  assert.equal(normalizedPredecessor.languageSemantics, 'legacy-v1')
   assert.equal(normalizedPredecessor.userBindingsShadowPolicy, LEGACY_USER_BINDINGS_SHADOW_POLICY)
   assert.equal(normalizedPredecessor.userBindingNames, null)
   appendRunCodeEvents(events, 'predecessor-cell', source, predecessor)
@@ -116,7 +119,7 @@ test('cold-replays predecessor default exports with their recorded writable bind
   for (const version of [2, 3]) {
     const events = []
     const session = { id: `predecessor-default-export-v${version}`, events }
-    const writer = fixture()
+    const writer = fixture({ legacyBindingSettings: true })
     t.after(() => writer.dispose())
     const setupSource = 'export default 1'
     const setup = await writer.runDurable(session.id, 'let __default = 1', {}, { session })
@@ -130,6 +133,7 @@ test('cold-replays predecessor default exports with their recorded writable bind
     const predecessorSetup = structuredClone(setup)
     const predecessorAssignment = structuredClone(assignment)
     for (const result of [predecessorSetup, predecessorAssignment]) {
+      assert.equal(result.meta.dshPtcPlus.languageSemantics, 'legacy-v1')
       result.meta.dshPtcPlus.version = version
       result.meta.dshPtcPlus.bindingMode = 'loose'
       delete result.meta.dshPtcPlus.bindingPolicy
@@ -139,7 +143,9 @@ test('cold-replays predecessor default exports with their recorded writable bind
       // v2/v3 records never carried per-name shadow policy or name evidence.
       delete result.meta.dshPtcPlus.userBindingsShadowPolicy
       delete result.meta.dshPtcPlus.userBindingNames
+      delete result.meta.dshPtcPlus.languageSemantics
       const normalized = normalizeJournal(result.meta.dshPtcPlus)
+      assert.equal(normalized.languageSemantics, 'legacy-v1')
       assert.equal(normalized.userBindingsShadowPolicy, LEGACY_USER_BINDINGS_SHADOW_POLICY)
       assert.equal(normalized.userBindingNames, null)
     }
@@ -640,6 +646,7 @@ test('does not contract durable history when cold replay is already cancelled', 
   const events = []
   const session = { id: 'cold-replay-abort', events }
   const writer = fixture()
+  t.after(() => writer.dispose())
   const source = 'const durableBeforeReplayAbort = 41'
   const written = await writer.runDurable(session.id, source, {}, { session })
   appendRunCodeEvents(events, 'cold-replay-abort-call', source, written)

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import test from 'node:test'
 import { parse } from '@babel/parser'
-import { USER_BINDING_TRANSFORM } from '../internal/typescript-transform.js'
+import { LEGACY_USER_BINDING_TRANSFORM, USER_BINDING_TRANSFORM } from '../internal/typescript-transform.js'
 import {
   USER_BINDINGS_META_KEY,
   createUserBindingsSnapshot,
@@ -74,6 +74,77 @@ test('binding names are exact identifiers across entries, exports and snapshots'
     assert.equal(ast.program.body[0].declarations[0].id.name, name)
     assert.equal(normalizeUserBindingsSnapshot(snapshotWire([normalized])).entries[0].name, name)
   }
+})
+
+test('source-derived binding metadata accepts updates without publishing compiler names', () => {
+  const source = `export const value: number = 1; export const value: number = 2;
+    export function read(input: number) { const input = input + 1; const local = 1; const local = 2; return input + local }`
+  const selected = normalizeUserBindingEntry(entry({ source }))
+  assert.deepEqual(selected.symbols, ['value', 'read'])
+  assert.match(selected.declaration, /value: number/)
+  assert.match(selected.declaration, /read\(input: number\)/)
+  assert.equal(selected.source, source)
+  assert.doesNotMatch(selected.declaration, /__ptc|module_export/)
+  const snapshot = createUserBindingsSnapshot({ entries: [entry({ source })] })
+  assert.deepEqual(normalizeUserBindingsSnapshot(snapshot), snapshot)
+})
+
+test('known historical binding transforms validate with their original generation', () => {
+  const original = normalizeUserBindingEntry(entry({
+    source: 'export const value = 1; export class Box { constructor(public value:number){} }',
+  }), { transform: LEGACY_USER_BINDING_TRANSFORM })
+  assert.match(original.declaration, /new\(value: number\)/)
+  const revision = 7
+  const transform = LEGACY_USER_BINDING_TRANSFORM
+  const snapshot = { version: 2, transform, revision, entries: [original], fingerprint: createHash('sha256')
+    .update(JSON.stringify({ revision, entries: [original.fingerprint], transform })).digest('hex') }
+  assert.deepEqual(normalizeUserBindingsSnapshot(snapshot), snapshot)
+  assert.equal(selectUserBindingsSnapshot(snapshot, ['helpers']).transform, transform)
+  assert.throws(() => normalizeUserBindingEntry(entry({ source: 'export const value = 1; export const value = 2' }), { transform }), /parsed/)
+})
+
+test('binding durability reflects source effects across both module transforms', () => {
+  for (const transform of [LEGACY_USER_BINDING_TRANSFORM, USER_BINDING_TRANSFORM]) {
+    for (const source of ['export const value: number = 42',
+      'await tools.observe({ value: 1 }); export const value: number = 1',
+      'import { Buffer } from "node:buffer"; export const value = Buffer']) {
+      const normalized = normalizeUserBindingEntry(entry({ source }), { transform })
+      assert.equal(normalized.durability, 'durable', `${transform}: ${source}`)
+      assert.equal(normalized.volatileReason, undefined)
+    }
+    const external = normalizeUserBindingEntry(entry({
+      source: 'import { value as external } from "./dependency.mjs"; export const value = external',
+    }), { transform })
+    assert.equal(external.durability, 'volatile')
+    assert.match(external.volatileReason, /dependency\.mjs/)
+  }
+})
+
+test('binding descriptors share runtime TypeScript normalization with module compilation', () => {
+  const cases = [
+    ['export enum Kind { A=1 }', ['Kind']],
+    ['export const enum Kind { A=1 }', ['Kind']],
+    ['export namespace Helpers { export const value=1 }', ['Helpers']],
+    ['enum Kind { A=1 }; namespace Helpers { export const value=1 }; export {Kind as Choice,Helpers as API}', ['Choice','API']],
+    ['export enum Kind { A=1 }; export enum Kind { B=2 }; export namespace Kind { export const count=2 }', ['Kind']],
+    ['export namespace Helpers { export const a=1 }; export namespace Helpers { export const b=2 }', ['Helpers']],
+  ]
+  for (const [source, symbols] of cases) {
+    for (const scope of ['namespace', 'top-level']) {
+      const normalized = normalizeUserBindingEntry(entry({ source, scope }))
+      assert.deepEqual(normalized.symbols, symbols)
+      assert.doesNotMatch(normalized.declaration, /__ptc|eval_scope|module_export/)
+      assert.doesNotThrow(() => parse(normalized.declaration, { sourceType: 'module', plugins: ['typescript'] }))
+      const snapshot = createUserBindingsSnapshot({ entries: [entry({ source, scope })] })
+      assert.deepEqual(normalizeUserBindingsSnapshot(snapshot), snapshot)
+    }
+  }
+  for (const source of ['export declare enum Kind { A=1 }',
+    'export declare namespace Helpers { const value:number }', 'export namespace Empty { export type T=number }']) {
+    assert.throws(() => normalizeUserBindingEntry(entry({ source })), /at least one named value export/)
+  }
+  assert.throws(() => normalizeUserBindingEntry(entry({ source: cases[0][0] }),
+    { transform: LEGACY_USER_BINDING_TRANSFORM }), /at least one named value export/)
 })
 
 test('derives bounded namespace and top-level declarations from named value exports', () => {

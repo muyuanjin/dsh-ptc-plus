@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { setImmediate as nextTurn } from 'node:timers/promises'
 import test from 'node:test'
 import { prepareProgram } from '../internal/cell-analysis.js'
+import { LEGACY_LANGUAGE_SEMANTICS, STATEFUL_LANGUAGE_SEMANTICS } from '../internal/language-semantics.js'
 import { JOURNAL_KEY, normalizeJournal } from '../internal/session-journal.js'
 import { SessionRuntime } from '../internal/session-runtime.js'
 import { USER_BINDINGS_META_KEY, createUserBindingsSnapshot } from '../internal/user-bindings.js'
@@ -45,8 +46,47 @@ async function recordUserBindingCell(runtime, session, program, userBindings, fu
   for (const [index, event] of recorded.entries()) event.seq = callSeq + index
   recorded[1].sourceEventSeqs = [callSeq]
   session.events.push(...recorded)
-  return { result: execution.result, journal, recoveryBoundaries: settlement.recoveryBoundaries }
+  return { result: execution.result, journal, recoveryBoundaries: settlement.recoveryBoundaries,
+    replMemory: settlement.replMemory }
 }
+
+test('enabling replay preserves the initialized live worker and its volatile source evidence', async t => {
+  const session = { id: 'enable-replay-live', events: [] }
+  const runtime = new SessionRuntime({ legacyBindingSettings: true, durableReplay: false })
+  t.after(() => runtime.dispose())
+  let effects = 0
+  const functions = { observe: async () => ++effects }
+  const initial = await recordUserBindingCell(runtime, session,
+    'const value=41;function read(){return eval("value")};await tools.observe({});return read()', undefined, functions)
+  assert.equal(initial.result.error, undefined)
+  assert.equal(initial.result.value, 41)
+  assert.equal(initial.journal.status, 'volatile')
+  const kernel = runtime.kernels.get(session.id)
+  const worker = kernel.client.worker
+  const namespaces = [...kernel.bindingCatalog.inputs().importNamespaces]
+  assert.ok(namespaces.length > 0)
+
+  runtime.reconfigure({ bindingUpdates: 'stateful', durableReplay: true })
+  const current = await recordUserBindingCell(runtime, session, 'return [value,read()]', undefined, functions)
+  assert.equal(current.result.error, undefined)
+  assert.deepEqual(current.result.value, [41, 41])
+  assert.equal(current.journal.status, 'volatile')
+  assert.equal(kernel.client.worker, worker)
+  for (const name of namespaces) assert.ok(kernel.bindingCatalog.inputs().importNamespaces.has(name))
+  runtime.reconfigure({ legacyBindingSettings: true, durableReplay: true })
+  const later = await recordUserBindingCell(runtime, session, 'return read()', undefined, functions)
+  assert.equal(later.result.error, undefined)
+  assert.equal(later.result.value, 41)
+  assert.equal(effects, 1)
+
+  await runtime.dispose()
+  const cold = new SessionRuntime()
+  t.after(() => cold.dispose())
+  const recovered = await recordUserBindingCell(cold, session, 'return typeof value', undefined, functions)
+  assert.equal(recovered.result.error, undefined)
+  assert.equal(recovered.result.value, 'undefined')
+  assert.equal(effects, 1)
+})
 
 test('success and body failure drain every issued call in settlement order and replay no effects', async t => {
   for (const fails of [false, true]) {
@@ -320,52 +360,137 @@ test('over-budget recorded replies contract recovery and still execute the curre
   assert.equal(normalizeJournal(recovered.meta.dshPtcPlus).status, 'durable')
 })
 
-test('every completion reports the same committed declarations, activation and source facts', async t => {
-  for (const [phase, end, kind] of [
-    ['return', 'return previous()', undefined],
-    ['throw', 'throw new Error("body failed")', 'exception'],
-    ['encode', 'return () => previous', 'invalid-output'],
-  ]) {
-    await t.test(phase, async t => {
-      const runtime = new SessionRuntime({ computeMs: 2_000, maxWallMs: 2_000 })
-      t.after(() => runtime.dispose())
-      const userBindings = createUserBindingsSnapshot({ entries: [
-        { id: 'ns', name: 'shared', scope: 'namespace', source: 'export const value = 1', enabled: true },
-        { id: 'top', name: 'top', scope: 'top-level', source: 'export const item = 1', enabled: true },
-        { id: 'failed', name: 'failed', scope: 'namespace', source: 'throw new Error("initializer"); export const value = 1', enabled: true },
-      ] }, 1)
-      await runtime.run(phase, { program: 'function previous() { return 1 }', bindings: [], userBindings })
-      const done = []
-      interceptWorkerMessages(runtime, phase, (message, deliver) => {
-        if (message.type === 'done') done.push(message)
-        deliver(message)
+test('every completion reports its language generation committed declarations, activation and source facts', async t => {
+  for (const languageSemantics of [LEGACY_LANGUAGE_SEMANTICS, STATEFUL_LANGUAGE_SEMANTICS]) {
+    for (const [phase, end, kind] of [
+      ['return', 'return previous()', undefined],
+      ['throw', 'throw new Error("body failed")', 'exception'],
+      ['encode', 'return () => previous', 'invalid-output'],
+    ]) {
+      await t.test(`${languageSemantics}, ${phase}`, async t => {
+        const legacy = languageSemantics === LEGACY_LANGUAGE_SEMANTICS
+        const runtime = new SessionRuntime({ legacyBindingSettings: legacy, computeMs: 2_000, maxWallMs: 2_000 })
+        t.after(() => runtime.dispose())
+        const userBindings = createUserBindingsSnapshot({ entries: [
+          { id: 'ns', name: 'shared', scope: 'namespace', source: 'export const value = 1', enabled: true },
+          { id: 'top', name: 'top', scope: 'top-level', source: 'export const item = 1', enabled: true },
+          { id: 'failed', name: 'failed', scope: 'namespace', source: 'throw new Error("initializer"); export const value = 1', enabled: true },
+        ] }, 1)
+        await runtime.run(phase, { program: 'function previous() { return 1 }', bindings: [], userBindings })
+        const done = []
+        interceptWorkerMessages(runtime, phase, (message, deliver) => {
+          if (message.type === 'done') done.push(message)
+          deliver(message)
+        })
+        const settled = await runtime.runTentative(phase, {
+          program: `function previous() { return 2 }; shared = 17; item = 19; console.log('body'); ${end}`,
+          bindings: [], userBindings,
+        })
+        runtime.finalize(settled.settlement, true)
+        assert.equal(settled.result.error?.kind, kind)
+        assert.equal(done.length, 1)
+        assert.equal(done[0].committedRedeclarations.length, 1)
+        assert.match(done[0].committedRedeclarations[0], legacy ? /^redeclaration:\d+:previous$/ : /^root:\d+:previous$/)
+        if (legacy) assert.equal('rootBindingFacts' in done[0], false)
+        else {
+          assert.deepEqual(new Map(done[0].rootBindingFacts.map(({ name, source }) => [name, source])),
+            new Map([['item', 'local'], ['previous', 'local'], ['shared', 'local']]))
+          for (const [name, source] of [['shared', 'shared = 17'], ['item', 'item = 19']]) {
+            assert.equal(typeof done[0].rootBindingFacts.find(fact => fact.name === name).write, 'string')
+            assert.equal(settled.settlement.replMemory.entries.find(entry => entry.name === name).definition.source, source)
+          }
+        }
+        // Activation and failure outcomes partition every requested entry.
+        assert.deepEqual(done[0].activatedUserBindings, ['ns', 'top'])
+        assert.deepEqual(done[0].userBindingFailures, [{ id: 'failed', error: 'initializer' }])
+        // Each completion carries per-name source facts and no whole-entry field.
+        assert.deepEqual(done[0].userBindingNames, [
+          { name: 'item', state: 'local' },
+          { name: 'shared', state: 'local' },
+        ])
+        assert.equal('shadowedUserBindings' in done[0], false)
+        assert.equal(done[0].logs.at(-1), 'body')
+        assert.equal(done[0].durability, 'durable')
+        assert.equal(normalizeJournal(settled.settlement.journal).status, 'durable')
+        assert.equal(normalizeJournal(settled.settlement.journal).languageSemantics, languageSemantics)
+        assert.deepEqual((await runtime.run(phase, {
+          program: 'return [previous(), shared, item]', bindings: [], userBindings,
+        })).value, [2, 17, 19])
       })
-      const settled = await runtime.runTentative(phase, {
-        program: `function previous() { return 2 }; shared = 17; item = 19; console.log('body'); ${end}`,
-        bindings: [], userBindings,
-      })
-      runtime.finalize(settled.settlement, true)
-      assert.equal(settled.result.error?.kind, kind)
-      assert.equal(done.length, 1)
-      assert.equal(done[0].committedRedeclarations.length, 1)
-      assert.match(done[0].committedRedeclarations[0], /^redeclaration:\d+:previous$/)
-      // Activation and failure outcomes partition every requested entry.
-      assert.deepEqual(done[0].activatedUserBindings, ['ns', 'top'])
-      assert.deepEqual(done[0].userBindingFailures, [{ id: 'failed', error: 'initializer' }])
-      // Each completion carries per-name source facts and no whole-entry field.
-      assert.deepEqual(done[0].userBindingNames, [
-        { name: 'item', state: 'local' },
-        { name: 'shared', state: 'local' },
-      ])
-      assert.equal('shadowedUserBindings' in done[0], false)
-      assert.equal(done[0].logs.at(-1), 'body')
-      assert.equal(done[0].durability, 'durable')
-      assert.equal(normalizeJournal(settled.settlement.journal).status, 'durable')
-      assert.deepEqual((await runtime.run(phase, {
-        program: 'return [previous(), shared, item]', bindings: [], userBindings,
-      })).value, [2, 17, 19])
-    })
+    }
   }
+})
+
+test('stateful settlement records drained callback writes and their original source through provider updates and replay', async t => {
+  for (const [phase, end, kind] of [
+    ['return', 'return 7', undefined],
+    ['void', 'void 0', undefined],
+    ['throw', 'throw new Error("body failed")', 'exception'],
+    ['encode', 'return () => 1', 'invalid-output'],
+  ]) await t.test(phase, async t => {
+    const runtime = new SessionRuntime({ bindingUpdates: 'stateful' })
+    t.after(() => runtime.dispose())
+    const session = { id: `stateful-drained-write-${phase}`, events: [] }
+    const initializations = []
+    let calls = 0
+    const started = Promise.withResolvers()
+    const gate = Promise.withResolvers()
+    const functions = {
+      observe: async ({ value }) => { initializations.push(value); return 'initialized' },
+      wait: async () => { calls += 1; started.resolve(); await gate.promise; return null },
+    }
+    const initial = assignmentSnapshot('namespace', 1)
+    const seeded = await recordUserBindingCell(runtime, session,
+      'let committed = 0; function assign() { shared = shared; committed = 2 }', initial, functions)
+    assert.equal(seeded.result.error, undefined)
+    assert.deepEqual(seeded.journal.userBindingNames, [{ name: 'shared', state: 'provider', entryId: 'shared' }])
+    const done = []
+    interceptWorkerMessages(runtime, session.id, (message, deliver) => {
+      if (message.type === 'done') done.push(message)
+      deliver(message)
+    })
+    let completed = false
+    const pending = recordUserBindingCell(runtime, session,
+      `void tools.wait({}).then(assign); if (false) shared = 99; ${end}`, initial, functions)
+      .then(result => { completed = true; return result })
+    await started.promise
+    await nextTurn()
+    assert.equal(completed, false)
+    gate.resolve()
+    const settled = await pending
+    assert.equal(settled.result.error?.kind, kind)
+    if (phase === 'return') assert.equal(settled.result.value, 7)
+    if (phase === 'void') assert.equal(settled.result.value, undefined)
+    assert.equal(done.length, 1)
+    assert.deepEqual(done[0].committedRedeclarations, [])
+    for (const [name, source] of [['shared', 'shared = shared'], ['committed', 'committed = 2']]) {
+      const fact = done[0].rootBindingFacts.find(fact => fact.name === name)
+      assert.equal(fact.source, 'local')
+      assert.equal(typeof fact.write, 'string')
+      assert.equal(settled.replMemory.entries.find(entry => entry.name === name).definition.source, source)
+    }
+    assert.deepEqual(settled.journal.userBindingNames, [{ name: 'shared', state: 'local' }])
+    assert.equal(settled.journal.languageSemantics, STATEFUL_LANGUAGE_SEMANTICS)
+    assert.equal(settled.journal.status, 'durable')
+    assert.deepEqual(settled.journal.calls.map(call => [call.member, call.settle]), [['wait', 0]])
+    const updated = assignmentSnapshot('namespace', 2)
+    const program = 'return [shared.value, committed]'
+    const continued = await recordUserBindingCell(runtime, session, program, updated, functions)
+    assert.equal(continued.result.error, undefined)
+    assert.deepEqual(continued.result.value, [1, 2])
+    assert.deepEqual(continued.journal.userBindingNames, [{ name: 'shared', state: 'local' }])
+    assert.deepEqual(initializations, [1, 2])
+    await runtime.dispose()
+    const restored = new SessionRuntime({ bindingUpdates: 'stateful' })
+    t.after(() => restored.dispose())
+    const cold = await recordUserBindingCell(restored, session, program, updated, functions)
+    assert.equal(cold.result.error, undefined)
+    assert.deepEqual(cold.result.value, [1, 2])
+    assert.equal(cold.recoveryBoundaries, undefined)
+    assert.deepEqual(cold.journal.userBindingNames, [{ name: 'shared', state: 'local' }])
+    assert.deepEqual(initializations, [1, 2])
+    assert.equal(calls, 1)
+  })
 })
 
 test('a pending rejection keeps the error class installed when the call started', async t => {
@@ -442,13 +567,13 @@ Object.defineProperty(this, 'shared', installed)
 ${completion}`
 }
 
-test('an actual assignment stays local when the installed descriptor is restored', async t => {
+test('a legacy actual assignment stays local when the installed descriptor is restored', async t => {
   for (const [label, write] of [
     ['value write', 'shared = 17'],
     ['same-value write', 'shared = shared'],
   ]) {
     for (const completion of ['return shared.value', 'void 0']) await t.test(`${label}, ${completion}`, async t => {
-      const runtime = new SessionRuntime()
+      const runtime = new SessionRuntime({ legacyBindingSettings: true })
       t.after(() => runtime.dispose())
       const session = { id: `restored-descriptor-${label.replaceAll(' ', '-')}`, events: [] }
       const initializations = []
@@ -467,7 +592,7 @@ test('an actual assignment stays local when the installed descriptor is restored
       assert.deepEqual(updated.journal.userBindingNames, [{ name: 'shared', state: 'local' }])
       assert.deepEqual(initializations, [1, 2])
       await runtime.dispose()
-      const restored = new SessionRuntime()
+      const restored = new SessionRuntime({ legacyBindingSettings: true })
       t.after(() => restored.dispose())
       const cold = await recordUserBindingCell(restored, session,
         'return shared.value', assignmentSnapshot('namespace', 2), functions)
@@ -480,8 +605,8 @@ test('an actual assignment stays local when the installed descriptor is restored
   }
 })
 
-test('restoring the installed descriptor without an assignment keeps provider ownership', async t => {
-  const runtime = new SessionRuntime()
+test('restoring the legacy installed descriptor without an assignment keeps provider ownership', async t => {
+  const runtime = new SessionRuntime({ legacyBindingSettings: true })
   t.after(() => runtime.dispose())
   const session = { id: 'restored-descriptor-unwritten', events: [] }
   const restored = await recordUserBindingCell(runtime, session,
@@ -557,6 +682,7 @@ test('version-6 assignment evidence retains the restored accessor through recove
     assert.deepEqual(same.result.value, [1, true])
     assert.equal(same.recoveryBoundaries, undefined)
     assert.deepEqual(same.journal.userBindingNames, [{ name: 'shared', state: 'local' }])
+    assert.equal(same.journal.languageSemantics, STATEFUL_LANGUAGE_SEMANTICS)
     assert.deepEqual(initializations, [])
     const changed = await recordUserBindingCell(runtime, session, 'return shared.value', updated, functions)
     assert.equal(changed.result.error, undefined)
@@ -579,9 +705,10 @@ test('version-6 assignment evidence retains the restored accessor through recove
 })
 
 /** Exercise both worker policies directly without inventing a historical journal. */
-async function bindingWorker(t) {
+async function bindingWorker(t, languageSemantics = LEGACY_LANGUAGE_SEMANTICS) {
   let pending
   let nextId = 0
+  let importNamespaces = new Set()
   const initializations = []
   const client = new WorkerClient({
     workerUrl: new URL('../internal/kernel-worker.js', import.meta.url), cwd: process.cwd(),
@@ -603,19 +730,23 @@ async function bindingWorker(t) {
     async run(program, userBindings, policy) {
       pending = Promise.withResolvers()
       const prepared = prepareProgram(program, {
+        languageSemantics, importNamespaces,
         bindingPolicy: { variableRedeclarations: true, functionClassRedeclarations: true },
         rewritesEnabled: { autoRewriteImports: true, autoStripExports: true, autoSplitRedeclarations: true },
       })
       client.post({ type: 'run', id: ++nextId, program: prepared.code,
-        returnSignal: prepared.returnSignal, commitSignal: prepared.commitSignal,
+        languageSemantics: prepared.languageSemantics,
+        rootRuntimeName: prepared.rootRuntimeName, rootBindings: prepared.rootBindings,
+        returnSignal: prepared.returnSignal, asyncCompletion: prepared.asyncCompletion, commitSignal: prepared.commitSignal,
         moduleLoads: prepared.moduleLoads, namespaces: [{ global: 'tools', members: ['observe'] }],
         maxOutputBytes: 65_536, durability: 'durable', userBindings,
         userBindingsCwd: process.cwd(), userBindingsReusePolicy: 'implementation-v1',
         userBindingsShadowPolicy: policy, shadowedUserBindingNames: [...shadowedNames],
       })
       const done = await pending.promise
+      importNamespaces = prepared.importNamespaces
       for (const name of done.shadowedUserBindings ?? []) shadowedNames.add(name)
-      return done
+      return { ...done, prepared }
     },
   }
 }
@@ -626,6 +757,25 @@ function assignmentSnapshot(scope, value) {
     source: `await tools.observe({ value: ${value} }); export const ${scope === 'namespace' ? 'value' : 'shared'} = ${value}`,
   }] }, value)
 }
+
+test('the raw worker receives the stateful preparation plan and reports actual root commits', async t => {
+  const worker = await bindingWorker(t, STATEFUL_LANGUAGE_SEMANTICS)
+  const done = await worker.run(`const previous = 1; const previous = 2
+shared = shared
+if (false) untouched = 99
+return [previous, shared.value]`, assignmentSnapshot('namespace', 1), 'per-name')
+  assert.equal(done.error, undefined)
+  assert.deepEqual(decodeValue(done.value), [2, 1])
+  assert.equal(done.committedRedeclarations.length, 2)
+  assert.deepEqual(new Set(done.committedRedeclarations), new Set(done.prepared.commitTargets))
+  assert.deepEqual(done.rootBindingFacts.map(({ name, source }) => ({ name, source })), [
+    { name: 'previous', source: 'local' },
+    { name: 'shared', source: 'local' },
+  ])
+  assert.equal(typeof done.rootBindingFacts.find(fact => fact.name === 'shared').write, 'string')
+  assert.deepEqual(done.userBindingNames, [{ name: 'shared', state: 'local' }])
+  assert.deepEqual(worker.initializations, [1])
+})
 
 test('both policies combine actual assignments with descriptors across return and void completion', async t => {
   for (const policy of ['whole-entry', 'per-name']) {

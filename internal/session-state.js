@@ -2,6 +2,9 @@
 
 import { userBindingCatalogEntries } from './user-bindings.js'
 import { LEGACY_USER_BINDINGS_SHADOW_POLICY } from './session-journal-schema.js'
+import { advanceLegacyBindings } from './legacy-binding-catalog.js'
+import { dynamicBindingOrigin } from './dynamic-binding-evidence.js'
+import { LEGACY_LANGUAGE_SEMANTICS, normalizeLanguageSemantics } from './language-semantics.js'
 
 export function durabilityState(overrides = {}) {
   return Object.freeze({
@@ -24,10 +27,16 @@ export class BindingCatalog {
   #entries
   #namespaces
   #userBindingAncestry
+  #rootCandidates
+  #dynamicOrigins
 
-  constructor({ entries = new Map(), namespaces = new Set(), userBindingAncestry = new Set() } = {}) {
+  constructor({ entries = new Map(), namespaces = new Set(), userBindingAncestry = new Set(), rootCandidates = new Map(), dynamicOrigins = new Map() } = {}) {
     this.#entries = new Map([...entries].map(([name, entry]) => [name, Object.freeze({ ...entry })]))
     this.#namespaces = new Set(namespaces)
+    // A closure can perform its first implicit assignment in a later cell.
+    // Its source plan is ancestry, not an initialized binding or provider shadow.
+    this.#rootCandidates = new Map(rootCandidates)
+    this.#dynamicOrigins = new Map(dynamicOrigins)
     // Escaped provider setters may create local values after their entries are
     // removed. Eligibility follows the catalog ancestry, not the visible inventory.
     this.#userBindingAncestry = new Set([
@@ -39,7 +48,9 @@ export class BindingCatalog {
 
   inputs() {
     return {
-      knownBindings: new Set([...this.#entries].filter(([, entry]) => entry.unavailable !== true).map(([name]) => name)),
+      knownBindings: new Set([...this.#entries]
+        .filter(([, entry]) => entry.unavailable !== true)
+        .map(([name]) => name)),
       importBindings: new Map([...this.#entries]
         .filter(([, entry]) => entry.import !== undefined)
         .map(([name, entry]) => [name, entry.import])),
@@ -47,56 +58,76 @@ export class BindingCatalog {
       writableBindings: new Set([...this.#entries]
         .filter(([, entry]) => entry.writable === true)
         .map(([name]) => name)),
+      nativeBindings: new Set([...this.#entries].filter(([, entry]) => entry.native === true).map(([name]) => name)),
+      nativeLexicalBindings: new Set([...this.#entries].filter(([, entry]) => entry.nativeLexical === true).map(([name]) => name)),
+      rootCandidates: new Map([...this.#rootCandidates].map(([target, declaration]) => [target, declaration.name])),
+      dynamicOrigins: [...this.#dynamicOrigins.keys()],
+      establishedRoots: new Map([...this.#entries].filter(([, entry]) => entry.rootSource !== undefined)
+        .map(([name, entry]) => [name, entry.rootSource])),
     }
   }
 
-  advance(prepared, source = undefined, committedRedeclarations = undefined) {
-    const entries = new Map(this.#entries)
-    const touched = new Set()
-    const redeclared = new Set((prepared.redeclared ?? []).map(declaration => declaration.name))
-    const commitGated = prepared.commitTargets
-    const committed = committedRedeclarations instanceof Set
-      ? committedRedeclarations
-      : new Set([...redeclared, ...commitGated])
-    const uncommitted = new Set()
-    const extractDefinition = sourceDefinitionExtractor(source)
-    for (const declaration of prepared.declarations ?? []) {
-      if (typeof declaration?.name !== 'string') continue
-      const dependency = typeof declaration.commitDependency === 'string'
-        && commitGated.has(declaration.commitDependency)
-        ? declaration.commitDependency
-        : commitGated.has(declaration.name) ? declaration.name : undefined
-      if (dependency !== undefined && !committed.has(dependency)) {
-        uncommitted.add(declaration.name)
-        continue
+  advance(prepared, source = undefined, committedRedeclarations = undefined, rootBindingFacts = undefined) {
+    const semantics = normalizeLanguageSemantics(prepared.languageSemantics ?? LEGACY_LANGUAGE_SEMANTICS)
+    if (semantics === LEGACY_LANGUAGE_SEMANTICS) {
+      const legacy = advanceLegacyBindings(this.#entries, prepared, sourceDefinitionExtractor(source), committedRedeclarations)
+      const nativePublications = new Set(prepared.moduleLoads.flatMap(load => (load.nativePublications ?? []).map(binding => binding.name)))
+      for (const [name, entry] of legacy.entries) {
+        if (entry.rootSource === undefined && entry.origin === undefined && entry.userBindingState === undefined) {
+          legacy.entries.set(name, { ...entry, native: true,
+            nativeLexical: this.#entries.get(name)?.nativeLexical === true || prepared.nativeLexicals?.has(name) === true })
+        }
       }
-      touched.add(declaration.name)
-      const previous = entries.get(declaration.name)
-      const definition = extractDefinition(declaration.definitionSpan)
-      entries.set(declaration.name, {
-        kind: declaration.kind ?? 'variable',
-        definition: definition ?? previous?.definition,
-        writable: redeclared.has(declaration.name) ? previous?.writable === true : declaration.writable === true,
+      for (const fact of rootBindingFacts ?? []) {
+        const previous = legacy.entries.get(fact.name)
+        if (previous !== undefined) legacy.entries.set(fact.name, { ...previous,
+          native: this.#entries.get(fact.name)?.native || nativePublications.has(fact.name) && fact.source !== 'absent',
+          import: this.#entries.get(fact.name)?.import,
+        })
+      }
+      applyRootBindingFacts(legacy.entries, rootBindingFacts, this.#rootCandidates, this.#dynamicOrigins,
+        prepared.imports, this.#entries)
+      return new BindingCatalog({
+        ...legacy,
+        userBindingAncestry: this.#userBindingAncestry,
+        rootCandidates: this.#rootCandidates,
+        dynamicOrigins: this.#dynamicOrigins,
       })
     }
-    for (const name of prepared.declared) {
-      if (!uncommitted.has(name)) touched.add(name)
+    const entries = new Map(this.#entries)
+    const committed = committedRedeclarations ?? prepared.commitTargets
+    const extractDefinition = sourceDefinitionExtractor(source)
+    const rootCandidates = new Map(this.#rootCandidates)
+    const dynamicOrigins = new Map(this.#dynamicOrigins)
+    for (const origin of prepared.dynamicOrigins ?? []) {
+      dynamicOrigins.set(origin.target, extractDefinition(origin.definitionSpan))
     }
-    for (const name of touched) {
-      const entry = entries.get(name) ?? { kind: 'variable', writable: false }
+    for (const declaration of prepared.implicitDeclarations ?? []) {
+      rootCandidates.set(declaration.target, { name: declaration.name, kind: 'variable', writable: true,
+        definition: extractDefinition(declaration.definitionSpan) })
+    }
+    const commitOrder = new Map([...committed].map((target, index) => [target, index]))
+    const declarations = prepared.declarations.filter(declaration => committed.has(declaration.commitDependency))
+      .sort((left, right) => commitOrder.get(left.commitDependency) - commitOrder.get(right.commitDependency))
+    for (const declaration of declarations) {
+      const previous = entries.get(declaration.name)
+      entries.set(declaration.name, { kind: declaration.kind,
+        writable: declaration.writable,
+        ...(previous?.nativeLexical === true ? { nativeLexical: true } : {}),
+        definition: extractDefinition(declaration.definitionSpan) ?? previous?.definition,
+        import: declaration.kind === 'import' ? prepared.imports.get(declaration.name) : undefined,
+      })
+    }
+    // Value provenance follows actual commits, including repeated loop targets.
+    // The inventory separately presents accepted declarations in source order.
+    for (const { name } of declarations.sort((left, right) => left.span.line - right.span.line
+      || left.span.column - right.span.column)) {
+      const entry = entries.get(name)
       entries.delete(name)
       entries.set(name, entry)
     }
-    const imports = new Map(prepared.imports)
-    for (const [name, binding] of imports) {
-      if (typeof binding?.commitDependency !== 'string'
-        || !commitGated.has(binding.commitDependency)
-        || committed.has(binding.commitDependency)) continue
-      if (this.#entries.get(name)?.import !== undefined) imports.set(name, this.#entries.get(name).import)
-      else imports.delete(name)
-    }
-    for (const [name, entry] of entries) entries.set(name, { ...entry, import: imports.get(name) })
-    return new BindingCatalog({ entries, namespaces: prepared.importNamespaces, userBindingAncestry: this.#userBindingAncestry })
+    applyRootBindingFacts(entries, rootBindingFacts, rootCandidates, dynamicOrigins, prepared.imports, this.#entries)
+    return new BindingCatalog({ entries, namespaces: this.#namespaces, userBindingAncestry: this.#userBindingAncestry, rootCandidates, dynamicOrigins })
   }
 
   userBindings(snapshot, activeEntryIds = undefined, shadowPolicy = LEGACY_USER_BINDINGS_SHADOW_POLICY) {
@@ -130,7 +161,7 @@ export class BindingCatalog {
       })
     }
     return Object.freeze({
-      catalog: new BindingCatalog({ entries, namespaces: this.#namespaces, userBindingAncestry: this.#userBindingAncestry }),
+      catalog: new BindingCatalog({ entries, namespaces: this.#namespaces, userBindingAncestry: this.#userBindingAncestry, rootCandidates: this.#rootCandidates, dynamicOrigins: this.#dynamicOrigins }),
       shadowedNames,
     })
   }
@@ -167,6 +198,9 @@ export class BindingCatalog {
           // per-name user-binding proof. Imports are the canonical storage for
           // aliases and must remain available to the next preparation pass.
           import: previous?.import,
+          rootSource: previous?.rootSource,
+          native: previous?.native,
+          nativeLexical: previous?.nativeLexical,
           definition: previous?.origin === undefined && previous?.definition !== undefined
             ? previous.definition
             : fact.state === 'local' && typeof source === 'string' && source.length > 0
@@ -177,12 +211,12 @@ export class BindingCatalog {
         })
       }
     }
-    return new BindingCatalog({ entries, namespaces: this.#namespaces, userBindingAncestry: this.#userBindingAncestry })
+    return new BindingCatalog({ entries, namespaces: this.#namespaces, userBindingAncestry: this.#userBindingAncestry, rootCandidates: this.#rootCandidates, dynamicOrigins: this.#dynamicOrigins })
   }
 
   withoutUserBindings() {
     const entries = new Map([...this.#entries].filter(([, entry]) => entry.origin?.kind !== 'user-global'))
-    return new BindingCatalog({ entries, namespaces: this.#namespaces, userBindingAncestry: this.#userBindingAncestry })
+    return new BindingCatalog({ entries, namespaces: this.#namespaces, userBindingAncestry: this.#userBindingAncestry, rootCandidates: this.#rootCandidates, dynamicOrigins: this.#dynamicOrigins })
   }
 
   shadowUserBindings(names) {
@@ -192,7 +226,7 @@ export class BindingCatalog {
       if (entry?.origin?.kind !== 'user-global') continue
       entries.set(name, { ...entry, origin: undefined, definition: undefined })
     }
-    return new BindingCatalog({ entries, namespaces: this.#namespaces, userBindingAncestry: this.#userBindingAncestry })
+    return new BindingCatalog({ entries, namespaces: this.#namespaces, userBindingAncestry: this.#userBindingAncestry, rootCandidates: this.#rootCandidates, dynamicOrigins: this.#dynamicOrigins })
   }
 
   snapshot() {
@@ -203,6 +237,22 @@ export class BindingCatalog {
         kind: entry.kind,
         ...(entry.definition === undefined ? {} : { definition: entry.definition }),
       }))
+  }
+}
+
+function applyRootBindingFacts(entries, facts, rootCandidates, dynamicOrigins, imports, previousEntries) {
+  for (const fact of facts ?? []) {
+    const origin = dynamicBindingOrigin(fact.write, fact.name, dynamicOrigins)
+    const write = rootCandidates.get(fact.write) ?? (origin === undefined ? undefined
+      : { name: fact.name, kind: 'variable', writable: true, definition: dynamicOrigins.get(origin) })
+    const previous = entries.get(fact.name) ?? write
+    if (previous === undefined) continue
+    const root = { ...previous, rootSource: fact.source,
+      ...(write === undefined ? {} : { definition: write.definition }) }
+    if (fact.source === 'local') entries.set(fact.name, { ...root, unavailable: false, import: undefined, origin: undefined,
+      ...(previous.import === undefined && write === undefined ? {} : { kind: 'variable', writable: true }) })
+    else if (fact.source === 'absent') entries.set(fact.name, { ...root, unavailable: true, import: undefined })
+    else entries.set(fact.name, { ...root, unavailable: false, import: imports.get(fact.name) ?? previousEntries.get(fact.name)?.import })
   }
 }
 

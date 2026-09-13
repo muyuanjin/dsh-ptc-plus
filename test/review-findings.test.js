@@ -531,6 +531,36 @@ test('uses Git canonical content for source trees', async (t) => {
   assert.match(canonicalSource, /^[0-9a-f]{40,64}$/)
 })
 
+test('fingerprinting honors repository attributes without retaining temporary objects or changing the index', async t => {
+  const root = await committedRepository(t, 'ptc-review-object-isolation-')
+  execFileSync('git', ['config', 'core.autocrlf', 'false'], { cwd: root })
+  await writeFile(path.join(root, '.git/info/attributes'), '*.txt text eol=lf\n')
+  const indexTree = indexTreeFingerprint(root)
+  const indexBytes = await gitIndexBytes(root)
+  await writeFile(path.join(root, 'base.txt'), 'base\r\n')
+  assert.equal(await sourceTreeFingerprint(root), indexTree)
+
+  const content = 'an uncommitted object used only by the fingerprint\n'
+  const objectId = execFileSync('git', ['hash-object', '--stdin'], {
+    cwd: root, input: content, encoding: 'utf8',
+  }).trim()
+  await writeFile(path.join(root, 'draft.txt'), content)
+  assert.notEqual(await sourceTreeFingerprint(root), indexTree)
+  assert.throws(() => execFileSync('git', ['cat-file', '-e', objectId], { cwd: root, stdio: 'pipe' }))
+  assert.deepEqual(await gitIndexBytes(root), indexBytes)
+})
+
+test('source fingerprints retain the repository object format', async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'ptc-review-sha256-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  execFileSync('git', ['init', '--quiet', '--object-format=sha256'], { cwd: root })
+  await writeFile(path.join(root, 'source.txt'), 'source\n')
+  execFileSync('git', ['add', 'source.txt'], { cwd: root })
+  const expected = indexTreeFingerprint(root)
+  assert.equal(expected.length, 64)
+  assert.equal(await sourceTreeFingerprint(root), expected)
+})
+
 test('uses Git symlink identity for source trees', async (t) => {
   const root = await repository(t, 'ptc-review-git-symlink-tree-')
   if (gitConfigValue(root, 'core.symlinks') === 'false') {

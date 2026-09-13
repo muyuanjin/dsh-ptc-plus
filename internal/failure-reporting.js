@@ -1,11 +1,55 @@
 import { diagnostic } from './diagnostic.js'
+import { AsyncLocalStorage } from 'node:async_hooks'
+import { createHash } from 'node:crypto'
+import { moduleRuntimeIntrinsics as internal } from './compiler-intrinsics.js'
 
 export const MAX_ERROR_LOG_BYTES = 4 * 1024
 export const FAILURE_HINT_THRESHOLD = 3
 export const LONG_CELL_CODE_UNITS = 2_000
 const BINDING_FAILURE = Symbol('binding failure')
-const PROGRAM_FAILURES = new WeakMap()
+const PROGRAM_FAILURES = new internal.WeakMap()
 const MAX_CAUSE_CODE_UNITS = 2048
+const exceptionOrigins = new AsyncLocalStorage()
+const runExceptionScope = exceptionOrigins.run.bind(exceptionOrigins)
+const currentExceptionScope = exceptionOrigins.getStore.bind(exceptionOrigins)
+
+/** Propagation facts belong to one execution, never to a user-thrown value. */
+export function createExceptionOriginScope() {
+  const state = { origins: new internal.Map(), sourceFailures: new internal.Set(), open: true }
+  return {
+    run: callback => runExceptionScope(state, callback),
+    origins: error => internal.mapGet(state.origins, error),
+    sourceFailure: error => internal.setHas(state.sourceFailures, error),
+    close() { state.open = false; internal.mapClear(state.origins); internal.setClear(state.sourceFailures) },
+  }
+}
+
+export function recordExceptionOrigin(error, origin, { reset = false, sourceFailure = false } = {}) {
+  const state = currentExceptionScope()
+  if (state?.open !== true) return
+  if (reset) { internal.mapDelete(state.origins, error); internal.setDelete(state.sourceFailures, error) }
+  if (sourceFailure) internal.setAdd(state.sourceFailures, error)
+  if (typeof origin !== 'string') return
+  const origins = internal.mapGet(state.origins, error) ?? []
+  if (!internal.includes(origins, origin)) internal.appendArray(origins, origin)
+  internal.mapSet(state.origins, error, origins)
+}
+
+/** Only a fact belonging to the current original source can bypass its map. */
+export function exceptionOriginPosition(origins, source) {
+  if (!Array.isArray(origins)) return undefined
+  const prefix = `eval:${createHash('sha256').update(source).digest('hex')}:`
+  const lines = source.split(/\r\n|[\n\r\u2028\u2029]/)
+  for (const origin of origins) {
+    if (typeof origin !== 'string' || !origin.startsWith(prefix)) continue
+    const position = /^(\d+):(\d+)$/.exec(origin.slice(prefix.length))
+    if (position === null) continue
+    const line = Number(position[1]), column = Number(position[2])
+    if (Number.isSafeInteger(line) && Number.isSafeInteger(column) && line >= 1
+      && line <= lines.length && column >= 1 && column <= lines[line - 1].length) return { line, column }
+  }
+  return undefined
+}
 
 export function markBindingFailure(error, kind = 'lexical') {
   Object.defineProperty(error, BINDING_FAILURE, { value: kind })
@@ -14,8 +58,8 @@ export function markBindingFailure(error, kind = 'lexical') {
 
 /** Preserve worker-owned failure identity without trusting user exception text. */
 export function programBindingError(kind, message) {
-  const error = new Error(message)
-  PROGRAM_FAILURES.set(error, kind)
+  const error = new internal.Error(message)
+  internal.weakMapSet(PROGRAM_FAILURES, error, kind)
   return error
 }
 
@@ -143,7 +187,7 @@ export function errorDetails(error, filename) {
         message: causeMessage,
       }
   const position = errorPosition(error, filename)
-  const failureOrigin = PROGRAM_FAILURES.get(error)
+  const failureOrigin = internal.weakMapGet(PROGRAM_FAILURES, error)
   return {
     name,
     message,

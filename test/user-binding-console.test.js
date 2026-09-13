@@ -14,6 +14,24 @@ import { UserBindingConsole } from '../internal/user-binding-console.js'
 const options = { cwd: process.cwd(), maxWallMs: 10_000, maxOutputBytes: 64 * 1024, maxOldGenerationSizeMb: 128 }
 const source = 'export const answer: number = 42'
 
+test('continuous console retains helper ownership after source protocol mutation', async t => {
+  const owner = new UserBindingConsole({ ...options, maxOldGenerationSizeMb: 32 })
+  t.after(() => owner.dispose())
+  const source = `const original={get:Map.prototype.get,add:Set.prototype.add,iterator:Array.prototype[Symbol.iterator]};
+    export function change(){Object.prototype.get=()=>7;Map.prototype.get=null;Set.prototype.add=null;Array.prototype[Symbol.iterator]=null}
+    export function restore(){delete Object.prototype.get;Map.prototype.get=original.get;Set.prototype.add=original.add;Array.prototype[Symbol.iterator]=original.iterator}`
+  let environment
+  for (const [code, expected] of [['change();42', '42'], ['const answer=1+1;answer', '2'],
+    ['import {value} from "data:text/javascript,export const value=40";answer+value', '42'],
+    ['restore();answer+value', '42']]) {
+    const result = await owner.run({ source, code, environment })
+    assert.equal(result.error, undefined, result.error)
+    assert.equal(result.output, expected)
+    if (environment !== undefined) assert.equal(result.environment, environment)
+    environment = result.environment
+  }
+})
+
 test('one bounded worker round captures output, budgets bytes and settles exactly once', () => {
   const settlements = []
   const round = createBoundedWorkerRound({
@@ -120,7 +138,9 @@ test('the draft console preserves declarations, await, expression values and ord
     assert.equal((await run(`throw ${value}`)).error, value === '"failed"' ? "'failed'" : value)
   }
   assert.equal((await run('await Promise.resolve(42)')).output, '42')
-  assert.equal((await run('enum Step { Start = 2, Next }; const box = new (class { constructor(public value: number) {} })(Step.Next); box.value')).output, '3')
+  assert.equal((await run('try{const [first=second,second]=[]}catch(error){return error instanceof ReferenceError}')).output, 'true')
+  const typed = await run('enum Step { Start = 2, Next }; const box = new (class { constructor(public value: number) {} })(Step.Next); box.value')
+  assert.equal(typed.output, '3', typed.error)
   assert.equal((await run('box.value += 1')).output, '4')
   assert.equal((await run('"use strict"')).output, "'use strict'")
   assert.equal((await run('// no statement')).output, 'undefined')
@@ -139,6 +159,23 @@ test('the draft console preserves declarations, await, expression values and ord
   const fresh = await owner.run({ environment: replaced.environment, source, code: 'answer' })
   assert.equal(fresh.reset, true)
   assert.equal(fresh.output, '42')
+})
+
+test('draft modules and continuous console cells share binding update semantics', async t => {
+  const owner = new UserBindingConsole(options)
+  t.after(() => owner.dispose())
+  const source = 'export function read() { const value = 1; const value = 2; return value }'
+  let environment
+  const run = async code => {
+    const result = await owner.run({ source, code, environment })
+    environment = result.environment
+    return result
+  }
+  assert.equal((await run('read()')).output, '2')
+  assert.equal((await run('const value = 1; const readValue = () => value')).output, 'undefined')
+  assert.equal((await run('const value = value + 1; value += 1; readValue()')).output, '3')
+  assert.equal((await run('function read(value) { const value = value + 1; return value }; read(4)')).output, '5')
+  assert.equal((await run('read(8)')).output, '9')
 })
 
 test('draft execution validates requests and releases failed, stopped, timed-out and noisy workers', async t => {

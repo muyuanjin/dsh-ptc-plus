@@ -26,6 +26,7 @@ import { createUserBindingDraftProjection } from './internal/user-binding-draft-
 import { createUserBindingsOwner } from './internal/user-bindings-owner.js'
 import { createHostRpc } from './internal/host-rpc.js'
 import { createReplObservationInterest } from './internal/repl-observation-interest.js'
+import { guidancePolicies } from './internal/binding-update-policy.js'
 import * as dshSettings from '@deepseek-ai/dsh-settings'
 
 const INSTALL_CLEANUP = Symbol('ptc-plus install cleanup')
@@ -37,7 +38,10 @@ export const name = 'ptc-plus'
 function configSchemaField(field) {
   const base = field.type === 'boolean'
     ? Schema.boolean().default(field.default)
-    : Schema.number().step(1).min(field.min).max(field.max).default(field.default)
+    : field.type === 'enum'
+      // Keep omission visible until resolveConfig migrates legacy policies.
+      ? Schema.union(field.options.map(option => Schema.const(option)))
+      : Schema.number().step(1).min(field.min).max(field.max).default(field.default)
   return base.description(field.description)
 }
 
@@ -48,15 +52,12 @@ export const Config = Schema.object(Object.fromEntries(
 /** Core services required by the plugin. Optional authoring services are injected on demand. */
 export const inject = ['tools', 'codeRuntime', 'systemPrompt', 'agents', 'llm']
 
-function replGuidance(
-  looseTopLevelRedeclarations,
-  looseTopLevelFunctionClassRedeclarations,
-  durableReplay,
-  autoRewriteImports,
-  autoStripExports,
-  autoSplitRedeclarations,
-  cordisToolsEnabled,
-) {
+function replGuidance({ bindingPolicy, rewritesEnabled, languageSemantics, durableReplay, cordisToolsEnabled }) {
+  const looseTopLevelRedeclarations = bindingPolicy.variableRedeclarations
+  const looseTopLevelFunctionClassRedeclarations = bindingPolicy.functionClassRedeclarations
+  const autoRewriteImports = rewritesEnabled.autoRewriteImports
+  const autoStripExports = rewritesEnabled.autoStripExports
+  const autoSplitRedeclarations = rewritesEnabled.autoSplitRedeclarations
   const variableRedeclaration = looseTopLevelRedeclarations
     ? 'Repeated top-level `const`/`let` declarations replace existing bindings.'
     : 'Repeated top-level variable declarations fail before execution, so reuse existing bindings or place one-off declarations inside a block.'
@@ -73,6 +74,11 @@ function replGuidance(
   const splitSyntax = autoSplitRedeclarations
     ? 'Mixed new/existing top-level destructuring is split automatically while preserving assignment semantics.'
     : 'Mixed new/existing top-level destructuring remains unsupported; separate the declaration from the assignment.'
+  const cellConventions = languageSemantics === 'legacy-v1'
+    ? `Cells are async function bodies; ${moduleSyntax} Use dynamic import or require explicitly when static module syntax is unsupported. ${variableRedeclaration} ${functionClassRedeclaration} ${splitSyntax}`
+    : `Cells support TypeScript, top-level await, return, static import and top-level export. ${languageSemantics === 'stateful-v1'
+      ? 'Declarations and assignments update the same logical binding within its scope, including const, functions, classes and imports. A bare declaration preserves an existing value. A declaration publishes its bindings after its whole pattern initializes; explicit assignments preserve actual partial writes. Imports follow their module until locally overwritten; importing again changes that same binding source. Existing closures observe later updates, while saved values retain their identity.'
+      : 'Redeclaration protection is enabled: existing session names cannot be redeclared, and newly created const and import bindings reject assignment. Other declarations follow native scope rules. Previously writable bindings stay writable.'}`
   const recovery = durableReplay
     ? 'Direct Node/OS access remains live but is not replayed after a kernel restart.'
     : 'Durable replay is disabled for this profile. Bindings remain reusable only in the current process; a new kernel starts empty.'
@@ -84,7 +90,7 @@ function replGuidance(
 After an execution error, earlier statements may have taken effect. Inspect relevant values in a short cell and continue from them; repeat external operations only when their retry rules and current results establish that it is safe. \`edit_run_code\` edits and reruns a complete cell.
 
 ## Cell conventions
-Expressions that are neither returned nor printed produce no output. Keep large inspection results in bindings or reduce them to targeted excerpts: \`tools.read\` is bounded inspection, not a lossless whole-file reader. Cells are async function bodies; ${moduleSyntax} Use dynamic import or require explicitly when static module syntax is unsupported. ${variableRedeclaration} ${functionClassRedeclaration} ${splitSyntax}
+Use \`return\` for an explicit result and \`console\` for logs. Keep large inspection results in bindings or reduce them to targeted excerpts: \`tools.read\` is bounded inspection, not a lossless whole-file reader. ${cellConventions}
 
 ## Available capabilities
 Use \`capabilities.tree()\`, \`capabilities.find()\`, and \`capabilities.inspect()\` for unfamiliar program APIs. Prefer direct current-cell work; reserve \`code.run\` for isolated execution of source held as data.
@@ -306,15 +312,7 @@ function installPtCRuntime(ctx, resolvedConfig, toolSchemasForAgent, sessionId) 
       order: 98,
       text: context => {
         if (ctx.tools.get(RUN_CODE, context?.scope) === undefined) return ''
-        return replGuidance(
-          activeConfig.looseTopLevelRedeclarations,
-          activeConfig.looseTopLevelFunctionClassRedeclarations,
-          activeConfig.durableReplay,
-          activeConfig.autoRewriteImports,
-          activeConfig.autoStripExports,
-          activeConfig.autoSplitRedeclarations,
-          activeConfig.cordisToolsEnabled,
-        )
+        return replGuidance(guidancePolicies(activeConfig))
       },
     }))
     disposers.push(ctx.on('system-prompt/assemble', (assembly, context, next) => (

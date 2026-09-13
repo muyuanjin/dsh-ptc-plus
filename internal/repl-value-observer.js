@@ -3,7 +3,7 @@ import { runInContext } from 'node:vm'
 import { parse } from 'acorn'
 import { randomUUID } from 'node:crypto'
 import { walkAst, SKIP_AST_CHILDREN } from './ast-traversal.js'
-import { bindingNodes } from './binding-pattern.js'
+import { bindingNodes } from './binding-pattern-traversal.js'
 
 const MAX_ENTRIES = 128
 const MAX_TEXT = 512

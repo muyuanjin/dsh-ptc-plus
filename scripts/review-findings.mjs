@@ -63,6 +63,11 @@ function relativeGitPath(from, absolute) {
   return path.relative(from, absolute).split(path.sep).join('/')
 }
 
+function gitConfigPath(value) {
+  return `"${value.replaceAll('\\', '\\\\').replaceAll('"', '\\"')
+    .replaceAll('\n', '\\n').replaceAll('\t', '\\t').replaceAll('\b', '\\b')}"`
+}
+
 function gitPathKey(record) {
   return record.toString('base64')
 }
@@ -260,17 +265,17 @@ function sourceHead(root) {
 
 export async function sourceTreeFingerprint(root) {
   indexTreeFingerprint(root)
-  const skipWorktreePaths = new Set(splitGitRecords(gitBytes(root, [
-    'ls-files', '--cached', '-t', '-z',
-  ])).filter(record => record[0] === 0x53 && record[1] === 0x20)
+  // One tagged inventory retains raw filename bytes and distinguishes cached,
+  // missing, untracked and deliberately unmaterialized worktree entries.
+  const inventory = splitGitRecords(gitBytes(root, [
+    'ls-files', '--cached', '--deleted', '--others', '--exclude-standard', '-t', '-z',
+  ]))
+  const skipWorktreePaths = new Set(inventory.filter(record => record[0] === 0x53)
     .map(record => gitPathKey(record.subarray(2))))
-  const missingPaths = splitGitRecords(gitBytes(root, [
-    'ls-files', '--deleted', '-z',
-  ])).filter(relative => !skipWorktreePaths.has(gitPathKey(relative)))
+  const missingPaths = inventory.filter(record => record[0] === 0x52)
+    .map(record => record.subarray(2)).filter(relative => !skipWorktreePaths.has(gitPathKey(relative)))
   const missingPathKeys = new Set(missingPaths.map(gitPathKey))
-  const sourcePaths = splitGitRecords(gitBytes(root, [
-    'ls-files', '--cached', '--others', '--exclude-standard', '-z',
-  ])).filter(relative => {
+  const sourcePaths = inventory.map(record => record.subarray(2)).filter(relative => {
     const key = gitPathKey(relative)
     return !missingPathKeys.has(key) && !skipWorktreePaths.has(key)
   })
@@ -285,30 +290,36 @@ export async function sourceTreeFingerprint(root) {
   await mkdir(metadataDirectory, { recursive: true })
   const directory = await mkdtemp(path.join(metadataDirectory, 'tree-'))
   const scratchGitDirectory = path.join(directory, 'git')
-  const scratchGitPath = gitRelativePath(root, scratchGitDirectory)
+  const scratchObjects = path.join(scratchGitDirectory, 'objects')
+  // Explicit Git paths also cross command forwarders that omit custom
+  // environment variables. Git owns the scratch index and canonical objects.
   const scratchCommand = (args, options) => git(root, [
-    '--git-dir', scratchGitPath,
+    '--git-dir', gitRelativePath(root, scratchGitDirectory),
     '--work-tree', '.',
     '--literal-pathspecs',
     ...args,
   ], options)
   try {
     const objectFormat = git(root, ['rev-parse', '--show-object-format'])
-    git(root, ['init', '--quiet', '--bare', `--object-format=${objectFormat}`, scratchGitPath])
     const originalConfig = path.resolve(root, git(root, ['rev-parse', '--git-path', 'config']))
-    const configIncludes = [originalConfig]
     const worktreeConfig = path.resolve(root, git(root, ['rev-parse', '--git-path', 'config.worktree']))
+    const configIncludes = [originalConfig]
     if (await exists(worktreeConfig)) configIncludes.push(worktreeConfig)
-    const scratchConfigPath = gitRelativePath(root, path.join(scratchGitDirectory, 'config'))
-    for (const config of configIncludes) {
-      git(root, [
-        'config', '--file', scratchConfigPath, '--add',
-        'include.path', relativeGitPath(scratchGitDirectory, config),
-      ])
-    }
-    git(root, ['config', '--file', scratchConfigPath, '--replace-all', 'core.bare', 'false'])
     const originalObjects = path.resolve(root, git(root, ['rev-parse', '--git-path', 'objects']))
-    const scratchObjects = path.join(scratchGitDirectory, 'objects')
+    // This short-lived object store needs no template, hooks or branch refs.
+    // Write its documented administrative layout once instead of starting Git
+    // repeatedly to initialize and configure it.
+    await mkdir(path.join(scratchObjects, 'info'), { recursive: true })
+    await mkdir(path.join(scratchGitDirectory, 'refs'))
+    await mkdir(path.join(scratchGitDirectory, 'info'))
+    await writeFile(path.join(scratchGitDirectory, 'HEAD'), 'ref: refs/heads/fingerprint\n')
+    await writeFile(path.join(scratchGitDirectory, 'config'),
+      `[core]\nrepositoryformatversion = ${objectFormat === 'sha1' ? 0 : 1}\n`
+      + (objectFormat === 'sha1' ? '' : `[extensions]\nobjectformat = ${objectFormat}\n`)
+      + configIncludes.map(config => `[include]\npath = ${gitConfigPath(relativeGitPath(scratchGitDirectory, config))}\n`).join('')
+      + '[core]\nbare = false\n')
+    const attributes = path.resolve(root, git(root, ['rev-parse', '--git-path', 'info/attributes']))
+    if (await exists(attributes)) await writeFile(path.join(scratchGitDirectory, 'info/attributes'), await readFile(attributes))
     await writeFile(
       path.join(scratchObjects, 'info', 'alternates'),
       `${relativeGitPath(scratchObjects, originalObjects)}\n`,

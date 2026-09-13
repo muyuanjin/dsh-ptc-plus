@@ -1,3 +1,47 @@
+import { TraceMap, decodedMappings } from '@jridgewell/trace-mapping'
+
+export const SOURCE_MAP_RUNS = Symbol.for('ptc.compiler.source-map-runs')
+
+export class SourceMapRuns {
+  constructor(data) { this.data = data; this.length = data.length / 4; this[SOURCE_MAP_RUNS] = true }
+  at(index) {
+    if (index < 0) index += this.length
+    if (index < 0 || index >= this.length) return undefined
+    const offset = index * 4
+    return { generatedStart: this.data[offset], generatedEnd: this.data[offset + 1],
+      originalStart: this.data[offset + 2], originalEnd: this.data[offset + 3] }
+  }
+  *[Symbol.iterator]() { for (let index = 0; index < this.length; index++) yield this.at(index) }
+}
+
+const isSourceMap = value => Array.isArray(value) || value instanceof SourceMapRuns
+
+/** Numeric mapping runs avoid retaining an object for every copied token. */
+export function createSourceMapBuilder() {
+  const blocks = []
+  const blockLength = 4096
+  let size = 0
+  return {
+    push({ generatedStart, generatedEnd, originalStart, originalEnd }) {
+      const values = [generatedStart, generatedEnd, originalStart, originalEnd]
+      if (values.some(value => !Number.isSafeInteger(value) || value < 0 || value > 0xffffffff)) {
+        throw new RangeError('source mapping offsets must fit a source buffer')
+      }
+      if (size % blockLength === 0) blocks.push(new Uint32Array(blockLength))
+      blocks.at(-1).set(values, size % blockLength)
+      size += 4
+    },
+    finish(compact = false) {
+      const data = new Uint32Array(size)
+      for (let index = 0; index < blocks.length; index++) {
+        data.set(blocks[index].subarray(0, Math.min(blockLength, size - index * blockLength)), index * blockLength)
+      }
+      const runs = new SourceMapRuns(data)
+      return !compact && runs.length < 4096 ? [...runs] : runs
+    },
+  }
+}
+
 export function identitySourceMap(length) {
   return [{ generatedStart: 0, generatedEnd: length, originalStart: 0, originalEnd: length }]
 }
@@ -42,16 +86,26 @@ export function createMappedTextBuilder(source, sourceOffset = 0) {
   }
 }
 
-function originalOffsetAt(sourceMap, generatedOffset) {
+function segmentIndexAt(sourceMap, generatedOffset) {
   let low = 0
   let high = sourceMap.length
+  const packed = sourceMap instanceof SourceMapRuns ? sourceMap.data : undefined
   while (low < high) {
     const middle = (low + high) >>> 1
-    if (generatedOffset < sourceMap[middle].generatedEnd) high = middle
+    const end = packed === undefined ? sourceMap.at(middle).generatedEnd : packed[middle * 4 + 1]
+    if (generatedOffset < end) high = middle
     else low = middle + 1
   }
-  const segment = sourceMap[low] ?? sourceMap.at(-1)
+  return low
+}
+
+export function sourceOffsetAt(sourceMap, generatedOffset) {
+  const segment = sourceMap.at(segmentIndexAt(sourceMap, generatedOffset)) ?? sourceMap.at(-1)
   if (segment === undefined) return generatedOffset
+  return segmentOffsetAt(segment, generatedOffset)
+}
+
+function segmentOffsetAt(segment, generatedOffset) {
   const generatedLength = segment.generatedEnd - segment.generatedStart
   const originalLength = segment.originalEnd - segment.originalStart
   const localOffset = Math.max(0, generatedOffset - segment.generatedStart)
@@ -62,51 +116,81 @@ function originalOffsetAt(sourceMap, generatedOffset) {
     + Math.floor((localOffset * (originalLength - 1)) / (generatedLength - 1))
 }
 
+/** A copied interval is already bounded by this segment. Its endpoints need
+ * no additional search through the complete source map. */
+function copiedSegmentRange(segment, start, end) {
+  return { originalStart: segmentOffsetAt(segment, start),
+    originalEnd: segmentOffsetAt(segment, end - 1) + (segment.originalEnd > segment.originalStart ? 1 : 0) }
+}
+
 function mappedOffsetRange(sourceMap, start, end) {
+  const lastOffset = Math.max(start, end - 1)
+  const last = sourceMap.at(segmentIndexAt(sourceMap, lastOffset)) ?? sourceMap.at(-1)
+  const hasSourceCharacter = last === undefined || lastOffset < last.generatedEnd && last.originalEnd > last.originalStart
+  const originalLast = last === undefined ? lastOffset : segmentOffsetAt(last, lastOffset)
   return {
-    originalStart: originalOffsetAt(sourceMap, start),
-    originalEnd: originalOffsetAt(sourceMap, Math.max(start, end - 1)) + (end > start ? 1 : 0),
+    originalStart: start === lastOffset ? originalLast : sourceOffsetAt(sourceMap, start),
+    originalEnd: originalLast + (end > start && hasSourceCharacter ? 1 : 0),
   }
 }
 
-function replacementSegments(sourceMap, start, end, replacementLength, mappings) {
+function* replacementSegments(sourceMap, start, end, replacementLength, mappings) {
   const { originalStart: startOriginal, originalEnd: endOriginal } = mappedOffsetRange(sourceMap, start, end)
-  if (!Array.isArray(mappings) || mappings.length === 0) {
-    return replacementLength === 0 ? [] : [{
+  if (!isSourceMap(mappings) || mappings.length === 0) {
+    if (replacementLength !== 0) yield {
       generatedStart: start,
       generatedEnd: start + replacementLength,
       originalStart: startOriginal,
       originalEnd: endOriginal,
-    }]
+    }
+    return
   }
-  const segments = []
   let cursor = 0
+  let anchorOffset = start
   for (const mapping of mappings) {
     if (mapping.generatedStart > cursor) {
-      segments.push({
+      const nextAnchor = sourceOffsetAt(sourceMap, mapping.originalStart)
+      yield {
         generatedStart: start + cursor,
         generatedEnd: start + mapping.generatedStart,
-        originalStart: startOriginal,
-        originalEnd: endOriginal,
-      })
+        originalStart: nextAnchor,
+        originalEnd: nextAnchor,
+      }
     }
-    const original = mappedOffsetRange(sourceMap, mapping.originalStart, mapping.originalEnd)
-    segments.push({
-      generatedStart: start + mapping.generatedStart,
-      generatedEnd: start + mapping.generatedEnd,
-      ...original,
-    })
+    if (mapping.generatedEnd - mapping.generatedStart === mapping.originalEnd - mapping.originalStart
+      && mapping.originalEnd > mapping.originalStart) {
+      // A verbatim copy retains every previous boundary, including inserted
+      // compiler text. Collapsing its endpoints would interpolate that text
+      // into source positions and corrupt later call/write provenance.
+      for (let index = segmentIndexAt(sourceMap, mapping.originalStart); index < sourceMap.length; index++) {
+        const segment = sourceMap.at(index)
+        if (segment.generatedStart >= mapping.originalEnd) break
+        const from = Math.max(mapping.originalStart, segment.generatedStart)
+        const to = Math.min(mapping.originalEnd, segment.generatedEnd)
+        yield { generatedStart: start + mapping.generatedStart + from - mapping.originalStart,
+          generatedEnd: start + mapping.generatedStart + to - mapping.originalStart,
+          ...copiedSegmentRange(segment, from, to) }
+      }
+    } else {
+      const original = mappedOffsetRange(sourceMap, mapping.originalStart, mapping.originalEnd)
+      yield {
+        generatedStart: start + mapping.generatedStart,
+        generatedEnd: start + mapping.generatedEnd,
+        ...original,
+      }
+    }
     cursor = mapping.generatedEnd
+    anchorOffset = mapping.originalEnd
   }
   if (cursor < replacementLength) {
-    segments.push({
+    const anchor = sourceOffsetAt(sourceMap, anchorOffset)
+    yield {
       generatedStart: start + cursor,
       generatedEnd: start + replacementLength,
-      originalStart: startOriginal,
-      originalEnd: endOriginal,
-    })
+      originalStart: anchor,
+      originalEnd: anchor,
+    }
   }
-  return segments
 }
 
 export function applySourceEdits(code, sourceMap, edits) {
@@ -120,12 +204,12 @@ export function applySourceEdits(code, sourceMap, edits) {
     if (!Number.isSafeInteger(item.start) || !Number.isSafeInteger(item.end)
       || item.start < 0 || item.end < item.start || item.end > code.length
       || item.start < previousEnd || typeof text !== 'string'
-      || (item.mappings !== undefined && !Array.isArray(item.mappings))
+      || (item.mappings !== undefined && !isSourceMap(item.mappings))
       || (item.start === item.end && previous?.start === item.start && previous.end === item.end)) {
       throw new RangeError('source edits must be bounded, ordered, and non-overlapping')
     }
-    const itemMappings = [...(item.mappings ?? [])]
-      .sort((left, right) => left.generatedStart - right.generatedStart)
+    const itemMappings = item.mappings instanceof SourceMapRuns ? item.mappings
+      : [...(item.mappings ?? [])].sort((left, right) => left.generatedStart - right.generatedStart)
     let mappingEnd = 0
     for (const mapping of itemMappings) {
       if (!Number.isSafeInteger(mapping.generatedStart) || !Number.isSafeInteger(mapping.generatedEnd)
@@ -143,21 +227,21 @@ export function applySourceEdits(code, sourceMap, edits) {
   }
 
   const chunks = []
-  const mappings = []
+  const mappings = createSourceMapBuilder()
   let generatedOffset = 0
   let sourceOffset = 0
   let segmentIndex = 0
   const appendUnchanged = end => {
     if (end <= sourceOffset) return
     chunks.push(code.slice(sourceOffset, end))
-    while (segmentIndex < sourceMap.length && sourceMap[segmentIndex].generatedEnd <= sourceOffset) segmentIndex += 1
+    while (segmentIndex < sourceMap.length && sourceMap.at(segmentIndex).generatedEnd <= sourceOffset) segmentIndex += 1
     for (let index = segmentIndex; index < sourceMap.length; index += 1) {
-      const segment = sourceMap[index]
+      const segment = sourceMap.at(index)
       if (segment.generatedStart >= end) break
       const start = Math.max(sourceOffset, segment.generatedStart)
       const stop = Math.min(end, segment.generatedEnd)
       if (stop <= start) continue
-      const { originalStart, originalEnd } = mappedOffsetRange(sourceMap, start, stop)
+      const { originalStart, originalEnd } = copiedSegmentRange(segment, start, stop)
       mappings.push({
         generatedStart: generatedOffset + start - sourceOffset,
         generatedEnd: generatedOffset + stop - sourceOffset,
@@ -173,57 +257,117 @@ export function applySourceEdits(code, sourceMap, edits) {
     appendUnchanged(item.start)
     const { text } = item
     chunks.push(text)
-    mappings.push(...replacementSegments(sourceMap, item.start, item.end, text.length, item.mappings)
-      .map(segment => ({ ...segment, generatedStart: segment.generatedStart - item.start + generatedOffset,
-        generatedEnd: segment.generatedEnd - item.start + generatedOffset })))
+    for (const segment of replacementSegments(sourceMap, item.start, item.end, text.length, item.mappings)) {
+      mappings.push({ ...segment, generatedStart: segment.generatedStart - item.start + generatedOffset,
+        generatedEnd: segment.generatedEnd - item.start + generatedOffset })
+    }
     generatedOffset += text.length
     sourceOffset = item.end
   }
   appendUnchanged(code.length)
-  return { code: chunks.join(''), sourceMap: mappings }
+  return { code: chunks.join(''), sourceMap: mappings.finish() }
 }
 
 const LINE_TERMINATORS = /\r\n|[\n\r\u2028\u2029]/gu
 
-function lineStartOffset(source, line) {
-  if (line === 1) return 0
-  let current = 1
-  for (const match of source.matchAll(LINE_TERMINATORS)) {
-    current += 1
-    if (current === line) return match.index + match[0].length
-  }
-  return source.length
+/** JavaScript source coordinates count CRLF as one line boundary. */
+export function sourceLineStarts(source) {
+  const starts = [0]
+  for (const match of source.matchAll(LINE_TERMINATORS)) starts.push(match.index + match[0].length)
+  return starts
 }
 
-function positionAtOffset(source, offset) {
-  let line = 1
-  let start = 0
-  for (const match of source.slice(0, offset).matchAll(LINE_TERMINATORS)) {
-    line += 1
-    start = match.index + match[0].length
+/** Visit maintained emitter coordinates without re-encoding available raw maps.
+ * All line numbers at this boundary are zero-based; absent origins stay absent. */
+export function visitSourceMappings(transformed, visit) {
+  const raw = transformed.rawMappings
+  if (raw !== undefined) {
+    for (const item of raw) visit(item.generated.line - 1, item.generated.column,
+      item.original === undefined ? undefined : item.original.line - 1, item.original?.column)
+    return
   }
-  return { line, column: offset - start + 1 }
+  const nativeMap = new TraceMap(typeof transformed.map === 'string' ? JSON.parse(transformed.map) : transformed.map)
+  for (const [line, entries] of decodedMappings(nativeMap).entries()) {
+    for (const entry of entries) visit(line, entry[0], entry[2], entry[3])
+  }
 }
 
-export function mapSourcePosition(position, generatedSource, originalSource, sourceMap) {
+/** Compose a parser's line/column map with the existing source-offset map. */
+export function mappedSourceTransform(code, sourceMap, transformed) {
+  const starts = sourceLineStarts(code)
+  const generatedStarts = sourceLineStarts(transformed.code)
+  const mappings = createSourceMapBuilder()
+  let previous
+  visitSourceMappings(transformed, (line, column, originalLine, originalColumn) => {
+    const generatedStart = Math.min(transformed.code.length, generatedStarts[line] + column)
+    if (previous !== undefined) {
+      previous.generatedEnd = generatedStart
+      mappings.push(previous)
+    }
+    if (starts[originalLine] === undefined) {
+      previous = undefined
+      return
+    }
+    const originalStart = Math.min(code.length, starts[originalLine] + originalColumn)
+    previous = { generatedStart, generatedEnd: transformed.code.length,
+      originalStart, originalEnd: Math.min(code.length, originalStart + 1) }
+  })
+  if (previous !== undefined) mappings.push(previous)
+  return applySourceEdits(code, sourceMap, [{ start: 0, end: code.length, text: transformed.code, mappings: mappings.finish(true) }])
+}
+
+function lineStartOffset(source, line, starts) {
+  return starts[line - 1] ?? source.length
+}
+
+function positionAtOffset(source, offset, starts) {
+  let low = 0, high = starts.length
+  while (low < high) {
+    const middle = (low + high) >>> 1
+    if (starts[middle] <= offset) low = middle + 1
+    else high = middle
+  }
+  const line = low - 1
+  return { line: line + 1, column: offset - starts[line] + 1 }
+}
+
+const coordinateIndexes = new WeakMap()
+function coordinateIndex(sourceMap, generatedSource, originalSource) {
+  let index = coordinateIndexes.get(sourceMap)
+  if (index?.generatedSource !== generatedSource || index.originalSource !== originalSource) {
+    index = { generatedSource, originalSource, generatedStarts: sourceLineStarts(generatedSource),
+      originalStarts: sourceLineStarts(originalSource) }
+    coordinateIndexes.set(sourceMap, index)
+  }
+  return index
+}
+
+export function sourceTextAtSpan(source, span, starts = sourceLineStarts(source)) {
+  return source.slice(lineStartOffset(source, span.line, starts) + span.column - 1,
+    lineStartOffset(source, span.end.line, starts) + span.end.column - 1)
+}
+
+export function mapSourcePosition(position, generatedSource, originalSource, sourceMap, coordinates) {
   if (position === undefined || sourceMap === undefined) return position
   if (!Number.isSafeInteger(position.line) || position.line < 1
     || !Number.isSafeInteger(position.column) || position.column < 1) return position
-  const lineStart = lineStartOffset(generatedSource, position.line)
-  const mappedOffset = originalOffsetAt(sourceMap, lineStart + position.column - 1)
-  return positionAtOffset(originalSource, mappedOffset)
+  const index = coordinates ?? coordinateIndex(sourceMap, generatedSource, originalSource)
+  const lineStart = lineStartOffset(generatedSource, position.line, index.generatedStarts)
+  const mappedOffset = sourceOffsetAt(sourceMap, lineStart + position.column - 1)
+  return positionAtOffset(originalSource, mappedOffset, index.originalStarts)
 }
 
 /** Map a complete generated-source span into original cell coordinates. */
-export function mapSourceSpan(span, generatedSource, originalSource, sourceMap) {
+export function mapSourceSpan(span, generatedSource, originalSource, sourceMap, coordinates) {
   if (span === undefined) return undefined
-  const start = mapSourcePosition(span, generatedSource, originalSource, sourceMap)
+  const start = mapSourcePosition(span, generatedSource, originalSource, sourceMap, coordinates)
   if (span.end === undefined) return start === span ? span : start
   if (!Number.isSafeInteger(span.end.line) || span.end.line < 1
     || !Number.isSafeInteger(span.end.column) || span.end.column < 1) {
     return { ...start, end: span.end }
   }
-  const generatedEnd = lineStartOffset(generatedSource, span.end.line) + span.end.column - 1
+  const index = coordinates ?? coordinateIndex(sourceMap, generatedSource, originalSource)
+  const generatedEnd = lineStartOffset(generatedSource, span.end.line, index.generatedStarts) + span.end.column - 1
   const original = mappedOffsetRange(sourceMap, Math.max(0, generatedEnd - 1), generatedEnd)
-  return { ...start, end: positionAtOffset(originalSource, original.originalEnd) }
+  return { ...start, end: positionAtOffset(originalSource, original.originalEnd, index.originalStarts) }
 }

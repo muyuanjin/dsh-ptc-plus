@@ -30,7 +30,8 @@ PTC Plus 的正确承诺是：
 
 ```ts
 {
-  version: 8,
+  version: 9,
+  languageSemantics: "legacy-v1" | "stateful-v1" | "protected-v1",
   bindingPolicy: {
     variableRedeclarations: boolean,
     functionClassRedeclarations: boolean
@@ -66,9 +67,10 @@ PTC Plus 的正确承诺是：
 字段含义：
 
 - `durable`：创建可重放 node，推进 `durableHead`；
+- `languageSemantics`：固定完整语言代际；新统一策略选择 `stateful-v1` 或 `protected-v1`，显式旧设置兼容态与 v1–v8 历史使用 `legacy-v1`。冷重放从该字段选择编译路径，不用当前配置替换历史声明、闭包和初始化语义；
 - `bindingPolicy`：记录该 cell 实际采用的变量重声明和 function/class 重声明语义；冷重放读取每个 node 的完整记录值，并用它重建 binding 可写性，不读取恢复时的 profile 配置；
 - `rewritePolicy`：记录该 cell 解析和 lowering 时使用的三个 AST rewrite 开关；冷重放读取每个 node 的记录值，不读取恢复时的 profile 配置；
-- `moduleSemantics`：记录不可由 profile 选择的源码 lowering 代际；当前 cell 固定写入 `live-readonly` 与 `statement-safe`，冷重放按记录值恢复 `export default` 的公开 binding 模型，以及模块引用写入相对前一语句的边界；
+- `moduleSemantics`：保留旧模块 lowering 的独立代际；`legacy-v1` 按记录值恢复 default binding 与模块引用写入的语句边界。当前 live cell 写入 `live-readonly` 与 `statement-safe`，但新语言的可写 alias、default 关联和提交规则由 `languageSemantics` 决定，不能仅凭历史字段中的 `readonly` 推断当前 binding 不可写；
 - `userBindingsFingerprint`：`null` 明确表示该 cell 没有 Global User Binding 快照；SHA-256 值要求最终 result 同时携带 fingerprint 一致的私有快照，缺失或不一致时形成 unknown boundary；
 - `userBindingsReusePolicy`：记录全局绑定模块的复用代际；新 cell 写入 `implementation-v1`，按执行输入复用模块，历史 `fingerprint-v1` 则按完整条目指纹复用，保留仅修改说明或顶层显示名称时发生的初始化；
 - `userBindingsShadowPolicy`：记录该 cell 的 session-local 覆盖粒度；新 cell 写入 `per-name`，只有同名 session-local binding 覆盖对应全局名称，同条目的其他名称继续激活；v1-v7 迁移的历史 node 写入 `whole-entry`，保留整条来源条目退出后续全局激活的语义；该粒度与 `userBindingsReusePolicy` 相互独立；
@@ -90,7 +92,7 @@ SessionRuntime 创建 kernel 时完全忽略历史 nodes、head、checkpoints �
 
 journal、diagnostic、source、cause、call、operation、completion 和 completion error 都使用封闭字段集合；未知、symbol 或非枚举自有字段会使 journal 无效。capability-call `args`/`value` 与 return completion `value` 都是封闭、规范化的 `ptc-value-graph/v1` envelope。诊断结构、source frame 依赖和稳定代码见[架构说明](architecture.md#journal-与恢复)。
 
-当前实现只写入 `version: 8` schema。v1-v7 作为封闭 predecessor 输入规范化为 v8：v1-v3 的旧 `bindingMode` 精确映射到 `bindingPolicy.variableRedeclarations`，而 `functionClassRedeclarations` 固定为 `false`，因为旧 pipeline 不具备该语义；`moduleSemantics.defaultExportBinding` 固定迁移为 `legacy-variable`，使 loose 历史保留旧的可写生成 binding、strict 历史保留旧的 const 行为；v1-v6 的 `moduleSemantics.importExpressionBoundary` 固定迁移为 `legacy`，使历史写入沿用其记录时的语句 lowering，v7 保留自身记录的边界代际。v1 仍使用三个 rewrite 开关全关的历史默认值，并只在 session log 唯一证明 call identity 时迁移字符串 confirmation；v2/v3 保留自身 `rewritePolicy`。v4/v5 保留已有 binding/rewrite/module 语义；v6 与 v7 保留其记录的 `userBindingsReusePolicy`。v1-v4 的 `userBindingsFingerprint` 固定为 `null`，v5 及之后的代际保留自身记录的快照指纹；v1-v5 的 `userBindingsReusePolicy` 固定为 `fingerprint-v1`。v1-v7 的 `userBindingsShadowPolicy` 固定迁移为 `whole-entry`，`userBindingNames` 固定为 `null`，因此历史 node 继续按整条条目退出，只有 v8 起的 cell 使用 `per-name` 名称证据。无法表示为非负 event sequence 的 confirmation 必须形成 unknown boundary 并触发状态收缩。包括 `bindingPolicy`、`rewritePolicy`、`moduleSemantics`、`userBindingsFingerprint`、`userBindingsReusePolicy`、`userBindingsShadowPolicy`、`userBindingNames`、`diagnostics` 在内的当前必需字段缺失或策略未知时 journal 必须失效，否则会削弱最终持久值与 tentative journal 的严格一致性确认；失效 journal 不证明旧 binding，但也不单独成为后续当前调用的 availability gate。profile 后续切换任一 binding 或 AST rewrite 开关只影响新 cell，历史 node 始终按自身记录的 policy 和 module semantics 重放。新旧全局绑定复用策略与覆盖粒度可共存于同一历史，重复规范化不能把旧策略或旧粒度升级为当前值；没有返回值的 completion 不能证明模块内部状态相等。
+当前实现只写入 `version: 9` schema。v9 必须携带 `languageSemantics`，其值为 `legacy-v1`、`stateful-v1` 或 `protected-v1`；v1–v8 固定迁移为 `legacy-v1`，由冻结历史编译器重放，不能因当前配置或新 lowering 改变隐藏状态（[ADR 0025](adr/0025-use-versioned-logical-binding-identities.md)）。v1-v8 作为封闭 predecessor 输入规范化为 v9：v1-v3 的旧 `bindingMode` 精确映射到 `bindingPolicy.variableRedeclarations`，而 `functionClassRedeclarations` 固定为 `false`，因为旧 pipeline 不具备该语义；`moduleSemantics.defaultExportBinding` 固定迁移为 `legacy-variable`，使 loose 历史保留旧的可写生成 binding、strict 历史保留旧的 const 行为；v1-v6 的 `moduleSemantics.importExpressionBoundary` 固定迁移为 `legacy`，使历史写入沿用其记录时的语句 lowering，v7 保留自身记录的边界代际。v1 仍使用三个 rewrite 开关全关的历史默认值，并只在 session log 唯一证明 call identity 时迁移字符串 confirmation；v2/v3 保留自身 `rewritePolicy`。v4/v5 保留已有 binding/rewrite/module 语义；v6 与 v7 保留其记录的 `userBindingsReusePolicy`。v1-v4 的 `userBindingsFingerprint` 固定为 `null`，v5 及之后的代际保留自身记录的快照指纹；v1-v5 的 `userBindingsReusePolicy` 固定为 `fingerprint-v1`。v1-v7 的 `userBindingsShadowPolicy` 固定迁移为 `whole-entry`，`userBindingNames` 固定为 `null`，因此历史 node 继续按整条条目退出，只有 v8 起的 cell 使用 `per-name` 名称证据。无法表示为非负 event sequence 的 confirmation 必须形成 unknown boundary 并触发状态收缩。包括 `languageSemantics`、`bindingPolicy`、`rewritePolicy`、`moduleSemantics`、`userBindingsFingerprint`、`userBindingsReusePolicy`、`userBindingsShadowPolicy`、`userBindingNames`、`diagnostics` 在内的当前必需字段缺失或策略未知时 journal 必须失效，否则会削弱最终持久值与 tentative journal 的严格一致性确认；失效 journal 不证明旧 binding，但也不单独成为后续当前调用的 availability gate。profile 后续切换任一 binding 或 AST rewrite 开关只影响新 cell，历史 node 始终按自身记录的 policy 和 module semantics 重放。新旧全局绑定复用策略与覆盖粒度可共存于同一历史，重复规范化不能把旧策略或旧粒度升级为当前值；没有返回值的 completion 不能证明模块内部状态相等。
 
 ## Capability Call Transcript
 
@@ -261,6 +263,8 @@ live kernel 首次进入 volatile 只更新 journal 的 `status` / `volatileReas
 - PTC Value V1 输出超出支持域或预算时使用 `PTC-O001` 与 `partially-applied`，因为返回前的 binding/mutation 已经执行；`undefined`、special number、BigInt、hole、shared identity 和 cycle 属于受支持值，不要求模型为了 transport 改写；
 - 冷恢复丢弃不可信后缀使用 `rolled-back`；
 - 只有已知外部 dispatch 发生但 completion 无法确定时才使用 `unknown` 并附 `dispatchState: "unknown"`，插件不得在宿主未提供该事实时猜测。
+
+`PTC-N001` collision 诊断另带 `collisions`：每条记录为 `{name, kind, reason, start, end}`。`reason` 由判定冲突的编译器 owner 记录（`reserved-program-binding-not-shadowable`、`protected-root-redeclaration`、`import-binding-redeclaration`、`redeclaration-splitting-disabled`，以及既有的重声明策略值），渲染只消费已记录的原因，不从请求描述符重新推导保留名或保护策略。
 
 模型可见文本与 `diagnostics` 必须由同一个结构确定性生成。恢复不通过解析既有 message 重建诊断；session export/import 和 replay 均保留结构化 code、cause、dispatch state 与 state effect。源码 frame 使用 `@babel/code-frame` 的无色投影。
 

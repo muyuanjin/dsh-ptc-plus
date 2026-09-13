@@ -23,7 +23,7 @@ const WINDOWS_ENVIRONMENT_NAMES = new Map([
   ['userprofile', 'USERPROFILE'],
   ['windir', 'windir'],
 ])
-const HOST_ONLY_ENVIRONMENT_NAMES = new Set(['node_test_context', 'node_v8_coverage'])
+const HOST_ONLY_ENVIRONMENT_NAMES = new Set(['node_test_context', 'node_v8_coverage', 'dsh_ptc_compiler_bytecode'])
 
 /** Project the host environment once without losing Windows case variants. */
 export function normalizeWorkerEnvironment(source, platform = process.platform) {
@@ -48,11 +48,12 @@ export function normalizeWorkerEnvironment(source, platform = process.platform) 
 
 /** Owns one session kernel's worker process, private port, and scratch directory. */
 export class WorkerClient {
-  constructor({ workerUrl, cwd, onMessage, onFailure }) {
+  constructor({ workerUrl, cwd, onMessage, onFailure, compilerCache }) {
     this.workerUrl = workerUrl
     this.cwd = cwd
     this.onMessage = onMessage
     this.onFailure = onFailure
+    this.compilerCache = compilerCache
     this.worker = undefined
     this.workerLimit = undefined
     this.workerReady = undefined
@@ -109,7 +110,7 @@ export class WorkerClient {
           TMPDIR: scratchDirectory,
         },
         execArgv: [],
-        workerData: this.cwd === undefined ? {} : { cwd: this.cwd },
+        workerData: { cwd: this.cwd, compilerCache: this.compilerCache?.() },
         resourceLimits: { maxOldGenerationSizeMb: this.workerLimit },
         stdout: true,
         stderr: true,

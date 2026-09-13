@@ -27,6 +27,12 @@ function assertField(field, value) {
     }
     return
   }
+  if (field.type === 'enum') {
+    if (!field.options.includes(value)) {
+      throw new TypeError(`ptc-plus: ${field.key} must be one of ${field.options.join(', ')}`)
+    }
+    return
+  }
   assertIntegerField(field, value)
 }
 
@@ -40,6 +46,22 @@ function assertField(field, value) {
 export function resolveConfig(config = {}) {
   const resolved = { ...CONFIG_DEFAULTS, ...config }
   for (const field of CONFIG_FIELDS) assertField(field, resolved[field.key])
+  // Migrate complete old policies; mixed choices retain their explicit
+  // compatibility state until the user selects the unified language.
+  const legacyKeys = [
+    'looseTopLevelRedeclarations', 'looseTopLevelFunctionClassRedeclarations',
+    'autoRewriteImports', 'autoStripExports', 'autoSplitRedeclarations',
+  ]
+  if (!Object.hasOwn(config, 'bindingUpdates')
+    && legacyKeys.some(key => Object.hasOwn(config, key))) {
+    if (legacyKeys.every(key => resolved[key] === true)) {
+      resolved.bindingUpdates = 'stateful'
+    } else if (legacyKeys.slice(0, 2).every(key => resolved[key] === false)
+      && resolved.autoSplitRedeclarations === false
+      && resolved.autoRewriteImports && resolved.autoStripExports) {
+      resolved.bindingUpdates = 'protected'
+    } else resolved.legacyBindingSettings = true
+  }
   return resolved
 }
 

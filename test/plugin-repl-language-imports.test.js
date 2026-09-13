@@ -4,7 +4,199 @@ import { access, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
-import { appendRunCodeEvents, fixture, ptcAgent } from './plugin-fixture.js'
+import { appendRunCodeEvents, fixture as pluginFixture, ptcAgent } from './plugin-fixture.js'
+
+const fixture = (config = {}, ...args) => pluginFixture({ ...config, legacyBindingSettings: config.bindingUpdates === undefined }, ...args)
+
+test('updates imported and control-flow var names without cross-cell lexical collisions', async (t) => {
+  const state = fixture({ bindingUpdates: 'stateful' })
+  t.after(() => state.dispose())
+
+  const repeatedImport = 'repeated-import-update'
+  assert.equal((await state.run(repeatedImport,
+    "import { basename as item } from 'node:path'; return item('/a/b')")).value, 'b')
+  assert.equal((await state.run(repeatedImport,
+    "import { basename as item } from 'node:path'; return item('/a/c')")).value, 'c')
+
+  const varUpdate = 'control-flow-var-update'
+  assert.equal((await state.run(varUpdate,
+    'if (true) { var item = 1 }; return item')).value, 1)
+  assert.equal((await state.run(varUpdate,
+    'let item = 2; return item')).value, 2)
+  assert.equal((await state.run(varUpdate,
+    'if (true) { var item = 3 }; return item')).value, 3)
+})
+
+test('replaces an import alias with a function that later cells resolve locally', async (t) => {
+  const state = fixture({ bindingUpdates: 'stateful' })
+  t.after(() => state.dispose())
+
+  const sessionId = 'import-function-replacement'
+  const first = await state.run(sessionId,
+    "import { basename as item } from 'node:path'; const old = () => item('/a/b'); return [item('/c/d'), old()]")
+  assert.deepEqual(first.value, ['d', 'b'])
+
+  const replaced = await state.run(sessionId,
+    'function item(value) { return `fn:${value}` }; return [item("x"), old()]')
+  assert.deepEqual(replaced.value, ['fn:x', 'fn:/a/b'])
+
+  // Later cells read the local function instead of the retired alias.
+  assert.deepEqual((await state.run(sessionId, 'return [item("y"), old()]')).value, ['fn:y', 'fn:/a/b'])
+
+  // A second replacement updates the identity read by older closures.
+  assert.equal((await state.run(sessionId, 'function item(value) { return `fn2:${value}` }; return item("z")')).value, 'fn2:z')
+  assert.deepEqual((await state.run(sessionId, 'return [item("w"), old()]')).value, ['fn2:w', 'fn2:/a/b'])
+})
+
+test('replaces an import alias with a class that later cells construct', async (t) => {
+  const state = fixture({ bindingUpdates: 'stateful' })
+  t.after(() => state.dispose())
+
+  const sessionId = 'import-class-replacement'
+  assert.equal((await state.run(sessionId,
+    "import { basename as item } from 'node:path'; const old = () => item; return old()('/a/b')")).value, 'b')
+  assert.deepEqual((await state.run(sessionId,
+    'class item { constructor(value) { this.value = value } }; return [new item(3).value, old() === item]')).value, [3, true])
+  assert.equal((await state.run(sessionId, 'return new item(4).value')).value, 4)
+  assert.equal((await state.run(sessionId,
+    "class item { m() { return 'base' } }; class child extends item {}; return new child().m()")).value, 'base')
+})
+
+test('keeps declared function forms and their identity through alias replacement', async (t) => {
+  const state = fixture({ bindingUpdates: 'stateful' })
+  t.after(() => state.dispose())
+
+  const recursive = 'import-identity-recursive'
+  await state.run(recursive, "import { basename as item } from 'node:path'; return item('/a/b')")
+  assert.deepEqual((await state.run(recursive,
+    'function item(n) { return n <= 0 ? 0 : n + item(n - 1) }; return [item(3), item.name, item.length]')).value,
+  [6, 'item', 1])
+
+  const generator = 'import-identity-generator'
+  await state.run(generator, "import { basename as item } from 'node:path'; return item('/a/b')")
+  assert.deepEqual((await state.run(generator, "function* item() { yield 'gen' }; return [...item()]")).value, ['gen'])
+  assert.deepEqual((await state.run(generator, 'return [...item()]')).value, ['gen'])
+
+  const asyncGenerator = 'import-identity-async-generator'
+  await state.run(asyncGenerator, "import { basename as item } from 'node:path'; return item('/a/b')")
+  assert.deepEqual((await state.run(asyncGenerator,
+    "async function* item() { yield 'a' }; const out = []; for await (const value of item()) out.push(value); return out")).value, ['a'])
+
+  const asyncFunction = 'import-identity-async-function'
+  await state.run(asyncFunction, "import { basename as item } from 'node:path'; return item('/a/b')")
+  assert.equal((await state.run(asyncFunction, "async function item() { return 'async' }; return await item()")).value, 'async')
+})
+
+test('retires an alias only when the replacing declaration actually runs', async (t) => {
+  const state = fixture({ bindingUpdates: 'stateful' })
+  t.after(() => state.dispose())
+
+  const thrown = 'import-replacement-throws'
+  await state.run(thrown, "import { basename as item } from 'node:path'; return item('/a/b')")
+  const failed = await state.run(thrown, "throw new Error('boom'); function item() { return 'local' }")
+  assert.equal(failed.error.kind, 'exception')
+  assert.equal((await state.run(thrown, "return item('/a/c')")).value, 'c')
+
+  const returned = 'import-replacement-returns-early'
+  await state.run(returned, "import { basename as item } from 'node:path'; return item('/a/b')")
+  assert.equal((await state.run(returned, "if (true) return 1; function item() { return 'local' }")).value, 1)
+  assert.equal((await state.run(returned, "return item('/a/c')")).value, 'c')
+
+  // A replacement after the restored alias behaves like a first replacement.
+  assert.equal((await state.run(returned, "function item() { return 'later' }; return item()")).value, 'later')
+  assert.equal((await state.run(returned, 'return item()')).value, 'later')
+})
+
+test('keeps imported alias identity across re-imports and namespace aliases', async (t) => {
+  const state = fixture({ bindingUpdates: 'stateful' })
+  t.after(() => state.dispose())
+
+  const reimported = 'import-replacement-then-reimport'
+  await state.run(reimported, "import { basename as item } from 'node:path'; return item('/a/b')")
+  assert.equal((await state.run(reimported, "function item() { return 'local' }; return item()")).value, 'local')
+  assert.equal((await state.run(reimported, "import { basename as item } from 'node:path'; return item('/a/c')")).value, 'c')
+  assert.equal((await state.run(reimported, "return item('/a/d')")).value, 'd')
+
+  const namespace = 'import-namespace-replacement'
+  assert.equal((await state.run(namespace,
+    "import * as item from 'node:path'; return item.basename('/a/b')")).value, 'b')
+  assert.equal((await state.run(namespace, "function item() { return 'local' }; return item()")).value, 'local')
+  assert.equal((await state.run(namespace, 'return item()')).value, 'local')
+})
+
+test('keeps default export exposure working across an alias replacement', async (t) => {
+  const state = fixture({ bindingUpdates: 'stateful' })
+  t.after(() => state.dispose())
+  const sessionId = 'import-replacement-default-export'
+  await state.run(sessionId, "import { basename as item } from 'node:path'; return item('/a/b')")
+  assert.equal((await state.run(sessionId,
+    "function item() { return 'local' }; export default item; return __default()")).value, 'local')
+})
+
+test('keeps bare declarations of imported aliases live without creating phantom locals', async (t) => {
+  const state = fixture({ bindingUpdates: 'stateful' })
+  t.after(() => state.dispose())
+  const sessionId = 'bare-import-preserves-alias'
+  assert.equal((await state.run(sessionId,
+    "import { basename as item } from 'node:path'; const item; return item('/a/b')")).value, 'b')
+  assert.equal((await state.run(sessionId, 'return item("/a/c")')).value, 'c')
+})
+
+test('allows default export and bare const updates in stateful cells', async (t) => {
+  const state = fixture({ bindingUpdates: 'stateful' })
+  t.after(() => state.dispose())
+
+  const sessionId = 'default-and-bare-const-update'
+  assert.equal((await state.run(sessionId, 'let __default = 1; return __default')).value, 1)
+  assert.equal((await state.run(sessionId, 'export default 2; return __default')).value, 2)
+  const bareSession = 'bare-const-update'
+  assert.equal((await state.run(bareSession, 'const value = 3; return value')).value, 3)
+  assert.equal((await state.run(bareSession, 'const value; return value')).value, 3)
+})
+
+test('replaces aliases independently across default, named, and synthetic forms', async (t) => {
+  const state = fixture({ bindingUpdates: 'stateful' })
+  t.after(() => state.dispose())
+
+  const pair = 'import-replacement-two-aliases'
+  assert.deepEqual((await state.run(pair,
+    "import { basename as a, sep as b } from 'node:path'; const readB = () => b; return [a('/x/y'), b]")).value,
+  ['y', '\\'])
+  assert.deepEqual((await state.run(pair, "function a() { return 'A1' }; return [a(), b, readB()]")).value,
+    ['A1', '\\', '\\'])
+  // Replacing one alias leaves its sibling following the module.
+  assert.deepEqual((await state.run(pair, 'return [a(), b]')).value, ['A1', '\\'])
+  assert.deepEqual((await state.run(pair, "function b() { return 'B1' }; return [a(), b(), readB() === b]")).value,
+    ['A1', 'B1', true])
+  assert.deepEqual((await state.run(pair, 'return [a(), b()]')).value, ['A1', 'B1'])
+
+  const mixed = 'import-replacement-default-and-named'
+  assert.deepEqual((await state.run(mixed,
+    "import def, { basename as item } from 'node:path'; return [typeof def, item('/x/y')]")).value, ['object', 'y'])
+  assert.deepEqual((await state.run(mixed, "function item() { return 'named' }; return [typeof def, item()]")).value,
+    ['object', 'named'])
+
+  const defaultOnly = 'import-replacement-default-only'
+  assert.equal((await state.run(defaultOnly, "import item from 'node:path'; return typeof item")).value, 'object')
+  assert.equal((await state.run(defaultOnly, "function item() { return 'replaced' }; return item()")).value, 'replaced')
+
+  const synthetic = 'import-replacement-synthetic-default'
+  assert.equal((await state.run(synthetic, 'export default 1; return __default')).value, 1)
+  assert.equal((await state.run(synthetic,
+    'class __default { static value() { return 2 } }; return __default.value()')).value, 2)
+  assert.equal((await state.run(synthetic, 'return __default.value()')).value, 2)
+})
+
+test('keeps compiler namespace captures independent from source-level names', async (t) => {
+  const state = fixture({ bindingUpdates: 'stateful' })
+  t.after(() => state.dispose())
+  const sessionId = 'compiler-namespace-reserved'
+  await state.run(sessionId, "import { basename as item } from 'node:path'; return item('/x/y')")
+  const collision = await state.run(sessionId,
+    'function __dsh_ptc_import_namespace_0__() { return 1 }; return __dsh_ptc_import_namespace_0__()')
+  assert.equal(collision.value, 1)
+  assert.equal((await state.run(sessionId, "return item('/x/z')")).value, 'z')
+})
 
 test('preserves statement boundaries for anonymous default declarations', async (t) => {
   const state = fixture()
@@ -368,7 +560,9 @@ test('rejects read-only alias declarations before execution under the strict var
     "executed += 1\nconst imported = 'local'",
   )
   assert.equal(importedCollision.error.kind, 'exception')
-  assert.match(importedCollision.error.message, /PTC-N001.*immutable/s)
+  // An import alias is not a writable worker binding, so a redeclaration of it
+  // is refused as a top-level binding conflict before anything runs.
+  assert.match(importedCollision.error.message, /PTC-N001[^]*existing binding is immutable/)
   assert.deepEqual(
     (await state.run(sessionId, 'return [executed, typeof imported]')).value,
     [0, 'string'],
@@ -380,7 +574,7 @@ test('rejects read-only alias declarations before execution under the strict var
     'executed += 1\nconst __default = 2',
   )
   assert.equal(defaultCollision.error.kind, 'exception')
-  assert.match(defaultCollision.error.message, /PTC-N001.*immutable/s)
+  assert.match(defaultCollision.error.message, /PTC-N001[^]*existing binding is immutable/)
   assert.deepEqual(
     (await state.run(sessionId, 'return [executed, __default]')).value,
     [0, 1],

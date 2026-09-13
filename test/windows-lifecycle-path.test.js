@@ -15,22 +15,28 @@ import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
+import { uncoveredEnvironment } from './subprocess-environment.js'
 
 const helperPath = fileURLToPath(new URL('../scripts/windows-lifecycle-path.ps1', import.meta.url))
+const windowsCommands = new Map()
 
 function resolveWindowsCommand(command) {
   if (process.platform !== 'win32') return null
+  if (windowsCommands.has(command)) return windowsCommands.get(command)
   try {
-    return execFileSync('where.exe', [command], { encoding: 'utf8' })
+    const resolved = execFileSync('where.exe', [command], { encoding: 'utf8' })
       .split(/\r?\n/u)
       .find(Boolean) ?? null
+    windowsCommands.set(command, resolved)
+    return resolved
   } catch {
+    windowsCommands.set(command, null)
     return null
   }
 }
 
 function windowsEnvironment(pathValue, additions = {}) {
-  const environment = { ...process.env }
+  const environment = uncoveredEnvironment()
   for (const key of Object.keys(environment)) {
     if (key.toLowerCase() === 'path') delete environment[key]
     // The launcher's own pnpm store must not leak into unrelated npm
@@ -480,10 +486,9 @@ const report = {
   scopeRegistry: process.env['npm_config_@deepseek-ai:registry'],
 }
 if (tool === 'npm' && args[0] === 'view') {
-  report.resolved = ['registry', '@deepseek-ai:registry', '@private:registry'].map(key =>
-    execFileSync(process.env.PTC_TEST_NODE, [process.env.PTC_TEST_NPM_CLI, 'config', 'get', key], {
-      encoding: 'utf8',
-    }).trim())
+  const resolved = JSON.parse(execFileSync(process.env.PTC_TEST_NODE,
+    [process.env.PTC_TEST_NPM_CLI, 'config', 'list', '--json'], { encoding: 'utf8' }))
+  report.resolved = ['registry', '@deepseek-ai:registry', '@private:registry'].map(key => resolved[key])
 }
 appendFileSync(process.env.PTC_REGISTRY_REPORT, JSON.stringify(report) + '\n')
 if (tool === 'npm' && args[0] === 'view') {

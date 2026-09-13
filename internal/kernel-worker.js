@@ -1,6 +1,9 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { create as createDomain } from 'node:domain'
-import { registerHooks } from 'node:module'
+import { createRequire, registerHooks } from 'node:module'
+import { managedModuleImport, managedRequire, readModuleImport, statefulModuleLink } from './stateful-module-runtime.js'
+import { compileStatefulModule, createUserModuleCompilationHooks } from './stateful-module-compiler.js'
+import { USER_BINDING_TRANSFORM, LEGACY_USER_BINDING_TRANSFORM, moduleTransformForLanguage } from './module-transform-contract.js'
 import { isAbsolute, resolve } from 'node:path'
 import repl from 'node:repl'
 import { PassThrough } from 'node:stream'
@@ -9,13 +12,20 @@ import { formatWithOptions } from 'node:util'
 import { MessageChannel, parentPort, workerData } from 'node:worker_threads'
 import { runInContext } from 'node:vm'
 import { synchronizeBuiltinEsmExports } from './builtin-esm-sync.js'
-import { errorDetails, messageOf, programBindingError } from './failure-reporting.js'
+import { createExceptionOriginScope, errorDetails, messageOf, programBindingError } from './failure-reporting.js'
 import { AMBIENT_GLOBALS, DURABLE_IMPORTS, FORBIDDEN_IMPORTS } from './module-policy.js'
 import { decodeValue, encodeValue } from './value-wire.js'
 import { LEGACY_USER_BINDINGS_REUSE_POLICY, LIVE_USER_BINDINGS_SHADOW_POLICY, normalizeUserBindingNames } from './session-journal-schema.js'
 import { installWorkerCwdVirtualization } from './worker-cwd-virtualization.js'
-import { createReplValueObserver, supportsAwaitLexicals } from './repl-value-observer.js'
-import { transformTypeScriptModule } from './typescript-transform.js'
+import { createReplValueObserver, supportsAwaitLexicals, previewBindingValue } from './repl-value-observer.js'
+import { createStatefulRootRuntime } from './stateful-root-runtime.js'
+import { createNativeRootDynamic } from './native-root-dynamic.js'
+import { moduleRuntimeIntrinsics } from './compiler-intrinsics.js'
+import { compilerDescriptors } from './compiler-descriptors.js'
+import { createCellCompletionObserver } from './cell-completion.js'
+
+const { Object, mapGet, mapSet, mapHas, mapDelete, setHas, setAdd, setDelete } = moduleRuntimeIntrinsics
+const hasProperty = Reflect.has
 
 if (parentPort === null) throw new Error('ptc-plus kernel worker started without a parent port')
 const { port1, port2: channel } = new MessageChannel()
@@ -50,22 +60,66 @@ errorDomain.removeAllListeners('error')
 errorDomain.on('error', error => evaluationScope.getStore()?.(true, error))
 const context = server.context
 const contextGlobal = runInContext('globalThis', context)
+const completionObserver = createCellCompletionObserver(runInContext('Function', context))
+let replModuleRealm
+const statefulRoots = createStatefulRootRuntime({
+  refresh: name => refreshLegacyPublication(name),
+  importModule: (source, options) => managedModuleImport(replParent, source, options, replModuleRealm),
+  errors: runInContext('({ ReferenceError, TypeError })', context),
+  dynamicIntrinsics: runInContext('({intrinsicEval:eval,realmFunction:Function,globalObject:globalThis,errors:{ReferenceError,TypeError,SyntaxError},reflect:Reflect,object:Object})', context),
+  readAmbient: name => runInContext(name, context),
+  typeofAmbient: name => runInContext(`typeof ${name}`, context),
+  canWriteAmbient: name => writableRootProperty(name),
+  writeAmbient(name, value, strict) {
+    const argument = name === '__ptc_value' ? '__ptc_other_value' : '__ptc_value'
+    runInContext(`${strict ? '"use strict";' : ''}(${argument}) => (${name} = ${argument})`, context)(value)
+  },
+  deleteAmbient: name => runInContext(`delete ${name}`, context),
+  hasAmbient: name => setHas(installedGlobals, name)
+    ? mapGet(installedGlobalOriginals, name).descriptor !== undefined : hasProperty(context, name),
+  // Request namespaces stay on globalThis; source declarations own separate
+  // logical storage. Provider overlays retain their existing write-through.
+  hasOverlay: name => setHas(installedGlobals, name) && mapGet(dynamicNamespaces, name)?.shadowable !== true,
+  publish(name) {
+    // Logical lexical identities do not redefine the global object's properties.
+    if (mapHas(userBindingSources, name)) recordUserBindingAssignment(name)
+  },
+})
+const nativeRootDynamic = createNativeRootDynamic({
+  logicalReference: (name, writable) => statefulRoots.legacyReference(name, writable),
+  intrinsics: runInContext('({intrinsicEval:eval,realmFunction:Function,globalObject:globalThis,errors:{ReferenceError,TypeError,SyntaxError},reflect:Reflect,object:Object})', context),
+  importModule: (source, options) => managedModuleImport(replParent, source, options, replModuleRealm),
+  read: name => runInContext(name, context),
+  typeOf: name => runInContext(`typeof ${name}`, context),
+  write(name, value, strict) {
+    const argument = name === '__ptc_value' ? '__ptc_other_value' : '__ptc_value'
+    runInContext(`${strict ? '"use strict";' : ''}(${argument}) => (${name} = ${argument})`, context)(value)
+  },
+  remove: name => runInContext(`delete ${name}`, context),
+})
 let valueObserver
 const REPL_IMPORT_CANARY = 'data:text/javascript,export default 1'
 let replParent
 const sessionReplParent = sessionCwd === undefined ? undefined : pathToFileURL(resolve(sessionCwd, 'repl')).href
 const staticAdapterParents = new Set()
 const userBindingModuleParents = new Map()
+const userModuleCompilation = createUserModuleCompilationHooks({
+  transformForParent: parent => (parent === replParent || parent === sessionReplParent) && activeExecution !== undefined
+    ? moduleTransformForLanguage(activeExecution.languageSemantics) : undefined,
+})
 registerHooks({
   resolve(specifier, context, nextResolve) {
     if (specifier === REPL_IMPORT_CANARY && replParent === undefined) replParent = context.parentURL
-    const userBindingParent = userBindingModuleParents.get(context.parentURL)
-    return nextResolve(specifier, userBindingParent !== undefined
-      ? { ...context, parentURL: userBindingParent }
-      : context.parentURL === replParent || staticAdapterParents.has(context.parentURL)
-        ? { ...context, parentURL: sessionReplParent ?? replParent }
-        : context)
+    return userModuleCompilation.resolve(specifier, context, (source, resolvedContext) => {
+      const userBindingParent = mapGet(userBindingModuleParents, resolvedContext.parentURL)
+      return nextResolve(source, userBindingParent !== undefined
+        ? { ...resolvedContext, parentURL: userBindingParent }
+        : resolvedContext.parentURL === replParent || setHas(staticAdapterParents, resolvedContext.parentURL)
+          ? { ...resolvedContext, parentURL: sessionReplParent ?? replParent }
+          : resolvedContext)
+    })
   },
+  load: userModuleCompilation.load,
 })
 const logScope = new AsyncLocalStorage()
 const userBindingActivationScope = new AsyncLocalStorage()
@@ -192,15 +246,22 @@ installWorkerCwdVirtualization(sessionCwd, originalRequire)
 synchronizeBuiltinEsmExports()
 const originalGlobals = Object.fromEntries(
   [...AMBIENT_GLOBALS].filter(name => name !== 'require')
-    .map(name => [name, globalThis[name]]),
+    .map(name => [name, name === 'eval' || name === 'Function' ? runInContext(name, context) : globalThis[name]]),
 )
+const providedRequire = sessionReplParent === undefined ? originalRequire : createRequire(sessionReplParent)
+function selectProvidedRequire(args) {
+  const specifier = args[0]
+  if (FORBIDDEN_IMPORTS.has(specifier)) throw new Error(`module ${specifier} is forbidden because it exposes kernel control`)
+  if (!DURABLE_IMPORTS.has(specifier)) markVolatile(`require(${JSON.stringify(specifier)})`)
+  return managedRequire(activeExecution?.languageSemantics === 'legacy-v1' ? replParent : sessionReplParent ?? replParent,
+    activeExecution?.languageSemantics === 'legacy-v1' ? originalRequire : providedRequire)
+}
 Object.defineProperty(context, 'require', {
   configurable: true,
-  value(specifier) {
-    if (FORBIDDEN_IMPORTS.has(specifier)) throw new Error(`module ${specifier} is forbidden because it exposes kernel control`)
-    if (!DURABLE_IMPORTS.has(specifier)) markVolatile(`require(${JSON.stringify(specifier)})`)
-    return originalRequire(specifier)
-  },
+  value: new Proxy(providedRequire, {
+    apply: (_, receiver, args) => Reflect.apply(selectProvidedRequire(args), receiver, args),
+    construct: (_, args, newTarget) => Reflect.construct(selectProvidedRequire(args), args, newTarget),
+  }),
 })
 
 for (const [name, value] of Object.entries(originalGlobals)) {
@@ -257,20 +318,20 @@ Object.defineProperty(context, 'Math', {
   value: Object.freeze(mathView),
 })
 
-function evaluate(program, completionSignal) {
+function evaluate(program, completionSignal, asyncCompletion = false) {
   return new Promise((resolve, reject) => {
     let settled = false
     const finish = (failed, value) => {
       if (settled) return
       settled = true
       if (failed && value instanceof CellReturn) {
-        Promise.resolve(value.value).then(
+        completionObserver.settle(value.value,
           value => resolve({ hasValue: true, value }),
           reject,
         )
       } else if (failed) reject(value)
       else {
-        Promise.resolve(value).then(
+        completionObserver.settle(value,
           value => resolve({ hasValue: value !== undefined, value }),
           reject,
         )
@@ -283,9 +344,13 @@ function evaluate(program, completionSignal) {
       // A block-scoped declaration has empty completion and preserves the
       // preceding non-await expression value without adding a session binding.
       // Keep the final semicolon so REPL cannot guess a block is an object literal.
-      const suffix = completionSignal === undefined ? CELL_FRAME_SUFFIX
+      const suffix = completionSignal === undefined || asyncCompletion ? CELL_FRAME_SUFFIX
         : `${CELL_FRAME_SUFFIX}{ let completed = this[${JSON.stringify(completionSignal)}].complete(); }${CELL_FRAME_SUFFIX}`
       server.eval(program + suffix, context, activeFilename, (error, value) => {
+        if (asyncCompletion && (error === null || error === undefined)) {
+          completionObserver.observe(value, value => finish(false, value), error => finish(true, error))
+          return
+        }
         const failed = error !== null && error !== undefined || completionSignal !== undefined && finish.completed !== true
         finish(failed, failed ? error : value)
       })
@@ -336,7 +401,7 @@ function staticImportAttributes(options) {
 }
 
 function staticAdapterSource(load) {
-  const source = JSON.stringify(load.source)
+  const source = JSON.stringify(statefulModuleLink(load.source))
   const attributes = staticImportAttributes(load.options)
   if (load.global === undefined) return `import ${source}${attributes};`
   const requirements = load.requiredExports?.map((name, index) => {
@@ -353,21 +418,35 @@ function staticAdapterSource(load) {
 }
 
 async function loadStaticModule(load) {
+  if (load.operation === 'native-dynamic') return { namespace: nativeRootDynamic.environment(load.callableSources,
+    load.awaitRoot === true, load.logicalRoots.filter(name => statefulRoots.has(name)
+      && rootBindingStorage(name, moduleRuntimeIntrinsics.includes(load.nativeLexicals, name)) !== 'lexical'), load.writableRoots) }
+  if (load.operation === 'import') {
+    return { namespace: (source, options) => managedModuleImport(replParent, source, options, replModuleRealm) }
+  }
   const adapter = `data:text/javascript,${encodeURIComponent(staticAdapterSource(load))}#${++nextStaticAdapterId}`
   staticAdapterParents.add(adapter)
+  userModuleCompilation.mark(adapter, { compiled: true,
+    transform: moduleTransformForLanguage(activeExecution?.languageSemantics) })
   try {
     const completion = await evaluate(`import(${JSON.stringify(adapter)})`)
-    return completion.value.namespace
+    if (load.global === undefined) return { namespace: undefined }
+    const namespace = readModuleImport(adapter, load.source, null, () => completion.value.namespace, load.options?.with)
+    return { namespace }
   } finally {
     staticAdapterParents.delete(adapter)
   }
+}
+
+function hasExecutionLease(runId) {
+  return runId !== undefined && activeRun === runId && logScope.getStore()?.id === runId
 }
 
 // BoundError is the error class installed by this cell's wrapper, not a name
 // looked up later: the cell can replace or delete the context binding while a
 // call is pending, and the call must keep its submitted error identity.
 function callHost(runId, global, member, args, BoundError) {
-  if (runId === undefined || activeRun !== runId || logScope.getStore()?.id !== runId) {
+  if (!hasExecutionLease(runId)) {
     return Promise.reject(programBindingError('lease', 'PTC execution lease expired'))
   }
   const activation = userBindingActivationScope.getStore()
@@ -396,12 +475,21 @@ function callHost(runId, global, member, args, BoundError) {
 }
 
 function dynamicNamespace(name) {
+  const assertLease = () => {
+    if (!hasExecutionLease(logScope.getStore()?.id)) {
+      throw programBindingError('lease', 'PTC execution lease expired')
+    }
+  }
   return new Proxy(Object.create(null), {
     get(_target, property) {
       if (typeof property !== 'string') return undefined
+      assertLease()
       const descriptor = dynamicNamespaces.get(name)
       if (descriptor === undefined || !descriptor.members.has(property)) return undefined
       return (...args) => {
+        if (!hasExecutionLease(logScope.getStore()?.id)) {
+          return Promise.reject(programBindingError('lease', 'PTC execution lease expired'))
+        }
         const current = dynamicNamespaces.get(name)
         if (current === undefined || !current.members.has(property)) {
           return Promise.reject(programBindingError('capability', `unknown binding ${name}.${property}`))
@@ -416,14 +504,17 @@ function dynamicNamespace(name) {
       }
     },
     has(_target, property) {
+      assertLease()
       return typeof property === 'string' && dynamicNamespaces.get(name)?.members.has(property) === true
     },
     ownKeys() {
+      assertLease()
       return [...dynamicNamespaces.get(name)?.members ?? []]
     },
     getOwnPropertyDescriptor(_target, property) {
+      assertLease()
       return typeof property === 'string' && dynamicNamespaces.get(name)?.members.has(property) === true
-        ? { configurable: true, enumerable: true }
+        ? compilerDescriptors.descriptor({ configurable: true, enumerable: true })
         : undefined
     },
     set() { return false },
@@ -490,6 +581,7 @@ function installBindings(message) {
     const emptyObjectMembers = new Set(namespace.emptyObjectMembers ?? [])
     dynamicNamespaces.set(namespace.global, {
       members: new Set(namespace.members),
+      shadowable: namespace.shadowable === true,
       emptyObjectMembers,
       BoundError,
     })
@@ -538,29 +630,29 @@ function underlyingUserBindingDescriptor(name) {
 
 function recordUserBindingAssignment(name, legacy = false) {
   if (!legacy || activeExecution?.userBindingsShadowPolicy === LIVE_USER_BINDINGS_SHADOW_POLICY) {
-    if (!installedGlobals.has(name)) {
-      userBindingNames.delete(name)
-      userBindingSources.set(name, { state: 'local' })
+    if (!setHas(installedGlobals, name)) {
+      mapDelete(userBindingNames, name)
+      mapSet(userBindingSources, name, { state: 'local' })
     }
   } else {
     // Historical setters record invocation before defining the property. A
     // restored accessor does not erase that operation, even for the same value.
-    activeExecution?.legacyAssignedUserBindingNames.add(name)
+    if (activeExecution !== undefined) setAdd(activeExecution.legacyAssignedUserBindingNames, name)
   }
 }
 
 // A temporary private getter distinguishes native lexical storage without
 // invoking provider/user getters or comparing arbitrary values. A failed read
 // proves no initialized value; it must never be promoted from the static catalog.
-function rootBindingStorage(name) {
+function rootBindingStorage(name, nativeLexical = false) {
   const original = Object.getOwnPropertyDescriptor(context, name)
   if (original?.configurable === false) {
-    if (!Object.hasOwn(original, 'value')) return 'unknown'
+    if (!nativeLexical && !Object.hasOwn(original, 'value')) return 'unknown'
     try {
       // Both an own data property and an initialized lexical can be read
       // without executing an accessor. Either proves an available local name.
       runInContext(name, context, { displayErrors: false })
-      return 'local'
+      return nativeLexical ? 'lexical' : 'local'
     } catch {
       return 'unknown'
     }
@@ -578,7 +670,14 @@ function rootBindingStorage(name) {
   }
 }
 
+function writableRootProperty(name) {
+  const descriptor = Object.getOwnPropertyDescriptor(context, name)
+  return descriptor !== undefined && (Object.hasOwn(descriptor, 'value')
+    ? descriptor.writable === true : typeof descriptor.set === 'function')
+}
+
 function userBindingRootStorage(name) {
+  if (statefulRoots.has(name)) return 'local'
   const namespace = activeExecution.importBindingNamespaces?.get(name)
   if (namespace === undefined) return rootBindingStorage(name)
   // Compiler-validated imports use native namespace slots, not public alias
@@ -637,7 +736,7 @@ async function activatePerNameUserBindings(snapshot, shadowedNames, cwd, reusePo
   }
   for (const [id, current] of userBindingEntries) {
     const next = desired.get(id)
-    if (next === undefined || !(reusePolicy === LEGACY_USER_BINDINGS_REUSE_POLICY
+    if (next === undefined || current.transform !== snapshot.transform || !(reusePolicy === LEGACY_USER_BINDINGS_REUSE_POLICY
       ? next.fingerprint === current.entry.fingerprint : userBindingImplementationMatches(next, current.entry))) {
       removePerNameUserBindingEntry(id)
     }
@@ -658,7 +757,7 @@ async function activatePerNameUserBindings(snapshot, shadowedNames, cwd, reusePo
     const activation = { id: entry.id, called: false, failed: false }
     try {
       if (entry.durability === 'volatile') markVolatile(`user binding ${JSON.stringify(entry.id)}: ${entry.volatileReason ?? 'non-replayable source'}`)
-      evaluated = await userBindingActivationScope.run(activation, () => evaluateUserBinding(entry, cwd))
+      evaluated = await userBindingActivationScope.run(activation, () => evaluateUserBinding(entry, cwd, snapshot.transform))
       const namespace = evaluated.namespace
       for (const symbol of entry.symbols) {
         if (!Object.hasOwn(namespace, symbol)) throw new Error(`named export ${JSON.stringify(symbol)} is unavailable after evaluation`)
@@ -694,7 +793,7 @@ async function activatePerNameUserBindings(snapshot, shadowedNames, cwd, reusePo
         userBindingNames.set(name, entry.id)
         userBindingSources.set(name, { state: 'provider', entryId: entry.id })
       }
-      userBindingEntries.set(entry.id, { entry, moduleUrl: evaluated.moduleUrl, names, descriptors })
+      userBindingEntries.set(entry.id, { entry, transform: snapshot.transform, moduleUrl: evaluated.moduleUrl, names, descriptors })
       retainedUserBindingRuntime = true
       activated.push(entry.id)
     } catch (error) {
@@ -749,15 +848,17 @@ function reconcileUserBindingShadows(shadowedNames) {
   }
 }
 
-async function evaluateUserBinding(entry, cwd) {
+async function evaluateUserBinding(entry, cwd, transform) {
   if (typeof cwd !== 'string' || !isAbsolute(cwd)) {
     throw new Error('user binding activation requires an absolute storage directory')
   }
-  const javascript = transformTypeScriptModule(entry.source)
-  const url = `data:text/javascript,${encodeURIComponent(javascript)}#ptc-plus-${entry.fingerprint}-${++nextUserBindingModuleId}`
+  const prepared = compileStatefulModule(entry.source, { transform })
+  const url = `data:text/javascript,${encodeURIComponent(prepared.code)}#ptc-plus-${entry.fingerprint}-${++nextUserBindingModuleId}`
   userBindingModuleParents.set(url, pathToFileURL(resolve(cwd, 'bindings.json')).href)
+  userModuleCompilation.mark(url, { transform, compiled: true, moduleInterface: prepared.moduleInterface, sourceRegions: prepared.sourceRegions })
   try {
-    return { namespace: await import(url), moduleUrl: url }
+    return { namespace: transform === LEGACY_USER_BINDING_TRANSFORM ? await import(url)
+      : await managedModuleImport(url, url), moduleUrl: url }
   } catch (error) {
     userBindingModuleParents.delete(url)
     throw error
@@ -786,7 +887,7 @@ async function activateUserBindings(snapshot, shadowedNames, cwd, reusePolicy, i
     const current = userBindingEntries.get(id)
     const next = desired.get(id)
     // Historical cells retain fingerprint-based resets, including presentation edits.
-    const reusable = next !== undefined && (reusePolicy === LEGACY_USER_BINDINGS_REUSE_POLICY
+    const reusable = next !== undefined && current.transform === snapshot.transform && (reusePolicy === LEGACY_USER_BINDINGS_REUSE_POLICY
       ? next.fingerprint === current.entry.fingerprint
       : userBindingImplementationMatches(next, current.entry))
     if (!reusable) {
@@ -811,7 +912,7 @@ async function activateUserBindings(snapshot, shadowedNames, cwd, reusePolicy, i
       }
       evaluated = await userBindingActivationScope.run(
         activation,
-        () => evaluateUserBinding(entry, cwd),
+        () => evaluateUserBinding(entry, cwd, snapshot.transform),
       )
       const namespace = evaluated.namespace
       for (const symbol of entry.symbols) {
@@ -874,6 +975,7 @@ async function activateUserBindings(snapshot, shadowedNames, cwd, reusePolicy, i
       }
       userBindingEntries.set(entry.id, {
         entry,
+        transform: snapshot.transform,
         moduleUrl: evaluated.moduleUrl,
         names,
         descriptors: new Map(names.map(name => [name, Object.getOwnPropertyDescriptor(context, name)])),
@@ -914,19 +1016,46 @@ function failureOutcome(error, phase) {
   if (phase === 'encode') return { invalidOutput: messageOf(error) }
   const failure = error instanceof StaticImportFailure ? error.error : error
   const detail = errorDetails(failure, activeFilename)
-  const position = error instanceof StaticImportFailure ? error.position : detail.position
+  // A compiler-created call error has only an adapter stack. Its source fact
+  // owns the operation; ordinary exceptions retain their native stack position.
+  const position = error instanceof StaticImportFailure ? error.position
+    : activeExecution.exceptionOrigins.sourceFailure(failure) ? undefined : detail.position
   return {
     error: detail.message,
     errorName: detail.name,
     ...(detail.toolName === undefined ? {} : { toolName: detail.toolName }),
     ...(error instanceof StaticImportFailure ? { moduleLoadFailed: true } : {}),
     ...(position === undefined ? {} : { position }),
+    ...(position === undefined ? { exceptionOrigins: activeExecution.exceptionOrigins.origins(failure) } : {}),
     ...(detail.cause === undefined ? {} : { cause: detail.cause }),
     ...(detail.failureOrigin === undefined ? {} : { failureOrigin: detail.failureOrigin }),
   }
 }
 
+function observeBindings(names) {
+  const observation = valueObserver.observe(names)
+  return { ...observation, entries: observation.entries.map(entry => {
+    const local = statefulRoots.localValue(entry.name)
+    return local === undefined ? entry : { name: entry.name, ...previewBindingValue(local.value) }
+  }) }
+}
+
+function refreshLegacyPublication(name) {
+  const publications = activeExecution?.nativePublications
+  const publication = publications === undefined ? undefined : mapGet(publications, name)
+  // A completed native declaration is visible to saved logical closures in
+  // the same cell. A failed or pending initializer retains the prior source.
+  if (publication === undefined) return
+  const storage = rootBindingStorage(publication.import?.namespace ?? name, publication.nativeLexical)
+  if (storage === 'lexical' || publication.import === undefined
+    && (storage === 'local' || storage === 'property' && Object.hasOwn(context, name))) {
+    mapDelete(publications, name)
+    statefulRoots.publishLegacy(name, publication.writable, publication.import, storage !== 'lexical')
+  }
+}
+
 function sendCompletion(message, execution, userBindings, committedRedeclarations, outcome) {
+  for (const name of execution.nativePublications?.keys() ?? []) refreshLegacyPublication(name)
   const shadowedNames = execution.legacyAssignedUserBindingNames
   const perName = message.userBindingsShadowPolicy === LIVE_USER_BINDINGS_SHADOW_POLICY
   if (perName) reconcileUserBindingNames()
@@ -938,6 +1067,7 @@ function sendCompletion(message, execution, userBindings, committedRedeclaration
     logs: execution.logs,
     ...completionDurability(execution),
     committedRedeclarations: [...committedRedeclarations],
+    ...(message.rootBindings === undefined ? {} : { rootBindingFacts: statefulRoots.facts() }),
     ...(perName ? { userBindingNames: normalizeUserBindingNames([...userBindingSources].map(([name, source]) => ({
       name, state: source.state, ...(source.state === 'provider' ? { entryId: source.entryId } : {}),
     }))) } : {}),
@@ -951,7 +1081,7 @@ function sendCompletion(message, execution, userBindings, committedRedeclaration
   })
   if (outcome.error === undefined) valueObserver.record(message.program)
   if (names.length > 0) {
-    channel.postMessage({ type: 'observation', id: message.id, observation: valueObserver.observe(names) })
+    channel.postMessage({ type: 'observation', id: message.id, observation: observeBindings(names) })
   }
 }
 
@@ -961,6 +1091,8 @@ async function runCell(message) {
   installBindings(message)
   const execution = {
     id: message.id,
+    exceptionOrigins: createExceptionOriginScope(),
+    languageSemantics: message.languageSemantics,
     userBindingsShadowPolicy: message.userBindingsShadowPolicy,
     importBindingNamespaces: message.importBindingNamespaces,
     legacyAssignedUserBindingNames: new Set(),
@@ -992,10 +1124,34 @@ async function runCell(message) {
         Object.defineProperty(context, message.commitSignal, {
           configurable: true,
           value(name) {
-            committedRedeclarations.add(name)
+            setAdd(committedRedeclarations, name)
           },
         })
         cellGlobals.push(message.commitSignal)
+        if (message.rootRuntimeName !== undefined) {
+          const nativeLexicals = new Set(message.rootBindings.legacyNativeLexicals)
+          const legacyStorage = new Map(message.rootBindings.legacyLexicals
+            .filter(name => !statefulRoots.has(name)).map(name => [name, rootBindingStorage(name, nativeLexicals.has(name))]))
+          const legacyLexicals = message.rootBindings.legacyLexicals.filter(name => legacyStorage.get(name) === 'lexical')
+          const legacyNative = new Set(message.rootBindings.legacyNative)
+          const legacyWritable = message.rootBindings.legacyWritable.filter(name => {
+            const storage = legacyStorage.get(name)
+            return storage === 'lexical' || legacyNative.has(name)
+              && (storage === 'local' || storage === 'property') && writableRootProperty(name)
+          })
+          Object.defineProperty(context, message.rootRuntimeName, {
+            configurable: true,
+            value: statefulRoots.begin({ ...message.rootBindings,
+              legacyLexicals,
+              legacyWritable,
+              legacyObjects: legacyWritable.filter(name => legacyStorage.get(name) !== 'lexical'),
+              committed(name) {
+                setDelete(committedRedeclarations, name)
+                setAdd(committedRedeclarations, name)
+              } }),
+          })
+          cellGlobals.push(message.rootRuntimeName)
+        }
         const activate = message.userBindingsShadowPolicy === LIVE_USER_BINDINGS_SHADOW_POLICY
           ? activatePerNameUserBindings : activateUserBindings
         userBindings = await activate(
@@ -1012,7 +1168,7 @@ async function runCell(message) {
         for (const load of message.moduleLoads ?? []) {
           let namespace
           try {
-            namespace = await loadStaticModule(load)
+            namespace = (await loadStaticModule(load)).namespace
           } catch (error) {
             throw new StaticImportFailure(error, load.position)
           }
@@ -1027,7 +1183,9 @@ async function runCell(message) {
         // Preload failure leaves prior aliases authoritative. Once evaluation
         // starts, new slots must prove their own initialization, including TDZ.
         execution.importBindingNamespaces = message.preparedImportBindingNamespaces
-        return evaluate(message.program, message.returnSignal)
+        execution.nativePublications = new Map((message.moduleLoads ?? []).flatMap(load =>
+          (load.nativePublications ?? []).map(publication => [publication.name, publication])))
+        return execution.exceptionOrigins.run(() => evaluate(message.program, message.returnSignal, message.asyncCompletion))
       })
     } catch (error) {
       outcome = failureOutcome(error, 'execute')
@@ -1053,6 +1211,7 @@ async function runCell(message) {
     for (const name of cellGlobals) delete context[name]
     activeRun = undefined
     activeExecution = undefined
+    execution.exceptionOrigins.close()
     execution.open = false
   }
 }
@@ -1065,7 +1224,7 @@ channel.on('message', (message) => {
   if (message?.type === 'observe') {
     channel.postMessage({ type: 'observation-started', id: message.id })
     channel.postMessage({ type: 'observation', id: message.id,
-      observation: valueObserver.observe(message.names) })
+      observation: observeBindings(message.names) })
     return
   }
   if (message?.type === 'reply') {
@@ -1095,6 +1254,7 @@ try {
       startupTimer = setTimeout(() => reject(new Error('REPL settlement probe timed out')), 5000)
     }),
   ])
+  replModuleRealm = (await evaluate('({Promise,stringify:value=>`${value}`,importModule:(source,options)=>import(source,options)})')).value
   valueObserver = createReplValueObserver(context, {
     awaitLexicals: await supportsAwaitLexicals(context, evaluate),
   })

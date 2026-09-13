@@ -363,6 +363,7 @@ test('preserves feature evidence for versioned and legacy binding reuse policies
   delete legacy.userBindingsReusePolicy
   delete legacy.userBindingsShadowPolicy
   delete legacy.userBindingNames
+  delete legacy.languageSemantics
   assert.equal(derivePtcToolView(result({ dshPtcPlus: legacy })).ptc, true)
   assert.equal(derivePtcToolView(result({ dshPtcPlus: { ...legacy, userBindingsReusePolicy: 'implementation-v1' } })).ptc, false)
 })
@@ -384,11 +385,26 @@ test('validates current and historical import-expression semantics independently
   const historical = { ...current, version: 6, moduleSemantics: { defaultExportBinding: 'live-readonly' } }
   delete historical.userBindingsShadowPolicy
   delete historical.userBindingNames
+  delete historical.languageSemantics
   assert.equal(derivePtcToolView(result({ dshPtcPlus: historical })).ptc, true)
   assert.equal(derivePtcToolView(result({ dshPtcPlus: {
     ...historical,
     moduleSemantics: { ...historical.moduleSemantics, importExpressionBoundary: 'legacy' },
   } })).ptc, false)
+})
+
+test('validates language generations without accepting new fields in historical records', () => {
+  const current = normalizeJournal(journal())
+  for (const languageSemantics of ['legacy-v1', 'stateful-v1', 'protected-v1']) {
+    assert.equal(derivePtcToolView(result({ dshPtcPlus: { ...current, languageSemantics } })).ptc, true)
+  }
+  for (const languageSemantics of [undefined, null, 'unknown']) {
+    assert.equal(derivePtcToolView(result({ dshPtcPlus: { ...current, languageSemantics } })).ptc, false)
+  }
+  const historical = { ...current, version: PER_NAME_USER_BINDINGS_JOURNAL_VERSION }
+  delete historical.languageSemantics
+  assert.equal(derivePtcToolView(result({ dshPtcPlus: historical })).ptc, true)
+  assert.equal(derivePtcToolView(result({ dshPtcPlus: { ...historical, languageSemantics: 'stateful-v1' } })).ptc, false)
 })
 
 test('validates per-name facts while preserving historical whole-entry presentation', () => {
@@ -432,6 +448,7 @@ test('validates per-name facts while preserving historical whole-entry presentat
     }
     delete historical.userBindingNames
     delete historical.userBindingsShadowPolicy
+    delete historical.languageSemantics
     if (version === 1) delete historical.rewritePolicy
     if (version < 6) delete historical.userBindingsReusePolicy
     if (version < 5) delete historical.userBindingsFingerprint

@@ -1,12 +1,67 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { parse } from '@babel/parser'
+import generateModule from '@babel/generator'
 import {
   applySourceEdits,
   createMappedTextBuilder,
+  createSourceMapBuilder,
   identitySourceMap,
   mapSourcePosition,
   mapSourceSpan,
+  mappedSourceTransform,
+  sourceOffsetAt,
+  sourceTextAtSpan,
 } from '../internal/source-position-map.js'
+
+test('raw emitter maps and encoded maps preserve identical source anchors', () => {
+  const generate = generateModule.default ?? generateModule
+  const source = 'const answer=()=>{\r\nreturn 42\n};answer()'
+  const emitted = generate(parse(source), { sourceMaps: true, sourceFileName: 'input.js' }, source)
+  const encoded = mappedSourceTransform(source, identitySourceMap(source.length), { code: emitted.code, map: emitted.map })
+  const raw = mappedSourceTransform(source, identitySourceMap(source.length), {
+    code: emitted.code, rawMappings: emitted.rawMappings,
+    get map() { assert.fail('available raw mappings must not be encoded again') },
+  })
+  assert.deepEqual(raw, encoded)
+  const sparse = mappedSourceTransform('x', identitySourceMap(1), {
+    code: 'a x?', rawMappings: [
+      { generated: { line: 1, column: 0 } },
+      { generated: { line: 1, column: 2 }, original: { line: 1, column: 0 } },
+      { generated: { line: 1, column: 3 } },
+      { generated: { line: 1, column: 4 }, original: { line: 1, column: 1 } },
+    ],
+  })
+  assert.deepEqual(Array.from({ length: 5 }, (_, offset) => sourceOffsetAt(sparse.sourceMap, offset)), [0, 0, 0, 1, 1])
+})
+
+test('numeric source maps reject offsets that cannot represent source buffers', () => {
+  const builder = createSourceMapBuilder()
+  for (const originalEnd of [-1, 1.5, 2 ** 32, NaN]) {
+    assert.throws(() => builder.push({ generatedStart: 0, generatedEnd: 1, originalStart: 0, originalEnd }),
+      /source mapping offsets must fit a source buffer/)
+  }
+  builder.push({ generatedStart: 0, generatedEnd: 1, originalStart: 0, originalEnd: 1 })
+  assert.deepEqual(builder.finish(), identitySourceMap(1))
+})
+
+test('composing inserted source anchors never invents a character past EOF', () => {
+  const source = 'x'
+  const inserted = applySourceEdits(source, identitySourceMap(source.length), [{ start: 1, end: 1, text: ';helper()' }])
+  const copied = applySourceEdits(inserted.code, inserted.sourceMap, [{ start: 0, end: inserted.code.length,
+    text: inserted.code, mappings: identitySourceMap(inserted.code.length) }])
+  assert.deepEqual(copied.sourceMap, inserted.sourceMap)
+  assert.ok([...copied.sourceMap].every(segment => segment.originalEnd <= source.length))
+  assert.doesNotThrow(() => applySourceEdits(source, identitySourceMap(source.length), [{
+    start: 0, end: source.length, text: copied.code, mappings: copied.sourceMap,
+  }]))
+})
+
+test('original reference spans retain exact text across native line terminators', () => {
+  const source = 'prefix\r\nservice\r[\u2028 key()\u2029]'
+  assert.equal(sourceTextAtSpan(source, { line: 2, column: 1, end: { line: 5, column: 2 } }),
+    'service\r[\u2028 key()\u2029]')
+})
 
 test('builds mapped text from explicit copied ranges', () => {
   const source = 'prefix value suffix'
@@ -61,6 +116,20 @@ test('composes insertions and deletions across CRLF source lines', () => {
     mapSourcePosition({ line: 3, column: thirdColumn }, rewritten.code, original, rewritten.sourceMap),
     { line: 3, column: 1 },
   )
+})
+
+test('copied function source preserves provenance across an earlier inserted marker', () => {
+  const original = '()=>eval("late=7")'
+  const marked = applySourceEdits(original, identitySourceMap(original.length), [
+    { start: 2, end: 2, text: '/*compiler source fact*/' },
+  ])
+  const copied = applySourceEdits(marked.code, marked.sourceMap, [{
+    start: 0, end: marked.code.length, text: `({name:${marked.code}}).name`,
+    mappings: [{ generatedStart: 7, generatedEnd: 7 + marked.code.length, originalStart: 0, originalEnd: marked.code.length }],
+  }])
+  const offset = copied.code.indexOf('eval')
+  assert.deepEqual(mapSourceSpan({ line: 1, column: offset + 1, end: { line: 1, column: offset + 15 } },
+    copied.code, original, copied.sourceMap), { line: 1, column: 5, end: { line: 1, column: 19 } })
 })
 
 test('leaves absent or invalid worker positions unchanged', () => {

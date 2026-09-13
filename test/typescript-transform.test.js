@@ -1,12 +1,24 @@
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import test from 'node:test'
-import { transformTypeScriptModule, USER_BINDING_TRANSFORM } from '../internal/typescript-transform.js'
+import { transformTypeScriptModule, LEGACY_USER_BINDING_TRANSFORM, USER_BINDING_TRANSFORM,
+  PROTECTED_MODULE_TRANSFORM, moduleTransformForLanguage, supportedUserBindingTransform } from '../internal/typescript-transform.js'
 
 test('records the exact installed compiler generation', async () => {
   const manifest = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'))
-  assert.equal(USER_BINDING_TRANSFORM, `amaro@${manifest.dependencies.amaro}`)
+  assert.equal(LEGACY_USER_BINDING_TRANSFORM, `amaro@${manifest.dependencies.amaro}`)
+  assert.equal(USER_BINDING_TRANSFORM, `stateful-module-v1+${LEGACY_USER_BINDING_TRANSFORM}`)
+  assert.equal(PROTECTED_MODULE_TRANSFORM, `protected-module-v1+${LEGACY_USER_BINDING_TRANSFORM}`)
   assert.match(manifest.dependencies.amaro, /^\d+\.\d+\.\d+$/)
+})
+
+test('current protected modules retain a distinct generation without changing persisted binding identities', () => {
+  assert.equal(moduleTransformForLanguage('stateful-v1'), USER_BINDING_TRANSFORM)
+  assert.equal(moduleTransformForLanguage('protected-v1'), PROTECTED_MODULE_TRANSFORM)
+  assert.equal(moduleTransformForLanguage('legacy-v1'), LEGACY_USER_BINDING_TRANSFORM)
+  assert.equal(supportedUserBindingTransform(PROTECTED_MODULE_TRANSFORM), false)
+  assert.equal(supportedUserBindingTransform(USER_BINDING_TRANSFORM), true)
+  assert.equal(supportedUserBindingTransform(LEGACY_USER_BINDING_TRANSFORM), true)
 })
 
 test('uses the current enum scope semantics rather than claiming native-transform equivalence', async () => {

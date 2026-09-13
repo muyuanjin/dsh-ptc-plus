@@ -15,6 +15,7 @@ test('normalizes Windows worker environment keys without losing host values', ()
     MixedCaseApplicationValue: 'kept',
     NODE_test_CONTEXT: 'host-only',
     node_v8_coverage: 'host-only',
+    DSH_PTC_COMPILER_BYTECODE: 'host-only',
   }, 'win32')
   assert.deepEqual(normalized, {
     PATH: 'canonical-path',

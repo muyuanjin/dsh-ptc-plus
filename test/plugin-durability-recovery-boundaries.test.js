@@ -16,6 +16,46 @@ import {
   workerOf,
 } from './runtime-observation.js'
 
+test('ambiguous historical call sequences persist a contraction across cold restarts', async t => {
+  for (const prefix of [false, true]) {
+    const events = []
+    const session = { id: `ambiguous-history-${prefix}`, events }
+    const writer = fixture()
+    t.after(() => writer.dispose())
+    const recorded = await writer.runDurable(session.id, 'const stable=1', {}, { session })
+    if (prefix) appendRunCodeEvents(events, 'stable', 'const stable=1', recorded)
+    await writer.dispose()
+    const ambiguousSeq = events.length
+    appendRunCodeEvents(events, 'ambiguous-a', 'throw Error("unproved source A")', recorded)
+    events.push({ ...events[ambiguousSeq], data: { ...events[ambiguousSeq].data,
+      callId: 'ambiguous-b', arguments: JSON.stringify({ code: 'throw Error("unproved source B")' }) } })
+    // Results associated by sequence or call identity must both remain unproved.
+    events.push({ type: 'tool/result', seq: events.length, sourceEventSeqs: [ambiguousSeq],
+      data: { message: { source: { kind: 'tool', callId: 'ambiguous-b' } }, meta: recorded.meta } })
+    for (let round = 0; round < 3; round++) {
+      const runtime = new SessionRuntime()
+      t.after(() => runtime.dispose())
+      const callId = `current-${round}`
+      const program = round === 0 ? 'const continued=41;return continued' : 'return [continued,typeof stable]'
+      const callSeq = events.length
+      events.push({ type: 'tool/call', seq: callSeq, data: {
+        name: 'run_code', callId, arguments: JSON.stringify({ code: program, description: 'current' }),
+      } })
+      const execution = await runtime.runTentative({ id: session.id, session, callId }, { program, bindings: [] })
+      assert.equal(execution.result.error, undefined, execution.result.error?.message)
+      assert.deepEqual(execution.result.value, round === 0 ? 41 : [41, prefix ? 'number' : 'undefined'])
+      assert.equal(execution.result.logs.filter(log => log.includes('PTC-R002')).length, round === 0 ? 1 : 0)
+      assert.deepEqual(execution.settlement.recoveryBoundaries, round === 0
+        ? [{ failedCallSeq: ambiguousSeq, frontierCallSeq: prefix ? 0 : null }] : undefined)
+      const meta = { dshPtcPlus: normalizeJournal(execution.settlement.journal) }
+      if (execution.settlement.recoveryBoundaries !== undefined) meta[RECOVERY_BOUNDARY_KEY] = execution.settlement.recoveryBoundaries
+      events.push({ type: 'tool/result', seq: events.length, sourceEventSeqs: [callSeq], data: { meta } })
+      runtime.finalize(execution.settlement, true)
+      await runtime.dispose()
+    }
+  }
+})
+
 test('rejects replaced, corrupt, or extended persisted journals during confirmation', async (t) => {
   const state = fixture()
   t.after(() => state.dispose())
@@ -351,6 +391,7 @@ test('restores one imported binding catalog before live and cold continuation', 
   const events = []
   const session = { id: 'import-catalog-restore', events }
   const first = fixture()
+  t.after(() => first.dispose())
   const imported = [
     "import { inspect } from 'node:util'",
     'const importedInspect = value => inspect(value)',
@@ -363,7 +404,7 @@ test('restores one imported binding catalog before live and cold continuation', 
   const shadowResult = await first.runDurable(session.id, shadow, {}, { session })
   appendRunCodeEvents(events, 'catalog-shadow', shadow, shadowResult)
   assert.deepEqual(await first.run(session.id, 'return [inspect({ a: 1 }), importedInspect({ a: 1 })]'), {
-    logs: [], value: ['shadowed', '{ a: 1 }'],
+    logs: [], value: ['shadowed', 'shadowed'],
   })
 
   const restore = "void await repl.state({ action: 'restore', name: 'imported' })"

@@ -127,10 +127,17 @@ window.__ModuleLoader__.load({
         const before = preferenceScope.getSnapshot()
         if (before.status !== 'ready' || before.writable !== true
           || (key !== 'enabled' && !featureEnabled(before, 'plugin'))
-          || before.value?.[key] === value) return null
-        await preferenceScope.set(key, value)
+          || (before.value?.[key] === value
+            && !(key === 'bindingUpdates' && before.value.legacyBindingSettings === true))) return null
+        if (key === 'bindingUpdates') {
+          await preferenceScope.mutate([
+            { op: 'set', path: ['bindingUpdates'], value },
+            { op: 'set', path: ['legacyBindingSettings'], value: false },
+          ])
+        } else await preferenceScope.set(key, value)
         const after = preferenceScope.getSnapshot()
         return after.status === 'ready' && after.value?.[key] === value
+          && (key !== 'bindingUpdates' || after.value.legacyBindingSettings !== true)
           ? 'status.applied' : 'status.conflict'
       }
       // One gated-registration shape for every settings-driven contribution.

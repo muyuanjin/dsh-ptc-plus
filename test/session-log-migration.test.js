@@ -1,12 +1,14 @@
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import test from 'node:test'
 import { link, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createAssistantMessage, createToolResultMessage } from '@deepseek-ai/dsh-llm'
 import { pathToHead, recoverJournal } from '../internal/session-journal-recovery.js'
-import { JOURNAL_VERSION, JOURNAL_VERSIONS, PER_NAME_USER_BINDINGS_JOURNAL_VERSION } from '../internal/session-journal-schema.js'
-import { createUserBindingsSnapshot, USER_BINDINGS_META_KEY } from '../internal/user-bindings.js'
+import { JOURNAL_VERSION, JOURNAL_VERSIONS, LANGUAGE_SEMANTICS_JOURNAL_VERSION, PER_NAME_USER_BINDINGS_JOURNAL_VERSION } from '../internal/session-journal-schema.js'
+import { LEGACY_USER_BINDING_TRANSFORM } from '../internal/typescript-transform.js'
+import { createUserBindingsSnapshot, normalizeUserBindingEntry, normalizeUserBindingsSnapshot, USER_BINDINGS_META_KEY } from '../internal/user-bindings.js'
 import { encodeValue } from '../internal/value-wire.js'
 import { appendRunCodeEvents, fixture } from './plugin-fixture.js'
 import {
@@ -108,8 +110,8 @@ test('CLI main validates required paths and leaves current logs untouched', asyn
 })
 
 // The physical v0 vocabulary is historical input, independent of the installed Host.
-async function historicalTranscript(t) {
-  const runtime = fixture()
+async function historicalTranscript(t, config = {}) {
+  const runtime = fixture(config)
   t.after(() => runtime.dispose())
   let effects = 0
   const events = []
@@ -211,8 +213,10 @@ test('the installed public DSH format catalog preserves historical edited state'
 })
 
 test('format migration preserves confirmed no-ops across every historical journal format', async t => {
-  const history = await historicalTranscript(t)
+  const currentHistory = await historicalTranscript(t)
+  const legacyHistory = await historicalTranscript(t, { legacyBindingSettings: true })
   for (const version of JOURNAL_VERSIONS) {
+    const history = version < LANGUAGE_SEMANTICS_JOURNAL_VERSION ? legacyHistory : currentHistory
     const events = structuredClone(history.events)
     const calls = events.filter(event => event.type === 'tool/call')
     delete events.find(event => event.type === 'tool/result').data.meta.dshPtcPlus
@@ -224,6 +228,10 @@ test('format migration preserves confirmed no-ops across every historical journa
     const journal = result.data.meta.dshPtcPlus
     journal.version = version
     journal.confirms = [version === 1 ? calls[0].data.callId : calls[0].seq]
+    if (version < LANGUAGE_SEMANTICS_JOURNAL_VERSION) {
+      assert.equal(journal.languageSemantics, 'legacy-v1')
+      delete journal.languageSemantics
+    } else assert.equal(journal.languageSemantics, 'stateful-v1')
     if (version < PER_NAME_USER_BINDINGS_JOURNAL_VERSION) {
       delete journal.userBindingsShadowPolicy
       delete journal.userBindingNames
@@ -299,14 +307,29 @@ test('cold replay preserves import boundary effects across journal and session f
   }
 })
 
+function predecessorBindingsSnapshot(entries) {
+  const revision = 1
+  const transform = LEGACY_USER_BINDING_TRANSFORM
+  const normalized = entries.map(entry => normalizeUserBindingEntry(entry, { transform }))
+  return normalizeUserBindingsSnapshot({
+    version: 2, transform, revision, entries: normalized,
+    fingerprint: createHash('sha256')
+      .update(JSON.stringify({ revision, entries: normalized.map(entry => entry.fingerprint), transform }))
+      .digest('hex'),
+  })
+}
+
 test('format migration preserves whole-entry and per-name saved values with empty completions', async t => {
-  const full = createUserBindingsSnapshot({ entries: [{
+  const entries = [{
     id: 'pair', name: 'pair', scope: 'top-level', enabled: true,
     source: 'await tools.observe({}); export const alpha = 1; export const beta = 2',
-  }] }, 1)
-  const empty = createUserBindingsSnapshot({ entries: [] }, 1)
-  for (const version of [6, 7, JOURNAL_VERSION]) await t.test(`journal ${version}`, async t => {
+  }]
+  const full = createUserBindingsSnapshot({ entries }, 1)
+  const predecessorFull = predecessorBindingsSnapshot(entries)
+  const predecessorEmpty = predecessorBindingsSnapshot([])
+  for (const version of [6, 7, PER_NAME_USER_BINDINGS_JOURNAL_VERSION, JOURNAL_VERSION]) await t.test(`journal ${version}`, async t => {
     const perName = version >= PER_NAME_USER_BINDINGS_JOURNAL_VERSION
+    const currentLanguage = version >= LANGUAGE_SEMANTICS_JOURNAL_VERSION
     const events = [{ seq: 0, type: 'assistant/chunk', data: {} }]
     for (const [index, code] of [
       'const before = beta; void 0',
@@ -315,9 +338,10 @@ test('format migration preserves whole-entry and per-name saved values with empt
     ].entries()) {
       // Whole-entry removal was applied on the next activation, so its third
       // snapshot is empty while the per-name record retains both exports.
-      const userBindings = !perName && index === 2 ? empty : full
+      const userBindings = !perName && index === 2 ? predecessorEmpty : currentLanguage ? full : predecessorFull
       const journal = {
         version,
+        ...(currentLanguage ? { languageSemantics: 'stateful-v1' } : {}),
         bindingPolicy: { variableRedeclarations: true, functionClassRedeclarations: true },
         rewritePolicy: { autoRewriteImports: true, autoStripExports: true, autoSplitRedeclarations: true },
         moduleSemantics: { defaultExportBinding: 'live-readonly',

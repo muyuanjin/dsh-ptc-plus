@@ -29,7 +29,7 @@
 
 ---
 
-**PTC Plus gives DSH PTC mode a persistent TypeScript REPL.** Variables, imports, and computed results from one `run_code` remain available to the next.
+**PTC Plus gives DSH PTC mode a persistent TypeScript REPL.** Variables, imports, and computed results from one `run_code` remain available to the next. By default, revise names directly: existing closures observe updated bindings, imports can be overridden and re-imported, and failed declarations do not permanently occupy a name.
 
 > [!NOTE]
 > Community plugin, with no affiliation with or endorsement from DeepSeek or DSH.
@@ -124,13 +124,20 @@ Enabled binding interfaces are supplied to the model in new sessions and updated
 Open **Settings → Plugin configuration → PTC Plus**. The main switch controls the plugin; other settings are grouped by purpose:
 
 - **Tool call tolerance**: accept `run_code` without a summary and repair uniquely identifiable top-level native-tool miscalls.
-- **REPL syntax**: control redeclarations, module syntax, and destructuring support.
+- **REPL syntax**: `bindingUpdates` defaults to `stateful`, allowing cross-cell updates of variables, functions, classes, and import aliases, and letting a repeated declaration in one logical scope of one cell update the same identity; choose `protected` to keep name protection. The five legacy switches apply only while migrating an old configuration; the settings page identifies that state and lets you choose either unified policy directly. Module syntax is enabled by default. `tools` and the injected error classes are request-reserved program bindings that can be neither redeclared nor written: a declaration collision reports `PTC-N001` in preflight, and an assignment fails during execution with an error that names the binding instead of being discarded silently.
+- **Module interoperability**: PTC-managed namespaces support live reads and local overrides, including when passed to external functions. External code independently importing a compiled module through native APIs does not receive the same namespace or writable-export guarantee. See the [runtime reference](docs/runtime-reference.md#cell-semantics).
 - **State and recovery**: control restart recovery and contextual error tips.
 - **Tool extensions**: enable global bindings or official Cordis tools for advanced use.
 - **Interface display**: control enhanced tool cards, the REPL tab, and the binding authoring shortcut.
 - **Resource limits**: adjust execution time, memory, and output limits.
 
 Global bindings and Cordis tools default to off. Settings generally apply immediately; a worker's memory limit cannot change while it is active. See the [configuration reference](docs/runtime-reference.md#configuration) for fields, defaults, and limits.
+
+PTC Plus uses a shared stateful computation contract for `run_code`, `edit_run_code`, plugin-owned child computation, and user binding entry points. Source passed to `eval`, `Function`, `node:vm`, or other external engines retains the corresponding native syntax rules and results. Direct `eval` must still access its caller's logical scope; indirect `eval` and `Function` use their owning realm's logical root. Internal name rewriting must not change which state they read. The module interface and native interoperability boundary are described in [ADR 0025](docs/adr/0025-use-versioned-logical-binding-identities.md#managed-module-interface).
+
+Indirect `eval` and all four `Function` constructors use their owning realm's root, including when passed as native callbacks: after `const value=41`, `["typeof value"].map(eval)` returns `["number"]`. Function source observations retain original JavaScript source and its actual dependencies, so self-contained functions can be recompiled with `Function`. Function values, user overrides, and separately created realms retain their respective semantics.
+
+Switching computation modes preserves existing closures' execution environments and saved function identities, including direct `eval` in asynchronous continuations and `Function.prototype.toString`. Each source generation selects stable callback interfaces while global and prototype properties retain their original values. Legacy code reuses established logical bindings through its native REPL environment, with existing native declarations retaining precedence, and reads modules through PTC-managed namespaces.
 
 ![PTC Plus settings card](assets/ptc-plus-settings-en.png)
 
@@ -152,6 +159,6 @@ Model calls and token usage depend on the task and model. A recorded paired obse
 
 ## Documentation
 
-[Global binding guide](docs/user-bindings.en.md) · [Installation and upgrades](docs/installation.md) · [Runtime reference](docs/runtime-reference.md) · [Development and architecture](docs/architecture.md) · [All documentation](docs/README.md)
+[Global binding guide](docs/user-bindings.en.md) · [Installation and upgrades](docs/installation.md) · [Runtime reference](docs/runtime-reference.md) · [Development and architecture](docs/architecture.md) · [Verification and test concurrency](docs/verification.md) · [All documentation](docs/README.md)
 
 [MIT License](LICENSE).

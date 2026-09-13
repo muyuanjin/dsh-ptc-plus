@@ -1076,8 +1076,9 @@ test('REPL observations and shared workbench remain separate from session execut
   expect(rpcCalls).toHaveLength(calls)
   settings.publish({ value: { ...value, enabled: false } })
   await runtime.flush()
-  const controls = [...settingsCard.querySelectorAll('[role=switch], input[type=number]')]
-  expect(controls).toHaveLength(CONFIG_FIELDS.length)
+  const controls = [...settingsCard.querySelectorAll('[role=switch], input[type=number], select')]
+  const visibleFieldCount = CONFIG_GROUPS.flatMap(group => group.fields).length
+  expect(controls).toHaveLength(visibleFieldCount)
   expect(controls.filter(control => !control.disabled).map(control => control.getAttribute('aria-label'))).toEqual(['Enable PTC Plus'])
   settings.publish({ writable: false, value })
   await runtime.flush()
@@ -1315,6 +1316,79 @@ test.each([{ enabled: false }, { bindings: false }])('disabled features remain d
   expect(events.entries()).toHaveLength(0)
   expect(runtime.slots.entries('conversation.input.left')).toHaveLength(0)
   expect(rpcCalls).toEqual([])
+})
+
+test.each([
+  ['mixed settings', { looseTopLevelRedeclarations: false }, 'stateful'],
+  ['mixed settings', { looseTopLevelRedeclarations: false }, 'protected'],
+  ['explicit marker', { bindingUpdates: 'stateful', legacyBindingSettings: true }, 'stateful'],
+  ['explicit marker', { bindingUpdates: 'protected', legacyBindingSettings: true }, 'protected'],
+])('migrating %s (%j) to %s displays the active policy and exits compatibility atomically', async (_label, legacy, policy) => {
+  const { runtime, settings, value } = await fixture({ bindings: false })
+  settings.publish({ value: { enabled: true, ...legacy } })
+  const migration = Promise.withResolvers()
+  settings.mutate.mockImplementation(async operations => {
+    await migration.promise
+    const next = { ...settings.scope.getSnapshot().value }
+    for (const operation of operations) next[operation.path[0]] = operation.value
+    settings.publish({ value: next })
+  })
+  const view = runtime.renderRoot()
+  await runtime.flush()
+  fireEvent.click(view.container.querySelector('.ptcPlusHeader'))
+  await runtime.flush()
+  const selector = view.getByRole('combobox', { name: 'Allow redeclarations and overrides' })
+  expect(selector.value).toBe('legacy')
+  expect(selector.selectedOptions[0].textContent).toBe('Legacy settings (not migrated)')
+  expect(view.queryByRole('switch', { name: 'Allow redeclarations and overrides' })).toBeNull()
+  expect(view.getByRole('switch', { name: 'Allow top-level variable redeclarations' }).checked)
+    .toBe(legacy.looseTopLevelRedeclarations ?? value.looseTopLevelRedeclarations)
+  expect(settings.mutate).not.toHaveBeenCalled()
+  expect(settings.set).not.toHaveBeenCalled()
+  fireEvent.change(selector, { target: { value: policy } })
+  await runtime.flush()
+  expect(selector.disabled).toBe(true)
+  expect(selector.value).toBe('legacy')
+  expect(settings.mutate).toHaveBeenCalledWith([
+    { op: 'set', path: ['bindingUpdates'], value: policy },
+    { op: 'set', path: ['legacyBindingSettings'], value: false },
+  ])
+  fireEvent.change(selector, { target: { value: policy } })
+  await runtime.flush()
+  expect(settings.mutate).toHaveBeenCalledTimes(1)
+  migration.resolve()
+  await runtime.flush()
+  expect(settings.set).not.toHaveBeenCalled()
+  expect(view.queryByRole('combobox', { name: 'Allow redeclarations and overrides' })).toBeNull()
+  expect(view.container.querySelector('[aria-label="Allow top-level variable redeclarations"]')).toBeNull()
+  const toggle = view.getByRole('switch', { name: 'Allow redeclarations and overrides' })
+  expect(toggle.checked).toBe(policy === 'stateful')
+  expect(toggle.disabled).toBe(false)
+  fireEvent.click(toggle)
+  await runtime.flush()
+  expect(settings.scope.getSnapshot().value.bindingUpdates).toBe(policy === 'stateful' ? 'protected' : 'stateful')
+  expect(settings.scope.getSnapshot().value.legacyBindingSettings).toBe(false)
+})
+
+test.each([
+  { writable: false, enabled: true },
+  { writable: true, enabled: false },
+])('legacy policy selection respects settings availability: %j', async ({ writable, enabled }) => {
+  const { runtime, settings, setLocale } = await fixture({ bindings: false })
+  settings.publish({ writable, value: { enabled, looseTopLevelRedeclarations: false } })
+  setLocale('zh')
+  const view = runtime.renderRoot()
+  await runtime.flush()
+  fireEvent.click(view.container.querySelector('.ptcPlusHeader'))
+  await runtime.flush()
+  const selector = view.getByRole('combobox', { name: '允许重声明和覆盖' })
+  expect(selector.value).toBe('legacy')
+  expect(selector.selectedOptions[0].textContent).toBe('沿用旧版设置（尚未迁移）')
+  expect(selector.disabled).toBe(true)
+  fireEvent.change(selector, { target: { value: 'stateful' } })
+  await runtime.flush()
+  expect(settings.mutate).not.toHaveBeenCalled()
+  expect(settings.set).not.toHaveBeenCalled()
 })
 
 test('renderer follows current Session projections and cleans settings subscriptions', async () => {

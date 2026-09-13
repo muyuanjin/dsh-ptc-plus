@@ -1,5 +1,6 @@
 /** Own the CodeRuntime patch, per-cell lease, journal projection, and session settlement. */
 import { AsyncLocalStorage } from 'node:async_hooks'
+import { executionPolicies } from './binding-update-policy.js'
 import { assertObjectJsonSchema, validateJsonSchemaValue } from '@deepseek-ai/dsh-tools'
 import { normalizeBindingDescriptors } from './binding-descriptors.js'
 import { SessionRuntime } from './session-runtime.js'
@@ -153,6 +154,8 @@ export function createRuntimeBridgeOwner({
   bindingSubmissionForAgent,
 }) {
   const scope = new AsyncLocalStorage()
+  const childScope = new AsyncLocalStorage()
+  const childRuntimes = new Set()
   // AgentRegistry.withInitiator is AsyncLocalStorage-based. The arrow preserves
   // its receiver when a worker callback re-enters the host tool pipeline.
   const withInitiator = ctx.agents === undefined || typeof ctx.agents.withInitiator !== 'function'
@@ -166,6 +169,21 @@ export function createRuntimeBridgeOwner({
   const patchedDefinitions = new Map()
   const pending = new WeakMap()
   let active = true
+  const runIsolated = async (request, executionToken, depth, cellConfig, inheritedTools) => {
+    const child = new SessionRuntime({ ...cellConfig, durableReplay: false, userBindingsEnabled: false,
+      replViewEnabled: false }, { withInitiator, userBindingsCwd })
+    childRuntimes.add(child)
+    const projected = projectBindings(request, depth, executionToken, inheritedTools, cellConfig)
+    try {
+      return await child.run({ id: 'isolated-cell', session: { header: {
+        cwd: executionToken?.session?.header?.cwd,
+      } } }, { ...projected.request, executionToken })
+    } finally {
+      projected.release()
+      childRuntimes.delete(child)
+      await child.dispose()
+    }
+  }
   const withDraftCapability = (meta, current) => currentConfig.userBindingsEnabled !== true
     || typeof userBindingDraftForAgent !== 'function'
     ? meta
@@ -205,7 +223,19 @@ export function createRuntimeBridgeOwner({
       if (depth >= cellConfig.maxNestedRunCodeDepth) {
         throw new RangeError(`code.run recursion depth exceeds configured maximum ${cellConfig.maxNestedRunCodeDepth}`)
       }
-      if (typeof functions[RUN_CODE] === 'function') return functions[RUN_CODE](args)
+      const languageSemantics = executionPolicies(cellConfig).languageSemantics
+      if (typeof functions[RUN_CODE] === 'function') {
+        return childScope.run({ executionToken, depth: depth + 1, cellConfig, functions },
+          () => functions[RUN_CODE](args))
+      }
+      if (languageSemantics !== 'legacy-v1') {
+        const child = await runIsolated({ ...request, program: args.code }, executionToken,
+          depth + 1, cellConfig, functions)
+        if (child.error !== undefined) {
+          throw new Error(`nested run_code failed (${child.error.kind}): ${child.error.message}`)
+        }
+        return { logs: child.logs, ...(child.value === undefined ? {} : { result: child.value }) }
+      }
       const childProjected = projectBindings(
         { ...request, program: args.code }, depth + 1, executionToken, functions, cellConfig,
       )
@@ -371,6 +401,10 @@ export function createRuntimeBridgeOwner({
 
   const patchedRun = function (request) {
     if (!active) return upstreamRun.call(runtime, request)
+    const child = childScope.getStore()
+    if (child !== undefined && executionPolicies(child.cellConfig).languageSemantics !== 'legacy-v1') {
+      return runIsolated(request, child.executionToken, child.depth, child.cellConfig, child.functions)
+    }
     const current = scope.getStore()
     if (current === undefined) return upstreamRun.call(runtime, request)
     const projected = projectBindings(request, 0, current)
@@ -505,6 +539,7 @@ export function createRuntimeBridgeOwner({
     },
     async dispose() {
       active = false
+      await Promise.all([...childRuntimes].map(child => child.dispose()))
       if (runtime.run === patchedRun) {
         if (ownRun === undefined) delete runtime.run
         else Object.defineProperty(runtime, 'run', ownRun)

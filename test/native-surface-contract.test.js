@@ -229,7 +229,7 @@ return {
 }
 `, {}, 'degraded-empty-tools', bindings)
   assert.deepEqual(observed.raw.value, {
-    child: { logs: [], result: 'upstream' },
+    child: { logs: [], result: 1 },
     tree: [
       { namespace: 'tools', members: [] },
       { namespace: 'repl', members: ['state'] },

@@ -3,9 +3,10 @@ import { assertOwnFields, isRecord } from './record-utils.js'
 
 const DIAGNOSTIC_FIELDS = new Set([
   'code', 'severity', 'phase', 'message', 'stateEffect', 'dispatchState',
-  'source', 'cause', 'help',
+  'source', 'cause', 'help', 'collisions',
 ])
 const SOURCE_FIELDS = new Set(['cell', 'start', 'end'])
+const COLLISION_FIELDS = new Set(['name', 'kind', 'reason', 'start', 'end'])
 const POSITION_FIELDS = new Set(['line', 'column'])
 const CAUSE_FIELDS = new Set(['code', 'message'])
 const SEVERITIES = new Set(['error', 'warning', 'note'])
@@ -24,6 +25,23 @@ function normalizePosition(value, label) {
   }
   assertOwnFields(value, POSITION_FIELDS, `diagnostic ${label}`)
   return Object.freeze({ line: value.line, column: value.column })
+}
+
+/** One collision record as its compiler owner determined it: the colliding name, its
+ * declaration kind, the reason the producer rejected it, and the original source span. */
+function normalizeCollision(value) {
+  if (!isRecord(value)) throw new Error('invalid dsh-ptc-plus diagnostic collision')
+  assertOwnFields(value, COLLISION_FIELDS, 'diagnostic collision')
+  if (!isLine(value.name) || !isLine(value.kind) || !isLine(value.reason)) {
+    throw new Error('invalid dsh-ptc-plus diagnostic collision')
+  }
+  return Object.freeze({
+    name: value.name,
+    kind: value.kind,
+    reason: value.reason,
+    start: normalizePosition(value.start, 'collision start'),
+    ...(value.end === undefined ? {} : { end: normalizePosition(value.end, 'collision end') }),
+  })
 }
 
 function normalizeCause(value, depth) {
@@ -77,6 +95,13 @@ export function normalizeDiagnostic(value, depth = 0) {
   }
   let cause
   if (value.cause !== undefined) cause = normalizeCause(value.cause, depth)
+  let collisions
+  if (value.collisions !== undefined) {
+    if (!Array.isArray(value.collisions) || value.collisions.length === 0) {
+      throw new Error('invalid dsh-ptc-plus diagnostic collisions')
+    }
+    collisions = Object.freeze(value.collisions.map(collision => normalizeCollision(collision)))
+  }
   let help
   if (value.help !== undefined) {
     if (!Array.isArray(value.help) || value.help.length > 3
@@ -94,6 +119,7 @@ export function normalizeDiagnostic(value, depth = 0) {
     ...(value.dispatchState === undefined ? {} : { dispatchState: value.dispatchState }),
     ...(source === undefined ? {} : { source }),
     ...(cause === undefined ? {} : { cause }),
+    ...(collisions === undefined ? {} : { collisions }),
     ...(help === undefined ? {} : { help }),
   })
 }

@@ -38,6 +38,18 @@ function schemas(...names) {
   return new Map(names.map(name => [name, { name, parameters: { type: 'object' } }]))
 }
 
+test('an unfinished unchanged call cannot restore replay state after an earlier normalization', async () => {
+  const first = call('read', { path: 'one' }).filter(chunk => !['usage', 'finish'].includes(chunk.type))
+  const trailing = call('read', '{', { index: 1, withEnd: false })
+  trailing[trailing.length - 1].replayState = { opaque: 'old-provider-state' }
+  const result = await collect([...first, ...trailing], {
+    tools: [{ name: 'run_code' }], nativeSchemas: schemas('read'),
+  })
+  assert.equal(result.find(chunk => chunk.type === 'block-end').block.name, 'run_code')
+  assert.equal(result.find(chunk => chunk.type === 'tool-call-delta' && chunk.index === 1).argumentsDelta, '{')
+  assert.equal(Object.hasOwn(result.at(-1), 'replayState'), false)
+})
+
 test('canonicalizes every live native name through its typed tools binding', async () => {
   for (const [name, args] of [
     ['read', { file_path: 'README.md', limit: 5 }],

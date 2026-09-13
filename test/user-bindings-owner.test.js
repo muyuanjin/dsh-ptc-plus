@@ -1918,10 +1918,16 @@ export async function add(value: number) {
   assert.match(result.value.logs.map(item => item.text).join(''), /candidate/)
   const symbols = await call(target, 'run', { source: 'export const one = 1' })
   assert.deepEqual(symbols.value.value, { symbols: ['one'] })
+  const revised = await call(target, 'run', {
+    source: 'export function read(value: number) { const value = value + 1; const local = 1; const local = 2; return value + local }',
+    invocation: { symbol: 'read', args: [3] },
+  })
+  assert.equal(revised.value.value, 6)
   assert.equal((await call(target, 'run', { source, invocation: { symbol: 'missing', args: [] } })).ok, false)
   assert.equal((await call(target, 'run', { source, invocation: { symbol: 'add', args: 'bad' } })).ok, false)
   const consoleResult = await call(target, 'console-run', { source, code: 'const total = await add(2); total' })
   assert.equal(consoleResult.ok, true)
+  assert.equal(consoleResult.value.error, undefined, consoleResult.value.error)
   assert.equal(consoleResult.value.output, '42')
   const environment = consoleResult.value.environment
   assert.equal((await call(target, 'console-run', { environment, source, code: 'total + 1' })).value.output, '43')

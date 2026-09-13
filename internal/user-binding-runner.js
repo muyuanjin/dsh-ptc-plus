@@ -3,7 +3,8 @@ import { isAbsolute, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { parentPort, workerData } from 'node:worker_threads'
 import { encodeValue } from './value-wire.js'
-import { transformTypeScriptModule } from './typescript-transform.js'
+import { managedModuleImport } from './stateful-module-runtime.js'
+import { compileStatefulModule, createUserModuleCompilationHooks } from './stateful-module-compiler.js'
 
 if (parentPort === null) throw new Error('user binding runner requires a parent port')
 const candidateCwd = workerData.cwd
@@ -13,18 +14,21 @@ if (typeof candidateCwd !== 'string' || !isAbsolute(candidateCwd)) {
 }
 const candidateParent = pathToFileURL(resolve(candidateCwd, 'ptc-plus-bindings-candidate')).href
 let candidateUrl
+const moduleCompilation = createUserModuleCompilationHooks()
 registerHooks({
   resolve(specifier, context, nextResolve) {
-    return nextResolve(specifier, context.parentURL === candidateUrl
-      ? { ...context, parentURL: candidateParent }
-      : context)
+    return moduleCompilation.resolve(specifier, context, (selected, original) =>
+      nextResolve(selected, original.parentURL === candidateUrl
+        ? { ...original, parentURL: candidateParent } : original))
   },
+  load: moduleCompilation.load,
 })
 
 try {
-  const javascript = transformTypeScriptModule(workerData.source)
-  candidateUrl = `data:text/javascript,${encodeURIComponent(javascript)}#candidate`
-  const namespace = await import(candidateUrl)
+  const prepared = compileStatefulModule(workerData.source)
+  candidateUrl = `data:text/javascript,${encodeURIComponent(prepared.code)}#candidate`
+  moduleCompilation.mark(candidateUrl, { compiled: true, moduleInterface: prepared.moduleInterface, sourceRegions: prepared.sourceRegions })
+  const namespace = await managedModuleImport(candidateUrl, candidateUrl)
   let value = { symbols: Object.keys(namespace).sort() }
   if (workerData.invocation !== undefined) {
     const { symbol, args } = workerData.invocation

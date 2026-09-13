@@ -2,6 +2,8 @@
 
 本仓库是普通 DSH bundle：`package.json` 声明 `dsh.bundle.patch`、入口、依赖、Node 范围和发布白名单，`cordis.patch.yml` 只插入 `dsh-ptc-plus`。插件自带的运行时依赖由 npm 包声明；必须与宿主共享实例的 DSH service 包声明为 peer dependencies，并由宿主按 `inject` 装配。
 
+`npm run build` 生成 Client bundle，以及私有编译器使用的 `compiler-core.cjs`、`compiler-platform.cjs`、按需加载的 `compiler-amaro.cjs`、`compiler-typescript.cjs` 和对应 source maps。依赖中的大型字符串参数由构建提取为 `compiler-asset-*.txt`，`compiler-assets.json` 拥有精确加载清单，避免 WASM 等数据同时驻留于源码与字面量池。这些编译器产物由 `scripts/compiler-bundle.mjs` 从源码紧凑生成，并列入发布白名单；不能手工修改生成文件。构建同时核验编译器源码所导入的必需平台成员。`npm run build:check` 同时比较 Client、编译器和资源产物，`prepack` 通过该检查阻止陈旧产物进入 tarball。源码验证还须把私有 realm 的执行映射回原始编译器文件，不能只统计调用服务的外层代码。
+
 ## 命名约定
 
 项目在不同集成层使用不同名称：

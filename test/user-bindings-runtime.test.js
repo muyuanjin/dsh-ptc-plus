@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { SessionRuntime } from '../internal/session-runtime.js'
 import { createUserBindingsSnapshot } from '../internal/user-bindings.js'
+import { LEGACY_USER_BINDING_TRANSFORM } from '../internal/typescript-transform.js'
 import { LIVE_USER_BINDINGS_SHADOW_POLICY } from '../internal/session-journal-schema.js'
 import { interceptWorkerMessages, interceptWorkerPosts, restartWorker } from './runtime-observation.js'
 
@@ -31,6 +33,23 @@ function nameStates(execution) {
   assert.equal(execution.settlement.journal.userBindingsShadowPolicy, LIVE_USER_BINDINGS_SHADOW_POLICY)
   return Object.fromEntries(execution.settlement.journal.userBindingNames.map(fact => [fact.name, fact.state]))
 }
+
+test('runtime TypeScript value exports activate through both binding scopes', async t => {
+  for (const scope of ['namespace', 'top-level']) await t.test(scope, async t => {
+    const run = perNameRuntime(t, [binding('typed', 'typed', scope, `
+      export const enum Kind { A=1 }; export const enum Kind { B=2 };
+      export namespace Helpers { export function read(){return Kind.A} };
+      export namespace Helpers { export const count=2 };
+    `)])
+    const prefix = scope === 'namespace' ? 'typed.' : ''
+    const first = await run(`return [${prefix}Kind.A,${prefix}Kind.B,${prefix}Helpers.read(),${prefix}Helpers.count]`)
+    assert.equal(first.result.error, undefined, first.result.error?.message)
+    assert.deepEqual(first.result.value, [1,2,1,2])
+    const later = await run(`${prefix}Kind.A=3;return ${prefix}Helpers.read()`)
+    assert.equal(later.result.error, undefined, later.result.error?.message)
+    assert.equal(later.result.value, 3)
+  })
+})
 
 test('retained provider setters can restore local values after disabled cells without losing other bindings', async t => {
   for (const [label, disabled] of [['feature disabled', undefined], ['empty catalog', snapshot([])]]) {
@@ -170,9 +189,9 @@ test('preserves imported alias provenance when a refreshed user binding snapshot
   assert.deepEqual(continued.settlement.replMemory.entries.find(entry => entry.name === 'alpha'), definition)
 })
 
-test('import aliases keep live values, readonly writes and definitions through provider lifecycle changes', async t => {
+test('protected import aliases keep live values, readonly writes and definitions through provider lifecycle changes', async t => {
   for (const style of ['named', 'default', 'namespace']) await t.test(style, async t => {
-    const run = perNameRuntime(t, [])
+    const run = perNameRuntime(t, [], { bindingUpdates: 'protected' })
     const moduleUrl = `data:text/javascript,${encodeURIComponent(`
 let current = { count: 1 }
 export { current as named, current as default }
@@ -222,6 +241,23 @@ export function bump() { current = { count: current.count + 1 } }
   })
 })
 
+test('stateful import overrides retain their actual source through provider updates and reimport', async t => {
+  const run = perNameRuntime(t, [])
+  const source = 'import {sep as alpha} from "node:path"'
+  await run(`${source}; const read=()=>alpha`)
+  const selected = seed => snapshot([binding('pair', 'pair', 'top-level', `export const alpha=${seed}; export const beta=${seed+1}`)], seed)
+  const written = await run('alpha=42; return [read(),beta]', selected(1))
+  assert.deepEqual(written.result.value, [42,2])
+  assert.equal(written.settlement.replMemory.entries.find(entry => entry.name === 'alpha').definition.source, 'alpha=42')
+  assert.deepEqual(nameStates(written), {alpha:'local',beta:'provider'})
+  assert.deepEqual((await run('return [read(),beta]', selected(10))).result.value, [42,11])
+  assert.deepEqual((await run('return [read(),typeof beta]', snapshot([]))).result.value, [42,'undefined'])
+  const restored = await run(`${source}; return [typeof read(),beta]`, selected(20))
+  assert.deepEqual(restored.result.value, ['string',21])
+  assert.equal(restored.settlement.replMemory.entries.find(entry => entry.name === 'alpha').kind, 'import')
+  assert.deepEqual(nameStates(restored), {alpha:'local',beta:'provider'})
+})
+
 test('synthetic default aliases retain their original definition and live readonly association beside providers', async t => {
   const run = perNameRuntime(t, [], { looseTopLevelRedeclarations: false })
   const declaration = 'export default { count: 1 }'
@@ -245,7 +281,7 @@ test('synthetic default aliases retain their original definition and live readon
 })
 
 test('synthetic import source proof never invokes a namespace member accessor', async t => {
-  const runtime = new SessionRuntime()
+  const runtime = new SessionRuntime({ legacyBindingSettings: true })
   t.after(() => runtime.dispose())
   const run = async (program, userBindings) => {
     const execution = await runtime.runTentative('import-getter-proof', { program, userBindings, bindings: [] })
@@ -283,7 +319,7 @@ test('synthetic import source proof never invokes a namespace member accessor', 
 test('import aliases with uninitialized compiler namespace slots stay unknown and unavailable', async t => {
   for (const storage of ['absent', 'tdz', 'property']) {
     await t.test(storage, async t => {
-      const runtime = new SessionRuntime()
+      const runtime = new SessionRuntime({ legacyBindingSettings: true })
       t.after(() => runtime.dispose())
       await runtime.run('missing-import-slot', { program: 'void 0', bindings: [] })
       // Fail before namespace capture while retaining the authoritative import
@@ -370,8 +406,8 @@ test('nullish same-value writes and invalid result encoding preserve actual name
   assert.deepEqual((await run('return [alpha, beta]')).result.value, [null, 2])
 })
 
-test('current declaration generation retains actual all-old partial writes and leaves failed mixed candidates attached', async t => {
-  const run = perNameRuntime(t, [binding('pair', 'pair', 'top-level', 'export let alpha = 1; export let beta = 2')])
+test('legacy: current declaration generation retains actual all-old partial writes and leaves failed mixed candidates attached', async t => {
+  const run = perNameRuntime(t, [binding('pair', 'pair', 'top-level', 'export let alpha = 1; export let beta = 2')], { legacyBindingSettings: true })
   const mixed = await run('let [alpha, fresh = (() => { throw new Error("mixed") })()] = [10];')
   assert.match(mixed.result.error.message, /mixed/)
   assert.deepEqual(nameStates(mixed), { alpha: 'provider', beta: 'provider' })
@@ -381,8 +417,8 @@ test('current declaration generation retains actual all-old partial writes and l
   assert.deepEqual((await run('return [alpha, beta]')).result.value, [10, 2])
 })
 
-test('pre-existing initialized lexicals remain local and failed native lexicals remain explicitly unknown', async t => {
-  const run = perNameRuntime(t, [])
+test('legacy: pre-existing initialized lexicals remain local and failed native lexicals remain explicitly unknown', async t => {
+  const run = perNameRuntime(t, [], { legacyBindingSettings: true })
   assert.match((await run('let ready = 4; throw new Error("stop"); let pending = 9;')).result.error.message, /stop/)
   const selected = snapshot([binding('pair', 'pair', 'top-level', 'export let ready = 40; export let pending = 90; export let peer = 2')])
   const result = await run('return [ready, peer]', selected)
@@ -392,14 +428,47 @@ test('pre-existing initialized lexicals remain local and failed native lexicals 
   assert.match((await run('return pending', selected)).result.error.message, /ReferenceError/)
 })
 
-test('an all-new failed pattern exposes its actual initialized prefix when a provider is later selected', async t => {
-  const run = perNameRuntime(t, [])
+test('legacy: an all-new failed pattern exposes its actual initialized prefix when a provider is later selected', async t => {
+  const run = perNameRuntime(t, [], { legacyBindingSettings: true })
   const failed = await run('let [alpha, beta = (() => { throw new Error("new-pattern") })()] = [5];')
   assert.match(failed.result.error.message, /new-pattern/)
   const selected = snapshot([binding('pair', 'pair', 'top-level', 'export let alpha = 10; export let beta = 20; export let peer = 30')])
   const attached = await run('return [alpha, peer]', selected)
   assert.deepEqual(attached.result.value, [5, 30])
   assert.deepEqual(nameStates(attached), { alpha: 'local', beta: 'unknown', peer: 'provider' })
+})
+
+test('stateful declarations publish all-old and mixed provider candidates only after the whole declarator succeeds', async t => {
+  const run = perNameRuntime(t, [binding('pair', 'pair', 'top-level', 'export let alpha=1; export let beta=2')])
+  for (const pattern of ['alpha,beta', 'alpha,fresh']) {
+    const failed = await run(`let [${pattern.split(',')[0]},${pattern.split(',')[1]}=(()=>{throw new Error("pattern")})()]=[10]`)
+    assert.match(failed.result.error.message, /pattern/)
+    assert.deepEqual(nameStates(failed), {alpha:'provider', beta:'provider'})
+    assert.deepEqual((await run('return [alpha,beta,typeof fresh]')).result.value, [1,2,'undefined'])
+  }
+  const assigned = await run('[alpha,beta=(()=>{throw new Error("assignment")})()]=[10]')
+  assert.match(assigned.result.error.message, /assignment/)
+  assert.deepEqual(nameStates(assigned), {alpha:'local',beta:'provider'})
+  assert.deepEqual((await run('return [alpha,beta]')).result.value, [10,2])
+})
+
+test('failed stateful declarations leave later provider activation available', async t => {
+  const run = perNameRuntime(t, [])
+  assert.match((await run('let ready=4; throw new Error("stop"); let pending=9')).result.error.message, /stop/)
+  assert.match((await run('let [alpha,beta=(()=>{throw new Error("pattern")})()]=[5]')).result.error.message, /pattern/)
+  const selected = snapshot([binding('pair', 'pair', 'top-level', 'export const ready=40; export const pending=90; export const alpha=10; export const beta=20')])
+  const attached = await run('return [ready,pending,alpha,beta]', selected)
+  assert.deepEqual(attached.result.value, [4,90,10,20])
+  assert.deepEqual(nameStates(attached), {alpha:'provider',beta:'provider',pending:'provider',ready:'local'})
+})
+
+test('bare declarations initialize names whose requested provider failed activation', async t => {
+  const run = perNameRuntime(t, [binding('failed', 'failed', 'top-level', 'throw new Error("activation"); export const missing=1')])
+  const result = await run('let missing; return typeof missing')
+  assert.equal(result.result.error, undefined)
+  assert.equal(result.result.value, 'undefined')
+  assert.ok(result.settlement.replMemory.entries.some(entry => entry.name === 'missing'))
+  assert.equal((await run('missing=2; return missing')).result.value, 2)
 })
 
 test('each actual assignment API changes only the written name and preserves sibling identity', async t => {
@@ -612,6 +681,31 @@ test('activates namespace and top-level helpers as ordinary REPL values', async 
     bindings: [],
     userBindings: bindings,
   }), { logs: [], value: [9, 'NEXT'] })
+})
+
+test('binding activation uses the same module updates as candidate execution', async t => {
+  const runtime = new SessionRuntime()
+  t.after(() => runtime.dispose())
+  const userBindings = snapshot([
+    binding('revised', 'revised', 'namespace', 'export const value = 1; export const value = 2; export function read(input: number) { const input = input + 1; const local = 1; const local = 2; return input + local + value }'),
+  ])
+  const result = await runtime.run('revised-module', { program: 'return [revised.value, revised.read(3)]', bindings: [], userBindings })
+  assert.deepEqual(result.value, [2, 8])
+})
+
+test('binding activation preserves historical transforms and reinstalls a changed generation', async t => {
+  const runtime = new SessionRuntime()
+  t.after(() => runtime.dispose())
+  const current = snapshot([
+    binding('generation', 'generation', 'namespace', 'export function read() { const value = 1; try { value = 2 } catch {} return value }'),
+  ])
+  const transform = LEGACY_USER_BINDING_TRANSFORM
+  const legacy = { ...current, transform, fingerprint: createHash('sha256').update(JSON.stringify({
+    revision: current.revision, entries: current.entries.map(entry => entry.fingerprint), transform,
+  })).digest('hex') }
+  const run = userBindings => runtime.run('module-generation', { program: 'return generation.read()', bindings: [], userBindings })
+  assert.equal((await run(legacy)).value, 1)
+  assert.equal((await run(current)).value, 2)
 })
 
 test('Unicode binding declarations identify the installed and reusable values exactly', async t => {

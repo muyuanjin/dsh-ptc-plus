@@ -1,13 +1,10 @@
-import { ModuleRewriteError, rewriteModuleImportsExports } from './cell-rewriter.js'
+import { ModuleRewriteError } from './cell-rewriter.js'
+import { declarationSpan, PreflightError } from './cell-analysis-contract.js'
+export { declarationSpan, PreflightError } from './cell-analysis-contract.js'
+import { parse } from 'acorn'
+import { parse as parseSource } from '@babel/parser'
 import { parseExecutableCell } from './cell-parser.js'
-import {
-  LEGACY_DEFAULT_EXPORT_BINDING,
-  LIVE_DEFAULT_EXPORT_BINDING,
-  LIVE_MODULE_SEMANTICS,
-  LEGACY_IMPORT_EXPRESSION_BOUNDARY,
-  LIVE_IMPORT_EXPRESSION_BOUNDARY,
-  redeclarationCommitTarget,
-} from './repl-rewrite-contract.js'
+import { redeclarationCommitTarget } from './repl-rewrite-contract.js'
 import {
   bindingNodes,
   createGeneratedNameAllocator,
@@ -20,9 +17,15 @@ import {
   renderDurabilityReason,
   renderDurabilityReasons,
 } from './module-policy.js'
-import { rewriteReplRedeclarations } from './repl-convenience.js'
 import { applySourceEdits, mapSourcePosition, mapSourceSpan } from './source-position-map.js'
 import { SKIP_AST_CHILDREN, walkAst } from './ast-traversal.js'
+import { compileStatefulRoot } from './stateful-root-compiler.js'
+import { CELL_PARSER_PLUGINS, bindCompilerIntrinsics, lowerStatefulDecorators, lowerStatefulResources, lowerNativeLanguageSource, normalizeStatefulScopes } from './repl-scope-normalizer.js'
+import { markCallableSources, collectCallableSources } from './callable-source-facts.js'
+import { LegacyPreflightError, prepareLegacyProgram } from './legacy-cell-analysis.js'
+import { adaptLegacyModuleImports } from './managed-module-operations.js'
+import { adaptNativeRootDynamic } from './native-root-compilation.js'
+import { sourceRegionData } from './compiler-region-output.js'
 
 /**
  * Pure AST analysis for PTC cells: binding inventory, durability classification,
@@ -30,24 +33,6 @@ import { SKIP_AST_CHILDREN, walkAst } from './ast-traversal.js'
  * or session state so its behavior is fully testable in isolation.
  */
 
-export function declarationSpan(node) {
-  const start = node.loc?.start
-  /* c8 ignore next */
-  const end = node.loc?.end ?? start
-  /* c8 ignore next */
-  if (start === undefined) return undefined
-  return {
-    line: start.line,
-    column: start.column + 1,
-    /* c8 ignore next */
-    ...(end === undefined ? {} : {
-      end: {
-        line: end.line,
-        column: end.column + 1,
-      },
-    }),
-  }
-}
 
 function addPatternBindings(pattern, names) {
   walkPattern(pattern, node => names.add(node.name))
@@ -67,10 +52,26 @@ function topLevelBindings(body) {
   return new Set(topLevelDeclarations(body).map(declaration => declaration.name))
 }
 
+function rootVarDeclarations(body, declarations, seen) {
+  walkAst({ type: 'Program', body }, node => {
+    if (node.type === 'VariableDeclaration' && node.kind === 'var' && !seen.has(node)) {
+      seen.add(node)
+      const definitionSpan = declarationSpan(node)
+      for (const declaration of node.declarations) {
+        addPatternDeclarations(declaration.id, declarations, 'variable', definitionSpan, true)
+      }
+    }
+    if (isFunction(node) || node.type === 'ClassDeclaration' || node.type === 'ClassExpression'
+      || node.type === 'StaticBlock') return SKIP_AST_CHILDREN
+  })
+}
+
 function topLevelDeclarations(body, variableRedeclarations = false) {
   const declarations = []
+  const seen = new Set()
   for (const statement of body) {
     if (statement.type === 'VariableDeclaration') {
+      seen.add(statement)
       const definitionSpan = declarationSpan(statement)
       for (const declaration of statement.declarations) {
         addPatternDeclarations(
@@ -93,6 +94,7 @@ function topLevelDeclarations(body, variableRedeclarations = false) {
       })
     }
   }
+  rootVarDeclarations(body, declarations, seen)
   return declarations
 }
 
@@ -218,12 +220,6 @@ function isFunction(node) {
     || node.type === 'ArrowFunctionExpression'
 }
 
-export class PreflightError extends Error {
-  constructor(message, node, span = undefined) {
-    super(message)
-    this.span = span ?? declarationSpan(node)
-  }
-}
 
 function staticModuleClassification(moduleLoads) {
   const reasons = new Map()
@@ -244,14 +240,46 @@ function staticModuleClassification(moduleLoads) {
 }
 
 /** Conservatively classify a cell before giving it non-journalable capability. */
-export function classifyDurability(code, knownBindings = new Set()) {
-  const { body } = parseExecutableCell(code)
+export function classifyDurability(code, knownBindings = new Set(), { sourceType = 'script', internalModules = new Set() } = {}) {
+  let body
+  let moduleLoads = []
+  if (sourceType === 'module') {
+    const program = parse(code, { ecmaVersion: 'latest', sourceType: 'module', locations: true })
+    knownBindings = new Set(knownBindings)
+    moduleLoads = program.body.filter(statement => statement.source != null
+      && ['ImportDeclaration', 'ExportNamedDeclaration', 'ExportAllDeclaration'].includes(statement.type)
+      && !internalModules.has(statement.source.value)).map(statement => ({
+      source: statement.source.value, position: declarationSpan(statement.source),
+    }))
+    body = { type: 'BlockStatement', body: program.body.flatMap(statement => {
+      if (statement.type === 'ImportDeclaration') {
+        for (const specifier of statement.specifiers) knownBindings.add(specifier.local.name)
+        return []
+      }
+      if (statement.type === 'ExportAllDeclaration') return []
+      if (statement.type === 'ExportNamedDeclaration') return statement.declaration === null ? [] : [statement.declaration]
+      if (statement.type === 'ExportDefaultDeclaration') return [statement.declaration]
+      return [statement]
+    }) }
+  } else ({ body } = parseExecutableCell(code))
   const declared = topLevelBindings(body.body)
   const rootBindings = new Set([...knownBindings, ...declared])
-  const rootStrict = hasStrictDirective(body)
+  const rootStrict = sourceType === 'module' || hasStrictDirective(body)
   addFunctionVariables(body, rootBindings, rootStrict)
+  // A `var` is instantiated with the cell even on the path that never runs its
+  // initializer, so it occupies the shared environment but does not by itself
+  // replace a name an earlier cell bound.
+  const hoistedVars = new Set()
+  walkAst(body, (node) => {
+    if (isFunction(node)) return SKIP_AST_CHILDREN
+    if (node.type === 'StaticBlock') return SKIP_AST_CHILDREN
+    if (node.type === 'VariableDeclaration' && node.kind === 'var') {
+      for (const declaration of node.declarations) addPatternBindings(declaration.id, hoistedVars)
+    }
+  })
   const reasons = new Map()
   const addReason = reason => reasons.set(renderDurabilityReason(reason), reason)
+  for (const reason of staticModuleClassification(moduleLoads)) addReason(reason)
   const classifyModule = (source) => {
     if (source?.type !== 'Literal' || typeof source.value !== 'string') {
       addReason(DYNAMIC_MODULE_REASON)
@@ -345,6 +373,7 @@ export function classifyDurability(code, knownBindings = new Set()) {
     durability: reasons.size === 0 ? 'durable' : 'volatile',
     reasons: Object.freeze([...reasons.values()]),
     declared,
+    hoistedVars,
   }
 }
 
@@ -354,243 +383,112 @@ function rewriteCellReturns(code, sourceMap, unavailableNames) {
   const allocateName = createGeneratedNameAllocator(body, unavailableNames)
   const returnSignal = allocateName('return_signal')
   const signalReference = `this[${JSON.stringify(returnSignal)}]`
+  const completion = allocateName('cell_completion')
+  const exit = allocateName('cell_exit')
+  const ignored = allocateName('completion_effect')
+  let asyncCompletion = false
 
   walkAst(body, (node) => {
     if (node !== body && isFunction(node)) return SKIP_AST_CHILDREN
+    if (node.type === 'AwaitExpression' || node.await === true
+      || node.type === 'VariableDeclaration' && node.kind === 'await using') asyncCompletion = true
     if (node.type === 'ReturnStatement') {
       const start = node.start
       const end = node.end
       const argument = node.argument === null
         ? ''
         : code.slice(node.argument.start, node.argument.end)
-      // A ReturnStatement may be the last clause body in a switch case. The
-      // generated throw must terminate explicitly because the original return
-      // statement's semicolon is part of the replaced AST range.
-      edits.push({ start, end, text: `throw new ${signalReference}(${argument});` })
-      return SKIP_AST_CHILDREN
-    }
-    if (node.type === 'CatchClause') {
-      const bodyStart = node.body.start + 1
-      const temporary = allocateName('caught')
-      if (node.param === null) {
-        edits.push({ start: node.start + 5, end: node.start + 5, text: ` (${temporary})` })
-        edits.push({ start: bodyStart, end: bodyStart, text: `\nif (${temporary} instanceof ${signalReference}) throw ${temporary};` })
-      } else if (node.param.type === 'Identifier') {
-        edits.push({
-          start: bodyStart,
-          end: bodyStart,
-          text: `\nif (${node.param.name} instanceof ${signalReference}) throw ${node.param.name};`,
-        })
-      } else {
-        const pattern = code.slice(node.param.start, node.param.end)
-        edits.push({ start: node.param.start, end: node.param.end, text: temporary })
-        edits.push({
-          start: bodyStart,
-          end: bodyStart,
-          text: `\nif (${temporary} instanceof ${signalReference}) throw ${temporary};\nconst ${pattern} = ${temporary};`,
-        })
-      }
+      // Break leaves resource and finally scopes without making disposal
+      // suppress a private error for an otherwise successful return.
+      edits.push({ start, end, text: `{let ${ignored}=(${completion}=new ${signalReference}(${argument}));break ${exit};}` })
     }
   })
 
-  /* c8 ignore next */
-  edits.sort((left, right) => right.start - left.start || right.end - left.end)
-  return { ...applySourceEdits(code, sourceMap, edits), returnSignal }
+  const directiveEnd = body.body.findLast(node => node.directive !== undefined)?.end ?? 0
+  // Fallthrough cancels a return overridden by finally break/continue. Empty
+  // declaration completions preserve the source's ordinary expression value.
+  edits.push({ start: directiveEnd, end: directiveEnd,
+    text: `\n{let ${completion};${exit}:{\n` })
+  edits.push({ start: code.length, end: code.length,
+    text: `\n;{let ${ignored}=(${completion}=void 0);}}{let ${ignored}=${completion}&&(()=>{throw ${completion}})();}}\n` })
+  let lowered = applySourceEdits(code, sourceMap, edits)
+  if (asyncCompletion) {
+    // The frame result is compiler-owned transport. Letting Node create it
+    // would hide the promise from our observer and re-enter source protocols
+    // when the host REPL awaits this realm's completion.
+    lowered = applySourceEdits(lowered.code, lowered.sourceMap, [
+      { start: 0, end: 0, text: '(async()=>{' },
+      { start: lowered.code.length, end: lowered.code.length, text: '\n})()' },
+    ])
+  }
+  return { ...lowered, returnSignal, asyncCompletion }
 }
 
-function normalizePreparationOptions({
-  knownBindings = new Set(),
-  bindingPolicy,
-  reservedBindings = new Set(),
-  rewritesEnabled,
-  importBindings = new Map(),
-  importNamespaces = new Set(),
-  writableBindings,
-  moduleSemantics = LIVE_MODULE_SEMANTICS,
-}) {
-  if (typeof bindingPolicy === 'boolean') {
-    bindingPolicy = {
-      variableRedeclarations: bindingPolicy,
-      functionClassRedeclarations: false,
-    }
-  }
-  if (bindingPolicy === null || typeof bindingPolicy !== 'object' || Array.isArray(bindingPolicy)
-    || typeof bindingPolicy.variableRedeclarations !== 'boolean'
-    || typeof bindingPolicy.functionClassRedeclarations !== 'boolean') {
-    throw new TypeError('ptc-plus: binding policy must define variableRedeclarations and functionClassRedeclarations booleans')
-  }
-  writableBindings ??= bindingPolicy.variableRedeclarations ? new Set(knownBindings) : new Set()
-  if (rewritesEnabled === null || typeof rewritesEnabled !== 'object' || Array.isArray(rewritesEnabled)
-    || typeof rewritesEnabled.autoRewriteImports !== 'boolean'
-    || typeof rewritesEnabled.autoStripExports !== 'boolean'
-    || typeof rewritesEnabled.autoSplitRedeclarations !== 'boolean') {
-    throw new TypeError('ptc-plus: rewrite policy must define autoRewriteImports, autoStripExports, and autoSplitRedeclarations booleans')
-  }
-  if (moduleSemantics === null || typeof moduleSemantics !== 'object' || Array.isArray(moduleSemantics)
-    || ![LEGACY_DEFAULT_EXPORT_BINDING, LIVE_DEFAULT_EXPORT_BINDING]
-      .includes(moduleSemantics.defaultExportBinding)
-    || ![LEGACY_IMPORT_EXPRESSION_BOUNDARY, LIVE_IMPORT_EXPRESSION_BOUNDARY]
-      .includes(moduleSemantics.importExpressionBoundary)) {
-    throw new TypeError('ptc-plus: module semantics must define supported default-export and import-expression rules')
-  }
-  return { knownBindings, bindingPolicy, reservedBindings, rewritesEnabled,
-    importBindings, importNamespaces, writableBindings, moduleSemantics }
-}
-
-function parseMappedCell(moduleRewrite, program) {
-  try {
-    return parseExecutableCell(moduleRewrite.code, { eraseTypes: true })
-  } catch (error) {
-    if (error instanceof ModuleRewriteError) {
-      error.cellPosition = mapSourcePosition(error.cellPosition, moduleRewrite.code, program, moduleRewrite.sourceMap)
-    }
-    throw error
-  }
-}
-
-function collisionMapper(code, program, sourceMap) {
-  return declaration => {
-    /* c8 ignore next */
-    const mapped = declaration.original === true ? declaration.span : declaration.span === undefined
-      ? { line: 1, column: 1 }
-      : mapSourceSpan(declaration.span, code, program, sourceMap)
-    return {
-      name: declaration.name,
-      kind: declaration.kind,
-      replaceableByVariableDeclaration: declaration.replaceableByVariableDeclaration === true,
-      ...(declaration.reason === undefined ? {} : { reason: declaration.reason }),
-      ...(declaration.commitDependency === undefined
-        ? {}
-        : { commitDependency: declaration.commitDependency }),
-      start: { line: mapped.line, column: mapped.column },
-      /* c8 ignore next */
-      ...(mapped.end === undefined ? {} : { end: mapped.end }),
-    }
-  }
-}
-
-function preparedDeclarations(moduleRewrite, parsed, program, bindingPolicy) {
-  const generatedDeclarations = topLevelDeclarations(parsed.body.body, bindingPolicy.variableRedeclarations)
-  const originalDeclarationNames = new Set(moduleRewrite.exportDeclarations.map(declaration => declaration.name))
-  return [
-    ...moduleRewrite.importDeclarations.map(declaration => ({ ...declaration, writable: false })),
-    ...moduleRewrite.exportDeclarations.map(declaration => ({
-      ...declaration,
-      writable: bindingPolicy.variableRedeclarations,
-    })),
-    ...generatedDeclarations
-      .filter(declaration => !moduleRewrite.generatedNamespaces.has(declaration.name)
-        && !originalDeclarationNames.has(declaration.name))
-      .map(declaration => ({
-        ...declaration,
-        ...(declaration.definitionSpan === undefined ? {} : {
-          definitionSpan: mapSourceSpan(declaration.definitionSpan, parsed.code, program, moduleRewrite.sourceMap),
-        }),
-      })),
-  ]
-}
-
-function classifyPrepared({ code, sourceMap }, program, knownBindings, moduleRewrite, staticModuleReasons) {
-  let classification
-  try {
-    classification = classifyDurability(code, knownBindings)
-  } catch (error) {
-    if (error instanceof PreflightError && error.span !== undefined) {
-      error.span = mapSourceSpan(error.span, code, program, sourceMap)
-    }
-    throw error
-  }
-  const reasons = new Map()
-  for (const reason of [...staticModuleReasons, ...classification.reasons]) {
-    reasons.set(renderDurabilityReason(reason), reason)
-  }
-  const imports = new Map(moduleRewrite.imports)
-  for (const name of classification.declared) {
-    if (!moduleRewrite.generatedNamespaces.has(name)) imports.delete(name)
-  }
-  return {
-    ...classification,
-    durability: reasons.size === 0 ? 'durable' : 'volatile',
-    reasons: Object.freeze([...reasons.values()]),
-    reason: renderDurabilityReasons([...reasons.values()]),
-    imports,
-    declared: new Set([...classification.declared, ...moduleRewrite.imports.keys()]),
-  }
+/** Workbench completion uses the same source grammar and compilation boundary. */
+export function prepareConsoleProgram(source, options) {
+  const program = parseSource(source, { sourceType: 'script', errorRecovery: true,
+    allowImportExportEverywhere: true, allowUndeclaredExports: true,
+    allowAwaitOutsideFunction: true, allowReturnOutsideFunction: true, plugins: CELL_PARSER_PLUGINS }).program
+  const last = program.body.at(-1)
+  const input = last?.type !== 'ExpressionStatement' ? source
+    : `${source.slice(0, last.start)}return (${source.slice(last.expression.start, last.expression.end)});${source.slice(last.end)}`
+  return prepareProgram(input, options)
 }
 
 export function prepareProgram(program, options = {}) {
   if (typeof program !== 'string') throw new TypeError('ptc-plus: program must be a string')
-  const { knownBindings, bindingPolicy, reservedBindings, rewritesEnabled,
-    importBindings, importNamespaces, writableBindings, moduleSemantics } = normalizePreparationOptions(options)
-  const unavailableGeneratedNames = new Set([
-    ...knownBindings, ...reservedBindings, ...importBindings.keys(), ...importNamespaces,
-  ])
-  const moduleRewrite = rewriteModuleImportsExports(
-    program, rewritesEnabled, importBindings, importNamespaces, unavailableGeneratedNames, moduleSemantics,
-  )
-  const staticModuleReasons = staticModuleClassification(moduleRewrite.moduleLoads)
-  const parsed = parseMappedCell(moduleRewrite, program)
-  const { code } = parsed
-  const { sourceMap, commitSignal } = moduleRewrite
-  const declarations = preparedDeclarations(moduleRewrite, parsed, program, bindingPolicy)
-  const collisionFor = collisionMapper(code, program, sourceMap)
-  const reserved = declarations.filter(declaration => (
-    reservedBindings.has(declaration.name)
-    || moduleRewrite.importNamespaces.has(declaration.name)
-    || (declaration.kind === 'import' && knownBindings.has(declaration.name))
-  ))
-  const convenience = reserved.length > 0 ? {
-    executableCode: code, executableSourceMap: sourceMap,
-    collisions: reserved.map(collisionFor), redeclared: [], rewrites: [],
-  } : rewriteReplRedeclarations({
-    code,
-    sourceMap,
-    body: parsed.body.body,
-    knownBindings,
-    variableRedeclarationBindings: bindingPolicy.variableRedeclarations
-      ? new Set([...knownBindings].filter(name => !importBindings.has(name)))
-      : new Set(knownBindings),
-    writableBindings: new Set([...writableBindings].filter(name => !importBindings.has(name))),
-    declarations,
-    declarationSpan,
-    collisionFor,
-    bindingPolicy,
-    autoSplitRedeclarations: rewritesEnabled.autoSplitRedeclarations,
-    commitSignal,
-  })
-  const { executableCode, executableSourceMap, collisions, redeclared, rewrites } = convenience
-  const commitTargets = new Set(moduleRewrite.commitTargets)
-  for (const declaration of redeclared) {
-    if (declaration.kind === 'function' || declaration.kind === 'class') {
-      commitTargets.add(declaration.commitDependency)
+  if (options.languageSemantics === undefined || options.languageSemantics === 'legacy-v1') {
+    try {
+      // Logical imports have no persistent native namespace slot. Their proved
+      // identity enters the native execution environment with the other roots.
+      const nativeOptions = { ...options, importBindings: new Map([...options.importBindings ?? []]
+        .filter(([name]) => !options.establishedRoots?.has(name) || options.nativeBindings?.has(name))) }
+      const prepared = adaptNativeRootDynamic(adaptLegacyModuleImports(prepareLegacyProgram(program, nativeOptions), nativeOptions), options, program)
+      return { ...prepared, sourceRegions: sourceRegionData(prepared.sourceRegions), languageSemantics: 'legacy-v1' }
+    } catch (error) {
+      if (error instanceof LegacyPreflightError) throw new PreflightError(error.message, undefined, error.span)
+      throw error
     }
   }
-  // Generated control helpers are not ambient inputs from the user's program.
-  const classification = classifyPrepared(
-    { code: executableCode, sourceMap: executableSourceMap },
-    program, knownBindings, moduleRewrite, staticModuleReasons,
-  )
-  let lowered = { code, sourceMap }
-  if (collisions.length === 0) {
-    lowered = rewriteCellReturns(
-      executableCode,
-      executableSourceMap,
-      unavailableGeneratedNames,
-    )
+  if (options.languageSemantics === 'stateful-v1' || options.languageSemantics === 'protected-v1') {
+    let normalized
+    let prepared
+    let callableSources
+    const intrinsicContext = { bindings: new Set() }
+    try {
+      const marked = markCallableSources(program, undefined, { plugins: CELL_PARSER_PLUGINS, allowImportExportEverywhere: true, allowUndeclaredExports: true },
+        { lowerNativeSource: lowerNativeLanguageSource, nativeUsing: options.nativeUsing })
+      callableSources = marked.callableSources
+      normalized = normalizeStatefulScopes(marked.code, marked.sourceMap, { mode: options.languageSemantics,
+        nativeJavaScript: marked.nativeJavaScript, deferDecorators: true, deferResources: true, intrinsicContext })
+      prepared = compileStatefulRoot(normalized.code, { ...options, sourceMap: normalized.sourceMap,
+        internalBindings: normalized.internalBindings, dynamicBindings: normalized.dynamicBindings,
+        privateBindings: normalized.privateBindings, originalSource: program })
+    } catch (error) {
+      if (error instanceof ModuleRewriteError) throw error
+      const position = error.loc === undefined ? undefined : { line: error.loc.line, column: error.loc.column + 1 }
+      throw new ModuleRewriteError(error.message, normalized === undefined ? position
+        : mapSourcePosition(position, normalized.code, program, normalized.sourceMap))
+    }
+    prepared = { ...prepared, deferredHelpers: normalized.deferredHelpers }
+    intrinsicContext.expression = `this[${JSON.stringify(prepared.rootRuntimeName)}].intrinsics`
+    const classificationSource = bindCompilerIntrinsics(lowerStatefulDecorators(
+      { ...prepared, code: prepared.classificationCode }, undefined, intrinsicContext), intrinsicContext).code
+    prepared = bindCompilerIntrinsics(lowerStatefulDecorators(prepared, undefined, intrinsicContext), intrinsicContext)
+    prepared = lowerStatefulResources(prepared, { intrinsicContext, nativeUsing: options.nativeUsing })
+    const parsed = parseExecutableCell(prepared.code, { eraseTypes: true })
+    const classification = classifyDurability(parseExecutableCell(classificationSource, { eraseTypes: true }).code,
+      new Set([...(options.knownBindings ?? []), ...prepared.declared]))
+    const reasons = [...staticModuleClassification(prepared.moduleLoads), ...classification.reasons]
+    const lowered = rewriteCellReturns(parsed.code, prepared.sourceMap,
+      new Set([...prepared.declared, ...(options.knownBindings ?? [])]))
+    prepared.rootBindings.callableSources = collectCallableSources(lowered.code, callableSources)
+    return { ...prepared, ...lowered,
+      sourceRegions: sourceRegionData(prepared.sourceRegions),
+      returnSignal: lowered.returnSignal,
+      durability: reasons.length === 0 ? 'durable' : 'volatile', reasons: Object.freeze(reasons),
+      reason: renderDurabilityReasons(reasons),
+    }
   }
-  return {
-    code: lowered.code,
-    sourceMap: lowered.sourceMap,
-    returnSignal: lowered.returnSignal,
-    ...classification,
-    declarations,
-    imports: classification.imports,
-    importNamespaces: moduleRewrite.importNamespaces,
-    collisions,
-    redeclared,
-    rewrites: [...moduleRewrite.rewrites, ...rewrites],
-    moduleLoads: moduleRewrite.moduleLoads,
-    commitSignal,
-    commitTargets,
-  }
+  throw new TypeError('ptc-plus: unsupported language semantics')
 }

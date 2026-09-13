@@ -5,7 +5,10 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { assertSameFilesystemEntry } from './filesystem-identity.js'
-import { appendRunCodeEvents, fixture, ptcAgent } from './plugin-fixture.js'
+import { appendRunCodeEvents, fixture as pluginFixture, ptcAgent } from './plugin-fixture.js'
+
+// These historical language contracts also govern replay of pre-v9 journals.
+const fixture = (config = {}, ...args) => pluginFixture({ ...config, legacyBindingSettings: true }, ...args)
 
 test('keeps REPL bindings isolated by session', async (t) => {
   const state = fixture()

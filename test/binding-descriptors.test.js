@@ -23,7 +23,7 @@ test('normalizes live binding callables and derives both consumer views', () => 
       emptyObjectMembers: ['read'],
       errorClass: { name: 'ToolError', memberNameProperty: 'toolName' },
     },
-    { global: 'capabilities', members: ['find'] },
+    { global: 'capabilities', members: ['find'], shadowable: true },
   ])
   assert.deepEqual([...normalized.reservedNames].sort(), ['ToolError', 'tools'])
 })

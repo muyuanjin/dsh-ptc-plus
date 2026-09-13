@@ -332,6 +332,7 @@ test('exports a Cordis config schema with validated runtime defaults', async () 
   const defaults = await Config['~standard'].validate({})
   assert.deepEqual(defaults, {
     value: {
+      legacyBindingSettings: false,
       enabled: true,
       enhancedToolView: true,
       replViewEnabled: true,
@@ -605,6 +606,19 @@ test('keeps an outer presentation projection across plugin teardown', async (t) 
   assert.deepEqual(state.runCodeDefinition.output.presentationMeta(), { original: true })
 })
 
+test('failed execute installation restores the original presentation owner', async t => {
+  for (const original of [undefined, () => ({ original: true })]) {
+    const state = fixture()
+    t.after(() => state.dispose())
+    if (original === undefined) delete state.runCodeDefinition.output.presentationMeta
+    else state.runCodeDefinition.output.presentationMeta = original
+    Object.defineProperty(state.runCodeDefinition, 'execute', { configurable: false, writable: false, value() {} })
+    await assert.rejects(state.executeRun('frozen-execute', 'return 1', {}, {}), /cannot attach the session journal/)
+    assert.equal(state.runCodeDefinition.output.presentationMeta, original)
+    assert.equal(Object.hasOwn(state.runCodeDefinition.output, 'presentationMeta'), original !== undefined)
+  }
+})
+
 test('rejects a tool assembly without a tools array', async (t) => {
   const state = fixture()
   t.after(() => state.dispose())
@@ -799,6 +813,47 @@ test('keeps queued journal and language policy on its submission generation', as
   assert.match(next.error.message, /may only appear at the top level|Unexpected token|import/)
 })
 
+test('live catalogs follow execution before delayed journal confirmation', async t => {
+  for (const policy of [{ legacyBindingSettings: true }, { bindingUpdates: 'stateful' }]) {
+    const runtime = new SessionRuntime({ ...policy, durableReplay: false })
+    t.after(() => runtime.dispose())
+    const first = await runtime.runTentative('delayed-confirmation', {
+      program: 'let value=1;const read=()=>value;return read()', bindings: [],
+    })
+    assert.equal(first.result.value, 1)
+    const second = await runtime.runTentative('delayed-confirmation', {
+      program: 'let value=2;const later=3;return [read(),later]', bindings: [],
+    })
+    assert.deepEqual(second.result.value, [2, 3], second.result.error?.message)
+    runtime.finalize(second.settlement, true)
+    runtime.finalize(first.settlement, false)
+    const next = await runtime.run('delayed-confirmation', {
+      program: 'return [read(),value,later]', bindings: [],
+    })
+    assert.deepEqual(next.value, [2, 2, 3], next.error?.message)
+    assert.equal(durableHistoryNodeCount(runtime, 'delayed-confirmation'), 0)
+  }
+})
+
+test('late journal confirmation cannot reinstall the catalog of a reset worker', async t => {
+  const runtime = new SessionRuntime({ bindingUpdates: 'protected', durableReplay: false })
+  t.after(() => runtime.dispose())
+  const pending = await runtime.runTentative('late-confirmation', {
+    program: 'const discarded=1;return discarded', bindings: [],
+  })
+  assert.equal(pending.result.value, 1)
+  await restartWorker(runtime, 'late-confirmation')
+  assert.equal((await runtime.run('late-confirmation', {
+    program: 'const retained=2;return retained', bindings: [],
+  })).value, 2)
+  runtime.finalize(pending.settlement, true)
+  const next = await runtime.run('late-confirmation', {
+    program: 'const discarded=3;return [discarded,retained]', bindings: [],
+  })
+  assert.deepEqual(next.value, [3, 2], next.error?.message)
+  assert.equal(durableHistoryNodeCount(runtime, 'late-confirmation'), 0)
+})
+
 test('does not replay durable history after durable replay is disabled', async (t) => {
   const runtime = new SessionRuntime({ computeMs: 100, maxWallMs: 1_000 })
   t.after(() => runtime.dispose())
@@ -939,12 +994,13 @@ test('handles direct runtime recovery, timeout, volatility, and lifecycle bounda
 
   const malformedTimeline = new SessionRuntime()
   t.after(() => malformedTimeline.dispose())
-  const unrecoverable = await malformedTimeline.run({ id: 'malformed-timeline', session: { events: [
+  const recoveredTimeline = await malformedTimeline.run({ id: 'malformed-timeline', session: { events: [
     { seq: 7, type: 'tool/call', data: { name: 'run_code', callId: 'first', arguments: '{}' } },
     { seq: 7, type: 'tool/call', data: { name: 'run_code', callId: 'second', arguments: '{}' } },
   ] } }, { program: 'return 1', bindings: [] })
-  assert.equal(unrecoverable.error.kind, 'recovery')
-  assert.match(unrecoverable.error.message, /duplicate run_code call sequence/)
+  assert.equal(recoveredTimeline.error, undefined)
+  assert.equal(recoveredTimeline.value, 1)
+  assert.match(recoveredTimeline.logs[0], /PTC-R002/)
 
   const disposed = new SessionRuntime()
   await disposed.dispose()
@@ -1182,9 +1238,9 @@ return code.run({ code: 'void 0', description: 'No value' })
   assert.deepEqual(result.value, { logs: [] })
 })
 
-test('rejects a captured tool lease after its cell settles', async (t) => {
+test('rejects a captured legacy child tool lease after its cell settles', async (t) => {
   let expired
-  const capture = fixture({}, { upstreamRun: async request => {
+  const capture = fixture({ legacyBindingSettings: true }, { upstreamRun: async request => {
     expired = request.bindings.find(binding => binding.global === 'tools').functions.echo
     return { logs: [] }
   } })
@@ -1238,16 +1294,16 @@ test('disposes an anonymous agent without disturbing a live session', async (t) 
   })
 })
 
-test('resets a bare let redeclaration and replaces an existing var declaration', async (t) => {
+test('preserves a bare let redeclaration and replaces an existing var declaration', async (t) => {
   const state = fixture()
   t.after(() => state.dispose())
   await state.runDurable('replacement-forms', 'let noInitializer = 1\nvar existingVar = 2')
   assert.deepEqual(await state.run('replacement-forms', 'let noInitializer'), { logs: [] })
   assert.deepEqual(await state.run('replacement-forms', 'return noInitializer'), {
     logs: [],
-    value: 'undefined',
+    value: 1,
   })
-  assert.deepEqual(await state.run('replacement-forms', 'var existingVar = 3'), { logs: [], value: 3 })
+  assert.deepEqual(await state.run('replacement-forms', 'var existingVar = 3'), { logs: [] })
   assert.deepEqual(await state.run('replacement-forms', 'return existingVar'), { logs: [], value: 3 })
 })
 

@@ -10,6 +10,8 @@ Global User Bindings is an optional PTC Plus capability controlled by `userBindi
 
 Each entry is a TypeScript module with named value exports, a stable ID, display/call name, `namespace` or `top-level` scope, selected symbols, purpose, enabled state, and optional `modelContext`. Omitted symbol selection derives every named value export; an explicit selection limits the exposed API. One strict normalizer derives body-free declarations, binding kinds and durability from source, fingerprints the complete stored entry, and rejects any supplied derivative that disagrees. Activated entries are ordinary writable REPL bindings; a model redeclaration follows the configured binding policy and shadows the default only for that session.
 
+New-generation export descriptors consume the shared TypeScript value normalizer used by module compilation, including enum and namespace values and erased type-only declarations. Original type-name evidence remains available for bounded signature projection. Validation derives this evidence without executing module source; historical snapshot transforms retain their recorded descriptor rules.
+
 `modelContext` contains `includeDeclaration` (default `true`) and `instructions` (default empty, at most 4096 UTF-16 code units). The checkbox controls injection of the existing source-derived interface; a nonempty prompt is injected independently. There is no separately authored interface. Unchecking the declaration and clearing the prompt omits both without disabling execution. Source-derived declarations remain canonical for conflict checks and recovery. The enabled set's selected declarations and prompts have an aggregate 16384-code-unit budget in addition to the existing source-derived declaration budget. The shared Client-safe metadata normalizer preserves these fields in accepted draft history.
 
 Omitting `modelContext` preserves the existing entry serialization and fingerprint; stored documents need no migration. Historical snapshot recovery additionally requires the transform evidence described below. When present, normalized metadata participates in the existing fingerprint. Previously saved `enabled` and `declaration` fields retain their normalized representation for fingerprint verification, including the old declaration string limit of 8192 code units, but custom declarations no longer enter model or UI presentation. A legacy disabled prompt maps to `includeDeclaration: false` and empty instructions; otherwise its prompt is retained and the source-derived interface is included. An explicit `includeDeclaration` takes precedence. Editing and saving through the workbench writes current fields. Existing entries without metadata gain first-turn discovery through the default declaration setting.
@@ -28,16 +30,7 @@ The workbench keeps a save revision with the loaded source. Catalog-only changes
 
 Source is the only implementation authority. Both candidate execution and session activation resolve relative imports from the directory containing `bindings.json`; a session cwd therefore cannot change a persistent helper's dependency graph. The parser accepts named value exports and rejects default exports, re-exports, reserved bindings, invalid selected symbols, and conflicting enabled call names. Model-visible declarations retain useful annotations and bounded inferred shapes but omit implementation bodies and private helpers.
 
-Binding-module transformation has one owner, `internal/typescript-transform.js`,
-shared by durability analysis, live and cold activation, candidate execution and
-the draft console. It uses the pinned standalone Amaro compiler instead of the
-Host's experimental transform API. Snapshot version 2 records the adapter's
-`transform` identity (`amaro@1.1.11`) and includes it in the snapshot fingerprint;
-entry fingerprints and the stored document format remain source-owned. Recovery
-validates this identity before deriving or activating any historical entry.
-Unsupported identities cannot be replaced by the current compiler. A compiler
-upgrade must change the identity and either retain its historical implementation
-or contract recovery at snapshots whose lowering is no longer supported.
+`internal/stateful-module-compiler.js` owns binding-module compilation, shared by validation, live/cold activation, candidate execution and the draft console. Its maintained TypeScript transform owner remains `internal/typescript-transform.js`. Snapshot version 2 records either the historical `amaro@1.1.11` transform or `stateful-module-v1+amaro@1.1.11`, and includes that exact identity in the snapshot fingerprint. The latter applies the shared logical scope rules before TypeScript transformation; the former retains its historical lowering. Entry fingerprints and stored source remain source-owned. Unsupported identities cannot be substituted with the current compiler, and a transform change participates in runtime reuse identity. The complete language and journal-generation decision is [ADR 0025](0025-use-versioned-logical-binding-identities.md).
 
 Version 1 snapshots did not record the native compiler. A matching source,
 declaration, durability classification or cell completion does not prove matching
@@ -50,7 +43,7 @@ modify stored binding entries. Empty version 1 snapshots retain their original
 fingerprint and remain usable as recovery evidence; subset selection preserves
 the snapshot version and transform identity. Reconstructable cells still obey
 their recorded module-reuse policy independently of the transform identity.
-Ordinary REPL cells retain their separate type-stripping and source-position contract.
+Ordinary REPL cells use the shared scope normalization and source-position contract with their recorded cell language generation.
 
 ## Runtime, Prompt, and Recovery
 

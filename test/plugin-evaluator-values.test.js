@@ -143,7 +143,7 @@ test('keeps rendered runtime diagnostics out of captured logs', async (t) => {
   assert.equal(observed.raw.error.message.includes('Captured output'), false)
 })
 
-test('guides fresh helper names when partial execution may leave declarations uninitialized', async (t) => {
+test('guides same-name continuation after a declaration initializer fails', async (t) => {
   const state = fixture()
   t.after(() => state.dispose())
 
@@ -156,7 +156,12 @@ test('guides fresh helper names when partial execution may leave declarations un
   assert.equal(observed.raw.error.kind, 'exception')
   const help = observed.result.meta.dshPtcPlus.diagnostics[0].help
   assert.match(help[0], /failing operation may have caused effects/)
-  assert.match(help[1], /later declarations may be uninitialized/)
+  assert.match(help[1], /completed declarations and actual assignments remain available/)
+  assert.match(help[1], /continue with the same binding names/)
+  assert.deepEqual(await state.run('partial-declaration-guidance', 'const poisoned = initialized + 1\nreturn [initialized, poisoned]'), {
+    logs: [],
+    value: [1, 2],
+  })
 })
 
 test('points cross-cell stack failures at the current call site', async (t) => {
@@ -178,7 +183,58 @@ test('points cross-cell stack failures at the current call site', async (t) => {
   assert.match(diagnostic.message, /uncaught Error: boom/)
 })
 
-test('tracks declarations instantiated before a throwing cell', async (t) => {
+test('exception origins retain frozen values and select each current caller across sync and async rethrows', async t => {
+  for (const bindingUpdates of ['stateful', 'protected']) {
+    const state = fixture({ bindingUpdates })
+    t.after(() => state.dispose())
+    const id = `exception-origins-${bindingUpdates}`
+    const setup = await state.run(id, `
+      const frozen = Object.freeze({message:'frozen failure',name:'FrozenFailure'});
+      const saved = new Error('saved failure');
+      const savedStack = saved.stack;
+      const stackLimit = Error.stackTraceLimit;
+      function fail(value) { throw value }
+      async function later(value) { await Promise.resolve(); throw value }
+    `)
+    assert.equal(setup.error, undefined)
+    for (const [source, column] of [
+      ['\n  fail(frozen)', 3],
+      ['\n    fail(saved)', 5],
+      ['\n      fail(saved)', 7],
+      ['\nawait later(saved)', 7],
+      ['\n  await later(frozen)', 9],
+    ]) {
+      const result = await state.runDurable(id, source)
+      assert.equal(result.isError, true)
+      assert.deepEqual(result.meta.dshPtcPlus.diagnostics[0].source,
+        { cell: 'current', start: { line: 2, column } }, `${bindingUpdates}: ${source}`)
+    }
+    const identity = await state.run(id, `
+      let exact=0;
+      try { fail(frozen) } catch(error) { exact += error === frozen }
+      try { await later(saved) } catch(error) { exact += error === saved }
+      try { await Promise.reject(saved) } catch(error) { exact += error === saved }
+      return [exact, Object.isFrozen(frozen), saved.stack === savedStack, Error.stackTraceLimit === stackLimit]
+    `)
+    assert.deepEqual(identity.value, [3, true, true, true], identity.error?.message)
+  }
+})
+
+test('non-callable failures identify the native current-cell operation after argument effects', async t => {
+  for (const bindingUpdates of ['stateful', 'protected']) {
+    const state = fixture({ bindingUpdates })
+    t.after(() => state.dispose())
+    const id = `non-callable-position-${bindingUpdates}`
+    await state.run(id, 'const service={value:undefined};let effects=0')
+    const result = await state.runDurable(id, '\n  service.value(++effects)')
+    assert.match(result.error.message, /service\.value is not a function/)
+    assert.deepEqual(result.meta.dshPtcPlus.diagnostics[0].source,
+      { cell: 'current', start: { line: 2, column: 3 } })
+    assert.equal((await state.run(id, 'return effects')).value, 1)
+  }
+})
+
+test('leaves unexecuted lexical declarations available for same-name continuation', async (t) => {
   const state = fixture()
   t.after(() => state.dispose())
 
@@ -189,12 +245,12 @@ test('tracks declarations instantiated before a throwing cell', async (t) => {
     {},
   )
   assert.equal(thrown.raw.error.kind, 'exception')
-  // `later` was instantiated during script compile (TDZ) and occupies the
-  // REPL lexical environment, so redeclaring it must hit collision handling
-  // instead of failing in the worker with "already been declared".
+  assert.deepEqual(await state.run('occupied-declaration', 'return typeof later'), {
+    logs: [],
+    value: 'undefined',
+  })
   const redeclared = await state.run('occupied-declaration', 'const later = 2\nreturn later')
-  assert.equal(redeclared.error.kind, 'exception')
-  assert.match(redeclared.error.message, /before initialization/)
+  assert.deepEqual(redeclared, { logs: [], value: 2 })
 })
 
 test('adds a classified one-shot hint after consecutive identical cell failures', async (t) => {
@@ -494,6 +550,7 @@ test('does not cold-replay ambient values reached through globalThis', async (t)
   const events = []
   const session = { id: 'global-this-ambient', events }
   const writer = fixture()
+  t.after(() => writer.dispose())
   const source = 'const ambientReplayValue = globalThis.crypto.randomUUID(); return 1'
   const observed = await writer.runDurable(session.id, source, {}, { session })
   assert.equal(observed.meta.dshPtcPlus.status, 'volatile')

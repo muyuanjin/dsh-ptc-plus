@@ -1,4 +1,5 @@
 import { CONFIG_FIELDS, CONFIG_GROUPS } from '../internal/config-spec.js'
+import { resolveConfig } from '../internal/runtime-config.js'
 import { featureEnabled } from './client-feature-gates.js'
 
 /**
@@ -16,6 +17,13 @@ export function createPtcSettingsView(React, deps) {
         type: 'checkbox', role: 'switch', className: 'ptcPlusCheck', checked: value === true,
         disabled, 'aria-label': label,
         onChange: event => onChange(field, event.target.checked),
+      })
+    }
+    if (field.type === 'enum') {
+      return h('input', {
+        type: 'checkbox', role: 'switch', className: 'ptcPlusCheck', checked: value !== 'protected',
+        disabled, 'aria-label': label,
+        onChange: event => onChange(field, event.target.checked ? 'stateful' : 'protected'),
       })
     }
     return h('input', {
@@ -37,7 +45,10 @@ export function createPtcSettingsView(React, deps) {
     const [pending, setPending] = React.useState(() => new Set())
     const writeTail = React.useRef(Promise.resolve())
     const snapshot = usePtcSettings(snapshot => snapshot)
-    const value = snapshot.status === 'ready' ? (snapshot.value ?? {}) : {}
+    const value = snapshot.status === 'ready' ? resolveConfig(snapshot.value ?? {}) : {}
+    const legacyKeys = ['looseTopLevelRedeclarations', 'looseTopLevelFunctionClassRedeclarations',
+      'autoRewriteImports', 'autoStripExports', 'autoSplitRedeclarations']
+    const legacyMigration = value.legacyBindingSettings === true
     const enabled = featureEnabled(snapshot, 'plugin')
     const globalEnabled = featureEnabled(snapshot, 'bindings')
     // The open dialog owns the management session: closing it releases the draft
@@ -71,7 +82,11 @@ export function createPtcSettingsView(React, deps) {
     const fieldDisabled = field => unavailable
       || pending.has(field.key)
       || (field.key !== 'enabled' && !enabled)
-    const settingGroups = CONFIG_GROUPS.map(group => h('section', {
+    const settingGroups = CONFIG_GROUPS.map(group => {
+      const fields = group.key === 'syntax' && legacyMigration
+        ? [...group.fields, ...legacyKeys]
+        : group.fields
+      return h('section', {
       key: group.key,
       className: 'ptcPlusGroup',
       'aria-labelledby': `ptc-plus-settings-group-${group.key}`,
@@ -80,20 +95,31 @@ export function createPtcSettingsView(React, deps) {
       id: `ptc-plus-settings-group-${group.key}`,
       className: 'ptcPlusGroupTitle',
     }, t(`group.${group.key}`)),
-    ...group.fields.map(key => {
+    ...fields.map(key => {
       const field = CONFIG_FIELDS.find(candidate => candidate.key === key)
       if (field === undefined) return null
+      const migratingPolicy = field.key === 'bindingUpdates' && legacyMigration
       return h(React.Fragment, { key: field.key },
         h('div', { className: 'ptcPlusRow' },
           h('div', { className: 'ptcPlusMain' },
             h('div', { className: 'ptcPlusLabel' }, t(`${field.key}.label`)),
-            field.description === '' ? null : h('div', { className: 'ptcPlusDetail' }, t(`${field.key}.description`))),
-          fieldInput(field, value[field.key], fieldDisabled(field), persist, t(`${field.key}.label`))),
+            field.description === '' ? null : h('div', { className: 'ptcPlusDetail' },
+              t(migratingPolicy ? 'bindingPolicy.migrationDescription' : `${field.key}.description`))),
+          migratingPolicy
+            ? h('select', {
+              className: 'ptcPlusSelect', value: 'legacy', disabled: fieldDisabled(field),
+              'aria-label': t(`${field.key}.label`),
+              onChange: event => persist(field, event.target.value),
+            },
+            h('option', { value: 'legacy', disabled: true }, t('bindingPolicy.legacy')),
+            ...field.options.map(policy => h('option', { key: policy, value: policy }, t(`bindingPolicy.${policy}`))))
+            : fieldInput(field, value[field.key], fieldDisabled(field), persist, t(`${field.key}.label`))),
         field.key === 'userBindingsEnabled' && globalEnabled
           ? h('div', { className: 'ptcPlusSettingAction' },
             h(ActionButton, { type: 'button', className: 'ptcPlusButton', onClick: () => setBindingsOpen(true) }, t('bindings.manage')))
           : null)
-    })))
+    }))
+    })
     return h('li', { className: 'ptcPlusCard' },
       h('button', {
         type: 'button', className: 'ptcPlusHeader', 'aria-expanded': open,

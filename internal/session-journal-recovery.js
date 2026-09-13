@@ -26,12 +26,13 @@ function sourceForRunCall(call) {
 }
 
 /** Select the boundary of a failed replay node or an unavailable recovered suffix. */
-export function recoveryBoundaryForHistory(history, failedNode) {
+export function recoveryBoundaryForHistory(history, failedNode, { reset = false } = {}) {
+  if (reset) failedNode = history.nodes[0]
   const failedCallSeq = failedNode === undefined
     ? history.available === false ? history.volatileSuffix[0]?.seq : undefined
     : failedNode.callSeq
   if (failedCallSeq === undefined) return undefined
-  const frontier = failedNode === undefined ? history.head : failedNode.parent
+  const frontier = reset ? undefined : failedNode === undefined ? history.head : failedNode.parent
   return {
     failedCallSeq,
     frontierCallSeq: frontier === undefined ? null : history.nodes[frontier]?.callSeq ?? null,
@@ -335,7 +336,18 @@ export function foldSessionTimeline(events) {
       let entry = { event, eventIndex, scope }
       if (executable) {
         if (Number.isSafeInteger(event.seq) && event.seq >= 0 && state.executableCalls.has(event.seq)) {
-          throw new Error('session log contains a duplicate run_code call sequence')
+          // A sequence collision disproves both sources, but not the earlier
+          // verified frontier. Keep its position for persistent contraction.
+          const previous = state.executableCalls.get(event.seq)
+          previous.ambiguous = true
+          state.unavailableResultSeq = Math.min(state.unavailableResultSeq ?? event.seq, event.seq)
+          state.found = true
+          state.latestRun = undefined
+          state.editableRun = undefined
+          pendingByCallId.set(previous.event.data.callId, null)
+          pendingByCallId.set(event.data.callId, null)
+          seenCallIds.add(event.data.callId)
+          continue
         }
         if (event.data.name === 'edit_run_code') {
           const targetCallSeq = state.editableRun?.callSeq
@@ -388,6 +400,11 @@ export function foldSessionTimeline(events) {
     }
 
     const call = entry?.event
+    if (entry?.ambiguous) {
+      state.latestRun = undefined
+      state.editableRun = undefined
+      continue
+    }
     const callSeq = call?.seq
     const meta = event.data?.meta
     let normalized

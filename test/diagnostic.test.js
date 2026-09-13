@@ -101,10 +101,34 @@ test('rejects malformed diagnostic fields, positions, causes, and help', () => {
     [valid({ help: 'help' }), /diagnostic help/],
     [valid({ help: ['one', 'two', 'three', 'four'] }), /diagnostic help/],
     [valid({ help: ['bad\nhelp'] }), /diagnostic help/],
+    [valid({ collisions: [] }), /diagnostic collisions/],
+    [valid({ collisions: 'collisions' }), /diagnostic collisions/],
+    [valid({ collisions: [null] }), /diagnostic collision/],
+    [valid({ collisions: [{ name: '', kind: 'variable', reason: 'r', start: { line: 1, column: 1 } }] }), /diagnostic collision/],
+    [valid({ collisions: [{ name: 'a', kind: 'variable', reason: '', start: { line: 1, column: 1 } }] }), /diagnostic collision/],
+    [valid({ collisions: [{ name: 'a', kind: 'variable', reason: 'r', start: { line: 0, column: 1 } }] }), /collision start/],
+    [valid({ collisions: [{ name: 'a', kind: 'variable', reason: 'r', start: { line: 1, column: 1 }, extra: 1 }] }), /collision field extra/],
   ]
   for (const [value, expected] of cases) assert.throws(() => normalizeDiagnostic(value), expected)
 
   let nested = valid()
   for (let index = 0; index < 18; index += 1) nested = valid({ cause: nested })
   assert.throws(() => normalizeDiagnostic(nested), /cause chain is too deep/)
+})
+
+test('keeps every collision reason in the structured diagnostic', () => {
+  const normalized = normalizeDiagnostic(valid({ collisions: [
+    { name: 'tools', kind: 'variable', reason: 'reserved-program-binding-not-shadowable', start: { line: 1, column: 1 } },
+    { name: 'kept', kind: 'class', reason: 'protected-root-redeclaration',
+      start: { line: 2, column: 1 }, end: { line: 2, column: 10 } },
+  ] }))
+  assert.ok(Object.isFrozen(normalized.collisions))
+  assert.ok(Object.isFrozen(normalized.collisions[0]))
+  assert.ok(Object.isFrozen(normalized.collisions[0].start))
+  assert.deepEqual(normalized.collisions, [
+    { name: 'tools', kind: 'variable', reason: 'reserved-program-binding-not-shadowable', start: { line: 1, column: 1 } },
+    { name: 'kept', kind: 'class', reason: 'protected-root-redeclaration',
+      start: { line: 2, column: 1 }, end: { line: 2, column: 10 } },
+  ])
+  assert.equal(Object.hasOwn(normalized.collisions[0], 'end'), false)
 })

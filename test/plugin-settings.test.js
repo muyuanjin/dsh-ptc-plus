@@ -7,6 +7,7 @@ import test from 'node:test'
 import { apply, Config, inject } from '../index.js'
 import { CONFIG_FIELDS, CONFIG_GROUPS, SETTINGS_NAMESPACE } from '../internal/config-spec.js'
 import { resolveConfig } from '../internal/runtime-config.js'
+import { executionPolicies } from '../internal/binding-update-policy.js'
 import { Session } from '@deepseek-ai/dsh-session'
 import { readRuntimeMessage, runtimeStateMessage } from '../internal/runtime-messages.js'
 import { createHostContext, describeSections, runHookChain } from './host-fixture.js'
@@ -865,6 +866,33 @@ test('late settings mount reconciles and detaches against composition config', a
   for (const cleanup of cleanups.reverse()) await cleanup()
 })
 
+test('Host schema and settings hydration preserve omitted new policy during migration', async () => {
+  const cases = [
+    [{}, 'stateful-v1'],
+    [{ looseTopLevelRedeclarations: false }, 'legacy-v1'],
+    [{ autoRewriteImports: false }, 'legacy-v1'],
+    [{ looseTopLevelRedeclarations: false, looseTopLevelFunctionClassRedeclarations: false,
+      autoSplitRedeclarations: false }, 'protected-v1'],
+    [{ autoRewriteImports: false, bindingUpdates: 'stateful' }, 'stateful-v1'],
+  ]
+  for (const [raw, expected] of cases) {
+    const validated = await Config['~standard'].validate(raw)
+    assert.equal(validated.issues, undefined)
+    assert.equal(Object.hasOwn(validated.value, 'bindingUpdates'), Object.hasOwn(raw, 'bindingUpdates'))
+    assert.equal(executionPolicies(resolveConfig(validated.value)).languageSemantics, expected)
+    const scope = settingsScope(validated.value)
+    const { ctx, sections, cleanups } = hostContext(settingsContext(scope))
+    try {
+      await apply(ctx, (await Config['~standard'].validate({})).value)
+      const text = describeSections(sections).map(section => section.text).join('\n')
+      if (expected === 'protected-v1') assert.match(text, /protect|read.only/i)
+      if (raw.autoRewriteImports === false && expected === 'legacy-v1') assert.doesNotMatch(text, /Static import\/export syntax is always available/)
+    } finally {
+      for (const cleanup of cleanups.reverse()) await cleanup()
+    }
+  }
+})
+
 test('late settings hydration applies persisted non-enabled configuration', async () => {
   const { agent, definitions } = cordisAgent()
   const { ctx, cleanups } = hostContext(undefined, [agent])
@@ -1562,11 +1590,13 @@ test('rolls back consecutive failed Cordis updates to the committed configuratio
 
 test('config schema defaults expose the settings switches', async () => {
   const expectedOrder = [
+    'legacyBindingSettings',
     'enabled',
     'enhancedToolView',
     'replViewEnabled',
     'bindingAuthorButtonVisible',
     'autoDescribeRunCode',
+    'bindingUpdates',
     'canonicalizeToolCalls',
     'cordisToolsEnabled',
     'userBindingsEnabled',
@@ -1591,7 +1621,9 @@ test('config schema defaults expose the settings switches', async () => {
   ]
   assert.deepEqual(CONFIG_FIELDS.map(field => field.key), expectedOrder)
   assert.deepEqual(CONFIG_GROUPS.map(group => group.key), ['switch', 'calls', 'syntax', 'recovery', 'extensions', 'interface', 'limits'])
-  assert.deepEqual(CONFIG_GROUPS.flatMap(group => group.fields).sort(), [...expectedOrder].sort())
+  assert.deepEqual(CONFIG_GROUPS.flatMap(group => group.fields).sort(), [...expectedOrder]
+    .filter(key => !['legacyBindingSettings', 'looseTopLevelRedeclarations', 'looseTopLevelFunctionClassRedeclarations', 'autoRewriteImports', 'autoStripExports', 'autoSplitRedeclarations'].includes(key))
+    .sort())
   const fieldByKey = new Map(CONFIG_FIELDS.map(field => [field.key, field]))
   for (const group of CONFIG_GROUPS) {
     assert.ok(group.fields.every(key => fieldByKey.has(key)))
@@ -1607,7 +1639,7 @@ test('config schema defaults expose the settings switches', async () => {
   )
   assert.deepEqual(
     CONFIG_GROUPS.find(group => group.key === 'syntax').fields,
-    ['looseTopLevelRedeclarations', 'looseTopLevelFunctionClassRedeclarations', 'autoRewriteImports', 'autoStripExports', 'autoSplitRedeclarations'],
+    ['bindingUpdates'],
   )
   assert.deepEqual(
     CONFIG_GROUPS.find(group => group.key === 'recovery').fields,

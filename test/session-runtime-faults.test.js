@@ -2,6 +2,9 @@ import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 import test from 'node:test'
 import { createUserBindingsSnapshot } from '../internal/user-bindings.js'
+import { normalizeJournal } from '../internal/session-journal.js'
+import { normalizeBindingDescriptors } from '../internal/binding-descriptors.js'
+import { sessionCellExecutor } from './runtime-observation.js'
 
 const behaviors = []
 let workerCreated
@@ -34,9 +37,13 @@ class FakePort extends EventEmitter {
     const base = {
       type: 'done', id: message.id, logs: [], durability: 'durable', committedRedeclarations: [],
       activatedUserBindings: [], userBindingFailures: [], userBindingNames: [],
+      rootBindingFacts: [],
     }
     if (this.behavior === 'invalid-durability') {
       this.emit('message', { ...base, durability: 'invalid', hasValue: false })
+    } else if (this.behavior === 'invalid-legacy-shadow' || this.behavior === 'missing-legacy-activation') {
+      this.emit('message', { ...base, hasValue: false,
+        shadowedUserBindings: this.behavior === 'invalid-legacy-shadow' ? ['unknown'] : [] })
     } else if (this.behavior === 'missing-commits') {
       const { committedRedeclarations: _committed, ...missing } = base
       this.emit('message', { ...missing, hasValue: false })
@@ -64,6 +71,8 @@ class FakePort extends EventEmitter {
       this.emit('message', { type: 'call', runId: message.id + 1, id: 1, global: 'api', member: 'call', args: { codec: 'ptc-value-graph/v1', root: null, nodes: [] } })
     } else if (this.behavior === 'invalid-user-bindings') {
       this.emit('message', { ...base, hasValue: false, activatedUserBindings: true })
+    } else if (this.behavior === 'unknown-user-binding-entry') {
+      this.emit('message', { ...base, hasValue: false, activatedUserBindings: ['unknown'] })
     } else if (this.behavior === 'missing-user-binding-names') {
       const { userBindingNames: _names, ...missing } = base
       this.emit('message', { ...missing, hasValue: false })
@@ -100,6 +109,7 @@ class FakePort extends EventEmitter {
       type: 'done', id: this.runId, logs: [], durability: 'durable', hasValue: false,
       committedRedeclarations: [], activatedUserBindings: [], userBindingFailures: [],
       userBindingNames: [],
+      rootBindingFacts: [],
     })
   }
 
@@ -226,6 +236,22 @@ test('fails closed for every worker startup and private-protocol fault', async (
     source: 'export const value = 1',
   }] })
 
+  for (const behavior of ['invalid-legacy-shadow', 'missing-legacy-activation']) {
+    behaviors.push(behavior)
+    const runtime = new SessionRuntime()
+    assert.equal((await runtime.run(behavior, { program: 'return 1', bindings: [] })).error, undefined)
+    const replay = normalizeJournal({ version: 3, bindingMode: 'loose',
+      rewritePolicy: { autoRewriteImports: true, autoStripExports: true, autoSplitRedeclarations: true },
+      status: 'durable', calls: [], operations: [], confirms: [], diagnostics: [],
+      completion: { kind: 'return', hasValue: false } })
+    const result = await sessionCellExecutor(runtime, behavior).executeCell({
+      program: 'return 1', bindings: [], bindingDescriptors: normalizeBindingDescriptors([]), userBindings,
+    }, replay)
+    assert.match(result.error.message, behavior === 'invalid-legacy-shadow'
+      ? /invalid shadowed user binding set/ : /recorded user bindings could not be reactivated/)
+    await runtime.dispose()
+  }
+
   behaviors.push('invalid-user-bindings')
   const invalidUserBindings = new SessionRuntime()
   const invalidUserBindingsResult = await invalidUserBindings.run('invalid-user-bindings', {
@@ -238,6 +264,7 @@ test('fails closed for every worker startup and private-protocol fault', async (
   // Every completion carries closed per-name source facts and a complete
   // activation partition; each injected fault must fail at its own check.
   for (const [behavior, expected, options = {}] of [
+    ['unknown-user-binding-entry', /activated an unknown user binding entry/, { userBindings }],
     ['missing-user-binding-names', /invalid user binding name evidence/],
     ['malformed-user-binding-names', /invalid user binding name evidence/],
     ['incomplete-user-binding-names', /incomplete user binding name evidence/, { userBindings }],

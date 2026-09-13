@@ -163,9 +163,9 @@ test('presents one coherent persistent REPL contract to the model', async (t) =>
   assert.doesNotMatch(guidance, /PTC-C001|state: partially-applied|do not resend the full source/)
   assert.match(guidance, /`tools\.read` is bounded inspection/)
   assert.match(guidance, /reduce them to targeted excerpts/)
-  assert.match(guidance, /neither returned nor printed produce no output/)
-  assert.match(guidance, /static `import` declarations are adapted with live, read-only bindings and top-level `export` modifiers are stripped automatically/)
-  assert.match(guidance, /Mixed new\/existing top-level destructuring is split automatically/)
+  assert.match(guidance, /Use `return` for an explicit result and `console` for logs/)
+  assert.match(guidance, /static import and top-level export/)
+  assert.match(guidance, /A declaration publishes its bindings after its whole pattern initializes/)
   assert.match(guidance, /for unfamiliar program APIs/)
   assert.match(guidance, /`capabilities\.find\(\)`/)
   assert.match(guidance, /`capabilities\.inspect\(\)`/)
@@ -175,8 +175,13 @@ test('presents one coherent persistent REPL contract to the model', async (t) =>
   assert.match(guidance, /reserve `code\.run` for isolated execution of source held as data/)
   assert.match(guidance, /instead of assuming Windows, WSL, POSIX, or a particular shell/)
   assert.doesNotMatch(guidance, /child_process|ComSpec|\.cmd|\.bat/)
-  assert.match(guidance, /Repeated top-level `const`\/`let` declarations replace existing bindings/)
-  assert.match(guidance, /Repeated top-level named `function`\/`class` declarations replace existing writable bindings at their declaration position\. Do not rely on function hoisting or class TDZ; define a replacement before using that name in the cell\./)
+  assert.match(guidance, /Declarations and assignments update the same logical binding within its scope/)
+  assert.match(guidance, /Existing closures observe later updates, while saved values retain their identity/)
+  assert.equal(state.sections[0].text({}), guidance)
+  const protectedState = fixture({ bindingUpdates: 'protected' })
+  t.after(() => protectedState.dispose())
+  assert.match(protectedState.sections[0].text({}), /Redeclaration protection is enabled/)
+  assert.doesNotMatch(protectedState.sections[0].text({}), /import.*unsupported/)
   assert.doesNotMatch(guidance, /orientation|inventory|PTC-N002|PTC-V001/)
   assert.match(guidance, /Direct Node\/OS access remains live but is not replayed after a kernel restart/)
   const functionClassStrict = fixture({ looseTopLevelFunctionClassRedeclarations: false })
@@ -462,6 +467,20 @@ test('defers edit registration until the first code composition is captured', as
     { agent, scope: agent },
   )
   assert.equal(agent.ctx.tools.get('edit_run_code')?.name, 'edit_run_code')
+})
+
+test('captures a code composition first supplied by downstream prompt assembly', async t => {
+  const state = fixture()
+  t.after(() => state.dispose())
+  const agent = ptcAgent('late-composition', { id: 'late-composition', events: [] })
+  const initial = { sections: [], contexts: [], variables: {}, tools: [] }
+  assert.equal(agent.ctx.tools.get('edit_run_code'), undefined)
+  const assembled = await state.assemble(initial, { agent, scope: agent }, async () => ({
+    ...initial, sections: [{ name: 'tools:code-only', text: 'upstream code-only guidance' }],
+    tools: [state.runCodeDefinition],
+  }))
+  assert.equal(agent.ctx.tools.get('edit_run_code')?.name, 'edit_run_code')
+  assert.deepEqual(assembled.tools.map(tool => tool.name), ['run_code', 'edit_run_code'])
 })
 
 test('reclassifies an empty session after preset recomposition', async (t) => {

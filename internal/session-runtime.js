@@ -18,8 +18,10 @@ import { valueLimitsFromConfig } from './value-wire-schema.js'
 import { normalizeBindingDescriptors } from './binding-descriptors.js'
 import { resolveConfig } from './runtime-config.js'
 import { WorkerClient } from './worker-client.js'
+import { compilerWorkerCache } from './compiler-service.js'
 import { BindingCatalog, durabilityState, transitionDurability } from './session-state.js'
 import { SessionCellExecutor } from './session-cell-executor.js'
+import { executionPolicies } from './binding-update-policy.js'
 import {
   createReplMemorySnapshot,
   normalizeReplMemorySnapshot,
@@ -39,21 +41,6 @@ function recoveryDiagnostic(count) {
       'do not reference values created only in the skipped suffix',
     ],
   })
-}
-
-function rewritePolicy(config) {
-  return {
-    autoRewriteImports: config.autoRewriteImports,
-    autoStripExports: config.autoStripExports,
-    autoSplitRedeclarations: config.autoSplitRedeclarations,
-  }
-}
-
-function bindingPolicy(config) {
-  return {
-    variableRedeclarations: config.looseTopLevelRedeclarations,
-    functionClassRedeclarations: config.looseTopLevelFunctionClassRedeclarations,
-  }
 }
 
 function resolvedRuntimeConfig(config) {
@@ -114,6 +101,7 @@ class SessionKernel {
     this.client = new WorkerClient({
       workerUrl: WORKER_URL,
       cwd,
+      compilerCache: compilerWorkerCache,
       onMessage: message => this.cellExecutor.onMessage(message),
       onFailure: message => {
         this.pendingInspection?.finish()
@@ -242,6 +230,8 @@ class SessionKernel {
               visibleCallSeqs,
             })
           } catch (error) {
+            const boundary = recoveryBoundaryForHistory(this.history, undefined, { reset: true })
+            if (boundary !== undefined) recoveryBoundaries.push(boundary)
             this.history = emptyHistory()
             this.recoveryNotice = recoveryDiagnostic(1)
             this.initialRecoveryBoundary = undefined
@@ -274,39 +264,28 @@ class SessionKernel {
             this.completeJournal(request.journal, 'noop', error.result)
             return finishResult(error.result)
           }
-          if (!(error instanceof ReplayFailure)) {
-            const result = {
-              logs: [],
-              error: {
-                kind: 'recovery',
-                message: `cannot reconstruct REPL from session log: ${messageOf(error)}`,
-              },
-            }
-            this.completeJournal(request.journal, 'noop', result)
-            return finishResult(result)
-          }
-          const previousPathLength = pathToHead(this.history).length
           try {
+            if (!(error instanceof ReplayFailure)) throw error
+            const previousPathLength = pathToHead(this.history).length
             const boundary = recoveryBoundaryForHistory(this.history, error.node)
             const recovered = recoverJournal(this.session, request.callSeq, {
               extraBoundaries: [boundary],
               visibleCallSeqs: visibleExecutableCallSeqs(this.session),
             })
+            const nextPathLength = pathToHead(recovered).length
+            if (nextPathLength >= previousPathLength) throw new Error('recovery did not contract the historical frontier')
             recoveryBoundaries.push(boundary)
             this.history = recovered
-          } catch (boundaryError) {
-            const result = {
-              logs: [],
-              error: {
-                kind: 'recovery',
-                message: `cannot apply REPL recovery boundary: ${messageOf(boundaryError)}`,
-              },
-            }
-            this.completeJournal(request.journal, 'noop', result)
-            return finishResult(result)
+            skipped += previousPathLength - nextPathLength
+          } catch {
+            // Unproved historical metadata cannot gate the current request.
+            // A failed or noncontracting recovery has no reusable frontier.
+            const boundary = recoveryBoundaryForHistory(this.history, undefined, { reset: true })
+            if (boundary !== undefined) recoveryBoundaries.push(boundary)
+            this.history = emptyHistory()
+            this.replayed = true
+            skipped++
           }
-          const nextPathLength = pathToHead(this.history).length
-          skipped += Math.max(1, previousPathLength - nextPathLength)
           this.durability = durabilityState()
         }
       }
@@ -440,10 +419,13 @@ class SessionKernel {
         this.unsettledCells++
       }
     }
-    if (replay !== undefined && !terminate) {
+    if (!terminate) {
       this.bindingCatalog = active.appliedBindingCatalog
     }
     if (replay === undefined && !terminate) {
+      // A live cell establishes this worker's timeline even when historical
+      // replay was disabled. Only a reset may reopen its recovery boundary.
+      this.replayed = true
       this.liveCallSeqs.add(request.callSeq ?? request.sourceCallSeq)
     }
     this.active = undefined
@@ -487,7 +469,6 @@ class SessionKernel {
           type: 'volatile',
           reason,
         })
-        this.bindingCatalog = tentative.bindingCatalog
       }
       return
     }
@@ -502,7 +483,6 @@ class SessionKernel {
       })
       const index = this.history.nodes.push(node) - 1
       this.history.head = index
-      this.bindingCatalog = tentative.bindingCatalog
       this.finishStateOperations(journal.operations, index, tentative.worker)
       return
     }
@@ -511,7 +491,6 @@ class SessionKernel {
         type: 'volatile',
         reason: journal.volatileReason,
       })
-      this.bindingCatalog = tentative.bindingCatalog
       this.finishStateOperations(journal.operations, undefined, tentative.worker)
     }
   }
@@ -657,6 +636,8 @@ export class SessionRuntime {
           })
           : emptyHistory()
       } catch (error) {
+        // Malformed PTC metadata is contracted by the ordered recovery owner.
+        // Failure to read DSH's session source cannot prove a reset boundary.
         return completed({ logs: [], error: { kind: 'recovery', message: `cannot reconstruct REPL from session log: ${messageOf(error)}` } })
       }
       kernel = new SessionKernel({
@@ -670,11 +651,13 @@ export class SessionRuntime {
       })
       this.kernels.set(sessionId, kernel)
     }
+    const policies = executionPolicies(cellConfig)
     const journal = createJournal(
       /* c8 ignore next */
       this.pendingNoops.get(sessionId) ?? [],
-      bindingPolicy(cellConfig),
-      rewritePolicy(cellConfig),
+      policies.bindingPolicy,
+      policies.rewritesEnabled,
+      policies.languageSemantics,
     )
     const workerReservation = kernel.reserveWorkerConfiguration(cellConfig)
     let result

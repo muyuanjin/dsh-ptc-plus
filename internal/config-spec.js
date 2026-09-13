@@ -12,6 +12,15 @@ export const SETTINGS_NAMESPACE = 'ptc-plus'
  */
 export const CONFIG_FIELDS = Object.freeze([
   {
+    key: 'legacyBindingSettings',
+    type: 'boolean',
+    default: false,
+    label: '旧绑定设置迁移状态',
+    labelEn: 'Legacy binding settings migration state',
+    description: '',
+    descriptionEn: '',
+  },
+  {
     key: 'enabled',
     type: 'boolean',
     default: true,
@@ -55,6 +64,16 @@ export const CONFIG_FIELDS = Object.freeze([
     labelEn: 'Allow run_code execution without a summary',
     description: '允许 run_code 缺少外层 description；关闭后恢复 DSH 校验。模型请求和原始调用参数保持不变。',
     descriptionEn: 'Allows run_code to omit its outer description; disabling restores DSH validation. Model requests and original call arguments remain unchanged.',
+  },
+  {
+    key: 'bindingUpdates',
+    type: 'enum',
+    options: Object.freeze(['stateful', 'protected']),
+    default: 'stateful',
+    label: '允许重声明和覆盖',
+    labelEn: 'Allow redeclarations and overrides',
+    description: '同一作用域的声明和赋值可更新变量、函数、类及导入。关闭后检测跨 cell 重声明，并保护新建的 const 和 import；静态 import/export 始终可用。',
+    descriptionEn: 'Declarations and assignments update variables, functions, classes and imports in the same scope. Disabling detects cross-cell redeclarations and protects newly created const and import bindings; static import/export remains available.',
   },
   {
     key: 'canonicalizeToolCalls',
@@ -288,11 +307,7 @@ export const CONFIG_GROUPS = Object.freeze([
     label: 'REPL 语法',
     labelEn: 'REPL syntax',
     fields: Object.freeze([
-      'looseTopLevelRedeclarations',
-      'looseTopLevelFunctionClassRedeclarations',
-      'autoRewriteImports',
-      'autoStripExports',
-      'autoSplitRedeclarations',
+      'bindingUpdates',
     ]),
   },
   {

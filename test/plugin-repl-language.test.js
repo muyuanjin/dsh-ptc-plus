@@ -7,8 +7,11 @@ import test from 'node:test'
 import { LONG_CELL_CODE_UNITS } from '../internal/failure-reporting.js'
 import { normalizeJournal } from '../internal/session-journal.js'
 import { PREDECESSOR_JOURNAL_FIELDS } from '../internal/session-journal-schema.js'
-import { appendRunCodeEvents, fixture, ptcAgent } from './plugin-fixture.js'
+import { appendRunCodeEvents, fixture as pluginFixture, ptcAgent } from './plugin-fixture.js'
 import { writeRawFilenameFixture } from './raw-filename-fixture.js'
+
+// These historical language contracts also govern replay of pre-v9 journals.
+const fixture = (config = {}, ...args) => pluginFixture({ ...config, legacyBindingSettings: true }, ...args)
 
 test('preflights every cross-cell binding collision with one actionable diagnostic', async (t) => {
   const state = fixture({ looseTopLevelRedeclarations: false })
@@ -42,6 +45,12 @@ test('preflights every cross-cell binding collision with one actionable diagnost
       end: { line: 2, column: 9 },
     },
     help: ['use a fresh name because the existing binding is immutable', 'place one-off declarations inside a block'],
+    collisions: [
+      { name: 'fs', kind: 'variable', reason: 'binding-not-writable',
+        start: { line: 2, column: 7 }, end: { line: 2, column: 9 } },
+      { name: 'base', kind: 'variable', reason: 'binding-not-writable',
+        start: { line: 3, column: 7 }, end: { line: 3, column: 11 } },
+    ],
   }])
   assert.deepEqual(await state.run('collision-diagnostic', 'return { executed, fs, base }'), {
     logs: [],
@@ -633,6 +642,7 @@ test('replays each journal node with its recorded binding mode', async (t) => {
   delete strictPredecessor.meta.dshPtcPlus.userBindingsReusePolicy
   delete strictPredecessor.meta.dshPtcPlus.userBindingsShadowPolicy
   delete strictPredecessor.meta.dshPtcPlus.userBindingNames
+  delete strictPredecessor.meta.dshPtcPlus.languageSemantics
   for (const field of Reflect.ownKeys(strictPredecessor.meta.dshPtcPlus)) {
     assert.ok(PREDECESSOR_JOURNAL_FIELDS.has(field),
       `v3 predecessor must not carry the ${String(field)} field`)

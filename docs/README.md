@@ -16,9 +16,12 @@
 - [PTC Value Graph V1](value-wire.md): supported JavaScript value encoding.
 - [Global User Bindings](adr/0023-global-user-bindings.md): persistent helper ownership, model projection, runtime activation, recovery, and Agent-assisted authoring.
 - [Binding Review Placement](binding-review-placement-design.md): the implemented full draft panel above the current composer, using the published input dock and one review controller.
+- [Logical Binding Identities](adr/0025-use-versioned-logical-binding-identities.md): stateful declarations, scope, candidate publication and language generations.
 - [Architecture Decisions](adr/): stable design constraints and their consequences.
 
 ## Maintenance
 
+- [Deterministic Verification](verification.md): complete checks, backend test concurrency, coverage, and focused diagnostics.
+- [Semantic Validation](semantic-validation.md): pinned Test262 cases, dialect contracts, native differential matrices and their limits.
 - [Publishing](publishing.md): release checks, package contents, permissions, and platform validation.
 - [Client UI](client-ui.md): current UI boundary and reevaluation criteria.

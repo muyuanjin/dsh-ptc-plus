@@ -3,7 +3,7 @@ import test from 'node:test'
 import { parse } from '@babel/parser'
 import { compileStatefulModule, detectModuleSourceFormat, attachModuleNamespace,
   commonJsExportEvidence, linkCommonJsEvidenceSource } from '../internal/module-compilation.js'
-import { compilerModuleReference } from '../internal/compiler-module-links.js'
+import { compilerModuleReference, staticModuleLinkReference } from '../internal/compiler-module-links.js'
 import { resolveStatefulModuleLink } from '../internal/stateful-module-runtime.js'
 import { createCommonJsEvidence } from '../internal/commonjs-export-evidence.js'
 import { createCallableSourceRegistry } from '../internal/callable-source-catalog.js'
@@ -28,15 +28,32 @@ test('pure module normalization preserves quoted export names and the final sour
   assert.equal(prepared.moduleInterface.exports.filter(entry => entry.name === 'quoted name').length, 1)
   assert.doesNotThrow(() => parse(prepared.code, { sourceType: 'module' }))
   const forwarded = compileStatefulModule('export {"quoted name" as "forwarded name"} from "./source.mjs"')
-  assert.ok(forwarded.staticLinks.includes('./source.mjs'))
+  assert.ok(forwarded.staticLinks.some(link => link.source === './source.mjs'))
   assert.ok(forwarded.moduleInterface.exports.some(entry => entry.name === 'forwarded name'))
+})
+
+test('static link identity distinguishes attribute sets and ignores their source order', () => {
+  const link = attributes => compileStatefulModule(`export { value } from './choice.mjs' with { ${attributes} }`)
+  const ordered = link("flavor: 'first', mode: 'strict'")
+  const reversed = link("mode: 'strict', flavor: 'first'")
+  const other = link("flavor: 'second', mode: 'strict'")
+  assert.deepEqual(ordered.staticLinks, reversed.staticLinks)
+  assert.notDeepEqual(ordered.staticLinks, other.staticLinks)
+  assert.ok(ordered.code.includes(ordered.staticLinks[0].reference))
+})
+
+test('static link references cannot collide with a source specifier', () => {
+  const attributed = staticModuleLinkReference('./choice.mjs', { flavor: 'first' })
+  assert.equal(staticModuleLinkReference('./choice.mjs', undefined), compilerModuleReference('static', './choice.mjs'))
+  assert.notEqual(attributed, staticModuleLinkReference('./choice.mjs', undefined))
+  assert.notEqual(attributed, staticModuleLinkReference('./choice.mjs\u0000[[\"flavor\",\"first\"]]', undefined))
 })
 
 test('pure module compilation returns linker and source-registration facts without installing runtime links', () => {
   const source = 'data:text/javascript,export const pureOnly=42#pure-module-compiler'
   const prepared = compileStatefulModule(`import {pureOnly} from ${JSON.stringify(source)};
     export function read(){return eval('pureOnly')}`)
-  assert.ok(prepared.staticLinks.includes(source))
+  assert.ok(prepared.staticLinks.some(link => link.source === source))
   assert.equal(resolveStatefulModuleLink(compilerModuleReference('static', source), {}), undefined)
   assert.ok(prepared.code.includes(compilerModuleReference('static', source)))
   assert.ok(prepared.callableSources.length > 0)

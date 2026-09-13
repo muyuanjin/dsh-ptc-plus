@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -920,8 +920,10 @@ test('restores a session-local shadow after a request namespace covers it', asyn
 })
 
 test('resolves delayed activation imports from the stable binding directory instead of session cwd', async (t) => {
-  const bindingsCwd = await mkdtemp(join(tmpdir(), 'ptc-plus-binding-cwd-'))
-  const sessionCwd = await mkdtemp(join(tmpdir(), 'ptc-plus-session-cwd-'))
+  // A worker resolves its real path, so the fixture cwd must match what the
+  // module loader will report; on macOS /var is a symlink to /private/var.
+  const bindingsCwd = await realpath(await mkdtemp(join(tmpdir(), 'ptc-plus-binding-cwd-')))
+  const sessionCwd = await realpath(await mkdtemp(join(tmpdir(), 'ptc-plus-session-cwd-')))
   t.after(() => Promise.all([
     rm(bindingsCwd, { recursive: true, force: true }),
     rm(sessionCwd, { recursive: true, force: true }),
@@ -1159,7 +1161,7 @@ test('reuses modules across presentation updates and reinitializes changed execu
 })
 
 test('retains closure support after a global entry is removed', async (t) => {
-  const bindingsCwd = await mkdtemp(join(tmpdir(), 'ptc-plus-retained-binding-'))
+  const bindingsCwd = await realpath(await mkdtemp(join(tmpdir(), 'ptc-plus-retained-binding-')))
   t.after(() => rm(bindingsCwd, { recursive: true, force: true }))
   await writeFile(join(bindingsCwd, 'dependency.mjs'), 'export const suffix = "dependency"\n')
   const runtime = new SessionRuntime({ durableReplay: false }, { userBindingsCwd: bindingsCwd })

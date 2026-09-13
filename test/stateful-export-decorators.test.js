@@ -78,7 +78,7 @@ test('wrapped definition keys retain per-class state through cells, modules and 
   const expected = Function(build(false)+';'+observe)()
   assert.deepEqual(expected, ['a','b','a','a','b',['a','a','b','b']])
   for (const bindingUpdates of ['stateful','protected']) {
-    const state = fixture({bindingUpdates})
+    const state = fixture({ bindingUpdates, computeMs: 5000, maxWallMs: 20_000 })
     t.after(() => state.dispose())
     const source = build(true)+';'+observe
     const direct = await state.run('wrapped-definition-direct', source)

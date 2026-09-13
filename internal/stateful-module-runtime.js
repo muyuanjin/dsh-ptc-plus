@@ -1,4 +1,3 @@
-import { compilerModuleReference } from './compiler-module-links.js'
 import { compilerDescriptors } from './compiler-descriptors.js'
 import { fileURLToPath, registerModuleResolutionHook } from './module-runtime-platform.js'
 import { moduleCompilerIntrinsics, moduleRuntimeIntrinsics } from './compiler-intrinsics.js'
@@ -52,9 +51,10 @@ export function recordStatefulModuleResolution(parentUrl, specifier, attributes,
   mapSet(moduleRecord(parentUrl).resolutions, resolutionKey(specifier, attributes), url)
 }
 
-/** Compiler-owned source references distinguish static links from later requests. */
-export function statefulModuleLink(source) {
-  const reference = compilerModuleReference('static', source)
+/** Register a compiler-owned static link reference and the source it names.
+ * The compiler already distinguished the attribute set when it built the
+ * reference, so no source-controlled string operation runs here. */
+export function statefulModuleLink(source, reference) {
   mapSet(staticLinks, reference, source)
   return reference
 }

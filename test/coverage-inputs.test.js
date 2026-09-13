@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, relative } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -10,7 +10,9 @@ import { COVERAGE_THRESHOLDS, createCoverageReport } from '../scripts/coverage-r
 import { uncoveredEnvironment } from './subprocess-environment.js'
 
 async function fixture(t) {
-  const root = await mkdtemp(join(tmpdir(), 'ptc-coverage-map-'))
+  // c8 keys coverage scripts by the real path, so the fixture root must be one
+  // too; on macOS /var is a symlink to /private/var.
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'ptc-coverage-map-')))
   t.after(() => rm(root, { recursive: true, force: true }))
   await mkdir(join(root, 'internal'))
   await mkdir(join(root, 'node_modules', 'dependency'), { recursive: true })

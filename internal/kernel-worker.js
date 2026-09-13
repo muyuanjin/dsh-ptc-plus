@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from 'node:async_hooks'
 import { create as createDomain } from 'node:domain'
 import { createRequire, registerHooks } from 'node:module'
 import { managedModuleImport, managedRequire, readModuleImport, statefulModuleLink } from './stateful-module-runtime.js'
+import { staticModuleLinkReference } from './compiler-module-links.js'
 import { compileStatefulModule, createUserModuleCompilationHooks } from './stateful-module-compiler.js'
 import { USER_BINDING_TRANSFORM, LEGACY_USER_BINDING_TRANSFORM, moduleTransformForLanguage } from './module-transform-contract.js'
 import { isAbsolute, resolve } from 'node:path'
@@ -392,26 +393,26 @@ async function verifyEvaluation() {
   }
 }
 
-function staticImportAttributes(options) {
-  if (options === undefined) return ''
+function staticImportClause(options) {
+  if (options === undefined) return { attributes: undefined, clause: '' }
   const [keyword, attributes] = Object.entries(options)[0]
   const entries = Object.entries(attributes)
     .map(([key, value]) => `${JSON.stringify(key)}: ${JSON.stringify(value)}`)
-  return ` ${keyword} { ${entries.join(', ')} }`
+  return { attributes, clause: ` ${keyword} { ${entries.join(', ')} }` }
 }
 
 function staticAdapterSource(load) {
-  const source = JSON.stringify(statefulModuleLink(load.source))
-  const attributes = staticImportAttributes(load.options)
-  if (load.global === undefined) return `import ${source}${attributes};`
+  const { attributes, clause } = staticImportClause(load.options)
+  const source = JSON.stringify(statefulModuleLink(load.source, staticModuleLinkReference(load.source, attributes)))
+  if (load.global === undefined) return `import ${source}${clause};`
   const requirements = load.requiredExports?.map((name, index) => {
     const imported = name === 'default' ? 'default' : JSON.stringify(name)
     return `${imported} as __required_${index}__`
   }) ?? []
   return [
-    `import * as namespace from ${source}${attributes};`,
+    `import * as namespace from ${source}${clause};`,
     ...(requirements.length === 0 ? [] : [
-      `export { ${requirements.join(', ')} } from ${source}${attributes};`,
+      `export { ${requirements.join(', ')} } from ${source}${clause};`,
     ]),
     'export { namespace };',
   ].join('\n')

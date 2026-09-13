@@ -1,4 +1,4 @@
-import { compilerModuleReference } from './compiler-module-links.js'
+import { staticModuleLinkReference } from './compiler-module-links.js'
 import { parse } from '@babel/parser'
 import { types as t } from '@babel/core'
 import { CELL_PARSER_PLUGINS, normalizeStatefulScopes, normalizeTypeScriptValues, lowerNativeLanguageSource,
@@ -143,10 +143,13 @@ function adaptStaticModuleLinks(normalized, staticLinks) {
   visitRegionSource(normalized, { sourceType: 'module', plugins: CELL_PARSER_PLUGINS }, input => {
     for (const node of input.selected.body) {
       if (node.source == null || !['ImportDeclaration', 'ExportNamedDeclaration', 'ExportAllDeclaration'].includes(node.type)) continue
-      staticLinks.push(node.source.value)
+      const source = node.source.value
+      const attributes = Object.fromEntries((node.attributes ?? []).map(item => [item.key.name ?? item.key.value, item.value.value]))
+      const reference = staticModuleLinkReference(source, attributes)
+      staticLinks.push({ source, reference })
       edits.push({ start: sourceOffsetAt(input.sourceMap, node.source.start),
         end: sourceOffsetAt(input.sourceMap, node.source.end - 1) + 1,
-        text: JSON.stringify(compilerModuleReference('static', node.source.value)) })
+        text: JSON.stringify(reference) })
     }
   }, topLevelRegion)
   return applyRegionEdits(normalized, edits)

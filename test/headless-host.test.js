@@ -903,6 +903,12 @@ test('runs one isolated task and collects the session logs it produced', async (
 })
 
 test('installs once and resolves every variant overlay before the runner oracle', async (t) => {
+  // The host forwards its workspace to PowerShell, which only exists on Windows
+  // or inside WSL; a native POSIX host cannot convert the path.
+  if (process.platform !== 'win32' && process.env.WSL_DISTRO_NAME === undefined) {
+    t.skip('requires a Windows or WSL-forwarded host')
+    return
+  }
   const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
   await mkdir(join(repoRoot, 'artifacts'), { recursive: true })
   const root = await mkdtemp(join(repoRoot, 'artifacts', 'ptc-prepare-configs-'))

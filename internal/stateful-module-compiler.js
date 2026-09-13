@@ -36,7 +36,10 @@ function isExternalDependency(url) {
 /** Source generation returns link facts; the runtime owns registration. */
 export function compileStatefulModule(source, options) {
   const prepared = compileModuleSource(source, options)
-  for (let index = 0; index < prepared.staticLinks.length; index++) statefulModuleLink(prepared.staticLinks[index])
+  for (let index = 0; index < prepared.staticLinks.length; index++) {
+    const link = prepared.staticLinks[index]
+    statefulModuleLink(link.source, link.reference)
+  }
   // Install reflection facts before Node can expose hoisted exports to a
   // cyclic importer. Catalog data never enters the user's executable source.
   if (prepared.callableSources?.length > 0) {

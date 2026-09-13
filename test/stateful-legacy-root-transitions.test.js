@@ -32,6 +32,10 @@ test('readonly legacy properties are replaced by logical declarations without re
     await t.test(`after=${afterTransition}, accessor=${accessor}`, async t => {
       const { run, configure } = fixture(t)
       configure({ legacyBindingSettings: true, looseTopLevelRedeclarations: false })
+      // Node 26 gives the REPL a realm global, where a fresh `var` binding is
+      // non-configurable; an existing property keeps its descriptor, so the
+      // fixture establishes the global every supported host must observe.
+      await run("Object.defineProperty(globalThis,'x',{value:1,writable:true,enumerable:true,configurable:true});return 1")
       await run('var x=1;const old=()=>x')
       if (afterTransition) {
         configure({ bindingUpdates: 'stateful' })
@@ -63,6 +67,9 @@ test('legacy bridge declaration provenance replaces earlier assignment evidence'
 test('legacy accessor setters remain the shared writable binding after transition', async t => {
   const { run, configure } = fixture(t)
   configure({ legacyBindingSettings: true, looseTopLevelRedeclarations: false })
+  // The accessor replaces an existing property, so its descriptor must not
+  // depend on how the host REPL creates a fresh global `var` (see above).
+  await run("Object.defineProperty(globalThis,'x',{value:1,writable:true,enumerable:true,configurable:true});return 1")
   await run(`var x=1;let stored=1;const writes=[];const old=()=>x;
     Object.defineProperty(globalThis,'x',{get(){return stored},set(value){writes.push(value);stored=value},configurable:true});return 1`)
   configure({ bindingUpdates: 'stateful' })

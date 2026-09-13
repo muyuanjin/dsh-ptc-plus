@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, realpath, rm, writeFile } from 'node:fs/promises'
 import { registerHooks } from 'node:module'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -7,7 +7,9 @@ import { compileStatefulModule, createUserModuleCompilationHooks } from '../inte
 import { managedModuleImport } from '../internal/stateful-module-runtime.js'
 
 export async function managedGraph(t, sources, root = 'root.mjs', native = [], { load } = {}) {
-  const directory = await mkdtemp(join(tmpdir(), 'ptc-managed-'))
+  // The loader resolves a real path, so the synthetic URLs must start from one;
+  // on macOS /var is a symlink to /private/var and the two would never match.
+  const directory = await realpath(await mkdtemp(join(tmpdir(), 'ptc-managed-')))
   t.after(() => rm(directory, { recursive: true, force: true }))
   await Promise.all(Object.entries(sources).map(([name, source]) => writeFile(join(directory, name), source)))
   const url = name => pathToFileURL(join(directory, name)).href

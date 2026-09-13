@@ -169,7 +169,7 @@ test('preserves versioned parameter-property and enum state through live executi
   const events = []
   const session = { id: 'typescript-binding-recovery', events }
   const agent = ptcAgent('typescript-binding-agent', session)
-  const first = fixture({ userBindingsEnabled: true })
+  const first = fixture({ userBindingsEnabled: true, computeMs: 5000, maxWallMs: 20_000 })
   t.after(() => first.dispose())
   await rememberRequest(first, session, agent)
   const code = 'const counter = new defaults.Counter(40); const saved = defaults.out; return counter.next()'
@@ -178,7 +178,7 @@ test('preserves versioned parameter-property and enum state through live executi
   assert.equal(initial.meta[JOURNAL_KEY].status, 'durable')
   appendRunCodeEvents(events, 'typescript-binding', code, initial)
   await first.dispose()
-  const restored = fixture({ userBindingsEnabled: true })
+  const restored = fixture({ userBindingsEnabled: true, computeMs: 5000, maxWallMs: 20_000 })
   t.after(() => restored.dispose())
   await rememberRequest(restored, session, agent)
   const continued = await restored.runDurable(session.id, 'return [counter.next(), saved]', {}, { session })
@@ -318,7 +318,7 @@ test('new sessions discover opted-in API documentation without evaluating module
   const witness = evaluationWitness(evaluationLog)
   await writeBindingsDocument(home, { entries: [entry, hidden, broken, witness, { ...entry, id: 'disabled', name: 'disabledTools',
     enabled: false, modelContext: {} }] })
-  const state = fixture({ userBindingsEnabled: true })
+  const state = fixture({ userBindingsEnabled: true, computeMs: 5000, maxWallMs: 20_000 })
   t.after(() => state.dispose())
   const session = { id: 'new-session-docs', events: [] }
   const agent = ptcAgent(session.id, session)

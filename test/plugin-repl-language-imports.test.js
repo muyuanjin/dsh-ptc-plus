@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { access, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, sep } from 'node:path'
 import test from 'node:test'
 import { appendRunCodeEvents, fixture as pluginFixture, ptcAgent } from './plugin-fixture.js'
 
@@ -161,11 +161,11 @@ test('replaces aliases independently across default, named, and synthetic forms'
   const pair = 'import-replacement-two-aliases'
   assert.deepEqual((await state.run(pair,
     "import { basename as a, sep as b } from 'node:path'; const readB = () => b; return [a('/x/y'), b]")).value,
-  ['y', '\\'])
+  ['y', sep])
   assert.deepEqual((await state.run(pair, "function a() { return 'A1' }; return [a(), b, readB()]")).value,
-    ['A1', '\\', '\\'])
+    ['A1', sep, sep])
   // Replacing one alias leaves its sibling following the module.
-  assert.deepEqual((await state.run(pair, 'return [a(), b]')).value, ['A1', '\\'])
+  assert.deepEqual((await state.run(pair, 'return [a(), b]')).value, ['A1', sep])
   assert.deepEqual((await state.run(pair, "function b() { return 'B1' }; return [a(), b(), readB() === b]")).value,
     ['A1', 'B1', true])
   assert.deepEqual((await state.run(pair, 'return [a(), b()]')).value, ['A1', 'B1'])

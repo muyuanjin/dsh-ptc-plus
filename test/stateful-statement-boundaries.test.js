@@ -86,12 +86,15 @@ test('keeps a declaration boundary inside protected module and CommonJS compilat
   // declaration, or when a declaration can shadow a CommonJS compiler global.
   const moduleCode = normalizeStatefulScopes('a()\nlet y = 1\nusing r = { [Symbol.dispose]() {} }',
     undefined, { mode: 'protected-v1', target: 'module' }).code
-  assert.match(moduleCode, /a\(\);\s*\(\(\(/)
-  assert.doesNotMatch(moduleCode, /a\(\)\s*\(\(\(/)
+  // The declaration wrapper differs between native using and the lowered
+  // helper, so assert the boundary itself: the call is terminated, and no
+  // following statement opens as its argument list.
+  assert.match(moduleCode, /a\(\);/)
+  assert.doesNotMatch(moduleCode, /a\(\)\s*\(/)
   const commonjsCode = normalizeStatefulScopes('a()\nlet process = 1', undefined,
     { mode: 'protected-v1', target: 'commonjs' }).code
-  assert.match(commonjsCode, /a\(\);\s*\(\(\(/)
-  assert.doesNotMatch(commonjsCode, /a\(\)\s*\(\(\(/)
+  assert.match(commonjsCode, /a\(\);/)
+  assert.doesNotMatch(commonjsCode, /a\(\)\s*\(/)
 })
 
 test('compiles adjacent expression statements into separate invocation frames', () => {

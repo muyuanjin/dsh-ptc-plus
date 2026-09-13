@@ -235,8 +235,10 @@ test('definition-time callable reflection owns helpers before method invocation'
     ['generator', "(yield 'key',@((value)=>value) class C{},'m')"],
     ['generator', "(class extends(yield class{}){@((value)=>value) read(){}},'m')"],
   ]
+  // Reflection and resource lowering dominate these cells; the budget is not
+  // the subject here, so give the heavy compilation room under coverage.
   for (const bindingUpdates of ['stateful','protected']) {
-    const state = fixture({bindingUpdates})
+    const state = fixture({ bindingUpdates, computeMs: 5000, maxWallMs: 20_000 })
     t.after(()=>state.dispose())
     for (const [index,[kind,key]] of definitions.entries()) {
       const rebuilt = kind === 'async'
@@ -280,7 +282,7 @@ test('computed class field key captures stay per class evaluation across reconst
       }],
   ]
   for (const bindingUpdates of ['stateful', 'protected']) {
-    const state = fixture({ bindingUpdates })
+    const state = fixture({ bindingUpdates, computeMs: 5000, maxWallMs: 20_000 })
     t.after(() => state.dispose())
     for (const [index, [label, declaration, selection, expectedValues, observe]] of shapes.entries()) {
       const native = Function('"use strict";return (' + declaration('') + ')')()

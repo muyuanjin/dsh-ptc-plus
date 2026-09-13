@@ -1696,7 +1696,9 @@ test('global menu rejects old reads after connection reset, navigation and featu
   await runtime.flush()
   pending = deferred()
   await openGlobalMenu(view, runtime)
-  await runtime.sessions.add({ id: 'fresh' })
+  // The star entry follows the current PTC preset, so the navigation target must
+  // stay a PTC session for this stale-read check to keep its subject mounted.
+  await runtime.sessions.add({ id: 'fresh', summary: { agentPreset: 'ptc' } })
   await runtime.sessions.setCurrent('fresh')
   await runtime.flush()
   pending.resolve({ revision: 'r1', entries: [entry] })
@@ -2001,6 +2003,31 @@ test.each(['expanded', 'collapsed', 'hidden'])('unconfirmed discard retains %s d
   review.display(visibility)
   await review.act('discard-draft')
   expect(review.getSnapshot()).toMatchObject({ visibility, action: null, writable: false, message: 'bindings.reviewUnconfirmed' })
+})
+
+test('the composer binding entry follows the current session PTC preset', async () => {
+  const { runtime, settings, value } = await fixture({
+    commands: { list: async () => ({ ok: true, value: [{ name: 'binding' }] }) } })
+  const view = runtime.renderRoot()
+  await runtime.flush()
+  const entries = () => runtime.slots.entries('conversation.input.left')
+  const projection = runtime.sessions.behavior('client-session').projections
+  expect(entries().map(entry => entry.options.id)).toEqual(['ptc-plus-binding-author'])
+  expect(view.getByRole('button', { name: 'Global bindings' })).not.toBeNull()
+  projection.set('agentPreset', 'chat')
+  await runtime.flush()
+  expect(entries()).toHaveLength(0)
+  expect(view.queryByRole('button', { name: 'Global bindings' })).toBeNull()
+  projection.set('agentPreset', 'code')
+  await runtime.flush()
+  expect(entries().map(entry => entry.options.id)).toEqual(['ptc-plus-binding-author'])
+  expect(view.getByRole('button', { name: 'Global bindings' })).not.toBeNull()
+  settings.publish({ value: { ...value, userBindingsEnabled: false } })
+  await runtime.flush()
+  expect(entries()).toHaveLength(0)
+  settings.publish({ value })
+  await runtime.flush()
+  expect(entries()).toHaveLength(1)
 })
 
 test('one authoring icon owns the draft badge and hover, click and keyboard menu', async () => {

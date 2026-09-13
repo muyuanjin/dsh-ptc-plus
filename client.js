@@ -31084,15 +31084,32 @@
           locale: LOCALE_NS
         }, (props) => typeof props.useProjection === "function" && props.sessionId !== void 0 ? h(BindingReviewDock, { ...props, key: props.sessionId }) : null)))));
         const availability = createBindingCommandAvailability(ctx);
-        ctx.slots.inject("conversation.input.left", () => registerGated(ctx, settingsGate("bindings", () => ctx.slots.register({
-          name: "conversation.input.left",
-          id: "ptc-plus-binding-author",
-          order: 20,
-          locale: LOCALE_NS,
-          inject: (sessionId) => ({
-            hooks: { ptcSettings: preferenceScope, bindingCommand: availability.source(sessionId) }
-          })
-        }, (props) => props.sessionId === void 0 ? null : h(BindingAuthorButton, { ...props, key: props.sessionId })))));
+        ctx.inject(["sessions"], (viewScope) => {
+          let preset;
+          viewScope.slots.inject("conversation.input.left", () => registerGated(viewScope, {
+            subscribe: (listener) => {
+              const unsubscribePreset = watchCurrentSessionPreset(viewScope.sessions, (value) => {
+                preset = value;
+                listener();
+              });
+              const unsubscribeSettings = preferenceScope.subscribe(listener);
+              return () => {
+                unsubscribePreset();
+                unsubscribeSettings();
+              };
+            },
+            isEnabled: () => sessionUsesPtcPreset(preset) && featureEnabled(preferenceScope.getSnapshot(), "bindings"),
+            register: () => ctx.slots.register({
+              name: "conversation.input.left",
+              id: "ptc-plus-binding-author",
+              order: 20,
+              locale: LOCALE_NS,
+              inject: (sessionId) => ({
+                hooks: { ptcSettings: preferenceScope, bindingCommand: availability.source(sessionId) }
+              })
+            }, (props) => props.sessionId === void 0 ? null : h(BindingAuthorButton, { ...props, key: props.sessionId }))
+          }));
+        });
       }
       module.exports = {
         apply,

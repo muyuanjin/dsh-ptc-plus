@@ -115,7 +115,7 @@ The Agent can test and revise the helper incrementally with in-memory REPL examp
 
 The panel can be collapsed or closed; the sparkle button's badge reopens it. A successful save or discard closes the panel automatically. The original request retains its source and outcome in history.
 
-Before the first message, hover over or click the sparkle button to view and toggle global bindings. These choices apply to all sessions. The menu also provides authoring and full management entries.
+Before the first message, hover over or click the sparkle button to view and toggle global bindings. These choices apply to all sessions, while the entry itself is registered only while the current session uses the `ptc` or compatible `code` preset. The menu also provides authoring and full management entries.
 
 Enabled binding interfaces are supplied to the model in new sessions and updated at the next permitted request in an existing session. Each binding can include a separate usage prompt or omit its interface. Changing only the prompt preserves the helper's runtime state. Assigning or redeclaring one name in a session overrides only that name; the entry's other names keep working, and the session-local override never writes back to the saved entry. See the [global binding guide](docs/user-bindings.en.md) for details.
 

@@ -240,12 +240,31 @@ window.__ModuleLoader__.load({
         }, props => typeof props.useProjection === 'function' && props.sessionId !== undefined
           ? h(BindingReviewDock, { ...props, key: props.sessionId }) : null)))))
       const availability = createBindingCommandAvailability(ctx)
-      ctx.slots.inject('conversation.input.left', () => registerGated(ctx, settingsGate('bindings', () => ctx.slots.register({
-          name: 'conversation.input.left', id: 'ptc-plus-binding-author', order: 20, locale: LOCALE_NS,
-          inject: sessionId => ({
-            hooks: { ptcSettings: preferenceScope, bindingCommand: availability.source(sessionId) },
-          }),
-        }, props => props.sessionId === undefined ? null : h(BindingAuthorButton, { ...props, key: props.sessionId })))))
+      // The composer binding entry belongs to the PTC surface, exactly like the
+      // header indicator and the REPL tab. A non-PTC session keeps plugin
+      // settings and `/binding` command cards, but shows no binding shortcut and
+      // issues no command-directory read for it.
+      ctx.inject(['sessions'], (viewScope) => {
+        let preset
+        viewScope.slots.inject('conversation.input.left', () => registerGated(viewScope, {
+          subscribe: listener => {
+            const unsubscribePreset = watchCurrentSessionPreset(viewScope.sessions, value => {
+              preset = value
+              listener()
+            })
+            const unsubscribeSettings = preferenceScope.subscribe(listener)
+            return () => { unsubscribePreset(); unsubscribeSettings() }
+          },
+          isEnabled: () => sessionUsesPtcPreset(preset)
+            && featureEnabled(preferenceScope.getSnapshot(), 'bindings'),
+          register: () => ctx.slots.register({
+            name: 'conversation.input.left', id: 'ptc-plus-binding-author', order: 20, locale: LOCALE_NS,
+            inject: sessionId => ({
+              hooks: { ptcSettings: preferenceScope, bindingCommand: availability.source(sessionId) },
+            }),
+          }, props => props.sessionId === undefined ? null : h(BindingAuthorButton, { ...props, key: props.sessionId })),
+        }))
+      })
     }
 
     module.exports = {

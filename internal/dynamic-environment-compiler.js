@@ -95,13 +95,6 @@ function compileStaticRegions(source, cell, parserOptions) {
       origin: node => ({ target: node.loc === undefined ? undefined : cell.evalOrigin?.(absoluteNode(node)), callee: invocations.get(node) }),
       skip: operations.declaration,
     })
-    traverse(input.tree, { Scopable(path) {
-      for (const binding of Object.values(path.scope.bindings)) {
-        if (binding.identifier.loc === undefined && !operations.internal.has(binding.identifier.name)) {
-          path.scope.rename(binding.identifier.name, allocate('native_temporary'))
-        }
-      }
-    } })
     if (envelope !== undefined) {
       // Babel hoists optional-chain temporaries to the analysis envelope.
       // Publish those private declarations in the real output body, retaining

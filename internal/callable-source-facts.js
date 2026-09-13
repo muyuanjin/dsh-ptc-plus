@@ -10,6 +10,10 @@ import { lowerCallableSource, undecoratedMethodSource, decoratedClassSource } fr
 import { supportsNativeUsing, transformTypeScriptSource } from './typescript-transform.js'
 
 const isCallable = node => t.isFunction(node) || t.isClass(node)
+const isMethod = node => t.isObjectMethod(node) || t.isClassMethod(node) || t.isClassPrivateMethod(node)
+const requiresTypeErasure = node => node.type.startsWith('TS') || node.type === 'Decorator' || node.type === 'ClassAccessorProperty'
+  || node.accessibility !== undefined && node.accessibility !== null || node.abstract || node.declare
+  || node.override || node.readonly || node.definite || node.optional
 
 class CallableSourceFacts {
   constructor(source) { this.buffers = [source]; this.entries = []; this.length = 0; this.aliases = [] }
@@ -75,9 +79,7 @@ export function markCallableSources(source, sourceMap = identitySourceMap(source
   const lowerResources = !nativeUsing && source.includes('using')
   const typed = node => {
     if (!node) return 0
-    let needed = node.type.startsWith('TS') || node.type === 'Decorator' || node.type === 'ClassAccessorProperty'
-      || node.accessibility !== undefined && node.accessibility !== null || node.abstract || node.declare
-      || node.override || node.readonly || node.definite || node.optional ? 1 : 0
+    let needed = requiresTypeErasure(node) ? 1 : 0
     if (lowerResources && t.isVariableDeclaration(node) && (node.kind === 'using' || node.kind === 'await using')) needed |= 2
     for (const key of t.VISITOR_KEYS[node.type] ?? []) {
       const child = node[key]
@@ -124,13 +126,46 @@ export function markCallableSources(source, sourceMap = identitySourceMap(source
   const markedTree = parse(marked.code, options)
   const markedNodes = new Map([...markedCallableOwners(markedTree, sources)].map(([node, fact]) => [fact.marker, node]))
   const originals = new Map(sources)
+  const nativeFunctions = typedRecords.map(record => markedNodes.get(record.marker))
+    .filter(node => t.isFunction(node) && !isMethod(node)).sort((left, right) => left.start - right.start)
+  const nativeRecipes = new Map()
+  const nativeFunctionIndex = start => {
+    let low = 0, high = nativeFunctions.length
+    while (low < high) {
+      const middle = (low + high) >>> 1
+      if (nativeFunctions[middle].start < start) low = middle + 1
+      else high = middle
+    }
+    return low
+  }
   for (const record of typedRecords.sort((a, b) => a.node.end - a.node.start - (b.node.end - b.node.start))) {
     const { marker, entry, privateNames } = record
     const node = markedNodes.get(marker)
-    let original = marked.code.slice(callableSourceStart(marked.code, node), node.end)
-    if (t.isClass(node) && (node.decorators?.length || node.abstract)) original = decoratedClassSource(node)
-    const method = t.isObjectMethod(node) || t.isClassMethod(node) || t.isClassPrivateMethod(node)
-    if (method && (node.decorators?.length || node.params.some(parameter => parameter.decorators?.length))) original = undecoratedMethodSource(node)
+    const start = callableSourceStart(marked.code, node)
+    let original = marked.code.slice(start, node.end)
+    const method = isMethod(node)
+    const classRecipe = t.isClass(node) && (node.decorators?.length || node.abstract)
+    const methodRecipe = method && (node.decorators?.length || node.params.some(parameter => parameter.decorators?.length))
+    const reused = []
+    if (classRecipe) original = decoratedClassSource(node)
+    else if (methodRecipe) original = undecoratedMethodSource(node)
+    else {
+      // A lowered function closes its generated helpers over its own source.
+      // Reuse that complete function in enclosing reflection recipes; class
+      // and method definition phases retain their separate grammar owners.
+      // Descendants are complete before their parent. Select the outermost
+      // reusable functions, jumping over the descendants each one already owns.
+      for (let index = nativeFunctionIndex(start); index < nativeFunctions.length;) {
+        const child = nativeFunctions[index]
+        if (child.start >= node.end) break
+        const replacement = nativeRecipes.get(child)
+        if (replacement === undefined) { index++; continue }
+        reused.push(replacement)
+        index = nativeFunctionIndex(child.end)
+      }
+      if (reused.length > 0) original = applySourceEdits(original, identitySourceMap(original.length), reused
+        .map(value => ({ start: value.start - start, end: value.end - start, text: value.text }))).code
+    }
     const prefix = method ? 'class Source {' : '('
     const suffix = method ? '}' : ')'
     const lowerCallable = () => {
@@ -145,8 +180,22 @@ export function markCallableSources(source, sourceMap = identitySourceMap(source
     }
     // Prefer source-preserving erasure. Runtime TypeScript constructs such as
     // parameter properties require equivalent JavaScript initialization too.
-    if (record.resources) lowerCallable()
-    else try {
+    let resources = record.resources
+    let erase = true
+    if (reused.length > 0) {
+      resources = false
+      erase = false
+      const reusedNodes = new Set(reused.map(value => value.node))
+      t.traverseFast(node, child => {
+        if (reusedNodes.has(child)) return t.traverseFast.skip
+        if (requiresTypeErasure(child)) erase = true
+        if (record.resources && t.isVariableDeclaration(child) && (child.kind === 'using' || child.kind === 'await using')) resources = true
+      })
+    }
+    // Replacing complete functions with proven native functions leaves native
+    // surrounding syntax intact. Their generated bodies need no erasure pass.
+    if (resources) lowerCallable()
+    else if (erase) try {
       const erased = transformTypeScriptSource(`${prefix}${original}${suffix}`, { mode: 'strip-only' }).code
       parse(erased, { errorRecovery: true })
       original = erased.slice(prefix.length, erased.length - suffix.length)
@@ -158,6 +207,7 @@ export function markCallableSources(source, sourceMap = identitySourceMap(source
     entry.start = 0
     entry.end = original.length
     originals.set(marker, original)
+    if (!method && t.isFunction(node)) nativeRecipes.set(node, { node, start, end: node.end, text: original })
   }
   return { ...marked, callableSources: sources, nativeJavaScript }
 }
@@ -360,13 +410,18 @@ export function emitRegionCallableSources(input, generated, sourceRanges, option
   if (from) edits.push({ start: 0, end: from, text: '' })
   if (to < generated.code.length) edits.push({ start: to, end: generated.code.length, text: '' })
   edits.sort((a, b) => a.start - b.start || a.end - b.end)
+  // Non-overlapping edits have ordered ends. Include every edit ending at a
+  // queried boundary, including all insertions at that same position.
+  const deltas = [0]
+  for (const edit of edits) deltas.push(deltas.at(-1) + edit.text.length - (edit.end - edit.start))
   const position = offset => {
-    let delta = 0
-    for (const edit of edits) {
-      if (edit.end > offset) break
-      delta += edit.text.length - (edit.end - edit.start)
+    let low = 0, high = edits.length
+    while (low < high) {
+      const middle = (low + high) >>> 1
+      if (edits[middle].end > offset) high = middle
+      else low = middle + 1
     }
-    return offset + delta
+    return offset + deltas[low]
   }
   const emission = mappedSourceTransform(input.code, identitySourceMap(input.code.length), generated)
   const restored = applySourceEdits(emission.code, emission.sourceMap, edits)

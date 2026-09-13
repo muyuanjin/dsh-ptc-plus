@@ -36,6 +36,35 @@ test('source catalogs share compressed buffers across overlapping large callable
   }
 })
 
+test('source catalogs omit unrelated data and retain disjoint ranges in registration order', () => {
+  const first = 'function first(){return 1}', second = 'function second(){return 2}'
+  const gap = 'unrelated module data'.repeat(10_000)
+  const generated = gap + first + gap + second + gap
+  const original = 'original first\ud800' + gap + 'original second😀'
+  const firstStart = gap.length, secondStart = gap.length * 2 + first.length
+  const secondOriginal = original.indexOf('original second')
+  const ranges = [
+    [0, secondStart, secondStart + second.length, 1, secondOriginal, original.length],
+    [0, firstStart, firstStart + first.length, 1, 0, 'original first\ud800'.length],
+  ]
+  const saved = structuredClone(ranges)
+  const catalog = createCallableSourceCatalog([generated, original, gap], ranges)
+  assert.deepEqual(ranges, saved)
+  assert.equal(catalog.buffers.reduce((size, buffer) => size + buffer.length, 0),
+    first.length + second.length + 'original first\ud800'.length + 'original second😀'.length)
+  const registry = createCallableSourceRegistry()
+  registry.register(JSON.parse(JSON.stringify(catalog)))
+  assert.equal(registry.get(first), 'original first\ud800')
+  assert.equal(registry.get(second), 'original second😀')
+  assert.deepEqual(createCallableSourceCatalog([generated, original], []).buffers, [])
+  const neighbors = first + ';\n' + second
+  const close = createCallableSourceCatalog([neighbors], [
+    [0, 0, first.length, 0, 0, first.length],
+    [0, first.length + 2, neighbors.length, 0, first.length + 2, neighbors.length],
+  ])
+  assert.equal(close.buffers.length, 1)
+})
+
 test('reflection verifies exact generated text after digest selection', () => {
   const expected = 'function test(){return 1}'
   const foreign = 'function test(){return 2}'

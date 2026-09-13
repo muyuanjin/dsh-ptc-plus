@@ -2,6 +2,7 @@ import traverseModule from '@babel/traverse'
 import { types as t } from '@babel/core'
 import { transform as transformOptional, transformOptionalChain } from '@babel/plugin-transform-optional-chaining'
 import { isWriteIdentifier as isWriteTarget } from './binding-pattern.js'
+import { withGeneratedNameAllocator } from './compiler-generated-names.js'
 
 const traverse = traverseModule.default ?? traverseModule
 
@@ -71,10 +72,12 @@ export function rewriteNativeCalls(tree, environment, { origin, skip, operations
     enter(path) { if (skipOwned(path)) path.skip() },
     'OptionalCallExpression|OptionalMemberExpression'(path) {
       const assumptions = { pureGetters: false, noDocumentAll: false }
-      if (path.isOptionalMemberExpression() && path.parentPath.isTaggedTemplateExpression()) {
-        const target = origin(path.parent)
-        transformOptionalChain(path, assumptions, path, undefinedValue(), callee => helper('prepareTagInvocation', [prepare(callee, target)]))
-      } else transformOptional(path, assumptions)
+      withGeneratedNameAllocator(path.scope, allocate, () => {
+        if (path.isOptionalMemberExpression() && path.parentPath.isTaggedTemplateExpression()) {
+          const target = origin(path.parent)
+          transformOptionalChain(path, assumptions, path, undefinedValue(), callee => helper('prepareTagInvocation', [prepare(callee, target)]))
+        } else transformOptional(path, assumptions)
+      })
     },
   })
   traverse(tree, {

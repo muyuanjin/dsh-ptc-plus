@@ -39,59 +39,72 @@ function shell(node, originals) {
   return result
 }
 
-function pattern(node, originals) {
+function pattern(node, copy) {
   if (node === null) return null
-  const result = shell(node, originals)
+  const result = copy(node)
   if (t.isIdentifier(node)) return result
-  if (t.isAssignmentPattern(node)) { result.left = pattern(node.left, originals); result.right = t.numericLiteral(0) }
-  else if (t.isRestElement(node)) result.argument = pattern(node.argument, originals)
-  else if (t.isArrayPattern(node)) result.elements = node.elements.map(item => pattern(item, originals))
+  if (t.isAssignmentPattern(node)) { result.left = pattern(node.left, copy); result.right ??= t.numericLiteral(0) }
+  else if (t.isRestElement(node)) result.argument = pattern(node.argument, copy)
+  else if (t.isArrayPattern(node)) result.elements = node.elements.map(item => pattern(item, copy))
   else if (t.isObjectPattern(node)) result.properties = node.properties.map(item => {
-    if (t.isRestElement(item)) return pattern(item, originals)
-    const property = shell(item, originals)
-    property.value = pattern(item.value, originals)
+    if (t.isRestElement(item)) return pattern(item, copy)
+    const property = copy(item)
+    property.value = pattern(item.value, copy)
     return property
   })
   return result
 }
 
-/** Babel assigns each declaration's owner on an ancestry witness. Complete
- * logical groups are merged afterward, never inferred from a partial scope. */
+/** Unique occurrence names let bounded groups share their ancestry witness.
+ * Babel still owns declaration placement; unrelated expressions stay absent. */
 export function analyzeSourceDeclarations(tree, declarations) {
   const paths = indexSource(tree)
   const owners = new Map()
-  for (const [declaration, occurrences] of declarations) {
-    const originals = new Map()
-    let selected = shell(declaration, originals)
-    if (t.isVariableDeclaration(declaration)) {
-      selected.declarations = declaration.declarations.map(item => {
-        const declarator = shell(item, originals)
-        declarator.id = pattern(item.id, originals)
-        return declarator
-      })
-    } else if (t.isFunction(declaration)) {
-      selected.id = declaration.id && pattern(declaration.id, originals)
-      selected.params = declaration.params.map(item => pattern(item, originals))
-    } else if (t.isClass(declaration)) selected.id = declaration.id && pattern(declaration.id, originals)
-    else if (t.isCatchClause(declaration)) {
-      selected.param = declaration.param && pattern(declaration.param, originals)
-      selected.body = t.blockStatement([])
-    } else if (t.isImportDeclaration(declaration)) {
-      selected.source = declaration.source
-      selected.specifiers = declaration.specifiers.map(item => ({ ...item, local: pattern(item.local, originals) }))
+  const entries = [...declarations]
+  for (let offset = 0; offset < entries.length; offset += 64) {
+    const batch = entries.slice(offset, offset + 64)
+    const originals = new Map(), copies = new Map(), linked = new Set()
+    const copy = node => {
+      let result = copies.get(node)
+      if (result === undefined) { result = shell(node, originals); copies.set(node, result) }
+      return result
     }
-    let path = paths.get(declaration)
-    while (path.parentPath) {
-      const parent = shell(path.parent, originals)
-      if (path.listKey !== null) parent[path.listKey] = [selected]
-      else parent[path.key] = selected
-      selected = parent
-      path = path.parentPath
+    for (const [declaration] of batch) {
+      let selected = copy(declaration)
+      if (t.isVariableDeclaration(declaration)) {
+        selected.declarations = declaration.declarations.map(item => {
+          const declarator = copy(item)
+          declarator.id = pattern(item.id, copy)
+          return declarator
+        })
+      } else if (t.isFunction(declaration)) {
+        selected.id = declaration.id && pattern(declaration.id, copy)
+        selected.params = declaration.params.map(item => pattern(item, copy))
+      } else if (t.isClass(declaration)) selected.id = declaration.id && pattern(declaration.id, copy)
+      else if (t.isCatchClause(declaration)) {
+        selected.param = declaration.param && pattern(declaration.param, copy)
+        selected.body ??= t.blockStatement([])
+      } else if (t.isImportDeclaration(declaration)) {
+        selected.source = declaration.source
+        selected.specifiers = declaration.specifiers.map(item => ({ ...item, local: pattern(item.local, copy) }))
+      }
+      let path = paths.get(declaration)
+      while (path.parentPath && !linked.has(path.node)) {
+        linked.add(path.node)
+        const parent = copy(path.parent)
+        if (path.listKey !== null) {
+          if (!parent[path.listKey].includes(selected)) parent[path.listKey].push(selected)
+        }
+        else parent[path.key] = selected
+        selected = parent
+        path = path.parentPath
+      }
     }
-    const witness = t.file(selected)
-    const byName = new Map(occurrences.map(occurrence => [occurrence.node.name, occurrence]))
+    const witness = t.file(copies.get(tree.program))
+    const byName = new Map(batch.flatMap(([declaration, occurrences]) => occurrences
+      .map(occurrence => [occurrence.node.name, { occurrence, declaration }])))
     traverse(witness, { Identifier(path) {
-      const occurrence = byName.get(path.node.name)
+      const { occurrence, declaration } = byName.get(path.node.name) ?? {}
       if (occurrence === undefined || originals.get(path.node) !== occurrence.node) return
       const binding = path.scope.getBinding(path.node.name)
       const owner = occurrence.role === 'catch' ? declaration : originals.get(binding.scope.block)

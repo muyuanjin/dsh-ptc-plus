@@ -8,8 +8,10 @@ import { copyCompilerData } from './compiler-data.js'
 import { identifier, exportedSymbols, sourceDurability } from './binding-source-analysis.js'
 import { hashText, deflateText, inflateText } from './compiler-text.js'
 import { createCallableSourceCatalog } from './callable-source-encoding.js'
+import { createCachedDynamicCompiler } from './compiler-dynamic-cache.js'
 
-const operations = { prepareProgram, prepareConsoleProgram, classifyDurability, compileDynamicEnvironmentSource,
+const operations = { prepareProgram, prepareConsoleProgram, classifyDurability,
+  compileDynamicEnvironmentSource: createCachedDynamicCompiler(compileDynamicEnvironmentSource),
   compileStatefulModule, detectModuleSourceFormat, attachModuleNamespace, linkCommonJsEvidenceSource,
   identifier, exportedSymbols, sourceDurability, hashText, deflateText, inflateText, createCallableSourceCatalog }
 

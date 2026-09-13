@@ -10,6 +10,11 @@ import { LEGACY_USER_BINDING_TRANSFORM } from '../internal/typescript-transform.
 import { LIVE_USER_BINDINGS_SHADOW_POLICY } from '../internal/session-journal-schema.js'
 import { interceptWorkerMessages, interceptWorkerPosts, restartWorker } from './runtime-observation.js'
 
+function withoutReuse(entry) {
+  const { reuseCount, ...rest } = entry
+  return rest
+}
+
 function binding(id, name, scope, source) {
   return { id, name, scope, source, purpose: '', enabled: true }
 }
@@ -172,13 +177,13 @@ test('preserves imported alias provenance when a refreshed user binding snapshot
   })
   runtime.finalize(attached.settlement, true)
   assert.deepEqual(attached.result.value, ['b', 2])
-  const definition = imported.settlement.replMemory.entries.find(entry => entry.name === 'alpha')
+  const definition = withoutReuse(imported.settlement.replMemory.entries.find(entry => entry.name === 'alpha'))
   assert.deepEqual(definition, {
     name: 'alpha', kind: 'import',
     definition: { source: 'import { basename as alpha } from "node:path";', line: 1, column: 1 },
   })
   assert.deepEqual(nameStates(attached), { alpha: 'local', beta: 'provider' })
-  assert.deepEqual(attached.settlement.replMemory.entries.find(entry => entry.name === 'alpha'), definition)
+  assert.deepEqual(withoutReuse(attached.settlement.replMemory.entries.find(entry => entry.name === 'alpha')), definition)
   const continued = await runtime.runTentative('import-alias', {
     program: 'return [alpha("/c"), beta]',
     userBindings: second, bindings: [],
@@ -186,7 +191,7 @@ test('preserves imported alias provenance when a refreshed user binding snapshot
   runtime.finalize(continued.settlement, true)
   assert.deepEqual(continued.result.value, ['c', 2])
   assert.deepEqual(nameStates(continued), { alpha: 'local', beta: 'provider' })
-  assert.deepEqual(continued.settlement.replMemory.entries.find(entry => entry.name === 'alpha'), definition)
+  assert.deepEqual(withoutReuse(continued.settlement.replMemory.entries.find(entry => entry.name === 'alpha')), definition)
 })
 
 test('protected import aliases keep live values, readonly writes and definitions through provider lifecycle changes', async t => {
@@ -205,7 +210,7 @@ export function bump() { current = { count: current.count + 1 } }
     const imported = await run(`${declaration} const saved = ${read}; const read = () => ${read}; const savedAlias = alpha;`)
     assert.equal(imported.result.error, undefined)
     const definition = { name: 'alpha', kind: 'import', definition: { source: declaration, line: 1, column: 1 } }
-    assert.deepEqual(imported.settlement.replMemory.entries.find(entry => entry.name === 'alpha'), definition)
+    assert.deepEqual(withoutReuse(imported.settlement.replMemory.entries.find(entry => entry.name === 'alpha')), definition)
     const provider = seed => binding('pair', 'pair', 'top-level',
       `export const alpha = ${seed}; export let beta = ${seed}; export function step() { return ++beta }`)
     const initial = snapshot([provider(2)])
@@ -214,7 +219,7 @@ export function bump() { current = { count: current.count + 1 } }
       assert.equal(execution.result.error, undefined)
       assert.deepEqual(nameStates(execution), enabled
         ? { alpha: 'local', beta: 'provider', step: 'provider' } : { alpha: 'local' })
-      assert.deepEqual(execution.settlement.replMemory.entries.find(entry => entry.name === 'alpha'), definition)
+      assert.deepEqual(withoutReuse(execution.settlement.replMemory.entries.find(entry => entry.name === 'alpha')), definition)
     }
     const attached = await run(`${bump}; const savedStep = step; return [${read}.count, read() === ${read}, saved.count, alpha === savedAlias, step(), beta]`, initial)
     assert.deepEqual(attached.result.value, [2, true, 1, style === 'namespace', 3, 3])
@@ -226,7 +231,7 @@ export function bump() { current = { count: current.count + 1 } }
     assert.equal(readonly.result.error.kind, 'exception')
     assert.match(readonly.result.error.message, /constant variable|read.?only/i)
     assert.deepEqual(nameStates(readonly), { alpha: 'local', beta: 'provider', step: 'provider' })
-    assert.deepEqual(readonly.settlement.replMemory.entries.find(entry => entry.name === 'alpha'), definition)
+    assert.deepEqual(withoutReuse(readonly.settlement.replMemory.entries.find(entry => entry.name === 'alpha')), definition)
     const changed = await run(`return [${read}.count, step === savedStep, step(), savedStep(), beta]`, updated)
     assert.deepEqual(changed.result.value, [2, false, 21, 4, 21])
     assertSources(changed, true)
@@ -248,13 +253,13 @@ test('stateful import overrides retain their actual source through provider upda
   const selected = seed => snapshot([binding('pair', 'pair', 'top-level', `export const alpha=${seed}; export const beta=${seed+1}`)], seed)
   const written = await run('alpha=42; return [read(),beta]', selected(1))
   assert.deepEqual(written.result.value, [42,2])
-  assert.equal(written.settlement.replMemory.entries.find(entry => entry.name === 'alpha').definition.source, 'alpha=42')
+  assert.equal(withoutReuse(written.settlement.replMemory.entries.find(entry => entry.name === 'alpha')).definition.source, 'alpha=42')
   assert.deepEqual(nameStates(written), {alpha:'local',beta:'provider'})
   assert.deepEqual((await run('return [read(),beta]', selected(10))).result.value, [42,11])
   assert.deepEqual((await run('return [read(),typeof beta]', snapshot([]))).result.value, [42,'undefined'])
   const restored = await run(`${source}; return [typeof read(),beta]`, selected(20))
   assert.deepEqual(restored.result.value, ['string',21])
-  assert.equal(restored.settlement.replMemory.entries.find(entry => entry.name === 'alpha').kind, 'import')
+  assert.equal(withoutReuse(restored.settlement.replMemory.entries.find(entry => entry.name === 'alpha')).kind, 'import')
   assert.deepEqual(nameStates(restored), {alpha:'local',beta:'provider'})
 })
 
@@ -263,21 +268,21 @@ test('synthetic default aliases retain their original definition and live readon
   const declaration = 'export default { count: 1 }'
   const imported = await run(`${declaration}\nconst saved = __default; const read = () => __default;`)
   assert.equal(imported.result.error, undefined)
-  const definition = imported.settlement.replMemory.entries.find(entry => entry.name === '__default')
+  const definition = withoutReuse(imported.settlement.replMemory.entries.find(entry => entry.name === '__default'))
   assert.equal(definition.definition.source, declaration)
   const selected = snapshot([binding('pair', 'pair', 'top-level', 'export const __default = 10; export const beta = 2')])
   const attached = await run('return [__default === saved, read() === saved, beta]', selected)
   assert.deepEqual(attached.result.value, [true, true, 2])
   assert.deepEqual(nameStates(attached), { __default: 'local', beta: 'provider' })
-  assert.deepEqual(attached.settlement.replMemory.entries.find(entry => entry.name === '__default'), definition)
+  assert.deepEqual(withoutReuse(attached.settlement.replMemory.entries.find(entry => entry.name === '__default')), definition)
   const rejected = await run('__default = 42', selected)
   assert.match(rejected.result.error.message, /constant variable|read.?only/i)
   assert.deepEqual(nameStates(rejected), { __default: 'local', beta: 'provider' })
-  assert.deepEqual(rejected.settlement.replMemory.entries.find(entry => entry.name === '__default'), definition)
+  assert.deepEqual(withoutReuse(rejected.settlement.replMemory.entries.find(entry => entry.name === '__default')), definition)
   const continued = await run('__default.count++; return [__default.count, read() === saved, beta]', selected)
   assert.deepEqual(continued.result.value, [2, true, 2])
   assert.deepEqual(nameStates(continued), { __default: 'local', beta: 'provider' })
-  assert.deepEqual(continued.settlement.replMemory.entries.find(entry => entry.name === '__default'), definition)
+  assert.deepEqual(withoutReuse(continued.settlement.replMemory.entries.find(entry => entry.name === '__default')), definition)
 })
 
 test('synthetic import source proof never invokes a namespace member accessor', async t => {
@@ -290,7 +295,7 @@ test('synthetic import source proof never invokes a namespace member accessor', 
   }
   const imported = await run('export default 1\nlet getterCalls = 0;', snapshot([]))
   assert.equal(imported.result.error, undefined)
-  const definition = imported.settlement.replMemory.entries.find(entry => entry.name === '__default')
+  const definition = withoutReuse(imported.settlement.replMemory.entries.find(entry => entry.name === '__default'))
   // Replace the synthetic namespace member through its structured compiler
   // association. Source proof must read only the initialized lexical slot.
   const intercepted = interceptWorkerPosts(runtime, 'import-getter-proof', message => {
@@ -307,12 +312,12 @@ test('synthetic import source proof never invokes a namespace member accessor', 
     const observed = await run('return [getterCalls, beta]', selected)
     assert.deepEqual(observed.result.value, [0, 2])
     assert.deepEqual(nameStates(observed), { __default: 'local', beta: 'provider' })
-    assert.deepEqual(observed.settlement.replMemory.entries.find(entry => entry.name === '__default'), definition)
+    assert.deepEqual(withoutReuse(observed.settlement.replMemory.entries.find(entry => entry.name === '__default')), definition)
   }
   const read = await run('return __default', selected)
   assert.match(read.result.error.message, /export getter invoked/)
   assert.deepEqual(nameStates(read), { __default: 'local', beta: 'provider' })
-  assert.deepEqual(read.settlement.replMemory.entries.find(entry => entry.name === '__default'), definition)
+  assert.deepEqual(withoutReuse(read.settlement.replMemory.entries.find(entry => entry.name === '__default')), definition)
   assert.equal((await run('return getterCalls', selected)).result.value, 1)
 })
 

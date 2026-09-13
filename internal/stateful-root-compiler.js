@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto'
 import traverseModule from '@babel/traverse'
 import { bindingNodes, createGeneratedNameAllocator, isWriteIdentifier } from './binding-pattern.js'
 import { applySourceEdits, createMappedTextBuilder, identitySourceMap, mapSourceSpan } from './source-position-map.js'
-import { CELL_PARSER_PLUGINS } from './repl-scope-normalizer.js'
+import { CELL_PARSER_PLUGINS, RECOVERABLE_CELL_PARSE_ERRORS } from './repl-scope-normalizer.js'
 import { adaptDynamicCell } from './dynamic-environment-integration.js'
 import { sourceBinding, varInitializerTarget } from './dynamic-scope-analysis.js'
 
@@ -86,6 +86,7 @@ function rewriteRootReferences(code, sourceMap, runtime, candidateNames, candida
   const classificationEdits = []
   const handled = new Set()
   const implicitDeclarations = new Map()
+  const readNames = new Set()
   const dynamicFunctions = new WeakSet()
   traverse(tree, { CallExpression(path) {
     if (path.node.callee.type === 'Identifier' && path.node.callee.name === 'eval') {
@@ -147,6 +148,16 @@ function rewriteRootReferences(code, sourceMap, runtime, candidateNames, candida
     if (selectedCandidate === undefined && path.findParent(parent => parent.isWithStatement() && parent.get('body').isAncestor(path)) !== null) return
     if (path.findParent(parent => parent.isFunction() && dynamicFunctions.has(parent.node)) !== null) return
     if (parent.type.startsWith('TS') && parent.expression !== path.node) return
+    // A static reference to an outer identity is a reuse event candidate.
+    // `for (x of ...)` and `for (x in ...)` bind the left target without
+    // reading its previous value, and `delete x` removes the reference without
+    // reading it, so both stay out; compound assignment, updates and `typeof`
+    // do read it.
+    const write = isWriteIdentifier(path)
+    const forHeadWrite = (parent.type === 'ForOfStatement' || parent.type === 'ForInStatement') && path.key === 'left'
+    const deleted = parent.type === 'UnaryExpression' && parent.operator === 'delete'
+    if ((path.isReferencedIdentifier() && !forHeadWrite && !deleted)
+      || write && parent.type === 'AssignmentExpression' && parent.operator !== '=') readNames.add(path.node.name)
     const owner = selectedCandidate ?? runtime
     const selectedReference = candidateReferences.has(owner)
     let text = selectedReference ? `${owner}().value` : `${owner}.values[${JSON.stringify(path.node.name)}]`
@@ -182,7 +193,8 @@ function rewriteRootReferences(code, sourceMap, runtime, candidateNames, candida
   } })
   return { ...applySourceEdits(code, sourceMap, edits),
     classificationCode: applySourceEdits(code, sourceMap, classificationEdits).code,
-    implicitDeclarations: [...implicitDeclarations.values()] }
+    implicitDeclarations: [...implicitDeclarations.values()],
+    readNames: [...readNames] }
 }
 
 export function compileStatefulRoot(program, {
@@ -224,7 +236,7 @@ export function compileStatefulRoot(program, {
   }
   const protectedError = file.errors.find(error => error.reasonCode !== 'UnexpectedUsingDeclaration')
   if (languageSemantics === 'protected-v1' && protectedError !== undefined) throw protectedError
-  const syntaxError = file.errors.find(error => !['VarRedeclaration', 'DeclarationMissingInitializer', 'DuplicateExport', 'DuplicateDefaultExport', 'UnexpectedUsingDeclaration'].includes(error.reasonCode))
+  const syntaxError = file.errors.find(error => !RECOVERABLE_CELL_PARSE_ERRORS.has(error.reasonCode))
   if (syntaxError !== undefined) throw syntaxError
   const root = rootDeclarations(file).filter(path => path.node.type === 'VariableDeclaration'
     ? !path.node.declarations.every(declarator => {
@@ -568,12 +580,19 @@ export function compileStatefulRoot(program, {
       reason: reservedBindings.has(declaration.name)
         ? 'reserved-program-binding-not-shadowable' : 'protected-root-redeclaration',
       start: { line: declaration.span.line, column: declaration.span.column }, end: declaration.span.end }))
+  // A binding is reused only when this cell's rewritten source statically
+  // references an identity that already existed and does not (re)declare that
+  // same name. The count is a source fact, not a runtime trace: an unreached or
+  // never-invoked reference still counts, and a redeclaration neither counts as
+  // a reuse here nor resets the accumulated count it carries.
+  const reusedNames = [...(rewritten.readNames ?? [])]
+    .filter(name => knownBindings.has(name) && !declared.has(name))
   return {
     ...rewritten, languageSemantics, rootRuntimeName, rootFrameBinding: runtime, commitSignal, commitTargets, declarations, declared,
     rootPlan: rootBindings,
     rootBindings,
     rootBindingFacts: true, moduleLoads, imports, importNamespaces: new Set(), collisions,
     redeclared: declarations.filter(declaration => knownBindings.has(declaration.name)), rewrites,
-    establishedRootLexicals: new Set(),
+    establishedRootLexicals: new Set(), reusedNames,
   }
 }

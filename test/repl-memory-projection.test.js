@@ -7,6 +7,7 @@ import {
   normalizeReplMemorySnapshot,
   normalizeReplObservation,
   unavailableReplMemorySnapshot,
+  validatedReplMemorySnapshot,
   withReplMemorySnapshot,
 } from '../internal/repl-memory-projection.js'
 import { prepareProgram } from '../internal/cell-analysis.js'
@@ -74,14 +75,14 @@ function resultMemory(result) {
 }
 
 function binding(name, kind = 'variable', source = `const ${name} = 1`, line = 1, column = 1) {
-  return { name, kind, definition: { source, line, column } }
+  return { name, kind, definition: { source, line, column }, reuseCount: 0 }
 }
 
 // A visible Client holds one cancellable `watch` request while it inspects the
 // session, then requests bounded observations through the same RPC contract.
-function observedFixture() {
+function observedFixture(config = {}) {
   let rpc
-  const state = fixture({}, { bindingRpc: handler => { rpc = handler } })
+  const state = fixture(config, { bindingRpc: handler => { rpc = handler } })
   return {
     state,
     watch(sessionId) {
@@ -113,9 +114,31 @@ test('bounds and validates UI observation independently of source inventory and 
   assert.throws(() => normalizeReplObservation({ ...observation, entries: [preview, preview] }), /preview/)
   assert.throws(() => normalizeReplMemorySnapshot({ ...snapshot, observation: { ...observation, entries: [{ ...preview, name: 'foreign' }] } }), /matching/)
   assert.throws(() => normalizeReplMemorySnapshot({ ...unavailableReplMemorySnapshot(), observation: { ...observation, entries: [] } }), /matching/)
-  const legacy = { [REPL_MEMORY_META_KEY]: { version: 3, generation: GENERATION, memory: createReplMemorySnapshot([binding('value')]) } }
+  // A genuinely legacy payload carries neither reuseTotal nor reuseCount.
+  const legacyMemory = { available: true, total: 1, omitted: 0, entries: [
+    { name: 'value', kind: 'variable', definition: { source: 'const value = 1', line: 1, column: 1 } },
+  ] }
+  const legacy = { [REPL_MEMORY_META_KEY]: { version: 3, generation: GENERATION, memory: legacyMemory } }
   const events = [toolCall(1), toolResult(2, 'call-1', legacy)]
-  assert.deepEqual(projectedMemory(events), createReplMemorySnapshot([binding('value')]))
+  assert.deepEqual(projectedMemory(events), {
+    ...legacyMemory, reuseTotal: 0, entries: [{ ...legacyMemory.entries[0], reuseCount: 0 }],
+  })
+})
+
+test('rejects reuse fields inside an older metadata version', () => {
+  // Reuse counts are a version 5 addition, so a version 3/4 payload cannot
+  // carry them; the symmetric version 3 + observation guard already exists.
+  const counted = { available: true, total: 1, omitted: 0, reuseTotal: 1, entries: [
+    { name: 'value', kind: 'variable', definition: { source: 'const value = 1', line: 1, column: 1 }, reuseCount: 1 },
+  ] }
+  for (const version of [3, 4]) {
+    assert.equal(validatedReplMemorySnapshot({
+      [REPL_MEMORY_META_KEY]: { version, generation: GENERATION, memory: counted },
+    }, GENERATION), undefined)
+  }
+  assert.equal(validatedReplMemorySnapshot({
+    [REPL_MEMORY_META_KEY]: { version: 5, generation: GENERATION, memory: counted },
+  }, GENERATION).reuseTotal, 1)
 })
 
 test('retains bounded definition provenance without reading runtime values', () => {
@@ -212,6 +235,7 @@ test('projects a bounded value-independent binding inventory through formal call
     ],
     total: 4,
     omitted: 0,
+    reuseTotal: 0,
   })
   const projected = foldProjection([
     toolCall(4, 'memory-call'),
@@ -266,7 +290,8 @@ test('bounds inventories and rejects malformed snapshots', () => {
     { available: true, entries: [binding('x', 'value')], total: 1, omitted: 0 },
     { available: true, entries: [binding('x'), binding('x', 'class')], total: 2, omitted: 0 },
     { available: false, entries: [binding('x')], total: 1, omitted: 0 },
-  ]) assert.throws(() => normalizeReplMemorySnapshot(malformed), /dsh-ptc-plus REPL (?:memory|binding)/)
+    { available: true, entries: [{ ...binding('x'), reuseCount: 5 }], total: 1, omitted: 0, reuseTotal: 4 },
+  ]) assert.throws(() => normalizeReplMemorySnapshot(malformed), /dsh-ptc-plus REPL (?:memory|binding|reuse)/)
 
   assert.throws(() => normalizeReplMemorySnapshot({
     available: true,
@@ -379,10 +404,10 @@ test('validates generation-bound projection state and bounded pending calls', ()
 
 test('distinguishes unavailable memory from an observed empty REPL', () => {
   assert.deepEqual(unavailableReplMemorySnapshot(), {
-    available: false, entries: [], total: 0, omitted: 0,
+    available: false, entries: [], total: 0, omitted: 0, reuseTotal: 0,
   })
   assert.deepEqual(createReplMemorySnapshot([]), {
-    available: true, entries: [], total: 0, omitted: 0,
+    available: true, entries: [], total: 0, omitted: 0, reuseTotal: 0,
   })
 })
 
@@ -396,7 +421,7 @@ function load() { return answer }
 class Widget {}
 return answer
 `)
-  assert.equal(first.meta[REPL_MEMORY_META_KEY].version, 4)
+  assert.equal(first.meta[REPL_MEMORY_META_KEY].version, 5)
   assert.equal(typeof first.meta[REPL_MEMORY_META_KEY].generation, 'string')
   assert.deepEqual(resultMemory(first).entries, [
     binding('Widget', 'class', 'class Widget {}', 4),
@@ -414,6 +439,44 @@ return answer
   assert.deepEqual(resultMemory(second).entries.map(entry => entry.name), [
     'next', 'Widget', 'load', 'answer',
   ])
+  // Reading the established `answer` is one reuse; declaring `next` is not.
+  assert.equal(resultMemory(second).entries.find(entry => entry.name === 'answer').reuseCount, 1)
+  assert.equal(resultMemory(second).reuseTotal, 1)
+})
+
+test('counts one reuse per later stateful cell and preserves it across redeclaration', async (t) => {
+  const { state } = observedFixture({ bindingUpdates: 'stateful' })
+  t.after(() => state.dispose())
+  const answer = result => resultMemory(result).entries.find(entry => entry.name === 'answer')
+  const first = await state.runDurable('reuse-session', 'const answer = 42\nreturn answer')
+  assert.equal(answer(first).reuseCount, 0)
+  const second = await state.runDurable('reuse-session', 'const next = answer + 1\nreturn next')
+  assert.equal(answer(second).reuseCount, 1)
+  assert.equal(resultMemory(second).reuseTotal, 1)
+  // A redeclaration neither counts as a reuse nor resets the accumulated count.
+  const third = await state.runDurable('reuse-session', 'const answer = 7\nreturn answer')
+  assert.equal(answer(third).reuseCount, 1)
+  assert.equal(resultMemory(third).reuseTotal, 1)
+  const fourth = await state.runDurable('reuse-session', 'return answer * 2')
+  assert.equal(answer(fourth).reuseCount, 2)
+  assert.equal(resultMemory(fourth).reuseTotal, 2)
+})
+
+test('counts static references, not delete or a plain assignment', async (t) => {
+  const { state } = observedFixture({ bindingUpdates: 'stateful' })
+  t.after(() => state.dispose())
+  const countOf = (result, name) => resultMemory(result).entries.find(entry => entry.name === name).reuseCount
+  await state.runDurable('reuse-classification', 'let target = 1')
+  // Removing a reference and overwriting a value are writes, not reads; a
+  // compound assignment and `typeof` do read the current value.
+  assert.equal(countOf(await state.runDurable('reuse-classification', 'delete target'), 'target'), 0)
+  assert.equal(countOf(await state.runDurable('reuse-classification', 'target = 2'), 'target'), 0)
+  assert.equal(countOf(await state.runDurable('reuse-classification', 'target += 1'), 'target'), 1)
+  assert.equal(countOf(await state.runDurable('reuse-classification', 'typeof target'), 'target'), 2)
+  assert.equal(countOf(await state.runDurable('reuse-classification', 'return target'), 'target'), 3)
+  // The count is a source fact: a reference the execution never reaches still
+  // counts once for the settled cell, and the failed cell is not discarded.
+  assert.equal(countOf(await state.runDurable('reuse-classification', 'throw new Error("boom")\nvoid target'), 'target'), 4)
 })
 
 test('trusted-host observation supplies missing previews without writing projection or execution evidence', async t => {

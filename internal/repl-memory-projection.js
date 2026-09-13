@@ -13,15 +13,22 @@ const MAX_PENDING_REPL_CALLS = 256
 const MAX_CALL_ID_LENGTH = 512
 const MAX_GENERATION_LENGTH = 128
 const SNAPSHOT_FIELDS = new Set(['available', 'entries', 'total', 'omitted'])
+const COUNTED_SNAPSHOT_FIELDS = new Set([...SNAPSHOT_FIELDS, 'reuseTotal'])
 const OBSERVED_SNAPSHOT_FIELDS = new Set([...SNAPSHOT_FIELDS, 'observation'])
+const OBSERVED_COUNTED_SNAPSHOT_FIELDS = new Set([...COUNTED_SNAPSHOT_FIELDS, 'observation'])
 const OBSERVATION_FIELDS = new Set(['at', 'entries'])
 const PREVIEW_FIELDS = new Set(['name', 'status', 'text', 'truncated'])
 const ENTRY_FIELDS = new Set(['name', 'kind', 'definition'])
+const COUNTED_ENTRY_FIELDS = new Set([...ENTRY_FIELDS, 'reuseCount'])
 const DEFINITION_FIELDS = new Set(['source', 'line', 'column'])
 const MEMORY_META_FIELDS = new Set(['version', 'generation', 'memory'])
 const PROJECTION_STATE_FIELDS = new Set(['generation', 'memory', 'pendingReplCalls'])
 const PENDING_CALL_FIELDS = new Set(['callId', 'seq'])
-const REPL_MEMORY_META_VERSION = 4
+const REPL_MEMORY_META_VERSION = 5
+
+function isReuseCount(value) {
+  return Number.isSafeInteger(value) && value >= 0
+}
 
 function exactFields(value, fields) {
   if (!isRecord(value)) return false
@@ -37,6 +44,7 @@ const EMPTY_REPL_MEMORY = Object.freeze({
   entries: Object.freeze([]),
   total: 0,
   omitted: 0,
+  reuseTotal: 0,
 })
 
 export function unavailableReplMemorySnapshot() {
@@ -62,15 +70,18 @@ function normalizeDefinition(value) {
 }
 
 function normalizeBinding(value) {
-  if (!exactFields(value, ENTRY_FIELDS) || typeof value.name !== 'string'
+  const counted = exactFields(value, COUNTED_ENTRY_FIELDS)
+  if ((!counted && !exactFields(value, ENTRY_FIELDS)) || typeof value.name !== 'string'
     || value.name.length === 0 || value.name.length > MAX_BINDING_NAME_LENGTH
-    || !BINDING_KINDS.has(value.kind)) {
+    || !BINDING_KINDS.has(value.kind)
+    || (counted && !isReuseCount(value.reuseCount))) {
     throw new Error('invalid dsh-ptc-plus REPL memory binding')
   }
   return Object.freeze({
     name: value.name,
     kind: value.kind,
     definition: normalizeDefinition(value.definition),
+    reuseCount: counted ? value.reuseCount : 0,
   })
 }
 
@@ -128,24 +139,32 @@ export function createReplMemorySnapshot(bindings, observation = undefined) {
     entries: Object.freeze(entries),
     total: candidates.length,
     omitted: candidates.length - entries.length,
+    // Counts survive the presentation truncation: this total covers every valid
+    // identity, including entries omitted from the bounded list.
+    reuseTotal: candidates.reduce((sum, entry) => sum + entry.reuseCount, 0),
     ...(observed === undefined ? {} : { observation: observed }),
   })
 }
 
 /** Validate one complete session-projection value without accepting unknown fields. */
 export function normalizeReplMemorySnapshot(value) {
-  if ((!exactFields(value, SNAPSHOT_FIELDS) && !exactFields(value, OBSERVED_SNAPSHOT_FIELDS)) || typeof value.available !== 'boolean'
+  const counted = exactFields(value, COUNTED_SNAPSHOT_FIELDS) || exactFields(value, OBSERVED_COUNTED_SNAPSHOT_FIELDS)
+  const legacy = exactFields(value, SNAPSHOT_FIELDS) || exactFields(value, OBSERVED_SNAPSHOT_FIELDS)
+  if ((!counted && !legacy) || typeof value.available !== 'boolean'
     || !Array.isArray(value.entries) || value.entries.length > MAX_BINDINGS
     || !Number.isSafeInteger(value.total) || value.total < 0
     || !Number.isSafeInteger(value.omitted) || value.omitted < 0
-    || value.total !== value.entries.length + value.omitted) {
+    || value.total !== value.entries.length + value.omitted
+    || counted && !isReuseCount(value.reuseTotal)) {
     throw new Error('invalid dsh-ptc-plus REPL memory snapshot')
   }
-  if (!value.available && (value.total !== 0 || value.entries.length !== 0)) {
+  const reuseTotal = counted ? value.reuseTotal : 0
+  if (!value.available && (value.total !== 0 || value.entries.length !== 0 || reuseTotal !== 0)) {
     throw new Error('unavailable dsh-ptc-plus REPL memory snapshot must be empty')
   }
   const names = new Set()
   let sourceLength = 0
+  let entryReuseTotal = 0
   const entries = value.entries.map((entry) => {
     const normalized = normalizeBinding(entry)
     if (names.has(normalized.name)) {
@@ -156,8 +175,12 @@ export function normalizeReplMemorySnapshot(value) {
       throw new Error('dsh-ptc-plus REPL binding definitions exceed the presentation budget')
     }
     names.add(normalized.name)
+    entryReuseTotal += normalized.reuseCount
     return normalized
   })
+  if (reuseTotal < entryReuseTotal) {
+    throw new Error('dsh-ptc-plus REPL reuse total is smaller than its entries')
+  }
   const observation = value.observation === undefined ? undefined : normalizeReplObservation(value.observation)
   if (observation !== undefined && (!value.available || observation.entries.some(entry => !names.has(entry.name)))) {
     throw new Error('REPL observation requires a matching available inventory')
@@ -167,13 +190,21 @@ export function normalizeReplMemorySnapshot(value) {
     entries: Object.freeze(entries),
     total: value.total,
     omitted: value.omitted,
+    reuseTotal,
     ...(observation === undefined ? {} : { observation }),
   })
 }
 
+/** Reuse fields are version 5 additions; an older metadata version cannot own them. */
+function countedMemory(memory) {
+  return memory?.reuseTotal !== undefined
+    || Array.isArray(memory?.entries) && memory.entries.some(entry => entry?.reuseCount !== undefined)
+}
+
 function normalizeReplMemoryMetadata(value) {
-  if (!exactFields(value, MEMORY_META_FIELDS) || ![3, REPL_MEMORY_META_VERSION].includes(value.version)
-    || (value.version === 3 && value.memory?.observation !== undefined)) {
+  if (!exactFields(value, MEMORY_META_FIELDS) || ![3, 4, REPL_MEMORY_META_VERSION].includes(value.version)
+    || (value.version === 3 && value.memory?.observation !== undefined)
+    || (value.version < REPL_MEMORY_META_VERSION && countedMemory(value.memory))) {
     throw new Error('invalid dsh-ptc-plus REPL memory metadata')
   }
   return Object.freeze({
@@ -296,7 +327,7 @@ export function createReplMemoryProjection(generation) {
   const currentGeneration = normalizeGeneration(generation)
   return Object.freeze({
     key: REPL_MEMORY_KEY,
-    stateVersion: 4,
+    stateVersion: 5,
     stateSchema: Object.freeze({
       parse: value => normalizeProjectionState(value, currentGeneration),
     }),

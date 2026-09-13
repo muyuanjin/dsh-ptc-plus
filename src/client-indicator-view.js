@@ -26,12 +26,11 @@ export function createIndicatorView(React, deps) {
   const h = React.createElement
 
   function PTCPlusSessionIndicator({
-    sessionId, t, useProjection, useSessions, useInput, inputActions, usePtcSettings, callUserBindings,
+    sessionId, t, useProjection, useSessions, usePtcSettings, callUserBindings,
   }) {
     const preset = useSessionPreset({ sessionId, useProjection, useSessions })
     const projectionMemory = useProjection('ptcPlusRepl')
     const settings = usePtcSettings(snapshot => snapshot)
-    const input = typeof useInput === 'function' ? useInput(snapshot => snapshot) : undefined
     const resolvedSessionId = sessionId
     const globalEnabled = featureEnabled(settings, 'bindings')
     const identity = JSON.stringify([sessionId, globalEnabled])
@@ -40,7 +39,6 @@ export function createIndicatorView(React, deps) {
     const catalogSource = React.useMemo(() => catalogOwner.claim(), [catalogOwner])
     const catalogState = React.useSyncExternalStore(catalogSource.subscribe, catalogSource.getSnapshot)
     const globalBindings = catalogState.catalog ?? undefined
-    const [authoringMessage, setAuthoringMessage] = React.useState(null)
     const refreshGlobalBindings = React.useCallback(() => {
       if (!globalEnabled) return
       void catalogSource.read()
@@ -195,16 +193,6 @@ export function createIndicatorView(React, deps) {
         document.removeEventListener('keydown', closeOnEscape)
       }
     }, [closeOnEscape, dismissOutside, expanded])
-    const prefillAuthoring = React.useCallback((value) => {
-      if (typeof inputActions?.setDraft !== 'function') return
-      if (typeof input?.draft === 'string' && input.draft.trim() !== '') {
-        setAuthoringMessage('bindings.composerBusy')
-        return
-      }
-      inputActions.setDraft(value)
-      setAuthoringMessage(null)
-      hidePopover()
-    }, [hidePopover, input?.draft, inputActions])
     React.useEffect(() => {
       const syncPopoverState = (event) => {
         if (event.target !== popoverRef.current) return
@@ -268,8 +256,6 @@ export function createIndicatorView(React, deps) {
         globalEnabled,
         globalBindings,
         loadGlobalBinding: id => callUserBindings('load', { id }),
-        prefillAuthoring,
-        authoringMessage,
         t, id: popoverId, titleId, popoverRef,
         onEnter: () => { cancelOpen(); cancelClose() },
         onLeave: scheduleHide,

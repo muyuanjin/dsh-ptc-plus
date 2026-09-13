@@ -5,10 +5,10 @@
  */
 export function createReplView(React, deps) {
   const {
-    ActionButton, CodeBlock, featureEnabled, normalizeReplMemorySnapshot,
+    CodeBlock, featureEnabled, normalizeReplMemorySnapshot,
     unavailableReplMemorySnapshot, useSessionPreset, sessionUsesPtcPreset,
     useWorkbenchController, UserBindingsWorkbench,
-    icons: { search: IconSearchOutline16, chevron: IconChevronDownOutline14, sparkle: IconSparkle16 },
+    icons: { search: IconSearchOutline16, chevron: IconChevronDownOutline14 },
   } = deps
   const h = React.createElement
 
@@ -45,7 +45,9 @@ export function createReplView(React, deps) {
         h('div', { className: 'ptcPlusObservationTitle' },
           h('h2', null, t('console.session')),
           memory.available ? h('span', { className: 'ptcPlusObservationCount', title: t('memory.count', { count: memory.total }) },
-            query.trim() || kind !== 'all' ? `${entries.length} / ${memory.total}` : memory.total) : null),
+            query.trim() || kind !== 'all' ? `${entries.length} / ${memory.total}` : memory.total) : null,
+          memory.available ? h('span', { className: 'ptcPlusObservationReuseTotal', title: t('memory.reuseHint') },
+            t('memory.reuseTotal', { count: memory.reuseTotal })) : null),
         h('span', { className: 'ptcPlusObservationTime' }, observation === undefined
           ? t('console.unobserved') : t('console.observed', { time: new Date(observation.at).toLocaleString() }))),
       memory.entries.length === 0 ? h('div', { className: 'ptcPlusSessionEmpty' },
@@ -66,6 +68,7 @@ export function createReplView(React, deps) {
               h('thead', null, h('tr', null,
                 h('th', { scope: 'col' }, t('console.name')),
                 h('th', { scope: 'col' }, t('console.kind')),
+                h('th', { scope: 'col' }, t('console.reuse')),
                 h('th', { scope: 'col' }, t('console.value')))),
               h('tbody', null, entries.map(entry => {
                 const preview = previews.get(entry.name)
@@ -74,6 +77,7 @@ export function createReplView(React, deps) {
                   h('td', null, h('button', { type: 'button', className: 'ptcPlusObservationSelect',
                     'aria-current': entry === selected ? 'true' : undefined, title: entry.name }, entry.name)),
                   h('td', { className: 'ptcPlusObservationKind' }, t(`memory.kind.${entry.kind}`)),
+                  h('td', { className: 'ptcPlusObservationReuse', title: t('memory.reuseHint') }, entry.reuseCount),
                   h('td', null, h('span', { className: 'ptcPlusObservationValue' },
                     preview?.status === 'readable' ? h('code', null, preview.text)
                       : h('span', { className: 'ptcPlusObservationState' }, t(preview === undefined ? 'console.unobservedValue' : 'console.unreadable')),
@@ -146,8 +150,6 @@ export function createReplView(React, deps) {
     globalEnabled,
     globalBindings,
     loadGlobalBinding,
-    prefillAuthoring,
-    authoringMessage,
     t,
     id,
     titleId,
@@ -161,7 +163,7 @@ export function createReplView(React, deps) {
     const [globalSource, setGlobalSource] = React.useState(null)
     const activeTab = globalEnabled ? tab : 'session'
     const summary = activeTab === 'session'
-      ? memory.available ? t('memory.count', { count: memory.total }) : ''
+      ? memory.available ? `${t('memory.count', { count: memory.total })} · ${t('memory.reuseTotal', { count: memory.reuseTotal })}` : ''
       : globalBindings === undefined ? '' : t('memory.globalCount', { count: globalBindings.entries.length })
     const inspectGlobal = entry => {
       if (globalSource?.id === entry.id) {
@@ -207,7 +209,6 @@ export function createReplView(React, deps) {
         : null,
       activeTab === 'global'
         ? h('div', { className: 'ptcPlusGlobalPane' },
-            authoringMessage === null ? null : h('p', { className: 'ptcPlusMessage', role: 'status' }, t(authoringMessage)),
             globalBindings === undefined
               ? h('span', { className: 'ptcPlusReplEmpty' }, t('memory.globalUnavailable'))
               : globalBindings.entries.length === 0
@@ -223,12 +224,6 @@ export function createReplView(React, deps) {
                   h('span', { className: 'ptcPlusBindingMeta', title: entry.symbols.join(', ') }, `${entry.scope} - ${entry.symbols.join(', ')}`),
                   h('span', { className: 'ptcPlusBindingState', 'data-enabled': entry.enabled },
                     t(entry.enabled ? 'bindings.enabled' : 'bindings.disabledEntry'))),
-                  h(ActionButton, {
-                    type: 'button', className: 'ptcPlusButton',
-                    onClick: () => prefillAuthoring(`/binding edit ${entry.id} `),
-                  }, typeof IconSparkle16 === 'function'
-                    ? h(IconSparkle16, { size: 14, 'aria-hidden': true })
-                    : null, t('bindings.authorEdit')),
                   globalSource?.id !== entry.id
                     ? null
                     : globalSource.error === true
@@ -257,10 +252,13 @@ export function createReplView(React, deps) {
                 'aria-controls': expanded ? definitionId : undefined,
                 onClick: toggle,
               },
-                h('span', {
-                  className: 'ptcPlusReplName', 'data-kind': binding.kind,
-                  title: `${binding.name} - ${t(`memory.kind.${binding.kind}`)}`,
-                }, binding.name),
+                h('span', { className: 'ptcPlusReplIdentity' },
+                  h('span', {
+                    className: 'ptcPlusReplName', 'data-kind': binding.kind,
+                    title: `${binding.name} - ${t(`memory.kind.${binding.kind}`)}`,
+                  }, binding.name),
+                  h('span', { className: 'ptcPlusReplReuse', title: t('memory.reuseHint') },
+                    t('memory.reuseCount', { count: binding.reuseCount }))),
                 h('span', { className: 'ptcPlusReplPreview', title: preview }, preview),
                 h('span', {
                   className: 'ptcPlusReplChevron', 'data-open': expanded, 'aria-hidden': true,

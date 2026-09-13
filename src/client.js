@@ -117,9 +117,9 @@ window.__ModuleLoader__.load({
         icons: { chevron: IconChevronDownOutline14 },
       })
       const { ReplComposer, ReplConsole, ReplMemoryCard, replPopoverIsOpen, placeReplPopover } = createReplView(React, {
-        ActionButton, CodeBlock, featureEnabled, normalizeReplMemorySnapshot, unavailableReplMemorySnapshot,
+        CodeBlock, featureEnabled, normalizeReplMemorySnapshot, unavailableReplMemorySnapshot,
         useSessionPreset, sessionUsesPtcPreset, useWorkbenchController, UserBindingsWorkbench,
-        icons: { search: IconSearchOutline16, chevron: IconChevronDownOutline14, sparkle: IconSparkle16 },
+        icons: { search: IconSearchOutline16, chevron: IconChevronDownOutline14 },
       })
 
       const settingsProps = () => ({ hooks: { ptcSettings: preferenceScope }, callUserBindings })

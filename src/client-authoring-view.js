@@ -101,7 +101,7 @@ export function createAuthoringView(React, deps) {
     const showMenu = mode => {
       cancelHoverOpen()
       if (!menuOpen && quickAccess) void refreshCatalog()
-      setMenu({ key: view.candidateKey, mode })
+      setMenu({ key: view.candidateKey, mode, step: 'root' })
     }
     // Touch has no hover: its tap reaches the same menu through the click path.
     const hoverMenu = event => {
@@ -117,22 +117,16 @@ export function createAuthoringView(React, deps) {
     const captureCatalogFocus = () => {
       catalogFocus.current = menuElement()?.contains(document.activeElement) ? document.activeElement : null
     }
-    // The published Menu re-places on every scroll and resize and re-runs its
-    // placement effect whenever this prop changes, so its per-render identity is
-    // what keeps an open list on a moving anchor - a composer that grows without
-    // emitting a scroll never reaches the listener path.
+    // The list must sit next to the entry that opened it. The published Menu reads
+    // this rect on open and on every scroll/resize, and re-runs placement whenever
+    // the prop identity changes, so measuring the trigger each render also keeps an
+    // open list on a composer that grows without emitting a scroll.
     const menuAnchorRect = () => {
       const anchor = anchorRef.current
       if (!anchor) return null
       const rect = anchor.getBoundingClientRect()
-      let top = rect.top
-      for (let parent = anchor.parentElement; parent; parent = parent.parentElement) {
-        if (!parent.querySelector('textarea, [contenteditable="true"]')) continue
-        top = Math.min(top, parent.getBoundingClientRect().top)
-        break
-      }
-      menuElement()?.style.setProperty('--ptc-plus-menu-space', `${Math.max(0, top - 16)}px`)
-      return new DOMRect(rect.x, top, rect.width, 0)
+      menuElement()?.style.setProperty('--ptc-plus-menu-space', `${Math.max(0, rect.top - 16)}px`)
+      return rect
     }
     const hideMenu = () => {
       const itemHasFocus = menuElement()?.contains(document.activeElement)
@@ -183,7 +177,7 @@ export function createAuthoringView(React, deps) {
         if (!cancelled && anchorRef.current?.getClientRects().length) menuElement()?.querySelector('button:not(:disabled)')?.focus({ preventScroll: true })
       })
       return () => { cancelled = true }
-    }, [menuOpen, menu?.mode])
+    }, [menuOpen, menu?.mode, menu?.step])
     React.useEffect(() => {
       if (toast === null || typeof Toast === 'function') return undefined
       const timer = setTimeout(() => setToast(null), 2_500)
@@ -192,7 +186,9 @@ export function createAuthoringView(React, deps) {
     const label = hasDraft ? t('bindings.reviewMenuLabel', { count: 1 })
       + (view.message ? ` · ${t('bindings.reviewAttention')}` : '') : t('bindings.open')
     const hint = t(hasDraft ? 'bindings.draftHint' : 'bindings.openHint')
-    const openAuthoring = () => {
+    // Every authoring action goes through the same busy guard and input owner, so a
+    // new or revision request can never overwrite an unsent user draft.
+    const prefillAuthoring = value => {
       hideMenu()
       if (!canAuthor) return
       if (typeof input?.draft === 'string' && input.draft.trim() !== '') {
@@ -200,8 +196,10 @@ export function createAuthoringView(React, deps) {
         setToast({ sequence: toastSequence.current, text: t('bindings.composerBusy') })
         return
       }
-      inputActions.setDraft('/binding new ')
+      inputActions.setDraft(value)
     }
+    const openAuthoring = () => prefillAuthoring('/binding new ')
+    const openAuthoringEdit = entry => prefillAuthoring(`/binding edit ${entry.id} `)
     const starButton = h('button', {
       type: 'button', className: 'ptcPlusAuthorButton', 'aria-label': label,
       // Older UI-kit lines ship no Tooltip primitive; the native title carries the hint there.
@@ -236,6 +234,23 @@ export function createAuthoringView(React, deps) {
         ? [{ id: 'pending', type: 'label', text: t(catalogStatus === 'writing' ? 'bindings.quickSaving' : 'bindings.quickLoading') }] : []),
       ...(catalogError === null ? [] : [{ id: 'error', type: 'label', text: t('bindings.failed', { error: catalogError }) }]),
     ]
+    // Revision selection is a second step of the same flat Menu. The published Menu
+    // disables its scroll viewport as soon as any top-level row has a submenu, so a
+    // submenu here would lose the bounded, scrollable catalog this step needs.
+    const editItems = [
+      { id: 'edit-heading', type: 'label', text: t('bindings.quickEditHeading') },
+      ...(catalog?.entries ?? []).map(entry => ({
+        id: `edit:${entry.id}`,
+        disabled: !catalogReady,
+        label: h('span', { className: 'ptcPlusBindingQuickRow' },
+          h('span', { className: 'ptcPlusBindingQuickName' }, h('strong', { title: entry.name }, entry.name),
+            h('span', { className: 'ptcPlusBindingQuickState' }, t(entry.enabled ? 'bindings.enabled' : 'bindings.disabledEntry'))),
+          h('span', { className: 'ptcPlusBindingQuickPurpose', title: entry.purpose }, entry.purpose)),
+      })),
+      // The back row also anchors menu lookup, so the step still owns its list
+      // when the catalog is momentarily empty.
+      { id: 'edit-back', label: h('span', { className: 'ptcPlusBindingMenuAction', ref: firstItemRef }, t('bindings.back')) },
+    ]
     return h('span', {
       className: 'ptcPlusComposerBindingAnchor', tabIndex: -1,
       onFocusCapture: () => { focused.current = true }, onBlurCapture: () => { focused.current = false },
@@ -254,13 +269,15 @@ export function createAuthoringView(React, deps) {
         getAnchorRect: menuAnchorRect,
         selectedIds: (catalog?.entries ?? []).filter(entry => entry.enabled).map(entry => `global:${entry.id}`),
         onClose: hideMenu,
-        items: [...(hasDraft ? [{ id: 'draft-heading', type: 'label', text: t('bindings.quickDrafts') }, { id: view.candidateKey,
+        items: menu?.step === 'edit' ? editItems : [...(hasDraft ? [{ id: 'draft-heading', type: 'label', text: t('bindings.quickDrafts') }, { id: view.candidateKey,
           label: h('span', { className: 'ptcPlusDraftMenuItem', ref: firstItemRef },
             h('strong', null, view.candidate.entry.name),
             h('span', null, t(bindingReviewStatus(view)))) },
             ...(quickAccess ? [{ id: 'draft-separator', type: 'separator' }] : [])] : []), ...catalogItems,
           ...(quickAccess ? [{ id: 'actions-separator', type: 'separator' }] : []),
           ...(canAuthor ? [{ id: 'new', label: h('span', { className: 'ptcPlusBindingMenuAction' }, t('bindings.authorNewDraft')) }] : []),
+          ...(canAuthor && (catalog?.entries?.length ?? 0) > 0
+            ? [{ id: 'edit', label: h('span', { className: 'ptcPlusBindingMenuAction' }, t('bindings.authorEdit')) }] : []),
           ...(quickAccess ? [
             ...(catalogError === null ? [] : [{ id: 'reload', label: h('span', { ref: reloadItemRef }, t('bindings.reload')) }]),
             { id: 'manage', label: h('span', { ref: manageItemRef, className: 'ptcPlusBindingMenuAction' }, t('bindings.manage')) },
@@ -268,6 +285,19 @@ export function createAuthoringView(React, deps) {
         ],
         onSelect: id => {
           if (!anchorRef.current?.getClientRects().length) return
+          if (id === 'edit') {
+            setMenu(current => current === null ? current : { ...current, step: 'edit' })
+            return
+          }
+          if (id === 'edit-back') {
+            setMenu(current => current === null ? current : { ...current, step: 'root' })
+            return
+          }
+          if (id.startsWith('edit:')) {
+            const entry = catalog?.entries.find(entry => `edit:${entry.id}` === id)
+            if (entry) openAuthoringEdit(entry)
+            return
+          }
           if (id.startsWith('global:')) {
             const entry = catalog?.entries.find(entry => `global:${entry.id}` === id)
             if (entry) void toggleBinding(entry)

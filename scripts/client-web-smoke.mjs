@@ -1504,9 +1504,10 @@ export async function main(argv = process.argv.slice(2)) {
         await page.getByRole('menuitem', { name: /fileTools/ }).waitFor()
         const menu = page.getByRole('menu').filter({ has: page.locator('.ptcPlusBindingQuickRow') })
         const bounds = await menu.boundingBox()
+        const entryBounds = await entry.boundingBox()
         assert.ok(bounds.x >= 0 && bounds.x + bounds.width <= width + 1)
-        assert.ok(bounds.y >= 0 && bounds.y + bounds.height <= (await composer.boundingBox()).y,
-          'Global menu obscures the composer input')
+        assert.ok(bounds.y >= 0 && bounds.y < entryBounds.y && bounds.y + bounds.height <= entryBounds.y + 1,
+          'Global menu is not anchored above its trigger')
         for (const item of await menu.getByRole('menuitem').all()) {
           assert.equal(await item.evaluate(element => {
             const rect = element.getBoundingClientRect()
@@ -1533,9 +1534,10 @@ export async function main(argv = process.argv.slice(2)) {
       }
       const shortBounds = await shortMenu.boundingBox()
       const inputBounds = await composer.boundingBox()
+      const shortEntryBounds = await entry.boundingBox()
       assert.ok(inputBounds.y < 156, 'Short viewport does not exercise limited space above the input')
-      assert.ok(shortBounds.y >= 0 && shortBounds.y + shortBounds.height <= inputBounds.y,
-        'Global menu obscures the expanded composer input in a short viewport')
+      assert.ok(shortBounds.y >= 0 && shortBounds.y < shortEntryBounds.y && shortBounds.y + shortBounds.height <= shortEntryBounds.y + 1,
+        'Global menu is not anchored above its trigger in a short viewport')
       await page.screenshot({ path: join(evidence, 'binding-entry-short-390.png'), animations: 'disabled' })
       await page.keyboard.press('Escape')
       await page.getByRole('menu').waitFor({ state: 'detached' })
@@ -1545,6 +1547,26 @@ export async function main(argv = process.argv.slice(2)) {
       await page.getByRole('menuitem', { name: /fileTools/ }).waitFor()
       assert.equal(await composerValue(composer), '')
       assert.deepEqual(await sessionLogBytes(), beforeMenu, 'Global menu actions before a turn alter the session log')
+      // The revision step is the same public Menu's second step: it lists the
+      // catalog, provides a way back, and prefills the composer for the choice.
+      const revisionRow = () => page.getByRole('menu')
+        .filter({ has: page.locator('.ptcPlusBindingQuickRow') })
+        .getByRole('menuitem', { name: /textTools/ })
+      await page.getByRole('menuitem', { name: 'Revise a binding', exact: true }).click()
+      await revisionRow().waitFor()
+      assert.equal(await page.getByRole('menuitem', { name: 'Back', exact: true }).count(), 1)
+      await page.getByRole('menuitem', { name: 'Back', exact: true }).click()
+      await page.getByRole('menuitem', { name: 'Manage global bindings', exact: true }).waitFor()
+      await page.getByRole('menuitem', { name: 'Revise a binding', exact: true }).click()
+      // The edit step always owns its Back row; only then is the row a revision.
+      await page.getByRole('menuitem', { name: 'Back', exact: true }).waitFor()
+      await revisionRow().click()
+      await page.getByRole('menu').waitFor({ state: 'detached' })
+      assert.equal(await composerValue(composer), '/binding edit textTools ')
+      await clearComposer(composer)
+      await page.mouse.move(0, 0)
+      await entry.hover()
+      await page.getByRole('menuitem', { name: 'Manage global bindings', exact: true }).waitFor()
       await page.getByRole('menuitem', { name: 'Manage global bindings', exact: true }).click()
       const quickManager = page.getByRole('dialog')
       for (const name of ['fileTools', 'textTools', 'jsonTools']) {
@@ -1678,9 +1700,10 @@ export async function main(argv = process.argv.slice(2)) {
       await draftItem.scrollIntoViewIfNeeded()
       const draftMenuBounds = await page.getByRole('menu').boundingBox()
       const draftInputBounds = await composer.boundingBox()
+      const draftTriggerBounds = await reopen.boundingBox()
       assert.ok(draftInputBounds.y < 156, 'Draft menu check needs limited space above the input')
-      assert.ok(draftMenuBounds.y >= 0 && draftMenuBounds.y + draftMenuBounds.height <= draftInputBounds.y,
-        'Draft-only menu obscures the composer input')
+      assert.ok(draftMenuBounds.y >= 0 && draftMenuBounds.y < draftTriggerBounds.y && draftMenuBounds.y + draftMenuBounds.height <= draftTriggerBounds.y + 1,
+        'Draft-only menu is not anchored above its trigger')
       assert.equal(await draftItem.evaluate(element => {
         const rect = element.getBoundingClientRect()
         return element.contains(document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2))

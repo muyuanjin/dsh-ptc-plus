@@ -35,18 +35,35 @@ export function recordExceptionOrigin(error, origin, { reset = false, sourceFail
   internal.mapSet(state.origins, error, origins)
 }
 
+const SOURCE_LINE_BREAK = /\r\n|[\n\r\u2028\u2029]/
+const sourceLines = source => source.split(SOURCE_LINE_BREAK)
+
+/** A cell position is a 1-based line and column inside its source. The column
+ * may address the position just after the last character of a line. */
+function boundedPosition(position, lines) {
+  if (position === null || typeof position !== 'object'
+    || !Number.isSafeInteger(position.line) || position.line < 1
+    || !Number.isSafeInteger(position.column) || position.column < 1
+    || position.line > lines.length || position.column > lines[position.line - 1].length + 1) return undefined
+  return { line: position.line, column: position.column }
+}
+
+/** Validate a candidate against the source that owns the reported cell. */
+export function cellPosition(position, source) {
+  return boundedPosition(position, sourceLines(source))
+}
+
 /** Only a fact belonging to the current original source can bypass its map. */
 export function exceptionOriginPosition(origins, source) {
   if (!Array.isArray(origins)) return undefined
   const prefix = `eval:${createHash('sha256').update(source).digest('hex')}:`
-  const lines = source.split(/\r\n|[\n\r\u2028\u2029]/)
+  const lines = sourceLines(source)
   for (const origin of origins) {
     if (typeof origin !== 'string' || !origin.startsWith(prefix)) continue
-    const position = /^(\d+):(\d+)$/.exec(origin.slice(prefix.length))
-    if (position === null) continue
-    const line = Number(position[1]), column = Number(position[2])
-    if (Number.isSafeInteger(line) && Number.isSafeInteger(column) && line >= 1
-      && line <= lines.length && column >= 1 && column <= lines[line - 1].length) return { line, column }
+    const match = /^(\d+):(\d+)$/.exec(origin.slice(prefix.length))
+    if (match === null) continue
+    const position = boundedPosition({ line: Number(match[1]), column: Number(match[2]) }, lines)
+    if (position !== undefined) return position
   }
   return undefined
 }
@@ -151,18 +168,26 @@ export function limitLogs(logs) {
   return tail
 }
 
-export function errorPosition(error, filename) {
+/** A frame is only useful when its 1-based line and column are safe integers. */
+function structuralPosition(position) {
+  return Number.isSafeInteger(position.line) && position.line >= 1
+    && Number.isSafeInteger(position.column) && position.column >= 1 ? position : undefined
+}
+
+/** Extract the first frame for the active cell. The frame is reported in the
+ * executed text, so it is only a cell position when it lies inside the source
+ * that produced that text. */
+export function errorPosition(error, filename, source) {
   const stack = safeProperty(error, 'stack')
   if (typeof stack !== 'string') return undefined
   const escaped = filename.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
   const match = new RegExp(`${escaped}:(\\d+):(\\d+)`).exec(stack)
   if (match === null) return undefined
-  const line = Number(match[1])
-  const column = Number(match[2])
-  return line >= 1 && column >= 1 ? { line, column } : undefined
+  const position = { line: Number(match[1]), column: Number(match[2]) }
+  return source === undefined ? structuralPosition(position) : cellPosition(position, source)
 }
 
-export function errorDetails(error, filename) {
+export function errorDetails(error, filename, source) {
   const message = messageOf(error, 'Unprintable thrown value')
   const rawName = safeProperty(error, 'name')
   const name = typeof rawName === 'string' && rawName.length > 0 ? rawName : 'Error'
@@ -186,7 +211,7 @@ export function errorDetails(error, filename) {
         ...(causeCode === undefined ? {} : { code: causeCode }),
         message: causeMessage,
       }
-  const position = errorPosition(error, filename)
+  const position = errorPosition(error, filename, source)
   const failureOrigin = internal.weakMapGet(PROGRAM_FAILURES, error)
   return {
     name,

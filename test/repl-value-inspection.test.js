@@ -79,7 +79,8 @@ test('inspection rejects unavailable, uncommitted and mismatched state without c
 })
 
 test('cancelled, timed-out and failed inspections preserve subsequent execution', async t => {
-  const { runtime, memory } = await fixture(t)
+  const { runtime, memory: initialMemory } = await fixture(t)
+  let memory = initialMemory
   const worker = workerOf(runtime, 'preview')
   const frames = interceptWorkerMessages(runtime, 'preview', (message, deliver) => deliver(message))
   for (const mode of ['abort', 'timeout', 'prepare-error', 'observe-error', 'stale', 'duplicate-ready']) {
@@ -109,7 +110,11 @@ test('cancelled, timed-out and failed inspections preserve subsequent execution'
     setSessionSurface(runtime, 'preview', undefined)
     if (ready !== undefined) frames.deliver({ type: 'ready', id: ready.id })
     link.restore()
-    assert.equal((await runtime.run('preview', { program: 'return answer', bindings: [] })).value, 42, mode)
+    const continued = await runtime.runTentative('preview', { program: 'return answer', bindings: [] })
+    runtime.finalize(continued.settlement, true)
+    assert.equal(continued.result.value, 42, mode)
+    // A read advances the reuse count, so the next mode inspects the current memory.
+    memory = continued.settlement.replMemory
     assert.equal(workerOf(runtime, 'preview'), worker)
   }
 })

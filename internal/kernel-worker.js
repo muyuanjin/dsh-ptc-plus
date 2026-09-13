@@ -1012,10 +1012,12 @@ async function closeExecution(execution) {
     .map(call => call.settled))
 }
 
-function failureOutcome(error, phase) {
+function failureOutcome(error, phase, program) {
   if (phase === 'encode') return { invalidOutput: messageOf(error) }
   const failure = error instanceof StaticImportFailure ? error.error : error
-  const detail = errorDetails(failure, activeFilename)
+  // The V8 frame is reported in the executed text; validate it there so an
+  // out-of-range frame is an explicit absence instead of a mapped position.
+  const detail = errorDetails(failure, activeFilename, program)
   // A compiler-created call error has only an adapter stack. Its source fact
   // owns the operation; ordinary exceptions retain their native stack position.
   const position = error instanceof StaticImportFailure ? error.position
@@ -1188,7 +1190,7 @@ async function runCell(message) {
         return execution.exceptionOrigins.run(() => evaluate(message.program, message.returnSignal, message.asyncCompletion))
       })
     } catch (error) {
-      outcome = failureOutcome(error, 'execute')
+      outcome = failureOutcome(error, 'execute', message.program)
     } finally {
       await closeExecution(execution)
     }
@@ -1203,7 +1205,7 @@ async function runCell(message) {
           ...(encodedValue === undefined ? {} : { value: encodedValue }),
         }
       } catch (error) {
-        outcome = failureOutcome(error, 'encode')
+        outcome = failureOutcome(error, 'encode', message.program)
       }
     }
     sendCompletion(message, execution, userBindings, committedRedeclarations, outcome)

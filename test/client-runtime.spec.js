@@ -1222,7 +1222,8 @@ test('saved cards retain exact source across remount and locale changes; catalog
     projection.set('ptcPlusRepl', { available: true, total: 1, omitted: 0,
       entries: [{ name: 'value', kind: 'variable', definition: { source: 'const value = 42', line: 1, column: 1 } }] })
     await runtime.flush()
-    expect(summary.textContent).toBe(locale === 'en' ? '1 reusable bindings' : '1 个可复用绑定')
+    expect(summary.textContent).toBe(locale === 'en'
+      ? '1 reusable bindings · reused 0\u00d7 total' : '1 个可复用绑定 · 共复用 0 次')
     expect(summary.hasAttribute('aria-hidden')).toBe(false)
     await snapshot(`popover-session-${locale}`)
     fireEvent.click(view.container.querySelectorAll('.ptcPlusReplTab')[1])
@@ -1841,12 +1842,16 @@ test('an open composer menu follows its anchor when the composer moves without a
   await openGlobalMenu(view, runtime)
   const menu = view.getByRole('menu')
   expect(menu.style.top).toBe('496px')
+  // The list must stay next to the trigger, so the height budget is measured from
+  // the trigger's own top edge, not from a taller composer container.
+  expect(menu.style.getPropertyValue('--ptc-plus-menu-space')).toBe('484px')
   // A composer that grew (or moved) without emitting a scroll still moves the list,
   // because the placement effect re-reads the anchor on every entry render.
   top = 440
   setLocale('zh')
   await runtime.flush()
   expect(menu.style.top).toBe('436px')
+  expect(menu.style.getPropertyValue('--ptc-plus-menu-space')).toBe('424px')
 })
 
 test('a global row stays actionable while a later catalog read is pending', async () => {
@@ -2028,6 +2033,35 @@ test('the composer binding entry follows the current session PTC preset', async 
   settings.publish({ value })
   await runtime.flush()
   expect(entries()).toHaveLength(1)
+})
+
+test('the composer menu revises an existing binding through its second step', async () => {
+  const entries = [
+    { ...reviewCandidate('revise').entry, enabled: true },
+    { ...reviewCandidate('other').entry, enabled: false },
+  ]
+  const { runtime, input } = await fixture({
+    commands: { list: async () => ({ ok: true, value: [{ name: 'binding' }] }) },
+    rpc: async () => ({ ok: true, value: { revision: 'r1', entries } }),
+  })
+  const view = runtime.renderRoot()
+  await runtime.flush()
+  await openGlobalMenu(view, runtime, 'click')
+  expect(view.getByRole('menuitem', { name: 'Revise a binding' })).not.toBeNull()
+  fireEvent.click(view.getByRole('menuitem', { name: 'Revise a binding' }))
+  await runtime.flush()
+  // The same Menu stays open and swaps to the revision step with a way back.
+  expect(view.getByRole('menu')).not.toBeNull()
+  expect(view.getByRole('menuitem', { name: /revise/ }).textContent).toContain('Enabled')
+  fireEvent.click(view.getByRole('menuitem', { name: 'Back' }))
+  await runtime.flush()
+  expect(view.getByRole('menuitem', { name: 'Revise a binding' })).not.toBeNull()
+  fireEvent.click(view.getByRole('menuitem', { name: 'Revise a binding' }))
+  await runtime.flush()
+  fireEvent.click(view.getByRole('menuitem', { name: /revise/ }))
+  await runtime.flush()
+  expect(input.scope.getSnapshot().draft).toBe('/binding edit revise ')
+  expect(view.queryByRole('menu')).toBeNull()
 })
 
 test('one authoring icon owns the draft badge and hover, click and keyboard menu', async () => {
@@ -3585,21 +3619,39 @@ test('missing optional primitives fall back to native controls and text labels',
   expect(input.scope.getSnapshot().draft).toBe('keep my text')
 })
 
-test('memory card expands session definitions and loads global sources on demand', async () => {
+test('the REPL tab reports per-binding and total reuse counts', async () => {
+  const { runtime } = await fixture({ repl: true, bindings: false })
+  runtime.sessions.behavior('client-session').projections.set('ptcPlusRepl', {
+    available: true, total: 2, omitted: 0, reuseTotal: 5, entries: [
+      { name: 'answer', kind: 'variable', definition: { source: 'const answer = 42', line: 1, column: 1 }, reuseCount: 4 },
+      { name: 'helper', kind: 'function', definition: { source: 'function helper() {}', line: 2, column: 1 }, reuseCount: 1 },
+    ],
+  })
+  const view = runtime.renderRoot()
+  await runtime.flush()
+  const rows = [...view.container.querySelectorAll('.ptcPlusObservationTable tbody tr')]
+  expect(rows.map(row => row.querySelector('.ptcPlusObservationReuse').textContent)).toEqual(['4', '1'])
+  expect(view.container.querySelector('.ptcPlusObservationReuseTotal').textContent).toBe('reused 5\u00d7 total')
+})
+
+test('memory card expands session definitions and the composer menu revises a global source', async () => {
   const entry = { id: 'alpha', name: 'alphaTools', scope: 'namespace', symbols: ['read'],
     purpose: 'Read files.', enabled: true }
-  const { runtime, input } = await fixture({ rpc: async (endpoint, payload) => {
-    if (endpoint === 'list') return { ok: true, value: { revision: 1, entries: [entry] } }
-    if (endpoint === 'load') {
-      expect(payload).toEqual({ id: 'alpha' })
-      return { ok: true, value: { revision: 1, entry: { ...entry, source: 'export const read = 1' } } }
-    }
-    throw new Error(endpoint)
-  } })
+  const { runtime, input } = await fixture({
+    commands: { list: async () => ({ ok: true, value: [{ name: 'binding' }] }) },
+    rpc: async (endpoint, payload) => {
+      if (endpoint === 'list') return { ok: true, value: { revision: 1, entries: [entry] } }
+      if (endpoint === 'load') {
+        expect(payload).toEqual({ id: 'alpha' })
+        return { ok: true, value: { revision: 1, entry: { ...entry, source: 'export const read = 1' } } }
+      }
+      throw new Error(endpoint)
+    },
+  })
   runtime.sessions.behavior('client-session').projections.set('ptcPlusRepl', {
-    available: true, total: 4, omitted: 2, entries: [
-      { name: 'answer', kind: 'variable', definition: { source: 'const answer = 42', line: 1, column: 1 } },
-      { name: 'helper', kind: 'function', definition: { source: 'function helper() {}', line: 4, column: 1 } },
+    available: true, total: 4, omitted: 2, reuseTotal: 3, entries: [
+      { name: 'answer', kind: 'variable', definition: { source: 'const answer = 42', line: 1, column: 1 }, reuseCount: 2 },
+      { name: 'helper', kind: 'function', definition: { source: 'function helper() {}', line: 4, column: 1 }, reuseCount: 1 },
     ],
   })
   const view = runtime.renderRoot()
@@ -3608,6 +3660,10 @@ test('memory card expands session definitions and loads global sources on demand
   await runtime.flush()
   const rows = () => view.container.querySelectorAll('.ptcPlusReplBinding')
   expect(rows()).toHaveLength(2)
+  expect([...view.container.querySelectorAll('.ptcPlusReplReuse')].map(node => node.textContent))
+    .toEqual(['reused 2\u00d7', 'reused 1\u00d7'])
+  expect(view.container.querySelector('.ptcPlusReplSummary').textContent)
+    .toBe('4 reusable bindings · reused 3\u00d7 total')
   expect(rows()[0].getAttribute('data-expanded')).toBe('false')
   fireEvent.click(rows()[0].querySelector('.ptcPlusReplBindingTrigger'))
   await runtime.flush()
@@ -3615,7 +3671,8 @@ test('memory card expands session definitions and loads global sources on demand
   expect(rows()[0].querySelector('.ptcPlusReplDefinition').textContent).toContain('const answer = 42')
   expect(rows()[0].querySelector('.ptcPlusReplLocation').textContent).toBe('Line 1, column 1')
   expect(view.container.querySelector('.ptcPlusReplMore').textContent).toBe('2 more bindings not shown')
-  // The global tab loads one entry's source on demand and can hand it to the composer.
+  // The global tab stays a read-only inspection surface: it loads one entry's source
+  // on demand but never writes to the composer.
   fireEvent.click(view.container.querySelectorAll('.ptcPlusReplTab')[1])
   await runtime.flush()
   const item = view.container.querySelector('.ptcPlusGlobalItem')
@@ -3623,7 +3680,12 @@ test('memory card expands session definitions and loads global sources on demand
   fireEvent.click(item.querySelector('.ptcPlusBindingSelect'))
   await runtime.flush()
   expect(item.querySelector('.ptcPlusGlobalSource').textContent).toBe('export const read = 1')
-  fireEvent.click([...item.querySelectorAll('button')].find(button => button.textContent === 'Ask Agent to revise'))
+  expect([...item.querySelectorAll('button')].some(button => button.textContent === 'Revise a binding')).toBe(false)
+  // The composer star menu owns the revision action and prefills the same command.
+  await openGlobalMenu(view, runtime, 'click')
+  fireEvent.click(view.getByRole('menuitem', { name: 'Revise a binding' }))
+  await runtime.flush()
+  fireEvent.click(view.getByRole('menuitem', { name: /alphaTools/ }))
   await runtime.flush()
   expect(input.scope.getSnapshot().draft).toBe('/binding edit alpha ')
 })

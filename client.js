@@ -2071,7 +2071,6 @@
   // src/client-repl-view.js
   function createReplView(React, deps) {
     const {
-      ActionButton,
       CodeBlock,
       featureEnabled: featureEnabled2,
       normalizeReplMemorySnapshot: normalizeReplMemorySnapshot2,
@@ -2080,7 +2079,7 @@
       sessionUsesPtcPreset: sessionUsesPtcPreset2,
       useWorkbenchController,
       UserBindingsWorkbench,
-      icons: { search: IconSearchOutline16, chevron: IconChevronDownOutline14, sparkle: IconSparkle16 }
+      icons: { search: IconSearchOutline16, chevron: IconChevronDownOutline14 }
     } = deps;
     const h = React.createElement;
     function ReplComposer() {
@@ -2136,6 +2135,11 @@
               "span",
               { className: "ptcPlusObservationCount", title: t2("memory.count", { count: memory.total }) },
               query.trim() || kind !== "all" ? `${entries.length} / ${memory.total}` : memory.total
+            ) : null,
+            memory.available ? h(
+              "span",
+              { className: "ptcPlusObservationReuseTotal", title: t2("memory.reuseHint") },
+              t2("memory.reuseTotal", { count: memory.reuseTotal })
             ) : null
           ),
           h("span", { className: "ptcPlusObservationTime" }, observation === void 0 ? t2("console.unobserved") : t2("console.observed", { time: new Date(observation.at).toLocaleString() }))
@@ -2190,6 +2194,7 @@
                   null,
                   h("th", { scope: "col" }, t2("console.name")),
                   h("th", { scope: "col" }, t2("console.kind")),
+                  h("th", { scope: "col" }, t2("console.reuse")),
                   h("th", { scope: "col" }, t2("console.value"))
                 )),
                 h("tbody", null, entries.map((entry) => {
@@ -2208,6 +2213,7 @@
                       title: entry.name
                     }, entry.name)),
                     h("td", { className: "ptcPlusObservationKind" }, t2(`memory.kind.${entry.kind}`)),
+                    h("td", { className: "ptcPlusObservationReuse", title: t2("memory.reuseHint") }, entry.reuseCount),
                     h("td", null, h(
                       "span",
                       { className: "ptcPlusObservationValue" },
@@ -2302,8 +2308,6 @@
       globalEnabled,
       globalBindings,
       loadGlobalBinding,
-      prefillAuthoring,
-      authoringMessage,
       t: t2,
       id: id2,
       titleId,
@@ -2316,7 +2320,7 @@
       const [tab, setTab] = React.useState("session");
       const [globalSource, setGlobalSource] = React.useState(null);
       const activeTab = globalEnabled ? tab : "session";
-      const summary = activeTab === "session" ? memory.available ? t2("memory.count", { count: memory.total }) : "" : globalBindings === void 0 ? "" : t2("memory.globalCount", { count: globalBindings.entries.length });
+      const summary = activeTab === "session" ? memory.available ? `${t2("memory.count", { count: memory.total })} \xB7 ${t2("memory.reuseTotal", { count: memory.reuseTotal })}` : "" : globalBindings === void 0 ? "" : t2("memory.globalCount", { count: globalBindings.entries.length });
       const inspectGlobal = (entry) => {
         if (globalSource?.id === entry.id) {
           setGlobalSource(null);
@@ -2379,7 +2383,6 @@
           activeTab === "global" ? h(
             "div",
             { className: "ptcPlusGlobalPane" },
-            authoringMessage === null ? null : h("p", { className: "ptcPlusMessage", role: "status" }, t2(authoringMessage)),
             globalBindings === void 0 ? h("span", { className: "ptcPlusReplEmpty" }, t2("memory.globalUnavailable")) : globalBindings.entries.length === 0 ? h("span", { className: "ptcPlusReplEmpty" }, t2("memory.globalEmpty")) : h("ul", { className: "ptcPlusGlobalList" }, globalBindings.entries.map((entry) => h(
               "li",
               { key: entry.id, className: "ptcPlusGlobalItem" },
@@ -2399,11 +2402,6 @@
                   t2(entry.enabled ? "bindings.enabled" : "bindings.disabledEntry")
                 )
               ),
-              h(ActionButton, {
-                type: "button",
-                className: "ptcPlusButton",
-                onClick: () => prefillAuthoring(`/binding edit ${entry.id} `)
-              }, typeof IconSparkle16 === "function" ? h(IconSparkle16, { size: 14, "aria-hidden": true }) : null, t2("bindings.authorEdit")),
               globalSource?.id !== entry.id ? null : globalSource.error === true ? h("span", { className: "ptcPlusReplEmpty" }, t2("memory.globalUnavailable")) : h("pre", { className: "ptcPlusGlobalSource" }, globalSource.source)
             )))
           ) : !memory.available ? h("span", { className: "ptcPlusReplEmpty" }, t2("memory.unavailable")) : memory.entries.length === 0 ? h("span", { className: "ptcPlusReplEmpty" }, t2("memory.empty")) : h("ul", { className: "ptcPlusReplList" }, memory.entries.map((binding, index) => {
@@ -2427,11 +2425,20 @@
                   "aria-controls": expanded ? definitionId : void 0,
                   onClick: toggle
                 },
-                h("span", {
-                  className: "ptcPlusReplName",
-                  "data-kind": binding.kind,
-                  title: `${binding.name} - ${t2(`memory.kind.${binding.kind}`)}`
-                }, binding.name),
+                h(
+                  "span",
+                  { className: "ptcPlusReplIdentity" },
+                  h("span", {
+                    className: "ptcPlusReplName",
+                    "data-kind": binding.kind,
+                    title: `${binding.name} - ${t2(`memory.kind.${binding.kind}`)}`
+                  }, binding.name),
+                  h(
+                    "span",
+                    { className: "ptcPlusReplReuse", title: t2("memory.reuseHint") },
+                    t2("memory.reuseCount", { count: binding.reuseCount })
+                  )
+                ),
                 h("span", { className: "ptcPlusReplPreview", title: preview }, preview),
                 h("span", {
                   className: "ptcPlusReplChevron",
@@ -2963,7 +2970,7 @@
       const showMenu = (mode) => {
         cancelHoverOpen();
         if (!menuOpen && quickAccess) void refreshCatalog();
-        setMenu({ key: view.candidateKey, mode });
+        setMenu({ key: view.candidateKey, mode, step: "root" });
       };
       const hoverMenu = (event) => {
         if (event.pointerType === "touch" || menuOpen) return;
@@ -2981,14 +2988,8 @@
         const anchor = anchorRef.current;
         if (!anchor) return null;
         const rect = anchor.getBoundingClientRect();
-        let top2 = rect.top;
-        for (let parent = anchor.parentElement; parent; parent = parent.parentElement) {
-          if (!parent.querySelector('textarea, [contenteditable="true"]')) continue;
-          top2 = Math.min(top2, parent.getBoundingClientRect().top);
-          break;
-        }
-        menuElement()?.style.setProperty("--ptc-plus-menu-space", `${Math.max(0, top2 - 16)}px`);
-        return new DOMRect(rect.x, top2, rect.width, 0);
+        menuElement()?.style.setProperty("--ptc-plus-menu-space", `${Math.max(0, rect.top - 16)}px`);
+        return rect;
       };
       const hideMenu = () => {
         const itemHasFocus = menuElement()?.contains(document.activeElement) || catalogFocus.current !== null && document.activeElement === document.body;
@@ -3040,7 +3041,7 @@
         return () => {
           cancelled = true;
         };
-      }, [menuOpen, menu?.mode]);
+      }, [menuOpen, menu?.mode, menu?.step]);
       React.useEffect(() => {
         if (toast === null || typeof Toast === "function") return void 0;
         const timer = setTimeout(() => setToast(null), 2500);
@@ -3048,7 +3049,7 @@
       }, [toast]);
       const label = hasDraft ? t2("bindings.reviewMenuLabel", { count: 1 }) + (view.message ? ` \xB7 ${t2("bindings.reviewAttention")}` : "") : t2("bindings.open");
       const hint = t2(hasDraft ? "bindings.draftHint" : "bindings.openHint");
-      const openAuthoring = () => {
+      const prefillAuthoring = (value) => {
         hideMenu();
         if (!canAuthor) return;
         if (typeof input?.draft === "string" && input.draft.trim() !== "") {
@@ -3056,8 +3057,10 @@
           setToast({ sequence: toastSequence.current, text: t2("bindings.composerBusy") });
           return;
         }
-        inputActions.setDraft("/binding new ");
+        inputActions.setDraft(value);
       };
+      const openAuthoring = () => prefillAuthoring("/binding new ");
+      const openAuthoringEdit = (entry) => prefillAuthoring(`/binding edit ${entry.id} `);
       const starButton = h(
         "button",
         {
@@ -3109,6 +3112,27 @@
         ...catalogStatus === "writing" || catalog === null && catalogStatus === "loading" ? [{ id: "pending", type: "label", text: t2(catalogStatus === "writing" ? "bindings.quickSaving" : "bindings.quickLoading") }] : [],
         ...catalogError === null ? [] : [{ id: "error", type: "label", text: t2("bindings.failed", { error: catalogError }) }]
       ];
+      const editItems = [
+        { id: "edit-heading", type: "label", text: t2("bindings.quickEditHeading") },
+        ...(catalog?.entries ?? []).map((entry) => ({
+          id: `edit:${entry.id}`,
+          disabled: !catalogReady,
+          label: h(
+            "span",
+            { className: "ptcPlusBindingQuickRow" },
+            h(
+              "span",
+              { className: "ptcPlusBindingQuickName" },
+              h("strong", { title: entry.name }, entry.name),
+              h("span", { className: "ptcPlusBindingQuickState" }, t2(entry.enabled ? "bindings.enabled" : "bindings.disabledEntry"))
+            ),
+            h("span", { className: "ptcPlusBindingQuickPurpose", title: entry.purpose }, entry.purpose)
+          )
+        })),
+        // The back row also anchors menu lookup, so the step still owns its list
+        // when the catalog is momentarily empty.
+        { id: "edit-back", label: h("span", { className: "ptcPlusBindingMenuAction", ref: firstItemRef }, t2("bindings.back")) }
+      ];
       return h(
         "span",
         {
@@ -3137,7 +3161,7 @@
           getAnchorRect: menuAnchorRect,
           selectedIds: (catalog?.entries ?? []).filter((entry) => entry.enabled).map((entry) => `global:${entry.id}`),
           onClose: hideMenu,
-          items: [
+          items: menu?.step === "edit" ? editItems : [
             ...hasDraft ? [
               { id: "draft-heading", type: "label", text: t2("bindings.quickDrafts") },
               {
@@ -3154,6 +3178,7 @@
             ...catalogItems,
             ...quickAccess ? [{ id: "actions-separator", type: "separator" }] : [],
             ...canAuthor ? [{ id: "new", label: h("span", { className: "ptcPlusBindingMenuAction" }, t2("bindings.authorNewDraft")) }] : [],
+            ...canAuthor && (catalog?.entries?.length ?? 0) > 0 ? [{ id: "edit", label: h("span", { className: "ptcPlusBindingMenuAction" }, t2("bindings.authorEdit")) }] : [],
             ...quickAccess ? [
               ...catalogError === null ? [] : [{ id: "reload", label: h("span", { ref: reloadItemRef }, t2("bindings.reload")) }],
               { id: "manage", label: h("span", { ref: manageItemRef, className: "ptcPlusBindingMenuAction" }, t2("bindings.manage")) }
@@ -3161,6 +3186,19 @@
           ],
           onSelect: (id2) => {
             if (!anchorRef.current?.getClientRects().length) return;
+            if (id2 === "edit") {
+              setMenu((current) => current === null ? current : { ...current, step: "edit" });
+              return;
+            }
+            if (id2 === "edit-back") {
+              setMenu((current) => current === null ? current : { ...current, step: "root" });
+              return;
+            }
+            if (id2.startsWith("edit:")) {
+              const entry = catalog?.entries.find((entry2) => `edit:${entry2.id}` === id2);
+              if (entry) openAuthoringEdit(entry);
+              return;
+            }
             if (id2.startsWith("global:")) {
               const entry = catalog?.entries.find((entry2) => `global:${entry2.id}` === id2);
               if (entry) void toggleBinding(entry);
@@ -3523,22 +3561,18 @@
       t: t2,
       useProjection,
       useSessions,
-      useInput,
-      inputActions,
       usePtcSettings,
       callUserBindings
     }) {
       const preset = useSessionPreset2({ sessionId, useProjection, useSessions });
       const projectionMemory = useProjection("ptcPlusRepl");
       const settings = usePtcSettings((snapshot) => snapshot);
-      const input = typeof useInput === "function" ? useInput((snapshot) => snapshot) : void 0;
       const resolvedSessionId = sessionId;
       const globalEnabled = featureEnabled2(settings, "bindings");
       const identity = JSON.stringify([sessionId, globalEnabled]);
       const catalogSource = React.useMemo(() => catalogOwner.claim(), [catalogOwner]);
       const catalogState = React.useSyncExternalStore(catalogSource.subscribe, catalogSource.getSnapshot);
       const globalBindings = catalogState.catalog ?? void 0;
-      const [authoringMessage, setAuthoringMessage] = React.useState(null);
       const refreshGlobalBindings = React.useCallback(() => {
         if (!globalEnabled) return;
         void catalogSource.read();
@@ -3689,16 +3723,6 @@
           document.removeEventListener("keydown", closeOnEscape);
         };
       }, [closeOnEscape, dismissOutside, expanded]);
-      const prefillAuthoring = React.useCallback((value) => {
-        if (typeof inputActions?.setDraft !== "function") return;
-        if (typeof input?.draft === "string" && input.draft.trim() !== "") {
-          setAuthoringMessage("bindings.composerBusy");
-          return;
-        }
-        inputActions.setDraft(value);
-        setAuthoringMessage(null);
-        hidePopover();
-      }, [hidePopover, input?.draft, inputActions]);
       React.useEffect(() => {
         const syncPopoverState = (event) => {
           if (event.target !== popoverRef.current) return;
@@ -3775,8 +3799,6 @@
           globalEnabled,
           globalBindings,
           loadGlobalBinding: (id2) => callUserBindings("load", { id: id2 }),
-          prefillAuthoring,
-          authoringMessage,
           t: t2,
           id: popoverId,
           titleId,
@@ -29332,11 +29354,17 @@
   var MAX_DEFINITION_SOURCE_LENGTH = 1024;
   var MAX_DEFINITION_SOURCE_TOTAL_LENGTH = 16 * 1024;
   var SNAPSHOT_FIELDS = /* @__PURE__ */ new Set(["available", "entries", "total", "omitted"]);
+  var COUNTED_SNAPSHOT_FIELDS = /* @__PURE__ */ new Set([...SNAPSHOT_FIELDS, "reuseTotal"]);
   var OBSERVED_SNAPSHOT_FIELDS = /* @__PURE__ */ new Set([...SNAPSHOT_FIELDS, "observation"]);
+  var OBSERVED_COUNTED_SNAPSHOT_FIELDS = /* @__PURE__ */ new Set([...COUNTED_SNAPSHOT_FIELDS, "observation"]);
   var OBSERVATION_FIELDS = /* @__PURE__ */ new Set(["at", "entries"]);
   var PREVIEW_FIELDS = /* @__PURE__ */ new Set(["name", "status", "text", "truncated"]);
   var ENTRY_FIELDS = /* @__PURE__ */ new Set(["name", "kind", "definition"]);
+  var COUNTED_ENTRY_FIELDS = /* @__PURE__ */ new Set([...ENTRY_FIELDS, "reuseCount"]);
   var DEFINITION_FIELDS = /* @__PURE__ */ new Set(["source", "line", "column"]);
+  function isReuseCount(value) {
+    return Number.isSafeInteger(value) && value >= 0;
+  }
   function exactFields2(value, fields) {
     if (!isRecord2(value)) return false;
     const keys2 = Reflect.ownKeys(value);
@@ -29346,7 +29374,8 @@
     available: false,
     entries: Object.freeze([]),
     total: 0,
-    omitted: 0
+    omitted: 0,
+    reuseTotal: 0
   });
   function unavailableReplMemorySnapshot() {
     return EMPTY_REPL_MEMORY;
@@ -29358,13 +29387,15 @@
     return Object.freeze({ source: value.source, line: value.line, column: value.column });
   }
   function normalizeBinding(value) {
-    if (!exactFields2(value, ENTRY_FIELDS) || typeof value.name !== "string" || value.name.length === 0 || value.name.length > MAX_BINDING_NAME_LENGTH || !BINDING_KINDS.has(value.kind)) {
+    const counted = exactFields2(value, COUNTED_ENTRY_FIELDS);
+    if (!counted && !exactFields2(value, ENTRY_FIELDS) || typeof value.name !== "string" || value.name.length === 0 || value.name.length > MAX_BINDING_NAME_LENGTH || !BINDING_KINDS.has(value.kind) || counted && !isReuseCount(value.reuseCount)) {
       throw new Error("invalid dsh-ptc-plus REPL memory binding");
     }
     return Object.freeze({
       name: value.name,
       kind: value.kind,
-      definition: normalizeDefinition(value.definition)
+      definition: normalizeDefinition(value.definition),
+      reuseCount: counted ? value.reuseCount : 0
     });
   }
   function normalizeReplObservation(value) {
@@ -29382,14 +29413,18 @@
     return Object.freeze({ at: value.at, entries: Object.freeze(entries) });
   }
   function normalizeReplMemorySnapshot(value) {
-    if (!exactFields2(value, SNAPSHOT_FIELDS) && !exactFields2(value, OBSERVED_SNAPSHOT_FIELDS) || typeof value.available !== "boolean" || !Array.isArray(value.entries) || value.entries.length > MAX_BINDINGS || !Number.isSafeInteger(value.total) || value.total < 0 || !Number.isSafeInteger(value.omitted) || value.omitted < 0 || value.total !== value.entries.length + value.omitted) {
+    const counted = exactFields2(value, COUNTED_SNAPSHOT_FIELDS) || exactFields2(value, OBSERVED_COUNTED_SNAPSHOT_FIELDS);
+    const legacy = exactFields2(value, SNAPSHOT_FIELDS) || exactFields2(value, OBSERVED_SNAPSHOT_FIELDS);
+    if (!counted && !legacy || typeof value.available !== "boolean" || !Array.isArray(value.entries) || value.entries.length > MAX_BINDINGS || !Number.isSafeInteger(value.total) || value.total < 0 || !Number.isSafeInteger(value.omitted) || value.omitted < 0 || value.total !== value.entries.length + value.omitted || counted && !isReuseCount(value.reuseTotal)) {
       throw new Error("invalid dsh-ptc-plus REPL memory snapshot");
     }
-    if (!value.available && (value.total !== 0 || value.entries.length !== 0)) {
+    const reuseTotal = counted ? value.reuseTotal : 0;
+    if (!value.available && (value.total !== 0 || value.entries.length !== 0 || reuseTotal !== 0)) {
       throw new Error("unavailable dsh-ptc-plus REPL memory snapshot must be empty");
     }
     const names = /* @__PURE__ */ new Set();
     let sourceLength = 0;
+    let entryReuseTotal = 0;
     const entries = value.entries.map((entry) => {
       const normalized = normalizeBinding(entry);
       if (names.has(normalized.name)) {
@@ -29400,8 +29435,12 @@
         throw new Error("dsh-ptc-plus REPL binding definitions exceed the presentation budget");
       }
       names.add(normalized.name);
+      entryReuseTotal += normalized.reuseCount;
       return normalized;
     });
+    if (reuseTotal < entryReuseTotal) {
+      throw new Error("dsh-ptc-plus REPL reuse total is smaller than its entries");
+    }
     const observation = value.observation === void 0 ? void 0 : normalizeReplObservation(value.observation);
     if (observation !== void 0 && (!value.available || observation.entries.some((entry) => !names.has(entry.name)))) {
       throw new Error("REPL observation requires a matching available inventory");
@@ -29411,6 +29450,7 @@
       entries: Object.freeze(entries),
       total: value.total,
       omitted: value.omitted,
+      reuseTotal,
       ...observation === void 0 ? {} : { observation }
     });
   }
@@ -29424,6 +29464,7 @@
       "console.definition": "\u5B9A\u4E49",
       "console.name": "\u540D\u79F0",
       "console.kind": "\u7C7B\u578B",
+      "console.reuse": "\u590D\u7528",
       "console.search": "\u641C\u7D22\u7ED1\u5B9A\u540D\u79F0",
       "console.allKinds": "\u5168\u90E8\u7C7B\u578B",
       "console.noMatches": "\u6CA1\u6709\u5339\u914D\u7684\u7ED1\u5B9A",
@@ -29508,7 +29549,7 @@
       "bindings.reloadedDraft": "\u76EE\u5F55\u5DF2\u91CD\u65B0\u52A0\u8F7D\uFF0C\u672A\u4FDD\u5B58\u7684\u7F16\u8F91\u5DF2\u4FDD\u7559\u3002",
       "bindings.reloadConflict": "\u8BFB\u53D6\u671F\u95F4\u76EE\u5F55\u518D\u6B21\u53D1\u751F\u53D8\u5316\uFF0C\u8BF7\u91CD\u65B0\u52A0\u8F7D\u3002",
       "bindings.failed": "\u5168\u5C40\u7528\u6237\u7ED1\u5B9A\u64CD\u4F5C\u5931\u8D25\uFF1A{error}",
-      "bindings.authorEdit": "Agent \u4FEE\u6539",
+      "bindings.authorEdit": "\u4FEE\u6539\u7ED1\u5B9A",
       "bindings.open": "\u5168\u5C40\u7ED1\u5B9A",
       "bindings.openHint": "PTC Plus \u63D2\u4EF6 \xB7 \u6253\u5F00\u5168\u5C40\u7528\u6237\u7ED1\u5B9A\u83DC\u5355\uFF0C\u53EF\u7F16\u5199\u3001\u542F\u505C\u6216\u7BA1\u7406",
       "bindings.draftHint": "PTC Plus \u63D2\u4EF6 \xB7 \u7ED1\u5B9A\u8349\u7A3F\u5F85\u5904\u7406\uFF0C\u70B9\u51FB\u67E5\u770B",
@@ -29517,6 +29558,8 @@
       "bindings.quickLoading": "\u6B63\u5728\u8BFB\u53D6\u7ED1\u5B9A\u2026",
       "bindings.quickSaving": "\u6B63\u5728\u4FDD\u5B58\u2026",
       "bindings.authorNewDraft": "\u7F16\u5199\u65B0\u7ED1\u5B9A",
+      "bindings.quickEditHeading": "\u9009\u62E9\u8981\u4FEE\u6539\u7684\u7ED1\u5B9A",
+      "bindings.back": "\u8FD4\u56DE",
       "bindings.composerBusy": "\u8F93\u5165\u6846\u5DF2\u6709\u5185\u5BB9\uFF0C\u672A\u8986\u76D6\u73B0\u6709\u8349\u7A3F\u3002",
       "bindings.reviewTitle": "\u7ED1\u5B9A\u8349\u7A3F",
       "bindings.reviewExpand": "\u5C55\u5F00\u7ED1\u5B9A\u8349\u7A3F",
@@ -29551,6 +29594,9 @@
       "memory.empty": "\u5F53\u524D\u6CA1\u6709\u53EF\u590D\u7528\u7ED1\u5B9A",
       "memory.unavailable": "\u5F53\u524D\u7ED1\u5B9A\u72B6\u6001\u5C1A\u4E0D\u53EF\u786E\u8BA4",
       "memory.more": "\u53E6\u6709 {count} \u4E2A\u7ED1\u5B9A\u672A\u663E\u793A",
+      "memory.reuseCount": "\u590D\u7528 {count} \u6B21",
+      "memory.reuseTotal": "\u5171\u590D\u7528 {count} \u6B21",
+      "memory.reuseHint": "\u88AB\u540E\u7EED cell \u590D\u7528\u7684\u6B21\u6570",
       "memory.kind.variable": "\u53D8\u91CF",
       "memory.kind.function": "\u51FD\u6570",
       "memory.kind.class": "\u7C7B",
@@ -29583,6 +29629,7 @@
       "console.definition": "Definition",
       "console.name": "Name",
       "console.kind": "Kind",
+      "console.reuse": "Reuses",
       "console.search": "Search binding names",
       "console.allKinds": "All kinds",
       "console.noMatches": "No matching bindings",
@@ -29667,7 +29714,7 @@
       "bindings.reloadedDraft": "Catalog reloaded; unsaved edits retained.",
       "bindings.reloadConflict": "The catalog changed during reload. Reload again.",
       "bindings.failed": "Global User Binding operation failed: {error}",
-      "bindings.authorEdit": "Ask Agent to revise",
+      "bindings.authorEdit": "Revise a binding",
       "bindings.open": "Global bindings",
       "bindings.openHint": "PTC Plus plugin \xB7 Open the Global User Binding menu to author, toggle, or manage",
       "bindings.draftHint": "PTC Plus plugin \xB7 Binding draft pending; click to review",
@@ -29676,6 +29723,8 @@
       "bindings.quickLoading": "Loading bindings\u2026",
       "bindings.quickSaving": "Saving\u2026",
       "bindings.authorNewDraft": "Write a new binding",
+      "bindings.quickEditHeading": "Choose a binding to revise",
+      "bindings.back": "Back",
       "bindings.composerBusy": "The composer already has text, so its draft was not replaced.",
       "bindings.reviewTitle": "Binding draft",
       "bindings.reviewExpand": "Expand binding draft",
@@ -29710,6 +29759,10 @@
       "memory.empty": "No reusable bindings",
       "memory.unavailable": "Current binding state cannot be confirmed",
       "memory.more": "{count} more bindings not shown",
+      // Number-neutral so a single reuse stays grammatical without a plural rule.
+      "memory.reuseCount": "reused {count}\xD7",
+      "memory.reuseTotal": "reused {count}\xD7 total",
+      "memory.reuseHint": "Times later cells referenced this binding in their source",
       "memory.kind.variable": "Variable",
       "memory.kind.function": "Function",
       "memory.kind.class": "Class",
@@ -29817,7 +29870,7 @@
 .ptcPlusSearch>svg{flex:none}.ptcPlusSearch input{min-width:0;width:100%;height:100%;padding:0;border:0;outline:none;background:transparent;color:var(--dsw-alias-label-primary);font:12px/20px inherit}.ptcPlusSearch:focus-within{outline:2px solid var(--dsw-alias-interactive-primary,#4d6bfe);outline-offset:1px}
 .ptcPlusObservations{height:256px;overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable;min-width:0;border:1px solid var(--dsw-alias-border-l2);border-radius:6px}
 .ptcPlusObservationTable{width:100%;table-layout:fixed;border-collapse:separate;border-spacing:0;font-size:12px;text-align:left}.ptcPlusObservationTable th{position:sticky;top:0;z-index:1;height:32px;padding:0 10px;background:var(--dsw-alias-bg-layer-3);color:var(--dsw-alias-label-tertiary);font-weight:500;border-bottom:1px solid var(--dsw-alias-border-l2)}
-.ptcPlusObservationTable th:first-child{width:34%}.ptcPlusObservationTable th:nth-child(2){width:16%}.ptcPlusObservationTable td{height:34px;padding:0 10px;border-bottom:1px solid var(--dsw-alias-border-l2);overflow:hidden}.ptcPlusObservationTable tr:last-child td{border-bottom:0}.ptcPlusObservationTable tbody tr{cursor:pointer}.ptcPlusObservationTable tbody tr:hover{background:var(--dsw-alias-interactive-bg-hover)}.ptcPlusObservationTable tr[data-selected=true]{background:color-mix(in srgb,var(--dsw-alias-interactive-primary,#4d6bfe) 7%,transparent)}
+.ptcPlusObservationTable th:first-child{width:34%}.ptcPlusObservationTable th:nth-child(2){width:16%}.ptcPlusObservationTable th:nth-child(3){width:72px}.ptcPlusObservationTable td{height:34px;padding:0 10px;border-bottom:1px solid var(--dsw-alias-border-l2);overflow:hidden}.ptcPlusObservationTable tr:last-child td{border-bottom:0}.ptcPlusObservationTable tbody tr{cursor:pointer}.ptcPlusObservationTable tbody tr:hover{background:var(--dsw-alias-interactive-bg-hover)}.ptcPlusObservationTable tr[data-selected=true]{background:color-mix(in srgb,var(--dsw-alias-interactive-primary,#4d6bfe) 7%,transparent)}
 .ptcPlusObservationSelect{display:block;width:100%;min-width:0;height:34px;padding:0;border:0;background:transparent;color:inherit;cursor:pointer;text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:12px/20px ui-monospace,SFMono-Regular,Consolas,monospace}.ptcPlusObservationKind{color:var(--dsw-alias-label-tertiary);white-space:nowrap}
 .ptcPlusObservationValue{display:flex;min-width:0;align-items:center;gap:6px}.ptcPlusObservationValue code{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:11px/18px ui-monospace,SFMono-Regular,Consolas,monospace}.ptcPlusObservationState{color:var(--dsw-alias-label-tertiary);font-size:11px;line-height:18px}.ptcPlusObservationValue .ptcPlusObservationState{flex:none}.ptcPlusObservationEmpty{padding:12px}
 .ptcPlusBindingInspector{box-sizing:border-box;min-width:0;max-height:296px;overflow:auto;padding-left:24px;border-left:1px solid var(--dsw-alias-border-l2)}
@@ -29840,8 +29893,10 @@
 .ptcPlusExecutionHistory{min-height:48px;max-height:320px;overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable}.ptcPlusExecutionHistory:empty{min-height:0}.ptcPlusExecutionRecord{min-width:0;padding:10px 12px;border-bottom:1px solid var(--dsw-alias-border-l2)}.ptcPlusExecutionCommand,.ptcPlusExecutionOutput{margin:0;white-space:pre-wrap;overflow-wrap:anywhere;font:12px/20px ui-monospace,SFMono-Regular,Consolas,monospace}.ptcPlusExecutionCommand{color:var(--dsw-alias-label-secondary)}.ptcPlusExecutionCommand>span{color:var(--dsw-alias-label-tertiary)}.ptcPlusExecutionResult{flex-direction:row;gap:12px;margin-top:8px;padding:12px 16px}.ptcPlusExecutionOutputLabel{flex:none;color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:20px}.ptcPlusExecutionOutput{flex:1;min-width:0;max-height:240px;overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable;color:var(--dsw-alias-label-secondary)}.ptcPlusExecutionOutput:focus-visible{outline:2px solid var(--dsw-alias-interactive-primary);outline-offset:-2px}.ptcPlusExecutionOutput[data-error=true]{color:var(--dsw-alias-state-error-primary)}.ptcPlusExecutionDuration{display:block;margin-top:4px;color:var(--dsw-alias-label-tertiary);font-size:10px;line-height:16px}.ptcPlusExecutionInput .ptcPlusCodeEditor{border:0;border-radius:0}.ptcPlusExecutionInput .cm-editor{height:108px}.ptcPlusExecutionInput .cm-content{min-height:88px}
 @container(max-width:460px){.ptcPlusSourceSection{grid-template-columns:minmax(0,1fr)}.ptcPlusSourceToggle{padding-bottom:6px}.ptcPlusSourceActions{justify-content:flex-end}.ptcPlusExecutionToolbar{gap:6px;padding:8px}.ptcPlusExecutionActions{gap:4px}.ptcPlusSourceFilename{display:none}}
 .ptcPlusBindingsModal.ptcPlusBindingsModal{width:min(1200px,calc(100vw - 32px));max-width:none;max-height:calc(100dvh - 40px);border-radius:8px}.ptcPlusBindingsDialog{box-sizing:border-box;max-height:calc(100dvh - 40px);overflow:auto;padding:24px}.ptcPlusBindingsDialogHead{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:16px}.ptcPlusBindingsDialogHead h2{margin:0;font-size:17px;line-height:24px}.ptcPlusDialogClose{display:flex;flex:none;align-items:center;justify-content:center;width:32px;height:32px;padding:0;border:0;border-radius:4px;background:transparent;color:inherit;cursor:pointer}.ptcPlusDialogClose:hover{background:var(--dsw-alias-interactive-bg-hover)}.ptcPlusConsole button:focus-visible,.ptcPlusBindingsDialog button:focus-visible{outline:2px solid var(--dsw-alias-interactive-primary);outline-offset:-2px}
-@container(max-width:780px){.ptcPlusObservationGrid{grid-template-columns:minmax(0,1fr);gap:16px}.ptcPlusBindingInspector{max-height:none;padding:12px 0 0;border-left:0;border-top:1px solid var(--dsw-alias-border-l2)}.ptcPlusObservations{height:200px}.ptcPlusBindingsSurface .ptcPlusBindingsGrid{grid-template-columns:minmax(0,1fr);gap:18px}.ptcPlusBindingsSurface .ptcPlusBindingList{max-height:180px}.ptcPlusBindingsSurface .ptcPlusBindingFields,.ptcPlusBindingsSurface .ptcPlusBindingDebugBody{grid-template-columns:minmax(0,1fr)}.ptcPlusObservationTable th:first-child{width:35%}.ptcPlusObservationTable th:nth-child(2){width:64px}}
+@container(max-width:780px){.ptcPlusObservationGrid{grid-template-columns:minmax(0,1fr);gap:16px}.ptcPlusBindingInspector{max-height:none;padding:12px 0 0;border-left:0;border-top:1px solid var(--dsw-alias-border-l2)}.ptcPlusObservations{height:200px}.ptcPlusBindingsSurface .ptcPlusBindingsGrid{grid-template-columns:minmax(0,1fr);gap:18px}.ptcPlusBindingsSurface .ptcPlusBindingList{max-height:180px}.ptcPlusBindingsSurface .ptcPlusBindingFields,.ptcPlusBindingsSurface .ptcPlusBindingDebugBody{grid-template-columns:minmax(0,1fr)}.ptcPlusObservationTable th:first-child{width:35%}.ptcPlusObservationTable th:nth-child(2){width:64px}.ptcPlusObservationTable th:nth-child(3){width:64px}}
 @media(max-width:560px){.ptcPlusConsole{padding:14px 12px}.ptcPlusBindingsModal.ptcPlusBindingsModal{width:calc(100vw - 16px);max-height:calc(100dvh - 16px)}.ptcPlusBindingsDialog{padding:16px;max-height:calc(100dvh - 16px)}.ptcPlusObservationFilters>.ptcPlusSelect{width:105px}.ptcPlusObservationTable th,.ptcPlusObservationTable td{padding:0 6px}.ptcPlusObservationValue{gap:3px}.ptcPlusObservationState{font-size:10px}.ptcPlusEditorHead{align-items:flex-start}.ptcPlusEditorHead>.ptcPlusBindingLifecycle{margin-left:auto}.ptcPlusSourceBody .cm-editor{height:300px}}
+.ptcPlusReplIdentity{grid-column:1}.ptcPlusReplReuse{flex:none;padding:0 5px;border-radius:999px;background:var(--dsw-alias-bg-layer-2,rgba(38,49,72,.06));color:var(--dsw-alias-label-tertiary,#74777d);font:500 10px/15px system-ui,sans-serif;white-space:nowrap}
+.ptcPlusObservationReuseTotal{font-size:13px;color:var(--dsw-alias-label-tertiary)}.ptcPlusObservationReuse{color:var(--dsw-alias-label-tertiary);white-space:nowrap;font-variant-numeric:tabular-nums}
 `;
   function installStyles() {
     if (document.getElementById(CLIENT_STYLE_ID) !== null) return () => {
@@ -30934,7 +30989,6 @@
           icons: { chevron: IconChevronDownOutline14 }
         });
         const { ReplComposer, ReplConsole, ReplMemoryCard, replPopoverIsOpen, placeReplPopover } = createReplView(React, {
-          ActionButton,
           CodeBlock,
           featureEnabled,
           normalizeReplMemorySnapshot,
@@ -30943,7 +30997,7 @@
           sessionUsesPtcPreset,
           useWorkbenchController,
           UserBindingsWorkbench,
-          icons: { search: IconSearchOutline16, chevron: IconChevronDownOutline14, sparkle: IconSparkle16 }
+          icons: { search: IconSearchOutline16, chevron: IconChevronDownOutline14 }
         });
         const settingsProps = () => ({ hooks: { ptcSettings: preferenceScope }, callUserBindings });
         const updateSetting = async (key, value) => {

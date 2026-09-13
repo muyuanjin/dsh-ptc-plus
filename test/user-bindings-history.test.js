@@ -8,6 +8,11 @@ import { encodeValue } from '../internal/value-wire.js'
 import { appendRunCodeEvents } from './plugin-fixture.js'
 import { interceptWorkerMessages } from './runtime-observation.js'
 
+function withoutReuse(entry) {
+  const { reuseCount, ...rest } = entry
+  return rest
+}
+
 function pair(seed = 0, enabled = true) {
   return {
     id: 'pair', name: 'pair', scope: 'top-level', enabled,
@@ -249,12 +254,12 @@ test('replays imported aliases with truthful source and UI evidence across void 
     const definition = { name, kind, definition: { source: declaration, line: 1, column: 1 } }
     const assertEvidence = (result, enabled = true) => {
       assert.deepEqual(result.meta[JOURNAL_KEY].userBindingNames, enabled ? facts : [{ name, state: 'local' }])
-      assert.deepEqual(result.replMemory.entries.find(entry => entry.name === name), definition)
+      assert.deepEqual(withoutReuse(result.replMemory.entries.find(entry => entry.name === name)), definition)
       assert.equal(result.meta.dshPtcPlusRecoveryBoundaries, undefined)
     }
     const imported = await record(runtime, session,
       `${declaration}\nconst saved = ${name}; const read = () => ${read}; void 0`, empty, functions)
-    assert.deepEqual(imported.replMemory.entries.find(entry => entry.name === name), definition)
+    assert.deepEqual(withoutReuse(imported.replMemory.entries.find(entry => entry.name === name)), definition)
     const attached = await record(runtime, session,
       `const observed = [${read}, beta, ${name} === saved]; void 0`, selected, functions)
     assert.deepEqual(attached.meta[JOURNAL_KEY].completion, { kind: 'return', hasValue: false })
@@ -314,7 +319,7 @@ test('rejects false import alias absence during void replay without redispatchin
     assert.deepEqual(continued.value, ['ok', 'undefined', 'undefined'])
     assert.equal(initializations, 1)
     assert.deepEqual(continued.meta[JOURNAL_KEY].calls, [])
-    assert.deepEqual(continued.replMemory.entries.find(entry => entry.name === 'alpha'), {
+    assert.deepEqual(withoutReuse(continued.replMemory.entries.find(entry => entry.name === 'alpha')), {
       name: 'alpha', kind: 'import',
       definition: { source: 'import { format as alpha } from "node:util";', line: 1, column: 1 },
     })

@@ -9,6 +9,7 @@ import { diagnostic, renderDiagnostic } from './diagnostic.js'
 import { normalizeBindingDescriptors } from './binding-descriptors.js'
 import {
   firstLine,
+  cellPosition,
   exceptionOriginPosition,
   limitLogs,
   LONG_CELL_CODE_UNITS,
@@ -825,13 +826,19 @@ export class SessionCellExecutor {
       const actualFailure = exceptionDiagnostic({
         error: rawError,
         cause: message.cause,
+        // A diagnostic caret must exist in the submitted cell. A native frame
+        // is mapped first; an unmappable frame falls back to the recorded
+        // source origin rather than attaching an out-of-range position.
         position: message.moduleLoadFailed === true
-          ? message.position
-          : mapSourcePosition(
-              message.position,
-              active.prepared.code,
+          ? cellPosition(message.position, active.request.program)
+          : cellPosition(
+              mapSourcePosition(
+                message.position,
+                active.prepared.code,
+                active.request.program,
+                active.prepared.sourceMap,
+              ),
               active.request.program,
-              active.prepared.sourceMap,
             ) ?? exceptionOriginPosition(message.exceptionOrigins, active.request.program),
         declared: message.moduleLoadFailed === true ? new Set() : active.prepared.declared,
         languageSemantics: active.prepared.languageSemantics,

@@ -5,6 +5,7 @@ import {
   createExceptionOriginScope,
   recordExceptionOrigin,
   exceptionOriginPosition,
+  cellPosition,
   createFailureTracker,
   errorDetails,
   errorPosition,
@@ -36,8 +37,10 @@ test('exception source facts validate current coordinates and expire with their 
   assert.deepEqual(exceptionOriginPosition(first.origins(error), source), { line: 2, column: 3 })
   assert.equal(exceptionOriginPosition(first.origins(error), 'fail()'), undefined)
   assert.equal(exceptionOriginPosition(undefined, source), undefined)
+  // The column just past a line's last character is a valid caret position.
+  assert.deepEqual(exceptionOriginPosition([`${prefix}2:9`], source), { line: 2, column: 9 })
   for (const invalid of [undefined, 'eval:old:2:3', `${prefix}0:1`, `${prefix}2:0`, `${prefix}3:1`,
-    `${prefix}2:9`, `${prefix}2:3:extra`, `${prefix}9007199254740992:1`]) {
+    `${prefix}2:10`, `${prefix}1:15`, `${prefix}2:3:extra`, `${prefix}9007199254740992:1`]) {
     assert.equal(exceptionOriginPosition([invalid], source), undefined)
   }
   first.run(() => {
@@ -90,7 +93,6 @@ test('normalizes hostile errors and extracts active-cell details', () => {
   assert.deepEqual(errorDetails(hostile, 'ptc-plus-repl-1'), {
     name: 'Error', message: 'Unprintable thrown value',
   })
-
   const toolError = Object.assign(new Error('denied'), {
     name: 'ToolCallError',
     toolName: 'read',
@@ -113,6 +115,35 @@ test('normalizes hostile errors and extracts active-cell details', () => {
     message: 'missing required property "command"; missing required property "options.cwd"',
   }), false)
   assert.equal(missingDescriptionPath({ message: 'invalid arguments: missing required property "options.command"' }), undefined)
+})
+
+test('bounds every reported cell position by the source that produced it', () => {
+  const source = 'first()\nsecond()\n'
+  // A candidate inside the source keeps the end-of-line caret at length + 1.
+  assert.deepEqual(cellPosition({ line: 1, column: 8 }, source), { line: 1, column: 8 })
+  assert.deepEqual(cellPosition({ line: 2, column: 9 }, source), { line: 2, column: 9 })
+  for (const invalid of [undefined, null, 'x', { line: 0, column: 1 }, { line: 1, column: 0 },
+    { line: 4, column: 1 }, { line: 1, column: 9 }, { line: 2, column: 10 },
+    { line: 1.5, column: 1 }, { line: 1, column: Number.NaN }]) {
+    assert.equal(cellPosition(invalid, source), undefined)
+  }
+
+  const error = new Error('boom')
+  error.stack = 'Error: boom\n    at cell (ptc-plus-repl-2:1:4)'
+  assert.deepEqual(errorPosition(error, 'ptc-plus-repl-2', source), { line: 1, column: 4 })
+  assert.deepEqual(errorPosition(error, 'ptc-plus-repl-2'), { line: 1, column: 4 })
+  assert.deepEqual(errorDetails(error, 'ptc-plus-repl-2', source).position, { line: 1, column: 4 })
+
+  // A frame past the executed source is an absence, not an unmappable position.
+  const beyond = new Error('boom')
+  beyond.stack = 'Error: boom\n    at cell (ptc-plus-repl-2:4:1)'
+  assert.equal(errorPosition(beyond, 'ptc-plus-repl-2', source), undefined)
+  assert.equal(errorDetails(beyond, 'ptc-plus-repl-2', source).position, undefined)
+
+  const unsafe = new Error('boom')
+  unsafe.stack = 'Error: boom\n    at cell (ptc-plus-repl-2:9007199254740992:1)'
+  assert.equal(errorPosition(unsafe, 'ptc-plus-repl-2'), undefined)
+  assert.equal(errorPosition(unsafe, 'ptc-plus-repl-2', source), undefined)
 })
 
 test('bounds diagnostic logs and emits one repeat-failure hint', () => {

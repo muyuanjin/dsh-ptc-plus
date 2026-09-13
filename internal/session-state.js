@@ -6,6 +6,31 @@ import { advanceLegacyBindings } from './legacy-binding-catalog.js'
 import { dynamicBindingOrigin } from './dynamic-binding-evidence.js'
 import { LEGACY_LANGUAGE_SEMANTICS, normalizeLanguageSemantics } from './language-semantics.js'
 
+/**
+ * Reuse counts belong to a logical binding identity, not to one declaration
+ * occurrence. Every catalog transition carries the previous count forward by
+ * name, so a redeclaration can change the definition without resetting how many
+ * later cells reused the binding.
+ */
+function carryReuseCounts(entries, previousEntries) {
+  for (const [name, entry] of entries) {
+    const previous = previousEntries.get(name)
+    if (previous?.reuseCount === undefined || entry.reuseCount === previous.reuseCount) continue
+    entries.set(name, { ...entry, reuseCount: previous.reuseCount })
+  }
+}
+
+/** One settled cell contributes at most one reuse event per identity its
+ * rewritten source statically references; the count is a source fact, not a
+ * runtime trace of which references executed. */
+function applyReuseEvents(entries, previousEntries, reusedNames) {
+  for (const name of new Set(reusedNames ?? [])) {
+    const entry = entries.get(name)
+    if (entry === undefined || previousEntries.get(name) === undefined) continue
+    entries.set(name, { ...entry, reuseCount: (entry.reuseCount ?? 0) + 1 })
+  }
+}
+
 export function durabilityState(overrides = {}) {
   return Object.freeze({
     status: 'durable',
@@ -87,6 +112,10 @@ export class BindingCatalog {
       }
       applyRootBindingFacts(legacy.entries, rootBindingFacts, this.#rootCandidates, this.#dynamicOrigins,
         prepared.imports, this.#entries)
+      // The frozen legacy-v1 preparation reports no reference facts, so a
+      // legacy cell contributes no reuse event; accumulated counts still carry
+      // across the transition.
+      carryReuseCounts(legacy.entries, this.#entries)
       return new BindingCatalog({
         ...legacy,
         userBindingAncestry: this.#userBindingAncestry,
@@ -127,6 +156,8 @@ export class BindingCatalog {
       entries.set(name, entry)
     }
     applyRootBindingFacts(entries, rootBindingFacts, rootCandidates, dynamicOrigins, prepared.imports, this.#entries)
+    carryReuseCounts(entries, this.#entries)
+    applyReuseEvents(entries, this.#entries, prepared.reusedNames)
     return new BindingCatalog({ entries, namespaces: this.#namespaces, userBindingAncestry: this.#userBindingAncestry, rootCandidates, dynamicOrigins })
   }
 
@@ -160,6 +191,7 @@ export class BindingCatalog {
         origin: Object.freeze({ kind: 'user-global', entryId: entry.entryId, fingerprint: entry.fingerprint }),
       })
     }
+    carryReuseCounts(entries, this.#entries)
     return Object.freeze({
       catalog: new BindingCatalog({ entries, namespaces: this.#namespaces, userBindingAncestry: this.#userBindingAncestry, rootCandidates: this.#rootCandidates, dynamicOrigins: this.#dynamicOrigins }),
       shadowedNames,
@@ -211,6 +243,7 @@ export class BindingCatalog {
         })
       }
     }
+    carryReuseCounts(entries, this.#entries)
     return new BindingCatalog({ entries, namespaces: this.#namespaces, userBindingAncestry: this.#userBindingAncestry, rootCandidates: this.#rootCandidates, dynamicOrigins: this.#dynamicOrigins })
   }
 
@@ -235,6 +268,7 @@ export class BindingCatalog {
       .map(([name, entry]) => ({
         name,
         kind: entry.kind,
+        reuseCount: entry.reuseCount ?? 0,
         ...(entry.definition === undefined ? {} : { definition: entry.definition }),
       }))
   }

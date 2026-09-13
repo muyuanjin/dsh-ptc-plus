@@ -29,6 +29,10 @@ import { indexSourceRegions, validateRegionSource, sourceFeatures } from './comp
 
 export const CELL_PARSER_PLUGINS = ['typescript', 'importAttributes', 'decorators', 'decoratorAutoAccessors']
 
+/** Babel parse errors the stateful cell compiler recovers from by design. */
+export const RECOVERABLE_CELL_PARSE_ERRORS = new Set(['VarRedeclaration', 'DeclarationMissingInitializer',
+  'DuplicateExport', 'DuplicateDefaultExport', 'UnexpectedUsingDeclaration'])
+
 const PARSER_OPTIONS = {
   sourceType: 'script',
   allowAwaitOutsideFunction: true,
@@ -1042,6 +1046,83 @@ function introduceAnnexBVars(code, sourceMap, target, onPhase) {
 }
 
 /**
+ * Later phases parse and execute the emitted text again, and an expression
+ * rewrite can turn the reference that starts an expression statement into a
+ * parenthesized token. Automatic semicolon insertion would then join it to the
+ * previous statement, so make that boundary explicit before any rewrite runs.
+ *
+ * A later rewrite can emit such a leading token for an expression statement's
+ * callable reference, a declaration protected module/CommonJS mode emits as
+ * `(pattern = (init));` (including one wrapped in an export), an exported
+ * declaration or default value, and a block-level function declaration the
+ * scope planner republishes as a candidate assignment. Every such boundary is
+ * made explicit before any rewrite runs. A statement the module phases delete
+ * as a whole cannot own the separator, because that deletion removes a trailing
+ * semicolon with it, so the separator is attached to the last statement that
+ * survives.
+ *
+ * The pass is semantics-neutral and idempotent. It changes the compiled form
+ * of a stateful-v1/protected-v1 cell, so a journal recorded with an earlier
+ * build may no longer reproduce its recorded completion; that cell is then
+ * unreconstructable and recovery contracts the frontier as designed.
+ */
+export function preserveStatementBoundaries(code, sourceMap = identitySourceMap(code.length), parserOptions = {}) {
+  let tree
+  try {
+    tree = parse(code, { ...PARSER_OPTIONS, ...parserOptions, errorRecovery: true })
+  } catch {
+    // Invalid source keeps its existing diagnostic owner; this pass only
+    // protects boundaries the parser already proved.
+    return { code, sourceMap }
+  }
+  // A parse error outside the recoverable set owns its diagnostic: inserting
+  // anything would change the program that diagnostic describes.
+  if (tree.errors.some(error => !RECOVERABLE_CELL_PARSE_ERRORS.has(error.reasonCode))) return { code, sourceMap }
+  const edits = []
+  // A later module phase deletes these statements as a whole, a trailing
+  // semicolon included, and a reparsed `;` placed directly before the next
+  // statement is itself absorbed as that deleted statement's terminator. The
+  // separator therefore belongs to the last statement that survives.
+  const removedAsWhole = node => node.type === 'ImportDeclaration'
+    || node.type === 'ExportAllDeclaration'
+    || node.type === 'ExportNamedDeclaration' && node.declaration === null
+    || node.type === 'ExportDefaultDeclaration'
+  // Every statement form a later rewrite can emit with a `(` first token.
+  // A declaration-less export or an import is deleted rather than re-emitted,
+  // so only a surviving or re-emitted statement needs the guard.
+  const parenthesized = (node, blockLevel) => node.type === 'ExpressionStatement'
+    || node.type === 'VariableDeclaration'
+    || node.type === 'ExportNamedDeclaration' && node.declaration !== null
+    || node.type === 'ExportDefaultDeclaration'
+    || blockLevel && node.type === 'FunctionDeclaration'
+  const list = (statements, directives, blockLevel) => {
+    const entries = [...directives ?? [], ...statements]
+    let survivor
+    let guardedAt
+    for (const next of entries) {
+      if (parenthesized(next, blockLevel) && survivor !== undefined && survivor.end !== guardedAt
+        && code[survivor.end - 1] !== ';' && code[survivor.end] !== ';') {
+        edits.push({ start: survivor.end, end: survivor.end, text: ';' })
+        guardedAt = survivor.end
+      }
+      if (!removedAsWhole(next)) survivor = next
+    }
+  }
+  const walk = node => {
+    if (node.type === 'Program') list(node.body, node.directives, false)
+    else if (node.type === 'BlockStatement' || node.type === 'StaticBlock') list(node.body, node.directives, true)
+    else if (node.type === 'SwitchCase') list(node.consequent, undefined, true)
+    for (const key of babelTypes.VISITOR_KEYS[node.type] ?? []) {
+      const child = node[key]
+      if (Array.isArray(child)) { for (const value of child) if (value?.type !== undefined) walk(value) }
+      else if (child?.type !== undefined) walk(child)
+    }
+  }
+  walk(tree.program)
+  return edits.length === 0 ? { code, sourceMap } : applySourceEdits(code, sourceMap, edits)
+}
+
+/**
  * stateful-v1 local activations use stable cells. A declaration evaluates into
  * candidate cells and links them to the committed identity only on success.
  * Escaped candidate closures consequently retain failed candidates, while a
@@ -1152,8 +1233,9 @@ function normalizeStatefulScopeInput(code, sourceMap, { mode = 'stateful-v1', ta
   onPhase?.('typescript')
   const typescript = nativeJavaScript ? { code, sourceMap }
     : lowerLegacyParameterDecorators(normalizeTypeScriptValues(code,sourceMap,target),target,intrinsicContext)
-  code=typescript.code
-  sourceMap=typescript.sourceMap
+  const separated = preserveStatementBoundaries(typescript.code, typescript.sourceMap, parserOptionsForTarget(target))
+  code=separated.code
+  sourceMap=separated.sourceMap
   const finish = result => {
     result = { ...result, deferredHelpers: typescript.deferredHelpers,
       internalBindings: new Set([...typescript.internalBindings ?? [], ...result.internalBindings ?? []]) }

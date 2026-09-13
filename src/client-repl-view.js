@@ -154,6 +154,7 @@ export function createReplView(React, deps) {
     popoverRef,
     onEnter,
     onLeave,
+    onGlobalTab,
   }) {
     const [expandedBinding, setExpandedBinding] = React.useState(null)
     const [tab, setTab] = React.useState('session')
@@ -178,7 +179,9 @@ export function createReplView(React, deps) {
       )
     }
     return h('div', {
-      className: 'ptcPlusReplPopover', id, ref: popoverRef, popover: 'auto',
+      // A manual popover owns its lifetime: the trigger toggles it, and the entry
+      // that opened it closes it on an outside press or Escape.
+      className: 'ptcPlusReplPopover', id, ref: popoverRef, popover: 'manual',
       role: 'dialog', 'aria-labelledby': titleId,
       onPointerEnter: onEnter, onPointerLeave: onLeave,
     },
@@ -198,7 +201,8 @@ export function createReplView(React, deps) {
             }, t('memory.sessionTab')),
             h('button', {
               type: 'button', role: 'tab', className: 'ptcPlusReplTab',
-              'aria-selected': activeTab === 'global', onClick: () => setTab('global'),
+              'aria-selected': activeTab === 'global',
+              onClick: () => { setTab('global'); onGlobalTab?.() },
             }, t('memory.globalTab')))
         : null,
       activeTab === 'global'

@@ -2309,7 +2309,8 @@
       titleId,
       popoverRef,
       onEnter,
-      onLeave
+      onLeave,
+      onGlobalTab
     }) {
       const [expandedBinding, setExpandedBinding] = React.useState(null);
       const [tab, setTab] = React.useState("session");
@@ -2330,10 +2331,12 @@
       return h(
         "div",
         {
+          // A manual popover owns its lifetime: the trigger toggles it, and the entry
+          // that opened it closes it on an outside press or Escape.
           className: "ptcPlusReplPopover",
           id: id2,
           ref: popoverRef,
-          popover: "auto",
+          popover: "manual",
           role: "dialog",
           "aria-labelledby": titleId,
           onPointerEnter: onEnter,
@@ -2367,7 +2370,10 @@
               role: "tab",
               className: "ptcPlusReplTab",
               "aria-selected": activeTab === "global",
-              onClick: () => setTab("global")
+              onClick: () => {
+                setTab("global");
+                onGlobalTab?.();
+              }
             }, t2("memory.globalTab"))
           ) : null,
           activeTab === "global" ? h(
@@ -2858,6 +2864,7 @@
   }
 
   // src/client-authoring-view.js
+  var HOVER_DWELL_MS = 150;
   function createAuthoringView(React, deps) {
     const {
       ActionButton,
@@ -2902,6 +2909,7 @@
       const reloadItemRef = React.useRef(null);
       const focused = React.useRef(false);
       const dialogReturnFocus = React.useRef(null);
+      const hoverTimer = React.useRef(void 0);
       const [menu, setMenu] = React.useState(null);
       const [managing, setManaging] = React.useState(false);
       const catalogSource = React.useMemo(() => catalogOwner.claim(), [catalogOwner]);
@@ -2909,6 +2917,7 @@
       const catalog = catalogState.catalog;
       const catalogStatus = catalogState.status;
       const catalogError = catalogState.error;
+      const catalogReady = catalog !== null && catalogStatus !== "writing";
       const catalogFocus = React.useRef(null);
       const toastSequence = React.useRef(0);
       const [toast, setToast] = React.useState(null);
@@ -2938,16 +2947,31 @@
         };
       }, [catalogSource]);
       const toggleBinding = async (entry) => {
-        if (catalogStatus !== "ready" || !quickAccess || catalog === null) return;
+        if (!catalogReady || !quickAccess) return;
         captureCatalogFocus();
         await catalogSource.write(() => callUserBindings(entry.enabled ? "disable" : "enable", {
           id: entry.id,
           expectedRevision: catalog.revision
         }));
       };
+      const cancelHoverOpen = React.useCallback(() => {
+        if (hoverTimer.current === void 0) return;
+        clearTimeout(hoverTimer.current);
+        hoverTimer.current = void 0;
+      }, []);
+      React.useEffect(() => cancelHoverOpen, [cancelHoverOpen]);
       const showMenu = (mode) => {
+        cancelHoverOpen();
         if (!menuOpen && quickAccess) void refreshCatalog();
         setMenu({ key: view.candidateKey, mode });
+      };
+      const hoverMenu = (event) => {
+        if (event.pointerType === "touch" || menuOpen) return;
+        cancelHoverOpen();
+        hoverTimer.current = setTimeout(() => {
+          hoverTimer.current = void 0;
+          showMenu("hover");
+        }, HOVER_DWELL_MS);
       };
       const menuElement = () => manageItemRef.current?.closest("[role=menu]") ?? firstItemRef.current?.closest("[role=menu]");
       const captureCatalogFocus = () => {
@@ -3044,9 +3068,8 @@
           title: typeof Tooltip === "function" ? void 0 : hint,
           "aria-haspopup": "menu",
           "aria-expanded": menuOpen,
-          onPointerEnter: (event) => {
-            if (event.pointerType !== "touch") showMenu("hover");
-          },
+          onPointerEnter: hoverMenu,
+          onPointerLeave: cancelHoverOpen,
           onKeyDown: (event) => {
             if (["ArrowUp", "ArrowDown"].includes(event.key)) {
               event.preventDefault();
@@ -3069,7 +3092,7 @@
         { id: "global-heading", type: "label", text: t2("bindings.quickHeading") },
         ...(catalog?.entries ?? []).map((entry) => ({
           id: `global:${entry.id}`,
-          disabled: catalogStatus !== "ready",
+          disabled: !catalogReady,
           label: h(
             "span",
             { className: "ptcPlusBindingQuickRow", "data-enabled": entry.enabled },
@@ -3082,8 +3105,8 @@
             h("span", { className: "ptcPlusBindingQuickPurpose", title: entry.purpose }, entry.purpose)
           )
         })),
-        ...catalogStatus === "ready" && !catalog?.entries?.length ? [{ id: "empty", type: "label", text: t2("memory.globalEmpty") }] : [],
-        ...catalogStatus === "loading" || catalogStatus === "writing" ? [{ id: "pending", type: "label", text: t2(catalogStatus === "writing" ? "bindings.quickSaving" : "bindings.quickLoading") }] : [],
+        ...catalog !== null && catalog.entries.length === 0 ? [{ id: "empty", type: "label", text: t2("memory.globalEmpty") }] : [],
+        ...catalogStatus === "writing" || catalog === null && catalogStatus === "loading" ? [{ id: "pending", type: "label", text: t2(catalogStatus === "writing" ? "bindings.quickSaving" : "bindings.quickLoading") }] : [],
         ...catalogError === null ? [] : [{ id: "error", type: "label", text: t2("bindings.failed", { error: catalogError }) }]
       ];
       return h(
@@ -3107,6 +3130,10 @@
           portal: true,
           side: "top",
           dense: true,
+          // A hovered menu leaves with the pointer once it leaves the trigger and the
+          // list for the published grace, which re-entering either cancels; click and
+          // keyboard menus stay until dismissed.
+          closeOnPointerLeave: menu !== null && menu.mode === "hover",
           getAnchorRect: menuAnchorRect,
           selectedIds: (catalog?.entries ?? []).filter((entry) => entry.enabled).map((entry) => `global:${entry.id}`),
           onClose: hideMenu,
@@ -3475,6 +3502,8 @@
   }
 
   // src/client-indicator-view.js
+  var HOVER_DWELL_MS2 = 150;
+  var CLOSE_GRACE_MS = 200;
   function createIndicatorView(React, deps) {
     const {
       featureEnabled: featureEnabled2,
@@ -3524,22 +3553,53 @@
       }, [identity, globalEnabled, catalogSource]);
       React.useEffect(() => subscribeReset(() => catalogSource.reset()), [catalogSource]);
       const triggerRef = React.useRef(null);
+      const shellRef = React.useRef(null);
       const popoverRef = React.useRef(null);
+      const openTimer = React.useRef(void 0);
       const closeTimer = React.useRef(void 0);
+      const placementFrame = React.useRef(void 0);
+      const pinned = React.useRef(false);
+      const keyboard = React.useRef(false);
+      const restoringFocus = React.useRef(false);
       const [expanded, setExpanded] = React.useState(false);
       React.useEffect(() => {
-        if (!expanded || !globalEnabled) return void 0;
-        const timer = setInterval(() => {
-          void refreshGlobalBindings();
-        }, 1500);
-        return () => clearInterval(timer);
-      }, [expanded, globalEnabled, refreshGlobalBindings]);
+        const markKeyboard = () => {
+          keyboard.current = true;
+        };
+        const markPointer = () => {
+          keyboard.current = false;
+        };
+        document.addEventListener("keydown", markKeyboard, true);
+        document.addEventListener("pointerdown", markPointer, true);
+        return () => {
+          document.removeEventListener("keydown", markKeyboard, true);
+          document.removeEventListener("pointerdown", markPointer, true);
+        };
+      }, []);
+      const cancelOpen = React.useCallback(() => {
+        if (openTimer.current === void 0) return;
+        clearTimeout(openTimer.current);
+        openTimer.current = void 0;
+      }, []);
+      const cancelClose = React.useCallback(() => {
+        if (closeTimer.current === void 0) return;
+        clearTimeout(closeTimer.current);
+        closeTimer.current = void 0;
+      }, []);
       const positionPopover = React.useCallback(() => {
         if (!replPopoverIsOpen(popoverRef.current)) return;
         placeReplPopover(triggerRef.current, popoverRef.current);
       }, []);
+      const schedulePlacement = React.useCallback(() => {
+        if (placementFrame.current !== void 0) return;
+        placementFrame.current = requestAnimationFrame(() => {
+          placementFrame.current = void 0;
+          positionPopover();
+        });
+      }, [positionPopover]);
       const showPopover = React.useCallback(() => {
-        if (closeTimer.current !== void 0) clearTimeout(closeTimer.current);
+        cancelOpen();
+        cancelClose();
         const popover = popoverRef.current;
         if (popover === null) return;
         popover.style.visibility = "hidden";
@@ -3558,8 +3618,11 @@
         popover.style.visibility = "visible";
         setExpanded(true);
         void refreshGlobalBindings();
-      }, [refreshGlobalBindings]);
+      }, [cancelClose, cancelOpen, refreshGlobalBindings]);
       const hidePopover = React.useCallback(() => {
+        cancelOpen();
+        cancelClose();
+        pinned.current = false;
         const popover = popoverRef.current;
         if (popover === null) return;
         if (popover.dataset.open === "true") delete popover.dataset.open;
@@ -3570,15 +3633,62 @@
           }
         }
         setExpanded(false);
-      }, []);
+      }, [cancelClose, cancelOpen]);
+      const scheduleOpen = React.useCallback(() => {
+        cancelClose();
+        if (replPopoverIsOpen(popoverRef.current)) return;
+        cancelOpen();
+        openTimer.current = setTimeout(() => {
+          openTimer.current = void 0;
+          keyboard.current = false;
+          showPopover();
+        }, HOVER_DWELL_MS2);
+      }, [cancelClose, cancelOpen, showPopover]);
       const scheduleHide = React.useCallback(() => {
-        if (closeTimer.current !== void 0) clearTimeout(closeTimer.current);
+        cancelOpen();
+        cancelClose();
+        if (pinned.current) return;
         closeTimer.current = setTimeout(() => {
           closeTimer.current = void 0;
-          if (document.activeElement === triggerRef.current || popoverRef.current?.contains(document.activeElement)) return;
+          if (popoverRef.current?.contains(document.activeElement)) return;
+          if (keyboard.current && document.activeElement === triggerRef.current) return;
           hidePopover();
-        }, 120);
+        }, CLOSE_GRACE_MS);
+      }, [cancelClose, cancelOpen, hidePopover]);
+      const togglePopover = React.useCallback(() => {
+        cancelOpen();
+        if (!replPopoverIsOpen(popoverRef.current)) {
+          pinned.current = true;
+          showPopover();
+          return;
+        }
+        if (!pinned.current) {
+          pinned.current = true;
+          return;
+        }
+        hidePopover();
+      }, [cancelOpen, hidePopover, showPopover]);
+      const dismissOutside = React.useCallback((event) => {
+        if (event.target instanceof Node && shellRef.current?.contains(event.target) !== true) hidePopover();
       }, [hidePopover]);
+      const closeOnEscape = React.useCallback((event) => {
+        if (event.key !== "Escape") return;
+        hidePopover();
+        const trigger = triggerRef.current;
+        if (!trigger?.getClientRects().length) return;
+        restoringFocus.current = true;
+        trigger.focus({ preventScroll: true });
+        restoringFocus.current = false;
+      }, [hidePopover]);
+      React.useEffect(() => {
+        if (!expanded) return void 0;
+        document.addEventListener("pointerdown", dismissOutside);
+        document.addEventListener("keydown", closeOnEscape);
+        return () => {
+          document.removeEventListener("pointerdown", dismissOutside);
+          document.removeEventListener("keydown", closeOnEscape);
+        };
+      }, [closeOnEscape, dismissOutside, expanded]);
       const prefillAuthoring = React.useCallback((value) => {
         if (typeof inputActions?.setDraft !== "function") return;
         if (typeof input?.draft === "string" && input.draft.trim() !== "") {
@@ -3592,15 +3702,26 @@
       React.useEffect(() => {
         const syncPopoverState = (event) => {
           if (event.target !== popoverRef.current) return;
-          setExpanded(replPopoverIsOpen(popoverRef.current));
+          const open = replPopoverIsOpen(popoverRef.current);
+          if (!open) pinned.current = false;
+          setExpanded(open);
         };
-        window.addEventListener("resize", positionPopover);
-        document.addEventListener("scroll", positionPopover, true);
+        const onScroll = (event) => {
+          if (popoverRef.current?.contains(event.target)) return;
+          schedulePlacement();
+        };
+        window.addEventListener("resize", schedulePlacement);
+        document.addEventListener("scroll", onScroll, true);
         document.addEventListener("toggle", syncPopoverState, true);
         return () => {
-          if (closeTimer.current !== void 0) clearTimeout(closeTimer.current);
-          window.removeEventListener("resize", positionPopover);
-          document.removeEventListener("scroll", positionPopover, true);
+          cancelOpen();
+          cancelClose();
+          if (placementFrame.current !== void 0) {
+            cancelAnimationFrame(placementFrame.current);
+            placementFrame.current = void 0;
+          }
+          window.removeEventListener("resize", schedulePlacement);
+          document.removeEventListener("scroll", onScroll, true);
           document.removeEventListener("toggle", syncPopoverState, true);
           const popover = popoverRef.current;
           if (popover?.dataset?.open === "true") delete popover.dataset.open;
@@ -3611,7 +3732,7 @@
             }
           }
         };
-      }, [hidePopover, positionPopover]);
+      }, [cancelClose, cancelOpen, schedulePlacement]);
       if (!sessionUsesPtcPreset2(preset) || !featureEnabled2(settings, "plugin")) return null;
       let memory;
       try {
@@ -3623,7 +3744,7 @@
       const titleId = `${popoverId}-title`;
       return h(
         "span",
-        { className: "ptcPlusActiveShell" },
+        { className: "ptcPlusActiveShell", ref: shellRef },
         h("button", {
           type: "button",
           className: "ptcPlusActive",
@@ -3633,11 +3754,18 @@
           "aria-controls": popoverId,
           "aria-expanded": expanded,
           "aria-haspopup": "dialog",
-          onPointerEnter: showPopover,
+          onPointerEnter: (event) => {
+            if (event.pointerType === "touch") return;
+            scheduleOpen();
+          },
           onPointerLeave: scheduleHide,
-          onFocus: showPopover,
+          // Only a keyboard reader opens the card by focusing the trigger; the focus
+          // a click leaves behind must not reopen what the click just toggled.
+          onFocus: () => {
+            if (keyboard.current && !restoringFocus.current) showPopover();
+          },
           onBlur: scheduleHide,
-          onClick: showPopover,
+          onClick: togglePopover,
           onKeyDown: (event) => {
             if (event.key === "Escape") hidePopover();
           }
@@ -3653,8 +3781,12 @@
           id: popoverId,
           titleId,
           popoverRef,
-          onEnter: showPopover,
-          onLeave: scheduleHide
+          onEnter: () => {
+            cancelOpen();
+            cancelClose();
+          },
+          onLeave: scheduleHide,
+          onGlobalTab: refreshGlobalBindings
         })
       );
     }

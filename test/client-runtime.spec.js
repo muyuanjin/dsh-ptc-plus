@@ -1578,11 +1578,17 @@ function deferred() {
   return { promise, resolve, reject }
 }
 
+/** The composer entry opens on hover intent, so a crossing alone leaves no menu. */
+async function hoverOpenMenu(view, trigger) {
+  fireEvent.pointerEnter(trigger, { pointerType: 'mouse' })
+  await vi.waitFor(() => { expect(view.queryByRole('menu')).not.toBeNull() })
+}
+
 async function openDraftMenu(view, runtime, mode = 'click') {
   const trigger = view.getByRole('button', { name: /Binding drafts \(1\)/ })
   // JSDOM has no layout; actual visibility and Host takeovers are browser checks.
   trigger.closest('.ptcPlusComposerBindingAnchor').getClientRects = () => [new DOMRect(20, 500, 24, 24)]
-  if (mode === 'hover') fireEvent.pointerEnter(trigger, { pointerType: 'mouse' })
+  if (mode === 'hover') await hoverOpenMenu(view, trigger)
   else if (mode === 'keyboard') fireEvent.keyDown(trigger, { key: 'ArrowUp' })
   else fireEvent.click(trigger)
   await runtime.flush()
@@ -1593,7 +1599,7 @@ async function openDraftMenu(view, runtime, mode = 'click') {
 async function openGlobalMenu(view, runtime, mode = 'hover') {
   const trigger = view.container.querySelector('.ptcPlusAuthorButton')
   trigger.closest('.ptcPlusComposerBindingAnchor').getClientRects = () => [new DOMRect(20, 500, 24, 24)]
-  if (mode === 'hover') fireEvent.pointerEnter(trigger, { pointerType: 'mouse' })
+  if (mode === 'hover') await hoverOpenMenu(view, trigger)
   else fireEvent.click(trigger)
   await runtime.flush()
   return trigger
@@ -1775,6 +1781,100 @@ test('explicit global menu reload clears a cached storage error', async () => {
   expect(rpc.mock.calls.at(-1)[0]).toBe('reload')
   expect(rpc.mock.calls.filter(([endpoint]) => endpoint === 'reload')).toHaveLength(1)
   expect(rpc.mock.calls.every(([endpoint]) => ['list', 'reload'].includes(endpoint))).toBe(true)
+})
+
+test('the composer entry opens on hover intent and leaves with the pointer', async () => {
+  const entry = { ...reviewCandidate('pointer').entry, enabled: false }
+  const { runtime } = await fixture({ rpc: async () => ({ ok: true, value: { revision: 'r1', entries: [entry] } }) })
+  const view = runtime.renderRoot()
+  await runtime.flush()
+  const trigger = view.container.querySelector('.ptcPlusAuthorButton')
+  trigger.closest('.ptcPlusComposerBindingAnchor').getClientRects = () => [new DOMRect(20, 500, 24, 24)]
+  fireEvent.pointerEnter(trigger, { pointerType: 'mouse' })
+  await runtime.flush()
+  // Crossing the entry leaves nothing behind; dwelling on it opens the menu.
+  expect(view.queryByRole('menu')).toBeNull()
+  await vi.waitFor(() => { expect(view.queryByRole('menu')).not.toBeNull() })
+  // The pointer may cross the composer edge into the portaled list, so the leave
+  // only arms a close that re-entering the list cancels.
+  fireEvent.pointerLeave(trigger, { pointerType: 'mouse' })
+  fireEvent.pointerEnter(view.getByRole('menuitem', { name: /pointer/ }), { pointerType: 'mouse' })
+  await new Promise(resolve => setTimeout(resolve, 300))
+  await runtime.flush()
+  expect(view.queryByRole('menu')).not.toBeNull()
+  fireEvent.pointerLeave(view.getByRole('menuitem', { name: /pointer/ }), { pointerType: 'mouse' })
+  await vi.waitFor(() => { expect(view.queryByRole('menu')).toBeNull() })
+})
+
+test('a click pins the open composer menu against the pointer and a second click releases it', async () => {
+  const entry = { ...reviewCandidate('pinned').entry, enabled: false }
+  const { runtime } = await fixture({ rpc: async () => ({ ok: true, value: { revision: 'r1', entries: [entry] } }) })
+  const view = runtime.renderRoot()
+  await runtime.flush()
+  const trigger = await openGlobalMenu(view, runtime)
+  // The same pointer leave takes an unclicked menu away, which is what the click pins.
+  fireEvent.pointerLeave(trigger, { pointerType: 'mouse' })
+  await vi.waitFor(() => { expect(view.queryByRole('menu')).toBeNull() })
+  await openGlobalMenu(view, runtime)
+  fireEvent.click(trigger)
+  fireEvent.pointerLeave(trigger, { pointerType: 'mouse' })
+  await new Promise(resolve => setTimeout(resolve, 300))
+  await runtime.flush()
+  expect(view.queryByRole('menu')).not.toBeNull()
+  fireEvent.click(trigger)
+  await runtime.flush()
+  expect(view.queryByRole('menu')).toBeNull()
+})
+
+test('an open composer menu follows its anchor when the composer moves without a scroll', async () => {
+  let top = 500
+  const rects = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function () {
+    return this.classList?.contains('ptcPlusComposerBindingAnchor') ? new DOMRect(20, top, 24, 24) : new DOMRect()
+  })
+  cleanups.push(() => rects.mockRestore())
+  const entry = { ...reviewCandidate('moving').entry, enabled: false }
+  const { runtime, setLocale } = await fixture({ rpc: async () => ({ ok: true, value: { revision: 'r1', entries: [entry] } }) })
+  const view = runtime.renderRoot()
+  await runtime.flush()
+  await openGlobalMenu(view, runtime)
+  const menu = view.getByRole('menu')
+  expect(menu.style.top).toBe('496px')
+  // A composer that grew (or moved) without emitting a scroll still moves the list,
+  // because the placement effect re-reads the anchor on every entry render.
+  top = 440
+  setLocale('zh')
+  await runtime.flush()
+  expect(menu.style.top).toBe('436px')
+})
+
+test('a global row stays actionable while a later catalog read is pending', async () => {
+  const entry = { ...reviewCandidate('reread').entry, enabled: false }
+  const pending = deferred()
+  let holdRead = false
+  const rpc = vi.fn(async endpoint => {
+    if (endpoint === 'list') {
+      return holdRead ? pending.promise : { ok: true, value: { revision: 'r1', entries: [entry] } }
+    }
+    if (endpoint === 'enable') return { ok: true, value: { revision: 'r2', entries: [{ ...entry, enabled: true }] } }
+    throw new Error(endpoint)
+  })
+  const { runtime } = await fixture({ rpc })
+  const view = runtime.renderRoot()
+  await runtime.flush()
+  await openGlobalMenu(view, runtime)
+  fireEvent.keyDown(document, { key: 'Escape' })
+  await runtime.flush()
+  holdRead = true
+  await openGlobalMenu(view, runtime)
+  // The row acts on the catalog already on screen instead of waiting for the read.
+  expect(view.queryByText('Loading bindings…')).toBeNull()
+  fireEvent.click(view.getByRole('menuitem', { name: /reread/ }))
+  await runtime.flush()
+  expect(rpc.mock.calls.filter(([endpoint]) => endpoint === 'enable')).toHaveLength(1)
+  expect(rpc.mock.calls.find(([endpoint]) => endpoint === 'enable')[1]).toEqual({ id: 'reread', expectedRevision: 'r1' })
+  pending.resolve({ ok: true, value: { revision: 'r3', entries: [{ ...entry, enabled: true }] } })
+  await runtime.flush()
+  expect(view.getByRole('menuitem', { name: /reread/ }).textContent).toContain('Enabled')
 })
 
 test.each([true, false])('history and dock share read-only model context with declaration included=%s', async includeDeclaration => {
@@ -3499,6 +3599,163 @@ test('memory card expands session definitions and loads global sources on demand
   fireEvent.click([...item.querySelectorAll('button')].find(button => button.textContent === 'Ask Agent to revise'))
   await runtime.flush()
   expect(input.scope.getSnapshot().draft).toBe('/binding edit alpha ')
+})
+
+/** Header card fixture: the trigger, its card and the projection the card reads. */
+async function indicatorFixture() {
+  const entry = { id: 'alpha', name: 'alphaTools', scope: 'namespace', symbols: ['read'],
+    purpose: 'Read files.', enabled: true }
+  const { runtime } = await fixture({ rpc: async endpoint => {
+    if (endpoint === 'list') return { ok: true, value: { revision: 1, entries: [entry] } }
+    throw new Error(endpoint)
+  } })
+  runtime.sessions.behavior('client-session').projections.set('ptcPlusRepl', {
+    available: true, total: 1, omitted: 0,
+    entries: [{ name: 'answer', kind: 'variable', definition: { source: 'const answer = 42', line: 1, column: 1 } }],
+  })
+  const view = runtime.renderRoot()
+  await runtime.flush()
+  const trigger = view.container.querySelector('.ptcPlusActive')
+  const card = view.container.querySelector('.ptcPlusReplPopover')
+  // JSDOM has no layout; the focus restore that owns the trigger checks visibility.
+  trigger.getClientRects = () => [new DOMRect(20, 20, 60, 24)]
+  return { runtime, view, trigger, card, expanded: () => trigger.getAttribute('aria-expanded') }
+}
+
+test('the header card opens on hover intent and leaves with the pointer', async () => {
+  const { runtime, trigger, card, expanded } = await indicatorFixture()
+  expect(expanded()).toBe('false')
+  fireEvent.pointerEnter(trigger, { pointerType: 'mouse' })
+  await runtime.flush()
+  // Crossing the indicator leaves nothing behind; dwelling on it opens the card.
+  expect(expanded()).toBe('false')
+  await vi.waitFor(() => { expect(expanded()).toBe('true') })
+  expect(card.dataset.open).toBe('true')
+  // The pointer crosses the trigger-card gap, so the leave only arms a close.
+  fireEvent.pointerLeave(trigger, { pointerType: 'mouse' })
+  fireEvent.pointerEnter(card, { pointerType: 'mouse' })
+  await new Promise(resolve => setTimeout(resolve, 300))
+  await runtime.flush()
+  expect(expanded()).toBe('true')
+  fireEvent.pointerLeave(card, { pointerType: 'mouse' })
+  await vi.waitFor(() => { expect(expanded()).toBe('false') })
+})
+
+test('the header card survives the pointer returning from the card to its trigger', async () => {
+  const { runtime, trigger, card, expanded } = await indicatorFixture()
+  fireEvent.pointerEnter(trigger, { pointerType: 'mouse' })
+  await vi.waitFor(() => { expect(expanded()).toBe('true') })
+  fireEvent.pointerLeave(trigger, { pointerType: 'mouse' })
+  fireEvent.pointerEnter(card, { pointerType: 'mouse' })
+  fireEvent.pointerLeave(card, { pointerType: 'mouse' })
+  // Coming back cancels the close the card's leave armed, even though the card is
+  // already open and its own dwell has nothing left to schedule.
+  fireEvent.pointerEnter(trigger, { pointerType: 'mouse' })
+  await new Promise(resolve => setTimeout(resolve, 300))
+  await runtime.flush()
+  expect(expanded()).toBe('true')
+})
+
+test('a keyboard-opened card stays while the pointer crosses its trigger', async () => {
+  const { runtime, trigger, expanded } = await indicatorFixture()
+  fireEvent.keyDown(document, { key: 'Tab' })
+  // A real focus, so the trigger owns document.activeElement as it does for a reader.
+  trigger.focus()
+  await runtime.flush()
+  expect(expanded()).toBe('true')
+  // A pointer that only crosses the trigger never opened the card, so it must not
+  // take the card away from the reader who did.
+  fireEvent.pointerEnter(trigger, { pointerType: 'mouse' })
+  fireEvent.pointerLeave(trigger, { pointerType: 'mouse' })
+  await new Promise(resolve => setTimeout(resolve, 300))
+  await runtime.flush()
+  expect(expanded()).toBe('true')
+  fireEvent.keyDown(document, { key: 'Escape' })
+  await runtime.flush()
+  expect(expanded()).toBe('false')
+})
+
+test('a keyboard-opened card leaves with the pointer once a hover reopens it', async () => {
+  const { runtime, trigger, expanded } = await indicatorFixture()
+  fireEvent.keyDown(document, { key: 'Tab' })
+  fireEvent.focus(trigger)
+  await runtime.flush()
+  expect(expanded()).toBe('true')
+  fireEvent.keyDown(document, { key: 'Escape' })
+  await runtime.flush()
+  expect(expanded()).toBe('false')
+  // The reintroduced pointer is the driving input, so a later leave closes the card
+  // instead of inheriting the keyboard exemption.
+  fireEvent.pointerEnter(trigger, { pointerType: 'mouse' })
+  await vi.waitFor(() => { expect(expanded()).toBe('true') })
+  fireEvent.pointerLeave(trigger, { pointerType: 'mouse' })
+  await vi.waitFor(() => { expect(expanded()).toBe('false') })
+})
+
+test('the header card pins on click, closes on an outside press and answers Escape', async () => {
+  const { runtime, view, trigger, expanded } = await indicatorFixture()
+  fireEvent.click(trigger)
+  await runtime.flush()
+  expect(expanded()).toBe('true')
+  // The click owns the card: a pointer leaving it does not take it away.
+  fireEvent.pointerLeave(trigger, { pointerType: 'mouse' })
+  await new Promise(resolve => setTimeout(resolve, 300))
+  await runtime.flush()
+  expect(expanded()).toBe('true')
+  // A second click releases it, and the escaping focus stays on the trigger.
+  fireEvent.click(trigger)
+  await runtime.flush()
+  expect(expanded()).toBe('false')
+  fireEvent.click(trigger)
+  await runtime.flush()
+  // A press inside the card is the reader using it, not dismissing it.
+  fireEvent.pointerDown(view.container.querySelector('.ptcPlusReplTab'))
+  await runtime.flush()
+  expect(expanded()).toBe('true')
+  fireEvent.pointerDown(document.body)
+  await runtime.flush()
+  expect(expanded()).toBe('false')
+  fireEvent.click(trigger)
+  await runtime.flush()
+  view.container.querySelector('.ptcPlusReplTab').focus()
+  fireEvent.keyDown(document, { key: 'Escape' })
+  await runtime.flush()
+  expect(expanded()).toBe('false')
+  expect(document.activeElement).toBe(trigger)
+})
+
+test('only a keyboard reader opens the header card by focusing its trigger', async () => {
+  const { runtime, trigger, expanded } = await indicatorFixture()
+  fireEvent.focus(trigger)
+  await runtime.flush()
+  expect(expanded()).toBe('false')
+  fireEvent.keyDown(document, { key: 'Tab' })
+  fireEvent.focus(trigger)
+  await runtime.flush()
+  expect(expanded()).toBe('true')
+})
+
+test('the open header card stops polling and rereads its catalog on the global tab', async () => {
+  vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+  const entry = { id: 'alpha', name: 'alphaTools', scope: 'namespace', symbols: ['read'],
+    purpose: 'Read files.', enabled: true }
+  const list = vi.fn(async () => ({ ok: true, value: { revision: 1, entries: [entry] } }))
+  const { runtime } = await fixture({ rpc: async endpoint => {
+    if (endpoint === 'list') return list()
+    throw new Error(endpoint)
+  } })
+  runtime.sessions.behavior('client-session').projections.set('ptcPlusRepl', { available: false, entries: [], total: 0, omitted: 0 })
+  const view = runtime.renderRoot()
+  await runtime.flush()
+  fireEvent.click(view.container.querySelector('.ptcPlusActive'))
+  await runtime.flush()
+  const opened = list.mock.calls.length
+  await vi.advanceTimersByTimeAsync(5_000)
+  await runtime.flush()
+  expect(list).toHaveBeenCalledTimes(opened)
+  fireEvent.click(view.container.querySelectorAll('.ptcPlusReplTab')[1])
+  await runtime.flush()
+  expect(list).toHaveBeenCalledTimes(opened + 1)
 })
 
 test('one settings mapping and one gated registration own every conditional contribution', () => {

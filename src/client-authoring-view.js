@@ -3,6 +3,14 @@ import { bindingModelPreferences } from '../internal/user-binding-model-context.
 import { featureEnabled } from './client-feature-gates.js'
 
 /**
+ * Hover dwell before the composer entry opens its menu. The entry sits inside the
+ * composer, so a pointer merely crossing it must not drop a menu over the input;
+ * click and keyboard paths stay immediate, and the published Menu owns the close
+ * grace for a pointer that leaves the trigger and its list.
+ */
+const HOVER_DWELL_MS = 150
+
+/**
  * Authoring surfaces: the composer entry menu, the binding review dock and the
  * command card. The review registry, catalog source and workbench controller
  * stay owned by the entry and arrive as dependencies.
@@ -35,6 +43,7 @@ export function createAuthoringView(React, deps) {
     const reloadItemRef = React.useRef(null)
     const focused = React.useRef(false)
     const dialogReturnFocus = React.useRef(null)
+    const hoverTimer = React.useRef(undefined)
     const [menu, setMenu] = React.useState(null)
     const [managing, setManaging] = React.useState(false)
     // The menu catalog and the workbench catalog are independent sources: a
@@ -44,6 +53,9 @@ export function createAuthoringView(React, deps) {
     const catalog = catalogState.catalog
     const catalogStatus = catalogState.status
     const catalogError = catalogState.error
+    // Rows act on the catalog already on screen. A background read keeps them
+    // usable; only a write in flight blocks a second toggle on the same menu.
+    const catalogReady = catalog !== null && catalogStatus !== 'writing'
     const catalogFocus = React.useRef(null)
     const toastSequence = React.useRef(0)
     const [toast, setToast] = React.useState(null)
@@ -74,21 +86,41 @@ export function createAuthoringView(React, deps) {
       }
     }, [catalogSource])
     const toggleBinding = async entry => {
-      if (catalogStatus !== 'ready' || !quickAccess || catalog === null) return
+      if (!catalogReady || !quickAccess) return
       captureCatalogFocus()
       await catalogSource.write(() => callUserBindings(entry.enabled ? 'disable' : 'enable', {
         id: entry.id, expectedRevision: catalog.revision,
       }))
     }
+    const cancelHoverOpen = React.useCallback(() => {
+      if (hoverTimer.current === undefined) return
+      clearTimeout(hoverTimer.current)
+      hoverTimer.current = undefined
+    }, [])
+    React.useEffect(() => cancelHoverOpen, [cancelHoverOpen])
     const showMenu = mode => {
+      cancelHoverOpen()
       if (!menuOpen && quickAccess) void refreshCatalog()
       setMenu({ key: view.candidateKey, mode })
+    }
+    // Touch has no hover: its tap reaches the same menu through the click path.
+    const hoverMenu = event => {
+      if (event.pointerType === 'touch' || menuOpen) return
+      cancelHoverOpen()
+      hoverTimer.current = setTimeout(() => {
+        hoverTimer.current = undefined
+        showMenu('hover')
+      }, HOVER_DWELL_MS)
     }
     const menuElement = () => manageItemRef.current?.closest('[role=menu]')
       ?? firstItemRef.current?.closest('[role=menu]')
     const captureCatalogFocus = () => {
       catalogFocus.current = menuElement()?.contains(document.activeElement) ? document.activeElement : null
     }
+    // The published Menu re-places on every scroll and resize and re-runs its
+    // placement effect whenever this prop changes, so its per-render identity is
+    // what keeps an open list on a moving anchor - a composer that grows without
+    // emitting a scroll never reaches the listener path.
     const menuAnchorRect = () => {
       const anchor = anchorRef.current
       if (!anchor) return null
@@ -175,7 +207,8 @@ export function createAuthoringView(React, deps) {
       // Older UI-kit lines ship no Tooltip primitive; the native title carries the hint there.
       title: typeof Tooltip === 'function' ? undefined : hint,
       'aria-haspopup': 'menu', 'aria-expanded': menuOpen,
-      onPointerEnter: event => { if (event.pointerType !== 'touch') showMenu('hover') },
+      onPointerEnter: hoverMenu,
+      onPointerLeave: cancelHoverOpen,
       onKeyDown: event => {
         if (['ArrowUp', 'ArrowDown'].includes(event.key)) { event.preventDefault(); showMenu('keyboard') }
       },
@@ -191,15 +224,15 @@ export function createAuthoringView(React, deps) {
     const catalogItems = !quickAccess ? [] : [
       { id: 'global-heading', type: 'label', text: t('bindings.quickHeading') },
       ...(catalog?.entries ?? []).map(entry => ({ id: `global:${entry.id}`,
-        disabled: catalogStatus !== 'ready',
+        disabled: !catalogReady,
         label: h('span', { className: 'ptcPlusBindingQuickRow', 'data-enabled': entry.enabled },
           h('span', { className: 'ptcPlusBindingQuickName' }, h('strong', { title: entry.name }, entry.name),
             h('span', { className: 'ptcPlusBindingQuickState' }, t(entry.enabled ? 'bindings.enabled' : 'bindings.disabledEntry'))),
           h('span', { className: 'ptcPlusBindingQuickPurpose', title: entry.purpose }, entry.purpose)),
       })),
-      ...(catalogStatus === 'ready' && !catalog?.entries?.length
+      ...(catalog !== null && catalog.entries.length === 0
         ? [{ id: 'empty', type: 'label', text: t('memory.globalEmpty') }] : []),
-      ...(catalogStatus === 'loading' || catalogStatus === 'writing'
+      ...(catalogStatus === 'writing' || (catalog === null && catalogStatus === 'loading')
         ? [{ id: 'pending', type: 'label', text: t(catalogStatus === 'writing' ? 'bindings.quickSaving' : 'bindings.quickLoading') }] : []),
       ...(catalogError === null ? [] : [{ id: 'error', type: 'label', text: t('bindings.failed', { error: catalogError }) }]),
     ]
@@ -214,6 +247,10 @@ export function createAuthoringView(React, deps) {
         anchor: typeof Tooltip === 'function'
           ? h(Tooltip, { label: hint, delayMs: 400 }, starButton) : starButton,
         portal: true, side: 'top', dense: true,
+        // A hovered menu leaves with the pointer once it leaves the trigger and the
+        // list for the published grace, which re-entering either cancels; click and
+        // keyboard menus stay until dismissed.
+        closeOnPointerLeave: menu !== null && menu.mode === 'hover',
         getAnchorRect: menuAnchorRect,
         selectedIds: (catalog?.entries ?? []).filter(entry => entry.enabled).map(entry => `global:${entry.id}`),
         onClose: hideMenu,

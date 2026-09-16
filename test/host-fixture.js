@@ -76,6 +76,20 @@ export function createHostContext({ onListener } = {}) {
   }
 }
 
+// Minimal `ctx.inject` for fixtures that call `apply` themselves. Cordis runs an
+// injected callback once every named service is available, and never runs it
+// otherwise. These fixtures pass the plugin its host context directly, so the
+// services it requires beside an injected one are already reachable; only a
+// registered service decides that the callback runs. A name this host does not
+// offer therefore never runs its callback, which is the state a deployment
+// without that service is in.
+export function serviceInjector(services, host) {
+  return (names, callback) => {
+    if (names.some(name => services[name] !== undefined)) callback(host())
+    return () => {}
+  }
+}
+
 // Host hooks are chained: each listener may call next() to reach the next one.
 export function runHookChain(entries, args, fallback) {
   const dispatch = index => entries[index] === undefined

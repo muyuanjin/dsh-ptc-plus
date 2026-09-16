@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url'
 const root = fileURLToPath(new URL('../', import.meta.url))
 const reporter = fileURLToPath(new URL('./coverage-report.mjs', import.meta.url))
 const bytecodeCompiler = fileURLToPath(new URL('./compiler-bytecode.mjs', import.meta.url))
+const workerCoverageSetup = new URL('./instrument-worker-coverage.mjs', import.meta.url).href
 
 // The `finally` in runCoverage covers failures, but not signals: with no listener
 // Node terminates on the spot, so an interrupted run would strand the worker
@@ -39,12 +40,14 @@ export async function runCoverage({
   // Worker evidence belongs to this invocation, including failed runs.
   // Independent runs must never erase or merge each other's evidence.
   const temporary = await mkdtemp(join(directory, `run-${process.pid}-`))
-  const diagnostics = join(directory, `${basename(temporary)}.tap`)
   const bytecode = join(temporary, 'compiler-bytecode.bin')
-  const reporters = testArguments.some(argument => /^--test-reporter(?:=|$)/.test(argument)) ? [] : [
+  const customReporters = testArguments.some(argument => /^--test-reporter(?:=|$)/.test(argument))
+  const diagnosticPath = label => join(directory, `${basename(temporary)}-${label}.tap`)
+  const reportersFor = label => customReporters ? [] : [
     '--test-reporter=spec', '--test-reporter-destination=stdout',
-    '--test-reporter=tap', `--test-reporter-destination=${diagnostics}`,
+    '--test-reporter=tap', `--test-reporter-destination=${diagnosticPath(label)}`,
   ]
+  const diagnostics = ['mock', 'instrumented'].map(diagnosticPath)
   const stopHandlingInterruptions = handleInterruptions(temporary)
   try {
     const started = performance.now()
@@ -52,13 +55,42 @@ export async function runCoverage({
       env: { ...process.env, NODE_V8_COVERAGE: '', DSH_PTC_COMPILER_BYTECODE: undefined },
     })
     if (preparationCode !== 0) return preparationCode
-    const testCode = await execute([
+    const testFiles = (await readdir(join(root, 'test')))
+      .filter(name => name.endsWith('.test.js'))
+      .map(name => `test/${name}`)
+      .sort()
+    // Tests that install module mocks before importing the transport must not
+    // preload the real transport through the coverage setup. Run those first
+    // without the instrumentation preload, then run the rest with it. Both
+    // groups write worker evidence into the same coverage directory.
+    const mockPreloadFiles = new Set([
+      'isolated-worker.test.js',
+      'session-runtime-faults.test.js',
+      'user-binding-console-transport.test.js',
+      'user-bindings-owner-faults.test.js',
+    ])
+    const runTestGroup = (files, { instrumented, label }) => execute([
+      ...(instrumented ? ['--import', workerCoverageSetup] : []),
       '--test', '--experimental-test-module-mocks', `--test-concurrency=${concurrency}`,
-      ...reporters,
-      'test/*.test.js', ...testArguments,
-    ], { env: { ...process.env, NODE_V8_COVERAGE: temporary, DSH_PTC_COMPILER_BYTECODE: bytecode } })
+      ...reportersFor(label),
+      ...testArguments,
+      ...files,
+    ], { env: {
+      ...process.env,
+      NODE_V8_COVERAGE: temporary,
+      DSH_PTC_COMPILER_BYTECODE: bytecode,
+      ...(instrumented ? { DSH_PTC_TEST_WORKER_COVERAGE: '1' } : {}),
+    } })
+    const mockPreload = testFiles.filter(file => mockPreloadFiles.has(basename(file)))
+    const instrumented = testFiles.filter(file => !mockPreloadFiles.has(basename(file)))
+    let testCode = mockPreload.length === 0
+      ? 0
+      : await runTestGroup(mockPreload, { instrumented: false, label: 'mock' })
+    if (testCode === 0 && instrumented.length > 0) {
+      testCode = await runTestGroup(instrumented, { instrumented: true, label: 'instrumented' })
+    }
     console.log(`Coverage tests: ${((performance.now() - started) / 1000).toFixed(1)}s`)
-    if (reporters.length > 0) console.log(`Test diagnostics: ${diagnostics}`)
+    if (!customReporters) console.log(`Test diagnostics: ${diagnostics.join(', ')}`)
     await rm(bytecode, { force: true })
     const reportCode = await execute([reporter, temporary], { env: { ...process.env, NODE_V8_COVERAGE: '' } })
     return testCode || reportCode

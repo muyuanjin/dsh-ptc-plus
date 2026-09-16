@@ -547,3 +547,26 @@ test('preserves child-process promisify results while injecting the session cwd'
     execError: { code: 7, stdout: 'out', stderr: 'err' },
   })
 })
+
+test('projects session cwd through execFile and glob option overloads', async (t) => {
+  const project = await mkdtemp(join(tmpdir(), 'dsh-ptc-plus-cwd-overloads-'))
+  const state = fixture()
+  t.after(async () => {
+    await state.dispose()
+    await rm(project, { recursive: true, force: true })
+  })
+  await writeFile(join(project, 'entry.txt'), 'value')
+  const session = { events: [], header: { cwd: project } }
+  const result = await state.run('child-process-overload-cwd', [
+    "const childProcess = await import('node:child_process')",
+    "const fs = await import('node:fs')",
+    'const child = childProcess.execFile(process.execPath)',
+    "const alive = typeof child.pid === 'number'",
+    'child.kill()',
+    "const globbed = fs.globSync('*.txt', {})",
+    'return { alive, globbed }',
+  ].join('\n'), {}, { session })
+  assert.equal(result.error, undefined)
+  assert.equal(result.value.alive, true)
+  assert.deepEqual(result.value.globbed, ['entry.txt'])
+})

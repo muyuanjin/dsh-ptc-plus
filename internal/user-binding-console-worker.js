@@ -17,16 +17,15 @@ import { USER_BINDING_TRANSFORM } from './module-transform-contract.js'
 import { moduleRuntimeIntrinsics } from './compiler-intrinsics.js'
 import { stringifyCompilerData } from './compiler-data.js'
 import { createCellCompletionObserver } from './cell-completion.js'
+import { WORKER_SHUTDOWN_ACKNOWLEDGEMENT, WORKER_SHUTDOWN_REQUEST } from './worker-shutdown.js'
 
 const { Object, Set, setHas, setAdd, setDelete, appendArray } = moduleRuntimeIntrinsics
 
+const input = new PassThrough()
 const output = new PassThrough()
 output.resume()
 const evaluations = new AsyncLocalStorage()
-const server = repl.start({
-  input: new PassThrough(), output, terminal: false, prompt: '', useGlobal: false,
-  writer(error) { evaluations.getStore()?.finish(true, error); return '' },
-})
+const server = repl.start({ input, output, terminal: false, prompt: '', useGlobal: false })
 const completionObserver = createCellCompletionObserver(runInContext('Function', server.context))
 server.context.console = console
 const errorDomain = server.eval.domain ?? createDomain()
@@ -59,7 +58,6 @@ const roots = createStatefulRootRuntime({
 })
 class ConsoleReturn {
   constructor(value) { this.value = value }
-  static complete() { evaluations.getStore().completed = true }
 }
 const moduleCompilation = createUserModuleCompilationHooks({
   transformForParent: parent => parent === replParent || parent === parentUrl ? USER_BINDING_TRANSFORM : undefined,
@@ -158,7 +156,19 @@ try {
     setAdd(knownBindings, name)
     Object.defineProperty(server.context, name, { configurable: true, enumerable: true, get: () => namespace[name] })
   }
-  parentPort.on('message', async ({ id, code }) => {
+  parentPort.on('message', async (message) => {
+    if (message?.type === WORKER_SHUTDOWN_REQUEST) {
+      // Release the realm, REPL and domain this console owns, then report the
+      // release before the host gives up on the thread; see worker-shutdown.js.
+      server.close()
+      input.destroy()
+      output.destroy()
+      errorDomain.removeAllListeners('error')
+      parentPort.postMessage({ type: WORKER_SHUTDOWN_ACKNOWLEDGEMENT })
+      parentPort.close()
+      return
+    }
+    const { id, code } = message
     let result
     try {
       const value = await evaluate(code)

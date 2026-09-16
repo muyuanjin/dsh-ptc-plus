@@ -15,6 +15,7 @@ import {
 import { createUserBindingsSnapshot } from '../internal/user-bindings.js'
 import { UserBindingsStore } from '../internal/user-bindings-store.js'
 import { decodeValue } from '../internal/value-wire.js'
+import { IsolatedOwner } from '../internal/isolated-worker.js'
 
 function injectedAgentContext(services) {
   const context = {
@@ -2098,6 +2099,41 @@ test('candidate workers settle non-callable exports and thrown values before nat
     assert.deepEqual(message, { ok: false, error })
     assert.equal(exitCode, 0)
   }
+})
+
+test('candidate process failure retains its signal and drained stderr', async t => {
+  class SignalingOwner extends IsolatedOwner {
+    start(options) {
+      const started = super.start(options)
+      started.transport.stderr.once('data', () => started.transport.child.kill('SIGKILL'))
+      return started
+    }
+  }
+  const target = ownerFixture()
+  const owner = createUserBindingsOwner(target.ctx, {
+    enabled: true,
+    store: fakeStore(),
+    cwd: process.cwd(),
+    maxWallMs: 2_000,
+    maxOutputBytes: 8_192,
+    maxOldGenerationSizeMb: 32,
+    valueLimits: {},
+    candidateOwner: new SignalingOwner(),
+  })
+  t.after(() => owner.dispose())
+  const result = await call(target, 'run', {
+    source: [
+      "process.stderr.write('candidate-stderr-marker\\n')",
+      'await new Promise(() => {})',
+      'export const value = 1',
+    ].join('\n'),
+  })
+
+  assert.equal(result.ok, false)
+  assert.match(result.error.message, /code null, signal SIGKILL/)
+  assert.match(result.error.details.logs
+    .filter(log => log.channel === 'stderr')
+    .map(log => log.text).join(''), /candidate-stderr-marker/)
 })
 
 test('candidate runner encodes invoked values, symbol listings, and bounded failures', async t => {

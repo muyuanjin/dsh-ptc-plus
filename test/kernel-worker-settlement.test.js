@@ -726,8 +726,9 @@ async function bindingWorker(t, languageSemantics = LEGACY_LANGUAGE_SEMANTICS) {
   await client.ensure(128)
   const shadowedNames = new Set()
   return {
+    client,
     initializations,
-    async run(program, userBindings, policy) {
+    async run(program, userBindings, policy, options = {}) {
       pending = Promise.withResolvers()
       const prepared = prepareProgram(program, {
         languageSemantics, importNamespaces,
@@ -738,9 +739,11 @@ async function bindingWorker(t, languageSemantics = LEGACY_LANGUAGE_SEMANTICS) {
         languageSemantics: prepared.languageSemantics,
         rootRuntimeName: prepared.rootRuntimeName, rootBindings: prepared.rootBindings,
         returnSignal: prepared.returnSignal, asyncCompletion: prepared.asyncCompletion, commitSignal: prepared.commitSignal,
-        moduleLoads: prepared.moduleLoads, namespaces: [{ global: 'tools', members: ['observe'] }],
+        moduleLoads: prepared.moduleLoads,
+        namespaces: options.namespaces ?? [{ global: 'tools', members: ['observe'] }],
         maxOutputBytes: 65_536, durability: 'durable', userBindings,
-        userBindingsCwd: process.cwd(), userBindingsReusePolicy: 'implementation-v1',
+        userBindingsCwd: options.userBindingsCwd ?? process.cwd(),
+        userBindingsReusePolicy: options.userBindingsReusePolicy ?? 'implementation-v1',
         userBindingsShadowPolicy: policy, shadowedUserBindingNames: [...shadowedNames],
       })
       const done = await pending.promise
@@ -873,4 +876,242 @@ return Object.hasOwn(receiver, 'shared')`, initial, 'per-name')
       assert.deepEqual(worker.initializations, [1, 2])
     })
   }
+})
+
+test('whole-entry activation failure is contained and reported', async t => {
+  const worker = await bindingWorker(t)
+  const userBindings = createUserBindingsSnapshot({ entries: [{
+    id: 'broken-whole-entry',
+    name: 'brokenWholeEntry',
+    scope: 'namespace',
+    enabled: true,
+    source: 'throw new Error("whole-entry activation failed"); export const value = 1',
+  }] })
+  const done = await worker.run('return typeof brokenWholeEntry', userBindings, 'whole-entry')
+  assert.equal(done.error, undefined)
+  assert.equal(decodeValue(done.value), 'undefined')
+  assert.deepEqual(done.activatedUserBindings, [])
+  assert.deepEqual(done.userBindingFailures.map(failure => failure.id), ['broken-whole-entry'])
+  assert.match(done.userBindingFailures[0].error, /whole-entry activation failed/)
+})
+
+test('whole-entry activation rolls back names installed before a later conflict', async t => {
+  const worker = await bindingWorker(t)
+  // Seed one configurable followed property and one non-configurable conflict.
+  await worker.run('globalThis.existingName = 1; return 1')
+  await worker.run('Object.defineProperty(globalThis, "conflictName", { value: 1, configurable: false }); return 1')
+  const source = `export const existingName = await tools.observe({ value: 1 })
+export const freshName = 2
+export const conflictName = 3`
+  const userBindings = createUserBindingsSnapshot({ entries: [{
+    id: 'rollback-whole-entry',
+    name: 'rollbackWholeEntry',
+    scope: 'top-level',
+    enabled: true,
+    source,
+  }] })
+  const done = await worker.run('return 1', userBindings, 'whole-entry')
+  assert.equal(done.error, undefined)
+  assert.deepEqual(done.activatedUserBindings, [])
+  assert.deepEqual(done.userBindingFailures.map(failure => failure.id), ['rollback-whole-entry'])
+  assert.match(done.userBindingFailures[0].error, /conflictName|Cannot redefine property/)
+
+  const observed = await worker.run(`return {
+    existing: globalThis.existingName,
+    fresh: Object.hasOwn(globalThis, 'freshName'),
+    conflictValue: globalThis.conflictName,
+    conflictWritable: Object.getOwnPropertyDescriptor(globalThis, 'conflictName').writable,
+  }`)
+  assert.equal(observed.error, undefined)
+  assert.deepEqual(decodeValue(observed.value), {
+    existing: 1,
+    fresh: false,
+    conflictValue: 1,
+    conflictWritable: false,
+  })
+})
+
+test('whole-entry activation rejects a selected export missing after evaluation', async t => {
+  const worker = await bindingWorker(t)
+  const originalPost = worker.client.post.bind(worker.client)
+  worker.client.post = message => {
+    if (message.type !== 'run') return originalPost(message)
+    return originalPost({
+      ...message,
+      userBindings: {
+        ...message.userBindings,
+        entries: message.userBindings.entries.map(entry => entry.id === 'legacy-missing-export'
+          ? { ...entry, source: 'export const beta = 2' } : entry),
+      },
+    })
+  }
+  t.after(() => { worker.client.post = originalPost })
+
+  const userBindings = createUserBindingsSnapshot({ entries: [{
+    id: 'legacy-missing-export',
+    name: 'legacyMissingExport',
+    scope: 'top-level',
+    enabled: true,
+    source: 'export const alpha = 1; export const beta = 2',
+  }] })
+  const done = await worker.run('return 1', userBindings, 'whole-entry')
+  assert.equal(done.error, undefined)
+  assert.deepEqual(done.activatedUserBindings, [])
+  assert.deepEqual(done.userBindingFailures.map(failure => failure.id), ['legacy-missing-export'])
+  assert.match(done.userBindingFailures[0].error, /named export "alpha" is unavailable after evaluation/)
+})
+
+test('process reflection marks a cell volatile without breaking the view', async t => {
+  const worker = await bindingWorker(t)
+  const done = await worker.run('return Object.keys(process).includes("cwd")')
+  assert.equal(done.error, undefined)
+  assert.equal(decodeValue(done.value), true)
+  assert.equal(done.durability, 'volatile')
+})
+
+
+test('per-name activation rolls back names installed before a later conflict', async t => {
+  const worker = await bindingWorker(t)
+  await worker.run('globalThis.existingName = 1; return 1')
+  await worker.run('Object.defineProperty(globalThis, "conflictName", { value: 1, configurable: false }); return 1')
+  const source = `export const existingName = await tools.observe({ value: 1 })
+export const freshName = 2
+export const conflictName = 3`
+  const userBindings = createUserBindingsSnapshot({ entries: [{
+    id: 'rollback-per-name',
+    name: 'rollbackPerName',
+    scope: 'top-level',
+    enabled: true,
+    source,
+  }] })
+  const done = await worker.run('return 1', userBindings, 'per-name')
+  assert.equal(done.error, undefined)
+  assert.deepEqual(done.activatedUserBindings, [])
+  assert.deepEqual(done.userBindingFailures.map(failure => failure.id), ['rollback-per-name'])
+  assert.match(done.userBindingFailures[0].error, /conflictName|Cannot redefine property/)
+
+  const observed = await worker.run(`return {
+    existing: globalThis.existingName,
+    fresh: Object.hasOwn(globalThis, 'freshName'),
+    conflictValue: globalThis.conflictName,
+  }`)
+  assert.equal(observed.error, undefined)
+  assert.deepEqual(decodeValue(observed.value), {
+    existing: 1,
+    fresh: false,
+    conflictValue: 1,
+  })
+})
+
+test('rejects a relative user binding cwd before evaluating source', async t => {
+  const worker = await bindingWorker(t)
+  const userBindings = createUserBindingsSnapshot({ entries: [{
+    id: 'relative-cwd',
+    name: 'relativeCwd',
+    scope: 'namespace',
+    enabled: true,
+    source: 'export const value = 1',
+  }] })
+  for (const policy of ['whole-entry', 'per-name']) {
+    const done = await worker.run('return 1', userBindings, policy, { userBindingsCwd: 'relative' })
+    assert.equal(done.error, undefined)
+    assert.deepEqual(done.userBindingFailures.map(failure => failure.id), ['relative-cwd'])
+    assert.match(done.userBindingFailures[0].error, /absolute storage directory/)
+  }
+})
+
+test('whole-entry activation records a volatile user binding', async t => {
+  const worker = await bindingWorker(t)
+  const userBindings = createUserBindingsSnapshot({ entries: [{
+    id: 'volatile-whole-entry',
+    name: 'volatileWholeEntry',
+    scope: 'namespace',
+    enabled: true,
+    source: 'export const value = Math.random()',
+  }] })
+  const done = await worker.run('return typeof volatileWholeEntry', userBindings, 'whole-entry')
+  assert.equal(done.error, undefined)
+  assert.equal(decodeValue(done.value), 'object')
+  assert.equal(done.durability, 'volatile')
+  assert.match(done.volatileReason, /volatile-whole-entry/)
+})
+
+test('host-call encoding failure does not dispatch and leaves the worker usable', async t => {
+  const worker = await bindingWorker(t)
+  const failed = await worker.run('return await tools.observe(() => {})')
+  assert.match(String(failed.error), /function|encode|unsupported/i)
+  assert.deepEqual(worker.initializations, [])
+  const next = await worker.run('return 2')
+  assert.equal(next.error, undefined)
+  assert.equal(decodeValue(next.value), 2)
+})
+
+test('per-name failure restores a previous provider source for a reused name', async t => {
+  const worker = await bindingWorker(t)
+  const provider = createUserBindingsSnapshot({ entries: [{
+    id: 'previous-provider',
+    name: 'previousProvider',
+    scope: 'top-level',
+    enabled: true,
+    source: 'export const existingName = 1',
+  }] })
+  const seeded = await worker.run('return globalThis.existingName', provider, 'per-name')
+  assert.equal(seeded.error, undefined)
+  assert.equal(decodeValue(seeded.value), 1)
+
+  const assigned = await worker.run('existingName = 99; return globalThis.existingName')
+  assert.equal(assigned.error, undefined)
+  assert.equal(decodeValue(assigned.value), 99)
+
+  await worker.run('Object.defineProperty(globalThis, "conflictName", { value: 1, configurable: false }); return 1')
+  const reused = createUserBindingsSnapshot({ entries: [{
+    id: 'reused-name',
+    name: 'reusedName',
+    scope: 'top-level',
+    enabled: true,
+    source: `export const existingName = await tools.observe({ value: 2 })
+export const conflictName = 3`,
+  }] })
+  const failed = await worker.run('return 1', reused, 'per-name')
+  assert.equal(failed.error, undefined)
+  assert.deepEqual(failed.activatedUserBindings, [])
+  assert.deepEqual(failed.userBindingFailures.map(failure => failure.id), ['reused-name'])
+  assert.match(failed.userBindingFailures[0].error, /conflictName|Cannot redefine property/)
+
+  const next = await worker.run('return globalThis.existingName')
+  assert.equal(next.error, undefined)
+  assert.equal(decodeValue(next.value), 99)
+})
+
+test('console.dir participates in captured cell logs', async t => {
+  const worker = await bindingWorker(t)
+  const done = await worker.run('console.dir({ value: 1 }); return 1')
+  assert.equal(done.error, undefined)
+  assert.equal(done.logs.length, 1)
+  assert.match(done.logs[0], /value/)
+})
+
+test('new require preserves the managed native export identity', async t => {
+  const worker = await bindingWorker(t)
+  const done = await worker.run('return new require("node:path") === require("node:path")')
+  assert.equal(done.error, undefined)
+  assert.equal(decodeValue(done.value), true)
+})
+
+test('binding module writes through a bridged request namespace are rejected', async t => {
+  const worker = await bindingWorker(t)
+  const userBindings = createUserBindingsSnapshot({ entries: [{
+    id: 'namespace-write',
+    name: 'namespaceWrite',
+    scope: 'namespace',
+    enabled: true,
+    source: 'api.value = 1; export const result = 1',
+  }] })
+  const done = await worker.run('return 1', userBindings, 'per-name', {
+    namespaces: [{ global: 'api', members: ['value'] }],
+  })
+  assert.equal(done.error, undefined)
+  assert.deepEqual(done.activatedUserBindings, [])
+  assert.deepEqual(done.userBindingFailures.map(failure => failure.id), ['namespace-write'])
+  assert.match(done.userBindingFailures[0].error, /trap returned falsish|TypeError|read.only|Cannot assign/)
 })

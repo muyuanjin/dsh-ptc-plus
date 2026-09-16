@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
-import { Worker } from 'node:worker_threads'
+import { processExitDescription } from './failure-reporting.js'
+import { IsolatedOwner } from './isolated-worker.js'
 import {
   createBoundedWorkerRound,
   ROUND_CANCELLED,
@@ -7,6 +8,7 @@ import {
   ROUND_TIMEOUT,
 } from './bounded-worker-round.js'
 import { normalizeWorkerEnvironment } from './worker-client.js'
+const CONSOLE_HELPER = new URL('./kernel-child.js', import.meta.url)
 
 export const CONSOLE_IDLE_MS = 10 * 60 * 1000
 const WORKER_URL = new URL('./user-binding-console-worker.js', import.meta.url)
@@ -23,6 +25,8 @@ export class UserBindingConsole {
   constructor(options) {
     this.options = options
     this.environments = new Map()
+    // Every console transport is owned here until its real exit is observed.
+    this.owner = new IsolatedOwner()
   }
 
   release(capability, reason = 'reset') {
@@ -31,15 +35,33 @@ export class UserBindingConsole {
     this.environments.delete(capability)
     clearTimeout(environment.idleTimer)
     environment.active?.finish({ error: reason, released: true })
-    void environment.worker.terminate()
+    // One close per transport owns the release request, the kill deadline and the
+    // real exit; a refusal stays visible instead of becoming an unhandled rejection.
+    // The owner keeps this instance (and any refusal) until a real exit arrives.
+    void this.owner.stop(environment.hostId).catch(() => {})
   }
 
-  dispose() {
+  /** Release every environment while this console's owner stays usable. */
+  async releaseAll(reason = 'released') {
+    for (const capability of [...this.environments.keys()]) this.release(capability, reason)
+    return this.owner.releaseAll()
+  }
+
+  async dispose() {
     for (const capability of this.environments.keys()) this.release(capability, 'disposed')
+    return this.owner.dispose()
   }
 
-  reconfigure(options) {
-    if (['maxWallMs', 'maxOutputBytes', 'maxOldGenerationSizeMb'].some(key => this.options[key] !== options[key])) this.dispose()
+  async reconfigure(options) {
+    // Reconfiguration releases the current environments; the owner stays usable so
+    // a later run can start again.
+    if (['maxWallMs', 'maxOutputBytes', 'maxOldGenerationSizeMb'].some(key => this.options[key] !== options[key])) {
+      for (const capability of [...this.environments.keys()]) this.release(capability, 'reconfigured')
+      const failures = await this.owner.releaseAll()
+      if (failures.length > 0) {
+        throw new AggregateError(failures, 'user binding console reconfiguration failed')
+      }
+    }
     this.options = options
   }
 
@@ -60,21 +82,25 @@ export class UserBindingConsole {
     if (environment === undefined) {
       if (this.environments.size >= MAX_CONSOLES) throw new Error('too many active code consoles')
       capability = randomUUID()
-      const worker = new Worker(WORKER_URL, {
+      const started = this.owner.start({
+        helper: CONSOLE_HELPER,
+        entry: WORKER_URL.href,
         workerData: { source, cwd: this.options.cwd, maxOutputBytes: this.options.maxOutputBytes },
         env: normalizeWorkerEnvironment(process.env),
-        execArgv: [],
         resourceLimits: { maxOldGenerationSizeMb: this.options.maxOldGenerationSizeMb },
-        stdout: true, stderr: true,
+        protocol: 'parent-port',
       })
-      environment = { worker, source, round: undefined, active: undefined, sequence: 0 }
+      const worker = started.transport
+      environment = { worker, hostId: started.id, source, round: undefined, active: undefined, sequence: 0 }
       this.environments.set(capability, environment)
       const fail = reason => this.release(capability, reason)
       for (const [stream, channel] of [[worker.stdout, 'stdout'], [worker.stderr, 'stderr']]) {
         stream.on('data', chunk => environment.round?.capture(channel, String(chunk)))
       }
       worker.on('error', error => fail(error.message))
-      worker.on('exit', code => fail(`console worker exited (${code})`))
+      worker.on('exit', (code, signal) => {
+        fail(`console worker exited (${processExitDescription(code, signal)})`)
+      })
       worker.on('message', message => {
         if (message === null || typeof message !== 'object') { fail('invalid console result'); return }
         if (message.fatal === true) { fail(message.error); return }

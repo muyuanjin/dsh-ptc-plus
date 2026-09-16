@@ -258,7 +258,11 @@ test('public settings updates preserve the active worker logical roots', async t
   const codeRuntime = { language: 'typescript', isolation: 'worker-thread', run() { throw new Error('unexpected upstream execution') } }
   const ctx = { ...host.ctx, fiber: { state: 2 }, codeRuntime,
     tools: { ...host.ctx.tools, get: () => definition, schemas: () => [definition] },
-    inject(names, callback) { if (names.length === 1 && names[0] === 'settings') callback({ settings, effect: host.ctx.effect, fiber: { state: 2 } }); return () => {} },
+    inject(names, callback) {
+      if (names.length === 1 && names[0] === 'settings') callback({ settings, effect: host.ctx.effect, fiber: { state: 2 } })
+      else if (names.includes('codeRuntime')) callback(ctx)
+      return () => {}
+    },
   }
   await apply(ctx)
   let sequence = 0

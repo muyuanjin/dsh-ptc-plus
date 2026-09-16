@@ -32,6 +32,9 @@ test('coverage input filtering retains mapped plugin code and leaves unproved ma
   assert.equal(keep(record(dependency)), false)
   assert.equal(keep({ url: 'node:fs' }), false)
   assert.equal(keep({ url: 'evalmachine.<anonymous>' }), false)
+  assert.equal(keep({ url: `${record(own).url}?node-test-mock=0` }), false)
+  assert.equal(keep({ url: `${record(own).url}?variant=1` }), true)
+  assert.equal(keep({ url: `${record(own).url}#fragment` }), true)
   const emitted = join(root, 'generated file.cjs')
   const map = { version: 3, sources: ['internal/example.js'], sourcesContent: [source], names: [], mappings: 'AAAA;AACA' }
   await writeFile(emitted, source + '\n//# sourceMappingURL=generated.map')
@@ -89,4 +92,36 @@ test('filtered c8 maps and uncovered counters exactly match ordinary c8', async 
     })
   assert.equal(gate.status, 1, gate.stdout + gate.stderr)
   assert.match(gate.stderr, /Coverage for functions .* does not meet global threshold \(100%\)/)
+})
+
+test('drops Node test mock aliases before they pollute the real source map', async t => {
+  const cwd = process.cwd()
+  t.after(() => process.chdir(cwd))
+  const { root, own, source } = await fixture(t)
+  process.chdir(root)
+  const directory = join(root, 'raw')
+  await mkdir(directory)
+  const real = {
+    url: pathToFileURL(own).href,
+    functions: [
+      { functionName: '', ranges: [{ startOffset: 0, endOffset: source.length, count: 1 }], isBlockCoverage: true },
+      { functionName: 'called', ranges: [{ startOffset: 0, endOffset: 10, count: 1 }], isBlockCoverage: true },
+      { functionName: 'uncalled', ranges: [{ startOffset: 10, endOffset: Math.min(20, source.length), count: 0 }], isBlockCoverage: true },
+    ],
+  }
+  const mock = {
+    url: `${pathToFileURL(own).href}?node-test-mock=0`,
+    functions: [
+      { functionName: '', ranges: [{ startOffset: 0, endOffset: 4, count: 1 }], isBlockCoverage: true },
+      { functionName: 'mock', ranges: [{ startOffset: 0, endOffset: 4, count: 0 }], isBlockCoverage: true },
+    ],
+  }
+  await writeFile(join(directory, 'worker.json'), JSON.stringify({ result: [real, mock] }))
+  const { report } = createCoverageReport({ root, directory, reporters: [] })
+  const map = await report.getCoverageMapFromAllCoverageFiles()
+  assert.deepEqual(map.files(), [own])
+  assert.equal(map.getCoverageSummary().lines.pct, 100)
+  const counters = Object.values(map.fileCoverageFor(own).data.f)
+  assert.ok(counters.includes(1), 'the executed real function must stay counted as covered')
+  assert.ok(counters.includes(0), 'the unexecuted real function must stay counted as uncovered')
 })

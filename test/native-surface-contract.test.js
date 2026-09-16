@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { apply } from '../index.js'
+import { serviceInjector } from './host-fixture.js'
 
 function fixture() {
   const listeners = new Map()
@@ -25,7 +26,9 @@ function fixture() {
     async run() { return { logs: [], value: 'upstream' } },
   }
   const definitions = new Map([['run_code', runCode]])
+  const services = { codeRuntime: runtime }
   const ctx = {
+    inject: serviceInjector(services, () => ctx),
     codeRuntime: runtime,
     tools: {
       get(name) { return definitions.get(name) },

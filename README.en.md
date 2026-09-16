@@ -151,7 +151,7 @@ On wide screens, the green **PTC Plus** header indicator offers a quick binding 
 
 ## Scope
 
-DSH continues to own tool permissions, approvals, cancellation, and sandbox policy. PTC Plus cannot recover every state across restarts: external inputs, unverifiable history, and context compaction can reduce the recovered state. Recovery neither repeats nor reverses historical external operations.
+DSH continues to own tool permissions, approvals, cancellation, and sandbox policy. Session evaluation runs in a plugin-owned helper process; a stuck or unresponsive helper is reclaimed there, and DSH does not perform an in-host worker kill. PTC Plus cannot recover every state across restarts: external inputs, unverifiable history, and context compaction can reduce the recovered state. Recovery neither repeats nor reverses historical external operations.
 
 Value previews have size and type limits; objects that cannot be read reliably appear as unavailable. An enabled binding can also fail initialization, with failures reported in execution results. See the [runtime reference](docs/runtime-reference.md) for details.
 

@@ -110,7 +110,34 @@ class SessionKernel {
       },
     })
     this.failures = createFailureTracker()
+    this.reclamationSequence = 0
+    this.reclamationRecords = new Map()
+    this.reclamationAttempts = new Set()
     this.disposed = false
+    this.disposal = undefined
+  }
+
+  resetWorker(worker) {
+    const sequence = ++this.reclamationSequence
+    const record = { failed: false, reason: undefined }
+    this.reclamationRecords.set(sequence, record)
+    let reset
+    try {
+      reset = this.client.reset(worker)
+    } catch (error) {
+      record.failed = true
+      record.reason = error
+      return
+    }
+    const attempt = Promise.resolve(reset).then(
+      () => { this.reclamationRecords.delete(sequence) },
+      error => {
+        record.failed = true
+        record.reason = error
+      },
+    )
+    this.reclamationAttempts.add(attempt)
+    attempt.then(() => { this.reclamationAttempts.delete(attempt) })
   }
 
   valueLimits(config = this.config) {
@@ -382,6 +409,7 @@ class SessionKernel {
   settleCell(active, result, terminate = false) {
     /* c8 ignore next */
     if (this.active !== active) return
+    active.settled = true
     const { request, journal, replay, worker } = active
     clearInterval(active.computeTimer)
     clearTimeout(active.wallTimer)
@@ -431,7 +459,9 @@ class SessionKernel {
     this.active = undefined
     if (terminate) {
       this.workerObservation = undefined
-      void this.client.reset(worker)
+      // A refused reclamation stays recorded on this kernel instead of becoming
+      // an unhandled rejection; the kernel keeps the worker until dispose.
+      this.resetWorker(worker)
     }
     if (!terminate && active.observing && replay === undefined) {
       // Computation and journal settlement are complete. Observation cannot change either.
@@ -517,14 +547,26 @@ class SessionKernel {
     this.history.checkpoints = transition.checkpoints
     if (transition.restored) {
       this.rollbackToDurable()
-      void this.client.reset(worker)
+      this.resetWorker(worker)
     }
   }
 
-  async dispose() {
+  dispose() {
+    if (this.disposal !== undefined) return this.disposal
+    const operation = this.#dispose()
+    this.disposal = operation
+    operation.then(
+      () => { if (this.disposal === operation) this.disposal = undefined },
+      () => { if (this.disposal === operation) this.disposal = undefined },
+    )
+    return operation
+  }
+
+  async #dispose() {
     this.disposed = true
     this.pendingInspection?.finish()
     this.workerObservation = undefined
+    // Keep any refused reclamation observable through this kernel's dispose.
     const worker = this.client.worker
     if (worker !== undefined) {
       /* c8 ignore next */
@@ -532,6 +574,18 @@ class SessionKernel {
     }
     await this.client.dispose()
     await this.tail
+    await Promise.all([...this.reclamationAttempts])
+    // A successful client disposal proves its owner no longer retains the
+    // helpers. Report every earlier refusal once, then let a later terminal
+    // retry release this already reclaimed kernel.
+    const reclamationFailures = [...this.reclamationRecords.values()]
+      .filter(record => record.failed)
+      .map(record => record.reason)
+    this.reclamationRecords.clear()
+    if (reclamationFailures.length === 1) throw reclamationFailures[0]
+    if (reclamationFailures.length > 1) {
+      throw new AggregateError(reclamationFailures, 'ptc-plus session kernel reclamation failed')
+    }
   }
 }
 
@@ -568,6 +622,7 @@ export class SessionRuntime {
     }
     this.withInitiator = typeof options.withInitiator === 'function' ? options.withInitiator : undefined
     this.observeSession = options.observeSession ?? (() => false)
+    this.disposal = undefined
   }
 
   async run(sessionContext, request) {
@@ -716,14 +771,36 @@ export class SessionRuntime {
     const kernel = this.kernels.get(id)
     this.pendingNoops.delete(id)
     if (kernel === undefined) return
-    this.kernels.delete(id)
+    // The entry survives a failed dispose so a repeated dispose reports the same
+    // unreclaimed instance instead of appearing to succeed.
     await kernel.dispose()
+    this.kernels.delete(id)
   }
 
-  async dispose() {
+  dispose() {
+    if (this.disposal !== undefined) return this.disposal
+    const operation = this.#dispose()
+    this.disposal = operation
+    operation.then(
+      () => { if (this.disposal === operation) this.disposal = undefined },
+      () => { if (this.disposal === operation) this.disposal = undefined },
+    )
+    return operation
+  }
+
+  async #dispose() {
     this.disposed = true
-    const kernels = [...this.kernels.values()]
-    this.kernels.clear()
-    await Promise.all(kernels.map(kernel => kernel.dispose()))
+    const entries = [...this.kernels]
+    const results = await Promise.allSettled(entries.map(async ([id, kernel]) => {
+      await kernel.dispose()
+      this.kernels.delete(id)
+    }))
+    const failures = []
+    for (const result of results) {
+      if (result.status === 'rejected') failures.push(result.reason)
+    }
+    if (failures.length > 0) {
+      throw new AggregateError(failures, 'ptc-plus session runtime disposal failed')
+    }
   }
 }

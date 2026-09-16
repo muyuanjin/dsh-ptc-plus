@@ -4,16 +4,61 @@ import test from 'node:test'
 
 const options = { cwd: process.cwd(), maxWallMs: 10_000, maxOutputBytes: 64 * 1024, maxOldGenerationSizeMb: 128 }
 const source = 'export const answer: number = 42'
+/** Let a released worker finish its cooperative stop before asserting on it. */
+const flushStops = () => new Promise(resolve => setImmediate(resolve))
 
 test('console ownership bounds count and handles expiry, reconfiguration and transport failures', async t => {
   const workers = []
   class FakeWorker extends EventEmitter {
     constructor() { super(); this.stdout = new EventEmitter(); this.stderr = new EventEmitter(); workers.push(this) }
     postMessage(message) { this.request = message }
-    terminate() { this.terminated = true; return Promise.resolve(0) }
+    terminate() {
+      this.terminated = true
+      this.emit('exit', 0)
+      return Promise.resolve(0)
+    }
     reply(value = { output: '42' }) { this.emit('message', { id: this.request.id, ...value }) }
   }
-  t.mock.module('node:worker_threads', { namedExports: { Worker: FakeWorker } })
+  t.mock.module('../internal/isolated-worker.js', {
+    namedExports: {
+      IsolatedWorker: FakeWorker,
+      IsolatedOwner: class FakeOwner {
+        constructor() {
+          this.instances = new Map()
+          this.nextId = 0
+        }
+
+        start() {
+          const id = String(++this.nextId)
+          const transport = new FakeWorker()
+          this.instances.set(id, transport)
+          return { id, transport, record: {} }
+        }
+
+        async stop(id) {
+          const transport = this.instances.get(id)
+          this.instances.delete(id)
+          await transport?.terminate()
+        }
+
+        async releaseAll() {
+          const failures = []
+          for (const id of [...this.instances.keys()]) {
+            try {
+              await this.stop(id)
+            } catch (error) {
+              failures.push(error)
+            }
+          }
+          return failures
+        }
+
+        async dispose() {
+          return this.releaseAll()
+        }
+      },
+    },
+  })
   const { UserBindingConsole: MockConsole, CONSOLE_IDLE_MS } = await import('../internal/user-binding-console.js')
   const owner = new MockConsole(options)
   t.after(() => owner.dispose())
@@ -35,10 +80,11 @@ test('console ownership bounds count and handles expiry, reconfiguration and tra
   await assert.rejects(owner.run({ environment: activeHandle, source, code: 'answer' }), /already running/)
   workers.at(-1).reply()
   await blocked
-  owner.reconfigure({ ...options })
+  await owner.reconfigure({ ...options })
   assert.equal(owner.environments.size, 1)
   t.mock.timers.tick(CONSOLE_IDLE_MS)
   assert.equal(owner.environments.size, 0)
+  await flushStops()
   assert.equal(workers[0].terminated, true)
   for (let index = 0; index < 4; index++) {
     const pending = owner.run({ source, code: 'answer' })
@@ -46,7 +92,7 @@ test('console ownership bounds count and handles expiry, reconfiguration and tra
     await pending
   }
   await assert.rejects(owner.run({ source, code: 'answer' }), /too many/)
-  owner.reconfigure({ ...options, maxOutputBytes: 2048 })
+  await owner.reconfigure({ ...options, maxOutputBytes: 2048 })
   assert.equal(owner.environments.size, 0)
   const overflow = owner.run({ source, code: 'answer' })
   workers.at(-1).stdout.emit('data', Buffer.alloc(4096))
@@ -58,8 +104,8 @@ test('console ownership bounds count and handles expiry, reconfiguration and tra
     assert.equal((await pending).environment, null)
   }
   const terminated = owner.run({ source, code: 'answer' })
-  workers.at(-1).emit('exit', 8)
-  assert.match((await terminated).error, /exited/)
+  workers.at(-1).emit('exit', null, 'SIGKILL')
+  assert.match((await terminated).error, /code null, signal SIGKILL/)
   const controller = new AbortController()
   const stopped = owner.run({ source, code: 'answer' }, controller.signal)
   controller.abort()

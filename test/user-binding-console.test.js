@@ -195,17 +195,102 @@ test('draft execution validates requests and releases failed, stopped, timed-out
   controller.abort()
   assert.equal((await active).error, 'stopped')
   assert.equal(owner.environments.size, 0)
-  for (const [draft, code, expected] of [
+  for (const [draft, code, expected, marker] of [
     ['throw new Error("initializer"); export const answer = 1', 'answer', /initializer/],
-    [source, 'process.exit(7)', /exited \(7\)/],
+    [source, 'process.stderr.write("console-exit-marker\\n"); process.exit(7)', /exited \(code 7\)/, /console-exit-marker/],
     [source, 'process.stdout.write("x".repeat(100000)); await new Promise(() => {})', /output limit/],
     [source, 'Array.from({length: 40}, () => "x".repeat(8192))', /output limit/],
   ]) {
     const result = await owner.run({ source: draft, code })
     assert.match(result.error, expected)
+    if (marker !== undefined) assert.match(result.logs.map(log => log.text).join(''), marker)
     assert.equal(result.environment, null)
     assert.equal(owner.environments.size, 0)
   }
-  owner.reconfigure({ ...options, maxWallMs: 20 })
+  await owner.reconfigure({ ...options, maxWallMs: 20 })
   assert.match((await owner.run({ source, code: 'while(true) {}' })).error, /timed out/)
+})
+
+test('projects the worker environment without host coverage instrumentation', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'ptc-console-environment-'))
+  const previousCoverage = process.env.NODE_V8_COVERAGE
+  const previousWorkerCoverage = process.env.DSH_PTC_TEST_WORKER_COVERAGE
+  const previousProbe = process.env.PTC_PLUS_CONSOLE_PROBE
+  process.env.NODE_V8_COVERAGE = directory
+  process.env.PTC_PLUS_CONSOLE_PROBE = 'kept'
+  // This regression asserts the production projection. Disable the coverage
+  // runner's explicit test instrumentation for the duration of the worker.
+  delete process.env.DSH_PTC_TEST_WORKER_COVERAGE
+  const owner = new UserBindingConsole({ ...options, maxOldGenerationSizeMb: 32 })
+  t.after(async () => {
+    await owner.dispose()
+    if (previousCoverage === undefined) delete process.env.NODE_V8_COVERAGE
+    else process.env.NODE_V8_COVERAGE = previousCoverage
+    if (previousWorkerCoverage === undefined) delete process.env.DSH_PTC_TEST_WORKER_COVERAGE
+    else process.env.DSH_PTC_TEST_WORKER_COVERAGE = previousWorkerCoverage
+    if (previousProbe === undefined) delete process.env.PTC_PLUS_CONSOLE_PROBE
+    else process.env.PTC_PLUS_CONSOLE_PROBE = previousProbe
+    await rm(directory, { recursive: true, force: true })
+  })
+  const source = 'export const answer: number = 42'
+  const coverage = await owner.run({ source, code: 'process.env.NODE_V8_COVERAGE ?? null' })
+  assert.equal(coverage.error, undefined)
+  assert.equal(coverage.output, 'null')
+  const probe = await owner.run({
+    environment: coverage.environment,
+    source,
+    code: 'process.env.PTC_PLUS_CONSOLE_PROBE ?? null',
+  })
+  assert.equal(probe.error, undefined)
+  assert.equal(probe.output, "'kept'")
+  const child = await owner.run({
+    environment: probe.environment,
+    source,
+    code: [
+      "const cp = await import('node:child_process')",
+      'cp.execFileSync(process.execPath, ',
+      `  ['-e', ${JSON.stringify('process.stdout.write(process.env.NODE_V8_COVERAGE ?? "null")')}],`,
+      "  { encoding: 'utf8' })",
+    ].join('\n'),
+  })
+  assert.equal(child.error, undefined)
+  assert.equal(child.output, "'null'")
+})
+
+test('console preserves ambient writes, deletes and static import attributes', async (t) => {
+  const owner = new UserBindingConsole({ ...options, maxOldGenerationSizeMb: 32 })
+  t.after(() => owner.dispose())
+  const source = 'export const answer: number = 42'
+  let environment
+  const run = async code => {
+    const result = await owner.run({ source, code, environment })
+    environment = result.environment
+    return result
+  }
+  assert.equal((await run('ambientProbe = 41')).output, '41')
+  assert.equal((await run('ambientProbe + 1')).output, '42')
+  assert.equal((await run('delete ambientProbe; typeof ambientProbe')).output, "'undefined'")
+  assert.equal((await run('var ambientProbe = 7; ambientProbe')).output, '7')
+  assert.equal((await run('return 9')).output, '9')
+  const jsonModule = 'data:application/json,%7B%22value%22%3A42%7D'
+  assert.equal(
+    (await run(`import data from ${JSON.stringify(jsonModule)} with { type: 'json' }; data.value`)).output,
+    '42',
+  )
+})
+
+test('console survives an asynchronous uncaught error', async (t) => {
+  const owner = new UserBindingConsole({ ...options, maxOldGenerationSizeMb: 32 })
+  t.after(() => owner.dispose())
+  const source = 'export const answer: number = 42'
+  const first = await owner.run({
+    source,
+    code: 'setTimeout(() => { throw new Error("late console failure") }, 0); 1',
+  })
+  assert.equal(first.error, undefined)
+  assert.equal(first.output, '1')
+  await new Promise(resolve => setTimeout(resolve, 50))
+  const second = await owner.run({ environment: first.environment, source, code: 'answer' })
+  assert.equal(second.error, undefined)
+  assert.equal(second.output, '42')
 })

@@ -13,6 +13,7 @@ import { RECOVERY_BOUNDARY_KEY, normalizeJournal } from '../internal/session-jou
 import { SessionRuntime } from '../internal/session-runtime.js'
 import { decodeValue, encodeValue, renderValueWire } from '../internal/value-wire.js'
 import { JOURNAL_POLICY, appendRunCodeEvents, fixture } from './plugin-fixture.js'
+import { serviceInjector } from './host-fixture.js'
 import {
   activeTimers,
   awaitKernelTail,
@@ -438,38 +439,48 @@ test('restores providers normally when an outer wrapper unloads first', async ()
   })
 })
 
-test('rejects unsupported runtimes and invalid limits', () => {
-  const base = {
-    tools: {},
-    systemPrompt: { section() {}, context: () => () => {} },
-    on() {},
-    effect() {},
+test('rejects unsupported runtimes and invalid limits', async () => {
+  // Each case needs its own runtime object: an activation that succeeds takes
+  // over the seam it selected, and one seam object carries one takeover.
+  const base = (runtime) => {
+    const ctx = {
+      ptcRuntime: runtime,
+      tools: {},
+      systemPrompt: { section() {}, context: () => () => {} },
+      on() {},
+      effect() {},
+    }
+    ctx.inject = serviceInjector({ ptcRuntime: runtime }, () => ctx)
+    return ctx
   }
-  assert.throws(() => apply({ ...base, codeRuntime: { language: 'python' } }), /only "typescript" is supported/)
-  assert.throws(() => apply({
-    ...base,
-    codeRuntime: { language: 'typescript', run() {} },
-  }, { maxWallMs: 0 }), /maxWallMs must be a positive safe integer/)
-  assert.throws(() => apply({
-    ...base,
-    codeRuntime: { language: 'typescript', run() {} },
-  }, { maxWallMs: 2_147_483_648 }), /maxWallMs must not exceed/)
-  assert.throws(() => apply({
-    ...base,
-    codeRuntime: { language: 'typescript', run() {} },
-  }, { maxNestedRunCodeDepth: 0 }), /maxNestedRunCodeDepth must be a positive safe integer/)
-  assert.throws(() => apply({
-    ...base,
-    codeRuntime: { language: 'typescript', run() {} },
-  }, { maxValueNodes: 0 }), /maxValueNodes must be a positive safe integer/)
-  assert.throws(() => apply({
-    ...base,
-    codeRuntime: { language: 'typescript', run() {} },
-  }, { looseTopLevelRedeclarations: 'yes' }), /looseTopLevelRedeclarations must be a boolean/)
-  assert.throws(() => apply({
-    ...base,
-    codeRuntime: { language: 'typescript', run() {} },
-  }, { durableReplay: 'yes' }), /durableReplay must be a boolean/)
+  const typescript = () => ({ language: 'typescript', isolation: 'process', resolve: request => request, run() {} })
+  await assert.rejects(async () => apply(
+    base({ language: 'python', isolation: 'process', resolve: request => request, run() {} }),
+  ), /only "typescript" is supported/)
+  await assert.rejects(async () => apply(
+    base(typescript()),
+    { maxWallMs: 0 },
+  ), /maxWallMs must be a positive safe integer/)
+  await assert.rejects(async () => apply(
+    base(typescript()),
+    { maxWallMs: 2_147_483_648 },
+  ), /maxWallMs must not exceed/)
+  await assert.rejects(async () => apply(
+    base(typescript()),
+    { maxNestedRunCodeDepth: 0 },
+  ), /maxNestedRunCodeDepth must be a positive safe integer/)
+  await assert.rejects(async () => apply(
+    base(typescript()),
+    { maxValueNodes: 0 },
+  ), /maxValueNodes must be a positive safe integer/)
+  await assert.rejects(async () => apply(
+    base(typescript()),
+    { looseTopLevelRedeclarations: 'yes' },
+  ), /looseTopLevelRedeclarations must be a boolean/)
+  await assert.rejects(async () => apply(
+    base(typescript()),
+    { durableReplay: 'yes' },
+  ), /durableReplay must be a boolean/)
 })
 
 test('validates the nested code.run request without policing native tool contracts', async (t) => {
@@ -1325,16 +1336,35 @@ return arrayParam([1, 2])
   assert.deepEqual(result, { logs: [], value: [1, [2]] })
 })
 
+test('supplies the session REPL on a host that registers only the current execution seam', async (t) => {
+  const state = fixture({}, { seamService: 'ptcRuntime' })
+  t.after(() => state.dispose())
+  assert.deepEqual(await state.run('current-seam', 'const kept = 41'), { logs: [] })
+  assert.deepEqual(await state.run('current-seam', 'return kept + 1'), { logs: [], value: 42 })
+  assert.deepEqual(state.upstreamCalls, [])
+})
+
+test('presents the capabilities of the execution the plugin performs', async (t) => {
+  const state = fixture({}, { seamService: 'ptcRuntime' })
+  t.after(() => state.dispose())
+  // While the plugin owns the seam, DSH reads these descriptors to decide
+  // whether to offer a per-call deadline or a file sandbox at all.
+  assert.equal(state.runtime.executionInstructions, '')
+  assert.equal(state.runtime.sandboxMode, undefined)
+  assert.equal(state.runtime.timeout, undefined)
+})
+
 test('restores an inherited runtime provider without leaving an own patch', async () => {
   const listeners = new Map()
   const cleanups = []
   const inheritedRun = async () => ({ logs: [] })
   const runtime = Object.assign(Object.create({ run: inheritedRun }), {
-    language: 'typescript', isolation: 'worker-thread',
+    language: 'typescript', isolation: 'process',
+    resolve(request) { return { ...request, cwd: '/fixture-workspace', timeoutMs: null } },
   })
   const definition = { name: 'run_code', output: {} }
   const ctx = {
-    codeRuntime: runtime,
+    ptcRuntime: runtime,
     tools: { get: () => definition, schemas: () => [], register: () => () => {} },
     systemPrompt: { section() {}, context: () => () => {} },
     on(name, listener) {
@@ -1343,7 +1373,8 @@ test('restores an inherited runtime provider without leaving an own patch', asyn
     },
     effect(register) { cleanups.push(register()) },
   }
-  apply(ctx)
+  ctx.inject = serviceInjector({ ptcRuntime: runtime }, () => ctx)
+  await apply(ctx)
   assert.equal(Object.hasOwn(runtime, 'run'), true)
   for (const cleanup of cleanups.reverse()) await cleanup()
   assert.equal(Object.hasOwn(runtime, 'run'), false)

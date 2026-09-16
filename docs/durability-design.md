@@ -26,7 +26,7 @@ PTC Plus 的正确承诺是：
 
 ## Journal
 
-每个进入 CodeRuntime 的 cell 创建 mutable tentative journal：
+每个进入执行缝的 cell 创建 mutable tentative journal：
 
 ```ts
 {
@@ -127,7 +127,7 @@ pre-execute -> tools/execute -> post-execute
 插件采用：
 
 1. `tools/execute` 保存 execution 对象与 session context；
-2. `CodeRuntime.run` 真正进入 kernel 时创建 tentative journal；
+2. 执行缝的 `run` 真正进入 kernel 时创建 tentative journal；
 3. 成功结果由 `presentationMeta` 投影 journal，失败结果由 around hook 附加；
 4. `tools/result` 规范化最终 `meta.dshPtcPlus` 与 runtime tentative journal；
 5. 两者语义完全相同时确认 tentative 状态；
@@ -250,7 +250,7 @@ state: ...
 help: ...
 ```
 
-通知进入正常 CodeRuntime logs，结构化值进入当前 journal，因此成功结果和错误结果都能呈现并从 session log 重建。收缩边界随当前 result 持久化，后续 cold start 从新分支恢复，不重复撞击同一损坏历史；每个 kernel 只发送一次，避免污染后续上下文。
+通知进入正常执行缝 logs，结构化值进入当前 journal，因此成功结果和错误结果都能呈现并从 session log 重建。收缩边界随当前 result 持久化，后续 cold start 从新分支恢复，不重复撞击同一损坏历史；每个 kernel 只发送一次，避免污染后续上下文。
 
 live kernel 首次进入 volatile 只更新 journal 的 `status` / `volatileReason` 和 `repl.state(list)`，不向模型投影 warning/note。该转换不要求当前任务采取行动；只有 cold recovery 已实际跳过 volatile、unknown 或 replay-abandoned 历史时才发送 `PTC-R002`。worker 在首次观察到直接 Node/OS 边界时立即通知主线程，因此后续 hard abort、timeout 或 worker exit 仍能把原因写入 discarded journal。
 
@@ -274,8 +274,8 @@ live kernel 首次进入 volatile 只更新 journal 的 `status` / `volatileReas
 
 - `tools/execute`；
 - `tools/result`；
-- `CodeRuntime.run`；
-- 当前 `CodeRuntime.run` request 的 public bindings 与 signal；
+- 执行缝的 `run`；
+- 当前执行缝 request 的 public bindings 与 signal；
 - `run_code.output.presentationMeta`；
 - 标准 `tool/call` 与 `tool/result.meta`。
 

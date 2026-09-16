@@ -43,6 +43,6 @@ explorer 不调用 capability、不提升 authority、不读取隐藏服务、�
 
 ## Non-tool APIs
 
-CodeRuntime request 已携带的 owner-provided program namespace 会原样进入 cell，并与 native tools 共享 lease；插件不翻译其领域契约。与插件保留的 `capabilities`、`code` 或 `repl` 同名时 request 明确失败，避免两套 binding 静默分叉；普通 cell 局部变量可以 shadow 这些低频 namespace，需要时从 `globalThis` 访问。`tools` 仍保持保留，因为 shadow 它会移除主要 typed 能力面。`code.run` 只隔离执行已经作为数据持有的 source；当前 cell 能直接完成的 Node、fetch 或 native tool 工作不需要嵌套。当前公共扩展面没有发现额外 DSH/插件服务的 registry，PTC Plus 不猜测隐藏服务，也不保留未来脚手架。显式注册、生成 manifest、装饰器或扫描只是可能的发现机制，不能替代类型、authority、lease 和 settlement 契约。
+执行缝 request 已携带的 owner-provided program namespace 会原样进入 cell，并与 native tools 共享 lease；插件不翻译其领域契约。与插件保留的 `capabilities`、`code` 或 `repl` 同名时 request 明确失败，避免两套 binding 静默分叉；普通 cell 局部变量可以 shadow 这些低频 namespace，需要时从 `globalThis` 访问。`tools` 仍保持保留，因为 shadow 它会移除主要 typed 能力面。`code.run` 只隔离执行已经作为数据持有的 source；当前 cell 能直接完成的 Node、fetch 或 native tool 工作不需要嵌套。当前公共扩展面没有发现额外 DSH/插件服务的 registry，PTC Plus 不猜测隐藏服务，也不保留未来脚手架。显式注册、生成 manifest、装饰器或扫描只是可能的发现机制，不能替代类型、authority、lease 和 settlement 契约。
 
 explorer 本身只做 deterministic inspection，不调用模型。任何 Agent 生成的语义摘要都必须由用户主动触发，或由用户预先授权且有硬预算、用量记录和取消能力的 policy 触发；它不属于当前运行时。

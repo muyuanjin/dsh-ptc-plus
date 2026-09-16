@@ -123,10 +123,11 @@ class FakeWorker extends EventEmitter {
     this.stdout = Object.assign(new EventEmitter(), { resume() {} })
     this.stderr = Object.assign(new EventEmitter(), { resume() {} })
     this.performance = { eventLoopUtilization: () => ({ active: 0 }) }
+    this.sampleUtilization = async () => this.performance.eventLoopUtilization()
     if (this.behavior === 'stderr-then-exit') {
       queueMicrotask(() => {
         this.stderr.emit('data', Buffer.from('V8 crash\nFATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memory\n'))
-        this.emit('exit', 134)
+        this.emit('exit', null, 'SIGABRT')
       })
       return
     }
@@ -148,9 +149,44 @@ class FakeWorker extends EventEmitter {
 }
 
 test('fails closed for every worker startup and private-protocol fault', async (t) => {
+  t.mock.module('../internal/isolated-worker.js', {
+    namedExports: {
+      IsolatedWorker: FakeWorker,
+      IsolatedOwner: class FakeOwner {
+        constructor() {
+          this.instances = new Map()
+          this.nextId = 0
+        }
+
+        start() {
+          const id = String(++this.nextId)
+          const transport = new FakeWorker()
+          this.instances.set(id, transport)
+          return { id, transport, record: {} }
+        }
+
+        async stop(id) {
+          const transport = this.instances.get(id)
+          this.instances.delete(id)
+          await transport?.terminate()
+        }
+
+        async dispose() {
+          const failures = []
+          for (const id of [...this.instances.keys()]) {
+            try {
+              await this.stop(id)
+            } catch (error) {
+              failures.push(error)
+            }
+          }
+          return failures
+        }
+      },
+    },
+  })
   t.mock.module('node:worker_threads', {
     namedExports: {
-      Worker: FakeWorker,
       parentPort: {},
       workerData: { cwd: 'relative' },
     },
@@ -207,6 +243,7 @@ test('fails closed for every worker startup and private-protocol fault', async (
   const stderrExit = new SessionRuntime()
   const stderrResult = await stderrExit.run('stderr-exit', { program: 'return 1', bindings: [] })
   assert.equal(stderrResult.error.kind, 'worker-exit')
+  assert.match(stderrResult.error.message, /code null, signal SIGABRT/)
   assert.match(stderrResult.error.message, /last stderr: FATAL ERROR: Reached heap limit/)
   await stderrExit.dispose()
 

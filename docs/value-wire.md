@@ -7,7 +7,7 @@ PTC runtime value、持久 wire 与模型文本是三个不同契约：
 ```text
 JavaScript value
   -> ptc-value-graph/v1 envelope     worker IPC / journal / replay identity
-  -> structured JSON or TS-like text outer CodeRuntime projection
+  -> structured JSON or TS-like text outer execution-seam projection
 ```
 
 wire 从不使用 `eval` 或 `Function` 解码，模型文本也从不作为可执行序列化读取。
@@ -44,10 +44,10 @@ graph 发现顺序与 ECMAScript own-key 顺序共同确定唯一编码。plain 
 
 worker completion 显式携带 `hasValue`，协议字段缺失不能与已编码的 JavaScript `undefined` 混淆。显式 `return undefined` 有值；自然无输出的声明 cell 仍保持无值。
 
-DSH 的公共 `CodeRuntime`/tool output 只接受 JSON-safe structured value。为保持社区插件边界：
+DSH 的公共执行缝/tool output 只接受 JSON-safe structured value。为保持社区插件边界：
 
 - dense、无 shared identity 的 plain JSON tree 继续作为 structured result 返回；
-- 包含 `undefined`、special number、BigInt、hole、shared identity 或 cycle 的合法 PTC value 使用确定性、有 byte ceiling 的 TS-like renderer，作为 string result 进入外层 CodeRuntime；
+- 包含 `undefined`、special number、BigInt、hole、shared identity 或 cycle 的合法 PTC value 使用确定性、有 byte ceiling 的 TS-like renderer，作为 string result 进入外层执行缝；
 - 外层投影是 untagged overlapping union：plain JSON 根值本身也可以是 string，调用方不能用 `typeof value === "string"` 判断是否经过 renderer；
 - renderer 只是模型展示，不参与 hydrate；需要继续计算时应保留 live REPL binding；
 - journal 保存 canonical graph envelope，不保存 renderer 反解析结果，也不把 decoded rich value 交给外层 `JSON.stringify`。

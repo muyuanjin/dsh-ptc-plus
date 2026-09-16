@@ -130,6 +130,13 @@ export function messageOf(error, fallback = 'Unprintable error') {
   }
 }
 
+/** Preserve the child-process exit facts in every helper failure diagnostic. */
+export function processExitDescription(code, signal) {
+  return signal === null || signal === undefined
+    ? `code ${code}`
+    : `code ${code}, signal ${signal}`
+}
+
 export function firstLine(value, fallback = undefined) {
   if (typeof value !== 'string') return fallback
   const line = value.split(/[\r\n]/, 1)[0]

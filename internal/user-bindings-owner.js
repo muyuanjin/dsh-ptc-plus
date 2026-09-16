@@ -1,7 +1,7 @@
 import { RPC_CONTRACTS } from './rpc-contract.js'
 import { randomUUID } from 'node:crypto'
 import { dirname } from 'node:path'
-import { Worker } from 'node:worker_threads'
+import { IsolatedOwner } from './isolated-worker.js'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { validateJsonSchemaValue } from '@deepseek-ai/dsh-tools'
 import {
@@ -14,6 +14,7 @@ import { BINDING_SUBMISSION, bindingAuthoringInstructions } from './user-binding
 import { bindingActionNotice, USER_BINDING_DRAFT_META_KEY } from './user-binding-draft-projection.js'
 import { bindingModelPreferences } from './user-binding-model-context.js'
 import { sessionEvents } from './session-events.js'
+import { processExitDescription } from './failure-reporting.js'
 import { decodeValue } from './value-wire.js'
 import { valueLimitsFromConfig } from './value-wire-schema.js'
 import { normalizeWorkerEnvironment } from './worker-client.js'
@@ -28,19 +29,22 @@ import {
 
 const RPC_CONTRACT = RPC_CONTRACTS.bindings
 const RUNNER_URL = new URL('./user-binding-runner.js', import.meta.url)
+const RUNNER_HELPER = new URL('./kernel-child.js', import.meta.url)
 const COMMAND_USAGE = '/binding new <requirement> or /binding edit <id> <requirement>'
+const CANDIDATE_FAILURE_LOGS = Symbol('candidate failure logs')
 
 function isRecord(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
 }
 
 function errorResult(error) {
+  const logs = error?.[CANDIDATE_FAILURE_LOGS]
   return {
     ok: false,
     error: {
       code: typeof error?.code === 'string' ? error.code : 'bindings/error',
       message: error instanceof Error ? error.message : String(error),
-      details: {},
+      details: Array.isArray(logs) ? { logs } : {},
     },
   }
 }
@@ -95,17 +99,18 @@ function candidateInvocation(value) {
   return { symbol: value.symbol, args: value.args }
 }
 
-function runCandidate(source, invocation, options, signal) {
+function runCandidate(source, invocation, options, signal, owner) {
   if (typeof source !== 'string' || source.length === 0) throw new TypeError('candidate source must be a non-empty string')
   return new Promise((resolve, reject) => {
-    const worker = new Worker(RUNNER_URL, {
+    const started = owner.start({
+      helper: RUNNER_HELPER,
+      entry: RUNNER_URL.href,
+      protocol: 'parent-port',
       workerData: { source, invocation, valueLimits: options.valueLimits, cwd: options.cwd },
       env: normalizeWorkerEnvironment(process.env),
-      execArgv: [],
       resourceLimits: { maxOldGenerationSizeMb: options.maxOldGenerationSizeMb },
-      stdout: true,
-      stderr: true,
     })
+    const worker = started.transport
     const outputLimitError = () => Object.assign(
       new Error('candidate output exceeded the configured limit'),
       { code: 'bindings/output-limit' },
@@ -115,7 +120,9 @@ function runCandidate(source, invocation, options, signal) {
       maxWallMs: options.maxWallMs,
       signal,
       settle: ({ ok, result, reason }) => {
-        void worker.terminate()
+        // The shared owner owns this close: the release request, the kill deadline
+        // and the real exit, with any refusal kept until a late exit arrives.
+        void owner.stop(started.id).catch(() => {})
         if (ok) { resolve(result); return }
         if (reason === ROUND_TIMEOUT) reject(new Error(`candidate execution exceeded ${options.maxWallMs}ms`))
         else if (reason === ROUND_CANCELLED) {
@@ -149,15 +156,22 @@ function runCandidate(source, invocation, options, signal) {
         else round.fail(new Error(error))
       }
     })
-    worker.once('error', error => round.fail(error))
-    worker.once('exit', code => {
-      round.fail(new Error(`candidate worker exited before returning a result (code ${code})`))
+    worker.once('error', error => {
+      error[CANDIDATE_FAILURE_LOGS] = round.logs.map(log => ({ ...log }))
+      round.fail(error)
+    })
+    worker.once('exit', (code, signal) => {
+      const error = new Error(`candidate worker exited before returning a result (${processExitDescription(code, signal)})`)
+      error[CANDIDATE_FAILURE_LOGS] = round.logs.map(log => ({ ...log }))
+      round.fail(error)
     })
   })
 }
 
 /** Own user-binding persistence and the optional authenticated Client RPC surface. */
 export function createUserBindingsOwner(ctx, options = {}) {
+  // This owner instance keeps its candidate transports only until real exit.
+  const candidateOwner = options.candidateOwner ?? new IsolatedOwner()
   const store = options.store ?? new UserBindingsStore(options)
   const bindingsCwd = options.cwd ?? dirname(store.filename)
   let enabled = options.enabled === true
@@ -379,6 +393,7 @@ export function createUserBindingsOwner(ctx, options = {}) {
       candidateInvocation(input.invocation),
       currentOptions,
       signal,
+      candidateOwner,
     ),
   })
   const consoleEndpoints = Object.freeze({
@@ -944,14 +959,32 @@ export function createUserBindingsOwner(ctx, options = {}) {
         valueLimits: valueLimitsFromConfig(nextConfig),
       }
       if (nextEnabled === previousEnabled) {
+        await codeConsole.reconfigure(nextOptions)
         currentOptions = nextOptions
-        codeConsole.reconfigure(nextOptions)
         return
+      }
+      try {
+        await codeConsole.reconfigure(nextOptions)
+        if (!nextEnabled) {
+          const failures = await codeConsole.releaseAll('disabled')
+          if (failures.length > 0) {
+            throw new AggregateError(failures, 'Global User Bindings console release failed')
+          }
+        }
+      } catch (error) {
+        try {
+          await codeConsole.reconfigure(previousOptions)
+        } catch (rollbackError) {
+          throw new AggregateError(
+            [error, rollbackError],
+            'Global User Bindings console reconfiguration and rollback failed',
+            { cause: error },
+          )
+        }
+        throw error
       }
       enabled = nextEnabled
       currentOptions = nextOptions
-      codeConsole.reconfigure(nextOptions)
-      if (!nextEnabled) codeConsole.dispose()
       lifecycleGeneration += 1
       if (nextEnabled) {
         try {
@@ -960,13 +993,18 @@ export function createUserBindingsOwner(ctx, options = {}) {
         } catch (error) {
           enabled = previousEnabled
           currentOptions = previousOptions
-          codeConsole.reconfigure(previousOptions)
           lifecycleGeneration += 1
-          try {
-            await Promise.all([unmountRpc(), unmountAuthoring()])
-          } catch (rollbackError) {
+          const rollbackResults = await Promise.allSettled([
+            codeConsole.reconfigure(previousOptions),
+            unmountRpc(),
+            unmountAuthoring(),
+          ])
+          const rollbackFailures = rollbackResults
+            .filter(result => result.status === 'rejected')
+            .map(result => result.reason)
+          if (rollbackFailures.length > 0) {
             throw new AggregateError(
-              [error, rollbackError],
+              [error, ...rollbackFailures],
               'Global User Bindings enablement and rollback failed',
               { cause: error },
             )
@@ -982,14 +1020,18 @@ export function createUserBindingsOwner(ctx, options = {}) {
       } catch (error) {
         enabled = previousEnabled
         currentOptions = previousOptions
-        codeConsole.reconfigure(previousOptions)
         lifecycleGeneration += 1
-        try {
-          mountRpc()
-          mountAuthoring()
-        } catch (rollbackError) {
+        const rollbackResults = await Promise.allSettled([
+          codeConsole.reconfigure(previousOptions),
+          Promise.resolve().then(() => mountRpc()),
+          Promise.resolve().then(() => mountAuthoring()),
+        ])
+        const rollbackFailures = rollbackResults
+          .filter(result => result.status === 'rejected')
+          .map(result => result.reason)
+        if (rollbackFailures.length > 0) {
           throw new AggregateError(
-            [error, rollbackError],
+            [error, ...rollbackFailures],
             'Global User Bindings disablement and rollback failed',
             { cause: error },
           )
@@ -999,12 +1041,23 @@ export function createUserBindingsOwner(ctx, options = {}) {
     },
     async dispose() {
       disposed = true
-      codeConsole.dispose()
+      const ownerResults = await Promise.allSettled([candidateOwner.dispose(), codeConsole.dispose()])
+      const failures = []
+      for (const result of ownerResults) {
+        if (result.status === 'rejected') failures.push(result.reason)
+        else failures.push(...result.value)
+      }
       enabled = false
       lifecycleGeneration += 1
       for (const draft of [...drafts.values()]) removeDraft(draft)
       reviewsByCapability.clear()
-      await Promise.all([unmountRpc(), unmountAuthoring()])
+      const unmountResults = await Promise.allSettled([unmountRpc(), unmountAuthoring()])
+      for (const result of unmountResults) {
+        if (result.status === 'rejected') failures.push(result.reason)
+      }
+      if (failures.length > 0) {
+        throw new AggregateError(failures, 'Global User Bindings disposal failed')
+      }
     },
   })
 }

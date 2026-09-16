@@ -476,7 +476,9 @@ export class SessionCellExecutor {
       const result = earlyResult('abort', String(request.signal.reason))
       kernel.completeJournal(request.journal, 'discarded', result)
       kernel.rollbackToDurable()
-      void kernel.client.reset(worker)
+      // A refused reclamation stays recorded on the kernel so disposal remains
+      // observable instead of becoming an unhandled rejection after this abort.
+      kernel.resetWorker(worker)
       return result
     }
 
@@ -524,30 +526,51 @@ export class SessionCellExecutor {
         userBindingFailures,
         userBindingSnapshot: userBindings,
         worker,
+        settled: false,
       }
       active.resolve = (result, terminate = false) => kernel.settleCell(active, result, terminate)
       active.onAbort = () => active.resolve(
         earlyResult('abort', String(request.signal?.reason)),
         true,
       )
+      active.budgetsStarted = false
       active.startBudgets = () => {
-        if (active.computeTimer !== undefined) return
-        // Only worker-confirmed observation may defer these budgets; never restart them.
-        const started = worker.performance.eventLoopUtilization()
-        active.computeTimer = setInterval(() => {
-          if (worker.performance.eventLoopUtilization(started).active > config.computeMs) {
-            active.resolve(earlyResult('timeout', `compute budget exhausted (${config.computeMs}ms event-loop active, including synchronous blocking); this measure does not establish CPU use or the specific cause. Use asynchronous waiting for long waits, or a DSH-owned managed job if available. This cell was discarded and the worker reset; external effects or processes may continue.`), true)
-          }
-        }, Math.min(100, config.computeMs))
+        if (active.budgetsStarted) return active.budgetsReady
+        active.budgetsStarted = true
+        // The wall bound starts at the request, while the compute baseline is
+        // sampled from the worker instead of reusing the helper's last periodic
+        // cache. Work that completed before this request must not be charged to
+        // the new cell, and work after the sample must remain counted.
         active.wallTimer = setTimeout(() => {
           active.resolve(earlyResult('timeout', `wall-clock ceiling reached (${config.maxWallMs}ms); split long-running work into smaller cells`), true)
         }, config.maxWallMs)
+        active.budgetsReady = (async () => {
+          let started
+          try {
+            started = await worker.sampleUtilization()
+          } catch (error) {
+            // No fresh baseline means this request cannot be measured. Use the
+            // existing worker-exit route instead of pretending the last cache
+            // sample is this request's starting point.
+            active.resolve(earlyResult('worker-exit', messageOf(error)), true)
+            return
+          }
+          if (active.settled) return
+          active.computeTimer = setInterval(() => {
+            if (active.settled) return
+            if (worker.performance.eventLoopUtilization(started).active > config.computeMs) {
+              active.resolve(earlyResult('timeout', `compute budget exhausted (${config.computeMs}ms event-loop active, including synchronous blocking); this measure does not establish CPU use or the specific cause. Use asynchronous waiting for long waits, or a DSH-owned managed job if available. This cell was discarded and the worker reset; external effects or processes may continue.`), true)
+            }
+          }, Math.min(100, config.computeMs))
+        })()
+        return active.budgetsReady
       }
-      active.start = () => {
+      active.start = async () => {
         if (active.started) return
         active.started = true
         kernel.workerObservation = undefined
-        active.startBudgets()
+        await active.startBudgets()
+        if (active.settled) return
         try {
           kernel.client.post({
             type: 'run', id, program: prepared.code, namespaces: bindings.workerDescriptors,
@@ -590,13 +613,17 @@ export class SessionCellExecutor {
         active.onAbort()
         return
       }
-      try {
-        if (kernel.workerObservation?.worker !== worker
-          || kernel.workerObservation.started !== true) active.startBudgets()
-        kernel.client.post({ type: 'prepare', id })
-      } catch (error) {
-        active.resolve(earlyResult('worker-exit', messageOf(error)), true)
-      }
+      void (async () => {
+        try {
+          // Only worker-confirmed observation may defer these budgets; never restart them.
+          if (kernel.workerObservation?.worker !== worker
+            || kernel.workerObservation.started !== true) await active.startBudgets()
+          if (active.settled) return
+          kernel.client.post({ type: 'prepare', id })
+        } catch (error) {
+          active.resolve(earlyResult('worker-exit', messageOf(error)), true)
+        }
+      })()
     })
   }
 
@@ -666,7 +693,7 @@ export class SessionCellExecutor {
       const inspection = this.kernel.pendingInspection
       if (inspection !== undefined && inspection.id === message.id) inspection.start()
       const active = this.kernel.active
-      if (active !== undefined && active.id === message.id) active.start()
+      if (active !== undefined && active.id === message.id) void active.start()
       return
     }
     if (message?.type === 'observation') {

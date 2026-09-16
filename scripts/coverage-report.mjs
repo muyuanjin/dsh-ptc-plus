@@ -7,12 +7,16 @@ import { coverageInputFilter } from './coverage-inputs.mjs'
 export const COVERAGE_INCLUDE = ['index.js', 'internal/*.js', 'compiler-*.cjs']
 export const COVERAGE_THRESHOLDS = { lines: 100, branches: 95, functions: 100, statements: 0 }
 
-export function createCoverageReport({ root, directory, filter = true, reporters = ['text'] }) {
+export function createCoverageReport({ root, directory, filter = true, reporters = ['text'], reporterOptions = {} }) {
   const report = Report({
     include: COVERAGE_INCLUDE, excludeAfterRemap: true,
+    // c8's incremental merge reads one report at a time instead of holding every
+    // raw JSON report in memory, which is what the reporter process ran out of.
+    mergeAsync: true,
     tempDirectory: directory, reportsDirectory: resolve(root, 'coverage'),
-    reporter: reporters, omitRelative: true,
+    reporter: reporters, reporterOptions, omitRelative: true,
   })
+  if (report.mergeAsync !== true) throw new Error('coverage report must merge asynchronously')
   const stats = { scripts: 0, retainedScripts: 0 }
   if (filter) {
     const keep = coverageInputFilter(root)
@@ -34,7 +38,12 @@ export function createCoverageReport({ root, directory, filter = true, reporters
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
-    const { report, stats } = createCoverageReport({ root: process.cwd(), directory: process.argv[2] })
+    const { report, stats } = createCoverageReport({
+      root: process.cwd(),
+      directory: process.argv[2],
+      reporters: ['text', 'json'],
+      reporterOptions: { text: { maxCols: 1000 } },
+    })
     await report.run()
     await checkCoverages(COVERAGE_THRESHOLDS, report)
     console.log(`Coverage merger input: ${stats.scripts} → ${stats.retainedScripts} scripts`)

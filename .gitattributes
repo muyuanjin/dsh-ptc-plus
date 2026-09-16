@@ -1,3 +1,12 @@
+# Source and documentation text is authored with LF on every platform.
+*.js text eol=lf
+*.mjs text eol=lf
+*.cjs text eol=lf
+*.md text eol=lf
+*.json text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+
 # client.js is a generated artifact checked byte-for-byte on every supported platform.
 /client.js text eol=lf
 

@@ -251,19 +251,34 @@ export function createCordisToolsOwner(
   const disposeMount = (agent, mount) => {
     mount.disposed = true
     if (mount.disposal === undefined) {
-      mount.disposal = (async () => {
+      const operation = (async () => {
         const failures = []
-        for (const fiber of [...mount.fibers].reverse()) {
+        const fibers = [...mount.fibers].reverse()
+        const results = await Promise.allSettled(fibers.map(fiber => {
           try {
-            await fiber.dispose()
+            return Promise.resolve(fiber.dispose())
           } catch (error) {
-            failures.push(error)
+            return Promise.reject(error)
+          }
+        }))
+        for (let index = 0; index < results.length; index += 1) {
+          const result = results[index]
+          const fiber = fibers[index]
+          if (result.status === 'rejected') failures.push(result.reason)
+          else {
+            const ownedIndex = mount.fibers.indexOf(fiber)
+            if (ownedIndex !== -1) mount.fibers.splice(ownedIndex, 1)
           }
         }
         if (failures.length > 0) {
           throw new AggregateError(failures, 'ptc-plus Cordis agent mount disposal failed')
         }
       })()
+      mount.disposal = operation
+      operation.then(
+        () => { if (mount.disposal === operation) mount.disposal = undefined },
+        () => { if (mount.disposal === operation) mount.disposal = undefined },
+      )
     }
     return mount.disposal.then(() => {
       if (mounts.get(agent) === mount) mounts.delete(agent)
@@ -387,26 +402,39 @@ export function createCordisToolsOwner(
   }
 
   let disposal
+  let leasesDisposed = false
   const dispose = () => {
     if (disposal !== undefined) return disposal
     disposed = true
-    stopToolsChange()
-    stopDisposed()
-    stopCreated()
-    stopPromptAssembly()
+    stopToolsChange?.()
+    stopToolsChange = undefined
+    stopDisposed?.()
+    stopDisposed = undefined
+    stopCreated?.()
+    stopCreated = undefined
+    stopPromptAssembly?.()
+    stopPromptAssembly = undefined
     pending.clear()
     const owned = [...mounts.entries()]
     const attempts = owned.map(([agent, mount]) => disposeMount(agent, mount))
-    disposal = Promise.allSettled(attempts).then(results => {
+    const operation = Promise.allSettled(attempts).then(results => {
       const failures = results.filter(result => result.status === 'rejected').map(result => result.reason)
-      try {
-        cordisInspectLeases.dispose()
-      } catch (error) {
-        failures.push(error)
+      if (!leasesDisposed) {
+        try {
+          cordisInspectLeases.dispose()
+          leasesDisposed = true
+        } catch (error) {
+          failures.push(error)
+        }
       }
       if (failures.length > 0) throw new AggregateError(failures, 'ptc-plus Cordis disposal failed')
     })
-    return disposal
+    disposal = operation
+    operation.then(
+      () => { if (disposal === operation) disposal = undefined },
+      () => { if (disposal === operation) disposal = undefined },
+    )
+    return operation
   }
   const ready = Promise.all(initialActivations).then(() => undefined).catch(async error => {
     try {

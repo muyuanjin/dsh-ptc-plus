@@ -42,7 +42,7 @@ npm.cmd stage approve '<stage-id>' --registry=https://registry.npmjs.org/
 
 ## Release checklist
 
-1. 在 Node `22.19.0` 与 Node 24.x 上运行 `npm ci`、`npm run build:check` 和 `npm run check`；Node 24.x 还应覆盖 Windows、Linux 与 macOS。仓库 CI 定义同一矩阵。
+1. 在 Linux Node `22.19.0`、24.x 与 26.x，以及 Windows 与 macOS Node 24.x 上运行 `npm ci`、`npm run build:check` 和 `npm run check`。仓库 CI 定义同一矩阵。
 2. 运行 `npm audit`、`npx publint`、`git diff --check`、Markdown local-link check 和 `npm pack --silent --dry-run --json`。确认 tarball 只包含发布白名单内的运行时代码、文档和展示资产，不含凭据、本地路径、开发脚本或测试夹具，并从 tarball 安装到空目录执行 ESM import smoke。机器读取 `npm pack --json` 时保持 `--silent`，避免 lifecycle 输出混入 JSON stream。
 3. 更新到最新可用 DSH release 并记录 `dsh --version`。分别从 npm 包、固定 Git commit、源码 checkout 和 tarball 安装到临时 profile，再执行 `dsh --profile <profile> --dump-config`，确认只新增 `ptc-plus` row。每个上游 release 都重新验证公共扩展面、CLI/Web 集成和 profile 装配，不设置版本白名单。
 4. 在 Windows 与 Linux 运行无模型调用的 `npm run test:client:web -- --dsh-entry <latest-installed-dsh/lib/bin.js>`，验证 tarball 安装后的真实 Web Client、设置与对话 surface；浏览器前置条件见 [安装指南](installation.md)。`build:check`、Host ESM import 和 factory smoke 均不能替代浏览器激活验收。macOS 由原生 runner 验证 CLI/Web；Windows 与 macOS Desktop 从托盘打开当前 profile 的 DSH Terminal 安装，重启 Desktop 后做一次 PTC 模式 smoke。Desktop 当前发布平台不包括 Linux。
@@ -54,7 +54,7 @@ npm.cmd stage approve '<stage-id>' --registry=https://registry.npmjs.org/
 
 ## Permission disclosure
 
-PTC Plus 自身不配置外部 endpoint，也不读取 API key。它让模型代码使用当前 request 的 DSH native tools，并在 worker 进程和操作系统实际允许时直接使用 Node.js filesystem、process、network 与 child process API。DSH 负责 native-tool policy；ambient Node/OS access 不经过该 policy。worker thread 是生命周期隔离，不是恶意代码安全沙箱。
+PTC Plus 自身不配置外部 endpoint，也不读取 API key。它让模型代码使用当前 request 的 DSH native tools，并在插件自有 helper/worker 进程和操作系统实际允许时直接使用 Node.js filesystem、process、network 与 child process API。DSH 负责 native-tool policy；ambient Node/OS access 不经过该 policy。会话 worker 运行在插件自有 helper 进程内，但 worker/helper 边界是生命周期隔离，不是恶意代码安全沙箱。
 
 DSH 当前公共 bundle surface 未定义供插件使用的机器可读 permission-disclosure contract，因此这些权限边界记录在人类可读文档中。
 

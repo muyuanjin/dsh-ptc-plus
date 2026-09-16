@@ -24,6 +24,7 @@ import { createNativeRootDynamic } from './native-root-dynamic.js'
 import { moduleRuntimeIntrinsics } from './compiler-intrinsics.js'
 import { compilerDescriptors } from './compiler-descriptors.js'
 import { createCellCompletionObserver } from './cell-completion.js'
+import { WORKER_SHUTDOWN_ACKNOWLEDGEMENT, WORKER_SHUTDOWN_REQUEST } from './worker-shutdown.js'
 
 const { Object, mapGet, mapSet, mapHas, mapDelete, setHas, setAdd, setDelete } = moduleRuntimeIntrinsics
 const hasProperty = Reflect.has
@@ -46,12 +47,6 @@ const server = repl.start({
   prompt: '',
   useGlobal: false,
   ignoreUndefined: true,
-  // The writer is a fallback for REPL error paths not captured by the domain.
-  // Successful direct eval values arrive through its callback.
-  writer(error) {
-    evaluationScope.getStore()?.(true, error)
-    return ''
-  },
 })
 // domain.bind exposes its owner on a bound evaluator in older Node REPLs.
 // Newer REPLs honor an explicitly entered domain. Capture before REPL error
@@ -545,10 +540,9 @@ function installDynamicNamespaceGlobals() {
 }
 
 function restoreDynamicNamespaceGlobals() {
-  for (const [name, original] of originalDynamicNamespaceGlobals) {
-    if (original === undefined) delete globalThis[name]
-    else Object.defineProperty(globalThis, name, original)
-  }
+  // installDynamicNamespaceGlobals refuses an existing worker global, so every
+  // recorded bridge install owns a previously absent name.
+  for (const name of originalDynamicNamespaceGlobals.keys()) delete globalThis[name]
   originalDynamicNamespaceGlobals.clear()
 }
 
@@ -1218,6 +1212,19 @@ async function runCell(message) {
     execution.open = false
   }
 }
+
+// The host stops this worker cooperatively so the release below runs while the
+// realms, REPL and ports it owns are still alive.
+parentPort.on('message', (message) => {
+  if (message?.type !== WORKER_SHUTDOWN_REQUEST) return
+  server.close()
+  input.destroy()
+  output.destroy()
+  errorDomain.removeAllListeners('error')
+  channel.close()
+  parentPort.postMessage({ type: WORKER_SHUTDOWN_ACKNOWLEDGEMENT })
+  parentPort.close()
+})
 
 channel.on('message', (message) => {
   if (message?.type === 'prepare') {

@@ -1,50 +1,13 @@
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { isAbsolute, join } from 'node:path'
-import { Worker } from 'node:worker_threads'
-import { messageOf } from './failure-reporting.js'
+import { messageOf, processExitDescription } from './failure-reporting.js'
+import { IsolatedOwner } from './isolated-worker.js'
+import { normalizeWorkerEnvironment } from './worker-environment.js'
 
-const WINDOWS_ENVIRONMENT_NAMES = new Map([
-  ['appdata', 'APPDATA'],
-  ['comspec', 'ComSpec'],
-  ['home', 'HOME'],
-  ['homedrive', 'HOMEDRIVE'],
-  ['homepath', 'HOMEPATH'],
-  ['localappdata', 'LOCALAPPDATA'],
-  ['path', 'PATH'],
-  ['pathext', 'PATHEXT'],
-  ['programdata', 'ProgramData'],
-  ['programfiles', 'ProgramFiles'],
-  ['programfiles(x86)', 'ProgramFiles(x86)'],
-  ['systemdrive', 'SystemDrive'],
-  ['systemroot', 'SystemRoot'],
-  ['temp', 'TEMP'],
-  ['tmp', 'TMP'],
-  ['userprofile', 'USERPROFILE'],
-  ['windir', 'windir'],
-])
-const HOST_ONLY_ENVIRONMENT_NAMES = new Set(['node_test_context', 'node_v8_coverage', 'dsh_ptc_compiler_bytecode'])
+export { normalizeWorkerEnvironment }
 
-/** Project the host environment once without losing Windows case variants. */
-export function normalizeWorkerEnvironment(source, platform = process.platform) {
-  if (platform !== 'win32') {
-    return Object.fromEntries(Object.entries(source).filter(([name, value]) => (
-      value !== undefined && !HOST_ONLY_ENVIRONMENT_NAMES.has(name.toLowerCase())
-    )))
-  }
-  const normalized = new Map()
-  for (const [name, value] of Object.entries(source)) {
-    if (value === undefined) continue
-    const key = name.toLowerCase()
-    if (HOST_ONLY_ENVIRONMENT_NAMES.has(key)) continue
-    const canonicalName = WINDOWS_ENVIRONMENT_NAMES.get(key) ?? name
-    const current = normalized.get(key)
-    if (current === undefined || name === canonicalName) {
-      normalized.set(key, [canonicalName, value])
-    }
-  }
-  return Object.fromEntries(normalized.values())
-}
+const KERNEL_HELPER = new URL('./kernel-child.js', import.meta.url)
 
 /** Owns one session kernel's worker process, private port, and scratch directory. */
 export class WorkerClient {
@@ -60,7 +23,10 @@ export class WorkerClient {
     this.port = undefined
     this.scratchReady = undefined
     this.stderrTails = new WeakMap()
-    this.terminations = new Set()
+    // One owner keeps every started kernel transport, including startup failures
+    // and closes that were refused, until its real exit is observed.
+    this.owner = new IsolatedOwner()
+    this.hostIds = new WeakMap()
     this.disposed = false
   }
 
@@ -102,19 +68,20 @@ export class WorkerClient {
     const environment = normalizeWorkerEnvironment(process.env)
     let worker
     try {
-      worker = new Worker(this.workerUrl, {
+      const started = this.owner.start({
+        helper: KERNEL_HELPER,
+        entry: this.workerUrl,
+        workerData: { cwd: this.cwd, compilerCache: this.compilerCache?.() },
+        resourceLimits: { maxOldGenerationSizeMb: this.workerLimit },
         env: {
           ...environment,
           TEMP: scratchDirectory,
           TMP: scratchDirectory,
           TMPDIR: scratchDirectory,
         },
-        execArgv: [],
-        workerData: { cwd: this.cwd, compilerCache: this.compilerCache?.() },
-        resourceLimits: { maxOldGenerationSizeMb: this.workerLimit },
-        stdout: true,
-        stderr: true,
       })
+      worker = started.transport
+      this.hostIds.set(worker, started.id)
     } catch (error) {
       this.workerLimit = undefined
       throw error
@@ -130,15 +97,23 @@ export class WorkerClient {
     })
     this.stderrTails.set(worker, stderrTail)
     worker.on('error', error => this.fail(worker, `worker error: ${messageOf(error)}`))
-    worker.on('exit', code => this.fail(worker, `worker exited with code ${code}`))
+    worker.on('exit', (code, signal) => {
+      this.fail(worker, `worker exited with ${processExitDescription(code, signal)}`)
+    })
     this.worker = worker
     this.workerReady = new Promise((resolve, reject) => {
-      const onError = error => reject(error)
-      const onExit = (code) => {
+      const onError = error => {
         const detail = this.stderrDetail(worker)
+        reject(detail === undefined
+          ? error
+          : new Error(`${messageOf(error)}; last stderr: ${detail}`, { cause: error }))
+      }
+      const onExit = (code, signal) => {
+        const detail = this.stderrDetail(worker)
+        const exit = processExitDescription(code, signal)
         reject(new Error(detail === undefined
-          ? `worker exited with code ${code} before opening its private channel`
-          : `worker exited with code ${code} before opening its private channel; last stderr: ${detail}`))
+          ? `worker exited with ${exit} before opening its private channel`
+          : `worker exited with ${exit} before opening its private channel; last stderr: ${detail}`))
       }
       worker.once('error', onError)
       worker.once('exit', onExit)
@@ -147,12 +122,16 @@ export class WorkerClient {
         worker.removeListener('exit', onExit)
         if (message?.type === 'startup-error' && typeof message.error === 'string') {
           reject(new Error(message.error))
-          void this.reset(worker)
+          // The owner keeps a refused reclamation, so this must not surface as an
+          // unhandled rejection after the caller already handled the startup error.
+          void this.reset(worker).catch(() => {})
           return
         }
         if (message?.type !== 'ready' || typeof message.port?.postMessage !== 'function') {
           reject(new Error('kernel worker returned an invalid private channel'))
-          void this.reset(worker)
+          // The owner keeps a refused reclamation, so this must not surface as an
+          // unhandled rejection after the caller already handled the startup error.
+          void this.reset(worker).catch(() => {})
           return
         }
         this.port = message.port
@@ -186,27 +165,37 @@ export class WorkerClient {
   }
 
   async reset(worker) {
+    const port = this.worker === worker ? this.port : undefined
     if (this.worker === worker) {
       this.worker = undefined
       this.workerLimit = undefined
       this.workerReady = undefined
-      this.port?.close()
       this.port = undefined
     }
-    const termination = worker.terminate()
-    this.terminations.add(termination)
-    try {
-      await termination
-    } finally {
-      this.terminations.delete(termination)
-    }
+    await this.owner.stop(this.hostIds.get(worker))
+    this.hostIds.delete(worker)
+    port?.close()
   }
 
   async dispose() {
     this.disposed = true
     const worker = this.worker
-    if (worker !== undefined) await this.reset(worker)
-    await Promise.all([...this.terminations])
+    const port = this.port
+    this.worker = undefined
+    this.workerLimit = undefined
+    this.workerReady = undefined
+    this.port = undefined
+    if (worker !== undefined) this.hostIds.delete(worker)
+    const failures = []
+    try {
+      port?.close()
+    } catch (error) {
+      failures.push(error)
+    }
+    failures.push(...await this.owner.dispose())
+    if (failures.length > 0) {
+      throw new AggregateError(failures, 'ptc-plus kernel worker disposal failed')
+    }
     if (this.scratchReady !== undefined) {
       try {
         const scratchDirectory = await this.scratchReady

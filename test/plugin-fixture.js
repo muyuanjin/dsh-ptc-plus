@@ -1,6 +1,6 @@
 import { apply } from '../index.js'
 import { readRuntimeMessage } from '../internal/runtime-messages.js'
-import { createHostContext, runHookChain } from './host-fixture.js'
+import { createHostContext, runHookChain, serviceInjector } from './host-fixture.js'
 
 export const JOURNAL_POLICY = { autoRewriteImports: true, autoStripExports: true, autoSplitRedeclarations: true }
 
@@ -103,26 +103,48 @@ export function fixture(config = {}, fixtureOptions = {}) {
   }
   const definitions = host.toolDefinitions
   definitions.set('run_code', runCodeDefinition)
+  // The execution seam the host registers. The current generation resolves a
+  // request before running it; the preceding one runs the request as given.
+  const seamServiceName = fixtureOptions.seamService ?? 'ptcRuntime'
   const runtime = {
     language: 'typescript',
-    isolation: 'worker-thread',
+    isolation: 'process',
+    get executionInstructions() {
+      return fixtureOptions.executionInstructions ?? 'PROVIDER TEXT'
+    },
+    get sandboxMode() {
+      return fixtureOptions.sandboxMode ?? 'workspace-write'
+    },
+    get timeout() {
+      return { defaultMs: 1_000, maxMs: 2_000 }
+    },
+    resolve(request) {
+      if (fixtureOptions.resolveSeam !== undefined) return fixtureOptions.resolveSeam(request)
+      return { ...request, cwd: '/fixture-workspace', timeoutMs: request.timeoutMs ?? null }
+    },
     async run(request) {
       upstreamCalls.push(request)
       if (fixtureOptions.upstreamRun !== undefined) return fixtureOptions.upstreamRun(request)
       return { logs: ['upstream'], value: 'upstream' }
     },
   }
+  const services = { [seamServiceName]: runtime }
+  const seamInject = serviceInjector(services, () => ctx)
   const ctx = {
-    ...(fixtureOptions.bindingRpc === undefined ? {} : { inject(names, callback) {
-      if (names[0] === 'ptcPlusRpc') callback({ ptcPlusRpc: {
-        register(_channel, handler) {
-          fixtureOptions.bindingRpc(handler)
-          return () => {}
-        },
-      } })
-      return () => {}
-    } }),
-    codeRuntime: runtime,
+    inject(names, callback) {
+      if (names.length === 1 && names[0] === 'ptcPlusRpc') {
+        if (fixtureOptions.bindingRpc === undefined) return () => {}
+        callback({ ptcPlusRpc: {
+          register(_channel, handler) {
+            fixtureOptions.bindingRpc(handler)
+            return () => {}
+          },
+        } })
+        return () => {}
+      }
+      return seamInject(names, callback)
+    },
+    [seamServiceName]: runtime,
     tools: {
       get: (name, scope) => scope?.ctx?.tools?.get(name) ?? definitions.get(name),
       register: host.ctx.tools.register,
@@ -165,6 +187,9 @@ export function fixture(config = {}, fixtureOptions = {}) {
     on: host.ctx.on,
     effect: host.ctx.effect,
   }
+  const invokeSeam = request => (seamServiceName === 'ptcRuntime'
+    ? runtime.run(runtime.resolve(request))
+    : runtime.run(request))
   apply(ctx, {
     computeMs: 500,
     maxWallMs: 2_000,
@@ -182,7 +207,7 @@ export function fixture(config = {}, fixtureOptions = {}) {
     }
     let raw
     let result = await execute(exec, async () => {
-      raw = await runtime.run({
+      raw = await invokeSeam({
         program,
         bindings: [{
           global: 'tools',

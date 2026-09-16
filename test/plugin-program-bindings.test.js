@@ -5,6 +5,7 @@ import { isAbsolute } from 'node:path'
 import test from 'node:test'
 import { Config } from '../index.js'
 import { createRuntimeBridgeOwner } from '../internal/runtime-bridge-owner.js'
+import { createExecutionSeam } from '../internal/execution-seam-compat.js'
 import { normalizeJournal, RECOVERY_BOUNDARY_KEY } from '../internal/session-journal.js'
 import { SessionRuntime } from '../internal/session-runtime.js'
 import { createUserBindingsSnapshot, USER_BINDINGS_META_KEY } from '../internal/user-bindings.js'
@@ -15,7 +16,8 @@ test('failed host results retain recovery boundaries and activated binding snaps
   const definition = { name: 'run_code', output: {} }
   const runtime = { async run() { throw Error('unexpected upstream execution') } }
   const owner = createRuntimeBridgeOwner({
-    ctx: { codeRuntime: runtime, tools: { get: () => definition } },
+    seam: createExecutionSeam(runtime, 'codeRuntime'),
+    ctx: { tools: { get: () => definition } },
     sessionConfig: {}, presentationGeneration: 'binding-error-result',
     sessionId: agent => agent.id, toolSchemasForAgent: () => [],
   })
@@ -659,8 +661,8 @@ test('binds nested code.run depth to the submitted cell generation', async (t) =
     async run() { throw new Error('A PTC child must use its selected compiler') },
   }
   const owner = createRuntimeBridgeOwner({
+    seam: createExecutionSeam(runtime, 'codeRuntime'),
     ctx: {
-      codeRuntime: runtime,
       tools: { get: () => definition },
     },
     sessionConfig: {

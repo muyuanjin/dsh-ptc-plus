@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
+import { once } from 'node:events'
 import test from 'node:test'
+import { fileURLToPath } from 'node:url'
 import { normalizeWorkerEnvironment, WorkerClient } from '../internal/worker-client.js'
 
 function workerClient(workerUrl = undefined) {
@@ -35,6 +38,71 @@ test('preserves POSIX case-sensitive keys while removing host instrumentation', 
     PATH: '/bin',
     Path: 'application-value',
   })
+})
+
+test('reports a signaled helper after its stderr drains', async () => {
+  let reportFailure
+  const failure = new Promise(resolve => { reportFailure = resolve })
+  const client = new WorkerClient({
+    workerUrl: new URL('./fixtures/isolated-signal-worker.mjs', import.meta.url),
+    cwd: process.cwd(),
+    onMessage() {},
+    onFailure: reportFailure,
+  })
+  try {
+    const worker = await client.ensure(32)
+    const stderr = once(worker.stderr, 'data')
+    client.post({ type: 'stderr-marker' })
+    assert.match(String((await stderr)[0]), /worker-client-stderr-marker/)
+    assert.equal(worker.child.kill('SIGKILL'), true)
+    const message = await failure
+    assert.match(message, /code null, signal SIGKILL/)
+    assert.match(message, /last stderr: worker-client-stderr-marker/)
+  } finally {
+    await client.dispose()
+  }
+})
+
+test('dispose delegates active and retained workers to one owner aggregation', async () => {
+  const client = workerClient()
+  const worker = {}
+  const portFailure = new Error('host port close failure')
+  const activeFailure = new Error('active owner failure')
+  const retainedFailure = new Error('retained owner failure')
+  let stopCalls = 0
+  let disposeCalls = 0
+  let portCloses = 0
+  client.worker = worker
+  client.workerLimit = 64
+  client.workerReady = Promise.resolve(worker)
+  client.port = {
+    close() {
+      portCloses++
+      throw portFailure
+    },
+  }
+  client.hostIds.set(worker, 'active')
+  client.owner.stop = async () => {
+    stopCalls++
+    throw activeFailure
+  }
+  client.owner.dispose = async () => {
+    disposeCalls++
+    return [activeFailure, retainedFailure]
+  }
+  await assert.rejects(client.dispose(), error => error instanceof AggregateError
+    && error.errors.length === 3
+    && error.errors[0] === portFailure
+    && error.errors[1] === activeFailure
+    && error.errors[2] === retainedFailure)
+  assert.equal(stopCalls, 0)
+  assert.equal(disposeCalls, 1)
+  assert.equal(portCloses, 1)
+  assert.equal(client.worker, undefined)
+  assert.equal(client.workerLimit, undefined)
+  assert.equal(client.workerReady, undefined)
+  assert.equal(client.port, undefined)
+  assert.equal(client.hostIds.has(worker), false)
 })
 
 test('rejects a worker limit outside the reserved cell generation', async () => {
@@ -80,4 +148,20 @@ test('releases worker reservations after root, scratch, disposal, and constructo
   constructorFailure.scratchReady = Promise.resolve('/tmp/dsh-ptc-plus-constructor-test')
   await assert.rejects(constructorFailure.ensure(64), /filename|URL|string/i)
   assert.equal(constructorFailure.workerLimit, undefined)
+})
+
+test('a refused startup reset stays owned without an unhandled rejection', () => {
+  const probe = fileURLToPath(new URL('./fixtures/worker-client-reset-refusal.mjs', import.meta.url))
+  for (const [mode, expectedError] of [
+    ['startup-error', 'probe startup failed'],
+    ['invalid-channel', 'kernel worker returned an invalid private channel'],
+  ]) {
+    const result = spawnSync(process.execPath, [probe, mode], { encoding: 'utf8', timeout: 20_000 })
+    assert.equal(result.status, 0, result.stderr)
+    assert.deepEqual(JSON.parse(result.stdout), {
+      startupError: expectedError,
+      unhandled: [],
+      retained: 1,
+    })
+  }
 })

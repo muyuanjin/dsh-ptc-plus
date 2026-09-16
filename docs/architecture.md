@@ -13,6 +13,8 @@ PTC Plus 把 DSH PTC 模式的顶层 `run_code` 变成与 session 绑定的连�
 | Journal / replay | PTC Plus + session log | 记录 call transcript、settlement、completion 和恢复边界 |
 | Presentation | DSH + PTC Plus | 保留 native guidance，并追加 REPL 指引与最小 explorer 声明 |
 
+求值层由插件自有的 helper 进程承载：Host 只持有 `IsolatedWorker` transport，真实 `node:worker_threads` session worker 与其私有 `MessagePort` 都留在 helper 内，IPC 只传输 plain data。宿主回收卡住的计算时只强杀自己的 helper process，不再在 DSH 进程内执行已测得会落入 Node 24/26 cppgc teardown fault 的 worker 强杀；`IsolatedOwner` 只在该实例的 real exit、output close 和 cleanup 都完成后释放。kernel、console、candidate 三个入口各自拥有 owner。helper 的 `init` 携带 fork 前 snapshot 的投影环境，user Worker 及其子进程保持原 env 契约，不会继承 `NODE_V8_COVERAGE` 等宿主 instrumentation；inner Worker 的 compute budget 在每次请求提交时通过 helper 的 on-demand sample 取新鲜 `eventLoopUtilization` baseline，ready handshake 另有启动样本；采样失败按 worker-exit 有界失败且不派发 prepare/run。唯一例外由 [ADR 0024](adr/0024-repl-console-observation.md) 所有：同一 worker 已确认存在未完成的 observation 时，prepare 可先于预算启动，确认 observation 完成后才开始计时。
+
 主入口接管模型直接发起的顶层 `run_code`，并通过 DSH tool registry 真实注册 `edit_run_code`。
 使用 code-only direct-tool projection 的 PTC request 始终按固定顺序暴露 `[run_code, edit_run_code]`；插件用 agent scope 的
 `tools.register()` 真实注册 edit transport，并用同一 scope 的 `tools.presentAs('both')` 放行这两个 provider tool call，再把其他 native tool 保留在 program SDK。首次可判定的 prompt assembly 在安装这项 presentation effect 前建立 agent composition owner；注册与 mode 记录都在所属 session、agent 或插件释放时撤销，native-mode 与无关 agent scope 不继承 `edit_run_code`。
@@ -34,7 +36,7 @@ DSH 为一个 agent composition 固定选择 `native`、`ptc` 或 `both`。首�
 所需事实。`edit_run_code` 不产生专用 runtime context：真实 call/result 已完整表达操作身份和结果，额外 contribution
 会重复已有事实；此类信息不进入独立 PTC 消息。只有缺少有效 journal、无法确认完成状态的 rewrite feedback 才保留独立生命周期；已结算失败的恢复指引由当前结果表达；成功的透明改写不产生 runtime context。
 
-插件卸载时恢复仍由自己持有的 `CodeRuntime.run` 与 `presentationMeta` 属性；若外层插件仍持有旧 wrapper，已卸载 wrapper 会透明委托原 provider，不会恢复已释放的 session 状态。
+插件卸载时恢复仍由自己持有的执行缝 `run` 与 `presentationMeta` 属性；执行缝由 `internal/execution-seam-compat.js` 按宿主注册的服务选定，并同时收回该插件无法兑现的 provider 描述符（见 [ADR 0028](adr/0028-attach-to-the-host-ptc-execution-seam.md)）。若外层插件仍持有旧 wrapper，已卸载 wrapper 会透明委托原 provider，不会恢复已释放的 session 状态。
 稳定 REPL 指引与执行共同从 `binding-update-policy.js` 取得语言代际。新代际说明 TypeScript、顶层 await/return、静态 import/export 与所选绑定更新策略；旧兼容态才按其独立开关说明支持的模块语法。显式结果使用 return，日志使用 console；原生表达式 completion 同样可以提供结果值。失败恢复先按状态分类：result 已证明解析或 preflight 未执行且提供符合任务意图的 validated repair 时，
 优先直接使用带目标保护的 `edit_run_code`，无需等待 recovery context；该验证只证明语法/preflight 接受。其他小型修正可用 edit 执行完整 cell；
 已执行或可能产生外部 effect 的目标，则必须依据操作 owner 的 retry/idempotence 契约和执行事实判断重跑。短 `run_code` 可以复用仍存活的 binding，但缩短源码不能证明幂等。能力和命令执行依赖当前 request
@@ -115,7 +117,7 @@ cell 直接使用 DSH 为当前 request 提供的 `tools.*`，不按工具名过
 
 当前公共扩展面没有跨 prompt assembly 与 cell dispatch 的冻结 view token。PTC Plus 使用同一 agent scope 分别读取 prompt 和 runtime view，并让实际 request binding 成为执行事实；能力在两阶段之间变化时，不伪造原子快照保证。
 
-CodeRuntime request 已携带的 owner-provided program namespace 会被原样保留并共享 cell lease，PTC Plus 不翻译其参数或结果。与插件保留的 `capabilities`、`code` 或 `repl` 同名时 request fail-fast，避免主线程与 worker 绑定分叉；普通 cell 局部变量允许自然 shadow 这三个低频 namespace，必要时可通过 `globalThis` 访问。`tools` 仍是保留名称，因为 shadow 它会切断主要能力面。当前公共扩展面没有用于发现额外服务的 program-binding registry；插件不提供名称分发总线或私有 provider registry。若 DSH 以后提供统一 registry，PTC Plus 只消费实际 request 中的 live binding，不复制 authority 或 discovery。
+执行缝 request 已携带的 owner-provided program namespace 会被原样保留并共享 cell lease，PTC Plus 不翻译其参数或结果。与插件保留的 `capabilities`、`code` 或 `repl` 同名时 request fail-fast，避免主线程与 worker 绑定分叉；普通 cell 局部变量允许自然 shadow 这三个低频 namespace，必要时可通过 `globalThis` 访问。`tools` 仍是保留名称，因为 shadow 它会切断主要能力面。当前公共扩展面没有用于发现额外服务的 program-binding registry；插件不提供名称分发总线或私有 provider registry。若 DSH 以后提供统一 registry，PTC Plus 只消费实际 request 中的 live binding，不复制 authority 或 discovery。
 
 ## REPL 生命周期
 

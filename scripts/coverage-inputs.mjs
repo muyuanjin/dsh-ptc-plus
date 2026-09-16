@@ -12,7 +12,16 @@ export function coveredSource(filename, root) {
 
 function scriptPath(url) {
   if (url.startsWith('file:')) {
-    try { return fileURLToPath(url) } catch { return undefined }
+    try {
+      const parsed = new URL(url)
+      // Node's test module mocks load a synthetic module under the real path
+      // plus the loader's node-test-mock search parameter. That alias is not
+      // the plugin source and must not merge its synthetic ranges into the real
+      // file's coverage map. Ordinary query strings and fragments remain real
+      // source URLs and still resolve to their filesystem path.
+      if (parsed.searchParams.has('node-test-mock')) return undefined
+      return fileURLToPath(parsed)
+    } catch { return undefined }
   }
   return isAbsolute(url) ? url : undefined
 }

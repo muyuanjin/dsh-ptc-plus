@@ -59,16 +59,22 @@ test('overlapping coverage runs keep worker evidence separate and propagate fail
       const path = env.NODE_V8_COVERAGE
       assert.equal(env.DSH_PTC_COMPILER_BYTECODE, join(path, 'compiler-bytecode.bin'))
       assert.ok(args.includes('--test-reporter=tap'))
-      assert.ok(args.includes(`--test-reporter-destination=${path}.tap`))
+      assert.ok(args.some(argument => argument.startsWith(`--test-reporter-destination=${path}`)
+        && argument.endsWith('.tap')))
       paths.push(path)
       await writeFile(join(path, 'worker.json'), String(code))
       if (paths.length === 2) release()
       await bothStarted
       assert.equal(await readFile(join(path, 'worker.json'), 'utf8'), String(code))
-      for (const required of ['--test-concurrency=2', 'test/*.test.js',
+      for (const required of ['--test-concurrency=2',
         '--test-name-pattern=worker evidence']) {
         assert.ok(args.includes(required), `missing coverage requirement: ${required}`)
       }
+      assert.ok(args.some(argument => /^test\/.*\.test\.js$/.test(argument)),
+        'missing coverage test file selection')
+      const patternIndex = args.indexOf('--test-name-pattern=worker evidence')
+      const fileIndex = args.findIndex(argument => /^test\/.*\.test\.js$/.test(argument))
+      assert.ok(patternIndex >= 0 && fileIndex > patternIndex, 'test arguments must precede file selection')
       return code
     },
   })))
@@ -93,7 +99,7 @@ test('a coverage gate failure fails the command after successful tests', async t
   t.after(() => rm(directory, { recursive: true, force: true }))
   let calls = 0
   assert.equal(await runCoverage({ directory, execute: async () => ++calls <= 2 ? 0 : 19 }), 19)
-  assert.equal(calls, 3)
+  assert.equal(calls, 4)
   assert.deepEqual(await readdir(directory), [])
 })
 

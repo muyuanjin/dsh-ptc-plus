@@ -90,7 +90,7 @@ function hostContext(settings = undefined, agents = [], options = {}) {
   const on = options.failHook === undefined
     ? host.ctx.on
     : (name, listener, registrationOptions) => {
-        if (options.failHook === name) throw new Error(`hook unavailable: ${name}`)
+        if (options.failHook === name) throw options.hookError ?? new Error(`hook unavailable: ${name}`)
         return host.ctx.on(name, listener, registrationOptions)
       }
   const section = value => {
@@ -98,6 +98,10 @@ function hostContext(settings = undefined, agents = [], options = {}) {
     const dispose = host.ctx.systemPrompt.section(value)
     return () => {
       const finish = () => {
+        if ((options.sectionDisposeFailures ?? 0) > 0) {
+          options.sectionDisposeFailures -= 1
+          throw new Error('prompt section disposal failed')
+        }
         if (options.throwSectionDispose === true) throw new Error('prompt section disposal failed')
         return dispose()
       }
@@ -138,8 +142,18 @@ function hostContext(settings = undefined, agents = [], options = {}) {
       warnings: [],
       warn(message, error) { this.warnings.push([message, error]) },
     },
-    ...(settings === undefined ? {} : {
+    ...(settings === undefined ? {
+      inject(names, callback) {
+        if (names.includes('codeRuntime')) callback(ctx)
+        return () => {}
+      },
+    } : {
       inject(services, callback) {
+        if (services.includes('ptcRuntime')) return () => {}
+        if (services.includes('codeRuntime')) {
+          callback(ctx)
+          return () => {}
+        }
         if (services.length === 1 && services[0] === 'sessionProjections') {
           let disposed = false
           let childDisposers = []
@@ -159,11 +173,40 @@ function hostContext(settings = undefined, agents = [], options = {}) {
                         && definition.key === 'ptcPlusBindingDraft')) return undefined
                     projectionDefinitions.push(definition)
                     let registered = true
+                    let unregistering
                     const unregister = () => {
                       if (!registered) return
-                      registered = false
-                      const index = projectionDefinitions.indexOf(definition)
-                      if (index !== -1) projectionDefinitions.splice(index, 1)
+                      if (unregistering !== undefined) return unregistering
+                      if (definition.key === 'ptcPlusBindingDraft') {
+                        options.onDraftProjectionDispose?.()
+                      }
+                      const finish = () => {
+                        if (definition.key !== 'ptcPlusBindingDraft') {
+                          registered = false
+                          const index = projectionDefinitions.indexOf(definition)
+                          if (index !== -1) projectionDefinitions.splice(index, 1)
+                          return
+                        }
+                        if ((options.draftProjectionDisposeFailures ?? 0) > 0) {
+                          options.draftProjectionDisposeFailures -= 1
+                          throw new Error('draft projection disposal failed')
+                        }
+                        registered = false
+                        const index = projectionDefinitions.indexOf(definition)
+                        if (index !== -1) projectionDefinitions.splice(index, 1)
+                      }
+                      const result = definition.key === 'ptcPlusBindingDraft'
+                        && options.draftProjectionDisposeGate !== undefined
+                        ? Promise.resolve(options.draftProjectionDisposeGate).then(finish)
+                        : finish()
+                      if (result === undefined || typeof result?.then !== 'function') return result
+                      const operation = Promise.resolve(result)
+                      unregistering = operation
+                      operation.then(
+                        () => { if (unregistering === operation) unregistering = undefined },
+                        () => { if (unregistering === operation) unregistering = undefined },
+                      )
+                      return operation
                     }
                     childDisposers.push(unregister)
                     return unregister
@@ -240,6 +283,7 @@ function cordisAgent(disposeGate = undefined, options = {}) {
   const skillCatalog = new Map()
   let pluginCalls = 0
   let skillPluginCalls = 0
+  let disposeCalls = 0
   let disposeFailuresRemaining = options.disposeFailures ?? 0
   const agent = {
     id: 'settings-cordis-agent',
@@ -315,6 +359,8 @@ function cordisAgent(disposeGate = undefined, options = {}) {
             ? { skills: null }
             : { dynamicCordisRunner: null, cordisInspect: null },
           async dispose() {
+            if (!skillFiber) disposeCalls += 1
+            options.onDisposeStart?.(skillFiber)
             disposed = true
             if (options.disposeWithoutActivation !== true) {
               try {
@@ -346,6 +392,9 @@ function cordisAgent(disposeGate = undefined, options = {}) {
     },
     get skillPluginCalls() {
       return skillPluginCalls
+    },
+    get disposeCalls() {
+      return disposeCalls
     },
   }
 }
@@ -721,6 +770,63 @@ test('contains binding command registration and projection cleanup failures', as
   for (const cleanup of cleanupHost.cleanups.reverse()) await cleanup()
 })
 
+test('retries draft projection unregister before reloading its injected service', async () => {
+  let draftDisposals = 0
+  const options = {
+    draftProjectionDisposeFailures: 1,
+    onDraftProjectionDispose: () => { draftDisposals += 1 },
+  }
+  const scope = settingsScope({ enabled: true, userBindingsEnabled: true })
+  const host = hostContext(
+    settingsContext(scope),
+    [],
+    options,
+  )
+  apply(host.ctx)
+  await new Promise(resolve => setImmediate(resolve))
+  assert.deepEqual(host.projectionDefinitions.map(definition => definition.key).sort(), [
+    'ptcPlusBindingDraft',
+    'ptcPlusRepl',
+  ])
+
+  await assert.rejects(
+    host.projectionInjections[0].suspend(),
+    error => error instanceof AggregateError
+      && error.errors.some(cause => cause.message === 'draft projection disposal failed'),
+  )
+  assert.equal(draftDisposals, 1)
+  assert.equal(host.projectionDefinitions.some(definition => definition.key === 'ptcPlusBindingDraft'), true)
+
+  await host.projectionInjections[0].suspend()
+  assert.equal(draftDisposals, 2)
+  assert.deepEqual(host.projectionDefinitions, [])
+  await host.projectionInjections[0].reload()
+  assert.deepEqual(host.projectionDefinitions.map(definition => definition.key).sort(), [
+    'ptcPlusBindingDraft',
+    'ptcPlusRepl',
+  ])
+
+  const gate = Promise.withResolvers()
+  options.draftProjectionDisposeGate = gate.promise
+  scope.set({ ...scope.get(), enabled: false })
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(draftDisposals, 3)
+  gate.resolve()
+  for (let index = 0; index < 4; index += 1) await new Promise(resolve => setImmediate(resolve))
+  assert.deepEqual(host.projectionDefinitions, [])
+  options.draftProjectionDisposeGate = undefined
+  scope.set({ ...scope.get(), enabled: true })
+  for (let index = 0; index < 4; index += 1) await new Promise(resolve => setImmediate(resolve))
+  assert.deepEqual(host.projectionDefinitions.map(definition => definition.key).sort(), [
+    'ptcPlusBindingDraft',
+    'ptcPlusRepl',
+  ])
+
+  for (const cleanup of host.cleanups.reverse()) {
+    try { await cleanup() } catch {}
+  }
+})
+
 test('handles projection registration through the real asynchronous Cordis inject fiber', async (t) => {
   const cordis = new CordisContext()
   t.after(() => cordis.fiber.dispose())
@@ -733,7 +839,12 @@ test('handles projection registration through the real asynchronous Cordis injec
   })
   t.after(removeProjectionService)
   const host = hostContext()
-  host.ctx.inject = cordis.inject.bind(cordis)
+  // Only the projection injection needs the real Cordis fiber; the execution
+  // seam belongs to this mock host, which registers it as a plain service.
+  const mockInject = host.ctx.inject
+  host.ctx.inject = (names, callback) => (names[0] === 'sessionProjections'
+    ? cordis.inject(names, callback)
+    : mockInject(names, callback))
 
   const activation = apply(host.ctx)
   assert.equal(registerCalls, 0)
@@ -842,7 +953,12 @@ test('late settings mount reconciles and detaches against composition config', a
   const { ctx, listeners, sections, cleanups, runtime } = hostContext()
   let injectSettings
   ctx.inject = (services, callback) => {
-    if (services.length === 1 && ['sessionProjections', 'ptcPlusRpc', 'typert'].includes(services[0])) return
+    if (services.length === 1 && ['sessionProjections', 'ptcPlusRpc', 'typert', 'ptcRuntime'].includes(services[0])) return
+    if (services.includes('ptcRuntime')) return
+    if (services.includes('codeRuntime')) {
+      callback(ctx)
+      return
+    }
     assert.deepEqual(services, ['settings'])
     injectSettings = callback
   }
@@ -899,6 +1015,11 @@ test('late settings hydration applies persisted non-enabled configuration', asyn
   let injectSettings
   ctx.inject = (services, callback) => {
     if (services.length === 1 && ['sessionProjections', 'ptcPlusRpc', 'typert'].includes(services[0])) return
+    if (services.includes('ptcRuntime')) return
+    if (services.includes('codeRuntime')) {
+      callback(ctx)
+      return
+    }
     injectSettings = callback
   }
   apply(ctx)
@@ -1022,7 +1143,9 @@ test('failed activation rolls back every mount created before the failing hook',
   apply(ctx)
   await new Promise(resolve => setImmediate(resolve))
   assert.equal(scope.get().enabled, false)
-  assert.equal(cordis.pluginCalls, 1)
+  // Concurrent rollback cancels the not-yet-started asynchronous owner before
+  // it can install a plugin.
+  assert.equal(cordis.pluginCalls, 0)
   assert.equal(TEST_CORDIS_TOOL_NAMES.some(name => cordis.definitions.has(name)), false)
   assert.equal(Object.hasOwn(ctx.codeRuntime, 'run'), false)
   assert.equal(ctx.logger.warnings.length > 0, true)
@@ -1058,24 +1181,24 @@ test('serializes a newer activation behind failed-install cleanup', async () => 
   let releaseTeardown
   const teardown = new Promise(resolve => { releaseTeardown = resolve })
   const scope = settingsScope({ enabled: false, cordisToolsEnabled: true })
-  const options = { failPromptSection: true }
-  const cordis = cordisAgent(teardown)
+  const options = { failHook: 'tools/execute', sectionDisposeGate: teardown }
+  const cordis = cordisAgent()
   const host = hostContext(settingsContext(scope), [cordis.agent], options)
   apply(host.ctx)
 
   scope.set({ enabled: true, cordisToolsEnabled: true })
   await new Promise(resolve => setImmediate(resolve))
-  options.failPromptSection = false
+  options.failHook = undefined
   scope.set({ enabled: true, cordisToolsEnabled: true, tipsEnabled: false })
   await new Promise(resolve => setImmediate(resolve))
 
-  assert.equal(cordis.pluginCalls, 1)
+  assert.equal(cordis.pluginCalls, 0)
   assert.equal(Object.hasOwn(host.runtime, 'run'), false)
 
   releaseTeardown()
   await new Promise(resolve => setImmediate(resolve))
   await new Promise(resolve => setImmediate(resolve))
-  assert.equal(cordis.pluginCalls, 2)
+  assert.equal(cordis.pluginCalls, 1)
   assert.equal(scope.get().enabled, true)
   assert.equal(Object.hasOwn(host.runtime, 'run'), true)
   for (const cleanup of host.cleanups.reverse()) await cleanup()
@@ -1130,6 +1253,57 @@ test('surfaces a settings rollback failure after activation cleanup', async () =
   await new Promise(resolve => setImmediate(resolve))
   assert.equal(scope.get().enabled, true)
   assert.equal(host.ctx.logger.warnings.length >= 2, true)
+  for (const cleanup of host.cleanups.reverse()) {
+    try { await cleanup() } catch {}
+  }
+})
+
+test('retries a synchronously failed installation before publishing its replacement', async () => {
+  let sectionDisposals = 0
+  const options = {
+    failHook: 'llm/stream',
+    hookError: Object.freeze(new Error('hook unavailable: llm/stream')),
+    sectionDisposeFailures: 2,
+    onSectionDispose: () => { sectionDisposals += 1 },
+  }
+  const scope = settingsScope({ enabled: false, cordisToolsEnabled: false })
+  const host = hostContext(settingsContext(scope), [], options)
+  apply(host.ctx)
+
+  scope.set({ enabled: true, cordisToolsEnabled: false })
+  for (let index = 0; index < 5; index += 1) await new Promise(resolve => setImmediate(resolve))
+  assert.equal(scope.get().enabled, false)
+  assert.equal(sectionDisposals, 2)
+  assert.equal(host.sections.length, 1)
+  assert.equal(Object.hasOwn(host.runtime, 'run'), false)
+
+  options.failHook = undefined
+  scope.set({ enabled: true, cordisToolsEnabled: false })
+  for (let index = 0; index < 5; index += 1) await new Promise(resolve => setImmediate(resolve))
+  assert.equal(sectionDisposals, 3)
+  assert.equal(host.sections.length, 1)
+  assert.equal(Object.hasOwn(host.runtime, 'run'), true)
+
+  for (const cleanup of host.cleanups.reverse()) await cleanup()
+})
+
+test('preserves cleanup ownership when installation throws a primitive', async () => {
+  const scope = settingsScope({ enabled: false, cordisToolsEnabled: false })
+  const host = hostContext(settingsContext(scope), [], {
+    failHook: 'llm/stream',
+    hookError: 'primitive hook failure',
+  })
+  apply(host.ctx)
+
+  scope.set({ enabled: true, cordisToolsEnabled: false })
+  for (let index = 0; index < 3; index += 1) await new Promise(resolve => setImmediate(resolve))
+
+  assert.equal(scope.get().enabled, false)
+  assert.equal(host.sections.length, 0)
+  assert.equal(Object.hasOwn(host.runtime, 'run'), false)
+  assert.equal(host.ctx.logger.warnings.some(([, error]) => (
+    error?.message === 'primitive hook failure' && error?.cause === 'primitive hook failure'
+  )), true)
   for (const cleanup of host.cleanups.reverse()) await cleanup()
 })
 
@@ -1144,7 +1318,9 @@ test('continues rollback after one owner disposer rejects', async () => {
   await new Promise(resolve => setImmediate(resolve))
   assert.equal(scope.get().enabled, false)
   assert.equal(TEST_CORDIS_TOOL_NAMES.some(name => cordis.definitions.has(name)), false)
-  for (const cleanup of host.cleanups.reverse()) await cleanup()
+  for (const cleanup of host.cleanups.reverse()) {
+    try { await cleanup() } catch {}
+  }
 })
 
 test('contains rejecting owner disposal during a live disable', async () => {
@@ -1156,6 +1332,7 @@ test('contains rejecting owner disposal during a live disable', async () => {
   process.on('unhandledRejection', onUnhandled)
   try {
     apply(host.ctx)
+    await new Promise(resolve => setImmediate(resolve))
     scope.set({ enabled: false, cordisToolsEnabled: true })
     await new Promise(resolve => setImmediate(resolve))
     await new Promise(resolve => setImmediate(resolve))
@@ -1164,8 +1341,67 @@ test('contains rejecting owner disposal during a live disable', async () => {
     assert.equal(host.ctx.logger.warnings.length > 0, true)
   } finally {
     process.off('unhandledRejection', onUnhandled)
-    for (const cleanup of host.cleanups.reverse()) await cleanup()
+    for (const cleanup of host.cleanups.reverse()) {
+      try { await cleanup() } catch {}
+    }
   }
+})
+
+test('retries a failed runtime owner before settings re-enable creates a replacement', async () => {
+  const scope = settingsScope({ enabled: true, cordisToolsEnabled: true })
+  const cordis = cordisAgent(undefined, { disposeFailures: 1 })
+  const host = hostContext(settingsContext(scope), [cordis.agent])
+  apply(host.ctx)
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(cordis.pluginCalls, 1)
+
+  scope.set({ enabled: false, cordisToolsEnabled: true })
+  await new Promise(resolve => setImmediate(resolve))
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(cordis.disposeCalls, 1)
+  assert.equal(Object.hasOwn(host.runtime, 'run'), false)
+
+  scope.set({ enabled: true, cordisToolsEnabled: true })
+  for (let index = 0; index < 5; index += 1) {
+    await new Promise(resolve => setImmediate(resolve))
+  }
+  assert.equal(cordis.disposeCalls, 2, JSON.stringify({
+    scope: scope.get(),
+    warnings: host.ctx.logger.warnings.map(([, error]) => errorMessages(error)),
+  }))
+  assert.equal(cordis.pluginCalls, 2)
+  assert.equal(Object.hasOwn(host.runtime, 'run'), true)
+
+  for (const cleanup of host.cleanups.reverse()) await cleanup()
+})
+
+test('starts independent top-level owner cleanup before awaiting either one', async () => {
+  const sectionGate = Promise.withResolvers()
+  const cordisGate = Promise.withResolvers()
+  const sectionStarted = Promise.withResolvers()
+  const cordisStarted = Promise.withResolvers()
+  const scope = settingsScope({ enabled: true, cordisToolsEnabled: true })
+  const cordis = cordisAgent(cordisGate.promise, {
+    onDisposeStart(skillFiber) {
+      if (!skillFiber) cordisStarted.resolve()
+    },
+  })
+  const host = hostContext(settingsContext(scope), [cordis.agent], {
+    sectionDisposeGate: sectionGate.promise,
+    onSectionDispose: () => sectionStarted.resolve(),
+  })
+  apply(host.ctx)
+  await new Promise(resolve => setImmediate(resolve))
+
+  scope.set({ enabled: false, cordisToolsEnabled: true })
+  await Promise.all([sectionStarted.promise, cordisStarted.promise])
+  assert.equal(Object.hasOwn(host.runtime, 'run'), false)
+
+  sectionGate.resolve()
+  cordisGate.resolve()
+  await new Promise(resolve => setImmediate(resolve))
+  await new Promise(resolve => setImmediate(resolve))
+  for (const cleanup of host.cleanups.reverse()) await cleanup()
 })
 
 test('Cordis setting applies immediately across live kill-switch toggles', async () => {
@@ -1297,6 +1533,28 @@ test('contains rejecting cleanup after asynchronous live Cordis activation fails
   const messages = host.ctx.logger.warnings.flatMap(([, error]) => errorMessages(error))
   assert.equal(messages.includes('Cordis activation failed'), true)
   assert.equal(messages.includes('Cordis disposal failed'), true)
+  for (const cleanup of host.cleanups.reverse()) {
+    try { await cleanup() } catch {}
+  }
+})
+
+test('retains a failed provisional Cordis owner until a later cleanup succeeds', async () => {
+  const scope = settingsScope({ enabled: true, cordisToolsEnabled: true })
+  const cordis = cordisAgent(undefined, {
+    activationError: new Error('Cordis activation failed'),
+    activationGate: Promise.resolve(),
+    disposeWithoutActivation: true,
+    disposeFailures: 2,
+  })
+  const host = hostContext(settingsContext(scope), [cordis.agent])
+  apply(host.ctx)
+  for (let index = 0; index < 8; index += 1) await new Promise(resolve => setImmediate(resolve))
+
+  assert.equal(scope.get().enabled, false)
+  assert.equal(cordis.disposeCalls, 3)
+  assert.equal(TEST_CORDIS_TOOL_NAMES.some(name => cordis.definitions.has(name)), false)
+  assert.equal(Object.hasOwn(host.runtime, 'run'), false)
+
   for (const cleanup of host.cleanups.reverse()) await cleanup()
 })
 
@@ -1318,14 +1576,22 @@ test('aggregates initial readiness and runtime owner cleanup failures', async ()
   assert.equal(messages.includes('Cordis activation failed'), true)
   assert.equal(messages.includes('prompt section disposal failed'), true)
   assert.equal(scope.get().enabled, false)
-  for (const cleanup of host.cleanups.reverse()) await cleanup()
+  for (const cleanup of host.cleanups.reverse()) {
+    try { await cleanup() } catch {}
+  }
 })
 
 test('fails closed when provisional Cordis activation cannot be disposed', async () => {
   const scope = settingsScope({ enabled: true, cordisToolsEnabled: true })
-  const cordis = cordisAgent(undefined, { throwDispose: true })
+  const cordis = cordisAgent(undefined, {
+    activationGate: new Promise(() => {}),
+    disposeWithoutActivation: true,
+    throwDispose: true,
+  })
   const host = hostContext(settingsContext(scope), [cordis.agent])
   apply(host.ctx)
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(cordis.pluginCalls, 1)
   scope.set({ enabled: true, cordisToolsEnabled: false })
   await new Promise(resolve => setImmediate(resolve))
   await new Promise(resolve => setImmediate(resolve))
@@ -1353,7 +1619,7 @@ test('restores a committed Cordis configuration after live disposal rejects', as
   for (const cleanup of host.cleanups.reverse()) await cleanup()
 })
 
-test('retains the committed Cordis owner when disposal and compensation both reject', async () => {
+test('retries the committed Cordis owner after disposal and compensation reject', async () => {
   const scope = settingsScope({ enabled: true, cordisToolsEnabled: true })
   const cordis = cordisAgent(undefined, {
     activationErrors: [undefined, new Error('Cordis compensation failed')],
@@ -1374,12 +1640,35 @@ test('retains the committed Cordis owner when disposal and compensation both rej
   scope.set({ enabled: true, cordisToolsEnabled: false })
   await new Promise(resolve => setImmediate(resolve))
   await new Promise(resolve => setImmediate(resolve))
-  assert.equal(cordis.pluginCalls, 3)
-  assert.equal(scope.get().cordisToolsEnabled, true)
-  assert.equal(TEST_CORDIS_TOOL_NAMES.some(name => cordis.definitions.has(name)), true)
+  assert.equal(cordis.pluginCalls, 2)
+  assert.equal(scope.get().cordisToolsEnabled, false)
+  assert.equal(TEST_CORDIS_TOOL_NAMES.some(name => cordis.definitions.has(name)), false)
   for (const cleanup of host.cleanups.reverse()) {
     try { await cleanup() } catch {}
   }
+})
+
+test('reclaims a not-ready committed Cordis owner before replacing it', async () => {
+  const scope = settingsScope({ enabled: true, cordisToolsEnabled: true })
+  const cordis = cordisAgent(undefined, { disposeFailures: 2 })
+  const host = hostContext(settingsContext(scope), [cordis.agent])
+  apply(host.ctx)
+  await new Promise(resolve => setImmediate(resolve))
+
+  scope.set({ enabled: true, cordisToolsEnabled: false })
+  for (let index = 0; index < 3; index += 1) await new Promise(resolve => setImmediate(resolve))
+  assert.equal(scope.get().cordisToolsEnabled, true)
+  assert.equal(cordis.disposeCalls, 2)
+  assert.equal(cordis.pluginCalls, 1)
+
+  scope.set({ enabled: true, cordisToolsEnabled: true, tipsEnabled: false })
+  for (let index = 0; index < 5; index += 1) await new Promise(resolve => setImmediate(resolve))
+  assert.equal(cordis.disposeCalls, 3)
+  assert.equal(cordis.pluginCalls, 2)
+  assert.equal(scope.get().tipsEnabled, false)
+  assert.equal(TEST_CORDIS_TOOL_NAMES.every(name => cordis.definitions.has(name)), true)
+
+  for (const cleanup of host.cleanups.reverse()) await cleanup()
 })
 
 test('surfaces a live configuration rollback write failure', async () => {
@@ -1401,6 +1690,7 @@ test('does not roll back a newer live update after an older update fails', async
   const cordis = cordisAgent(undefined, { disposeFailures: 1 })
   const host = hostContext(settingsContext(scope), [cordis.agent])
   apply(host.ctx)
+  await new Promise(resolve => setImmediate(resolve))
 
   scope.set({ enabled: true, cordisToolsEnabled: false })
   scope.set({ enabled: true, cordisToolsEnabled: false, tipsEnabled: false })
@@ -1471,6 +1761,7 @@ test('rolls back a queued live enable when installation rejects asynchronously',
   const options = {}
   const host = hostContext(settingsContext(scope), [cordis.agent], options)
   apply(host.ctx)
+  await new Promise(resolve => setImmediate(resolve))
 
   scope.set({ enabled: false, cordisToolsEnabled: true })
   options.failPromptSection = true

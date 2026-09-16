@@ -1,4 +1,4 @@
-/** Own the CodeRuntime patch, per-cell lease, journal projection, and session settlement. */
+/** Own the execution-seam takeover, per-cell lease, journal projection, and session settlement. */
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { executionPolicies } from './binding-update-policy.js'
 import { assertObjectJsonSchema, validateJsonSchemaValue } from '@deepseek-ai/dsh-tools'
@@ -143,6 +143,7 @@ const PROGRAM_CAPABILITY_METADATA = deepFreeze([
 
 export function createRuntimeBridgeOwner({
   ctx,
+  seam,
   sessionConfig,
   userBindingsCwd,
   observeSession,
@@ -156,6 +157,16 @@ export function createRuntimeBridgeOwner({
   const scope = new AsyncLocalStorage()
   const childScope = new AsyncLocalStorage()
   const childRuntimes = new Set()
+  const childDisposals = new WeakMap()
+  const childFinalizers = new WeakSet()
+  const disposeChildRuntime = (child) => {
+    let disposal = childDisposals.get(child)
+    if (disposal === undefined) {
+      disposal = child.dispose()
+      childDisposals.set(child, disposal)
+    }
+    return disposal
+  }
   // AgentRegistry.withInitiator is AsyncLocalStorage-based. The arrow preserves
   // its receiver when a worker callback re-enters the host tool pipeline.
   const withInitiator = ctx.agents === undefined || typeof ctx.agents.withInitiator !== 'function'
@@ -163,25 +174,29 @@ export function createRuntimeBridgeOwner({
     : (agent, operation) => ctx.agents.withInitiator(agent, operation)
   const sessions = new SessionRuntime(sessionConfig, { withInitiator, userBindingsCwd, observeSession })
   let currentConfig = sessions.config
-  const runtime = ctx.codeRuntime
-  const ownRun = Object.getOwnPropertyDescriptor(runtime, 'run')
-  const upstreamRun = runtime.run
   const patchedDefinitions = new Map()
   const pending = new WeakMap()
+  const nativeRunCodeHandoffs = new Set()
   let active = true
   const runIsolated = async (request, executionToken, depth, cellConfig, inheritedTools) => {
     const child = new SessionRuntime({ ...cellConfig, durableReplay: false, userBindingsEnabled: false,
       replViewEnabled: false }, { withInitiator, userBindingsCwd })
     childRuntimes.add(child)
     const projected = projectBindings(request, depth, executionToken, inheritedTools, cellConfig)
+    childFinalizers.add(child)
     try {
       return await child.run({ id: 'isolated-cell', session: { header: {
         cwd: executionToken?.session?.header?.cwd,
       } } }, { ...projected.request, executionToken })
     } finally {
       projected.release()
-      childRuntimes.delete(child)
-      await child.dispose()
+      try {
+        await disposeChildRuntime(child)
+        childRuntimes.delete(child)
+      } finally {
+        childDisposals.delete(child)
+        childFinalizers.delete(child)
+      }
     }
   }
   const withDraftCapability = (meta, current) => currentConfig.userBindingsEnabled !== true
@@ -215,7 +230,7 @@ export function createRuntimeBridgeOwner({
       toolsNamespace === undefined ? Object.create(null) : toolsNamespace.functions
     )
     const ensureLease = () => {
-      if (!lease.active) throw new Error('PTC execution lease expired')
+      if (!active || !lease.active) throw new Error('PTC execution lease expired')
     }
     const runCode = async (value) => {
       ensureLease()
@@ -224,9 +239,26 @@ export function createRuntimeBridgeOwner({
         throw new RangeError(`code.run recursion depth exceeds configured maximum ${cellConfig.maxNestedRunCodeDepth}`)
       }
       const languageSemantics = executionPolicies(cellConfig).languageSemantics
-      if (typeof functions[RUN_CODE] === 'function') {
-        return childScope.run({ executionToken, depth: depth + 1, cellConfig, functions },
-          () => functions[RUN_CODE](args))
+      const nativeRunCode = functions[RUN_CODE]
+      if (typeof nativeRunCode === 'function') {
+        ensureLease()
+        let settleHandoff
+        const handoff = {
+          active: true,
+          executionToken,
+          depth: depth + 1,
+          cellConfig,
+          functions,
+          settled: new Promise(resolve => { settleHandoff = resolve }),
+        }
+        nativeRunCodeHandoffs.add(handoff)
+        try {
+          return await childScope.run(handoff, () => nativeRunCode.call(functions, args))
+        } finally {
+          handoff.active = false
+          nativeRunCodeHandoffs.delete(handoff)
+          settleHandoff()
+        }
       }
       if (languageSemantics !== 'legacy-v1') {
         const child = await runIsolated({ ...request, program: args.code }, executionToken,
@@ -241,7 +273,7 @@ export function createRuntimeBridgeOwner({
       )
       let child
       try {
-        child = await upstreamRun.call(runtime, childProjected.request)
+        child = await seam.invokeUpstream(childProjected.request)
       } finally {
         childProjected.release()
       }
@@ -400,13 +432,16 @@ export function createRuntimeBridgeOwner({
   }
 
   const patchedRun = function (request) {
-    if (!active) return upstreamRun.call(runtime, request)
     const child = childScope.getStore()
-    if (child !== undefined && executionPolicies(child.cellConfig).languageSemantics !== 'legacy-v1') {
-      return runIsolated(request, child.executionToken, child.depth, child.cellConfig, child.functions)
+    if (child !== undefined) {
+      if (!active || !child.active) return Promise.reject(new Error('PTC execution lease expired'))
+      if (executionPolicies(child.cellConfig).languageSemantics !== 'legacy-v1') {
+        return runIsolated(request, child.executionToken, child.depth, child.cellConfig, child.functions)
+      }
     }
+    if (!active) return seam.invokeUpstream(request)
     const current = scope.getStore()
-    if (current === undefined) return upstreamRun.call(runtime, request)
+    if (current === undefined) return seam.invokeUpstream(request)
     const projected = projectBindings(request, 0, current)
     return sessions.runTentative(current, {
       ...projected.request,
@@ -420,11 +455,7 @@ export function createRuntimeBridgeOwner({
       .finally(projected.release)
   }
 
-  Object.defineProperty(runtime, 'run', {
-    configurable: true,
-    writable: true,
-    value: patchedRun,
-  })
+  const releaseSeam = seam.takeOver(patchedRun)
 
   return Object.freeze({
     config: sessions.config,
@@ -539,11 +570,20 @@ export function createRuntimeBridgeOwner({
     },
     async dispose() {
       active = false
-      await Promise.all([...childRuntimes].map(child => child.dispose()))
-      if (runtime.run === patchedRun) {
-        if (ownRun === undefined) delete runtime.run
-        else Object.defineProperty(runtime, 'run', ownRun)
+      const failures = []
+      const children = [...childRuntimes]
+      const childResultsPromise = Promise.allSettled(
+        children.map(child => disposeChildRuntime(child)),
+      )
+      await Promise.all([...nativeRunCodeHandoffs].map(handoff => handoff.settled))
+      const childResults = await childResultsPromise
+      for (const [index, result] of childResults.entries()) {
+        const child = children[index]
+        if (!childFinalizers.has(child)) childDisposals.delete(child)
+        if (result.status === 'rejected') failures.push(result.reason)
+        else childRuntimes.delete(child)
       }
+      releaseSeam()
       for (const patched of patchedDefinitions.values()) {
         if (patched.output.presentationMeta === patched.patchedPresentationMeta) {
           if (patched.originalPresentationMeta === undefined) delete patched.output.presentationMeta
@@ -556,7 +596,14 @@ export function createRuntimeBridgeOwner({
         }
       }
       patchedDefinitions.clear()
-      await sessions.dispose()
+      try {
+        await sessions.dispose()
+      } catch (error) {
+        failures.push(error)
+      }
+      if (failures.length > 0) {
+        throw new AggregateError(failures, 'ptc-plus runtime bridge disposal failed')
+      }
     },
   })
 }

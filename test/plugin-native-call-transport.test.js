@@ -532,6 +532,11 @@ test('preserves canonical run_code results through the real DSH ToolRuntime pipe
     isolation: 'worker-thread',
     async run() { return { logs: ['upstream'], value: 'upstream' } },
   })
+  // The plugin declares these two alongside the execution seam. Production gets
+  // them from the DSH plugin graph; this host provides the parts the plugin
+  // reads so that `apply` can run here at all.
+  ctx.provide('agents', { list: () => [] })
+  ctx.provide('llm', {})
   new ToolRuntime(ctx, { mode: ptcToolsMode() })
   let echoCalls = 0
   ctx.tools.register(defineTool({

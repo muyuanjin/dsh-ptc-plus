@@ -24,7 +24,10 @@ and composer compatibility. UI consumers own feature eligibility and slot
 registration. `scripts/dsh-host-contract.mjs` owns selected-installation package
 resolution, tools presentation and persona field adaptation for development and
 acceptance commands. Host runtime contracts remain in their existing focused
-owners, including `internal/session-events.js` and `internal/settings-compat.js`.
+owners, including `internal/session-events.js`, `internal/settings-compat.js`, and
+`internal/execution-seam-compat.js`, which owns which program-execution service the
+plugin attaches to and the call shape and provider descriptors it presents for it
+([ADR 0028](0028-attach-to-the-host-ptc-execution-seam.md)).
 `internal/host-rpc.js` owns UI Remote service registration and withdrawal;
 `src/client-rpc.js` owns Client mounting and result unwrapping. Both consume the
 executable wire definitions in `internal/rpc-contract.js`. Binding and observation

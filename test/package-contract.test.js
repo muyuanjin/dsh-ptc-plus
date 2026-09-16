@@ -49,6 +49,10 @@ test('keeps npm release authority stage-only and bound to a verified tag', async
     'id-token': 'write',
   })
 
+  const verifyStep = ci.jobs.check.steps.find(step => step.name === 'Verify the reviewed candidate')
+  assert.equal(verifyStep.run, 'npm run check')
+  assert.equal(verifyStep.env.DSH_PTC_TEST_CONCURRENCY, 1)
+
   const serializedCi = JSON.stringify(ci)
   const serializedRelease = JSON.stringify(release)
   const validateTarget = release.jobs['validate-target'].steps.find(step => step.id === 'target')

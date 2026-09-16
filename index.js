@@ -1,9 +1,9 @@
 /**
  * Session-bound REPL for DeepSeek Harness PTC mode.
  *
- * DSH's run_code bridge does not pass session identity to CodeRuntime.run().
- * The tools/execute around-hook carries that identity into the runtime bridge,
- * which redirects only those runs to a persistent per-session kernel.
+ * DSH's run_code bridge does not pass session identity to the execution seam it
+ * calls. The tools/execute around-hook carries that identity into the runtime
+ * bridge, which redirects only those runs to a persistent per-session kernel.
  */
 
 import Schema from '@deepseek-ai/schemastery'
@@ -20,6 +20,7 @@ import {
   SETTINGS_NAMESPACE,
 } from './internal/config-spec.js'
 import { installSettingsSectionCompat } from './internal/settings-compat.js'
+import { installExecutionSeam } from './internal/execution-seam-compat.js'
 import { valueLimitsFromConfig } from './internal/value-wire-schema.js'
 import { createReplMemoryProjection } from './internal/repl-memory-projection.js'
 import { createUserBindingDraftProjection } from './internal/user-binding-draft-projection.js'
@@ -49,8 +50,13 @@ export const Config = Schema.object(Object.fromEntries(
   CONFIG_FIELDS.map(field => [field.key, configSchemaField(field)]),
 ))
 
-/** Core services required by the plugin. Optional authoring services are injected on demand. */
-export const inject = ['tools', 'codeRuntime', 'systemPrompt', 'agents', 'llm']
+/**
+ * Core services required by the plugin. Optional authoring services are
+ * injected on demand. The execution seam is not listed here: the host registers
+ * it under the service name of one generation, so `installExecutionSeam`
+ * selects the live one.
+ */
+export const inject = ['tools', 'systemPrompt', 'agents', 'llm']
 
 function replGuidance({ bindingPolicy, rewritesEnabled, languageSemantics, durableReplay, cordisToolsEnabled }) {
   const looseTopLevelRedeclarations = bindingPolicy.variableRedeclarations
@@ -100,12 +106,14 @@ Native tool availability, executable names, shells, and path syntax depend on th
 }
 
 /** Register the session-bound REPL runtime. */
-function installPtCRuntime(ctx, resolvedConfig, toolSchemasForAgent, sessionId) {
+function installPtCRuntime(ctx, resolvedConfig, seam, toolSchemasForAgent, sessionId) {
   const presentationGeneration = randomUUID()
   const replMemoryProjection = createReplMemoryProjection(presentationGeneration)
   const userBindingDraftProjection = createUserBindingDraftProjection(presentationGeneration)
   let activeConfig = resolvedConfig
   let cordisTools
+  let cordisToolsReady = false
+  const cordisOwners = new Set()
   let runtimeBridge
   let editTransport
   let directSurface
@@ -117,41 +125,88 @@ function installPtCRuntime(ctx, resolvedConfig, toolSchemasForAgent, sessionId) 
   let draftProjectionAvailable = false
   let projectionService
   const disposers = []
+  const disposedOwners = new Set()
   let disposed = false
-  async function dispose() {
-    if (disposed) return
+  let disposal
+  function dispose() {
     disposed = true
     pendingCordisActivation?.cancel()
-    const failures = []
-    for (const dispose of [...disposers].reverse()) {
-      if (typeof dispose !== 'function') continue
-      try {
-        await dispose()
-      } catch (error) {
-        failures.push(error)
-      }
+    if (disposal !== undefined) return disposal
+    const tasks = []
+    for (let index = disposers.length - 1; index >= 0; index -= 1) {
+      const cleanup = disposers[index]
+      if (typeof cleanup !== 'function') continue
+      tasks.push({
+        run: cleanup,
+        complete: () => { if (disposers[index] === cleanup) disposers[index] = undefined },
+      })
     }
-    for (const owner of [directSurface, editTransport, runtimeBridge, userBindings, cordisTools]) {
-      try {
-        await owner?.dispose()
-      } catch (error) {
-        failures.push(error)
-      }
+    for (const owner of [directSurface, editTransport, runtimeBridge, userBindings]) {
+      if (typeof owner?.dispose !== 'function' || disposedOwners.has(owner)) continue
+      tasks.push({ run: () => owner.dispose(), complete: () => disposedOwners.add(owner) })
     }
-    if (failures.length > 0) throw new AggregateError(failures, 'ptc-plus runtime disposal failed')
+    for (const owner of cordisOwners) {
+      tasks.push({
+        run: () => owner.dispose(),
+        complete: () => {
+          cordisOwners.delete(owner)
+          if (cordisTools === owner) {
+            cordisTools = undefined
+            cordisToolsReady = false
+          }
+        },
+      })
+    }
+    const attempts = tasks.map(task => {
+      try {
+        return Promise.resolve(task.run())
+      } catch (error) {
+        return Promise.reject(error)
+      }
+    })
+    const operation = Promise.allSettled(attempts)
+      .then(results => {
+        const failures = []
+        for (let index = 0; index < results.length; index += 1) {
+          const result = results[index]
+          if (result.status === 'fulfilled') tasks[index].complete()
+          else failures.push(result.reason)
+        }
+        if (failures.length > 0) throw new AggregateError(failures, 'ptc-plus runtime disposal failed')
+      })
+    disposal = operation
+    operation.then(
+      () => { if (disposal === operation) disposal = undefined },
+      () => { if (disposal === operation) disposal = undefined },
+    )
+    return operation
+  }
+  const disposeCordisToolsOwner = async (owner) => {
+    await owner.dispose()
+    cordisOwners.delete(owner)
+    if (cordisTools === owner) {
+      cordisTools = undefined
+      cordisToolsReady = false
+    }
+  }
+  const disposeRetainedCordisTools = async () => {
+    const owners = [...cordisOwners]
+    const results = await Promise.allSettled(owners.map(owner => disposeCordisToolsOwner(owner)))
+    const failures = results.filter(result => result.status === 'rejected').map(result => result.reason)
+    if (failures.length > 0) throw new AggregateError(failures, 'ptc-plus: retained Cordis disposal failed')
   }
   const awaitCordisToolsOwner = async (owner, cancelled) => {
     try {
       await Promise.race([owner.ready, cancelled])
+      if (cordisTools === owner) cordisToolsReady = true
       return owner
     } catch (error) {
       let rollbackError
       try {
-        await owner.dispose()
+        await disposeCordisToolsOwner(owner)
       } catch (caught) {
         rollbackError = caught
       }
-      if (cordisTools === owner) cordisTools = undefined
       if (rollbackError !== undefined) {
         throw new AggregateError(
           [error, rollbackError],
@@ -163,13 +218,17 @@ function installPtCRuntime(ctx, resolvedConfig, toolSchemasForAgent, sessionId) 
     }
   }
   const activateCordisToolsOwner = async () => {
+    await disposeRetainedCordisTools()
+    if (disposed) throw new Error('ptc-plus: Cordis activation cancelled')
     const owner = createCordisToolsOwner(ctx)
+    cordisOwners.add(owner)
     let cancel
     const cancelled = new Promise((_resolve, reject) => {
       cancel = () => reject(new Error('ptc-plus: Cordis activation cancelled'))
     })
     const activation = { owner, cancel }
     cordisTools = owner
+    cordisToolsReady = false
     pendingCordisActivation = activation
     try {
       return await awaitCordisToolsOwner(owner, cancelled)
@@ -193,7 +252,6 @@ function installPtCRuntime(ctx, resolvedConfig, toolSchemasForAgent, sessionId) 
   const setDraftProjectionEnabled = async (enabled) => {
     if (!enabled) {
       const unregister = draftProjectionRegistration
-      draftProjectionRegistration = undefined
       draftProjectionAvailable = false
       const results = await Promise.allSettled([
         Promise.resolve().then(() => userBindings?.setDraftProjectionAvailable(false)),
@@ -205,15 +263,29 @@ function installPtCRuntime(ctx, resolvedConfig, toolSchemasForAgent, sessionId) 
       }
       return
     }
-    if (draftProjectionRegistration !== undefined || projectionService === undefined) return
+    if (draftProjectionRegistration !== undefined) {
+      if (draftProjectionAvailable) return
+      await draftProjectionRegistration()
+    }
+    if (projectionService === undefined) return
     const unregister = registerProjection(userBindingDraftProjection, 'binding draft')
     if (unregister === undefined) return
     let active = true
-    const release = async () => {
-      if (!active) return
-      active = false
-      if (draftProjectionRegistration === release) draftProjectionRegistration = undefined
-      await unregister()
+    let releasing
+    const release = () => {
+      if (!active) return Promise.resolve()
+      if (releasing !== undefined) return releasing
+      const operation = Promise.resolve().then(unregister)
+      releasing = operation
+      operation.then(
+        () => {
+          active = false
+          if (draftProjectionRegistration === release) draftProjectionRegistration = undefined
+          if (releasing === operation) releasing = undefined
+        },
+        () => { if (releasing === operation) releasing = undefined },
+      )
+      return operation
     }
     draftProjectionRegistration = release
     disposers.push(release)
@@ -240,7 +312,6 @@ function installPtCRuntime(ctx, resolvedConfig, toolSchemasForAgent, sessionId) 
         if (disposed) return
         const service = scope.sessionProjections
         projectionService = service
-        draftProjectionRegistration = undefined
         draftProjectionAvailable = false
         const unregisterMemory = registerProjection(replMemoryProjection, 'REPL memory')
         if (unregisterMemory !== undefined) disposers.push(unregisterMemory)
@@ -259,15 +330,11 @@ function installPtCRuntime(ctx, resolvedConfig, toolSchemasForAgent, sessionId) 
         disposers.push(() => projectionInjection.dispose())
       }
     }
-    cordisTools = activeConfig.cordisToolsEnabled
-      ? createCordisToolsOwner(ctx)
-      : undefined
+    cordisTools = activeConfig.cordisToolsEnabled ? createCordisToolsOwner(ctx) : undefined
     if (cordisTools !== undefined) {
       const initialCordisTools = cordisTools
-      ready = awaitCordisToolsOwner(initialCordisTools, new Promise(() => {})).catch(error => {
-        if (cordisTools === initialCordisTools) cordisTools = undefined
-        throw error
-      })
+      cordisOwners.add(initialCordisTools)
+      ready = awaitCordisToolsOwner(initialCordisTools, new Promise(() => {}))
     }
     userBindings = createUserBindingsOwner(ctx, {
       enabled: activeConfig.userBindingsEnabled,
@@ -279,6 +346,7 @@ function installPtCRuntime(ctx, resolvedConfig, toolSchemasForAgent, sessionId) 
     })
     runtimeBridge = createRuntimeBridgeOwner({
       ctx,
+      seam,
       observeSession: id => observationInterest.has(id),
       sessionConfig: activeConfig,
       userBindingsCwd: userBindings.cwd,
@@ -370,11 +438,18 @@ function installPtCRuntime(ctx, resolvedConfig, toolSchemasForAgent, sessionId) 
       void cleanup.catch(report)
     }))
   } catch (error) {
-    const cleanup = dispose()
-    if (error !== null && typeof error === 'object') {
-      Object.defineProperty(error, INSTALL_CLEANUP, { value: cleanup })
+    const failedRuntime = Object.freeze({ dispose })
+    let failure = error
+    if (failure === null || (typeof failure !== 'object' && typeof failure !== 'function')) {
+      failure = new Error(String(error), { cause: error })
     }
-    throw error
+    try {
+      Object.defineProperty(failure, INSTALL_CLEANUP, { value: failedRuntime })
+    } catch {
+      failure = new Error(failure.message ?? String(failure), { cause: failure })
+      Object.defineProperty(failure, INSTALL_CLEANUP, { value: failedRuntime })
+    }
+    throw failure
   }
   async function reconfigure(nextConfig) {
     if (disposed) return
@@ -392,19 +467,22 @@ function installPtCRuntime(ctx, resolvedConfig, toolSchemasForAgent, sessionId) 
       await setDraftProjectionEnabled(nextConfig.userBindingsEnabled)
       rollbacks.push(() => setDraftProjectionEnabled(previousConfig.userBindingsEnabled))
 
+      if (nextConfig.cordisToolsEnabled && cordisTools !== undefined && !cordisToolsReady) {
+        await disposeRetainedCordisTools()
+      }
       if (nextConfig.cordisToolsEnabled && cordisTools === undefined) {
         await activateCordisToolsOwner()
       } else if (!nextConfig.cordisToolsEnabled && cordisTools !== undefined) {
         const currentCordis = cordisTools
+        cordisToolsReady = false
         try {
-          await currentCordis.dispose()
-          cordisTools = undefined
+          await disposeCordisToolsOwner(currentCordis)
         } catch (error) {
           try {
+            await disposeCordisToolsOwner(currentCordis)
             await activateCordisToolsOwner()
           /* c8 ignore next */
           } catch (rollbackError) {
-            cordisTools = currentCordis
             throw new AggregateError([error, rollbackError], 'ptc-plus: Cordis reconfiguration and rollback failed', { cause: error })
           }
           throw error
@@ -435,7 +513,17 @@ function installPtCRuntime(ctx, resolvedConfig, toolSchemasForAgent, sessionId) 
 
 /** Register the session-bound REPL runtime. */
 export function apply(ctx, config = {}) {
+  // Configuration is validated before the plugin waits for the host's seam, so
+  // an unusable configuration fails at the load call rather than later.
   const resolvedConfig = resolveConfig(config)
+  return installExecutionSeam(ctx, {
+    services: inject,
+    attach: (scope, seam) => applyWithExecutionSeam(scope, resolvedConfig, seam),
+  })
+}
+
+/** Install the plugin into the scope of the seam the host registered. */
+function applyWithExecutionSeam(ctx, resolvedConfig, seam) {
   const toolSchemasForAgent = agent => typeof ctx.tools.schemas === 'function'
     ? ctx.tools.schemas(agent)
     : []
@@ -445,7 +533,9 @@ export function apply(ctx, config = {}) {
   }
   let committed
   let activating
+  const retained = new Set()
   let disposed = false
+  let controllerDisposal
   let transitionTail = Promise.resolve()
   let pendingTransitions = 0
   const trackTransition = operation => {
@@ -470,9 +560,26 @@ export function apply(ctx, config = {}) {
     return { promise, resolve, reject }
   }
   const disposeRuntime = record => {
+    if (record?.disposed === true) return Promise.resolve()
     if (record?.disposal !== undefined) return record.disposal
-    record.disposal = record.runtime.dispose()
-    return record.disposal
+    retained.add(record)
+    const operation = Promise.resolve().then(() => record.runtime.dispose())
+    record.disposal = operation
+    operation.then(
+      () => {
+        record.disposed = true
+        retained.delete(record)
+        if (record.disposal === operation) record.disposal = undefined
+      },
+      () => { if (record.disposal === operation) record.disposal = undefined },
+    )
+    return operation
+  }
+  const disposeRetainedRuntimes = async () => {
+    const records = [...retained].filter(record => record.runtime !== undefined)
+    const results = await Promise.allSettled(records.map(record => disposeRuntime(record)))
+    const failures = results.filter(result => result.status === 'rejected').map(result => result.reason)
+    if (failures.length > 0) throw new AggregateError(failures, 'ptc-plus retained runtime disposal failed')
   }
   const activationError = (error, cleanupError) => new AggregateError(
     [error, cleanupError],
@@ -498,17 +605,18 @@ export function apply(ctx, config = {}) {
       record.completion.resolve({ status: 'superseded' })
       return
     }
-    if (ctx.codeRuntime.language !== 'typescript') {
-      throw new Error('ptc-plus: unsupported code runtime language ' + JSON.stringify(ctx.codeRuntime.language) + '; only "typescript" is supported')
+    if (seam.language !== 'typescript') {
+      throw new Error('ptc-plus: unsupported code runtime language ' + JSON.stringify(seam.language) + '; only "typescript" is supported')
     }
     let candidate
     try {
-      candidate = installPtCRuntime(ctx, record.config, toolSchemasForAgent, sessionId)
+      candidate = installPtCRuntime(ctx, record.config, seam, toolSchemasForAgent, sessionId)
       record.runtime = candidate
     } catch (error) {
-      const cleanup = error?.[INSTALL_CLEANUP]
-      if (cleanup === undefined) throw error
-      const trackedCleanup = trackTransition(cleanup)
+      const failedRuntime = error?.[INSTALL_CLEANUP]
+      if (failedRuntime === undefined) throw error
+      record.runtime = failedRuntime
+      const trackedCleanup = trackTransition(disposeRuntime(record))
       void trackedCleanup.then(
         () => record.completion.reject(error),
         cleanupError => record.completion.reject(activationError(error, cleanupError)),
@@ -549,6 +657,8 @@ export function apply(ctx, config = {}) {
       generation,
       runtime: undefined,
       disposal: undefined,
+      disposed: false,
+      retiring: false,
       trackedDisposal: undefined,
       cancelled: false,
       completion,
@@ -577,10 +687,22 @@ export function apply(ctx, config = {}) {
     apply(nextConfig, generation) {
       if (disposed) return Promise.resolve({ status: 'superseded' })
       if (activating !== undefined) {
-        const cleanup = cancelActivation(activating)
+        cancelActivation(activating)
+        const cleanup = disposeRetainedRuntimes()
         return beginActivation(nextConfig, generation, cleanup)
       }
-      if (committed === undefined) return beginActivation(nextConfig, generation)
+      if (committed === undefined) {
+        const cleanup = retained.size === 0 ? undefined : disposeRetainedRuntimes()
+        return beginActivation(nextConfig, generation, cleanup)
+      }
+      if (committed.retiring) {
+        const current = committed
+        void disposeRuntime(current)
+        const cleanup = disposeRetainedRuntimes().then(() => {
+          if (committed === current) committed = undefined
+        })
+        return beginActivation(nextConfig, generation, cleanup)
+      }
       const current = committed
       if (!nextConfig.cordisToolsEnabled) current.runtime.cancelCordisActivation()
       return enqueueTransition(async () => {
@@ -591,29 +713,47 @@ export function apply(ctx, config = {}) {
         return { status: 'applied' }
       })
     },
-    uninstall() {
-      const activationCleanup = activating === undefined
+    async uninstall() {
+      const active = activating
+      const activationCleanup = active === undefined
         ? Promise.resolve()
-        : cancelActivation(activating)
+        : cancelActivation(active)
       const current = committed
-      committed = undefined
+      if (current !== undefined) current.retiring = true
       const committedCleanup = current === undefined
         ? Promise.resolve()
         : trackTransition(disposeRuntime(current))
-      return Promise.all([activationCleanup, committedCleanup]).then(() => undefined)
+      const records = [...retained].filter(record => (
+        record !== current && record !== active && record.runtime !== undefined
+      ))
+      const results = await Promise.allSettled([
+        activationCleanup,
+        committedCleanup,
+        ...records.map(record => disposeRuntime(record)),
+      ])
+      const failures = results.filter(result => result.status === 'rejected').map(result => result.reason)
+      if (current?.disposed === true && committed === current) committed = undefined
+      if (failures.length > 0) throw new AggregateError(failures, 'ptc-plus runtime uninstall failed')
     },
     committedConfig() {
-      return committed?.config
+      return committed?.retiring ? undefined : committed?.config
     },
-    async dispose() {
+    dispose() {
       disposed = true
-      await controller.uninstall()
+      if (controllerDisposal !== undefined) return controllerDisposal
+      const operation = controller.uninstall()
+      controllerDisposal = operation
+      operation.then(
+        () => { if (controllerDisposal === operation) controllerDisposal = undefined },
+        () => { if (controllerDisposal === operation) controllerDisposal = undefined },
+      )
+      return operation
     },
   }
   ctx.effect(() => async () => controller.dispose(), 'ptc-plus runtime lifecycle')
 
   const messageOwner = createRuntimeMessageOwner(context => (
-    committed?.runtime.contextsForRequest(context) ?? []
+    committed?.retiring ? [] : committed?.runtime.contextsForRequest(context) ?? []
   ))
   ctx.effect(() => ctx.systemPrompt.context({
     name: PTC_DELIVERY_CONTEXT, order: 98, text: '',

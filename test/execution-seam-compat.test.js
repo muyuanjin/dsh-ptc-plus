@@ -167,9 +167,11 @@ test('the preceding seam keeps its own call shape and descriptors', async () => 
     seen.push(request)
     return Promise.resolve({ logs: [], value: 'plugin' })
   })
-  // The preceding generation publishes no descriptors to withhold.
-  assert.equal(Object.hasOwn(service, 'sandboxMode'), false)
-  assert.equal(Object.hasOwn(service, 'executionInstructions'), false)
+  // The preceding generation's contract defines none of these members, and the
+  // takeover still leaves no provider capability claim in place.
+  assert.equal(service.executionInstructions, '')
+  assert.equal(service.sandboxMode, undefined)
+  assert.equal(service.timeout, undefined)
 
   const request = { program: 'return 1', bindings: [] }
   assert.deepEqual(await service.run(request), { logs: [], value: 'plugin' })
@@ -180,6 +182,9 @@ test('the preceding seam keeps its own call shape and descriptors', async () => 
   assert.deepEqual(await service.run(request), { logs: [], value: 'upstream' })
   assert.deepEqual(requests, [request])
   assert.equal(Object.hasOwn(service, 'run'), true)
+  assert.equal(Object.hasOwn(service, 'executionInstructions'), false)
+  assert.equal(Object.hasOwn(service, 'sandboxMode'), false)
+  assert.equal(Object.hasOwn(service, 'timeout'), false)
 
   // The wrapped provider stays reachable through the preceding generation's own
   // call shape: the request goes straight to `run`, with no resolve step.

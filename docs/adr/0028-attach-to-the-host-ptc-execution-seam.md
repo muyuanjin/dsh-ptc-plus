@@ -55,10 +55,13 @@ because the REPL applies the session's configured budgets instead of a per-call
 host deadline and performs no file confinement. DSH gates `timeoutMs`, file-policy
 resolution, and sandbox escalation on those descriptors, so withholding them keeps
 DSH's authority decisions with DSH instead of accepting an input the plugin would
-then ignore. This also reproduces the preceding generation's surface exactly,
-where those descriptors did not exist. Every takeover and every withheld
-descriptor is released together, and a release leaves a descriptor that another
-owner replaced in the meantime.
+then ignore. Withdrawal is unconditional rather than generation-conditional,
+because the rule belongs to the plugin's execution rather than to a generation:
+the preceding generation's contract defines none of these members and nothing in
+its install closure reads them, so withdrawing there is inert, while a provider
+that did publish them cannot outlive the takeover. Every takeover and every
+withheld descriptor is released together, and a release leaves a descriptor that
+another owner replaced in the meantime.
 
 ## Alternatives considered
 

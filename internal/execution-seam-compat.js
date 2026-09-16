@@ -39,7 +39,11 @@ const SEAM_SERVICES = Object.freeze([EXECUTION_SEAM_SERVICE, LEGACY_EXECUTION_SE
  * Descriptors the plugin replaces with the capabilities of its own execution.
  * `executionInstructions` describes the wrapped provider's program model, which
  * no longer applies; `timeout` and `sandboxMode` gate host inputs the plugin
- * cannot honor.
+ * cannot honor. Withdrawal is unconditional because the rule is a property of
+ * the plugin's execution, not of a generation: the preceding generation's
+ * contract defines none of these members and nothing in its install closure
+ * reads them, so withdrawing there is inert, while a provider that published
+ * them stays unable to outlive the takeover.
  */
 const WITHHELD_DESCRIPTORS = Object.freeze(['executionInstructions', 'sandboxMode', 'timeout'])
 
@@ -120,10 +124,8 @@ export function createExecutionSeam(service, serviceName) {
             })
           : request => execute(request),
       })
-      if (current) {
-        for (const name of WITHHELD_DESCRIPTORS) {
-          define(name, { configurable: true, value: name === 'executionInstructions' ? '' : undefined })
-        }
+      for (const name of WITHHELD_DESCRIPTORS) {
+        define(name, { configurable: true, value: name === 'executionInstructions' ? '' : undefined })
       }
       const restore = () => {
         if (installed !== restore) return

@@ -6,7 +6,7 @@ Global bindings save reusable TypeScript helpers for use across sessions. For ex
 
 ## Create and use a binding
 
-1. Open the PTC Plus settings card (current DSH: the plugin's **Configure** on the side-bar **Plugins** page; preceding DSH: **Settings → Plugin configuration → PTC Plus**) and enable **Global User Bindings**.
+1. Open PTC Plus settings (when the sparkle shortcut is already present, choose **PTC Plus settings** from its menu; the host's native entry is the plugin's **Configure** on the current DSH side-bar **Plugins** page, or **Settings → Plugin configuration → PTC Plus** on the preceding DSH) and enable **Global User Bindings**.
 2. In a PTC session, open the sparkle menu by the composer and choose **Write a new binding**, or enter `/binding new <requirement>`.
 3. Inspect the draft's source, interface, and model prompt in the panel above the composer.
 4. Choose **Save and enable**. Subsequent `run_code` calls load the binding; initialization failures appear in execution results.

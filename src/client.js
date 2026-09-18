@@ -113,8 +113,8 @@ window.__ModuleLoader__.load({
         },
       })
       const { observeRepl } = createReplObserver({ rpc, ctx })
-      const { PTCPlusSettingsCard } = createPtcSettingsView(React, {
-        ActionButton, BindingsDialog, useWorkbenchController,
+      const { PTCPlusSettingsCard, PTCPlusSettingsDialog } = createPtcSettingsView(React, {
+        ActionButton, BindingsDialog, Modal, useWorkbenchController,
         icons: { chevron: IconChevronDownOutline14 },
       })
       const { ReplComposer, ReplConsole, ReplMemoryCard, replPopoverIsOpen, placeReplPopover } = createReplView(React, {
@@ -216,9 +216,9 @@ window.__ModuleLoader__.load({
 
       const subscribeReset = listener => ctx.on('connection/reset', listener)
       const { BindingAuthorButton, BindingReviewDock, BindingCommandCard } = createAuthoringView(React, {
-        ActionButton, IconButton, Menu, Toast, Tooltip, CodeBlock, BindingsDialog,
+        ActionButton, IconButton, Menu, Toast, Tooltip, CodeBlock, BindingsDialog, PTCPlusSettingsDialog,
         useWorkbenchController, useBindingReview, catalogOwner, callUserBindings, subscribeReset,
-        settingsCardSeat: settingsCard.seat,
+        settingsCardSeat: settingsCard.seat, updateSetting,
         icons: {
           sparkle: IconSparkle16, chevron: IconChevronDownOutline14,
           close: IconCloseOutline16, check: IconCheckOutline14,

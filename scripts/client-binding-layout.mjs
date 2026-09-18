@@ -42,7 +42,7 @@ try {
         const collisions = []
         for (const row of document.querySelectorAll('.ptcPlusGlobalItem')) {
           const [text, button] = [...row.children].map(bounds)
-          if (text.right > button.left + 1) collisions.push({ text, button })
+          if (button !== undefined && text.right > button.left + 1) collisions.push({ text, button })
         }
         const containers = [...document.querySelectorAll('.fixture,.ptcPlusGlobalList,.ptcPlusBindingCommand')]
           .map(element => ({ name: element.className, client: element.clientWidth, scroll: element.scrollWidth }))
@@ -51,18 +51,19 @@ try {
           action: element.closest('.ptcPlusGlobalItem,.ptcPlusBindingCommandActions,.ptcPlusReplTabs') !== null,
         }))
         const head = document.querySelector('.ptcPlusReplHead')
-        const headBounds = bounds(head)
-        const header = { height: headBounds.height,
+        const headBounds = head === null ? null : bounds(head)
+        const header = head === null ? null : { height: headBounds.height,
           titleOffset: bounds(head.querySelector('.ptcPlusReplTitle')).top - headBounds.top,
           dotOffset: bounds(head.querySelector('.ptcPlusReplStatusDot')).top - headBounds.top,
           tabsOffset: bounds(document.querySelector('.ptcPlusReplTabs')).top - headBounds.top }
         return { collisions, containers, buttons, header, pageWidth: document.documentElement.scrollWidth,
-          tabFont: getComputedStyle(document.querySelector('.ptcPlusReplTab')).fontSize }
+          tabFont: document.querySelector('.ptcPlusReplTab') === null
+            ? null : getComputedStyle(document.querySelector('.ptcPlusReplTab')).fontSize }
       })
       assert.deepEqual(metrics.collisions, [], `${width}/${state}: overlapping list actions`)
       assert.ok(metrics.containers.every(item => item.scroll <= item.client + 1), JSON.stringify(metrics.containers))
       assert.ok(metrics.pageWidth <= width, `${width}/${state}: viewport overflow`)
-      assert.equal(metrics.tabFont, '11px')
+      if (state.startsWith('popover-')) assert.equal(metrics.tabFont, '11px')
       for (const { text, bounds, owner, action } of metrics.buttons) {
         assert.ok(bounds.width > 0 && bounds.height >= (action ? 24 : 16), `${state}: unusable button ${text}`)
         assert.ok(bounds.left >= owner.left - 1 && bounds.right <= owner.right + 1, `${state}: button outside owner ${text}`)
@@ -86,10 +87,10 @@ try {
   }
   for (const width of [320, 390, 1440]) {
     await page.setViewportSize({ width, height: 900 })
-    for (const state of ['console-en', 'console-zh', 'workbench-en', 'workbench-zh', 'modal-en', 'modal-zh', 'empty-en', 'empty-zh', 'settings-en', 'settings-zh', 'prompt-edit-en', 'prompt-edit-zh']) {
+    for (const state of ['console-en', 'console-zh', 'workbench-en', 'workbench-zh', 'modal-en', 'modal-zh', 'empty-en', 'empty-zh', 'settings-en', 'settings-zh', 'settings-dialog-en', 'settings-dialog-zh', 'prompt-edit-en', 'prompt-edit-zh']) {
       await page.goto(pathToFileURL(resolve(directory, `${state}.html`)).href)
       const metrics = await page.evaluate(() => {
-        const containers = [...document.querySelectorAll('.ptcPlusConsole,.ptcPlusBindingsSurface,.ptcPlusBindingsDialog,.ptcPlusBindingEditor')]
+        const containers = [...document.querySelectorAll('.ptcPlusConsole,.ptcPlusBindingsSurface,.ptcPlusBindingsDialog,.ptcPlusBindingEditor,.ptcPlusSettingsDialog,.ptcPlusSettingsDialogContent')]
           .map(element => ({ name: element.className, client: element.clientWidth, scroll: element.scrollWidth }))
         const collisions = []
         for (const row of document.querySelectorAll('.ptcPlusBindingItem')) {
@@ -102,12 +103,22 @@ try {
             const { left, right, width, height } = element.getBoundingClientRect()
             return { label: element.getAttribute('aria-label') ?? element.textContent, left, right, width, height }
           })
-        return { containers, collisions, controls, pageWidth: document.documentElement.scrollWidth }
+        const settingsDialog = document.querySelector('.ptcPlusSettingsModal')
+        const settingsDialogBounds = settingsDialog === null ? null : settingsDialog.getBoundingClientRect()
+        return { containers, collisions, controls, pageWidth: document.documentElement.scrollWidth,
+          settingsDialog: settingsDialogBounds === null ? null : {
+            top: settingsDialogBounds.top, bottom: settingsDialogBounds.bottom, height: settingsDialogBounds.height,
+          } }
       })
       assert.ok(metrics.pageWidth <= width, `${width}/${state}: viewport overflow`)
       assert.ok(metrics.containers.every(item => item.scroll <= item.client + 1), `${width}/${state}: ${JSON.stringify(metrics.containers)}`)
       assert.deepEqual(metrics.collisions, [], `${width}/${state}: overlapping binding actions`)
       assert.ok(metrics.controls.every(item => item.width > 0 && item.height >= 16 && item.left >= 0 && item.right <= width), `${width}/${state}: controls outside viewport`)
+      if (state.startsWith('settings-dialog-')) {
+        assert.ok(metrics.settingsDialog !== null, `${width}/${state}: settings dialog missing`)
+        assert.ok(metrics.settingsDialog.top >= 0 && metrics.settingsDialog.bottom <= 900,
+          `${width}/${state}: settings dialog outside viewport`)
+      }
       if (state.startsWith('empty')) {
         const empty = await page.locator('.ptcPlusSessionEmpty').evaluate(element => ({
           width: element.getBoundingClientRect().width,

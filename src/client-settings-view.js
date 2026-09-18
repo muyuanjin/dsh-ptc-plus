@@ -8,8 +8,9 @@ import { featureEnabled } from './client-feature-gates.js'
  * action only while global bindings are eligible.
  */
 export function createPtcSettingsView(React, deps) {
-  const { ActionButton, BindingsDialog, useWorkbenchController, icons } = deps
+  const { ActionButton, BindingsDialog, Modal, useWorkbenchController, icons } = deps
   const h = React.createElement
+  const focusableSelector = 'button:not(:disabled),input:not(:disabled),textarea:not(:disabled),select:not(:disabled),[href],[tabindex]:not([tabindex="-1"]),[contenteditable=true],summary'
 
   function fieldInput(field, value, disabled, onChange, label) {
     if (field.type === 'boolean') {
@@ -38,9 +39,10 @@ export function createPtcSettingsView(React, deps) {
     })
   }
 
-  function PTCPlusSettingsCard({ t, usePtcSettings, updateSetting, callUserBindings, view }) {
+  function PTCPlusSettingsCard({ t, usePtcSettings, updateSetting, callUserBindings, view, onBindingsOpenChange }) {
     const [open, setOpen] = React.useState(false)
     const [bindingsOpen, setBindingsOpen] = React.useState(false)
+    const bindingsAction = React.useRef(null)
     const [status, setStatus] = React.useState(null)
     const [pending, setPending] = React.useState(() => new Set())
     const writeTail = React.useRef(Promise.resolve())
@@ -51,10 +53,17 @@ export function createPtcSettingsView(React, deps) {
     const legacyMigration = value.legacyBindingSettings === true
     const enabled = featureEnabled(snapshot, 'plugin')
     const globalEnabled = featureEnabled(snapshot, 'bindings')
+    const groupIdPrefix = view === 'dialog' ? 'ptc-plus-settings-dialog-group' : 'ptc-plus-settings-group'
     // The open dialog owns the management session: closing it releases the draft
     // and drops every response the host has not answered yet.
     const workbench = useWorkbenchController({ enabled: globalEnabled && bindingsOpen, callUserBindings })
-    React.useEffect(() => { if (!globalEnabled) setBindingsOpen(false) }, [globalEnabled])
+    const setBindingsDialogOpen = next => {
+      setBindingsOpen(next)
+      onBindingsOpenChange?.(next)
+    }
+    React.useEffect(() => {
+      if (!globalEnabled) setBindingsDialogOpen(false)
+    }, [globalEnabled])
     const unavailable = snapshot.status !== 'ready' || snapshot.writable !== true
     const persist = (field, nextValue) => {
       if (unavailable || pending.has(field.key)) return
@@ -89,10 +98,10 @@ export function createPtcSettingsView(React, deps) {
       return h('section', {
       key: group.key,
       className: 'ptcPlusGroup',
-      'aria-labelledby': `ptc-plus-settings-group-${group.key}`,
+      'aria-labelledby': `${groupIdPrefix}-${group.key}`,
     },
     h('h3', {
-      id: `ptc-plus-settings-group-${group.key}`,
+      id: `${groupIdPrefix}-${group.key}`,
       className: 'ptcPlusGroupTitle',
     }, t(`group.${group.key}`)),
     ...fields.map(key => {
@@ -115,13 +124,13 @@ export function createPtcSettingsView(React, deps) {
             ...field.options.map(policy => h('option', { key: policy, value: policy }, t(`bindingPolicy.${policy}`))))
             : fieldInput(field, value[field.key], fieldDisabled(field), persist, t(`${field.key}.label`))),
         field.key === 'userBindingsEnabled' && globalEnabled
-          ? h('div', { className: 'ptcPlusSettingAction' },
-            h(ActionButton, { type: 'button', className: 'ptcPlusButton', onClick: () => setBindingsOpen(true) }, t('bindings.manage')))
+          ? h('div', { className: 'ptcPlusSettingAction', ref: bindingsAction },
+            h(ActionButton, { type: 'button', className: 'ptcPlusButton', onClick: () => setBindingsDialogOpen(true) }, t('bindings.manage')))
           : null)
     }))
     })
-    const settingsBody = expanded => h('div', {
-      id: 'ptc-plus-settings-body', className: 'ptcPlusBody', 'data-open': expanded, hidden: !expanded,
+    const settingsBody = (expanded, id) => h('div', {
+      id, className: 'ptcPlusBody', 'data-open': expanded, hidden: !expanded,
     },
     h('div', { className: 'ptcPlusBodyInner' }, h('div', { className: 'ptcPlusFields' },
       snapshot.status === 'loading'
@@ -136,13 +145,17 @@ export function createPtcSettingsView(React, deps) {
                 : t(status.key, status.params))),
           ])))
     const openBindings = globalEnabled && bindingsOpen
-      ? h(BindingsDialog, { controller: workbench, t, onClose: () => setBindingsOpen(false) }) : null
+      ? h(BindingsDialog, {
+        controller: workbench, t, onClose: () => setBindingsDialogOpen(false),
+        getReturnFocus: () => bindingsAction.current?.querySelector('button'),
+      }) : null
     // A seat that asks for views renders one entry twice: `summary` is the
     // one-liner under the title the seat draws, `page` is the form it mounts
     // with its own save control (the form already writes on change). The legacy
     // card seat asks for neither and keeps the whole collapsible card.
     if (view === 'summary') return h('span', { className: 'ptcPlusDescription' }, t('card.description'))
     if (view === 'page') return h('div', { className: 'ptcPlusCard' }, settingsBody(true), openBindings)
+    if (view === 'dialog') return h(React.Fragment, null, settingsBody(true), openBindings)
     return h('li', { className: 'ptcPlusCard' },
       h('button', {
         type: 'button', className: 'ptcPlusHeader', 'aria-expanded': open,
@@ -154,10 +167,55 @@ export function createPtcSettingsView(React, deps) {
         h('span', { className: 'ptcPlusDescription' }, t('card.description'))),
       h('span', { className: 'ptcPlusStatus', 'data-enabled': enabled }, t(enabled ? 'status.enabled' : 'status.disabled')),
       h('span', { className: 'ptcPlusChevron', 'data-open': open, 'aria-hidden': true }, h(icons.chevron, { size: 14 }))),
-      settingsBody(open),
+      settingsBody(open, 'ptc-plus-settings-body'),
       openBindings,
     )
   }
 
-  return { PTCPlusSettingsCard }
+  function PTCPlusSettingsDialog(props) {
+    const { t, onClose } = props
+    const body = React.useRef(null)
+    const [bindingsOpen, setBindingsOpen] = React.useState(false)
+    React.useEffect(() => {
+      const dialog = body.current?.closest('[role=dialog]')
+      const target = body.current?.querySelector(focusableSelector)
+        ?? dialog?.querySelector(focusableSelector)
+      target?.focus({ preventScroll: true })
+    }, [])
+    React.useEffect(() => {
+      const trapFocus = event => {
+        if (event.key !== 'Tab' || bindingsOpen) return
+        const dialog = body.current?.closest('[role=dialog]')
+        if (dialog === undefined || dialog === null) return
+        const controls = [...dialog.querySelectorAll(focusableSelector)]
+          .filter(element => !element.closest('[hidden], [inert], [aria-hidden="true"]'))
+        const first = controls[0]
+        const last = controls.at(-1)
+        const active = document.activeElement
+        if (!dialog.contains(active)
+          || (event.shiftKey && active === first)
+          || (!event.shiftKey && active === last)) {
+          event.preventDefault()
+          ;(event.shiftKey ? last : first)?.focus({ preventScroll: true })
+        }
+      }
+      document.addEventListener('keydown', trapFocus)
+      return () => document.removeEventListener('keydown', trapFocus)
+    }, [bindingsOpen])
+    const close = () => {
+      if (!bindingsOpen) onClose()
+    }
+    return h(Modal, {
+      open: true,
+      onClose: close,
+      title: t('settings.dialogTitle'),
+      closeLabel: t('settings.close'),
+      description: t('card.description'),
+      className: 'ptcPlusSettingsModal',
+      contentClassName: 'ptcPlusSettingsDialogContent',
+    }, h('div', { className: 'ptcPlusSettingsDialog', ref: body },
+      h(PTCPlusSettingsCard, { ...props, view: 'dialog', onBindingsOpenChange: setBindingsOpen })))
+  }
+
+  return { PTCPlusSettingsCard, PTCPlusSettingsDialog }
 }

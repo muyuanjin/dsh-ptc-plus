@@ -18,6 +18,7 @@ import { LOCALE_NS, SETTINGS_COPY } from '../src/client-copy.js'
 import { featureEnabled, registerGated } from '../src/client-feature-gates.js'
 import { createCatalogOwner } from '../src/client-catalog.js'
 import { createUserBindingsWorkbench } from '../src/client-workbench.js'
+import { createPtcSettingsView } from '../src/client-settings-view.js'
 
 // apply() creates one catalog owner per mount; capturing it proves the owner's
 // disposer is registered with the plugin scope instead of leaking sources.
@@ -1133,6 +1134,21 @@ test('REPL observations and shared workbench remain separate from session execut
   await runtime.flush()
   expect(groupTitles()).toEqual(['Plugin switch', 'Tool call tolerance', 'REPL syntax', 'State and recovery', 'Tool extensions', 'Interface display', 'Resource limits'])
   await saveLayout('settings-en', view.container.querySelector('.ptcPlusCard'))
+  await runtime.sessions.setCurrent('client-session')
+  await runtime.flush()
+  await openGlobalMenu(view, runtime)
+  fireEvent.click(view.getByRole('menuitem', { name: 'PTC Plus settings' }))
+  await runtime.flush()
+  const settingsDialog = () => document.querySelector('.ptcPlusSettingsModal')
+  expect(settingsDialog()).not.toBeNull()
+  await saveLayout('settings-dialog-en', settingsDialog().parentElement)
+  setLocale('zh')
+  await runtime.flush()
+  await saveLayout('settings-dialog-zh', settingsDialog().parentElement)
+  fireEvent.click(view.getByRole('button', { name: '关闭 PTC Plus 设置' }))
+  await runtime.flush()
+  await runtime.sessions.setCurrent(undefined)
+  await runtime.flush()
   setLocale('zh')
   await runtime.flush()
   fireEvent.click([...view.container.querySelectorAll('button')].find(button => button.textContent === '管理全局绑定'))
@@ -1692,22 +1708,76 @@ async function openGlobalMenu(view, runtime, mode = 'hover') {
   return trigger
 }
 
-test('the authoring entry names the settings seat the installed generation declares', async () => {
+test('the authoring entry opens the complete settings dialog from either host seat', async () => {
   for (const [seat, path] of [
     ['legacy', 'Settings → Plugin configuration → PTC Plus'],
     ['row', 'Side bar Plugins → dsh-ptc-plus → row ptc-plus → Configure'],
   ]) {
-    const { runtime } = await fixture({ settingsCardSeat: seat })
+    const { runtime } = await fixture({
+      settingsCardSeat: seat,
+      rpc: async endpoint => ({ ok: true, value: endpoint === 'list' ? { revision: 1, entries: [] } : null }),
+    })
     const view = runtime.renderRoot()
     await runtime.flush()
-    await openGlobalMenu(view, runtime)
+    const trigger = await openGlobalMenu(view, runtime)
     const item = view.getByRole('menuitem', { name: 'PTC Plus settings' })
     expect(item.querySelector('.ptcPlusBindingMenuAction').getAttribute('title')).toBe(path)
     fireEvent.click(item)
     await runtime.flush()
     expect(view.queryByRole('menu')).toBeNull()
-    expect(document.body.textContent).toContain(`PTC Plus settings: ${path}`)
+    const dialog = view.getByRole('dialog', { name: 'PTC Plus settings' })
+    expect(dialog.querySelectorAll('[role=switch], input[type=number], select'))
+      .toHaveLength(CONFIG_GROUPS.flatMap(group => group.fields).length)
+    expect(dialog.querySelector('.ptcPlusHeader')).toBeNull()
+    expect(dialog.querySelector('.ptcPlusSettingsDialog')).not.toBeNull()
+    const ids = [...view.container.querySelectorAll('[id]'), ...dialog.querySelectorAll('[id]')]
+      .map(element => element.id)
+    expect(new Set(ids).size).toBe(ids.length)
+    expect(document.body.textContent).not.toContain(`PTC Plus settings: ${path}`)
+    expect(document.activeElement).toBe(dialog.querySelector('[role=switch]'))
+    const controls = [...dialog.querySelectorAll('button:not(:disabled),input:not(:disabled),textarea:not(:disabled),select:not(:disabled),[href],[tabindex]:not([tabindex="-1"]),[contenteditable=true],summary')]
+    controls[0].focus()
+    fireEvent.keyDown(document, { key: 'Tab', shiftKey: true })
+    expect(document.activeElement).toBe(controls.at(-1))
+    controls.at(-1).focus()
+    fireEvent.keyDown(document, { key: 'Tab' })
+    expect(document.activeElement).toBe(controls[0])
+    const manage = [...dialog.querySelectorAll('button')]
+      .find(button => button.textContent === 'Manage global bindings')
+    manage.getClientRects = () => [new DOMRect(20, 20, 120, 28)]
+    fireEvent.click(manage)
+    await runtime.flush()
+    expect(view.getByRole('dialog', { name: 'Global User Bindings' })).not.toBeNull()
+    fireEvent.keyDown(document, { key: 'Escape' })
+    await runtime.flush()
+    expect(view.queryByRole('dialog', { name: 'Global User Bindings' })).toBeNull()
+    expect(view.getByRole('dialog', { name: 'PTC Plus settings' })).toBe(dialog)
+    expect(document.activeElement).toBe(manage)
+    fireEvent.click(view.getByRole('button', { name: 'Close PTC Plus settings' }))
+    await runtime.flush()
+    expect(view.queryByRole('dialog', { name: 'PTC Plus settings' })).toBeNull()
+    expect(document.activeElement).toBe(trigger)
   }
+})
+
+test('the settings dialog falls back to its close button when the form has no enabled control', async () => {
+  const snapshot = { status: 'ready', writable: false, value: { enabled: true, userBindingsEnabled: false } }
+  const { PTCPlusSettingsDialog } = createPtcSettingsView(React, {
+    ActionButton: props => React.createElement('button', props),
+    BindingsDialog: () => null,
+    Modal: primitives.Modal,
+    useWorkbenchController: () => null,
+    icons: { chevron: primitives.IconChevronDownOutline14 },
+  })
+  const view = render(React.createElement(PTCPlusSettingsDialog, {
+    t: key => key,
+    usePtcSettings: select => select(snapshot),
+    updateSetting: async () => null,
+    callUserBindings: async () => null,
+    onClose: () => {},
+  }))
+  expect(document.activeElement).toBe(view.getByRole('button', { name: 'settings.close' }))
+  view.unmount()
 })
 
 test('global binding menu works before authoring is available and preserves the input', async () => {

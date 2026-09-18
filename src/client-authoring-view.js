@@ -17,9 +17,9 @@ const HOVER_DWELL_MS = 150
  */
 export function createAuthoringView(React, deps) {
   const {
-    ActionButton, IconButton, Menu, Toast, Tooltip, CodeBlock, BindingsDialog,
+    ActionButton, IconButton, Menu, Toast, Tooltip, CodeBlock, BindingsDialog, PTCPlusSettingsDialog,
     useWorkbenchController, useBindingReview, catalogOwner, callUserBindings, subscribeReset,
-    settingsCardSeat,
+    settingsCardSeat, updateSetting,
     icons: {
       sparkle: IconSparkle16, chevron: IconChevronDownOutline14,
       close: IconCloseOutline16, check: IconCheckOutline14,
@@ -59,6 +59,7 @@ export function createAuthoringView(React, deps) {
     const hoverTimer = React.useRef(undefined)
     const [menu, setMenu] = React.useState(null)
     const [managing, setManaging] = React.useState(false)
+    const [settingsOpen, setSettingsOpen] = React.useState(false)
     // The menu catalog and the workbench catalog are independent sources: a
     // read or write in one never invalidates the other's in-flight request.
     const catalogSource = React.useMemo(() => catalogOwner.claim(), [catalogOwner])
@@ -75,7 +76,7 @@ export function createAuthoringView(React, deps) {
     const hasDraft = view.mounted && view.candidate !== null && view.action === null
     const quickAccess = featureEnabled(settings, 'authorButton')
     const canAuthor = quickAccess && available && typeof useInput === 'function' && typeof inputActions?.setDraft === 'function'
-    const menuOpen = (hasDraft || quickAccess) && view.reachable && !managing
+    const menuOpen = (hasDraft || quickAccess) && view.reachable && !managing && !settingsOpen
       && menu !== null && menu.key === view.candidateKey
     // The dialog owns the management session; losing the input surface only
     // suspends reads, so a draft survives a temporary Host takeover.
@@ -91,6 +92,7 @@ export function createAuthoringView(React, deps) {
         catalogSource.reset()
         setMenu(null)
         setManaging(false)
+        setSettingsOpen(false)
       }
       const unsubscribe = subscribeReset(reset)
       return () => {
@@ -324,11 +326,8 @@ export function createAuthoringView(React, deps) {
           }
           if (id === 'reload') { void refreshCatalog(true); return }
           if (id === 'settings') {
-            // No public navigation surface reaches the settings card from here, so
-            // the entry reports the path instead of guessing at a host panel.
             hideMenu()
-            toastSequence.current += 1
-            setToast({ sequence: toastSequence.current, text: t('settings.menuHint', { path: settingsPath(t) }) })
+            setSettingsOpen(true)
             return
           }
           hideMenu()
@@ -345,6 +344,15 @@ export function createAuthoringView(React, deps) {
         ? h(BindingsDialog, {
           controller: workbench, t, onClose: () => setManaging(false), returnFocusRef: dialogReturnFocus,
           getReturnFocus: () => anchorRef.current?.querySelector('.ptcPlusAuthorButton'),
+        }) : null,
+      settingsOpen && view.reachable
+        ? h(PTCPlusSettingsDialog, {
+          t, usePtcSettings, updateSetting, callUserBindings,
+          onClose: () => {
+            setSettingsOpen(false)
+            queueMicrotask(() => anchorRef.current?.querySelector('.ptcPlusAuthorButton')
+              ?.focus({ preventScroll: true }))
+          },
         }) : null,
       toast === null ? null : typeof Toast === 'function'
         ? h(Toast, {

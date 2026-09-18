@@ -53,8 +53,8 @@ export const CONFIG_FIELDS = Object.freeze([
     default: true,
     label: '显示 PTC Plus 快捷入口',
     labelEn: 'Show the PTC Plus shortcut',
-    description: '在输入框旁显示 PTC Plus 快捷入口：查看和启停全局绑定、编写新绑定，并提示插件设置的打开路径；隐藏后仍可使用 /binding 命令。',
-    descriptionEn: 'Shows the PTC Plus shortcut beside the composer: global binding access and toggles, authoring, and the path to this plugin\'s settings. Hiding it keeps /binding commands available.',
+    description: '在输入框旁显示 PTC Plus 快捷入口：查看和启停全局绑定、编写新绑定，并直接打开插件设置窗口；隐藏后仍可使用 /binding 命令。',
+    descriptionEn: 'Shows the PTC Plus shortcut beside the composer: global binding access and toggles, authoring, and direct access to the plugin settings dialog. Hiding it keeps /binding commands available.',
   },
   {
     key: 'autoDescribeRunCode',

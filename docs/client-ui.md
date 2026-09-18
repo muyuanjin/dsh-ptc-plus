@@ -1,6 +1,6 @@
 # Client UI
 
-PTC Plus 提供**插件设置卡片**。卡片座位由宿主代际决定：旧代际在 DSH Web/Desktop 的 Settings → Plugin configuration 中以 `settings.plugin.item` 渲染，当前 DSH 在侧栏 Plugins 页面以 `plugins.row.config`（键 `<包名>#<行 id>`）渲染该 bundle 自己的配置；`src/client-host-compat.js` 同时发布到两个座位，由声明了槽位的那一代决定哪个生效，卡片按座位提供的 `summary`/`page` 视图分别渲染一句描述与完整表单。
+PTC Plus 提供**插件设置卡片**。卡片座位由宿主代际决定：旧代际在 DSH Web/Desktop 的 Settings → Plugin configuration 中以 `settings.plugin.item` 渲染，当前 DSH 在侧栏 Plugins 页面以 `plugins.row.config`（键 `<包名>#<行 id>`）渲染该 bundle 自己的配置；`src/client-host-compat.js` 同时发布到两个座位，由声明了槽位的那一代决定哪个生效，卡片按座位提供的 `summary`/`page` 视图分别渲染一句描述与完整表单。输入框旁的星光菜单还直接打开复用同一表单的应用内设置窗口，不依赖宿主页面的局部导航状态；菜单项悬浮提示保留原生设置座位的路径。
 
 Client 根入口只依赖 `settingsScope`、`slots`、`locale`、`connection` 和 `remote`。头部贡献直接消费公开 session slot 提供的 `useProjection`；REPL 注册另依赖 `sessions` 的当前选择和 projection face。命令卡片等待公开 command slot，composer 管理入口直接消费现有管理 Remote；其中的编写动作再等待 `remote.commands` 与公开输入 hooks，不依赖已改名的 conversation registry 或未使用的 `ui-session` 模块。缺失、卸载或迟到的 slot/provider 只影响需要它的贡献；没有 `useProjection` 时不挂载依赖它的会话视图，命令卡片保留宿主结果但不提供草稿操作。没有输入 hooks 时不显示编写动作，已有全局绑定仍可查看和启停。preset 优先读取 `agentPreset` projection，缺失时依次读取会话公开摘要里的 projection 值与旧宿主的 `agentPreset` 字段；binding 值和草稿资格不采用该回退。当前会话身份取宿主已发布的选中证据：旧代际在会话列表上投影 `current`，当前代际把视图选择留在 controller 之外、以主视图持有的会话表达。两者都不读取私有 store。设置和独立正文 tool view 继续可用，不读取私有 store 或自行重建会话状态。
 
@@ -30,7 +30,7 @@ Host half 通过 DSH 公共 `settings` 服务注册命名空间 `ptc-plus`。字
 | 工具扩展 | `cordisToolsEnabled` | 默认关闭；开启后为 PTC agent 加入官方 Cordis 工具、指引与精确的 `cordis-plugin-development` companion Skill，不发布同目录 sibling。 |
 | 界面显示 | `enhancedToolView` | 默认开启；关闭后注销 PTC Plus 的两个 keyed tool view，恢复 DSH 原生 generic row。 |
 | 界面显示 | `replViewEnabled` | 默认开启；控制顶级 REPL 页签，关闭时释放观察订阅，不影响设置中的全局管理入口。 |
-| 界面显示 | `bindingAuthorButtonVisible` | 默认开启；控制输入框旁的 PTC Plus 快捷入口（全局绑定查看/启停/编写，以及设置卡片所在座位的一句提示路径），不撤销 `/binding` 命令。 |
+| 界面显示 | `bindingAuthorButtonVisible` | 默认开启；控制输入框旁的 PTC Plus 快捷入口（全局绑定查看/启停/编写，以及直接打开完整插件设置窗口），不撤销 `/binding` 命令。 |
 | 资源限制 | `computeMs` / `maxWallMs` | 单 cell event-loop active（包括同步阻塞）与总耗时预算；前者不证明 CPU 消耗。 |
 | 资源限制 | `maxOldGenerationSizeMb` / `maxNestedRunCodeDepth` | kernel worker 内存与嵌套执行深度。 |
 | 资源限制 | `maxOutputBytes` | 单 cell 日志与返回结果的合计字节上限。 |
@@ -47,7 +47,7 @@ Host half 通过 DSH 公共 `settings` 服务注册命名空间 `ptc-plus`。字
 
 ## 全局用户 Binding 工作台
 
-`/binding new` 和 `/binding edit` 的历史命令处保留原始需求、状态和错误说明。候选被接受后，完整源码、模型上下文与保存/启用/丢弃操作由官方 `conversation.input.dock` 在当前输入框上方承载；历史条目只提供该请求自己的只读来源。面板通过 dock 内的零高度锚点悬浮在整个普通输入区上方，不顶高正文或宿主遮罩；默认展开，正文内部滚动。整条标题按钮支持点击与 Enter/Space，箭头随折叠状态变化；输入框只保留一个星光入口：首轮前即可通过官方 Menu 悬停、点击或键盘查看全局绑定、切换启停及打开完整工作台；编写命令可用时显示“编写新绑定”，并在同一个 Menu 内提供“修改绑定”第二步来选择已有条目。该入口与头部标识、REPL 页签同属 PTC surface：只在当前会话使用 `ptc` 或兼容 `code` preset 时注册，其他 preset 既不显示入口也不读取该会话的命令目录。该入口以插件署名提示说明来源与用途，有草稿时改为提示待处理草稿。有草稿时显示数量角标，草稿在独立分组中选择。当前 Host 每会话只保留一份候选，菜单不列出过期历史；隐藏编写快捷入口或命令服务缺席不影响已有草稿的访问。关闭和重新打开只改变展示，不撤销候选或待决 RPC。保存或丢弃确认成功后面板自动关闭；失败和结果待确认时保持用户的显隐选择。候选身份、写资格和异步结算由一个 Client review controller 复用 draft projection 与现有 RPC owner，页头不再提供第二套当前写操作。实现细节与验收证据见[Binding 审阅位置设计](binding-review-placement-design.md)。
+`/binding new` 和 `/binding edit` 的历史命令处保留原始需求、状态和错误说明。候选被接受后，完整源码、模型上下文与保存/启用/丢弃操作由官方 `conversation.input.dock` 在当前输入框上方承载；历史条目只提供该请求自己的只读来源。面板通过 dock 内的零高度锚点悬浮在整个普通输入区上方，不顶高正文或宿主遮罩；默认展开，正文内部滚动。整条标题按钮支持点击与 Enter/Space，箭头随折叠状态变化；输入框只保留一个星光入口：首轮前即可通过官方 Menu 悬停、点击或键盘查看全局绑定、切换启停及打开完整工作台；设置条目直接打开复用设置卡片表单的应用内窗口，关闭后将焦点还给仍可用的星光按钮；编写命令可用时显示“编写新绑定”，并在同一个 Menu 内提供“修改绑定”第二步来选择已有条目。该入口与头部标识、REPL 页签同属 PTC surface：只在当前会话使用 `ptc` 或兼容 `code` preset 时注册，其他 preset 既不显示入口也不读取该会话的命令目录。该入口以插件署名提示说明来源与用途，有草稿时改为提示待处理草稿。有草稿时显示数量角标，草稿在独立分组中选择。当前 Host 每会话只保留一份候选，菜单不列出过期历史；隐藏编写快捷入口或命令服务缺席不影响已有草稿的访问。关闭和重新打开只改变展示，不撤销候选或待决 RPC。保存或丢弃确认成功后面板自动关闭；失败和结果待确认时保持用户的显隐选择。候选身份、写资格和异步结算由一个 Client review controller 复用 draft projection 与现有 RPC owner，页头不再提供第二套当前写操作。实现细节与验收证据见[Binding 审阅位置设计](binding-review-placement-design.md)。
 
 `userBindingsEnabled` 关闭时不渲染任何 Global User Binding 管理界面，Host 也不注册对应 RPC 或 Agent 命令。开启后，REPL 页签中的“全局绑定”和设置管理按钮打开的大尺寸应用内弹窗复用同一个 `UserBindingsWorkbench`。设置卡片保留开关与管理按钮，不嵌入编辑器。普通管理不依赖当前存在 PTC 会话；Agent 辅助编写仍使用当前可用会话的 `/binding` 入口。
 
@@ -79,7 +79,7 @@ PTC session 的头部弹窗在功能启用时增加 Session 与 Global 页签。
 
 编写中、就绪、保存和丢弃等 chrome 从结构化事实在渲染时通过 `settings.ptcPlus` 翻译，已有回执随 locale 切换。Host admission 只返回 `kind: success`，非 GUI consumer 仍能观察成功结算；历史成功 text 不参与状态渲染。原始错误、用户需求与候选源码保持原文。
 
-`enhancedToolView` 默认开启并即时生效。开启时 PTC Plus 通过公共 keyed tool-view surface 为 `run_code` 与 `edit_run_code` 提供增强行，并在可用时使用 DSH 公共 `DisclosureRow`/`CodeBlock` primitive，缺少某项 capability 时使用插件自有的等价降级；关闭时立即注销这两个 keyed view，由 DSH 原生 generic row 负责布局、状态、代码高亮和输入/输出卡片。该开关只影响 Client 展示，不改变工具、prompt、runtime 或 session 语义。composer 星光入口使用公共 `Menu`、`Tooltip`、`Toast` 和 `IconSparkle16`，星光菜单的“修改绑定”第二步继续使用同一公共 `Menu` 的条目、滚动与键盘语义。缺失 `IconSparkle16` 时降级为纯文本按钮，缺失 `Toast` 时使用插件自有的内联状态提示；缺失 `Tooltip` 时悬浮说明由原生 `title` 承载。
+`enhancedToolView` 默认开启并即时生效。开启时 PTC Plus 通过公共 keyed tool-view surface 为 `run_code` 与 `edit_run_code` 提供增强行，并在可用时使用 DSH 公共 `DisclosureRow`/`CodeBlock` primitive，缺少某项 capability 时使用插件自有的等价降级；关闭时立即注销这两个 keyed view，由 DSH 原生 generic row 负责布局、状态、代码高亮和输入/输出卡片。该开关只影响 Client 展示，不改变工具、prompt、runtime 或 session 语义。composer 星光入口使用公共 `Menu`、`Tooltip`、`Toast`、`Modal` 和 `IconSparkle16`；设置窗口复用设置卡片的完整表单与写入 callback，星光菜单的“修改绑定”第二步继续使用同一公共 `Menu` 的条目、滚动与键盘语义。缺失 `IconSparkle16` 时降级为纯文本按钮，缺失 `Toast` 时使用插件自有的内联状态提示；缺失 `Tooltip` 时悬浮说明由原生 `title` 承载。
 
 `autoDescribeRunCode` 的设置名称是“允许执行缺少摘要的 run_code”，默认开启并即时生效。缺少外层 `run_code.description` 时，调用使用派生参数通过本地 DSH 校验，备用摘要仅进入 presentation metadata；关闭时由 DSH 校验原始参数。两种状态的模型请求保持字节稳定并包含 required `description`，原始调用参数、已有摘要、cell 源码和嵌套 native 工具参数保持不变。
 

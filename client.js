@@ -920,8 +920,8 @@
       default: true,
       label: "\u663E\u793A PTC Plus \u5FEB\u6377\u5165\u53E3",
       labelEn: "Show the PTC Plus shortcut",
-      description: "\u5728\u8F93\u5165\u6846\u65C1\u663E\u793A PTC Plus \u5FEB\u6377\u5165\u53E3\uFF1A\u67E5\u770B\u548C\u542F\u505C\u5168\u5C40\u7ED1\u5B9A\u3001\u7F16\u5199\u65B0\u7ED1\u5B9A\uFF0C\u5E76\u63D0\u793A\u63D2\u4EF6\u8BBE\u7F6E\u7684\u6253\u5F00\u8DEF\u5F84\uFF1B\u9690\u85CF\u540E\u4ECD\u53EF\u4F7F\u7528 /binding \u547D\u4EE4\u3002",
-      descriptionEn: "Shows the PTC Plus shortcut beside the composer: global binding access and toggles, authoring, and the path to this plugin's settings. Hiding it keeps /binding commands available."
+      description: "\u5728\u8F93\u5165\u6846\u65C1\u663E\u793A PTC Plus \u5FEB\u6377\u5165\u53E3\uFF1A\u67E5\u770B\u548C\u542F\u505C\u5168\u5C40\u7ED1\u5B9A\u3001\u7F16\u5199\u65B0\u7ED1\u5B9A\uFF0C\u5E76\u76F4\u63A5\u6253\u5F00\u63D2\u4EF6\u8BBE\u7F6E\u7A97\u53E3\uFF1B\u9690\u85CF\u540E\u4ECD\u53EF\u4F7F\u7528 /binding \u547D\u4EE4\u3002",
+      descriptionEn: "Shows the PTC Plus shortcut beside the composer: global binding access and toggles, authoring, and direct access to the plugin settings dialog. Hiding it keeps /binding commands available."
     },
     {
       key: "autoDescribeRunCode",
@@ -1900,8 +1900,9 @@
 
   // src/client-settings-view.js
   function createPtcSettingsView(React, deps) {
-    const { ActionButton, BindingsDialog, useWorkbenchController, icons } = deps;
+    const { ActionButton, BindingsDialog, Modal, useWorkbenchController, icons } = deps;
     const h = React.createElement;
+    const focusableSelector = 'button:not(:disabled),input:not(:disabled),textarea:not(:disabled),select:not(:disabled),[href],[tabindex]:not([tabindex="-1"]),[contenteditable=true],summary';
     function fieldInput(field, value, disabled, onChange, label) {
       if (field.type === "boolean") {
         return h("input", {
@@ -1941,9 +1942,10 @@
         }
       });
     }
-    function PTCPlusSettingsCard({ t: t2, usePtcSettings, updateSetting, callUserBindings, view }) {
+    function PTCPlusSettingsCard({ t: t2, usePtcSettings, updateSetting, callUserBindings, view, onBindingsOpenChange }) {
       const [open, setOpen] = React.useState(false);
       const [bindingsOpen, setBindingsOpen] = React.useState(false);
+      const bindingsAction = React.useRef(null);
       const [status, setStatus] = React.useState(null);
       const [pending, setPending] = React.useState(() => /* @__PURE__ */ new Set());
       const writeTail = React.useRef(Promise.resolve());
@@ -1959,9 +1961,14 @@
       const legacyMigration = value.legacyBindingSettings === true;
       const enabled = featureEnabled(snapshot, "plugin");
       const globalEnabled = featureEnabled(snapshot, "bindings");
+      const groupIdPrefix = view === "dialog" ? "ptc-plus-settings-dialog-group" : "ptc-plus-settings-group";
       const workbench = useWorkbenchController({ enabled: globalEnabled && bindingsOpen, callUserBindings });
+      const setBindingsDialogOpen = (next) => {
+        setBindingsOpen(next);
+        onBindingsOpenChange?.(next);
+      };
       React.useEffect(() => {
-        if (!globalEnabled) setBindingsOpen(false);
+        if (!globalEnabled) setBindingsDialogOpen(false);
       }, [globalEnabled]);
       const unavailable = snapshot.status !== "ready" || snapshot.writable !== true;
       const persist = (field, nextValue) => {
@@ -1996,10 +2003,10 @@
           {
             key: group.key,
             className: "ptcPlusGroup",
-            "aria-labelledby": `ptc-plus-settings-group-${group.key}`
+            "aria-labelledby": `${groupIdPrefix}-${group.key}`
           },
           h("h3", {
-            id: `ptc-plus-settings-group-${group.key}`,
+            id: `${groupIdPrefix}-${group.key}`,
             className: "ptcPlusGroupTitle"
           }, t2(`group.${group.key}`)),
           ...fields.map((key) => {
@@ -2037,17 +2044,17 @@
               ),
               field.key === "userBindingsEnabled" && globalEnabled ? h(
                 "div",
-                { className: "ptcPlusSettingAction" },
-                h(ActionButton, { type: "button", className: "ptcPlusButton", onClick: () => setBindingsOpen(true) }, t2("bindings.manage"))
+                { className: "ptcPlusSettingAction", ref: bindingsAction },
+                h(ActionButton, { type: "button", className: "ptcPlusButton", onClick: () => setBindingsDialogOpen(true) }, t2("bindings.manage"))
               ) : null
             );
           })
         );
       });
-      const settingsBody = (expanded) => h(
+      const settingsBody = (expanded, id2) => h(
         "div",
         {
-          id: "ptc-plus-settings-body",
+          id: id2,
           className: "ptcPlusBody",
           "data-open": expanded,
           hidden: !expanded
@@ -2065,9 +2072,15 @@
           ]
         ))
       );
-      const openBindings = globalEnabled && bindingsOpen ? h(BindingsDialog, { controller: workbench, t: t2, onClose: () => setBindingsOpen(false) }) : null;
+      const openBindings = globalEnabled && bindingsOpen ? h(BindingsDialog, {
+        controller: workbench,
+        t: t2,
+        onClose: () => setBindingsDialogOpen(false),
+        getReturnFocus: () => bindingsAction.current?.querySelector("button")
+      }) : null;
       if (view === "summary") return h("span", { className: "ptcPlusDescription" }, t2("card.description"));
       if (view === "page") return h("div", { className: "ptcPlusCard" }, settingsBody(true), openBindings);
+      if (view === "dialog") return h(React.Fragment, null, settingsBody(true), openBindings);
       return h(
         "li",
         { className: "ptcPlusCard" },
@@ -2090,11 +2103,54 @@
           h("span", { className: "ptcPlusStatus", "data-enabled": enabled }, t2(enabled ? "status.enabled" : "status.disabled")),
           h("span", { className: "ptcPlusChevron", "data-open": open, "aria-hidden": true }, h(icons.chevron, { size: 14 }))
         ),
-        settingsBody(open),
+        settingsBody(open, "ptc-plus-settings-body"),
         openBindings
       );
     }
-    return { PTCPlusSettingsCard };
+    function PTCPlusSettingsDialog(props) {
+      const { t: t2, onClose } = props;
+      const body = React.useRef(null);
+      const [bindingsOpen, setBindingsOpen] = React.useState(false);
+      React.useEffect(() => {
+        const dialog = body.current?.closest("[role=dialog]");
+        const target = body.current?.querySelector(focusableSelector) ?? dialog?.querySelector(focusableSelector);
+        target?.focus({ preventScroll: true });
+      }, []);
+      React.useEffect(() => {
+        const trapFocus = (event) => {
+          if (event.key !== "Tab" || bindingsOpen) return;
+          const dialog = body.current?.closest("[role=dialog]");
+          if (dialog === void 0 || dialog === null) return;
+          const controls = [...dialog.querySelectorAll(focusableSelector)].filter((element) => !element.closest('[hidden], [inert], [aria-hidden="true"]'));
+          const first = controls[0];
+          const last2 = controls.at(-1);
+          const active = document.activeElement;
+          if (!dialog.contains(active) || event.shiftKey && active === first || !event.shiftKey && active === last2) {
+            event.preventDefault();
+            (event.shiftKey ? last2 : first)?.focus({ preventScroll: true });
+          }
+        };
+        document.addEventListener("keydown", trapFocus);
+        return () => document.removeEventListener("keydown", trapFocus);
+      }, [bindingsOpen]);
+      const close = () => {
+        if (!bindingsOpen) onClose();
+      };
+      return h(Modal, {
+        open: true,
+        onClose: close,
+        title: t2("settings.dialogTitle"),
+        closeLabel: t2("settings.close"),
+        description: t2("card.description"),
+        className: "ptcPlusSettingsModal",
+        contentClassName: "ptcPlusSettingsDialogContent"
+      }, h(
+        "div",
+        { className: "ptcPlusSettingsDialog", ref: body },
+        h(PTCPlusSettingsCard, { ...props, view: "dialog", onBindingsOpenChange: setBindingsOpen })
+      ));
+    }
+    return { PTCPlusSettingsCard, PTCPlusSettingsDialog };
   }
 
   // src/client-repl-view.js
@@ -2910,12 +2966,14 @@
       Tooltip,
       CodeBlock,
       BindingsDialog,
+      PTCPlusSettingsDialog,
       useWorkbenchController,
       useBindingReview,
       catalogOwner,
       callUserBindings,
       subscribeReset,
       settingsCardSeat,
+      updateSetting,
       icons: {
         sparkle: IconSparkle16,
         chevron: IconChevronDownOutline14,
@@ -2951,6 +3009,7 @@
       const hoverTimer = React.useRef(void 0);
       const [menu, setMenu] = React.useState(null);
       const [managing, setManaging] = React.useState(false);
+      const [settingsOpen, setSettingsOpen] = React.useState(false);
       const catalogSource = React.useMemo(() => catalogOwner.claim(), [catalogOwner]);
       const catalogState = React.useSyncExternalStore(catalogSource.subscribe, catalogSource.getSnapshot);
       const catalog = catalogState.catalog;
@@ -2963,7 +3022,7 @@
       const hasDraft = view.mounted && view.candidate !== null && view.action === null;
       const quickAccess = featureEnabled(settings, "authorButton");
       const canAuthor = quickAccess && available && typeof useInput === "function" && typeof inputActions?.setDraft === "function";
-      const menuOpen = (hasDraft || quickAccess) && view.reachable && !managing && menu !== null && menu.key === view.candidateKey;
+      const menuOpen = (hasDraft || quickAccess) && view.reachable && !managing && !settingsOpen && menu !== null && menu.key === view.candidateKey;
       const workbench = useWorkbenchController({
         enabled: quickAccess && managing,
         active: view.reachable,
@@ -2978,6 +3037,7 @@
           catalogSource.reset();
           setMenu(null);
           setManaging(false);
+          setSettingsOpen(false);
         };
         const unsubscribe = subscribeReset(reset);
         return () => {
@@ -3250,8 +3310,7 @@
             }
             if (id2 === "settings") {
               hideMenu();
-              toastSequence.current += 1;
-              setToast({ sequence: toastSequence.current, text: t2("settings.menuHint", { path: settingsPath(t2) }) });
+              setSettingsOpen(true);
               return;
             }
             hideMenu();
@@ -3269,6 +3328,16 @@
           onClose: () => setManaging(false),
           returnFocusRef: dialogReturnFocus,
           getReturnFocus: () => anchorRef.current?.querySelector(".ptcPlusAuthorButton")
+        }) : null,
+        settingsOpen && view.reachable ? h(PTCPlusSettingsDialog, {
+          t: t2,
+          usePtcSettings,
+          updateSetting,
+          callUserBindings,
+          onClose: () => {
+            setSettingsOpen(false);
+            queueMicrotask(() => anchorRef.current?.querySelector(".ptcPlusAuthorButton")?.focus({ preventScroll: true }));
+          }
         }) : null,
         toast === null ? null : typeof Toast === "function" ? h(Toast, {
           key: toast.sequence,
@@ -29555,9 +29624,10 @@
       "console.bounded": "\u5DF2\u622A\u65AD",
       "bindings.manage": "\u7BA1\u7406\u5168\u5C40\u7ED1\u5B9A",
       "settings.menuEntry": "PTC Plus \u8BBE\u7F6E",
+      "settings.dialogTitle": "PTC Plus \u8BBE\u7F6E",
+      "settings.close": "\u5173\u95ED PTC Plus \u8BBE\u7F6E",
       "settings.pathSettings": "\u8BBE\u7F6E \u2192 \u63D2\u4EF6\u914D\u7F6E \u2192 PTC Plus",
       "settings.pathPlugins": "\u4FA7\u680F Plugins \u2192 dsh-ptc-plus \u2192 \u884C ptc-plus \u2192 Configure",
-      "settings.menuHint": "PTC Plus \u8BBE\u7F6E\uFF1A{path}",
       "bindings.entry": "\u6761\u76EE\u914D\u7F6E",
       "bindings.close": "\u5173\u95ED\u5168\u5C40\u7ED1\u5B9A\u5DE5\u4F5C\u53F0",
       "card.description": "PTC \u6A21\u5F0F\u7684\u4F1A\u8BDD\u7EA7 TypeScript REPL\u3002",
@@ -29724,9 +29794,10 @@
       "console.bounded": "Truncated",
       "bindings.manage": "Manage global bindings",
       "settings.menuEntry": "PTC Plus settings",
+      "settings.dialogTitle": "PTC Plus settings",
+      "settings.close": "Close PTC Plus settings",
       "settings.pathSettings": "Settings \u2192 Plugin configuration \u2192 PTC Plus",
       "settings.pathPlugins": "Side bar Plugins \u2192 dsh-ptc-plus \u2192 row ptc-plus \u2192 Configure",
-      "settings.menuHint": "PTC Plus settings: {path}",
       "bindings.entry": "Entry configuration",
       "bindings.close": "Close global bindings workbench",
       "card.description": "The session-bound TypeScript REPL for PTC mode.",
@@ -29912,6 +29983,7 @@
 .ptcPlusGroup+.ptcPlusGroup{margin-top:20px;padding-top:12px;border-top:1px solid var(--dsw-alias-border-l2)}.ptcPlusGroupTitle{margin:0;padding:8px 0;color:var(--dsw-alias-label-secondary);font-size:13px;font-weight:600;letter-spacing:0;line-height:20px}.ptcPlusRow{display:flex;align-items:center;gap:12px;min-height:48px;border-top:0.5px solid var(--dsw-alias-border-l2)}.ptcPlusGroupTitle+.ptcPlusRow{border-top:0}.ptcPlusMain{flex:1;min-width:0}.ptcPlusLabel{font-size:13px;font-weight:500;line-height:1.5}.ptcPlusDetail,.ptcPlusMessage{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:1.5;overflow-wrap:anywhere}.ptcPlusInput{box-sizing:border-box;min-width:72px;width:140px;height:34px;padding:0 12px;border:0.5px solid var(--dsw-alias-border-l4);border-radius:8px;background:var(--dsw-alias-bg-layer-3);color:var(--dsw-alias-label-primary);font:inherit;font-size:13px;line-height:1.5}.ptcPlusInput:focus-visible{border-color:var(--dsw-alias-brand-primary);outline:none}.ptcPlusCheck{width:18px;height:18px;accent-color:var(--dsw-alias-brand-primary)}
 .ptcPlusFooter{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:8px}.ptcPlusButton{appearance:none;display:inline-flex;align-items:center;justify-content:center;gap:5px;min-height:32px;padding:4px 14px;border:0.5px solid var(--dsw-alias-border-l3);border-radius:8px;background:transparent;color:var(--dsw-alias-label-secondary);cursor:pointer;font:inherit;font-size:13px;line-height:1.5;transition:color .16s ease,border-color .16s ease,background-color .16s ease}.ptcPlusButton:hover:not(:disabled){border-color:var(--dsw-alias-label-dimmed);color:var(--dsw-alias-label-primary)}.ptcPlusButton[data-kind=primary]{background:var(--dsw-alias-label-primary);border-color:transparent;color:var(--dsw-alias-bg-layer-3)}.ptcPlusButton[data-kind=primary]:hover:not(:disabled){background:var(--dsw-alias-label-primary-dimmed);border-color:transparent;color:var(--dsw-alias-bg-layer-3)}.ptcPlusButton[data-kind=ghost]{border-color:transparent}.ptcPlusButton[data-kind=ghost]:hover:not(:disabled){border-color:var(--dsw-alias-border-l3)}.ptcPlusButton[data-kind=danger]{color:var(--dsw-alias-state-error-primary)}.ptcPlusButton[data-kind=danger]:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover-danger);border-color:var(--dsw-alias-state-error-primary);color:var(--dsw-alias-state-error-primary)}.ptcPlusButton:disabled,.ptcPlusInput:disabled,.ptcPlusCheck:disabled{cursor:not-allowed;opacity:.4}
 .ptcPlusSettingAction{padding:4px 0 12px}
+.ptcPlusSettingsModal.ptcPlusSettingsModal{width:min(760px,calc(100vw - 32px));max-width:none;max-height:calc(100dvh - 40px);border-radius:8px}.ptcPlusSettingsDialogContent{min-height:0;overflow:auto;overscroll-behavior:contain}.ptcPlusSettingsDialog{min-width:0}.ptcPlusSettingsDialog .ptcPlusFields{margin:0;padding:0 0 12px;border-top:0}
 .ptcPlusDanger{color:var(--dsw-alias-state-error-primary)}
 .ptcPlusActiveShell{display:inline-flex;align-items:center}.ptcPlusActive{appearance:none;display:inline-flex;height:24px;align-items:center;gap:5px;padding:0 8px;border:1px solid color-mix(in srgb,var(--dsw-alias-state-success-primary,#16794f) 32%,transparent);border-radius:6px;background:var(--dsw-alias-state-success-tertiary,#e7f7ef);color:var(--dsw-alias-state-success-primary,#16794f);cursor:help;font-family:inherit;font-size:12px;font-weight:600;line-height:18px;white-space:nowrap;transition:background-color .14s ease,border-color .14s ease}.ptcPlusActive:hover,.ptcPlusActive[aria-expanded=true]{border-color:color-mix(in srgb,var(--dsw-alias-state-success-primary,#16794f) 48%,transparent);background:color-mix(in srgb,var(--dsw-alias-state-success-primary,#16794f) 16%,var(--dsw-alias-bg-layer-3,#fff))}.ptcPlusActive:focus-visible{outline:2px solid var(--dsw-alias-state-success-primary,#16794f);outline-offset:2px}.ptcPlusReplPopover{position:fixed;z-index:2147483000;inset:auto;display:none;box-sizing:border-box;margin:0;padding:0;border:0;overflow:visible;background:transparent;color:var(--dsw-alias-label-primary,#18191c)}.ptcPlusReplPopover:popover-open,.ptcPlusReplPopover[data-open=true]{display:block}.ptcPlusReplPopover::backdrop{background:transparent}.ptcPlusReplCard{display:flex;max-height:inherit;overflow:hidden;flex-direction:column;border:1px solid color-mix(in srgb,var(--dsw-alias-state-success-primary,#16794f) 22%,var(--dsw-alias-border-l2,rgba(0,0,0,.1)));border-top:3px solid var(--dsw-alias-state-success-primary,#16794f);border-radius:8px;background:var(--dsw-alias-bg-layer-3,#fff);box-shadow:0 14px 36px rgba(16,24,40,.2),0 3px 10px rgba(16,24,40,.1);color:var(--dsw-alias-label-primary,#18191c);white-space:normal}.ptcPlusReplHead{display:grid;flex:none;grid-template-columns:auto minmax(0,1fr);align-items:center;column-gap:8px;padding:11px 13px 10px;border-bottom:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1));background:color-mix(in srgb,var(--dsw-alias-state-success-primary,#16794f) 7%,var(--dsw-alias-bg-layer-3,#fff))}.ptcPlusReplStatusDot{grid-row:1/3;width:8px;height:8px;border-radius:50%;background:var(--dsw-alias-state-success-primary,#16794f);box-shadow:0 0 0 3px color-mix(in srgb,var(--dsw-alias-state-success-primary,#16794f) 14%,transparent)}.ptcPlusReplTitle,.ptcPlusReplSummary{display:block;min-width:0}.ptcPlusReplTitle{font-size:13px;font-weight:600;line-height:19px}.ptcPlusReplSummary{min-height:16px;overflow-wrap:anywhere;color:var(--dsw-alias-label-tertiary,#74777d);font-size:11px;line-height:16px}.ptcPlusReplList{min-height:0;margin:0;padding:5px 0;overflow:auto;overscroll-behavior:contain;list-style:none;scrollbar-gutter:stable}.ptcPlusReplBinding{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:4px 10px;padding:7px 12px}.ptcPlusReplBinding:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(38,49,72,.06))}.ptcPlusReplIdentity{display:flex;min-width:0;align-items:center;gap:7px}.ptcPlusReplName{min-width:0;overflow:hidden;font:12px/18px ui-monospace,SFMono-Regular,Consolas,monospace;text-overflow:ellipsis;white-space:nowrap}.ptcPlusReplKind{flex:none;padding:1px 6px;border:1px solid color-mix(in srgb,currentColor 22%,transparent);border-radius:999px;background:color-mix(in srgb,currentColor 10%,transparent);font-size:10px;font-weight:600;line-height:15px}.ptcPlusReplKind[data-kind=variable]{color:var(--dsw-alias-interactive-primary,#315fbd)}.ptcPlusReplKind[data-kind=function]{color:#7651b5}.ptcPlusReplKind[data-kind=class]{color:var(--dsw-alias-state-warning-primary,#946200)}.ptcPlusReplKind[data-kind=import]{color:#14766f}.ptcPlusReplPreview{grid-column:1;min-width:0;overflow:hidden;color:var(--dsw-alias-label-tertiary,#74777d);font:11px/16px ui-monospace,SFMono-Regular,Consolas,monospace;text-overflow:ellipsis;white-space:nowrap}.ptcPlusReplInspect{grid-column:2;grid-row:1/3;display:inline-flex;align-items:center;gap:4px;padding:3px 5px;border:0;border-radius:4px;background:transparent;color:var(--dsw-alias-label-secondary,#52565d);cursor:pointer;font:500 11px/17px inherit;white-space:nowrap}.ptcPlusReplInspect:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(38,49,72,.06));color:var(--dsw-alias-interactive-primary,#4d6bfe)}.ptcPlusReplInspect:focus-visible{outline:2px solid var(--dsw-alias-interactive-primary,#4d6bfe);outline-offset:1px}.ptcPlusReplDefinition{grid-column:1/-1;min-width:0;margin-top:4px;padding:8px;border-left:2px solid var(--dsw-alias-interactive-primary,#4d6bfe);background:var(--dsw-alias-bg-layer-2,rgba(38,49,72,.03))}.ptcPlusReplLocation{display:block;margin-bottom:5px;color:var(--dsw-alias-label-tertiary,#74777d);font-size:10px;line-height:15px}.ptcPlusReplCode{max-height:180px;margin:0;overflow:auto;color:inherit;font:11px/16px ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere}.ptcPlusReplEmpty,.ptcPlusReplMore{display:block;color:var(--dsw-alias-label-tertiary,#74777d)}.ptcPlusReplEmpty{padding:18px 13px;font-size:12px;line-height:18px}.ptcPlusReplMore{padding:8px 13px;border-top:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1));background:var(--dsw-alias-bg-layer-2,rgba(38,49,72,.03));font-size:11px;line-height:17px}
 .ptcPlusReplTabs{display:flex;flex:none;padding:6px 8px 0;border-bottom:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1))}.ptcPlusReplTab{flex:1;padding:5px 6px;border:0;border-bottom:2px solid transparent;background:transparent;color:var(--dsw-alias-label-secondary,#52565d);cursor:pointer;font-family:inherit;font-size:11px;font-weight:600;line-height:17px}.ptcPlusReplTab[aria-selected=true]{border-bottom-color:var(--dsw-alias-interactive-primary,#4d6bfe);color:var(--dsw-alias-label-primary,#18191c)}.ptcPlusGlobalPane{display:flex;min-height:0;flex-direction:column;gap:8px;padding:8px 12px}.ptcPlusGlobalList{min-height:0;margin:0 -12px -8px;padding:5px 0;overflow:auto;list-style:none}.ptcPlusGlobalItem{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:6px 10px;padding:7px 12px;border-radius:8px}.ptcPlusGlobalItem:hover{background:var(--dsw-alias-interactive-bg-hover)}.ptcPlusGlobalItem .ptcPlusGlobalSource,.ptcPlusGlobalItem .ptcPlusReplEmpty{grid-column:1/-1}.ptcPlusAuthoringDraft{display:flex;flex-direction:column;gap:6px;padding:10px 12px;border:0.5px solid var(--dsw-alias-border-l4);border-radius:12px;background:var(--dsw-alias-bg-layer-3)}.ptcPlusGlobalSource{max-height:180px;margin:6px 0 0;padding:8px 10px;overflow:auto;background:var(--dsw-alias-markdown-code-block);border-radius:8px;font:12px/18px ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere}
@@ -29921,7 +29993,7 @@
 .ptcPlusToolBody{margin:4px 0 8px 23px;border-left:2px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1));background:var(--dsw-alias-bg-layer-2,rgba(38,49,72,.03))}.ptcPlusToolSection{display:flex;min-width:0;flex-direction:column;gap:4px;padding:9px 11px}.ptcPlusToolSection+.ptcPlusToolSection{border-top:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1))}.ptcPlusToolSectionLabel{color:var(--dsw-alias-label-tertiary,#74777d);font-size:10px;font-weight:600;line-height:16px;text-transform:uppercase}.ptcPlusToolCode{max-height:320px;margin:0;overflow:auto;color:inherit;font:12px/18px ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere}.ptcPlusIoCard{display:flex;flex-direction:column;border:1px solid var(--dsw-alias-border-l1,rgba(0,0,0,.1));border-radius:12px;background:var(--dsw-alias-markdown-code-block,rgba(38,49,72,.06));overflow:hidden}.ptcPlusIoText{max-height:320px;margin:0;padding:12px 16px;overflow:auto;color:var(--dsw-alias-label-secondary,#52565d);font:12px/18px ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere}.ptcPlusIoText[data-error]{color:var(--dsw-alias-state-error-primary,#c43d3d)}.ptcPlusInspect{display:inline-flex;align-self:flex-start;align-items:center;gap:4px;margin:4px 0 2px 4px;padding:2px 8px;border:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1));border-radius:999px;background:var(--dsw-alias-bg-base,#fff);color:var(--dsw-alias-label-secondary,#52565d);cursor:pointer;opacity:0;font-size:11px;line-height:16px;transition:opacity .1s ease;display:inline-flex}.ptcPlusTool:hover .ptcPlusInspect,.ptcPlusInspect:focus-visible{opacity:1}.ptcPlusInspect:hover{background:var(--dsw-alias-interactive-bg-hover-solid,rgba(38,49,72,.06));color:var(--dsw-alias-label-primary,#18191c)}
 .ptcPlusAuthorButtonShell{display:inline-flex;width:28px;height:28px;flex:none;align-items:center;justify-content:center}.ptcPlusAuthorButton{appearance:none;display:inline-flex;box-sizing:border-box;width:28px;height:28px;align-items:center;justify-content:center;padding:0;border:0;border-radius:6px;background:transparent;color:var(--dsw-alias-label-secondary,#52565d);cursor:pointer}.ptcPlusAuthorButton:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(38,49,72,.06));color:var(--dsw-alias-interactive-primary,#4d6bfe)}.ptcPlusAuthorButton:focus-visible{outline:2px solid var(--dsw-alias-interactive-primary,#4d6bfe);outline-offset:1px}.ptcPlusAuthorButtonShell[data-text=true]{width:auto}.ptcPlusAuthorButtonLabel{padding:0 4px;font-size:12px;line-height:18px;font-weight:500}.ptcPlusComposerNotice{max-width:160px;color:var(--dsw-alias-label-secondary,#52565d);font-size:11px;line-height:17px;overflow-wrap:anywhere}.ptcPlusButton>svg{flex:none;margin-right:5px;vertical-align:-2px}
 @media(max-width:760px){.ptcPlusBindingsGrid{grid-template-columns:1fr}.ptcPlusBindingFields{grid-template-columns:1fr}.ptcPlusBindingField[data-wide=true]{grid-column:auto}.ptcPlusBindingSourceGrid{grid-template-columns:1fr}.ptcPlusBindingDebugBody{grid-template-columns:1fr}.ptcPlusBindingDebugBody .ptcPlusButton{width:100%}.ptcPlusBindingDebugWarning{grid-column:1}}
-@media(max-width:560px){.ptcPlusHeader{padding:12px}.ptcPlusFields{margin:0 12px}.ptcPlusRow{align-items:flex-start;flex-direction:column;gap:6px;padding:10px 0}.ptcPlusInput{width:100%}.ptcPlusFooter,.ptcPlusBindingsHead{align-items:stretch;flex-direction:column}.ptcPlusButton{width:100%}.ptcPlusFeatures,.ptcPlusToolBody{margin-left:0}.ptcPlusToolSummary .ptcPlusToolDescription{white-space:normal;overflow-wrap:anywhere}}
+@media(max-width:560px){.ptcPlusHeader{padding:12px}.ptcPlusFields{margin:0 12px}.ptcPlusSettingsModal.ptcPlusSettingsModal{width:calc(100vw - 16px);max-height:calc(100dvh - 16px)}.ptcPlusSettingsDialog .ptcPlusFields{margin:0}.ptcPlusRow{align-items:flex-start;flex-direction:column;gap:6px;padding:10px 0}.ptcPlusInput{width:100%}.ptcPlusFooter,.ptcPlusBindingsHead{align-items:stretch;flex-direction:column}.ptcPlusButton{width:100%}.ptcPlusFeatures,.ptcPlusToolBody{margin-left:0}.ptcPlusToolSummary .ptcPlusToolDescription{white-space:normal;overflow-wrap:anywhere}}
 @media(prefers-reduced-motion:reduce){.ptcPlusHeader,.ptcPlusChevron,.ptcPlusBody,.ptcPlusButton,.ptcPlusActive,.ptcPlusToolChevron,.ptcPlusReplChevron,.ptcPlusReplDefinitionWrap,.ptcPlusInspect,.ptcPlusBindingDockChevron{transition:none}}
 /* The summary button owns disclosure; definition content is a separate grid item. */
 .ptcPlusReplBinding{padding:0;cursor:default}.ptcPlusReplBindingTrigger{appearance:none;display:grid;width:100%;grid-column:1/-1;grid-template-columns:minmax(0,1fr) 24px;gap:3px 8px;min-height:36px;padding:5px 12px;border:0;background:transparent;color:inherit;text-align:left;cursor:pointer;font:inherit;transition:background-color .16s ease}.ptcPlusReplBindingTrigger:hover,.ptcPlusReplBindingTrigger[aria-expanded=true]{background:color-mix(in srgb,var(--dsw-alias-interactive-primary,#4d6bfe) 5%,transparent)}.ptcPlusReplBindingTrigger:focus-visible{outline:2px solid var(--dsw-alias-interactive-primary,#4d6bfe);outline-offset:-2px}
@@ -31068,9 +31140,10 @@
           }
         });
         const { observeRepl } = createReplObserver({ rpc, ctx });
-        const { PTCPlusSettingsCard } = createPtcSettingsView(React, {
+        const { PTCPlusSettingsCard, PTCPlusSettingsDialog } = createPtcSettingsView(React, {
           ActionButton,
           BindingsDialog,
+          Modal,
           useWorkbenchController,
           icons: { chevron: IconChevronDownOutline14 }
         });
@@ -31180,12 +31253,14 @@
           Tooltip,
           CodeBlock,
           BindingsDialog,
+          PTCPlusSettingsDialog,
           useWorkbenchController,
           useBindingReview,
           catalogOwner,
           callUserBindings,
           subscribeReset,
           settingsCardSeat: settingsCard.seat,
+          updateSetting,
           icons: {
             sparkle: IconSparkle16,
             chevron: IconChevronDownOutline14,

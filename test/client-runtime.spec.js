@@ -1692,6 +1692,24 @@ async function openGlobalMenu(view, runtime, mode = 'hover') {
   return trigger
 }
 
+test('the authoring entry names the settings seat the installed generation declares', async () => {
+  for (const [seat, path] of [
+    ['legacy', 'Settings → Plugin configuration → PTC Plus'],
+    ['row', 'Side bar Plugins → dsh-ptc-plus → row ptc-plus → Configure'],
+  ]) {
+    const { runtime } = await fixture({ settingsCardSeat: seat })
+    const view = runtime.renderRoot()
+    await runtime.flush()
+    await openGlobalMenu(view, runtime)
+    const item = view.getByRole('menuitem', { name: 'PTC Plus settings' })
+    expect(item.querySelector('.ptcPlusBindingMenuAction').getAttribute('title')).toBe(path)
+    fireEvent.click(item)
+    await runtime.flush()
+    expect(view.queryByRole('menu')).toBeNull()
+    expect(document.body.textContent).toContain(`PTC Plus settings: ${path}`)
+  }
+})
+
 test('global binding menu works before authoring is available and preserves the input', async () => {
   const entry = { ...reviewCandidate('fileTools').entry, enabled: false }
   let catalog = { revision: 'r1', entries: [entry] }
@@ -2167,7 +2185,7 @@ test('one authoring icon owns the draft badge and hover, click and keyboard menu
   const menu = view.getByRole('menu')
   expect(view.container.contains(menu)).toBe(false)
   expect(view.getAllByRole('menuitem').map(item => item.textContent)).toEqual([
-    'menu-draftDraft ready to save or discard', 'Write a new binding', 'Manage global bindings',
+    'menu-draftDraft ready to save or discard', 'Write a new binding', 'Manage global bindings', 'PTC Plus settings',
   ])
   expect(view.container.querySelector('.ptcPlusBindingDock')).toBeNull()
   fireEvent.click(view.getAllByRole('menuitem')[0])
@@ -2196,7 +2214,8 @@ test('one authoring icon owns the draft badge and hover, click and keyboard menu
   view.getByRole('menuitem', { name: 'Write a new binding' }).focus()
   settings.publish({ value: { ...value, bindingAuthorButtonVisible: false } })
   await runtime.flush()
-  expect(view.getAllByRole('menuitem')).toHaveLength(1)
+  // Every menu carries the constant settings row beside the binding actions.
+  expect(view.getAllByRole('menuitem')).toHaveLength(2)
   expect(view.queryByRole('menuitem', { name: 'Write a new binding' })).toBeNull()
   expect(document.activeElement).toBe(trigger)
 })
@@ -2249,7 +2268,7 @@ test('draft menu works without commands and revokes late command availability wh
   const view = runtime.renderRoot()
   await runtime.flush()
   await openDraftMenu(view, runtime)
-  expect(view.getAllByRole('menuitem')).toHaveLength(2)
+  expect(view.getAllByRole('menuitem')).toHaveLength(3)
   const pending = deferred()
   const provider = await runtime.mount({ apply(ctx) {
     const commands = { list: () => pending.promise }
@@ -2258,16 +2277,16 @@ test('draft menu works without commands and revokes late command availability wh
   await provider.dispose()
   pending.resolve({ ok: true, value: [{ name: 'binding' }] })
   await runtime.flush()
-  expect(view.getAllByRole('menuitem')).toHaveLength(2)
+  expect(view.getAllByRole('menuitem')).toHaveLength(3)
   const live = await runtime.mount({ apply(ctx) {
     const commands = { list: async () => ({ ok: true, value: [{ name: 'binding' }] }) }
     ctx.provide('remote.commands', commands)
   } })
   await runtime.flush()
-  expect(view.getAllByRole('menuitem')).toHaveLength(3)
+  expect(view.getAllByRole('menuitem')).toHaveLength(4)
   await live.dispose()
   await runtime.flush()
-  expect(view.getAllByRole('menuitem')).toHaveLength(2)
+  expect(view.getAllByRole('menuitem')).toHaveLength(3)
 })
 
 test('draft menus close on candidate replacement, session navigation, feature disablement and disposal', async () => {
@@ -2288,7 +2307,7 @@ test('draft menus close on candidate replacement, session navigation, feature di
   await runtime.flush()
   expect(view.queryByRole('menu')).toBeNull()
   await openDraftMenu(view, runtime)
-  expect(view.getAllByRole('menuitem')).toHaveLength(2)
+  expect(view.getAllByRole('menuitem')).toHaveLength(3)
   expect(view.getByRole('menuitem', { name: /menu-second/ }).textContent).toContain('menu-second')
   await runtime.sessions.add({ id: 'menu-other' })
   await runtime.sessions.setCurrent('menu-other')

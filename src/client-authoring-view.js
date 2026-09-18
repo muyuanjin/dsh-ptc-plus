@@ -19,12 +19,24 @@ export function createAuthoringView(React, deps) {
   const {
     ActionButton, IconButton, Menu, Toast, Tooltip, CodeBlock, BindingsDialog,
     useWorkbenchController, useBindingReview, catalogOwner, callUserBindings, subscribeReset,
+    settingsCardSeat,
     icons: {
       sparkle: IconSparkle16, chevron: IconChevronDownOutline14,
       close: IconCloseOutline16, check: IconCheckOutline14,
     },
   } = deps
   const h = React.createElement
+
+  /**
+   * Where the settings card lives on the installed generation.
+   *
+   * The compat module reports the seat the host declared rather than the
+   * generation, so this copy names the place a user can open now. Before either
+   * seat mounts it reports the current one, which is what an up-to-date install
+   * offers; the preceding generation's own seat replaces it once it registers.
+   */
+  const settingsPath = t => t(settingsCardSeat?.() === 'settings.plugin.item'
+    ? 'settings.pathSettings' : 'settings.pathPlugins')
 
   function BindingAuthorButton({
     sessionId, t, useInput, inputActions, usePtcSettings, useBindingCommand,
@@ -41,6 +53,7 @@ export function createAuthoringView(React, deps) {
     const firstItemRef = React.useRef(null)
     const manageItemRef = React.useRef(null)
     const reloadItemRef = React.useRef(null)
+    const settingsItemRef = React.useRef(null)
     const focused = React.useRef(false)
     const dialogReturnFocus = React.useRef(null)
     const hoverTimer = React.useRef(undefined)
@@ -282,6 +295,12 @@ export function createAuthoringView(React, deps) {
             ...(catalogError === null ? [] : [{ id: 'reload', label: h('span', { ref: reloadItemRef }, t('bindings.reload')) }]),
             { id: 'manage', label: h('span', { ref: manageItemRef, className: 'ptcPlusBindingMenuAction' }, t('bindings.manage')) },
           ] : []),
+          // The entry is also the shortcut to this plugin's own settings, so the
+          // row names the seat the installed generation declared and its hint
+          // carries the full path that opens it.
+          { id: 'settings', label: h('span', {
+            ref: settingsItemRef, className: 'ptcPlusBindingMenuAction', title: settingsPath(t),
+          }, t('settings.menuEntry')) },
         ],
         onSelect: id => {
           if (!anchorRef.current?.getClientRects().length) return
@@ -304,6 +323,14 @@ export function createAuthoringView(React, deps) {
             return
           }
           if (id === 'reload') { void refreshCatalog(true); return }
+          if (id === 'settings') {
+            // No public navigation surface reaches the settings card from here, so
+            // the entry reports the path instead of guessing at a host panel.
+            hideMenu()
+            toastSequence.current += 1
+            setToast({ sequence: toastSequence.current, text: t('settings.menuHint', { path: settingsPath(t) }) })
+            return
+          }
           hideMenu()
           if (id === 'new') openAuthoring()
           else if (id === 'manage') {

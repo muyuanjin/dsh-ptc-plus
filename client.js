@@ -918,10 +918,10 @@
       key: "bindingAuthorButtonVisible",
       type: "boolean",
       default: true,
-      label: "\u663E\u793A\u7ED1\u5B9A\u7F16\u5199\u6309\u94AE",
-      labelEn: "Show binding authoring button",
-      description: "\u5728\u8F93\u5165\u6846\u65C1\u663E\u793A\u5168\u5C40\u7ED1\u5B9A\u7684\u67E5\u770B\u3001\u542F\u505C\u548C\u7F16\u5199\u5165\u53E3\uFF1B\u9690\u85CF\u540E\u4ECD\u53EF\u4F7F\u7528 /binding \u547D\u4EE4\u3002",
-      descriptionEn: "Shows global binding access, toggles and authoring beside the composer. Hiding it keeps /binding commands available."
+      label: "\u663E\u793A PTC Plus \u5FEB\u6377\u5165\u53E3",
+      labelEn: "Show the PTC Plus shortcut",
+      description: "\u5728\u8F93\u5165\u6846\u65C1\u663E\u793A PTC Plus \u5FEB\u6377\u5165\u53E3\uFF1A\u67E5\u770B\u548C\u542F\u505C\u5168\u5C40\u7ED1\u5B9A\u3001\u7F16\u5199\u65B0\u7ED1\u5B9A\uFF0C\u5E76\u63D0\u793A\u63D2\u4EF6\u8BBE\u7F6E\u7684\u6253\u5F00\u8DEF\u5F84\uFF1B\u9690\u85CF\u540E\u4ECD\u53EF\u4F7F\u7528 /binding \u547D\u4EE4\u3002",
+      descriptionEn: "Shows the PTC Plus shortcut beside the composer: global binding access and toggles, authoring, and the path to this plugin's settings. Hiding it keeps /binding commands available."
     },
     {
       key: "autoDescribeRunCode",
@@ -2915,6 +2915,7 @@
       catalogOwner,
       callUserBindings,
       subscribeReset,
+      settingsCardSeat,
       icons: {
         sparkle: IconSparkle16,
         chevron: IconChevronDownOutline14,
@@ -2923,6 +2924,7 @@
       }
     } = deps;
     const h = React.createElement;
+    const settingsPath = (t2) => t2(settingsCardSeat?.() === "settings.plugin.item" ? "settings.pathSettings" : "settings.pathPlugins");
     function BindingAuthorButton({
       sessionId,
       t: t2,
@@ -2943,6 +2945,7 @@
       const firstItemRef = React.useRef(null);
       const manageItemRef = React.useRef(null);
       const reloadItemRef = React.useRef(null);
+      const settingsItemRef = React.useRef(null);
       const focused = React.useRef(false);
       const dialogReturnFocus = React.useRef(null);
       const hoverTimer = React.useRef(void 0);
@@ -3211,7 +3214,15 @@
             ...quickAccess ? [
               ...catalogError === null ? [] : [{ id: "reload", label: h("span", { ref: reloadItemRef }, t2("bindings.reload")) }],
               { id: "manage", label: h("span", { ref: manageItemRef, className: "ptcPlusBindingMenuAction" }, t2("bindings.manage")) }
-            ] : []
+            ] : [],
+            // The entry is also the shortcut to this plugin's own settings, so the
+            // row names the seat the installed generation declared and its hint
+            // carries the full path that opens it.
+            { id: "settings", label: h("span", {
+              ref: settingsItemRef,
+              className: "ptcPlusBindingMenuAction",
+              title: settingsPath(t2)
+            }, t2("settings.menuEntry")) }
           ],
           onSelect: (id2) => {
             if (!anchorRef.current?.getClientRects().length) return;
@@ -3235,6 +3246,12 @@
             }
             if (id2 === "reload") {
               void refreshCatalog(true);
+              return;
+            }
+            if (id2 === "settings") {
+              hideMenu();
+              toastSequence.current += 1;
+              setToast({ sequence: toastSequence.current, text: t2("settings.menuHint", { path: settingsPath(t2) }) });
               return;
             }
             hideMenu();
@@ -29336,7 +29353,18 @@
 
   // src/client-host-compat.js
   function sessionPresetValue(projected, summary) {
-    return projected !== void 0 || Object.hasOwn(summary?.projectionValues ?? {}, "agentPreset") ? projected : summary?.agentPreset;
+    if (projected !== void 0) return projected;
+    const values = summary?.projectionValues;
+    return values !== void 0 && Object.hasOwn(values, "agentPreset") ? values.agentPreset : summary?.agentPreset;
+  }
+  function currentSessionId(snapshot, remembered) {
+    if (snapshot?.current !== void 0) return snapshot.current;
+    const held = (id2) => id2 !== void 0 && (snapshot?.byId?.[id2]?.retainedBy?.mainView ?? 0) > 0;
+    if (held(remembered)) return remembered;
+    for (const row of Object.values(snapshot?.byId ?? {})) {
+      if ((row?.retainedBy?.mainView ?? 0) > 0) return row.id;
+    }
+    return void 0;
   }
   function sessionUsesPtcPreset(preset) {
     return preset === "ptc" || preset === "code";
@@ -29348,16 +29376,19 @@
   function watchCurrentSessionPreset(sessions, listener) {
     let source;
     let unsubscribeProjection;
+    let selected;
     const sync = () => {
       const snapshot = sessions.list.getSnapshot();
-      const current = snapshot.current;
-      const next = current === void 0 ? void 0 : sessions.binding(current)?.session.projections?.faceOf?.("agentPreset");
+      const current = currentSessionId(snapshot, selected);
+      selected = current;
+      const summary = current === void 0 ? void 0 : snapshot.byId?.[current];
+      const next = current === void 0 ? void 0 : sessions.binding?.(current)?.session?.projections?.faceOf?.("agentPreset");
       if (source !== next) {
         unsubscribeProjection?.();
         source = next;
         unsubscribeProjection = source?.subscribe(sync);
       }
-      listener(sessionPresetValue(source?.getSnapshot(), snapshot.byId?.[current]));
+      listener(sessionPresetValue(source?.getSnapshot(), summary));
     };
     const unsubscribeList = sessions.list.subscribe(sync);
     const dispose = () => {
@@ -29383,10 +29414,15 @@
     ];
   }
   function publishSettingsCard(ctx, { bundleName, locale, injectProps, component }) {
-    return settingsCardSeats(bundleName).map(({ slot, identity }) => ctx.slots.inject(
+    let live;
+    const releases = settingsCardSeats(bundleName).map(({ slot, identity }) => ctx.slots.inject(
       slot,
-      () => ctx.slots.register({ name: slot, ...identity, locale, inject: injectProps }, component)
+      () => {
+        live = slot;
+        return ctx.slots.register({ name: slot, ...identity, locale, inject: injectProps }, component);
+      }
     ));
+    return { seat: () => live, releases };
   }
 
   // internal/repl-memory-projection.js
@@ -29518,6 +29554,10 @@
       "console.unreadable": "\u4E0D\u53EF\u8BFB\u53D6",
       "console.bounded": "\u5DF2\u622A\u65AD",
       "bindings.manage": "\u7BA1\u7406\u5168\u5C40\u7ED1\u5B9A",
+      "settings.menuEntry": "PTC Plus \u8BBE\u7F6E",
+      "settings.pathSettings": "\u8BBE\u7F6E \u2192 \u63D2\u4EF6\u914D\u7F6E \u2192 PTC Plus",
+      "settings.pathPlugins": "\u4FA7\u680F Plugins \u2192 dsh-ptc-plus \u2192 \u884C ptc-plus \u2192 Configure",
+      "settings.menuHint": "PTC Plus \u8BBE\u7F6E\uFF1A{path}",
       "bindings.entry": "\u6761\u76EE\u914D\u7F6E",
       "bindings.close": "\u5173\u95ED\u5168\u5C40\u7ED1\u5B9A\u5DE5\u4F5C\u53F0",
       "card.description": "PTC \u6A21\u5F0F\u7684\u4F1A\u8BDD\u7EA7 TypeScript REPL\u3002",
@@ -29683,6 +29723,10 @@
       "console.unreadable": "Unreadable",
       "console.bounded": "Truncated",
       "bindings.manage": "Manage global bindings",
+      "settings.menuEntry": "PTC Plus settings",
+      "settings.pathSettings": "Settings \u2192 Plugin configuration \u2192 PTC Plus",
+      "settings.pathPlugins": "Side bar Plugins \u2192 dsh-ptc-plus \u2192 row ptc-plus \u2192 Configure",
+      "settings.menuHint": "PTC Plus settings: {path}",
       "bindings.entry": "Entry configuration",
       "bindings.close": "Close global bindings workbench",
       "card.description": "The session-bound TypeScript REPL for PTC mode.",
@@ -31059,7 +31103,7 @@
           isEnabled: () => featureEnabled(preferenceScope.getSnapshot(), feature),
           register
         });
-        publishSettingsCard(ctx, {
+        const settingsCard = publishSettingsCard(ctx, {
           bundleName: "dsh-ptc-plus",
           locale: LOCALE_NS,
           injectProps: () => ({ ...settingsProps(), updateSetting }),
@@ -31141,6 +31185,7 @@
           catalogOwner,
           callUserBindings,
           subscribeReset,
+          settingsCardSeat: settingsCard.seat,
           icons: {
             sparkle: IconSparkle16,
             chevron: IconChevronDownOutline14,

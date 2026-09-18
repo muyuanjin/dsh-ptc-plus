@@ -2,7 +2,7 @@
 
 PTC Plus 提供**插件设置卡片**。卡片座位由宿主代际决定：旧代际在 DSH Web/Desktop 的 Settings → Plugin configuration 中以 `settings.plugin.item` 渲染，当前 DSH 在侧栏 Plugins 页面以 `plugins.row.config`（键 `<包名>#<行 id>`）渲染该 bundle 自己的配置；`src/client-host-compat.js` 同时发布到两个座位，由声明了槽位的那一代决定哪个生效，卡片按座位提供的 `summary`/`page` 视图分别渲染一句描述与完整表单。
 
-Client 根入口只依赖 `settingsScope`、`slots`、`locale`、`connection` 和 `remote`。头部贡献直接消费公开 session slot 提供的 `useProjection`；REPL 注册另依赖 `sessions` 的当前选择和 projection face。命令卡片等待公开 command slot，composer 管理入口直接消费现有管理 Remote；其中的编写动作再等待 `remote.commands` 与公开输入 hooks，不依赖已改名的 conversation registry 或未使用的 `ui-session` 模块。缺失、卸载或迟到的 slot/provider 只影响需要它的贡献；没有 `useProjection` 时不挂载依赖它的会话视图，命令卡片保留宿主结果但不提供草稿操作。没有输入 hooks 时不显示编写动作，已有全局绑定仍可查看和启停。preset 优先读取 `agentPreset` projection，仅在缺少该 projection 时读取旧宿主公开会话摘要中的 `agentPreset`；binding 值和草稿资格不采用该回退。设置和独立正文 tool view 继续可用，不读取私有 store 或自行重建会话状态。
+Client 根入口只依赖 `settingsScope`、`slots`、`locale`、`connection` 和 `remote`。头部贡献直接消费公开 session slot 提供的 `useProjection`；REPL 注册另依赖 `sessions` 的当前选择和 projection face。命令卡片等待公开 command slot，composer 管理入口直接消费现有管理 Remote；其中的编写动作再等待 `remote.commands` 与公开输入 hooks，不依赖已改名的 conversation registry 或未使用的 `ui-session` 模块。缺失、卸载或迟到的 slot/provider 只影响需要它的贡献；没有 `useProjection` 时不挂载依赖它的会话视图，命令卡片保留宿主结果但不提供草稿操作。没有输入 hooks 时不显示编写动作，已有全局绑定仍可查看和启停。preset 优先读取 `agentPreset` projection，缺失时依次读取会话公开摘要里的 projection 值与旧宿主的 `agentPreset` 字段；binding 值和草稿资格不采用该回退。当前会话身份取宿主已发布的选中证据：旧代际在会话列表上投影 `current`，当前代际把视图选择留在 controller 之外、以主视图持有的会话表达。两者都不读取私有 store。设置和独立正文 tool view 继续可用，不读取私有 store 或自行重建会话状态。
 
 组件通过 renderer 提供的 `useProjection`、旧宿主的公开 `useSessions` 和注入 `hooks` 读取外部状态，设置写入与 RPC 由 apply 层注入 callback。业务组件不自行构造 external-store hook。设置、slot、provider 与插件释放共同拥有注册和订阅的生命周期；开关关闭时撤销相关贡献。
 
@@ -30,7 +30,7 @@ Host half 通过 DSH 公共 `settings` 服务注册命名空间 `ptc-plus`。字
 | 工具扩展 | `cordisToolsEnabled` | 默认关闭；开启后为 PTC agent 加入官方 Cordis 工具、指引与精确的 `cordis-plugin-development` companion Skill，不发布同目录 sibling。 |
 | 界面显示 | `enhancedToolView` | 默认开启；关闭后注销 PTC Plus 的两个 keyed tool view，恢复 DSH 原生 generic row。 |
 | 界面显示 | `replViewEnabled` | 默认开启；控制顶级 REPL 页签，关闭时释放观察订阅，不影响设置中的全局管理入口。 |
-| 界面显示 | `bindingAuthorButtonVisible` | 默认开启；控制输入框的全局绑定管理与编写入口，不撤销 `/binding` 命令。 |
+| 界面显示 | `bindingAuthorButtonVisible` | 默认开启；控制输入框旁的 PTC Plus 快捷入口（全局绑定查看/启停/编写，以及设置卡片所在座位的一句提示路径），不撤销 `/binding` 命令。 |
 | 资源限制 | `computeMs` / `maxWallMs` | 单 cell event-loop active（包括同步阻塞）与总耗时预算；前者不证明 CPU 消耗。 |
 | 资源限制 | `maxOldGenerationSizeMb` / `maxNestedRunCodeDepth` | kernel worker 内存与嵌套执行深度。 |
 | 资源限制 | `maxOutputBytes` | 单 cell 日志与返回结果的合计字节上限。 |

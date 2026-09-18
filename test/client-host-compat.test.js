@@ -121,7 +121,7 @@ test('the alpha.2 row-configuration key names the row this bundle patch inserts'
   assert.equal(seat.identity.key, `${manifest.name}#${rows[0].id}`)
 })
 
-test('one publication path waits on every seat and registers only where one is declared', () => {
+test('one publication path waits on every seat and reports the one the host declared', () => {
   const callbacks = new Map()
   const registrations = []
   const ctx = { slots: {
@@ -129,12 +129,13 @@ test('one publication path waits on every seat and registers only where one is d
     register(options, component) { registrations.push({ options, component }); return () => {} },
   } }
   const component = () => null
-  const disposers = publishSettingsCard(ctx, {
+  const card = publishSettingsCard(ctx, {
     bundleName: 'dsh-ptc-plus', locale: 'settings.ptcPlus',
     injectProps: () => ({ hooks: {} }), component,
   })
   assert.deepEqual([...callbacks.keys()], ['settings.plugin.item', 'plugins.row.config'])
   assert.deepEqual(registrations, [], 'an undeclared seat registers nothing')
+  assert.equal(card.seat(), undefined, 'no seat is live until the host declares one')
   callbacks.get('plugins.row.config')()
   assert.equal(registrations.length, 1)
   assert.equal(registrations[0].component, component)
@@ -142,11 +143,71 @@ test('one publication path waits on every seat and registers only where one is d
   assert.equal(registrations[0].options.key, 'dsh-ptc-plus#ptc-plus')
   assert.equal(registrations[0].options.locale, 'settings.ptcPlus')
   assert.deepEqual(registrations[0].options.inject(), { hooks: {} })
+  assert.equal(card.seat(), 'plugins.row.config')
   callbacks.get('settings.plugin.item')()
   assert.equal(registrations.length, 2)
   assert.equal(registrations[1].options.name, 'settings.plugin.item')
   assert.equal(registrations[1].options.key, 'ptc-plus')
-  assert.deepEqual(disposers.map(disposer => typeof disposer), ['function', 'function'])
-  for (const release of disposers) release()
+  assert.equal(card.seat(), 'settings.plugin.item')
+  assert.deepEqual(card.releases.map(disposer => typeof disposer), ['function', 'function'])
+  for (const release of card.releases) release()
   assert.equal(callbacks.size, 0)
+})
+
+/** One session list with the selection evidence the named generation publishes. */
+function sessionSource({ snapshot, binding }) {
+  const listeners = []
+  return {
+    listeners,
+    sessions: {
+      list: {
+        getSnapshot: () => snapshot,
+        subscribe(listener) { listeners.push(listener); return () => listeners.splice(listeners.indexOf(listener), 1) },
+      },
+      binding,
+    },
+  }
+}
+
+test('the current-session preset follows whichever selection evidence the host publishes', () => {
+  // The current DSH leaves view selection outside the controller and retains the
+  // session its main view shows; the preceding one projects `current` directly.
+  const current = sessionSource({
+    snapshot: { ids: ['a2-session'], byId: { 'a2-session': {
+      id: 'a2-session', retainedBy: { mainView: 1 }, projectionValues: { agentPreset: 'ptc' },
+    } } },
+    binding: () => undefined,
+  })
+  const seen = []
+  watchCurrentSessionPreset(current.sessions, preset => seen.push(preset))
+  assert.deepEqual(seen, ['ptc'], 'published projection values carry the preset without a retained scope')
+
+  const face = { getSnapshot: () => 'code', subscribe: () => () => {} }
+  const preceding = sessionSource({
+    snapshot: { current: 'rc2-session', byId: { 'rc2-session': { id: 'rc2-session' } } },
+    binding: id => (id === 'rc2-session'
+      ? { session: { projections: { faceOf: key => (key === 'agentPreset' ? face : undefined) } } } : undefined),
+  })
+  const preceded = []
+  watchCurrentSessionPreset(preceding.sessions, preset => preceded.push(preset))
+  assert.deepEqual(preceded, ['code'], 'a retained scope face stays the primary source')
+
+  const unselected = sessionSource({ snapshot: { ids: [], byId: {} }, binding: () => undefined })
+  const empty = []
+  watchCurrentSessionPreset(unselected.sessions, preset => empty.push(preset))
+  assert.deepEqual(empty, [undefined])
+
+  // A switch retains the new session before releasing the old one, so the held
+  // selection stays the one the view shows until its retention really ends.
+  const rows = {
+    old: { id: 'old', retainedBy: { mainView: 1 }, projectionValues: { agentPreset: 'chat' } },
+    replacement: { id: 'replacement', retainedBy: { mainView: 1 }, projectionValues: { agentPreset: 'ptc' } },
+  }
+  const switching = sessionSource({ snapshot: { ids: ['old', 'replacement'], byId: rows }, binding: () => undefined })
+  const switched = []
+  watchCurrentSessionPreset(switching.sessions, preset => switched.push(preset))
+  assert.deepEqual(switched, ['chat'], 'the previously held session stays selected through the overlap')
+  rows.old.retainedBy.mainView = 0
+  for (const listener of [...switching.listeners]) listener()
+  assert.deepEqual(switched, ['chat', 'ptc'], 'the released session gives way to the newly retained one')
 })

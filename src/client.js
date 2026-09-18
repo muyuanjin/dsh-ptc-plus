@@ -149,8 +149,9 @@ window.__ModuleLoader__.load({
       })
 
       // The settings card's seat differs by DSH generation; the compat module
-      // owns both contracts and why one publication serves them.
-      publishSettingsCard(ctx, {
+      // owns both contracts and why one publication serves them. The composer
+      // entry points at whichever seat the installed generation declared.
+      const settingsCard = publishSettingsCard(ctx, {
         bundleName: __PTC_PLUS_CLIENT_MODULE_ID__,
         locale: LOCALE_NS,
         injectProps: () => ({ ...settingsProps(), updateSetting }),
@@ -217,6 +218,7 @@ window.__ModuleLoader__.load({
       const { BindingAuthorButton, BindingReviewDock, BindingCommandCard } = createAuthoringView(React, {
         ActionButton, IconButton, Menu, Toast, Tooltip, CodeBlock, BindingsDialog,
         useWorkbenchController, useBindingReview, catalogOwner, callUserBindings, subscribeReset,
+        settingsCardSeat: settingsCard.seat,
         icons: {
           sparkle: IconSparkle16, chevron: IconChevronDownOutline14,
           close: IconCloseOutline16, check: IconCheckOutline14,

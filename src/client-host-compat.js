@@ -1,8 +1,32 @@
 import { SETTINGS_NAMESPACE } from '../internal/config-spec.js'
 
+/** The preset a session publishes, preferring the projection reader's evidence. */
 function sessionPresetValue(projected, summary) {
-  return projected !== undefined || Object.hasOwn(summary?.projectionValues ?? {}, 'agentPreset')
-    ? projected : summary?.agentPreset
+  if (projected !== undefined) return projected
+  const values = summary?.projectionValues
+  // A published key is authoritative even when its value is undefined: it says
+  // the projection exists, so the legacy summary field must not stand in.
+  return values !== undefined && Object.hasOwn(values, 'agentPreset') ? values.agentPreset : summary?.agentPreset
+}
+
+/**
+ * The session the main view holds.
+ *
+ * The preceding DSH projects the current selection on the session list snapshot.
+ * The current one keeps view selection outside the controller and retains the
+ * session its main view shows instead, so `retainedBy.mainView` is that layer's
+ * own selection evidence. A switch retains the new session before releasing the
+ * old one, so the remembered selection wins while it is still held: that is the
+ * same rule the view layer applies to decide which session it shows.
+ */
+function currentSessionId(snapshot, remembered) {
+  if (snapshot?.current !== undefined) return snapshot.current
+  const held = id => id !== undefined && (snapshot?.byId?.[id]?.retainedBy?.mainView ?? 0) > 0
+  if (held(remembered)) return remembered
+  for (const row of Object.values(snapshot?.byId ?? {})) {
+    if ((row?.retainedBy?.mainView ?? 0) > 0) return row.id
+  }
+  return undefined
 }
 
 export function sessionUsesPtcPreset(preset) {
@@ -21,17 +45,20 @@ export function useSessionPreset({ sessionId, useProjection, useSessions }) {
 export function watchCurrentSessionPreset(sessions, listener) {
   let source
   let unsubscribeProjection
+  let selected
   const sync = () => {
     const snapshot = sessions.list.getSnapshot()
-    const current = snapshot.current
-    const next = current === undefined ? undefined
-      : sessions.binding(current)?.session.projections?.faceOf?.('agentPreset')
+    const current = currentSessionId(snapshot, selected)
+    selected = current
+    const summary = current === undefined ? undefined : snapshot.byId?.[current]
+    const next = current === undefined
+      ? undefined : sessions.binding?.(current)?.session?.projections?.faceOf?.('agentPreset')
     if (source !== next) {
       unsubscribeProjection?.()
       source = next
       unsubscribeProjection = source?.subscribe(sync)
     }
-    listener(sessionPresetValue(source?.getSnapshot(), snapshot.byId?.[current]))
+    listener(sessionPresetValue(source?.getSnapshot(), summary))
   }
   const unsubscribeList = sessions.list.subscribe(sync)
   const dispose = () => {
@@ -94,7 +121,12 @@ export function settingsCardSeats(bundleName) {
 }
 
 /**
- * Publish one settings card to every seat above.
+ * Publish one settings card to every seat above and report which seat the
+ * installed generation declared.
+ *
+ * Only the declaring generation runs a seat's callback, so the card's location
+ * is observed rather than inferred: the seat that registered is where a user
+ * finds the card now, and that is what any copy pointing at it must say.
  *
  * @param ctx - browser plugin context carrying `slots`.
  * @param options.bundleName - this bundle's package name, as the profile installs it.
@@ -102,11 +134,17 @@ export function settingsCardSeats(bundleName) {
  * @param options.injectProps - inject face producing the card's props.
  * @param options.component - the card component; it renders the summary view as
  *   one line and the card's other views as the full settings form.
- * @returns one disposer per seat, for callers that release them explicitly.
+ * @returns `seat` reports the live seat's slot name, and `releases` holds one
+ *   disposer per seat for callers that release them explicitly.
  */
 export function publishSettingsCard(ctx, { bundleName, locale, injectProps, component }) {
-  return settingsCardSeats(bundleName).map(({ slot, identity }) => ctx.slots.inject(
+  let live
+  const releases = settingsCardSeats(bundleName).map(({ slot, identity }) => ctx.slots.inject(
     slot,
-    () => ctx.slots.register({ name: slot, ...identity, locale, inject: injectProps }, component),
+    () => {
+      live = slot
+      return ctx.slots.register({ name: slot, ...identity, locale, inject: injectProps }, component)
+    },
   ))
+  return { seat: () => live, releases }
 }

@@ -190,9 +190,17 @@ export function fixture(config = {}, fixtureOptions = {}) {
   const invokeSeam = request => (seamServiceName === 'ptcRuntime'
     ? runtime.run(runtime.resolve(request))
     : runtime.run(request))
+  // These tests run cells that compile and import modules in-process, and the
+  // compute budget counts event-loop active time, including synchronous
+  // blocking. A budget tuned for one deployment therefore turns a loaded CI
+  // runner into a semantic failure, because runner scheduling inflates the
+  // measure the budget reads. The defaults keep that measurement out of what a
+  // semantic test asserts; a test that asserts budget or deadline behavior
+  // states the budget it asserts. The shipped defaults remain `computeMs`
+  // 60_000 and `maxWallMs` 600_000, so this is still far below deployment.
   apply(ctx, {
-    computeMs: 500,
-    maxWallMs: 2_000,
+    computeMs: 5_000,
+    maxWallMs: 20_000,
     maxOldGenerationSizeMb: 64,
     ...config,
   })

@@ -734,7 +734,9 @@ return message
 
 test('turns child runtime failure into a normal binding error and keeps the parent usable', async (t) => {
   const controller = new AbortController()
-  const state = fixture()
+  // The child loops forever, so this test states the budget it asserts: the
+  // nested run has to reach its compute deadline.
+  const state = fixture({ computeMs: 500, maxWallMs: 2_000 })
   t.after(() => state.dispose())
 
   const result = await state.run('recursive-child-failure', `

@@ -66,6 +66,7 @@ test('bundle carries every public slot and entry identity it registers', async (
   // them silently drops a user-visible surface, which is what this asserts.
   for (const slot of [
     'settings.plugin.item',
+    'plugins.row.config',
     'conversation.session.header.actions',
     'conversation.chat.commandview',
     'conversation.input.left',

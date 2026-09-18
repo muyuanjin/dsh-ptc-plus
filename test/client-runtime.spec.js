@@ -33,6 +33,20 @@ vi.mock('../src/client-catalog.js', async importOriginal => {
 })
 
 const cleanups = []
+// DSH 0.1.6-alpha.2 declares a bundle's own row configuration as this keyed
+// slot and dispatches `<package name>#<row id>`, with the row id
+// cordis.patch.yml inserts for this package.
+const ROW_CONFIG_SLOT = 'plugins.row.config'
+const ROW_CONFIG_KEY = 'dsh-ptc-plus#ptc-plus'
+// The Plugins page asks one entry for both of its views; the wrappers keep the
+// two renders addressable without standing in for page chrome.
+function rowConfigViews(props) {
+  return React.createElement(React.Fragment, null,
+    React.createElement('div', { 'data-view': 'summary' },
+      props.renderSlot(ROW_CONFIG_SLOT, { view: 'summary' }, { entryKey: ROW_CONFIG_KEY })),
+    React.createElement('div', { 'data-view': 'page' },
+      props.renderSlot(ROW_CONFIG_SLOT, { view: 'page' }, { entryKey: ROW_CONFIG_KEY })))
+}
 // JSDOM has no text layout. Editor geometry is exercised in the real browser.
 beforeAll(() => {
   Range.prototype.getClientRects = () => []
@@ -60,7 +74,7 @@ async function clientPlugin(ui = primitives) {
   })
 }
 
-async function fixture({ enabled = true, bindings = true, conversation = true, repl = false, composer = false, dock = true, uiSession = true, rpc, watchRpc, observeRpc, commands, turn, tool, ui, setupEvents } = {}) {
+async function fixture({ enabled = true, bindings = true, conversation = true, repl = false, composer = false, dock = true, uiSession = true, settingsCardSeat = 'legacy', rpc, watchRpc, observeRpc, commands, turn, tool, ui, setupEvents } = {}) {
   const runtime = await SlotTestRuntime.create()
   cleanups.push(() => runtime.dispose())
   const settings = stubSettingsScope()
@@ -121,7 +135,9 @@ async function fixture({ enabled = true, bindings = true, conversation = true, r
   await runtime.sessions.add({ id: 'client-session' })
   runtime.sessions.behavior('client-session').projections.set('agentPreset', 'ptc')
   await runtime.root.declare({
-    'settings.plugin.item': { kind: 'keyed', scope: 'root' },
+    ...(settingsCardSeat === 'legacy' ? { 'settings.plugin.item': { kind: 'keyed', scope: 'root' } } : {}),
+    ...(settingsCardSeat === 'row' ? { [ROW_CONFIG_SLOT]: { kind: 'keyed', scope: 'root' } } : {}),
+    ...(settingsCardSeat === 'page' ? { 'test.pluginPage': { kind: 'list', scope: 'root' } } : {}),
     'conversation.session.header.actions': { kind: 'list', scope: 'session' },
     'conversation.chat.turnTail': { kind: 'chain', scope: 'session' },
     'conversation.chat.commandview': { kind: 'keyed', scope: 'session' },
@@ -131,7 +147,11 @@ async function fixture({ enabled = true, bindings = true, conversation = true, r
     'conversation.composer': { kind: 'chain', scope: 'session' },
     'tool.call.toolview': { kind: 'keyed', scope: 'session' },
   }, props => React.createElement(React.Fragment, null,
-    props.renderSlot('settings.plugin.item', {}, { entryKey: 'ptc-plus' }),
+    settingsCardSeat === 'legacy'
+      ? props.renderSlot('settings.plugin.item', {}, { entryKey: 'ptc-plus' })
+      : null,
+    settingsCardSeat === 'row' ? rowConfigViews(props) : null,
+    settingsCardSeat === 'page' ? props.renderSlot('test.pluginPage', {}) : null,
     React.createElement(props.SessionProvider, null,
       props.renderSlot('conversation.session.header.actions', {}),
       dock ? props.renderSlot('conversation.input.dock', {}) : null,
@@ -745,6 +765,72 @@ test('reload rejects mismatched revisions and ignores responses from a disposed 
   await runtime.flush()
   expect(view.container.querySelector('.ptcPlusBindings')).toBeNull()
   expect(rpcCalls.filter(call => call.endpoint === 'save')).toHaveLength(1)
+})
+
+test('the alpha.2 Plugins page claims the row-configuration seat only while it is mounted', async () => {
+  const { runtime } = await fixture({ settingsCardSeat: 'page' })
+  const view = runtime.renderRoot()
+  await runtime.flush()
+  // Alpha.2 declares neither the old card seat nor the page's seat before the
+  // page itself mounts, so the plugin waits instead of registering.
+  expect(runtime.slots.entries('settings.plugin.item')).toHaveLength(0)
+  expect(runtime.slots.entries(ROW_CONFIG_SLOT)).toHaveLength(0)
+  expect(view.container.querySelector('.ptcPlusFields')).toBeNull()
+  const page = await runtime.mount({ inject: ['slots'], apply(ctx) {
+    ctx.slots.inject('test.pluginPage', () => ctx.slots.register({
+      name: 'test.pluginPage', id: 'plugin-manager-page',
+      children: { [ROW_CONFIG_SLOT]: { kind: 'keyed', scope: 'root' } },
+    }, props => rowConfigViews(props)))
+  } })
+  await runtime.flush()
+  expect(runtime.slots.entries(ROW_CONFIG_SLOT).map(entry => entry.options.key)).toEqual([ROW_CONFIG_KEY])
+  expect(view.container.querySelector('[data-view=summary] .ptcPlusDescription').textContent)
+    .toBe('The session-bound TypeScript REPL for PTC mode.')
+  const form = view.container.querySelector('[data-view=page]')
+  expect(form.querySelector('.ptcPlusFields')).not.toBeNull()
+  expect(form.querySelector('.ptcPlusBody').hasAttribute('hidden')).toBe(false)
+  // The page draws the title, the icon and the crumb; the entry draws only the form.
+  expect(form.querySelector('.ptcPlusHeader')).toBeNull()
+  expect(form.querySelectorAll('.ptcPlusCard')).toHaveLength(1)
+  await page.dispose()
+  await runtime.flush()
+  expect(runtime.slots.entries(ROW_CONFIG_SLOT)).toHaveLength(0)
+  expect(view.container.querySelector('.ptcPlusFields')).toBeNull()
+})
+
+test('the alpha.2 seat renders both views when the page declares it first', async () => {
+  const { runtime, settings } = await fixture({ settingsCardSeat: 'row' })
+  expect(runtime.slots.entries('settings.plugin.item')).toHaveLength(0)
+  expect(runtime.slots.entries(ROW_CONFIG_SLOT).map(entry => entry.options.key)).toEqual([ROW_CONFIG_KEY])
+  const view = runtime.renderRoot()
+  await runtime.flush()
+  const summary = view.container.querySelector('[data-view=summary]')
+  expect(summary.querySelector('.ptcPlusFields')).toBeNull()
+  expect(summary.textContent).toBe('The session-bound TypeScript REPL for PTC mode.')
+  const form = view.container.querySelector('[data-view=page]')
+  expect([...form.querySelectorAll('.ptcPlusGroupTitle')].map(title => title.textContent))
+    .toEqual(['Plugin switch', 'Tool call tolerance', 'REPL syntax', 'State and recovery', 'Tool extensions', 'Interface display', 'Resource limits'])
+  expect(form.querySelector('[role=status]').textContent).toBe('Changes take effect immediately.')
+  const fields = [...form.querySelectorAll('[role=switch], input[type=number], select')]
+  expect(fields).toHaveLength(CONFIG_GROUPS.flatMap(group => group.fields).length)
+  fireEvent.click(form.querySelector('[role=switch][aria-label="Enable PTC Plus"]'))
+  await runtime.flush()
+  // The page view is the settings form itself: its controls write through the
+  // same scope the legacy card uses, and the registration survives the write.
+  expect(settings.set).toHaveBeenCalledWith('enabled', false)
+  expect(runtime.slots.entries(ROW_CONFIG_SLOT)).toHaveLength(1)
+})
+
+test('the settings-section seat stays the only claim where the generation declares it', async () => {
+  const { runtime } = await fixture({})
+  expect(runtime.slots.entries('settings.plugin.item').map(entry => entry.options.key)).toEqual(['ptc-plus'])
+  expect(runtime.slots.entries(ROW_CONFIG_SLOT)).toHaveLength(0)
+  const view = runtime.renderRoot()
+  await runtime.flush()
+  const card = view.container.querySelector('.ptcPlusCard')
+  expect(card.querySelector('.ptcPlusHeader')).not.toBeNull()
+  expect(card.querySelector('.ptcPlusBody').hasAttribute('hidden')).toBe(true)
+  expect(card.querySelector('.ptcPlusDescription').textContent).toBe('The session-bound TypeScript REPL for PTC mode.')
 })
 
 test('the code console uses the unsaved draft, retains history and releases only its temporary environment', async () => {

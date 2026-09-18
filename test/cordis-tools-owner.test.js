@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { Context } from '@deepseek-ai/cordis'
 import { dirname, join } from 'node:path'
 import test from 'node:test'
 import { createCordisToolsOwner as createCordisToolsOwnerRaw } from '../internal/cordis-tools-owner.js'
@@ -167,6 +168,7 @@ function scopedAgent(id, options = {}) {
     ['skills', skills],
   ])
   for (const missing of options.missingServices ?? []) services.delete(missing)
+  for (const malformed of options.malformedServices ?? []) services.set(malformed, {})
   let pluginCalls = 0
   let skillPluginCalls = 0
   const ctx = {
@@ -388,6 +390,36 @@ test('Cordis owner preserves incomplete observations while filtering and guardin
   await owner.dispose()
 })
 
+test('Cordis owner leaves the host dispatchers their own outcome', async () => {
+  const root = new Context()
+  root.provide('agents', { list: () => [] })
+  root.provide('cordisInspect', inspectRegistry())
+  const owner = createCordisToolsOwner(root, fakeCordisPlugin)
+  await owner.ready
+
+  // DSH 0.1.6 announces agent creation through its own serial dispatch, whose
+  // documented contract is that a listener failure rejects the agents.create()
+  // that asked for the agent. A scope this owner cannot serve must not become
+  // that failure, and the parallel form of the same announcement must hold too.
+  const omitted = scopedAgent('host-dispatch-omitted-tool', { skillTool: false })
+  await root.serial(root, 'agent/created', { agent: omitted })
+  await root.parallel(root, 'agent/created', { agent: omitted })
+  assert.equal(TEST_CORDIS_TOOL_NAMES.some(name => omitted.definitions.has(name)), false)
+
+  // A scope whose exposed surface contradicts the host contract withdraws from
+  // that scope, and the prompt assembly it still reaches keeps its own result.
+  const broken = scopedAgent('host-dispatch-broken-preset', { preset: { path: 'cordis.yml' } })
+  const assembly = await root.waterfall(root, 'system-prompt/assemble', { sections: [], tools: [] },
+    { scope: broken }, () => 'assembled')
+  assert.equal(assembly, 'assembled')
+  assert.equal(TEST_CORDIS_TOOL_NAMES.some(name => broken.definitions.has(name)), false)
+
+  // A contradiction found before the mount exists is contained the same way.
+  const unavailable = scopedAgent('host-dispatch-omitted-context-api', { withoutPlugin: true })
+  await root.serial(root, 'agent/created', { agent: unavailable })
+  await owner.dispose()
+})
+
 test('Cordis owner rejects incompatible provider results without leaving a partial mount', async () => {
   for (const [label, createProvider, expected] of [
     ['invalid provider', () => null, /Skill provider is incompatible/],
@@ -465,13 +497,85 @@ test('Cordis owner rolls back both contributions when the companion Skill cannot
   await missingOwner.dispose()
 })
 
+test('Cordis owner defers an agent scope that omits a companion service or tool', async () => {
+  for (const [label, options] of [
+    ['preset service', { missingServices: ['agentPresets'] }],
+    ['skills service', { missingServices: ['skills'] }],
+    ['skill tool', { skillTool: false }],
+  ]) {
+    const agent = scopedAgent(`absent-${label}`, options)
+    const owner = createCordisToolsOwner(ownerContext([agent]).ctx)
+    await owner.ready
+    assert.equal(agent.skillPluginCalls, 0)
+    assert.equal(agent.pluginCalls, 0)
+    assert.equal(TEST_CORDIS_TOOL_NAMES.some(name => agent.definitions.has(name)), false)
+    await owner.dispose()
+  }
+})
+
+test('Cordis owner contains a created agent scope that omits the companion tool', async () => {
+  const host = ownerContext([])
+  const owner = createCordisToolsOwner(host.ctx, fakeCordisPlugin)
+  await owner.ready
+
+  // DSH 0.1.6 announces `agent/created` serially and turns a listener rejection
+  // into an agents.create() failure, so another plugin's subagent creation has
+  // to survive an agent scope this owner cannot serve.
+  const agent = scopedAgent('serial-without-companion-tool', { skillTool: false })
+  await host.emit('agent/created', { agent })
+
+  assert.equal(agent.skillPluginCalls, 0)
+  assert.equal(agent.pluginCalls, 0)
+  assert.equal(TEST_CORDIS_TOOL_NAMES.some(name => agent.definitions.has(name)), false)
+  assert.equal(agent.skillCatalog.has(CORDIS_SKILL_NAME), false)
+  assert.deepEqual(host.warnings, [])
+  await owner.dispose()
+})
+
+test('Cordis owner mounts a created agent once its companion tool appears', async () => {
+  const host = ownerContext([])
+  const owner = createCordisToolsOwner(host.ctx, fakeCordisPlugin)
+  await owner.ready
+  const agent = scopedAgent('late-companion-tool', { skillTool: false })
+  await host.emit('agent/created', { agent })
+  assert.equal(agent.pluginCalls, 0)
+
+  agent.definitions.set('skill', { name: 'skill' })
+  await host.emit('tools/change')
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(agent.pluginCalls, 1)
+  assert.deepEqual(TEST_CORDIS_TOOL_NAMES.filter(name => agent.definitions.has(name)), TEST_CORDIS_TOOL_NAMES)
+  await owner.dispose()
+})
+
+test('Cordis owner withdraws from an unusable created agent scope without failing its creation', async () => {
+  const host = ownerContext([])
+  const owner = createCordisToolsOwner(host.ctx, fakeCordisPlugin)
+  await owner.ready
+
+  const agent = scopedAgent('created-with-broken-preset', { preset: { path: 'cordis.yml' } })
+  await host.emit('agent/created', { agent })
+  assert.equal(agent.pluginCalls, 0)
+  assert.equal(TEST_CORDIS_TOOL_NAMES.some(name => agent.definitions.has(name)), false)
+  assert.equal(host.warnings.length, 1)
+  assert.match(errorMessages(host.warnings[0][1]).join('\n'), /absolute composition path/)
+
+  // The same withdrawn scope must neither report again nor fail the prompt it
+  // still has to assemble.
+  await host.emit('agent/created', { agent })
+  await host.emit('tools/change')
+  const assembly = await host.ctx.systemPrompt.assemble({ scope: agent })
+  assert.equal(host.warnings.length, 1)
+  assert.deepEqual(assembly.tools, [])
+  await owner.dispose()
+})
+
 test('Cordis owner rejects unavailable companion Skill capabilities before publication', async () => {
   for (const [label, options, expected] of [
-    ['preset service', { missingServices: ['agentPresets'] }, /agentPresets\.resolve API/],
-    ['skills service', { missingServices: ['skills'] }, /skills registerProvider\/list\/get APIs/],
-    ['skill tool', { skillTool: false }, /skill tool in the PTC agent scope/],
     ['broken preset', { preset: { path: CORDIS_PRESET_PATH, broken: 'invalid composition' } }, /preset is unavailable/],
     ['relative preset path', { preset: { path: 'cordis.yml' } }, /absolute composition path/],
+    ['preset service without resolve', { malformedServices: ['agentPresets'] }, /agentPresets\.resolve API/],
+    ['skills service without its APIs', { malformedServices: ['skills'] }, /skills registerProvider\/list\/get APIs/],
   ]) {
     const agent = scopedAgent(`missing-${label}`, options)
     const owner = createCordisToolsOwner(ownerContext([agent]).ctx)

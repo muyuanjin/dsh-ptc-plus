@@ -38,7 +38,7 @@ export function createPtcSettingsView(React, deps) {
     })
   }
 
-  function PTCPlusSettingsCard({ t, usePtcSettings, updateSetting, callUserBindings }) {
+  function PTCPlusSettingsCard({ t, usePtcSettings, updateSetting, callUserBindings, view }) {
     const [open, setOpen] = React.useState(false)
     const [bindingsOpen, setBindingsOpen] = React.useState(false)
     const [status, setStatus] = React.useState(null)
@@ -82,7 +82,7 @@ export function createPtcSettingsView(React, deps) {
     const fieldDisabled = field => unavailable
       || pending.has(field.key)
       || (field.key !== 'enabled' && !enabled)
-    const settingGroups = CONFIG_GROUPS.map(group => {
+    const settingsFields = () => CONFIG_GROUPS.map(group => {
       const fields = group.key === 'syntax' && legacyMigration
         ? [...group.fields, ...legacyKeys]
         : group.fields
@@ -120,6 +120,29 @@ export function createPtcSettingsView(React, deps) {
           : null)
     }))
     })
+    const settingsBody = expanded => h('div', {
+      id: 'ptc-plus-settings-body', className: 'ptcPlusBody', 'data-open': expanded, hidden: !expanded,
+    },
+    h('div', { className: 'ptcPlusBodyInner' }, h('div', { className: 'ptcPlusFields' },
+      snapshot.status === 'loading'
+        ? h('p', { className: 'ptcPlusMessage' }, t('state.syncing'))
+        : snapshot.status === 'unavailable'
+          ? h('p', { className: 'ptcPlusMessage' }, t('state.unavailable'))
+          : [
+            ...settingsFields(),
+            h('div', { key: 'footer', className: 'ptcPlusFooter' },
+              h('span', { className: 'ptcPlusMessage', role: 'status' }, status === null
+                ? t(snapshot.writable ? 'footer.live' : 'footer.readOnly')
+                : t(status.key, status.params))),
+          ])))
+    const openBindings = globalEnabled && bindingsOpen
+      ? h(BindingsDialog, { controller: workbench, t, onClose: () => setBindingsOpen(false) }) : null
+    // A seat that asks for views renders one entry twice: `summary` is the
+    // one-liner under the title the seat draws, `page` is the form it mounts
+    // with its own save control (the form already writes on change). The legacy
+    // card seat asks for neither and keeps the whole collapsible card.
+    if (view === 'summary') return h('span', { className: 'ptcPlusDescription' }, t('card.description'))
+    if (view === 'page') return h('div', { className: 'ptcPlusCard' }, settingsBody(true), openBindings)
     return h('li', { className: 'ptcPlusCard' },
       h('button', {
         type: 'button', className: 'ptcPlusHeader', 'aria-expanded': open,
@@ -131,21 +154,8 @@ export function createPtcSettingsView(React, deps) {
         h('span', { className: 'ptcPlusDescription' }, t('card.description'))),
       h('span', { className: 'ptcPlusStatus', 'data-enabled': enabled }, t(enabled ? 'status.enabled' : 'status.disabled')),
       h('span', { className: 'ptcPlusChevron', 'data-open': open, 'aria-hidden': true }, h(icons.chevron, { size: 14 }))),
-      h('div', { id: 'ptc-plus-settings-body', className: 'ptcPlusBody', 'data-open': open, hidden: !open },
-        h('div', { className: 'ptcPlusBodyInner' }, h('div', { className: 'ptcPlusFields' },
-          snapshot.status === 'loading'
-            ? h('p', { className: 'ptcPlusMessage' }, t('state.syncing'))
-            : snapshot.status === 'unavailable'
-              ? h('p', { className: 'ptcPlusMessage' }, t('state.unavailable'))
-              : [
-                ...settingGroups,
-                h('div', { key: 'footer', className: 'ptcPlusFooter' },
-                  h('span', { className: 'ptcPlusMessage', role: 'status' }, status === null
-                    ? t(snapshot.writable ? 'footer.live' : 'footer.readOnly')
-                    : t(status.key, status.params))),
-              ]))),
-      globalEnabled && bindingsOpen
-        ? h(BindingsDialog, { controller: workbench, t, onClose: () => setBindingsOpen(false) }) : null,
+      settingsBody(open),
+      openBindings,
     )
   }
 

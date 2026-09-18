@@ -10,6 +10,7 @@ import { createTypeScriptEditor } from './client-code-editor.js'
 import { createBindingConsole } from './client-console.js'
 import {
   isIdleSessionComposer,
+  publishSettingsCard,
   sessionUsesPtcPreset,
   useSessionPreset,
   watchCurrentSessionPreset,
@@ -147,12 +148,14 @@ window.__ModuleLoader__.load({
         register,
       })
 
-
-      ctx.slots.inject('settings.plugin.item', () => ctx.slots.register({
-        name: 'settings.plugin.item', key: SETTINGS_NAMESPACE, locale: LOCALE_NS,
-        inject: () => ({ ...settingsProps(), updateSetting }),
-      }, PTCPlusSettingsCard))
-
+      // The settings card's seat differs by DSH generation; the compat module
+      // owns both contracts and why one publication serves them.
+      publishSettingsCard(ctx, {
+        bundleName: __PTC_PLUS_CLIENT_MODULE_ID__,
+        locale: LOCALE_NS,
+        injectProps: () => ({ ...settingsProps(), updateSetting }),
+        component: PTCPlusSettingsCard,
+      })
 
       ctx.slots.inject('tool.call.toolview', () => registerGated(ctx, settingsGate('toolView', () => {
         // Two rows share one eligibility decision; roll both back if either fails.

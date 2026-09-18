@@ -1,6 +1,6 @@
 # Client UI
 
-PTC Plus 在 DSH Web/Desktop 的 Settings → Plugin configuration 中提供**插件设置卡片**。
+PTC Plus 提供**插件设置卡片**。卡片座位由宿主代际决定：旧代际在 DSH Web/Desktop 的 Settings → Plugin configuration 中以 `settings.plugin.item` 渲染，当前 DSH 在侧栏 Plugins 页面以 `plugins.row.config`（键 `<包名>#<行 id>`）渲染该 bundle 自己的配置；`src/client-host-compat.js` 同时发布到两个座位，由声明了槽位的那一代决定哪个生效，卡片按座位提供的 `summary`/`page` 视图分别渲染一句描述与完整表单。
 
 Client 根入口只依赖 `settingsScope`、`slots`、`locale`、`connection` 和 `remote`。头部贡献直接消费公开 session slot 提供的 `useProjection`；REPL 注册另依赖 `sessions` 的当前选择和 projection face。命令卡片等待公开 command slot，composer 管理入口直接消费现有管理 Remote；其中的编写动作再等待 `remote.commands` 与公开输入 hooks，不依赖已改名的 conversation registry 或未使用的 `ui-session` 模块。缺失、卸载或迟到的 slot/provider 只影响需要它的贡献；没有 `useProjection` 时不挂载依赖它的会话视图，命令卡片保留宿主结果但不提供草稿操作。没有输入 hooks 时不显示编写动作，已有全局绑定仍可查看和启停。preset 优先读取 `agentPreset` projection，仅在缺少该 projection 时读取旧宿主公开会话摘要中的 `agentPreset`；binding 值和草稿资格不采用该回退。设置和独立正文 tool view 继续可用，不读取私有 store 或自行重建会话状态。
 
@@ -43,7 +43,7 @@ Host half 通过 DSH 公共 `settings` 服务注册命名空间 `ptc-plus`。字
 所有字段都是实时设置：Host 在 settings watch 中安装、卸载或重配置 runtime。已提交的 cell 固定使用提交时的配置快照，运行中的更新从随后提交的 cell 开始使用；这不会替换 session-bound REPL 或已有 binding。`maxOldGenerationSizeMb` 在活动 worker 存在时因 Node 的创建期限制而拒绝并回滚，其他可重配置字段照常交给 owner。关闭后唯一的宿主副作用是注册 settings 命名空间，
 保证设置卡片仍然可读；此时只有 `enabled` 可写，其他控件被禁用。运行时重配置失败时回滚到上一次已应用值。
 
-`cordisToolsEnabled` 默认关闭并即时生效。它不切换 preset，而是把官方 Cordis 工具、owner guidance 与 `cordis-plugin-development` Skill 作为一个 agent-scoped mount 加入或移出 PTC agent；顶层仍为 `run_code` / `edit_run_code`，普通 agent 不继承。Host 缺少 official preset、Skill/Cordis service 或任一 contribution 加载失败时，启用会完整回滚。完整运行要求见 [运行时参考](runtime-reference.md)。
+`cordisToolsEnabled` 默认关闭并即时生效。它不切换 preset，而是把官方 Cordis 工具、owner guidance 与 `cordis-plugin-development` Skill 作为一个 agent-scoped mount 加入或移出同时暴露 `run_code`、`skill` 工具与 preset/Skill service 的 PTC agent；顶层仍为 `run_code` / `edit_run_code`，普通 agent 不继承。暴露面齐全但挂载失败时，启用会完整回滚；agent scope 缺少 companion surface 时只是延后，不报错也不发布。完整运行要求见 [运行时参考](runtime-reference.md)。
 
 ## 全局用户 Binding 工作台
 

@@ -18,7 +18,7 @@ Install the plugin into the profile that actually runs the target DSH surface. D
 
 `danger-full-access` is the primary supported experience. The worker isolates the REPL lifecycle; it is not a malicious-code sandbox. DSH continues to own native-tool scope, policy, approval, cancellation, sandboxing, and scheduling. Narrower profiles expose only their available capabilities; PTC Plus does not simulate missing authority or add another permission system.
 
-The optional `cordisToolsEnabled` integration requires the current DSH installation to provide its shipped `cordis` preset plus the public preset, Skill, Cordis, settings, and tool-runtime packages. PTC Plus declares those host-owned DSH packages as unrestricted required peers instead of installing private runtime copies; runtime capability validation owns compatibility, and CI loads the packed plugin inside complete stable and alpha DSH installations. That load step runs `scripts/dsh-execution-seam-smoke.mjs`, which reads the execution service the installed tool runtime reads and requires the plugin to take it over; an import alone cannot distinguish a loaded plugin from one whose injection is unsatisfied, because Cordis leaves the latter pending without an error. Service packages retain the dependency graph selected by their Host distribution rather than independently selecting each service's release tag. DSH's profile module fallback must resolve the peers from the active installation. Do not copy `SKILL.md` or add the Cordis preset's Skill directory to global roots. If the host surface is incomplete, plugin activation or enabling the setting fails instead of loading a second DSH core.
+The optional `cordisToolsEnabled` integration requires the current DSH installation to provide its shipped `cordis` preset plus the public preset, Skill, Cordis, settings, and tool-runtime packages. PTC Plus declares those host-owned DSH packages as unrestricted required peers instead of installing private runtime copies; runtime capability validation owns compatibility, and CI loads the packed plugin inside complete stable and alpha DSH installations. That load step runs `scripts/dsh-execution-seam-smoke.mjs`, which reads the execution service the installed tool runtime reads and requires the plugin to take it over, and `scripts/dsh-rpc-contract-smoke.mjs`, which registers the packed Remote descriptors with the installed TYPERT registry and evaluates the decoder that generation reads ([ADR 0030](adr/0030-serve-both-typert-codec-generations-from-one-codec.md)); an import alone cannot distinguish a loaded plugin from one whose injection is unsatisfied, because Cordis leaves the latter pending without an error, and it cannot show that the Host accepts a wire contract it validates only at registration. Service packages retain the dependency graph selected by their Host distribution rather than independently selecting each service's release tag. DSH's profile module fallback must resolve the peers from the active installation. Do not copy `SKILL.md` or add the Cordis preset's Skill directory to global roots. If the host surface is incomplete, plugin activation or enabling the setting fails instead of loading a second DSH core.
 
 The plugin attaches to whichever program-execution service the installed DSH registers, and it presents the capabilities of the execution it performs ([ADR 0028](adr/0028-attach-to-the-host-ptc-execution-seam.md)). Cells run in the session kernel under the session's configured budgets, so `run_code` advertises neither a per-call deadline nor a file sandbox, and DSH rejects `timeoutMs` and `sandbox_permissions` with its own message instead of the plugin accepting an input it would then ignore.
 
@@ -31,7 +31,7 @@ The Client root requires `settingsScope`, `slots`, `locale`, and `connection`. C
 Use this form after the selected version is available from the npm registry:
 
 ```sh
-dsh plugin --profile <profile> add dsh-ptc-plus@0.4.0
+dsh plugin --profile <profile> add dsh-ptc-plus@0.4.1
 dsh --profile <profile> --dump-config
 ```
 
@@ -68,7 +68,7 @@ pnpm dsh --profile <profile> --dump-config
 
 ```sh
 npm pack
-dsh plugin --profile <profile> add /absolute/path/to/dsh-ptc-plus-0.4.0.tgz
+dsh plugin --profile <profile> add /absolute/path/to/dsh-ptc-plus-0.4.1.tgz
 dsh --profile <profile> --dump-config
 ```
 
@@ -106,7 +106,7 @@ dsh plugin add github:muyuanjin/dsh-ptc-plus#main
 dsh --dump-config
 ```
 
-After an npm release, the package spec may instead be `dsh-ptc-plus@0.4.0`. For a local package, use its absolute tarball path. Restart DSH Desktop after installation. Linux Desktop is not a current DSH Desktop release target; use DSH CLI/Web on Linux.
+After an npm release, the package spec may instead be `dsh-ptc-plus@0.4.1`. For a local package, use its absolute tarball path. Restart DSH Desktop after installation. Linux Desktop is not a current DSH Desktop release target; use DSH CLI/Web on Linux.
 
 ## Session format upgrades
 

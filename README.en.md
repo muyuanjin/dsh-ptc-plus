@@ -121,7 +121,7 @@ Enabled binding interfaces are supplied to the model in new sessions and updated
 
 ## Settings
 
-Open **Settings → Plugin configuration → PTC Plus**. The main switch controls the plugin; other settings are grouped by purpose:
+Open the PTC Plus settings card in DSH: on the current release, find the plugin's entry on the side-bar **Plugins** page and choose **Configure**; on the preceding release, open **Settings → Plugin configuration → PTC Plus**. The main switch controls the plugin; other settings are grouped by purpose:
 
 - **Tool call tolerance**: accept `run_code` without a summary and repair uniquely identifiable top-level native-tool miscalls.
 - **REPL syntax**: `bindingUpdates` defaults to `stateful`, allowing cross-cell updates of variables, functions, classes, and import aliases, and letting a repeated declaration in one logical scope of one cell update the same identity; choose `protected` to keep name protection. The five legacy switches apply only while migrating an old configuration; the settings page identifies that state and lets you choose either unified policy directly. Module syntax is enabled by default. `tools` and the injected error classes are request-reserved program bindings that can be neither redeclared nor written: a declaration collision reports `PTC-N001` in preflight, and an assignment fails during execution with an error that names the binding instead of being discarded silently.

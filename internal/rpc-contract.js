@@ -1,4 +1,5 @@
 import Schema from '@deepseek-ai/schemastery'
+import { strictCodec } from './typert-codec-compat.js'
 
 const resultSchema = Schema.union([
   Schema.object({ ok: Schema.const(true).required(), value: Schema.any() }),
@@ -27,12 +28,21 @@ export function rpcDescriptor({ service }) {
     invocation: { kind: 'direct' },
     parameters: [
       { name: 'operation', wire: 'operation', source: 'json',
-        codec: { mode: 'strict', typeSymbol: 'dsh-ptc-plus#RpcOperation', schema: { parse: Schema.string().required() } } },
+        codec: strictCodec({
+          typeSymbol: 'dsh-ptc-plus#RpcOperation',
+          schema: Schema.string().required(),
+        }) },
       { name: 'payload', wire: 'payload', source: 'json',
-        codec: { mode: 'strict', typeSymbol: 'dsh-ptc-plus#RpcPayload', schema: { parse: Schema.any() } } },
+        codec: strictCodec({
+          typeSymbol: 'dsh-ptc-plus#RpcPayload',
+          schema: Schema.any(),
+        }) },
     ],
     cancellation: { parameter: 'signal' },
-    result: { mode: 'strict', typeSymbol: 'dsh-ptc-plus#RpcResult', schema: { parse: resultSchema } },
+    result: strictCodec({
+      typeSymbol: 'dsh-ptc-plus#RpcResult',
+      schema: resultSchema,
+    }),
   }
 }
 

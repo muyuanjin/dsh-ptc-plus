@@ -110,10 +110,29 @@ test('provider withdrawal aborts pending calls and replacement republishes activ
 
 test('shared codecs reject malformed envelopes and preserve the existing business result shape', () => {
   const descriptor = rpcDescriptor(RPC_CONTRACTS.bindings)
-  const parse = descriptor.result.schema.parse
-  for (const bad of [null, {}, { ok: 'true' }, { ok: false, error: {} }]) assert.throws(() => parse(bad))
-  assert.deepEqual(parse({ ok: true }), { ok: true })
-  assert.deepEqual(parse({ ok: true, value: null }), { ok: true, value: null })
+  for (const parse of [descriptor.result.schema.parse, descriptor.result.create().parse]) {
+    for (const bad of [null, {}, { ok: 'true' }, { ok: false, error: {} }]) assert.throws(() => parse(bad))
+    assert.deepEqual(parse({ ok: true }), { ok: true })
+    assert.deepEqual(parse({ ok: true, value: null }), { ok: true, value: null })
+  }
+})
+
+test('strict codecs carry the executable decoder in both TYPERT generations', () => {
+  for (const contract of Object.values(RPC_CONTRACTS)) {
+    const descriptor = rpcDescriptor(contract)
+    for (const [subject, codec] of [
+      ...descriptor.parameters.map(parameter => [`${parameter.name} parameter`, parameter.codec]),
+      ['result', descriptor.result],
+    ]) {
+      assert.equal(codec.mode, 'strict', subject)
+      assert.equal(typeof codec.typeSymbol, 'string', subject)
+      // The preceding generation evaluates the decoder reached through `schema`.
+      assert.equal(typeof codec.schema.parse, 'function', subject)
+      // The current generation validates `create` and evaluates `create().parse`.
+      assert.equal(typeof codec.create, 'function', subject)
+      assert.equal(codec.create(), codec.schema, subject)
+    }
+  }
 })
 
 

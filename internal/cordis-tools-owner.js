@@ -7,6 +7,7 @@ import { RUN_CODE } from './runtime-bridge-owner.js'
 const CORDIS_PRESET_ID = 'cordis'
 const CORDIS_SKILL_NAME = 'cordis-plugin-development'
 const CORDIS_SKILL_PROVIDER = 'ptc-plus-cordis'
+const COMPANION_SKILL_TOOL = 'skill'
 
 function exactCompanionCandidates(observation) {
   if (Array.isArray(observation)) {
@@ -80,6 +81,40 @@ function requireFiberServices(agent, fiber, owner) {
   }
 }
 
+/**
+ * Companion surfaces the agent scope decides for itself.
+ *
+ * A scope composes its own tools, preset service and Skill service, so one that
+ * omits any of them is not a scope this plugin publishes in yet: the host keeps
+ * authority over the composition, and the missing member can appear later (a
+ * tool registered after this owner loaded, a service provided by a plugin that
+ * loads later). Such an agent therefore stays deferred instead of becoming a
+ * failure, which also keeps this plugin's unavailability out of the host
+ * operation that created it. `undefined` reports a scope without the public
+ * `Context.get` API, whose contradiction the activation guard owns.
+ *
+ * @param {object} agent - the DSH agent scope.
+ * @returns {string[]|undefined} the missing companion surfaces, if any.
+ */
+function absentCompanionSurfaces(agent) {
+  if (typeof agent?.ctx?.get !== 'function') return undefined
+  const missing = []
+  if (agent.ctx.tools?.get?.(RUN_CODE, agent) === undefined) missing.push(`the ${RUN_CODE} tool`)
+  if (agent.ctx.tools?.get?.(COMPANION_SKILL_TOOL, agent) === undefined) {
+    missing.push(`the ${COMPANION_SKILL_TOOL} tool`)
+  }
+  if (agent.ctx.get('agentPresets') === undefined) missing.push('the agentPresets service')
+  if (agent.ctx.get('skills') === undefined) missing.push('the skills service')
+  return missing
+}
+
+/**
+ * Read the services the mount publishes through, and reject a scope whose
+ * exposed service contradicts their public contract. Whether a companion surface
+ * exists at all is decided before the mount ([`absentCompanionSurfaces`]): this
+ * guard owns the shapes, so a service that is present but does not expose the
+ * API the mount calls is a host contradiction rather than a deferred surface.
+ */
 function requireCompanionServices(agent) {
   if (typeof agent?.ctx?.get !== 'function') {
     throw new Error('ptc-plus: cordisToolsEnabled requires the DSH agent Context.get API')
@@ -92,9 +127,6 @@ function requireCompanionServices(agent) {
   if (typeof skills?.registerProvider !== 'function'
     || typeof skills.list !== 'function' || typeof skills.get !== 'function') {
     throw new Error('ptc-plus: cordisToolsEnabled requires the DSH skills registerProvider/list/get APIs')
-  }
-  if (agent.ctx.tools?.get?.('skill', agent) === undefined) {
-    throw new Error('ptc-plus: cordisToolsEnabled requires the DSH skill tool in the PTC agent scope')
   }
   return { agentPresets, skills }
 }
@@ -234,6 +266,8 @@ export function createCordisToolsOwner(
   }
   const mounts = new Map()
   const pending = new Set()
+  // Agent scopes this owner withdrew from, keyed by the failure it reported.
+  const withdrawn = new Map()
   const cordisInspectLeases = createCordisInspectLeases(ctx)
   const scopedCordisPlugin = cordisInspectLeases.plugin(cordisPlugin)
   const scopedSkillPlugin = exactCompanionSkillPlugin(skillFilesystemPlugin)
@@ -287,6 +321,7 @@ export function createCordisToolsOwner(
 
   const disposeAgent = async (agent) => {
     pending.delete(agent)
+    withdrawn.delete(agent)
     const mount = mounts.get(agent)
     if (mount === undefined) return
     await disposeMount(agent, mount)
@@ -295,8 +330,11 @@ export function createCordisToolsOwner(
   const installAgent = (agent) => {
     if (disposed) return Promise.resolve()
     const mounted = mounts.get(agent)
-    if (mounted !== undefined) return mounted.activation
-    if (agent?.ctx?.tools?.get?.(RUN_CODE, agent) === undefined) {
+    if (mounted !== undefined) {
+      return mounted.withdrawn === true ? Promise.resolve() : mounted.activation
+    }
+    const absent = absentCompanionSurfaces(agent)
+    if (absent !== undefined && absent.length > 0) {
       pending.add(agent)
       return Promise.resolve()
     }
@@ -310,6 +348,7 @@ export function createCordisToolsOwner(
       disposal: undefined,
       activated: false,
       disposed: false,
+      withdrawn: false,
     }
     mounts.set(agent, mount)
     mount.activation = Promise.resolve().then(async () => {
@@ -355,10 +394,51 @@ export function createCordisToolsOwner(
     return mount.activation
   }
 
+  /**
+   * Report one agent scope this owner cannot serve and stop retrying it.
+   *
+   * A scope whose exposed preset, services, provider or fiber activation
+   * contradicts the DSH contract is not repaired by a later tool registration,
+   * and DSH sessions create many scopes, so the same failure is reported once
+   * per scope instead of once per turn. The mount is marked so later calls
+   * resolve immediately rather than repeating the attempt and its diagnostic.
+   */
+  const withdraw = (agent, error) => {
+    const mount = mounts.get(agent)
+    if (mount !== undefined) mount.withdrawn = true
+    pending.delete(agent)
+    const message = error instanceof Error ? error.message : String(error)
+    if (withdrawn.get(agent) === message) return
+    withdrawn.set(agent, message)
+    ctx.logger?.warn?.('ptc-plus: Cordis companion tooling withdrew from an agent scope', error)
+  }
+
+  /**
+   * Install for a call the host makes on its own behalf.
+   *
+   * DSH 0.1.6 announces `agent/created` serially and rejects `agents.create()`
+   * when a listener rejects, so a scope this owner cannot serve must withdraw
+   * instead of failing an operation another plugin asked for. Install-time
+   * enumeration stays strict: there the plugin speaks for what it claims to
+   * have published, and `ready` reports the same failure.
+   */
+  const installForHost = (agent) => {
+    let activation
+    try {
+      activation = installAgent(agent)
+    } catch (error) {
+      withdraw(agent, error)
+      return Promise.resolve()
+    }
+    return Promise.resolve(activation).catch(error => {
+      withdraw(agent, error)
+    })
+  }
+
   const promptAssembly = async (_assembly, context, next) => {
     const agent = context?.scope
     if (agent === undefined || mounts.get(agent)?.activated === true) return next()
-    await installAgent(agent)
+    await installForHost(agent)
     if (disposed || mounts.get(agent)?.activated !== true) return next()
     if (typeof ctx.systemPrompt?.assemble !== 'function') {
       throw new Error('ptc-plus: cordisToolsEnabled requires the DSH systemPrompt.assemble API')
@@ -384,7 +464,7 @@ export function createCordisToolsOwner(
   let initialActivations
   try {
     stopPromptAssembly = ctx.on('system-prompt/assemble', promptAssembly, { prepend: true })
-    stopCreated = ctx.on('agent/created', ({ agent }) => installAgent(agent))
+    stopCreated = ctx.on('agent/created', ({ agent }) => installForHost(agent))
     stopDisposed = ctx.on('agent/disposed', ({ agent }) => disposeAgent(agent))
     stopToolsChange = ctx.on('tools/change', retryPending)
     initialActivations = ctx.agents.list().map(installAgent)
@@ -415,6 +495,7 @@ export function createCordisToolsOwner(
     stopPromptAssembly?.()
     stopPromptAssembly = undefined
     pending.clear()
+    withdrawn.clear()
     const owned = [...mounts.entries()]
     const attempts = owned.map(([agent, mount]) => disposeMount(agent, mount))
     const operation = Promise.allSettled(attempts).then(results => {

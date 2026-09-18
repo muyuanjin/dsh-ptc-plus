@@ -1472,8 +1472,7 @@ test('keeps Cordis and settings atomic when an active worker rejects reconfigura
 
 test('rolls back a failed live Cordis reconfiguration', async () => {
   const scope = settingsScope({ enabled: true, cordisToolsEnabled: false })
-  const agent = cordisAgent(undefined, { missingServices: true })
-  agent.agent.ctx.get = () => undefined
+  const agent = cordisAgent(undefined, { activationError: new Error('Cordis activation failed') })
   const host = hostContext(settingsContext(scope), [agent.agent])
   apply(host.ctx)
   scope.set({ enabled: true, cordisToolsEnabled: true })
@@ -1482,6 +1481,22 @@ test('rolls back a failed live Cordis reconfiguration', async () => {
   assert.equal(scope.get().cordisToolsEnabled, false)
   assert.equal(Object.hasOwn(host.runtime, 'run'), true)
   assert.equal(host.ctx.logger.warnings.length > 0, true)
+  for (const cleanup of host.cleanups.reverse()) await cleanup()
+})
+
+test('keeps a live Cordis enable whose agent scope omits the companion services', async () => {
+  const scope = settingsScope({ enabled: true, cordisToolsEnabled: false })
+  const agent = cordisAgent()
+  agent.agent.ctx.get = () => undefined
+  const host = hostContext(settingsContext(scope), [agent.agent])
+  apply(host.ctx)
+  scope.set({ enabled: true, cordisToolsEnabled: true })
+  await new Promise(resolve => setImmediate(resolve))
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(scope.get().cordisToolsEnabled, true)
+  assert.equal(Object.hasOwn(host.runtime, 'run'), true)
+  assert.equal(TEST_CORDIS_TOOL_NAMES.some(name => agent.definitions.has(name)), false)
+  assert.deepEqual(host.ctx.logger.warnings, [])
   for (const cleanup of host.cleanups.reverse()) await cleanup()
 })
 
@@ -1674,8 +1689,7 @@ test('reclaims a not-ready committed Cordis owner before replacing it', async ()
 test('surfaces a live configuration rollback write failure', async () => {
   const scope = settingsScope({ enabled: true, cordisToolsEnabled: false })
   scope.update = async () => { throw new Error('settings offline') }
-  const agent = cordisAgent()
-  agent.agent.ctx.get = () => undefined
+  const agent = cordisAgent(undefined, { activationError: new Error('Cordis activation failed') })
   const host = hostContext(settingsContext(scope), [agent.agent])
   apply(host.ctx)
   scope.set({ enabled: true, cordisToolsEnabled: true })

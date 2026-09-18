@@ -787,6 +787,17 @@
     "preserve"
   ], ({ inner }, isInner) => inner.toString(isInner));
 
+  // internal/typert-codec-compat.js
+  function strictCodec({ typeSymbol, schema }) {
+    const decoder = { parse: schema };
+    return {
+      mode: "strict",
+      typeSymbol,
+      schema: decoder,
+      create: () => decoder
+    };
+  }
+
   // internal/rpc-contract.js
   var resultSchema = Schema.union([
     Schema.object({ ok: Schema.const(true).required(), value: Schema.any() }),
@@ -815,17 +826,26 @@
           name: "operation",
           wire: "operation",
           source: "json",
-          codec: { mode: "strict", typeSymbol: "dsh-ptc-plus#RpcOperation", schema: { parse: Schema.string().required() } }
+          codec: strictCodec({
+            typeSymbol: "dsh-ptc-plus#RpcOperation",
+            schema: Schema.string().required()
+          })
         },
         {
           name: "payload",
           wire: "payload",
           source: "json",
-          codec: { mode: "strict", typeSymbol: "dsh-ptc-plus#RpcPayload", schema: { parse: Schema.any() } }
+          codec: strictCodec({
+            typeSymbol: "dsh-ptc-plus#RpcPayload",
+            schema: Schema.any()
+          })
         }
       ],
       cancellation: { parameter: "signal" },
-      result: { mode: "strict", typeSymbol: "dsh-ptc-plus#RpcResult", schema: { parse: resultSchema } }
+      result: strictCodec({
+        typeSymbol: "dsh-ptc-plus#RpcResult",
+        schema: resultSchema
+      })
     };
   }
   var RPC_REMOTE = Object.freeze({
@@ -1921,7 +1941,7 @@
         }
       });
     }
-    function PTCPlusSettingsCard({ t: t2, usePtcSettings, updateSetting, callUserBindings }) {
+    function PTCPlusSettingsCard({ t: t2, usePtcSettings, updateSetting, callUserBindings, view }) {
       const [open, setOpen] = React.useState(false);
       const [bindingsOpen, setBindingsOpen] = React.useState(false);
       const [status, setStatus] = React.useState(null);
@@ -1969,7 +1989,7 @@
         });
       };
       const fieldDisabled = (field) => unavailable || pending.has(field.key) || field.key !== "enabled" && !enabled;
-      const settingGroups = CONFIG_GROUPS.map((group) => {
+      const settingsFields = () => CONFIG_GROUPS.map((group) => {
         const fields = group.key === "syntax" && legacyMigration ? [...group.fields, ...legacyKeys] : group.fields;
         return h(
           "section",
@@ -2024,6 +2044,30 @@
           })
         );
       });
+      const settingsBody = (expanded) => h(
+        "div",
+        {
+          id: "ptc-plus-settings-body",
+          className: "ptcPlusBody",
+          "data-open": expanded,
+          hidden: !expanded
+        },
+        h("div", { className: "ptcPlusBodyInner" }, h(
+          "div",
+          { className: "ptcPlusFields" },
+          snapshot.status === "loading" ? h("p", { className: "ptcPlusMessage" }, t2("state.syncing")) : snapshot.status === "unavailable" ? h("p", { className: "ptcPlusMessage" }, t2("state.unavailable")) : [
+            ...settingsFields(),
+            h(
+              "div",
+              { key: "footer", className: "ptcPlusFooter" },
+              h("span", { className: "ptcPlusMessage", role: "status" }, status === null ? t2(snapshot.writable ? "footer.live" : "footer.readOnly") : t2(status.key, status.params))
+            )
+          ]
+        ))
+      );
+      const openBindings = globalEnabled && bindingsOpen ? h(BindingsDialog, { controller: workbench, t: t2, onClose: () => setBindingsOpen(false) }) : null;
+      if (view === "summary") return h("span", { className: "ptcPlusDescription" }, t2("card.description"));
+      if (view === "page") return h("div", { className: "ptcPlusCard" }, settingsBody(true), openBindings);
       return h(
         "li",
         { className: "ptcPlusCard" },
@@ -2046,23 +2090,8 @@
           h("span", { className: "ptcPlusStatus", "data-enabled": enabled }, t2(enabled ? "status.enabled" : "status.disabled")),
           h("span", { className: "ptcPlusChevron", "data-open": open, "aria-hidden": true }, h(icons.chevron, { size: 14 }))
         ),
-        h(
-          "div",
-          { id: "ptc-plus-settings-body", className: "ptcPlusBody", "data-open": open, hidden: !open },
-          h("div", { className: "ptcPlusBodyInner" }, h(
-            "div",
-            { className: "ptcPlusFields" },
-            snapshot.status === "loading" ? h("p", { className: "ptcPlusMessage" }, t2("state.syncing")) : snapshot.status === "unavailable" ? h("p", { className: "ptcPlusMessage" }, t2("state.unavailable")) : [
-              ...settingGroups,
-              h(
-                "div",
-                { key: "footer", className: "ptcPlusFooter" },
-                h("span", { className: "ptcPlusMessage", role: "status" }, status === null ? t2(snapshot.writable ? "footer.live" : "footer.readOnly") : t2(status.key, status.params))
-              )
-            ]
-          ))
-        ),
-        globalEnabled && bindingsOpen ? h(BindingsDialog, { controller: workbench, t: t2, onClose: () => setBindingsOpen(false) }) : null
+        settingsBody(open),
+        openBindings
       );
     }
     return { PTCPlusSettingsCard };
@@ -29346,6 +29375,19 @@
   function isIdleSessionComposer(owner, sessionId) {
     return Object.hasOwn(owner, "sessionId") ? owner.sessionId === sessionId && owner.pendingInteraction === void 0 : owner.session?.sessionId === sessionId && Array.isArray(owner.interactions) && owner.interactions.length === 0;
   }
+  var BUNDLE_PATCH_ROW_ID = "ptc-plus";
+  function settingsCardSeats(bundleName) {
+    return [
+      { slot: "settings.plugin.item", identity: { key: SETTINGS_NAMESPACE } },
+      { slot: "plugins.row.config", identity: { key: `${bundleName}#${BUNDLE_PATCH_ROW_ID}` } }
+    ];
+  }
+  function publishSettingsCard(ctx, { bundleName, locale, injectProps, component }) {
+    return settingsCardSeats(bundleName).map(({ slot, identity }) => ctx.slots.inject(
+      slot,
+      () => ctx.slots.register({ name: slot, ...identity, locale, inject: injectProps }, component)
+    ));
+  }
 
   // internal/repl-memory-projection.js
   var BINDING_KINDS = /* @__PURE__ */ new Set(["variable", "function", "class", "import"]);
@@ -31017,12 +31059,12 @@
           isEnabled: () => featureEnabled(preferenceScope.getSnapshot(), feature),
           register
         });
-        ctx.slots.inject("settings.plugin.item", () => ctx.slots.register({
-          name: "settings.plugin.item",
-          key: SETTINGS_NAMESPACE,
+        publishSettingsCard(ctx, {
+          bundleName: "dsh-ptc-plus",
           locale: LOCALE_NS,
-          inject: () => ({ ...settingsProps(), updateSetting })
-        }, PTCPlusSettingsCard));
+          injectProps: () => ({ ...settingsProps(), updateSetting }),
+          component: PTCPlusSettingsCard
+        });
         ctx.slots.inject("tool.call.toolview", () => registerGated(ctx, settingsGate("toolView", () => {
           const disposers = [];
           try {

@@ -1,8 +1,12 @@
 import assert from 'node:assert/strict'
+import { readFile } from 'node:fs/promises'
 import test from 'node:test'
+import { parse } from 'yaml'
 import {
   isIdleSessionComposer,
+  publishSettingsCard,
   sessionUsesPtcPreset,
+  settingsCardSeats,
   useSessionPreset,
   watchCurrentSessionPreset,
 } from '../src/client-host-compat.js'
@@ -99,4 +103,50 @@ test('composer compatibility requires a matching idle session with authoritative
     { sessionId: 'other', session: { sessionId: 'selected' }, interactions: [] },
     { sessionId: undefined, session: { sessionId: 'selected' }, interactions: [] },
   ]) assert.equal(isIdleSessionComposer(owner, 'selected'), false)
+})
+
+test('settings-card seats follow the slot each DSH generation declares', () => {
+  assert.deepEqual(settingsCardSeats('dsh-ptc-plus'), [
+    { slot: 'settings.plugin.item', identity: { key: 'ptc-plus' } },
+    { slot: 'plugins.row.config', identity: { key: 'dsh-ptc-plus#ptc-plus' } },
+  ])
+})
+
+test('the alpha.2 row-configuration key names the row this bundle patch inserts', async () => {
+  const manifest = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'))
+  const patch = parse(await readFile(new URL('../cordis.patch.yml', import.meta.url), 'utf8'))
+  const rows = patch.flatMap(item => item.insert ?? []).filter(row => row.name === manifest.name)
+  assert.equal(rows.length, 1, 'the bundle patch inserts exactly one row for this package')
+  const seat = settingsCardSeats(manifest.name).find(candidate => candidate.slot === 'plugins.row.config')
+  assert.equal(seat.identity.key, `${manifest.name}#${rows[0].id}`)
+})
+
+test('one publication path waits on every seat and registers only where one is declared', () => {
+  const callbacks = new Map()
+  const registrations = []
+  const ctx = { slots: {
+    inject(slot, callback) { callbacks.set(slot, callback); return () => callbacks.delete(slot) },
+    register(options, component) { registrations.push({ options, component }); return () => {} },
+  } }
+  const component = () => null
+  const disposers = publishSettingsCard(ctx, {
+    bundleName: 'dsh-ptc-plus', locale: 'settings.ptcPlus',
+    injectProps: () => ({ hooks: {} }), component,
+  })
+  assert.deepEqual([...callbacks.keys()], ['settings.plugin.item', 'plugins.row.config'])
+  assert.deepEqual(registrations, [], 'an undeclared seat registers nothing')
+  callbacks.get('plugins.row.config')()
+  assert.equal(registrations.length, 1)
+  assert.equal(registrations[0].component, component)
+  assert.equal(registrations[0].options.name, 'plugins.row.config')
+  assert.equal(registrations[0].options.key, 'dsh-ptc-plus#ptc-plus')
+  assert.equal(registrations[0].options.locale, 'settings.ptcPlus')
+  assert.deepEqual(registrations[0].options.inject(), { hooks: {} })
+  callbacks.get('settings.plugin.item')()
+  assert.equal(registrations.length, 2)
+  assert.equal(registrations[1].options.name, 'settings.plugin.item')
+  assert.equal(registrations[1].options.key, 'ptc-plus')
+  assert.deepEqual(disposers.map(disposer => typeof disposer), ['function', 'function'])
+  for (const release of disposers) release()
+  assert.equal(callbacks.size, 0)
 })

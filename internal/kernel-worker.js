@@ -25,6 +25,7 @@ import { compilerDescriptors } from './compiler-descriptors.js'
 import { createCellCompletionObserver } from './cell-completion.js'
 import { WORKER_SHUTDOWN_ACKNOWLEDGEMENT, WORKER_SHUTDOWN_REQUEST } from './worker-shutdown.js'
 import { WORKER_REPL_OPTIONS, createWorkerControlPromise, createWorkerReplErrorHandler,
+  createWorkerUncaughtExceptionHandler,
   disableWorkerReplDomain,
   captureWorkerReplGlobals, protectWorkerReplAsyncContext, restoreWorkerReplGlobals, runInWorkerReplRealm,
   workerReplContext } from './worker-repl-realm.js'
@@ -124,16 +125,7 @@ const originalRequire = server.context.require
 const errorDomain = disableWorkerReplDomain(server.eval.domain ?? createDomain())
 errorDomain.removeAllListeners('error')
 errorDomain.on('error', error => evaluationScope.getStore()?.(true, error))
-const handleUncaughtException = error => {
-  const finish = evaluationScope.getStore()
-  if (finish !== undefined) {
-    finish(true, error)
-    return
-  }
-  /* c8 ignore next 2 -- preserve Node's fatal behavior outside an owned evaluation */
-  process.removeListener('uncaughtException', handleUncaughtException)
-  throw error
-}
+const handleUncaughtException = createWorkerUncaughtExceptionHandler(evaluationScope, process)
 process.on('uncaughtException', handleUncaughtException)
 const context = workerReplContext(server)
 restoreWorkerReplGlobals(workerGlobalBaseline, context)

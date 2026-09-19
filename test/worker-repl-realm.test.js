@@ -7,6 +7,7 @@ import {
   WORKER_REPL_OPTIONS,
   captureWorkerReplGlobals,
   createWorkerReplErrorHandler,
+  createWorkerUncaughtExceptionHandler,
   protectWorkerReplAsyncContext,
   restoreWorkerReplGlobals,
   runInWorkerReplRealm,
@@ -54,6 +55,23 @@ test('worker REPL error handler settles only the active evaluation with the orig
     assert.equal(observed.failed, true)
     assert.equal(observed.value, thrown)
   }
+})
+
+test('worker REPL uncaught fallback settles owned errors and preserves unowned fatal errors', () => {
+  const marker = new Error('original value')
+  let observed
+  let removed
+  const listenerOwner = { removeListener(event, handler) { removed = { event, handler } } }
+  const owned = createWorkerUncaughtExceptionHandler({
+    getStore: () => (failed, value) => { observed = { failed, value } },
+  }, listenerOwner)
+  assert.equal(owned(marker), undefined)
+  assert.deepEqual(observed, { failed: true, value: marker })
+  assert.equal(removed, undefined)
+
+  const unowned = createWorkerUncaughtExceptionHandler({ getStore: () => undefined }, listenerOwner)
+  assert.throws(() => unowned(marker), error => error === marker)
+  assert.deepEqual(removed, { event: 'uncaughtException', handler: unowned })
 })
 
 test('worker REPL helpers require and evaluate in the native Node realm', () => {

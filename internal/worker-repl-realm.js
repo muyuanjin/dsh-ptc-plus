@@ -117,3 +117,18 @@ export function createWorkerReplErrorHandler(evaluationScope, settle) {
     return 'ignore'
   }
 }
+
+/** Older REPLs can bypass handleError. Keep their process-level fallback
+ * directly testable without requiring a version-specific uncaught event. */
+export function createWorkerUncaughtExceptionHandler(evaluationScope, listenerOwner = process) {
+  const handleUncaughtException = error => {
+    const finish = evaluationScope.getStore()
+    if (finish !== undefined) {
+      finish(true, error)
+      return
+    }
+    listenerOwner.removeListener('uncaughtException', handleUncaughtException)
+    throw error
+  }
+  return handleUncaughtException
+}

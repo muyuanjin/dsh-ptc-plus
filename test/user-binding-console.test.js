@@ -33,6 +33,25 @@ test('continuous console retains helper ownership after source protocol mutation
   }
 })
 
+test('binding console control survives user-visible AsyncLocalStorage prototype mutations', async t => {
+  for (const method of ['getStore', 'enterWith', 'run']) {
+    const owner = new UserBindingConsole(options)
+    t.after(() => owner.dispose())
+    const changed = await owner.run({ source, code: `
+const { AsyncLocalStorage } = require('node:async_hooks')
+AsyncLocalStorage.prototype.${method} = null
+AsyncLocalStorage.prototype.${method} === null
+` })
+    assert.equal(changed.error, undefined, changed.error)
+    assert.equal(changed.output, 'true')
+    const continued = await owner.run({ source, environment: changed.environment, code: `
+[42, AsyncLocalStorage.prototype.${method} === null]
+` })
+    assert.equal(continued.error, undefined, continued.error)
+    assert.equal(continued.output, '[ 42, true ]')
+  }
+})
+
 test('binding workbench cells and their module use one worker realm', async t => {
   const owner = new UserBindingConsole(options)
   t.after(() => owner.dispose())

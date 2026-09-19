@@ -1,6 +1,6 @@
 import { diagnostic } from './diagnostic.js'
-import { AsyncLocalStorage } from 'node:async_hooks'
 import { createHash } from 'node:crypto'
+import { createPrivateAsyncLocalStorage } from './async-local-storage-intrinsics.js'
 import { runtimeIntrinsics as internal } from './runtime-intrinsics.js'
 
 const { Object, RegExp, isArray, numberIsSafeInteger, toNumber, toString,
@@ -13,7 +13,7 @@ export const LONG_CELL_CODE_UNITS = 2_000
 const BINDING_FAILURE = Symbol('binding failure')
 const PROGRAM_FAILURES = new internal.WeakMap()
 const MAX_CAUSE_CODE_UNITS = 2048
-const exceptionOrigins = new AsyncLocalStorage()
+const exceptionOrigins = createPrivateAsyncLocalStorage()
 const runExceptionScope = exceptionOrigins.run.bind(exceptionOrigins)
 const currentExceptionScope = exceptionOrigins.getStore.bind(exceptionOrigins)
 

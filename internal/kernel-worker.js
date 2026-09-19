@@ -1,4 +1,3 @@
-import { AsyncLocalStorage } from 'node:async_hooks'
 import { create as createDomain } from 'node:domain'
 import { createRequire, registerHooks } from 'node:module'
 import { managedModuleImport, managedRequire, readModuleImport, statefulModuleLink } from './stateful-module-runtime.js'
@@ -12,6 +11,7 @@ import { pathToFileURL } from 'node:url'
 import { formatWithOptions } from 'node:util'
 import { MessageChannel, parentPort, workerData } from 'node:worker_threads'
 import { synchronizeBuiltinEsmExports } from './builtin-esm-sync.js'
+import { createPrivateAsyncLocalStorage } from './async-local-storage-intrinsics.js'
 import { createExceptionOriginScope, errorDetails, messageOf, programBindingError } from './failure-reporting.js'
 import { DURABLE_IMPORTS, FORBIDDEN_IMPORTS } from './module-policy.js'
 import { decodeValue, encodeValue } from './value-wire.js'
@@ -24,8 +24,9 @@ import { moduleRuntimeIntrinsics } from './compiler-intrinsics.js'
 import { compilerDescriptors } from './compiler-descriptors.js'
 import { createCellCompletionObserver } from './cell-completion.js'
 import { WORKER_SHUTDOWN_ACKNOWLEDGEMENT, WORKER_SHUTDOWN_REQUEST } from './worker-shutdown.js'
-import { WORKER_REPL_OPTIONS, createWorkerControlPromise, disableWorkerReplDomain,
-  captureWorkerReplGlobals, restoreWorkerReplGlobals, runInWorkerReplRealm,
+import { WORKER_REPL_OPTIONS, createWorkerControlPromise, createWorkerReplErrorHandler,
+  disableWorkerReplDomain,
+  captureWorkerReplGlobals, protectWorkerReplAsyncContext, restoreWorkerReplGlobals, runInWorkerReplRealm,
   workerReplContext } from './worker-repl-realm.js'
 import { installProgramAmbientResolver } from './dynamic-environment-runtime.js'
 
@@ -100,7 +101,7 @@ const { port1, port2: channel } = new MessageChannel()
 const input = new PassThrough()
 const output = new PassThrough()
 output.resume()
-const evaluationScope = new AsyncLocalStorage()
+const evaluationScope = createPrivateAsyncLocalStorage()
 const sessionCwd = typeof workerData?.cwd === 'string' ? workerData.cwd : undefined
 if (sessionCwd !== undefined && !isAbsolute(sessionCwd)) {
   throw new Error(`ptc-plus session cwd must be absolute, got ${jsonStringify(sessionCwd)}`)
@@ -112,8 +113,10 @@ const server = repl.start({
   terminal: false,
   prompt: '',
   ...WORKER_REPL_OPTIONS,
+  handleError: createWorkerReplErrorHandler(evaluationScope, (finish, error) => finish(true, error)),
   ignoreUndefined: true,
 })
+protectWorkerReplAsyncContext(server)
 const originalRequire = server.context.require
 // domain.bind exposes its owner on a bound evaluator in older Node REPLs.
 // Newer REPLs honor an explicitly entered domain. Capture before REPL error
@@ -197,8 +200,8 @@ registerHooks({
   },
   load: userModuleCompilation.load,
 })
-const logScope = new AsyncLocalStorage()
-const userBindingActivationScope = new AsyncLocalStorage()
+const logScope = createPrivateAsyncLocalStorage()
+const userBindingActivationScope = createPrivateAsyncLocalStorage()
 const pending = new Map()
 const installedGlobals = new Set()
 const installedGlobalOriginals = new Map()

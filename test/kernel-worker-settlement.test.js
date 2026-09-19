@@ -830,6 +830,23 @@ return [previous, shared.value]`, assignmentSnapshot('namespace', 1), 'per-name'
   assert.deepEqual(worker.initializations, [1])
 })
 
+test('kernel REPL control survives user-visible AsyncLocalStorage prototype mutations', async t => {
+  for (const method of ['getStore', 'enterWith', 'run']) {
+    const worker = await bindingWorker(t, STATEFUL_LANGUAGE_SEMANTICS)
+    const changed = await worker.run(`
+const { AsyncLocalStorage } = require('node:async_hooks')
+AsyncLocalStorage.prototype.${method} = null
+return AsyncLocalStorage.prototype.${method} === null`, undefined, 'per-name')
+    assert.equal(changed.error, undefined, changed.error)
+    assert.equal(decodeValue(changed.value), true)
+    const continued = await worker.run(`
+const { AsyncLocalStorage } = require('node:async_hooks')
+return [42, AsyncLocalStorage.prototype.${method} === null]`, undefined, 'per-name')
+    assert.equal(continued.error, undefined, continued.error)
+    assert.deepEqual(decodeValue(continued.value), [42, true])
+  }
+})
+
 test('both policies combine actual assignments with descriptors across return and void completion', async t => {
   for (const policy of ['whole-entry', 'per-name']) {
     for (const scope of ['namespace', 'top-level']) {

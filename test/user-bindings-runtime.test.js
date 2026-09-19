@@ -56,6 +56,111 @@ test('runtime TypeScript value exports activate through both binding scopes', as
   })
 })
 
+test('duplicate public class fields project and execute the effective last declaration', async t => {
+  const source = `
+interface Earlier { value: number }
+interface Current { value: string }
+export class Result {
+  readonly value: Earlier = { value: 1 }
+  value: Current = { value: 's' }
+}`
+  for (const scope of ['namespace', 'top-level']) await t.test(scope, async t => {
+    const selected = snapshot([binding('duplicate-fields', 'helpers', scope, source)])
+    assert.match(selected.entries[0].declaration, /value: __ptcBinding_[a-f0-9]{12}\.Current/)
+    assert.doesNotMatch(selected.entries[0].declaration, /readonly value|export interface Earlier/)
+    const run = perNameRuntime(t, [])
+    const prefix = scope === 'namespace' ? 'helpers.' : ''
+    const execution = await run(`return new ${prefix}Result().value.value`, selected)
+    assert.equal(execution.result.error, undefined, execution.result.error?.message)
+    assert.equal(execution.result.value, 's')
+  })
+})
+
+test('mixed public class member collisions project the real worker instance shape', async t => {
+  const source = `
+export class Shape {
+  methodThenField(): number { return 1 }
+  methodThenField: string = 'method-then-field'
+  fieldThenMethod: string = 'field-then-method'
+  fieldThenMethod(): number { return 2 }
+  get accessorThenField(): number { return 3 }
+  accessorThenField: string = 'accessor-then-field'
+  fieldThenAccessor: string = 'field-then-accessor'
+  get fieldThenAccessor(): number { return 4 }
+  duplicate(): number { return 5 }
+  duplicate(): string { return 'last-method' }
+  get getterThenMethod(): number { return 7 }
+  getterThenMethod(): string { return 'last-method' }
+  methodThenGetter(): number { return 8 }
+  get methodThenGetter(): string { return 'last-getter' }
+  set setterThenMethod(value: number) {}
+  setterThenMethod(): string { return 'last-method' }
+  methodThenSetter(): number { return 9 }
+  set methodThenSetter(value: string) {}
+  parameterWins(): number { return 6 }
+  constructor(public parameterWins: string = 'parameter') {}
+}`
+  for (const scope of ['namespace', 'top-level']) await t.test(scope, async t => {
+    const selected = snapshot([binding('mixed-members', 'helpers', scope, source)])
+    const prefix = scope === 'namespace' ? 'helpers.' : ''
+    const run = perNameRuntime(t, [])
+    const execution = await run(`
+const value = new ${prefix}Shape()
+return [value.methodThenField, value.fieldThenMethod, value.accessorThenField,
+  value.fieldThenAccessor, value.duplicate(), value.getterThenMethod(),
+  value.methodThenGetter, value.setterThenMethod(),
+  typeof Object.getOwnPropertyDescriptor(${prefix}Shape.prototype, 'methodThenSetter').set,
+  value.parameterWins]`, selected)
+    assert.equal(execution.result.error, undefined, execution.result.error?.message)
+    assert.deepEqual(execution.result.value,
+      ['method-then-field', 'field-then-method', 'accessor-then-field', 'field-then-accessor',
+        'last-method', 'last-method', 'last-getter', 'last-method', 'function', 'parameter'])
+  })
+})
+
+test('canonical literal and identifier keys project the real worker class shape', async t => {
+  const source = `
+interface Obsolete { old: true }
+interface Current { current: true }
+export class Shape {
+  value: Obsolete = { old: true }
+  "value": Current = { current: true }
+  "reverse": Obsolete = { old: true }
+  reverse: Current = { current: true }
+  "1": Obsolete = { old: true };
+  [1n]: Current = { current: true }
+  "2": Obsolete = { old: true }
+  2: Current = { current: true }
+  3: Current = { current: true }
+  0x10n: Obsolete = { old: true }
+  "16": Current = { current: true }
+  "17": Obsolete = { old: true }
+  0x11n: Current = { current: true }
+  18n: Current = { current: true }
+  4: Obsolete = { old: true };
+  [4]: Current = { current: true }
+  callable(): Obsolete { return { old: true } }
+  ["callable"]: Current = { current: true }
+  "parameter": Obsolete = { old: true }
+  constructor(public parameter: Current = { current: true }) {}
+}`
+  for (const scope of ['namespace', 'top-level']) await t.test(scope, async t => {
+    const selected = snapshot([binding('literal-keys', 'helpers', scope, source)])
+    assert.doesNotMatch(selected.entries[0].declaration, /export interface Obsolete/)
+    const run = perNameRuntime(t, [])
+    const prefix = scope === 'namespace' ? 'helpers.' : ''
+    const execution = await run(`
+const value = new ${prefix}Shape()
+return [value.value.current, value.reverse.current, value[1].current,
+  value[2].current, value[3].current, value[4].current, value[16].current,
+  value[17].current, value[18].current,
+  value.callable.current, value.parameter.current]`, selected)
+    assert.equal(execution.result.error, undefined, execution.result.error?.message)
+    assert.deepEqual(execution.result.value,
+      [true, true, true, true, true, true, true, true, true, true, true])
+  })
+})
+
 test('retained provider setters can restore local values after disabled cells without losing other bindings', async t => {
   for (const [label, disabled] of [['feature disabled', undefined], ['empty catalog', snapshot([])]]) {
     await t.test(label, async t => {

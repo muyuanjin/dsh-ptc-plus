@@ -1,6 +1,9 @@
 import { fileURLToPath } from 'node:url'
 
 const encodeReference = encodeURIComponent
+const objectEntries = Object.entries
+const sortArray = Function.prototype.call.bind(Array.prototype.sort)
+const jsonStringify = JSON.stringify
 
 // These ambient inputs must remain outside source-owned CommonJS bindings.
 export const commonJsCompilerGlobals = new Set(['process'])
@@ -21,14 +24,14 @@ const ATTRIBUTED_LINK_KIND = 'static-attributed'
  * attribute-free links keep the reference they had before attributes were
  * distinguished. */
 export function staticModuleLinkReference(source, attributes) {
-  const entries = Object.entries(attributes ?? {})
+  const entries = objectEntries(attributes ?? {})
   if (entries.length === 0) return compilerModuleReference(STATIC_LINK_KIND, source)
-  entries.sort((left, right) => left[0] < right[0] ? -1 : left[0] > right[0] ? 1 : 0)
-  return compilerModuleReference(ATTRIBUTED_LINK_KIND, JSON.stringify([source, entries]))
+  sortArray(entries, (left, right) => left[0] < right[0] ? -1 : left[0] > right[0] ? 1 : 0)
+  return compilerModuleReference(ATTRIBUTED_LINK_KIND, jsonStringify([source, entries]))
 }
 
 /** Compiler helpers resolve from their own URL, independently of source-owned
  * wrapper bindings and the ESM translator's restricted CommonJS require. */
 export function commonJsCompilerImport(url) {
-  return `process.getBuiltinModule('module').createRequire(${JSON.stringify(url.href)})(${JSON.stringify(fileURLToPath(url))})`
+  return `process.getBuiltinModule('module').createRequire(${jsonStringify(url.href)})(${jsonStringify(fileURLToPath(url))})`
 }

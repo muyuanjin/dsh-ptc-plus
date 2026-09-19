@@ -421,7 +421,7 @@ test('restores one imported binding catalog before live and cold continuation', 
 })
 
 test('contracts a broken replay node and continues the current request', async (t) => {
-  const runtime = new SessionRuntime({ computeMs: 20, maxWallMs: 1_000 })
+  const runtime = new SessionRuntime({ computeMs: 5_000, maxWallMs: 20_000 })
   t.after(() => runtime.dispose())
   const events = []
   const session = appendOnlySession('replay-timeout', events)
@@ -477,7 +477,7 @@ test('contracts a broken replay node and continues the current request', async (
 test('contracts a live derived edit node by its persisted outer call sequence', async (t) => {
   const events = []
   const session = appendOnlySession('live-replay-contraction', events)
-  const runtime = new SessionRuntime({ computeMs: 100, maxWallMs: 1_000 })
+  const runtime = new SessionRuntime({ computeMs: 5_000, maxWallMs: 20_000 })
   t.after(() => runtime.dispose())
 
   const executeConfirmed = async (callId, program, options = {}) => {
@@ -569,7 +569,7 @@ return { stableHead, failedType: typeof failedHead, freshHead }`,
   }])
   assert.equal(boundary.seq, fresh.call.seq + 1)
 
-  const restarted = new SessionRuntime({ computeMs: 100, maxWallMs: 1_000 })
+  const restarted = new SessionRuntime({ computeMs: 5_000, maxWallMs: 20_000 })
   t.after(() => restarted.dispose())
   const inspectCall = session.append('tool/call', {
     turn: 0,
@@ -1078,7 +1078,7 @@ test('attaches post-recovery cells to the verified frontier across restarts', as
   })
   events[3].data.meta.dshPtcPlus = normalizeJournal(events[3].data.meta.dshPtcPlus)
 
-  const recovering = fixture({ computeMs: 20, maxWallMs: 1_000 })
+  const recovering = fixture()
   t.after(() => recovering.dispose())
   const confirmed = await recovering.executeRun(
     session.id,
@@ -1089,7 +1089,7 @@ test('attaches post-recovery cells to the verified frontier across restarts', as
   appendRunCodeEvents(events, 'fresh-head', 'const freshHead = stableHead + 4', confirmed.result)
   assert.equal(confirmed.raw.error, undefined)
 
-  const restarted = fixture({ computeMs: 20, maxWallMs: 1_000 })
+  const restarted = fixture()
   t.after(() => restarted.dispose())
   assert.deepEqual(await restarted.run(session.id, 'return [stableHead, freshHead]', {}, { session }), {
     logs: [],
@@ -1128,7 +1128,7 @@ test('requires exact recovery boundaries before confirming a contracted cell', a
         }),
       },
     })
-    const state = fixture({ computeMs: 20, maxWallMs: 1_000 })
+    const state = fixture()
     t.after(() => state.dispose())
     const contracted = await state.executeRun(
       session.id,

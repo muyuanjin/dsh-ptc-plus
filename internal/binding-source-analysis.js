@@ -260,8 +260,24 @@ function classMemberName(member) {
     : member.key?.type === 'StringLiteral' ? JSON.stringify(member.key.value) : undefined
 }
 
+function modernClassMemberName(member) {
+  const key = classMemberKey(member)
+  return classMemberName(member) ?? (key === undefined ? undefined : JSON.stringify(key))
+}
+
+function classMemberKey(member) {
+  if (member.computed && !['StringLiteral', 'NumericLiteral', 'BigIntLiteral'].includes(member.key?.type)) {
+    throw new TypeError('computed class member key cannot be represented in the binding interface; use a literal property key')
+  }
+  return member.key?.type === 'Identifier'
+    ? member.key.name
+    : member.key?.type === 'StringLiteral' ? member.key.value
+      : member.key?.type === 'NumericLiteral' ? String(member.key.value)
+        : member.key?.type === 'BigIntLiteral' ? String(BigInt(member.key.value)) : undefined
+}
+
 function isPublicClassMember(member) {
-  return !member.static && !member.computed
+  return !member.static
     && member.accessibility !== 'private' && member.accessibility !== 'protected'
     && member.key?.type !== 'PrivateName'
 }
@@ -275,21 +291,19 @@ function parameterPropertyMember(source, node, classTypeNames, typeContext, used
   return `${node.readonly === true ? 'readonly ' : ''}${target.name}${optional || target.optional === true ? '?' : ''}: ${annotation(source, target, classTypeNames, typeContext, usedTypeNames)}`
 }
 
-function classMembers(source, node, classTypeNames, typeContext, usedTypeNames) {
+function parameterPropertyName(node) {
+  if (node?.type !== 'TSParameterProperty' || node.accessibility === 'private' || node.accessibility === 'protected') return undefined
+  const parameter = node.parameter?.type === 'AssignmentPattern' ? node.parameter.left : node.parameter
+  return parameter?.type === 'Identifier' ? parameter.name : undefined
+}
+
+function legacyClassMembers(source, node, classTypeNames, typeContext, usedTypeNames) {
   const members = []
   const memberNames = new Set()
   let constructorParameters = '...args: unknown[]'
   for (const member of node.body?.body ?? []) {
-    if (typeContext.modern && ['ClassProperty', 'ClassAccessorProperty', 'TSAbstractPropertyDefinition'].includes(member.type)) {
-      if (!isPublicClassMember(member)) continue
-      const name = classMemberName(member)
-      if (name === undefined || memberNames.has(name)) continue
-      members.push(`${member.readonly === true ? 'readonly ' : ''}${name}${member.optional === true ? '?' : ''}: ${annotation(source, member, classTypeNames, typeContext, usedTypeNames)}`)
-      memberNames.add(name)
-      continue
-    }
-    if (!['ClassMethod', 'TSDeclareMethod'].includes(member.type) || (typeContext.modern ? !isPublicClassMember(member)
-      : member.static || member.computed || member.accessibility === 'private' || member.key?.type === 'PrivateName')) continue
+    if (!['ClassMethod', 'TSDeclareMethod'].includes(member.type)
+      || member.static || member.computed || member.accessibility === 'private' || member.key?.type === 'PrivateName') continue
     const name = classMemberName(member)
     if (name === undefined) continue
     const generics = typeParameters(source, member, classTypeNames, typeContext, usedTypeNames)
@@ -297,15 +311,6 @@ function classMembers(source, node, classTypeNames, typeContext, usedTypeNames) 
       .map((item, index) => parameter(source, item, index, generics.names, typeContext, usedTypeNames)).join(', ')
     if (member.kind === 'constructor') {
       constructorParameters = parameters
-      for (const item of typeContext.modern ? member.params ?? [] : []) {
-        const field = parameterPropertyMember(source, item, classTypeNames, typeContext, usedTypeNames)
-        const fieldName = item?.type === 'TSParameterProperty'
-          ? (item.parameter?.type === 'AssignmentPattern' ? item.parameter.left : item.parameter)?.name : undefined
-        if (field !== undefined && !memberNames.has(fieldName)) {
-          members.push(field)
-          memberNames.add(fieldName)
-        }
-      }
     }
     else if (member.kind === 'get' || member.kind === 'set') {
       const signature = `${member.kind}:${name}`
@@ -318,6 +323,108 @@ function classMembers(source, node, classTypeNames, typeContext, usedTypeNames) 
     else if (member.kind === 'method') {
       members.push(`${name}${member.optional === true ? '?' : ''}${generics.text}(${parameters}): ${returnType(source, member, generics.names, typeContext, usedTypeNames)}`)
       memberNames.add(name)
+    }
+  }
+  return { constructorParameters, members, instance: `{ ${members.join('; ')} }` }
+}
+
+function classMembers(source, node, classTypeNames, typeContext, usedTypeNames) {
+  if (!typeContext.modern) return legacyClassMembers(source, node, classTypeNames, typeContext, usedTypeNames)
+  const body = node.body?.body ?? []
+  const fields = new Map()
+  const parameterProperties = new Map()
+  const prototypeMembers = new Map()
+  let constructorNode
+  for (const member of body) {
+    if (['ClassProperty', 'TSAbstractPropertyDefinition'].includes(member.type)) {
+      if (!isPublicClassMember(member)) continue
+      const key = classMemberKey(member)
+      if (key !== undefined) fields.set(key, member)
+      continue
+    }
+    if (member.type === 'ClassAccessorProperty') {
+      if (!isPublicClassMember(member)) continue
+      const key = classMemberKey(member)
+      if (key !== undefined) prototypeMembers.set(key, { kind: 'accessor', get: member, set: member })
+      continue
+    }
+    if (!['ClassMethod', 'TSDeclareMethod'].includes(member.type) || !isPublicClassMember(member)) continue
+    const key = classMemberKey(member)
+    if (key === undefined) continue
+    if (member.kind === 'constructor') {
+      constructorNode = member
+    } else if (member.kind === 'get' || member.kind === 'set') {
+      const current = prototypeMembers.get(key)
+      const descriptor = current?.kind === 'accessor' ? { ...current } : { kind: 'accessor' }
+      descriptor[member.kind] = member
+      prototypeMembers.set(key, descriptor)
+    } else if (member.kind === 'method') {
+      prototypeMembers.set(key, { kind: 'method', node: member })
+    }
+  }
+  for (const parameter of constructorNode?.params ?? []) {
+    const name = parameterPropertyName(parameter)
+    if (name !== undefined) parameterProperties.set(name, parameter)
+  }
+  const ownMember = name => parameterProperties.get(name) ?? fields.get(name)
+  const members = []
+  let constructorParameters = '...args: unknown[]'
+  for (const member of body) {
+    if (['ClassProperty', 'TSAbstractPropertyDefinition'].includes(member.type)) {
+      if (!isPublicClassMember(member)) continue
+      const key = classMemberKey(member)
+      if (key === undefined || ownMember(key) !== member) continue
+      const name = modernClassMemberName(member)
+      members.push(`${member.readonly === true ? 'readonly ' : ''}${name}${member.optional === true ? '?' : ''}: ${annotation(source, member, classTypeNames, typeContext, usedTypeNames)}`)
+      continue
+    }
+    if (member.type === 'ClassAccessorProperty') {
+      if (!isPublicClassMember(member)) continue
+      const key = classMemberKey(member)
+      const name = modernClassMemberName(member)
+      const selected = key === undefined || ownMember(key) !== undefined ? undefined : prototypeMembers.get(key)
+      if (selected?.kind !== 'accessor') continue
+      if (selected.get === member && selected.set === member) {
+        members.push(`${name}${member.optional === true ? '?' : ''}: ${annotation(source, member, classTypeNames, typeContext, usedTypeNames)}`)
+      } else {
+        const type = annotation(source, member, classTypeNames, typeContext, usedTypeNames)
+        if (selected.get === member) members.push(`get ${name}(): ${type}`)
+        if (selected.set === member) members.push(`set ${name}(value: ${type})`)
+      }
+      continue
+    }
+    if (!['ClassMethod', 'TSDeclareMethod'].includes(member.type) || !isPublicClassMember(member)) continue
+    const key = classMemberKey(member)
+    if (key === undefined) continue
+    const name = modernClassMemberName(member)
+    if (member.kind === 'constructor') {
+      if (member !== constructorNode) continue
+      const generics = typeParameters(source, member, classTypeNames, typeContext, usedTypeNames)
+      const parameters = (member.params ?? [])
+        .map((item, index) => parameter(source, item, index, generics.names, typeContext, usedTypeNames)).join(', ')
+      constructorParameters = parameters
+      for (const item of member.params ?? []) {
+        const fieldName = parameterPropertyName(item)
+        if (fieldName === undefined || ownMember(fieldName) !== item) continue
+        members.push(parameterPropertyMember(source, item, classTypeNames, typeContext, usedTypeNames))
+      }
+      continue
+    }
+    if (ownMember(key) !== undefined) continue
+    const selected = prototypeMembers.get(key)
+    if (member.kind === 'get' || member.kind === 'set') {
+      if (selected?.kind !== 'accessor' || selected[member.kind] !== member) continue
+      const generics = typeParameters(source, member, classTypeNames, typeContext, usedTypeNames)
+      const parameters = (member.params ?? [])
+        .map((item, index) => parameter(source, item, index, generics.names, typeContext, usedTypeNames)).join(', ')
+      members.push(member.kind === 'get'
+        ? `get ${name}(): ${returnType(source, member, generics.names, typeContext, usedTypeNames)}`
+        : `set ${name}(${parameters})`)
+    } else if (member.kind === 'method' && selected?.kind === 'method' && selected.node === member) {
+      const generics = typeParameters(source, member, classTypeNames, typeContext, usedTypeNames)
+      const parameters = (member.params ?? [])
+        .map((item, index) => parameter(source, item, index, generics.names, typeContext, usedTypeNames)).join(', ')
+      members.push(`${name}${member.optional === true ? '?' : ''}${generics.text}(${parameters}): ${returnType(source, member, generics.names, typeContext, usedTypeNames)}`)
     }
   }
   return { constructorParameters, members, instance: `{ ${members.join('; ')} }` }

@@ -43,6 +43,33 @@ test('owned cell preparation retains captured intrinsics after prototype changes
   }
 })
 
+test('static import attributes survive earlier user mutations of link intrinsics', async t => {
+  for (const bindingUpdates of ['stateful', 'protected']) {
+    const runtime = new SessionRuntime({ bindingUpdates, durableReplay: false })
+    t.after(() => runtime.dispose())
+    const importSource = 'import value from "data:application/json,%7B%22n%22%3A2%7D" with { type: "json" };'
+    const importCell = `${importSource} return value.n`
+    const control = await runtime.run(`${bindingUpdates}-import-control`, { program: importCell, bindings: [] })
+    assert.equal(control.error, undefined, control.error?.message)
+    assert.equal(control.value, 2)
+    for (const [name, method] of [
+      ['entries', 'Object.entries'],
+      ['sort', 'Array.prototype.sort'],
+      ['stringify', 'JSON.stringify'],
+    ]) {
+      const sessionId = `${bindingUpdates}-${name}-mutated-import`
+      const changed = await runtime.run(sessionId, { program: `${method} = null; return 1`, bindings: [] })
+      assert.equal(changed.error, undefined, changed.error?.message)
+      assert.equal(changed.value, 1)
+      const imported = await runtime.run(sessionId, {
+        program: `${importSource} return [value.n, ${method} === null]`, bindings: [],
+      })
+      assert.equal(imported.error, undefined, imported.error?.message)
+      assert.deepEqual(imported.value, [2, true])
+    }
+  }
+})
+
 test('compiler intrinsic capture retains realm identity and static operations', () => {
   const realm = createContext()
   const constructor = runInContext('Function', realm)

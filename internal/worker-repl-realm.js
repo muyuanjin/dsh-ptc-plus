@@ -1,5 +1,6 @@
 import { createContext, runInContext, runInThisContext } from 'node:vm'
 import { types } from 'node:util'
+import { protectNextAsyncLocalStorageRun } from './async-local-storage-intrinsics.js'
 
 export const WORKER_REPL_OPTIONS = Object.freeze({ useGlobal: true })
 const NativeMap = Map
@@ -73,6 +74,22 @@ export function workerReplContext(server) {
   return server.context
 }
 
+let replAsyncContextProtected = false
+
+/** Newer Node REPLs own an AsyncLocalStorage instance whose public prototype
+ * remains user-mutable. Give only that platform instance its native operations
+ * before the first user evaluation. */
+export function protectWorkerReplAsyncContext(server) {
+  if (replAsyncContextProtected) return
+  let callbackError
+  const scope = protectNextAsyncLocalStorageRun(() => {
+    server.eval('void 0\n', server.context, 'ptc-plus-repl-bootstrap', error => { callbackError = error })
+  })
+  if (callbackError !== null && callbackError !== undefined) throw callbackError
+  replAsyncContextProtected = true
+  return scope !== undefined
+}
+
 export function runInWorkerReplRealm(source, options) {
   return runInThisContext(source, options)
 }
@@ -88,4 +105,15 @@ export function disableWorkerReplDomain(domain) {
   domain.enter = () => domain
   domain.exit = () => domain
   return domain
+}
+
+/** Newer REPLs format errors before the eval callback unless an owned
+ * evaluation consumes the original thrown value through handleError. */
+export function createWorkerReplErrorHandler(evaluationScope, settle) {
+  return error => {
+    const finish = evaluationScope.getStore()
+    if (finish === undefined) return 'unhandled'
+    settle(finish, error)
+    return 'ignore'
+  }
 }

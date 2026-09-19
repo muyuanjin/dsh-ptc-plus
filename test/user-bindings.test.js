@@ -122,6 +122,17 @@ test('known historical binding transforms validate with their original generatio
     })).digest('hex'),
   }
   assert.deepEqual(normalizeUserBindingsSnapshot(previousSnapshot), previousSnapshot)
+
+  for (const historicalTransform of [LEGACY_USER_BINDING_TRANSFORM, PREVIOUS_USER_BINDING_TRANSFORM]) {
+    const numeric = normalizeUserBindingEntry(entry({
+      source: 'export class Numeric { 1(): string { return "one" } }',
+    }), { transform: historicalTransform })
+    assert.doesNotMatch(numeric.declaration, /"1"|one/)
+    const computed = normalizeUserBindingEntry(entry({
+      source: 'export class Computed { ["value"](): number { return 1 } }',
+    }), { transform: historicalTransform })
+    assert.doesNotMatch(computed.declaration, /value\(/)
+  }
 })
 
 test('binding durability reflects source effects across both module transforms', () => {
@@ -254,6 +265,9 @@ export async function request<T = unknown>(url: URL, options?: HttpOptions): Pro
   assert.throws(() => normalizeUserBindingEntry(entry({
     source: "import type { Stats } from 'node:fs'; export function inspect(value: Stats): string { return String(value.size) }",
   })), /imported type "Stats" cannot be represented/)
+  assert.throws(() => normalizeUserBindingEntry(entry({
+    source: 'namespace Local { export interface Value { ok: true } } export const value: Local = Local',
+  })), /local type "Local" cannot be represented/)
 })
 
 test('binding declaration namespace markers cannot rewrite user-authored type text', () => {
@@ -322,6 +336,179 @@ export class HttpError extends Error {
   assert.doesNotMatch(normalized.declaration, /category|secret|internal/)
   assert.equal((normalized.declaration.match(/readonly body: string/g) ?? []).length, 1)
   assert.doesNotThrow(() => parse(normalized.declaration, { sourceType: 'module', plugins: ['typescript'] }))
+})
+
+test('binding class projections select the last duplicate public field and its type closure', () => {
+  const source = `
+interface Earlier { value: number }
+interface Current { value: string }
+export class Result {
+  readonly value: Earlier = { value: 1 }
+  value: Current = { value: 's' }
+}
+`
+  for (const scope of ['namespace', 'top-level']) {
+    const normalized = normalizeUserBindingEntry(entry({ scope, source }))
+    assert.match(normalized.declaration, /value: __ptcBinding_[a-f0-9]{12}\.Current/)
+    assert.match(normalized.declaration, /export interface Current/)
+    assert.doesNotMatch(normalized.declaration, /readonly value|export interface Earlier/)
+    assert.doesNotThrow(() => parse(normalized.declaration, { sourceType: 'module', plugins: ['typescript'] }))
+  }
+})
+
+test('binding class projections follow effective field, method, accessor and parameter-property shapes', () => {
+  const normalized = normalizeUserBindingEntry(entry({ source: `
+interface Obsolete { old: true }
+interface Current { current: true }
+export class Shape {
+  methodThenField(): Obsolete { return { old: true } }
+  methodThenField: Current = { current: true }
+  fieldThenMethod: Current = { current: true }
+  fieldThenMethod(): Obsolete { return { old: true } }
+  get accessorThenField(): Obsolete { return { old: true } }
+  accessorThenField: Current = { current: true }
+  fieldThenAccessor: Current = { current: true }
+  get fieldThenAccessor(): Obsolete { return { old: true } }
+  duplicate(): Obsolete { return { old: true } }
+  duplicate(): Current { return { current: true } }
+  get paired(): Current { return { current: true } }
+  set paired(value: Current) {}
+  get getterThenMethod(): Obsolete { return { old: true } }
+  getterThenMethod(): Current { return { current: true } }
+  methodThenGetter(): Obsolete { return { old: true } }
+  get methodThenGetter(): Current { return { current: true } }
+  set setterThenMethod(value: Obsolete) {}
+  setterThenMethod(): Current { return { current: true } }
+  methodThenSetter(): Obsolete { return { old: true } }
+  set methodThenSetter(value: Current) {}
+  get repeated(): Obsolete { return { old: true } }
+  set repeated(value: Current) {}
+  get repeated(): Current { return { current: true } }
+  parameterWins(): Obsolete { return { old: true } }
+  constructor(public parameterWins: Current) {}
+}
+` }))
+  const declaration = normalized.declaration
+  for (const name of ['methodThenField', 'fieldThenMethod', 'accessorThenField', 'fieldThenAccessor', 'parameterWins']) {
+    assert.match(declaration, new RegExp(`${name}: __ptcBinding_[a-f0-9]{12}\\.Current`))
+    assert.doesNotMatch(declaration, new RegExp(`${name}\\(`))
+  }
+  assert.match(declaration, /duplicate\(\): __ptcBinding_[a-f0-9]{12}\.Current/)
+  assert.equal((declaration.match(/duplicate\(/g) ?? []).length, 1)
+  assert.match(declaration, /get paired\(\): __ptcBinding_[a-f0-9]{12}\.Current/)
+  assert.match(declaration, /set paired\(value: __ptcBinding_[a-f0-9]{12}\.Current\)/)
+  assert.match(declaration, /getterThenMethod\(\): __ptcBinding_[a-f0-9]{12}\.Current/)
+  assert.doesNotMatch(declaration, /get getterThenMethod/)
+  assert.match(declaration, /get methodThenGetter\(\): __ptcBinding_[a-f0-9]{12}\.Current/)
+  assert.doesNotMatch(declaration, /(?:\{ |; )methodThenGetter\(\):/)
+  assert.match(declaration, /setterThenMethod\(\): __ptcBinding_[a-f0-9]{12}\.Current/)
+  assert.doesNotMatch(declaration, /set setterThenMethod/)
+  assert.match(declaration, /set methodThenSetter\(value: __ptcBinding_[a-f0-9]{12}\.Current\)/)
+  assert.doesNotMatch(declaration, /methodThenSetter\(\):/)
+  assert.match(declaration, /get repeated\(\): __ptcBinding_[a-f0-9]{12}\.Current/)
+  assert.match(declaration, /set repeated\(value: __ptcBinding_[a-f0-9]{12}\.Current\)/)
+  assert.equal((declaration.match(/get repeated/g) ?? []).length, 1)
+  assert.match(declaration, /export interface Current/)
+  assert.doesNotMatch(declaration, /export interface Obsolete/)
+  assert.doesNotThrow(() => parse(declaration, { sourceType: 'module', plugins: ['typescript'] }))
+})
+
+test('binding class projections retain the effective automatic accessor descriptor halves', () => {
+  const normalized = normalizeUserBindingEntry(entry({ source: `
+interface Obsolete { old: true }
+interface Current { current: true }
+export class Shape {
+  accessor whole: Current
+  accessor getterReplaced: Current
+  get getterReplaced(): Current { return { current: true } }
+  accessor setterReplaced: Current
+  set setterReplaced(value: Current) {}
+  accessor methodWins: Obsolete
+  methodWins(): Current { return { current: true } }
+  private accessor hidden: Obsolete
+}
+` }))
+  const declaration = normalized.declaration
+  assert.match(declaration, /whole: __ptcBinding_[a-f0-9]{12}\.Current/)
+  assert.match(declaration, /get getterReplaced\(\): __ptcBinding_[a-f0-9]{12}\.Current/)
+  assert.match(declaration, /set getterReplaced\(value: __ptcBinding_[a-f0-9]{12}\.Current\)/)
+  assert.match(declaration, /get setterReplaced\(\): __ptcBinding_[a-f0-9]{12}\.Current/)
+  assert.match(declaration, /set setterReplaced\(value: __ptcBinding_[a-f0-9]{12}\.Current\)/)
+  assert.match(declaration, /methodWins\(\): __ptcBinding_[a-f0-9]{12}\.Current/)
+  assert.doesNotMatch(declaration, /hidden|export interface Obsolete/)
+  assert.doesNotThrow(() => parse(declaration, { sourceType: 'module', plugins: ['typescript'] }))
+})
+
+test('binding class projections select canonical identifier, quoted and numeric property keys', () => {
+  const source = `
+interface Obsolete { old: true }
+interface Current { current: true }
+export class Shape {
+  value: Obsolete = { old: true }
+  "value": Current = { current: true }
+  "reverse": Obsolete = { old: true }
+  reverse: Current = { current: true }
+  "1": Obsolete = { old: true };
+  [1n]: Current = { current: true }
+  "2": Obsolete = { old: true }
+  2: Current = { current: true }
+  3: Current = { current: true }
+  0x10n: Obsolete = { old: true }
+  "16": Current = { current: true }
+  "17": Obsolete = { old: true }
+  0x11n: Current = { current: true }
+  18n: Current = { current: true }
+  4: Obsolete = { old: true };
+  [4]: Current = { current: true }
+  callable(): Obsolete { return { old: true } }
+  ["callable"]: Current = { current: true }
+  get "access"(): Obsolete { return { old: true } }
+  get access(): Current { return { current: true } }
+  "method"(): Obsolete { return { old: true } }
+  method(): Current { return { current: true } }
+  "parameter": Obsolete = { old: true }
+  constructor(public parameter: Current) {}
+}
+`
+  for (const scope of ['namespace', 'top-level']) {
+    const declaration = normalizeUserBindingEntry(entry({ scope, source })).declaration
+    for (const name of ['value', 'reverse', 'parameter', 'callable']) {
+      assert.match(declaration, new RegExp(`(?:"${name}"|${name}): __ptcBinding_[a-f0-9]{12}\\.Current`))
+      assert.equal((declaration.match(new RegExp(`(?:^|[;{]\\s*)(?:"${name}"|${name}):`, 'g')) ?? []).length, 1)
+    }
+    for (const key of ['1', '2', '3', '4', '16', '17', '18']) {
+      assert.match(declaration, new RegExp(`"${key}": __ptcBinding_[a-f0-9]{12}\\.Current`))
+      assert.equal((declaration.match(new RegExp(`"${key}":`, 'g')) ?? []).length, 1)
+    }
+    assert.match(declaration, /get access\(\): __ptcBinding_[a-f0-9]{12}\.Current/)
+    assert.match(declaration, /method\(\): __ptcBinding_[a-f0-9]{12}\.Current/)
+    assert.doesNotMatch(declaration, /export interface Obsolete/)
+    assert.doesNotThrow(() => parse(declaration, { sourceType: 'module', plugins: ['typescript'] }))
+    const fileName = `canonical-class-keys-${scope}.d.ts`
+    const options = { noEmit: true, strict: true, target: ts.ScriptTarget.ESNext }
+    const host = ts.createCompilerHost(options)
+    const originalGetSourceFile = host.getSourceFile.bind(host)
+    host.getSourceFile = (requested, languageVersion, onError, shouldCreateNewSourceFile) => requested === fileName
+      ? ts.createSourceFile(fileName, declaration, languageVersion, true, ts.ScriptKind.TS)
+      : originalGetSourceFile(requested, languageVersion, onError, shouldCreateNewSourceFile)
+    host.fileExists = requested => requested === fileName || ts.sys.fileExists(requested)
+    host.readFile = requested => requested === fileName ? declaration : ts.sys.readFile(requested)
+    const diagnostics = ts.getPreEmitDiagnostics(ts.createProgram([fileName], options, host))
+      .filter(diagnostic => diagnostic.file?.fileName === fileName)
+    assert.deepEqual(diagnostics.map(diagnostic => diagnostic.code), [])
+  }
+})
+
+test('binding class projection rejects dynamic computed keys whose collisions are unknown', () => {
+  for (const scope of ['namespace', 'top-level']) {
+    assert.throws(() => normalizeUserBindingEntry(entry({ scope, source: `
+const key = 'value'
+export class Shape {
+  value(): number { return 1 }
+  [key]: string = 'actual'
+}
+` })), /computed class member key cannot be represented/)
+  }
 })
 
 test('binding class projections retain public abstract methods and accessors', () => {

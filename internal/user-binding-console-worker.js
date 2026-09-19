@@ -1,5 +1,5 @@
-import { AsyncLocalStorage } from 'node:async_hooks'
 import { randomUUID } from 'node:crypto'
+import { createPrivateAsyncLocalStorage } from './async-local-storage-intrinsics.js'
 import { create as createDomain } from 'node:domain'
 import { createRequire, registerHooks } from 'node:module'
 import { resolve } from 'node:path'
@@ -17,8 +17,9 @@ import { moduleRuntimeIntrinsics } from './compiler-intrinsics.js'
 import { stringifyCompilerData } from './compiler-data.js'
 import { createCellCompletionObserver } from './cell-completion.js'
 import { WORKER_SHUTDOWN_ACKNOWLEDGEMENT, WORKER_SHUTDOWN_REQUEST } from './worker-shutdown.js'
-import { WORKER_REPL_OPTIONS, createWorkerControlPromise, disableWorkerReplDomain,
-  captureWorkerReplGlobals, restoreWorkerReplGlobals, runInWorkerReplRealm,
+import { WORKER_REPL_OPTIONS, createWorkerControlPromise, createWorkerReplErrorHandler,
+  disableWorkerReplDomain,
+  captureWorkerReplGlobals, protectWorkerReplAsyncContext, restoreWorkerReplGlobals, runInWorkerReplRealm,
   workerReplContext } from './worker-repl-realm.js'
 
 const { Object, Set, setHas, setAdd, setDelete, appendArray } = moduleRuntimeIntrinsics
@@ -27,7 +28,7 @@ const process = globalThis.process
 const hasProperty = globalThis.Reflect.has
 const ControlPromise = createWorkerControlPromise()
 
-const evaluations = new AsyncLocalStorage()
+const evaluations = createPrivateAsyncLocalStorage()
 const context = globalThis
 const completionObserver = createCellCompletionObserver(runInWorkerReplRealm('Function'))
 context.console = console
@@ -146,7 +147,9 @@ function evaluatePrepared(javascript, asyncCompletion = false) {
   const output = new PassThrough()
   output.resume()
   const workerGlobalBaseline = captureWorkerReplGlobals(context)
-  const server = repl.start({ input, output, terminal: false, prompt: '', ...WORKER_REPL_OPTIONS })
+  const server = repl.start({ input, output, terminal: false, prompt: '', ...WORKER_REPL_OPTIONS,
+    handleError: createWorkerReplErrorHandler(evaluations, (state, error) => state.finish(true, error)) })
+  protectWorkerReplAsyncContext(server)
   workerReplContext(server)
   restoreWorkerReplGlobals(workerGlobalBaseline, context)
   Object.defineProperty(context, 'require', { configurable: true, value: providedRequire })

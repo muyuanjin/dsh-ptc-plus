@@ -73,7 +73,11 @@ Use `npm ci` only when dependencies are unavailable or the lockfile changes. For
 - `npm run verify` while an active ledger contains unresolved findings.
 - `npm run check` when no active ledger exists or every active finding is terminal.
 
-`npm run verify` validates the ledger, checks generated builds and syntax, runs client tests, and enforces 100% line and function coverage with at least 95% branch coverage. `npm run test:semantics` is a focused diagnostic entry, not a replacement for the final command.
+Run the applicable final command once: `npm run check` already runs `npm run verify`, so do not run `verify` immediately before `check` on the same tree. Do not attach a concurrency, retry, or environment override inherited from a handoff; use the command above literally unless current owner documentation or reproduced evidence requires the override.
+
+`npm run verify` validates the ledger, checks generated builds and syntax, runs client tests, and enforces 100% line and function coverage with at least 95% branch coverage. `npm run test:semantics` and `npm run coverage:focus` are focused diagnostic entries, not replacements for the final command. Before the first full gate, make the smallest relevant tests and focused coverage pass. After a full gate failure, reproduce and correct that failure with the narrowest distinguishing check before rerunning the full gate. For a change spanning multiple semantic owners or recovery boundaries, obtain a diagnostic review before the first full gate; it does not replace the independent final review of the frozen candidate.
+
+[Focused Verification](docs/verification-optimization-work.md) records the bounded coverage diagnostic contract. Keep transient run state, review findings, and delivery progress out of that design reference.
 
 `npm run check` runs that verification while checking that the source tree and active ledger remain unchanged, then writes a proof for the verified source and current HEAD. The pre-commit hook consumes that proof and checks the prospective index tree against it. These mechanisms bind verification to an object; they do not prove all semantic obligations or replace an independent review required by the task. When a clean independent review is required, obtain one no-findings conclusion for the final complete change after all fixes; earlier partial reviews do not supply that conclusion.
 

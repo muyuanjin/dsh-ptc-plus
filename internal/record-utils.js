@@ -1,14 +1,22 @@
 /** Shared structural guards for closed PTC metadata boundaries. */
 
+import { runtimeIntrinsics as internal } from './runtime-intrinsics.js'
+
+const { TypeError, isArray, reflectOwnKeys, objectGetOwnPropertyDescriptor,
+  objectHasOwn, objectPropertyIsEnumerable, objectFreeze, trimString, toString,
+  Set, setHas, setAdd, setSize, appendArray, popArray } = internal
+
 export function isRecord(value) {
-  return value !== null && typeof value === 'object' && !Array.isArray(value)
+  return value !== null && typeof value === 'object' && !isArray(value)
 }
 
 export function assertOwnFields(value, allowed, label) {
-  for (const key of Reflect.ownKeys(value)) {
-    if (typeof key !== 'string' || !allowed.has(key)
-      || !Object.prototype.propertyIsEnumerable.call(value, key)) {
-      throw new TypeError(`invalid ${label} field ${String(key)}`)
+  const keys = reflectOwnKeys(value)
+  for (let index = 0; index < keys.length; index += 1) {
+    const key = keys[index]
+    if (typeof key !== 'string' || !setHas(allowed, key)
+      || !objectPropertyIsEnumerable(value, key)) {
+      throw new TypeError(`invalid ${label} field ${toString(key)}`)
     }
   }
 }
@@ -16,7 +24,7 @@ export function assertOwnFields(value, allowed, label) {
 export function assertFields(value, allowed, label) {
   if (!isRecord(value)) throw new TypeError(`invalid ${label}`)
   assertOwnFields(value, allowed, label)
-  if (Reflect.ownKeys(value).length !== allowed.size) throw new TypeError(`invalid ${label} fields`)
+  if (reflectOwnKeys(value).length !== setSize(allowed)) throw new TypeError(`invalid ${label} fields`)
 }
 
 export function record(value, label) {
@@ -25,7 +33,7 @@ export function record(value, label) {
 }
 
 export function text(value, label) {
-  if (typeof value !== 'string' || value.trim().length === 0) {
+  if (typeof value !== 'string' || trimString(value).length === 0) {
     throw new TypeError(`ptc-plus: ${label} must be a non-empty string`)
   }
   return value
@@ -37,17 +45,18 @@ export function deepFreeze(value) {
   const pending = [value]
   const seen = new Set()
   while (pending.length > 0) {
-    const current = pending.pop()
-    if (seen.has(current)) continue
-    seen.add(current)
-    for (const key of Reflect.ownKeys(current)) {
-      const descriptor = Object.getOwnPropertyDescriptor(current, key)
-      if (descriptor !== undefined && Object.hasOwn(descriptor, 'value')) {
+    const current = popArray(pending)
+    if (setHas(seen, current)) continue
+    setAdd(seen, current)
+    const keys = reflectOwnKeys(current)
+    for (let index = 0; index < keys.length; index += 1) {
+      const descriptor = objectGetOwnPropertyDescriptor(current, keys[index])
+      if (descriptor !== undefined && objectHasOwn(descriptor, 'value')) {
         const child = descriptor.value
-        if (child !== null && typeof child === 'object') pending.push(child)
+        if (child !== null && typeof child === 'object') appendArray(pending, child)
       }
     }
-    Object.freeze(current)
+    objectFreeze(current)
   }
   return value
 }

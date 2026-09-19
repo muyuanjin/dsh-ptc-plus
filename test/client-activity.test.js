@@ -5,6 +5,8 @@ import { normalizeJournal } from '../internal/session-journal.js'
 import { JOURNAL_VERSION, JOURNAL_VERSIONS, PER_NAME_USER_BINDINGS_JOURNAL_VERSION } from '../internal/session-journal-schema.js'
 import { encodeValue } from '../internal/value-wire.js'
 import { DEFAULT_VALUE_LIMITS } from '../internal/value-wire-schema.js'
+import { LEGACY_USER_BINDING_TRANSFORM, PREVIOUS_USER_BINDING_TRANSFORM,
+  PROTECTED_MODULE_TRANSFORM } from '../internal/module-transform-contract.js'
 
 const REWRITE_POLICY = Object.freeze({
   autoRewriteImports: true,
@@ -364,6 +366,7 @@ test('preserves feature evidence for versioned and legacy binding reuse policies
   delete legacy.userBindingsShadowPolicy
   delete legacy.userBindingNames
   delete legacy.languageSemantics
+  delete legacy.moduleTransform
   assert.equal(derivePtcToolView(result({ dshPtcPlus: legacy })).ptc, true)
   assert.equal(derivePtcToolView(result({ dshPtcPlus: { ...legacy, userBindingsReusePolicy: 'implementation-v1' } })).ptc, false)
 })
@@ -386,6 +389,7 @@ test('validates current and historical import-expression semantics independently
   delete historical.userBindingsShadowPolicy
   delete historical.userBindingNames
   delete historical.languageSemantics
+  delete historical.moduleTransform
   assert.equal(derivePtcToolView(result({ dshPtcPlus: historical })).ptc, true)
   assert.equal(derivePtcToolView(result({ dshPtcPlus: {
     ...historical,
@@ -395,14 +399,24 @@ test('validates current and historical import-expression semantics independently
 
 test('validates language generations without accepting new fields in historical records', () => {
   const current = normalizeJournal(journal())
-  for (const languageSemantics of ['legacy-v1', 'stateful-v1', 'protected-v1']) {
-    assert.equal(derivePtcToolView(result({ dshPtcPlus: { ...current, languageSemantics } })).ptc, true)
+  for (const [languageSemantics, moduleTransform] of [
+    ['legacy-v1', LEGACY_USER_BINDING_TRANSFORM],
+    ['stateful-v1', PREVIOUS_USER_BINDING_TRANSFORM],
+    ['protected-v1', PROTECTED_MODULE_TRANSFORM],
+  ]) {
+    assert.equal(derivePtcToolView(result({ dshPtcPlus: {
+      ...current, languageSemantics, moduleTransform,
+    } })).ptc, true)
   }
+  assert.equal(derivePtcToolView(result({ dshPtcPlus: {
+    ...current, languageSemantics: 'legacy-v1', moduleTransform: PREVIOUS_USER_BINDING_TRANSFORM,
+  } })).ptc, false)
   for (const languageSemantics of [undefined, null, 'unknown']) {
     assert.equal(derivePtcToolView(result({ dshPtcPlus: { ...current, languageSemantics } })).ptc, false)
   }
   const historical = { ...current, version: PER_NAME_USER_BINDINGS_JOURNAL_VERSION }
   delete historical.languageSemantics
+  delete historical.moduleTransform
   assert.equal(derivePtcToolView(result({ dshPtcPlus: historical })).ptc, true)
   assert.equal(derivePtcToolView(result({ dshPtcPlus: { ...historical, languageSemantics: 'stateful-v1' } })).ptc, false)
 })
@@ -449,6 +463,7 @@ test('validates per-name facts while preserving historical whole-entry presentat
     delete historical.userBindingNames
     delete historical.userBindingsShadowPolicy
     delete historical.languageSemantics
+    delete historical.moduleTransform
     if (version === 1) delete historical.rewritePolicy
     if (version < 6) delete historical.userBindingsReusePolicy
     if (version < 5) delete historical.userBindingsFingerprint

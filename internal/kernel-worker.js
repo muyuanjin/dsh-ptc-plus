@@ -4,17 +4,16 @@ import { createRequire, registerHooks } from 'node:module'
 import { managedModuleImport, managedRequire, readModuleImport, statefulModuleLink } from './stateful-module-runtime.js'
 import { staticModuleLinkReference } from './compiler-module-links.js'
 import { compileStatefulModule, createUserModuleCompilationHooks } from './stateful-module-compiler.js'
-import { USER_BINDING_TRANSFORM, LEGACY_USER_BINDING_TRANSFORM, moduleTransformForLanguage } from './module-transform-contract.js'
+import { USER_BINDING_TRANSFORM, LEGACY_USER_BINDING_TRANSFORM } from './module-transform-contract.js'
 import { isAbsolute, resolve } from 'node:path'
 import repl from 'node:repl'
 import { PassThrough } from 'node:stream'
 import { pathToFileURL } from 'node:url'
 import { formatWithOptions } from 'node:util'
 import { MessageChannel, parentPort, workerData } from 'node:worker_threads'
-import { runInContext } from 'node:vm'
 import { synchronizeBuiltinEsmExports } from './builtin-esm-sync.js'
 import { createExceptionOriginScope, errorDetails, messageOf, programBindingError } from './failure-reporting.js'
-import { AMBIENT_GLOBALS, DURABLE_IMPORTS, FORBIDDEN_IMPORTS } from './module-policy.js'
+import { DURABLE_IMPORTS, FORBIDDEN_IMPORTS } from './module-policy.js'
 import { decodeValue, encodeValue } from './value-wire.js'
 import { LEGACY_USER_BINDINGS_REUSE_POLICY, LIVE_USER_BINDINGS_SHADOW_POLICY, normalizeUserBindingNames } from './session-journal-schema.js'
 import { installWorkerCwdVirtualization } from './worker-cwd-virtualization.js'
@@ -25,9 +24,75 @@ import { moduleRuntimeIntrinsics } from './compiler-intrinsics.js'
 import { compilerDescriptors } from './compiler-descriptors.js'
 import { createCellCompletionObserver } from './cell-completion.js'
 import { WORKER_SHUTDOWN_ACKNOWLEDGEMENT, WORKER_SHUTDOWN_REQUEST } from './worker-shutdown.js'
+import { WORKER_REPL_OPTIONS, createWorkerControlPromise, disableWorkerReplDomain,
+  captureWorkerReplGlobals, restoreWorkerReplGlobals, runInWorkerReplRealm,
+  workerReplContext } from './worker-repl-realm.js'
+import { installProgramAmbientResolver } from './dynamic-environment-runtime.js'
 
-const { Object, mapGet, mapSet, mapHas, mapDelete, setHas, setAdd, setDelete } = moduleRuntimeIntrinsics
-const hasProperty = Reflect.has
+const { Object, Map, Set, Proxy, Error,
+  mapGet, mapSet, mapHas, mapDelete, mapClear, mapSize, mapForEach,
+  setHas, setAdd, setDelete, setClear, setForEach,
+  everyArray, someArray, appendArray, copyArray, join, Reflect: privateReflect, promiseResolve, promiseReject } = moduleRuntimeIntrinsics
+const PublicPromise = globalThis.Promise
+const jsonStringify = globalThis.JSON.stringify
+const bufferByteLength = globalThis.Buffer.byteLength
+const String = globalThis.String
+const process = globalThis.process
+const ControlPromise = createWorkerControlPromise()
+const hasProperty = privateReflect.has
+
+function mapArray(values, visit) {
+  const result = []
+  for (let index = 0; index < values.length; index++) appendArray(result, visit(values[index], index))
+  return result
+}
+
+function filterArray(values, select) {
+  const result = []
+  for (let index = 0; index < values.length; index++) {
+    if (select(values[index], index)) appendArray(result, values[index])
+  }
+  return result
+}
+
+function mapFromArray(values, visit) {
+  const result = new Map()
+  for (let index = 0; index < values.length; index++) {
+    const entry = visit(values[index], index)
+    mapSet(result, entry[0], entry[1])
+  }
+  return result
+}
+
+function setFromArray(values) {
+  const result = new Set()
+  for (let index = 0; index < values.length; index++) setAdd(result, values[index])
+  return result
+}
+
+function mapKeysArray(value) {
+  const result = []
+  mapForEach(value, (_item, key) => appendArray(result, key))
+  return result
+}
+
+function mapEntriesArray(value) {
+  const result = []
+  mapForEach(value, (item, key) => appendArray(result, [key, item]))
+  return result
+}
+
+function mapValuesArray(value) {
+  const result = []
+  mapForEach(value, item => appendArray(result, item))
+  return result
+}
+
+function setValuesArray(value) {
+  const result = []
+  setForEach(value, item => appendArray(result, item))
+  return result
+}
 
 if (parentPort === null) throw new Error('ptc-plus kernel worker started without a parent port')
 const { port1, port2: channel } = new MessageChannel()
@@ -38,39 +103,54 @@ output.resume()
 const evaluationScope = new AsyncLocalStorage()
 const sessionCwd = typeof workerData?.cwd === 'string' ? workerData.cwd : undefined
 if (sessionCwd !== undefined && !isAbsolute(sessionCwd)) {
-  throw new Error(`ptc-plus session cwd must be absolute, got ${JSON.stringify(sessionCwd)}`)
+  throw new Error(`ptc-plus session cwd must be absolute, got ${jsonStringify(sessionCwd)}`)
 }
+const workerGlobalBaseline = captureWorkerReplGlobals()
 const server = repl.start({
   input,
   output,
   terminal: false,
   prompt: '',
-  useGlobal: false,
+  ...WORKER_REPL_OPTIONS,
   ignoreUndefined: true,
 })
+const originalRequire = server.context.require
 // domain.bind exposes its owner on a bound evaluator in older Node REPLs.
 // Newer REPLs honor an explicitly entered domain. Capture before REPL error
 // formatting can evaluate user-defined stack/name getters.
-const errorDomain = server.eval.domain ?? createDomain()
+const errorDomain = disableWorkerReplDomain(server.eval.domain ?? createDomain())
 errorDomain.removeAllListeners('error')
 errorDomain.on('error', error => evaluationScope.getStore()?.(true, error))
-const context = server.context
-const contextGlobal = runInContext('globalThis', context)
-const completionObserver = createCellCompletionObserver(runInContext('Function', context))
+const handleUncaughtException = error => {
+  const finish = evaluationScope.getStore()
+  if (finish !== undefined) {
+    finish(true, error)
+    return
+  }
+  /* c8 ignore next 2 -- preserve Node's fatal behavior outside an owned evaluation */
+  process.removeListener('uncaughtException', handleUncaughtException)
+  throw error
+}
+process.on('uncaughtException', handleUncaughtException)
+const context = workerReplContext(server)
+restoreWorkerReplGlobals(workerGlobalBaseline, context)
+const workerBaselineGlobals = setFromArray(mapKeysArray(workerGlobalBaseline))
+const contextGlobal = runInWorkerReplRealm('globalThis')
+const completionObserver = createCellCompletionObserver(runInWorkerReplRealm('Function'))
 let replModuleRealm
 const statefulRoots = createStatefulRootRuntime({
   refresh: name => refreshLegacyPublication(name),
   importModule: (source, options) => managedModuleImport(replParent, source, options, replModuleRealm),
-  errors: runInContext('({ ReferenceError, TypeError })', context),
-  dynamicIntrinsics: runInContext('({intrinsicEval:eval,realmFunction:Function,globalObject:globalThis,errors:{ReferenceError,TypeError,SyntaxError},reflect:Reflect,object:Object})', context),
-  readAmbient: name => runInContext(name, context),
-  typeofAmbient: name => runInContext(`typeof ${name}`, context),
+  errors: runInWorkerReplRealm('({ ReferenceError, TypeError })'),
+  dynamicIntrinsics: runInWorkerReplRealm('({intrinsicEval:eval,realmFunction:Function,globalObject:globalThis,errors:{ReferenceError,TypeError,SyntaxError},reflect:Reflect,object:Object})'),
+  readAmbient: name => runInWorkerReplRealm(name),
+  typeofAmbient: name => runInWorkerReplRealm(`typeof ${name}`),
   canWriteAmbient: name => writableRootProperty(name),
   writeAmbient(name, value, strict) {
     const argument = name === '__ptc_value' ? '__ptc_other_value' : '__ptc_value'
-    runInContext(`${strict ? '"use strict";' : ''}(${argument}) => (${name} = ${argument})`, context)(value)
+    runInWorkerReplRealm(`${strict ? '"use strict";' : ''}(${argument}) => (${name} = ${argument})`)(value)
   },
-  deleteAmbient: name => runInContext(`delete ${name}`, context),
+  deleteAmbient: name => runInWorkerReplRealm(`delete ${name}`),
   hasAmbient: name => setHas(installedGlobals, name)
     ? mapGet(installedGlobalOriginals, name).descriptor !== undefined : hasProperty(context, name),
   // Request namespaces stay on globalThis; source declarations own separate
@@ -83,15 +163,15 @@ const statefulRoots = createStatefulRootRuntime({
 })
 const nativeRootDynamic = createNativeRootDynamic({
   logicalReference: (name, writable) => statefulRoots.legacyReference(name, writable),
-  intrinsics: runInContext('({intrinsicEval:eval,realmFunction:Function,globalObject:globalThis,errors:{ReferenceError,TypeError,SyntaxError},reflect:Reflect,object:Object})', context),
+  intrinsics: runInWorkerReplRealm('({intrinsicEval:eval,realmFunction:Function,globalObject:globalThis,errors:{ReferenceError,TypeError,SyntaxError},reflect:Reflect,object:Object})'),
   importModule: (source, options) => managedModuleImport(replParent, source, options, replModuleRealm),
-  read: name => runInContext(name, context),
-  typeOf: name => runInContext(`typeof ${name}`, context),
+  read: name => runInWorkerReplRealm(name),
+  typeOf: name => runInWorkerReplRealm(`typeof ${name}`),
   write(name, value, strict) {
     const argument = name === '__ptc_value' ? '__ptc_other_value' : '__ptc_value'
-    runInContext(`${strict ? '"use strict";' : ''}(${argument}) => (${name} = ${argument})`, context)(value)
+    runInWorkerReplRealm(`${strict ? '"use strict";' : ''}(${argument}) => (${name} = ${argument})`)(value)
   },
-  remove: name => runInContext(`delete ${name}`, context),
+  remove: name => runInWorkerReplRealm(`delete ${name}`),
 })
 let valueObserver
 const REPL_IMPORT_CANARY = 'data:text/javascript,export default 1'
@@ -101,7 +181,7 @@ const staticAdapterParents = new Set()
 const userBindingModuleParents = new Map()
 const userModuleCompilation = createUserModuleCompilationHooks({
   transformForParent: parent => (parent === replParent || parent === sessionReplParent) && activeExecution !== undefined
-    ? moduleTransformForLanguage(activeExecution.languageSemantics) : undefined,
+    ? activeExecution.moduleTransform : undefined,
 })
 registerHooks({
   resolve(specifier, context, nextResolve) {
@@ -122,7 +202,7 @@ const userBindingActivationScope = new AsyncLocalStorage()
 const pending = new Map()
 const installedGlobals = new Set()
 const installedGlobalOriginals = new Map()
-const PROCESS_CONTROLS = new Set(['exit', 'abort', 'kill', 'chdir'])
+const PROCESS_CONTROLS = setFromArray(['exit', 'abort', 'kill', 'chdir'])
 const CELL_FRAME_SUFFIX = '\n;'
 let filenameSequence = 0
 let activeFilename = 'ptc-plus-repl'
@@ -131,12 +211,12 @@ const CONFORMANCE_CELL = `"use strict";
   if (this !== globalThis) throw new Error('invalid REPL global receiver semantics')
   const __ptc_canary = await Promise.resolve(1)
   if (__ptc_canary !== 1) throw new Error('invalid REPL await semantics')
-  const __ptc_import_canary = await import(${JSON.stringify(REPL_IMPORT_CANARY)})
+  const __ptc_import_canary = await import(${jsonStringify(REPL_IMPORT_CANARY)})
   if (__ptc_import_canary.default !== 1) throw new Error('invalid REPL import semantics')
 }`
 let activeRun
 let activeExecution
-let pendingVolatileReason
+let suppressReplCwdObservation = false
 let nextCallId = 0
 let nextStaticAdapterId = 0
 let nextUserBindingModuleId = 0
@@ -145,7 +225,20 @@ const userBindingNames = new Map()
 const userBindingSources = new Map()
 const dynamicNamespaces = new Map()
 const originalDynamicNamespaceGlobals = new Map()
-let retainedUserBindingRuntime = false
+const dynamicNamespaceViews = new Map()
+const dynamicNamespaceGlobalGetters = new Map()
+let retainedLegacyUserBindingRuntime = false
+
+installProgramAmbientResolver(name => {
+  if (!mapHas(dynamicNamespaces, name) && !mapHas(originalDynamicNamespaceGlobals, name)
+    && !mapHas(dynamicNamespaceViews, name)) return undefined
+  return {
+    get: () => dynamicNamespaceView(name),
+    set() { throw new TypeError(`${name} cannot be overwritten because reserved program bindings are not shadowable`) },
+    typeof: () => 'object',
+    delete: () => false,
+  }
+})
 
 class StaticImportFailure {
   constructor(error, position) {
@@ -172,14 +265,14 @@ function appendLog(...values) {
 
 function appendText(current, text) {
   if (current.open !== true || current.outputLimited) return
-  const bytes = Buffer.byteLength(JSON.stringify(text), 'utf8') + (current.logs.length === 0 ? 0 : 1)
+  const bytes = bufferByteLength(jsonStringify(text), 'utf8') + (current.logs.length === 0 ? 0 : 1)
   if (current.logBytes + bytes > current.maxOutputBytes) {
     current.outputLimited = true
     channel.postMessage({ type: 'output-limit', id: current.id, logs: current.logs })
     return
   }
   current.logBytes += bytes
-  current.logs.push(text)
+  appendArray(current.logs, text)
 }
 
 const consoleView = Object.freeze({
@@ -195,7 +288,8 @@ Object.defineProperty(context, 'console', { configurable: true, value: consoleVi
 function captureWrite(chunk, ...rest) {
   const current = logScope.getStore()
   if (current?.open === true) appendText(current, typeof chunk === 'string' ? chunk : String(chunk))
-  const callback = [rest[0], rest[1]].find(value => typeof value === 'function')
+  const callback = typeof rest[0] === 'function' ? rest[0]
+    : typeof rest[1] === 'function' ? rest[1] : undefined
   if (callback !== undefined) queueMicrotask(() => callback(null))
   return true
 }
@@ -204,10 +298,7 @@ process.stderr.write = captureWrite
 
 function markVolatile(reason) {
   const current = activeExecution
-  if (current === undefined) {
-    pendingVolatileReason ??= reason
-    return
-  }
+  if (current === undefined) return
   if (current.durability === 'volatile') return
   current.durability = 'volatile'
   current.volatileReason ??= reason
@@ -221,10 +312,10 @@ function completionDurability(execution) {
   }
 }
 
-const originalRequire = context.require
-
 function guardProcessControls() {
-  for (const property of PROCESS_CONTROLS) {
+  const properties = setValuesArray(PROCESS_CONTROLS)
+  for (let index = 0; index < properties.length; index += 1) {
+    const property = properties[index]
     const descriptor = Object.getOwnPropertyDescriptor(process, property)
     Object.defineProperty(process, property, {
       configurable: false,
@@ -238,84 +329,31 @@ function guardProcessControls() {
 }
 
 guardProcessControls()
-installWorkerCwdVirtualization(sessionCwd, originalRequire)
+installWorkerCwdVirtualization(sessionCwd, originalRequire, reason => {
+  if (suppressReplCwdObservation) {
+    suppressReplCwdObservation = false
+    return
+  }
+  markVolatile(reason)
+})
 synchronizeBuiltinEsmExports()
-const originalGlobals = Object.fromEntries(
-  [...AMBIENT_GLOBALS].filter(name => name !== 'require')
-    .map(name => [name, name === 'eval' || name === 'Function' ? runInContext(name, context) : globalThis[name]]),
-)
 const providedRequire = sessionReplParent === undefined ? originalRequire : createRequire(sessionReplParent)
 function selectProvidedRequire(args) {
   const specifier = args[0]
-  if (FORBIDDEN_IMPORTS.has(specifier)) throw new Error(`module ${specifier} is forbidden because it exposes kernel control`)
-  if (!DURABLE_IMPORTS.has(specifier)) markVolatile(`require(${JSON.stringify(specifier)})`)
+  if (setHas(FORBIDDEN_IMPORTS, specifier)) throw new Error(`module ${specifier} is forbidden because it exposes kernel control`)
+  if (!setHas(DURABLE_IMPORTS, specifier)) markVolatile(`require(${jsonStringify(specifier)})`)
   return managedRequire(activeExecution?.languageSemantics === 'legacy-v1' ? replParent : sessionReplParent ?? replParent,
     activeExecution?.languageSemantics === 'legacy-v1' ? originalRequire : providedRequire)
 }
 Object.defineProperty(context, 'require', {
   configurable: true,
   value: new Proxy(providedRequire, {
-    apply: (_, receiver, args) => Reflect.apply(selectProvidedRequire(args), receiver, args),
-    construct: (_, args, newTarget) => Reflect.construct(selectProvidedRequire(args), args, newTarget),
+    apply: (_, receiver, args) => privateReflect.apply(selectProvidedRequire(args), receiver, args),
+    construct: (_, args, newTarget) => privateReflect.construct(selectProvidedRequire(args), args, newTarget),
   }),
 })
-
-for (const [name, value] of Object.entries(originalGlobals)) {
-  Object.defineProperty(context, name, {
-    configurable: true,
-    get() {
-      markVolatile(`ambient ${name}`)
-      return value
-    },
-    set(next) {
-      markVolatile(`ambient ${name}`)
-      Object.defineProperty(context, name, { configurable: true, writable: true, value: next })
-    },
-  })
-}
-
-const capturedOutput = Object.freeze({ write: captureWrite })
-const processView = new Proxy(process, {
-  get(target, property) {
-    if (property === 'stdout' || property === 'stderr') return capturedOutput
-    if (property === 'cwd') {
-      if (sessionCwd !== undefined) return () => sessionCwd
-      markVolatile('process.cwd')
-      return target.cwd.bind(target)
-    }
-    if (PROCESS_CONTROLS.has(property)) return Reflect.get(target, property, target)
-    markVolatile(`process.${String(property)}`)
-    const value = Reflect.get(target, property, target)
-    return typeof value === 'function' ? value.bind(target) : value
-  },
-  set(target, property, value) {
-    if (property === 'stdout' || property === 'stderr') return false
-    markVolatile(`process.${String(property)}`)
-    return Reflect.set(target, property, value, target)
-  },
-  ownKeys(target) {
-    markVolatile('process reflection')
-    return Reflect.ownKeys(target)
-  },
-})
-Object.defineProperty(context, 'process', { configurable: true, value: processView })
-
-const mathDescriptors = Object.getOwnPropertyDescriptors(Math)
-mathDescriptors.random = {
-  ...mathDescriptors.random,
-  value: () => {
-    markVolatile('Math.random')
-    return Math.random()
-  },
-}
-const mathView = Object.defineProperties(Object.create(Object.getPrototypeOf(Math)), mathDescriptors)
-Object.defineProperty(context, 'Math', {
-  configurable: true,
-  value: Object.freeze(mathView),
-})
-
 function evaluate(program, completionSignal, asyncCompletion = false) {
-  return new Promise((resolve, reject) => {
+  return new ControlPromise((resolve, reject) => {
     let settled = false
     const finish = (failed, value) => {
       if (settled) return
@@ -334,6 +372,7 @@ function evaluate(program, completionSignal, asyncCompletion = false) {
       }
     }
     activeFilename = `ptc-plus-repl-${++filenameSequence}`
+    suppressReplCwdObservation = true
     evaluationScope.run(finish, () => errorDomain.run(() => {
       // Older REPL callbacks conflate null/undefined await rejection with a
       // successful empty result. A reached EOF distinguishes those outcomes.
@@ -341,7 +380,7 @@ function evaluate(program, completionSignal, asyncCompletion = false) {
       // preceding non-await expression value without adding a session binding.
       // Keep the final semicolon so REPL cannot guess a block is an object literal.
       const suffix = completionSignal === undefined || asyncCompletion ? CELL_FRAME_SUFFIX
-        : `${CELL_FRAME_SUFFIX}{ let completed = this[${JSON.stringify(completionSignal)}].complete(); }${CELL_FRAME_SUFFIX}`
+        : `${CELL_FRAME_SUFFIX}{ let completed = this[${jsonStringify(completionSignal)}].complete(); }${CELL_FRAME_SUFFIX}`
       server.eval(program + suffix, context, activeFilename, (error, value) => {
         if (asyncCompletion && (error === null || error === undefined)) {
           completionObserver.observe(value, value => finish(false, value), error => finish(true, error))
@@ -351,6 +390,7 @@ function evaluate(program, completionSignal, asyncCompletion = false) {
         finish(failed, failed ? error : value)
       })
     }))
+    suppressReplCwdObservation = false
   })
 }
 
@@ -361,9 +401,13 @@ async function verifyEvaluation() {
   context.__ptc_settlement_probe__ = marker
   context.__ptc_completion_probe__ = CellReturn
   try {
-    for (const value of [marker, null, undefined, false, 0]) {
+    const values = [marker, null, undefined, false, 0]
+    for (let valueIndex = 0; valueIndex < values.length; valueIndex += 1) {
+      const value = values[valueIndex]
       context.__ptc_settlement_probe__ = value
-      for (const source of ['throw __ptc_settlement_probe__', 'await Promise.reject(__ptc_settlement_probe__)']) {
+      const sources = ['throw __ptc_settlement_probe__', 'await Promise.reject(__ptc_settlement_probe__)']
+      for (let sourceIndex = 0; sourceIndex < sources.length; sourceIndex += 1) {
+        const source = sources[sourceIndex]
         let caught = false
         try { await evaluate(source, '__ptc_completion_probe__') } catch (error) {
           if (error !== value) throw new Error('REPL did not preserve the original thrown value')
@@ -375,7 +419,7 @@ async function verifyEvaluation() {
     let syntaxRejected = false
     try { await evaluate('const =') } catch (error) { syntaxRejected = error?.name === 'SyntaxError' }
     if (!syntaxRejected) throw new Error('REPL did not preserve syntax failure')
-    context.__ptc_settlement_probe__ = new CellReturn(Promise.resolve(marker))
+    context.__ptc_settlement_probe__ = new CellReturn(promiseResolve(marker))
     const returned = await evaluate('throw __ptc_settlement_probe__')
     if (!returned.hasValue || returned.value !== marker) throw new Error('REPL did not preserve cell return')
     await evaluate(CONFORMANCE_CELL)
@@ -390,47 +434,45 @@ async function verifyEvaluation() {
 
 function staticImportClause(options) {
   if (options === undefined) return { attributes: undefined, clause: '' }
-  const [keyword, attributes] = Object.entries(options)[0]
-  const entries = Object.entries(attributes)
-    .map(([key, value]) => `${JSON.stringify(key)}: ${JSON.stringify(value)}`)
-  return { attributes, clause: ` ${keyword} { ${entries.join(', ')} }` }
+  const option = Object.entries(options)[0]
+  const keyword = option[0]
+  const attributes = option[1]
+  const entries = mapArray(Object.entries(attributes), entry => `${jsonStringify(entry[0])}: ${jsonStringify(entry[1])}`)
+  return { attributes, clause: ` ${keyword} { ${join(entries, ', ')} }` }
 }
 
 function staticAdapterSource(load) {
   const { attributes, clause } = staticImportClause(load.options)
-  const source = JSON.stringify(statefulModuleLink(load.source, staticModuleLinkReference(load.source, attributes)))
+  const source = jsonStringify(statefulModuleLink(load.source, staticModuleLinkReference(load.source, attributes)))
   if (load.global === undefined) return `import ${source}${clause};`
-  const requirements = load.requiredExports?.map((name, index) => {
-    const imported = name === 'default' ? 'default' : JSON.stringify(name)
+  const requirements = load.requiredExports === undefined ? [] : mapArray(load.requiredExports, (name, index) => {
+    const imported = name === 'default' ? 'default' : jsonStringify(name)
     return `${imported} as __required_${index}__`
-  }) ?? []
-  return [
-    `import * as namespace from ${source}${clause};`,
-    ...(requirements.length === 0 ? [] : [
-      `export { ${requirements.join(', ')} } from ${source}${clause};`,
-    ]),
-    'export { namespace };',
-  ].join('\n')
+  })
+  const lines = [`import * as namespace from ${source}${clause};`]
+  if (requirements.length > 0) appendArray(lines, `export { ${join(requirements, ', ')} } from ${source}${clause};`)
+  appendArray(lines, 'export { namespace };')
+  return join(lines, '\n')
 }
 
 async function loadStaticModule(load) {
   if (load.operation === 'native-dynamic') return { namespace: nativeRootDynamic.environment(load.callableSources,
-    load.awaitRoot === true, load.logicalRoots.filter(name => statefulRoots.has(name)
+    load.awaitRoot === true, filterArray(load.logicalRoots, name => statefulRoots.has(name)
       && rootBindingStorage(name, moduleRuntimeIntrinsics.includes(load.nativeLexicals, name)) !== 'lexical'), load.writableRoots) }
   if (load.operation === 'import') {
     return { namespace: (source, options) => managedModuleImport(replParent, source, options, replModuleRealm) }
   }
   const adapter = `data:text/javascript,${encodeURIComponent(staticAdapterSource(load))}#${++nextStaticAdapterId}`
-  staticAdapterParents.add(adapter)
+  setAdd(staticAdapterParents, adapter)
   userModuleCompilation.mark(adapter, { compiled: true,
-    transform: moduleTransformForLanguage(activeExecution?.languageSemantics) })
+    transform: activeExecution?.moduleTransform })
   try {
-    const completion = await evaluate(`import(${JSON.stringify(adapter)})`)
+    const completion = await evaluate(`import(${jsonStringify(adapter)})`)
     if (load.global === undefined) return { namespace: undefined }
     const namespace = readModuleImport(adapter, load.source, null, () => completion.value.namespace, load.options?.with)
     return { namespace }
   } finally {
-    staticAdapterParents.delete(adapter)
+    setDelete(staticAdapterParents, adapter)
   }
 }
 
@@ -443,28 +485,30 @@ function hasExecutionLease(runId) {
 // call is pending, and the call must keep its submitted error identity.
 function callHost(runId, global, member, args, BoundError) {
   if (!hasExecutionLease(runId)) {
-    return Promise.reject(programBindingError('lease', 'PTC execution lease expired'))
+    return promiseReject(programBindingError('lease', 'PTC execution lease expired'))
   }
   const activation = userBindingActivationScope.getStore()
   if (activation !== undefined) {
     activation.called = true
     if (activation.failed) {
-      markVolatile(`failed user binding ${JSON.stringify(activation.id)} issued a host call`)
+      markVolatile(`failed user binding ${jsonStringify(activation.id)} issued a host call`)
     }
   }
   const id = ++nextCallId
   const valueLimits = activeExecution.valueLimits
   let settle
-  const result = new Promise((resolve, reject) => { settle = { resolve, reject } })
-  const settled = result.then(() => {}, () => {})
-  pending.set(id, { ...settle, runId, valueLimits, settled, member, BoundError })
+  const result = new PublicPromise((resolve, reject) => { settle = { resolve, reject } })
+  const settled = new ControlPromise(resolve => {
+    moduleRuntimeIntrinsics.Reflect.apply(moduleRuntimeIntrinsics.promiseThen, result, [resolve, resolve])
+  })
+  mapSet(pending, id, { ...settle, runId, valueLimits, settled, member, BoundError })
   try {
     channel.postMessage({
       type: 'call', runId, id, global, member,
       args: encodeValue(args, valueLimits),
     })
   } catch (error) {
-    pending.delete(id)
+    mapDelete(pending, id)
     settle.reject(error)
   }
   return result
@@ -480,36 +524,39 @@ function dynamicNamespace(name) {
     get(_target, property) {
       if (typeof property !== 'string') return undefined
       assertLease()
-      const descriptor = dynamicNamespaces.get(name)
-      if (descriptor === undefined || !descriptor.members.has(property)) return undefined
+      const descriptor = mapGet(dynamicNamespaces, name)
+      if (descriptor === undefined || !setHas(descriptor.members, property)) return undefined
       return (...args) => {
         if (!hasExecutionLease(logScope.getStore()?.id)) {
-          return Promise.reject(programBindingError('lease', 'PTC execution lease expired'))
+          return promiseReject(programBindingError('lease', 'PTC execution lease expired'))
         }
-        const current = dynamicNamespaces.get(name)
-        if (current === undefined || !current.members.has(property)) {
-          return Promise.reject(programBindingError('capability', `unknown binding ${name}.${property}`))
+        const current = mapGet(dynamicNamespaces, name)
+        if (current === undefined || !setHas(current.members, property)) {
+          return promiseReject(programBindingError('capability', `unknown binding ${name}.${property}`))
         }
         return callHost(
           logScope.getStore()?.id,
           name,
           property,
-          args.length === 0 && current.emptyObjectMembers.has(property) ? {} : args[0],
+          args.length === 0 && setHas(current.emptyObjectMembers, property) ? {} : args[0],
           current.BoundError,
         )
       }
     },
     has(_target, property) {
       assertLease()
-      return typeof property === 'string' && dynamicNamespaces.get(name)?.members.has(property) === true
+      const descriptor = mapGet(dynamicNamespaces, name)
+      return typeof property === 'string' && descriptor !== undefined && setHas(descriptor.members, property)
     },
     ownKeys() {
       assertLease()
-      return [...dynamicNamespaces.get(name)?.members ?? []]
+      const descriptor = mapGet(dynamicNamespaces, name)
+      return descriptor === undefined ? [] : setValuesArray(descriptor.members)
     },
     getOwnPropertyDescriptor(_target, property) {
       assertLease()
-      return typeof property === 'string' && dynamicNamespaces.get(name)?.members.has(property) === true
+      const descriptor = mapGet(dynamicNamespaces, name)
+      return typeof property === 'string' && descriptor !== undefined && setHas(descriptor.members, property)
         ? compilerDescriptors.descriptor({ configurable: true, enumerable: true })
         : undefined
     },
@@ -517,50 +564,92 @@ function dynamicNamespace(name) {
   })
 }
 
+function dynamicNamespaceView(name) {
+  let view = mapGet(dynamicNamespaceViews, name)
+  if (view === undefined) {
+    view = dynamicNamespace(name)
+    mapSet(dynamicNamespaceViews, name, view)
+  }
+  return view
+}
+
+function namespaceGlobalGetter(name) {
+  let getter = mapGet(dynamicNamespaceGlobalGetters, name)
+  if (getter === undefined) {
+    getter = () => mapGet(dynamicNamespaces, name)?.cellView ?? dynamicNamespaceView(name)
+    mapSet(dynamicNamespaceGlobalGetters, name, getter)
+  }
+  return getter
+}
+
+function installNamespaceGlobal(name) {
+  Object.defineProperty(globalThis, name, {
+    configurable: true,
+    get: namespaceGlobalGetter(name),
+  })
+}
+
 function installDynamicNamespaceGlobals() {
   const pendingGlobals = []
-  for (const name of dynamicNamespaces.keys()) {
-    if (originalDynamicNamespaceGlobals.has(name)) continue
-    const original = Object.getOwnPropertyDescriptor(globalThis, name)
-    if (original !== undefined) {
+  const names = mapKeysArray(dynamicNamespaces)
+  for (let index = 0; index < names.length; index += 1) {
+    const name = names[index]
+    if (mapHas(originalDynamicNamespaceGlobals, name)) {
+      installNamespaceGlobal(name)
+      continue
+    }
+    const original = setHas(installedGlobals, name)
+      ? mapGet(installedGlobalOriginals, name)
+      : capturedGlobalDescriptor(name)
+    if (setHas(workerBaselineGlobals, name)) {
       throw new Error(
-        `program namespace ${JSON.stringify(name)} cannot be bridged into Global User Binding modules because the worker global already exists`,
+        `program namespace ${jsonStringify(name)} cannot be bridged into Global User Binding modules because the worker global already exists`,
       )
     }
-    pendingGlobals.push(name)
+    appendArray(pendingGlobals, [name, original.descriptor])
   }
-  for (const name of pendingGlobals) {
-    originalDynamicNamespaceGlobals.set(name, undefined)
-    Object.defineProperty(globalThis, name, {
-      configurable: true,
-      writable: false,
-      value: dynamicNamespace(name),
-    })
+  for (let index = 0; index < pendingGlobals.length; index += 1) {
+    const entry = pendingGlobals[index]
+    const name = entry[0]
+    const descriptor = entry[1]
+    mapSet(originalDynamicNamespaceGlobals, name, descriptor)
+    if (!setHas(installedGlobals, name)) installNamespaceGlobal(name)
   }
 }
 
 function restoreDynamicNamespaceGlobals() {
-  // installDynamicNamespaceGlobals refuses an existing worker global, so every
-  // recorded bridge install owns a previously absent name.
-  for (const name of originalDynamicNamespaceGlobals.keys()) delete globalThis[name]
-  originalDynamicNamespaceGlobals.clear()
+  const names = mapKeysArray(originalDynamicNamespaceGlobals)
+  for (let index = 0; index < names.length; index += 1) {
+    const name = names[index]
+    setHas(installedGlobals, name) ? installNamespaceGlobal(name) : privateReflect.deleteProperty(globalThis, name)
+  }
+  mapClear(originalDynamicNamespaceGlobals)
 }
 
 function installBindings(message) {
-  for (const name of installedGlobals) {
-    const original = installedGlobalOriginals.get(name)
-    if (original.userGlobalEntryId !== undefined
-      && (userBindingNames.get(name) !== original.userGlobalEntryId
-        || userBindingEntries.get(original.userGlobalEntryId)?.descriptors.get(name) !== original.attachment)) {
+  const installedNames = setValuesArray(installedGlobals)
+  for (let index = 0; index < installedNames.length; index += 1) {
+    const name = installedNames[index]
+    const original = mapGet(installedGlobalOriginals, name)
+    const attachedEntry = original.userGlobalEntryId === undefined
+      ? undefined : mapGet(userBindingEntries, original.userGlobalEntryId)
+    const attachment = attachedEntry === undefined ? undefined : mapGet(attachedEntry.descriptors, name)
+    if (mapHas(originalDynamicNamespaceGlobals, name)) {
+      installNamespaceGlobal(name)
+    } else if (original.userGlobalEntryId !== undefined
+      && (mapGet(userBindingNames, name) !== original.userGlobalEntryId
+        || attachment !== original.attachment)) {
       delete context[name]
     } else if (original.descriptor === undefined) delete context[name]
     else Object.defineProperty(context, name, original.descriptor)
   }
-  installedGlobals.clear()
-  installedGlobalOriginals.clear()
-  dynamicNamespaces.clear()
+  setClear(installedGlobals)
+  mapClear(installedGlobalOriginals)
+  mapClear(dynamicNamespaces)
+  let namespaceError
 
-  for (const namespace of message.namespaces) {
+  for (let namespaceIndex = 0; namespaceIndex < message.namespaces.length; namespaceIndex += 1) {
+    const namespace = message.namespaces[namespaceIndex]
     const descriptor = namespace.errorClass
     // The wrapper owns the constructor, so a pending call keeps its submitted
     // error identity even after the cell shadows the context binding.
@@ -573,42 +662,55 @@ function installBindings(message) {
       }
     }
     const view = Object.create(null)
-    const emptyObjectMembers = new Set(namespace.emptyObjectMembers ?? [])
-    dynamicNamespaces.set(namespace.global, {
-      members: new Set(namespace.members),
+    const emptyObjectMembers = setFromArray(namespace.emptyObjectMembers ?? [])
+    mapSet(dynamicNamespaces, namespace.global, {
+      members: setFromArray(namespace.members),
       shadowable: namespace.shadowable === true,
       emptyObjectMembers,
       BoundError,
+      cellView: view,
     })
-    for (const member of namespace.members) {
+    for (let memberIndex = 0; memberIndex < namespace.members.length; memberIndex += 1) {
+      const member = namespace.members[memberIndex]
       Object.defineProperty(view, member, {
         enumerable: true,
         value: (...args) => callHost(
           message.id,
           namespace.global,
           member,
-          args.length === 0 && emptyObjectMembers.has(member) ? {} : args[0],
+          args.length === 0 && setHas(emptyObjectMembers, member) ? {} : args[0],
           BoundError,
         ),
       })
     }
     Object.freeze(view)
-    installedGlobalOriginals.set(namespace.global, capturedGlobalDescriptor(namespace.global))
-    Object.defineProperty(context, namespace.global, { configurable: true, value: view })
-    installedGlobals.add(namespace.global)
+    const original = capturedGlobalDescriptor(namespace.global)
+    mapSet(installedGlobalOriginals, namespace.global, original)
+    if (setHas(workerBaselineGlobals, namespace.global)) {
+      namespaceError ??= new Error(
+        `program namespace ${jsonStringify(namespace.global)} cannot be bridged into the worker realm because the global already exists`,
+      )
+    } else {
+      installNamespaceGlobal(namespace.global)
+      setAdd(installedGlobals, namespace.global)
+    }
 
     if (descriptor !== undefined) {
-      installedGlobalOriginals.set(descriptor.name, capturedGlobalDescriptor(descriptor.name))
+      mapSet(installedGlobalOriginals, descriptor.name, capturedGlobalDescriptor(descriptor.name))
       Object.defineProperty(context, descriptor.name, { configurable: true, value: BoundError })
-      installedGlobals.add(descriptor.name)
+      setAdd(installedGlobals, descriptor.name)
     }
   }
+  return namespaceError
 }
 
 function capturedGlobalDescriptor(name) {
-  const descriptor = Object.getOwnPropertyDescriptor(context, name)
-  const userGlobalEntryId = userBindingNames.get(name)
-  const installed = userBindingEntries.get(userGlobalEntryId)?.descriptors.get(name)
+  const descriptor = mapHas(originalDynamicNamespaceGlobals, name)
+    ? mapGet(originalDynamicNamespaceGlobals, name)
+    : Object.getOwnPropertyDescriptor(context, name)
+  const userGlobalEntryId = mapGet(userBindingNames, name)
+  const entry = mapGet(userBindingEntries, userGlobalEntryId)
+  const installed = entry === undefined ? undefined : mapGet(entry.descriptors, name)
   return {
     descriptor,
     ...(userGlobalEntryId !== undefined && descriptorsEqual(descriptor, installed)
@@ -618,8 +720,8 @@ function capturedGlobalDescriptor(name) {
 }
 
 function underlyingUserBindingDescriptor(name) {
-  return installedGlobals.has(name)
-    ? installedGlobalOriginals.get(name).descriptor
+  return setHas(installedGlobals, name)
+    ? mapGet(installedGlobalOriginals, name).descriptor
     : Object.getOwnPropertyDescriptor(context, name)
 }
 
@@ -646,7 +748,7 @@ function rootBindingStorage(name, nativeLexical = false) {
     try {
       // Both an own data property and an initialized lexical can be read
       // without executing an accessor. Either proves an available local name.
-      runInContext(name, context, { displayErrors: false })
+      runInWorkerReplRealm(name, { displayErrors: false })
       return nativeLexical ? 'lexical' : 'local'
     } catch {
       return 'unknown'
@@ -655,7 +757,7 @@ function rootBindingStorage(name, nativeLexical = false) {
   let propertyRead = false
   try {
     Object.defineProperty(context, name, { configurable: true, get() { propertyRead = true } })
-    runInContext(name, context, { displayErrors: false })
+    runInWorkerReplRealm(name, { displayErrors: false })
     return propertyRead ? 'property' : 'lexical'
   } catch {
     return 'unknown'
@@ -673,7 +775,8 @@ function writableRootProperty(name) {
 
 function userBindingRootStorage(name) {
   if (statefulRoots.has(name)) return 'local'
-  const namespace = activeExecution.importBindingNamespaces?.get(name)
+  const namespaces = activeExecution.importBindingNamespaces
+  const namespace = namespaces === undefined ? undefined : mapGet(namespaces, name)
   if (namespace === undefined) return rootBindingStorage(name)
   // Compiler-validated imports use native namespace slots, not public alias
   // properties. Probe only the slot; reading an export could invoke user code.
@@ -681,96 +784,117 @@ function userBindingRootStorage(name) {
 }
 
 function reconcileUserBindingNames() {
-  for (const name of userBindingSources.keys()) {
+  const names = mapKeysArray(userBindingSources)
+  for (let index = 0; index < names.length; index += 1) {
+    const name = names[index]
     const storage = userBindingRootStorage(name)
     const descriptor = underlyingUserBindingDescriptor(name)
-    const id = userBindingNames.get(name)
-    const installed = userBindingEntries.get(id)?.descriptors.get(name)
+    const id = mapGet(userBindingNames, name)
+    const entry = mapGet(userBindingEntries, id)
+    const installed = entry === undefined ? undefined : mapGet(entry.descriptors, name)
     const state = storage === 'lexical' || storage === 'local' ? 'local'
       : storage === 'unknown' ? 'unknown'
         : descriptor === undefined ? 'absent'
           : installed !== undefined && descriptorsEqual(descriptor, installed) ? 'provider' : 'local'
-    userBindingSources.set(name, { state, ...(state === 'provider' ? { entryId: id } : {}) })
-    if (state !== 'provider') userBindingNames.delete(name)
+    mapSet(userBindingSources, name, { state, ...(state === 'provider' ? { entryId: id } : {}) })
+    if (state !== 'provider') mapDelete(userBindingNames, name)
   }
 }
 
 function removePerNameUserBindingEntry(id) {
-  const entry = userBindingEntries.get(id)
-  for (const name of entry.names) {
-    if (userBindingNames.get(name) !== id) continue
-    const installed = entry.descriptors.get(name)
-    userBindingNames.delete(name)
-    if (installedGlobals.has(name)) {
-      const original = installedGlobalOriginals.get(name)
+  const entry = mapGet(userBindingEntries, id)
+  for (let index = 0; index < entry.names.length; index += 1) {
+    const name = entry.names[index]
+    if (mapGet(userBindingNames, name) !== id) continue
+    const installed = mapGet(entry.descriptors, name)
+    mapDelete(userBindingNames, name)
+    if (setHas(installedGlobals, name)) {
+      const original = mapGet(installedGlobalOriginals, name)
       if (original.attachment === installed) original.descriptor = undefined
     } else if (descriptorsEqual(Object.getOwnPropertyDescriptor(context, name), installed)) delete context[name]
     // Lifecycle removal permits reattachment; explicit deletion retains absent.
-    userBindingSources.delete(name)
+    mapDelete(userBindingSources, name)
   }
-  userBindingEntries.delete(id)
+  mapDelete(userBindingEntries, id)
 }
 
 async function activatePerNameUserBindings(snapshot, shadowedNames, cwd, reusePolicy, initialFailures = []) {
   // Import preceding legacy attachments into the new source owner once.
-  for (const [name, entryId] of userBindingNames) {
-    if (userBindingSources.has(name)) continue
-    userBindingSources.set(name, { state: 'provider', entryId })
+  const existingNames = mapEntriesArray(userBindingNames)
+  for (let index = 0; index < existingNames.length; index += 1) {
+    const name = existingNames[index][0]
+    const entryId = existingNames[index][1]
+    if (mapHas(userBindingSources, name)) continue
+    mapSet(userBindingSources, name, { state: 'provider', entryId })
     // The legacy catalog includes actual setter writes as well as descriptor
     // changes. Do not reattach a restored local accessor by descriptor equality.
-    if (shadowedNames.has(name) && !installedGlobals.has(name)) userBindingNames.delete(name)
+    if (setHas(shadowedNames, name) && !setHas(installedGlobals, name)) mapDelete(userBindingNames, name)
   }
   reconcileUserBindingNames()
-  const blockedIds = new Set(initialFailures.map(failure => failure.id))
-  const desired = new Map((snapshot?.entries ?? []).filter(entry => !blockedIds.has(entry.id)).map(entry => [entry.id, entry]))
+  const blockedIds = setFromArray(mapArray(initialFailures, failure => failure.id))
+  const desired = mapFromArray(filterArray(snapshot?.entries ?? [], entry => !setHas(blockedIds, entry.id)), entry => [entry.id, entry])
   try {
-    if (desired.size > 0 || retainedUserBindingRuntime) installDynamicNamespaceGlobals()
+    if (mapSize(desired) > 0 || retainedLegacyUserBindingRuntime) installDynamicNamespaceGlobals()
   } catch (error) {
-    for (const id of userBindingEntries.keys()) removePerNameUserBindingEntry(id)
-    return { activated: [], failures: [...initialFailures, ...[...desired.keys()].map(id => ({ id, error: messageOf(error) }))], error }
+    const ids = mapKeysArray(userBindingEntries)
+    for (let index = 0; index < ids.length; index += 1) removePerNameUserBindingEntry(ids[index])
+    const failures = copyArray(initialFailures)
+    const desiredFailures = mapArray(mapKeysArray(desired), id => ({ id, error: messageOf(error) }))
+    for (let index = 0; index < desiredFailures.length; index += 1) appendArray(failures, desiredFailures[index])
+    return { activated: [], failures, error }
   }
-  for (const [id, current] of userBindingEntries) {
-    const next = desired.get(id)
+  const currentEntries = mapEntriesArray(userBindingEntries)
+  for (let index = 0; index < currentEntries.length; index += 1) {
+    const id = currentEntries[index][0]
+    const current = currentEntries[index][1]
+    const next = mapGet(desired, id)
     if (next === undefined || current.transform !== snapshot.transform || !(reusePolicy === LEGACY_USER_BINDINGS_REUSE_POLICY
       ? next.fingerprint === current.entry.fingerprint : userBindingImplementationMatches(next, current.entry))) {
       removePerNameUserBindingEntry(id)
     }
   }
   const activated = []
-  const failures = [...initialFailures]
-  for (const entry of desired.values()) {
-    const current = userBindingEntries.get(entry.id)
+  const failures = copyArray(initialFailures)
+  const desiredEntries = mapValuesArray(desired)
+  for (let entryIndex = 0; entryIndex < desiredEntries.length; entryIndex += 1) {
+    const entry = desiredEntries[entryIndex]
+    const current = mapGet(userBindingEntries, entry.id)
     if (current !== undefined) {
       current.entry = entry
-      activated.push(entry.id)
+      appendArray(activated, entry.id)
       continue
     }
     const names = entry.scope === 'namespace' ? [entry.name] : entry.symbols
-    const previousSources = new Map(names.map(name => [name, userBindingSources.get(name)]))
+    const previousSources = mapFromArray(names, name => [name, mapGet(userBindingSources, name)])
     const installedNames = []
     let evaluated
     const activation = { id: entry.id, called: false, failed: false }
     try {
-      if (entry.durability === 'volatile') markVolatile(`user binding ${JSON.stringify(entry.id)}: ${entry.volatileReason ?? 'non-replayable source'}`)
+      if (entry.durability === 'volatile') markVolatile(`user binding ${jsonStringify(entry.id)}: ${entry.volatileReason ?? 'non-replayable source'}`)
       evaluated = await userBindingActivationScope.run(activation, () => evaluateUserBinding(entry, cwd, snapshot.transform))
       const namespace = evaluated.namespace
-      for (const symbol of entry.symbols) {
-        if (!Object.hasOwn(namespace, symbol)) throw new Error(`named export ${JSON.stringify(symbol)} is unavailable after evaluation`)
+      for (let symbolIndex = 0; symbolIndex < entry.symbols.length; symbolIndex += 1) {
+        const symbol = entry.symbols[symbolIndex]
+        if (!Object.hasOwn(namespace, symbol)) throw new Error(`named export ${jsonStringify(symbol)} is unavailable after evaluation`)
       }
       const view = Object.create(null)
-      for (const symbol of entry.symbols) Object.defineProperty(view, symbol, { enumerable: true, get: () => namespace[symbol] })
+      for (let symbolIndex = 0; symbolIndex < entry.symbols.length; symbolIndex += 1) {
+        const symbol = entry.symbols[symbolIndex]
+        Object.defineProperty(view, symbol, { enumerable: true, get: () => namespace[symbol] })
+      }
       Object.freeze(view)
       const descriptors = new Map()
-      for (const name of names) {
+      for (let nameIndex = 0; nameIndex < names.length; nameIndex += 1) {
+        const name = names[nameIndex]
         const storage = userBindingRootStorage(name)
-        const prior = userBindingSources.get(name)
+        const prior = mapGet(userBindingSources, name)
         if (storage === 'lexical' || storage === 'unknown') {
-          userBindingSources.set(name, { state: storage === 'lexical' ? 'local' : 'unknown' })
-        } else if (prior === undefined && shadowedNames.has(name)) {
+          mapSet(userBindingSources, name, { state: storage === 'lexical' ? 'local' : 'unknown' })
+        } else if (prior === undefined && setHas(shadowedNames, name)) {
           const descriptor = underlyingUserBindingDescriptor(name)
-          userBindingSources.set(name, { state: descriptor === undefined ? 'unknown' : 'local' })
+          mapSet(userBindingSources, name, { state: descriptor === undefined ? 'unknown' : 'local' })
         }
-        const source = userBindingSources.get(name)
+        const source = mapGet(userBindingSources, name)
         if (source !== undefined && source.state !== 'provider') continue
         const descriptor = Object.getOwnPropertyDescriptor(context, name)
         Object.defineProperty(context, name, {
@@ -783,43 +907,48 @@ async function activatePerNameUserBindings(snapshot, shadowedNames, cwd, reusePo
             if (receiver === context) recordUserBindingAssignment(name)
           },
         })
-        installedNames.push({ name, descriptor })
-        descriptors.set(name, Object.getOwnPropertyDescriptor(context, name))
-        userBindingNames.set(name, entry.id)
-        userBindingSources.set(name, { state: 'provider', entryId: entry.id })
+        appendArray(installedNames, { name, descriptor })
+        mapSet(descriptors, name, Object.getOwnPropertyDescriptor(context, name))
+        mapSet(userBindingNames, name, entry.id)
+        mapSet(userBindingSources, name, { state: 'provider', entryId: entry.id })
       }
-      userBindingEntries.set(entry.id, { entry, transform: snapshot.transform, moduleUrl: evaluated.moduleUrl, names, descriptors })
-      retainedUserBindingRuntime = true
-      activated.push(entry.id)
+      mapSet(userBindingEntries, entry.id, { entry, transform: snapshot.transform, moduleUrl: evaluated.moduleUrl, names, descriptors })
+      if (snapshot.transform !== USER_BINDING_TRANSFORM) retainedLegacyUserBindingRuntime = true
+      appendArray(activated, entry.id)
     } catch (error) {
       activation.failed = true
-      if (activation.called) markVolatile(`failed user binding ${JSON.stringify(entry.id)} issued a host call`)
-      for (const installed of installedNames.reverse()) {
-        userBindingNames.delete(installed.name)
+      if (activation.called) markVolatile(`failed user binding ${jsonStringify(entry.id)} issued a host call`)
+      for (let index = installedNames.length - 1; index >= 0; index--) {
+        const installed = installedNames[index]
+        mapDelete(userBindingNames, installed.name)
         if (installed.descriptor === undefined) delete context[installed.name]
         else Object.defineProperty(context, installed.name, installed.descriptor)
       }
-      for (const [name, prior] of previousSources) {
-        if (prior === undefined) userBindingSources.delete(name)
-        else userBindingSources.set(name, prior)
+      const previousEntries = mapEntriesArray(previousSources)
+      for (let previousIndex = 0; previousIndex < previousEntries.length; previousIndex += 1) {
+        const name = previousEntries[previousIndex][0]
+        const prior = previousEntries[previousIndex][1]
+        if (prior === undefined) mapDelete(userBindingSources, name)
+        else mapSet(userBindingSources, name, prior)
       }
-      if (evaluated !== undefined) userBindingModuleParents.delete(evaluated.moduleUrl)
-      failures.push({ id: entry.id, error: messageOf(error) })
+      if (evaluated !== undefined) mapDelete(userBindingModuleParents, evaluated.moduleUrl)
+      appendArray(failures, { id: entry.id, error: messageOf(error) })
     }
   }
-  if (userBindingEntries.size === 0 && !retainedUserBindingRuntime) restoreDynamicNamespaceGlobals()
+  if (mapSize(userBindingEntries) === 0 && !retainedLegacyUserBindingRuntime) restoreDynamicNamespaceGlobals()
   return { activated, failures }
 }
 
 function removeUserBindingEntry(id, shadowedNames) {
-  const previous = userBindingEntries.get(id)
+  const previous = mapGet(userBindingEntries, id)
   if (previous === undefined) return
-  for (const name of previous.names) {
-    if (userBindingNames.get(name) !== id) continue
-    userBindingNames.delete(name)
-    if (!shadowedNames.has(name)) delete context[name]
+  for (let index = 0; index < previous.names.length; index += 1) {
+    const name = previous.names[index]
+    if (mapGet(userBindingNames, name) !== id) continue
+    mapDelete(userBindingNames, name)
+    if (!setHas(shadowedNames, name)) delete context[name]
   }
-  userBindingEntries.delete(id)
+  mapDelete(userBindingEntries, id)
 }
 
 function descriptorsEqual(left, right) {
@@ -833,12 +962,16 @@ function descriptorsEqual(left, right) {
 }
 
 function reconcileUserBindingShadows(shadowedNames) {
-  for (const [id, entry] of userBindingEntries) {
-    for (const name of entry.names) {
-      if (userBindingNames.get(name) !== id) continue
-      const installed = entry.descriptors.get(name)
+  const entries = mapEntriesArray(userBindingEntries)
+  for (let entryIndex = 0; entryIndex < entries.length; entryIndex += 1) {
+    const id = entries[entryIndex][0]
+    const entry = entries[entryIndex][1]
+    for (let nameIndex = 0; nameIndex < entry.names.length; nameIndex += 1) {
+      const name = entry.names[nameIndex]
+      if (mapGet(userBindingNames, name) !== id) continue
+      const installed = mapGet(entry.descriptors, name)
       const current = Object.getOwnPropertyDescriptor(context, name)
-      if (!descriptorsEqual(current, installed)) shadowedNames.add(name)
+      if (!descriptorsEqual(current, installed)) setAdd(shadowedNames, name)
     }
   }
 }
@@ -847,15 +980,18 @@ async function evaluateUserBinding(entry, cwd, transform) {
   if (typeof cwd !== 'string' || !isAbsolute(cwd)) {
     throw new Error('user binding activation requires an absolute storage directory')
   }
-  const prepared = compileStatefulModule(entry.source, { transform })
+  const prepared = compileStatefulModule(entry.source, {
+    transform,
+    programBindings: transform === USER_BINDING_TRANSFORM,
+  })
   const url = `data:text/javascript,${encodeURIComponent(prepared.code)}#ptc-plus-${entry.fingerprint}-${++nextUserBindingModuleId}`
-  userBindingModuleParents.set(url, pathToFileURL(resolve(cwd, 'bindings.json')).href)
+  mapSet(userBindingModuleParents, url, pathToFileURL(resolve(cwd, 'bindings.json')).href)
   userModuleCompilation.mark(url, { transform, compiled: true, moduleInterface: prepared.moduleInterface, sourceRegions: prepared.sourceRegions })
   try {
     return { namespace: transform === LEGACY_USER_BINDING_TRANSFORM ? await import(url)
       : await managedModuleImport(url, url), moduleUrl: url }
   } catch (error) {
-    userBindingModuleParents.delete(url)
+    mapDelete(userBindingModuleParents, url)
     throw error
   }
 }
@@ -865,22 +1001,31 @@ function userBindingImplementationMatches(left, right) {
     && left.scope === right.scope
     && (left.scope !== 'namespace' || left.name === right.name)
     && left.symbols.length === right.symbols.length
-    && left.symbols.every((symbol, index) => symbol === right.symbols[index])
+    && everyArray(left.symbols, (symbol, index) => symbol === right.symbols[index])
 }
 
 async function activateUserBindings(snapshot, shadowedNames, cwd, reusePolicy, initialFailures = []) {
   reconcileUserBindingShadows(shadowedNames)
-  const blockedIds = new Set(initialFailures.map(failure => failure.id))
-  const desired = new Map((snapshot?.entries ?? [])
-    .filter((entry) => {
+  const blockedIds = setFromArray(mapArray(initialFailures, failure => failure.id))
+  const desired = mapFromArray(filterArray(snapshot?.entries ?? [], (entry) => {
       const names = entry.scope === 'namespace' ? [entry.name] : entry.symbols
-      return !blockedIds.has(entry.id) && !names.some(name => shadowedNames.has(name))
-    })
-    .map(entry => [entry.id, entry]))
-  if (desired.size > 0 || retainedUserBindingRuntime) installDynamicNamespaceGlobals()
-  for (const id of [...userBindingEntries.keys()]) {
-    const current = userBindingEntries.get(id)
-    const next = desired.get(id)
+      return !setHas(blockedIds, entry.id) && !someArray(names, name => setHas(shadowedNames, name))
+    }), entry => [entry.id, entry])
+  try {
+    if (mapSize(desired) > 0 || retainedLegacyUserBindingRuntime) installDynamicNamespaceGlobals()
+  } catch (error) {
+    const ids = mapKeysArray(userBindingEntries)
+    for (let index = 0; index < ids.length; index += 1) removeUserBindingEntry(ids[index], shadowedNames)
+    const failures = copyArray(initialFailures)
+    const desiredFailures = mapArray(mapKeysArray(desired), id => ({ id, error: messageOf(error) }))
+    for (let index = 0; index < desiredFailures.length; index += 1) appendArray(failures, desiredFailures[index])
+    return { activated: [], failures, error }
+  }
+  const existingIds = mapKeysArray(userBindingEntries)
+  for (let index = 0; index < existingIds.length; index += 1) {
+    const id = existingIds[index]
+    const current = mapGet(userBindingEntries, id)
+    const next = mapGet(desired, id)
     // Historical cells retain fingerprint-based resets, including presentation edits.
     const reusable = next !== undefined && current.transform === snapshot.transform && (reusePolicy === LEGACY_USER_BINDINGS_REUSE_POLICY
       ? next.fingerprint === current.entry.fingerprint
@@ -890,12 +1035,14 @@ async function activateUserBindings(snapshot, shadowedNames, cwd, reusePolicy, i
     }
   }
   const activated = []
-  const failures = [...initialFailures]
-  for (const entry of desired.values()) {
-    const current = userBindingEntries.get(entry.id)
+  const failures = copyArray(initialFailures)
+  const desiredEntries = mapValuesArray(desired)
+  for (let entryIndex = 0; entryIndex < desiredEntries.length; entryIndex += 1) {
+    const entry = desiredEntries[entryIndex]
+    const current = mapGet(userBindingEntries, entry.id)
     if (current !== undefined) {
       current.entry = entry
-      activated.push(entry.id)
+      appendArray(activated, entry.id)
       continue
     }
     let evaluated
@@ -903,22 +1050,24 @@ async function activateUserBindings(snapshot, shadowedNames, cwd, reusePolicy, i
     const activation = { id: entry.id, called: false, failed: false }
     try {
       if (entry.durability === 'volatile') {
-        markVolatile(`user binding ${JSON.stringify(entry.id)}: ${entry.volatileReason ?? 'non-replayable source'}`)
+        markVolatile(`user binding ${jsonStringify(entry.id)}: ${entry.volatileReason ?? 'non-replayable source'}`)
       }
       evaluated = await userBindingActivationScope.run(
         activation,
         () => evaluateUserBinding(entry, cwd, snapshot.transform),
       )
       const namespace = evaluated.namespace
-      for (const symbol of entry.symbols) {
+      for (let symbolIndex = 0; symbolIndex < entry.symbols.length; symbolIndex += 1) {
+        const symbol = entry.symbols[symbolIndex]
         if (!Object.hasOwn(namespace, symbol)) {
-          throw new Error(`named export ${JSON.stringify(symbol)} is unavailable after evaluation`)
+          throw new Error(`named export ${jsonStringify(symbol)} is unavailable after evaluation`)
         }
       }
       const names = []
       if (entry.scope === 'namespace') {
         const view = Object.create(null)
-        for (const symbol of entry.symbols) {
+        for (let symbolIndex = 0; symbolIndex < entry.symbols.length; symbolIndex += 1) {
+          const symbol = entry.symbols[symbolIndex]
           Object.defineProperty(view, symbol, {
             enumerable: true,
             get: () => namespace[symbol],
@@ -940,14 +1089,15 @@ async function activateUserBindings(snapshot, shadowedNames, cwd, reusePolicy, i
             })
           },
         })
-        installedNames.push({
+        appendArray(installedNames, {
           name: entry.name,
           descriptor,
         })
-        userBindingNames.set(entry.name, entry.id)
-        names.push(entry.name)
+        mapSet(userBindingNames, entry.name, entry.id)
+        appendArray(names, entry.name)
       } else {
-        for (const symbol of entry.symbols) {
+        for (let symbolIndex = 0; symbolIndex < entry.symbols.length; symbolIndex += 1) {
+          const symbol = entry.symbols[symbolIndex]
           const descriptor = Object.getOwnPropertyDescriptor(context, symbol)
           Object.defineProperty(context, symbol, {
             configurable: true,
@@ -963,48 +1113,51 @@ async function activateUserBindings(snapshot, shadowedNames, cwd, reusePolicy, i
               })
             },
           })
-          installedNames.push({ name: symbol, descriptor })
-          userBindingNames.set(symbol, entry.id)
-          names.push(symbol)
+          appendArray(installedNames, { name: symbol, descriptor })
+          mapSet(userBindingNames, symbol, entry.id)
+          appendArray(names, symbol)
         }
       }
-      userBindingEntries.set(entry.id, {
+      mapSet(userBindingEntries, entry.id, {
         entry,
         transform: snapshot.transform,
         moduleUrl: evaluated.moduleUrl,
         names,
-        descriptors: new Map(names.map(name => [name, Object.getOwnPropertyDescriptor(context, name)])),
+        descriptors: mapFromArray(names, name => [name, Object.getOwnPropertyDescriptor(context, name)]),
       })
-      retainedUserBindingRuntime = true
-      activated.push(entry.id)
+      if (snapshot.transform !== USER_BINDING_TRANSFORM) retainedLegacyUserBindingRuntime = true
+      appendArray(activated, entry.id)
     } catch (error) {
       activation.failed = true
       if (activation.called) {
-        markVolatile(`failed user binding ${JSON.stringify(entry.id)} issued a host call`)
+        markVolatile(`failed user binding ${jsonStringify(entry.id)} issued a host call`)
       }
-      for (const installed of installedNames.reverse()) {
-        userBindingNames.delete(installed.name)
+      for (let index = installedNames.length - 1; index >= 0; index--) {
+        const installed = installedNames[index]
+        mapDelete(userBindingNames, installed.name)
         if (installed.descriptor === undefined) delete context[installed.name]
         else Object.defineProperty(context, installed.name, installed.descriptor)
       }
-      if (evaluated !== undefined) userBindingModuleParents.delete(evaluated.moduleUrl)
+      if (evaluated !== undefined) mapDelete(userBindingModuleParents, evaluated.moduleUrl)
       removeUserBindingEntry(entry.id, shadowedNames)
-      failures.push({
+      appendArray(failures, {
         id: entry.id,
         error: messageOf(error),
       })
     }
   }
-  if (userBindingEntries.size === 0 && !retainedUserBindingRuntime) restoreDynamicNamespaceGlobals()
+  if (mapSize(userBindingEntries) === 0 && !retainedLegacyUserBindingRuntime) restoreDynamicNamespaceGlobals()
   return { activated, failures }
 }
 
 async function closeExecution(execution) {
   activeRun = undefined
   execution.open = false
-  await Promise.all([...pending.values()]
-    .filter(call => call.runId === execution.id)
-    .map(call => call.settled))
+  const settling = []
+  mapForEach(pending, call => {
+    if (call.runId === execution.id) appendArray(settling, call.settled)
+  })
+  for (let index = 0; index < settling.length; index++) await settling[index]
 }
 
 function failureOutcome(error, phase, program) {
@@ -1031,7 +1184,7 @@ function failureOutcome(error, phase, program) {
 
 function observeBindings(names) {
   const observation = valueObserver.observe(names)
-  return { ...observation, entries: observation.entries.map(entry => {
+  return { ...observation, entries: mapArray(observation.entries, entry => {
     const local = statefulRoots.localValue(entry.name)
     return local === undefined ? entry : { name: entry.name, ...previewBindingValue(local.value) }
   }) }
@@ -1052,7 +1205,9 @@ function refreshLegacyPublication(name) {
 }
 
 function sendCompletion(message, execution, userBindings, committedRedeclarations, outcome) {
-  for (const name of execution.nativePublications?.keys() ?? []) refreshLegacyPublication(name)
+  const publicationNames = execution.nativePublications === undefined
+    ? [] : mapKeysArray(execution.nativePublications)
+  for (let index = 0; index < publicationNames.length; index += 1) refreshLegacyPublication(publicationNames[index])
   const shadowedNames = execution.legacyAssignedUserBindingNames
   const perName = message.userBindingsShadowPolicy === LIVE_USER_BINDINGS_SHADOW_POLICY
   if (perName) reconcileUserBindingNames()
@@ -1063,15 +1218,15 @@ function sendCompletion(message, execution, userBindings, committedRedeclaration
     id: message.id,
     logs: execution.logs,
     ...completionDurability(execution),
-    committedRedeclarations: [...committedRedeclarations],
+    committedRedeclarations: setValuesArray(committedRedeclarations),
     ...(message.rootBindings === undefined ? {} : { rootBindingFacts: statefulRoots.facts() }),
-    ...(perName ? { userBindingNames: normalizeUserBindingNames([...userBindingSources].map(([name, source]) => ({
-      name, state: source.state, ...(source.state === 'provider' ? { entryId: source.entryId } : {}),
+    ...(perName ? { userBindingNames: normalizeUserBindingNames(mapArray(mapEntriesArray(userBindingSources), entry => ({
+      name: entry[0], state: entry[1].state, ...(entry[1].state === 'provider' ? { entryId: entry[1].entryId } : {}),
     }))) } : {}),
     ...(message.userBindings === undefined ? {} : {
       activatedUserBindings: userBindings.activated,
       userBindingFailures: userBindings.failures,
-      ...(perName ? {} : { shadowedUserBindings: [...shadowedNames] }),
+      ...(perName ? {} : { shadowedUserBindings: setValuesArray(shadowedNames) }),
     }),
     ...outcome,
     observing: names.length > 0,
@@ -1085,11 +1240,11 @@ function sendCompletion(message, execution, userBindings, committedRedeclaration
 async function runCell(message) {
   if (activeExecution !== undefined) throw new Error('kernel received overlapping cells')
   activeRun = message.id
-  installBindings(message)
   const execution = {
     id: message.id,
     exceptionOrigins: createExceptionOriginScope(),
     languageSemantics: message.languageSemantics,
+    moduleTransform: message.moduleTransform,
     userBindingsShadowPolicy: message.userBindingsShadowPolicy,
     importBindingNamespaces: message.importBindingNamespaces,
     legacyAssignedUserBindingNames: new Set(),
@@ -1099,10 +1254,9 @@ async function runCell(message) {
     logBytes: 2,
     maxOutputBytes: message.maxOutputBytes,
     valueLimits: message.valueLimits,
-    durability: message.durability === 'volatile' || pendingVolatileReason !== undefined ? 'volatile' : 'durable',
-    volatileReason: pendingVolatileReason,
+    durability: message.durability === 'volatile' ? 'volatile' : 'durable',
+    volatileReason: message.volatileReason,
   }
-  pendingVolatileReason = undefined
   activeExecution = execution
   const cellGlobals = []
   const committedRedeclarations = new Set()
@@ -1113,27 +1267,28 @@ async function runCell(message) {
     let userBindings = { activated: [], failures: [] }
     try {
       completion = await logScope.run(execution, async () => {
+        const namespaceError = installBindings(message)
         Object.defineProperty(context, message.returnSignal, {
           configurable: true,
           value: CellReturn,
         })
-        cellGlobals.push(message.returnSignal)
+        appendArray(cellGlobals, message.returnSignal)
         Object.defineProperty(context, message.commitSignal, {
           configurable: true,
           value(name) {
             setAdd(committedRedeclarations, name)
           },
         })
-        cellGlobals.push(message.commitSignal)
+        appendArray(cellGlobals, message.commitSignal)
         if (message.rootRuntimeName !== undefined) {
-          const nativeLexicals = new Set(message.rootBindings.legacyNativeLexicals)
-          const legacyStorage = new Map(message.rootBindings.legacyLexicals
-            .filter(name => !statefulRoots.has(name)).map(name => [name, rootBindingStorage(name, nativeLexicals.has(name))]))
-          const legacyLexicals = message.rootBindings.legacyLexicals.filter(name => legacyStorage.get(name) === 'lexical')
-          const legacyNative = new Set(message.rootBindings.legacyNative)
-          const legacyWritable = message.rootBindings.legacyWritable.filter(name => {
-            const storage = legacyStorage.get(name)
-            return storage === 'lexical' || legacyNative.has(name)
+          const nativeLexicals = setFromArray(message.rootBindings.legacyNativeLexicals)
+          const legacyStorage = mapFromArray(filterArray(message.rootBindings.legacyLexicals,
+            name => !statefulRoots.has(name)), name => [name, rootBindingStorage(name, setHas(nativeLexicals, name))])
+          const legacyLexicals = filterArray(message.rootBindings.legacyLexicals, name => mapGet(legacyStorage, name) === 'lexical')
+          const legacyNative = setFromArray(message.rootBindings.legacyNative)
+          const legacyWritable = filterArray(message.rootBindings.legacyWritable, name => {
+            const storage = mapGet(legacyStorage, name)
+            return storage === 'lexical' || setHas(legacyNative, name)
               && (storage === 'local' || storage === 'property') && writableRootProperty(name)
           })
           Object.defineProperty(context, message.rootRuntimeName, {
@@ -1141,28 +1296,32 @@ async function runCell(message) {
             value: statefulRoots.begin({ ...message.rootBindings,
               legacyLexicals,
               legacyWritable,
-              legacyObjects: legacyWritable.filter(name => legacyStorage.get(name) !== 'lexical'),
+              legacyObjects: filterArray(legacyWritable, name => mapGet(legacyStorage, name) !== 'lexical'),
               committed(name) {
                 setDelete(committedRedeclarations, name)
                 setAdd(committedRedeclarations, name)
               } }),
           })
-          cellGlobals.push(message.rootRuntimeName)
+          appendArray(cellGlobals, message.rootRuntimeName)
         }
         const activate = message.userBindingsShadowPolicy === LIVE_USER_BINDINGS_SHADOW_POLICY
           ? activatePerNameUserBindings : activateUserBindings
         userBindings = await activate(
           message.userBindings,
-          new Set(message.shadowedUserBindingNames ?? []),
+          setFromArray(message.shadowedUserBindingNames ?? []),
           message.userBindingsCwd,
           message.userBindingsReusePolicy,
           message.userBindingFailures,
         )
         if (userBindings.error !== undefined) throw userBindings.error
-        for (const failure of userBindings.failures) {
-          appendText(execution, `Global binding ${JSON.stringify(failure.id)} was not activated: ${failure.error}`)
+        if (namespaceError !== undefined) throw namespaceError
+        for (let failureIndex = 0; failureIndex < userBindings.failures.length; failureIndex += 1) {
+          const failure = userBindings.failures[failureIndex]
+          appendText(execution, `Global binding ${jsonStringify(failure.id)} was not activated: ${failure.error}`)
         }
-        for (const load of message.moduleLoads ?? []) {
+        const moduleLoads = message.moduleLoads ?? []
+        for (let loadIndex = 0; loadIndex < moduleLoads.length; loadIndex += 1) {
+          const load = moduleLoads[loadIndex]
           let namespace
           try {
             namespace = (await loadStaticModule(load)).namespace
@@ -1174,14 +1333,21 @@ async function runCell(message) {
               configurable: true,
               value: namespace,
             })
-            cellGlobals.push(load.global)
+            appendArray(cellGlobals, load.global)
           }
         }
         // Preload failure leaves prior aliases authoritative. Once evaluation
         // starts, new slots must prove their own initialization, including TDZ.
         execution.importBindingNamespaces = message.preparedImportBindingNamespaces
-        execution.nativePublications = new Map((message.moduleLoads ?? []).flatMap(load =>
-          (load.nativePublications ?? []).map(publication => [publication.name, publication])))
+        execution.nativePublications = new Map()
+        for (let loadIndex = 0; loadIndex < moduleLoads.length; loadIndex += 1) {
+          const load = moduleLoads[loadIndex]
+          const publications = load.nativePublications ?? []
+          for (let publicationIndex = 0; publicationIndex < publications.length; publicationIndex += 1) {
+            const publication = publications[publicationIndex]
+            mapSet(execution.nativePublications, publication.name, publication)
+          }
+        }
         return execution.exceptionOrigins.run(() => evaluate(message.program, message.returnSignal, message.asyncCompletion))
       })
     } catch (error) {
@@ -1205,7 +1371,7 @@ async function runCell(message) {
     }
     sendCompletion(message, execution, userBindings, committedRedeclarations, outcome)
   } finally {
-    for (const name of cellGlobals) delete context[name]
+    for (let index = 0; index < cellGlobals.length; index += 1) delete context[cellGlobals[index]]
     activeRun = undefined
     activeExecution = undefined
     execution.exceptionOrigins.close()
@@ -1221,6 +1387,7 @@ parentPort.on('message', (message) => {
   input.destroy()
   output.destroy()
   errorDomain.removeAllListeners('error')
+  process.removeListener('uncaughtException', handleUncaughtException)
   channel.close()
   parentPort.postMessage({ type: WORKER_SHUTDOWN_ACKNOWLEDGEMENT })
   parentPort.close()
@@ -1238,9 +1405,9 @@ channel.on('message', (message) => {
     return
   }
   if (message?.type === 'reply') {
-    const call = pending.get(message.id)
+    const call = mapGet(pending, message.id)
     if (call === undefined || call.runId !== message.runId) return
-    pending.delete(message.id)
+    mapDelete(pending, message.id)
     try {
       if (message.ok) call.resolve(decodeValue(message.value, call.valueLimits))
       else if (call.BoundError === undefined) {

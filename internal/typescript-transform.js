@@ -1,7 +1,9 @@
 import loadAmaro from './compiler-amaro.cjs'
 
-export { LEGACY_USER_BINDING_TRANSFORM, USER_BINDING_TRANSFORM, PROTECTED_MODULE_TRANSFORM,
-  moduleTransformForLanguage, supportedUserBindingTransform } from './module-transform-contract.js'
+export { LEGACY_USER_BINDING_TRANSFORM, PREVIOUS_USER_BINDING_TRANSFORM, USER_BINDING_TRANSFORM,
+  PROTECTED_MODULE_TRANSFORM, isStatefulUserBindingTransform,
+  historicalModuleTransformForLanguage, moduleTransformForLanguage, moduleTransformMatchesLanguage,
+  normalizeModuleTransform, supportedUserBindingTransform } from './module-transform-contract.js'
 
 /** Keep binding-module lowering independent of the Host's experimental transform API. */
 export function transformTypeScriptModule(source) {

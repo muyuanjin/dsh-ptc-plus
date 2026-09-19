@@ -3,6 +3,7 @@ import {
   STATUSES as JOURNAL_STATUSES,
   BINDING_MODES,
   JOURNAL_FIELDS,
+  LANGUAGE_SEMANTICS_JOURNAL_FIELDS,
   PER_NAME_JOURNAL_FIELDS,
   LANGUAGE_SEMANTICS_JOURNAL_VERSION,
   WHOLE_ENTRY_JOURNAL_FIELDS,
@@ -33,6 +34,7 @@ import {
   USER_BINDINGS_REUSE_POLICIES,
 } from '../internal/session-journal-schema.js'
 import { normalizeLanguageSemantics } from '../internal/language-semantics.js'
+import { normalizeModuleTransform } from '../internal/module-transform-contract.js'
 import {
   VALUE_CODEC,
   DEFAULT_VALUE_LIMITS,
@@ -292,7 +294,8 @@ function isReadableJournalUnchecked(value) {
       : value.version === 4 ? RELATIONLESS_JOURNAL_FIELDS
         : value.version === 5 ? FINGERPRINT_REUSE_JOURNAL_FIELDS
           : value.version < PER_NAME_USER_BINDINGS_JOURNAL_VERSION ? WHOLE_ENTRY_JOURNAL_FIELDS
-            : value.version < LANGUAGE_SEMANTICS_JOURNAL_VERSION ? PER_NAME_JOURNAL_FIELDS : JOURNAL_FIELDS
+          : value.version < LANGUAGE_SEMANTICS_JOURNAL_VERSION ? PER_NAME_JOURNAL_FIELDS
+            : value.version === LANGUAGE_SEMANTICS_JOURNAL_VERSION ? LANGUAGE_SEMANTICS_JOURNAL_FIELDS : JOURNAL_FIELDS
   const required = predecessor
     ? ['version', 'bindingMode', 'status', 'calls', 'operations', 'diagnostics']
     : ['version', 'bindingPolicy', 'rewritePolicy', 'moduleSemantics', 'status', 'calls', 'operations', 'diagnostics']
@@ -306,6 +309,10 @@ function isReadableJournalUnchecked(value) {
   if (value.version >= LANGUAGE_SEMANTICS_JOURNAL_VERSION) {
     required.push('languageSemantics')
     normalizeLanguageSemantics(value.languageSemantics)
+  }
+  if (value.version > LANGUAGE_SEMANTICS_JOURNAL_VERSION) {
+    required.push('moduleTransform')
+    normalizeModuleTransform(value.moduleTransform, value.languageSemantics)
   }
   if (!hasClosedFields(value, fields, required)
     || (predecessor && !BINDING_MODES.has(value.bindingMode))

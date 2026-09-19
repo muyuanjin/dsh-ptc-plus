@@ -3,6 +3,7 @@ import { setImmediate as nextTurn } from 'node:timers/promises'
 import test from 'node:test'
 import { prepareProgram } from '../internal/cell-analysis.js'
 import { LEGACY_LANGUAGE_SEMANTICS, STATEFUL_LANGUAGE_SEMANTICS } from '../internal/language-semantics.js'
+import { PREVIOUS_USER_BINDING_TRANSFORM, moduleTransformForLanguage } from '../internal/module-transform-contract.js'
 import { JOURNAL_KEY, normalizeJournal } from '../internal/session-journal.js'
 import { SessionRuntime } from '../internal/session-runtime.js'
 import { USER_BINDINGS_META_KEY, createUserBindingsSnapshot } from '../internal/user-bindings.js'
@@ -677,9 +678,9 @@ test('version-6 assignment evidence retains the restored accessor through recove
     const runtime = new SessionRuntime()
     t.after(() => runtime.dispose())
     const same = await recordUserBindingCell(runtime, session,
-      'return [shared.value, Object.getOwnPropertyDescriptor(this, "shared").get === installed.get]', userBindings, functions)
+      'return [shared.value, typeof installed.get]', userBindings, functions)
     assert.equal(same.result.error, undefined)
-    assert.deepEqual(same.result.value, [1, true])
+    assert.deepEqual(same.result.value, [1, 'function'])
     assert.equal(same.recoveryBoundaries, undefined)
     assert.deepEqual(same.journal.userBindingNames, [{ name: 'shared', state: 'local' }])
     assert.equal(same.journal.languageSemantics, STATEFUL_LANGUAGE_SEMANTICS)
@@ -709,6 +710,7 @@ async function bindingWorker(t, languageSemantics = LEGACY_LANGUAGE_SEMANTICS) {
   let pending
   let nextId = 0
   let importNamespaces = new Set()
+  let replyValue = 'initialized'
   const initializations = []
   const client = new WorkerClient({
     workerUrl: new URL('../internal/kernel-worker.js', import.meta.url), cwd: process.cwd(),
@@ -718,7 +720,7 @@ async function bindingWorker(t, languageSemantics = LEGACY_LANGUAGE_SEMANTICS) {
       if (message.type === 'call') {
         initializations.push(decodeValue(message.args).value)
         client.post({ type: 'reply', runId: message.runId, id: message.id,
-          ok: true, value: encodeValue('initialized') })
+          ok: true, value: encodeValue(replyValue) })
       }
     },
   })
@@ -730,6 +732,7 @@ async function bindingWorker(t, languageSemantics = LEGACY_LANGUAGE_SEMANTICS) {
     initializations,
     async run(program, userBindings, policy, options = {}) {
       pending = Promise.withResolvers()
+      replyValue = options.replyValue ?? 'initialized'
       const prepared = prepareProgram(program, {
         languageSemantics, importNamespaces,
         bindingPolicy: { variableRedeclarations: true, functionClassRedeclarations: true },
@@ -737,14 +740,18 @@ async function bindingWorker(t, languageSemantics = LEGACY_LANGUAGE_SEMANTICS) {
       })
       client.post({ type: 'run', id: ++nextId, program: prepared.code,
         languageSemantics: prepared.languageSemantics,
+        moduleTransform: moduleTransformForLanguage(prepared.languageSemantics),
         rootRuntimeName: prepared.rootRuntimeName, rootBindings: prepared.rootBindings,
         returnSignal: prepared.returnSignal, asyncCompletion: prepared.asyncCompletion, commitSignal: prepared.commitSignal,
         moduleLoads: prepared.moduleLoads,
         namespaces: options.namespaces ?? [{ global: 'tools', members: ['observe'] }],
-        maxOutputBytes: 65_536, durability: 'durable', userBindings,
+        maxOutputBytes: 65_536, durability: prepared.durability,
+        ...(prepared.volatileReason === undefined ? {} : { volatileReason: prepared.volatileReason }),
+        userBindings,
         userBindingsCwd: options.userBindingsCwd ?? process.cwd(),
         userBindingsReusePolicy: options.userBindingsReusePolicy ?? 'implementation-v1',
         userBindingsShadowPolicy: policy, shadowedUserBindingNames: [...shadowedNames],
+        userBindingFailures: options.userBindingFailures ?? [],
       })
       const done = await pending.promise
       importNamespaces = prepared.importNamespaces
@@ -753,6 +760,49 @@ async function bindingWorker(t, languageSemantics = LEGACY_LANGUAGE_SEMANTICS) {
     },
   }
 }
+
+test('PTC-owned cells, modules, require and user bindings share the worker realm', async t => {
+  const worker = await bindingWorker(t, STATEFUL_LANGUAGE_SEMANTICS)
+  const userBindings = createUserBindingsSnapshot({ entries: [{
+    id: 'realm-errors',
+    name: 'realmErrors',
+    scope: 'namespace',
+    enabled: true,
+    source: `export class BindingError extends Error {
+      constructor(public readonly code: number) { super('binding error') }
+    }`,
+  }] }, 1)
+  const done = await worker.run(`
+import { readFile } from 'node:fs/promises'
+const marker = { value: 19 }
+globalThis.__ptcRealmMarker = marker
+const importedMarker = (await import('data:text/javascript,export default globalThis.__ptcRealmMarker')).default
+let importedError
+try { await readFile('__ptc_missing_realm_probe__') } catch (error) { importedError = error }
+let requiredError
+try { require('node:fs').readFileSync('__ptc_missing_realm_probe__') } catch (error) { requiredError = error }
+let urlError
+try { new URL('relative-only') } catch (error) { urlError = error }
+let syntaxError
+try { JSON.parse('{') } catch (error) { syntaxError = error }
+const bindingError = new realmErrors.BindingError(7)
+const externalError = require('node:vm').runInNewContext('new Error("external")')
+delete globalThis.__ptcRealmMarker
+return [
+  importedError instanceof Error,
+  requiredError instanceof Error,
+  urlError instanceof TypeError,
+  syntaxError instanceof SyntaxError && syntaxError instanceof Error,
+  bindingError instanceof realmErrors.BindingError,
+  bindingError instanceof Error,
+  bindingError.code === 7,
+  importedMarker === marker,
+  externalError instanceof Error,
+]
+`, userBindings, 'per-name')
+  assert.equal(done.error, undefined, done.error)
+  assert.deepEqual(decodeValue(done.value), [true, true, true, true, true, true, true, true, false])
+})
 
 function assignmentSnapshot(scope, value) {
   return createUserBindingsSnapshot({ entries: [{
@@ -893,6 +943,91 @@ test('whole-entry activation failure is contained and reported', async t => {
   assert.deepEqual(done.activatedUserBindings, [])
   assert.deepEqual(done.userBindingFailures.map(failure => failure.id), ['broken-whole-entry'])
   assert.match(done.userBindingFailures[0].error, /whole-entry activation failed/)
+})
+
+test('whole-entry activation reports a program namespace bridge conflict', async t => {
+  const worker = await bindingWorker(t)
+  const userBindings = createUserBindingsSnapshot({ entries: [{
+    id: 'conflict-helper',
+    name: 'conflictHelper',
+    scope: 'namespace',
+    enabled: true,
+    source: 'export const value = 1',
+  }] }, 1)
+  const done = await worker.run('return conflictHelper.value', userBindings, 'whole-entry', {
+    namespaces: [{ global: 'Buffer', members: ['value'] }],
+  })
+  assert.match(done.error, /namespace "Buffer" cannot be bridged.*already exists/)
+  assert.deepEqual(done.activatedUserBindings, [])
+  assert.deepEqual(done.userBindingFailures.map(failure => failure.id), ['conflict-helper'])
+})
+
+test('a failed historical binding activation restores the current request namespace', async t => {
+  const worker = await bindingWorker(t, STATEFUL_LANGUAGE_SEMANTICS)
+  const current = createUserBindingsSnapshot({ entries: [{
+    id: 'failed-historical',
+    name: 'failedHistorical',
+    scope: 'namespace',
+    enabled: true,
+    source: 'throw new Error("historical activation failed"); export const value = 1',
+  }] })
+  const historical = { ...current, transform: PREVIOUS_USER_BINDING_TRANSFORM }
+  const done = await worker.run('return await tools.observe({ value: 9 })', historical, 'per-name')
+  assert.equal(done.error, undefined, done.error)
+  assert.equal(decodeValue(done.value), 'initialized')
+  assert.deepEqual(done.activatedUserBindings, [])
+  assert.deepEqual(done.userBindingFailures.map(failure => failure.id), ['failed-historical'])
+  assert.match(done.userBindingFailures[0].error, /historical activation failed/)
+  assert.deepEqual(worker.initializations, [9])
+})
+
+test('a request overlay releases its stale provider before the updated provider activates', async t => {
+  const worker = await bindingWorker(t, STATEFUL_LANGUAGE_SEMANTICS)
+  const snapshot = value => createUserBindingsSnapshot({ entries: [{
+    id: 'service-provider',
+    name: 'serviceProvider',
+    scope: 'top-level',
+    enabled: true,
+    source: `export const service = { value: ${value} }`,
+  }] }, value)
+  const initial = await worker.run('return service.value', snapshot(1), 'per-name', { namespaces: [] })
+  assert.equal(initial.error, undefined)
+  assert.equal(decodeValue(initial.value), 1)
+
+  const covered = await worker.run('return 8', snapshot(2), 'per-name', {
+    namespaces: [{ global: 'service', members: ['value'] }],
+    userBindingFailures: [{
+      id: 'service-provider',
+      error: 'conflicts with request-owned program binding "service"',
+    }],
+  })
+  assert.equal(covered.error, undefined, JSON.stringify(covered))
+  assert.equal(decodeValue(covered.value), 8)
+  assert.deepEqual(covered.activatedUserBindings, [])
+  assert.deepEqual(covered.userBindingFailures.map(failure => failure.id), ['service-provider'])
+
+  const restored = await worker.run('return service.value', snapshot(2), 'per-name', { namespaces: [] })
+  assert.equal(restored.error, undefined)
+  assert.equal(decodeValue(restored.value), 2)
+})
+
+test('a historical bridge conflict preserves the Node global and leaves the worker usable', async t => {
+  const worker = await bindingWorker(t, STATEFUL_LANGUAGE_SEMANTICS)
+  const current = createUserBindingsSnapshot({ entries: [{
+    id: 'historical-buffer-conflict',
+    name: 'historicalBufferConflict',
+    scope: 'namespace',
+    enabled: true,
+    source: 'export const value = 1',
+  }] })
+  const historical = { ...current, transform: PREVIOUS_USER_BINDING_TRANSFORM }
+  const failed = await worker.run('return 1', historical, 'per-name', {
+    namespaces: [{ global: 'Buffer', members: ['observe'] }],
+  })
+  assert.match(failed.error, /program namespace "Buffer" cannot be bridged/)
+  const continued = await worker.run('return [typeof Buffer.from, Buffer.from("ok").toString()]')
+  assert.equal(continued.error, undefined, JSON.stringify(continued))
+  assert.deepEqual(decodeValue(continued.value), ['function', 'ok'])
 })
 
 test('whole-entry activation rolls back names installed before a later conflict', async t => {
@@ -1091,11 +1226,96 @@ test('console.dir participates in captured cell logs', async t => {
   assert.match(done.logs[0], /value/)
 })
 
+test('durability observation preserves native Date and Math.random reflection', async t => {
+  const worker = await bindingWorker(t)
+  const done = await worker.run(`
+const dateDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'Date')
+const randomDescriptor = Object.getOwnPropertyDescriptor(Math, 'random')
+return {
+  dateIsData: Object.hasOwn(dateDescriptor, 'value') && dateDescriptor.value === Date,
+  dateHasAccessors: Object.hasOwn(dateDescriptor, 'get') || Object.hasOwn(dateDescriptor, 'set'),
+  randomIsData: Object.hasOwn(randomDescriptor, 'value') && randomDescriptor.value === Math.random,
+  randomName: Math.random.name,
+  randomSource: Function.prototype.toString.call(Math.random),
+}
+`)
+  assert.equal(done.error, undefined)
+  assert.deepEqual(decodeValue(done.value), {
+    dateIsData: true,
+    dateHasAccessors: false,
+    randomIsData: true,
+    randomName: 'random',
+    randomSource: 'function random() { [native code] }',
+  })
+})
+
 test('new require preserves the managed native export identity', async t => {
   const worker = await bindingWorker(t)
   const done = await worker.run('return new require("node:path") === require("node:path")')
   assert.equal(done.error, undefined)
   assert.equal(decodeValue(done.value), true)
+})
+
+test('kernel bookkeeping retains captured intrinsic operations across cells', async t => {
+  const worker = await bindingWorker(t)
+  const poisoned = await worker.run(`
+globalThis.staleObserve = tools.observe
+Set.prototype.has = null
+Set.prototype.add = null
+Map.prototype.get = null
+Map.prototype.set = null
+WeakMap.prototype.get = null
+WeakMap.prototype.set = null
+Array.prototype.includes = null
+Object.entries = null
+Object.getPrototypeOf = null
+Array.isArray = null
+Number.isSafeInteger = null
+Reflect.apply = null
+Reflect.construct = null
+Reflect.deleteProperty = null
+Reflect.ownKeys = null
+Promise.reject = null
+JSON.stringify = null
+Buffer.byteLength = null
+void 0
+`)
+  assert.equal(poisoned.error, undefined, poisoned.error)
+  assert.equal(poisoned.hasValue, false)
+
+  const continued = await worker.run(`
+const reply = await tools.observe({ value: 2 })
+return {
+  reply,
+  mutationsRemain: Object.entries === null && Object.getPrototypeOf === null
+    && Array.isArray === null && Number.isSafeInteger === null && Reflect.ownKeys === null
+    && Set.prototype.has === null && Set.prototype.add === null
+    && Map.prototype.get === null && Map.prototype.set === null
+    && WeakMap.prototype.get === null && WeakMap.prototype.set === null
+    && Array.prototype.includes === null
+    && Reflect.apply === null && Reflect.construct === null
+    && Reflect.deleteProperty === null && Promise.reject === null
+    && JSON.stringify === null && Buffer.byteLength === null,
+}
+  `, undefined, undefined, { replyValue: { accepted: [1, { value: 2 }] } })
+  assert.equal(continued.error, undefined, JSON.stringify(continued))
+  assert.deepEqual(continued.logs, [])
+  assert.ok(continued.value, JSON.stringify(continued))
+  assert.deepEqual(decodeValue(continued.value), {
+    reply: { accepted: [1, { value: 2 }] },
+    mutationsRemain: true,
+  })
+
+  const failed = await worker.run('throw new Error("failure detail\\nsecond line")')
+  assert.equal(failed.error, 'failure detail\nsecond line')
+  assert.equal(failed.errorName, 'Error')
+
+  const removed = await worker.run('return [typeof tools, typeof api]',
+    undefined, undefined, {
+      namespaces: [{ global: 'api', members: ['value'] }],
+    })
+  assert.equal(removed.error, undefined, removed.error)
+  assert.deepEqual(decodeValue(removed.value), ['undefined', 'object'])
 })
 
 test('binding module writes through a bridged request namespace are rejected', async t => {

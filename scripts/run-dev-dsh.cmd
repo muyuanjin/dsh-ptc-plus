@@ -1,7 +1,7 @@
 @echo off
 setlocal
 
-rem Double-click launcher for an isolated DSH alpha profile with this checkout installed.
+rem Double-click launcher for an isolated DSH profile with this checkout installed.
 set "SCRIPT_DIR=%~dp0"
 set "POWERSHELL_EXE=%ProgramFiles%\PowerShell\7\pwsh.exe"
 if not exist "%POWERSHELL_EXE%" (

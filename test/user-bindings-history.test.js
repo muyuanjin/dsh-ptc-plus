@@ -86,46 +86,30 @@ function wholeEntryHistory(version) {
   return { session, full }
 }
 
-test('cold replay rebuilds retained setter eligibility from disabled-cell ancestry without repeating initialization', async t => {
-  for (const [label, disabled] of [['feature disabled', undefined], ['empty catalog', snapshot([])]]) await t.test(label, async t => {
-    const session = { id: `cold-retained-setter-${label}`, events: [] }
-    let initializations = 0
-    const functions = { observe: async () => ++initializations }
-    const selected = snapshot([{ id: 'alpha', name: 'alpha', scope: 'top-level', enabled: true,
-      source: 'await tools.observe({}); export const alpha = 1',
-    }])
-    const runtime = new SessionRuntime()
-    t.after(() => runtime.dispose())
-    await record(runtime, session,
-      'const savedSetter = Object.getOwnPropertyDescriptor(this, "alpha").set; const retained = 42; void 0', selected, functions)
-    for (let index = 0; index < 2; index++) {
-      const idle = await record(runtime, session, 'void 0', disabled, functions)
-      assert.equal(idle.replMemory.entries.some(entry => entry.name === 'alpha'), false)
-      assert.deepEqual(idle.meta[JOURNAL_KEY].userBindingNames, [])
-    }
-    await runtime.dispose()
-    for (let generation = 0; generation < 2; generation++) {
-      const restored = new SessionRuntime()
-      t.after(() => restored.dispose())
-      const assigned = await record(restored, session,
-        'savedSetter.call(this, 7); const savedValue = alpha; void 0', disabled, functions)
-      assert.deepEqual(assigned.meta[JOURNAL_KEY].userBindingNames, [{ name: 'alpha', state: 'local' }])
-      assert.equal(assigned.meta.dshPtcPlusRecoveryBoundaries, undefined)
-      const continued = await record(restored, session, 'return [alpha, retained, savedValue]', disabled, functions)
-      assert.deepEqual(continued.value, [7, 42, 7])
-      assert.deepEqual(continued.meta[JOURNAL_KEY].calls, [])
-      assert.equal(continued.meta.dshPtcPlusRecoveryBoundaries, undefined)
-      assert.equal(initializations, 1)
-      await restored.dispose()
-    }
+test('top-level accessor capture cannot create durable setter ancestry', async t => {
+  const runtime = new SessionRuntime()
+  t.after(() => runtime.dispose())
+  let initializations = 0
+  const selected = snapshot([{ id: 'alpha', name: 'alpha', scope: 'top-level', enabled: true,
+    source: 'await tools.observe({}); export const alpha = 1',
+  }])
+  const execution = await runtime.runTentative('volatile-setter-ancestry', {
+    program: 'const savedSetter = Object.getOwnPropertyDescriptor(this, "alpha").set; return alpha',
+    userBindings: selected,
+    bindings: [{ global: 'tools', functions: { observe: async () => ++initializations } }],
   })
+  runtime.finalize(execution.settlement, true)
+  assert.equal(execution.result.value, 1)
+  assert.equal(execution.settlement.journal.status, 'volatile')
+  assert.equal(execution.settlement.journal.volatileReason, 'ambient globalThis')
+  assert.equal(initializations, 1)
 })
 
 test('legacy retained setters remain callable after disabled ancestry and new per-name cells', async t => {
   for (const version of [6, 7]) await t.test(`journal ${version}`, async t => {
     const selected = snapshot([{ id: 'alpha', name: 'alpha', scope: 'top-level', enabled: true, source: 'export const alpha = 1' }])
     const session = { id: `legacy-retained-setter-${version}`, events: [] }
-    const source = 'const savedSetter = Object.getOwnPropertyDescriptor(this, "alpha").set; const retained = 42; void 0'
+    const source = 'const savedRoot = this; const savedSetter = Object.getOwnPropertyDescriptor(savedRoot, "alpha").set; const retained = 42; void 0'
     appendRunCodeEvents(session.events, 'legacy-setter', source, { meta: {
       [JOURNAL_KEY]: historicalJournal(version, selected), [USER_BINDINGS_META_KEY]: selected,
     } })
@@ -141,7 +125,7 @@ test('legacy retained setters remain callable after disabled ancestry and new pe
         assert.equal(idle.replMemory.entries.some(entry => entry.name === 'alpha'), false)
         assert.deepEqual(idle.meta[JOURNAL_KEY].userBindingNames, [])
       }
-      const assigned = await record(runtime, session, 'savedSetter.call(this, 7); return [alpha, retained]', undefined)
+      const assigned = await record(runtime, session, 'savedSetter.call(savedRoot, 7); return [alpha, retained]', undefined)
       assert.deepEqual(assigned.value, [7, 42])
       assert.deepEqual(assigned.meta[JOURNAL_KEY].userBindingNames, [{ name: 'alpha', state: 'local' }])
       assert.equal(assigned.meta.dshPtcPlusRecoveryBoundaries, undefined)
@@ -157,14 +141,14 @@ test('unknown-boundary contraction cannot retain discarded provider-name eligibi
   const runtime = new SessionRuntime()
   t.after(() => runtime.dispose())
   await record(runtime, session, 'const anchor = 42; void 0', undefined)
-  await record(runtime, session, 'const savedSetter = Object.getOwnPropertyDescriptor(this, "alpha").set; void 0', selected)
+  await record(runtime, session, 'const savedProvider = alpha; void 0', selected)
   await record(runtime, session, 'void 0', undefined)
   await runtime.dispose()
   session.events = structuredClone(session.events)
   delete session.events[3].data.meta[JOURNAL_KEY].userBindingNames
   const restored = new SessionRuntime()
   t.after(() => restored.dispose())
-  const contracted = await record(restored, session, 'return [anchor, typeof savedSetter, typeof alpha]', undefined)
+  const contracted = await record(restored, session, 'return [anchor, typeof savedProvider, typeof alpha]', undefined)
   assert.deepEqual(contracted.value, [42, 'undefined', 'undefined'])
   assert.deepEqual(contracted.meta.dshPtcPlusRecoveryBoundaries, [{ failedCallSeq: 2, frontierCallSeq: 0 }])
   const intercepted = interceptWorkerMessages(restored, session.id, (message, deliver) => {

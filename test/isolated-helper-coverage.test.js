@@ -13,6 +13,31 @@ function bounded(promise, ms, message) {
   return Promise.race([promise, bound]).finally(() => clearTimeout(timer))
 }
 
+test('starts an Electron helper in Node mode without changing the inner worker environment', async (t) => {
+  Object.defineProperty(process.versions, 'electron', { value: '43.3.0', configurable: true })
+  t.after(() => { delete process.versions.electron })
+  const worker = new IsolatedWorker({
+    helper: fileURLToPath(new URL('./fixtures/isolated-environment-helper.mjs', import.meta.url)),
+    entry: new URL('./fixtures/isolated-ready-busy-worker.mjs', import.meta.url).href,
+    workerData: {},
+    resourceLimits: { maxOldGenerationSizeMb: 64 },
+    env: { PTC_PLUS_ENVIRONMENT_MARKER: 'preserved' },
+    protocol: 'parent-port',
+  })
+  t.after(async () => { if (!worker.exited) await worker.terminate() })
+
+  const report = await bounded(
+    new Promise((resolve, reject) => {
+      worker.once('message', resolve)
+      worker.once('error', reject)
+    }),
+    20_000,
+    'Electron helper never reported its environment',
+  )
+  assert.deepEqual(report, { helper: '1', worker: null })
+  await bounded(worker.closed, 20_000, 'Electron helper output never closed')
+})
+
 test('runs the real helper entry so its child coverage is collected', async (t) => {
   const worker = new IsolatedWorker({
     helper: fileURLToPath(new URL('../internal/kernel-child.js', import.meta.url)),

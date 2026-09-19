@@ -1,8 +1,9 @@
 import { spawn } from 'node:child_process'
-import { mkdir, mkdtemp, readdir, rm, stat } from 'node:fs/promises'
+import { mkdir, mkdtemp, readdir, realpath, rm, stat } from 'node:fs/promises'
 import { availableParallelism } from 'node:os'
-import { resolve, join, basename } from 'node:path'
+import { resolve, join, basename, isAbsolute, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { coveredSource } from './coverage-inputs.mjs'
 
 const root = fileURLToPath(new URL('../', import.meta.url))
 const reporter = fileURLToPath(new URL('./coverage-report.mjs', import.meta.url))
@@ -29,10 +30,91 @@ export function testConcurrency(value, parallelism = availableParallelism()) {
   return Number(value)
 }
 
+export function focusedCoverageArguments(argv) {
+  const options = { sources: [], tests: [], testArguments: [] }
+  for (let index = 0; index < argv.length; index++) {
+    const argument = argv[index]
+    if (argument === '--') {
+      options.testArguments = argv.slice(index + 1)
+      break
+    }
+    if (argument === '--help') {
+      options.help = true
+      continue
+    }
+    if (!['--source', '--test', '--concurrency'].includes(argument)) {
+      throw new Error(`unknown focused coverage argument: ${argument}`)
+    }
+    const value = argv[++index]
+    if (value === undefined || value.length === 0) throw new Error(`${argument} requires a value`)
+    if (argument === '--source') options.sources.push(value)
+    else if (argument === '--test') options.tests.push(value)
+    else options.concurrency = value
+  }
+  if (options.help) return options
+  if (options.sources.length === 0) throw new Error('focused coverage requires at least one --source')
+  if (options.tests.length === 0) throw new Error('focused coverage requires at least one --test')
+  if (options.testArguments.some(argument => !argument.startsWith('-'))) {
+    throw new Error('arguments after -- must be Node test options; select files with --test')
+  }
+  return options
+}
+
+async function selectedPath(input, kind) {
+  if (isAbsolute(input)) throw new Error(`${kind} path must be relative to the project root: ${input}`)
+  let fullPath
+  try {
+    fullPath = await realpath(resolve(root, input))
+  } catch (error) {
+    if (error.code === 'ENOENT') throw new Error(`${kind} path does not exist: ${input}`)
+    throw error
+  }
+  const name = relative(root, fullPath)
+  if (name.length === 0 || name === '..' || name.startsWith(`..${sep}`) || isAbsolute(name)) {
+    throw new Error(`${kind} path escapes the project root: ${input}`)
+  }
+  return { fullPath, name: name.split(sep).join('/') }
+}
+
+export async function validateFocusedCoverage(options) {
+  const sources = []
+  for (const input of options.sources) {
+    const selected = await selectedPath(input, 'source')
+    if (!coveredSource(selected.fullPath, root)) {
+      throw new Error(`source is outside the project coverage gate: ${input}`)
+    }
+    sources.push(selected.name)
+  }
+  const tests = []
+  for (const input of options.tests) {
+    const selected = await selectedPath(input, 'test')
+    if (!selected.name.startsWith('test/') || !selected.name.endsWith('.test.js')) {
+      throw new Error(`test must be a test/*.test.js file: ${input}`)
+    }
+    tests.push(selected.name)
+  }
+  return {
+    sources: [...new Set(sources)],
+    tests: [...new Set(tests)],
+    concurrency: testConcurrency(options.concurrency ?? process.env.DSH_PTC_TEST_CONCURRENCY),
+    testArguments: options.testArguments,
+  }
+}
+
+function focusedCoverageUsage() {
+  return `Usage:
+  npm run coverage:focus -- --source <gate-source> --test <test-file> [options] [-- <node-test-options>]
+
+Repeat --source and --test to select the smallest set that distinguishes the change.
+--concurrency is diagnostic-only; without it the project default applies.`
+}
+
 export async function runCoverage({
   concurrency = testConcurrency(process.env.DSH_PTC_TEST_CONCURRENCY),
   directory = join(root, 'coverage'),
   testArguments = [],
+  selectedTestFiles,
+  coverageSources,
   execute = executeNode,
 } = {}) {
   await mkdir(directory, { recursive: true })
@@ -51,11 +133,12 @@ export async function runCoverage({
   const stopHandlingInterruptions = handleInterruptions(temporary)
   try {
     const started = performance.now()
+    console.log('Coverage stage: preparing compiler bytecode')
     const preparationCode = await execute([bytecodeCompiler, bytecode], {
       env: { ...process.env, NODE_V8_COVERAGE: '', DSH_PTC_COMPILER_BYTECODE: undefined },
     })
     if (preparationCode !== 0) return preparationCode
-    const testFiles = (await readdir(join(root, 'test')))
+    const testFiles = selectedTestFiles ?? (await readdir(join(root, 'test')))
       .filter(name => name.endsWith('.test.js'))
       .map(name => `test/${name}`)
       .sort()
@@ -83,16 +166,23 @@ export async function runCoverage({
     } })
     const mockPreload = testFiles.filter(file => mockPreloadFiles.has(basename(file)))
     const instrumented = testFiles.filter(file => !mockPreloadFiles.has(basename(file)))
-    let testCode = mockPreload.length === 0
-      ? 0
-      : await runTestGroup(mockPreload, { instrumented: false, label: 'mock' })
+    let testCode = 0
+    if (mockPreload.length > 0) {
+      console.log(`Coverage stage: mock-dependent tests (${mockPreload.length} files)`)
+      testCode = await runTestGroup(mockPreload, { instrumented: false, label: 'mock' })
+    }
     if (testCode === 0 && instrumented.length > 0) {
+      console.log(`Coverage stage: instrumented tests (${instrumented.length} files)`)
       testCode = await runTestGroup(instrumented, { instrumented: true, label: 'instrumented' })
     }
     console.log(`Coverage tests: ${((performance.now() - started) / 1000).toFixed(1)}s`)
     if (!customReporters) console.log(`Test diagnostics: ${diagnostics.join(', ')}`)
     await rm(bytecode, { force: true })
-    const reportCode = await execute([reporter, temporary], { env: { ...process.env, NODE_V8_COVERAGE: '' } })
+    console.log('Coverage stage: merging report')
+    const reportArguments = coverageSources?.flatMap(source => ['--include', source]) ?? []
+    const reportCode = await execute([reporter, temporary, ...reportArguments], {
+      env: { ...process.env, NODE_V8_COVERAGE: '' },
+    })
     return testCode || reportCode
   } finally {
     stopHandlingInterruptions()
@@ -181,9 +271,27 @@ function executeNode(args, { env }) {
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const started = performance.now()
   try {
-    const concurrency = testConcurrency(process.env.DSH_PTC_TEST_CONCURRENCY)
-    console.log(`Coverage: default file concurrency ${concurrency} (DSH_PTC_TEST_CONCURRENCY to override)`)
-    process.exitCode = await runCoverage({ concurrency, testArguments: process.argv.slice(2) })
+    const argumentsAfterScript = process.argv.slice(2)
+    if (argumentsAfterScript[0] === '--focus') {
+      const options = focusedCoverageArguments(argumentsAfterScript.slice(1))
+      if (options.help) console.log(focusedCoverageUsage())
+      else {
+        const selection = await validateFocusedCoverage(options)
+        console.log(`Focused sources: ${selection.sources.join(', ')}`)
+        console.log(`Focused tests: ${selection.tests.join(', ')}`)
+        console.log(`Coverage: file concurrency ${selection.concurrency}`)
+        process.exitCode = await runCoverage({
+          concurrency: selection.concurrency,
+          testArguments: selection.testArguments,
+          selectedTestFiles: selection.tests,
+          coverageSources: selection.sources,
+        })
+      }
+    } else {
+      const concurrency = testConcurrency(process.env.DSH_PTC_TEST_CONCURRENCY)
+      console.log(`Coverage: default file concurrency ${concurrency} (DSH_PTC_TEST_CONCURRENCY to override)`)
+      process.exitCode = await runCoverage({ concurrency, testArguments: argumentsAfterScript })
+    }
   } catch (error) {
     console.error(error.message)
     process.exitCode = 1

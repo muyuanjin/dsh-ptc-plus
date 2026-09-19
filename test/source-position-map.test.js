@@ -11,6 +11,7 @@ import {
   mapSourceSpan,
   mappedSourceTransform,
   sourceOffsetAt,
+  sourceRangeHasOriginalText,
   sourceTextAtSpan,
 } from '../internal/source-position-map.js'
 
@@ -43,6 +44,22 @@ test('numeric source maps reject offsets that cannot represent source buffers', 
   }
   builder.push({ generatedStart: 0, generatedEnd: 1, originalStart: 0, originalEnd: 1 })
   assert.deepEqual(builder.finish(), identitySourceMap(1))
+})
+
+test('distinguishes source text from generated anchors across compressed mappings', () => {
+  const generated = 'skipthis'
+  const original = 'xxthis'
+  const sourceMap = [
+    { generatedStart: 0, generatedEnd: 4, originalStart: 0, originalEnd: 0 },
+    { generatedStart: 4, generatedEnd: 8, originalStart: 2, originalEnd: 3 },
+  ]
+  assert.equal(sourceRangeHasOriginalText(sourceMap, generated, original, 0, 4), false)
+  assert.equal(sourceRangeHasOriginalText(sourceMap, generated, original, 3, 5), false)
+  assert.equal(sourceRangeHasOriginalText(sourceMap, generated, original, 4, 8), true)
+  assert.equal(sourceRangeHasOriginalText(sourceMap, generated, original, 8, 8), false)
+  assert.equal(sourceRangeHasOriginalText(sourceMap, 'this', 'that', 0, 4), false)
+  assert.equal(sourceRangeHasOriginalText(identitySourceMap(4), 'this', 'this', 0, 4), true)
+  assert.equal(sourceRangeHasOriginalText(identitySourceMap(4), 'this', undefined, 0, 4), false)
 })
 
 test('composing inserted source anchors never invents a character past EOF', () => {

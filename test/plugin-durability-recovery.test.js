@@ -97,6 +97,7 @@ return predecessorBinding
   delete predecessor.meta.dshPtcPlus.userBindingsShadowPolicy
   delete predecessor.meta.dshPtcPlus.userBindingNames
   delete predecessor.meta.dshPtcPlus.languageSemantics
+  delete predecessor.meta.dshPtcPlus.moduleTransform
   const normalizedPredecessor = normalizeJournal(predecessor.meta.dshPtcPlus)
   assert.equal(normalizedPredecessor.languageSemantics, 'legacy-v1')
   assert.equal(normalizedPredecessor.userBindingsShadowPolicy, LEGACY_USER_BINDINGS_SHADOW_POLICY)
@@ -144,6 +145,7 @@ test('cold-replays predecessor default exports with their recorded writable bind
       delete result.meta.dshPtcPlus.userBindingsShadowPolicy
       delete result.meta.dshPtcPlus.userBindingNames
       delete result.meta.dshPtcPlus.languageSemantics
+      delete result.meta.dshPtcPlus.moduleTransform
       const normalized = normalizeJournal(result.meta.dshPtcPlus)
       assert.equal(normalized.languageSemantics, 'legacy-v1')
       assert.equal(normalized.userBindingsShadowPolicy, LEGACY_USER_BINDINGS_SHADOW_POLICY)
@@ -550,13 +552,11 @@ test('hard cancellation restores the previous durable frontier', async (t) => {
   })
 })
 
-test('attributes inherited async callbacks to the currently active cell', async (t) => {
+test('keeps callbacks from a statically volatile setup outside the durable replay frontier', async (t) => {
   const events = []
   const session = { id: 'async-volatility', events }
   const first = fixture()
   t.after(() => first.dispose())
-  // Top-level this is the REPL context global; capturing it keeps this setup statically
-  // durable while the delayed callback still reaches ambient input and marks volatility at runtime.
   const setupCode = `
 let asyncValue = 0
 let releaseAsyncValue
@@ -565,7 +565,8 @@ const deferredAsyncValue = new Promise(resolve => { releaseAsyncValue = resolve 
 void deferredAsyncValue.then(() => { asyncValue = ambientRoot['Math']['ran' + 'dom']() })
 `
   const setup = await first.runDurable(session.id, setupCode, {}, { session })
-  assert.equal(setup.meta.dshPtcPlus.status, 'durable')
+  assert.equal(setup.meta.dshPtcPlus.status, 'volatile')
+  assert.equal(setup.meta.dshPtcPlus.volatileReason, 'ambient globalThis')
   appendRunCodeEvents(events, 'async-setup', setupCode, setup)
 
   const triggerCode = `
@@ -576,23 +577,21 @@ return asyncValue
   const triggered = await first.runDurable(session.id, triggerCode, {}, { session })
   assert.equal(typeof triggered.value, 'number')
   assert.equal(triggered.meta.dshPtcPlus.status, 'volatile')
-  assert.equal(triggered.meta.dshPtcPlus.volatileReason, 'Math.random')
+  assert.equal(triggered.meta.dshPtcPlus.volatileReason, 'ambient globalThis')
   appendRunCodeEvents(events, 'async-trigger', triggerCode, triggered)
   await first.dispose()
 
   const restored = fixture()
   t.after(() => restored.dispose())
   const result = await restored.run(session.id, 'return asyncValue', {}, { session })
-  assert.equal(result.value, 0)
+  assert.equal(result.value, undefined)
   assert.match(result.logs[0], /unreconstructable historical cell/)
 })
 
-test('keeps result and error conversion inside the active execution', async (t) => {
+test('keeps result and error conversion inside a statically classified execution', async (t) => {
   const state = fixture()
   t.after(() => state.dispose())
 
-  // Top-level this is the REPL context global; the capture stays statically durable, so an
-  // accessor invocation would only ever be observed by the runtime worker.
   const returned = await state.runDurable('result-conversion-volatility', `
 let accessorInvocations = 0
 const ambientRoot = this
@@ -604,11 +603,12 @@ return {
 }
 `)
   assert.match(returned.error.message, /^error\[PTC-O001\]: cell result could not cross the PTC Value V1 boundary:/)
-  assert.equal(returned.meta.dshPtcPlus.status, 'durable')
-  assert.equal(returned.meta.dshPtcPlus.volatileReason, undefined)
+  assert.equal(returned.meta.dshPtcPlus.status, 'volatile')
+  assert.equal(returned.meta.dshPtcPlus.volatileReason, 'ambient globalThis')
   const accessor = await state.runDurable('result-conversion-volatility', 'return accessorInvocations')
   assert.equal(accessor.value, 0)
-  assert.equal(accessor.meta.dshPtcPlus.status, 'durable')
+  assert.equal(accessor.meta.dshPtcPlus.status, 'volatile')
+  assert.equal(accessor.meta.dshPtcPlus.volatileReason, 'ambient globalThis')
 
   const thrown = await state.runDurable('error-conversion-volatility', `
 const ambientRoot = this
@@ -622,7 +622,7 @@ throw {
   assert.equal(thrown.isError, true)
   assert.match(thrown.error.message, /^error\[PTC-X001\]: uncaught Error: converted failure/)
   assert.equal(thrown.meta.dshPtcPlus.status, 'volatile')
-  assert.equal(thrown.meta.dshPtcPlus.volatileReason, 'Math.random')
+  assert.equal(thrown.meta.dshPtcPlus.volatileReason, 'ambient globalThis')
   assert.deepEqual(thrown.meta.dshPtcPlus.diagnostics.map(item => item.code), ['PTC-X001'])
 })
 
@@ -672,8 +672,6 @@ test('does not contract durable history when cold replay is already cancelled', 
 test('preserves an observed direct volatile boundary when the cell times out', async (t) => {
   const state = fixture({ computeMs: 1_000, maxWallMs: 100 })
   t.after(() => state.dispose())
-  // Top-level this is the REPL context global; the indirect read stays statically durable and
-  // the ambient access is observed only when the worker resolves it at runtime.
   const result = await state.runDurable('direct-volatile-timeout', `
 const ambientRoot = this
 Reflect.get(ambientRoot, 'Date').now()
@@ -681,12 +679,26 @@ await new Promise(() => {})
 `)
   assert.equal(result.isError, true)
   assert.equal(result.meta.dshPtcPlus.status, 'discarded')
-  assert.equal(result.meta.dshPtcPlus.volatileReason, 'ambient Date')
+  assert.equal(result.meta.dshPtcPlus.volatileReason, 'ambient globalThis')
 
   const continued = await state.run('direct-volatile-timeout', 'return repl.state({ action: "list" })')
   assert.equal(continued.value.mode, 'volatile')
-  assert.equal(continued.value.volatileReason, 'ambient Date')
+  assert.equal(continued.value.volatileReason, 'ambient globalThis')
   assert.deepEqual(continued.logs, [])
+})
+
+test('marks ambient constructor replacement volatile at the write boundary', async (t) => {
+  const state = fixture()
+  t.after(() => state.dispose())
+  const observed = await state.executeRun(
+    'ambient-constructor-write',
+    'globalThis.Date = function ReplacementDate() {}; return Date.name',
+    {},
+    {},
+  )
+  assert.equal(observed.raw.value, 'ReplacementDate')
+  assert.equal(observed.result.meta.dshPtcPlus.status, 'volatile')
+  assert.equal(observed.result.meta.dshPtcPlus.volatileReason, 'ambient Date')
 })
 
 test('preserves a generic possible-effect boundary for an unsettled native tool call', async (t) => {

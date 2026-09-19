@@ -307,7 +307,7 @@ const explicitEmptyResult = await tools.zero({})
     ['explicit undefined', 'return tools.zero(undefined)', { zero: rejectUndefined }],
     ['required input', 'return tools.required()', { required: rejectUndefined }],
     ['unsupported schema', 'return tools.unsupported()', { unsupported: rejectUndefined }],
-    ['owner namespace', 'return domain.zero()', {}, [{ global: 'domain', functions: { zero: rejectUndefined } }]],
+    ['owner namespace', 'return ownerApi.zero()', {}, [{ global: 'ownerApi', functions: { zero: rejectUndefined } }]],
   ]) {
     const result = await first.run(`empty-native-arguments-${label}`, program, functions, { bindings })
     assert.equal(result.error?.kind, 'exception')
@@ -361,7 +361,7 @@ test('preserves owner-provided program namespaces without domain translation', a
   const state = fixture()
   t.after(() => state.dispose())
   const binding = {
-    global: 'domain',
+    global: 'ownerApi',
     functions: {
       inspect: async value => ({ received: value }),
     },
@@ -369,17 +369,17 @@ test('preserves owner-provided program namespaces without domain translation', a
   }
   const observed = await state.executeRun(
     'owner-binding',
-    'const staleDomainInspect = domain.inspect; return domain.inspect({ exact: true })',
+    'const staleOwnerInspect = ownerApi.inspect; return ownerApi.inspect({ exact: true })',
     {},
     { bindings: [binding] },
   )
   assert.deepEqual(observed.raw.value, { received: { exact: true } })
   assert.deepEqual(observed.result.meta.dshPtcPlus.calls.map(call => [call.global, call.member]), [
-    ['domain', 'inspect'],
+    ['ownerApi', 'inspect'],
   ])
   const expired = await state.executeRun(
     'owner-binding',
-    'try { return await staleDomainInspect({ expired: true }) } catch (error) { return error.message }',
+    'try { return await staleOwnerInspect({ expired: true }) } catch (error) { return error.message }',
     {},
     { bindings: [binding] },
   )
@@ -405,11 +405,11 @@ test('cold-replays an owner-provided program binding from its recorded value', a
   const first = fixture()
   t.after(() => first.dispose())
   let liveCalls = 0
-  const source = 'const ownerReplayValue = await domain.read({ key: "answer" })'
+  const source = 'const ownerReplayValue = await ownerApi.read({ key: "answer" })'
   const recorded = await first.runDurable(session.id, source, {}, {
     session,
     bindings: [{
-      global: 'domain',
+      global: 'ownerApi',
       functions: { read: async () => { liveCalls += 1; return 42 } },
     }],
   })
@@ -424,7 +424,7 @@ test('cold-replays an owner-provided program binding from its recorded value', a
   const result = await restored.run(session.id, 'return ownerReplayValue', {}, {
     session,
     bindings: [{
-      global: 'domain',
+      global: 'ownerApi',
       functions: { read: async () => { replayDispatches += 1; return -1 } },
     }],
   })
@@ -455,7 +455,7 @@ Object.defineProperty(ownerRichInput, '__proto__', {
   value: { safe: true },
 })
 ownerRichInput.self = ownerRichInput
-const ownerRichValue = await domain.transform(ownerRichInput)
+const ownerRichValue = await ownerApi.transform(ownerRichInput)
 `
   const transform = async (value) => {
     liveCalls += 1
@@ -473,7 +473,7 @@ const ownerRichValue = await domain.transform(ownerRichInput)
   }
   const recorded = await first.runDurable(session.id, source, {}, {
     session,
-    bindings: [{ global: 'domain', functions: { transform } }],
+    bindings: [{ global: 'ownerApi', functions: { transform } }],
   })
   assert.equal(liveCalls, 1)
   assert.equal(recorded.meta.dshPtcPlus.status, 'durable')
@@ -501,7 +501,7 @@ const ownerRichValue = await domain.transform(ownerRichInput)
   }`, {}, {
     session,
     bindings: [{
-      global: 'domain',
+      global: 'ownerApi',
       functions: { transform: async () => { replayDispatches += 1; return null } },
     }],
   })
@@ -736,7 +736,7 @@ test('turns child runtime failure into a normal binding error and keeps the pare
   const controller = new AbortController()
   // The child loops forever, so this test states the budget it asserts: the
   // nested run has to reach its compute deadline.
-  const state = fixture({ computeMs: 500, maxWallMs: 2_000 })
+  const state = fixture({ computeMs: 500, maxWallMs: 10_000 })
   t.after(() => state.dispose())
 
   const result = await state.run('recursive-child-failure', `

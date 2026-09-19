@@ -1,5 +1,5 @@
 import { types } from 'node:util'
-import { runInContext } from 'node:vm'
+import { isContext, runInContext, runInThisContext } from 'node:vm'
 import { parse } from 'acorn'
 import { randomUUID } from 'node:crypto'
 import { walkAst, SKIP_AST_CHILDREN } from './ast-traversal.js'
@@ -16,6 +16,9 @@ const now = Date.now
 const bigintText = BigInt.prototype.toString
 const BIGINT_LIMIT = 10n ** 128n
 const unreadable = () => ({ status: 'unreadable', text: '', truncated: false })
+const runInRealm = (source, context, options) => isContext(context)
+  ? runInContext(source, context, options)
+  : runInThisContext(source, options)
 
 function primitiveText(value) {
   if (typeof value === 'string') return stringify(value.slice(0, MAX_TEXT))
@@ -56,7 +59,7 @@ export async function supportsAwaitLexicals(context, evaluate) {
   try {
     await evaluate(`let ${names[0]} = await Promise.resolve(41); const ${names[1]} = 42;`)
     return names.every((name, index) => ownDescriptor(context, name) === undefined
-      && runInContext(name, context, { timeout: 25 }) === index + 41)
+      && runInRealm(name, context, { timeout: 25 }) === index + 41)
   } catch {
     return false
   } finally {
@@ -97,7 +100,7 @@ export function createReplValueObserver(context, { awaitLexicals = false } = {})
           if (lexicals.has(name)) {
             // Lexical storage shadows global properties, even while uninitialized.
             if (/^[$_\p{ID_Start}][$\u200c\u200d\p{ID_Continue}]*$/u.test(name) && now() - at < 100) {
-              preview = previewBindingValue(runInContext(name, context, { timeout: 25, displayErrors: false }))
+              preview = previewBindingValue(runInRealm(name, context, { timeout: 25, displayErrors: false }))
             }
           } else if (globals.has(name)) {
             const descriptor = ownDescriptor(context, name)

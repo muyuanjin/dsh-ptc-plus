@@ -4,6 +4,7 @@ import { once } from 'node:events'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { normalizeWorkerEnvironment, WorkerClient } from '../internal/worker-client.js'
+import { helperProcessEnvironment, isElectronHost } from '../internal/worker-environment.js'
 
 function workerClient(workerUrl = undefined) {
   return new WorkerClient({ workerUrl, cwd: undefined, onMessage() {}, onFailure() {} })
@@ -37,6 +38,33 @@ test('preserves POSIX case-sensitive keys while removing host instrumentation', 
   }, 'linux'), {
     PATH: '/bin',
     Path: 'application-value',
+  })
+})
+
+test('adds Electron Node mode only to the helper process projection', () => {
+  assert.equal(isElectronHost({ electron: '43.3.0' }), true)
+  assert.equal(isElectronHost({ node: process.versions.node }), false)
+  assert.equal(isElectronHost(), false)
+
+  const source = {
+    PATH: 'canonical-path',
+    Electron_Run_As_Node: '0',
+    ApplicationValue: 'kept',
+  }
+  assert.deepEqual(helperProcessEnvironment(source, 'win32', true), {
+    PATH: 'canonical-path',
+    ELECTRON_RUN_AS_NODE: '1',
+    ApplicationValue: 'kept',
+  })
+  assert.deepEqual(source, {
+    PATH: 'canonical-path',
+    Electron_Run_As_Node: '0',
+    ApplicationValue: 'kept',
+  })
+  assert.equal(helperProcessEnvironment(source, 'win32', false), source)
+  assert.deepEqual(helperProcessEnvironment({ PATH: '/bin' }, 'linux', true), {
+    PATH: '/bin',
+    ELECTRON_RUN_AS_NODE: '1',
   })
 })
 

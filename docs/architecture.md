@@ -13,7 +13,7 @@ PTC Plus 把 DSH PTC 模式的顶层 `run_code` 变成与 session 绑定的连�
 | Journal / replay | PTC Plus + session log | 记录 call transcript、settlement、completion 和恢复边界 |
 | Presentation | DSH + PTC Plus | 保留 native guidance，并追加 REPL 指引与最小 explorer 声明 |
 
-求值层由插件自有的 helper 进程承载：Host 只持有 `IsolatedWorker` transport，真实 `node:worker_threads` session worker 与其私有 `MessagePort` 都留在 helper 内，IPC 只传输 plain data。宿主回收卡住的计算时只强杀自己的 helper process，不再在 DSH 进程内执行已测得会落入 Node 24/26 cppgc teardown fault 的 worker 强杀；`IsolatedOwner` 只在该实例的 real exit、output close 和 cleanup 都完成后释放。kernel、console、candidate 三个入口各自拥有 owner。helper 的 `init` 携带 fork 前 snapshot 的投影环境，user Worker 及其子进程保持原 env 契约，不会继承 `NODE_V8_COVERAGE` 等宿主 instrumentation；inner Worker 的 compute budget 在每次请求提交时通过 helper 的 on-demand sample 取新鲜 `eventLoopUtilization` baseline，ready handshake 另有启动样本；采样失败按 worker-exit 有界失败且不派发 prepare/run。唯一例外由 [ADR 0024](adr/0024-repl-console-observation.md) 所有：同一 worker 已确认存在未完成的 observation 时，prepare 可先于预算启动，确认 observation 完成后才开始计时。
+求值层由插件自有的 helper 进程承载：Host 只持有 `IsolatedWorker` transport，真实 `node:worker_threads` session worker 与其私有 `MessagePort` 都留在 helper 内，IPC 只传输 plain data。宿主回收卡住的计算时只强杀自己的 helper process，DSH 进程内没有需要终止的 session worker，因此不会触达已测得会落入 Node 24/26 cppgc teardown fault 的 in-host worker 强杀路径；`IsolatedOwner` 只在该实例的 real exit、output close 和 cleanup 都完成后释放。kernel、console、candidate 三个入口各自拥有 owner。helper 的 `init` 携带 fork 前 snapshot 的投影环境，user Worker 及其子进程保持原 env 契约，不会继承 `NODE_V8_COVERAGE` 等宿主 instrumentation；Electron Host 只在 helper fork 环境覆盖 `ELECTRON_RUN_AS_NODE=1`，该启动变量不进入 user Worker。inner Worker 的 compute budget 在每次请求提交时通过 helper 的 on-demand sample 取新鲜 `eventLoopUtilization` baseline，ready handshake 另有启动样本；采样失败按 worker-exit 有界失败且不派发 prepare/run。唯一例外由 [ADR 0024](adr/0024-repl-console-observation.md) 所有：同一 worker 已确认存在未完成的 observation 时，prepare 可先于预算启动，确认 observation 完成后才开始计时。
 
 主入口接管模型直接发起的顶层 `run_code`，并通过 DSH tool registry 真实注册 `edit_run_code`。
 使用 code-only direct-tool projection 的 PTC request 始终按固定顺序暴露 `[run_code, edit_run_code]`；插件用 agent scope 的
@@ -64,7 +64,7 @@ Client half 通过宿主当前代的设置座位呈现全部配置：旧代际�
 
 ## Global User Bindings
 
-`internal/user-bindings.js` 是条目、文档、请求快照和有界声明的严格规范化 owner。它从命名 value export 的 TypeScript 源码派生 symbols、binding kind、body-free declaration、durability 与 fingerprint，并封闭校验所有衍生字段；调用方不能提交一份与源码不一致的声明或 snapshot。`namespace` scope 产生一个条目名对象，`top-level` scope 产生选定导出；保留名称和启用集合中的调用标识符冲突在持久化或请求激活前拒绝。
+`internal/user-bindings.js` 是条目、文档、请求快照和有界声明的严格规范化 owner。它从命名 value export 的 TypeScript 源码派生 symbols、binding kind、body-free declaration、durability 与 fingerprint，并封闭校验所有衍生字段；调用方不能提交一份与源码不一致的声明或 snapshot。源码声明保留未被遮蔽的环境类型，并收集公开签名引用的本地 interface、type alias 与 class 闭包；各条目使用独立声明 namespace，公开 class shape 包含实例字段与 constructor parameter property。无法形成自足声明的 imported type 在持久化前拒绝，不能静默替换为 `unknown`。`namespace` scope 产生一个条目名对象，`top-level` scope 产生选定导出；保留名称和启用集合中的调用标识符冲突在持久化或请求激活前拒绝。
 
 可选 `modelContext` 与源码一起持久化，包含默认开启的接口注入开关 `includeDeclaration` 和独立注入的提示词 `instructions`。声明只有源码派生这一份，不另行编写。非空 metadata 参与条目 fingerprint；旧条目省略该字段时保持原序列化与 fingerprint，存储文档无需迁移。此前保存的 `enabled` / `declaration` 字段保留规范化形式以验证旧 fingerprint，但旧自定义声明不用于展示或注入；旧关闭状态映射为声明关闭、提示词为空，下一次编辑保存使用新字段。Client 安全的结构校验和偏好映射由 `internal/user-binding-model-context.js` 复用，预算和完整 schema 见 [ADR 0023](adr/0023-global-user-bindings.md)。
 
@@ -74,7 +74,9 @@ prompt assembly 为每个 PTC request 取得一次当前启用条目快照，作
 
 配置段是全局绑定提示词与接口的唯一注入来源，不包含实现源码；成功初始化、session-local shadow 和 worker 重建本身不生成活动公告，也不触发相同配置重发。执行结果与诊断拥有实际行为证据；需要验证可用性时只对已知名称做无副作用观察。历史 `tools:ptc-plus-user-bindings` 活动段保留读取支持，下一次允许且接受的快照撤销旧活动声明一次。`tools:sdk` 与 direct-tool schema 不随条目内容改变。配置 API 不证明当前值，也不延长被 compaction 遮蔽的 session-local 状态。runtime 在 cell preflight 前把期望集合映射到 BindingCatalog，再由 worker 激活：当前覆盖粒度为 `per-name`，同名 session-local binding 只覆盖对应全局名称，同条目的其他名称继续激活；v1-v7 历史 cell 保留整条 entry 退出的旧粒度。条目级失败产生诊断并从该 cell 排除，不阻塞独立代码。失败 initializer 一旦发起 program call，整个 cell 进入 volatile，因此只包含成功条目的结果 snapshot 不会被误作该调用的 cold replay source。
 
-worker 对 namespace 成员和 top-level 导出保留 ECMAScript module live read；对顶层名称的赋值或重声明将该名称转换为 session-local binding，并使该名称在后续全局激活中保持 session-local 覆盖，同一条目的其他名称不受影响；v1-v7 历史 cell 仍按整条来源条目退出。binding module 使用稳定 worker-global proxy 访问当前 request 的全部 program namespace；proxy 在调用时读取 AsyncLocalStorage 中的原 cell lease，因此旧 continuation 即使恰逢下一 cell 运行也不能借用其 authority。新 namespace 可在后续 request 安装，已消失 namespace 的 proxy 不再提供 member；与任何既有 worker global 冲突时，bridge 在写入 global 前拒绝整个安装，避免覆盖 Node intrinsic 或留下部分 namespace。一个导出闭包一旦可能被普通 session binding 保存，worker 就无法证明其不可达，因此相应 synthetic-module 解析基准与已安装 proxy 保守保留到 worker 结束。worker 从未成功暴露过条目时，disabled 或 empty activation 不安装 bridge；若本次尝试全部失败，则在执行 cell 前移除本次安装的 bridge。
+每个 session kernel 和 binding workbench 各自使用所在 worker 的原生 Node realm。cell、PTC 管理模块、provided `require` 与 binding module 因而共享 intrinsic identity 和 `globalThis`；用户显式创建的 `node:vm` context 或独立运行时保留自己的 realm。
+
+worker 对 namespace 成员和 top-level 导出保留 ECMAScript module live read；对顶层名称的赋值或重声明将该名称转换为 session-local binding，并使该名称在后续全局激活中保持 session-local 覆盖，同一条目的其他名称不受影响；v1-v7 历史 cell 仍按整条来源条目退出。当前 `stateful-module-v2` binding module 通过编译后的 logical-root resolver 取得 program namespace，并为每个 cell 建立绑定原 lease 的 namespace view。`stateful-module-v1` 与 legacy binding module 保留其记录代际的 worker-global bridge。两条路径都使旧 continuation 无法借用后续 cell 的 authority，并在后续 request 反映 namespace 的新增与移除。需要安装历史 bridge 且名称与既有 worker global 冲突时，安装在写入前整体失败，避免覆盖 Node intrinsic 或留下部分 namespace。一个导出闭包一旦可能被普通 session binding 保存，worker 就无法证明其不可达，因此相应 synthetic-module 解析基准与历史 bridge 保守保留到 worker 结束。worker 从未成功暴露过需要 bridge 的条目时，disabled 或 empty activation 不安装 bridge；若本次尝试全部失败，则在执行 cell 前移除本次安装的 bridge。
 
 配置段以消息文本直接投递，不进入 system renderer；提示词与声明中的 `{{...}}` 保持字面量，不被解释为宿主变量。投递遵守 runtime-context suppression、取消和步骤准入，解除屏蔽后的下一请求同步当前说明。worker 对同一条目 ID 只比较源码、scope、namespace 调用名和有序导出列表来决定模块复用；模型上下文、purpose 或 top-level 显示名称变化不重置模块状态，也不重复初始化。
 
@@ -143,8 +145,10 @@ cell 的静态 import 与 remote re-export 产生有序 preload，Node 继续拥
 
 ```ts
 {
-  version: 9,
+  version: 10,
   languageSemantics: "legacy-v1" | "stateful-v1" | "protected-v1",
+  moduleTransform: "amaro@1.1.11" | "stateful-module-v1+amaro@1.1.11" |
+    "stateful-module-v2+amaro@1.1.11" | "protected-module-v1+amaro@1.1.11",
   bindingPolicy: {
     variableRedeclarations: boolean,
     functionClassRedeclarations: boolean
@@ -168,7 +172,7 @@ cell 的静态 import 与 remote re-export 产生有序 preload，Node 继续拥
 }
 ```
 
-`languageSemantics` 选择完整编译代际；v1–v8 固定迁移为 `legacy-v1`，不能按当前新语言重新解释。`bindingPolicy`、`rewritePolicy` 与 `moduleSemantics` 保留历史细分契约；新代际从统一策略派生它们，旧代际由冻结编译器消费。`userBindingsFingerprint` 以 `null` 证明不存在 Global User Binding 输入，或以 SHA-256 绑定并行私有快照；声明存在但快照缺失或不一致时，node 形成 unknown boundary。`userBindingsShadowPolicy` 固化该 cell 的 session-local 覆盖粒度，`userBindingNames` 以按名称排序的 `{name, state}` 记录结算时的 provider/local/absent/unknown 事实，因此 cold replay 按历史粒度重放覆盖关系，不从当前实现推断 v1-v7 cell 的整条 entry 语义；provider 事实必须对应并行快照的条目 ID，并覆盖该快照公开的每个名称，否则 node 形成 unknown boundary。`calls` 只保存 global、member、PTC Value Graph 编码的 args/result 或 error，以及 settlement 序号。cold replay 校验调用名称、参数、数量和提交顺序，并按 recorded settlement order 释放 recorded result；不会重新 dispatch program binding 或重做外部 effect。该规则同样适用于 native tools、owner-provided namespace 和 `code.run`，不按名称分支。Cordis 的进程内对象不会因此被宣称已恢复；presentation 可以从已验证 transcript 派生重新检查要求，但不能改变 replay。若基础设施终止时仍有未结算 binding，heap 回滚到 durable frontier，discarded journal 以最先观察到的 `global.member` 保留 possible-effect boundary。effect、completeness 和 source metadata 属于 capability explorer，不伪装成 journal 字段。
+`languageSemantics` 选择语言契约，`moduleTransform` 选择确切 parser、compiler 与 lowering generation；两者必须是允许的配对。v1–v8 固定迁移为 legacy transform，v9 按发布时映射恢复，其中 `stateful-v1` 使用 `stateful-module-v1`，不能按当前 transform 重解释。`bindingPolicy`、`rewritePolicy` 与 `moduleSemantics` 保留历史细分契约；新代际从统一策略派生它们，旧代际由冻结编译器消费。`userBindingsFingerprint` 以 `null` 证明不存在 Global User Binding 输入，或以 SHA-256 绑定并行私有快照；声明存在但快照缺失或不一致时，node 形成 unknown boundary。`userBindingsShadowPolicy` 固化该 cell 的 session-local 覆盖粒度，`userBindingNames` 以按名称排序的 `{name, state}` 记录结算时的 provider/local/absent/unknown 事实，因此 cold replay 按历史粒度重放覆盖关系，不从当前实现推断 v1-v7 cell 的整条 entry 语义；provider 事实必须对应并行快照的条目 ID，并覆盖该快照公开的每个名称，否则 node 形成 unknown boundary。`calls` 只保存 global、member、PTC Value Graph 编码的 args/result 或 error，以及 settlement 序号。cold replay 校验调用名称、参数、数量和提交顺序，并按 recorded settlement order 释放 recorded result；不会重新 dispatch program binding 或重做外部 effect。该规则同样适用于 native tools、owner-provided namespace 和 `code.run`，不按名称分支。Cordis 的进程内对象不会因此被宣称已恢复；presentation 可以从已验证 transcript 派生重新检查要求，但不能改变 replay。若基础设施终止时仍有未结算 binding，heap 回滚到 durable frontier，discarded journal 以最先观察到的 `global.member` 保留 possible-effect boundary。effect、completeness 和 source metadata 属于 capability explorer，不伪装成 journal 字段。
 
 journal 通过 `run_code.output.presentationMeta` 附着到最终 result，再由 `tools/result` 做两阶段确认。live binding catalog 在 worker 结算时随实际状态更新，下一条排队 cell 使用这份目录准备；journal 确认只推进持久历史，迟到或逆序的确认不能覆盖较新的 live 目录，也不能恢复已重置的状态。缺失、损坏或被替换的 journal 形成 unknown/volatile 边界；未进入 runtime 的 call 由后续 `confirms` 以对应 `tool/call.seq` 证明为 no-op。volatile 源码保留在原 session log，但不参与 cold replay。
 

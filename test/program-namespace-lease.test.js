@@ -4,6 +4,34 @@ import test from 'node:test'
 import { SessionRuntime } from '../internal/session-runtime.js'
 import { createUserBindingsSnapshot } from '../internal/user-bindings.js'
 
+test('binding modules preserve every reserved program namespace operation', async t => {
+  const runtime = new SessionRuntime({ durableReplay: false })
+  t.after(() => runtime.dispose())
+  const userBindings = createUserBindingsSnapshot({ entries: [{
+    id: 'program-operations', name: 'programOperations', scope: 'namespace', enabled: true,
+    source: `
+export function inspect() { return [typeof tools, Function('return delete tools')()] }
+export function overwrite() { tools = {} }
+`,
+  }] }, 1)
+  const options = {
+    program: 'return programOperations.inspect()',
+    userBindings,
+    bindings: [{ global: 'tools', functions: { echo: async () => 1 } }],
+  }
+  const inspected = await runtime.run('program-operations', options)
+  assert.equal(inspected.error, undefined, inspected.error?.message)
+  assert.deepEqual(inspected.value, ['object', false])
+  const overwritten = await runtime.run('program-operations', {
+    ...options,
+    program: 'programOperations.overwrite()',
+  })
+  assert.match(overwritten.error.message, /tools cannot be overwritten because reserved program bindings are not shadowable/u)
+  const preserved = await runtime.run('program-operations', options)
+  assert.equal(preserved.error, undefined, preserved.error?.message)
+  assert.deepEqual(preserved.value, ['object', false])
+})
+
 test('expired module continuations cannot inspect or call a request namespace between cells', async t => {
   const runtime = new SessionRuntime()
   t.after(() => runtime.dispose())

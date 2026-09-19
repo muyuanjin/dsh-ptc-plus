@@ -7,14 +7,23 @@ import { coverageInputFilter } from './coverage-inputs.mjs'
 export const COVERAGE_INCLUDE = ['index.js', 'internal/*.js', 'compiler-*.cjs']
 export const COVERAGE_THRESHOLDS = { lines: 100, branches: 95, functions: 100, statements: 0 }
 
-export function createCoverageReport({ root, directory, filter = true, reporters = ['text'], reporterOptions = {} }) {
+export function createCoverageReport({
+  root,
+  directory,
+  filter = true,
+  reporters = ['text'],
+  reporterOptions = {},
+  include = COVERAGE_INCLUDE,
+  includeUncovered = false,
+}) {
   const report = Report({
-    include: COVERAGE_INCLUDE, excludeAfterRemap: true,
+    include, excludeAfterRemap: true,
     // c8's incremental merge reads one report at a time instead of holding every
     // raw JSON report in memory, which is what the reporter process ran out of.
     mergeAsync: true,
     tempDirectory: directory, reportsDirectory: resolve(root, 'coverage'),
     reporter: reporters, reporterOptions, omitRelative: true,
+    all: includeUncovered, src: [root],
   })
   if (report.mergeAsync !== true) throw new Error('coverage report must merge asynchronously')
   const stats = { scripts: 0, retainedScripts: 0 }
@@ -36,14 +45,37 @@ export function createCoverageReport({ root, directory, filter = true, reporters
   return { report, stats }
 }
 
+export function coverageReportArguments(argv) {
+  const [directory, ...argumentsAfterDirectory] = argv
+  if (directory === undefined) throw new Error('coverage report requires an evidence directory')
+  const include = []
+  for (let index = 0; index < argumentsAfterDirectory.length; index++) {
+    const argument = argumentsAfterDirectory[index]
+    if (argument !== '--include') throw new Error(`unknown coverage report argument: ${argument}`)
+    const value = argumentsAfterDirectory[++index]
+    if (value === undefined || value.length === 0) throw new Error('--include requires a value')
+    include.push(value)
+  }
+  return { directory, include: include.length === 0 ? COVERAGE_INCLUDE : include, focused: include.length > 0 }
+}
+
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
+    const options = coverageReportArguments(process.argv.slice(2))
     const { report, stats } = createCoverageReport({
       root: process.cwd(),
-      directory: process.argv[2],
+      directory: options.directory,
+      include: options.include,
+      includeUncovered: options.focused,
       reporters: ['text', 'json'],
       reporterOptions: { text: { maxCols: 1000 } },
     })
+    const map = await report.getCoverageMapFromAllCoverageFiles()
+    if (options.focused) {
+      const files = new Set(map.files().map(file => resolve(file)))
+      const missing = options.include.filter(source => !files.has(resolve(process.cwd(), source)))
+      if (missing.length > 0) throw new Error(`focused coverage report omitted selected sources: ${missing.join(', ')}`)
+    }
     await report.run()
     await checkCoverages(COVERAGE_THRESHOLDS, report)
     console.log(`Coverage merger input: ${stats.scripts} → ${stats.retainedScripts} scripts`)

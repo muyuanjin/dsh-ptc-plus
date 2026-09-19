@@ -17,11 +17,12 @@ const source = 'export const answer: number = 42'
 test('continuous console retains helper ownership after source protocol mutation', async t => {
   const owner = new UserBindingConsole({ ...options, maxOldGenerationSizeMb: 32 })
   t.after(() => owner.dispose())
-  const source = `const original={get:Map.prototype.get,add:Set.prototype.add,iterator:Array.prototype[Symbol.iterator]};
-    export function change(){Object.prototype.get=()=>7;Map.prototype.get=null;Set.prototype.add=null;Array.prototype[Symbol.iterator]=null}
-    export function restore(){delete Object.prototype.get;Map.prototype.get=original.get;Set.prototype.add=original.add;Array.prototype[Symbol.iterator]=original.iterator}`
+  const source = `const original={Map,is:Object.is,get:Map.prototype.get,add:Set.prototype.add,iterator:Array.prototype[Symbol.iterator]};
+    export function change(){Object.prototype.get=()=>7;Map.prototype.get=null;Set.prototype.add=null;Array.prototype[Symbol.iterator]=null;Object.is=null;globalThis.Map=null}
+    export function restore(){globalThis.Map=original.Map;Object.is=original.is;delete Object.prototype.get;Map.prototype.get=original.get;Set.prototype.add=original.add;Array.prototype[Symbol.iterator]=original.iterator}`
   let environment
-  for (const [code, expected] of [['change();42', '42'], ['const answer=1+1;answer', '2'],
+  for (const [code, expected] of [['change();42', '42'],
+    ['const answer=1+1;[answer,typeof worker_threads,typeof child_process]', "[ 2, 'undefined', 'undefined' ]"],
     ['import {value} from "data:text/javascript,export const value=40";answer+value', '42'],
     ['restore();answer+value', '42']]) {
     const result = await owner.run({ source, code, environment })
@@ -30,6 +31,28 @@ test('continuous console retains helper ownership after source protocol mutation
     if (environment !== undefined) assert.equal(result.environment, environment)
     environment = result.environment
   }
+})
+
+test('binding workbench cells and their module use one worker realm', async t => {
+  const owner = new UserBindingConsole(options)
+  t.after(() => owner.dispose())
+  const source = `
+export class BindingError extends Error {}
+export function makeError() { return new BindingError('binding') }
+export function readMarker() { return globalThis.__ptcWorkbenchRealmMarker }
+`
+  const result = await owner.run({ source, code: `
+globalThis.__ptcWorkbenchRealmMarker = 23;
+[makeError() instanceof BindingError, makeError() instanceof Error, readMarker(),
+  (await import('data:text/javascript,export default globalThis.__ptcWorkbenchRealmMarker')).default,
+  require('node:vm').runInNewContext('new Error("external")') instanceof Error]
+` })
+  assert.equal(result.error, undefined, result.error)
+  assert.equal(result.output, '[ true, true, 23, 23, false ]')
+  const shortcuts = await owner.run({ source,
+    code: '[typeof worker_threads, typeof child_process, typeof fs, typeof module]' })
+  assert.equal(shortcuts.error, undefined, shortcuts.error)
+  assert.equal(shortcuts.output, "[ 'undefined', 'undefined', 'undefined', 'undefined' ]")
 })
 
 test('one bounded worker round captures output, budgets bytes and settles exactly once', () => {
@@ -293,4 +316,18 @@ test('console survives an asynchronous uncaught error', async (t) => {
   const second = await owner.run({ environment: first.environment, source, code: 'answer' })
   assert.equal(second.error, undefined)
   assert.equal(second.output, '42')
+})
+
+test('console reports an unowned module continuation as fatal', async (t) => {
+  const owner = new UserBindingConsole({ ...options, maxOldGenerationSizeMb: 32 })
+  t.after(() => owner.dispose())
+  const result = await owner.run({
+    source: `
+setTimeout(() => { throw new Error('unowned module continuation') }, 10)
+export const answer = 42
+`,
+    code: 'await new Promise(resolve => setTimeout(resolve, 100)); answer',
+  })
+  assert.match(result.error, /unowned module continuation/)
+  assert.equal(result.environment, null)
 })

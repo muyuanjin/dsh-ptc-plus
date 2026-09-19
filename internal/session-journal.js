@@ -3,6 +3,8 @@ import { normalizeDiagnostic } from './diagnostic.js'
 import { assertOwnFields, isRecord } from './record-utils.js'
 import { sessionEvents } from './session-events.js'
 import { LEGACY_LANGUAGE_SEMANTICS, normalizeLanguageSemantics } from './language-semantics.js'
+import { LEGACY_USER_BINDING_TRANSFORM, historicalModuleTransformForLanguage,
+  moduleTransformForLanguage, normalizeModuleTransform } from './module-transform-contract.js'
 import {
   LEGACY_DEFAULT_EXPORT_BINDING,
   LEGACY_IMPORT_EXPRESSION_BOUNDARY,
@@ -16,6 +18,8 @@ import {
   REWRITES_KEY,
   RECOVERY_BOUNDARY_KEY,
   JOURNAL_VERSION,
+  LANGUAGE_SEMANTICS_JOURNAL_VERSION,
+  LANGUAGE_SEMANTICS_JOURNAL_FIELDS,
   IMPORT_BOUNDARY_JOURNAL_VERSION,
   PER_NAME_USER_BINDINGS_JOURNAL_VERSION,
   PER_NAME_JOURNAL_FIELDS,
@@ -251,12 +255,18 @@ function normalizeUserBindingsFingerprint(value) {
 
 function migrateJournal(value, resolveLegacyConfirm) {
   if (value.version === JOURNAL_VERSION) return value
+  if (value.version === LANGUAGE_SEMANTICS_JOURNAL_VERSION) {
+    assertOwnFields(value, LANGUAGE_SEMANTICS_JOURNAL_FIELDS, 'dsh-ptc-plus journal')
+    const languageSemantics = normalizeLanguageSemantics(value.languageSemantics)
+    return { ...value, version: JOURNAL_VERSION, moduleTransform: historicalModuleTransformForLanguage(languageSemantics) }
+  }
   if (value.version === PER_NAME_USER_BINDINGS_JOURNAL_VERSION) {
     assertOwnFields(value, PER_NAME_JOURNAL_FIELDS, 'dsh-ptc-plus journal')
-    return { ...value, version: JOURNAL_VERSION, languageSemantics: LEGACY_LANGUAGE_SEMANTICS }
+    return { ...value, version: JOURNAL_VERSION, languageSemantics: LEGACY_LANGUAGE_SEMANTICS,
+      moduleTransform: LEGACY_USER_BINDING_TRANSFORM }
   }
   const shadow = { userBindingsShadowPolicy: LEGACY_USER_BINDINGS_SHADOW_POLICY, userBindingNames: null,
-    languageSemantics: LEGACY_LANGUAGE_SEMANTICS }
+    languageSemantics: LEGACY_LANGUAGE_SEMANTICS, moduleTransform: LEGACY_USER_BINDING_TRANSFORM }
   if (value.version === IMPORT_BOUNDARY_JOURNAL_VERSION) {
     assertOwnFields(value, WHOLE_ENTRY_JOURNAL_FIELDS, 'dsh-ptc-plus journal')
     return { ...value, version: JOURNAL_VERSION, ...shadow }
@@ -325,6 +335,7 @@ export function normalizeJournal(value, options = {}) {
   const migrated = migrateJournal(value, options.resolveLegacyConfirm)
   assertOwnFields(migrated, JOURNAL_FIELDS, 'dsh-ptc-plus journal')
   const languageSemantics = normalizeLanguageSemantics(migrated.languageSemantics)
+  const moduleTransform = normalizeModuleTransform(migrated.moduleTransform, languageSemantics)
   const bindingPolicy = normalizeBindingPolicy(migrated.bindingPolicy)
   const rewritePolicy = normalizeRewritePolicy(migrated.rewritePolicy)
   const moduleSemantics = normalizeModuleSemantics(migrated.moduleSemantics)
@@ -355,6 +366,7 @@ export function normalizeJournal(value, options = {}) {
   return Object.freeze({
     version: JOURNAL_VERSION,
     languageSemantics,
+    moduleTransform,
     bindingPolicy,
     rewritePolicy,
     moduleSemantics,
@@ -583,7 +595,8 @@ export function liveToolCallSeq(session, callId, toolName) {
 }
 
 /** Start a mutable journal for one live cell. */
-export function createJournal(confirms = [], bindingPolicy, rewritePolicy, languageSemantics = LEGACY_LANGUAGE_SEMANTICS) {
+export function createJournal(confirms = [], bindingPolicy, rewritePolicy, languageSemantics = LEGACY_LANGUAGE_SEMANTICS,
+  moduleTransform = moduleTransformForLanguage(languageSemantics)) {
   if (typeof bindingPolicy === 'string') {
     if (!BINDING_MODES.has(bindingPolicy)) throw new TypeError('invalid dsh-ptc-plus journal binding mode')
     bindingPolicy = {
@@ -591,9 +604,11 @@ export function createJournal(confirms = [], bindingPolicy, rewritePolicy, langu
       functionClassRedeclarations: false,
     }
   }
+  languageSemantics = normalizeLanguageSemantics(languageSemantics)
   return {
     version: JOURNAL_VERSION,
-    languageSemantics: normalizeLanguageSemantics(languageSemantics),
+    languageSemantics,
+    moduleTransform: normalizeModuleTransform(moduleTransform, languageSemantics),
     bindingPolicy: normalizeBindingPolicy(bindingPolicy),
     rewritePolicy: normalizeRewritePolicy(rewritePolicy),
     moduleSemantics: normalizeModuleSemantics(LIVE_MODULE_SEMANTICS),

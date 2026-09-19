@@ -117,6 +117,25 @@ export function sourceOffsetAt(sourceMap, generatedOffset) {
   return segmentOffsetAt(segment, generatedOffset)
 }
 
+/** Whether a complete generated interval still contains its exact original text. */
+export function sourceRangeHasOriginalText(sourceMap, generatedSource, originalSource, generatedStart, generatedEnd) {
+  if (typeof generatedSource !== 'string' || typeof originalSource !== 'string'
+    || generatedEnd <= generatedStart || generatedStart < 0 || generatedEnd > generatedSource.length) return false
+  let cursor = generatedStart
+  for (let index = segmentIndexAt(sourceMap, generatedStart); index < sourceMap.length && cursor < generatedEnd; index += 1) {
+    const segment = sourceMap.at(index)
+    if (segment.generatedStart > cursor || segment.generatedEnd <= cursor) break
+    const end = Math.min(generatedEnd, segment.generatedEnd)
+    const length = end - cursor
+    const originalStart = segmentOffsetAt(segment, cursor)
+    if (segment.originalEnd <= segment.originalStart
+      || originalStart + length > originalSource.length
+      || generatedSource.slice(cursor, end) !== originalSource.slice(originalStart, originalStart + length)) return false
+    cursor = end
+  }
+  return cursor === generatedEnd
+}
+
 function segmentOffsetAt(segment, generatedOffset) {
   const generatedLength = segment.generatedEnd - segment.generatedStart
   const originalLength = segment.originalEnd - segment.originalStart

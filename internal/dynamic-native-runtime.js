@@ -11,6 +11,7 @@ const exposedIntrinsics = new internal.WeakMap()
 const sources = createCallableSourceRegistry()
 const callableSources = new internal.WeakMap()
 const callableSourceTargets = new internal.WeakMap()
+const callableInterfaces = new internal.WeakMap()
 const sourceTarget = origin => typeof origin === 'string' ? origin : origin?.target
 const copyArguments = (source, start = 0, result = []) => internal.copyArray(source, start, source.length, result)
 const invocationScopes = new AsyncLocalStorage()
@@ -114,7 +115,19 @@ export function createNativeCallAdapter({ realmFunction, intrinsicEval, reflect,
     internal.weakMapSet(state.callableSources, compiled, source)
     return compiled
   }
-  const exposedValue = value => internal.mapGet(selected.exposed, value) ?? internal.weakMapGet(exposedIntrinsics, value) ?? value
+  const exposedValue = value => {
+    const exposed = internal.mapGet(selected.exposed, value) ?? internal.weakMapGet(exposedIntrinsics, value)
+    if (exposed !== undefined) return exposed
+    if (typeof value === 'function' && !internal.weakMapHas(callableInterfaces, value)) {
+      internal.weakMapSet(callableInterfaces, value, selected)
+    }
+    return value
+  }
+  const exposedMemberValue = (receiver, value) => {
+    const owner = typeof receiver === 'function' ? internal.weakMapGet(callableInterfaces, receiver) : undefined
+    const exposed = owner === undefined ? undefined : internal.mapGet(owner.exposed, value)
+    return exposed ?? exposedValue(value)
+  }
   const propagate = (error, origin) => {
     recordExceptionOrigin(error, sourceTarget(origin), { reset: true })
     for (let scope = currentScope(); scope !== undefined; scope = scope.parent) {
@@ -218,6 +231,7 @@ export function createNativeCallAdapter({ realmFunction, intrinsicEval, reflect,
   return {
     install,
     exposedValue,
+    exposedMemberValue,
     isEval: callee => callee === state.intrinsicEval || internal.mapHas(selected.exposed, state.intrinsicEval) && callee === internal.mapGet(selected.exposed, state.intrinsicEval),
     evaluate(compiled, environment) {
       // Bootstrap originals never leave this owner. Direct eval must use the

@@ -77,10 +77,10 @@ C1–C6 共同约束结果。“没有错误”不能通过破坏 C2/C3/C4/C5 �
 | --- | --- |
 | run_code、edit_run_code 的派生执行 | 同一语言入口、状态机制、原始参数与 call identity。 |
 | 同 cell、跨 cell、函数、块、参数、catch、switch、循环、类初始化 | 全部声明命名空间归一化，保留各自 scope 和 activation。 |
-| 用户绑定 initializer、候选、工作台及插件创建的 worker/bootstrap | 通过 PTC Plus 编译与状态契约适配，拥有独立 root 和生命周期。 |
+| 用户绑定 initializer、候选、工作台及插件创建的 worker/bootstrap | 通过 PTC Plus 编译与状态契约适配，拥有独立 root 和生命周期；同一 worker 内的 REPL 与 Node 模块共享原生 realm。 |
 | 用户主动调用的 eval、Function 家族及其 alias、原型构造器、bound callable | 保留原生语法目标、编译错误与效果；适配其所属逻辑环境和源码反射，具体契约见第 5.7 节。 |
 | 用户自行创建的 vm、新 realm、native addon 或外部引擎 | 保留该引擎的原生编译与所属环境，不把独立环境映射到调用者的会话 root，也不声称 module hook 接管了这些编译器。 |
-| PTC Plus 自有模块加载（静态/动态/data URL、ESM/CJS） | 在 PTC 执行环境内统一接入；不修改磁盘模块或安装包。模块内的 eval/Function 同样保持所属逻辑环境。 |
+| PTC Plus 自有模块加载（静态/动态/data URL、ESM/CJS） | 在 PTC 执行环境内统一接入；与 cell 共享 worker 的 intrinsic identity 和 `globalThis`，不修改磁盘模块或安装包。模块内的 eval/Function 同样保持所属逻辑环境。 |
 | 插件自有子计算、用户绑定 initializer、候选与工作台 | 编译契约一致，状态、权限与生命周期各自独立。 |
 | 失败继续、配置切换、cold replay、模型可见状态收缩 | 实际状态与证据一致，不留下永久占位、混用语义或未知历史门禁。 |
 
@@ -382,6 +382,10 @@ C1/C6 要求扫描所有声明命名空间，不能只处理普通 lexical；C3 
 
 namespace 形式只有一个公开 namespace 名称，覆盖该名称自然替换整个 namespace 入口。对象成员修改按对象契约处理，不自动扩大成全局配置更新。
 
+当前 binding module 通过编译后的 logical-root resolver 取得 request program namespace，并为每个 cell 使用绑定原 lease 的 namespace view。记录为 `stateful-module-v1` 或 legacy transform 的历史模块继续使用其 worker-global bridge；恢复必须按 snapshot transform 选择路径。两条路径都不能让过期 continuation 借用后续 cell 的 request authority。
+
+模型可见接口由绑定源码派生。公开签名保留未被源码遮蔽的环境类型，并携带引用到的本地 interface、type alias、enum 与 class 声明闭包；每个条目的本地类型位于独立声明 namespace。class shape 包含公开实例字段、constructor parameter property、方法和访问器，并分别保留 getter 与 setter 的读写类型。无法形成自足接口的 imported type 必须在持久化前给出诊断，不能退化为 `unknown`。
+
 整条目遮蔽是需要改变的旧语义，见 [ADR 0023](adr/0023-global-user-bindings.md)；当前代际的新 cell 已按名称粒度记录覆盖/来源事实。新代际应记录 entry 级激活证据和 name 级覆盖/来源证据，旧 journal 仍保留当时的整条目行为。新代际中条目更新、禁用或删除不得抹去已经明确形成的会话覆盖；未覆盖名称按条目生命周期调整，旧闭包实际持有的值按引用生命周期保留。
 
 这不会给模型新增写全局存储、启停条目或执行用户候选的管理权限，也不会把 session runtime value 自动转成持久源码。
@@ -478,7 +482,7 @@ cell 使用公开 Node 编译能力创建与当前 context 对齐的 async body�
 | --- | --- |
 | run_code / edit_run_code | 同一 preparation 与 CompiledUnit；保留原始参数、派生关系、call identity 和 cell lease。 |
 | code.run、插件子 worker | bootstrap 安装编译器，拥有独立 root；父子状态与原有能力关系不变。 |
-| 用户绑定 initializer、候选、工作台 | 在类型变换和 native 编译之前接入；工作台独立状态，不写 Agent journal。 |
+| 用户绑定 initializer、候选、工作台 | 在类型变换和 native 编译之前接入；工作台独立状态，不写 Agent journal；其 REPL 与模块共享所在 worker 的原生 realm。 |
 | eval、Function 家族及其间接调用 | 动态环境 owner 保留所属逻辑环境、原生语法目标、转换次序与反射；不把普通同名函数当作原生编译器。 |
 | 用户自行创建的 vm、new realm、native addon 或外部引擎 | 使用独立引擎的原生编译和环境；不继承 PTC 会话 root。 |
 
@@ -622,7 +626,7 @@ C2/C3/C4 要求分别描述：
 
 ### 8.4 journal 代际与旧代码
 
-当前封闭 schema 的版本常量与字段集由 [session-journal-schema.js](../internal/session-journal-schema.js) 拥有，JOURNAL_VERSION 为 9；schema 包含 languageSemantics、bindingPolicy、rewritePolicy、moduleSemantics（含 `importExpressionBoundary`）、userBindingsFingerprint、userBindingsReusePolicy、userBindingsShadowPolicy 与 userBindingNames 等字段。字段校验、journal 创建与旧代际迁移由 [session-journal.js](../internal/session-journal.js) 拥有，事件关联与折叠恢复由 [session-journal-recovery.js](../internal/session-journal-recovery.js) 拥有。旧 ADR 描述其决策发生时的版本，不能用历史版本叙述替代当前 schema 事实。
+当前封闭 schema 的版本常量与字段集由 [session-journal-schema.js](../internal/session-journal-schema.js) 拥有，JOURNAL_VERSION 为 10；schema 包含 languageSemantics、精确的 moduleTransform、bindingPolicy、rewritePolicy、moduleSemantics（含 `importExpressionBoundary`）、userBindingsFingerprint、userBindingsReusePolicy、userBindingsShadowPolicy 与 userBindingNames 等字段。字段校验、journal 创建与旧代际迁移由 [session-journal.js](../internal/session-journal.js) 拥有，事件关联与折叠恢复由 [session-journal-recovery.js](../internal/session-journal-recovery.js) 拥有。旧 ADR 描述其决策发生时的版本，不能用历史版本叙述替代当前 schema 事实。
 
 新代际必须区分：所有作用域可写规则、裸声明、声明 pattern 提交、import/default 来源关联、特殊命名空间、动态 grammar goal、独立单元、name 级用户绑定覆盖和实际操作证据。只重解释原有两个布尔值无法表达这些变化。
 

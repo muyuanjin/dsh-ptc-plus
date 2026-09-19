@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createContext, runInContext } from 'node:vm'
-import { createDynamicEnvironmentRuntime } from '../internal/dynamic-environment-runtime.js'
+import { createDynamicEnvironmentRuntime, installProgramAmbientResolver } from '../internal/dynamic-environment-runtime.js'
 import { compileDynamicEnvironmentSource } from '../internal/dynamic-environment-compiler.js'
 
 function fixture(values = {}, options = {}) {
@@ -13,6 +13,29 @@ function fixture(values = {}, options = {}) {
   const environment = runtime.environment({ varFrame: variables, ...options })
   return { runtime, environment, variables, run: source => runtime.evaluate(eval, undefined, [source], environment) }
 }
+
+test('program ambient resolver owns reads, writes, typeof, deletion, and installation lifetime', () => {
+  let value = 3
+  const reference = {
+    get: () => value,
+    set: next => { value = next },
+    typeof: () => typeof value,
+    delete: () => false,
+  }
+  assert.throws(() => installProgramAmbientResolver(null), /must be a function/)
+  const uninstall = installProgramAmbientResolver(name => name === 'programValue' ? reference : undefined)
+  assert.throws(() => installProgramAmbientResolver(() => undefined), /already installed/)
+  const runtime = createDynamicEnvironmentRuntime()
+  const environment = runtime.environment()
+  assert.equal(environment.reference('programValue').value, 3)
+  environment.reference('programValue').value = 4
+  assert.equal(value, 4)
+  assert.equal(runtime.evaluate(eval, undefined, ['typeof programValue'], environment), 'number')
+  assert.equal(runtime.evaluate(eval, undefined, ['delete programValue'], environment), false)
+  uninstall()
+  uninstall()
+  assert.equal(createDynamicEnvironmentRuntime().environment().reference('programValue').typeof(), 'undefined')
+})
 
 test('parameter-created callable values preserve native inferred and absent names with captured values', () => {
   const source = `function outer(value=3, trigger=eval('value'),

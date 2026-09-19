@@ -13,7 +13,8 @@ export const RECOVERY_BOUNDARY_KEY = 'dshPtcPlusRecoveryBoundaries'
 export const IMPORT_BOUNDARY_JOURNAL_VERSION = 7
 export const PER_NAME_USER_BINDINGS_JOURNAL_VERSION = 8
 export const LANGUAGE_SEMANTICS_JOURNAL_VERSION = 9
-export const JOURNAL_VERSION = LANGUAGE_SEMANTICS_JOURNAL_VERSION
+export const MODULE_TRANSFORM_JOURNAL_VERSION = 10
+export const JOURNAL_VERSION = MODULE_TRANSFORM_JOURNAL_VERSION
 export const LIVE_USER_BINDINGS_SHADOW_POLICY = 'per-name'
 export const LEGACY_USER_BINDINGS_SHADOW_POLICY = 'whole-entry'
 export const LIVE_USER_BINDINGS_REUSE_POLICY = 'implementation-v1'
@@ -30,7 +31,8 @@ export const STATUSES = new Set(['durable', 'volatile', 'discarded', 'noop'])
 export const BINDING_MODES = new Set(['loose', 'strict'])
 export const WHOLE_ENTRY_JOURNAL_FIELDS = new Set(['version', 'bindingPolicy', 'rewritePolicy', 'moduleSemantics', 'userBindingsFingerprint', 'userBindingsReusePolicy', 'status', 'calls', 'operations', 'confirms', 'diagnostics', 'completion', 'volatileReason'])
 export const PER_NAME_JOURNAL_FIELDS = new Set([...WHOLE_ENTRY_JOURNAL_FIELDS, 'userBindingsShadowPolicy', 'userBindingNames'])
-export const JOURNAL_FIELDS = new Set([...PER_NAME_JOURNAL_FIELDS, 'languageSemantics'])
+export const LANGUAGE_SEMANTICS_JOURNAL_FIELDS = new Set([...PER_NAME_JOURNAL_FIELDS, 'languageSemantics'])
+export const JOURNAL_FIELDS = new Set([...LANGUAGE_SEMANTICS_JOURNAL_FIELDS, 'moduleTransform'])
 export const FINGERPRINT_REUSE_JOURNAL_FIELDS = new Set([...WHOLE_ENTRY_JOURNAL_FIELDS].filter(field => field !== 'userBindingsReusePolicy'))
 export const RELATIONLESS_JOURNAL_FIELDS = new Set([...FINGERPRINT_REUSE_JOURNAL_FIELDS].filter(field => field !== 'userBindingsFingerprint'))
 export const PREDECESSOR_JOURNAL_FIELDS = new Set(['version', 'bindingMode', 'rewritePolicy', 'status', 'calls', 'operations', 'confirms', 'diagnostics', 'completion', 'volatileReason'])
@@ -56,32 +58,47 @@ export const ERROR_FIELDS = new Set(['kind', 'message'])
 export const EDIT_TARGET_FIELDS = new Set(['targetCallSeq'])
 export const DERIVED_RUN_FIELDS = new Set(['code', 'description'])
 
-export const JOURNAL_VERSIONS = new Set([LEGACY_JOURNAL_VERSION, INTERMEDIATE_JOURNAL_VERSION, PREVIOUS_JOURNAL_VERSION, USER_BINDING_RELATIONLESS_JOURNAL_VERSION, FINGERPRINT_REUSE_JOURNAL_VERSION, VERSIONED_BINDING_REUSE_JOURNAL_VERSION, IMPORT_BOUNDARY_JOURNAL_VERSION, PER_NAME_USER_BINDINGS_JOURNAL_VERSION, JOURNAL_VERSION])
+export const JOURNAL_VERSIONS = new Set([LEGACY_JOURNAL_VERSION, INTERMEDIATE_JOURNAL_VERSION, PREVIOUS_JOURNAL_VERSION, USER_BINDING_RELATIONLESS_JOURNAL_VERSION, FINGERPRINT_REUSE_JOURNAL_VERSION, VERSIONED_BINDING_REUSE_JOURNAL_VERSION, IMPORT_BOUNDARY_JOURNAL_VERSION, PER_NAME_USER_BINDINGS_JOURNAL_VERSION, LANGUAGE_SEMANTICS_JOURNAL_VERSION, JOURNAL_VERSION])
 export const USER_BINDINGS_REUSE_POLICIES = new Set([LEGACY_USER_BINDINGS_REUSE_POLICY, LIVE_USER_BINDINGS_REUSE_POLICY])
 export const USER_BINDINGS_SHADOW_POLICIES = new Set([LEGACY_USER_BINDINGS_SHADOW_POLICY, LIVE_USER_BINDINGS_SHADOW_POLICY])
 const USER_BINDING_NAME_STATES = new Set(['provider', 'local', 'absent', 'unknown'])
+const isArray = Array.isArray
+const freeze = Object.freeze
+const ownKeys = Reflect.ownKeys
+const defineProperty = Object.defineProperty
+const uncurry = Function.prototype.bind.bind(Function.prototype.call)
+const setHas = uncurry(Set.prototype.has)
+const setAdd = uncurry(Set.prototype.add)
+const sort = uncurry(Array.prototype.sort)
+const enumerable = uncurry(Object.prototype.propertyIsEnumerable)
 
 /** Closed, value-free evidence shared by worker settlement, persistence and Client. */
 export function normalizeUserBindingNames(value) {
-  if (!Array.isArray(value)) throw new TypeError('invalid user binding name evidence')
+  if (!isArray(value)) throw new TypeError('invalid user binding name evidence')
   const names = new Set()
-  return Object.freeze(value.map(fact => {
+  const normalized = []
+  for (let index = 0; index < value.length; index++) {
+    const fact = value[index]
     if (fact === null || typeof fact !== 'object'
-      || !USER_BINDING_NAME_STATES.has(fact.state)
+      || !setHas(USER_BINDING_NAME_STATES, fact.state)
       || typeof fact.name !== 'string' || fact.name.length > 128
       || !/^[$_\p{ID_Start}][$\u200c\u200d\p{ID_Continue}]*$/u.test(fact.name)
-      || names.has(fact.name)) throw new TypeError('invalid user binding name evidence')
+      || setHas(names, fact.name)) throw new TypeError('invalid user binding name evidence')
     const fields = fact.state === 'provider' ? ['name', 'state', 'entryId'] : ['name', 'state']
-    if (Reflect.ownKeys(fact).length !== fields.length
-      || !fields.every(key => Object.prototype.propertyIsEnumerable.call(fact, key))
+    let validFields = ownKeys(fact).length === fields.length
+    for (let field = 0; validFields && field < fields.length; field++) validFields = enumerable(fact, fields[field])
+    if (!validFields
       || (fact.state === 'provider' && (typeof fact.entryId !== 'string'
         || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(fact.entryId)))) {
       throw new TypeError('invalid user binding name evidence')
     }
-    names.add(fact.name)
-    return Object.freeze({ name: fact.name, state: fact.state,
-      ...(fact.state === 'provider' ? { entryId: fact.entryId } : {}) })
-  }).sort((left, right) => left.name < right.name ? -1 : left.name > right.name ? 1 : 0))
+    setAdd(names, fact.name)
+    defineProperty(normalized, normalized.length, { configurable: true, enumerable: true, writable: true,
+      value: freeze({ name: fact.name, state: fact.state,
+        ...(fact.state === 'provider' ? { entryId: fact.entryId } : {}) }) })
+  }
+  sort(normalized, (left, right) => left.name < right.name ? -1 : left.name > right.name ? 1 : 0)
+  return freeze(normalized)
 }
 
 export function normalizeJournalUserBindingNames(journal) {

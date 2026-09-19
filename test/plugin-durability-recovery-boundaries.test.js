@@ -278,25 +278,23 @@ void await repl.state({ action: 'restore', name: 'before-change' })
   assert.deepEqual(await state.run('session-a', 'return branchValue'), { logs: [], value: 1 })
 })
 
-test('drops a tentative save when the cell becomes volatile at runtime', async (t) => {
+test('drops a tentative save when top-level global input makes the cell volatile', async (t) => {
   const state = fixture()
   t.after(() => state.dispose())
 
-  // Top-level this is the REPL context global; the capture stays statically durable, so only the
-  // runtime access can discard the tentative save.
   const result = await state.runDurable('late-volatile-save', `
 const ambientRoot = this
 void await repl.state({ action: 'save', name: 'must-not-persist' })
 return ambientRoot['Math']['ran' + 'dom']()
 `)
   assert.equal(result.meta.dshPtcPlus.status, 'volatile')
-  assert.equal(result.meta.dshPtcPlus.volatileReason, 'Math.random')
+  assert.equal(result.meta.dshPtcPlus.volatileReason, 'ambient globalThis')
   assert.deepEqual(result.meta.dshPtcPlus.operations, [])
   assert.deepEqual(await state.run('late-volatile-save', `
 return await repl.state({ action: 'list' })
 `), {
     logs: [],
-    value: { names: [], mode: 'volatile', volatileReason: 'Math.random' },
+    value: { names: [], mode: 'volatile', volatileReason: 'ambient globalThis' },
   })
 })
 

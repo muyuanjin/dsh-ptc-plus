@@ -6,7 +6,12 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { runCoverage, testConcurrency } from '../scripts/coverage.mjs'
+import {
+  focusedCoverageArguments,
+  runCoverage,
+  testConcurrency,
+  validateFocusedCoverage,
+} from '../scripts/coverage.mjs'
 
 const posixOnly = process.platform === 'win32'
   ? 'a catchable SIGINT cannot be delivered to another process on Windows'
@@ -32,6 +37,65 @@ test('coverage CLI rejects invalid concurrency before starting the suite', () =>
   assert.equal(result.status, 1, result.stderr)
   assert.match(result.stderr, /DSH_PTC_TEST_CONCURRENCY must be a positive integer/)
   assert.doesNotMatch(result.stdout, /default file concurrency/)
+})
+
+test('focused coverage requires explicit gate sources and test files', async () => {
+  assert.deepEqual(focusedCoverageArguments([
+    '--source', 'internal/source-position-map.js',
+    '--source', 'internal/source-position-map.js',
+    '--test', 'test/source-position-map.test.js',
+    '--concurrency', '2',
+    '--', '--test-name-pattern=source anchors',
+  ]), {
+    sources: ['internal/source-position-map.js', 'internal/source-position-map.js'],
+    tests: ['test/source-position-map.test.js'],
+    concurrency: '2',
+    testArguments: ['--test-name-pattern=source anchors'],
+  })
+  assert.throws(() => focusedCoverageArguments(['--test', 'test/source-position-map.test.js']),
+    /at least one --source/)
+  assert.throws(() => focusedCoverageArguments(['--source', 'internal/source-position-map.js']),
+    /at least one --test/)
+  assert.throws(() => focusedCoverageArguments(['--source', 'internal/source-position-map.js',
+    '--test', 'test/source-position-map.test.js', '--unknown']), /unknown focused coverage argument/)
+
+  const selected = await validateFocusedCoverage(focusedCoverageArguments([
+    '--source', 'internal/source-position-map.js',
+    '--source', 'internal/source-position-map.js',
+    '--test', 'test/source-position-map.test.js',
+  ]))
+  assert.deepEqual(selected.sources, ['internal/source-position-map.js'])
+  assert.deepEqual(selected.tests, ['test/source-position-map.test.js'])
+  await assert.rejects(validateFocusedCoverage(focusedCoverageArguments([
+    '--source', 'README.md', '--test', 'test/source-position-map.test.js',
+  ])), /outside the project coverage gate/)
+  await assert.rejects(validateFocusedCoverage(focusedCoverageArguments([
+    '--source', 'internal/source-position-map.js',
+    '--test', fileURLToPath(new URL('../package.json', import.meta.url)),
+  ])), /must be relative to the project root/)
+})
+
+test('focused coverage runs only selected tests and scopes the report', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'ptc-coverage-'))
+  t.after(() => rm(directory, { recursive: true, force: true }))
+  const calls = []
+  assert.equal(await runCoverage({
+    directory,
+    concurrency: 3,
+    selectedTestFiles: ['test/source-position-map.test.js'],
+    coverageSources: ['internal/source-position-map.js'],
+    execute: async (args, { env }) => {
+      calls.push({ args, env })
+      return 0
+    },
+  }), 0)
+  assert.equal(calls.length, 3)
+  assert.match(calls[0].args[0], /compiler-bytecode\.mjs$/)
+  assert.ok(calls[1].args.includes('--test-concurrency=3'))
+  assert.ok(calls[1].args.includes('test/source-position-map.test.js'))
+  assert.equal(calls[1].args.filter(argument => /^test\/.*\.test\.js$/.test(argument)).length, 1)
+  assert.deepEqual(calls[2].args.slice(-2), ['--include', 'internal/source-position-map.js'])
+  assert.equal(calls[2].env.NODE_V8_COVERAGE, '')
 })
 
 test('overlapping coverage runs keep worker evidence separate and propagate failure', async t => {

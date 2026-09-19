@@ -16,6 +16,17 @@ function captureReflection(reflect) {
   return captured
 }
 const defaultIntrinsics = { intrinsicEval: eval, realmFunction: Function, globalObject: globalThis, reflect: captureReflection(Reflect) }
+let programAmbientResolver
+
+/** Install the worker-owned resolver used by explicitly adapted program modules. */
+export function installProgramAmbientResolver(resolve) {
+  if (programAmbientResolver !== undefined) throw new Error('program ambient resolver is already installed')
+  if (typeof resolve !== 'function') throw new TypeError('program ambient resolver must be a function')
+  programAmbientResolver = resolve
+  return () => {
+    if (programAmbientResolver === resolve) programAmbientResolver = undefined
+  }
+}
 
 const isObject = value => value !== null && (typeof value === 'object' || typeof value === 'function')
 const isMap = types.isMap
@@ -45,7 +56,7 @@ const asBindings = value => {
 export function createDynamicEnvironmentRuntime({
   importModule = (source, options) => import(source, options),
   intrinsicEval = defaultIntrinsics.intrinsicEval, realmFunction = defaultIntrinsics.realmFunction, globalObject = defaultIntrinsics.globalObject,
-  errors, reflect = defaultIntrinsics.reflect, object, interfaceOwner,
+  errors, reflect = defaultIntrinsics.reflect, object, interfaceOwner, resolveAmbient = programAmbientResolver,
 } = {}) {
   const intrinsics = captureCompilerIntrinsics(realmFunction)
   const { unscopables, Object: intrinsicObject, array: internalArray } = intrinsics
@@ -143,7 +154,10 @@ export function createDynamicEnvironmentRuntime({
       return deleted
     },
   }, object, strict)
-  const ambientReference = (name, strict) => reference(name, {
+  const ambientReference = (name, strict) => {
+    const resolved = resolveAmbient?.(name)
+    if (resolved !== undefined) return reference(name, resolved, undefined, strict)
+    return reference(name, {
     get() {
       if (!reflect.has(globalObject, name)) throw new errors.ReferenceError(`${name} is not defined`)
       return reflect.get(globalObject, name, globalObject)
@@ -154,7 +168,8 @@ export function createDynamicEnvironmentRuntime({
     },
     typeof: () => reflect.has(globalObject, name) ? typeof reflect.get(globalObject, name, globalObject) : 'undefined',
     delete: () => reflect.deleteProperty(globalObject, name),
-  }, undefined, strict)
+    }, undefined, strict)
+  }
 
   function environment({ frames = [], varFrame = new internal.Map(), strict = false, origin, lexicalContext = {},
     getThis = () => globalObject, getNewTarget = () => undefined, allowNewTarget = false,
@@ -170,6 +185,12 @@ export function createDynamicEnvironmentRuntime({
       importModule,
       internalArray,
       expose: nativeCalls.exposedValue,
+      exposeProperty(receiver, key) {
+        if (receiver === null || receiver === undefined) {
+          throw new errors.TypeError(`Cannot read properties of ${receiver}`)
+        }
+        return nativeCalls.exposedMemberValue(receiver, reflect.get(object(receiver), key, receiver))
+      },
       prepareCall: nativeCalls.prepareCall,
       prepareInvocation: nativeCalls.prepareInvocation,
       releaseMemberReceiver: nativeCalls.releaseMemberReceiver,

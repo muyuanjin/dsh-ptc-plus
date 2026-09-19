@@ -679,25 +679,25 @@
     if (!strict) merge(result, data);
     return [result];
   });
-  Schema.extend("union", (data, { list, toString: toString2 }, options, strict) => {
+  Schema.extend("union", (data, { list, toString: toString3 }, options, strict) => {
     const messages = [];
     for (const inner of list) try {
       return Schema.resolve(data, inner, options, strict);
     } catch (error) {
       messages.push(error);
     }
-    throw new ValidationError(`expected ${toString2()} but got ${JSON.stringify(data)}`, options);
+    throw new ValidationError(`expected ${toString3()} but got ${JSON.stringify(data)}`, options);
   });
-  Schema.extend("intersect", (data, { list, toString: toString2 }, options, strict) => {
+  Schema.extend("intersect", (data, { list, toString: toString3 }, options, strict) => {
     if (!list.length) return [data];
     let result;
     for (const inner of list) {
       const value = Schema.resolve(data, inner, options, true)[0];
       if (isNullable(value)) continue;
       if (isNullable(result)) result = value;
-      else if (typeof result !== typeof value) throw new ValidationError(`expected ${toString2()} but got ${JSON.stringify(data)}`, options);
+      else if (typeof result !== typeof value) throw new ValidationError(`expected ${toString3()} but got ${JSON.stringify(data)}`, options);
       else if (typeof value === "object") merge(result ??= {}, value);
-      else if (result !== value) throw new ValidationError(`expected ${toString2()} but got ${JSON.stringify(data)}`, options);
+      else if (result !== value) throw new ValidationError(`expected ${toString3()} but got ${JSON.stringify(data)}`, options);
     }
     if (!strict && isPlainObject(data)) merge(result, data);
     return [result];
@@ -1228,7 +1228,8 @@
   var IMPORT_BOUNDARY_JOURNAL_VERSION = 7;
   var PER_NAME_USER_BINDINGS_JOURNAL_VERSION = 8;
   var LANGUAGE_SEMANTICS_JOURNAL_VERSION = 9;
-  var JOURNAL_VERSION = LANGUAGE_SEMANTICS_JOURNAL_VERSION;
+  var MODULE_TRANSFORM_JOURNAL_VERSION = 10;
+  var JOURNAL_VERSION = MODULE_TRANSFORM_JOURNAL_VERSION;
   var LIVE_USER_BINDINGS_SHADOW_POLICY = "per-name";
   var LEGACY_USER_BINDINGS_SHADOW_POLICY = "whole-entry";
   var LIVE_USER_BINDINGS_REUSE_POLICY = "implementation-v1";
@@ -1243,7 +1244,8 @@
   var BINDING_MODES = /* @__PURE__ */ new Set(["loose", "strict"]);
   var WHOLE_ENTRY_JOURNAL_FIELDS = /* @__PURE__ */ new Set(["version", "bindingPolicy", "rewritePolicy", "moduleSemantics", "userBindingsFingerprint", "userBindingsReusePolicy", "status", "calls", "operations", "confirms", "diagnostics", "completion", "volatileReason"]);
   var PER_NAME_JOURNAL_FIELDS = /* @__PURE__ */ new Set([...WHOLE_ENTRY_JOURNAL_FIELDS, "userBindingsShadowPolicy", "userBindingNames"]);
-  var JOURNAL_FIELDS = /* @__PURE__ */ new Set([...PER_NAME_JOURNAL_FIELDS, "languageSemantics"]);
+  var LANGUAGE_SEMANTICS_JOURNAL_FIELDS = /* @__PURE__ */ new Set([...PER_NAME_JOURNAL_FIELDS, "languageSemantics"]);
+  var JOURNAL_FIELDS = /* @__PURE__ */ new Set([...LANGUAGE_SEMANTICS_JOURNAL_FIELDS, "moduleTransform"]);
   var FINGERPRINT_REUSE_JOURNAL_FIELDS = new Set([...WHOLE_ENTRY_JOURNAL_FIELDS].filter((field) => field !== "userBindingsReusePolicy"));
   var RELATIONLESS_JOURNAL_FIELDS = new Set([...FINGERPRINT_REUSE_JOURNAL_FIELDS].filter((field) => field !== "userBindingsFingerprint"));
   var PREDECESSOR_JOURNAL_FIELDS = /* @__PURE__ */ new Set(["version", "bindingMode", "rewritePolicy", "status", "calls", "operations", "confirms", "diagnostics", "completion", "volatileReason"]);
@@ -1268,26 +1270,46 @@
   var ERROR_FIELDS = /* @__PURE__ */ new Set(["kind", "message"]);
   var EDIT_TARGET_FIELDS = /* @__PURE__ */ new Set(["targetCallSeq"]);
   var DERIVED_RUN_FIELDS = /* @__PURE__ */ new Set(["code", "description"]);
-  var JOURNAL_VERSIONS = /* @__PURE__ */ new Set([LEGACY_JOURNAL_VERSION, INTERMEDIATE_JOURNAL_VERSION, PREVIOUS_JOURNAL_VERSION, USER_BINDING_RELATIONLESS_JOURNAL_VERSION, FINGERPRINT_REUSE_JOURNAL_VERSION, VERSIONED_BINDING_REUSE_JOURNAL_VERSION, IMPORT_BOUNDARY_JOURNAL_VERSION, PER_NAME_USER_BINDINGS_JOURNAL_VERSION, JOURNAL_VERSION]);
+  var JOURNAL_VERSIONS = /* @__PURE__ */ new Set([LEGACY_JOURNAL_VERSION, INTERMEDIATE_JOURNAL_VERSION, PREVIOUS_JOURNAL_VERSION, USER_BINDING_RELATIONLESS_JOURNAL_VERSION, FINGERPRINT_REUSE_JOURNAL_VERSION, VERSIONED_BINDING_REUSE_JOURNAL_VERSION, IMPORT_BOUNDARY_JOURNAL_VERSION, PER_NAME_USER_BINDINGS_JOURNAL_VERSION, LANGUAGE_SEMANTICS_JOURNAL_VERSION, JOURNAL_VERSION]);
   var USER_BINDINGS_REUSE_POLICIES = /* @__PURE__ */ new Set([LEGACY_USER_BINDINGS_REUSE_POLICY, LIVE_USER_BINDINGS_REUSE_POLICY]);
   var USER_BINDINGS_SHADOW_POLICIES = /* @__PURE__ */ new Set([LEGACY_USER_BINDINGS_SHADOW_POLICY, LIVE_USER_BINDINGS_SHADOW_POLICY]);
   var USER_BINDING_NAME_STATES = /* @__PURE__ */ new Set(["provider", "local", "absent", "unknown"]);
+  var isArray = Array.isArray;
+  var freeze = Object.freeze;
+  var ownKeys = Reflect.ownKeys;
+  var defineProperty = Object.defineProperty;
+  var uncurry = Function.prototype.bind.bind(Function.prototype.call);
+  var setHas = uncurry(Set.prototype.has);
+  var setAdd = uncurry(Set.prototype.add);
+  var sort = uncurry(Array.prototype.sort);
+  var enumerable = uncurry(Object.prototype.propertyIsEnumerable);
   function normalizeUserBindingNames(value) {
-    if (!Array.isArray(value)) throw new TypeError("invalid user binding name evidence");
+    if (!isArray(value)) throw new TypeError("invalid user binding name evidence");
     const names = /* @__PURE__ */ new Set();
-    return Object.freeze(value.map((fact) => {
-      if (fact === null || typeof fact !== "object" || !USER_BINDING_NAME_STATES.has(fact.state) || typeof fact.name !== "string" || fact.name.length > 128 || !/^[$_\p{ID_Start}][$\u200c\u200d\p{ID_Continue}]*$/u.test(fact.name) || names.has(fact.name)) throw new TypeError("invalid user binding name evidence");
+    const normalized = [];
+    for (let index = 0; index < value.length; index++) {
+      const fact = value[index];
+      if (fact === null || typeof fact !== "object" || !setHas(USER_BINDING_NAME_STATES, fact.state) || typeof fact.name !== "string" || fact.name.length > 128 || !/^[$_\p{ID_Start}][$\u200c\u200d\p{ID_Continue}]*$/u.test(fact.name) || setHas(names, fact.name)) throw new TypeError("invalid user binding name evidence");
       const fields = fact.state === "provider" ? ["name", "state", "entryId"] : ["name", "state"];
-      if (Reflect.ownKeys(fact).length !== fields.length || !fields.every((key) => Object.prototype.propertyIsEnumerable.call(fact, key)) || fact.state === "provider" && (typeof fact.entryId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(fact.entryId))) {
+      let validFields = ownKeys(fact).length === fields.length;
+      for (let field = 0; validFields && field < fields.length; field++) validFields = enumerable(fact, fields[field]);
+      if (!validFields || fact.state === "provider" && (typeof fact.entryId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(fact.entryId))) {
         throw new TypeError("invalid user binding name evidence");
       }
-      names.add(fact.name);
-      return Object.freeze({
-        name: fact.name,
-        state: fact.state,
-        ...fact.state === "provider" ? { entryId: fact.entryId } : {}
+      setAdd(names, fact.name);
+      defineProperty(normalized, normalized.length, {
+        configurable: true,
+        enumerable: true,
+        writable: true,
+        value: freeze({
+          name: fact.name,
+          state: fact.state,
+          ...fact.state === "provider" ? { entryId: fact.entryId } : {}
+        })
       });
-    }).sort((left, right) => left.name < right.name ? -1 : left.name > right.name ? 1 : 0));
+    }
+    sort(normalized, (left, right) => left.name < right.name ? -1 : left.name > right.name ? 1 : 0);
+    return freeze(normalized);
   }
   function normalizeJournalUserBindingNames(journal) {
     if (!USER_BINDINGS_SHADOW_POLICIES.has(journal.userBindingsShadowPolicy)) {
@@ -1315,6 +1337,31 @@
   function normalizeLanguageSemantics(value) {
     if (!LANGUAGE_SEMANTICS.has(value)) throw new TypeError("invalid dsh-ptc-plus language semantics");
     return value;
+  }
+
+  // internal/module-transform-contract.js
+  var LEGACY_USER_BINDING_TRANSFORM = "amaro@1.1.11";
+  var PREVIOUS_USER_BINDING_TRANSFORM = "stateful-module-v1+amaro@1.1.11";
+  var USER_BINDING_TRANSFORM = "stateful-module-v2+amaro@1.1.11";
+  var PROTECTED_MODULE_TRANSFORM = "protected-module-v1+amaro@1.1.11";
+  var MODULE_TRANSFORMS = /* @__PURE__ */ new Set([
+    LEGACY_USER_BINDING_TRANSFORM,
+    PREVIOUS_USER_BINDING_TRANSFORM,
+    USER_BINDING_TRANSFORM,
+    PROTECTED_MODULE_TRANSFORM
+  ]);
+  function isStatefulUserBindingTransform(transform) {
+    return transform === USER_BINDING_TRANSFORM || transform === PREVIOUS_USER_BINDING_TRANSFORM;
+  }
+  function moduleTransformMatchesLanguage(transform, languageSemantics) {
+    return languageSemantics === "stateful-v1" ? isStatefulUserBindingTransform(transform) : languageSemantics === "protected-v1" ? transform === PROTECTED_MODULE_TRANSFORM : languageSemantics === "legacy-v1" ? transform === LEGACY_USER_BINDING_TRANSFORM : false;
+  }
+  function normalizeModuleTransform(transform, languageSemantics) {
+    if (!MODULE_TRANSFORMS.has(transform)) throw new TypeError("invalid dsh-ptc-plus journal module transform");
+    if (!moduleTransformMatchesLanguage(transform, languageSemantics)) {
+      throw new TypeError("dsh-ptc-plus journal module transform does not match its language semantics");
+    }
+    return transform;
   }
 
   // internal/value-wire-schema.js
@@ -1529,7 +1576,7 @@
       return false;
     }
     const predecessor = value.version < 4;
-    const fields = value.version === 1 ? LEGACY_JOURNAL_FIELDS : predecessor ? PREDECESSOR_JOURNAL_FIELDS : value.version === 4 ? RELATIONLESS_JOURNAL_FIELDS : value.version === 5 ? FINGERPRINT_REUSE_JOURNAL_FIELDS : value.version < PER_NAME_USER_BINDINGS_JOURNAL_VERSION ? WHOLE_ENTRY_JOURNAL_FIELDS : value.version < LANGUAGE_SEMANTICS_JOURNAL_VERSION ? PER_NAME_JOURNAL_FIELDS : JOURNAL_FIELDS;
+    const fields = value.version === 1 ? LEGACY_JOURNAL_FIELDS : predecessor ? PREDECESSOR_JOURNAL_FIELDS : value.version === 4 ? RELATIONLESS_JOURNAL_FIELDS : value.version === 5 ? FINGERPRINT_REUSE_JOURNAL_FIELDS : value.version < PER_NAME_USER_BINDINGS_JOURNAL_VERSION ? WHOLE_ENTRY_JOURNAL_FIELDS : value.version < LANGUAGE_SEMANTICS_JOURNAL_VERSION ? PER_NAME_JOURNAL_FIELDS : value.version === LANGUAGE_SEMANTICS_JOURNAL_VERSION ? LANGUAGE_SEMANTICS_JOURNAL_FIELDS : JOURNAL_FIELDS;
     const required = predecessor ? ["version", "bindingMode", "status", "calls", "operations", "diagnostics"] : ["version", "bindingPolicy", "rewritePolicy", "moduleSemantics", "status", "calls", "operations", "diagnostics"];
     if (value.version !== 1 && value.version < 4) required.push("rewritePolicy");
     if (value.version >= 5) required.push("userBindingsFingerprint");
@@ -1541,6 +1588,10 @@
     if (value.version >= LANGUAGE_SEMANTICS_JOURNAL_VERSION) {
       required.push("languageSemantics");
       normalizeLanguageSemantics(value.languageSemantics);
+    }
+    if (value.version > LANGUAGE_SEMANTICS_JOURNAL_VERSION) {
+      required.push("moduleTransform");
+      normalizeModuleTransform(value.moduleTransform, value.languageSemantics);
     }
     if (!hasClosedFields(value, fields, required) || predecessor && !BINDING_MODES.has(value.bindingMode) || value.version >= 4 && !isValidBindingPolicy(value.bindingPolicy) || value.version >= 4 && !isValidModuleSemantics(value.moduleSemantics, value.version) || value.version >= VERSIONED_BINDING_REUSE_JOURNAL_VERSION && !USER_BINDINGS_REUSE_POLICIES.has(value.userBindingsReusePolicy) || value.version >= 5 && value.userBindingsFingerprint !== null && (typeof value.userBindingsFingerprint !== "string" || !/^[a-f0-9]{64}$/.test(value.userBindingsFingerprint)) || value.version !== 1 && !isValidRewritePolicy(value.rewritePolicy) || !Array.isArray(value.calls) || !value.calls.every(isValidCall) || !Array.isArray(value.operations) || !value.operations.every(isValidOperation) || !isValidConfirms(value.confirms, value.version) || !Array.isArray(value.diagnostics) || !value.diagnostics.every(isValidDiagnostic)) return false;
     const settlementOrder = value.calls.map((call) => call.settle).sort((left, right) => left - right);
@@ -2565,14 +2616,193 @@
     return { ReplComposer, ReplConsole, ReplMemoryCard, replPopoverIsOpen, placeReplPopover };
   }
 
+  // internal/compiler-descriptors.js
+  function createCompilerDescriptors(object, reflect) {
+    const define = object.defineProperty, defineMany = object.defineProperties;
+    const ownKeys2 = reflect.ownKeys, ownField = object.getOwnPropertyDescriptor;
+    const reflectDefine = reflect.defineProperty;
+    const descriptor = (fields) => ({ __proto__: null, ...fields });
+    const ownedObject = function(value) {
+      return object(value);
+    };
+    const names = object.getOwnPropertyNames(object);
+    for (let index = 0; index < names.length; index++) {
+      const name2 = names[index];
+      if (name2 !== "name" && name2 !== "length" && name2 !== "prototype") {
+        define(ownedObject, name2, descriptor(ownField(object, name2)));
+      }
+    }
+    const operations = {
+      Object: ownedObject,
+      descriptor,
+      getOwnPropertyDescriptor(target, key) {
+        const fields = ownField(target, key);
+        return fields === void 0 ? void 0 : descriptor(fields);
+      },
+      defineProperty: (target, key, fields) => define(target, key, descriptor(fields)),
+      reflectDefineProperty: (target, key, fields) => reflectDefine(target, key, descriptor(fields)),
+      // Rehomed compiler data always writes an owned data field. The null
+      // prototype still keeps native descriptor conversion from reaching an
+      // inherited field, and this writer reaches it without the intermediate
+      // own-field descriptor the generic path copies for every property.
+      defineDataProperty(target, key, value, enumerable2) {
+        const fields = { __proto__: null };
+        fields.value = value;
+        fields.enumerable = enumerable2;
+        fields.writable = true;
+        fields.configurable = true;
+        return define(target, key, fields);
+      },
+      defineProperties(target, fields) {
+        const table = { __proto__: null }, keys2 = ownKeys2(fields);
+        for (let index = 0; index < keys2.length; index++) {
+          const key = keys2[index];
+          if (ownField(fields, key).enumerable) table[key] = descriptor(fields[key]);
+        }
+        return defineMany(target, table);
+      }
+    };
+    ownedObject.defineProperty = operations.defineProperty;
+    ownedObject.defineProperties = operations.defineProperties;
+    ownedObject.getOwnPropertyDescriptor = operations.getOwnPropertyDescriptor;
+    return operations;
+  }
+  var compilerDescriptorSource = Function.prototype.toString.call(createCompilerDescriptors);
+  var compilerDescriptors = createCompilerDescriptors(Object, Reflect);
+
+  // internal/runtime-intrinsics.js
+  var uncurry2 = Function.prototype.bind.bind(Function.prototype.call);
+  var mapKeys = uncurry2(Map.prototype.keys);
+  var mapIteratorNext = uncurry2(Object.getPrototypeOf((/* @__PURE__ */ new Map()).keys()).next);
+  var weakMapGet = uncurry2(WeakMap.prototype.get);
+  var weakMapSet = uncurry2(WeakMap.prototype.set);
+  function appendArray(target, value) {
+    compilerDescriptors.defineProperty(
+      target,
+      target.length,
+      { value, writable: true, enumerable: true, configurable: true }
+    );
+    return target;
+  }
+  function copyArray(source, start = 0, end = source.length, target = []) {
+    for (let index = start; index < end; index++) appendArray(target, source[index]);
+    return target;
+  }
+  var runtimeIntrinsics = {
+    Object: compilerDescriptors.Object,
+    Reflect: {
+      apply: Reflect.apply,
+      construct: Reflect.construct,
+      deleteProperty: Reflect.deleteProperty,
+      defineProperty: compilerDescriptors.reflectDefineProperty,
+      has: Reflect.has,
+      ownKeys: Reflect.ownKeys
+    },
+    Error,
+    TypeError,
+    Array,
+    Map,
+    Set,
+    WeakMap,
+    WeakSet,
+    RegExp,
+    Proxy,
+    objectCreate: Object.create,
+    objectDefineProperty: Object.defineProperty,
+    objectEntries: Object.entries,
+    objectFreeze: Object.freeze,
+    objectGetOwnPropertyDescriptor: Object.getOwnPropertyDescriptor,
+    objectGetPrototypeOf: Object.getPrototypeOf,
+    objectHasOwn: Object.hasOwn,
+    objectIs: Object.is,
+    objectKeys: Object.keys,
+    objectPropertyIsEnumerable: uncurry2(Object.prototype.propertyIsEnumerable),
+    reflectOwnKeys: Reflect.ownKeys,
+    numberIsFinite: Number.isFinite,
+    numberIsNaN: Number.isNaN,
+    numberIsSafeInteger: Number.isSafeInteger,
+    toBigInt: BigInt,
+    toNumber: Number,
+    toString: String,
+    mapGet: uncurry2(Map.prototype.get),
+    mapHas: uncurry2(Map.prototype.has),
+    mapSet: uncurry2(Map.prototype.set),
+    mapDelete: uncurry2(Map.prototype.delete),
+    mapClear: uncurry2(Map.prototype.clear),
+    mapSize: uncurry2(Object.getOwnPropertyDescriptor(Map.prototype, "size").get),
+    mapFirstKey: (value) => mapIteratorNext(mapKeys(value)).value,
+    mapForEach: uncurry2(Map.prototype.forEach),
+    setHas: uncurry2(Set.prototype.has),
+    setAdd: uncurry2(Set.prototype.add),
+    setDelete: uncurry2(Set.prototype.delete),
+    setClear: uncurry2(Set.prototype.clear),
+    setSize: uncurry2(Object.getOwnPropertyDescriptor(Set.prototype, "size").get),
+    setForEach: uncurry2(Set.prototype.forEach),
+    weakMapHas: uncurry2(WeakMap.prototype.has),
+    weakMapGet,
+    weakMapSet,
+    weakSetHas: uncurry2(WeakSet.prototype.has),
+    weakSetAdd: uncurry2(WeakSet.prototype.add),
+    isArray: Array.isArray,
+    everyArray: uncurry2(Array.prototype.every),
+    includes: uncurry2(Array.prototype.includes),
+    join: uncurry2(Array.prototype.join),
+    popArray: uncurry2(Array.prototype.pop),
+    prependArray: uncurry2(Array.prototype.unshift),
+    someArray: uncurry2(Array.prototype.some),
+    sliceString: uncurry2(String.prototype.slice),
+    splitString: uncurry2(String.prototype.split),
+    searchString: uncurry2(String.prototype.search),
+    replaceString: uncurry2(String.prototype.replace),
+    trimString: uncurry2(String.prototype.trim),
+    replaceAllString: uncurry2(String.prototype.replaceAll),
+    includesString: uncurry2(String.prototype.includes),
+    startsWith: uncurry2(String.prototype.startsWith),
+    endsWith: uncurry2(String.prototype.endsWith),
+    regexpExec: uncurry2(RegExp.prototype.exec),
+    regexpTest: uncurry2(RegExp.prototype.test),
+    floor: Math.floor,
+    min: Math.min,
+    max: Math.max,
+    appendArray,
+    copyArray,
+    sort: uncurry2(Array.prototype.sort),
+    compare: uncurry2(String.prototype.localeCompare)
+  };
+  if (typeof Buffer === "function") {
+    runtimeIntrinsics.bufferByteLength = Buffer.byteLength;
+    runtimeIntrinsics.bufferIsBuffer = Buffer.isBuffer;
+    runtimeIntrinsics.bufferSubarray = uncurry2(Buffer.prototype.subarray);
+    runtimeIntrinsics.bufferToString = uncurry2(Buffer.prototype.toString);
+  }
+
   // internal/record-utils.js
+  var {
+    TypeError: TypeError2,
+    isArray: isArray2,
+    reflectOwnKeys,
+    objectGetOwnPropertyDescriptor,
+    objectHasOwn,
+    objectPropertyIsEnumerable,
+    objectFreeze,
+    trimString,
+    toString: toString2,
+    Set: Set2,
+    setHas: setHas2,
+    setAdd: setAdd2,
+    setSize,
+    appendArray: appendArray2,
+    popArray
+  } = runtimeIntrinsics;
   function isRecord2(value) {
-    return value !== null && typeof value === "object" && !Array.isArray(value);
+    return value !== null && typeof value === "object" && !isArray2(value);
   }
   function assertOwnFields(value, allowed, label) {
-    for (const key of Reflect.ownKeys(value)) {
-      if (typeof key !== "string" || !allowed.has(key) || !Object.prototype.propertyIsEnumerable.call(value, key)) {
-        throw new TypeError(`invalid ${label} field ${String(key)}`);
+    const keys2 = reflectOwnKeys(value);
+    for (let index = 0; index < keys2.length; index += 1) {
+      const key = keys2[index];
+      if (typeof key !== "string" || !setHas2(allowed, key) || !objectPropertyIsEnumerable(value, key)) {
+        throw new TypeError2(`invalid ${label} field ${toString2(key)}`);
       }
     }
   }
@@ -6749,11 +6979,11 @@
     `Y`.)
     */
     update(updateSpec) {
-      let { add: add2 = [], sort = false, filterFrom = 0, filterTo = this.length } = updateSpec;
+      let { add: add2 = [], sort: sort2 = false, filterFrom = 0, filterTo = this.length } = updateSpec;
       let filter = updateSpec.filter;
       if (add2.length == 0 && !filter)
         return this;
-      if (sort)
+      if (sort2)
         add2 = add2.slice().sort(cmpRange);
       if (this.isEmpty)
         return add2.length ? _RangeSet.of(add2) : this;
@@ -6919,9 +7149,9 @@
     `value.startSide`). You can pass `true` as second argument to
     cause the method to sort them.
     */
-    static of(ranges, sort = false) {
+    static of(ranges, sort2 = false) {
       let build = new RangeSetBuilder();
-      for (let range of ranges instanceof Range ? [ranges] : sort ? lazySort(ranges) : ranges)
+      for (let range of ranges instanceof Range ? [ranges] : sort2 ? lazySort(ranges) : ranges)
         build.add(range.from, range.to, range.value);
       return build.finish();
     }
@@ -7938,8 +8168,8 @@
     decorated range or ranges. If the ranges aren't already sorted,
     pass `true` for `sort` to make the library sort them for you.
     */
-    static set(of, sort = false) {
-      return RangeSet.of(of, sort);
+    static set(of, sort2 = false) {
+      return RangeSet.of(of, sort2);
     }
     /**
     @internal
@@ -8045,8 +8275,8 @@
     /**
     Create a range set from the given block wrapper ranges.
     */
-    static set(of, sort = false) {
-      return RangeSet.of(of, sort);
+    static set(of, sort2 = false) {
+      return RangeSet.of(of, sort2);
     }
   };
   BlockWrapper.prototype.startSide = BlockWrapper.prototype.endSide = -1;

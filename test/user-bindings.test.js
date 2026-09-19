@@ -2,7 +2,9 @@ import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import test from 'node:test'
 import { parse } from '@babel/parser'
-import { LEGACY_USER_BINDING_TRANSFORM, USER_BINDING_TRANSFORM } from '../internal/typescript-transform.js'
+import ts from 'typescript'
+import { LEGACY_USER_BINDING_TRANSFORM, PREVIOUS_USER_BINDING_TRANSFORM,
+  USER_BINDING_TRANSFORM } from '../internal/typescript-transform.js'
 import {
   USER_BINDINGS_META_KEY,
   createUserBindingsSnapshot,
@@ -101,6 +103,25 @@ test('known historical binding transforms validate with their original generatio
   assert.deepEqual(normalizeUserBindingsSnapshot(snapshot), snapshot)
   assert.equal(selectUserBindingsSnapshot(snapshot, ['helpers']).transform, transform)
   assert.throws(() => normalizeUserBindingEntry(entry({ source: 'export const value = 1; export const value = 2' }), { transform }), /parsed/)
+
+  const previous = normalizeUserBindingEntry(entry({
+    source: 'interface Options { value: string } export class Box { constructor(public value: Options) {} }',
+  }), { transform: PREVIOUS_USER_BINDING_TRANSFORM })
+  assert.match(previous.declaration, /new\(value: unknown\): \{  \}/)
+  assert.doesNotMatch(previous.declaration, /interface Options|value: Options/)
+  const previousRevision = 8
+  const previousSnapshot = {
+    version: 2,
+    transform: PREVIOUS_USER_BINDING_TRANSFORM,
+    revision: previousRevision,
+    entries: [previous],
+    fingerprint: createHash('sha256').update(JSON.stringify({
+      revision: previousRevision,
+      entries: [previous.fingerprint],
+      transform: PREVIOUS_USER_BINDING_TRANSFORM,
+    })).digest('hex'),
+  }
+  assert.deepEqual(normalizeUserBindingsSnapshot(previousSnapshot), previousSnapshot)
 })
 
 test('binding durability reflects source effects across both module transforms', () => {
@@ -153,7 +174,7 @@ test('derives bounded namespace and top-level declarations from named value expo
   assert.match(namespace.declaration, /Add two values/)
   assert.match(namespace.declaration, /add\(left: number, right: number\): number/)
   assert.match(namespace.declaration, /later\(value\?: unknown\): Promise<unknown>/)
-  assert.match(namespace.declaration, /new\(value: number\): \{ increment\(by: number\): number \}/)
+  assert.match(namespace.declaration, /new\(value: number\): \{ value: number; increment\(by: number\): number \}/)
   assert.doesNotMatch(namespace.declaration, /hidden|return left|this\.value/)
   assert.equal(namespace.bindings[0].name, 'helpers')
 
@@ -192,7 +213,188 @@ export const dynamic = { [String('x')]: 1 }
   assert.match(inferred.declaration, /dynamic: Record<string, unknown>/)
 })
 
-test('keeps generic declarations scoped and degrades source-local type references', () => {
+test('binding declarations preserve ambient types and publish referenced local type closures', () => {
+  const http = normalizeUserBindingEntry(entry({
+    id: 'http-tools',
+    name: 'httpTools',
+    source: `
+interface HttpOptions {
+  method?: string
+  signal?: AbortSignal
+  headers?: Headers
+}
+type HttpResponse<T> = { status: number; value: T }
+export async function request<T = unknown>(url: URL, options?: HttpOptions): Promise<HttpResponse<T>> {
+  return { status: 200, value: undefined as T }
+}
+`,
+  }))
+  assert.match(http.declaration, /signal\?: AbortSignal/)
+  assert.match(http.declaration, /headers\?: Headers/)
+  assert.match(http.declaration, /url: URL/)
+  assert.match(http.declaration, /export interface HttpOptions/)
+  assert.match(http.declaration, /export type HttpResponse<T>/)
+  assert.match(http.declaration, /options\?: __ptcBinding_[a-f0-9]{12}\.HttpOptions/)
+  assert.match(http.declaration, /Promise<__ptcBinding_[a-f0-9]{12}\.HttpResponse<T>>/)
+  assert.doesNotThrow(() => parse(http.declaration, { sourceType: 'module', plugins: ['typescript'] }))
+
+  const other = normalizeUserBindingEntry(entry({
+    id: 'other-tools',
+    name: 'otherTools',
+    source: 'interface HttpOptions { retry: boolean } export function use(value: HttpOptions): boolean { return value.retry }',
+  }))
+  const combined = userBindingsDeclaration(createUserBindingsSnapshot({ entries: [
+    { ...entry({ id: 'http-tools', name: 'httpTools', source: http.source }) },
+    { ...entry({ id: 'other-tools', name: 'otherTools', source: other.source }) },
+  ] }))
+  const namespaces = [...combined.matchAll(/declare namespace (__ptcBinding_[a-f0-9]{12})/g)].map(match => match[1])
+  assert.equal(new Set(namespaces).size, 2)
+  assert.doesNotThrow(() => parse(combined, { sourceType: 'module', plugins: ['typescript'] }))
+
+  assert.throws(() => normalizeUserBindingEntry(entry({
+    source: "import type { Stats } from 'node:fs'; export function inspect(value: Stats): string { return String(value.size) }",
+  })), /imported type "Stats" cannot be represented/)
+})
+
+test('binding declaration namespace markers cannot rewrite user-authored type text', () => {
+  const normalized = normalizeUserBindingEntry(entry({
+    source: `
+type MarkerLiteral = "__ptcBindingTypes"
+interface Options {
+  "__ptcBindingTypes": MarkerLiteral
+}
+export function inspect(value: Options): MarkerLiteral { return value.__ptcBindingTypes }
+`,
+  }))
+  assert.match(normalized.declaration, /"__ptcBindingTypes":/)
+  assert.match(normalized.declaration, /= "__ptcBindingTypes"/)
+  assert.match(normalized.declaration, /inspect\(value: __ptcBinding_[a-f0-9]{12}\.Options\): __ptcBinding_[a-f0-9]{12}\.MarkerLiteral/)
+  assert.doesNotThrow(() => parse(normalized.declaration, { sourceType: 'module', plugins: ['typescript'] }))
+})
+
+test('binding declarations qualify representable local value queries and reject incomplete ones', () => {
+  const normalized = normalizeUserBindingEntry(entry({
+    source: `
+class Model { value: number = 1 }
+export const ModelClass: typeof Model = Model
+enum Choice { First, Second }
+export const Selected: typeof Choice.First = Choice.First
+`,
+  }))
+  assert.match(normalized.declaration, /export class Model/)
+  assert.match(normalized.declaration, /ModelClass: typeof __ptcBinding_[a-f0-9]{12}\.Model/)
+  assert.match(normalized.declaration, /export enum Choice/)
+  assert.match(normalized.declaration, /Selected: typeof __ptcBinding_[a-f0-9]{12}\.Choice\.First/)
+  assert.doesNotThrow(() => parse(normalized.declaration, { sourceType: 'module', plugins: ['typescript'] }))
+
+  assert.throws(() => normalizeUserBindingEntry(entry({
+    source: 'function local(value: number): number { return value }; export const callback: typeof local = local',
+  })), /local value query "local" cannot be represented/)
+})
+
+test('binding class projections include public fields and constructor parameter properties', () => {
+  const normalized = normalizeUserBindingEntry(entry({
+    source: `
+export class HttpError extends Error {
+  readonly status: number
+  readonly url: string
+  optional?: boolean
+  static category = 'http'
+  private secret: string
+  protected internal: number
+  constructor(status: number, public readonly body: string, private token: string) {
+    super('http')
+    this.status = status
+    this.url = ''
+    this.secret = token
+    this.internal = 1
+  }
+  describe(): string { return this.body }
+}
+`,
+  }))
+  assert.match(normalized.declaration, /readonly status: number/)
+  assert.match(normalized.declaration, /readonly url: string/)
+  assert.match(normalized.declaration, /optional\?: boolean/)
+  assert.match(normalized.declaration, /readonly body: string/)
+  assert.match(normalized.declaration, /new\(status: number, body: string, token: string\)/)
+  assert.match(normalized.declaration, /describe\(\): string/)
+  assert.doesNotMatch(normalized.declaration, /category|secret|internal/)
+  assert.equal((normalized.declaration.match(/readonly body: string/g) ?? []).length, 1)
+  assert.doesNotThrow(() => parse(normalized.declaration, { sourceType: 'module', plugins: ['typescript'] }))
+})
+
+test('binding class projections retain public abstract methods and accessors', () => {
+  const normalized = normalizeUserBindingEntry(entry({
+    source: `
+interface Input { value: string }
+interface Result { ok: boolean }
+export abstract class Service {
+  abstract read(input: Input): Result
+  abstract optional?(input: Input): Result
+  abstract get status(): Result
+  abstract set status(value: Result)
+  get label(): string { return '' }
+  set label(value: string | URL) {}
+  protected abstract hidden(): void
+  static create(): Service { throw new Error() }
+}
+`,
+  }))
+  assert.match(normalized.declaration, /read\(input: __ptcBinding_[a-f0-9]{12}\.Input\): __ptcBinding_[a-f0-9]{12}\.Result/)
+  assert.match(normalized.declaration, /optional\?\(input: __ptcBinding_[a-f0-9]{12}\.Input\): __ptcBinding_[a-f0-9]{12}\.Result/)
+  assert.match(normalized.declaration, /get status\(\): __ptcBinding_[a-f0-9]{12}\.Result/)
+  assert.match(normalized.declaration, /set status\(value: __ptcBinding_[a-f0-9]{12}\.Result\)/)
+  assert.match(normalized.declaration, /get label\(\): string/)
+  assert.match(normalized.declaration, /set label\(value: string \| URL\)/)
+  assert.doesNotMatch(normalized.declaration, /hidden|create/)
+  assert.doesNotThrow(() => parse(normalized.declaration, { sourceType: 'module', plugins: ['typescript'] }))
+})
+
+test('binding class projections retain heritage and abstract construction semantics', () => {
+  const normalized = normalizeUserBindingEntry(entry({
+    source: `
+class Root<T> { root(value: T): T { return value } }
+abstract class Base<T> extends Root<T> { abstract read(): T }
+export abstract class Service extends Base<string> { abstract write(value: string): void }
+export class HttpFailure extends Error { readonly status: number = 500 }
+`,
+  }))
+  const namespace = normalized.declaration.match(/declare namespace (__ptcBinding_[a-f0-9]{12})/)?.[1]
+  assert.ok(namespace)
+  assert.match(normalized.declaration, /export class Root<T>/)
+  assert.match(normalized.declaration, new RegExp(`export abstract class Base<T> extends ${namespace}\\.Root<T>`))
+  assert.match(normalized.declaration, new RegExp(`Service: abstract new\\(\\.\\.\\.args: unknown\\[\\]\\) => ${namespace}\\.Base<string>`))
+  assert.match(normalized.declaration, /HttpFailure: \{ new\(\.\.\.args: unknown\[\]\): Error & \{ readonly status: number \} \}/)
+
+  const fileName = 'binding-interface.d.ts'
+  const options = { noEmit: true, strict: true, target: ts.ScriptTarget.ESNext }
+  const host = ts.createCompilerHost(options)
+  const originalGetSourceFile = host.getSourceFile.bind(host)
+  host.getSourceFile = (requested, languageVersion, onError, shouldCreateNewSourceFile) => requested === fileName
+    ? ts.createSourceFile(fileName, normalized.declaration, languageVersion, true, ts.ScriptKind.TS)
+    : originalGetSourceFile(requested, languageVersion, onError, shouldCreateNewSourceFile)
+  host.fileExists = requested => requested === fileName || ts.sys.fileExists(requested)
+  host.readFile = requested => requested === fileName ? normalized.declaration : ts.sys.readFile(requested)
+  const diagnostics = ts.getPreEmitDiagnostics(ts.createProgram([fileName], options, host))
+    .filter(diagnostic => diagnostic.file?.fileName === fileName)
+  assert.deepEqual(diagnostics.map(diagnostic => ts.flattenDiagnosticMessageText(diagnostic.messageText, '\n')), [])
+
+  assert.throws(() => normalizeUserBindingEntry(entry({
+    source: "import { EventEmitter } from 'node:events'; export class Events extends EventEmitter {}",
+  })), /imported class "EventEmitter" cannot be represented/)
+  assert.throws(() => normalizeUserBindingEntry(entry({
+    source: 'const createBase = () => class {}; export class Value extends createBase() {}',
+  })), /class heritage cannot be represented/)
+  assert.throws(() => normalizeUserBindingEntry(entry({
+    source: 'enum Base { Value }; export class Derived extends Base {}',
+  })), /local class base "Base" cannot be represented/)
+  assert.throws(() => normalizeUserBindingEntry(entry({
+    source: 'const Base = class {}; export class Derived extends Base {}',
+  })), /local class base "Base" cannot be represented/)
+})
+
+test('keeps generic declarations scoped and qualifies source-local type references', () => {
   const namespace = normalizeUserBindingEntry(entry({
     id: 'generic-namespace',
     name: 'genericHelpers',
@@ -217,14 +419,15 @@ test('keeps generic declarations scoped and degrades source-local type reference
     ].join('\n'),
   }))
   assert.match(namespace.declaration, /identity<T>\(value: T\): T/)
-  assert.match(namespace.declaration, /configure<T extends unknown>\(value: T\): unknown/)
-  assert.match(namespace.declaration, /combine\(left: unknown, right: unknown\): \[unknown, unknown\]/)
+  assert.match(namespace.declaration, /export type PrivateOptions = \{ prefix: string \}/)
+  assert.match(namespace.declaration, /export interface PrivateResult \{ value: string \}/)
+  assert.match(namespace.declaration, /configure<T extends __ptcBinding_[a-f0-9]{12}\.PrivateOptions>\(value: T\): __ptcBinding_[a-f0-9]{12}\.PrivateResult/)
+  assert.match(namespace.declaration, /combine\(left: __ptcBinding_[a-f0-9]{12}\.PrivateOptions, right: __ptcBinding_[a-f0-9]{12}\.PrivateResult\)/)
   assert.match(namespace.declaration, /clone<T>\(value: T\): \{ \[K in keyof T\]: T\[K\] \}/)
-  assert.match(namespace.declaration, /unwrap<T>\(value: T\): T extends Promise<infer U> \? unknown : T/)
-  assert.match(namespace.declaration, /imported: unknown/)
-  assert.match(namespace.declaration, /math: unknown/)
-  assert.match(namespace.declaration, /new<T>\(value: T\): \{ map<U>\(project: \(value: T\) => U\): unknown \}/)
-  assert.doesNotMatch(namespace.declaration, /PrivateOptions|PrivateResult|Box<U>/)
+  assert.match(namespace.declaration, /unwrap<T>\(value: T\): T extends Promise<infer U> \? U : T/)
+  assert.match(namespace.declaration, /imported: import\('node:path'\)\.PlatformPath/)
+  assert.match(namespace.declaration, /math: typeof Math/)
+  assert.match(namespace.declaration, /new<T>\(value: T\): \{ value: T; map<U>\(project: \(value: T\) => U\): __ptcBinding_[a-f0-9]{12}\.Box<U> \}/)
   assert.doesNotThrow(() => parse(namespace.declaration, {
     sourceType: 'module',
     plugins: ['typescript'],
@@ -244,15 +447,16 @@ test('keeps generic declarations scoped and degrades source-local type reference
     ].join('\n'),
   }))
   assert.match(topLevel.declaration, /declare const transform: <T>\(value: T\) => T/)
-  assert.match(topLevel.declaration, /declare class Holder<T extends unknown>/)
+  assert.match(topLevel.declaration, /export type Hidden = \{ value: string \}/)
+  assert.match(topLevel.declaration, /declare class Holder<T extends __ptcBinding_[a-f0-9]{12}\.Hidden>/)
+  assert.match(topLevel.declaration, /value: T/)
   assert.match(topLevel.declaration, /read\(\): T/)
-  assert.doesNotMatch(topLevel.declaration, /Hidden/)
   assert.doesNotThrow(() => parse(topLevel.declaration, {
     sourceType: 'module',
     plugins: ['typescript'],
   }))
 
-  const shadowedGlobals = normalizeUserBindingEntry(entry({
+  assert.throws(() => normalizeUserBindingEntry(entry({
     id: 'shadowed-global-types',
     name: 'shadowedGlobalTypes',
     source: [
@@ -266,11 +470,24 @@ test('keeps generic declarations scoped and degrades source-local type reference
       'export function imported(value: Array): Array { return value }',
       'export function preserve<Promise>(value: Promise): Promise { return value }',
     ].join('\n'),
+  })), /imported type "Array" cannot be represented/)
+
+  const shadowedGlobals = normalizeUserBindingEntry(entry({
+    id: 'local-shadowed-global-types',
+    name: 'localShadowedGlobalTypes',
+    source: [
+      'type Promise<T> = { localPromise: T }',
+      'interface Record<K, V> { localRecord: [K, V] }',
+      'class Map<K, V> {}',
+      'export function inspect(value: Promise<string>): Record<string, Map<string, number>> {',
+      '  return value as never',
+      '}',
+      'export function preserve<Promise>(value: Promise): Promise { return value }',
+    ].join('\n'),
   }))
-  assert.match(shadowedGlobals.declaration, /inspect\(value: unknown\): unknown/)
-  assert.match(shadowedGlobals.declaration, /imported\(value: unknown\): unknown/)
+  assert.match(shadowedGlobals.declaration, /localPromise: T/)
+  assert.match(shadowedGlobals.declaration, /localRecord: \[K, V\]/)
   assert.match(shadowedGlobals.declaration, /preserve<Promise>\(value: Promise\): Promise/)
-  assert.doesNotMatch(shadowedGlobals.declaration, /localPromise|localRecord/)
 })
 
 test('removes source comments from model-visible type annotations', () => {

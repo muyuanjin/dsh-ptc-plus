@@ -31,7 +31,7 @@ The Client root requires `settingsScope`, `slots`, `locale`, and `connection`. C
 Use this form after the selected version is available from the npm registry:
 
 ```sh
-dsh plugin --profile <profile> add dsh-ptc-plus@0.4.1
+dsh plugin --profile <profile> add dsh-ptc-plus@0.4.2
 dsh --profile <profile> --dump-config
 ```
 
@@ -68,7 +68,7 @@ pnpm dsh --profile <profile> --dump-config
 
 ```sh
 npm pack
-dsh plugin --profile <profile> add /absolute/path/to/dsh-ptc-plus-0.4.1.tgz
+dsh plugin --profile <profile> add /absolute/path/to/dsh-ptc-plus-0.4.2.tgz
 dsh --profile <profile> --dump-config
 ```
 
@@ -89,7 +89,7 @@ On Windows, `--browser-channel msedge` can use the existing Edge installation. T
 
 ## Isolated latest-DSH development launcher
 
-To test this checkout in a separate DSH installation, double-click `scripts\run-dev-dsh.cmd`. It resolves the newest published DSH release by semantic version over all published versions, prereleases included, rather than following a dist-tag that a release can leave behind; it installs that exact version only when the cached version changes, creates the shipped `web` profile inside an isolated `DSH_HOME`, installs this checkout, and starts DSH. If no port is supplied, it selects a free loopback port automatically, so another DSH on port 3080 does not block the test instance. The launcher does not modify the repository or your normal DSH home.
+To test this checkout in a separate DSH installation, double-click `scripts\run-dev-dsh.cmd`. It resolves the newest published DSH release by semantic version over all published versions, prereleases included, rather than following a dist-tag that a release can leave behind; it installs that exact version only when the cached version changes, creates the shipped `web` profile inside an isolated `DSH_HOME`, installs this checkout, and starts DSH. When no port is supplied, the default Web profile reuses its cached loopback port while that port is available; an invalid cache entry or occupied port is replaced with a free port. This keeps browser authentication stable across ordinary restarts without blocking another DSH on port 3080. The launched Host receives a 64 KiB HTTP request-header limit while retaining existing Node options to accommodate development authentication cookies and the combined Client plugin request during Web boot. The launcher does not modify the repository or your normal DSH home.
 
 The launcher defaults to `https://registry.npmjs.org/` for version queries, npm installs and DSH's pnpm subprocesses, including the `@deepseek-ai` scope. This avoids mirror synchronization gaps where a new DSH package is available before its dependencies. It prints the selected registry and refreshes version metadata online; an unavailable version query can still reuse the previously cached version. Set `DSH_DEV_REGISTRY` to an absolute HTTP(S) registry URL to select another source explicitly. The choice applies only to the launcher process and its children; npm configuration files and persistent environment settings are unchanged. Other explicitly configured package scopes retain their own registries.
 
@@ -106,7 +106,7 @@ dsh plugin add github:muyuanjin/dsh-ptc-plus#main
 dsh --dump-config
 ```
 
-After an npm release, the package spec may instead be `dsh-ptc-plus@0.4.1`. For a local package, use its absolute tarball path. Restart DSH Desktop after installation. Linux Desktop is not a current DSH Desktop release target; use DSH CLI/Web on Linux.
+After an npm release, the package spec may instead be `dsh-ptc-plus@0.4.2`. For a local package, use its absolute tarball path. Restart DSH Desktop after installation. Linux Desktop is not a current DSH Desktop release target; use DSH CLI/Web on Linux.
 
 ## Session format upgrades
 

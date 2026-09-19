@@ -14,7 +14,7 @@ export { commonJsExportEvidence, linkCommonJsEvidenceSource } from './commonjs-s
 import { COMMONJS_PARAMETERS } from './compiler-scope-facts.js'
 import {
   LEGACY_USER_BINDING_TRANSFORM, USER_BINDING_TRANSFORM, PROTECTED_MODULE_TRANSFORM,
-  supportedUserBindingTransform, transformTypeScriptSource,
+  isStatefulUserBindingTransform, supportedUserBindingTransform, transformTypeScriptSource,
 } from './typescript-transform.js'
 
 const topLevelRegion = region => region.kind === 'program' || region.top === true
@@ -162,7 +162,7 @@ function commonJsBodyRange(source) {
 
 /** Module activations share lexical updates while retaining the native linker. */
 export function compileStatefulModule(source, {
-  transform = USER_BINDING_TRANSFORM, target = 'module', url, nativeUsing,
+  transform = USER_BINDING_TRANSFORM, target = 'module', url, nativeUsing, programBindings = false,
 } = {}) {
   if (transform !== PROTECTED_MODULE_TRANSFORM && !supportedUserBindingTransform(transform)) {
     throw new TypeError('user binding snapshot cannot prove its historical TypeScript transform')
@@ -188,14 +188,14 @@ export function compileStatefulModule(source, {
     nativeJavaScript = marked.nativeJavaScript
     mapped = marked
     if (!nativeJavaScript) mapped = normalizeTypeScriptValues(mapped.code, mapped.sourceMap, target)
-    if (target !== 'commonjs' && (transform === USER_BINDING_TRANSFORM
+    if (target !== 'commonjs' && (isStatefulUserBindingTransform(transform)
       || transform === PROTECTED_MODULE_TRANSFORM && hasModuleResources(mapped.code))) {
       mapped = normalizeModuleExports(mapped.code, mapped.sourceMap)
     }
   }
   const commonJsSource = target === 'commonjs'
     ? commonJsExportEvidence(mapped.code, { legacy: transform === LEGACY_USER_BINDING_TRANSFORM }) : undefined
-  const links = transform === USER_BINDING_TRANSFORM && target === 'module'
+  const links = isStatefulUserBindingTransform(transform) && target === 'module'
     ? moduleLinkPlan(mapped.code) : undefined
   let normalized = transform === LEGACY_USER_BINDING_TRANSFORM ? mapped
     : normalizeStatefulScopes(mapped.code, mapped.sourceMap, { target, moduleImport: links?.reader, nativeJavaScript, nativeUsing,
@@ -222,6 +222,7 @@ export function compileStatefulModule(source, {
     sourceRegions: normalized.sourceRegions,
     callableCollector: createRegionCallableCollector(callableSources),
     module: true, compactOutput: true, importOperation: normalized.importOperation, sourceType, originalSource: source,
+    logicalRoots: programBindings,
     bindings: normalized.dynamicBindings, privateBindings: normalized.privateBindings,
     internalBindings: normalized.internalBindings, parserPlugins: CELL_PARSER_PLUGINS,
   }) }

@@ -240,4 +240,9 @@ return {
     ],
     domain: 'pong',
   })
+  const shortcuts = await state.execute(
+    'return [typeof worker_threads, typeof child_process, typeof fs, typeof module]',
+    {}, 'no-repl-module-shortcuts', bindings,
+  )
+  assert.deepEqual(shortcuts.raw.value, ['undefined', 'undefined', 'undefined', 'undefined'])
 })

@@ -713,6 +713,7 @@ export class SessionRuntime {
       policies.bindingPolicy,
       policies.rewritesEnabled,
       policies.languageSemantics,
+      policies.moduleTransform,
     )
     const workerReservation = kernel.reserveWorkerConfiguration(cellConfig)
     let result

@@ -17,7 +17,7 @@ import {
   renderDurabilityReason,
   renderDurabilityReasons,
 } from './module-policy.js'
-import { applySourceEdits, mapSourcePosition, mapSourceSpan } from './source-position-map.js'
+import { applySourceEdits, mapSourcePosition, mapSourceSpan, sourceRangeHasOriginalText } from './source-position-map.js'
 import { SKIP_AST_CHILDREN, walkAst } from './ast-traversal.js'
 import { compileStatefulRoot } from './stateful-root-compiler.js'
 import { CELL_PARSER_PLUGINS, bindCompilerIntrinsics, lowerStatefulDecorators, lowerStatefulResources, lowerNativeLanguageSource, normalizeStatefulScopes } from './repl-scope-normalizer.js'
@@ -240,7 +240,9 @@ function staticModuleClassification(moduleLoads) {
 }
 
 /** Conservatively classify a cell before giving it non-journalable capability. */
-export function classifyDurability(code, knownBindings = new Set(), { sourceType = 'script', internalModules = new Set() } = {}) {
+export function classifyDurability(code, knownBindings = new Set(), {
+  sourceType = 'script', internalModules = new Set(), sourceMap = undefined, originalSource = undefined,
+} = {}) {
   let body
   let moduleLoads = []
   if (sourceType === 'module') {
@@ -297,11 +299,12 @@ export function classifyDurability(code, knownBindings = new Set(), { sourceType
     }
     return false
   }
-  walkAst(body, (node, parent, parentKey, { scopes, strict }) => {
+  walkAst(body, (node, parent, parentKey, { scopes, strict, thisIsGlobal }) => {
     let nestedScopes = scopes
     if (isFunction(node)) {
       strict ||= hasStrictDirective(node.body)
       nestedScopes = [...scopes, functionParameterBindings(node)]
+      if (node.type !== 'ArrowFunctionExpression') thisIsGlobal = false
     } else if (node.type === 'BlockStatement' && node !== body) {
       const names = directBlockBindings(node.body)
       if (isFunction(parent)) addFunctionVariables(node, names, strict)
@@ -325,6 +328,11 @@ export function classifyDurability(code, knownBindings = new Set(), { sourceType
     }
     if (node.type === 'ImportExpression') {
       classifyModule(node.source)
+    }
+    const sourceOwnedThis = sourceMap === undefined
+      || sourceRangeHasOriginalText(sourceMap, code, originalSource, node.start, node.end)
+    if (node.type === 'ThisExpression' && thisIsGlobal && sourceOwnedThis) {
+      addReason(Object.freeze({ kind: 'ambient', name: 'globalThis' }))
     }
     if (node.type === 'CallExpression' && node.callee?.type === 'Identifier' && node.callee.name === 'require'
       && !isBound('require', nestedScopes)) {
@@ -367,8 +375,8 @@ export function classifyDurability(code, knownBindings = new Set(), { sourceType
         addReason(Object.freeze({ kind: 'ambient', name: 'Math' }))
       }
     }
-    return { scopes: nestedScopes, strict }
-  }, undefined, { scopes: [rootBindings], strict: rootStrict })
+    return { scopes: nestedScopes, strict, thisIsGlobal }
+  }, undefined, { scopes: [rootBindings], strict: rootStrict, thisIsGlobal: sourceType === 'script' })
   return {
     durability: reasons.size === 0 ? 'durable' : 'volatile',
     reasons: Object.freeze([...reasons.values()]),
@@ -473,12 +481,17 @@ export function prepareProgram(program, options = {}) {
     prepared = { ...prepared, deferredHelpers: normalized.deferredHelpers }
     intrinsicContext.expression = `this[${JSON.stringify(prepared.rootRuntimeName)}].intrinsics`
     const classificationSource = bindCompilerIntrinsics(lowerStatefulDecorators(
-      { ...prepared, code: prepared.classificationCode }, undefined, intrinsicContext), intrinsicContext).code
+      { ...prepared, code: prepared.classificationCode, sourceMap: prepared.classificationSourceMap },
+      undefined, intrinsicContext), intrinsicContext)
     prepared = bindCompilerIntrinsics(lowerStatefulDecorators(prepared, undefined, intrinsicContext), intrinsicContext)
     prepared = lowerStatefulResources(prepared, { intrinsicContext, nativeUsing: options.nativeUsing })
     const parsed = parseExecutableCell(prepared.code, { eraseTypes: true })
-    const classification = classifyDurability(parseExecutableCell(classificationSource, { eraseTypes: true }).code,
-      new Set([...(options.knownBindings ?? []), ...prepared.declared]))
+    const classificationCode = parseExecutableCell(classificationSource.code, { eraseTypes: true }).code
+    const classification = classifyDurability(classificationCode,
+      new Set([...(options.knownBindings ?? []), ...prepared.declared]), {
+        sourceMap: classificationSource.sourceMap,
+        originalSource: program,
+      })
     const reasons = [...staticModuleClassification(prepared.moduleLoads), ...classification.reasons]
     const lowered = rewriteCellReturns(parsed.code, prepared.sourceMap,
       new Set([...prepared.declared, ...(options.knownBindings ?? [])]))

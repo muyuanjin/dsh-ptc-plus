@@ -3,6 +3,7 @@ import { EventEmitter } from 'node:events'
 import { resolve } from 'node:path'
 import { PassThrough } from 'node:stream'
 import { pathToFileURL } from 'node:url'
+import { helperProcessEnvironment, isElectronHost } from './worker-environment.js'
 
 /**
  * Fallback bound for a helper that answers the stop request and then keeps the
@@ -63,12 +64,15 @@ export class IsolatedWorker extends EventEmitter {
     }
     // child_process.fork mutates the env object it receives by copying
     // NODE_V8_COVERAGE into it. Snapshot the caller's projection first so the
-    // inner Worker receives exactly the projected user environment, while the
-    // helper process can still carry the host's coverage variable.
-    const workerEnvironment = env === undefined ? undefined : { ...env }
+    // inner Worker receives exactly the projected user environment. An Electron
+    // Host also needs a helper-only startup override; it must not reach user code.
+    const electronHost = isElectronHost()
+    const projectedEnvironment = env === undefined && electronHost ? process.env : env
+    const workerEnvironment = projectedEnvironment === undefined ? undefined : { ...projectedEnvironment }
+    const forkEnvironment = helperProcessEnvironment(projectedEnvironment, process.platform, electronHost)
     this.child = fork(helper, [], {
       stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
-      env,
+      env: forkEnvironment,
       serialization: 'advanced',
       // The helper starts with the host's own startup arguments removed, matching
       // the isolation the in-host worker had with execArgv: [].

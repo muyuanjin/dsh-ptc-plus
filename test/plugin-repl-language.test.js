@@ -643,6 +643,7 @@ test('replays each journal node with its recorded binding mode', async (t) => {
   delete strictPredecessor.meta.dshPtcPlus.userBindingsShadowPolicy
   delete strictPredecessor.meta.dshPtcPlus.userBindingNames
   delete strictPredecessor.meta.dshPtcPlus.languageSemantics
+  delete strictPredecessor.meta.dshPtcPlus.moduleTransform
   for (const field of Reflect.ownKeys(strictPredecessor.meta.dshPtcPlus)) {
     assert.ok(PREDECESSOR_JOURNAL_FIELDS.has(field),
       `v3 predecessor must not carry the ${String(field)} field`)

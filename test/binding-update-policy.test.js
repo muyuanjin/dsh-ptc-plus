@@ -1,6 +1,8 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { executionPolicies, guidancePolicies } from '../internal/binding-update-policy.js'
+import { LEGACY_USER_BINDING_TRANSFORM, PREVIOUS_USER_BINDING_TRANSFORM,
+  PROTECTED_MODULE_TRANSFORM, USER_BINDING_TRANSFORM } from '../internal/module-transform-contract.js'
 
 const config = {
   looseTopLevelRedeclarations: true,
@@ -29,12 +31,15 @@ test('derives one live execution policy from compatibility settings', () => {
 
 test('replay uses the journaled policy without consulting current settings', () => {
   const replay = {
+    languageSemantics: 'legacy-v1',
+    moduleTransform: LEGACY_USER_BINDING_TRANSFORM,
     bindingPolicy: { variableRedeclarations: false, functionClassRedeclarations: true },
     rewritePolicy: { autoRewriteImports: true, autoStripExports: false, autoSplitRedeclarations: false },
     moduleSemantics: { defaultExportBinding: 'legacy-variable', importExpressionBoundary: 'legacy' },
   }
   assert.deepEqual(executionPolicies(config, replay), {
     languageSemantics: 'legacy-v1',
+    moduleTransform: LEGACY_USER_BINDING_TRANSFORM,
     bindingPolicy: replay.bindingPolicy,
     rewritesEnabled: replay.rewritePolicy,
     moduleSemantics: replay.moduleSemantics,
@@ -53,6 +58,8 @@ test('unified policy selects complete language defaults', () => {
   assert.equal(executionPolicies(config).languageSemantics, 'legacy-v1')
   assert.equal(executionPolicies({ bindingUpdates: 'stateful' }).languageSemantics, 'stateful-v1')
   assert.equal(executionPolicies({ bindingUpdates: 'protected' }).languageSemantics, 'protected-v1')
+  assert.equal(executionPolicies({ bindingUpdates: 'stateful' }).moduleTransform, USER_BINDING_TRANSFORM)
+  assert.equal(executionPolicies({ bindingUpdates: 'protected' }).moduleTransform, PROTECTED_MODULE_TRANSFORM)
   assert.equal(executionPolicies({ bindingUpdates: 'stateful' }).bindingPolicy.variableRedeclarations, true)
   assert.equal(executionPolicies({ bindingUpdates: 'stateful' }).rewritesEnabled.autoRewriteImports, true)
   assert.equal(executionPolicies({ bindingUpdates: 'protected' }).bindingPolicy.variableRedeclarations, false)
@@ -60,10 +67,19 @@ test('unified policy selects complete language defaults', () => {
 })
 
 test('recorded language generation survives live configuration changes', () => {
-  for (const languageSemantics of ['legacy-v1', 'stateful-v1', 'protected-v1']) {
+  for (const [languageSemantics, moduleTransform] of [
+    ['legacy-v1', LEGACY_USER_BINDING_TRANSFORM],
+    ['stateful-v1', PREVIOUS_USER_BINDING_TRANSFORM],
+    ['protected-v1', PROTECTED_MODULE_TRANSFORM],
+  ]) {
     const live = executionPolicies({ bindingUpdates: 'stateful' })
-    const recorded = { ...live, languageSemantics, rewritePolicy: live.rewritesEnabled }
-    assert.equal(executionPolicies({ bindingUpdates: 'protected' }, recorded).languageSemantics, languageSemantics)
+    const recorded = { ...live, languageSemantics, moduleTransform, rewritePolicy: live.rewritesEnabled }
+    const replay = executionPolicies({ bindingUpdates: 'protected' }, recorded)
+    assert.equal(replay.languageSemantics, languageSemantics)
+    assert.equal(replay.moduleTransform, moduleTransform)
   }
   assert.throws(() => executionPolicies(config, { languageSemantics: 'unknown' }), /language semantics/)
+  assert.throws(() => executionPolicies(config, {
+    languageSemantics: 'legacy-v1', moduleTransform: USER_BINDING_TRANSFORM,
+  }), /does not match/)
 })

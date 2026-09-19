@@ -60,8 +60,15 @@ function wrapBuiltin(owner, name, projectArguments, projectedProperties) {
 }
 
 /** Install one session's cwd projection into Node builtins loaded by the worker. */
-export function installWorkerCwdVirtualization(sessionCwd, originalRequire) {
-  if (sessionCwd === undefined) return
+export function installWorkerCwdVirtualization(sessionCwd, originalRequire, markVolatile) {
+  if (sessionCwd === undefined) {
+    const nativeCwd = process.cwd
+    process.cwd = () => {
+      markVolatile('process.cwd')
+      return Reflect.apply(nativeCwd, process, [])
+    }
+    return
+  }
   const nativeResolve = resolve
   const bufferPrefix = Buffer.from(sessionCwd + (/[\\/]$/.test(sessionCwd) ? '' : sep))
   const sessionPath = (value) => {
@@ -132,7 +139,12 @@ export function installWorkerCwdVirtualization(sessionCwd, originalRequire) {
     return next
   }
 
-  process.cwd = () => sessionCwd
+  Object.defineProperty(process, 'cwd', {
+    configurable: false,
+    enumerable: true,
+    writable: false,
+    value: () => sessionCwd,
+  })
   const fs = originalRequire('node:fs')
   const path = originalRequire('node:path')
   for (const [name, indices] of Object.entries(FILE_SYSTEM_PATH_ARGUMENTS)) {

@@ -62,11 +62,19 @@ function selectedDescriptors(source, symbols, transform) {
 
 
 function declarationFor(entry, descriptors) {
+  const typeNamespace = `__ptcBinding_${createHash('sha256').update(entry.id).digest('hex').slice(0, 12)}`
+  const typeNamespaceTokens = new Set(descriptors.map(item => item.typeNamespaceToken))
+  if (typeNamespaceTokens.size !== 1 || typeNamespaceTokens.has(undefined)) throw new TypeError('binding symbols do not share one compiler type namespace')
+  const [typeNamespaceToken] = typeNamespaceTokens
+  const render = text => text.replaceAll(typeNamespaceToken, typeNamespace)
+  const typeDeclarations = [...new Set(descriptors.flatMap(item => item.typeDeclarations ?? []))]
+  const typePrefix = typeDeclarations.length === 0 ? '' : `declare namespace ${typeNamespace} {\n${typeDeclarations
+    .map(item => render(item).split('\n').map(line => `  ${line}`).join('\n')).join('\n')}\n}\n`
   const comment = entry.purpose === '' ? '' : `/** ${entry.purpose.replaceAll('*/', '* /')} */\n`
   if (entry.scope === 'namespace') {
-    return `${comment}declare const ${entry.name}: {\n${descriptors.map(item => `  ${item.member};`).join('\n')}\n}`
+    return `${typePrefix}${comment}declare const ${entry.name}: {\n${descriptors.map(item => `  ${render(item.member)};`).join('\n')}\n}`
   }
-  return descriptors.map((item, index) => `${index === 0 ? comment : ''}declare ${item.declaration}`).join('\n')
+  return `${typePrefix}${descriptors.map((item, index) => `${index === 0 ? comment : ''}declare ${render(item.declaration)}`).join('\n')}`
 }
 
 export function normalizeUserBindingEntry(value, { transform = USER_BINDING_TRANSFORM } = {}) {

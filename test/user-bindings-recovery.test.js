@@ -591,6 +591,7 @@ test('contracts missing or unknown reuse policies once and executes the current 
       record.journal.userBindingsFingerprint = record.userBindings.fingerprint
     }
     records[1].journal.version = 6
+    delete records[1].journal.moduleTransform
     if (policy !== undefined) records[1].journal.userBindingsReusePolicy = policy
     const session = { id: `invalid-policy-${policy}`, events: [] }
     const agent = ptcAgent(session.id, session)

@@ -414,7 +414,7 @@ export class SessionCellExecutor {
     }
     const priorBindingCatalog = userBindingPlan.catalog
     const catalog = priorBindingCatalog.inputs()
-    const { bindingPolicy, rewritesEnabled, moduleSemantics, languageSemantics } = executionPolicies(config, replayRecord)
+    const { bindingPolicy, rewritesEnabled, moduleSemantics, languageSemantics, moduleTransform } = executionPolicies(config, replayRecord)
     const prepareCell = program => prepareProgram(program, {
       knownBindings: catalog.knownBindings,
       bindingPolicy,
@@ -576,6 +576,7 @@ export class SessionCellExecutor {
             type: 'run', id, program: prepared.code, namespaces: bindings.workerDescriptors,
             moduleLoads: prepared.moduleLoads,
             languageSemantics,
+            moduleTransform,
             rootRuntimeName: prepared.rootRuntimeName,
             rootBindings: prepared.rootBindings,
             importBindingNamespaces: new Map([...catalog.importBindings].map(([name, binding]) => [name, binding.namespace])),

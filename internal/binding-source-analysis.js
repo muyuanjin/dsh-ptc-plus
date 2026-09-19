@@ -2,13 +2,14 @@ import { parse } from '@babel/parser'
 import { AMBIENT_GLOBALS, renderDurabilityReasons } from './module-policy.js'
 import { CELL_PARSER_PLUGINS, normalizeTypeScriptValues } from './repl-scope-normalizer.js'
 import { identitySourceMap } from './source-position-map.js'
-import { LEGACY_USER_BINDING_TRANSFORM, transformTypeScriptSource } from './typescript-transform.js'
+import { LEGACY_USER_BINDING_TRANSFORM, USER_BINDING_TRANSFORM, transformTypeScriptSource } from './typescript-transform.js'
 import { compileStatefulModule } from './module-compilation.js'
 import { prepareProgram, classifyDurability } from './cell-analysis.js'
 import { createCompilerSourceCache } from './compiler-source-cache.js'
+import { bindingTypeNamespaceToken } from './binding-declaration-contract.js'
 
 const MAX_NAME_LENGTH = 128
-const GLOBAL_TYPE_NAMES = new Set([
+const LEGACY_GLOBAL_TYPE_NAMES = new Set([
   'Array', 'ArrayBuffer', 'ArrayBufferView', 'AsyncIterable', 'AsyncIterableIterator',
   'AsyncIterator', 'Awaited', 'BigInt', 'BigInt64Array', 'BigUint64Array', 'Boolean',
   'Buffer', 'ConstructorParameters', 'DataView', 'Date', 'Error', 'EvalError', 'Exclude',
@@ -92,7 +93,13 @@ function typeReferenceRoot(node) {
   return current?.type === 'Identifier' ? current.name : undefined
 }
 
-function projectedType(source, node, outerTypeNames = new Set(), sourceTypeNames = new Set()) {
+function typeReferenceRootNode(node) {
+  let current = node
+  while (current?.type === 'TSQualifiedName') current = current.left
+  return current?.type === 'Identifier' ? current : undefined
+}
+
+function projectedType(source, node, outerTypeNames, typeContext, usedTypeNames) {
   const replacements = []
   const commentRanges = new Set()
   const visit = (current, inheritedNames) => {
@@ -115,21 +122,53 @@ function projectedType(source, node, outerTypeNames = new Set(), sourceTypeNames
     if (current.type === 'TSMappedType' && typeof current.typeParameter?.name === 'string') {
       typeNames = new Set([...typeNames, current.typeParameter.name])
     }
-    if (current.type === 'TSImportType' || current.type === 'TSTypeQuery') {
+    if (!typeContext.modern && (current.type === 'TSImportType' || current.type === 'TSTypeQuery')) {
       replacements.push({ start: current.start, end: current.end, text: 'unknown' })
       return
     }
-    if (current.type === 'TSTypeReference' || current.type === 'TSExpressionWithTypeArguments') {
-      const name = typeReferenceRoot(current.typeName ?? current.expression)
-      if (name === undefined || (!typeNames.has(name)
-        && (sourceTypeNames.has(name) || !GLOBAL_TYPE_NAMES.has(name)))) {
+    if (current.type === 'TSTypeQuery') {
+      const reference = current.exprName
+      const name = typeReferenceRoot(reference)
+      if (typeContext.modern && name !== undefined && !typeNames.has(name)) {
+        if (typeContext.importedNames.has(name)) {
+          throw new TypeError(`imported value ${JSON.stringify(name)} cannot be represented in the binding interface; use an explicit import(...) type query`)
+        }
+        if (typeContext.localValues.has(name)) {
+          const declaration = typeContext.localDeclarations.get(name)
+          if (declaration === undefined
+            || !['ClassDeclaration', 'TSEnumDeclaration'].includes(declaration.type)
+            || (reference.type !== 'Identifier' && declaration.type !== 'TSEnumDeclaration')) {
+            throw new TypeError(`local value query ${JSON.stringify(name)} cannot be represented in the binding interface; use an explicit structural type`)
+          }
+          usedTypeNames.add(name)
+          const root = typeReferenceRootNode(reference)
+          replacements.push({ start: root.start, end: root.end,
+            text: `${typeContext.typeNamespaceToken}.${name}` })
+        }
+      }
+    } else if (current.type === 'TSTypeReference' || current.type === 'TSExpressionWithTypeArguments') {
+      const reference = current.typeName ?? current.expression
+      const name = typeReferenceRoot(reference)
+      if (!typeContext.modern && (name === undefined || !typeNames.has(name)
+        && (typeContext.sourceTypeNames.has(name) || !LEGACY_GLOBAL_TYPE_NAMES.has(name)))) {
         replacements.push({ start: current.start, end: current.end, text: 'unknown' })
         return
+      }
+      if (typeContext.modern && name !== undefined && !typeNames.has(name)) {
+        if (typeContext.importedNames.has(name)) {
+          throw new TypeError(`imported type ${JSON.stringify(name)} cannot be represented in the binding interface; use an explicit import(...) type or a local structural type`)
+        }
+        if (typeContext.localDeclarations.has(name)) {
+          usedTypeNames.add(name)
+          const root = typeReferenceRootNode(reference)
+          replacements.push({ start: root.start, end: root.end,
+            text: `${typeContext.typeNamespaceToken}.${name}` })
+        }
       }
     }
     for (const [key, value] of Object.entries(current)) {
       if (key === 'loc' || key === 'start' || key === 'end'
-        || key === 'typeParameters' || key === 'typeName' || key === 'expression') continue
+        || key === 'typeParameters' || key === 'typeName' || key === 'expression' || key === 'exprName') continue
       if (Array.isArray(value)) value.forEach(item => visit(item, typeNames))
       else visit(value, typeNames)
     }
@@ -146,50 +185,50 @@ function projectedType(source, node, outerTypeNames = new Set(), sourceTypeNames
   return text
 }
 
-function typeParameters(source, node, outerTypeNames = new Set(), sourceTypeNames = new Set()) {
+function typeParameters(source, node, outerTypeNames, typeContext, usedTypeNames) {
   const declaration = node?.typeParameters
   if (declaration?.type !== 'TSTypeParameterDeclaration') {
     return { text: '', names: outerTypeNames }
   }
   const names = new Set([...outerTypeNames, ...typeParameterNames(declaration)])
-  return { text: projectedType(source, declaration, names, sourceTypeNames), names }
+  return { text: projectedType(source, declaration, names, typeContext, usedTypeNames), names }
 }
 
-function annotation(source, node, typeNames = new Set(), sourceTypeNames = new Set()) {
+function annotation(source, node, typeNames, typeContext, usedTypeNames) {
   const type = node?.typeAnnotation?.typeAnnotation
-  return type === undefined ? 'unknown' : projectedType(source, type, typeNames, sourceTypeNames)
+  return type === undefined ? 'unknown' : projectedType(source, type, typeNames, typeContext, usedTypeNames)
 }
 
-function parameter(source, node, index, typeNames = new Set(), sourceTypeNames = new Set()) {
+function parameter(source, node, index, typeNames, typeContext, usedTypeNames) {
   if (node?.type === 'TSParameterProperty') {
-    return parameter(source, node.parameter, index, typeNames, sourceTypeNames)
+    return parameter(source, node.parameter, index, typeNames, typeContext, usedTypeNames)
   }
   if (node?.type === 'RestElement') {
     const argument = node.argument
     return argument?.type === 'Identifier'
-      ? `...${argument.name}: ${node.typeAnnotation === undefined ? 'unknown[]' : annotation(source, node, typeNames, sourceTypeNames)}`
+      ? `...${argument.name}: ${node.typeAnnotation === undefined ? 'unknown[]' : annotation(source, node, typeNames, typeContext, usedTypeNames)}`
       : `...args${index}: unknown[]`
   }
   const optional = node?.type === 'AssignmentPattern'
   const target = optional ? node.left : node
   if (target?.type !== 'Identifier') return `arg${index}: unknown`
-  return `${target.name}${optional || target.optional === true ? '?' : ''}: ${annotation(source, target, typeNames, sourceTypeNames)}`
+  return `${target.name}${optional || target.optional === true ? '?' : ''}: ${annotation(source, target, typeNames, typeContext, usedTypeNames)}`
 }
 
-function returnType(source, node, typeNames = new Set(), sourceTypeNames = new Set()) {
+function returnType(source, node, typeNames, typeContext, usedTypeNames) {
   const explicit = node?.returnType?.typeAnnotation
-  if (explicit !== undefined) return projectedType(source, explicit, typeNames, sourceTypeNames)
+  if (explicit !== undefined) return projectedType(source, explicit, typeNames, typeContext, usedTypeNames)
   return node?.async === true ? 'Promise<unknown>' : 'unknown'
 }
 
-function functionType(source, node, outerTypeNames = new Set(), sourceTypeNames = new Set()) {
-  const generics = typeParameters(source, node, outerTypeNames, sourceTypeNames)
+function functionType(source, node, outerTypeNames, typeContext, usedTypeNames) {
+  const generics = typeParameters(source, node, outerTypeNames, typeContext, usedTypeNames)
   const parameters = (node.params ?? [])
-    .map((item, index) => parameter(source, item, index, generics.names, sourceTypeNames)).join(', ')
-  return `${generics.text}(${parameters}) => ${returnType(source, node, generics.names, sourceTypeNames)}`
+    .map((item, index) => parameter(source, item, index, generics.names, typeContext, usedTypeNames)).join(', ')
+  return `${generics.text}(${parameters}) => ${returnType(source, node, generics.names, typeContext, usedTypeNames)}`
 }
 
-function inferredType(source, node, depth = 0, sourceTypeNames = new Set()) {
+function inferredType(source, node, depth, typeContext, usedTypeNames) {
   if (depth > 2 || node === null || node === undefined) return 'unknown'
   if (node.type === 'StringLiteral' || node.type === 'TemplateLiteral') return 'string'
   if (node.type === 'NumericLiteral') return 'number'
@@ -197,7 +236,7 @@ function inferredType(source, node, depth = 0, sourceTypeNames = new Set()) {
   if (node.type === 'BigIntLiteral') return 'bigint'
   if (node.type === 'NullLiteral') return 'null'
   if (node.type === 'ArrowFunctionExpression' || node.type === 'FunctionExpression') {
-    return functionType(source, node, new Set(), sourceTypeNames)
+    return functionType(source, node, new Set(), typeContext, usedTypeNames)
   }
   if (node.type === 'ArrayExpression') return 'unknown[]'
   if (node.type === 'ObjectExpression') {
@@ -208,32 +247,149 @@ function inferredType(source, node, depth = 0, sourceTypeNames = new Set()) {
         ? property.key.name
         : property.key.type === 'StringLiteral' ? JSON.stringify(property.key.value) : undefined
       if (name === undefined) return 'Record<string, unknown>'
-      members.push(`${name}: ${inferredType(source, property.value, depth + 1, sourceTypeNames)}`)
+      members.push(`${name}: ${inferredType(source, property.value, depth + 1, typeContext, usedTypeNames)}`)
     }
     return `{ ${members.join('; ')} }`
   }
   return 'unknown'
 }
 
-function classMembers(source, node, classTypeNames, sourceTypeNames) {
+function classMemberName(member) {
+  return member.key?.type === 'Identifier'
+    ? member.key.name
+    : member.key?.type === 'StringLiteral' ? JSON.stringify(member.key.value) : undefined
+}
+
+function isPublicClassMember(member) {
+  return !member.static && !member.computed
+    && member.accessibility !== 'private' && member.accessibility !== 'protected'
+    && member.key?.type !== 'PrivateName'
+}
+
+function parameterPropertyMember(source, node, classTypeNames, typeContext, usedTypeNames) {
+  if (node?.type !== 'TSParameterProperty' || node.accessibility === 'private' || node.accessibility === 'protected') return undefined
+  const parameterNode = node.parameter
+  const optional = parameterNode?.type === 'AssignmentPattern'
+  const target = optional ? parameterNode.left : parameterNode
+  if (target?.type !== 'Identifier') return undefined
+  return `${node.readonly === true ? 'readonly ' : ''}${target.name}${optional || target.optional === true ? '?' : ''}: ${annotation(source, target, classTypeNames, typeContext, usedTypeNames)}`
+}
+
+function classMembers(source, node, classTypeNames, typeContext, usedTypeNames) {
   const members = []
+  const memberNames = new Set()
   let constructorParameters = '...args: unknown[]'
   for (const member of node.body?.body ?? []) {
-    if (member.type !== 'ClassMethod' || member.static || member.computed
-      || member.accessibility === 'private' || member.key?.type === 'PrivateName') continue
-    const name = member.key?.type === 'Identifier'
-      ? member.key.name
-      : member.key?.type === 'StringLiteral' ? JSON.stringify(member.key.value) : undefined
+    if (typeContext.modern && ['ClassProperty', 'ClassAccessorProperty', 'TSAbstractPropertyDefinition'].includes(member.type)) {
+      if (!isPublicClassMember(member)) continue
+      const name = classMemberName(member)
+      if (name === undefined || memberNames.has(name)) continue
+      members.push(`${member.readonly === true ? 'readonly ' : ''}${name}${member.optional === true ? '?' : ''}: ${annotation(source, member, classTypeNames, typeContext, usedTypeNames)}`)
+      memberNames.add(name)
+      continue
+    }
+    if (!['ClassMethod', 'TSDeclareMethod'].includes(member.type) || (typeContext.modern ? !isPublicClassMember(member)
+      : member.static || member.computed || member.accessibility === 'private' || member.key?.type === 'PrivateName')) continue
+    const name = classMemberName(member)
     if (name === undefined) continue
-    const generics = typeParameters(source, member, classTypeNames, sourceTypeNames)
+    const generics = typeParameters(source, member, classTypeNames, typeContext, usedTypeNames)
     const parameters = (member.params ?? [])
-      .map((item, index) => parameter(source, item, index, generics.names, sourceTypeNames)).join(', ')
-    if (member.kind === 'constructor') constructorParameters = parameters
+      .map((item, index) => parameter(source, item, index, generics.names, typeContext, usedTypeNames)).join(', ')
+    if (member.kind === 'constructor') {
+      constructorParameters = parameters
+      for (const item of typeContext.modern ? member.params ?? [] : []) {
+        const field = parameterPropertyMember(source, item, classTypeNames, typeContext, usedTypeNames)
+        const fieldName = item?.type === 'TSParameterProperty'
+          ? (item.parameter?.type === 'AssignmentPattern' ? item.parameter.left : item.parameter)?.name : undefined
+        if (field !== undefined && !memberNames.has(fieldName)) {
+          members.push(field)
+          memberNames.add(fieldName)
+        }
+      }
+    }
+    else if (member.kind === 'get' || member.kind === 'set') {
+      const signature = `${member.kind}:${name}`
+      if (memberNames.has(signature)) continue
+      members.push(member.kind === 'get'
+        ? `get ${name}(): ${returnType(source, member, generics.names, typeContext, usedTypeNames)}`
+        : `set ${name}(${parameters})`)
+      memberNames.add(signature)
+    }
     else if (member.kind === 'method') {
-      members.push(`${name}${generics.text}(${parameters}): ${returnType(source, member, generics.names, sourceTypeNames)}`)
+      members.push(`${name}${member.optional === true ? '?' : ''}${generics.text}(${parameters}): ${returnType(source, member, generics.names, typeContext, usedTypeNames)}`)
+      memberNames.add(name)
     }
   }
   return { constructorParameters, members, instance: `{ ${members.join('; ')} }` }
+}
+
+function valueReferenceRootNode(node) {
+  let current = node
+  while (current?.type === 'MemberExpression' && !current.computed) current = current.object
+  return current?.type === 'Identifier' ? current : undefined
+}
+
+function classHeritage(source, node, classTypeNames, typeContext, usedTypeNames) {
+  const base = node.superClass
+  if (base === null || base === undefined) return { clause: '', instance: '' }
+  const root = valueReferenceRootNode(base)
+  if (root === undefined || !['Identifier', 'MemberExpression'].includes(base.type)) {
+    throw new TypeError('class heritage cannot be represented in the binding interface; use a named class base')
+  }
+  if (typeContext.importedNames.has(root.name)) {
+    throw new TypeError(`imported class ${JSON.stringify(root.name)} cannot be represented in the binding interface; use an explicit structural type`)
+  }
+  let reference = sourceSlice(source, base)
+  if (base.type === 'Identifier' && typeContext.localDeclarations.has(root.name)) {
+    const declaration = typeContext.localDeclarations.get(root.name)
+    if (declaration.type !== 'ClassDeclaration') {
+      throw new TypeError(`local class base ${JSON.stringify(root.name)} cannot be represented in the binding interface; use a class declaration`)
+    }
+    usedTypeNames.add(root.name)
+    reference = `${typeContext.typeNamespaceToken}.${root.name}`
+  } else if (typeContext.localValues.has(root.name)) {
+    throw new TypeError(`local class base ${JSON.stringify(root.name)} cannot be represented in the binding interface; use a class declaration`)
+  }
+  const argumentsNode = node.superTypeParameters ?? node.superTypeArguments
+  const typeArguments = argumentsNode === undefined ? ''
+    : projectedType(source, argumentsNode, classTypeNames, typeContext, usedTypeNames)
+  const instance = `${reference}${typeArguments}`
+  return { clause: ` extends ${instance}`, instance }
+}
+
+function localTypeDeclaration(source, name, node, typeContext, usedTypeNames) {
+  if (node.type === 'TSInterfaceDeclaration' || node.type === 'TSTypeAliasDeclaration'
+    || node.type === 'TSEnumDeclaration') {
+    const ownTypeNames = new Set(typeParameterNames(node.typeParameters))
+    const text = projectedType(source, node, ownTypeNames, typeContext, usedTypeNames)
+      .replace(/^declare\s+/, '')
+    return `export ${text}`
+  }
+  if (node.type === 'ClassDeclaration') {
+    const generics = typeParameters(source, node, new Set(), typeContext, usedTypeNames)
+    const heritage = classHeritage(source, node, generics.names, typeContext, usedTypeNames)
+    const shape = classMembers(source, node, generics.names, typeContext, usedTypeNames)
+    return `export ${node.abstract === true ? 'abstract ' : ''}class ${name}${generics.text}${heritage.clause} { constructor(${shape.constructorParameters});${shape.members.length === 0 ? '' : ` ${shape.members.join('; ')};`} }`
+  }
+  throw new TypeError(`local type ${JSON.stringify(name)} cannot be represented in the binding interface; use a local interface, type alias, enum, or class`)
+}
+
+function typeDependencyDeclarations(source, roots, typeContext) {
+  if (!typeContext.modern) return []
+  const pending = [...roots]
+  const seen = new Set()
+  const declarations = []
+  while (pending.length > 0) {
+    const name = pending.shift()
+    if (seen.has(name)) continue
+    seen.add(name)
+    const node = typeContext.localDeclarations.get(name)
+    if (node === undefined) continue
+    const dependencies = new Set()
+    declarations.push(localTypeDeclaration(source, name, node, typeContext, dependencies))
+    for (const dependency of dependencies) if (!seen.has(dependency)) pending.push(dependency)
+  }
+  return declarations
 }
 
 function jsdocPurpose(...nodes) {
@@ -245,51 +401,62 @@ function jsdocPurpose(...nodes) {
     .find(line => line !== '' && !line.startsWith('@')) ?? ''
 }
 
-function symbolDescriptor(source, name, node, exportNode = node, sourceTypeNames = new Set()) {
+function symbolDescriptor(source, name, node, exportNode, typeContext) {
+  const usedTypeNames = new Set()
+  const complete = descriptor => ({
+    ...descriptor,
+    typeNamespaceToken: typeContext.typeNamespaceToken,
+    typeDeclarations: typeDependencyDeclarations(source, usedTypeNames, typeContext),
+  })
   if (node?.type === 'FunctionDeclaration') {
-    const generics = typeParameters(source, node, new Set(), sourceTypeNames)
+    const generics = typeParameters(source, node, new Set(), typeContext, usedTypeNames)
     const parameters = (node.params ?? [])
-      .map((item, index) => parameter(source, item, index, generics.names, sourceTypeNames)).join(', ')
-    return {
+      .map((item, index) => parameter(source, item, index, generics.names, typeContext, usedTypeNames)).join(', ')
+    return complete({
       name,
       kind: 'function',
       purpose: jsdocPurpose(exportNode, node),
-      declaration: `function ${name}${generics.text}(${parameters}): ${returnType(source, node, generics.names, sourceTypeNames)}`,
-      member: `${name}${generics.text}(${parameters}): ${returnType(source, node, generics.names, sourceTypeNames)}`,
-    }
+      declaration: `function ${name}${generics.text}(${parameters}): ${returnType(source, node, generics.names, typeContext, usedTypeNames)}`,
+      member: `${name}${generics.text}(${parameters}): ${returnType(source, node, generics.names, typeContext, usedTypeNames)}`,
+    })
   }
   if (node?.type === 'ClassDeclaration') {
-    const generics = typeParameters(source, node, new Set(), sourceTypeNames)
-    const shape = classMembers(source, node, generics.names, sourceTypeNames)
-    return {
+    const generics = typeParameters(source, node, new Set(), typeContext, usedTypeNames)
+    const heritage = classHeritage(source, node, generics.names, typeContext, usedTypeNames)
+    const shape = classMembers(source, node, generics.names, typeContext, usedTypeNames)
+    const instance = heritage.instance === '' ? shape.instance : `${heritage.instance} & ${shape.instance}`
+    return complete({
       name,
       kind: 'class',
       purpose: jsdocPurpose(exportNode, node),
-      declaration: `class ${name}${generics.text} { constructor(${shape.constructorParameters});${shape.members.length === 0 ? '' : ` ${shape.members.join('; ')};`} }`,
-      member: `${name}: { new${generics.text}(${shape.constructorParameters}): ${shape.instance} }`,
-    }
+      declaration: `${node.abstract === true ? 'abstract ' : ''}class ${name}${generics.text}${heritage.clause} { constructor(${shape.constructorParameters});${shape.members.length === 0 ? '' : ` ${shape.members.join('; ')};`} }`,
+      member: node.abstract === true
+        ? `${name}: abstract new${generics.text}(${shape.constructorParameters}) => ${instance}`
+        : `${name}: { new${generics.text}(${shape.constructorParameters}): ${instance} }`,
+    })
   }
   const declarator = node?.type === 'VariableDeclarator' ? node : undefined
   const type = declarator?.id?.type !== 'Identifier'
     ? 'unknown'
     : declarator.id.typeAnnotation !== undefined
-      ? annotation(source, declarator.id, new Set(), sourceTypeNames)
-      : inferredType(source, declarator.init, 0, sourceTypeNames)
-  return {
+      ? annotation(source, declarator.id, new Set(), typeContext, usedTypeNames)
+      : inferredType(source, declarator.init, 0, typeContext, usedTypeNames)
+  return complete({
     name,
     kind: 'variable',
     purpose: jsdocPurpose(exportNode, node),
     declaration: `const ${name}: ${type}`,
     member: `${name}: ${type}`,
-  }
+  })
 }
 
 export const exportedSymbols = createCompilerSourceCache(analyzeExportedSymbols)
 
 function analyzeExportedSymbols(source, transform) {
-  let ast
+  const metadataSource = source
+  let metadataAst
   try {
-    ast = parse(source, {
+    metadataAst = parse(metadataSource, {
       sourceType: 'module',
       plugins: transform === LEGACY_USER_BINDING_TRANSFORM
         ? ['typescript', 'topLevelAwait', 'importAttributes'] : CELL_PARSER_PLUGINS,
@@ -298,20 +465,58 @@ function analyzeExportedSymbols(source, transform) {
   } catch (error) {
     throw new SyntaxError(`binding source could not be parsed: ${error.message}`)
   }
-  const sourceTypeNames = new Set()
-  for (const statement of ast.program.body) {
+  const importedNames = new Set()
+  const localDeclarations = new Map()
+  const localValueNames = new Set()
+  const metadataLocals = new Map()
+  const metadataExportNodes = new Map()
+  for (const statement of metadataAst.program.body) {
     const declaration = statement.type === 'ExportNamedDeclaration' ? statement.declaration : statement
     if (statement.type === 'ImportDeclaration') {
-      for (const specifier of statement.specifiers) sourceTypeNames.add(specifier.local.name)
+      for (const specifier of statement.specifiers) importedNames.add(specifier.local.name)
     }
     if (declaration?.type === 'TSTypeAliasDeclaration'
       || declaration?.type === 'TSInterfaceDeclaration'
       || declaration?.type === 'TSEnumDeclaration'
       || declaration?.type === 'TSModuleDeclaration'
       || declaration?.type === 'ClassDeclaration') {
-      if (declaration.id?.type === 'Identifier') sourceTypeNames.add(declaration.id.name)
+      if (declaration.id?.type === 'Identifier') localDeclarations.set(declaration.id.name, declaration)
+    }
+    if (declaration?.type === 'TSEnumDeclaration' || declaration?.type === 'TSModuleDeclaration') {
+      if (declaration.id?.type === 'Identifier') localValueNames.add(declaration.id.name)
+    }
+    if (declaration?.type === 'FunctionDeclaration' || declaration?.type === 'ClassDeclaration') {
+      if (declaration.id !== null) {
+        localValueNames.add(declaration.id.name)
+        metadataLocals.set(declaration.id.name, declaration)
+        if (statement.type === 'ExportNamedDeclaration') metadataExportNodes.set(declaration.id.name, statement)
+      }
+    } else if (declaration?.type === 'VariableDeclaration') {
+      for (const item of declaration.declarations) {
+        for (const name of bindingNames(item.id)) {
+          localValueNames.add(name)
+          metadataLocals.set(name, item)
+          if (statement.type === 'ExportNamedDeclaration') metadataExportNodes.set(name, statement)
+        }
+      }
+    }
+    if (statement.type === 'ExportNamedDeclaration') {
+      for (const specifier of statement.specifiers) {
+        if (specifier.type === 'ExportSpecifier' && specifier.local.type === 'Identifier') {
+          metadataExportNodes.set(specifier.local.name, statement)
+        }
+      }
     }
   }
+  const typeContext = {
+    modern: transform === USER_BINDING_TRANSFORM,
+    importedNames,
+    localDeclarations,
+    localValues: localValueNames,
+    sourceTypeNames: new Set([...importedNames, ...localDeclarations.keys()]),
+    typeNamespaceToken: bindingTypeNamespaceToken(metadataSource),
+  }
+  let ast = metadataAst
   if (transform !== LEGACY_USER_BINDING_TRANSFORM) {
     source = normalizeTypeScriptValues(source, identitySourceMap(source.length), 'module').code
     ast = parse(source, { sourceType: 'module', plugins: CELL_PARSER_PLUGINS, errorRecovery: true })
@@ -328,6 +533,13 @@ function analyzeExportedSymbols(source, transform) {
     }
   }
   const exports = new Map()
+  const descriptor = (name, runtimeNode, exportNode, localName = name) => {
+    const metadataNode = metadataLocals.get(localName)
+    return metadataNode === undefined
+      ? symbolDescriptor(source, name, runtimeNode, exportNode, typeContext)
+      : symbolDescriptor(metadataSource, name, metadataNode,
+        metadataExportNodes.get(localName) ?? metadataNode, typeContext)
+  }
   for (const statement of ast.program.body) {
     if (statement.type === 'ExportDefaultDeclaration' || statement.type === 'ExportAllDeclaration') {
       throw new TypeError('binding source supports named exports only')
@@ -339,15 +551,13 @@ function analyzeExportedSymbols(source, transform) {
     const declaration = statement.declaration
     if (declaration?.type === 'FunctionDeclaration' || declaration?.type === 'ClassDeclaration') {
       if (declaration.id === null) throw new TypeError('binding source exports must be named')
-      exports.set(declaration.id.name, symbolDescriptor(
-        source, declaration.id.name, declaration, statement, sourceTypeNames,
-      ))
+      exports.set(declaration.id.name, descriptor(declaration.id.name, declaration, statement))
       continue
     }
     if (declaration?.type === 'VariableDeclaration') {
       for (const item of declaration.declarations) {
         for (const name of bindingNames(item.id)) {
-          exports.set(name, symbolDescriptor(source, name, item, statement, sourceTypeNames))
+          exports.set(name, descriptor(name, item, statement))
         }
       }
       continue
@@ -359,7 +569,7 @@ function analyzeExportedSymbols(source, transform) {
       identifier(exported, 'exported binding name')
       const target = locals.get(local)
       if (target === undefined) throw new TypeError(`export ${JSON.stringify(exported)} has no local value declaration`)
-      exports.set(exported, symbolDescriptor(source, exported, target, target, sourceTypeNames))
+      exports.set(exported, descriptor(exported, target, target, local))
     }
   }
   if (exports.size === 0) throw new TypeError('binding source must contain at least one named value export')

@@ -7,7 +7,7 @@ import { join } from 'node:path'
 import { createAssistantMessage, createToolResultMessage } from '@deepseek-ai/dsh-llm'
 import { pathToHead, recoverJournal } from '../internal/session-journal-recovery.js'
 import { JOURNAL_VERSION, JOURNAL_VERSIONS, LANGUAGE_SEMANTICS_JOURNAL_VERSION, PER_NAME_USER_BINDINGS_JOURNAL_VERSION } from '../internal/session-journal-schema.js'
-import { LEGACY_USER_BINDING_TRANSFORM } from '../internal/typescript-transform.js'
+import { LEGACY_USER_BINDING_TRANSFORM, USER_BINDING_TRANSFORM } from '../internal/typescript-transform.js'
 import { createUserBindingsSnapshot, normalizeUserBindingEntry, normalizeUserBindingsSnapshot, USER_BINDINGS_META_KEY } from '../internal/user-bindings.js'
 import { encodeValue } from '../internal/value-wire.js'
 import { appendRunCodeEvents, fixture } from './plugin-fixture.js'
@@ -228,6 +228,7 @@ test('format migration preserves confirmed no-ops across every historical journa
     const journal = result.data.meta.dshPtcPlus
     journal.version = version
     journal.confirms = [version === 1 ? calls[0].data.callId : calls[0].seq]
+    if (version < JOURNAL_VERSION) delete journal.moduleTransform
     if (version < LANGUAGE_SEMANTICS_JOURNAL_VERSION) {
       assert.equal(journal.languageSemantics, 'legacy-v1')
       delete journal.languageSemantics
@@ -342,6 +343,7 @@ test('format migration preserves whole-entry and per-name saved values with empt
       const journal = {
         version,
         ...(currentLanguage ? { languageSemantics: 'stateful-v1' } : {}),
+        ...(version === JOURNAL_VERSION ? { moduleTransform: USER_BINDING_TRANSFORM } : {}),
         bindingPolicy: { variableRedeclarations: true, functionClassRedeclarations: true },
         rewritePolicy: { autoRewriteImports: true, autoStripExports: true, autoSplitRedeclarations: true },
         moduleSemantics: { defaultExportBinding: 'live-readonly',

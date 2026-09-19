@@ -42,7 +42,10 @@ export function rewriteNativeCalls(tree, environment, { origin, skip, operations
       parent.node.computed = true
       parent.node.key = t.stringLiteral(path.node.name)
     }
-    path.replaceWith(t.inherits(helper('expose', [path.node]), path.node))
+    if (path.isMemberExpression() && !t.isSuper(path.node.object) && !t.isPrivateName(path.node.property)) {
+      const key = path.node.computed ? path.node.property : t.stringLiteral(path.node.property.name)
+      path.replaceWith(t.inherits(helper('exposeProperty', [path.node.object, key]), path.node))
+    } else path.replaceWith(t.inherits(helper('expose', [path.node]), path.node))
     path.skip()
   }
   const prepare = (callee, target, optional = false) => {

@@ -43,7 +43,7 @@ try {
   assert.match(result.reason, /module node:path/)
   assert.doesNotMatch(result.code, /^\s*(?:import|export)\b/m)
   assert.doesNotMatch(result.code, /:\s*(number|string)\b/)
-  assert.match(result.code, /throw .*this\["__dsh_ptc_return_signal_0__"\]/)
+  assert.match(result.code, /throw .*exposeProperty\(this, "__dsh_ptc_return_signal_0__"\)/)
   assert.equal(result.returnSignal, '__dsh_ptc_return_signal_0__')
   assert.deepEqual(result.rewrites.map(item => item.kind), ['import', 'export', 'redeclaration'])
 })
@@ -66,7 +66,7 @@ test('allocates return control outside persistent REPL bindings', async t => {
     new Set(['__dsh_ptc_return_signal_0__']),
   )
   assert.equal(result.returnSignal, '__dsh_ptc_return_signal_1__')
-  assert.match(result.code, /this\["__dsh_ptc_return_signal_1__"\]/)
+  assert.match(result.code, /exposeProperty\(this, "__dsh_ptc_return_signal_1__"\)/)
   assert.doesNotMatch(result.code, /__dsh_ptc_return_signal_0__/)
   assert.doesNotMatch(result.code, /(?:globalThis|throw new __dsh_ptc).*return_signal/)
   const runtime = new SessionRuntime({ legacyBindingSettings: true })
@@ -163,6 +163,19 @@ test('selects only the recorded production compiler generation', () => {
   assert.deepEqual(current.collisions, [])
   assert.equal(current.languageSemantics, 'stateful-v1')
   assert.throws(() => prepareProgram('return 1', { languageSemantics: 'unknown' }), /unsupported language semantics/)
+})
+
+test('classifies source-owned top-level this without treating compiler transports as ambient input', () => {
+  const options = {
+    languageSemantics: 'stateful-v1', knownBindings: new Set(), reservedBindings: new Set(),
+    bindingPolicy: { variableRedeclarations: true, functionClassRedeclarations: true },
+    rewritesEnabled: ENABLED,
+  }
+  assert.equal(prepareProgram('import { inspect } from "node:util"; const kind = typeof inspect', options).durability,
+    'durable')
+  const collision = prepareProgram('const value = this["__dsh_ptc_root_runtime_0__"]', options)
+  assert.equal(collision.durability, 'volatile')
+  assert.equal(collision.reason, 'ambient globalThis')
 })
 
 test('module durability uses native import scope and checks every static dependency', () => {
@@ -377,6 +390,44 @@ test('classifies global-object aliases and escapes without treating local shadow
     'const Local = class global { static Date = { now: () => 1 }; static value = global.Date.now() }',
     'switch (1) { case 1: const global = { Date: { now: () => 1 } }; global.Date.now() }',
   ]) assert.equal(classifyDurability(source).durability, 'durable', source)
+})
+
+test('classifies only script-level this and its lexical captures as the REPL global', () => {
+  for (const source of [
+    'this',
+    'this.Date.now()',
+    'const read = () => this.Math.random(); read()',
+    'const outer = () => () => this.process; outer()()',
+  ]) assert.deepEqual(classifyDurability(source).reasons,
+    [{ kind: 'ambient', name: 'globalThis' }], source)
+
+  for (const source of [
+    'function read() { return this }',
+    'const read = function () { return this.Date }',
+    'const value = { read() { return this.Date } }',
+    'class Value { read() { return this.Date } }',
+  ]) assert.equal(classifyDurability(source).durability, 'durable', source)
+
+  assert.equal(classifyDurability('export const value = this', new Set(), { sourceType: 'module' }).durability,
+    'durable')
+})
+
+test('classifies source-owned this without treating decorator output as ambient input', () => {
+  const prepareStateful = source => prepareProgram(source, {
+    languageSemantics: 'stateful-v1', knownBindings: new Set(), reservedBindings: new Set(),
+    bindingPolicy: { variableRedeclarations: true, functionClassRedeclarations: true },
+  })
+  for (const source of [
+    'const decorate = value => value; @decorate class Value {}',
+    'const decorate = value => value; class Value { @decorate method() {} }',
+    'const decorate = value => value;\r\nconst marker = "\ud83c\udf1f";\r\n@decorate class Value {}',
+  ]) assert.equal(prepareStateful(source).durability, 'durable', source)
+
+  for (const source of [
+    'const decorate = value => value; @decorate class Value {}; this',
+    'const decorate = value => value; @decorate class Value {}; const read = () => this',
+  ]) assert.deepEqual(prepareStateful(source).reasons,
+    [{ kind: 'ambient', name: 'globalThis' }], source)
 })
 
 test('normalizes executable AST ranges and parser failures to the cell source', () => {

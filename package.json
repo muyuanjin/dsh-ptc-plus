@@ -1,6 +1,6 @@
 {
   "name": "dsh-ptc-plus",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "A session-bound agent-native REPL for DeepSeek Harness PTC mode.",
   "type": "module",
   "main": "./index.js",
@@ -96,6 +96,7 @@
     "review:gate": "node scripts/review-findings.mjs gate",
     "session:migrate": "node scripts/migrate-session-log.mjs",
     "coverage": "node scripts/coverage.mjs",
+    "coverage:focus": "node scripts/coverage.mjs --focus",
     "verify": "npm run review:validate && npm run build:check && node --check index.js && node --check internal/kernel-worker.js && node --check scripts/migrate-session-log.mjs && node --check scripts/expensive-headless-acceptance.mjs && node --check scripts/ab-headless-trajectories.mjs && npm run test:client && npm run coverage",
     "check": "node scripts/review-findings.mjs check",
     "test:expensive": "node scripts/expensive-headless-acceptance.mjs",

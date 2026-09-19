@@ -1264,7 +1264,7 @@ test('treats reflective deletion and redefinition as session-local shadows', asy
   assert.deepEqual(retained.value, ['undefined', 10, 'undefined'])
 })
 
-test('keeps worker-global namespaces dark until a binding value has been exposed', async (t) => {
+test('native modules observe only namespaces installed in the shared worker realm', async (t) => {
   const runtime = new SessionRuntime({ durableReplay: false })
   t.after(() => runtime.dispose())
   let probe = 0
@@ -1276,17 +1276,16 @@ test('keeps worker-global namespaces dark until a binding value has been exposed
       ...(userBindings === undefined ? {} : { userBindings }),
     })
   }
-  const hidden = ['undefined', 'undefined', 'undefined', 'undefined']
-  assert.deepEqual((await observe()).value, hidden)
-  assert.deepEqual((await observe(snapshot([]))).value, hidden)
+  const currentOnly = ['undefined', 'undefined', 'undefined', 'object']
+  assert.deepEqual((await observe()).value, currentOnly)
+  assert.deepEqual((await observe(snapshot([]))).value, currentOnly)
 
   const failed = await observe(snapshot([
     binding('broken-only', 'brokenOnly', 'namespace', 'throw new Error("broken"); export const value = 1'),
   ], 2))
-  assert.deepEqual(failed.value, hidden)
+  assert.deepEqual(failed.value, currentOnly)
   assert.match(failed.logs[0], /broken-only/)
 
-  const currentOnly = ['undefined', 'undefined', 'undefined', 'object']
   assert.deepEqual((await observe(snapshot([
     binding('active', 'active', 'namespace', 'export const value = 1'),
   ], 3))).value, currentOnly)

@@ -34,15 +34,19 @@ export function adaptDynamicCell(code, sourceMap, options) {
   let setup
   if (options.module === true) {
     const runtimeUrl = new URL('./dynamic-environment-runtime.js', import.meta.url)
+    const interfaceOwner = allocate('dynamic_interface_owner')
+    const runtimeOptions = `{interfaceOwner:${interfaceOwner}${options.importOperation === undefined
+      ? '' : `,importModule:${options.importOperation}`}}`
     if (options.sourceType === 'module') {
       const factory = allocate('dynamic_factory')
-      setup = `\nimport {createDynamicEnvironmentRuntime as ${factory}} from ${JSON.stringify(runtimeUrl.href)};\n`
-      expression = `${factory}(${options.importOperation === undefined ? '' : `{importModule:${options.importOperation}}`}).installIntrinsics().environment({strict:true,getThis:()=>void 0})`
-      options = { ...options, internalBindings: new Set([...options.internalBindings ?? [], factory]) }
+      setup = `\nimport {createDynamicEnvironmentRuntime as ${factory}} from ${JSON.stringify(runtimeUrl.href)};\nfunction ${interfaceOwner}(){}\n`
+      expression = `${factory}(${runtimeOptions}).installIntrinsics().environment({strict:true,getThis:()=>void 0})`
+      options = { ...options, internalBindings: new Set([...options.internalBindings ?? [], factory, interfaceOwner]) }
     } else {
       const names = ['exports', 'module', 'require', '__filename', '__dirname', 'arguments']
       const bindings = names.map(name => `[${JSON.stringify(name)},{kind:"param",get:()=>${name}${name === 'arguments' && strict ? '' : `,set:v=>${name}=v`}}]`).join(',')
-      setup = `\nconst ${environmentName}=${commonJsCompilerImport(runtimeUrl)}.createDynamicEnvironmentRuntime(${options.importOperation === undefined ? '' : `{importModule:${options.importOperation}}`}).installIntrinsics().environment({strict:${strict},getThis:()=>this,getNewTarget:()=>new.target,allowNewTarget:true,nativeBindings:[${bindings}]});\n`
+      setup = `\nfunction ${interfaceOwner}(){}\nconst ${environmentName}=${commonJsCompilerImport(runtimeUrl)}.createDynamicEnvironmentRuntime(${runtimeOptions}).installIntrinsics().environment({strict:${strict},getThis:()=>this,getNewTarget:()=>new.target,allowNewTarget:true,nativeBindings:[${bindings}]});\n`
+      options = { ...options, internalBindings: new Set([...options.internalBindings ?? [], interfaceOwner]) }
     }
   } else setup = options.nativeRoot === true ? `\nconst ${environmentName}=${options.environmentGlobal};\n`
     : `\nconst ${environmentName}=${options.rootRuntime}.dynamic();\n`

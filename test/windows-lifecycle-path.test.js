@@ -13,6 +13,7 @@ import {
 } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
+import { createServer } from 'node:net'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { uncoveredEnvironment } from './subprocess-environment.js'
@@ -438,8 +439,10 @@ test('Windows launchers normalize PATH without persistent system resources', asy
   for (const source of [installScript, isolatedScript]) {
     assert.match(source, /windows-lifecycle-path\.ps1/u)
     assert.ok(source.indexOf('Import-LatestWindowsPath') < source.indexOf('Get-Command npm'))
-    assert.doesNotMatch(source, /WindowsPathOverlay|\bsubst\b|npm_config_script_shell|NODE_OPTIONS/iu)
+    assert.doesNotMatch(source, /WindowsPathOverlay|\bsubst\b|npm_config_script_shell/iu)
   }
+  assert.doesNotMatch(installScript, /NODE_OPTIONS/iu)
+  assert.match(isolatedScript, /--max-http-header-size=65536/u)
   assert.match(isolatedScript, /Import-LatestWindowsPath -Prepend @\(\$binRoot, \$nodeDirectory\)/u)
 })
 
@@ -484,6 +487,7 @@ const report = {
   tool, args,
   registry: process.env.npm_config_registry,
   scopeRegistry: process.env['npm_config_@deepseek-ai:registry'],
+  nodeOptions: process.env.NODE_OPTIONS,
 }
 if (tool === 'npm' && args[0] === 'view') {
   const resolved = JSON.parse(execFileSync(process.env.PTC_TEST_NODE,
@@ -597,6 +601,70 @@ for (const shellName of ['powershell.exe', 'pwsh.exe']) {
 
     assert.equal(offline.status, 0, offline.stderr || offline.stdout || offline.error?.message)
     assert.match(offline.stdout, /reusing cached DSH 0\.0\.0-test/u)
+  })
+
+  test(`isolated launcher reuses a profile port and preserves Node options under ${shellName}`, {
+    skip: shellPath === null,
+  }, async t => {
+    const fixture = await developmentRegistryFixture(t)
+    const portCache = path.join(fixture.cacheRoot, 'dsh-home', 'profiles', 'web', '.ptc-plus-dev-web-port')
+    const first = fixture.run(shellPath, { DSH_DEV_PORT: '', NODE_OPTIONS: '--no-warnings' })
+    assert.equal(first.status, 0, first.stderr || first.stdout || first.error?.message)
+    const firstPort = (await readFile(portCache, 'utf8')).trim()
+    assert.match(firstPort, /^\d+$/u)
+
+    const second = fixture.run(shellPath, { DSH_DEV_PORT: '', NODE_OPTIONS: '--no-warnings' })
+    assert.equal(second.status, 0, second.stderr || second.stdout || second.error?.message)
+    assert.equal((await readFile(portCache, 'utf8')).trim(), firstPort)
+
+    const launches = (await fixture.reports()).filter(entry => entry.tool === 'dsh' && entry.args[0] !== 'plugin')
+    assert.equal(launches.length, 2)
+    for (const launch of launches) {
+      assert.deepEqual(launch.args.slice(-2), ['--port', firstPort])
+      assert.equal(launch.nodeOptions, '--no-warnings --max-http-header-size=65536')
+    }
+    const setupCommands = (await fixture.reports()).filter(entry => entry.tool !== 'dsh' || entry.args[0] === 'plugin')
+    assert.ok(setupCommands.length > 0)
+    assert.ok(setupCommands.every(entry => entry.nodeOptions === '--no-warnings'))
+  })
+
+  test(`isolated launcher honors explicit ports and replaces unusable cached ports under ${shellName}`, {
+    skip: shellPath === null,
+  }, async t => {
+    const fixture = await developmentRegistryFixture(t)
+    const portCache = path.join(fixture.cacheRoot, 'dsh-home', 'profiles', 'web', '.ptc-plus-dev-web-port')
+
+    const explicit = fixture.run(shellPath, { DSH_DEV_PORT: '43120' })
+    assert.equal(explicit.status, 0, explicit.stderr || explicit.stdout || explicit.error?.message)
+    await assert.rejects(readFile(portCache), { code: 'ENOENT' })
+
+    await mkdir(path.dirname(portCache), { recursive: true })
+    await writeFile(portCache, 'not-a-port\r\n')
+    const malformed = fixture.run(shellPath, { DSH_DEV_PORT: '' })
+    assert.equal(malformed.status, 0, malformed.stderr || malformed.stdout || malformed.error?.message)
+    const recoveredPort = (await readFile(portCache, 'utf8')).trim()
+    assert.match(recoveredPort, /^\d+$/u)
+
+    const blocker = createServer()
+    await new Promise((resolve, reject) => {
+      blocker.once('error', reject)
+      blocker.listen(0, '127.0.0.1', resolve)
+    })
+    t.after(() => blocker.close())
+    const occupiedPort = String(blocker.address().port)
+    await writeFile(portCache, occupiedPort)
+    const occupied = fixture.run(shellPath, { DSH_DEV_PORT: '' })
+    assert.equal(occupied.status, 0, occupied.stderr || occupied.stdout || occupied.error?.message)
+    const replacementPort = (await readFile(portCache, 'utf8')).trim()
+    assert.notEqual(replacementPort, occupiedPort)
+    assert.match(replacementPort, /^\d+$/u)
+
+    const launches = (await fixture.reports()).filter(entry => entry.tool === 'dsh' && entry.args[0] !== 'plugin')
+    assert.deepEqual(launches.map(entry => entry.args.slice(-2)), [
+      ['--port', '43120'],
+      ['--port', recoveredPort],
+      ['--port', replacementPort],
+    ])
   })
 
   test(`isolated launcher continues after locked cache cleanup and prune failures under ${shellName}`, {

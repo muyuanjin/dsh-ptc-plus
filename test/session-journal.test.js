@@ -43,6 +43,8 @@ import {
   USER_BINDINGS_META_KEY,
 } from '../internal/user-bindings.js'
 import { encodeValue } from '../internal/value-wire.js'
+import { LEGACY_USER_BINDING_TRANSFORM, PREVIOUS_USER_BINDING_TRANSFORM,
+  PROTECTED_MODULE_TRANSFORM, USER_BINDING_TRANSFORM } from '../internal/module-transform-contract.js'
 
 function completion(value = 1) {
   return { kind: 'return', hasValue: true, value: encodeValue(value) }
@@ -81,6 +83,7 @@ function journal(overrides = {}) {
   return {
     version,
     ...(version >= LANGUAGE_SEMANTICS_JOURNAL_VERSION ? { languageSemantics: 'legacy-v1' } : {}),
+    ...(version > LANGUAGE_SEMANTICS_JOURNAL_VERSION ? { moduleTransform: LEGACY_USER_BINDING_TRANSFORM } : {}),
     ...(version >= 4 ? {
       bindingPolicy: { variableRedeclarations: true, functionClassRedeclarations: false },
       rewritePolicy: { autoRewriteImports: true, autoStripExports: true, autoSplitRedeclarations: true },
@@ -218,6 +221,7 @@ test('creates journals, compares semantics, validates names, and merges metadata
   assert.deepEqual(createJournal([4], 'strict', policy), {
     version: JOURNAL_VERSION,
     languageSemantics: 'legacy-v1',
+    moduleTransform: LEGACY_USER_BINDING_TRANSFORM,
     bindingPolicy: { variableRedeclarations: false, functionClassRedeclarations: false },
     rewritePolicy: { autoRewriteImports: true, autoStripExports: true, autoSplitRedeclarations: true },
     moduleSemantics: { defaultExportBinding: 'live-readonly', importExpressionBoundary: 'statement-safe' },
@@ -794,8 +798,12 @@ test('records a closed language generation and migrates old cells without reinte
       assert.throws(() => normalizeJournal({ ...historical, languageSemantics: 'stateful-v1' }), /journal field/)
     }
   }
-  for (const languageSemantics of ['legacy-v1', 'stateful-v1', 'protected-v1']) {
-    const normalized = normalizeJournal(journal({ languageSemantics }))
+  for (const [languageSemantics, moduleTransform] of [
+    ['legacy-v1', LEGACY_USER_BINDING_TRANSFORM],
+    ['stateful-v1', USER_BINDING_TRANSFORM],
+    ['protected-v1', PROTECTED_MODULE_TRANSFORM],
+  ]) {
+    const normalized = normalizeJournal(journal({ languageSemantics, moduleTransform }))
     assert.equal(normalized.languageSemantics, languageSemantics)
     assert.deepEqual(normalizeJournal(normalized), normalized)
   }
@@ -803,6 +811,30 @@ test('records a closed language generation and migrates old cells without reinte
     assert.throws(() => normalizeJournal(journal({ languageSemantics })), /language semantics/)
   }
   assert.equal(journalsEqual(journal({ languageSemantics: 'stateful-v1' }), journal()), false)
+})
+
+test('records the exact module transform and freezes version 9 language mappings', () => {
+  for (const [languageSemantics, historicalTransform, currentTransform] of [
+    ['legacy-v1', LEGACY_USER_BINDING_TRANSFORM, LEGACY_USER_BINDING_TRANSFORM],
+    ['stateful-v1', PREVIOUS_USER_BINDING_TRANSFORM, USER_BINDING_TRANSFORM],
+    ['protected-v1', PROTECTED_MODULE_TRANSFORM, PROTECTED_MODULE_TRANSFORM],
+  ]) {
+    const historical = journal({ version: LANGUAGE_SEMANTICS_JOURNAL_VERSION, languageSemantics })
+    const normalized = normalizeJournal(historical)
+    assert.equal(normalized.moduleTransform, historicalTransform)
+    assert.deepEqual(normalizeJournal(normalized), normalized)
+
+    const current = normalizeJournal(journal({ languageSemantics, moduleTransform: currentTransform }))
+    assert.equal(current.moduleTransform, currentTransform)
+  }
+  assert.throws(() => normalizeJournal(journal({ moduleTransform: 'unknown' })), /module transform/)
+  assert.throws(() => normalizeJournal(journal({
+    languageSemantics: 'legacy-v1', moduleTransform: USER_BINDING_TRANSFORM,
+  })), /does not match/)
+  assert.throws(() => normalizeJournal({
+    ...journal({ version: LANGUAGE_SEMANTICS_JOURNAL_VERSION }),
+    moduleTransform: PREVIOUS_USER_BINDING_TRANSFORM,
+  }), /journal field moduleTransform/)
 })
 
 test('records per-name shadow evidence without changing any historical whole-entry generation', () => {
@@ -934,6 +966,7 @@ test('migrates predecessor journals and only unambiguous legacy call identities'
   assert.deepEqual(normalizeJournal(legacy), {
     version: JOURNAL_VERSION,
     languageSemantics: 'legacy-v1',
+    moduleTransform: LEGACY_USER_BINDING_TRANSFORM,
     bindingPolicy: { variableRedeclarations: true, functionClassRedeclarations: false },
     rewritePolicy: { autoRewriteImports: false, autoStripExports: false, autoSplitRedeclarations: false },
     moduleSemantics: { defaultExportBinding: 'legacy-variable', importExpressionBoundary: 'legacy' },

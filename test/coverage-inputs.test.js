@@ -6,7 +6,12 @@ import { join, relative } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import test from 'node:test'
 import { coverageInputFilter } from '../scripts/coverage-inputs.mjs'
-import { COVERAGE_THRESHOLDS, createCoverageReport } from '../scripts/coverage-report.mjs'
+import {
+  COVERAGE_INCLUDE,
+  COVERAGE_THRESHOLDS,
+  coverageReportArguments,
+  createCoverageReport,
+} from '../scripts/coverage-report.mjs'
 import { uncoveredEnvironment } from './subprocess-environment.js'
 
 async function fixture(t) {
@@ -23,6 +28,44 @@ async function fixture(t) {
   await writeFile(dependency, source)
   return { root, own, dependency, source }
 }
+
+test('focused report arguments select explicit sources', () => {
+  assert.deepEqual(coverageReportArguments(['raw']), {
+    directory: 'raw', include: COVERAGE_INCLUDE, focused: false,
+  })
+  assert.deepEqual(coverageReportArguments([
+    'raw', '--include', 'internal/first.js', '--include', 'internal/second.js',
+  ]), {
+    directory: 'raw', include: ['internal/first.js', 'internal/second.js'], focused: true,
+  })
+  assert.throws(() => coverageReportArguments([]), /requires an evidence directory/)
+  assert.throws(() => coverageReportArguments(['raw', '--include']), /requires a value/)
+  assert.throws(() => coverageReportArguments(['raw', '--unknown']), /unknown coverage report argument/)
+})
+
+test('focused reports retain an unexecuted selected source as uncovered', async t => {
+  const cwd = process.cwd()
+  t.after(() => process.chdir(cwd))
+  const { root } = await fixture(t)
+  const directory = join(root, 'raw')
+  const selected = join(root, 'internal', 'selected.js')
+  await mkdir(directory)
+  await writeFile(selected, 'export function selected(value) { return value ? 1 : 2 }\n')
+  await writeFile(join(directory, 'worker.json'), JSON.stringify({ result: [] }))
+  process.chdir(root)
+  const { report } = createCoverageReport({
+    root,
+    directory,
+    include: ['internal/selected.js'],
+    includeUncovered: true,
+    reporters: [],
+  })
+  const map = await report.getCoverageMapFromAllCoverageFiles()
+  assert.deepEqual(map.files(), [selected])
+  const summary = map.fileCoverageFor(selected).toSummary()
+  assert.equal(summary.lines.pct, 0)
+  assert.equal(summary.functions.pct, 0)
+})
 
 test('coverage input filtering retains mapped plugin code and leaves unproved maps to c8', async t => {
   const { root, own, dependency, source } = await fixture(t)

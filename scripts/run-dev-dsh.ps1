@@ -201,6 +201,53 @@ function Get-FreeLoopbackPort {
     }
 }
 
+function Test-LoopbackPortAvailable {
+    param(
+        [Parameter(Mandatory = $true)]
+        [int] $Port
+    )
+
+    $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, $Port)
+    try {
+        $listener.Start()
+        return $true
+    } catch [Net.Sockets.SocketException] {
+        return $false
+    } finally {
+        $listener.Stop()
+    }
+}
+
+function Get-ProfileWebPort {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $CachePath
+    )
+
+    if (Test-Path -LiteralPath $CachePath -PathType Leaf) {
+        $cachedPort = (Get-Content -LiteralPath $CachePath -Raw).Trim()
+        $parsedPort = 0
+        if ($cachedPort -match '^\d+$' -and
+            [int]::TryParse($cachedPort, [ref] $parsedPort) -and
+            $parsedPort -ge 1 -and $parsedPort -le 65535 -and
+            (Test-LoopbackPortAvailable $parsedPort)) {
+            return $parsedPort
+        }
+    }
+
+    $selectedPort = Get-FreeLoopbackPort
+    $temporaryPath = "$CachePath.$([Guid]::NewGuid().ToString('N')).tmp"
+    try {
+        Set-Content -LiteralPath $temporaryPath -Value $selectedPort -Encoding ASCII
+        Move-Item -LiteralPath $temporaryPath -Destination $CachePath -Force
+    } finally {
+        if (Test-Path -LiteralPath $temporaryPath -PathType Leaf) {
+            Remove-Item -LiteralPath $temporaryPath -Force
+        }
+    }
+    return $selectedPort
+}
+
 Import-LatestWindowsPath
 
 $registry = if ([string]::IsNullOrWhiteSpace($env:DSH_DEV_REGISTRY)) {
@@ -430,7 +477,8 @@ if ($null -ne $DshArguments) {
 if ($ProfileName -eq 'web' -and -not ($launchArguments | Where-Object { $_ -eq '--port' -or $_ -like '--port=*' })) {
     $configuredPort = $env:DSH_DEV_PORT
     if ([string]::IsNullOrWhiteSpace($configuredPort)) {
-        $configuredPort = [string] (Get-FreeLoopbackPort)
+        $portCachePath = Join-Path $profileDirectory '.ptc-plus-dev-web-port'
+        $configuredPort = [string] (Get-ProfileWebPort $portCachePath)
     }
     if ($configuredPort -notmatch '^\d+$' -or [int] $configuredPort -lt 0 -or [int] $configuredPort -gt 65535) {
         throw "DSH_DEV_PORT must be an integer between 0 and 65535."
@@ -438,5 +486,8 @@ if ($ProfileName -eq 'web' -and -not ($launchArguments | Where-Object { $_ -eq '
     $launchArguments += @('--port', $configuredPort)
     Write-Host "Using Web port $configuredPort."
 }
+$env:NODE_OPTIONS = (($env:NODE_OPTIONS, '--max-http-header-size=65536' | Where-Object {
+    -not [string]::IsNullOrWhiteSpace($_)
+}) -join ' ').Trim()
 & $dshCommandPath @launchArguments
 exit $LASTEXITCODE

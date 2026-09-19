@@ -191,8 +191,10 @@ function rewriteRootReferences(code, sourceMap, runtime, candidateNames, candida
     }
     handled.add(path.node.start)
   } })
+  const classificationSource = applySourceEdits(code, sourceMap, classificationEdits)
   return { ...applySourceEdits(code, sourceMap, edits),
-    classificationCode: applySourceEdits(code, sourceMap, classificationEdits).code,
+    classificationCode: classificationSource.code,
+    classificationSourceMap: classificationSource.sourceMap,
     implicitDeclarations: [...implicitDeclarations.values()],
     readNames: [...readNames] }
 }

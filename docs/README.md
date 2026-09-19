@@ -22,6 +22,7 @@
 ## Maintenance
 
 - [Deterministic Verification](verification.md): complete checks, backend test concurrency, coverage, and focused diagnostics.
+- [Focused Verification](verification-optimization-work.md): bounded coverage diagnostics and their relationship to the final verification gate.
 - [Semantic Validation](semantic-validation.md): pinned Test262 cases, dialect contracts, native differential matrices and their limits.
 - [Publishing](publishing.md): release checks, package contents, permissions, and platform validation.
 - [Client UI](client-ui.md): current UI boundary and reevaluation criteria.

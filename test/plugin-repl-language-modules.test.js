@@ -488,6 +488,112 @@ test('uses the session cwd for child processes while preserving explicit cwd', a
   await assertSameFilesystemEntry(result.value.explicitCwd, explicit)
 })
 
+test('keeps child-process cwd projection after an earlier intrinsic mutation', async (t) => {
+  const project = await mkdtemp(join(tmpdir(), 'dsh-ptc-plus-child-intrinsic-'))
+  t.after(() => rm(project, { recursive: true, force: true }))
+  const spawnSource = [
+    "const childProcess = require('node:child_process')",
+    "const source = 'process.stdout.write(process.cwd())'",
+    "return childProcess.spawnSync(process.execPath, ['-e', source], { encoding: 'utf8' }).stdout",
+  ].join('\n')
+  const execSource = [
+    "const childProcess = require('node:child_process')",
+    "const source = 'process.stdout.write(process.cwd())'",
+    "const command = JSON.stringify(process.execPath) + ' -e ' + JSON.stringify(source)",
+    'return await new Promise((resolve, reject) => childProcess.exec(command, (error, stdout) => error === null ? resolve(stdout) : reject(error)))',
+  ].join('\n')
+  const cases = [
+    ['array-is-array', 'Array.isArray = null', spawnSource],
+    ['reflect-apply', 'Reflect.apply = null', spawnSource],
+    ['array-splice', 'Array.prototype.splice = null', execSource],
+  ]
+
+  for (const [name, mutation, source] of cases) {
+    const state = fixture()
+    const session = { events: [], header: { cwd: project } }
+    try {
+      assert.deepEqual(await state.run(`child-process-intrinsic-${name}`, [
+        mutation,
+        "return 'mutated'",
+      ].join('\n'), {}, { session }), { logs: [], value: 'mutated' })
+      const result = await state.run(`child-process-intrinsic-${name}`, source, {}, { session })
+      assert.equal(result.error, undefined, name)
+      await assertSameFilesystemEntry(result.value, project)
+    } finally {
+      await state.dispose()
+    }
+  }
+})
+
+test('keeps Buffer filesystem paths after earlier Buffer intrinsic mutations', async (t) => {
+  const project = await mkdtemp(join(tmpdir(), 'dsh-ptc-plus-buffer-intrinsic-'))
+  await writeFile(join(project, 'value.txt'), 'session-value')
+  const state = fixture()
+  t.after(async () => {
+    await state.dispose()
+    await rm(project, { recursive: true, force: true })
+  })
+  const session = { events: [], header: { cwd: project } }
+
+  await state.run('buffer-path-intrinsic', [
+    'Buffer.isBuffer = null',
+    'Buffer.concat = null',
+  ].join('\n'), {}, { session })
+  const result = await state.run('buffer-path-intrinsic', [
+    "const fs = require('node:fs')",
+    "return fs.readFileSync(Buffer.from('value.txt'), 'utf8')",
+  ].join('\n'), {}, { session })
+
+  assert.deepEqual(result, { logs: [], value: 'session-value' })
+})
+
+test('keeps filesystem and path projection after iterator and regexp mutations', async (t) => {
+  const project = await mkdtemp(join(tmpdir(), 'dsh-ptc-plus-path-intrinsic-'))
+  await writeFile(join(project, 'value.txt'), 'session-value')
+  const state = fixture()
+  t.after(async () => {
+    await state.dispose()
+    await rm(project, { recursive: true, force: true })
+  })
+  const session = { events: [], header: { cwd: project } }
+
+  await state.run('path-intrinsic', [
+    'Array.prototype[Symbol.iterator] = null',
+    'RegExp.prototype.test = null',
+  ].join('\n'), {}, { session })
+  const result = await state.run('path-intrinsic', [
+    "const fs = require('node:fs')",
+    "const path = require('node:path')",
+    "const created = fs.mkdtempSync('.')",
+    "const value = fs.readFileSync('value.txt', 'utf8')",
+    "const resolved = path.resolve('nested')",
+    'return { value, resolved }',
+  ].join('\n'), {}, { session })
+
+  assert.equal(result.error, undefined)
+  assert.equal(result.value.value, 'session-value')
+  assert.equal(result.value.resolved, join(project, 'nested'))
+})
+
+test('keeps glob callback projection after an earlier splice mutation', async (t) => {
+  const project = await mkdtemp(join(tmpdir(), 'dsh-ptc-plus-glob-intrinsic-'))
+  await writeFile(join(project, 'value.txt'), 'session-value')
+  const state = fixture()
+  t.after(async () => {
+    await state.dispose()
+    await rm(project, { recursive: true, force: true })
+  })
+  const session = { events: [], header: { cwd: project } }
+
+  await state.run('glob-intrinsic', 'Array.prototype.splice = null', {}, { session })
+  const result = await state.run('glob-intrinsic', [
+    "const fs = require('node:fs')",
+    "return await new Promise((resolve, reject) => fs.glob('*.txt', (error, matches) => error === null ? resolve(matches) : reject(error)))",
+  ].join('\n'), {}, { session })
+
+  assert.deepEqual(result, { logs: [], value: ['value.txt'] })
+})
+
 test('injects session cwd into execFile callback overloads', async (t) => {
   const project = await mkdtemp(join(tmpdir(), 'dsh-ptc-plus-execfile-callback-'))
   const state = fixture()

@@ -1,5 +1,10 @@
 import { isAbsolute, parse, resolve, sep } from 'node:path'
 import { promisify } from 'node:util'
+import { runtimeIntrinsics as internal } from './runtime-intrinsics.js'
+
+const { Reflect: privateReflect, appendArray, bufferConcat, bufferIsBuffer, bufferToString,
+  copyArray, isArray, regexpTest } = internal
+const TRAILING_SEPARATOR = /[\\/]$/
 
 const FILE_SYSTEM_PATH_ARGUMENTS = Object.freeze({
   access: [0], accessSync: [0], appendFile: [0], appendFileSync: [0],
@@ -34,7 +39,7 @@ const CHILD_PROCESS_PROJECTED_PROPERTIES = Object.freeze({
 function wrapBuiltinCallable(original, projectArguments, projectedProperties = []) {
   const wrapped = {
     invoke(...args) {
-      return Reflect.apply(original, this, projectArguments(args))
+      return privateReflect.apply(original, this, projectArguments(args))
     },
   }.invoke
   const descriptors = Object.getOwnPropertyDescriptors(original)
@@ -59,80 +64,89 @@ function wrapBuiltin(owner, name, projectArguments, projectedProperties) {
   owner[name] = wrapBuiltinCallable(original, projectArguments, projectedProperties)
 }
 
+export function projectChildProcessArguments(name, args, sessionCwd) {
+  const sessionChildOptions = options => (
+    options === null || typeof options !== 'object' || options.cwd !== undefined
+      ? options
+      : { ...options, cwd: sessionCwd }
+  )
+  const withDefaultOptions = (index) => {
+    const next = copyArray(args)
+    next[index] = sessionChildOptions(next[index]) ?? { cwd: sessionCwd }
+    return next
+  }
+  const insertDefaultOptions = (index) => {
+    const next = copyArray(args, 0, index)
+    appendArray(next, { cwd: sessionCwd })
+    return copyArray(args, index, args.length, next)
+  }
+  if (name === 'exec' || name === 'execSync') {
+    const next = copyArray(args)
+    if (typeof next[1] === 'function') return insertDefaultOptions(1)
+    else next[1] = sessionChildOptions(next[1]) ?? { cwd: sessionCwd }
+    return next
+  }
+  if (name === 'execFile' || name === 'execFileSync') {
+    if (args.length === 1 || typeof args[1] === 'function') {
+      return insertDefaultOptions(1)
+    }
+    if (typeof args[2] === 'function') {
+      if (args[1] !== undefined && !isArray(args[1])) return withDefaultOptions(1)
+      return insertDefaultOptions(2)
+    }
+    if (args[1] !== undefined && !isArray(args[1])) return withDefaultOptions(1)
+    return withDefaultOptions(2)
+  }
+  return args.length === 1 || (args[1] !== undefined && !isArray(args[1]))
+    ? withDefaultOptions(1)
+    : withDefaultOptions(2)
+}
+
 /** Install one session's cwd projection into Node builtins loaded by the worker. */
 export function installWorkerCwdVirtualization(sessionCwd, originalRequire, markVolatile) {
   if (sessionCwd === undefined) {
     const nativeCwd = process.cwd
     process.cwd = () => {
       markVolatile('process.cwd')
-      return Reflect.apply(nativeCwd, process, [])
+      return privateReflect.apply(nativeCwd, process, [])
     }
     return
   }
   const nativeResolve = resolve
-  const bufferPrefix = Buffer.from(sessionCwd + (/[\\/]$/.test(sessionCwd) ? '' : sep))
+  const bufferPrefix = Buffer.from(sessionCwd + (regexpTest(TRAILING_SEPARATOR, sessionCwd) ? '' : sep))
   const sessionPath = (value) => {
     if (typeof value === 'string') return isAbsolute(value) ? value : nativeResolve(sessionCwd, value)
-    if (Buffer.isBuffer(value)) {
-      const absolute = isAbsolute(String.fromCharCode(...value.subarray(0, 3)))
-      return absolute ? value : Buffer.concat([bufferPrefix, value])
+    if (bufferIsBuffer(value)) {
+      const absolute = isAbsolute(bufferToString(value, 'utf8', 0, 3))
+      return absolute ? value : bufferConcat([bufferPrefix, value])
     }
     return value
   }
   const sessionPathPrefix = (value) => {
     if (typeof value !== 'string' || isAbsolute(value) || parse(value).root !== '') return sessionPath(value)
-    return sessionCwd + (/[\\/]$/.test(sessionCwd) ? '' : sep) + value
+    return sessionCwd + (regexpTest(TRAILING_SEPARATOR, sessionCwd) ? '' : sep) + value
   }
   const projectPaths = (args, indices) => {
-    const next = [...args]
-    for (const index of indices) next[index] = sessionPath(next[index])
+    const next = copyArray(args)
+    for (let offset = 0; offset < indices.length; offset += 1) {
+      const index = indices[offset]
+      next[index] = sessionPath(next[index])
+    }
     return next
   }
   const projectPrefix = (args) => {
-    const next = [...args]
+    const next = copyArray(args)
     next[0] = sessionPathPrefix(next[0])
     return next
   }
-  const sessionChildOptions = options => (
-    options === null || typeof options !== 'object' || options.cwd !== undefined
-      ? options
-      : { ...options, cwd: sessionCwd }
-  )
-  const withDefaultOptions = (args, index) => {
-    const next = [...args]
-    next[index] = sessionChildOptions(next[index]) ?? { cwd: sessionCwd }
-    return next
-  }
-  const childProcessOptions = (name, args) => {
-    if (name === 'exec' || name === 'execSync') {
-      const next = [...args]
-      if (typeof next[1] === 'function') next.splice(1, 0, { cwd: sessionCwd })
-      else next[1] = sessionChildOptions(next[1]) ?? { cwd: sessionCwd }
-      return next
-    }
-    if (name === 'execFile' || name === 'execFileSync') {
-      if (args.length === 1 || typeof args[1] === 'function') {
-        const next = [...args]
-        next.splice(1, 0, { cwd: sessionCwd })
-        return next
-      }
-      if (typeof args[2] === 'function') {
-        if (args[1] !== undefined && !Array.isArray(args[1])) return withDefaultOptions(args, 1)
-        const next = [...args]
-        next.splice(2, 0, { cwd: sessionCwd })
-        return next
-      }
-      if (args[1] !== undefined && !Array.isArray(args[1])) return withDefaultOptions(args, 1)
-      return withDefaultOptions(args, 2)
-    }
-    return args.length === 1 || (args[1] !== undefined && !Array.isArray(args[1]))
-      ? withDefaultOptions(args, 1)
-      : withDefaultOptions(args, 2)
-  }
   const sessionGlobOptions = (args) => {
-    const next = [...args]
-    if (typeof next[1] === 'function') next.splice(1, 0, { cwd: sessionCwd })
-    else if (next[1] === undefined) next[1] = { cwd: sessionCwd }
+    if (typeof args[1] === 'function') {
+      const next = copyArray(args, 0, 1)
+      appendArray(next, { cwd: sessionCwd })
+      return copyArray(args, 1, args.length, next)
+    }
+    const next = copyArray(args)
+    if (next[1] === undefined) next[1] = { cwd: sessionCwd }
     else if (next[1] !== null && typeof next[1] === 'object' && next[1].cwd === undefined) {
       next[1] = { ...next[1], cwd: sessionCwd }
     }
@@ -159,9 +173,10 @@ export function installWorkerCwdVirtualization(sessionCwd, originalRequire, mark
     wrapBuiltin(fs, name, sessionGlobOptions)
     wrapBuiltin(fs.promises, name, sessionGlobOptions)
   }
-  wrapBuiltin(path, 'resolve', args => [sessionCwd, ...args])
+  wrapBuiltin(path, 'resolve', args => copyArray(args, 0, args.length, [sessionCwd]))
   const childProcess = originalRequire('node:child_process')
   for (const name of ['exec', 'execFile', 'execFileSync', 'execSync', 'fork', 'spawn', 'spawnSync']) {
-    wrapBuiltin(childProcess, name, args => childProcessOptions(name, args), CHILD_PROCESS_PROJECTED_PROPERTIES[name])
+    wrapBuiltin(childProcess, name,
+      args => projectChildProcessArguments(name, args, sessionCwd), CHILD_PROCESS_PROJECTED_PROPERTIES[name])
   }
 }

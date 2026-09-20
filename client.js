@@ -2771,6 +2771,7 @@
   };
   if (typeof Buffer === "function") {
     runtimeIntrinsics.bufferByteLength = Buffer.byteLength;
+    runtimeIntrinsics.bufferConcat = Buffer.concat;
     runtimeIntrinsics.bufferIsBuffer = Buffer.isBuffer;
     runtimeIntrinsics.bufferSubarray = uncurry2(Buffer.prototype.subarray);
     runtimeIntrinsics.bufferToString = uncurry2(Buffer.prototype.toString);

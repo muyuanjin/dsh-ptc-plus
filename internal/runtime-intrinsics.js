@@ -94,6 +94,7 @@ export const runtimeIntrinsics = {
 
 if (typeof Buffer === 'function') {
   runtimeIntrinsics.bufferByteLength = Buffer.byteLength
+  runtimeIntrinsics.bufferConcat = Buffer.concat
   runtimeIntrinsics.bufferIsBuffer = Buffer.isBuffer
   runtimeIntrinsics.bufferSubarray = uncurry(Buffer.prototype.subarray)
   runtimeIntrinsics.bufferToString = uncurry(Buffer.prototype.toString)

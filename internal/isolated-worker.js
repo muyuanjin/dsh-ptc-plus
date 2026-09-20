@@ -44,6 +44,7 @@ export class IsolatedWorker extends EventEmitter {
     this.stderr = new PassThrough()
     this.protocol = protocol
     this.exited = false
+    this.exitedPromise = new Promise(resolve => { this.resolveExited = resolve })
     this.exitCode = undefined
     this.exitSignal = undefined
     this.released = false
@@ -84,6 +85,7 @@ export class IsolatedWorker extends EventEmitter {
       this.exited = true
       this.exitCode = code
       this.exitSignal = signal
+      this.resolveExited()
       this.#rejectUtilizationRequests(new Error('kernel helper exited before answering utilization sampling'))
     })
     // A ChildProcess 'close' follows 'exit' once its stdio has really ended, which
@@ -268,7 +270,7 @@ export class IsolatedWorker extends EventEmitter {
     const started = Date.now()
     const killAt = started + ISOLATED_RELEASE_MS
     const confirmBy = started + ISOLATED_STOP_MS
-    const exited = new Promise(resolve => { this.child.once('exit', resolve) })
+    const exited = this.exitedPromise
     const onReleased = message => {
       if (message?.type === 'worker-message' && message.value?.type === 'shutdown-released') this.released = true
     }
@@ -282,18 +284,19 @@ export class IsolatedWorker extends EventEmitter {
         // The channel is closed; the kill path below owns the instance.
       }
       if (!await leftWithin(this, remaining(killAt))) {
+        let killFailure
         if (!this.exited) {
           try {
             await this.kill()
           } catch (error) {
-            // Reclamation failed: keep the failure observable on the transport so
-            // the owner can retain responsibility for this instance.
-            this.reclamationFailure = error
-            throw error
+            // On Windows a process that has already left can report a refused
+            // kill before Node delivers its exit event. The real exit observation
+            // decides whether this instance was reclaimed.
+            killFailure = error
           }
         }
         if (!this.exited && !await leftWithin(this, remaining(confirmBy))) {
-          const failure = new Error('kernel helper did not exit before the close deadline')
+          const failure = killFailure ?? new Error('kernel helper did not exit before the close deadline')
           this.reclamationFailure = failure
           throw failure
         }

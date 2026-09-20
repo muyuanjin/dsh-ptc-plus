@@ -47,6 +47,26 @@ test('shares one close outcome across concurrent callers', async t => {
   assert.equal(current.kills, 0)
 })
 
+test('does not miss an exit observed while the close deadline is initialized', async t => {
+  t.mock.module('node:child_process', { namedExports: { fork: () => current } })
+  const worker = await started()
+  const originalNow = Date.now
+  let emitted = false
+  t.mock.method(Date, 'now', () => {
+    if (!emitted) {
+      emitted = true
+      current.emit('exit', 0, null)
+    }
+    return originalNow()
+  })
+
+  await Promise.race([
+    worker.terminate(),
+    new Promise((_, reject) => setTimeout(() => reject(new Error('close missed the observed exit')), 100)),
+  ])
+  assert.equal(worker.exited, true)
+})
+
 test('publishes process exit after final stderr and before transport close', async t => {
   t.mock.module('node:child_process', { namedExports: { fork: () => current } })
   const worker = await started()
@@ -122,13 +142,34 @@ test('still kills the helper when the stop request cannot be sent', async t => {
   assert.match(await outcome, /did not exit before the close deadline/)
 })
 
-test('reports a refused kill as a retained failure', async t => {
-  t.mock.timers.enable({ apis: ['setTimeout'] })
+test('accepts an exit delivered after the platform could not confirm the kill', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] })
   t.mock.module('node:child_process', { namedExports: { fork: () => current } })
   const worker = await started({ killResult: false })
   const closing = worker.terminate()
+  const outcome = closing.then(() => 'resolved', error => error.message)
+  await flush()
   t.mock.timers.tick(1000)
-  await assert.rejects(closing, /could not be killed/)
+  await flush()
+  assert.equal(current.kills, 1)
+  current.emit('exit', 0, null)
+  assert.equal(await outcome, 'resolved')
+  assert.equal(worker.reclamationFailure, undefined)
+})
+
+test('reports a refused kill when the helper still does not exit', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] })
+  t.mock.module('node:child_process', { namedExports: { fork: () => current } })
+  const worker = await started({ killResult: false })
+  const closing = worker.terminate()
+  const outcome = closing.then(() => 'resolved', error => error.message)
+  await flush()
+  t.mock.timers.tick(1000)
+  await flush()
+  assert.equal(current.kills, 1)
+  t.mock.timers.tick(4000)
+  await flush()
+  assert.match(await outcome, /could not be killed/)
   assert.match(worker.reclamationFailure.message, /could not be killed/)
 })
 

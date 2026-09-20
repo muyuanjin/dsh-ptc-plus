@@ -6,14 +6,20 @@ import path from 'node:path'
 import test from 'node:test'
 import {
   ACTIVE_LEDGER,
+  ACTIVE_REVIEW_PLAN,
+  REVIEW_PLAN_TEMPLATE_PATH,
   TEMPLATE_PATH,
   checkReviewLedger,
   createReviewLedger,
+  createReviewPlan,
+  finalizeReviewVerdict,
   gateReviewLedger,
   installHook,
   parseReviewLedger,
   preCommitReviewLedger,
-  recordReviewVerdict,
+  recordReviewLaneVerdict,
+  recordReviewPlan,
+  reviewStatus,
   indexTreeFingerprint,
   sourceTreeFingerprint,
   validateReviewLedger,
@@ -22,6 +28,7 @@ import {
 import { writeRawFilenameFixture } from './raw-filename-fixture.js'
 
 const templateText = await readFile(TEMPLATE_PATH, 'utf8')
+const planTemplateText = await readFile(REVIEW_PLAN_TEMPLATE_PATH, 'utf8')
 
 function ledger(overrides = {}) {
   const finding = {
@@ -79,14 +86,53 @@ function headOf(root) {
 }
 
 async function recordCleanVerdict(root, fingerprint = sourceTreeFingerprint) {
+  const plan = path.join(root, ACTIVE_REVIEW_PLAN)
+  await writeFile(plan, JSON.stringify({
+    schema: 'dsh-review-plan/v1',
+    obligations: [
+      {
+        id: 'complete-review',
+        description: 'Review the complete candidate used by this gate test.',
+        disposition: 'covered',
+        reason: null,
+      },
+      ...[
+        'intrinsic-handling',
+        'scope-and-declaration-ownership',
+        'callable-reconstruction',
+        'module-and-cross-entry-contracts',
+        'historical-semantics-and-recovery',
+      ].map(id => ({
+        id,
+        description: `Standard obligation ${id}.`,
+        disposition: 'excluded',
+        reason: 'This gate fixture changes no product semantics.',
+      })),
+    ],
+    lanes: [{
+      id: 'complete-review',
+      scope: 'The complete candidate.',
+      paths: ['.'],
+      dependsOn: [],
+      obligations: ['complete-review'],
+      owners: ['The test candidate owner.'],
+      consumers: ['The commit gate.'],
+      counterexamples: ['A changed candidate must invalidate this lane.'],
+    }],
+  }))
+  await recordReviewPlan(root, { base: headOf(root) })
+  const status = await reviewStatus(root)
   const report = path.join(root, '.git', 'review-report.txt')
   await writeFile(report, 'the frozen candidate has no findings\nVERDICT: NO FINDINGS\n')
-  return recordReviewVerdict(root, {
-    base: headOf(root),
+  await recordReviewLaneVerdict(root, {
+    lane: 'complete-review',
     expectHead: headOf(root),
     evidence: report,
-    expectFingerprint: await fingerprint(root),
+    expectFingerprint: status.lanes[0].fingerprint,
+  })
+  return finalizeReviewVerdict(root, {
     fingerprint: () => fingerprint(root),
+    head: () => headOf(root),
   })
 }
 
@@ -173,6 +219,11 @@ test('requires accepted findings to retain one durable disposition owner', async
   await writeFile(path.join(root, 'docs/decision.md'), '# Decision\n')
   execFileSync('git', ['add', 'docs/decision.md'], { cwd: root })
   assert.equal((await gateReviewLedger(root)).state, 'ready')
+  await writeFile(active, accepted('docs'))
+  await assert.rejects(() => gateReviewLedger(root), /must name a tracked file or HTTPS issue/)
+  await writeFile(active, accepted('docs/decision.md'))
+  await unlink(path.join(root, 'docs/decision.md'))
+  await assert.rejects(() => gateReviewLedger(root), /must name a tracked file or HTTPS issue/)
 })
 
 test('validates open and resolved ledgers without applying readiness or archive', async (t) => {
@@ -668,12 +719,17 @@ test('refreshes a stale proof after a later check without an active ledger', asy
   })).state, 'verified')
 })
 
-test('creates the ignored ledger only through the authorized lifecycle', async (t) => {
+test('creates ignored review working files only through their authorized lifecycles', async (t) => {
   const root = await repository(t, 'ptc-review-create-')
   const active = await createReviewLedger(root)
+  const activePlan = await createReviewPlan(root)
   assert.equal(await readFile(active, 'utf8'), templateText)
+  assert.equal(await readFile(activePlan, 'utf8'), planTemplateText)
+  assert.equal(path.basename(activePlan), ACTIVE_REVIEW_PLAN)
   assert.match(await readFile(path.join(root, '.git/info/exclude'), 'utf8'), /^\/REVIEW_FINDINGS\.md$/m)
+  assert.match(await readFile(path.join(root, '.git/info/exclude'), 'utf8'), /^\/REVIEW_PLAN\.json$/m)
   await assert.rejects(() => createReviewLedger(root), /already exists/)
+  await assert.rejects(() => createReviewPlan(root), /already exists/)
 })
 
 test('keeps verification, checked archive, and hook installation explicit', async () => {
@@ -681,6 +737,8 @@ test('keeps verification, checked archive, and hook installation explicit', asyn
   const agentContract = await readFile(new URL('../AGENTS.md', import.meta.url), 'utf8')
   assert.equal(packageJson.scripts.prepare, undefined)
   assert.equal(packageJson.scripts['hooks:install'], 'node scripts/review-findings.mjs install-hook')
+  assert.equal(packageJson.scripts['review:plan:new'], 'node scripts/review-findings.mjs plan-create')
+  assert.equal(packageJson.scripts['review:finalize'], 'node scripts/review-findings.mjs finalize')
   assert.match(packageJson.scripts.verify, /^npm run review:validate && /)
   assert.doesNotMatch(packageJson.scripts.verify, /review:gate/)
   assert.equal(packageJson.scripts.check, 'node scripts/review-findings.mjs check')

@@ -6,11 +6,11 @@ PTC Plus needs a tracked instruction surface for product boundaries, source owne
 
 ## Decision
 
-`AGENTS.md` contains only obligations whose subject is PTC Plus: DSH authority, runtime and journal invariants, public source ownership, the checkout-local review ledger, deterministic verification, documentation parity, generated-material exclusions, and delivery safety. It links the canonical product and architecture documents rather than duplicating their detailed behavior.
+`AGENTS.md` contains only obligations whose subject is PTC Plus: DSH authority, runtime and journal invariants, public source ownership, checkout-local review state, deterministic verification, documentation parity, generated-material exclusions, and delivery safety. It links the canonical product and architecture documents rather than duplicating their detailed behavior.
 
 Reusable maintenance methods remain outside tracked project sources. Local editor state and branch topology also remain checkout-owned. They may guide an individual maintainer, but project code, tests, hooks, and acceptance do not require their names, installation, or presence.
 
-The tracked ledger template and lifecycle script remain because they enforce a repository-specific commit invariant: unresolved findings cannot be committed, and a verified source tree must match the prospective Git tree. The tracked hook is limited to that invariant and is installed explicitly.
+The tracked findings-ledger and review-plan templates and their lifecycle script remain because they enforce repository-specific commit invariants: unresolved findings cannot be committed, changed paths need declared semantic coverage, lane evidence follows dependency-scoped invalidation, and a verified source tree must match the prospective Git tree. The tracked hook is limited to those invariants and is installed explicitly.
 
 ## Alternatives considered
 

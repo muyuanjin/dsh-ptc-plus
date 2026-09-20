@@ -24,6 +24,6 @@ Test262 子集位于 `test/fixtures/test262/`。`manifest.json` 记录上游仓�
 
 ## 发布验证边界
 
-完整确定性检查与独立代码审查是提交门槛，不代表发布稳定性证明。发布前仍需补齐 Node 22/24 下连续会话、反复创建与释放 worker、覆盖插桩和资源压力组合的稳定性验证。进程级失败必须保留原始退出码、signal 与 stderr；仅有测试文件级 `test failed` 无法区分运行时缺陷、引擎退出或外部终止。
+完整确定性检查与有效的独立审查 lane 聚合是提交门槛，不代表发布稳定性证明。发布前仍需补齐 Node 22/24 下连续会话、反复创建与释放 worker、覆盖插桩和资源压力组合的稳定性验证。进程级失败必须保留原始退出码、signal 与 stderr；仅有测试文件级 `test failed` 无法区分运行时缺陷、引擎退出或外部终止。
 
 Windows Node 24/26 的 worker teardown native 崩溃已由插件自有 helper 进程边界限制在可回收子进程内（见 [ADR 0027](adr/0027-run-the-session-kernel-in-a-killable-helper-process.md)）；`npm run check` 现在执行一次确定性运行，不再根据 TAP 文件级 abort 自动重试。发布前仍须在受支持 Node 版本上保留原始退出码、signal 与 stderr，并覆盖连续创建/释放 helper、覆盖插桩和资源压力组合。文件级失败仍按实际 owner 修复，不得用重试掩盖。

@@ -1,0 +1,61 @@
+{
+  "schema": "dsh-review-plan/v1",
+  "obligations": [
+    {
+      "id": "intrinsic-handling",
+      "description": "Intrinsic capture, mutation resistance, and execution-world boundaries.",
+      "disposition": "covered",
+      "reason": null
+    },
+    {
+      "id": "scope-and-declaration-ownership",
+      "description": "Scope, declaration ownership, initialization, publication, and updates.",
+      "disposition": "covered",
+      "reason": null
+    },
+    {
+      "id": "callable-reconstruction",
+      "description": "Callable source identity, reconstruction, nested environments, and reuse.",
+      "disposition": "covered",
+      "reason": null
+    },
+    {
+      "id": "module-and-cross-entry-contracts",
+      "description": "Module lowering, linking, cross-entry identity, and host boundaries.",
+      "disposition": "covered",
+      "reason": null
+    },
+    {
+      "id": "historical-semantics-and-recovery",
+      "description": "Recorded generations, replay, recovery contraction, and historical behavior.",
+      "disposition": "covered",
+      "reason": null
+    }
+  ],
+  "lanes": [
+    {
+      "id": "replace-me",
+      "scope": "Replace with one stable semantic review boundary.",
+      "paths": [
+        "."
+      ],
+      "dependsOn": [],
+      "obligations": [
+        "intrinsic-handling",
+        "scope-and-declaration-ownership",
+        "callable-reconstruction",
+        "module-and-cross-entry-contracts",
+        "historical-semantics-and-recovery"
+      ],
+      "owners": [
+        "Replace with the semantic owner examined by this lane."
+      ],
+      "consumers": [
+        "Replace with the consumers whose behavior this lane checks."
+      ],
+      "counterexamples": [
+        "Replace with a discriminating counterexample that could falsify this lane."
+      ]
+    }
+  ]
+}

@@ -1,3 +1,4 @@
+import { isPtcMessageSource, PTC_MESSAGE_SOURCE_KIND } from './message-sources.js'
 import { isRecord } from './record-utils.js'
 import { normalizeBindingModelContext } from './user-binding-model-context.js'
 
@@ -51,13 +52,13 @@ function normalizeAction(value) {
 
 export function bindingActionNotice(action) {
   return {
-    source: { kind: 'plugin', plugin: 'ptc-plus', form: 'notice', summary: 'Global User Binding action' },
+    source: { kind: PTC_MESSAGE_SOURCE_KIND, form: 'notice', summary: 'Global User Binding action' },
     content: [{ type: 'text', text: ACTION_PREFIX + JSON.stringify(normalizeAction(action)) }],
   }
 }
 
 export function readBindingAction(message) {
-  if (message?.source?.kind !== 'plugin' || message.source.plugin !== 'ptc-plus'
+  if (!isPtcMessageSource(message?.source)
     || message.source.form !== 'notice' || message.source.summary !== 'Global User Binding action'
     || message.content?.length !== 1 || message.content[0]?.type !== 'text') return undefined
   try {

@@ -1,3 +1,4 @@
+import { isHostRuntimeContextSource, isPtcMessageSource } from '../internal/message-sources.js'
 import { normalizeJournal } from '../internal/session-journal.js'
 import { decodeValue } from '../internal/value-wire.js'
 import { PTC_BINDING_CATALOG, readRuntimeMessage, recoveryTipIdentity } from '../internal/runtime-messages.js'
@@ -145,6 +146,7 @@ export const PTC_DIRECT_TOOLS = Object.freeze(['run_code', 'edit_run_code'])
 
 export function isRuntimeContextSource(source) {
   return [
+    'runtime-context:snapshot', 'runtime-context',
     'plugin:@deepseek-ai/dsh-system-prompt:snapshot',
     'plugin:@deepseek-ai/dsh-system-prompt',
     'plugin:ptc-plus:snapshot', 'plugin:ptc-plus:notice', 'plugin:ptc-plus:catalog',
@@ -1046,12 +1048,11 @@ export function auditRuntimeContexts(events, config = {}) {
       }
     }
     const source = event.data?.source
-    const aggregate = event.type === 'user/message' && source?.kind === 'plugin'
-      && source.plugin === '@deepseek-ai/dsh-system-prompt'
+    const aggregate = event.type === 'user/message' && isHostRuntimeContextSource(source)
     const aggregateClear = aggregate && source.form === undefined
       && collectModelText(event.data?.content).join('\n') === 'Current runtime context: none. Earlier runtime-context snapshots no longer apply.'
     const ptc = event.type === 'user/message' ? readRuntimeMessage(event.data) : undefined
-    if (event.type === 'user/message' && source?.plugin === 'ptc-plus'
+    if (event.type === 'user/message' && isPtcMessageSource(source)
       && ['snapshot', 'notice', 'catalog'].includes(source.form) && ptc === undefined
       && readBindingAction(event.data) === undefined) {
       failures.push(`malformed PTC runtime message at seq ${String(event.seq ?? 'unknown')}`)

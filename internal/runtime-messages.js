@@ -1,5 +1,7 @@
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 
+import { isPtcMessageSource, PTC_MESSAGE_SOURCE_KIND } from './message-sources.js'
+
 export const PTC_DELIVERY_CONTEXT = 'tools:ptc-plus-message-delivery'
 export const PTC_BINDING_CATALOG = 'tools:ptc-plus-user-binding-defaults'
 export const PTC_STATE_NAMES = Object.freeze([
@@ -54,7 +56,7 @@ function stateText(sections, prefix = STATE_PREFIX) {
 /** Recognize only bounded, formed PTC records, never authoring tasks or Skills. */
 export function readRuntimeMessage(message) {
   const source = message?.source
-  if (source?.kind !== 'plugin' || source.plugin !== 'ptc-plus'
+  if (!isPtcMessageSource(source)
     || !Array.isArray(message.content) || message.content.length !== 1
     || message.content[0]?.type !== 'text') return undefined
   const text = message.content[0].text
@@ -87,7 +89,7 @@ export function runtimeBindingCatalogMessage(context) {
     throw new Error('invalid PTC binding catalog')
   }
   return createUserMessage({
-    source: { kind: 'plugin', plugin: 'ptc-plus', form: 'catalog' },
+    source: { kind: PTC_MESSAGE_SOURCE_KIND, form: 'catalog' },
     content: [{ type: 'text', text: `${CATALOG_PREFIX}\n\n${context?.text ?? EMPTY_CATALOG}` }],
   })
 }
@@ -96,14 +98,14 @@ export function runtimeStateMessage(value) {
   const sections = stateSections(value)
   if (sections === undefined) throw new Error('invalid PTC runtime state sections')
   return createUserMessage({
-    source: { kind: 'plugin', plugin: 'ptc-plus', form: 'snapshot', sections },
+    source: { kind: PTC_MESSAGE_SOURCE_KIND, form: 'snapshot', sections },
     content: [{ type: 'text', text: stateText(sections) }],
   })
 }
 
 export function runtimeNoticeMessage(tip) {
   const message = createUserMessage({
-    source: { kind: 'plugin', plugin: 'ptc-plus', form: 'notice', summary: tip.name },
+    source: { kind: PTC_MESSAGE_SOURCE_KIND, form: 'notice', summary: tip.name },
     content: [{ type: 'text', text: tip.text }],
   })
   if (readRuntimeMessage(message) === undefined) throw new Error('invalid PTC recovery notice')

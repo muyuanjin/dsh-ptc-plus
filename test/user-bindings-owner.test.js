@@ -551,7 +551,7 @@ test('scopes agent authoring to PTC sessions and accepts one validated in-memory
   assert.equal(commandSettled, true)
   assert.equal(skill, undefined)
   assert.deepEqual(injected, [])
-  assert.deepEqual(steered[0].source, { kind: 'plugin', plugin: 'ptc-plus', form: 'instructions' })
+  assert.deepEqual(steered[0].source, { kind: 'plugin:ptc-plus', form: 'instructions' })
   assert.match(steered[0].content[0].text, /format repository data/)
 
   const entry = {

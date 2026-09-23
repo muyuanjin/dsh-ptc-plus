@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict'
+import { sessionFormatCatalog } from '@deepseek-ai/dsh-session-format-catalog'
+import { isPtcMessageSource } from '../internal/message-sources.js'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -106,7 +108,10 @@ export async function bindingWorkflowHost(t) {
       release()
     }
   }
-  const events = () => sessionEvents(agent.session)
+  const events = () => sessionEvents(agent.session).map(event => {
+    sessionFormatCatalog.encodeCurrentEvent(event)
+    return event
+  })
   const run = async (program, text = 'Execute the requested verification cell.') => {
     programs.push(program)
     await idleAfter(() => agent.followup(createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text }] })))
@@ -118,7 +123,7 @@ export async function bindingWorkflowHost(t) {
   }
   const requestId = () => {
     const message = events().filter(event => event.type === 'user/message'
-      && event.data.source.plugin === 'ptc-plus' && event.data.source.form === 'instructions').at(-1).data
+      && isPtcMessageSource(event.data.source) && event.data.source.form === 'instructions').at(-1).data
     return JSON.parse(/requestId: ("[^"\n]+")/.exec(message.content[0].text)[1])
   }
   return { ctx, agent, requests, events, run, begin, requestId, home,

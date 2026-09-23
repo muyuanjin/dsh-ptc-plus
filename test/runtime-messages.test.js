@@ -1,6 +1,9 @@
+import { isPtcMessageSource } from '../internal/message-sources.js'
 import assert from 'node:assert/strict'
 import { sessionEvents } from '../internal/session-events.js'
 import test from 'node:test'
+import { sessionFormatCatalog } from '@deepseek-ai/dsh-session-format-catalog'
+import { bindingActionNotice, readBindingAction } from '../internal/user-binding-draft-projection.js'
 import { Context } from '@deepseek-ai/cordis'
 import { AgentRegistry } from '@deepseek-ai/dsh-agent'
 import { AgentLoop } from '@deepseek-ai/dsh-agent-loop'
@@ -58,14 +61,6 @@ const requestHeader = () => usesHeaderSnapshots
   ? { header: { config: { provider: 'fixture', model: 'fixture' } }, reason: 'initial' }
   : {}
 
-function hostRuntimeContextSections(message) {
-  const historical = systemPromptSnapshotSections(message)
-  if (historical !== undefined) return historical
-  const source = message?.source
-  if (source?.kind !== 'runtime-context' || source.form !== 'snapshot'
-    || !Array.isArray(source.sections)) return undefined
-  return source.sections
-}
 
 test('bounded message forms separate current state, notices, tasks, and malformed evidence', () => {
   const snapshot = runtimeStateMessage(state('current'))
@@ -569,38 +564,38 @@ async function hostFixture(t, includeRuntimeContext = true) {
 test('real AgentLoop keeps PTC transitions independent and honors runtime suppression', { timeout: 15000 }, async t => {
   const host = await hostFixture(t)
   const messages = () => sessionEvents(host.agent.session).filter(event => event.type === 'user/message')
-  const count = producer => messages().filter(event => event.data.source.plugin === producer).length
+  const count = () => messages().filter(event => isPtcMessageSource(event.data.source)).length
   const hostContextCount = () => messages().filter(event => (
-    hostRuntimeContextSections(event.data) !== undefined
+    systemPromptSnapshotSections(event.data) !== undefined
   )).length
   host.setState(state('first'))
   await host.wake()
   assert.equal(host.calls.length, 1)
-  assert.equal(count('ptc-plus'), 1)
+  assert.equal(count(), 1)
   assert.equal(hostContextCount(), 1)
   const prefix = JSON.stringify({ system: host.calls[0].system, tools: host.calls[0].tools })
   host.setState(state('second'))
   await host.wake()
-  assert.equal(count('ptc-plus'), 2)
+  assert.equal(count(), 2)
   assert.equal(hostContextCount(), 1)
   host.setOther('different unrelated policy')
   await host.wake()
-  assert.equal(count('ptc-plus'), 2)
+  assert.equal(count(), 2)
   assert.equal(hostContextCount(), 2)
   await host.wake()
-  assert.equal(count('ptc-plus'), 2)
+  assert.equal(count(), 2)
   assert.equal(hostContextCount(), 2)
   const release = host.agent.ctx.systemPrompt.suppressRuntimeContext()
   host.setState(state('suppressed'))
   await host.wake()
-  assert.equal(count('ptc-plus'), 2)
+  assert.equal(count(), 2)
   release()
   await host.wake()
-  assert.equal(count('ptc-plus'), 3)
+  assert.equal(count(), 3)
   host.setState([])
   await host.wake()
-  assert.equal(count('ptc-plus'), 4)
-  assert.deepEqual(readRuntimeMessage(messages().filter(event => event.data.source.plugin === 'ptc-plus').at(-1).data).sections, [])
+  assert.equal(count(), 4)
+  assert.deepEqual(readRuntimeMessage(messages().filter(event => isPtcMessageSource(event.data.source)).at(-1).data).sections, [])
   for (const call of host.calls) assert.equal(JSON.stringify({ system: call.system, tools: call.tools }), prefix)
 })
 
@@ -656,7 +651,7 @@ test('real Host clearance leaves an explicitly scoped catalog valid across uncha
   }
 })
 
-test('real AgentLoop preserves or migrates an active historical aggregate by Host replacement ownership', { timeout: 15000 }, async t => {
+test('real AgentLoop migrates historical aggregate state before a current Host replacement', { timeout: 15000 }, async t => {
   const host = await hostFixture(t)
   append(host.agent.session, createUserMessage({
     source: { kind: 'plugin', plugin: '@deepseek-ai/dsh-system-prompt', form: 'snapshot', sections: state('active') },
@@ -664,17 +659,13 @@ test('real AgentLoop preserves or migrates an active historical aggregate by Hos
   }))
   host.setState(state('active'))
   await host.wake()
-  const usesIndependentHostContext = sessionEvents(host.agent.session).some(event => (
-    event.type === 'user/message' && event.data.source?.kind === 'runtime-context'
-  ))
-  assert.equal(viewOf(host.agent.session).ptcMessages.length, usesIndependentHostContext ? 0 : 1)
-  if (!usesIndependentHostContext) {
-    assert.deepEqual(viewOf(host.agent.session).ptcMessages[0].sections, state('active'))
-  }
+  assert.equal(viewOf(host.agent.session).ptcMessages.length, 1)
+  assert.deepEqual(viewOf(host.agent.session).ptcMessages[0].sections, state('active'))
   host.setOther('')
   await host.wake()
-  assert.equal(viewOf(host.agent.session).ptcMessages.length, usesIndependentHostContext ? 0 : 1)
-  assert.deepEqual(viewOf(host.agent.session).visibleRuntimeMessages.at(-1).sections, state('active'))
+  assert.equal(viewOf(host.agent.session).ptcMessages.length, 1)
+  assert.deepEqual(viewOf(host.agent.session).visibleRuntimeMessages
+    .filter(record => record.producer === 'ptc-plus').at(-1).sections, state('active'))
 })
 
 test('includeRuntimeContext false suppresses independent PTC messages through the public witness', { timeout: 15000 }, async t => {
@@ -683,4 +674,24 @@ test('includeRuntimeContext false suppresses independent PTC messages through th
   await host.wake()
   assert.equal(host.calls.length, 1)
   assert.equal(viewOf(host.agent.session).ptcMessages.length, 0)
+})
+
+test('current PTC message forms pass the official persistence codec and retain historical readers', () => {
+  const messages = [runtimeStateMessage(state('active')), runtimeNoticeMessage(tip(1)),
+    runtimeBindingCatalogMessage({ name: PTC_BINDING_CATALOG, text: 'declare const helper: number' }),
+    createUserMessage(bindingActionNotice({ requestId: 'request', id: 'helper', state: 'saved', enabled: true }))]
+  const session = Session.create('ptc-message-persistence')
+  for (const message of messages) {
+    const event = append(session, message)
+    assert.doesNotThrow(() => sessionFormatCatalog.encodeCurrentEvent(event))
+    const historical = { ...message, source: { ...message.source, kind: 'plugin', plugin: 'ptc-plus' } }
+    assert.throws(() => sessionFormatCatalog.encodeCurrentEvent({ ...event, data: historical }),
+      /producer-owned source kind/)
+    assert.deepEqual(readRuntimeMessage(historical), readRuntimeMessage(message))
+    assert.deepEqual(readBindingAction(historical), readBindingAction(message))
+  }
+  const header = sessionFormatCatalog.encodeCurrentHeader({ ...session.header, delegationDepth: 0 }, 0)
+  const restore = sessionFormatCatalog.createRestore(header, { recovery: 'none', validation: 'current' })
+  for (const event of sessionEvents(session)) restore.decodeRow(sessionFormatCatalog.encodeCurrentEvent(event))
+  assert.deepEqual(restore.finish().events.map(event => event.data), messages)
 })

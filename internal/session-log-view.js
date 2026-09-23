@@ -5,13 +5,13 @@ import { isCanonicalSequence } from './session-journal.js'
 import { sessionEvents } from './session-events.js'
 import { readRuntimeMessage } from './runtime-messages.js'
 
-const SYSTEM_PROMPT_PLUGIN = '@deepseek-ai/dsh-system-prompt'
+import { isHostRuntimeContextSource } from './message-sources.js'
 const SYSTEM_PROMPT_CLEARED = 'Current runtime context: none. Earlier runtime-context snapshots no longer apply.'
 
 /** DSH's empty aggregate uses an exact owner marker without a snapshot form. */
 export function systemPromptSnapshotSections(message) {
   const source = message?.source
-  if (source?.kind !== 'plugin' || source.plugin !== SYSTEM_PROMPT_PLUGIN) return undefined
+  if (!isHostRuntimeContextSource(source)) return undefined
   if (source.form === undefined && Array.isArray(message.content) && message.content.length === 1
     && message.content[0]?.type === 'text' && message.content[0].text === SYSTEM_PROMPT_CLEARED) {
     return Object.freeze([])

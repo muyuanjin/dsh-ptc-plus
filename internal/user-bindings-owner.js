@@ -1,3 +1,4 @@
+import { PTC_MESSAGE_SOURCE_KIND } from './message-sources.js'
 import { RPC_CONTRACTS } from './rpc-contract.js'
 import { randomUUID } from 'node:crypto'
 import { dirname } from 'node:path'
@@ -87,7 +88,7 @@ function authoringTask(command, current) {
 function taskMessage(text) {
   return createUserMessage({
     content: [{ type: 'text', text }],
-    source: { kind: 'plugin', plugin: 'ptc-plus', form: 'instructions' },
+    source: { kind: PTC_MESSAGE_SOURCE_KIND, form: 'instructions' },
   })
 }
 

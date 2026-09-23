@@ -7,6 +7,13 @@ The persistent REPL contract must stay short enough for every request, while som
 ## Decision
 
 PTC-owned dynamic information uses independently sourced, accepted DSH messages.
+All newly emitted PTC messages, including authoring instructions and binding-action
+receipts, use `source.kind: 'plugin:ptc-plus'`, the producer identity assigned by
+DSH's official source migration. They never emit the retired `kind: 'plugin'`
+wrapper. Readers retain that historical wrapper and recognize current Host
+`runtime-context` sources as well as historical system-prompt sources. Source
+admission is tested through the official persistence codec; an in-memory Session
+alone does not establish that a message can be saved or resumed.
 Unproved rewrite completion and Cordis recovery form a bounded `ptc-plus`
 `snapshot` with named sections. Configured Global User Binding documentation uses
 DSH's existing `catalog` form, independently of transient recovery state. A recovery tip is a `ptc-plus` `notice` whose

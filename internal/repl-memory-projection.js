@@ -26,6 +26,16 @@ const PROJECTION_STATE_FIELDS = new Set(['generation', 'memory', 'pendingReplCal
 const PENDING_CALL_FIELDS = new Set(['callId', 'seq'])
 const REPL_MEMORY_META_VERSION = 5
 
+/**
+ * Bound one definition source to the presentation budget. Producers apply this
+ * before a catalog entry can carry more than the validated metadata shape.
+ */
+export function boundedDefinitionSource(source) {
+  return source.length <= MAX_DEFINITION_SOURCE_LENGTH
+    ? source
+    : `${source.slice(0, MAX_DEFINITION_SOURCE_LENGTH - 3)}...`
+}
+
 function isReuseCount(value) {
   return Number.isSafeInteger(value) && value >= 0
 }

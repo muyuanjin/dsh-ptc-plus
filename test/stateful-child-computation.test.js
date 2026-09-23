@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { appendRunCodeEvents, fixture } from './plugin-fixture.js'
+import { appendRunCodeEvents, fixture, orderedSurfaceSession } from './plugin-fixture.js'
 
 test('code.run uses the selected language with independent state and recorded child results', async t => {
   const state = fixture({ bindingUpdates: 'stateful' })
@@ -36,7 +36,7 @@ test('isolated children preserve native tool calls and fail at the configured re
 })
 
 test('isolated child imports retain namespace identity and record results without repeating effects on recovery', async t => {
-  const session = { id: 'child-import-recovery', events: [] }
+  const session = orderedSurfaceSession('child-import-recovery')
   const writer = fixture({ bindingUpdates: 'stateful' })
   t.after(() => writer.dispose())
   const calls = []
@@ -49,7 +49,7 @@ const receipt = await tools.record({ value: format('%s', 'child') })
 return [sameNamespace, format === utilities.format, receipt, typeof parentOnly]
 `
   const source = `const parentOnly = 42; const importedChild = await code.run({ code: ${JSON.stringify(childSource)}, description: 'Import in an isolated child' }); return [importedChild.result, parentOnly, typeof utilities]`
-  const written = await writer.runDurable(session.id, source, functions, { session })
+  const written = await writer.runDurable(session.id, source, functions, { session, recordSession: 'deferred-result', callId: 'child-import-source' })
   assert.equal(written.isError, false, written.error?.message)
   assert.deepEqual(written.value, [[true, true, 1, 'undefined'], 42, 'undefined'])
   assert.deepEqual(calls, [{ value: 'child' }])

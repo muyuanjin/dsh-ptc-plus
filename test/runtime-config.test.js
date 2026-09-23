@@ -1,7 +1,13 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { CONFIG_DEFAULTS, CONFIG_FIELDS } from '../internal/config-spec.js'
-import { MAX_TIMER_DELAY_MS, resolveConfig, validateMaxWallMs } from '../internal/runtime-config.js'
+import {
+  MAX_TIMER_DELAY_MS,
+  hasVolatileFields,
+  resolveConfig,
+  validateMaxWallMs,
+  watchVolatileConfig,
+} from '../internal/runtime-config.js'
 import { SessionRuntime } from '../internal/session-runtime.js'
 
 test('owns the runtime wall-clock ceiling', () => {
@@ -13,6 +19,41 @@ test('owns the runtime wall-clock ceiling', () => {
   assert.equal(runtime.config.maxWallMs, MAX_TIMER_DELAY_MS)
   assert.throws(() => new SessionRuntime({ maxWallMs: MAX_TIMER_DELAY_MS + 1 }), /must not exceed/)
   return runtime.dispose()
+})
+
+test('follows volatile config handles without restarting the fiber', () => {
+  let enabled = true
+  const config = { enabled: { get: () => enabled } }
+  assert.equal(hasVolatileFields(config), true)
+  assert.equal(hasVolatileFields({ enabled: true }), false)
+  assert.equal(hasVolatileFields(undefined), false)
+
+  const listeners = []
+  const host = {
+    on(event, listener) {
+      listeners.push([event, listener])
+      return () => listeners.splice(listeners.indexOf([event, listener]), 1)
+    },
+  }
+  const observed = []
+  assert.equal(watchVolatileConfig(host, {}, config, next => observed.push(next.enabled)), true)
+  assert.equal(listeners[0][0], 'loader/volatile-update')
+  enabled = false
+  listeners[0][1]()
+  assert.deepEqual(observed, [false])
+
+  assert.equal(watchVolatileConfig(undefined, {}, config, () => {}), false)
+  assert.equal(watchVolatileConfig(host, {}, { enabled: true }, () => {}), false)
+
+  let registered
+  const scope = {
+    effect(register) {
+      registered = register()
+      return registered
+    },
+  }
+  assert.equal(watchVolatileConfig(host, scope, config, () => {}), true)
+  assert.equal(typeof registered, 'function')
 })
 
 test('validates every declared field from its CONFIG_FIELDS type and bounds', () => {

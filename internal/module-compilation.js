@@ -187,7 +187,7 @@ export function compileStatefulModule(source, {
     callableSources = marked.callableSources
     nativeJavaScript = marked.nativeJavaScript
     mapped = marked
-    if (!nativeJavaScript) mapped = normalizeTypeScriptValues(mapped.code, mapped.sourceMap, target)
+    if (!nativeJavaScript) mapped = normalizeTypeScriptValues(mapped.code, mapped.sourceMap, target, callableSources)
     if (target !== 'commonjs' && (isStatefulUserBindingTransform(transform)
       || transform === PROTECTED_MODULE_TRANSFORM && hasModuleResources(mapped.code))) {
       mapped = normalizeModuleExports(mapped.code, mapped.sourceMap)
@@ -199,6 +199,7 @@ export function compileStatefulModule(source, {
     ? moduleLinkPlan(mapped.code) : undefined
   let normalized = transform === LEGACY_USER_BINDING_TRANSFORM ? mapped
     : normalizeStatefulScopes(mapped.code, mapped.sourceMap, { target, moduleImport: links?.reader, nativeJavaScript, nativeUsing,
+      callableSources,
       mode: transform === PROTECTED_MODULE_TRANSFORM ? 'protected-v1' : 'stateful-v1' })
   // Protected entries retain native declaration policy; adapters still need
   // bounded source regions after TypeScript and decorator lowering.

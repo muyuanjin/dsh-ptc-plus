@@ -133,11 +133,21 @@ function requireCompanionServices(agent) {
 
 async function companionSkillDirectory(agentPresets) {
   const preset = await agentPresets.resolve(CORDIS_PRESET_ID)
-  if (typeof preset?.path !== 'string' || !isAbsolute(preset.path)) {
-    throw new Error('ptc-plus: DSH cordis preset did not expose an absolute composition path')
-  }
   if (typeof preset.broken === 'string' && preset.broken.length > 0) {
     throw new Error(`ptc-plus: DSH cordis preset is unavailable: ${preset.broken}`)
+  }
+  // The generations that discover presets from their composition directories
+  // publish an absolute path, and the preset's sibling `skills` directory is
+  // then the companion Skill root. A generation that declares presets without
+  // any composition path publishes no root through this surface at all, so the
+  // report names that missing publication instead of claiming a shape failure
+  // on a healthy host. A published path that is not absolute is still a
+  // contract contradiction.
+  if (preset?.path === undefined) {
+    throw new Error('ptc-plus: the installed DSH agentPresets generation publishes no composition path for the "cordis" preset, so it does not publish the companion Skill root that cordisToolsEnabled mounts')
+  }
+  if (typeof preset.path !== 'string' || !isAbsolute(preset.path)) {
+    throw new Error('ptc-plus: DSH cordis preset did not expose an absolute composition path')
   }
   return join(dirname(preset.path), 'skills')
 }
@@ -329,6 +339,7 @@ export function createCordisToolsOwner(
 
   const installAgent = (agent) => {
     if (disposed) return Promise.resolve()
+    if (withdrawn.has(agent)) return Promise.resolve()
     const mounted = mounts.get(agent)
     if (mounted !== undefined) {
       return mounted.withdrawn === true ? Promise.resolve() : mounted.activation
@@ -416,11 +427,11 @@ export function createCordisToolsOwner(
   /**
    * Install for a call the host makes on its own behalf.
    *
-   * DSH 0.1.6 announces `agent/created` serially and rejects `agents.create()`
-   * when a listener rejects, so a scope this owner cannot serve must withdraw
-   * instead of failing an operation another plugin asked for. Install-time
-   * enumeration stays strict: there the plugin speaks for what it claims to
-   * have published, and `ready` reports the same failure.
+   * The public host lifecycle announces `agent/created` serially and rejects
+   * `agents.create()` when a listener rejects, so a scope this owner cannot
+   * serve must withdraw instead of failing an operation another plugin asked
+   * for. Install-time enumeration stays strict: there the plugin speaks for
+   * what it claims to have published, and `ready` reports the same failure.
    */
   const installForHost = (agent) => {
     let activation
@@ -451,8 +462,7 @@ export function createCordisToolsOwner(
       if (disposed) return
       for (const agent of [...pending]) {
         void Promise.resolve().then(() => installAgent(agent)).catch(error => {
-          pending.delete(agent)
-          ctx.logger?.warn?.('ptc-plus: deferred Cordis activation failed', error)
+          withdraw(agent, error)
         })
       }
     })

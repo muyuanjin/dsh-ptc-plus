@@ -5,7 +5,7 @@ import { createDynamicEnvironmentRuntime } from '../internal/dynamic-environment
 import { SessionRuntime } from '../internal/session-runtime.js'
 import { JOURNAL_KEY } from '../internal/session-journal.js'
 import { encodeValue } from '../internal/value-wire.js'
-import { appendRunCodeEvents } from './plugin-fixture.js'
+import { appendRunCodeEvents, orderedSurfaceSession } from './plugin-fixture.js'
 
 const modes = [
   ['stateful', { bindingUpdates: 'stateful' }],
@@ -146,7 +146,7 @@ test('member reads retain foreign object ownership and exact getter errors', () 
 })
 
 test('valid v8 member-call replay retains its verified frontier and escaped native values', async t => {
-  const session = { id: 'legacy-member-realm-replay', events: [] }
+  const session = orderedSurfaceSession('legacy-member-realm-replay')
   const cells = [
     ['let kept=17;let fields="a,b".split(",");return fields instanceof Array', true],
     ['let read=()=>[kept,fields instanceof Array,fields.join("-")];return read()', [17,true,'a-b']],
@@ -165,7 +165,14 @@ test('valid v8 member-call replay retains its verified frontier and escaped nati
   }
   const runtime = new SessionRuntime({ bindingUpdates: 'stateful' })
   t.after(() => runtime.dispose())
-  const execution = await runtime.runTentative({ id: session.id, session, persistedCallSeq: session.events.length }, {
+  const nextEvents = []
+  const { callSeq: relativeCallSeq } = appendRunCodeEvents(nextEvents, 'current-member-cell', '', {})
+  const nextSeq = Math.max(-1, ...session.events.map(event => event.seq)) + 1
+  const execution = await runtime.runTentative({
+    id: session.id,
+    session,
+    persistedCallSeq: nextSeq + relativeCallSeq,
+  }, {
     program: 'return [kept,fields instanceof Array,read()]', bindings: [],
   })
   assert.equal(execution.result.error, undefined, execution.result.error?.message)

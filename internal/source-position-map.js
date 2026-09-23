@@ -287,6 +287,25 @@ export function sourceLineStarts(source) {
   return starts
 }
 
+/** Convert one-based JavaScript source coordinates without admitting a
+ * position inside a line terminator. End coordinates may point immediately
+ * after the final content character. */
+export function sourceOffsetAtPosition(source, position, starts) {
+  if (typeof source !== 'string' || position === null || typeof position !== 'object'
+    || !Number.isSafeInteger(position.line) || position.line < 1
+    || !Number.isSafeInteger(position.column) || position.column < 1) return undefined
+  const lineStarts = starts ?? sourceLineStarts(source)
+  if (!Array.isArray(lineStarts) || position.line > lineStarts.length) return undefined
+  const lineStart = lineStarts[position.line - 1]
+  const nextLineStart = lineStarts[position.line]
+  let lineEnd = source.length
+  if (nextLineStart !== undefined) {
+    lineEnd = nextLineStart - (source[nextLineStart - 2] === '\r' && source[nextLineStart - 1] === '\n' ? 2 : 1)
+  }
+  const offset = lineStart + position.column - 1
+  return offset <= lineEnd ? offset : undefined
+}
+
 /** Visit maintained emitter coordinates without re-encoding available raw maps.
  * All line numbers at this boundary are zero-based; absent origins stay absent. */
 export function visitSourceMappings(transformed, visit) {

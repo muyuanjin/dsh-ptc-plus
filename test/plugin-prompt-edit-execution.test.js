@@ -9,6 +9,8 @@ import {
   withUserBindingDraftCapability,
 } from '../internal/user-binding-draft-projection.js'
 import { REPL_MEMORY_META_KEY } from '../internal/repl-memory-projection.js'
+import { projectSessionLog } from '../internal/session-log-view.js'
+import { latestRecoveryTip } from '../internal/recovery-tips.js'
 import { REWRITES_KEY, normalizeJournal } from '../internal/session-journal.js'
 import { SessionRuntime } from '../internal/session-runtime.js'
 import {
@@ -16,14 +18,20 @@ import {
   createUserBindingsSnapshot,
 } from '../internal/user-bindings.js'
 import { decodeValue, encodeValue, renderValueWire } from '../internal/value-wire.js'
-import { JOURNAL_POLICY, appendRunCodeEvents, fixture, ptcAgent } from './plugin-fixture.js'
+import {
+  JOURNAL_POLICY,
+  appendRunCodeEvents,
+  fixture,
+  orderedSurfaceSession,
+  ptcAgent,
+} from './plugin-fixture.js'
 import { auditEditCalls, collectTrajectoryFacts } from '../scripts/acceptance-contract.mjs'
 
 test('continues from bindings after a partial failure without redispatching a native call', async (t) => {
   const state = fixture()
   t.after(() => state.dispose())
   let dispatches = 0
-  const session = { id: 'partial-reuse', events: [] }
+  const session = orderedSurfaceSession('partial-reuse')
   const failed = await state.runDurable(
     session.id,
     'const observed = await tools.observe({}); return observed.missing.trim()',
@@ -56,7 +64,7 @@ test('continues from bindings after a partial failure without redispatching a na
 test('keeps edit selection model-owned when a partial cell may have caused an effect', async (t) => {
   const state = fixture()
   t.after(() => state.dispose())
-  const session = { id: 'edit-effect-boundary', events: [{ type: 'turn/start' }] }
+  const session = orderedSurfaceSession('edit-effect-boundary', [{ type: 'turn/start' }])
   const agent = ptcAgent(session.id, session)
   await state.assemble(
     { sections: [], contexts: [], variables: {}, tools: [state.runCodeDefinition] },
@@ -65,7 +73,7 @@ test('keeps edit selection model-owned when a partial cell may have caused an ef
   const definition = agent.ctx.tools.get('edit_run_code')
 
   const safeCode = 'let safeValue = 1; return safeValue'
-  const safe = await state.runDurable(session.id, safeCode, {}, { session, callId: 'safe' })
+  const safe = await state.runDurable(session.id, safeCode, {}, { session, callId: 'safe', recordSession: 'deferred-result' })
   appendRunCodeEvents(session.events, 'safe', safeCode, safe)
   const safeArgs = { edits: [{ old_string: '1', new_string: '2' }] }
   const safeCallSeq = appendEditCall(session.events, 'safe-edit', safeArgs)
@@ -83,7 +91,7 @@ test('keeps edit selection model-owned when a partial cell may have caused an ef
       dispatches += 1
       return { value: 'live result' }
     },
-  }, { session, callId: 'effect' })
+  }, { session, callId: 'effect', recordSession: 'deferred-result' })
   assert.equal(failed.isError, true)
   appendRunCodeEvents(session.events, 'effect', effectCode, failed)
   const effectArgs = {
@@ -117,8 +125,8 @@ test('keeps edit selection model-owned when a partial cell may have caused an ef
 })
 
 test('repairs a long parse-rejected cell without resending its source', async (t) => {
-  const events = [{ type: 'turn/start', seq: 0, data: {} }]
-  const session = { id: 'long-parse-edit', events }
+  const events = [{ type: 'turn/start', seq: 0, time: 0, data: {} }]
+  const session = orderedSurfaceSession('long-parse-edit', events)
   const state = fixture({ computeMs: 10_000, maxWallMs: 10_000 })
   t.after(() => state.dispose())
   const agent = ptcAgent(session.id, session)
@@ -137,7 +145,7 @@ return longOutput.length`
     session.id,
     rejectedCode,
     {},
-    { session, callId: 'long-parse' },
+    { session, callId: 'long-parse', recordSession: 'deferred-result' },
   )
   assert.equal(rejected.isError, true)
   assert.equal(rejected.meta.dshPtcPlus.status, 'noop')
@@ -173,8 +181,8 @@ return longOutput.length`
 })
 
 test('executes the validated EOF repair invocation with recovery tips disabled', async (t) => {
-  const events = [{ type: 'turn/start', seq: 0, data: {} }]
-  const session = { id: 'validated-parse-edit', events }
+  const events = [{ type: 'turn/start', seq: 0, time: 0, data: {} }]
+  const session = orderedSurfaceSession('validated-parse-edit', events)
   const state = fixture({ tipsEnabled: false })
   t.after(() => state.dispose())
   const agent = ptcAgent(session.id, session)
@@ -190,7 +198,7 @@ test('executes the validated EOF repair invocation with recovery tips disabled',
     session.id,
     rejectedCode,
     {},
-    { session, callId: 'validated-parse' },
+    { session, callId: 'validated-parse', recordSession: false },
   )
   assert.equal(rejected.isError, true)
   assert.equal(rejected.meta.dshPtcPlus.status, 'noop')
@@ -222,8 +230,8 @@ test('executes the validated EOF repair invocation with recovery tips disabled',
 })
 
 test('rejects a validated EOF repair after a newer matching cell becomes editable', async (t) => {
-  const events = [{ type: 'turn/start', seq: 0, data: {} }]
-  const session = { id: 'stale-validated-parse-edit', events }
+  const events = [{ type: 'turn/start', seq: 0, time: 0, data: {} }]
+  const session = orderedSurfaceSession('stale-validated-parse-edit', events)
   const state = fixture()
   t.after(() => state.dispose())
   const agent = ptcAgent(session.id, session)
@@ -238,7 +246,7 @@ test('rejects a validated EOF repair after a newer matching cell becomes editabl
     session.id,
     rejectedCode,
     {},
-    { session, callId: 'stale-parse' },
+    { session, callId: 'stale-parse', recordSession: false },
   )
   const diagnostic = rejected.meta.dshPtcPlus.diagnostics[0]
   const invocation = /call edit_run_code\((\{.*\})\)/.exec(diagnostic.help[1])
@@ -253,7 +261,7 @@ test('rejects a validated EOF repair after a newer matching cell becomes editabl
     session.id,
     laterCode,
     {},
-    { session, callId: 'later-matching-cell' },
+    { session, callId: 'later-matching-cell', recordSession: false },
   )
   appendRunResult(events, 'later-matching-cell', laterCallSeq, later)
   const editCallSeq = appendEditCall(events, 'stale-parse-edit', editArgs)
@@ -285,8 +293,8 @@ test('rejects a validated EOF repair after a newer matching cell becomes editabl
 })
 
 test('suppresses a target-bound EOF repair for derived edit parse rejection', async (t) => {
-  const events = [{ type: 'turn/start', seq: 0, data: {} }]
-  const session = { id: 'derived-parse-rejection', events }
+  const events = [{ type: 'turn/start', seq: 0, time: 0, data: {} }]
+  const session = orderedSurfaceSession('derived-parse-rejection', events)
   const state = fixture()
   t.after(() => state.dispose())
   const agent = ptcAgent(session.id, session)
@@ -301,7 +309,7 @@ test('suppresses a target-bound EOF repair for derived edit parse rejection', as
     session.id,
     source,
     {},
-    { session, callId: 'derived-parse-setup' },
+    { session, callId: 'derived-parse-setup', recordSession: 'deferred-result' },
   )
   appendRunCodeEvents(events, 'derived-parse-setup', source, setup)
 
@@ -323,6 +331,12 @@ test('suppresses a target-bound EOF repair for derived edit parse rejection', as
 })
 
 function appendRunCall(events, callId, code) {
+  const argumentsValue = JSON.stringify({ code, description: 'test cell' })
+  events.push({
+    type: 'assistant/message',
+    seq: events.length,
+    data: { message: { content: [{ type: 'tool-call', id: callId, name: 'run_code', arguments: argumentsValue }] } },
+  })
   const seq = events.length
   events.push({
     type: 'tool/call',
@@ -330,7 +344,7 @@ function appendRunCall(events, callId, code) {
     data: {
       callId,
       name: 'run_code',
-      arguments: JSON.stringify({ code, description: 'test cell' }),
+      arguments: argumentsValue,
     },
   })
   return seq
@@ -349,11 +363,17 @@ function appendRunResult(events, callId, callSeq, result) {
 }
 
 function appendEditCall(events, callId, args) {
+  const argumentsValue = JSON.stringify(args)
+  events.push({
+    type: 'assistant/message',
+    seq: events.length,
+    data: { message: { content: [{ type: 'tool-call', id: callId, name: 'edit_run_code', arguments: argumentsValue }] } },
+  })
   const seq = events.length
   events.push({
     type: 'tool/call',
     seq,
-    data: { callId, name: 'edit_run_code', arguments: JSON.stringify(args) },
+    data: { callId, name: 'edit_run_code', arguments: argumentsValue },
   })
   return seq
 }
@@ -369,7 +389,7 @@ function appendEditResult(events, callId, callSeq, meta = {}) {
 
 test('executes successive real edits and replays derived sources without model duplication', async (t) => {
   const events = [{ type: 'turn/start', seq: 0, data: {} }]
-  const session = { id: 'real-edit', events }
+  const session = orderedSurfaceSession('real-edit', events)
   const first = fixture()
   const firstAgent = ptcAgent(session.id, session)
   const requestSignal = new AbortController().signal
@@ -379,48 +399,34 @@ test('executes successive real edits and replays derived sources without model d
   )
 
   const setupCode = 'let editableValue = 40; return editableValue'
-  const setup = await first.runDurable(session.id, setupCode, {}, { session, callId: 'setup' })
-  appendRunCodeEvents(events, 'setup', setupCode, setup)
-  const editCallSeq = events.length
-  events.push({
-    type: 'tool/call', seq: editCallSeq, data: {
-      callId: 'edit-1', name: 'edit_run_code',
-      arguments: JSON.stringify({ edits: [{ old_string: '40', new_string: '42' }] }),
-    },
+  const setup = await first.runDurable(session.id, setupCode, {}, {
+    session, callId: 'setup', recordSession: 'deferred-result',
   })
+  const setupEventSeqs = appendRunCodeEvents(events, 'setup', setupCode, setup)
+  const firstEditArgs = { edits: [{ old_string: '40', new_string: '42' }] }
+  const editCallSeq = appendEditCall(events, 'edit-1', firstEditArgs)
   const edit = await first.ctx.tools.execute({
     callId: 'edit-1', name: 'edit_run_code',
-    arguments: { edits: [{ old_string: '40', new_string: '42' }] },
+    arguments: firstEditArgs,
     agent: firstAgent, signal: requestSignal,
   })
   assert.equal(edit.isError, false)
   assert.deepEqual(edit.value, { edited: true, logs: [], value: 42 })
   assert.equal(JSON.stringify(edit.value).includes(setupCode), false)
-  assert.deepEqual(edit.meta.dshPtcPlusEdit, { targetCallSeq: 1 })
-  events.push({
-    type: 'tool/result', seq: editCallSeq + 1, sourceEventSeqs: [editCallSeq],
-    data: { message: { source: { callId: 'edit-1' } }, meta: edit.meta },
-  })
+  assert.deepEqual(edit.meta.dshPtcPlusEdit, { targetCallSeq: setupEventSeqs.callSeq })
+  appendEditResult(events, 'edit-1', editCallSeq, edit.meta)
 
-  const nextEditCallSeq = events.length
-  events.push({
-    type: 'tool/call', seq: nextEditCallSeq, data: {
-      callId: 'edit-2', name: 'edit_run_code',
-      arguments: JSON.stringify({ edits: [{ old_string: '42', new_string: '43' }] }),
-    },
-  })
+  const secondEditArgs = { edits: [{ old_string: '42', new_string: '43' }] }
+  const nextEditCallSeq = appendEditCall(events, 'edit-2', secondEditArgs)
   const nextEdit = await first.ctx.tools.execute({
     callId: 'edit-2', name: 'edit_run_code',
-    arguments: { edits: [{ old_string: '42', new_string: '43' }] },
+    arguments: secondEditArgs,
     agent: firstAgent, signal: requestSignal,
   })
   assert.equal(nextEdit.isError, false)
   assert.deepEqual(nextEdit.value, { edited: true, logs: [], value: 43 })
   assert.deepEqual(nextEdit.meta.dshPtcPlusEdit, { targetCallSeq: editCallSeq })
-  events.push({
-    type: 'tool/result', seq: nextEditCallSeq + 1, sourceEventSeqs: [nextEditCallSeq],
-    data: { message: { source: { callId: 'edit-2' } }, meta: nextEdit.meta },
-  })
+  appendEditResult(events, 'edit-2', nextEditCallSeq, nextEdit.meta)
   await first.dispose()
 
   const restored = fixture()
@@ -438,7 +444,7 @@ test('executes successive real edits and replays derived sources without model d
 
 test('binds delayed edit execution to the target captured by its call event', async (t) => {
   const events = [{ type: 'turn/start', seq: 0, data: {} }]
-  const session = { id: 'delayed-edit-target', events }
+  const session = orderedSurfaceSession('delayed-edit-target', events)
   const state = fixture()
   t.after(() => state.dispose())
   const agent = ptcAgent(session.id, session)
@@ -447,19 +453,14 @@ test('binds delayed edit execution to the target captured by its call event', as
     { agent, scope: agent },
   )
 
-  const first = await state.runDurable(session.id, 'return 1', {}, { session })
-  appendRunCodeEvents(events, 'first-target', 'return 1', first)
-  const editCallSeq = events.length
-  events.push({
-    type: 'tool/call',
-    seq: editCallSeq,
-    data: {
-      callId: 'delayed-edit',
-      name: 'edit_run_code',
-      arguments: JSON.stringify({ edits: [{ old_string: '1', new_string: '2' }] }),
-    },
-  })
-  const later = await state.runDurable(session.id, 'return 9', {}, { session })
+  const first = await state.runDurable(session.id, 'return 1', {}, { session, recordSession: 'deferred-result', callId: 'first-target' })
+  const firstEventSeqs = appendRunCodeEvents(events, 'first-target', 'return 1', first)
+  const editCallSeq = appendEditCall(
+    events,
+    'delayed-edit',
+    { edits: [{ old_string: '1', new_string: '2' }] },
+  )
+  const later = await state.runDurable(session.id, 'return 9', {}, { session, recordSession: 'deferred-result', callId: 'later-target' })
   appendRunCodeEvents(events, 'later-target', 'return 9', later)
 
   await assert.rejects(
@@ -481,13 +482,13 @@ test('binds delayed edit execution to the target captured by its call event', as
   assert.equal(derivedCode, 'return 2')
   assert.equal(edited.edited, true)
   assert.deepEqual(definition.output.presentationMeta(args, edited).dshPtcPlusEdit, {
-    targetCallSeq: 1,
+    targetCallSeq: firstEventSeqs.callSeq,
   })
 })
 
 test('cold-replays a delayed edit in its live execution order', async (t) => {
   const events = [{ type: 'turn/start', seq: 0, data: {} }]
-  const session = { id: 'delayed-edit-replay-order', events }
+  const session = orderedSurfaceSession('delayed-edit-replay-order', events)
   const first = fixture()
   const agent = ptcAgent(session.id, session)
   const signal = new AbortController().signal
@@ -497,14 +498,16 @@ test('cold-replays a delayed edit in its live execution order', async (t) => {
   )
 
   const setupCode = 'let delayedOrder = [1]; return delayedOrder'
-  const setup = await first.runDurable(session.id, setupCode, {}, { session, callId: 'setup' })
+  const setup = await first.runDurable(session.id, setupCode, {}, { session, callId: 'setup', recordSession: 'deferred-result' })
   appendRunCodeEvents(events, 'setup', setupCode, setup)
   const editArgs = {
     edits: [{ old_string: '[1]', new_string: '[...delayedOrder, 3]' }],
   }
   const editCallSeq = appendEditCall(events, 'delayed-order-edit', editArgs)
   const laterCode = 'delayedOrder.push(4); return delayedOrder'
-  const later = await first.runDurable(session.id, laterCode, {}, { session, callId: 'later' })
+  const later = await first.runDurable(session.id, laterCode, {}, {
+    session, callId: 'later', recordSession: 'deferred-result',
+  })
   appendRunCodeEvents(events, 'later', laterCode, later)
 
   const edit = await first.ctx.tools.execute({
@@ -528,7 +531,7 @@ test('cold-replays a delayed edit in its live execution order', async (t) => {
 
 test('keeps optional rewrite metadata out of derived edit settlement', async (t) => {
   const events = [{ type: 'turn/start', seq: 0, data: {} }]
-  const session = { id: 'edit-optional-rewrites', events }
+  const session = orderedSurfaceSession('edit-optional-rewrites', events)
   const state = fixture()
   t.after(() => state.dispose())
   const agent = ptcAgent(session.id, session)
@@ -538,7 +541,7 @@ test('keeps optional rewrite metadata out of derived edit settlement', async (t)
   )
   const definition = agent.ctx.tools.get('edit_run_code')
   const code = 'let optionalRewriteValue = 1; return optionalRewriteValue'
-  const run = await state.runDurable(session.id, code, {}, { session })
+  const run = await state.runDurable(session.id, code, {}, { session, recordSession: 'deferred-result', callId: 'optional-rewrite-source' })
   appendRunCodeEvents(events, 'optional-rewrite-source', code, run)
 
   const originalExecute = state.ctx.tools.execute
@@ -586,7 +589,7 @@ test('keeps optional rewrite metadata out of derived edit settlement', async (t)
 
 test('keeps malformed REPL memory metadata out of derived edit settlement', async (t) => {
   const events = [{ type: 'turn/start', seq: 0, data: {} }]
-  const session = { id: 'edit-malformed-repl-memory', events }
+  const session = orderedSurfaceSession('edit-malformed-repl-memory', events)
   const state = fixture()
   t.after(() => state.dispose())
   const agent = ptcAgent(session.id, session)
@@ -596,8 +599,8 @@ test('keeps malformed REPL memory metadata out of derived edit settlement', asyn
     { agent, scope: agent, signal: requestSignal },
   )
   const code = 'let memorySafeEdit = 1; return memorySafeEdit'
-  const setup = await state.runDurable(session.id, code, {}, { session, callId: 'memory-setup' })
-  appendRunCodeEvents(events, 'memory-setup', code, setup)
+  const setup = await state.runDurable(session.id, code, {}, { session, callId: 'memory-setup', recordSession: 'deferred-result' })
+  const setupEventSeqs = appendRunCodeEvents(events, 'memory-setup', code, setup)
 
   const execute = state.ctx.tools.execute
   state.ctx.tools.execute = async (options) => {
@@ -625,7 +628,7 @@ test('keeps malformed REPL memory metadata out of derived edit settlement', asyn
   assert.deepEqual(edited.value, { edited: true, logs: [], value: 2 })
   assert.equal(Object.hasOwn(edited.meta, REPL_MEMORY_META_KEY), false)
   assert.equal(Object.hasOwn(edited.meta, USER_BINDING_DRAFT_META_KEY), false)
-  assert.deepEqual(edited.meta.dshPtcPlusEdit, { targetCallSeq: 1 })
+  assert.deepEqual(edited.meta.dshPtcPlusEdit, { targetCallSeq: setupEventSeqs.callSeq })
   appendEditResult(events, 'memory-edit', callSeq, edited.meta)
   state.ctx.tools.execute = execute
   await state.dispose()
@@ -639,7 +642,7 @@ test('keeps malformed REPL memory metadata out of derived edit settlement', asyn
 
 test('fails edit execution at each owned boundary without changing the target', async (t) => {
   const events = [{ type: 'turn/start', seq: 0, data: {} }]
-  const session = { id: 'edit-boundaries', events }
+  const session = orderedSurfaceSession('edit-boundaries', events)
   const state = fixture()
   t.after(() => state.dispose())
   const agent = ptcAgent(session.id, session)
@@ -670,8 +673,8 @@ test('fails edit execution at each owned boundary without changing the target', 
   }])
 
   const code = 'return 1'
-  const run = await state.runDurable(session.id, code, {}, { session })
-  appendRunCodeEvents(events, 'editable', code, run)
+  const run = await state.runDurable(session.id, code, {}, { session, recordSession: 'deferred-result', callId: 'editable' })
+  const editableEventSeqs = appendRunCodeEvents(events, 'editable', code, run)
   const invalidCallSeq = appendEditCall(events, 'invalid', { edits: [] })
   const invalid = await state.ctx.tools.execute({
     callId: 'invalid', name: 'edit_run_code', arguments: { edits: [] }, agent,
@@ -762,7 +765,7 @@ test('fails edit execution at each owned boundary without changing the target', 
   })
   assert.equal(primitive.value, 7)
   const primitiveMeta = definition.output.presentationMeta(primitiveArgs, primitive)
-  assert.deepEqual(primitiveMeta.dshPtcPlusEdit, { targetCallSeq: 1 })
+  assert.deepEqual(primitiveMeta.dshPtcPlusEdit, { targetCallSeq: editableEventSeqs.callSeq })
   assert.deepEqual(primitiveMeta.dshPtcPlusDerivedRun, {
     code: 'return 2', description: 'Edit and run TypeScript cell',
   })
@@ -801,7 +804,7 @@ test('fails edit execution at each owned boundary without changing the target', 
     definition.output.presentationMeta(afterArgs, { edited: true }),
   )
 
-  const nextRun = await state.runDurable(session.id, code, {}, { session })
+  const nextRun = await state.runDurable(session.id, code, {}, { session, recordSession: 'deferred-result', callId: 'editable-again' })
   appendRunCodeEvents(events, 'editable-again', code, nextRun)
   state.ctx.tools.execute = async () => ({ isError: true, error: {}, meta: nextRun.meta })
   const failedArgs = { edits: [{ old_string: '1', new_string: '2' }] }
@@ -822,7 +825,7 @@ test('fails edit execution at each owned boundary without changing the target', 
 
 test('releases edit claims when derived execution has no owner-proven settlement', async (t) => {
   const events = [{ type: 'turn/start', seq: 0, data: {} }]
-  const session = { id: 'edit-in-flight', events }
+  const session = orderedSurfaceSession('edit-in-flight', events)
   const state = fixture()
   t.after(() => state.dispose())
   const agent = ptcAgent(session.id, session)
@@ -833,7 +836,7 @@ test('releases edit claims when derived execution has no owner-proven settlement
   )
   const definition = agent.ctx.tools.get('edit_run_code')
   const code = 'return 1'
-  const run = await state.runDurable(session.id, code, {}, { session })
+  const run = await state.runDurable(session.id, code, {}, { session, recordSession: 'deferred-result', callId: 'editable-in-flight' })
   appendRunCodeEvents(events, 'editable-in-flight', code, run)
 
   const presentationMeta = definition.output.presentationMeta
@@ -941,7 +944,7 @@ test('keeps truthful run and edit transports with a stable prompt prefix', async
     ],
     contexts: [], variables: {}, tools: [state.runCodeDefinition],
   }
-  const session = { id: 'prefix-stability-session', events: [{ type: 'turn/start' }] }
+  const session = orderedSurfaceSession('prefix-stability-session', [{ type: 'turn/start' }])
   const agent = ptcAgent('prefix-stability-agent', session)
   const assemble = () => state.assembleStep(codeOnlyAssembly, {
     agent, scope: agent, signal: new AbortController().signal,
@@ -965,7 +968,7 @@ test('keeps truthful run and edit transports with a stable prompt prefix', async
   assert.equal(surface(await assemble()), baseline)
 
   const rejectedCode = 'return )'
-  const rejected = await state.runDurable(session.id, rejectedCode, {}, { session })
+  const rejected = await state.runDurable(session.id, rejectedCode, {}, { session, recordSession: 'deferred-result', callId: 'prefix-rejected' })
   appendRunCodeEvents(session.events, 'prefix-rejected', rejectedCode, rejected)
   const afterRejection = await assemble()
   assert.equal(surface(afterRejection), baseline)
@@ -1008,8 +1011,14 @@ test('uses environment-neutral tips for command failures and escalates repeated 
   }
   const nextRequest = () => session.events.push({ type: 'request/header' })
   const commandFailure = 'throw new Error("ENOENT: command not found")'
-  const commandResult = await state.runDurable(session.id, commandFailure, {}, { session })
+  const commandResult = await state.runDurable(session.id, commandFailure, {}, { session, recordSession: 'deferred-result', callId: 'platform-failure' })
   appendRunCodeEvents(session.events, 'platform-failure', commandFailure, commandResult)
+  const projectedFailure = projectSessionLog(agent)
+  assert.notEqual(projectedFailure.latestRun, undefined, 'the persisted failure must remain the latest open-turn run')
+  assert.equal(projectedFailure.latestRun.journal?.diagnostics.some(item => item.code === 'PTC-X001'), true)
+  assert.notEqual(latestRecoveryTip(projectedFailure, {
+    enabled: true, cooldownMessages: 1, escalationFailures: 2,
+  }), undefined, 'the persisted platform diagnostic must classify for a recovery tip')
   const compactPlatform = await tipOf()
   assert.match(compactPlatform.text, /current execution world/)
   assert.match(compactPlatform.text, /do not assume Windows, WSL, POSIX, or one shell/)
@@ -1026,7 +1035,7 @@ test('uses environment-neutral tips for command failures and escalates repeated 
 
   const unrelated = 'throw new Error("binding missing")'
   for (let index = 0; index < 3; index += 1) {
-    const result = await state.runDurable(session.id, unrelated, {}, { session })
+    const result = await state.runDurable(session.id, unrelated, {}, { session, recordSession: 'deferred-result', callId: `generic-failure-${index}` })
     appendRunCodeEvents(session.events, `generic-failure-${index}`, unrelated, result)
   }
   nextRequest()
@@ -1034,7 +1043,7 @@ test('uses environment-neutral tips for command failures and escalates repeated 
 
   const repeated = 'return missingTipBinding'
   for (let index = 0; index < 3; index += 1) {
-    const result = await state.runDurable(session.id, repeated, {}, { session })
+    const result = await state.runDurable(session.id, repeated, {}, { session, recordSession: 'deferred-result', callId: `binding-failure-${index}` })
     appendRunCodeEvents(session.events, `binding-failure-${index}`, repeated, result)
   }
   nextRequest()
@@ -1058,7 +1067,7 @@ test('uses environment-neutral tips for command failures and escalates repeated 
 test('recognizes platform diagnostics from structured causes and Windows wording', async (t) => {
   const state = fixture({ tipCooldownMessages: 1 })
   t.after(() => state.dispose())
-  const session = { id: 'structured-platform-tip', events: [{ type: 'turn/start' }] }
+  const session = orderedSurfaceSession('structured-platform-tip', [{ type: 'turn/start' }])
   const agent = ptcAgent('structured-platform-agent', session)
   const codeOnlyAssembly = { sections: [], contexts: [], variables: {}, tools: [state.runCodeDefinition] }
   const assemble = () => state.assembleStep(codeOnlyAssembly, {
@@ -1070,7 +1079,7 @@ test('recognizes platform diagnostics from structured causes and Windows wording
       error.code = 'ENOENT'
       throw error
     },
-  }, { session })
+  }, { session, recordSession: 'deferred-result', callId: 'structured-platform-failure' })
   appendRunCodeEvents(session.events, 'structured-platform-failure', 'return await tools.run({})', result.result)
   const tip = assemble()
   assert.match((await tip).ptcContexts.find(item => item.name.startsWith('tools:ptc-plus-tip/')).text, /executable, shell, or path/)
@@ -1079,9 +1088,9 @@ test('recognizes platform diagnostics from structured causes and Windows wording
 test('does not turn an unrelated path error into an environment tip', async (t) => {
   const state = fixture({ tipCooldownMessages: 1 })
   t.after(() => state.dispose())
-  const session = { id: 'unrelated-path-tip', events: [{ type: 'turn/start' }] }
+  const session = orderedSurfaceSession('unrelated-path-tip', [{ type: 'turn/start' }])
   const agent = ptcAgent('unrelated-path-agent', session)
-  const result = await state.runDurable(session.id, 'throw new Error("path validation failed")', {}, { session })
+  const result = await state.runDurable(session.id, 'throw new Error("path validation failed")', {}, { session, recordSession: 'deferred-result', callId: 'unrelated-path-failure' })
   appendRunCodeEvents(session.events, 'unrelated-path-failure', 'throw new Error("path validation failed")', result)
   const assembly = await state.assemble(
     { sections: [], contexts: [], variables: {}, tools: [state.runCodeDefinition] },

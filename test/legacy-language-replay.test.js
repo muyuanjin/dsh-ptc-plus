@@ -6,7 +6,7 @@ import { SessionRuntime } from '../internal/session-runtime.js'
 import { BindingCatalog } from '../internal/session-state.js'
 import { JOURNAL_KEY } from '../internal/session-journal.js'
 import { encodeValue } from '../internal/value-wire.js'
-import { appendRunCodeEvents } from './plugin-fixture.js'
+import { appendRunCodeEvents, orderedSurfaceSession } from './plugin-fixture.js'
 import { prepareLegacyProgram } from '../internal/legacy-cell-analysis.js'
 
 const legacyPolicy = { variableRedeclarations: true, functionClassRedeclarations: true }
@@ -19,7 +19,7 @@ function legacyPrepare(source, catalog = new BindingCatalog(), options = {}) {
 }
 
 function recordedSession(id, cells, options = {}) {
-  const session = { id, events: [] }
+  const session = orderedSurfaceSession(id)
   for (const [index, [source, value, hasValue = value !== undefined]] of cells.entries()) {
     appendRunCodeEvents(session.events, `${id}-${index}`, source, { meta: { [JOURNAL_KEY]: {
       version: 8, bindingPolicy: legacyPolicy, rewritePolicy, moduleSemantics,
@@ -33,10 +33,16 @@ function recordedSession(id, cells, options = {}) {
   return session
 }
 
+function recordedResult(session, callId) {
+  return session.events.find(event => event.type === 'tool/result'
+    && event.data?.message?.source?.callId === callId)
+}
+
 async function recover(t, session, program, config = {}) {
   const runtime = new SessionRuntime({ bindingUpdates: 'stateful', ...config })
   t.after(() => runtime.dispose())
-  const execution = await runtime.runTentative({ id: session.id, session, persistedCallSeq: session.events.length }, {
+  const callSeq = Math.max(-1, ...session.events.map(event => event.seq)) + 2
+  const execution = await runtime.runTentative({ id: session.id, session, persistedCallSeq: callSeq }, {
     program, bindings: [],
   })
   assert.equal(execution.result.error, undefined, execution.result.error?.message)
@@ -53,7 +59,8 @@ test('v8 replay clears an existing value on a bare declaration with void complet
   const execution = await recover(t, session, 'return [typeof x, x === undefined]')
   assert.deepEqual(execution.result.value, ['undefined', true])
   assert.equal(execution.settlement.journal.languageSemantics, 'stateful-v1')
-  assert.deepEqual(session.events[3].data.meta[JOURNAL_KEY].completion, { kind: 'return', hasValue: false })
+  assert.deepEqual(recordedResult(session, 'legacy-bare-1').data.meta[JOURNAL_KEY].completion,
+    { kind: 'return', hasValue: false })
 })
 
 test('v8 void replay retains native callers and the values captured by their closures', async t => {
@@ -148,6 +155,11 @@ test('legacy catalog uses historical namespace and declaration commit evidence',
   assert.equal(beforeCommit.inputs().importBindings.has('format'), true)
   const afterCommit = catalog.advance(next, 'export default 3', next.commitTargets)
   assert.equal(afterCommit.inputs().importBindings.has('__default'), true)
+  const referenced = legacyPrepare('format; void 0', catalog)
+  const withRootFact = catalog.advance(referenced, 'format; void 0', undefined, [
+    { name: 'format', source: 'import' },
+  ])
+  assert.equal(withRootFact.inputs().importBindings.has('format'), true)
 })
 
 test('v8 replay preserves class static-block and switch lexical owners', async t => {

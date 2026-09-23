@@ -1,13 +1,16 @@
 import { createContext, runInContext, runInThisContext } from 'node:vm'
 import { types } from 'node:util'
 import { protectNextAsyncLocalStorageRun } from './async-local-storage-intrinsics.js'
+import {
+  WORKER_REALM_MUTATION,
+  defineWorkerRealmProperty,
+  deleteWorkerRealmProperty,
+} from './worker-realm-surfaces.js'
 
 export const WORKER_REPL_OPTIONS = Object.freeze({ useGlobal: true })
 const NativeMap = Map
 const ownKeys = Reflect.ownKeys
-const deleteProperty = Reflect.deleteProperty
 const getOwnPropertyDescriptor = Object.getOwnPropertyDescriptor
-const defineProperty = Object.defineProperty
 const createObject = Object.create
 const hasOwn = Object.hasOwn
 const sameValue = Object.is
@@ -54,13 +57,16 @@ export function restoreWorkerReplGlobals(baseline, globalObject = globalThis) {
   const keys = ownKeys(globalObject)
   for (let index = 0; index < keys.length; index += 1) {
     const key = keys[index]
-    if (typeof key === 'string' && !mapHas(baseline, key) && !deleteProperty(globalObject, key)) {
+    if (typeof key === 'string' && !mapHas(baseline, key)
+      && !deleteWorkerRealmProperty(WORKER_REALM_MUTATION.RESTORE, undefined, globalObject, key)) {
       throw new Error(`worker REPL added a non-configurable global ${String(key)}`)
     }
   }
   mapForEach(baseline, (descriptor, key) => {
     if (!descriptorsEqual(getOwnPropertyDescriptor(globalObject, key), descriptor)) {
-      defineProperty(globalObject, key, detachedDescriptor(descriptor))
+      defineWorkerRealmProperty(
+        WORKER_REALM_MUTATION.RESTORE, undefined, globalObject, key, detachedDescriptor(descriptor),
+      )
     }
   })
   return globalObject

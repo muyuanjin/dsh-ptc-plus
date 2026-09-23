@@ -12,7 +12,8 @@ import {
 import { RECOVERY_BOUNDARY_KEY, normalizeJournal } from '../internal/session-journal.js'
 import { SessionRuntime } from '../internal/session-runtime.js'
 import { decodeValue, encodeValue, renderValueWire } from '../internal/value-wire.js'
-import { JOURNAL_POLICY, appendRunCodeEvents, fixture } from './plugin-fixture.js'
+import { resolveConfig } from '../internal/runtime-config.js'
+import { JOURNAL_POLICY, appendRunCodeEvents, fixture, orderedSurfaceSession } from './plugin-fixture.js'
 import { serviceInjector } from './host-fixture.js'
 import {
   activeTimers,
@@ -36,16 +37,16 @@ import {
   workerOf,
 } from './runtime-observation.js'
 
-test('disposes a kernel with its owning agent session', async (t) => {
+test('disposes a live-only kernel with its owning agent session', async (t) => {
   const state = fixture()
   t.after(() => state.dispose())
-  await state.run('session-a', 'const sessionValue = 9')
+  await state.run('session-a', 'const sessionValue = process.pid')
 
   await state.emit('agent/disposed', { agent: { id: 'session-a' } })
-  assert.deepEqual(await state.run('session-a', 'return typeof sessionValue'), {
-    logs: [],
-    value: 'undefined',
-  })
+  const continued = await state.run('session-a', 'return typeof sessionValue')
+  assert.equal(continued.value, 'undefined')
+  assert.equal(continued.logs.length, 1)
+  assert.match(continued.logs[0], /Restored the durable head and skipped 1 unreconstructable historical cell/u)
 })
 
 test('missing, stale, and malformed value observations cannot change a settled cell', async t => {
@@ -330,9 +331,12 @@ test('disposes fixture cleanups once in LIFO order across concurrent callers', a
 })
 
 test('exports a Cordis config schema with validated runtime defaults', async () => {
-  const defaults = await Config['~standard'].validate({})
+  const validated = await Config['~standard'].validate({})
+  const defaults = Object.fromEntries(Object.entries(validated.value)
+    .map(([key, value]) => [key, value !== null && typeof value === 'object'
+      && typeof value.get === 'function' ? value.get() : value])
+    .filter(([, value]) => value !== undefined))
   assert.deepEqual(defaults, {
-    value: {
       legacyBindingSettings: false,
       enabled: true,
       enhancedToolView: true,
@@ -360,12 +364,13 @@ test('exports a Cordis config schema with validated runtime defaults', async () 
       maxValueBigIntDigits: 100_000,
       tipCooldownMessages: 3,
       tipEscalationFailures: 2,
-    },
   })
   const invalid = await Config['~standard'].validate({ maxWallMs: 0 })
   assert.equal(invalid.issues.length, 1)
   assert.deepEqual(invalid.issues[0].path, ['maxWallMs'])
-  assert.equal((await Config['~standard'].validate({ maxWallMs: 2_147_483_647 })).value.maxWallMs, 2_147_483_647)
+  assert.equal(resolveConfig(
+    (await Config['~standard'].validate({ maxWallMs: 2_147_483_647 })).value,
+  ).maxWallMs, 2_147_483_647)
   assert.deepEqual(
     (await Config['~standard'].validate({ maxWallMs: 2_147_483_648 })).issues[0].path,
     ['maxWallMs'],
@@ -376,6 +381,11 @@ test('exports a Cordis config schema with validated runtime defaults', async () 
   for (const key of ['tipCooldownMessages', 'tipEscalationFailures']) {
     assert.throws(() => fixture({ [key]: 0 }), new RegExp(`${key} must be a positive safe integer`))
   }
+})
+
+test('exports apply as a plain function so Cordis observes its activation promise', () => {
+  assert.equal(typeof apply, 'function')
+  assert.equal(Object.hasOwn(apply, 'prototype'), false)
 })
 
 test('retired runtime and metadata wrappers stay transparent across outer wrapper teardown', async () => {
@@ -951,35 +961,45 @@ test('handles direct runtime recovery, timeout, volatility, and lifecycle bounda
 
   const invalidHistory = new SessionRuntime()
   t.after(() => invalidHistory.dispose())
-  const events = []
-  appendRunCodeEvents(events, 'duplicate-history', 'const discardedHistory = 1', {
+  const session = orderedSurfaceSession('invalid-history')
+  const events = session.events
+  const historySeqs = appendRunCodeEvents(events, 'duplicate-history', 'const discardedHistory = 1', {
     meta: { dshPtcPlus: {
       version: 3, bindingMode: 'loose', rewritePolicy: JOURNAL_POLICY, status: 'noop', calls: [], operations: [], confirms: [], diagnostics: [],
     } },
   })
-  events.push({ ...events[1], seq: 2 })
+  events.push({ ...events.find(event => event.seq === historySeqs.resultSeq), seq: events.length })
+  const currentArguments = JSON.stringify({ code: 'const recoveredValue = 1', description: 'recover current' })
   events.push({
-    seq: 3,
+    seq: events.length,
+    type: 'assistant/message',
+    data: { message: { content: [{
+      type: 'tool-call', id: 'recover-current', name: 'run_code', arguments: currentArguments,
+    }] } },
+  })
+  const currentCallSeq = events.length
+  events.push({
+    seq: currentCallSeq,
     type: 'tool/call',
     data: {
       callId: 'recover-current',
       name: 'run_code',
-      arguments: JSON.stringify({ code: 'const recoveredValue = 1', description: 'recover current' }),
+      arguments: currentArguments,
     },
   })
   const recovered = await invalidHistory.runTentative(
-    { id: 'invalid-history', session: { events }, callId: 'recover-current' },
+    { id: session.id, session, callId: 'recover-current' },
     { program: 'const recoveredValue = 1', bindings: [] },
   )
   assert.equal(recovered.result.error, undefined)
   assert.deepEqual(recovered.settlement.recoveryBoundaries, [
-    { failedCallSeq: 0, frontierCallSeq: null },
+    { failedCallSeq: historySeqs.callSeq, frontierCallSeq: null },
   ])
   invalidHistory.finalize(recovered.settlement, true)
   events.push({
-    seq: 4,
+    seq: events.length,
     type: 'tool/result',
-    sourceEventSeqs: [3],
+    sourceEventSeqs: [currentCallSeq],
     data: { meta: {
       dshPtcPlus: normalizeJournal(recovered.settlement.journal),
       [RECOVERY_BOUNDARY_KEY]: recovered.settlement.recoveryBoundaries,
@@ -988,8 +1008,9 @@ test('handles direct runtime recovery, timeout, volatility, and lifecycle bounda
 
   const restarted = new SessionRuntime()
   t.after(() => restarted.dispose())
+  const inspectCallSeq = events.length
   events.push({
-    seq: 5,
+    seq: inspectCallSeq,
     type: 'tool/call',
     data: {
       callId: 'recover-inspect',
@@ -998,7 +1019,7 @@ test('handles direct runtime recovery, timeout, volatility, and lifecycle bounda
     },
   })
   const resumed = await restarted.run(
-    { id: 'invalid-history', session: { events }, callId: 'recover-inspect' },
+    { id: session.id, session, callId: 'recover-inspect' },
     { program: 'return recoveredValue', bindings: [] },
   )
   assert.deepEqual(resumed, { logs: [], value: 1 })
@@ -1058,7 +1079,7 @@ test('contracts every semantic replay mismatch before continuing', async (t) => 
     },
   ]
   for (const item of cases) {
-    const session = { id: item.name, events: [] }
+    const session = orderedSurfaceSession(item.name)
     appendRunCodeEvents(session.events, item.name, item.code, { meta: { dshPtcPlus: {
       version: 3,
       bindingMode: 'loose',
@@ -1076,7 +1097,7 @@ test('contracts every semantic replay mismatch before continuing', async (t) => 
     assert.equal(result.error, undefined, item.name)
   }
 
-  const session = { id: 'recorded-call-mismatch', events: [] }
+  const session = orderedSurfaceSession('recorded-call-mismatch')
   const code = 'return await tools.call({ value: 1 })'
   appendRunCodeEvents(session.events, 'recorded-call-mismatch', code, { meta: { dshPtcPlus: {
     version: 3,
@@ -1342,6 +1363,24 @@ test('supplies the session REPL on a host that registers only the current execut
   assert.deepEqual(await state.run('current-seam', 'const kept = 41'), { logs: [] })
   assert.deepEqual(await state.run('current-seam', 'return kept + 1'), { logs: [], value: 42 })
   assert.deepEqual(state.upstreamCalls, [])
+})
+
+test('reports an unusable execution seam through the plugin logger', async () => {
+  const warnings = []
+  const service = { language: 'typescript', run() {} }
+  const ctx = {
+    logger: { warn: (...args) => warnings.push(args) },
+    get: name => (name === 'ptcRuntime' ? service : undefined),
+    inject(names, callback) {
+      if (names.includes('ptcRuntime')) callback({ ptcRuntime: service })
+      return () => {}
+    },
+    effect() { return () => {} },
+  }
+  await assert.rejects(apply(ctx, {}), /ptcRuntime\.resolve must be a function/)
+  assert.equal(warnings.length, 1)
+  assert.match(warnings[0][0], /execution seam ptcRuntime failed to attach/)
+  assert.match(warnings[0][1].message, /ptcRuntime\.resolve must be a function/)
 })
 
 test('presents the capabilities of the execution the plugin performs', async (t) => {

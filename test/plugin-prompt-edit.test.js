@@ -11,6 +11,7 @@ import {
   JOURNAL_POLICY,
   appendRunCodeEvents,
   fixture,
+  orderedSurfaceSession,
   ptcAgent,
 } from './plugin-fixture.js'
 
@@ -31,6 +32,12 @@ function appendEditResult(events, callId, callSeq, meta = {}) {
     sourceEventSeqs: [callSeq],
     data: { message: { source: { callId } }, meta },
   })
+}
+
+function errorTreeHasMessage(error, message) {
+  return error?.message === message
+    || (Array.isArray(error?.errors)
+      && error.errors.some(cause => errorTreeHasMessage(cause, message)))
 }
 
 test('continues TypeScript bindings across cells in one session', async (t) => {
@@ -74,20 +81,20 @@ return [typeof __ptc_canary, typeof awaitedConst, typeof awaitedLet, typeof nest
 })
 
 test('cold-replays a block-scoped awaited initializer without source conventions', async (t) => {
-  const events = []
-  const session = { id: 'block-await-replay', events }
+  const session = orderedSurfaceSession('block-await-replay')
+  const { events } = session
   const first = fixture()
   t.after(() => first.dispose())
 
   const setupCode = 'let blockAwaitReplayValue = 0'
-  const setup = await first.runDurable(session.id, setupCode, {}, { session })
+  const setup = await first.runDurable(session.id, setupCode, {}, { session, recordSession: 'deferred-result', callId: 'block-await-setup' })
   appendRunCodeEvents(events, 'block-await-setup', setupCode, setup)
   const blockCode = `{
   const nextValue = await Promise.resolve(42)
   blockAwaitReplayValue = nextValue
 }
 // no model-side semicolon`
-  const block = await first.runDurable(session.id, blockCode, {}, { session })
+  const block = await first.runDurable(session.id, blockCode, {}, { session, recordSession: 'deferred-result', callId: 'block-await-cell' })
   assert.equal(block.meta.dshPtcPlus.status, 'durable')
   appendRunCodeEvents(events, 'block-await-cell', blockCode, block)
   await first.dispose()
@@ -101,12 +108,12 @@ test('cold-replays a block-scoped awaited initializer without source conventions
 })
 
 test('can disable durable replay while preserving live volatile continuation', async (t) => {
-  const events = []
-  const session = { id: 'durable-replay-disabled', events }
+  const session = orderedSurfaceSession('durable-replay-disabled')
+  const { events } = session
   const writer = fixture()
 
   const setupCode = 'let historicalBinding = 41'
-  const setup = await writer.runDurable(session.id, setupCode, {}, { session })
+  const setup = await writer.runDurable(session.id, setupCode, {}, { session, recordSession: 'deferred-result', callId: 'durable-replay-setup' })
   appendRunCodeEvents(events, 'durable-replay-setup', setupCode, setup)
   appendRunCodeEvents(events, 'durable-replay-corrupt', 'let corruptHistory = 1', {
     meta: { dshPtcPlus: { version: 999 } },
@@ -628,6 +635,84 @@ test('revokes edit registration on session disposal without agent disposal', asy
   assert.equal(agent.presentation.disposals, 1)
 })
 
+test('retries a failed edit presentation cleanup after disposing its siblings', async (t) => {
+  const state = fixture()
+  t.after(() => state.dispose())
+  const session = { id: 'edit-presentation-cleanup-fault', events: [] }
+  const agent = ptcAgent('edit-presentation-cleanup-agent', session)
+  const presentAs = agent.ctx.tools.presentAs
+  let failPresentation = true
+  agent.ctx.tools.presentAs = (...args) => {
+    const dispose = presentAs(...args)
+    return () => {
+      if (failPresentation) throw new Error('presentation cleanup fault')
+      return dispose()
+    }
+  }
+  await state.run(session.id, 'const liveBeforeCleanupFault = process.pid')
+  await state.assemble(
+    { sections: [], contexts: [], variables: {}, tools: [state.runCodeDefinition] },
+    { agent, scope: agent },
+  )
+
+  await assert.rejects(
+    state.emit('agent/disposed', { agent }),
+    error => error instanceof AggregateError
+      && error.message === 'ptc-plus: agent disposal failed'
+      && errorTreeHasMessage(error, 'presentation cleanup fault'),
+  )
+  assert.equal(agent.registration.disposals, 1)
+  assert.equal(agent.presentation.disposals, 0)
+  assert.equal(agent.ctx.tools.get('edit_run_code'), undefined)
+  assert.equal(
+    (await state.run(session.id, 'return typeof liveBeforeCleanupFault')).value,
+    'undefined',
+  )
+
+  failPresentation = false
+  await state.emit('agent/disposed', { agent })
+  assert.equal(agent.registration.disposals, 1)
+  assert.equal(agent.presentation.disposals, 1)
+  await state.emit('agent/disposed', { agent })
+  assert.equal(agent.presentation.disposals, 1)
+})
+
+test('retries a failed edit registration cleanup without repeating presentation cleanup', async (t) => {
+  const state = fixture()
+  t.after(() => state.dispose())
+  const session = { id: 'edit-registration-cleanup-fault', events: [] }
+  const agent = ptcAgent('edit-registration-cleanup-agent', session)
+  const register = agent.ctx.tools.register
+  let failRegistration = true
+  agent.ctx.tools.register = definition => {
+    const dispose = register(definition)
+    return () => {
+      if (failRegistration) throw new Error('registration cleanup fault')
+      return dispose()
+    }
+  }
+  await state.assemble(
+    { sections: [], contexts: [], variables: {}, tools: [state.runCodeDefinition] },
+    { agent, scope: agent },
+  )
+
+  await assert.rejects(
+    state.emit('session/disposed', session),
+    error => error instanceof AggregateError
+      && error.message === 'ptc-plus: session disposal failed'
+      && errorTreeHasMessage(error, 'registration cleanup fault'),
+  )
+  assert.equal(agent.presentation.disposals, 1)
+  assert.equal(agent.registration.disposals, 0)
+  assert.equal(agent.ctx.tools.get('edit_run_code')?.name, 'edit_run_code')
+
+  failRegistration = false
+  await state.emit('session/disposed', session)
+  assert.equal(agent.presentation.disposals, 1)
+  assert.equal(agent.registration.disposals, 1)
+  assert.equal(agent.ctx.tools.get('edit_run_code'), undefined)
+})
+
 test('fails before advertising edit_run_code without the required scoped host surfaces', async (t) => {
   const state = fixture()
   t.after(() => state.dispose())
@@ -650,4 +735,85 @@ test('fails before advertising edit_run_code without the required scoped host su
   await assert.rejects(state.assemble(assembly, {
     agent: invalidRegistration, scope: invalidRegistration,
   }), /tools\.register did not return a disposer/)
+})
+
+test('retains a failed partial edit installation rollback for lifecycle retry', async (t) => {
+  const state = fixture()
+  t.after(() => state.dispose())
+  const agent = ptcAgent('partial-edit-rollback', { id: 'partial-edit-rollback', events: [] })
+  const register = agent.ctx.tools.register
+  let failRollback = true
+  let failPresentation = true
+  agent.ctx.tools.register = definition => {
+    const dispose = register(definition)
+    return () => {
+      if (failRollback) throw new Error('registration rollback fault')
+      return dispose()
+    }
+  }
+  const presentAs = agent.ctx.tools.presentAs
+  agent.ctx.tools.presentAs = (...args) => {
+    if (failPresentation) throw new Error('presentation installation fault')
+    return presentAs(...args)
+  }
+
+  await assert.rejects(
+    state.assemble(
+      { sections: [], contexts: [], variables: {}, tools: [state.runCodeDefinition] },
+      { agent, scope: agent },
+    ),
+    error => error instanceof AggregateError
+      && errorTreeHasMessage(error, 'presentation installation fault')
+      && errorTreeHasMessage(error, 'registration rollback fault'),
+  )
+  assert.equal(agent.ctx.tools.get('edit_run_code')?.name, 'edit_run_code')
+  assert.equal(agent.registration.disposals, 0)
+
+  failRollback = false
+  failPresentation = false
+  await state.assemble(
+    { sections: [], contexts: [], variables: {}, tools: [state.runCodeDefinition] },
+    { agent, scope: agent },
+  )
+  assert.equal(agent.registration.disposals, 1)
+  assert.equal(agent.registration.calls.length, 2)
+  assert.equal(agent.presentation.calls.length, 1)
+  await state.emit('agent/disposed', { agent })
+  assert.equal(agent.ctx.tools.get('edit_run_code'), undefined)
+  assert.equal(agent.registration.disposals, 2)
+})
+
+test('reports edit owner cleanup failure after attempting both plugin disposers', async () => {
+  const state = fixture()
+  const agent = ptcAgent('plugin-edit-cleanup-fault', {
+    id: 'plugin-edit-cleanup-fault', events: [],
+  })
+  const register = agent.ctx.tools.register
+  agent.ctx.tools.register = definition => {
+    const dispose = register(definition)
+    return () => {
+      dispose()
+      throw new Error('plugin registration cleanup fault')
+    }
+  }
+  const presentAs = agent.ctx.tools.presentAs
+  agent.ctx.tools.presentAs = (...args) => {
+    const dispose = presentAs(...args)
+    return () => {
+      dispose()
+      throw new Error('plugin presentation cleanup fault')
+    }
+  }
+  await state.assemble(
+    { sections: [], contexts: [], variables: {}, tools: [state.runCodeDefinition] },
+    { agent, scope: agent },
+  )
+
+  await assert.rejects(
+    state.dispose(),
+    error => errorTreeHasMessage(error, 'plugin registration cleanup fault')
+      && errorTreeHasMessage(error, 'plugin presentation cleanup fault'),
+  )
+  assert.equal(agent.registration.disposals, 1)
+  assert.equal(agent.presentation.disposals, 1)
 })

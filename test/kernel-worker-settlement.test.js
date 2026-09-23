@@ -9,7 +9,12 @@ import { SessionRuntime } from '../internal/session-runtime.js'
 import { USER_BINDINGS_META_KEY, createUserBindingsSnapshot } from '../internal/user-bindings.js'
 import { decodeValue, encodeValue } from '../internal/value-wire.js'
 import { WorkerClient } from '../internal/worker-client.js'
-import { appendRunCodeEvents, fixture } from './plugin-fixture.js'
+import {
+  appendRunCodeCall,
+  appendRunCodeEvents,
+  fixture,
+  orderedSurfaceSession,
+} from './plugin-fixture.js'
 import {
   activeTimers,
   interceptWorkerMessages,
@@ -31,7 +36,17 @@ function sharedNamespaceSnapshot(value) {
  * so the same session can later replay the record and continue live.
  */
 async function recordUserBindingCell(runtime, session, program, userBindings, functions = {}) {
-  const callSeq = Math.max(-1, ...session.events.map(event => event.seq)) + 1
+  const firstSeq = Math.max(-1, ...session.events.map(event => event.seq)) + 1
+  const recorded = []
+  const appended = appendRunCodeEvents(recorded, `user-binding-${firstSeq}`, program, {})
+  for (const event of recorded) {
+    event.seq += firstSeq
+    event.time += firstSeq
+    if (event.sourceEventSeqs !== undefined) {
+      event.sourceEventSeqs = event.sourceEventSeqs.map(seq => seq + firstSeq)
+    }
+  }
+  const callSeq = appended.callSeq + firstSeq
   const execution = await runtime.runTentative(
     { id: session.id, session, persistedCallSeq: callSeq },
     { program, userBindings, bindings: [{ global: 'tools', functions }] },
@@ -39,20 +54,18 @@ async function recordUserBindingCell(runtime, session, program, userBindings, fu
   const { settlement } = execution
   const journal = normalizeJournal(settlement.journal)
   runtime.finalize(settlement, true)
-  const recorded = []
-  appendRunCodeEvents(recorded, `user-binding-${callSeq}`, program, { meta: {
+  const resultEvent = recorded.find(event => event.seq === appended.resultSeq + firstSeq)
+  resultEvent.data.meta = {
     [JOURNAL_KEY]: journal,
     ...(settlement.userBindings === undefined ? {} : { [USER_BINDINGS_META_KEY]: settlement.userBindings }),
-  } })
-  for (const [index, event] of recorded.entries()) event.seq = callSeq + index
-  recorded[1].sourceEventSeqs = [callSeq]
+  }
   session.events.push(...recorded)
   return { result: execution.result, journal, recoveryBoundaries: settlement.recoveryBoundaries,
     replMemory: settlement.replMemory }
 }
 
 test('enabling replay preserves the initialized live worker and its volatile source evidence', async t => {
-  const session = { id: 'enable-replay-live', events: [] }
+  const session = orderedSurfaceSession('enable-replay-live')
   const runtime = new SessionRuntime({ legacyBindingSettings: true, durableReplay: false })
   t.after(() => runtime.dispose())
   let effects = 0
@@ -92,7 +105,7 @@ test('enabling replay preserves the initialized live worker and its volatile sou
 test('success and body failure drain every issued call in settlement order and replay no effects', async t => {
   for (const fails of [false, true]) {
     await t.test(fails ? 'body throws' : 'body returns', async t => {
-      const session = { id: `settlement-${fails}`, events: [] }
+      const session = orderedSurfaceSession(`settlement-${fails}`)
       const writer = fixture()
       t.after(() => writer.dispose())
       const started = Promise.withResolvers()
@@ -106,7 +119,9 @@ void tools.slow({ index: 0 }).then(value => settledLabels.push(value))
 void tools.slow({ index: 1 }).catch(error => settledLabels.push(error.message))
 ${fails ? 'throw new Error("body failed")' : 'return 7'}
 `
-      const pending = writer.runDurable(session.id, source, {
+      const callId = `settled-calls-${fails}`
+      const call = appendRunCodeCall(session.events, callId, source)
+      const pending = writer.executeRun(session.id, source, {
         slow: async ({ index }) => {
           if (++calls === 2) started.resolve()
           await gates[index].promise
@@ -116,14 +131,14 @@ ${fails ? 'throw new Error("body failed")' : 'return 7'}
           }
           return 'first completed'
         },
-      }, { session }).then(result => { completed = true; return result })
+      }, { session, callId }).then(execution => { completed = true; return execution })
       await started.promise
       gates[1].resolve()
       await secondFinished.promise
       await nextTurn()
       assert.equal(completed, false)
       gates[0].resolve()
-      const written = await pending
+      const { result: written } = await pending
       assert.equal(written.isError, fails)
       if (fails) assert.match(written.error.message, /body failed/)
       else assert.equal(written.value, 7)
@@ -132,18 +147,25 @@ ${fails ? 'throw new Error("body failed")' : 'return 7'}
       assert.deepEqual(journal.calls.map(call => [call.ok, call.settle]), [[true, 1], [false, 0]])
       assert.equal(decodeValue(journal.calls[0].value), 'first completed')
       assert.equal(journal.calls[1].error, 'second rejected')
-      appendRunCodeEvents(session.events, 'settled-calls', source, written)
-      assert.deepEqual((await writer.run(session.id, 'return settledLabels', {}, { session })).value,
+      const liveReadId = `settled-live-read-${fails}`
+      const liveRead = appendRunCodeCall(session.events, liveReadId, 'return settledLabels')
+      const liveExecution = await writer.executeRun(session.id, 'return settledLabels', {}, {
+        session,
+        callId: liveReadId,
+      })
+      assert.deepEqual(liveExecution.raw.value,
         ['second rejected', 'first completed'])
       await writer.dispose()
 
       const restored = fixture()
       t.after(() => restored.dispose())
-      const result = await restored.run(session.id, 'return settledLabels', {
+      const restoredReadId = `settled-restored-read-${fails}`
+      const restoredRead = appendRunCodeCall(session.events, restoredReadId, 'return settledLabels')
+      const result = await restored.executeRun(session.id, 'return settledLabels', {
         slow: async () => { calls += 1; return 'unexpected replay dispatch' },
-      }, { session })
-      assert.equal(result.error, undefined)
-      assert.deepEqual(result.value, ['second rejected', 'first completed'])
+      }, { session, callId: restoredReadId })
+      assert.equal(result.raw.error, undefined)
+      assert.deepEqual(result.raw.value, ['second rejected', 'first completed'])
       assert.equal(calls, 2)
     })
   }
@@ -340,12 +362,12 @@ test('a pending reply retains its submitted value budget across configuration ch
 test('over-budget recorded replies contract recovery and still execute the current cell', async t => {
   const writer = fixture()
   t.after(() => writer.dispose())
-  const session = { id: 'recorded-reply-budget', events: [] }
+  const session = orderedSurfaceSession('recorded-reply-budget')
   let calls = 0
   const source = 'const saved = await tools.read({}); return undefined'
   const written = await writer.runDurable(session.id, source, {
     read: async () => { calls += 1; return [{ value: 7 }] },
-  }, { session })
+  }, { session, recordSession: 'deferred-result', callId: 'recorded-large-reply' })
   assert.equal(written.isError, false)
   appendRunCodeEvents(session.events, 'recorded-large-reply', source, written)
   await writer.dispose()
@@ -431,7 +453,7 @@ test('stateful settlement records drained callback writes and their original sou
   ]) await t.test(phase, async t => {
     const runtime = new SessionRuntime({ bindingUpdates: 'stateful' })
     t.after(() => runtime.dispose())
-    const session = { id: `stateful-drained-write-${phase}`, events: [] }
+    const session = orderedSurfaceSession(`stateful-drained-write-${phase}`)
     const initializations = []
     let calls = 0
     const started = Promise.withResolvers()
@@ -576,7 +598,7 @@ test('a legacy actual assignment stays local when the installed descriptor is re
     for (const completion of ['return shared.value', 'void 0']) await t.test(`${label}, ${completion}`, async t => {
       const runtime = new SessionRuntime({ legacyBindingSettings: true })
       t.after(() => runtime.dispose())
-      const session = { id: `restored-descriptor-${label.replaceAll(' ', '-')}`, events: [] }
+      const session = orderedSurfaceSession(`restored-descriptor-${label.replaceAll(' ', '-')}`)
       const initializations = []
       const functions = { observe: async ({ value }) => { initializations.push(value); return 'initialized' } }
       const assigned = await recordUserBindingCell(runtime, session,
@@ -609,7 +631,7 @@ test('a legacy actual assignment stays local when the installed descriptor is re
 test('restoring the legacy installed descriptor without an assignment keeps provider ownership', async t => {
   const runtime = new SessionRuntime({ legacyBindingSettings: true })
   t.after(() => runtime.dispose())
-  const session = { id: 'restored-descriptor-unwritten', events: [] }
+  const session = orderedSurfaceSession('restored-descriptor-unwritten')
   const restored = await recordUserBindingCell(runtime, session,
     restoreInstalledDescriptor(''), sharedNamespaceSnapshot(1))
   assert.equal(restored.result.value, 1)
@@ -657,18 +679,18 @@ ${hasValue ? 'return shared.value' : 'void 0'}`
       ...(hasValue ? { value: { codec: 'ptc-value-graph/v1', root: 1, nodes: [] } } : {}),
     },
   }
-  const session = { id: `historical-descriptor-${hasValue}`, events: [] }
-  appendRunCodeEvents(session.events, 'historical-descriptor', program, { meta: {
+  const session = orderedSurfaceSession(`historical-descriptor-${hasValue}`)
+  const { resultSeq } = appendRunCodeEvents(session.events, 'historical-descriptor', program, { meta: {
     [JOURNAL_KEY]: journal, [USER_BINDINGS_META_KEY]: userBindings,
   } })
-  return session
+  return { session, resultSeq }
 }
 
 test('version-6 assignment evidence retains the restored accessor through recovery and policy transition', async t => {
   for (const hasValue of [true, false]) await t.test(hasValue ? 'return' : 'void', async t => {
-    const session = historicalDescriptorSession(hasValue)
+    const { session, resultSeq } = historicalDescriptorSession(hasValue)
     const historical = structuredClone(session.events)
-    const userBindings = session.events[1].data.meta[USER_BINDINGS_META_KEY]
+    const userBindings = session.events.find(event => event.seq === resultSeq).data.meta[USER_BINDINGS_META_KEY]
     const updated = createUserBindingsSnapshot({ entries: [{
       id: 'shared', name: 'shared', scope: 'namespace', enabled: true,
       source: 'await tools.observe({ value: 2 }); export const value = 2',
@@ -1235,12 +1257,39 @@ export const conflictName = 3`,
   assert.equal(decodeValue(next.value), 99)
 })
 
-test('console.dir participates in captured cell logs', async t => {
+test('native console methods preserve their semantics in budgeted cell logs', async t => {
   const worker = await bindingWorker(t)
-  const done = await worker.run('console.dir({ value: 1 }); return 1')
+  const methods = ['log', 'info', 'debug', 'warn', 'error', 'dir', 'time', 'timeEnd', 'timeLog',
+    'trace', 'assert', 'clear', 'count', 'countReset', 'group', 'groupCollapsed', 'groupEnd', 'table', 'dirxml']
+  const done = await worker.run(`
+console.log('plain', { value: 1 })
+console.table([{ value: 2 }])
+console.count('items')
+console.count('items')
+console.countReset('items')
+console.assert(false, 'asserted')
+console.group('outer')
+console.log('inner')
+console.groupEnd()
+console.dir({ a: { b: { c: { d: { e: { f: 'deep' } } } } } }, { depth: null })
+console.time('timer')
+console.timeLog('timer', 'tick')
+console.timeEnd('timer')
+console.trace('traced')
+return Object.fromEntries(${JSON.stringify(methods)}.map(name => [name, typeof console[name]]))`)
   assert.equal(done.error, undefined)
-  assert.equal(done.logs.length, 1)
-  assert.match(done.logs[0], /value/)
+  assert.deepEqual(decodeValue(done.value), Object.fromEntries(methods.map(name => [name, 'function'])))
+  assert.equal(done.logs[0], 'plain { value: 1 }')
+  assert.ok(done.logs.some(log => /value/.test(log) && /2/.test(log)))
+  assert.ok(done.logs.includes('items: 1'))
+  assert.ok(done.logs.includes('items: 2'))
+  assert.ok(done.logs.includes('Assertion failed: asserted'))
+  assert.ok(done.logs.includes('outer'))
+  assert.ok(done.logs.includes('  inner'))
+  assert.ok(done.logs.some(log => /f: 'deep'/.test(log)))
+  assert.ok(done.logs.some(log => /^timer: .* tick$/u.test(log)))
+  assert.ok(done.logs.some(log => /^timer: /u.test(log) && !/ tick$/u.test(log)))
+  assert.ok(done.logs.some(log => /^Trace: traced/u.test(log)))
 })
 
 test('durability observation preserves native Date and Math.random reflection', async t => {

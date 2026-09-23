@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   REPL_MEMORY_META_KEY,
+  boundedDefinitionSource,
   createReplMemoryProjection,
   createReplMemorySnapshot,
   normalizeReplMemorySnapshot,
@@ -11,9 +12,14 @@ import {
   withReplMemorySnapshot,
 } from '../internal/repl-memory-projection.js'
 import { prepareProgram } from '../internal/cell-analysis.js'
-import { BindingCatalog } from '../internal/session-state.js'
-import { createUserBindingsSnapshot } from '../internal/user-bindings.js'
-import { appendRunCodeEvents, fixture } from './plugin-fixture.js'
+import { BindingCatalog, durabilityState, transitionDurability } from '../internal/session-state.js'
+import { createUserBindingsSnapshot, userBindingCatalogEntries } from '../internal/user-bindings.js'
+import {
+  appendRunCodeCall,
+  appendRunCodeResult,
+  fixture,
+  orderedSurfaceSession,
+} from './plugin-fixture.js'
 
 const GENERATION = 'test-runtime-generation'
 const OTHER_GENERATION = 'other-runtime-generation'
@@ -94,6 +100,14 @@ function observedFixture(config = {}) {
   }
 }
 
+test('durability transitions preserve the first volatile reason and ignore durable observations', () => {
+  const durable = durabilityState()
+  assert.equal(transitionDurability(durable, { type: 'durable' }), durable)
+  const volatile = transitionDurability(durable, { type: 'volatile', reason: 'first' })
+  assert.deepEqual(volatile, { status: 'volatile', reason: 'first' })
+  assert.deepEqual(transitionDurability(volatile, { type: 'volatile', reason: 'later' }), volatile)
+})
+
 test('bounds and validates UI observation independently of source inventory and journal evidence', () => {
   const preview = { name: 'value', status: 'readable', text: '42', truncated: false }
   const observation = { at: 1000, entries: [preview] }
@@ -125,6 +139,36 @@ test('bounds and validates UI observation independently of source inventory and 
   })
 })
 
+test('bounds global binding declarations before the REPL inventory drops them', () => {
+  const long = 'x'.repeat(2000)
+  assert.equal(boundedDefinitionSource(long).length, 1024)
+  assert.equal(boundedDefinitionSource(long), `${'x'.repeat(1021)}...`)
+  assert.equal(boundedDefinitionSource('short'), 'short')
+
+  const names = Array.from({ length: 64 }, (_, index) => (
+    `exportedValueNumber${String(index).padStart(3, '0')}`
+  ))
+  const snapshot = createUserBindingsSnapshot({ entries: [{
+    id: 'long-global',
+    name: 'longTools',
+    scope: 'namespace',
+    purpose: '',
+    enabled: true,
+    source: names.map((name, index) => `export const ${name} = ${index}`).join('\n'),
+  }] }, 1)
+  const [catalog] = userBindingCatalogEntries(snapshot)
+  assert.match(catalog.definition.source, /\.\.\.$/)
+  assert.equal(catalog.definition.source.length, 1024)
+  const memory = createReplMemorySnapshot([{
+    name: catalog.name,
+    kind: catalog.kind,
+    definition: catalog.definition,
+  }])
+  assert.deepEqual(memory.entries.map(entry => entry.name), ['longTools'])
+  assert.equal(memory.total, 1)
+  assert.equal(memory.omitted, 0)
+})
+
 test('rejects reuse fields inside an older metadata version', () => {
   // Reuse counts are a version 5 addition, so a version 3/4 payload cannot
   // carry them; the symmetric version 3 + observation guard already exists.
@@ -151,6 +195,69 @@ test('retains bounded definition provenance without reading runtime values', () 
     binding('answer', 'variable', 'const answer = 42', 2),
     binding('path', 'import', "import path from 'node:path'"),
   ])
+})
+
+test('retains definition provenance across every JavaScript line terminator', () => {
+  for (const ending of ['\n', '\r\n', '\r', '\u2028', '\u2029']) {
+    const source = `const first = 1;${ending}const second = 2`
+    const prepared = prepareProgram(source, {
+      knownBindings: new Set(),
+      bindingPolicy: true,
+      reservedBindings: new Set(),
+      rewritesEnabled: REWRITES,
+    })
+    const entry = new BindingCatalog().advance(prepared, source).snapshot()
+      .find(bindingEntry => bindingEntry.name === 'second')
+    assert.deepEqual(entry?.definition, { source: 'const second = 2', line: 2, column: 1 }, JSON.stringify(ending))
+  }
+})
+
+test('rejects invalid definition spans without manufacturing source provenance', () => {
+  const source = 'const value = 1'
+  const prepared = prepareProgram(source, {
+    knownBindings: new Set(), bindingPolicy: true, reservedBindings: new Set(), rewritesEnabled: REWRITES,
+  })
+  const spans = [
+    null,
+    { line: 2, column: 1, end: { line: 2, column: 2 } },
+    { line: 1, column: source.length + 2, end: { line: 1, column: source.length + 3 } },
+    { line: 1, column: 2, end: { line: 1, column: 1 } },
+  ]
+  for (const definitionSpan of spans) {
+    const candidate = { ...prepared, declarations: prepared.declarations.map(declaration => ({
+      ...declaration, definitionSpan,
+    })) }
+    assert.equal(new BindingCatalog().advance(candidate, source).snapshot()[0].definition, undefined)
+  }
+  assert.equal(new BindingCatalog().advance(prepared).snapshot()[0].definition, undefined)
+
+  const firstLine = 'const value = 1'
+  for (const ending of ['\n', '\r\n', '\r', '\u2028', '\u2029']) {
+    const multiline = `${firstLine}${ending}const other = 2`
+    const multilinePrepared = prepareProgram(multiline, {
+      knownBindings: new Set(), bindingPolicy: true, reservedBindings: new Set(), rewritesEnabled: REWRITES,
+    })
+    const declaration = multilinePrepared.declarations.find(item => item.name === 'value')
+    const withSpan = definitionSpan => ({
+      ...multilinePrepared,
+      declarations: multilinePrepared.declarations.map(item => item === declaration
+        ? { ...item, definitionSpan }
+        : item),
+    })
+    const legal = withSpan({ line: 1, column: 1, end: { line: 1, column: firstLine.length + 1 } })
+    assert.equal(new BindingCatalog().advance(legal, multiline).snapshot()
+      .find(item => item.name === 'value')?.definition?.source, firstLine, JSON.stringify(ending))
+    const insideTerminator = withSpan({ line: 1, column: 1, end: { line: 1, column: firstLine.length + 2 } })
+    assert.equal(new BindingCatalog().advance(insideTerminator, multiline).snapshot()
+      .find(item => item.name === 'value')?.definition, undefined, JSON.stringify(ending))
+  }
+
+  const expression = prepareProgram('return 1', {
+    knownBindings: new Set(), bindingPolicy: true, reservedBindings: new Set(), rewritesEnabled: REWRITES,
+  })
+  assert.equal(new BindingCatalog().advance(expression, 'return 1', undefined, [
+    { name: 'ghost', write: 'missing', source: 'local' },
+  ]).snapshot().length, 0)
 })
 
 test('retains original provenance for every synthetic default-export binding', () => {
@@ -514,20 +621,78 @@ return 42
   assert.equal(continued.meta.dshPtcPlus.status, 'durable')
 })
 
+test('automatic and on-demand observations use private intrinsics after user mutation', async t => {
+  const { state, watch, observe } = observedFixture()
+  t.after(() => state.dispose())
+  const sessionId = 'observation-private-intrinsics'
+  watch(sessionId)
+  const result = await state.runDurable(sessionId, `
+let observerTrapCalls = 0
+const observerOriginals = {
+  arrayFrom: Array.from,
+  objectIs: Object.is,
+  objectHasOwn: Object.hasOwn,
+  mathMin: Math.min,
+  string: globalThis.String,
+  arraySlice: Array.prototype.slice,
+  arrayMap: Array.prototype.map,
+  setHas: Set.prototype.has,
+  regexpTest: RegExp.prototype.test,
+}
+const observerTrap = () => { observerTrapCalls++; throw new Error('observer used mutable intrinsic') }
+Array.from = observerTrap
+Object.is = observerTrap
+Object.hasOwn = observerTrap
+Math.min = observerTrap
+globalThis.String = observerTrap
+Array.prototype.slice = observerTrap
+Array.prototype.map = observerTrap
+Set.prototype.has = observerTrap
+RegExp.prototype.test = observerTrap
+const observedArray = [42]
+return 42
+`)
+  assert.equal(result.value, 42)
+  assert.equal(
+    resultMemory(result).observation.entries.find(entry => entry.name === 'observedArray').text,
+    'array { "0": 42 }',
+  )
+  const onDemand = await observe(sessionId, resultMemory(result))
+  assert.equal(onDemand.ok, true)
+  assert.equal(
+    onDemand.value.observation.entries.find(entry => entry.name === 'observedArray').text,
+    'array { "0": 42 }',
+  )
+  const restored = await state.runDurable(sessionId, `
+Array.from = observerOriginals.arrayFrom
+Object.is = observerOriginals.objectIs
+Object.hasOwn = observerOriginals.objectHasOwn
+Math.min = observerOriginals.mathMin
+globalThis.String = observerOriginals.string
+Array.prototype.slice = observerOriginals.arraySlice
+Array.prototype.map = observerOriginals.arrayMap
+Set.prototype.has = observerOriginals.setHas
+RegExp.prototype.test = observerOriginals.regexpTest
+return observerTrapCalls
+`)
+  assert.equal(restored.value, 0)
+})
+
 test('shows volatile live bindings but rejects them after runtime reactivation', async (t) => {
   const events = []
   const session = { id: 'volatile-memory-session', events }
   const live = fixture()
   t.after(() => live.dispose())
   const code = 'const volatileOnly = Date.now()'
+  const liveCall = appendRunCodeCall(events, 'volatile-memory-call', code)
   const result = await live.runDurable(session.id, code, {}, {
-    session, callId: 'volatile-memory-call',
+    session, callId: 'volatile-memory-call', recordSession: false,
   })
   assert.equal(result.meta.dshPtcPlus.status, 'volatile')
   assert.deepEqual(resultMemory(result).entries, [
     binding('volatileOnly', 'variable', code),
   ])
-  appendRunCodeEvents(events, 'volatile-memory-call', code, result)
+  appendRunCodeResult(events, 'volatile-memory-call', liveCall.callSeq, result)
   const liveGeneration = result.meta[REPL_MEMORY_META_KEY].generation
   assert.deepEqual(projectedMemory(events, liveGeneration), resultMemory(result))
   await live.dispose()
@@ -535,21 +700,22 @@ test('shows volatile live bindings but rejects them after runtime reactivation',
   const cold = fixture()
   t.after(() => cold.dispose())
   const recoveredCode = 'return typeof volatileOnly'
+  const coldCall = appendRunCodeCall(events, 'cold-memory-call', recoveredCode)
   const recovered = await cold.runDurable(session.id, recoveredCode, {}, {
-    session, callId: 'cold-memory-call',
+    session, callId: 'cold-memory-call', recordSession: false,
   })
   assert.equal(recovered.value, 'undefined')
   assert.equal(recovered.meta.dshPtcPlus.diagnostics[0]?.code, 'PTC-R002')
   const coldGeneration = recovered.meta[REPL_MEMORY_META_KEY].generation
   assert.notEqual(coldGeneration, liveGeneration)
   assert.deepEqual(projectedMemory(events, coldGeneration), unavailableReplMemorySnapshot())
-  appendRunCodeEvents(events, 'cold-memory-call', recoveredCode, recovered)
+  appendRunCodeResult(events, 'cold-memory-call', coldCall.callSeq, recovered)
   assert.deepEqual(projectedMemory(events, coldGeneration), createReplMemorySnapshot([]))
 })
 
 test('repopulates the restored binding surface after the reset is materialized', async (t) => {
   const events = []
-  const session = { id: 'restored-memory-session', events }
+  const session = orderedSurfaceSession('restored-memory-session', events)
   const state = fixture()
   t.after(() => state.dispose())
 
@@ -557,28 +723,38 @@ test('repopulates the restored binding surface after the reset is materialized',
 let stableValue = 1
 void await repl.state({ action: 'save', name: 'stable' })
 `
-  const setup = await state.runDurable(session.id, setupCode, {}, { session, callId: 'setup' })
-  appendRunCodeEvents(events, 'setup', setupCode, setup)
+  const setupCall = appendRunCodeCall(events, 'setup', setupCode)
+  const setup = await state.runDurable(session.id, setupCode, {}, {
+    session, callId: 'setup', recordSession: false,
+  })
+  appendRunCodeResult(events, 'setup', setupCall.callSeq, setup)
   const generation = setup.meta[REPL_MEMORY_META_KEY].generation
   assert.deepEqual(projectedMemory(events, generation).entries.map(entry => entry.name), ['stableValue'])
 
   const volatileCode = 'const liveOnly = Date.now()'
-  const volatile = await state.runDurable(session.id, volatileCode, {}, { session, callId: 'volatile' })
-  appendRunCodeEvents(events, 'volatile', volatileCode, volatile)
+  const volatileCall = appendRunCodeCall(events, 'volatile', volatileCode)
+  const volatile = await state.runDurable(session.id, volatileCode, {}, {
+    session, callId: 'volatile', recordSession: false,
+  })
+  appendRunCodeResult(events, 'volatile', volatileCall.callSeq, volatile)
   assert.deepEqual(projectedMemory(events, generation).entries.map(entry => entry.name), [
     'liveOnly', 'stableValue',
   ])
 
   const restoreCode = "void await repl.state({ action: 'restore', name: 'stable' })"
-  const restored = await state.runDurable(session.id, restoreCode, {}, { session, callId: 'restore' })
-  appendRunCodeEvents(events, 'restore', restoreCode, restored)
+  const restoreCall = appendRunCodeCall(events, 'restore', restoreCode)
+  const restored = await state.runDurable(session.id, restoreCode, {}, {
+    session, callId: 'restore', recordSession: false,
+  })
+  appendRunCodeResult(events, 'restore', restoreCall.callSeq, restored)
   assert.deepEqual(projectedMemory(events, generation), unavailableReplMemorySnapshot())
 
   const materializeCode = 'return stableValue'
+  const materializeCall = appendRunCodeCall(events, 'materialized', materializeCode)
   const materialized = await state.runDurable(session.id, materializeCode, {}, {
-    session, callId: 'materialized',
+    session, callId: 'materialized', recordSession: false,
   })
-  appendRunCodeEvents(events, 'materialized', materializeCode, materialized)
+  appendRunCodeResult(events, 'materialized', materializeCall.callSeq, materialized)
   assert.equal(materialized.value, 1)
   assert.deepEqual(projectedMemory(events, generation).entries.map(entry => entry.name), ['stableValue'])
 })
@@ -590,5 +766,46 @@ test('removes user-global bindings independently of session bindings', () => {
   }] })
   const plan = new BindingCatalog().userBindings(snapshot)
   assert.equal(plan.catalog.snapshot()[0].name, 'answer')
+  assert.equal(new BindingCatalog().userBindings(snapshot, new Set()).catalog.snapshot().length, 0)
+  assert.equal(plan.catalog.userBindings(snapshot).catalog.snapshot()[0].name, 'answer')
+  assert.equal(plan.catalog.userBindings(undefined).catalog.snapshot().length, 0)
   assert.equal(plan.catalog.withoutUserBindings().snapshot().length, 0)
+
+  const provider = new BindingCatalog().reconcileUserBindingNames(snapshot, [
+    { name: 'answer', state: 'provider' },
+  ])
+  assert.equal(provider.snapshot()[0].name, 'answer')
+  assert.equal(provider.userBindingNameSet().has('answer'), false)
+  assert.equal(provider.userBindingNameSet(undefined, true).has('answer'), true)
+
+  const multiSnapshot = createUserBindingsSnapshot({ entries: [{
+    id: 'multi', name: 'multi', scope: 'top-level', purpose: '', enabled: true,
+    source: 'export const answer = 42; export const sibling = 43',
+  }] })
+  const localAnswer = new BindingCatalog({ entries: new Map([
+    ['answer', { kind: 'variable', writable: true, definition: { source: 'const answer = 1', line: 1, column: 1 } }],
+  ]) })
+  assert.equal(localAnswer.userBindings(multiSnapshot, undefined, 'whole-entry').catalog.snapshot().length, 1)
+  assert.deepEqual(localAnswer.userBindings(multiSnapshot, undefined, 'per-name').catalog.snapshot()
+    .map(entry => entry.name), ['sibling', 'answer'])
+
+  const localImport = { namespace: 'fixture', imported: 'local' }
+  const catalog = new BindingCatalog({ entries: new Map([
+    ['local', { kind: 'import', writable: false, import: localImport, rootSource: 'local',
+      native: true, nativeLexical: true, definition: { source: 'const local = 1', line: 1, column: 1 } }],
+    ['stale', { kind: 'variable', writable: true, origin: {
+      kind: 'user-global', entryId: 'stale', fingerprint: 'stale',
+    } }],
+  ]) })
+  const reconciled = catalog.reconcileUserBindingNames(undefined, [
+    { name: 'local', state: 'local' },
+    { name: 'stale', state: 'local' },
+    { name: 'missing', state: 'absent' },
+  ], 'x'.repeat(2048))
+  const byName = new Map(reconciled.snapshot().map(entry => [entry.name, entry]))
+  assert.deepEqual(reconciled.inputs().importBindings.get('local'), localImport)
+  assert.equal(byName.get('local').definition.source, 'const local = 1')
+  assert.equal(byName.get('stale').definition.source.length, 1024)
+  assert.equal(byName.has('missing'), false)
+  assert.equal(reconciled.inputs().knownBindings.has('missing'), false)
 })

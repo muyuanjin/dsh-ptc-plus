@@ -1,10 +1,12 @@
 // Runtime state transitions shared by the session coordinator and cell executor.
 
 import { userBindingCatalogEntries } from './user-bindings.js'
+import { boundedDefinitionSource } from './repl-memory-projection.js'
 import { LEGACY_USER_BINDINGS_SHADOW_POLICY } from './session-journal-schema.js'
 import { advanceLegacyBindings } from './legacy-binding-catalog.js'
 import { dynamicBindingOrigin } from './dynamic-binding-evidence.js'
 import { LEGACY_LANGUAGE_SEMANTICS, normalizeLanguageSemantics } from './language-semantics.js'
+import { sourceLineStarts, sourceOffsetAtPosition } from './source-position-map.js'
 
 /**
  * Reuse counts belong to a logical binding identity, not to one declaration
@@ -236,7 +238,7 @@ export class BindingCatalog {
           definition: previous?.origin === undefined && previous?.definition !== undefined
             ? previous.definition
             : fact.state === 'local' && typeof source === 'string' && source.length > 0
-              ? Object.freeze({ source: source.slice(0, MAX_DEFINITION_SOURCE_LENGTH), line: 1, column: 1 }) : undefined,
+              ? Object.freeze({ source: boundedDefinitionSource(source), line: 1, column: 1 }) : undefined,
           writable: previous?.writable ?? true,
           userBindingState: fact.state,
           unavailable: fact.state !== 'local',
@@ -290,41 +292,17 @@ function applyRootBindingFacts(entries, facts, rootCandidates, dynamicOrigins, i
   }
 }
 
-const MAX_DEFINITION_SOURCE_LENGTH = 1024
-
-function lineOffsets(source) {
-  const offsets = [0]
-  for (let index = 0; index < source.length; index += 1) {
-    if (source.charCodeAt(index) === 10) offsets.push(index + 1)
-  }
-  return offsets
-}
-
-function offsetAt(offsets, sourceLength, position) {
-  if (position === null || typeof position !== 'object'
-    || !Number.isSafeInteger(position.line) || position.line < 1
-    || !Number.isSafeInteger(position.column) || position.column < 1
-    || position.line > offsets.length) return undefined
-  const lineStart = offsets[position.line - 1]
-  const lineEnd = position.line < offsets.length ? offsets[position.line] - 1 : sourceLength
-  const offset = lineStart + position.column - 1
-  return offset <= lineEnd ? offset : undefined
-}
-
 function sourceDefinitionExtractor(source) {
-  const offsets = typeof source === 'string' ? lineOffsets(source) : undefined
+  const offsets = typeof source === 'string' ? sourceLineStarts(source) : undefined
   const extracted = new Map()
   return span => {
     if (offsets === undefined || span === null || typeof span !== 'object') return undefined
-    const start = offsetAt(offsets, source.length, span)
-    const end = offsetAt(offsets, source.length, span.end)
+    const start = sourceOffsetAtPosition(source, span, offsets)
+    const end = sourceOffsetAtPosition(source, span.end, offsets)
     if (start === undefined || end === undefined || end <= start) return undefined
     const key = `${start}:${end}`
     if (extracted.has(key)) return extracted.get(key)
-    const length = end - start
-    const bounded = length <= MAX_DEFINITION_SOURCE_LENGTH
-      ? source.slice(start, end)
-      : `${source.slice(start, start + MAX_DEFINITION_SOURCE_LENGTH - 3)}...`
+    const bounded = boundedDefinitionSource(source.slice(start, end))
     if (bounded.length === 0) return undefined
     const definition = Object.freeze({ source: bounded, line: span.line, column: span.column })
     extracted.set(key, definition)

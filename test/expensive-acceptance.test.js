@@ -70,6 +70,7 @@ test('public series headers keep exact prefix checks while bundled streams retai
   assert.deepEqual(attempts.failures, [])
   assert.equal(attempts.usage.inputTokens, 13)
   assert.deepEqual(collectTrajectoryFacts([message(1, undefined, [])]).failures, [])
+  assert.equal(collectTrajectoryFacts([message(1, undefined, [])]).usageComplete, false)
   for (const events of [
     [message(1, usage, packed(other))],
     [message(1, usage, [])],
@@ -1033,6 +1034,19 @@ test('separates logical model requests from header epochs and retry evidence', (
   assert.equal(invalid.headerEpochs, 2)
   assert.equal(invalid.headerChanges, 1)
   assert.match(invalid.failures.join('\n'), /epoch 1 is invalid/)
+})
+
+test('expensive acceptance retains unknown usage instead of a zero-cost budget pass', () => {
+  const events = acceptanceEvents()
+  delete events.find(event => event.type === 'assistant/message').data.usage
+  const report = inspectLog(events, { id: 'missing-usage', expect: { machineBudget: {
+    maxModelRequests: 10, maxDirectCalls: 10, maxSourceChars: 10000,
+    maxRepeatedSourceCalls: 10, maxResultChars: 10000, maxAssistantChars: 10000,
+    maxTokenTraffic: 1, maxRuntimeContextChars: 10000,
+  } } }, { provider: 'provider', model: 'model' })
+  assert.equal(report.usageComplete, false)
+  assert.equal(report.machineMetrics.tokenTraffic, null)
+  assert.match(report.failures.join('\n'), /usage accounting is incomplete/)
 })
 
 test('turns every machine budget dimension into a failure boundary', () => {

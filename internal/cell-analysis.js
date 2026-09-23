@@ -20,7 +20,7 @@ import {
 import { applySourceEdits, mapSourcePosition, mapSourceSpan, sourceRangeHasOriginalText } from './source-position-map.js'
 import { SKIP_AST_CHILDREN, walkAst } from './ast-traversal.js'
 import { compileStatefulRoot } from './stateful-root-compiler.js'
-import { CELL_PARSER_PLUGINS, bindCompilerIntrinsics, lowerStatefulDecorators, lowerStatefulResources, lowerNativeLanguageSource, normalizeStatefulScopes } from './repl-scope-normalizer.js'
+import { CELL_PARSER_PLUGINS, bindCompilerIntrinsics, lowerStatefulDecorators, lowerStatefulResources, lowerNativeLanguageSource, normalizationFailureInput, normalizeStatefulScopes } from './repl-scope-normalizer.js'
 import { markCallableSources, collectCallableSources } from './callable-source-facts.js'
 import { LegacyPreflightError, prepareLegacyProgram } from './legacy-cell-analysis.js'
 import { adaptLegacyModuleImports } from './managed-module-operations.js'
@@ -220,6 +220,49 @@ function isFunction(node) {
     || node.type === 'ArrowFunctionExpression'
 }
 
+function lowerCellImportMeta(result, importMeta, originalSource) {
+  if (!result.code.includes('import')) return result
+  const tree = parseSource(result.code, {
+    sourceType: 'unambiguous',
+    errorRecovery: true,
+    allowAwaitOutsideFunction: true,
+    allowImportExportEverywhere: true,
+    allowReturnOutsideFunction: true,
+    allowUndeclaredExports: true,
+    plugins: CELL_PARSER_PLUGINS,
+  }).program
+  const references = []
+  walkAst(tree, (node) => {
+    if (node.type === 'MetaProperty' && node.meta?.name === 'import' && node.property?.name === 'meta') {
+      references.push(node)
+    }
+  })
+  if (references.length === 0) return result
+  if (importMeta === null || typeof importMeta !== 'object'
+    || typeof importMeta.url !== 'string' || typeof importMeta.filename !== 'string'
+    || typeof importMeta.dirname !== 'string') {
+    const node = references[0]
+    throw new ModuleRewriteError('import.meta requires the session module base', mapSourcePosition({
+      line: node.loc.start.line,
+      column: node.loc.start.column + 1,
+    }, result.code, originalSource, result.sourceMap))
+  }
+  const binding = createGeneratedNameAllocator(tree)('import_meta')
+  const directiveEnd = tree.directives.at(-1)?.end ?? tree.interpreter?.end ?? 0
+  const declaration = `\nconst ${binding}={__proto__:null,url:${JSON.stringify(importMeta.url)},filename:${JSON.stringify(importMeta.filename)},dirname:${JSON.stringify(importMeta.dirname)}};\n`
+  const edits = [
+    { start: directiveEnd, end: directiveEnd, text: declaration },
+    ...references.map(node => ({
+      start: node.start,
+      end: node.end,
+      text: binding,
+      mappings: [{ generatedStart: 0, generatedEnd: binding.length,
+        originalStart: node.start, originalEnd: node.end }],
+    })),
+  ]
+  return { ...result, ...applySourceEdits(result.code, result.sourceMap, edits), importMetaBinding: binding }
+}
+
 
 function staticModuleClassification(moduleLoads) {
   const reasons = new Map()
@@ -282,14 +325,16 @@ export function classifyDurability(code, knownBindings = new Set(), {
   const reasons = new Map()
   const addReason = reason => reasons.set(renderDurabilityReason(reason), reason)
   for (const reason of staticModuleClassification(moduleLoads)) addReason(reason)
-  const classifyModule = (source) => {
+  const classifyModule = (source, form) => {
     if (source?.type !== 'Literal' || typeof source.value !== 'string') {
       addReason(DYNAMIC_MODULE_REASON)
       return
     }
     const classification = classifyModuleSource(source.value)
     if (classification.status === 'forbidden') {
-      throw new PreflightError(`cell import of ${source.value} is forbidden because it exposes kernel control`, source)
+      const span = sourceMap === undefined || originalSource === undefined ? declarationSpan(source)
+        : mapSourceSpan(declarationSpan(source), code, originalSource, sourceMap)
+      throw new PreflightError(`cell ${form} of ${source.value} is forbidden because it exposes kernel control`, undefined, span)
     }
     if (classification.reason !== undefined) addReason(classification.reason)
   }
@@ -327,7 +372,7 @@ export function classifyDurability(code, knownBindings = new Set(), {
       nestedScopes = [...scopes, loopBindings(node)]
     }
     if (node.type === 'ImportExpression') {
-      classifyModule(node.source)
+      classifyModule(node.source, 'import')
     }
     const sourceOwnedThis = sourceMap === undefined
       || sourceRangeHasOriginalText(sourceMap, code, originalSource, node.start, node.end)
@@ -336,7 +381,7 @@ export function classifyDurability(code, knownBindings = new Set(), {
     }
     if (node.type === 'CallExpression' && node.callee?.type === 'Identifier' && node.callee.name === 'require'
       && !isBound('require', nestedScopes)) {
-      classifyModule(node.arguments[0])
+      classifyModule(node.arguments[0], 'require')
     }
     if (node.type === 'Identifier' && isReferenceIdentifier(node, parent, parentKey)
       && !isBound(node.name, nestedScopes) && AMBIENT_GLOBALS.has(node.name)
@@ -462,21 +507,31 @@ export function prepareProgram(program, options = {}) {
     let normalized
     let prepared
     let callableSources
+    let diagnosticInput
     const intrinsicContext = { bindings: new Set() }
     try {
       const marked = markCallableSources(program, undefined, { plugins: CELL_PARSER_PLUGINS, allowImportExportEverywhere: true, allowUndeclaredExports: true },
         { lowerNativeSource: lowerNativeLanguageSource, nativeUsing: options.nativeUsing })
+      const moduleMetadata = lowerCellImportMeta(marked, options.importMeta, program)
+      diagnosticInput = moduleMetadata
       callableSources = marked.callableSources
-      normalized = normalizeStatefulScopes(marked.code, marked.sourceMap, { mode: options.languageSemantics,
-        nativeJavaScript: marked.nativeJavaScript, deferDecorators: true, deferResources: true, intrinsicContext })
+      normalized = normalizeStatefulScopes(moduleMetadata.code, moduleMetadata.sourceMap, { mode: options.languageSemantics,
+        callableSources, nativeJavaScript: marked.nativeJavaScript,
+        deferDecorators: true, deferResources: true, intrinsicContext })
+      if (moduleMetadata.importMetaBinding !== undefined) {
+        normalized.internalBindings = new Set(normalized.internalBindings)
+        normalized.internalBindings.add(moduleMetadata.importMetaBinding)
+      }
+      diagnosticInput = normalized
       prepared = compileStatefulRoot(normalized.code, { ...options, sourceMap: normalized.sourceMap,
         internalBindings: normalized.internalBindings, dynamicBindings: normalized.dynamicBindings,
         privateBindings: normalized.privateBindings, originalSource: program })
     } catch (error) {
       if (error instanceof ModuleRewriteError) throw error
       const position = error.loc === undefined ? undefined : { line: error.loc.line, column: error.loc.column + 1 }
-      throw new ModuleRewriteError(error.message, normalized === undefined ? position
-        : mapSourcePosition(position, normalized.code, program, normalized.sourceMap))
+      const failureInput = normalizationFailureInput(error) ?? diagnosticInput
+      throw new ModuleRewriteError(error.message, failureInput === undefined ? position
+        : mapSourcePosition(position, failureInput.code, program, failureInput.sourceMap))
     }
     prepared = { ...prepared, deferredHelpers: normalized.deferredHelpers }
     intrinsicContext.expression = `this[${JSON.stringify(prepared.rootRuntimeName)}].intrinsics`

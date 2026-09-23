@@ -23,9 +23,10 @@ edit_run_code({
 
 PTC mode requests using the code-only direct-tool projection expose `[run_code, edit_run_code]` in
 that order. The first conclusive prompt assembly creates one per-agent composition owner before any
-plugin-owned presentation effect changes the nearest DSH scope. A non-empty `tools:code-only`
-section proves `code`, an empty section proves `both`, and only a missing owner signal permits a
-tool-shape inference. For a code composition, the same owner
+plugin-owned presentation effect changes the nearest DSH scope. A non-empty `tools:ptc-only`
+section proves `ptc`, an empty section proves `both`, and the preceding generation's
+`tools:code-only` alias proves the same composition; the current section wins when both appear, and
+only a missing owner signal permits a tool-shape inference. For a code composition, the same owner
 registers `edit_run_code` through `agent.ctx.tools.register()` and uses the same scope's
 `tools.presentAs('both')` to admit both direct calls. It retains both exact disposers and releases
 registration and presentation together with the owning session, agent, or plugin. Native-mode and unrelated agent

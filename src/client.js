@@ -9,6 +9,8 @@ import { createIndicatorView } from './client-indicator-view.js'
 import { createTypeScriptEditor } from './client-code-editor.js'
 import { createBindingConsole } from './client-console.js'
 import {
+  hostIconComponents,
+  isHostIconComponent,
   isIdleSessionComposer,
   publishSettingsCard,
   sessionUsesPtcPreset,
@@ -32,34 +34,37 @@ window.__ModuleLoader__.load({
   id: __PTC_PLUS_CLIENT_MODULE_ID__,
   factory: (require) => {
     const React = require('react')
+    const primitives = require('@deepseek-ai/dsh-client-ui-primitives')
     const {
       Button,
       CodeBlock,
       DisclosureRow,
-      IconCheckOutline14,
-      IconChevronDownOutline14,
-      IconInspectOutline12,
-      IconSparkle16,
-      IconCloseOutline16,
-      IconSearchOutline16,
-      IconPlusOutline16,
-      IconRefreshOutline16,
-      IconTrashOutline16,
-      IconEditOutline16,
-      IconPlayOutline16,
-      IconStopFill16,
       Menu,
       Modal,
       Toast,
       Tooltip,
-    } = require('@deepseek-ai/dsh-client-ui-primitives')
+    } = primitives
+    const {
+      check: IconCheckOutline14,
+      chevron: IconChevronDownOutline14,
+      inspect: IconInspectOutline12,
+      sparkle: IconSparkle16,
+      close: IconCloseOutline16,
+      search: IconSearchOutline16,
+      plus: IconPlusOutline16,
+      refresh: IconRefreshOutline16,
+      trash: IconTrashOutline16,
+      edit: IconEditOutline16,
+      play: IconPlayOutline16,
+      stop: IconStopFill16,
+    } = hostIconComponents(primitives)
     const module = { exports: {} }
     const h = React.createElement
     const TypeScriptEditor = createTypeScriptEditor(React)
 
     function IconButton({ icon: Icon, label, ...props }) {
       const button = h('button', { ...props, type: 'button', className: 'ptcPlusIconButton',
-        'aria-label': label, title: label }, typeof Icon === 'function' ? h(Icon, { size: 16 }) : label)
+        'aria-label': label, title: label }, isHostIconComponent(Icon) ? h(Icon, { size: 16 }) : label)
       return typeof Tooltip === 'function' ? h(Tooltip, { label, delayMs: 400 }, button) : button
     }
 
@@ -79,9 +84,40 @@ window.__ModuleLoader__.load({
       icons: { chevron: IconChevronDownOutline14, check: IconCheckOutline14, inspect: IconInspectOutline12 },
     })
 
+    /**
+     * Resolve the settings transport of the running generation. The current
+     * release publishes `configForms`; the preceding one published
+     * `settingsScope`. Both are optional child injections so the client entry
+     * does not stay pending on the name the installed generation does not use.
+     */
+    function settingsPreferenceScope(ctx) {
+      return new Promise((resolve, reject) => {
+        let settled = false
+        let configFormsWatcher
+        let settingsScopeWatcher
+        const take = (name, scope) => {
+          if (settled) return
+          settled = true
+          if (name !== 'configForms' && typeof configFormsWatcher === 'function') configFormsWatcher()
+          if (name !== 'settingsScope' && typeof settingsScopeWatcher === 'function') settingsScopeWatcher()
+          resolve(name === 'configForms'
+            ? scope.configForms.get(SETTINGS_NAMESPACE)
+            : scope.settingsScope.bind({ namespace: SETTINGS_NAMESPACE }))
+        }
+        try {
+          configFormsWatcher = ctx.inject(['configForms'], scope => take('configForms', scope))
+          if (!settled) {
+            settingsScopeWatcher = ctx.inject(['settingsScope'], scope => take('settingsScope', scope))
+          }
+        } catch (error) {
+          reject(error)
+        }
+      })
+    }
+
     async function apply(ctx) {
       const rpc = await createClientRpc(ctx)
-      const preferenceScope = ctx.settingsScope.bind({ namespace: SETTINGS_NAMESPACE })
+      const preferenceScope = await settingsPreferenceScope(ctx)
       ctx.effect(() => ctx.locale.register(LOCALE_NS, SETTINGS_COPY), 'ptc-plus: settings dictionaries')
       ctx.effect(installStyles, 'ptc-plus: client styles')
 
@@ -274,7 +310,7 @@ window.__ModuleLoader__.load({
 
     module.exports = {
       apply,
-      inject: ['settingsScope', 'slots', 'locale', 'connection', 'remote'],
+      inject: ['slots', 'locale', 'connection', 'remote'],
     }
     return module.exports
   },

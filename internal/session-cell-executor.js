@@ -1,3 +1,5 @@
+import { resolve } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import {
   decodeValue,
   encodeValue,
@@ -415,6 +417,8 @@ export class SessionCellExecutor {
     const priorBindingCatalog = userBindingPlan.catalog
     const catalog = priorBindingCatalog.inputs()
     const { bindingPolicy, rewritesEnabled, moduleSemantics, languageSemantics, moduleTransform } = executionPolicies(config, replayRecord)
+    const moduleDirectory = kernel.cwd ?? process.cwd()
+    const moduleFilename = resolve(moduleDirectory, 'repl')
     const prepareCell = program => prepareProgram(program, {
       knownBindings: catalog.knownBindings,
       bindingPolicy,
@@ -430,6 +434,11 @@ export class SessionCellExecutor {
       dynamicOrigins: catalog.dynamicOrigins,
       establishedRoots: catalog.establishedRoots,
       moduleSemantics,
+      importMeta: {
+        url: pathToFileURL(moduleFilename).href,
+        filename: moduleFilename,
+        dirname: moduleDirectory,
+      },
     })
     let prepared
     try {
@@ -712,9 +721,10 @@ export class SessionCellExecutor {
       volatile: this.handleVolatile,
       call: this.handleCall,
       'output-limit': this.handleOutputLimit,
+      'worker-output-error': this.handleWorkerOutputError,
       done: this.handleDone,
     }[message.type]
-    handler?.call(this, message)
+    return handler?.call(this, message)
   }
 
   handleVolatile(message) {
@@ -740,6 +750,19 @@ export class SessionCellExecutor {
         logs: limitLogs(logs),
         error: { kind: 'output-limit', message: OUTPUT_LIMIT_MESSAGE(active.config.maxOutputBytes) },
     }, true)
+  }
+
+  handleWorkerOutputError(message) {
+    const active = this.kernel.active
+    if (active?.id !== message.id) return false
+    const detail = typeof message.message === 'string'
+      ? message.message
+      : 'the kernel returned an invalid output-attribution event'
+    active.resolve({
+      logs: [],
+      error: { kind: 'worker-exit', message: `worker output attribution failed: ${detail}` },
+    }, true)
+    return true
   }
 
   handleDone(message) {

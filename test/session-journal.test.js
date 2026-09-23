@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { RELEASED_V0_EVENT_TYPES } from '@deepseek-ai/dsh-session-format-v0-to-v1'
 import {
   JOURNAL_KEY,
   RECOVERY_BOUNDARY_EVENT,
@@ -191,6 +192,7 @@ test('rejects malformed journal schemas exhaustively', () => {
     [journal({ calls: [{ global: 'g', member: 'm', args: encodeValue(1), ok: true, settle: 0 }] }), /missing its value/],
     [journal({ calls: [{ global: 'g', member: 'm', args: encodeValue(1), ok: false, settle: 0 }] }), /missing its error/],
     [journal({ calls: [{ global: 'g', member: 'm', args: encodeValue(1), ok: false, error: 1, settle: 0 }] }), /missing its error/],
+    [journal({ calls: [{ global: 'g', member: 'm', args: encodeValue(1), ok: true, value: encodeValue(1), settle: -0 }] }), /journal call at index 0/],
     [journal({ calls: [{ global: 'g', member: 'm', args: encodeValue(1), ok: true, value: encodeValue(1), settle: 1 }] }), /not contiguous/],
     [journal({ operations: null }), /journal operations/],
     [journal({ operations: [{}] }), /journal operation at index 0/],
@@ -205,6 +207,7 @@ test('rejects malformed journal schemas exhaustively', () => {
     [journal({ completion: { kind: 'throw', error: { kind: 1, message: 'bad' } } }), /journal throw completion/],
     [journal({ confirms: 'call' }), /confirmed no-op/],
     [journal({ confirms: [-1] }), /confirmed no-op/],
+    [journal({ confirms: [-0] }), /confirmed no-op/],
     [journal({ confirms: [1, 1] }), /duplicate/],
     [journal({ diagnostics: null }), /journal diagnostics/],
     [journal({ diagnostics: [{}] }), /journal diagnostic at index 0/],
@@ -293,6 +296,30 @@ test('requires a journal-bound user binding snapshot for run_code recovery', () 
   }
 })
 
+test('contracts at PTC metadata on a non-REPL tool result instead of throwing', () => {
+  const call = {
+    seq: 0,
+    type: 'tool/call',
+    data: { name: 'read', callId: 'native-read', arguments: '{}' },
+  }
+  const result = {
+    seq: 1,
+    type: 'tool/result',
+    data: {
+      message: {
+        role: 'user',
+        source: { kind: 'tool', callId: 'native-read' },
+        content: [{ type: 'tool-result', toolCallId: 'native-read', content: [] }],
+      },
+      meta: { [JOURNAL_KEY]: journal() },
+    },
+  }
+  const recovered = recoverJournal({ events: [call, result] })
+  assert.equal(recovered.available, false)
+  assert.deepEqual(recovered.volatileSuffix.map(item => item.seq), [0])
+  assert.match(recovered.volatileSuffix[0].reason, /non-REPL tool result/)
+})
+
 test('folds a recovery boundary from settled tool-result metadata', () => {
   const repeated = journal({
     operations: [
@@ -367,19 +394,423 @@ test('migrates retired recovery events without mutating the source log', () => {
   assert.equal(source[1].type, RECOVERY_BOUNDARY_EVENT)
   assert.throws(
     () => migrateRecoveryBoundaryEvents(source.slice(0, 2)),
-    /no later tool\/result settlement/,
+    /no later PTC journal result/,
   )
   assert.throws(
     () => migrateRecoveryBoundaryEvents([{
       seq: -1, type: RECOVERY_BOUNDARY_EVENT,
       data: { failedCallSeq: 0, frontierCallSeq: null },
     }]),
-    /recovery boundary event sequence/,
+    /session event sequence/,
   )
   assert.throws(
     () => normalizeRecoveryBoundaries([{ failedCallSeq: 0, frontierCallSeq: null }], -1),
     /recovery boundary event sequence/,
   )
+  for (const sequences of [
+    [10, 11, 12, 13],
+    [0, 1, 3, 4],
+    [0, 2, 1, 3],
+  ]) {
+    assert.throws(() => migrateRecoveryBoundaryEvents([
+      callEvent(sequences[0], 'damaged-failed', 'throw new Error("failed")'),
+      { seq: sequences[1], type: RECOVERY_BOUNDARY_EVENT,
+        data: { failedCallSeq: sequences[0], frontierCallSeq: null } },
+      callEvent(sequences[2], 'damaged-carrier', 'return 1'),
+      { ...resultEvent(sequences[2], journal()), seq: sequences[3] },
+    ]), /not contiguous from zero/)
+  }
+})
+
+test('recovery-boundary migration remaps every persisted event and PTC call relation', () => {
+  const source = [
+    callEvent(0, 'first', 'const first = 1'),
+    { seq: 1, type: RECOVERY_BOUNDARY_EVENT, data: { failedCallSeq: 0, frontierCallSeq: null } },
+    { ...resultEvent(0, journal()), seq: 2 },
+    callEvent(3, 'noop', 'return first'),
+    { seq: 4, type: 'tool/result', sourceEventSeqs: [3], data: { meta: {} } },
+    callEvent(5, 'current', 'const current = 2'),
+    { seq: 6, type: 'tool/result', sourceEventSeqs: [5], data: { meta: {
+      [JOURNAL_KEY]: { version: 3, confirms: [3] },
+      dshPtcPlusEdit: { targetCallSeq: 3 },
+      [RECOVERY_BOUNDARY_KEY]: [{ failedCallSeq: 3, frontierCallSeq: 0 }],
+    } } },
+    { seq: 7, type: RECOVERY_BOUNDARY_EVENT, data: { failedCallSeq: 5, frontierCallSeq: 0 } },
+    { seq: 8, type: 'tool/call', data: {
+      name: 'edit_run_code', callId: 'edit', arguments: '{"edits":[]}',
+    } },
+    { seq: 9, type: 'tool/result', sourceEventSeqs: [8], data: { meta: {
+      [JOURNAL_KEY]: journal(),
+      dshPtcPlusEdit: { targetCallSeq: 5 },
+    } } },
+  ]
+  const original = structuredClone(source)
+  const migrated = migrateRecoveryBoundaryEvents(source)
+  assert.deepEqual(source, original)
+  assert.deepEqual(migrated.map(event => event.seq), [0, 1, 2, 3, 4, 5, 6, 7])
+  assert.deepEqual(migrated.filter(event => event.type === 'tool/result').map(event => event.sourceEventSeqs),
+    [[0], [2], [4], [6]])
+  assert.deepEqual(migrated[1].data.meta[RECOVERY_BOUNDARY_KEY], [
+    { failedCallSeq: 0, frontierCallSeq: null },
+  ])
+  assert.deepEqual(migrated[5].data.meta[JOURNAL_KEY].confirms, [2])
+  assert.deepEqual(migrated[5].data.meta.dshPtcPlusEdit, { targetCallSeq: 2 })
+  assert.deepEqual(migrated[5].data.meta[RECOVERY_BOUNDARY_KEY], [
+    { failedCallSeq: 2, frontierCallSeq: 0 },
+  ])
+  assert.deepEqual(migrated[7].data.meta.dshPtcPlusEdit, { targetCallSeq: 4 })
+  assert.deepEqual(migrated[7].data.meta[RECOVERY_BOUNDARY_KEY], [
+    { failedCallSeq: 4, frontierCallSeq: 0 },
+  ])
+
+  const interleaved = migrateRecoveryBoundaryEvents([
+    callEvent(0, 'failed-before-native', 'throw new Error("failed")'),
+    { seq: 1, type: RECOVERY_BOUNDARY_EVENT, data: { failedCallSeq: 0, frontierCallSeq: null } },
+    { seq: 2, type: 'tool/result', data: { meta: { [JOURNAL_KEY]: journal() } } },
+    { seq: 3, type: 'tool/call', data: { name: 'read', callId: 'native', arguments: '{}' } },
+    { seq: 4, type: 'tool/result', sourceEventSeqs: [3], data: {
+      meta: { [JOURNAL_KEY]: journal() },
+    } },
+    callEvent(5, 'carrier', 'const recovered = true'),
+    { ...resultEvent(5, journal()), seq: 6 },
+  ])
+  assert.equal(Object.hasOwn(interleaved[1].data.meta, RECOVERY_BOUNDARY_KEY), false)
+  assert.equal(Object.hasOwn(interleaved[3].data.meta, RECOVERY_BOUNDARY_KEY), false)
+  assert.deepEqual(interleaved[5].data.meta[RECOVERY_BOUNDARY_KEY], [
+    { failedCallSeq: 0, frontierCallSeq: null },
+  ])
+
+  assert.throws(() => migrateRecoveryBoundaryEvents([
+    callEvent(0, 'duplicate-a', 'return 1'),
+    callEvent(0, 'duplicate-b', 'return 2'),
+  ]), /duplicate session event sequence 0/)
+  assert.throws(() => migrateRecoveryBoundaryEvents([{
+    seq: 0, type: 'tool/result', sourceEventSeqs: [9], data: {},
+  }]), /invalid source event reference 9/)
+  assert.throws(() => migrateRecoveryBoundaryEvents([
+    { seq: 0, type: RECOVERY_BOUNDARY_EVENT, data: { failedCallSeq: 1, frontierCallSeq: null } },
+    callEvent(1, 'forward', 'return 1'),
+    { seq: 2, type: 'tool/result', sourceEventSeqs: [1], data: {
+      meta: { [JOURNAL_KEY]: journal() },
+    } },
+  ]), /unproved recovery-boundary failure call reference 1 at event 0/)
+
+  assert.throws(() => migrateRecoveryBoundaryEvents([
+    callEvent(0, 'frontier', 'return 0'),
+    callEvent(1, 'failed', 'return 1'),
+    { seq: 2, type: RECOVERY_BOUNDARY_EVENT,
+      data: { failedCallSeq: 1, frontierCallSeq: 1 } },
+    callEvent(3, 'carrier', 'return 3'),
+    { ...resultEvent(3, journal()), seq: 4 },
+  ]), /frontier must precede its failed call/)
+})
+
+test('recovery-boundary migration remaps host sequence relations as one closed operation', () => {
+  const minimalData = (type, seq) => {
+    if (type === 'command/done') return { sourceEventSeq: undefined }
+    if (type === 'session/title') return { messageSeqs: [], source: { kind: 'user' } }
+    if (type === 'session-log-deepseek/delivery-accepted') return { throughSeq: seq - 1 }
+    if (type === 'session/title-llm-request') return { messageSeqs: [] }
+    if (type === 'compaction/prune' || type === 'compaction/summary') {
+      return { shadowedSeqs: [] }
+    }
+    return {}
+  }
+  const supportedVocabulary = [...RELEASED_V0_EVENT_TYPES]
+    .map((type, seq) => ({ seq, type, data: minimalData(type, seq) }))
+  assert.equal(migrateRecoveryBoundaryEvents(supportedVocabulary).length,
+    RELEASED_V0_EVENT_TYPES.length)
+
+  const source = [
+    callEvent(0, 'failed', 'throw new Error("failed")'),
+    { seq: 1, type: RECOVERY_BOUNDARY_EVENT,
+      data: { failedCallSeq: 0, frontierCallSeq: null } },
+    callEvent(2, 'current', 'const current = 2'),
+    { ...resultEvent(2, journal()), seq: 3 },
+    { seq: 4, type: 'assistant/message', data: { content: 'old surface' } },
+    { seq: 5, type: 'compaction/prune', data: {
+      shadowedSeqs: [3, 4],
+      shadowedRange: { start: 3, end: 4 },
+    } },
+    { seq: 6, type: 'assistant/message', sourceEventSeqs: [3, 4],
+      surfaceOp: { op: 'replace', start: 3, end: 4 }, data: { content: 'replacement' } },
+    { seq: 7, type: 'user/message', surfaceOp: 'append',
+      data: { source: { kind: 'user' }, content: [{ type: 'text', text: 'title source' }] } },
+    { seq: 8, type: 'command/run', data: {
+      commandId: 'migration-command', name: 'review', source: { kind: 'user' },
+    } },
+    { seq: 9, type: 'command/done', data: {
+      commandId: 'migration-command', kind: 'success', sourceEventSeq: 7,
+    } },
+    { seq: 10, type: 'session/title', data: {
+      title: 'Migrated title', messageSeqs: [7], source: { kind: 'fallback' },
+    } },
+    { seq: 11, type: 'compaction/summary', data: {
+      compactionId: 'migration-summary', summary: [],
+      shadowedSeqs: [6, 7], shadowedRange: { start: 6, end: 7 },
+      shadowedTokenCount: 0, provider: 'fixture', model: 'fixture',
+    } },
+  ]
+
+  const migrated = migrateRecoveryBoundaryEvents(source)
+  assert.deepEqual(migrated.map(event => event.seq), [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
+  assert.deepEqual(migrated[2].sourceEventSeqs, [1])
+  assert.deepEqual(migrated[4].data.shadowedSeqs, [2, 3])
+  assert.deepEqual(migrated[4].data.shadowedRange, { start: 2, end: 3 })
+  assert.deepEqual(migrated[5].sourceEventSeqs, [2, 3])
+  assert.deepEqual(migrated[5].surfaceOp, { op: 'replace', start: 2, end: 3 })
+  assert.equal(migrated[8].data.sourceEventSeq, 6)
+  assert.equal(migrated[migrated[8].data.sourceEventSeq].type, 'user/message')
+  assert.deepEqual(migrated[9].data.messageSeqs, [6])
+  assert.equal(migrated[migrated[9].data.messageSeqs[0]].type, 'user/message')
+  assert.deepEqual(migrated[10].data.shadowedSeqs, [5, 6])
+  assert.deepEqual(migrated[10].data.shadowedRange, { start: 5, end: 6 })
+  assert.deepEqual(source[5].data.shadowedSeqs, [3, 4])
+  assert.deepEqual(source[6].surfaceOp, { op: 'replace', start: 3, end: 4 })
+  assert.equal(source[9].data.sourceEventSeq, 7)
+  assert.deepEqual(source[10].data.messageSeqs, [7])
+  assert.deepEqual(source[11].data.shadowedRange, { start: 6, end: 7 })
+
+  const withRelation = (relation) => [
+    callEvent(0, 'failed', 'return 0'),
+    { seq: 1, type: RECOVERY_BOUNDARY_EVENT,
+      data: { failedCallSeq: 0, frontierCallSeq: null } },
+    callEvent(2, 'carrier', 'return 2'),
+    { ...resultEvent(2, journal()), seq: 3 },
+    relation,
+  ]
+  assert.throws(() => migrateRecoveryBoundaryEvents(withRelation({
+    seq: 4,
+    type: 'compaction/prune',
+    data: { shadowedSeqs: [1], shadowedRange: { start: 1, end: 1 } },
+  })), /shadow range does not match the current surface/)
+  assert.throws(() => migrateRecoveryBoundaryEvents(withRelation({
+    seq: 4,
+    type: 'assistant/message',
+    surfaceOp: { op: 'replace', start: 2, end: 99 },
+  })), /invalid surface replacement end event reference 99/)
+  assert.throws(() => migrateRecoveryBoundaryEvents(withRelation({
+    seq: 4,
+    type: 'command/done',
+    data: { commandId: 'removed-source', kind: 'success', sourceEventSeq: 1 },
+  })), /unmapped command source event reference 1/)
+  assert.throws(() => migrateRecoveryBoundaryEvents(withRelation({
+    seq: 4,
+    type: 'session/title',
+    data: { title: 'Removed', messageSeqs: [1], source: { kind: 'fallback' } },
+  })), /must cite earlier human user\/message events/)
+  assert.throws(() => migrateRecoveryBoundaryEvents(withRelation({
+    seq: 4,
+    type: 'compaction/summary',
+    data: { shadowedSeqs: [1], shadowedRange: { start: 1, end: 1 } },
+  })), /shadow range does not match the current surface/)
+  assert.throws(() => migrateRecoveryBoundaryEvents(withRelation({
+    seq: 4,
+    type: 'future/required-event',
+    data: { relatedSeq: 2 },
+  })), /unsupported session event type "future\/required-event"/)
+  assert.throws(() => migrateRecoveryBoundaryEvents(withRelation({
+    seq: 4,
+    type: 'assistant/message',
+    surfaceOp: { op: 'unknown' },
+  })), /invalid surface operation/)
+  assert.throws(() => migrateRecoveryBoundaryEvents(withRelation({
+    seq: 4,
+    type: 'session/title',
+    data: { title: 'Malformed', messageSeqs: 'invalid', source: { kind: 'fallback' } },
+  })), /invalid session\/title message references/)
+  assert.throws(() => migrateRecoveryBoundaryEvents(withRelation({
+    seq: 4,
+    type: 'compaction/summary',
+    data: { shadowedSeqs: 'invalid' },
+  })), /invalid compaction\/summary shadow references/)
+  assert.throws(() => migrateRecoveryBoundaryEvents(withRelation({
+    seq: 4,
+    type: 'compaction/prune',
+    data: { shadowedSeqs: [2], shadowedRange: 'invalid' },
+  })), /invalid compaction\/prune shadow range/)
+
+  const withTail = tail => migrateRecoveryBoundaryEvents([
+    callEvent(0, 'relation-failed', 'return 0'),
+    { seq: 1, type: RECOVERY_BOUNDARY_EVENT,
+      data: { failedCallSeq: 0, frontierCallSeq: null } },
+    callEvent(2, 'relation-carrier', 'return 2'),
+    { ...resultEvent(2, journal()), seq: 3 },
+    ...tail,
+  ])
+  assert.throws(() => withTail([
+    { seq: 4, type: 'assistant/message', sourceEventSeqs: [5], surfaceOp: 'append', data: {} },
+    { seq: 5, type: 'user/message', surfaceOp: 'append', data: { source: { kind: 'user' } } },
+  ]), /invalid source event reference 5 at event 4/)
+  assert.throws(() => withTail([
+    { seq: 4, type: 'assistant/message', sourceEventSeqs: [3, 3], surfaceOp: 'append', data: {} },
+  ]), /duplicate source event reference 3/)
+  assert.throws(() => withTail([
+    { seq: 4, type: 'assistant/message', sourceEventSeqs: [],
+      surfaceOp: { op: 'replace', start: 3, end: 3 }, data: {} },
+  ]), /does not cite every replaced surface node/)
+  assert.throws(() => withTail([
+    { seq: 4, type: 'assistant/message', sourceEventSeqs: [3],
+      surfaceOp: { op: 'replace', start: 3, end: 3 }, data: {} },
+    { seq: 5, type: 'assistant/message', sourceEventSeqs: [3],
+      surfaceOp: { op: 'replace', start: 3, end: 3 }, data: {} },
+  ]), /does not identify a current ordered surface range/)
+  assert.throws(() => withTail([
+    { seq: 4, type: 'command/done', data: {
+      commandId: 'failed-command', kind: 'error', sourceEventSeq: 3,
+    } },
+  ]), /source outside a successful result/)
+  assert.throws(() => withTail([
+    { seq: 4, type: 'command/run', data: { commandId: 'nested-command' } },
+    { seq: 5, type: 'command/done', data: {
+      commandId: 'nested-command', kind: 'success', sourceEventSeq: 4,
+    } },
+  ]), /cites a command lifecycle event/)
+  assert.throws(() => withTail([
+    { seq: 4, type: 'session/title', data: {
+      title: 'Invalid source', messageSeqs: [3], source: { kind: 'fallback' },
+    } },
+  ]), /must cite earlier human user\/message events/)
+  assert.throws(() => migrateRecoveryBoundaryEvents([
+    callEvent(0, 'failed-relation', 'return 0'),
+    { seq: 1, type: RECOVERY_BOUNDARY_EVENT,
+      data: { failedCallSeq: 0, frontierCallSeq: null } },
+    callEvent(2, 'relation-carrier', 'return 2'),
+    { ...resultEvent(2, journal()), seq: 3 },
+    { seq: 4, type: 'turn/end', data: {
+      turn: 1, reason: { kind: 'completed' }, relatedEventSeq: 2,
+    } },
+  ]), /unsupported turn\/end data sequence relation "relatedEventSeq"/u)
+  assert.throws(() => withTail([
+    { seq: 4, type: 'session/title', data: {
+      title: 'Missing automatic source', messageSeqs: [], source: { kind: 'provider' },
+    } },
+  ]), /cite at least one message seq/)
+  assert.throws(() => withTail([
+    { seq: 4, type: 'user/message', surfaceOp: 'append', data: { source: { kind: 'user' } } },
+    { seq: 5, type: 'session/title', data: {
+      title: 'Explicit rename with source', messageSeqs: [4], source: { kind: 'user' },
+    } },
+  ]), /cite no message seqs/)
+  assert.throws(() => withTail([
+    { seq: 4, type: 'assistant/message', surfaceOp: 'append', data: {} },
+    { seq: 5, type: 'tool/result', sourceEventSeqs: [4],
+      surfaceOp: { op: 'replace', start: 4, end: 4 }, data: {} },
+  ]), /tool\/result surface replacement must target one current tool\/result/)
+  const originalResultData = {
+    message: { content: [{ type: 'tool-result', toolCallId: 'replace-result', content: 'before' }] },
+    meta: { stable: true },
+  }
+  const contentOnlyReplacement = withTail([
+    { seq: 4, type: 'tool/result', surfaceOp: 'append', data: originalResultData },
+    { seq: 5, type: 'tool/result', sourceEventSeqs: [4],
+      surfaceOp: { op: 'replace', start: 4, end: 4 }, data: {
+        ...originalResultData,
+        message: { content: [{ type: 'tool-result', toolCallId: 'replace-result', content: 'after' }] },
+      } },
+  ])
+  assert.equal(contentOnlyReplacement.at(-1).data.message.content[0].content, 'after')
+  assert.throws(() => withTail([
+    { seq: 4, type: 'tool/result', surfaceOp: 'append', data: originalResultData },
+    { seq: 5, type: 'tool/result', sourceEventSeqs: [4],
+      surfaceOp: { op: 'replace', start: 4, end: 4 }, data: {
+        ...originalResultData,
+        message: { content: [{ type: 'tool-result', toolCallId: 'replace-result', content: 'after' }] },
+        meta: { stable: false },
+      } },
+  ]), /may change only content/)
+  assert.throws(() => withTail([
+    { seq: 4, type: 'tool/result', surfaceOp: 'append', data: originalResultData },
+    { seq: 5, type: 'tool/result', sourceEventSeqs: [4],
+      surfaceOp: { op: 'replace', start: 4, end: 4 }, data: { meta: { stable: true } } },
+  ]), /invalid message content/)
+  assert.throws(() => withTail([
+    { seq: 4, type: 'compaction/prune', data: {
+      shadowedSeqs: [3, 3], shadowedRange: { start: 3, end: 3 },
+    } },
+  ]), /duplicate compaction shadow event reference 3/)
+  assert.throws(() => withTail([
+    { seq: 4, type: 'compaction/prune', data: { shadowedSeqs: [2] } },
+  ]), /shadow list does not match the current surface/)
+  assert.throws(() => withTail([
+    { seq: 4, type: 'assistant/message', sourceEventSeqs: [3],
+      surfaceOp: { op: 'replace', start: 3, end: 3, extra: true }, data: {} },
+  ]), /invalid surface operation/)
+  assert.throws(() => withTail([
+    { seq: 4, type: 'command/run', sourceEventSeqs: [3], data: {} },
+  ]), /is not surface-eligible/)
+  assert.throws(() => withTail([
+    { seq: 4, type: 'user/message', sourceEventSeqs: [], surfaceOp: 'append', data: {} },
+  ]), /must not be empty except on assistant\/message/)
+  const noRangeCompaction = withTail([
+    { seq: 4, type: 'compaction/prune', data: { shadowedSeqs: [3] } },
+  ])
+  assert.deepEqual(noRangeCompaction.at(-1).data.shadowedSeqs, [2])
+})
+
+test('handles every released host relation and rejects malformed relation data with its own diagnostic', () => {
+  const titlePreserved = [
+    { seq: 0, type: 'user/message', surfaceOp: 'append',
+      data: { source: { kind: 'user' }, content: [{ type: 'text', text: 'hello' }] } },
+    { seq: 1, type: 'session/title-llm-request', data: {
+      messages: [{ role: 'user', source: { kind: 'plugin', plugin: 'dsh-session-title-llm' },
+        content: [{ type: 'text', text: '{}' }] }],
+      messageSeqs: [0],
+    } },
+    callEvent(2, 'failed', 'throw new Error("failed")'),
+    { seq: 3, type: RECOVERY_BOUNDARY_EVENT, data: { failedCallSeq: 2, frontierCallSeq: null } },
+    callEvent(4, 'current', 'return 2'),
+    { ...resultEvent(4, journal()), seq: 5 },
+  ]
+  const migrated = migrateRecoveryBoundaryEvents(titlePreserved)
+  assert.deepEqual(
+    migrated.find(event => event.type === 'session/title-llm-request').data.messageSeqs,
+    [0],
+  )
+
+  assert.throws(() => migrateRecoveryBoundaryEvents([
+    callEvent(0, 'failed', 'throw new Error("failed")'),
+    { seq: 1, type: RECOVERY_BOUNDARY_EVENT, data: { failedCallSeq: 0, frontierCallSeq: null } },
+    { seq: 2, type: 'user/message', surfaceOp: 'append',
+      data: { source: { kind: 'user' }, content: [{ type: 'text', text: 'hello' }] } },
+    { seq: 3, type: 'session/title-llm-request', data: { messageSeqs: [2] } },
+    callEvent(4, 'current', 'return 2'),
+    { ...resultEvent(4, journal()), seq: 5 },
+  ]), /session\/title-llm-request messageSeqs cannot be preserved/)
+
+  const delivery = migrateRecoveryBoundaryEvents([
+    callEvent(0, 'failed', 'throw new Error("failed")'),
+    { seq: 1, type: RECOVERY_BOUNDARY_EVENT, data: { failedCallSeq: 0, frontierCallSeq: null } },
+    { seq: 2, type: 'user/message', surfaceOp: 'append',
+      data: { source: { kind: 'user' }, content: [{ type: 'text', text: 'hello' }] } },
+    { seq: 3, type: 'session-log-deepseek/delivery-accepted',
+      data: { sessionId: 'session', throughSeq: 2 } },
+    callEvent(4, 'current', 'return 2'),
+    { ...resultEvent(4, journal()), seq: 5 },
+  ])
+  assert.equal(
+    delivery.find(event => event.type === 'session-log-deepseek/delivery-accepted').data.throughSeq,
+    1,
+  )
+
+  assert.throws(() => migrateRecoveryBoundaryEvents([
+    callEvent(0, 'failed', 'throw new Error("failed")'),
+    { seq: 1, type: RECOVERY_BOUNDARY_EVENT, data: { failedCallSeq: 0, frontierCallSeq: null } },
+    callEvent(2, 'current', 'return 2'),
+    { ...resultEvent(2, journal()), seq: 3 },
+    { seq: 4, type: 'command/done', data: null },
+  ]), /command\/done event 4 has invalid data/)
+
+  assert.throws(() => migrateRecoveryBoundaryEvents([
+    { seq: 0, type: 'session/title-llm-request', data: { messageSeqs: 'invalid' } },
+  ]), /invalid session\/title-llm-request message references/)
+  assert.throws(() => migrateRecoveryBoundaryEvents([
+    callEvent(0, 'not-a-message', 'return 1'),
+    { seq: 1, type: 'session/title-llm-request', data: { messageSeqs: [0] } },
+  ]), /must cite earlier user\/message events/)
+  assert.throws(() => migrateRecoveryBoundaryEvents([
+    { seq: 0, type: 'session-log-deepseek/delivery-accepted', data: null },
+  ]), /delivery-accepted event 0 has invalid data/)
 })
 
 test('resolves the unique unpaired live named tool call event', () => {
@@ -412,6 +843,77 @@ test('resolves the unique unpaired live named tool call event', () => {
     () => liveToolCallSeq({ events: [malformed] }, 'malformed', 'run_code'),
     /invalid session event sequence/,
   )
+
+  for (const toolName of ['run_code', 'edit_run_code']) {
+    const reused = `${toolName}-reused`
+    const toolCall = (seq, argumentsValue) => ({
+      seq,
+      type: 'tool/call',
+      data: { name: toolName, callId: reused, arguments: argumentsValue },
+    })
+    const damagedHistory = [
+      toolCall(0, toolName === 'run_code' ? '{"code":"return 1"}' : '{"edits":[]}'),
+      {
+        seq: 1,
+        type: 'tool/result',
+        sourceEventSeqs: [-0],
+        data: { message: { source: { kind: 'tool', callId: reused } } },
+      },
+      toolCall(2, toolName === 'run_code' ? '{"code":"return 2"}' : '{"edits":[]}'),
+    ]
+    assert.equal(liveToolCallSeq({ events: damagedHistory }, reused, toolName), 2)
+  }
+
+  for (const sourceEventSeqs of [[0, 99], [0, 0]]) {
+    assert.throws(() => liveToolCallSeq({ events: [
+      callEvent(0, 'malformed-multi-source', 'return 1'),
+      callEvent(1, 'malformed-multi-source', 'return 2'),
+      {
+        seq: 2,
+        type: 'tool/result',
+        sourceEventSeqs,
+        data: { message: { source: { callId: 'malformed-multi-source' } } },
+      },
+    ] }, 'malformed-multi-source', 'run_code'), /multiple unpaired run_code calls/)
+  }
+
+  const sourcedCall = (seq, callId, name, argumentsValue) => [
+    { seq, type: 'assistant/message', data: { message: { content: [{
+      type: 'tool-call', id: callId, name, arguments: argumentsValue,
+    }] } } },
+    { seq: seq + 1, type: 'tool/call', data: { callId, name, arguments: argumentsValue } },
+  ]
+  for (const [toolName, historicalArguments, currentArguments] of [
+    ['run_code', { code: 'return 1', description: 'historical' }, { code: 'return 42', description: 'current' }],
+    ['edit_run_code', { edits: [], description: 'historical' }, { edits: [], description: 'current' }],
+  ]) {
+    const callId = `missing-result-identity-${toolName}`
+    const historicalRaw = JSON.stringify(historicalArguments)
+    const currentRaw = JSON.stringify(currentArguments)
+    for (const sourceEventSeqs of [[-0], [1, 99]]) {
+      const eventsWithMissingIdentity = [
+        ...sourcedCall(0, callId, toolName, historicalRaw),
+        { seq: 2, type: 'tool/result', sourceEventSeqs, data: {} },
+        ...sourcedCall(3, callId, toolName, currentRaw),
+      ]
+      assert.equal(liveToolCallSeq(
+        { events: eventsWithMissingIdentity }, callId, toolName,
+      ), 4)
+    }
+
+    const indistinguishable = [
+      ...sourcedCall(0, callId, toolName, historicalRaw),
+      { seq: 2, type: 'tool/result', sourceEventSeqs: [-0], data: {} },
+      ...sourcedCall(3, callId, toolName, currentRaw),
+    ]
+    indistinguishable[3].data.message.content.push({
+      ...indistinguishable[3].data.message.content[0],
+    })
+    assert.throws(
+      () => liveToolCallSeq({ events: indistinguishable }, callId, toolName),
+      new RegExp(`multiple unpaired ${toolName} calls`),
+    )
+  }
 })
 
 test('reads the current snapshotEvents session API and keeps the legacy events fallback', () => {
@@ -442,7 +944,10 @@ test('intersects recovery with the model-visible executable surface', () => {
     surface: { nodes: [1, 3], replaceGeneration: 0 },
   }
   const visible = visibleExecutableCallSeqs(session)
-  assert.deepEqual([...visible], [0, 2])
+  assert.deepEqual([...visible], [])
+  const resultOnly = recoverJournal(session, undefined, { visibleCallSeqs: visible })
+  assert.deepEqual(pathToHead(resultOnly), [])
+  assert.equal(resultOnly.available, false)
   const contracted = recoverJournal(session, undefined, { visibleCallSeqs: new Set([0]) })
   assert.deepEqual(pathToHead(contracted).map(node => node.code), ['const visible = 1'])
   assert.equal(contracted.available, false)
@@ -452,15 +957,64 @@ test('intersects recovery with the model-visible executable surface', () => {
     surface: { nodes: [0] },
   }
   assert.deepEqual([...visibleExecutableCallSeqs(assistantSurface)], [])
+  const visibleRelation = (name, argumentsValue, block = {}) => ({
+    events: [
+      { seq: 0, type: 'assistant/message', data: { message: { content: [{
+        type: 'tool-call', id: 'exact', name, arguments: argumentsValue, ...block,
+      }] } } },
+      { seq: 1, type: 'tool/call', data: {
+        callId: 'exact', name, arguments: argumentsValue,
+      } },
+    ],
+    surface: { nodes: [0] },
+  })
+  const runArguments = JSON.stringify({ code: 'return 1' })
+  const editArguments = JSON.stringify({ edits: [] })
+  assert.deepEqual([...visibleExecutableCallSeqs(
+    visibleRelation('run_code', runArguments),
+  )], [1])
+  assert.deepEqual([...visibleExecutableCallSeqs(
+    visibleRelation('edit_run_code', editArguments),
+  )], [1])
+  const currentHostSurface = visibleRelation('run_code', runArguments)
+  currentHostSurface.events.push(
+    { seq: 2, type: 'system/message', data: { message: { content: [{ type: 'text', text: 'system' }] } } },
+    { seq: 3, type: 'developer/message', data: { message: { content: [{ type: 'text', text: 'developer' }] } } },
+  )
+  currentHostSurface.surface.nodes.push(2, 3)
+  assert.deepEqual([...visibleExecutableCallSeqs(currentHostSurface)], [1])
+  for (const malformed of [
+    visibleRelation('run_code', runArguments, { name: 'read' }),
+    visibleRelation('run_code', runArguments, { arguments: JSON.stringify({ code: 'return 2' }) }),
+    visibleRelation('run_code', runArguments, { arguments: undefined }),
+    {
+      events: [
+        { seq: 0, type: 'assistant/message', data: { message: { content: [
+          { type: 'tool-call', id: 'exact', name: 'run_code', arguments: runArguments },
+          { type: 'tool-call', id: 'exact', name: 'run_code', arguments: runArguments },
+        ] } } },
+        { seq: 1, type: 'tool/call', data: {
+          callId: 'exact', name: 'run_code', arguments: runArguments,
+        } },
+      ],
+      surface: { nodes: [0] },
+    },
+  ]) assert.deepEqual([...visibleExecutableCallSeqs(malformed)], [])
   const reusedCallId = {
     events: [
       { seq: 0, type: 'turn/start' },
-      { seq: 1, type: 'assistant/message', data: { message: { content: [{ type: 'tool-call', id: 'reused' }] } } },
+      { seq: 1, type: 'assistant/message', data: { message: { content: [{
+        type: 'tool-call', id: 'reused', name: 'run_code',
+        arguments: JSON.stringify({ code: 'const hiddenOld = 1' }),
+      }] } } },
       callEvent(2, 'reused', 'const hiddenOld = 1'),
       { ...resultEvent(2, journal()), seq: 3 },
       { seq: 4, type: 'turn/end' },
       { seq: 5, type: 'turn/start' },
-      { seq: 6, type: 'assistant/message', data: { message: { content: [{ type: 'tool-call', id: 'reused' }] } } },
+      { seq: 6, type: 'assistant/message', data: { message: { content: [{
+        type: 'tool-call', id: 'reused', name: 'run_code',
+        arguments: JSON.stringify({ code: 'const visibleNew = 2' }),
+      }] } } },
       callEvent(7, 'reused', 'const visibleNew = 2'),
       { ...resultEvent(7, journal()), seq: 8 },
     ],
@@ -473,7 +1027,13 @@ test('intersects recovery with the model-visible executable surface', () => {
   assert.equal(reusedContracted.available, false)
   assert.deepEqual(pathToHead(reusedContracted), [])
   assert.equal(reusedContracted.volatileSuffix[0].seq, 2)
-  assert.equal(visibleExecutableCallSeqs({ events: [], surface: { nodes: [1] }}), undefined)
+  assert.deepEqual([...visibleExecutableCallSeqs({ events: [], surface: { nodes: [1] }})], [])
+  assert.deepEqual([...visibleExecutableCallSeqs({ events, surface: { nodes: [0] } })], [])
+  assert.deepEqual([...visibleExecutableCallSeqs({ events, surface: { nodes: [1, 1] } })], [])
+  assert.deepEqual([...visibleExecutableCallSeqs({
+    events: [{ ...events[0], seq: 0 }, { ...events[1], seq: 0 }],
+    surface: { nodes: [0] },
+  })], [])
 })
 
 test('resumes a durable prefix after a volatile historical cell', () => {
@@ -487,19 +1047,273 @@ test('resumes a durable prefix after a volatile historical cell', () => {
 })
 
 test('handles surface capability failure and ordered recovery boundaries', () => {
-  assert.equal(visibleExecutableCallSeqs({ events: [], get surface() { throw new Error('no surface') } }), undefined)
+  const unavailableSurface = {
+    events: [callEvent(0, 'hidden', 'const hidden = 9'), { ...resultEvent(0, journal()), seq: 1 }],
+    get surface() { throw new Error('no surface') },
+  }
+  const visible = visibleExecutableCallSeqs(unavailableSurface)
+  assert.deepEqual([...visible], [])
+  const hidden = recoverJournal(unavailableSurface, undefined, { visibleCallSeqs: visible })
+  assert.deepEqual(pathToHead(hidden), [])
+  assert.equal(hidden.available, false)
+  assert.match(hidden.volatileSuffix[0].reason, /model-visible provenance was shadowed/u)
   const first = resultEvent(0, journal())
   first.seq = 1
   first.data.meta[RECOVERY_BOUNDARY_KEY] = [{ failedCallSeq: 0, frontierCallSeq: null }]
   const later = resultEvent(2, journal())
   later.seq = 3
   const recovered = recoverJournal({ events: [callEvent(0, 'first', 'const first = 1'), first, callEvent(2, 'later', 'const later = 2'), later] })
-  assert.deepEqual(pathToHead(recovered).map(node => node.code), ['const first = 1', 'const later = 2'])
+  assert.deepEqual(pathToHead(recovered), [])
+  assert.equal(recovered.available, false)
+  assert.match(recovered.volatileSuffix[0].reason, /outside the verified frontier/u)
   const acknowledgedResult = resultEvent(0, { version: 3 })
   acknowledgedResult.seq = 1
   acknowledgedResult.data.meta[RECOVERY_BOUNDARY_KEY] = [{ failedCallSeq: 0, frontierCallSeq: null }]
   const acknowledged = recoverJournal({ events: [callEvent(0, 'bad', 'const bad = 1'), acknowledgedResult] })
   assert.equal(acknowledged.available, false)
+})
+
+test('contracts malformed recovery boundaries at the greatest proved prefix', () => {
+  const recoveredWith = (boundary) => {
+    const carrier = { ...resultEvent(4, journal()), seq: 5 }
+    carrier.data.meta[RECOVERY_BOUNDARY_KEY] = [boundary]
+    return recoverJournal({ events: [
+      callEvent(0, 'first', 'const first = 1'),
+      { ...resultEvent(0, journal()), seq: 1 },
+      callEvent(2, 'second', 'const second = 2'),
+      { ...resultEvent(2, journal()), seq: 3 },
+      callEvent(4, 'carrier', 'const carrier = 4'),
+      carrier,
+    ] })
+  }
+
+  const wrongParent = recoveredWith({ failedCallSeq: 0, frontierCallSeq: 2 })
+  assert.deepEqual(pathToHead(wrongParent), [])
+  assert.equal(wrongParent.available, false)
+  assert.match(wrongParent.volatileSuffix[0].reason, /frontier does not match/u)
+
+  const missing = recoveredWith({ failedCallSeq: 1, frontierCallSeq: 0 })
+  assert.deepEqual(pathToHead(missing).map(node => node.callSeq), [0])
+  assert.equal(missing.available, false)
+  assert.match(missing.volatileSuffix[0].reason, /earlier executable call/u)
+
+  const future = recoveredWith({ failedCallSeq: 10, frontierCallSeq: 2 })
+  assert.deepEqual(pathToHead(future).map(node => node.callSeq), [0, 2])
+  assert.equal(future.available, false)
+  assert.match(future.volatileSuffix[0].reason, /earlier executable call/u)
+})
+
+test('retires malformed recovery boundaries through their executable carrier', () => {
+  for (const { malformedBoundary, missingResult, expectedPrefix, expectedBoundary } of [
+    {
+      malformedBoundary: { failedCallSeq: 1, frontierCallSeq: null },
+      missingResult: false,
+      expectedPrefix: [0],
+      expectedBoundary: { failedCallSeq: 4, frontierCallSeq: 0 },
+    },
+    {
+      malformedBoundary: { failedCallSeq: 2, frontierCallSeq: null },
+      missingResult: false,
+      expectedPrefix: [0],
+      expectedBoundary: { failedCallSeq: 4, frontierCallSeq: 0 },
+    },
+    {
+      malformedBoundary: { failedCallSeq: 1, frontierCallSeq: null },
+      missingResult: true,
+      expectedPrefix: [0],
+      expectedBoundary: { failedCallSeq: 2, frontierCallSeq: 0 },
+    },
+    {
+      malformedBoundary: { failedCallSeq: 0, frontierCallSeq: 2 },
+      missingResult: true,
+      expectedPrefix: [],
+      expectedBoundary: { failedCallSeq: 2, frontierCallSeq: null },
+    },
+  ]) {
+    const carrier = { ...resultEvent(4, journal()), seq: 5 }
+    carrier.data.meta[RECOVERY_BOUNDARY_KEY] = [malformedBoundary]
+    const events = [
+      callEvent(0, 'stable', 'const stable = 1'),
+      { ...resultEvent(0, journal()), seq: 1 },
+      callEvent(2, 'discarded', 'const discarded = 2'),
+      ...(missingResult ? [] : [{ ...resultEvent(2, journal()), seq: 3 }]),
+      callEvent(4, 'carrier', 'const carrier = 4'),
+      carrier,
+    ]
+
+    const first = recoverJournal({ events })
+    assert.equal(first.available, false)
+    assert.deepEqual(pathToHead(first).map(node => node.callSeq), expectedPrefix)
+    assert.equal(first.volatileSuffix[0].seq, expectedBoundary.failedCallSeq)
+    const boundary = recoveryBoundaryForHistory(first)
+    assert.deepEqual(boundary, expectedBoundary)
+
+    const current = { ...resultEvent(6, journal()), seq: 7 }
+    current.data.meta[RECOVERY_BOUNDARY_KEY] = [boundary]
+    events.push(callEvent(6, 'current', 'const current = 6'), current)
+    const recovered = recoverJournal({ events })
+    assert.equal(recovered.available, true)
+    assert.deepEqual(pathToHead(recovered).map(node => node.callSeq), [...expectedPrefix, 6])
+    assert.deepEqual(recovered.volatileSuffix, [])
+  }
+})
+
+test('keeps delayed historical settlements inside an applied recovery contraction', () => {
+  const carrier = { ...resultEvent(6, journal()), seq: 7 }
+  carrier.data.meta[RECOVERY_BOUNDARY_KEY] = [{ failedCallSeq: 2, frontierCallSeq: 0 }]
+  const recovered = recoverJournal({ events: [
+    callEvent(0, 'stable', 'const stable = 0'),
+    { ...resultEvent(0, journal()), seq: 1 },
+    callEvent(2, 'missing', 'const missing = 2'),
+    callEvent(4, 'delayed', 'const delayed = missing + 2'),
+    callEvent(6, 'carrier', 'const carrier = 6'),
+    carrier,
+    { ...resultEvent(4, journal()), seq: 8 },
+  ] })
+
+  assert.equal(recovered.available, true)
+  assert.deepEqual(pathToHead(recovered).map(node => node.callSeq), [0, 6])
+  assert.deepEqual(recovered.volatileSuffix, [])
+})
+
+test('ties a recovery contraction to its exact carrier when result sequences collide', () => {
+  const carrier = { ...resultEvent(6, journal()), seq: 7 }
+  carrier.data.meta[RECOVERY_BOUNDARY_KEY] = [{ failedCallSeq: 2, frontierCallSeq: 0 }]
+  const recovered = recoverJournal({ events: [
+    callEvent(0, 'stable', 'const stable = 0'),
+    { ...resultEvent(0, journal()), seq: 1 },
+    callEvent(2, 'missing', 'const missing = 2'),
+    callEvent(4, 'delayed', 'const delayed = missing + 2'),
+    callEvent(5, 'colliding', 'const colliding = missing + 3'),
+    { ...resultEvent(5, journal()), seq: 7 },
+    callEvent(6, 'carrier', 'const carrier = 6'),
+    carrier,
+    { ...resultEvent(4, journal()), seq: 8 },
+  ] })
+
+  assert.equal(recovered.available, true)
+  assert.deepEqual(pathToHead(recovered).map(node => node.callSeq), [0, 6])
+  assert.deepEqual(recovered.volatileSuffix, [])
+})
+
+test('rejects a recovery boundary carried before its failed call', () => {
+  const carrier = { ...resultEvent(2, journal()), seq: 5 }
+  carrier.data.meta[RECOVERY_BOUNDARY_KEY] = [{ failedCallSeq: 4, frontierCallSeq: 0 }]
+  const recovered = recoverJournal({ events: [
+    callEvent(0, 'stable', 'const stable = 0'),
+    { ...resultEvent(0, journal()), seq: 1 },
+    callEvent(2, 'carrier', 'const carrier = 2'),
+    callEvent(4, 'missing', 'const missing = 4'),
+    carrier,
+    callEvent(6, 'dependent', 'const dependent = missing + 2'),
+    { ...resultEvent(6, journal()), seq: 7 },
+  ] })
+
+  assert.equal(recovered.available, false)
+  assert.deepEqual(pathToHead(recovered).map(node => node.callSeq), [0])
+  assert.match(recovered.volatileSuffix[0].reason, /carrier does not follow/u)
+})
+
+test('rejects conflicting sequence and call-id result identities', () => {
+  const pairedResult = (seq, sourceSeq, callId, meta) => ({
+    seq,
+    type: 'tool/result',
+    sourceEventSeqs: [sourceSeq],
+    data: { message: { source: { callId } }, meta },
+  })
+  const matching = recoverJournal({ events: [
+    callEvent(0, 'matching', 'const matching = 1'),
+    pairedResult(1, 0, 'matching', { [JOURNAL_KEY]: journal() }),
+  ] })
+  assert.deepEqual(pathToHead(matching).map(node => node.callSeq), [0])
+
+  const conflict = recoverJournal({ events: [
+    callEvent(0, 'first', 'const first = 1'),
+    callEvent(2, 'other', 'const other = 2'),
+    pairedResult(3, 0, 'other', { [JOURNAL_KEY]: journal() }),
+  ] })
+  assert.deepEqual(pathToHead(conflict), [])
+  assert.equal(conflict.available, false)
+  assert.match(conflict.volatileSuffix[0].reason, /identities disagree/u)
+
+  const editMeta = {
+    [JOURNAL_KEY]: journal(),
+    dshPtcPlusEdit: { targetCallSeq: 0 },
+    dshPtcPlusDerivedRun: { code: 'base = 2', description: 'edit base' },
+  }
+  const editConflict = recoverJournal({ events: [
+    callEvent(0, 'base', 'let base = 1'),
+    pairedResult(1, 0, 'base', { [JOURNAL_KEY]: journal() }),
+    { seq: 2, type: 'tool/call', data: { name: 'edit_run_code', callId: 'edit', arguments: '{"edits":[]}' } },
+    pairedResult(3, 2, 'base', editMeta),
+  ] })
+  assert.deepEqual(pathToHead(editConflict).map(node => node.callSeq), [0])
+  assert.equal(editConflict.available, false)
+  assert.match(editConflict.volatileSuffix.at(-1).reason, /identities disagree/u)
+
+  const confirmer = journal({ confirms: [0] })
+  const conflictWithoutJournal = recoverJournal({ events: [
+    callEvent(0, 'unsettled', 'const mustStayUnavailable = 1'),
+    pairedResult(1, 0, 'other', undefined),
+    callEvent(2, 'confirmer', 'const mustNotConfirmConflict = 2'),
+    pairedResult(3, 2, 'confirmer', { [JOURNAL_KEY]: confirmer }),
+  ] })
+  assert.deepEqual(pathToHead(conflictWithoutJournal), [])
+  assert.equal(conflictWithoutJournal.available, false)
+  assert.match(conflictWithoutJournal.volatileSuffix[0].reason, /identities disagree/u)
+
+  const duplicateOrdinaryResult = recoverJournal({ events: [
+    callEvent(0, 'duplicated', 'const duplicated = 1'),
+    pairedResult(1, 0, 'duplicated', undefined),
+    pairedResult(2, 0, 'duplicated', { [JOURNAL_KEY]: journal() }),
+  ] })
+  assert.deepEqual(pathToHead(duplicateOrdinaryResult), [])
+  assert.equal(duplicateOrdinaryResult.available, false)
+  assert.match(duplicateOrdinaryResult.volatileSuffix[0].reason, /duplicate ordinary tool results/u)
+
+  const malformedLaterRelation = recoverJournal({ events: [
+    callEvent(0, 'settled-before-malformed', 'const settledBeforeMalformed = 1'),
+    pairedResult(1, 0, 'settled-before-malformed', { [JOURNAL_KEY]: journal() }),
+    {
+      seq: 2,
+      type: 'tool/result',
+      sourceEventSeqs: ['invalid', 0],
+      data: { message: { source: { callId: 'unrelated-result' } } },
+    },
+  ] })
+  assert.deepEqual(pathToHead(malformedLaterRelation), [])
+  assert.equal(malformedLaterRelation.available, false)
+  assert.match(malformedLaterRelation.volatileSuffix[0].reason, /invalid source relation/u)
+})
+
+test('uses call identity only when historical result provenance is absent', () => {
+  const legacyResult = {
+    seq: 1,
+    type: 'tool/result',
+    data: {
+      message: { source: { callId: 'legacy-result' } },
+      meta: { [JOURNAL_KEY]: journal() },
+    },
+  }
+  const legacy = recoverJournal({ events: [
+    callEvent(0, 'legacy-result', 'const legacyResult = 1'),
+    legacyResult,
+  ] })
+  assert.deepEqual(pathToHead(legacy).map(node => node.callSeq), [0])
+
+  for (const sourceEventSeqs of [[-0], [-1], ['0'], [], [0, 0]]) {
+    const malformed = recoverJournal({ events: [
+      callEvent(0, 'malformed-result', 'const malformedResult = 1'),
+      { ...legacyResult, sourceEventSeqs, data: {
+        ...legacyResult.data,
+        message: { source: { callId: 'malformed-result' } },
+      } },
+    ] })
+    assert.deepEqual(pathToHead(malformed), [])
+    assert.equal(malformed.available, false)
+    assert.equal(malformed.volatileSuffix[0].seq, 0)
+    assert.match(malformed.volatileSuffix[0].reason, /invalid source relation/u)
+  }
 })
 
 test('requires one complete target-linked relation for derived edit replay', () => {
@@ -531,6 +1345,10 @@ test('requires one complete target-linked relation for derived edit replay', () 
     'edited = 2',
   ])
   assert.equal(normalizeDerivedEditResult(derivedMeta, 1).targetCallSeq, 1)
+  assert.throws(() => normalizeDerivedEditResult({
+    ...structuredClone(derivedMeta),
+    dshPtcPlusEdit: { targetCallSeq: -0 },
+  }, 0), /target does not match/u)
   assert.equal(derivedEditResultsEqual(derivedMeta, structuredClone(derivedMeta), 1), true)
   for (const mutate of [
     meta => { meta.dshPtcPlusDerivedRun.code = 'edited = 3' },
@@ -1189,6 +2007,94 @@ test('ignores pruned journal-result clones while retaining fail-closed corruptio
   assert.equal(ghost.volatileSuffix[0].seq, 555)
 })
 
+test('accepts a host-valid content-only replacement with the shadowed result present', () => {
+  const originalData = {
+    message: {
+      id: 'message-a',
+      role: 'user',
+      source: { kind: 'tool', callId: 'call_a' },
+      content: [{ type: 'tool-result', toolCallId: 'call_a', content: 'before' }],
+    },
+    meta: { [JOURNAL_KEY]: journal() },
+  }
+  const replacementData = {
+    ...structuredClone(originalData),
+    message: {
+      ...structuredClone(originalData.message),
+      content: [{ type: 'tool-result', toolCallId: 'call_a', content: 'after' }],
+    },
+  }
+  const events = [
+    callEvent(0, 'call_a', 'const a = 1'),
+    { seq: 1, type: 'tool/result', sourceEventSeqs: [0], data: structuredClone(originalData) },
+    { seq: 2, type: 'compaction/prune', data: { shadowedSeqs: [1] } },
+    { seq: 3, type: 'tool/result', sourceEventSeqs: [1],
+      surfaceOp: { op: 'replace', startSeq: 1, endSeq: 1 }, data: replacementData },
+    callEvent(4, 'call_b', 'const b = 2'),
+    { seq: 5, type: 'tool/result', sourceEventSeqs: [4], data: { meta: { [JOURNAL_KEY]: journal() } } },
+  ]
+  const recovered = recoverJournal({ events }, 6)
+  assert.equal(recovered.available, true)
+  assert.deepEqual(pathToHead(recovered).map(node => node.code), ['const a = 1', 'const b = 2'])
+
+  const tampered = structuredClone(events)
+  tampered[3].data.meta = { ...tampered[3].data.meta, changed: true }
+  const rejected = recoverJournal({ events: tampered }, 6)
+  assert.equal(rejected.available, false)
+  assert.deepEqual(pathToHead(rejected).map(node => node.code), ['const a = 1'])
+
+  const wrongSurfaceOp = structuredClone(events)
+  wrongSurfaceOp[3].surfaceOp = { op: 'append' }
+  assert.equal(recoverJournal({ events: wrongSurfaceOp }, 6).available, false)
+  const missingMessage = structuredClone(events)
+  missingMessage[3].data = { meta: missingMessage[3].data.meta }
+  assert.equal(recoverJournal({ events: missingMessage }, 6).available, false)
+
+  const legacyReplacement = structuredClone(events)
+  legacyReplacement[3].surfaceOp = { op: 'replace', start: 1, end: 1 }
+  assert.equal(recoverJournal({ events: legacyReplacement }, 6).available, true)
+})
+
+test('keeps a derived edit settlement after a content-only result replacement', () => {
+  const editData = {
+    message: {
+      id: 'message-edit',
+      role: 'user',
+      source: { kind: 'tool', callId: 'call_edit' },
+      content: [{ type: 'tool-result', toolCallId: 'call_edit', content: 'before' }],
+    },
+    meta: {
+      [JOURNAL_KEY]: journal(),
+      dshPtcPlusEdit: { targetCallSeq: 0 },
+      dshPtcPlusDerivedRun: { code: 'const a = 2', description: 'edited cell' },
+    },
+  }
+  const events = [
+    callEvent(0, 'call_a', 'const a = 1'),
+    { seq: 1, type: 'tool/result', sourceEventSeqs: [0], data: { meta: { [JOURNAL_KEY]: journal() } } },
+    { seq: 2, type: 'tool/call', data: {
+      name: 'edit_run_code', callId: 'call_edit',
+      arguments: JSON.stringify({ edits: [], expected_target_call_seq: 0 }),
+    } },
+    { seq: 3, type: 'tool/result', sourceEventSeqs: [2], data: structuredClone(editData) },
+    { seq: 4, type: 'compaction/prune', data: { shadowedSeqs: [3] } },
+    { seq: 5, type: 'tool/result', sourceEventSeqs: [3],
+      surfaceOp: { op: 'replace', startSeq: 3, endSeq: 3 },
+      data: {
+        ...structuredClone(editData),
+        message: {
+          ...structuredClone(editData.message),
+          content: [{ type: 'tool-result', toolCallId: 'call_edit', content: 'after' }],
+        },
+      } },
+    callEvent(6, 'call_b', 'const b = 2'),
+    { seq: 7, type: 'tool/result', sourceEventSeqs: [6], data: { meta: { [JOURNAL_KEY]: journal() } } },
+  ]
+  const recovered = recoverJournal({ events }, 8)
+  assert.equal(recovered.available, true)
+  assert.deepEqual(recovered.volatileSuffix, [])
+})
+
 test('requires an adjacent, uniquely identified prune replacement', () => {
   const call = callEvent(10, 'call_10', 'return 1')
   const clone = {
@@ -1205,6 +2111,13 @@ test('requires an adjacent, uniquely identified prune replacement', () => {
   const accepted = recoverJournal({ events: [call, prune, clone] })
   assert.equal(accepted.available, true)
   assert.deepEqual(pathToHead(accepted).map(node => node.code), ['return 1'])
+
+  const currentReplacement = recoverJournal({ events: [call, prune, {
+    ...clone,
+    surfaceOp: { op: 'replace', startSeq: 11, endSeq: 11 },
+  }] })
+  assert.equal(currentReplacement.available, true)
+  assert.deepEqual(pathToHead(currentReplacement).map(node => node.code), ['return 1'])
 
   for (const malformed of [
     [call, prune, { type: 'tool/call', data: { name: 'read', callId: 'gap' } }, clone],
@@ -1225,6 +2138,10 @@ test('requires an adjacent, uniquely identified prune replacement', () => {
     [call, { ...call, seq: 9 }, prune, clone],
     [call, prune, { ...clone, surfaceOp: { op: 'append' } }],
     [call, prune, { ...clone, surfaceOp: { op: 'replace', start: 10, end: 10 } }],
+    [call, prune, { ...clone, surfaceOp: { op: 'replace', startSeq: 10, endSeq: 10 } }],
+    [call, prune, { ...clone, surfaceOp: {
+      op: 'replace', startSeq: 11, endSeq: 11, extra: true,
+    } }],
     [call, prune, {
       ...clone,
       sourceEventSeqs: [11, 12],
@@ -1262,7 +2179,28 @@ test('marks missing and corrupt recovery data untrusted and rejects invalid hist
   const duplicate = resultEvent(1, journal())
   const duplicateState = recoverJournal({ events: [callEvent(1, 'duplicate', 'return 1'), duplicate, duplicate] })
   assert.equal(duplicateState.available, false)
-  assert.match(duplicateState.volatileSuffix.at(-1).reason, /duplicate PTC journal/)
+
+  const ambiguousCallSequence = recoverJournal({ events: [
+    callEvent(1, 'first-sequence-owner', 'return 1'),
+    callEvent(1, 'second-sequence-owner', 'return 2'),
+    { ...resultEvent(1, journal()), seq: 2 },
+  ] })
+  assert.equal(ambiguousCallSequence.available, false)
+  assert.match(
+    ambiguousCallSequence.volatileSuffix.at(-1).reason,
+    /duplicate executable tool call sequence 1/,
+  )
+  const multipleAmbiguousCallSequences = recoverJournal({ events: [
+    callEvent(1, 'first-sequence-owner', 'return 1'),
+    callEvent(1, 'second-sequence-owner', 'return 2'),
+    callEvent(2, 'third-sequence-owner', 'return 3'),
+    callEvent(2, 'fourth-sequence-owner', 'return 4'),
+  ] })
+  assert.equal(multipleAmbiguousCallSequences.available, false)
+  assert.match(
+    multipleAmbiguousCallSequences.volatileSuffix.at(-1).reason,
+    /duplicate executable tool call sequence 1/,
+  )
   assert.throws(() => pathToHead({ head: 2, nodes: [] }), /invalid dsh-ptc-plus journal head/)
 
   const unknownRestore = [
@@ -1310,7 +2248,8 @@ test('marks missing and corrupt recovery data untrusted and rejects invalid hist
         { failedCallSeq: 0, frontierCallSeq: null },
       ],
     })
-  assert.equal(duplicateBoundary.available, true)
+  assert.equal(duplicateBoundary.available, false)
+  assert.match(duplicateBoundary.volatileSuffix[0].reason, /outside the verified frontier/u)
   const malformedExtraBoundary = recoverJournal({ events: [] }, undefined, { extraBoundaries: 'invalid' })
   assert.equal(malformedExtraBoundary.available, false)
 })
@@ -1655,4 +2594,88 @@ test('preserves the editable run across unrelated native settlements', () => {
     source: 'return 1',
     callSeq: 1,
   })
+})
+
+test('orders a pruned journal clone at its settlement position', () => {
+  const failed = callEvent(10, 'call_10', 'const a = 1')
+  const carrier = callEvent(12, 'call_12', 'const b = 2')
+  const later = callEvent(30, 'call_30', 'const c = 3')
+  const failedResult = { ...resultEvent(10, journal()), seq: 11 }
+  const carrierResult = (() => {
+    const result = resultEvent(12, journal())
+    return {
+      ...result,
+      seq: 13,
+      data: {
+        meta: withRecoveryBoundaries(
+          result.data.meta,
+          [{ failedCallSeq: 10, frontierCallSeq: null }],
+        ),
+      },
+    }
+  })()
+  const laterResult = { ...resultEvent(30, journal()), seq: 31 }
+  const boundaryPath = ['const b = 2', 'const c = 3']
+
+  const control = recoverJournal({
+    events: [failed, failedResult, carrier, carrierResult, later, laterResult],
+  })
+  assert.equal(control.available, true)
+  assert.deepEqual(pathToHead(control).map(node => node.code), boundaryPath)
+
+  // The Host pruner replaces the failed cell's settlement with a clone that
+  // sits after the carrier. The clone is the same settlement representation, so
+  // it keeps the settlement's position and the recorded boundary still applies.
+  const prune = { seq: 20, type: 'compaction/prune', data: { shadowedSeqs: [11] } }
+  const clone = {
+    ...resultEvent(11, journal()),
+    seq: 21,
+    data: {
+      ...resultEvent(11, journal()).data,
+      message: { source: { callId: 'call_10' } },
+    },
+    surfaceOp: { op: 'replace', start: 11, end: 11 },
+  }
+  const replaced = recoverJournal({
+    events: [failed, prune, clone, carrier, carrierResult, later, laterResult],
+  })
+  assert.equal(replaced.available, true)
+  assert.deepEqual(pathToHead(replaced).map(node => node.code), boundaryPath)
+})
+
+test('contracts later-folded settlements when a recovery boundary is rejected', () => {
+  const failed = callEvent(0, 'failed', 'const a = 1')
+  const carrier = callEvent(2, 'carrier', 'const b = 2')
+  const later = callEvent(4, 'later', 'const c = 3')
+  const carrierResult = (() => {
+    const result = resultEvent(2, journal())
+    return {
+      ...result,
+      seq: 3,
+      data: {
+        meta: withRecoveryBoundaries(
+          result.data.meta,
+          [{ failedCallSeq: 0, frontierCallSeq: 2 }],
+        ),
+      },
+    }
+  })()
+  // The failed cell's settlement arrives after the carrier that recorded the
+  // boundary, so the boundary is rejected while that settlement is still
+  // unfolded. The rejected boundary still contracts the window it computed.
+  const recovered = recoverJournal({
+    events: [
+      failed,
+      carrier,
+      carrierResult,
+      later,
+      { ...resultEvent(0, journal()), seq: 5 },
+      { ...resultEvent(4, journal()), seq: 6 },
+    ],
+  })
+  assert.equal(recovered.available, false)
+  assert.deepEqual(pathToHead(recovered), [])
+  // The carrier and everything after it stay unproved; the contracted window
+  // keeps no node at all.
+  assert.deepEqual(recovered.volatileSuffix.map(item => item.seq).sort(), [2, 4])
 })

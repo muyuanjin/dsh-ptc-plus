@@ -74,7 +74,7 @@ DSH 原生 tool guidance 与 typed SDK 保持 owner 提供的内容。PTC Plus �
 
 ## 设置 UI
 
-PTC Plus 注册 `ptc-plus` settings namespace，字段来源于 `internal/config-spec.js`，client half 通过宿主当前代的设置座位暴露全部配置：旧代际是 `settings.plugin.item`（keyed，按 namespace），当前 DSH 是 Plugins 页面的 `plugins.row.config`（keyed，键 `<包名>#<行 id>`），`src/client-host-compat.js` 同一次发布到两个座位、由声明槽位的一代渲染，并按页面提供的 `summary`/`page` 视图分别渲染一句描述与完整表单。composer 星光菜单的设置快捷入口在应用内弹窗复用同一完整表单与写入 owner，点击不依赖宿主页面的局部导航状态；悬浮提示仍标明当前代际的原生设置座位。`enhancedToolView` 默认开启且只影响 Client 展示：开启时通过公共 keyed tool-view surface 组合可用的 DSH primitive，缺少某项 primitive 时使用插件自有的等价降级；关闭时注销 keyed view 并交还 DSH 原生 generic row。两种路径都不改变工具、prompt、runtime 或 session 语义。
+PTC Plus 注册 `ptc-plus` settings namespace，字段来源于 `internal/config-spec.js`，client half 通过宿主当前代的设置座位暴露全部配置：旧代际是 `settings.plugin.item`（keyed，按 namespace），rc 代际是 Plugins 页面的 `plugins.row.config`（keyed，键 `<包名>#<行 id>`），当前 alpha 是 Settings → General 的 `settings.general.item`（list，`id: ptc-plus`）；`src/client-host-compat.js` 同一次发布到全部三个座位、由声明槽位的一代渲染，并按页面提供的 `summary`/`page` 视图分别渲染一句描述与完整表单。composer 星光菜单的设置快捷入口在应用内弹窗复用同一完整表单与写入 owner，点击不依赖宿主页面的局部导航状态；悬浮提示仍标明当前代际的原生设置座位。`enhancedToolView` 默认开启且只影响 Client 展示：开启时通过公共 keyed tool-view surface 组合可用的 DSH primitive，缺少某项 primitive 时使用插件自有的等价降级；关闭时注销 keyed view 并交还 DSH 原生 generic row。两种路径都不改变工具、prompt、runtime 或 session 语义。
 `autoDescribeRunCode` 默认开启且只控制本地执行宽容度：开启时，缺少外层 `description` 的 `run_code` 使用派生参数通过本地 DSH 校验，备用摘要仅进入 presentation metadata；关闭时由 DSH 校验原始参数。两种状态的模型请求保持字节稳定并包含 required `description`，原始调用参数、代码、native 工具参数、权限、journal 和 session 语义保持不变。
 设置卡片将插件总开关单独置顶，其后按调用容错、REPL 语法、状态与恢复、工具扩展、界面显示和资源限制分区。恢复提示及其间隔、阈值集中在状态与恢复区，全局绑定管理入口紧随工具扩展区的全局绑定开关；分组与 Host schema 字段顺序独立，不改变默认值或执行语义。
 `enabled` 是 kill switch：关闭时宿主保留 settings 注册、设置卡片，以及仅用于在下一允许步骤撤销旧 PTC 声明的被动消息清理；不安装 runtime、执行 hook、tool surface 或 prompt section，不读取 binding 存储；
@@ -87,7 +87,7 @@ PTC Plus 注册 `ptc-plus` settings namespace，字段来源于 `internal/config
 
 REPL 控制台使用公开 `conversation.view`，由当前 Client 的会话选择、`agentPreset` projection 与插件开关共同决定注册；只有 `ptc` / `code` 会话拥有该页签，DSH 继续拥有导航与回退。会话观察只显示名称、定义来源及带观察时间、截断与不可读取状态的有界值预览。值检查属于 worker owner，新代际直接读取已提交且最终 catalog 可证明的普通本地值；旧 storage 只读取成功执行源码可证明的 lexical binding 或自有 data descriptor，并在反射前排除 Proxy；不触发 getter、Proxy trap 或用户 formatter，不使用 Inspector 连接。值预览不枚举对象属性集合，只对基本值和数组前五个自有槽位提供有界读取，其余对象保持不可读取。
 
-cell 的执行结果与 journal 先结算，再以独立私有消息附加可选 UI 观察。可见 REPL 清单没有预览时，可经宿主认证的 Remote 请求一次有界观察：只读取现存、已结算且 surface generation 与清单一致的 worker，沿用 cell 队列与 readiness 握手，不启动 worker、不恢复或重放历史。按需结果只留在当前 Client 清单的展示状态，不回写日志；清单替换、取消或失效后丢弃旧响应。未采集与不可读取必须区分。预览失败、迟到或缺失不改变已结算结果、不重启 worker，也不构成模型知识、journal evidence 或保留隐藏 binding 的理由。它不是原子 heap snapshot 或实时监控，不增加会话代码输入、Agent 对象操作或克隆环境。`dshPtcPlusBindings` v4 的可选观察与名称清单共享原有 generation、seed、restore/discard 和模型可见 frontier 失效规则；旧 v3 源码清单仍可展示。
+cell 的执行结果与 journal 先结算，再以独立私有消息附加可选 UI 观察。可见 REPL 清单没有预览时，可经宿主认证的 Remote 请求一次有界观察：只读取现存、已结算且 surface generation 与清单一致的 worker，沿用 cell 队列与 readiness 握手，不启动 worker、不恢复或重放历史。按需结果只留在当前 Client 清单的展示状态，不回写日志；清单替换、取消或失效后丢弃旧响应。未采集与不可读取必须区分。预览失败、迟到或缺失不改变已结算结果、不重启 worker，也不构成模型知识、journal evidence 或保留隐藏 binding 的理由。它不是原子 heap snapshot 或实时监控，不增加会话代码输入、Agent 对象操作或克隆环境。`dshPtcPlusBindings` v5 的可选观察、名称清单与复用计数共享原有 generation、seed、restore/discard 和模型可见 frontier 失效规则；v3 源码清单与 v4 清单仍可读取展示。
 
 旧原生路径的异步 lexical storage 由当前 worker 的真实 REPL 探测决定，失败只关闭相应预览，不影响执行；新逻辑 root 读取不依赖该探测，也不为观察执行 import 或关联来源 getter。函数内部 await 不影响外层变量证明。基本值预览含至多 128 位的 BigInt，超限只显示有界提示，不完整转换。数组的额外自有属性未被检查，即使所有索引都能展示也始终标记预览不完整。
 

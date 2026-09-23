@@ -1,3 +1,5 @@
+import { isHostIconComponent } from './client-host-compat.js'
+
 const MAX_HISTORY_ENTRIES = 40
 const MAX_HISTORY_CHARACTERS = 128 * 1024
 const MAX_RECORD_CHARACTERS = MAX_HISTORY_CHARACTERS / 2
@@ -89,9 +91,9 @@ export function createBindingConsole(React, { TypeScriptEditor, IconButton, Acti
         h('span', { className: 'ptcPlusExecutionState', role: 'status' }, t(`execution.${state}`)),
         h('div', { className: 'ptcPlusExecutionActions' },
           running
-            ? h(ActionButton, { onClick: () => { release(); setState('released') } }, typeof icons.stop === 'function' ? h(icons.stop, { size: 14 }) : null, t('execution.stop'))
+            ? h(ActionButton, { onClick: () => { release(); setState('released') } }, isHostIconComponent(icons.stop) ? h(icons.stop, { size: 14 }) : null, t('execution.stop'))
             : h(ActionButton, { 'data-kind': 'primary', onClick: run, disabled: !code.trim() || !source.trim() },
-              typeof icons.play === 'function' ? h(icons.play, { size: 14 }) : null, t('bindings.run')),
+              isHostIconComponent(icons.play) ? h(icons.play, { size: 14 }) : null, t('bindings.run')),
           h(IconButton, { icon: icons.reset, label: t('execution.reset'), onClick: () => { release(); setState('ready') } }),
           h(IconButton, { icon: icons.clear, label: t('execution.clear'), onClick: () => setRecords([]) }))),
       h('div', { className: 'ptcPlusExecutionHistory', ref: history, 'aria-label': t('execution.history') },

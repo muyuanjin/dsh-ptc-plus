@@ -125,7 +125,6 @@ Agent 可以在会话 REPL 中用内存样例逐步测试和修正，再交出�
 
 - **调用容错**：允许缺少摘要的 `run_code`，修复可以准确识别的顶层工具误调用。
 - **REPL 语法**：`bindingUpdates` 默认是 `stateful`，允许跨 cell 更新变量、函数、类和 import alias，也允许同一 cell 内同一逻辑 scope 的重复声明更新同一身份；`protected` 可选择名称保护。`tools` 与注入的错误类不能重声明或写入：声明冲突报 `PTC-N001`，赋值失败时会指出对应名称。已有配置若仍含五个细分开关，设置页会显示待迁移状态，可直接选择任一种统一策略。模块语法默认可用。
-- **模块互操作**：PTC 管理的 namespace 支持实时读取和局部覆盖，传给外部函数后仍保留这些语义。外部代码自行原生导入编译模块不承诺同一 namespace 或可写导出语义，详见[运行时说明](docs/runtime-reference.md#cell-semantics)。
 - **状态与恢复**：控制重启恢复和按需错误提示。
 - **工具扩展**：开启全局绑定，或供高级用户使用的官方 Cordis 工具。
 - **界面显示**：控制增强工具卡片、REPL 页签和绑定编写快捷入口。
@@ -133,7 +132,7 @@ Agent 可以在会话 REPL 中用内存样例逐步测试和修正，再交出�
 
 全局绑定与 Cordis 工具默认关闭。设置通常即时生效；活动 worker 存在时不能更改其内存上限。字段、默认值和限制见[配置参考](docs/runtime-reference.md#configuration)。
 
-`run_code`、`edit_run_code`、绑定试运行和用户绑定执行遵循同一套有状态语义。每个计算环境中的 cell、PTC 管理模块、`require` 和绑定模块共享该 worker 的 Node realm，因此 `Error` 子类判断与 `globalThis` 写入保持 Node 语义。显式使用 `eval`、`Function`、`node:vm` 或独立运行时仍遵循对应的原生边界；切换绑定更新策略不会改写已有闭包和函数的执行环境。完整的作用域、源码观察、模块互操作和已记录会话兼容规则见[运行时参考](docs/runtime-reference.md#cell-semantics)。
+`run_code`、`edit_run_code`、绑定试运行和用户绑定执行遵循同一套有状态语义。每个计算环境中的 cell、PTC 管理模块、`require` 和绑定模块共享该 worker 的 Node realm，因此 `Error` 子类判断与 `globalThis` 写入保持 Node 语义。PTC 管理的 namespace 支持实时读取和局部覆盖，传给外部函数后仍保留这些语义；外部代码自行原生导入编译模块不承诺同一 namespace 或可写导出语义。显式使用 `eval`、`Function`、`node:vm` 或独立运行时仍遵循对应的原生边界；切换绑定更新策略不会改写已有闭包和函数的执行环境。完整的作用域、源码观察、模块互操作和已记录会话兼容规则见[运行时参考](docs/runtime-reference.md#cell-semantics)。
 
 ![PTC Plus 设置卡片](assets/ptc-plus-settings-zh.png)
 

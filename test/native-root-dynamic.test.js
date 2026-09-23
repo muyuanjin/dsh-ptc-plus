@@ -7,6 +7,7 @@ import { createContext, runInContext } from 'node:vm'
 import { createNativeRootDynamic } from '../internal/native-root-dynamic.js'
 import { SessionRuntime } from '../internal/session-runtime.js'
 import { createUserBindingsSnapshot } from '../internal/user-bindings.js'
+import { orderedSurfaceSession, runRecordedCell } from './plugin-fixture.js'
 
 test('native root eval validates declarations atomically and preserves actual realm properties', () => {
   const context = createContext()
@@ -76,9 +77,13 @@ async function fixture(t) {
   t.after(() => runtime.dispose())
   const userBindings = createUserBindingsSnapshot({ entries: [{ id: 'helpers', name: 'helpers', scope: 'namespace',
     enabled: true, purpose: '', source: `import {value as imported} from './value.mjs';export const value=imported` }] })
-  const session = { id: 'native-root-dynamic', session: { header: { cwd } } }
+  const session = orderedSurfaceSession('native-root-dynamic')
+  session.header = { cwd }
+  let call = 0
   return { runtime, async run(program) {
-    const result = await runtime.run(session, { program, bindings: [], userBindings })
+    const result = await runRecordedCell(runtime, session, `native-root-${++call}`, {
+      program, bindings: [], userBindings,
+    })
     assert.equal(result.error, undefined, result.error?.message)
     return result.value
   } }

@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import test from 'node:test'
 import { runInNewContext } from 'node:vm'
 import { SessionRuntime } from '../internal/session-runtime.js'
+import { orderedSurfaceSession, runRecordedCell } from './plugin-fixture.js'
 
 const statements = Array.from({ length: 1200 }, (_, index) => `total+=step(${index % 11});`).join('\n')
 const source = `
@@ -43,12 +44,15 @@ for (const extension of ['cjs', 'mjs']) for (const lexicalDynamic of [false, tru
   const native = JSON.parse(JSON.stringify(await runInNewContext(input + '\nrun()')))
   const runtime = new SessionRuntime({ bindingUpdates: 'stateful', durableReplay: false })
   t.after(() => runtime.dispose())
-  const session = { id: `source-regions-${extension}`, session: { header: { cwd: directory } } }
-  const result = await runtime.run(session, { bindings: [], program:
+  const session = orderedSurfaceSession(`source-regions-${extension}`)
+  session.header = { cwd: directory }
+  const result = await runRecordedCell(runtime, session, 'load-dependency', { bindings: [], program:
     `const dependency=${extension === 'cjs' ? 'require("./source.cjs")' : 'await import("./source.mjs")'};return await dependency.run()` })
   assert.equal(result.error, undefined, result.error?.message)
   assert.deepEqual(result.value, native)
-  const next = await runtime.run(session, { bindings: [], program: 'return (await dependency.run()).slice(2,5)' })
+  const next = await runRecordedCell(runtime, session, 'reuse-dependency', {
+    bindings: [], program: 'return (await dependency.run()).slice(2,5)',
+  })
   assert.equal(next.error, undefined, next.error?.message)
   assert.deepEqual(next.value, [true, 7, 7])
 })

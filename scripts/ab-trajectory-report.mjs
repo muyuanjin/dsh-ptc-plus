@@ -26,7 +26,10 @@ export function trajectoryDelta(plugin, baseline) {
     'sourceChars', 'repeatedSourceCalls', 'resultOutputChars', 'assistantTextChars', 'finalAnswerChars', 'questionMarks',
   ]
   const result = Object.fromEntries(fields.map(field => [field, plugin[field] - baseline[field]]))
-  for (const field of Object.keys(plugin.usage)) result[field] = plugin.usage[field] - baseline.usage[field]
+  for (const field of Object.keys(plugin.usage)) {
+    result[field] = plugin.usageComplete === false || baseline.usageComplete === false
+      ? null : plugin.usage[field] - baseline.usage[field]
+  }
   result.promptChars = plugin.prompt.chars - baseline.prompt.chars
   result.promptBytes = plugin.prompt.bytes - baseline.prompt.bytes
   result.runCodeSchemaChars = plugin.prompt.runCodeSchemaChars - baseline.prompt.runCodeSchemaChars
@@ -61,13 +64,18 @@ export function aggregateTrajectories(sessions, variant) {
     taskBlindPending: selected.filter(session => session.taskValidation?.status === 'blind-pending').length,
   }
   result.totalTraffic = result.inputTokens + result.cacheReadTokens + result.cacheWriteTokens + result.outputTokens
+  result.usageComplete = selected.every(session => session.usageComplete !== false)
+  if (!result.usageComplete) {
+    for (const key of ['inputTokens', 'outputTokens', 'cacheReadTokens', 'cacheWriteTokens', 'totalTraffic']) result[key] = null
+  }
   return result
 }
 
 function metricRow(pair) {
   const p = pair.plugin
   const b = pair.baseline
-  return `| ${pair.taskId} / ${pair.replicate} | ${p.modelRequests}/${b.modelRequests} | ${p.headerEpochs}/${b.headerEpochs} | ${p.headerChanges}/${b.headerChanges} | ${p.toolCallCount}/${b.toolCallCount} | ${p.ptcWarningCount}/${b.ptcWarningCount} | ${p.usage.inputTokens}/${b.usage.inputTokens} | ${p.usage.cacheReadTokens}/${b.usage.cacheReadTokens} | ${p.usage.outputTokens}/${b.usage.outputTokens} | ${p.sourceChars}/${b.sourceChars} | ${p.resultOutputChars}/${b.resultOutputChars} | ${p.turnWallMs}/${b.turnWallMs} | ${p.failures.length}/${b.failures.length} |`
+  const usage = (session, key) => session.usageComplete === false ? 'unknown' : session.usage[key]
+  return `| ${pair.taskId} / ${pair.replicate} | ${p.modelRequests}/${b.modelRequests} | ${p.headerEpochs}/${b.headerEpochs} | ${p.headerChanges}/${b.headerChanges} | ${p.toolCallCount}/${b.toolCallCount} | ${p.ptcWarningCount}/${b.ptcWarningCount} | ${usage(p, 'inputTokens')}/${usage(b, 'inputTokens')} | ${usage(p, 'cacheReadTokens')}/${usage(b, 'cacheReadTokens')} | ${usage(p, 'outputTokens')}/${usage(b, 'outputTokens')} | ${p.sourceChars}/${b.sourceChars} | ${p.resultOutputChars}/${b.resultOutputChars} | ${p.turnWallMs}/${b.turnWallMs} | ${p.failures.length}/${b.failures.length} |`
 }
 
 export function reportMarkdown(report) {

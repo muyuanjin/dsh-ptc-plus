@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import test from 'node:test'
 import { SessionRuntime } from '../internal/session-runtime.js'
 import { createUserBindingsSnapshot } from '../internal/user-bindings.js'
+import { orderedSurfaceSession, runRecordedCell } from './plugin-fixture.js'
 
 async function sessionRuntime(t, config) {
   const cwd = await mkdtemp(join(tmpdir(), 'ptc-generation-entry-'))
@@ -18,8 +19,12 @@ async function sessionRuntime(t, config) {
     export async function dynamic(){return (await import('./value.mjs')).value}`)
   const runtime = new SessionRuntime({ durableReplay:false,maxWallMs:5000,...config },{ userBindingsCwd:cwd })
   t.after(() => runtime.dispose())
-  const session = { id:'generation-entry',session:{ header:{ cwd } } }
-  return { runtime,cwd,run: (program, extra={}) => runtime.run(session,{ program,bindings:[],...extra }) }
+  const session = orderedSurfaceSession('generation-entry')
+  session.header = { cwd }
+  let call = 0
+  return { runtime,cwd,run: (program, extra={}) => runRecordedCell(
+    runtime, session, `generation-entry-${++call}`, { program,bindings:[],...extra },
+  ) }
 }
 
 for (const bindingUpdates of ['stateful','protected']) test(`dynamic imports preserve caller Promise, parameter errors and exact user failures (${bindingUpdates})`,async t => {

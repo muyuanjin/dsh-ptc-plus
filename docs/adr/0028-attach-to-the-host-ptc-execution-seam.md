@@ -30,12 +30,23 @@ generation is.
 **Selection is a live capability.** The plugin's static injection names only the
 services both generations provide; the seam owner waits through `inject` for
 whichever execution service the host registers, in a scope that also requires the
-plugin's own services, and attaches once. When both are
-registered, the current generation wins, and the preceding generation attaches
-only when the current one is absent. Attachment runs in the injected scope, so
+plugin's own services, and owns one live attachment at a time. When both are registered, the current
+generation wins, including when it appears after a preceding-generation attachment.
+That transition first disposes the legacy injected fiber and its complete effect
+tree, then attaches in the current service's scope; cleanup from the retired scope
+cannot clear the new owner. If that attach fails, the owner marks the current
+service object unusable, re-arms the preceding-generation attachment
+immediately, and reports the failure instead of leaving the plugin with no
+execution seam; the failed object is never retried, while a replacement current
+service supersedes the restored attachment. The preceding generation therefore
+attaches only when the current one is absent or is the recorded unusable object.
+Attachment runs in the injected scope, so
 the plugin is unloaded when the host unregisters that service and reattaches when
 it is registered again. A service that satisfies the name but not the contract
-(`run` or `resolve` missing) is reported as a load failure naming the service.
+(`run` or `resolve` missing) follows the same path and is reported as a load
+failure naming the service; when a preceding-generation attachment exists, the
+report accompanies its restoration so `run_code` never silently returns to the
+host provider.
 
 **Execution is one neutral call shape.** The owner publishes `invokeUpstream`,
 which reproduces each generation's own call shape — directly for
@@ -93,8 +104,17 @@ escalation it thinks it is offering.
 The plugin activates on both the current and the preceding host generation, and
 one test owner covers the selection rules, the neutral call shape, the descriptor
 takeover, and the release semantics for both. A host that registers neither
-execution service leaves the plugin waiting, exactly as a required injection did,
-rather than loading a plugin whose entry points can never run.
+execution service cannot be served, and its activation settles with a bounded
+diagnostic naming the missing seam — `no host execution seam (ptcRuntime or
+codeRuntime) is registered` — after the attachment window instead of staying
+pending: the host awaits loader settlement before it becomes usable, so an
+unbounded wait would park every agent, native tool, and unrelated plugin rather
+than failing this entry.
+
+A current-generation service that fails to attach cannot leave the plugin
+unattached while the preceding service is still registered: the preceding
+attachment is restored and the failure is reported through the plugin's own
+logger in addition to the injected fiber's activation result.
 
 `run_code` on the current host no longer advertises a per-call deadline or file
 sandbox, and DSH rejects those arguments with its own message instead of the

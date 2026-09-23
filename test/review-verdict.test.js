@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdir, mkdtemp, readFile, rm, unlink, writeFile } from 'node:fs/promises'
+import { copyFile, mkdir, mkdtemp, readFile, rm, unlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -37,7 +37,9 @@ function usesWindowsGitPathSemantics(root) {
 
 async function repository(t) {
   const root = await mkdtemp(join(tmpdir(), 'ptc-review-gate-'))
-  t.after(() => rm(root, { recursive: true, force: true }))
+  t.after(() => rm(root, {
+    recursive: true, force: true, maxRetries: 10, retryDelay: 50,
+  }))
   git(root, ['init', '--quiet'])
   git(root, ['config', 'user.email', 'gate@example.invalid'])
   git(root, ['config', 'user.name', 'Gate Test'])
@@ -679,6 +681,29 @@ test('finalization directly rejects missing, malformed, stale, and changing proo
     /verification proof changed while/u,
   )
   await assert.rejects(() => readFile(verdictPath), error => error?.code === 'ENOENT')
+})
+
+test('source snapshots never write through the caller Git index', async (t) => {
+  const root = await repository(t)
+  const index = join(root, '.git', 'index')
+  const sentinel = join(root, '.git', 'sentinel-index')
+  await copyFile(index, sentinel)
+  const before = await readFile(sentinel)
+  // A partial commit leaves an unstaged worktree change behind; the scratch
+  // tree must fold it into its own index only.
+  await writeFile(join(root, 'b.txt'), 'b1\n')
+  const previous = process.env.GIT_INDEX_FILE
+  process.env.GIT_INDEX_FILE = sentinel
+  t.after(() => {
+    if (previous === undefined) delete process.env.GIT_INDEX_FILE
+    else process.env.GIT_INDEX_FILE = previous
+  })
+
+  // The scratch tree owns its own index: Git exports GIT_INDEX_FILE to hooks,
+  // and a snapshot that wrote through it would rewrite the commit's index.
+  await sourceTreeSnapshot(root)
+  assert.deepEqual(await readFile(sentinel), before)
+  assert.deepEqual(await readFile(index), before)
 })
 
 test('finalization final reads reject hook-time tree and HEAD changes', async (t) => {

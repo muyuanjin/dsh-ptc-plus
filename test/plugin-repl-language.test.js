@@ -7,7 +7,12 @@ import test from 'node:test'
 import { LONG_CELL_CODE_UNITS } from '../internal/failure-reporting.js'
 import { normalizeJournal } from '../internal/session-journal.js'
 import { PREDECESSOR_JOURNAL_FIELDS } from '../internal/session-journal-schema.js'
-import { appendRunCodeEvents, fixture as pluginFixture, ptcAgent } from './plugin-fixture.js'
+import {
+  appendRunCodeEvents,
+  fixture as pluginFixture,
+  orderedSurfaceSession,
+  ptcAgent,
+} from './plugin-fixture.js'
 import { writeRawFilenameFixture } from './raw-filename-fixture.js'
 
 // These historical language contracts also govern replay of pre-v9 journals.
@@ -382,10 +387,10 @@ test('does not publish an uncommitted class replacement in binding inventory', a
 
 test('publishes only same-name function declarations that reached their commit point', async (t) => {
   const events = []
-  const session = { id: 'same-name-function-commits', events }
+  const session = orderedSurfaceSession('same-name-function-commits', events)
   const writer = fixture({ looseTopLevelFunctionClassRedeclarations: true })
   const setupSource = 'function current() { return 0 }'
-  const setup = await writer.runDurable(session.id, setupSource, {}, { session })
+  const setup = await writer.runDurable(session.id, setupSource, {}, { session, recordSession: 'deferred-result', callId: 'same-name-function-setup' })
   appendRunCodeEvents(events, 'same-name-function-setup', setupSource, setup)
 
   const earlySource = [
@@ -393,7 +398,7 @@ test('publishes only same-name function declarations that reached their commit p
     'return current()',
     'function current() { return 2 }',
   ].join('\n')
-  const early = await writer.runDurable(session.id, earlySource, {}, { session })
+  const early = await writer.runDurable(session.id, earlySource, {}, { session, recordSession: 'deferred-result', callId: 'same-name-function-early' })
   assert.equal(early.value, 1)
   const earlyEntry = early.meta.dshPtcPlusBindings.memory.entries
     .find(entry => entry.name === 'current')
@@ -417,7 +422,7 @@ test('publishes only same-name function declarations that reached their commit p
     'function current() { return 3 }',
     'function current() { return 4 }',
   ].join('\n')
-  const complete = await writer.runDurable(session.id, completeSource, {}, { session })
+  const complete = await writer.runDurable(session.id, completeSource, {}, { session, recordSession: 'deferred-result', callId: 'same-name-function-complete' })
   const completeEntry = complete.meta.dshPtcPlusBindings.memory.entries
     .find(entry => entry.name === 'current')
   assert.equal(completeEntry.definition.source, 'function current() { return 4 }')
@@ -440,14 +445,14 @@ test('publishes only same-name function declarations that reached their commit p
 
 test('cold-replays function/class redeclarations with their recorded binding policy', async (t) => {
   const events = []
-  const session = { id: 'function-class-replay', events }
+  const session = orderedSurfaceSession('function-class-replay', events)
   const writer = fixture({ looseTopLevelFunctionClassRedeclarations: true })
   t.after(() => writer.dispose())
   const firstSource = 'function current() { return 1 }\nclass Current { static value = 1 }'
-  const first = await writer.runDurable(session.id, firstSource, {}, { session })
+  const first = await writer.runDurable(session.id, firstSource, {}, { session, recordSession: 'deferred-result', callId: 'function-class-first' })
   appendRunCodeEvents(events, 'function-class-first', firstSource, first)
   const secondSource = 'function current() { return 2 }\nclass Current { static value = 2 }'
-  const second = await writer.runDurable(session.id, secondSource, {}, { session })
+  const second = await writer.runDurable(session.id, secondSource, {}, { session, recordSession: 'deferred-result', callId: 'function-class-second' })
   appendRunCodeEvents(events, 'function-class-second', secondSource, second)
   assert.deepEqual(second.meta.dshPtcPlus.bindingPolicy, {
     variableRedeclarations: true,
@@ -465,7 +470,7 @@ test('cold-replays function/class redeclarations with their recorded binding pol
 
 test('replaces repeated top-level variables in default loose mode and cold-replays them', async (t) => {
   const events = []
-  const session = { id: 'loose-redeclarations', events }
+  const session = orderedSurfaceSession('loose-redeclarations', events)
   const first = fixture()
   t.after(() => first.dispose())
 
@@ -473,7 +478,7 @@ test('replaces repeated top-level variables in default loose mode and cold-repla
 const repeatedValue = 40
 const { repeatedLabel } = { repeatedLabel: 'first' }
 `
-  const setup = await first.runDurable(session.id, setupCode, {}, { session })
+  const setup = await first.runDurable(session.id, setupCode, {}, { session, recordSession: 'deferred-result', callId: 'loose-setup' })
   assert.equal(setup.isError, false)
   appendRunCodeEvents(events, 'loose-setup', setupCode, setup)
 
@@ -482,7 +487,7 @@ const repeatedValue = repeatedValue + 1, addedAfterReplace = repeatedValue
 const { repeatedLabel } = { repeatedLabel: repeatedLabel + '-second' }
 return { repeatedValue, addedAfterReplace, repeatedLabel }
 `
-  const replaced = await first.runDurable(session.id, replaceCode, {}, { session })
+  const replaced = await first.runDurable(session.id, replaceCode, {}, { session, recordSession: 'deferred-result', callId: 'loose-replace' })
   assert.deepEqual(replaced.value, {
     repeatedValue: 41,
     addedAfterReplace: 41,
@@ -565,10 +570,10 @@ test('keeps adjacent loose redeclarations quiet across executed cells', async (t
 
 test('keeps recovered adjacent redeclarations quiet', async (t) => {
   const events = []
-  const session = { id: 'loose-note-replay', events }
+  const session = orderedSurfaceSession('loose-note-replay', events)
   const writer = fixture()
   const source = 'const recoveredRecentValue = 1'
-  const written = await writer.runDurable(session.id, source, {}, { session })
+  const written = await writer.runDurable(session.id, source, {}, { session, recordSession: 'deferred-result', callId: 'loose-note-setup' })
   appendRunCodeEvents(events, 'loose-note-setup', source, written)
   await writer.dispose()
 
@@ -597,13 +602,13 @@ return { first, second }
 
 test('replays each journal node with its recorded binding mode', async (t) => {
   const looseEvents = []
-  const looseSession = { id: 'recorded-loose-mode', events: looseEvents }
+  const looseSession = orderedSurfaceSession('recorded-loose-mode', looseEvents)
   const looseWriter = fixture({ looseTopLevelFunctionClassRedeclarations: false })
   const looseFirstCode = 'const switchedBinding = 1'
-  const looseFirst = await looseWriter.runDurable(looseSession.id, looseFirstCode, {}, { session: looseSession })
+  const looseFirst = await looseWriter.runDurable(looseSession.id, looseFirstCode, {}, { session: looseSession, recordSession: 'deferred-result', callId: 'loose-mode-first' })
   appendRunCodeEvents(looseEvents, 'loose-mode-first', looseFirstCode, looseFirst)
   const looseSecondCode = 'const switchedBinding = switchedBinding + 1'
-  const looseSecond = await looseWriter.runDurable(looseSession.id, looseSecondCode, {}, { session: looseSession })
+  const looseSecond = await looseWriter.runDurable(looseSession.id, looseSecondCode, {}, { session: looseSession, recordSession: 'deferred-result', callId: 'loose-mode-second' })
   appendRunCodeEvents(looseEvents, 'loose-mode-second', looseSecondCode, looseSecond)
   assert.deepEqual(looseSecond.meta.dshPtcPlus.bindingPolicy, {
     variableRedeclarations: true,
@@ -619,7 +624,7 @@ test('replays each journal node with its recorded binding mode', async (t) => {
   })
 
   const strictEvents = []
-  const strictSession = { id: 'recorded-strict-mode', events: strictEvents }
+  const strictSession = orderedSurfaceSession('recorded-strict-mode', strictEvents)
   const strictWriter = fixture({
     looseTopLevelRedeclarations: false,
     looseTopLevelFunctionClassRedeclarations: false,
@@ -872,15 +877,15 @@ return { shapeExisting, shapeFresh, shapeHead, shapeTail, shapeRest }
 
 test('replays split redeclarations from the session log', async (t) => {
   const first = fixture()
-  const session = { id: 'split-replay', events: [] }
+  const session = orderedSurfaceSession('split-replay')
   const code = `
 const { existingPatternValue, newPatternValue } = { existingPatternValue: 2, newPatternValue: 3 }
 return newPatternValue
 `
   const setupCode = 'const existingPatternValue = 1'
-  const observed = await first.runDurable('split-replay', setupCode, {}, { session })
+  const observed = await first.runDurable('split-replay', setupCode, {}, { session, recordSession: 'deferred-result', callId: 'split-replay-declare' })
   appendRunCodeEvents(session.events, 'split-replay-declare', setupCode, observed)
-  const observedSplit = await first.runDurable('split-replay', code, {}, { session })
+  const observedSplit = await first.runDurable('split-replay', code, {}, { session, recordSession: 'deferred-result', callId: 'split-replay-mixed' })
   assert.equal(observedSplit.value, 3)
   appendRunCodeEvents(session.events, 'split-replay-mixed', code, observedSplit)
   first.dispose()
@@ -1003,14 +1008,14 @@ var existingVar = 3
 })
 
 test('keeps loose REPL convenience out of strict cells and preserves session replay', async (t) => {
-  const session = { id: 'repl-pattern-replay', events: [] }
+  const session = orderedSurfaceSession('repl-pattern-replay')
   const writer = fixture()
   t.after(() => writer.dispose())
   const setupCode = 'const replayExisting = 1'
-  const setup = await writer.runDurable(session.id, setupCode, {}, { session })
+  const setup = await writer.runDurable(session.id, setupCode, {}, { session, recordSession: 'deferred-result', callId: 'replay-setup' })
   appendRunCodeEvents(session.events, 'replay-setup', setupCode, setup)
   const mixedCode = 'const { replayExisting, replayFresh = 2 } = { replayExisting: 4 }\nreturn replayFresh'
-  const mixed = await writer.runDurable(session.id, mixedCode, {}, { session })
+  const mixed = await writer.runDurable(session.id, mixedCode, {}, { session, recordSession: 'deferred-result', callId: 'replay-mixed' })
   appendRunCodeEvents(session.events, 'replay-mixed', mixedCode, mixed)
   assert.deepEqual(mixed.value, 2)
   await writer.dispose()
@@ -1534,11 +1539,11 @@ test('inherits durability classification for rewritten imports', async (t) => {
   const state = fixture()
   t.after(() => state.dispose())
   const durable = await state.runDurable(
-    'import-durable', "import { inspect } from 'node:util'\nreturn typeof inspect", {}, { session: { events: [] } },
+    'import-durable', "import { inspect } from 'node:util'\nreturn typeof inspect",
   )
   assert.equal(durable.meta.dshPtcPlus.status, 'durable')
   const volatile = await state.runDurable(
-    'import-durable', "import { basename } from 'node:path'\nreturn basename('/a/b')", {}, { session: { events: [] } },
+    'import-durable', "import { basename } from 'node:path'\nreturn basename('/a/b')",
   )
   assert.equal(volatile.meta.dshPtcPlus.status, 'volatile')
   assert.match(volatile.meta.dshPtcPlus.volatileReason, /module node:path/)
@@ -1549,11 +1554,11 @@ test('inherits durability classification for rewritten imports', async (t) => {
 })
 
 test('replays durable cells with their recorded rewrite policy after config changes', async (t) => {
-  const session = { id: 'rewrite-policy-replay', events: [] }
+  const session = orderedSurfaceSession('rewrite-policy-replay')
   const writer = fixture()
   t.after(() => writer.dispose())
   const code = "import { inspect } from 'node:util'\nconst persistedInspectType = typeof inspect"
-  const written = await writer.runDurable(session.id, code, {}, { session })
+  const written = await writer.runDurable(session.id, code, {}, { session, recordSession: 'deferred-result', callId: 'rewrite-policy-cell' })
   assert.equal(written.error, undefined)
   assert.equal(written.meta.dshPtcPlus.status, 'durable')
   assert.equal(written.meta.dshPtcPlus.rewritePolicy.autoRewriteImports, true)
@@ -1567,10 +1572,10 @@ test('replays durable cells with their recorded rewrite policy after config chan
 })
 
 test('rebuilds imported aliases for later cells during cold replay', async (t) => {
-  const session = { id: 'import-alias-replay', events: [] }
+  const session = orderedSurfaceSession('import-alias-replay')
   const writer = fixture()
   const code = "import { inspect as render } from 'node:util'"
-  const written = await writer.runDurable(session.id, code, {}, { session })
+  const written = await writer.runDurable(session.id, code, {}, { session, recordSession: 'deferred-result', callId: 'import-alias-cell' })
   assert.equal(written.meta.dshPtcPlus.status, 'durable')
   appendRunCodeEvents(session.events, 'import-alias-cell', code, written)
   await writer.dispose()
@@ -1687,16 +1692,16 @@ test('updates directly named default declarations through one policy-independent
 
 test('cold-replays directly named default updates and their older live readers', async (t) => {
   const events = []
-  const session = { id: 'direct-default-replay', events }
+  const session = orderedSurfaceSession('direct-default-replay', events)
   const writer = fixture({
     looseTopLevelRedeclarations: false,
     looseTopLevelFunctionClassRedeclarations: false,
   })
   const setupSource = 'export default function initialDefault() { return 1 }\nconst readDefault = () => __default'
-  const setup = await writer.runDurable(session.id, setupSource, {}, { session })
+  const setup = await writer.runDurable(session.id, setupSource, {}, { session, recordSession: 'deferred-result', callId: 'direct-default-setup' })
   appendRunCodeEvents(events, 'direct-default-setup', setupSource, setup)
   const replacementSource = 'export default function __default(value) { return value > 1 ? value * __default(value - 1) : 1 }'
-  const replacement = await writer.runDurable(session.id, replacementSource, {}, { session })
+  const replacement = await writer.runDurable(session.id, replacementSource, {}, { session, recordSession: 'deferred-result', callId: 'direct-default-replacement' })
   appendRunCodeEvents(events, 'direct-default-replacement', replacementSource, replacement)
   await writer.dispose()
 
@@ -1741,10 +1746,10 @@ test('does not publish directly named default classes before their slot commits'
   assert.equal((await failedState.run('direct-default-class-failure', 'return typeof __default')).value, 'undefined')
 
   const events = []
-  const session = { id: 'direct-default-early-replay', events }
+  const session = orderedSurfaceSession('direct-default-early-replay', events)
   const writer = fixture()
   const earlySource = "return 'early'\nexport default class __default { static value = 1 }"
-  const early = await writer.runDurable(session.id, earlySource, {}, { session })
+  const early = await writer.runDurable(session.id, earlySource, {}, { session, recordSession: 'deferred-result', callId: 'direct-default-early' })
   assert.equal(early.value, 'early')
   assert.equal(
     early.meta.dshPtcPlusBindings.memory.entries.some(entry => entry.name === '__default'),
@@ -1853,15 +1858,15 @@ test('keeps named default replacement independent from variable replacement', as
 
 test('commits fresh named default aliases at their execution position across replay', async (t) => {
   const events = []
-  const session = { id: 'fresh-default-commit-replay', events }
+  const session = orderedSurfaceSession('fresh-default-commit-replay', events)
   const writer = fixture({ looseTopLevelFunctionClassRedeclarations: true })
   const original = 'export default function OriginalDefault() { return 1 }'
-  const first = await writer.runDurable(session.id, original, {}, { session })
+  const first = await writer.runDurable(session.id, original, {}, { session, recordSession: 'deferred-result', callId: 'fresh-default-first' })
   appendRunCodeEvents(events, 'fresh-default-first', original, first)
 
   const fresh = 'export default function FreshDefault() { return 2 }'
   const earlySource = `return 'early'\n${fresh}`
-  const early = await writer.runDurable(session.id, earlySource, {}, { session })
+  const early = await writer.runDurable(session.id, earlySource, {}, { session, recordSession: 'deferred-result', callId: 'fresh-default-early' })
   appendRunCodeEvents(events, 'fresh-default-early', earlySource, early)
   assert.equal(early.value, 'early')
   const earlyEntries = early.meta.dshPtcPlusBindings.memory.entries

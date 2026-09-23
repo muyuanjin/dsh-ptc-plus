@@ -8,7 +8,7 @@ import { SessionRuntime } from '../internal/session-runtime.js'
 import { UserBindingConsole } from '../internal/user-binding-console.js'
 import { createUserBindingsSnapshot } from '../internal/user-bindings.js'
 import { decodeValue } from '../internal/value-wire.js'
-import { fixture } from './plugin-fixture.js'
+import { fixture, orderedSurfaceSession, runRecordedCell } from './plugin-fixture.js'
 
 const source = `import {readFile} from 'node:fs'; export {readFile};
   export const effects=[];effects.push('once');export function override(next){readFile=next}`
@@ -42,8 +42,12 @@ test('actual root static, dynamic, eval and provided require entries share live 
   const cwd = await files(t)
   const runtime = new SessionRuntime({ bindingUpdates: 'stateful', durableReplay: false })
   t.after(() => runtime.dispose())
-  const session = { id: 'managed-root', session: { header: { cwd } } }
-  const run = program => runtime.run(session, { program, bindings: [] })
+  const session = orderedSurfaceSession('managed-root')
+  session.header = { cwd }
+  let call = 0
+  const run = program => runRecordedCell(runtime, session, `managed-root-${++call}`, {
+    program, bindings: [],
+  })
   const cold = await run(`const cold=new require('./value.mjs');return [typeof cold.readFile,cold.effects.length]`)
   assert.deepEqual(cold.value, ['function',1], cold.error?.message)
   const first = await run(`import * as ns from './chain.mjs';import './effect.mjs';

@@ -45,7 +45,7 @@ export function scenarioMarkdown(report) {
     `- events: ${report.eventCount}`,
     `- logical model requests: ${report.modelRequests}; header epochs: ${report.headerEpochs}; header changes: ${report.headerChanges}; history replacements: ${report.historyReplacements}`,
     `- PTC direct calls/results: ${report.toolCallCount}/${report.toolResultCount}`,
-    `- model tokens: input ${report.usage.inputTokens}, cache read ${report.usage.cacheReadTokens}, cache write ${report.usage.cacheWriteTokens}, output ${report.usage.outputTokens}`,
+    report.usageComplete === false ? '- model tokens: unknown (incomplete accounting)' : `- model tokens: input ${report.usage.inputTokens}, cache read ${report.usage.cacheReadTokens}, cache write ${report.usage.cacheWriteTokens}, output ${report.usage.outputTokens}`,
     `- final answer: ${report.finalAnswerChars} chars`,
     ...(report.programWork?.observations ?? []).map(item =>
       `- workload ${item.global}.${item.member}: ${item.calls} calls; ${item.repeatedArgumentCalls} repeated-argument calls`),
@@ -87,7 +87,7 @@ export function summaryMarkdown(summary) {
     `- permission mode: ${summary.runtime.permissionMode}`,
     `- concurrency: ${summary.runtime.concurrency}`,
     `- scenarios: ${summary.scenarios.length}`,
-    `- model tokens: input ${summary.usage.inputTokens}, cache read ${summary.usage.cacheReadTokens}, cache write ${summary.usage.cacheWriteTokens}, output ${summary.usage.outputTokens}`,
+    summary.usageComplete === false ? '- model tokens: unknown (incomplete accounting)' : `- model tokens: input ${summary.usage.inputTokens}, cache read ${summary.usage.cacheReadTokens}, cache write ${summary.usage.cacheWriteTokens}, output ${summary.usage.outputTokens}`,
     '',
     '| Scenario | Process | Cells | Journal | Failures |',
     '| --- | ---: | ---: | --- | ---: |',

@@ -95,7 +95,7 @@ SessionRuntime 创建 kernel 时完全忽略历史 nodes、head、checkpoints �
 
 journal、diagnostic、source、cause、call、operation、completion 和 completion error 都使用封闭字段集合；未知、symbol 或非枚举自有字段会使 journal 无效。capability-call `args`/`value` 与 return completion `value` 都是封闭、规范化的 `ptc-value-graph/v1` envelope。诊断结构、source frame 依赖和稳定代码见[架构说明](architecture.md#journal-与恢复)。
 
-当前实现只写入 `version: 10` schema。v10 必须携带 `languageSemantics` 与匹配的 `moduleTransform`。v1–v8 固定迁移为 `legacy-v1` 和 legacy transform；v9 保留其语言字段，并按该版本发布时的映射补入 transform：`stateful-v1` 使用 `stateful-module-v1`，`protected-v1` 使用 `protected-module-v1`，`legacy-v1` 使用 legacy transform。恢复不能因当前配置或新 lowering 改变隐藏状态（[ADR 0025](adr/0025-use-versioned-logical-binding-identities.md)）。v1-v9 作为封闭 predecessor 输入规范化为 v10：v1-v3 的旧 `bindingMode` 精确映射到 `bindingPolicy.variableRedeclarations`，而 `functionClassRedeclarations` 固定为 `false`，因为旧 pipeline 不具备该语义；`moduleSemantics.defaultExportBinding` 固定迁移为 `legacy-variable`，使 loose 历史保留旧的可写生成 binding、strict 历史保留旧的 const 行为；v1-v6 的 `moduleSemantics.importExpressionBoundary` 固定迁移为 `legacy`，使历史写入沿用其记录时的语句 lowering，v7 保留自身记录的边界代际。v1 仍使用三个 rewrite 开关全关的历史默认值，并只在 session log 唯一证明 call identity 时迁移字符串 confirmation；v2/v3 保留自身 `rewritePolicy`。v4/v5 保留已有 binding/rewrite/module 语义；v6 与 v7 保留其记录的 `userBindingsReusePolicy`。v1-v4 的 `userBindingsFingerprint` 固定为 `null`，v5 及之后的代际保留自身记录的快照指纹；v1-v5 的 `userBindingsReusePolicy` 固定为 `fingerprint-v1`。v1-v7 的 `userBindingsShadowPolicy` 固定迁移为 `whole-entry`，`userBindingNames` 固定为 `null`，因此历史 node 继续按整条条目退出，只有 v8 起的 cell 使用 `per-name` 名称证据。无法表示为非负 event sequence 的 confirmation 必须形成 unknown boundary 并触发状态收缩。包括 `languageSemantics`、`moduleTransform`、`bindingPolicy`、`rewritePolicy`、`moduleSemantics`、`userBindingsFingerprint`、`userBindingsReusePolicy`、`userBindingsShadowPolicy`、`userBindingNames`、`diagnostics` 在内的当前必需字段缺失或策略未知时 journal 必须失效，否则会削弱最终持久值与 tentative journal 的严格一致性确认；失效 journal 不证明旧 binding，但也不单独成为后续当前调用的 availability gate。profile 后续切换任一 binding 或 AST rewrite 开关只影响新 cell，历史 node 始终按自身记录的 policy、module semantics 与 transform 重放。新旧全局绑定复用策略与覆盖粒度可共存于同一历史，重复规范化不能把旧策略或旧粒度升级为当前值；没有返回值的 completion 不能证明模块内部状态相等。
+当前实现只写入 `version: 10` schema。v10 必须携带 `languageSemantics` 与匹配的 `moduleTransform`。v1–v8 固定迁移为 `legacy-v1` 和 legacy transform；v9 保留其语言字段，并按该版本发布时的映射补入 transform：`stateful-v1` 使用 `stateful-module-v1`，`protected-v1` 使用 `protected-module-v1`，`legacy-v1` 使用 legacy transform。当前代际新提交的源码可把 `import.meta` lowering 为记录 session module base 的 cell-local metadata；`legacy-v1` 仍使用冻结 parser 并保留历史拒绝，且此前不可能成功记录的 MetaProperty 不能被恢复时重新解释。恢复不能因当前配置或新 lowering 改变隐藏状态（[ADR 0025](adr/0025-use-versioned-logical-binding-identities.md)）。v1-v9 作为封闭 predecessor 输入规范化为 v10：v1-v3 的旧 `bindingMode` 精确映射到 `bindingPolicy.variableRedeclarations`，而 `functionClassRedeclarations` 固定为 `false`，因为旧 pipeline 不具备该语义；`moduleSemantics.defaultExportBinding` 固定迁移为 `legacy-variable`，使 loose 历史保留旧的可写生成 binding、strict 历史保留旧的 const 行为；v1-v6 的 `moduleSemantics.importExpressionBoundary` 固定迁移为 `legacy`，使历史写入沿用其记录时的语句 lowering，v7 保留自身记录的边界代际。v1 仍使用三个 rewrite 开关全关的历史默认值，并只在 session log 唯一证明 call identity 时迁移字符串 confirmation；v2/v3 保留自身 `rewritePolicy`。v4/v5 保留已有 binding/rewrite/module 语义；v6 与 v7 保留其记录的 `userBindingsReusePolicy`。v1-v4 的 `userBindingsFingerprint` 固定为 `null`，v5 及之后的代际保留自身记录的快照指纹；v1-v5 的 `userBindingsReusePolicy` 固定为 `fingerprint-v1`。v1-v7 的 `userBindingsShadowPolicy` 固定迁移为 `whole-entry`，`userBindingNames` 固定为 `null`，因此历史 node 继续按整条条目退出，只有 v8 起的 cell 使用 `per-name` 名称证据。无法表示为非负 event sequence 的 confirmation 必须形成 unknown boundary 并触发状态收缩。包括 `languageSemantics`、`moduleTransform`、`bindingPolicy`、`rewritePolicy`、`moduleSemantics`、`userBindingsFingerprint`、`userBindingsReusePolicy`、`userBindingsShadowPolicy`、`userBindingNames`、`diagnostics` 在内的当前必需字段缺失或策略未知时 journal 必须失效，否则会削弱最终持久值与 tentative journal 的严格一致性确认；失效 journal 不证明旧 binding，但也不单独成为后续当前调用的 availability gate。profile 后续切换任一 binding 或 AST rewrite 开关只影响新 cell，历史 node 始终按自身记录的 policy、module semantics 与 transform 重放。新旧全局绑定复用策略与覆盖粒度可共存于同一历史，重复规范化不能把旧策略或旧粒度升级为当前值；没有返回值的 completion 不能证明模块内部状态相等。
 
 ## Capability Call Transcript
 
@@ -161,7 +161,7 @@ pre-execute -> tools/execute -> post-execute
 
 恢复以当前请求需要的 head 为目标，沿可证明 parent 关系向更早 frontier 收缩；实现可以前向折叠 event 建图，但不得把 unknown boundary 两侧的日志位置当作状态依赖证据。恢复入口先把当前 call id 解析为持久化 `tool/call.seq`，再把该序号作为 live boundary 传入折叠器；对应的在途 call event 不属于历史。每个 `edit_run_code` 在其 call event 处，根据此前已经结算的调用确定并固定可编辑目标；之后出现的 result 只影响随后发起的 edit：
 
-1. 用 `sourceEventSeqs[0]` 关联 `tool/result` 与 `tool/call`；
+1. 用 `sourceEventSeqs[0]` 关联 `tool/result` 与 `tool/call`；若 result 同时带有 `message.source.callId`，两种身份必须指向同一个 call，否则该 call 建立 untrusted boundary。每个 ordinary result 在 journal 解析前闭合一次 call settlement；同一 call 的第二个 ordinary result 被拒绝。经过结构校验的 prune replacement 是唯一不占用第二次 ordinary settlement 的替代表示；
 2. 预收集 valid journal 中的 `confirms`；
 3. 排除与 live boundary 序号相同的在途 call，并让已确认 no-op 的无 journal call 不改变状态；
 4. 缺失源码、缺失/损坏 journal 或无法验证的 call/result/prune 关联建立 untrusted boundary，不作为旧 binding 的证据；
@@ -180,11 +180,11 @@ pre-execute -> tools/execute -> post-execute
 
 ## 模型可知状态
 
-DSH session 同时提供两个不同投影：append-only event log 保存审计、journal 与 replay evidence；ordered surface/derived request history 是模型请求实际可见的消息历史。PTC Plus 的默认状态 frontier 是“结构可重建”和“模型可知”的交集，不能用 raw log 的存在替代 surface evidence。模型可知只采用外部可验证事实，不猜模型内部记忆：精确声明源码仍在当前 request surface，或插件/宿主通过有界结构把准确 binding identity 与 provenance 放入模型上下文。
+DSH session 同时提供两个不同投影：append-only event log 保存审计、journal 与 replay evidence；ordered surface/derived request history 是模型请求实际可见的消息历史。PTC Plus 的默认状态 frontier 是“结构可重建”和“模型可知”的交集，不能用 raw log 的存在替代 surface evidence。模型可知只采用外部可验证事实，不猜模型内部记忆：可见 assistant tool-call block 必须以相同 call id、tool name 和原始 JSON arguments 精确对应 raw dispatch，或插件/宿主通过有界结构把准确 binding identity 与 provenance 放入模型上下文。只匹配 call id、可见 `tool/result`、result source relation 或 raw log 不能证明声明源码可见。若 ordered surface 缺失、格式错误或不可读取，就没有历史 executable provenance 可证明，恢复必须收缩到空 frontier；这只否定历史 binding 证据，当前有效 cell 仍从空 REPL 正常执行。
 
 surface replacement 是否删除状态取决于模型失去了什么，而不取决于是否出现 `compaction/prune` 这个名字。只替换过长 tool result、仍保留 assistant `run_code`/`edit_run_code` 调用及源码时，模型仍知道该 cell，可继续使用其 journal。若 replacement 或 summary 遮蔽了声明 provenance，raw journal 即使完整也不能让 binding 默认继续存在；自然语言 summary 不解析为依赖或 binding 证明。当前没有模型可见的完整 binding inventory，因此缺少精确 provenance 时按 cell 与依赖后缀收缩。
 
-该规则也约束 live worker。runtime 在下一 cell 前观察 DSH public surface generation；发生 replacement 后，若现存 binding 超出模型可知 frontier，先重置 worker、重建交集 frontier，再执行当前 cell。Client header card 的 `dshPtcPlusBindings` 只帮助用户检查，不进入模型上下文，也不延长 binding 生命周期；相同 contraction 应让 UI inventory 进入不可确认状态。未来若新增模型可见状态投影，它必须由用户、模型或明确配置选择，有固定 schema、硬预算、append-only runtime-context 证据和明确清除条件，不能仅为延长隐藏状态而默认注入，也不能污染稳定 prompt prefix。
+该规则也约束 live worker。structured host session 的 runtime 在每个后续 cell 前都重新读取 DSH public ordered surface，并验证所有现存 live call 的精确 assistant provenance；`replaceGeneration` 没有变化不构成继续复用的证明。generation 改变、缺失或不可读取也进入同一验证。若现存 binding 超出模型可知 frontier，先重置 worker、重建交集 frontier，再执行当前 cell。只有不带 host session 的内部 primitive session id 明确使用 live-only 连续性。Client header card 的 `dshPtcPlusBindings` 只帮助用户检查，不进入模型上下文，也不延长 binding 生命周期；相同 contraction 应让 UI inventory 进入不可确认状态。未来若新增模型可见状态投影，它必须由用户、模型或明确配置选择，有固定 schema、硬预算、append-only runtime-context 证据和明确清除条件，不能仅为延长隐藏状态而默认注入，也不能污染稳定 prompt prefix。
 
 ## Completion 校验
 
@@ -226,7 +226,7 @@ type StateOperation =
 
 静态分类器理解 top-level、block、function、catch 和 loop binding。它只把实际未绑定的 ambient reference 作为降级候选；属性键和局部同名变量无影响。
 
-运行时对以下访问标记 volatile。归因依据是 worker 当前 active execution，不使用异步回调继承的 `AsyncLocalStorage` store。active execution 从开始求值持续到 capability calls 结算、返回值 PTC value graph 编码或异常归一化全部完成；这些阶段的 getter、Proxy 或字符串转换仍可能执行用户代码。最终 durability 必须在转换后采样，纯 wire message 构造完成后才在最外层 `finally` 清除 active execution。只有此后发生的访问才暂存 reason 并使下一 cell volatile：
+运行时对以下访问标记 volatile。durability 归因依据是 worker 当前 active execution，不使用异步回调继承的 `AsyncLocalStorage` store。active execution 从开始求值持续到 capability calls 结算、返回值 PTC value graph 编码或异常归一化全部完成；这些阶段的 getter、Proxy 或字符串转换仍可能执行用户代码。最终 durability 必须在转换后采样，纯 wire message 构造完成后才在最外层 `finally` 清除 active execution。只有此后发生的访问才暂存 reason 并使下一 cell volatile：
 
 - Date、performance、fetch、WebSocket、crypto、Intl；
 - setTimeout、setInterval、setImmediate；
@@ -234,12 +234,12 @@ type StateOperation =
 - `Math.random()`；
 - durable allowlist 之外的 dynamic import，包括 `node:path`。
 
-普通 `Math` intrinsic 保持完整。`process.stdout/stderr.write` 被捕获为 cell log，不因输出本身降级。
+普通 `Math` intrinsic 保持完整。`console` 与 `process.stdout/stderr.write` 使用私有 `AsyncLocalStorage` 保留其调度 cell 的日志归属；该 cell 关闭后的结构化输出产生诊断并重置 worker，不静默丢弃。直接 fd 1/2 与继承的 child stdio 没有调度身份，Host 以每轮 stdout/stderr start/end fence 的物理到达窗口捕获；窗口内字节计入该轮预算。窗口外第一笔字节立即关闭 capture 并触发重置；若当时没有 active cell，Host 保留一次失败并让下一次执行显式失败，而不是继续无界 drain。stdout、stderr 和结构化日志各自保持顺序，合并结果不声称跨通道全序。该日志规则与上段 durability 归因分别拥有输出交付和恢复分类，不能互相替代。
 
 worker 不继承 Electron 的工作目录语义。插件通过现有 `tools/execute` context 读取不可变的 `agent.session.header.cwd` 并注入 session worker；`process.cwd()` 返回该值且保持 durable。header 未记录 cwd 时才回退宿主值并在运行时标记 volatile。
 同一 session 中，`child_process` 的 `exec`、`execFile`、`fork`、`spawn` 及同步变体在未提供 `options.cwd` 时以该 cwd 启动；显式 cwd 保持调用方选择。worker 保留 Node、package manager 和 shell 所需的宿主环境变量，仅将 `TEMP`、`TMP` 和 `TMPDIR` 覆盖为该 session 的 scratch 目录。`node:fs`、`node:fs/promises` 和 glob 的相对入口统一以 session cwd 解析，绝对路径与显式路径选项保持原生语义。
 
-直接访问 `worker_threads` 或 `cluster` 的常见 import/require 形式会被拒绝。直接 `process`、`require`、dynamic import 与 static import 取得的 `process.exit/abort/kill/chdir` 共享同一组拒绝函数，因为这些操作暴露或破坏 worker lifecycle control。该 gate 只维护 REPL 生命周期，不是恶意
+直接访问 `worker_threads` 或 `cluster` 的 static import、dynamic import 和未遮蔽 `require` 会在 cell 任何语句执行前的 preflight 阶段被拒绝，因此外围 `try`/`catch` 不能捕获该拒绝。直接 `process`、`require`、dynamic import 与 static import 取得的 `process.exit/abort/kill/chdir` 共享同一组拒绝函数，因为这些操作暴露或破坏 worker lifecycle control。该 gate 只维护 REPL 生命周期，不是恶意
 代码安全沙箱；native tool 的安全依赖 DSH policy，ambient Node 的安全依赖进程隔离和操作系统权限。
 
 ## 恢复通知

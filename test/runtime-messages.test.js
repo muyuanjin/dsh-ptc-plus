@@ -25,6 +25,48 @@ const user = text => createUserMessage({ source: { kind: 'user' }, content: [{ t
 const viewOf = session => projectSessionLog({ session })
 const append = (session, message) => session.append('user/message', message, { surfaceOp: 'append' })
 
+const usesSequenceReplacement = (() => {
+  const session = Session.create('surface-replacement-schema-probe')
+  const first = append(session, user('probe'))
+  try {
+    session.append('user/message', user('replacement'), {
+      surfaceOp: { op: 'replace', startSeq: first.seq, endSeq: first.seq },
+      sourceEventSeqs: [first.seq],
+    })
+    return true
+  } catch {
+    return false
+  }
+})()
+const replaceSurface = (start, end) => ({
+  op: 'replace',
+  ...(usesSequenceReplacement ? { startSeq: start, endSeq: end } : { start, end }),
+})
+
+const usesHeaderSnapshots = (() => {
+  const session = Session.create('request-header-schema-probe')
+  try {
+    session.append('request/header', {
+      header: { config: { provider: 'fixture', model: 'fixture' } }, reason: 'initial',
+    })
+    return true
+  } catch {
+    return false
+  }
+})()
+const requestHeader = () => usesHeaderSnapshots
+  ? { header: { config: { provider: 'fixture', model: 'fixture' } }, reason: 'initial' }
+  : {}
+
+function hostRuntimeContextSections(message) {
+  const historical = systemPromptSnapshotSections(message)
+  if (historical !== undefined) return historical
+  const source = message?.source
+  if (source?.kind !== 'runtime-context' || source.form !== 'snapshot'
+    || !Array.isArray(source.sections)) return undefined
+  return source.sections
+}
+
 test('bounded message forms separate current state, notices, tasks, and malformed evidence', () => {
   const snapshot = runtimeStateMessage(state('current'))
   const notice = runtimeNoticeMessage(tip(1))
@@ -181,7 +223,7 @@ test('recovery snapshots never resend or withdraw a retained API catalog', () =>
   assert.deepEqual(deliver([]), [])
   const nodes = session.surface.nodes
   session.append('user/message', user('Summary'), {
-    surfaceOp: { op: 'replace', start: nodes[0], end: nodes.at(-1) }, sourceEventSeqs: nodes,
+    surfaceOp: replaceSurface(nodes[0], nodes.at(-1)), sourceEventSeqs: nodes,
   })
   assert.deepEqual(deliver([]).map(message => message.form), ['snapshot', 'catalog'])
   assert.deepEqual(deliver([]), [])
@@ -220,7 +262,7 @@ test('committed history deduplicates notices while public surface controls retai
   assert.deepEqual(projectRuntimeMessages(viewOf(session), []), [])
   const nodes = session.surface.nodes
   session.append('user/message', user('Compacted summary mentions old state.'), {
-    surfaceOp: { op: 'replace', start: nodes[0], end: nodes.at(-1) }, sourceEventSeqs: [...nodes],
+    surfaceOp: replaceSurface(nodes[0], nodes.at(-1)), sourceEventSeqs: [...nodes],
   })
   assert.equal(viewOf(session).ptcMessages.length, 4)
   assert.equal(viewOf(session).visibleRuntimeMessages.length, 0)
@@ -265,7 +307,7 @@ test('configured binding prompts reconstruct, reappear after compaction, and wit
   assert.ok(restored.deriveMessages()[0].content[0].text.includes('first task'))
   const nodes = restored.surface.nodes
   restored.append('user/message', user('Compacted task summary.'), {
-    surfaceOp: { op: 'replace', start: nodes[0], end: nodes.at(-1) }, sourceEventSeqs: [...nodes],
+    surfaceOp: replaceSurface(nodes[0], nodes.at(-1)), sourceEventSeqs: [...nodes],
   })
   const reaffirmed = projectRuntimeMessages(viewOf(restored), revised)
   assert.equal(reaffirmed.length, 1)
@@ -375,7 +417,7 @@ test('acceptance audits preserve independent ownership, notice identity, and sur
   append(session, runtimeNoticeMessage(tip(1)))
   const nodes = session.surface.nodes
   session.append('user/message', user('summary'), {
-    surfaceOp: { op: 'replace', start: nodes[0], end: nodes.at(-1) }, sourceEventSeqs: [...nodes],
+    surfaceOp: replaceSurface(nodes[0], nodes.at(-1)), sourceEventSeqs: [...nodes],
   })
   append(session, runtimeStateMessage(state('current')))
   append(session, runtimeStateMessage([]))
@@ -396,9 +438,9 @@ test('replacement audits use public order and notice audits retain historical id
   const first = append(session, runtimeStateMessage(state('first')))
   append(session, runtimeStateMessage(state('current')))
   session.append('user/message', runtimeStateMessage(state('replacement of first')), {
-    surfaceOp: { op: 'replace', start: first.seq, end: first.seq }, sourceEventSeqs: [first.seq],
+    surfaceOp: replaceSurface(first.seq, first.seq), sourceEventSeqs: [first.seq],
   })
-  session.append('request/header', {})
+  session.append('request/header', requestHeader())
   const config = { allowed: [...state('current'), tip(1)].map(item => ({ name: item.name, maxChars: 100 })) }
   const audited = auditRuntimeContexts(sessionEvents(session), config)
   assert.deepEqual(audited.failures, [])
@@ -528,23 +570,26 @@ test('real AgentLoop keeps PTC transitions independent and honors runtime suppre
   const host = await hostFixture(t)
   const messages = () => sessionEvents(host.agent.session).filter(event => event.type === 'user/message')
   const count = producer => messages().filter(event => event.data.source.plugin === producer).length
+  const hostContextCount = () => messages().filter(event => (
+    hostRuntimeContextSections(event.data) !== undefined
+  )).length
   host.setState(state('first'))
   await host.wake()
   assert.equal(host.calls.length, 1)
   assert.equal(count('ptc-plus'), 1)
-  assert.equal(count('@deepseek-ai/dsh-system-prompt'), 1)
+  assert.equal(hostContextCount(), 1)
   const prefix = JSON.stringify({ system: host.calls[0].system, tools: host.calls[0].tools })
   host.setState(state('second'))
   await host.wake()
   assert.equal(count('ptc-plus'), 2)
-  assert.equal(count('@deepseek-ai/dsh-system-prompt'), 1)
+  assert.equal(hostContextCount(), 1)
   host.setOther('different unrelated policy')
   await host.wake()
   assert.equal(count('ptc-plus'), 2)
-  assert.equal(count('@deepseek-ai/dsh-system-prompt'), 2)
+  assert.equal(hostContextCount(), 2)
   await host.wake()
   assert.equal(count('ptc-plus'), 2)
-  assert.equal(count('@deepseek-ai/dsh-system-prompt'), 2)
+  assert.equal(hostContextCount(), 2)
   const release = host.agent.ctx.systemPrompt.suppressRuntimeContext()
   host.setState(state('suppressed'))
   await host.wake()
@@ -611,7 +656,7 @@ test('real Host clearance leaves an explicitly scoped catalog valid across uncha
   }
 })
 
-test('real AgentLoop migrates an active historical aggregate section during unrelated replacement', { timeout: 15000 }, async t => {
+test('real AgentLoop preserves or migrates an active historical aggregate by Host replacement ownership', { timeout: 15000 }, async t => {
   const host = await hostFixture(t)
   append(host.agent.session, createUserMessage({
     source: { kind: 'plugin', plugin: '@deepseek-ai/dsh-system-prompt', form: 'snapshot', sections: state('active') },
@@ -619,11 +664,17 @@ test('real AgentLoop migrates an active historical aggregate section during unre
   }))
   host.setState(state('active'))
   await host.wake()
-  assert.equal(viewOf(host.agent.session).ptcMessages.length, 1)
-  assert.deepEqual(viewOf(host.agent.session).ptcMessages[0].sections, state('active'))
+  const usesIndependentHostContext = sessionEvents(host.agent.session).some(event => (
+    event.type === 'user/message' && event.data.source?.kind === 'runtime-context'
+  ))
+  assert.equal(viewOf(host.agent.session).ptcMessages.length, usesIndependentHostContext ? 0 : 1)
+  if (!usesIndependentHostContext) {
+    assert.deepEqual(viewOf(host.agent.session).ptcMessages[0].sections, state('active'))
+  }
   host.setOther('')
   await host.wake()
-  assert.equal(viewOf(host.agent.session).ptcMessages.length, 1)
+  assert.equal(viewOf(host.agent.session).ptcMessages.length, usesIndependentHostContext ? 0 : 1)
+  assert.deepEqual(viewOf(host.agent.session).visibleRuntimeMessages.at(-1).sections, state('active'))
 })
 
 test('includeRuntimeContext false suppresses independent PTC messages through the public witness', { timeout: 15000 }, async t => {

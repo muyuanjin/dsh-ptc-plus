@@ -8,7 +8,13 @@ import { Config } from '../index.js'
 import { RECOVERY_BOUNDARY_KEY, normalizeJournal } from '../internal/session-journal.js'
 import { SessionRuntime } from '../internal/session-runtime.js'
 import { decodeValue, encodeValue, renderValueWire } from '../internal/value-wire.js'
-import { JOURNAL_POLICY, appendOnlySession, appendRunCodeEvents, fixture } from './plugin-fixture.js'
+import {
+  JOURNAL_POLICY,
+  appendOnlySession,
+  appendRunCodeCall,
+  appendRunCodeEvents,
+  fixture,
+} from './plugin-fixture.js'
 import {
   hasSessionKernel,
   restartWorker,
@@ -16,18 +22,71 @@ import {
   workerOf,
 } from './runtime-observation.js'
 
+function appendVisibleToolCall(events, callId, name, args) {
+  const argumentsValue = JSON.stringify(args)
+  const assistantSeq = events.length
+  events.push({
+    seq: assistantSeq,
+    type: 'assistant/message',
+    data: { message: { content: [{ type: 'tool-call', id: callId, name, arguments: argumentsValue }] } },
+  })
+  const callSeq = events.length
+  events.push({
+    seq: callSeq,
+    type: 'tool/call',
+    data: { callId, name, arguments: argumentsValue },
+  })
+  return { assistantSeq, callSeq }
+}
+
+function appendToolResult(events, callId, callSeq, result) {
+  const seq = events.length
+  events.push({
+    seq,
+    type: 'tool/result',
+    sourceEventSeqs: [callSeq],
+    data: {
+      message: { source: { kind: 'tool', callId } },
+      ...(result.meta === undefined ? {} : { meta: result.meta }),
+    },
+  })
+  return seq
+}
+
+async function executeRecordedFixture(state, session, events, callId, program, functions = {}, options = {}) {
+  const call = appendVisibleToolCall(events, callId, 'run_code', {
+    code: program,
+    description: options.description ?? 'test cell',
+  })
+  const execution = await state.executeRun(session.id, program, functions, {
+    ...options,
+    session,
+    callId,
+  })
+  return { ...execution, ...call }
+}
+
 test('ambiguous historical call sequences persist a contraction across cold restarts', async t => {
   for (const prefix of [false, true]) {
     const events = []
-    const session = { id: `ambiguous-history-${prefix}`, events }
+    const session = appendOnlySession(`ambiguous-history-${prefix}`, events)
     const writer = fixture()
     t.after(() => writer.dispose())
-    const recorded = await writer.runDurable(session.id, 'const stable=1', {}, { session })
+    const recorded = await writer.runDurable(session.id, 'const stable=1', {}, {
+      session,
+      recordSession: false,
+    })
     if (prefix) appendRunCodeEvents(events, 'stable', 'const stable=1', recorded)
     await writer.dispose()
-    const ambiguousSeq = events.length
     appendRunCodeEvents(events, 'ambiguous-a', 'throw Error("unproved source A")', recorded)
-    events.push({ ...events[ambiguousSeq], data: { ...events[ambiguousSeq].data,
+    const ambiguousCall = events.find(event => (
+      event.type === 'tool/call' && event.data?.callId === 'ambiguous-a'
+    ))
+    const ambiguousSeq = ambiguousCall.seq
+    const stableCallSeq = events.find(event => (
+      event.type === 'tool/call' && event.data?.callId === 'stable'
+    ))?.seq ?? null
+    events.push({ ...ambiguousCall, data: { ...ambiguousCall.data,
       callId: 'ambiguous-b', arguments: JSON.stringify({ code: 'throw Error("unproved source B")' }) } })
     // Results associated by sequence or call identity must both remain unproved.
     events.push({ type: 'tool/result', seq: events.length, sourceEventSeqs: [ambiguousSeq],
@@ -37,16 +96,16 @@ test('ambiguous historical call sequences persist a contraction across cold rest
       t.after(() => runtime.dispose())
       const callId = `current-${round}`
       const program = round === 0 ? 'const continued=41;return continued' : 'return [continued,typeof stable]'
-      const callSeq = events.length
-      events.push({ type: 'tool/call', seq: callSeq, data: {
-        name: 'run_code', callId, arguments: JSON.stringify({ code: program, description: 'current' }),
-      } })
+      const { callSeq } = appendVisibleToolCall(events, callId, 'run_code', {
+        code: program,
+        description: 'current',
+      })
       const execution = await runtime.runTentative({ id: session.id, session, callId }, { program, bindings: [] })
       assert.equal(execution.result.error, undefined, execution.result.error?.message)
       assert.deepEqual(execution.result.value, round === 0 ? 41 : [41, prefix ? 'number' : 'undefined'])
       assert.equal(execution.result.logs.filter(log => log.includes('PTC-R002')).length, round === 0 ? 1 : 0)
       assert.deepEqual(execution.settlement.recoveryBoundaries, round === 0
-        ? [{ failedCallSeq: ambiguousSeq, frontierCallSeq: prefix ? 0 : null }] : undefined)
+        ? [{ failedCallSeq: ambiguousSeq, frontierCallSeq: stableCallSeq }] : undefined)
       const meta = { dshPtcPlus: normalizeJournal(execution.settlement.journal) }
       if (execution.settlement.recoveryBoundaries !== undefined) meta[RECOVERY_BOUNDARY_KEY] = execution.settlement.recoveryBoundaries
       events.push({ type: 'tool/result', seq: events.length, sourceEventSeqs: [callSeq], data: { meta } })
@@ -60,7 +119,10 @@ test('rejects replaced, corrupt, or extended persisted journals during confirmat
   const state = fixture()
   t.after(() => state.dispose())
 
-  const replaced = await state.runDurable('replaced-journal', 'const replacedJournalValue = 1', {}, {
+  const replacedEvents = []
+  const replacedSession = appendOnlySession('replaced-journal', replacedEvents)
+  const replaced = (await executeRecordedFixture(state, replacedSession, replacedEvents,
+    'replaced-first', 'const replacedJournalValue = 1', {}, {
     finalizeResult(result) {
       return {
         ...result,
@@ -77,23 +139,31 @@ test('rejects replaced, corrupt, or extended persisted journals during confirmat
         },
       }
     },
-  })
+    })).result
   assert.equal(replaced.meta.dshPtcPlus.status, 'noop')
-  const afterReplacement = await state.runDurable('replaced-journal', 'return replacedJournalValue')
+  const afterReplacement = (await executeRecordedFixture(state, replacedSession, replacedEvents,
+    'replaced-second', 'return replacedJournalValue')).result
   assert.equal(afterReplacement.value, 1)
   assert.equal(afterReplacement.meta.dshPtcPlus.status, 'volatile')
 
-  const corrupt = await state.runDurable('corrupt-journal', 'const corruptJournalValue = 2', {}, {
+  const corruptEvents = []
+  const corruptSession = appendOnlySession('corrupt-journal', corruptEvents)
+  const corrupt = (await executeRecordedFixture(state, corruptSession, corruptEvents,
+    'corrupt-first', 'const corruptJournalValue = 2', {}, {
     finalizeResult(result) {
       return { ...result, meta: { ...result.meta, dshPtcPlus: { version: 2 } } }
     },
-  })
-    assert.deepEqual(corrupt.meta.dshPtcPlus, { version: 2 })
-  const afterCorruption = await state.runDurable('corrupt-journal', 'return corruptJournalValue')
+    })).result
+  assert.deepEqual(corrupt.meta.dshPtcPlus, { version: 2 })
+  const afterCorruption = (await executeRecordedFixture(state, corruptSession, corruptEvents,
+    'corrupt-second', 'return corruptJournalValue')).result
   assert.equal(afterCorruption.value, 2)
   assert.equal(afterCorruption.meta.dshPtcPlus.status, 'volatile')
 
-  const extended = await state.runDurable('extended-journal', 'const extendedJournalValue = 3', {}, {
+  const extendedEvents = []
+  const extendedSession = appendOnlySession('extended-journal', extendedEvents)
+  const extended = (await executeRecordedFixture(state, extendedSession, extendedEvents,
+    'extended-first', 'const extendedJournalValue = 3', {}, {
     finalizeResult(result) {
       return {
         ...result,
@@ -103,14 +173,20 @@ test('rejects replaced, corrupt, or extended persisted journals during confirmat
         },
       }
     },
-  })
+    })).result
   assert.equal(extended.meta.dshPtcPlus.injected, true)
-  const afterExtension = await state.runDurable('extended-journal', 'return extendedJournalValue')
+  const afterExtension = (await executeRecordedFixture(state, extendedSession, extendedEvents,
+    'extended-second', 'return extendedJournalValue')).result
   assert.equal(afterExtension.value, 3)
   assert.equal(afterExtension.meta.dshPtcPlus.status, 'volatile')
 
-  const extendedDiagnostic = await state.runDurable(
-    'extended-diagnostic',
+  const diagnosticEvents = []
+  const diagnosticSession = appendOnlySession('extended-diagnostic', diagnosticEvents)
+  const extendedDiagnostic = (await executeRecordedFixture(
+    state,
+    diagnosticSession,
+    diagnosticEvents,
+    'diagnostic-first',
     'const diagnosticJournalValue = 4\nthrow new Error("expected failure")',
     {},
     {
@@ -127,15 +203,16 @@ test('rejects replaced, corrupt, or extended persisted journals during confirmat
         }
       },
     },
-  )
+  )).result
   assert.equal(extendedDiagnostic.meta.dshPtcPlus.diagnostics[0].injected, true)
-  const afterDiagnosticExtension = await state.runDurable('extended-diagnostic', 'return diagnosticJournalValue')
+  const afterDiagnosticExtension = (await executeRecordedFixture(state, diagnosticSession, diagnosticEvents,
+    'diagnostic-second', 'return diagnosticJournalValue')).result
   assert.equal(afterDiagnosticExtension.value, 4)
   assert.equal(afterDiagnosticExtension.meta.dshPtcPlus.status, 'volatile')
 })
 test('confirms pre-dispatch no-ops in the next durable journal', async (t) => {
   const events = []
-  const session = { id: 'session-confirm-noop', events }
+  const session = appendOnlySession('session-confirm-noop', events)
   const first = fixture()
   t.after(() => first.dispose())
 
@@ -166,16 +243,20 @@ test('confirms pre-dispatch no-ops in the next durable journal', async (t) => {
   events.push({ seq: 1, type: 'tool/result', sourceEventSeqs: [0], data: { meta: rejected.meta } })
 
   const durableCode = 'const acceptedBinding = 2'
-  const durable = await first.runDurable(session.id, durableCode, {}, { session })
+  const durable = await first.runDurable(session.id, durableCode, {}, { session, recordSession: 'deferred-result', callId: 'accepted-call' })
   assert.deepEqual(durable.meta.dshPtcPlus.confirms, [0])
   appendRunCodeEvents(events, 'accepted-call', durableCode, durable)
   await first.dispose()
 
   const restored = fixture()
   t.after(() => restored.dispose())
-  const result = await restored.run(session.id, `
-return { rejected: typeof rejectedBinding, acceptedBinding }
-`, {}, { session })
+  const inspectCode = 'return { rejected: typeof rejectedBinding, acceptedBinding }'
+  appendRunCodeCall(events, 'inspect-confirmed-noop', inspectCode, 'inspect confirmed no-op')
+  const result = await restored.run(session.id, inspectCode, {}, {
+    session,
+    callId: 'inspect-confirmed-noop',
+    description: 'inspect confirmed no-op',
+  })
   assert.deepEqual(result.value, { rejected: 'undefined', acceptedBinding: 2 })
   assert.deepEqual(result.logs, [])
 })
@@ -183,14 +264,14 @@ return { rejected: typeof rejectedBinding, acceptedBinding }
 test('reconstructs the live REPL from only session-log journal metadata', async (t) => {
   const events = []
   const first = fixture()
-  const session = { id: 'session-a', events }
+  const session = appendOnlySession('session-a', events)
   t.after(() => first.dispose())
 
   let originalCalls = 0
   const firstCode = 'const persistedValue = await tools.readValue({})'
   const firstResult = await first.runDurable('session-a', firstCode, {
     readValue: async () => { originalCalls++; return 40 },
-  }, { session })
+  }, { session, recordSession: 'deferred-result', callId: 'call-1' })
   assert.equal(originalCalls, 1)
   appendRunCodeEvents(events, 'call-1', firstCode, firstResult)
   await first.dispose()
@@ -211,16 +292,16 @@ test('reconstructs the live REPL from only session-log journal metadata', async 
 
 test('replays imports without consuming user bindings that resemble private namespaces', async (t) => {
   const events = []
-  const session = { id: 'import-private-replay', events }
+  const session = appendOnlySession('import-private-replay', events)
   const first = fixture()
   t.after(() => first.dispose())
 
   const userCode = 'const __dsh_ptc_import_namespace_0__ = 99'
-  const userResult = await first.runDurable(session.id, userCode, {}, { session })
+  const userResult = await first.runDurable(session.id, userCode, {}, { session, recordSession: 'deferred-result', callId: 'private-user-binding' })
   appendRunCodeEvents(events, 'private-user-binding', userCode, userResult)
 
   const importCode = "import { inspect } from 'node:util'; const inspectType = typeof inspect"
-  const importResult = await first.runDurable(session.id, importCode, {}, { session })
+  const importResult = await first.runDurable(session.id, importCode, {}, { session, recordSession: 'deferred-result', callId: 'private-import-binding' })
   assert.equal(importResult.meta.dshPtcPlus.status, 'durable')
   appendRunCodeEvents(events, 'private-import-binding', importCode, importResult)
   await first.dispose()
@@ -238,7 +319,7 @@ test('replays imports without consuming user bindings that resemble private name
 test('replays concurrent native tool calls in their recorded settlement order', async (t) => {
   const events = []
   const first = fixture()
-  const session = { id: 'session-race', events }
+  const session = appendOnlySession('session-race', events)
   t.after(() => first.dispose())
   const code = `
 const recordedWinner = await Promise.race([
@@ -249,7 +330,7 @@ const recordedWinner = await Promise.race([
   const result = await first.runDurable('session-race', code, {
     slow: async () => new Promise(resolve => setTimeout(() => resolve('slow'), 25)),
     fast: async () => 'fast',
-  }, { session })
+  }, { session, recordSession: 'deferred-result', callId: 'call-race' })
   appendRunCodeEvents(events, 'call-race', code, result)
   await first.dispose()
 
@@ -265,55 +346,63 @@ const recordedWinner = await Promise.race([
 })
 
 test('repl.state saves and restores a named branch without model-visible ids', async (t) => {
+  const events = []
+  const session = appendOnlySession('session-a', events)
   const state = fixture()
   t.after(() => state.dispose())
-  assert.deepEqual(await state.run('session-a', `
+  assert.deepEqual((await executeRecordedFixture(state, session, events, 'save-branch', `
 let branchValue = 1
 void await repl.state({ action: 'save', name: 'before-change' })
-`), { logs: [] })
-  assert.deepEqual(await state.run('session-a', `
+`)).raw, { logs: [] })
+  assert.deepEqual((await executeRecordedFixture(state, session, events, 'restore-branch', `
 branchValue = 2
 void await repl.state({ action: 'restore', name: 'before-change' })
-`), { logs: [] })
-  assert.deepEqual(await state.run('session-a', 'return branchValue'), { logs: [], value: 1 })
+`)).raw, { logs: [] })
+  assert.deepEqual((await executeRecordedFixture(state, session, events,
+    'inspect-branch', 'return branchValue')).raw, { logs: [], value: 1 })
 })
 
 test('drops a tentative save when top-level global input makes the cell volatile', async (t) => {
+  const events = []
+  const session = appendOnlySession('late-volatile-save', events)
   const state = fixture()
   t.after(() => state.dispose())
 
-  const result = await state.runDurable('late-volatile-save', `
+  const result = (await executeRecordedFixture(state, session, events, 'volatile-save', `
 const ambientRoot = this
 void await repl.state({ action: 'save', name: 'must-not-persist' })
 return ambientRoot['Math']['ran' + 'dom']()
-`)
+`)).result
   assert.equal(result.meta.dshPtcPlus.status, 'volatile')
   assert.equal(result.meta.dshPtcPlus.volatileReason, 'ambient globalThis')
   assert.deepEqual(result.meta.dshPtcPlus.operations, [])
-  assert.deepEqual(await state.run('late-volatile-save', `
+  assert.deepEqual((await executeRecordedFixture(state, session, events, 'list-after-volatile-save', `
 return await repl.state({ action: 'list' })
-`), {
+`)).raw, {
     logs: [],
     value: { names: [], mode: 'volatile', volatileReason: 'ambient globalThis' },
   })
 })
 
 test('can explicitly restore a durable state from a volatile suffix', async (t) => {
+  const events = []
+  const session = appendOnlySession('volatile-restore', events)
   const state = fixture()
   t.after(() => state.dispose())
-  await state.run('volatile-restore', `
+  await executeRecordedFixture(state, session, events, 'save-stable', `
 let restoredValue = 1
 void await repl.state({ action: 'save', name: 'stable' })
 `)
-  await state.run('volatile-restore', `
+  await executeRecordedFixture(state, session, events, 'create-volatile-suffix', `
 restoredValue = 2
 void Math.random()
 `)
-  const restored = await state.runDurable('volatile-restore', `
+  const restored = (await executeRecordedFixture(state, session, events, 'restore-stable', `
 void await repl.state({ action: 'restore', name: 'stable' })
-`)
+`)).result
   assert.equal(restored.meta.dshPtcPlus.status, 'volatile')
-  assert.deepEqual(await state.run('volatile-restore', 'return restoredValue'), {
+  assert.deepEqual((await executeRecordedFixture(state, session, events,
+    'inspect-restored', 'return restoredValue')).raw, {
     logs: [],
     value: 1,
   })
@@ -321,20 +410,20 @@ void await repl.state({ action: 'restore', name: 'stable' })
 
 test('restores the last durable head without a named checkpoint', async (t) => {
   const events = []
-  const session = { id: 'restore-durable-head', events }
+  const session = appendOnlySession('restore-durable-head', events)
   const first = fixture()
   t.after(() => first.dispose())
 
   const durableCode = 'let unnamedRestoreValue = 1'
-  const durable = await first.runDurable(session.id, durableCode, {}, { session })
+  const durable = await first.runDurable(session.id, durableCode, {}, { session, recordSession: 'deferred-result', callId: 'unnamed-durable' })
   appendRunCodeEvents(events, 'unnamed-durable', durableCode, durable)
 
   const volatileCode = 'unnamedRestoreValue = 2; void Math.random()'
-  const volatile = await first.runDurable(session.id, volatileCode, {}, { session })
+  const volatile = await first.runDurable(session.id, volatileCode, {}, { session, recordSession: 'deferred-result', callId: 'unnamed-volatile' })
   appendRunCodeEvents(events, 'unnamed-volatile', volatileCode, volatile)
 
   const restoreCode = 'return await repl.state({ action: "restore" })'
-  const restoredHead = await first.runDurable(session.id, restoreCode, {}, { session })
+  const restoredHead = await first.runDurable(session.id, restoreCode, {}, { session, recordSession: 'deferred-result', callId: 'unnamed-restore' })
   assert.deepEqual(restoredHead.value, { action: 'restore', restored: true })
   assert.deepEqual(restoredHead.meta.dshPtcPlus.operations, [{ action: 'restore' }])
   appendRunCodeEvents(events, 'unnamed-restore', restoreCode, restoredHead)
@@ -357,7 +446,7 @@ return { value: unnamedRestoreValue, state: await repl.state({ action: 'list' })
 
 test('named REPL branches survive transfer as session-log data alone', async (t) => {
   const events = []
-  const session = { id: 'session-branches', events }
+  const session = appendOnlySession('session-branches', events)
   const first = fixture()
   const cells = [
     `let durableBranch = 1; void await repl.state({ action: 'save', name: 'one' })`,
@@ -365,7 +454,7 @@ test('named REPL branches survive transfer as session-log data alone', async (t)
     `void await repl.state({ action: 'restore', name: 'one' })`,
   ]
   for (const [index, code] of cells.entries()) {
-    const result = await first.runDurable('session-branches', code, {}, { session })
+    const result = await first.runDurable('session-branches', code, {}, { session, recordSession: 'deferred-result', callId: `branch-${index}` })
     appendRunCodeEvents(events, `branch-${index}`, code, result)
   }
   await first.dispose()
@@ -387,7 +476,7 @@ void await repl.state({ action: 'restore', name: 'two' })
 
 test('restores one imported binding catalog before live and cold continuation', async (t) => {
   const events = []
-  const session = { id: 'import-catalog-restore', events }
+  const session = appendOnlySession('import-catalog-restore', events)
   const first = fixture()
   t.after(() => first.dispose())
   const imported = [
@@ -395,27 +484,39 @@ test('restores one imported binding catalog before live and cold continuation', 
     'const importedInspect = value => inspect(value)',
     "void await repl.state({ action: 'save', name: 'imported' })",
   ].join('\n')
-  const importedResult = await first.runDurable(session.id, imported, {}, { session })
-  appendRunCodeEvents(events, 'catalog-import', imported, importedResult)
+  const importedResult = await executeRecordedFixture(
+    first, session, events, 'catalog-import', imported,
+  )
+  assert.equal(importedResult.result.isError, false)
 
   const shadow = "const inspect = () => 'shadowed'"
-  const shadowResult = await first.runDurable(session.id, shadow, {}, { session })
-  appendRunCodeEvents(events, 'catalog-shadow', shadow, shadowResult)
-  assert.deepEqual(await first.run(session.id, 'return [inspect({ a: 1 }), importedInspect({ a: 1 })]'), {
+  const shadowResult = await executeRecordedFixture(
+    first, session, events, 'catalog-shadow', shadow,
+  )
+  assert.equal(shadowResult.result.isError, false)
+  const shadowed = await executeRecordedFixture(first, session, events, 'catalog-shadow-read',
+    'return [inspect({ a: 1 }), importedInspect({ a: 1 })]')
+  assert.deepEqual(shadowed.raw, {
     logs: [], value: ['shadowed', 'shadowed'],
   })
 
   const restore = "void await repl.state({ action: 'restore', name: 'imported' })"
-  const restoreResult = await first.runDurable(session.id, restore, {}, { session })
-  appendRunCodeEvents(events, 'catalog-restore', restore, restoreResult)
-  assert.deepEqual(await first.run(session.id, 'return [inspect({ a: 1 }), importedInspect({ a: 1 })]'), {
+  const restoreResult = await executeRecordedFixture(
+    first, session, events, 'catalog-restore', restore,
+  )
+  assert.equal(restoreResult.result.isError, false)
+  const restoredRead = await executeRecordedFixture(first, session, events, 'catalog-restored-read',
+    'return [inspect({ a: 1 }), importedInspect({ a: 1 })]')
+  assert.deepEqual(restoredRead.raw, {
     logs: [], value: ['{ a: 1 }', '{ a: 1 }'],
   })
   await first.dispose()
 
   const cold = fixture()
   t.after(() => cold.dispose())
-  assert.deepEqual(await cold.run(session.id, 'return [inspect({ a: 1 }), importedInspect({ a: 1 })]', {}, { session }), {
+  const coldRead = await executeRecordedFixture(cold, session, events, 'catalog-cold-read',
+    'return [inspect({ a: 1 }), importedInspect({ a: 1 })]')
+  assert.deepEqual(coldRead.raw, {
     logs: [], value: ['{ a: 1 }', '{ a: 1 }'],
   })
 })
@@ -443,17 +544,16 @@ test('contracts a broken replay node and continues the current request', async (
       },
     },
   })
+  const failedCallSeq = events.find(event => (
+    event.type === 'tool/call' && event.data?.callId === 'timed-out-history'
+  )).seq
 
-  const currentCallSeq = events.length
-  events.push({
-    seq: currentCallSeq,
-    type: 'tool/call',
-    data: {
-      callId: 'current-after-timeout',
-      name: 'run_code',
-      arguments: JSON.stringify({ code: 'return 1', description: 'current' }),
-    },
-  })
+  const { callSeq: currentCallSeq } = appendVisibleToolCall(
+    events,
+    'current-after-timeout',
+    'run_code',
+    { code: 'return 1', description: 'current' },
+  )
   const execution = await runtime.runTentative(
     { id: session.id, session, callId: 'current-after-timeout' },
     { program: 'return 1', bindings: [], signal: new AbortController().signal },
@@ -466,12 +566,12 @@ test('contracts a broken replay node and continues the current request', async (
     [RECOVERY_BOUNDARY_KEY]: execution.settlement.recoveryBoundaries,
   }
   events.push({
-    seq: currentCallSeq + 1,
+    seq: events.length,
     type: 'tool/result',
     sourceEventSeqs: [currentCallSeq],
     data: { meta: resultMeta },
   })
-  assert.deepEqual(resultMeta[RECOVERY_BOUNDARY_KEY], [{ failedCallSeq: 0, frontierCallSeq: null }])
+  assert.deepEqual(resultMeta[RECOVERY_BOUNDARY_KEY], [{ failedCallSeq, frontierCallSeq: null }])
 })
 
 test('contracts a live derived edit node by its persisted outer call sequence', async (t) => {
@@ -482,14 +582,23 @@ test('contracts a live derived edit node by its persisted outer call sequence', 
 
   const executeConfirmed = async (callId, program, options = {}) => {
     const name = options.name ?? 'run_code'
+    const argumentsValue = JSON.stringify(name === 'run_code'
+      ? { code: program, description: 'test cell' }
+      : { edits: [{ old_string: options.targetSource, new_string: program }] })
+    session.append('assistant/message', {
+      turn: 0,
+      step: 0,
+      message: {
+        role: 'assistant',
+        content: [{ type: 'tool-call', id: callId, name, arguments: argumentsValue }],
+      },
+    })
     const call = session.append('tool/call', {
       turn: 0,
       step: 0,
       callId,
       name,
-      arguments: JSON.stringify(name === 'run_code'
-        ? { code: program, description: 'test cell' }
-        : { edits: [{ old_string: options.targetSource, new_string: program }] }),
+      arguments: argumentsValue,
     })
     const context = {
       id: session.id,
@@ -510,6 +619,7 @@ test('contracts a live derived edit node by its persisted outer call sequence', 
       time: events.length,
       sourceEventSeqs: [call.seq],
       data: {
+        message: { source: { kind: 'tool', callId } },
         meta: {
           dshPtcPlus: normalizeJournal(execution.settlement.journal),
           ...(execution.settlement.recoveryBoundaries === undefined ? {} : {
@@ -571,12 +681,24 @@ return { stableHead, failedType: typeof failedHead, freshHead }`,
 
   const restarted = new SessionRuntime({ computeMs: 5_000, maxWallMs: 20_000 })
   t.after(() => restarted.dispose())
+  const inspectArguments = JSON.stringify({
+    code: 'return [stableHead, typeof failedHead, freshHead]',
+    description: 'test cell',
+  })
+  session.append('assistant/message', {
+    turn: 0,
+    step: 1,
+    message: {
+      role: 'assistant',
+      content: [{ type: 'tool-call', id: 'live-inspect', name: 'run_code', arguments: inspectArguments }],
+    },
+  })
   const inspectCall = session.append('tool/call', {
     turn: 0,
     step: 1,
     callId: 'live-inspect',
     name: 'run_code',
-    arguments: JSON.stringify({ code: 'return [stableHead, typeof failedHead, freshHead]', description: 'test cell' }),
+    arguments: inspectArguments,
   })
   const inspected = await restarted.run(
     { id: session.id, session, callId: inspectCall.data.callId },
@@ -714,24 +836,192 @@ test('continues the current cell after an unprovable historical result', async (
   assert.equal(execution.error, undefined)
 })
 
-test('keeps availability when the optional session surface is unavailable', async (t) => {
+test('runs the current cell from an empty frontier when the session surface is unavailable or malformed', async (t) => {
+  for (const [label, installSurface] of [
+    ['unavailable', (session) => Object.defineProperty(session, 'surface', {
+      get() { throw new Error('surface unavailable') },
+    })],
+    ['raw tool call', (session, historical) => {
+      session.surface = { nodes: [historical.callSeq] }
+    }],
+    ['duplicate result', (session, historical) => {
+      session.surface = { nodes: [historical.resultSeq, historical.resultSeq] }
+    }],
+  ]) await t.test(label, async t => {
+    const events = []
+    appendRunCodeEvents(events, 'surface-hidden', 'const surfaceHidden = 9', {
+      meta: { dshPtcPlus: normalizeJournal({
+        version: 3,
+        bindingMode: 'loose',
+        rewritePolicy: JOURNAL_POLICY,
+        status: 'durable',
+        calls: [],
+        operations: [],
+        confirms: [],
+        diagnostics: [],
+        completion: { kind: 'return', hasValue: false },
+      }) },
+    })
+    const historical = {
+      callSeq: events.find(event => (
+        event.type === 'tool/call' && event.data?.callId === 'surface-hidden'
+      )).seq,
+      resultSeq: events.find(event => (
+        event.type === 'tool/result' && event.data?.message?.source?.callId === 'surface-hidden'
+      )).seq,
+    }
+    appendVisibleToolCall(events, 'surface-call', 'run_code', {
+      code: 'return typeof surfaceHidden',
+      description: 'current',
+    })
+    const session = { id: `surface-${label}`, events }
+    installSurface(session, historical)
+    const runtime = new SessionRuntime()
+    t.after(() => runtime.dispose())
+    const execution = await runtime.run(
+      { id: session.id, session, callId: 'surface-call' },
+      { program: 'return typeof surfaceHidden', bindings: [], signal: new AbortController().signal },
+    )
+    assert.equal(execution.value, 'undefined')
+    assert.match(execution.logs[0], /Restored the durable head and skipped 1 unreconstructable historical cell/u)
+  })
+})
+
+test('contracts explicit malformed result provenance before running the current cell', async (t) => {
+  for (const [label, sourceEventSeqs] of [
+    ['negative-zero', [-0]],
+    ['negative', [-1]],
+    ['non-number', ['1']],
+    ['empty', []],
+  ]) await t.test(label, async t => {
+    const events = []
+    const historical = appendRunCodeEvents(events, 'malformed-source', 'const malformedSource = 9', {
+      meta: { dshPtcPlus: normalizeJournal({
+        version: 3,
+        bindingMode: 'loose',
+        rewritePolicy: JOURNAL_POLICY,
+        status: 'durable',
+        calls: [],
+        operations: [],
+        confirms: [],
+        diagnostics: [],
+        completion: { kind: 'return', hasValue: false },
+      }) },
+    })
+    events[historical.resultSeq].sourceEventSeqs = sourceEventSeqs
+    appendVisibleToolCall(events, `malformed-current-${label}`, 'run_code', {
+      code: 'return typeof malformedSource',
+      description: 'current',
+    })
+    const session = appendOnlySession(`malformed-source-${label}`, events)
+    const runtime = new SessionRuntime()
+    t.after(() => runtime.dispose())
+    const execution = await runtime.run(
+      { id: session.id, session, callId: `malformed-current-${label}` },
+      { program: 'return typeof malformedSource', bindings: [], signal: new AbortController().signal },
+    )
+    assert.equal(execution.value, 'undefined')
+    assert.equal(execution.error, undefined)
+    assert.match(execution.logs[0], /Restored the durable head and skipped 1 unreconstructable historical cell/u)
+  })
+})
+
+test('runs a reused provider call ID after a malformed historical settlement', async (t) => {
+  const events = []
+  const historical = appendRunCodeEvents(events, 'reused-malformed', 'const damagedBinding = 9', {
+    meta: { dshPtcPlus: normalizeJournal({
+      version: 3,
+      bindingMode: 'loose',
+      rewritePolicy: JOURNAL_POLICY,
+      status: 'durable',
+      calls: [],
+      operations: [],
+      confirms: [],
+      diagnostics: [],
+      completion: { kind: 'return', hasValue: false },
+    }) },
+  })
+  events[historical.resultSeq].sourceEventSeqs = [-0]
+  delete events[historical.resultSeq].data.message
+  appendVisibleToolCall(events, 'reused-malformed', 'run_code', {
+    code: 'return 42',
+    description: 'current',
+  })
+  const session = appendOnlySession('reused-malformed-settlement', events)
+  const runtime = new SessionRuntime()
+  t.after(() => runtime.dispose())
+  const execution = await runtime.run(
+    { id: session.id, session, callId: 'reused-malformed' },
+    { program: 'return 42', bindings: [], signal: new AbortController().signal },
+  )
+  assert.equal(execution.value, 42)
+  assert.equal(execution.error, undefined)
+  assert.equal(execution.logs.filter(log => log.includes('PTC-R002')).length, 1)
+})
+
+test('does not authorize hidden source from a mismatched visible assistant call', async (t) => {
+  const hiddenArguments = JSON.stringify({ code: 'const mismatchedVisibleSource = 9', description: 'hidden' })
+  const events = [
+    {
+      seq: 0,
+      type: 'assistant/message',
+      data: { message: { content: [{
+        type: 'tool-call', id: 'mismatched-visible', name: 'read',
+        arguments: JSON.stringify({ path: 'public.txt' }),
+      }] } },
+    },
+    {
+      seq: 1,
+      type: 'tool/call',
+      data: { callId: 'mismatched-visible', name: 'run_code', arguments: hiddenArguments },
+    },
+    {
+      seq: 2,
+      type: 'tool/result',
+      sourceEventSeqs: [1],
+      data: { meta: { dshPtcPlus: normalizeJournal({
+        version: 3,
+        bindingMode: 'loose',
+        rewritePolicy: JOURNAL_POLICY,
+        status: 'durable',
+        calls: [],
+        operations: [],
+        confirms: [],
+        diagnostics: [],
+        completion: { kind: 'return', hasValue: false },
+      }) } },
+    },
+    {
+      seq: 3,
+      type: 'tool/call',
+      data: {
+        callId: 'mismatched-current',
+        name: 'run_code',
+        arguments: JSON.stringify({
+          code: 'return typeof mismatchedVisibleSource',
+          description: 'current',
+        }),
+      },
+    },
+  ]
   const session = {
-    id: 'surface-unavailable',
-    events: [{ seq: 0, type: 'tool/call', data: { callId: 'surface-call', name: 'run_code', arguments: '{"code":"return 7","description":"current"}' } }],
-    get surface() { throw new Error('surface unavailable') },
+    id: 'mismatched-visible-assistant-call',
+    events,
+    surface: { nodes: [0, 2], replaceGeneration: 0 },
   }
   const runtime = new SessionRuntime()
   t.after(() => runtime.dispose())
   const execution = await runtime.run(
-    { id: session.id, session, callId: 'surface-call' },
-    { program: 'return 7', bindings: [], signal: new AbortController().signal },
+    { id: session.id, session, callId: 'mismatched-current' },
+    { program: 'return typeof mismatchedVisibleSource', bindings: [], signal: new AbortController().signal },
   )
-  assert.equal(execution.value, 7)
+  assert.equal(execution.value, 'undefined')
+  assert.match(execution.logs[0], /Restored the durable head and skipped 1 unreconstructable historical cell/u)
 })
 
 test('rebuilds history when the model-visible surface generation changes', async (t) => {
   let generation = 0
-  let surfaceNodes = [1, 3]
+  let surfaceNodes = []
   const events = []
   appendRunCodeEvents(events, 'surface-stable', 'const surfaceStable = 1', {
     meta: { dshPtcPlus: normalizeJournal({
@@ -759,6 +1049,17 @@ test('rebuilds history when the model-visible surface generation changes', async
       completion: { kind: 'return', hasValue: false },
     }) },
   })
+  const visibleHistory = callId => ({
+    assistantSeq: events.find(event => (
+      event.type === 'assistant/message'
+      && event.data?.message?.content?.some(block => block.id === callId)
+    )).seq,
+    resultSeq: events.find(event => (
+      event.type === 'tool/result' && event.data?.message?.source?.callId === callId
+    )).seq,
+  })
+  const stableHistory = visibleHistory('surface-stable')
+  const hiddenHistory = visibleHistory('surface-hidden')
   const session = {
     id: 'surface-generation-change',
     events,
@@ -769,16 +1070,17 @@ test('rebuilds history when the model-visible surface generation changes', async
   }
   const runtime = new SessionRuntime()
   t.after(() => runtime.dispose())
-  events.push({
-    seq: 4,
-    type: 'tool/call',
-    data: {
-      callId: 'surface-before-replacement',
-      name: 'run_code',
-      arguments: JSON.stringify({ code: 'return [surfaceStable, surfaceHidden]', description: 'before replacement' }),
-    },
+  const beforeReplacement = appendVisibleToolCall(events, 'surface-before-replacement', 'run_code', {
+    code: 'return [surfaceStable, surfaceHidden]',
+    description: 'before replacement',
   })
-  surfaceNodes = [1, 3, 4]
+  surfaceNodes = [
+    stableHistory.assistantSeq,
+    stableHistory.resultSeq,
+    hiddenHistory.assistantSeq,
+    hiddenHistory.resultSeq,
+    beforeReplacement.assistantSeq,
+  ]
   const first = await runtime.run(
     { id: session.id, session, callId: 'surface-before-replacement' },
     { program: 'return [surfaceStable, surfaceHidden]', bindings: [], signal: new AbortController().signal },
@@ -786,16 +1088,15 @@ test('rebuilds history when the model-visible surface generation changes', async
   assert.deepEqual(first.value, [1, 2])
   const firstWorker = workerOf(runtime, session.id)
   generation = 1
-  events.push({
-    seq: 5,
-    type: 'tool/call',
-    data: {
-      callId: 'surface-after-replacement',
-      name: 'run_code',
-      arguments: JSON.stringify({ code: 'return [surfaceStable, typeof surfaceHidden]', description: 'after replacement' }),
-    },
+  const afterReplacement = appendVisibleToolCall(events, 'surface-after-replacement', 'run_code', {
+    code: 'return [surfaceStable, typeof surfaceHidden]',
+    description: 'after replacement',
   })
-  surfaceNodes = [1, 5]
+  surfaceNodes = [
+    stableHistory.assistantSeq,
+    stableHistory.resultSeq,
+    afterReplacement.assistantSeq,
+  ]
   const second = await runtime.run(
     { id: session.id, session, callId: 'surface-after-replacement' },
     { program: 'return [surfaceStable, typeof surfaceHidden]', bindings: [], signal: new AbortController().signal },
@@ -805,16 +1106,12 @@ test('rebuilds history when the model-visible surface generation changes', async
   assert.notEqual(workerOf(runtime, session.id), firstWorker)
 
   let disabledGeneration = 0
-  let disabledNodes = [0]
-  const disabledEvents = [{
-    seq: 0,
-    type: 'tool/call',
-    data: {
-      callId: 'surface-disabled-first',
-      name: 'run_code',
-      arguments: JSON.stringify({ code: 'const disabledHidden = 1', description: 'declare hidden binding' }),
-    },
-  }]
+  const disabledEvents = []
+  const disabledFirst = appendVisibleToolCall(disabledEvents, 'surface-disabled-first', 'run_code', {
+    code: 'const disabledHidden = 1',
+    description: 'declare hidden binding',
+  })
+  let disabledNodes = [disabledFirst.assistantSeq]
   const disabledSession = {
     id: 'surface-generation-disabled-replay',
     events: disabledEvents,
@@ -831,16 +1128,11 @@ test('rebuilds history when the model-visible surface generation changes', async
   )).error, undefined)
   const disabledWorker = workerOf(disabledRuntime, disabledSession.id)
   disabledGeneration = 1
-  disabledEvents.push({
-    seq: 1,
-    type: 'tool/call',
-    data: {
-      callId: 'surface-disabled-second',
-      name: 'run_code',
-      arguments: JSON.stringify({ code: 'return typeof disabledHidden', description: 'inspect hidden binding' }),
-    },
+  const disabledSecond = appendVisibleToolCall(disabledEvents, 'surface-disabled-second', 'run_code', {
+    code: 'return typeof disabledHidden',
+    description: 'inspect hidden binding',
   })
-  disabledNodes = [0, 1]
+  disabledNodes = [disabledFirst.assistantSeq, disabledSecond.assistantSeq]
   const disabledVisibleResult = await disabledRuntime.run(
     { id: disabledSession.id, session: disabledSession, callId: 'surface-disabled-second' },
     { program: 'return typeof disabledHidden', bindings: [], signal: new AbortController().signal },
@@ -849,16 +1141,11 @@ test('rebuilds history when the model-visible surface generation changes', async
   assert.deepEqual(disabledVisibleResult.logs, [])
   assert.equal(workerOf(disabledRuntime, disabledSession.id), disabledWorker)
   disabledGeneration = 2
-  disabledEvents.push({
-    seq: 2,
-    type: 'tool/call',
-    data: {
-      callId: 'surface-disabled-third',
-      name: 'run_code',
-      arguments: JSON.stringify({ code: 'return typeof disabledHidden', description: 'inspect hidden binding' }),
-    },
+  const disabledThird = appendVisibleToolCall(disabledEvents, 'surface-disabled-third', 'run_code', {
+    code: 'return typeof disabledHidden',
+    description: 'inspect hidden binding',
   })
-  disabledNodes = [2]
+  disabledNodes = [disabledThird.assistantSeq]
   const disabledHiddenResult = await disabledRuntime.run(
     { id: disabledSession.id, session: disabledSession, callId: 'surface-disabled-third' },
     { program: 'return typeof disabledHidden', bindings: [], signal: new AbortController().signal },
@@ -879,17 +1166,12 @@ test('rebuilds history when the model-visible surface generation changes', async
   }
   const volatileRuntime = new SessionRuntime()
   t.after(() => volatileRuntime.dispose())
-  const executeVolatile = async (seq, callId, program) => {
-    volatileEvents.push({
-      seq,
-      type: 'tool/call',
-      data: {
-        callId,
-        name: 'run_code',
-        arguments: JSON.stringify({ code: program, description: 'volatile surface cell' }),
-      },
+  const executeVolatile = async (callId, program) => {
+    const call = appendVisibleToolCall(volatileEvents, callId, 'run_code', {
+      code: program,
+      description: 'volatile surface cell',
     })
-    volatileNodes = [...volatileNodes, seq]
+    volatileNodes = [...volatileNodes, call.assistantSeq]
     const execution = await volatileRuntime.runTentative(
       { id: volatileSession.id, session: volatileSession, callId },
       { program, bindings: [], signal: new AbortController().signal },
@@ -897,14 +1179,168 @@ test('rebuilds history when the model-visible surface generation changes', async
     volatileRuntime.finalize(execution.settlement, true)
     return execution
   }
-  const volatileFirst = await executeVolatile(0, 'surface-volatile-first', 'const surfaceVolatile = Date.now()')
+  const volatileFirst = await executeVolatile('surface-volatile-first', 'const surfaceVolatile = Date.now()')
   assert.equal(volatileFirst.settlement.journal.status, 'volatile')
   const volatileWorker = workerOf(volatileRuntime, volatileSession.id)
   volatileGeneration = 1
-  const volatileVisible = await executeVolatile(1, 'surface-volatile-second', 'return typeof surfaceVolatile')
+  const volatileVisible = await executeVolatile('surface-volatile-second', 'return typeof surfaceVolatile')
   assert.equal(volatileVisible.result.value, 'number')
   assert.deepEqual(volatileVisible.result.logs, [])
   assert.equal(workerOf(volatileRuntime, volatileSession.id), volatileWorker)
+})
+
+test('contracts live state when surface-generation evidence becomes or remains unavailable', async (t) => {
+  for (const initiallyReadable of [true, false]) await t.test(
+    initiallyReadable ? 'capability loss' : 'persistently unavailable',
+    async (t) => {
+      let readable = initiallyReadable
+      let surfaceNodes = []
+      const events = []
+      const session = {
+        id: `surface-generation-unavailable-${initiallyReadable}`,
+        events,
+        surface: {
+          get replaceGeneration() {
+            if (!readable) throw new Error('surface generation unavailable')
+            return 0
+          },
+          get nodes() { return surfaceNodes },
+        },
+      }
+      const first = appendVisibleToolCall(events, 'generation-first', 'run_code', {
+        code: 'const generationHidden = 1',
+        description: 'declare live binding',
+      })
+      surfaceNodes = [first.assistantSeq]
+      const runtime = new SessionRuntime({ durableReplay: false })
+      t.after(() => runtime.dispose())
+      const declared = await runtime.run(
+        { id: session.id, session, callId: 'generation-first' },
+        { program: 'const generationHidden = 1', bindings: [], signal: new AbortController().signal },
+      )
+      assert.equal(declared.error, undefined)
+      const firstWorker = workerOf(runtime, session.id)
+
+      readable = false
+      const second = appendVisibleToolCall(events, 'generation-second', 'run_code', {
+        code: 'return typeof generationHidden',
+        description: 'inspect contracted binding',
+      })
+      surfaceNodes = [second.assistantSeq]
+      const inspected = await runtime.run(
+        { id: session.id, session, callId: 'generation-second' },
+        { program: 'return typeof generationHidden', bindings: [], signal: new AbortController().signal },
+      )
+      assert.equal(inspected.value, 'undefined')
+      assert.match(inspected.logs[0], /Restored the durable head and skipped/u)
+      assert.notEqual(workerOf(runtime, session.id), firstWorker)
+    },
+  )
+})
+
+test('revalidates live provenance when the readable surface generation is unchanged', async (t) => {
+  for (const mode of ['visible', 'empty', 'malformed']) await t.test(mode, async (t) => {
+    const events = []
+    let surfaceNodes = []
+    const session = {
+      id: `surface-generation-unchanged-${mode}`,
+      events,
+      surface: {
+        replaceGeneration: 0,
+        get nodes() { return surfaceNodes },
+      },
+    }
+    const runtime = new SessionRuntime({ durableReplay: false })
+    t.after(() => runtime.dispose())
+    const first = appendVisibleToolCall(events, `unchanged-first-${mode}`, 'run_code', {
+      code: 'const unchangedLive = 1',
+      description: 'declare live binding',
+    })
+    surfaceNodes = [first.assistantSeq]
+    const declared = await runtime.runTentative(
+      { id: session.id, session, callId: `unchanged-first-${mode}` },
+      { program: 'const unchangedLive = 1', bindings: [], signal: new AbortController().signal },
+    )
+    assert.equal(declared.result.error, undefined)
+    runtime.finalize(declared.settlement, true)
+    const firstResultSeq = appendToolResult(events, `unchanged-first-${mode}`, first.callSeq, {
+      meta: { dshPtcPlus: normalizeJournal(declared.settlement.journal) },
+    })
+    const firstWorker = workerOf(runtime, session.id)
+    if (mode === 'malformed') {
+      events[first.assistantSeq].data.message.content[0].arguments = JSON.stringify({
+        code: 'const differentSource = 1',
+        description: 'declare live binding',
+      })
+    }
+    const second = appendVisibleToolCall(events, `unchanged-second-${mode}`, 'run_code', {
+      code: 'return typeof unchangedLive',
+      description: 'inspect live binding',
+    })
+    surfaceNodes = mode === 'empty'
+      ? [second.assistantSeq]
+      : [first.assistantSeq, firstResultSeq, second.assistantSeq]
+    const inspected = await runtime.run(
+      { id: session.id, session, callId: `unchanged-second-${mode}` },
+      { program: 'return typeof unchangedLive', bindings: [], signal: new AbortController().signal },
+    )
+    assert.equal(inspected.value, mode === 'visible' ? 'number' : 'undefined')
+    if (mode === 'visible') {
+      assert.deepEqual(inspected.logs, [])
+      assert.equal(workerOf(runtime, session.id), firstWorker)
+    } else {
+      assert.match(inspected.logs[0], /Restored the durable head and skipped/u)
+      assert.notEqual(workerOf(runtime, session.id), firstWorker)
+    }
+  })
+})
+
+test('contracts to an empty frontier when ordered events fail during live recovery', async (t) => {
+  const events = []
+  let surfaceNodes = []
+  const session = {
+    id: 'surface-events-fail-during-recovery',
+    events,
+    surface: {
+      replaceGeneration: 0,
+      get nodes() { return surfaceNodes },
+    },
+  }
+  const runtime = new SessionRuntime()
+  t.after(() => runtime.dispose())
+  const first = appendVisibleToolCall(events, 'events-fail-first', 'run_code', {
+    code: 'const eventsFailBinding = 1',
+    description: 'declare live binding',
+  })
+  surfaceNodes = [first.assistantSeq]
+  const declared = await runtime.runTentative(
+    { id: session.id, session, callId: 'events-fail-first' },
+    { program: 'const eventsFailBinding = 1', bindings: [], signal: new AbortController().signal },
+  )
+  assert.equal(declared.result.error, undefined)
+  runtime.finalize(declared.settlement, true)
+  appendToolResult(events, 'events-fail-first', first.callSeq, {
+    meta: { dshPtcPlus: normalizeJournal(declared.settlement.journal) },
+  })
+
+  const second = appendVisibleToolCall(events, 'events-fail-second', 'run_code', {
+    code: 'return typeof eventsFailBinding',
+    description: 'inspect contracted binding',
+  })
+  surfaceNodes = [second.assistantSeq]
+  let reads = 0
+  session.snapshotEvents = () => {
+    reads += 1
+    if (reads <= 2) return events
+    throw new Error('ordered events became unavailable')
+  }
+  const inspected = await runtime.run(
+    { id: session.id, session, callId: 'events-fail-second' },
+    { program: 'return typeof eventsFailBinding', bindings: [], signal: new AbortController().signal },
+  )
+  assert.equal(inspected.value, 'undefined')
+  assert.match(inspected.logs[0], /Restored the durable head and skipped/u)
+  assert.equal(reads, 3)
 })
 
 test('counts every historical cell excluded after an unavailable journal boundary', async (t) => {
@@ -933,16 +1369,11 @@ test('counts every historical cell excluded after an unavailable journal boundar
   appendRunCodeEvents(events, 'count-dependent-two', 'const countDependentTwo = 4', {
     meta: { dshPtcPlus: stable },
   })
-  events.push({
-    seq: 8,
-    type: 'tool/call',
-    data: {
-      callId: 'count-current',
-      name: 'run_code',
-      arguments: JSON.stringify({ code: 'return countStable', description: 'inspect recovered prefix' }),
-    },
+  appendVisibleToolCall(events, 'count-current', 'run_code', {
+    code: 'return countStable',
+    description: 'inspect recovered prefix',
   })
-  const session = { id: 'count-unavailable-suffix', events }
+  const session = appendOnlySession('count-unavailable-suffix', events)
   const runtime = new SessionRuntime()
   t.after(() => runtime.dispose())
   const current = await runtime.run(
@@ -955,16 +1386,12 @@ test('counts every historical cell excluded after an unavailable journal boundar
 
 test('keeps disabled derived edit provenance through visible surface replacement', async (t) => {
   let generation = 0
-  let surfaceNodes = [0]
-  const events = [{
-    seq: 0,
-    type: 'tool/call',
-    data: {
-      callId: 'disabled-edit-source',
-      name: 'run_code',
-      arguments: JSON.stringify({ code: 'let editableSurface = 1', description: 'editable source' }),
-    },
-  }]
+  const events = []
+  const sourceCall = appendVisibleToolCall(events, 'disabled-edit-source', 'run_code', {
+    code: 'let editableSurface = 1',
+    description: 'editable source',
+  })
+  let surfaceNodes = [sourceCall.assistantSeq]
   const session = {
     id: 'disabled-derived-edit-surface',
     events,
@@ -982,22 +1409,16 @@ test('keeps disabled derived edit provenance through visible surface replacement
   assert.equal(first.error, undefined)
   const firstWorker = workerOf(runtime, session.id)
 
-  events.push({
-    seq: 1,
-    type: 'tool/call',
-    data: {
-      callId: 'disabled-edit-call',
-      name: 'edit_run_code',
-      arguments: JSON.stringify({ edits: [{ old_string: '1', new_string: '2' }] }),
-    },
+  const editCall = appendVisibleToolCall(events, 'disabled-edit-call', 'edit_run_code', {
+    edits: [{ old_string: '1', new_string: '2' }],
   })
-  surfaceNodes = [0, 1]
+  surfaceNodes = [sourceCall.assistantSeq, editCall.assistantSeq]
   const edited = await runtime.run(
     {
       id: session.id,
       session,
       callId: 'disabled-edit-call:derived',
-      persistedCallSeq: 1,
+      persistedCallSeq: editCall.callSeq,
     },
     { program: 'editableSurface = 2', bindings: [], signal: new AbortController().signal },
   )
@@ -1005,16 +1426,11 @@ test('keeps disabled derived edit provenance through visible surface replacement
   assert.equal(workerOf(runtime, session.id), firstWorker)
 
   generation = 1
-  events.push({
-    seq: 2,
-    type: 'tool/call',
-    data: {
-      callId: 'disabled-edit-inspect',
-      name: 'run_code',
-      arguments: JSON.stringify({ code: 'return editableSurface', description: 'inspect edited source' }),
-    },
+  const inspectCall = appendVisibleToolCall(events, 'disabled-edit-inspect', 'run_code', {
+    code: 'return editableSurface',
+    description: 'inspect edited source',
   })
-  surfaceNodes = [0, 1, 2]
+  surfaceNodes = [sourceCall.assistantSeq, editCall.assistantSeq, inspectCall.assistantSeq]
   const visible = await runtime.run(
     { id: session.id, session, callId: 'disabled-edit-inspect' },
     { program: 'return editableSurface', bindings: [], signal: new AbortController().signal },
@@ -1024,16 +1440,11 @@ test('keeps disabled derived edit provenance through visible surface replacement
   assert.equal(workerOf(runtime, session.id), firstWorker)
 
   generation = 2
-  surfaceNodes = [2]
-  events.push({
-    seq: 3,
-    type: 'tool/call',
-    data: {
-      callId: 'disabled-edit-after-hide',
-      name: 'run_code',
-      arguments: JSON.stringify({ code: 'return typeof editableSurface', description: 'inspect hidden edit' }),
-    },
+  const hiddenCall = appendVisibleToolCall(events, 'disabled-edit-after-hide', 'run_code', {
+    code: 'return typeof editableSurface',
+    description: 'inspect hidden edit',
   })
+  surfaceNodes = [inspectCall.assistantSeq, hiddenCall.assistantSeq]
   const hidden = await runtime.run(
     { id: session.id, session, callId: 'disabled-edit-after-hide' },
     { program: 'return typeof editableSurface', bindings: [], signal: new AbortController().signal },
@@ -1076,22 +1487,33 @@ test('attaches post-recovery cells to the verified frontier across restarts', as
       },
     },
   })
-  events[3].data.meta.dshPtcPlus = normalizeJournal(events[3].data.meta.dshPtcPlus)
+  const timedOutResult = events.find(event => (
+    event.type === 'tool/result'
+    && event.data?.message?.source?.callId === 'timed-out-history'
+  ))
+  timedOutResult.data.meta.dshPtcPlus = normalizeJournal(timedOutResult.data.meta.dshPtcPlus)
 
   const recovering = fixture()
   t.after(() => recovering.dispose())
-  const confirmed = await recovering.executeRun(
-    session.id,
+  const confirmed = await executeRecordedFixture(
+    recovering,
+    session,
+    events,
+    'fresh-head',
     'const freshHead = stableHead + 4',
     {},
-    { session },
   )
-  appendRunCodeEvents(events, 'fresh-head', 'const freshHead = stableHead + 4', confirmed.result)
   assert.equal(confirmed.raw.error, undefined)
 
   const restarted = fixture()
   t.after(() => restarted.dispose())
-  assert.deepEqual(await restarted.run(session.id, 'return [stableHead, freshHead]', {}, { session }), {
+  assert.deepEqual((await executeRecordedFixture(
+    restarted,
+    session,
+    events,
+    'inspect-fresh-head',
+    'return [stableHead, freshHead]',
+  )).raw, {
     logs: [],
     value: [3, 7],
   })
@@ -1130,25 +1552,32 @@ test('requires exact recovery boundaries before confirming a contracted cell', a
     })
     const state = fixture()
     t.after(() => state.dispose())
-    const contracted = await state.executeRun(
-      session.id,
+    const contracted = await executeRecordedFixture(
+      state,
+      session,
+      events,
+      `contracted-${index}`,
       `const boundaryValue${index} = ${index + 1}`,
       {},
-      { session, finalizeResult: result => ({ ...result, meta: mutate(result.meta) }) },
+      { finalizeResult: result => ({ ...result, meta: mutate(result.meta) }) },
     )
     assert.equal(contracted.raw.error, undefined)
-    const dependent = await state.runDurable(
-      session.id,
+    const dependent = (await executeRecordedFixture(
+      state,
+      session,
+      events,
+      `dependent-${index}`,
       `return boundaryValue${index}`,
-      {},
-      { session },
-    )
+    )).result
     assert.equal(dependent.meta.dshPtcPlus.status, 'volatile')
   }
 
   const state = fixture()
   t.after(() => state.dispose())
-  await state.runDurable('unexpected-boundary', 'const unexpectedBoundary = 1', {}, {
+  const unexpectedEvents = []
+  const unexpectedSession = appendOnlySession('unexpected-boundary', unexpectedEvents)
+  await executeRecordedFixture(state, unexpectedSession, unexpectedEvents,
+    'unexpected-first', 'const unexpectedBoundary = 1', {}, {
     finalizeResult: result => ({
       ...result,
       meta: {
@@ -1157,6 +1586,7 @@ test('requires exact recovery boundaries before confirming a contracted cell', a
       },
     }),
   })
-  const dependent = await state.runDurable('unexpected-boundary', 'return unexpectedBoundary')
+  const dependent = (await executeRecordedFixture(state, unexpectedSession, unexpectedEvents,
+    'unexpected-second', 'return unexpectedBoundary')).result
   assert.equal(dependent.meta.dshPtcPlus.status, 'volatile')
 })

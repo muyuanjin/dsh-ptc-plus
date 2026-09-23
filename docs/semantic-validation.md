@@ -1,6 +1,10 @@
-# 编译语义验证
+# 语义义务与编译验证
 
-`npm run test:semantics` 运行三个互补的确定性测试层。它们也由 `npm run verify` / `npm run check` 的常规测试发现机制执行，不需要网络或模型调用。定向命令用于快速诊断，不能替代完整检查、资源验收和独立审查。
+[`semantic-obligations.json`](../semantic-obligations.json) 是插件自有语义边界的 tracked owner graph，[ADR 0031](adr/0031-close-semantic-obligations-by-owner.md) 定义其闭合范围。`npm run semantic:check` 要求 `internal/`、`src/`、`index.js`、`client.js` 与 journal migration entry 中的每个受管实现文件恰好归属一个义务，并核对 contract、可执行 evidence、依赖图、journal 连续代际以及 language/module 导出代际。报告分别统计 `preserved`、`intentional-difference`、`bounded-external` 与 `unknown`；只有 `unknown: 0` 才表示声明范围内闭合，不表示对全部 Node 或 DSH 行为的等价证明。
+
+每项义务必须记录 owner、实现边界、源 contract、可观察量、入口、生命周期、代际、平台边界、消费者、oracle 与 evidence。新增文件会直接使 source inventory 失败；现有 owner 内新增转换时，维护者还必须判断它是否改变当前义务、依赖或 oracle。能够从中央注册点机械闭合的边界继续使用更强检查，例如 realm mutation 的分类写入入口、journal schema 和 language/module generation set。该图不能替代具体反例、覆盖率或独立 review lane。
+
+`npm run test:semantics` 运行三个互补的确定性编译测试层。它们也由 `npm run verify` / `npm run check` 的常规测试发现机制执行，不需要网络或模型调用。定向命令用于快速诊断，不能替代完整检查、资源验收和独立审查。
 
 | 层 | Oracle 与执行方式 | 代码 owner |
 | --- | --- | --- |

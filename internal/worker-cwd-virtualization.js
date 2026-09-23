@@ -1,6 +1,11 @@
 import { isAbsolute, parse, resolve, sep } from 'node:path'
 import { promisify } from 'node:util'
 import { runtimeIntrinsics as internal } from './runtime-intrinsics.js'
+import {
+  WORKER_REALM_MUTATION,
+  assignWorkerRealmProperty,
+  installProjectedProcessCwd,
+} from './worker-realm-surfaces.js'
 
 const { Reflect: privateReflect, appendArray, bufferConcat, bufferIsBuffer, bufferToString,
   copyArray, isArray, regexpTest } = internal
@@ -61,7 +66,8 @@ function wrapBuiltinCallable(original, projectArguments, projectedProperties = [
 function wrapBuiltin(owner, name, projectArguments, projectedProperties) {
   const original = owner?.[name]
   if (typeof original !== 'function') return
-  owner[name] = wrapBuiltinCallable(original, projectArguments, projectedProperties)
+  assignWorkerRealmProperty(WORKER_REALM_MUTATION.STABLE, 'cwd-projected Node builtins',
+    owner, name, wrapBuiltinCallable(original, projectArguments, projectedProperties))
 }
 
 export function projectChildProcessArguments(name, args, sessionCwd) {
@@ -106,10 +112,10 @@ export function projectChildProcessArguments(name, args, sessionCwd) {
 export function installWorkerCwdVirtualization(sessionCwd, originalRequire, markVolatile) {
   if (sessionCwd === undefined) {
     const nativeCwd = process.cwd
-    process.cwd = () => {
+    assignWorkerRealmProperty(WORKER_REALM_MUTATION.STABLE, 'process.cwd', process, 'cwd', () => {
       markVolatile('process.cwd')
       return privateReflect.apply(nativeCwd, process, [])
-    }
+    })
     return
   }
   const nativeResolve = resolve
@@ -153,12 +159,7 @@ export function installWorkerCwdVirtualization(sessionCwd, originalRequire, mark
     return next
   }
 
-  Object.defineProperty(process, 'cwd', {
-    configurable: false,
-    enumerable: true,
-    writable: false,
-    value: () => sessionCwd,
-  })
+  installProjectedProcessCwd(process, sessionCwd)
   const fs = originalRequire('node:fs')
   const path = originalRequire('node:path')
   for (const [name, indices] of Object.entries(FILE_SYSTEM_PATH_ARGUMENTS)) {

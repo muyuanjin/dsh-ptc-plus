@@ -7,7 +7,7 @@ export const RUNTIME_PROBE_PREFIX = 'PTC-EVAL-RUNTIME '
 /** Exercise the real kernel before a DSH entry can reach model dispatch. */
 export async function probeReplRuntime() {
   const runtime = new SessionRuntime({ durableReplay: false, computeMs: 1000, maxWallMs: 8000 })
-  const session = { id: 'runtime-prerequisite', events: [] }
+  const session = 'runtime-prerequisite'
   const run = program => runtime.run(session, { program, bindings: [] })
   try {
     assert.equal((await run('return 1 + 1')).value, 2)

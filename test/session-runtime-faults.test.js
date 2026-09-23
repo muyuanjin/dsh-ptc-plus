@@ -4,16 +4,37 @@ import test from 'node:test'
 import { createUserBindingsSnapshot } from '../internal/user-bindings.js'
 import { normalizeJournal } from '../internal/session-journal.js'
 import { normalizeBindingDescriptors } from '../internal/binding-descriptors.js'
-import { sessionCellExecutor } from './runtime-observation.js'
+import { outputFenceMarker } from '../internal/worker-output-fence.js'
+import {
+  failUnmatchedOutput,
+  isCellActive,
+  sessionCellExecutor,
+} from './runtime-observation.js'
 
 const behaviors = []
 let workerCreated
 
 class FakePort extends EventEmitter {
-  constructor(behavior) {
+  constructor(worker, behavior) {
     super()
+    this.worker = worker
     this.behavior = behavior
     this.runId = undefined
+    this.runMessage = undefined
+    this.outputFence = undefined
+  }
+
+  emit(event, message, ...rest) {
+    if (event === 'message' && message?.type === 'done' && this.outputFence !== undefined) {
+      message = { ...message, outputFence: this.outputFence }
+    }
+    const emitted = super.emit(event, message, ...rest)
+    if (event === 'message' && message?.type === 'done' && this.outputFence !== undefined) {
+      this.worker.stdout.emit('data', outputFenceMarker(this.outputFence, 'stdout', 'end'))
+      this.worker.stderr.emit('data', outputFenceMarker(this.outputFence, 'stderr', 'end'))
+      this.outputFence = undefined
+    }
+    return emitted
   }
 
   postMessage(message) {
@@ -25,7 +46,22 @@ class FakePort extends EventEmitter {
     if (message.type === 'run') {
       if (this.behavior === 'post-error') throw new Error('private port rejected run message')
       this.runId = message.id
-      queueMicrotask(() => this.start(message))
+      this.runMessage = message
+      this.outputFence = message.outputFence
+      queueMicrotask(() => {
+        this.emit('message', { type: 'output-start', id: message.id, outputFence: message.outputFence })
+        this.worker.stdout.emit('data', outputFenceMarker(message.outputFence, 'stdout', 'start'))
+        this.worker.stderr.emit('data', outputFenceMarker(message.outputFence, 'stderr', 'start'))
+      })
+      return
+    }
+    if (message.type === 'output-start-ack') {
+      const runMessage = this.runMessage
+      if (runMessage !== undefined && message.id === runMessage.id
+        && message.outputFence === runMessage.outputFence) {
+        this.runMessage = undefined
+        queueMicrotask(() => this.start(runMessage))
+      }
       return
     }
     if (message.type === 'reply') {
@@ -136,7 +172,7 @@ class FakeWorker extends EventEmitter {
       else if (this.behavior === 'exit-before-ready') this.emit('exit', 9)
       else if (this.behavior === 'startup-error') this.emit('message', { type: 'startup-error', error: 'worker startup rejected' })
       else if (this.behavior === 'invalid-channel') this.emit('message', { type: 'ready', port: {} })
-      else this.emit('message', { type: 'ready', port: new FakePort(this.behavior) })
+      else this.emit('message', { type: 'ready', port: new FakePort(this, this.behavior) })
     }
     workerCreated?.()
     if (this.behavior === 'delayed-ready') setTimeout(ready, 10)
@@ -200,6 +236,24 @@ test('fails closed for every worker startup and private-protocol fault', async (
     assert.equal(result.error.kind, 'worker-exit')
     await runtime.dispose()
   }
+
+  behaviors.push('pending')
+  const unmatched = new SessionRuntime()
+  const unmatchedResult = unmatched.run('active-unmatched-output', {
+    program: 'await new Promise(() => {})', bindings: [],
+  })
+  while (!isCellActive(unmatched, 'active-unmatched-output')) {
+    await new Promise(resolve => setImmediate(resolve))
+  }
+  assert.equal(failUnmatchedOutput(
+    unmatched,
+    'active-unmatched-output',
+    'worker output attribution failed: prior physical round',
+  ), true)
+  const failedUnmatched = await unmatchedResult
+  assert.equal(failedUnmatched.error.kind, 'worker-exit')
+  assert.match(failedUnmatched.error.message, /prior physical round/u)
+  await unmatched.dispose()
 
   behaviors.push('invalid-durability')
   const durability = new SessionRuntime()

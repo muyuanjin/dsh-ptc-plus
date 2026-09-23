@@ -11,6 +11,7 @@ import {
   mapSourceSpan,
   mappedSourceTransform,
   sourceOffsetAt,
+  sourceOffsetAtPosition,
   sourceRangeHasOriginalText,
   sourceTextAtSpan,
 } from '../internal/source-position-map.js'
@@ -78,6 +79,22 @@ test('original reference spans retain exact text across native line terminators'
   const source = 'prefix\r\nservice\r[\u2028 key()\u2029]'
   assert.equal(sourceTextAtSpan(source, { line: 2, column: 1, end: { line: 5, column: 2 } }),
     'service\r[\u2028 key()\u2029]')
+})
+
+test('source coordinates stop before every complete line terminator', () => {
+  const content = 'const value = 1'
+  for (const ending of ['\n', '\r\n', '\r', '\u2028', '\u2029']) {
+    const source = `${content}${ending}next`
+    assert.equal(sourceOffsetAtPosition(source, {
+      line: 1, column: content.length + 1,
+    }), content.length, JSON.stringify(ending))
+    assert.equal(sourceOffsetAtPosition(source, {
+      line: 1, column: content.length + 2,
+    }), undefined, JSON.stringify(ending))
+    assert.equal(sourceOffsetAtPosition(source, { line: 2, column: 1 }), content.length + ending.length)
+  }
+  assert.equal(sourceOffsetAtPosition('value', { line: 1, column: 6 }), 5)
+  assert.equal(sourceOffsetAtPosition('value', { line: 0, column: 1 }), undefined)
 })
 
 test('builds mapped text from explicit copied ranges', () => {

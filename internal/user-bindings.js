@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import { identifier, exportedSymbols, sourceDurability } from './compiler-service.js'
 import { assertOwnFields, isRecord } from './record-utils.js'
+import { boundedDefinitionSource } from './repl-memory-projection.js'
 import { bindingModelPreferences, normalizeBindingModelContext } from './user-binding-model-context.js'
 import { supportedUserBindingTransform, USER_BINDING_TRANSFORM } from './module-transform-contract.js'
 
@@ -296,7 +297,11 @@ export function userBindingCatalogEntries(snapshot) {
     kind: binding.kind,
     entryId: entry.id,
     fingerprint: entry.fingerprint,
-    definition: Object.freeze({ source: binding.declaration, line: 1, column: 1 }),
+    definition: Object.freeze({
+      source: boundedDefinitionSource(binding.declaration),
+      line: 1,
+      column: 1,
+    }),
   })))
 }
 

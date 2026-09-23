@@ -16,7 +16,7 @@ export { VALUE_CODEC, DEFAULT_VALUE_LIMITS } from './value-wire-schema.js'
 const { Object, Reflect, Array, Map, Set, WeakMap, WeakSet, TypeError,
   isArray, numberIsFinite, numberIsNaN, numberIsSafeInteger, toBigInt,
   toNumber, toString, regexpTest, mapGet, mapHas, mapSet, setHas, setAdd,
-  setDelete, setSize, weakMapGet, weakMapSet, weakSetHas, weakSetAdd,
+  setDelete, weakMapGet, weakMapSet, weakSetHas, weakSetAdd,
   appendArray, popArray, join } = internal
 const IDENTIFIER = /^[A-Za-z_$][A-Za-z0-9_$]*$/
 const intrinsicFunctionToString = Function.prototype.toString
@@ -81,6 +81,7 @@ export function encodeValue(value, options = {}) {
   const pending = []
   const nodes = []
   let edgeCount = 0
+  let arraySlotCount = 0
   let textBytes = 0
 
   const accountText = (text, path) => {
@@ -127,6 +128,10 @@ export function encodeValue(value, options = {}) {
     if (isArray(current)) {
       if (!hasPlainArrayPrototype(current)) invalid(item.path, 'non-plain array')
       if (current.length > limits.maxArrayLength) invalid(item.path, `array length exceeds ${limits.maxArrayLength}`)
+      arraySlotCount += current.length
+      if (arraySlotCount > limits.maxArrayLength) {
+        invalid(item.path, `array slot budget exceeds ${limits.maxArrayLength}`)
+      }
       const entries = []
       const keys = Reflect.ownKeys(current)
       for (let keyIndex = 0; keyIndex < keys.length; keyIndex += 1) {
@@ -170,7 +175,7 @@ export function encodeValue(value, options = {}) {
   return { codec: VALUE_CODEC, root, nodes }
 }
 
-function decodeAtom(atom, nodes, limits, budget, path) {
+function validateAtom(atom, nodeCount, limits, budget, path) {
   if (atom === null || typeof atom === 'boolean') return atom
   if (typeof atom === 'string') {
     budget.textBytes += stringBytes(atom)
@@ -184,14 +189,14 @@ function decodeAtom(atom, nodes, limits, budget, path) {
   if (!isRecord(atom) || typeof atom.tag !== 'string') throw new TypeError(`invalid PTC value atom at ${path}`)
   if (atom.tag === 'undefined') {
     assertFields(atom, UNDEFINED_FIELDS, 'PTC undefined atom')
-    return undefined
+    return { tag: 'undefined' }
   }
   if (atom.tag === 'number') {
     assertFields(atom, NUMBER_FIELDS, 'PTC number atom')
-    if (atom.value === 'nan') return NaN
-    if (atom.value === 'infinity') return Infinity
-    if (atom.value === '-infinity') return -Infinity
-    if (atom.value === '-0') return -0
+    if (atom.value === 'nan' || atom.value === 'infinity'
+      || atom.value === '-infinity' || atom.value === '-0') {
+      return { tag: 'number', value: atom.value }
+    }
     throw new TypeError('invalid PTC special number')
   }
   if (atom.tag === 'bigint') {
@@ -203,52 +208,66 @@ function decodeAtom(atom, nodes, limits, budget, path) {
     if (digits > limits.maxBigIntDigits) throw new TypeError('PTC BigInt digit budget exceeded')
     budget.textBytes += stringBytes(atom.value)
     if (budget.textBytes > limits.maxStringBytes) throw new TypeError('PTC value string budget exceeded')
-    return toBigInt(atom.value)
+    return { tag: 'bigint', value: atom.value }
   }
   if (atom.tag === 'reference') {
     assertFields(atom, REFERENCE_FIELDS, 'PTC reference atom')
-    if (!numberIsSafeInteger(atom.index) || atom.index < 0 || atom.index >= nodes.length) {
+    if (!numberIsSafeInteger(atom.index) || atom.index < 0 || atom.index >= nodeCount) {
       throw new TypeError('dangling PTC value reference')
     }
-    setAdd(budget.reachable, atom.index)
-    return nodes[atom.index]
+    if (atom.index >= budget.nextReference) {
+      if (atom.index !== budget.nextReference) throw new TypeError('non-canonical PTC value envelope')
+      budget.nextReference += 1
+    }
+    return { tag: 'reference', index: atom.index }
   }
   throw new TypeError(`unknown PTC value atom tag ${jsonStringify(atom.tag)}`)
 }
 
-/** Validate, hydrate, and own one canonical PTC value envelope without recursive stack growth. */
-function decodeCanonicalValue(wire, options = {}) {
-  const limits = limitsOf(options)
+function canonicalArrayIndex(key) {
+  if (!regexpTest(/^(0|[1-9][0-9]*)$/, key)) return undefined
+  const index = toNumber(key)
+  return numberIsSafeInteger(index) && index < 0xffffffff && toString(index) === key ? index : undefined
+}
+
+const MAX_ARRAY_LENGTH = 0xffffffff
+
+/** Validate and detach the complete envelope before allocating hydrated arrays. */
+function validateCanonicalWire(wire, limits) {
   assertFields(wire, ENVELOPE_FIELDS, 'PTC value envelope')
   if (wire.codec !== VALUE_CODEC || !isArray(wire.nodes)) throw new TypeError('invalid PTC value codec')
   if (wire.nodes.length > limits.maxNodes) throw new TypeError('PTC value node budget exceeded')
-  const targets = new Array(wire.nodes.length)
+  const nodes = new Array(wire.nodes.length)
+  let arraySlots = 0
   for (let index = 0; index < wire.nodes.length; index += 1) {
     const node = wire.nodes[index]
     if (!isRecord(node)) throw new TypeError(`invalid PTC value node ${index}`)
     if (node.type === 'array') {
       assertFields(node, ARRAY_NODE_FIELDS, `PTC array node ${index}`)
-      if (!numberIsSafeInteger(node.length) || node.length < 0 || node.length > limits.maxArrayLength) {
+      if (!numberIsSafeInteger(node.length) || node.length < 0
+        || node.length > MAX_ARRAY_LENGTH || node.length > limits.maxArrayLength) {
         throw new TypeError(`invalid PTC array length at node ${index}`)
       }
       if (!isArray(node.entries)) throw new TypeError(`invalid PTC array entries at node ${index}`)
-      targets[index] = new Array(node.length)
+      arraySlots += node.length
+      if (arraySlots > limits.maxArrayLength) throw new TypeError('PTC value array slot budget exceeded')
+      nodes[index] = { type: 'array', length: node.length, entries: node.entries }
     } else if (node.type === 'object') {
       assertFields(node, OBJECT_NODE_FIELDS, `PTC object node ${index}`)
       if ((node.prototype !== 'object' && node.prototype !== 'null') || !isArray(node.entries)) {
         throw new TypeError(`invalid PTC object node ${index}`)
       }
-      targets[index] = node.prototype === 'null' ? Object.create(null) : {}
+      nodes[index] = { type: 'object', prototype: node.prototype, entries: node.entries }
     } else {
       throw new TypeError(`unknown PTC value node type at ${index}`)
     }
   }
 
-  const budget = { edges: 0, textBytes: 0, reachable: new Set() }
-  const root = decodeAtom(wire.root, targets, limits, budget, '$')
-  for (let nodeIndex = 0; nodeIndex < wire.nodes.length; nodeIndex += 1) {
-    const node = wire.nodes[nodeIndex]
-    const target = targets[nodeIndex]
+  const budget = { edges: 0, textBytes: 0, nextReference: 0 }
+  const root = validateAtom(wire.root, nodes.length, limits, budget, '$')
+  for (let nodeIndex = 0; nodeIndex < budget.nextReference; nodeIndex += 1) {
+    const node = nodes[nodeIndex]
+    const entries = []
     if (node.type === 'array') {
       let previous = -1
       for (let entryIndex = 0; entryIndex < node.entries.length; entryIndex += 1) {
@@ -260,34 +279,80 @@ function decodeCanonicalValue(wire, options = {}) {
         previous = entry[0]
         budget.edges += 1
         if (budget.edges > limits.maxEdges) throw new TypeError('PTC value edge budget exceeded')
-        Object.defineProperty(target, entry[0], {
-          value: decodeAtom(entry[1], targets, limits, budget, `$nodes[${nodeIndex}][${entry[0]}]`),
-          enumerable: true, configurable: true, writable: true,
-        })
+        appendArray(entries, [entry[0], validateAtom(entry[1], nodes.length, limits, budget,
+          `$nodes[${nodeIndex}][${entry[0]}]`)])
       }
+      nodes[nodeIndex] = { type: 'array', length: node.length, entries }
       continue
     }
     const keys = new Set()
+    let previousIndex = -1
+    let ordinaryKeySeen = false
     for (let entryIndex = 0; entryIndex < node.entries.length; entryIndex += 1) {
       const entry = node.entries[entryIndex]
       if (!isArray(entry) || entry.length !== 2 || typeof entry[0] !== 'string' || setHas(keys, entry[0])) {
         throw new TypeError(`invalid PTC object entry at node ${nodeIndex}`)
       }
+      const index = canonicalArrayIndex(entry[0])
+      if (index === undefined) ordinaryKeySeen = true
+      else if (ordinaryKeySeen || index <= previousIndex) {
+        throw new TypeError('non-canonical PTC value envelope')
+      } else previousIndex = index
       setAdd(keys, entry[0])
       budget.textBytes += stringBytes(entry[0])
       if (budget.textBytes > limits.maxStringBytes) throw new TypeError('PTC value string budget exceeded')
       budget.edges += 1
       if (budget.edges > limits.maxEdges) throw new TypeError('PTC value edge budget exceeded')
+      appendArray(entries, [entry[0], validateAtom(entry[1], nodes.length, limits, budget,
+        `$nodes[${nodeIndex}].${entry[0]}`)])
+    }
+    nodes[nodeIndex] = { type: 'object', prototype: node.prototype, entries }
+  }
+  if (budget.nextReference !== nodes.length) throw new TypeError('PTC value envelope contains unreachable nodes')
+  const normalized = { codec: VALUE_CODEC, root, nodes }
+  const serialization = jsonStringify(normalized)
+  if (serialization !== jsonStringify(wire)) throw new TypeError('non-canonical PTC value envelope')
+  return { wire: normalized, serialization }
+}
+
+function hydrateAtom(atom, nodes) {
+  if (atom === null || typeof atom === 'boolean' || typeof atom === 'string' || typeof atom === 'number') return atom
+  if (atom.tag === 'undefined') return undefined
+  if (atom.tag === 'number') {
+    if (atom.value === 'nan') return NaN
+    if (atom.value === 'infinity') return Infinity
+    if (atom.value === '-infinity') return -Infinity
+    return -0
+  }
+  if (atom.tag === 'bigint') return toBigInt(atom.value)
+  return nodes[atom.index]
+}
+
+/** Validate, hydrate, and own one canonical PTC value envelope without recursive stack growth. */
+function decodeCanonicalValue(wire, options = {}) {
+  const limits = limitsOf(options)
+  const validated = validateCanonicalWire(wire, limits)
+  const targets = new Array(validated.wire.nodes.length)
+  for (let index = 0; index < validated.wire.nodes.length; index += 1) {
+    const node = validated.wire.nodes[index]
+    targets[index] = node.type === 'array' ? new Array(node.length)
+      : node.prototype === 'null' ? Object.create(null) : {}
+  }
+  const root = hydrateAtom(validated.wire.root, targets)
+  for (let nodeIndex = 0; nodeIndex < validated.wire.nodes.length; nodeIndex += 1) {
+    const node = validated.wire.nodes[nodeIndex]
+    const target = targets[nodeIndex]
+    for (let entryIndex = 0; entryIndex < node.entries.length; entryIndex += 1) {
+      const entry = node.entries[entryIndex]
       Object.defineProperty(target, entry[0], {
-        value: decodeAtom(entry[1], targets, limits, budget, `$nodes[${nodeIndex}].${entry[0]}`),
+        value: hydrateAtom(entry[1], targets),
         enumerable: true, configurable: true, writable: true,
       })
     }
   }
-  if (setSize(budget.reachable) !== wire.nodes.length) throw new TypeError('PTC value envelope contains unreachable nodes')
   const canonical = encodeValue(root, limits)
   const serialization = jsonStringify(canonical)
-  if (serialization !== jsonStringify(wire)) throw new TypeError('non-canonical PTC value envelope')
+  if (serialization !== validated.serialization) throw new TypeError('non-canonical PTC value envelope')
   return { value: root, wire: canonical, serialization }
 }
 

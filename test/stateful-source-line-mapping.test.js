@@ -26,6 +26,14 @@ function stringPosition(code, value, sourceType = 'script') {
   return position
 }
 
+function literalPosition(code, value) {
+  const offset = code.indexOf(`"${value}"`)
+  assert.notEqual(offset, -1, `missing string ${value}`)
+  const starts = sourceLineStarts(code)
+  const line = starts.findLastIndex(start => start <= offset)
+  return { line: line + 1, column: offset - starts[line] + 1 }
+}
+
 test('shared transform maps retain all JavaScript line boundaries in both directions', () => {
   const source = 'zero\r\none\rtwo\nthree\u2028four\u2029five'
   assert.deepEqual(sourceLineStarts(source), [0,6,10,14,20,25])
@@ -45,6 +53,18 @@ test('shared transform maps retain all JavaScript line boundaries in both direct
 })
 
 for (const ending of endings) {
+  test(`TypeScript declaration bodies preserve source coordinates across ${JSON.stringify(ending)}`, () => {
+    for (const [kind, source] of [
+      ['enum', `export enum E {${ending}Value=(()=>{throw new Error("enum position")})()${ending}}`],
+      ['namespace', `export namespace N {${ending}export const value=(()=>{throw new Error("namespace position")})()${ending}}`],
+    ]) {
+      const prepared = compileStatefulModule(source, { target: 'module' })
+      const value = `${kind} position`
+      assert.deepEqual(mapSourcePosition(stringPosition(prepared.code, value, 'module'),
+        prepared.code, source, prepared.sourceMap.emission), literalPosition(source, value))
+    }
+  })
+
   test(`module emission preserves source coordinates across ${JSON.stringify(ending)}`, () => {
     for (const target of ['module','commonjs']) {
       for (const prefix of ['', 'enum Mode { Value=1 };', 'function decorate(value){return value};@decorate class Box{};']) {
@@ -78,6 +98,16 @@ for (const ending of endings) {
       [{ line: 2, column: 1, end: { line: 2, column: 17 } }])
   })
 }
+
+test('worker errors retain positions inside a lone-CR enum transform', async t => {
+  const runtime = new SessionRuntime({ durableReplay: false, bindingUpdates: 'stateful' })
+  t.after(() => runtime.dispose())
+  const session = { id: 'source-position-enum-cr', session: { header: { cwd: process.cwd() } } }
+  const result = await runtime.run(session, { bindings: [],
+    program: 'enum E {\r A=(()=>{throw new Error("boom")})()\r}\rreturn E' })
+  assert.match(result.error?.message ?? '', /current:2:16/)
+  assert.match(result.error.message, /boom/)
+})
 
 test('native module functions retain exact callable source through mixed line endings', async t => {
   const sources = endings.map(ending => `function read () {${ending}  return 42${ending}}`)

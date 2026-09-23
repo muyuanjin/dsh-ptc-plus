@@ -116,7 +116,7 @@ export function createBindingCommandAvailability(scope) {
     const epoch = ++entry.epoch
     let available = false
     try {
-      const result = await commandRemote?.commands.list(String(sessionId))
+      const result = await commandRemote?.list(String(sessionId))
       available = result?.ok === true
         && Array.isArray(result.value)
         && result.value.some(command => command?.name === 'binding')
@@ -132,7 +132,7 @@ export function createBindingCommandAvailability(scope) {
     void refresh(sessionId)
   }
   scope.inject(['remote', 'remote.commands'], commandScope => {
-    commandRemote = commandScope.remote
+    commandRemote = commandScope.get('remote.commands')
     commandScope.effect(() => commandScope.remote.$on('commands/change', () => {
       for (const sessionId of entries.keys()) void refresh(sessionId)
     }))

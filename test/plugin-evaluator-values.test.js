@@ -12,6 +12,7 @@ import {
   appendOnlySession,
   appendRunCodeEvents,
   fixture,
+  orderedSurfaceSession,
 } from './plugin-fixture.js'
 
 test('captures console output and returns only explicit cell output', async (t) => {
@@ -24,6 +25,38 @@ console.log("answer", internal)
 process.stdout.write("raw output\\n")
 return { answer: internal }
 `), { logs: ['answer 42', 'raw output\n'], value: { answer: 42 } })
+})
+
+test('captures direct descriptors and inherited child stdio exactly once', async t => {
+  const state = fixture()
+  t.after(() => state.dispose())
+
+  const result = await state.run('descriptor-output', `
+const fs = require('node:fs')
+const childProcess = require('node:child_process')
+console.log('console-once')
+fs.writeSync(1, 'fd-one')
+fs.writevSync(2, [Buffer.from('fd-two')])
+await new Promise((resolve, reject) => fs.writev(1, [Buffer.from('vector-three')], error => error ? reject(error) : resolve()))
+process._rawDebug('raw-debug')
+Object.getPrototypeOf(process.stdout).write.call(process.stdout, 'prototype-out')
+childProcess.execFileSync(process.execPath, ['-e', ${JSON.stringify("process.stdout.write('child-four')")}], { stdio: 'inherit' })
+await new Promise((resolve, reject) => {
+  const child = childProcess.spawn(process.execPath, ['-e', ${JSON.stringify("process.stderr.write('child-five')")}], { stdio: 'inherit' })
+  child.once('error', reject)
+  child.once('exit', code => code === 0 ? resolve() : reject(new Error('child exit ' + code)))
+})
+return 42
+`)
+  assert.equal(result.error, undefined)
+  assert.equal(result.value, 42)
+  const output = result.logs.join('')
+  for (const marker of [
+    'console-once', 'fd-one', 'fd-two', 'vector-three', 'raw-debug',
+    'prototype-out', 'child-four', 'child-five',
+  ]) {
+    assert.equal(output.split(marker).length - 1, 1, marker)
+  }
 })
 
 test('enforces the output budget before a cell can flood the host', async (t) => {
@@ -97,6 +130,104 @@ test('a late REPL exception cannot settle a subsequent cell', async t => {
   t.after(() => state.dispose())
   assert.deepEqual(await state.run('late-evaluation', 'setTimeout(() => { throw new Error("late") }, 30); return 1'), { logs: [], value: 1 })
   assert.deepEqual(await state.run('late-evaluation', 'return await new Promise(resolve => setTimeout(() => resolve(42), 80))'), { logs: [], value: 42 })
+})
+
+test('a drained program-call continuation keeps its cell result, logs and durability', async t => {
+  const state = fixture()
+  t.after(() => state.dispose())
+
+  const drained = await state.executeRun('drained-output', `
+void tools.settle({}).then(value => console.log('drained:' + value))
+const retainedAfterDrainedOutput = 41
+return 7
+`, { settle: async () => 'continuation' }, {})
+  assert.equal(drained.raw.error, undefined)
+  assert.equal(drained.raw.value, 7)
+  assert.deepEqual(drained.raw.logs, ['drained:continuation'])
+  assert.equal(drained.result.meta.dshPtcPlus.status, 'durable')
+  assert.deepEqual(await state.run('drained-output', 'return retainedAfterDrainedOutput'), {
+    logs: [], value: 41,
+  })
+})
+
+test('late structured output diagnoses attribution failure and resets the worker', async t => {
+  const state = fixture()
+  t.after(() => state.dispose())
+
+  assert.deepEqual(await state.run('late-output', `
+let releaseLateStructuredOutput
+const lateStructuredOutput = new Promise(resolve => { releaseLateStructuredOutput = resolve })
+setTimeout(() => lateStructuredOutput.then(() => console.log('late-from-settled-cell')), 0)
+const retainedBeforeLateOutput = 41
+return 1
+`), { logs: [], value: 1 })
+  const affected = await state.run('late-output', `
+releaseLateStructuredOutput()
+await new Promise(resolve => setTimeout(resolve, 0))
+return 2
+`)
+  assert.equal(affected.error.kind, 'worker-exit')
+  assert.match(affected.error.message, /output attribution failed/u)
+  assert.deepEqual(affected.logs, [])
+  assert.deepEqual(await state.run('late-output', 'return typeof retainedBeforeLateOutput'), {
+    logs: [], value: 'undefined',
+  })
+})
+
+test('late bare descriptor output follows the acknowledged physical round', async t => {
+  const state = fixture()
+  t.after(() => state.dispose())
+
+  assert.deepEqual(await state.run('late-fd-output', `
+const fs = require('node:fs')
+let releaseLateDescriptorOutput
+const lateDescriptorOutput = new Promise(resolve => { releaseLateDescriptorOutput = resolve })
+setTimeout(() => lateDescriptorOutput.then(() => fs.writeSync(1, 'physical-window-output')), 0)
+return 1
+`), { logs: [], value: 1 })
+  const current = await state.run('late-fd-output', `
+releaseLateDescriptorOutput()
+await new Promise(resolve => setTimeout(resolve, 0))
+return 2
+`)
+  assert.equal(current.error, undefined)
+  assert.equal(current.value, 2)
+  assert.equal(current.logs.join('').split('physical-window-output').length - 1, 1)
+})
+
+test('output settlement uses captured string and regexp intrinsics', async t => {
+  for (const [id, source, marker] of [
+    ['regexp-test', 'RegExp.prototype.test = null', undefined],
+    ['string-ends-with', 'String.prototype.endsWith = null', 'ends-with-marker'],
+    ['string-slice', 'String.prototype.slice = null', 'slice-marker'],
+  ]) {
+    const state = fixture()
+    t.after(() => state.dispose())
+    const result = await state.run(`output-intrinsic-${id}`, `${source};${marker === undefined ? '' : `console.log(${JSON.stringify(marker)});`}return 1`)
+    assert.equal(result.error, undefined, id)
+    assert.equal(result.value, 1, id)
+    if (marker !== undefined) assert.deepEqual(result.logs, [marker], id)
+    const continued = await state.run(`output-intrinsic-${id}`, `return [${source.split(' = ')[0]} === null, 2]`)
+    assert.deepEqual(continued, { logs: [], value: [true, 2] }, id)
+  }
+})
+
+test('log capture converts descriptor chunks without the user realm prototypes', async t => {
+  const state = fixture()
+  t.after(() => state.dispose())
+  const result = await state.run('output-buffer-prototype', `
+const { Buffer: NativeBuffer } = require('node:buffer')
+let traps = 0
+NativeBuffer.prototype.toString = function () { traps += 1; return 'REWRITTEN' }
+console.log('console-marker')
+process.stdout.write(NativeBuffer.from('buffer-marker'))
+process.stdout.write('string-marker')
+process.stdout.write(new Uint8Array([118, 105, 101, 119, 45, 109, 97, 114, 107, 101, 114]))
+return traps
+`)
+  assert.equal(result.error, undefined)
+  assert.equal(result.value, 0)
+  assert.deepEqual(result.logs, ['console-marker', 'buffer-marker', 'string-marker', 'view-marker'])
 })
 
 test('reports runtime exceptions as partially applied and preserves earlier mutations', async (t) => {
@@ -314,15 +445,15 @@ throw originalError
 
 test('replays a durable runtime exception from its persisted diagnostic', async (t) => {
   const events = []
-  const session = { id: 'replay-diagnostic', events }
+  const session = orderedSurfaceSession('replay-diagnostic', events)
   const first = fixture()
   t.after(() => first.dispose())
 
   const setupCode = 'let replayedAfterThrow = 0'
-  const setup = await first.runDurable(session.id, setupCode, {}, { session })
+  const setup = await first.runDurable(session.id, setupCode, {}, { session, recordSession: 'deferred-result', callId: 'replay-setup' })
   appendRunCodeEvents(events, 'replay-setup', setupCode, setup)
   const throwCode = 'replayedAfterThrow = 1\nthrow new TypeError("replay failure")'
-  const thrown = await first.runDurable(session.id, throwCode, {}, { session })
+  const thrown = await first.runDurable(session.id, throwCode, {}, { session, recordSession: 'deferred-result', callId: 'replay-throw' })
   assert.equal(thrown.meta.dshPtcPlus.status, 'durable')
   assert.equal(thrown.meta.dshPtcPlus.diagnostics[0].code, 'PTC-X001')
   appendRunCodeEvents(events, 'replay-throw', throwCode, thrown)
@@ -343,23 +474,26 @@ test('persists and skips a replay node whose semantic exception changed', async 
   t.after(() => first.dispose())
 
   const code = 'throw new TypeError("actual failure")'
-  const actual = await first.runDurable(session.id, code, {}, { session })
+  const actual = await first.runDurable(session.id, code, {}, {
+    session: session.id,
+    recordSession: false,
+  })
   const forged = structuredClone(actual)
   const journal = forged.meta.dshPtcPlus
   journal.diagnostics[0].message = 'uncaught TypeError: forged failure'
   journal.completion.error.message = journal.completion.error.message.replaceAll('actual failure', 'forged failure')
-  appendRunCodeEvents(events, 'replay-forged-throw', code, forged)
+  const { callSeq: failedCallSeq } = appendRunCodeEvents(events, 'replay-forged-throw', code, forged)
   await first.dispose()
 
   const restored = fixture()
   t.after(() => restored.dispose())
-  const result = await restored.runDurable(session.id, 'return 1', {}, { session })
+  const result = await restored.runDurable(session.id, 'return 1', {}, { session, recordSession: 'deferred-result', callId: 'replay-forged-recovery' })
   assert.equal(result.isError, false)
   assert.equal(result.value, 1)
-  appendRunCodeEvents(events, 'replay-forged-recovery', 'return 1', result)
+  const { resultSeq } = appendRunCodeEvents(events, 'replay-forged-recovery', 'return 1', result)
   assert.deepEqual(
-    session.events.at(-1).data.meta[RECOVERY_BOUNDARY_KEY],
-    [{ failedCallSeq: 0, frontierCallSeq: null }],
+    session.events.find(event => event.seq === resultSeq).data.meta[RECOVERY_BOUNDARY_KEY],
+    [{ failedCallSeq, frontierCallSeq: null }],
   )
 })
 
@@ -485,7 +619,7 @@ test('distinguishes an explicit undefined completion from no completion value', 
 
 test('persists and cold-replays a rich completion through session-log JSON alone', async (t) => {
   const events = []
-  const session = { id: 'rich-value-replay', events }
+  const session = orderedSurfaceSession('rich-value-replay', events)
   const first = fixture()
   t.after(() => first.dispose())
   const code = `
@@ -548,11 +682,11 @@ return readLocal(4)
 
 test('does not cold-replay ambient values reached through globalThis', async (t) => {
   const events = []
-  const session = { id: 'global-this-ambient', events }
+  const session = orderedSurfaceSession('global-this-ambient', events)
   const writer = fixture()
   t.after(() => writer.dispose())
   const source = 'const ambientReplayValue = globalThis.crypto.randomUUID(); return 1'
-  const observed = await writer.runDurable(session.id, source, {}, { session })
+  const observed = await writer.runDurable(session.id, source, {}, { session, recordSession: 'deferred-result', callId: 'global-this-ambient-cell' })
   assert.equal(observed.meta.dshPtcPlus.status, 'volatile')
   appendRunCodeEvents(events, 'global-this-ambient-cell', source, observed)
   await writer.dispose()

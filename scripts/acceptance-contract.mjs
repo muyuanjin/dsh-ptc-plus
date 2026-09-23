@@ -238,6 +238,10 @@ export function collectTrajectoryFacts(events, options = {}) {
   let pendingAnswerTurn
   let finalAnswer = ''
   const usage = Object.fromEntries(usageKeys.map(key => [key, 0]))
+  let usageComplete = true
+  const hasUsage = value => isRecord(value)
+    && ['inputTokens', 'outputTokens'].every(key => Number.isSafeInteger(value[key]) && value[key] >= 0)
+    && usageKeys.every(key => value[key] === undefined || (Number.isSafeInteger(value[key]) && value[key] >= 0))
   const messageUsages = []
   const chunkUsages = []
   const standaloneUsages = []
@@ -263,6 +267,7 @@ export function collectTrajectoryFacts(events, options = {}) {
         .reduce((sum, block) => sum + (block.text?.length ?? 0), 0)
       pendingAnswer = content.some(block => block.type === 'tool-call') ? '' : text
       pendingAnswerTurn = event.data.turn
+      if (!hasUsage(event.data?.usage)) usageComplete = false
       if (event.data?.usage !== undefined) messageUsages.push(event.data.usage)
       for (const key of usageKeys) {
         const value = event.data?.usage?.[key]
@@ -272,10 +277,12 @@ export function collectTrajectoryFacts(events, options = {}) {
     if (['assistant/message', 'assistant/attempt'].includes(event?.type)) {
       try {
         const bundled = hostAssistantUsageEvents(event)
+        if (event.type === 'assistant/attempt' && !hasUsage(bundled?.at(-1))) usageComplete = false
         if (bundled !== undefined) {
           const linked = standaloneUsages.filter(item => !item.claimed && event.sourceEventSeqs?.includes(item.seq))
           if (linked.length > 0) {
             if (!isDeepStrictEqual(linked.map(item => item.usage), bundled)) {
+              usageComplete = false
               failures.push(`assistant stream at seq ${event.seq} conflicts with linked usage chunks`)
             }
             for (const item of linked) {
@@ -292,6 +299,7 @@ export function collectTrajectoryFacts(events, options = {}) {
           const last = bundled.at(-1)
           if (event.type === 'assistant/message') {
             if (compareUsageChunks && !isDeepStrictEqual(event.data.usage, last)) {
+              usageComplete = false
               failures.push(`assistant message usage does not match usage chunks at seq ${event.seq}`)
             }
             if (last !== undefined) chunkUsages.push(last)
@@ -303,10 +311,12 @@ export function collectTrajectoryFacts(events, options = {}) {
           }
         }
       } catch (error) {
+        usageComplete = false
         failures.push(`invalid assistant stream at seq ${event.seq}: ${error.message}`)
       }
     }
     if (event?.type === 'assistant/chunk' && event.data?.chunk?.type === 'usage') {
+      if (!hasUsage(event.data.chunk.usage)) usageComplete = false
       standaloneUsages.push({ seq: event.seq, usage: event.data.chunk.usage, claimed: false })
       chunkUsages.push(event.data.chunk.usage)
     }
@@ -409,6 +419,7 @@ export function collectTrajectoryFacts(events, options = {}) {
   }
   for (const callId of results.keys()) if (!calls.has(callId)) failures.push(`tool result ${callId} has no matching call`)
   if (compareUsageChunks && !isDeepStrictEqual(messageUsages, chunkUsages)) {
+    usageComplete = false
     failures.push('assistant message usage does not match usage chunks')
   }
   if (events.some(event => event?.type === 'session/title-llm-request')) {
@@ -426,6 +437,7 @@ export function collectTrajectoryFacts(events, options = {}) {
     finalAnswer,
     reasoningChars,
     usage,
+    usageComplete: usageComplete && Object.values(usage).every(Number.isSafeInteger),
     messageUsages,
     chunkUsages,
     turnStartedAt,
@@ -1149,6 +1161,10 @@ export function machineBudgetFailures(metrics, budget, label = 'trajectory') {
   const failures = []
   for (const [limit, metric] of Object.entries(BUDGET_METRICS)) {
     const observed = metrics[metric]
+    if (metric === 'tokenTraffic' && observed === null) {
+      failures.push(`${label} tokenTraffic is unknown because usage accounting is incomplete`)
+      continue
+    }
     if (!Number.isSafeInteger(observed) || observed < 0) {
       throw new TypeError(`${label} metric ${metric} must be a non-negative safe integer`)
     }

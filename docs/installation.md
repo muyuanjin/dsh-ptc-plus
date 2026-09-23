@@ -24,7 +24,7 @@ The plugin attaches to whichever program-execution service the installed DSH reg
 
 Every installation path uses an unmodified official DSH distribution. Local plugin development packages this checkout; it does not build, patch, or substitute the Host. Missing public layout interfaces remain a feature limitation, not an instruction to customize DSH. See [ADR 0017](adr/0017-track-the-latest-dsh-public-surface.md) for distribution and acceptance requirements.
 
-The Client root requires `settingsScope`, `slots`, `locale`, and `connection`. Contributions wait for their public slots and consume the supplied session hooks; the composer action additionally requires `remote.commands`. Neither an unused `ui-session` module nor a renamed conversation registry gates activation. Preset selection prefers `agentPreset` projection evidence, falling back only to the preceding public session summary field when that projection is absent. Binding values and draft capabilities always require their own projections. No private store or raw-log fallback is used. Slot and provider disposal withdraw the contributions they own.
+The Client root requires `slots`, `locale`, `connection`, and `remote`; it resolves the installed generation's settings transport (`configForms` on the current alpha, `settingsScope` on the preceding RC) through an optional injection. Contributions wait for their public slots and consume the supplied session hooks; the composer action additionally requires `remote.commands`. Neither an unused `ui-session` module nor a renamed conversation registry gates activation. Preset selection prefers `agentPreset` projection evidence, falling back only to the preceding public session summary field when that projection is absent. Binding values and draft capabilities always require their own projections. No private store or raw-log fallback is used. Slot and provider disposal withdraw the contributions they own.
 
 ## npm Release
 
@@ -108,18 +108,36 @@ dsh --dump-config
 
 After an npm release, the package spec may instead be `dsh-ptc-plus@0.4.2`. For a local package, use its absolute tarball path. Restart DSH Desktop after installation. Linux Desktop is not a current DSH Desktop release target; use DSH CLI/Web on Linux.
 
+## Upgrades
+
+PTC Plus upgrades independently of the host. Replace the installed package with the new release the same way it was installed — `npm install dsh-ptc-plus@latest`, a new tarball, or an updated pinned Git revision in the profile patch — and restart the host so every profile reloads the plugin. The plugin never patches DSH and never requires a custom host build, so a host upgrade keeps the plugin working as long as the public surfaces it needs are still published.
+
+Your settings document and session logs are not rewritten by an upgrade. A release that adds a configuration field applies its documented default until you choose a value. A release that raises the Session format generation requires the migration below before an older log is opened by the new Host; the plugin reports that condition instead of rewriting history on its own.
+
+## Troubleshooting
+
+Start from the exact diagnostic: every message below names the surface that is missing, and the plugin keeps the rest of its behavior intact while the condition holds.
+
+- `ptc-plus: no host execution seam (ptcRuntime or codeRuntime) is registered` — the profile publishes no DSH code runtime, or that entry failed to activate. Repair or enable the runtime row and reload; the plugin attaches as soon as the service appears.
+- The settings card is missing — the installed DSH generation publishes no settings section installer for this entry, or no volatile form for the exported Config. The runtime keeps working; the host reports its own settings diagnostic.
+- `ptc-plus: Cordis companion tooling withdrew from an agent scope` — an exposed companion service, preset, Skill or child fiber failed its required contract. Repair the specific cause attached to the warning, or disable `cordisToolsEnabled` if that integration is unavailable. A scope missing optional companion surfaces instead waits silently and retries when its tool surface changes or its next prompt is assembled.
+- A commit is refused with a verification or proof error — follow [deterministic verification](verification.md): resolve any incomplete lanes shown by `npm run review:status`, run `npm run check` on the frozen tree, then `npm run review:finalize`. Stage that verified candidate and retry. Use `npm run hooks:install` if the hook is missing; never bypass it.
+- A historical PTC session cannot be resumed — follow the Session format upgrade below, keep the original log, and report the exact refusal message.
+
 ## Session format upgrades
 
 The public DSH Session format catalog can renumber events when converting historical assistant streams. It treats plugin result metadata as opaque, so its automatic conversion alone cannot preserve PTC sequence references. Before opening historical PTC sessions in the new Host, stop the processes using that profile and retain a backup of each original log.
 
-From this source checkout, convert a source artifact with the destination Host's public catalog:
+From this source checkout, convert a standalone source artifact with the destination Host's public catalog. An empty child set must be explicit:
 
 ```sh
-npm run session:migrate -- --dsh-entry /path/to/dsh/lib/bin.js --input /backup/session.jsonl --output /staging/session.v2.jsonl
+npm run session:migrate -- --dsh-entry /path/to/dsh/lib/bin.js --no-children --input /backup/session.jsonl --output /staging/session.v2.jsonl
 ```
+
+For a parent session, pass `--child-facts /backup/child-facts.json` instead. The JSON file must be the complete array of direct-child evidence produced through the selected Host's public historical catalog and child-fact APIs. Do not use `--no-children` merely because child artifacts are unavailable: newer format migrations use those facts to preserve or reconstruct the parent's child catalog and deliberately refuse to guess. Current-format inputs need neither option because no historical body migration runs.
 
 The output header and command report identify the actual target **Session format**, independent of the DSH package version. Use the corresponding canonical filename `session.v<N>.jsonl` in that session's existing directory. Match the persistence provider's encoding: `.zstd` input/output uses the `zstd` executable, with separate header and event frames. The example names format 2; use the format reported by the selected catalog. Only place the validated output in the stopped profile after inspecting it. Keep the predecessor artifact for rollback; do not continue editing the same history through old and new Hosts in parallel.
 
-The converter verifies that ordered tool records retain their identities, maps journal confirmations, edit targets and recovery boundaries, and revalidates the output. It leaves original model arguments, source, results and recorded effects unchanged. Input files are never overwritten, including through hard links; existing destinations require explicit `--force`. A current-format source needs no output. A Host without the public catalog cannot perform Host format conversion.
+The converter verifies that ordered tool records retain their normalized call arguments, result content, error status, PTC metadata, and recorded effects while allowing the public Host migration to update generation-specific message envelopes. It maps journal confirmations, edit targets and recovery boundaries, then revalidates the output. Input files are never overwritten, including through hard links; existing destinations require explicit `--force`. A current-format source needs no output. A Host without the public catalog cannot perform Host format conversion.
 
-Already converted logs with stale PTC references cannot be repaired from their numeric values alone: use the original predecessor or backup. Preserve any newer activity separately. Logs containing retired `ptc-plus/recovery-boundary` events are refused by Host format conversion; the existing command without `--dsh-entry` remains the separate retired-event converter, whose output needs validation before a further upgrade. The migration tool does not modify a running persistence queue or silently repair unproved history.
+Already converted logs with stale PTC references cannot be repaired from their numeric values alone: use the original predecessor or backup. Preserve any newer activity separately. Logs containing retired `ptc-plus/recovery-boundary` events are refused by Host format conversion; the existing command without `--dsh-entry` remains the separate retired-event converter. That converter accepts only Session format 0 with a contiguous zero-based source log and, before writing, validates PTC recovery plus every sequence relation in that frozen Host vocabulary, including surface replacements, command sources, title sources and compaction shadows. It also subtracts removed boundary events from a seeded session's exact inherited-prefix cut. A different source format, missing, removed, forward, duplicate, wrong-kind or semantically inconsistent relation leaves the source unchanged and produces no output. Run the retired-event conversion first, then use its validated output as the input to any Host format upgrade. The migration tool does not modify a running persistence queue or silently repair unproved history.

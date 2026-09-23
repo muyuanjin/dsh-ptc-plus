@@ -23,6 +23,11 @@ const REVIEW_STATE_LOCK = 'review-findings/state.lock'
 const REVIEW_LOCK_HELD = Symbol('reviewLockHeld')
 const REVIEW_LOCK_RETRY_MS = 25
 const REVIEW_LOCK_TIMEOUT_MS = 30_000
+// Windows-hosted checkouts can still hold a just-written review-state directory
+// open when removal starts, so every recursive removal retries the documented
+// sharing violations (EBUSY, EMFILE, ENFILE, ENOTEMPTY, EPERM) instead of
+// failing a review command that already completed its state change.
+const REVIEW_REMOVAL_OPTIONS = Object.freeze({ recursive: true, force: true, maxRetries: 20, retryDelay: 50 })
 const STANDARD_REVIEW_OBLIGATIONS = new Set([
   'intrinsic-handling',
   'scope-and-declaration-ownership',
@@ -49,11 +54,11 @@ const TERMINAL_STATUSES = new Set(['resolved', 'invalid', 'accepted'])
 const FINDING_STATUSES = new Set(['unresolved', ...TERMINAL_STATUSES])
 const PLACEHOLDER_FIELDS = new Set(['owner', 'condition', 'impact', 'requiredOutcome'])
 
-function git(root, args, { allowFailure = false, env, input } = {}) {
+function git(root, args, { allowFailure = false, env, replaceEnv = false, input } = {}) {
   const result = spawnSync('git', args, {
     cwd: root,
     encoding: 'utf8',
-    ...(env === undefined ? {} : { env: { ...process.env, ...env } }),
+    ...(env === undefined ? {} : { env: replaceEnv ? env : { ...process.env, ...env } }),
     ...(input === undefined ? {} : { input }),
   })
   if (result.status === 0) return result.stdout.trim()
@@ -62,8 +67,13 @@ function git(root, args, { allowFailure = false, env, input } = {}) {
   throw new Error(`git ${args.join(' ')} failed: ${detail}`)
 }
 
-function gitBytes(root, args) {
-  const result = spawnSync('git', args, { cwd: root, encoding: null, maxBuffer: 64 * 1024 * 1024 })
+function gitBytes(root, args, { env } = {}) {
+  const result = spawnSync('git', args, {
+    cwd: root,
+    encoding: null,
+    maxBuffer: 64 * 1024 * 1024,
+    ...(env === undefined ? {} : { env }),
+  })
   if (result.status === 0) return result.stdout
   const detail = result.stderr.toString('utf8').trim() || `exit ${result.status}`
   throw new Error(`git ${args.join(' ')} failed: ${detail}`)
@@ -389,7 +399,7 @@ async function acquireReviewStateLock(root, options = {}) {
       try {
         await writeFile(ownerPath, `${JSON.stringify({ pid: process.pid, token })}\n`)
       } catch (error) {
-        await rm(lockPath, { recursive: true, force: true })
+        await rm(lockPath, REVIEW_REMOVAL_OPTIONS)
         throw error
       }
       return async () => {
@@ -399,7 +409,7 @@ async function acquireReviewStateLock(root, options = {}) {
         } catch {
           owner = undefined
         }
-        if (owner?.token === token) await rm(lockPath, { recursive: true, force: true })
+        if (owner?.token === token) await rm(lockPath, REVIEW_REMOVAL_OPTIONS)
       }
     } catch (error) {
       if (error?.code !== 'EEXIST') throw error
@@ -656,6 +666,17 @@ export async function sourceTreeSnapshot(root, { base } = {}) {
   const directory = await mkdtemp(path.join(metadataDirectory, 'tree-'))
   const scratchGitDirectory = path.join(directory, 'git')
   const scratchObjects = path.join(scratchGitDirectory, 'objects')
+  // Git exports GIT_INDEX_FILE (and the other repository variables) to hooks:
+  // a partially staged commit exports `.git/index`, and `git commit --only`
+  // exports its temporary next index. The scratch tree must never write through
+  // the caller's index, so every scratch command runs without those variables.
+  // Reading the prospective index stays outside this environment, because that
+  // fingerprint must observe exactly the index Git prepared for the commit.
+  const scratchEnvironment = { ...process.env }
+  for (const name of [
+    'GIT_INDEX_FILE', 'GIT_DIR', 'GIT_WORK_TREE', 'GIT_OBJECT_DIRECTORY',
+    'GIT_ALTERNATE_OBJECT_DIRECTORIES', 'GIT_COMMON_DIR',
+  ]) delete scratchEnvironment[name]
   // Explicit Git paths also cross command forwarders that omit custom
   // environment variables. Git owns the scratch index and canonical objects.
   const scratchCommand = (args, options) => git(root, [
@@ -663,13 +684,13 @@ export async function sourceTreeSnapshot(root, { base } = {}) {
     '--work-tree', '.',
     '--literal-pathspecs',
     ...args,
-  ], options)
+  ], { ...options, env: scratchEnvironment, replaceEnv: true })
   const scratchBytes = (args) => gitBytes(root, [
     '--git-dir', gitRelativePath(root, scratchGitDirectory),
     '--work-tree', '.',
     '--literal-pathspecs',
     ...args,
-  ])
+  ], { env: scratchEnvironment })
   try {
     const objectFormat = git(root, ['rev-parse', '--show-object-format'])
     const originalConfig = path.resolve(root, git(root, ['rev-parse', '--git-path', 'config']))
@@ -721,7 +742,7 @@ export async function sourceTreeSnapshot(root, { base } = {}) {
     ]))
     return Object.freeze({ fingerprint, entries: Object.freeze(entries), changedPaths: Object.freeze(changedPaths) })
   } finally {
-    await rm(directory, { recursive: true, force: true })
+    await rm(directory, REVIEW_REMOVAL_OPTIONS)
   }
 }
 
@@ -1232,7 +1253,7 @@ export async function clearReviewVerdict(root, options = {}) {
   await removeIfPresent(verificationVerdictPath(root))
   await removeIfPresent(verificationProofPath(root))
   await removeIfPresent(reviewPlanStatePath(root))
-  await rm(reviewLaneDirectory(root), { recursive: true, force: true })
+  await rm(reviewLaneDirectory(root), REVIEW_REMOVAL_OPTIONS)
   return Object.freeze({ state: 'cleared' })
 }
 

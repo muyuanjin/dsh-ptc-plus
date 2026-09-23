@@ -1,4 +1,5 @@
 import { blankBinding, editableBinding, bindingPayload } from './client-bindings-data.js'
+import { isHostIconComponent } from './client-host-compat.js'
 
 /**
  * User Bindings workbench. The controller owns every piece of edit state in one
@@ -320,7 +321,7 @@ export function createUserBindingsWorkbench(React, deps) {
           h(ActionButton, {
             type: 'button', className: 'ptcPlusButton', 'data-kind': 'primary', disabled: !canCreate,
             onClick: create,
-          }, typeof icons.plus === 'function' ? h(icons.plus, { size: 16 }) : null, t('bindings.new')))),
+          }, isHostIconComponent(icons.plus) ? h(icons.plus, { size: 16 }) : null, t('bindings.new')))),
       state.catalog === null
         ? h('p', {
             // A failed read publishes its error on the shared source; without it
@@ -333,7 +334,7 @@ export function createUserBindingsWorkbench(React, deps) {
         : h('div', { className: 'ptcPlusBindingsGrid' },
             h('div', { className: 'ptcPlusBindingPane' },
               h('label', { className: 'ptcPlusSearch' },
-                typeof icons.search === 'function' ? h(icons.search, { size: 16 }) : null,
+                isHostIconComponent(icons.search) ? h(icons.search, { size: 16 }) : null,
                 h('input', { value: state.query, onChange: event => patch({ query: event.target.value }),
                   placeholder: t('bindings.search'), 'aria-label': t('bindings.search') })),
               state.catalog.error === undefined
@@ -414,7 +415,7 @@ export function createUserBindingsWorkbench(React, deps) {
                   h('span', { className: 'ptcPlusSourceFilename' }, state.draft.name ? `${state.draft.name}.ts` : '')),
                 h('div', { className: 'ptcPlusSourceActions' }, state.editing ? null
                   : h(ActionButton, { disabled: state.busy, onClick: () => patch({ editing: true, sourceOpen: true }) },
-                    typeof icons.edit === 'function' ? h(icons.edit, { size: 14 }) : null, t('bindings.edit'))),
+                    isHostIconComponent(icons.edit) ? h(icons.edit, { size: 14 }) : null, t('bindings.edit'))),
                 h('div', { className: 'ptcPlusSourceBody', hidden: !state.sourceOpen },
                   state.editing
                     ? h(TypeScriptEditor, { documentId: state.documentId, value: state.draft.source, disabled: state.busy,

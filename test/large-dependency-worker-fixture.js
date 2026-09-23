@@ -1,14 +1,19 @@
 import assert from 'node:assert/strict'
 import { createRequire } from 'node:module'
 import { SessionRuntime } from '../internal/session-runtime.js'
+import { orderedSurfaceSession, runRecordedCell } from './plugin-fixture.js'
 
 const native = createRequire(import.meta.url)('typescript')
 const { name, options, first } = JSON.parse(process.argv[2])
 const runtime = new SessionRuntime({ durableReplay: false, ...options })
 try {
-  const session = { id: `large-dependency-${name}`, session: { header: { cwd: process.cwd() } } }
+  const session = orderedSurfaceSession(`large-dependency-${name}`)
+  session.header = { cwd: process.cwd() }
+  let call = 0
   const run = async program => {
-    const result = await runtime.run(session, { bindings: [], program })
+    const result = await runRecordedCell(runtime, session, `large-dependency-${++call}`, {
+      bindings: [], program,
+    })
     assert.equal(result.error, undefined, result.error?.message)
     return result.value
   }

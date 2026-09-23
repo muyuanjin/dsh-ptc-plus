@@ -397,10 +397,9 @@ test('Cordis owner leaves the host dispatchers their own outcome', async () => {
   const owner = createCordisToolsOwner(root, fakeCordisPlugin)
   await owner.ready
 
-  // DSH 0.1.6 announces agent creation through its own serial dispatch, whose
-  // documented contract is that a listener failure rejects the agents.create()
-  // that asked for the agent. A scope this owner cannot serve must not become
-  // that failure, and the parallel form of the same announcement must hold too.
+  // The public serial agent-created dispatch rejects the agents.create() that
+  // requested the agent when a listener fails. A scope this owner cannot serve
+  // must not become that failure, and the parallel form must hold too.
   const omitted = scopedAgent('host-dispatch-omitted-tool', { skillTool: false })
   await root.serial(root, 'agent/created', { agent: omitted })
   await root.parallel(root, 'agent/created', { agent: omitted })
@@ -518,9 +517,9 @@ test('Cordis owner contains a created agent scope that omits the companion tool'
   const owner = createCordisToolsOwner(host.ctx, fakeCordisPlugin)
   await owner.ready
 
-  // DSH 0.1.6 announces `agent/created` serially and turns a listener rejection
-  // into an agents.create() failure, so another plugin's subagent creation has
-  // to survive an agent scope this owner cannot serve.
+  // The public serial `agent/created` dispatch turns a listener rejection into
+  // an agents.create() failure, so another plugin's subagent creation has to
+  // survive an agent scope this owner cannot serve.
   const agent = scopedAgent('serial-without-companion-tool', { skillTool: false })
   await host.emit('agent/created', { agent })
 
@@ -570,9 +569,32 @@ test('Cordis owner withdraws from an unusable created agent scope without failin
   await owner.dispose()
 })
 
+test('Cordis owner never retries a withdrawn asynchronous activation', async () => {
+  const host = ownerContext([])
+  const owner = createCordisToolsOwner(host.ctx, fakeCordisPlugin)
+  await owner.ready
+  const agent = scopedAgent('created-with-failed-activation', {
+    activationError: new Error('created activation failed'),
+  })
+  await host.emit('agent/created', { agent })
+  assert.equal(agent.skillPluginCalls, 1)
+  assert.equal(agent.pluginCalls, 1)
+  assert.equal(host.warnings.length, 1)
+
+  await host.emit('agent/created', { agent })
+  await host.emit('tools/change')
+  await host.ctx.systemPrompt.assemble({ scope: agent })
+  assert.equal(agent.skillPluginCalls, 1)
+  assert.equal(agent.pluginCalls, 1)
+  assert.equal(host.warnings.length, 1)
+  await owner.dispose()
+})
+
 test('Cordis owner rejects unavailable companion Skill capabilities before publication', async () => {
   for (const [label, options, expected] of [
-    ['broken preset', { preset: { path: CORDIS_PRESET_PATH, broken: 'invalid composition' } }, /preset is unavailable/],
+    ['broken preset', { preset: { broken: 'invalid composition' } }, /preset is unavailable/],
+    ['preset generation without a composition path', { preset: { id: 'cordis' } },
+      /publishes no composition path for the "cordis" preset/],
     ['relative preset path', { preset: { path: 'cordis.yml' } }, /absolute composition path/],
     ['preset service without resolve', { malformedServices: ['agentPresets'] }, /agentPresets\.resolve API/],
     ['skills service without its APIs', { malformedServices: ['skills'] }, /skills registerProvider\/list\/get APIs/],
@@ -645,7 +667,29 @@ test('Cordis owner diagnoses a deferred activation failure', async () => {
   assert.equal(late.pluginCalls, 1)
   assert.equal(TEST_CORDIS_TOOL_NAMES.some(name => late.definitions.has(name)), false)
   assert.equal(host.warnings.length, 1)
+  await host.emit('tools/change')
+  await host.emit('tools/change')
+  await host.ctx.systemPrompt.assemble({ scope: late })
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(late.pluginCalls, 1)
+  assert.equal(host.warnings.length, 1)
   await owner.dispose()
+})
+
+test('Cordis owner cancels a queued deferred retry when disposed', async () => {
+  const late = scopedAgent('late-disposed-retry', { ptc: false })
+  const host = ownerContext([late])
+  const owner = createCordisToolsOwner(host.ctx, fakeCordisPlugin)
+  await owner.ready
+  late.definitions.set('run_code', { name: 'run_code' })
+  const retry = [...host.listeners.get('tools/change')][0]
+  retry()
+  const disposal = owner.dispose()
+  assert.equal(owner.dispose(), disposal)
+  await disposal
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(late.pluginCalls, 0)
+  assert.equal(host.warnings.length, 0)
 })
 
 test('Cordis owner follows the official plugin tool names without a local manifest', async () => {

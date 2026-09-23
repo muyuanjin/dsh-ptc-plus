@@ -5,7 +5,7 @@ import { JOURNAL_KEY, normalizeJournal } from '../internal/session-journal.js'
 import { JOURNAL_VERSION } from '../internal/session-journal-schema.js'
 import { createUserBindingsSnapshot, USER_BINDINGS_META_KEY } from '../internal/user-bindings.js'
 import { encodeValue } from '../internal/value-wire.js'
-import { appendRunCodeEvents } from './plugin-fixture.js'
+import { appendRunCodeEvents, orderedSurfaceSession } from './plugin-fixture.js'
 import { interceptWorkerMessages } from './runtime-observation.js'
 
 function withoutReuse(entry) {
@@ -24,8 +24,35 @@ function snapshot(entries, revision = 1) {
   return createUserBindingsSnapshot({ entries }, revision)
 }
 
+function nextEventSeq(events) {
+  return Math.max(-1, ...events.map(event => event.seq)) + 1
+}
+
+function appendRecordedRunCodeEvents(events, callId, code, result) {
+  const offset = nextEventSeq(events)
+  const recorded = []
+  const local = appendRunCodeEvents(recorded, callId, code, result)
+  for (const event of recorded) {
+    event.seq += offset
+    event.time = event.seq
+    if (event.sourceEventSeqs !== undefined) {
+      event.sourceEventSeqs = event.sourceEventSeqs.map(seq => seq + offset)
+    }
+  }
+  events.push(...recorded)
+  return Object.freeze({
+    assistantSeq: local.assistantSeq + offset,
+    callSeq: local.callSeq + offset,
+    resultSeq: local.resultSeq + offset,
+  })
+}
+
+function eventAt(session, seq) {
+  return session.events.find(event => event.seq === seq)
+}
+
 async function record(runtime, session, program, userBindings, functions = {}) {
-  const callSeq = Math.max(-1, ...session.events.map(event => event.seq)) + 1
+  const callSeq = nextEventSeq(session.events) + 1
   const execution = await runtime.runTentative({ id: session.id, session, persistedCallSeq: callSeq }, {
     program, userBindings, bindings: [{ global: 'tools', functions }],
   })
@@ -37,13 +64,9 @@ async function record(runtime, session, program, userBindings, functions = {}) {
     ...(settlement.recoveryBoundaries === undefined ? {} : { dshPtcPlusRecoveryBoundaries: settlement.recoveryBoundaries }),
   }
   runtime.finalize(settlement, true)
-  const recorded = []
-  appendRunCodeEvents(recorded, `history-${callSeq}`, program, { meta })
-  recorded[0].seq = callSeq
-  recorded[1].seq = callSeq + 1
-  recorded[1].sourceEventSeqs = [callSeq]
-  session.events.push(...recorded)
-  return { ...execution.result, meta, replMemory: settlement.replMemory }
+  const eventSeqs = appendRecordedRunCodeEvents(session.events, `history-${callSeq}`, program, { meta })
+  assert.equal(eventSeqs.callSeq, callSeq)
+  return { ...execution.result, meta, replMemory: settlement.replMemory, eventSeqs }
 }
 
 function historicalJournal(version, userBindings, calls = []) {
@@ -66,7 +89,7 @@ function historicalJournal(version, userBindings, calls = []) {
 function wholeEntryHistory(version) {
   const full = snapshot([pair()])
   const empty = snapshot([])
-  const session = { id: `whole-entry-${version}`, events: [] }
+  const session = orderedSurfaceSession(`whole-entry-${version}`)
   const sources = [
     'const savedAlpha = alpha; const savedBeta = beta; const before = beta(); void 0',
     'alpha = { local: true }; const localAlpha = alpha; const inside = beta(); void 0',
@@ -108,7 +131,7 @@ test('top-level accessor capture cannot create durable setter ancestry', async t
 test('legacy retained setters remain callable after disabled ancestry and new per-name cells', async t => {
   for (const version of [6, 7]) await t.test(`journal ${version}`, async t => {
     const selected = snapshot([{ id: 'alpha', name: 'alpha', scope: 'top-level', enabled: true, source: 'export const alpha = 1' }])
-    const session = { id: `legacy-retained-setter-${version}`, events: [] }
+    const session = orderedSurfaceSession(`legacy-retained-setter-${version}`)
     const source = 'const savedRoot = this; const savedSetter = Object.getOwnPropertyDescriptor(savedRoot, "alpha").set; const retained = 42; void 0'
     appendRunCodeEvents(session.events, 'legacy-setter', source, { meta: {
       [JOURNAL_KEY]: historicalJournal(version, selected), [USER_BINDINGS_META_KEY]: selected,
@@ -136,26 +159,29 @@ test('legacy retained setters remain callable after disabled ancestry and new pe
 })
 
 test('unknown-boundary contraction cannot retain discarded provider-name eligibility', async t => {
-  const session = { id: 'contracted-setter-ancestry', events: [] }
+  const session = orderedSurfaceSession('contracted-setter-ancestry')
   const selected = snapshot([{ id: 'alpha', name: 'alpha', scope: 'top-level', enabled: true, source: 'export const alpha = 1' }])
   const runtime = new SessionRuntime()
   t.after(() => runtime.dispose())
-  await record(runtime, session, 'const anchor = 42; void 0', undefined)
-  await record(runtime, session, 'const savedProvider = alpha; void 0', selected)
+  const anchor = await record(runtime, session, 'const anchor = 42; void 0', undefined)
+  const savedProvider = await record(runtime, session, 'const savedProvider = alpha; void 0', selected)
   await record(runtime, session, 'void 0', undefined)
   await runtime.dispose()
   session.events = structuredClone(session.events)
-  delete session.events[3].data.meta[JOURNAL_KEY].userBindingNames
+  delete eventAt(session, savedProvider.eventSeqs.resultSeq).data.meta[JOURNAL_KEY].userBindingNames
   const restored = new SessionRuntime()
   t.after(() => restored.dispose())
   const contracted = await record(restored, session, 'return [anchor, typeof savedProvider, typeof alpha]', undefined)
   assert.deepEqual(contracted.value, [42, 'undefined', 'undefined'])
-  assert.deepEqual(contracted.meta.dshPtcPlusRecoveryBoundaries, [{ failedCallSeq: 2, frontierCallSeq: 0 }])
+  assert.deepEqual(contracted.meta.dshPtcPlusRecoveryBoundaries,
+    [{ failedCallSeq: savedProvider.eventSeqs.callSeq, frontierCallSeq: anchor.eventSeqs.callSeq }])
   const intercepted = interceptWorkerMessages(restored, session.id, (message, deliver) => {
     if (message.type === 'done') message.userBindingNames.push({ name: 'alpha', state: 'local' })
     deliver(message)
   })
-  const forged = await restored.runTentative({ id: session.id, session, persistedCallSeq: session.events.length }, {
+  const forged = await restored.runTentative({
+    id: session.id, session, persistedCallSeq: nextEventSeq(session.events) + 1,
+  }, {
     program: 'return anchor', bindings: [],
   })
   intercepted.restore()
@@ -166,7 +192,7 @@ test('unknown-boundary contraction cannot retain discarded provider-name eligibi
 })
 
 test('retains per-name overrides and saved module identities through lifecycle changes and cold replay', async t => {
-  const session = { id: 'per-name-lifecycle', events: [] }
+  const session = orderedSurfaceSession('per-name-lifecycle')
   let initializations = 0
   const functions = { observe: async () => { initializations++; return 'initialized' } }
   const runtime = new SessionRuntime()
@@ -222,7 +248,7 @@ test('replays imported aliases with truthful source and UI evidence across void 
     ['synthetic default', '__default', 'export default { value: "value" }', '__default.value', 'variable'],
   ]
   for (const [style, name, declaration, read, kind] of cases) await t.test(style, async t => {
-    const session = { id: `import-alias-cold-replay-${style}`, events: [] }
+    const session = orderedSurfaceSession(`import-alias-cold-replay-${style}`)
     let initializations = 0
     const functions = { observe: async () => { initializations++; return 'initialized' } }
     const runtime = new SessionRuntime()
@@ -279,13 +305,14 @@ test('replays imported aliases with truthful source and UI evidence across void 
 })
 
 test('rejects false import alias absence during void replay without redispatching historical calls', async t => {
-  const session = { id: 'false-import-absence', events: [] }
+  const session = orderedSurfaceSession('false-import-absence')
   const runtime = new SessionRuntime()
   t.after(() => runtime.dispose())
   let initializations = 0
   const functions = { observe: async () => { initializations++; return 'initialized' } }
   const selected = snapshot([pair()])
-  await record(runtime, session, 'import { format as alpha } from "node:util"; void 0', snapshot([]), functions)
+  const imported = await record(runtime, session,
+    'import { format as alpha } from "node:util"; void 0', snapshot([]), functions)
   const attached = await record(runtime, session, 'const observed = [alpha("ok"), beta()]; void 0', selected, functions)
   assert.deepEqual(attached.meta[JOURNAL_KEY].completion, { kind: 'return', hasValue: false })
   assert.deepEqual(attached.meta[JOURNAL_KEY].userBindingNames, [
@@ -294,7 +321,7 @@ test('rejects false import alias absence during void replay without redispatchin
   assert.equal(initializations, 1)
   await runtime.dispose()
   session.events = structuredClone(session.events)
-  session.events[3].data.meta[JOURNAL_KEY].userBindingNames[0].state = 'absent'
+  eventAt(session, attached.eventSeqs.resultSeq).data.meta[JOURNAL_KEY].userBindingNames[0].state = 'absent'
   for (let generation = 0; generation < 2; generation++) {
     const restored = new SessionRuntime()
     t.after(() => restored.dispose())
@@ -308,7 +335,8 @@ test('rejects false import alias absence during void replay without redispatchin
       definition: { source: 'import { format as alpha } from "node:util";', line: 1, column: 1 },
     })
     if (generation === 0) {
-      assert.deepEqual(continued.meta.dshPtcPlusRecoveryBoundaries, [{ failedCallSeq: 2, frontierCallSeq: 0 }])
+      assert.deepEqual(continued.meta.dshPtcPlusRecoveryBoundaries,
+        [{ failedCallSeq: attached.eventSeqs.callSeq, frontierCallSeq: imported.eventSeqs.callSeq }])
       assert.equal(continued.meta[JOURNAL_KEY].diagnostics.filter(item => item.code === 'PTC-R002').length, 1)
     } else {
       assert.equal(continued.meta.dshPtcPlusRecoveryBoundaries, undefined)
@@ -319,7 +347,7 @@ test('rejects false import alias absence during void replay without redispatchin
 })
 
 test('fully activates changed entries when every public name is local and replays their initializer values', async t => {
-  const session = { id: 'all-names-local', events: [] }
+  const session = orderedSurfaceSession('all-names-local')
   let initializations = 0
   const functions = { observe: async () => { initializations++; return 'initialized' } }
   const runtime = new SessionRuntime()
@@ -381,13 +409,14 @@ test('replays historical whole-entry removal before appending new per-name cells
 
 test('contracts corrupt or false name evidence once and continues from the greatest proved frontier', async t => {
   const full = snapshot([pair()])
-  const original = { id: 'source-proof', events: [] }
+  const original = orderedSurfaceSession('source-proof')
   const runtime = new SessionRuntime()
   t.after(() => runtime.dispose())
   let initializations = 0
   const functions = { observe: async () => { initializations++; return 'initialized' } }
-  await record(runtime, original, 'const anchor = 40; void 0', undefined, functions)
-  await record(runtime, original, 'alpha = { local: true }; const saved = beta(); void 0', full, functions)
+  const anchor = await record(runtime, original, 'const anchor = 40; void 0', undefined, functions)
+  const corrupted = await record(runtime, original,
+    'alpha = { local: true }; const saved = beta(); void 0', full, functions)
   await record(runtime, original, 'const dependent = saved + 1; void 0', full, functions)
   assert.equal(initializations, 1)
   await runtime.dispose()
@@ -404,9 +433,9 @@ test('contracts corrupt or false name evidence once and continues from the great
   ]
   for (const [label, corrupt] of corruptions) for (const keepPrefix of [true, false]) {
     await t.test(`${label}, prefix ${keepPrefix}`, async t => {
-      const session = { id: `${label}-${keepPrefix}`, events: structuredClone(original.events) }
-      corrupt(session.events[3].data.meta[JOURNAL_KEY])
-      if (!keepPrefix) session.events.splice(0, 2)
+      const session = orderedSurfaceSession(`${label}-${keepPrefix}`, structuredClone(original.events))
+      corrupt(eventAt(session, corrupted.eventSeqs.resultSeq).data.meta[JOURNAL_KEY])
+      if (!keepPrefix) session.events = session.events.filter(event => event.seq > anchor.eventSeqs.resultSeq)
       const source = structuredClone(session.events)
       for (let generation = 0; generation < 2; generation++) {
         const restored = new SessionRuntime()
@@ -417,7 +446,10 @@ test('contracts corrupt or false name evidence once and continues from the great
         assert.equal(initializations, 1)
         assert.deepEqual(continued.meta[JOURNAL_KEY].calls, [])
         if (generation === 0) {
-          assert.deepEqual(continued.meta.dshPtcPlusRecoveryBoundaries, [{ failedCallSeq: 2, frontierCallSeq: keepPrefix ? 0 : null }])
+          assert.deepEqual(continued.meta.dshPtcPlusRecoveryBoundaries, [{
+            failedCallSeq: corrupted.eventSeqs.callSeq,
+            frontierCallSeq: keepPrefix ? anchor.eventSeqs.callSeq : null,
+          }])
           assert.equal(continued.meta[JOURNAL_KEY].diagnostics.filter(item => item.code === 'PTC-R002').length, 1)
         } else {
           assert.equal(continued.meta.dshPtcPlusRecoveryBoundaries, undefined)

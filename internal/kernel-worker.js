@@ -1,4 +1,5 @@
 import { create as createDomain } from 'node:domain'
+import { Console } from 'node:console'
 import { createRequire, registerHooks } from 'node:module'
 import { managedModuleImport, managedRequire, readModuleImport, statefulModuleLink } from './stateful-module-runtime.js'
 import { staticModuleLinkReference } from './compiler-module-links.js'
@@ -6,9 +7,8 @@ import { compileStatefulModule, createUserModuleCompilationHooks } from './state
 import { USER_BINDING_TRANSFORM, LEGACY_USER_BINDING_TRANSFORM } from './module-transform-contract.js'
 import { isAbsolute, resolve } from 'node:path'
 import repl from 'node:repl'
-import { PassThrough } from 'node:stream'
+import { PassThrough, Writable } from 'node:stream'
 import { pathToFileURL } from 'node:url'
-import { formatWithOptions } from 'node:util'
 import { MessageChannel, parentPort, workerData } from 'node:worker_threads'
 import { synchronizeBuiltinEsmExports } from './builtin-esm-sync.js'
 import { createPrivateAsyncLocalStorage } from './async-local-storage-intrinsics.js'
@@ -17,6 +17,13 @@ import { DURABLE_IMPORTS, FORBIDDEN_IMPORTS } from './module-policy.js'
 import { decodeValue, encodeValue } from './value-wire.js'
 import { LEGACY_USER_BINDINGS_REUSE_POLICY, LIVE_USER_BINDINGS_SHADOW_POLICY, normalizeUserBindingNames } from './session-journal-schema.js'
 import { installWorkerCwdVirtualization } from './worker-cwd-virtualization.js'
+import {
+  WORKER_REALM_MUTATION,
+  assignWorkerRealmProperty,
+  defineWorkerRealmProperty,
+  deleteWorkerRealmProperty,
+  installProcessControlGuards,
+} from './worker-realm-surfaces.js'
 import { createReplValueObserver, supportsAwaitLexicals, previewBindingValue } from './repl-value-observer.js'
 import { createStatefulRootRuntime } from './stateful-root-runtime.js'
 import { createNativeRootDynamic } from './native-root-dynamic.js'
@@ -24,6 +31,7 @@ import { moduleRuntimeIntrinsics } from './compiler-intrinsics.js'
 import { compilerDescriptors } from './compiler-descriptors.js'
 import { createCellCompletionObserver } from './cell-completion.js'
 import { WORKER_SHUTDOWN_ACKNOWLEDGEMENT, WORKER_SHUTDOWN_REQUEST } from './worker-shutdown.js'
+import { outputFenceMarker } from './worker-output-fence.js'
 import { WORKER_REPL_OPTIONS, createWorkerControlPromise, createWorkerReplErrorHandler,
   createWorkerUncaughtExceptionHandler,
   disableWorkerReplDomain,
@@ -34,7 +42,9 @@ import { installProgramAmbientResolver } from './dynamic-environment-runtime.js'
 const { Object, Map, Set, Proxy, Error,
   mapGet, mapSet, mapHas, mapDelete, mapClear, mapSize, mapForEach,
   setHas, setAdd, setDelete, setClear, setForEach,
-  everyArray, someArray, appendArray, copyArray, join, Reflect: privateReflect, promiseResolve, promiseReject } = moduleRuntimeIntrinsics
+  everyArray, someArray, appendArray, copyArray, join, sliceString, endsWith,
+  bufferConcat, bufferIsBuffer, bufferToString,
+  Reflect: privateReflect, promiseResolve, promiseReject } = moduleRuntimeIntrinsics
 const PublicPromise = globalThis.Promise
 const jsonStringify = globalThis.JSON.stringify
 const bufferByteLength = globalThis.Buffer.byteLength
@@ -195,6 +205,7 @@ registerHooks({
 const logScope = createPrivateAsyncLocalStorage()
 const userBindingActivationScope = createPrivateAsyncLocalStorage()
 const pending = new Map()
+const pendingOutputStarts = new Map()
 const installedGlobals = new Set()
 const installedGlobalOriginals = new Map()
 const PROCESS_CONTROLS = setFromArray(['exit', 'abort', 'kill', 'chdir'])
@@ -252,14 +263,32 @@ class CellReturn extends Error {
     evaluationScope.getStore().completed = true
   }
 }
-function appendLog(...values) {
-  const current = logScope.getStore()
-  if (current?.open !== true) return
-  appendText(current, formatWithOptions({ colors: false, depth: 4, maxArrayLength: 100, maxStringLength: 10_000 }, ...values))
+/**
+ * Convert one captured descriptor chunk with plugin-private operations.
+ *
+ * The private Writable decodes string writes into Buffers, and a cell may
+ * replace `Buffer.prototype.toString` or a typed-array join. Converting here
+ * with captured operations keeps the model-visible log record from running user
+ * code that could rewrite, forge, or fail the logs of the cell that printed
+ * them.
+ */
+function outputText(chunk) {
+  if (typeof chunk === 'string') return chunk
+  // The private Writable hands over Buffers, and a direct write may pass any
+  // Uint8Array view. Any other chunk type fails in the captured conversion,
+  // exactly as the replaced stream method would reject it.
+  return bufferToString(bufferIsBuffer(chunk) ? chunk : bufferConcat([chunk]), 'utf8')
 }
 
 function appendText(current, text) {
-  if (current.open !== true || current.outputLimited) return
+  if (current.open !== true) {
+    if (!current.lateOutputReported) {
+      current.lateOutputReported = true
+      channel.postMessage({ type: 'late-output', id: current.id })
+    }
+    return
+  }
+  if (current.outputLimited) return
   const bytes = bufferByteLength(jsonStringify(text), 'utf8') + (current.logs.length === 0 ? 0 : 1)
   if (current.logBytes + bytes > current.maxOutputBytes) {
     current.outputLimited = true
@@ -270,26 +299,39 @@ function appendText(current, text) {
   appendArray(current.logs, text)
 }
 
-const consoleView = Object.freeze({
-  log: appendLog,
-  info: appendLog,
-  warn: appendLog,
-  error: appendLog,
-  debug: appendLog,
-  dir: value => appendLog(value),
+const consoleOutput = new Writable({
+  write(chunk, _encoding, callback) {
+    const current = logScope.getStore()
+    if (current !== undefined) {
+      const text = outputText(chunk)
+      appendText(current, endsWith(text, '\n') ? sliceString(text, 0, -1) : text)
+    }
+    callback()
+  },
 })
-Object.defineProperty(context, 'console', { configurable: true, value: consoleView })
+const nativeStdoutWrite = process.stdout.write.bind(process.stdout)
+const nativeStderrWrite = process.stderr.write.bind(process.stderr)
+const consoleView = new Console({
+  stdout: consoleOutput,
+  stderr: consoleOutput,
+  colorMode: false,
+  inspectOptions: { depth: 4, maxArrayLength: 100, maxStringLength: 10_000 },
+})
+defineWorkerRealmProperty(WORKER_REALM_MUTATION.STABLE, 'console',
+  context, 'console', { configurable: true, value: consoleView })
 
 function captureWrite(chunk, ...rest) {
   const current = logScope.getStore()
-  if (current?.open === true) appendText(current, typeof chunk === 'string' ? chunk : String(chunk))
+  if (current !== undefined) appendText(current, outputText(chunk))
   const callback = typeof rest[0] === 'function' ? rest[0]
     : typeof rest[1] === 'function' ? rest[1] : undefined
   if (callback !== undefined) queueMicrotask(() => callback(null))
   return true
 }
-process.stdout.write = captureWrite
-process.stderr.write = captureWrite
+assignWorkerRealmProperty(WORKER_REALM_MUTATION.STABLE, 'process.stdout.write/process.stderr.write',
+  process.stdout, 'write', captureWrite)
+assignWorkerRealmProperty(WORKER_REALM_MUTATION.STABLE, 'process.stdout.write/process.stderr.write',
+  process.stderr, 'write', captureWrite)
 
 function markVolatile(reason) {
   const current = activeExecution
@@ -307,23 +349,7 @@ function completionDurability(execution) {
   }
 }
 
-function guardProcessControls() {
-  const properties = setValuesArray(PROCESS_CONTROLS)
-  for (let index = 0; index < properties.length; index += 1) {
-    const property = properties[index]
-    const descriptor = Object.getOwnPropertyDescriptor(process, property)
-    Object.defineProperty(process, property, {
-      configurable: false,
-      enumerable: descriptor?.enumerable ?? true,
-      writable: false,
-      value: () => {
-        throw new Error(`process.${property} is forbidden inside the REPL kernel`)
-      },
-    })
-  }
-}
-
-guardProcessControls()
+installProcessControlGuards(process, setValuesArray(PROCESS_CONTROLS))
 installWorkerCwdVirtualization(sessionCwd, originalRequire, reason => {
   if (suppressReplCwdObservation) {
     suppressReplCwdObservation = false
@@ -340,7 +366,7 @@ function selectProvidedRequire(args) {
   return managedRequire(activeExecution?.languageSemantics === 'legacy-v1' ? replParent : sessionReplParent ?? replParent,
     activeExecution?.languageSemantics === 'legacy-v1' ? originalRequire : providedRequire)
 }
-Object.defineProperty(context, 'require', {
+defineWorkerRealmProperty(WORKER_REALM_MUTATION.STABLE, 'cell module metadata', context, 'require', {
   configurable: true,
   value: new Proxy(providedRequire, {
     apply: (_, receiver, args) => privateReflect.apply(selectProvidedRequire(args), receiver, args),
@@ -393,13 +419,16 @@ async function verifyEvaluation() {
   await evaluate(CONFORMANCE_CELL)
   const marker = new Error('PTC Plus REPL settlement probe')
   Object.defineProperty(marker, 'stack', { get() { throw new Error('REPL must not format an error before settlement') } })
-  context.__ptc_settlement_probe__ = marker
-  context.__ptc_completion_probe__ = CellReturn
+  assignWorkerRealmProperty(WORKER_REALM_MUTATION.TEMPORARY, undefined,
+    context, '__ptc_settlement_probe__', marker)
+  assignWorkerRealmProperty(WORKER_REALM_MUTATION.TEMPORARY, undefined,
+    context, '__ptc_completion_probe__', CellReturn)
   try {
     const values = [marker, null, undefined, false, 0]
     for (let valueIndex = 0; valueIndex < values.length; valueIndex += 1) {
       const value = values[valueIndex]
-      context.__ptc_settlement_probe__ = value
+      assignWorkerRealmProperty(WORKER_REALM_MUTATION.TEMPORARY, undefined,
+        context, '__ptc_settlement_probe__', value)
       const sources = ['throw __ptc_settlement_probe__', 'await Promise.reject(__ptc_settlement_probe__)']
       for (let sourceIndex = 0; sourceIndex < sources.length; sourceIndex += 1) {
         const source = sources[sourceIndex]
@@ -414,7 +443,8 @@ async function verifyEvaluation() {
     let syntaxRejected = false
     try { await evaluate('const =') } catch (error) { syntaxRejected = error?.name === 'SyntaxError' }
     if (!syntaxRejected) throw new Error('REPL did not preserve syntax failure')
-    context.__ptc_settlement_probe__ = new CellReturn(promiseResolve(marker))
+    assignWorkerRealmProperty(WORKER_REALM_MUTATION.TEMPORARY, undefined,
+      context, '__ptc_settlement_probe__', new CellReturn(promiseResolve(marker)))
     const returned = await evaluate('throw __ptc_settlement_probe__')
     if (!returned.hasValue || returned.value !== marker) throw new Error('REPL did not preserve cell return')
     await evaluate(CONFORMANCE_CELL)
@@ -422,8 +452,10 @@ async function verifyEvaluation() {
     const expression = await evaluate('42', '__ptc_completion_probe__')
     if (expression.value !== 42) throw new Error('REPL did not preserve expression completion')
   } finally {
-    delete context.__ptc_settlement_probe__
-    delete context.__ptc_completion_probe__
+    deleteWorkerRealmProperty(WORKER_REALM_MUTATION.RESTORE, undefined,
+      context, '__ptc_settlement_probe__')
+    deleteWorkerRealmProperty(WORKER_REALM_MUTATION.RESTORE, undefined,
+      context, '__ptc_completion_probe__')
   }
 }
 
@@ -578,7 +610,7 @@ function namespaceGlobalGetter(name) {
 }
 
 function installNamespaceGlobal(name) {
-  Object.defineProperty(globalThis, name, {
+  defineWorkerRealmProperty(WORKER_REALM_MUTATION.PROGRAM, undefined, globalThis, name, {
     configurable: true,
     get: namespaceGlobalGetter(name),
   })
@@ -616,7 +648,9 @@ function restoreDynamicNamespaceGlobals() {
   const names = mapKeysArray(originalDynamicNamespaceGlobals)
   for (let index = 0; index < names.length; index += 1) {
     const name = names[index]
-    setHas(installedGlobals, name) ? installNamespaceGlobal(name) : privateReflect.deleteProperty(globalThis, name)
+    setHas(installedGlobals, name)
+      ? installNamespaceGlobal(name)
+      : deleteWorkerRealmProperty(WORKER_REALM_MUTATION.RESTORE, undefined, globalThis, name)
   }
   mapClear(originalDynamicNamespaceGlobals)
 }
@@ -634,9 +668,13 @@ function installBindings(message) {
     } else if (original.userGlobalEntryId !== undefined
       && (mapGet(userBindingNames, name) !== original.userGlobalEntryId
         || attachment !== original.attachment)) {
-      delete context[name]
-    } else if (original.descriptor === undefined) delete context[name]
-    else Object.defineProperty(context, name, original.descriptor)
+      deleteWorkerRealmProperty(WORKER_REALM_MUTATION.RESTORE, undefined, context, name)
+    } else if (original.descriptor === undefined) {
+      deleteWorkerRealmProperty(WORKER_REALM_MUTATION.RESTORE, undefined, context, name)
+    } else {
+      defineWorkerRealmProperty(WORKER_REALM_MUTATION.RESTORE, undefined,
+        context, name, original.descriptor)
+    }
   }
   setClear(installedGlobals)
   mapClear(installedGlobalOriginals)
@@ -692,7 +730,8 @@ function installBindings(message) {
 
     if (descriptor !== undefined) {
       mapSet(installedGlobalOriginals, descriptor.name, capturedGlobalDescriptor(descriptor.name))
-      Object.defineProperty(context, descriptor.name, { configurable: true, value: BoundError })
+      defineWorkerRealmProperty(WORKER_REALM_MUTATION.PROGRAM, undefined,
+        context, descriptor.name, { configurable: true, value: BoundError })
       setAdd(installedGlobals, descriptor.name)
     }
   }
@@ -751,14 +790,18 @@ function rootBindingStorage(name, nativeLexical = false) {
   }
   let propertyRead = false
   try {
-    Object.defineProperty(context, name, { configurable: true, get() { propertyRead = true } })
+    defineWorkerRealmProperty(WORKER_REALM_MUTATION.TEMPORARY, undefined,
+      context, name, { configurable: true, get() { propertyRead = true } })
     runInWorkerReplRealm(name, { displayErrors: false })
     return propertyRead ? 'property' : 'lexical'
   } catch {
     return 'unknown'
   } finally {
-    if (original === undefined) delete context[name]
-    else Object.defineProperty(context, name, original)
+    if (original === undefined) {
+      deleteWorkerRealmProperty(WORKER_REALM_MUTATION.RESTORE, undefined, context, name)
+    } else {
+      defineWorkerRealmProperty(WORKER_REALM_MUTATION.RESTORE, undefined, context, name, original)
+    }
   }
 }
 
@@ -806,7 +849,9 @@ function removePerNameUserBindingEntry(id) {
     if (setHas(installedGlobals, name)) {
       const original = mapGet(installedGlobalOriginals, name)
       if (original.attachment === installed) original.descriptor = undefined
-    } else if (descriptorsEqual(Object.getOwnPropertyDescriptor(context, name), installed)) delete context[name]
+    } else if (descriptorsEqual(Object.getOwnPropertyDescriptor(context, name), installed)) {
+      deleteWorkerRealmProperty(WORKER_REALM_MUTATION.RESTORE, undefined, context, name)
+    }
     // Lifecycle removal permits reattachment; explicit deletion retains absent.
     mapDelete(userBindingSources, name)
   }
@@ -892,13 +937,14 @@ async function activatePerNameUserBindings(snapshot, shadowedNames, cwd, reusePo
         const source = mapGet(userBindingSources, name)
         if (source !== undefined && source.state !== 'provider') continue
         const descriptor = Object.getOwnPropertyDescriptor(context, name)
-        Object.defineProperty(context, name, {
+        defineWorkerRealmProperty(WORKER_REALM_MUTATION.USER, undefined, context, name, {
           configurable: true,
           enumerable: true,
           get: () => entry.scope === 'namespace' ? view : namespace[name],
           set(value) {
             const receiver = this === contextGlobal ? context : this
-            Object.defineProperty(receiver, name, { configurable: true, enumerable: true, writable: true, value })
+            defineWorkerRealmProperty(WORKER_REALM_MUTATION.USER, undefined,
+              receiver, name, { configurable: true, enumerable: true, writable: true, value })
             if (receiver === context) recordUserBindingAssignment(name)
           },
         })
@@ -916,8 +962,13 @@ async function activatePerNameUserBindings(snapshot, shadowedNames, cwd, reusePo
       for (let index = installedNames.length - 1; index >= 0; index--) {
         const installed = installedNames[index]
         mapDelete(userBindingNames, installed.name)
-        if (installed.descriptor === undefined) delete context[installed.name]
-        else Object.defineProperty(context, installed.name, installed.descriptor)
+        if (installed.descriptor === undefined) {
+          deleteWorkerRealmProperty(WORKER_REALM_MUTATION.RESTORE, undefined,
+            context, installed.name)
+        } else {
+          defineWorkerRealmProperty(WORKER_REALM_MUTATION.RESTORE, undefined,
+            context, installed.name, installed.descriptor)
+        }
       }
       const previousEntries = mapEntriesArray(previousSources)
       for (let previousIndex = 0; previousIndex < previousEntries.length; previousIndex += 1) {
@@ -941,7 +992,9 @@ function removeUserBindingEntry(id, shadowedNames) {
     const name = previous.names[index]
     if (mapGet(userBindingNames, name) !== id) continue
     mapDelete(userBindingNames, name)
-    if (!setHas(shadowedNames, name)) delete context[name]
+    if (!setHas(shadowedNames, name)) {
+      deleteWorkerRealmProperty(WORKER_REALM_MUTATION.RESTORE, undefined, context, name)
+    }
   }
   mapDelete(userBindingEntries, id)
 }
@@ -1070,13 +1123,13 @@ async function activateUserBindings(snapshot, shadowedNames, cwd, reusePolicy, i
         }
         Object.freeze(view)
         const descriptor = Object.getOwnPropertyDescriptor(context, entry.name)
-        Object.defineProperty(context, entry.name, {
+        defineWorkerRealmProperty(WORKER_REALM_MUTATION.USER, undefined, context, entry.name, {
           configurable: true,
           enumerable: true,
           get: () => view,
           set(value) {
             recordUserBindingAssignment(entry.name, true)
-            Object.defineProperty(context, entry.name, {
+            defineWorkerRealmProperty(WORKER_REALM_MUTATION.USER, undefined, context, entry.name, {
               configurable: true,
               enumerable: true,
               writable: true,
@@ -1094,13 +1147,13 @@ async function activateUserBindings(snapshot, shadowedNames, cwd, reusePolicy, i
         for (let symbolIndex = 0; symbolIndex < entry.symbols.length; symbolIndex += 1) {
           const symbol = entry.symbols[symbolIndex]
           const descriptor = Object.getOwnPropertyDescriptor(context, symbol)
-          Object.defineProperty(context, symbol, {
+          defineWorkerRealmProperty(WORKER_REALM_MUTATION.USER, undefined, context, symbol, {
             configurable: true,
             enumerable: true,
             get: () => namespace[symbol],
             set(value) {
               recordUserBindingAssignment(symbol, true)
-              Object.defineProperty(context, symbol, {
+              defineWorkerRealmProperty(WORKER_REALM_MUTATION.USER, undefined, context, symbol, {
                 configurable: true,
                 enumerable: true,
                 writable: true,
@@ -1130,8 +1183,13 @@ async function activateUserBindings(snapshot, shadowedNames, cwd, reusePolicy, i
       for (let index = installedNames.length - 1; index >= 0; index--) {
         const installed = installedNames[index]
         mapDelete(userBindingNames, installed.name)
-        if (installed.descriptor === undefined) delete context[installed.name]
-        else Object.defineProperty(context, installed.name, installed.descriptor)
+        if (installed.descriptor === undefined) {
+          deleteWorkerRealmProperty(WORKER_REALM_MUTATION.RESTORE, undefined,
+            context, installed.name)
+        } else {
+          defineWorkerRealmProperty(WORKER_REALM_MUTATION.RESTORE, undefined,
+            context, installed.name, installed.descriptor)
+        }
       }
       if (evaluated !== undefined) mapDelete(userBindingModuleParents, evaluated.moduleUrl)
       removeUserBindingEntry(entry.id, shadowedNames)
@@ -1147,7 +1205,6 @@ async function activateUserBindings(snapshot, shadowedNames, cwd, reusePolicy, i
 
 async function closeExecution(execution) {
   activeRun = undefined
-  execution.open = false
   const settling = []
   mapForEach(pending, call => {
     if (call.runId === execution.id) appendArray(settling, call.settled)
@@ -1199,7 +1256,13 @@ function refreshLegacyPublication(name) {
   }
 }
 
-function sendCompletion(message, execution, userBindings, committedRedeclarations, outcome) {
+function writeOutputFence(write, marker) {
+  return new ControlPromise((resolve, reject) => {
+    write(marker, error => error === null || error === undefined ? resolve() : reject(error))
+  })
+}
+
+async function sendCompletion(message, execution, userBindings, committedRedeclarations, outcome) {
   const publicationNames = execution.nativePublications === undefined
     ? [] : mapKeysArray(execution.nativePublications)
   for (let index = 0; index < publicationNames.length; index += 1) refreshLegacyPublication(publicationNames[index])
@@ -1208,9 +1271,18 @@ function sendCompletion(message, execution, userBindings, committedRedeclaration
   if (perName) reconcileUserBindingNames()
   else reconcileUserBindingShadows(shadowedNames)
   const names = message.observeNames ?? []
+  await writeOutputFence(nativeStdoutWrite, outputFenceMarker(message.outputFence, 'stdout', 'end'))
+  await writeOutputFence(nativeStderrWrite, outputFenceMarker(message.outputFence, 'stderr', 'end'))
+  // Program-call settlement and value encoding belong to this physical run, so
+  // structured output from a drained continuation keeps its cell ownership
+  // until this completion is posted. Output from the same scheduling execution
+  // after this point is background output and carries the attribution
+  // diagnostic instead of being attached to a later cell.
+  execution.open = false
   channel.postMessage({
     type: 'done',
     id: message.id,
+    outputFence: message.outputFence,
     logs: execution.logs,
     ...completionDurability(execution),
     committedRedeclarations: setValuesArray(committedRedeclarations),
@@ -1234,6 +1306,12 @@ function sendCompletion(message, execution, userBindings, committedRedeclaration
 
 async function runCell(message) {
   if (activeExecution !== undefined) throw new Error('kernel received overlapping cells')
+  await writeOutputFence(nativeStdoutWrite, outputFenceMarker(message.outputFence, 'stdout', 'start'))
+  await writeOutputFence(nativeStderrWrite, outputFenceMarker(message.outputFence, 'stderr', 'start'))
+  await new ControlPromise(resolve => {
+    mapSet(pendingOutputStarts, message.id, { outputFence: message.outputFence, resolve })
+    channel.postMessage({ type: 'output-start', id: message.id, outputFence: message.outputFence })
+  })
   activeRun = message.id
   const execution = {
     id: message.id,
@@ -1263,12 +1341,12 @@ async function runCell(message) {
     try {
       completion = await logScope.run(execution, async () => {
         const namespaceError = installBindings(message)
-        Object.defineProperty(context, message.returnSignal, {
+        defineWorkerRealmProperty(WORKER_REALM_MUTATION.TEMPORARY, undefined, context, message.returnSignal, {
           configurable: true,
           value: CellReturn,
         })
         appendArray(cellGlobals, message.returnSignal)
-        Object.defineProperty(context, message.commitSignal, {
+        defineWorkerRealmProperty(WORKER_REALM_MUTATION.TEMPORARY, undefined, context, message.commitSignal, {
           configurable: true,
           value(name) {
             setAdd(committedRedeclarations, name)
@@ -1286,7 +1364,8 @@ async function runCell(message) {
             return storage === 'lexical' || setHas(legacyNative, name)
               && (storage === 'local' || storage === 'property') && writableRootProperty(name)
           })
-          Object.defineProperty(context, message.rootRuntimeName, {
+          defineWorkerRealmProperty(WORKER_REALM_MUTATION.TEMPORARY, undefined,
+            context, message.rootRuntimeName, {
             configurable: true,
             value: statefulRoots.begin({ ...message.rootBindings,
               legacyLexicals,
@@ -1324,7 +1403,7 @@ async function runCell(message) {
             throw new StaticImportFailure(error, load.position)
           }
           if (load.global !== undefined) {
-            Object.defineProperty(context, load.global, {
+            defineWorkerRealmProperty(WORKER_REALM_MUTATION.TEMPORARY, undefined, context, load.global, {
               configurable: true,
               value: namespace,
             })
@@ -1364,9 +1443,12 @@ async function runCell(message) {
         outcome = failureOutcome(error, 'encode', message.program)
       }
     }
-    sendCompletion(message, execution, userBindings, committedRedeclarations, outcome)
+    await sendCompletion(message, execution, userBindings, committedRedeclarations, outcome)
   } finally {
-    for (let index = 0; index < cellGlobals.length; index += 1) delete context[cellGlobals[index]]
+    for (let index = 0; index < cellGlobals.length; index += 1) {
+      deleteWorkerRealmProperty(WORKER_REALM_MUTATION.RESTORE, undefined,
+        context, cellGlobals[index])
+    }
     activeRun = undefined
     activeExecution = undefined
     execution.exceptionOrigins.close()
@@ -1412,6 +1494,14 @@ channel.on('message', (message) => {
       } else call.reject(new call.BoundError(call.member, message.error, message.cause))
     } catch (error) {
       call.reject(error)
+    }
+    return
+  }
+  if (message?.type === 'output-start-ack') {
+    const pendingStart = mapGet(pendingOutputStarts, message.id)
+    if (pendingStart !== undefined && pendingStart.outputFence === message.outputFence) {
+      mapDelete(pendingOutputStarts, message.id)
+      pendingStart.resolve()
     }
     return
   }

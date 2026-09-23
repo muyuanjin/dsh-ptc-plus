@@ -16,6 +16,9 @@ import {
 
 test('worker REPL protects only its platform AsyncLocalStorage receiver', () => {
   const scope = new AsyncLocalStorage()
+  const unrelated = new AsyncLocalStorage()
+  const unrelatedProperties = Object.getOwnPropertyNames(unrelated)
+  const runDescriptor = Object.getOwnPropertyDescriptor(AsyncLocalStorage.prototype, 'run')
   let evaluations = 0
   const server = { context: globalThis, eval(source, context, filename, callback) {
     evaluations++
@@ -26,6 +29,9 @@ test('worker REPL protects only its platform AsyncLocalStorage receiver', () => 
   } }
   assert.equal(protectWorkerReplAsyncContext(server), true)
   assert.equal(evaluations, 1)
+  assert.deepEqual(Object.getOwnPropertyDescriptor(AsyncLocalStorage.prototype, 'run'), runDescriptor)
+  assert.deepEqual(Object.getOwnPropertyNames(unrelated), unrelatedProperties)
+  for (const name of ['getStore', 'enterWith', 'run']) assert.equal(Object.hasOwn(unrelated, name), false)
   const descriptors = Object.fromEntries(['getStore', 'enterWith', 'run'].map(name =>
     [name, Object.getOwnPropertyDescriptor(AsyncLocalStorage.prototype, name)]))
   try {

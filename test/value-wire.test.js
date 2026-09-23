@@ -314,6 +314,53 @@ test('enforces encode budgets and validates limit options', () => {
   }
 })
 
+test('bounds cumulative sparse-array allocation before hydration', () => {
+  const source = { first: new Array(6), second: new Array(5) }
+  assert.throws(() => encodeValue(source, { maxArrayLength: 10 }), /array slot budget/)
+  assert.doesNotThrow(() => encodeValue(source, { maxArrayLength: 11 }))
+
+  const wire = envelope(ref(0), [
+    { type: 'object', prototype: 'object', entries: [['first', ref(1)], ['second', ref(2)]] },
+    { type: 'array', length: 6, entries: [] },
+    { type: 'array', length: 5, entries: [] },
+  ])
+  assert.throws(() => decodeValue(wire, { maxArrayLength: 10 }), /array slot budget/)
+  assert.deepEqual(decodeValue(wire, { maxArrayLength: 11 }), source)
+
+  const unreachable = envelope(ref(0), [
+    { type: 'array', length: 10, entries: [] },
+    { type: 'array', length: 1, entries: [] },
+  ])
+  assert.throws(() => decodeValue(unreachable, { maxArrayLength: 10 }), /array slot budget/)
+  assert.throws(() => decodeValue(unreachable, { maxArrayLength: 11 }), /unreachable nodes/)
+
+  const maximumPlatformLength = envelope(null, [
+    { type: 'array', length: 0xffffffff, entries: [] },
+  ])
+  assert.throws(
+    () => decodeValue(maximumPlatformLength, { maxArrayLength: Number.MAX_SAFE_INTEGER }),
+    /unreachable nodes/,
+  )
+  const beyondPlatformLength = envelope(ref(0), [
+    { type: 'array', length: 0x100000000, entries: [] },
+  ])
+  assert.throws(
+    () => decodeValue(beyondPlatformLength, { maxArrayLength: Number.MAX_SAFE_INTEGER }),
+    error => error instanceof TypeError && /invalid PTC array length/u.test(error.message),
+  )
+
+  const disconnectedSelfCycle = envelope(null, [
+    { type: 'array', length: 100_000, entries: [[0, ref(0)]] },
+  ])
+  assert.throws(() => decodeValue(disconnectedSelfCycle, { maxArrayLength: 100_000 }), /unreachable nodes/)
+
+  const disconnectedCycle = envelope(null, [
+    { type: 'array', length: 1, entries: [[0, ref(1)]] },
+    { type: 'array', length: 1, entries: [[0, ref(0)]] },
+  ])
+  assert.throws(() => decodeValue(disconnectedCycle, { maxArrayLength: 2 }), /unreachable nodes/)
+})
+
 test('counts UTF-8 key, string, and BigInt bytes cumulatively', () => {
   assert.doesNotThrow(() => encodeValue({ '\u4e2d': '\ud83d\ude42' }, { maxStringBytes: 7 }))
   assert.throws(() => encodeValue({ '\u4e2d': '\ud83d\ude42' }, { maxStringBytes: 6 }), /string budget/)

@@ -16,6 +16,12 @@ import { USER_BINDING_TRANSFORM } from './module-transform-contract.js'
 import { moduleRuntimeIntrinsics } from './compiler-intrinsics.js'
 import { stringifyCompilerData } from './compiler-data.js'
 import { createCellCompletionObserver } from './cell-completion.js'
+import {
+  WORKER_REALM_MUTATION,
+  assignWorkerRealmProperty,
+  defineWorkerRealmProperty,
+  deleteWorkerRealmProperty,
+} from './worker-realm-surfaces.js'
 import { WORKER_SHUTDOWN_ACKNOWLEDGEMENT, WORKER_SHUTDOWN_REQUEST } from './worker-shutdown.js'
 import { WORKER_REPL_OPTIONS, createWorkerControlPromise, createWorkerReplErrorHandler,
   disableWorkerReplDomain,
@@ -31,10 +37,10 @@ const ControlPromise = createWorkerControlPromise()
 const evaluations = createPrivateAsyncLocalStorage()
 const context = globalThis
 const completionObserver = createCellCompletionObserver(runInWorkerReplRealm('Function'))
-context.console = console
+assignWorkerRealmProperty(WORKER_REALM_MUTATION.STABLE, 'console', context, 'console', console)
 let retainedEvaluator
 const completionKey = `__ptc_console_${randomUUID().replaceAll('-', '')}`
-Object.defineProperty(context, completionKey, { value: value => {
+defineWorkerRealmProperty(WORKER_REALM_MUTATION.TEMPORARY, undefined, context, completionKey, { value: value => {
   evaluations.getStore().completed = true
   return value
 } })
@@ -65,7 +71,8 @@ const moduleCompilation = createUserModuleCompilationHooks({
   transformForParent: parent => parent === replParent || parent === parentUrl ? USER_BINDING_TRANSFORM : undefined,
 })
 const providedRequire = managedRequire(parentUrl, createRequire(parentUrl))
-Object.defineProperty(context, 'require', { configurable: true, value: providedRequire })
+defineWorkerRealmProperty(WORKER_REALM_MUTATION.STABLE, 'cell module metadata',
+  context, 'require', { configurable: true, value: providedRequire })
 const importCanary = 'data:text/javascript,export default 1'
 registerHooks({ resolve(specifier, context, nextResolve) {
   if (specifier === importCanary) replParent = context.parentURL
@@ -86,10 +93,12 @@ process.on('uncaughtException', error => {
 function evaluate(source) {
   const prepared = prepareConsoleProgram(source, { languageSemantics: 'stateful-v1', knownBindings })
   const helpers = [prepared.rootRuntimeName, prepared.returnSignal]
-  Object.defineProperty(context, prepared.rootRuntimeName, {
+  defineWorkerRealmProperty(WORKER_REALM_MUTATION.TEMPORARY, undefined,
+    context, prepared.rootRuntimeName, {
     configurable: true, value: roots.begin({ ...prepared.rootBindings, committed: () => {} }),
   })
-  Object.defineProperty(context, prepared.returnSignal, { configurable: true, value: ConsoleReturn })
+  defineWorkerRealmProperty(WORKER_REALM_MUTATION.TEMPORARY, undefined,
+    context, prepared.returnSignal, { configurable: true, value: ConsoleReturn })
   if (prepared.moduleLoads.length === 0) {
     const operation = evaluatePrepared(prepared.code, prepared.asyncCompletion)
     return new ControlPromise((resolve, reject) => operation.then(
@@ -101,7 +110,9 @@ function evaluate(source) {
 }
 
 function removeHelpers(helpers) {
-  for (let index = 0; index < helpers.length; index++) delete context[helpers[index]]
+  for (let index = 0; index < helpers.length; index++) {
+    deleteWorkerRealmProperty(WORKER_REALM_MUTATION.RESTORE, undefined, context, helpers[index])
+  }
 }
 
 async function evaluateWithModules(prepared, helpers) {
@@ -132,7 +143,8 @@ async function evaluateWithModules(prepared, helpers) {
       } finally { setDelete(adapterParents, adapter) }
       if (load.global !== undefined) {
         appendArray(helpers, load.global)
-        Object.defineProperty(context, load.global, { configurable: true, value: namespace })
+        defineWorkerRealmProperty(WORKER_REALM_MUTATION.TEMPORARY, undefined,
+          context, load.global, { configurable: true, value: namespace })
       }
     }
     return await evaluatePrepared(prepared.code, prepared.asyncCompletion)
@@ -152,7 +164,8 @@ function evaluatePrepared(javascript, asyncCompletion = false) {
   protectWorkerReplAsyncContext(server)
   workerReplContext(server)
   restoreWorkerReplGlobals(workerGlobalBaseline, context)
-  Object.defineProperty(context, 'require', { configurable: true, value: providedRequire })
+  defineWorkerRealmProperty(WORKER_REALM_MUTATION.STABLE, 'cell module metadata',
+    context, 'require', { configurable: true, value: providedRequire })
   const errorDomain = disableWorkerReplDomain(server.eval.domain ?? createDomain())
   const evaluator = { server, input, output, errorDomain }
   retainedEvaluator = evaluator
@@ -205,7 +218,8 @@ try {
   for (let index = 0; index < names.length; index++) {
     const name = names[index]
     setAdd(knownBindings, name)
-    Object.defineProperty(context, name, { configurable: true, enumerable: true, get: () => namespace[name] })
+    defineWorkerRealmProperty(WORKER_REALM_MUTATION.USER, undefined,
+      context, name, { configurable: true, enumerable: true, get: () => namespace[name] })
   }
   parentPort.on('message', (message) => {
     if (message?.type === WORKER_SHUTDOWN_REQUEST) {

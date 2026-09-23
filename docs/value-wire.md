@@ -38,7 +38,7 @@ wire 从不使用 `eval` 或 `Function` 解码，模型文本也从不作为可�
 
 `Atom` 是 JSON primitive，或封闭 tag：`undefined`、special number、BigInt、node reference。object node 保存有序 `[key, Atom]` entries；array node 保存 `length` 与有序 `[index, Atom]` entries，因此 hole 与显式 `undefined` 不同。decoder 拒绝未知/额外字段、重复 key/index、越界或 dangling reference、不可达 node 和非 canonical 编码；`__proto__` 通过 data descriptor hydrate，不触发 setter。
 
-graph 发现顺序与 ECMAScript own-key 顺序共同确定唯一编码。plain JSON tree 保持线性；shared object 只编码一次。结构预算为 `maxValueNodes`、`maxValueEdges`、`maxValueArrayLength` 和 `maxValueBigIntDigits`，总 IPC/journal/render byte ceiling 继续由 `maxOutputBytes` 约束。
+graph 发现顺序与 ECMAScript own-key 顺序共同确定唯一编码。plain JSON tree 保持线性；shared object 只编码一次。结构预算为 `maxValueNodes`、`maxValueEdges`、`maxValueArrayLength` 和 `maxValueBigIntDigits`；`maxValueArrayLength` 同时限制单个数组长度与一份 graph 中全部数组声明的累计槽位，decoder 在分配目标数组前完成整个 wire 的结构、预算、可达性与 canonical 校验。总 IPC/journal/render byte ceiling 继续由 `maxOutputBytes` 约束。
 
 ## Completion 与外层投影
 

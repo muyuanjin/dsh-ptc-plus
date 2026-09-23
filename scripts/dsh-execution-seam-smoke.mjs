@@ -73,6 +73,7 @@ async function main() {
     ...PROVIDER_CAPABILITIES,
   }
   ctx.provide(seamService, runtime)
+  const providerRun = runtime.run
 
   // A plugin whose injection is never satisfied stays pending forever and Cordis
   // reports nothing, so the wait needs its own bound. The timer keeps the loop
@@ -87,7 +88,9 @@ async function main() {
       )), 15_000)
     }),
   ]).finally(() => clearTimeout(expiry))
-  if (!Object.hasOwn(runtime, 'run')) throw new Error('dsh-execution-seam-smoke: the plugin did not take over the execution entry')
+  if (!Object.hasOwn(runtime, 'run') || typeof runtime.run !== 'function' || runtime.run === providerRun) {
+    throw new Error('dsh-execution-seam-smoke: the plugin did not take over the execution entry')
+  }
   for (const [name, advertised] of Object.entries(PROVIDER_CAPABILITIES)) {
     if (runtime[name] === advertised) {
       throw new Error(`dsh-execution-seam-smoke: the plugin still advertises the provider's ${name}`)

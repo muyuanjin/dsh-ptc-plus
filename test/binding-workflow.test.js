@@ -18,9 +18,21 @@ function configuredBindingPrompt(request) {
   return snapshot?.sections.find(section => section.name === 'tools:ptc-plus-user-binding-defaults')?.text ?? ''
 }
 
+function requestSystemPrompt(request) {
+  if (typeof request.system === 'string') return request.system
+  return request.messages.filter(message => message.role === 'system')
+    .flatMap(message => message.content).filter(part => part.type === 'text')
+    .map(part => part.text).join('\n')
+}
+
+function toolResultIsError(event) {
+  const message = event.data.message
+  return typeof message.isError === 'boolean' ? message.isError : message.content[0]?.isError
+}
+
 function assertStablePrefix(host) {
   for (const request of host.requests) {
-    assert.equal(request.system, host.requests[0].system)
+    assert.equal(requestSystemPrompt(request), requestSystemPrompt(host.requests[0]))
     assert.deepEqual(request.tools, host.requests[0].tools)
   }
   assert.equal(host.events().some(event => event.type === 'request/header' && event.data.reason === 'change'), false)
@@ -252,7 +264,7 @@ test('initial binding prompts and changed interfaces honor host runtime-context 
   await host.run('return 0')
   assert.match(configuredBindingPrompt(host.requests[0]), /First request instructions/)
   assert.match(configuredBindingPrompt(host.requests[0]), /declare const workflow/)
-  assert.doesNotMatch(host.requests[0].system, /First request instructions|declare const workflow/)
+  assert.doesNotMatch(requestSystemPrompt(host.requests[0]), /First request instructions|declare const workflow/)
   const release = host.agent.ctx.systemPrompt.suppressRuntimeContext()
   t.after(release)
   catalog = (await host.rpc('list')).value
@@ -288,7 +300,7 @@ test('file-helper availability observes the active export without write/delete p
   const catalog = (await host.rpc('list')).value
   assert.equal((await host.rpc('save-draft', { capability, version: draft.version, expectedRevision: catalog.revision, activate: true })).ok, true)
   const observed = await host.run('return typeof miniFiles !== "undefined" && typeof miniFiles.write === "function" && typeof miniFiles.remove === "function"', files.statusQuestion)
-  assert.equal(observed.data.message.content[0].isError, false)
+  assert.equal(toolResultIsError(observed), false)
   assert.deepEqual(auditBindingWorkflow(host.events(), files).failures, [])
   assert.equal(await readFile(sentinel, 'utf8'), 'pre-existing user content')
   const probing = structuredClone(host.events())
@@ -307,9 +319,9 @@ test('public binding lifecycle preserves each configured prompt and separates sa
   const sentinel = join(existingDirectory, 'unrelated.txt')
   await writeFile(sentinel, 'pre-existing user content')
   await host.run('return 1')
-  const prefix = JSON.stringify({ system: host.requests[0].system, tools: host.requests[0].tools })
+  const prefix = JSON.stringify({ system: requestSystemPrompt(host.requests[0]), tools: host.requests[0].tools })
   const noRequest = await host.run(`return code.submitBindingDraft(${JSON.stringify({ requestId: 'missing', entry })})`)
-  assert.equal(noRequest.data.message.content[0].isError, true)
+  assert.equal(toolResultIsError(noRequest), true)
   const command = await host.begin(scenario.command, () => (
     `const acceptedReceipt = await code.submitBindingDraft(${JSON.stringify({ requestId: host.requestId(), entry })}); return acceptedReceipt`
   ))
@@ -335,11 +347,13 @@ test('public binding lifecycle preserves each configured prompt and separates sa
   assert.equal(JSON.parse(await readFile(join(host.home, 'ptc-plus', 'bindings.json'), 'utf8')).entries[0].enabled, true)
   const configuredStart = host.requests.length
   const observed = await host.run('return typeof workflow !== "undefined" && typeof workflow.value === "function"', scenario.statusQuestion)
-  const configuredPrefix = JSON.stringify({ system: host.requests[configuredStart].system, tools: host.requests[configuredStart].tools })
+  const configuredPrefix = JSON.stringify({
+    system: requestSystemPrompt(host.requests[configuredStart]), tools: host.requests[configuredStart].tools,
+  })
   assert.equal(configuredPrefix, prefix)
   assert.match(configuredBindingPrompt(host.requests[configuredStart]), /declare const workflow/)
   assert.doesNotMatch(configuredBindingPrompt(host.requests[configuredStart]), /successfully activated/)
-  assert.equal(observed.data.message.content[0].isError, false)
+  assert.equal(toolResultIsError(observed), false)
   assert.ok(host.requests.some(request => JSON.stringify(request.messages).includes('"state":"saved"')
     || JSON.stringify(request.messages).includes('\\"state\\":\\"saved\\"')))
   assert.ok(host.requests.every(request => !JSON.stringify(request.messages).includes('successfully activated')))
@@ -367,29 +381,30 @@ test('public binding lifecycle preserves each configured prompt and separates sa
   await host.begin('new cancelled helper')
   const endedRequest = host.requestId()
   const late = await host.run(`return code.submitBindingDraft(${JSON.stringify({ requestId: endedRequest, entry })})`)
-  assert.equal(late.data.message.content[0].isError, true)
+  assert.equal(toolResultIsError(late), true)
   host.agent.cancel()
   await host.run('return 2')
   await host.begin('new replacement helper')
   const oldRequest = host.requestId()
   await host.begin('new newer helper', `return code.submitBindingDraft(${JSON.stringify({ requestId: oldRequest, entry: { ...entry, id: 'another', name: 'another' } })})`)
   const rejected = host.events().filter(event => event.type === 'tool/result').at(-1)
-  assert.equal(rejected.data.message.content[0].isError, true)
+  assert.equal(toolResultIsError(rejected), true)
   for (const [index, request] of host.requests.entries()) {
-    assert.equal(JSON.stringify({ system: request.system, tools: request.tools }), index < configuredStart ? prefix : configuredPrefix)
+    assert.equal(JSON.stringify({ system: requestSystemPrompt(request), tools: request.tools }),
+      index < configuredStart ? prefix : configuredPrefix)
     assert.deepEqual(request.tools.map(tool => tool.name), ['run_code', 'edit_run_code'])
   }
   await host.restart()
   const replayed = await host.run('return acceptedReceipt')
-  assert.equal(replayed.data.message.content[0].isError, false)
+  assert.equal(toolResultIsError(replayed), false)
   assert.equal((await host.rpc('draft', { capability })).value, null)
   const currentCatalog = (await host.rpc('list')).value
   assert.equal((await host.rpc('save', { intent: 'update', originalId: entry.id,
     expectedRevision: currentCatalog.revision,
     entry: { ...entry, enabled: true, modelContext: { includeDeclaration: false } } })).ok, true)
   await host.run('return 1')
-  assert.doesNotMatch(host.requests.at(-1).system, /declare const workflow/)
+  assert.doesNotMatch(requestSystemPrompt(host.requests.at(-1)), /declare const workflow/)
   assert.deepEqual(host.requests.at(-1).tools, host.requests[0].tools)
   const afterReplay = await host.run(`return code.submitBindingDraft(${JSON.stringify({ requestId, entry })})`)
-  assert.equal(afterReplay.data.message.content[0].isError, true)
+  assert.equal(toolResultIsError(afterReplay), true)
 })

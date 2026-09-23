@@ -1,6 +1,7 @@
 import { bindingDraftProjection, bindingReviewStatus } from './client-binding-review.js'
 import { bindingModelPreferences } from '../internal/user-binding-model-context.js'
 import { featureEnabled } from './client-feature-gates.js'
+import { isHostIconComponent } from './client-host-compat.js'
 
 /**
  * Hover dwell before the composer entry opens its menu. The entry sits inside the
@@ -31,12 +32,14 @@ export function createAuthoringView(React, deps) {
    * Where the settings card lives on the installed generation.
    *
    * The compat module reports the seat the host declared rather than the
-   * generation, so this copy names the place a user can open now. Before either
-   * seat mounts it reports the current one, which is what an up-to-date install
-   * offers; the preceding generation's own seat replaces it once it registers.
+   * generation, so this copy names the place a user can open now. An undeclared
+   * seat carries no location evidence and keeps the generic settings label.
    */
-  const settingsPath = t => t(settingsCardSeat?.() === 'settings.plugin.item'
-    ? 'settings.pathSettings' : 'settings.pathPlugins')
+  const settingsPath = t => t({
+    'settings.plugin.item': 'settings.pathSettings',
+    'plugins.row.config': 'settings.pathPlugins',
+    'settings.general.item': 'settings.pathGeneral',
+  }[settingsCardSeat?.()] ?? 'settings.menuEntry')
 
   function BindingAuthorButton({
     sessionId, t, useInput, inputActions, usePtcSettings, useBindingCommand,
@@ -229,7 +232,7 @@ export function createAuthoringView(React, deps) {
         if (menuOpen && menu.mode !== 'hover') hideMenu()
         else showMenu('click')
       },
-    }, typeof IconSparkle16 === 'function'
+    }, isHostIconComponent(IconSparkle16)
       ? h(IconSparkle16, { size: 16, 'aria-hidden': true })
       : h('span', { className: 'ptcPlusAuthorButtonLabel', 'aria-hidden': true }, t('bindings.open')),
       hasDraft ? h('span', { className: 'ptcPlusDraftBadge', 'aria-hidden': true,
@@ -269,7 +272,7 @@ export function createAuthoringView(React, deps) {
     return h('span', {
       className: 'ptcPlusComposerBindingAnchor', tabIndex: -1,
       onFocusCapture: () => { focused.current = true }, onBlurCapture: () => { focused.current = false },
-      'data-text': typeof IconSparkle16 === 'function' ? undefined : true,
+      'data-text': isHostIconComponent(IconSparkle16) ? undefined : true,
       ref: attachAnchor,
     },
       !hasDraft && !quickAccess ? null : h(Menu, {

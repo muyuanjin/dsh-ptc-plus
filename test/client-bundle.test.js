@@ -51,7 +51,7 @@ test('checked client bundle loads through the DSH module loader contract', async
   const { loaded, exported, packageJson, requested } = await loadBundle()
   assert.equal(loaded.id, packageJson.name)
   assert.deepEqual([...new Set(requested)], ['react', '@deepseek-ai/dsh-client-ui-primitives'])
-  assert.equal(Array.from(exported.inject).join(','), 'settingsScope,slots,locale,connection,remote')
+  assert.equal(Array.from(exported.inject).join(','), 'slots,locale,connection,remote')
   assert.equal(typeof exported.apply, 'function')
   assert.equal(packageJson.dsh.client.platform, 'web')
   assert.deepEqual(packageJson.dsh.client.external, ['react'])

@@ -1,8 +1,8 @@
 # Client UI
 
-PTC Plus 提供**插件设置卡片**。卡片座位由宿主代际决定：旧代际在 DSH Web/Desktop 的 Settings → Plugin configuration 中以 `settings.plugin.item` 渲染，当前 DSH 在侧栏 Plugins 页面以 `plugins.row.config`（键 `<包名>#<行 id>`）渲染该 bundle 自己的配置；`src/client-host-compat.js` 同时发布到两个座位，由声明了槽位的那一代决定哪个生效，卡片按座位提供的 `summary`/`page` 视图分别渲染一句描述与完整表单。输入框旁的星光菜单还直接打开复用同一表单的应用内设置窗口，不依赖宿主页面的局部导航状态；菜单项悬浮提示保留原生设置座位的路径。
+PTC Plus 提供**插件设置卡片**。卡片座位由宿主代际决定：旧代际在 DSH Web/Desktop 的 Settings → Plugin configuration 中以 `settings.plugin.item` 渲染，rc 代际在侧栏 Plugins 页面以 `plugins.row.config`（键 `<包名>#<行 id>`）渲染该 bundle 自己的配置，当前 alpha 在 Settings → General 中以 `settings.general.item`（list，`id: ptc-plus`）渲染；`src/client-host-compat.js` 同时发布到全部三个座位，由声明了槽位的那一代决定哪个生效，卡片按座位提供的 `summary`/`page` 视图分别渲染一句描述与完整表单。输入框旁的星光菜单还直接打开复用同一表单的应用内设置窗口，不依赖宿主页面的局部导航状态；菜单项悬浮提示保留原生设置座位的路径。
 
-Client 根入口只依赖 `settingsScope`、`slots`、`locale`、`connection` 和 `remote`。头部贡献直接消费公开 session slot 提供的 `useProjection`；REPL 注册另依赖 `sessions` 的当前选择和 projection face。命令卡片等待公开 command slot，composer 管理入口直接消费现有管理 Remote；其中的编写动作再等待 `remote.commands` 与公开输入 hooks，不依赖已改名的 conversation registry 或未使用的 `ui-session` 模块。缺失、卸载或迟到的 slot/provider 只影响需要它的贡献；没有 `useProjection` 时不挂载依赖它的会话视图，命令卡片保留宿主结果但不提供草稿操作。没有输入 hooks 时不显示编写动作，已有全局绑定仍可查看和启停。preset 优先读取 `agentPreset` projection，缺失时依次读取会话公开摘要里的 projection 值与旧宿主的 `agentPreset` 字段；binding 值和草稿资格不采用该回退。当前会话身份取宿主已发布的选中证据：旧代际在会话列表上投影 `current`，当前代际把视图选择留在 controller 之外、以主视图持有的会话表达。两者都不读取私有 store。设置和独立正文 tool view 继续可用，不读取私有 store 或自行重建会话状态。
+Client 根入口只依赖 `slots`、`locale`、`connection` 和 `remote`；settings transport 由当前代的 `configForms` 或上一代的 `settingsScope` 可选注入提供。头部贡献直接消费公开 session slot 提供的 `useProjection`；REPL 注册另依赖 `sessions` 的当前选择和 projection face。命令卡片等待公开 command slot，composer 管理入口直接消费现有管理 Remote；其中的编写动作再等待 `remote.commands` 与公开输入 hooks，不依赖已改名的 conversation registry 或未使用的 `ui-session` 模块。缺失、卸载或迟到的 slot/provider 只影响需要它的贡献；没有 `useProjection` 时不挂载依赖它的会话视图，命令卡片保留宿主结果但不提供草稿操作。没有输入 hooks 时不显示编写动作，已有全局绑定仍可查看和启停。preset 优先读取 `agentPreset` projection，缺失时依次读取会话公开摘要里的 projection 值与旧宿主的 `agentPreset` 字段；binding 值和草稿资格不采用该回退。当前会话身份取宿主已发布的选中证据：旧代际在会话列表上投影 `current`，当前代际把视图选择留在 controller 之外、以主视图持有的会话表达。两者都不读取私有 store。设置和独立正文 tool view 继续可用，不读取私有 store 或自行重建会话状态。
 
 组件通过 renderer 提供的 `useProjection`、旧宿主的公开 `useSessions` 和注入 `hooks` 读取外部状态，设置写入与 RPC 由 apply 层注入 callback。业务组件不自行构造 external-store hook。设置、slot、provider 与插件释放共同拥有注册和订阅的生命周期；开关关闭时撤销相关贡献。
 
@@ -34,7 +34,7 @@ Host half 通过 DSH 公共 `settings` 服务注册命名空间 `ptc-plus`。字
 | 资源限制 | `computeMs` / `maxWallMs` | 单 cell event-loop active（包括同步阻塞）与总耗时预算；前者不证明 CPU 消耗。 |
 | 资源限制 | `maxOldGenerationSizeMb` / `maxNestedRunCodeDepth` | kernel worker 内存与嵌套执行深度。 |
 | 资源限制 | `maxOutputBytes` | 单 cell 日志与返回结果的合计字节上限。 |
-| 资源限制 | `maxValueNodes` / `maxValueEdges` / `maxValueArrayLength` / `maxValueBigIntDigits` | Value Graph 与大数组、BigInt 的返回上限。 |
+| 资源限制 | `maxValueNodes` / `maxValueEdges` / `maxValueArrayLength` / `maxValueBigIntDigits` | Value Graph 与大数组、BigInt 的返回上限；数组长度限制同时约束单数组和一份 graph 的累计槽位。 |
 
 旧配置的五个开关（`looseTopLevelRedeclarations`、`looseTopLevelFunctionClassRedeclarations`、`autoRewriteImports`、`autoStripExports`、`autoSplitRedeclarations`）先由共享 resolver 迁移。完整策略映射到 `stateful` 或 `protected`；混合选择保留显式兼容态，只有该状态才显示旧控件。兼容态的统一策略控件显示“沿用旧版设置（尚未迁移）”，可直接选择“允许重声明和覆盖”或“启用名称保护”；选择后一次写入同时保存 `bindingUpdates` 并清除兼容标记，随后执行和模型指引采用相同的新语言策略，设置页恢复统一开关。仅查看设置不触发写入。
 

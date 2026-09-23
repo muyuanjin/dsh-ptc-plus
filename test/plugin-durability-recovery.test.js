@@ -9,11 +9,17 @@ import { normalizeJournal } from '../internal/session-journal.js'
 import { LEGACY_USER_BINDINGS_SHADOW_POLICY } from '../internal/session-journal-schema.js'
 import { SessionRuntime } from '../internal/session-runtime.js'
 import { decodeValue, encodeValue, renderValueWire } from '../internal/value-wire.js'
-import { JOURNAL_POLICY, appendOnlySession, appendRunCodeEvents, fixture } from './plugin-fixture.js'
+import {
+  JOURNAL_POLICY,
+  appendRunCodeCall,
+  appendRunCodeEvents,
+  fixture,
+  orderedSurfaceSession,
+} from './plugin-fixture.js'
 import { assertSameFilesystemEntry } from './filesystem-identity.js'
 
 test('checkpoints and cold replay retain Annex B local computation without redispatching calls', async t => {
-  const session = { id: 'annex-b-checkpoint', events: [] }
+  const session = orderedSurfaceSession('annex-b-checkpoint')
   const writer = fixture()
   t.after(() => writer.dispose())
   let calls = 0
@@ -32,7 +38,7 @@ const receipt = await tools.record({ saved })
 void await repl.state({ action: 'save', name: 'local-computation' })
 return { saved, branchTypes, receipt }
 `
-  const { raw, result: written } = await writer.executeRun(session.id, source, { record: async () => ++calls }, { session })
+  const { raw, result: written } = await writer.executeRun(session.id, source, { record: async () => ++calls }, { session, recordSession: 'deferred-result', callId: 'annex-b-source' })
   assert.deepEqual(raw, {
     logs: [], value: { saved: 1, branchTypes: ['undefined', 'function', 'function', 'function', 'function', 'function'], receipt: 1 },
   })
@@ -75,7 +81,7 @@ test('unpromoted block declarations leave actual ambient access volatile in the 
 
 test('cold-replays predecessor journals with bindings and named states intact', async (t) => {
   const events = []
-  const session = { id: 'predecessor-journal', events }
+  const session = orderedSurfaceSession('predecessor-journal', events)
   const writer = fixture({ legacyBindingSettings: true })
   t.after(() => writer.dispose())
   const source = `
@@ -83,7 +89,10 @@ let predecessorBinding = 41
 void await repl.state({ action: 'save', name: 'predecessor-point' })
 return predecessorBinding
 `
-  const written = await writer.runDurable(session.id, source, {}, { session })
+  const written = await writer.runDurable(session.id, source, {}, {
+    session: session.id,
+    recordSession: false,
+  })
   assert.equal(written.meta.dshPtcPlus.languageSemantics, 'legacy-v1')
   const predecessor = structuredClone(written)
   predecessor.meta.dshPtcPlus.version = 1
@@ -119,21 +128,11 @@ return { value: predecessorBinding, names: states.names }
 test('cold-replays predecessor default exports with their recorded writable binding semantics', async (t) => {
   for (const version of [2, 3]) {
     const events = []
-    const session = { id: `predecessor-default-export-v${version}`, events }
+    const session = orderedSurfaceSession(`predecessor-default-export-v${version}`, events)
     const writer = fixture({ legacyBindingSettings: true })
+    const writerSession = `${session.id}-source`
     t.after(() => writer.dispose())
-    const setupSource = 'export default 1'
-    const setup = await writer.runDurable(session.id, 'let __default = 1', {}, { session })
-    const assignmentSource = 'try { __default = 2 } catch {}\nreturn __default'
-    const assignment = await writer.runDurable(
-      session.id,
-      '__default = 2\nreturn __default',
-      {},
-      { session },
-    )
-    const predecessorSetup = structuredClone(setup)
-    const predecessorAssignment = structuredClone(assignment)
-    for (const result of [predecessorSetup, predecessorAssignment]) {
+    const downgrade = result => {
       assert.equal(result.meta.dshPtcPlus.languageSemantics, 'legacy-v1')
       result.meta.dshPtcPlus.version = version
       result.meta.dshPtcPlus.bindingMode = 'loose'
@@ -150,13 +149,28 @@ test('cold-replays predecessor default exports with their recorded writable bind
       assert.equal(normalized.languageSemantics, 'legacy-v1')
       assert.equal(normalized.userBindingsShadowPolicy, LEGACY_USER_BINDINGS_SHADOW_POLICY)
       assert.equal(normalized.userBindingNames, null)
+      return result
     }
+    const setupSource = 'export default 1'
+    const predecessorSetup = downgrade(structuredClone(
+      await writer.runDurable(writerSession, 'let __default = 1', {}, {
+        session: writerSession,
+        recordSession: false,
+      }),
+    ))
     appendRunCodeEvents(
       events,
       `predecessor-default-v${version}-setup`,
       setupSource,
       predecessorSetup,
     )
+    const assignmentSource = 'try { __default = 2 } catch {}\nreturn __default'
+    const predecessorAssignment = downgrade(structuredClone(await writer.runDurable(
+      writerSession,
+      '__default = 2\nreturn __default',
+      {},
+      { session: writerSession, recordSession: false },
+    )))
     appendRunCodeEvents(
       events,
       `predecessor-default-v${version}-assignment`,
@@ -219,7 +233,7 @@ test('uses the session header cwd without inheriting the host process cwd', asyn
   t.after(() => rm(cwd, { recursive: true, force: true }))
   const state = fixture()
   t.after(() => state.dispose())
-  const session = { id: 'session-cwd', header: { cwd }, events: [] }
+  const session = { ...orderedSurfaceSession('session-cwd'), header: { cwd } }
 
   const recordedRun = await state.executeRun(session.id, 'return process.cwd()', {}, { session })
   const recorded = recordedRun.result
@@ -244,7 +258,7 @@ test('preserves recorded cwd while native paths retain filesystem identity', asy
   t.after(() => rm(root, { recursive: true, force: true }))
   const state = fixture({ maxWallMs: 500 })
   t.after(() => state.dispose())
-  const session = { id: 'native-session-cwd', header: { cwd }, events: [] }
+  const session = { ...orderedSurfaceSession('native-session-cwd'), header: { cwd } }
   const source = `
 const fs = await import('node:fs')
 const path = await import('node:path')
@@ -344,11 +358,11 @@ return 42
 
 test('does not replay a volatile cell after a cold restore', async (t) => {
   const events = []
-  const session = { id: 'session-rejected', events }
+  const session = orderedSurfaceSession('session-rejected', events)
   const first = fixture()
   t.after(() => first.dispose())
   const code = 'const shouldNeverExist = Date.now()'
-  const rejected = await first.runDurable('session-rejected', code, {}, { session })
+  const rejected = await first.runDurable('session-rejected', code, {}, { session, recordSession: 'deferred-result', callId: 'call-rejected' })
   assert.equal(rejected.isError, false)
   assert.equal(rejected.meta.dshPtcPlus.status, 'volatile')
   appendRunCodeEvents(events, 'call-rejected', code, rejected)
@@ -405,22 +419,14 @@ test('excludes the current in-flight run_code call from history recovery', async
   const state = fixture()
   t.after(() => state.dispose())
   const callId = 'current-call'
-  const session = {
-    id: 'session-current-call',
-    events: [{
-      type: 'tool/call',
-      seq: 63,
-      time: 63,
-      data: {
-        turn: 0,
-        step: 0,
-        callId,
-        name: 'run_code',
-        arguments: JSON.stringify({ code: 'return 1', description: 'current cell' }),
-      },
-    }],
-  }
-  assert.deepEqual(await state.run(session.id, 'return 1', {}, { session, callId }), {
+  const events = []
+  const session = orderedSurfaceSession('session-current-call', events)
+  appendRunCodeCall(events, callId, 'return 1', 'current cell')
+  assert.deepEqual(await state.run(session.id, 'return 1', {}, {
+    session,
+    callId,
+    description: 'current cell',
+  }), {
     logs: [],
     value: 1,
   })
@@ -428,30 +434,23 @@ test('excludes the current in-flight run_code call from history recovery', async
 
 test('recovers prior durable history while excluding the current call', async (t) => {
   const events = []
-  const session = { id: 'session-prior-and-current', events }
+  const session = orderedSurfaceSession('session-prior-and-current', events)
   const first = fixture()
   t.after(() => first.dispose())
   const priorCode = 'const priorDurableValue = 41'
-  const prior = await first.runDurable(session.id, priorCode, {}, { session })
+  const prior = await first.runDurable(session.id, priorCode, {}, { session, recordSession: 'deferred-result', callId: 'prior-call' })
   appendRunCodeEvents(events, 'prior-call', priorCode, prior)
   await first.dispose()
 
   const callId = 'current-after-prior'
-  events.push({
-    type: 'tool/call',
-    seq: events.length,
-    time: events.length,
-    data: {
-      turn: 1,
-      step: 0,
-      callId,
-      name: 'run_code',
-      arguments: JSON.stringify({ code: 'return priorDurableValue + 1', description: 'current cell' }),
-    },
-  })
+  appendRunCodeCall(events, callId, 'return priorDurableValue + 1', 'current cell')
   const restored = fixture()
   t.after(() => restored.dispose())
-  assert.deepEqual(await restored.run(session.id, 'return priorDurableValue + 1', {}, { session, callId }), {
+  assert.deepEqual(await restored.run(session.id, 'return priorDurableValue + 1', {}, {
+    session,
+    callId,
+    description: 'current cell',
+  }), {
     logs: [],
     value: 42,
   })
@@ -470,14 +469,14 @@ test('advances durability again after recovering an unknown suffix', async (t) =
       arguments: JSON.stringify({ code: 'const unknownBinding = 1', description: 'unknown cell' }),
     },
   }]
-  const session = { id: 'session-rebased', events }
+  const session = orderedSurfaceSession('session-rebased', events)
   const first = fixture()
   t.after(() => first.dispose())
   const rebasedCode = `
 const rebasedBinding = 2
 void await repl.state({ action: 'save', name: 'rebased' })
 `
-  const rebased = await first.runDurable(session.id, rebasedCode, {}, { session })
+  const rebased = await first.runDurable(session.id, rebasedCode, {}, { session, recordSession: 'deferred-result', callId: 'rebased-call' })
   assert.equal(rebased.meta.dshPtcPlus.status, 'durable')
   appendRunCodeEvents(events, 'rebased-call', rebasedCode, rebased)
   await first.dispose()
@@ -554,7 +553,7 @@ test('hard cancellation restores the previous durable frontier', async (t) => {
 
 test('keeps callbacks from a statically volatile setup outside the durable replay frontier', async (t) => {
   const events = []
-  const session = { id: 'async-volatility', events }
+  const session = orderedSurfaceSession('async-volatility', events)
   const first = fixture()
   t.after(() => first.dispose())
   const setupCode = `
@@ -564,7 +563,7 @@ const ambientRoot = this
 const deferredAsyncValue = new Promise(resolve => { releaseAsyncValue = resolve })
 void deferredAsyncValue.then(() => { asyncValue = ambientRoot['Math']['ran' + 'dom']() })
 `
-  const setup = await first.runDurable(session.id, setupCode, {}, { session })
+  const setup = await first.runDurable(session.id, setupCode, {}, { session, recordSession: 'deferred-result', callId: 'async-setup' })
   assert.equal(setup.meta.dshPtcPlus.status, 'volatile')
   assert.equal(setup.meta.dshPtcPlus.volatileReason, 'ambient globalThis')
   appendRunCodeEvents(events, 'async-setup', setupCode, setup)
@@ -574,7 +573,7 @@ releaseAsyncValue()
 await Promise.resolve()
 return asyncValue
 `
-  const triggered = await first.runDurable(session.id, triggerCode, {}, { session })
+  const triggered = await first.runDurable(session.id, triggerCode, {}, { session, recordSession: 'deferred-result', callId: 'async-trigger' })
   assert.equal(typeof triggered.value, 'number')
   assert.equal(triggered.meta.dshPtcPlus.status, 'volatile')
   assert.equal(triggered.meta.dshPtcPlus.volatileReason, 'ambient globalThis')
@@ -644,11 +643,11 @@ test('does not lose cancellation during cold worker startup', async (t) => {
 
 test('does not contract durable history when cold replay is already cancelled', async (t) => {
   const events = []
-  const session = { id: 'cold-replay-abort', events }
+  const session = orderedSurfaceSession('cold-replay-abort', events)
   const writer = fixture()
   t.after(() => writer.dispose())
   const source = 'const durableBeforeReplayAbort = 41'
-  const written = await writer.runDurable(session.id, source, {}, { session })
+  const written = await writer.runDurable(session.id, source, {}, { session, recordSession: 'deferred-result', callId: 'cold-replay-abort-call' })
   appendRunCodeEvents(events, 'cold-replay-abort-call', source, written)
   await writer.dispose()
 
@@ -733,16 +732,18 @@ return { durableBeforePendingCall, state: await repl.state({ action: 'list' }) }
 
 test('treats post-execute metadata removal as a volatile boundary', async (t) => {
   const events = []
-  const session = { id: 'session-post-strip', events }
+  const session = orderedSurfaceSession('session-post-strip', events)
   const first = fixture()
   t.after(() => first.dispose())
 
   const durableCode = 'const durableValue = 40'
-  const durable = await first.runDurable(session.id, durableCode, {}, { session })
+  const durable = await first.runDurable(session.id, durableCode, {}, { session, recordSession: 'deferred-result', callId: 'durable-call' })
   appendRunCodeEvents(events, 'durable-call', durableCode, durable)
 
   const strippedCode = 'const strippedValue = 2'
   const stripped = await first.runDurable(session.id, strippedCode, {}, {
+    callId: 'stripped-call',
+    recordSession: 'deferred-result',
     session,
     finalizeResult(result) {
       const { meta: _removed, ...withoutMeta } = result

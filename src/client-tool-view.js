@@ -8,6 +8,8 @@ import { derivePtcToolView } from './client-activity.js'
 export function createPtcToolView(React, deps) {
   const { CodeBlock, DisclosureRow, icons } = deps
   const h = React.createElement
+  const hasDisclosureRow = typeof DisclosureRow === 'function'
+    || (typeof DisclosureRow === 'object' && DisclosureRow !== null)
 
   function PTCPlusToolRow({ toolName, block, inspect, t }) {
     const [open, setOpen] = React.useState(false)
@@ -60,7 +62,7 @@ export function createPtcToolView(React, deps) {
       feature.detail === '' ? null
         : h('span', { className: 'ptcPlusFeatureDetail', title: feature.detail }, feature.detail))))
     const collapsedContent = h('div', { className: 'ptcPlusToolPreview' }, summaryLine, features)
-    if (typeof DisclosureRow === 'function') {
+    if (hasDisclosureRow) {
       return h('div', { className: 'ptcPlusTool' },
         h(DisclosureRow, {
           icon: expandable

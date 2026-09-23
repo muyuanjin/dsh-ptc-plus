@@ -165,6 +165,56 @@ test('selects only the recorded production compiler generation', () => {
   assert.throws(() => prepareProgram('return 1', { languageSemantics: 'unknown' }), /unsupported language semantics/)
 })
 
+test('lowers current import.meta against explicit session metadata without publishing its private binding', () => {
+  const importMeta = {
+    url: 'file:///workspace/repl',
+    filename: '/workspace/repl',
+    dirname: '/workspace',
+  }
+  for (const languageSemantics of ['stateful-v1', 'protected-v1']) {
+    for (const meta of ['import.meta', 'import . meta', 'import/*comment*/.meta', 'import\n.meta']) {
+      const prepared = prepareProgram(`const first = ${meta}; return first === ${meta} && new URL('./asset', first.url).href`, {
+        languageSemantics,
+        importMeta,
+      })
+      assert.equal(prepared.code.includes('import.meta'), false)
+      assert.deepEqual([...prepared.declared], ['first'])
+      assert.match(prepared.code, /__proto__:\s*null/)
+      assert.match(prepared.code, /file:\/\/\/workspace\/repl/)
+    }
+  }
+  assert.throws(
+    () => prepare('return import.meta.url'),
+    /import\.meta may appear only with 'sourceType: "module"'/,
+  )
+  assert.throws(
+    () => prepareProgram('return import.meta.url', { languageSemantics: 'stateful-v1' }),
+    error => {
+      assert.equal(error.message, 'import.meta requires the session module base')
+      assert.deepEqual(error.cellPosition, { line: 1, column: 8 })
+      return true
+    },
+  )
+  assert.throws(
+    () => prepareProgram('function f(){}; return import.meta.url', { languageSemantics: 'stateful-v1' }),
+    error => {
+      assert.equal(error.message, 'import.meta requires the session module base')
+      assert.deepEqual(error.cellPosition, { line: 1, column: 24 })
+      return true
+    },
+  )
+  assert.throws(
+    () => prepareProgram('return import.meta.url + missing(', {
+      languageSemantics: 'stateful-v1',
+      importMeta,
+    }),
+    error => {
+      assert.deepEqual(error.cellPosition, { line: 1, column: 34 })
+      return true
+    },
+  )
+})
+
 test('classifies source-owned top-level this without treating compiler transports as ambient input', () => {
   const options = {
     languageSemantics: 'stateful-v1', knownBindings: new Set(), reservedBindings: new Set(),
@@ -465,6 +515,42 @@ test('maps rewritten parser failures through original module positions', () => {
       assert.doesNotMatch(error.message, /\(\d+:\d+\)/)
       return true
     })
+  }
+})
+
+test('maps normalization failures through every completed source preparation stage', () => {
+  for (const languageSemantics of ['stateful-v1', 'protected-v1']) {
+    for (const declaration of [
+      'function f(){return 1}',
+      'enum E { A=1 }',
+      'namespace N { export const x=1 }',
+    ]) {
+      for (const ending of ['', '\n', '\r\n', '\r', '\u2028', '\u2029']) {
+        const source = `"use strict";${ending}${declaration};${ending}delete foo`
+        const before = source.slice(0, source.indexOf('delete'))
+        const lines = before.split(/\r\n|[\n\r\u2028\u2029]/u)
+        assert.throws(() => prepareProgram(source, { languageSemantics }), error => {
+          assert.deepEqual(error.cellPosition, { line: lines.length, column: lines.at(-1).length + 1 })
+          return true
+        })
+      }
+    }
+  }
+})
+
+test('maps forbidden dynamic module references to submitted positions and names their form', () => {
+  for (const languageSemantics of ['stateful-v1', 'protected-v1']) {
+    for (const [expression, form, span] of [
+      ["await import('node:worker_threads')", 'import', { line: 3, column: 20, end: { line: 3, column: 41 } }],
+      ["require('node:worker_threads')", 'require', { line: 3, column: 15, end: { line: 3, column: 36 } }],
+    ]) {
+      const source = `function marked(){return 1}\nenum E { A=1 }\ntry { ${expression} } catch {}`
+      assert.throws(() => prepareProgram(source, { languageSemantics }), error => {
+        assert.deepEqual(error.span, span)
+        assert.match(error.message, new RegExp(`cell ${form} of node:worker_threads is forbidden`))
+        return true
+      })
+    }
   }
 })
 

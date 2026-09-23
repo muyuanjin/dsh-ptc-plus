@@ -4,11 +4,20 @@ import { parse } from 'acorn'
 import { defineConfig } from 'vitest/config'
 
 const require = createRequire(import.meta.url)
+// `@deepseek-ai/dsh-api-session-controller` is a peer of the declared client
+// test runtime, not a direct dependency, so it resolves from that owner's
+// location instead of relying on the installer hoisting it to the root.
+const ownerRequire = createRequire(require.resolve('@deepseek-ai/dsh-client-test-runtime'))
+const resolveClientEntry = (name) => {
+  try { return ownerRequire.resolve(name) } catch { return require.resolve(name) }
+}
 const prefix = '\0ptc-client-test:'
 const renderer = '@deepseek-ai/dsh-client-ui-renderer'
+const sessionController = '@deepseek-ai/dsh-api-session-controller'
 const supportExports = {
-  [`${renderer}/src/client/bind.ts`]: ['bindSnapshotSelector', 'bindSnapshotSelector'],
-  [`${renderer}/src/client/scoped-slots.tsx`]: ['createSlotRenderer', 'createSlotRenderer'],
+  [`${renderer}/src/client/bind.ts`]: [renderer, 'bindSnapshotSelector'],
+  [`${renderer}/src/client/scoped-slots.tsx`]: [renderer, 'createSlotRenderer'],
+  [`${sessionController}/src/client/scope.ts`]: [sessionController, 'scopeIdentityOf'],
 }
 
 function walk(node, visit) {
@@ -22,7 +31,7 @@ function walk(node, visit) {
 
 function clientDependency(name) {
   if (!name.startsWith('@deepseek-ai/')) return name
-  try { require.resolve(`${name}/client`); return `${name}/client` } catch { return name }
+  try { resolveClientEntry(`${name}/client`); return `${name}/client` } catch { return name }
 }
 
 // Published browser entries are ModuleLoader factories, not ESM. Exercise their
@@ -34,15 +43,15 @@ function clientModules() {
     resolveId(id) {
       if (Object.hasOwn(supportExports, id)) return prefix + id
       if (id.startsWith('@deepseek-ai/') && id.endsWith('/client')) {
-        return prefix + require.resolve(id)
+        return prefix + resolveClientEntry(id)
       }
     },
     load(id) {
       if (!id.startsWith(prefix)) return
       const path = id.slice(prefix.length)
       if (Object.hasOwn(supportExports, path)) {
-        const [name, exported] = supportExports[path]
-        return `export { __test_${name} as ${exported} } from ${JSON.stringify(renderer + '/client')}`
+        const [owner, name] = supportExports[path]
+        return `export { __test_${name} as ${name} } from ${JSON.stringify(owner + '/client')}`
       }
       let source = readFileSync(path, 'utf8')
       const ast = parse(source, { ecmaVersion: 'latest', sourceType: 'script' })
@@ -61,14 +70,17 @@ function clientModules() {
         return expression?.type === 'AssignmentExpression' && expression.left?.object?.name === 'exports'
           ? [expression.left.property.name] : []
       })
-      // The published test-support package references two omitted source files.
-      // Expose those same functions from the shipped renderer only for its harness.
-      if (path === require.resolve(renderer + '/client')) {
+      // The published test-support package references source files omitted from
+      // its dependencies' tarballs. Expose the same shipped bundle functions.
+      const supportNames = Object.values(supportExports)
+        .filter(([owner]) => path === resolveClientEntry(owner + '/client'))
+        .map(([, name]) => name)
+      if (supportNames.length > 0) {
         const returned = factory.body.body.findLast(statement => statement.type === 'ReturnStatement')
         source = source.slice(0, returned.start)
-          + 'exports.__test_bindSnapshotSelector = bindSnapshotSelector; exports.__test_createSlotRenderer = createSlotRenderer;'
+          + supportNames.map(name => `exports.__test_${name} = ${name};`).join('')
           + source.slice(returned.start)
-        names.push('__test_bindSnapshotSelector', '__test_createSlotRenderer')
+        names.push(...supportNames.map(name => `__test_${name}`))
       }
       const dependencies = [...imports]
       return [

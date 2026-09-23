@@ -412,7 +412,7 @@ try {
     $locationPushed = $true
 
     Write-Host "Packing $packageName from $repositoryRoot ..."
-    Invoke-ExternalCommand $npmPath @('pack', '--ignore-scripts', '--pack-destination', $stagingDirectory)
+    Invoke-ExternalCommand $npmPath @('pack', '--pack-destination', $stagingDirectory)
 
     $archives = @(Get-ChildItem -LiteralPath $stagingDirectory -Filter '*.tgz' -File)
     if ($archives.Count -ne 1) {

@@ -23,21 +23,21 @@ test('projects only normalized Cordis call facts from persisted journals', async
     session.id,
     'return await tools.cordis_define({})',
     { cordis_define: async () => ({ pluginId: 'plugin-1', packageId: 'package-1' }) },
-    { session },
+    { session, recordSession: 'deferred-result', callId: 'cordis-defined' },
   )
   appendRunCodeEvents(events, 'cordis-defined', 'return await tools.cordis_define({})', defined)
   const failedInspect = await state.runDurable(
     session.id,
     'return await tools.cordis_inspect_self({})',
     { cordis_inspect_self: async () => { throw new Error('inspect failed') } },
-    { session },
+    { session, recordSession: 'deferred-result', callId: 'cordis-inspect-failed' },
   )
   appendRunCodeEvents(events, 'cordis-inspect-failed', 'return await tools.cordis_inspect_self({})', failedInspect)
   const inspected = await state.runDurable(
     session.id,
     'return await tools.cordis_inspect_list({})',
     { cordis_inspect_list: async () => ({ providers: [] }) },
-    { session },
+    { session, recordSession: 'deferred-result', callId: 'cordis-inspected' },
   )
   appendRunCodeEvents(events, 'cordis-inspected', 'return await tools.cordis_inspect_list({})', inspected)
   appendRunCodeEvents(events, 'malformed', 'return 1', { meta: { dshPtcPlus: { version: 999 } } })
@@ -58,7 +58,7 @@ test('keeps recovered Cordis guidance until a new successful live inspection', a
     session.id,
     'return await tools.cordis_run({})',
     { cordis_run: async () => ({ status: 'starting' }) },
-    { session },
+    { session, recordSession: 'deferred-result', callId: 'historical-cordis-run' },
   )
   appendRunCodeEvents(events, 'historical-cordis-run', 'return await tools.cordis_run({})', historical)
 
@@ -74,7 +74,7 @@ test('keeps recovered Cordis guidance until a new successful live inspection', a
     session.id,
     'return await tools.cordis_inspect_self({})',
     { cordis_inspect_self: async () => ({ plugins: [] }) },
-    { session },
+    { session, recordSession: 'deferred-result', callId: 'live-cordis-inspect' },
   )
   appendRunCodeEvents(events, 'live-cordis-inspect', 'return await tools.cordis_inspect_self({})', inspected)
   assert.deepEqual(recoveryContexts(agent, policy), [])

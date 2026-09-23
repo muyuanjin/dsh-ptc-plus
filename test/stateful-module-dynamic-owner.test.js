@@ -5,6 +5,7 @@ import { managedGraph } from './managed-module-fixture.js'
 import { managedModuleAdapter } from '../internal/stateful-module-runtime.js'
 import { LEGACY_USER_BINDING_TRANSFORM, USER_BINDING_TRANSFORM } from '../internal/typescript-transform.js'
 import { SessionRuntime } from '../internal/session-runtime.js'
+import { orderedSurfaceSession, runRecordedCell } from './plugin-fixture.js'
 import { createUserBindingsSnapshot } from '../internal/user-bindings.js'
 
 const source = `
@@ -86,15 +87,16 @@ test('worker module imports and global binding activation retain their source-ow
   })
   const runtime = new SessionRuntime({ bindingUpdates: 'stateful', durableReplay: false }, { userBindingsCwd: graph.directory })
   t.after(() => runtime.dispose())
-  const session = { id: 'module-dynamic-owner', session: { header: { cwd: graph.directory } } }
+  const session = orderedSurfaceSession('module-dynamic-owner')
+  session.header = { cwd: graph.directory }
   const userBindings = createUserBindingsSnapshot({ entries: [{ id: 'helpers', name: 'helpers', scope: 'namespace',
     purpose: '', enabled: true, source: `export function load(){return Function("return import('./value.mjs')")()}` }] })
-  const first = await runtime.run(session, { bindings: [], userBindings,
+  const first = await runRecordedCell(runtime, session, 'load-dynamic-owner', { bindings: [], userBindings,
     program: `import * as root from './root.mjs';const cjs=require('./root.cjs');
       const values=await Promise.all([root.load(),cjs.load(),helpers.load()]);
       const retained=values[0];return [retained.value,values.every(value=>value===retained),retained.effects.length]` })
   assert.deepEqual(first.value, [42,true,1], first.error?.message)
-  const next = await runtime.run(session, { bindings: [], userBindings,
+  const next = await runRecordedCell(runtime, session, 'reuse-dynamic-owner', { bindings: [], userBindings,
     program: `return [(await root.load())===retained,(await helpers.load())===retained,retained.effects.length]` })
   assert.deepEqual(next.value, [true,true,1], next.error?.message)
 })

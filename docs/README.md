@@ -2,7 +2,7 @@
 
 ## Getting Started
 
-- [Installation](installation.md): npm, Git, source, tarball, development snapshot, and Desktop installation.
+- [Installation](installation.md): npm, Git, source, tarball, development snapshot, and Desktop installation, plus upgrades, troubleshooting, and Session format migration.
 - [Global binding guide](user-bindings.en.md) ([中文](user-bindings.md)): author, review, save, configure, and test reusable helpers.
 - [Runtime Reference](runtime-reference.md): cell behavior, capability discovery, configuration, diagnostics, and limits.
 - [Evaluation](evaluation.md): paired ordinary-task protocol, metrics, configuration, and limitations.
@@ -17,6 +17,7 @@
 - [Global User Bindings](adr/0023-global-user-bindings.md): persistent helper ownership, model projection, runtime activation, recovery, and Agent-assisted authoring.
 - [Binding Review Placement](binding-review-placement-design.md): the implemented full draft panel above the current composer, using the published input dock and one review controller.
 - [Logical Binding Identities](adr/0025-use-versioned-logical-binding-identities.md): stateful declarations, scope, candidate publication and language generations.
+- [Stateful Binding Updates](stateful-binding-updates-proposal.md): target stateful-computation semantics and their acceptance boundaries.
 - [Architecture Decisions](adr/): stable design constraints and their consequences.
 
 ## Maintenance

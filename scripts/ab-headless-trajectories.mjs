@@ -408,7 +408,7 @@ export function computeMetrics(facts, audits) {
     repeatedSourceCalls,
     resultChars: [...results.values()].reduce((total, result) => total + result.outputChars, 0),
     assistantChars: allAssistantText.length,
-    tokenTraffic: Object.values(usage).reduce((sum, value) => sum + value, 0),
+    tokenTraffic: facts.usageComplete === false ? null : Object.values(usage).reduce((sum, value) => sum + value, 0),
     runtimeContextChars: contextAudit.totalMessageChars,
   }
   return {
@@ -485,6 +485,7 @@ export function analyzeSession(events, expected) {
     resultOutputChars: metrics.resultOutputChars,
     assistantTextChars: metrics.assistantTextChars,
     usage,
+    usageComplete: facts.usageComplete,
     machineMetrics: metrics.machineMetrics,
     timeline,
     finalAnswerChars: metrics.finalAnswer.length,
@@ -533,10 +534,18 @@ export async function loadTasks(path) {
   return tasks
 }
 
+function requireOracleCompletion(result, task) {
+  if (result.timedOut === true || result.signal != null || result.termination != null
+    || !Number.isSafeInteger(result.code) || result.code < 0) {
+    throw new Error(`cannot establish ${task.validator} oracle for ${task.id}: subprocess did not complete (${result.termination ?? result.signal ?? (result.timedOut ? 'timeout' : 'missing exit status')})`)
+  }
+}
+
 export async function taskOracle(task, workspace, options = {}) {
   const run = options.runProcess ?? runProcess
   if (task.validator === 'git-status') {
     const result = await run('git', ['status', '--porcelain=v1'], { cwd: workspace, timeoutMs: 30_000 })
+    requireOracleCompletion(result, task)
     if (result.code !== 0) throw new Error(`cannot establish git-status oracle for ${task.id}`)
     return result.stdout.split(/\r?\n/).filter(Boolean).map(line => line.slice(3).replace(/^.* -> /, '')).sort()
   }
@@ -561,6 +570,7 @@ export async function taskOracle(task, workspace, options = {}) {
       cwd: workspace,
       timeoutMs: 10 * 60_000,
     })
+    requireOracleCompletion(result, task)
     return {
       command: 'npm run check',
       exitCode: result.code,
@@ -625,6 +635,7 @@ export async function validateTask(task, oracle, analysis, workspace) {
     return taskValidation({ status: 'pass', source: 'workspace', expectedPresent: oracle })
   }
   if (task.validator === 'test-gate') {
+    requireOracleCompletion({ ...oracle, code: oracle.exitCode }, task)
     return taskValidation({
       status: 'pass',
       source: 'subprocess',

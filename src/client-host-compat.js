@@ -1,5 +1,51 @@
 import { SETTINGS_NAMESPACE } from '../internal/config-spec.js'
 
+const HOST_ICON_EXPORTS = Object.freeze({
+  check: ['IconCheckOutlineRegular', 'IconCheckOutline14'],
+  chevron: ['IconChevronDownOutlineRegular', 'IconChevronDownOutline14'],
+  inspect: ['IconInspectOutlineRegular', 'IconInspectOutline12'],
+  sparkle: ['IconSparkleRegular', 'IconSparkle16'],
+  close: ['IconCloseOutlineRegular', 'IconCloseOutline16'],
+  search: ['IconSearchOutlineRegular', 'IconSearchOutline16'],
+  plus: ['IconPlusOutlineRegular', 'IconPlusOutline16'],
+  refresh: ['IconRefreshOutlineRegular', 'IconRefreshOutline16'],
+  trash: ['IconTrashOutlineRegular', 'IconTrashOutline16'],
+  edit: ['IconEditOutlineRegular', 'IconEditOutline16'],
+  play: ['IconPlayOutlineRegular', 'IconPlayOutline16'],
+  stop: ['IconStopFillRegular', 'IconStopFill16'],
+})
+
+/**
+ * The one component that stands in for a glyph the host did not publish.
+ *
+ * Call sites render `icons.<key>` as a glyph, so an omitted, renamed, or
+ * malformed export must still resolve to a renderable element type. The marker
+ * stays readable so a control that can show its own text label instead
+ * (`IconButton`) keeps that fallback rather than rendering an empty button.
+ */
+const ABSENT_HOST_ICON = () => null
+ABSENT_HOST_ICON.absentHostIcon = true
+
+/** Whether a normalized icon entry is a glyph the host actually published. */
+export function isHostIconComponent(icon) {
+  return typeof icon === 'function' && icon.absentHostIcon !== true
+}
+
+/**
+ * Normalize the public icon export shape used by current and preceding Clients.
+ *
+ * The mapping is total: every key resolves to a render-safe component, so a
+ * host generation that renames or omits an icon never turns a missing glyph
+ * into a render-time throw of the whole plugin surface.
+ */
+export function hostIconComponents(primitives) {
+  return Object.fromEntries(Object.entries(HOST_ICON_EXPORTS).map(([name, candidates]) => [
+    name,
+    candidates.map(candidate => primitives?.[candidate])
+      .find(value => typeof value === 'function') ?? ABSENT_HOST_ICON,
+  ]))
+}
+
 /** The preset a session publishes, preferring the projection reader's evidence. */
 function sessionPresetValue(projected, summary) {
   if (projected !== undefined) return projected
@@ -92,19 +138,22 @@ const BUNDLE_PATCH_ROW_ID = 'ptc-plus'
  * The slot seats one generation of DSH offers for a plugin's own settings card,
  * oldest generation first:
  *
- * - DSH 0.1.5 and earlier: the Settings panel's Plugins section declares
+ * - The settings-card generation declares
  *   `settings.plugin.item` (keyed, root) as the child slot of its configurable
  *   tab and renders one card per settings namespace the Host serves, so this
  *   plugin's key is its namespace.
- * - DSH 0.1.6-alpha.2 and later: that section is a read-only inventory, and a
- *   bundle's own configuration belongs to the side bar Plugins page, which
- *   declares `plugins.row.config` (keyed, root) and renders the entry's summary
- *   on the row's page with the entry's form below it. The key is
+ * - The bundle-row generation exposes that section as a read-only inventory,
+ *   and a bundle's own configuration belongs to the side bar Plugins page,
+ *   which declares `plugins.row.config` (keyed, root) and renders the entry's
+ *   summary on the row's page with the entry's form below it. The key is
  *   `<bundle package name>#<row id>`. The same page's `plugins.item` list is its
  *   Official group, occupied by the host-plane configuration pages DSH itself
  *   ships, so it is not a seat for a third-party bundle.
  *
- * No generation declares both keys, and `ctx.slots.inject` waits rather than
+ * - The General settings generation declares `settings.general.item` (list,
+ *   root), with `id` identifying the contributed row inside Settings / General.
+ *
+ * Each generation declares its own seat, and `ctx.slots.inject` waits rather than
  * failing while a key is undeclared: the callback runs only after the declaring
  * entry mounts, and nothing is registered until then. One publication therefore
  * serves every generation without probing a version, and no card renders twice
@@ -117,6 +166,7 @@ export function settingsCardSeats(bundleName) {
   return [
     { slot: 'settings.plugin.item', identity: { key: SETTINGS_NAMESPACE } },
     { slot: 'plugins.row.config', identity: { key: `${bundleName}#${BUNDLE_PATCH_ROW_ID}` } },
+    { slot: 'settings.general.item', identity: { id: SETTINGS_NAMESPACE } },
   ]
 }
 

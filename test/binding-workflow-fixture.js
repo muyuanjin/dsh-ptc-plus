@@ -30,9 +30,16 @@ export async function bindingWorkflowHost(t) {
     else process.env.DSH_HOME = previousHome
     await rm(home, { recursive: true, force: true })
   })
-  ctx.provide('codeRuntime', {
+  const upstreamRuntime = {
     language: 'typescript', isolation: 'worker-thread',
     async run() { throw new Error('unexpected isolated runtime') },
+  }
+  ctx.provide('codeRuntime', upstreamRuntime)
+  ctx.provide('ptcRuntime', {
+    ...upstreamRuntime,
+    resolve(request) {
+      return { ...request, cwd: request.cwd ?? home, timeoutMs: request.timeoutMs ?? null }
+    },
   })
   for (const plugin of [TypertRegistry, SystemPrompt, SessionStore, AgentRegistry, LlmRuntime,
     SessionProjectionRegistry, ToolRuntime, CommandRuntime, AgentLoop]) {
@@ -80,12 +87,24 @@ export async function bindingWorkflowHost(t) {
   await new Promise(resolve => setImmediate(resolve))
   const idleAfter = async operation => {
     let release
+    let failure
     const idle = new Promise(resolve => {
       release = ctx.on('agent/status', payload => {
         if (payload.agent === agent && payload.status === 'idle') resolve()
       })
     })
-    try { const value = await operation(); await idle; return value } finally { release() }
+    const releaseError = ctx.on('agent/error', payload => {
+      if (payload.agent === agent) failure = payload.error
+    })
+    try {
+      const value = await operation()
+      await idle
+      if (failure !== undefined) throw failure
+      return value
+    } finally {
+      releaseError()
+      release()
+    }
   }
   const events = () => sessionEvents(agent.session)
   const run = async (program, text = 'Execute the requested verification cell.') => {

@@ -1,9 +1,12 @@
 import { mkdtemp, rm } from 'node:fs/promises'
+import { randomBytes } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { isAbsolute, join } from 'node:path'
 import { messageOf, processExitDescription } from './failure-reporting.js'
 import { IsolatedOwner } from './isolated-worker.js'
 import { normalizeWorkerEnvironment } from './worker-environment.js'
+import { WorkerOutputCapture } from './worker-output-capture.js'
+import { stripOutputFenceMarkers } from './worker-output-fence.js'
 
 export { normalizeWorkerEnvironment }
 
@@ -11,16 +14,21 @@ const KERNEL_HELPER = new URL('./kernel-child.js', import.meta.url)
 
 /** Owns one session kernel's worker process, private port, and scratch directory. */
 export class WorkerClient {
-  constructor({ workerUrl, cwd, onMessage, onFailure, compilerCache }) {
+  constructor({ workerUrl, cwd, onMessage, onFailure, onUnmatchedOutputFailure, compilerCache }) {
     this.workerUrl = workerUrl
     this.cwd = cwd
     this.onMessage = onMessage
     this.onFailure = onFailure
+    this.onUnmatchedOutputFailure = onUnmatchedOutputFailure ?? (() => false)
     this.compilerCache = compilerCache
     this.worker = undefined
     this.workerLimit = undefined
     this.workerReady = undefined
     this.port = undefined
+    this.outputCapture = undefined
+    this.outputCompletionPending = undefined
+    this.deferredOutputMessages = []
+    this.pendingOutputFailure = undefined
     this.scratchReady = undefined
     this.stderrTails = new WeakMap()
     // One owner keeps every started kernel transport, including startup failures
@@ -32,13 +40,18 @@ export class WorkerClient {
 
   /** Last non-empty stderr line of a failed worker, capped for diagnostics. */
   stderrDetail(worker) {
-    const tail = this.stderrTails.get(worker)?.join('').trim()
+    const tail = stripOutputFenceMarkers(this.stderrTails.get(worker)?.join('')).trim()
     if (tail === undefined || tail.length === 0) return undefined
     const lastLine = tail.split(/\r?\n/).map(line => line.trim()).filter(line => line.length > 0).slice(-1)[0]
     return lastLine === undefined ? undefined : lastLine.slice(0, 300)
   }
 
   async ensure(maxOldGenerationSizeMb) {
+    if (this.pendingOutputFailure !== undefined) {
+      const message = this.pendingOutputFailure
+      this.pendingOutputFailure = undefined
+      throw new Error(`worker output attribution failed: ${message}`)
+    }
     if (this.workerLimit !== undefined && this.workerLimit !== maxOldGenerationSizeMb) {
       throw new Error('ptc-plus: session worker memory limit differs from the submitted cell configuration')
     }
@@ -86,15 +99,21 @@ export class WorkerClient {
       this.workerLimit = undefined
       throw error
     }
-    worker.stdout.resume()
-    worker.stderr.resume()
+    const outputCapture = new WorkerOutputCapture()
+    this.outputCapture = outputCapture
     const stderrTail = []
+    worker.stdout.on?.('data', chunk => {
+      this.handleCapturedOutput(worker, outputCapture.push('stdout', chunk))
+    })
     worker.stderr.on?.('data', (chunk) => {
       const text = typeof chunk === 'string' ? chunk : String(chunk ?? '')
       stderrTail.push(text)
       const bounded = Buffer.from(stderrTail.join('')).subarray(-2048).toString('utf8')
       stderrTail.splice(0, stderrTail.length, bounded)
+      this.handleCapturedOutput(worker, outputCapture.push('stderr', chunk))
     })
+    worker.stdout.resume()
+    worker.stderr.resume()
     this.stderrTails.set(worker, stderrTail)
     worker.on('error', error => this.fail(worker, `worker error: ${messageOf(error)}`))
     worker.on('exit', (code, signal) => {
@@ -135,9 +154,7 @@ export class WorkerClient {
           return
         }
         this.port = message.port
-        this.port.on('message', (value) => {
-          if (worker === this.worker) this.onMessage(value)
-        })
+        this.port.on('message', value => this.handleWorkerMessage(worker, outputCapture, value))
         resolve(worker)
       })
     })
@@ -145,7 +162,17 @@ export class WorkerClient {
   }
 
   post(message) {
-    this.port.postMessage(message)
+    if (message?.type !== 'run') {
+      this.port.postMessage(message)
+      return
+    }
+    const outputFence = randomBytes(24).toString('hex')
+    const failure = this.outputCapture?.begin(message.id, message.maxOutputBytes, outputFence)
+    if (failure !== undefined) {
+      this.handleCapturedOutput(this.worker, failure)
+      return
+    }
+    this.port.postMessage({ ...message, outputFence })
   }
 
   /** Best-effort reply for a request whose lease may outlive a worker reset. */
@@ -153,11 +180,68 @@ export class WorkerClient {
     this.port?.postMessage(message)
   }
 
+  handleWorkerMessage(worker, outputCapture, value) {
+    if (worker !== this.worker) return
+    const outputProtocol = value?.type === 'output-start'
+      || value?.type === 'late-output'
+      || value?.type === 'done'
+    if (this.outputCompletionPending !== undefined && !outputProtocol) {
+      this.deferredOutputMessages.push(value)
+      return
+    }
+    const captured = value?.type === 'output-start'
+      ? outputCapture.start(value)
+      : value?.type === 'late-output'
+        ? outputCapture.lateOutput()
+        : value?.type === 'done'
+          ? outputCapture.complete(value)
+          : value
+    if (value?.type === 'done' && captured === undefined) {
+      this.outputCompletionPending = value.id
+      return
+    }
+    this.handleCapturedOutput(worker, captured)
+  }
+
+  handleCapturedOutput(worker, message) {
+    if (message === undefined || worker !== this.worker) return
+    if (message.type === 'worker-output-started') {
+      this.port?.postMessage({
+        type: 'output-start-ack',
+        id: message.id,
+        outputFence: message.outputFence,
+      })
+      return
+    }
+    const releasesDeferred = message.type === 'done' && message.id === this.outputCompletionPending
+    const discardsDeferred = message.id === this.outputCompletionPending
+      && (message.type === 'worker-output-error' || message.type === 'output-limit')
+    if (releasesDeferred || discardsDeferred) this.outputCompletionPending = undefined
+    const consumed = this.onMessage(message) === true
+    if (message.type === 'worker-output-error' && worker === this.worker) {
+      const failureConsumed = consumed || this.onUnmatchedOutputFailure(
+        `worker output attribution failed: ${message.message}`,
+      ) === true
+      if (!failureConsumed) this.pendingOutputFailure = message.message
+      void this.reset(worker).catch(error => this.onFailure(`worker output reset failed: ${messageOf(error)}`))
+      return
+    }
+    if (releasesDeferred) {
+      const deferred = this.deferredOutputMessages
+      this.deferredOutputMessages = []
+      for (const value of deferred) this.onMessage(value)
+    } else if (discardsDeferred) this.deferredOutputMessages = []
+  }
+
   fail(worker, message) {
     if (worker !== this.worker) return
     this.worker = undefined
     this.workerLimit = undefined
     this.workerReady = undefined
+    this.outputCapture = undefined
+    this.outputCompletionPending = undefined
+    this.deferredOutputMessages = []
+    this.pendingOutputFailure = undefined
     this.port?.close()
     this.port = undefined
     const detail = this.stderrDetail(worker)
@@ -170,6 +254,9 @@ export class WorkerClient {
       this.worker = undefined
       this.workerLimit = undefined
       this.workerReady = undefined
+      this.outputCapture = undefined
+      this.outputCompletionPending = undefined
+      this.deferredOutputMessages = []
       this.port = undefined
     }
     await this.owner.stop(this.hostIds.get(worker))
@@ -184,6 +271,10 @@ export class WorkerClient {
     this.worker = undefined
     this.workerLimit = undefined
     this.workerReady = undefined
+    this.outputCapture = undefined
+    this.outputCompletionPending = undefined
+    this.deferredOutputMessages = []
+    this.pendingOutputFailure = undefined
     this.port = undefined
     if (worker !== undefined) this.hostIds.delete(worker)
     const failures = []

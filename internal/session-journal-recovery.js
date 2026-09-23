@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util'
 import { isRecord } from './record-utils.js'
 import { sessionEvents } from './session-events.js'
 import {
@@ -8,6 +9,7 @@ import {
   REPL_TOOL_NAMES,
 } from './session-journal-schema.js'
 import {
+  isCanonicalSequence,
   normalizeDerivedEditResult,
   normalizeJournal,
   normalizeRecoveryBoundaries,
@@ -15,6 +17,15 @@ import {
   userBindingsForJournal,
   validatedRewrites,
 } from './session-journal.js'
+
+const RECOVERY_BOUNDARY_EVIDENCE = Symbol('recoveryBoundaryEvidence')
+const MODEL_VISIBLE_SURFACE_EVENTS = new Set([
+  'system/message',
+  'developer/message',
+  'user/message',
+  'assistant/message',
+  'tool/result',
+])
 
 function sourceForRunCall(call) {
   try {
@@ -96,7 +107,11 @@ function applyRecord(state, record, invalidCallSeqs) {
 }
 
 function recordEventSeq(record) {
-  return record.result?.eventSeq ?? record.call.seq
+  // A settlement that the Host re-published as a pruned clone carries the
+  // clone's row sequence, but it is still the same settlement: ordering and
+  // boundary application use its settlement position so a recorded boundary
+  // finds the call it names already folded.
+  return record.result?.positionSeq ?? record.result?.eventSeq ?? record.call.seq
 }
 
 function foldRecords(records, invalidCallSeqs, options = {}) {
@@ -123,24 +138,32 @@ function dependsOn(nodes, index, ancestor) {
 
 /** Return executable call sequences whose provenance remains model-visible. */
 export function visibleExecutableCallSeqs(session) {
-  const events = sessionEvents(session)
+  let events
   let nodes
   try {
+    events = sessionEvents(session)
     nodes = session?.surface?.nodes
   } catch {
-    return undefined
+    return new Set()
   }
-  if (!Array.isArray(events) || !Array.isArray(nodes)) return undefined
+  if (!Array.isArray(events) || !Array.isArray(nodes)) return new Set()
   const eventBySeq = new Map()
-  for (const event of events) eventBySeq.set(event?.seq, event)
-  for (const seq of nodes) {
-    if (!Number.isSafeInteger(seq) || seq < 0 || eventBySeq.get(seq) === undefined) return undefined
+  const duplicateEventSeqs = new Set()
+  for (const event of events) {
+    if (!isCanonicalSequence(event?.seq)) return new Set()
+    if (eventBySeq.has(event.seq)) duplicateEventSeqs.add(event.seq)
+    else eventBySeq.set(event.seq, event)
   }
-  const visible = new Set(nodes)
-  const resultSources = new Set()
+  const visible = new Set()
+  for (const seq of nodes) {
+    const event = eventBySeq.get(seq)
+    if (!isCanonicalSequence(seq) || event === undefined
+      || duplicateEventSeqs.has(seq) || !MODEL_VISIBLE_SURFACE_EVENTS.has(event.type)
+      || visible.has(seq)) return new Set()
+    visible.add(seq)
+  }
   const visibleAssistantCallSeqs = new Set()
   const pendingAssistantCalls = new Map()
-  let assistantCallEvidence = false
   for (const event of events) {
     if (event?.type === 'turn/start' || event?.type === 'turn/end') {
       pendingAssistantCalls.clear()
@@ -153,41 +176,34 @@ export function visibleExecutableCallSeqs(session) {
         for (const part of content) {
           if (part?.type === 'tool-call' && typeof part.id === 'string') {
             const isVisible = visible.has(event.seq)
-            if (isVisible) assistantCallEvidence = true
-            let occurrences = pendingAssistantCalls.get(part.id)
-            if (occurrences === undefined) {
-              occurrences = []
-              pendingAssistantCalls.set(part.id, occurrences)
+            const candidate = {
+              isVisible,
+              name: typeof part.name === 'string' ? part.name : undefined,
+              arguments: typeof part.arguments === 'string' ? part.arguments : undefined,
             }
-            occurrences.push(isVisible)
+            pendingAssistantCalls.set(part.id,
+              pendingAssistantCalls.has(part.id) ? null : candidate)
           }
         }
       }
       continue
     }
     if (event?.type === 'tool/call' && typeof event.data?.callId === 'string') {
-      const occurrences = pendingAssistantCalls.get(event.data.callId)
-      if (occurrences !== undefined && occurrences.length > 0) {
-        const isVisible = occurrences.shift()
-        if (occurrences.length === 0) pendingAssistantCalls.delete(event.data.callId)
-        if (isVisible && REPL_TOOL_NAMES.has(event.data.name)) {
+      const candidate = pendingAssistantCalls.get(event.data.callId)
+      pendingAssistantCalls.delete(event.data.callId)
+      if (candidate !== undefined && candidate !== null) {
+        if (candidate.isVisible && REPL_TOOL_NAMES.has(event.data.name)
+          && candidate.name === event.data.name
+          && candidate.arguments === event.data.arguments) {
           visibleAssistantCallSeqs.add(event.seq)
         }
-      }
-    }
-    if (visible.has(event?.seq)
-      && event?.type === 'tool/result' && Array.isArray(event.sourceEventSeqs)) {
-      for (const sourceSeq of event.sourceEventSeqs) {
-        if (Number.isSafeInteger(sourceSeq) && sourceSeq >= 0) resultSources.add(sourceSeq)
       }
     }
   }
   const calls = new Set()
   for (const event of events) {
     if (event?.type !== 'tool/call' || !REPL_TOOL_NAMES.has(event.data?.name)) continue
-    if (assistantCallEvidence
-      ? visibleAssistantCallSeqs.has(event.seq)
-      : (visible.has(event.seq) || resultSources.has(event.seq))) calls.add(event.seq)
+    if (visibleAssistantCallSeqs.has(event.seq)) calls.add(event.seq)
   }
   return calls
 }
@@ -202,7 +218,7 @@ function timelineRun(call, result, eventIndex, journal) {
   }
   return Object.freeze({
     index: eventIndex,
-    callSeq: Number.isSafeInteger(call.seq) ? call.seq : undefined,
+    callSeq: isCanonicalSequence(call.seq) ? call.seq : undefined,
     args,
     source: typeof args?.code === 'string' ? args.code : undefined,
     journal,
@@ -213,7 +229,7 @@ function timelineRun(call, result, eventIndex, journal) {
 function timelineDerivedRun(call, result, eventIndex, derived) {
   return Object.freeze({
     index: eventIndex,
-    callSeq: Number.isSafeInteger(call.seq) ? call.seq : undefined,
+    callSeq: isCanonicalSequence(call.seq) ? call.seq : undefined,
     args: Object.freeze({ description: derived.description }),
     source: derived.code,
     journal: derived.journal,
@@ -235,7 +251,7 @@ function pruneWindowForEvent(event, eventIndex) {
       && shadowedRange.end === shadowedSeqs[shadowedSeqs.length - 1])
   const valid = shadowedSeqs.length > 0
     && seqs.size === shadowedSeqs.length
-    && shadowedSeqs.every(seq => Number.isSafeInteger(seq) && seq >= 0)
+    && shadowedSeqs.every(isCanonicalSequence)
     && shadowedSeqs.every((seq, index) => index === 0 || seq > shadowedSeqs[index - 1])
     && rangeValid
   return { seqs: valid ? seqs : new Set(), lastEventIndex: eventIndex }
@@ -247,7 +263,7 @@ function continuesPruneWindow(window, event, eventIndex) {
 
 function identifiesPrunedResult(window, event, eventIndex) {
   const sourceSeq = event.sourceEventSeqs?.[0]
-  return Number.isSafeInteger(sourceSeq)
+  return isCanonicalSequence(sourceSeq)
     && window?.seqs.has(sourceSeq)
     && eventIndex === window.lastEventIndex + 1
     && Array.isArray(event.sourceEventSeqs) && event.sourceEventSeqs.length === 1
@@ -260,14 +276,41 @@ function replacesPendingCall(candidate, event, pruneSeq) {
   const sourceSeq = event.sourceEventSeqs[0]
   const surfaceOp = event.surfaceOp
   const orderedIdentity = REPL_TOOL_NAMES.has(candidate.event.data.name)
-    && Number.isSafeInteger(candidateSeq) && candidateSeq >= 0
+    && isCanonicalSequence(candidateSeq)
     && sourceSeq > candidateSeq
-    && Number.isSafeInteger(pruneSeq) && pruneSeq >= 0
-    && Number.isSafeInteger(event.seq) && event.seq - pruneSeq === 1
+    && isCanonicalSequence(pruneSeq)
+    && isCanonicalSequence(event.seq) && event.seq - pruneSeq === 1
     && sourceSeq < pruneSeq
-  const exactReplacement = surfaceOp === undefined
-    || (surfaceOp?.op === 'replace' && surfaceOp.start === sourceSeq && surfaceOp.end === sourceSeq)
+  const legacyReplacement = isRecord(surfaceOp)
+    && Reflect.ownKeys(surfaceOp).length === 3
+    && surfaceOp.op === 'replace'
+    && surfaceOp.start === sourceSeq
+    && surfaceOp.end === sourceSeq
+  const currentReplacement = isRecord(surfaceOp)
+    && Reflect.ownKeys(surfaceOp).length === 3
+    && surfaceOp.op === 'replace'
+    && surfaceOp.startSeq === sourceSeq
+    && surfaceOp.endSeq === sourceSeq
+  const exactReplacement = surfaceOp === undefined || legacyReplacement || currentReplacement
   return orderedIdentity && exactReplacement
+}
+
+/** The exact single-event surface replacement the Host pruner appends. */
+function exactResultReplacement(event, sourceSeq) {
+  const surfaceOp = event.surfaceOp
+  if (!isRecord(surfaceOp) || Reflect.ownKeys(surfaceOp).length !== 3 || surfaceOp.op !== 'replace') {
+    return false
+  }
+  return (surfaceOp.start === sourceSeq && surfaceOp.end === sourceSeq)
+    || (surfaceOp.startSeq === sourceSeq && surfaceOp.endSeq === sourceSeq)
+}
+
+/** A replacement representation may differ from its shadowed result only in message content. */
+function sameResultExceptContent(previous, next) {
+  const withoutContent = data => isRecord(data) && isRecord(data.message)
+    ? { ...data, message: { ...data.message, content: undefined } }
+    : data
+  return isDeepStrictEqual(withoutContent(previous), withoutContent(next))
 }
 
 /**
@@ -283,6 +326,7 @@ export function foldSessionTimeline(events) {
     boundaries: [],
     found: false,
     unavailableResultSeq: undefined,
+    unavailableResultReason: undefined,
     lastSuccessfulRunIndex: undefined,
     latestRun: undefined,
     editableRun: undefined,
@@ -295,7 +339,8 @@ export function foldSessionTimeline(events) {
   const seenCallIds = new Set()
   const claimedEditTargets = new Set()
   const editClaims = new Map()
-  const journalResultSeqs = new Set()
+  const ordinaryResultSeqs = new Set()
+  const settledResultsByEventSeq = new Map()
   let pruneReplacementWindow
   let scope = 0
 
@@ -324,7 +369,7 @@ export function foldSessionTimeline(events) {
       continue
     }
     if (event?.type === RECOVERY_BOUNDARY_EVENT) {
-      state.unavailableResultSeq ??= Number.isSafeInteger(event.seq) ? event.seq : eventIndex
+      state.unavailableResultSeq ??= isCanonicalSequence(event.seq) ? event.seq : eventIndex
       continue
     }
     if (event?.type === 'compaction/prune' && Array.isArray(event.data?.shadowedSeqs)) {
@@ -335,12 +380,19 @@ export function foldSessionTimeline(events) {
       const executable = REPL_TOOL_NAMES.has(event.data.name)
       let entry = { event, eventIndex, scope }
       if (executable) {
-        if (Number.isSafeInteger(event.seq) && event.seq >= 0 && state.executableCalls.has(event.seq)) {
+        if (isCanonicalSequence(event.seq) && state.executableCalls.has(event.seq)) {
           // A sequence collision disproves both sources, but not the earlier
           // verified frontier. Keep its position for persistent contraction.
           const previous = state.executableCalls.get(event.seq)
           previous.ambiguous = true
           state.unavailableResultSeq = Math.min(state.unavailableResultSeq ?? event.seq, event.seq)
+          if (state.unavailableResultReason === undefined
+            || event.seq < state.unavailableResultReason.seq) {
+            state.unavailableResultReason = {
+              seq: event.seq,
+              reason: `duplicate executable tool call sequence ${event.seq}`,
+            }
+          }
           state.found = true
           state.latestRun = undefined
           state.editableRun = undefined
@@ -363,7 +415,7 @@ export function foldSessionTimeline(events) {
           }
         }
         state.calls.push(event)
-        if (Number.isSafeInteger(event.seq) && event.seq >= 0) {
+        if (isCanonicalSequence(event.seq)) {
           state.executableCalls.set(event.seq, entry)
         }
       }
@@ -376,9 +428,14 @@ export function foldSessionTimeline(events) {
     }
     if (event?.type !== 'tool/result') continue
 
-    const sourceSeq = event.sourceEventSeqs?.[0]
+    const hasSourceRelation = Object.hasOwn(event, 'sourceEventSeqs')
+    const sourceRelation = event.sourceEventSeqs
+    const sourceSeq = sourceRelation?.[0]
+    const canonicalSourceRelation = Array.isArray(sourceRelation)
+      && sourceRelation.length === 1
+      && isCanonicalSequence(sourceSeq)
     const callId = event.data?.message?.source?.callId
-    let entry = Number.isSafeInteger(sourceSeq) ? state.executableCalls.get(sourceSeq) : undefined
+    let entry = canonicalSourceRelation ? state.executableCalls.get(sourceSeq) : undefined
     let prunedReplacement = false
     if (entry === undefined && identifiesPrunedResult(pruneReplacementWindow, event, eventIndex)) {
       const candidate = pendingByCallId.get(callId)
@@ -389,8 +446,47 @@ export function foldSessionTimeline(events) {
         pruneReplacementWindow.lastEventIndex = eventIndex
       }
     }
-    if (entry === undefined && !Number.isSafeInteger(sourceSeq) && typeof callId === 'string') {
+    if (entry === undefined && !hasSourceRelation && typeof callId === 'string') {
       entry = pendingByCallId.get(callId)
+    }
+    if (entry === undefined && canonicalSourceRelation) {
+      // The Host pruner may replace an already-settled result with a
+      // content-only clone that cites the shadowed result event. It is the same
+      // call's settlement representation, not a new unknown boundary.
+      const settled = settledResultsByEventSeq.get(sourceSeq)
+      if (settled !== undefined && typeof callId === 'string'
+        && settled.call?.data?.callId === callId
+        && exactResultReplacement(event, sourceSeq)
+        && sameResultExceptContent(settled.data, event.data)) {
+        entry = settled.entry
+        prunedReplacement = true
+      }
+    }
+    if (hasSourceRelation && !canonicalSourceRelation) {
+      const identityEntry = typeof callId === 'string' ? pendingByCallId.get(callId) : undefined
+      const callSeqs = new Set(Array.isArray(sourceRelation)
+        ? sourceRelation
+          .filter(isCanonicalSequence)
+          .map(candidateSeq => state.executableCalls.get(candidateSeq)?.event?.seq)
+          .filter(isCanonicalSequence)
+        : [])
+      if (isCanonicalSequence(identityEntry?.event?.seq)) {
+        callSeqs.add(identityEntry.event.seq)
+      }
+      if (callSeqs.size > 0) {
+        const callSeq = Math.min(...callSeqs)
+        state.unavailableResultSeq = Math.min(state.unavailableResultSeq ?? callSeq, callSeq)
+        state.results.set(callSeq, {
+          eventSeq: isCanonicalSequence(event.seq) ? event.seq : callSeq,
+          eventIndex,
+          error: `tool result has an invalid source relation for call seq ${callSeq}`,
+        })
+        state.found = true
+      }
+      if (typeof callId === 'string') pendingByCallId.delete(callId)
+      state.latestRun = undefined
+      state.editableRun = undefined
+      continue
     }
     if (typeof callId === 'string') pendingByCallId.delete(callId)
     if (entry === null) {
@@ -407,38 +503,65 @@ export function foldSessionTimeline(events) {
     }
     const callSeq = call?.seq
     const meta = event.data?.meta
-    let normalized
-    if (isRecord(meta) && Object.hasOwn(meta, JOURNAL_KEY)) {
-      if (Number.isSafeInteger(sourceSeq) && journalResultSeqs.has(sourceSeq)) {
-        state.unavailableResultSeq ??= sourceSeq
-        state.results.set(sourceSeq, {
-          eventSeq: Number.isSafeInteger(event.seq) && event.seq >= 0 ? event.seq : sourceSeq,
+    if (!prunedReplacement && isCanonicalSequence(callSeq)) {
+      if (ordinaryResultSeqs.has(callSeq)) {
+        state.unavailableResultSeq ??= callSeq
+        state.results.set(callSeq, {
+          eventSeq: isCanonicalSequence(event.seq) ? event.seq : callSeq,
           eventIndex,
-          error: `session log contains duplicate PTC journal results for call seq ${sourceSeq}`,
+          error: `session log contains duplicate ordinary tool results for call seq ${callSeq}`,
         })
         state.found = true
+        state.latestRun = undefined
+        state.editableRun = undefined
         continue
       }
-      if (Number.isSafeInteger(sourceSeq)) journalResultSeqs.add(sourceSeq)
+      ordinaryResultSeqs.add(callSeq)
+    }
+    if (call !== undefined && typeof callId === 'string' && call.data.callId !== callId) {
+      state.latestRun = undefined
+      state.editableRun = undefined
+      if (isCanonicalSequence(callSeq)) {
+        state.unavailableResultSeq ??= callSeq
+        state.results.set(callSeq, {
+          eventSeq: isCanonicalSequence(event.seq) ? event.seq : callSeq,
+          eventIndex,
+          error: `tool result identities disagree for call seq ${callSeq}`,
+        })
+        state.found = true
+      }
+      continue
+    }
+    let normalized
+    if (isRecord(meta) && Object.hasOwn(meta, JOURNAL_KEY)) {
       if (entry === undefined) {
-        if (Number.isSafeInteger(sourceSeq)) {
+        if (isCanonicalSequence(sourceSeq)) {
           state.unavailableResultSeq ??= sourceSeq
         }
         continue
       }
       const resultSeq = prunedReplacement
         ? callSeq
-        : Number.isSafeInteger(sourceSeq) ? sourceSeq : callSeq
+        : isCanonicalSequence(sourceSeq) ? sourceSeq : callSeq
+      // A pruned clone re-publishes an existing settlement, so it keeps that
+      // settlement's position instead of the clone's later row sequence. A
+      // recorded recovery boundary names the call it follows, and ordering the
+      // clone by its own row would apply the boundary before that call exists
+      // in the verified frontier.
+      const settlementPosition = prunedReplacement
+        ? state.results.get(resultSeq)?.eventSeq ?? resultSeq
+        : undefined
       const raw = {
         meta,
-        eventSeq: Number.isSafeInteger(event.seq) && event.seq >= 0 ? event.seq : resultSeq,
+        eventSeq: isCanonicalSequence(event.seq) ? event.seq : resultSeq,
+        ...(settlementPosition === undefined ? {} : { positionSeq: settlementPosition }),
         eventIndex,
       }
       if (Object.hasOwn(meta, RECOVERY_BOUNDARY_KEY)) {
         try {
           state.boundaries.push(...normalizeRecoveryBoundaries(
             meta[RECOVERY_BOUNDARY_KEY], raw.eventSeq,
-          ))
+          ).map(boundary => ({ ...boundary, carrierCallSeq: resultSeq })))
         } catch {
           state.unavailableResultSeq ??= callSeq
         }
@@ -475,7 +598,15 @@ export function foldSessionTimeline(events) {
       } catch (error) {
         normalized = { ...raw, error: error.message }
       }
-      if (Number.isSafeInteger(resultSeq)) state.results.set(resultSeq, normalized)
+      if (normalized === undefined) {
+        // PTC metadata on a settlement whose call is not a REPL tool is
+        // unproved evidence: it must contract the frontier, not escape the fold.
+        normalized = { ...raw, error: 'PTC journal metadata appeared on a non-REPL tool result' }
+      }
+      if (isCanonicalSequence(resultSeq)) state.results.set(resultSeq, normalized)
+      if (!prunedReplacement && isCanonicalSequence(event.seq)) {
+        settledResultsByEventSeq.set(event.seq, { call, entry, data: event.data })
+      }
       state.found = true
     }
 
@@ -518,6 +649,7 @@ export function recoverJournal(session, currentCallSeq, options = {}) {
   const calls = timeline.calls.filter(call => call.seq !== currentCallSeq)
   const { executableCalls, results, found } = timeline
   const visibleCalls = options?.visibleCallSeqs
+  const appliedBoundaries = options?.[RECOVERY_BOUNDARY_EVIDENCE]
   const invalidCallSeqs = new Set()
   let unavailableBoundary
   const registerUnavailable = ({ seq, reason, code }, recoveryState) => {
@@ -528,17 +660,22 @@ export function recoverJournal(session, currentCallSeq, options = {}) {
     invalidCallSeqs.add(seq)
     recoveryState.trusted = false
     if (!recoveryState.volatileSuffix.some(item => item.seq === seq)) {
-      recoveryState.volatileSuffix.push({ seq, code, reason })
+      const item = { seq, code, reason }
+      const index = recoveryState.volatileSuffix.findIndex(existing => existing.seq > seq)
+      if (index < 0) recoveryState.volatileSuffix.push(item)
+      else recoveryState.volatileSuffix.splice(index, 0, item)
     }
   }
   if (timeline.unavailableResultSeq !== undefined) {
     registerUnavailable({
       seq: timeline.unavailableResultSeq,
-      reason: 'unavailable or malformed dsh-ptc-plus journal result',
+      reason: timeline.unavailableResultReason?.seq === timeline.unavailableResultSeq
+        ? timeline.unavailableResultReason.reason
+        : 'unavailable or malformed dsh-ptc-plus journal result',
     })
   }
   for (const [resultSeq, result] of results.entries()) {
-    if (result?.error !== undefined && Number.isSafeInteger(resultSeq)) {
+    if (result?.error !== undefined && isCanonicalSequence(resultSeq)) {
       registerUnavailable({ seq: resultSeq, reason: result.error })
     }
   }
@@ -578,27 +715,71 @@ export function recoverJournal(session, currentCallSeq, options = {}) {
   }
   const records = []
   const orderedRecords = []
+  const contractedCallRanges = []
   let state = foldRecords(records, invalidCallSeqs)
   let boundaryIndex = 0
+  const carrierCallSeqForBoundary = boundary => boundary.carrierCallSeq
+  const isContractedCallSeq = (callSeq) => contractedCallRanges.some(range => (
+    callSeq >= range.start && callSeq < range.end
+  ))
+  const rejectBoundary = (boundary, reason) => {
+    const carrierCallSeq = carrierCallSeqForBoundary(boundary)
+    const contractionSeq = carrierCallSeq === undefined
+      ? boundary.failedCallSeq
+      : Math.min(boundary.failedCallSeq, carrierCallSeq)
+    // A rejected boundary still establishes a conservative contraction point:
+    // the same window an accepted boundary would contract stays unproved, so
+    // settlements folded after this rejection cannot re-enter the frontier.
+    if (carrierCallSeq !== undefined) {
+      contractedCallRanges.push({ start: contractionSeq, end: carrierCallSeq })
+    }
+    for (const record of records) {
+      if (record.call.seq >= contractionSeq) invalidCallSeqs.add(record.call.seq)
+    }
+    state = foldRecords(records, invalidCallSeqs, {
+      surfaceContracted: state.surfaceContracted,
+    })
+    registerUnavailable({ seq: carrierCallSeq ?? boundary.failedCallSeq, reason }, state)
+  }
   const applyBoundariesBefore = (seq) => {
     while (boundaryIndex < boundaries.length && boundaries[boundaryIndex].eventSeq <= seq) {
       const boundary = boundaries[boundaryIndex++]
+      const carrierCallSeq = carrierCallSeqForBoundary(boundary)
       const failedCall = executableCalls.get(boundary.failedCallSeq)
-      if (failedCall === undefined || failedCall.event.seq >= boundary.eventSeq) continue
+      if (failedCall === undefined || failedCall.event.seq >= boundary.eventSeq) {
+        rejectBoundary(boundary, 'recovery boundary does not identify an earlier executable call')
+        continue
+      }
       const failedIndex = state.nodes.findIndex(node => node.callSeq === boundary.failedCallSeq)
       const expectedFrontier = failedIndex < 0 ? state.head : state.nodes[failedIndex].parent
       const frontierIndex = boundary.frontierCallSeq === null
         ? undefined
         : state.nodes.findIndex(node => node.callSeq === boundary.frontierCallSeq)
-      if (frontierIndex !== expectedFrontier) continue
+      if (frontierIndex !== expectedFrontier) {
+        rejectBoundary(boundary, 'recovery boundary frontier does not match the failed call parent')
+        continue
+      }
       const resolvesUnavailable = unavailableBoundary?.seq === boundary.failedCallSeq
-      if (failedIndex < 0 && !resolvesUnavailable) continue
+      const resolvesConfirmedNoop = confirmedNoops.has(boundary.failedCallSeq)
+      if (failedIndex < 0 && !resolvesUnavailable && !resolvesConfirmedNoop) {
+        rejectBoundary(boundary, 'recovery boundary failed call is outside the verified frontier')
+        continue
+      }
+      if (carrierCallSeq !== undefined && carrierCallSeq <= boundary.failedCallSeq) {
+        rejectBoundary(boundary, 'recovery boundary carrier does not follow the failed call')
+        continue
+      }
+      if (Array.isArray(appliedBoundaries)) appliedBoundaries.push(boundary)
+      if (carrierCallSeq !== undefined) {
+        contractedCallRanges.push({ start: boundary.failedCallSeq, end: carrierCallSeq })
+      }
       for (let index = 0; index < state.nodes.length; index += 1) {
         if (dependsOn(state.nodes, index, failedIndex)) invalidCallSeqs.add(state.nodes[index].callSeq)
       }
-      if (failedIndex < 0) {
-        for (const record of records) {
-          if (record.call.seq >= boundary.failedCallSeq) invalidCallSeqs.add(record.call.seq)
+      for (const record of records) {
+        if ((failedIndex < 0 && record.call.seq >= boundary.failedCallSeq)
+          || isContractedCallSeq(record.call.seq)) {
+          invalidCallSeqs.add(record.call.seq)
         }
       }
       state = foldRecords(records, invalidCallSeqs, {
@@ -628,6 +809,10 @@ export function recoverJournal(session, currentCallSeq, options = {}) {
   for (const record of orderedRecords) {
     applyBoundariesBefore(recordEventSeq(record))
     records.push(record)
+    if (isContractedCallSeq(record.call.seq)) {
+      invalidCallSeqs.add(record.call.seq)
+      continue
+    }
     if (record.hidden) {
       state.surfaceContracted = true
       registerUnavailable({
@@ -668,6 +853,21 @@ export function recoverJournal(session, currentCallSeq, options = {}) {
     volatileSuffix: state.volatileSuffix,
     available: found && !state.surfaceContracted && unavailableBoundary === undefined,
   }
+}
+
+/** Prove that recovery consumes every persisted boundary at its declared frontier. */
+export function validateRecoveryBoundaryApplication(events) {
+  const applied = []
+  const recovered = recoverJournal(
+    { events },
+    undefined,
+    { [RECOVERY_BOUNDARY_EVIDENCE]: applied },
+  )
+  const declared = foldSessionTimeline(events).boundaries.length
+  if (!recovered.available || applied.length !== declared) {
+    throw new Error('migrated PTC recovery boundary does not prove its declared frontier')
+  }
+  return recovered
 }
 
 /** Return source nodes from the empty state to a selected durable head. */

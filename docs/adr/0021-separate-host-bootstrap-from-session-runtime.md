@@ -28,12 +28,23 @@ artifact rewrite API when one exists. Until then, PTC Plus must not rewrite
 files obtained from private storage paths or race the persistence provider's
 append/flush queue. Legacy `ptc-plus/recovery-boundary` artifacts therefore
 remain an explicit, startup-before-restore migration concern rather than a
-runtime event handler concern.
+runtime event handler concern. The dedicated retired-event converter accepts
+only a Session format 0 artifact with a contiguous zero-based source identity graph, removes the retired events
+and rewrites every supported Host and PTC sequence relation through one closed
+old-to-new map. Before writing, it validates current-surface replacement and
+compaction ranges, provenance, command and title sources, and complete
+recovery-boundary application; invalid or unknown relations fail closed. If a
+header records a seeded session, the converter also maps its exact inherited-
+event cut across removed boundary events so child-owned events cannot become
+inherited.
 
 Host format upgrades are also explicit pre-restore work. The migration CLI may
 resolve the selected Host's public Session format catalog and use its strict
-conversion and current validation. PTC result metadata remains opaque to that
-catalog. The CLI therefore proves an ordered one-to-one relation between the
+conversion and current validation. When the selected catalog requires
+parent-specific child evidence, the caller supplies the complete direct-child
+facts or explicitly declares that the artifact has no children; the CLI does
+not infer an empty child set. PTC result metadata remains opaque to that catalog.
+The CLI therefore proves an ordered one-to-one relation between the
 unchanged tool records, remaps only PTC-owned sequence references, and validates
 the resulting timeline. Original call arguments and recorded effects are never
 rewritten or executed. Ambiguous records, invalid PTC evidence and mixed retired

@@ -24,6 +24,8 @@ Cordis tools remain native program bindings under `tools.*`. The PTC code-only d
 
 Cordis definitions and Runs are process-local, while PTC journals replay every settled program binding as a recorded value without redispatch. On the first prompt for an agent or a new Cordis enable generation, PTC Plus derives whether normalized journals contain a Cordis transcript. If they do, it emits the fixed `tools:ptc-plus-cordis-recovery` runtime context: recorded values remain journal data, but the model must perform a live read-only Cordis Inspect before relying on prior IDs, state, approvals, or capability observations. The context remains until a newly settled successful `cordis_inspect*` call appears in the session log. It neither asserts that live state was lost nor reruns a mutating call.
 
+Companion Skill resolution is capability-based. The generations that discover presets from their composition directories publish an absolute composition path for the shipped `cordis` preset, and PTC Plus reads the sibling `skills` root. A generation that declares presets without publishing any composition path publishes no companion Skill root through `agentPresets` at all: PTC Plus reports that missing publication as an unsupported surface, naming the surface and its consequence rather than a shape failure of a healthy host, and keeps the existing rollback or single-warning withdrawal instead of assuming a directory. An unusable preset (`broken`) is reported as unavailable before any path shape is considered.
+
 ## Alternatives Considered
 
 1. Add the Cordis row to the PTC preset. Rejected: PTC Plus is installed as a host plugin and does not own or fork DSH's shipped preset files; a plugin setting keeps the optional mount within the plugin's ownership boundary.

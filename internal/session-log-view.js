@@ -1,6 +1,7 @@
 import {
   foldSessionTimeline,
 } from './session-journal-recovery.js'
+import { isCanonicalSequence } from './session-journal.js'
 import { sessionEvents } from './session-events.js'
 import { readRuntimeMessage } from './runtime-messages.js'
 
@@ -101,7 +102,7 @@ export function projectSessionLog(agent, requestedEdit) {
   try {
     const nodes = agent?.session?.surface?.nodes
     const knownSeqs = new Set(events.map(event => event?.seq))
-    if (Array.isArray(nodes) && nodes.every(seq => Number.isSafeInteger(seq) && seq >= 0 && knownSeqs.has(seq))) {
+    if (Array.isArray(nodes) && nodes.every(seq => isCanonicalSequence(seq) && knownSeqs.has(seq))) {
       visibleRuntimeMessages = Object.freeze(nodes.flatMap(seq => {
         const record = runtimeMessagesBySeq.get(seq)
         return record === undefined ? [] : [record]
@@ -126,6 +127,6 @@ export function projectSessionLog(agent, requestedEdit) {
 /** Return the target snapshot captured at one persisted edit call event. */
 export function editTargetForCall(agent, callId, callSeq) {
   if (typeof callId !== 'string' || callId.length === 0
-    || !Number.isSafeInteger(callSeq) || callSeq < 0) return undefined
+    || !isCanonicalSequence(callSeq)) return undefined
   return projectSessionLog(agent, { callId, callSeq }).requestedEditTarget
 }

@@ -2,11 +2,17 @@ import assert from 'node:assert/strict'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { parse } from '@babel/parser'
+import { types as t } from '@babel/core'
 import test from 'node:test'
 import { runInNewContext } from 'node:vm'
 import { collectCallableSources, markCallableSources } from '../internal/callable-source-facts.js'
+import { createCallableSourceRegistry } from '../internal/callable-source-catalog.js'
 import { SessionRuntime } from '../internal/session-runtime.js'
 import { transformTypeScriptSource } from '../internal/typescript-transform.js'
+import { compileStatefulModule } from '../internal/stateful-module-compiler.js'
+import { USER_BINDING_TRANSFORM, PROTECTED_MODULE_TRANSFORM } from '../internal/module-transform-contract.js'
+import { orderedSurfaceSession, runRecordedCell } from './plugin-fixture.js'
 
 const arrow = '() => { const local=1701; return local }'
 const anonymous = 'function(){const local=1702;return local}'
@@ -23,6 +29,7 @@ const shape = 'class Shape{value=1711;read(){return this.value}static read(){ret
 const outer = 'function outer(){return ()=>1713}'
 const nested = '()=>1713'
 const dependent = '()=>offset'
+const lineEndings = ['\n', '\r\n', '\r', '\u2028', '\u2029']
 
 for (const bindingUpdates of ['stateful','protected']) for (const extension of ['mjs','cjs']) for (const lexicalDynamic of [false,true]) {
   test(`isolated ${extension} module reflection and recompilation use original callable ownership (${bindingUpdates}, eval=${lexicalDynamic})`, async t => {
@@ -67,9 +74,13 @@ ${extension === 'mjs' ? 'export {inspect}' : 'module.exports={inspect}'}
     await writeFile(join(directory, `source.${extension}`), source)
     const runtime = new SessionRuntime({ bindingUpdates, durableReplay: false })
     t.after(() => runtime.dispose())
-    const session = { id: `callable-source-${extension}`, session: { header: { cwd: directory } } }
+    const agentSession = orderedSurfaceSession(`callable-source-${extension}`)
+    agentSession.header = { cwd: directory }
     const imported = extension === 'mjs' ? 'await import("./source.mjs")' : 'require("./source.cjs")'
-    const result = await runtime.run(session, { bindings: [], program: `const source=${imported}; return await source.inspect()` })
+    const result = await runRecordedCell(runtime, agentSession, 'load-source', {
+      bindings: [],
+      program: `const source=${imported}; return await source.inspect()`,
+    }, { description: 'callable source integration cell' })
     assert.equal(result.error, undefined, result.error?.message)
     assert.deepEqual(result.value[0], [arrow,anonymous,named,asyncNamed,generator,asyncGenerator,
       method,getter,setter,asyncMethod,generatorMethod,shape,outer,nested,dependent,
@@ -78,7 +89,10 @@ ${extension === 'mjs' ? 'export {inspect}' : 'module.exports={inspect}'}
     assert.equal(result.value[2][0], 'ReferenceError')
     assert.match(result.value[2][1], /offset/)
     assert.doesNotMatch(result.value[2][1], /__dsh_ptc/)
-    const next = await runtime.run(session, { bindings: [], program: 'return (await source.inspect())[1]' })
+    const next = await runRecordedCell(runtime, agentSession, 'inspect-source', {
+      bindings: [],
+      program: 'return (await source.inspect())[1]',
+    }, { description: 'callable source integration cell' })
     assert.equal(next.error, undefined, next.error?.message)
     assert.deepEqual(next.value, result.value[1])
   })
@@ -104,4 +118,50 @@ test('final transform mappings prove callable ownership and exclude unmapped nei
     assert.equal(facts.get(Function.prototype.toString.call(values[index])), original)
   }
   assert.equal(facts.has(Function.prototype.toString.call(values.at(-1))), false)
+})
+
+test('TypeScript namespace functions retain module callable ownership across targets and line endings', () => {
+  for (const transform of [USER_BINDING_TRANSFORM, PROTECTED_MODULE_TRANSFORM]) {
+    for (const target of ['module', 'commonjs']) {
+      for (const ending of lineEndings) {
+        const callable = `function read () {${ending}return secret${ending}}`
+        const source = `namespace N {${ending}export let secret=42;${ending}export ${callable}${ending}}`
+        const prepared = compileStatefulModule(source, { target, transform })
+        const registry = createCallableSourceRegistry()
+        registry.register(prepared.callableSources)
+        const tree = parse(prepared.code, { sourceType: target, errorRecovery: true })
+        let emitted
+        t.traverseFast(tree, node => {
+          if (emitted === undefined && t.isFunction(node) && node.id?.name === 'read') {
+            emitted = prepared.code.slice(node.start, node.end)
+          }
+        })
+        assert.ok(emitted)
+        assert.equal(registry.get(emitted), callable)
+        assert.doesNotMatch(registry.get(emitted), /__dsh_ptc_/)
+      }
+    }
+  }
+})
+
+test('typed namespace callable catalogs exclude compiler ownership marks', () => {
+  const expected = 'function read(value       )       {return value+42}'
+  for (const transform of [USER_BINDING_TRANSFORM, PROTECTED_MODULE_TRANSFORM]) {
+    for (const target of ['module', 'commonjs']) {
+      const prepared = compileStatefulModule(
+        'namespace N {export function read(value:number):number{return value+42}}', { target, transform })
+      const registry = createCallableSourceRegistry()
+      registry.register(prepared.callableSources)
+      const tree = parse(prepared.code, { sourceType: target, errorRecovery: true })
+      let reflected
+      t.traverseFast(tree, node => {
+        if (reflected === undefined && t.isFunction(node) && node.id?.name === 'read') {
+          reflected = registry.get(prepared.code.slice(node.start, node.end))
+        }
+      })
+      assert.equal(reflected, expected)
+      assert.equal(Function(`return (${reflected})`)()(0), 42)
+      assert.doesNotMatch(reflected, /__dsh_ptc_/)
+    }
+  }
 })

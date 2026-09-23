@@ -23,7 +23,7 @@ import { supportsNativeUsing, transformTypeScriptSource } from './typescript-tra
 import { createDynamicScopeAnalysis, varInitializerTarget } from './dynamic-scope-analysis.js'
 import { visitSource } from './compiler-source-regions.js'
 import { analyzeSourceDeclarations, resolveSourceBinding, COMMONJS_PARAMETERS } from './compiler-scope-facts.js'
-import { callableMarkerPosition } from './callable-source-facts.js'
+import { callableMarkerPosition, restoreMappedCallableSourceMarks } from './callable-source-facts.js'
 import { createSourcePieces } from './compiler-source-pieces.js'
 import { indexSourceRegions, validateRegionSource, sourceFeatures } from './compiler-region-output.js'
 
@@ -424,7 +424,7 @@ export function lowerStatefulDecorators(result, target, intrinsicContext) {
 
 /** Erase type-only declarations and lower runtime TypeScript values before
  * logical ownership and module export/link plans consume the source. */
-export function normalizeTypeScriptValues(code, sourceMap, target) {
+export function normalizeTypeScriptValues(code, sourceMap, target, callableSources) {
   const tree=parse(code,{...parserOptionsForTarget(target),errorRecovery:true})
   let parameterProperties = false
   let tokens
@@ -521,20 +521,15 @@ export function normalizeTypeScriptValues(code, sourceMap, target) {
       if(enumEdits.length>0) source=applySourceEdits(source,identitySourceMap(source.length),enumEdits).code
       const transformed=transformTypeScriptSource(source,{module:target!=='commonjs',sourceMap:true,
         transform:{tsEnumIsMutable:true,noEmptyExport:true}})
-      const nativeMap=new SourceMap(JSON.parse(transformed.map))
-      const starts=[0]
-      for(let index=0;index<source.length;index++) if(source[index]==='\n') starts.push(index+1)
-      const mappings=[]
-      let line=1,column=1
-      for(let index=0;index<transformed.code.length;index++) {
-        const origin=nativeMap.findOrigin(line,column)
-        const start=Math.min(source.length,Math.max(0,(starts[origin.lineNumber-1]??0)+(origin.columnNumber??1)-1))
-        mappings.push({generatedStart:index,generatedEnd:index+1,originalStart:path.node.start+start,
-          originalEnd:Math.min(owner.end,path.node.start+start+1)})
-        if(transformed.code[index]==='\n'){line++;column=1}else column++
-      }
-      const exported=owner!==path.node&&transformed.code.trim()!==''?`\nexport {${path.node.id.name}};`:''
-      edits.push({start:owner.start,end:owner.end,text:transformed.code+exported,mappings})
+      let mapped=mappedSourceTransform(source,identitySourceMap(source.length),transformed)
+      mapped=restoreMappedCallableSourceMarks(mapped,source,transformed,callableSources,parserOptionsForTarget(target))
+      const mappings=[...mapped.sourceMap].map(mapping=>({
+        ...mapping,
+        originalStart:path.node.start+mapping.originalStart,
+        originalEnd:Math.min(owner.end,path.node.start+mapping.originalEnd),
+      }))
+      const exported=owner!==path.node&&mapped.code.trim()!==''?`\nexport {${path.node.id.name}};`:''
+      edits.push({start:owner.start,end:owner.end,text:mapped.code+exported,mappings})
       path.skip()
     },
   })
@@ -1130,23 +1125,46 @@ export function preserveStatementBoundaries(code, sourceMap = identitySourceMap(
  * The root compiler owns Program bindings and calls this pass after lowering
  * those declarations. protected-v1 keeps native local binding policy.
  */
-export function normalizeStatefulScopes(code, sourceMap = identitySourceMap(code.length), options = {}) {
-  const { outputPlan, ...metadata } = normalizeStatefulScopeInput(code, sourceMap, options)
-  let result = metadata
-  if (outputPlan) {
-    // Release declaration ASTs and scope ancestry before materializing the
-    // expanded output. This phase retains only numeric pieces and source facts.
-    const { pieces, root, code, sourceMap, regionFacts } = outputPlan
-    options.onPhase?.('mapping')
-    const output = pieces.emit(root)
-    result = { ...metadata, ...applySourceEdits(code, sourceMap,
-      [{ start: 0, end: code.length, ...output }]),
-    sourceRegions: { ...regionFacts, regions: output.regions } }
+const normalizationFailureInputs = new WeakMap()
+
+function retainNormalizationFailureInput(error, input) {
+  if ((typeof error === 'object' && error !== null) || typeof error === 'function') {
+    if (!normalizationFailureInputs.has(error)) normalizationFailureInputs.set(error, input)
   }
-  options.onPhase?.('validation')
-  if (options.target === 'module' || options.target === 'commonjs') validateRegionSource(result, parserOptionsForTarget(options.target))
-  result = options.deferDecorators ? result : lowerStatefulDecorators(result, options.target, options.intrinsicContext)
-  return options.deferResources ? result : lowerStatefulResources(result, options)
+}
+
+/** Latest mapped normalization stage established before an error was thrown. */
+export function normalizationFailureInput(error) {
+  return (typeof error === 'object' && error !== null) || typeof error === 'function'
+    ? normalizationFailureInputs.get(error) : undefined
+}
+
+export function normalizeStatefulScopes(code, sourceMap = identitySourceMap(code.length), options = {}) {
+  let diagnosticInput = { code, sourceMap }
+  try {
+    const { outputPlan, ...metadata } = normalizeStatefulScopeInput(code, sourceMap, options)
+    let result = metadata
+    if (outputPlan) {
+      // Release declaration ASTs and scope ancestry before materializing the
+      // expanded output. This phase retains only numeric pieces and source facts.
+      const { pieces, root, code, sourceMap, regionFacts } = outputPlan
+      diagnosticInput = { code, sourceMap }
+      options.onPhase?.('mapping')
+      const output = pieces.emit(root)
+      result = { ...metadata, ...applySourceEdits(code, sourceMap,
+        [{ start: 0, end: code.length, ...output }]),
+      sourceRegions: { ...regionFacts, regions: output.regions } }
+    }
+    diagnosticInput = result
+    options.onPhase?.('validation')
+    if (options.target === 'module' || options.target === 'commonjs') validateRegionSource(result, parserOptionsForTarget(options.target))
+    result = options.deferDecorators ? result : lowerStatefulDecorators(result, options.target, options.intrinsicContext)
+    diagnosticInput = result
+    return options.deferResources ? result : lowerStatefulResources(result, options)
+  } catch (error) {
+    retainNormalizationFailureInput(error, diagnosticInput)
+    throw error
+  }
 }
 
 /** Resource lifetime is lowered only after declaration owners have consumed
@@ -1227,15 +1245,33 @@ export function hasModuleResources(code) {
     node.type === 'VariableDeclaration' && (node.kind === 'using' || node.kind === 'await using'))
 }
 
-function normalizeStatefulScopeInput(code, sourceMap, { mode = 'stateful-v1', target, moduleImport, intrinsicContext, onPhase,
-  nativeJavaScript = false, nativeUsing = supportsNativeUsing() } = {}) {
+function normalizeStatefulScopeInput(code, sourceMap, options) {
+  let diagnosticInput = { code, sourceMap }
+  try {
+    return normalizeStatefulScopeInputUnchecked(code, sourceMap, options, input => { diagnosticInput = input })
+  } catch (error) {
+    retainNormalizationFailureInput(error, diagnosticInput)
+    throw error
+  }
+}
+
+function normalizeStatefulScopeInputUnchecked(code, sourceMap, { mode = 'stateful-v1', target, moduleImport, intrinsicContext, onPhase,
+  callableSources, nativeJavaScript = false, nativeUsing = supportsNativeUsing() } = {}, updateDiagnosticInput) {
   if (mode !== 'stateful-v1' && mode !== 'protected-v1') throw new TypeError('ptc-plus: unsupported scope semantics')
   onPhase?.('typescript')
-  const typescript = nativeJavaScript ? { code, sourceMap }
-    : lowerLegacyParameterDecorators(normalizeTypeScriptValues(code,sourceMap,target),target,intrinsicContext)
+  let typescript
+  if (nativeJavaScript) {
+    typescript = { code, sourceMap }
+  } else {
+    const normalizedTypescript = normalizeTypeScriptValues(code,sourceMap,target,callableSources)
+    updateDiagnosticInput(normalizedTypescript)
+    typescript = lowerLegacyParameterDecorators(normalizedTypescript,target,intrinsicContext)
+  }
+  updateDiagnosticInput(typescript)
   const separated = preserveStatementBoundaries(typescript.code, typescript.sourceMap, parserOptionsForTarget(target))
   code=separated.code
   sourceMap=separated.sourceMap
+  updateDiagnosticInput(separated)
   const finish = result => {
     result = { ...result, deferredHelpers: typescript.deferredHelpers,
       internalBindings: new Set([...typescript.internalBindings ?? [], ...result.internalBindings ?? []]) }
@@ -1269,6 +1305,7 @@ function normalizeStatefulScopeInput(code, sourceMap, { mode = 'stateful-v1', ta
   const annex = introduceAnnexBVars(code, sourceMap, target, onPhase)
   code = annex.code
   sourceMap = annex.sourceMap
+  updateDiagnosticInput(annex)
   onPhase?.('facts')
   const facts = analyzeLogicalScopes(code, { target, compact: true, compactNames: target === 'module' || target === 'commonjs', onPhase })
   onPhase?.('planning')

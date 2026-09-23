@@ -14,12 +14,12 @@ import { PTC_DELIVERY_CONTEXT } from './internal/runtime-messages.js'
 import { createCordisToolsOwner } from './internal/cordis-tools-owner.js'
 import { createEditTransportOwner, EDIT_RUN_CODE } from './internal/edit-transport-owner.js'
 import { createRuntimeBridgeOwner, RUN_CODE } from './internal/runtime-bridge-owner.js'
-import { resolveConfig } from './internal/runtime-config.js'
+import { resolveConfig, watchVolatileConfig } from './internal/runtime-config.js'
 import {
   CONFIG_FIELDS,
   SETTINGS_NAMESPACE,
 } from './internal/config-spec.js'
-import { installSettingsSectionCompat } from './internal/settings-compat.js'
+import { configFieldSchema, installSettingsSectionCompat } from './internal/settings-compat.js'
 import { installExecutionSeam } from './internal/execution-seam-compat.js'
 import { valueLimitsFromConfig } from './internal/value-wire-schema.js'
 import { createReplMemoryProjection } from './internal/repl-memory-projection.js'
@@ -35,19 +35,13 @@ const INSTALL_CLEANUP = Symbol('ptc-plus install cleanup')
 /** Plugin name used by loader diagnostics. */
 export const name = 'ptc-plus'
 
-/** Runtime limits and behavior exposed to Cordis configuration. */
-function configSchemaField(field) {
-  const base = field.type === 'boolean'
-    ? Schema.boolean().default(field.default)
-    : field.type === 'enum'
-      // Keep omission visible until resolveConfig migrates legacy policies.
-      ? Schema.union(field.options.map(option => Schema.const(option)))
-      : Schema.number().step(1).min(field.min).max(field.max).default(field.default)
-  return base.description(field.description)
-}
-
 export const Config = Schema.object(Object.fromEntries(
-  CONFIG_FIELDS.map(field => [field.key, configSchemaField(field)]),
+  CONFIG_FIELDS.map(field => [
+    field.key,
+    // Runtime limits and behavior exposed to Cordis configuration. The shape
+    // each field takes is owned by the installed settings generation.
+    configFieldSchema({ Schema, field, settingsModule: dshSettings }),
+  ]),
 ))
 
 /**
@@ -408,22 +402,27 @@ function installPtCRuntime(ctx, resolvedConfig, seam, toolSchemasForAgent, sessi
       if (exec.name === EDIT_RUN_CODE) return editTransport.handleResult(exec, result)
       if (exec.name === RUN_CODE) return runtimeBridge.handleResult(exec, result)
     }))
-    disposers.push(ctx.on('agent/disposed', async ({ agent }) => {
-      directSurface.disposeAgent(agent)
-      editTransport.disposeAgent(agent)
-      await Promise.all([
-        runtimeBridge.disposeAgent(agent),
-        userBindings.clearAgentPresentation(agent),
-      ])
-    }))
-    disposers.push(ctx.on('session/disposed', async (session) => {
-      directSurface.disposeSession(session)
-      editTransport.disposeSession(session)
-      await Promise.all([
-        runtimeBridge.disposeSession(session),
-        userBindings.clearSessionPresentation(session?.id ?? session),
-      ])
-    }))
+    const disposeLifecycleOwners = async (operations, message) => {
+      const results = await Promise.allSettled(operations.map(operation => (
+        Promise.resolve().then(operation)
+      )))
+      const failures = results
+        .filter(result => result.status === 'rejected')
+        .map(result => result.reason)
+      if (failures.length > 0) throw new AggregateError(failures, message)
+    }
+    disposers.push(ctx.on('agent/disposed', ({ agent }) => disposeLifecycleOwners([
+      () => directSurface.disposeAgent(agent),
+      () => editTransport.disposeAgent(agent),
+      () => runtimeBridge.disposeAgent(agent),
+      () => userBindings.clearAgentPresentation(agent),
+    ], 'ptc-plus: agent disposal failed')))
+    disposers.push(ctx.on('session/disposed', session => disposeLifecycleOwners([
+      () => directSurface.disposeSession(session),
+      () => editTransport.disposeSession(session),
+      () => runtimeBridge.disposeSession(session),
+      () => userBindings.clearSessionPresentation(session?.id ?? session),
+    ], 'ptc-plus: session disposal failed')))
     disposers.push(ctx.on('agent-preset/selected', (sessionId) => {
       directSurface.resetSessionComposition(sessionId)
       const agent = ctx.agents?.get?.(String(sessionId))
@@ -512,18 +511,22 @@ function installPtCRuntime(ctx, resolvedConfig, seam, toolSchemasForAgent, sessi
 }
 
 /** Register the session-bound REPL runtime. */
-export function apply(ctx, config = {}) {
+export const apply = (ctx, config = {}) => {
   // Configuration is validated before the plugin waits for the host's seam, so
   // an unusable configuration fails at the load call rather than later.
   const resolvedConfig = resolveConfig(config)
   return installExecutionSeam(ctx, {
     services: inject,
-    attach: (scope, seam) => applyWithExecutionSeam(scope, resolvedConfig, seam),
+    attach: (scope, seam) => applyWithExecutionSeam(scope, resolvedConfig, seam, ctx, config),
+    reportFailure: (error, seamName) => ctx.logger?.warn?.(
+      `ptc-plus: execution seam ${seamName} failed to attach`,
+      error,
+    ),
   })
 }
 
 /** Install the plugin into the scope of the seam the host registered. */
-function applyWithExecutionSeam(ctx, resolvedConfig, seam) {
+function applyWithExecutionSeam(ctx, resolvedConfig, seam, volatileHost, volatileConfig) {
   const toolSchemasForAgent = agent => typeof ctx.tools.schemas === 'function'
     ? ctx.tools.schemas(agent)
     : []
@@ -767,7 +770,7 @@ function applyWithExecutionSeam(ctx, resolvedConfig, seam) {
   ctx.effect(() => ctx.on('agent/disposed', ({ agent }) => messageOwner.disposeAgent(agent)), 'ptc-plus message agent disposal')
   ctx.effect(() => () => messageOwner.dispose(), 'ptc-plus dynamic message lifecycle')
 
-  let configSource = () => resolvedConfig
+  let configSource = () => resolveConfig(volatileConfig ?? resolvedConfig)
   let configurationGeneration = 0
   let settingsWriter
   let configurationRollback = false
@@ -826,6 +829,7 @@ function applyWithExecutionSeam(ctx, resolvedConfig, seam) {
   if (typeof ctx.inject === 'function') {
     installSettingsSectionCompat({
       ctx,
+      ownerFiber: volatileHost.fiber,
       settingsModule: dshSettings,
       namespace: SETTINGS_NAMESPACE,
       schema: Config,
@@ -841,5 +845,6 @@ function applyWithExecutionSeam(ctx, resolvedConfig, seam) {
       },
     })
   }
+  watchVolatileConfig(volatileHost, ctx, volatileConfig, () => reconcile())
   if (configurationGeneration === 0) return reconcile(settingsWriter === undefined)
 }

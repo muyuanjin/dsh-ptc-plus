@@ -5,6 +5,8 @@ import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { normalizeWorkerEnvironment, WorkerClient } from '../internal/worker-client.js'
 import { helperProcessEnvironment, isElectronHost } from '../internal/worker-environment.js'
+import { WorkerOutputCapture } from '../internal/worker-output-capture.js'
+import { outputFenceMarker } from '../internal/worker-output-fence.js'
 
 function workerClient(workerUrl = undefined) {
   return new WorkerClient({ workerUrl, cwd: undefined, onMessage() {}, onFailure() {} })
@@ -192,4 +194,198 @@ test('a refused startup reset stays owned without an unhandled rejection', () =>
       retained: 1,
     })
   }
+})
+
+test('an idle output-attribution failure resets immediately and fails the next ensure once', async () => {
+  const messages = []
+  const failures = []
+  const client = new WorkerClient({
+    cwd: undefined,
+    onMessage: message => messages.push(message),
+    onFailure: message => failures.push(message),
+  })
+  const worker = {}
+  let stops = 0
+  client.worker = worker
+  client.workerLimit = 64
+  client.workerReady = Promise.resolve(worker)
+  client.port = { close() {} }
+  client.hostIds.set(worker, 'idle-output-worker')
+  client.owner.stop = async id => {
+    assert.equal(id, 'idle-output-worker')
+    stops++
+  }
+
+  client.handleCapturedOutput(worker, {
+    type: 'worker-output-error',
+    id: 1,
+    message: 'late descriptor output',
+  })
+  assert.deepEqual(messages, [{ type: 'worker-output-error', id: 1, message: 'late descriptor output' }])
+  assert.equal(client.worker, undefined)
+  await assert.rejects(client.ensure(64), /worker output attribution failed: late descriptor output/u)
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(stops, 1)
+  assert.deepEqual(failures, [])
+})
+
+test('an old-round output failure settles an active transport consumer without poisoning its successor', async () => {
+  const messages = []
+  const failures = []
+  const client = new WorkerClient({
+    cwd: undefined,
+    onMessage(message) {
+      messages.push(message)
+      return false
+    },
+    onFailure() {},
+    onUnmatchedOutputFailure(message) {
+      failures.push(message)
+      return true
+    },
+  })
+  const worker = {}
+  client.worker = worker
+  client.workerLimit = 64
+  client.workerReady = Promise.resolve(worker)
+  client.port = { close() {} }
+  client.hostIds.set(worker, 'active-output-worker')
+  client.owner.stop = async id => assert.equal(id, 'active-output-worker')
+
+  client.handleCapturedOutput(worker, {
+    type: 'worker-output-error',
+    id: 1,
+    message: 'prior round wrote while the next cell was preparing',
+  })
+  assert.deepEqual(messages, [{
+    type: 'worker-output-error',
+    id: 1,
+    message: 'prior round wrote while the next cell was preparing',
+  }])
+  assert.deepEqual(failures, [
+    'worker output attribution failed: prior round wrote while the next cell was preparing',
+  ])
+  assert.equal(client.pendingOutputFailure, undefined)
+  assert.equal(client.worker, undefined)
+  await new Promise(resolve => setImmediate(resolve))
+})
+
+test('output protocol frames cannot bypass capture while completion waits for fences', async t => {
+  const token = 'a'.repeat(48)
+  for (const [name, invalidFrame, expected] of [
+    ['repeated done', { type: 'done', id: 7, outputFence: token, logs: [] }, /repeated a completion/u],
+    ['wrong-id done', { type: 'done', id: 8, outputFence: token, logs: [] }, /no matching output round/u],
+    ['repeated output-start', { type: 'output-start', id: 7, outputFence: token }, /repeated an output start/u],
+  ]) {
+    await t.test(name, async () => {
+      const messages = []
+      const client = new WorkerClient({
+        cwd: undefined,
+        onMessage(message) {
+          messages.push(message)
+          return message.type === 'worker-output-error'
+        },
+        onFailure() {},
+      })
+      const worker = {}
+      const capture = new WorkerOutputCapture()
+      client.worker = worker
+      client.port = { postMessage() {}, close() {} }
+      client.hostIds.set(worker, name)
+      client.owner.stop = async id => assert.equal(id, name)
+      assert.equal(capture.begin(7, 1024, token), undefined)
+      assert.equal(capture.start({ type: 'output-start', id: 7, outputFence: token }), undefined)
+      capture.push('stdout', outputFenceMarker(token, 'stdout', 'start'))
+      capture.push('stderr', outputFenceMarker(token, 'stderr', 'start'))
+
+      client.handleWorkerMessage(worker, capture, { type: 'done', id: 7, outputFence: token, logs: [] })
+      assert.equal(client.outputCompletionPending, 7)
+      client.handleWorkerMessage(worker, capture, { type: 'observation', id: 7 })
+      assert.equal(client.deferredOutputMessages.length, 1)
+      client.handleWorkerMessage(worker, capture, invalidFrame)
+
+      assert.equal(messages.length, 1)
+      assert.equal(messages[0].type, 'worker-output-error')
+      assert.match(messages[0].message, expected)
+      assert.deepEqual(client.deferredOutputMessages, [])
+      assert.equal(client.worker, undefined)
+      await new Promise(resolve => setImmediate(resolve))
+    })
+  }
+})
+
+test('completion fences release deferred application messages in arrival order', () => {
+  const token = 'b'.repeat(48)
+  const messages = []
+  const client = new WorkerClient({
+    cwd: undefined,
+    onMessage(message) {
+      messages.push(message)
+      return true
+    },
+    onFailure() {},
+  })
+  const worker = {}
+  const capture = new WorkerOutputCapture()
+  client.worker = worker
+  client.port = { postMessage() {}, close() {} }
+  assert.equal(capture.begin(9, 1024, token), undefined)
+  assert.equal(capture.start({ type: 'output-start', id: 9, outputFence: token }), undefined)
+  capture.push('stdout', outputFenceMarker(token, 'stdout', 'start'))
+  capture.push('stderr', outputFenceMarker(token, 'stderr', 'start'))
+
+  client.handleWorkerMessage(worker, capture, { type: 'done', id: 9, outputFence: token, logs: [] })
+  client.handleWorkerMessage(worker, capture, { type: 'observation', id: 9, value: 'after' })
+  client.handleCapturedOutput(worker, capture.push('stdout', outputFenceMarker(token, 'stdout', 'end')))
+  client.handleCapturedOutput(worker, capture.push('stderr', outputFenceMarker(token, 'stderr', 'end')))
+
+  assert.deepEqual(messages, [
+    { type: 'done', id: 9, outputFence: token, logs: [] },
+    { type: 'observation', id: 9, value: 'after' },
+  ])
+  assert.equal(client.outputCompletionPending, undefined)
+  assert.deepEqual(client.deferredOutputMessages, [])
+  assert.equal(client.worker, worker)
+})
+
+test('post resets an overlapping output round and postIfAlive remains best effort', async () => {
+  const messages = []
+  const posted = []
+  const stops = []
+  let closes = 0
+  const client = new WorkerClient({
+    cwd: undefined,
+    onMessage(message) {
+      messages.push(message)
+      return true
+    },
+    onFailure() {},
+  })
+  const worker = {}
+  client.worker = worker
+  client.owner = {
+    async stop(id) { stops.push(id) },
+    async dispose() { return [] },
+  }
+  client.hostIds.set(worker, 'overlap-worker')
+  client.outputCapture = new WorkerOutputCapture()
+  client.port = { postMessage: message => posted.push(message), close() { closes += 1 } }
+  client.post({ type: 'run', id: 1, maxOutputBytes: 1024 })
+  client.post({ type: 'run', id: 2, maxOutputBytes: 1024 })
+  while (stops.length === 0 || closes === 0) await new Promise(resolve => setImmediate(resolve))
+  assert.equal(posted.length, 1)
+  assert.deepEqual(messages, [{ type: 'worker-output-error', id: 2, message: 'worker output rounds overlapped' }])
+  assert.deepEqual(stops, ['overlap-worker'])
+  assert.equal(closes, 1)
+  assert.equal(client.worker, undefined)
+  assert.equal(client.outputCapture, undefined)
+  client.postIfAlive({ type: 'reply', id: 3 })
+  assert.equal(posted.length, 1)
+  assert.doesNotThrow(() => client.postIfAlive({ type: 'reply', id: 4 }))
+})
+
+test('scratch cleanup failure stays best effort after transport disposal', async () => {
+  const client = workerClient()
+  client.scratchReady = Promise.reject(new Error('scratch cleanup failed'))
+  await client.dispose()
 })

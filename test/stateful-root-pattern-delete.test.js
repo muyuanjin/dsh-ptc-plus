@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { appendRunCodeEvents, fixture } from './plugin-fixture.js'
+import { appendRunCodeEvents, fixture, orderedSurfaceSession } from './plugin-fixture.js'
 
 test('root pattern references preserve declaration deletion before and after publication', async t => {
   const state = fixture({ bindingUpdates: 'stateful' })
@@ -156,28 +156,28 @@ return [typeof recreated, delete recreated, typeof globalThis.recreated]
 })
 
 test('eval-var deletion and recreation retain only the provable frontier on cold continuation', async t => {
-  const session = { id: 'eval-delete-recovery', events: [] }
+  const session = orderedSurfaceSession('eval-delete-recovery')
   const writer = fixture({ bindingUpdates: 'stateful' })
   t.after(() => writer.dispose())
   const calls = []
   const functions = { record: async value => { calls.push(value); return calls.length } }
   const durable = 'const receipt = await tools.record({ value: 1 }); return receipt'
-  const recorded = await writer.runDurable(session.id, durable, functions, { session })
+  const recorded = await writer.runDurable(session.id, durable, functions, { session, recordSession: 'deferred-result', callId: 'eval-delete-receipt' })
   assert.equal(recorded.isError, false, recorded.error?.message)
   assert.equal(recorded.meta.dshPtcPlus.status, 'durable')
   appendRunCodeEvents(session.events, 'eval-delete-receipt', durable, recorded)
   const setup = 'eval("var removed = receipt; var retained = 2"); const readRemoved = () => removed; return [removed, retained]'
-  const created = await writer.runDurable(session.id, setup, functions, { session })
+  const created = await writer.runDurable(session.id, setup, functions, { session, recordSession: 'deferred-result', callId: 'eval-delete-setup' })
   assert.equal(created.isError, false, created.error?.message)
   appendRunCodeEvents(session.events, 'eval-delete-setup', setup, created)
   const deletion = 'return [delete removed, typeof removed, retained]'
-  const deleted = await writer.runDurable(session.id, deletion, functions, { session })
+  const deleted = await writer.runDurable(session.id, deletion, functions, { session, recordSession: 'deferred-result', callId: 'eval-delete-remove' })
   assert.equal(deleted.isError, false, deleted.error?.message)
   assert.deepEqual(deleted.value, [true, 'undefined', 2])
   assert.equal(deleted.meta.dshPtcPlusBindings.memory.entries.some(entry => entry.name === 'removed'), false)
   appendRunCodeEvents(session.events, 'eval-delete-remove', deletion, deleted)
   const replacement = 'eval("var removed = 3"); return [readRemoved(), retained, receipt]'
-  const recreated = await writer.runDurable(session.id, replacement, functions, { session })
+  const recreated = await writer.runDurable(session.id, replacement, functions, { session, recordSession: 'deferred-result', callId: 'eval-delete-recreated' })
   assert.equal(recreated.isError, false, recreated.error?.message)
   assert.deepEqual(recreated.value, [3, 2, 1])
   assert.equal(recreated.meta.dshPtcPlusBindings.memory.entries.some(entry => entry.name === 'removed'), true)

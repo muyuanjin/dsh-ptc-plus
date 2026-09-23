@@ -1,5 +1,9 @@
 import assert from 'node:assert/strict'
-import { readFile } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { spawnSync } from 'node:child_process'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import test from 'node:test'
 import { parse } from 'yaml'
 
@@ -12,6 +16,31 @@ const DSH_RUNTIME_PEERS = [
   '@deepseek-ai/dsh-tool-cordis',
   '@deepseek-ai/dsh-tools',
 ]
+
+test('execution smoke rejects capability-only changes and accepts the real plugin', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'ptc-seam-smoke-'))
+  t.after(() => rm(directory, { recursive: true, force: true }))
+  const smoke = fileURLToPath(new URL('../scripts/dsh-execution-seam-smoke.mjs', import.meta.url))
+  const run = plugin => spawnSync(process.execPath, [smoke, plugin], {
+    cwd: fileURLToPath(new URL('..', import.meta.url)), encoding: 'utf8', timeout: 30_000,
+  })
+  const fake = join(directory, 'fake.mjs')
+  for (const mutation of ['', 'runtime.run = null']) {
+    await writeFile(fake, `export function apply(ctx) {
+      const runtime = ctx.get('ptcRuntime') ?? ctx.get('codeRuntime')
+      delete runtime.executionInstructions
+      delete runtime.sandboxMode
+      delete runtime.timeout
+      ${mutation}
+    }`)
+    const result = run(fake)
+    assert.equal(result.status, 1, result.stderr)
+    assert.match(result.stderr, /did not take over the execution entry/)
+  }
+  const result = run(fileURLToPath(new URL('../index.js', import.meta.url)))
+  assert.equal(result.status, 0, result.stderr)
+  assert.match(result.stdout, /took over its execution entry/)
+})
 
 test('keeps host-owned DSH runtime packages out of plugin dependencies', async () => {
   const manifest = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'))

@@ -1,11 +1,29 @@
 import { Report } from 'c8'
 import { checkCoverages } from 'c8/lib/commands/check-coverage.js'
-import { resolve } from 'node:path'
+import { readdirSync } from 'node:fs'
+import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { coverageInputFilter } from './coverage-inputs.mjs'
 
 export const COVERAGE_INCLUDE = ['index.js', 'internal/*.js', 'compiler-*.cjs']
 export const COVERAGE_THRESHOLDS = { lines: 100, branches: 95, functions: 100, statements: 0 }
+
+/**
+ * The plugin sources every graded coverage merge must measure: the plugin entry
+ * and each `internal/` JavaScript owner. `COVERAGE_INCLUDE` additionally keeps
+ * the generated compiler bundles, whose recorded evidence is remapped onto
+ * their original `internal/` sources. Without this closure, a module that no
+ * instrumented process loads simply stays out of the merged map and every
+ * threshold passes on the remaining files.
+ */
+export function gateSourceFiles(root) {
+  return [
+    'index.js',
+    ...readdirSync(join(root, 'internal'))
+      .filter(name => /^[^/]+\.js$/.test(name))
+      .map(name => `internal/${name}`),
+  ]
+}
 
 export function createCoverageReport({
   root,
@@ -71,10 +89,16 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
       reporterOptions: { text: { maxCols: 1000 } },
     })
     const map = await report.getCoverageMapFromAllCoverageFiles()
+    const files = new Set(map.files().map(file => resolve(file)))
     if (options.focused) {
-      const files = new Set(map.files().map(file => resolve(file)))
       const missing = options.include.filter(source => !files.has(resolve(process.cwd(), source)))
       if (missing.length > 0) throw new Error(`focused coverage report omitted selected sources: ${missing.join(', ')}`)
+    } else {
+      const missing = gateSourceFiles(process.cwd())
+        .filter(source => !files.has(resolve(process.cwd(), source)))
+      if (missing.length > 0) {
+        throw new Error(`coverage report omitted measured plugin sources: ${missing.join(', ')}`)
+      }
     }
     await report.run()
     await checkCoverages(COVERAGE_THRESHOLDS, report)

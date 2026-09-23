@@ -1,0 +1,115 @@
+{
+  "schema": "dsh-semantic-obligations/v1",
+  "languageGenerations": ["legacy-v1", "protected-v1", "stateful-v1"],
+  "moduleTransforms": ["amaro@1.1.11", "protected-module-v1+amaro@1.1.11", "stateful-module-v1+amaro@1.1.11", "stateful-module-v2+amaro@1.1.11"],
+  "obligations": [
+    {
+      "id": "language-frontend",
+      "disposition": "intentional-difference",
+      "owner": "Cell parsing, analysis, normalization and rewrite contracts",
+      "implementation": [
+        "internal/ast-traversal.js", "internal/binding-declaration-contract.js", "internal/binding-pattern-traversal.js", "internal/binding-pattern.js", "internal/binding-source-analysis.js", "internal/binding-update-policy.js", "internal/cell-analysis-contract.js", "internal/cell-analysis.js", "internal/cell-error.js", "internal/cell-parser.js", "internal/cell-rewriter.js", "internal/language-semantics.js", "internal/legacy-cell-analysis.js", "internal/legacy-cell-parser.js", "internal/legacy-cell-rewriter.js", "internal/legacy-repl-convenience.js", "internal/repl-convenience.js", "internal/repl-rewrite-contract.js", "internal/repl-scope-normalizer.js", "internal/source-position-map.js", "internal/typescript-transform.js", "internal/validated-parse-repair.js"
+      ],
+      "contract": "docs/stateful-binding-updates-proposal.md",
+      "observables": ["scope", "declaration ownership", "initialization", "completion", "source positions"],
+      "entries": ["root cell", "function", "eval", "Function", "module"],
+      "lifecycle": ["prepare", "execute", "failure continuation"],
+      "generations": ["legacy-v1", "protected-v1", "stateful-v1"],
+      "platforms": ["Node 22.19+", "Node 24+"],
+      "consumers": ["compiler-and-callables", "persistence-and-recovery"],
+      "oracle": "native Node for preserved JavaScript; explicit PTC dialect assertions for declared differences",
+      "evidence": ["test/semantic-test262.test.js", "test/semantic-dialect.test.js", "test/stateful-source-line-mapping.test.js"],
+      "dependsOn": []
+    },
+    {
+      "id": "compiler-and-callables",
+      "disposition": "preserved",
+      "owner": "Compiler service, root/module compilers and callable reconstruction",
+      "implementation": [
+        "internal/callable-definition-environment.js", "internal/callable-source-catalog.js", "internal/callable-source-encoding.js", "internal/callable-source-facts.js", "internal/callable-source-format.js", "internal/callable-source-lowering.js", "internal/commonjs-export-evidence.js", "internal/commonjs-source-evidence.js", "internal/compiler-amaro.cjs", "internal/compiler-compression.js", "internal/compiler-data.js", "internal/compiler-descriptors.js", "internal/compiler-dynamic-cache.js", "internal/compiler-entry.js", "internal/compiler-generated-names.js", "internal/compiler-intrinsics.js", "internal/compiler-module-links.js", "internal/compiler-operations.js", "internal/compiler-platform-factory.js", "internal/compiler-platform.js", "internal/compiler-record-roles.js", "internal/compiler-region-output.js", "internal/compiler-resource-lowering.js", "internal/compiler-scope-facts.js", "internal/compiler-service.js", "internal/compiler-source-cache.js", "internal/compiler-source-pieces.js", "internal/compiler-source-regions.js", "internal/compiler-storage-source.js", "internal/compiler-text.js", "internal/compiler-typescript.cjs", "internal/dynamic-binding-evidence.js", "internal/dynamic-environment-compiler.js", "internal/dynamic-environment-integration.js", "internal/dynamic-scope-analysis.js", "internal/managed-module-operations.js", "internal/module-compilation.js", "internal/module-policy.js", "internal/module-transform-contract.js", "internal/native-await-declarations.js", "internal/native-root-compilation.js", "internal/stateful-module-compiler.js", "internal/stateful-root-compiler.js"
+      ],
+      "contract": "docs/adr/0025-use-versioned-logical-binding-identities.md",
+      "observables": ["callable source identity", "lexical environment", "module links", "generated names", "intrinsic isolation"],
+      "entries": ["root", "nested callable", "eval", "Function", "static module", "dynamic module"],
+      "lifecycle": ["compile", "instantiate", "reuse", "reconstruct"],
+      "generations": ["legacy-v1", "protected-v1", "stateful-v1"],
+      "platforms": ["Node 22.19+", "Node 24+"],
+      "consumers": ["execution-kernel", "user-bindings-and-client"],
+      "oracle": "native execution for preserved source plus compiler-independent source and identity assertions",
+      "evidence": ["test/semantic-boundaries.test.js", "test/stateful-callable-source-identity.test.js", "test/stateful-module-callable-sources.test.js"],
+      "dependsOn": ["language-frontend"]
+    },
+    {
+      "id": "execution-kernel",
+      "disposition": "preserved",
+      "owner": "Killable worker execution, realm mutation, settlement and value/output transport",
+      "implementation": [
+        "internal/async-local-storage-intrinsics.js", "internal/bounded-worker-round.js", "internal/builtin-esm-sync.js", "internal/cell-completion.js", "internal/diagnostic.js", "internal/dynamic-environment-runtime.js", "internal/dynamic-native-runtime.js", "internal/failure-reporting.js", "internal/isolated-worker.js", "internal/kernel-child.js", "internal/kernel-worker.js", "internal/module-runtime-platform.js", "internal/native-root-dynamic.js", "internal/program-bindings.js", "internal/repl-value-observer.js", "internal/runtime-intrinsics.js", "internal/runtime-messages.js", "internal/session-cell-executor.js", "internal/stateful-module-runtime.js", "internal/stateful-root-runtime.js", "internal/value-wire-schema.js", "internal/value-wire.js", "internal/worker-client.js", "internal/worker-cwd-virtualization.js", "internal/worker-environment.js", "internal/worker-output-capture.js", "internal/worker-output-fence.js", "internal/worker-output-relay.js", "internal/worker-realm-surfaces.js", "internal/worker-repl-realm.js", "internal/worker-shutdown.js"
+      ],
+      "contract": "docs/runtime-reference.md",
+      "observables": ["realm identity", "descriptor behavior", "settlement ordering", "output attribution", "canonical values", "resource bounds"],
+      "entries": ["cell worker", "helper process", "host transport", "binding console worker"],
+      "lifecycle": ["startup", "round", "late output", "timeout", "reset", "shutdown"],
+      "generations": ["legacy-v1", "protected-v1", "stateful-v1"],
+      "platforms": ["Windows", "WSL", "POSIX", "Node 22.19+", "Node 24+"],
+      "consumers": ["persistence-and-recovery", "host-integration", "user-bindings-and-client"],
+      "oracle": "plain Node worker references, protocol state assertions and canonical wire models",
+      "evidence": ["test/worker-realm-surfaces.test.js", "test/worker-output-capture.test.js", "test/kernel-worker-settlement.test.js", "test/value-wire.test.js"],
+      "dependsOn": ["compiler-and-callables"]
+    },
+    {
+      "id": "persistence-and-recovery",
+      "disposition": "intentional-difference",
+      "owner": "Journal schema, recovery, migration and verified-frontier contraction",
+      "implementation": [
+        "internal/legacy-binding-catalog.js", "internal/record-utils.js", "internal/recovery-tips.js", "internal/session-journal-recovery.js", "internal/session-journal-schema.js", "internal/session-journal.js", "internal/session-log-view.js", "internal/session-state.js", "scripts/migrate-session-log.mjs"
+      ],
+      "contract": "docs/durability-design.md",
+      "observables": ["recorded generations", "proven ancestry", "replay effects", "frontier contraction", "current-cell availability"],
+      "entries": ["live settlement", "cold replay", "damaged history", "migration"],
+      "lifecycle": ["append", "recover", "contract", "reset"],
+      "generations": ["journal-v1..v10", "legacy-v1", "protected-v1", "stateful-v1"],
+      "platforms": ["all supported hosts"],
+      "consumers": ["host-integration", "user-bindings-and-client"],
+      "oracle": "closed journal schema and independently constructed damaged-history fixtures",
+      "evidence": ["test/session-journal.test.js", "test/session-recovery-boundary-faults.test.js", "test/user-bindings-recovery.test.js"],
+      "dependsOn": ["language-frontend", "compiler-and-callables", "execution-kernel"]
+    },
+    {
+      "id": "host-integration",
+      "disposition": "bounded-external",
+      "owner": "Official DSH extension seam, direct tools, settings, RPC and Cordis lifecycle",
+      "implementation": [
+        "index.js", "internal/binding-descriptors.js", "internal/config-spec.js", "internal/cordis-tools-owner.js", "internal/direct-surface-owner.js", "internal/dynamic-native-calls.js", "internal/edit-transport-owner.js", "internal/execution-seam-compat.js", "internal/host-rpc.js", "internal/rejected-cell-editor.js", "internal/rpc-contract.js", "internal/run-code-description.js", "internal/runtime-bridge-owner.js", "internal/runtime-config.js", "internal/runtime-contexts.js", "internal/sdk-projection.js", "internal/session-events.js", "internal/session-runtime.js", "internal/settings-compat.js", "internal/tool-call-canonicalizer.js", "internal/typert-codec-compat.js"
+      ],
+      "contract": "CONTEXT.md",
+      "observables": ["tool identity", "host policy authority", "registration disposal", "edit identity", "RPC failure isolation"],
+      "entries": ["run_code", "edit_run_code", "Cordis plugin", "client RPC"],
+      "lifecycle": ["register", "invoke", "reconfigure", "dispose", "unavailable"],
+      "generations": ["latest official DSH public surface", "stable and alpha typert codecs"],
+      "platforms": ["official DSH release", "Electron host", "Node host"],
+      "consumers": ["DSH agent loop", "client", "user-bindings-and-client"],
+      "oracle": "public host contract fixtures and lifecycle fakes; external host internals are explicitly excluded",
+      "evidence": ["test/direct-surface-policy.test.js", "test/plugin-lifecycle.test.js", "test/runtime-bridge-owner-dispose.test.js"],
+      "dependsOn": ["execution-kernel", "persistence-and-recovery"]
+    },
+    {
+      "id": "user-bindings-and-client",
+      "disposition": "intentional-difference",
+      "owner": "Global User Binding storage/activation and bounded REPL client presentation",
+      "implementation": [
+        "client.js", "internal/repl-memory-projection.js", "internal/repl-observation-interest.js", "internal/user-binding-authoring.js", "internal/user-binding-console-worker.js", "internal/user-binding-console.js", "internal/user-binding-draft-projection.js", "internal/user-binding-model-context.js", "internal/user-binding-runner.js", "internal/user-bindings-owner.js", "internal/user-bindings-store.js", "internal/user-bindings.js", "src/client-activity.js", "src/client-authoring-view.js", "src/client-binding-review.js", "src/client-bindings-data.js", "src/client-catalog.js", "src/client-code-editor.js", "src/client-console.js", "src/client-copy.js", "src/client-feature-gates.js", "src/client-host-compat.js", "src/client-indicator-view.js", "src/client-repl-view.js", "src/client-rpc.js", "src/client-settings-view.js", "src/client-styles.js", "src/client-tool-view.js", "src/client-transport.js", "src/client-workbench.js", "src/client.js"
+      ],
+      "contract": "docs/adr/0023-global-user-bindings.md",
+      "observables": ["activation ownership", "shadow policy", "canonical versus preview values", "feature gates", "model visibility"],
+      "entries": ["session activation", "binding workbench", "RPC", "client renderer", "model context"],
+      "lifecycle": ["load", "validate", "activate", "replace", "disable", "observe"],
+      "generations": ["whole-entry", "per-name", "legacy and current module transforms"],
+      "platforms": ["browser client", "Node worker", "official DSH host"],
+      "consumers": ["users", "model requests", "session recovery"],
+      "oracle": "isolated binding workers, storage fixtures and client host adapters",
+      "evidence": ["test/user-bindings-runtime.test.js", "test/user-binding-console.test.js", "test/client-host-compat.test.js", "test/repl-value-observer.test.js"],
+      "dependsOn": ["compiler-and-callables", "execution-kernel", "persistence-and-recovery", "host-integration"]
+    }
+  ]
+}

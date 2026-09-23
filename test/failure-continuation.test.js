@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { renderDiagnostic } from '../internal/diagnostic.js'
 import { latestRecoveryTip } from '../internal/recovery-tips.js'
-import { appendRunCodeEvents, fixture } from './plugin-fixture.js'
+import { appendRunCodeEvents, fixture, orderedSurfaceSession } from './plugin-fixture.js'
 
 const tipConfig = { enabled: true, cooldownMessages: 1, escalationFailures: 2 }
 function tipFor(result) {
@@ -89,6 +89,7 @@ test('equal output limits distinguish terminated cell state from a live encoding
     ['aggregate', 'const limited = Array(100).fill(0); return limited', 'output-limit', false],
     ['encoding', 'const limited = ["x".repeat(600)]; return limited', 'invalid-output', true],
     ['console', 'const limited = 42; console.log("x".repeat(600))', 'output-limit', false],
+    ['console-table', 'const limited = 42; console.table(Array(100).fill({ value: "x" }))', 'output-limit', false],
   ]) {
     const state = fixture({ maxOutputBytes: 512 })
     t.after(() => state.dispose())
@@ -108,12 +109,15 @@ test('recorded diagnostic wording preserves failed-cell bindings and never redis
     ['encoding', 'return ["x".repeat(600)]', ['return a PTC Value V1 value or keep the live value in a REPL binding', 'reduce the returned graph when it exceeds the configured value budget']],
   ]) {
     for (const mismatch of ['none', 'completion', 'transcript', 'diagnostic']) {
-      const session = { id: `${id}-${mismatch}`, events: [] }
+      const session = orderedSurfaceSession(`${id}-${mismatch}`)
       const first = fixture({ maxOutputBytes: 512 })
       let calls = 0
       const tools = { effect: async () => ++calls }
       const source = `const keptValue = await tools.effect({}); ${ending}`
-      const result = await first.runDurable(session.id, source, tools, { session })
+      const result = await first.runDurable(session.id, source, tools, {
+        session: session.id,
+        recordSession: false,
+      })
       const historical = structuredClone(result)
       const journal = historical.meta.dshPtcPlus
       journal.diagnostics[0].help = legacyHelp
@@ -154,16 +158,16 @@ test('state receipts describe settlement and restore changes the following cell'
 test('synchronous blocking consumes event-loop-active budget while asynchronous waiting does not', async t => {
   const state = fixture({ computeMs: 500, maxWallMs: 5000 })
   t.after(() => state.dispose())
-  const session = { id: 'budget', events: [] }
+  const session = orderedSurfaceSession('budget')
   const tools = {
     wait: () => new Promise(resolve => setTimeout(() => resolve(1), 1100)),
   }
   const source = 'return await tools.wait({})'
-  const asyncWait = await state.runDurable(session.id, source, tools, { session })
+  const asyncWait = await state.runDurable(session.id, source, tools, { session, recordSession: 'deferred-result', callId: 'async-wait' })
   appendRunCodeEvents(session.events, 'async-wait', source, asyncWait)
   assert.equal(asyncWait.value, 1)
   const blocking = 'Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2000)'
-  const { raw, result: blocked } = await state.executeRun(session.id, blocking, tools, { session })
+  const { raw, result: blocked } = await state.executeRun(session.id, blocking, tools, { session, recordSession: 'deferred-result', callId: 'blocking-wait' })
   assert.equal(raw.error.kind, 'timeout')
   assert.match(blocked.error.message, /including synchronous blocking/)
   assert.match(blocked.error.message, /does not establish CPU use/)

@@ -84,10 +84,26 @@ export function createHostContext({ onListener } = {}) {
 // offer therefore never runs its callback, which is the state a deployment
 // without that service is in.
 export function serviceInjector(services, host) {
-  return (names, callback) => {
-    if (names.some(name => services[name] !== undefined)) callback(host())
+  const pending = new Set()
+  const failures = []
+  const inject = (names, callback) => {
+    if (names.some(name => services[name] !== undefined)) {
+      const activation = callback(host())
+      if (typeof activation?.then === 'function') {
+        let settlement
+        settlement = Promise.resolve(activation)
+          .catch(error => { failures.push(error) })
+          .finally(() => pending.delete(settlement))
+        pending.add(settlement)
+      }
+    }
     return () => {}
   }
+  inject.settle = async () => {
+    while (pending.size > 0) await Promise.all([...pending])
+    return Object.freeze([...failures])
+  }
+  return inject
 }
 
 // Host hooks are chained: each listener may call next() to reach the next one.

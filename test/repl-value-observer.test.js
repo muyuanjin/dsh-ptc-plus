@@ -38,14 +38,16 @@ test('observes bounded descriptors without invoking getters, Proxy traps or form
     Object.defineProperty(globalThis, 'accessor', { get() { touched(); return 42 } })
     var own = 7
     let unicode名 = 1
+    let [arrayHead = 5, , ...arrayTail] = [5, 6, 7, 8]
+    let { nested: { objectValue }, ...objectRest } = { nested: { objectValue: 9 }, extra: 10 }
   `
   runInContext(program, context)
   observer.record(program)
-  const names = ['scalar', 'text', 'missing', 'nothing', 'special', 'negativeZero', 'bigint', 'symbol', 'fn', 'object', 'array', 'proxy', 'revokedProxy', 'accessor', 'own', 'unknown', 'unicode名', 'touched()', 'lexicalAccessor']
+  const names = ['scalar', 'text', 'missing', 'nothing', 'special', 'negativeZero', 'bigint', 'symbol', 'fn', 'object', 'array', 'proxy', 'revokedProxy', 'accessor', 'own', 'unknown', 'unicode名', 'touched()', 'lexicalAccessor', 'arrayHead', 'arrayTail', 'objectValue', 'objectRest']
   const before = Object.getOwnPropertyNames(context)
   const observed = observer.observe(names)
   const values = new Map(observed.entries.map(entry => [entry.name, entry]))
-  for (const [name, text] of [['scalar', '42'], ['own', '7'], ['missing', 'undefined'], ['nothing', 'null'], ['special', 'NaN'], ['negativeZero', '-0'], ['unicode名', '1'], ['lexicalAccessor', '3'], ['bigint', '123n']]) {
+  for (const [name, text] of [['scalar', '42'], ['own', '7'], ['missing', 'undefined'], ['nothing', 'null'], ['special', 'NaN'], ['negativeZero', '-0'], ['unicode名', '1'], ['lexicalAccessor', '3'], ['bigint', '123n'], ['arrayHead', '5'], ['objectValue', '9']]) {
     assert.equal(values.get(name).text, text)
   }
   assert.equal(values.get('text').truncated, true)
@@ -53,7 +55,8 @@ test('observes bounded descriptors without invoking getters, Proxy traps or form
   assert.equal(values.get('array').truncated, true)
   assert.match(values.get('array').text, /\[object\]/)
   assert.match(values.get('array').text, /\[empty\]/)
-  for (const name of ['object', 'proxy', 'revokedProxy', 'accessor', 'unknown', 'touched()', 'symbol', 'fn']) {
+  assert.equal(values.get('arrayTail').text, 'array { "0": 7, "1": 8 }')
+  for (const name of ['object', 'proxy', 'revokedProxy', 'accessor', 'unknown', 'touched()', 'symbol', 'fn', 'objectRest']) {
     assert.equal(values.get(name).status, 'unreadable', name)
   }
   assert.ok(observed.entries.every(entry => entry.text.length <= 512))

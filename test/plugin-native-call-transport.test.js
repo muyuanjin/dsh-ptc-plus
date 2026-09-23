@@ -4,6 +4,7 @@ import { access, rm } from 'node:fs/promises'
 import { isAbsolute } from 'node:path'
 import test from 'node:test'
 import { Context as CordisContext } from '@deepseek-ai/cordis'
+import { createToolResultMessage } from '@deepseek-ai/dsh-llm'
 import { createScope } from '@deepseek-ai/dsh-scope'
 import { SystemPrompt } from '@deepseek-ai/dsh-system-prompt'
 import { ToolRuntime, defineTool } from '@deepseek-ai/dsh-tools'
@@ -527,9 +528,16 @@ test('preserves canonical run_code results through the real DSH ToolRuntime pipe
     persona: '',
     toolOrder: undefined,
   })
-  ctx.provide('codeRuntime', {
+  ctx.provide('ptcRuntime', {
     language: 'typescript',
     isolation: 'worker-thread',
+    resolve(request) {
+      return {
+        ...request,
+        cwd: request.cwd ?? process.cwd(),
+        timeoutMs: request.timeoutMs ?? null,
+      }
+    },
     async run() { return { logs: ['upstream'], value: 'upstream' } },
   })
   // The plugin declares these two alongside the execution seam. Production gets
@@ -552,7 +560,9 @@ test('preserves canonical run_code results through the real DSH ToolRuntime pipe
       return value
     },
   }))
-  await apply(ctx, { computeMs: 500, maxWallMs: 2_000, maxOldGenerationSizeMb: 64 })
+  const upstreamRun = ctx.get('ptcRuntime').run
+  await apply(ctx, { computeMs: 500, maxWallMs: 20_000, maxOldGenerationSizeMb: 64 })
+  assert.notEqual(ctx.get('ptcRuntime').run, upstreamRun, 'PTC Plus must own the registered execution seam')
 
   const session = appendOnlySession('real-tool-runtime')
   const agent = { id: 'real-tool-runtime-agent', session }
@@ -564,14 +574,24 @@ test('preserves canonical run_code results through the real DSH ToolRuntime pipe
   })
   const signal = new AbortController().signal
   await ctx.systemPrompt.assemble({ agent, scope: agent, signal })
+  assert.notEqual(ctx.get('ptcRuntime').run, upstreamRun, 'assembly must retain PTC Plus seam ownership')
 
   const executeRunCode = async (callId, args) => {
+    const argumentsValue = JSON.stringify(args)
+    session.append('assistant/message', {
+      turn: 1,
+      step: 1,
+      message: {
+        role: 'assistant',
+        content: [{ type: 'tool-call', id: callId, name: 'run_code', arguments: argumentsValue }],
+      },
+    })
     const call = session.append('tool/call', {
       turn: 1,
       step: 1,
       callId,
       name: 'run_code',
-      arguments: JSON.stringify(args),
+      arguments: argumentsValue,
     })
     const result = await ctx.tools.execute({
       name: 'run_code',
@@ -583,12 +603,11 @@ test('preserves canonical run_code results through the real DSH ToolRuntime pipe
     session.append('tool/result', {
       turn: 1,
       step: 1,
-      message: {
-        id: `message-${callId}`,
-        role: 'tool',
-        source: { kind: 'tool', callId },
-        content: [{ type: 'tool-result', toolCallId: callId, content: result.content }],
-      },
+      message: createToolResultMessage({
+        callId,
+        content: result.content,
+        isError: result.isError,
+      }),
       ...(result.meta === undefined ? {} : { meta: result.meta }),
     }, { sourceEventSeqs: [call.seq] })
     return result
@@ -598,8 +617,8 @@ test('preserves canonical run_code results through the real DSH ToolRuntime pipe
     code: 'const echoed = await tools.echo({ value: "ok" })\nreturn echoed',
     description: 'Echo through the persistent REPL',
   })
-  assert.equal(explicit.isError, false)
-  assert.equal(echoCalls, 1)
+  assert.equal(explicit.isError, false, JSON.stringify(explicit))
+  assert.equal(echoCalls, 1, JSON.stringify(explicit))
   assert.deepEqual(explicit.value, { logs: [], result: 'ok' })
   assert.notEqual(snapshotJsonValue(explicit.meta), undefined)
   assert.equal(normalizeJournal(explicit.meta.dshPtcPlus).status, 'durable')
@@ -693,29 +712,44 @@ test('preserves disabled derived edit bindings across visible surface generation
     { agent, scope: agent, signal },
   )
   const run = async (callId, code) => {
+    const argumentsValue = JSON.stringify({ code, description: 'test cell' })
+    const assistant = session.append('assistant/message', {
+      message: {
+        role: 'assistant',
+        content: [{ type: 'tool-call', id: callId, name: 'run_code', arguments: argumentsValue }],
+      },
+    })
     const call = session.append('tool/call', {
       callId,
       name: 'run_code',
-      arguments: JSON.stringify({ code, description: 'test cell' }),
+      arguments: argumentsValue,
     })
-    surfaceNodes = [...surfaceNodes, call.seq]
+    surfaceNodes = [...surfaceNodes, assistant.seq]
     const result = await state.ctx.tools.execute({
       name: 'run_code', callId, arguments: { code, description: 'test cell' }, signal, agent,
     })
-    session.append('tool/result', {
+    const resultEvent = session.append('tool/result', {
       message: { source: { callId } },
       ...(result.meta === undefined ? {} : { meta: result.meta }),
-    })
+    }, { sourceEventSeqs: [call.seq] })
+    surfaceNodes = [...surfaceNodes, resultEvent.seq]
     return { call, result }
   }
   const source = await run('disabled-edit-source', 'let editableSurface = 1')
   assert.equal(source.result.isError, false)
+  const editArguments = JSON.stringify({ edits: [{ old_string: '1', new_string: '2' }] })
+  const editAssistant = session.append('assistant/message', {
+    message: {
+      role: 'assistant',
+      content: [{ type: 'tool-call', id: 'disabled-edit-call', name: 'edit_run_code', arguments: editArguments }],
+    },
+  })
   const editCall = session.append('tool/call', {
     callId: 'disabled-edit-call',
     name: 'edit_run_code',
-    arguments: JSON.stringify({ edits: [{ old_string: '1', new_string: '2' }] }),
+    arguments: editArguments,
   })
-  surfaceNodes = [...surfaceNodes, editCall.seq]
+  surfaceNodes = [...surfaceNodes, editAssistant.seq]
   const edit = await state.ctx.tools.execute({
     name: 'edit_run_code',
     callId: editCall.data.callId,
@@ -729,7 +763,10 @@ test('preserves disabled derived edit bindings across visible surface generation
   const inspected = await run('disabled-edit-inspect', 'return editableSurface')
   assert.equal(inspected.result.value, 2)
   generation = 2
-  surfaceNodes = [inspected.call.seq]
+  surfaceNodes = events
+    .filter(event => event.type === 'assistant/message' || event.type === 'tool/result')
+    .filter(event => event.seq >= inspected.call.seq - 1)
+    .map(event => event.seq)
   const hidden = await run('disabled-edit-hidden', 'return typeof editableSurface')
   assert.equal(hidden.result.value, 'undefined')
 })
@@ -855,7 +892,7 @@ test('preserves both as a distinct PTC presentation across native capability vie
     const session = { id: `both-mode-${id}-session`, events: [{ type: 'turn/start' }] }
     const agent = ptcAgent(`both-mode-${id}-agent`, session)
     const code = `export const ${id}Value = 1\nreturn ${id}Value`
-    const run = await state.runDurable(session.id, code, {}, { session })
+    const run = await state.runDurable(session.id, code, {}, { session, recordSession: 'deferred-result', callId: `both-mode-${id}-run` })
     assert.equal(run.isError, false)
     appendRunCodeEvents(session.events, `both-mode-${id}-run`, code, run)
     const signal = new AbortController().signal

@@ -4,7 +4,13 @@ import { access, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, sep } from 'node:path'
 import test from 'node:test'
-import { appendRunCodeEvents, fixture as pluginFixture, ptcAgent } from './plugin-fixture.js'
+import { pathToFileURL } from 'node:url'
+import {
+  appendRunCodeEvents,
+  fixture as pluginFixture,
+  orderedSurfaceSession,
+  ptcAgent,
+} from './plugin-fixture.js'
 
 const fixture = (config = {}, ...args) => pluginFixture({ ...config, legacyBindingSettings: config.bindingUpdates === undefined }, ...args)
 
@@ -354,10 +360,12 @@ test('keeps successful rewrite provenance out of runtime contexts', async (t) =>
     ],
     contexts: [], variables: {}, tools: [state.runCodeDefinition],
   }
-  const session = { id: 'export-feedback-session', events: [{ type: 'turn/start' }] }
+  const session = orderedSurfaceSession('export-feedback-session', [
+    { type: 'turn/start', seq: 0, time: 0, data: {} },
+  ])
   const agent = ptcAgent(`${session.id}-agent`, session)
   const code = 'export const exportedValue = 1\nreturn exportedValue'
-  const observed = await state.runDurable(session.id, code, {}, { session })
+  const observed = await state.runDurable(session.id, code, {}, { session, recordSession: 'deferred-result', callId: 'export-feedback-cell' })
   assert.match(
     observed.meta.dshPtcPlusRewrites[0].description,
     /stripped the export modifier from a top-level declaration/,
@@ -366,7 +374,7 @@ test('keeps successful rewrite provenance out of runtime contexts', async (t) =>
   const assembly = await state.assemble(codeOnlyAssembly, { agent, scope: agent, signal: new AbortController().signal })
   assert.equal(assembly.contexts.some(item => item?.name === 'tools:ptc-plus-rewrite-info'), false)
   const reexportCode = "export { basename } from 'node:path'\nreturn 1"
-  const reexport = await state.runDurable(session.id, reexportCode, {}, { session })
+  const reexport = await state.runDurable(session.id, reexportCode, {}, { session, recordSession: 'deferred-result', callId: 'export-feedback-reexport' })
   assert.match(
     reexport.meta.dshPtcPlusRewrites[0].description,
     /converted the re-export of "node:path" into a side-effect import/,
@@ -376,7 +384,7 @@ test('keeps successful rewrite provenance out of runtime contexts', async (t) =>
   assert.equal(updated.contexts.some(item => item?.name === 'tools:ptc-plus-rewrite-info'), false)
 
   const erasedCode = "import type { A } from 'pkg'\nexport type B = A\nreturn 1"
-  const erased = await state.runDurable(session.id, erasedCode, {}, { session })
+  const erased = await state.runDurable(session.id, erasedCode, {}, { session, recordSession: 'deferred-result', callId: 'export-feedback-erased' })
   assert.deepEqual(
     erased.meta.dshPtcPlusRewrites.map(rewrite => rewrite.description),
     ['removed the type-only import of "pkg"', 'removed a type-only export declaration'],
@@ -385,10 +393,10 @@ test('keeps successful rewrite provenance out of runtime contexts', async (t) =>
   const erasedAssembly = await state.assemble(codeOnlyAssembly, { agent, scope: agent, signal: new AbortController().signal })
   assert.equal(erasedAssembly.contexts.some(item => item?.name === 'tools:ptc-plus-rewrite-info'), false)
 
-  const plain = await state.runDurable(session.id, 'const mixExisting = 1', {}, { session })
+  const plain = await state.runDurable(session.id, 'const mixExisting = 1', {}, { session, recordSession: 'deferred-result', callId: 'export-feedback-plain' })
   appendRunCodeEvents(session.events, 'export-feedback-plain', 'const mixExisting = 1', plain)
   const splitCode = 'const { mixExisting, mixNew } = { mixExisting: 2, mixNew: 3 }\nreturn mixNew'
-  const split = await state.runDurable(session.id, splitCode, {}, { session })
+  const split = await state.runDurable(session.id, splitCode, {}, { session, recordSession: 'deferred-result', callId: 'export-feedback-split' })
   assert.match(
     split.meta.dshPtcPlusRewrites[0].description,
     /split a mixed top-level declaration/,
@@ -402,7 +410,7 @@ test('classifies require exactly like dynamic imports', async (t) => {
   const state = fixture()
   t.after(() => state.dispose())
   const durable = await state.runDurable(
-    'require-util', "const { inspect } = require('node:util')\nreturn typeof inspect", {}, { session: { events: [] } },
+    'require-util', "const { inspect } = require('node:util')\nreturn typeof inspect",
   )
   assert.equal(durable.meta.dshPtcPlus.status, 'durable')
   assert.deepEqual(
@@ -509,6 +517,56 @@ test('fails safe when a static import shape is unrecognized', async (t) => {
   )
 })
 
+test('provides current cells one synthetic module base while preserving the legacy grammar', async (t) => {
+  const project = await mkdtemp(join(tmpdir(), 'ptc-import-meta-'))
+  t.after(() => rm(project, { recursive: true, force: true }))
+  const filename = join(project, 'repl')
+  const url = pathToFileURL(filename).href
+  const expected = [url, filename, project, new URL('./asset', url).href]
+  for (const bindingUpdates of ['stateful', 'protected']) {
+    const state = fixture({ bindingUpdates })
+    t.after(() => state.dispose())
+    for (const [form, meta] of [
+      ['compact', 'import.meta'],
+      ['space', 'import . meta'],
+      ['comment', 'import/*comment*/.meta'],
+      ['newline', 'import\n.meta'],
+    ]) {
+      const session = orderedSurfaceSession(`import-meta-${bindingUpdates}-${form}`)
+      session.header = { cwd: project }
+      const first = `first${form[0].toUpperCase()}${form.slice(1)}`
+      const result = await state.run(session.id, [
+        `const ${first} = ${meta}`,
+        `${meta}.extra = 7`,
+        `return [${first} === ${meta}, Object.getPrototypeOf(${first}) === null,`,
+        `  ${first}.url, ${first}.filename, ${first}.dirname, new URL('./asset', ${meta}.url).href, ${meta}.extra]`,
+      ].join('\n'), {}, { session })
+      assert.deepEqual(result.value, [true, true, ...expected, 7])
+    }
+  }
+  const fallback = fixture({ bindingUpdates: 'stateful' })
+  t.after(() => fallback.dispose())
+  assert.equal(
+    (await fallback.run('import-meta-default-base', 'return import.meta.url')).value,
+    pathToFileURL(join(process.cwd(), 'repl')).href,
+  )
+})
+
+test('defines the exact CommonJS-like surface of current cells', async (t) => {
+  for (const bindingUpdates of ['stateful', 'protected']) {
+    const state = fixture({ bindingUpdates })
+    t.after(() => state.dispose())
+    const result = await state.run(`cell-module-surface-${bindingUpdates}`, [
+      'return [typeof require, typeof require.resolve, typeof require.cache, typeof require.main,',
+      '  typeof __dirname, typeof __filename, typeof module]',
+    ].join('\n'))
+    assert.deepEqual(result.value, [
+      'function', 'function', 'object', 'undefined',
+      'undefined', 'undefined', 'undefined',
+    ])
+  }
+})
+
 test('keeps static imports rejected when autoRewriteImports is disabled', async (t) => {
   const state = fixture({ autoRewriteImports: false })
   t.after(() => state.dispose())
@@ -537,9 +595,9 @@ test('attaches rewrite provenance to failed executions', async (t) => {
 test('does not attach rewrite provenance to preflight-rejected cells', async (t) => {
   const state = fixture({ looseTopLevelRedeclarations: false })
   t.after(() => state.dispose())
-  await state.runDurable('strict-rewrite', 'const existingValue = 1', {}, { session: { events: [] } })
+  await state.runDurable('strict-rewrite', 'const existingValue = 1')
   const rejected = await state.runDurable(
-    'strict-rewrite', "import { basename } from 'node:path'\nconst existingValue = 2\nreturn 1", {}, { session: { events: [] } },
+    'strict-rewrite', "import { basename } from 'node:path'\nconst existingValue = 2\nreturn 1",
   )
   assert.equal(rejected.isError, true)
   assert.match(rejected.error.message, /PTC-N001/)
@@ -639,8 +697,8 @@ test('keeps explicit loose declarations replacing future alias reads only', asyn
 })
 
 test('persists mixed loose alias declarations across live and cold continuation', async (t) => {
-  const events = []
-  const session = { id: 'mixed-loose-alias-replay', events }
+  const session = orderedSurfaceSession('mixed-loose-alias-replay')
+  const { events } = session
   const writer = fixture({ looseTopLevelRedeclarations: true })
   const setupSource = [
     "import { inspect as imported } from 'node:util'",
@@ -650,7 +708,7 @@ test('persists mixed loose alias declarations across live and cold continuation'
     'const readImported = () => imported',
     'const readDefault = () => __default',
   ].join('\n')
-  const setup = await writer.runDurable(session.id, setupSource, {}, { session })
+  const setup = await writer.runDurable(session.id, setupSource, {}, { session, recordSession: 'deferred-result', callId: 'mixed-loose-alias-setup' })
   appendRunCodeEvents(events, 'mixed-loose-alias-setup', setupSource, setup)
 
   const replacementDeclaration = [
@@ -663,7 +721,7 @@ test('persists mixed loose alias declarations across live and cold continuation'
   ].join('\n')
   const observation = '[imported, __default, existing, fresh, readImported() === originalImported, readDefault()]'
   const replacementSource = `${replacementDeclaration}\nreturn ${observation}`
-  const replacement = await writer.runDurable(session.id, replacementSource, {}, { session })
+  const replacement = await writer.runDurable(session.id, replacementSource, {}, { session, recordSession: 'deferred-result', callId: 'mixed-loose-alias-replacement' })
   assert.deepEqual(replacement.value, [
     'local-import',
     'local-default',

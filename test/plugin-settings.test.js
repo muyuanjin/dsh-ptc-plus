@@ -10,7 +10,7 @@ import { resolveConfig } from '../internal/runtime-config.js'
 import { executionPolicies } from '../internal/binding-update-policy.js'
 import { Session } from '@deepseek-ai/dsh-session'
 import { readRuntimeMessage, runtimeStateMessage } from '../internal/runtime-messages.js'
-import { createHostContext, describeSections, runHookChain } from './host-fixture.js'
+import { createHostContext, describeSections, runHookChain, serviceInjector } from './host-fixture.js'
 
 const TEST_CORDIS_TOOL_NAMES = Object.freeze([
   'test_cordis_inspect',
@@ -48,6 +48,23 @@ function settingsScope(value) {
     watchers,
   }
 }
+
+test('shared service injection owns asynchronous callback rejection', async () => {
+  const expected = new Error('injected activation failed')
+  let activations = 0
+  const inject = serviceInjector({ codeRuntime: {} }, () => ({}))
+  const dispose = inject(['codeRuntime'], async () => {
+    activations += 1
+    await Promise.resolve()
+    throw expected
+  })
+
+  assert.equal(typeof dispose, 'function')
+  assert.deepEqual(await inject.settle(), [expected])
+  await new Promise(resolve => setImmediate(resolve))
+  assert.deepEqual(await inject.settle(), [expected])
+  assert.equal(activations, 1)
+})
 
 function settingsContext(scope) {
   const context = {
@@ -143,10 +160,7 @@ function hostContext(settings = undefined, agents = [], options = {}) {
       warn(message, error) { this.warnings.push([message, error]) },
     },
     ...(settings === undefined ? {
-      inject(names, callback) {
-        if (names.includes('codeRuntime')) callback(ctx)
-        return () => {}
-      },
+      inject: serviceInjector({ codeRuntime: runtime }, () => ctx),
     } : {
       inject(services, callback) {
         if (services.includes('ptcRuntime')) return () => {}
@@ -994,7 +1008,8 @@ test('Host schema and settings hydration preserve omitted new policy during migr
   for (const [raw, expected] of cases) {
     const validated = await Config['~standard'].validate(raw)
     assert.equal(validated.issues, undefined)
-    assert.equal(Object.hasOwn(validated.value, 'bindingUpdates'), Object.hasOwn(raw, 'bindingUpdates'))
+    // Volatile schema fields always materialize; omission is carried by an
+    // undefined live value and must retain the legacy migration semantics.
     assert.equal(executionPolicies(resolveConfig(validated.value)).languageSemantics, expected)
     const scope = settingsScope(validated.value)
     const { ctx, sections, cleanups } = hostContext(settingsContext(scope))
@@ -1954,24 +1969,87 @@ test('config schema defaults expose the settings switches', async () => {
     CONFIG_GROUPS.find(group => group.key === 'extensions').fields,
     ['userBindingsEnabled', 'cordisToolsEnabled'],
   )
-  const defaults = await Config['~standard'].validate({})
+  const defaults = resolveConfig((await Config['~standard'].validate({})).value)
   assert.equal(inject.includes('commands'), false)
-  assert.equal(defaults.value.enabled, true)
-  assert.equal(defaults.value.enhancedToolView, true)
-  assert.equal(defaults.value.autoDescribeRunCode, true)
-  assert.equal(defaults.value.cordisToolsEnabled, false)
-  assert.equal(defaults.value.userBindingsEnabled, false)
-  assert.equal(defaults.value.looseTopLevelFunctionClassRedeclarations, true)
+  assert.equal(defaults.enabled, true)
+  assert.equal(defaults.enhancedToolView, true)
+  assert.equal(defaults.autoDescribeRunCode, true)
+  assert.equal(defaults.cordisToolsEnabled, false)
+  assert.equal(defaults.userBindingsEnabled, false)
+  assert.equal(defaults.looseTopLevelFunctionClassRedeclarations, true)
   const invalid = await Config['~standard'].validate({ enabled: 'yes' })
   assert.equal(invalid.issues[0].path[0], 'enabled')
-  const ns = await Config['~standard'].validate({ enabled: false })
-  assert.equal(ns.value.enabled, false)
-  const native = await Config['~standard'].validate({ enhancedToolView: false })
-  assert.equal(native.value.enhancedToolView, false)
-  const autoDescribe = await Config['~standard'].validate({ autoDescribeRunCode: true })
-  assert.equal(autoDescribe.value.autoDescribeRunCode, true)
-  const cordis = await Config['~standard'].validate({ cordisToolsEnabled: true })
-  assert.equal(cordis.value.cordisToolsEnabled, true)
+  const ns = resolveConfig((await Config['~standard'].validate({ enabled: false })).value)
+  assert.equal(ns.enabled, false)
+  const native = resolveConfig((await Config['~standard'].validate({ enhancedToolView: false })).value)
+  assert.equal(native.enhancedToolView, false)
+  const autoDescribe = resolveConfig((await Config['~standard'].validate({ autoDescribeRunCode: true })).value)
+  assert.equal(autoDescribe.autoDescribeRunCode, true)
+  const cordis = resolveConfig((await Config['~standard'].validate({ cordisToolsEnabled: true })).value)
+  assert.equal(cordis.cordisToolsEnabled, true)
+})
+
+test('applies a volatile-only configuration update through the loader event', async () => {
+  const host = hostContext()
+  const live = { enabled: true }
+  const activation = apply(host.ctx, { enabled: { get: () => live.enabled } })
+  await activation
+  await new Promise(resolve => setImmediate(resolve))
+  assert.ok((host.listeners.get('tools/execute') ?? []).length > 0)
+  const volatileListeners = host.listeners.get('loader/volatile-update') ?? []
+  assert.equal(volatileListeners.length, 1)
+  live.enabled = false
+  volatileListeners[0]()
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(host.listeners.get('tools/execute'), undefined)
+})
+
+test('re-attaching the execution seam keeps the committed volatile configuration', async () => {
+  const host = hostContext()
+  const live = { enabled: true, maxWallMs: 600_000 }
+  const config = {
+    enabled: { get: () => live.enabled },
+    maxWallMs: { get: () => live.maxWallMs },
+  }
+  const originalInject = host.ctx.inject
+  const seamInjections = []
+  host.ctx.inject = (names, callback) => {
+    if (!names.includes('codeRuntime') && !names.includes('ptcRuntime')) {
+      return originalInject(names, callback)
+    }
+    if (!names.includes('codeRuntime')) return () => {}
+    const cleanups = []
+    const scope = {
+      ...host.ctx,
+      effect(register) {
+        cleanups.push(register())
+        return () => {}
+      },
+    }
+    const entry = { names, callback, scope, cleanups }
+    seamInjections.push(entry)
+    callback(scope)
+    return () => {}
+  }
+  await apply(host.ctx, config)
+  await new Promise(resolve => setImmediate(resolve))
+  assert.ok((host.listeners.get('tools/execute') ?? []).length > 0)
+
+  const volatileListeners = host.listeners.get('loader/volatile-update') ?? []
+  assert.equal(volatileListeners.length, 1)
+  live.enabled = false
+  live.maxWallMs = 120_000
+  volatileListeners[0]()
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(host.listeners.get('tools/execute'), undefined)
+  assert.equal(host.sections.length, 0)
+
+  const previous = seamInjections.pop()
+  for (const cleanup of previous.cleanups.reverse()) cleanup?.()
+  host.ctx.inject(previous.names, previous.callback)
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(host.listeners.get('tools/execute'), undefined)
+  assert.equal(host.sections.length, 0)
 })
 
 test('runtime config rejects an invalid enabled value', () => {

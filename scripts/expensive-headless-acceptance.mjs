@@ -457,7 +457,7 @@ export function inspectLog(events, scenario, expectedRuntime) {
     repeatedSourceCalls: [...sourceCounts.values()].reduce((total, count) => total + Math.max(0, count - 1), 0),
     resultChars: [...results.values()].reduce((total, result) => total + result.outputChars, 0),
     assistantChars: assistantTexts.join('\n').length,
-    tokenTraffic: Object.values(usage).reduce((total, value) => total + value, 0),
+    tokenTraffic: facts.usageComplete === false ? null : Object.values(usage).reduce((total, value) => total + value, 0),
     runtimeContextChars: contextAudit.totalMessageChars,
   }
   if (expect.machineBudget !== undefined) {
@@ -484,6 +484,7 @@ export function inspectLog(events, scenario, expectedRuntime) {
     historyReplacements: headerAudit.historyReplacements,
     turnWallMs: turnStartedAt === undefined || turnEndedAt === undefined ? undefined : turnEndedAt - turnStartedAt,
     usage,
+    usageComplete: facts.usageComplete,
     machineMetrics,
     programWork,
     toolCallCount: calls.size,
@@ -603,7 +604,7 @@ async function runAcceptance(env, modelRuntime, host, overlayRoot) {
           runtimeSnapshots: [],
         },
         eventCount: 0, toolCallCount: 0, toolResultCount: 0,
-        usage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 }, timeline: [], finalAnswerChars: 0,
+        usage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 }, usageComplete: false, timeline: [], finalAnswerChars: 0,
         diagnostics: [], failures: [`found ${matches.length} matching session logs; expected exactly one`],
       }
     } else {
@@ -636,6 +637,8 @@ async function runAcceptance(env, modelRuntime, host, overlayRoot) {
     for (const name of Object.keys(total)) total[name] += report.usage[name]
     return total
   }, { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 })
+  const usageComplete = scenarioResults.every(({ report }) => report.usageComplete !== false)
+  if (!usageComplete) for (const name of Object.keys(usage)) usage[name] = null
   const summary = {
     runtime: {
       dshVersion: runtime.dshVersion,
@@ -648,6 +651,7 @@ async function runAcceptance(env, modelRuntime, host, overlayRoot) {
       concurrency: runtime.concurrency,
     },
     usage,
+    usageComplete,
     runtimeSnapshots: summarizeRuntimeSnapshots(
       scenarioResults.flatMap(({ report }) => report.prompt.runtimeSnapshots),
     ),

@@ -8,6 +8,7 @@ import { adaptModuleOperations } from '../internal/managed-module-operations.js'
 import { CELL_PARSER_PLUGINS, normalizeStatefulScopes, normalizeTypeScriptValues } from '../internal/repl-scope-normalizer.js'
 import { identitySourceMap, mapSourceSpan } from '../internal/source-position-map.js'
 import { SessionRuntime } from '../internal/session-runtime.js'
+import { orderedSurfaceSession, runRecordedCell } from './plugin-fixture.js'
 import { LEGACY_USER_BINDING_TRANSFORM, PROTECTED_MODULE_TRANSFORM, USER_BINDING_TRANSFORM } from '../internal/typescript-transform.js'
 import { managedGraph } from './managed-module-fixture.js'
 
@@ -223,8 +224,9 @@ for (const legacy of [false,true]) {
     const runtime = new SessionRuntime({ durableReplay: false,
       ...(legacy ? { legacyBindingSettings: true, looseTopLevelRedeclarations: false } : { bindingUpdates: 'stateful' }) })
     t.after(() => runtime.dispose())
-    const session = { id: `commonjs-context-${legacy}`, session: { header: { cwd: graph.directory } } }
-    const first = await runtime.run(session, { bindings: [], program: `
+    const session = orderedSurfaceSession(`commonjs-context-${legacy}`)
+    session.header = { cwd: graph.directory }
+    const first = await runRecordedCell(runtime, session, 'load-commonjs-context', { bindings: [], program: `
 const required=require('./root.cjs')
 const imported=await import('./root.cjs')
 const retained=required.arrow
@@ -235,7 +237,9 @@ return [required===imported.default,required.target===undefined,required.arrow()
     assert.deepEqual(first.value, [true,true,true,
       ['undefined','undefined','undefined','undefined',true,true,true,true,5,true,true,true],
       [true,true,true],[false,false,false]])
-    const next = await runtime.run(session, { bindings: [], program: 'return [retained()===undefined,required.read()[4],required.read()[8]]' })
+    const next = await runRecordedCell(runtime, session, 'reuse-commonjs-context', {
+      bindings: [], program: 'return [retained()===undefined,required.read()[4],required.read()[8]]',
+    })
     assert.equal(next.error, undefined, next.error?.message)
     assert.deepEqual(next.value, [true,true,5])
   })

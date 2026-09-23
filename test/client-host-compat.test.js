@@ -3,6 +3,8 @@ import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 import { parse } from 'yaml'
 import {
+  hostIconComponents,
+  isHostIconComponent,
   isIdleSessionComposer,
   publishSettingsCard,
   sessionUsesPtcPreset,
@@ -10,6 +12,45 @@ import {
   useSessionPreset,
   watchCurrentSessionPreset,
 } from '../src/client-host-compat.js'
+
+test('host icons follow the public export shape without a version branch', () => {
+  const component = iconName => Object.assign(() => null, { iconName })
+  const legacy = Object.fromEntries([
+    ['CheckOutline14', 'check'], ['ChevronDownOutline14', 'chevron'],
+    ['InspectOutline12', 'inspect'], ['Sparkle16', 'sparkle'],
+    ['CloseOutline16', 'close'], ['SearchOutline16', 'search'],
+    ['PlusOutline16', 'plus'], ['RefreshOutline16', 'refresh'],
+    ['TrashOutline16', 'trash'], ['EditOutline16', 'edit'],
+    ['PlayOutline16', 'play'], ['StopFill16', 'stop'],
+  ].map(([suffix, name]) => [`Icon${suffix}`, component(name)]))
+  const current = Object.fromEntries([
+    ['CheckOutline', 'check'], ['ChevronDownOutline', 'chevron'],
+    ['InspectOutline', 'inspect'], ['Sparkle', 'sparkle'],
+    ['CloseOutline', 'close'], ['SearchOutline', 'search'],
+    ['PlusOutline', 'plus'], ['RefreshOutline', 'refresh'],
+    ['TrashOutline', 'trash'], ['EditOutline', 'edit'],
+    ['PlayOutline', 'play'], ['StopFill', 'stop'],
+  ].map(([stem, name]) => [`Icon${stem}Regular`, component(name)]))
+
+  assert.deepEqual(hostIconComponents(legacy), Object.fromEntries(
+    Object.values(legacy).map(value => [value.iconName, value]),
+  ))
+  assert.deepEqual(hostIconComponents({ ...legacy, ...current }), Object.fromEntries(
+    Object.values(current).map(value => [value.iconName, value]),
+  ))
+  const resolved = hostIconComponents(legacy)
+  assert.equal(isHostIconComponent(resolved.check), true)
+  assert.equal(isHostIconComponent(resolved.chevron), true)
+  // A renamed, omitted, or malformed export stays render-safe: every key is a
+  // component, and the absent-glyph marker keeps a control's text fallback.
+  const absent = hostIconComponents({ IconCheckOutlineRegular: 'not a component' })
+  assert.deepEqual(Object.keys(absent), Object.keys(resolved))
+  for (const name of Object.keys(absent)) {
+    assert.equal(isHostIconComponent(absent[name]), false, name)
+    assert.equal(typeof absent[name], 'function', name)
+    assert.equal(absent[name](), null, name)
+  }
+})
 
 function source(value) {
   const listeners = new Set()
@@ -109,6 +150,7 @@ test('settings-card seats follow the slot each DSH generation declares', () => {
   assert.deepEqual(settingsCardSeats('dsh-ptc-plus'), [
     { slot: 'settings.plugin.item', identity: { key: 'ptc-plus' } },
     { slot: 'plugins.row.config', identity: { key: 'dsh-ptc-plus#ptc-plus' } },
+    { slot: 'settings.general.item', identity: { id: 'ptc-plus' } },
   ])
 })
 
@@ -133,7 +175,9 @@ test('one publication path waits on every seat and reports the one the host decl
     bundleName: 'dsh-ptc-plus', locale: 'settings.ptcPlus',
     injectProps: () => ({ hooks: {} }), component,
   })
-  assert.deepEqual([...callbacks.keys()], ['settings.plugin.item', 'plugins.row.config'])
+  assert.deepEqual([...callbacks.keys()], [
+    'settings.plugin.item', 'plugins.row.config', 'settings.general.item',
+  ])
   assert.deepEqual(registrations, [], 'an undeclared seat registers nothing')
   assert.equal(card.seat(), undefined, 'no seat is live until the host declares one')
   callbacks.get('plugins.row.config')()
@@ -149,7 +193,14 @@ test('one publication path waits on every seat and reports the one the host decl
   assert.equal(registrations[1].options.name, 'settings.plugin.item')
   assert.equal(registrations[1].options.key, 'ptc-plus')
   assert.equal(card.seat(), 'settings.plugin.item')
-  assert.deepEqual(card.releases.map(disposer => typeof disposer), ['function', 'function'])
+  callbacks.get('settings.general.item')()
+  assert.equal(registrations.length, 3)
+  assert.equal(registrations[2].options.name, 'settings.general.item')
+  assert.equal(registrations[2].options.id, 'ptc-plus')
+  assert.equal(card.seat(), 'settings.general.item')
+  assert.deepEqual(card.releases.map(disposer => typeof disposer), [
+    'function', 'function', 'function',
+  ])
   for (const release of card.releases) release()
   assert.equal(callbacks.size, 0)
 })

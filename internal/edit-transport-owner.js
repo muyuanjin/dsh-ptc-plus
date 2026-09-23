@@ -238,11 +238,34 @@ export function createEditTransportOwner(ctx, {
     }
   }
 
+  const disposeInstalled = (installed) => {
+    const failures = []
+    for (const key of ['disposePresentation', 'disposeRegistration']) {
+      const dispose = installed[key]
+      if (dispose === undefined) continue
+      try {
+        dispose()
+        installed[key] = undefined
+      } catch (error) {
+        failures.push(error)
+      }
+    }
+    if (failures.length > 0) {
+      throw new AggregateError(failures, 'ptc-plus: edit_run_code scope disposal failed')
+    }
+  }
+
   const uninstall = (agent) => {
     const installed = installedScopes.get(agent)
     if (installed === undefined) return
-    installedScopes.delete(agent)
-    installed.dispose()
+    try {
+      disposeInstalled(installed)
+    } finally {
+      if (installed.disposePresentation === undefined
+        && installed.disposeRegistration === undefined) {
+        installedScopes.delete(agent)
+      }
+    }
   }
 
   return Object.freeze({
@@ -251,11 +274,19 @@ export function createEditTransportOwner(ctx, {
       currentDurableReplay = nextConfig.durableReplay
     },
     isInstalled(agent) {
-      return installedScopes.has(agent)
+      const installed = installedScopes.get(agent)
+      return installed?.disposePresentation !== undefined
+        && installed.disposeRegistration !== undefined
     },
     ensureInstalled(agent) {
       const installed = installedScopes.get(agent)
-      if (installed !== undefined) return installed.definition
+      if (installed !== undefined) {
+        if (installed.disposePresentation !== undefined
+          && installed.disposeRegistration !== undefined) {
+          return installed.definition
+        }
+        uninstall(agent)
+      }
       const liveSchemas = typeof toolSchemasForAgent === 'function'
         ? toolSchemasForAgent(agent)
         : []
@@ -271,24 +302,31 @@ export function createEditTransportOwner(ctx, {
       if (typeof disposeRegistration !== 'function') {
         throw new Error('ptc-plus: DSH tools.register did not return a disposer')
       }
-      let disposePresentation
+      const nextInstalled = {
+        definition,
+        disposePresentation: undefined,
+        disposeRegistration,
+        sessionId: sessionId(agent),
+      }
+      installedScopes.set(agent, nextInstalled)
       try {
-        disposePresentation = scopedTools.presentAs('both')
+        const disposePresentation = scopedTools.presentAs('both')
         if (typeof disposePresentation !== 'function') {
           throw new Error('ptc-plus: DSH tools.presentAs did not return a disposer')
         }
+        nextInstalled.disposePresentation = disposePresentation
       } catch (error) {
-        disposeRegistration()
+        try {
+          uninstall(agent)
+        } catch (cleanupError) {
+          throw new AggregateError(
+            [error, cleanupError],
+            'ptc-plus: edit_run_code installation and rollback failed',
+            { cause: error },
+          )
+        }
         throw error
       }
-      let active = true
-      const dispose = () => {
-        if (!active) return
-        active = false
-        disposePresentation()
-        disposeRegistration()
-      }
-      installedScopes.set(agent, { definition, dispose, sessionId: sessionId(agent) })
       return definition
     },
     handleResult(exec, result) {
@@ -305,28 +343,50 @@ export function createEditTransportOwner(ctx, {
       releaseClaim(pending.id, pending.targetCallSeq)
     },
     disposeAgent(agent) {
-      uninstall(agent)
+      let failure
+      try {
+        uninstall(agent)
+      } catch (error) {
+        failure = error
+      }
       const id = sessionId(agent)
       if (id !== undefined) {
         discardSettlements(id)
         editClaims.delete(id)
       }
+      if (failure !== undefined) throw failure
     },
     disposeSession(session) {
       const id = String(session.id)
+      const failures = []
       for (const [agent, installed] of installedScopes) {
         if (installed.sessionId !== id) continue
-        installedScopes.delete(agent)
-        installed.dispose()
+        try {
+          uninstall(agent)
+        } catch (error) {
+          failures.push(error)
+        }
       }
       discardSettlements(id)
       editClaims.delete(id)
+      if (failures.length > 0) {
+        throw new AggregateError(failures, 'ptc-plus: edit_run_code session disposal failed')
+      }
     },
     dispose() {
       discardSettlements()
       editClaims.clear()
-      for (const installed of installedScopes.values()) installed.dispose()
-      installedScopes.clear()
+      const failures = []
+      for (const agent of [...installedScopes.keys()]) {
+        try {
+          uninstall(agent)
+        } catch (error) {
+          failures.push(error)
+        }
+      }
+      if (failures.length > 0) {
+        throw new AggregateError(failures, 'ptc-plus: edit_run_code owner disposal failed')
+      }
     },
   })
 }

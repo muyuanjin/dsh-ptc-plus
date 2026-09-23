@@ -2,6 +2,11 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { apply } from '../index.js'
 import { serviceInjector } from './host-fixture.js'
+import {
+  appendRunCodeCall,
+  appendRunCodeResult,
+  orderedSurfaceSession,
+} from './plugin-fixture.js'
 
 function fixture() {
   const listeners = new Map()
@@ -27,6 +32,8 @@ function fixture() {
   }
   const definitions = new Map([['run_code', runCode]])
   const services = { codeRuntime: runtime }
+  const sessions = new Map()
+  let nextCall = 0
   const ctx = {
     inject: serviceInjector(services, () => ctx),
     codeRuntime: runtime,
@@ -70,7 +77,14 @@ function fixture() {
     sections,
     async execute(program, functions, session = 'native-surface', bindings = undefined) {
       const execute = listeners.get('tools/execute')[0]
-      const exec = { name: 'run_code', callId: `${session}-${Date.now()}`, agent: { id: session } }
+      let agentSession = sessions.get(session)
+      if (agentSession === undefined) {
+        agentSession = orderedSurfaceSession(session)
+        sessions.set(session, agentSession)
+      }
+      const callId = `${session}-${++nextCall}`
+      const call = appendRunCodeCall(agentSession.events, callId, program)
+      const exec = { name: 'run_code', callId, agent: { id: session, session: agentSession } }
       let raw
       let result = await execute(exec, async () => {
         raw = await runtime.run({
@@ -87,6 +101,7 @@ function fixture() {
           : { isError: true, content: [], error: { message: raw.error.message }, meta }
       })
       for (const listener of listeners.get('tools/result') ?? []) await listener(exec, result)
+      appendRunCodeResult(agentSession.events, callId, call.callSeq, result)
       return { raw, result }
     },
     async assemble(assembly) {

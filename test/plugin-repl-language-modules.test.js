@@ -5,10 +5,21 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { assertSameFilesystemEntry } from './filesystem-identity.js'
-import { appendRunCodeEvents, fixture as pluginFixture, ptcAgent } from './plugin-fixture.js'
+import {
+  appendRunCodeEvents,
+  fixture as pluginFixture,
+  orderedSurfaceSession,
+  ptcAgent,
+} from './plugin-fixture.js'
 
 // These historical language contracts also govern replay of pre-v9 journals.
 const fixture = (config = {}, ...args) => pluginFixture({ ...config, legacyBindingSettings: true }, ...args)
+
+function sessionWithCwd(id, cwd) {
+  const session = orderedSurfaceSession(id)
+  session.header = { cwd }
+  return session
+}
 
 test('keeps REPL bindings isolated by session', async (t) => {
   const state = fixture()
@@ -291,7 +302,7 @@ test('resolves static and dynamic imports from the session project with Node ESM
     await state.dispose()
     await rm(project, { recursive: true, force: true })
   })
-  const session = { events: [], header: { cwd: project } }
+  const session = sessionWithCwd('project-imports', project)
   const result = await state.run('project-imports', [
     "import data from './data.json' with { type: 'json' }",
     "import packageValue, { condition } from 'ptc-esm-fixture'",
@@ -328,7 +339,7 @@ test('virtualizes CommonJS and ESM filesystem paths against the session cwd', as
     await state.dispose()
     await rm(project, { recursive: true, force: true })
   })
-  const session = { events: [], header: { cwd: project } }
+  const session = sessionWithCwd('filesystem-cwd', project)
   const result = await state.run('filesystem-cwd', [
     "const commonJs = require('node:fs').readFileSync('value.txt', 'utf8')",
     "const defaultFs = (await import('node:fs')).default",
@@ -356,7 +367,7 @@ test('preserves mkdtemp prefix semantics under the session cwd', async (t) => {
     await state.dispose()
     await rm(project, { recursive: true, force: true })
   })
-  const session = { events: [], header: { cwd: project } }
+  const session = sessionWithCwd('mkdtemp-prefix-cwd', project)
   const result = await state.run('mkdtemp-prefix-cwd', [
     "const fs = require('node:fs')",
     "const fsp = require('node:fs/promises')",
@@ -421,7 +432,7 @@ test('preserves native path.resolve semantics under a session cwd', async (t) =>
     await state.dispose()
     await rm(project, { recursive: true, force: true })
   })
-  const session = { events: [], header: { cwd: project } }
+  const session = sessionWithCwd('path-resolve-cwd', project)
   const result = await state.run('path-resolve-cwd', [
     "const path = await import('node:path')",
     `return [path.resolve(), path.resolve('nested', 'file.txt'), path.resolve(${JSON.stringify(project)}, 'child'), path.resolve('nested', ${JSON.stringify(project)}, 'child')]`,
@@ -441,7 +452,7 @@ test('anchors path.resolve to the session cwd after process.cwd mutation', async
     await state.dispose()
     await rm(project, { recursive: true, force: true })
   })
-  const session = { events: [], header: { cwd: project } }
+  const session = sessionWithCwd('path-resolve-cwd-mutation', project)
   const result = await state.run('path-resolve-cwd-mutation', [
     "const path = await import('node:path')",
     "process.cwd = () => '/tmp/assigned-worker-cwd'",
@@ -462,7 +473,7 @@ test('uses the session cwd for child processes while preserving explicit cwd', a
     await rm(project, { recursive: true, force: true })
     await rm(explicit, { recursive: true, force: true })
   })
-  const session = { events: [], header: { cwd: project } }
+  const session = sessionWithCwd('child-process-cwd', project)
   const source = [
     "const childProcess = await import('node:child_process')",
     "const source = 'process.stdout.write(process.cwd())'",
@@ -510,7 +521,7 @@ test('keeps child-process cwd projection after an earlier intrinsic mutation', a
 
   for (const [name, mutation, source] of cases) {
     const state = fixture()
-    const session = { events: [], header: { cwd: project } }
+    const session = sessionWithCwd(`child-process-intrinsic-${name}`, project)
     try {
       assert.deepEqual(await state.run(`child-process-intrinsic-${name}`, [
         mutation,
@@ -533,7 +544,7 @@ test('keeps Buffer filesystem paths after earlier Buffer intrinsic mutations', a
     await state.dispose()
     await rm(project, { recursive: true, force: true })
   })
-  const session = { events: [], header: { cwd: project } }
+  const session = sessionWithCwd('buffer-path-intrinsic', project)
 
   await state.run('buffer-path-intrinsic', [
     'Buffer.isBuffer = null',
@@ -555,7 +566,7 @@ test('keeps filesystem and path projection after iterator and regexp mutations',
     await state.dispose()
     await rm(project, { recursive: true, force: true })
   })
-  const session = { events: [], header: { cwd: project } }
+  const session = sessionWithCwd('path-intrinsic', project)
 
   await state.run('path-intrinsic', [
     'Array.prototype[Symbol.iterator] = null',
@@ -583,7 +594,7 @@ test('keeps glob callback projection after an earlier splice mutation', async (t
     await state.dispose()
     await rm(project, { recursive: true, force: true })
   })
-  const session = { events: [], header: { cwd: project } }
+  const session = sessionWithCwd('glob-intrinsic', project)
 
   await state.run('glob-intrinsic', 'Array.prototype.splice = null', {}, { session })
   const result = await state.run('glob-intrinsic', [
@@ -601,7 +612,7 @@ test('injects session cwd into execFile callback overloads', async (t) => {
     await state.dispose()
     await rm(project, { recursive: true, force: true })
   })
-  const session = { events: [], header: { cwd: project } }
+  const session = sessionWithCwd('execfile-callback-cwd', project)
   const result = await state.run('execfile-callback-cwd', [
     "const childProcess = await import('node:child_process')",
     "const source = 'process.stdout.write(process.cwd())'",
@@ -618,7 +629,7 @@ test('preserves child-process promisify results while injecting the session cwd'
     await state.dispose()
     await rm(project, { recursive: true, force: true })
   })
-  const session = { events: [], header: { cwd: project } }
+  const session = sessionWithCwd('promisify-child-cwd', project)
   const result = await state.run('promisify-child-cwd', [
     "const childProcess = await import('node:child_process')",
     "const { promisify } = await import('node:util')",
@@ -662,7 +673,7 @@ test('projects session cwd through execFile and glob option overloads', async (t
     await rm(project, { recursive: true, force: true })
   })
   await writeFile(join(project, 'entry.txt'), 'value')
-  const session = { events: [], header: { cwd: project } }
+  const session = sessionWithCwd('child-process-overload-cwd', project)
   const result = await state.run('child-process-overload-cwd', [
     "const childProcess = await import('node:child_process')",
     "const fs = await import('node:fs')",

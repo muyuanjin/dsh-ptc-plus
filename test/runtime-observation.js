@@ -138,6 +138,11 @@ export function failWorker(runtime, sessionId, worker, message) {
   clientOf(runtime, sessionId).fail(worker, message)
 }
 
+/** Deliver an output-attribution failure that does not belong to the active output round. */
+export function failUnmatchedOutput(runtime, sessionId, message) {
+  return clientOf(runtime, sessionId).onUnmatchedOutputFailure(message)
+}
+
 /**
  * Drop the transport slot as if its worker had failed without a live port.
  * Returns a restore callback so the real worker can still be terminated.

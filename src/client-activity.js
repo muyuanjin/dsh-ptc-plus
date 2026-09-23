@@ -105,7 +105,7 @@ function isLine(value) {
 }
 
 function isSafeSequence(value) {
-  return Number.isSafeInteger(value) && value >= 0
+  return Number.isSafeInteger(value) && value >= 0 && !Object.is(value, -0)
 }
 
 function isValidPosition(value) {
@@ -187,6 +187,7 @@ function isValidValueWire(value) {
     nodeCount: value.nodes.length,
     discovered: new Set(),
     edges: 0,
+    arraySlots: 0,
     textBytes: 0,
   }
   if (!isValidValueAtom(value.root, state)) return false
@@ -196,6 +197,8 @@ function isValidValueWire(value) {
       if (!hasExactOrderedFields(node, VALUE_ARRAY_FIELDS)
         || !Number.isSafeInteger(node.length) || node.length < 0 || node.length > MAX_ARRAY_LENGTH
         || !Array.isArray(node.entries)) return false
+      state.arraySlots += node.length
+      if (state.arraySlots > MAX_ARRAY_LENGTH) return false
       let previous = -1
       for (const entry of node.entries) {
         if (!Array.isArray(entry) || entry.length !== 2 || !Number.isSafeInteger(entry[0])

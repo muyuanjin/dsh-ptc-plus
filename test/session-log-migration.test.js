@@ -4,13 +4,13 @@ import test from 'node:test'
 import { link, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { createAssistantMessage, createToolResultMessage } from '@deepseek-ai/dsh-llm'
+import { createAssistantMessage } from '@deepseek-ai/dsh-llm'
 import { pathToHead, recoverJournal } from '../internal/session-journal-recovery.js'
 import { JOURNAL_VERSION, JOURNAL_VERSIONS, LANGUAGE_SEMANTICS_JOURNAL_VERSION, PER_NAME_USER_BINDINGS_JOURNAL_VERSION } from '../internal/session-journal-schema.js'
 import { LEGACY_USER_BINDING_TRANSFORM, USER_BINDING_TRANSFORM } from '../internal/typescript-transform.js'
 import { createUserBindingsSnapshot, normalizeUserBindingEntry, normalizeUserBindingsSnapshot, USER_BINDINGS_META_KEY } from '../internal/user-bindings.js'
 import { encodeValue } from '../internal/value-wire.js'
-import { appendRunCodeEvents, fixture } from './plugin-fixture.js'
+import { appendOnlySession, appendRunCodeEvents, fixture } from './plugin-fixture.js'
 import {
   main,
   migrateSessionLogFile,
@@ -31,12 +31,33 @@ function logText(events) {
   return `${events.map(event => JSON.stringify(event)).join('\n')}\n`
 }
 
+function legacyJournal(confirms = []) {
+  return {
+    version: 3,
+    bindingMode: 'loose',
+    rewritePolicy: { autoRewriteImports: true, autoStripExports: true, autoSplitRedeclarations: true },
+    status: 'durable',
+    calls: [],
+    operations: [],
+    confirms,
+    diagnostics: [],
+    completion: { kind: 'return', hasValue: false },
+  }
+}
+
 test('migrates decoded JSONL and reports a no-op for current logs', () => {
   const source = logText([
     sessionHeader,
-    { seq: 0, type: 'tool/call', data: { name: 'run_code', callId: 'failed' } },
+    { seq: 0, type: 'tool/call', data: {
+      name: 'run_code', callId: 'failed', arguments: JSON.stringify({ code: 'throw new Error("failed")' }),
+    } },
     legacyEvent,
-    { seq: 2, type: 'tool/result', sourceEventSeqs: [0], data: { meta: {} } },
+    { seq: 2, type: 'tool/call', data: {
+      name: 'run_code', callId: 'current', arguments: JSON.stringify({ code: 'return 2' }),
+    } },
+    { seq: 3, type: 'tool/result', sourceEventSeqs: [2], data: {
+      meta: { dshPtcPlus: legacyJournal() },
+    } },
   ])
   const migrated = migrateSessionLogText(source)
   assert.equal(migrated.changed, true)
@@ -44,13 +65,377 @@ test('migrates decoded JSONL and reports a no-op for current logs', () => {
   assert.equal(migrated.text.includes('ptc-plus/recovery-boundary'), false)
   assert.deepEqual(JSON.parse(migrated.text.split('\n')[0]), sessionHeader)
   assert.equal(JSON.parse(migrated.text.split('\n')[2]).seq, 1)
-  assert.deepEqual(JSON.parse(migrated.text.split('\n')[2]).data.meta.dshPtcPlusRecoveryBoundaries, [{
+  assert.deepEqual(JSON.parse(migrated.text.split('\n')[3]).data.meta.dshPtcPlusRecoveryBoundaries, [{
     failedCallSeq: 0,
     frontierCallSeq: null,
   }])
 
   const current = migrateSessionLogText(migrated.text)
   assert.deepEqual(current, { changed: false, legacyCount: 0, text: migrated.text })
+  assert.throws(() => migrateSessionLogText(logText([
+    { ...sessionHeader, version: 1 },
+    ...source.trim().split('\n').slice(1).map(line => JSON.parse(line)),
+  ])), /only from Session format 0/)
+})
+
+test('retired-boundary migration preserves the seeded inherited-event cut', () => {
+  const events = [
+    { seq: 0, type: 'tool/call', data: {
+      name: 'run_code', callId: 'seed-failed', arguments: JSON.stringify({ code: 'throw new Error("failed")' }),
+    } },
+    { seq: 1, type: 'ptc-plus/recovery-boundary',
+      data: { failedCallSeq: 0, frontierCallSeq: null } },
+    { seq: 2, type: 'tool/call', data: {
+      name: 'run_code', callId: 'seed-current', arguments: JSON.stringify({ code: 'return 2' }),
+    } },
+    { seq: 3, type: 'tool/result', sourceEventSeqs: [2], data: {
+      meta: { dshPtcPlus: legacyJournal() },
+    } },
+  ]
+  for (const [seedLength, expected] of [[3, 2], [1, 1], [0, 0]]) {
+    const header = { ...sessionHeader, seedLength }
+    const source = logText([header, ...events])
+    const migrated = migrateSessionLogText(source)
+    assert.equal(JSON.parse(migrated.text.split('\n')[0]).seedLength, expected)
+    assert.equal(source, logText([header, ...events]))
+  }
+  assert.throws(() => migrateSessionLogText(logText([
+    { ...sessionHeader, seedLength: events.length + 1 }, ...events,
+  ])), /invalid seeded event cut/)
+})
+
+test('retired-boundary migration expands released packed assistant rows', () => {
+  const events = [
+    { type: 'text-chunks', seq0: 0, time0: 1, data: {
+      turn: 0, step: 0, index: 0, dt: [], texts: ['packed assistant text'],
+    } },
+    { seq: 1, type: 'tool/call', time: 1, data: {
+      turn: 0, step: 0, name: 'run_code', callId: 'packed-failed',
+      arguments: JSON.stringify({ code: 'throw new Error("failed")' }),
+    } },
+    { seq: 2, type: 'ptc-plus/recovery-boundary', time: 2,
+      data: { failedCallSeq: 1, frontierCallSeq: null } },
+    { seq: 3, type: 'tool/call', time: 3, data: {
+      turn: 0, step: 0, name: 'run_code', callId: 'packed-current',
+      arguments: JSON.stringify({ code: 'return 2' }),
+    } },
+    { seq: 4, type: 'tool/result', time: 4, surfaceOp: 'append', sourceEventSeqs: [3], data: {
+      turn: 0, step: 0, callId: 'packed-current', content: [], isError: false,
+      meta: { dshPtcPlus: legacyJournal() },
+    } },
+  ]
+  const migrated = migrateSessionLogText(logText([
+    { ...sessionHeader, delegationDepth: 0 },
+    ...events,
+  ]))
+  assert.equal(migrated.changed, true)
+  assert.equal(migrated.legacyCount, 1)
+  assert.equal(migrated.text.includes('ptc-plus/recovery-boundary'), false)
+  const rows = migrated.text.trim().split('\n').map(line => JSON.parse(line))
+  assert.deepEqual(rows.slice(1).map(row => row.type),
+    ['assistant/chunk', 'tool/call', 'tool/call', 'tool/result'])
+  assert.deepEqual(rows.at(-1).data.meta.dshPtcPlusRecoveryBoundaries, [{
+    failedCallSeq: 1,
+    frontierCallSeq: null,
+  }])
+})
+
+test('retired-boundary migration accepts the released legacy v0 spellings', () => {
+  const eventsFor = (type, data) => [
+    { seq: 0, type, time: 1, data },
+    { seq: 1, type: 'tool/call', time: 2, data: {
+      turn: 0, step: 0, name: 'run_code', callId: `${type}-failed`,
+      arguments: JSON.stringify({ code: 'throw new Error("failed")' }),
+    } },
+    { seq: 2, type: 'ptc-plus/recovery-boundary', time: 3,
+      data: { failedCallSeq: 1, frontierCallSeq: null } },
+    { seq: 3, type: 'tool/call', time: 4, data: {
+      turn: 0, step: 0, name: 'run_code', callId: `${type}-current`,
+      arguments: JSON.stringify({ code: 'return 2' }),
+    } },
+    { seq: 4, type: 'tool/result', time: 5, surfaceOp: 'append', sourceEventSeqs: [3], data: {
+      turn: 0, step: 0, callId: `${type}-current`, content: [], isError: false,
+      meta: { dshPtcPlus: legacyJournal() },
+    } },
+  ]
+  // The frozen v0-to-v1 stage normalizes these legacy spellings itself, so the
+  // retired-boundary converter accepts them with the same relation policy.
+  for (const [type, data] of [
+    ['steering/message', { turn: 0 }],
+    ['compact/start', {}],
+    ['compact/summary', { shadowedSeqs: [] }],
+    ['compact/end', {}],
+    ['compact/prune', { shadowedSeqs: [] }],
+  ]) {
+    const migrated = migrateSessionLogText(logText([
+      { ...sessionHeader, delegationDepth: 0 },
+      ...eventsFor(type, data),
+    ]))
+    assert.equal(migrated.changed, true, type)
+    assert.equal(migrated.text.includes('ptc-plus/recovery-boundary'), false, type)
+  }
+  // `request/header-delta` and `mode/set` stay refused: the frozen v0 stage
+  // refuses them as unsupported legacy rows as well.
+  for (const type of ['request/header-delta', 'mode/set']) {
+    assert.throws(() => migrateSessionLogText(logText([
+      { ...sessionHeader, delegationDepth: 0 },
+      ...eventsFor(type, {}),
+    ])), /unsupported session event type/, type)
+  }
+})
+
+test('retired-boundary migration validates a packed seeded cut in logical events', () => {
+  const events = [
+    { type: 'text-chunks', seq0: 0, time0: 1, data: {
+      turn: 0, step: 0, index: 0, dt: [1, 1], texts: ['one', 'two', 'three'],
+    } },
+    { seq: 3, type: 'tool/call', time: 4, data: {
+      turn: 0, step: 0, name: 'run_code', callId: 'packed-seed-failed',
+      arguments: JSON.stringify({ code: 'throw new Error("failed")' }),
+    } },
+    { seq: 4, type: 'ptc-plus/recovery-boundary', time: 5,
+      data: { failedCallSeq: 3, frontierCallSeq: null } },
+    { seq: 5, type: 'tool/call', time: 6, data: {
+      turn: 0, step: 0, name: 'run_code', callId: 'packed-seed-current',
+      arguments: JSON.stringify({ code: 'return 2' }),
+    } },
+    { seq: 6, type: 'tool/result', time: 7, surfaceOp: 'append', sourceEventSeqs: [5], data: {
+      turn: 0, step: 0, callId: 'packed-seed-current', content: [], isError: false,
+      meta: { dshPtcPlus: legacyJournal() },
+    } },
+  ]
+  const migrated = migrateSessionLogText(logText([
+    { ...sessionHeader, delegationDepth: 0, seedLength: 6 },
+    ...events,
+  ]))
+  assert.equal(migrated.changed, true)
+  assert.equal(JSON.parse(migrated.text.split('\n')[0]).seedLength, 5)
+})
+
+test('retired-boundary migration rejects negative-zero sequence identities before serialization', () => {
+  const rows = [
+    sessionHeader,
+    { seq: 0, type: 'tool/call', data: {
+      name: 'run_code', callId: 'negative-zero-failed',
+      arguments: JSON.stringify({ code: 'throw new Error("failed")' }),
+    } },
+    { seq: 1, type: 'ptc-plus/recovery-boundary',
+      data: { failedCallSeq: 0, frontierCallSeq: null } },
+    { seq: 2, type: 'tool/call', data: {
+      name: 'run_code', callId: 'negative-zero-current',
+      arguments: JSON.stringify({ code: 'return 1' }),
+    } },
+    { seq: 3, type: 'tool/result', sourceEventSeqs: [2], data: {
+      meta: { dshPtcPlus: legacyJournal() },
+    } },
+  ]
+  const canonical = logText(rows)
+  assert.equal(migrateSessionLogText(canonical).changed, true)
+  const candidates = [
+    [canonical.replace('"seq":0', '"seq":-0'), /invalid session event sequence/],
+    [canonical.replace('"failedCallSeq":0', '"failedCallSeq":-0'), /invalid dsh-ptc-plus recovery boundary/],
+    [canonical.replace('"sourceEventSeqs":[2]', '"sourceEventSeqs":[-0]'), /invalid source event reference/],
+    [logText([{ ...sessionHeader, seedLength: 0 }, ...rows.slice(1)])
+      .replace('"seedLength":0', '"seedLength":-0'), /invalid seeded event cut/],
+  ]
+  for (const [source, expected] of candidates) {
+    assert.match(source, /-0/u)
+    assert.throws(() => migrateSessionLogText(source), expected)
+  }
+})
+
+test('retired-boundary migration preserves later confirmations and durable recovery', () => {
+  const call = (seq, callId, code) => ({
+    seq,
+    type: 'tool/call',
+    data: { name: 'run_code', callId, arguments: JSON.stringify({ code }) },
+  })
+  const source = logText([
+    sessionHeader,
+    call(0, 'first', 'const first = 1'),
+    { seq: 1, type: 'tool/result', sourceEventSeqs: [0], data: {
+      meta: { dshPtcPlus: legacyJournal() },
+    } },
+    call(2, 'failed', 'throw new Error("failed")'),
+    { seq: 3, type: 'tool/result', sourceEventSeqs: [2], data: { meta: {} } },
+    { seq: 4, type: 'ptc-plus/recovery-boundary', data: { failedCallSeq: 2, frontierCallSeq: 0 } },
+    { seq: 5, type: 'tool/result', data: { meta: { dshPtcPlus: legacyJournal() } } },
+    { seq: 6, type: 'tool/call', data: { name: 'read', callId: 'unrelated', arguments: '{}' } },
+    { seq: 7, type: 'tool/result', sourceEventSeqs: [6], data: { meta: { unrelated: true } } },
+    call(8, 'noop', 'return first'),
+    call(9, 'current', 'const current = first + 1'),
+    { seq: 10, type: 'tool/result', sourceEventSeqs: [9], data: {
+      meta: { dshPtcPlus: legacyJournal([8]) },
+    } },
+  ])
+
+  const migrated = migrateSessionLogText(source)
+  const [, ...events] = migrated.text.trim().split('\n').map(line => JSON.parse(line))
+  assert.equal(Object.hasOwn(events[4].data.meta, 'dshPtcPlusRecoveryBoundaries'), false)
+  assert.equal(Object.hasOwn(events[6].data.meta, 'dshPtcPlusRecoveryBoundaries'), false)
+  assert.deepEqual(events.at(-1).data.meta.dshPtcPlus.confirms, [7])
+  assert.deepEqual(events.at(-1).data.meta.dshPtcPlusRecoveryBoundaries, [
+    { failedCallSeq: 2, frontierCallSeq: 0 },
+  ])
+  const recovered = recoverJournal({ events })
+  assert.equal(recovered.available, true)
+  assert.deepEqual(pathToHead(recovered).map(node => node.code), [
+    'const first = 1',
+    'const current = first + 1',
+  ])
+  assert.deepEqual(recovered.volatileSuffix, [])
+
+  const orphanBoundary = logText([
+    sessionHeader,
+    call(0, 'carrier-validation-failed', 'throw new Error("failed")'),
+    legacyEvent,
+    call(2, 'carrier-validation-current', 'return 1'),
+    { seq: 3, type: 'tool/result', sourceEventSeqs: [2], data: {
+      meta: { dshPtcPlus: legacyJournal() },
+    } },
+    { seq: 4, type: 'tool/result', data: { meta: {
+      dshPtcPlus: legacyJournal(),
+      dshPtcPlusRecoveryBoundaries: [{ failedCallSeq: 0, frontierCallSeq: null }],
+    } } },
+  ])
+  assert.throws(() => migrateSessionLogText(orphanBoundary), /proved journal carrier at event 3/)
+})
+
+test('retired-boundary migration accepts only the recovery fold\'s exact frontier', () => {
+  const call = (seq, callId, code) => ({
+    seq,
+    type: 'tool/call',
+    data: { name: 'run_code', callId, arguments: JSON.stringify({ code }) },
+  })
+  const settled = (seq, callSeq) => ({
+    seq,
+    type: 'tool/result',
+    sourceEventSeqs: [callSeq],
+    data: { meta: { dshPtcPlus: legacyJournal() } },
+  })
+  const candidate = frontierCallSeq => logText([
+    sessionHeader,
+    call(0, 'first', 'const first = 1'),
+    settled(1, 0),
+    call(2, 'parent', 'const parent = 2'),
+    settled(3, 2),
+    call(4, 'failed', 'throw new Error("failed")'),
+    { seq: 5, type: 'tool/result', sourceEventSeqs: [4], data: { meta: {} } },
+    { seq: 6, type: 'ptc-plus/recovery-boundary',
+      data: { failedCallSeq: 4, frontierCallSeq } },
+    call(7, 'current', 'const current = 3'),
+    settled(8, 7),
+  ])
+
+  assert.throws(() => migrateSessionLogText(candidate(0)), /does not prove its declared frontier/)
+  assert.throws(() => migrateSessionLogText(candidate(4)), /frontier must precede its failed call/)
+
+  const migrated = migrateSessionLogText(candidate(2))
+  const [, ...events] = migrated.text.trim().split('\n').map(line => JSON.parse(line))
+  const recovered = recoverJournal({ events })
+  assert.equal(recovered.available, true)
+  assert.deepEqual(pathToHead(recovered).map(node => node.code), [
+    'const first = 1',
+    'const parent = 2',
+    'const current = 3',
+  ])
+
+  const reset = migrateSessionLogText(logText([
+    sessionHeader,
+    call(0, 'failed-reset', 'throw new Error("failed")'),
+    { seq: 1, type: 'tool/result', sourceEventSeqs: [0], data: { meta: {} } },
+    { seq: 2, type: 'ptc-plus/recovery-boundary',
+      data: { failedCallSeq: 0, frontierCallSeq: null } },
+    call(3, 'after-reset', 'const afterReset = true'),
+    settled(4, 3),
+  ]))
+  const [, ...resetEvents] = reset.text.trim().split('\n').map(line => JSON.parse(line))
+  assert.equal(recoverJournal({ events: resetEvents }).available, true)
+})
+
+test('retired and existing recovery boundaries retain historical order on one carrier', () => {
+  const call = (seq, callId, code) => ({
+    seq,
+    type: 'tool/call',
+    data: { name: 'run_code', callId, arguments: JSON.stringify({ code }) },
+  })
+  const settled = (seq, callSeq, meta = {}) => ({
+    seq,
+    type: 'tool/result',
+    sourceEventSeqs: [callSeq],
+    data: { meta: { dshPtcPlus: legacyJournal(), ...meta } },
+  })
+  const result = migrateSessionLogText(logText([
+    sessionHeader,
+    call(0, 'first-generation', 'const first = 1'),
+    settled(1, 0),
+    call(2, 'second-generation', 'const second = 2'),
+    settled(3, 2),
+    { seq: 4, type: 'ptc-plus/recovery-boundary',
+      data: { failedCallSeq: 2, frontierCallSeq: 0 } },
+    call(5, 'mixed-boundary-carrier', 'const current = 3'),
+    settled(6, 5, {
+      dshPtcPlusRecoveryBoundaries: [{ failedCallSeq: 0, frontierCallSeq: null }],
+    }),
+  ]))
+  const [, ...events] = result.text.trim().split('\n').map(line => JSON.parse(line))
+  const carrier = events.find(event => event.data?.meta?.dshPtcPlusRecoveryBoundaries)
+  assert.deepEqual(carrier.data.meta.dshPtcPlusRecoveryBoundaries, [
+    { failedCallSeq: 2, frontierCallSeq: 0 },
+    { failedCallSeq: 0, frontierCallSeq: null },
+  ])
+  const recovered = recoverJournal({ events })
+  assert.equal(recovered.available, true)
+  assert.deepEqual(pathToHead(recovered).map(node => node.code), ['const current = 3'])
+})
+
+test('retired-boundary migration preserves official command, title, and summary relations', () => {
+  const source = logText([
+    sessionHeader,
+    { seq: 0, type: 'tool/call', data: {
+      name: 'run_code', callId: 'failed-official-relations',
+      arguments: JSON.stringify({ code: 'throw new Error("failed")' }),
+    } },
+    { seq: 1, type: 'tool/result', sourceEventSeqs: [0], data: { meta: {} } },
+    { seq: 2, type: 'ptc-plus/recovery-boundary',
+      data: { failedCallSeq: 0, frontierCallSeq: null } },
+    { seq: 3, type: 'tool/call', data: {
+      name: 'run_code', callId: 'current-official-relations',
+      arguments: JSON.stringify({ code: 'return 1' }),
+    } },
+    { seq: 4, type: 'tool/result', sourceEventSeqs: [3], data: {
+      meta: { dshPtcPlus: legacyJournal() },
+    } },
+    { seq: 5, type: 'user/message', surfaceOp: 'append',
+      data: { source: { kind: 'user' }, content: [{ type: 'text', text: 'Title me' }] } },
+    { seq: 6, type: 'command/run', data: {
+      commandId: 'official-relations', name: 'review', source: { kind: 'user' },
+    } },
+    { seq: 7, type: 'command/done', data: {
+      commandId: 'official-relations', kind: 'success', sourceEventSeq: 5,
+    } },
+    { seq: 8, type: 'session/title', data: {
+      title: 'Official relations', messageSeqs: [5], source: { kind: 'fallback' },
+    } },
+    { seq: 9, type: 'compaction/summary', data: {
+      compactionId: 'official-relations', summary: [], shadowedSeqs: [4, 5],
+      shadowedRange: { start: 4, end: 5 }, shadowedTokenCount: 0,
+      provider: 'fixture', model: 'fixture',
+    } },
+  ])
+
+  const migration = migrateSessionLogText(source)
+  const [, ...events] = migration.text.trim().split('\n').map(line => JSON.parse(line))
+  const done = events.find(event => event.type === 'command/done')
+  const title = events.find(event => event.type === 'session/title')
+  const summary = events.find(event => event.type === 'compaction/summary')
+  assert.equal(done.data.sourceEventSeq, 4)
+  assert.equal(events[done.data.sourceEventSeq].type, 'user/message')
+  assert.deepEqual(title.data.messageSeqs, [4])
+  assert.equal(events[title.data.messageSeqs[0]].data.source.kind, 'user')
+  assert.deepEqual(summary.data.shadowedSeqs, [3, 4])
+  assert.deepEqual(summary.data.shadowedRange, { start: 3, end: 4 })
+  assert.equal(recoverJournal({ events }).available, true)
 })
 
 test('migrates a file without replacing the source or an existing destination', async t => {
@@ -60,8 +445,16 @@ test('migrates a file without replacing the source or an existing destination', 
   const output = join(root, 'migrated.jsonl')
   const source = logText([
     sessionHeader,
-    { ...legacyEvent, seq: 0 },
-    { seq: 1, type: 'tool/result', data: {} },
+    { seq: 0, type: 'tool/call', data: {
+      name: 'run_code', callId: 'failed', arguments: JSON.stringify({ code: 'throw new Error("failed")' }),
+    } },
+    legacyEvent,
+    { seq: 2, type: 'tool/call', data: {
+      name: 'run_code', callId: 'current', arguments: JSON.stringify({ code: 'return 2' }),
+    } },
+    { seq: 3, type: 'tool/result', sourceEventSeqs: [2], data: {
+      meta: { dshPtcPlus: legacyJournal() },
+    } },
   ])
   await writeFile(input, source)
   const result = await migrateSessionLogFile(input, output)
@@ -73,6 +466,79 @@ test('migrates a file without replacing the source or an existing destination', 
   assert.equal(forced.written, true)
 })
 
+test('file migration rejects damaged source sequences without creating output', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-ptc-log-migration-seq-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  for (const [caseIndex, sequences] of [
+    [10, 11, 12, 13],
+    [0, 1, 3, 4],
+    [0, 2, 1, 3],
+  ].entries()) {
+    const input = join(root, `damaged-${caseIndex}.jsonl`)
+    const output = join(root, `migrated-${caseIndex}.jsonl`)
+    const source = logText([
+      sessionHeader,
+      { seq: sequences[0], type: 'tool/call', data: {
+        name: 'run_code', callId: `damaged-${caseIndex}`,
+        arguments: JSON.stringify({ code: 'throw new Error("failed")' }),
+      } },
+      { seq: sequences[1], type: 'ptc-plus/recovery-boundary',
+        data: { failedCallSeq: sequences[0], frontierCallSeq: null } },
+      { seq: sequences[2], type: 'tool/call', data: {
+        name: 'run_code', callId: `carrier-${caseIndex}`,
+        arguments: JSON.stringify({ code: 'return 1' }),
+      } },
+      { seq: sequences[3], type: 'tool/result', sourceEventSeqs: [sequences[2]], data: {
+        meta: { dshPtcPlus: legacyJournal() },
+      } },
+    ])
+    await writeFile(input, source)
+    await assert.rejects(() => migrateSessionLogFile(input, output), /not contiguous from zero/)
+    assert.equal(await readFile(input, 'utf8'), source)
+    await assert.rejects(() => readFile(output, 'utf8'), { code: 'ENOENT' })
+  }
+})
+
+test('file migration rejects invalid title and tool-result replacement relations before writing', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-ptc-log-migration-relations-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const carrierData = {
+    message: { content: [{ type: 'tool-result', toolCallId: 'current', content: 'original' }] },
+    meta: { dshPtcPlus: legacyJournal() },
+  }
+  const prefix = [
+    { seq: 0, type: 'tool/call', data: {
+      name: 'run_code', callId: 'relation-failed', arguments: JSON.stringify({ code: 'throw new Error("failed")' }),
+    } },
+    { seq: 1, type: 'ptc-plus/recovery-boundary', data: { failedCallSeq: 0, frontierCallSeq: null } },
+    { seq: 2, type: 'tool/call', data: {
+      name: 'run_code', callId: 'current', arguments: JSON.stringify({ code: 'return 1' }),
+    } },
+    { seq: 3, type: 'tool/result', sourceEventSeqs: [2], surfaceOp: 'append', data: carrierData },
+  ]
+  const candidates = [
+    [...prefix, { seq: 4, type: 'session/title', data: {
+      title: 'Invalid automatic title', messageSeqs: [], source: { kind: 'provider', provider: 'fixture' },
+    } }],
+    [...prefix, { seq: 4, type: 'tool/result', sourceEventSeqs: [3],
+      surfaceOp: { op: 'replace', start: 3, end: 3 }, data: {
+        ...carrierData,
+        message: { content: [{ type: 'tool-result', toolCallId: 'current', content: 'replacement' }] },
+        meta: { ...carrierData.meta, changed: true },
+      } }],
+  ]
+  for (const [index, events] of candidates.entries()) {
+    const input = join(root, `invalid-${index}.jsonl`)
+    const output = join(root, `migrated-${index}.jsonl`)
+    const source = logText([sessionHeader, ...events])
+    await writeFile(input, source)
+    await assert.rejects(() => migrateSessionLogFile(input, output),
+      index === 0 ? /cite at least one message seq/ : /may change only content/)
+    assert.equal(await readFile(input, 'utf8'), source)
+    await assert.rejects(() => readFile(output, 'utf8'), { code: 'ENOENT' })
+  }
+})
+
 test('encodes the session header and events as independent Zstandard frames', async t => {
   const root = await mkdtemp(join(tmpdir(), 'dsh-ptc-log-migration-'))
   t.after(() => rm(root, { recursive: true, force: true }))
@@ -80,8 +546,16 @@ test('encodes the session header and events as independent Zstandard frames', as
   const output = join(root, 'migrated.jsonl.zstd')
   const source = logText([
     { type: 'session', version: 0, id: 'framed', createdAt: 1, cwd: root },
+    { seq: 0, type: 'tool/call', data: {
+      name: 'run_code', callId: 'failed', arguments: JSON.stringify({ code: 'throw new Error("failed")' }),
+    } },
     legacyEvent,
-    { seq: 1, type: 'tool/result', data: {} },
+    { seq: 2, type: 'tool/call', data: {
+      name: 'run_code', callId: 'current', arguments: JSON.stringify({ code: 'return 2' }),
+    } },
+    { seq: 3, type: 'tool/result', sourceEventSeqs: [2], data: {
+      meta: { dshPtcPlus: legacyJournal() },
+    } },
   ])
   const frames = []
   const execFileSync = (command, args, options) => {
@@ -143,7 +617,12 @@ async function historicalTranscript(t, config = {}) {
     const callSeq = append('tool/call', { turn: 1, step, callId, name, arguments: args })
     if (step === 1) targetCallSeq = callSeq
     append('tool/result', { turn: 1, step,
-      message: createToolResultMessage({ callId, content: result.content, isError: false }),
+      message: {
+        id: `migration-tool-result-${step}`,
+        role: 'user',
+        content: [{ type: 'tool-result', toolCallId: callId, content: result.content, isError: false }],
+        source: { kind: 'tool', callId },
+      },
       meta: { ...structuredClone(result.meta), ...(step === 1 ? {} : {
         dshPtcPlusEdit: { targetCallSeq }, dshPtcPlusDerivedRun: { code, description: 'Record an edited value' },
       }) } }, { sourceEventSeqs: [callSeq], surfaceOp: 'append' })
@@ -191,7 +670,7 @@ async function assertColdMigration(t, catalog) {
   t.after(() => cold.dispose())
   const restored = await cold.runDurable('migration', 'return migratedValue', {
     echo() { throw new Error('Cold replay redispatched an external effect') },
-  }, { session: { id: 'migration', events } })
+  }, { session: appendOnlySession('migration', events) })
   assert.equal(restored.value, 2)
   assert.equal(history.effects(), 2)
   assert.equal(migrateSessionLogText(result.text, { catalog }).changed, false)
@@ -202,14 +681,72 @@ test('format migration preserves edited bindings, original call arguments and re
   await assertColdMigration(t, renumberingCatalog())
 })
 
-test('the installed public DSH format catalog preserves historical edited state', async t => {
+test('the installed public DSH format catalog preserves standalone historical edited state', async t => {
   let catalog
-  try { catalog = (await import('@deepseek-ai/dsh-session-format-catalog')).sessionFormatCatalog } catch (error) {
+  try {
+    const module = await import('@deepseek-ai/dsh-session-format-catalog')
+    catalog = typeof module.createSessionFormatCatalogWithChildren === 'function'
+      ? module.createSessionFormatCatalogWithChildren([])
+      : module.sessionFormatCatalog
+  } catch (error) {
     if (error.code !== 'ERR_MODULE_NOT_FOUND') throw error
     t.skip('The installed Host predates the public Session format catalog')
     return
   }
   await assertColdMigration(t, catalog)
+})
+
+test('accepts the released flat tool-result shape through the public catalog', async t => {
+  let catalog
+  try {
+    const module = await import('@deepseek-ai/dsh-session-format-catalog')
+    catalog = typeof module.createSessionFormatCatalogWithChildren === 'function'
+      ? module.createSessionFormatCatalogWithChildren([])
+      : module.sessionFormatCatalog
+  } catch (error) {
+    if (error.code !== 'ERR_MODULE_NOT_FOUND') throw error
+    t.skip('The installed Host predates the public Session format catalog')
+    return
+  }
+  const history = await historicalTranscript(t)
+  const events = history.events.map(event => event.type !== 'tool/result' ? event : {
+    ...event,
+    data: {
+      turn: event.data.turn,
+      step: event.data.step,
+      callId: event.data.message.source.callId,
+      content: event.data.message.content[0].content,
+      isError: event.data.message.content[0].isError ?? false,
+      ...(event.data.meta === undefined ? {} : { meta: structuredClone(event.data.meta) }),
+    },
+  })
+  const migrated = migrateSessionLogText(logText([history.header, ...events]), { catalog })
+  assert.equal(migrated.changed, true)
+  assert.equal(migrated.sourceVersion, 0)
+  assert.equal(migrated.targetVersion > 0, true)
+})
+
+test('file migration requires and consumes explicit standalone child facts', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-ptc-log-host-migration-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const input = join(root, 'session.jsonl')
+  const rejectedOutput = join(root, 'rejected.jsonl')
+  const output = join(root, 'migrated.jsonl')
+  const history = await historicalTranscript(t)
+  await writeFile(input, logText([history.header, ...history.events]))
+  const dshEntry = import.meta.resolve('@deepseek-ai/dsh-session-format-catalog')
+
+  await assert.rejects(
+    migrateSessionLogFile(input, rejectedOutput, { dshEntry }),
+    /requires explicit child facts or --no-children/,
+  )
+  await assert.rejects(() => readFile(rejectedOutput, 'utf8'), { code: 'ENOENT' })
+
+  const result = await migrateSessionLogFile(input, output, { dshEntry, childFacts: [] })
+  assert.equal(result.written, true)
+  assert.equal(result.sourceVersion, 0)
+  assert.equal(result.targetVersion > result.sourceVersion, true)
+  assert.equal((await readFile(output, 'utf8')).includes('dshPtcPlusEdit'), true)
 })
 
 test('format migration preserves confirmed no-ops across every historical journal format', async t => {
@@ -296,7 +833,7 @@ test('cold replay preserves import boundary effects across journal and session f
     for (const history of [events, migratedEvents]) {
       const state = fixture()
       t.after(() => state.dispose())
-      const session = { id: `boundary-v${version}`, events: history }
+      const session = appendOnlySession(`boundary-v${version}`, history)
       const result = await state.runDurable(session.id, 'return trace', {}, { session })
       assert.equal(result.error, undefined)
       assert.deepEqual(result.value, version === 6 ? ['called', 'caught'] : ['rhs', 'caught'])
@@ -379,7 +916,7 @@ test('format migration preserves whole-entry and per-name saved values with empt
     for (const history of [events, migrated]) {
       const state = fixture()
       t.after(() => state.dispose())
-      const session = { id: `shadow-migration-${version}`, events: history }
+      const session = appendOnlySession(`shadow-migration-${version}`, history)
       const current = await state.runDurable(session.id, 'return [before, inside, after]', {
         observe: async () => { dispatches++; return 'unexpected' },
       }, { session })
@@ -433,6 +970,15 @@ test('format migration refuses changed tool identities, invalid journals and mix
   }) }), /tool record identities/)
   assert.throws(() => migrateSessionLogText(source, { catalog: renumberingCatalog(events =>
     events.filter(event => event.type !== 'tool/result')) }), /number of tool records/)
+  assert.throws(() => migrateSessionLogText(source, { catalog: renumberingCatalog(events => {
+    const message = events.find(event => event.type === 'tool/result').data.message
+    message.content[0].content = [{ type: 'text', text: 'changed recorded result' }]
+    return events
+  }) }), /tool record identities/)
+  assert.throws(() => migrateSessionLogText(source, { catalog: renumberingCatalog(events => {
+    events.find(event => event.type === 'tool/result').data.meta.dshPtcPlus.status = 'volatile'
+    return events
+  }) }), /tool record identities/)
   history.events.find(event => event.data.meta?.dshPtcPlusEdit).data.meta.dshPtcPlusEdit.targetCallSeq = 999
   assert.throws(() => migrateSessionLogText(logText([history.header, ...history.events]), { catalog: renumberingCatalog() }), /unproved PTC history/)
   assert.throws(() => migrateSessionLogText(logText([history.header, legacyEvent]), { catalog: renumberingCatalog() }), /retired recovery-boundary/)

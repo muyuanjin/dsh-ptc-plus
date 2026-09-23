@@ -6,6 +6,7 @@ import test from 'node:test'
 import { createContext, runInContext } from 'node:vm'
 import { createDynamicEnvironmentRuntime } from '../internal/dynamic-environment-runtime.js'
 import { SessionRuntime } from '../internal/session-runtime.js'
+import { orderedSurfaceSession, runRecordedCell } from './plugin-fixture.js'
 
 const originals = ['(a=eval("1974"))=>a', 'async (a=eval("1975"))=>a']
 
@@ -15,9 +16,13 @@ async function worker(t, bindingUpdates = 'stateful', files = {}) {
   await Promise.all(Object.entries(files).map(([name, source]) => writeFile(join(directory, name), source)))
   const runtime = new SessionRuntime({ bindingUpdates, durableReplay: false })
   t.after(() => runtime.dispose())
-  const session = { id: 'parameter-arrow-source', session: { header: { cwd: directory } } }
+  const session = orderedSurfaceSession('parameter-arrow-source')
+  session.header = { cwd: directory }
+  let call = 0
   return async program => {
-    const result = await runtime.run(session, { bindings: [], program })
+    const result = await runRecordedCell(runtime, session, `parameter-arrow-${++call}`, {
+      bindings: [], program,
+    })
     assert.equal(result.error, undefined, result.error?.message)
     return result.value
   }

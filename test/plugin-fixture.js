@@ -1,12 +1,36 @@
 import { apply } from '../index.js'
+import { sessionEvents } from '../internal/session-events.js'
+import { normalizeJournal } from '../internal/session-journal.js'
 import { readRuntimeMessage } from '../internal/runtime-messages.js'
 import { createHostContext, runHookChain, serviceInjector } from './host-fixture.js'
 
 export const JOURNAL_POLICY = { autoRewriteImports: true, autoStripExports: true, autoSplitRedeclarations: true }
 
+function visibleEventSeqs(events) {
+  return events.filter(event => (
+    event.type === 'user/message'
+    || event.type === 'assistant/message'
+    || event.type === 'tool/result'
+  )).map(event => event.seq)
+}
+
+export function orderedSurfaceSession(id, events = []) {
+  const session = { id, events }
+  session.surface = {
+    replaceGeneration: 0,
+    get nodes() { return visibleEventSeqs(session.events) },
+  }
+  return session
+}
+
 export function appendOnlySession(id, events = []) {
   return {
     id,
+    header: { cwd: process.cwd() },
+    surface: {
+      replaceGeneration: 0,
+      get nodes() { return visibleEventSeqs(events) },
+    },
     get events() {
       return Object.freeze([...events])
     },
@@ -20,7 +44,29 @@ export function appendOnlySession(id, events = []) {
       events.push(event)
       return event
     },
+    appendEvent(event) {
+      if (event?.seq !== events.length) throw new Error('fixture event sequence must be contiguous')
+      events.push(event)
+      return event
+    },
   }
+}
+
+function appendSessionEvents(session, appended) {
+  if (typeof session.appendEvent === 'function') {
+    for (const event of appended) session.appendEvent(event)
+    return
+  }
+  if (typeof session.append === 'function') {
+    for (const event of appended) {
+      session.append(event.type, event.data, {
+        ...(event.surfaceOp === undefined ? {} : { surfaceOp: event.surfaceOp }),
+        ...(event.sourceEventSeqs === undefined ? {} : { sourceEventSeqs: event.sourceEventSeqs }),
+      })
+    }
+    return
+  }
+  session.events.push(...appended)
 }
 
 export function ptcAgent(id, session = { id, events: [] }) {
@@ -86,6 +132,7 @@ export function fixture(config = {}, fixtureOptions = {}) {
   const { listeners, sections, contexts, cleanups } = host
   let disposal
   const upstreamCalls = []
+  const defaultSessions = new Map()
   let nextCallId = 0
   const runCodeDefinition = {
     name: 'run_code',
@@ -155,7 +202,11 @@ export function fixture(config = {}, fixtureOptions = {}) {
             options.agent?.id,
             options.arguments.code,
             options.bindings ?? {},
-            { session: options.agent?.session, callId: options.callId },
+            {
+              session: options.agent?.session,
+              callId: options.callId,
+              recordSession: false,
+            },
           )
           return observed.result
         }
@@ -208,10 +259,72 @@ export function fixture(config = {}, fixtureOptions = {}) {
   async function executeRun(session, program, functions, options) {
     const execute = listeners.get('tools/execute')[0]
     const controller = options.controller ?? new AbortController()
+    let agentSession = options.session
+    const recordSession = options.recordSession !== false
+    const deferResult = options.recordSession === 'deferred-result'
+    if (agentSession === undefined) {
+      agentSession = defaultSessions.get(session)
+      if (agentSession === undefined) {
+        agentSession = orderedSurfaceSession(session)
+        defaultSessions.set(session, agentSession)
+      }
+    }
+    const callId = options.callId ?? `fixture-call-${++nextCallId}`
+    let call
+    if (recordSession) {
+      const argumentsValue = JSON.stringify({ code: program, description: options.description ?? 'test cell' })
+      const currentEvents = sessionEvents(agentSession)
+      if (!Array.isArray(currentEvents)) {
+        throw new TypeError('fixture session must expose snapshotEvents() or an events array')
+      }
+      const existingCalls = currentEvents.filter(event => (
+        event?.type === 'tool/call'
+        && event.data?.callId === callId
+        && event.data?.name === 'run_code'
+        && !currentEvents.some(candidate => candidate?.type === 'tool/result'
+          && candidate.sourceEventSeqs?.includes(event.seq))
+      ))
+      if (existingCalls.length > 1) {
+        throw new Error(`fixture found multiple unpaired run_code calls for callId ${JSON.stringify(callId)}`)
+      }
+      const [existingCall] = existingCalls
+      if (existingCall !== undefined) {
+        if (existingCall.data.arguments !== argumentsValue) {
+          throw new Error('fixture pending run_code call does not match the requested arguments')
+        }
+        const assistantSources = currentEvents.filter(event => (
+          event?.type === 'assistant/message' && event.seq === existingCall.seq - 1
+        ))
+        const [assistant] = assistantSources
+        const sameIdBlocks = assistant?.data?.message?.content?.filter(block => (
+          block?.type === 'tool-call' && block.id === callId
+        )) ?? []
+        if (assistantSources.length !== 1
+          || sameIdBlocks.length !== 1
+          || sameIdBlocks[0].name !== 'run_code'
+          || sameIdBlocks[0].arguments !== argumentsValue) {
+          throw new Error('fixture pending run_code call has no exact assistant source')
+        }
+        call = { callSeq: existingCall.seq }
+      } else {
+        const pendingEvents = []
+        const localCall = appendRunCodeCall(pendingEvents, callId, program, options.description)
+        const offset = currentEvents.length
+        for (const event of pendingEvents) {
+          event.seq += offset
+          event.time += offset
+        }
+        call = {
+          assistantSeq: localCall.assistantSeq + offset,
+          callSeq: localCall.callSeq + offset,
+        }
+        appendSessionEvents(agentSession, pendingEvents)
+      }
+    }
     const exec = {
       name: 'run_code',
-      callId: options.callId ?? `fixture-call-${++nextCallId}`,
-      agent: { id: session, session: options.session },
+      callId,
+      agent: { id: session, session: agentSession },
     }
     let raw
     let result = await execute(exec, async () => {
@@ -235,6 +348,14 @@ export function fixture(config = {}, fixtureOptions = {}) {
     })
     if (options.finalizeResult !== undefined) result = options.finalizeResult(result)
     for (const listener of listeners.get('tools/result') ?? []) await listener(exec, result)
+    if (call !== undefined && !deferResult) {
+      const resultEvents = []
+      appendRunCodeResult(resultEvents, callId, 0, result)
+      resultEvents[0].seq = call.callSeq + 1
+      resultEvents[0].time = call.callSeq + 1
+      resultEvents[0].sourceEventSeqs = [call.callSeq]
+      appendSessionEvents(agentSession, resultEvents)
+    }
     return { raw, result }
   }
 
@@ -325,7 +446,25 @@ export function fixture(config = {}, fixtureOptions = {}) {
   }
 }
 
-export function appendRunCodeEvents(events, callId, code, result, description = 'test cell') {
+export function appendRunCodeCall(events, callId, code, description = 'test cell') {
+  const argumentsValue = JSON.stringify({ code, description })
+  const assistantSeq = events.length
+  events.push({
+    type: 'assistant/message',
+    seq: assistantSeq,
+    time: assistantSeq,
+    surfaceOp: 'append',
+    data: {
+      turn: 0,
+      step: 0,
+      message: {
+        id: `message-assistant-${callId}`,
+        role: 'assistant',
+        source: { kind: 'model', provider: 'fixture', model: 'fixture' },
+        content: [{ type: 'tool-call', id: callId, name: 'run_code', arguments: argumentsValue }],
+      },
+    },
+  })
   const callSeq = events.length
   events.push({
     type: 'tool/call',
@@ -336,23 +475,97 @@ export function appendRunCodeEvents(events, callId, code, result, description = 
       step: 0,
       callId,
       name: 'run_code',
-      arguments: JSON.stringify({ code, description }),
+      arguments: argumentsValue,
     },
   })
+  return Object.freeze({ assistantSeq, callSeq })
+}
+
+export function appendRunCodeResult(events, callId, callSeq, result) {
+  const resultSeq = callSeq + 1
+  if (events.length > 0 && resultSeq !== events.length) {
+    throw new Error('run_code fixture result must immediately follow its call')
+  }
   events.push({
     type: 'tool/result',
-    seq: callSeq + 1,
-    time: callSeq + 1,
+    seq: resultSeq,
+    time: resultSeq,
     sourceEventSeqs: [callSeq],
     surfaceOp: 'append',
     data: {
       message: {
         id: `message-${callId}`,
-        role: 'tool',
+        role: 'user',
         source: { kind: 'tool', callId },
         content: [{ type: 'tool-result', toolCallId: callId, content: [] }],
       },
       ...(result.meta === undefined ? {} : { meta: result.meta }),
     },
   })
+  return Object.freeze({ callSeq, resultSeq })
+}
+
+export function appendRunCodeEvents(events, callId, code, result, description = 'test cell') {
+  const argumentsValue = JSON.stringify({ code, description })
+  const [assistant, pendingCall] = events.slice(-2)
+  const block = assistant?.data?.message?.content?.[0]
+  if (assistant?.type === 'assistant/message'
+    && pendingCall?.type === 'tool/call'
+    && pendingCall.seq === assistant.seq + 1
+    && pendingCall.data?.callId === callId
+    && pendingCall.data?.name === 'run_code'
+    && pendingCall.data?.arguments === argumentsValue
+    && block?.type === 'tool-call'
+    && block.id === callId
+    && block.name === 'run_code'
+    && block.arguments === argumentsValue) {
+    return Object.freeze({
+      assistantSeq: assistant.seq,
+      callSeq: pendingCall.seq,
+      ...appendRunCodeResult(events, callId, pendingCall.seq, result),
+    })
+  }
+  const call = appendRunCodeCall(events, callId, code, description)
+  return Object.freeze({
+    ...call,
+    ...appendRunCodeResult(events, callId, call.callSeq, result),
+  })
+}
+
+export async function runRecordedCell(
+  runtime,
+  session,
+  callId,
+  request,
+  { description = 'test cell', confirmed = true } = {},
+) {
+  const pending = []
+  const localCall = appendRunCodeCall(pending, callId, request.program, description)
+  const currentEvents = sessionEvents(session)
+  if (!Array.isArray(currentEvents)) {
+    throw new TypeError('recorded cell session must expose snapshotEvents() or an events array')
+  }
+  const offset = currentEvents.length
+  for (const event of pending) {
+    event.seq += offset
+    event.time += offset
+  }
+  appendSessionEvents(session, pending)
+  const callSeq = localCall.callSeq + offset
+  const execution = await runtime.runTentative(
+    { id: session.id, session, callId },
+    request,
+  )
+  if (execution.settlement !== undefined) runtime.finalize(execution.settlement, confirmed)
+  const recorded = execution.settlement === undefined ? execution.result : {
+    ...execution.result,
+    meta: { dshPtcPlus: normalizeJournal(execution.settlement.journal) },
+  }
+  const resultEvents = []
+  appendRunCodeResult(resultEvents, callId, 0, recorded)
+  resultEvents[0].seq = callSeq + 1
+  resultEvents[0].time = callSeq + 1
+  resultEvents[0].sourceEventSeqs = [callSeq]
+  appendSessionEvents(session, resultEvents)
+  return execution.result
 }

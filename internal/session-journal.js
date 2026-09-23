@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util'
 import { decodeValue, encodeValue, normalizeValueWire } from './value-wire.js'
 import { normalizeDiagnostic } from './diagnostic.js'
 import { assertOwnFields, isRecord } from './record-utils.js'
@@ -58,8 +59,10 @@ import {
   JOURNAL_VERSIONS,
   USER_BINDINGS_REUSE_POLICIES,
   RECOVERY_BOUNDARY_FIELDS,
+  REPL_TOOL_NAMES,
   REWRITE_FIELDS,
   REWRITE_KINDS,
+  usesCallSequenceConfirms,
 } from './session-journal-schema.js'
 
 export {
@@ -82,12 +85,16 @@ function validName(name) {
   return typeof name === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(name)
 }
 
+export function isCanonicalSequence(value) {
+  return Number.isSafeInteger(value) && value >= 0 && !Object.is(value, -0)
+}
+
 function normalizeCalls(value) {
   if (!Array.isArray(value)) throw new Error('invalid dsh-ptc-plus journal calls')
   const calls = value.map((call, index) => {
     if (!isRecord(call) || typeof call.global !== 'string' || typeof call.member !== 'string'
       || !Object.hasOwn(call, 'args') || (call.ok !== true && call.ok !== false)
-      || !Number.isSafeInteger(call.settle) || call.settle < 0) {
+      || !isCanonicalSequence(call.settle)) {
       throw new Error(`invalid dsh-ptc-plus journal call at index ${index}`)
     }
     assertOwnFields(call, call.ok ? CALL_SUCCESS_FIELDS : CALL_ERROR_FIELDS, `journal call at index ${index}`)
@@ -170,7 +177,7 @@ function normalizeLegacyConfirms(value, resolveLegacyConfirm) {
     throw new Error('legacy dsh-ptc-plus confirmed no-op calls require session call identity')
   }
   const confirms = value.map(callId => resolveLegacyConfirm(callId))
-  if (confirms.some(callSeq => !Number.isSafeInteger(callSeq) || callSeq < 0)) {
+  if (confirms.some(callSeq => !isCanonicalSequence(callSeq))) {
     throw new Error('legacy dsh-ptc-plus confirmed no-op call is not uniquely persisted')
   }
   if (new Set(confirms).size !== confirms.length) {
@@ -181,7 +188,7 @@ function normalizeLegacyConfirms(value, resolveLegacyConfirm) {
 
 function normalizeConfirms(value) {
   if (value === undefined) return []
-  if (!Array.isArray(value) || value.some(callSeq => !Number.isSafeInteger(callSeq) || callSeq < 0)) {
+  if (!Array.isArray(value) || value.some(callSeq => !isCanonicalSequence(callSeq))) {
     throw new Error('invalid dsh-ptc-plus confirmed no-op calls')
   }
   const confirms = [...new Set(value)]
@@ -386,7 +393,7 @@ export function normalizeJournal(value, options = {}) {
 
 /** Validate the required persisted relation that makes one edit result executable history. */
 export function normalizeDerivedEditResult(meta, expectedTargetCallSeq) {
-  if (!Number.isSafeInteger(expectedTargetCallSeq) || expectedTargetCallSeq < 0) {
+  if (!isCanonicalSequence(expectedTargetCallSeq)) {
     throw new Error('derived edit does not identify an eligible target call')
   }
   if (!isRecord(meta)) throw new Error('invalid dsh-ptc-plus derived edit metadata')
@@ -394,7 +401,8 @@ export function normalizeDerivedEditResult(meta, expectedTargetCallSeq) {
   const derived = meta[DERIVED_RUN_KEY]
   if (!isRecord(target)) throw new Error('invalid dsh-ptc-plus edit target metadata')
   assertOwnFields(target, EDIT_TARGET_FIELDS, 'edit target metadata')
-  if (target.targetCallSeq !== expectedTargetCallSeq) {
+  if (!isCanonicalSequence(target.targetCallSeq)
+    || target.targetCallSeq !== expectedTargetCallSeq) {
     throw new Error('derived edit target does not match the eligible target call')
   }
   if (!isRecord(derived) || typeof derived.code !== 'string' || typeof derived.description !== 'string') {
@@ -488,13 +496,13 @@ export function recoveryBoundariesEqual(left, right) {
 
 function normalizeRecoveryBoundaryValue(value, eventSeq = undefined) {
   if (!isRecord(value)
-    || !Number.isSafeInteger(value.failedCallSeq) || value.failedCallSeq < 0
+    || !isCanonicalSequence(value.failedCallSeq)
     || (value.frontierCallSeq !== null
-      && (!Number.isSafeInteger(value.frontierCallSeq) || value.frontierCallSeq < 0))) {
+      && !isCanonicalSequence(value.frontierCallSeq))) {
     throw new Error('invalid dsh-ptc-plus recovery boundary')
   }
   assertOwnFields(value, RECOVERY_BOUNDARY_FIELDS, 'recovery boundary')
-  if (eventSeq !== undefined && (!Number.isSafeInteger(eventSeq) || eventSeq < 0)) {
+  if (eventSeq !== undefined && !isCanonicalSequence(eventSeq)) {
     throw new Error('invalid dsh-ptc-plus recovery boundary event sequence')
   }
   return {
@@ -519,30 +527,399 @@ export function withRecoveryBoundaries(meta, boundaries) {
   return base
 }
 
+const HOST_SEQUENCE_RELATION_POLICY_V0 = new Map([
+  ['agent-preset/selected', null],
+  ['agent/inbox/spliced', null],
+  ['approval/asked', null],
+  ['approval/decided', null],
+  ['approval/policy', null],
+  ['assistant/chunk', null],
+  ['assistant/message', null],
+  ['command/done', 'command-source'],
+  ['command/run', null],
+  // Released format 0 also wrote the legacy spellings of the compaction events
+  // and a steering message that its own v0-to-v1 stage normalizes to
+  // `compaction/*` and `user/message`. They belong to the same frozen
+  // vocabulary, so the retired-boundary converter accepts them with their
+  // normalized relation semantics. `request/header-delta` and `mode/set` stay
+  // unsupported because that stage refuses them as well.
+  ['compact/end', null],
+  ['compact/prune', 'compaction-shadow'],
+  ['compact/start', null],
+  ['compact/summary', 'compaction-shadow'],
+  ['compaction/end', null],
+  ['compaction/prune', 'compaction-shadow'],
+  ['compaction/start', null],
+  ['compaction/summary', 'compaction-shadow'],
+  ['feedback/record', null],
+  ['goal/change', null],
+  ['hook/invoked', null],
+  ['hook/result', null],
+  ['llm/retry', null],
+  ['llm/retry-started', null],
+  ['model/selection', null],
+  ['permission/preset', null],
+  ['plan/mode', null],
+  ['request/context', null],
+  ['request/header', null],
+  ['sandbox/mode', null],
+  ['schedule/change', null],
+  ['session-log-deepseek/delivery-accepted', 'delivery-through'],
+  ['session/end-seed', null],
+  ['session/title', 'title-messages'],
+  ['session/title-llm-request', 'title-request-messages'],
+  ['step/end', null],
+  ['step/start', null],
+  ['steering/message', null],
+  ['subagent/descriptor', null],
+  ['subagent/model-selection-policy', null],
+  ['team/member', null],
+  ['team/message/delivered', null],
+  ['team/message/queued', null],
+  ['team/task', null],
+  ['todo/write', null],
+  ['tool-workflow/agent-end', null],
+  ['tool-workflow/agent-start', null],
+  ['tool-workflow/run-end', null],
+  ['tool-workflow/run-start', null],
+  ['tool/call', null],
+  ['tool/code-dispatch', null],
+  ['tool/code-dispatch-start', null],
+  ['tool/result', null],
+  ['turn/end', null],
+  ['turn/start', null],
+  ['user/message', null],
+  ['web/deepseek-search-llm-request', null],
+])
+
+const V0_SURFACE_EVENT_TYPES = new Set([
+  'user/message', 'steering/message', 'assistant/message', 'tool/result',
+])
+const HOST_DATA_SEQUENCE_RELATIONS_V0 = new Map([
+  ['command/done', new Set(['sourceEventSeq'])],
+  ['compact/prune', new Set(['shadowedSeqs'])],
+  ['compact/summary', new Set(['shadowedSeqs'])],
+  ['compaction/prune', new Set(['shadowedSeqs'])],
+  ['compaction/summary', new Set(['shadowedSeqs'])],
+  ['session-log-deepseek/delivery-accepted', new Set(['throughSeq'])],
+  ['session/title', new Set(['messageSeqs'])],
+  ['session/title-llm-request', new Set(['messageSeqs'])],
+])
+const SEQUENCE_RELATION_FIELD = /Seqs?$/u
+
+function validateKnownDataSequenceRelations(event) {
+  if (!isRecord(event.data)) return
+  const allowed = HOST_DATA_SEQUENCE_RELATIONS_V0.get(event.type) ?? new Set()
+  for (const field of Reflect.ownKeys(event.data)) {
+    if (typeof field === 'string' && SEQUENCE_RELATION_FIELD.test(field) && !allowed.has(field)) {
+      throw new Error(`unsupported ${event.type} data sequence relation ${JSON.stringify(field)}`)
+    }
+  }
+}
+
+function validateEarlierEventReference(events, event, seq, label) {
+  if (!isCanonicalSequence(seq) || seq >= event.seq || events[seq]?.seq !== seq) {
+    throw new Error(`invalid ${label} event reference ${JSON.stringify(seq)} at event ${event.seq}`)
+  }
+  return events[seq]
+}
+
+function validateEarlierEventReferences(events, event, seqs, label) {
+  if (!Array.isArray(seqs)) throw new Error(`invalid ${label} event references`)
+  const seen = new Set()
+  return seqs.map(seq => {
+    if (seen.has(seq)) throw new Error(`duplicate ${label} event reference ${JSON.stringify(seq)} at event ${event.seq}`)
+    seen.add(seq)
+    return validateEarlierEventReference(events, event, seq, label)
+  })
+}
+
+function sameSequences(left, right) {
+  return left.length === right.length && left.every((seq, index) => seq === right[index])
+}
+
+function validateSurfaceRelation(events, event, surface) {
+  const eligible = V0_SURFACE_EVENT_TYPES.has(event.type)
+  if (!eligible) {
+    if (event.surfaceOp !== undefined || event.sourceEventSeqs !== undefined) {
+      throw new Error(`session event ${JSON.stringify(event.type)} is not surface-eligible`)
+    }
+    return
+  }
+  if (event.sourceEventSeqs !== undefined) {
+    validateEarlierEventReferences(events, event, event.sourceEventSeqs, 'source')
+  }
+  if (event.sourceEventSeqs?.length === 0 && event.type !== 'assistant/message') {
+    throw new Error('source event references must not be empty except on assistant/message')
+  }
+  const op = event.surfaceOp
+  // Historical host formats predate the mandatory append marker.
+  if (op === undefined || op === 'append') {
+    surface.push(event.seq)
+    return
+  }
+  if (!isRecord(op) || op.op !== 'replace'
+    || Reflect.ownKeys(op).length !== 3
+    || !isCanonicalSequence(op.start)
+    || !isCanonicalSequence(op.end)) {
+    throw new Error('invalid surface operation during recovery-boundary migration')
+  }
+  validateEarlierEventReference(events, event, op.start, 'surface replacement start')
+  validateEarlierEventReference(events, event, op.end, 'surface replacement end')
+  const start = surface.indexOf(op.start)
+  const end = surface.indexOf(op.end)
+  if (start < 0 || end < start) {
+    throw new Error(`surface replacement at event ${event.seq} does not identify a current ordered surface range`)
+  }
+  const shadowed = surface.slice(start, end + 1)
+  const provenance = new Set(event.sourceEventSeqs ?? [])
+  if (shadowed.some(seq => !provenance.has(seq))) {
+    throw new Error(`surface replacement at event ${event.seq} does not cite every replaced surface node`)
+  }
+  if (event.type === 'tool/result'
+    && (shadowed.length !== 1 || events[shadowed[0]]?.type !== 'tool/result')) {
+    throw new Error('tool/result surface replacement must target one current tool/result')
+  }
+  if (event.type === 'tool/result') {
+    const withoutContent = candidate => {
+      const data = candidate?.data
+      const message = data?.message
+      const content = message?.content
+      if (!isRecord(data) || !isRecord(message) || !Array.isArray(content)
+        || content.length !== 1 || !isRecord(content[0])) {
+        throw new Error('tool/result surface replacement has invalid message content')
+      }
+      return {
+        ...data,
+        message: { ...message, content: [{ ...content[0], content: null }] },
+      }
+    }
+    if (!isDeepStrictEqual(withoutContent(events[shadowed[0]]), withoutContent(event))) {
+      throw new Error('tool/result surface replacement may change only content')
+    }
+  }
+  surface.splice(start, shadowed.length, event.seq)
+}
+
+function validateCommandSource(events, event) {
+  if (!isRecord(event.data)) {
+    throw new Error(`command/done event ${event.seq} has invalid data`)
+  }
+  if (event.data.sourceEventSeq === undefined) return
+  if (!isRecord(event.data) || event.data.kind !== 'success') {
+    throw new Error(`command/done event ${event.seq} has a source outside a successful result`)
+  }
+  const source = validateEarlierEventReference(events, event, event.data.sourceEventSeq, 'command source')
+  if (source.type === 'command/run' || source.type === 'command/done') {
+    throw new Error(`command/done event ${event.seq} cites a command lifecycle event as its source`)
+  }
+}
+
+function validateTitleRequestSources(events, event) {
+  if (!isRecord(event.data) || !Array.isArray(event.data.messageSeqs)) {
+    throw new Error('invalid session/title-llm-request message references')
+  }
+  const sources = validateEarlierEventReferences(
+    events, event, event.data.messageSeqs, 'session title request message',
+  )
+  if (sources.some(source => source.type !== 'user/message')) {
+    throw new Error(`session/title-llm-request event ${event.seq} must cite earlier user/message events`)
+  }
+}
+
+function validateDeliveryThrough(events, event) {
+  if (!isRecord(event.data)) {
+    throw new Error(`session-log-deepseek/delivery-accepted event ${event.seq} has invalid data`)
+  }
+  validateEarlierEventReference(events, event, event.data.throughSeq, 'session delivery through')
+}
+
+function validateTitleSources(events, event) {
+  if (!isRecord(event.data) || !Array.isArray(event.data.messageSeqs)) {
+    throw new Error('invalid session/title message references')
+  }
+  if ((event.data.messageSeqs.length === 0) !== (event.data.source?.kind === 'user')) {
+    const requirement = event.data.source?.kind === 'user'
+      ? 'cite no message seqs'
+      : 'cite at least one message seq'
+    throw new Error(`session/title event ${event.seq} must ${requirement}`)
+  }
+  const sources = validateEarlierEventReferences(events, event, event.data.messageSeqs, 'session title message')
+  if (sources.some(source => source.type !== 'user/message' || source.data?.source?.kind !== 'user')) {
+    throw new Error(`session/title event ${event.seq} must cite earlier human user/message events`)
+  }
+}
+
+function validateCompactionSources(events, event, surface) {
+  if (!isRecord(event.data) || !Array.isArray(event.data.shadowedSeqs)) {
+    throw new Error(`invalid ${event.type} shadow references`)
+  }
+  const shadowed = event.data.shadowedSeqs
+  validateEarlierEventReferences(events, event, shadowed, 'compaction shadow')
+  if (event.data.shadowedRange === undefined) {
+    if (shadowed.length === 0) return
+    const start = surface.indexOf(shadowed[0])
+    if (start < 0 || !sameSequences(surface.slice(start, start + shadowed.length), shadowed)) {
+      throw new Error(`${event.type} event ${event.seq} shadow list does not match the current surface`)
+    }
+    return
+  }
+  const range = event.data.shadowedRange
+  if (!isRecord(range)) throw new Error(`invalid ${event.type} shadow range`)
+  validateEarlierEventReference(events, event, range.start, 'compaction range start')
+  validateEarlierEventReference(events, event, range.end, 'compaction range end')
+  const start = surface.indexOf(range.start)
+  const end = surface.indexOf(range.end)
+  if (start < 0 || end < start
+    || !sameSequences(surface.slice(start, end + 1), shadowed)) {
+    throw new Error(`${event.type} event ${event.seq} shadow range does not match the current surface`)
+  }
+}
+
+function validateHostSequenceRelations(events) {
+  const surface = []
+  for (const event of events) {
+    if (event.type === RECOVERY_BOUNDARY_EVENT) continue
+    if (!HOST_SEQUENCE_RELATION_POLICY_V0.has(event.type)) {
+      throw new Error(`unsupported session event type ${JSON.stringify(event.type)} during recovery-boundary migration`)
+    }
+    validateKnownDataSequenceRelations(event)
+    validateSurfaceRelation(events, event, surface)
+    const relation = HOST_SEQUENCE_RELATION_POLICY_V0.get(event.type)
+    if (relation === 'command-source') validateCommandSource(events, event)
+    else if (relation === 'title-messages') validateTitleSources(events, event)
+    else if (relation === 'title-request-messages') validateTitleRequestSources(events, event)
+    else if (relation === 'delivery-through') validateDeliveryThrough(events, event)
+    else if (relation === 'compaction-shadow') validateCompactionSources(events, event, surface)
+  }
+}
+
+function rewriteHostSequenceRelations(event, mapEvent) {
+  const relation = HOST_SEQUENCE_RELATION_POLICY_V0.get(event.type)
+  if (Object.hasOwn(event, 'sourceEventSeqs')) {
+    event.sourceEventSeqs = event.sourceEventSeqs.map(seq => mapEvent(seq, 'source'))
+  }
+  if (event.surfaceOp !== undefined && event.surfaceOp !== 'append') {
+    event.surfaceOp = {
+      ...event.surfaceOp,
+      start: mapEvent(event.surfaceOp.start, 'surface replacement start'),
+      end: mapEvent(event.surfaceOp.end, 'surface replacement end'),
+    }
+  }
+  if (relation === 'command-source') {
+    if (event.data.sourceEventSeq !== undefined) {
+      event.data = {
+        ...event.data,
+        sourceEventSeq: mapEvent(event.data.sourceEventSeq, 'command source'),
+      }
+    }
+  } else if (relation === 'title-messages') {
+    event.data = {
+      ...event.data,
+      messageSeqs: event.data.messageSeqs.map(seq => mapEvent(seq, 'session title message')),
+    }
+  } else if (relation === 'title-request-messages') {
+    const mapped = event.data.messageSeqs.map(seq => mapEvent(seq, 'session title request message'))
+    if (mapped.some((seq, index) => seq !== event.data.messageSeqs[index])) {
+      throw new Error('session/title-llm-request messageSeqs cannot be preserved across removed events')
+    }
+  } else if (relation === 'delivery-through') {
+    event.data = {
+      ...event.data,
+      throughSeq: mapEvent(event.data.throughSeq, 'session delivery through'),
+    }
+  } else if (relation === 'compaction-shadow') {
+    const data = {
+      ...event.data,
+      shadowedSeqs: event.data.shadowedSeqs.map(seq => mapEvent(seq, 'compaction shadow')),
+    }
+    if (event.data.shadowedRange !== undefined) {
+      data.shadowedRange = {
+        ...event.data.shadowedRange,
+        start: mapEvent(event.data.shadowedRange.start, 'compaction range start'),
+        end: mapEvent(event.data.shadowedRange.end, 'compaction range end'),
+      }
+    }
+    event.data = data
+  }
+  return event
+}
+
 /**
  * Convert the retired custom boundary event in a raw log before DSH restores it.
  * The returned log is a detached, renumbered copy; the input is never mutated.
  */
 export function migrateRecoveryBoundaryEvents(events) {
   if (!Array.isArray(events)) throw new TypeError('recovery-boundary migration expects an event array')
+  const sequenceMap = new Map()
+  let nextSeq = 0
+  for (const [index, event] of events.entries()) {
+    if (!isCanonicalSequence(event?.seq)) {
+      throw new Error('invalid session event sequence during recovery-boundary migration')
+    }
+    if (sequenceMap.has(event.seq)) {
+      throw new Error(`duplicate session event sequence ${event.seq} during recovery-boundary migration`)
+    }
+    if (event.seq !== index) {
+      throw new Error(`session event sequence ${event.seq} at index ${index} is not contiguous from zero`)
+    }
+    const retainedSeq = event.type === RECOVERY_BOUNDARY_EVENT ? undefined : nextSeq++
+    sequenceMap.set(event.seq, { event, retainedSeq })
+  }
+  validateHostSequenceRelations(events)
+  const mapEvent = (seq, label) => {
+    if (!isCanonicalSequence(seq)) throw new Error(`invalid ${label} event reference`)
+    const target = sequenceMap.get(seq)
+    if (target === undefined || target.retainedSeq === undefined) {
+      throw new Error(`unmapped ${label} event reference ${seq}`)
+    }
+    return target.retainedSeq
+  }
+  const mapCall = (seq, resultSeq, label) => {
+    const target = sequenceMap.get(seq)
+    if (!isCanonicalSequence(seq) || target === undefined
+      || target.retainedSeq === undefined || target.event?.type !== 'tool/call'
+      || !REPL_TOOL_NAMES.has(target.event.data?.name) || seq >= resultSeq) {
+      throw new Error(`unproved ${label} call reference ${JSON.stringify(seq)} at event ${resultSeq}`)
+    }
+    return target.retainedSeq
+  }
+  const mapBoundary = (boundary, resultSeq) => ({
+    failedCallSeq: mapCall(boundary.failedCallSeq, resultSeq, 'recovery-boundary failure'),
+    frontierCallSeq: boundary.frontierCallSeq === null ? null : (() => {
+      if (boundary.frontierCallSeq >= boundary.failedCallSeq) {
+        throw new Error('recovery-boundary frontier must precede its failed call')
+      }
+      return mapCall(boundary.frontierCallSeq, resultSeq, 'recovery-boundary frontier')
+    })(),
+  })
   const migrated = []
   const pending = []
+  const boundaryOrigins = new Map()
   for (const event of events) {
     if (event?.type === RECOVERY_BOUNDARY_EVENT) {
-      if (!Number.isSafeInteger(event.seq) || event.seq < 0) {
-        throw new Error('invalid dsh-ptc-plus recovery boundary event sequence')
-      }
-      pending.push(normalizeRecoveryBoundaryValue(event.data))
+      pending.push({ boundary: normalizeRecoveryBoundaryValue(event.data), eventSeq: event.seq })
       continue
     }
     const detached = cloneJson(event)
-    if (pending.length > 0 && detached?.type === 'tool/result') {
-      const data = isRecord(detached.data) ? { ...detached.data } : {}
-      const meta = isRecord(data.meta) ? { ...data.meta } : {}
+    const sourceSeqs = detached?.sourceEventSeqs
+    const source = Array.isArray(sourceSeqs) && sourceSeqs.length === 1
+      ? sequenceMap.get(sourceSeqs[0]) : undefined
+    const carriesJournal = detached?.type === 'tool/result'
+      && isRecord(detached.data?.meta) && Object.hasOwn(detached.data.meta, JOURNAL_KEY)
+      && source?.retainedSeq !== undefined && source.event?.type === 'tool/call'
+      && REPL_TOOL_NAMES.has(source.event.data?.name) && source.event.seq < event.seq
+    if (pending.length > 0 && carriesJournal) {
+      const data = { ...detached.data }
+      const meta = { ...data.meta }
       const existing = meta[RECOVERY_BOUNDARY_KEY] === undefined
         ? []
         : normalizeRecoveryBoundaries(meta[RECOVERY_BOUNDARY_KEY])
-      meta[RECOVERY_BOUNDARY_KEY] = [...existing, ...pending]
+      meta[RECOVERY_BOUNDARY_KEY] = [...pending.map(item => item.boundary), ...existing]
+      boundaryOrigins.set(event.seq, {
+        pendingCount: pending.length,
+        pendingEventSeqs: pending.map(item => item.eventSeq),
+      })
       data.meta = meta
       detached.data = data
       pending.length = 0
@@ -550,19 +927,53 @@ export function migrateRecoveryBoundaryEvents(events) {
     migrated.push(detached)
   }
   if (pending.length > 0) {
-    throw new Error('recovery boundary has no later tool/result settlement for migration')
+    throw new Error('recovery boundary has no later PTC journal result for migration')
   }
-  const sequenceMap = new Map()
-  for (const [index, event] of migrated.entries()) {
-    if (Number.isSafeInteger(event?.seq) && event.seq >= 0) sequenceMap.set(event.seq, index)
+  return Object.freeze(migrated.map((event) => {
+    const oldSeq = event.seq
+    rewriteHostSequenceRelations(event, mapEvent)
+    if (event.type === 'tool/result' && isRecord(event.data?.meta)) {
+      const meta = event.data.meta
+      const journal = meta[JOURNAL_KEY]
+      if (usesCallSequenceConfirms(journal) && journal.confirms !== undefined) {
+        if (!Array.isArray(journal.confirms)) throw new Error('invalid dsh-ptc-plus confirmed no-op calls')
+        journal.confirms = journal.confirms.map(seq => mapCall(seq, oldSeq, 'journal confirmation'))
+      }
+      if (meta[EDIT_TARGET_KEY] !== undefined) {
+        if (!isRecord(meta[EDIT_TARGET_KEY])) throw new Error('invalid dsh-ptc-plus edit target')
+        meta[EDIT_TARGET_KEY].targetCallSeq = mapCall(
+          meta[EDIT_TARGET_KEY].targetCallSeq, oldSeq, 'edit target',
+        )
+      }
+      if (meta[RECOVERY_BOUNDARY_KEY] !== undefined) {
+        const origins = boundaryOrigins.get(oldSeq)
+        meta[RECOVERY_BOUNDARY_KEY] = normalizeRecoveryBoundaries(meta[RECOVERY_BOUNDARY_KEY])
+          .map((boundary, index) => mapBoundary(boundary,
+            origins !== undefined && index < origins.pendingCount
+              ? origins.pendingEventSeqs[index]
+              : oldSeq))
+      }
+    }
+    event.seq = sequenceMap.get(oldSeq).retainedSeq
+    return Object.freeze(event)
+  }))
+}
+
+function currentAssistantCallSeq(events, candidates, callId, toolName) {
+  let assistantIndex = events.length - 1
+  while (assistantIndex >= 0 && events[assistantIndex]?.type !== 'assistant/message') {
+    assistantIndex -= 1
   }
-  return Object.freeze(migrated.map((event, index) => Object.freeze({
-    ...event,
-    seq: index,
-    ...(Array.isArray(event.sourceEventSeqs)
-      ? { sourceEventSeqs: event.sourceEventSeqs.map(seq => sequenceMap.get(seq) ?? seq) }
-      : {}),
-  })))
+  if (assistantIndex < 0) return undefined
+  const content = events[assistantIndex].data?.message?.content
+  if (!Array.isArray(content)) return undefined
+  const blocks = content.filter(part => part?.type === 'tool-call'
+    && part.id === callId && part.name === toolName)
+  if (blocks.length !== 1) return undefined
+  const eventIndexes = new Map(events.map((event, index) => [event, index]))
+  const current = candidates.filter(event => eventIndexes.get(event) > assistantIndex
+    && event.data.arguments === blocks[0].arguments)
+  return current.length === 1 ? current[0].seq : undefined
 }
 
 /** Resolve the persisted event identity for one named tool call being dispatched. */
@@ -571,27 +982,42 @@ export function liveToolCallSeq(session, callId, toolName) {
   if (!Array.isArray(events) || typeof callId !== 'string' || callId.length === 0
     || typeof toolName !== 'string' || toolName.length === 0) return undefined
 
-  const pairedCallSeqs = new Set()
+  const pendingCalls = new Map()
   for (const event of events) {
-    if (event?.type !== 'tool/result' || !Array.isArray(event.sourceEventSeqs)) continue
-    for (const sourceSeq of event.sourceEventSeqs) {
-      if (Number.isSafeInteger(sourceSeq) && sourceSeq >= 0) pairedCallSeqs.add(sourceSeq)
+    if (event?.type === 'tool/call' && event.data?.callId === callId) {
+      if (event.data.name === toolName && !isCanonicalSequence(event.seq)) {
+        throw new Error(`current ${toolName} call has an invalid session event sequence`)
+      }
+      if (isCanonicalSequence(event.seq)) pendingCalls.set(event.seq, event)
+      continue
+    }
+    if (event?.type !== 'tool/result') continue
+    const sourceRelation = event.sourceEventSeqs
+    const canonicalSourceRelation = Array.isArray(sourceRelation)
+      && sourceRelation.length === 1
+      && isCanonicalSequence(sourceRelation[0])
+    if (canonicalSourceRelation) {
+      pendingCalls.delete(sourceRelation[0])
+      continue
+    }
+    // A damaged result cannot recover state, but its ordered call identity can
+    // still prove that the sole preceding same-id call is no longer live.
+    if (event.data?.message?.source?.callId === callId
+      && pendingCalls.size === 1) {
+      pendingCalls.clear()
     }
   }
 
-  const candidates = []
-  for (const event of events) {
-    if (event?.type !== 'tool/call' || event.data?.name !== toolName
-      || event.data.callId !== callId || pairedCallSeqs.has(event.seq)) continue
-    if (!Number.isSafeInteger(event.seq) || event.seq < 0) {
-      throw new Error(`current ${toolName} call has an invalid session event sequence`)
-    }
-    candidates.push(event.seq)
+  const candidates = [...pendingCalls.values()]
+    .filter(event => event.data?.name === toolName)
+  if (candidates.length > 1) {
+    const current = currentAssistantCallSeq(events, candidates, callId, toolName)
+    if (current !== undefined) return current
   }
   if (candidates.length > 1) {
     throw new Error(`session log contains multiple unpaired ${toolName} calls for callId ${JSON.stringify(callId)}`)
   }
-  return candidates[0]
+  return candidates[0]?.seq
 }
 
 /** Start a mutable journal for one live cell. */

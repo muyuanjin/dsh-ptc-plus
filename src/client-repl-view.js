@@ -1,3 +1,5 @@
+import { isHostIconComponent } from './client-host-compat.js'
+
 /**
  * REPL surface views: the conversation tab (session bindings + global workbench)
  * and the header memory card. Every piece here is a pure projection of props,
@@ -56,7 +58,7 @@ export function createReplView(React, deps) {
         h('div', { className: 'ptcPlusObservationCatalog' },
           h('div', { className: 'ptcPlusObservationFilters' },
             h('label', { className: 'ptcPlusSearch' },
-              typeof IconSearchOutline16 === 'function' ? h(IconSearchOutline16, { size: 16 }) : null,
+              isHostIconComponent(IconSearchOutline16) ? h(IconSearchOutline16, { size: 16 }) : null,
               h('input', { value: query, onChange: event => setQuery(event.target.value),
                 placeholder: t('console.search'), 'aria-label': t('console.search') })),
             h('select', { className: 'ptcPlusSelect', value: kind, onChange: event => setKind(event.target.value),

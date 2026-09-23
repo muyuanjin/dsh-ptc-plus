@@ -4,7 +4,12 @@ import { SessionRuntime } from '../internal/session-runtime.js'
 import { prepareProgram } from '../internal/cell-analysis.js'
 import { BindingCatalog } from '../internal/session-state.js'
 import { JOURNAL_KEY } from '../internal/session-journal.js'
-import { appendRunCodeEvents } from './plugin-fixture.js'
+import {
+  appendRunCodeCall,
+  appendRunCodeEvents,
+  appendRunCodeResult,
+  orderedSurfaceSession,
+} from './plugin-fixture.js'
 import { createHostContext } from './host-fixture.js'
 import { apply } from '../index.js'
 import { createContext, runInContext } from 'node:vm'
@@ -14,7 +19,7 @@ import { createStatefulRootRuntime } from '../internal/stateful-root-runtime.js'
 function fixture(t, bindingUpdates = 'stateful') {
   const runtime = new SessionRuntime({ bindingUpdates, durableReplay: false, maxWallMs: 10_000 })
   t.after(() => runtime.dispose())
-  const session = { id: `root-transitions-${t.name}` }
+  const session = `root-transitions-${t.name}`
   return {
     runtime,
     configure(config) { runtime.reconfigure({ durableReplay: false, maxWallMs: 10_000, ...config }) },
@@ -209,7 +214,7 @@ test('legacy bridge preparation uses proved roots and preserves source generatio
 })
 
 test('mixed logical and legacy journals replay their recorded policies and shared writes', async t => {
-  const session = { id: 'mixed-root-generations', events: [] }
+  const session = orderedSurfaceSession('mixed-root-generations')
   const runtime = new SessionRuntime({ bindingUpdates: 'stateful', maxWallMs: 10_000 })
   t.after(() => runtime.dispose())
   const cells = [
@@ -220,18 +225,21 @@ test('mixed logical and legacy journals replay their recorded policies and share
   ]
   for (const [languageSemantics, config, program, expected] of cells) {
     runtime.reconfigure({ maxWallMs: 10_000, ...config })
-    const execution = await runtime.runTentative({ id: session.id, session, persistedCallSeq: session.events.length }, { program, bindings: [] })
+    const callSeq = Math.max(-1, ...session.events.map(event => event.seq)) + 2
+    const execution = await runtime.runTentative({ id: session.id, session, persistedCallSeq: callSeq }, { program, bindings: [] })
     assert.equal(execution.result.error, undefined, execution.result.error?.message)
     assert.equal(execution.result.value, expected)
     assert.equal(execution.settlement.journal.status, 'durable')
     assert.equal(execution.settlement.journal.languageSemantics, languageSemantics)
     runtime.finalize(execution.settlement, true)
-    appendRunCodeEvents(session.events, `mixed-root-${session.events.length}`, program,
+    const appended = appendRunCodeEvents(session.events, `mixed-root-${callSeq}`, program,
       { meta: { [JOURNAL_KEY]: execution.settlement.journal } })
+    assert.equal(appended.callSeq, callSeq)
   }
   await runtime.disposeSession(session.id)
   runtime.reconfigure({ bindingUpdates: 'protected', maxWallMs: 10_000 })
-  const replayed = await runtime.runTentative({ id: session.id, session, persistedCallSeq: session.events.length },
+  const replayCallSeq = Math.max(...session.events.map(event => event.seq)) + 2
+  const replayed = await runtime.runTentative({ id: session.id, session, persistedCallSeq: replayCallSeq },
     { program: 'return [value,read()]', bindings: [] })
   assert.equal(replayed.result.error, undefined, replayed.result.error?.message)
   assert.equal(replayed.settlement.recoveryBoundaries, undefined)
@@ -241,6 +249,7 @@ test('mixed logical and legacy journals replay their recorded policies and share
 
 test('public settings updates preserve the active worker logical roots', async t => {
   const host = createHostContext()
+  const session = orderedSurfaceSession('root-settings')
   t.after(async () => { while (host.cleanups.length > 0) await host.cleanups.pop()() })
   let current = { enabled: true, durableReplay: false, maxWallMs: 10_000 }
   let update
@@ -267,7 +276,13 @@ test('public settings updates preserve the active worker logical roots', async t
   await apply(ctx)
   let sequence = 0
   const run = async program => {
-    const exec = { name: 'run_code', callId: `root-settings-${++sequence}`, agent: { id: 'root-settings' } }
+    const callId = `root-settings-${++sequence}`
+    const { callSeq } = appendRunCodeCall(session.events, callId, program)
+    const exec = {
+      name: 'run_code',
+      callId,
+      agent: { id: session.id, session },
+    }
     let raw
     const result = await host.listeners.get('tools/execute')[0](exec, async () => {
       raw = await codeRuntime.run({ program, bindings: [] })
@@ -275,6 +290,7 @@ test('public settings updates preserve the active worker logical roots', async t
         meta: definition.output.presentationMeta?.({}, raw.value) }
     })
     for (const listener of host.listeners.get('tools/result') ?? []) await listener(exec, result)
+    appendRunCodeResult(session.events, callId, callSeq, result)
     assert.equal(raw.error, undefined, raw.error?.message)
     return raw.value
   }

@@ -10,7 +10,7 @@ import { JOURNAL_KEY } from '../internal/session-journal.js'
 import { JOURNAL_VERSION } from '../internal/session-journal-schema.js'
 import { USER_BINDING_DRAFT_META_KEY } from '../internal/user-binding-draft-projection.js'
 import { createUserBindingsSnapshot, storedUserBindingsDocument, USER_BINDINGS_META_KEY } from '../internal/user-bindings.js'
-import { appendRunCodeEvents, fixture, ptcAgent } from './plugin-fixture.js'
+import { appendRunCodeEvents, fixture, orderedSurfaceSession, ptcAgent } from './plugin-fixture.js'
 
 const codeOnlyAssembly = state => ({
   sections: [
@@ -81,21 +81,51 @@ function evaluationWitness(log) {
 }
 
 function appendEditCall(events, callId, args) {
+  const argumentsValue = JSON.stringify(args)
+  const assistantSeq = events.length
+  events.push({
+    type: 'assistant/message',
+    seq: assistantSeq,
+    time: assistantSeq,
+    surfaceOp: 'append',
+    data: {
+      turn: 0,
+      step: 0,
+      message: {
+        id: `message-assistant-${callId}`,
+        role: 'assistant',
+        source: { kind: 'model', provider: 'fixture', model: 'fixture' },
+        content: [{ type: 'tool-call', id: callId, name: 'edit_run_code', arguments: argumentsValue }],
+      },
+    },
+  })
   const seq = events.length
   events.push({
     type: 'tool/call',
     seq,
-    data: { callId, name: 'edit_run_code', arguments: JSON.stringify(args) },
+    time: seq,
+    data: { turn: 0, step: 0, callId, name: 'edit_run_code', arguments: argumentsValue },
   })
   return seq
 }
 
 function appendEditResult(events, callId, callSeq, result) {
+  const seq = events.length
   events.push({
     type: 'tool/result',
-    seq: events.length,
+    seq,
+    time: seq,
     sourceEventSeqs: [callSeq],
-    data: { message: { source: { callId } }, meta: result.meta },
+    surfaceOp: 'append',
+    data: {
+      message: {
+        id: `message-${callId}`,
+        role: 'user',
+        source: { kind: 'tool', callId },
+        content: [{ type: 'tool-result', toolCallId: callId, content: result.content }],
+      },
+      meta: result.meta,
+    },
   })
 }
 
@@ -111,7 +141,7 @@ test('advertises configured APIs before activation, keeps the prefix stable and 
   await writeBindings(home, 1)
 
   const events = []
-  const session = { id: 'user-binding-recovery', events }
+  const session = orderedSurfaceSession('user-binding-recovery', events)
   const agent = ptcAgent('user-binding-recovery-agent', session)
   const first = fixture({ userBindingsEnabled: true })
   t.after(() => first.dispose())
@@ -131,7 +161,7 @@ test('advertises configured APIs before activation, keeps the prefix stable and 
   assert.doesNotMatch(defaults, /private-1/)
 
   const firstCode = 'const recordedDefault = defaults.value'
-  const firstResult = await first.runDurable(session.id, firstCode, {}, { session })
+  const firstResult = await first.runDurable(session.id, firstCode, {}, { session, recordSession: 'deferred-result', callId: 'binding-one' })
   appendRunCodeEvents(events, 'binding-one', firstCode, firstResult)
   const activatedAssembly = await rememberRequest(first, session, agent)
   assert.deepEqual(activatedAssembly.sections, assembly.sections)
@@ -167,13 +197,13 @@ test('preserves versioned parameter-property and enum state through live executi
   bindings.entries[0].source = 'export class Counter { constructor(public value: number) {} next() { return ++this.value } }; enum E { A, B, C, D = ((C) => C)(10) }; export const out = E.D'
   await writeBindingsDocument(home, bindings)
   const events = []
-  const session = { id: 'typescript-binding-recovery', events }
+  const session = orderedSurfaceSession('typescript-binding-recovery', events)
   const agent = ptcAgent('typescript-binding-agent', session)
   const first = fixture({ userBindingsEnabled: true, computeMs: 5000, maxWallMs: 20_000 })
   t.after(() => first.dispose())
   await rememberRequest(first, session, agent)
   const code = 'const counter = new defaults.Counter(40); const saved = defaults.out; return counter.next()'
-  const initial = await first.runDurable(session.id, code, {}, { session })
+  const initial = await first.runDurable(session.id, code, {}, { session, recordSession: 'deferred-result', callId: 'typescript-binding' })
   assert.equal(initial.value, 41)
   assert.equal(initial.meta[JOURNAL_KEY].status, 'durable')
   appendRunCodeEvents(events, 'typescript-binding', code, initial)
@@ -201,12 +231,13 @@ test('contracts captured native transforms once without replaying effects or cha
       else process.env.DSH_HOME = previousHome
     })
     await writeBindingsDocument(home, storedUserBindingsDocument(captured.records[1].userBindings))
-    const session = { id: `transform-recovery-${keepPrefix}`, events: [] }
+    const session = orderedSurfaceSession(`transform-recovery-${keepPrefix}`)
     const agent = ptcAgent(session.id, session)
+    const recordedCells = []
     for (const [index, record] of captured.records.slice(keepPrefix ? 0 : 1).entries()) {
-      appendRunCodeEvents(session.events, `native-${index}`, record.code, { meta: {
+      recordedCells.push(appendRunCodeEvents(session.events, `native-${index}`, record.code, { meta: {
         [JOURNAL_KEY]: record.journal, [USER_BINDINGS_META_KEY]: record.userBindings,
-      } })
+      } }))
     }
     const historicalEvents = structuredClone(session.events)
     let dispatches = 0
@@ -217,14 +248,15 @@ test('contracts captured native transforms once without replaying effects or cha
       const code = `return [${keepPrefix ? 'anchor' : 'typeof anchor'}, typeof saved, typeof after, enums.out]`
       const current = await state.runDurable(session.id, code, {
         observe: async () => { dispatches++; return 'unexpected' },
-      }, { session })
+      }, { session, recordSession: 'deferred-result', callId: `continued-${generation}` })
       assert.equal(current.error, undefined)
       assert.deepEqual(current.value, [keepPrefix ? 41 : 'undefined', 'undefined', 'undefined', 10])
       assert.equal(current.meta[JOURNAL_KEY].status, 'durable')
       assert.equal(current.meta[JOURNAL_KEY].diagnostics.filter(item => item.code === 'PTC-R002').length, generation === 0 ? 1 : 0)
       if (generation === 0) {
         assert.equal(current.meta.dshPtcPlusRecoveryBoundaries.length, 1)
-        assert.equal(current.meta.dshPtcPlusRecoveryBoundaries[0].frontierCallSeq, keepPrefix ? 0 : null)
+        assert.equal(current.meta.dshPtcPlusRecoveryBoundaries[0].frontierCallSeq,
+          keepPrefix ? recordedCells[0].callSeq : null)
       } else {
         assert.equal(current.meta.dshPtcPlusRecoveryBoundaries, undefined)
       }
@@ -268,7 +300,7 @@ export const value = 1
   await writeBindingsDocument(home, { entries: [broken, healthy] })
 
   const events = []
-  const session = { id: 'failed-binding-call-recovery', events }
+  const session = orderedSurfaceSession('failed-binding-call-recovery', events)
   const agent = ptcAgent('failed-binding-call-agent', session)
   const first = fixture({ userBindingsEnabled: true })
   let dispatches = 0
@@ -276,7 +308,7 @@ export const value = 1
   const source = 'const liveOnly = healthyCallPeer.value + 1; return liveOnly'
   const result = await first.runDurable(session.id, source, {
     observe: async () => { dispatches += 1; return 'observed' },
-  }, { session })
+  }, { session, recordSession: 'deferred-result', callId: 'failed-binding-call' })
   assert.equal(result.value, 3)
   assert.equal(result.meta[JOURNAL_KEY].status, 'volatile')
   appendRunCodeEvents(events, 'failed-binding-call', source, result)
@@ -320,7 +352,7 @@ test('new sessions discover opted-in API documentation without evaluating module
     enabled: false, modelContext: {} }] })
   const state = fixture({ userBindingsEnabled: true, computeMs: 5000, maxWallMs: 20_000 })
   t.after(() => state.dispose())
-  const session = { id: 'new-session-docs', events: [] }
+  const session = orderedSurfaceSession('new-session-docs')
   const agent = ptcAgent(session.id, session)
   let initializations = 0
   const assembly = await rememberRequest(state, session, agent)
@@ -334,7 +366,7 @@ test('new sessions discover opted-in API documentation without evaluating module
   // prompt assembly itself would already be observable here.
   assert.equal(await evaluationCount(evaluationLog), 0)
   const code = 'return [await fileTools.readText("example.txt"), quietTools.value, evaluationWitness.value]'
-  const result = await state.runDurable(session.id, code, { observe: async () => { initializations++; return null } }, { session })
+  const result = await state.runDurable(session.id, code, { observe: async () => { initializations++; return null } }, { session, recordSession: 'deferred-result', callId: 'first-use' })
   assert.deepEqual(result.value, ['example.txt', 2, 7])
   assert.equal(initializations, 1)
   assert.equal(await evaluationCount(evaluationLog), 1)
@@ -351,7 +383,7 @@ test('new sessions discover opted-in API documentation without evaluating module
   await writeBindingsDocument(home, { entries: [{ ...entry, modelContext: { includeDeclaration: false, instructions: '' } }] })
   const next = fixture({ userBindingsEnabled: true })
   t.after(() => next.dispose())
-  const nextSession = { id: 'no-injection', events: [] }
+  const nextSession = orderedSurfaceSession('no-injection')
   const nextAgent = ptcAgent(nextSession.id, nextSession)
   const withoutInjection = await rememberRequest(next, nextSession, nextAgent)
   assert.equal(withoutInjection.sections.some(item => item.name === 'tools:ptc-plus-user-binding-defaults'), false)
@@ -376,7 +408,7 @@ test('binding prompts and declarations remain literal in appended context withou
   }] })
   const state = fixture({ userBindingsEnabled: true })
   t.after(() => state.dispose())
-  const session = { id: 'literal-binding-prompt', events: [] }
+  const session = orderedSurfaceSession('literal-binding-prompt')
   const input = codeOnlyAssembly(state)
   input.sections.push({ name: 'host-template', text: 'Host {{known}}.' })
   input.variables.known = 'expanded'
@@ -405,7 +437,7 @@ test('model-context updates preserve live module state and recorded-value cold r
     id: 'counter', name: 'counter', enabled: true, scope: 'namespace',
     source: 'await tools.observe({}); let count = 0; export function next() { return ++count }',
   }
-  const session = { id: 'binding-context-recovery', events: [] }
+  const session = orderedSurfaceSession('binding-context-recovery')
   const agent = ptcAgent(session.id, session)
   let initializations = 0
   const functions = { observe: async () => { initializations++; return 'initialized' } }
@@ -432,7 +464,7 @@ test('model-context updates preserve live module state and recorded-value cold r
     prefix ??= currentPrefix
     assert.equal(currentPrefix, prefix)
     if (modelContext !== undefined) assert.ok(configuredBindingPrompt(assembly).includes(modelContext.instructions))
-    const result = await first.runDurable(session.id, code, functions, { session })
+    const result = await first.runDurable(session.id, code, functions, { session, recordSession: 'deferred-result', callId: `counter-${index}` })
     assert.equal(result.value, index + 1)
     assert.equal(initializations, 1)
     assert.equal(result.meta[JOURNAL_KEY].status, 'durable')
@@ -466,7 +498,7 @@ test('keeps per-name overrides through configured entry removal, replacement and
     source: 'await tools.observe({}); export const alpha = 1; export let beta = 2',
   }
   await writeBindingsDocument(home, { entries: [entry] })
-  const session = { id: 'configured-name-recovery', events: [] }
+  const session = orderedSurfaceSession('configured-name-recovery')
   const agent = ptcAgent(session.id, session)
   let initializations = 0
   const functions = { observe: async () => { initializations++; return 'initialized' } }
@@ -475,7 +507,7 @@ test('keeps per-name overrides through configured entry removal, replacement and
   t.after(() => first.dispose())
   await rememberRequest(first, session, agent)
   const code = 'alpha = { local: true }; const localAlpha = alpha; const savedBeta = beta; void 0'
-  const executed = await first.runDurable(session.id, code, functions, { session })
+  const executed = await first.runDurable(session.id, code, functions, { session, recordSession: 'deferred-result', callId: 'local-alpha' })
   assert.equal(executed.isError, false)
   assert.deepEqual(executed.meta[JOURNAL_KEY].completion, { kind: 'return', hasValue: false })
   assert.deepEqual(executed.meta[JOURNAL_KEY].userBindingNames, [
@@ -489,7 +521,7 @@ test('keeps per-name overrides through configured entry removal, replacement and
   assert.equal(removed.ok, true)
   await rememberRequest(first, session, agent)
   const absentCode = 'return [alpha === localAlpha, typeof beta, savedBeta]'
-  const absent = await first.runDurable(session.id, absentCode, functions, { session })
+  const absent = await first.runDurable(session.id, absentCode, functions, { session, recordSession: 'deferred-result', callId: 'removed-pair' })
   assert.deepEqual(absent.value, [true, 'undefined', 2])
   appendRunCodeEvents(session.events, 'removed-pair', absentCode, absent)
   assert.equal(initializations, 1)
@@ -501,7 +533,7 @@ test('keeps per-name overrides through configured entry removal, replacement and
   assert.equal(replaced.ok, true)
   await rememberRequest(first, session, agent)
   const replacementCode = 'return [alpha === localAlpha, beta, savedBeta]'
-  const replacement = await first.runDurable(session.id, replacementCode, functions, { session })
+  const replacement = await first.runDurable(session.id, replacementCode, functions, { session, recordSession: 'deferred-result', callId: 'replacement-pair' })
   assert.deepEqual(replacement.value, [true, 20, 2])
   assert.equal(initializations, 2)
   assert.deepEqual(replacement.meta[USER_BINDINGS_META_KEY].entries[0].symbols, ['alpha', 'beta'])
@@ -529,7 +561,7 @@ test('contracts unversioned version 5 bindings and preserves resets when the tra
       if (previousHome === undefined) delete process.env.DSH_HOME
       else process.env.DSH_HOME = previousHome
     })
-    const session = { id: scenario.name, events: [] }
+    const session = orderedSurfaceSession(scenario.name)
     const agent = ptcAgent(session.id, session)
     for (const [index, record] of scenario.records.entries()) {
       assert.equal(record.journal.version, 5)
@@ -558,7 +590,7 @@ test('contracts unversioned version 5 bindings and preserves resets when the tra
       const probe = provedTransform ? scenario.probe : scenario.probe.replace('[earlier, later,', '[typeof earlier, typeof later,')
       const current = await state.runDurable(session.id, probe, {
         observe: async () => { dispatches++; return null },
-      }, { session })
+      }, { session, recordSession: 'deferred-result', callId: `current-${generation}` })
       assert.equal(current.error, undefined)
       assert.deepEqual(current.value, provedTransform
         ? scenario.expected.map((value, index) => value + (index === 2 ? generation : 0))
@@ -593,7 +625,7 @@ test('contracts missing or unknown reuse policies once and executes the current 
     records[1].journal.version = 6
     delete records[1].journal.moduleTransform
     if (policy !== undefined) records[1].journal.userBindingsReusePolicy = policy
-    const session = { id: `invalid-policy-${policy}`, events: [] }
+    const session = orderedSurfaceSession(`invalid-policy-${policy}`)
     const agent = ptcAgent(session.id, session)
     for (const [index, record] of records.entries()) {
       appendRunCodeEvents(session.events, `legacy-${index}`, record.code, { meta: {
@@ -607,7 +639,7 @@ test('contracts missing or unknown reuse policies once and executes the current 
       t.after(() => state.dispose())
       await rememberRequest(state, session, agent)
       const code = 'return [earlier, typeof later, counter.next()]'
-      const current = await state.runDurable(session.id, code, {}, { session })
+      const current = await state.runDurable(session.id, code, {}, { session, recordSession: 'deferred-result', callId: `current-${generation}` })
       assert.equal(current.error, undefined)
       assert.deepEqual(current.value, [1, 'undefined', generation + 2])
       assert.equal(current.meta[JOURNAL_KEY].status, 'durable')
@@ -630,13 +662,16 @@ test('contracts a malformed recorded binding snapshot instead of guessing from d
   await writeBindings(home, 1)
 
   const events = []
-  const session = { id: 'user-binding-malformed', events }
+  const session = orderedSurfaceSession('user-binding-malformed', events)
   const agent = ptcAgent('user-binding-malformed-agent', session)
   const first = fixture({ userBindingsEnabled: true })
   t.after(() => first.dispose())
   await rememberRequest(first, session, agent)
   const code = 'const shouldNotRecover = defaults.value'
-  const result = await first.runDurable(session.id, code, {}, { session })
+  const result = await first.runDurable(session.id, code, {}, {
+    session: session.id,
+    recordSession: false,
+  })
   const malformed = structuredClone(result)
   malformed.meta[USER_BINDINGS_META_KEY].entries[0].declaration = 'declare const forged: true'
   appendRunCodeEvents(events, 'malformed-binding', code, malformed)
@@ -667,12 +702,15 @@ test('contracts a durable node when its declared binding snapshot is missing', a
   await writeBindings(home, 1)
 
   const events = []
-  const session = { id: 'user-binding-missing', events }
+  const session = orderedSurfaceSession('user-binding-missing', events)
   const agent = ptcAgent('user-binding-missing-agent', session)
   const first = fixture({ userBindingsEnabled: true })
   await rememberRequest(first, session, agent)
   const code = 'const missingSnapshotValue = defaults.value'
-  const result = await first.runDurable(session.id, code, {}, { session })
+  const result = await first.runDurable(session.id, code, {}, {
+    session: session.id,
+    recordSession: false,
+  })
   assert.match(result.meta[JOURNAL_KEY].userBindingsFingerprint, /^[a-f0-9]{64}$/)
   const missing = structuredClone(result)
   delete missing.meta[USER_BINDINGS_META_KEY]
@@ -704,13 +742,16 @@ test('contracts a self-consistent historical snapshot with an invalid identifier
   })
   await writeBindings(home, 1)
   const events = []
-  const session = { id: 'identifier-recovery', events }
+  const session = orderedSurfaceSession('identifier-recovery', events)
   const agent = ptcAgent('identifier-recovery-agent', session)
   const first = fixture({ userBindingsEnabled: true })
   t.after(() => first.dispose())
   await rememberRequest(first, session, agent)
   const source = 'const historical = defaults.value; return historical'
-  const result = structuredClone(await first.runDurable(session.id, source, {}, { session }))
+  const result = structuredClone(await first.runDurable(session.id, source, {}, {
+    session: session.id,
+    recordSession: false,
+  }))
   const snapshot = result.meta[USER_BINDINGS_META_KEY]
   const entry = snapshot.entries[0]
   entry.name = 'defaults '
@@ -731,7 +772,7 @@ test('contracts a self-consistent historical snapshot with an invalid identifier
   t.after(() => restored.dispose())
   await rememberRequest(restored, session, agent)
   const currentSource = 'let current = defaults.value; return [typeof historical, current]'
-  const current = await restored.runDurable(session.id, currentSource, {}, { session })
+  const current = await restored.runDurable(session.id, currentSource, {}, { session, recordSession: 'deferred-result', callId: 'continued-identifier' })
   assert.deepEqual(current.value, ['undefined', 2])
   assert.equal(current.meta.dshPtcPlusRecoveryBoundaries.length, 1)
   appendRunCodeEvents(events, 'continued-identifier', currentSource, current)
@@ -756,30 +797,37 @@ test('contracts ambient module history before cold initialization and keeps the 
     const configured = document(1)
     configured.entries[0].source = bindingSource
     await writeBindingsDocument(home, configured)
-    const session = { id: `ambient-module-recovery-${index}`, events: [] }
+    const session = orderedSurfaceSession(`ambient-module-recovery-${index}`)
     const agent = ptcAgent(`ambient-module-agent-${index}`, session)
     const first = fixture({ userBindingsEnabled: true })
     t.after(() => first.dispose())
     await rememberRequest(first, session, agent)
     const source = 'const saved = defaults.value; return undefined'
-    const executed = await first.executeRun(session.id, source, {}, { session })
+    const executed = await first.executeRun(session.id, source, {}, {
+      session,
+      callId: 'ambient-module',
+      recordSession: 'deferred-result',
+    })
     assert.equal(executed.raw.error, undefined)
     assert.equal(executed.result.meta[JOURNAL_KEY].status, 'volatile')
     assert.equal(executed.result.meta[USER_BINDINGS_META_KEY].entries[0].durability, 'volatile')
-    assert.equal(typeof (await first.run(session.id, 'return saved', {}, { session })).value, 'number')
     const historical = structuredClone(executed.result)
     historical.meta[JOURNAL_KEY].status = 'durable'
     delete historical.meta[JOURNAL_KEY].volatileReason
     historical.meta[USER_BINDINGS_META_KEY].entries[0].durability = 'durable'
     delete historical.meta[USER_BINDINGS_META_KEY].entries[0].volatileReason
     appendRunCodeEvents(session.events, 'ambient-module', source, historical)
+    assert.equal(typeof (await first.run(session.id, 'return saved', {}, {
+      session: session.id,
+      recordSession: false,
+    })).value, 'number')
     await first.dispose()
     await writeBindings(home, 2)
     const restored = fixture({ userBindingsEnabled: true })
     t.after(() => restored.dispose())
     await rememberRequest(restored, session, agent)
     const currentSource = 'const current = defaults.value; return [typeof saved, current]'
-    const current = await restored.runDurable(session.id, currentSource, {}, { session })
+    const current = await restored.runDurable(session.id, currentSource, {}, { session, recordSession: 'deferred-result', callId: 'after-ambient-boundary' })
     assert.deepEqual(current.value, ['undefined', 2])
     assert.equal(current.meta.dshPtcPlusRecoveryBoundaries.length, 1)
     appendRunCodeEvents(session.events, 'after-ambient-boundary', currentSource, current)
@@ -801,14 +849,14 @@ test('cold-replays the binding snapshot used by a derived edit cell', async (t) 
   await writeBindings(home, 1)
 
   const events = []
-  const session = { id: 'user-binding-edit-recovery', events }
+  const session = orderedSurfaceSession('user-binding-edit-recovery', events)
   const agent = ptcAgent('user-binding-edit-recovery-agent', session)
   const first = fixture({ userBindingsEnabled: true })
   t.after(() => first.dispose())
   const requestSignal = new AbortController().signal
   await rememberRequest(first, session, agent, requestSignal)
   const source = 'let editedBindingValue = 0; return editedBindingValue'
-  const setup = await first.runDurable(session.id, source, {}, { session })
+  const setup = await first.runDurable(session.id, source, {}, { session, recordSession: 'deferred-result', callId: 'binding-edit-source' })
   appendRunCodeEvents(events, 'binding-edit-source', source, setup)
 
   const editArgs = { edits: [{ old_string: '= 0', new_string: '= defaults.value' }] }
@@ -842,7 +890,7 @@ test('cold-replays the binding snapshot used by a derived edit cell', async (t) 
 test('leaves prompt and runtime context unchanged when the capability is disabled or empty', async (t) => {
   const disabled = fixture({ userBindingsEnabled: false })
   t.after(() => disabled.dispose())
-  const session = { id: 'disabled-bindings', events: [] }
+  const session = orderedSurfaceSession('disabled-bindings')
   const agent = ptcAgent('disabled-bindings-agent', session)
   const assembly = await rememberRequest(disabled, session, agent)
   assert.equal(assembly.sections.some(item => item.name === 'tools:ptc-plus-user-binding-defaults'), false)

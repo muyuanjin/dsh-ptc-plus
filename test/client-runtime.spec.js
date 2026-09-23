@@ -6,7 +6,7 @@ import { act, fireEvent, render } from '@testing-library/react'
 import * as React from 'react'
 import * as primitives from '@deepseek-ai/dsh-client-ui-primitives'
 import { ConversationEventRegistry } from '@deepseek-ai/dsh-client-ui-conversation/client'
-import { SlotTestRuntime, stubSettingsScope, TestRemote } from '@deepseek-ai/dsh-client-test-runtime'
+import { SlotTestRuntime, TestRemote } from '@deepseek-ai/dsh-client-test-runtime'
 import { Context } from '@deepseek-ai/cordis'
 import * as gatewayClient from '@deepseek-ai/dsh-api-gateway/client'
 import { TypertRegistry } from '@deepseek-ai/dsh-typert-registry'
@@ -34,9 +34,78 @@ vi.mock('../src/client-catalog.js', async importOriginal => {
 })
 
 const cleanups = []
-// DSH 0.1.6-alpha.2 declares a bundle's own row configuration as this keyed
-// slot and dispatches `<package name>#<row id>`, with the row id
-// cordis.patch.yml inserts for this package.
+function stubSettingsScope() {
+  let snapshot = {
+    status: 'loading', value: undefined, base: undefined, user: undefined,
+    revision: undefined, writable: false, mode: 'host',
+  }
+  const listeners = new Set()
+  const set = vi.fn(() => Promise.resolve())
+  const mutate = vi.fn(() => Promise.resolve())
+  const unset = vi.fn(() => Promise.resolve())
+  return {
+    scope: {
+      getSnapshot: () => snapshot,
+      subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener) },
+      mutate,
+      set,
+      unset,
+    },
+    set,
+    mutate,
+    unset,
+    listenerCount: () => listeners.size,
+    publish(next) {
+      snapshot = { ...snapshot, ...next }
+      for (const listener of [...listeners]) listener()
+    },
+  }
+}
+
+function installSessionSelectionCompat(runtime) {
+  if (typeof runtime.sessions.setCurrent === 'function') return
+  const originalBehavior = runtime.sessions.behavior.bind(runtime.sessions)
+  const persisted = new Map()
+  const wrapped = new WeakSet()
+  const setters = new WeakMap()
+  runtime.sessions.behavior = id => {
+    const session = originalBehavior(id)
+    if (!wrapped.has(session)) {
+      const set = session.projections.set.bind(session.projections)
+      setters.set(session, set)
+      session.projections.set = (key, value) => {
+        const values = persisted.get(id) ?? new Map()
+        values.set(key, value)
+        persisted.set(id, values)
+        const result = set(key, value)
+        const current = originalBehavior(id)
+        if (current !== session) {
+          const publish = setters.get(current) ?? current.projections.set.bind(current.projections)
+          publish(key, value)
+        }
+        return result
+      }
+      wrapped.add(session)
+    }
+    return session
+  }
+  let selected
+  runtime.sessions.setCurrent = async id => {
+    for (const [key, value] of persisted.get(id) ?? []) {
+      await runtime.sessions.setProjection(id, key, value)
+    }
+    const next = id === undefined ? undefined : runtime.sessions.retain(id, { source: 'mainView' })
+    if (next !== undefined) await next.ready
+    if (id !== undefined) runtime.sessions.behavior(id)
+    selected?.release()
+    selected = next
+    await runtime.flush()
+  }
+}
+
+// The bundle-row settings contract declares this keyed slot and dispatches
+// `<package name>#<row id>`, with the row id cordis.patch.yml inserts for this
+// package.
 const ROW_CONFIG_SLOT = 'plugins.row.config'
 const ROW_CONFIG_KEY = 'dsh-ptc-plus#ptc-plus'
 // The Plugins page asks one entry for both of its views; the wrappers keep the
@@ -75,13 +144,18 @@ async function clientPlugin(ui = primitives) {
   })
 }
 
-async function fixture({ enabled = true, bindings = true, conversation = true, repl = false, composer = false, dock = true, uiSession = true, settingsCardSeat = 'legacy', rpc, watchRpc, observeRpc, commands, turn, tool, ui, setupEvents } = {}) {
+async function fixture({ enabled = true, bindings = true, conversation = true, repl = false, composer = false, dock = true, uiSession = true, settingsCardSeat = 'legacy', settingsTransport = 'configForms', rpc, watchRpc, observeRpc, commands, turn, tool, ui, setupEvents } = {}) {
   const runtime = await SlotTestRuntime.create()
   cleanups.push(() => runtime.dispose())
+  installSessionSelectionCompat(runtime)
   const settings = stubSettingsScope()
   const value = { ...Object.fromEntries(CONFIG_FIELDS.map(field => [field.key, field.default])), enabled, userBindingsEnabled: bindings }
   settings.publish({ status: 'ready', writable: true, value })
-  runtime.ctx.provide('settingsScope', { bind: () => settings.scope })
+  if (settingsTransport === 'configForms') {
+    runtime.ctx.provide('configForms', { get: () => settings.scope })
+  } else {
+    runtime.ctx.provide('settingsScope', { bind: () => settings.scope })
+  }
   const rpcCalls = []
   runtime.ctx.provide('connection', {
     start: () => ({ stop() {} }),
@@ -104,7 +178,18 @@ async function fixture({ enabled = true, bindings = true, conversation = true, r
     return { ok: true, value }
   } } })
   await runtime.mount(TypertRegistry)
-  await runtime.mount(gatewayClient)
+  if (runtime.ctx.get('remote') === undefined) {
+    await runtime.mount(gatewayClient)
+  } else {
+    const invoke = service => (operation, payload, signal) => runtime.ctx.connection.rpc.call(
+      '/api', `${service}/invoke`, { args: { operation, payload } }, signal,
+    )
+    runtime.remote.provideNamespaces({
+      ptcPlusBindings: { invoke: invoke('ptcPlusBindings') },
+      ptcPlusRepl: { invoke: invoke('ptcPlusRepl') },
+    })
+    runtime.remote.$mount = async () => {}
+  }
   const dictionaries = new Map()
   const localeSnapshot = { active: 'en', locales: [], revision: 0 }
   const localeListeners = new Set()
@@ -120,10 +205,18 @@ async function fixture({ enabled = true, bindings = true, conversation = true, r
   setupEvents?.(events)
   const provideConversation = () => runtime.mount({ apply(ctx) { ctx.provide('uiConversation', { events }) } })
   const conversationProvider = conversation ? await provideConversation() : undefined
-  const remote = commands ? new TestRemote(new Context(), { commands }) : undefined
+  let remote
+  if (commands) {
+    if (typeof runtime.remote?.provideNamespaces === 'function') {
+      runtime.remote.provideNamespaces({ commands })
+      remote = runtime.remote
+    } else {
+      remote = new TestRemote(new Context(), { commands })
+    }
+  }
   if (remote) {
-    runtime.ctx.provide('remote.commands', commands)
-    Object.assign(runtime.ctx.remote, { $on: remote.$on.bind(remote) })
+    if (runtime.ctx.get('remote.commands') === undefined) runtime.ctx.provide('remote.commands', commands)
+    if (runtime.ctx.get('remote') !== remote) Object.assign(runtime.ctx.remote, { $on: remote.$on.bind(remote) })
   }
   const input = stubSettingsScope()
   input.publish({ draft: '' })
@@ -134,10 +227,14 @@ async function fixture({ enabled = true, bindings = true, conversation = true, r
     } } }),
   })
   await runtime.sessions.add({ id: 'client-session' })
-  runtime.sessions.behavior('client-session').projections.set('agentPreset', 'ptc')
+  if (typeof runtime.sessions.setProjection === 'function') {
+    await runtime.sessions.setProjection('client-session', 'agentPreset', 'ptc')
+  } else runtime.sessions.behavior('client-session').projections.set('agentPreset', 'ptc')
+  await runtime.sessions.setCurrent('client-session')
   await runtime.root.declare({
     ...(settingsCardSeat === 'legacy' ? { 'settings.plugin.item': { kind: 'keyed', scope: 'root' } } : {}),
     ...(settingsCardSeat === 'row' ? { [ROW_CONFIG_SLOT]: { kind: 'keyed', scope: 'root' } } : {}),
+    ...(settingsCardSeat === 'general' ? { 'settings.general.item': { kind: 'list', scope: 'root' } } : {}),
     ...(settingsCardSeat === 'page' ? { 'test.pluginPage': { kind: 'list', scope: 'root' } } : {}),
     'conversation.session.header.actions': { kind: 'list', scope: 'session' },
     'conversation.chat.turnTail': { kind: 'chain', scope: 'session' },
@@ -152,6 +249,7 @@ async function fixture({ enabled = true, bindings = true, conversation = true, r
       ? props.renderSlot('settings.plugin.item', {}, { entryKey: 'ptc-plus' })
       : null,
     settingsCardSeat === 'row' ? rowConfigViews(props) : null,
+    settingsCardSeat === 'general' ? props.renderSlot('settings.general.item', {}) : null,
     settingsCardSeat === 'page' ? props.renderSlot('test.pluginPage', {}) : null,
     React.createElement(props.SessionProvider, null,
       props.renderSlot('conversation.session.header.actions', {}),
@@ -1708,10 +1806,12 @@ async function openGlobalMenu(view, runtime, mode = 'hover') {
   return trigger
 }
 
-test('the authoring entry opens the complete settings dialog from either host seat', async () => {
+test('the authoring entry opens the complete settings dialog from every host seat', async () => {
   for (const [seat, path] of [
     ['legacy', 'Settings → Plugin configuration → PTC Plus'],
     ['row', 'Side bar Plugins → dsh-ptc-plus → row ptc-plus → Configure'],
+    ['general', 'Settings → General → PTC Plus'],
+    ['page', 'PTC Plus settings'],
   ]) {
     const { runtime } = await fixture({
       settingsCardSeat: seat,
@@ -2776,10 +2876,9 @@ test('missing dock retains compact requests and read-only history without a phan
 
 
 test('Client Remote owns cancellation, unwraps Gateway failures and revokes calls on disposal', async () => {
-  const runtime = await SlotTestRuntime.create()
-  cleanups.push(() => runtime.dispose())
+  const ctx = new Context()
   const calls = []
-  runtime.ctx.provide('connection', {
+  ctx.provide('connection', {
     start: () => ({ stop() {} }), registerGenerationSource: () => () => {},
     rpc: { open: async function* () {}, async call(channel, endpoint, wire, signal) {
       calls.push({ channel, endpoint, wire, signal })
@@ -2790,10 +2889,14 @@ test('Client Remote owns cancellation, unwraps Gateway failures and revokes call
       return { ok: true, value: { ok: true, value: wire.args.payload } }
     } },
   })
-  await runtime.mount(TypertRegistry)
-  await runtime.mount(gatewayClient)
+  const registry = ctx.plugin(TypertRegistry)
+  await registry.await()
+  const gateway = ctx.plugin(gatewayClient)
+  await gateway.await()
+  cleanups.push(() => gateway.dispose(), () => registry.dispose())
   let rpc
-  const feature = await runtime.mount({ inject: ['remote'], async apply(ctx) { rpc = await createClientRpc(ctx) } })
+  const feature = ctx.plugin({ inject: ['remote'], async apply(featureCtx) { rpc = await createClientRpc(featureCtx) } })
+  await feature.await()
   expect(await rpc.call(RPC_CONTRACTS.bindings, 'list', { text: '{{literal}}' })).toEqual({ ok: true, value: { text: '{{literal}}' } })
   expect((await rpc.call(RPC_CONTRACTS.bindings, 'failure', {})).error.code).toBe('gateway/unavailable')
   const pending = rpc.call(RPC_CONTRACTS.repl, 'wait', {})
@@ -3745,20 +3848,24 @@ test('disposing the client plugin disposes its catalog owner and drops in-flight
 test('missing optional primitives fall back to native controls and text labels', async () => {
   const reducedUi = {
     Menu: primitives.Menu, Modal: primitives.Modal,
-    IconCheckOutline14: primitives.IconCheckOutline14,
-    IconChevronDownOutline14: primitives.IconChevronDownOutline14,
-    IconCloseOutline16: primitives.IconCloseOutline16,
-    IconInspectOutline12: primitives.IconInspectOutline12,
+    IconCheckOutlineRegular: primitives.IconCheckOutlineRegular,
+    IconCloseOutlineRegular: primitives.IconCloseOutlineRegular,
   }
   const entry = { ...reviewCandidate('reduced').entry, name: 'reducedTools' }
   const inspect = vi.fn()
   const block = { kind: 'tool-result', callId: 'call-1',
     call: { name: 'run_code', argsRaw: JSON.stringify({ code: 'return 41 + 1', description: 'Compute the answer' }) },
     content: [{ type: 'text', text: '42' }], isError: false, subCalls: [], meta: undefined }
-  const { runtime, input } = await fixture({ ui: reducedUi, tool: { toolName: 'run_code', block, inspect },
+  const { runtime, input } = await fixture({ ui: reducedUi, repl: true, tool: { toolName: 'run_code', block, inspect },
     commands: { list: async () => ({ ok: true, value: [{ name: 'binding' }] }) },
     rpc: async endpoint => ({ ok: true,
       value: endpoint === 'load' ? { revision: 1, entry } : { revision: 1, entries: [entry] } }) })
+  runtime.sessions.behavior('client-session').projections.set('ptcPlusRepl', {
+    available: true, total: 1, omitted: 0, reuseTotal: 1, entries: [
+      { name: 'answer', kind: 'variable',
+        definition: { source: 'const answer = 42', line: 1, column: 1 }, reuseCount: 1 },
+    ],
+  })
   const view = runtime.renderRoot()
   await runtime.flush()
   // ActionButton loses the primitive but keeps a native button with its copy.
@@ -3777,6 +3884,14 @@ test('missing optional primitives fall back to native controls and text labels',
   expect(row.querySelector('.ptcPlusIoText').textContent).toBe('42')
   fireEvent.click(row.querySelector('.ptcPlusInspect'))
   expect(inspect).toHaveBeenCalledTimes(1)
+  // The settings card and the tool row keep their chevron slots when the host
+  // publishes no chevron glyph, and the REPL card still expands its definition.
+  expect(view.container.querySelector('.ptcPlusChevron')).not.toBeNull()
+  const replTrigger = view.container.querySelector('.ptcPlusReplBindingTrigger')
+  expect(replTrigger).not.toBeNull()
+  fireEvent.click(replTrigger)
+  await runtime.flush()
+  expect(view.container.querySelector('.ptcPlusReplDefinitionWrap')).not.toBeNull()
   // The authoring trigger keeps a text label, a native hint and the busy notice.
   const anchor = view.container.querySelector('.ptcPlusComposerBindingAnchor')
   expect(anchor.getAttribute('data-text')).toBe('true')
@@ -4121,4 +4236,11 @@ test('tool rows project the recorded call and expose expansion and inspection', 
   expect(row.querySelector('.ptcPlusIoText').textContent).toBe('42')
   fireEvent.click(row.querySelector('.ptcPlusInspect'))
   expect(inspect).toHaveBeenCalledTimes(1)
+})
+
+test('activates through the preceding settingsScope transport', async () => {
+  const { runtime } = await fixture({ settingsTransport: 'settingsScope' })
+  const view = runtime.renderRoot()
+  await runtime.flush()
+  expect(view.container.querySelector('.ptcPlusSettingAction')).not.toBeNull()
 })

@@ -43,6 +43,16 @@ function callableSourceStart(source, node) {
   return start + tokens.getToken().start
 }
 
+function removeCallableSourceMarks(source, prefix, suffix, sources, options) {
+  const tree = parse(prefix + source + suffix, options)
+  const markers = new Set(sources.entries.map(entry => entry.marker))
+  const offset = prefix.length
+  const edits = tree.comments.filter(comment => markers.has(comment.value)
+    && comment.start >= offset && comment.end <= offset + source.length)
+    .map(comment => ({ start: comment.start - offset, end: comment.end - offset, text: '' }))
+  return edits.length === 0 ? source : applySourceEdits(source, identitySourceMap(source.length), edits).code
+}
+
 export function callableMarkerPosition(node, source, comments) {
   if (node.type !== 'ArrowFunctionExpression') return node.body.start + 1
   let start = source.lastIndexOf('=>', node.body.start - 1)
@@ -129,6 +139,7 @@ export function markCallableSources(source, sourceMap = identitySourceMap(source
   const nativeFunctions = typedRecords.map(record => markedNodes.get(record.marker))
     .filter(node => t.isFunction(node) && !isMethod(node)).sort((left, right) => left.start - right.start)
   const nativeRecipes = new Map()
+  const aliasMarkers = []
   const nativeFunctionIndex = start => {
     let low = 0, high = nativeFunctions.length
     while (low < high) {
@@ -175,7 +186,17 @@ export function markCallableSources(source, sourceMap = identitySourceMap(source
       original = lowered.source
       const entries = [...originals].map(([key, text]) => [key, key === marker ? original : text])
       for (const [node, fact] of markedCallableOwners(lowered.emitted, entries)) {
-        sources.aliases.push([lowered.emittedSource.slice(node.start, node.end), fact.original])
+        const generated = lowered.emittedSource.slice(node.start, node.end)
+        aliasMarkers.push([generated, fact.marker])
+        const generatedMethod = isMethod(node)
+        const markerFree = removeCallableSourceMarks(
+          generated,
+          generatedMethod ? 'class Source {' : '(',
+          generatedMethod ? '}' : ')',
+          sources,
+          options,
+        )
+        if (markerFree !== generated) aliasMarkers.push([markerFree, fact.marker])
       }
     }
     // Prefer source-preserving erasure. Runtime TypeScript constructs such as
@@ -202,6 +223,7 @@ export function markCallableSources(source, sourceMap = identitySourceMap(source
     } catch {
       lowerCallable()
     }
+    original = removeCallableSourceMarks(original, prefix, suffix, sources, options)
     entry.buffer = sources.buffers.length
     sources.buffers.push(original)
     entry.start = 0
@@ -209,6 +231,8 @@ export function markCallableSources(source, sourceMap = identitySourceMap(source
     originals.set(marker, original)
     if (!method && t.isFunction(node)) nativeRecipes.set(node, { node, start, end: node.end, text: original })
   }
+  const finalFacts = factMap(sources)
+  for (const [generated, marker] of aliasMarkers) sources.aliases.push([generated, originalText(finalFacts.get(marker))])
   return { ...marked, callableSources: sources, nativeJavaScript }
 }
 
@@ -271,6 +295,18 @@ export function collectCallableSources(code, sources, parserOptions = {}, transf
   return [...owners].map(([node, fact]) => {
     return [code.slice(callableSourceStart(code, node), node.end), originalText(fact)]
   }).concat(sources.aliases ?? [])
+}
+
+/** Restore only callable marks whose transformed starts have exact source-map ownership. */
+export function restoreMappedCallableSourceMarks(mapped, input, transformation, sources, parserOptions = {}) {
+  if (sources === undefined || sources.length === 0) return mapped
+  const { tree, owners } = callableSourceOwners(mapped.code, sources, parserOptions,
+    { code: input, map: transformation.map })
+  const edits = [...owners].map(([node, fact]) => {
+    const start = callableMarkerPosition(node, mapped.code, tree.comments)
+    return { start, end: start, text: `/*${fact.marker}*/` }
+  })
+  return edits.length === 0 ? mapped : applySourceEdits(mapped.code, mapped.sourceMap, edits)
 }
 
 /** Emission ranges come from typed nodes and exact generator mappings. */

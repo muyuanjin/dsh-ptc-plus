@@ -22,8 +22,8 @@ import {
   validateConfigPair,
 } from '../scripts/ab-headless-trajectories.mjs'
 import { orderCanaryFirst, runCanaryThenConcurrent } from '../scripts/acceptance-orchestration.mjs'
-import { collectTrajectoryFacts, pendingBlindApproval } from '../scripts/acceptance-contract.mjs'
-import { aggregateTrajectories } from '../scripts/ab-trajectory-report.mjs'
+import { collectTrajectoryFacts, machineBudgetFailures, MACHINE_BUDGET_KEYS, pendingBlindApproval } from '../scripts/acceptance-contract.mjs'
+import { aggregateTrajectories, trajectoryDelta } from '../scripts/ab-trajectory-report.mjs'
 
 const persona = 'You are a coding agent powered by the {{model}} model. Your working directory is {{cwd}}.'
 const runtime = { toolsMode: 'ptc', permissionMode: 'danger-full-access' }
@@ -120,6 +120,49 @@ test('freezes only repository source and explicit execution prerequisites', asyn
   await assert.rejects(copyWorkspace(source, join(root, 'failed'), {
     async runProcess() { return { code: 1, stdout: '', stderr: 'not a repository' } },
   }), /cannot enumerate A\/B workspace source files: not a repository/)
+})
+
+test('incomplete token accounting cannot establish a passing budget or usage delta', () => {
+  const zero = { inputTokens: 0, outputTokens: 0 }
+  const message = usage => ({ type: 'assistant/message', data: { usage, message: { content: [] } } })
+  const audits = { modelRequestAudit: { modelRequests: 1 }, contextAudit: { totalMessageChars: 0 } }
+  const budget = Object.fromEntries(MACHINE_BUDGET_KEYS.map(key => [key, 1000]))
+  for (const events of [
+    [message(undefined)],
+    [message({ inputTokens: 3 })],
+    [message({ inputTokens: -1, outputTokens: 0 })],
+    [message(zero), message(undefined)],
+    [{ type: 'assistant/attempt', data: { stream: [] } }, message(zero)],
+  ]) {
+    const facts = collectTrajectoryFacts(events, { compareUsageChunks: false })
+    assert.equal(facts.usageComplete, false)
+    const { machineMetrics } = computeMetrics(facts, audits)
+    assert.equal(machineMetrics.tokenTraffic, null)
+    assert.match(machineBudgetFailures(machineMetrics, budget).join('\n'), /accounting is incomplete/)
+    const session = { variant: 'plugin', usage: facts.usage, usageComplete: false,
+      failures: [], uncertaintySignals: [], prompt: {} }
+    assert.equal(aggregateTrajectories([session], 'plugin').totalTraffic, null)
+    assert.equal(trajectoryDelta(session, { ...session, usageComplete: true }).inputTokens, null)
+  }
+  const facts = collectTrajectoryFacts([message(zero)], { compareUsageChunks: false })
+  assert.equal(facts.usageComplete, true)
+  assert.equal(computeMetrics(facts, audits).machineMetrics.tokenTraffic, 0)
+  assert.deepEqual(machineBudgetFailures(computeMetrics(facts, audits).machineMetrics, budget), [])
+})
+
+test('incomplete subprocesses cannot establish task oracles', async () => {
+  for (const result of [
+    { code: 0, timedOut: true }, { code: 1, termination: 'unconfirmed' },
+    { code: 1, signal: 'SIGTERM' }, { code: null },
+  ]) {
+    for (const validator of ['test-gate', 'git-status']) {
+      await assert.rejects(taskOracle({ id: 'incomplete', validator }, '.', {
+        runProcess: async () => ({ stdout: '', stderr: '', ...result }),
+      }), /subprocess did not complete/)
+    }
+    await assert.rejects(validateTask({ id: 'incomplete', validator: 'test-gate' },
+      { ...result, exitCode: result.code }, { timeline: [] }), /subprocess did not complete/)
+  }
 })
 
 test('runs the test-gate oracle through the invoking npm CLI', async () => {

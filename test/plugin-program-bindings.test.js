@@ -10,7 +10,13 @@ import { normalizeJournal, RECOVERY_BOUNDARY_KEY } from '../internal/session-jou
 import { SessionRuntime } from '../internal/session-runtime.js'
 import { createUserBindingsSnapshot, USER_BINDINGS_META_KEY } from '../internal/user-bindings.js'
 import { decodeValue, encodeValue, renderValueWire } from '../internal/value-wire.js'
-import { JOURNAL_POLICY, appendRunCodeEvents, fixture, ptcAgent } from './plugin-fixture.js'
+import {
+  JOURNAL_POLICY,
+  appendRunCodeEvents,
+  fixture,
+  orderedSurfaceSession,
+  ptcAgent,
+} from './plugin-fixture.js'
 
 test('failed host results retain recovery boundaries and activated binding snapshots for journal confirmation', async t => {
   const definition = { name: 'run_code', output: {} }
@@ -24,16 +30,23 @@ test('failed host results retain recovery boundaries and activated binding snaps
   t.after(() => owner.dispose())
   const selected = createUserBindingsSnapshot({ entries: [{ id: 'helper', name: 'helper',
     scope: 'namespace', purpose: '', enabled: true, source: 'export const value=42' }] })
-  const events = []
-  appendRunCodeEvents(events, 'unproved-history', 'let old=1', { meta: { dshPtcPlus: { version: 999 } } })
-  const exec = { name: 'run_code', callId: 'binding-error', agent: { id: 'binding-error', session: { events } } }
+  const session = orderedSurfaceSession('binding-error')
+  const historySeqs = appendRunCodeEvents(
+    session.events,
+    'unproved-history',
+    'let old=1',
+    { meta: { dshPtcPlus: { version: 999 } } },
+  )
+  const exec = { name: 'run_code', callId: 'binding-error', agent: { id: 'binding-error', session } }
   const result = await owner.handleExecute(exec, async () => {
     const raw = await runtime.run({ program: 'throw Error(String(helper.value))', bindings: [] })
     assert.match(raw.error.message, /42/)
     return { isError: true, content: [], error: { message: raw.error.message } }
   }, undefined, selected)
   assert.deepEqual(result.meta[USER_BINDINGS_META_KEY], selected)
-  assert.deepEqual(result.meta[RECOVERY_BOUNDARY_KEY], [{ failedCallSeq: 0, frontierCallSeq: null }])
+  assert.deepEqual(result.meta[RECOVERY_BOUNDARY_KEY], [
+    { failedCallSeq: historySeqs.callSeq, frontierCallSeq: null },
+  ])
   assert.equal(result.meta.dshPtcPlus.completion.kind, 'throw')
   owner.handleResult(exec, result)
 })
@@ -52,7 +65,7 @@ test('keeps successful rewrites out of the prompt projection', async (t) => {
     ],
     contexts: stableContexts, variables: {}, tools: [state.runCodeDefinition],
   }
-  const session = { id: 'rewrite-feedback-session', events: [{ type: 'turn/start' }] }
+  const session = orderedSurfaceSession('rewrite-feedback-session', [{ type: 'turn/start' }])
   const agent = ptcAgent(`${session.id}-agent`, session)
   const requestContext = { agent, scope: agent, signal: new AbortController().signal }
   const renderHeader = async (target, assembly, context) => {
@@ -78,20 +91,20 @@ test('keeps successful rewrites out of the prompt projection', async (t) => {
 
   const baseline = await headerOf()
   const firstCode = "import { basename } from 'node:path'\nreturn basename('/a/b')"
-  const first = await state.runDurable(session.id, firstCode, {}, { session })
+  const first = await state.runDurable(session.id, firstCode, {}, { session, recordSession: 'deferred-result', callId: 'rewrite-first' })
   assert.match(first.meta.dshPtcPlusRewrites[0].description, /adapted the static import of "node:path"/)
   appendRunCodeEvents(session.events, 'rewrite-first', firstCode, first)
   assert.deepEqual(await runtimeContexts(), stableContexts)
   assert.equal(await headerOf(), baseline)
 
   const secondCode = "import { fileURLToPath } from 'node:url'\nreturn typeof fileURLToPath"
-  const second = await state.runDurable(session.id, secondCode, {}, { session })
+  const second = await state.runDurable(session.id, secondCode, {}, { session, recordSession: 'deferred-result', callId: 'rewrite-second' })
   assert.match(second.meta.dshPtcPlusRewrites[0].description, /adapted the static import of "node:url"/)
   appendRunCodeEvents(session.events, 'rewrite-second', secondCode, second)
   assert.deepEqual(await runtimeContexts(), stableContexts)
   assert.equal(await headerOf(), baseline)
 
-  const later = await state.runDurable(session.id, 'return 1', {}, { session })
+  const later = await state.runDurable(session.id, 'return 1', {}, { session, recordSession: 'deferred-result', callId: 'rewrite-later' })
   appendRunCodeEvents(session.events, 'rewrite-later', 'return 1', later)
   assert.deepEqual(await runtimeContexts(), stableContexts)
   assert.equal(await headerOf(), baseline)
@@ -174,10 +187,10 @@ test('keeps rewritten completion unknown without a valid journal', async (t) => 
 test('a throwing rewritten cell explains its continuation in the result alone', async (t) => {
   const state = fixture()
   t.after(() => state.dispose())
-  const session = { id: 'rewrite-failure-context', events: [{ type: 'turn/start' }] }
+  const session = orderedSurfaceSession('rewrite-failure-context', [{ type: 'turn/start' }])
   const agent = ptcAgent('rewrite-failure-context-agent', session)
   const code = 'export const failedValue = 1\nthrow new Error("boom")'
-  const result = await state.runDurable(session.id, code, {}, { session })
+  const result = await state.runDurable(session.id, code, {}, { session, recordSession: 'deferred-result', callId: 'rewrite-failure' })
   assert.equal(result.isError, true)
   assert.ok(result.meta.dshPtcPlusRewrites?.length > 0)
   appendRunCodeEvents(session.events, 'rewrite-failure', code, result)
@@ -281,8 +294,8 @@ test('canonicalizes omitted native arguments only when the live schema accepts a
       parameters: { type: 'object', minProperties: 1 },
     },
   ]
-  const events = []
-  const session = { id: 'empty-native-arguments', events }
+  const session = orderedSurfaceSession('empty-native-arguments')
+  const { events } = session
   const first = fixture({}, { schemas })
   t.after(() => first.dispose())
   const calls = []
@@ -292,7 +305,7 @@ const explicitEmptyResult = await tools.zero({})
 `
   const recorded = await first.runDurable(session.id, source, {
     zero: async args => { calls.push(args); return Object.keys(args).length },
-  }, { session })
+  }, { session, recordSession: 'deferred-result', callId: 'empty-native-arguments-call' })
 
   assert.equal(recorded.isError, false)
   assert.deepEqual(calls, [{}, {}])
@@ -400,13 +413,15 @@ test('rejects owner bindings that collide with plugin program namespaces', async
 })
 
 test('cold-replays an owner-provided program binding from its recorded value', async (t) => {
-  const events = []
-  const session = { id: 'owner-binding-replay', events }
+  const session = orderedSurfaceSession('owner-binding-replay')
+  const { events } = session
   const first = fixture()
   t.after(() => first.dispose())
   let liveCalls = 0
   const source = 'const ownerReplayValue = await ownerApi.read({ key: "answer" })'
   const recorded = await first.runDurable(session.id, source, {}, {
+    callId: 'owner-binding-call',
+    recordSession: 'deferred-result',
     session,
     bindings: [{
       global: 'ownerApi',
@@ -433,8 +448,8 @@ test('cold-replays an owner-provided program binding from its recorded value', a
 })
 
 test('preserves rich owner binding values through journal JSON and cold replay', async (t) => {
-  const events = []
-  const session = { id: 'owner-rich-binding-replay', events }
+  const session = orderedSurfaceSession('owner-rich-binding-replay')
+  const { events } = session
   const first = fixture()
   t.after(() => first.dispose())
   let liveCalls = 0
@@ -779,15 +794,15 @@ return code.run({ code: 'await tools.started({}); await new Promise(() => {})', 
 test('cold-replays a settled code.run result without dispatching the child again', async (t) => {
   let calls = 0
   const functions = { read: async () => { calls++; return 42 } }
-  const events = []
-  const session = { id: 'recursive-replay', events }
+  const session = orderedSurfaceSession('recursive-replay')
+  const { events } = session
   const first = fixture()
   t.after(() => first.dispose())
   const code = `const recursiveReplayResult = await code.run({
   code: 'return tools.read({})',
   description: 'Compute isolated child value',
 })`
-  const recorded = await first.runDurable(session.id, code, functions, { session })
+  const recorded = await first.runDurable(session.id, code, functions, { session, recordSession: 'deferred-result', callId: 'recursive-parent' })
   assert.equal(calls, 1)
   assert.equal(recorded.meta.dshPtcPlus.calls[0].member, 'run')
   appendRunCodeEvents(events, 'recursive-parent', code, recorded)
@@ -819,8 +834,8 @@ return caught
 })
 
 test('preserves available native tool error codes as a structured diagnostic cause', async (t) => {
-  const events = []
-  const session = { id: 'host-cause', events }
+  const session = orderedSurfaceSession('host-cause')
+  const { events } = session
   const state = fixture()
   t.after(() => state.dispose())
 
@@ -831,7 +846,7 @@ test('preserves available native tool error codes as a structured diagnostic cau
       error.code = 'ENOENT'
       throw error
     },
-  }, { session })
+  }, { session, recordSession: 'deferred-result', callId: 'host-cause-call' })
   const diagnostic = observed.result.meta.dshPtcPlus.diagnostics[0]
   assert.equal(diagnostic.code, 'PTC-X001')
   assert.deepEqual(diagnostic.cause, { code: 'ENOENT', message: 'file not found' })

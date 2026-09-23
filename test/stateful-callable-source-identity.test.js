@@ -8,10 +8,12 @@ import test from 'node:test'
 import { SessionRuntime } from '../internal/session-runtime.js'
 import { compileStatefulModule } from '../internal/stateful-module-compiler.js'
 import { mapSourceSpan } from '../internal/source-position-map.js'
+import { orderedSurfaceSession, runRecordedCell } from './plugin-fixture.js'
 
 const traverse = traverseModule.default ?? traverseModule
 const originals = ['() => 1801', '()=>1801', 'method () { return 1802 }', 'method(){return 1802}',
   'class { read () { return 1803 } }', 'class{read(){return 1803}}']
+const lineEndings = ['\n', '\r\n', '\r', '\u2028', '\u2029']
 
 async function worker(t, files, bindingUpdates = 'stateful') {
   const directory = await mkdtemp(join(tmpdir(), 'ptc-callable-source-identity-'))
@@ -19,9 +21,13 @@ async function worker(t, files, bindingUpdates = 'stateful') {
   await Promise.all(Object.entries(files).map(([name, source]) => writeFile(join(directory, name), source)))
   const runtime = new SessionRuntime({ bindingUpdates, durableReplay: false })
   t.after(() => runtime.dispose())
-  const session = { id: 'callable-source-identity', session: { header: { cwd: directory } } }
+  const session = orderedSurfaceSession('callable-source-identity')
+  session.header = { cwd: directory }
+  let call = 0
   return async program => {
-    const result = await runtime.run(session, { bindings: [], program })
+    const result = await runRecordedCell(runtime, session, `callable-source-${++call}`, {
+      bindings: [], program,
+    })
     assert.equal(result.error, undefined, result.error?.message)
     return result.value
   }
@@ -87,6 +93,31 @@ const dynamic=eval(${JSON.stringify(`const a=${originals[0]};const b=${originals
 return [[a.toString(),b.toString()],local(),dynamic]`
   assert.deepEqual(await run(program), [originals.slice(0,2),originals.slice(0,2),originals.slice(0,2)])
 })
+
+for (const bindingUpdates of ['stateful', 'protected']) {
+  test(`TypeScript namespace functions retain source ownership across line endings (${bindingUpdates})`, async t => {
+    const run = await worker(t, {}, bindingUpdates)
+    for (const [index, ending] of lineEndings.entries()) {
+      const namespace = `N${index}`
+      const secret = `secret${index}`
+      const read = `read${index}`
+      const reflected = `reflected${index}`
+      const callable = `function ${read} () {${ending}return ${secret}${ending}}`
+      const source = `namespace ${namespace} {${ending}export let ${secret}=42;${ending}export ${callable}${ending}}`
+      assert.deepEqual(await run(`${source}${ending}const ${reflected}=${namespace}.${read}.toString();`
+        + `return [${namespace}.${read}(),${reflected}]`), [42, callable])
+      assert.equal(await run(`const ${secret}=43;return eval("("+${reflected}+")")()`), 43)
+    }
+  })
+
+  test(`typed namespace reflection contains only reconstructed JavaScript (${bindingUpdates})`, async t => {
+    const run = await worker(t, {}, bindingUpdates)
+    const expected = 'function add(value       )       {return value+1}'
+    assert.equal(await run(`namespace Typed {export function add(value:number):number{return value+1}}
+      const typedReflected=Typed.add.toString();return typedReflected`), expected)
+    assert.equal(await run('return Function("return ("+typedReflected+")")()(41)'), 42)
+  })
+}
 
 const staticMethodSource = `class C{
   static["m"](){let value=7;return value}

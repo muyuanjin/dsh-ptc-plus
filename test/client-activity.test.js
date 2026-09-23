@@ -3,8 +3,8 @@ import test from 'node:test'
 import { derivePtcToolView } from '../src/client-activity.js'
 import { normalizeJournal } from '../internal/session-journal.js'
 import { JOURNAL_VERSION, JOURNAL_VERSIONS, PER_NAME_USER_BINDINGS_JOURNAL_VERSION } from '../internal/session-journal-schema.js'
-import { encodeValue } from '../internal/value-wire.js'
-import { DEFAULT_VALUE_LIMITS } from '../internal/value-wire-schema.js'
+import { decodeValue, encodeValue } from '../internal/value-wire.js'
+import { DEFAULT_VALUE_LIMITS, VALUE_CODEC } from '../internal/value-wire-schema.js'
 import { LEGACY_USER_BINDING_TRANSFORM, PREVIOUS_USER_BINDING_TRANSFORM,
   PROTECTED_MODULE_TRANSFORM } from '../internal/module-transform-contract.js'
 
@@ -228,6 +228,51 @@ test('distinguishes successful code.run from failed or discarded state', () => {
   })).features, [])
 })
 
+test('rejects negative zero in every presentation sequence contract', () => {
+  const valid = normalizeJournal(journal({ calls: [call('code', 'run', 0)] }))
+  const invalidSettlement = structuredClone(valid)
+  invalidSettlement.calls[0].settle = -0
+  assert.equal(derivePtcToolView(result({ dshPtcPlus: invalidSettlement })).ptc, false)
+
+  const invalidConfirm = structuredClone(valid)
+  invalidConfirm.confirms = [-0]
+  assert.equal(derivePtcToolView(result({ dshPtcPlus: invalidConfirm })).ptc, false)
+
+  const editMeta = {
+    dshPtcPlus: valid,
+    dshPtcPlusEdit: { targetCallSeq: 7 },
+    dshPtcPlusDerivedRun: { code: 'return fixed', description: 'Apply fix' },
+  }
+  const editFeatures = meta => derivePtcToolView(result(meta, {
+    toolName: 'edit_run_code',
+  }), 'edit_run_code').features
+  assert.equal(editFeatures({
+    ...editMeta,
+    dshPtcPlusEdit: { targetCallSeq: -0 },
+  }).some(feature => feature.key === 'feature.safeEdit'), false)
+  for (const boundary of [
+    { failedCallSeq: -0, frontierCallSeq: null },
+    { failedCallSeq: 9, frontierCallSeq: -0 },
+  ]) {
+    assert.equal(editFeatures({
+      ...editMeta,
+      dshPtcPlusRecoveryBoundaries: [boundary],
+    }).some(feature => feature.key === 'feature.safeEdit'), false)
+  }
+
+  const invalidReference = structuredClone(valid)
+  invalidReference.completion = {
+    kind: 'return',
+    hasValue: true,
+    value: {
+      codec: VALUE_CODEC,
+      root: { tag: 'reference', index: -0 },
+      nodes: [{ type: 'object', prototype: 'object', entries: [] }],
+    },
+  }
+  assert.equal(derivePtcToolView(result({ dshPtcPlus: invalidReference })).ptc, false)
+})
+
 test('requires the complete durable recovery diagnostic tuple', () => {
   const recovery = {
     ...diagnostic(),
@@ -346,6 +391,32 @@ test('rejects non-canonical Value V1 property order', () => {
 test('keeps presentation validation bounded when a cell uses larger runtime limits', () => {
   const length = DEFAULT_VALUE_LIMITS.maxArrayLength + 1
   const wire = encodeValue(new Array(length), { maxArrayLength: length })
+  const candidate = normalizeJournal(journal())
+  const view = derivePtcToolView(result({
+    dshPtcPlus: { ...candidate, completion: { kind: 'return', hasValue: true, value: wire } },
+  }))
+  assert.equal(view.ptc, false)
+  assert.equal(view.code, 'return 1')
+  assert.equal(view.output, '1')
+  assert.deepEqual(view.features, [])
+})
+
+test('rejects Value V1 graphs whose reachable arrays exceed the cumulative slot budget', () => {
+  const length = Math.floor(DEFAULT_VALUE_LIMITS.maxArrayLength / 2) + 1
+  const wire = {
+    codec: VALUE_CODEC,
+    root: { tag: 'reference', index: 0 },
+    nodes: [
+      { type: 'object', prototype: 'object', entries: [
+        ['first', { tag: 'reference', index: 1 }],
+        ['second', { tag: 'reference', index: 2 }],
+      ] },
+      { type: 'array', length, entries: [] },
+      { type: 'array', length, entries: [] },
+    ],
+  }
+  assert.throws(() => decodeValue(wire), /array slot budget exceeded/)
+
   const candidate = normalizeJournal(journal())
   const view = derivePtcToolView(result({
     dshPtcPlus: { ...candidate, completion: { kind: 'return', hasValue: true, value: wire } },

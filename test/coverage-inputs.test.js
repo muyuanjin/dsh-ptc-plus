@@ -11,6 +11,7 @@ import {
   COVERAGE_THRESHOLDS,
   coverageReportArguments,
   createCoverageReport,
+  gateSourceFiles,
 } from '../scripts/coverage-report.mjs'
 import { uncoveredEnvironment } from './subprocess-environment.js'
 
@@ -41,6 +42,13 @@ test('focused report arguments select explicit sources', () => {
   assert.throws(() => coverageReportArguments([]), /requires an evidence directory/)
   assert.throws(() => coverageReportArguments(['raw', '--include']), /requires a value/)
   assert.throws(() => coverageReportArguments(['raw', '--unknown']), /unknown coverage report argument/)
+})
+
+test('the graded coverage closure requires every plugin source', async t => {
+  const { root } = await fixture(t)
+  await writeFile(join(root, 'index.js'), 'export const name = "fixture"\n')
+  await writeFile(join(root, 'internal', 'shim.cjs'), 'module.exports = 1\n')
+  assert.deepEqual(gateSourceFiles(root).sort(), ['index.js', 'internal/example.js'])
 })
 
 test('focused reports retain an unexecuted selected source as uncovered', async t => {
@@ -129,6 +137,14 @@ test('filtered c8 maps and uncovered counters exactly match ordinary c8', async 
   assert.ok(filtered.stats.retainedScripts < filtered.stats.scripts)
   assert.deepEqual(await readFile(join(directory, 'worker.json')), raw, 'filter rewrote V8 evidence')
   assert.deepEqual(COVERAGE_THRESHOLDS, { lines: 100, branches: 95, functions: 100, statements: 0 })
+  // The graded gate requires the whole plugin-source closure, so the entry
+  // source and its evidence join the fixture before the threshold check.
+  await writeFile(join(root, 'index.js'), source)
+  await writeFile(join(directory, 'worker.json'), JSON.stringify({ result: [
+    record(own, source, 1), record(join(root, 'index.js'), source, 1),
+    record(dependency, source, 1), record(emitted, generated, 1),
+    { url: 'node:fs', functions: [] },
+  ] }))
   const gate = spawnSync(process.execPath,
     [fileURLToPath(new URL('../scripts/coverage-report.mjs', import.meta.url)), directory], {
       cwd: root, env: uncoveredEnvironment(), encoding: 'utf8', timeout: 10000,

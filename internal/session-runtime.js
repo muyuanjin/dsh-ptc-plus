@@ -4,6 +4,7 @@ import { diagnostic, renderDiagnostic } from './diagnostic.js'
 import { createFailureTracker, messageOf } from './failure-reporting.js'
 import {
   createJournal,
+  isCanonicalSequence,
   liveToolCallSeq,
   normalizeJournal,
   reduceStateOperations,
@@ -29,6 +30,17 @@ import {
 } from './repl-memory-projection.js'
 
 const WORKER_URL = new URL('./kernel-worker.js', import.meta.url)
+const UNAVAILABLE_SURFACE_GENERATION = Symbol('unavailableSurfaceGeneration')
+
+function surfaceGeneration(session, provenanceRequired = true) {
+  try {
+    return session?.surface?.replaceGeneration
+      ?? (provenanceRequired ? UNAVAILABLE_SURFACE_GENERATION : undefined)
+  } catch {
+    return provenanceRequired ? UNAVAILABLE_SURFACE_GENERATION : undefined
+  }
+}
+
 function recoveryDiagnostic(count) {
   return diagnostic({
     code: 'PTC-R002',
@@ -66,20 +78,16 @@ class ReplayCancelled extends Error {
 }
 
 class SessionKernel {
-  constructor({ config, history, cwd, session, userBindingsCwd, withInitiator, observeValues }) {
+  constructor({ config, history, cwd, session, surfaceProvenanceRequired, userBindingsCwd, withInitiator, observeValues }) {
     this.config = config
     this.history = history
     this.initialRecoveryBoundary = recoveryBoundaryForHistory(history)
-    this.surfaceGeneration = undefined
-    try {
-      this.surfaceGeneration = session?.surface?.replaceGeneration
-    } catch {
-      this.surfaceGeneration = undefined
-    }
+    this.surfaceGeneration = surfaceGeneration(session, surfaceProvenanceRequired)
     this.cwd = cwd
     this.userBindingsCwd = userBindingsCwd
     this.observeValues = observeValues
     this.session = session
+    this.surfaceProvenanceRequired = surfaceProvenanceRequired
     this.withInitiator = withInitiator
     this.durability = durabilityState()
     this.bindingCatalog = new BindingCatalog()
@@ -103,10 +111,19 @@ class SessionKernel {
       cwd,
       compilerCache: compilerWorkerCache,
       onMessage: message => this.cellExecutor.onMessage(message),
+      onUnmatchedOutputFailure: message => {
+        const active = this.active
+        if (active === undefined) return false
+        active.resolve({ logs: [], error: { kind: 'worker-exit', message } }, true)
+        return true
+      },
       onFailure: message => {
         this.pendingInspection?.finish()
         this.workerObservation = undefined
-        this.active?.resolve({ logs: [], error: { kind: 'worker-exit', message } }, true)
+        const active = this.active
+        if (active === undefined) return false
+        active.resolve({ logs: [], error: { kind: 'worker-exit', message } }, true)
+        return true
       },
     })
     this.failures = createFailureTracker()
@@ -181,10 +198,10 @@ class SessionKernel {
     const current = () => {
       if (this.disposed || !this.config.replViewEnabled || signal?.aborted
         || this.client.worker === undefined || this.unsettledCells > 0) return false
-      try {
-        return this.session?.surface?.replaceGeneration === this.surfaceGeneration
-          && isDeepStrictEqual(expected, createReplMemorySnapshot(this.bindingCatalog.snapshot()))
-      } catch { return false }
+      return surfaceGeneration(this.session, this.surfaceProvenanceRequired) === this.surfaceGeneration
+        && (!this.surfaceProvenanceRequired
+          || this.surfaceGeneration !== UNAVAILABLE_SURFACE_GENERATION)
+        && isDeepStrictEqual(expected, createReplMemorySnapshot(this.bindingCatalog.snapshot()))
     }
     return new Promise(resolve => {
       let finished = false
@@ -234,13 +251,10 @@ class SessionKernel {
     const finishResult = result => recoveryBoundaries.length === 0
       ? result
       : { ...result, recoveryBoundaries: recoveryBoundaries.map(boundary => ({ ...boundary })) }
-    let currentGeneration
-    try {
-      currentGeneration = this.session?.surface?.replaceGeneration
-    } catch {
-      currentGeneration = undefined
-    }
-    if (currentGeneration !== undefined && currentGeneration !== this.surfaceGeneration) {
+    const currentGeneration = surfaceGeneration(this.session, this.surfaceProvenanceRequired)
+    const hasLiveState = this.liveCallSeqs.size > 0
+    if (this.surfaceProvenanceRequired
+      && (currentGeneration !== this.surfaceGeneration || hasLiveState)) {
       this.surfaceGeneration = currentGeneration
       const visibleCallSeqs = visibleExecutableCallSeqs(this.session)
       const contractsLiveState = [...this.liveCallSeqs].some(callSeq => (
@@ -597,6 +611,7 @@ function sessionOf(sessionContext) {
       callId: undefined,
       persistedCallSeq: undefined,
       cwd: undefined,
+      surfaceProvenanceRequired: false,
     }
   }
   const session = sessionContext.session
@@ -606,6 +621,7 @@ function sessionOf(sessionContext) {
     callId: sessionContext.callId,
     persistedCallSeq: sessionContext.persistedCallSeq,
     cwd: typeof session?.header?.cwd === 'string' ? session.header.cwd : undefined,
+    surfaceProvenanceRequired: true,
   }
 }
 
@@ -657,12 +673,19 @@ export class SessionRuntime {
       return completed({ logs: [], error: { kind: 'exception', message: messageOf(error) } })
     }
     request = { ...request, bindings: bindingDescriptors.namespaces, bindingDescriptors }
-    const { id: sessionId, session, callId, persistedCallSeq, cwd } = sessionOf(sessionContext)
+    const {
+      id: sessionId,
+      session,
+      callId,
+      persistedCallSeq,
+      cwd,
+      surfaceProvenanceRequired,
+    } = sessionOf(sessionContext)
     let callSeq
     let sourceCallSeq
     try {
       if (persistedCallSeq !== undefined
-        && (!Number.isSafeInteger(persistedCallSeq) || persistedCallSeq < 0)) {
+        && !isCanonicalSequence(persistedCallSeq)) {
         throw new Error('persisted tool call sequence must be a non-negative safe integer')
       }
       if (cellConfig.durableReplay) {
@@ -700,6 +723,7 @@ export class SessionRuntime {
         history,
         cwd,
         session,
+        surfaceProvenanceRequired,
         userBindingsCwd: this.userBindingsCwd,
         withInitiator: this.withInitiator,
         observeValues: () => this.config.replViewEnabled && this.observeSession(sessionId),

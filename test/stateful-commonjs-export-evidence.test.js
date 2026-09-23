@@ -10,6 +10,7 @@ import { compileStatefulModule } from '../internal/stateful-module-compiler.js'
 import { SessionRuntime } from '../internal/session-runtime.js'
 import { LEGACY_USER_BINDING_TRANSFORM, USER_BINDING_TRANSFORM } from '../internal/typescript-transform.js'
 import { managedGraph } from './managed-module-fixture.js'
+import { orderedSurfaceSession, runRecordedCell } from './plugin-fixture.js'
 
 const transforms = [USER_BINDING_TRANSFORM, LEGACY_USER_BINDING_TRANSFORM]
 const cases = {
@@ -236,13 +237,16 @@ for (const [policy, options] of Object.entries(policies)) {
       ])
       const runtime = new SessionRuntime({ durableReplay: false, ...options })
       t.after(() => runtime.dispose())
-      const session = { id: `cjs-evidence-${policy}-${first}`, session: { header: { cwd: directory } } }
+      const session = orderedSurfaceSession(`cjs-evidence-${policy}-${first}`)
+      session.header = { cwd: directory }
       if (first === 'require') {
-        const initial = await runtime.run(session, { bindings: [], program: 'const initiallyRequired=require("./value.cjs");return initiallyRequired.answer' })
+        const initial = await runRecordedCell(runtime, session, 'initial-require', {
+          bindings: [], program: 'const initiallyRequired=require("./value.cjs");return initiallyRequired.answer',
+        })
         assert.equal(initial.error, undefined, initial.error?.message)
         assert.equal(initial.value, 42)
       }
-      const result = await runtime.run(session, { bindings: [], program: `
+      const result = await runRecordedCell(runtime, session, 'load-commonjs-evidence', { bindings: [], program: `
 import consumer,{answer} from './consumer.mjs';import {answer as direct} from './value.cjs';
 const dynamic=await import('./value.cjs');const forwarded=await import('./forward.cjs');const required=require('./value.cjs');
 const indirect=await import('./consumer.mjs');required.update();
@@ -253,7 +257,9 @@ return [answer,direct,dynamic.answer,forwarded.answer,await indirect.dynamic(),
       assert.deepEqual(result.value.slice(0, -1), [42,42,42,42,42,true,true,true,true,1,1,2])
       if (policy === 'stateful') assert.equal(result.value.at(-1), 'function runs(){return counter.runs}')
       assert.equal(result.value.at(-1).includes('if(false)'), false)
-      const later = await runtime.run(session, { bindings: [], program: 'return [(await import("./value.cjs")).value,required.value,required.runs()]' })
+      const later = await runRecordedCell(runtime, session, 'reuse-commonjs-evidence', {
+        bindings: [], program: 'return [(await import("./value.cjs")).value,required.value,required.runs()]',
+      })
       assert.equal(later.error, undefined, later.error?.message)
       assert.deepEqual(later.value, [1,2,1])
     })

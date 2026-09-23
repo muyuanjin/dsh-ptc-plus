@@ -43,8 +43,36 @@ function assertField(field, value) {
  * @param config - raw config object.
  * @returns a resolved config object.
  */
+/**
+ * A volatile schema field validates to a live `{ get }` handle. A field that
+ * has no schema default arrives as a handle with an undefined live value and
+ * keeps the runtime default.
+ */
+function liveConfigValue(value, fallback) {
+  if (value !== null && typeof value === 'object'
+    && typeof value.get === 'function' && Object.keys(value).length === 1) {
+    const live = value.get()
+    return live === undefined ? fallback : live
+  }
+  return value
+}
+
 export function resolveConfig(config = {}) {
+  const provided = new Set()
+  for (const field of CONFIG_FIELDS) {
+    if (!Object.hasOwn(config, field.key)) continue
+    const value = config[field.key]
+    if (value !== null && typeof value === 'object'
+      && typeof value.get === 'function' && Object.keys(value).length === 1) {
+      if (value.get() !== undefined) provided.add(field.key)
+    } else {
+      provided.add(field.key)
+    }
+  }
   const resolved = { ...CONFIG_DEFAULTS, ...config }
+  for (const field of CONFIG_FIELDS) {
+    resolved[field.key] = liveConfigValue(resolved[field.key], CONFIG_DEFAULTS[field.key])
+  }
   for (const field of CONFIG_FIELDS) assertField(field, resolved[field.key])
   // Migrate complete old policies; mixed choices retain their explicit
   // compatibility state until the user selects the unified language.
@@ -52,8 +80,8 @@ export function resolveConfig(config = {}) {
     'looseTopLevelRedeclarations', 'looseTopLevelFunctionClassRedeclarations',
     'autoRewriteImports', 'autoStripExports', 'autoSplitRedeclarations',
   ]
-  if (!Object.hasOwn(config, 'bindingUpdates')
-    && legacyKeys.some(key => Object.hasOwn(config, key))) {
+  if (!provided.has('bindingUpdates')
+    && legacyKeys.some(key => provided.has(key))) {
     if (legacyKeys.every(key => resolved[key] === true)) {
       resolved.bindingUpdates = 'stateful'
     } else if (legacyKeys.slice(0, 2).every(key => resolved[key] === false)
@@ -63,6 +91,38 @@ export function resolveConfig(config = {}) {
     } else resolved.legacyBindingSettings = true
   }
   return resolved
+}
+
+/** Whether a validated config carries live volatile field handles. */
+export function hasVolatileFields(config) {
+  if (config === null || typeof config !== 'object') return false
+  return Object.values(config).some(value => value !== null && typeof value === 'object'
+    && typeof value.get === 'function' && Object.keys(value).length === 1)
+}
+
+/**
+ * Follow the host's volatile-only commit into the running fiber.
+ *
+ * The loader updates the retained handles in place and emits
+ * `loader/volatile-update` on the owning fiber; listeners on a child scope are
+ * filtered out, so the listener belongs to the plugin's own context and is
+ * released with the runtime scope it serves.
+ *
+ * @param host - the plugin's own context, owning the loader event listener.
+ * @param scope - the runtime scope whose disposal removes the listener.
+ * @param config - the validated config carrying the volatile handles.
+ * @param listener - receives the newly resolved plain configuration.
+ * @returns whether a volatile listener was installed.
+ */
+export function watchVolatileConfig(host, scope, config, listener) {
+  if (!hasVolatileFields(config) || typeof host?.on !== 'function') return false
+  const update = () => listener(resolveConfig(config))
+  if (typeof scope?.effect === 'function') {
+    scope.effect(() => host.on('loader/volatile-update', update), 'ptc-plus volatile settings lifecycle')
+  } else {
+    host.on('loader/volatile-update', update)
+  }
+  return true
 }
 
 /**

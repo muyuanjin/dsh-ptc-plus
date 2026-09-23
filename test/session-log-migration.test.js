@@ -24,7 +24,7 @@ const legacyEvent = {
 }
 
 const sessionHeader = {
-  type: 'session', version: 0, id: 'migration-test', createdAt: 1, cwd: 'G:\\workspace',
+  type: 'session', version: 0, id: 'migration-test', createdAt: 1, cwd: '/workspace',
 }
 
 function logText(events) {

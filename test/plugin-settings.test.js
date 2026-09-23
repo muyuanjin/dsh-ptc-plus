@@ -3,7 +3,7 @@ import { Context as CordisContext } from '@deepseek-ai/cordis'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
-import test from 'node:test'
+import test, { after } from 'node:test'
 import { apply, Config, inject } from '../index.js'
 import { CONFIG_FIELDS, CONFIG_GROUPS, SETTINGS_NAMESPACE } from '../internal/config-spec.js'
 import { resolveConfig } from '../internal/runtime-config.js'
@@ -11,6 +11,16 @@ import { executionPolicies } from '../internal/binding-update-policy.js'
 import { Session } from '@deepseek-ai/dsh-session'
 import { readRuntimeMessage, runtimeStateMessage } from '../internal/runtime-messages.js'
 import { createHostContext, describeSections, runHookChain, serviceInjector } from './host-fixture.js'
+
+// Default-enabled bindings must read an isolated store, never the user's helpers.
+const previousDshHome = process.env.DSH_HOME
+const settingsTestHome = await mkdtemp(join(tmpdir(), 'ptc-settings-'))
+process.env.DSH_HOME = settingsTestHome
+after(async () => {
+  if (previousDshHome === undefined) delete process.env.DSH_HOME
+  else process.env.DSH_HOME = previousDshHome
+  await rm(settingsTestHome, { recursive: true, force: true })
+})
 
 const TEST_CORDIS_TOOL_NAMES = Object.freeze([
   'test_cordis_inspect',
@@ -304,6 +314,8 @@ function cordisAgent(disposeGate = undefined, options = {}) {
     definitions,
     session: { header: { cwd: '/workspace' } },
     ctx: {
+      // This fixture has no commands service; scoped injection remains pending.
+      inject: serviceInjector({}, () => agent.ctx),
       tools: {
         get: name => definitions.get(name),
       },
@@ -667,7 +679,7 @@ test('binds the session binding command to live draft projection availability', 
 
   const availableAgent = bindingCommandAgent()
   const available = hostContext(
-    settingsContext(settingsScope({ enabled: true, userBindingsEnabled: true })),
+    settingsContext(settingsScope({ enabled: true })),
     [availableAgent.agent],
   )
   apply(available.ctx)
@@ -866,7 +878,7 @@ test('handles projection registration through the real asynchronous Cordis injec
   await activation
   await new Promise(resolve => setImmediate(resolve))
 
-  assert.equal(registerCalls, 1)
+  assert.equal(registerCalls, 2)
   assert.equal(Object.hasOwn(host.runtime, 'run'), true)
   assert.ok(host.listeners.has('tools/execute'))
   assert.match(
@@ -924,15 +936,18 @@ test('settings kill switch installs and removes the runtime live', async () => {
   } = hostContext(settingsContext(scope))
   apply(ctx)
   await new Promise(resolve => setImmediate(resolve))
-  assert.deepEqual(projectionDefinitions.map(definition => definition.key), ['ptcPlusRepl'])
+  assert.deepEqual(projectionDefinitions.map(definition => definition.key), ['ptcPlusRepl', 'ptcPlusBindingDraft'])
   assert.equal(projectionInjections.length, 1)
   await projectionInjections[0].reload()
-  assert.deepEqual(projectionDefinitions.map(definition => definition.key), ['ptcPlusRepl'])
+  assert.deepEqual(projectionDefinitions.map(definition => definition.key), ['ptcPlusRepl', 'ptcPlusBindingDraft'])
   assert.equal(projectionInjections.length, 1)
   assert.equal(Object.hasOwn(runtime, 'run'), true)
   assert.ok(listeners.has('tools/execute'))
   assert.ok(sections.some(section => section.name === 'tools:ptc-plus-repl'))
 
+  scope.set({ ...scope.get(), userBindingsEnabled: false })
+  await new Promise(resolve => setTimeout(resolve, 0))
+  assert.deepEqual(projectionDefinitions.map(definition => definition.key), ['ptcPlusRepl'])
   scope.set({ ...scope.get(), userBindingsEnabled: true })
   await new Promise(resolve => setTimeout(resolve, 0))
   assert.deepEqual(projectionDefinitions.map(definition => definition.key), [
@@ -966,14 +981,9 @@ test('settings kill switch installs and removes the runtime live', async () => {
 test('late settings mount reconciles and detaches against composition config', async () => {
   const { ctx, listeners, sections, cleanups, runtime } = hostContext()
   let injectSettings
+  const mockInject = ctx.inject
   ctx.inject = (services, callback) => {
-    if (services.length === 1 && ['sessionProjections', 'ptcPlusRpc', 'typert', 'ptcRuntime'].includes(services[0])) return
-    if (services.includes('ptcRuntime')) return
-    if (services.includes('codeRuntime')) {
-      callback(ctx)
-      return
-    }
-    assert.deepEqual(services, ['settings'])
+    if (services.length !== 1 || services[0] !== 'settings') return mockInject(services, callback)
     injectSettings = callback
   }
   apply(ctx)
@@ -1028,13 +1038,9 @@ test('late settings hydration applies persisted non-enabled configuration', asyn
   const { agent, definitions } = cordisAgent()
   const { ctx, cleanups } = hostContext(undefined, [agent])
   let injectSettings
+  const mockInject = ctx.inject
   ctx.inject = (services, callback) => {
-    if (services.length === 1 && ['sessionProjections', 'ptcPlusRpc', 'typert'].includes(services[0])) return
-    if (services.includes('ptcRuntime')) return
-    if (services.includes('codeRuntime')) {
-      callback(ctx)
-      return
-    }
+    if (services.length !== 1 || services[0] !== 'settings') return mockInject(services, callback)
     injectSettings = callback
   }
   apply(ctx)
@@ -1975,7 +1981,9 @@ test('config schema defaults expose the settings switches', async () => {
   assert.equal(defaults.enhancedToolView, true)
   assert.equal(defaults.autoDescribeRunCode, true)
   assert.equal(defaults.cordisToolsEnabled, false)
-  assert.equal(defaults.userBindingsEnabled, false)
+  assert.equal(defaults.userBindingsEnabled, true)
+  const bindingsOff = resolveConfig((await Config['~standard'].validate({ userBindingsEnabled: false })).value)
+  assert.equal(bindingsOff.userBindingsEnabled, false)
   assert.equal(defaults.looseTopLevelFunctionClassRedeclarations, true)
   const invalid = await Config['~standard'].validate({ enabled: 'yes' })
   assert.equal(invalid.issues[0].path[0], 'enabled')

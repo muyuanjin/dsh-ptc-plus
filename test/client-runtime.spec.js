@@ -144,12 +144,13 @@ async function clientPlugin(ui = primitives) {
   })
 }
 
-async function fixture({ enabled = true, bindings = true, conversation = true, repl = false, composer = false, dock = true, uiSession = true, settingsCardSeat = 'legacy', settingsTransport = 'configForms', rpc, watchRpc, observeRpc, commands, turn, tool, ui, setupEvents } = {}) {
+async function fixture({ enabled = true, bindings, conversation = true, repl = false, composer = false, dock = true, uiSession = true, settingsCardSeat = 'legacy', settingsTransport = 'configForms', rpc, watchRpc, observeRpc, commands, turn, tool, ui, setupEvents } = {}) {
   const runtime = await SlotTestRuntime.create()
   cleanups.push(() => runtime.dispose())
   installSessionSelectionCompat(runtime)
   const settings = stubSettingsScope()
-  const value = { ...Object.fromEntries(CONFIG_FIELDS.map(field => [field.key, field.default])), enabled, userBindingsEnabled: bindings }
+  const value = { ...Object.fromEntries(CONFIG_FIELDS.map(field => [field.key, field.default])), enabled,
+    ...(bindings === undefined ? {} : { userBindingsEnabled: bindings }) }
   settings.publish({ status: 'ready', writable: true, value })
   if (settingsTransport === 'configForms') {
     runtime.ctx.provide('configForms', { get: () => settings.scope })
@@ -4148,8 +4149,12 @@ test('the open header card stops polling and rereads its catalog on the global t
 test('one settings mapping and one gated registration own every conditional contribution', () => {
   const settings = { status: 'ready', writable: true, value: { enabled: true } }
   expect(featureEnabled(settings, 'plugin')).toBe(true)
-  expect(featureEnabled(settings, 'bindings')).toBe(false)
-  expect(featureEnabled({ ...settings, value: { ...settings.value, userBindingsEnabled: true } }, 'bindings')).toBe(true)
+  expect(featureEnabled(settings, 'bindings')).toBe(true)
+  expect(featureEnabled(settings, 'authorButton')).toBe(true)
+  const bindingsOff = { ...settings, value: { ...settings.value, userBindingsEnabled: false } }
+  expect(featureEnabled(bindingsOff, 'bindings')).toBe(false)
+  expect(featureEnabled(bindingsOff, 'authorButton')).toBe(false)
+  expect(featureEnabled({ ...settings, value: { ...settings.value, bindingAuthorButtonVisible: false } }, 'authorButton')).toBe(false)
   // Default-on settings stay on unless explicitly turned off.
   expect(featureEnabled(settings, 'toolView')).toBe(true)
   expect(featureEnabled({ ...settings, value: { ...settings.value, enhancedToolView: false } }, 'toolView')).toBe(false)

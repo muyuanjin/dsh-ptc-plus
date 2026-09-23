@@ -250,6 +250,9 @@ export function fixture(config = {}, fixtureOptions = {}) {
   // states the budget it asserts. The shipped defaults remain `computeMs`
   // 60_000 and `maxWallMs` 600_000, so this is still far below deployment.
   apply(ctx, {
+    // Cell tests isolate language behavior from the user's saved helpers.
+    // Binding integration tests explicitly enable their isolated store.
+    userBindingsEnabled: false,
     computeMs: 5_000,
     maxWallMs: 20_000,
     maxOldGenerationSizeMb: 64,

@@ -101,14 +101,14 @@
         "client.js", "internal/repl-memory-projection.js", "internal/repl-observation-interest.js", "internal/user-binding-authoring.js", "internal/user-binding-console-worker.js", "internal/user-binding-console.js", "internal/user-binding-draft-projection.js", "internal/user-binding-model-context.js", "internal/user-binding-runner.js", "internal/user-bindings-owner.js", "internal/user-bindings-store.js", "internal/user-bindings.js", "src/client-activity.js", "src/client-authoring-view.js", "src/client-binding-review.js", "src/client-bindings-data.js", "src/client-catalog.js", "src/client-code-editor.js", "src/client-console.js", "src/client-copy.js", "src/client-feature-gates.js", "src/client-host-compat.js", "src/client-indicator-view.js", "src/client-repl-view.js", "src/client-rpc.js", "src/client-settings-view.js", "src/client-styles.js", "src/client-tool-view.js", "src/client-transport.js", "src/client-workbench.js", "src/client.js"
       ],
       "contract": "docs/adr/0023-global-user-bindings.md",
-      "observables": ["activation ownership", "shadow policy", "canonical versus preview values", "feature gates", "model visibility"],
+      "observables": ["activation ownership", "shadow policy", "canonical versus preview values", "feature gates", "default-enabled bindings with explicit disable preserved", "model visibility"],
       "entries": ["session activation", "binding workbench", "RPC", "client renderer", "model context"],
       "lifecycle": ["load", "validate", "activate", "replace", "disable", "observe"],
       "generations": ["whole-entry", "per-name", "legacy and current module transforms"],
       "platforms": ["browser client", "Node worker", "official DSH host"],
       "consumers": ["users", "model requests", "session recovery"],
       "oracle": "isolated binding workers, storage fixtures and client host adapters",
-      "evidence": ["test/user-bindings-runtime.test.js", "test/user-binding-console.test.js", "test/client-host-compat.test.js", "test/repl-value-observer.test.js"],
+      "evidence": ["test/user-bindings-runtime.test.js", "test/user-binding-console.test.js", "test/client-host-compat.test.js", "test/repl-value-observer.test.js", "test/runtime-config.test.js", "test/plugin-settings.test.js", "test/client-runtime.spec.js"],
       "dependsOn": ["compiler-and-callables", "execution-kernel", "persistence-and-recovery", "host-integration"]
     }
   ]

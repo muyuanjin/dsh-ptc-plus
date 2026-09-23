@@ -26,7 +26,7 @@ Host half 通过 DSH 公共 `settings` 服务注册命名空间 `ptc-plus`。字
 | REPL 语法 | `bindingUpdates` | 默认 `stateful`；同作用域的声明与赋值更新变量、函数、类和导入。选择 `protected` 后保护新建 const/import，并检测跨 cell 重声明。两种策略均支持静态 import/export。 |
 | 状态与恢复 | `durableReplay` / `tipsEnabled` | 默认开启；控制 worker 重启后的状态恢复与失败恢复提示。 |
 | 状态与恢复 | `tipCooldownMessages` / `tipEscalationFailures` | 同类提示间隔与详细提示阈值。 |
-| 工具扩展 | `userBindingsEnabled` | 默认关闭；开启后加载跨会话 TypeScript helper，并在开关下方显示管理按钮，同时启用全局绑定工作台与 `/binding` Agent 编写入口。 |
+| 工具扩展 | `userBindingsEnabled` | 默认开启，显式关闭仍有效；开启时加载跨会话 TypeScript helper，并在开关下方显示管理按钮，同时启用全局绑定工作台与 `/binding` Agent 编写入口。 |
 | 工具扩展 | `cordisToolsEnabled` | 默认关闭；开启后为 PTC agent 加入官方 Cordis 工具、指引与精确的 `cordis-plugin-development` companion Skill，不发布同目录 sibling。 |
 | 界面显示 | `enhancedToolView` | 默认开启；关闭后注销 PTC Plus 的两个 keyed tool view，恢复 DSH 原生 generic row。 |
 | 界面显示 | `replViewEnabled` | 默认开启；控制顶级 REPL 页签，关闭时释放观察订阅，不影响设置中的全局管理入口。 |

@@ -1041,7 +1041,7 @@
     {
       key: "userBindingsEnabled",
       type: "boolean",
-      default: false,
+      default: true,
       label: "\u542F\u7528\u5168\u5C40\u7528\u6237 Binding",
       labelEn: "Enable Global User Bindings",
       description: "\u7BA1\u7406 TypeScript helper\uFF0C\u5E76\u5C06\u5DF2\u542F\u7528\u6761\u76EE\u4F5C\u4E3A\u8DE8\u4F1A\u8BDD\u7684\u9ED8\u8BA4 REPL \u7ED1\u5B9A\u3002",
@@ -2012,22 +2012,22 @@
   // src/client-feature-gates.js
   var FEATURE_SETTINGS = Object.freeze({
     // The plugin master switch plus every contribution that only needs it.
-    plugin: { required: [], defaultOn: [] },
+    plugin: [],
     // Global User Bindings: the workbench, its command renderer and the author menu.
-    bindings: { required: ["userBindingsEnabled"], defaultOn: [] },
+    bindings: ["userBindingsEnabled"],
     // Enhanced run_code tool rows.
-    toolView: { required: [], defaultOn: ["enhancedToolView"] },
+    toolView: ["enhancedToolView"],
     // The REPL view tab; the session preset condition is added by its registration.
-    replView: { required: [], defaultOn: ["replViewEnabled"] },
+    replView: ["replViewEnabled"],
     // The composer authoring menu.
-    authorButton: { required: ["userBindingsEnabled"], defaultOn: ["bindingAuthorButtonVisible"] }
+    authorButton: ["userBindingsEnabled", "bindingAuthorButtonVisible"]
   });
   function featureEnabled(snapshot2, feature) {
     const rule = FEATURE_SETTINGS[feature];
     if (rule === void 0) throw new Error(`Unknown client feature: ${feature}`);
     if (snapshot2?.status !== "ready" || snapshot2.value?.enabled !== true) return false;
     const value = snapshot2.value;
-    return rule.required.every((key) => value[key] === true) && rule.defaultOn.every((key) => value[key] !== false);
+    return rule.every((key) => value[key] !== false);
   }
   function registerGated(scope, { subscribe, isEnabled, register }) {
     return scope.effect(() => {

@@ -24,7 +24,8 @@ test('failed host results retain recovery boundaries and activated binding snaps
   const owner = createRuntimeBridgeOwner({
     seam: createExecutionSeam(runtime, 'codeRuntime'),
     ctx: { tools: { get: () => definition } },
-    sessionConfig: {}, presentationGeneration: 'binding-error-result',
+    // The snapshot is supplied below; this bridge does not mount draft authoring.
+    sessionConfig: { userBindingsEnabled: false }, presentationGeneration: 'binding-error-result',
     sessionId: agent => agent.id, toolSchemasForAgent: () => [],
   })
   t.after(() => owner.dispose())
@@ -681,6 +682,7 @@ test('binds nested code.run depth to the submitted cell generation', async (t) =
       tools: { get: () => definition },
     },
     sessionConfig: {
+      userBindingsEnabled: false,
       computeMs: 1_000,
       maxWallMs: 1_000,
       maxNestedRunCodeDepth: 2,
@@ -713,6 +715,7 @@ return code.run({ code: ${JSON.stringify(childCode)}, description: 'Use submitte
 `, [{ global: 'tools', functions: { wait: async () => { gateStarted(); await gate } } }])
   await started
   owner.reconfigure({
+    userBindingsEnabled: false,
     computeMs: 1_000,
     maxWallMs: 1_000,
     maxNestedRunCodeDepth: 1,

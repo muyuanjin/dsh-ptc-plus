@@ -68,7 +68,8 @@ function fixture() {
       cleanups.push(register())
     },
   }
-  apply(ctx, { computeMs: 500, maxWallMs: 2_000 })
+  // This fixture checks native capabilities without saved helpers or authoring.
+  apply(ctx, { userBindingsEnabled: false, computeMs: 500, maxWallMs: 2_000 })
 
   return {
     ctx,

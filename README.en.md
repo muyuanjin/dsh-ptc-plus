@@ -58,7 +58,7 @@ dsh plugin --profile <profile> add dsh-ptc-plus
 
 Replace `<profile>` with your profile name. Restart DSH and select **PTC mode** in the session. Stateful computation and call tolerance are enabled by default.
 
-With the default interface settings, the session has a **REPL** tab; wide screens also show a green **PTC Plus** header indicator. Open **Plugins → Installed → dsh-ptc-plus → Configure** in the sidebar to check the main switch and all plugin settings.
+With the default interface settings, the session has a **REPL** tab; wide screens also show a green **PTC Plus** header indicator. The sparkle button beside the composer opens **PTC Plus settings** and the global binding menu. You can also open **Plugins → Installed → dsh-ptc-plus → Configure** in the sidebar to check the main switch and all plugin settings.
 
 See the [installation guide](docs/installation.md) for other installation methods, Desktop, the local development launcher, upgrades, and troubleshooting.
 
@@ -105,18 +105,18 @@ An edit **reruns the entire cell**; this example returns `12`. Earlier state cha
 
 ## Settings and extensions
 
-Core computation features work with the defaults. The plugin configuration page provides settings for binding updates, call tolerance, recovery, interface display, and resource limits. Enabling global bindings also reveals the sparkle button beside the composer; **PTC Plus settings** in that menu opens the same settings. The [configuration reference](docs/runtime-reference.md#configuration) lists fields, defaults, and limits.
+Core computation features work with the defaults. The plugin configuration page provides settings for binding updates, call tolerance, recovery, interface display, and resource limits. Global bindings and the sparkle shortcut default to on; **PTC Plus settings** in that menu opens the same settings. Explicitly disabled options in an existing configuration stay disabled. The [configuration reference](docs/runtime-reference.md#configuration) lists fields, defaults, and limits.
 
 **Inspect session state.** The REPL tab lets you search retained bindings, inspect their definitions, and view bounded value previews. Incomplete or unreadable previews are identified explicitly; display does not invoke user getters.
 
 <details>
-<summary>View the REPL interface with global bindings enabled</summary>
+<summary>View the REPL interface</summary>
 
 ![Session state and the global binding workbench in the REPL tab](assets/ptc-plus-repl-workspace-en.png)
 
 </details>
 
-**Reuse helpers across sessions.** Optional Global User Bindings default to off. Enable them to save TypeScript helpers and provide their interfaces and usage instructions to the model. The sparkle menu lists entries and lets you toggle them. You can also ask the Agent to author a helper:
+**Reuse helpers across sessions.** Global User Bindings default to on. Save TypeScript helpers and provide their interfaces and usage instructions to the model. The sparkle menu lists entries and lets you toggle them. You can also ask the Agent to author a helper:
 
 ```text
 /binding new Create textTools to trim outer whitespace while preserving interior spaces

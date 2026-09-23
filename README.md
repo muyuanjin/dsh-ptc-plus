@@ -58,7 +58,7 @@ dsh plugin --profile <profile> add dsh-ptc-plus
 
 将 `<profile>` 替换为实际 profile 名称。安装后重启 DSH，在会话中选择 **PTC 模式**，即可使用默认启用的连续计算与调用容错能力。
 
-在默认界面设置下，会话中会出现 **REPL** 页签；宽屏顶部还会显示绿色 **PTC Plus** 标志。从侧边栏 **插件 → 已安装 → dsh-ptc-plus → 配置** 可检查插件总开关和全部设置。
+在默认界面设置下，会话中会出现 **REPL** 页签；宽屏顶部还会显示绿色 **PTC Plus** 标志。输入框旁的星光按钮可打开 **PTC Plus 设置** 和全局绑定菜单；也可从侧边栏 **插件 → 已安装 → dsh-ptc-plus → 配置** 检查插件总开关和全部设置。
 
 其他安装方式、Desktop、本地开发启动器、升级和故障排查见[安装指南](docs/installation.md)。
 
@@ -105,18 +105,18 @@ edit_run_code({
 
 ## 设置与扩展
 
-核心计算能力默认可用。在插件配置页可以调整绑定更新策略、调用容错、状态恢复、界面显示和资源限额。开启全局绑定后，输入框旁还会出现星光入口，其中的 **PTC Plus 设置** 可打开同一套设置。[配置参考](docs/runtime-reference.md#configuration)列出了字段、默认值和限制。
+核心计算能力默认可用。在插件配置页可以调整绑定更新策略、调用容错、状态恢复、界面显示和资源限额。全局绑定和星光入口默认开启，星光菜单中的 **PTC Plus 设置** 可打开同一套设置。已有配置中显式关闭的选项会保持关闭。[配置参考](docs/runtime-reference.md#configuration)列出了字段、默认值和限制。
 
 **查看会话状态。** REPL 页签可搜索保留的绑定、查看定义来源和有界值预览。预览不完整或不可读取时会明确标注，不会为展示调用用户 getter。
 
 <details>
-<summary>查看 REPL 界面示例（已开启全局绑定）</summary>
+<summary>查看 REPL 界面示例</summary>
 
 ![REPL 页签中的会话状态与全局绑定工作台](assets/ptc-plus-repl-workspace-zh.png)
 
 </details>
 
-**跨会话复用 helper。** 可选的全局用户 Binding 默认关闭。开启后，可保存 TypeScript helper，并向模型提供接口与使用提示；星光菜单可查看和启停条目。也可以让 Agent 帮忙编写：
+**跨会话复用 helper。** 全局用户 Binding 默认开启，可保存 TypeScript helper，并向模型提供接口与使用提示；星光菜单可查看和启停条目。也可以让 Agent 帮忙编写：
 
 ```text
 /binding new 创建 textTools，去掉文本首尾空白并保留内部空格

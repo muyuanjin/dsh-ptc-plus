@@ -91,6 +91,10 @@ test('validates every declared field from its CONFIG_FIELDS type and bounds', ()
 
 test('keeps defaults and unknown fields while rejecting every invalid value', () => {
   assert.deepEqual(resolveConfig(), CONFIG_DEFAULTS)
+  assert.equal(resolveConfig().userBindingsEnabled, true)
+  assert.equal(resolveConfig({ userBindingsEnabled: false }).userBindingsEnabled, false)
+  assert.equal(resolveConfig({ userBindingsEnabled: { get: () => undefined } }).userBindingsEnabled, true)
+  assert.equal(resolveConfig({ userBindingsEnabled: { get: () => false } }).userBindingsEnabled, false)
   const resolved = resolveConfig({ futureOption: 'kept', tipCooldownMessages: 5 })
   assert.equal(resolved.tipCooldownMessages, 5)
   assert.equal(resolved.futureOption, 'kept')

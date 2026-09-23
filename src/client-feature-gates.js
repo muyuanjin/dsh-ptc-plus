@@ -6,21 +6,20 @@
  */
 const FEATURE_SETTINGS = Object.freeze({
   // The plugin master switch plus every contribution that only needs it.
-  plugin: { required: [], defaultOn: [] },
+  plugin: [],
   // Global User Bindings: the workbench, its command renderer and the author menu.
-  bindings: { required: ['userBindingsEnabled'], defaultOn: [] },
+  bindings: ['userBindingsEnabled'],
   // Enhanced run_code tool rows.
-  toolView: { required: [], defaultOn: ['enhancedToolView'] },
+  toolView: ['enhancedToolView'],
   // The REPL view tab; the session preset condition is added by its registration.
-  replView: { required: [], defaultOn: ['replViewEnabled'] },
+  replView: ['replViewEnabled'],
   // The composer authoring menu.
-  authorButton: { required: ['userBindingsEnabled'], defaultOn: ['bindingAuthorButtonVisible'] },
+  authorButton: ['userBindingsEnabled', 'bindingAuthorButtonVisible'],
 })
 
 /**
  * Pure settings projection: a feature is eligible only from a ready snapshot
- * with the master switch on and every feature-specific setting met. Required
- * settings must be explicitly true; default-on settings are on unless the user
+ * with the master switch on. These features default to on unless the user
  * turned them off. Writability gates setting writes, not contribution presence.
  */
 export function featureEnabled(snapshot, feature) {
@@ -28,8 +27,7 @@ export function featureEnabled(snapshot, feature) {
   if (rule === undefined) throw new Error(`Unknown client feature: ${feature}`)
   if (snapshot?.status !== 'ready' || snapshot.value?.enabled !== true) return false
   const value = snapshot.value
-  return rule.required.every(key => value[key] === true)
-    && rule.defaultOn.every(key => value[key] !== false)
+  return rule.every(key => value[key] !== false)
 }
 
 /**

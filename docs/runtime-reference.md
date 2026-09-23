@@ -73,7 +73,7 @@ The configuration uses `ptc-plus` as the DSH plugin ID and `dsh-ptc-plus` as the
     durableReplay: true
     tipsEnabled: true
     cordisToolsEnabled: false
-    userBindingsEnabled: false
+    userBindingsEnabled: true
     computeMs: 60000
     maxWallMs: 600000
     maxOldGenerationSizeMb: 512
@@ -99,7 +99,7 @@ Cordis Plugins and Runs are process-local. On a resumed agent or after Cordis is
 
 ## Global User Bindings
 
-`userBindingsEnabled` defaults to `false`. While disabled, PTC Plus does not read binding storage, add new declarations, inject values, register the management RPC or `/binding` command, or render Global User Binding controls. The next permitted accepted step can withdraw previously delivered declarations. Enabling it loads the single document at `$DSH_HOME/ptc-plus/bindings.json`; writes use a file lock, atomic replacement, owner-only file permissions, and an expected process-local revision. A stale revision or an external file change rejects the mutation and requires reload rather than overwriting newer content. A damaged document produces an explicit catalog error and remains unwritable until the user repairs it and reloads.
+`userBindingsEnabled` defaults to `true`; an explicit `false` is preserved. Omitted settings use the current default, including after an upgrade. Individual entry states and user-controlled draft saving are unchanged. While disabled, PTC Plus does not read binding storage, add new declarations, inject values, register the management RPC or `/binding` command, or render Global User Binding controls. The next permitted accepted step can withdraw previously delivered declarations. Enabling it loads the single document at `$DSH_HOME/ptc-plus/bindings.json`; writes use a file lock, atomic replacement, owner-only file permissions, and an expected process-local revision. A stale revision or an external file change rejects the mutation and requires reload rather than overwriting newer content. A damaged document produces an explicit catalog error and remains unwritable until the user repairs it and reloads.
 
 Each entry has a stable `id`, display `name`, `namespace` or `top-level` scope, selected symbols, one-line purpose, enabled state, and TypeScript source. A namespace name must be a JavaScript identifier; a top-level entry uses its exported symbols as call identifiers and keeps `name` for display. Source must provide named value exports; default exports and re-exports are rejected. An omitted symbol list derives every named value export, while an explicit list limits the exposed API; clearing the Settings symbol field requests fresh derivation from the edited source. The parser derives declaration kinds, parameter and return annotations, bounded inferred types, and model-visible declarations from the selected source exports. A `namespace` entry contributes one object binding under its name, while a `top-level` entry contributes each selected export. Reserved REPL names and duplicate active identifiers fail validation. The document accepts at most 64 entries, 65,536 UTF-16 code units per source, 262,144 across all sources, and 16,384 across active declarations. Mutations validate the complete enabled declaration set before atomic replacement; an externally written document that exceeds the limit is reported as damaged storage and contributes no active entries.
 

@@ -117,7 +117,8 @@ test('runtime bridge disposal waits for session disposal and aggregates its fail
   const owner = createRuntimeBridgeOwner({
     seam: createExecutionSeam(runtime, 'codeRuntime'),
     ctx: { tools: { get: () => undefined } },
-    sessionConfig: {},
+    // This fixture owns disposal, without a binding-authoring collaborator.
+    sessionConfig: { userBindingsEnabled: false },
     presentationGeneration: 'runtime-bridge-dispose-test',
     sessionId: agent => agent.id,
     toolSchemasForAgent: () => [],
@@ -141,7 +142,7 @@ test('waiting for active child runtimes preserves every child disposal failure',
   const owner = createRuntimeBridgeOwner({
     seam: createExecutionSeam(runtime, 'codeRuntime'),
     ctx: { tools: { get: () => definition } },
-    sessionConfig: { maxNestedRunCodeDepth: 4 },
+    sessionConfig: { userBindingsEnabled: false, maxNestedRunCodeDepth: 4 },
     presentationGeneration: 'runtime-bridge-active-children-test',
     sessionId: agent => agent.id,
     toolSchemasForAgent: () => [],
@@ -197,7 +198,7 @@ test('terminal disposal rejects a child submitted after the drain snapshot', { t
   const owner = createRuntimeBridgeOwner({
     seam: createExecutionSeam(runtime, 'codeRuntime'),
     ctx: { tools: { get: () => definition } },
-    sessionConfig: { maxNestedRunCodeDepth: 4 },
+    sessionConfig: { userBindingsEnabled: false, maxNestedRunCodeDepth: 4 },
     presentationGeneration: 'runtime-bridge-late-child-test',
     sessionId: agent => agent.id,
     toolSchemasForAgent: () => [],
@@ -248,7 +249,7 @@ test('runtime bridge retains a child whose first disposal fails and retries it',
     const owner = createRuntimeBridgeOwner({
       seam: createExecutionSeam(runtime, 'codeRuntime'),
       ctx: { tools: { get: () => definition } },
-      sessionConfig: { maxNestedRunCodeDepth: 4 },
+      sessionConfig: { userBindingsEnabled: false, maxNestedRunCodeDepth: 4 },
       presentationGeneration: 'runtime-bridge-child-retry-test',
       sessionId: agent => agent.id,
       toolSchemasForAgent: () => [],
@@ -307,7 +308,7 @@ for (const [language, languageConfig] of [
       const owner = createRuntimeBridgeOwner({
         seam: createExecutionSeam(runtime, 'codeRuntime'),
         ctx: { tools: { get: () => definition } },
-        sessionConfig: { ...languageConfig, maxNestedRunCodeDepth: 4 },
+        sessionConfig: { ...languageConfig, userBindingsEnabled: false, maxNestedRunCodeDepth: 4 },
         presentationGeneration: 'runtime-bridge-native-handoff-test',
         sessionId: agent => agent.id,
         toolSchemasForAgent: () => [],

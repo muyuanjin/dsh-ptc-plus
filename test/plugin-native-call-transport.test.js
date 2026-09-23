@@ -561,7 +561,8 @@ test('preserves canonical run_code results through the real DSH ToolRuntime pipe
     },
   }))
   const upstreamRun = ctx.get('ptcRuntime').run
-  await apply(ctx, { computeMs: 500, maxWallMs: 20_000, maxOldGenerationSizeMb: 64 })
+  // Canonical native transport is independent of the user's saved helper store.
+  await apply(ctx, { userBindingsEnabled: false, computeMs: 500, maxWallMs: 20_000, maxOldGenerationSizeMb: 64 })
   assert.notEqual(ctx.get('ptcRuntime').run, upstreamRun, 'PTC Plus must own the registered execution seam')
 
   const session = appendOnlySession('real-tool-runtime')

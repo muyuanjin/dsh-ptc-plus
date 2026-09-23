@@ -96,7 +96,7 @@ export const CONFIG_FIELDS = Object.freeze([
   {
     key: 'userBindingsEnabled',
     type: 'boolean',
-    default: false,
+    default: true,
     label: '启用全局用户 Binding',
     labelEn: 'Enable Global User Bindings',
     description: '管理 TypeScript helper，并将已启用条目作为跨会话的默认 REPL 绑定。',

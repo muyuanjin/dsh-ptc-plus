@@ -6,10 +6,11 @@ Global bindings save reusable TypeScript helpers for use across sessions. For ex
 
 ## Create and use a binding
 
-1. Open PTC Plus settings (when the sparkle shortcut is already present, choose **PTC Plus settings** from its menu; depending on the DSH interface, you can also find the plugin on the side-bar **Plugins** page and choose **Configure**, or open **Settings → Plugin configuration → PTC Plus**) and enable **Global User Bindings**.
-2. In a PTC session, open the sparkle menu by the composer and choose **Write a new binding**, or enter `/binding new <requirement>`.
-3. Inspect the draft's source, interface, and model prompt in the panel above the composer.
-4. Choose **Save and enable**. Subsequent `run_code` calls load the binding; initialization failures appear in execution results.
+Global bindings and the sparkle shortcut default to on; a new installation needs no setup switch. If an existing configuration explicitly disables global bindings, enable them under **Plugins → Installed → dsh-ptc-plus → Configure**. If only the shortcut is hidden, enable **Show the PTC Plus shortcut**. The feature switch does not change saved entries' enabled states.
+
+1. In a PTC session, open the sparkle menu by the composer and choose **Write a new binding**, or enter `/binding new <requirement>`.
+2. Inspect the draft's source, interface, and model prompt in the panel above the composer.
+3. Choose **Save and enable**. Subsequent `run_code` calls load the binding; initialization failures appear in execution results.
 
 During authoring, the Agent starts with a small in-memory check of the core behavior, then adds normal, edge, and failure assertions with `node:assert/strict`. Bulk tests report totals and a few representative failures instead of printing every successful case into the context. Tests must not modify external files or services. File and network helpers use in-memory substitutes to verify argument forwarding and error propagation; the answer identifies integration behavior that remains untested. Submission delivers a draft for your review. You decide whether to save and enable it.
 

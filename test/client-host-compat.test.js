@@ -150,11 +150,10 @@ test('settings-card seats follow the slot each DSH generation declares', () => {
   assert.deepEqual(settingsCardSeats('dsh-ptc-plus'), [
     { slot: 'settings.plugin.item', identity: { key: 'ptc-plus' } },
     { slot: 'plugins.row.config', identity: { key: 'dsh-ptc-plus#ptc-plus' } },
-    { slot: 'settings.general.item', identity: { id: 'ptc-plus' } },
   ])
 })
 
-test('the alpha.2 row-configuration key names the row this bundle patch inserts', async () => {
+test('the plugin row-configuration key names the row this bundle patch inserts', async () => {
   const manifest = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'))
   const patch = parse(await readFile(new URL('../cordis.patch.yml', import.meta.url), 'utf8'))
   const rows = patch.flatMap(item => item.insert ?? []).filter(row => row.name === manifest.name)
@@ -176,7 +175,7 @@ test('one publication path waits on every seat and reports the one the host decl
     injectProps: () => ({ hooks: {} }), component,
   })
   assert.deepEqual([...callbacks.keys()], [
-    'settings.plugin.item', 'plugins.row.config', 'settings.general.item',
+    'settings.plugin.item', 'plugins.row.config',
   ])
   assert.deepEqual(registrations, [], 'an undeclared seat registers nothing')
   assert.equal(card.seat(), undefined, 'no seat is live until the host declares one')
@@ -193,13 +192,9 @@ test('one publication path waits on every seat and reports the one the host decl
   assert.equal(registrations[1].options.name, 'settings.plugin.item')
   assert.equal(registrations[1].options.key, 'ptc-plus')
   assert.equal(card.seat(), 'settings.plugin.item')
-  callbacks.get('settings.general.item')()
-  assert.equal(registrations.length, 3)
-  assert.equal(registrations[2].options.name, 'settings.general.item')
-  assert.equal(registrations[2].options.id, 'ptc-plus')
-  assert.equal(card.seat(), 'settings.general.item')
+  assert.equal(callbacks.has('settings.general.item'), false, 'General is not a plugin configuration seat')
   assert.deepEqual(card.releases.map(disposer => typeof disposer), [
-    'function', 'function', 'function',
+    'function', 'function',
   ])
   for (const release of card.releases) release()
   assert.equal(callbacks.size, 0)

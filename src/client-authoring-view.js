@@ -38,7 +38,6 @@ export function createAuthoringView(React, deps) {
   const settingsPath = t => t({
     'settings.plugin.item': 'settings.pathSettings',
     'plugins.row.config': 'settings.pathPlugins',
-    'settings.general.item': 'settings.pathGeneral',
   }[settingsCardSeat?.()] ?? 'settings.menuEntry')
 
   function BindingAuthorButton({
@@ -221,7 +220,7 @@ export function createAuthoringView(React, deps) {
     const starButton = h('button', {
       type: 'button', className: 'ptcPlusAuthorButton', 'aria-label': label,
       // Older UI-kit lines ship no Tooltip primitive; the native title carries the hint there.
-      title: typeof Tooltip === 'function' ? undefined : hint,
+      title: typeof Tooltip === 'function' || menuOpen || managing || settingsOpen ? undefined : hint,
       'aria-haspopup': 'menu', 'aria-expanded': menuOpen,
       onPointerEnter: hoverMenu,
       onPointerLeave: cancelHoverOpen,
@@ -269,6 +268,45 @@ export function createAuthoringView(React, deps) {
       // when the catalog is momentarily empty.
       { id: 'edit-back', label: h('span', { className: 'ptcPlusBindingMenuAction', ref: firstItemRef }, t('bindings.back')) },
     ]
+    const selectMenuItem = id => {
+      if (!anchorRef.current?.getClientRects().length) return
+      if (id === 'edit') {
+        setMenu(current => current === null ? current : { ...current, step: 'edit' })
+        return
+      }
+      if (id === 'edit-back') {
+        setMenu(current => current === null ? current : { ...current, step: 'root' })
+        return
+      }
+      if (id.startsWith('edit:')) {
+        const entry = catalog?.entries.find(entry => `edit:${entry.id}` === id)
+        if (entry) openAuthoringEdit(entry)
+        return
+      }
+      if (id.startsWith('global:')) {
+        const entry = catalog?.entries.find(entry => `global:${entry.id}` === id)
+        if (entry) void toggleBinding(entry)
+        return
+      }
+      if (id === 'reload') { void refreshCatalog(true); return }
+      if (id === 'settings') {
+        hideMenu()
+        setSettingsOpen(true)
+        return
+      }
+      hideMenu()
+      if (id === 'new') openAuthoring()
+      else if (id === 'manage') {
+        dialogReturnFocus.current = null
+        setManaging(true)
+      }
+      else if (id === view.candidateKey) openBindingReview(review, view.candidate)
+    }
+    const actionButton = (id, copy, ref) => h('button', {
+      type: 'button', role: 'menuitem', className: 'ptcPlusMenuButton',
+      onClick: () => selectMenuItem(id),
+    }, h('span', { ref, className: 'ptcPlusBindingMenuAction',
+      title: id === 'settings' ? settingsPath(t) : undefined }, t(copy)))
     return h('span', {
       className: 'ptcPlusComposerBindingAnchor', tabIndex: -1,
       onFocusCapture: () => { focused.current = true }, onBlurCapture: () => { focused.current = false },
@@ -278,69 +316,32 @@ export function createAuthoringView(React, deps) {
       !hasDraft && !quickAccess ? null : h(Menu, {
         className: 'ptcPlusAuthorButtonShell', open: menuOpen,
         anchor: typeof Tooltip === 'function'
-          ? h(Tooltip, { label: hint, delayMs: 400 }, starButton) : starButton,
+          ? h(Tooltip, { label: hint, delayMs: 700, disabled: menuOpen || managing || settingsOpen }, starButton) : starButton,
         portal: true, side: 'top', dense: true,
         // A hovered menu leaves with the pointer once it leaves the trigger and the
         // list for the published grace, which re-entering either cancels; click and
         // keyboard menus stay until dismissed.
         closeOnPointerLeave: menu !== null && menu.mode === 'hover',
         getAnchorRect: menuAnchorRect,
-        selectedIds: (catalog?.entries ?? []).filter(entry => entry.enabled).map(entry => `global:${entry.id}`),
         onClose: hideMenu,
         items: menu?.step === 'edit' ? editItems : [...(hasDraft ? [{ id: 'draft-heading', type: 'label', text: t('bindings.quickDrafts') }, { id: view.candidateKey,
           label: h('span', { className: 'ptcPlusDraftMenuItem', ref: firstItemRef },
             h('strong', null, view.candidate.entry.name),
             h('span', null, t(bindingReviewStatus(view)))) },
             ...(quickAccess ? [{ id: 'draft-separator', type: 'separator' }] : [])] : []), ...catalogItems,
-          ...(quickAccess ? [{ id: 'actions-separator', type: 'separator' }] : []),
-          ...(canAuthor ? [{ id: 'new', label: h('span', { className: 'ptcPlusBindingMenuAction' }, t('bindings.authorNewDraft')) }] : []),
-          ...(canAuthor && (catalog?.entries?.length ?? 0) > 0
-            ? [{ id: 'edit', label: h('span', { className: 'ptcPlusBindingMenuAction' }, t('bindings.authorEdit')) }] : []),
-          ...(quickAccess ? [
-            ...(catalogError === null ? [] : [{ id: 'reload', label: h('span', { ref: reloadItemRef }, t('bindings.reload')) }]),
-            { id: 'manage', label: h('span', { ref: manageItemRef, className: 'ptcPlusBindingMenuAction' }, t('bindings.manage')) },
-          ] : []),
-          // The entry is also the shortcut to this plugin's own settings, so the
-          // row names the seat the installed generation declared and its hint
-          // carries the full path that opens it.
-          { id: 'settings', label: h('span', {
-            ref: settingsItemRef, className: 'ptcPlusBindingMenuAction', title: settingsPath(t),
-          }, t('settings.menuEntry')) },
+          ...(quickAccess && catalogError !== null
+            ? [{ id: 'reload', label: h('span', { ref: reloadItemRef }, t('bindings.reload')) }] : []),
         ],
-        onSelect: id => {
-          if (!anchorRef.current?.getClientRects().length) return
-          if (id === 'edit') {
-            setMenu(current => current === null ? current : { ...current, step: 'edit' })
-            return
-          }
-          if (id === 'edit-back') {
-            setMenu(current => current === null ? current : { ...current, step: 'root' })
-            return
-          }
-          if (id.startsWith('edit:')) {
-            const entry = catalog?.entries.find(entry => `edit:${entry.id}` === id)
-            if (entry) openAuthoringEdit(entry)
-            return
-          }
-          if (id.startsWith('global:')) {
-            const entry = catalog?.entries.find(entry => `global:${entry.id}` === id)
-            if (entry) void toggleBinding(entry)
-            return
-          }
-          if (id === 'reload') { void refreshCatalog(true); return }
-          if (id === 'settings') {
-            hideMenu()
-            setSettingsOpen(true)
-            return
-          }
-          hideMenu()
-          if (id === 'new') openAuthoring()
-          else if (id === 'manage') {
-            dialogReturnFocus.current = null
-            setManaging(true)
-          }
-          else if (id === view.candidateKey) openBindingReview(review, view.candidate)
-        },
+        children: menu?.step === 'edit' ? null : h('div', { className: 'ptcPlusMenuActions' },
+          canAuthor ? h('div', { className: 'ptcPlusMenuAuthoring', role: 'group', 'aria-label': t('bindings.authorGroup') },
+            h('div', { className: 'ptcPlusMenuGroupLabel' }, t('bindings.authorGroup')),
+            h('div', { className: 'ptcPlusMenuActionGrid' },
+              actionButton('new', 'bindings.authorNewDraft'),
+              (catalog?.entries?.length ?? 0) > 0 ? actionButton('edit', 'bindings.authorEdit') : null)) : null,
+          h('div', { className: 'ptcPlusMenuUtilities' },
+            quickAccess ? actionButton('manage', 'bindings.manage', manageItemRef) : null,
+            actionButton('settings', 'settings.menuEntry', settingsItemRef))),
+        onSelect: selectMenuItem,
       }),
       // Hiding the composer unmounts the dialog, not the controller: the draft survives.
       managing && quickAccess && view.reachable

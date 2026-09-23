@@ -2390,8 +2390,7 @@
   function settingsCardSeats(bundleName) {
     return [
       { slot: "settings.plugin.item", identity: { key: SETTINGS_NAMESPACE } },
-      { slot: "plugins.row.config", identity: { key: `${bundleName}#${BUNDLE_PATCH_ROW_ID}` } },
-      { slot: "settings.general.item", identity: { id: SETTINGS_NAMESPACE } }
+      { slot: "plugins.row.config", identity: { key: `${bundleName}#${BUNDLE_PATCH_ROW_ID}` } }
     ];
   }
   function publishSettingsCard(ctx, { bundleName, locale, injectProps, component }) {
@@ -3420,8 +3419,7 @@
     const h = React.createElement;
     const settingsPath = (t2) => t2({
       "settings.plugin.item": "settings.pathSettings",
-      "plugins.row.config": "settings.pathPlugins",
-      "settings.general.item": "settings.pathGeneral"
+      "plugins.row.config": "settings.pathPlugins"
     }[settingsCardSeat?.()] ?? "settings.menuEntry");
     function BindingAuthorButton({
       sessionId,
@@ -3600,7 +3598,7 @@
           className: "ptcPlusAuthorButton",
           "aria-label": label,
           // Older UI-kit lines ship no Tooltip primitive; the native title carries the hint there.
-          title: typeof Tooltip === "function" ? void 0 : hint,
+          title: typeof Tooltip === "function" || menuOpen || managing || settingsOpen ? void 0 : hint,
           "aria-haspopup": "menu",
           "aria-expanded": menuOpen,
           onPointerEnter: hoverMenu,
@@ -3665,6 +3663,52 @@
         // when the catalog is momentarily empty.
         { id: "edit-back", label: h("span", { className: "ptcPlusBindingMenuAction", ref: firstItemRef }, t2("bindings.back")) }
       ];
+      const selectMenuItem = (id2) => {
+        if (!anchorRef.current?.getClientRects().length) return;
+        if (id2 === "edit") {
+          setMenu((current) => current === null ? current : { ...current, step: "edit" });
+          return;
+        }
+        if (id2 === "edit-back") {
+          setMenu((current) => current === null ? current : { ...current, step: "root" });
+          return;
+        }
+        if (id2.startsWith("edit:")) {
+          const entry = catalog?.entries.find((entry2) => `edit:${entry2.id}` === id2);
+          if (entry) openAuthoringEdit(entry);
+          return;
+        }
+        if (id2.startsWith("global:")) {
+          const entry = catalog?.entries.find((entry2) => `global:${entry2.id}` === id2);
+          if (entry) void toggleBinding(entry);
+          return;
+        }
+        if (id2 === "reload") {
+          void refreshCatalog(true);
+          return;
+        }
+        if (id2 === "settings") {
+          hideMenu();
+          setSettingsOpen(true);
+          return;
+        }
+        hideMenu();
+        if (id2 === "new") openAuthoring();
+        else if (id2 === "manage") {
+          dialogReturnFocus.current = null;
+          setManaging(true);
+        } else if (id2 === view.candidateKey) openBindingReview(review, view.candidate);
+      };
+      const actionButton = (id2, copy, ref) => h("button", {
+        type: "button",
+        role: "menuitem",
+        className: "ptcPlusMenuButton",
+        onClick: () => selectMenuItem(id2)
+      }, h("span", {
+        ref,
+        className: "ptcPlusBindingMenuAction",
+        title: id2 === "settings" ? settingsPath(t2) : void 0
+      }, t2(copy)));
       return h(
         "span",
         {
@@ -3682,7 +3726,7 @@
         !hasDraft && !quickAccess ? null : h(Menu, {
           className: "ptcPlusAuthorButtonShell",
           open: menuOpen,
-          anchor: typeof Tooltip === "function" ? h(Tooltip, { label: hint, delayMs: 400 }, starButton) : starButton,
+          anchor: typeof Tooltip === "function" ? h(Tooltip, { label: hint, delayMs: 700, disabled: menuOpen || managing || settingsOpen }, starButton) : starButton,
           portal: true,
           side: "top",
           dense: true,
@@ -3691,7 +3735,6 @@
           // keyboard menus stay until dismissed.
           closeOnPointerLeave: menu !== null && menu.mode === "hover",
           getAnchorRect: menuAnchorRect,
-          selectedIds: (catalog?.entries ?? []).filter((entry) => entry.enabled).map((entry) => `global:${entry.id}`),
           onClose: hideMenu,
           items: menu?.step === "edit" ? editItems : [
             ...hasDraft ? [
@@ -3708,58 +3751,30 @@
               ...quickAccess ? [{ id: "draft-separator", type: "separator" }] : []
             ] : [],
             ...catalogItems,
-            ...quickAccess ? [{ id: "actions-separator", type: "separator" }] : [],
-            ...canAuthor ? [{ id: "new", label: h("span", { className: "ptcPlusBindingMenuAction" }, t2("bindings.authorNewDraft")) }] : [],
-            ...canAuthor && (catalog?.entries?.length ?? 0) > 0 ? [{ id: "edit", label: h("span", { className: "ptcPlusBindingMenuAction" }, t2("bindings.authorEdit")) }] : [],
-            ...quickAccess ? [
-              ...catalogError === null ? [] : [{ id: "reload", label: h("span", { ref: reloadItemRef }, t2("bindings.reload")) }],
-              { id: "manage", label: h("span", { ref: manageItemRef, className: "ptcPlusBindingMenuAction" }, t2("bindings.manage")) }
-            ] : [],
-            // The entry is also the shortcut to this plugin's own settings, so the
-            // row names the seat the installed generation declared and its hint
-            // carries the full path that opens it.
-            { id: "settings", label: h("span", {
-              ref: settingsItemRef,
-              className: "ptcPlusBindingMenuAction",
-              title: settingsPath(t2)
-            }, t2("settings.menuEntry")) }
+            ...quickAccess && catalogError !== null ? [{ id: "reload", label: h("span", { ref: reloadItemRef }, t2("bindings.reload")) }] : []
           ],
-          onSelect: (id2) => {
-            if (!anchorRef.current?.getClientRects().length) return;
-            if (id2 === "edit") {
-              setMenu((current) => current === null ? current : { ...current, step: "edit" });
-              return;
-            }
-            if (id2 === "edit-back") {
-              setMenu((current) => current === null ? current : { ...current, step: "root" });
-              return;
-            }
-            if (id2.startsWith("edit:")) {
-              const entry = catalog?.entries.find((entry2) => `edit:${entry2.id}` === id2);
-              if (entry) openAuthoringEdit(entry);
-              return;
-            }
-            if (id2.startsWith("global:")) {
-              const entry = catalog?.entries.find((entry2) => `global:${entry2.id}` === id2);
-              if (entry) void toggleBinding(entry);
-              return;
-            }
-            if (id2 === "reload") {
-              void refreshCatalog(true);
-              return;
-            }
-            if (id2 === "settings") {
-              hideMenu();
-              setSettingsOpen(true);
-              return;
-            }
-            hideMenu();
-            if (id2 === "new") openAuthoring();
-            else if (id2 === "manage") {
-              dialogReturnFocus.current = null;
-              setManaging(true);
-            } else if (id2 === view.candidateKey) openBindingReview(review, view.candidate);
-          }
+          children: menu?.step === "edit" ? null : h(
+            "div",
+            { className: "ptcPlusMenuActions" },
+            canAuthor ? h(
+              "div",
+              { className: "ptcPlusMenuAuthoring", role: "group", "aria-label": t2("bindings.authorGroup") },
+              h("div", { className: "ptcPlusMenuGroupLabel" }, t2("bindings.authorGroup")),
+              h(
+                "div",
+                { className: "ptcPlusMenuActionGrid" },
+                actionButton("new", "bindings.authorNewDraft"),
+                (catalog?.entries?.length ?? 0) > 0 ? actionButton("edit", "bindings.authorEdit") : null
+              )
+            ) : null,
+            h(
+              "div",
+              { className: "ptcPlusMenuUtilities" },
+              quickAccess ? actionButton("manage", "bindings.manage", manageItemRef) : null,
+              actionButton("settings", "settings.menuEntry", settingsItemRef)
+            )
+          ),
+          onSelect: selectMenuItem
         }),
         // Hiding the composer unmounts the dialog, not the controller: the draft survives.
         managing && quickAccess && view.reachable ? h(BindingsDialog, {
@@ -30043,7 +30058,6 @@
       "settings.dialogTitle": "PTC Plus \u8BBE\u7F6E",
       "settings.close": "\u5173\u95ED PTC Plus \u8BBE\u7F6E",
       "settings.pathSettings": "\u8BBE\u7F6E \u2192 \u63D2\u4EF6\u914D\u7F6E \u2192 PTC Plus",
-      "settings.pathGeneral": "\u8BBE\u7F6E \u2192 \u5E38\u89C4 \u2192 PTC Plus",
       "settings.pathPlugins": "\u4FA7\u680F Plugins \u2192 dsh-ptc-plus \u2192 \u884C ptc-plus \u2192 Configure",
       "bindings.entry": "\u6761\u76EE\u914D\u7F6E",
       "bindings.close": "\u5173\u95ED\u5168\u5C40\u7ED1\u5B9A\u5DE5\u4F5C\u53F0",
@@ -30120,12 +30134,13 @@
       "bindings.failed": "\u5168\u5C40\u7528\u6237\u7ED1\u5B9A\u64CD\u4F5C\u5931\u8D25\uFF1A{error}",
       "bindings.authorEdit": "\u4FEE\u6539\u7ED1\u5B9A",
       "bindings.open": "\u5168\u5C40\u7ED1\u5B9A",
-      "bindings.openHint": "PTC Plus \u63D2\u4EF6 \xB7 \u6253\u5F00\u5168\u5C40\u7528\u6237\u7ED1\u5B9A\u83DC\u5355\uFF0C\u53EF\u7F16\u5199\u3001\u542F\u505C\u6216\u7BA1\u7406",
+      "bindings.openHint": "PTC Plus \xB7 \u5168\u5C40\u7ED1\u5B9A\u4E0E\u8BBE\u7F6E",
       "bindings.draftHint": "PTC Plus \u63D2\u4EF6 \xB7 \u7ED1\u5B9A\u8349\u7A3F\u5F85\u5904\u7406\uFF0C\u70B9\u51FB\u67E5\u770B",
       "bindings.quickHeading": "\u5168\u5C40\u7528\u6237\u7ED1\u5B9A \xB7 \u5BF9\u6240\u6709\u4F1A\u8BDD\u751F\u6548",
       "bindings.quickDrafts": "\u5F85\u5904\u7406\u8349\u7A3F",
       "bindings.quickLoading": "\u6B63\u5728\u8BFB\u53D6\u7ED1\u5B9A\u2026",
       "bindings.quickSaving": "\u6B63\u5728\u4FDD\u5B58\u2026",
+      "bindings.authorGroup": "Agent \u7F16\u5199",
       "bindings.authorNewDraft": "\u7F16\u5199\u65B0\u7ED1\u5B9A",
       "bindings.quickEditHeading": "\u9009\u62E9\u8981\u4FEE\u6539\u7684\u7ED1\u5B9A",
       "bindings.back": "\u8FD4\u56DE",
@@ -30214,7 +30229,6 @@
       "settings.dialogTitle": "PTC Plus settings",
       "settings.close": "Close PTC Plus settings",
       "settings.pathSettings": "Settings \u2192 Plugin configuration \u2192 PTC Plus",
-      "settings.pathGeneral": "Settings \u2192 General \u2192 PTC Plus",
       "settings.pathPlugins": "Side bar Plugins \u2192 dsh-ptc-plus \u2192 row ptc-plus \u2192 Configure",
       "bindings.entry": "Entry configuration",
       "bindings.close": "Close global bindings workbench",
@@ -30291,12 +30305,13 @@
       "bindings.failed": "Global User Binding operation failed: {error}",
       "bindings.authorEdit": "Revise a binding",
       "bindings.open": "Global bindings",
-      "bindings.openHint": "PTC Plus plugin \xB7 Open the Global User Binding menu to author, toggle, or manage",
+      "bindings.openHint": "PTC Plus \xB7 Global bindings and settings",
       "bindings.draftHint": "PTC Plus plugin \xB7 Binding draft pending; click to review",
       "bindings.quickHeading": "Global bindings \xB7 Applies to all sessions",
       "bindings.quickDrafts": "Pending drafts",
       "bindings.quickLoading": "Loading bindings\u2026",
       "bindings.quickSaving": "Saving\u2026",
+      "bindings.authorGroup": "Author with Agent",
       "bindings.authorNewDraft": "Write a new binding",
       "bindings.quickEditHeading": "Choose a binding to revise",
       "bindings.back": "Back",
@@ -30423,7 +30438,9 @@
 /* Keep the session-header action on the same compact 32px rhythm as DSH chrome. */
 .ptcPlusActiveShell{display:inline-flex;height:28px;align-items:center;justify-content:center;line-height:0;vertical-align:middle}.ptcPlusActive{box-sizing:border-box;height:28px;justify-content:center;gap:6px;padding:0 6px;border:0;background:transparent;font-family:inherit;font-size:13px;font-weight:500;line-height:18px}.ptcPlusActive::before{width:6px;height:6px;flex:none;border-radius:50%;background:currentColor;box-shadow:0 0 0 2px color-mix(in srgb,currentColor 18%,transparent);content:''}.ptcPlusActive:hover,.ptcPlusActive[aria-expanded=true]{background:var(--dsw-alias-interactive-bg-hover,rgba(38,49,72,.06))}.ptcPlusActiveLabel{display:inline-flex;height:18px;align-items:center;line-height:18px}
 @media(max-width:560px){.ptcPlusActiveShell{display:none}}
-[role=menu]:has(.ptcPlusBindingMenuAction,.ptcPlusDraftMenuItem){width:min(320px,calc(100vw - 24px));min-width:0;max-height:min(440px,60dvh,var(--ptc-plus-menu-space,100dvh));border-radius:12px}.ptcPlusBindingQuickRow{display:flex;min-width:0;flex-direction:column;gap:3px;white-space:normal}.ptcPlusBindingQuickName{display:flex;align-items:center;justify-content:space-between;gap:12px;font-size:13px}.ptcPlusBindingQuickName strong{min-width:0;overflow:hidden;text-overflow:ellipsis;font-weight:500;white-space:nowrap}.ptcPlusBindingQuickState{flex:none;font-size:11px;color:var(--dsw-alias-label-tertiary)}.ptcPlusBindingQuickRow[data-enabled=true] .ptcPlusBindingQuickState{color:var(--dsw-alias-state-success-primary)}.ptcPlusBindingQuickPurpose{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dsw-alias-label-tertiary);font-size:12px}.ptcPlusBindingMenuAction{font-size:13px}
+[role=menu]:has(.ptcPlusBindingMenuAction,.ptcPlusDraftMenuItem){width:min(320px,calc(100vw - 24px));min-width:0;max-height:min(440px,60dvh,var(--ptc-plus-menu-space,100dvh));border-radius:12px}.ptcPlusBindingQuickRow{display:flex;min-width:0;flex-direction:column;gap:3px;white-space:normal}.ptcPlusBindingQuickName{display:flex;align-items:center;justify-content:space-between;gap:12px;font-size:13px}.ptcPlusBindingQuickName strong{min-width:0;overflow:hidden;text-overflow:ellipsis;font-weight:500;white-space:nowrap}.ptcPlusBindingQuickState{flex:none;min-width:5em;text-align:end;font-size:11px;color:var(--dsw-alias-label-tertiary)}.ptcPlusBindingQuickRow[data-enabled=true] .ptcPlusBindingQuickState{color:var(--dsw-alias-state-success-primary)}.ptcPlusBindingQuickPurpose{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dsw-alias-label-tertiary);font-size:12px}.ptcPlusBindingMenuAction{font-size:13px}
+.ptcPlusMenuActions{margin-top:6px;border-top:1px solid var(--dsw-alias-border-l3,rgba(0,0,0,.1))}.ptcPlusMenuAuthoring{padding:8px 4px}.ptcPlusMenuGroupLabel{padding:0 4px 6px;color:var(--dsw-alias-label-tertiary);font-size:11px;line-height:16px}.ptcPlusMenuActionGrid,.ptcPlusMenuUtilities{display:flex;gap:6px;min-width:0}.ptcPlusMenuUtilities{padding:6px 4px}.ptcPlusMenuAuthoring+.ptcPlusMenuUtilities{border-top:1px solid var(--dsw-alias-border-l3,rgba(0,0,0,.1))}.ptcPlusMenuButton{appearance:none;display:flex;flex:1;align-items:center;justify-content:center;min-width:0;min-height:34px;padding:6px 8px;border:1px solid var(--dsw-alias-border-l3,rgba(0,0,0,.1));border-radius:7px;background:transparent;color:var(--dsw-alias-label-primary);font:inherit;text-align:center;cursor:pointer}.ptcPlusMenuButton:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(38,49,72,.06))}.ptcPlusMenuButton:focus-visible{outline:2px solid var(--dsw-alias-interactive-primary,#4d6bfe);outline-offset:-2px}.ptcPlusMenuButton .ptcPlusBindingMenuAction{white-space:normal;overflow-wrap:anywhere;line-height:18px}.ptcPlusMenuUtilities .ptcPlusMenuButton{border-color:transparent;color:var(--dsw-alias-label-secondary)}.ptcPlusMenuUtilities .ptcPlusBindingMenuAction{font-size:12px}
+
 `;
   var BINDING_WORKBENCH_CSS = `
 .ptcPlusCandidateContext{min-width:0;margin-top:4px;padding:12px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-module-platform)}.ptcPlusCandidateContext h4{margin:0 0 10px;color:var(--dsw-alias-label-primary);font-size:12px;font-weight:600;line-height:18px}.ptcPlusCandidateContext dl{display:grid;gap:12px;margin:0}.ptcPlusCandidateContext dt{color:var(--dsw-alias-label-secondary);font-size:12px;line-height:20px}.ptcPlusCandidateContext dd{min-width:0;margin:0}.ptcPlusCandidateDeclaration{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:4px 12px}.ptcPlusCandidateDeclaration dd{display:inline-flex;align-items:center;gap:4px;max-width:100%;box-sizing:border-box;padding:2px 8px;border-radius:6px;background:var(--dsw-alias-bg-layer-3);color:var(--dsw-alias-label-secondary);font-size:11px;line-height:18px;overflow-wrap:anywhere}.ptcPlusCandidateDeclaration dd[data-included=true]{background:var(--dsw-alias-state-business-tertiary);color:var(--dsw-alias-state-business-primary)}.ptcPlusCandidateDeclaration svg{flex:none}.ptcPlusCandidatePrompt{display:grid;gap:6px}.ptcPlusCandidatePrompt dd{padding:8px 10px;border:1px solid var(--dsw-alias-border-l2);border-radius:6px;background:var(--dsw-alias-bg-layer-3);color:var(--dsw-alias-label-primary);font-size:12px;line-height:20px;white-space:pre-wrap;overflow-wrap:anywhere}.ptcPlusCandidatePrompt dd[data-empty=true]{padding:0;border:0;background:transparent;color:var(--dsw-alias-label-tertiary)}

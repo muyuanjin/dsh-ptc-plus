@@ -234,7 +234,7 @@ async function fixture({ enabled = true, bindings = true, conversation = true, r
   await runtime.root.declare({
     ...(settingsCardSeat === 'legacy' ? { 'settings.plugin.item': { kind: 'keyed', scope: 'root' } } : {}),
     ...(settingsCardSeat === 'row' ? { [ROW_CONFIG_SLOT]: { kind: 'keyed', scope: 'root' } } : {}),
-    ...(settingsCardSeat === 'general' ? { 'settings.general.item': { kind: 'list', scope: 'root' } } : {}),
+    'settings.general.item': { kind: 'list', scope: 'root' },
     ...(settingsCardSeat === 'page' ? { 'test.pluginPage': { kind: 'list', scope: 'root' } } : {}),
     'conversation.session.header.actions': { kind: 'list', scope: 'session' },
     'conversation.chat.turnTail': { kind: 'chain', scope: 'session' },
@@ -249,7 +249,7 @@ async function fixture({ enabled = true, bindings = true, conversation = true, r
       ? props.renderSlot('settings.plugin.item', {}, { entryKey: 'ptc-plus' })
       : null,
     settingsCardSeat === 'row' ? rowConfigViews(props) : null,
-    settingsCardSeat === 'general' ? props.renderSlot('settings.general.item', {}) : null,
+    React.createElement('section', { 'data-general-settings': true }, props.renderSlot('settings.general.item', {})),
     settingsCardSeat === 'page' ? props.renderSlot('test.pluginPage', {}) : null,
     React.createElement(props.SessionProvider, null,
       props.renderSlot('conversation.session.header.actions', {}),
@@ -866,13 +866,13 @@ test('reload rejects mismatched revisions and ignores responses from a disposed 
   expect(rpcCalls.filter(call => call.endpoint === 'save')).toHaveLength(1)
 })
 
-test('the alpha.2 Plugins page claims the row-configuration seat only while it is mounted', async () => {
+test('the Plugins page claims the row-configuration seat only while it is mounted', async () => {
   const { runtime } = await fixture({ settingsCardSeat: 'page' })
   const view = runtime.renderRoot()
   await runtime.flush()
-  // Alpha.2 declares neither the old card seat nor the page's seat before the
-  // page itself mounts, so the plugin waits instead of registering.
+  // General is already mounted; the plugin configuration waits for its page.
   expect(runtime.slots.entries('settings.plugin.item')).toHaveLength(0)
+  expect(runtime.slots.entries('settings.general.item')).toHaveLength(0)
   expect(runtime.slots.entries(ROW_CONFIG_SLOT)).toHaveLength(0)
   expect(view.container.querySelector('.ptcPlusFields')).toBeNull()
   const page = await runtime.mount({ inject: ['slots'], apply(ctx) {
@@ -897,12 +897,14 @@ test('the alpha.2 Plugins page claims the row-configuration seat only while it i
   expect(view.container.querySelector('.ptcPlusFields')).toBeNull()
 })
 
-test('the alpha.2 seat renders both views when the page declares it first', async () => {
+test('the plugin row seat renders both views when the page declares it first', async () => {
   const { runtime, settings } = await fixture({ settingsCardSeat: 'row' })
   expect(runtime.slots.entries('settings.plugin.item')).toHaveLength(0)
+  expect(runtime.slots.entries('settings.general.item')).toHaveLength(0)
   expect(runtime.slots.entries(ROW_CONFIG_SLOT).map(entry => entry.options.key)).toEqual([ROW_CONFIG_KEY])
   const view = runtime.renderRoot()
   await runtime.flush()
+  expect(view.container.querySelector('[data-general-settings]').textContent).toBe('')
   const summary = view.container.querySelector('[data-view=summary]')
   expect(summary.querySelector('.ptcPlusFields')).toBeNull()
   expect(summary.textContent).toBe('The session-bound TypeScript REPL for PTC mode.')
@@ -1810,7 +1812,6 @@ test('the authoring entry opens the complete settings dialog from every host sea
   for (const [seat, path] of [
     ['legacy', 'Settings → Plugin configuration → PTC Plus'],
     ['row', 'Side bar Plugins → dsh-ptc-plus → row ptc-plus → Configure'],
-    ['general', 'Settings → General → PTC Plus'],
     ['page', 'PTC Plus settings'],
   ]) {
     const { runtime } = await fixture({
@@ -2401,11 +2402,18 @@ test('the composer entry carries a plugin-signed tooltip that follows the draft 
   fireEvent.focus(trigger)
   await runtime.flush()
   expect(view.getByRole('tooltip').textContent)
-    .toBe('PTC Plus plugin · Open the Global User Binding menu to author, toggle, or manage')
+    .toBe('PTC Plus · Global bindings and settings')
   runtime.sessions.behavior('client-session').projections.set('ptcPlusBindingDraft', reviewProjection(candidate))
   await runtime.flush()
   expect(trigger.getAttribute('aria-label')).toBe('Binding drafts (1)')
   expect(view.getByRole('tooltip').textContent).toBe('PTC Plus plugin · Binding draft pending; click to review')
+  trigger.closest('.ptcPlusComposerBindingAnchor').getClientRects = () => [new DOMRect(20, 500, 24, 24)]
+  fireEvent.click(trigger)
+  await runtime.flush()
+  expect(view.getByRole('menu')).not.toBeNull()
+  expect(view.queryByRole('tooltip')).toBeNull()
+  expect(view.container.querySelector('.ptcPlusAuthorButton')).toBe(trigger)
+
 })
 
 test('a receipt arriving while a draft menu has focus returns focus to its authoring icon', async () => {
@@ -3897,7 +3905,7 @@ test('missing optional primitives fall back to native controls and text labels',
   expect(anchor.getAttribute('data-text')).toBe('true')
   expect(anchor.querySelector('.ptcPlusAuthorButtonLabel').textContent).toBe('Global bindings')
   expect(anchor.querySelector('.ptcPlusAuthorButton').getAttribute('title'))
-    .toBe('PTC Plus plugin · Open the Global User Binding menu to author, toggle, or manage')
+    .toBe('PTC Plus · Global bindings and settings')
   input.publish({ draft: 'keep my text' })
   await runtime.flush()
   await openGlobalMenu(view, runtime, 'click')

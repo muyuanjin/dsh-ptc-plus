@@ -135,48 +135,24 @@ export function isIdleSessionComposer(owner, sessionId) {
 const BUNDLE_PATCH_ROW_ID = 'ptc-plus'
 
 /**
- * The slot seats one generation of DSH offers for a plugin's own settings card,
- * oldest generation first:
- *
- * - The settings-card generation declares
- *   `settings.plugin.item` (keyed, root) as the child slot of its configurable
- *   tab and renders one card per settings namespace the Host serves, so this
- *   plugin's key is its namespace.
- * - The bundle-row generation exposes that section as a read-only inventory,
- *   and a bundle's own configuration belongs to the side bar Plugins page,
- *   which declares `plugins.row.config` (keyed, root) and renders the entry's
- *   summary on the row's page with the entry's form below it. The key is
- *   `<bundle package name>#<row id>`. The same page's `plugins.item` list is its
- *   Official group, occupied by the host-plane configuration pages DSH itself
- *   ships, so it is not a seat for a third-party bundle.
- *
- * - The General settings generation declares `settings.general.item` (list,
- *   root), with `id` identifying the contributed row inside Settings / General.
- *
- * Each generation declares its own seat, and `ctx.slots.inject` waits rather than
- * failing while a key is undeclared: the callback runs only after the declaring
- * entry mounts, and nothing is registered until then. One publication therefore
- * serves every generation without probing a version, and no card renders twice
- * on a generation that exists.
+ * Plugin-owned configuration seats. Current Hosts use the bundle's row page;
+ * preceding Hosts use the settings namespace card. General settings may coexist
+ * with either surface and is not a destination for this plugin's configuration.
+ * Undeclared slots stay pending until their owning page mounts.
  *
  * @param bundleName - this bundle's package name, as the profile installs it.
- * @returns one `{ slot, identity }` per generation.
+ * @returns one `{ slot, identity }` per supported plugin configuration surface.
  */
 export function settingsCardSeats(bundleName) {
   return [
     { slot: 'settings.plugin.item', identity: { key: SETTINGS_NAMESPACE } },
     { slot: 'plugins.row.config', identity: { key: `${bundleName}#${BUNDLE_PATCH_ROW_ID}` } },
-    { slot: 'settings.general.item', identity: { id: SETTINGS_NAMESPACE } },
   ]
 }
 
 /**
- * Publish one settings card to every seat above and report which seat the
- * installed generation declared.
- *
- * Only the declaring generation runs a seat's callback, so the card's location
- * is observed rather than inferred: the seat that registered is where a user
- * finds the card now, and that is what any copy pointing at it must say.
+ * Publish the settings card when a plugin configuration surface is declared.
+ * The observed seat supplies the native-location hint for the composer shortcut.
  *
  * @param ctx - browser plugin context carrying `slots`.
  * @param options.bundleName - this bundle's package name, as the profile installs it.

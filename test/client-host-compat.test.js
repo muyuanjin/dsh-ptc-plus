@@ -3,10 +3,13 @@ import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 import { parse } from 'yaml'
 import {
+  MENU_CHILDREN_PROBE_SENTINEL,
+  createMenuChildrenEvidence,
   hostIconComponents,
   isHostIconComponent,
   isIdleSessionComposer,
   publishSettingsCard,
+  readMenuChildrenProbe,
   sessionUsesPtcPreset,
   settingsCardSeats,
   useSessionPreset,
@@ -50,6 +53,32 @@ test('host icons follow the public export shape without a version branch', () =>
     assert.equal(typeof absent[name], 'function', name)
     assert.equal(absent[name](), null, name)
   }
+})
+
+test('the Menu children probe answers from mounted output and keeps the first observation', () => {
+  const sentinel = { className: MENU_CHILDREN_PROBE_SENTINEL }
+  const rendersChildren = { querySelector: selector => selector === `.${MENU_CHILDREN_PROBE_SENTINEL}` ? sentinel : null }
+  const ignoresChildren = { querySelector: () => null }
+
+  assert.equal(readMenuChildrenProbe(rendersChildren), true)
+  assert.equal(readMenuChildrenProbe(ignoresChildren), false)
+  // A probe that never mounted carries no evidence either way.
+  assert.equal(readMenuChildrenProbe(null), false)
+  assert.equal(readMenuChildrenProbe(undefined), false)
+
+  // `undefined` is the open question, not a verdict: callers keep the region
+  // they already render until a mounted probe answers.
+  const evidence = createMenuChildrenEvidence()
+  assert.equal(evidence.supported(), undefined)
+  evidence.record(readMenuChildrenProbe(ignoresChildren))
+  assert.equal(evidence.supported(), false)
+  evidence.record(true)
+  assert.equal(evidence.supported(), false)
+  const preceding = createMenuChildrenEvidence()
+  preceding.record(readMenuChildrenProbe(rendersChildren))
+  assert.equal(preceding.supported(), true)
+  preceding.record(false)
+  assert.equal(preceding.supported(), true)
 })
 
 function source(value) {

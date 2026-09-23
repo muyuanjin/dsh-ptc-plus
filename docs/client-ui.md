@@ -1,6 +1,6 @@
 # Client UI
 
-PTC Plus 提供**插件设置卡片**。卡片座位由宿主代际决定：旧代际在 DSH Web/Desktop 的 Settings → Plugin configuration 中以 `settings.plugin.item` 渲染，rc 代际在侧栏 Plugins 页面以 `plugins.row.config`（键 `<包名>#<行 id>`）渲染该 bundle 自己的配置，当前 alpha 在 Settings → General 中以 `settings.general.item`（list，`id: ptc-plus`）渲染；`src/client-host-compat.js` 同时发布到全部三个座位，由声明了槽位的那一代决定哪个生效，卡片按座位提供的 `summary`/`page` 视图分别渲染一句描述与完整表单。输入框旁的星光菜单还直接打开复用同一表单的应用内设置窗口，不依赖宿主页面的局部导航状态；菜单项悬浮提示保留原生设置座位的路径。
+PTC Plus 提供**插件设置卡片**。卡片座位由宿主代际决定：旧代际在 DSH Web/Desktop 的 Settings → Plugin configuration 中以 `settings.plugin.item` 渲染，当前代际在侧栏 Plugins → Installed 页面以 `plugins.row.config`（键 `<包名>#<行 id>`）渲染该 bundle 自己的配置；General 设置不是本卡片的座位，`src/client-host-compat.js` 只发布到这两个插件配置座位，由声明了槽位的那一代决定哪个生效，卡片按座位提供的 `summary`/`page` 视图分别渲染一句描述与完整表单。输入框旁的星光菜单还直接打开复用同一表单的应用内设置窗口，不依赖宿主页面的局部导航状态；菜单项悬浮提示保留原生设置座位的路径。
 
 Client 根入口只依赖 `slots`、`locale`、`connection` 和 `remote`；settings transport 由当前代的 `configForms` 或上一代的 `settingsScope` 可选注入提供。头部贡献直接消费公开 session slot 提供的 `useProjection`；REPL 注册另依赖 `sessions` 的当前选择和 projection face。命令卡片等待公开 command slot，composer 管理入口直接消费现有管理 Remote；其中的编写动作再等待 `remote.commands` 与公开输入 hooks，不依赖已改名的 conversation registry 或未使用的 `ui-session` 模块。缺失、卸载或迟到的 slot/provider 只影响需要它的贡献；没有 `useProjection` 时不挂载依赖它的会话视图，命令卡片保留宿主结果但不提供草稿操作。没有输入 hooks 时不显示编写动作，已有全局绑定仍可查看和启停。preset 优先读取 `agentPreset` projection，缺失时依次读取会话公开摘要里的 projection 值与旧宿主的 `agentPreset` 字段；binding 值和草稿资格不采用该回退。当前会话身份取宿主已发布的选中证据：旧代际在会话列表上投影 `current`，当前代际把视图选择留在 controller 之外、以主视图持有的会话表达。两者都不读取私有 store。设置和独立正文 tool view 继续可用，不读取私有 store 或自行重建会话状态。
 
@@ -80,6 +80,10 @@ PTC session 的头部弹窗在功能启用时增加 Session 与 Global 页签。
 编写中、就绪、保存和丢弃等 chrome 从结构化事实在渲染时通过 `settings.ptcPlus` 翻译，已有回执随 locale 切换。Host admission 只返回 `kind: success`，非 GUI consumer 仍能观察成功结算；历史成功 text 不参与状态渲染。原始错误、用户需求与候选源码保持原文。
 
 `enhancedToolView` 默认开启并即时生效。开启时 PTC Plus 通过公共 keyed tool-view surface 为 `run_code` 与 `edit_run_code` 提供增强行，并在可用时使用 DSH 公共 `DisclosureRow`/`CodeBlock` primitive，缺少某项 capability 时使用插件自有的等价降级；关闭时立即注销这两个 keyed view，由 DSH 原生 generic row 负责布局、状态、代码高亮和输入/输出卡片。该开关只影响 Client 展示，不改变工具、prompt、runtime 或 session 语义。composer 星光入口使用公共 `Menu`、`Tooltip`、`Toast`、`Modal` 和 `IconSparkle16`；设置窗口复用设置卡片的完整表单与写入 callback，星光菜单的“修改绑定”第二步继续使用同一公共 `Menu` 的条目、滚动与键盘语义。缺失 `IconSparkle16` 时降级为纯文本按钮，缺失 `Toast` 时使用插件自有的内联状态提示；缺失 `Tooltip` 时悬浮说明由原生 `title` 承载。
+
+星光入口的四个动作（编写新绑定、修改绑定、管理全局绑定、PTC Plus 设置）始终由插件自己的动作区承载——`Agent 编写` 分组标题加两列网格，再一行工具入口——而不是宿主的列表行。该动作区优先放进公共 `Menu` 的 `children` 区域。这个区域不是所有已发布 Client 都会渲染的输入：较早的实现接受 `children` 属性却不挂载任何节点。`src/client-host-compat.js` 因此以已挂载输出而不是版本号判定该契约：首个 composer 入口挂载时渲染一次隐藏、非 portal 的 `Menu`，读取其中是否出现插件自己的哨兵子节点，随后在同一次提交内丢弃探测；答案在单个 Client 生命周期内只记录第一次结果，后续会话入口复用该答案、不再渲染探测。未渲染 `children` 时插件不把“未回答”当作结论，也不退化成宿主行：同一份动作区改由该 `Menu` 一向渲染的 pinned 区域承载（入口类型为 label，内容仍是插件自己的网格），因此分组、分组分隔线、两列布局、文案、顺序和设置座位提示在所有代际一致；渲染 `children` 的 Client 不再追加 pinned 副本，避免同一动作出现两次。pinned 载体只抵消自身的外边距和上边框，避免与宿主 footer 的 hairline 叠成两条；分组分隔线位于 `Agent 编写` 网格与工具入口之间，不会与它重复。已发布的 Client 至少渲染 pinned 区域；两处都不渲染的代际没有可承载这四个动作的宿主插槽，插件不以自有浮层替换宿主菜单，也不因此伪造宿主能力。探测挂载失败时不记录任何结论，入口保持原有渲染路径。
+
+悬浮窗里的条目启停不改变列表的可用性：写入由 catalog source 串行化、重复请求被丢弃，因此请求期间行不会被禁用（宿主会给禁用行降透明度）也不会插入“正在保存”行，避免整个悬浮窗在每次切换时闪一下；只有尚无目录可操作或读取失败时行才不可用。
 
 `autoDescribeRunCode` 的设置名称是“允许执行缺少摘要的 run_code”，默认开启并即时生效。缺少外层 `run_code.description` 时，调用使用派生参数通过本地 DSH 校验，备用摘要仅进入 presentation metadata；关闭时由 DSH 校验原始参数。两种状态的模型请求保持字节稳定并包含 required `description`，原始调用参数、已有摘要、cell 源码和嵌套 native 工具参数保持不变。
 

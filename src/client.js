@@ -9,6 +9,7 @@ import { createIndicatorView } from './client-indicator-view.js'
 import { createTypeScriptEditor } from './client-code-editor.js'
 import { createBindingConsole } from './client-console.js'
 import {
+  createMenuChildrenEvidence,
   hostIconComponents,
   isHostIconComponent,
   isIdleSessionComposer,
@@ -251,10 +252,12 @@ window.__ModuleLoader__.load({
       }
 
       const subscribeReset = listener => ctx.on('connection/reset', listener)
+      // One probe answer serves every session's composer entry for this Client.
+      const menuChildren = createMenuChildrenEvidence()
       const { BindingAuthorButton, BindingReviewDock, BindingCommandCard } = createAuthoringView(React, {
         ActionButton, IconButton, Menu, Toast, Tooltip, CodeBlock, BindingsDialog, PTCPlusSettingsDialog,
         useWorkbenchController, useBindingReview, catalogOwner, callUserBindings, subscribeReset,
-        settingsCardSeat: settingsCard.seat, updateSetting,
+        settingsCardSeat: settingsCard.seat, updateSetting, menuChildren,
         icons: {
           sparkle: IconSparkle16, chevron: IconChevronDownOutline14,
           close: IconCloseOutline16, check: IconCheckOutline14,

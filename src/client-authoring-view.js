@@ -1,7 +1,11 @@
 import { bindingDraftProjection, bindingReviewStatus } from './client-binding-review.js'
 import { bindingModelPreferences } from '../internal/user-binding-model-context.js'
 import { featureEnabled } from './client-feature-gates.js'
-import { isHostIconComponent } from './client-host-compat.js'
+import {
+  MENU_CHILDREN_PROBE_SENTINEL,
+  isHostIconComponent,
+  readMenuChildrenProbe,
+} from './client-host-compat.js'
 
 /**
  * Hover dwell before the composer entry opens its menu. The entry sits inside the
@@ -20,7 +24,7 @@ export function createAuthoringView(React, deps) {
   const {
     ActionButton, IconButton, Menu, Toast, Tooltip, CodeBlock, BindingsDialog, PTCPlusSettingsDialog,
     useWorkbenchController, useBindingReview, catalogOwner, callUserBindings, subscribeReset,
-    settingsCardSeat, updateSetting,
+    settingsCardSeat, updateSetting, menuChildren,
     icons: {
       sparkle: IconSparkle16, chevron: IconChevronDownOutline14,
       close: IconCloseOutline16, check: IconCheckOutline14,
@@ -62,6 +66,13 @@ export function createAuthoringView(React, deps) {
     const [menu, setMenu] = React.useState(null)
     const [managing, setManaging] = React.useState(false)
     const [settingsOpen, setSettingsOpen] = React.useState(false)
+    // The composer entry's four actions live in the host Menu's `children`
+    // region. Preceding Clients accept that prop and mount nothing, so the entry
+    // probes the installed primitive once and, when it renders no such region,
+    // keeps the same actions reachable through the Menu's pinned rows.
+    const probeRef = React.useRef(null)
+    const [probing, setProbing] = React.useState(() => menuChildren.supported() === undefined)
+    const menuChildrenRegion = menuChildren.supported() !== false
     // The menu catalog and the workbench catalog are independent sources: a
     // read or write in one never invalidates the other's in-flight request.
     const catalogSource = React.useMemo(() => catalogOwner.claim(), [catalogOwner])
@@ -195,6 +206,16 @@ export function createAuthoringView(React, deps) {
       })
       return () => { cancelled = true }
     }, [menuOpen, menu?.mode, menu?.step])
+    React.useLayoutEffect(() => {
+      // The probe mounts in the same commit as this effect, so the answer comes
+      // from Client output rather than from the props the plugin passed. A probe
+      // that never mounted records nothing: the entry keeps rendering the region
+      // instead of turning a missing container into a compatibility verdict.
+      if (!probing) return
+      const mounted = probeRef.current
+      if (mounted !== null) menuChildren.record(readMenuChildrenProbe(mounted))
+      setProbing(false)
+    }, [probing, menuChildren])
     React.useEffect(() => {
       if (toast === null || typeof Toast === 'function') return undefined
       const timer = setTimeout(() => setToast(null), 2_500)
@@ -236,10 +257,14 @@ export function createAuthoringView(React, deps) {
       : h('span', { className: 'ptcPlusAuthorButtonLabel', 'aria-hidden': true }, t('bindings.open')),
       hasDraft ? h('span', { className: 'ptcPlusDraftBadge', 'aria-hidden': true,
         'data-attention': view.message !== null }, '1') : null)
+    // A write in flight keeps the list interactive. The source serializes writes
+    // and drops a duplicate, while disabling rows would dim every row and add a
+    // pending row for the duration of the request: both read as the popover
+    // flickering when the user toggles an entry.
     const catalogItems = !quickAccess ? [] : [
       { id: 'global-heading', type: 'label', text: t('bindings.quickHeading') },
       ...(catalog?.entries ?? []).map(entry => ({ id: `global:${entry.id}`,
-        disabled: !catalogReady,
+        disabled: catalog === null,
         label: h('span', { className: 'ptcPlusBindingQuickRow', 'data-enabled': entry.enabled },
           h('span', { className: 'ptcPlusBindingQuickName' }, h('strong', { title: entry.name }, entry.name),
             h('span', { className: 'ptcPlusBindingQuickState' }, t(entry.enabled ? 'bindings.enabled' : 'bindings.disabledEntry'))),
@@ -247,7 +272,7 @@ export function createAuthoringView(React, deps) {
       })),
       ...(catalog !== null && catalog.entries.length === 0
         ? [{ id: 'empty', type: 'label', text: t('memory.globalEmpty') }] : []),
-      ...(catalogStatus === 'writing' || (catalog === null && catalogStatus === 'loading')
+      ...(catalog === null && catalogStatus !== 'error'
         ? [{ id: 'pending', type: 'label', text: t(catalogStatus === 'writing' ? 'bindings.quickSaving' : 'bindings.quickLoading') }] : []),
       ...(catalogError === null ? [] : [{ id: 'error', type: 'label', text: t('bindings.failed', { error: catalogError }) }]),
     ]
@@ -258,7 +283,7 @@ export function createAuthoringView(React, deps) {
       { id: 'edit-heading', type: 'label', text: t('bindings.quickEditHeading') },
       ...(catalog?.entries ?? []).map(entry => ({
         id: `edit:${entry.id}`,
-        disabled: !catalogReady,
+        disabled: catalog === null,
         label: h('span', { className: 'ptcPlusBindingQuickRow' },
           h('span', { className: 'ptcPlusBindingQuickName' }, h('strong', { title: entry.name }, entry.name),
             h('span', { className: 'ptcPlusBindingQuickState' }, t(entry.enabled ? 'bindings.enabled' : 'bindings.disabledEntry'))),
@@ -302,11 +327,39 @@ export function createAuthoringView(React, deps) {
       }
       else if (id === view.candidateKey) openBindingReview(review, view.candidate)
     }
+    // One copy of each action label serves the grid the plugin renders itself,
+    // in whichever carrier the installed Menu publishes for it.
+    const actionCopy = (id, copy, ref) => h('span', {
+      ref, className: 'ptcPlusBindingMenuAction',
+      title: id === 'settings' ? settingsPath(t) : undefined,
+    }, t(copy))
     const actionButton = (id, copy, ref) => h('button', {
       type: 'button', role: 'menuitem', className: 'ptcPlusMenuButton',
       onClick: () => selectMenuItem(id),
-    }, h('span', { ref, className: 'ptcPlusBindingMenuAction',
-      title: id === 'settings' ? settingsPath(t) : undefined }, t(copy)))
+    }, actionCopy(id, copy, ref))
+    const actionSections = [
+      canAuthor ? h('div', { key: 'authoring', className: 'ptcPlusMenuAuthoring', role: 'group', 'aria-label': t('bindings.authorGroup') },
+        h('div', { className: 'ptcPlusMenuGroupLabel' }, t('bindings.authorGroup')),
+        h('div', { className: 'ptcPlusMenuActionGrid' },
+          actionButton('new', 'bindings.authorNewDraft'),
+          (catalog?.entries?.length ?? 0) > 0 ? actionButton('edit', 'bindings.authorEdit') : null)) : null,
+      h('div', { key: 'utilities', className: 'ptcPlusMenuUtilities' },
+        quickAccess ? actionButton('manage', 'bindings.manage', manageItemRef) : null,
+        actionButton('settings', 'settings.menuEntry', settingsItemRef)),
+    ]
+    const actionsInRegion = menu?.step === 'edit'
+      ? null : h('div', { className: 'ptcPlusMenuActions' }, actionSections)
+    // The plugin's own action area, never a row list. A Client that mounts no
+    // `children` region still renders the pinned entry area, which carries the
+    // same grouped grid; the published `text` type names a string while the
+    // implementation renders the value, so this stays the plugin's own markup
+    // rather than a set of host-styled rows. Neither carrier enters the draft
+    // menu's second step, which owns its own rows.
+    const actionsPinned = menuChildrenRegion || menu?.step === 'edit' ? [] : [{
+      id: 'ptc-plus-actions',
+      type: 'label',
+      text: h('div', { className: 'ptcPlusMenuActions ptcPlusMenuActionsPinned' }, actionSections),
+    }]
     return h('span', {
       className: 'ptcPlusComposerBindingAnchor', tabIndex: -1,
       onFocusCapture: () => { focused.current = true }, onBlurCapture: () => { focused.current = false },
@@ -332,17 +385,19 @@ export function createAuthoringView(React, deps) {
           ...(quickAccess && catalogError !== null
             ? [{ id: 'reload', label: h('span', { ref: reloadItemRef }, t('bindings.reload')) }] : []),
         ],
-        children: menu?.step === 'edit' ? null : h('div', { className: 'ptcPlusMenuActions' },
-          canAuthor ? h('div', { className: 'ptcPlusMenuAuthoring', role: 'group', 'aria-label': t('bindings.authorGroup') },
-            h('div', { className: 'ptcPlusMenuGroupLabel' }, t('bindings.authorGroup')),
-            h('div', { className: 'ptcPlusMenuActionGrid' },
-              actionButton('new', 'bindings.authorNewDraft'),
-              (catalog?.entries?.length ?? 0) > 0 ? actionButton('edit', 'bindings.authorEdit') : null)) : null,
-          h('div', { className: 'ptcPlusMenuUtilities' },
-            quickAccess ? actionButton('manage', 'bindings.manage', manageItemRef) : null,
-            actionButton('settings', 'settings.menuEntry', settingsItemRef))),
+        children: actionsInRegion,
+        ...(actionsPinned.length === 0 ? {} : { footer: actionsPinned }),
         onSelect: selectMenuItem,
       }),
+      // The probe mounts the host Menu's own `children` region inside a hidden
+      // non-portal list and is dropped in the same commit as the effect that
+      // reads it, so no Client ever paints it and the entry's own menu keeps the
+      // only interactive surface.
+      probing ? h('span', { className: 'ptcPlusMenuProbe', ref: probeRef, 'aria-hidden': 'true' },
+        h(Menu, {
+          open: true, items: [], anchor: h('span', null), onSelect: selectMenuItem, onClose: hideMenu,
+          children: h('span', { className: MENU_CHILDREN_PROBE_SENTINEL }),
+        })) : null,
       // Hiding the composer unmounts the dialog, not the controller: the draft survives.
       managing && quickAccess && view.reachable
         ? h(BindingsDialog, {

@@ -1809,6 +1809,73 @@ async function openGlobalMenu(view, runtime, mode = 'hover') {
   return trigger
 }
 
+/**
+ * The Menu line that predates the `children` region: it renders the caller's
+ * rows and the pinned footer rows and mounts nothing for a `children` prop.
+ */
+function menuWithoutChildren(ui) {
+  const row = (entry, onSelect) => entry.type === 'label'
+    ? React.createElement('div', { key: entry.id, role: 'presentation' }, entry.text)
+    : entry.type === 'separator'
+      ? React.createElement('div', { key: entry.id, role: 'separator' })
+      : React.createElement('button', {
+        key: entry.id, type: 'button', role: 'menuitem', disabled: entry.disabled,
+        onClick: () => onSelect(entry.id),
+      }, entry.label)
+  return {
+    ...ui,
+    Menu: ({ open, anchor, items = [], footer = [], onSelect }) => React.createElement('span', null,
+      anchor,
+      open ? React.createElement('div', { role: 'menu' },
+        [...items, ...footer].map(entry => row(entry, onSelect))) : null),
+  }
+}
+
+test('a Menu line without a children region keeps the four composer actions reachable', async () => {
+  const { runtime, input } = await fixture({
+    ui: menuWithoutChildren(primitives),
+    commands: { list: async () => ({ ok: true, value: [{ name: 'binding' }] }) },
+    rpc: async endpoint => ({ ok: true, value: endpoint === 'list'
+      ? { revision: 1, entries: [reviewCandidate('menuRow').entry] }
+      : null }),
+  })
+  const view = runtime.renderRoot()
+  await runtime.flush()
+  // The probe reads mounted output, so the answered Client keeps the hidden
+  // probe out of its own surface.
+  expect(view.container.querySelector('.ptcPlusMenuProbe')).toBeNull()
+  await openGlobalMenu(view, runtime)
+  const rows = ['Write a new binding', 'Revise a binding', 'Manage global bindings', 'PTC Plus settings']
+  for (const name of rows) expect(view.getByRole('menuitem', { name })).not.toBeNull()
+  // The fallback carries the plugin's own grouped grid, not host-styled rows.
+  const actions = view.container.querySelector('.ptcPlusMenuActionsPinned')
+  expect(actions).not.toBeNull()
+  expect([...actions.querySelectorAll('.ptcPlusMenuAuthoring [role=menuitem]')].map(node => node.textContent))
+    .toEqual(['Write a new binding', 'Revise a binding'])
+  expect([...actions.querySelectorAll('.ptcPlusMenuUtilities [role=menuitem]')].map(node => node.textContent))
+    .toEqual(['Manage global bindings', 'PTC Plus settings'])
+  expect(view.getByRole('menuitem', { name: 'PTC Plus settings' })
+    .querySelector('.ptcPlusBindingMenuAction').getAttribute('title'))
+    .toBe('Settings → Plugin configuration → PTC Plus')
+  fireEvent.click(view.getByRole('menuitem', { name: 'Write a new binding' }))
+  expect(input.scope.getSnapshot().draft).toBe('/binding new ')
+})
+
+test('the hosted Menu carries each composer action once', async () => {
+  const { runtime } = await fixture({
+    commands: { list: async () => ({ ok: true, value: [{ name: 'binding' }] }) },
+    rpc: async endpoint => ({ ok: true, value: endpoint === 'list' ? { revision: 1, entries: [] } : null }),
+  })
+  const view = runtime.renderRoot()
+  await runtime.flush()
+  await openGlobalMenu(view, runtime)
+  // The region is the only carrier while the Client renders it: the pinned rows
+  // must not duplicate the same four actions.
+  expect(view.getAllByRole('menuitem', { name: 'Write a new binding' })).toHaveLength(1)
+  expect(view.getAllByRole('menuitem', { name: 'Manage global bindings' })).toHaveLength(1)
+  expect(view.getAllByRole('menuitem', { name: 'PTC Plus settings' })).toHaveLength(1)
+})
+
 test('the authoring entry opens the complete settings dialog from every host seat', async () => {
   for (const [seat, path] of [
     ['legacy', 'Settings → Plugin configuration → PTC Plus'],
@@ -1932,11 +1999,15 @@ test('global toggles settle while closed, prevent duplicate writes and require r
   fireEvent.click(row)
   fireEvent.click(row)
   await runtime.flush()
-  expect(row.disabled).toBe(true)
+  // A write in flight must not dim the list or insert a row: both read as the
+  // popover flickering on every toggle. The source still drops the duplicate.
+  expect(row.disabled).toBe(false)
+  expect(view.getAllByRole('menuitem', { name: /toggle/ })).toHaveLength(1)
+  expect(view.queryByText('Saving…')).toBeNull()
   fireEvent.keyDown(document, { key: 'Escape' })
   await runtime.flush()
   await openGlobalMenu(view, runtime, 'click')
-  expect(view.getByRole('menuitem', { name: /toggle/ }).disabled).toBe(true)
+  expect(view.getByRole('menuitem', { name: /toggle/ }).disabled).toBe(false)
   pending.resolve()
   await runtime.flush()
   expect(rpc.mock.calls.filter(([endpoint]) => endpoint === 'enable')).toHaveLength(1)
@@ -2008,9 +2079,14 @@ test.each(['toggle', 'reload'].flatMap(operation => ['settled', 'closed', 'moved
   fireEvent.click(row)
   await runtime.flush()
   if (operation === 'reload') expect(row.isConnected).toBe(false)
-  else expect(row.disabled).toBe(true)
-  // Chromium blurs disabled buttons; JSDOM needs that browser transition explicitly.
-  row.blur()
+  else {
+    // A write in flight leaves the toggled row enabled, so the browser has no
+    // reason to blur it; only the removed reload row needs that transition.
+    expect(row.disabled).toBe(false)
+    expect(document.activeElement).toBe(row)
+  }
+  // Chromium blurs a row it removes; JSDOM needs that browser transition explicitly.
+  if (operation === 'reload') row.blur()
   let expectedFocus = row
   if (outcome === 'closed') {
     fireEvent.keyDown(document, { key: 'Escape' })

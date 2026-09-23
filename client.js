@@ -2332,6 +2332,20 @@
       candidates.map((candidate) => primitives?.[candidate]).find((value) => typeof value === "function") ?? ABSENT_HOST_ICON
     ]));
   }
+  var MENU_CHILDREN_PROBE_SENTINEL = "ptcPlusMenuChildrenProbe";
+  function readMenuChildrenProbe(container) {
+    if (container === null || container === void 0) return false;
+    return container.querySelector(`.${MENU_CHILDREN_PROBE_SENTINEL}`) !== null;
+  }
+  function createMenuChildrenEvidence() {
+    let supported;
+    return {
+      supported: () => supported,
+      record(value) {
+        supported ??= value === true;
+      }
+    };
+  }
   function sessionPresetValue(projected, summary) {
     if (projected !== void 0) return projected;
     const values = summary?.projectionValues;
@@ -3409,6 +3423,7 @@
       subscribeReset,
       settingsCardSeat,
       updateSetting,
+      menuChildren,
       icons: {
         sparkle: IconSparkle16,
         chevron: IconChevronDownOutline14,
@@ -3448,6 +3463,9 @@
       const [menu, setMenu] = React.useState(null);
       const [managing, setManaging] = React.useState(false);
       const [settingsOpen, setSettingsOpen] = React.useState(false);
+      const probeRef = React.useRef(null);
+      const [probing, setProbing] = React.useState(() => menuChildren.supported() === void 0);
+      const menuChildrenRegion = menuChildren.supported() !== false;
       const catalogSource = React.useMemo(() => catalogOwner.claim(), [catalogOwner]);
       const catalogState = React.useSyncExternalStore(catalogSource.subscribe, catalogSource.getSnapshot);
       const catalog = catalogState.catalog;
@@ -3572,6 +3590,12 @@
           cancelled = true;
         };
       }, [menuOpen, menu?.mode, menu?.step]);
+      React.useLayoutEffect(() => {
+        if (!probing) return;
+        const mounted = probeRef.current;
+        if (mounted !== null) menuChildren.record(readMenuChildrenProbe(mounted));
+        setProbing(false);
+      }, [probing, menuChildren]);
       React.useEffect(() => {
         if (toast === null || typeof Toast === "function") return void 0;
         const timer = setTimeout(() => setToast(null), 2500);
@@ -3625,7 +3649,7 @@
         { id: "global-heading", type: "label", text: t2("bindings.quickHeading") },
         ...(catalog?.entries ?? []).map((entry) => ({
           id: `global:${entry.id}`,
-          disabled: !catalogReady,
+          disabled: catalog === null,
           label: h(
             "span",
             { className: "ptcPlusBindingQuickRow", "data-enabled": entry.enabled },
@@ -3639,14 +3663,14 @@
           )
         })),
         ...catalog !== null && catalog.entries.length === 0 ? [{ id: "empty", type: "label", text: t2("memory.globalEmpty") }] : [],
-        ...catalogStatus === "writing" || catalog === null && catalogStatus === "loading" ? [{ id: "pending", type: "label", text: t2(catalogStatus === "writing" ? "bindings.quickSaving" : "bindings.quickLoading") }] : [],
+        ...catalog === null && catalogStatus !== "error" ? [{ id: "pending", type: "label", text: t2(catalogStatus === "writing" ? "bindings.quickSaving" : "bindings.quickLoading") }] : [],
         ...catalogError === null ? [] : [{ id: "error", type: "label", text: t2("bindings.failed", { error: catalogError }) }]
       ];
       const editItems = [
         { id: "edit-heading", type: "label", text: t2("bindings.quickEditHeading") },
         ...(catalog?.entries ?? []).map((entry) => ({
           id: `edit:${entry.id}`,
-          disabled: !catalogReady,
+          disabled: catalog === null,
           label: h(
             "span",
             { className: "ptcPlusBindingQuickRow" },
@@ -3699,16 +3723,42 @@
           setManaging(true);
         } else if (id2 === view.candidateKey) openBindingReview(review, view.candidate);
       };
+      const actionCopy = (id2, copy, ref) => h("span", {
+        ref,
+        className: "ptcPlusBindingMenuAction",
+        title: id2 === "settings" ? settingsPath(t2) : void 0
+      }, t2(copy));
       const actionButton = (id2, copy, ref) => h("button", {
         type: "button",
         role: "menuitem",
         className: "ptcPlusMenuButton",
         onClick: () => selectMenuItem(id2)
-      }, h("span", {
-        ref,
-        className: "ptcPlusBindingMenuAction",
-        title: id2 === "settings" ? settingsPath(t2) : void 0
-      }, t2(copy)));
+      }, actionCopy(id2, copy, ref));
+      const actionSections = [
+        canAuthor ? h(
+          "div",
+          { key: "authoring", className: "ptcPlusMenuAuthoring", role: "group", "aria-label": t2("bindings.authorGroup") },
+          h("div", { className: "ptcPlusMenuGroupLabel" }, t2("bindings.authorGroup")),
+          h(
+            "div",
+            { className: "ptcPlusMenuActionGrid" },
+            actionButton("new", "bindings.authorNewDraft"),
+            (catalog?.entries?.length ?? 0) > 0 ? actionButton("edit", "bindings.authorEdit") : null
+          )
+        ) : null,
+        h(
+          "div",
+          { key: "utilities", className: "ptcPlusMenuUtilities" },
+          quickAccess ? actionButton("manage", "bindings.manage", manageItemRef) : null,
+          actionButton("settings", "settings.menuEntry", settingsItemRef)
+        )
+      ];
+      const actionsInRegion = menu?.step === "edit" ? null : h("div", { className: "ptcPlusMenuActions" }, actionSections);
+      const actionsPinned = menuChildrenRegion || menu?.step === "edit" ? [] : [{
+        id: "ptc-plus-actions",
+        type: "label",
+        text: h("div", { className: "ptcPlusMenuActions ptcPlusMenuActionsPinned" }, actionSections)
+      }];
       return h(
         "span",
         {
@@ -3753,29 +3803,26 @@
             ...catalogItems,
             ...quickAccess && catalogError !== null ? [{ id: "reload", label: h("span", { ref: reloadItemRef }, t2("bindings.reload")) }] : []
           ],
-          children: menu?.step === "edit" ? null : h(
-            "div",
-            { className: "ptcPlusMenuActions" },
-            canAuthor ? h(
-              "div",
-              { className: "ptcPlusMenuAuthoring", role: "group", "aria-label": t2("bindings.authorGroup") },
-              h("div", { className: "ptcPlusMenuGroupLabel" }, t2("bindings.authorGroup")),
-              h(
-                "div",
-                { className: "ptcPlusMenuActionGrid" },
-                actionButton("new", "bindings.authorNewDraft"),
-                (catalog?.entries?.length ?? 0) > 0 ? actionButton("edit", "bindings.authorEdit") : null
-              )
-            ) : null,
-            h(
-              "div",
-              { className: "ptcPlusMenuUtilities" },
-              quickAccess ? actionButton("manage", "bindings.manage", manageItemRef) : null,
-              actionButton("settings", "settings.menuEntry", settingsItemRef)
-            )
-          ),
+          children: actionsInRegion,
+          ...actionsPinned.length === 0 ? {} : { footer: actionsPinned },
           onSelect: selectMenuItem
         }),
+        // The probe mounts the host Menu's own `children` region inside a hidden
+        // non-portal list and is dropped in the same commit as the effect that
+        // reads it, so no Client ever paints it and the entry's own menu keeps the
+        // only interactive surface.
+        probing ? h(
+          "span",
+          { className: "ptcPlusMenuProbe", ref: probeRef, "aria-hidden": "true" },
+          h(Menu, {
+            open: true,
+            items: [],
+            anchor: h("span", null),
+            onSelect: selectMenuItem,
+            onClose: hideMenu,
+            children: h("span", { className: MENU_CHILDREN_PROBE_SENTINEL })
+          })
+        ) : null,
         // Hiding the composer unmounts the dialog, not the controller: the draft survives.
         managing && quickAccess && view.reachable ? h(BindingsDialog, {
           controller: workbench,
@@ -30438,6 +30485,15 @@
 /* Keep the session-header action on the same compact 32px rhythm as DSH chrome. */
 .ptcPlusActiveShell{display:inline-flex;height:28px;align-items:center;justify-content:center;line-height:0;vertical-align:middle}.ptcPlusActive{box-sizing:border-box;height:28px;justify-content:center;gap:6px;padding:0 6px;border:0;background:transparent;font-family:inherit;font-size:13px;font-weight:500;line-height:18px}.ptcPlusActive::before{width:6px;height:6px;flex:none;border-radius:50%;background:currentColor;box-shadow:0 0 0 2px color-mix(in srgb,currentColor 18%,transparent);content:''}.ptcPlusActive:hover,.ptcPlusActive[aria-expanded=true]{background:var(--dsw-alias-interactive-bg-hover,rgba(38,49,72,.06))}.ptcPlusActiveLabel{display:inline-flex;height:18px;align-items:center;line-height:18px}
 @media(max-width:560px){.ptcPlusActiveShell{display:none}}
+/* The compatibility probe never paints: it exists so the entry can read whether
+   the installed Menu mounted the region it was given. */
+.ptcPlusMenuProbe{display:none}
+/* The pinned carrier is a Client-owned label cell: the host already draws the
+   hairline above it, and the cell's own type must not leak into the grid. The
+   compound selector is load-bearing: the base .ptcPlusMenuActions rule is
+   declared later in this sheet, so an equal-specificity override loses and the
+   grid would draw a second hairline under the host's. */
+.ptcPlusMenuActions.ptcPlusMenuActionsPinned{margin-top:0;border-top:0;font-size:13px;line-height:18px;color:var(--dsw-alias-label-primary)}
 [role=menu]:has(.ptcPlusBindingMenuAction,.ptcPlusDraftMenuItem){width:min(320px,calc(100vw - 24px));min-width:0;max-height:min(440px,60dvh,var(--ptc-plus-menu-space,100dvh));border-radius:12px}.ptcPlusBindingQuickRow{display:flex;min-width:0;flex-direction:column;gap:3px;white-space:normal}.ptcPlusBindingQuickName{display:flex;align-items:center;justify-content:space-between;gap:12px;font-size:13px}.ptcPlusBindingQuickName strong{min-width:0;overflow:hidden;text-overflow:ellipsis;font-weight:500;white-space:nowrap}.ptcPlusBindingQuickState{flex:none;min-width:5em;text-align:end;font-size:11px;color:var(--dsw-alias-label-tertiary)}.ptcPlusBindingQuickRow[data-enabled=true] .ptcPlusBindingQuickState{color:var(--dsw-alias-state-success-primary)}.ptcPlusBindingQuickPurpose{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dsw-alias-label-tertiary);font-size:12px}.ptcPlusBindingMenuAction{font-size:13px}
 .ptcPlusMenuActions{margin-top:6px;border-top:1px solid var(--dsw-alias-border-l3,rgba(0,0,0,.1))}.ptcPlusMenuAuthoring{padding:8px 4px}.ptcPlusMenuGroupLabel{padding:0 4px 6px;color:var(--dsw-alias-label-tertiary);font-size:11px;line-height:16px}.ptcPlusMenuActionGrid,.ptcPlusMenuUtilities{display:flex;gap:6px;min-width:0}.ptcPlusMenuUtilities{padding:6px 4px}.ptcPlusMenuAuthoring+.ptcPlusMenuUtilities{border-top:1px solid var(--dsw-alias-border-l3,rgba(0,0,0,.1))}.ptcPlusMenuButton{appearance:none;display:flex;flex:1;align-items:center;justify-content:center;min-width:0;min-height:34px;padding:6px 8px;border:1px solid var(--dsw-alias-border-l3,rgba(0,0,0,.1));border-radius:7px;background:transparent;color:var(--dsw-alias-label-primary);font:inherit;text-align:center;cursor:pointer}.ptcPlusMenuButton:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(38,49,72,.06))}.ptcPlusMenuButton:focus-visible{outline:2px solid var(--dsw-alias-interactive-primary,#4d6bfe);outline-offset:-2px}.ptcPlusMenuButton .ptcPlusBindingMenuAction{white-space:normal;overflow-wrap:anywhere;line-height:18px}.ptcPlusMenuUtilities .ptcPlusMenuButton{border-color:transparent;color:var(--dsw-alias-label-secondary)}.ptcPlusMenuUtilities .ptcPlusBindingMenuAction{font-size:12px}
 
@@ -31705,6 +31761,7 @@
           return [review, view];
         }
         const subscribeReset = (listener) => ctx.on("connection/reset", listener);
+        const menuChildren = createMenuChildrenEvidence();
         const { BindingAuthorButton, BindingReviewDock, BindingCommandCard } = createAuthoringView(React, {
           ActionButton,
           IconButton,
@@ -31721,6 +31778,7 @@
           subscribeReset,
           settingsCardSeat: settingsCard.seat,
           updateSetting,
+          menuChildren,
           icons: {
             sparkle: IconSparkle16,
             chevron: IconChevronDownOutline14,

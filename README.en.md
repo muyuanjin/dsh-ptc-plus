@@ -10,6 +10,9 @@
   <a href="https://github.com/deepseek-ai/deepseek-harness"><img alt="DeepSeek Harness PTC mode" src="https://img.shields.io/badge/DeepSeek%20Harness-PTC%20mode-4b6bfb"></a>
   <a href="https://www.npmjs.com/package/dsh-ptc-plus"><img alt="npm version" src="https://img.shields.io/npm/v/dsh-ptc-plus?logo=npm"></a>
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-yellow.svg"></a>
+</p>
+
+<p align="center">
   <a href="https://awesome-dsh-plugin.com/"><img alt="Awesome DSH Plugin" src="https://awesome-dsh-plugin.com/badge.svg"></a>
 </p>
 
@@ -40,20 +43,24 @@ Once installed, describe your task to the model as usual. The `run_code` and `ed
 
 ## Feature overview
 
-| What you want the model to do | What PTC Plus provides |
-| --- | --- |
-| Continue processing data | Retain variables, functions, imports, and intermediate results for later calls in the session |
-| Revise an existing calculation | Update variables, functions, classes, and import bindings under the same names; existing closures read updated bindings |
-| Change a small part of the code | Submit a delta through `edit_run_code`, then execute the complete revised code |
-| Use familiar syntax | TypeScript, top-level `await` / `return`, and static `import` / `export` |
-| Avoid interruptions from call format or syntax mistakes | Tolerate missing summaries, normalize uniquely identifiable misplaced native-tool calls, and suggest validated EOF syntax repairs |
-| Work with the current project | Resolve relative file paths, session module imports, and default child-process directories from the session project directory |
-| Find tools and parameters | List and search current capabilities in code, then inspect relevant interfaces |
-| Transfer data beyond plain JSON | Preserve `undefined`, BigInt, cycles, and shared references within the supported value domain |
-| Inspect computation state | View retained names, source definitions, reuse counts, and bounded value previews in the REPL tab |
-| Reuse functions across sessions | Save TypeScript global bindings and supply their interfaces and usage notes to the model |
-| Author and test global bindings | Ask the model for a draft to review, or run unsaved source in the workbench |
-| Continue after a restart | Recover verifiable state from session records and report what cannot be recovered |
+Default PTC mode starts every execution in a fresh environment: variables from the previous call are gone, and a change that depends on earlier results means resending the setup code. PTC Plus turns `run_code` into a session-bound TypeScript REPL and closes the gaps below.
+
+| Scenario | Default PTC mode | With PTC Plus |
+| --- | --- | --- |
+| Continue processing data | Each call starts fresh, so setup code must be sent again | Variables, functions, imports, and intermediate results stay in the session for the next call |
+| Revise an existing name | No established binding can be updated, so the whole cell has to be resent | Revise variables, functions, classes, and import bindings under the same names; existing closures read updated bindings |
+| Change a small part of the code | A one-line change means resending the complete source | Submit a delta through `edit_run_code`, then execute the complete revised cell |
+| Use module syntax | Static `import` and `export` are invalid inside the function body | Write them directly in a cell; the plugin adapts the module syntax |
+| Omit a call summary | Missing `run_code.description` fails validation | Supply a display summary automatically so otherwise valid code proceeds |
+| Recover a misplaced top-level tool call | Undeclared top-level calls are rejected in PTC mode | Convert the call to `run_code` when the live tool definitions uniquely identify the target and validate its arguments |
+| Locate a code error | Return the native error and stack | Map the error to the cell source; suggest an edit when a missing trailing delimiter has one verified correction |
+| Work with the current project | Relative Node paths depend on the host process directory | Resolve file paths, session module imports, and default child-process directories from the session project directory |
+| Find tools and parameters | Read through the tool interfaces already supplied to the model | List and search current capabilities in code, then inspect relevant interfaces on demand |
+| Transfer data beyond plain JSON | JSON cannot fully represent `undefined`, BigInt, cycles, and similar values | Preserve supported special values and reference relationships for further computation and recovery |
+| Inspect computation state | No reusable session variables remain after a call | View retained names, source definitions, reuse counts, and bounded value previews in the REPL tab |
+| Reuse functions across sessions | Save the code yourself and reload it in later calls | Save TypeScript global bindings and supply their interfaces and usage notes to the model |
+| Author and test global bindings | No dedicated workbench for global bindings | Ask the model for a draft to review, or run unsaved source in the workbench |
+| Continue after a restart | No computation state spans calls, so there is nothing to recover | Recover verifiable state from session records and report what cannot be recovered |
 
 The following sections explain usage and limits. See the [runtime reference](docs/runtime-reference.md) for complete language rules, configuration fields, and diagnostics.
 
@@ -194,28 +201,25 @@ The workbench can run unsaved source and retain temporary variables across execu
 
 The **REPL tab** lets you search retained names, inspect definitions, see reuse counts and bounded value previews, and open the global binding workbench. Previews have type and size limits; missing, incomplete, or unreadable previews are identified explicitly, and display does not invoke user getters. The green **PTC Plus** header indicator offers a quick binding list on wide screens; use the REPL tab on narrow screens.
 
-<details>
-<summary>View the REPL interface</summary>
-
 ![Session state and the global binding workbench in the REPL tab](assets/ptc-plus-repl-workspace-en.png)
-
-</details>
 
 The sparkle menu beside the composer groups binding authoring, entry management, and **PTC Plus settings**. Its settings dialog and the sidebar plugin configuration page share the same configuration:
 
 | Group | What you can adjust |
 | --- | --- |
-| Main switch | Enable or disable PTC Plus |
-| Call tolerance | Missing call summaries and identifiable misplaced native-tool calls |
+| Plugin switch | Enable or disable PTC Plus |
+| Tool call tolerance | Missing call summaries and identifiable misplaced native-tool calls |
 | REPL syntax | Allow same-name revisions or choose name protection |
 | State and recovery | Restart recovery, contextual tips, and their frequency |
 | Tool extensions | Global bindings and their management entry, official Cordis tool integration |
-| Interface | Enhanced tool cards, the REPL tab, and the sparkle shortcut |
+| Interface display | Enhanced tool cards, the REPL tab, and the sparkle shortcut |
 | Resource limits | Execution time, memory, and output budgets |
 
 Everyday computation features default to on. **Cordis development tools default to off** and can be enabled when inspecting or developing DSH plugins; see the [integration notes](docs/adr/0020-optional-cordis-tools-in-ptc-mode.md). Explicitly disabled options stay disabled, and each saved binding keeps its own enabled state.
 
 Settings usually apply immediately. A worker's memory limit cannot be changed while that worker is active. See the [configuration reference](docs/runtime-reference.md#configuration) for fields, defaults, and full limits.
+
+![PTC Plus settings card](assets/ptc-plus-settings-en.png)
 
 ## Value transfer and state recovery
 

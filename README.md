@@ -10,6 +10,9 @@
   <a href="https://github.com/deepseek-ai/deepseek-harness"><img alt="DeepSeek Harness PTC mode" src="https://img.shields.io/badge/DeepSeek%20Harness-PTC%20mode-4b6bfb"></a>
   <a href="https://www.npmjs.com/package/dsh-ptc-plus"><img alt="npm version" src="https://img.shields.io/npm/v/dsh-ptc-plus?logo=npm"></a>
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-yellow.svg"></a>
+</p>
+
+<p align="center">
   <a href="https://awesome-dsh-plugin.com/zh/"><img alt="Awesome DSH Plugin" src="https://awesome-dsh-plugin.com/badge.svg"></a>
 </p>
 
@@ -40,20 +43,24 @@ dsh plugin --profile <profile> add dsh-ptc-plus
 
 ## 功能概览
 
-| 你希望模型完成的事 | PTC Plus 提供的能力 |
-| --- | --- |
-| 接着上一次处理数据 | 会话内保留变量、函数、导入和中间结果，后续调用直接复用 |
-| 修改已有计算逻辑 | 同名修订变量、函数、类和导入绑定，已有闭包读取更新后的绑定 |
-| 只改一小段代码 | `edit_run_code` 提交差异，再执行修改后的完整代码 |
-| 使用熟悉的代码写法 | 支持 TypeScript、顶层 `await` / `return`、静态 `import` / `export` |
-| 少因调用格式或笔误中断 | 容忍缺少摘要的调用、修复可唯一识别的顶层工具误调用、提供经过验证的末尾语法修正建议 |
-| 访问当前项目 | 按会话项目目录解析相对文件路径、会话模块导入和默认子进程目录 |
-| 查找工具和参数 | 在代码中列出、搜索当前可用能力，按需查看接口说明 |
-| 传递 JSON 不易表达的数据 | 在支持的值范围内保留 `undefined`、BigInt、循环引用和共享引用关系 |
-| 查看当前计算状态 | REPL 页签展示保留的名称、定义来源、复用次数和有界值预览 |
-| 跨会话使用常用函数 | 全局绑定保存 TypeScript 源码，并向模型提供接口与使用提示 |
-| 编写和测试全局绑定 | 让模型生成待审阅草稿，或在工作台试运行未保存的源码 |
-| 重启后继续工作 | 从会话记录恢复可验证的状态，无法恢复的部分明确提示 |
+默认 PTC 模式的每次调用都从新环境开始：上次的变量不再存在，改动依赖前面的结果时只能重发准备代码。PTC Plus 把 `run_code` 变成会话级的 TypeScript REPL，补上下面的落差。
+
+| 场景 | 默认 PTC 模式 | 使用 PTC Plus |
+| --- | --- | --- |
+| 接着上一次处理数据 | 每次从新环境开始，准备代码要重新发送 | 变量、函数、导入和中间结果留在会话里，下一次调用直接继续 |
+| 修订已有的名称 | 没有已建立的绑定可更新，只能重发整段代码 | 同名修订变量、函数、类和导入绑定，已有闭包读取更新后的值 |
+| 只改一小段代码 | 改动一行也要重新发送整段源码 | `edit_run_code` 只提交差异，再执行修改后的完整代码 |
+| 使用模块语法 | 函数体里不能直接写静态 `import` / `export` | 在 cell 中直接写，插件自动适配模块语法 |
+| 调用漏填摘要 | 缺少 `run_code.description` 时校验失败 | 自动补充显示摘要，其余参数合法的代码继续执行 |
+| 误发顶层工具调用 | PTC 模式下未声明的顶层调用被拒绝 | 当前工具定义能唯一确认目标且参数合法时，转为对应的 `run_code` |
+| 定位代码错误 | 只返回原生错误与堆栈 | 对应到 cell 源码位置；末尾缺少闭合符且修正可唯一验证时给出编辑建议 |
+| 访问当前项目 | 相对路径按宿主进程目录解析 | 按会话项目目录解析文件路径、会话模块导入和默认子进程目录 |
+| 查找工具和参数 | 只能翻已经提供给模型的工具说明 | 在代码中列出、搜索当前可用能力，按需查看接口说明 |
+| 传递 JSON 不易表达的数据 | JSON 无法完整表达 `undefined`、BigInt、循环引用等 | 在支持的值范围内保留特殊值和引用关系，供后续计算与恢复 |
+| 查看当前计算状态 | 执行结束后没有可继续使用的会话变量可查 | REPL 页签展示保留的名称、定义来源、复用次数和有界值预览 |
+| 跨会话使用常用函数 | 自己保存代码，并在后续调用中重新加载 | 全局绑定保存 TypeScript 源码，并向模型提供接口与使用提示 |
+| 编写和测试全局绑定 | 没有全局绑定的专用工作台 | 让模型生成待审阅草稿，或在工作台试运行未保存的源码 |
+| 重启后继续工作 | 没有跨调用的计算状态可供恢复 | 从会话记录恢复可验证的状态，无法恢复的部分明确提示 |
 
 以下各节介绍具体用法和边界；完整语言规则、配置字段与诊断见[运行时参考](docs/runtime-reference.md)。
 
@@ -194,18 +201,13 @@ return capabilities.inspect({
 
 **REPL 页签**可搜索当前保留的名称，查看定义来源、复用次数和有界值预览，也可打开全局绑定工作台。预览有类型和大小限制，未采集、不完整或不可读取时会明确标注，不会为展示调用用户 getter。宽屏顶部的绿色 **PTC Plus** 标志提供快捷绑定清单，窄屏可使用 REPL 页签。
 
-<details>
-<summary>查看 REPL 界面示例</summary>
-
 ![REPL 页签中的会话状态与全局绑定工作台](assets/ptc-plus-repl-workspace-zh.png)
-
-</details>
 
 输入框旁的星光菜单将绑定编写、条目管理和 **PTC Plus 设置** 分组提供。设置弹窗与侧边栏插件配置页使用同一套配置：
 
 | 分组 | 可以调整的内容 |
 | --- | --- |
-| 插件总开关 | 启用或停用 PTC Plus |
+| 插件开关 | 启用或停用 PTC Plus |
 | 调用容错 | 缺少摘要的调用、可准确识别的顶层工具误调用 |
 | REPL 语法 | 允许同名修订，或选择名称保护策略 |
 | 状态与恢复 | 重启恢复、按需提示与提示频率 |
@@ -216,6 +218,8 @@ return capabilities.inspect({
 面向日常计算的功能默认开启。**Cordis 开发工具默认关闭**，适用于检查或开发 DSH 插件，按需开启即可；详见[集成说明](docs/adr/0020-optional-cordis-tools-in-ptc-mode.md)。已有配置中显式关闭的选项会保持关闭，条目是否启用也由各自的保存状态决定。
 
 设置通常即时生效；活动 worker 存在时不能修改其内存上限。字段、默认值和完整限制见[配置参考](docs/runtime-reference.md#configuration)。
+
+![PTC Plus 设置卡片](assets/ptc-plus-settings-zh.png)
 
 ## 值传递与状态恢复
 

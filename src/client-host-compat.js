@@ -46,6 +46,57 @@ export function hostIconComponents(primitives) {
   ]))
 }
 
+/**
+ * The class the composer entry mounts as the probe's sentinel child.
+ *
+ * `src/client-authoring-view.js` renders it inside the host `Menu`'s own
+ * `children` region; this module owns the selector that reads it back.
+ */
+export const MENU_CHILDREN_PROBE_SENTINEL = 'ptcPlusMenuChildrenProbe'
+
+/**
+ * Whether the installed `Menu` primitive mounts the caller's own action area.
+ *
+ * The published `@deepseek-ai/dsh-client-ui-primitives` Menu gained its
+ * `children` region with the 0.1.7 generation. Preceding Clients accept the
+ * prop and mount nothing, so the prop name proves no more than the call the
+ * plugin already makes. The entry therefore mounts that region once inside a
+ * hidden non-portal Menu and reads what the Client actually rendered — the
+ * consumed contract is observed behavior, never a version comparison
+ * ([ADR 0017](../docs/adr/0017-track-the-latest-dsh-public-surface.md)).
+ *
+ * @param container - the probe's mounted wrapper, or nothing when it never
+ *   mounted.
+ * @returns whether the sentinel is part of the mounted Client output. A
+ *   container that never mounted proves no region, and its caller records that
+ *   answer only for a probe that did mount.
+ */
+export function readMenuChildrenProbe(container) {
+  if (container === null || container === undefined) return false
+  return container.querySelector(`.${MENU_CHILDREN_PROBE_SENTINEL}`) !== null
+}
+
+/**
+ * The probe's answer for one loaded Client.
+ *
+ * Composer entries are mounted per session, so the first observation owns the
+ * answer for the whole Client lifetime: a later mount reuses it instead of
+ * rendering a second probe, and a partially applied answer cannot contradict
+ * the rendering path already chosen. `undefined` means no probe has run yet,
+ * which callers must treat as the current rendering path, not as a verdict.
+ *
+ * @returns `supported()` reporting the recorded answer, and `record()` taking
+ *   the first one. A record that throws or never runs leaves the question open
+ *   and keeps the entry on the path it already renders.
+ */
+export function createMenuChildrenEvidence() {
+  let supported
+  return {
+    supported: () => supported,
+    record(value) { supported ??= value === true },
+  }
+}
+
 /** The preset a session publishes, preferring the projection reader's evidence. */
 function sessionPresetValue(projected, summary) {
   if (projected !== undefined) return projected

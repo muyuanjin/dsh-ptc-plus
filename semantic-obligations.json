@@ -11,14 +11,14 @@
         "internal/ast-traversal.js", "internal/binding-declaration-contract.js", "internal/binding-pattern-traversal.js", "internal/binding-pattern.js", "internal/binding-source-analysis.js", "internal/binding-update-policy.js", "internal/cell-analysis-contract.js", "internal/cell-analysis.js", "internal/cell-error.js", "internal/cell-parser.js", "internal/cell-rewriter.js", "internal/language-semantics.js", "internal/legacy-cell-analysis.js", "internal/legacy-cell-parser.js", "internal/legacy-cell-rewriter.js", "internal/legacy-repl-convenience.js", "internal/repl-convenience.js", "internal/repl-rewrite-contract.js", "internal/repl-scope-normalizer.js", "internal/source-position-map.js", "internal/typescript-transform.js", "internal/validated-parse-repair.js"
       ],
       "contract": "docs/stateful-binding-updates-proposal.md",
-      "observables": ["scope", "declaration ownership", "initialization", "completion", "source positions"],
+      "observables": ["scope", "declaration ownership", "initialization", "completion", "source positions", "unique target-bound EOF repair within two closing tokens"],
       "entries": ["root cell", "function", "eval", "Function", "module"],
       "lifecycle": ["prepare", "execute", "failure continuation"],
       "generations": ["legacy-v1", "protected-v1", "stateful-v1"],
       "platforms": ["Node 22.19+", "Node 24+"],
       "consumers": ["compiler-and-callables", "persistence-and-recovery"],
       "oracle": "native Node for preserved JavaScript; explicit PTC dialect assertions for declared differences",
-      "evidence": ["test/semantic-test262.test.js", "test/semantic-dialect.test.js", "test/stateful-source-line-mapping.test.js"],
+      "evidence": ["test/semantic-test262.test.js", "test/semantic-dialect.test.js", "test/stateful-source-line-mapping.test.js", "test/validated-parse-repair.test.js", "test/plugin-prompt-edit-execution.test.js", "test/stateful-root-bindings.test.js"],
       "dependsOn": []
     },
     {

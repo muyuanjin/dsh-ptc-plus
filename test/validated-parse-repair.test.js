@@ -31,11 +31,21 @@ function repair(source, prepareCandidate = candidate => prepare(candidate), targ
   })
 }
 
-test('proves each single-token EOF closure through the editor and preparation pipeline', () => {
+test('proves one- and two-token EOF closures through the editor and preparation pipeline', () => {
   for (const [source, delimiter] of [
     ['{\n  return 1;', '}'],
     ['return (1 + 2', ')'],
     ['return [1, 2', ']'],
+    ['{{ return 1;', '}}'],
+    ['return ({ value: 1', '})'],
+    ['return [{ value: 1', '}]'],
+    ['{ return (1 + 2', ')}'],
+    ['return ((1 + 2', '))'],
+    ['return [(1 + 2', ')]'],
+    ['{ return [1, 2', ']}'],
+    ['return ([1, 2', '])'],
+    ['return [[1, 2', ']]'],
+    ['return words.map(w => { return w.toUpperCase()', '})'],
   ]) {
     const result = repair(source)
     assert.equal(result.delimiter, delimiter)
@@ -77,7 +87,7 @@ test('requires the exact source EOF and emits single-line escaped arguments', ()
   assert.equal(/[\r\n]/.test(result.invocation), false)
 
   const surrogate = repair('prefix😀', code => ({
-    collisions: code.endsWith('}') ? [] : [{ name: 'not-the-candidate' }],
+    collisions: code === 'prefix😀}' ? [] : [{ name: 'not-the-candidate' }],
   }))
   assert.equal(surrogate.arguments.edits[0].old_string, '😀')
 })
@@ -87,10 +97,13 @@ test('declines ambiguous, non-local, preflight-rejected, or unexpressible repair
     'const value =',
     "const text = 'unterminated",
     '/* unterminated comment',
-    'return ({ value: 1',
+    'return ([{ value: 1',
   ]) assert.equal(repair(source), undefined)
 
   assert.equal(repair('unique;', () => ({ collisions: [] })), undefined)
+  assert.equal(repair('ambiguous', code => ({
+    collisions: ['ambiguous}', 'ambiguous})'].includes(code) ? [] : [{}],
+  })), undefined)
   assert.equal(repair('throwing;', () => { throw new Error('candidate rejected') }), undefined)
   assert.equal(repair('const existing = (1', candidate => prepareProgram(candidate, { knownBindings: new Set(), bindingPolicy: true, reservedBindings: new Set(['existing']), rewritesEnabled: REWRITES })), undefined)
   assert.equal(repair('', code => ({ collisions: code.endsWith('}') ? [] : [{}] })), undefined)

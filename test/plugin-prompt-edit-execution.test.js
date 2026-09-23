@@ -180,7 +180,10 @@ return longOutput.length`
   })
 })
 
-test('executes the validated EOF repair invocation with recovery tips disabled', async (t) => {
+for (const { label, rejectedCode, suffix, expected } of [
+  { label: 'one closing token', rejectedCode: '{\n  const closureValue = 42\n  return closureValue;', suffix: '}', expected: 42 },
+  { label: 'two closing tokens', rejectedCode: "const words = ['one', 'two'];\nreturn words.map(w => { return w.toUpperCase()", suffix: '})', expected: ['ONE', 'TWO'] },
+]) test(`executes the validated EOF repair for ${label} with recovery tips disabled`, async (t) => {
   const events = [{ type: 'turn/start', seq: 0, time: 0, data: {} }]
   const session = orderedSurfaceSession('validated-parse-edit', events)
   const state = fixture({ tipsEnabled: false })
@@ -192,7 +195,6 @@ test('executes the validated EOF repair invocation with recovery tips disabled',
     { agent, scope: agent, signal },
   )
 
-  const rejectedCode = '{\n  const closureValue = 42\n  return closureValue;'
   const rejectedCallSeq = appendRunCall(events, 'validated-parse', rejectedCode)
   const rejected = await state.runDurable(
     session.id,
@@ -204,7 +206,7 @@ test('executes the validated EOF repair invocation with recovery tips disabled',
   assert.equal(rejected.meta.dshPtcPlus.status, 'noop')
   const diagnostic = rejected.meta.dshPtcPlus.diagnostics[0]
   assert.deepEqual(diagnostic.help.slice(0, 1), [
-    'this cell was not executed; validated syntax repair: append "}" at the end of this cell',
+    `this cell was not executed; validated syntax repair: append ${JSON.stringify(suffix)} at the end of this cell`,
   ])
   const invocation = /call edit_run_code\((\{.*\})\)/.exec(diagnostic.help[1])
   assert.notEqual(invocation, null)
@@ -222,8 +224,8 @@ test('executes the validated EOF repair invocation with recovery tips disabled',
     signal,
   })
   assert.equal(edited.isError, false)
-  assert.deepEqual(edited.value, { edited: true, logs: [], value: 42 })
-  assert.equal(edited.meta.dshPtcPlusDerivedRun.code, `${rejectedCode}}`)
+  assert.deepEqual(edited.value, { edited: true, logs: [], value: expected })
+  assert.equal(edited.meta.dshPtcPlusDerivedRun.code, rejectedCode + suffix)
   appendEditResult(events, 'validated-parse-edit', editCallSeq, edited.meta)
   events.at(-1).data.message.content = agent.ctx.tools.get('edit_run_code').output.render(editArgs, edited.value)
   assert.deepEqual(auditEditCalls(events, collectTrajectoryFacts(events).timeline).failures, [])

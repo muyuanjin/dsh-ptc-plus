@@ -106,10 +106,10 @@ would repeat unrelated policy context. Rewrite feedback and unrelated recovery t
 own independently justified lifecycles.
 
 A live `PTC-C001` at the exact source EOF may carry a validated one-call repair. The analyzer tries
-only the three single-token suffixes `}`, `)`, and `]` against the same binding catalog, reserved
-bindings, redeclaration mode, rewrite policy, and import state as the rejected cell. Exactly one
-candidate must complete preparation without a binding collision, and the existing exact editor
-must be able to express it from a bounded unique source suffix. The rejected call must also have a
+only the 12 suffixes of one or two closing tokens drawn from `}`, `)`, and `]` against the same
+binding catalog, reserved bindings, redeclaration mode, rewrite policy, and import state as the
+rejected cell. Exactly one candidate across both lengths must complete preparation without a binding
+collision, and the existing exact editor must be able to express it from a bounded unique source suffix. The rejected call must also have a
 persistent event sequence. The diagnostic then renders those already-validated
 `edit_run_code({ edits: [...], expected_target_call_seq })` arguments on one help line. At dispatch,
 the precondition binds the proof to that rejected cell even if another matching source has become

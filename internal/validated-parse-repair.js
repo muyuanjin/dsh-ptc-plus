@@ -1,6 +1,10 @@
 import { EXPECTED_TARGET_CALL_SEQ, editRejectedCell } from './rejected-cell-editor.js'
 
 const CLOSING_DELIMITERS = Object.freeze(['}', ')', ']'])
+const CLOSING_SUFFIXES = Object.freeze([
+  ...CLOSING_DELIMITERS,
+  ...CLOSING_DELIMITERS.flatMap(first => CLOSING_DELIMITERS.map(second => first + second)),
+])
 const LINE_TERMINATORS = /\r\n|[\n\r\u2028\u2029]/gu
 export const MAX_PARSE_REPAIR_ANCHOR_CODE_UNITS = 256
 
@@ -52,14 +56,14 @@ function renderInvocation(argumentsValue) {
   return `edit_run_code(${json})`
 }
 
-/** Returns a source-exact edit only when one bounded EOF-closing candidate is valid. */
+/** Requires exactly one valid suffix across all one- and two-token EOF closures. */
 export function validatedEofClosureRepair({ source, position, prepare, targetCallSeq }) {
   if (!Number.isSafeInteger(targetCallSeq) || targetCallSeq < 0
     || !isSourceEnd(source, position)) return undefined
   const anchor = boundedUniqueSuffix(source)
   if (anchor === undefined) return undefined
   const candidates = []
-  for (const delimiter of CLOSING_DELIMITERS) {
+  for (const delimiter of CLOSING_SUFFIXES) {
     const code = source + delimiter
     let prepared
     try {

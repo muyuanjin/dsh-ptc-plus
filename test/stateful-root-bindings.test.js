@@ -167,6 +167,24 @@ test('import identities preserve live reads and accept every ordinary write form
   assert.equal(await state.run(`import {value as item} from ${JSON.stringify(module)}; const item = 12; return read()`), 12)
 })
 
+test('static imports precede body declarations regardless of their text position', async () => {
+  const state = session()
+  assert.deepEqual(await state.run(`
+    const initial = typeof join;
+    const join = () => 'LOCAL';
+    const read = () => join;
+    import { join } from 'node:path';
+    return [initial, read()('a', 'b')]
+  `), ['function', 'LOCAL'])
+  assert.equal(await state.run(`import { join } from 'node:path'; return read() === (await import('node:path')).join`), true)
+  assert.deepEqual(await state.run(`
+    const join = () => 'LOCAL';
+    const before = read()();
+    join = (await import('node:path')).join;
+    return [before, read() === (await import('node:path')).join]
+  `), ['LOCAL', true])
+})
+
 test('root function and class values preserve native callable details and local shadows', async () => {
   const state = session()
   assert.deepEqual(await state.run('function* item(a) { yield a }; return [item.name,item.length,[...item(2)]]'), ['item', 1, [2]])

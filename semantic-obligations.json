@@ -90,7 +90,7 @@
       "platforms": ["official DSH release", "Electron host", "Node host"],
       "consumers": ["DSH agent loop", "client", "user-bindings-and-client"],
       "oracle": "public host contract fixtures and lifecycle fakes; external host internals are explicitly excluded",
-      "evidence": ["test/direct-surface-policy.test.js", "test/plugin-lifecycle.test.js", "test/runtime-bridge-owner-dispose.test.js"],
+      "evidence": ["test/direct-surface-policy.test.js", "test/plugin-lifecycle.test.js", "test/runtime-bridge-owner-dispose.test.js", "test/settings-compat.test.js"],
       "dependsOn": ["execution-kernel", "persistence-and-recovery"]
     },
     {

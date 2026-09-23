@@ -70,6 +70,7 @@ test('adapts the legacy package helper to the mounted provider', () => {
 
 test('treats a host-owned settings surface without an installer as supported', () => {
   const configured = []
+  let released = 0
   const entryFiber = { state: 2, uid: 7 }
   const provider = {
     describe() {},
@@ -77,7 +78,7 @@ test('treats a host-owned settings surface without an installer as supported', (
     mutate() {},
     configure(presentation, owner) {
       configured.push([presentation, owner])
-      return () => {}
+      return () => { released += 1 }
     },
   }
   const { ctx } = fixture(provider)
@@ -88,6 +89,12 @@ test('treats a host-owned settings surface without an installer as supported', (
   // by the scope that happened to run the installation.
   assert.deepEqual(configured, [[{ auto: false }, entryFiber]])
   assert.notEqual(entryFiber, ctx.fiber)
+  const effects = []
+  ctx.effect = register => effects.push(register())
+  install(ctx, provider, {})
+  assert.deepEqual(configured[1], [{ auto: false }, ctx.fiber])
+  effects.forEach(dispose => dispose())
+  assert.equal(released, 1)
 })
 
 test('serves the current settings generation from the exported volatile Config', async () => {
@@ -169,7 +176,7 @@ test('selects the exported Config shape from the installed settings generation',
   assert.equal(hostOwnsSettingsDocument(undefined), true)
 })
 
-test('keeps provider-installed fields plain and tolerates a builder without volatile', () => {
+test('keeps provider-installed fields plain and rejects missing required volatile support', () => {
   const providerOwned = { SettingsProvider: class { installSection() {} } }
   const booleanField = CONFIG_FIELDS.find(field => field.type === 'boolean')
   const numberField = CONFIG_FIELDS.find(field => field.type === 'integer')
@@ -189,8 +196,8 @@ test('keeps provider-installed fields plain and tolerates a builder without vola
   for (const option of enumField.options) assert.equal(enumSchema(option), option)
   assert.equal(enumSchema.meta.volatile, undefined)
 
-  // A generation that serves the document itself but predates the builder
-  // capability keeps the described field instead of failing the import.
+  // An older builder remains valid for the section installer, but cannot
+  // publish an editable document on a Host that requires volatile fields.
   const described = {
     step() { return this },
     min() { return this },
@@ -199,7 +206,11 @@ test('keeps provider-installed fields plain and tolerates a builder without vola
     description() { return this },
   }
   assert.equal(
-    configFieldSchema({ Schema: { number: () => described }, field: numberField, settingsModule: {} }),
+    configFieldSchema({ Schema: { number: () => described }, field: numberField, settingsModule: providerOwned }),
     described,
+  )
+  assert.throws(
+    () => configFieldSchema({ Schema: { number: () => described }, field: numberField, settingsModule: {} }),
+    /host settings contract requires @deepseek-ai\/schemastery with volatile\(\); reinstall the plugin/,
   )
 })

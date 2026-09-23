@@ -23,9 +23,10 @@ export function hostOwnsSettingsDocument(settingsModule) {
  * A generation that serves the document itself keeps a form mounted and commits
  * new values into the retained handle only for fields whose nearest schema
  * ancestor is marked volatile, so the marker is applied there. A builder that
- * does not publish that capability keeps the plain described field and lets the
- * host report its own missing volatile contract instead of failing this import;
- * the generation that installs its own section validates the same fields itself
+ * does not publish that capability causes a dependency error during import; silently
+ * emitting ordinary fields would hide the form and every Client feature gated
+ * by its settings snapshot. The generation that installs its own section
+ * validates the same fields itself
  * and must not receive the marker, because its validated defaults would become
  * live handles its document path never commits.
  *
@@ -43,7 +44,10 @@ export function configFieldSchema({ Schema, field, settingsModule }) {
       : Schema.number().step(1).min(field.min).max(field.max).default(field.default)
   const described = base.description(field.description)
   if (!hostOwnsSettingsDocument(settingsModule)) return described
-  return typeof described.volatile === 'function' ? described.volatile() : described
+  if (typeof described.volatile !== 'function') {
+    throw new Error('ptc-plus: the host settings contract requires @deepseek-ai/schemastery with volatile(); reinstall the plugin to update its dependencies')
+  }
+  return described.volatile()
 }
 
 /** Install an optional settings section across current and legacy DSH settings APIs. */

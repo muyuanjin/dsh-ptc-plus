@@ -61,7 +61,7 @@
     "@codemirror/language": "^6.12.4",
     "@codemirror/state": "^6.7.4",
     "@codemirror/view": "^6.43.11",
-    "@deepseek-ai/schemastery": "^3.18.1",
+    "@deepseek-ai/schemastery": "^3.18.3",
     "@jridgewell/trace-mapping": "^0.3.31",
     "@lezer/highlight": "^1.2.3",
     "acorn": "^8.15.0",

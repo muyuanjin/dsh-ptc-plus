@@ -1,10 +1,22 @@
 name: CI
 
+# Documentation-only changes skip the matrix: they cannot change the shipped
+# runtime. A release commit always bumps package.json and package-lock.json, so
+# the tagged commit still produces the successful run the Release workflow
+# requires (see docs/publishing.md).
 on:
   push:
     branches:
       - main
+    paths-ignore:
+      - '**.md'
+      - 'assets/**'
+      - 'LICENSE'
   pull_request:
+    paths-ignore:
+      - '**.md'
+      - 'assets/**'
+      - 'LICENSE'
 
 permissions:
   contents: read

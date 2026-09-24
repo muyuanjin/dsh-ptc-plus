@@ -27,4 +27,5 @@
 - [Focused Verification](verification-optimization-work.md): bounded coverage diagnostics and their relationship to the final verification gate.
 - [Semantic Validation](semantic-validation.md): pinned Test262 cases, dialect contracts, native differential matrices and their limits.
 - [Publishing](publishing.md): release checks, package contents, permissions, and platform validation.
+- [GitHub Release Notes](release-notes.md): user-perspective priority order, required sections, bilingual style, and a worked example for release notes.
 - [Client UI](client-ui.md): current UI boundary and reevaluation criteria.

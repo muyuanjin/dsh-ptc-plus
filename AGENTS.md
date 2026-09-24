@@ -53,7 +53,7 @@ Damage to historical PTC Plus metadata invalidates recovery evidence, not future
 - Use maintained dependencies and platform primitives for parsers, protocols, state machines, and serializers when they cover the required semantics.
 - Comments and diagnostics state contracts, ownership, failure, and recovery consequences. They do not retain review discussion, implementation diaries, or local execution records.
 
-Add or update an ADR only when a durable architecture, contract, data-format, or project process decision changes. Update `README.md` (Chinese default) and `README.en.md` (English) together for user-facing behavior. Installation and release procedures belong in [docs/installation.md](docs/installation.md) and [docs/publishing.md](docs/publishing.md).
+Add or update an ADR only when a durable architecture, contract, data-format, or project process decision changes. Update `README.md` (Chinese default) and `README.en.md` (English) together for user-facing behavior. Installation and release procedures belong in [docs/installation.md](docs/installation.md) and [docs/publishing.md](docs/publishing.md). GitHub Release notes follow [docs/release-notes.md](docs/release-notes.md), which owns their user-perspective priority order, required sections, bilingual style, and worked example: rank every change by what users can actually observe (current-official-DSH usability first, then behavior changes, then fixes, then upgrade requirements) before writing; state product facts only, without authoring-time stamps, verification narration, or internal delivery process; and do not re-derive that judgement from past releases or from commit order.
 
 ## Local Review State
 

@@ -41,6 +41,8 @@ With the default interface settings, the session has a **REPL** tab; wide screen
 
 Once installed, describe your task to the model as usual. The `run_code` and `edit_run_code` examples below show how the model uses these features. See the [installation guide](docs/installation.md) for other installation methods, Desktop, the local development launcher, upgrades, and troubleshooting.
 
+For Windows source testing, double-click `scripts\run-upstream-dsh.cmd` to fetch the official DSH default branch, reuse an isolated build cache, and load this plugin checkout. The first run installs dependencies and builds DSH; see [upstream source testing](docs/installation.md#upstream-source-development-launcher-windows).
+
 ## Feature overview
 
 Default PTC mode starts every execution in a fresh environment: variables from the previous call are gone, and a change that depends on earlier results means resending the setup code. PTC Plus turns `run_code` into a session-bound TypeScript REPL and closes the gaps below.

@@ -3,6 +3,8 @@ param(
     [Parameter(Position = 0)]
     [string] $ProfileName = $env:DSH_DEV_PROFILE,
 
+    [switch] $UpstreamSource,
+
     [Parameter(ValueFromRemainingArguments = $true)]
     [string[]] $DshArguments
 )
@@ -184,6 +186,10 @@ function Remove-OldDirectories {
             if (Test-Path -LiteralPath $marker -PathType Leaf) {
                 Remove-Item -LiteralPath $marker -Force
             }
+            $buildMarker = Join-Path $directory.FullName '.build-complete'
+            if (Test-Path -LiteralPath $buildMarker -PathType Leaf) {
+                Remove-Item -LiteralPath $buildMarker -Force
+            }
             Remove-Item -LiteralPath $directory.FullName -Recurse -Force
         } catch {
             Write-Warning "Unable to remove cached directory '$($directory.FullName)'; cleanup will retry on a later launch. $($_.Exception.Message)"
@@ -305,6 +311,7 @@ if ([string]::IsNullOrWhiteSpace($cacheFallback.Trim())) {
     $cacheFallback = Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)) '.dsh-ptc-plus-dev'
 }
 $cacheRoot = Resolve-Directory ($env:DSH_DEV_CACHE) $cacheFallback
+if ($UpstreamSource) { $cacheRoot = Join-Path $cacheRoot 'upstream' }
 $dshRoot = Join-Path $cacheRoot 'dsh'
 $dshHome = Join-Path $cacheRoot 'dsh-home'
 $pluginSnapshotRoot = Join-Path (Join-Path $cacheRoot 'plugin-snapshots') $packageName
@@ -324,13 +331,31 @@ foreach ($directory in @($cacheRoot, $dshRoot, $dshHome, $pluginSnapshotRoot, $p
     New-Item -ItemType Directory -Path $directory -Force | Out-Null
 }
 
+# Source preparation and its running Host hold one OS-released cache lease.
+$sourceLease = $null
+try {
+if ($UpstreamSource) {
+    . (Join-Path $PSScriptRoot 'upstream-dsh.ps1')
+    $sourceLease = Open-UpstreamCacheLease $cacheRoot
+}
+
 $npmShim = Join-Path $binRoot 'npm.cmd'
 if (Test-Path -LiteralPath (Join-Path $binRoot 'node.cmd') -PathType Leaf) {
     Remove-Item -LiteralPath (Join-Path $binRoot 'node.cmd') -Force
 }
-Set-Content -LiteralPath $npmShim -Encoding ASCII -Value "@echo off`r`ncall `"$npmPath`" %*`r`n"
+$env:DSH_DEV_NPM_EXE = $npmPath
+Set-Content -LiteralPath $npmShim -Encoding ASCII -Value ('@echo off' + "`r`n" + 'call "%DSH_DEV_NPM_EXE%" %*' + "`r`n")
 Import-LatestWindowsPath -Prepend @($binRoot, $nodeDirectory)
 
+if ($UpstreamSource) {
+    $env:DSH_HOME = $dshHome
+    $env:npm_config_store_dir = $pnpmStore
+    $sourceHost = Initialize-UpstreamDsh -CacheRoot $cacheRoot -NpmPath $npmPath -NodePath $nodePath -BinRoot $binRoot -StorePath $pnpmStore
+    $dshVersion = "source $($sourceHost.Commit)"
+    $dshCommandPath = $sourceHost.Command
+    $dshInstallDirectory = $sourceHost.Directory
+    $pnpmShim = $sourceHost.Pnpm
+} else {
 $cachedVersionFile = Join-Path $cacheRoot 'dsh-version.txt'
 # An explicit spec keeps its dist-tag or version meaning; the default resolves
 # every published version so the launcher always installs the newest release.
@@ -403,6 +428,8 @@ if ($null -ne $corepackCommand) {
     Set-Content -LiteralPath $pnpmShim -Encoding ASCII -Value "@echo off`r`ncall `"$nodePath`" `"$pnpmEntrypoint`" --store-dir `"$pnpmStore`" %*`r`n"
 }
 
+}
+
 $stagingDirectory = Join-Path ([IO.Path]::GetTempPath()) ("dsh-ptc-plus-pack-" + [Guid]::NewGuid().ToString('N'))
 $snapshotFile = $null
 $locationPushed = $false
@@ -459,14 +486,21 @@ Invoke-ExternalCommand $dshCommandPath @('plugin', '--profile', $ProfileName, 'a
 Remove-OldDirectories $pluginSnapshotRoot $keepCount @($snapshotDirectory)
 $dshInstallDirectoryItem = Get-Item -LiteralPath $dshInstallDirectory
 $dshInstallDirectoryItem.LastWriteTime = Get-Date
-Remove-OldDirectories $dshRoot $keepCount @($dshInstallDirectory)
+if ($UpstreamSource) {
+    Remove-OldDirectories (Join-Path $cacheRoot 'builds') $keepCount @($dshInstallDirectory)
+} else {
+    Remove-OldDirectories $dshRoot $keepCount @($dshInstallDirectory)
+}
 
 # DSH forwards plugin management to pnpm. Pruning its dedicated store keeps
 # repeated DSH/plugin upgrades bounded without touching the user's global store.
+if (-not $UpstreamSource) {
 try {
     Invoke-ExternalCommand $pnpmShim @('store', 'prune')
 } catch {
     Write-Warning "Unable to prune the development pnpm store; continuing startup. $($_.Exception.Message)"
+}
+
 }
 
 Write-Host "Starting DSH $dshVersion with profile '$ProfileName'."
@@ -490,4 +524,8 @@ $env:NODE_OPTIONS = (($env:NODE_OPTIONS, '--max-http-header-size=65536' | Where-
     -not [string]::IsNullOrWhiteSpace($_)
 }) -join ' ').Trim()
 & $dshCommandPath @launchArguments
-exit $LASTEXITCODE
+$launchExitCode = $LASTEXITCODE
+} finally {
+    if ($null -ne $sourceLease) { $sourceLease.Dispose() }
+}
+exit $launchExitCode

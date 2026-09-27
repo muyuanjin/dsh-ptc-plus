@@ -446,16 +446,16 @@ test('Windows launchers normalize PATH without persistent system resources', asy
   assert.match(isolatedScript, /Import-LatestWindowsPath -Prepend @\(\$binRoot, \$nodeDirectory\)/u)
 })
 
-async function developmentRegistryFixture(t) {
+async function developmentRegistryFixture(t, { unicodeCache = false } = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'ptc-plus-dev-registry-'))
   t.after(() => rm(root, { recursive: true, force: true }))
   const projectRoot = path.join(root, 'project')
   const scriptRoot = path.join(projectRoot, 'scripts')
   const mockBin = path.join(root, 'bin')
-  const cacheRoot = path.join(root, 'cache')
+  const cacheRoot = path.join(root, unicodeCache ? '缓存目录' : 'cache')
   await mkdir(scriptRoot, { recursive: true })
   await mkdir(mockBin)
-  for (const filename of ['run-dev-dsh.ps1', 'windows-lifecycle-path.ps1', 'semver-compare.ps1']) {
+  for (const filename of ['run-dev-dsh.ps1', 'windows-lifecycle-path.ps1', 'semver-compare.ps1', 'upstream-dsh.ps1', 'run-dev-dsh.cmd', 'run-upstream-dsh.cmd']) {
     await copyFile(new URL(`../scripts/${filename}`, import.meta.url), path.join(scriptRoot, filename))
   }
   await writeFile(path.join(projectRoot, 'package.json'), JSON.stringify({ name: 'registry-probe' }))
@@ -475,7 +475,7 @@ async function developmentRegistryFixture(t) {
   }
   const mockProgram = path.join(mockBin, 'mock.cjs')
   const commandText = tool => `@"${process.execPath}" "${mockProgram}" ${tool} %*\r\n`
-  for (const tool of ['npm', 'corepack']) {
+  for (const tool of ['npm', 'corepack', 'git']) {
     await writeFile(path.join(mockBin, `${tool}.cmd`), commandText(tool))
   }
   await writeFile(mockProgram, String.raw`
@@ -495,7 +495,22 @@ if (tool === 'npm' && args[0] === 'view') {
   report.resolved = ['registry', '@deepseek-ai:registry', '@private:registry'].map(key => resolved[key])
 }
 appendFileSync(process.env.PTC_REGISTRY_REPORT, JSON.stringify(report) + '\n')
-if (tool === 'npm' && args[0] === 'view') {
+if (tool === 'git') {
+  if (args.includes('fetch') && args.includes('https://github.com/deepseek-ai/deepseek-harness.git') && process.env.PTC_MOCK_FETCH_FAILURE === '1') process.exit(1)
+  const forwarded = args.map(arg => arg === 'https://github.com/deepseek-ai/deepseek-harness.git' ? process.env.PTC_UPSTREAM_REPOSITORY : arg)
+  const result = spawnSync(process.env.PTC_REAL_GIT, forwarded, { stdio: 'inherit' })
+  process.exit(result.status ?? 1)
+} else if (tool === 'pnpm') {
+  const command = args.filter(arg => !arg.startsWith('--config.store-dir='))
+  if (command[0] === 'install') {
+    mkdirSync('node_modules', { recursive: true })
+    writeFileSync('node_modules/.modules.yaml', 'fixture')
+  } else if (command[1] === 'build') {
+    if (process.env.PTC_MOCK_BUILD_FAILURE === '1') process.exit(17)
+    mkdirSync('apps/cli/lib', { recursive: true })
+    writeFileSync('apps/cli/lib/bin.js', 'fixture')
+  }
+} else if (tool === 'npm' && args[0] === 'view') {
   if (process.env.PTC_MOCK_VIEW_FAILURE === '1') {
     console.error('npm error code ENETUNREACH')
     process.exit(1)
@@ -511,6 +526,13 @@ if (tool === 'npm' && args[0] === 'view') {
   if ([report.registry, report.scopeRegistry].some(value => value.includes('stale-'))) {
     console.error('npm error code ETARGET')
     process.exit(1)
+  }
+  if (args.some(arg => arg.startsWith('pnpm@'))) {
+    const directory = path.join(args[args.indexOf('--prefix') + 1], 'node_modules', 'pnpm', 'bin')
+    mkdirSync(directory, { recursive: true })
+    writeFileSync(path.join(directory, 'pnpm.cjs'),
+      'process.argv.splice(2, 0, "pnpm"); require(' + JSON.stringify(__filename) + ')')
+    process.exit(0)
   }
   const directory = path.join(args[args.indexOf('--prefix') + 1], 'node_modules', '.bin')
   mkdirSync(directory, { recursive: true })
@@ -529,7 +551,7 @@ if (tool === 'npm' && args[0] === 'view') {
 `)
   const reportPath = path.join(root, 'commands.jsonl')
   return {
-    root, cacheRoot,
+    root, cacheRoot, mockBin,
     async reports() {
       return (await readFile(reportPath, 'utf8')).trim().split(/\r?\n/u).map(line => JSON.parse(line))
     },
@@ -537,10 +559,16 @@ if (tool === 'npm' && args[0] === 'view') {
       assert.equal(await readFile(userConfig, 'utf8'), registryConfig)
       assert.equal(await readFile(path.join(projectRoot, '.npmrc'), 'utf8'), registryConfig)
     },
-    run(shellPath, additions = {}) {
+    run(shellPath, additions = {}, upstream = false, launch = {}) {
+      const forwarded = launch.args ?? ['--version']
+      const entryArguments = launch.cmd ? [
+        '-Command', '$launchArguments = @($env:PTC_LAUNCH_ARGUMENTS | ConvertFrom-Json); & $env:PTC_LAUNCH_ENTRY @launchArguments; exit $LASTEXITCODE',
+      ] : [
+        '-File', path.join(scriptRoot, 'run-dev-dsh.ps1'), ...(upstream ? ['-UpstreamSource'] : []), 'web', ...forwarded,
+      ]
       return spawnSync(shellPath, [
         '-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass',
-        '-File', path.join(scriptRoot, 'run-dev-dsh.ps1'), 'web', '--version',
+        ...entryArguments,
       ], {
         cwd: projectRoot,
         encoding: 'utf8',
@@ -548,6 +576,9 @@ if (tool === 'npm' && args[0] === 'view') {
         env: windowsEnvironment([
           mockBin, path.dirname(process.execPath), path.join(process.env.SystemRoot, 'System32'),
         ].join(';'), {
+          DSH_DEV_INSTALL_NO_PAUSE: '1',
+          PTC_LAUNCH_ARGUMENTS: JSON.stringify(['web', ...forwarded]),
+          PTC_LAUNCH_ENTRY: path.join(scriptRoot, upstream ? 'run-upstream-dsh.cmd' : 'run-dev-dsh.cmd'),
           DSH_DEV_CACHE: cacheRoot,
           DSH_DEV_REGISTRY: '',
           // Empty selects the newest published version, which is the launcher default.
@@ -752,3 +783,113 @@ try {
     await fixture.assertConfigUnchanged()
   })
 }
+
+
+for (const shellName of ['powershell.exe', 'pwsh.exe']) {
+  const shellPath = resolveWindowsCommand(shellName)
+  const gitPath = resolveWindowsCommand('git.exe')
+  test(`upstream launcher caches exact commits and retries failed builds under ${shellName}`, {
+    skip: shellPath === null || gitPath === null,
+  }, async t => {
+    const fixture = await developmentRegistryFixture(t, { unicodeCache: true })
+    const upstream = path.join(fixture.root, 'official-source')
+    await mkdir(upstream)
+    const git = (...args) => execFileSync(gitPath, ['-C', upstream, ...args], { encoding: 'utf8' }).trim()
+    git('init', '--initial-branch=fixture-default')
+    git('config', 'user.name', 'Launcher fixture')
+    git('config', 'user.email', 'launcher@example.invalid')
+    git('config', 'core.hooksPath', path.join(fixture.root, 'no-hooks'))
+    await writeFile(path.join(upstream, 'package.json'), JSON.stringify({ name: 'upstream-fixture', packageManager: 'pnpm@11.7.0' }))
+    await writeFile(path.join(upstream, '.gitignore'), 'node_modules/\napps/\n.build-complete\n')
+    git('add', '.')
+    git('commit', '-m', 'Initial fixture')
+    const firstCommit = git('rev-parse', 'HEAD')
+    const environment = { PTC_REAL_GIT: gitPath, PTC_UPSTREAM_REPOSITORY: upstream }
+    const run = additions => fixture.run(shellPath, { ...environment, ...additions }, true)
+    const assertSuccess = result => assert.equal(result.status, 0, result.stderr || result.stdout || result.error?.message)
+    const coldOffline = run({ PTC_MOCK_FETCH_FAILURE: '1' })
+    assert.notEqual(coldOffline.status, 0)
+    assert.equal((await fixture.reports()).some(row => row.args.includes('build')), false)
+    const forwarded = ['--version', '--port', '43123', '--patch', 'C:\\test folder\\patch.yml']
+    const first = fixture.run(shellPath, environment, true, { cmd: true, args: forwarded })
+    assertSuccess(first)
+    assert.match(first.stdout, new RegExp(firstCommit))
+    const initialReports = await fixture.reports()
+    assert.equal(initialReports.some(row => row.tool === 'npm' && row.args[0] === 'view'), false)
+    assert.ok(initialReports.some(row => row.tool === 'pnpm' && row.args.includes('--frozen-lockfile')))
+    assert.ok(initialReports.some(row => row.tool === 'pnpm' && row.args.includes('dsh') && row.args.includes('plugin')))
+    const launches = initialReports.filter(row => row.tool === 'pnpm' && row.args.includes('dsh') && !row.args.includes('plugin'))
+    assert.deepEqual(launches.at(-1).args.filter(arg => !arg.startsWith('--config.store-dir=')),
+      ['run', 'dsh', '--profile', 'web', ...forwarded])
+    assert.deepEqual(launches.at(-2).args.filter(arg => !arg.startsWith('--config.store-dir=')), ['run', 'dsh', '--version'])
+    await assert.rejects(stat(path.join(fixture.cacheRoot, 'dsh-home')), { code: 'ENOENT' })
+
+    assertSuccess(run())
+    const warmReports = (await fixture.reports()).slice(initialReports.length)
+    assert.equal(warmReports.some(row => row.args.includes('build')), false)
+    const offline = run({ PTC_MOCK_FETCH_FAILURE: '1' })
+    assertSuccess(offline)
+    assert.match(offline.stdout, /using cached source/u)
+
+    const lockPath = path.join(fixture.cacheRoot, 'upstream', 'source.lock')
+    const locker = spawn(shellPath, ['-NoLogo', '-NoProfile', '-Command', String.raw`
+$stream = [IO.File]::Open($env:PTC_SOURCE_LOCK, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+try {
+    [Console]::Out.WriteLine('locked')
+    [Console]::Out.Flush()
+    [Console]::In.ReadLine() | Out-Null
+} finally { $stream.Dispose() }
+`], { env: { ...process.env, PTC_SOURCE_LOCK: lockPath }, stdio: ['pipe', 'pipe', 'pipe'] })
+    const closed = new Promise(resolve => locker.once('close', resolve))
+    try {
+      await new Promise((resolve, reject) => {
+        locker.once('error', reject)
+        locker.stdout.once('data', resolve)
+        locker.stderr.once('data', data => reject(new Error(String(data))))
+      })
+      const locked = run()
+      assert.notEqual(locked.status, 0)
+      assert.match(locked.stderr + locked.stdout, /already in use/u)
+    } finally {
+      locker.stdin.end('\n')
+      await closed
+    }
+    assertSuccess(run())
+
+    await writeFile(path.join(upstream, 'change.txt'), 'next revision')
+    git('add', '.')
+    git('commit', '-m', 'Next fixture')
+    const nextCommit = git('rev-parse', 'HEAD')
+    const beforeFailure = (await fixture.reports()).length
+    const failed = run({ PTC_MOCK_BUILD_FAILURE: '1' })
+    assert.notEqual(failed.status, 0)
+    const failureReports = (await fixture.reports()).slice(beforeFailure)
+    assert.ok(failureReports.some(row => row.args.includes('build')))
+    assert.equal(failureReports.some(row => row.tool === 'pnpm' && row.args.includes('dsh')), false)
+    const retry = run({ DSH_DEV_MAX_VERSIONS: '1' })
+    assertSuccess(retry)
+    assert.match(retry.stdout, new RegExp(nextCommit))
+    const buildsRoot = path.join(fixture.cacheRoot, 'upstream', 'builds')
+    const { readdir } = await import('node:fs/promises')
+    const builds = await readdir(buildsRoot)
+    assert.equal(builds.length, 1)
+    assert.ok(builds[0].startsWith(nextCommit.slice(0, 12)))
+    await writeFile(path.join(buildsRoot, builds[0], 'change.txt'), 'local edit')
+    const modified = run()
+    assert.notEqual(modified.status, 0)
+    assert.match(modified.stderr + modified.stdout, /checkout was modified/u)
+    await fixture.assertConfigUnchanged()
+  })
+}
+
+
+test('released CMD entry preserves exact final Host arguments including spaces', {
+  skip: resolveWindowsCommand('powershell.exe') === null,
+}, async t => {
+  const fixture = await developmentRegistryFixture(t)
+  const forwarded = ['--version', '--port', '43123', '--patch', 'C:\\test folder\\patch.yml']
+  const result = fixture.run(resolveWindowsCommand('powershell.exe'), {}, false, { cmd: true, args: forwarded })
+  assert.equal(result.status, 0, result.stderr || result.stdout || result.error?.message)
+  const launches = (await fixture.reports()).filter(row => row.tool === 'dsh' && row.args[0] !== 'plugin')
+  assert.deepEqual(launches.at(-1).args, ['--profile', 'web', ...forwarded])
+})

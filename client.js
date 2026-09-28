@@ -31321,10 +31321,12 @@
       const content2 = React.useRef(null);
       const localReturnFocus = React.useRef(null);
       const returnFocus = returnFocusRef ?? localReturnFocus;
-      React.useEffect(() => {
+      const attachContent = React.useCallback((element) => {
+        content2.current = element;
+        if (element === null) return;
         const previous = document.activeElement;
-        if (!content2.current.contains(previous) && canReturnFocus(previous)) returnFocus.current = previous;
-        content2.current.querySelector("button")?.focus();
+        if (!element.contains(previous) && canReturnFocus(previous)) returnFocus.current = previous;
+        element.querySelector("button")?.focus();
       }, [returnFocus]);
       const close = () => {
         const target = canReturnFocus(returnFocus.current) ? returnFocus.current : getReturnFocus?.();
@@ -31347,7 +31349,7 @@
         { open: true, onClose: close, title: t2("bindings.title"), headless: true, className: "ptcPlusBindingsModal" },
         h(
           "div",
-          { className: "ptcPlusBindingsDialog", ref: content2, onKeyDown: trapFocus },
+          { className: "ptcPlusBindingsDialog", ref: attachContent, onKeyDown: trapFocus },
           h(
             "div",
             { className: "ptcPlusBindingsDialogHead" },

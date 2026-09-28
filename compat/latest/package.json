@@ -1,0 +1,8 @@
+{
+  "name": "dsh-ptc-plus-latest-host-contract",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@deepseek-ai/dsh": "latest"
+  }
+}

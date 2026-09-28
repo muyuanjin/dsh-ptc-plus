@@ -92,6 +92,9 @@
     "semantic:check": "node scripts/semantic-obligations.mjs",
     "test:client:web": "node scripts/client-web-smoke.mjs",
     "test:client:layout": "node scripts/client-binding-layout.mjs",
+    "host:baseline:update": "node scripts/dsh-dependency-baseline.mjs update",
+    "host:baseline:verify": "node scripts/dsh-dependency-baseline.mjs verify",
+    "test:host-contract": "node scripts/dsh-host-contract-suite.mjs",
     "prepack": "npm run build:check",
     "hooks:install": "node scripts/review-findings.mjs install-hook",
     "review:new": "node scripts/review-findings.mjs create",
@@ -106,7 +109,7 @@
     "session:migrate": "node scripts/migrate-session-log.mjs",
     "coverage": "node scripts/coverage.mjs",
     "coverage:focus": "node scripts/coverage.mjs --focus",
-    "verify": "npm run review:validate && npm run semantic:check && npm run build:check && node --check index.js && node --check internal/kernel-worker.js && node --check scripts/migrate-session-log.mjs && node --check scripts/expensive-headless-acceptance.mjs && node --check scripts/ab-headless-trajectories.mjs && npm run test:client && npm run coverage",
+    "verify": "npm run review:validate && npm run host:baseline:verify && npm run semantic:check && npm run build:check && node --check index.js && node --check internal/kernel-worker.js && node --check scripts/migrate-session-log.mjs && node --check scripts/expensive-headless-acceptance.mjs && node --check scripts/ab-headless-trajectories.mjs && npm run test:client && npm run coverage",
     "check": "node scripts/review-findings.mjs check",
     "test:expensive": "node scripts/expensive-headless-acceptance.mjs",
     "test:ab": "node scripts/ab-headless-trajectories.mjs"
@@ -151,6 +154,7 @@
     }
   },
   "devDependencies": {
+    "@deepseek-ai/dsh": "next",
     "@deepseek-ai/dsh-agent-loop": "next",
     "@deepseek-ai/dsh-api-gateway": "next",
     "@deepseek-ai/dsh-api-remotes": "next",

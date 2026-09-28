@@ -5,6 +5,7 @@ name: CI
 # the tagged commit still produces the successful run the Release workflow
 # requires (see docs/publishing.md).
 on:
+  workflow_dispatch:
   push:
     branches:
       - main
@@ -58,37 +59,7 @@ jobs:
           DSH_PTC_TEST_CONCURRENCY: 1
         shell: bash
         run: npm run check
-      - name: Pack and load from a clean consumer
+      - name: Verify frozen latest and next host contracts
+        if: matrix.os == 'ubuntu-latest' && matrix.node == 24
         shell: bash
-        run: |
-          set -euo pipefail
-          repo_root="$PWD"
-          pack_dir="$(mktemp -d)"
-          consumers_dir="$(mktemp -d)"
-          trap 'rm -rf -- "$pack_dir" "$consumers_dir"' EXIT
-          archive="$(npm pack --silent --pack-destination "$pack_dir" --json | node scripts/npm-pack-filename.mjs)"
-          for channel in latest alpha; do
-            consumer_dir="$consumers_dir/$channel"
-            mkdir "$consumer_dir"
-            cd "$consumer_dir"
-            npm init --yes
-            npm install --ignore-scripts "@deepseek-ai/dsh@$channel"
-            npm install --ignore-scripts "$pack_dir/$archive"
-            npm ls \
-              @deepseek-ai/dsh-settings \
-              @deepseek-ai/dsh-atomic-write \
-              @deepseek-ai/dsh-home-paths \
-              @deepseek-ai/dsh-llm \
-              @deepseek-ai/dsh-skill-filesystem \
-              @deepseek-ai/dsh-tool-cordis \
-              @deepseek-ai/dsh-tools
-            node --input-type=module -e "const plugin = await import('dsh-ptc-plus'); if (plugin.name !== 'ptc-plus' || typeof plugin.apply !== 'function') throw new Error('invalid package exports')"
-            # An import alone cannot show that this host and the plugin agree on
-            # an execution service: a plugin whose injection is unsatisfied stays
-            # pending without an error, leaving run_code on the host's runtime.
-            node "$repo_root/scripts/dsh-execution-seam-smoke.mjs" dsh-ptc-plus
-            # The Remote descriptors are a second host-owned contract: a codec the
-            # installed TYPERT registry rejects fails activation in the Host and in
-            # the browser while an import and a load check still succeed.
-            node "$repo_root/scripts/dsh-rpc-contract-smoke.mjs" dsh-ptc-plus
-          done
+        run: npm run test:host-contract

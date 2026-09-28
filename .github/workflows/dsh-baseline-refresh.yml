@@ -1,0 +1,60 @@
+name: Refresh DSH baselines
+
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: dsh-baseline-refresh
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.15.0
+          registry-url: https://registry.npmjs.org
+      - name: Refresh frozen locks when official tags move
+        id: refresh
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run host:baseline:update
+          if git diff --quiet -- package-lock.json compat/latest/package-lock.json; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Publish the baseline update branch
+        if: steps.refresh.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          branch="automation/dsh-baselines"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B "$branch"
+          git add package-lock.json compat/latest/package-lock.json
+          git commit -m "build(host): refresh frozen DSH baselines"
+          git push --force origin "HEAD:refs/heads/$branch"
+          if gh pr view "$branch" --json number >/dev/null 2>&1; then
+            gh pr edit "$branch" --title "build(host): refresh frozen DSH baselines" --body "Refresh the tracked official DSH latest and next dependency graphs. The normal CI workflow validates the frozen candidate without resolving floating tags."
+          else
+            gh pr create --base main --head "$branch" --title "build(host): refresh frozen DSH baselines" --body "Refresh the tracked official DSH latest and next dependency graphs. The normal CI workflow validates the frozen candidate without resolving floating tags."
+          fi
+          # GITHUB_TOKEN suppresses workflow runs from its push and PR events,
+          # so this dispatch is the candidate's only CI run.
+          gh workflow run ci.yml --ref "$branch"

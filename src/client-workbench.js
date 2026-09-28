@@ -484,11 +484,13 @@ export function createUserBindingsWorkbench(React, deps) {
     const content = React.useRef(null)
     const localReturnFocus = React.useRef(null)
     const returnFocus = returnFocusRef ?? localReturnFocus
-    React.useEffect(() => {
+    const attachContent = React.useCallback(element => {
+      content.current = element
+      if (element === null) return
       const previous = document.activeElement
       // A resumed mount may have no focused control; keep the last valid entry.
-      if (!content.current.contains(previous) && canReturnFocus(previous)) returnFocus.current = previous
-      content.current.querySelector('button')?.focus()
+      if (!element.contains(previous) && canReturnFocus(previous)) returnFocus.current = previous
+      element.querySelector('button')?.focus()
     }, [returnFocus])
     const close = () => {
       const target = canReturnFocus(returnFocus.current) ? returnFocus.current : getReturnFocus?.()
@@ -509,7 +511,7 @@ export function createUserBindingsWorkbench(React, deps) {
       }
     }
     return h(Modal, { open: true, onClose: close, title: t('bindings.title'), headless: true, className: 'ptcPlusBindingsModal' },
-      h('div', { className: 'ptcPlusBindingsDialog', ref: content, onKeyDown: trapFocus },
+      h('div', { className: 'ptcPlusBindingsDialog', ref: attachContent, onKeyDown: trapFocus },
         h('div', { className: 'ptcPlusBindingsDialogHead' },
           h('h2', null, t('bindings.title')),
           h('button', { type: 'button', className: 'ptcPlusDialogClose', onClick: close,

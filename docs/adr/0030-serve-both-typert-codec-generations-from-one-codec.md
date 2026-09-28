@@ -12,7 +12,7 @@ PTC Plus publishes its Remote services through DSH's TYPERT registry, and that r
 
 Each generation validates only the member it owns and ignores the other, so one published contract serves whichever shape the installed host implements. Compatibility follows the live acceptance behavior of the registry rather than a release version, and the decoder is published once, so a host that reads both members cannot obtain two different decoders for one wire member.
 
-CI registers the packed contract with the installed host's own registry on both the stable and alpha channels (`scripts/dsh-rpc-contract-smoke.mjs`), so a generation that changes this validation fails the packaging check instead of reaching users.
+CI registers the packed contract with the installed host's own registry from the frozen official `latest` and `next` graphs (`scripts/dsh-rpc-contract-smoke.mjs`), so a generation that changes this validation fails the packaging check instead of reaching users.
 
 ## Alternatives Considered
 
@@ -24,4 +24,4 @@ CI registers the packed contract with the installed host's own registry on both 
 
 ## Consequences
 
-One plugin build serves the stable and alpha channels for this surface, and the compatibility rule lives in a single module with the decoder published once. A future generation that requires another member, or that rejects a codec carrying a member it does not know, needs this owner updated; the regression test is CI's registration against the installed registry, which fails on the channel that changed instead of on the user's machine. The decoder keeps the project's maintained schema runtime, so a host that validates payloads itself still evaluates the same semantics the plugin's own tests exercise through both members.
+One plugin build serves the preceding and current public codec generations for this surface, and the compatibility rule lives in a single module with the decoder published once. A future generation that requires another member, or that rejects a codec carrying a member it does not know, needs this owner updated; the regression test is CI's registration against the installed registry, which fails on the frozen Host graph that changed instead of on the user's machine. The decoder keeps the project's maintained schema runtime, so a host that validates payloads itself still evaluates the same semantics the plugin's own tests exercise through both members.

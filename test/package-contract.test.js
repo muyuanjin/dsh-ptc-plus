@@ -15,6 +15,7 @@ const DSH_RUNTIME_PEERS = [
   '@deepseek-ai/dsh-skill-filesystem',
   '@deepseek-ai/dsh-tool-cordis',
   '@deepseek-ai/dsh-tools',
+  '@deepseek-ai/dsh-typert-protocol',
 ]
 
 test('execution smoke rejects capability-only changes and accepts the real plugin', async t => {
@@ -54,14 +55,38 @@ test('keeps host-owned DSH runtime packages out of plugin dependencies', async (
   }
 })
 
+test('freezes official latest and next host baselines without changing ordinary installs', async () => {
+  const manifest = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'))
+  const lock = JSON.parse(await readFile(new URL('../package-lock.json', import.meta.url), 'utf8'))
+  const latestManifest = JSON.parse(await readFile(new URL('../compat/latest/package.json', import.meta.url), 'utf8'))
+  const latestLock = JSON.parse(await readFile(new URL('../compat/latest/package-lock.json', import.meta.url), 'utf8'))
+  const hostSuite = await readFile(new URL('../scripts/dsh-host-contract-suite.mjs', import.meta.url), 'utf8')
+
+  const dshDevelopmentPackages = Object.entries(manifest.devDependencies)
+    .filter(([name]) => name === '@deepseek-ai/dsh' || name.startsWith('@deepseek-ai/dsh-'))
+  assert.ok(dshDevelopmentPackages.some(([name]) => name === '@deepseek-ai/dsh'))
+  assert.ok(dshDevelopmentPackages.every(([, version]) => version === 'next'))
+  assert.ok(dshDevelopmentPackages.every(([name]) => lock.packages[''].devDependencies[name] === 'next'))
+  const nextVersion = lock.packages['node_modules/@deepseek-ai/dsh'].version
+  assert.ok(dshDevelopmentPackages.every(([name]) => lock.packages[`node_modules/${name}`].version === nextVersion))
+  assert.deepEqual(latestManifest.dependencies, { '@deepseek-ai/dsh': 'latest' })
+  assert.equal(latestLock.packages[''].dependencies['@deepseek-ai/dsh'], 'latest')
+  assert.match(latestLock.packages['node_modules/@deepseek-ai/dsh'].version, /^\d+\.\d+\.\d+/)
+  assert.doesNotMatch(hostSuite, /npm\(\[['"]install['"]/)
+  assert.match(hostSuite, /run\('tar', \['-xzf'/)
+  assert.match(hostSuite, /exposePluginDependencies\(consumer\)/)
+})
+
 test('keeps npm release authority stage-only and bound to a verified tag', async () => {
   const manifest = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'))
   const ci = parse(await readFile(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8'))
+  const refresh = parse(await readFile(new URL('../.github/workflows/dsh-baseline-refresh.yml', import.meta.url), 'utf8'))
   const release = parse(await readFile(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8'))
 
   assert.deepEqual(manifest.allowScripts, { esbuild: false })
   assert.deepEqual(ci.on.push.branches, ['main'])
   assert.equal(ci.on.push.tags, undefined)
+  assert.equal(ci.on.workflow_dispatch, null)
   assert.deepEqual(release.on.workflow_dispatch, {})
   assert.deepEqual(release.permissions, { actions: 'read', contents: 'read' })
   assert.equal(
@@ -81,6 +106,9 @@ test('keeps npm release authority stage-only and bound to a verified tag', async
   const verifyStep = ci.jobs.check.steps.find(step => step.name === 'Verify the reviewed candidate')
   assert.equal(verifyStep.run, 'npm run check')
   assert.equal(verifyStep.env.DSH_PTC_TEST_CONCURRENCY, 1)
+  const hostStep = ci.jobs.check.steps.find(step => step.name === 'Verify frozen latest and next host contracts')
+  assert.equal(hostStep.run, 'npm run test:host-contract')
+  assert.equal(hostStep.if, "matrix.os == 'ubuntu-latest' && matrix.node == 24")
 
   const serializedCi = JSON.stringify(ci)
   const serializedRelease = JSON.stringify(release)
@@ -88,13 +116,12 @@ test('keeps npm release authority stage-only and bound to a verified tag', async
   const revalidateTarget = release.jobs.stage.steps.find(
     step => step.name === 'Revalidate immutable release target',
   )
-  assert.match(serializedCi, /node scripts\/npm-pack-filename\.mjs/)
-  assert.match(serializedCi, /for channel in latest alpha/)
-  assert.ok(serializedCi.includes('@deepseek-ai/dsh@$channel'))
-  for (const packageName of DSH_RUNTIME_PEERS) {
-    assert.ok(serializedCi.includes(packageName))
-    assert.ok(!serializedCi.includes(`${packageName}@$channel`))
-  }
+  assert.doesNotMatch(serializedCi, /npm install|for channel|@deepseek-ai\/dsh@\$channel/)
+  const serializedRefresh = JSON.stringify(refresh)
+  assert.match(serializedRefresh, /npm run host:baseline:update/)
+  assert.match(serializedRefresh, /GITHUB_TOKEN suppresses workflow runs/)
+  assert.match(serializedRefresh, /gh workflow run ci\.yml/)
+  assert.doesNotMatch(serializedRefresh, /npm run (?:check|verify|test:host-contract)/)
   assert.match(validateTarget.run, /GITHUB_REF/)
   assert.match(validateTarget.run, /GITHUB_SHA/)
   assert.match(revalidateTarget.run, /GITHUB_REF/)

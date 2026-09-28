@@ -121,6 +121,14 @@ function rowConfigViews(props) {
 beforeAll(() => {
   Range.prototype.getClientRects = () => []
   Range.prototype.getBoundingClientRect = () => new DOMRect()
+  globalThis.ResizeObserver = class {
+    constructor(callback) { this.callback = callback }
+    observe(target) {
+      this.callback([{ target, borderBoxSize: [{ inlineSize: 160, blockSize: 24 }] }])
+    }
+    unobserve() {}
+    disconnect() {}
+  }
 })
 afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup()
@@ -2476,6 +2484,7 @@ test('the composer entry carries a plugin-signed tooltip that follows the draft 
   await runtime.flush()
   const trigger = view.container.querySelector('.ptcPlusAuthorButton')
   expect(trigger.getAttribute('aria-label')).toBe('Global bindings')
+  fireEvent.keyDown(document, { key: 'Tab' })
   fireEvent.focus(trigger)
   await runtime.flush()
   expect(view.getByRole('tooltip').textContent)

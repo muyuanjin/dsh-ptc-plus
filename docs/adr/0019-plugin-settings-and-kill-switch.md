@@ -8,7 +8,7 @@ Accepted
 
 ## Context
 
-PTC Plus 0.1.0 deliberately had no Client UI. The runtime surface was the DSH PTC mode `run_code`/`edit_run_code` transport, and adding a settings bundle was judged not to improve the core REPL path. The plugin also lacked a user-facing way to disable its runtime without removing the Cordis entry, and enabling/disabling state was invisible outside the session log. PTC Plus requires a plugin settings UI containing every Host Config field, a kill switch, and an explicit enabled marker. DSH's public settings service registers a namespace; the browser half contributes a card through the generation's settings seat, and the client reads the installed generation's settings transport (`configForms` on the current alpha, `settingsScope` on the preceding RC).
+PTC Plus 0.1.0 deliberately had no Client UI. The runtime surface was the DSH PTC mode `run_code`/`edit_run_code` transport, and adding a settings bundle was judged not to improve the core REPL path. The plugin also lacked a user-facing way to disable its runtime without removing the Cordis entry, and enabling/disabling state was invisible outside the session log. PTC Plus requires a plugin settings UI containing every Host Config field, a kill switch, and an explicit enabled marker. DSH's public settings service registers a namespace; the browser half contributes a card through the generation's settings seat, and the client reads whichever public settings transport the installed Host exposes (`configForms` or `settingsScope`).
 
 ## Decision
 

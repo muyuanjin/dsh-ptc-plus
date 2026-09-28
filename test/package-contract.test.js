@@ -105,10 +105,18 @@ test('keeps npm release authority stage-only and bound to a verified tag', async
 
   const verifyStep = ci.jobs.check.steps.find(step => step.name === 'Verify the reviewed candidate')
   assert.equal(verifyStep.run, 'npm run check')
+  assert.equal(verifyStep.if, 'matrix.full')
   assert.equal(verifyStep.env.DSH_PTC_TEST_CONCURRENCY, 1)
+  const platformStep = ci.jobs.check.steps.find(step => step.name === 'Verify platform behavior without coverage')
+  assert.equal(platformStep.run, 'npm run verify:platform')
+  assert.equal(platformStep.if, '${{ !matrix.full }}')
+  assert.equal(ci.jobs.check.strategy.matrix.include.filter(entry => entry.full).length, 1)
+  assert.deepEqual(ci.jobs.check.strategy.matrix.include.find(entry => entry.full), {
+    os: 'ubuntu-latest', node: 24, full: true,
+  })
   const hostStep = ci.jobs.check.steps.find(step => step.name === 'Verify frozen latest and next host contracts')
   assert.equal(hostStep.run, 'npm run test:host-contract')
-  assert.equal(hostStep.if, "matrix.os == 'ubuntu-latest' && matrix.node == 24")
+  assert.equal(hostStep.if, 'matrix.full')
 
   const serializedCi = JSON.stringify(ci)
   const serializedRelease = JSON.stringify(release)

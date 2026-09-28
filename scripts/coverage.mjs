@@ -4,6 +4,7 @@ import { availableParallelism } from 'node:os'
 import { resolve, join, basename, isAbsolute, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { coveredSource } from './coverage-inputs.mjs'
+import { backendTestFiles, splitBackendTestFiles } from './test-suite-files.mjs'
 
 const root = fileURLToPath(new URL('../', import.meta.url))
 const reporter = fileURLToPath(new URL('./coverage-report.mjs', import.meta.url))
@@ -138,20 +139,11 @@ export async function runCoverage({
       env: { ...process.env, NODE_V8_COVERAGE: '', DSH_PTC_COMPILER_BYTECODE: undefined },
     })
     if (preparationCode !== 0) return preparationCode
-    const testFiles = selectedTestFiles ?? (await readdir(join(root, 'test')))
-      .filter(name => name.endsWith('.test.js'))
-      .map(name => `test/${name}`)
-      .sort()
+    const testFiles = selectedTestFiles ?? await backendTestFiles(root)
     // Tests that install module mocks before importing the transport must not
     // preload the real transport through the coverage setup. Run those first
     // without the instrumentation preload, then run the rest with it. Both
     // groups write worker evidence into the same coverage directory.
-    const mockPreloadFiles = new Set([
-      'isolated-worker.test.js',
-      'session-runtime-faults.test.js',
-      'user-binding-console-transport.test.js',
-      'user-bindings-owner-faults.test.js',
-    ])
     const runTestGroup = (files, { instrumented, label }) => execute([
       ...(instrumented ? ['--import', workerCoverageSetup] : []),
       '--test', '--experimental-test-module-mocks', `--test-concurrency=${concurrency}`,
@@ -164,8 +156,7 @@ export async function runCoverage({
       DSH_PTC_COMPILER_BYTECODE: bytecode,
       ...(instrumented ? { DSH_PTC_TEST_WORKER_COVERAGE: '1' } : {}),
     } })
-    const mockPreload = testFiles.filter(file => mockPreloadFiles.has(basename(file)))
-    const instrumented = testFiles.filter(file => !mockPreloadFiles.has(basename(file)))
+    const { mockPreload, ordinary: instrumented } = splitBackendTestFiles(testFiles)
     let testCode = 0
     if (mockPreload.length > 0) {
       console.log(`Coverage stage: mock-dependent tests (${mockPreload.length} files)`)

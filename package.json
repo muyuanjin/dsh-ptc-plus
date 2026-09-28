@@ -109,7 +109,9 @@
     "session:migrate": "node scripts/migrate-session-log.mjs",
     "coverage": "node scripts/coverage.mjs",
     "coverage:focus": "node scripts/coverage.mjs --focus",
+    "test:platform": "node scripts/platform-tests.mjs",
     "verify": "npm run review:validate && npm run host:baseline:verify && npm run semantic:check && npm run build:check && node --check index.js && node --check internal/kernel-worker.js && node --check scripts/migrate-session-log.mjs && node --check scripts/expensive-headless-acceptance.mjs && node --check scripts/ab-headless-trajectories.mjs && npm run test:client && npm run coverage",
+    "verify:platform": "npm run review:validate && npm run host:baseline:verify && npm run semantic:check && npm run build:check && node --check index.js && node --check internal/kernel-worker.js && node --check scripts/migrate-session-log.mjs && node --check scripts/expensive-headless-acceptance.mjs && node --check scripts/ab-headless-trajectories.mjs && npm run test:client && npm run test:platform",
     "check": "node scripts/review-findings.mjs check",
     "test:expensive": "node scripts/expensive-headless-acceptance.mjs",
     "test:ab": "node scripts/ab-headless-trajectories.mjs"

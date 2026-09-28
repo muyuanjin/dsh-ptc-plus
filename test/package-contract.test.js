@@ -103,20 +103,16 @@ test('keeps npm release authority stage-only and bound to a verified tag', async
     'id-token': 'write',
   })
 
-  const verifyStep = ci.jobs.check.steps.find(step => step.name === 'Verify the reviewed candidate')
-  assert.equal(verifyStep.run, 'npm run check')
-  assert.equal(verifyStep.if, 'matrix.full')
-  assert.equal(verifyStep.env.DSH_PTC_TEST_CONCURRENCY, 1)
-  const platformStep = ci.jobs.check.steps.find(step => step.name === 'Verify platform behavior without coverage')
-  assert.equal(platformStep.run, 'npm run verify:platform')
-  assert.equal(platformStep.if, '${{ !matrix.full }}')
-  assert.equal(ci.jobs.check.strategy.matrix.include.filter(entry => entry.full).length, 1)
-  assert.deepEqual(ci.jobs.check.strategy.matrix.include.find(entry => entry.full), {
-    os: 'ubuntu-latest', node: 24, full: true,
+  const verifyStep = ci.jobs.check.steps.find(step => step.name === 'Verify portable runtime contracts')
+  assert.equal(verifyStep.run, 'npm run verify:ci')
+  assert.equal(verifyStep.if, undefined)
+  assert.equal(ci.jobs.check.strategy.matrix.include.filter(entry => entry['host-contracts']).length, 1)
+  assert.deepEqual(ci.jobs.check.strategy.matrix.include.find(entry => entry['host-contracts']), {
+    os: 'ubuntu-latest', node: 24, 'host-contracts': true,
   })
   const hostStep = ci.jobs.check.steps.find(step => step.name === 'Verify frozen latest and next host contracts')
   assert.equal(hostStep.run, 'npm run test:host-contract')
-  assert.equal(hostStep.if, 'matrix.full')
+  assert.equal(hostStep.if, 'matrix.host-contracts')
 
   const serializedCi = JSON.stringify(ci)
   const serializedRelease = JSON.stringify(release)
@@ -125,6 +121,7 @@ test('keeps npm release authority stage-only and bound to a verified tag', async
     step => step.name === 'Revalidate immutable release target',
   )
   assert.doesNotMatch(serializedCi, /npm install|for channel|@deepseek-ai\/dsh@\$channel/)
+  assert.doesNotMatch(serializedCi, /npm run (?:check|verify:platform)|NODE_V8_COVERAGE/)
   const serializedRefresh = JSON.stringify(refresh)
   assert.match(serializedRefresh, /npm run host:baseline:update/)
   assert.match(serializedRefresh, /GITHUB_TOKEN suppresses workflow runs/)

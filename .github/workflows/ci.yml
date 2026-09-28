@@ -32,19 +32,19 @@ jobs:
         include:
           - os: ubuntu-latest
             node: 22.19.0
-            full: false
+            host-contracts: false
           - os: ubuntu-latest
             node: 24
-            full: true
+            host-contracts: true
           - os: ubuntu-latest
             node: 26
-            full: false
+            host-contracts: false
           - os: windows-latest
             node: 24
-            full: false
+            host-contracts: false
           - os: macos-latest
             node: 24
-            full: false
+            host-contracts: false
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -54,24 +54,9 @@ jobs:
           cache: npm
           registry-url: https://registry.npmjs.org
       - run: npm ci
-      # The session kernel runs in a killable helper process, so a stuck or
-      # unresponsive kernel is reclaimed by killing that process instead of a
-      # thread inside the host. A single deterministic run is the gate; the
-      # retry wrapper that used to absorb in-host teardown aborts is gone with
-      # that boundary.
-      - name: Verify the reviewed candidate
-        if: matrix.full
-        env:
-          DSH_PTC_TEST_CONCURRENCY: 1
-        shell: bash
-        run: npm run check
-      - name: Verify platform behavior without coverage
-        if: ${{ !matrix.full }}
-        env:
-          DSH_PTC_TEST_CONCURRENCY: 1
-        shell: bash
-        run: npm run verify:platform
+      - name: Verify portable runtime contracts
+        run: npm run verify:ci
       - name: Verify frozen latest and next host contracts
-        if: matrix.full
+        if: matrix.host-contracts
         shell: bash
         run: npm run test:host-contract

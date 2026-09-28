@@ -12,8 +12,6 @@ import {
   testConcurrency,
   validateFocusedCoverage,
 } from '../scripts/coverage.mjs'
-import { runPlatformTests } from '../scripts/platform-tests.mjs'
-import { backendTestFiles, splitBackendTestFiles } from '../scripts/test-suite-files.mjs'
 
 const posixOnly = process.platform === 'win32'
   ? 'a catchable SIGINT cannot be delivered to another process on Windows'
@@ -39,57 +37,6 @@ test('coverage CLI rejects invalid concurrency before starting the suite', () =>
   assert.equal(result.status, 1, result.stderr)
   assert.match(result.stderr, /DSH_PTC_TEST_CONCURRENCY must be a positive integer/)
   assert.doesNotMatch(result.stdout, /default file concurrency/)
-})
-
-test('platform runner executes every backend test without coverage state', async () => {
-  const files = await backendTestFiles(fileURLToPath(new URL('../', import.meta.url)))
-  const groups = splitBackendTestFiles(files)
-  const calls = []
-  assert.equal(await runPlatformTests({
-    concurrency: 3,
-    files,
-    environment: {
-      PATH: process.env.PATH,
-      Node_V8_Coverage: 'inherited-coverage',
-      dsh_ptc_test_worker_coverage: 'inherited-worker-coverage',
-      Dsh_Ptc_Compiler_Bytecode: 'stale-bytecode',
-    },
-    execute: async (args, env) => {
-      calls.push({ args, env })
-      return 0
-    },
-  }), 0)
-  assert.equal(calls.length, 3)
-  assert.deepEqual([
-    ...calls[1].args.filter(argument => argument.startsWith('test/')),
-    ...calls[2].args.filter(argument => argument.startsWith('test/')),
-  ].sort(), files)
-  assert.deepEqual(calls[1].args.filter(argument => argument.startsWith('test/')), groups.mockPreload)
-  assert.deepEqual(calls[2].args.filter(argument => argument.startsWith('test/')), groups.ordinary)
-  for (const { env } of calls) {
-    const keys = Object.keys(env).map(key => key.toUpperCase())
-    assert.equal(keys.includes('NODE_V8_COVERAGE'), false)
-    assert.equal(keys.includes('DSH_PTC_TEST_WORKER_COVERAGE'), false)
-  }
-  assert.equal(Object.keys(calls[0].env).some(key => key.toUpperCase() === 'DSH_PTC_COMPILER_BYTECODE'), false)
-  assert.match(calls[1].env.DSH_PTC_COMPILER_BYTECODE, /compiler-bytecode\.bin$/)
-  assert.equal(calls[2].env.DSH_PTC_COMPILER_BYTECODE, calls[1].env.DSH_PTC_COMPILER_BYTECODE)
-})
-
-test('platform runner propagates preparation and test group failures', async () => {
-  const files = ['test/isolated-worker.test.js', 'test/ordinary.test.js']
-  for (const { codes, expected, calls } of [
-    { codes: [7], expected: 7, calls: 1 },
-    { codes: [0, 8], expected: 8, calls: 2 },
-    { codes: [0, 0, 9], expected: 9, calls: 3 },
-  ]) {
-    let call = 0
-    assert.equal(await runPlatformTests({
-      files,
-      execute: async () => codes[call++],
-    }), expected)
-    assert.equal(call, calls)
-  }
 })
 
 test('focused coverage requires explicit gate sources and test files', async () => {

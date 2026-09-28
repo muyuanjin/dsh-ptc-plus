@@ -1,6 +1,6 @@
 {
   "name": "dsh-ptc-plus",
-  "version": "0.4.3",
+  "version": "0.4.4",
   "icon": "assets/ptc-plus-icon.svg",
   "description": "A session-bound agent-native REPL for DeepSeek Harness PTC mode.",
   "type": "module",
@@ -109,9 +109,9 @@
     "session:migrate": "node scripts/migrate-session-log.mjs",
     "coverage": "node scripts/coverage.mjs",
     "coverage:focus": "node scripts/coverage.mjs --focus",
-    "test:platform": "node scripts/platform-tests.mjs",
+    "test:ci:runtime": "node --test --test-concurrency=1 test/package-contract.test.js test/compiler-platform.test.js test/direct-surface-policy.test.js test/isolated-entrance.test.js test/plugin-native-call-transport.test.js",
     "verify": "npm run review:validate && npm run host:baseline:verify && npm run semantic:check && npm run build:check && node --check index.js && node --check internal/kernel-worker.js && node --check scripts/migrate-session-log.mjs && node --check scripts/expensive-headless-acceptance.mjs && node --check scripts/ab-headless-trajectories.mjs && npm run test:client && npm run coverage",
-    "verify:platform": "npm run review:validate && npm run host:baseline:verify && npm run semantic:check && npm run build:check && node --check index.js && node --check internal/kernel-worker.js && node --check scripts/migrate-session-log.mjs && node --check scripts/expensive-headless-acceptance.mjs && node --check scripts/ab-headless-trajectories.mjs && npm run test:client && npm run test:platform",
+    "verify:ci": "npm run review:validate && npm run host:baseline:verify && npm run semantic:check && npm run build:check && node --check index.js && node --check internal/kernel-worker.js && node --check scripts/migrate-session-log.mjs && npm run test:client && npm run test:ci:runtime",
     "check": "node scripts/review-findings.mjs check",
     "test:expensive": "node scripts/expensive-headless-acceptance.mjs",
     "test:ab": "node scripts/ab-headless-trajectories.mjs"

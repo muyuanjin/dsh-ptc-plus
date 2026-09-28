@@ -61,6 +61,8 @@ The configuration uses `ptc-plus` as the DSH plugin ID and `dsh-ptc-plus` as the
 
 `autoDescribeRunCode` defaults to `true` and appears as “Allow run_code execution without a summary.” When enabled, a call that omits the outer `run_code.description` uses derived arguments for local DSH validation, and the fallback summary enters presentation metadata only. When disabled, DSH validates the original arguments. Both states expose byte-identical model requests with the required `description` declaration; original call arguments, existing summaries, cell source, and nested native-tool JSON remain unchanged.
 
+Missing-description diagnostics append a complete DSH user message to `additionalContexts`, with an identity, text content and a `plugin:ptc-plus` notice source. The diagnostic distinguishes outer transport arguments from nested native-tool arguments and preserves existing additional messages. These notices are ordinary inbox messages, separate from recovery-tip escalation and state snapshots. This prevents new malformed diagnostic records; it does not repair session files already written by older plugin versions.
+
 ```yaml
 - id: ptc-plus
   name: dsh-ptc-plus

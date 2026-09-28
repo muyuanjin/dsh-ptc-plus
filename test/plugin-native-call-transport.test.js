@@ -286,7 +286,7 @@ test('derives missing run_code descriptions locally without changing the require
     )
     assert.equal(result.meta?.dshPtcPlusRunCodeDescription, undefined)
     if (!enabled) {
-      assert.match(result.additionalContexts?.[0]?.text ?? '', /outer transport arguments.*nested inside a native-tool argument/)
+      assert.match(result.additionalContexts[0].content[0].text, /outer transport arguments.*nested inside a native-tool argument/)
     }
     await state.dispose()
     assert.equal(state.runCodeDefinition.execute, strictRunCode.execute)
@@ -339,7 +339,7 @@ test('annotates generated descriptions and nested missing-description paths', as
     },
   }))
   assert.equal(result.meta.dshPtcPlusRunCodeDescription, 'Execute the next TypeScript cell in this session')
-  assert.match(result.additionalContexts[0].text, /options\.description/)
+  assert.match(result.additionalContexts[0].content[0].text, /options\.description/)
 })
 
 test('pins auto-description behavior to the request assembly despite live setting changes', async (t) => {

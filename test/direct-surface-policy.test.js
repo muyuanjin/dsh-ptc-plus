@@ -1,8 +1,12 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { createUserMessage } from '@deepseek-ai/dsh-llm'
+import { Session } from '@deepseek-ai/dsh-session'
+import { sessionFormatCatalog } from '@deepseek-ai/dsh-session-format-catalog'
 import { CONFIG_DEFAULTS } from '../internal/config-spec.js'
 import { createDirectSurfaceOwner } from '../internal/direct-surface-owner.js'
 import { createUserBindingsSnapshot } from '../internal/user-bindings.js'
+import { sessionEvents } from '../internal/session-events.js'
 
 function assembly() {
   return {
@@ -143,10 +147,52 @@ test('argumentDiagnostic resolves the same policy for its context choice', async
   const tolerantResult = owner.argumentDiagnostic({
     name: 'run_code', callId: 'diagnostic-tolerant-call', arguments: { code: 'return 1', description: 5 }, agent: tolerant,
   }, result)
-  assert.match(tolerantResult.additionalContexts[0].text, /nested native-tool argument/)
+  assert.match(tolerantResult.additionalContexts[0].content[0].text, /nested native-tool argument/)
 
   const strictResult = owner.argumentDiagnostic({
     name: 'run_code', callId: 'diagnostic-strict-call', arguments: { code: 'return 1' }, agent: strict,
   }, result)
-  assert.match(strictResult.additionalContexts[0].text, /outer transport arguments/)
+  assert.match(strictResult.additionalContexts[0].content[0].text, /outer transport arguments/)
+})
+
+test('argument diagnostics survive inbox persistence and complete session restoration', async (t) => {
+  const owner = createOwner({ runtimeConfig: { ...CONFIG_DEFAULTS, autoDescribeRunCode: false } })
+  t.after(() => owner.dispose())
+  const agent = { id: 'diagnostic-persistence' }
+  await owner.assemble(assembly(), { agent }, async () => assembly())
+  const previous = createUserMessage({
+    source: { kind: 'user' }, content: [{ type: 'text', text: 'Keep this context.' }],
+  })
+  const session = Session.create(agent.id)
+  const messages = []
+  for (const [args, path, expected] of [
+    [{ code: 'return 1' }, 'description', /outer transport arguments/],
+    [{ code: 'return tools.read({})', description: 'Read' }, 'description', /nested native-tool argument/],
+    [{ code: 'return tools.read({})', description: 'Read' }, 'options.description', /options\.description/],
+  ]) {
+    const result = { isError: true, error: { message: `missing required property "${path}"` }, additionalContexts: [previous] }
+    const diagnosed = owner.argumentDiagnostic({ name: 'run_code', arguments: args, agent }, result)
+    assert.equal(diagnosed.error, result.error)
+    assert.deepEqual(result.additionalContexts, [previous])
+    assert.equal(diagnosed.additionalContexts[0], previous)
+    const message = diagnosed.additionalContexts[1]
+    assert.equal(message.role, 'user')
+    assert.equal(typeof message.id, 'string')
+    assert.ok(message.id.length > 0)
+    assert.deepEqual(message.source, {
+      kind: 'plugin:ptc-plus', form: 'notice', summary: 'tools:ptc-plus-run-code-arguments',
+    })
+    assert.equal(message.content[0].type, 'text')
+    assert.match(message.content[0].text, expected)
+    messages.push(message)
+    session.append('agent/inbox/spliced', { target: 'next-step', start: 0, inserted: [message] })
+  }
+  assert.equal(new Set(messages.map(message => message.id)).size, messages.length)
+  session.append('user/message', previous, { surfaceOp: 'append' })
+  const header = sessionFormatCatalog.encodeCurrentHeader({ ...session.header, delegationDepth: 0 }, 0)
+  const restore = sessionFormatCatalog.createRestore(header, { recovery: 'none', validation: 'current' })
+  for (const event of sessionEvents(session)) {
+    restore.decodeRow(JSON.parse(JSON.stringify(sessionFormatCatalog.encodeCurrentEvent(event))))
+  }
+  assert.deepEqual(restore.finish().events, sessionEvents(session))
 })

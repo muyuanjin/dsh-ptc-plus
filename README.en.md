@@ -133,6 +133,7 @@ An edit **reruns the entire cell**; this example returns `12`. Earlier state cha
 | --- | --- |
 | `run_code` omits its outer `description` | Supply a display summary so code with otherwise valid arguments can execute |
 | The model calls a native tool outside the PTC direct-tool list | Convert it to the corresponding `run_code` when current tool definitions uniquely identify the target and validate the arguments |
+| Argument validation reports a missing `description` | Distinguish outer and nested tool arguments and provide correction guidance, saved as a complete message so session history remains loadable |
 | Code fails to parse | Identify the source position; at EOF, suggest a target-bound edit if appending one or two closing delimiters has exactly one validated correction |
 
 The first two behaviors default to on and can be disabled in settings. Syntax suggestions do not execute automatically or establish that the code matches the task's intent.

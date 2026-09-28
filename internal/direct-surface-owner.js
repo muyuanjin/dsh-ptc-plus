@@ -1,4 +1,6 @@
 /** Own PTC direct presentation, prompt projection, and stream normalization. */
+import { boundContextSummary, createUserMessage } from '@deepseek-ai/dsh-llm'
+import { PTC_MESSAGE_SOURCE_KIND } from './message-sources.js'
 import { canonicalizeToolCallStream } from './tool-call-canonicalizer.js'
 import { editRunCodeSchema } from './rejected-cell-editor.js'
 import { sessionRuntimeContexts } from './runtime-contexts.js'
@@ -430,12 +432,18 @@ export function createDirectSurfaceOwner({
       const outer = missingPath === 'description'
         && policy?.autoDescribeRunCode !== true
         && !(isRecord(exec.arguments) && typeof exec.arguments.description === 'string')
-      const context = {
-        name: 'tools:ptc-plus-run-code-arguments',
-        text: outer
-          ? 'The run_code outer transport arguments are invalid at JSON path $.description. Add a sibling string `description` field to run_code; a description nested inside a native-tool argument does not satisfy this outer requirement.'
-          : `A nested native-tool argument is missing required property "${missingPath}". Add a string description at that path in the native-tool arguments; the outer run_code description does not satisfy this nested requirement.`,
-      }
+      const text = outer
+        ? 'The run_code outer transport arguments are invalid at JSON path $.description. Add a sibling string `description` field to run_code; a description nested inside a native-tool argument does not satisfy this outer requirement.'
+        : `A nested native-tool argument is missing required property "${missingPath}". Add a string description at that path in the native-tool arguments; the outer run_code description does not satisfy this nested requirement.`
+      // additionalContexts enter the durable inbox as messages, not prompt sections.
+      const context = createUserMessage({
+        source: {
+          kind: PTC_MESSAGE_SOURCE_KIND,
+          form: 'notice',
+          summary: boundContextSummary('tools:ptc-plus-run-code-arguments'),
+        },
+        content: [{ type: 'text', text }],
+      })
       return {
         ...diagnosed,
         additionalContexts: [...diagnosed.additionalContexts ?? [], context],

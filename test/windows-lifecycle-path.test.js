@@ -520,7 +520,7 @@ if (tool === 'git') {
       ? ['0.0.0-test', '0.0.0-old']
       : JSON.parse(process.env.PTC_MOCK_VIEW_VERSIONS)))
   } else {
-    console.log(JSON.stringify('0.0.0-test'))
+    console.log(JSON.stringify(process.env.PTC_MOCK_VIEW_VERSION || '0.0.0-test'))
   }
 } else if (tool === 'npm' && args[0] === 'install') {
   if ([report.registry, report.scopeRegistry].some(value => value.includes('stale-'))) {
@@ -533,6 +533,11 @@ if (tool === 'git') {
     writeFileSync(path.join(directory, 'pnpm.cjs'),
       'process.argv.splice(2, 0, "pnpm"); require(' + JSON.stringify(__filename) + ')')
     process.exit(0)
+  }
+  const dshSpec = args.find(arg => arg.startsWith('@deepseek-ai/dsh@'))
+  if (dshSpec === '@deepseek-ai/dsh@' + process.env.PTC_MOCK_INSTALL_FAILURE_VERSION) {
+    console.error('npm error code ' + (process.env.PTC_MOCK_INSTALL_FAILURE_CODE || 'ETARGET'))
+    process.exit(1)
   }
   const directory = path.join(args[args.indexOf('--prefix') + 1], 'node_modules', '.bin')
   mkdirSync(directory, { recursive: true })
@@ -591,6 +596,9 @@ if (tool === 'git') {
           PTC_TEST_NPM_CLI: npmCliPath(),
           PTC_REGISTRY_REPORT: reportPath,
           PTC_MOCK_VIEW_FAILURE: '',
+          PTC_MOCK_VIEW_VERSION: '',
+          PTC_MOCK_INSTALL_FAILURE_VERSION: '',
+          PTC_MOCK_INSTALL_FAILURE_CODE: '',
           PTC_MOCK_PRUNE_FAILURE: '',
           ...additions,
         }),
@@ -615,6 +623,62 @@ for (const shellName of ['powershell.exe', 'pwsh.exe']) {
 
     assert.equal(result.status, 0, result.stderr || result.stdout || result.error?.message)
     assert.match(await readFile(path.join(fixture.cacheRoot, 'dsh-version.txt'), 'utf8'), /0\.1\.5-rc\.1/u)
+  })
+
+  test(`isolated launcher skips an incomplete newest DSH release under ${shellName}`, {
+    skip: shellPath === null,
+  }, async t => {
+    const fixture = await developmentRegistryFixture(t)
+    const result = fixture.run(shellPath, {
+      PTC_MOCK_VIEW_VERSIONS: JSON.stringify(['0.2.0-rc.1', '0.2.0-rc.2']),
+      PTC_MOCK_INSTALL_FAILURE_VERSION: '0.2.0-rc.2',
+    })
+
+    assert.equal(result.status, 0, result.stderr || result.stdout || result.error?.message)
+    assert.match(`${result.stdout}\n${result.stderr}`, /DSH 0\.2\.0-rc\.2 is not installable/u)
+    assert.match(await readFile(path.join(fixture.cacheRoot, 'dsh-version.txt'), 'utf8'), /0\.2\.0-rc\.1/u)
+    await assert.rejects(
+      readFile(path.join(fixture.cacheRoot, 'dsh', 'dsh-0.2.0-rc.2', '.install-complete')),
+      { code: 'ENOENT' },
+    )
+    const installs = (await fixture.reports()).filter(entry => entry.tool === 'npm' && entry.args[0] === 'install')
+    assert.deepEqual(installs.slice(0, 2).map(entry => entry.args.at(-1)), [
+      '@deepseek-ai/dsh@0.2.0-rc.2',
+      '@deepseek-ai/dsh@0.2.0-rc.1',
+    ])
+  })
+
+  test(`isolated launcher does not replace an explicit incomplete DSH version under ${shellName}`, {
+    skip: shellPath === null,
+  }, async t => {
+    const fixture = await developmentRegistryFixture(t)
+    const result = fixture.run(shellPath, {
+      DSH_DEV_VERSION: '0.2.0-rc.2',
+      PTC_MOCK_VIEW_VERSION: '0.2.0-rc.2',
+      PTC_MOCK_INSTALL_FAILURE_VERSION: '0.2.0-rc.2',
+    })
+
+    assert.notEqual(result.status, 0)
+    assert.doesNotMatch(`${result.stdout}\n${result.stderr}`, /trying the preceding release/u)
+    await assert.rejects(readFile(path.join(fixture.cacheRoot, 'dsh-version.txt')), { code: 'ENOENT' })
+    const installs = (await fixture.reports()).filter(entry => entry.tool === 'npm' && entry.args[0] === 'install')
+    assert.deepEqual(installs.map(entry => entry.args.at(-1)), ['@deepseek-ai/dsh@0.2.0-rc.2'])
+  })
+
+  test(`isolated launcher stops on a non-version installation failure under ${shellName}`, {
+    skip: shellPath === null,
+  }, async t => {
+    const fixture = await developmentRegistryFixture(t)
+    const result = fixture.run(shellPath, {
+      PTC_MOCK_VIEW_VERSIONS: JSON.stringify(['0.2.0-rc.1', '0.2.0-rc.2']),
+      PTC_MOCK_INSTALL_FAILURE_VERSION: '0.2.0-rc.2',
+      PTC_MOCK_INSTALL_FAILURE_CODE: 'ENOSPC',
+    })
+
+    assert.notEqual(result.status, 0)
+    assert.doesNotMatch(`${result.stdout}\n${result.stderr}`, /trying the preceding release/u)
+    const installs = (await fixture.reports()).filter(entry => entry.tool === 'npm' && entry.args[0] === 'install')
+    assert.deepEqual(installs.map(entry => entry.args.at(-1)), ['@deepseek-ai/dsh@0.2.0-rc.2'])
   })
 
   test(`isolated launcher reuses the cached newest DSH version offline under ${shellName}`, {

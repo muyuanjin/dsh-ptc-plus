@@ -42,6 +42,40 @@ function Invoke-ExternalCommand {
     }
 }
 
+function Invoke-NpmPackageInstall {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $NpmPath,
+
+        [Parameter(Mandatory = $true)]
+        [string[]] $ArgumentList
+    )
+
+    $output = [Text.StringBuilder]::new()
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        # Windows PowerShell 5.1 promotes native stderr to ErrorRecord objects.
+        # Capture those records without letting the script-wide Stop policy end
+        # the command before npm's exit code and diagnostic can be classified.
+        $ErrorActionPreference = 'Continue'
+        & $NpmPath @ArgumentList 2>&1 | ForEach-Object {
+            $line = [string] $_
+            [void] $output.AppendLine($line)
+            Write-Host $line
+        }
+        $exitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+    if ($exitCode -ne 0) {
+        $exception = [InvalidOperationException]::new(
+            "Command failed with exit code $exitCode`: $NpmPath $($ArgumentList -join ' ')"
+        )
+        $exception.Data['NpmOutput'] = $output.ToString()
+        throw $exception
+    }
+}
+
 function Get-Sha256 {
     param(
         [Parameter(Mandatory = $true)]
@@ -88,7 +122,7 @@ function Resolve-Directory {
     return [IO.Path]::GetFullPath((Join-Path (Get-Location) $ConfiguredPath))
 }
 
-function Get-NpmPublishedVersion {
+function Get-NpmPublishedVersions {
     param(
         [Parameter(Mandatory = $true)]
         [string] $NpmPath,
@@ -129,14 +163,27 @@ function Get-NpmPublishedVersion {
             # ConvertFrom-Json emits the published versions as one array object;
             # enumerate it explicitly so the selector sees each version.
             $published = @(($json | ConvertFrom-Json) | ForEach-Object { [string] $_ })
-            $version = Select-HighestVersion -Versions $published
+            $remaining = [System.Collections.Generic.List[string]]::new()
+            foreach ($publishedVersion in $published) {
+                if (-not [string]::IsNullOrWhiteSpace($publishedVersion) -and
+                    -not $remaining.Contains($publishedVersion)) {
+                    $remaining.Add($publishedVersion)
+                }
+            }
+            $versions = [System.Collections.Generic.List[string]]::new()
+            while ($remaining.Count -gt 0) {
+                $highest = Select-HighestVersion -Versions $remaining.ToArray()
+                $versions.Add($highest)
+                $remaining.Remove($highest) | Out-Null
+            }
+            return $versions.ToArray()
         } else {
             $version = [string] ($json | ConvertFrom-Json)
             if ([string]::IsNullOrWhiteSpace($version)) {
                 throw "npm view returned no version for $spec"
             }
+            return $version.Trim()
         }
-        return $version.Trim()
     } catch {
         if (Test-Path -LiteralPath $FallbackVersionFile -PathType Leaf) {
             $cachedLines = @(Get-Content -LiteralPath $FallbackVersionFile)
@@ -357,8 +404,8 @@ if ($UpstreamSource) {
     $pnpmShim = $sourceHost.Pnpm
 } else {
 $cachedVersionFile = Join-Path $cacheRoot 'dsh-version.txt'
-# An explicit spec keeps its dist-tag or version meaning; the default resolves
-# every published version so the launcher always installs the newest release.
+# An explicit spec keeps its dist-tag or version meaning; the default orders
+# every published version so the launcher can select the newest installable release.
 $packageSpec = if ([string]::IsNullOrWhiteSpace($versionSpec)) { '@deepseek-ai/dsh' } else { "@deepseek-ai/dsh@$versionSpec" }
 $legacyDefaultSpecs = if ([string]::IsNullOrWhiteSpace($versionSpec)) {
     # The previous launcher used the alpha dist-tag as its default cache key.
@@ -366,41 +413,72 @@ $legacyDefaultSpecs = if ([string]::IsNullOrWhiteSpace($versionSpec)) {
 } else {
     @()
 }
-$dshVersion = Get-NpmPublishedVersion -NpmPath $npmPath -PackageSpec '@deepseek-ai/dsh' -VersionSpec $versionSpec `
+$candidateVersions = @(Get-NpmPublishedVersions -NpmPath $npmPath -PackageSpec '@deepseek-ai/dsh' -VersionSpec $versionSpec `
     -FallbackVersionFile $cachedVersionFile -LegacySpecs $legacyDefaultSpecs
-Write-Host "Resolved @deepseek-ai/dsh $dshVersion."
-$dshInstallDirectory = Join-Path $dshRoot ("dsh-" + ($dshVersion -replace '[^A-Za-z0-9._-]', '_'))
-$dshCommandPath = Join-Path $dshInstallDirectory 'node_modules\.bin\dsh.cmd'
-$dshInstallMarker = Join-Path $dshInstallDirectory '.install-complete'
-
-if (-not (Test-Path -LiteralPath $dshCommandPath -PathType Leaf) -or
-    -not (Test-Path -LiteralPath $dshInstallMarker -PathType Leaf)) {
-    Write-Host "Installing @deepseek-ai/dsh@$dshVersion into $dshInstallDirectory ..."
-    New-Item -ItemType Directory -Path $dshInstallDirectory -Force | Out-Null
-    $localBinDirectory = Join-Path $dshInstallDirectory 'node_modules\.bin'
-    New-Item -ItemType Directory -Path $localBinDirectory -Force | Out-Null
-    $localNodePath = Join-Path $localBinDirectory 'node.exe'
-    if (-not (Test-Path -LiteralPath $localNodePath -PathType Leaf)) {
-        try {
-            New-Item -ItemType HardLink -Path $localNodePath -Target $nodePath -Force | Out-Null
-        } catch {
-            Copy-Item -LiteralPath $nodePath -Destination $localNodePath -Force
+)
+$dshVersion = $null
+$dshInstallDirectory = $null
+$dshCommandPath = $null
+$lastInstallError = $null
+foreach ($candidateVersion in $candidateVersions) {
+    $candidateDirectory = Join-Path $dshRoot ("dsh-" + ($candidateVersion -replace '[^A-Za-z0-9._-]', '_'))
+    $candidateCommand = Join-Path $candidateDirectory 'node_modules\.bin\dsh.cmd'
+    $candidateMarker = Join-Path $candidateDirectory '.install-complete'
+    try {
+        if (-not (Test-Path -LiteralPath $candidateCommand -PathType Leaf) -or
+            -not (Test-Path -LiteralPath $candidateMarker -PathType Leaf)) {
+            Write-Host "Installing @deepseek-ai/dsh@$candidateVersion into $candidateDirectory ..."
+            New-Item -ItemType Directory -Path $candidateDirectory -Force | Out-Null
+            if (Test-Path -LiteralPath $candidateMarker -PathType Leaf) {
+                Remove-Item -LiteralPath $candidateMarker -Force
+            }
+            $localBinDirectory = Join-Path $candidateDirectory 'node_modules\.bin'
+            New-Item -ItemType Directory -Path $localBinDirectory -Force | Out-Null
+            $localNodePath = Join-Path $localBinDirectory 'node.exe'
+            if (-not (Test-Path -LiteralPath $localNodePath -PathType Leaf)) {
+                try {
+                    New-Item -ItemType HardLink -Path $localNodePath -Target $nodePath -Force | Out-Null
+                } catch {
+                    Copy-Item -LiteralPath $nodePath -Destination $localNodePath -Force
+                }
+            }
+            Invoke-NpmPackageInstall $npmPath @(
+                'install',
+                '--prefix', $candidateDirectory,
+                '--no-package-lock',
+                '--no-fund',
+                '--no-audit',
+                "@deepseek-ai/dsh@$candidateVersion"
+            )
+            if (-not (Test-Path -LiteralPath $candidateCommand -PathType Leaf)) {
+                throw "The DSH CLI was not created at $candidateCommand"
+            }
+            Set-Content -LiteralPath $candidateMarker -Value $candidateVersion -Encoding ASCII
         }
+        $dshVersion = $candidateVersion
+        $dshInstallDirectory = $candidateDirectory
+        $dshCommandPath = $candidateCommand
+        break
+    } catch {
+        $npmOutput = [string] $_.Exception.Data['NpmOutput']
+        $isMissingPublishedTarget = $npmOutput -match '(?im)^npm\s+(?:error|ERR!)\s+code\s+ETARGET\s*$'
+        if (-not [string]::IsNullOrWhiteSpace($versionSpec) -or -not $isMissingPublishedTarget) {
+            throw
+        }
+        $lastInstallError = $_
+        if (Test-Path -LiteralPath $candidateMarker -PathType Leaf) {
+            Remove-Item -LiteralPath $candidateMarker -Force
+        }
+        Write-Warning "Published DSH $candidateVersion is not installable; trying the preceding release. $($_.Exception.Message)"
     }
-    Invoke-ExternalCommand $npmPath @(
-        'install',
-        '--prefix', $dshInstallDirectory,
-        '--no-package-lock',
-        '--no-fund',
-        '--no-audit',
-        "@deepseek-ai/dsh@$dshVersion"
-    )
-    Set-Content -LiteralPath $dshInstallMarker -Value $dshVersion -Encoding ASCII
 }
-if (-not (Test-Path -LiteralPath $dshCommandPath -PathType Leaf) -or
-    -not (Test-Path -LiteralPath $dshInstallMarker -PathType Leaf)) {
-    throw "The DSH CLI was not created at $dshCommandPath"
+if ([string]::IsNullOrWhiteSpace($dshVersion)) {
+    if ($null -ne $lastInstallError) {
+        throw "No published DSH version could be installed. Last failure: $($lastInstallError.Exception.Message)"
+    }
+    throw 'No published DSH version was available to install.'
 }
+Write-Host "Resolved installable @deepseek-ai/dsh $dshVersion."
 Set-Content -LiteralPath $cachedVersionFile -Value @($packageSpec, $dshVersion) -Encoding ASCII
 
 $pnpmShim = Join-Path $binRoot 'pnpm.cmd'

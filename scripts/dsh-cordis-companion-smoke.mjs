@@ -120,7 +120,8 @@ async function main() {
     name: 'packed-skill-filesystem',
     inject: ['skills'],
     apply(ctx, config) {
-      assert.deepEqual(config.customSkillDirs, [activeSkillDirectory])
+      assert.equal(config.bundledSkillDir, activeSkillDirectory)
+      assert.equal(config.watch, false)
       ctx.effect(() => ctx.skills.registerProvider(() => ({
         name: config.providerName,
         async list() {

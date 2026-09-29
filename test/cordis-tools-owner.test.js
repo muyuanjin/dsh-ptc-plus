@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict'
 import { Context } from '@deepseek-ai/cordis'
+import SkillRegistry from '@deepseek-ai/dsh-skill'
+import * as SkillFilesystem from '@deepseek-ai/dsh-skill-filesystem'
+import { createScope } from '@deepseek-ai/dsh-scope'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
@@ -46,7 +49,8 @@ const fakeSkillFilesystemPlugin = {
     assert.deepEqual(config, {
       providerName: 'ptc-plus-cordis',
       includeDefaultRoots: false,
-      customSkillDirs: [CORDIS_SKILL_DIRECTORY],
+      bundledSkillDir: CORDIS_SKILL_DIRECTORY,
+      watch: false,
     })
     const definitions = new Map([
       [CORDIS_SKILL_NAME, '# Cordis plugin development'],
@@ -703,6 +707,55 @@ test('Cordis owner activates against a pathless official preset', async () => {
   await owner.dispose()
 })
 
+test('Cordis owner reads the packaged companion as a bundled Host resource', async () => {
+  const root = new Context()
+  const skillRegistryFiber = root.plugin(SkillRegistry)
+  await skillRegistryFiber
+  const agent = { id: 'bundled-host-resource' }
+  const scope = createScope(root, agent)
+  const definitions = new Map([
+    ['run_code', { name: 'run_code' }],
+    ['skill', { name: 'skill' }],
+  ])
+  const services = new Map([
+    ['agentPresets', { resolve: async () => ({ id: 'cordis', path: CORDIS_PRESET_PATH }) }],
+    ['cordisInspect', inspectRegistry()],
+    ['dynamicCordisRunner', {}],
+    ['fs', {
+      async resolve() {
+        throw Object.assign(new Error('host package is outside the workspace filesystem'), {
+          code: 'FS_NOT_FOUND',
+        })
+      },
+    }],
+  ])
+  const inheritedGet = scope.ctx.get.bind(scope.ctx)
+  agent.ctx = scope.ctx.extend({
+    tools: {
+      get(name) { return definitions.get(name) },
+      register(definition) {
+        definitions.set(definition.name, definition)
+        return () => definitions.delete(definition.name)
+      },
+    },
+    systemPrompt: { section() { return () => {} } },
+    get(name) { return services.get(name) ?? inheritedGet(name) },
+  })
+  agent.session = { header: { cwd: process.cwd() } }
+  const host = ownerContext([agent])
+  const owner = createCordisToolsOwner(host.ctx, fakeCordisPlugin, SkillFilesystem)
+  await owner.ready
+  const skill = await agent.ctx.get('skills').get(CORDIS_SKILL_NAME, {
+    cwd: process.cwd(),
+    scope: agent,
+  })
+  assert.equal(skill?.provider, 'ptc-plus-cordis')
+  assert.match(skill.content, /# Persistent Harness plugins/)
+  await owner.dispose()
+  await scope.dispose()
+  await skillRegistryFiber.dispose()
+})
+
 test('Cordis owner activates through a host-anchored legacy package layout', async t => {
   const root = await mkdtemp(join(tmpdir(), 'ptc-plus-legacy-host-'))
   t.after(() => rm(root, { recursive: true, force: true }))
@@ -721,10 +774,11 @@ test('Cordis owner activates through a host-anchored legacy package layout', asy
   const legacySkillPlugin = {
     ...fakeSkillFilesystemPlugin,
     apply(ctx, config) {
-      assert.deepEqual(config.customSkillDirs, [skillDirectory])
+      assert.equal(config.bundledSkillDir, skillDirectory)
+      assert.equal(config.watch, false)
       return fakeSkillFilesystemPlugin.apply(ctx, {
         ...config,
-        customSkillDirs: [CORDIS_SKILL_DIRECTORY],
+        bundledSkillDir: CORDIS_SKILL_DIRECTORY,
       })
     },
   }

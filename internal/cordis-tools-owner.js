@@ -425,7 +425,8 @@ export function createCordisToolsOwner(
       const skillFiber = agent.ctx.plugin(scopedSkillPlugin, {
         providerName: CORDIS_SKILL_PROVIDER,
         includeDefaultRoots: false,
-        customSkillDirs: [skillDirectory],
+        bundledSkillDir: skillDirectory,
+        watch: false,
       })
       if (typeof skillFiber?.dispose !== 'function') {
         throw new Error('ptc-plus: DSH Context.plugin did not return a disposable Cordis Skill fiber')

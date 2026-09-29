@@ -367,7 +367,8 @@ function cordisAgent(disposeGate = undefined, options = {}) {
           assert.deepEqual(config, {
             providerName: 'ptc-plus-cordis',
             includeDefaultRoots: false,
-            customSkillDirs: [CORDIS_SKILL_DIRECTORY],
+            bundledSkillDir: CORDIS_SKILL_DIRECTORY,
+            watch: false,
           })
         }
         let disposed = false

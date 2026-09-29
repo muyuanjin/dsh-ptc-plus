@@ -54,6 +54,7 @@ Default PTC mode starts every execution in a fresh environment: variables from t
 | Change a small part of the code | A one-line change means resending the complete source | Submit a delta through `edit_run_code`, then execute the complete revised cell |
 | Use module syntax | Static `import` and `export` are invalid inside the function body | Write them directly in a cell; the plugin adapts the module syntax |
 | Omit a call summary | Missing `run_code.description` fails validation | Supply a display summary automatically so otherwise valid code proceeds |
+| Provider rejects malformed tool JSON | The whole turn ends with a provider error | Repair or preserve a buffered tool-call tail containing only tool framing and at most one usage event; route every other buffered tail through schema rejection so the model continues |
 | Recover a misplaced top-level tool call | Undeclared top-level calls are rejected in PTC mode | Convert the call to `run_code` when the live tool definitions uniquely identify the target and validate its arguments |
 | Locate a code error | Return the native error and stack | Map the error to the cell source; suggest an edit when a missing trailing delimiter has one verified correction |
 | Work with the current project | Relative Node paths depend on the host process directory | Resolve file paths, session module imports, and default child-process directories from the session project directory |

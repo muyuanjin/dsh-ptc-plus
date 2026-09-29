@@ -614,6 +614,17 @@ test('preserves canonical run_code results through the real DSH ToolRuntime pipe
     return result
   }
 
+  const malformedTransport = await ctx.tools.execute({
+    name: 'run_code',
+    callId: 'malformed-transport-rejection',
+    arguments: '{"dsh_ptc_plus_malformed_tool_json":',
+    signal,
+    agent,
+  })
+  assert.equal(malformedTransport.isError, true)
+  assert.match(malformedTransport.error.message, /must be an object/)
+  assert.equal(echoCalls, 0)
+
   const explicit = await executeRunCode('explicit-description', {
     code: 'const echoed = await tools.echo({ value: "ok" })\nreturn echoed',
     description: 'Echo through the persistent REPL',

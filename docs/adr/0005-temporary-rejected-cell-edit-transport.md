@@ -68,8 +68,10 @@ session-log projection captures the eligible target at the edit call event and a
 source only when its target sequence matches that snapshot and its journal is valid and non-noop,
 so live and recovered eligibility derive from the same persisted relation.
 
-The caller sends exactly one of `edits` or `regex_edits`, plus an optional non-negative
-`expected_target_call_seq` precondition. The precondition must equal the call sequence of the target
+The public schema is one closed object with optional `edits`, `regex_edits`, and
+`expected_target_call_seq` properties, avoiding duplicated object alternatives in the provider
+prompt. Runtime validation still requires exactly one of `edits` or `regex_edits`, plus an optional
+non-negative `expected_target_call_seq` precondition. The precondition must equal the call sequence of the target
 captured for the persisted edit event; a mismatch returns an unedited result before derived
 dispatch. Ordinary model-authored edits omit it and retain latest-target selection. Exact edits
 contain at most 16 items; each
@@ -95,10 +97,42 @@ tool/result:          { edited: true, value?, error?, logs }
 The complete derived source, its journal, and its target call sequence are stored only in private tool-result metadata, including
 when the derived cell fails after entering the runtime. Cold
 recovery folds that explicitly marked derived run into the durable REPL history. The source is not
-copied into the model-visible edit result, and assistant stream chunks for the two declared
+copied into the model-visible edit result. Valid assistant stream chunks for the two declared
 transports pass through unchanged.
 Consequently the UI and later model requests do not attribute a generated `run_code` call to the
 model.
+
+The stream owner handles one bounded provider protocol failure before DSH assembles the assistant
+message. It buffers tool-call material until the terminal event. If the response reports the exact
+invalid-tool-JSON `MALFORMED_RESPONSE` as a terminal chunk or stream exception, it changes that
+terminal reason to `tool-calls`.
+DSH's existing Agent Loop
+then preserves an unparseable argument as a string and routes it through ordinary tool validation,
+execution, and result recording, after which the model receives another step. A malformed tool argument therefore
+cannot become a turn-ending provider failure merely because this adapter parses it earlier than the
+Agent Loop.
+
+The stream owner preserves calls only when the buffered body consists entirely of
+tool-call-specific framing plus at most one `usage` event. When that trusted body contains exactly
+one complete, internally consistent declared `run_code` or `edit_run_code` block, the stream owner
+first considers one correction: delete exactly one final `}`. The block index, call ID, name,
+concatenated deltas, and final arguments must agree, and the candidate must parse as an object
+accepted by that request's live direct-tool schema. A successful correction changes the final delta
+and final block arguments before the same `tool-calls` settlement. Without that proof, trusted
+internally consistent complete blocks retain their original identity and argument bytes for the
+ordinary tool-error path. The owner re-emits those calls with canonical
+`block-start`, full-argument delta, and `block-end` framing so provider variants tolerated by the
+assembler also satisfy DSH's stream invariant. A final `block-end` is canonical even when the
+provider emitted no deltas; when deltas exist, their supplied identity fields and accumulated
+arguments must agree with it. An already visible open text or reasoning block is closed from its
+accumulated content before the synthetic call. If any tool block is incomplete or inconsistent, or no tool block was
+emitted, more than one usage event appears, or any other event occurs in the buffered body, the owner
+removes unsafe block and unknown events, retains at most the first protocol-valid `usage`, and emits
+one deterministic `run_code` call with an argument string that cannot parse as a JSON object. That
+call can only fail DSH's ordinary schema
+validation, so no untrusted partial call executes and the model still receives another step. Valid streams and every
+other provider failure pass through unchanged. The rule does not insert missing delimiters, search
+arbitrary edits, reinterpret native calls, or retry effects.
 
 No edit-specific runtime context is emitted. The truthful call/result pair already carries the
 operation and outcome; changing an aggregate runtime-context snapshot merely to restate that fact
@@ -140,7 +174,10 @@ claim that the earlier execution was undone or idempotent.
 out-of-surface call are different protocol facts. Rewriting a real `edit_run_code` destroys a valid
 identity; normalizing a live-schema-proven native miscall to the declared `run_code` transport gives
 an otherwise invalid call its executable representation. Native-call canonicalization therefore
-remains available while the two declared transports pass through unchanged.
+remains available. The bounded malformed-input correction likewise retains a declared call's identity.
+Fallback settlement preserves arguments for trusted complete internally consistent blocks. Unsafe,
+partial, or mixed buffered material is replaced by a validation-rejected `run_code` call only after
+the provider itself reports the exact terminal protocol failure.
 
 ## Consequences
 

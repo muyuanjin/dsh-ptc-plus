@@ -252,29 +252,15 @@ function assemble(source, replacements) {
   return changed ? { code: chunks.join('') } : { error: 'edits must change at least one matched fragment' }
 }
 
-function editRunCodeParameterBranch(operation, operationSchema) {
-  return {
-    type: 'object',
-    additionalProperties: false,
-    properties: {
-      [operation]: operationSchema,
-      [EXPECTED_TARGET_CALL_SEQ]: {
-        type: 'integer', minimum: 0,
-        description: 'Optional target precondition copied from a validated diagnostic. The edit is rejected if the captured cell has another call sequence.',
-      },
-    },
-    required: [operation],
-  }
-}
-
 export function editRunCodeSchema() {
   return {
     name: 'edit_run_code',
     description: 'Edit the most recent eligible cell captured at dispatch and run the complete corrected cell. A successful edit becomes the next target. This reruns the entire cell, including prior effects; use it after pre-execution rejection or when repeating those effects is safe under the called API\'s retry rules. Otherwise continue in a new run_code cell using retained values. A diagnostic may supply a localized correction; use it when it matches your intent and preserve its expected_target_call_seq. Send exactly one edits or regex_edits array: edits replaces unique literal fragments; regex_edits replaces a counted set of pattern matches. All ranges must be non-overlapping in the original cell. Regex replacements use JavaScript $1/$<name> captures, not \\1.',
     parameters: {
       type: 'object',
-      oneOf: [
-        editRunCodeParameterBranch('edits', {
+      additionalProperties: false,
+      properties: {
+        edits: {
           type: 'array', minItems: 1, maxItems: EDIT_LIMITS.exactEdits,
           description: 'Atomic exact replacements, all resolved against the original target cell.',
           items: {
@@ -285,8 +271,8 @@ export function editRunCodeSchema() {
             },
             required: ['old_string', 'new_string'],
           },
-        }),
-        editRunCodeParameterBranch('regex_edits', {
+        },
+        regex_edits: {
           type: 'array', minItems: 1, maxItems: EDIT_LIMITS.regexEdits,
           description: 'Atomic regular-expression replacements, all matched against the original target cell with JavaScript pattern and replacement semantics; each replacement is a JavaScript template (see replacement).',
           items: {
@@ -299,8 +285,12 @@ export function editRunCodeSchema() {
             },
             required: ['pattern', 'flags', 'replacement', 'expected_matches'],
           },
-        }),
-      ],
+        },
+        [EXPECTED_TARGET_CALL_SEQ]: {
+          type: 'integer', minimum: 0,
+          description: 'Optional target precondition copied from a validated diagnostic. The edit is rejected if the captured cell has another call sequence.',
+        },
+      },
     },
   }
 }

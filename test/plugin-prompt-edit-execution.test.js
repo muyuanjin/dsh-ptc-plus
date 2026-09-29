@@ -180,6 +180,141 @@ return longOutput.length`
   })
 })
 
+test('dispatches and persists an edit recovered from the archived malformed stream shape', async (t) => {
+  const events = [{ type: 'turn/start', seq: 0, time: 0, data: {} }]
+  const session = orderedSurfaceSession('malformed-stream-edit', events)
+  const state = fixture({ tipsEnabled: false })
+  t.after(() => state.dispose())
+  const agent = ptcAgent(session.id, session)
+  const signal = new AbortController().signal
+  const projected = await state.assemble(
+    { sections: [], contexts: [], variables: {}, tools: [state.runCodeDefinition] },
+    { agent, scope: agent, signal },
+  )
+
+  const rejectedCode = 'const recoveredArray = [1, 2, 3'
+  const rejectedCallSeq = appendRunCall(events, 'malformed-stream-target', rejectedCode)
+  const rejected = await state.runDurable(
+    session.id,
+    rejectedCode,
+    {},
+    { session, callId: 'malformed-stream-target', recordSession: false },
+  )
+  assert.equal(rejected.isError, true)
+  appendRunResult(events, 'malformed-stream-target', rejectedCallSeq, rejected)
+
+  const raw = `{"edits":[{"old_string":"3","new_string":"3]"}],"expected_target_call_seq":${rejectedCallSeq}}}`
+  const callId = 'malformed-stream-edit'
+  const source = [
+    { type: 'block-start', index: 0, blockType: 'tool-call' },
+    {
+      type: 'tool-call-delta', index: 0, id: callId, name: 'edit_run_code',
+      argumentsDelta: '',
+    },
+    { type: 'tool-call-delta', index: 0, id: callId, argumentsDelta: raw },
+    {
+      type: 'block-end', index: 0,
+      block: { type: 'tool-call', id: callId, name: 'edit_run_code', arguments: raw },
+    },
+    {
+      type: 'finish',
+      reason: {
+        kind: 'error',
+        failure: {
+          message: 'DeepSeek Messages stream: tool input is invalid JSON',
+          code: 'MALFORMED_RESPONSE',
+        },
+      },
+    },
+  ]
+  const streamed = await state.stream({
+    sessionId: session.id,
+    signal,
+    tools: projected.tools,
+  }, source)
+  const repairedBlock = streamed.find(chunk => chunk.type === 'block-end').block
+  assert.equal(repairedBlock.id, callId)
+  assert.equal(repairedBlock.name, 'edit_run_code')
+  assert.equal(repairedBlock.arguments, raw.slice(0, -1))
+  assert.deepEqual(streamed.at(-1), { type: 'finish', reason: { kind: 'tool-calls' } })
+
+  const editArgs = JSON.parse(repairedBlock.arguments)
+  const editCallSeq = appendEditCall(events, callId, editArgs)
+  const edited = await state.ctx.tools.execute({
+    callId,
+    name: 'edit_run_code',
+    arguments: editArgs,
+    agent,
+    signal,
+  })
+  assert.equal(edited.isError, false)
+  assert.equal(edited.value.edited, true)
+  appendEditResult(events, callId, editCallSeq, edited.meta)
+  assert.equal(projectSessionLog({ session }).latestRun.source, `${rejectedCode}]`)
+  assert.deepEqual(await state.run(session.id, 'return recoveredArray', {}, { session }), {
+    logs: [], value: [1, 2, 3],
+  })
+
+  const invalidCallId = 'unrepairable-stream-edit'
+  const invalidRaw = '{"edits":[}'
+  const invalidSource = source.map(chunk => {
+    if (chunk.type === 'tool-call-delta') {
+      return {
+        ...chunk,
+        id: invalidCallId,
+        argumentsDelta: chunk.name === 'edit_run_code' ? '' : invalidRaw,
+      }
+    }
+    if (chunk.type === 'block-end') {
+      return {
+        ...chunk,
+        block: { ...chunk.block, id: invalidCallId, arguments: invalidRaw },
+      }
+    }
+    return chunk
+  })
+  const settled = await state.stream({
+    sessionId: session.id,
+    signal,
+    tools: projected.tools,
+  }, invalidSource)
+  assert.equal(settled.find(chunk => chunk.type === 'block-end').block.arguments, invalidRaw)
+  assert.deepEqual(settled.at(-1), { type: 'finish', reason: { kind: 'tool-calls' } })
+  events.push({
+    type: 'assistant/message',
+    seq: events.length,
+    data: {
+      message: {
+        content: [{
+          type: 'tool-call', id: invalidCallId, name: 'edit_run_code', arguments: invalidRaw,
+        }],
+      },
+    },
+  })
+  const invalidCallSeq = events.length
+  events.push({
+    type: 'tool/call',
+    seq: invalidCallSeq,
+    data: {
+      callId: invalidCallId, name: 'edit_run_code', arguments: invalidRaw,
+    },
+  })
+  const ordinaryToolResult = await state.ctx.tools.execute({
+    callId: invalidCallId,
+    name: 'edit_run_code',
+    arguments: invalidRaw,
+    agent,
+    signal,
+  })
+  assert.equal(ordinaryToolResult.isError, false)
+  assert.equal(ordinaryToolResult.value.edited, false)
+  assert.match(ordinaryToolResult.value.reason, /expects an object/)
+  appendEditResult(events, invalidCallId, invalidCallSeq)
+  assert.deepEqual(await state.run(session.id, 'return recoveredArray.length', {}, { session }), {
+    logs: [], value: 3,
+  })
+})
+
 for (const { label, rejectedCode, suffix, expected } of [
   { label: 'one closing token', rejectedCode: '{\n  const closureValue = 42\n  return closureValue;', suffix: '}', expected: 42 },
   { label: 'two closing tokens', rejectedCode: "const words = ['one', 'two'];\nreturn words.map(w => { return w.toUpperCase()", suffix: '})', expected: ['ONE', 'TWO'] },

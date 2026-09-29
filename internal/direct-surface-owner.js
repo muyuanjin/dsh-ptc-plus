@@ -1,5 +1,6 @@
 /** Own PTC direct presentation, prompt projection, and stream normalization. */
 import { boundContextSummary, createUserMessage } from '@deepseek-ai/dsh-llm'
+import { validateJsonSchemaValue } from '@deepseek-ai/dsh-tools'
 import { PTC_MESSAGE_SOURCE_KIND } from './message-sources.js'
 import { canonicalizeToolCallStream } from './tool-call-canonicalizer.js'
 import { editRunCodeSchema } from './rejected-cell-editor.js'
@@ -21,6 +22,12 @@ const RUN_CODE_CODE_DESCRIPTION = 'Code for the next REPL cell, parsed as the bo
 const RUN_CODE_DESCRIPTION_DESCRIPTION = 'Short active-voice summary of what this cell does, 5-10 words (shown in the UI).'
 const CODE_TRANSPORT_INSTRUCTION = '`run_code` and `edit_run_code` are the only tools callable directly. Call every native tool declared by the SDK from inside a program.'
 const PTC_COLLAPSE_SECTION_NAMES = Object.freeze(['tools:ptc-only', 'tools:code-only'])
+const INVALID_TOOL_JSON_FAILURE = Object.freeze({
+  code: 'MALFORMED_RESPONSE',
+  message: 'DeepSeek Messages stream: tool input is invalid JSON',
+})
+const MALFORMED_TOOL_REJECTION_ID = 'dsh-ptc-plus-malformed-tool-json'
+const MALFORMED_TOOL_REJECTION_ARGUMENTS = '{"dsh_ptc_plus_malformed_tool_json":'
 
 function adaptRunCodeSchema(tool) {
   const parameters = tool.parameters
@@ -139,6 +146,314 @@ async function* bindCallPolicies(source, policy, calls) {
     }
     yield chunk
   }
+}
+
+function invalidToolJsonFinish(chunk) {
+  const failure = chunk?.reason?.failure
+  return chunk?.type === 'finish'
+    && chunk.reason.kind === 'error'
+    && failure?.code === INVALID_TOOL_JSON_FAILURE.code
+    && failure?.message === INVALID_TOOL_JSON_FAILURE.message
+}
+
+function invalidToolJsonError(error) {
+  const failure = error?.failure ?? error
+  return failure?.code === INVALID_TOOL_JSON_FAILURE.code
+    && failure?.message === INVALID_TOOL_JSON_FAILURE.message
+}
+
+function directToolSchemas(tools) {
+  const schemas = new Map()
+  if (!Array.isArray(tools)) return schemas
+  for (const tool of tools) {
+    if (tool?.name !== RUN_CODE && tool?.name !== EDIT_RUN_CODE) continue
+    if (schemas.has(tool.name) || !isRecord(tool.parameters)) return new Map()
+    schemas.set(tool.name, tool.parameters)
+  }
+  return schemas
+}
+
+function repairableDirectCall(chunks, tools) {
+  const finish = chunks.at(-1)
+  if (!invalidToolJsonFinish(finish)) return undefined
+  const completed = completedToolBlocks(chunks)
+  if (completed?.length !== 1) return undefined
+  const body = chunks.slice(0, -1)
+  const starts = body.filter(chunk => chunk?.type === 'block-start' && chunk.blockType === 'tool-call')
+  const deltas = body.filter(chunk => chunk?.type === 'tool-call-delta')
+  const ends = body.filter(chunk => chunk?.type === 'block-end' && chunk.block?.type === 'tool-call')
+  const usages = body.filter(chunk => chunk?.type === 'usage')
+  if (starts.length !== 1 || deltas.length === 0 || ends.length !== 1
+    || usages.length > 1
+    || body.some(chunk => chunk?.type !== 'usage' && !toolStreamChunk(chunk))) {
+    return undefined
+  }
+  const index = starts[0].index
+  const end = ends[0]
+  const id = end.block.id
+  const name = end.block.name
+  if (!Number.isSafeInteger(index) || index < 0 || typeof id !== 'string' || id.length === 0
+    || (name !== RUN_CODE && name !== EDIT_RUN_CODE)
+    || end.index !== index
+    || typeof end.block.arguments !== 'string'
+    || deltas.some(chunk => chunk.index !== index || chunk.id !== id
+      || (chunk.name !== undefined && chunk.name !== name)
+      || typeof chunk.argumentsDelta !== 'string')) {
+    return undefined
+  }
+  const raw = deltas.map(chunk => chunk.argumentsDelta).join('')
+  if (raw !== end.block.arguments || !raw.endsWith('}')) return undefined
+  const candidate = raw.slice(0, -1)
+  let value
+  try {
+    value = JSON.parse(candidate)
+  } catch {
+    return undefined
+  }
+  const schema = directToolSchemas(tools).get(name)
+  if (!isRecord(value) || schema === undefined
+    || validateJsonSchemaValue(schema, value).length !== 0) return undefined
+  return { index, candidate }
+}
+
+function canonicalToolBlock(index, block) {
+  return [
+    { type: 'block-start', index, blockType: 'tool-call' },
+    {
+      type: 'tool-call-delta', index, id: block.id, name: block.name,
+      argumentsDelta: block.arguments,
+    },
+    { type: 'block-end', index, block },
+  ]
+}
+
+function repairedDirectChunks(chunks, repair, usageAlreadyEmitted) {
+  const end = chunks.find(chunk => chunk?.type === 'block-end'
+    && chunk.index === repair.index && chunk.block?.type === 'tool-call')
+  const block = { ...end.block, arguments: repair.candidate }
+  const usage = usageAlreadyEmitted ? undefined : firstUsageChunk(chunks)
+  return [
+    ...canonicalToolBlock(repair.index, block),
+    ...usage === undefined ? [] : [usage],
+    { type: 'finish', reason: { kind: 'tool-calls' } },
+  ]
+}
+
+function completedToolBlocks(chunks) {
+  const body = chunks.slice(0, -1)
+  if (body.filter(chunk => chunk?.type === 'usage').length > 1
+    || body.some(chunk => chunk?.type !== 'usage' && !toolStreamChunk(chunk))) {
+    return undefined
+  }
+  const calls = new Map()
+  for (const chunk of chunks) {
+    if (chunk?.type === 'block-start' && chunk.blockType === 'tool-call') {
+      if (!Number.isSafeInteger(chunk.index) || chunk.index < 0) return undefined
+      const call = calls.get(chunk.index)
+      if (call?.started === true || call?.block !== undefined) return undefined
+      if (call === undefined) calls.set(chunk.index, {
+        arguments: '', hasDelta: false, started: true,
+      })
+      else call.started = true
+    } else if (chunk?.type === 'tool-call-delta') {
+      if (!Number.isSafeInteger(chunk.index) || chunk.index < 0) return undefined
+      let call = calls.get(chunk.index)
+      if (call === undefined) {
+        call = { arguments: '', hasDelta: false, started: false }
+        calls.set(chunk.index, call)
+      }
+      if (call.block !== undefined
+        || typeof chunk.id !== 'string' || chunk.id.length === 0
+        || (call.id !== undefined && call.id !== chunk.id)
+        || (chunk.name !== undefined && (typeof chunk.name !== 'string' || chunk.name.length === 0
+          || (call.name !== undefined && call.name !== chunk.name)))
+        || typeof chunk.argumentsDelta !== 'string') return undefined
+      call.id ??= chunk.id
+      if (chunk.name !== undefined) call.name ??= chunk.name
+      call.hasDelta = true
+      call.arguments += chunk.argumentsDelta
+    } else if (chunk?.type === 'block-end' && chunk.block?.type === 'tool-call') {
+      if (!Number.isSafeInteger(chunk.index) || chunk.index < 0) return undefined
+      let call = calls.get(chunk.index)
+      if (call === undefined) {
+        call = { arguments: '', hasDelta: false, started: false }
+        calls.set(chunk.index, call)
+      }
+      if (call.block !== undefined
+        || typeof chunk.block.id !== 'string' || chunk.block.id.length === 0
+        || typeof chunk.block.name !== 'string' || chunk.block.name.length === 0
+        || typeof chunk.block.arguments !== 'string'
+        || (call.id !== undefined && call.id !== chunk.block.id)
+        || (call.name !== undefined && call.name !== chunk.block.name)
+        || (call.hasDelta && call.arguments !== chunk.block.arguments)) return undefined
+      call.block = chunk.block
+    }
+  }
+  if (calls.size === 0 || [...calls.values()].some(call => call.block === undefined)) {
+    return undefined
+  }
+  const completed = [...calls].map(([index, call]) => ({ index, block: call.block }))
+  if (new Set(completed.map(call => call.block.id)).size !== completed.length) return undefined
+  return completed
+}
+
+function firstUsageChunk(chunks) {
+  return chunks.find(chunk => chunk?.type === 'usage')
+}
+
+function settleMalformedToolCalls(chunks, priorIndexes, usageAlreadyEmitted) {
+  if (!invalidToolJsonFinish(chunks.at(-1))) return undefined
+  const calls = completedToolBlocks(chunks)
+  if (calls === undefined || calls.some(call => priorIndexes.has(call.index))) return undefined
+  const usage = usageAlreadyEmitted ? undefined : firstUsageChunk(chunks)
+  return [
+    ...calls.flatMap(call => canonicalToolBlock(call.index, call.block)),
+    ...usage === undefined ? [] : [usage],
+    { type: 'finish', reason: { kind: 'tool-calls' } },
+  ]
+}
+
+function toolStreamChunk(chunk) {
+  return chunk?.type === 'tool-call-delta'
+    || (chunk?.type === 'block-start' && chunk.blockType === 'tool-call')
+    || (chunk?.type === 'block-end' && chunk.block?.type === 'tool-call')
+}
+
+function unusedString(base, used) {
+  let value = base
+  for (let suffix = 2; used.has(value); suffix++) value = `${base}-${suffix}`
+  return value
+}
+
+function visibleBlockClosures(openBlocks, chunks) {
+  const closing = new Map([...openBlocks].map(([index, block]) => [index, { ...block }]))
+  for (const chunk of chunks) {
+    const block = closing.get(chunk?.index)
+    if (block === undefined) continue
+    if (chunk.type === `${block.type}-delta` && typeof chunk.text === 'string') {
+      block.text += chunk.text
+    } else if (chunk.type === 'block-end' && chunk.block?.type === block.type) {
+      block.final = chunk.block
+    }
+  }
+  return [...closing].map(([index, block]) => ({
+    type: 'block-end',
+    index,
+    block: block.final ?? { type: block.type, text: block.text },
+  }))
+}
+
+function rejectedMalformedToolStream(
+  chunks,
+  priorIndexes = new Set(),
+  openBlocks = new Map(),
+  usageAlreadyEmitted = false,
+) {
+  const usedIndexes = new Set(priorIndexes)
+  const usedIds = new Set()
+  for (const chunk of chunks) {
+    if (Number.isSafeInteger(chunk?.index) && chunk.index >= 0) usedIndexes.add(chunk.index)
+    if (typeof chunk?.id === 'string') usedIds.add(chunk.id)
+    if (typeof chunk?.block?.id === 'string') usedIds.add(chunk.block.id)
+  }
+  let index = 0
+  while (usedIndexes.has(index)) index++
+  const id = unusedString(MALFORMED_TOOL_REJECTION_ID, usedIds)
+  const usage = usageAlreadyEmitted ? undefined : firstUsageChunk(chunks)
+  return [
+    ...visibleBlockClosures(openBlocks, chunks),
+    { type: 'block-start', index, blockType: 'tool-call' },
+    {
+      type: 'tool-call-delta', index, id, name: RUN_CODE,
+      argumentsDelta: MALFORMED_TOOL_REJECTION_ARGUMENTS,
+    },
+    {
+      type: 'block-end', index,
+      block: {
+        type: 'tool-call', id, name: RUN_CODE,
+        arguments: MALFORMED_TOOL_REJECTION_ARGUMENTS,
+      },
+    },
+    ...usage === undefined ? [] : [usage],
+    { type: 'finish', reason: { kind: 'tool-calls' } },
+  ]
+}
+
+function recoveredMalformedChunks(chunks, tools, priorIndexes, openBlocks, usageAlreadyEmitted) {
+  if (usageAlreadyEmitted && firstUsageChunk(chunks) !== undefined) {
+    return rejectedMalformedToolStream(chunks, priorIndexes, openBlocks, true)
+  }
+  const repair = repairableDirectCall(chunks, tools)
+  const settled = repair !== undefined && !priorIndexes.has(repair.index)
+    ? repairedDirectChunks(chunks, repair, usageAlreadyEmitted)
+    : settleMalformedToolCalls(chunks, priorIndexes, usageAlreadyEmitted)
+  return settled === undefined
+    ? rejectedMalformedToolStream(chunks, priorIndexes, openBlocks, usageAlreadyEmitted)
+    : [...visibleBlockClosures(openBlocks, chunks), ...settled]
+}
+
+function observeVisibleBlock(openBlocks, chunk) {
+  if (chunk?.type === 'block-start'
+    && (chunk.blockType === 'text' || chunk.blockType === 'reasoning')) {
+    openBlocks.set(chunk.index, { type: chunk.blockType, text: '' })
+  } else if (chunk?.type === 'text-delta' || chunk?.type === 'reasoning-delta') {
+    const block = openBlocks.get(chunk.index)
+    const type = chunk.type === 'text-delta' ? 'text' : 'reasoning'
+    if (block?.type === type) block.text += chunk.text
+  } else if (chunk?.type === 'block-end') {
+    openBlocks.delete(chunk.index)
+  }
+}
+
+async function* recoverMalformedToolCallStream(source, tools) {
+  let pending = []
+  const priorIndexes = new Set()
+  const openBlocks = new Map()
+  let usageSeen = false
+  try {
+    for await (const chunk of source) {
+      if (pending.length === 0) {
+        if (toolStreamChunk(chunk)) pending.push(chunk)
+        else if (chunk?.type === 'usage' && usageSeen) pending.push(chunk)
+        else if (invalidToolJsonFinish(chunk)) {
+          yield* rejectedMalformedToolStream([chunk], priorIndexes, openBlocks, usageSeen)
+          openBlocks.clear()
+        } else {
+          if (Number.isSafeInteger(chunk?.index) && chunk.index >= 0) priorIndexes.add(chunk.index)
+          observeVisibleBlock(openBlocks, chunk)
+          if (chunk?.type === 'usage') usageSeen = true
+          yield chunk
+        }
+        continue
+      }
+      pending.push(chunk)
+      if (chunk?.type !== 'finish') continue
+      const output = invalidToolJsonFinish(chunk)
+        ? recoveredMalformedChunks(pending, tools, priorIndexes, openBlocks, usageSeen)
+        : pending
+      for (const outputChunk of output) {
+        if (Number.isSafeInteger(outputChunk?.index) && outputChunk.index >= 0) {
+          priorIndexes.add(outputChunk.index)
+        }
+        if (outputChunk?.type === 'usage') usageSeen = true
+        yield outputChunk
+      }
+      if (invalidToolJsonFinish(chunk)) openBlocks.clear()
+      pending = []
+    }
+  } catch (error) {
+    if (invalidToolJsonError(error)) {
+      yield* recoveredMalformedChunks([
+        ...pending,
+        { type: 'finish', reason: { kind: 'error', failure: INVALID_TOOL_JSON_FAILURE } },
+      ], tools, priorIndexes, openBlocks, usageSeen)
+      return
+    } else {
+      yield* pending
+      throw error
+    }
+  }
+  yield* pending
 }
 
 export function createDirectSurfaceOwner({
@@ -385,7 +700,8 @@ export function createDirectSurfaceOwner({
           editToolName: EDIT_RUN_CODE,
         })
         : next()
-      return bindCallPolicies(source, policy, policy.owner.calls)
+      const recovered = recoverMalformedToolCallStream(source, options.tools)
+      return bindCallPolicies(recovered, policy, policy.owner.calls)
     },
     executionRejection(exec) {
       if (exec.name === EDIT_RUN_CODE && exec.parent !== undefined) {

@@ -18,25 +18,17 @@ test('publishes the closed edit tool schema', () => {
   const schema = editRunCodeSchema()
   assert.equal(schema.name, 'edit_run_code')
   assert.equal(schema.parameters.type, 'object')
-  assert.deepEqual(Object.keys(schema.parameters).sort(), ['oneOf', 'type'])
-  assert.equal(schema.parameters.oneOf.length, 2)
-  const [exactBranch, regexBranch] = schema.parameters.oneOf
-  for (const [branch, operation] of [
-    [exactBranch, 'edits'],
-    [regexBranch, 'regex_edits'],
-  ]) {
-    assert.equal(branch.type, 'object')
-    assert.equal(branch.additionalProperties, false)
-    assert.deepEqual(Object.keys(branch.properties), [operation, EXPECTED_TARGET_CALL_SEQ])
-    assert.deepEqual(branch.required, [operation])
-    assert.deepEqual(branch.properties[EXPECTED_TARGET_CALL_SEQ], {
-      type: 'integer',
-      minimum: 0,
-      description: 'Optional target precondition copied from a validated diagnostic. The edit is rejected if the captured cell has another call sequence.',
-    })
-  }
-  assert.equal(exactBranch.properties.edits.maxItems, EDIT_LIMITS.exactEdits)
-  assert.equal(regexBranch.properties.regex_edits.maxItems, EDIT_LIMITS.regexEdits)
+  assert.equal(schema.parameters.additionalProperties, false)
+  assert.deepEqual(Object.keys(schema.parameters.properties), [
+    'edits', 'regex_edits', EXPECTED_TARGET_CALL_SEQ,
+  ])
+  assert.deepEqual(schema.parameters.properties[EXPECTED_TARGET_CALL_SEQ], {
+    type: 'integer',
+    minimum: 0,
+    description: 'Optional target precondition copied from a validated diagnostic. The edit is rejected if the captured cell has another call sequence.',
+  })
+  assert.equal(schema.parameters.properties.edits.maxItems, EDIT_LIMITS.exactEdits)
+  assert.equal(schema.parameters.properties.regex_edits.maxItems, EDIT_LIMITS.regexEdits)
   assert.match(schema.description, /most recent eligible cell captured at dispatch/)
   assert.match(schema.description, /successful edit becomes the next target/)
   assert.match(schema.description, /run the complete corrected cell/)

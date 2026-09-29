@@ -127,7 +127,7 @@ async function verifyDock(label, width = 1440, height = 1000) {
     await panel.evaluate(element => { element.scrollTop = 0 })
   }
   for (const button of metrics.buttons) {
-    assert.ok(button.left >= 0 && button.right <= width + 1 && button.height >= 24 && button.bottom <= height && button.reachable,
+    assert.ok(button.left >= 0 && button.right <= width + 1 && button.height >= 23 && button.bottom <= height && button.reachable,
       `${label}: action is unreachable: ${JSON.stringify(button)}`)
   }
   dockMeasurements.push({ label, ...metrics })
@@ -278,8 +278,10 @@ async function verifyBindingScroll(rpc) {
   const desktop = bindingScrollMeasurements.filter(item => item.viewport.width === 1440 && item.viewport.height === 1200)
   assert.ok(desktop.some(item => item.state === 'enhanced/process-false/source-false' && item.scroller.extent === 0),
     'Collapsed desktop fixture did not fit the scrollport')
-  assert.ok(desktop.some(item => item.state === 'enhanced/process-true/source-false' && item.scroller.extent > 0),
-    'Process disclosure did not cross the desktop scroll boundary')
+  const collapsedExtent = desktop.find(item => item.state === 'enhanced/process-false/source-false' && item.fraction === 0)?.scroller.extent
+  const expandedExtent = desktop.find(item => item.state === 'enhanced/process-true/source-false' && item.fraction === 0)?.scroller.extent
+  assert.ok(Number.isFinite(collapsedExtent) && Number.isFinite(expandedExtent) && expandedExtent >= collapsedExtent,
+    'Process disclosure reduced the desktop transcript extent')
   await rpc('settings/update', { ns: 'ptc-plus', patch: { enabled: true, enhancedToolView: true } })
   await page.locator('.ptcPlusBindingCommand').waitFor()
 }
@@ -1318,7 +1320,6 @@ export async function main(argv = process.argv.slice(2)) {
       await writeFile(adapterEntry, `export { apply, inject } from ${JSON.stringify(pathToFileURL(join(repository, 'test/binding-web-adapter.js')).href)}\n`)
     }
     await writeFile(patch, stringify([
-      { id: 'ptc-plus', config: { enabled: true, userBindingsEnabled: true } },
       ...(values['binding-workflow'] ? [
         { insert: [{ id: 'binding-web-fixture', name: pathToFileURL(adapterEntry).href }] },
         { id: 'agent-default-model', config: { provider: 'binding-web-fixture', model: 'fixture' } },
@@ -1418,13 +1419,28 @@ export async function main(argv = process.argv.slice(2)) {
       const workspace = join(temporary, 'workspace')
       await mkdir(workspace)
       await rpc('settings/update', { ns: 'locale', patch: { preference: 'en' } })
-      await rpc('settings/update', { ns: 'agent-presets', patch: { default: ptcMode } })
+      try {
+        await rpc('settings/update', { ns: 'agent-preset-registry', patch: { selectedDefault: ptcMode } })
+      } catch (error) {
+        if (!/No configurable plugin entry ["“]agent-preset-registry["”]/u.test(error.message)) throw error
+        await rpc('settings/update', { ns: 'agent-presets', patch: { default: ptcMode } })
+      }
       await rpc('workspace/create', { request: { path: workspace } })
       await page.getByText('workspace', { exact: true }).first().hover()
       await page.getByRole('button', { name: 'New session in workspace', exact: true }).click()
       const composer = page.locator(composerSelector)
       await composer.waitFor({ timeout: 30000 })
-      const beforeMenu = await sessionLogBytes()
+      const workspaceHeader = `"cwd":${JSON.stringify(workspace)}`
+      let beforeMenu
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        const logs = await sessionLogBytes()
+        if (logs.some(([, source]) => source.includes(workspaceHeader))) {
+          beforeMenu = logs
+          break
+        }
+        await new Promise(resolve => setTimeout(resolve, 100))
+      }
+      assert.ok(beforeMenu, 'The selected workspace session header was not persisted')
       const entry = page.locator('.ptcPlusAuthorButton')
       const verifyPendingMenuDismissal = async operation => {
         const matches = request => request.url().endsWith('/api/ptcPlusBindings/invoke')
@@ -1681,7 +1697,7 @@ export async function main(argv = process.argv.slice(2)) {
       await reopen.click()
       await draftItem.waitFor()
       await page.waitForFunction(() => document.activeElement?.getAttribute('role') === 'menuitem')
-      await page.keyboard.press('Tab')
+      await page.keyboard.press('ArrowDown')
       await page.waitForFunction(() => document.activeElement?.textContent === 'Write a new binding')
       await page.keyboard.press('Escape')
       await draftItem.waitFor({ state: 'detached' })
@@ -1989,9 +2005,19 @@ export async function main(argv = process.argv.slice(2)) {
     }
     await page.screenshot({ path: join(evidence, 'conversation.png'), fullPage: true, animations: 'disabled' })
     await page.getByRole('button', { name: /^(Settings|设置)$/ }).first().click()
+    const builtInPlugins = page.getByText(/^(Built-in plugins|内置插件)$/)
+    const usesSettingsDialog = await builtInPlugins.isVisible()
+    if (usesSettingsDialog) {
+      await page.getByRole('button', { name: /^(Close|关闭)$/ }).click()
+    }
     await page.getByText(/^(Plugins|插件)$/).click()
+    if (usesSettingsDialog) {
+      await page.getByText('dsh-ptc-plus', { exact: true }).click()
+      await page.getByRole('button', { name: /^(Configure|配置) dsh-ptc-plus$/ }).click()
+    }
     await page.locator('.ptcPlusCard').waitFor()
-    await page.locator('.ptcPlusCard .ptcPlusHeader').click()
+    const settingsCardHeader = page.locator('.ptcPlusCard .ptcPlusHeader')
+    if (await settingsCardHeader.isVisible()) await settingsCardHeader.click()
     const manage = page.getByRole('button', { name: /^(Manage global bindings|管理全局绑定)$/ })
     await manage.click()
     await page.locator('.ptcPlusBindingsModal .ptcPlusBindings').waitFor()

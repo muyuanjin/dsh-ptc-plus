@@ -1,8 +1,15 @@
 import assert from 'node:assert/strict'
 import { Context } from '@deepseek-ai/cordis'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { createRequire } from 'node:module'
+import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import test from 'node:test'
-import { createCordisToolsOwner as createCordisToolsOwnerRaw } from '../internal/cordis-tools-owner.js'
+import { pathToFileURL } from 'node:url'
+import {
+  createCordisToolsOwner as createCordisToolsOwnerRaw,
+  resolveCompanionSkillDirectory,
+} from '../internal/cordis-tools-owner.js'
 import { createHostContext, describeSections, runHookChain } from './host-fixture.js'
 
 const TEST_CORDIS_TOOL_NAMES = Object.freeze([
@@ -26,7 +33,9 @@ const fakeCordisPlugin = {
 
 const CORDIS_SKILL_NAME = 'cordis-plugin-development'
 const EXTRA_CORDIS_SKILL_NAME = 'editing-cordis-compositions'
-const CORDIS_PRESET_PATH = '/dsh/presets/cordis/cordis.yml'
+const require = createRequire(import.meta.url)
+const CORDIS_PRESET_PACKAGE = dirname(require.resolve('@deepseek-ai/dsh-agent-preset/package.json'))
+const CORDIS_PRESET_PATH = join(CORDIS_PRESET_PACKAGE, 'cordis.yml')
 const CORDIS_SKILL_DIRECTORY = join(dirname(CORDIS_PRESET_PATH), 'skills')
 
 const fakeSkillFilesystemPlugin = {
@@ -290,7 +299,8 @@ function ownerContext(initialAgents = [], options = {}) {
     ctx: {
       agents: { list: () => initialAgents },
       get(name) {
-        return name === 'cordisInspect' ? cordisInspect : undefined
+        if (name === 'cordisInspect') return cordisInspect
+        if (name === 'pluginPackages') return options.pluginPackages
       },
       on: host.ctx.on,
       logger: { warn(message, error) { warnings.push([message, error]) } },
@@ -593,8 +603,6 @@ test('Cordis owner never retries a withdrawn asynchronous activation', async () 
 test('Cordis owner rejects unavailable companion Skill capabilities before publication', async () => {
   for (const [label, options, expected] of [
     ['broken preset', { preset: { broken: 'invalid composition' } }, /preset is unavailable/],
-    ['preset generation without a composition path', { preset: { id: 'cordis' } },
-      /publishes no composition path for the "cordis" preset/],
     ['relative preset path', { preset: { path: 'cordis.yml' } }, /absolute composition path/],
     ['preset service without resolve', { malformedServices: ['agentPresets'] }, /agentPresets\.resolve API/],
     ['skills service without its APIs', { malformedServices: ['skills'] }, /skills registerProvider\/list\/get APIs/],
@@ -616,6 +624,163 @@ test('Cordis owner rejects unavailable companion Skill capabilities before publi
   const invalidSkillOwner = createCordisToolsOwner(ownerContext([invalidSkillFiber]).ctx)
   await assert.rejects(invalidSkillOwner.ready, /disposable Cordis Skill fiber/)
   await invalidSkillOwner.dispose()
+})
+
+test('Cordis companion Skill resolution supports pathless official preset generations', async () => {
+  const singularPackage = join('/host', 'node_modules', '@deepseek-ai', 'dsh-agent-preset')
+  const singularRoot = join(singularPackage, 'skills')
+  const pluralPackage = join('/host', 'node_modules', '@deepseek-ai', 'dsh-agent-presets')
+  const pluralRoot = join(pluralPackage, 'presets', 'cordis', 'skills')
+
+  for (const [label, packages, expected] of [
+    ['singular package', new Map([
+      ['@deepseek-ai/dsh-agent-preset', singularPackage],
+    ]), singularRoot],
+    ['plural package', new Map([
+      ['@deepseek-ai/dsh-agent-presets', pluralPackage],
+    ]), pluralRoot],
+  ]) {
+    const directory = await resolveCompanionSkillDirectory({
+      resolve: async id => ({ id }),
+    }, {
+      packageOf(specifier, parentURL) {
+        assert.equal(parentURL, 'file:///active-profile/')
+        const directory = packages.get(specifier)
+        return directory === undefined ? undefined : { name: specifier, dir: directory }
+      },
+      packageBaseUrl: 'file:///active-profile/',
+      fileExists: filename => filename === join(expected, CORDIS_SKILL_NAME, 'SKILL.md'),
+    })
+    assert.equal(directory, expected, label)
+  }
+})
+
+test('Cordis companion Skill resolution supports a host-anchored legacy plural package', async () => {
+  const manifest = join('/legacy-host', 'node_modules', '@deepseek-ai', 'dsh-agent-presets', 'package.json')
+  const expected = join(dirname(manifest), 'presets', 'cordis', 'skills')
+  const directory = await resolveCompanionSkillDirectory({ resolve: async id => ({ id }) }, {
+    resolveLegacyPackageManifest(specifier) {
+      assert.equal(specifier, '@deepseek-ai/dsh-agent-presets/package.json')
+      return manifest
+    },
+    fileExists: filename => filename === join(expected, CORDIS_SKILL_NAME, 'SKILL.md'),
+  })
+  assert.equal(directory, expected)
+})
+
+test('Cordis companion Skill resolution never falls back around pluginPackages', async () => {
+  let legacyLookups = 0
+  await assert.rejects(
+    resolveCompanionSkillDirectory({ resolve: async id => ({ id }) }, {
+      packageOf: () => undefined,
+      resolveLegacyPackageManifest() {
+        legacyLookups += 1
+        return join('/stale-host', 'node_modules', '@deepseek-ai', 'dsh-agent-presets', 'package.json')
+      },
+      fileExists: () => true,
+    }),
+    /active DSH installation does not publish a loadable cordis-plugin-development companion Skill/,
+  )
+  assert.equal(legacyLookups, 0)
+})
+
+test('Cordis owner activates against a pathless official preset', async () => {
+  const agent = scopedAgent('pathless-preset', { preset: { id: 'cordis' } })
+  const host = ownerContext([agent], {
+    pluginPackages: {
+      packageOf(name) {
+        return name === '@deepseek-ai/dsh-agent-preset'
+          ? { name, dir: CORDIS_PRESET_PACKAGE }
+          : undefined
+      },
+    },
+  })
+  host.ctx.baseUrl = 'file:///active-profile/'
+  const owner = createCordisToolsOwner(host.ctx)
+  await owner.ready
+  assert.equal(agent.skillCatalog.has(CORDIS_SKILL_NAME), true)
+  assert.deepEqual(TEST_CORDIS_TOOL_NAMES.filter(name => agent.definitions.has(name)), TEST_CORDIS_TOOL_NAMES)
+  await owner.dispose()
+})
+
+test('Cordis owner activates through a host-anchored legacy package layout', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'ptc-plus-legacy-host-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const packageDirectory = join(root, 'node_modules', '@deepseek-ai', 'dsh-agent-presets')
+  const skillDirectory = join(packageDirectory, 'presets', 'cordis', 'skills')
+  await mkdir(join(skillDirectory, CORDIS_SKILL_NAME), { recursive: true })
+  await writeFile(join(packageDirectory, 'package.json'), JSON.stringify({
+    name: '@deepseek-ai/dsh-agent-presets',
+    version: '0.1.5-compat-fixture',
+  }))
+  await writeFile(join(skillDirectory, CORDIS_SKILL_NAME, 'SKILL.md'), '# legacy companion\n')
+
+  const agent = scopedAgent('legacy-pathless-preset', { preset: { id: 'cordis' } })
+  const host = ownerContext([agent])
+  host.ctx.baseUrl = pathToFileURL(join(root, 'host.cjs')).href
+  const legacySkillPlugin = {
+    ...fakeSkillFilesystemPlugin,
+    apply(ctx, config) {
+      assert.deepEqual(config.customSkillDirs, [skillDirectory])
+      return fakeSkillFilesystemPlugin.apply(ctx, {
+        ...config,
+        customSkillDirs: [CORDIS_SKILL_DIRECTORY],
+      })
+    },
+  }
+  const owner = createCordisToolsOwner(host.ctx, fakeCordisPlugin, legacySkillPlugin)
+  await owner.ready
+  assert.equal(agent.skillCatalog.has(CORDIS_SKILL_NAME), true)
+  await owner.dispose()
+})
+
+test('Cordis companion Skill resolution rejects missing official Skill content', async () => {
+  await assert.rejects(
+    resolveCompanionSkillDirectory({ resolve: async id => ({ id }) }, {
+      packageOf: name => ({ name, dir: join('/host', 'dsh-agent-preset') }),
+      fileExists: () => false,
+    }),
+    /active DSH installation does not publish a loadable cordis-plugin-development companion Skill/,
+  )
+
+  await assert.rejects(
+    resolveCompanionSkillDirectory({
+      resolve: async id => ({ id, path: '/host/presets/cordis/agent.cordis.yml' }),
+    }, { fileExists: () => false }),
+    /does not contain cordis-plugin-development\/SKILL\.md/,
+  )
+
+  const resolutionFailure = new Error('package resolution denied')
+  await assert.rejects(
+    resolveCompanionSkillDirectory({ resolve: async id => ({ id }) }, {
+      packageOf() { throw resolutionFailure },
+    }),
+    error => error === resolutionFailure,
+  )
+
+  await assert.rejects(
+    resolveCompanionSkillDirectory({ resolve: async id => ({ id }) }, {
+      packageOf: name => ({ name: `${name}-wrong`, dir: join('/host', 'dsh-agent-preset') }),
+    }),
+    /pluginPackages returned an invalid/,
+  )
+
+  const legacyFailure = new Error('legacy host resolution failed')
+  await assert.rejects(
+    resolveCompanionSkillDirectory({ resolve: async id => ({ id }) }, {
+      resolveLegacyPackageManifest() { throw legacyFailure },
+    }),
+    error => error === legacyFailure,
+  )
+})
+
+test('Cordis owner requires a valid package service when the host publishes one', async () => {
+  const agent = scopedAgent('malformed-package-service', { preset: { id: 'cordis' } })
+  const host = ownerContext([agent], { pluginPackages: {} })
+  host.ctx.baseUrl = 'file:///active-profile/'
+  const owner = createCordisToolsOwner(host.ctx)
+  await assert.rejects(owner.ready, /pluginPackages\.packageOf API/)
+  await owner.dispose()
 })
 
 test('Cordis owner verifies the exact scoped companion Skill provider and body', async () => {

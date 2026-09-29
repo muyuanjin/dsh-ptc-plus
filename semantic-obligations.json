@@ -83,14 +83,14 @@
         "index.js", "internal/binding-descriptors.js", "internal/config-spec.js", "internal/cordis-tools-owner.js", "internal/direct-surface-owner.js", "internal/dynamic-native-calls.js", "internal/edit-transport-owner.js", "internal/execution-seam-compat.js", "internal/host-rpc.js", "internal/message-sources.js", "internal/rejected-cell-editor.js", "internal/rpc-contract.js", "internal/run-code-description.js", "internal/runtime-bridge-owner.js", "internal/runtime-config.js", "internal/runtime-contexts.js", "internal/sdk-projection.js", "internal/session-events.js", "internal/session-runtime.js", "internal/settings-compat.js", "internal/tool-call-canonicalizer.js", "internal/typert-codec-compat.js"
       ],
       "contract": "CONTEXT.md",
-      "observables": ["tool identity", "host policy authority", "registration disposal", "edit identity", "RPC failure isolation", "durable message source admission"],
+      "observables": ["tool identity", "host policy authority", "active Host package provenance", "registration disposal", "edit identity", "RPC failure isolation", "durable message source admission"],
       "entries": ["run_code", "edit_run_code", "Cordis plugin", "client RPC", "runtime message", "binding authoring and action message", "argument diagnostic inbox message"],
       "lifecycle": ["register", "invoke", "reconfigure", "dispose", "unavailable"],
       "generations": ["official latest and next DSH public surfaces", "preceding and current typert codecs"],
       "platforms": ["official DSH release", "Electron host", "Node host"],
       "consumers": ["DSH agent loop", "client", "user-bindings-and-client"],
       "oracle": "public host contract fixtures, lifecycle fakes and official session codec round trips; external host internals are explicitly excluded",
-      "evidence": ["scripts/dsh-execution-seam-smoke.mjs", "scripts/dsh-host-contract-suite.mjs", "scripts/dsh-message-persistence-smoke.mjs", "scripts/dsh-rpc-contract-smoke.mjs", "test/direct-surface-policy.test.js", "test/package-contract.test.js", "test/plugin-native-call-transport.test.js", "test/plugin-lifecycle.test.js", "test/runtime-bridge-owner-dispose.test.js", "test/settings-compat.test.js", "test/runtime-messages.test.js", "test/binding-workflow.test.js"],
+      "evidence": ["scripts/dsh-cordis-companion-smoke.mjs", "scripts/dsh-execution-seam-smoke.mjs", "scripts/dsh-host-contract-suite.mjs", "scripts/dsh-message-persistence-smoke.mjs", "scripts/dsh-rpc-contract-smoke.mjs", "test/direct-surface-policy.test.js", "test/package-contract.test.js", "test/plugin-native-call-transport.test.js", "test/plugin-lifecycle.test.js", "test/runtime-bridge-owner-dispose.test.js", "test/settings-compat.test.js", "test/runtime-messages.test.js", "test/binding-workflow.test.js"],
       "dependsOn": ["execution-kernel", "persistence-and-recovery"]
     },
     {

@@ -1,5 +1,7 @@
 import * as CordisTools from '@deepseek-ai/dsh-tool-cordis'
 import * as CordisSkillFilesystem from '@deepseek-ai/dsh-skill-filesystem'
+import { existsSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import { dirname, isAbsolute, join } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 import { RUN_CODE } from './runtime-bridge-owner.js'
@@ -8,6 +10,16 @@ const CORDIS_PRESET_ID = 'cordis'
 const CORDIS_SKILL_NAME = 'cordis-plugin-development'
 const CORDIS_SKILL_PROVIDER = 'ptc-plus-cordis'
 const COMPANION_SKILL_TOOL = 'skill'
+const COMPANION_PACKAGE_LAYOUTS = Object.freeze([
+  Object.freeze({
+    name: '@deepseek-ai/dsh-agent-preset',
+    skillRoot: directory => join(directory, 'skills'),
+  }),
+  Object.freeze({
+    name: '@deepseek-ai/dsh-agent-presets',
+    skillRoot: directory => join(directory, 'presets', CORDIS_PRESET_ID, 'skills'),
+  }),
+])
 
 function exactCompanionCandidates(observation) {
   if (Array.isArray(observation)) {
@@ -131,25 +143,51 @@ function requireCompanionServices(agent) {
   return { agentPresets, skills }
 }
 
-async function companionSkillDirectory(agentPresets) {
+function containsCompanionSkill(directory, fileExists) {
+  return fileExists(join(directory, CORDIS_SKILL_NAME, 'SKILL.md'))
+}
+
+/** Resolve the official Cordis companion Skill across DSH preset generations. */
+export async function resolveCompanionSkillDirectory(agentPresets, options = {}) {
+  const fileExists = options.fileExists ?? existsSync
   const preset = await agentPresets.resolve(CORDIS_PRESET_ID)
-  if (typeof preset.broken === 'string' && preset.broken.length > 0) {
+  if (typeof preset?.broken === 'string' && preset.broken.length > 0) {
     throw new Error(`ptc-plus: DSH cordis preset is unavailable: ${preset.broken}`)
   }
-  // The generations that discover presets from their composition directories
-  // publish an absolute path, and the preset's sibling `skills` directory is
-  // then the companion Skill root. A generation that declares presets without
-  // any composition path publishes no root through this surface at all, so the
-  // report names that missing publication instead of claiming a shape failure
-  // on a healthy host. A published path that is not absolute is still a
-  // contract contradiction.
-  if (preset?.path === undefined) {
-    throw new Error('ptc-plus: the installed DSH agentPresets generation publishes no composition path for the "cordis" preset, so it does not publish the companion Skill root that cordisToolsEnabled mounts')
+  if (preset?.path !== undefined) {
+    if (typeof preset.path !== 'string' || !isAbsolute(preset.path)) {
+      throw new Error('ptc-plus: DSH cordis preset did not expose an absolute composition path')
+    }
+    const directory = join(dirname(preset.path), 'skills')
+    if (!containsCompanionSkill(directory, fileExists)) {
+      throw new Error(`ptc-plus: DSH cordis preset does not contain ${CORDIS_SKILL_NAME}/SKILL.md beside its composition`)
+    }
+    return directory
   }
-  if (typeof preset.path !== 'string' || !isAbsolute(preset.path)) {
-    throw new Error('ptc-plus: DSH cordis preset did not expose an absolute composition path')
+
+  for (const layout of COMPANION_PACKAGE_LAYOUTS) {
+    const pkg = options.packageOf?.(layout.name, options.packageBaseUrl)
+    if (pkg === undefined) continue
+    if (pkg?.name !== layout.name || typeof pkg.dir !== 'string' || !isAbsolute(pkg.dir)) {
+      throw new Error(`ptc-plus: DSH pluginPackages returned an invalid ${layout.name} package resource`)
+    }
+    const directory = layout.skillRoot(pkg.dir)
+    if (containsCompanionSkill(directory, fileExists)) return directory
   }
-  return join(dirname(preset.path), 'skills')
+
+  if (options.packageOf === undefined && options.resolveLegacyPackageManifest !== undefined) {
+    let manifest
+    try {
+      manifest = options.resolveLegacyPackageManifest('@deepseek-ai/dsh-agent-presets/package.json')
+    } catch (error) {
+      if (error?.code !== 'MODULE_NOT_FOUND' && error?.code !== 'ERR_PACKAGE_PATH_NOT_EXPORTED') throw error
+    }
+    if (manifest !== undefined) {
+      const directory = join(dirname(manifest), 'presets', CORDIS_PRESET_ID, 'skills')
+      if (containsCompanionSkill(directory, fileExists)) return directory
+    }
+  }
+  throw new Error(`ptc-plus: the active DSH installation does not publish a loadable ${CORDIS_SKILL_NAME} companion Skill through its package-resolution surface`)
 }
 
 async function requireCompanionSkill(agent, skills) {
@@ -270,6 +308,7 @@ export function createCordisToolsOwner(
   ctx,
   cordisPlugin = CordisTools,
   skillFilesystemPlugin = CordisSkillFilesystem,
+  companionResolution = undefined,
 ) {
   if (typeof ctx?.agents?.list !== 'function') {
     throw new Error('ptc-plus: cordisToolsEnabled requires the DSH agents.list API')
@@ -281,6 +320,22 @@ export function createCordisToolsOwner(
   const cordisInspectLeases = createCordisInspectLeases(ctx)
   const scopedCordisPlugin = cordisInspectLeases.plugin(cordisPlugin)
   const scopedSkillPlugin = exactCompanionSkillPlugin(skillFilesystemPlugin)
+  const pluginPackages = ctx.get?.('pluginPackages')
+  const packageBaseUrl = ctx.baseUrl
+  const skillResolution = companionResolution ?? {
+    packageOf: pluginPackages === undefined
+      ? undefined
+      : (name, parentURL) => {
+          if (typeof pluginPackages?.packageOf !== 'function') {
+            throw new Error('ptc-plus: cordisToolsEnabled requires the DSH pluginPackages.packageOf API')
+          }
+          return pluginPackages.packageOf(name, parentURL)
+        },
+    packageBaseUrl,
+    resolveLegacyPackageManifest: pluginPackages === undefined && typeof packageBaseUrl === 'string'
+      ? specifier => createRequire(packageBaseUrl).resolve(specifier)
+      : undefined,
+  }
   let disposed = false
 
   const leafErrors = error => error instanceof AggregateError
@@ -364,7 +419,7 @@ export function createCordisToolsOwner(
     mounts.set(agent, mount)
     mount.activation = Promise.resolve().then(async () => {
       const { agentPresets, skills } = requireCompanionServices(agent)
-      const skillDirectory = await companionSkillDirectory(agentPresets)
+      const skillDirectory = await resolveCompanionSkillDirectory(agentPresets, skillResolution)
       if (mount.disposed) return
 
       const skillFiber = agent.ctx.plugin(scopedSkillPlugin, {

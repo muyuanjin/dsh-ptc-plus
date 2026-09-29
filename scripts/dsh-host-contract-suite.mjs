@@ -17,6 +17,7 @@ const HOST_PACKAGES = [
   '@deepseek-ai/dsh-typert-registry',
 ]
 const scripts = [
+  'dsh-cordis-companion-smoke.mjs',
   'dsh-execution-seam-smoke.mjs',
   'dsh-rpc-contract-smoke.mjs',
   'dsh-message-persistence-smoke.mjs',
@@ -87,19 +88,30 @@ async function exposePluginDependencies(consumer) {
   }
 }
 
-async function verifyConsumer(consumer, label) {
+async function verifyConsumer(consumer, label, host) {
   const require = createRequire(join(consumer, 'package.json'))
   const plugin = await import(pathToFileURL(require.resolve('dsh-ptc-plus')).href)
   if (plugin.name !== 'ptc-plus' || typeof plugin.apply !== 'function') {
     throw new Error(`${label} resolved invalid dsh-ptc-plus exports`)
   }
   const hostVersion = require('@deepseek-ai/dsh/package.json').version
+  const hostRequire = createRequire(join(host, 'package.json'))
+  const dshRequire = createRequire(hostRequire.resolve('@deepseek-ai/dsh/package.json'))
+  const baseRequire = createRequire(dshRequire.resolve('@deepseek-ai/dsh-base/package.json'))
+  const activePresetPackage = dirname(resolveHostPackage(
+    [hostRequire, dshRequire, baseRequire],
+    '@deepseek-ai/dsh-agent-preset',
+  ))
   for (const script of scripts) {
     const result = spawnSync(process.execPath, [join(ROOT, 'scripts', script), 'dsh-ptc-plus'], {
       cwd: consumer,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
       timeout: 30_000,
+      env: {
+        ...process.env,
+        DSH_PTC_ACTIVE_PRESET_PACKAGE: activePresetPackage,
+      },
     })
     if (result.status !== 0) {
       throw new Error(`${label} / ${script} failed\n${result.stdout}${result.stderr}`)
@@ -127,7 +139,14 @@ async function verifyPackedConsumer(temporary, label, host, archive) {
   run('tar', ['-xzf', archive, '--strip-components=1', '-C', plugin])
   await exposePluginDependencies(consumer)
   await exposeHostPackages(consumer, host)
-  await verifyConsumer(consumer, label)
+  const stalePackage = join(consumer, 'node_modules', '@deepseek-ai', 'dsh-agent-presets')
+  await mkdir(join(stalePackage, 'presets', 'cordis', 'skills', 'cordis-plugin-development'), { recursive: true })
+  await writeFile(join(stalePackage, 'package.json'), '{"name":"@deepseek-ai/dsh-agent-presets","version":"0.0.0-stale"}\n')
+  await writeFile(
+    join(stalePackage, 'presets', 'cordis', 'skills', 'cordis-plugin-development', 'SKILL.md'),
+    '# stale companion must never be mounted\n',
+  )
+  await verifyConsumer(consumer, label, host)
 }
 
 const selection = process.argv[2] ?? 'all'

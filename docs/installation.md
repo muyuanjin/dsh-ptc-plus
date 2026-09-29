@@ -18,7 +18,7 @@ Install the plugin into the profile that actually runs the target DSH surface. D
 
 `danger-full-access` is the primary supported experience. The worker isolates the REPL lifecycle; it is not a malicious-code sandbox. DSH continues to own native-tool scope, policy, approval, cancellation, sandboxing, and scheduling. Narrower profiles expose only their available capabilities; PTC Plus does not simulate missing authority or add another permission system.
 
-The optional `cordisToolsEnabled` integration requires the current DSH installation to provide its shipped `cordis` preset plus the public preset, Skill, Cordis, settings, and tool-runtime packages. PTC Plus declares those host-owned DSH packages as unrestricted required peers instead of installing private runtime copies; runtime capability validation owns compatibility, and CI loads the packed plugin against frozen official `latest` and `next` DSH graphs. That load step runs `scripts/dsh-execution-seam-smoke.mjs`, which reads the execution service the installed tool runtime reads and requires the plugin to take it over, and `scripts/dsh-rpc-contract-smoke.mjs`, which registers the packed Remote descriptors with the installed TYPERT registry and evaluates the decoder that generation reads ([ADR 0030](adr/0030-serve-both-typert-codec-generations-from-one-codec.md)); an import alone cannot distinguish a loaded plugin from one whose injection is unsatisfied, because Cordis leaves the latter pending without an error, and it cannot show that the Host accepts a wire contract it validates only at registration. The same suite round-trips argument diagnostics through the selected Host's compressed JSONL Session persistence. Service packages retain the dependency graph selected by their Host distribution rather than independently selecting each service's release tag. DSH's profile module fallback must resolve the peers from the active installation. Do not copy `SKILL.md` or add the Cordis preset's Skill directory to global roots. If the host surface is incomplete, plugin activation or enabling the setting fails instead of loading a second DSH core.
+The optional `cordisToolsEnabled` integration requires the current DSH installation to provide its shipped `cordis` preset plus the public preset, Skill, Cordis, settings, and tool-runtime services. PTC Plus declares the shared service packages as unrestricted required peers instead of installing private runtime copies. For a pathless preset it asks the Host's `pluginPackages.packageOf` service for the active generation's official preset package and requires the exact `cordis-plugin-development/SKILL.md` before mounting it; an older generation with no package service may resolve only its historical plural preset package relative to the Host's `ctx.baseUrl`. This compatibility path is disabled whenever `pluginPackages` exists, so packages merely reachable from the plugin profile cannot override an active Host result. Runtime capability validation owns compatibility, and CI loads the packed plugin against frozen official `latest` and `next` DSH graphs. That load step mounts the pathless Cordis companion from a separated active-host resource while a resolvable stale package is present beside the packed plugin, runs `scripts/dsh-execution-seam-smoke.mjs` to read and take over the execution service the installed tool runtime uses, and runs `scripts/dsh-rpc-contract-smoke.mjs` to register the packed Remote descriptors with the installed TYPERT registry and evaluate the decoder that generation reads ([ADR 0030](adr/0030-serve-both-typert-codec-generations-from-one-codec.md)); an import alone cannot distinguish a loaded plugin from one whose injection is unsatisfied, because Cordis leaves the latter pending without an error, and it cannot show that the Host accepts a wire contract it validates only at registration. The same suite round-trips argument diagnostics through the selected Host's compressed JSONL Session persistence. Service packages retain the dependency graph selected by their Host distribution rather than independently selecting each service's release tag. DSH's profile module fallback must resolve the peers, while `pluginPackages` identifies the official preset resource from an active installation that publishes the service. Do not copy `SKILL.md` or add the Cordis preset's Skill directory to global roots. If the host surface is incomplete, plugin activation or enabling the setting fails instead of loading a second DSH core.
 
 The plugin attaches to whichever program-execution service the installed DSH registers, and it presents the capabilities of the execution it performs ([ADR 0028](adr/0028-attach-to-the-host-ptc-execution-seam.md)). Cells run in the session kernel under the session's configured budgets, so `run_code` advertises neither a per-call deadline nor a file sandbox, and DSH rejects `timeoutMs` and `sandbox_permissions` with its own message instead of the plugin accepting an input it would then ignore.
 
@@ -31,7 +31,7 @@ The Client root requires `slots`, `locale`, `connection`, and `remote`; it resol
 Use this form after the selected version is available from the npm registry:
 
 ```sh
-dsh plugin --profile <profile> add dsh-ptc-plus@0.4.6
+dsh plugin --profile <profile> add dsh-ptc-plus@0.4.7
 dsh --profile <profile> --dump-config
 ```
 
@@ -68,7 +68,7 @@ pnpm dsh --profile <profile> --dump-config
 
 ```sh
 npm pack
-dsh plugin --profile <profile> add /absolute/path/to/dsh-ptc-plus-0.4.6.tgz
+dsh plugin --profile <profile> add /absolute/path/to/dsh-ptc-plus-0.4.7.tgz
 dsh --profile <profile> --dump-config
 ```
 
@@ -124,7 +124,7 @@ dsh plugin add github:muyuanjin/dsh-ptc-plus#main
 dsh --dump-config
 ```
 
-After an npm release, the package spec may instead be `dsh-ptc-plus@0.4.6`. For a local package, use its absolute tarball path. Restart DSH Desktop after installation. Linux Desktop is not a current DSH Desktop release target; use DSH CLI/Web on Linux.
+After an npm release, the package spec may instead be `dsh-ptc-plus@0.4.7`. For a local package, use its absolute tarball path. Restart DSH Desktop after installation. Linux Desktop is not a current DSH Desktop release target; use DSH CLI/Web on Linux.
 
 ## Upgrades
 

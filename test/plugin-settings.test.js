@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { Context as CordisContext } from '@deepseek-ai/cordis'
 import { mkdtemp, rm } from 'node:fs/promises'
+import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import test, { after } from 'node:test'
@@ -26,7 +27,11 @@ const TEST_CORDIS_TOOL_NAMES = Object.freeze([
   'test_cordis_inspect',
   'test_cordis_run',
 ])
-const CORDIS_PRESET_PATH = '/dsh/presets/cordis/cordis.yml'
+const require = createRequire(import.meta.url)
+const CORDIS_PRESET_PATH = join(
+  dirname(require.resolve('@deepseek-ai/dsh-agent-preset/package.json')),
+  'cordis.yml',
+)
 const CORDIS_SKILL_DIRECTORY = join(dirname(CORDIS_PRESET_PATH), 'skills')
 
 function errorMessages(error) {
@@ -168,6 +173,9 @@ function hostContext(settings = undefined, agents = [], options = {}) {
     logger: {
       warnings: [],
       warn(message, error) { this.warnings.push([message, error]) },
+    },
+    get(name) {
+      if (name === 'pluginPackages') return options.pluginPackages
     },
     ...(settings === undefined ? {
       inject: serviceInjector({ codeRuntime: runtime }, () => ctx),
@@ -325,7 +333,7 @@ function cordisAgent(disposeGate = undefined, options = {}) {
           return {
             resolve: async id => {
               assert.equal(id, 'cordis')
-              return { id, trust: 'system', path: CORDIS_PRESET_PATH }
+              return options.preset ?? { id, trust: 'system', path: CORDIS_PRESET_PATH }
             },
           }
         }
@@ -1058,8 +1066,15 @@ test('late settings hydration applies persisted non-enabled configuration', asyn
 
 test('startup settings mount Cordis tools before the first PTC request', async () => {
   const scope = settingsScope({ enabled: true, cordisToolsEnabled: true })
-  const { agent, definitions, skillCatalog } = cordisAgent()
-  const { ctx, cleanups } = hostContext(settingsContext(scope), [agent])
+  const { agent, definitions, skillCatalog } = cordisAgent(undefined, { preset: { id: 'cordis' } })
+  const pluginPackages = {
+    packageOf(name) {
+      return name === '@deepseek-ai/dsh-agent-preset'
+        ? { name, dir: dirname(CORDIS_PRESET_PATH) }
+        : undefined
+    },
+  }
+  const { ctx, cleanups } = hostContext(settingsContext(scope), [agent], { pluginPackages })
   apply(ctx)
   const assembly = await ctx.systemPrompt.assemble({ scope: agent })
   assert.deepEqual(assembly.tools.map(tool => tool.name), TEST_CORDIS_TOOL_NAMES)

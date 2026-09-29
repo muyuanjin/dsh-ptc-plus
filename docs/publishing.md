@@ -43,7 +43,7 @@ npm.cmd stage approve '<stage-id>' --registry=https://registry.npmjs.org/
 ## Release checklist
 
 1. 提交前在稳定工作树上运行完整 `npm run check`，生成 coverage 与 review proof。仓库 CI 在 Linux Node `22.19.0`、24.x、26.x，以及 Windows 与 macOS Node 24.x 的干净安装上运行 `npm run verify:ci`，检查构建、Client 与跨平台关键运行契约；Ubuntu Node 24.x 另运行打包后的 `latest` / `next` Host contracts。CI 不重复收集 coverage 或执行穷尽式后端套件。
-2. 运行 `npm audit`、`npx publint`、`git diff --check`、Markdown local-link check 和 `npm pack --silent --dry-run --json`。确认 tarball 只包含发布白名单内的运行时代码、文档和展示资产，不含凭据、本地路径、开发脚本或测试夹具，并从 tarball 安装到空目录执行 ESM import smoke。机器读取 `npm pack --json` 时保持 `--silent`，避免 lifecycle 输出混入 JSON stream。
+2. 运行 `npm audit --omit=dev`、`npx publint`、`git diff --check`、Markdown local-link check 和 `npm pack --silent --dry-run --json`。audit 检查随包安装的 production 依赖图；宿主 DSH 及其开发依赖不进入插件 tarball，由冻结宿主契约和 CI 单独验证。确认 tarball 只包含发布白名单内的运行时代码、文档和展示资产，不含凭据、本地路径、开发脚本或测试夹具，并从 tarball 安装到空目录执行 ESM import smoke。机器读取 `npm pack --json` 时保持 `--silent`，避免 lifecycle 输出混入 JSON stream。
 3. 更新到最新可用 DSH release 并记录 `dsh --version`。分别从 npm 包、固定 Git commit、源码 checkout 和 tarball 安装到临时 profile，再执行 `dsh --profile <profile> --dump-config`，确认只新增 `ptc-plus` row。每个上游 release 都重新验证公共扩展面、CLI/Web 集成和 profile 装配，不设置版本白名单。
 4. 在 Windows 与 Linux 运行无模型调用的 `npm run test:client:web -- --dsh-entry <latest-installed-dsh/lib/bin.js>`，验证 tarball 安装后的真实 Web Client、设置与对话 surface；浏览器前置条件见 [安装指南](installation.md)。`build:check`、Host ESM import 和 factory smoke 均不能替代浏览器激活验收。macOS 由原生 runner 验证 CLI/Web；Windows 与 macOS Desktop 从托盘打开当前 profile 的 DSH Terminal 安装，重启 Desktop 后做一次 PTC 模式 smoke。Desktop 当前发布平台不包括 Linux。
 5. 只有在明确授权模型消耗后才运行 `npm run test:expensive` 与 `npm run test:ab`。发布结论以结构化测试结果为准，不把一次模型样本推广为普遍保证。

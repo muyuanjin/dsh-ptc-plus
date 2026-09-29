@@ -135,6 +135,7 @@ test('keeps npm release authority stage-only and bound to a verified tag', async
   assert.match(serializedRelease, /actions\/workflows\/ci\.yml\/runs/)
   assert.match(serializedRelease, /head_branch == \\"main\\"/)
   assert.match(serializedRelease, /npm stage publish/)
+  assert.match(serializedRelease, /npm audit --omit=dev/)
   assert.match(serializedRelease, /node scripts\/npm-pack-filename\.mjs/)
   assert.match(serializedRelease, /npm@12\.0\.2/)
   assert.match(serializedRelease, /node-version":"24\.15\.0/)

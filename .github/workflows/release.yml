@@ -106,7 +106,7 @@ jobs:
 
           npm ci
           npm run build:check
-          npm audit
+          npm audit --omit=dev
           npx --yes publint@0.3.24
           git diff --exit-code
 

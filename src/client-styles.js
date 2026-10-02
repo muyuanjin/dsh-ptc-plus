@@ -1,9 +1,10 @@
 const CLIENT_STYLE_ID = 'ptc-plus-client-style'
 const CLIENT_CSS = `
-.ptcPlusBindingDockAnchor{position:relative;flex:none;block-size:0;min-width:0;width:min(calc(100% - 32px),44rem);margin-inline:auto}
-.ptcPlusBindingDock{position:absolute;inset-inline:0;bottom:var(--ptc-plus-review-offset,8px);box-sizing:border-box;min-width:0;display:flex;flex-direction:column;border:1px solid var(--dsw-alias-border-l3,rgba(0,0,0,.1));border-radius:14px;background:var(--dsw-alias-bg-base,#fff);color:var(--dsw-alias-label-primary,#18191c);box-shadow:0 8px 32px rgba(0,0,0,.14),0 2px 6px rgba(0,0,0,.06);max-block-size:var(--ptc-plus-review-height,80dvh);overflow:auto;overscroll-behavior:contain}
+.ptcPlusBindingMenuContent{min-width:0;width:100%;max-block-size:min(440px,60dvh,var(--ptc-plus-menu-space,100dvh));overflow:auto;overscroll-behavior:contain}.ptcPlusOwnedMenuRow{appearance:none;box-sizing:border-box;display:flex;width:100%;min-width:0;min-height:38px;padding:8px 10px;border:0;border-radius:6px;background:transparent;color:inherit;font:inherit;text-align:start;cursor:pointer}.ptcPlusOwnedMenuRow:hover{background:var(--dsw-alias-interactive-bg-hover)}.ptcPlusOwnedMenuRow:focus-visible{outline:2px solid var(--dsw-alias-interactive-primary);outline-offset:-2px}.ptcPlusOwnedMenuRow:disabled{opacity:.5;cursor:default}.ptcPlusOwnedMenuSeparator{margin:6px 0;border-top:1px solid var(--dsw-alias-border-l2)}
+.ptcPlusBindingDockAnchor{position:relative;flex:none;min-width:0;width:min(calc(100% - 32px),44rem);margin-inline:auto}
+.ptcPlusBindingDock{position:relative;box-sizing:border-box;min-width:0;display:flex;flex-direction:column;border:1px solid var(--dsw-alias-border-l3,rgba(0,0,0,.1));border-radius:14px;background:var(--dsw-alias-bg-base,#fff);color:var(--dsw-alias-label-primary,#18191c);box-shadow:0 8px 32px rgba(0,0,0,.14),0 2px 6px rgba(0,0,0,.06);max-block-size:min(440px,30dvh);overflow:auto;overscroll-behavior:contain}
 .ptcPlusBindingDockHead{display:flex;flex:none;align-items:center;gap:4px;min-width:0;padding:0 10px 0 0}.ptcPlusBindingDockToggle{appearance:none;display:flex;flex:1;align-items:center;gap:10px;min-width:0;min-height:54px;padding:10px 12px;border:0;background:transparent;color:inherit;text-align:start;font:inherit;cursor:pointer}.ptcPlusBindingDockToggle:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(38,49,72,.06))}.ptcPlusBindingDockToggle:focus-visible{outline:2px solid var(--dsw-alias-interactive-primary,#4d6bfe);outline-offset:-3px}.ptcPlusBindingDockSymbol{display:grid;place-items:center;flex:none;width:30px;height:30px;border-radius:8px;background:var(--dsw-alias-bg-layer-2,#f3f4f6);color:var(--dsw-alias-label-secondary,#52565d);font:600 13px ui-monospace,monospace}.ptcPlusBindingDockHeading{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px;font-size:13px;line-height:18px}.ptcPlusBindingDockHeading strong,.ptcPlusBindingDockHeading>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.ptcPlusBindingDockHeading>span{font-size:11px;color:var(--dsw-alias-label-secondary,#52565d)}.ptcPlusBindingDockChevron{display:flex;flex:none;transform:rotate(180deg);transition:transform .16s ease}.ptcPlusBindingDockToggle[aria-expanded=true] .ptcPlusBindingDockChevron{transform:rotate(0deg)}
-.ptcPlusBindingDockBody{flex:none;min-width:0;max-block-size:min(32dvh,20rem,var(--ptc-plus-review-space,100dvh));overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable;border-top:1px solid var(--dsw-alias-border-l3,rgba(0,0,0,.1))}.ptcPlusBindingDock[data-scroll=panel] .ptcPlusBindingDockBody{max-block-size:none;overflow:visible;scrollbar-gutter:auto}.ptcPlusBindingDockBody:focus-visible{outline:2px solid var(--dsw-alias-interactive-primary);outline-offset:-2px}.ptcPlusBindingDockBody .ptcPlusAuthoringDraft{border:0;padding:12px 14px;background:transparent;gap:10px}.ptcPlusBindingDockBody .ptcPlusBindingCommandSource,.ptcPlusBindingDockBody .ptcPlusBindingCommandCode{max-height:none;margin:0}.ptcPlusBindingDockBody pre{font-size:12px;line-height:19px}.ptcPlusBindingDockBody .ptcPlusBindingMeta{font:11px/17px ui-monospace,monospace;overflow-wrap:anywhere}.ptcPlusBindingDockActions{display:flex;flex:none;flex-wrap:wrap;align-items:center;gap:6px;padding:10px 12px;border-top:1px solid var(--dsw-alias-border-l3,rgba(0,0,0,.1))}.ptcPlusBindingDockActions>button{min-width:0;white-space:normal}.ptcPlusBindingDockDiscard{margin-inline-end:auto}.ptcPlusBindingDock .ptcPlusMessage{margin:0;font-size:12px;line-height:19px}.ptcPlusBindingDock>.ptcPlusMessage{padding:8px 12px}.ptcPlusComposerBindingAnchor{display:inline-flex;min-width:1px;min-height:1px}.ptcPlusComposerBindingAnchor .ptcPlusAuthorButton{position:relative}.ptcPlusDraftBadge{position:absolute;top:-2px;right:-3px;display:grid;place-items:center;box-sizing:border-box;min-width:14px;height:14px;padding-inline:3px;border:1.5px solid var(--dsw-alias-bg-base,#fff);border-radius:8px;background:var(--dsw-alias-state-business-primary,#4d6bfe);color:#fff;font:600 9px/1 system-ui,sans-serif;pointer-events:none}.ptcPlusDraftBadge[data-attention=true]{background:var(--dsw-alias-state-warning-primary,#a15c00)}.ptcPlusDraftMenuItem{display:flex;min-width:0;max-width:240px;flex-direction:column;gap:3px;white-space:normal;overflow-wrap:anywhere}.ptcPlusDraftMenuItem strong{font-size:12px;font-weight:600}.ptcPlusDraftMenuItem>span{font-size:11px;color:var(--dsw-alias-label-secondary,#52565d)}.ptcPlusComposerBindingAnchor[data-text=true] .ptcPlusAuthorButtonShell{width:auto}
+.ptcPlusBindingDockBody{flex:1 1 auto;min-width:0;min-block-size:40px;max-block-size:20rem;overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable;border-top:1px solid var(--dsw-alias-border-l3,rgba(0,0,0,.1))}.ptcPlusBindingDockBody:focus-visible{outline:2px solid var(--dsw-alias-interactive-primary);outline-offset:-2px}.ptcPlusBindingDockBody .ptcPlusAuthoringDraft{border:0;padding:12px 14px;background:transparent;gap:10px}.ptcPlusBindingDockBody .ptcPlusBindingCommandSource,.ptcPlusBindingDockBody .ptcPlusBindingCommandCode{max-height:none;margin:0}.ptcPlusBindingDockBody pre{font-size:12px;line-height:19px}.ptcPlusBindingDockBody .ptcPlusBindingMeta{font:11px/17px ui-monospace,monospace;overflow-wrap:anywhere}.ptcPlusBindingDockActions{display:flex;flex:none;flex-wrap:wrap;align-items:center;gap:6px;padding:10px 12px;border-top:1px solid var(--dsw-alias-border-l3,rgba(0,0,0,.1))}.ptcPlusBindingDockActions>button{min-width:0;white-space:normal}.ptcPlusBindingDockDiscard{margin-inline-end:auto}.ptcPlusBindingDock .ptcPlusMessage{margin:0;font-size:12px;line-height:19px}.ptcPlusBindingDock>.ptcPlusMessage{padding:8px 12px}.ptcPlusComposerBindingAnchor{display:inline-flex;min-width:1px;min-height:1px}.ptcPlusComposerBindingAnchor .ptcPlusAuthorButton{position:relative}.ptcPlusDraftBadge{position:absolute;top:-2px;right:-3px;display:grid;place-items:center;box-sizing:border-box;min-width:14px;height:14px;padding-inline:3px;border:1.5px solid var(--dsw-alias-bg-base,#fff);border-radius:8px;background:var(--dsw-alias-state-business-primary,#4d6bfe);color:#fff;font:600 9px/1 system-ui,sans-serif;pointer-events:none}.ptcPlusDraftBadge[data-attention=true]{background:var(--dsw-alias-state-warning-primary,#a15c00)}.ptcPlusDraftMenuItem{display:flex;min-width:0;max-width:240px;flex-direction:column;gap:3px;white-space:normal;overflow-wrap:anywhere}.ptcPlusDraftMenuItem strong{font-size:12px;font-weight:600}.ptcPlusDraftMenuItem>span{font-size:11px;color:var(--dsw-alias-label-secondary,#52565d)}.ptcPlusComposerBindingAnchor[data-text=true] .ptcPlusAuthorButtonShell{width:auto}
 .ptcPlusBindingCommand .ptcPlusMessage{margin:0}.ptcPlusBindingSourceDetails{min-width:0}.ptcPlusBindingSourceDetails>summary{cursor:pointer;font-size:12px;line-height:20px}.ptcPlusBindingItem>button,.ptcPlusGlobalItem>button{align-self:center}.ptcPlusAuthoringDraft>strong{font-size:13px;line-height:20px;overflow-wrap:anywhere}.ptcPlusBindingCommand .ptcPlusBindingCommandState{max-width:100%;box-sizing:border-box;white-space:normal}.ptcPlusBindingCommand .ptcPlusAuthoringDraft{min-width:0;padding:0;border:0;border-radius:0;background:transparent}
 .ptcPlusCard{list-style:none;border:0.5px solid var(--dsw-alias-border-l4);border-radius:16px;background:var(--dsw-alias-bg-layer-3);overflow:hidden;transition:border-color .16s ease,background-color .16s ease}
 .ptcPlusCard:hover{border-color:var(--dsw-alias-label-dimmed)}
@@ -48,8 +49,18 @@ const CLIENT_CSS = `
    declared later in this sheet, so an equal-specificity override loses and the
    grid would draw a second hairline under the host's. */
 .ptcPlusMenuActions.ptcPlusMenuActionsPinned{margin-top:0;border-top:0;font-size:13px;line-height:18px;color:var(--dsw-alias-label-primary)}
-[role=menu]:has(.ptcPlusBindingMenuAction,.ptcPlusDraftMenuItem){width:min(320px,calc(100vw - 24px));min-width:0;max-height:min(440px,60dvh,var(--ptc-plus-menu-space,100dvh));border-radius:12px}.ptcPlusBindingQuickRow{display:flex;min-width:0;flex-direction:column;gap:3px;white-space:normal}.ptcPlusBindingQuickName{display:flex;align-items:center;justify-content:space-between;gap:12px;font-size:13px}.ptcPlusBindingQuickName strong{min-width:0;overflow:hidden;text-overflow:ellipsis;font-weight:500;white-space:nowrap}.ptcPlusBindingQuickState{flex:none;min-width:5em;text-align:end;font-size:11px;color:var(--dsw-alias-label-tertiary)}.ptcPlusBindingQuickRow[data-enabled=true] .ptcPlusBindingQuickState{color:var(--dsw-alias-state-success-primary)}.ptcPlusBindingQuickPurpose{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dsw-alias-label-tertiary);font-size:12px}.ptcPlusBindingMenuAction{font-size:13px}
+.ptcPlusBindingMenu{width:min(320px,calc(100vw - 24px));min-width:0;max-height:min(440px,60dvh);border-radius:12px}.ptcPlusBindingQuickRow{display:flex;min-width:0;flex-direction:column;gap:3px;white-space:normal}.ptcPlusBindingQuickName{display:flex;align-items:center;justify-content:space-between;gap:12px;font-size:13px}.ptcPlusBindingQuickName strong{min-width:0;overflow:hidden;text-overflow:ellipsis;font-weight:500;white-space:nowrap}.ptcPlusBindingQuickState{flex:none;min-width:5em;text-align:end;font-size:11px;color:var(--dsw-alias-label-tertiary)}.ptcPlusBindingQuickRow[data-enabled=true] .ptcPlusBindingQuickState{color:var(--dsw-alias-state-success-primary)}.ptcPlusBindingQuickPurpose{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dsw-alias-label-tertiary);font-size:12px}.ptcPlusBindingMenuAction{font-size:13px}
 .ptcPlusMenuActions{margin-top:6px;border-top:1px solid var(--dsw-alias-border-l3,rgba(0,0,0,.1))}.ptcPlusMenuAuthoring{padding:8px 4px}.ptcPlusMenuGroupLabel{padding:0 4px 6px;color:var(--dsw-alias-label-tertiary);font-size:11px;line-height:16px}.ptcPlusMenuActionGrid,.ptcPlusMenuUtilities{display:flex;gap:6px;min-width:0}.ptcPlusMenuUtilities{padding:6px 4px}.ptcPlusMenuAuthoring+.ptcPlusMenuUtilities{border-top:1px solid var(--dsw-alias-border-l3,rgba(0,0,0,.1))}.ptcPlusMenuButton{appearance:none;display:flex;flex:1;align-items:center;justify-content:center;min-width:0;min-height:34px;padding:6px 8px;border:1px solid var(--dsw-alias-border-l3,rgba(0,0,0,.1));border-radius:7px;background:transparent;color:var(--dsw-alias-label-primary);font:inherit;text-align:center;cursor:pointer}.ptcPlusMenuButton:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(38,49,72,.06))}.ptcPlusMenuButton:focus-visible{outline:2px solid var(--dsw-alias-interactive-primary,#4d6bfe);outline-offset:-2px}.ptcPlusMenuButton .ptcPlusBindingMenuAction{white-space:normal;overflow-wrap:anywhere;line-height:18px}.ptcPlusMenuUtilities .ptcPlusMenuButton{border-color:transparent;color:var(--dsw-alias-label-secondary)}.ptcPlusMenuUtilities .ptcPlusBindingMenuAction{font-size:12px}
+/* Fallbacks used only when the installed generation ships no Menu or Modal. */
+.ptcPlusFallbackMenu{display:inline-flex}.ptcPlusFallbackMenuList{position:fixed;z-index:60;box-sizing:border-box;min-width:min(220px,calc(100vw - 24px));max-width:min(320px,calc(100vw - 24px));overflow:auto;overscroll-behavior:contain;padding:6px;border:1px solid var(--dsw-alias-border-l3,rgba(0,0,0,.1));border-radius:12px;background:var(--dsw-alias-bg-layer-3,#fff);color:var(--dsw-alias-label-primary,#18191c);box-shadow:0 8px 32px rgba(0,0,0,.14)}
+.ptcPlusFallbackMenuItem{display:flex;box-sizing:border-box;width:100%;align-items:center;gap:6px;padding:8px 10px;border:0;border-radius:8px;background:transparent;color:inherit;font:inherit;font-size:13px;text-align:start;cursor:pointer}
+.ptcPlusFallbackMenuItem:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover,rgba(38,49,72,.06))}
+.ptcPlusFallbackMenuItem:disabled{opacity:.5;cursor:not-allowed}
+.ptcPlusFallbackMenuLabel{padding:6px 10px 2px;color:var(--dsw-alias-label-tertiary,#74777d);font-size:11px;line-height:16px}
+.ptcPlusFallbackMenuSeparator{height:1px;margin:4px 6px;background:var(--dsw-alias-border-l3,rgba(0,0,0,.1))}
+.ptcPlusFallbackModalBackdrop{position:fixed;inset:0;z-index:50;display:grid;place-items:center;background:rgba(16,24,40,.35)}
+.ptcPlusFallbackModal{box-sizing:border-box;width:min(760px,calc(100vw - 32px));max-height:calc(100dvh - 40px);overflow:auto;padding:16px 18px;border:1px solid var(--dsw-alias-border-l3,rgba(0,0,0,.1));border-radius:8px;background:var(--dsw-alias-bg-base,#fff);color:var(--dsw-alias-label-primary,#18191c)}
+.ptcPlusFallbackModalHead{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px}.ptcPlusFallbackModalHead h2{margin:0;font-size:17px;line-height:24px}
 
 `
 
@@ -104,14 +115,61 @@ const REPL_CONSOLE_CSS = `
 .ptcPlusObservationReuseTotal{font-size:13px;color:var(--dsw-alias-label-tertiary)}.ptcPlusObservationReuse{color:var(--dsw-alias-label-tertiary);white-space:nowrap;font-variant-numeric:tabular-nums}
 `
 
-/** Install the plugin stylesheet once; returns the disposer that removes it. */
+/**
+ * Package name this bundle was built for. DSH attributes a client plugin's
+ * stylesheets by exactly this string, so the browser entry substitutes it at
+ * build time and the Client test entry sets the same global.
+ */
+const CLIENT_PLUGIN_ID = typeof __PTC_PLUS_CLIENT_MODULE_ID__ === 'string'
+  ? __PTC_PLUS_CLIENT_MODULE_ID__
+  : 'dsh-ptc-plus'
+/** Stable identity of each stylesheet this plugin owns. */
+const CLIENT_STYLE_TAG = `${CLIENT_PLUGIN_ID}/client.css`
+const CODEMIRROR_STYLE_TAG = `${CLIENT_PLUGIN_ID}/codemirror.css`
+
+/**
+ * Install the plugin stylesheet and return the disposer that removes it.
+ *
+ * The tag carries its DSH attribution from creation. The Client module system
+ * claims every untagged `style` it finds while materializing a plugin and
+ * deletes that plugin's tags when the plugin leaves, so an untagged sheet
+ * inserted from `apply` — after this plugin's own materialization — would be
+ * claimed by whichever plugin loads next and deleted with it.
+ */
 function installStyles() {
-  if (document.getElementById(CLIENT_STYLE_ID) !== null) return () => {}
+  if (typeof document === 'undefined') return () => {}
   const style = document.createElement('style')
   style.id = CLIENT_STYLE_ID
+  style.dataset.plugin = CLIENT_PLUGIN_ID
+  style.dataset.pluginCss = CLIENT_STYLE_TAG
   style.textContent = `${CLIENT_CSS}${BINDING_WORKBENCH_CSS}${REPL_CONSOLE_CSS}`
   document.head.append(style)
   return () => style.remove()
 }
 
-export { CLIENT_STYLE_ID, CLIENT_CSS, BINDING_WORKBENCH_CSS, REPL_CONSOLE_CSS, installStyles }
+/** Snapshot the untagged stylesheets so a later adoption can name only new ones. */
+function captureUnownedStyles() {
+  if (typeof document === 'undefined') return new Set()
+  return new Set(document.querySelectorAll('style:not([data-plugin])'))
+}
+
+/**
+ * Attribute the stylesheets a dependency injected while this plugin ran.
+ * CodeMirror's style-mod mounts one global sheet per document and cannot tag
+ * it, so the plugin that mounted the editor claims it; only tags absent from
+ * `known` are claimed, leaving another plugin's concurrent sheet alone.
+ */
+function adoptUnownedStyles(known, tagId = CODEMIRROR_STYLE_TAG) {
+  if (typeof document === 'undefined') return
+  for (const style of document.querySelectorAll('style:not([data-plugin])')) {
+    if (known?.has(style)) continue
+    style.dataset.plugin = CLIENT_PLUGIN_ID
+    style.dataset.pluginCss = tagId
+  }
+}
+
+export {
+  CLIENT_STYLE_ID, CLIENT_CSS, BINDING_WORKBENCH_CSS, REPL_CONSOLE_CSS,
+  CLIENT_PLUGIN_ID, CLIENT_STYLE_TAG, CODEMIRROR_STYLE_TAG,
+  installStyles, captureUnownedStyles, adoptUnownedStyles,
+}

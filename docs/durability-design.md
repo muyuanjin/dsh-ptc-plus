@@ -4,6 +4,18 @@
 
 本文拥有 `dsh-ptc-plus` 的 journal、两阶段确认和冷恢复契约；`internal/session-journal-schema.js` 拥有封闭字段集合与版本常量，`internal/session-journal.js` 拥有校验、迁移与创建，`internal/session-journal-recovery.js` 拥有事件关联与分支折叠，`internal/session-runtime.js` 拥有 live kernel；它们提供实现证据。
 
+## 日志读取与派生事实
+
+当前 Host 的历史读取由 `sessionQuery.observeSession` 提供。runtime bridge 为一次顶层调用取得一个不可变 event/cursor/header 切点，释放 observation lease 后仍消费其不可变 events；派生 edit 把该切点传给内层执行，恢复、call identity、provenance 和 no-op 确认不在运行中重读变化的 live log。观察切点与当前 surface 不同时，按该切点的公开 surface operations 重建顺序，而不是用较新的 replacement 撤销较早观察的证据。生产路径不调用 `snapshotEvents`、`eventAt` 或 `ownEvents`。
+
+同步 presentation 从 host-only `ptcPlusSessionLog` 单元读取。该单元与批量 journal fold 共用单事件 timeline 转移；checkpoint 仅保存关联所需的最小 call、规范 journal、身份及当前/历史 runtime records，不复制原始事件日志。pruned result 的非 content 身份保存为确定性 SHA-256 摘要。提示的已见身份、最高 ordinal、cooldown 和成功后的未解决计数在事件进入时更新；装配不扫描历史提示。checkpoint 是可丢弃的派生缓存，不证明 model knowledge、成功 initialization 或 cold replay。状态版本、schema 和 Host 的 watermark/restore 规则共同限定缓存使用，损坏或过时缓存必须重新折叠原日志。
+
+旧 array-backed session 使用同一转移的批量读取回退。缺少当前公开 reader/投影或历史 events 不是数组时明确诊断，不静默宣称空历史；不存在 session 的非会话调用仍委托其原 owner。投影注册随插件/controller 生命周期释放，运行时关闭后只保留日志事实以撤回旧 PTC 消息，不保留 worker、工具或默认模型状态投影。具体决策见 [ADR 0032](adr/0032-own-session-log-facts-in-a-host-only-projection.md)。
+
+结果的 content-only 重发布保留原 settlement 的位置与规范证据，不重新结算 edit claim，也不生成新的成功或编辑目标。原结果缺失时，已有 call 位置限制重建事实的 chronology，不能越过较新的执行。提示身份保留原投递位置，因此后获知的较早成功不能清空其后的未解决提示。
+
+checkpoint 准入由 timeline 表示 owner 校验 typed payload、call/entry 对应、edit claim、规范 journal、派生 run 与 transcript 计数，再由投影复用。损坏嵌套状态在 suffix apply 前拒绝；Host 的水位不能替插件证明这些内容。
+
 ## 恢复承诺
 
 PTC Plus 的正确承诺是：

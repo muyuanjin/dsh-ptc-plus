@@ -32,11 +32,11 @@ DSH 为一个 agent composition 固定选择 `native`、`ptc` 或 `both`。首�
 `run_code`。无目标或参数不合法时不执行，返回 `{ edited: false, reason }` 并保留原目标。
 进程内 claim 区分 executing 与 settled：抛错、取消或缺少有效 PTC journal 的派生结果立即释放；已由 journal 证明进入 runtime 的派生执行继续占用旧 target，直到外层 result 的私有 metadata 通过最终 policy 并由 session log 投影为新 target。最终 result 丢失 metadata 时由 `tools/result` 释放。session log 投影在 edit call event 处记录 eligible target，只接受 target call sequence 匹配该快照且 journal 有效、非 noop 的派生源码，因此 live 与 cold recovery 从同一持久关系决定可编辑目标。
 
-`internal/session-log-view.js` 单次前向扫描 session events，分别投影最新执行、可编辑目标、rewrite metadata、规范 journal 中的 Cordis transcript 计数和恢复 tip
-所需事实。`edit_run_code` 不产生专用 runtime context：真实 call/result 已完整表达操作身份和结果，额外 contribution
+`internal/session-log-view.js` 通过公开 `sessionProjections` 注册 host-only 的 `ptcPlusSessionLog` 单元。同步单事件转移维护最新执行、可编辑目标、rewrite metadata、规范 journal 的 Cordis transcript 计数、已投递提示身份与 cooldown/escalation 事实，以及按公开 surface operation 排序的当前 runtime messages。pre-step 与 assembly 只读该单元，不重新读取或折叠历史；异步恢复通过 `sessionQuery.observeSession` 取得不可变观察切点，派生 edit 与其内层执行共享该切点。旧的 array-backed session 使用同一转移的批量折叠，不修改 Host 状态。详见 [ADR 0032](adr/0032-own-session-log-facts-in-a-host-only-projection.md)。
+`edit_run_code` 不产生专用 runtime context：真实 call/result 已完整表达操作身份和结果，额外 contribution
 会重复已有事实；此类信息不进入独立 PTC 消息。只有缺少有效 journal、无法确认完成状态的 rewrite feedback 才保留独立生命周期；已结算失败的恢复指引由当前结果表达；成功的透明改写不产生 runtime context。
 
-插件卸载时恢复仍由自己持有的执行缝 `run` 与 `presentationMeta` 属性；执行缝由 `internal/execution-seam-compat.js` 按宿主注册的服务选定，并同时收回该插件无法兑现的 provider 描述符（见 [ADR 0028](adr/0028-attach-to-the-host-ptc-execution-seam.md)）。若外层插件仍持有旧 wrapper，已卸载 wrapper 会透明委托原 provider，不会恢复已释放的 session 状态。
+执行接入由 `internal/execution-provider-owner.js` 经公开 Loader/Cordis 组合：保留原 row 的模块与配置，将原服务置于 named isolation，另注册插件自有 global provider。`internal/execution-seam-compat.js` 选择该服务并拥有 request/spec 边界；主插件卸载只释放自有 provider 的私有 execution callback，恢复原生委托与能力 getter，不写原实例的 `run` 或描述符。移除完整 bundle 时，Loader 生命周期先同步撤销插件注册，再让原 provider 回到 global slot。`presentationMeta` 仍由 runtime bridge 单独还原；它不属于 provider composition（见 [ADR 0028](adr/0028-attach-to-the-host-ptc-execution-seam.md)）。旧 provider generation 不能复活已释放的 session 状态。
 稳定 REPL 指引与执行共同从 `binding-update-policy.js` 取得语言代际。新代际说明 TypeScript、顶层 await/return、静态 import/export 与所选绑定更新策略；旧兼容态才按其独立开关说明支持的模块语法。显式结果使用 return，日志使用 console；原生表达式 completion 同样可以提供结果值。失败恢复先按状态分类：result 已证明解析或 preflight 未执行且提供符合任务意图的 validated repair 时，
 优先直接使用带目标保护的 `edit_run_code`，无需等待 recovery context；该验证只证明语法/preflight 接受。其他小型修正可用 edit 执行完整 cell；
 已执行或可能产生外部 effect 的目标，则必须依据操作 owner 的 retry/idempotence 契约和执行事实判断重跑。短 `run_code` 可以复用仍存活的 binding，但缩短源码不能证明幂等。能力和命令执行依赖当前 request

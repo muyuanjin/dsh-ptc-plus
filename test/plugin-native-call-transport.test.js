@@ -10,6 +10,7 @@ import { SystemPrompt } from '@deepseek-ai/dsh-system-prompt'
 import { ToolRuntime, defineTool } from '@deepseek-ai/dsh-tools'
 import { snapshotJsonValue } from '@deepseek-ai/dsh-util-values'
 import { ptcToolsMode } from '../scripts/dsh-host-contract.mjs'
+import { createFixtureExecutionProvider, executionInstalled } from './host-fixture.js'
 import { Config, apply } from '../index.js'
 import { CONFIG_DEFAULTS } from '../internal/config-spec.js'
 import { createDirectSurfaceOwner } from '../internal/direct-surface-owner.js'
@@ -528,7 +529,7 @@ test('preserves canonical run_code results through the real DSH ToolRuntime pipe
     persona: '',
     toolOrder: undefined,
   })
-  ctx.provide('ptcRuntime', {
+  const originalRuntime = Object.freeze({
     language: 'typescript',
     isolation: 'worker-thread',
     resolve(request) {
@@ -540,6 +541,8 @@ test('preserves canonical run_code results through the real DSH ToolRuntime pipe
     },
     async run() { return { logs: ['upstream'], value: 'upstream' } },
   })
+  const originalDescriptors = Object.getOwnPropertyDescriptors(originalRuntime)
+  ctx.effect(() => ctx.provide('ptcRuntime', createFixtureExecutionProvider(originalRuntime)))
   // The plugin declares these two alongside the execution seam. Production gets
   // them from the DSH plugin graph; this host provides the parts the plugin
   // reads so that `apply` can run here at all.
@@ -561,9 +564,22 @@ test('preserves canonical run_code results through the real DSH ToolRuntime pipe
     },
   }))
   const upstreamRun = ctx.get('ptcRuntime').run
+  const hostOutput = ctx.tools.get('run_code').output
+  hostOutput.ownerTag = 'host-output-owner'
+  let callbackRevision = 1
+  const callbackDescriptor = { configurable: true, enumerable: false,
+    get() {
+      const revision = callbackRevision
+      return function () { return { ownerTag: this.ownerTag, revision } }
+    } }
+  Object.defineProperty(hostOutput, 'presentationMeta', callbackDescriptor)
+  const originalCallbackDescriptor = Object.getOwnPropertyDescriptor(hostOutput, 'presentationMeta')
+  assert.deepEqual(hostOutput.presentationMeta({}, {}), { ownerTag: 'host-output-owner', revision: 1 })
   // Canonical native transport is independent of the user's saved helper store.
   await apply(ctx, { userBindingsEnabled: false, computeMs: 500, maxWallMs: 20_000, maxOldGenerationSizeMb: 64 })
-  assert.notEqual(ctx.get('ptcRuntime').run, upstreamRun, 'PTC Plus must own the registered execution seam')
+  assert.equal(ctx.get('ptcRuntime').run, upstreamRun)
+  assert.equal(executionInstalled(ctx.get('ptcRuntime')), true, 'PTC Plus must own the public execution entry')
+  assert.deepEqual(Object.getOwnPropertyDescriptors(originalRuntime), originalDescriptors)
 
   const session = appendOnlySession('real-tool-runtime')
   const agent = { id: 'real-tool-runtime-agent', session }
@@ -575,7 +591,7 @@ test('preserves canonical run_code results through the real DSH ToolRuntime pipe
   })
   const signal = new AbortController().signal
   await ctx.systemPrompt.assemble({ agent, scope: agent, signal })
-  assert.notEqual(ctx.get('ptcRuntime').run, upstreamRun, 'assembly must retain PTC Plus seam ownership')
+  assert.equal(executionInstalled(ctx.get('ptcRuntime')), true, 'assembly must retain PTC Plus execution ownership')
 
   const executeRunCode = async (callId, args) => {
     const argumentsValue = JSON.stringify(args)
@@ -630,6 +646,8 @@ test('preserves canonical run_code results through the real DSH ToolRuntime pipe
     description: 'Echo through the persistent REPL',
   })
   assert.equal(explicit.isError, false, JSON.stringify(explicit))
+  assert.equal(explicit.meta.ownerTag, 'host-output-owner')
+  assert.equal(explicit.meta.revision, 1)
   assert.equal(echoCalls, 1, JSON.stringify(explicit))
   assert.deepEqual(explicit.value, { logs: [], result: 'ok' })
   assert.notEqual(snapshotJsonValue(explicit.meta), undefined)
@@ -639,11 +657,13 @@ test('preserves canonical run_code results through the real DSH ToolRuntime pipe
     ['echoed'],
   )
 
+  callbackRevision = 2
   const checkpoint = await executeRunCode('confirmed-checkpoint', {
     code: 'return await repl.state({ action: "save", name: "confirmed" })',
     description: 'Save the confirmed durable state',
   })
   assert.equal(checkpoint.isError, false)
+  assert.equal(checkpoint.meta.revision, 2)
   assert.deepEqual(normalizeJournal(checkpoint.meta.dshPtcPlus).operations, [
     { action: 'save', name: 'confirmed' },
   ])
@@ -704,6 +724,67 @@ test('preserves canonical run_code results through the real DSH ToolRuntime pipe
   assert.equal(malformedEdit.isError, false)
   assert.equal(malformedEdit.value.edited, false)
   assert.match(malformedEdit.value.reason, /old_string and new_string must differ/)
+  await agentScope.dispose()
+  await ctx.fiber.dispose()
+  assert.deepEqual(Object.getOwnPropertyDescriptor(hostOutput, 'presentationMeta'), originalCallbackDescriptor)
+  callbackRevision = 2
+  assert.deepEqual(hostOutput.presentationMeta({}, {}), { ownerTag: 'host-output-owner', revision: 2 })
+})
+
+test('bridge disposal restores inherited presentation callback ownership', async t => {
+  const state = fixture()
+  t.after(() => state.dispose())
+  const prototype = { presentationMeta() { return { owner: this.owner } } }
+  const output = state.runCodeDefinition.output
+  output.owner = 'host'
+  Object.setPrototypeOf(output, prototype)
+  assert.equal(Object.hasOwn(output, 'presentationMeta'), false)
+  const result = await state.runDurable('inherited-callback', 'return 1')
+  assert.equal(result.meta.owner, 'host')
+  assert.equal(Object.hasOwn(output, 'presentationMeta'), true)
+  prototype.presentationMeta = function () { return { owner: this.owner, revised: true } }
+  const revised = await state.runDurable('inherited-callback', 'return 2')
+  assert.equal(revised.meta.revised, true)
+  await state.dispose()
+  assert.equal(Object.hasOwn(output, 'presentationMeta'), false)
+  prototype.presentationMeta = function () { return { owner: this.owner, revised: true } }
+  assert.deepEqual(output.presentationMeta({}, {}), { owner: 'host', revised: true })
+})
+
+test('bridge presentation supports an output without a prototype callback', async t => {
+  let observation
+  const state = fixture({ userBindingsEnabled: false }, {
+    bindingRpc(handler) { observation = handler },
+  })
+  t.after(() => state.dispose())
+  const output = state.runCodeDefinition.output
+  Object.setPrototypeOf(output, null)
+  const result = await state.runDurable('null-prototype-output', 'let answer = 1; return answer')
+  assert.ok(result.meta.dshPtcPlus)
+  const memory = result.meta.dshPtcPlusBindings.memory
+  assert.equal(memory.observation, undefined)
+  const observed = await observation('observe', { sessionId: 'null-prototype-output', memory },
+    new AbortController().signal)
+  assert.equal(observed.ok, true)
+  assert.equal(observed.value.observation.entries[0].text, '1')
+  assert.equal(memory.observation, undefined)
+  await state.dispose()
+  assert.equal(Object.hasOwn(output, 'presentationMeta'), false)
+})
+
+test('definition patch rollback restores a configurable presentation getter', async t => {
+  const state = fixture()
+  t.after(() => state.dispose())
+  let revision = 1
+  const output = state.runCodeDefinition.output
+  Object.defineProperty(output, 'presentationMeta', { configurable: true,
+    get() { const selected = revision; return () => ({ revision: selected }) } })
+  const descriptor = Object.getOwnPropertyDescriptor(output, 'presentationMeta')
+  Object.defineProperty(state.runCodeDefinition, 'execute', { value: () => 1, configurable: false })
+  await assert.rejects(state.run('callback-rollback', 'return 1'), /cannot attach the session journal/)
+  assert.deepEqual(Object.getOwnPropertyDescriptor(output, 'presentationMeta'), descriptor)
+  revision = 2
+  assert.deepEqual(output.presentationMeta({}, {}), { revision: 2 })
 })
 
 test('preserves disabled derived edit bindings across visible surface generations', async (t) => {

@@ -7,6 +7,16 @@
 // the disposal contract lives here once. Each mock composes it with the storage,
 // services and failure injection its scenario needs.
 
+import { createExecutionSeam } from '../internal/execution-seam-compat.js'
+
+export function createFixtureExecutionProvider(original, serviceName = 'ptcRuntime') {
+  return createExecutionSeam(original, serviceName).provider
+}
+
+export function executionInstalled(provider) {
+  return createExecutionSeam(provider, 'codeRuntime').active
+}
+
 const once = action => {
   let active = true
   return () => {
@@ -78,17 +88,55 @@ export function createHostContext({ onListener } = {}) {
 
 // Minimal `ctx.inject` for fixtures that call `apply` themselves. Cordis runs an
 // injected callback once every named service is available, and never runs it
-// otherwise. These fixtures pass the plugin its host context directly, so the
-// services it requires beside an injected one are already reachable; only a
-// registered service decides that the callback runs. A name this host does not
-// offer therefore never runs its callback, which is the state a deployment
-// without that service is in.
+// otherwise. A fixture can expose a service through its service map or public
+// context, but every requested service must be present before activation.
 export function serviceInjector(services, host) {
   const pending = new Set()
   const failures = []
   const inject = (names, callback) => {
-    if (names.some(name => services[name] !== undefined)) {
-      const activation = callback(host())
+    const context = host()
+    const owned = []
+    const fiber = { state: 2 }
+    const dispose = once(async () => {
+      fiber.state = 3
+      for (const cleanup of owned.reverse()) await cleanup()
+    })
+    fiber.dispose = dispose
+    context.effect?.(() => dispose)
+    const required = new Map(names.map(name => {
+      const provided = services[name] === undefined ? context.get?.(name) : services[name]
+      return [name, provided === undefined ? context[name] : provided]
+    }))
+    if ([...required.values()].every(service => service !== undefined)) {
+      const scope = Object.create(context)
+      for (const [name, service] of required) {
+        Object.defineProperty(scope, name, { configurable: true, enumerable: true, value: service })
+      }
+      scope.fiber = fiber
+      scope.get = name => required.has(name) ? required.get(name) : context.get?.(name)
+      const requireActive = () => {
+        if (fiber.state === 3) throw new Error('injected fixture lifetime disposed')
+      }
+      scope.effect = register => {
+        requireActive()
+        const cleanup = register()
+        const release = once(() => cleanup?.())
+        owned.push(release)
+        return release
+      }
+      scope.on = (...args) => {
+        requireActive()
+        const release = context.on(...args)
+        owned.push(release)
+        return release
+      }
+      scope.inject = (...args) => {
+        requireActive()
+        const release = typeof context.inject === 'function' ? context.inject(...args) : inject(...args)
+        owned.push(() => typeof release === 'function' ? release() : release?.dispose?.())
+        return release
+      }
+      const activation = callback(scope)
       if (typeof activation?.then === 'function') {
         let settlement
         settlement = Promise.resolve(activation)
@@ -97,7 +145,7 @@ export function serviceInjector(services, host) {
         pending.add(settlement)
       }
     }
-    return () => {}
+    return dispose
   }
   inject.settle = async () => {
     while (pending.size > 0) await Promise.all([...pending])

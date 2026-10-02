@@ -1,5 +1,15 @@
-# Attach the session REPL after both the tools registry and Code Runtime exist.
-# The plugin adds a virtual rejected-cell edit transport beside DSH's run_code.
+- id: ptc-runtime
+  isolate:
+    ptcRuntime: ptc-plus-original
+
 - insert:
+    - id: ptc-plus-execution
+      name: dsh-ptc-plus/execution-provider
+      intercept:
+        loader:
+          await: false
+      config:
+        originalEntryId: ptc-runtime
+        isolation: ptc-plus-original
     - id: ptc-plus
       name: dsh-ptc-plus

@@ -33,6 +33,7 @@ async function loadBundle() {
   const exported = loaded.factory(name => {
     requested.push(name)
     if (name === 'react') return react
+    if (name === 'react-dom') return { createPortal: value => value }
     if (name === '@deepseek-ai/dsh-client-ui-primitives') return primitives
     throw new Error(`unexpected client dependency ${name}`)
   })
@@ -50,13 +51,22 @@ test('keeps generated client bundle checkout bytes stable', () => {
 test('checked client bundle loads through the DSH module loader contract', async () => {
   const { loaded, exported, packageJson, requested } = await loadBundle()
   assert.equal(loaded.id, packageJson.name)
-  assert.deepEqual([...new Set(requested)], ['react', '@deepseek-ai/dsh-client-ui-primitives'])
+  assert.deepEqual([...new Set(requested)], ['react', 'react-dom', '@deepseek-ai/dsh-client-ui-primitives'])
   assert.equal(Array.from(exported.inject).join(','), 'slots,locale,connection,remote')
   assert.equal(typeof exported.apply, 'function')
   assert.equal(packageJson.dsh.client.platform, 'web')
-  assert.deepEqual(packageJson.dsh.client.external, ['react'])
+  // The shell prefetches only rows that ask for it; both frozen generations
+  // read the flag.
+  assert.equal(packageJson.dsh.client.immediately, true)
+  // `external` names non-baseline runtime requests, and React comes from the
+  // shell's baseline module table, so declaring it adds no graph edge.
+  assert.equal(packageJson.dsh.client.external, undefined)
   assert.ok(packageJson.dsh.client.inject.includes('@deepseek-ai/dsh-api-remotes'))
   assert.ok(packageJson.dsh.client.inject.includes('@deepseek-ai/dsh-client-locale'))
+  // `inject` only orders arrival of real Client rows: a baseline seed word and
+  // a package no generation ships can never become one.
+  assert.equal(packageJson.dsh.client.inject.includes('@deepseek-ai/dsh-client-ui-primitives'), false)
+  assert.equal(packageJson.dsh.client.inject.includes('@deepseek-ai/dsh-client-runtime'), false)
   assert.equal(packageJson.dsh.client.inject.includes('@deepseek-ai/dsh-client-ui-session'), false)
 })
 

@@ -7,8 +7,10 @@
   "main": "./index.js",
   "exports": {
     ".": "./index.js",
+    "./execution-provider": "./internal/execution-provider-owner.js",
     "./client": "./client.js",
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json"
   },
   "files": [
     "index.js",
@@ -29,15 +31,12 @@
     "assets/ptc-plus-icon.svg",
     "assets/dsh-ptc-plus-banner-en.webp",
     "assets/dsh-ptc-plus-banner-zh.webp",
-    "assets/ptc-plus-bindings-en.png",
-    "assets/ptc-plus-bindings-zh.png",
-    "assets/ptc-plus-repair-zh.png",
-    "assets/ptc-plus-repair-en.png",
     "assets/ptc-plus-repl-workspace-en.png",
     "assets/ptc-plus-repl-workspace-zh.png",
     "assets/ptc-plus-settings-en.png",
     "assets/ptc-plus-settings-zh.png",
     "cordis.patch.yml",
+    "locale",
     "README.md",
     "README.en.md",
     "LICENSE"
@@ -91,6 +90,7 @@
     "test:semantics": "node --test --test-concurrency=1 test/semantic-test262.test.js test/semantic-dialect.test.js test/semantic-boundaries.test.js",
     "semantic:check": "node scripts/semantic-obligations.mjs",
     "test:client:web": "node scripts/client-web-smoke.mjs",
+    "test:client:fallback": "node scripts/client-fallback-smoke.mjs",
     "test:client:layout": "node scripts/client-binding-layout.mjs",
     "host:baseline:update": "node scripts/dsh-dependency-baseline.mjs update",
     "host:baseline:verify": "node scripts/dsh-dependency-baseline.mjs verify",
@@ -139,19 +139,15 @@
     },
     "client": {
       "platform": "web",
-      "external": [
-        "react"
-      ],
+      "immediately": true,
       "inject": [
         "@deepseek-ai/dsh-api-gateway",
         "@deepseek-ai/dsh-api-remotes",
-        "@deepseek-ai/dsh-client-runtime",
         "@deepseek-ai/dsh-client-locale",
         "@deepseek-ai/dsh-client-ui-settings",
         "@deepseek-ai/dsh-client-ui-settings-plugins",
         "@deepseek-ai/dsh-client-ui-conversation",
-        "@deepseek-ai/dsh-client-connection",
-        "@deepseek-ai/dsh-client-ui-primitives"
+        "@deepseek-ai/dsh-client-connection"
       ]
     }
   },

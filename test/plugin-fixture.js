@@ -1,8 +1,10 @@
 import { apply } from '../index.js'
-import { sessionEvents } from '../internal/session-events.js'
+import { Context } from '@deepseek-ai/cordis'
+import { SessionProjectionRegistry } from '@deepseek-ai/dsh-session-projection'
+import { recordedSessionEvents as sessionEvents } from './session-observation-fixture.js'
 import { normalizeJournal } from '../internal/session-journal.js'
 import { readRuntimeMessage } from '../internal/runtime-messages.js'
-import { createHostContext, runHookChain, serviceInjector } from './host-fixture.js'
+import { createFixtureExecutionProvider, createHostContext, runHookChain, serviceInjector } from './host-fixture.js'
 
 export const JOURNAL_POLICY = { autoRewriteImports: true, autoStripExports: true, autoSplitRedeclarations: true }
 
@@ -122,6 +124,7 @@ export function ptcAgent(id, session = { id, events: [] }) {
     registration,
     ctx: {
       tools,
+      inject: serviceInjector({}, () => agent.ctx),
     },
   }
   return agent
@@ -133,6 +136,7 @@ export function fixture(config = {}, fixtureOptions = {}) {
   let disposal
   const upstreamCalls = []
   const defaultSessions = new Map()
+  const requestContexts = new Map()
   let nextCallId = 0
   const runCodeDefinition = {
     name: 'run_code',
@@ -153,7 +157,7 @@ export function fixture(config = {}, fixtureOptions = {}) {
   // The execution seam the host registers. The current generation resolves a
   // request before running it; the preceding one runs the request as given.
   const seamServiceName = fixtureOptions.seamService ?? 'ptcRuntime'
-  const runtime = {
+  const originalRuntime = Object.freeze({
     language: 'typescript',
     isolation: 'process',
     get executionInstructions() {
@@ -174,10 +178,22 @@ export function fixture(config = {}, fixtureOptions = {}) {
       if (fixtureOptions.upstreamRun !== undefined) return fixtureOptions.upstreamRun(request)
       return { logs: ['upstream'], value: 'upstream' }
     },
+  })
+  const runtime = createFixtureExecutionProvider(originalRuntime, seamServiceName)
+  const services = { [seamServiceName]: runtime,
+    sessionProjections: new SessionProjectionRegistry(new Context()),
+    sessionQuery: { async observeSession(id) {
+      const session = defaultSessions.get(id)
+      if (session === undefined) throw new Error(`fixture has no observation source for ${id}`)
+      const events = sessionEvents(session)
+      return { events, header: session.header, cursor: events.length - 1, [Symbol.dispose]() {} }
+    } },
   }
-  const services = { [seamServiceName]: runtime }
   const seamInject = serviceInjector(services, () => ctx)
   const ctx = {
+    get(name) { return services[name] ?? this[name] },
+    sessionProjections: services.sessionProjections,
+    sessionQuery: services.sessionQuery,
     inject(names, callback) {
       if (names.length === 1 && names[0] === 'ptcPlusRpc') {
         if (fixtureOptions.bindingRpc === undefined) return () => {}
@@ -230,7 +246,7 @@ export function fixture(config = {}, fixtureOptions = {}) {
         ? scope.ctx.tools.schemas(scope)
         : [...definitions.values(), ...(fixtureOptions.schemas ?? [])],
     },
-    ...(fixtureOptions.agents === undefined ? {} : { agents: fixtureOptions.agents }),
+    agents: fixtureOptions.agents ?? { list: () => [] },
     systemPrompt: {
       context: host.ctx.systemPrompt.context,
       section: host.ctx.systemPrompt.section,
@@ -263,6 +279,7 @@ export function fixture(config = {}, fixtureOptions = {}) {
     const execute = listeners.get('tools/execute')[0]
     const controller = options.controller ?? new AbortController()
     let agentSession = options.session
+    if (typeof agentSession === 'string') agentSession = defaultSessions.get(agentSession)
     const recordSession = options.recordSession !== false
     const deferResult = options.recordSession === 'deferred-result'
     if (agentSession === undefined) {
@@ -272,6 +289,10 @@ export function fixture(config = {}, fixtureOptions = {}) {
         defaultSessions.set(session, agentSession)
       }
     }
+    if (agentSession.id === undefined) agentSession.id = String(session)
+    defaultSessions.set(agentSession.id, agentSession)
+    const requestContext = requestContexts.get(agentSession.id)
+    const signal = options.controller?.signal ?? requestContext?.signal ?? controller.signal
     const callId = options.callId ?? `fixture-call-${++nextCallId}`
     let call
     if (recordSession) {
@@ -327,7 +348,8 @@ export function fixture(config = {}, fixtureOptions = {}) {
     const exec = {
       name: 'run_code',
       callId,
-      agent: { id: session, session: agentSession },
+      signal,
+      agent: requestContext?.agent ?? { id: session, session: agentSession },
     }
     let raw
     let result = await execute(exec, async () => {
@@ -341,7 +363,7 @@ export function fixture(config = {}, fixtureOptions = {}) {
             : { emptyObjectMembers: options.toolEmptyObjectMembers }),
           errorClass: { name: 'ToolCallError', memberNameProperty: 'toolName' },
         }, ...(options.bindings ?? [])],
-        signal: controller.signal,
+        signal,
       })
       const meta = runCodeDefinition.output.presentationMeta?.({}, raw.value)
       if (raw.error) {
@@ -371,6 +393,10 @@ export function fixture(config = {}, fixtureOptions = {}) {
   }
 
   async function assemble(assembly, context = {}, next) {
+    if (context.agent !== undefined) {
+      context.agent.ctx ??= {}
+      context.agent.ctx.inject ??= serviceInjector({}, () => context.agent.ctx)
+    }
     context.agent?.ctx?.tools?.bindFixtureRegistry?.(
       name => definitions.get(name),
       scope => [
@@ -390,6 +416,15 @@ export function fixture(config = {}, fixtureOptions = {}) {
 
   async function assembleStep(assembly, context) {
     const session = context.agent?.session
+    if (session !== undefined) {
+      if (session.id === undefined) session.id = String(context.agent.id)
+      defaultSessions.set(session.id, session)
+      if (Array.isArray(session.events)) {
+        for (let index = 0; index < session.events.length; index += 1) {
+          if (!Object.hasOwn(session.events[index], 'seq')) session.events[index].seq = index
+        }
+      }
+    }
     // These legacy test fixtures declare an append-only, fully visible surface.
     // Real compaction and admission behavior is covered with DSH Session/AgentLoop.
     if (session !== undefined && session.surface === undefined && Array.isArray(session.events)) {
@@ -403,6 +438,7 @@ export function fixture(config = {}, fixtureOptions = {}) {
       }
     }
     const result = await assemble(assembly, context)
+    if (session !== undefined) requestContexts.set(session.id, context)
     const payload = { agent: context.agent, signal: context.signal, turn: 1, step: 1, messages: [] }
     const entries = [...listeners.get('agent/pre-step') ?? []]
     const dispatch = index => entries[index] === undefined
@@ -428,6 +464,7 @@ export function fixture(config = {}, fixtureOptions = {}) {
     ctx,
     listeners,
     runtime,
+    originalRuntime,
     runCodeDefinition,
     sections,
     upstreamCalls,

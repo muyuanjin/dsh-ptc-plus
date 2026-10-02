@@ -63,7 +63,14 @@ export function installSettingsSectionCompat({
 }) {
   ctx.inject(['settings'], settingsContext => {
     const provider = settingsContext.settings
-    onProvider(provider)
+    const sectionInstalled = typeof provider?.installSection === 'function'
+      || typeof settingsModule?.installSettingsSection === 'function'
+    const writeNamespace = sectionInstalled ? namespace : (ownerFiber ?? ctx.fiber)?.entry?.options?.id
+    const writer = typeof provider?.update === 'function'
+      && typeof writeNamespace === 'string' && writeNamespace.length > 0
+      ? Object.freeze({ update: patch => provider.update(writeNamespace, patch) }) : undefined
+    const unbind = onProvider(provider, writer)
+    if (typeof unbind === 'function') settingsContext.effect(() => unbind, 'ptc-plus settings writer')
     if (typeof provider?.installSection === 'function') {
       provider.installSection(ctx, namespace, schema, entry, hooks)
       return
@@ -79,7 +86,10 @@ export function installSettingsSectionCompat({
         // fiber, so the owner is the plugin's entry context rather than the
         // scope this installation happens to run in.
         const dispose = provider.configure({ auto: false }, ownerFiber ?? ctx.fiber)
-        ctx.effect?.(() => dispose, 'ptc-plus settings page policy')
+        // The policy belongs to the settings surface that accepted it, so its
+        // disposer is released when that surface goes away instead of
+        // accumulating on the plugin scope across settings reloads.
+        settingsContext.effect?.(() => dispose, 'ptc-plus settings page policy')
       }
       return
     }

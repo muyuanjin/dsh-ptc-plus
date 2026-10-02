@@ -10,13 +10,13 @@ import { featureEnabled } from './client-feature-gates.js'
 export function createPtcSettingsView(React, deps) {
   const { ActionButton, BindingsDialog, Modal, useWorkbenchController, icons } = deps
   const h = React.createElement
-  const focusableSelector = 'button:not(:disabled),input:not(:disabled),textarea:not(:disabled),select:not(:disabled),[href],[tabindex]:not([tabindex="-1"]),[contenteditable=true],summary'
 
   function fieldInput(field, value, disabled, onChange, label) {
     if (field.type === 'boolean') {
       return h('input', {
         type: 'checkbox', role: 'switch', className: 'ptcPlusCheck', checked: value === true,
         disabled, 'aria-label': label,
+        'data-modal-autofocus': field.key === 'enabled' && !disabled ? true : undefined,
         onChange: event => onChange(field, event.target.checked),
       })
     }
@@ -174,34 +174,7 @@ export function createPtcSettingsView(React, deps) {
 
   function PTCPlusSettingsDialog(props) {
     const { t, onClose } = props
-    const body = React.useRef(null)
     const [bindingsOpen, setBindingsOpen] = React.useState(false)
-    React.useEffect(() => {
-      const dialog = body.current?.closest('[role=dialog]')
-      const target = body.current?.querySelector(focusableSelector)
-        ?? dialog?.querySelector(focusableSelector)
-      target?.focus({ preventScroll: true })
-    }, [])
-    React.useEffect(() => {
-      const trapFocus = event => {
-        if (event.key !== 'Tab' || bindingsOpen) return
-        const dialog = body.current?.closest('[role=dialog]')
-        if (dialog === undefined || dialog === null) return
-        const controls = [...dialog.querySelectorAll(focusableSelector)]
-          .filter(element => !element.closest('[hidden], [inert], [aria-hidden="true"]'))
-        const first = controls[0]
-        const last = controls.at(-1)
-        const active = document.activeElement
-        if (!dialog.contains(active)
-          || (event.shiftKey && active === first)
-          || (!event.shiftKey && active === last)) {
-          event.preventDefault()
-          ;(event.shiftKey ? last : first)?.focus({ preventScroll: true })
-        }
-      }
-      document.addEventListener('keydown', trapFocus)
-      return () => document.removeEventListener('keydown', trapFocus)
-    }, [bindingsOpen])
     const close = () => {
       if (!bindingsOpen) onClose()
     }
@@ -213,7 +186,7 @@ export function createPtcSettingsView(React, deps) {
       description: t('card.description'),
       className: 'ptcPlusSettingsModal',
       contentClassName: 'ptcPlusSettingsDialogContent',
-    }, h('div', { className: 'ptcPlusSettingsDialog', ref: body },
+    }, h('div', { className: 'ptcPlusSettingsDialog' },
       h(PTCPlusSettingsCard, { ...props, view: 'dialog', onBindingsOpenChange: setBindingsOpen })))
   }
 

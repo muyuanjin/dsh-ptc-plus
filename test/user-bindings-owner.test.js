@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict'
-import { sessionEvents } from '../internal/session-events.js'
 import { once } from 'node:events'
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -680,7 +679,7 @@ test('draft removal never appends presentation notifications to a Session', asyn
     else await fixture.owner.dispose()
     assert.equal(fixture.owner.draftCapabilityForAgent(fixture.agent), null)
     assert.equal(appends.mock.callCount(), 0, action)
-    assert.deepEqual(sessionEvents(session), [])
+    assert.deepEqual(session.snapshotEvents(), [])
   }
 })
 

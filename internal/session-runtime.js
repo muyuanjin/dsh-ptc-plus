@@ -244,6 +244,7 @@ class SessionKernel {
   }
 
   async execute(request, config) {
+    const observedSession = request.sessionLog ?? this.session
     const recoveryBoundaries = this.initialRecoveryBoundary === undefined
       ? []
       : [this.initialRecoveryBoundary]
@@ -256,7 +257,7 @@ class SessionKernel {
     if (this.surfaceProvenanceRequired
       && (currentGeneration !== this.surfaceGeneration || hasLiveState)) {
       this.surfaceGeneration = currentGeneration
-      const visibleCallSeqs = visibleExecutableCallSeqs(this.session)
+      const visibleCallSeqs = visibleExecutableCallSeqs(observedSession)
       const contractsLiveState = [...this.liveCallSeqs].some(callSeq => (
         !(visibleCallSeqs instanceof Set) || !visibleCallSeqs.has(callSeq)
       ))
@@ -267,7 +268,7 @@ class SessionKernel {
         if (config.durableReplay) {
           this.recoveryNotice = undefined
           try {
-            this.history = recoverJournal(this.session, request.callSeq, {
+            this.history = recoverJournal(observedSession, request.callSeq, {
               visibleCallSeqs,
             })
           } catch (error) {
@@ -309,9 +310,9 @@ class SessionKernel {
             if (!(error instanceof ReplayFailure)) throw error
             const previousPathLength = pathToHead(this.history).length
             const boundary = recoveryBoundaryForHistory(this.history, error.node)
-            const recovered = recoverJournal(this.session, request.callSeq, {
+            const recovered = recoverJournal(observedSession, request.callSeq, {
               extraBoundaries: [boundary],
-              visibleCallSeqs: visibleExecutableCallSeqs(this.session),
+              visibleCallSeqs: visibleExecutableCallSeqs(observedSession),
             })
             const nextPathLength = pathToHead(recovered).length
             if (nextPathLength >= previousPathLength) throw new Error('recovery did not contract the historical frontier')
@@ -631,6 +632,8 @@ export class SessionRuntime {
     this.kernels = new Map()
     this.pendingNoops = new Map()
     this.settlements = new WeakSet()
+    this.preparingCells = new Set()
+    this.submissions = new WeakSet()
     this.disposed = false
     this.userBindingsCwd = options.userBindingsCwd ?? process.cwd()
     if (typeof this.userBindingsCwd !== 'string' || !isAbsolute(this.userBindingsCwd)) {
@@ -638,6 +641,7 @@ export class SessionRuntime {
     }
     this.withInitiator = typeof options.withInitiator === 'function' ? options.withInitiator : undefined
     this.observeSession = options.observeSession ?? (() => false)
+    this.readSessionLog = options.readSessionLog ?? (async session => session)
     this.disposal = undefined
   }
 
@@ -647,8 +651,31 @@ export class SessionRuntime {
     return execution.result
   }
 
+  beginSubmission(sessionContext, signal) {
+    const admission = { sessionId: sessionOf(sessionContext).id, config: this.config,
+      signal, cancelled: this.disposed }
+    this.submissions.add(admission)
+    if (!this.disposed) this.preparingCells.add(admission)
+    return admission
+  }
+
+  releaseSubmission(admission) {
+    this.preparingCells.delete(admission)
+    this.submissions.delete(admission)
+  }
+
+  assertSubmission(admission) {
+    if (this.disposed) throw new Error('PTC runtime disposed')
+    if (admission.cancelled || !this.submissions.has(admission)) throw new Error('PTC session disposed')
+  }
+
   reconfigure(config) {
     const resolved = resolvedRuntimeConfig(config)
+    for (const admission of this.preparingCells) {
+      if (!admission.signal?.aborted && resolved.maxOldGenerationSizeMb !== admission.config.maxOldGenerationSizeMb) {
+        throw new Error('ptc-plus: maxOldGenerationSizeMb cannot change while a session worker is active; retry after the session is disposed')
+      }
+    }
     const kernels = [...this.kernels.values()]
     for (const kernel of kernels) kernel.assertReconfigurationAllowed(resolved)
     for (const kernel of kernels) kernel.reconfigure(resolved)
@@ -665,7 +692,6 @@ export class SessionRuntime {
   async runTentative(sessionContext, request) {
     const completed = result => Object.freeze({ result, settlement: undefined })
     if (this.disposed) return completed({ logs: [], error: { kind: 'abort', message: 'PTC runtime disposed' } })
-    const cellConfig = this.config
     let bindingDescriptors
     try {
       bindingDescriptors = normalizeBindingDescriptors(request?.bindings)
@@ -683,34 +709,49 @@ export class SessionRuntime {
     } = sessionOf(sessionContext)
     let callSeq
     let sourceCallSeq
+    let sessionLog
+    const admission = sessionContext?.submission ?? this.beginSubmission(sessionContext, request.signal)
+    if (!this.submissions.has(admission) || admission.sessionId !== sessionId) {
+      return completed({ logs: [], error: { kind: 'exception', message: 'PTC submission does not belong to this session runtime' } })
+    }
+    const cellConfig = admission.config
+    const aborted = () => this.disposed || admission.cancelled
+    const abortResult = () => completed({ logs: [], error: { kind: 'abort',
+      message: request.signal?.aborted ? String(request.signal.reason)
+        : this.disposed ? 'PTC runtime disposed' : 'PTC session disposed' } })
     try {
+      sessionLog = sessionContext?.sessionLog ?? await this.readSessionLog(session, request.signal)
+      if (aborted()) return abortResult()
       if (persistedCallSeq !== undefined
         && !isCanonicalSequence(persistedCallSeq)) {
         throw new Error('persisted tool call sequence must be a non-negative safe integer')
       }
       if (cellConfig.durableReplay) {
-        sourceCallSeq = liveToolCallSeq(session, callId, 'run_code')
+        sourceCallSeq = liveToolCallSeq(sessionLog, callId, 'run_code')
         callSeq = persistedCallSeq ?? sourceCallSeq
       } else {
         sourceCallSeq = persistedCallSeq
         if (sourceCallSeq === undefined) {
           try {
-            sourceCallSeq = liveToolCallSeq(session, callId, 'run_code')
+            sourceCallSeq = liveToolCallSeq(sessionLog, callId, 'run_code')
           } catch {
             sourceCallSeq = undefined
           }
         }
       }
     } catch (error) {
+      if (aborted() || request.signal?.aborted) return abortResult()
       return completed({ logs: [], error: { kind: 'recovery', message: `cannot identify current run_code call in session log: ${messageOf(error)}` } })
+    } finally {
+      this.releaseSubmission(admission)
     }
     let kernel = this.kernels.get(sessionId)
     if (kernel === undefined) {
       let history
       try {
         history = cellConfig.durableReplay
-          ? recoverJournal(session, callSeq, {
-            visibleCallSeqs: visibleExecutableCallSeqs(session),
+          ? recoverJournal(sessionLog, callSeq, {
+            visibleCallSeqs: visibleExecutableCallSeqs(sessionLog),
           })
           : emptyHistory()
       } catch (error) {
@@ -742,7 +783,7 @@ export class SessionRuntime {
     const workerReservation = kernel.reserveWorkerConfiguration(cellConfig)
     let result
     try {
-      result = await kernel.run({ ...request, journal, callSeq, sourceCallSeq }, cellConfig)
+      result = await kernel.run({ ...request, journal, callSeq, sourceCallSeq, sessionLog }, cellConfig)
     } finally {
       kernel.releaseWorkerConfiguration(workerReservation)
     }
@@ -793,6 +834,12 @@ export class SessionRuntime {
 
   async disposeSession(sessionId) {
     const id = String(sessionId)
+    for (const admission of this.preparingCells) {
+      if (admission.sessionId === id) {
+        admission.cancelled = true
+        this.preparingCells.delete(admission)
+      }
+    }
     const kernel = this.kernels.get(id)
     this.pendingNoops.delete(id)
     if (kernel === undefined) return
@@ -815,6 +862,7 @@ export class SessionRuntime {
 
   async #dispose() {
     this.disposed = true
+    this.preparingCells.clear()
     const entries = [...this.kernels]
     const results = await Promise.allSettled(entries.map(async ([id, kernel]) => {
       await kernel.dispose()

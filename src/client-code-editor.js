@@ -4,6 +4,7 @@ import { EditorView, keymap } from '@codemirror/view'
 import { HighlightStyle, syntaxHighlighting } from '@codemirror/language'
 import { javascript } from '@codemirror/lang-javascript'
 import { tags } from '@lezer/highlight'
+import { adoptUnownedStyles, captureUnownedStyles } from './client-styles.js'
 
 const editorTheme = EditorView.theme({
   '&': { backgroundColor: 'var(--dsw-alias-bg-layer-3)', color: 'var(--dsw-alias-label-primary)', fontSize: '12px' },
@@ -40,6 +41,10 @@ export function createTypeScriptEditor(React) {
     const accessExtensions = () => [EditorState.readOnly.of(disabled), EditorView.editable.of(!disabled)]
 
     React.useLayoutEffect(() => {
+      // style-mod mounts one global sheet per document and cannot tag it, so
+      // the plugin that mounts the editor claims the sheet this mount added
+      // before any other client plugin can take it over.
+      const unowned = captureUnownedStyles()
       const editor = new EditorView({
         parent: parent.current,
         state: EditorState.create({ doc: value, extensions: [
@@ -63,6 +68,7 @@ export function createTypeScriptEditor(React) {
           }),
         ] }),
       })
+      adoptUnownedStyles(unowned)
       view.current = editor
       return () => { view.current = null; editor.destroy() }
     }, [documentId])

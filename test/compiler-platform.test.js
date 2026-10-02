@@ -6,7 +6,7 @@ import { Hash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { SourceMap } from 'node:module'
 import path from 'node:path'
-import { URL, fileURLToPath } from 'node:url'
+import { URL, fileURLToPath, pathToFileURL } from 'node:url'
 import { TextDecoder, TextEncoder } from 'node:util'
 import { createContext, Script } from 'node:vm'
 import { deflateRawSync as nativeDeflate, inflateRawSync as nativeInflate } from 'node:zlib'
@@ -88,6 +88,7 @@ test('compiler platform gives dependencies realm-owned codecs and closed module 
       checks:[types.isMap(new Map()),types.isSet(new Set()),types.isUint32Array(new Uint32Array()),types.isMap({})],
       url:String(new URL('./space%20name.js','file:///C:/project/main.js')),
       filename:require('url').fileURLToPath(new URL('file:///C:/project%20space/file.js')),
+      stripped:require('node:module').stripTypeScriptTypes('const value: number = 42;'),
       cwd:typeof process.cwd(),version:process.version, nextTick:typeof process.nextTick,
       basic:Buffer.from('hello').toString()
     });
@@ -106,6 +107,9 @@ test('compiler platform gives dependencies realm-owned codecs and closed module 
   assert.deepEqual(value.checks, [true, true, true, false])
   assert.equal(value.url, 'file:///C:/project/space%20name.js')
   assert.equal(value.filename, fileURLToPath('file:///C:/project%20space/file.js'))
+  assert.equal(compilerPlatformBridge.pathToFileURL('compiler platform space.ts').href,
+    pathToFileURL('compiler platform space.ts').href)
+  assert.equal(value.stripped, 'const value         = 42;')
   assert.equal(value.cwd, 'string')
   assert.equal(value.version, process.version)
   assert.equal(value.nextTick, 'undefined')

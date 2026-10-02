@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { Context } from '@deepseek-ai/cordis'
+import { createRuntimeBridgeOwner } from '../internal/runtime-bridge-owner.js'
 import {
   EXECUTION_SEAM_SERVICE,
   LEGACY_EXECUTION_SEAM_SERVICE,
@@ -43,10 +44,22 @@ class NodeRuntimeProvider {
 // injection stays registered like a Cordis fiber, so providing the service it
 // named runs its callback again; a scenario that unloads the injected fiber
 // clears the lifecycle cleanups it registered.
+const fixtureProviders = new WeakMap()
+const composed = (service, serviceName) => {
+  if (service === undefined || typeof service.run !== 'function'
+    || (serviceName === EXECUTION_SEAM_SERVICE && typeof service.resolve !== 'function')) return service
+  let provider = fixtureProviders.get(service)
+  if (provider === undefined) {
+    provider = createExecutionSeam(service, serviceName).provider
+    fixtureProviders.set(service, provider)
+  }
+  return provider
+}
+
 function seamHost(initial = {}) {
   // Both the plugin's own required services and the seam it waits for are
   // registered through the same injection, so every scenario provides `core`.
-  const services = { core: {}, ...initial }
+  const services = { core: {}, ...Object.fromEntries(Object.entries(initial).map(([name, service]) => [name, composed(service, name)])) }
   const injections = []
   const cleanups = []
   const failures = []
@@ -111,7 +124,7 @@ function seamHost(initial = {}) {
     failures,
     disposeAttempts,
     provide(name, service) {
-      services[name] = service
+      services[name] = composed(service, name)
       flush(name)
     },
     unprovide(name) {
@@ -156,207 +169,151 @@ function seamHost(initial = {}) {
   }
 }
 
-// A provider that records which of its two call shapes the seam reached.
-class RecordingProvider extends NodeRuntimeProvider {
-  calls = []
-
-  resolve(request) {
-    this.calls.push('resolve')
-    return super.resolve(request)
-  }
-
-  async run(spec) {
-    this.calls.push('run')
-    return super.run(spec)
-  }
-}
-
-test('the current seam runs a resolved spec through the plugin entry', async () => {
-  const service = new RecordingProvider()
-  const seam = createExecutionSeam(service, EXECUTION_SEAM_SERVICE)
-  assert.equal(seam.serviceName, 'ptcRuntime')
-  assert.equal(seam.language, 'typescript')
-
-  const seen = []
-  const release = seam.takeOver(request => {
-    seen.push(request)
-    return Promise.resolve({ logs: [], value: 'plugin' })
-  })
-  assert.equal(service.executionInstructions, '')
-  assert.equal(service.sandboxMode, undefined)
-  assert.equal(service.timeout, undefined)
-
-  const result = await service.run(service.resolve({ program: 'return 1', bindings: [], signal: undefined }))
-  assert.deepEqual(result, { logs: [], value: 'plugin' })
-  // Only the plugin entry ran, and it received the seam-neutral request rather
-  // than the resolved directory, deadline, and authority.
-  assert.deepEqual(seen, [{ program: 'return 1', bindings: [], signal: undefined }])
-  assert.deepEqual(service.calls, ['resolve'])
-
-  // The wrapped provider is still reachable through the original call shape.
-  assert.deepEqual(await seam.invokeUpstream({ program: 'return 2', bindings: [] }), {
-    logs: ['provider'],
-    value: 'provider',
-  })
-  assert.deepEqual(service.calls, ['resolve', 'resolve', 'run'])
-
-  release()
-  assert.equal(service.executionInstructions, 'PROVIDER TEXT')
-  assert.equal(service.sandboxMode, 'workspace-write')
-  assert.deepEqual(service.timeout, { defaultMs: 1_000, maxMs: 2_000 })
-  assert.equal(Object.hasOwn(service, 'executionInstructions'), false)
-  assert.equal(Object.hasOwn(service, 'sandboxMode'), false)
-  assert.equal(Object.hasOwn(service, 'timeout'), false)
-  assert.equal(Object.hasOwn(service, 'run'), false)
-})
-
-test('the preceding seam keeps its own call shape and descriptors', async () => {
-  const requests = []
-  const service = {
+test('plugin-owned execution preserves a frozen original and resolved spec identity', async () => {
+  const calls = []
+  const original = Object.freeze({
     language: 'typescript',
-    isolation: 'worker-thread',
-    async run(request) {
-      requests.push(request)
-      return { logs: [], value: 'upstream' }
-    },
-  }
-  const seam = createExecutionSeam(service, LEGACY_EXECUTION_SEAM_SERVICE)
-  const seen = []
-  const release = seam.takeOver(request => {
-    seen.push(request)
-    return Promise.resolve({ logs: [], value: 'plugin' })
-  })
-  // The preceding generation's contract defines none of these members, and the
-  // takeover still leaves no provider capability claim in place.
-  assert.equal(service.executionInstructions, '')
-  assert.equal(service.sandboxMode, undefined)
-  assert.equal(service.timeout, undefined)
-
-  const request = { program: 'return 1', bindings: [] }
-  assert.deepEqual(await service.run(request), { logs: [], value: 'plugin' })
-  assert.deepEqual(seen, [request])
-  assert.deepEqual(requests, [])
-
-  release()
-  assert.deepEqual(await service.run(request), { logs: [], value: 'upstream' })
-  assert.deepEqual(requests, [request])
-  assert.equal(Object.hasOwn(service, 'run'), true)
-  assert.equal(Object.hasOwn(service, 'executionInstructions'), false)
-  assert.equal(Object.hasOwn(service, 'sandboxMode'), false)
-  assert.equal(Object.hasOwn(service, 'timeout'), false)
-
-  // The wrapped provider stays reachable through the preceding generation's own
-  // call shape: the request goes straight to `run`, with no resolve step.
-  assert.deepEqual(await seam.invokeUpstream(request), { logs: [], value: 'upstream' })
-  assert.deepEqual(requests, [request, request])
-})
-
-test('a release leaves a descriptor that another owner replaced', () => {
-  const service = new NodeRuntimeProvider()
-  const seam = createExecutionSeam(service, EXECUTION_SEAM_SERVICE)
-  const release = seam.takeOver(() => Promise.resolve({ logs: [] }))
-  const replacement = async () => ({ logs: ['replacement'] })
-  Object.defineProperty(service, 'run', { configurable: true, writable: true, value: replacement })
-  release()
-  assert.equal(service.run, replacement)
-  // The withheld descriptors this module wrote are still restored.
-  assert.equal(service.executionInstructions, 'PROVIDER TEXT')
-})
-
-test('a failed takeover leaves every execution service descriptor unchanged', () => {
-  const service = new NodeRuntimeProvider()
-  Object.defineProperty(service, 'timeout', {
-    configurable: false,
-    enumerable: true,
-    value: { defaultMs: 1_000, maxMs: 2_000 },
-  })
-  const names = ['run', 'executionInstructions', 'sandboxMode', 'timeout']
-  const before = new Map(names.map(name => [name, Object.getOwnPropertyDescriptor(service, name)]))
-  const seam = createExecutionSeam(service, EXECUTION_SEAM_SERVICE)
-
-  assert.throws(() => seam.takeOver(() => Promise.resolve({ logs: [], value: 'plugin' })),
-    /Cannot redefine property: timeout/)
-  for (const name of names) {
-    assert.deepEqual(Object.getOwnPropertyDescriptor(service, name), before.get(name))
-  }
-})
-
-test('a non-extensible provider can be taken over when every descriptor already exists', () => {
-  const service = {
-    language: 'typescript',
+    isolation: 'process',
     executionInstructions: 'provider',
     sandboxMode: 'workspace-write',
-    timeout: { defaultMs: 1_000 },
-    resolve: request => request,
-    run() {},
+    timeout: Object.freeze({ defaultMs: 1000, maxMs: 2000 }),
+    resolve(request) { calls.push(['resolve', request]); return Object.freeze({ ...request, cwd: '/chosen' }) },
+    async run(spec) { calls.push(['run', spec]); return { logs: [], value: 'original' } },
+  })
+  const descriptors = Object.getOwnPropertyDescriptors(original)
+  const seam = createExecutionSeam(original, EXECUTION_SEAM_SERVICE)
+  assert.equal(seam.active, false)
+  const spec = Object.freeze({
+    program: 'return 1', bindings: Object.freeze([]), cwd: '/custom',
+    sandboxPolicy: Object.freeze({ mode: 'read-only' }), timeoutMs: null,
+  })
+  const release = seam.installExecute(input => Promise.resolve({ logs: [], value: input }))
+  assert.equal(seam.active, true)
+  assert.equal(seam.provider.language, 'typescript')
+  assert.equal(seam.provider.isolation, 'worker-thread')
+  assert.equal(seam.provider.executionInstructions, '')
+  assert.equal(seam.provider.sandboxMode, undefined)
+  assert.equal(seam.provider.timeout, undefined)
+  assert.equal((await seam.provider.run(spec)).value, spec)
+  assert.deepEqual(calls, [])
+  assert.equal((await seam.runUpstream(spec)).value, 'original')
+  assert.equal(calls[0][1], spec)
+  const request = { program: 'return 2', bindings: [] }
+  await seam.invokeUpstream(request)
+  assert.equal(calls[1][0], 'resolve')
+  assert.equal(calls[1][1], request)
+  assert.equal(calls[2][0], 'run')
+  release()
+  release()
+  assert.equal(seam.active, false)
+  assert.equal(seam.provider.isolation, 'process')
+  assert.equal(seam.provider.executionInstructions, 'provider')
+  assert.equal(seam.provider.sandboxMode, 'workspace-write')
+  assert.equal(seam.provider.timeout, original.timeout)
+  assert.deepEqual(Object.getOwnPropertyDescriptors(original), descriptors)
+  assert.equal(createExecutionSeam(seam.provider, EXECUTION_SEAM_SERVICE), seam)
+})
+
+test('non-session consumers delegate an already resolved spec without resolving again', async t => {
+  const seen = []
+  let resolutions = 0
+  const original = Object.freeze({
+    language: 'typescript',
+    resolve() { resolutions += 1; throw new Error('unexpected re-resolution') },
+    async run(spec) { seen.push(spec); return { logs: [], value: 'delegated' } },
+  })
+  const seam = createExecutionSeam(original, EXECUTION_SEAM_SERVICE)
+  const owner = createRuntimeBridgeOwner({
+    ctx: {}, seam, sessionConfig: { userBindingsEnabled: false },
+    presentationGeneration: 'resolved-delegation', sessionId: () => undefined,
+    toolSchemasForAgent: () => [],
+  })
+  t.after(() => owner.dispose())
+  const spec = Object.freeze({
+    program: 'return 42', bindings: [], cwd: '/selected-workspace',
+    timeoutMs: null, sandboxPolicy: Object.freeze({ mode: 'read-only' }),
+  })
+  assert.deepEqual(await seam.provider.run(spec), { logs: [], value: 'delegated' })
+  assert.equal(seen[0], spec)
+  assert.equal(resolutions, 0)
+  assert.deepEqual(await seam.runUpstream(spec), { logs: [], value: 'delegated' })
+  assert.equal(seen[1], spec)
+  assert.equal(resolutions, 0)
+})
+
+test('the historical request-only seam does not introduce a resolution step', async () => {
+  const requests = []
+  const original = Object.seal({
+    language: 'typescript', isolation: 'worker-thread',
+    async run(request) { requests.push(request); return { logs: [], value: 'original' } },
+  })
+  const descriptors = Object.getOwnPropertyDescriptors(original)
+  const seam = createExecutionSeam(original, LEGACY_EXECUTION_SEAM_SERVICE)
+  const release = seam.installExecute(input => Promise.resolve({ logs: [], value: input }))
+  const request = Object.freeze({ program: 'return 1', bindings: [] })
+  assert.equal((await seam.provider.run(request)).value, request)
+  assert.deepEqual(requests, [])
+  await seam.invokeUpstream(request)
+  assert.equal(requests[0], request)
+  release()
+  await seam.provider.run(request)
+  assert.equal(requests[1], request)
+  assert.deepEqual(Object.getOwnPropertyDescriptors(original), descriptors)
+})
+
+test('an installed seam gates changed source language before its asynchronous lifecycle cleanup', async () => {
+  const original = { language: 'typescript', resolve: request => request, run: () => 'original' }
+  const seam = createExecutionSeam(original, EXECUTION_SEAM_SERVICE)
+  let executions = 0
+  const release = seam.installExecute(() => { executions += 1; return 'plugin' })
+  let notifications = 0
+  const unsubscribe = seam.onSourceChange(() => { notifications += 1; release() })
+  original.language = 'python'
+  assert.equal(seam.language, 'python')
+  assert.equal(seam.active, false)
+  assert.throws(() => seam.provider.run({}), /incompatible with the active/)
+  assert.throws(() => seam.provider.resolve({}), /incompatible with the active/)
+  assert.throws(() => seam.invokeUpstream({}), /incompatible with the active/)
+  assert.throws(() => seam.runUpstream({}), /incompatible with the active/)
+  for (const property of ['language', 'isolation', 'executionInstructions', 'sandboxMode', 'timeout']) {
+    assert.throws(() => seam.provider[property], /incompatible with the active/)
   }
-  Object.preventExtensions(service)
-  const seam = createExecutionSeam(service, EXECUTION_SEAM_SERVICE)
-  const release = seam.takeOver(() => Promise.resolve({ logs: [] }))
+  assert.equal(executions, 0)
+  assert.equal(await seam.sourceChanged(), undefined)
+  assert.equal(notifications, 1)
+  assert.equal(seam.provider.language, 'python')
+  assert.equal(seam.provider.run({}), 'original')
+  unsubscribe()
+  await seam.sourceChanged()
+  assert.equal(notifications, 1)
+})
 
-  assert.equal(service.executionInstructions, '')
-  assert.equal(service.sandboxMode, undefined)
-  assert.equal(service.timeout, undefined)
+test('seam installation is exclusive and stale releases cannot remove a newer entry', () => {
+  const seam = createExecutionSeam(Object.freeze(new NodeRuntimeProvider()), EXECUTION_SEAM_SERVICE)
+  assert.throws(() => seam.installExecute(null), /must be a function/)
+  const release = seam.installExecute(() => 'first')
+  assert.throws(() => seam.installExecute(() => 'second'), /already installed/)
   release()
-  assert.equal(service.executionInstructions, 'provider')
-  assert.equal(service.sandboxMode, 'workspace-write')
-  assert.deepEqual(service.timeout, { defaultMs: 1_000 })
-  assert.equal(Object.isExtensible(service), false)
-})
-
-test('a write failure after preflight rolls back descriptors already installed', () => {
-  const target = new NodeRuntimeProvider()
-  Object.defineProperty(target, 'run', {
-    configurable: true,
-    writable: true,
-    value: target.run,
-  })
-  const before = Object.getOwnPropertyDescriptor(target, 'run')
-  const service = new Proxy(target, {
-    defineProperty(object, name, descriptor) {
-      if (name === 'sandboxMode') throw new Error('injected descriptor failure')
-      return Reflect.defineProperty(object, name, descriptor)
-    },
-  })
-  const seam = createExecutionSeam(service, EXECUTION_SEAM_SERVICE)
-
-  assert.throws(() => seam.takeOver(() => Promise.resolve({ logs: [] })), /injected descriptor failure/)
-  assert.deepEqual(Object.getOwnPropertyDescriptor(target, 'run'), before)
-  assert.equal(Object.hasOwn(target, 'executionInstructions'), false)
-})
-
-test('takeover rollback does not overwrite a concurrent descriptor owner', () => {
-  const target = new NodeRuntimeProvider()
-  const replacement = async () => ({ logs: ['replacement'] })
-  const service = new Proxy(target, {
-    defineProperty(object, name, descriptor) {
-      if (name === 'executionInstructions') {
-        Object.defineProperty(object, 'run', {
-          configurable: true,
-          writable: true,
-          value: replacement,
-        })
-        throw new Error('injected descriptor failure')
-      }
-      return Reflect.defineProperty(object, name, descriptor)
-    },
-  })
-  const seam = createExecutionSeam(service, EXECUTION_SEAM_SERVICE)
-
-  assert.throws(() => seam.takeOver(() => Promise.resolve({ logs: [] })), /injected descriptor failure/)
-  assert.equal(target.run, replacement)
-})
-
-test('a second takeover of the same seam is rejected until it is released', () => {
-  const service = new NodeRuntimeProvider()
-  const seam = createExecutionSeam(service, EXECUTION_SEAM_SERVICE)
-  const release = seam.takeOver(() => Promise.resolve({ logs: [] }))
-  assert.throws(() => seam.takeOver(() => Promise.resolve({ logs: [] })), /already taken over/)
+  const second = seam.installExecute(() => 'second')
   release()
-  const second = seam.takeOver(() => Promise.resolve({ logs: [] }))
+  assert.equal(seam.provider.run({}), 'second')
   second()
-  second()
-  assert.equal(Object.hasOwn(service, 'run'), false)
+  seam.retire()
+  assert.throws(() => seam.provider.resolve({}), /generation is unavailable/)
+  assert.throws(() => seam.provider.run({}), /generation is unavailable/)
+  assert.throws(() => seam.installExecute(() => {}), /generation is unavailable/)
+  assert.throws(() => seam.runUpstream({}), /generation is unavailable/)
+  assert.throws(() => seam.invokeUpstream({}), /generation is unavailable/)
+})
+
+test('activation diagnoses an uncomposed public provider instead of mutating it', async t => {
+  const root = new Context()
+  t.after(() => root.fiber.dispose())
+  const original = Object.freeze(new NodeRuntimeProvider())
+  root.provide('ptcRuntime', original)
+  const descriptors = Object.getOwnPropertyDescriptors(original)
+  await assert.rejects(installExecutionSeam(root, { attach() {} }), /public execution-provider bundle composition/)
+  assert.deepEqual(Object.getOwnPropertyDescriptors(original), descriptors)
 })
 
 test('an unusable execution service is rejected with its own name', () => {
@@ -381,7 +338,7 @@ test('attaches to the seam the host registered', () => {
 })
 
 test('normalizes asynchronous activation to a valid injected effect', async () => {
-  const service = { language: 'typescript', run() {} }
+  const service = composed({ language: 'typescript', run() {} }, 'codeRuntime')
   let injectedResult
   const ctx = {
     get: name => name === 'codeRuntime' ? service : undefined,
@@ -399,7 +356,7 @@ test('normalizes asynchronous activation to a valid injected effect', async () =
 test('returns a valid effect through the official Cordis plugin lifecycle', async (t) => {
   const root = new Context()
   t.after(() => root.fiber.dispose())
-  root.provide('codeRuntime', { language: 'typescript', run() {} })
+  root.provide('codeRuntime', composed({ language: 'typescript', run() {} }, 'codeRuntime'))
   const fiber = root.plugin({
     apply(ctx) {
       return installExecutionSeam(ctx, {
@@ -495,8 +452,8 @@ test('current-generation supersession reports missing and failed legacy disposal
   let currentCallback
   let currentLive
   const services = {
-    codeRuntime: { language: 'typescript', run() {} },
-    ptcRuntime: { language: 'typescript', resolve: request => request, run() {} },
+    codeRuntime: composed({ language: 'typescript', run() {} }, 'codeRuntime'),
+    ptcRuntime: composed({ language: 'typescript', resolve: request => request, run() {} }, 'ptcRuntime'),
   }
   const ctx = {
     get: name => name === 'ptcRuntime' ? currentLive : services[name],
@@ -589,11 +546,11 @@ test('a failed current attach keeps the legacy seam through the official Cordis 
   const root = new Context()
   t.after(() => root.fiber.dispose())
   root.provide('core', {})
-  const legacy = {
+  const legacy = composed({
     language: 'typescript',
     isolation: 'worker-thread',
     run() { return { logs: ['upstream'], value: 'upstream' } },
-  }
+  }, 'codeRuntime')
   root.provide('codeRuntime', legacy)
   const attached = []
   const reported = []
@@ -604,7 +561,7 @@ test('a failed current attach keeps the legacy seam through the official Cordis 
         attach: (scope, seam) => {
           attached.push(seam.serviceName)
           if (seam.serviceName === 'ptcRuntime') throw new Error('incompatible current seam')
-          const release = seam.takeOver(request => Promise.resolve({
+          const release = seam.installExecute(request => Promise.resolve({
             logs: ['plugin'],
             value: request.program,
           }))
@@ -760,7 +717,7 @@ test('reports an attach failure and accepts the next injection', async () => {
 })
 
 test('reads a service from a host context that has no accessor', () => {
-  const service = { language: 'typescript', run() {} }
+  const service = composed({ language: 'typescript', run() {} }, 'codeRuntime')
   const attached = []
   const ctx = {
     get codeRuntime() {
@@ -776,7 +733,7 @@ test('reads a service from a host context that has no accessor', () => {
 })
 
 test('reads the injected service from the host when the scope does not carry it', () => {
-  const service = { language: 'typescript', run() {} }
+  const service = composed({ language: 'typescript', run() {} }, 'codeRuntime')
   const attached = []
   const ctx = {
     get: name => (name === 'codeRuntime' ? service : undefined),
@@ -791,7 +748,7 @@ test('reads the injected service from the host when the scope does not carry it'
 })
 
 test('attaches without a lifecycle hook when the injected scope has none', () => {
-  const service = { language: 'typescript', run() {} }
+  const service = composed({ language: 'typescript', run() {} }, 'codeRuntime')
   const attached = []
   const ctx = {
     get: name => (name === 'codeRuntime' ? service : undefined),

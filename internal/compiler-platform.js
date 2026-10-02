@@ -20,6 +20,7 @@ const nativePathToFileURL = pathToFileURL
 const nativeStripTypeScriptTypes = stripTypeScriptTypes
 const runInContext = Script.prototype.runInContext
 const NativeUint8Array = Uint8Array
+const typedArrayLength = descriptor(Object.getPrototypeOf(NativeUint8Array.prototype), 'length').get
 const NativeWeakRef = WeakRef, deref = WeakRef.prototype.deref
 const NativeError = Error
 const parseJson = JSON.parse
@@ -65,11 +66,12 @@ export const compilerPlatformBridge = {
   fileURLToPath: input => nativeFileURLToPath(nativeUrl(input)),
   pathToFileURL: input => ownUrl(nativePathToFileURL(input)),
   encode(source, encoding) {
-    const buffer = new NativeUint8Array(byteLength(source, encoding))
-    const length = apply(codecs[encoding].write, buffer, [source, 0, buffer.length])
+    const size = byteLength(source, encoding)
+    const buffer = new NativeUint8Array(size)
+    const length = apply(codecs[encoding].write, buffer, [source, 0, size])
     return { buffer, length }
   },
-  decode: (buffer, encoding) => apply(codecs[encoding].slice, buffer, [0, buffer.length]),
+  decode: (buffer, encoding) => apply(codecs[encoding].slice, buffer, [0, apply(typedArrayLength, buffer, [])]),
   textEncoder() {
     const encoder = new NativeTextEncoder()
     return { encode: source => apply(encoderEncode, encoder, [source]),

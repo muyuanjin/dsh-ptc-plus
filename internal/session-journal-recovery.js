@@ -1,12 +1,17 @@
-import { isDeepStrictEqual } from 'node:util'
-import { isRecord } from './record-utils.js'
+import { createHash } from 'node:crypto'
+import { deepEqualJson, isJsonValue } from '@deepseek-ai/dsh-util-values'
+import { deepFreeze, isRecord } from './record-utils.js'
 import { sessionEvents } from './session-events.js'
+import { USER_BINDINGS_META_KEY } from './user-bindings.js'
 import {
   JOURNAL_KEY,
   RECOVERY_BOUNDARY_KEY,
   RECOVERY_BOUNDARY_EVENT,
   LEGACY_JOURNAL_VERSION,
   REPL_TOOL_NAMES,
+  REWRITES_KEY,
+  EDIT_TARGET_KEY,
+  DERIVED_RUN_KEY,
 } from './session-journal-schema.js'
 import {
   isCanonicalSequence,
@@ -19,6 +24,10 @@ import {
 } from './session-journal.js'
 
 const RECOVERY_BOUNDARY_EVIDENCE = Symbol('recoveryBoundaryEvidence')
+const RUN_SELECTION_CLEAR_REASONS = new Set([
+  'turn/start', 'turn/end', 'duplicate-call-sequence', 'invalid-source-relation',
+  'ambiguous-call-id', 'ambiguous-call-sequence', 'duplicate-result', 'result-identity-mismatch',
+])
 const MODEL_VISIBLE_SURFACE_EVENTS = new Set([
   'system/message',
   'developer/message',
@@ -241,6 +250,29 @@ function successfulTimelineRun(run) {
   return run.journal?.completion?.kind === 'return' && run.journal.status !== 'noop'
 }
 
+function settlementRun(settlement) {
+  const publication = settlement.publication
+  if (publication === undefined) return undefined
+  const result = { data: { meta: { [REWRITES_KEY]: publication.rewrites } } }
+  return timelineJson(publication.derived === undefined
+    ? timelineRun(settlement.call, result, publication.index, publication.journal)
+    : timelineDerivedRun(settlement.call, result, publication.index, publication.derived))
+}
+
+function selectSettlementRun(selected, settlement, scope, frontier) {
+  const publication = settlement.publication
+  if (publication === undefined || settlement.entry.scope !== scope
+    || (frontier !== null && publication.index <= frontier.index)) return selected
+  return selected === undefined || publication.index >= selected.index ? settlementRun(settlement) : selected
+}
+
+function editTargetForSelection(run, claimedTargets) {
+  const callSeq = run?.callSeq
+  return callSeq !== undefined && run.source !== undefined && !claimedTargets.has(callSeq)
+    ? Object.freeze({ source: run.source, callSeq })
+    : undefined
+}
+
 function pruneWindowForEvent(event, eventIndex) {
   const shadowedSeqs = event.data.shadowedSeqs
   const seqs = new Set(shadowedSeqs)
@@ -254,7 +286,7 @@ function pruneWindowForEvent(event, eventIndex) {
     && shadowedSeqs.every(isCanonicalSequence)
     && shadowedSeqs.every((seq, index) => index === 0 || seq > shadowedSeqs[index - 1])
     && rangeValid
-  return { seqs: valid ? seqs : new Set(), lastEventIndex: eventIndex }
+  return { seqs: valid ? [...seqs] : [], lastEventIndex: eventIndex, lastEventSeq: event.seq }
 }
 
 function continuesPruneWindow(window, event, eventIndex) {
@@ -264,7 +296,7 @@ function continuesPruneWindow(window, event, eventIndex) {
 function identifiesPrunedResult(window, event, eventIndex) {
   const sourceSeq = event.sourceEventSeqs?.[0]
   return isCanonicalSequence(sourceSeq)
-    && window?.seqs.has(sourceSeq)
+    && window?.seqs.includes(sourceSeq)
     && eventIndex === window.lastEventIndex + 1
     && Array.isArray(event.sourceEventSeqs) && event.sourceEventSeqs.length === 1
     && typeof event.data?.message?.source?.callId === 'string'
@@ -305,44 +337,506 @@ function exactResultReplacement(event, sourceSeq) {
     || (surfaceOp.startSeq === sourceSeq && surfaceOp.endSeq === sourceSeq)
 }
 
-/** A replacement representation may differ from its shadowed result only in message content. */
-function sameResultExceptContent(previous, next) {
-  const withoutContent = data => isRecord(data) && isRecord(data.message)
-    ? { ...data, message: { ...data.message, content: undefined } }
-    : data
-  return isDeepStrictEqual(withoutContent(previous), withoutContent(next))
+function resolveTimelineResult(event, eventIndex, executableCalls, pendingByCallId,
+  settledResultsByEventSeq, pruneReplacementWindow, identity) {
+  const hasSourceRelation = Object.hasOwn(event, 'sourceEventSeqs')
+  const sourceRelation = event.sourceEventSeqs
+  const sourceSeq = sourceRelation?.[0]
+  const canonicalSourceRelation = Array.isArray(sourceRelation)
+    && sourceRelation.length === 1
+    && isCanonicalSequence(sourceSeq)
+  const callId = event.data?.message?.source?.callId
+  let entry = canonicalSourceRelation ? executableCalls.get(sourceSeq) : undefined
+  let prunedReplacement = false
+  let republishedSettlement
+  if (entry === undefined && identifiesPrunedResult(pruneReplacementWindow, event, eventIndex)) {
+    const candidate = pendingByCallId.get(callId)
+    const pruneSeq = pruneReplacementWindow.lastEventSeq
+    if (replacesPendingCall(candidate, event, pruneSeq)) {
+      entry = candidate
+      prunedReplacement = true
+      pruneReplacementWindow = { ...pruneReplacementWindow, lastEventIndex: eventIndex, lastEventSeq: event.seq }
+    }
+  }
+  if (entry === undefined && !hasSourceRelation && typeof callId === 'string') {
+    entry = pendingByCallId.get(callId)
+  }
+  if (entry === undefined && canonicalSourceRelation) {
+    // The Host pruner may replace an already-settled result with a
+    // content-only clone that cites the shadowed result event. It is the same
+    // call's settlement representation, not a new unknown boundary.
+    const settled = settledResultsByEventSeq.get(sourceSeq)
+    if (settled !== undefined && typeof callId === 'string'
+      && settled.call?.data?.callId === callId
+      && exactResultReplacement(event, sourceSeq)
+      && settled.identity === identity) {
+      entry = executableCalls.get(settled.call?.seq) ?? settled.entry
+      prunedReplacement = true
+      republishedSettlement = settled
+    }
+  }
+  return { entry, prunedReplacement, republishedSettlement, pruneReplacementWindow }
+}
+
+function invalidSourceCallSeq(event, executableCalls, pendingByCallId) {
+  const callId = event.data?.message?.source?.callId
+  const identityEntry = typeof callId === 'string' ? pendingByCallId.get(callId) : undefined
+  const callSeqs = new Set(Array.isArray(event.sourceEventSeqs)
+    ? event.sourceEventSeqs.filter(isCanonicalSequence)
+      .map(seq => executableCalls.get(seq)?.event?.seq).filter(isCanonicalSequence) : [])
+  if (isCanonicalSequence(identityEntry?.event?.seq)) callSeqs.add(identityEntry.event.seq)
+  return callSeqs.size === 0 ? undefined : Math.min(...callSeqs)
+}
+
+function timelineResultError(event, eventIndex, callSeq, error) {
+  return { eventSeq: isCanonicalSequence(event.seq) ? event.seq : callSeq, eventIndex, error }
+}
+
+function republishedTimelineResult(result, event) {
+  return { ...result, eventSeq: event.seq, positionSeq: result.positionSeq ?? result.eventSeq }
+}
+
+function correlationEvent(event) {
+  return timelineJson({ seq: event.seq, type: event.type,
+    ...(event.type === 'tool/call' && typeof event.data?.callId === 'string'
+      ? { data: timelineCallEvent(event).data } : {}),
+    ...(event.type === 'tool/result' ? { data: { message: { source: {
+      ...(typeof event.data?.message?.source?.callId === 'string'
+        ? { callId: event.data.message.source.callId } : {}),
+    } } } } : {}),
+    ...(event.type === 'compaction/prune' ? { data: {
+      ...(event.data?.shadowedSeqs === undefined ? {} : { shadowedSeqs: event.data.shadowedSeqs }),
+      ...(event.data?.shadowedRange === undefined ? {} : { shadowedRange: event.data.shadowedRange }),
+    } } : {}),
+    ...(Object.hasOwn(event, 'sourceEventSeqs') ? { sourceEventSeqs: event.sourceEventSeqs } : {}),
+    ...(event.surfaceOp === undefined ? {} : { surfaceOp: event.surfaceOp }),
+  })
+}
+
+function recordPendingCall(pending, seen, entry, duplicateSequence) {
+  const id = entry.event.data.callId
+  if (duplicateSequence !== undefined) {
+    pending.set(duplicateSequence.event.data.callId, null)
+    pending.set(id, null)
+    seen.add(id)
+  } else if (seen.has(id)) pending.set(id, null)
+  else {
+    seen.add(id)
+    pending.set(id, entry)
+  }
+}
+
+function nextPruneWindow(window, event, eventIndex) {
+  if (window !== undefined && !continuesPruneWindow(window, event, eventIndex)) return undefined
+  return window
 }
 
 /**
  * Fold persisted tool events once into the call/result and edit-target timeline
  * shared by prompt projection and cold journal recovery.
  */
-export function foldSessionTimeline(events) {
-  const empty = {
+class TimelineTable {
+  constructor(table = {}, onSet) {
+    this.table = table
+    this.copied = false
+    this.onSet = onSet
+  }
+
+  get(key) { return this.table[`k${key}`]?.[1] }
+  has(key) { return Object.hasOwn(this.table, `k${key}`) }
+  values() { return Object.values(this.table).map(entry => entry[1]) }
+  copy() {
+    if (!this.copied) {
+      this.table = { ...this.table }
+      this.copied = true
+    }
+  }
+  set(key, value) {
+    this.onSet?.(this.get(key), value)
+    this.copy()
+    this.table[`k${key}`] = [key, timelineJson(value ?? null)]
+  }
+  add(key) { this.set(key, true) }
+  delete(key) {
+    if (!this.has(key)) return
+    this.copy()
+    delete this.table[`k${key}`]
+  }
+  clear() { this.table = {}; this.copied = true }
+}
+
+function timelineJson(value) {
+  return deepFreeze(JSON.parse(JSON.stringify(value ?? null)))
+}
+
+function timelineCallEvent(event) {
+  return timelineJson({ seq: event.seq, type: event.type, data: {
+    callId: event.data.callId, name: event.data.name,
+    ...(REPL_TOOL_NAMES.has(event.data.name) ? { arguments: event.data.arguments } : {}),
+  } })
+}
+
+function resultIdentity(data) {
+  const identity = timelineJson(isRecord(data) && isRecord(data.message)
+    ? { ...data, message: { ...data.message, content: undefined } } : data)
+  return createHash('sha256').update(JSON.stringify(identity, (_key, value) => (
+    isRecord(value) ? Object.fromEntries(Object.keys(value).sort().map(key => [key, value[key]])) : value
+  ))).digest('hex')
+}
+
+export function createSessionTimelineState() {
+  return {
     openTurn: false,
-    executableCalls: new Map(),
+    executableCalls: {},
     calls: [],
-    results: new Map(),
+    results: {},
     boundaries: [],
     found: false,
-    unavailableResultSeq: undefined,
-    unavailableResultReason: undefined,
-    lastSuccessfulRunIndex: undefined,
-    latestRun: undefined,
-    editableRun: undefined,
-    editTargets: new Map(),
+    cordisTranscript: { calls: 0, inspections: 0 },
+    editTargets: {},
+    pendingByCallId: {},
+    seenCallIds: {},
+    claimedEditTargets: {},
+    editClaims: {},
+    ordinaryResultSeqs: {},
+    settledResultsByEventSeq: {},
+    runSelectionFrontier: null,
+    runSelectionHistory: [],
+    lastEventIndex: null,
+    eventFacts: [],
+    scope: 0,
   }
-  if (!Array.isArray(events)) return empty
+}
 
-  const state = { ...empty }
-  const pendingByCallId = new Map()
-  const seenCallIds = new Set()
-  const claimedEditTargets = new Set()
-  const editClaims = new Map()
-  const ordinaryResultSeqs = new Set()
-  const settledResultsByEventSeq = new Map()
-  let pruneReplacementWindow
-  let scope = 0
+export function validateSessionTimelineState(value) {
+  const requireFact = condition => {
+    if (!condition) throw new TypeError('invalid PTC session-log projection timeline checkpoint')
+  }
+  const optional = (field, predicate) => field === undefined || predicate(field)
+  const fields = (record, names) => isRecord(record) && Object.keys(record).every(name => names.includes(name))
+  const target = field => fields(field, ['callSeq', 'source']) && isCanonicalSequence(field.callSeq) && typeof field.source === 'string'
+  const callEvent = event => fields(event, ['seq', 'type', 'data']) && isCanonicalSequence(event.seq) && event.type === 'tool/call'
+    && isRecord(event.data) && typeof event.data.callId === 'string'
+    && fields(event.data, ['callId', 'name', 'arguments'])
+    && optional(event.data.name, name => typeof name === 'string')
+    && optional(event.data.arguments, args => typeof args === 'string')
+  const callEntry = entry => fields(entry, ['event', 'eventIndex', 'scope', 'ambiguous', 'editTarget']) && callEvent(entry.event)
+    && isCanonicalSequence(entry.eventIndex) && isCanonicalSequence(entry.scope) && entry.scope <= value.scope
+    && optional(entry.ambiguous, field => field === true) && optional(entry.editTarget, target)
+  const table = (name, keyValid, payloadValid) => {
+    requireFact(isRecord(value[name]))
+    for (const [key, pair] of Object.entries(value[name])) {
+      requireFact(Array.isArray(pair) && pair.length === 2 && keyValid(pair[0]) && key === `k${pair[0]}`)
+      requireFact(payloadValid(pair[1], pair[0]))
+    }
+    return new Map(Object.values(value[name]))
+  }
+  requireFact(isJsonValue(value) && fields(value, ['openTurn', 'executableCalls', 'calls', 'results', 'boundaries', 'found',
+    'cordisTranscript', 'editTargets', 'pendingByCallId', 'seenCallIds', 'claimedEditTargets', 'editClaims',
+    'ordinaryResultSeqs', 'settledResultsByEventSeq', 'scope', 'latestRun', 'editableRun', 'lastSuccessfulRunIndex',
+    'unavailableResultSeq', 'unavailableResultReason', 'pruneReplacementWindow', 'runSelectionFrontier',
+    'runSelectionHistory', 'lastEventIndex', 'eventFacts']) && typeof value.openTurn === 'boolean'
+    && typeof value.found === 'boolean' && isCanonicalSequence(value.scope)
+    && Array.isArray(value.calls) && value.calls.every(callEvent) && Array.isArray(value.boundaries))
+  requireFact(value.lastEventIndex === null || isCanonicalSequence(value.lastEventIndex))
+  requireFact(Array.isArray(value.runSelectionHistory))
+  let boundaryScope = 0
+  let boundaryIndex = -1
+  let openTurn = false
+  for (const frontier of value.runSelectionHistory) {
+    requireFact(fields(frontier, ['index', 'scope', 'reason']) && isCanonicalSequence(frontier.index)
+      && value.lastEventIndex !== null && frontier.index <= value.lastEventIndex && frontier.index > boundaryIndex
+      && RUN_SELECTION_CLEAR_REASONS.has(frontier.reason))
+    if (frontier.reason === 'turn/start' || frontier.reason === 'turn/end') {
+      boundaryScope += 1
+      openTurn = frontier.reason === 'turn/start'
+    }
+    requireFact(frontier.scope === boundaryScope)
+    boundaryIndex = frontier.index
+  }
+  requireFact(boundaryScope === value.scope && openTurn === value.openTurn
+    && deepEqualJson(value.runSelectionFrontier, value.runSelectionHistory.at(-1) ?? null))
+  const executable = table('executableCalls', isCanonicalSequence, (entry, seq) => callEntry(entry)
+    && value.lastEventIndex !== null && entry.eventIndex <= value.lastEventIndex
+    && entry.event.seq === seq && REPL_TOOL_NAMES.has(entry.event.data.name))
+  requireFact(value.calls.length === executable.size)
+  const callSeqs = new Set()
+  for (const call of value.calls) {
+    requireFact(!callSeqs.has(call.seq) && deepEqualJson(executable.get(call.seq)?.event, call))
+    callSeqs.add(call.seq)
+  }
+  const journalFacts = result => {
+    if (!isRecord(result.journal)) return false
+    const journal = normalizeJournal(result.journal)
+    if (!deepEqualJson(journal, result.journal)) return false
+    if (!deepEqualJson(userBindingsForJournal(result.userBindings === undefined ? {} : { [USER_BINDINGS_META_KEY]: result.userBindings }, journal) ?? null,
+      result.userBindings ?? null)) return false
+    if (result.derived !== undefined) {
+      const derived = result.derived
+      if (!isRecord(derived)) return false
+      const normalized = normalizeDerivedEditResult({
+        [JOURNAL_KEY]: result.journal,
+        [EDIT_TARGET_KEY]: { targetCallSeq: derived.targetCallSeq },
+        [DERIVED_RUN_KEY]: { code: derived.code, description: derived.description },
+        ...(derived.recoveryBoundaries === undefined ? {} : { [RECOVERY_BOUNDARY_KEY]: derived.recoveryBoundaries }),
+        ...(derived.userBindings === undefined ? {} : { [USER_BINDINGS_META_KEY]: derived.userBindings }),
+      }, derived.targetCallSeq)
+      if (!deepEqualJson(normalized, derived) || !executable.has(derived.targetCallSeq)) return false
+    }
+    return true
+  }
+  const normalizedResult = result => {
+    if (!fields(result, ['eventSeq', 'eventIndex', 'positionSeq', 'error', 'journal', 'derived', 'userBindings'])
+      || !isCanonicalSequence(result.eventSeq) || !isCanonicalSequence(result.eventIndex)
+      || !optional(result.positionSeq, isCanonicalSequence)) return false
+    if (result.error !== undefined) return typeof result.error === 'string' && result.journal === undefined && result.derived === undefined
+    return journalFacts(result)
+  }
+  const results = table('results', isCanonicalSequence, normalizedResult)
+  const targets = table('editTargets', isCanonicalSequence, (field, seq) => (
+    executable.get(seq)?.event.data.name === 'edit_run_code'
+    && (field === null || (target(field) && executable.has(field.callSeq)))
+    && deepEqualJson(field, executable.get(seq).editTarget ?? null)
+  ))
+  for (const [seq, entry] of executable) {
+    requireFact(entry.event.data.name !== 'edit_run_code' || targets.has(seq))
+  }
+  const stringKey = key => typeof key === 'string'
+  const trueValue = field => field === true
+  const seen = table('seenCallIds', stringKey, trueValue)
+  table('pendingByCallId', stringKey, (entry, id) => seen.has(id) && (entry === null
+    || (callEntry(entry) && entry.event.data.callId === id && entry.scope === value.scope
+      && (!REPL_TOOL_NAMES.has(entry.event.data.name) || deepEqualJson(executable.get(entry.event.seq), entry)))))
+  const claimed = table('claimedEditTargets', isCanonicalSequence, (field, seq) => trueValue(field) && executable.has(seq))
+  const edits = table('editClaims', isCanonicalSequence, (seq, editSeq) => isCanonicalSequence(seq)
+    && claimed.has(seq) && targets.get(editSeq)?.callSeq === seq)
+  const ordinaryObservations = table('ordinaryResultSeqs', isCanonicalSequence, (observation, seq) => fields(observation,
+    ['call', 'eventSeq', 'eventIndex']) && callEvent(observation.call) && observation.call.seq === seq
+    && isCanonicalSequence(observation.eventSeq) && isCanonicalSequence(observation.eventIndex)
+    && value.lastEventIndex !== null && observation.eventIndex <= value.lastEventIndex
+    && (!REPL_TOOL_NAMES.has(observation.call.data.name)
+      || (deepEqualJson(executable.get(seq)?.event, observation.call)
+        && observation.eventIndex >= executable.get(seq).eventIndex)))
+  const settlements = table('settledResultsByEventSeq', isCanonicalSequence, settlement => fields(settlement,
+    ['call', 'entry', 'identity', 'publication', 'observedIndex', 'ordinary', 'normalized'])
+    && callEvent(settlement.call) && callEntry(settlement.entry)
+    && optional(settlement.normalized, normalizedResult)
+    && typeof settlement.ordinary === 'boolean'
+    && isCanonicalSequence(settlement.observedIndex) && value.lastEventIndex !== null
+    && settlement.observedIndex >= settlement.entry.eventIndex && settlement.observedIndex <= value.lastEventIndex
+    && deepEqualJson(settlement.call, settlement.entry.event)
+    && typeof settlement.identity === 'string' && /^[a-f0-9]{64}$/u.test(settlement.identity)
+    && (!REPL_TOOL_NAMES.has(settlement.call.data.name)
+      || deepEqualJson(executable.get(settlement.call.seq)?.event, settlement.call))
+    && optional(settlement.publication, publication => fields(publication,
+      ['index', 'journal', 'derived', 'userBindings', 'rewrites'])
+      && deepEqualJson(publication.journal ?? null, settlement.normalized?.journal ?? null)
+      && deepEqualJson(publication.derived ?? null, settlement.normalized?.derived ?? null)
+      && deepEqualJson(publication.userBindings ?? null, settlement.normalized?.userBindings ?? null)
+      && !settlement.entry.ambiguous && isCanonicalSequence(publication.index)
+      && publication.index === (settlement.ordinary ? settlement.observedIndex : settlement.entry.eventIndex)
+      && ((settlement.call.data.name === 'run_code' && publication.derived === undefined)
+        || (settlement.call.data.name === 'edit_run_code'
+        && publication.derived?.targetCallSeq === settlement.entry.editTarget?.callSeq
+        && publication.derived !== undefined))
+      && (publication.journal === undefined
+        ? publication.derived === undefined && publication.userBindings === undefined
+        : journalFacts(publication))
+      && deepEqualJson(validatedRewrites({ [REWRITES_KEY]: publication.rewrites }) ?? null, publication.rewrites ?? null)))
+  // Normalized event facts retain distinctions needed by the transition but
+  // omit result content. Admission uses that same transition, not a second
+  // partial interpretation of the materialized caches.
+  requireFact(Array.isArray(value.eventFacts))
+  let reconstructed = createSessionTimelineState()
+  let correlationIndex = -1
+  for (const observation of value.eventFacts) {
+    requireFact(fields(observation, ['eventIndex', 'event', 'identity', 'hasJournal', 'normalized',
+      'boundaries', 'boundaryFailure', 'rewrites'])
+      && isCanonicalSequence(observation.eventIndex) && observation.eventIndex > correlationIndex
+      && value.lastEventIndex !== null && observation.eventIndex <= value.lastEventIndex
+      && isRecord(observation.event) && isCanonicalSequence(observation.event.seq)
+      && ['turn/start', 'turn/end', RECOVERY_BOUNDARY_EVENT, 'compaction/prune', 'tool/call', 'tool/result']
+        .includes(observation.event.type)
+      && deepEqualJson(correlationEvent(observation.event), observation.event)
+      && (observation.event.type === 'tool/result'
+        ? typeof observation.identity === 'string' && /^[a-f0-9]{64}$/u.test(observation.identity)
+          && typeof observation.hasJournal === 'boolean'
+        : observation.identity === undefined && observation.hasJournal === undefined)
+      && optional(observation.normalized, normalizedResult)
+      && optional(observation.boundaryFailure, failed => failed === true)
+      && optional(observation.boundaries, boundaries => Array.isArray(boundaries)
+        && boundaries.every(boundary => {
+          if (!isRecord(boundary)) return false
+          const { eventSeq, ...evidence } = boundary
+          return eventSeq === observation.event.seq
+            && deepEqualJson(normalizeRecoveryBoundaries([evidence], eventSeq), [boundary])
+        }))
+      && deepEqualJson(validatedRewrites({ [REWRITES_KEY]: observation.rewrites }) ?? null,
+        observation.rewrites ?? null))
+    correlationIndex = observation.eventIndex
+    reconstructed = replaySessionTimelineFact(reconstructed, observation)
+  }
+  requireFact(deepEqualJson(reconstructed, value))
+  for (const observation of ordinaryObservations.values()) {
+    const settlement = settlements.get(observation.eventSeq)
+    requireFact(settlement !== undefined
+      ? settlement.ordinary && settlement.observedIndex === observation.eventIndex
+        && deepEqualJson(settlement.call, observation.call)
+      : value.runSelectionHistory.some(frontier => frontier.index === observation.eventIndex
+        && frontier.reason === 'result-identity-mismatch'))
+  }
+  for (const settlement of settlements.values()) {
+    if (!settlement.ordinary) continue
+    const observation = ordinaryObservations.get(settlement.call.seq)
+    requireFact(observation !== undefined && observation.eventIndex === settlement.observedIndex
+      && deepEqualJson(observation.call, settlement.call))
+  }
+  const publications = [...settlements.values()].filter(settlement => settlement.publication !== undefined)
+  // Dispatch targets are derived from first-observed settlements and retained
+  // clears. A late prune reconstruction cannot establish an earlier target.
+  const positions = new Map()
+  for (const settlement of settlements.values()) {
+    const previous = positions.get(settlement.observedIndex)
+    requireFact(previous === undefined || deepEqualJson(previous, settlement))
+    positions.set(settlement.observedIndex, settlement)
+  }
+  const chronology = [
+    ...value.runSelectionHistory.map(frontier => ({ index: frontier.index, frontier })),
+    ...[...executable.values()].map(entry => ({ index: entry.eventIndex, entry })),
+    ...[...positions.values()].map(settlement => ({ index: settlement.observedIndex, settlement })),
+  ].sort((left, right) => left.index - right.index)
+  let dispatchScope = 0
+  let dispatchFrontier = null
+  let dispatchRun
+  const dispatchClaims = new Set()
+  const dispatchEdits = new Map()
+  for (const item of chronology) {
+    if (item.frontier !== undefined) {
+      dispatchFrontier = item.frontier
+      dispatchRun = undefined
+      if (item.frontier.reason === 'turn/start' || item.frontier.reason === 'turn/end') {
+        dispatchScope = item.frontier.scope
+        dispatchClaims.clear()
+        dispatchEdits.clear()
+      }
+    } else if (item.entry !== undefined) {
+      requireFact(item.entry.scope === dispatchScope)
+      if (item.entry.event.data.name !== 'edit_run_code') continue
+      const expected = editTargetForSelection(dispatchRun, dispatchClaims)
+      requireFact(deepEqualJson(targets.get(item.entry.event.seq), expected ?? null))
+      if (expected !== undefined) {
+        dispatchClaims.add(expected.callSeq)
+        dispatchEdits.set(item.entry.event.seq, expected.callSeq)
+      }
+    } else {
+      const settlement = item.settlement
+      const claim = dispatchEdits.get(settlement.call.seq)
+      if (claim !== undefined) {
+        dispatchEdits.delete(settlement.call.seq)
+        if (settlement.publication?.derived === undefined) dispatchClaims.delete(claim)
+      }
+      dispatchRun = selectSettlementRun(dispatchRun, settlement, dispatchScope, dispatchFrontier)
+    }
+  }
+  requireFact(claimed.size === dispatchClaims.size && [...dispatchClaims].every(seq => claimed.has(seq)))
+  requireFact(edits.size === dispatchEdits.size && [...dispatchEdits].every(([seq, targetSeq]) => edits.get(seq) === targetSeq))
+  let selectedRun
+  let lastSuccessfulRunIndex
+  for (const settlement of publications) {
+    selectedRun = selectSettlementRun(selectedRun, settlement, value.scope, value.runSelectionFrontier)
+    if (successfulTimelineRun(settlementRun(settlement))) {
+      lastSuccessfulRunIndex = Math.max(lastSuccessfulRunIndex ?? -1, settlement.publication.index)
+    }
+  }
+  requireFact(selectedRun === undefined || (executable.get(selectedRun.callSeq)?.scope === value.scope
+    && !executable.get(selectedRun.callSeq).ambiguous))
+  requireFact(selectedRun === undefined ? value.latestRun === undefined && value.editableRun === undefined
+    : deepEqualJson(value.latestRun ?? null, selectedRun) && deepEqualJson(value.editableRun ?? null, selectedRun))
+  requireFact(value.lastSuccessfulRunIndex === lastSuccessfulRunIndex
+    && optional(value.unavailableResultSeq, isCanonicalSequence))
+  requireFact(optional(value.unavailableResultReason, reason => isRecord(reason)
+    && isCanonicalSequence(reason.seq) && typeof reason.reason === 'string'))
+  requireFact(optional(value.pruneReplacementWindow, window => isRecord(window)
+    && Array.isArray(window.seqs) && window.seqs.every(isCanonicalSequence)
+    && new Set(window.seqs).size === window.seqs.length
+    && isCanonicalSequence(window.lastEventIndex) && isCanonicalSequence(window.lastEventSeq)))
+  for (const boundary of value.boundaries) {
+    requireFact(isRecord(boundary) && isCanonicalSequence(boundary.carrierCallSeq))
+    const { carrierCallSeq: _carrier, eventSeq, ...evidence } = boundary
+    requireFact(isCanonicalSequence(eventSeq)
+      && deepEqualJson(normalizeRecoveryBoundaries([evidence], eventSeq), [{ ...evidence, eventSeq }]))
+  }
+  const transcript = { calls: 0, inspections: 0 }
+  for (const result of results.values()) {
+    for (const call of result.journal?.calls ?? []) {
+      if (call.global !== 'tools' || typeof call.member !== 'string' || !call.member.startsWith('cordis_')) continue
+      transcript.calls += 1
+      if (call.ok === true && call.member.startsWith('cordis_inspect')) transcript.inspections += 1
+    }
+  }
+  requireFact(deepEqualJson(transcript, value.cordisTranscript))
+  return value
+}
+
+export function advanceSessionTimeline(previous, inputEvent, eventIndex = inputEvent?.seq) {
+  return advanceTimelineEvent(previous, inputEvent, eventIndex)
+}
+
+/** Reconstruct an already validated normalized fact at its recorded cut. */
+export function replaySessionTimelineFact(previous, fact) {
+  return advanceTimelineEvent(previous, fact.event, fact.eventIndex, fact)
+}
+
+function advanceTimelineEvent(previous, inputEvent, eventIndex, replayFact) {
+  if (!['turn/start', 'turn/end', RECOVERY_BOUNDARY_EVENT, 'compaction/prune', 'tool/call', 'tool/result'].includes(inputEvent?.type)) {
+    return previous
+  }
+  const observation = { eventIndex, event: correlationEvent(inputEvent),
+    ...(inputEvent.type === 'tool/result' ? {
+      identity: replayFact === undefined ? resultIdentity(inputEvent.data) : replayFact.identity,
+      hasJournal: replayFact === undefined
+        ? isRecord(inputEvent.data?.meta) && Object.hasOwn(inputEvent.data.meta, JOURNAL_KEY) : replayFact.hasJournal,
+    } : {}),
+  }
+  const state = { ...previous,
+    lastEventIndex: eventIndex,
+    eventFacts: [...previous.eventFacts, observation],
+    executableCalls: new TimelineTable(previous.executableCalls),
+    editTargets: new TimelineTable(previous.editTargets),
+  }
+  state.results = new TimelineTable(previous.results, (oldResult, newResult) => {
+    const count = result => {
+      let calls = 0
+      let inspections = 0
+      for (const call of result?.journal?.calls ?? []) {
+        if (call.global !== 'tools' || typeof call.member !== 'string' || !call.member.startsWith('cordis_')) continue
+        calls += 1
+        if (call.ok === true && call.member.startsWith('cordis_inspect')) inspections += 1
+      }
+      return { calls, inspections }
+    }
+    const before = count(oldResult)
+    const after = count(newResult)
+    state.cordisTranscript = {
+      calls: state.cordisTranscript.calls + after.calls - before.calls,
+      inspections: state.cordisTranscript.inspections + after.inspections - before.inspections,
+    }
+  })
+  const pendingByCallId = new TimelineTable(previous.pendingByCallId)
+  const seenCallIds = new TimelineTable(previous.seenCallIds)
+  const claimedEditTargets = new TimelineTable(previous.claimedEditTargets)
+  const editClaims = new TimelineTable(previous.editClaims)
+  const ordinaryResultSeqs = new TimelineTable(previous.ordinaryResultSeqs)
+  const settledResultsByEventSeq = new TimelineTable(previous.settledResultsByEventSeq)
+  let pruneReplacementWindow = previous.pruneReplacementWindow
+  let scope = previous.scope
+
+  const clearRunSelection = reason => {
+    state.runSelectionFrontier = timelineJson({ index: eventIndex, scope, reason })
+    state.runSelectionHistory = [...state.runSelectionHistory, state.runSelectionFrontier]
+    state.latestRun = undefined
+    state.editableRun = undefined
+  }
 
   const resetTurn = (openTurn) => {
     state.openTurn = openTurn
@@ -350,16 +844,12 @@ export function foldSessionTimeline(events) {
     pendingByCallId.clear()
     seenCallIds.clear()
     claimedEditTargets.clear()
-    state.latestRun = undefined
-    state.editableRun = undefined
+    editClaims.clear()
+    clearRunSelection(openTurn ? 'turn/start' : 'turn/end')
   }
 
-  for (let eventIndex = 0; eventIndex < events.length; eventIndex += 1) {
-    const event = events[eventIndex]
-    if (pruneReplacementWindow !== undefined
-      && !continuesPruneWindow(pruneReplacementWindow, event, eventIndex)) {
-      pruneReplacementWindow = undefined
-    }
+  for (const event of [inputEvent]) {
+    pruneReplacementWindow = nextPruneWindow(pruneReplacementWindow, event, eventIndex)
     if (event?.type === 'turn/start') {
       resetTurn(true)
       continue
@@ -378,13 +868,13 @@ export function foldSessionTimeline(events) {
     }
     if (event?.type === 'tool/call' && typeof event.data?.callId === 'string') {
       const executable = REPL_TOOL_NAMES.has(event.data.name)
-      let entry = { event, eventIndex, scope }
+      let entry = { event: timelineCallEvent(event), eventIndex, scope }
       if (executable) {
         if (isCanonicalSequence(event.seq) && state.executableCalls.has(event.seq)) {
           // A sequence collision disproves both sources, but not the earlier
           // verified frontier. Keep its position for persistent contraction.
-          const previous = state.executableCalls.get(event.seq)
-          previous.ambiguous = true
+          const previous = { ...state.executableCalls.get(event.seq), ambiguous: true }
+          state.executableCalls.set(event.seq, previous)
           state.unavailableResultSeq = Math.min(state.unavailableResultSeq ?? event.seq, event.seq)
           if (state.unavailableResultReason === undefined
             || event.seq < state.unavailableResultReason.seq) {
@@ -394,36 +884,25 @@ export function foldSessionTimeline(events) {
             }
           }
           state.found = true
-          state.latestRun = undefined
-          state.editableRun = undefined
-          pendingByCallId.set(previous.event.data.callId, null)
-          pendingByCallId.set(event.data.callId, null)
-          seenCallIds.add(event.data.callId)
+          clearRunSelection('duplicate-call-sequence')
+          recordPendingCall(pendingByCallId, seenCallIds, entry, previous)
           continue
         }
         if (event.data.name === 'edit_run_code') {
-          const targetCallSeq = state.editableRun?.callSeq
-          const target = targetCallSeq !== undefined && state.editableRun.source !== undefined
-            && !claimedEditTargets.has(targetCallSeq)
-            ? Object.freeze({ source: state.editableRun.source, callSeq: targetCallSeq })
-            : undefined
+          const target = editTargetForSelection(state.editableRun, claimedEditTargets)
           entry = { ...entry, editTarget: target }
-          state.editTargets.set(event.seq, target)
+          state.editTargets.set(event.seq, target ?? null)
           if (target !== undefined) {
             claimedEditTargets.add(target.callSeq)
             editClaims.set(event.seq, target.callSeq)
           }
         }
-        state.calls.push(event)
+        state.calls = [...state.calls, entry.event]
         if (isCanonicalSequence(event.seq)) {
           state.executableCalls.set(event.seq, entry)
         }
       }
-      if (seenCallIds.has(event.data.callId)) pendingByCallId.set(event.data.callId, null)
-      else {
-        seenCallIds.add(event.data.callId)
-        pendingByCallId.set(event.data.callId, entry)
-      }
+      recordPendingCall(pendingByCallId, seenCallIds, entry)
       continue
     }
     if (event?.type !== 'tool/result') continue
@@ -432,73 +911,42 @@ export function foldSessionTimeline(events) {
     const sourceRelation = event.sourceEventSeqs
     const sourceSeq = sourceRelation?.[0]
     const canonicalSourceRelation = Array.isArray(sourceRelation)
-      && sourceRelation.length === 1
-      && isCanonicalSequence(sourceSeq)
+      && sourceRelation.length === 1 && isCanonicalSequence(sourceSeq)
     const callId = event.data?.message?.source?.callId
-    let entry = canonicalSourceRelation ? state.executableCalls.get(sourceSeq) : undefined
-    let prunedReplacement = false
-    if (entry === undefined && identifiesPrunedResult(pruneReplacementWindow, event, eventIndex)) {
-      const candidate = pendingByCallId.get(callId)
-      const pruneSeq = events[pruneReplacementWindow.lastEventIndex]?.seq
-      if (replacesPendingCall(candidate, event, pruneSeq)) {
-        entry = candidate
-        prunedReplacement = true
-        pruneReplacementWindow.lastEventIndex = eventIndex
+    const resolution = resolveTimelineResult(event, eventIndex, state.executableCalls, pendingByCallId,
+      settledResultsByEventSeq, pruneReplacementWindow, observation.identity)
+    const { entry, prunedReplacement, republishedSettlement } = resolution
+    pruneReplacementWindow = resolution.pruneReplacementWindow
+    if (republishedSettlement !== undefined) {
+      const resultSeq = republishedSettlement.call.seq
+      const settledResult = state.results.get(resultSeq)
+      if (settledResult !== undefined) {
+        state.results.set(resultSeq, republishedTimelineResult(settledResult, event))
       }
-    }
-    if (entry === undefined && !hasSourceRelation && typeof callId === 'string') {
-      entry = pendingByCallId.get(callId)
-    }
-    if (entry === undefined && canonicalSourceRelation) {
-      // The Host pruner may replace an already-settled result with a
-      // content-only clone that cites the shadowed result event. It is the same
-      // call's settlement representation, not a new unknown boundary.
-      const settled = settledResultsByEventSeq.get(sourceSeq)
-      if (settled !== undefined && typeof callId === 'string'
-        && settled.call?.data?.callId === callId
-        && exactResultReplacement(event, sourceSeq)
-        && sameResultExceptContent(settled.data, event.data)) {
-        entry = settled.entry
-        prunedReplacement = true
-      }
+      settledResultsByEventSeq.set(event.seq, republishedSettlement)
+      continue
     }
     if (hasSourceRelation && !canonicalSourceRelation) {
-      const identityEntry = typeof callId === 'string' ? pendingByCallId.get(callId) : undefined
-      const callSeqs = new Set(Array.isArray(sourceRelation)
-        ? sourceRelation
-          .filter(isCanonicalSequence)
-          .map(candidateSeq => state.executableCalls.get(candidateSeq)?.event?.seq)
-          .filter(isCanonicalSequence)
-        : [])
-      if (isCanonicalSequence(identityEntry?.event?.seq)) {
-        callSeqs.add(identityEntry.event.seq)
-      }
-      if (callSeqs.size > 0) {
-        const callSeq = Math.min(...callSeqs)
+      const callSeq = invalidSourceCallSeq(event, state.executableCalls, pendingByCallId)
+      if (callSeq !== undefined) {
         state.unavailableResultSeq = Math.min(state.unavailableResultSeq ?? callSeq, callSeq)
-        state.results.set(callSeq, {
-          eventSeq: isCanonicalSequence(event.seq) ? event.seq : callSeq,
-          eventIndex,
-          error: `tool result has an invalid source relation for call seq ${callSeq}`,
-        })
+        state.results.set(callSeq, timelineResultError(event, eventIndex, callSeq,
+          `tool result has an invalid source relation for call seq ${callSeq}`))
         state.found = true
       }
       if (typeof callId === 'string') pendingByCallId.delete(callId)
-      state.latestRun = undefined
-      state.editableRun = undefined
+      clearRunSelection('invalid-source-relation')
       continue
     }
     if (typeof callId === 'string') pendingByCallId.delete(callId)
     if (entry === null) {
-      state.latestRun = undefined
-      state.editableRun = undefined
+      clearRunSelection('ambiguous-call-id')
       continue
     }
 
     const call = entry?.event
     if (entry?.ambiguous) {
-      state.latestRun = undefined
-      state.editableRun = undefined
+      clearRunSelection('ambiguous-call-sequence')
       continue
     }
     const callSeq = call?.seq
@@ -506,34 +954,27 @@ export function foldSessionTimeline(events) {
     if (!prunedReplacement && isCanonicalSequence(callSeq)) {
       if (ordinaryResultSeqs.has(callSeq)) {
         state.unavailableResultSeq ??= callSeq
-        state.results.set(callSeq, {
-          eventSeq: isCanonicalSequence(event.seq) ? event.seq : callSeq,
-          eventIndex,
-          error: `session log contains duplicate ordinary tool results for call seq ${callSeq}`,
-        })
+        state.results.set(callSeq, timelineResultError(event, eventIndex, callSeq,
+          `session log contains duplicate ordinary tool results for call seq ${callSeq}`))
         state.found = true
-        state.latestRun = undefined
-        state.editableRun = undefined
+        clearRunSelection('duplicate-result')
         continue
       }
-      ordinaryResultSeqs.add(callSeq)
+      ordinaryResultSeqs.set(callSeq, timelineJson({ call,
+        eventSeq: isCanonicalSequence(event.seq) ? event.seq : callSeq, eventIndex }))
     }
     if (call !== undefined && typeof callId === 'string' && call.data.callId !== callId) {
-      state.latestRun = undefined
-      state.editableRun = undefined
+      clearRunSelection('result-identity-mismatch')
       if (isCanonicalSequence(callSeq)) {
         state.unavailableResultSeq ??= callSeq
-        state.results.set(callSeq, {
-          eventSeq: isCanonicalSequence(event.seq) ? event.seq : callSeq,
-          eventIndex,
-          error: `tool result identities disagree for call seq ${callSeq}`,
-        })
+        state.results.set(callSeq, timelineResultError(event, eventIndex, callSeq,
+          `tool result identities disagree for call seq ${callSeq}`))
         state.found = true
       }
       continue
     }
     let normalized
-    if (isRecord(meta) && Object.hasOwn(meta, JOURNAL_KEY)) {
+    if (observation.hasJournal) {
       if (entry === undefined) {
         if (isCanonicalSequence(sourceSeq)) {
           state.unavailableResultSeq ??= sourceSeq
@@ -549,65 +990,94 @@ export function foldSessionTimeline(events) {
       // clone by its own row would apply the boundary before that call exists
       // in the verified frontier.
       const settlementPosition = prunedReplacement
-        ? state.results.get(resultSeq)?.eventSeq ?? resultSeq
+        ? state.results.get(resultSeq)?.positionSeq ?? state.results.get(resultSeq)?.eventSeq ?? sourceSeq
         : undefined
       const raw = {
-        meta,
         eventSeq: isCanonicalSequence(event.seq) ? event.seq : resultSeq,
         ...(settlementPosition === undefined ? {} : { positionSeq: settlementPosition }),
         eventIndex,
       }
-      if (Object.hasOwn(meta, RECOVERY_BOUNDARY_KEY)) {
+      if (replayFact === undefined) {
+        if (Object.hasOwn(meta, RECOVERY_BOUNDARY_KEY)) {
+          try {
+            observation.boundaries = normalizeRecoveryBoundaries(meta[RECOVERY_BOUNDARY_KEY], raw.eventSeq)
+          } catch {
+            observation.boundaryFailure = true
+          }
+        }
         try {
-          state.boundaries.push(...normalizeRecoveryBoundaries(
-            meta[RECOVERY_BOUNDARY_KEY], raw.eventSeq,
-          ).map(boundary => ({ ...boundary, carrierCallSeq: resultSeq })))
-        } catch {
-          state.unavailableResultSeq ??= callSeq
-        }
-      }
-      try {
-        if (call.data.name === 'edit_run_code') {
-          const derived = normalizeDerivedEditResult(meta, entry.editTarget?.callSeq)
-          normalized = {
-            ...raw,
-            journal: derived.journal,
-            derived,
-            ...(derived.userBindings === undefined ? {} : { userBindings: derived.userBindings }),
-          }
-        } else if (call.data.name === 'run_code') {
-          const rawJournal = meta[JOURNAL_KEY]
-          const resolveLegacyConfirm = rawJournal?.version === LEGACY_JOURNAL_VERSION
-            ? legacyCallId => {
-              const candidates = [...state.executableCalls.values()]
-                .filter(candidate => candidate.eventIndex < eventIndex
-                  && candidate.event.data?.name === 'run_code'
-                  && candidate.event.data.callId === legacyCallId
-                  && !state.results.has(candidate.event.seq))
-              return candidates.length === 1 ? candidates[0].event.seq : undefined
+          if (call.data.name === 'edit_run_code') {
+            const derived = normalizeDerivedEditResult(meta, entry.editTarget?.callSeq)
+            normalized = {
+              ...raw,
+              journal: derived.journal,
+              derived,
+              ...(derived.userBindings === undefined ? {} : { userBindings: derived.userBindings }),
             }
-            : undefined
-          const journal = normalizeJournal(rawJournal, { resolveLegacyConfirm })
-          const userBindings = userBindingsForJournal(meta, journal)
-          normalized = {
-            ...raw,
-            journal,
-            ...(userBindings === undefined ? {} : { userBindings }),
+          } else if (call.data.name === 'run_code') {
+            const rawJournal = meta[JOURNAL_KEY]
+            const resolveLegacyConfirm = rawJournal?.version === LEGACY_JOURNAL_VERSION
+              ? legacyCallId => {
+                const candidates = [...state.executableCalls.values()]
+                  .filter(candidate => candidate.eventIndex < eventIndex
+                    && candidate.event.data?.name === 'run_code'
+                    && candidate.event.data.callId === legacyCallId
+                    && !state.results.has(candidate.event.seq))
+                return candidates.length === 1 ? candidates[0].event.seq : undefined
+              }
+              : undefined
+            const journal = normalizeJournal(rawJournal, { resolveLegacyConfirm })
+            const userBindings = userBindingsForJournal(meta, journal)
+            normalized = {
+              ...raw,
+              journal,
+              ...(userBindings === undefined ? {} : { userBindings }),
+            }
           }
+        } catch (error) {
+          normalized = { ...raw, error: error.message }
         }
-      } catch (error) {
-        normalized = { ...raw, error: error.message }
+        if (normalized === undefined) {
+          // PTC metadata on a settlement whose call is not a REPL tool is
+          // unproved evidence: it must contract the frontier, not escape the fold.
+          normalized = { ...raw, error: 'PTC journal metadata appeared on a non-REPL tool result' }
+        }
+      } else {
+        normalized = replayFact.normalized
+        if (normalized === undefined || !deepEqualJson(raw, {
+          eventSeq: normalized.eventSeq, eventIndex: normalized.eventIndex,
+          ...(normalized.positionSeq === undefined ? {} : { positionSeq: normalized.positionSeq }),
+        })) throw new TypeError('invalid PTC session-log projection timeline checkpoint result facts')
+        if (replayFact.boundaries !== undefined) observation.boundaries = replayFact.boundaries
+        if (replayFact.boundaryFailure !== undefined) observation.boundaryFailure = replayFact.boundaryFailure
       }
-      if (normalized === undefined) {
-        // PTC metadata on a settlement whose call is not a REPL tool is
-        // unproved evidence: it must contract the frontier, not escape the fold.
-        normalized = { ...raw, error: 'PTC journal metadata appeared on a non-REPL tool result' }
+      observation.normalized = normalized
+      if (observation.boundaries !== undefined) {
+        state.boundaries = [...state.boundaries, ...observation.boundaries.map(boundary => ({
+          ...boundary, carrierCallSeq: resultSeq,
+        }))]
       }
-      if (isCanonicalSequence(resultSeq)) state.results.set(resultSeq, normalized)
-      if (!prunedReplacement && isCanonicalSequence(event.seq)) {
-        settledResultsByEventSeq.set(event.seq, { call, entry, data: event.data })
-      }
+      if (observation.boundaryFailure) state.unavailableResultSeq ??= callSeq
+      if (isCanonicalSequence(resultSeq)) state.results.set(resultSeq, timelineJson(normalized))
       state.found = true
+    }
+    const settlement = call === undefined ? undefined : { call, entry, identity: observation.identity,
+      observedIndex: eventIndex, ordinary: !prunedReplacement,
+      ...(normalized === undefined ? {} : { normalized }) }
+    if (settlement !== undefined && entry.scope === scope
+      && (call.data.name === 'run_code' || normalized?.derived !== undefined)) {
+      const rewrites = replayFact === undefined ? validatedRewrites(meta) : replayFact.rewrites
+      if (rewrites !== undefined) observation.rewrites = rewrites
+      settlement.publication = {
+        index: prunedReplacement ? entry.eventIndex : eventIndex,
+        journal: normalized?.journal,
+        derived: normalized?.derived,
+        userBindings: normalized?.userBindings,
+        rewrites,
+      }
+    }
+    if (settlement !== undefined && isCanonicalSequence(event.seq)) {
+      settledResultsByEventSeq.set(event.seq, settlement)
     }
 
     const claimedTarget = editClaims.get(callSeq)
@@ -616,12 +1086,17 @@ export function foldSessionTimeline(events) {
       if (normalized?.derived === undefined) claimedEditTargets.delete(claimedTarget)
     }
     if (entry === undefined || entry.scope !== scope) continue
+    const publishRun = () => {
+      const run = settlementRun(settlement)
+      state.latestRun = selectSettlementRun(state.latestRun, settlement, scope, state.runSelectionFrontier)
+      state.editableRun = state.latestRun
+      if (successfulTimelineRun(run)) {
+        state.lastSuccessfulRunIndex = Math.max(state.lastSuccessfulRunIndex ?? -1, run.index)
+      }
+    }
     if (call.data.name === 'edit_run_code') {
       if (normalized?.derived !== undefined) {
-        const run = timelineDerivedRun(call, event, eventIndex, normalized.derived)
-        state.latestRun = run
-        state.editableRun = run
-        if (successfulTimelineRun(run)) state.lastSuccessfulRunIndex = eventIndex
+        publishRun()
       }
       continue
     }
@@ -631,12 +1106,34 @@ export function foldSessionTimeline(events) {
       // new executable cell or turn boundary supersedes it.
       continue
     }
-    const run = timelineRun(call, event, eventIndex, normalized?.journal)
-    state.latestRun = run
-    state.editableRun = run
-    if (successfulTimelineRun(run)) state.lastSuccessfulRunIndex = eventIndex
+    publishRun()
   }
-  return state
+  state.eventFacts[state.eventFacts.length - 1] = timelineJson(observation)
+  return Object.fromEntries(Object.entries({ ...state,
+    executableCalls: state.executableCalls.table, results: state.results.table, editTargets: state.editTargets.table,
+    pendingByCallId: pendingByCallId.table, seenCallIds: seenCallIds.table,
+    claimedEditTargets: claimedEditTargets.table, editClaims: editClaims.table,
+    ordinaryResultSeqs: ordinaryResultSeqs.table, settledResultsByEventSeq: settledResultsByEventSeq.table,
+    pruneReplacementWindow, scope,
+  }).filter(([_key, value]) => value !== undefined))
+}
+
+export function sessionTimelineValue(checkpoint) {
+  return { ...checkpoint,
+    executableCalls: new Map(Object.values(checkpoint.executableCalls)),
+    results: new Map(Object.values(checkpoint.results)),
+    editTargets: new Map(Object.values(checkpoint.editTargets).map(([seq, target]) => [seq, target ?? undefined])),
+  }
+}
+
+export function foldSessionTimeline(events) {
+  let checkpoint = createSessionTimelineState()
+  if (Array.isArray(events)) {
+    for (let index = 0; index < events.length; index += 1) {
+      checkpoint = advanceSessionTimeline(checkpoint, events[index], index)
+    }
+  }
+  return sessionTimelineValue(checkpoint)
 }
 
 /** Fold the session log into the last exactly replayable frontier. */

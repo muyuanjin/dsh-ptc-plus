@@ -11,10 +11,18 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const LATEST_FIXTURE = join(ROOT, 'compat', 'latest')
 const HOST_PACKAGES = [
   '@deepseek-ai/cordis',
+  '@deepseek-ai/cordis-plugin-loader',
   '@deepseek-ai/dsh',
+  '@deepseek-ai/dsh-app-boot',
+  '@deepseek-ai/dsh-ptc-runtime',
+  '@deepseek-ai/dsh-system-prompt',
   '@deepseek-ai/dsh-session',
+  '@deepseek-ai/dsh-session-query',
+  '@deepseek-ai/dsh-session-projection',
+  '@deepseek-ai/dsh-scope',
   '@deepseek-ai/dsh-session-persistence-jsonl',
   '@deepseek-ai/dsh-typert-registry',
+  '@deepseek-ai/dsh-util-values',
 ]
 const scripts = [
   'dsh-cordis-companion-smoke.mjs',
@@ -102,7 +110,7 @@ async function verifyConsumer(consumer, label, host) {
     [hostRequire, dshRequire, baseRequire],
     '@deepseek-ai/dsh-agent-preset',
   ))
-  for (const script of scripts) {
+  for (const script of executionOnly ? ['dsh-execution-seam-smoke.mjs'] : scripts) {
     const result = spawnSync(process.execPath, [join(ROOT, 'scripts', script), 'dsh-ptc-plus'], {
       cwd: consumer,
       encoding: 'utf8',
@@ -118,7 +126,7 @@ async function verifyConsumer(consumer, label, host) {
     }
     process.stdout.write(result.stdout)
   }
-  console.log(`${label}: official DSH ${hostVersion} host contracts passed`)
+  console.log(`${label}: official DSH ${hostVersion} ${executionOnly ? 'packed public execution contract' : 'host contracts'} passed`)
 }
 
 async function installLatestHost(temporary) {
@@ -150,8 +158,9 @@ async function verifyPackedConsumer(temporary, label, host, archive) {
 }
 
 const selection = process.argv[2] ?? 'all'
+const executionOnly = process.argv[3] === '--execution-only'
 if (!['all', 'next', 'latest'].includes(selection)) {
-  throw new Error('usage: dsh-host-contract-suite.mjs [all|next|latest]')
+  throw new Error('usage: dsh-host-contract-suite.mjs [all|next|latest] [--execution-only]')
 }
 const temporary = await mkdtemp(join(tmpdir(), 'ptc-host-contracts-'))
 try {
@@ -164,7 +173,7 @@ try {
     await verifyPackedConsumer(temporary, 'next baseline', ROOT, archive)
   }
   if (selection !== 'next') {
-    const latestHost = await installLatestHost(temporary)
+    const latestHost = executionOnly ? LATEST_FIXTURE : await installLatestHost(temporary)
     await verifyPackedConsumer(temporary, 'latest baseline', latestHost, archive)
   }
 } finally {

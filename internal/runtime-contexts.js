@@ -1,5 +1,5 @@
-import { latestRecoveryTip } from './recovery-tips.js'
-import { projectSessionLog, systemPromptSnapshotSections } from './session-log-view.js'
+import { latestRecoveryTip, runtimeHistoryForView } from './recovery-tips.js'
+import { projectSessionLog, runtimeMessageFacts, systemPromptSnapshotSections } from './session-log-view.js'
 import {
   PTC_BINDING_CATALOG, PTC_DELIVERY_CONTEXT, PTC_STATE_NAMES, readRuntimeMessage,
   runtimeBindingCatalogMessage, runtimeNoticeMessage, runtimeStateMessage,
@@ -21,7 +21,7 @@ function continuationFeedback(view) {
 
 /** Build all dynamic PTC contexts from one session-log projection. */
 export function sessionRuntimeContexts(agent, tipConfig, options = {}) {
-  const view = projectSessionLog(agent)
+  const view = (options.sessionLogView ?? projectSessionLog)(agent)
   const rewrite = continuationFeedback(view)
   const tip = latestRecoveryTip(view, tipConfig)
   const cordisRecovery = options.cordisRecoveryRequired?.(view) === true
@@ -42,13 +42,14 @@ export function projectRuntimeMessages(view, contexts, pending = []) {
   const sections = contexts.filter(context => PTC_STATE_NAMES.includes(context.name) && context.name !== PTC_BINDING_CATALOG)
   const catalog = contexts.find(context => context.name === PTC_BINDING_CATALOG)
   const records = view.visibleRuntimeMessages
-  const owned = records.filter(record => record.producer === 'ptc-plus' && record.form === 'snapshot').at(-1)
-  const legacy = records.filter(record => record.producer === 'aggregate').at(-1)
+  const facts = view.visibleRuntimeFacts ?? runtimeMessageFacts(records)
+  const history = runtimeHistoryForView(view)
+  const owned = facts.snapshot
+  const legacy = facts.aggregate
   const pendingAggregate = pending.map(systemPromptSnapshotSections).filter(sections => sections !== undefined).at(-1)
   const retained = owned?.sections
     ?? (pendingAggregate ?? legacy?.sections)?.filter(section => PTC_STATE_NAMES.includes(section.name))
-  const hadState = view.ptcMessages.some(record => record.form === 'snapshot')
-    || view.systemPromptSnapshots.some(record => record.sections.some(section => PTC_STATE_NAMES.includes(section.name)))
+  const hadState = history.hadState
   const messages = []
   const proposed = pending.map(readRuntimeMessage).filter(record => record !== undefined)
   const pendingState = proposed.filter(record => record.form === 'snapshot').at(-1)
@@ -58,23 +59,22 @@ export function projectRuntimeMessages(view, contexts, pending = []) {
     messages.push(runtimeStateMessage(sections))
   }
   const previousCatalog = proposed.filter(record => record.form === 'catalog').at(-1)
-    ?? records.filter(record => record.form === 'catalog').at(-1)
-  const hadCatalog = view.ptcMessages.some(record => record.form === 'catalog')
+    ?? facts.catalog
+  const hadCatalog = history.hadCatalog
   if ((catalog !== undefined || previousCatalog !== undefined || hadCatalog)
     && JSON.stringify(previousCatalog?.sections) !== JSON.stringify(catalog === undefined ? [] : [catalog])) {
     messages.push(runtimeBindingCatalogMessage(catalog))
   }
   for (const tip of contexts.filter(context => context.name.startsWith('tools:ptc-plus-tip/'))) {
     if (proposed.some(record => record.form === 'notice' && record.name === tip.name)) continue
-    if (view.ptcMessages.some(record => record.form === 'notice' && record.name === tip.name)
-      || view.systemPromptSnapshots.some(snapshot => snapshot.sections.some(section => section.name === tip.name))) continue
+    if (Object.hasOwn(history.seenNames, tip.name)) continue
     messages.push(runtimeNoticeMessage(tip))
   }
   return messages
 }
 
 /** Passive message delivery follows the actual public assembly and accepted step. */
-export function createRuntimeMessageOwner(contextsForRequest) {
+export function createRuntimeMessageOwner(contextsForRequest, sessionLogView = projectSessionLog) {
   const requests = new WeakMap()
   const disposedAgents = new WeakSet()
   let disposed = false
@@ -99,7 +99,7 @@ export function createRuntimeMessageOwner(contextsForRequest) {
       if (disposed || decision.kind !== 'enter' || payload.signal?.aborted === true
         || request?.allowed !== true || request.context.signal !== payload.signal) return decision
       const messages = projectRuntimeMessages(
-        projectSessionLog(payload.agent), contextsForRequest(request.context), decision.messages,
+        sessionLogView(payload.agent), contextsForRequest(request.context), decision.messages,
       )
       return messages.length === 0 ? decision : { ...decision, messages: [...decision.messages, ...messages] }
     },

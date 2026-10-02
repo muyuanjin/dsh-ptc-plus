@@ -55,6 +55,12 @@ class FakeSessionRuntime {
     active.instances.push(this)
   }
 
+  beginSubmission(session, signal) { return { sessionId: session.id, config: this.config, signal } }
+
+  releaseSubmission() {}
+
+  assertSubmission() {}
+
   async runTentative(_session, request) {
     const code = request.bindings.find(binding => binding.global === 'code')
     if (['late-child', 'native-handoff', 'child-retry'].includes(active.scenario)) {
@@ -113,7 +119,7 @@ test('runtime bridge disposal waits for session disposal and aggregates its fail
     namedExports: { SessionRuntime: FakeSessionRuntime },
   })
   ;({ createRuntimeBridgeOwner } = await import('../internal/runtime-bridge-owner.js'))
-  const runtime = { run() {} }
+  const runtime = createExecutionSeam(Object.freeze({ run() {} }), 'codeRuntime').provider
   const owner = createRuntimeBridgeOwner({
     seam: createExecutionSeam(runtime, 'codeRuntime'),
     ctx: { tools: { get: () => undefined } },
@@ -138,7 +144,7 @@ test('waiting for active child runtimes preserves every child disposal failure',
   assert.equal(typeof createRuntimeBridgeOwner, 'function')
 
   const definition = { name: 'run_code', output: {} }
-  const runtime = { run() {} }
+  const runtime = createExecutionSeam(Object.freeze({ run() {} }), 'codeRuntime').provider
   const owner = createRuntimeBridgeOwner({
     seam: createExecutionSeam(runtime, 'codeRuntime'),
     ctx: { tools: { get: () => definition } },
@@ -194,7 +200,7 @@ test('terminal disposal rejects a child submitted after the drain snapshot', { t
   })
 
   const definition = { name: 'run_code', output: {} }
-  const runtime = { run() {} }
+  const runtime = createExecutionSeam(Object.freeze({ run() {} }), 'codeRuntime').provider
   const owner = createRuntimeBridgeOwner({
     seam: createExecutionSeam(runtime, 'codeRuntime'),
     ctx: { tools: { get: () => definition } },
@@ -245,7 +251,7 @@ test('runtime bridge retains a child whose first disposal fails and retries it',
     })
 
     const definition = { name: 'run_code', output: {} }
-    const runtime = { run() {} }
+    const runtime = createExecutionSeam(Object.freeze({ run() {} }), 'codeRuntime').provider
     const owner = createRuntimeBridgeOwner({
       seam: createExecutionSeam(runtime, 'codeRuntime'),
       ctx: { tools: { get: () => definition } },
@@ -279,7 +285,7 @@ for (const [language, languageConfig] of [
   ['stateful', { bindingUpdates: 'stateful', legacyBindingSettings: false }],
   ['legacy', { legacyBindingSettings: true }],
 ]) {
-  test(`terminal disposal drains an authorized ${language} native run_code handoff before restoring runtime.run`,
+  test(`terminal disposal drains an authorized ${language} native run_code handoff before releasing the plugin execution entry`,
     { timeout: 20_000 }, async t => {
       active.scenario = 'native-handoff'
       resetLateChild()
@@ -298,7 +304,10 @@ for (const [language, languageConfig] of [
         upstreamCalls += 1
         return { logs: [], value: 'upstream' }
       }
-      const runtime = { run: upstreamRun }
+      const original = Object.freeze({ run: upstreamRun })
+      const descriptors = Object.getOwnPropertyDescriptors(original)
+      const seam = createExecutionSeam(original, 'codeRuntime')
+      const runtime = seam.provider
       const nativeRunCode = async (args) => {
         resolveNativeRunStarted()
         await nativeRunGate
@@ -331,11 +340,13 @@ for (const [language, languageConfig] of [
       await new Promise(resolve => setImmediate(resolve))
       assert.equal(disposalSettled, false)
       assert.equal(runtime.run, patchedRun)
+      assert.equal(seam.active, true)
 
       releaseNativeRun()
       await assert.rejects(nestedRun, /PTC execution lease expired/)
       await disposal
-      assert.equal(runtime.run, upstreamRun)
+      assert.equal(seam.active, false)
+      assert.deepEqual(Object.getOwnPropertyDescriptors(original), descriptors)
       assert.equal(upstreamCalls, 0)
       assert.equal(active.instances.length, 1)
       assert.equal(active.startedChildren, 0)

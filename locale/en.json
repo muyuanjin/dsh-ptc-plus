@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "PTC Plus",
+    "description": "A session-bound agent-native REPL for DeepSeek Harness PTC mode."
+  }
+}

@@ -4,6 +4,7 @@ import { afterEach, beforeAll, expect, test, vi } from 'vitest'
 import { EditorView } from '@codemirror/view'
 import { act, fireEvent, render } from '@testing-library/react'
 import * as React from 'react'
+import { createPortal } from 'react-dom'
 import * as primitives from '@deepseek-ai/dsh-client-ui-primitives'
 import { ConversationEventRegistry } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import { SlotTestRuntime, TestRemote } from '@deepseek-ai/dsh-client-test-runtime'
@@ -147,7 +148,11 @@ async function clientPlugin(ui = primitives) {
   }
   return clientDefinition.factory(name => {
     if (name === 'react') return React
-    if (name === '@deepseek-ai/dsh-client-ui-primitives') return ui
+    if (name === 'react-dom') return { createPortal }
+    if (name === '@deepseek-ai/dsh-client-ui-primitives') {
+      if (ui === null) throw new Error('Host primitive package is unavailable')
+      return ui
+    }
     throw new Error(`Unexpected Client module ${name}`)
   })
 }
@@ -162,7 +167,7 @@ async function fixture({ enabled = true, bindings, conversation = true, repl = f
   settings.publish({ status: 'ready', writable: true, value })
   if (settingsTransport === 'configForms') {
     runtime.ctx.provide('configForms', { get: () => settings.scope })
-  } else {
+  } else if (settingsTransport === 'settingsScope') {
     runtime.ctx.provide('settingsScope', { bind: () => settings.scope })
   }
   const rpcCalls = []
@@ -1856,7 +1861,7 @@ test('a Menu line without a children region keeps the four composer actions reac
   const rows = ['Write a new binding', 'Revise a binding', 'Manage global bindings', 'PTC Plus settings']
   for (const name of rows) expect(view.getByRole('menuitem', { name })).not.toBeNull()
   // The fallback carries the plugin's own grouped grid, not host-styled rows.
-  const actions = view.container.querySelector('.ptcPlusMenuActionsPinned')
+  const actions = document.querySelector('.ptcPlusFallbackMenuList .ptcPlusMenuActions')
   expect(actions).not.toBeNull()
   expect([...actions.querySelectorAll('.ptcPlusMenuAuthoring [role=menuitem]')].map(node => node.textContent))
     .toEqual(['Write a new binding', 'Revise a binding'])
@@ -2204,14 +2209,16 @@ test('an open composer menu follows its anchor when the composer moves without a
   expect(menu.style.top).toBe('496px')
   // The list must stay next to the trigger, so the height budget is measured from
   // the trigger's own top edge, not from a taller composer container.
-  expect(menu.style.getPropertyValue('--ptc-plus-menu-space')).toBe('484px')
+  expect(menu.style.getPropertyValue('--ptc-plus-menu-space')).toBe('')
+  expect(menu.querySelector('.ptcPlusBindingMenuContent').style.getPropertyValue('--ptc-plus-menu-space')).toBe('484px')
   // A composer that grew (or moved) without emitting a scroll still moves the list,
   // because the placement effect re-reads the anchor on every entry render.
   top = 440
   setLocale('zh')
   await runtime.flush()
   expect(menu.style.top).toBe('436px')
-  expect(menu.style.getPropertyValue('--ptc-plus-menu-space')).toBe('424px')
+  expect(menu.style.getPropertyValue('--ptc-plus-menu-space')).toBe('')
+  expect(menu.querySelector('.ptcPlusBindingMenuContent').style.getPropertyValue('--ptc-plus-menu-space')).toBe('424px')
 })
 
 test('a global row stays actionable while a later catalog read is pending', async () => {
@@ -4243,7 +4250,14 @@ test('one settings mapping and one gated registration own every conditional cont
   // Default-on settings stay on unless explicitly turned off.
   expect(featureEnabled(settings, 'toolView')).toBe(true)
   expect(featureEnabled({ ...settings, value: { ...settings.value, enhancedToolView: false } }, 'toolView')).toBe(false)
-  expect(featureEnabled({ status: 'loading', value: { enabled: true } }, 'plugin')).toBe(false)
+  // An unreadable or not-yet-arrived settings transport falls back to the
+  // plugin's shipped defaults instead of removing every contribution.
+  expect(featureEnabled({ status: 'loading' }, 'plugin')).toBe(true)
+  expect(featureEnabled({ status: 'unavailable' }, 'bindings')).toBe(true)
+  // An unavailable transport carries no committed value, so the shipped
+  // defaults decide even when a stale value is attached to the snapshot.
+  expect(featureEnabled({ status: 'unavailable', value: { enabled: false } }, 'plugin')).toBe(true)
+  expect(featureEnabled({ status: 'ready', value: { userBindingsEnabled: false } }, 'bindings')).toBe(false)
   expect(featureEnabled({ ...settings, writable: false }, 'plugin')).toBe(true)
   expect(featureEnabled({ status: 'ready', value: { enabled: false } }, 'plugin')).toBe(false)
   expect(() => featureEnabled(settings, 'unknown')).toThrow('Unknown client feature')
@@ -4341,4 +4355,360 @@ test('activates through the preceding settingsScope transport', async () => {
   const view = runtime.renderRoot()
   await runtime.flush()
   expect(view.container.querySelector('.ptcPlusSettingAction')).not.toBeNull()
+})
+
+test.each([false, true].flatMap(sharedFace => ['configForms', 'settingsScope'].flatMap(firstArrival =>
+  ['configForms', 'settingsScope'].map(firstRemoval => ({ sharedFace, firstArrival, firstRemoval })),
+)))('settings transport handoff preserves registration ownership: shared=$sharedFace, arrives=$firstArrival, removes=$firstRemoval', async ({ sharedFace, firstArrival, firstRemoval }) => {
+  const { runtime, value, feature } = await fixture({ settingsTransport: 'none' })
+  const preference = runtime.slots.entries('settings.plugin.item')[0].inject().hooks.ptcSettings
+  const current = stubSettingsScope()
+  const legacy = sharedFace ? current : stubSettingsScope()
+  const stores = { configForms: current, settingsScope: legacy }
+  for (const store of new Set(Object.values(stores))) {
+    store.publish({ status: 'ready', writable: true, value: { ...value, enabled: false } })
+  }
+  const providers = {}
+  const provide = async name => {
+    providers[name] = await runtime.mount({ apply(ctx) {
+      ctx.provide(name, name === 'configForms'
+        ? { get: () => stores[name].scope }
+        : { bind: () => stores[name].scope })
+    } })
+    await runtime.flush()
+  }
+  const remove = async name => {
+    await providers[name].dispose()
+    delete providers[name]
+    await runtime.flush()
+  }
+  const expectSelected = async name => {
+    const selected = stores[name]
+    expect(preference.getSnapshot()).toBe(selected.scope.getSnapshot())
+    expect(featureEnabled(preference.getSnapshot(), 'plugin')).toBe(false)
+    expect(runtime.slots.entries('tool.call.toolview')).toHaveLength(0)
+    for (const store of new Set(Object.values(stores))) {
+      store.set.mockClear()
+      store.mutate.mockClear()
+    }
+    await preference.set('enabled', true)
+    const patch = [{ op: 'set', path: ['bindingUpdates'], value: 'protected' }]
+    await preference.mutate(patch)
+    expect(selected.set).toHaveBeenCalledExactlyOnceWith('enabled', true)
+    expect(selected.mutate).toHaveBeenCalledExactlyOnceWith(patch)
+    for (const store of new Set(Object.values(stores))) {
+      if (store === selected) continue
+      expect(store.set).not.toHaveBeenCalled()
+      expect(store.mutate).not.toHaveBeenCalled()
+    }
+  }
+  const secondArrival = firstArrival === 'configForms' ? 'settingsScope' : 'configForms'
+  const secondRemoval = firstRemoval === 'configForms' ? 'settingsScope' : 'configForms'
+  await provide(firstArrival)
+  await expectSelected(firstArrival)
+  await provide(secondArrival)
+  await expectSelected('configForms')
+  expect(current.listenerCount()).toBe(sharedFace ? 2 : 1)
+  expect(legacy.listenerCount()).toBe(sharedFace ? 2 : 1)
+  if (!sharedFace) {
+    legacy.publish({ value: { ...value, enabled: false, bindingUpdates: 'protected' } })
+    await runtime.flush()
+    await expectSelected('configForms')
+  }
+  await remove(firstRemoval)
+  await expectSelected(secondRemoval)
+  expect(stores[secondRemoval].listenerCount()).toBe(1)
+  if (!sharedFace) expect(stores[firstRemoval].listenerCount()).toBe(0)
+  await provide(firstRemoval)
+  await expectSelected('configForms')
+  await remove(secondRemoval)
+  await expectSelected(firstRemoval)
+  await remove(firstRemoval)
+  expect(preference.getSnapshot().status).toBe('unavailable')
+  expect(featureEnabled(preference.getSnapshot(), 'plugin')).toBe(true)
+  expect(runtime.slots.entries('tool.call.toolview')).toHaveLength(2)
+  expect(current.listenerCount()).toBe(0)
+  expect(legacy.listenerCount()).toBe(0)
+  current.set.mockClear()
+  current.mutate.mockClear()
+  legacy.set.mockClear()
+  legacy.mutate.mockClear()
+  expect(await preference.set('enabled', false)).toBeUndefined()
+  expect(await preference.mutate([])).toBeUndefined()
+  expect(current.set).not.toHaveBeenCalled()
+  expect(current.mutate).not.toHaveBeenCalled()
+  expect(legacy.set).not.toHaveBeenCalled()
+  expect(legacy.mutate).not.toHaveBeenCalled()
+  await provide(secondArrival)
+  await provide(firstArrival)
+  await expectSelected('configForms')
+  await feature.dispose()
+  expect(current.listenerCount()).toBe(0)
+  expect(legacy.listenerCount()).toBe(0)
+  expect(runtime.slots.entries('tool.call.toolview')).toHaveLength(0)
+})
+
+test('activates without any settings transport and reads the shipped defaults', async () => {
+  const { runtime } = await fixture({ settingsTransport: 'none' })
+  const view = runtime.renderRoot()
+  await runtime.flush()
+  // apply() completes and registers its contributions instead of waiting for a
+  // transport name the installed generation may never publish; the gated
+  // surfaces then follow the shipped defaults, asserted by the settings
+  // mapping unit test above.
+  expect(runtime.ctx.get('configForms')).toBeUndefined()
+  expect(runtime.ctx.get('settingsScope')).toBeUndefined()
+  expect(view.container.querySelector('.ptcPlusCard')).not.toBeNull()
+  expect(view.container.querySelector('.ptcPlusAuthorButton')).not.toBeNull()
+  expect(runtime.slots.entries('tool.call.toolview')).toHaveLength(2)
+  fireEvent.click(view.container.querySelector('.ptcPlusHeader'))
+  await runtime.flush()
+  expect(view.getByText('This DSH instance does not provide a settings service')).not.toBeNull()
+  expect(view.queryByRole('switch', { name: 'Enable PTC Plus', exact: true })).toBeNull()
+})
+
+test('activates usable menu and settings controls when the Host primitive package cannot load', async () => {
+  const { runtime } = await fixture({ ui: null })
+  const view = runtime.renderRoot()
+  await runtime.flush()
+  const trigger = view.container.querySelector('.ptcPlusAuthorButton')
+  expect(trigger).not.toBeNull()
+  await openGlobalMenu(view, runtime, 'click')
+  fireEvent.click(view.getByRole('menuitem', { name: 'PTC Plus settings' }))
+  await runtime.flush()
+  expect(view.getByRole('dialog', { name: 'PTC Plus settings' })).not.toBeNull()
+  expect(view.getByRole('switch', { name: 'Enable PTC Plus', exact: false })).not.toBeNull()
+  fireEvent.keyDown(document, { key: 'Escape' })
+  await runtime.flush()
+  expect(view.queryByRole('dialog')).toBeNull()
+})
+
+test('attributes the plugin stylesheet to the plugin that owns it', async () => {
+  await fixture({})
+  const sheet = document.getElementById('ptc-plus-client-style')
+  expect(sheet).not.toBeNull()
+  expect(sheet.dataset.plugin).toBe('dsh-ptc-plus')
+  expect(sheet.dataset.pluginCss).toBe('dsh-ptc-plus/client.css')
+  // DSH attributes every untagged sheet it meets to whichever plugin is
+  // materializing then, so the plugin's own sheet must never be untagged.
+  const untagged = [...document.querySelectorAll('style:not([data-plugin])')]
+  expect(untagged.some(element => element.id === 'ptc-plus-client-style')).toBe(false)
+})
+
+test('claims the global stylesheet the code editor mounts', async () => {
+  const { createTypeScriptEditor } = await import('../src/client-code-editor.js')
+  const { adoptUnownedStyles, captureUnownedStyles } = await import('../src/client-styles.js')
+  const Editor = createTypeScriptEditor(React)
+  const view = render(React.createElement(Editor, { value: 'return 1', onChange: () => {}, label: 'probe', documentId: 'probe' }))
+  const owned = [...document.querySelectorAll('style[data-plugin="dsh-ptc-plus"]')].map(element => element.dataset.pluginCss)
+  expect(owned).toContain('dsh-ptc-plus/codemirror.css')
+  expect([...document.querySelectorAll('style:not([data-plugin])')].some(element => element.textContent.includes('.cm-gutters'))).toBe(false)
+  view.unmount()
+  // Adoption names only sheets that appeared while the plugin mounted them.
+  const foreign = document.createElement('style')
+  foreign.textContent = '.ptcPlusProbe{}'
+  document.head.append(foreign)
+  adoptUnownedStyles(captureUnownedStyles())
+  expect(foreign.dataset.plugin).toBeUndefined()
+  foreign.remove()
+})
+
+test('resolves every rendered primitive, with a usable fallback for each missing one', async () => {
+  const { resolvePrimitives } = await import('../src/client-primitives.js')
+  const resolved = resolvePrimitives({}, React)
+  for (const name of ['Button', 'CodeBlock', 'DisclosureRow', 'Menu', 'Modal', 'Toast', 'Tooltip']) {
+    expect(resolved).toHaveProperty(name)
+  }
+  expect(typeof resolved.Menu).toBe('function')
+  expect(typeof resolved.Modal).toBe('function')
+  const onSelect = vi.fn()
+  const onClose = vi.fn()
+  const menu = render(React.createElement(resolved.Menu, {
+    open: true, onClose, onSelect,
+    items: [{ id: 'alpha', label: 'Alpha' }, { id: 'sep', type: 'separator' }, { id: 'group', type: 'label', text: 'Group' }],
+  }))
+  fireEvent.click(menu.getByRole('menuitem', { name: 'Alpha' }))
+  expect(onSelect).toHaveBeenCalledWith('alpha')
+  fireEvent.keyDown(document, { key: 'Escape' })
+  expect(onClose).toHaveBeenCalled()
+  menu.unmount()
+  const modal = render(React.createElement(resolved.Modal, {
+    open: true, title: 'Title', closeLabel: 'Close', onClose,
+  }, React.createElement('p', null, 'Body')))
+  expect(modal.getByRole('dialog')).not.toBeNull()
+  expect(modal.getByText('Body')).not.toBeNull()
+  modal.unmount()
+  // A generation that ships the components keeps rendering them unchanged.
+  const passthrough = resolvePrimitives(primitives, React)
+  expect(passthrough.Menu).toBe(primitives.Menu)
+  expect(passthrough.Modal).toBe(primitives.Modal)
+  expect(passthrough.Button).toBe(primitives.Button)
+})
+
+test('fallback modal uses current close authority and isolates nested focus layers', async () => {
+  const { resolvePrimitives } = await import('../src/client-primitives.js')
+  const { Modal } = resolvePrimitives({}, React)
+  const outerClose = vi.fn()
+  const staleClose = vi.fn()
+  const currentClose = vi.fn()
+  const trigger = document.createElement('button')
+  document.body.appendChild(trigger)
+  trigger.focus()
+  const outer = render(React.createElement(Modal, { open: true, title: 'Outer', onClose: outerClose },
+    React.createElement('button', { 'data-modal-autofocus': true }, 'Outer control')))
+  expect(document.activeElement).toBe(outer.getByRole('button', { name: 'Outer control' }))
+  const inner = render(React.createElement(Modal, { open: true, title: 'Inner', onClose: staleClose },
+    React.createElement('input', { 'data-modal-autofocus': true, disabled: true })))
+  expect(document.activeElement).toBe(inner.getByRole('button', { name: 'Inner' }))
+  inner.rerender(React.createElement(Modal, { open: true, title: 'Inner', onClose: currentClose }))
+  fireEvent.keyDown(document, { key: 'Escape' })
+  expect(currentClose).toHaveBeenCalledTimes(1)
+  expect(staleClose).not.toHaveBeenCalled()
+  expect(outerClose).not.toHaveBeenCalled()
+  inner.unmount()
+  expect(document.activeElement).toBe(outer.getByRole('button', { name: 'Outer control' }))
+  fireEvent.keyDown(document, { key: 'Escape' })
+  expect(outerClose).toHaveBeenCalledTimes(1)
+  outer.unmount()
+  expect(document.activeElement).toBe(trigger)
+  trigger.remove()
+})
+
+test('fallback overlays preserve composition cancellation and menu dismissal across callback replacement', async () => {
+  const { resolvePrimitives } = await import('../src/client-primitives.js')
+  const { Modal, Menu } = resolvePrimitives({}, React, createPortal)
+  const onClose = vi.fn()
+  const modal = render(React.createElement(Modal, { open: true, title: 'Compose', onClose },
+    React.createElement('input', { 'aria-label': 'Draft' })))
+  const draft = modal.getByRole('textbox', { name: 'Draft' })
+  fireEvent.compositionStart(draft)
+  fireEvent.keyDown(draft, { key: 'Escape' })
+  expect(onClose).not.toHaveBeenCalled()
+  fireEvent.compositionEnd(draft)
+  fireEvent.keyDown(draft, { key: 'Escape', keyCode: 27 })
+  expect(onClose).not.toHaveBeenCalled()
+  fireEvent.keyUp(draft, { key: 'Escape' })
+  fireEvent.keyDown(draft, { key: 'Escape', isComposing: true })
+  fireEvent.keyDown(draft, { key: 'Escape', keyCode: 229 })
+  expect(onClose).not.toHaveBeenCalled()
+  fireEvent.keyDown(draft, { key: 'Escape' })
+  expect(onClose).toHaveBeenCalledTimes(1)
+  fireEvent.keyDown(draft, { key: 'Escape', repeat: true })
+  expect(onClose).toHaveBeenCalledTimes(1)
+  fireEvent.compositionStart(draft)
+  fireEvent(window, new Event('blur'))
+  fireEvent.keyDown(draft, { key: 'Escape' })
+  expect(onClose).toHaveBeenCalledTimes(2)
+  modal.unmount()
+  vi.useFakeTimers()
+  try {
+    const staleClose = vi.fn()
+    const currentClose = vi.fn()
+    const props = { open: true, portal: true, closeOnPointerLeave: true,
+      items: [{ id: 'entry', label: 'Entry' }], anchor: React.createElement('button', null, 'Anchor') }
+    const menu = render(React.createElement(Menu, { ...props, onClose: staleClose }))
+    fireEvent.keyDown(document, { key: 'Escape', repeat: true })
+    expect(staleClose).not.toHaveBeenCalled()
+    fireEvent.pointerLeave(document.querySelector('.ptcPlusFallbackMenuList'))
+    menu.rerender(React.createElement(Menu, { ...props, onClose: currentClose }))
+    await act(() => vi.advanceTimersByTimeAsync(180))
+    expect(staleClose).not.toHaveBeenCalled()
+    expect(currentClose).toHaveBeenCalledTimes(1)
+    fireEvent.pointerLeave(document.querySelector('.ptcPlusFallbackMenuList'))
+    menu.unmount()
+    await act(() => vi.advanceTimersByTimeAsync(180))
+    expect(currentClose).toHaveBeenCalledTimes(1)
+  } finally {
+    vi.useRealTimers()
+  }
+})
+
+test('fallback menu portals only its list and retains its public placement and pointer boundary', async () => {
+  const { resolvePrimitives } = await import('../src/client-primitives.js')
+  const { Menu } = resolvePrimitives({}, React, createPortal)
+  const onClose = vi.fn()
+  let rect = new DOMRect(20, 400, 24, 24)
+  const getAnchorRect = vi.fn(() => rect)
+  const view = render(React.createElement(Menu, { open: true, portal: true, side: 'top', onClose, getAnchorRect,
+    anchor: React.createElement('button', null, 'Anchor'),
+    items: [{ id: 'first', label: 'First' }, { id: 'last', label: 'Last' }], onSelect: vi.fn() }))
+  const list = document.querySelector('.ptcPlusFallbackMenuList')
+  expect(list.parentElement).toBe(document.body)
+  expect(view.container.contains(view.getByRole('button', { name: 'Anchor' }))).toBe(true)
+  expect(view.container.contains(list)).toBe(false)
+  expect(list.style.maxHeight).toBe('388px')
+  expect(getAnchorRect).toHaveBeenCalled()
+  fireEvent.pointerDown(view.getByRole('menuitem', { name: 'First' }))
+  expect(onClose).not.toHaveBeenCalled()
+  view.getByRole('button', { name: 'Anchor' }).focus()
+  fireEvent.keyDown(document.activeElement, { key: 'ArrowDown' })
+  expect(document.activeElement).toBe(view.getByRole('menuitem', { name: 'First' }))
+  rect = new DOMRect(20, 300, 24, 24)
+  fireEvent(window, new Event('resize'))
+  expect(list.style.maxHeight).toBe('288px')
+  fireEvent.pointerDown(document.body)
+  expect(onClose).toHaveBeenCalledTimes(1)
+  view.unmount()
+  expect(document.querySelector('.ptcPlusFallbackMenuList')).toBeNull()
+})
+
+test('headless fallback modal keeps the viewport mask and portal without default chrome', async () => {
+  const { resolvePrimitives } = await import('../src/client-primitives.js')
+  const { Modal } = resolvePrimitives({}, React, createPortal)
+  const onClose = vi.fn()
+  const view = render(React.createElement(Modal, { open: true, headless: true, title: 'Workbench', onClose },
+    React.createElement('button', { 'data-modal-autofocus': true }, 'Owned close')))
+  const dialog = view.getByRole('dialog', { name: 'Workbench' })
+  const mask = dialog.parentElement
+  expect(mask.className).toBe('ptcPlusFallbackModalBackdrop')
+  expect(mask.parentElement).toBe(document.body)
+  expect(view.container.contains(dialog)).toBe(false)
+  expect(dialog.querySelector('.ptcPlusFallbackModalHead')).toBeNull()
+  expect(document.activeElement).toBe(view.getByRole('button', { name: 'Owned close' }))
+  fireEvent.pointerDown(dialog)
+  expect(onClose).not.toHaveBeenCalled()
+  fireEvent.pointerDown(mask)
+  expect(onClose).toHaveBeenCalledTimes(1)
+  view.unmount()
+  expect(document.querySelector('.ptcPlusFallbackModalBackdrop')).toBeNull()
+})
+
+test('draft viewport budgeting observes only its owned panel and releases its resize authority', async () => {
+  const observers = []
+  vi.stubGlobal('IntersectionObserver', class {
+    constructor(callback) {
+      this.callback = callback
+      this.disconnect = vi.fn()
+      observers.push(this)
+    }
+    observe(target) {
+      this.target = target
+      if (!target.matches('.ptcPlusBindingDock')) this.callback([{ target, isIntersecting: true }])
+    }
+    unobserve() {}
+  })
+  cleanups.push(() => vi.unstubAllGlobals())
+  const candidate = reviewCandidate('viewport-owner')
+  const { runtime, feature } = await fixture({ rpc: reviewRpc(candidate) })
+  runtime.sessions.behavior('client-session').projections.set('ptcPlusBindingDraft', reviewProjection(candidate))
+  const view = runtime.renderRoot()
+  await runtime.flush()
+  const panel = view.container.querySelector('.ptcPlusBindingDock')
+  const observer = observers.find(value => value.target === panel)
+  expect(observer).not.toBeUndefined()
+  const host = document.createElement('div')
+  host.setAttribute('style', 'max-block-size: 400px')
+  view.container.appendChild(host)
+  observer.callback([{ target: panel, isIntersecting: true,
+    boundingClientRect: { top: 20 }, intersectionRect: { top: 60, height: 100 } }])
+  expect(panel.style.getPropertyValue('max-block-size')).toBe('100px')
+  expect(host.style.getPropertyValue('max-block-size')).toBe('400px')
+  fireEvent(window, new Event('resize'))
+  expect(panel.style.getPropertyValue('max-block-size')).toBe('')
+  observer.callback([{ target: panel, isIntersecting: true,
+    boundingClientRect: { top: 20 }, intersectionRect: { top: 60, height: 100 } }])
+  await feature.dispose()
+  await runtime.flush()
+  expect(observer.disconnect).toHaveBeenCalledTimes(1)
+  expect(panel.style.getPropertyValue('max-block-size')).toBe('')
 })

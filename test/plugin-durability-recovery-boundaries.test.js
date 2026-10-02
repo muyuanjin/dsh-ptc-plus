@@ -1295,7 +1295,7 @@ test('revalidates live provenance when the readable surface generation is unchan
   })
 })
 
-test('contracts to an empty frontier when ordered events fail during live recovery', async (t) => {
+test('contracts from one immutable observation without rereading live history', async (t) => {
   const events = []
   let surfaceNodes = []
   const session = {
@@ -1306,7 +1306,11 @@ test('contracts to an empty frontier when ordered events fail during live recove
       get nodes() { return surfaceNodes },
     },
   }
-  const runtime = new SessionRuntime()
+  let reads = 0
+  const runtime = new SessionRuntime({}, { readSessionLog: async current => {
+    reads += 1
+    return { events: structuredClone(current.events), surface: { nodes: [...current.surface.nodes] } }
+  } })
   t.after(() => runtime.dispose())
   const first = appendVisibleToolCall(events, 'events-fail-first', 'run_code', {
     code: 'const eventsFailBinding = 1',
@@ -1328,11 +1332,8 @@ test('contracts to an empty frontier when ordered events fail during live recove
     description: 'inspect contracted binding',
   })
   surfaceNodes = [second.assistantSeq]
-  let reads = 0
   session.snapshotEvents = () => {
-    reads += 1
-    if (reads <= 2) return events
-    throw new Error('ordered events became unavailable')
+    throw new Error('deprecated live history is unavailable')
   }
   const inspected = await runtime.run(
     { id: session.id, session, callId: 'events-fail-second' },
@@ -1340,7 +1341,7 @@ test('contracts to an empty frontier when ordered events fail during live recove
   )
   assert.equal(inspected.value, 'undefined')
   assert.match(inspected.logs[0], /Restored the durable head and skipped/u)
-  assert.equal(reads, 3)
+  assert.equal(reads, 2)
 })
 
 test('counts every historical cell excluded after an unavailable journal boundary', async (t) => {

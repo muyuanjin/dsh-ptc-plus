@@ -1,4 +1,4 @@
-import { recoveryTipIdentity } from './runtime-messages.js'
+import { PTC_STATE_NAMES, recoveryTipIdentity } from './runtime-messages.js'
 
 const PLATFORM_CAUSE_CODES = new Set(['EACCES', 'EINVAL', 'ENOTDIR', 'ENOENT', 'UNKNOWN'])
 const TIP_CONTEXT_PREFIX = 'tools:ptc-plus-tip/'
@@ -8,27 +8,58 @@ const TIP_PREFIXES = Object.freeze({
 })
 
 // TODO(dsh-tips-api): replace this local provider with an adapter after dsh-tips publishes a stable facts and decision interface.
-function tipHistory(view) {
-  const active = new Map()
-  const seen = new Set()
-  const history = []
+export function createRuntimeHistory() {
+  return { seenNames: {}, tips: {}, hadState: false, hadCatalog: false }
+}
+
+export function advanceRuntimeHistory(previous, { sections = [], notice, snapshot = false, catalog = false,
+  index, contextStep, lastSuccessfulRunIndex, resetSuccess = false }) {
+  let next = previous
+  const revise = () => {
+    if (next === previous) next = { ...previous, tips: { ...previous.tips }, seenNames: { ...previous.seenNames } }
+  }
+  if (resetSuccess) {
+    revise()
+    for (const [id, tip] of Object.entries(next.tips)) next.tips[id] = { ...tip, unresolved: 0 }
+    for (const [name, deliveredIndex] of Object.entries(next.seenNames)) {
+      const identity = recoveryTipIdentity(name)
+      if (deliveredIndex > (lastSuccessfulRunIndex ?? -1)) next.tips[identity.id].unresolved += 1
+    }
+  }
+  const hadState = snapshot || sections.some(section => PTC_STATE_NAMES.includes(section.name))
+  if ((hadState && !next.hadState) || (catalog && !next.hadCatalog)) {
+    revise()
+    next.hadState ||= hadState
+    next.hadCatalog ||= catalog
+  }
+  for (const name of [...sections.map(section => section.name), ...(notice === undefined ? [] : [notice])]) {
+    const identity = recoveryTipIdentity(name)
+    if (identity === undefined || Object.hasOwn(next.seenNames, name)) continue
+    revise()
+    next.seenNames[name] = index
+    const earlier = next.tips[identity.id]
+    next.tips[identity.id] = {
+      highestOrdinal: Math.max(earlier?.highestOrdinal ?? 0, identity.ordinal),
+      contextStep,
+      unresolved: (earlier?.unresolved ?? 0) + (index > (lastSuccessfulRunIndex ?? -1) ? 1 : 0),
+    }
+  }
+  return next
+}
+
+export function runtimeHistoryForView(view) {
+  if (view.runtimeHistory !== undefined) return view.runtimeHistory
+  let history = createRuntimeHistory()
+  history.hadState = view.ptcMessages?.some(record => record.form === 'snapshot') === true
+  history.hadCatalog = view.ptcMessages?.some(record => record.form === 'catalog') === true
   const snapshots = [
-    ...view.systemPromptSnapshots,
+    ...(view.systemPromptSnapshots ?? []),
     ...(view.ptcMessages ?? []).filter(record => record.form === 'notice').map(record => ({
       ...record, sections: [{ name: record.name, text: record.text }],
     })),
   ].sort((left, right) => left.index - right.index)
   for (const snapshot of snapshots) {
-    const next = new Map(snapshot.sections.map(section => [section.name, section.text]))
-    for (const [name] of next) {
-      if (active.has(name) || seen.has(name)) continue
-      const identity = recoveryTipIdentity(name)
-      if (identity === undefined) continue
-      seen.add(name)
-      history.push({ ...identity, index: snapshot.index, contextStep: snapshot.contextStep })
-    }
-    active.clear()
-    for (const entry of next) active.set(...entry)
+    history = advanceRuntimeHistory(history, { ...snapshot, lastSuccessfulRunIndex: view.lastSuccessfulRunIndex })
   }
   return history
 }
@@ -79,14 +110,12 @@ export function latestRecoveryTip(view, config) {
   if (candidate === undefined) return undefined
   // Cooldown, escalation, and ordinal are per trigger kind: one kind's tip must
   // not suppress a different kind.
-  const matching = tipHistory(view).filter(item => item.id === candidate.id)
-  const lastTip = matching.at(-1)
+  const lastTip = runtimeHistoryForView(view).tips[candidate.id]
   if (lastTip !== undefined && view.contextStep - lastTip.contextStep < config.cooldownMessages) return undefined
-  const unresolved = matching.filter(item => item.index > (view.lastSuccessfulRunIndex ?? -1))
-  const ordinal = matching.reduce((highest, item) => Math.max(highest, item.ordinal), 0) + 1
+  const ordinal = (lastTip?.highestOrdinal ?? 0) + 1
   if (!Number.isSafeInteger(ordinal)) return undefined
   return {
     name: `${TIP_CONTEXT_PREFIX}${candidate.id}/${ordinal}`,
-    text: renderTip(candidate.id, unresolved.length >= config.escalationFailures, candidate),
+    text: renderTip(candidate.id, (lastTip?.unresolved ?? 0) >= config.escalationFailures, candidate),
   }
 }

@@ -11,12 +11,14 @@ import { CommandRuntime } from '@deepseek-ai/dsh-commands'
 import { createUserMessage, LlmAdapter, LlmRuntime } from '@deepseek-ai/dsh-llm'
 import { SessionStore } from '@deepseek-ai/dsh-session'
 import { SessionProjectionRegistry } from '@deepseek-ai/dsh-session-projection'
+import { SessionQueryEngine } from '@deepseek-ai/dsh-session-query'
 import { SystemPrompt } from '@deepseek-ai/dsh-system-prompt'
 import { ToolRuntime } from '@deepseek-ai/dsh-tools'
 import { TypertRegistry } from '@deepseek-ai/dsh-typert-registry'
 import * as ptc from '../index.js'
 import { ptcToolsMode } from '../scripts/dsh-host-contract.mjs'
-import { sessionEvents } from '../internal/session-events.js'
+import { recordedSessionEvents as sessionEvents } from './session-observation-fixture.js'
+import { createFixtureExecutionProvider } from './host-fixture.js'
 
 export async function bindingWorkflowHost(t) {
   const home = await mkdtemp(join(tmpdir(), 'ptc-binding-workflow-'))
@@ -36,15 +38,15 @@ export async function bindingWorkflowHost(t) {
     language: 'typescript', isolation: 'worker-thread',
     async run() { throw new Error('unexpected isolated runtime') },
   }
-  ctx.provide('codeRuntime', upstreamRuntime)
-  ctx.provide('ptcRuntime', {
+  ctx.effect(() => ctx.provide('codeRuntime', createFixtureExecutionProvider(upstreamRuntime, 'codeRuntime')))
+  ctx.effect(() => ctx.provide('ptcRuntime', createFixtureExecutionProvider({
     ...upstreamRuntime,
     resolve(request) {
       return { ...request, cwd: request.cwd ?? home, timeoutMs: request.timeoutMs ?? null }
     },
-  })
+  })))
   for (const plugin of [TypertRegistry, SystemPrompt, SessionStore, AgentRegistry, LlmRuntime,
-    SessionProjectionRegistry, ToolRuntime, CommandRuntime, AgentLoop]) {
+    SessionProjectionRegistry, SessionQueryEngine, ToolRuntime, CommandRuntime, AgentLoop]) {
     const config = plugin === ToolRuntime ? { mode: ptcToolsMode() }
       : plugin === SystemPrompt ? { includeHarnessIdentity: false, persona: '' } : undefined
     const fiber = ctx.plugin(plugin, config)

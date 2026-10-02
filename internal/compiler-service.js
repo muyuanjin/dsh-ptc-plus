@@ -2,7 +2,6 @@ import { readFileSync } from 'node:fs'
 import { constants, createContext, Script } from 'node:vm'
 import { fileURLToPath } from 'node:url'
 import { workerData } from 'node:worker_threads'
-import { deserialize } from 'node:v8'
 import { copyCompilerData } from './compiler-data.js'
 import { PreflightError } from './cell-analysis-contract.js'
 import { ModuleRewriteError } from './cell-error.js'
@@ -29,10 +28,7 @@ const define = compilerDescriptors.defineProperty
 const keys = Object.keys
 let compiler
 let compilerScript
-const coverageEnabled = Boolean(process.env.NODE_V8_COVERAGE)
-const bytecodeFile = process.env.DSH_PTC_COMPILER_BYTECODE
-let workerCache = bytecodeFile ? deserialize(readFileSync(bytecodeFile)) : undefined
-if (workerCache?.source !== compilerSource) workerCache = undefined
+let workerCache
 // Bytecode contains no compiler realm or program state. Match the complete
 // source: V8's cache validation alone does not prove source text equality.
 let cachedData = workerData?.compilerCache?.source === compilerSource
@@ -43,9 +39,6 @@ if (workerData !== null && typeof workerData === 'object') delete workerData.com
 /** Reuse compiled compiler code across fresh workers, never their realm state. */
 export function compilerWorkerCache() {
   if (compilerScript === undefined) return undefined
-  // Instrumented compiler instances neither produce nor consume bytecode.
-  // Coverage's runner supplies a snapshot from its uninstrumented preparation.
-  if (workerCache === undefined && coverageEnabled) return undefined
   workerCache ??= { source: compilerSource, data: apply(createCachedData, compilerScript, []) }
   return { source: workerCache.source, data: new NativeUint8Array(workerCache.data) }
 }
@@ -58,7 +51,7 @@ function compilerEntry() {
   // Workers can execute host-prepared cells without compiling dynamic source.
   // Capture source and platform before user code, but parse only on first use.
   compilerScript = new NativeScript(compilerSource, { __proto__: null, filename, displayErrors: false,
-    cachedData: coverageEnabled ? undefined : cachedData })
+    cachedData })
   cachedData = undefined
   const context = nativeCreateContext(dontContextify)
   define(context, '__compilerBaseUrl', { value: import.meta.url })

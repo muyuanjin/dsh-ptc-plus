@@ -93,7 +93,6 @@ async function verifyDock(label, width = 1440, height = 1000) {
     const composer = document.querySelector('[data-composer-seat] :is(textarea, [contenteditable=true])')
     const bounds = node => node.getBoundingClientRect().toJSON()
     return { panel: bounds(element), composer: bounds(composer), viewport: { width: innerWidth, height: innerHeight },
-      scrollMode: element.dataset.scroll,
       position: getComputedStyle(element).position, background: getComputedStyle(element).backgroundColor,
       shadow: getComputedStyle(element).boxShadow,
       anchor: bounds(element.parentElement),
@@ -107,25 +106,22 @@ async function verifyDock(label, width = 1440, height = 1000) {
       }) }
   })
   assert.ok(metrics.panel.bottom <= metrics.composer.top + 1, `${label}: dock is not above the input`)
-  assert.equal(metrics.position, 'absolute', `${label}: review grows the composer mask`)
-  assert.equal(metrics.anchor.height, 0, `${label}: review occupies transcript flow`)
-  assert.ok(metrics.panel.bottom <= metrics.seat.top - 7, `${label}: review covers other composer content`)
-  assert.notEqual(metrics.shadow, 'none', `${label}: floating review has no elevation`)
+  assert.equal(metrics.position, 'relative', `${label}: review escaped the public dock layout`)
+  assert.ok(metrics.anchor.height >= metrics.panel.height - 1, `${label}: dock does not reserve the review height`)
+  assert.notEqual(metrics.shadow, 'none', `${label}: review has no elevation`)
   assert.ok(!/rgba\(.*,[\s]*0\)|transparent/.test(metrics.background), `${label}: review background is transparent`)
   assert.ok(metrics.panel.top >= -1, `${label}: dock title is unreachable: ${JSON.stringify(metrics)}`)
   assert.ok(metrics.composer.bottom <= height, `${label}: input is outside the viewport`)
   assert.ok(metrics.scrollWidth <= width, `${label}: document overflows horizontally`)
-  if (metrics.scrollMode === 'panel') {
-    metrics.buttons = []
-    for (const button of await panel.locator('.ptcPlusBindingDockHead button,.ptcPlusBindingDockActions button').all()) {
-      await button.focus()
-      metrics.buttons.push(await button.evaluate(element => {
-        const rect = element.getBoundingClientRect().toJSON()
-        return { ...rect, reachable: element.contains(document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2)) }
-      }))
-    }
-    await panel.evaluate(element => { element.scrollTop = 0 })
+  metrics.buttons = []
+  for (const button of await panel.locator('.ptcPlusBindingDockHead button,.ptcPlusBindingDockActions button').all()) {
+    await button.focus()
+    metrics.buttons.push(await button.evaluate(element => {
+      const rect = element.getBoundingClientRect().toJSON()
+      return { ...rect, reachable: element.contains(document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2)) }
+    }))
   }
+  await panel.evaluate(element => { element.scrollTop = 0 })
   for (const button of metrics.buttons) {
     assert.ok(button.left >= 0 && button.right <= width + 1 && button.height >= 23 && button.bottom <= height && button.reachable,
       `${label}: action is unreachable: ${JSON.stringify(button)}`)
@@ -1652,8 +1648,8 @@ export async function main(argv = process.argv.slice(2)) {
       assert.equal(await dock.locator('.ptcPlusBindingDockBody').count(), 0)
       await verifyDock('collapsed')
       const collapsedLayout = await disclosureLayout()
-      assert.deepEqual(collapsedLayout.seat, expandedLayout.seat, 'Disclosure moved the composer')
-      assert.equal(collapsedLayout.extent, expandedLayout.extent, 'Disclosure changed transcript height')
+      assert.ok(Math.abs(collapsedLayout.seat.bottom - expandedLayout.seat.bottom) <= 1, 'Disclosure moved the composer floor')
+      assert.ok(collapsedLayout.seat.height < expandedLayout.seat.height, 'The dock did not release its reserved height')
       assert.notEqual(collapsedLayout.transform, expandedLayout.transform, 'Disclosure chevron did not change direction')
       // Click the title itself; a tiny icon-only target must fail this acceptance check.
       await dock.locator('.ptcPlusBindingDockHeading strong').click()
@@ -2012,8 +2008,8 @@ export async function main(argv = process.argv.slice(2)) {
     }
     await page.getByText(/^(Plugins|插件)$/).click()
     if (usesSettingsDialog) {
-      await page.getByText('dsh-ptc-plus', { exact: true }).click()
-      await page.getByRole('button', { name: /^(Configure|配置) dsh-ptc-plus$/ }).click()
+      await page.getByText('PTC Plus', { exact: true }).click()
+      await page.getByRole('button', { name: /^(Configure|配置) PTC Plus$/ }).click()
     }
     await page.locator('.ptcPlusCard').waitFor()
     const settingsCardHeader = page.locator('.ptcPlusCard .ptcPlusHeader')

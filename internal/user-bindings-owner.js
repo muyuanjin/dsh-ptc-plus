@@ -274,7 +274,7 @@ export function createUserBindingsOwner(ctx, options = {}) {
     entry: current.entry,
   })
   const candidateView = current => Object.freeze({ requestId: current.requestId, commandId: current.commandId, ...draftView(current) })
-  const settleDraft = (current, state, enabled = false) => {
+  const settleDraft = async (current, state, enabled = false) => {
     const retainReview = draftsByCapability.get(current.capability) === current
     removeDraft(current)
     const action = Object.freeze({ requestId: current.requestId, id: current.entry.id, state, enabled })
@@ -282,7 +282,8 @@ export function createUserBindingsOwner(ctx, options = {}) {
       reviewsByCapability.set(current.capability, { agent: current.agent, candidate: candidateView(current), action })
     }
     try {
-      const accepting = sessionEvents(current.agent.session)?.find(event => (
+      const sessionLog = await (options.readSessionLog ?? (async session => session))(current.agent.session)
+      const accepting = sessionEvents(sessionLog)?.find(event => (
         event.type === 'tool/result' && event.surfaceOp === 'append'
         && event.data?.meta?.[USER_BINDING_DRAFT_META_KEY]?.candidate?.requestId === current.requestId
       ))
@@ -303,7 +304,7 @@ export function createUserBindingsOwner(ctx, options = {}) {
       drafts.delete(current.sessionId)
     }
   }
-  const clearDraft = (capability, version) => {
+  const clearDraft = async (capability, version) => {
     const current = draftFor(capability)
     if (current === null) return null
     if (!Number.isSafeInteger(version) || version < 1 || version !== current.version) {
@@ -314,7 +315,7 @@ export function createUserBindingsOwner(ctx, options = {}) {
     if (current.state !== 'ready') {
       throw Object.assign(new Error('binding draft is being saved'), { code: 'BINDINGS_BUSY' })
     }
-    settleDraft(current, 'discarded')
+    await settleDraft(current, 'discarded')
     return null
   }
   const saveDraft = async (capability, version, expectedRevision, activate = false) => {
@@ -333,7 +334,7 @@ export function createUserBindingsOwner(ctx, options = {}) {
       const result = current.mode === 'new'
         ? await store.create(entry, expectedRevision)
         : await store.update(entry, expectedRevision)
-      settleDraft(current, 'saved', activate === true)
+      await settleDraft(current, 'saved', activate === true)
       return result
     } catch (error) {
       if (drafts.get(current.sessionId) === current && current.state === 'saving') {

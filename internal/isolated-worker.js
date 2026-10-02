@@ -15,6 +15,17 @@ const ISOLATED_STOP_MS = 5000
 /** Bound on the helper's output pipes really ending after its process exited. */
 const ISOLATED_OUTPUT_MS = 5000
 
+export function isolatedWorkerEntry(entry) {
+  if (!(entry instanceof URL) && (typeof entry !== 'string' || entry.length === 0)) {
+    throw new TypeError('isolated worker entry must be a URL or a non-empty string filename')
+  }
+  return entry instanceof URL
+    ? entry.href
+    : entry.slice(0, 5).toLowerCase() === 'file:'
+      ? new URL(entry).href
+      : pathToFileURL(resolve(entry)).href
+}
+
 /**
  * A worker-shaped transport whose worker lives in a killable helper process.
  *
@@ -29,17 +40,10 @@ export class IsolatedWorker extends EventEmitter {
     super()
     // The entry follows the worker constructor's contract: a URL or a string
     // filename. Anything else fails here, before a helper process exists.
-    if (!(entry instanceof URL) && (typeof entry !== 'string' || entry.length === 0)) {
-      throw new TypeError('isolated worker entry must be a URL or a non-empty string filename')
-    }
     // The init message crosses advanced IPC, which cannot rebuild a URL object, so
     // the boundary normalizes it to one absolute file URL string. A path follows
     // the worker constructor's rule: resolved from the current working directory.
-    const entrySpec = entry instanceof URL
-      ? entry.href
-      : entry.slice(0, 5).toLowerCase() === 'file:'
-        ? new URL(entry).href
-        : pathToFileURL(resolve(entry)).href
+    const entrySpec = isolatedWorkerEntry(entry)
     this.stdout = new PassThrough()
     this.stderr = new PassThrough()
     this.protocol = protocol

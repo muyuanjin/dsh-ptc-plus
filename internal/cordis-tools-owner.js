@@ -149,8 +149,9 @@ function containsCompanionSkill(directory, fileExists) {
 
 /** Resolve the official Cordis companion Skill across DSH preset generations. */
 export async function resolveCompanionSkillDirectory(agentPresets, options = {}) {
-  const fileExists = options.fileExists ?? existsSync
   const preset = await agentPresets.resolve(CORDIS_PRESET_ID)
+  const resolution = typeof options === 'function' ? options() : options
+  const fileExists = resolution.fileExists ?? existsSync
   if (typeof preset?.broken === 'string' && preset.broken.length > 0) {
     throw new Error(`ptc-plus: DSH cordis preset is unavailable: ${preset.broken}`)
   }
@@ -166,7 +167,7 @@ export async function resolveCompanionSkillDirectory(agentPresets, options = {})
   }
 
   for (const layout of COMPANION_PACKAGE_LAYOUTS) {
-    const pkg = options.packageOf?.(layout.name, options.packageBaseUrl)
+    const pkg = resolution.packageOf?.(layout.name, resolution.packageBaseUrl)
     if (pkg === undefined) continue
     if (pkg?.name !== layout.name || typeof pkg.dir !== 'string' || !isAbsolute(pkg.dir)) {
       throw new Error(`ptc-plus: DSH pluginPackages returned an invalid ${layout.name} package resource`)
@@ -175,10 +176,10 @@ export async function resolveCompanionSkillDirectory(agentPresets, options = {})
     if (containsCompanionSkill(directory, fileExists)) return directory
   }
 
-  if (options.packageOf === undefined && options.resolveLegacyPackageManifest !== undefined) {
+  if (resolution.packageOf === undefined && resolution.resolveLegacyPackageManifest !== undefined) {
     let manifest
     try {
-      manifest = options.resolveLegacyPackageManifest('@deepseek-ai/dsh-agent-presets/package.json')
+      manifest = resolution.resolveLegacyPackageManifest('@deepseek-ai/dsh-agent-presets/package.json')
     } catch (error) {
       if (error?.code !== 'MODULE_NOT_FOUND' && error?.code !== 'ERR_PACKAGE_PATH_NOT_EXPORTED') throw error
     }
@@ -320,22 +321,24 @@ export function createCordisToolsOwner(
   const cordisInspectLeases = createCordisInspectLeases(ctx)
   const scopedCordisPlugin = cordisInspectLeases.plugin(cordisPlugin)
   const scopedSkillPlugin = exactCompanionSkillPlugin(skillFilesystemPlugin)
-  const pluginPackages = ctx.get?.('pluginPackages')
   const packageBaseUrl = ctx.baseUrl
-  const skillResolution = companionResolution ?? {
-    packageOf: pluginPackages === undefined
-      ? undefined
-      : (name, parentURL) => {
-          if (typeof pluginPackages?.packageOf !== 'function') {
-            throw new Error('ptc-plus: cordisToolsEnabled requires the DSH pluginPackages.packageOf API')
-          }
-          return pluginPackages.packageOf(name, parentURL)
-        },
-    packageBaseUrl,
-    resolveLegacyPackageManifest: pluginPackages === undefined && typeof packageBaseUrl === 'string'
-      ? specifier => createRequire(packageBaseUrl).resolve(specifier)
-      : undefined,
-  }
+  const skillResolution = companionResolution ?? (() => {
+    const pluginPackages = ctx.get?.('pluginPackages')
+    return {
+      packageOf: pluginPackages === undefined
+        ? undefined
+        : (name, parentURL) => {
+            if (typeof pluginPackages?.packageOf !== 'function') {
+              throw new Error('ptc-plus: cordisToolsEnabled requires the DSH pluginPackages.packageOf API')
+            }
+            return pluginPackages.packageOf(name, parentURL)
+          },
+      packageBaseUrl,
+      resolveLegacyPackageManifest: pluginPackages === undefined && typeof packageBaseUrl === 'string'
+        ? specifier => createRequire(packageBaseUrl).resolve(specifier)
+        : undefined,
+    }
+  })
   let disposed = false
 
   const leafErrors = error => error instanceof AggregateError

@@ -10,6 +10,7 @@ const root = fileURLToPath(new URL('../', import.meta.url))
 const reporter = fileURLToPath(new URL('./coverage-report.mjs', import.meta.url))
 const bytecodeCompiler = fileURLToPath(new URL('./compiler-bytecode.mjs', import.meta.url))
 const workerCoverageSetup = new URL('./instrument-worker-coverage.mjs', import.meta.url).href
+const compilerCoverageSetup = new URL('./instrument-compiler-coverage.mjs', import.meta.url).href
 
 // The `finally` in runCoverage covers failures, but not signals: with no listener
 // Node terminates on the spot, so an interrupted run would strand the worker
@@ -145,6 +146,7 @@ export async function runCoverage({
     // without the instrumentation preload, then run the rest with it. Both
     // groups write worker evidence into the same coverage directory.
     const runTestGroup = (files, { instrumented, label }) => execute([
+      '--import', compilerCoverageSetup,
       ...(instrumented ? ['--import', workerCoverageSetup] : []),
       '--test', '--experimental-test-module-mocks', `--test-concurrency=${concurrency}`,
       ...reportersFor(label),

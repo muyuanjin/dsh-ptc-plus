@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { sessionEvents } from '../internal/session-events.js'
+import { recordedSessionEvents as sessionEvents } from './session-observation-fixture.js'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import test from 'node:test'

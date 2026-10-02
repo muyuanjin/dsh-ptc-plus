@@ -27,6 +27,7 @@ test('historical recovery faults contract the frontier and preserve current comp
     },
   } })
   const { SessionRuntime } = await import('../internal/session-runtime.js')
+  const { orderedSurfaceSession, appendRunCodeCall, appendRunCodeResult } = await import('./plugin-fixture.js')
   fault = 'initial'
   const initial = new SessionRuntime()
   t.after(() => initial.dispose())
@@ -40,7 +41,10 @@ test('historical recovery faults contract the frontier and preserve current comp
     fault = undefined
     const runtime = new SessionRuntime()
     t.after(() => runtime.dispose())
-    assert.equal((await runtime.run(mode, { program: 'return 0', bindings: [] })).value, 0)
+    const context = mode === 'refresh'
+      ? { id: mode, session: orderedSurfaceSession(mode) }
+      : mode
+    assert.equal((await runtime.run(context, { program: 'return 0', bindings: [] })).value, 0)
     const kernel = sessionKernel(runtime, mode)
     await restartWorker(runtime, mode)
     const journal = normalizeJournal({ version: 3, bindingMode: 'loose',
@@ -57,9 +61,15 @@ test('historical recovery faults contract the frontier and preserve current comp
         throw Error('historical planning failed')
       }
     }
-    if (mode === 'refresh') kernel.session = { surface: { replaceGeneration: 1, nodes: [] } }
+    if (mode === 'refresh') context.session.surface.replaceGeneration = 1
     fault = mode
-    const execution = await runtime.runTentative(mode, { program: 'let current=42;return current', bindings: [] })
+    const program = 'let current=42;return current'
+    let call
+    if (mode === 'refresh') {
+      context.callId = 'current'
+      call = appendRunCodeCall(context.session.events, context.callId, program)
+    }
+    const execution = await runtime.runTentative(context, { program, bindings: [] })
     const result = execution.result
     assert.deepEqual(execution.settlement.recoveryBoundaries, [{ failedCallSeq: 0, frontierCallSeq: null }])
     runtime.finalize(execution.settlement, true)
@@ -67,7 +77,15 @@ test('historical recovery faults contract the frontier and preserve current comp
     assert.equal(result.value, 42)
     assert.equal(result.logs.filter(log => log.includes('PTC-R002')).length, 1)
     fault = undefined
-    const next = await runtime.run(mode, { program: 'return ++current', bindings: [] })
+    if (call !== undefined) {
+      appendRunCodeResult(context.session.events, context.callId, call.callSeq, { meta: {
+        dshPtcPlus: execution.settlement.journal,
+        dshPtcPlusRecoveryBoundaries: execution.settlement.recoveryBoundaries,
+      } })
+      context.callId = 'next'
+      appendRunCodeCall(context.session.events, context.callId, 'return ++current')
+    }
+    const next = await runtime.run(context, { program: 'return ++current', bindings: [] })
     assert.equal(next.value, 43)
     assert.deepEqual(next.logs, [])
     await runtime.dispose()

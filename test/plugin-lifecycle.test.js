@@ -3,6 +3,7 @@ import { AsyncLocalStorage } from 'node:async_hooks'
 import { access, rm } from 'node:fs/promises'
 import { isAbsolute } from 'node:path'
 import test from 'node:test'
+import { Session } from '@deepseek-ai/dsh-session'
 import { Config, apply } from '../index.js'
 import {
   GENERATED_RUN_CODE_DESCRIPTION,
@@ -14,7 +15,9 @@ import { SessionRuntime } from '../internal/session-runtime.js'
 import { decodeValue, encodeValue, renderValueWire } from '../internal/value-wire.js'
 import { resolveConfig } from '../internal/runtime-config.js'
 import { JOURNAL_POLICY, appendRunCodeEvents, fixture, orderedSurfaceSession } from './plugin-fixture.js'
-import { serviceInjector } from './host-fixture.js'
+import { createFixtureExecutionProvider, serviceInjector } from './host-fixture.js'
+import { createRuntimeBridgeOwner } from '../internal/runtime-bridge-owner.js'
+import { createExecutionSeam } from '../internal/execution-seam-compat.js'
 import {
   activeTimers,
   awaitKernelTail,
@@ -299,9 +302,82 @@ test('does not reset the binding draft projection for an Agent with no owned dra
   assert.deepEqual(events, [])
 })
 
+test('production observation admission rejects disposed submissions and permits a fresh session', async t => {
+  for (const lifecycle of ['session', 'runtime']) await t.test(lifecycle, async t => {
+    const state = fixture({ durableReplay: false })
+    t.after(() => state.dispose())
+    const session = Session.create(`production-admission-${lifecycle}`)
+    const original = state.ctx.sessionQuery.observeSession
+    let resume
+    let entered
+    const suspended = new Promise(resolve => { resume = resolve })
+    const reading = new Promise(resolve => { entered = resolve })
+    state.ctx.sessionQuery.observeSession = async function (...args) {
+      const cut = await original.call(this, ...args)
+      entered()
+      await suspended
+      return cut
+    }
+    const pending = state.run('production-agent', 'let orphan = 41; return orphan + 1', {}, { session })
+    const rejected = assert.rejects(pending, new RegExp(`PTC ${lifecycle} disposed`))
+    await reading
+    if (lifecycle === 'session') await state.emit('session/disposed', session)
+    else await state.dispose()
+    resume()
+    await rejected
+    if (lifecycle === 'session') {
+      state.ctx.sessionQuery.observeSession = original
+      assert.equal((await state.run('production-agent', 'return typeof orphan', {}, { session })).value, 'undefined')
+    }
+  })
+})
+
+test('bridge observation shares the runtime submission configuration and releases failed reads', async t => {
+  let rejectRead
+  const reading = new Promise((_resolve, reject) => { rejectRead = reject })
+  const service = { language: 'typescript', run: async () => ({ logs: [], value: 'upstream' }) }
+  const owner = createRuntimeBridgeOwner({
+    ctx: { tools: { get: () => ({ output: {} }) } }, seam: createExecutionSeam(service, 'codeRuntime'),
+    sessionConfig: { userBindingsEnabled: false, durableReplay: false, maxOldGenerationSizeMb: 64 },
+    readSessionLog: () => reading, presentationGeneration: 'production-admission',
+    sessionId: agent => agent.id, toolSchemasForAgent: () => [],
+  })
+  t.after(() => owner.dispose())
+  const next = () => { assert.fail('failed observation reached the provider') }
+  const pending = owner.handleExecute({ agent: { id: 'production-admission' }, callId: 'pending' }, next)
+  const rejected = assert.rejects(pending, /reader unavailable/)
+  assert.throws(() => owner.reconfigure({ userBindingsEnabled: false, durableReplay: false,
+    maxOldGenerationSizeMb: 128 }), /cannot change while/)
+  rejectRead(new Error('reader unavailable'))
+  await rejected
+  owner.reconfigure({ userBindingsEnabled: false, durableReplay: false, maxOldGenerationSizeMb: 128 })
+})
+
+test('submission ownership rejects foreign and released tokens without starting a kernel', async t => {
+  const runtime = new SessionRuntime({ durableReplay: false })
+  const foreignRuntime = new SessionRuntime({ durableReplay: false })
+  t.after(() => Promise.all([runtime.dispose(), foreignRuntime.dispose()]))
+  const foreign = foreignRuntime.beginSubmission({ id: 'submission-owner' })
+  const local = runtime.beginSubmission({ id: 'submission-owner' })
+  for (const [id, submission] of [['submission-owner', foreign], ['other-session', local]]) {
+    const rejected = await runtime.runTentative({ id, submission }, { program: 'return 42', bindings: [] })
+    assert.match(rejected.result.error.message, /does not belong/)
+    assert.equal(workerOf(runtime, id), undefined)
+  }
+  runtime.releaseSubmission(local)
+  assert.throws(() => runtime.assertSubmission(local), /PTC session disposed/)
+  const released = await runtime.runTentative({ id: 'submission-owner', submission: local },
+    { program: 'return 42', bindings: [] })
+  assert.match(released.result.error.message, /does not belong/)
+  foreignRuntime.releaseSubmission(foreign)
+})
+
 test('delegates non-agent runtime calls and restores the provider on teardown', async () => {
   const state = fixture()
-  const patched = state.runtime.run
+  const descriptors = Object.getOwnPropertyDescriptors(state.originalRuntime)
+  const seam = createExecutionSeam(state.runtime, 'ptcRuntime')
+  assert.equal(seam.active, true)
+  assert.equal(Object.isFrozen(state.originalRuntime), true)
   assert.deepEqual(await state.runtime.run({ program: 'return 1', bindings: [] }), {
     logs: ['upstream'],
     value: 'upstream',
@@ -309,7 +385,8 @@ test('delegates non-agent runtime calls and restores the provider on teardown', 
   assert.equal(state.upstreamCalls.length, 1)
 
   await state.dispose()
-  assert.notEqual(state.runtime.run, patched)
+  assert.equal(seam.active, false)
+  assert.deepEqual(Object.getOwnPropertyDescriptors(state.originalRuntime), descriptors)
   assert.deepEqual(await state.runtime.run({ program: 'return 2', bindings: [] }), {
     logs: ['upstream'],
     value: 'upstream',
@@ -388,8 +465,12 @@ test('exports apply as a plain function so Cordis observes its activation promis
   assert.equal(Object.hasOwn(apply, 'prototype'), false)
 })
 
-test('retired runtime and metadata wrappers stay transparent across outer wrapper teardown', async () => {
+test('retired runtime consumers and metadata wrappers stay transparent across outer wrapper teardown', async testContext => {
   const state = fixture()
+  testContext.after(() => state.dispose())
+  const originalDescriptors = Object.getOwnPropertyDescriptors(state.originalRuntime)
+  const providerDescriptors = Object.getOwnPropertyDescriptors(state.runtime)
+  const seam = createExecutionSeam(state.runtime, 'ptcRuntime')
   const originalExecute = async args => args
   state.runCodeDefinition.execute = originalExecute
   await state.run('composition', 'return 1')
@@ -397,64 +478,78 @@ test('retired runtime and metadata wrappers stay transparent across outer wrappe
   const ptcPresentation = state.runCodeDefinition.output.presentationMeta
   const ptcExecute = state.runCodeDefinition.execute
   const outerRun = request => ptcRun(request)
+  const outerRuntime = Object.freeze({ run: outerRun })
+  let runtimeConsumer = outerRuntime
   const outerPresentation = (args, value) => ptcPresentation(args, value)
   const outerExecute = (args, exec) => ptcExecute(args, exec)
-  state.runtime.run = outerRun
   state.runCodeDefinition.output.presentationMeta = outerPresentation
   state.runCodeDefinition.execute = outerExecute
 
   await state.dispose()
-  assert.equal(state.runtime.run, outerRun)
+  assert.equal(seam.active, false)
+  assert.equal(runtimeConsumer.run, outerRun)
+  assert.deepEqual(Object.getOwnPropertyDescriptors(state.runtime), providerDescriptors)
+  assert.deepEqual(Object.getOwnPropertyDescriptors(state.originalRuntime), originalDescriptors)
   assert.equal(state.runCodeDefinition.output.presentationMeta, outerPresentation)
   assert.equal(state.runCodeDefinition.execute, outerExecute)
-  assert.deepEqual(await state.runtime.run({ program: 'return 2', bindings: [] }), {
+  assert.deepEqual(await runtimeConsumer.run({ program: 'return 2', bindings: [] }), {
     logs: ['upstream'],
     value: 'upstream',
   })
   assert.equal(state.runCodeDefinition.output.presentationMeta({}, undefined), undefined)
 
-  state.runtime.run = ptcRun
+  runtimeConsumer = state.runtime
   state.runCodeDefinition.output.presentationMeta = ptcPresentation
   state.runCodeDefinition.execute = ptcExecute
-  assert.deepEqual(await state.runtime.run({ program: 'return 3', bindings: [] }), {
+  assert.deepEqual(await runtimeConsumer.run({ program: 'return 3', bindings: [] }), {
     logs: ['upstream'],
     value: 'upstream',
   })
   assert.equal(state.runCodeDefinition.output.presentationMeta({}, undefined), undefined)
 })
 
-test('restores providers normally when an outer wrapper unloads first', async () => {
+test('releases execution normally when an outer consumer and metadata wrapper unload first', async testContext => {
   const state = fixture()
+  testContext.after(() => state.dispose())
+  const originalDescriptors = Object.getOwnPropertyDescriptors(state.originalRuntime)
+  const providerDescriptors = Object.getOwnPropertyDescriptors(state.runtime)
+  const seam = createExecutionSeam(state.runtime, 'ptcRuntime')
   const originalExecute = async args => args
   state.runCodeDefinition.execute = originalExecute
   await state.run('composition', 'return 1')
   const ptcRun = state.runtime.run
   const ptcPresentation = state.runCodeDefinition.output.presentationMeta
   const ptcExecute = state.runCodeDefinition.execute
-  state.runtime.run = request => ptcRun(request)
+  let runtimeConsumer = Object.freeze({ run: request => ptcRun(request) })
   state.runCodeDefinition.output.presentationMeta = (args, value) => ptcPresentation(args, value)
   state.runCodeDefinition.execute = (args, exec) => ptcExecute(args, exec)
 
-  state.runtime.run = ptcRun
+  assert.deepEqual(await runtimeConsumer.run({ program: 'return 0', bindings: [] }), {
+    logs: ['upstream'], value: 'upstream',
+  })
+  runtimeConsumer = state.runtime
   state.runCodeDefinition.output.presentationMeta = ptcPresentation
   state.runCodeDefinition.execute = ptcExecute
   await state.dispose()
 
-  assert.notEqual(state.runtime.run, ptcRun)
+  assert.equal(seam.active, false)
+  assert.equal(runtimeConsumer.run, ptcRun)
+  assert.deepEqual(Object.getOwnPropertyDescriptors(state.runtime), providerDescriptors)
+  assert.deepEqual(Object.getOwnPropertyDescriptors(state.originalRuntime), originalDescriptors)
   assert.equal(state.runCodeDefinition.output.presentationMeta, undefined)
   assert.equal(state.runCodeDefinition.execute, originalExecute)
-  assert.deepEqual(await state.runtime.run({ program: 'return 2', bindings: [] }), {
+  assert.deepEqual(await runtimeConsumer.run({ program: 'return 2', bindings: [] }), {
     logs: ['upstream'],
     value: 'upstream',
   })
 })
 
 test('rejects unsupported runtimes and invalid limits', async () => {
-  // Each case needs its own runtime object: an activation that succeeds takes
-  // over the seam it selected, and one seam object carries one takeover.
-  const base = (runtime) => {
+  const base = (originalRuntime) => {
+    const runtime = createFixtureExecutionProvider(Object.freeze(originalRuntime))
     const ctx = {
       ptcRuntime: runtime,
+      agents: { list: () => [] },
       tools: {},
       systemPrompt: { section() {}, context: () => () => {} },
       on() {},
@@ -927,6 +1022,43 @@ test('rejects live worker memory-limit changes without changing runtime config',
   assert.equal(runtime.config.maxOldGenerationSizeMb, 128)
 })
 
+test('observation preparation preserves submission configuration and disposal admission', async t => {
+  for (const mode of ['session', 'runtime', 'signal', 'reader-failure', 'success']) {
+    let release
+    const observation = new Promise((resolve, reject) => { release = { resolve, reject } })
+    const runtime = new SessionRuntime({ durableReplay: false, maxOldGenerationSizeMb: 64 }, {
+      readSessionLog: () => observation,
+    })
+    t.after(() => runtime.dispose())
+    const controller = new AbortController()
+    const pending = runtime.run('preparing-cell', { program: 'return 42', bindings: [], signal: controller.signal })
+    assert.throws(() => runtime.reconfigure({ maxOldGenerationSizeMb: 128 }), /maxOldGenerationSizeMb cannot change/)
+    if (mode === 'session') await runtime.disposeSession('preparing-cell')
+    if (mode === 'runtime') await runtime.dispose()
+    if (mode === 'signal') controller.abort()
+    if (['session', 'runtime', 'signal'].includes(mode)) runtime.reconfigure({ durableReplay: false, maxOldGenerationSizeMb: 128 })
+    if (mode === 'reader-failure') release.reject(new Error('observation failed'))
+    else release.resolve(undefined)
+    const result = await pending
+    if (mode === 'success') {
+      assert.equal(result.value, 42)
+      assert.equal(workerLimitOf(runtime, 'preparing-cell'), 64)
+      await runtime.disposeSession('preparing-cell')
+    } else {
+      assert.equal(result.error.kind, mode === 'reader-failure' ? 'recovery' : 'abort')
+      if (mode === 'signal') assert.equal(workerOf(runtime, 'preparing-cell'), undefined)
+      else assert.equal(runtime.kernels.size, 0)
+    }
+    assert.equal(runtime.preparingCells.size, 0)
+    runtime.reconfigure({ durableReplay: false, maxOldGenerationSizeMb: 128 })
+    if (mode !== 'runtime') {
+      runtime.readSessionLog = async () => undefined
+      assert.equal((await runtime.run('preparing-cell', { program: 'return 7', bindings: [] })).value, 7)
+      assert.equal(workerLimitOf(runtime, 'preparing-cell'), 128)
+    }
+  }
+})
+
 test('reserves the submitted cell memory limit before queued worker creation', async (t) => {
   const runtime = new SessionRuntime({ maxOldGenerationSizeMb: 64 })
   t.after(() => runtime.dispose())
@@ -1393,17 +1525,22 @@ test('presents the capabilities of the execution the plugin performs', async (t)
   assert.equal(state.runtime.timeout, undefined)
 })
 
-test('restores an inherited runtime provider without leaving an own patch', async () => {
+test('releases plugin execution without adding an own patch to an inherited original provider', async testContext => {
   const listeners = new Map()
   const cleanups = []
   const inheritedRun = async () => ({ logs: [] })
-  const runtime = Object.assign(Object.create({ run: inheritedRun }), {
+  const original = Object.freeze(Object.assign(Object.create(Object.freeze({ run: inheritedRun })), {
     language: 'typescript', isolation: 'process',
     resolve(request) { return { ...request, cwd: '/fixture-workspace', timeoutMs: null } },
-  })
+  }))
+  const descriptors = Object.getOwnPropertyDescriptors(original)
+  const prototype = Object.getPrototypeOf(original)
+  const runtime = createFixtureExecutionProvider(original)
+  const seam = createExecutionSeam(runtime, 'ptcRuntime')
   const definition = { name: 'run_code', output: {} }
   const ctx = {
     ptcRuntime: runtime,
+    agents: { list: () => [] },
     tools: { get: () => definition, schemas: () => [], register: () => () => {} },
     systemPrompt: { section() {}, context: () => () => {} },
     on(name, listener) {
@@ -1413,9 +1550,23 @@ test('restores an inherited runtime provider without leaving an own patch', asyn
     effect(register) { cleanups.push(register()) },
   }
   ctx.inject = serviceInjector({ ptcRuntime: runtime }, () => ctx)
+  let disposed = false
+  const dispose = async () => {
+    if (disposed) return
+    disposed = true
+    for (const cleanup of cleanups.reverse()) await cleanup()
+  }
+  testContext.after(dispose)
   await apply(ctx)
-  assert.equal(Object.hasOwn(runtime, 'run'), true)
-  for (const cleanup of cleanups.reverse()) await cleanup()
-  assert.equal(Object.hasOwn(runtime, 'run'), false)
-  assert.equal(runtime.run, inheritedRun)
+  assert.equal(seam.active, true)
+  assert.equal(Object.hasOwn(original, 'run'), false)
+  assert.equal(original.run, inheritedRun)
+  assert.deepEqual(Object.getOwnPropertyDescriptors(original), descriptors)
+  await dispose()
+  assert.equal(seam.active, false)
+  assert.equal(Object.hasOwn(original, 'run'), false)
+  assert.equal(original.run, inheritedRun)
+  assert.equal(Object.getPrototypeOf(original), prototype)
+  assert.deepEqual(Object.getOwnPropertyDescriptors(original), descriptors)
+  assert.deepEqual(await runtime.run({ program: 'return 1', bindings: [] }), { logs: [] })
 })

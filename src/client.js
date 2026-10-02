@@ -1,6 +1,6 @@
 import { createClientRpc } from './client-rpc.js'
 import { RPC_CONTRACTS } from '../internal/rpc-contract.js'
-import { SETTINGS_NAMESPACE } from '../internal/config-spec.js'
+import { CONFIG_DEFAULTS, SETTINGS_NAMESPACE } from '../internal/config-spec.js'
 import { createPtcToolView } from './client-tool-view.js'
 import { createPtcSettingsView } from './client-settings-view.js'
 import { createReplView } from './client-repl-view.js'
@@ -29,22 +29,85 @@ import { featureEnabled, registerGated } from './client-feature-gates.js'
 import { createCatalogOwner } from './client-catalog.js'
 import { createUserBindingsWorkbench } from './client-workbench.js'
 import { createBindingCommandAvailability, createReplObserver } from './client-transport.js'
+import { resolvePrimitives } from './client-primitives.js'
+
+/** Settings snapshot used until the installed generation serves a transport. */
+const UNAVAILABLE_PREFERENCE = Object.freeze({
+  status: 'unavailable',
+  writable: false,
+  value: CONFIG_DEFAULTS,
+})
+
+/**
+ * Resolve the settings preference scope of the running generation without
+ * depending on that generation publishing a particular transport name: the
+ * current one serves `configForms` and the preceding one served
+ * `settingsScope`. The plugin exposes the shipped Config defaults until a
+ * transport appears, prefers the current one, and retains live alternatives.
+ * A renamed or omitted transport degrades the settings surface instead of
+ * suspending apply() before any contribution is registered.
+ */
+function createPreferenceScope(ctx) {
+  const listeners = new Set()
+  const registrations = new Map()
+  let bound
+  const notify = () => { for (const listener of [...listeners]) listener() }
+  const sync = () => {
+    const next = registrations.get('configForms') ?? registrations.get('settingsScope')
+    if (bound === next) return
+    bound = next
+    notify()
+  }
+  const adopt = (name, scope) => {
+    if (scope === undefined || scope === null) return undefined
+    const registration = { scope }
+    const unsubscribe = typeof scope.subscribe === 'function' ? scope.subscribe(() => {
+      if (bound === registration) notify()
+    }) : undefined
+    registrations.set(name, registration)
+    sync()
+    return () => {
+      unsubscribe?.()
+      if (registrations.get(name) !== registration) return
+      registrations.delete(name)
+      sync()
+    }
+  }
+  ctx.inject(['configForms'], scope => adopt('configForms', scope.configForms.get(SETTINGS_NAMESPACE)))
+  ctx.inject(['settingsScope'], scope => adopt('settingsScope', scope.settingsScope.bind({ namespace: SETTINGS_NAMESPACE })))
+  return Object.freeze({
+    getSnapshot: () => bound?.scope.getSnapshot() ?? UNAVAILABLE_PREFERENCE,
+    subscribe(listener) {
+      listeners.add(listener)
+      return () => listeners.delete(listener)
+    },
+    set: (key, value) => bound?.scope.set(key, value),
+    mutate: patch => bound?.scope.mutate(patch),
+  })
+}
 
 window.__ModuleLoader__.load({
   // Replaced by the bundle entry with the package name from package.json.
   id: __PTC_PLUS_CLIENT_MODULE_ID__,
   factory: (require) => {
     const React = require('react')
-    const primitives = require('@deepseek-ai/dsh-client-ui-primitives')
+    const { createPortal } = require('react-dom')
+    let primitives
+    try {
+      primitives = require('@deepseek-ai/dsh-client-ui-primitives') ?? {}
+    } catch {
+      primitives = {}
+    }
     const {
       Button,
       CodeBlock,
       DisclosureRow,
       Menu,
+      MenuFallback,
       Modal,
       Toast,
       Tooltip,
-    } = primitives
+    } = resolvePrimitives(primitives, React, createPortal)
     const {
       check: IconCheckOutline14,
       chevron: IconChevronDownOutline14,
@@ -85,40 +148,9 @@ window.__ModuleLoader__.load({
       icons: { chevron: IconChevronDownOutline14, check: IconCheckOutline14, inspect: IconInspectOutline12 },
     })
 
-    /**
-     * Resolve the settings transport of the running generation. The current
-     * release publishes `configForms`; the preceding one published
-     * `settingsScope`. Both are optional child injections so the client entry
-     * does not stay pending on the name the installed generation does not use.
-     */
-    function settingsPreferenceScope(ctx) {
-      return new Promise((resolve, reject) => {
-        let settled = false
-        let configFormsWatcher
-        let settingsScopeWatcher
-        const take = (name, scope) => {
-          if (settled) return
-          settled = true
-          if (name !== 'configForms' && typeof configFormsWatcher === 'function') configFormsWatcher()
-          if (name !== 'settingsScope' && typeof settingsScopeWatcher === 'function') settingsScopeWatcher()
-          resolve(name === 'configForms'
-            ? scope.configForms.get(SETTINGS_NAMESPACE)
-            : scope.settingsScope.bind({ namespace: SETTINGS_NAMESPACE }))
-        }
-        try {
-          configFormsWatcher = ctx.inject(['configForms'], scope => take('configForms', scope))
-          if (!settled) {
-            settingsScopeWatcher = ctx.inject(['settingsScope'], scope => take('settingsScope', scope))
-          }
-        } catch (error) {
-          reject(error)
-        }
-      })
-    }
-
     async function apply(ctx) {
       const rpc = await createClientRpc(ctx)
-      const preferenceScope = await settingsPreferenceScope(ctx)
+      const preferenceScope = createPreferenceScope(ctx)
       ctx.effect(() => ctx.locale.register(LOCALE_NS, SETTINGS_COPY), 'ptc-plus: settings dictionaries')
       ctx.effect(installStyles, 'ptc-plus: client styles')
 
@@ -255,7 +287,7 @@ window.__ModuleLoader__.load({
       // One probe answer serves every session's composer entry for this Client.
       const menuChildren = createMenuChildrenEvidence()
       const { BindingAuthorButton, BindingReviewDock, BindingCommandCard } = createAuthoringView(React, {
-        ActionButton, IconButton, Menu, Toast, Tooltip, CodeBlock, BindingsDialog, PTCPlusSettingsDialog,
+        ActionButton, IconButton, Menu, MenuFallback, Toast, Tooltip, CodeBlock, BindingsDialog, PTCPlusSettingsDialog,
         useWorkbenchController, useBindingReview, catalogOwner, callUserBindings, subscribeReset,
         settingsCardSeat: settingsCard.seat, updateSetting, menuChildren,
         icons: {

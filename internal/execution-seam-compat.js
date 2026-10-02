@@ -1,39 +1,11 @@
-/**
- * Own how PTC Plus attaches to the host's program-execution seam.
- *
- * DSH registers one execution seam per generation. The current release
- * registers `ctx.ptcRuntime` (`@deepseek-ai/dsh-ptc-runtime`); the preceding one
- * registered `ctx.codeRuntime` (`@deepseek-ai/dsh-code-runtime`). Both run one
- * model-written program against host async bindings. They differ in the service
- * name, in the call shape (`resolve(request)` then `run(spec)` against a single
- * `run(request)`), and in the capability descriptors a provider publishes.
- * Which seam is live is decided by the registered service, never by a version
- * string, so a deployment on either generation obtains the same behavior.
- *
- * PTC Plus replaces the execution of session cells with its own persistent
- * REPL. The object DSH describes to the model is therefore the plugin's
- * execution, not the wrapped provider's, so `takeOver()` answers the
- * descriptors the plugin can honor and withholds the ones it cannot. The REPL
- * runs every cell in one long-lived worker rather than a fresh process per
- * call, applies the session's configured budgets rather than a per-call host
- * deadline, and performs no file confinement. DSH gates `timeoutMs` on
- * `timeout` and resolves or escalates file policy on `sandboxMode`, so
- * withholding those descriptors keeps DSH's authority decisions with DSH
- * instead of having this plugin accept an input it would then ignore.
- *
- * A seam-neutral request carries exactly `program`, `bindings`, and `signal`:
- * the fields PTC Plus consumes. A resolved spec's directory, deadline, and
- * authority describe the provider whose execution was replaced, and are neither
- * forwarded to the session kernel nor re-derived here.
- */
-
 /** Cordis service name registered by the current DSH generation. */
 export const EXECUTION_SEAM_SERVICE = 'ptcRuntime'
 
-/** Cordis service name registered by the preceding DSH generation. */
+/** Historical request-only service name, retained with fixture evidence. */
 export const LEGACY_EXECUTION_SEAM_SERVICE = 'codeRuntime'
 
 const SEAM_SERVICES = Object.freeze([EXECUTION_SEAM_SERVICE, LEGACY_EXECUTION_SEAM_SERVICE])
+const PLUGIN_EXECUTION_SEAM = Symbol.for('dsh-ptc-plus.execution-seam')
 
 /**
  * How long the plugin waits for the host's execution seam before it reports the
@@ -48,32 +20,10 @@ const SEAM_SERVICES = Object.freeze([EXECUTION_SEAM_SERVICE, LEGACY_EXECUTION_SE
  */
 const SEAM_ATTACHMENT_TIMEOUT_MS = 30_000
 
-/**
- * Descriptors the plugin replaces with the capabilities of its own execution.
- * `executionInstructions` describes the wrapped provider's program model, which
- * no longer applies; `timeout` and `sandboxMode` gate host inputs the plugin
- * cannot honor. Withdrawal is unconditional because the rule is a property of
- * the plugin's execution, not of a generation: the preceding generation's
- * contract defines none of these members and nothing in its install closure
- * reads them, so withdrawing there is inert, while a provider that published
- * them stays unable to outlive the takeover.
- */
-const WITHHELD_DESCRIPTORS = Object.freeze(['executionInstructions', 'sandboxMode', 'timeout'])
-
 /** Read a registered service without declaring an injection requirement. */
 function readService(ctx, name) {
   if (typeof ctx?.get === 'function') return ctx.get(name)
   return ctx?.[name]
-}
-
-function descriptorsMatch(left, right) {
-  if (left === undefined || right === undefined) return left === right
-  return left.value === right.value
-    && left.get === right.get
-    && left.set === right.set
-    && left.writable === right.writable
-    && left.enumerable === right.enumerable
-    && left.configurable === right.configurable
 }
 
 /**
@@ -85,6 +35,7 @@ export function createExecutionSeam(service, serviceName) {
   if (service === null || typeof service !== 'object') {
     throw new TypeError(`ptc-plus: ${serviceName} must be an execution service object`)
   }
+  if (typeof service[PLUGIN_EXECUTION_SEAM] === 'function') return service[PLUGIN_EXECUTION_SEAM]()
   const current = serviceName === EXECUTION_SEAM_SERVICE
   const upstreamRun = service.run
   if (typeof upstreamRun !== 'function') {
@@ -95,82 +46,87 @@ export function createExecutionSeam(service, serviceName) {
     throw new TypeError('ptc-plus: ptcRuntime.resolve must be a function')
   }
   let installed
-  return Object.freeze({
+  const sourceListeners = new Set()
+  let available = true
+  const requireAvailable = () => {
+    if (!available) throw new Error(`ptc-plus: original ${serviceName} generation is unavailable`)
+  }
+  const requireCompatible = () => {
+    requireAvailable()
+    if (installed !== undefined && service.language !== installed.language) {
+      throw new Error(`ptc-plus: current original language ${JSON.stringify(service.language)} is incompatible with the active ${JSON.stringify(installed.language)} runtime`)
+    }
+  }
+  const provider = Object.freeze({
+    get language() { requireCompatible(); return service.language },
+    get isolation() { requireCompatible(); return installed === undefined ? service.isolation : 'worker-thread' },
+    get executionInstructions() { requireCompatible(); return installed === undefined ? service.executionInstructions ?? '' : '' },
+    get sandboxMode() { requireCompatible(); return installed === undefined ? service.sandboxMode : undefined },
+    get timeout() { requireCompatible(); return installed === undefined ? service.timeout : undefined },
+    resolve(request) {
+      requireCompatible()
+      return current ? upstreamResolve.call(service, request) : request
+    },
+    run(input) {
+      requireCompatible()
+      return installed === undefined ? upstreamRun.call(service, input) : installed.execute(input)
+    },
+    [PLUGIN_EXECUTION_SEAM]() { return seam },
+  })
+  const seam = Object.freeze({
     serviceName,
-    language: service.language,
+    get language() { requireAvailable(); return service.language },
+    provider,
+    get active() { return installed !== undefined && service.language === installed.language },
+    onSourceChange(listener) {
+      sourceListeners.add(listener)
+      return () => sourceListeners.delete(listener)
+    },
+    sourceChanged() {
+      return Promise.all([...sourceListeners].map(listener => listener())).then(() => undefined)
+    },
     /**
      * Run one program through the provider this plugin wraps. The current
      * generation resolves the request before running it, exactly as its own
      * consumer does; the preceding generation accepts the request directly.
      */
     invokeUpstream(request) {
+      requireCompatible()
       return current
         ? upstreamRun.call(service, upstreamResolve.call(service, request))
         : upstreamRun.call(service, request)
     },
-    /**
-     * Install the plugin's execution entry, and its capability descriptors, on
-     * the live service. Only one takeover is live at a time.
-     * @param {(request: object) => Promise<object>} execute - the plugin's entry.
-     * @returns {() => void} restores every descriptor this call replaced.
-     */
-    takeOver(execute) {
-      if (installed !== undefined) throw new Error('ptc-plus: execution seam already taken over')
-      const saved = new Map()
-      const written = new Map()
-      const requested = new Map()
-      requested.set('run', {
-        configurable: true,
-        writable: true,
-        value: current
-          ? spec => execute({
-              program: spec.program,
-              bindings: spec.bindings,
-              signal: spec.signal,
-            })
-          : request => execute(request),
-      })
-      for (const name of WITHHELD_DESCRIPTORS) {
-        requested.set(name, { configurable: true, value: name === 'executionInstructions' ? '' : undefined })
-      }
-      const extensible = Object.isExtensible(service)
-      for (const [name, descriptor] of requested) {
-        const previous = Object.getOwnPropertyDescriptor(service, name)
-        saved.set(name, previous)
-        const next = { enumerable: previous?.enumerable ?? false, ...descriptor }
-        requested.set(name, next)
-        const probe = {}
-        if (previous !== undefined) Object.defineProperty(probe, name, previous)
-        if (!extensible) Object.preventExtensions(probe)
-        Object.defineProperty(probe, name, next)
-      }
-      try {
-        for (const [name, descriptor] of requested) {
-          Object.defineProperty(service, name, descriptor)
-          written.set(name, Object.getOwnPropertyDescriptor(service, name))
-        }
-      } catch (error) {
-        for (const name of [...written.keys()].reverse()) {
-          if (!descriptorsMatch(Object.getOwnPropertyDescriptor(service, name), written.get(name))) continue
-          const descriptor = saved.get(name)
-          if (descriptor === undefined) delete service[name]
-          else Object.defineProperty(service, name, descriptor)
-        }
-        throw error
-      }
+    runUpstream(spec) {
+      requireCompatible()
+      return upstreamRun.call(service, spec)
+    },
+    installExecute(execute) {
+      requireAvailable()
+      if (typeof execute !== 'function') throw new TypeError('ptc-plus: execution entry must be a function')
+      if (installed !== undefined) throw new Error('ptc-plus: execution seam already installed')
+      const entry = { execute, language: service.language }
+      installed = entry
       const restore = () => {
-        if (installed !== restore) return
+        if (installed !== entry) return
         installed = undefined
-        for (const [name, descriptor] of saved) {
-          if (!descriptorsMatch(Object.getOwnPropertyDescriptor(service, name), written.get(name))) continue
-          if (descriptor === undefined) delete service[name]
-          else Object.defineProperty(service, name, descriptor)
-        }
       }
-      installed = restore
       return restore
     },
+    retire() {
+      available = false
+      installed = undefined
+      sourceListeners.clear()
+    },
   })
+  return seam
+}
+
+function registeredExecutionSeam(service, serviceName) {
+  const seam = createExecutionSeam(service, serviceName)
+  if (typeof service[PLUGIN_EXECUTION_SEAM] !== 'function') {
+    throw new Error(`ptc-plus: ${serviceName} requires the public execution-provider bundle composition`)
+  }
+  return seam
 }
 
 /**
@@ -259,7 +215,7 @@ export function installExecutionSeam(ctx, {
         entry = { name, scope }
         live = entry
         registerLifecycle(entry, name, scope)
-        const attached = attach(scope, createExecutionSeam(scope?.[name] ?? readService(ctx, name), name))
+        const attached = attach(scope, registeredExecutionSeam(scope?.[name] ?? readService(ctx, name), name))
         entry.attached = attached
         return attached
       })
@@ -292,7 +248,7 @@ export function installExecutionSeam(ctx, {
     const entry = { name, scope }
     live = entry
     try {
-      entry.attached = attach(scope, createExecutionSeam(scope?.[name] ?? readService(ctx, name), name))
+      entry.attached = attach(scope, registeredExecutionSeam(scope?.[name] ?? readService(ctx, name), name))
     } catch (error) {
       live = undefined
       throw error

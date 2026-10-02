@@ -464,6 +464,7 @@ export function createDirectSurfaceOwner({
   toolSchemasForAgent,
   userBindingsForAgent = async () => undefined,
   setAgentPresentation = async () => {},
+  sessionLogView,
 }) {
   // Composition is anchored to Agent identity because DSH selects presentation
   // once per composed agent. Request signals bind the exact assembly to stream
@@ -634,6 +635,7 @@ export function createDirectSurfaceOwner({
       }
       const runtimeContexts = sessionPtc
         ? sessionRuntimeContexts(agent, tipConfig, {
+          sessionLogView,
           cordisRecoveryRequired(view) {
             return cordisRecovery.required(agent, view)
           },

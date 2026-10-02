@@ -22,7 +22,7 @@ const HOVER_DWELL_MS = 150
  */
 export function createAuthoringView(React, deps) {
   const {
-    ActionButton, IconButton, Menu, Toast, Tooltip, CodeBlock, BindingsDialog, PTCPlusSettingsDialog,
+    ActionButton, IconButton, Menu, MenuFallback, Toast, Tooltip, CodeBlock, BindingsDialog, PTCPlusSettingsDialog,
     useWorkbenchController, useBindingReview, catalogOwner, callUserBindings, subscribeReset,
     settingsCardSeat, updateSetting, menuChildren,
     icons: {
@@ -56,10 +56,8 @@ export function createAuthoringView(React, deps) {
       anchorRef.current = element
       review.access = element
     }, [review])
-    const firstItemRef = React.useRef(null)
-    const manageItemRef = React.useRef(null)
+    const menuBodyRef = React.useRef(null)
     const reloadItemRef = React.useRef(null)
-    const settingsItemRef = React.useRef(null)
     const focused = React.useRef(false)
     const dialogReturnFocus = React.useRef(null)
     const hoverTimer = React.useRef(undefined)
@@ -68,8 +66,8 @@ export function createAuthoringView(React, deps) {
     const [settingsOpen, setSettingsOpen] = React.useState(false)
     // The composer entry's four actions live in the host Menu's `children`
     // region. Preceding Clients accept that prop and mount nothing, so the entry
-    // probes the installed primitive once and, when it renders no such region,
-    // keeps the same actions reachable through the Menu's pinned rows.
+    // probes the installed primitive once and uses its own Menu fallback when
+    // that public region is absent.
     const probeRef = React.useRef(null)
     const [probing, setProbing] = React.useState(() => menuChildren.supported() === undefined)
     const menuChildrenRegion = menuChildren.supported() !== false
@@ -140,8 +138,7 @@ export function createAuthoringView(React, deps) {
         showMenu('hover')
       }, HOVER_DWELL_MS)
     }
-    const menuElement = () => manageItemRef.current?.closest('[role=menu]')
-      ?? firstItemRef.current?.closest('[role=menu]')
+    const menuElement = () => menuBodyRef.current
     const captureCatalogFocus = () => {
       catalogFocus.current = menuElement()?.contains(document.activeElement) ? document.activeElement : null
     }
@@ -194,7 +191,7 @@ export function createAuthoringView(React, deps) {
       if (!target || document.activeElement !== document.body) return
       const root = menuElement()
       const next = root?.contains(target) && !target.disabled ? target
-        : reloadItemRef.current?.closest('button') ?? root?.querySelector('button:not(:disabled)')
+        : reloadItemRef.current ?? root?.querySelector('button:not(:disabled)')
       next?.focus({ preventScroll: true })
     }, [catalogStatus, menuOpen])
     React.useLayoutEffect(() => {
@@ -289,9 +286,7 @@ export function createAuthoringView(React, deps) {
             h('span', { className: 'ptcPlusBindingQuickState' }, t(entry.enabled ? 'bindings.enabled' : 'bindings.disabledEntry'))),
           h('span', { className: 'ptcPlusBindingQuickPurpose', title: entry.purpose }, entry.purpose)),
       })),
-      // The back row also anchors menu lookup, so the step still owns its list
-      // when the catalog is momentarily empty.
-      { id: 'edit-back', label: h('span', { className: 'ptcPlusBindingMenuAction', ref: firstItemRef }, t('bindings.back')) },
+      { id: 'edit-back', label: h('span', { className: 'ptcPlusBindingMenuAction' }, t('bindings.back')) },
     ]
     const selectMenuItem = id => {
       if (!anchorRef.current?.getClientRects().length) return
@@ -329,14 +324,14 @@ export function createAuthoringView(React, deps) {
     }
     // One copy of each action label serves the grid the plugin renders itself,
     // in whichever carrier the installed Menu publishes for it.
-    const actionCopy = (id, copy, ref) => h('span', {
-      ref, className: 'ptcPlusBindingMenuAction',
+    const actionCopy = (id, copy) => h('span', {
+      className: 'ptcPlusBindingMenuAction',
       title: id === 'settings' ? settingsPath(t) : undefined,
     }, t(copy))
-    const actionButton = (id, copy, ref) => h('button', {
+    const actionButton = (id, copy) => h('button', {
       type: 'button', role: 'menuitem', className: 'ptcPlusMenuButton',
       onClick: () => selectMenuItem(id),
-    }, actionCopy(id, copy, ref))
+    }, actionCopy(id, copy))
     const actionSections = [
       canAuthor ? h('div', { key: 'authoring', className: 'ptcPlusMenuAuthoring', role: 'group', 'aria-label': t('bindings.authorGroup') },
         h('div', { className: 'ptcPlusMenuGroupLabel' }, t('bindings.authorGroup')),
@@ -344,49 +339,48 @@ export function createAuthoringView(React, deps) {
           actionButton('new', 'bindings.authorNewDraft'),
           (catalog?.entries?.length ?? 0) > 0 ? actionButton('edit', 'bindings.authorEdit') : null)) : null,
       h('div', { key: 'utilities', className: 'ptcPlusMenuUtilities' },
-        quickAccess ? actionButton('manage', 'bindings.manage', manageItemRef) : null,
-        actionButton('settings', 'settings.menuEntry', settingsItemRef)),
+        quickAccess ? actionButton('manage', 'bindings.manage') : null,
+        actionButton('settings', 'settings.menuEntry')),
     ]
-    const actionsInRegion = menu?.step === 'edit'
-      ? null : h('div', { className: 'ptcPlusMenuActions' }, actionSections)
-    // The plugin's own action area, never a row list. A Client that mounts no
-    // `children` region still renders the pinned entry area, which carries the
-    // same grouped grid; the published `text` type names a string while the
-    // implementation renders the value, so this stays the plugin's own markup
-    // rather than a set of host-styled rows. Neither carrier enters the draft
-    // menu's second step, which owns its own rows.
-    const actionsPinned = menuChildrenRegion || menu?.step === 'edit' ? [] : [{
-      id: 'ptc-plus-actions',
-      type: 'label',
-      text: h('div', { className: 'ptcPlusMenuActions ptcPlusMenuActionsPinned' }, actionSections),
-    }]
+    const menuEntries = menu?.step === 'edit' ? editItems : [
+      ...(hasDraft ? [{ id: 'draft-heading', type: 'label', text: t('bindings.quickDrafts') }, {
+        id: view.candidateKey,
+        label: h('span', { className: 'ptcPlusDraftMenuItem' },
+          h('strong', null, view.candidate.entry.name), h('span', null, t(bindingReviewStatus(view)))),
+      }, ...(quickAccess ? [{ id: 'draft-separator', type: 'separator' }] : [])] : []),
+      ...catalogItems,
+      ...(quickAccess && catalogError !== null ? [{ id: 'reload', label: t('bindings.reload') }] : []),
+    ]
+    const menuContent = h('div', { className: 'ptcPlusBindingMenuContent', ref: menuBodyRef },
+      ...menuEntries.map(entry => entry.type === 'separator'
+        ? h('div', { key: entry.id, role: 'separator', className: 'ptcPlusOwnedMenuSeparator' })
+        : entry.type === 'label'
+          ? h('div', { key: entry.id, className: 'ptcPlusMenuGroupLabel' }, entry.text)
+          : h('button', {
+            key: entry.id, type: 'button', role: 'menuitem', className: 'ptcPlusOwnedMenuRow',
+            disabled: entry.disabled, ref: entry.id === 'reload' ? reloadItemRef : undefined,
+            onClick: () => selectMenuItem(entry.id),
+          }, entry.label)),
+      menu?.step === 'edit' ? null : h('div', { className: 'ptcPlusMenuActions' }, actionSections))
     return h('span', {
       className: 'ptcPlusComposerBindingAnchor', tabIndex: -1,
       onFocusCapture: () => { focused.current = true }, onBlurCapture: () => { focused.current = false },
       'data-text': isHostIconComponent(IconSparkle16) ? undefined : true,
       ref: attachAnchor,
     },
-      !hasDraft && !quickAccess ? null : h(Menu, {
+      !hasDraft && !quickAccess ? null : h(menuChildrenRegion ? Menu : MenuFallback, {
         className: 'ptcPlusAuthorButtonShell', open: menuOpen,
         anchor: typeof Tooltip === 'function'
           ? h(Tooltip, { label: hint, delayMs: 700, disabled: menuOpen || managing || settingsOpen }, starButton) : starButton,
         portal: true, side: 'top', dense: true,
+        listClassName: 'ptcPlusBindingMenu',
         // A hovered menu leaves with the pointer once it leaves the trigger and the
         // list for the published grace, which re-entering either cancels; click and
         // keyboard menus stay until dismissed.
         closeOnPointerLeave: menu !== null && menu.mode === 'hover',
         getAnchorRect: menuAnchorRect,
         onClose: hideMenu,
-        items: menu?.step === 'edit' ? editItems : [...(hasDraft ? [{ id: 'draft-heading', type: 'label', text: t('bindings.quickDrafts') }, { id: view.candidateKey,
-          label: h('span', { className: 'ptcPlusDraftMenuItem', ref: firstItemRef },
-            h('strong', null, view.candidate.entry.name),
-            h('span', null, t(bindingReviewStatus(view)))) },
-            ...(quickAccess ? [{ id: 'draft-separator', type: 'separator' }] : [])] : []), ...catalogItems,
-          ...(quickAccess && catalogError !== null
-            ? [{ id: 'reload', label: h('span', { ref: reloadItemRef }, t('bindings.reload')) }] : []),
-        ],
-        children: actionsInRegion,
-        ...(actionsPinned.length === 0 ? {} : { footer: actionsPinned }),
+        items: [], children: menuContent,
         onSelect: selectMenuItem,
       }),
       // The probe mounts the host Menu's own `children` region inside a hidden
@@ -450,14 +444,8 @@ export function createAuthoringView(React, deps) {
               preferences.instructions || t('bindings.noInstructions'))))))
   }
 
-  // Native editable semantics are enough to restore focus; no Host class, store or editor internals are used.
   function focusComposer(anchor) {
     if (!anchor || anchor.getClientRects().length === 0) return
-    for (let parent = anchor.parentElement; parent; parent = parent.parentElement) {
-      const editable = [...parent.querySelectorAll('textarea, [contenteditable="true"]')]
-        .find(element => element.getClientRects().length > 0 && !element.disabled)
-      if (editable) { editable.focus({ preventScroll: true }); return }
-    }
     anchor.focus({ preventScroll: true })
   }
 
@@ -477,60 +465,6 @@ export function createAuthoringView(React, deps) {
     else focusComposer(anchor)
   }
 
-  function fitBindingReview(panel) {
-    const body = panel?.querySelector('.ptcPlusBindingDockBody')
-    const anchor = panel?.parentElement
-    if (!anchor || typeof ResizeObserver !== 'function') return undefined
-    const ancestors = []
-    let seat = panel
-    let viewport
-    for (let parent = panel.parentElement; parent; parent = parent.parentElement) {
-      ancestors.push(parent)
-      if (/auto|scroll|hidden|clip/.test(getComputedStyle(parent).overflowY)) {
-        viewport = parent
-        break
-      }
-      seat = parent
-    }
-    if (!viewport) return undefined
-    let frame
-    const update = () => {
-      if (!panel.getClientRects().length) return
-      const top = Math.max(viewport.getBoundingClientRect().top + viewport.clientTop,
-        window.visualViewport?.offsetTop ?? 0)
-      // Float above the complete composer stack without changing its height or covering other docks.
-      const offset = anchor.getBoundingClientRect().bottom - seat.getBoundingClientRect().top + 8
-      panel.style.setProperty('--ptc-plus-review-offset', `${Math.max(8, Math.ceil(offset))}px`)
-      const room = Math.max(0, seat.getBoundingClientRect().top - top - 16)
-      panel.style.setProperty('--ptc-plus-review-height', `${Math.floor(room)}px`)
-      if (body) {
-        const chrome = panel.scrollHeight - body.offsetHeight + 2
-        const available = Math.max(0, room - chrome)
-        // In short viewports one scroller keeps source and actions reachable together.
-        panel.dataset.scroll = available < 80 ? 'panel' : 'body'
-        body.style.setProperty('--ptc-plus-review-space', `${Math.floor(available)}px`)
-      }
-    }
-    const schedule = () => {
-      cancelAnimationFrame(frame)
-      frame = requestAnimationFrame(update)
-    }
-    const observer = new ResizeObserver(schedule)
-    for (const element of [panel, ...panel.children, ...ancestors]) observer.observe(element)
-    window.visualViewport?.addEventListener('resize', schedule)
-    window.visualViewport?.addEventListener('scroll', schedule)
-    update()
-    return () => {
-      observer.disconnect()
-      cancelAnimationFrame(frame)
-      window.visualViewport?.removeEventListener('resize', schedule)
-      window.visualViewport?.removeEventListener('scroll', schedule)
-      panel.style.removeProperty('--ptc-plus-review-offset')
-      panel.style.removeProperty('--ptc-plus-review-height')
-      delete panel.dataset.scroll
-      body?.style.removeProperty('--ptc-plus-review-space')
-    }
-  }
 
   function BindingReviewDock({ sessionId, useProjection, t }) {
     const raw = useProjection('ptcPlusBindingDraft')
@@ -551,8 +485,26 @@ export function createAuthoringView(React, deps) {
     const content = React.useId()
     const expanded = view.visibility === 'expanded'
     const candidateKey = view.candidateKey
-    React.useLayoutEffect(() => fitBindingReview(review.panel),
-      [review, candidateKey, expanded, view.visibility, view.message])
+    React.useLayoutEffect(() => {
+      const panel = review.panel
+      if (!panel || typeof IntersectionObserver !== 'function') return undefined
+      const resetBudget = () => panel.style.removeProperty('max-block-size')
+      resetBudget()
+      const observer = new IntersectionObserver(entries => {
+        const entry = entries.find(candidate => candidate.target === panel)
+        if (!entry?.isIntersecting || entry.intersectionRect.top <= entry.boundingClientRect.top + 1) return
+        panel.style.setProperty('max-block-size', `${Math.max(1, entry.intersectionRect.height)}px`)
+      }, { threshold: [0, 1] })
+      observer.observe(panel)
+      window.addEventListener('resize', resetBudget)
+      window.visualViewport?.addEventListener('resize', resetBudget)
+      return () => {
+        observer.disconnect()
+        window.removeEventListener('resize', resetBudget)
+        window.visualViewport?.removeEventListener('resize', resetBudget)
+        resetBudget()
+      }
+    }, [review, candidateKey, expanded, view.visibility])
     const close = () => {
       review.display('hidden')
       requestAnimationFrame(() => focusBindingReviewAccess(review))

@@ -1,9 +1,13 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import Schema from '@deepseek-ai/schemastery'
 import { SettingsForms } from '@deepseek-ai/dsh-settings'
 import { Config } from '../index.js'
 import { CONFIG_FIELDS } from '../internal/config-spec.js'
+import { createFixtureExecutionProvider } from './host-fixture.js'
 import {
   configFieldSchema,
   hostOwnsSettingsDocument,
@@ -11,7 +15,7 @@ import {
 } from '../internal/settings-compat.js'
 
 function fixture(provider) {
-  const settingsContext = { settings: provider }
+  const settingsContext = { settings: provider, effect: register => register() }
   const ctx = {
     fiber: { state: 2 },
     inject(services, callback) {
@@ -81,7 +85,7 @@ test('treats a host-owned settings surface without an installer as supported', (
       return () => { released += 1 }
     },
   }
-  const { ctx } = fixture(provider)
+  const { ctx, settingsContext } = fixture(provider)
   const hooks = install(ctx, provider, {}, entryFiber)
   assert.equal(typeof hooks.setSource, 'function')
   assert.equal(typeof hooks.onChange, 'function')
@@ -89,10 +93,15 @@ test('treats a host-owned settings surface without an installer as supported', (
   // by the scope that happened to run the installation.
   assert.deepEqual(configured, [[{ auto: false }, entryFiber]])
   assert.notEqual(entryFiber, ctx.fiber)
+  // The policy belongs to the settings surface that accepted it: its disposer
+  // is released with that surface rather than accumulating on the plugin scope.
+  const foreign = []
+  ctx.effect = register => foreign.push(register())
   const effects = []
-  ctx.effect = register => effects.push(register())
+  settingsContext.effect = register => effects.push(register())
   install(ctx, provider, {})
   assert.deepEqual(configured[1], [{ auto: false }, ctx.fiber])
+  assert.deepEqual(foreign, [])
   effects.forEach(dispose => dispose())
   assert.equal(released, 1)
 })
@@ -122,6 +131,33 @@ test('serves the current settings generation from the exported volatile Config',
   await service.update('ptc-plus', { enabled: false })
   assert.equal(edits.length, 1)
   assert.equal(edits[0].enabled, false)
+})
+
+test('binds compensating writes to the owning entry or historical section, never another entry', async () => {
+  for (const shape of ['host-owned', 'provider-section', 'package-section']) {
+    const writes = []
+    const provider = { update: async (namespace, patch) => writes.push({ namespace, patch }) }
+    if (shape === 'provider-section') provider.installSection = () => {}
+    const settingsModule = shape === 'package-section' ? { installSettingsSection() {} } : {}
+    const { ctx, settingsContext } = fixture(provider)
+    const disposers = []
+    settingsContext.effect = register => disposers.push(register())
+    let writer
+    installSettingsSectionCompat({ ctx, settingsModule, namespace: 'ptc-plus', schema: Config,
+      entry: {}, hooks: {}, ownerFiber: { entry: { options: { id: 'custom-ptc' } } },
+      onProvider(_provider, bound) {
+        writer = bound
+        return () => { if (writer === bound) writer = undefined }
+      } })
+    await writer.update({ enabled: false })
+    assert.deepEqual(writes, [{ namespace: shape === 'host-owned' ? 'custom-ptc' : 'ptc-plus',
+      patch: { enabled: false } }])
+    disposers.forEach(dispose => dispose())
+    assert.equal(writer, undefined)
+  }
+  const { ctx } = fixture({ update() { throw new Error('unaddressed update') } })
+  installSettingsSectionCompat({ ctx, settingsModule: {}, namespace: 'ptc-plus',
+    schema: Config, entry: {}, hooks: {}, onProvider(_provider, writer) { assert.equal(writer, undefined) } })
 })
 
 test('a volatile-only settings commit reaches the running plugin through the loader event', async t => {
@@ -154,6 +190,56 @@ test('a volatile-only settings commit reaches the running plugin through the loa
   await root.loader.await()
   assert.equal(globalThis.__ptcVolatileApplies, 1)
   assert.deepEqual(globalThis.__ptcVolatileSnapshots, [false])
+})
+
+test('failed activation compensates the custom Loader entry through real SettingsForms', async t => {
+  const { Context } = await import('@deepseek-ai/cordis')
+  const Loader = (await import('@deepseek-ai/cordis-plugin-loader')).default
+  const { SystemPrompt } = await import('@deepseek-ai/dsh-system-prompt')
+  const { ToolRuntime } = await import('@deepseek-ai/dsh-tools')
+  const root = new Context()
+  t.after(() => root.fiber.dispose())
+  const home = await mkdtemp(join(tmpdir(), 'ptc-settings-owner-'))
+  t.after(() => rm(home, { recursive: true, force: true }))
+  root.provide('profileContext', { home, name: 'isolated-settings-owner' })
+  await root.plugin(Loader, { baseUrl: new URL('../', import.meta.url).href }).await()
+  root.provide('agents', { list: () => [] })
+  root.provide('ptcRuntime', createFixtureExecutionProvider({ language: 'python', isolation: 'worker-thread',
+    resolve: request => ({ ...request, cwd: process.cwd(), timeoutMs: null }),
+    run: async () => ({ logs: [], value: 42 }) }))
+  await root.plugin(SystemPrompt, { includeHarnessIdentity: false, includeRuntimeContext: false,
+    persona: '', toolOrder: undefined }).await()
+  await root.plugin(ToolRuntime, { mode: 'ptc' }).await()
+  const defaults = (await Config['~standard'].validate({})).value
+  const writes = []
+  let compensated
+  const compensation = new Promise(resolve => { compensated = resolve })
+  root.provide('configEditor', {
+    entries: () => [...root.loader.entries()],
+    configuration: () => [...root.loader.entries()].map(entry => ({ entry, inherited: defaults, override: {} })),
+    documentPath: '/isolated/in-memory-profile.json',
+    async edit(entry, change) {
+      const config = await change(entry.options.config ?? {}, defaults, entry.fiber.runtime.Config)
+      writes.push({ id: entry.options.id, enabled: config.enabled })
+      await root.loader.create({ ...entry.options, config })
+      await root.loader.await()
+      if (entry.options.id === 'custom-ptc' && config.enabled === false) compensated()
+    },
+  })
+  await root.plugin(SettingsForms).await()
+  await root.loader.create({ id: 'custom-ptc', name: new URL('../index.js', import.meta.url).href,
+    config: { enabled: false, userBindingsEnabled: false, cordisToolsEnabled: false } })
+  await root.loader.await()
+  await root.settings.update('custom-ptc', { enabled: true })
+  let timeout
+  try {
+    await Promise.race([compensation, new Promise((_, reject) => {
+      timeout = setTimeout(() => reject(new Error('activation was not compensated')), 5_000)
+    })])
+  } finally { clearTimeout(timeout) }
+  assert.deepEqual(writes, [{ id: 'custom-ptc', enabled: true }, { id: 'custom-ptc', enabled: false }])
+  const descriptor = root.settings.describe().find(item => item.ns === 'custom-ptc')
+  assert.equal(descriptor.value.enabled, false)
 })
 
 test('selects the exported Config shape from the installed settings generation', async () => {

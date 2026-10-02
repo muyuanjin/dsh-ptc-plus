@@ -43,7 +43,8 @@ test('projects only normalized Cordis call facts from persisted journals', async
   appendRunCodeEvents(events, 'malformed', 'return 1', { meta: { dshPtcPlus: { version: 999 } } })
 
   assert.deepEqual(projectSessionLog({ session }).cordisTranscript, { calls: 3, inspections: 1 })
-  assert.deepEqual(projectSessionLog({ session: { events: undefined } }).cordisTranscript, {
+  assert.throws(() => projectSessionLog({ session: { events: undefined } }), /not an event array/)
+  assert.deepEqual(projectSessionLog({}).cordisTranscript, {
     calls: 0,
     inspections: 0,
   })

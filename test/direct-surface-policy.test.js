@@ -9,7 +9,7 @@ import { validateJsonSchemaValue } from '@deepseek-ai/dsh-tools'
 import { CONFIG_DEFAULTS } from '../internal/config-spec.js'
 import { createDirectSurfaceOwner } from '../internal/direct-surface-owner.js'
 import { createUserBindingsSnapshot } from '../internal/user-bindings.js'
-import { sessionEvents } from '../internal/session-events.js'
+import { recordedSessionEvents as sessionEvents } from './session-observation-fixture.js'
 
 function assembly() {
   return {

@@ -181,6 +181,7 @@ test('advertises configured APIs before activation, keeps the prefix stable and 
     {},
     { session },
   )
+  assert.equal(result.error, undefined, JSON.stringify(result))
   assert.deepEqual(result.value, [1, 2])
 })
 
@@ -212,6 +213,7 @@ test('preserves versioned parameter-property and enum state through live executi
   t.after(() => restored.dispose())
   await rememberRequest(restored, session, agent)
   const continued = await restored.runDurable(session.id, 'return [counter.next(), saved]', {}, { session })
+  assert.equal(continued.error, undefined, JSON.stringify(continued))
   assert.deepEqual(continued.value, [42, 10])
   assert.deepEqual(continued.meta[JOURNAL_KEY].diagnostics, [])
 })

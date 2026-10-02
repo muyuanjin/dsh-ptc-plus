@@ -1,120 +1,18 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { apply } from '../index.js'
-import { serviceInjector } from './host-fixture.js'
-import {
-  appendRunCodeCall,
-  appendRunCodeResult,
-  orderedSurfaceSession,
-} from './plugin-fixture.js'
+import { fixture as pluginFixture } from './plugin-fixture.js'
 
 function fixture() {
-  const listeners = new Map()
-  const sections = []
-  const cleanups = []
-  const runCode = {
-    name: 'run_code',
-    description: 'Execute a program.',
-    parameters: {
-      type: 'object',
-      properties: {
-        code: { type: 'string' },
-        description: { type: 'string' },
-      },
-      required: ['code', 'description'],
-    },
-    output: {},
-  }
-  const runtime = {
-    language: 'typescript',
-    isolation: 'worker-thread',
-    async run() { return { logs: [], value: 'upstream' } },
-  }
-  const definitions = new Map([['run_code', runCode]])
-  const services = { codeRuntime: runtime }
-  const sessions = new Map()
-  let nextCall = 0
-  const ctx = {
-    inject: serviceInjector(services, () => ctx),
-    codeRuntime: runtime,
-    tools: {
-      get(name) { return definitions.get(name) },
-      register(definition) {
-        definitions.set(definition.name, definition)
-        return () => definitions.delete(definition.name)
-      },
-      schemas() {
-        return [
-          runCode,
-          { name: 'read', description: 'Read a bounded page.', parameters: { type: 'object' } },
-          { name: 'echo', description: 'Echo a value.', parameters: { type: 'object' } },
-        ]
-      },
-    },
-    systemPrompt: {
-      context: () => () => {},
-      section(value) {
-        sections.push(value)
-        return () => sections.splice(sections.indexOf(value), 1)
-      },
-    },
-    on(name, listener) {
-      const values = listeners.get(name) ?? []
-      values.push(listener)
-      listeners.set(name, values)
-      return () => values.splice(values.indexOf(listener), 1)
-    },
-    effect(register) {
-      cleanups.push(register())
-    },
-  }
-  // This fixture checks native capabilities without saved helpers or authoring.
-  apply(ctx, { userBindingsEnabled: false, computeMs: 500, maxWallMs: 2_000 })
-
+  const state = pluginFixture({ userBindingsEnabled: false }, { schemas: [
+    { name: 'read', description: 'Read a bounded page.', parameters: { type: 'object' } },
+    { name: 'echo', description: 'Echo a value.', parameters: { type: 'object' } },
+  ] })
   return {
-    ctx,
-    runtime,
-    listeners,
-    sections,
-    async execute(program, functions, session = 'native-surface', bindings = undefined) {
-      const execute = listeners.get('tools/execute')[0]
-      let agentSession = sessions.get(session)
-      if (agentSession === undefined) {
-        agentSession = orderedSurfaceSession(session)
-        sessions.set(session, agentSession)
-      }
-      const callId = `${session}-${++nextCall}`
-      const call = appendRunCodeCall(agentSession.events, callId, program)
-      const exec = { name: 'run_code', callId, agent: { id: session, session: agentSession } }
-      let raw
-      let result = await execute(exec, async () => {
-        raw = await runtime.run({
-          program,
-          bindings: bindings ?? [{
-            global: 'tools',
-            functions,
-          }],
-          signal: new AbortController().signal,
-        })
-        const meta = runCode.output.presentationMeta?.({}, raw.value)
-        return raw.error === undefined
-          ? { isError: false, value: raw.value, content: [], meta }
-          : { isError: true, content: [], error: { message: raw.error.message }, meta }
-      })
-      for (const listener of listeners.get('tools/result') ?? []) await listener(exec, result)
-      appendRunCodeResult(agentSession.events, callId, call.callSeq, result)
-      return { raw, result }
+    ...state,
+    execute(program, functions, session = 'native-surface', bindings = []) {
+      return state.executeRun(session, program, functions, { bindings })
     },
-    async assemble(assembly) {
-      const entries = listeners.get('system-prompt/assemble')
-      const context = { scope: { id: 'native-surface' } }
-      const dispatch = index => entries[index] === undefined ? Promise.resolve(assembly)
-        : entries[index](assembly, context, () => dispatch(index + 1))
-      return dispatch(0)
-    },
-    async dispose() {
-      for (const cleanup of cleanups.reverse()) await cleanup()
-    },
+    assemble(assembly) { return state.assemble(assembly, { scope: { id: 'native-surface' } }) },
   }
 }
 

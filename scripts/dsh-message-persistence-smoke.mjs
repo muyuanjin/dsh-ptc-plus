@@ -45,7 +45,7 @@ async function main() {
     session.append('user/message', createUserMessage({
       source: { kind: 'user' }, content: [{ type: 'text', text: 'Continue after diagnostic' }],
     }), { surfaceOp: 'append' })
-    const expected = events.sessionEvents(session)
+    const expected = typeof session.snapshotEvents === 'function' ? session.snapshotEvents() : events.sessionEvents(session)
     const write = await persistence.create(session.header)
     try {
       await write.append(expected)

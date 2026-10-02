@@ -2,6 +2,20 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { SessionCellExecutor } from '../internal/session-cell-executor.js'
 
+test('a disposed kernel settles an admitted cell as a no-op without starting execution', async () => {
+  const journal = {}
+  const completions = []
+  const executor = new SessionCellExecutor({
+    disposed: true,
+    completeJournal(...args) { completions.push(args) },
+  })
+  const result = await executor.executeCell({ journal, program: 'throw new Error("must not execute")' })
+  assert.equal(result.error.kind, 'abort')
+  assert.equal(result.error.message, 'session kernel disposed')
+  assert.deepEqual(result.logs, [])
+  assert.deepEqual(completions, [[journal, 'noop', result]])
+})
+
 test('durable replay rejects a completion after volatility is observed', () => {
   let settlement
   const active = {

@@ -49,6 +49,25 @@ signal. A settled result retires the relation. The retained registration does no
 tool outside a code composition, and one shared session lifecycle revokes outstanding request and
 call records on session, agent, or plugin disposal.
 
+The code composition deliberately retains a complete native registry and nested
+SDK while the public assembly hook projects only the two direct transports.
+This is an accepted exception to the Host recommendation that assembly hooks
+should not change the visible tool list; registry and model-visible lists need
+not be identical. Requiring stock `ptc` collapse would reject the editor, and
+restricting the registry to the two transports would remove native program
+bindings. Live-schema-proven native-call normalization is therefore retained
+before persistence and Host dispatch, preserving call identity and native JSON
+arguments through ordinary DSH validation, policy and approval. Stable
+configuration still requires byte-stable plugin text and ordered schemas.
+
+An unchanged native root call, including one left unchanged when canonicalization
+is disabled, is rejected by the plugin's execution hook. Because Host
+pre-execution approval precedes that hook, such a call can prompt for approval
+before rejection; this ordering is an accepted limitation, not a registry-level
+admission guarantee. Acceptance does not establish a new public direct-set API.
+Revisit the projection if the official Host changes the assembly contract or
+provides independent direct-tool admission without narrowing the nested SDK.
+
 `edit_run_code` targets the most recent editable cell in the current turn when its persisted
 `tool/call` event is recorded. Execution resolves that snapshot through the event sequence rather
 than reading the latest target when the handler begins. Intervening inspection tools do not erase

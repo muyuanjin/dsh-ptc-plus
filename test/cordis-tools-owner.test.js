@@ -788,6 +788,56 @@ test('Cordis owner activates through a host-anchored legacy package layout', asy
   await owner.dispose()
 })
 
+test('Cordis companion resolution reads the current Host package service for each mount', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'ptc-plus-live-host-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const packageDirectory = join(root, 'node_modules', '@deepseek-ai', 'dsh-agent-presets')
+  const legacyDirectory = join(packageDirectory, 'presets', 'cordis', 'skills')
+  await mkdir(join(legacyDirectory, CORDIS_SKILL_NAME), { recursive: true })
+  await writeFile(join(packageDirectory, 'package.json'), JSON.stringify({ name: '@deepseek-ai/dsh-agent-presets' }))
+  await writeFile(join(legacyDirectory, CORDIS_SKILL_NAME, 'SKILL.md'), '# old host companion\n')
+  const options = {}
+  const host = ownerContext([], options)
+  host.ctx.baseUrl = pathToFileURL(join(root, 'host.cjs')).href
+  const mountedDirectories = []
+  const skillPlugin = { ...fakeSkillFilesystemPlugin, apply(ctx, config) {
+    mountedDirectories.push(config.bundledSkillDir)
+    return fakeSkillFilesystemPlugin.apply(ctx, { ...config, bundledSkillDir: CORDIS_SKILL_DIRECTORY })
+  } }
+  const owner = createCordisToolsOwner(host.ctx, fakeCordisPlugin, skillPlugin)
+  t.after(() => owner.dispose())
+  await owner.ready
+  let packageQueries = 0
+  const currentService = { packageOf(name) {
+    packageQueries += 1
+    return name === '@deepseek-ai/dsh-agent-preset' ? { name, dir: CORDIS_PRESET_PACKAGE } : undefined
+  } }
+  for (const [id, service, expected] of [
+    ['late-service', currentService, CORDIS_SKILL_DIRECTORY],
+    ['removed-service', undefined, legacyDirectory],
+    ['empty-current', { packageOf() { packageQueries += 1 } }, undefined],
+    ['reloaded-service', currentService, CORDIS_SKILL_DIRECTORY],
+    ['malformed-current', {}, undefined],
+  ]) {
+    options.pluginPackages = service
+    const agent = scopedAgent(id, { preset: { id: 'cordis' } })
+    const mountsBefore = mountedDirectories.length
+    await host.emit('agent/created', { agent })
+    assert.equal(agent.skillCatalog.has(CORDIS_SKILL_NAME), expected !== undefined, id)
+    assert.deepEqual(mountedDirectories.slice(mountsBefore), expected === undefined ? [] : [expected], id)
+  }
+  assert.equal(packageQueries, 4)
+  options.pluginPackages = undefined
+  const duringResolve = scopedAgent('service-arrives-during-preset', { preset: { id: 'cordis' } })
+  duringResolve.ctx.get('agentPresets').resolve = async () => {
+    options.pluginPackages = currentService
+    return { id: 'cordis' }
+  }
+  await host.emit('agent/created', { agent: duringResolve })
+  assert.equal(mountedDirectories.at(-1), CORDIS_SKILL_DIRECTORY)
+  assert.equal(packageQueries, 5)
+})
+
 test('Cordis companion Skill resolution rejects missing official Skill content', async () => {
   await assert.rejects(
     resolveCompanionSkillDirectory({ resolve: async id => ({ id }) }, {

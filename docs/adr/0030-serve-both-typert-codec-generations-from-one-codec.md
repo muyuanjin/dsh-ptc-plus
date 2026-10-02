@@ -4,7 +4,7 @@ Date: 2026-09-18
 
 ## Problem
 
-PTC Plus publishes its Remote services through DSH's TYPERT registry, and that registry validates every strict codec it is handed before any endpoint exists. The codec carries the decoder for one wire member, and DSH changed where the host reads it: the preceding generation keeps the decoder on `codec.schema` and evaluates `codec.schema.parse(value)`, while the current generation keeps a `create()` factory, rejects a codec without it, and evaluates `codec.create().parse(value)`. The plugin published only the preceding shape, so a release that requires `create` fails registration inside the plugin's own activation: the Host entry never activates and the Client entry reports a failed fiber, although every import, load check, and type-level use still succeeds.
+PTC Plus publishes its Remote services through DSH's TYPERT registry, and that registry validates every strict codec it is handed before any endpoint exists. The codec carries the decoder for one wire member, and DSH changed where the host reads it: a historical schema-based generation keeps the decoder on `codec.schema` and evaluates `codec.schema.parse(value)`, while the current generation keeps a `create()` factory, rejects a codec without it, and evaluates `codec.create().parse(value)`. The plugin published only the preceding shape, so a release that requires `create` fails registration inside the plugin's own activation: the Host entry never activates and the Client entry reports a failed fiber, although every import, load check, and type-level use still succeeds.
 
 ## Decision
 
@@ -12,7 +12,7 @@ PTC Plus publishes its Remote services through DSH's TYPERT registry, and that r
 
 Each generation validates only the member it owns and ignores the other, so one published contract serves whichever shape the installed host implements. Compatibility follows the live acceptance behavior of the registry rather than a release version, and the decoder is published once, so a host that reads both members cannot obtain two different decoders for one wire member.
 
-CI registers the packed contract with the installed host's own registry from the frozen official `latest` and `next` graphs (`scripts/dsh-rpc-contract-smoke.mjs`), so a generation that changes this validation fails the packaging check instead of reaching users.
+CI registers the packed contract with the installed host's own registry from the frozen official `latest` and `next` graphs (`scripts/dsh-rpc-contract-smoke.mjs`). Both frozen graphs read `create()`; they do not exercise a schema-only Host. Unit fixtures cover `schema.parse`, not a complete historical Host installation. The evidence boundary is [Installation: Compatibility Evidence](../installation.md#compatibility-evidence); passing two graphs must not be reported as packaging verification of both codec shapes.
 
 ## Alternatives Considered
 
@@ -24,4 +24,4 @@ CI registers the packed contract with the installed host's own registry from the
 
 ## Consequences
 
-One plugin build serves the preceding and current public codec generations for this surface, and the compatibility rule lives in a single module with the decoder published once. A future generation that requires another member, or that rejects a codec carrying a member it does not know, needs this owner updated; the regression test is CI's registration against the installed registry, which fails on the frozen Host graph that changed instead of on the user's machine. The decoder keeps the project's maintained schema runtime, so a host that validates payloads itself still evaluates the same semantics the plugin's own tests exercise through both members.
+One plugin build carries both the historical schema-based and factory-based codec shapes, and the compatibility rule lives in a single module with the decoder published once. A future generation that requires another member, or that rejects a codec carrying a member it does not know, needs this owner updated; the regression test is CI's registration against the installed registry, which fails on the frozen Host graph that changed instead of on the user's machine. The decoder keeps the project's maintained schema runtime, so a host that validates payloads itself still evaluates the same semantics the plugin's own tests exercise through both members.

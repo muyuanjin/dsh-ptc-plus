@@ -11,7 +11,7 @@ import {
   runRecordedCell,
 } from './plugin-fixture.js'
 import { RECOVERY_BOUNDARY_KEY } from '../internal/session-journal.js'
-import { sessionEvents } from '../internal/session-events.js'
+import { recordedSessionEvents as sessionEvents } from './session-observation-fixture.js'
 
 function appendEditCall(events, callId, args) {
   const argumentsValue = JSON.stringify(args)
@@ -170,6 +170,52 @@ test('records direct cells but not edit-derived runs in an official session', as
     },
     meta: edit.meta,
   }, { surfaceOp: 'append', sourceEventSeqs: [editCall.seq] })
+})
+
+test('production edit observation cannot execute after its submission is disposed', async t => {
+  for (const lifecycle of ['session', 'runtime']) await t.test(lifecycle, async t => {
+    const session = Session.create(`edit-observation-${lifecycle}`)
+    const state = fixture({ durableReplay: false })
+    t.after(() => state.dispose())
+    const agent = ptcAgent(session.id, session)
+    const signal = new AbortController().signal
+    await state.assemble(
+      { sections: [], contexts: [], variables: {}, tools: [state.runCodeDefinition] },
+      { agent, scope: agent, signal },
+    )
+    await state.runDurable(session.id, 'let editOrphan = 1; return editOrphan', {}, { session })
+    const args = { edits: [{ old_string: '= 1', new_string: '= 2' }] }
+    const argumentsValue = JSON.stringify(args)
+    session.append('assistant/message', { turn: 0, step: 1, message: {
+      id: `edit-observation-message-${lifecycle}`, role: 'assistant',
+      source: { kind: 'model', provider: 'fixture', model: 'fixture' },
+      content: [{ type: 'tool-call', id: 'pending-edit', name: 'edit_run_code', arguments: argumentsValue }],
+    } }, { surfaceOp: 'append' })
+    session.append('tool/call', { turn: 0, step: 1, callId: 'pending-edit',
+      name: 'edit_run_code', arguments: argumentsValue })
+    const original = state.ctx.sessionQuery.observeSession
+    const reading = Promise.withResolvers()
+    const suspended = Promise.withResolvers()
+    state.ctx.sessionQuery.observeSession = async function (...parameters) {
+      const cut = await original.call(this, ...parameters)
+      reading.resolve()
+      await suspended.promise
+      return cut
+    }
+    const pending = state.ctx.tools.execute({ callId: 'pending-edit', name: 'edit_run_code',
+      arguments: args, agent, signal })
+    await reading.promise
+    if (lifecycle === 'session') await state.emit('session/disposed', session)
+    else await state.dispose()
+    suspended.resolve()
+    const rejected = await pending
+    assert.equal(rejected.isError, true)
+    assert.match(rejected.error.message, new RegExp(`PTC ${lifecycle} disposed`))
+    if (lifecycle === 'session') {
+      state.ctx.sessionQuery.observeSession = original
+      assert.equal((await state.run(session.id, 'return typeof editOrphan', {}, { session })).value, 'undefined')
+    }
+  })
 })
 
 test('keeps a derived run tentative until exact outer metadata persists', async (t) => {

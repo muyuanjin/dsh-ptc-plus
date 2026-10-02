@@ -37,6 +37,8 @@ dsh plugin --profile <profile> add dsh-ptc-plus
 
 Replace `<profile>` with your profile name. Restart DSH and select **PTC mode** in the session. Continuous computation, call tolerance, and global bindings default to on. Explicitly disabled options in an existing configuration stay disabled.
 
+Session history uses DSH's public reader, and the Host incrementally projects prompt facts. Missing read surfaces or malformed historical event arrays produce explicit diagnostics, not a claim that unavailable history was successfully recovered as an empty session.
+
 With the default interface settings, the session has a **REPL** tab; wide screens also show a green **PTC Plus** header indicator. The sparkle button beside the composer opens the global binding menu and **PTC Plus settings**. You can also open **Plugins → Installed → dsh-ptc-plus → Configure** in the sidebar to check the main switch and all plugin settings.
 
 Once installed, describe your task to the model as usual. The `run_code` and `edit_run_code` examples below show how the model uses these features. See the [installation guide](docs/installation.md) for other installation methods, Desktop, the local development launcher, upgrades, and troubleshooting.
@@ -128,6 +130,8 @@ edit_run_code({
 
 An edit **reruns the entire cell**; this example returns `12`. Earlier state changes are not rolled back. If the code writes files or calls external services, rerunning still requires considering duplicate effects. Edits can repair failed code or refine a successful computation.
 
+Republishing a historical result as a compacted display entry is not another execution and does not make the older cell the new edit target. A newer failed cell remains available for correction.
+
 ### Recover from identifiable call problems
 
 | Situation | PTC Plus behavior |
@@ -191,7 +195,7 @@ Global bindings and the sparkle shortcut default to on. Create entries manually,
 
 ### Author, review, and enable
 
-The model can test with in-memory examples before submitting a draft. The draft appears above the composer, where you review its source, interface, and model instructions, then choose **Save and enable**, **Save disabled**, or **Discard draft**. Submission alone neither saves nor enables a binding. If you close the panel, the sparkle button's draft badge lets you reopen it.
+The model can test with in-memory examples before submitting a draft. The draft appears in the public dock above the composer, using normal layout and bounded internal scrolling without depending on Host-internal DOM; where you review its source, interface, and model instructions, then choose **Save and enable**, **Save disabled**, or **Discard draft**. Submission alone neither saves nor enables a binding. If you close the panel, the sparkle button's draft badge lets you reopen it.
 
 The sparkle menu lists and toggles entries even before the first message; these choices apply across sessions. Enabled entries' interfaces and usage notes are provided to the model in new sessions. Changes during a session are delivered on its next allowed request.
 
@@ -221,7 +225,9 @@ The sparkle menu beside the composer groups binding authoring, entry management,
 
 Everyday computation features default to on. **Cordis development tools default to off** and can be enabled when inspecting or developing DSH plugins; see the [integration notes](docs/adr/0020-optional-cordis-tools-in-ptc-mode.md). Explicitly disabled options stay disabled, and each saved binding keeps its own enabled state.
 
-Settings usually apply immediately. A worker's memory limit cannot be changed while that worker is active. See the [configuration reference](docs/runtime-reference.md#configuration) for fields, defaults, and full limits.
+Settings usually apply immediately. A worker's memory limit cannot be changed while that worker is active or a submitted cell is preparing to execute. See the [configuration reference](docs/runtime-reference.md#configuration) for fields, defaults, and full limits.
+
+The host execution provider must use TypeScript. Changing it to another language during reload withdraws the active PTC runtime and reports a diagnostic; returning to TypeScript reactivates it without changing the plugin setting.
 
 ![PTC Plus settings card](assets/ptc-plus-settings-en.png)
 

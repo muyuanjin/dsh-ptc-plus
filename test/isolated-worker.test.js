@@ -2,6 +2,9 @@ import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 import { PassThrough } from 'node:stream'
 import test from 'node:test'
+import { resolve } from 'node:path'
+import { pathToFileURL } from 'node:url'
+
 
 class FakeChild extends EventEmitter {
   constructor({ killResult = true } = {}) {
@@ -278,4 +281,17 @@ test('port adapter supports once and off listeners', async (t) => {
   current.emit('message', { type: 'kernel-message', value: { kind: 'ignored' } })
   await new Promise(resolve => setImmediate(resolve))
   assert.deepEqual(seen, [])
+})
+
+test('ordinary and covered workers share absolute entry identity across accepted representations', async () => {
+  const { isolatedWorkerEntry } = await import('../internal/isolated-worker.js')
+  const filename = resolve('entry with spaces.mjs')
+  const url = pathToFileURL(filename)
+  for (const entry of [url, url.href, filename, 'entry with spaces.mjs']) {
+    assert.equal(isolatedWorkerEntry(entry), url.href)
+  }
+  assert.equal(isolatedWorkerEntry(`FILE:${url.href.slice(5)}`), url.href)
+  for (const entry of [undefined, null, '', 42, {}]) {
+    assert.throws(() => isolatedWorkerEntry(entry), /URL or a non-empty string filename/)
+  }
 })

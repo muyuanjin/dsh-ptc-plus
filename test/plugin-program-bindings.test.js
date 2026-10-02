@@ -20,7 +20,9 @@ import {
 
 test('failed host results retain recovery boundaries and activated binding snapshots for journal confirmation', async t => {
   const definition = { name: 'run_code', output: {} }
-  const runtime = { async run() { throw Error('unexpected upstream execution') } }
+  const runtime = createExecutionSeam(Object.freeze({
+    async run() { throw Error('unexpected upstream execution') },
+  }), 'codeRuntime').provider
   const owner = createRuntimeBridgeOwner({
     seam: createExecutionSeam(runtime, 'codeRuntime'),
     ctx: { tools: { get: () => definition } },
@@ -671,11 +673,11 @@ test('binds nested code.run depth to the submitted cell generation', async (t) =
   const gate = new Promise(resolve => { releaseGate = resolve })
   const started = new Promise(resolve => { gateStarted = resolve })
   const definition = { name: 'run_code', output: {} }
-  const runtime = {
+  const runtime = createExecutionSeam(Object.freeze({
     language: 'typescript',
     isolation: 'worker-thread',
     async run() { throw new Error('A PTC child must use its selected compiler') },
-  }
+  }), 'codeRuntime').provider
   const owner = createRuntimeBridgeOwner({
     seam: createExecutionSeam(runtime, 'codeRuntime'),
     ctx: {
@@ -683,8 +685,8 @@ test('binds nested code.run depth to the submitted cell generation', async (t) =
     },
     sessionConfig: {
       userBindingsEnabled: false,
-      computeMs: 1_000,
-      maxWallMs: 1_000,
+      computeMs: 5_000,
+      maxWallMs: 20_000,
       maxNestedRunCodeDepth: 2,
     },
     maxNestedRunCodeDepth: 2,
@@ -716,13 +718,15 @@ return code.run({ code: ${JSON.stringify(childCode)}, description: 'Use submitte
   await started
   owner.reconfigure({
     userBindingsEnabled: false,
-    computeMs: 1_000,
-    maxWallMs: 1_000,
+    computeMs: 5_000,
+    maxWallMs: 20_000,
     maxNestedRunCodeDepth: 1,
   })
   releaseGate()
 
-  assert.deepEqual((await active).value, {
+  const completed = await active
+  assert.equal(completed.error, undefined, JSON.stringify(completed.error))
+  assert.deepEqual(completed.value, {
     logs: [],
     result: { logs: ['leaf'], result: 0 },
   })

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { advanceSessionSurface, readSessionLog } from '../internal/session-events.js'
 import test from 'node:test'
 import { RELEASED_V0_EVENT_TYPES } from '@deepseek-ai/dsh-session-format-v0-to-v1'
 import {
@@ -24,6 +25,10 @@ import {
   withRewrites,
 } from '../internal/session-journal.js'
 import {
+  advanceSessionTimeline,
+  createSessionTimelineState,
+  sessionTimelineValue,
+  validateSessionTimelineState,
   pathToHead,
   recoverJournal,
   recoveryBoundaryForHistory,
@@ -38,7 +43,8 @@ import {
   normalizeUserBindingNames,
   usesCallSequenceConfirms,
 } from '../internal/session-journal-schema.js'
-import { editTargetForCall, projectSessionLog } from '../internal/session-log-view.js'
+import { createSessionLogProjection, editTargetForCall, projectSessionLog } from '../internal/session-log-view.js'
+import { runtimeNoticeMessage } from '../internal/runtime-messages.js'
 import {
   createUserBindingsSnapshot,
   USER_BINDINGS_META_KEY,
@@ -120,6 +126,428 @@ function callEvent(seq, callId, code) {
 function resultEvent(sourceSeq, value) {
   return { type: 'tool/result', sourceEventSeqs: [sourceSeq], data: { meta: { [JOURNAL_KEY]: value } } }
 }
+
+test('timeline checkpoints preserve pending identities, edit claims, prune clones and ambiguous boundaries', () => {
+  const run = callEvent(1, 'run', 'const checkpointValue = 1')
+  const result = { ...resultEvent(1, journal()), seq: 2,
+    data: { message: { source: { callId: 'run' }, content: [{ type: 'text', text: 'one' }] },
+      meta: { [JOURNAL_KEY]: journal() } } }
+  const histories = [
+    [run, result],
+    [run, { ...run, seq: 3 }, result],
+    [run, { ...run, data: { ...run.data, callId: 'duplicate-sequence' } }, result],
+    [run, result, { seq: 3, type: 'tool/call', data: { name: 'edit_run_code', callId: 'edit', arguments: '{"edits":[]}' } },
+      { seq: 4, type: 'tool/result', sourceEventSeqs: [3], data: { meta: {
+        [JOURNAL_KEY]: journal(), dshPtcPlusEdit: { targetCallSeq: 1 },
+        dshPtcPlusDerivedRun: { code: 'checkpointValue = 2', description: 'edit' },
+      } } }],
+    [run, result, { seq: 3, type: 'compaction/prune', data: { shadowedSeqs: [2] } },
+      { ...result, seq: 4, surfaceOp: { op: 'replace', startSeq: 2, endSeq: 2 }, sourceEventSeqs: [2],
+        data: { ...result.data, message: { ...result.data.message, content: [{ type: 'text', text: 'pruned' }] } } }],
+    [run, result, { seq: 3, type: RECOVERY_BOUNDARY_EVENT, data: { failedCallSeq: 1, frontierCallSeq: null } }],
+  ]
+  for (const history of histories) {
+    const events = [{ seq: 0, type: 'turn/start', data: {} }, ...history]
+    let baseline = createSessionTimelineState()
+    for (let index = 0; index < events.length; index += 1) baseline = advanceSessionTimeline(baseline, events[index], index)
+    for (let cut = 0; cut <= events.length; cut += 1) {
+      let restored = createSessionTimelineState()
+      for (let index = 0; index < cut; index += 1) restored = advanceSessionTimeline(restored, events[index], index)
+      restored = JSON.parse(JSON.stringify(restored))
+      validateSessionTimelineState(restored)
+      for (let index = cut; index < events.length; index += 1) restored = advanceSessionTimeline(restored, events[index], index)
+      assert.deepEqual(sessionTimelineValue(restored), sessionTimelineValue(baseline))
+    }
+  }
+})
+
+test('pruned republication preserves execution chronology, editable source and unresolved tips at every cut', () => {
+  const older = { ...resultEvent(1, journal()), seq: 2,
+    data: { meta: { [JOURNAL_KEY]: journal() }, message: { source: { callId: 'older' }, content: [] } } }
+  const failed = journal({ completion: { kind: 'throw', error: { kind: 'Error', message: 'command not found' } } })
+  const events = [{ seq: 0, type: 'turn/start', data: {} }, callEvent(1, 'older', 'let older = 1'), older,
+    callEvent(3, 'newer', 'let newer = 2; throw Error("command not found")'), { ...resultEvent(3, failed), seq: 4 },
+    { seq: 5, type: 'user/message', data: runtimeNoticeMessage({
+      name: 'tools:ptc-plus-tip/platform-command-failure/1', text: 'Inspect the executable.',
+    }), surfaceOp: 'append' },
+    { seq: 6, type: 'compaction/prune', data: { shadowedSeqs: [2] } },
+    { ...older, seq: 7, sourceEventSeqs: [2], surfaceOp: { op: 'replace', startSeq: 2, endSeq: 2 } },
+    { seq: 8, type: 'compaction/prune', data: { shadowedSeqs: [7] } },
+    { ...older, seq: 9, sourceEventSeqs: [7], surfaceOp: { op: 'replace', startSeq: 7, endSeq: 7 } },
+    { seq: 10, type: 'tool/call', data: { callId: 'edit', name: 'edit_run_code', arguments: '{"edits":[]}' } }]
+  const projection = createSessionLogProjection()
+  for (const history of [events, events.filter(event => event.seq !== 2)]) {
+    const batch = projectSessionLog({ session: { events: history } }, { callId: 'edit', callSeq: 10 })
+    assert.equal(batch.latestRun.callSeq, 3)
+    assert.equal(batch.lastSuccessfulRunIndex, history === events ? 2 : 1)
+    assert.equal(batch.requestedEditTarget.callSeq, 3)
+    assert.equal(batch.runtimeHistory.tips['platform-command-failure'].unresolved, 1)
+    for (let cut = 0; cut <= history.length; cut += 1) {
+      let checkpoint = projection.init()
+      for (const event of history.slice(0, cut)) checkpoint = projection.apply(checkpoint, event)
+      checkpoint = projection.stateSchema.parse(JSON.parse(JSON.stringify(checkpoint)))
+      for (const event of history.slice(cut)) checkpoint = projection.apply(checkpoint, event)
+      projection.stateSchema.parse(JSON.parse(JSON.stringify(checkpoint)))
+      const view = projectSessionLog({ session: { events: history } }, { callId: 'edit', callSeq: 10 }, checkpoint)
+      assert.equal(view.latestRun.callSeq, 3)
+      assert.equal(view.lastSuccessfulRunIndex, history === events ? 2 : 1)
+      assert.equal(view.requestedEditTarget.callSeq, 3)
+      assert.equal(view.runtimeHistory.tips['platform-command-failure'].unresolved, 1)
+      assert.equal(checkpoint.timeline.results.k1[1].positionSeq, 2)
+    }
+  }
+})
+
+test('timeline checkpoint admission validates typed payloads and cross-table identities', () => {
+  const bindings = createUserBindingsSnapshot({ entries: [] }, 1)
+  const value = journal({ userBindingsFingerprint: bindings.fingerprint, calls: [
+    { global: 'tools', member: 'cordis_inspect', args: encodeValue({}), ok: true, value: encodeValue({}), settle: 0 },
+    { global: 'tools', member: 'other', args: encodeValue({}), ok: true, value: encodeValue(1), settle: 1 },
+  ] })
+  const meta = { [JOURNAL_KEY]: value, [USER_BINDINGS_META_KEY]: bindings,
+    [REWRITES_KEY]: [{ kind: 'export', description: 'strip export' }],
+    [RECOVERY_BOUNDARY_KEY]: [{ failedCallSeq: 0, frontierCallSeq: null }] }
+  const events = [{ seq: 0, type: 'turn/start', data: {} }, callEvent(1, 'first', 'let value = 1'),
+    { seq: 2, type: 'tool/result', sourceEventSeqs: [1], data: { meta, message: { source: { callId: 'first' }, content: [] } } },
+    { seq: 3, type: 'tool/call', data: { name: 'edit_run_code', callId: 'edit', arguments: '{"edits":[]}' } },
+    { seq: 4, type: 'tool/result', sourceEventSeqs: [3], data: { meta: { ...meta,
+      dshPtcPlusEdit: { targetCallSeq: 1 }, dshPtcPlusDerivedRun: { code: 'value = 2', description: 'edit' },
+    }, message: { source: { callId: 'edit' }, content: [] } } },
+    callEvent(5, 'pending', 'return value'),
+    { seq: 6, type: 'compaction/prune', data: { shadowedSeqs: [2] } }]
+  let checkpoint = createSessionTimelineState()
+  const checkpoints = []
+  for (const event of events) {
+    checkpoint = advanceSessionTimeline(checkpoint, event)
+    assert.deepEqual(validateSessionTimelineState(JSON.parse(JSON.stringify(checkpoint))), checkpoint)
+    checkpoints.push(checkpoint)
+  }
+  for (const mutate of [
+    state => { state.executableCalls.k1 = [1, {}] },
+    state => { state.executableCalls.k1[1].scope = 99 },
+    state => { state.executableCalls.k1[1].event.seq = 99 },
+    state => { state.executableCalls.k1[1].event.data.callId = 99 },
+    state => { state.executableCalls.k1[1].event.data.arguments = {} },
+    state => { state.executableCalls.k1[1].ambiguous = 'true' },
+    state => { state.calls = [] },
+    state => { state.calls[0].data.arguments = 'return 99' },
+    state => { state.calls.push(state.calls[0]) },
+    state => { state.results.k1[1].eventIndex = -1 },
+    state => { state.results.k1[1].positionSeq = 'later' },
+    state => { state.results.k1[1].journal.status = 'invalid' },
+    state => { state.results.k1[1].journal = null },
+    state => { state.results.k1[1].error = true },
+    state => { state.results.k1[1].error = 'conflicting journal' },
+    state => { state.results.k1[1].userBindings.fingerprint = '0'.repeat(64) },
+    state => { state.results.k3[1].derived.code = 99 },
+    state => { state.results.k3[1].derived.journal = {} },
+    state => { state.results.k3[1].derived.targetCallSeq = 99 },
+    state => { state.editTargets.k3[1].callSeq = 99 },
+    state => { state.editTargets.k3[1].source = 99 },
+    state => { delete state.editTargets.k3 },
+    state => { state.seenCallIds.kpending[1] = false },
+    state => { state.pendingByCallId.kpending[1] = {} },
+    state => { state.pendingByCallId.kpending[1].event.data.callId = 'other' },
+    state => { state.pendingByCallId.kpending[1].scope = 0 },
+    state => { state.claimedEditTargets.k1[1] = false },
+    state => { state.editClaims.k3 = [3, 99] },
+    state => { state.ordinaryResultSeqs.k1[1] = null },
+    state => { state.settledResultsByEventSeq.k2[1].entry = {} },
+    state => { state.settledResultsByEventSeq.k2[1].identity = 'invalid' },
+    state => { state.settledResultsByEventSeq.k2[1].call.data.callId = 'other' },
+    state => { state.settledResultsByEventSeq.k2[1].publication.index = -1 },
+    state => { state.settledResultsByEventSeq.k4[1].publication.index = 99 },
+    state => { state.settledResultsByEventSeq.k4[1].publication.derived.code = 99 },
+    state => { state.settledResultsByEventSeq.k4[1].publication.derived.targetCallSeq = 99 },
+    state => { state.settledResultsByEventSeq.k4[1].publication.journal.status = 'invalid' },
+    state => { state.settledResultsByEventSeq.k4[1].publication.rewrites = [] },
+    state => { delete state.settledResultsByEventSeq.k4[1].publication },
+    state => { state.latestRun.args = {} },
+    state => { state.editableRun.callSeq = 99 },
+    state => { state.lastSuccessfulRunIndex = -1 },
+    state => { state.lastSuccessfulRunIndex = 2 },
+    state => { delete state.lastSuccessfulRunIndex },
+    state => { delete state.runSelectionFrontier },
+    state => { state.runSelectionFrontier = null },
+    state => { state.runSelectionFrontier.index = -1 },
+    state => { state.runSelectionFrontier.scope = 99 },
+    state => { state.runSelectionFrontier.reason = 'unknown' },
+    state => { state.runSelectionFrontier.reason = 'turn/end' },
+    state => { state.runSelectionFrontier.extra = true },
+    state => { state.boundaries[0].carrierCallSeq = 'invalid' },
+    state => { state.boundaries[0].eventSeq = -1 },
+    state => { state.pruneReplacementWindow.lastEventIndex = -1 },
+    state => { state.pruneReplacementWindow.seqs.push(2) },
+    state => { state.cordisTranscript.calls += 1 },
+    state => { state.extra = true },
+  ]) {
+    const damaged = JSON.parse(JSON.stringify(checkpoint))
+    mutate(damaged)
+    assert.throws(() => validateSessionTimelineState(damaged))
+  }
+  const pendingEdit = JSON.parse(JSON.stringify(checkpoints[3]))
+  delete pendingEdit.claimedEditTargets.k1
+  assert.throws(() => validateSessionTimelineState(pendingEdit))
+  const invalid = advanceSessionTimeline(checkpoint, { seq: 7, type: 'tool/result', sourceEventSeqs: [5],
+    data: { meta: { [JOURNAL_KEY]: {} } } })
+  assert.deepEqual(validateSessionTimelineState(JSON.parse(JSON.stringify(invalid))), invalid)
+})
+
+test('checkpoint chronology requires retained settlement positions for ordinary and derived runs', () => {
+  const projection = createSessionLogProjection()
+  for (const journaled of [false, true]) {
+    const result = { seq: 2, type: 'tool/result', sourceEventSeqs: [1], surfaceOp: 'append',
+      data: { message: { source: { callId: 'ordinary' }, content: [] },
+        ...(journaled ? { meta: { [JOURNAL_KEY]: journal() } } : {}) } }
+    const events = [{ seq: 0, type: 'turn/start', data: {} }, callEvent(1, 'ordinary', 'let value = 1'), result,
+      { seq: 3, type: 'compaction/prune', data: { shadowedSeqs: [2] } },
+      { ...result, seq: 4, sourceEventSeqs: [2], surfaceOp: { op: 'replace', startSeq: 2, endSeq: 2 } },
+      { seq: 5, type: 'compaction/prune', data: { shadowedSeqs: [4] } },
+      { ...result, seq: 6, sourceEventSeqs: [4], surfaceOp: { op: 'replace', startSeq: 4, endSeq: 4 } },
+      { seq: 7, type: 'tool/call', data: { name: 'edit_run_code', callId: 'edit', arguments: '{"edits":[]}' } },
+      { seq: 8, type: 'tool/result', sourceEventSeqs: [7], data: { meta: {
+        [JOURNAL_KEY]: journal(), dshPtcPlusEdit: { targetCallSeq: 1 },
+        dshPtcPlusDerivedRun: { code: 'value = 2', description: 'edit' },
+      } } }]
+    for (const history of [events, events.filter(event => event.seq !== 2)]) {
+      let checkpoint = projection.init()
+      for (const event of history) {
+        checkpoint = projection.apply(checkpoint, event)
+        const intact = JSON.parse(JSON.stringify(checkpoint))
+        assert.deepEqual(projection.stateSchema.parse(intact), checkpoint)
+        if (checkpoint.timeline.latestRun === undefined) continue
+        assert.equal(checkpoint.timeline.latestRun.index, event.seq === 8 ? 8 : history === events ? 2 : 1)
+        for (const index of [0, 99]) {
+          const damaged = JSON.parse(JSON.stringify(checkpoint))
+          damaged.timeline.latestRun.index = index
+          damaged.timeline.editableRun.index = index
+          assert.throws(() => projection.stateSchema.parse(damaged), /timeline checkpoint/)
+        }
+        if (checkpoint.timeline.lastSuccessfulRunIndex !== undefined) {
+          const damaged = JSON.parse(JSON.stringify(checkpoint))
+          damaged.timeline.lastSuccessfulRunIndex = 99
+          assert.throws(() => validateSessionTimelineState(damaged.timeline), /timeline checkpoint/)
+        }
+      }
+    }
+  }
+})
+
+test('checkpoint success position survives result invalidation and turn changes without counting stale settlements', () => {
+  const projection = createSessionLogProjection()
+  const events = [{ seq: 0, type: 'turn/start', data: {} }, callEvent(1, 'success', 'return 1'),
+    { ...resultEvent(1, journal()), seq: 2 },
+    { ...resultEvent(1, journal()), seq: 3 },
+    callEvent(4, 'late', 'return 2'),
+    { seq: 5, type: 'turn/end', data: {} },
+    { seq: 6, type: 'turn/start', data: {} },
+    { ...resultEvent(4, journal()), seq: 7 }]
+  let checkpoint = projection.init()
+  for (const event of events) {
+    checkpoint = projection.apply(checkpoint, event)
+    checkpoint = projection.stateSchema.parse(JSON.parse(JSON.stringify(checkpoint)))
+    if (event.seq < 2) continue
+    assert.equal(checkpoint.timeline.lastSuccessfulRunIndex, 2)
+    if (event.seq >= 3) assert.equal(checkpoint.timeline.latestRun, undefined)
+  }
+  assert.match(checkpoint.timeline.results.k1[1].error, /duplicate ordinary/)
+  assert.equal(checkpoint.timeline.results.k4[1].journal.completion.kind, 'return')
+})
+
+test('checkpoint selection rejects an older complete publication and omission of both selected runs', () => {
+  const projection = createSessionLogProjection()
+  for (const journaled of [false, true]) {
+    const events = [{ seq: 0, type: 'turn/start', data: {} }, callEvent(1, 'older', 'let older = 1'),
+      { seq: 2, type: 'tool/result', sourceEventSeqs: [1], data: journaled ? { meta: { [JOURNAL_KEY]: journal() } } : {} },
+      callEvent(3, 'newer', 'let newer = 2'),
+      { seq: 4, type: 'tool/result', sourceEventSeqs: [3], data: journaled ? { meta: { [JOURNAL_KEY]: journal({
+        completion: { kind: 'throw', error: { kind: 'Error', message: 'failed' } },
+      }) } } : {} },
+      { seq: 5, type: 'tool/call', data: { name: 'edit_run_code', callId: 'edit', arguments: '{"edits":[]}' } },
+      { seq: 6, type: 'tool/result', sourceEventSeqs: [5], data: { meta: {
+        [JOURNAL_KEY]: journal(), dshPtcPlusEdit: { targetCallSeq: 3 },
+        dshPtcPlusDerivedRun: { code: 'let newer = 3', description: 'edit' },
+      } } }]
+    let checkpoint = projection.init()
+    let olderRun
+    for (const event of events) {
+      checkpoint = projection.apply(checkpoint, event)
+      projection.stateSchema.parse(JSON.parse(JSON.stringify(checkpoint)))
+      if (event.seq === 2) olderRun = checkpoint.timeline.latestRun
+      if (event.seq < 4) continue
+      assert.equal(checkpoint.timeline.latestRun.callSeq, event.seq === 6 ? 5 : 3)
+      for (const mutate of [
+        value => { value.timeline.latestRun = olderRun; value.timeline.editableRun = olderRun },
+        value => { delete value.timeline.latestRun; delete value.timeline.editableRun },
+      ]) {
+        const damaged = JSON.parse(JSON.stringify(checkpoint))
+        mutate(damaged)
+        assert.throws(() => projection.stateSchema.parse(damaged), /timeline checkpoint/)
+      }
+    }
+  }
+})
+
+test('retained selection frontier covers every clear and preserves non-clearing result failures at every cut', () => {
+  const projection = createSessionLogProjection()
+  const prefix = [{ seq: 0, type: 'turn/start', data: {} }, callEvent(1, 'older', 'let older = 1'),
+    { ...resultEvent(1, journal()), seq: 2 }, callEvent(3, 'newer', 'let newer = 2'),
+    { ...resultEvent(3, journal({ completion: { kind: 'throw', error: { kind: 'Error', message: 'failed' } } })), seq: 4 }]
+  const cases = [
+    { events: [{ seq: 5, type: 'turn/end', data: {} }, { seq: 6, type: 'turn/start', data: {} }],
+      clears: { 5: 'turn/end', 6: 'turn/start' } },
+    { events: [{ seq: 5, type: 'turn/start', data: {} }], clears: { 5: 'turn/start' } },
+    { events: [{ seq: 5, type: 'tool/result', sourceEventSeqs: [1, 3], data: {} }],
+      clears: { 5: 'invalid-source-relation' } },
+    { events: [{ seq: 5, type: 'tool/result', sourceEventSeqs: [], data: {} }],
+      clears: { 5: 'invalid-source-relation' } },
+    { events: [callEvent(5, 'newer', 'return 3'),
+      { seq: 6, type: 'tool/result', data: { message: { source: { callId: 'newer' } } } }],
+      clears: { 6: 'ambiguous-call-id' } },
+    { events: [callEvent(3, 'colliding-sequence', 'return 3'), { ...resultEvent(3, journal()), seq: 6 }],
+      clears: { 5: 'duplicate-call-sequence', 6: 'ambiguous-call-sequence' } },
+    { events: [{ ...resultEvent(3, journal()), seq: 5 }], clears: { 5: 'duplicate-result' } },
+    { events: [callEvent(5, 'expected', 'return 3'), { ...resultEvent(5, journal()), seq: 6,
+      data: { message: { source: { callId: 'different' } } } }], clears: { 6: 'result-identity-mismatch' } },
+    { events: [{ seq: 5, type: 'tool/call', data: { name: 'native', callId: 'native' } },
+      { seq: 6, type: 'tool/result', data: { message: { source: { callId: 'native' } }, meta: { [JOURNAL_KEY]: {} } } }],
+      clears: {}, error: /non-REPL/, selected: 3 },
+    { events: [callEvent(5, 'bad-journal', 'let current = 3'), { ...resultEvent(5, {}), seq: 6 }],
+      clears: {}, error: /journal/, selected: 5 },
+  ]
+  for (const scenario of cases) {
+    const events = [...prefix, ...scenario.events]
+    const nextCallSeq = events.length
+    events.push(callEvent(nextCallSeq, 'continued', 'return 4'), { ...resultEvent(nextCallSeq, journal()), seq: nextCallSeq + 1 })
+    let checkpoint = projection.init()
+    let olderRun
+    let newerRun
+    for (let index = 0; index < events.length; index += 1) {
+      checkpoint = projection.apply(checkpoint, events[index], index)
+      checkpoint = projection.stateSchema.parse(JSON.parse(JSON.stringify(checkpoint)))
+      if (index === 2) olderRun = checkpoint.timeline.latestRun
+      if (index === 4) newerRun = checkpoint.timeline.latestRun
+      if (scenario.clears[index] !== undefined) {
+        assert.deepEqual(checkpoint.timeline.runSelectionFrontier,
+          { index, scope: checkpoint.timeline.scope, reason: scenario.clears[index] })
+        assert.equal(checkpoint.timeline.latestRun, undefined)
+        assert.equal(checkpoint.timeline.editableRun, undefined)
+        assert.equal(checkpoint.timeline.lastSuccessfulRunIndex, 2)
+        for (const stale of [olderRun, newerRun]) {
+          const damaged = JSON.parse(JSON.stringify(checkpoint))
+          damaged.timeline.latestRun = stale
+          damaged.timeline.editableRun = stale
+          assert.throws(() => projection.stateSchema.parse(damaged), /timeline checkpoint/)
+        }
+        const nullRun = JSON.parse(JSON.stringify(checkpoint))
+        nullRun.timeline.latestRun = null
+        nullRun.timeline.editableRun = null
+        assert.throws(() => projection.stateSchema.parse(nullRun), /timeline checkpoint/)
+      }
+      if (index === nextCallSeq - 1) {
+        assert.equal(checkpoint.timeline.latestRun?.callSeq, scenario.selected)
+        if (scenario.error !== undefined) assert.match(checkpoint.timeline.results.k5[1].error, scenario.error)
+      }
+    }
+    assert.equal(checkpoint.timeline.latestRun.callSeq, nextCallSeq)
+    assert.equal(checkpoint.timeline.latestRun.index, nextCallSeq + 1)
+    for (let cut = 0; cut <= events.length; cut += 1) {
+      let restored = projection.init()
+      for (let index = 0; index < cut; index += 1) restored = projection.apply(restored, events[index], index)
+      restored = projection.stateSchema.parse(JSON.parse(JSON.stringify(restored)))
+      for (let index = cut; index < events.length; index += 1) restored = projection.apply(restored, events[index], index)
+      assert.deepEqual(projection.stateSchema.parse(JSON.parse(JSON.stringify(restored))), checkpoint)
+    }
+  }
+})
+
+test('turn reset retires pending edit claims before admitting a new selection', () => {
+  const projection = createSessionLogProjection()
+  const events = [{ seq: 0, type: 'turn/start', data: {} }, callEvent(1, 'before', 'let before = 1'),
+    { ...resultEvent(1, journal()), seq: 2 },
+    { seq: 3, type: 'tool/call', data: { name: 'edit_run_code', callId: 'pending-edit', arguments: '{"edits":[]}' } },
+    { seq: 4, type: 'turn/end', data: {} }, { seq: 5, type: 'turn/start', data: {} },
+    callEvent(6, 'after', 'let after = 2'), { ...resultEvent(6, journal()), seq: 7 },
+    { seq: 8, type: 'tool/call', data: { name: 'edit_run_code', callId: 'fresh-edit', arguments: '{"edits":[]}' } }]
+  let checkpoint = projection.init()
+  for (const event of events) {
+    checkpoint = projection.stateSchema.parse(JSON.parse(JSON.stringify(projection.apply(checkpoint, event))))
+  }
+  assert.deepEqual(checkpoint.timeline.editClaims, { k8: [8, 6] })
+  assert.deepEqual(checkpoint.timeline.editTargets.k8[1], { callSeq: 6, source: 'let after = 2' })
+})
+
+test('late prune reconstruction preserves the unavailable target captured before its first observation', () => {
+  const projection = createSessionLogProjection()
+  const older = { seq: 2, type: 'tool/result', sourceEventSeqs: [1],
+    data: { message: { source: { callId: 'older' }, content: [] }, meta: { [JOURNAL_KEY]: journal() } } }
+  const events = [{ seq: 0, type: 'turn/start', data: {} }, callEvent(1, 'older', 'let older = 1'),
+    { seq: 3, type: 'tool/call', data: { name: 'edit_run_code', callId: 'early-edit', arguments: '{"edits":[]}' } },
+    { seq: 4, type: 'compaction/prune', data: { shadowedSeqs: [2] } },
+    { ...older, seq: 5, sourceEventSeqs: [2], surfaceOp: { op: 'replace', startSeq: 2, endSeq: 2 } },
+    { seq: 6, type: 'tool/call', data: { name: 'edit_run_code', callId: 'later-edit', arguments: '{"edits":[]}' } }]
+  let checkpoint = projection.init()
+  for (const event of events) {
+    checkpoint = projection.stateSchema.parse(JSON.parse(JSON.stringify(projection.apply(checkpoint, event))))
+  }
+  assert.equal(checkpoint.timeline.editTargets.k3[1], null)
+  assert.deepEqual(checkpoint.timeline.editTargets.k6[1], { callSeq: 1, source: 'let older = 1' })
+  assert.equal(checkpoint.timeline.settledResultsByEventSeq.k5[1].observedIndex, 5)
+  assert.equal(checkpoint.timeline.settledResultsByEventSeq.k5[1].publication.index, 1)
+})
+
+test('a selection invalidation frontier prevents prune reconstruction or clones from resurrecting older runs', () => {
+  const projection = createSessionLogProjection()
+  const older = { seq: 2, type: 'tool/result', sourceEventSeqs: [1],
+    data: { message: { source: { callId: 'older' }, content: [] }, meta: { [JOURNAL_KEY]: journal() } } }
+  const events = [{ seq: 0, type: 'turn/start', data: {} }, callEvent(1, 'older', 'let older = 1'), older,
+    callEvent(3, 'newer', 'let newer = 2'), { ...resultEvent(3, journal()), seq: 4 },
+    { seq: 5, type: 'tool/result', sourceEventSeqs: [], data: {} },
+    { seq: 6, type: 'compaction/prune', data: { shadowedSeqs: [2] } },
+    { ...older, seq: 7, sourceEventSeqs: [2], surfaceOp: { op: 'replace', startSeq: 2, endSeq: 2 } },
+    { seq: 8, type: 'compaction/prune', data: { shadowedSeqs: [7] } },
+    { ...older, seq: 9, sourceEventSeqs: [7], surfaceOp: { op: 'replace', startSeq: 7, endSeq: 7 } },
+    { seq: 10, type: 'tool/call', data: { name: 'edit_run_code', callId: 'edit', arguments: '{"edits":[]}' } }]
+  for (const history of [events, events.filter(event => event.seq !== 2)]) {
+    const batch = projectSessionLog({ session: { events: history } }, { callId: 'edit', callSeq: 10 })
+    assert.equal(batch.latestRun, undefined)
+    assert.equal(batch.requestedEditTarget, undefined)
+    for (let cut = 0; cut <= history.length; cut += 1) {
+      let checkpoint = projection.init()
+      for (const event of history.slice(0, cut)) checkpoint = projection.apply(checkpoint, event)
+      checkpoint = projection.stateSchema.parse(JSON.parse(JSON.stringify(checkpoint)))
+      for (const event of history.slice(cut)) checkpoint = projection.apply(checkpoint, event)
+      checkpoint = projection.stateSchema.parse(JSON.parse(JSON.stringify(checkpoint)))
+      assert.equal(checkpoint.timeline.latestRun, undefined)
+      assert.equal(checkpoint.timeline.editableRun, undefined)
+      assert.equal(checkpoint.timeline.editTargets.k10[1], null)
+      assert.deepEqual(checkpoint.timeline.runSelectionFrontier, { index: 5, scope: 1, reason: 'invalid-source-relation' })
+    }
+  }
+})
+
+test('reader diagnoses missing surfaces and releases observation leases on malformed evidence', async () => {
+  await assert.rejects(readSessionLog({ id: 'missing-reader' }), /observeSession is unavailable/)
+  assert.throws(() => liveToolCallSeq({ events: undefined }, 'call', 'run_code'), /not an event array/)
+  let released = 0
+  await assert.rejects(readSessionLog({ id: 'malformed-reader' }, { async observeSession() {
+    return { events: null, [Symbol.dispose]() { released += 1 } }
+  } }), /did not publish events/)
+  assert.equal(released, 1)
+})
+
+test('reader reconstructs the observation surface rather than using a newer live replacement', async () => {
+  const events = [{ seq: 0, type: 'assistant/message', data: {}, surfaceOp: 'append' },
+    { seq: 1, type: 'tool/result', data: {}, surfaceOp: 'append' }]
+  const live = { id: 'moving-surface', seq: 3, surface: { nodes: [2] } }
+  const observed = await readSessionLog(live, { async observeSession() {
+    return { events, cursor: 1, header: {}, [Symbol.dispose]() {} }
+  } })
+  assert.deepEqual(observed.surface.nodes, [0, 1])
+  const nodes = [0, 1]
+  assert.equal(advanceSessionSurface(nodes, { surfaceOp: { op: 'replace', startSeq: 99, endSeq: 1 } }), nodes)
+  assert.equal(advanceSessionSurface(nodes, { surfaceOp: { op: 'replace', startSeq: 1, endSeq: 0 } }), nodes)
+})
 
 test('ignores an unjournaled edit call with an invalid historical sequence', () => {
   const session = { events: [{
@@ -916,7 +1344,7 @@ test('resolves the unique unpaired live named tool call event', () => {
   }
 })
 
-test('reads the current snapshotEvents session API and keeps the legacy events fallback', () => {
+test('reads a public sessionQuery observation and keeps the legacy events fallback', async () => {
   const events = [
     { seq: 0, type: 'turn/start', data: { turn: 1 } },
     callEvent(1, 'current-api', 'return 1'),
@@ -924,11 +1352,22 @@ test('reads the current snapshotEvents session API and keeps the legacy events f
     callEvent(3, 'current-api', 'return 2'),
   ]
   const current = {
-    snapshotEvents: () => Object.freeze([...events]),
+    id: 'current-api',
+    snapshotEvents: () => { throw new Error('deprecated session API') },
   }
-  assert.equal(liveToolCallSeq(current, 'current-api', 'run_code'), 3)
-  assert.equal(projectSessionLog({ session: current }).latestRun.callSeq, 1)
-  assert.equal(recoverJournal(current).nodes.length, 1)
+  let disposed = 0
+  const observation = await readSessionLog(current, {
+    async observeSession(id, options) {
+      assert.equal(id, current.id)
+      assert.equal(options.projectionMode, 'none')
+      return { events: Object.freeze([...events]), cursor: 3, header: {}, [Symbol.dispose]() { disposed += 1 } }
+    },
+  })
+  assert.equal(disposed, 1)
+  assert.equal(liveToolCallSeq(observation, 'current-api', 'run_code'), 3)
+  assert.equal(projectSessionLog({ session: observation }).latestRun.callSeq, 1)
+  assert.equal(recoverJournal(observation).nodes.length, 1)
+  assert.throws(() => liveToolCallSeq(current, 'current-api', 'run_code'), /public sessionQuery observation/)
   assert.equal(liveToolCallSeq({ events }, 'current-api', 'run_code'), 3)
 })
 

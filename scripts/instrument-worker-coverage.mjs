@@ -1,4 +1,4 @@
-import { IsolatedOwner } from '../internal/isolated-worker.js'
+import { IsolatedOwner, isolatedWorkerEntry } from '../internal/isolated-worker.js'
 
 // Test-only coverage seam. The production environment projection deliberately
 // strips NODE_V8_COVERAGE before it reaches the inner user Worker. Coverage runs
@@ -14,6 +14,12 @@ IsolatedOwner.prototype.start = function (options) {
   }
   return originalStart.call(this, {
     ...options,
-    env: { ...options.env, NODE_V8_COVERAGE: process.env.NODE_V8_COVERAGE },
+    entry: new URL('./covered-worker-entry.mjs', import.meta.url),
+    workerData: {
+      ...options.workerData,
+      coverageEntry: isolatedWorkerEntry(options.entry),
+    },
+    env: { ...options.env, NODE_V8_COVERAGE: process.env.NODE_V8_COVERAGE,
+      DSH_PTC_COMPILER_BYTECODE: process.env.DSH_PTC_COMPILER_BYTECODE },
   })
 }

@@ -17,7 +17,7 @@ import {
   editRejectedCell,
   editRunCodeSchema,
 } from './rejected-cell-editor.js'
-import { editTargetForCall, projectSessionLog } from './session-log-view.js'
+import { projectSessionLog } from './session-log-view.js'
 import { RUN_CODE } from './runtime-bridge-owner.js'
 import { isRecord } from './record-utils.js'
 import {
@@ -67,6 +67,8 @@ export function createEditTransportOwner(ctx, {
   presentationGeneration,
   sessionId,
   toolSchemasForAgent,
+  readSessionLog,
+  sessionLogView = projectSessionLog,
 }) {
   let currentDurableReplay = durableReplay
   const editExecutionMetadata = new WeakMap()
@@ -143,13 +145,14 @@ export function createEditTransportOwner(ctx, {
   definition.execute = async (args, exec) => {
     const agent = exec?.agent
     const callId = typeof exec?.callId === 'string' ? exec.callId : undefined
-    const persistedTargetCallSeq = liveToolCallSeq(agent?.session, callId, EDIT_RUN_CODE)
-    if (persistedTargetCallSeq === undefined && projectSessionLog(agent).editableRun !== undefined) {
+    const sessionLog = await readSessionLog(agent?.session, exec.signal)
+    const persistedTargetCallSeq = liveToolCallSeq(sessionLog, callId, EDIT_RUN_CODE)
+    if (persistedTargetCallSeq === undefined && sessionLogView(agent).editableRun !== undefined) {
       throw new Error('ptc-plus: edit_run_code requires a unique persisted tool/call event')
     }
     const target = persistedTargetCallSeq === undefined
       ? undefined
-      : editTargetForCall(agent, callId, persistedTargetCallSeq)
+      : sessionLogView(agent, { callId, callSeq: persistedTargetCallSeq }).requestedEditTarget
     if (target?.source === undefined || target.callSeq === undefined) {
       return { edited: false, reason: 'no run_code cell is currently eligible for safe editing' }
     }
@@ -190,7 +193,7 @@ export function createEditTransportOwner(ctx, {
         agent,
         signal: exec.signal,
       })
-      const tentative = await executeTentative(persistedCallSeq, dispatch)
+      const tentative = await executeTentative(persistedCallSeq, dispatch, sessionLog)
       const inner = tentative.result
       finalizeTentative = tentative.finalize
       const journalValue = isRecord(inner?.meta) && Object.hasOwn(inner.meta, JOURNAL_KEY)

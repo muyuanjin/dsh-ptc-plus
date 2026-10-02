@@ -11,7 +11,7 @@ import { resolveConfig } from '../internal/runtime-config.js'
 import { executionPolicies } from '../internal/binding-update-policy.js'
 import { Session } from '@deepseek-ai/dsh-session'
 import { readRuntimeMessage, runtimeStateMessage } from '../internal/runtime-messages.js'
-import { createHostContext, describeSections, runHookChain, serviceInjector } from './host-fixture.js'
+import { createFixtureExecutionProvider, createHostContext, describeSections, executionInstalled, runHookChain, serviceInjector } from './host-fixture.js'
 
 // Default-enabled bindings must read an isolated store, never the user's helpers.
 const previousDshHome = process.env.DSH_HOME
@@ -64,6 +64,72 @@ function settingsScope(value) {
   }
 }
 
+test('shared service injection waits for every requested public service', async () => {
+  const context = { tools: {} }
+  const services = { sessionProjections: {} }
+  const inject = serviceInjector(services, () => context)
+  let activations = 0
+  inject(['sessionProjections', 'commands'], () => { activations += 1 })
+  assert.equal(activations, 0)
+  context.commands = {}
+  inject(['sessionProjections', 'commands', 'tools'], value => {
+    assert.equal(value.tools, context.tools)
+    assert.equal(value.sessionProjections, services.sessionProjections)
+    assert.equal(value.commands, context.commands)
+    assert.equal(value.get('sessionProjections'), services.sessionProjections)
+    activations += 1
+  })
+  assert.equal(activations, 1)
+  assert.deepEqual(await inject.settle(), [])
+  const registry = {}
+  const publicReader = serviceInjector({}, () => ({ get: name => name === 'registry' ? registry : undefined }))
+  publicReader(['registry'], value => {
+    assert.equal(value.registry, registry)
+    assert.equal(value.get('registry'), registry)
+  })
+})
+
+test('released injection scopes reject late effects, listeners and child registrations', async () => {
+  const host = createHostContext()
+  const inject = serviceInjector({ tools: host.ctx.tools }, () => host.ctx)
+  let resume
+  let effects = 0
+  let children = 0
+  const suspended = new Promise(resolve => { resume = resolve })
+  const dispose = inject(['tools'], async scope => {
+    await suspended
+    assert.throws(() => scope.on('late/event', () => {}), /lifetime disposed/)
+    assert.throws(() => scope.effect(() => { effects += 1; return () => {} }), /lifetime disposed/)
+    assert.throws(() => scope.inject(['tools'], child => {
+      children += 1
+      child.on('late/child', () => {})
+    }), /lifetime disposed/)
+  })
+  await dispose()
+  resume()
+  assert.deepEqual(await inject.settle(), [])
+  await dispose()
+  assert.equal(host.listeners.size, 0)
+  assert.equal(effects, 0)
+  assert.equal(children, 0)
+})
+
+test('shared service injection releases registrations with its injected lifetime', async () => {
+  const host = createHostContext()
+  const inject = serviceInjector({ tools: host.ctx.tools }, () => host.ctx)
+  let released = 0
+  const dispose = inject(['tools'], scope => {
+    scope.on('fixture/event', () => {})
+    scope.effect(() => () => { released += 1 })
+    scope.inject(['tools'], child => child.on('fixture/child', () => {}))
+  })
+  assert.equal(host.listeners.size, 2)
+  await dispose()
+  await dispose()
+  assert.equal(host.listeners.size, 0)
+  assert.equal(released, 1)
+})
+
 test('shared service injection owns asynchronous callback rejection', async () => {
   const expected = new Error('injected activation failed')
   let activations = 0
@@ -114,10 +180,11 @@ function hostContext(settings = undefined, agents = [], options = {}) {
   const projectionDefinitions = []
   const projectionInjections = []
   const inheritedRun = async () => ({ logs: [] })
-  const runtime = Object.assign(Object.create({ run: inheritedRun }), {
+  const originalRuntime = Object.freeze(Object.assign(Object.create({ run: inheritedRun }), {
     language: options.language ?? 'typescript',
     isolation: 'worker-thread',
-  })
+  }))
+  const runtime = createFixtureExecutionProvider(originalRuntime, 'codeRuntime')
   const definition = { name: 'run_code', output: {} }
   const on = options.failHook === undefined
     ? host.ctx.on
@@ -199,6 +266,13 @@ function hostContext(settings = undefined, agents = [], options = {}) {
               if (disposed) return
               const childScope = {
                 sessionProjections: {
+                  stateOf(session, key) {
+                    const definition = projectionDefinitions.find(definition => definition.key === key)
+                    if (definition === undefined) throw new Error(`projection unavailable: ${key}`)
+                    let state = definition.init(session.header, 0)
+                    for (const event of session.events ?? session.snapshotEvents()) state = definition.apply(state, event)
+                    return state
+                  },
                   register(definition) {
                     if (options.invalidProjectionDisposer === true
                       || (options.invalidDraftProjectionDisposer === true
@@ -320,7 +394,7 @@ function cordisAgent(disposeGate = undefined, options = {}) {
   const agent = {
     id: 'settings-cordis-agent',
     definitions,
-    session: { header: { cwd: '/workspace' } },
+    session: { header: { cwd: '/workspace' }, events: [] },
     ctx: {
       // This fixture has no commands service; scoped injection remains pending.
       inject: serviceInjector({}, () => agent.ctx),
@@ -460,6 +534,7 @@ function bindingCommandAgent(options = {}) {
     session: {
       id: 'settings-binding-session',
       header: { cwd: '/workspace' },
+      events,
       append(type, data) { events.push({ type, data }) },
     },
     inject() {},
@@ -584,9 +659,11 @@ test('settings kill switch leaves no runtime side effects when disabled', async 
     projectionInjections,
   } = hostContext(settingsContext(scope))
   apply(ctx)
-  assert.deepEqual(projectionDefinitions, [])
-  assert.deepEqual(projectionInjections, [])
-  assert.equal(Object.hasOwn(runtime, 'run'), false)
+  await new Promise(resolve => setImmediate(resolve))
+  assert.deepEqual(projectionDefinitions.map(definition => definition.key), ['ptcPlusSessionLog'])
+  assert.equal(projectionDefinitions[0].wire, undefined)
+  assert.equal(projectionInjections.length, 1)
+  assert.equal(executionInstalled(runtime), false)
   assert.deepEqual([...listeners.keys()].sort(), ['agent/disposed', 'agent/pre-step', 'system-prompt/assemble'])
   assert.equal(sections.length, 0)
   for (const cleanup of cleanups.reverse()) await cleanup()
@@ -615,12 +692,12 @@ test('plugin disable clears committed declarations and re-enable reconciles curr
   }
   scope.set({ enabled: false })
   await new Promise(resolve => setImmediate(resolve))
-  assert.equal(Object.hasOwn(host.runtime, 'run'), false)
+  assert.equal(executionInstalled(host.runtime), false)
   assert.deepEqual(await step(), [{ form: 'snapshot', sections: [] }])
   assert.deepEqual(await step(), [])
   scope.set({ enabled: true })
   await new Promise(resolve => setImmediate(resolve))
-  assert.equal(Object.hasOwn(host.runtime, 'run'), true)
+  assert.equal(executionInstalled(host.runtime), true)
   assert.deepEqual(await step(), [])
   agent.session.append('turn/start', {})
   agent.session.append('tool/call', { callId: 'rewrite', name: 'run_code', arguments: '{"code":"export const value = 1"}' })
@@ -653,17 +730,17 @@ test('degrades an incompatible session projection and releases its callable inje
   assert.doesNotThrow(() => apply(host.ctx))
   await new Promise(resolve => setImmediate(resolve))
   assert.equal(scope.get().enabled, true)
-  assert.equal(Object.hasOwn(host.runtime, 'run'), true)
+  assert.equal(executionInstalled(host.runtime), true)
   assert.ok(host.listeners.has('tools/execute'))
   assert.ok(host.sections.some(section => section.name === 'tools:ptc-plus-repl'))
   assert.deepEqual(host.projectionDefinitions, [])
-  assert.equal(host.projectionInjections.length, 1)
+  assert.equal(host.projectionInjections.length, 2)
   assert.match(
     String(host.ctx.logger.warnings[0]?.[1]?.message),
     /sessionProjections\.register did not return a disposer/,
   )
   for (const cleanup of host.cleanups.reverse()) await cleanup()
-  assert.equal(Object.hasOwn(host.runtime, 'run'), false)
+  assert.equal(executionInstalled(host.runtime), false)
   assert.deepEqual(host.projectionInjections, [])
 })
 
@@ -679,10 +756,10 @@ test('binds the session binding command to live draft projection availability', 
   await assemblePtc(unavailable, unavailableAgent.agent)
   assert.deepEqual(
     unavailable.projectionDefinitions.map(definition => definition.key),
-    ['ptcPlusRepl'],
+    ['ptcPlusSessionLog', 'ptcPlusRepl'],
   )
   assert.equal(unavailableAgent.command, undefined)
-  assert.equal(Object.hasOwn(unavailable.runtime, 'run'), true)
+  assert.equal(executionInstalled(unavailable.runtime), true)
   assert.ok(unavailable.listeners.has('tools/execute'))
   for (const cleanup of unavailable.cleanups.reverse()) await cleanup()
 
@@ -697,21 +774,21 @@ test('binds the session binding command to live draft projection availability', 
   assert.equal(availableAgent.command?.name, 'binding')
   assert.deepEqual(
     available.projectionDefinitions.map(definition => definition.key),
-    ['ptcPlusRepl', 'ptcPlusBindingDraft'],
+    ['ptcPlusSessionLog', 'ptcPlusRepl', 'ptcPlusBindingDraft'],
   )
 
-  await available.projectionInjections[0].suspend()
+  await available.projectionInjections[1].suspend()
   assert.equal(availableAgent.command, undefined)
-  assert.deepEqual(available.projectionDefinitions, [])
-  assert.equal(Object.hasOwn(available.runtime, 'run'), true)
+  assert.deepEqual(available.projectionDefinitions.map(definition => definition.key), ['ptcPlusSessionLog'])
+  assert.equal(executionInstalled(available.runtime), true)
   assert.ok(available.listeners.has('tools/execute'))
 
-  await available.projectionInjections[0].activate()
+  await available.projectionInjections[1].activate()
   await new Promise(resolve => setImmediate(resolve))
   assert.equal(availableAgent.command?.name, 'binding')
   assert.deepEqual(
     available.projectionDefinitions.map(definition => definition.key),
-    ['ptcPlusRepl', 'ptcPlusBindingDraft'],
+    ['ptcPlusSessionLog', 'ptcPlusRepl', 'ptcPlusBindingDraft'],
   )
   for (const cleanup of available.cleanups.reverse()) await cleanup()
 })
@@ -770,12 +847,12 @@ test('contains binding command registration and projection cleanup failures', as
   await new Promise(resolve => setImmediate(resolve))
   await assemblePtc(registrationHost, registrationAgent.agent)
   registrationOptions.invalidDraftProjectionDisposer = false
-  await registrationHost.projectionInjections[0].reload()
+  await registrationHost.projectionInjections[1].reload()
   await new Promise(resolve => setImmediate(resolve))
   assert.equal(registrationAgent.command, undefined)
   assert.deepEqual(
     registrationHost.projectionDefinitions.map(definition => definition.key),
-    ['ptcPlusRepl'],
+    ['ptcPlusSessionLog', 'ptcPlusRepl'],
   )
   assert.ok(registrationHost.ctx.logger.warnings.some(([message, error]) => (
     message === 'ptc-plus: binding draft projection unavailable'
@@ -792,7 +869,7 @@ test('contains binding command registration and projection cleanup failures', as
   await new Promise(resolve => setImmediate(resolve))
   await assemblePtc(cleanupHost, cleanupAgent.agent)
   await assert.rejects(
-    cleanupHost.projectionInjections[0].suspend(),
+    cleanupHost.projectionInjections[1].suspend(),
     error => error instanceof AggregateError
       && error.message === 'ptc-plus: binding draft projection cleanup failed'
       && error.errors.some(cause => (
@@ -801,7 +878,7 @@ test('contains binding command registration and projection cleanup failures', as
       )),
   )
   assert.equal(cleanupAgent.command, undefined)
-  assert.equal(Object.hasOwn(cleanupHost.runtime, 'run'), true)
+  assert.equal(executionInstalled(cleanupHost.runtime), true)
   for (const cleanup of cleanupHost.cleanups.reverse()) await cleanup()
 })
 
@@ -822,23 +899,25 @@ test('retries draft projection unregister before reloading its injected service'
   assert.deepEqual(host.projectionDefinitions.map(definition => definition.key).sort(), [
     'ptcPlusBindingDraft',
     'ptcPlusRepl',
+    'ptcPlusSessionLog',
   ])
 
   await assert.rejects(
-    host.projectionInjections[0].suspend(),
+    host.projectionInjections[1].suspend(),
     error => error instanceof AggregateError
       && error.errors.some(cause => cause.message === 'draft projection disposal failed'),
   )
   assert.equal(draftDisposals, 1)
   assert.equal(host.projectionDefinitions.some(definition => definition.key === 'ptcPlusBindingDraft'), true)
 
-  await host.projectionInjections[0].suspend()
+  await host.projectionInjections[1].suspend()
   assert.equal(draftDisposals, 2)
-  assert.deepEqual(host.projectionDefinitions, [])
-  await host.projectionInjections[0].reload()
+  assert.deepEqual(host.projectionDefinitions.map(definition => definition.key), ['ptcPlusSessionLog'])
+  await host.projectionInjections[1].reload()
   assert.deepEqual(host.projectionDefinitions.map(definition => definition.key).sort(), [
     'ptcPlusBindingDraft',
     'ptcPlusRepl',
+    'ptcPlusSessionLog',
   ])
 
   const gate = Promise.withResolvers()
@@ -848,13 +927,14 @@ test('retries draft projection unregister before reloading its injected service'
   assert.equal(draftDisposals, 3)
   gate.resolve()
   for (let index = 0; index < 4; index += 1) await new Promise(resolve => setImmediate(resolve))
-  assert.deepEqual(host.projectionDefinitions, [])
+  assert.deepEqual(host.projectionDefinitions.map(definition => definition.key), ['ptcPlusSessionLog'])
   options.draftProjectionDisposeGate = undefined
   scope.set({ ...scope.get(), enabled: true })
   for (let index = 0; index < 4; index += 1) await new Promise(resolve => setImmediate(resolve))
   assert.deepEqual(host.projectionDefinitions.map(definition => definition.key).sort(), [
     'ptcPlusBindingDraft',
     'ptcPlusRepl',
+    'ptcPlusSessionLog',
   ])
 
   for (const cleanup of host.cleanups.reverse()) {
@@ -883,12 +963,12 @@ test('handles projection registration through the real asynchronous Cordis injec
 
   const activation = apply(host.ctx)
   assert.equal(registerCalls, 0)
-  assert.equal(Object.hasOwn(host.runtime, 'run'), true)
+  assert.equal(executionInstalled(host.runtime), true)
   await activation
   await new Promise(resolve => setImmediate(resolve))
 
-  assert.equal(registerCalls, 2)
-  assert.equal(Object.hasOwn(host.runtime, 'run'), true)
+  assert.equal(registerCalls, 3)
+  assert.equal(executionInstalled(host.runtime), true)
   assert.ok(host.listeners.has('tools/execute'))
   assert.match(
     String(host.ctx.logger.warnings[0]?.[1]?.message),
@@ -896,7 +976,7 @@ test('handles projection registration through the real asynchronous Cordis injec
   )
 
   for (const cleanup of host.cleanups.reverse()) await cleanup()
-  assert.equal(Object.hasOwn(host.runtime, 'run'), false)
+  assert.equal(executionInstalled(host.runtime), false)
 })
 
 test('disabled settings can load on hosts without a TypeScript runtime', async () => {
@@ -908,14 +988,14 @@ test('disabled settings can load on hosts without a TypeScript runtime', async (
   )
 
   assert.doesNotThrow(() => apply(ctx))
-  assert.equal(Object.hasOwn(runtime, 'run'), false)
+  assert.equal(executionInstalled(runtime), false)
   assert.deepEqual([...listeners.keys()].sort(), ['agent/disposed', 'agent/pre-step', 'system-prompt/assemble'])
   assert.equal(sections.length, 0)
 
   scope.set({ ...scope.get(), enabled: true })
   await new Promise(resolve => setImmediate(resolve))
   assert.equal(scope.get().enabled, false)
-  assert.equal(Object.hasOwn(runtime, 'run'), false)
+  assert.equal(executionInstalled(runtime), false)
   assert.equal(ctx.logger.warnings.length > 0, true)
 
   for (const cleanup of cleanups.reverse()) await cleanup()
@@ -945,44 +1025,44 @@ test('settings kill switch installs and removes the runtime live', async () => {
   } = hostContext(settingsContext(scope))
   apply(ctx)
   await new Promise(resolve => setImmediate(resolve))
-  assert.deepEqual(projectionDefinitions.map(definition => definition.key), ['ptcPlusRepl', 'ptcPlusBindingDraft'])
-  assert.equal(projectionInjections.length, 1)
-  await projectionInjections[0].reload()
-  assert.deepEqual(projectionDefinitions.map(definition => definition.key), ['ptcPlusRepl', 'ptcPlusBindingDraft'])
-  assert.equal(projectionInjections.length, 1)
-  assert.equal(Object.hasOwn(runtime, 'run'), true)
+  assert.deepEqual(projectionDefinitions.map(definition => definition.key), ['ptcPlusSessionLog', 'ptcPlusRepl', 'ptcPlusBindingDraft'])
+  assert.equal(projectionInjections.length, 2)
+  await projectionInjections[1].reload()
+  assert.deepEqual(projectionDefinitions.map(definition => definition.key), ['ptcPlusSessionLog', 'ptcPlusRepl', 'ptcPlusBindingDraft'])
+  assert.equal(projectionInjections.length, 2)
+  assert.equal(executionInstalled(runtime), true)
   assert.ok(listeners.has('tools/execute'))
   assert.ok(sections.some(section => section.name === 'tools:ptc-plus-repl'))
 
   scope.set({ ...scope.get(), userBindingsEnabled: false })
   await new Promise(resolve => setTimeout(resolve, 0))
-  assert.deepEqual(projectionDefinitions.map(definition => definition.key), ['ptcPlusRepl'])
+  assert.deepEqual(projectionDefinitions.map(definition => definition.key), ['ptcPlusSessionLog', 'ptcPlusRepl'])
   scope.set({ ...scope.get(), userBindingsEnabled: true })
   await new Promise(resolve => setTimeout(resolve, 0))
   assert.deepEqual(projectionDefinitions.map(definition => definition.key), [
-    'ptcPlusRepl', 'ptcPlusBindingDraft',
+    'ptcPlusSessionLog', 'ptcPlusRepl', 'ptcPlusBindingDraft',
   ])
   scope.set({ ...scope.get(), userBindingsEnabled: false })
   await new Promise(resolve => setTimeout(resolve, 0))
-  assert.deepEqual(projectionDefinitions.map(definition => definition.key), ['ptcPlusRepl'])
+  assert.deepEqual(projectionDefinitions.map(definition => definition.key), ['ptcPlusSessionLog', 'ptcPlusRepl'])
 
   scope.set({ ...scope.get(), enabled: false })
   await new Promise(resolve => setTimeout(resolve, 0))
-  assert.equal(Object.hasOwn(runtime, 'run'), false)
+  assert.equal(executionInstalled(runtime), false)
   assert.deepEqual([...listeners.keys()].sort(), ['agent/disposed', 'agent/pre-step', 'system-prompt/assemble'])
   assert.equal(sections.length, 0)
-  assert.deepEqual(projectionDefinitions, [])
-  assert.deepEqual(projectionInjections, [])
+  assert.deepEqual(projectionDefinitions.map(definition => definition.key), ['ptcPlusSessionLog'])
+  assert.equal(projectionInjections.length, 1)
 
   scope.set({ ...scope.get(), enabled: true })
   await new Promise(resolve => setTimeout(resolve, 0))
-  assert.equal(Object.hasOwn(runtime, 'run'), true)
+  assert.equal(executionInstalled(runtime), true)
   assert.ok(listeners.has('tools/execute'))
-  assert.deepEqual(projectionDefinitions.map(definition => definition.key), ['ptcPlusRepl'])
-  assert.equal(projectionInjections.length, 1)
+  assert.deepEqual(projectionDefinitions.map(definition => definition.key), ['ptcPlusSessionLog', 'ptcPlusRepl'])
+  assert.equal(projectionInjections.length, 2)
 
   for (const cleanup of cleanups.reverse()) await cleanup()
-  assert.equal(Object.hasOwn(runtime, 'run'), false)
+  assert.equal(executionInstalled(runtime), false)
   assert.deepEqual(projectionDefinitions, [])
   assert.deepEqual(projectionInjections, [])
 })
@@ -996,7 +1076,7 @@ test('late settings mount reconciles and detaches against composition config', a
     injectSettings = callback
   }
   apply(ctx)
-  assert.equal(Object.hasOwn(runtime, 'run'), true)
+  assert.equal(executionInstalled(runtime), true)
 
   const scope = settingsScope({ enabled: false })
   let detach
@@ -1005,13 +1085,13 @@ test('late settings mount reconciles and detaches against composition config', a
   settings.effect = (register) => { detach = register() }
   injectSettings(settings)
   await new Promise(resolve => setTimeout(resolve, 0))
-  assert.equal(Object.hasOwn(runtime, 'run'), false)
+  assert.equal(executionInstalled(runtime), false)
   assert.deepEqual([...listeners.keys()].sort(), ['agent/disposed', 'agent/pre-step', 'system-prompt/assemble'])
   assert.equal(sections.length, 0)
 
   detach()
   await new Promise(resolve => setTimeout(resolve, 0))
-  assert.equal(Object.hasOwn(runtime, 'run'), true)
+  assert.equal(executionInstalled(runtime), true)
   for (const cleanup of cleanups.reverse()) await cleanup()
 })
 
@@ -1097,7 +1177,7 @@ test('propagates asynchronous composition activation failure without settings', 
     /Cordis activation failed without settings/,
   )
 
-  assert.equal(Object.hasOwn(host.runtime, 'run'), false)
+  assert.equal(executionInstalled(host.runtime), false)
   assert.equal(TEST_CORDIS_TOOL_NAMES.some(name => cordis.definitions.has(name)), false)
   for (const cleanup of host.cleanups.reverse()) await cleanup()
 })
@@ -1141,7 +1221,7 @@ test('asynchronous initial Cordis failure rolls back the enabled setting', async
   await new Promise(resolve => setImmediate(resolve))
 
   assert.equal(scope.get().enabled, false)
-  assert.equal(Object.hasOwn(host.runtime, 'run'), false)
+  assert.equal(executionInstalled(host.runtime), false)
   assert.equal(TEST_CORDIS_TOOL_NAMES.some(name => definitions.has(name)), false)
   assert.equal(host.ctx.logger.warnings.length > 0, true)
   for (const cleanup of host.cleanups.reverse()) await cleanup()
@@ -1165,7 +1245,7 @@ test('does not let a stale initial Cordis failure disable newer settings', async
   await new Promise(resolve => setImmediate(resolve))
 
   assert.deepEqual(scope.get(), { enabled: true, cordisToolsEnabled: false })
-  assert.equal(Object.hasOwn(host.runtime, 'run'), true)
+  assert.equal(executionInstalled(host.runtime), true)
   assert.equal(TEST_CORDIS_TOOL_NAMES.some(name => cordis.definitions.has(name)), false)
   assert.equal(host.ctx.logger.warnings.length, 0)
   for (const cleanup of host.cleanups.reverse()) await cleanup()
@@ -1184,7 +1264,7 @@ test('failed activation rolls back every mount created before the failing hook',
   // it can install a plugin.
   assert.equal(cordis.pluginCalls, 0)
   assert.equal(TEST_CORDIS_TOOL_NAMES.some(name => cordis.definitions.has(name)), false)
-  assert.equal(Object.hasOwn(ctx.codeRuntime, 'run'), false)
+  assert.equal(executionInstalled(ctx.codeRuntime), false)
   assert.equal(ctx.logger.warnings.length > 0, true)
 
   for (const cleanup of cleanups.reverse()) await cleanup()
@@ -1199,7 +1279,7 @@ test('live enable failure is persisted as disabled and can recover after the hos
   await new Promise(resolve => setImmediate(resolve))
   await new Promise(resolve => setImmediate(resolve))
   assert.equal(scope.get().enabled, false)
-  assert.equal(Object.hasOwn(host.runtime, 'run'), false)
+  assert.equal(executionInstalled(host.runtime), false)
   assert.equal(host.ctx.logger.warnings.length > 0, true)
 
   host.ctx.systemPrompt.section = value => {
@@ -1209,7 +1289,7 @@ test('live enable failure is persisted as disabled and can recover after the hos
   scope.set({ ...scope.get(), enabled: true })
   await new Promise(resolve => setImmediate(resolve))
   assert.equal(scope.get().enabled, true)
-  assert.equal(Object.hasOwn(host.runtime, 'run'), true)
+  assert.equal(executionInstalled(host.runtime), true)
 
   for (const cleanup of host.cleanups.reverse()) await cleanup()
 })
@@ -1230,14 +1310,14 @@ test('serializes a newer activation behind failed-install cleanup', async () => 
   await new Promise(resolve => setImmediate(resolve))
 
   assert.equal(cordis.pluginCalls, 0)
-  assert.equal(Object.hasOwn(host.runtime, 'run'), false)
+  assert.equal(executionInstalled(host.runtime), false)
 
   releaseTeardown()
   await new Promise(resolve => setImmediate(resolve))
   await new Promise(resolve => setImmediate(resolve))
   assert.equal(cordis.pluginCalls, 1)
   assert.equal(scope.get().enabled, true)
-  assert.equal(Object.hasOwn(host.runtime, 'run'), true)
+  assert.equal(executionInstalled(host.runtime), true)
   for (const cleanup of host.cleanups.reverse()) await cleanup()
 })
 
@@ -1272,7 +1352,7 @@ test('serializes a newer activation behind rejected-readiness cleanup', async ()
   await new Promise(resolve => setImmediate(resolve))
   assert.equal(scope.get().enabled, true)
   assert.equal(scope.get().cordisToolsEnabled, false)
-  assert.equal(Object.hasOwn(host.runtime, 'run'), true)
+  assert.equal(executionInstalled(host.runtime), true)
   assert.equal(host.sections.length, 1)
   for (const cleanup of host.cleanups.reverse()) await cleanup()
 })
@@ -1312,14 +1392,14 @@ test('retries a synchronously failed installation before publishing its replacem
   assert.equal(scope.get().enabled, false)
   assert.equal(sectionDisposals, 2)
   assert.equal(host.sections.length, 1)
-  assert.equal(Object.hasOwn(host.runtime, 'run'), false)
+  assert.equal(executionInstalled(host.runtime), false)
 
   options.failHook = undefined
   scope.set({ enabled: true, cordisToolsEnabled: false })
   for (let index = 0; index < 5; index += 1) await new Promise(resolve => setImmediate(resolve))
   assert.equal(sectionDisposals, 3)
   assert.equal(host.sections.length, 1)
-  assert.equal(Object.hasOwn(host.runtime, 'run'), true)
+  assert.equal(executionInstalled(host.runtime), true)
 
   for (const cleanup of host.cleanups.reverse()) await cleanup()
 })
@@ -1337,7 +1417,7 @@ test('preserves cleanup ownership when installation throws a primitive', async (
 
   assert.equal(scope.get().enabled, false)
   assert.equal(host.sections.length, 0)
-  assert.equal(Object.hasOwn(host.runtime, 'run'), false)
+  assert.equal(executionInstalled(host.runtime), false)
   assert.equal(host.ctx.logger.warnings.some(([, error]) => (
     error?.message === 'primitive hook failure' && error?.cause === 'primitive hook failure'
   )), true)
@@ -1373,7 +1453,7 @@ test('contains rejecting owner disposal during a live disable', async () => {
     scope.set({ enabled: false, cordisToolsEnabled: true })
     await new Promise(resolve => setImmediate(resolve))
     await new Promise(resolve => setImmediate(resolve))
-    assert.equal(Object.hasOwn(host.runtime, 'run'), false)
+    assert.equal(executionInstalled(host.runtime), false)
     assert.equal(unhandled.length, 0)
     assert.equal(host.ctx.logger.warnings.length > 0, true)
   } finally {
@@ -1396,7 +1476,7 @@ test('retries a failed runtime owner before settings re-enable creates a replace
   await new Promise(resolve => setImmediate(resolve))
   await new Promise(resolve => setImmediate(resolve))
   assert.equal(cordis.disposeCalls, 1)
-  assert.equal(Object.hasOwn(host.runtime, 'run'), false)
+  assert.equal(executionInstalled(host.runtime), false)
 
   scope.set({ enabled: true, cordisToolsEnabled: true })
   for (let index = 0; index < 5; index += 1) {
@@ -1407,7 +1487,7 @@ test('retries a failed runtime owner before settings re-enable creates a replace
     warnings: host.ctx.logger.warnings.map(([, error]) => errorMessages(error)),
   }))
   assert.equal(cordis.pluginCalls, 2)
-  assert.equal(Object.hasOwn(host.runtime, 'run'), true)
+  assert.equal(executionInstalled(host.runtime), true)
 
   for (const cleanup of host.cleanups.reverse()) await cleanup()
 })
@@ -1432,7 +1512,7 @@ test('starts independent top-level owner cleanup before awaiting either one', as
 
   scope.set({ enabled: false, cordisToolsEnabled: true })
   await Promise.all([sectionStarted.promise, cordisStarted.promise])
-  assert.equal(Object.hasOwn(host.runtime, 'run'), false)
+  assert.equal(executionInstalled(host.runtime), false)
 
   sectionGate.resolve()
   cordisGate.resolve()
@@ -1516,7 +1596,7 @@ test('rolls back a failed live Cordis reconfiguration', async () => {
   await new Promise(resolve => setImmediate(resolve))
   await new Promise(resolve => setImmediate(resolve))
   assert.equal(scope.get().cordisToolsEnabled, false)
-  assert.equal(Object.hasOwn(host.runtime, 'run'), true)
+  assert.equal(executionInstalled(host.runtime), true)
   assert.equal(host.ctx.logger.warnings.length > 0, true)
   for (const cleanup of host.cleanups.reverse()) await cleanup()
 })
@@ -1531,7 +1611,7 @@ test('keeps a live Cordis enable whose agent scope omits the companion services'
   await new Promise(resolve => setImmediate(resolve))
   await new Promise(resolve => setImmediate(resolve))
   assert.equal(scope.get().cordisToolsEnabled, true)
-  assert.equal(Object.hasOwn(host.runtime, 'run'), true)
+  assert.equal(executionInstalled(host.runtime), true)
   assert.equal(TEST_CORDIS_TOOL_NAMES.some(name => agent.definitions.has(name)), false)
   assert.deepEqual(host.ctx.logger.warnings, [])
   for (const cleanup of host.cleanups.reverse()) await cleanup()
@@ -1554,7 +1634,7 @@ test('rolls back an asynchronous live Cordis activation after clean disposal', a
   await new Promise(resolve => setImmediate(resolve))
 
   assert.equal(scope.get().cordisToolsEnabled, false)
-  assert.equal(Object.hasOwn(host.runtime, 'run'), true)
+  assert.equal(executionInstalled(host.runtime), true)
   assert.equal(TEST_CORDIS_TOOL_NAMES.some(name => cordis.definitions.has(name)), false)
   assert.equal(host.ctx.logger.warnings.length > 0, true)
   for (const cleanup of host.cleanups.reverse()) await cleanup()
@@ -1578,7 +1658,7 @@ test('contains rejecting cleanup after asynchronous live Cordis activation fails
   await new Promise(resolve => setImmediate(resolve))
 
   assert.equal(scope.get().cordisToolsEnabled, false)
-  assert.equal(Object.hasOwn(host.runtime, 'run'), true)
+  assert.equal(executionInstalled(host.runtime), true)
   assert.equal(TEST_CORDIS_TOOL_NAMES.some(name => failing.definitions.has(name)), false)
   assert.equal(TEST_CORDIS_TOOL_NAMES.some(name => rejecting.definitions.has(name)), false)
   assert.equal(host.ctx.logger.warnings.length > 0, true)
@@ -1605,7 +1685,7 @@ test('retains a failed provisional Cordis owner until a later cleanup succeeds',
   assert.equal(scope.get().enabled, false)
   assert.equal(cordis.disposeCalls, 3)
   assert.equal(TEST_CORDIS_TOOL_NAMES.some(name => cordis.definitions.has(name)), false)
-  assert.equal(Object.hasOwn(host.runtime, 'run'), false)
+  assert.equal(executionInstalled(host.runtime), false)
 
   for (const cleanup of host.cleanups.reverse()) await cleanup()
 })
@@ -1824,7 +1904,7 @@ test('rolls back a queued live enable when installation rejects asynchronously',
   await new Promise(resolve => setImmediate(resolve))
   await new Promise(resolve => setImmediate(resolve))
   assert.equal(scope.get().enabled, false)
-  assert.equal(Object.hasOwn(host.runtime, 'run'), false)
+  assert.equal(executionInstalled(host.runtime), false)
   assert.equal(TEST_CORDIS_TOOL_NAMES.some(name => cordis.definitions.has(name)), false)
   assert.equal(host.ctx.logger.warnings.length > 0, true)
 
@@ -1840,7 +1920,7 @@ test('disables and disposes while initial Cordis readiness never settles', async
 
   scope.set({ enabled: false, cordisToolsEnabled: true })
   await new Promise(resolve => setImmediate(resolve))
-  assert.equal(Object.hasOwn(host.runtime, 'run'), false)
+  assert.equal(executionInstalled(host.runtime), false)
   assert.equal(TEST_CORDIS_TOOL_NAMES.some(name => cordis.definitions.has(name)), false)
   await Promise.all(host.cleanups.reverse().map(cleanup => cleanup()))
 })
@@ -1853,7 +1933,7 @@ test('host disposal cancels initial Cordis readiness without a settings transiti
   apply(host.ctx)
 
   await Promise.all(host.cleanups.reverse().map(cleanup => cleanup()))
-  assert.equal(Object.hasOwn(host.runtime, 'run'), false)
+  assert.equal(executionInstalled(host.runtime), false)
   assert.equal(host.listeners.size, 0)
   assert.equal(host.sections.length, 0)
   assert.equal(TEST_CORDIS_TOOL_NAMES.some(name => cordis.definitions.has(name)), false)
@@ -1874,7 +1954,7 @@ test('disables a never-ready provisional Cordis owner during live reconfiguratio
   await new Promise(resolve => setImmediate(resolve))
 
   assert.equal(scope.get().cordisToolsEnabled, false)
-  assert.equal(Object.hasOwn(host.runtime, 'run'), true)
+  assert.equal(executionInstalled(host.runtime), true)
   assert.equal(TEST_CORDIS_TOOL_NAMES.some(name => cordis.definitions.has(name)), false)
   await Promise.all(host.cleanups.reverse().map(cleanup => cleanup()))
 })
@@ -1891,7 +1971,7 @@ test('host disposal cancels a never-ready live Cordis reconfiguration', async ()
   assert.equal(cordis.pluginCalls, 1)
   await Promise.all(host.cleanups.reverse().map(cleanup => cleanup()))
 
-  assert.equal(Object.hasOwn(host.runtime, 'run'), false)
+  assert.equal(executionInstalled(host.runtime), false)
   assert.equal(host.listeners.size, 0)
   assert.equal(host.sections.length, 0)
   assert.equal(TEST_CORDIS_TOOL_NAMES.some(name => cordis.definitions.has(name)), false)

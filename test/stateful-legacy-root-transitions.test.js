@@ -10,7 +10,7 @@ import {
   appendRunCodeResult,
   orderedSurfaceSession,
 } from './plugin-fixture.js'
-import { createHostContext } from './host-fixture.js'
+import { createFixtureExecutionProvider, createHostContext } from './host-fixture.js'
 import { apply } from '../index.js'
 import { createContext, runInContext } from 'node:vm'
 import { createNativeRootDynamic } from '../internal/native-root-dynamic.js'
@@ -264,7 +264,7 @@ test('public settings updates preserve the active worker logical roots', async t
   const definition = { name: 'run_code', parameters: { type: 'object', properties: {
     code: { type: 'string' }, description: { type: 'string' },
   }, required: ['code', 'description'], additionalProperties: false }, output: {} }
-  const codeRuntime = { language: 'typescript', isolation: 'worker-thread', run() { throw new Error('unexpected upstream execution') } }
+  const codeRuntime = createFixtureExecutionProvider({ language: 'typescript', isolation: 'worker-thread', run() { throw new Error('unexpected upstream execution') } }, 'codeRuntime')
   const ctx = { ...host.ctx, fiber: { state: 2 }, codeRuntime,
     tools: { ...host.ctx.tools, get: () => definition, schemas: () => [definition] },
     inject(names, callback) {

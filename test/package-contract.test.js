@@ -28,7 +28,7 @@ test('execution smoke rejects capability-only changes and accepts the real plugi
   const fake = join(directory, 'fake.mjs')
   for (const mutation of ['', 'runtime.run = null']) {
     await writeFile(fake, `export function apply(ctx) {
-      const runtime = ctx.get('ptcRuntime') ?? ctx.get('codeRuntime')
+      const runtime = { ...(ctx.get('ptcRuntime') ?? ctx.get('codeRuntime')) }
       delete runtime.executionInstructions
       delete runtime.sandboxMode
       delete runtime.timeout
@@ -36,11 +36,12 @@ test('execution smoke rejects capability-only changes and accepts the real plugi
     }`)
     const result = run(fake)
     assert.equal(result.status, 1, result.stderr)
-    assert.match(result.stderr, /did not take over the execution entry/)
+    assert.match(result.stderr, /did not install the public execution entry/)
   }
   const result = run(fileURLToPath(new URL('../index.js', import.meta.url)))
   assert.equal(result.status, 0, result.stderr)
-  assert.match(result.stdout, /took over its execution entry/)
+  assert.match(result.stdout, /official profile Include bundle\/provider execution installed; frozen original preserved/)
+  assert.match(result.stdout, /session run_code\/edit_run_code continuous state proved/)
 })
 
 test('keeps host-owned DSH runtime packages out of plugin dependencies', async () => {

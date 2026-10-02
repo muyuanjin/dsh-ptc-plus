@@ -10,6 +10,7 @@ import Schema from '@deepseek-ai/schemastery'
 import { randomUUID } from 'node:crypto'
 import { createDirectSurfaceOwner } from './internal/direct-surface-owner.js'
 import { createRuntimeMessageOwner } from './internal/runtime-contexts.js'
+import { createSessionLogOwner } from './internal/session-log-view.js'
 import { PTC_DELIVERY_CONTEXT } from './internal/runtime-messages.js'
 import { createCordisToolsOwner } from './internal/cordis-tools-owner.js'
 import { createEditTransportOwner, EDIT_RUN_CODE } from './internal/edit-transport-owner.js'
@@ -50,7 +51,7 @@ export const Config = Schema.object(Object.fromEntries(
  * it under the service name of one generation, so `installExecutionSeam`
  * selects the live one.
  */
-export const inject = ['tools', 'systemPrompt', 'agents', 'llm']
+export const inject = ['tools', 'systemPrompt', 'agents']
 
 function replGuidance({ bindingPolicy, rewritesEnabled, languageSemantics, durableReplay, cordisToolsEnabled }) {
   const looseTopLevelRedeclarations = bindingPolicy.variableRedeclarations
@@ -100,7 +101,7 @@ Native tool availability, executable names, shells, and path syntax depend on th
 }
 
 /** Register the session-bound REPL runtime. */
-function installPtCRuntime(ctx, resolvedConfig, seam, toolSchemasForAgent, sessionId) {
+function installPtCRuntime(ctx, resolvedConfig, seam, toolSchemasForAgent, sessionId, sessionLog) {
   const presentationGeneration = randomUUID()
   const replMemoryProjection = createReplMemoryProjection(presentationGeneration)
   const userBindingDraftProjection = createUserBindingDraftProjection(presentationGeneration)
@@ -331,6 +332,7 @@ function installPtCRuntime(ctx, resolvedConfig, seam, toolSchemasForAgent, sessi
       ready = awaitCordisToolsOwner(initialCordisTools, new Promise(() => {}))
     }
     userBindings = createUserBindingsOwner(ctx, {
+      readSessionLog: sessionLog.read,
       enabled: activeConfig.userBindingsEnabled,
       draftProjectionAvailable,
       maxWallMs: activeConfig.maxWallMs,
@@ -342,6 +344,7 @@ function installPtCRuntime(ctx, resolvedConfig, seam, toolSchemasForAgent, sessi
       ctx,
       seam,
       observeSession: id => observationInterest.has(id),
+      readSessionLog: sessionLog.read,
       sessionConfig: activeConfig,
       userBindingsCwd: userBindings.cwd,
       maxNestedRunCodeDepth: activeConfig.maxNestedRunCodeDepth,
@@ -352,6 +355,8 @@ function installPtCRuntime(ctx, resolvedConfig, seam, toolSchemasForAgent, sessi
       bindingSubmissionForAgent: (agent, ensureLease, onAccepted) => userBindings.submissionForAgent(agent, ensureLease, onAccepted),
     })
     editTransport = createEditTransportOwner(ctx, {
+      readSessionLog: runtimeBridge.readSubmissionLog,
+      sessionLogView: sessionLog.project,
       durableReplay: activeConfig.durableReplay,
       executeTentative: runtimeBridge.executeTentative,
       presentationGeneration,
@@ -359,6 +364,7 @@ function installPtCRuntime(ctx, resolvedConfig, seam, toolSchemasForAgent, sessi
       toolSchemasForAgent,
     })
     directSurface = createDirectSurfaceOwner({
+      sessionLogView: sessionLog.project,
       editTransport,
       runtimeConfig: activeConfig,
       canonicalizeToolCalls: activeConfig.canonicalizeToolCalls,
@@ -395,6 +401,7 @@ function installPtCRuntime(ctx, resolvedConfig, seam, toolSchemasForAgent, sessi
         ))
           .then(result => directSurface.argumentDiagnostic(exec, result))
       }
+      if (exec.name === EDIT_RUN_CODE) return runtimeBridge.withSubmission(exec, next)
       return next()
     }))
     disposers.push(ctx.on('tools/result', (exec, result) => {
@@ -527,6 +534,7 @@ export const apply = (ctx, config = {}) => {
 
 /** Install the plugin into the scope of the seam the host registered. */
 function applyWithExecutionSeam(ctx, resolvedConfig, seam, volatileHost, volatileConfig) {
+  const sessionLog = createSessionLogOwner(ctx)
   const toolSchemasForAgent = agent => typeof ctx.tools.schemas === 'function'
     ? ctx.tools.schemas(agent)
     : []
@@ -613,7 +621,7 @@ function applyWithExecutionSeam(ctx, resolvedConfig, seam, volatileHost, volatil
     }
     let candidate
     try {
-      candidate = installPtCRuntime(ctx, record.config, seam, toolSchemasForAgent, sessionId)
+      candidate = installPtCRuntime(ctx, record.config, seam, toolSchemasForAgent, sessionId, sessionLog)
       record.runtime = candidate
     } catch (error) {
       const failedRuntime = error?.[INSTALL_CLEANUP]
@@ -757,7 +765,7 @@ function applyWithExecutionSeam(ctx, resolvedConfig, seam, volatileHost, volatil
 
   const messageOwner = createRuntimeMessageOwner(context => (
     committed?.retiring ? [] : committed?.runtime.contextsForRequest(context) ?? []
-  ))
+  ), sessionLog.project)
   ctx.effect(() => ctx.systemPrompt.context({
     name: PTC_DELIVERY_CONTEXT, order: 98, text: '',
   }), 'ptc-plus dynamic message delivery witness')
@@ -788,7 +796,7 @@ function applyWithExecutionSeam(ctx, resolvedConfig, seam, volatileHost, volatil
         ? { enabled: false }
         : Object.fromEntries(CONFIG_FIELDS.map(field => [field.key, previousConfig[field.key]]))
       try {
-        await settingsWriter.update(SETTINGS_NAMESPACE, patch)
+        await settingsWriter.update(patch)
       } catch (rollbackError) {
         reportActivationFailure(new Error(
           `ptc-plus: failed to roll back runtime configuration: ${rollbackError.message}`,
@@ -840,11 +848,24 @@ function applyWithExecutionSeam(ctx, resolvedConfig, seam, volatileHost, volatil
         },
         onChange: reconcile,
       },
-      onProvider(provider) {
-        settingsWriter = provider
+      onProvider(_provider, writer) {
+        settingsWriter = writer
+        return () => { if (settingsWriter === writer) settingsWriter = undefined }
       },
     })
   }
+  ctx.effect(() => seam.onSourceChange(() => {
+    const current = resolveConfig(configSource())
+    if (!current.enabled) return undefined
+    if (seam.language !== 'typescript') {
+      const language = seam.language
+      const cleanup = controller.uninstall()
+      reportActivationFailure(new Error('ptc-plus: unsupported code runtime language '
+        + JSON.stringify(language) + '; only "typescript" is supported'))
+      return cleanup
+    }
+    return reconcile(true)
+  }), 'ptc-plus original language lifecycle')
   watchVolatileConfig(volatileHost, ctx, volatileConfig, () => reconcile())
   if (configurationGeneration === 0) return reconcile(settingsWriter === undefined)
 }

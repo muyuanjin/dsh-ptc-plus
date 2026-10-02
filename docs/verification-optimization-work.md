@@ -24,6 +24,32 @@ owns command syntax, thresholds, generated evidence, and the final gate.
 - Node test options may follow a standalone `--` after the focused source and
   test selections.
 
+Compiler instrumentation belongs to the test runner, not the compiler service.
+The runner prepares bytecode without coverage, then preloads
+`scripts/instrument-compiler-coverage.mjs` before the compiler captures Node's
+`Script` constructor. Only the exact compiler bundle bypasses cached bytecode
+consumption during that run; cache export uses the prepared, uninstrumented
+bytes. The real-worker testing entry installs the same seam before importing
+the production worker, removes its private entry locator and bytecode-path
+environment variable, restores the ordinary worker's `process.argv[1]` through
+the worker realm restoration boundary, and then runs the unchanged worker. Production compilation
+does not read `NODE_V8_COVERAGE` or `DSH_PTC_COMPILER_BYTECODE` and never opens a
+file selected by those variables.
+
+The testing `Script` seam preserves the compiler's option prototype and property
+descriptors while disabling only `cachedData`. Ordinary scripts keep their
+original options. Descriptor conversion uses the shared compiler descriptor
+owner; the seam captures its required primordials before user execution so
+caller prototype and static-method mutations cannot reach private compilation.
+Prepared cache export copies typed-array internal data through a captured native
+constructor, without invoking public length getters on its private snapshot.
+The shared compiler platform also uses captured native byte operations for
+encoding and decoding, so first-use TypeScript lowering cannot invoke a caller's
+replacement typed-array length getter in either ordinary or covered execution.
+Covered and ordinary workers use the same absolute entry
+normalization for URL objects, file-URL strings, and filenames; the testing
+preload does not independently reinterpret a caller's entry.
+
 ## Workflow
 
 Use focused coverage after the nearest behavioral test passes or after a full

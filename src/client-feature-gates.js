@@ -1,3 +1,5 @@
+import { CONFIG_DEFAULTS } from '../internal/config-spec.js'
+
 /**
  * Settings snapshot to feature eligibility. Each feature names the settings that
  * gate exactly one contribution, so a new gated surface reads one table instead
@@ -18,15 +20,20 @@ const FEATURE_SETTINGS = Object.freeze({
 })
 
 /**
- * Pure settings projection: a feature is eligible only from a ready snapshot
- * with the master switch on. These features default to on unless the user
- * turned them off. Writability gates setting writes, not contribution presence.
+ * Pure settings projection: a feature is eligible unless the settings say
+ * otherwise. Only a readable snapshot can turn a feature off — an unreadable or
+ * not-yet-arrived settings transport falls back to the defaults the plugin ships
+ * in `CONFIG_FIELDS`, so a transport outage degrades the settings surface
+ * instead of removing every contribution the plugin owns. Writability gates
+ * setting writes, not contribution presence.
  */
 export function featureEnabled(snapshot, feature) {
   const rule = FEATURE_SETTINGS[feature]
   if (rule === undefined) throw new Error(`Unknown client feature: ${feature}`)
-  if (snapshot?.status !== 'ready' || snapshot.value?.enabled !== true) return false
-  const value = snapshot.value
+  const value = snapshot?.status === 'ready' && snapshot.value !== undefined
+    ? snapshot.value
+    : CONFIG_DEFAULTS
+  if (value.enabled === false) return false
   return rule.every(key => value[key] !== false)
 }
 

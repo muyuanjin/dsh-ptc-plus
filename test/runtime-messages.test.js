@@ -1,6 +1,5 @@
 import { isPtcMessageSource } from '../internal/message-sources.js'
 import assert from 'node:assert/strict'
-import { sessionEvents } from '../internal/session-events.js'
 import test from 'node:test'
 import { sessionFormatCatalog } from '@deepseek-ai/dsh-session-format-catalog'
 import { bindingActionNotice, readBindingAction } from '../internal/user-binding-draft-projection.js'
@@ -10,13 +9,16 @@ import { AgentLoop } from '@deepseek-ai/dsh-agent-loop'
 import { createUserMessage, LlmAdapter, LlmRuntime } from '@deepseek-ai/dsh-llm'
 import { Session, SessionStore } from '@deepseek-ai/dsh-session'
 import { SessionProjectionRegistry } from '@deepseek-ai/dsh-session-projection'
+import { SessionQueryEngine } from '@deepseek-ai/dsh-session-query'
 import { SystemPrompt } from '@deepseek-ai/dsh-system-prompt'
 import { ToolRuntime } from '@deepseek-ai/dsh-tools'
+import { JOURNAL_KEY } from '../internal/session-journal.js'
+import { encodeValue } from '../internal/value-wire.js'
 import { auditRuntimeContexts, isRuntimeContextSource } from '../scripts/acceptance-contract.mjs'
 import { createRuntimeMessageOwner, projectRuntimeMessages, sessionRuntimeContexts } from '../internal/runtime-contexts.js'
 import { latestRecoveryTip } from '../internal/recovery-tips.js'
 import { createUserBindingsSnapshot, userBindingsConfiguredContext } from '../internal/user-bindings.js'
-import { projectSessionLog, systemPromptSnapshotSections } from '../internal/session-log-view.js'
+import { createSessionLogOwner, createSessionLogProjection, projectSessionLog, runtimeMessageFacts, systemPromptSnapshotSections } from '../internal/session-log-view.js'
 import {
   PTC_BINDING_CATALOG, PTC_DELIVERY_CONTEXT, PTC_STATE_NAMES, readRuntimeMessage, recoveryTipIdentity,
   runtimeBindingCatalogMessage, runtimeNoticeMessage, runtimeStateMessage,
@@ -25,7 +27,12 @@ import {
 const state = text => [{ name: PTC_STATE_NAMES[0], text }]
 const tip = ordinal => ({ name: `tools:ptc-plus-tip/platform-command-failure/${ordinal}`, text: 'Inspect the current executable.' })
 const user = text => createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text }] })
-const viewOf = session => projectSessionLog({ session })
+const logRegistry = new SessionProjectionRegistry(new Context())
+logRegistry.register(createSessionLogProjection())
+const sessionEvents = session => session.snapshotEvents()
+const viewOf = session => Array.isArray(session?.events) ? projectSessionLog({ session })
+  : projectSessionLog({ session }, undefined, logRegistry.stateOf(session, 'ptcPlusSessionLog'))
+const viewForAgent = agent => viewOf(agent.session)
 const append = (session, message) => session.append('user/message', message, { surfaceOp: 'append' })
 
 const usesSequenceReplacement = (() => {
@@ -60,6 +67,503 @@ const usesHeaderSnapshots = (() => {
 const requestHeader = () => usesHeaderSnapshots
   ? { header: { config: { provider: 'fixture', model: 'fixture' } }, reason: 'initial' }
   : {}
+
+test('host-only log facts survive public checkpoint restore and session forks', async t => {
+  const ctx = new Context()
+  const fibers = []
+  t.after(async () => { for (const fiber of fibers.reverse()) await fiber.dispose() })
+  for (const plugin of [SessionStore, SessionProjectionRegistry, SessionQueryEngine]) {
+    const fiber = ctx.plugin(plugin)
+    fibers.push(fiber)
+    await fiber.await()
+  }
+  let owner
+  const feature = ctx.plugin({ apply(scope) { owner = createSessionLogOwner(scope) } })
+  fibers.push(feature)
+  await feature.await()
+  const parent = ctx.sessions.create('log-projection-parent')
+  const first = append(parent, runtimeStateMessage(state('first')))
+  append(parent, runtimeNoticeMessage(tip(1)))
+  const checkpoint = JSON.parse(JSON.stringify(ctx.sessionProjections.checkpoint(parent)))
+  assert.deepEqual(ctx.sessionProjections.snapshot(parent).values, {})
+  append(parent, runtimeStateMessage(state('second')))
+  parent.append('user/message', user('replace only the first snapshot'), {
+    surfaceOp: replaceSurface(first.seq, first.seq), sourceEventSeqs: [first.seq],
+  })
+  const observation = await owner.read(parent)
+  assert.deepEqual(observation.surface.nodes, parent.surface.nodes)
+  const floor = ctx.sessionProjections.restoreFloor(checkpoint)
+  const restored = ctx.sessionProjections.restore(checkpoint, observation.events.slice(floor), floor, parent.header, 0)
+  const restoredView = projectSessionLog({ session: parent }, undefined, restored.checkpoint.ptcPlusSessionLog.val)
+  assert.deepEqual(restoredView, owner.project({ session: parent }))
+  assert.equal(restoredView.visibleRuntimeFacts.snapshot.sections[0].text, 'second')
+  const child = ctx.sessions.fork(parent, undefined, 'log-projection-child')
+  assert.deepEqual(owner.project({ session: child }), owner.project({ session: parent }))
+  append(child, runtimeStateMessage(state('child only')))
+  assert.equal(owner.project({ session: parent }).visibleRuntimeFacts.snapshot.sections[0].text, 'second')
+  assert.equal(owner.project({ session: child }).visibleRuntimeFacts.snapshot.sections[0].text, 'child only')
+})
+
+test('long unrelated histories leave projection state unchanged and presentation never reads the raw log', () => {
+  const projection = createSessionLogProjection()
+  let checkpoint = projection.init()
+  checkpoint = projection.apply(checkpoint, { seq: 0, type: 'user/message',
+    data: runtimeNoticeMessage(tip(1)), surfaceOp: 'append' })
+  for (let seq = 1; seq <= 10_000; seq += 1) {
+    assert.equal(projection.apply(checkpoint, { seq, type: 'tool/ptc-dispatch', data: {} }), checkpoint)
+  }
+  const session = { get events() { throw new Error('raw log read during presentation') },
+    get surface() { throw new Error('live surface read during presentation') } }
+  const view = projectSessionLog({ session }, undefined, checkpoint)
+  assert.equal(view.runtimeHistory.tips['platform-command-failure'].highestOrdinal, 1)
+  assert.deepEqual(projectRuntimeMessages(view, [tip(1)]), [])
+  const legacy = projectSessionLog({ session: { events: [
+    { seq: 0, type: 'user/message', data: runtimeStateMessage(state('legacy')) },
+    { seq: 1, type: 'user/message', data: user('ordinary') },
+  ], surface: { nodes: [0, 1] } } })
+  assert.equal(legacy.visibleRuntimeMessages.length, 1)
+  assert.deepEqual(projectRuntimeMessages(legacy, state('legacy')), [])
+})
+
+test('projection checkpoints reject malformed tables and inconsistent derived facts', () => {
+  const projection = createSessionLogProjection()
+  let checkpoint = projection.init()
+  checkpoint = projection.apply(checkpoint, { seq: 0, type: 'user/message',
+    data: runtimeStateMessage(state('retained')), surfaceOp: 'append' })
+  checkpoint = projection.apply(checkpoint, { seq: 1, type: 'user/message',
+    data: runtimeNoticeMessage(tip(1)), surfaceOp: 'append' })
+  assert.deepEqual(projection.stateSchema.parse(JSON.parse(JSON.stringify(checkpoint))), checkpoint)
+  for (const mutate of [
+    value => { value.timeline.results = [] },
+    value => { value.timeline.results.k0 = [1, null] },
+    value => { value.timeline.results.k0 = {} },
+    value => { value.visibleRuntimeMessages = [] },
+    value => { value.visibleRuntimeFacts = {} },
+    value => { value.runtimeHistory.tips['platform-command-failure'].highestOrdinal = 99 },
+    value => { value.runtimeHistory.seenNames = {} },
+    value => { value.surfaceNodes = [0, 0] },
+    value => { value.contextStep = -1 },
+  ]) {
+    const damaged = JSON.parse(JSON.stringify(checkpoint))
+    mutate(damaged)
+    assert.throws(() => projection.stateSchema.parse(damaged), /PTC session-log projection/)
+  }
+  const invisible = projection.apply(checkpoint, { seq: 2, type: 'user/message', data: user('summary'),
+    surfaceOp: replaceSurface(0, 1) })
+  assert.deepEqual(projection.stateSchema.parse(JSON.parse(JSON.stringify(invisible))), invisible)
+})
+
+test('public restore rejects malformed nested timeline evidence before advancing a valid suffix', () => {
+  const registry = new SessionProjectionRegistry(new Context())
+  registry.register(createSessionLogProjection())
+  const session = Session.create('typed-checkpoint-admission')
+  append(session, runtimeStateMessage(state('checkpoint')))
+  const checkpoint = JSON.parse(JSON.stringify(registry.checkpoint(session)))
+  checkpoint.ptcPlusSessionLog.val.timeline.executableCalls.k1 = [1, {}]
+  session.append('tool/call', { callId: 'current', name: 'run_code', arguments: '{"code":"return 42"}' })
+  const floor = registry.restoreFloor(checkpoint)
+  assert.throws(() => registry.restore(checkpoint, sessionEvents(session).slice(floor), floor, session.header, 0),
+    /PTC session-log projection timeline checkpoint/)
+  assert.equal(checkpoint.ptcPlusSessionLog.seq, 0)
+  const refolded = registry.restore({}, sessionEvents(session), 0, session.header, 0)
+  assert.equal(refolded.checkpoint.ptcPlusSessionLog.seq, 1)
+  assert.equal(refolded.checkpoint.ptcPlusSessionLog.val.timeline.calls[0].data.callId, 'current')
+  assert.deepEqual(refolded.checkpoint.ptcPlusSessionLog.val, registry.stateOf(session, 'ptcPlusSessionLog'))
+})
+
+test('public restore rejects self-certified run chronology and refolds the newer failed edit target', () => {
+  const registry = new SessionProjectionRegistry(new Context())
+  const projection = createSessionLogProjection()
+  registry.register(projection)
+  const session = Session.create('checkpoint-chronology-admission')
+  const journal = completion => ({ version: 1, bindingMode: 'loose', status: 'durable',
+    calls: [], operations: [], confirms: [], diagnostics: [], completion })
+  const call = (callId, code) => session.append('tool/call', {
+    turn: 1, step: 1, name: 'run_code', callId, arguments: JSON.stringify({ code, description: 'probe' }),
+  })
+  const result = (source, completion) => session.append('tool/result', {
+    turn: 1, step: 1, message: { source: { kind: 'tool', callId: source.data.callId }, content: [] },
+    meta: { [JOURNAL_KEY]: journal(completion) },
+  }, { sourceEventSeqs: [source.seq], surfaceOp: 'append' })
+  session.append('turn/start', { turn: 1 })
+  result(call('older', 'let older = 1'), { kind: 'return', hasValue: true, value: encodeValue(1) })
+  const checkpoint = JSON.parse(JSON.stringify(registry.checkpoint(session)))
+  result(call('newer', 'let newer = 2; throw Error("failed")'), {
+    kind: 'throw', error: { kind: 'Error', message: 'failed' },
+  })
+  const newerCheckpoint = JSON.parse(JSON.stringify(registry.checkpoint(session)))
+  const edit = session.append('tool/call', { turn: 1, step: 1, name: 'edit_run_code', callId: 'edit',
+    arguments: JSON.stringify({ edits: [{ old_string: 'let', new_string: 'var' }] }),
+  })
+  const floor = registry.restoreFloor(checkpoint)
+  const events = sessionEvents(session)
+  const intact = registry.restore(checkpoint, events.slice(floor), floor, session.header, 0)
+  assert.equal(projectSessionLog({ session }, { callId: 'edit', callSeq: edit.seq },
+    intact.checkpoint.ptcPlusSessionLog.val).requestedEditTarget.callSeq, 3)
+  for (const mutate of [
+    value => { value.timeline.latestRun.index = 99; value.timeline.editableRun.index = 99 },
+    value => { value.timeline.lastSuccessfulRunIndex = 99 },
+    value => {
+      value.timeline.runSelectionFrontier.index = 99
+      delete value.timeline.latestRun
+      delete value.timeline.editableRun
+    },
+  ]) {
+    const damaged = JSON.parse(JSON.stringify(checkpoint))
+    mutate(damaged.ptcPlusSessionLog.val)
+    assert.throws(() => registry.restore(damaged, events.slice(floor), floor, session.header, 0), /timeline checkpoint/)
+    assert.equal(damaged.ptcPlusSessionLog.seq, 2)
+    const refolded = registry.restore({}, events, 0, session.header, 0)
+    assert.equal(refolded.checkpoint.ptcPlusSessionLog.seq, edit.seq)
+    assert.deepEqual(refolded.checkpoint.ptcPlusSessionLog.val, registry.stateOf(session, 'ptcPlusSessionLog'))
+    assert.deepEqual(projectSessionLog({ session }, { callId: 'edit', callSeq: edit.seq },
+      refolded.checkpoint.ptcPlusSessionLog.val).requestedEditTarget,
+    { callSeq: 3, source: 'let newer = 2; throw Error("failed")' })
+  }
+  for (const mutate of [
+    value => {
+      value.timeline.latestRun = checkpoint.ptcPlusSessionLog.val.timeline.latestRun
+      value.timeline.editableRun = checkpoint.ptcPlusSessionLog.val.timeline.editableRun
+    },
+    value => { delete value.timeline.latestRun; delete value.timeline.editableRun },
+  ]) {
+    const damaged = JSON.parse(JSON.stringify(newerCheckpoint))
+    mutate(damaged.ptcPlusSessionLog.val)
+    const newerFloor = registry.restoreFloor(damaged)
+    assert.throws(() => registry.restore(damaged, events.slice(newerFloor), newerFloor, session.header, 0), /timeline checkpoint/)
+    assert.equal(damaged.ptcPlusSessionLog.seq, 4)
+    const refolded = registry.restore({}, events, 0, session.header, 0)
+    assert.deepEqual(projectSessionLog({ session }, { callId: 'edit', callSeq: edit.seq },
+      refolded.checkpoint.ptcPlusSessionLog.val).requestedEditTarget,
+    { callSeq: 3, source: 'let newer = 2; throw Error("failed")' })
+  }
+})
+
+test('checkpoint edit target source and dispatch eligibility derive from retained publications', () => {
+  const registry = new SessionProjectionRegistry(new Context())
+  const projection = createSessionLogProjection()
+  registry.register(projection)
+  const session = Session.create('checkpoint-edit-source-admission')
+  session.append('turn/start', { turn: 1 })
+  const run = session.append('tool/call', { turn: 1, step: 1, name: 'run_code', callId: 'run',
+    arguments: JSON.stringify({ code: 'let value = 1', description: 'probe' }) })
+  session.append('tool/result', { turn: 1, step: 1,
+    message: { source: { kind: 'tool', callId: 'run' }, content: [] } },
+  { sourceEventSeqs: [run.seq], surfaceOp: 'append' })
+  const edit = session.append('tool/call', { turn: 1, step: 1, name: 'edit_run_code', callId: 'edit',
+    arguments: JSON.stringify({ edits: [{ old_string: '1', new_string: '2' }] }) })
+  const events = sessionEvents(session)
+  const checkpoint = JSON.parse(JSON.stringify(registry.checkpoint(session)))
+  const floor = registry.restoreFloor(checkpoint)
+  const restore = value => registry.restore(value, events.slice(floor), floor, session.header, 0)
+  assert.deepEqual(projectSessionLog({ session }, { callId: 'edit', callSeq: edit.seq },
+    restore(checkpoint).checkpoint.ptcPlusSessionLog.val).requestedEditTarget,
+  { callSeq: run.seq, source: 'let value = 1' })
+  for (const replacement of [{ callSeq: run.seq, source: 'let unrelated = 9000' }, null]) {
+    const damaged = JSON.parse(JSON.stringify(checkpoint))
+    const timeline = damaged.ptcPlusSessionLog.val.timeline
+    timeline.editTargets[`k${edit.seq}`][1] = replacement
+    if (replacement === null) {
+      delete timeline.executableCalls[`k${edit.seq}`][1].editTarget
+      delete timeline.pendingByCallId.kedit[1].editTarget
+    } else {
+      timeline.executableCalls[`k${edit.seq}`][1].editTarget = { ...replacement }
+      timeline.pendingByCallId.kedit[1].editTarget = { ...replacement }
+    }
+    assert.throws(() => restore(damaged), /timeline checkpoint/)
+    assert.equal(damaged.ptcPlusSessionLog.seq, edit.seq)
+    assert.deepEqual(registry.restore({}, events, 0, session.header, 0).checkpoint.ptcPlusSessionLog.val,
+      registry.stateOf(session, 'ptcPlusSessionLog'))
+  }
+})
+
+test('public checkpoint restore derives persistent edit claims from dispatch and settlement facts', () => {
+  const registry = new SessionProjectionRegistry(new Context())
+  registry.register(createSessionLogProjection())
+  const session = Session.create('checkpoint-claim-admission')
+  session.append('turn/start', { turn: 1 })
+  const run = session.append('tool/call', { turn: 1, step: 1, name: 'run_code', callId: 'run',
+    arguments: JSON.stringify({ code: 'let value = 1', description: 'probe' }) })
+  session.append('tool/result', { turn: 1, step: 1,
+    message: { source: { kind: 'tool', callId: 'run' }, content: [] } },
+  { sourceEventSeqs: [run.seq], surfaceOp: 'append' })
+  const unclaimed = JSON.parse(JSON.stringify(registry.checkpoint(session)))
+  const edit = session.append('tool/call', { turn: 1, step: 1, name: 'edit_run_code', callId: 'edit',
+    arguments: JSON.stringify({ edits: [{ old_string: '1', new_string: '2' }] }) })
+  const claimed = JSON.parse(JSON.stringify(registry.checkpoint(session)))
+  const concurrent = session.append('tool/call', { turn: 1, step: 1, name: 'edit_run_code', callId: 'concurrent',
+    arguments: JSON.stringify({ edits: [{ old_string: '1', new_string: '3' }] }) })
+  const events = sessionEvents(session)
+  const target = value => projectSessionLog({ session }, { callId: 'edit', callSeq: edit.seq }, value).requestedEditTarget
+  for (const [checkpoint, mutate] of [
+    [unclaimed, timeline => { timeline.claimedEditTargets[`k${run.seq}`] = [run.seq, true] }],
+    [claimed, timeline => { delete timeline.editClaims[`k${edit.seq}`] }],
+    [claimed, timeline => { delete timeline.editClaims[`k${edit.seq}`]; delete timeline.claimedEditTargets[`k${run.seq}`] }],
+    [claimed, timeline => {
+      delete timeline.editClaims[`k${edit.seq}`]
+      delete timeline.claimedEditTargets[`k${run.seq}`]
+      timeline.claimedEditTargets[`k${edit.seq}`] = [edit.seq, true]
+    }],
+  ]) {
+    const floor = registry.restoreFloor(checkpoint)
+    const honest = registry.restore(checkpoint, events.slice(floor), floor, session.header, 0)
+    assert.deepEqual(target(honest.checkpoint.ptcPlusSessionLog.val), { callSeq: run.seq, source: 'let value = 1' })
+    assert.equal(projectSessionLog({ session }, { callId: 'concurrent', callSeq: concurrent.seq },
+      honest.checkpoint.ptcPlusSessionLog.val).requestedEditTarget, undefined)
+    const damaged = JSON.parse(JSON.stringify(checkpoint))
+    mutate(damaged.ptcPlusSessionLog.val.timeline)
+    assert.throws(() => registry.restore(damaged, events.slice(floor), floor, session.header, 0), /timeline checkpoint/)
+    assert.equal(damaged.ptcPlusSessionLog.seq, checkpoint.ptcPlusSessionLog.seq)
+    const refolded = registry.restore({}, events, 0, session.header, 0)
+    assert.deepEqual(refolded.checkpoint.ptcPlusSessionLog.val, registry.stateOf(session, 'ptcPlusSessionLog'))
+    assert.deepEqual(target(refolded.checkpoint.ptcPlusSessionLog.val), { callSeq: run.seq, source: 'let value = 1' })
+  }
+})
+
+test('public checkpoint restore proves ordinary result deduplication before admitting a suffix', () => {
+  const registry = new SessionProjectionRegistry(new Context())
+  registry.register(createSessionLogProjection())
+  const session = Session.create('checkpoint-result-observation-admission')
+  const run = session.append('tool/call', { turn: 1, step: 1, name: 'run_code', callId: 'run',
+    arguments: JSON.stringify({ code: 'let value = 1', description: 'probe' }) })
+  const pending = JSON.parse(JSON.stringify(registry.checkpoint(session)))
+  const result = () => session.append('tool/result', { turn: 1, step: 1,
+    message: { source: { kind: 'tool', callId: 'run' }, content: [] },
+    meta: { [JOURNAL_KEY]: { version: 1, bindingMode: 'loose', status: 'durable',
+      calls: [], operations: [], confirms: [], diagnostics: [], completion: { kind: 'return', hasValue: false } } } },
+  { sourceEventSeqs: [run.seq], surfaceOp: 'append' })
+  result()
+  const settled = JSON.parse(JSON.stringify(registry.checkpoint(session)))
+  const events = sessionEvents(session)
+  const floor = registry.restoreFloor(pending)
+  assert.equal(registry.restore(pending, events.slice(floor), floor, session.header, 0)
+    .checkpoint.ptcPlusSessionLog.val.timeline.latestRun.callSeq, run.seq)
+  const retainedCall = pending.ptcPlusSessionLog.val.timeline.executableCalls[`k${run.seq}`][1].event
+  for (const replacement of [true, { eventSeq: run.seq, eventIndex: run.seq, call: retainedCall }]) {
+    const damaged = JSON.parse(JSON.stringify(pending))
+    damaged.ptcPlusSessionLog.val.timeline.ordinaryResultSeqs[`k${run.seq}`] = [run.seq, replacement]
+    assert.throws(() => registry.restore(damaged, events.slice(floor), floor, session.header, 0), /timeline checkpoint/)
+    assert.equal(damaged.ptcPlusSessionLog.seq, pending.ptcPlusSessionLog.seq)
+    assert.deepEqual(registry.restore({}, events, 0, session.header, 0).checkpoint.ptcPlusSessionLog.val,
+      registry.stateOf(session, 'ptcPlusSessionLog'))
+  }
+  result()
+  const duplicateEvents = sessionEvents(session)
+  const duplicateFloor = registry.restoreFloor(settled)
+  const honest = registry.restore(settled, duplicateEvents.slice(duplicateFloor), duplicateFloor, session.header, 0)
+  assert.equal(honest.checkpoint.ptcPlusSessionLog.val.timeline.latestRun, undefined)
+  assert.equal(honest.checkpoint.ptcPlusSessionLog.val.timeline.runSelectionFrontier.reason, 'duplicate-result')
+  const damaged = JSON.parse(JSON.stringify(settled))
+  delete damaged.ptcPlusSessionLog.val.timeline.ordinaryResultSeqs[`k${run.seq}`]
+  assert.throws(() => registry.restore(damaged, duplicateEvents.slice(duplicateFloor), duplicateFloor, session.header, 0), /timeline checkpoint/)
+  assert.equal(damaged.ptcPlusSessionLog.seq, settled.ptcPlusSessionLog.seq)
+  assert.deepEqual(registry.restore({}, duplicateEvents, 0, session.header, 0).checkpoint.ptcPlusSessionLog.val,
+    registry.stateOf(session, 'ptcPlusSessionLog'))
+})
+
+test('public checkpoint restore proves pending identities and genuine ambiguity from correlation inputs', () => {
+  const registry = new SessionProjectionRegistry(new Context())
+  registry.register(createSessionLogProjection())
+  const session = Session.create('checkpoint-pending-correlation')
+  const empty = JSON.parse(JSON.stringify(registry.checkpoint(session)))
+  const run = session.append('tool/call', { turn: 1, step: 1, name: 'run_code', callId: 'run',
+    arguments: JSON.stringify({ code: 'let value = 1', description: 'probe' }) })
+  const pending = JSON.parse(JSON.stringify(registry.checkpoint(session)))
+  session.append('tool/result', { turn: 1, step: 1,
+    message: { source: { kind: 'tool', callId: 'run' }, content: [] } }, { surfaceOp: 'append' })
+  const events = sessionEvents(session)
+  const floor = registry.restoreFloor(pending)
+  assert.equal(registry.restore(pending, events.slice(floor), floor, session.header, 0)
+    .checkpoint.ptcPlusSessionLog.val.timeline.latestRun.callSeq, run.seq)
+  for (const mutate of [
+    timeline => { delete timeline.pendingByCallId.krun },
+    timeline => { timeline.pendingByCallId.krun = ['run', null] },
+    timeline => { timeline.seenCallIds.kfuture = ['future', true] },
+  ]) {
+    const damaged = JSON.parse(JSON.stringify(pending))
+    mutate(damaged.ptcPlusSessionLog.val.timeline)
+    assert.throws(() => registry.restore(damaged, events.slice(floor), floor, session.header, 0), /timeline checkpoint/)
+    assert.equal(damaged.ptcPlusSessionLog.seq, pending.ptcPlusSessionLog.seq)
+  }
+  const invented = JSON.parse(JSON.stringify(empty))
+  invented.ptcPlusSessionLog.val.timeline.seenCallIds.krun = ['run', true]
+  const emptyFloor = registry.restoreFloor(empty)
+  assert.throws(() => registry.restore(invented, events.slice(emptyFloor), emptyFloor, session.header, 0), /timeline checkpoint/)
+  assert.deepEqual(registry.restore({}, events, 0, session.header, 0).checkpoint.ptcPlusSessionLog.val,
+    registry.stateOf(session, 'ptcPlusSessionLog'))
+
+  // Native and REPL calls share the same identity lifecycle; a real duplicate
+  // remains ambiguous even when the first call has already settled.
+  session.append('tool/call', { turn: 1, step: 1, name: 'native', callId: 'native', arguments: '{}' })
+  session.append('tool/result', { turn: 1, step: 1,
+    message: { source: { kind: 'tool', callId: 'native' }, content: [] } }, { surfaceOp: 'append' })
+  session.append('tool/call', { turn: 1, step: 1, name: 'run_code', callId: 'native',
+    arguments: JSON.stringify({ code: 'return 42' }) })
+  const duplicate = JSON.parse(JSON.stringify(registry.checkpoint(session)))
+  session.append('tool/result', { turn: 1, step: 1,
+    message: { source: { kind: 'tool', callId: 'native' }, content: [] } }, { surfaceOp: 'append' })
+  const duplicateEvents = sessionEvents(session)
+  const duplicateFloor = registry.restoreFloor(duplicate)
+  const restored = registry.restore(duplicate, duplicateEvents.slice(duplicateFloor), duplicateFloor, session.header, 0)
+  assert.equal(restored.checkpoint.ptcPlusSessionLog.val.timeline.runSelectionFrontier.reason, 'ambiguous-call-id')
+  assert.deepEqual(restored.checkpoint.ptcPlusSessionLog.val, registry.stateOf(session, 'ptcPlusSessionLog'))
+})
+
+test('public checkpoint restore requires public prune evidence for an active replacement window', () => {
+  const registry = new SessionProjectionRegistry(new Context())
+  registry.register(createSessionLogProjection())
+  const session = Session.create('checkpoint-prune-window-correlation')
+  session.append('tool/call', { turn: 1, step: 1, name: 'run_code', callId: 'run',
+    arguments: JSON.stringify({ code: 'let value = 1' }) })
+  const native = session.append('tool/call', { turn: 1, step: 1, name: 'native', callId: 'native', arguments: '{}' })
+  const last = session.append('tool/call', { turn: 1, step: 1, name: 'native', callId: 'other', arguments: '{}' })
+  const checkpoint = JSON.parse(JSON.stringify(registry.checkpoint(session)))
+  session.append('tool/result', { turn: 1, step: 1,
+    message: { source: { kind: 'tool', callId: 'run' }, content: [] },
+    meta: { [JOURNAL_KEY]: { version: 1, bindingMode: 'loose', status: 'durable',
+      calls: [], operations: [], confirms: [], diagnostics: [], completion: { kind: 'return', hasValue: false } } } },
+  { sourceEventSeqs: [native.seq], surfaceOp: 'append' })
+  const events = sessionEvents(session)
+  const floor = registry.restoreFloor(checkpoint)
+  const honest = registry.restore(checkpoint, events.slice(floor), floor, session.header, 0)
+  assert.equal(honest.checkpoint.ptcPlusSessionLog.val.timeline.latestRun, undefined)
+  assert.equal(honest.checkpoint.ptcPlusSessionLog.val.timeline.unavailableResultSeq, native.seq)
+  const damaged = JSON.parse(JSON.stringify(checkpoint))
+  damaged.ptcPlusSessionLog.val.timeline.pruneReplacementWindow = {
+    seqs: [native.seq], lastEventIndex: last.seq, lastEventSeq: last.seq,
+  }
+  assert.throws(() => registry.restore(damaged, events.slice(floor), floor, session.header, 0), /timeline checkpoint/)
+  assert.equal(damaged.ptcPlusSessionLog.seq, checkpoint.ptcPlusSessionLog.seq)
+  assert.deepEqual(registry.restore({}, events, 0, session.header, 0).checkpoint.ptcPlusSessionLog.val,
+    registry.stateOf(session, 'ptcPlusSessionLog'))
+})
+
+test('public checkpoint restore reconstructs settlement and journal caches from normalized event facts', () => {
+  const registry = new SessionProjectionRegistry(new Context())
+  registry.register(createSessionLogProjection())
+  const session = Session.create('checkpoint-result-lifecycle-evidence')
+  const run = session.append('tool/call', { turn: 1, step: 1, name: 'run_code', callId: 'run',
+    arguments: JSON.stringify({ code: 'let value = 1', description: 'probe' }) })
+  const result = session.append('tool/result', { turn: 1, step: 1,
+    message: { source: { kind: 'tool', callId: 'run' }, content: [] },
+    meta: { [JOURNAL_KEY]: { version: 1, bindingMode: 'loose', status: 'durable',
+      calls: [], operations: [], confirms: [], diagnostics: [], completion: { kind: 'return', hasValue: false } } } },
+  { sourceEventSeqs: [run.seq], surfaceOp: 'append' })
+  const checkpoint = JSON.parse(JSON.stringify(registry.checkpoint(session)))
+  const edit = session.append('tool/call', { turn: 1, step: 1, name: 'edit_run_code', callId: 'edit',
+    arguments: JSON.stringify({ edits: [] }) })
+  const events = sessionEvents(session)
+  const floor = registry.restoreFloor(checkpoint)
+  const honest = registry.restore(checkpoint, events.slice(floor), floor, session.header, 0)
+  const target = state => projectSessionLog({ session }, { callId: edit.data.callId, callSeq: edit.seq }, state).requestedEditTarget
+  assert.deepEqual(target(honest.checkpoint.ptcPlusSessionLog.val), { source: 'let value = 1', callSeq: run.seq })
+  const resultFact = timeline => timeline.eventFacts.find(fact => fact.event.seq === result.seq)
+  for (const mutate of [
+    timeline => {
+      delete timeline.settledResultsByEventSeq[`k${result.seq}`]
+      delete timeline.ordinaryResultSeqs[`k${run.seq}`]
+      delete timeline.latestRun
+      delete timeline.editableRun
+      delete timeline.lastSuccessfulRunIndex
+    },
+    timeline => { timeline.results[`k${run.seq}`][1].journal.completion = {
+      kind: 'throw', error: { kind: 'Error', message: 'fabricated failure' },
+    } },
+    timeline => {
+      timeline.results[`k${run.seq}`][1].journal.calls.push({ global: 'tools', member: 'cordis_inspect',
+        args: encodeValue({}), ok: true, value: encodeValue({}), settle: 0 })
+      timeline.cordisTranscript = { calls: 1, inspections: 1 }
+    },
+    timeline => { delete timeline.results[`k${run.seq}`] },
+    timeline => { timeline.unavailableResultSeq = run.seq },
+    timeline => { delete resultFact(timeline).normalized },
+    timeline => { resultFact(timeline).normalized.eventIndex += 1 },
+    timeline => { resultFact(timeline).normalized.positionSeq = result.seq },
+    timeline => { delete resultFact(timeline).hasJournal },
+    timeline => { resultFact(timeline).hasJournal = false },
+    timeline => { resultFact(timeline).boundaryFailure = true },
+  ]) {
+    const damaged = JSON.parse(JSON.stringify(checkpoint))
+    mutate(damaged.ptcPlusSessionLog.val.timeline)
+    assert.throws(() => registry.restore(damaged, events.slice(floor), floor, session.header, 0), /timeline checkpoint/)
+    assert.equal(damaged.ptcPlusSessionLog.seq, checkpoint.ptcPlusSessionLog.seq)
+  }
+  assert.deepEqual(registry.restore({}, events, 0, session.header, 0).checkpoint.ptcPlusSessionLog.val,
+    registry.stateOf(session, 'ptcPlusSessionLog'))
+})
+
+test('public checkpoint restore proves exact ordered visibility from presentation input facts', () => {
+  const registry = new SessionProjectionRegistry(new Context())
+  registry.register(createSessionLogProjection())
+  const session = Session.create('checkpoint-public-surface-evidence')
+  const catalog = { name: PTC_BINDING_CATALOG, text: 'declare function availableApi(): number' }
+  const first = session.append('user/message', runtimeBindingCatalogMessage(catalog), { surfaceOp: 'append' })
+  const visible = JSON.parse(JSON.stringify(registry.checkpoint(session)))
+  const replacement = session.append('user/message', user('summary without the binding API catalog'), {
+    surfaceOp: replaceSurface(first.seq, first.seq), sourceEventSeqs: [first.seq],
+  })
+  const run = session.append('tool/call', { turn: 1, step: 1, name: 'run_code', callId: 'run',
+    arguments: JSON.stringify({ code: 'return 42', description: 'probe' }) })
+  const checkpoint = JSON.parse(JSON.stringify(registry.checkpoint(session)))
+  const events = sessionEvents(session)
+  const floor = registry.restoreFloor(checkpoint)
+  const restore = candidate => registry.restore(candidate, events.slice(floor), floor, session.header, 0)
+  const honest = restore(checkpoint).checkpoint.ptcPlusSessionLog.val
+  assert.deepEqual(honest.surfaceNodes, session.surface.nodes)
+  assert.deepEqual(honest.surfaceNodes, [replacement.seq])
+  assert.equal(projectRuntimeMessages(projectSessionLog({ session }, undefined, honest), [catalog]).length, 1)
+  assert.equal(JSON.stringify(honest.logFacts).includes('summary without the binding API catalog'), false)
+  for (const mutate of [
+    value => {
+      value.surfaceNodes = [first.seq]
+      value.visibleRuntimeMessages = [value.runtimeMessagesBySeq[`k${first.seq}`]]
+      value.visibleRuntimeFacts = runtimeMessageFacts(value.visibleRuntimeMessages)
+    },
+    value => { value.logFacts = [] },
+    value => { delete value.logFacts },
+    value => { value.logFacts[0].index = -1 },
+    value => { value.logFacts[0].extra = true },
+    value => { value.logFacts.find(fact => fact.index === run.seq).event.seq += 1 },
+    value => { value.logFacts = value.logFacts.filter(fact => fact.index !== run.seq) },
+    value => { value.timeline = JSON.parse(JSON.stringify(visible.ptcPlusSessionLog.val.timeline)) },
+    value => { value.ptcMessages = [] },
+    value => { value.contextStep += 1 },
+    value => { value.runtimeMessagesBySeq = {} },
+  ]) {
+    const damaged = JSON.parse(JSON.stringify(checkpoint))
+    mutate(damaged.ptcPlusSessionLog.val)
+    assert.throws(() => restore(damaged), /checkpoint/)
+    assert.equal(damaged.ptcPlusSessionLog.seq, checkpoint.ptcPlusSessionLog.seq)
+  }
+  const visibleEvents = events.slice(0, visible.ptcPlusSessionLog.seq + 1)
+  const damagedVisible = JSON.parse(JSON.stringify(visible))
+  damagedVisible.ptcPlusSessionLog.val.surfaceNodes = []
+  damagedVisible.ptcPlusSessionLog.val.visibleRuntimeMessages = []
+  damagedVisible.ptcPlusSessionLog.val.visibleRuntimeFacts = {}
+  const visibleFloor = registry.restoreFloor(visible)
+  assert.throws(() => registry.restore(damagedVisible, visibleEvents.slice(visibleFloor), visibleFloor, session.header, 0), /checkpoint/)
+  assert.equal(projectRuntimeMessages(projectSessionLog({ session }, undefined,
+    registry.restore(visible, events.slice(visibleFloor), visibleFloor, session.header, 0)
+      .checkpoint.ptcPlusSessionLog.val), [catalog]).length, 1)
+  assert.deepEqual(registry.restore({}, events, 0, session.header, 0).checkpoint.ptcPlusSessionLog.val,
+    registry.stateOf(session, 'ptcPlusSessionLog'))
+})
+
+test('log projection registration failures are diagnosed without silently empty current facts', async () => {
+  const diagnostics = []
+  const effects = []
+  const scope = { sessionProjections: { register() {} },
+    effect(create) { effects.push(create()) } }
+  const owner = createSessionLogOwner({
+    inject(_names, callback) { callback(scope); return { dispose() { diagnostics.push('disposed') } } },
+    effect: scope.effect,
+    logger: { warn(...parts) { diagnostics.push(parts) } },
+  })
+  assert.match(diagnostics[0][1].message, /did not return a disposer/)
+  assert.throws(() => owner.project({ session: { id: 'no-current-projection' } }), /public sessionQuery observation/)
+  for (const dispose of effects) await dispose?.()
+  assert.equal(diagnostics.at(-1), 'disposed')
+})
 
 
 test('bounded message forms separate current state, notices, tasks, and malformed evidence', () => {
@@ -453,7 +957,7 @@ test('pending assembly and pre-step cannot reacquire delivery after disposal', a
   const assembly = { contexts: [{ name: PTC_DELIVERY_CONTEXT, text: '' }] }
   const decision = { kind: 'enter', messages: [] }
   for (const disposal of ['agent', 'owner']) {
-    const owner = createRuntimeMessageOwner(() => state('late state'))
+    const owner = createRuntimeMessageOwner(() => state('late state'), viewForAgent)
     const agent = { session: Session.create(`disposed-${disposal}`) }
     const signal = new AbortController().signal
     const context = { agent, signal }
@@ -470,7 +974,7 @@ test('pending assembly and pre-step cannot reacquire delivery after disposal', a
   const agent = { session: Session.create('disposed-pre-step') }
   const signal = new AbortController().signal
   const context = { agent, signal }
-  const owner = createRuntimeMessageOwner(() => state('late state'))
+  const owner = createRuntimeMessageOwner(() => state('late state'), viewForAgent)
   await owner.assemble(assembly, context, async () => assembly)
   const gate = Promise.withResolvers()
   const pending = owner.preStep(context, () => gate.promise)
@@ -480,7 +984,7 @@ test('pending assembly and pre-step cannot reacquire delivery after disposal', a
 })
 
 test('delivery requires a matching permitted assembly and a live request signal', async () => {
-  const owner = createRuntimeMessageOwner(() => state('eligible'))
+  const owner = createRuntimeMessageOwner(() => state('eligible'), viewForAgent)
   const agent = { session: Session.create('assembly-permission') }
   const controller = new AbortController()
   const context = { agent, signal: controller.signal }
@@ -531,7 +1035,8 @@ async function hostFixture(t, includeRuntimeContext = true) {
     scope.effect(() => scope.llm.registerAdapter(['fixture'], new Adapter()))
     scope.effect(() => scope.systemPrompt.context({ name: PTC_DELIVERY_CONTEXT, order: 98, text: '' }))
     scope.effect(() => scope.systemPrompt.context({ name: 'other', order: 1, text: () => unrelated }))
-    const owner = createRuntimeMessageOwner(() => current)
+    const log = createSessionLogOwner(scope)
+    const owner = createRuntimeMessageOwner(() => current, log.project)
     scope.on('system-prompt/assemble', (assembly, context, next) => owner.assemble(assembly, context, next))
     scope.on('agent/pre-step', (payload, next) => owner.preStep(payload, next))
     scope.on('agent/pre-step', async ({ agent }, next) => {

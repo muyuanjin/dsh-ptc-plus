@@ -11,7 +11,7 @@ import { probeMarker, probeReason } from '../test/binding-web-adapter.js'
 import { npmCliCommand } from './npm-cli.mjs'
 import { extractPackFilename } from './npm-pack-filename.mjs'
 import { hostToolRuntime, ptcToolsMode } from './dsh-host-contract.mjs'
-import { assertControlVisual, assertVisualSurface } from './client-visual-contract.mjs'
+import { assertControlVisual, assertToolTypography, assertVisualSurface } from './client-visual-contract.mjs'
 import {
   TERMINATION_GRACE_MS,
   decodeSessionLog,
@@ -257,6 +257,7 @@ async function verifyBindingScroll(rpc) {
     } })
     await page.locator('.ptcPlusBindingCommand').waitFor({ state: mode === 'native-client' ? 'detached' : 'visible' })
     await page.locator('.ptcPlusTool').waitFor({ state: mode === 'enhanced' ? 'attached' : 'detached' })
+    if (mode === 'enhanced') await assertToolTypography(page.locator('.ptcPlusTool'), 'packed web/enhanced tool')
     for (const [width, height] of [[390, 1000], [1440, 1000], [1440, 1200]]) {
       await page.setViewportSize({ width, height })
       if (width < 1024) await page.locator('[data-sidebar-collapsed=true]').waitFor()
@@ -284,6 +285,38 @@ async function verifyBindingScroll(rpc) {
     'Process disclosure reduced the desktop transcript extent')
   await rpc('settings/update', { ns: 'ptc-plus', patch: { enabled: true, enhancedToolView: true } })
   await page.locator('.ptcPlusBindingCommand').waitFor()
+}
+
+async function verifyPackedToolTypography() {
+  const style = page.locator('#ptc-plus-client-style')
+  await style.waitFor({ state: 'attached' })
+  const css = await style.textContent()
+  assert.match(css ?? '', /\.ptcPlusTool\{font-family:inherit;font-size:13px;line-height:18px\}/,
+    'Packed Client did not install the shipped tool typography rules')
+  const marker = `ptc-plus-packed-typography-${Date.now()}`
+  await page.evaluate(marker => {
+    const root = document.createElement('div')
+    root.id = marker
+    root.className = 'ptcPlusTool'
+    root.style.cssText = 'position:fixed;left:-10000px;top:0;width:420px'
+    root.innerHTML = '<span class="ptcPlusToolTitle">CodeCompute</span>'
+      + '<span class="ptcPlusToolPreview"><span class="ptcPlusToolSummaryLine">'
+      + '<span class="ptcPlusToolState">ready</span>'
+      + '<span class="ptcPlusToolSep" aria-hidden="true"></span>'
+      + '<span class="ptcPlusToolDescription">The answer is ready.</span>'
+      + '</span></span>'
+      + '<div class="ptcPlusToolBody"><div class="ptcPlusToolSection">'
+      + '<span class="ptcPlusToolSectionLabel">Source</span>'
+      + '<pre class="ptcPlusToolCode">return 42</pre></div>'
+      + '<div class="ptcPlusToolSection"><span class="ptcPlusToolSectionLabel">Result</span>'
+      + '<div class="ptcPlusIoCard"><pre class="ptcPlusIoText">42</pre></div></div></div>'
+    document.body.append(root)
+  }, marker)
+  try {
+    await assertToolTypography(page.locator(`#${marker}`), 'packed web/shipped tool')
+  } finally {
+    await page.locator(`#${marker}`).evaluate(element => element.remove())
+  }
 }
 
 async function captureBinding(state, width = 1440) {
@@ -1404,6 +1437,7 @@ export async function main(argv = process.argv.slice(2)) {
       if (error.name !== 'TimeoutError') throw error
     })
     if (await skipCredentials.isVisible()) await skipCredentials.click()
+    await verifyPackedToolTypography()
     if (values['binding-workflow']) {
       // The Remote result envelope wraps the fixture's own result, exactly as the Host
       // client unwraps it once before reading the owner's ok/value.

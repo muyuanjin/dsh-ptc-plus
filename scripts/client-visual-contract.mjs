@@ -253,6 +253,63 @@ export async function assertToolStateVisual(root, label = 'tool state') {
   }
 }
 
+export async function assertToolTypography(root, label = 'tool typography') {
+  const metrics = await root.evaluate(element => {
+    const read = selector => {
+      const node = element.querySelector(selector)
+      if (!node) return null
+      const style = getComputedStyle(node)
+      const rect = node.getBoundingClientRect()
+      return { family: style.fontFamily, size: style.fontSize, line: style.lineHeight,
+        marginStart: parseFloat(style.marginInlineStart) || 0,
+        marginEnd: parseFloat(style.marginInlineEnd) || 0, left: rect.left, right: rect.right }
+    }
+    const rootStyle = getComputedStyle(element)
+    return {
+      root: { family: rootStyle.fontFamily, size: rootStyle.fontSize, line: rootStyle.lineHeight },
+      title: read('.ptcPlusToolTitle'),
+      preview: read('.ptcPlusToolPreview'),
+      summary: read('.ptcPlusToolSummary,.ptcPlusToolSummaryLine'),
+      state: read('.ptcPlusToolState'),
+      separator: read('.ptcPlusToolSep'),
+      description: read('.ptcPlusToolDescription'),
+      feature: read('.ptcPlusFeature'),
+      label: read('.ptcPlusToolSectionLabel'),
+      code: read('.ptcPlusToolCode'),
+      output: read('.ptcPlusIoText'),
+    }
+  })
+  assert.ok(metrics.root, `${label}: tool root is not rendered`)
+  for (const name of ['title', 'summary', 'state', 'description', 'feature', 'label']) {
+    const value = metrics[name]
+    if (!value) continue
+    assert.equal(value.family, metrics.root.family, `${label}/${name}: font family drifted`)
+  }
+  for (const name of ['title', 'summary', 'state', 'description']) {
+    if (!metrics[name]) continue
+    assert.equal(metrics[name].size, '13px', `${label}/${name}: base font size drifted`)
+    assert.equal(metrics[name].line, '18px', `${label}/${name}: base line height drifted`)
+  }
+  for (const [name, size, line] of [['feature', '11px', '17px'], ['label', '10px', '16px'],
+    ['code', '12px', '18px'], ['output', '12px', '18px']]) {
+    if (!metrics[name]) continue
+    assert.equal(metrics[name].size, size, `${label}/${name}: hierarchy font size drifted`)
+    assert.equal(metrics[name].line, line, `${label}/${name}: hierarchy line height drifted`)
+  }
+  const title = metrics.title
+  const content = metrics.preview || metrics.state || metrics.description
+  if (title && content) {
+    assert.ok(content.left - title.right >= 4 || title.marginEnd >= 4 || content.marginStart >= 4,
+      `${label}: title and preview content have no readable gap`)
+  }
+  if (metrics.state && metrics.description) {
+    const separator = metrics.separator
+    assert.ok(separator && (separator.right - separator.left >= 4
+      || separator.marginStart >= 4 || separator.marginEnd >= 4),
+    `${label}: state and description have no readable separator`)
+  }
+}
+
 export async function assertContentCounterexamples(page, { input, selected }) {
   if (input) assert.ok(await input.inputValue(), 'input contrast probe needs actual renderer value')
   if (selected) assert.equal(await selected.isDisabled(), false, 'selected hover probe needs enabled renderer control')

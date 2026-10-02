@@ -75,6 +75,11 @@ export function createPtcToolView(React, deps) {
           expandOnRowClick: true,
           previewChevron: false,
           keepContentWhenOpen: true,
+          className: 'ptcPlusToolDisclosure',
+          rowClassName: 'ptcPlusToolRow',
+          contentClassName: 'ptcPlusToolDisclosureContent',
+          contentLayoutClassName: 'ptcPlusToolDisclosureLayout',
+          titleClassName: 'ptcPlusToolTitle',
           collapsedContent,
           children: body,
         }))

@@ -1,11 +1,15 @@
 import assert from 'node:assert/strict'
-import { mkdir } from 'node:fs/promises'
+import { mkdir, readFile } from 'node:fs/promises'
 import { build } from 'esbuild'
 import { chromium } from 'playwright'
 import { parseArgs } from 'node:util'
-import { assertContentCounterexamples, assertControlVisual, assertToolStateVisual, assertVisualCounterexamples, assertVisualSurface, controlAppearance, setFixtureTheme } from './client-visual-contract.mjs'
+import { assertContentCounterexamples, assertControlVisual, assertToolStateVisual, assertToolTypography, assertVisualCounterexamples, assertVisualSurface, controlAppearance, setFixtureTheme } from './client-visual-contract.mjs'
 
 const { values } = parseArgs({ options: { 'browser-channel': { type: 'string' } } })
+
+const clientBundle = await readFile(new URL('../client.js', import.meta.url), 'utf8')
+const clientCss = clientBundle.match(/var CLIENT_CSS = `([\s\S]*?)`;/)?.[1]
+assert.ok(clientCss, 'generated client bundle does not publish CLIENT_CSS')
 
 const fixture = await build({
   stdin: { resolveDir: process.cwd(), sourcefile: 'fallback-fixture.js', contents: `
@@ -126,6 +130,13 @@ try {
           if (file.path.endsWith('.css')) await page.addStyleTag({ content: file.text })
         }
         await page.addScriptTag({ content: buttonFixture.outputFiles.find(file => file.path.endsWith('.js')).text })
+        await page.evaluate(css => {
+          const style = document.getElementById('ptc-plus-client-style')
+          if (!style) throw new Error('packed client style element was not installed')
+          const workbenchStart = style.textContent.indexOf('.ptcPlusCandidateContext')
+          if (workbenchStart < 0) throw new Error('source workbench styles are not installed')
+          style.textContent = css + style.textContent.slice(workbenchStart)
+        }, clientCss)
         const actions = page.locator('.ptcPlusBindingDockActions button')
         await actions.last().waitFor()
         const metrics = await actions.evaluateAll(buttons => buttons.map(button => {
@@ -167,9 +178,11 @@ try {
         await page.evaluate(() => window.setBusy(false))
         await page.waitForFunction(() => !document.querySelector('.ptcPlusBindingDockActions button').disabled)
         const tool = page.locator('.ptcPlusTool')
+        await assertToolTypography(tool, `${theme}/${native ? 'native' : 'fallback'}/${locale}`)
         for (const state of ['running', 'error', 'stopped', 'ok']) {
           await page.evaluate(state => window.setToolState(state), state)
           await page.waitForFunction(state => document.querySelector('.ptcPlusToolSummaryLine,.ptcPlusToolSummary')?.dataset.state === state, state)
+          await assertToolTypography(tool, `${theme}/${native ? 'native' : 'fallback'}/${state}`)
           await assertToolStateVisual(tool, `${theme}/${native ? 'native' : 'fallback'}/${state}`)
           if (state === 'error' && width === 320 && locale === 'en') {
             const sheet = await page.addStyleTag({ content: '.ptcPlusToolState{color:#010101!important;background:#010101!important}' })
@@ -185,6 +198,7 @@ try {
         await disclosure.focus()
         await page.keyboard.press('Enter')
         await tool.locator('.ptcPlusToolBody').waitFor()
+        await assertToolTypography(tool, `${theme}/${native ? 'native' : 'fallback'}/expanded`)
         const inspect = tool.locator('.ptcPlusInspect')
         await page.keyboard.press('Tab')
         await inspect.focus()

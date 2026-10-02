@@ -1,5 +1,5 @@
 import { blankBinding, editableBinding, bindingPayload } from './client-bindings-data.js'
-import { isHostIconComponent } from './client-host-compat.js'
+import { isHostComponent, isHostIconComponent } from './client-host-compat.js'
 
 /**
  * User Bindings workbench. The controller owns every piece of edit state in one
@@ -391,7 +391,7 @@ export function createUserBindingsWorkbench(React, deps) {
               h('details', { className: 'ptcPlusBindingSection ptcPlusBindingSourcePreview', open: true },
                 h('summary', { className: 'ptcPlusBindingFieldLabel' }, t('bindings.declaration')),
                 state.declaration === '' ? h('p', { className: 'ptcPlusMessage' }, t('bindings.unvalidated'))
-                  : typeof CodeBlock === 'function'
+                  : isHostComponent(CodeBlock)
                     ? h(CodeBlock, { code: state.declaration, lang: 'typescript', className: 'ptcPlusCodeBlock',
                       copyLabel: t('tool.copy'), copiedLabel: t('tool.copied') })
                     : h('pre', { className: 'ptcPlusDeclaration' }, state.declaration)),
@@ -420,7 +420,7 @@ export function createUserBindingsWorkbench(React, deps) {
                   state.editing
                     ? h(TypeScriptEditor, { documentId: state.documentId, value: state.draft.source, disabled: state.busy,
                       label: t('bindings.source'), onChange: value => edit('source', value) })
-                    : state.sourceOpen && typeof CodeBlock === 'function'
+                    : state.sourceOpen && isHostComponent(CodeBlock)
                       ? h(CodeBlock, { code: state.draft.source, lang: 'typescript', className: 'ptcPlusSourceCode',
                         copyLabel: t('tool.copy'), copiedLabel: t('tool.copied') })
                       : state.sourceOpen ? h('pre', { className: 'ptcPlusSourceCode' }, state.draft.source) : null)),

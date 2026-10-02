@@ -1,4 +1,5 @@
 import { derivePtcToolView } from './client-activity.js'
+import { isHostComponent } from './client-host-compat.js'
 
 /**
  * run_code / edit_run_code tool rows. The row is a pure projection of the
@@ -8,8 +9,7 @@ import { derivePtcToolView } from './client-activity.js'
 export function createPtcToolView(React, deps) {
   const { CodeBlock, DisclosureRow, icons } = deps
   const h = React.createElement
-  const hasDisclosureRow = typeof DisclosureRow === 'function'
-    || (typeof DisclosureRow === 'object' && DisclosureRow !== null)
+  const hasDisclosureRow = isHostComponent(DisclosureRow)
 
   function PTCPlusToolRow({ toolName, block, inspect, t }) {
     const [open, setOpen] = React.useState(false)
@@ -38,7 +38,7 @@ export function createPtcToolView(React, deps) {
     const body = !open ? null : h('div', { className: 'ptcPlusToolBody' },
       view.code === '' ? null : h('div', { className: 'ptcPlusToolSection' },
         h('span', { className: 'ptcPlusToolSectionLabel' }, t('tool.source')),
-        typeof CodeBlock === 'function'
+        isHostComponent(CodeBlock)
           ? h(CodeBlock, {
             code: view.code, lang: 'typescript', className: 'ptcPlusToolCode',
             copyLabel: t('tool.copy'), copiedLabel: t('tool.copied'),

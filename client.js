@@ -1,4 +1,139 @@
 (() => {
+  var __create = Object.create;
+  var __defProp = Object.defineProperty;
+  var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
+  var __getOwnPropNames = Object.getOwnPropertyNames;
+  var __getProtoOf = Object.getPrototypeOf;
+  var __hasOwnProp = Object.prototype.hasOwnProperty;
+  var __commonJS = (cb, mod) => function __require() {
+    try {
+      return mod || (0, cb[__getOwnPropNames(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;
+    } catch (e) {
+      throw mod = 0, e;
+    }
+  };
+  var __copyProps = (to, from2, except, desc) => {
+    if (from2 && typeof from2 === "object" || typeof from2 === "function") {
+      for (let key of __getOwnPropNames(from2))
+        if (!__hasOwnProp.call(to, key) && key !== except)
+          __defProp(to, key, { get: () => from2[key], enumerable: !(desc = __getOwnPropDesc(from2, key)) || desc.enumerable });
+    }
+    return to;
+  };
+  var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__getProtoOf(mod)) : {}, __copyProps(
+    // If the importer is in node compatibility mode or this is not an ESM
+    // file that has been converted to a CommonJS file using a Babel-
+    // compatible transform (i.e. "__esModule" has not been set), then set
+    // "default" to the CommonJS "module.exports" for node compatibility.
+    isNodeMode || !mod || !mod.__esModule ? __defProp(target, "default", { value: mod, enumerable: true }) : target,
+    mod
+  ));
+
+  // node_modules/react-is/cjs/react-is.development.js
+  var require_react_is_development = __commonJS({
+    "node_modules/react-is/cjs/react-is.development.js"(exports) {
+      "use strict";
+      (function() {
+        function typeOf(object) {
+          if ("object" === typeof object && null !== object) {
+            var $$typeof = object.$$typeof;
+            switch ($$typeof) {
+              case REACT_ELEMENT_TYPE:
+                switch (object = object.type, object) {
+                  case REACT_FRAGMENT_TYPE:
+                  case REACT_PROFILER_TYPE:
+                  case REACT_STRICT_MODE_TYPE:
+                  case REACT_SUSPENSE_TYPE:
+                  case REACT_SUSPENSE_LIST_TYPE:
+                  case REACT_VIEW_TRANSITION_TYPE:
+                    return object;
+                  default:
+                    switch (object = object && object.$$typeof, object) {
+                      case REACT_CONTEXT_TYPE:
+                      case REACT_FORWARD_REF_TYPE:
+                      case REACT_LAZY_TYPE:
+                      case REACT_MEMO_TYPE:
+                        return object;
+                      case REACT_CONSUMER_TYPE:
+                        return object;
+                      default:
+                        return $$typeof;
+                    }
+                }
+              case REACT_PORTAL_TYPE:
+                return $$typeof;
+            }
+          }
+        }
+        var REACT_ELEMENT_TYPE = /* @__PURE__ */ Symbol.for("react.transitional.element"), REACT_PORTAL_TYPE = /* @__PURE__ */ Symbol.for("react.portal"), REACT_FRAGMENT_TYPE = /* @__PURE__ */ Symbol.for("react.fragment"), REACT_STRICT_MODE_TYPE = /* @__PURE__ */ Symbol.for("react.strict_mode"), REACT_PROFILER_TYPE = /* @__PURE__ */ Symbol.for("react.profiler"), REACT_CONSUMER_TYPE = /* @__PURE__ */ Symbol.for("react.consumer"), REACT_CONTEXT_TYPE = /* @__PURE__ */ Symbol.for("react.context"), REACT_FORWARD_REF_TYPE = /* @__PURE__ */ Symbol.for("react.forward_ref"), REACT_SUSPENSE_TYPE = /* @__PURE__ */ Symbol.for("react.suspense"), REACT_SUSPENSE_LIST_TYPE = /* @__PURE__ */ Symbol.for("react.suspense_list"), REACT_MEMO_TYPE = /* @__PURE__ */ Symbol.for("react.memo"), REACT_LAZY_TYPE = /* @__PURE__ */ Symbol.for("react.lazy"), REACT_VIEW_TRANSITION_TYPE = /* @__PURE__ */ Symbol.for("react.view_transition"), REACT_CLIENT_REFERENCE = /* @__PURE__ */ Symbol.for("react.client.reference");
+        exports.ContextConsumer = REACT_CONSUMER_TYPE;
+        exports.ContextProvider = REACT_CONTEXT_TYPE;
+        exports.Element = REACT_ELEMENT_TYPE;
+        exports.ForwardRef = REACT_FORWARD_REF_TYPE;
+        exports.Fragment = REACT_FRAGMENT_TYPE;
+        exports.Lazy = REACT_LAZY_TYPE;
+        exports.Memo = REACT_MEMO_TYPE;
+        exports.Portal = REACT_PORTAL_TYPE;
+        exports.Profiler = REACT_PROFILER_TYPE;
+        exports.StrictMode = REACT_STRICT_MODE_TYPE;
+        exports.Suspense = REACT_SUSPENSE_TYPE;
+        exports.SuspenseList = REACT_SUSPENSE_LIST_TYPE;
+        exports.isContextConsumer = function(object) {
+          return typeOf(object) === REACT_CONSUMER_TYPE;
+        };
+        exports.isContextProvider = function(object) {
+          return typeOf(object) === REACT_CONTEXT_TYPE;
+        };
+        exports.isElement = function(object) {
+          return "object" === typeof object && null !== object && object.$$typeof === REACT_ELEMENT_TYPE;
+        };
+        exports.isForwardRef = function(object) {
+          return typeOf(object) === REACT_FORWARD_REF_TYPE;
+        };
+        exports.isFragment = function(object) {
+          return typeOf(object) === REACT_FRAGMENT_TYPE;
+        };
+        exports.isLazy = function(object) {
+          return typeOf(object) === REACT_LAZY_TYPE;
+        };
+        exports.isMemo = function(object) {
+          return typeOf(object) === REACT_MEMO_TYPE;
+        };
+        exports.isPortal = function(object) {
+          return typeOf(object) === REACT_PORTAL_TYPE;
+        };
+        exports.isProfiler = function(object) {
+          return typeOf(object) === REACT_PROFILER_TYPE;
+        };
+        exports.isStrictMode = function(object) {
+          return typeOf(object) === REACT_STRICT_MODE_TYPE;
+        };
+        exports.isSuspense = function(object) {
+          return typeOf(object) === REACT_SUSPENSE_TYPE;
+        };
+        exports.isSuspenseList = function(object) {
+          return typeOf(object) === REACT_SUSPENSE_LIST_TYPE;
+        };
+        exports.isValidElementType = function(type) {
+          return "string" === typeof type || "function" === typeof type || type === REACT_FRAGMENT_TYPE || type === REACT_PROFILER_TYPE || type === REACT_STRICT_MODE_TYPE || type === REACT_SUSPENSE_TYPE || type === REACT_SUSPENSE_LIST_TYPE || type === REACT_VIEW_TRANSITION_TYPE || "object" === typeof type && null !== type && (type.$$typeof === REACT_LAZY_TYPE || type.$$typeof === REACT_MEMO_TYPE || type.$$typeof === REACT_CONTEXT_TYPE || type.$$typeof === REACT_CONSUMER_TYPE || type.$$typeof === REACT_FORWARD_REF_TYPE || type.$$typeof === REACT_CLIENT_REFERENCE || void 0 !== type.getModuleId) ? true : false;
+        };
+        exports.typeOf = typeOf;
+      })();
+    }
+  });
+
+  // node_modules/react-is/index.js
+  var require_react_is = __commonJS({
+    "node_modules/react-is/index.js"(exports, module) {
+      "use strict";
+      if (false) {
+        module.exports = null;
+      } else {
+        module.exports = require_react_is_development();
+      }
+    }
+  });
+
   // node_modules/@deepseek-ai/cosmokit/lib/index.js
   function isNullable(value) {
     return value === null || value === void 0;
@@ -1815,11 +1950,141 @@
     return Object.freeze({ state, description, code: code2, output, ptc: true, features: Object.freeze(features) });
   }
 
+  // src/client-host-compat.js
+  var import_react_is = __toESM(require_react_is(), 1);
+  function isHostComponent(component) {
+    if (typeof component === "function") return true;
+    if (typeof component !== "object" || component === null) return false;
+    const seen = /* @__PURE__ */ new Set();
+    while ((0, import_react_is.isValidElementType)(component)) {
+      if (typeof component !== "object" || component === null) return true;
+      if (seen.has(component)) return false;
+      seen.add(component);
+      if (component.$$typeof === import_react_is.ForwardRef) return typeof component.render === "function";
+      if (component.$$typeof === import_react_is.Lazy) return typeof component._init === "function" && typeof component._payload === "object" && component._payload !== null;
+      if (component.$$typeof !== import_react_is.Memo) return false;
+      if (component.compare != null && typeof component.compare !== "function") return false;
+      component = component.type;
+    }
+    return false;
+  }
+  var HOST_ICON_EXPORTS = Object.freeze({
+    check: ["IconCheckOutlineRegular", "IconCheckOutline14"],
+    chevron: ["IconChevronDownOutlineRegular", "IconChevronDownOutline14"],
+    inspect: ["IconInspectOutlineRegular", "IconInspectOutline12"],
+    sparkle: ["IconSparkleRegular", "IconSparkle16"],
+    close: ["IconCloseOutlineRegular", "IconCloseOutline16"],
+    search: ["IconSearchOutlineRegular", "IconSearchOutline16"],
+    plus: ["IconPlusOutlineRegular", "IconPlusOutline16"],
+    refresh: ["IconRefreshOutlineRegular", "IconRefreshOutline16"],
+    trash: ["IconTrashOutlineRegular", "IconTrashOutline16"],
+    edit: ["IconEditOutlineRegular", "IconEditOutline16"],
+    play: ["IconPlayOutlineRegular", "IconPlayOutline16"],
+    stop: ["IconStopFillRegular", "IconStopFill16"]
+  });
+  var ABSENT_HOST_ICON = () => null;
+  ABSENT_HOST_ICON.absentHostIcon = true;
+  function isHostIconComponent(icon) {
+    return isHostComponent(icon) && icon.absentHostIcon !== true;
+  }
+  function hostIconComponents(primitives) {
+    return Object.fromEntries(Object.entries(HOST_ICON_EXPORTS).map(([name2, candidates]) => [
+      name2,
+      candidates.map((candidate) => primitives?.[candidate]).find(isHostComponent) ?? ABSENT_HOST_ICON
+    ]));
+  }
+  var MENU_CHILDREN_PROBE_SENTINEL = "ptcPlusMenuChildrenProbe";
+  function readMenuChildrenProbe(container) {
+    if (container === null || container === void 0) return false;
+    return container.querySelector(`.${MENU_CHILDREN_PROBE_SENTINEL}`) !== null;
+  }
+  function createMenuChildrenEvidence() {
+    let supported;
+    return {
+      supported: () => supported,
+      record(value) {
+        supported ??= value === true;
+      }
+    };
+  }
+  function sessionPresetValue(projected, summary) {
+    if (projected !== void 0) return projected;
+    const values = summary?.projectionValues;
+    return values !== void 0 && Object.hasOwn(values, "agentPreset") ? values.agentPreset : summary?.agentPreset;
+  }
+  function currentSessionId(snapshot2, remembered) {
+    if (snapshot2?.current !== void 0) return snapshot2.current;
+    const held = (id2) => id2 !== void 0 && (snapshot2?.byId?.[id2]?.retainedBy?.mainView ?? 0) > 0;
+    if (held(remembered)) return remembered;
+    for (const row of Object.values(snapshot2?.byId ?? {})) {
+      if ((row?.retainedBy?.mainView ?? 0) > 0) return row.id;
+    }
+    return void 0;
+  }
+  function sessionUsesPtcPreset(preset) {
+    return preset === "ptc" || preset === "code";
+  }
+  function useSessionPreset({ sessionId, useProjection, useSessions }) {
+    const projected = useProjection("agentPreset");
+    return typeof useSessions === "function" ? useSessions((state) => sessionPresetValue(projected, state.byId?.[sessionId])) : projected;
+  }
+  function watchCurrentSessionPreset(sessions, listener) {
+    let source;
+    let unsubscribeProjection;
+    let selected;
+    const sync = () => {
+      const snapshot2 = sessions.list.getSnapshot();
+      const current = currentSessionId(snapshot2, selected);
+      selected = current;
+      const summary = current === void 0 ? void 0 : snapshot2.byId?.[current];
+      const next = current === void 0 ? void 0 : sessions.binding?.(current)?.session?.projections?.faceOf?.("agentPreset");
+      if (source !== next) {
+        unsubscribeProjection?.();
+        source = next;
+        unsubscribeProjection = source?.subscribe(sync);
+      }
+      listener(sessionPresetValue(source?.getSnapshot(), summary));
+    };
+    const unsubscribeList = sessions.list.subscribe(sync);
+    const dispose = () => {
+      unsubscribeList();
+      unsubscribeProjection?.();
+    };
+    try {
+      sync();
+    } catch (error) {
+      dispose();
+      throw error;
+    }
+    return dispose;
+  }
+  function isIdleSessionComposer(owner, sessionId) {
+    return Object.hasOwn(owner, "sessionId") ? owner.sessionId === sessionId && owner.pendingInteraction === void 0 : owner.session?.sessionId === sessionId && Array.isArray(owner.interactions) && owner.interactions.length === 0;
+  }
+  var BUNDLE_PATCH_ROW_ID = "ptc-plus";
+  function settingsCardSeats(bundleName) {
+    return [
+      { slot: "settings.plugin.item", identity: { key: SETTINGS_NAMESPACE } },
+      { slot: "plugins.row.config", identity: { key: `${bundleName}#${BUNDLE_PATCH_ROW_ID}` } }
+    ];
+  }
+  function publishSettingsCard(ctx, { bundleName, locale, injectProps, component }) {
+    let live;
+    const releases = settingsCardSeats(bundleName).map(({ slot, identity }) => ctx.slots.inject(
+      slot,
+      () => {
+        live = slot;
+        return ctx.slots.register({ name: slot, ...identity, locale, inject: injectProps }, component);
+      }
+    ));
+    return { seat: () => live, releases };
+  }
+
   // src/client-tool-view.js
   function createPtcToolView(React, deps) {
     const { CodeBlock, DisclosureRow, icons } = deps;
     const h = React.createElement;
-    const hasDisclosureRow = typeof DisclosureRow === "function" || typeof DisclosureRow === "object" && DisclosureRow !== null;
+    const hasDisclosureRow = isHostComponent(DisclosureRow);
     function PTCPlusToolRow({ toolName, block, inspect, t: t2 }) {
       const [open, setOpen] = React.useState(false);
       const view = derivePtcToolView(block, toolName);
@@ -1851,7 +2116,7 @@
           "div",
           { className: "ptcPlusToolSection" },
           h("span", { className: "ptcPlusToolSectionLabel" }, t2("tool.source")),
-          typeof CodeBlock === "function" ? h(CodeBlock, {
+          isHostComponent(CodeBlock) ? h(CodeBlock, {
             code: view.code,
             lang: "typescript",
             className: "ptcPlusToolCode",
@@ -2283,119 +2548,6 @@
     return { PTCPlusSettingsCard, PTCPlusSettingsDialog };
   }
 
-  // src/client-host-compat.js
-  var HOST_ICON_EXPORTS = Object.freeze({
-    check: ["IconCheckOutlineRegular", "IconCheckOutline14"],
-    chevron: ["IconChevronDownOutlineRegular", "IconChevronDownOutline14"],
-    inspect: ["IconInspectOutlineRegular", "IconInspectOutline12"],
-    sparkle: ["IconSparkleRegular", "IconSparkle16"],
-    close: ["IconCloseOutlineRegular", "IconCloseOutline16"],
-    search: ["IconSearchOutlineRegular", "IconSearchOutline16"],
-    plus: ["IconPlusOutlineRegular", "IconPlusOutline16"],
-    refresh: ["IconRefreshOutlineRegular", "IconRefreshOutline16"],
-    trash: ["IconTrashOutlineRegular", "IconTrashOutline16"],
-    edit: ["IconEditOutlineRegular", "IconEditOutline16"],
-    play: ["IconPlayOutlineRegular", "IconPlayOutline16"],
-    stop: ["IconStopFillRegular", "IconStopFill16"]
-  });
-  var ABSENT_HOST_ICON = () => null;
-  ABSENT_HOST_ICON.absentHostIcon = true;
-  function isHostIconComponent(icon) {
-    return typeof icon === "function" && icon.absentHostIcon !== true;
-  }
-  function hostIconComponents(primitives) {
-    return Object.fromEntries(Object.entries(HOST_ICON_EXPORTS).map(([name2, candidates]) => [
-      name2,
-      candidates.map((candidate) => primitives?.[candidate]).find((value) => typeof value === "function") ?? ABSENT_HOST_ICON
-    ]));
-  }
-  var MENU_CHILDREN_PROBE_SENTINEL = "ptcPlusMenuChildrenProbe";
-  function readMenuChildrenProbe(container) {
-    if (container === null || container === void 0) return false;
-    return container.querySelector(`.${MENU_CHILDREN_PROBE_SENTINEL}`) !== null;
-  }
-  function createMenuChildrenEvidence() {
-    let supported;
-    return {
-      supported: () => supported,
-      record(value) {
-        supported ??= value === true;
-      }
-    };
-  }
-  function sessionPresetValue(projected, summary) {
-    if (projected !== void 0) return projected;
-    const values = summary?.projectionValues;
-    return values !== void 0 && Object.hasOwn(values, "agentPreset") ? values.agentPreset : summary?.agentPreset;
-  }
-  function currentSessionId(snapshot2, remembered) {
-    if (snapshot2?.current !== void 0) return snapshot2.current;
-    const held = (id2) => id2 !== void 0 && (snapshot2?.byId?.[id2]?.retainedBy?.mainView ?? 0) > 0;
-    if (held(remembered)) return remembered;
-    for (const row of Object.values(snapshot2?.byId ?? {})) {
-      if ((row?.retainedBy?.mainView ?? 0) > 0) return row.id;
-    }
-    return void 0;
-  }
-  function sessionUsesPtcPreset(preset) {
-    return preset === "ptc" || preset === "code";
-  }
-  function useSessionPreset({ sessionId, useProjection, useSessions }) {
-    const projected = useProjection("agentPreset");
-    return typeof useSessions === "function" ? useSessions((state) => sessionPresetValue(projected, state.byId?.[sessionId])) : projected;
-  }
-  function watchCurrentSessionPreset(sessions, listener) {
-    let source;
-    let unsubscribeProjection;
-    let selected;
-    const sync = () => {
-      const snapshot2 = sessions.list.getSnapshot();
-      const current = currentSessionId(snapshot2, selected);
-      selected = current;
-      const summary = current === void 0 ? void 0 : snapshot2.byId?.[current];
-      const next = current === void 0 ? void 0 : sessions.binding?.(current)?.session?.projections?.faceOf?.("agentPreset");
-      if (source !== next) {
-        unsubscribeProjection?.();
-        source = next;
-        unsubscribeProjection = source?.subscribe(sync);
-      }
-      listener(sessionPresetValue(source?.getSnapshot(), summary));
-    };
-    const unsubscribeList = sessions.list.subscribe(sync);
-    const dispose = () => {
-      unsubscribeList();
-      unsubscribeProjection?.();
-    };
-    try {
-      sync();
-    } catch (error) {
-      dispose();
-      throw error;
-    }
-    return dispose;
-  }
-  function isIdleSessionComposer(owner, sessionId) {
-    return Object.hasOwn(owner, "sessionId") ? owner.sessionId === sessionId && owner.pendingInteraction === void 0 : owner.session?.sessionId === sessionId && Array.isArray(owner.interactions) && owner.interactions.length === 0;
-  }
-  var BUNDLE_PATCH_ROW_ID = "ptc-plus";
-  function settingsCardSeats(bundleName) {
-    return [
-      { slot: "settings.plugin.item", identity: { key: SETTINGS_NAMESPACE } },
-      { slot: "plugins.row.config", identity: { key: `${bundleName}#${BUNDLE_PATCH_ROW_ID}` } }
-    ];
-  }
-  function publishSettingsCard(ctx, { bundleName, locale, injectProps, component }) {
-    let live;
-    const releases = settingsCardSeats(bundleName).map(({ slot, identity }) => ctx.slots.inject(
-      slot,
-      () => {
-        live = slot;
-        return ctx.slots.register({ name: slot, ...identity, locale, inject: injectProps }, component);
-      }
-    ));
-    return { seat: () => live, releases };
-  }
-
   // src/client-repl-view.js
   function createReplView(React, deps) {
     const {
@@ -2425,7 +2577,7 @@
           h("span", null, t2("memory.location", entry.definition))
         ),
         h("div", { className: "ptcPlusObservationLabel" }, t2("console.definition")),
-        typeof CodeBlock === "function" ? h(CodeBlock, {
+        isHostComponent(CodeBlock) ? h(CodeBlock, {
           code: entry.definition.source,
           lang: "typescript",
           className: "ptcPlusObservationCode",
@@ -2790,7 +2942,7 @@
                     line: binding.definition.line,
                     column: binding.definition.column
                   })),
-                  typeof CodeBlock === "function" ? h(CodeBlock, {
+                  isHostComponent(CodeBlock) ? h(CodeBlock, {
                     code: binding.definition.source,
                     lang: "typescript",
                     className: "ptcPlusReplCode",
@@ -3573,7 +3725,7 @@
         setProbing(false);
       }, [probing, menuChildren]);
       React.useEffect(() => {
-        if (toast === null || typeof Toast === "function") return void 0;
+        if (toast === null || isHostComponent(Toast)) return void 0;
         const timer = setTimeout(() => setToast(null), 2500);
         return () => clearTimeout(timer);
       }, [toast]);
@@ -3598,7 +3750,7 @@
           className: "ptcPlusAuthorButton",
           "aria-label": label,
           // Older UI-kit lines ship no Tooltip primitive; the native title carries the hint there.
-          title: typeof Tooltip === "function" || menuOpen || managing || settingsOpen ? void 0 : hint,
+          title: isHostComponent(Tooltip) || menuOpen || managing || settingsOpen ? void 0 : hint,
           "aria-haspopup": "menu",
           "aria-expanded": menuOpen,
           onPointerEnter: hoverMenu,
@@ -3770,7 +3922,7 @@
         !hasDraft && !quickAccess ? null : h(menuChildrenRegion ? Menu : MenuFallback, {
           className: "ptcPlusAuthorButtonShell",
           open: menuOpen,
-          anchor: typeof Tooltip === "function" ? h(Tooltip, { label: hint, delayMs: 700, disabled: menuOpen || managing || settingsOpen }, starButton) : starButton,
+          anchor: isHostComponent(Tooltip) ? h(Tooltip, { label: hint, delayMs: 700, disabled: menuOpen || managing || settingsOpen }, starButton) : starButton,
           portal: true,
           side: "top",
           dense: true,
@@ -3819,7 +3971,7 @@
             queueMicrotask(() => anchorRef.current?.querySelector(".ptcPlusAuthorButton")?.focus({ preventScroll: true }));
           }
         }) : null,
-        toast === null ? null : typeof Toast === "function" ? h(Toast, {
+        toast === null ? null : isHostComponent(Toast) ? h(Toast, {
           key: toast.sequence,
           text: toast.text,
           anchor: anchorRef.current,
@@ -3840,7 +3992,7 @@
         showName ? h("strong", null, candidate.entry.name) : null,
         h("span", { className: "ptcPlusBindingMeta" }, `${candidate.entry.scope} - ${candidate.entry.symbols.join(", ")}`),
         candidate.entry.purpose ? h("p", { className: "ptcPlusMessage" }, candidate.entry.purpose) : null,
-        typeof CodeBlock === "function" ? h(CodeBlock, {
+        isHostComponent(CodeBlock) ? h(CodeBlock, {
           code: candidate.entry.source,
           lang: "typescript",
           className: "ptcPlusBindingCommandCode",
@@ -31108,7 +31260,7 @@
               "details",
               { className: "ptcPlusBindingSection ptcPlusBindingSourcePreview", open: true },
               h("summary", { className: "ptcPlusBindingFieldLabel" }, t2("bindings.declaration")),
-              state.declaration === "" ? h("p", { className: "ptcPlusMessage" }, t2("bindings.unvalidated")) : typeof CodeBlock === "function" ? h(CodeBlock, {
+              state.declaration === "" ? h("p", { className: "ptcPlusMessage" }, t2("bindings.unvalidated")) : isHostComponent(CodeBlock) ? h(CodeBlock, {
                 code: state.declaration,
                 lang: "typescript",
                 className: "ptcPlusCodeBlock",
@@ -31180,7 +31332,7 @@
                   disabled: state.busy,
                   label: t2("bindings.source"),
                   onChange: (value) => edit("source", value)
-                }) : state.sourceOpen && typeof CodeBlock === "function" ? h(CodeBlock, {
+                }) : state.sourceOpen && isHostComponent(CodeBlock) ? h(CodeBlock, {
                   code: state.draft.source,
                   lang: "typescript",
                   className: "ptcPlusSourceCode",
@@ -31750,12 +31902,25 @@
       Button: primitives.Button,
       CodeBlock: primitives.CodeBlock,
       DisclosureRow: primitives.DisclosureRow,
-      Menu: typeof primitives.Menu === "function" ? primitives.Menu : createFallbackMenu(React, createPortal),
+      Menu: isHostComponent(primitives.Menu) ? primitives.Menu : createFallbackMenu(React, createPortal),
       MenuFallback: createFallbackMenu(React, createPortal),
-      Modal: typeof primitives.Modal === "function" ? primitives.Modal : createFallbackModal(React, createPortal),
+      Modal: isHostComponent(primitives.Modal) ? primitives.Modal : createFallbackModal(React, createPortal),
       Toast: primitives.Toast,
       Tooltip: primitives.Tooltip
     });
+  }
+  function createActionButton(React, Button) {
+    const h = React.createElement;
+    return function ActionButton({ className = "", "data-kind": kind, ...props }) {
+      const classes = className.split(/\s+/).filter((name2) => name2 !== "" && name2 !== "ptcPlusButton");
+      return isHostComponent(Button) ? h(Button, {
+        type: "button",
+        ...props,
+        size: "sm",
+        variant: kind === "primary" ? "primary" : kind === "ghost" ? "ghost" : "outline",
+        className: classes.join(" ")
+      }) : h("button", { type: "button", ...props, className: ["ptcPlusButton", ...classes].join(" "), "data-kind": kind });
+    };
   }
 
   // src/client.js
@@ -31851,16 +32016,9 @@
           "aria-label": label,
           title: label
         }, isHostIconComponent(Icon) ? h(Icon, { size: 16 }) : label);
-        return typeof Tooltip === "function" ? h(Tooltip, { label, delayMs: 400 }, button) : button;
+        return isHostComponent(Tooltip) ? h(Tooltip, { label, delayMs: 400 }, button) : button;
       }
-      function ActionButton({ className = "", "data-kind": kind, ...props }) {
-        return typeof Button === "function" ? h(Button, {
-          ...props,
-          size: "sm",
-          variant: kind === "primary" ? "primary" : kind === "ghost" ? "ghost" : "outline",
-          className: className.split(" ").filter((name2) => name2 !== "ptcPlusButton").join(" ")
-        }) : h("button", { ...props, className, "data-kind": kind });
-      }
+      const ActionButton = createActionButton(React, Button);
       const BindingConsole = createBindingConsole(React, {
         TypeScriptEditor,
         IconButton,
@@ -32112,3 +32270,16 @@
     }
   });
 })();
+/*! Bundled license information:
+
+react-is/cjs/react-is.development.js:
+  (**
+   * @license React
+   * react-is.development.js
+   *
+   * Copyright (c) Meta Platforms, Inc. and affiliates.
+   *
+   * This source code is licensed under the MIT license found in the
+   * LICENSE file in the root directory of this source tree.
+   *)
+*/

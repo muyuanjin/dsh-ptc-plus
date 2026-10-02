@@ -1,4 +1,4 @@
-import { isHostIconComponent } from './client-host-compat.js'
+import { isHostComponent, isHostIconComponent } from './client-host-compat.js'
 
 /**
  * REPL surface views: the conversation tab (session bindings + global workbench)
@@ -23,7 +23,7 @@ export function createReplView(React, deps) {
         h('strong', null, entry.name),
         h('span', null, t('memory.location', entry.definition))),
       h('div', { className: 'ptcPlusObservationLabel' }, t('console.definition')),
-      typeof CodeBlock === 'function'
+      isHostComponent(CodeBlock)
         ? h(CodeBlock, { code: entry.definition.source, lang: 'typescript', className: 'ptcPlusObservationCode',
             copyLabel: t('tool.copy'), copiedLabel: t('tool.copied') })
         : h('pre', { className: 'ptcPlusObservationCode' }, entry.definition.source),
@@ -275,7 +275,7 @@ export function createReplView(React, deps) {
                       line: binding.definition.line,
                       column: binding.definition.column,
                     })),
-                    typeof CodeBlock === 'function'
+                    isHostComponent(CodeBlock)
                       ? h(CodeBlock, {
                         code: binding.definition.source,
                         lang: 'typescript',

@@ -20,6 +20,12 @@ import { featureEnabled, registerGated } from '../src/client-feature-gates.js'
 import { createCatalogOwner } from '../src/client-catalog.js'
 import { createUserBindingsWorkbench } from '../src/client-workbench.js'
 import { createPtcSettingsView } from '../src/client-settings-view.js'
+import { isHostComponent } from '../src/client-host-compat.js'
+
+function wrappedPrimitives() {
+  return Object.fromEntries(Object.entries(primitives).map(([name, component]) => [name,
+    isHostComponent(component) ? React.memo(component) : component]))
+}
 
 // apply() creates one catalog owner per mount; capturing it proves the owner's
 // disposer is registered with the plugin scope instead of leaking sources.
@@ -2483,9 +2489,9 @@ test('one authoring icon owns the draft badge and hover, click and keyboard menu
   expect(document.activeElement).toBe(trigger)
 })
 
-test('the composer entry carries a plugin-signed tooltip that follows the draft state', async () => {
+test.each(['native', 'wrapped'])('the composer entry carries a %s plugin-signed tooltip that follows the draft state', async mode => {
   const candidate = reviewCandidate('tooltip-entry')
-  const { runtime } = await fixture({ rpc: reviewRpc(candidate),
+  const { runtime } = await fixture({ ui: mode === 'wrapped' ? wrappedPrimitives() : primitives, rpc: reviewRpc(candidate),
     commands: { list: async () => ({ ok: true, value: [] }) } })
   const view = runtime.renderRoot()
   await runtime.flush()
@@ -2507,6 +2513,24 @@ test('the composer entry carries a plugin-signed tooltip that follows the draft 
   expect(view.queryByRole('tooltip')).toBeNull()
   expect(view.container.querySelector('.ptcPlusAuthorButton')).toBe(trigger)
 
+})
+
+test('wrapped Toast renders the host notice for a busy composer', async () => {
+  const Toast = React.memo(React.forwardRef(({ text }, ref) => React.createElement('span', {
+    ref, role: 'status', 'data-host-toast': true,
+  }, text)))
+  const { runtime, input } = await fixture({ ui: { ...wrappedPrimitives(), Toast },
+    commands: { list: async () => ({ ok: true, value: [{ name: 'binding' }] }) } })
+  const view = runtime.renderRoot()
+  await runtime.flush()
+  input.publish({ draft: 'keep my text' })
+  await openGlobalMenu(view, runtime, 'click')
+  fireEvent.click(view.getByRole('menuitem', { name: 'Write a new binding' }))
+  await runtime.flush()
+  expect(view.container.querySelector('[data-host-toast]').textContent)
+    .toBe('The composer already has text, so its draft was not replaced.')
+  expect(view.container.querySelector('.ptcPlusComposerNotice')).toBeNull()
+  expect(input.scope.getSnapshot().draft).toBe('keep my text')
 })
 
 test('a receipt arriving while a draft menu has focus returns focus to its authoring icon', async () => {
@@ -4326,16 +4350,18 @@ test('a refused registration leaves nothing registered and keeps its subscriptio
   expect(listeners.size).toBe(0)
 })
 
-test('tool rows project the recorded call and expose expansion and inspection', async () => {
+test.each(['native', 'wrapped', 'malformed'])('tool rows project the recorded call with %s components and expose expansion and inspection', async mode => {
   const inspect = vi.fn()
   const block = { kind: 'tool-result', callId: 'call-1',
     call: { name: 'run_code', argsRaw: JSON.stringify({ code: 'return 41 + 1', description: 'Compute the answer' }) },
     content: [{ type: 'text', text: '42' }], isError: false, subCalls: [], meta: undefined }
-  const { runtime } = await fixture({ tool: { toolName: 'run_code', block, inspect } })
+  const ui = mode === 'native' ? primitives : mode === 'wrapped' ? wrappedPrimitives()
+    : { ...primitives, DisclosureRow: {}, CodeBlock: {} }
+  const { runtime } = await fixture({ ui, tool: { toolName: 'run_code', block, inspect } })
   const view = runtime.renderRoot()
   await runtime.flush()
   const row = view.container.querySelector('.ptcPlusTool')
-  const header = row.querySelector('[data-disclosure-row]')
+  const header = row.querySelector(mode === 'malformed' ? '.ptcPlusToolSummary' : '[data-disclosure-row]')
   expect(header.textContent).toContain('Code')
   expect(row.querySelector('.ptcPlusToolDescription').textContent).toBe('Compute the answer')
   expect(row.querySelector('.ptcPlusToolState')).toBeNull()
@@ -4345,6 +4371,7 @@ test('tool rows project the recorded call and expose expansion and inspection', 
   await runtime.flush()
   expect(header.getAttribute('aria-expanded')).toBe('true')
   expect(row.querySelector('.ptcPlusToolCode').textContent).toContain('return 41 + 1')
+  expect(row.querySelector('.ptcPlusToolCode').tagName === 'PRE').toBe(mode === 'malformed')
   expect(row.querySelector('.ptcPlusIoText').textContent).toBe('42')
   fireEvent.click(row.querySelector('.ptcPlusInspect'))
   expect(inspect).toHaveBeenCalledTimes(1)
@@ -4511,6 +4538,77 @@ test('claims the global stylesheet the code editor mounts', async () => {
   adoptUnownedStyles(captureUnownedStyles())
   expect(foreign.dataset.plugin).toBeUndefined()
   foreign.remove()
+})
+
+test.each(['native', 'wrapped', 'missing', 'malformed', 'module-reference', 'broken-memo', 'broken-forward-ref', 'broken-lazy'])('review dock action buttons retain %s styling and save behavior', async mode => {
+  const candidate = reviewCandidate('button-styles')
+  const wrapped = wrappedPrimitives()
+  const malformed = {
+    malformed: {},
+    'module-reference': { getModuleId: 'wrong export' },
+    'broken-memo': { $$typeof: Symbol.for('react.memo') },
+    'broken-forward-ref': { $$typeof: Symbol.for('react.forward_ref'), render: 1 },
+    'broken-lazy': { $$typeof: Symbol.for('react.lazy'), _init: 1, _payload: {} },
+  }
+  const ui = mode === 'native' ? primitives : mode === 'wrapped' ? wrapped : mode === 'missing' ? null
+    : Object.fromEntries(['Button', 'Tooltip', 'Toast', 'Menu', 'Modal', 'CodeBlock', 'DisclosureRow']
+      .map(name => [name, malformed[mode]]))
+  const rpc = vi.fn(reviewRpc(candidate))
+  const { runtime } = await fixture({ ui, rpc })
+  runtime.sessions.behavior('client-session').projections.set('ptcPlusBindingDraft', reviewProjection(candidate))
+  const view = runtime.renderRoot()
+  await runtime.flush()
+  const fallback = mode !== 'native' && mode !== 'wrapped'
+  for (const [name, variant] of [['Discard draft', 'ghost'], ['Save as disabled', 'outline'], ['Save and enable', 'primary']]) {
+    const button = view.getByRole('button', { name, exact: true })
+    expect(button.type).toBe('button')
+    expect(button.disabled).toBe(false)
+    expect(button.classList.contains('ptcPlusButton')).toBe(fallback)
+    if (!fallback) {
+      const control = render(React.createElement(primitives.Button, { size: 'sm', variant }, 'Native style reference'))
+      for (const name of control.getByRole('button', { name: 'Native style reference' }).classList) {
+        expect(button.classList.contains(name)).toBe(true)
+      }
+      control.unmount()
+    }
+  }
+  const enable = view.getByRole('button', { name: 'Save and enable', exact: true })
+  if (fallback) expect(enable.dataset.kind).toBe('primary')
+  fireEvent.click(enable)
+  await runtime.flush()
+  const writes = rpc.mock.calls.filter(([endpoint]) => endpoint === 'save-draft')
+  expect(writes).toHaveLength(1)
+  expect(writes[0][1]).toMatchObject({ activate: true })
+})
+
+test('action adapter preserves classes, variants, disabled state and explicit button type', async () => {
+  const { createActionButton } = await import('../src/client-primitives.js')
+  for (const Button of [undefined, {}, primitives.Button, React.memo(primitives.Button)]) {
+    const ActionButton = createActionButton(React, Button)
+    const click = vi.fn()
+    const view = render(React.createElement(ActionButton, {
+      className: 'ptcPlusButton  extra\tptcPlusButton', 'data-kind': 'ghost', disabled: true, onClick: click,
+    }, 'Action'))
+    const button = view.getByRole('button', { name: 'Action', exact: true })
+    expect(button.classList.contains('extra')).toBe(true)
+    expect(button.type).toBe('button')
+    fireEvent.click(button)
+    expect(click).not.toHaveBeenCalled()
+    view.rerender(React.createElement(ActionButton, { type: 'submit', onClick: click }, 'Action'))
+    expect(button.type).toBe('submit')
+    fireEvent.click(button)
+    expect(click).toHaveBeenCalledTimes(1)
+    view.unmount()
+  }
+})
+
+test('wrapped menu and modal exports retain host components', async () => {
+  const { resolvePrimitives } = await import('../src/client-primitives.js')
+  const Menu = React.memo(primitives.Menu)
+  const Modal = React.forwardRef((props, _ref) => React.createElement(primitives.Modal, props))
+  const resolved = resolvePrimitives({ Menu, Modal }, React)
+  expect(resolved.Menu).toBe(Menu)
+  expect(resolved.Modal).toBe(Modal)
 })
 
 test('resolves every rendered primitive, with a usable fallback for each missing one', async () => {

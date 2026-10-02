@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { mkdir } from 'node:fs/promises'
 import { build } from 'esbuild'
 import { chromium } from 'playwright'
 
@@ -7,7 +8,7 @@ const fixture = await build({
     import * as React from 'react';
     import {createRoot} from 'react-dom/client';
     import {createPortal} from 'react-dom';
-    import {resolvePrimitives} from './src/client-primitives.js';
+    import {createActionButton,resolvePrimitives} from './src/client-primitives.js';
     import {installStyles} from './src/client-styles.js';
     import {createCatalogOwner} from './src/client-catalog.js';
     import {createMenuChildrenEvidence} from './src/client-host-compat.js';
@@ -27,7 +28,7 @@ const fixture = await build({
     window.settleCatalog=()=>settleCatalog({revision:1,entries});
     const catalogOwner=createCatalogOwner({callUserBindings});
     const Icon=()=>h('span',null,'+');
-    const ActionButton=({'data-kind':kind,...props})=>h('button',props);
+    const ActionButton=createActionButton(React);
     const IconButton=({icon,label,...props})=>h('button',{...props,'aria-label':label},label);
     const workbench=createUserBindingsWorkbench(React,{TypeScriptEditor:()=>null,BindingConsole:()=>null,
       IconButton,ActionButton,Modal,catalogOwner,icons:{refresh:Icon,plus:Icon,close:Icon,search:Icon,chevron:Icon,
@@ -51,9 +52,90 @@ const fixture = await build({
   bundle: true, platform: 'browser', format: 'iife', write: false,
   define: { __PTC_PLUS_CLIENT_MODULE_ID__: JSON.stringify('dsh-ptc-plus'), 'process.env.NODE_ENV': JSON.stringify('production') },
 })
+const buttonFixture = await build({
+  stdin: { resolveDir: process.cwd(), sourcefile: 'button-fixture.js', contents: `
+    import * as React from 'react';
+    import {createRoot} from 'react-dom/client';
+    import {Button} from '@deepseek-ai/dsh-client-ui-primitives';
+    import {createActionButton} from './src/client-primitives.js';
+    import {createAuthoringView} from './src/client-authoring-view.js';
+    import {installStyles} from './src/client-styles.js';
+    import {SETTINGS_COPY} from './src/client-copy.js';
+    const h=React.createElement;
+    installStyles();
+    const ActionButton=createActionButton(React,window.nativeButtons?Button:undefined);
+    const candidate={entry:{name:'Inputs',scope:'namespace',symbols:['value'],
+      source:'export const value = 42',modelContext:{includeDeclaration:true,instructions:''}}};
+    const view={candidate,candidateKey:'probe',visibility:'expanded',action:null,message:null,writable:true,busy:false};
+    window.actions=[];
+    const review={attach:()=>()=>{},sync:()=>{},act:(...args)=>window.actions.push(args),display:()=>{}};
+    const Icon=()=>null;
+    const IconButton=({label,...props})=>h('button',{type:'button',...props},label);
+    const {BindingReviewDock}=createAuthoringView(React,{ActionButton,IconButton,
+      useBindingReview:()=>[review,view],icons:{check:Icon,close:Icon,chevron:Icon}});
+    createRoot(document.querySelector('#root')).render(h(React.Fragment,null,
+      h(BindingReviewDock,{sessionId:'probe',useProjection:()=>null,t:key=>SETTINGS_COPY[window.buttonLocale][key]??key}),
+      h('div',{id:'controls'},
+        h(Button,{size:'sm',variant:'primary'},'Native reference'),
+        h(ActionButton,{disabled:true},'Disabled action'))));
+  ` },
+  bundle: true, platform: 'browser', format: 'iife', write: false, outfile: 'button-fixture.js',
+  loader: { '.svg': 'dataurl', '.png': 'dataurl', '.woff2': 'dataurl', '.woff': 'dataurl', '.ttf': 'dataurl' },
+  define: { 'process.env.NODE_ENV': JSON.stringify('production') },
+})
 const browser = await chromium.launch({ headless: true })
 try {
   const page = await browser.newPage()
+  await mkdir('artifacts/button-styles', { recursive: true })
+  for (const width of [320, 390, 1440]) {
+    for (const native of [true, false]) {
+      for (const locale of ['en', 'zh']) {
+        await page.goto('about:blank')
+        await page.setViewportSize({ width, height: 900 })
+        await page.setContent(`<style>
+          :root{--dsw-alias-label-primary:#222;--dsw-alias-label-secondary:#555;--dsw-alias-bg-layer-3:#fff;
+            --dsw-alias-border-l3:#ddd;--dsw-alias-button-primary-fill:#222;--dsw-alias-label-primary-foreground:#fff;
+            --dsw-alias-brand-primary:#2970cc;--dsw-radius-sm:6px}
+          body{margin:0;font:14px system-ui}button{font:inherit;background:none;border:0;padding:0}
+          #root{padding:8px}#controls{display:flex;gap:8px;margin-top:16px}
+        </style><div id="root"></div>`)
+        await page.evaluate(({ native, locale }) => { window.nativeButtons = native; window.buttonLocale = locale }, { native, locale })
+        for (const file of buttonFixture.outputFiles) {
+          if (file.path.endsWith('.css')) await page.addStyleTag({ content: file.text })
+        }
+        await page.addScriptTag({ content: buttonFixture.outputFiles.find(file => file.path.endsWith('.js')).text })
+        const actions = page.locator('.ptcPlusBindingDockActions button')
+        await actions.last().waitFor()
+        const metrics = await actions.evaluateAll(buttons => buttons.map(button => {
+          const rect = button.getBoundingClientRect()
+          const style = getComputedStyle(button)
+          return { className: button.className, height: rect.height, left: rect.left, right: rect.right,
+            padding: parseFloat(style.paddingLeft), background: style.backgroundColor, color: style.color }
+        }))
+        assert.equal(metrics.length, 3)
+        for (const button of metrics) {
+          assert.ok(button.height >= 28 && button.padding >= 10, JSON.stringify({ width, native, locale, button }))
+          assert.ok(button.left >= 0 && button.right <= width, 'dock action outside viewport')
+          assert.equal(button.className.includes('ptcPlusButton'), !native)
+        }
+        assert.notEqual(metrics[2].background, 'rgba(0, 0, 0, 0)', 'primary action has no fill')
+        assert.notEqual(metrics[2].background, metrics[2].color, 'primary action text is invisible')
+        if (native) {
+          const reference = await page.getByRole('button', { name: 'Native reference' }).evaluate(button => {
+            const style = getComputedStyle(button)
+            return { height: button.getBoundingClientRect().height, padding: parseFloat(style.paddingLeft) }
+          })
+          assert.equal(metrics[2].height, reference.height)
+          assert.equal(metrics[2].padding, reference.padding)
+        }
+        await actions.last().focus()
+        await page.keyboard.press('Enter')
+        assert.deepEqual(await page.evaluate(() => window.actions), [['save-draft', true]])
+        assert.equal(await page.getByRole('button', { name: 'Disabled action' }).isDisabled(), true)
+        await page.screenshot({ path: `artifacts/button-styles/${width}-${native ? 'native' : 'fallback'}-${locale}.png`, fullPage: true })
+      }
+    }
+  }
   for (const viewport of [{ width: 390, height: 600 }, { width: 320, height: 420 }]) {
     await page.goto('about:blank')
     await page.setViewportSize(viewport)
@@ -140,7 +222,7 @@ try {
   await page.evaluate(() => window.settleCatalog())
   await hoverMenu.waitFor({ state: 'hidden' })
   await page.evaluate(() => window.disposeFixture())
-  process.stdout.write('fallback Client: viewport keyboard/pointer actions, composition draft, hover settlement, modal mask and focus return passed\n')
+  process.stdout.write('Client: native/fallback dock button styles and save actions, viewport keyboard/pointer actions, composition draft, hover settlement, modal mask and focus return passed\n')
 } finally {
   await browser.close()
 }

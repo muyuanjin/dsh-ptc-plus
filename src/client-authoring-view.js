@@ -3,6 +3,7 @@ import { bindingModelPreferences } from '../internal/user-binding-model-context.
 import { featureEnabled } from './client-feature-gates.js'
 import {
   MENU_CHILDREN_PROBE_SENTINEL,
+  isHostComponent,
   isHostIconComponent,
   readMenuChildrenProbe,
 } from './client-host-compat.js'
@@ -214,7 +215,7 @@ export function createAuthoringView(React, deps) {
       setProbing(false)
     }, [probing, menuChildren])
     React.useEffect(() => {
-      if (toast === null || typeof Toast === 'function') return undefined
+      if (toast === null || isHostComponent(Toast)) return undefined
       const timer = setTimeout(() => setToast(null), 2_500)
       return () => clearTimeout(timer)
     }, [toast])
@@ -238,7 +239,7 @@ export function createAuthoringView(React, deps) {
     const starButton = h('button', {
       type: 'button', className: 'ptcPlusAuthorButton', 'aria-label': label,
       // Older UI-kit lines ship no Tooltip primitive; the native title carries the hint there.
-      title: typeof Tooltip === 'function' || menuOpen || managing || settingsOpen ? undefined : hint,
+      title: isHostComponent(Tooltip) || menuOpen || managing || settingsOpen ? undefined : hint,
       'aria-haspopup': 'menu', 'aria-expanded': menuOpen,
       onPointerEnter: hoverMenu,
       onPointerLeave: cancelHoverOpen,
@@ -370,7 +371,7 @@ export function createAuthoringView(React, deps) {
     },
       !hasDraft && !quickAccess ? null : h(menuChildrenRegion ? Menu : MenuFallback, {
         className: 'ptcPlusAuthorButtonShell', open: menuOpen,
-        anchor: typeof Tooltip === 'function'
+        anchor: isHostComponent(Tooltip)
           ? h(Tooltip, { label: hint, delayMs: 700, disabled: menuOpen || managing || settingsOpen }, starButton) : starButton,
         portal: true, side: 'top', dense: true,
         listClassName: 'ptcPlusBindingMenu',
@@ -407,7 +408,7 @@ export function createAuthoringView(React, deps) {
               ?.focus({ preventScroll: true }))
           },
         }) : null,
-      toast === null ? null : typeof Toast === 'function'
+      toast === null ? null : isHostComponent(Toast)
         ? h(Toast, {
           key: toast.sequence,
           text: toast.text,
@@ -426,7 +427,7 @@ export function createAuthoringView(React, deps) {
       showName ? h('strong', null, candidate.entry.name) : null,
       h('span', { className: 'ptcPlusBindingMeta' }, `${candidate.entry.scope} - ${candidate.entry.symbols.join(', ')}`),
       candidate.entry.purpose ? h('p', { className: 'ptcPlusMessage' }, candidate.entry.purpose) : null,
-      typeof CodeBlock === 'function'
+      isHostComponent(CodeBlock)
         ? h(CodeBlock, { code: candidate.entry.source, lang: 'typescript', className: 'ptcPlusBindingCommandCode',
           copyLabel: t('tool.copy'), copiedLabel: t('tool.copied') })
         : h('pre', { className: 'ptcPlusBindingCommandSource' }, candidate.entry.source),

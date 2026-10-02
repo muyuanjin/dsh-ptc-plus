@@ -1,3 +1,5 @@
+import { isHostComponent } from './client-host-compat.js'
+
 /**
  * Resolve the Harness Client components this plugin renders against the
  * installed generation.
@@ -221,12 +223,27 @@ export function resolvePrimitives(primitives, React, createPortal) {
     Button: primitives.Button,
     CodeBlock: primitives.CodeBlock,
     DisclosureRow: primitives.DisclosureRow,
-    Menu: typeof primitives.Menu === 'function' ? primitives.Menu : createFallbackMenu(React, createPortal),
+    Menu: isHostComponent(primitives.Menu) ? primitives.Menu : createFallbackMenu(React, createPortal),
     MenuFallback: createFallbackMenu(React, createPortal),
-    Modal: typeof primitives.Modal === 'function' ? primitives.Modal : createFallbackModal(React, createPortal),
+    Modal: isHostComponent(primitives.Modal) ? primitives.Modal : createFallbackModal(React, createPortal),
     Toast: primitives.Toast,
     Tooltip: primitives.Tooltip,
   })
+}
+
+/** Adapt host action styling, or own it completely when the primitive is absent. */
+export function createActionButton(React, Button) {
+  const h = React.createElement
+  return function ActionButton({ className = '', 'data-kind': kind, ...props }) {
+    const classes = className.split(/\s+/).filter(name => name !== '' && name !== 'ptcPlusButton')
+    return isHostComponent(Button)
+      ? h(Button, {
+        type: 'button', ...props, size: 'sm',
+        variant: kind === 'primary' ? 'primary' : kind === 'ghost' ? 'ghost' : 'outline',
+        className: classes.join(' '),
+      })
+      : h('button', { type: 'button', ...props, className: ['ptcPlusButton', ...classes].join(' '), 'data-kind': kind })
+  }
 }
 
 export { createFallbackMenu, createFallbackModal }

@@ -11,6 +11,7 @@ import { createBindingConsole } from './client-console.js'
 import {
   createMenuChildrenEvidence,
   hostIconComponents,
+  isHostComponent,
   isHostIconComponent,
   isIdleSessionComposer,
   publishSettingsCard,
@@ -29,7 +30,7 @@ import { featureEnabled, registerGated } from './client-feature-gates.js'
 import { createCatalogOwner } from './client-catalog.js'
 import { createUserBindingsWorkbench } from './client-workbench.js'
 import { createBindingCommandAvailability, createReplObserver } from './client-transport.js'
-import { resolvePrimitives } from './client-primitives.js'
+import { createActionButton, resolvePrimitives } from './client-primitives.js'
 
 /** Settings snapshot used until the installed generation serves a transport. */
 const UNAVAILABLE_PREFERENCE = Object.freeze({
@@ -129,17 +130,10 @@ window.__ModuleLoader__.load({
     function IconButton({ icon: Icon, label, ...props }) {
       const button = h('button', { ...props, type: 'button', className: 'ptcPlusIconButton',
         'aria-label': label, title: label }, isHostIconComponent(Icon) ? h(Icon, { size: 16 }) : label)
-      return typeof Tooltip === 'function' ? h(Tooltip, { label, delayMs: 400 }, button) : button
+      return isHostComponent(Tooltip) ? h(Tooltip, { label, delayMs: 400 }, button) : button
     }
 
-    function ActionButton({ className = '', 'data-kind': kind, ...props }) {
-      return typeof Button === 'function'
-        ? h(Button, {
-          ...props, size: 'sm', variant: kind === 'primary' ? 'primary' : kind === 'ghost' ? 'ghost' : 'outline',
-          className: className.split(' ').filter(name => name !== 'ptcPlusButton').join(' '),
-        })
-        : h('button', { ...props, className, 'data-kind': kind })
-    }
+    const ActionButton = createActionButton(React, Button)
 
     const BindingConsole = createBindingConsole(React, { TypeScriptEditor, IconButton, ActionButton,
       icons: { play: IconPlayOutline16, stop: IconStopFill16, reset: IconRefreshOutline16, clear: IconTrashOutline16 } })

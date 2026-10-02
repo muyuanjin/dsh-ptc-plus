@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import test from 'node:test'
+import * as React from 'react'
 import { parse } from 'yaml'
 import {
   MENU_CHILDREN_PROBE_SENTINEL,
   createMenuChildrenEvidence,
   hostIconComponents,
+  isHostComponent,
   isHostIconComponent,
   isIdleSessionComposer,
   publishSettingsCard,
@@ -15,6 +17,46 @@ import {
   useSessionPreset,
   watchCurrentSessionPreset,
 } from '../src/client-host-compat.js'
+
+test('host component exports preserve React wrappers and reject malformed exports', () => {
+  const plain = () => null
+  const forwarded = React.forwardRef(plain)
+  const memoized = React.memo(forwarded)
+  let initialized = false
+  const lazy = React.lazy(async () => { initialized = true; return { default: memoized } })
+  for (const component of [plain, forwarded, memoized, lazy, React.memo(lazy), React.memo('button')]) {
+    assert.equal(isHostComponent(component), true)
+    const icons = hostIconComponents({ IconCheckOutlineRegular: component })
+    assert.equal(icons.check, component)
+    assert.equal(isHostIconComponent(icons.check), true)
+  }
+  for (const component of [undefined, null, false, 0, 'button', {}, React.createElement(plain),
+    { $$typeof: Symbol.for('not.a.react.component') }]) {
+    assert.equal(isHostComponent(component), false)
+    assert.equal(isHostIconComponent(component), false)
+  }
+  const legacy = React.memo(plain)
+  assert.equal(hostIconComponents({ IconCheckOutlineRegular: {}, IconCheckOutline14: legacy }).check, legacy)
+  assert.equal(initialized, false)
+})
+
+test('malformed wrappers and module references use component and icon fallbacks', () => {
+  const cyclic = { $$typeof: Symbol.for('react.memo') }
+  cyclic.type = cyclic
+  const valid = () => null
+  for (const component of [{ getModuleId: 'wrong export' },
+    { $$typeof: Symbol.for('react.client.reference') },
+    { $$typeof: Symbol.for('react.memo') },
+    { $$typeof: Symbol.for('react.memo'), type: valid, compare: 1 },
+    { $$typeof: Symbol.for('react.forward_ref'), render: 1 },
+    { $$typeof: Symbol.for('react.lazy'), _init: 1, _payload: {} },
+    { $$typeof: Symbol.for('react.lazy'), _init: valid, _payload: null },
+    cyclic, React.memo(cyclic)]) {
+    assert.equal(isHostComponent(component), false)
+    assert.equal(isHostIconComponent(component), false)
+    assert.equal(hostIconComponents({ IconCheckOutlineRegular: component, IconCheckOutline14: valid }).check, valid)
+  }
+})
 
 test('host icons follow the public export shape without a version branch', () => {
   const component = iconName => Object.assign(() => null, { iconName })

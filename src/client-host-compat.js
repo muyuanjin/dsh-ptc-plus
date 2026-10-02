@@ -1,4 +1,25 @@
 import { SETTINGS_NAMESPACE } from '../internal/config-spec.js'
+import { ForwardRef, Lazy, Memo, isValidElementType } from 'react-is'
+
+/** Host exports are components, including React's wrapped object types. */
+export function isHostComponent(component) {
+  if (typeof component === 'function') return true
+  if (typeof component !== 'object' || component === null) return false
+  const seen = new Set()
+  while (isValidElementType(component)) {
+    if (typeof component !== 'object' || component === null) return true
+    if (seen.has(component)) return false
+    seen.add(component)
+    // react-is also admits server references and wrappers with missing payloads.
+    if (component.$$typeof === ForwardRef) return typeof component.render === 'function'
+    if (component.$$typeof === Lazy) return typeof component._init === 'function'
+      && typeof component._payload === 'object' && component._payload !== null
+    if (component.$$typeof !== Memo) return false
+    if (component.compare != null && typeof component.compare !== 'function') return false
+    component = component.type
+  }
+  return false
+}
 
 const HOST_ICON_EXPORTS = Object.freeze({
   check: ['IconCheckOutlineRegular', 'IconCheckOutline14'],
@@ -28,7 +49,7 @@ ABSENT_HOST_ICON.absentHostIcon = true
 
 /** Whether a normalized icon entry is a glyph the host actually published. */
 export function isHostIconComponent(icon) {
-  return typeof icon === 'function' && icon.absentHostIcon !== true
+  return isHostComponent(icon) && icon.absentHostIcon !== true
 }
 
 /**
@@ -42,7 +63,7 @@ export function hostIconComponents(primitives) {
   return Object.fromEntries(Object.entries(HOST_ICON_EXPORTS).map(([name, candidates]) => [
     name,
     candidates.map(candidate => primitives?.[candidate])
-      .find(value => typeof value === 'function') ?? ABSENT_HOST_ICON,
+      .find(isHostComponent) ?? ABSENT_HOST_ICON,
   ]))
 }
 

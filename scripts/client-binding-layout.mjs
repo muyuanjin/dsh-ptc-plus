@@ -1,33 +1,48 @@
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
-import { mkdir, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { parseArgs } from 'node:util'
 import { chromium } from 'playwright'
 import { npmCliCommand } from './npm-cli.mjs'
+import { assertControlVisual, assertVisualSurface, setFixtureTheme } from './client-visual-contract.mjs'
 
-const { values } = parseArgs({ options: { 'browser-channel': { type: 'string' } } })
-const directory = resolve('artifacts/binding-layout')
-await mkdir(directory, { recursive: true })
-const command = npmCliCommand(['run', 'test:client'])
-await new Promise((resolveRun, reject) => {
-  const child = spawn(command.executable, command.args, {
-    env: { ...process.env, PTC_BINDING_UI_FIXTURE: directory }, stdio: 'inherit', windowsHide: true,
-  })
-  child.on('error', reject)
-  child.on('exit', code => code === 0 ? resolveRun() : reject(new Error(`Client fixture exited ${code}`)))
-})
-const browser = await chromium.launch({ headless: true, channel: values['browser-channel'] })
+const { values } = parseArgs({ options: { 'browser-channel': { type: 'string' }, 'fixtures-dir': { type: 'string' } } })
+const output = resolve('artifacts/binding-layout')
+await mkdir(output, { recursive: true })
+const fixtureArgument = values['fixtures-dir']?.trim()
+const ownedDirectory = !fixtureArgument
+const directory = fixtureArgument ? resolve(fixtureArgument) : await mkdtemp(resolve(output, 'candidate-'))
+let browser
 const measurements = []
 try {
+  if (ownedDirectory) {
+    const command = npmCliCommand(['run', 'test:client'])
+    await new Promise((resolveRun, reject) => {
+      const child = spawn(command.executable, command.args, {
+        env: { ...process.env, PTC_BINDING_UI_FIXTURE: directory }, stdio: 'inherit', windowsHide: true,
+      })
+      child.on('error', reject)
+      child.on('exit', code => code === 0 ? resolveRun() : reject(new Error(`Client fixture exited ${code}`)))
+    })
+  }
+  browser = await chromium.launch({ headless: true, channel: values['browser-channel'] })
   const page = await browser.newPage()
-  for (const width of [320, 390, 1440]) {
+  const matrix = [320, 390, 1440].flatMap(width => ['light', 'dark'].map(theme => ({ width, theme })))
+  for (const { width, theme } of matrix) {
     await page.setViewportSize({ width, height: 900 })
-    const states = ['ready-en', 'ready-zh', 'saved-en', 'saved-zh',
+    const states = ['ready-en', 'ready-zh', 'saved-en', 'saved-zh', 'kinds-en', 'kinds-zh',
       ...['en', 'zh'].flatMap(locale => ['unavailable', 'session', 'global'].map(tab => `popover-${tab}-${locale}`))]
     for (const state of states) {
       await page.goto(pathToFileURL(resolve(directory, `${state}.html`)).href)
+      await setFixtureTheme(page, theme)
+      const visualControls = await assertVisualSurface(page, page.locator('body'), `${width}/${theme}/${state}`)
+      if (state.startsWith('kinds-')) {
+        for (const control of await page.locator('.ptcPlusReplBindingTrigger').all()) {
+          await assertControlVisual(control, { hover: true, label: `${theme}/REPL name kind` })
+        }
+      }
       const details = page.locator('.ptcPlusBindingSourceDetails')
       const summary = details.locator('summary')
       await summary.focus()
@@ -68,27 +83,30 @@ try {
         assert.ok(bounds.width > 0 && bounds.height >= (action ? 24 : 16), `${state}: unusable button ${text}`)
         assert.ok(bounds.left >= owner.left - 1 && bounds.right <= owner.right + 1, `${state}: button outside owner ${text}`)
       }
+      await summary.focus()
       await page.keyboard.press('Enter')
       assert.equal(await details.getAttribute('open'), null)
       const collapsedHeight = await page.locator('.ptcPlusBindingCommand').evaluate(element => element.clientHeight)
       if (state.startsWith('saved')) assert.ok(collapsedHeight < 230, `loose saved card: ${collapsedHeight}px`)
-      await page.screenshot({ path: resolve(directory, `${width}-${state}-collapsed.png`), fullPage: true })
+      await page.screenshot({ path: resolve(output, `${width}-${theme}-${state}-collapsed.png`), fullPage: true })
       await page.keyboard.press('Enter')
-      await page.screenshot({ path: resolve(directory, `${width}-${state}-source.png`), fullPage: true })
-      measurements.push({ width, state, collapsedHeight, ...metrics })
+      await page.screenshot({ path: resolve(output, `${width}-${theme}-${state}-source.png`), fullPage: true })
+      measurements.push({ width, theme, state, visualControls, collapsedHeight, ...metrics })
     }
     for (const locale of ['en', 'zh']) {
       const headers = measurements.filter(item => item.width === width
-        && item.state.startsWith('popover-') && item.state.endsWith(locale)).map(item => item.header)
+        && item.theme === theme && item.state.startsWith('popover-') && item.state.endsWith(locale)).map(item => item.header)
       assert.equal(headers.length, 3)
       assert.deepEqual(headers[0], headers[1], `${width}/${locale}: header shifts when session data becomes available`)
       assert.deepEqual(headers[1], headers[2], `${width}/${locale}: header shifts between Session and Global`)
     }
   }
-  for (const width of [320, 390, 1440]) {
+  for (const { width, theme } of matrix) {
     await page.setViewportSize({ width, height: 900 })
     for (const state of ['console-en', 'console-zh', 'workbench-en', 'workbench-zh', 'modal-en', 'modal-zh', 'empty-en', 'empty-zh', 'settings-en', 'settings-zh', 'settings-dialog-en', 'settings-dialog-zh', 'prompt-edit-en', 'prompt-edit-zh']) {
       await page.goto(pathToFileURL(resolve(directory, `${state}.html`)).href)
+      await setFixtureTheme(page, theme)
+      const visualControls = await assertVisualSurface(page, page.locator('body'), `${width}/${theme}/${state}`)
       const metrics = await page.evaluate(() => {
         const containers = [...document.querySelectorAll('.ptcPlusConsole,.ptcPlusBindingsSurface,.ptcPlusBindingsDialog,.ptcPlusBindingEditor,.ptcPlusSettingsDialog,.ptcPlusSettingsDialogContent')]
           .map(element => ({ name: element.className, client: element.clientWidth, scroll: element.scrollWidth }))
@@ -135,12 +153,21 @@ try {
         assert.equal(await page.locator('.ptcPlusConsole .ptcPlusBindings').count(), 1)
         assert.equal(await page.locator('.ptcPlusObservationCode').count(), 1)
       }
-      await page.screenshot({ path: resolve(directory, `${width}-${state}.png`), fullPage: true })
-      measurements.push({ width, state, ...metrics })
+      await page.screenshot({ path: resolve(output, `${width}-${theme}-${state}.png`), fullPage: true })
+      measurements.push({ width, theme, state, visualControls, ...metrics })
     }
   }
-  await writeFile(resolve(directory, 'measurements.json'), JSON.stringify(measurements, null, 2) + '\n')
+  const covered = new Set(measurements.flatMap(item => item.visualControls))
+  for (const name of ['action', 'settings disclosure', 'binding selection', 'binding switch', 'icon command',
+    'input', 'instructions', 'settings switch', 'select', 'search', 'REPL observation', 'REPL definition', 'REPL tab', 'source disclosure']) {
+    assert.ok(covered.has(name), `Visual fixture lost responsibility: ${name}`)
+  }
+  await writeFile(resolve(output, 'measurements.json'), JSON.stringify(measurements, null, 2) + '\n')
   console.log(`Binding layout passed: ${measurements.length} viewport/state combinations`)
 } finally {
-  await browser.close()
+  try {
+    await browser?.close()
+  } finally {
+    if (ownedDirectory) await rm(directory, { recursive: true, force: true })
+  }
 }

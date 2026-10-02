@@ -23,6 +23,7 @@
 ## Maintenance
 
 - [Deterministic Verification](verification.md): complete checks, backend test concurrency, coverage, and focused diagnostics.
+- [Client Visual Contract](client-visual-contract.md): browser prerequisites, control and state coverage, fault counterexamples, and packed Host evidence boundaries.
 - [Incremental Review Verdict](adr/0026-persist-the-delivery-verdict-against-the-verified-candidate.md): predeclared parallel lanes, dependency-scoped invalidation, and the composite commit verdict.
 - [Focused Verification](verification-optimization-work.md): bounded coverage diagnostics and their relationship to the final verification gate.
 - [Semantic Validation](semantic-validation.md): pinned Test262 cases, dialect contracts, native differential matrices and their limits.

@@ -4,6 +4,8 @@
 
 ## Incremental independent review
 
+The standard local and CI gates run `test:client:visual`: one Client suite exports fresh renderer fixtures, followed by deterministic browser layout and visual assertions. Install its locked browser first with `npx playwright install --with-deps chromium`; missing browsers fail verification. The [Client visual contract](client-visual-contract.md) owns the bounded control/state inventory, reference palettes, fault counterexamples and official-Host evidence limits. Focused diagnostics may run `npm run test:client:visual` independently; they do not replace the final gate.
+
 Independent review is partitioned before reviewers start. Create the ignored working plan, replace every placeholder, then record it against the commit that defines the change scope:
 
 ```bash

@@ -1,0 +1,37 @@
+# Client visual contract
+
+The Client must expose readable, distinguishable and reachable computation controls. DOM classes and functioning RPC handlers do not establish that obligation. `scripts/client-visual-contract.mjs` owns a bounded browser oracle used by deterministic fixtures and packed official-Host acceptance. This is a usability contract, not a pixel snapshot of DSH.
+
+## Gate and prerequisites
+
+Install the lockfile dependencies and the matching Playwright browser before verification:
+
+```sh
+npx playwright install --with-deps chromium
+npm run test:client:visual
+```
+
+`test:client:visual` runs the Client suite once, exporting actual renderer DOM and current plugin, public primitive and CodeMirror CSS to a newly created ignored directory. The layout runner consumes that invocation's fixtures; missing fixtures, unavailable browsers and failing children fail the command. Its temporary HTML is removed afterwards. The standalone layout entry also removes its own directory after fixture failure, browser-launch failure or completion; an explicitly supplied fixtures directory remains owned by its caller. Screenshots and measurements remain under ignored `artifacts/binding-layout` and `artifacts/button-styles` as diagnostics; screenshots alone are not acceptance assertions. `verify`, `check` through `verify`, and every `verify:ci` matrix entry include this command. CI installs Chromium explicitly and does not download browsers inside the gate. An installed compatible Chromium channel can be selected for focused diagnostics with `--browser-channel msedge`.
+
+## Coverage
+
+All fixture families exercise light and dark reference palettes, English and Chinese, and widths 320, 390 and 1440 px. Reference tokens deliberately exercise both foreground polarities; they do not claim to reproduce official or customized themes. The separate model-free packed acceptance uses DSH's public theme settings on an unmodified official Host, reuses the oracle for dock actions and the global workbench, and retains its existing actual editor, permission, session-log and layout assertions.
+
+| Surface | Actual controls | Visual states and evidence |
+| --- | --- | --- |
+| Settings and settings dialog | Disclosure, action, numeric input, select, checkbox switch | Normal, keyboard focus, disabled feedback; hover for commands/disclosure; dialog containment |
+| Global workbench and dialog | Selection, enable switch, icon commands, action buttons, input, instructions, search | Normal, focus, hover where the control or its owner supplies it, disabled feedback, long-label geometry |
+| Draft dock | All three actions, disclosure, icon command, author attention badge | Native and absent-Button fallback matrix; normal, hover, focus, disabled, actual busy rendering; Enter saves exactly once |
+| REPL | Observation selection, search, tabs, definition disclosure, four binding-name kinds | Normal and keyboard focus, definition hover, light/dark name readability, long inventory and source geometry |
+| Command card | Action and native source disclosure | Readable/reachable actions, focus, disabled feedback; saved card remains compact |
+| Tool row | Official DisclosureRow and fallback summary, inspection action, running/error/stopped status and description | Normal, focus, fallback title hover; Enter expansion and inspection, focused inspection becomes visible |
+
+The oracle requires actionable button padding of at least 10 px and height of at least 28 px, other controls of at least 16 px height, viewport containment and center hit reachability after scrolling. Enabled text (including nonempty input/textarea values and selected options) and relevant icon foregrounds must have at least 3:1 contrast against the alpha-composited ancestor background; primary actions must retain a nontransparent fill. Hover feedback must change a painted foreground, background, border or shadow without resizing. Keyboard focus must establish `:focus-visible` and a contrasted outline, a changed contrasted border or solid outer shadow ring of at least 1 px (zero offset and blur, positive spread), or the search owner's contrasted `:focus-within` outline. Disabled controls must change opacity/color, retain the disabled cursor and reject focus. Presentation probes restore the previous disabled property without dispatching business events. The dynamic dock additionally obtains disabled state from its real busy view; recorded callbacks prove the probes do not save or inspect accidentally.
+
+Each declared responsibility must occur in the generated layout inventory. Repeated rows share one style owner and are sampled; four REPL name kinds are checked individually. Selected binding rows may retain their selected background on hover, while readability and geometry remain required; an unselected row independently exercises hover feedback. Padding removal, primary-fill removal, same foreground/background, zero opacity, removed hover/focus cues and removed disabled feedback are injected into the real fallback action DOM without replacing its classes or handlers. Each fault must fail its corresponding assertion and is removed afterwards. Additional real-control probes reject white-on-white input values, unreadable selected-row hover and transparent focus outlines and transparent, inset or negative-spread shadows; a contrasted shadow remains a legal focus cue. Error and stopped tool summaries use the public state-error-primary and state-warn-primary tokens; the shared warning foreground mixes the latter with label-primary for light/dark readability, and attention badges use the theme background as foreground; reference palettes do not supply the unsupported danger/warning aliases.
+
+## Limits
+
+Static DOM exports establish presentation, not live RPC, editor, switch or permission behavior; Client interaction tests and packed acceptance own those facts. Disabled presentation is sampled on supported HTML form controls; tabs, disclosures and read-only observations have no disabled/busy product state. Native tool hover remains the official DisclosureRow's responsibility and is not required to paint the plugin fallback title. Static settings/workbench fixtures use public native primitives; the shared ActionButton fallback is tested dynamically in the dock, while fallback menu/modal keyboard, portal, mask, composition and focus-return behavior remain in the same browser runner. Dynamic busy checks cover draft actions and a pending workbench catalog reload. Workbench buttons may retain full opacity when a readable status and wait cursor identify the pending request; they must still reject focus. Request sequencing remains covered by Client interaction tests.
+
+The 3:1 floor detects loss of readability and does not claim full WCAG conformance. Empty input placeholder paint and native select popups are outside this bounded text oracle. Shadow evidence is limited to contrasted solid outer rings; arbitrary blur, offset and inset effects are not accepted as proof of visible focus. No pixel baseline freezes typography, animation, every CodeMirror token, offscreen content, antialiasing, arbitrary third-party themes or future CSS properties. New controls or new state owners require updating the responsibility inventory and executable evidence. Backend coverage cannot substitute for this browser contract, and fixture success cannot substitute for official-Host delivery evidence.

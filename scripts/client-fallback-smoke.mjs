@@ -2,6 +2,10 @@ import assert from 'node:assert/strict'
 import { mkdir } from 'node:fs/promises'
 import { build } from 'esbuild'
 import { chromium } from 'playwright'
+import { parseArgs } from 'node:util'
+import { assertContentCounterexamples, assertControlVisual, assertToolStateVisual, assertVisualCounterexamples, assertVisualSurface, controlAppearance, setFixtureTheme } from './client-visual-contract.mjs'
+
+const { values } = parseArgs({ options: { 'browser-channel': { type: 'string' } } })
 
 const fixture = await build({
   stdin: { resolveDir: process.cwd(), sourcefile: 'fallback-fixture.js', contents: `
@@ -44,9 +48,11 @@ const fixture = await build({
       catalogOwner,callUserBindings,subscribeReset:()=>()=>{},menuChildren:createMenuChildrenEvidence(),
       icons:{sparkle:Icon,chevron:Icon,close:Icon,check:Icon}});
     const root=createRoot(document.querySelector('#composer'));
-    root.render(h(BindingAuthorButton,{sessionId:'fallback-session',t:key=>key,
+    const render=()=>root.render(h(BindingAuthorButton,{sessionId:'fallback-session',t:key=>key,
       useInput:select=>select({draft:''}),inputActions:{setDraft:()=>{}},
       usePtcSettings:select=>select({status:'ready',writable:true,value:{enabled:true}}),useBindingCommand:()=>true}));
+    window.setAttention=()=>{view.mounted=true;view.candidate={entry:{name:'Attention'}};view.message='Attention';render()};
+    render();
     window.disposeFixture=()=>{root.unmount();catalogOwner.dispose()};
   ` },
   bundle: true, platform: 'browser', format: 'iife', write: false,
@@ -56,11 +62,12 @@ const buttonFixture = await build({
   stdin: { resolveDir: process.cwd(), sourcefile: 'button-fixture.js', contents: `
     import * as React from 'react';
     import {createRoot} from 'react-dom/client';
-    import {Button} from '@deepseek-ai/dsh-client-ui-primitives';
+    import {Button,DisclosureRow} from '@deepseek-ai/dsh-client-ui-primitives';
     import {createActionButton} from './src/client-primitives.js';
     import {createAuthoringView} from './src/client-authoring-view.js';
     import {installStyles} from './src/client-styles.js';
     import {SETTINGS_COPY} from './src/client-copy.js';
+    import {createPtcToolView} from './src/client-tool-view.js';
     const h=React.createElement;
     installStyles();
     const ActionButton=createActionButton(React,window.nativeButtons?Button:undefined);
@@ -70,35 +77,50 @@ const buttonFixture = await build({
     window.actions=[];
     const review={attach:()=>()=>{},sync:()=>{},act:(...args)=>window.actions.push(args),display:()=>{}};
     const Icon=()=>null;
-    const IconButton=({label,...props})=>h('button',{type:'button',...props},label);
+    const IconButton=({label,...props})=>h('button',{type:'button',className:'ptcPlusIconButton','aria-label':label,...props},'+');
     const {BindingReviewDock}=createAuthoringView(React,{ActionButton,IconButton,
       useBindingReview:()=>[review,view],icons:{check:Icon,close:Icon,chevron:Icon}});
-    createRoot(document.querySelector('#root')).render(h(React.Fragment,null,
+    const {PTCPlusToolRow}=createPtcToolView(React,{DisclosureRow:window.nativeButtons?DisclosureRow:undefined,
+      icons:{chevron:Icon,check:Icon,inspect:Icon}});
+    const block={kind:'tool-result',callId:'visual-tool',call:{name:'run_code',
+      argsRaw:JSON.stringify({code:'return 42',description:'Compute the answer'})},
+      content:[{type:'text',text:'42'}],isError:false,subCalls:[]};
+    const root=createRoot(document.querySelector('#root'));
+    const render=()=>root.render(h(React.Fragment,null,
       h(BindingReviewDock,{sessionId:'probe',useProjection:()=>null,t:key=>SETTINGS_COPY[window.buttonLocale][key]??key}),
       h('div',{id:'controls'},
         h(Button,{size:'sm',variant:'primary'},'Native reference'),
-        h(ActionButton,{disabled:true},'Disabled action'))));
+        h(ActionButton,{disabled:true},'Disabled action')),
+      h(PTCPlusToolRow,{toolName:'run_code',block,inspect:()=>window.actions.push(['inspect']),
+        t:key=>SETTINGS_COPY[window.buttonLocale][key]??key})));
+    window.setBusy=busy=>{view.busy=busy;render()};
+    window.setToolState=state=>{
+      block.kind=state==='running'?'tool-call':'tool-result';
+      block.isError=state==='error';
+      block.error=state==='stopped'?{code:'interrupted'}:undefined;
+      render();
+    };
+    render();
   ` },
   bundle: true, platform: 'browser', format: 'iife', write: false, outfile: 'button-fixture.js',
   loader: { '.svg': 'dataurl', '.png': 'dataurl', '.woff2': 'dataurl', '.woff': 'dataurl', '.ttf': 'dataurl' },
   define: { 'process.env.NODE_ENV': JSON.stringify('production') },
 })
-const browser = await chromium.launch({ headless: true })
+const browser = await chromium.launch({ headless: true, channel: values['browser-channel'] })
 try {
-  const page = await browser.newPage()
+  const page = await browser.newPage({ reducedMotion: 'reduce' })
   await mkdir('artifacts/button-styles', { recursive: true })
-  for (const width of [320, 390, 1440]) {
+  for (const { width, theme } of [320, 390, 1440].flatMap(width => ['light', 'dark'].map(theme => ({ width, theme })))) {
     for (const native of [true, false]) {
       for (const locale of ['en', 'zh']) {
         await page.goto('about:blank')
         await page.setViewportSize({ width, height: 900 })
         await page.setContent(`<style>
-          :root{--dsw-alias-label-primary:#222;--dsw-alias-label-secondary:#555;--dsw-alias-bg-layer-3:#fff;
-            --dsw-alias-border-l3:#ddd;--dsw-alias-button-primary-fill:#222;--dsw-alias-label-primary-foreground:#fff;
-            --dsw-alias-brand-primary:#2970cc;--dsw-radius-sm:6px}
+          :root{--dsw-radius-sm:6px}
           body{margin:0;font:14px system-ui}button{font:inherit;background:none;border:0;padding:0}
           #root{padding:8px}#controls{display:flex;gap:8px;margin-top:16px}
         </style><div id="root"></div>`)
+        await setFixtureTheme(page, theme)
         await page.evaluate(({ native, locale }) => { window.nativeButtons = native; window.buttonLocale = locale }, { native, locale })
         for (const file of buttonFixture.outputFiles) {
           if (file.path.endsWith('.css')) await page.addStyleTag({ content: file.text })
@@ -120,6 +142,9 @@ try {
         }
         assert.notEqual(metrics[2].background, 'rgba(0, 0, 0, 0)', 'primary action has no fill')
         assert.notEqual(metrics[2].background, metrics[2].color, 'primary action text is invisible')
+        for (const action of await actions.all()) await assertControlVisual(action,
+          { action: true, hover: true, disabled: true, label: `${width}/${theme}/${native}/${locale}/dock action` })
+        await assertVisualSurface(page, page.locator('.ptcPlusBindingDock'), 'dock')
         if (native) {
           const reference = await page.getByRole('button', { name: 'Native reference' }).evaluate(button => {
             const style = getComputedStyle(button)
@@ -132,15 +157,53 @@ try {
         await page.keyboard.press('Enter')
         assert.deepEqual(await page.evaluate(() => window.actions), [['save-draft', true]])
         assert.equal(await page.getByRole('button', { name: 'Disabled action' }).isDisabled(), true)
-        await page.screenshot({ path: `artifacts/button-styles/${width}-${native ? 'native' : 'fallback'}-${locale}.png`, fullPage: true })
+        await page.evaluate(() => window.setBusy(true))
+        await page.waitForFunction(() => document.querySelector('.ptcPlusBindingDock').getAttribute('aria-busy') === 'true')
+        for (const action of await actions.all()) {
+          assert.equal(await action.isDisabled(), true, 'busy dock action remains enabled')
+          await assertControlVisual(action, { action: true, label: 'busy dock action' })
+        }
+        assert.deepEqual(await page.evaluate(() => window.actions), [['save-draft', true]], 'visual probes dispatched an action')
+        await page.evaluate(() => window.setBusy(false))
+        await page.waitForFunction(() => !document.querySelector('.ptcPlusBindingDockActions button').disabled)
+        const tool = page.locator('.ptcPlusTool')
+        for (const state of ['running', 'error', 'stopped', 'ok']) {
+          await page.evaluate(state => window.setToolState(state), state)
+          await page.waitForFunction(state => document.querySelector('.ptcPlusToolSummaryLine,.ptcPlusToolSummary')?.dataset.state === state, state)
+          await assertToolStateVisual(tool, `${theme}/${native ? 'native' : 'fallback'}/${state}`)
+          if (state === 'error' && width === 320 && locale === 'en') {
+            const sheet = await page.addStyleTag({ content: '.ptcPlusToolState{color:#010101!important;background:#010101!important}' })
+            try {
+              await assert.rejects(() => assertToolStateVisual(tool), /unreadable tool state/)
+            } finally {
+              await sheet.evaluate(element => element.remove())
+            }
+          }
+        }
+        const disclosure = tool.locator(native ? '[data-disclosure-row]' : '.ptcPlusToolSummary')
+        await assertControlVisual(disclosure, { label: 'tool disclosure' })
+        await disclosure.focus()
+        await page.keyboard.press('Enter')
+        await tool.locator('.ptcPlusToolBody').waitFor()
+        const inspect = tool.locator('.ptcPlusInspect')
+        await page.keyboard.press('Tab')
+        await inspect.focus()
+        await page.waitForTimeout(180)
+        assert.equal(await inspect.evaluate(element => getComputedStyle(element).opacity), '1', 'inspection action remains invisible on focus')
+        await inspect.press('Enter')
+        assert.deepEqual(await page.evaluate(() => window.actions), [['save-draft', true], ['inspect']])
+        if (!native && width === 320 && locale === 'en') await assertVisualCounterexamples(page, actions.last())
+        await page.screenshot({ path: `artifacts/button-styles/${width}-${theme}-${native ? 'native' : 'fallback'}-${locale}.png`, fullPage: true })
       }
     }
   }
-  for (const viewport of [{ width: 390, height: 600 }, { width: 320, height: 420 }]) {
+  for (const { viewport, theme } of [{ width: 390, height: 600 }, { width: 320, height: 420 }]
+    .flatMap(viewport => ['light', 'dark'].map(theme => ({ viewport, theme })))) {
     await page.goto('about:blank')
     await page.setViewportSize(viewport)
     await page.setContent(`<button id="background" style="position:fixed;top:10px;left:10px">Host control</button>
       <div id="composer" style="position:fixed;bottom:16px;left:16px;width:calc(100vw - 32px);height:60px;overflow:hidden;transform:translateZ(0)"></div>`)
+    await setFixtureTheme(page, theme)
     await page.addScriptTag({ content: fixture.outputFiles[0].text })
     const trigger = page.locator('.ptcPlusAuthorButton')
     await trigger.click()
@@ -166,16 +229,26 @@ try {
     await menu.getByRole('menuitem', { name: 'bindings.manage', exact: true }).click()
     const dialog = page.locator('.ptcPlusBindingsModal')
     await dialog.waitFor()
+    await page.evaluate(() => { window.deferCatalog = true })
+    await dialog.getByRole('button', { name: 'bindings.reload', exact: true }).click()
+    await page.waitForFunction(() => document.querySelector('.ptcPlusBindings')?.getAttribute('aria-busy') === 'true')
+    for (const control of await dialog.locator('button:disabled').all()) {
+      await assertControlVisual(control, { label: 'busy workbench control' })
+    }
+    await page.evaluate(() => { window.settleCatalog(); window.deferCatalog = false })
+    await page.waitForFunction(() => document.querySelector('.ptcPlusBindings')?.getAttribute('aria-busy') === 'false')
     assert.equal(await dialog.evaluate(element => element.parentElement.parentElement === document.body), true)
     assert.equal(await page.locator('#background').evaluate(element => {
       const rect = element.getBoundingClientRect()
       return element.contains(document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2))
     }), false, 'headless modal leaves the background clickable')
     await dialog.locator('.ptcPlusBindingSelect').first().click()
+    await assertContentCounterexamples(page, { selected: dialog.locator('.ptcPlusBindingItem[data-selected=true] .ptcPlusBindingSelect') })
     await dialog.locator('.ptcPlusSourceActions button').click()
     await dialog.locator('.ptcPlusEntrySettings summary').click()
     const purpose = dialog.getByLabel('bindings.purpose', { exact: true })
     await purpose.fill('Unsaved purpose')
+    await assertContentCounterexamples(page, { input: purpose })
     await purpose.evaluate(element => {
       element.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }))
       element.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, isComposing: true, keyCode: 229 }))
@@ -207,6 +280,10 @@ try {
     await page.keyboard.up('Escape')
     await page.keyboard.press('Escape')
     await settings.waitFor({ state: 'hidden' })
+    await page.evaluate(() => window.setAttention())
+    const badge = page.locator('.ptcPlusDraftBadge[data-attention=true]')
+    await badge.waitFor()
+    assert.ok((await controlAppearance(badge)).minContrast >= 3, 'attention badge unreadable')
     await page.evaluate(() => window.disposeFixture())
   }
   await page.goto('about:blank')

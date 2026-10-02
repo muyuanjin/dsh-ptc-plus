@@ -1453,6 +1453,16 @@ test('saved cards retain exact source across remount and locale changes; catalog
     expect(view.container.querySelector('.ptcPlusReplSummary')).toBe(summary)
     expect(summary.textContent).toBe(locale === 'en' ? '2 global entries' : '2 个全局条目')
     await snapshot(`popover-global-${locale}`)
+    if (process.env.PTC_BINDING_UI_FIXTURE) {
+      projection.set('ptcPlusRepl', { available: true, total: 4, omitted: 0,
+        entries: ['variable', 'function', 'class', 'import'].map(kind => ({ name: `${kind}Value`, kind,
+          definition: { source: 'const value = 42', line: 1, column: 1 } })) })
+      fireEvent.click(view.container.querySelectorAll('.ptcPlusReplTab')[0])
+      await runtime.flush()
+      await snapshot(`kinds-${locale}`)
+      fireEvent.click(view.container.querySelectorAll('.ptcPlusReplTab')[1])
+      await runtime.flush()
+    }
   }
   setLocale('en')
   await runtime.flush()

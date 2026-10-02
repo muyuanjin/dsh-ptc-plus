@@ -107,8 +107,8 @@
       "generations": ["whole-entry", "per-name", "legacy and current module transforms"],
       "platforms": ["browser client", "Node worker", "official DSH host"],
       "consumers": ["users", "model requests", "session recovery"],
-      "oracle": "isolated binding workers, storage fixtures, client host adapters and react-is component classification; official Button computed-style references and fallback reset fixtures",
-      "evidence": ["test/user-bindings-runtime.test.js", "test/user-binding-console.test.js", "test/client-host-compat.test.js", "test/repl-value-observer.test.js", "test/runtime-config.test.js", "test/plugin-settings.test.js", "test/client-runtime.spec.js", "scripts/client-web-smoke.mjs", "scripts/client-fallback-smoke.mjs"],
+      "oracle": "isolated binding workers, storage fixtures, client host adapters and react-is component classification; bounded computed-style, contrast, keyboard focus, hover, disabled and reachability oracle with retained-handler CSS counterexamples in native/fallback reference palettes and packed official Host themes (docs/client-visual-contract.md)",
+      "evidence": ["test/user-bindings-runtime.test.js", "test/user-binding-console.test.js", "test/client-host-compat.test.js", "test/repl-value-observer.test.js", "test/runtime-config.test.js", "test/plugin-settings.test.js", "test/client-runtime.spec.js", "scripts/client-web-smoke.mjs", "scripts/client-fallback-smoke.mjs", "scripts/client-binding-layout.mjs", "scripts/client-visual-contract.mjs", "scripts/client-visual-check.mjs"],
       "dependsOn": ["compiler-and-callables", "execution-kernel", "persistence-and-recovery", "host-integration"]
     }
   ]

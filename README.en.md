@@ -209,6 +209,8 @@ The workbench can run unsaved source and retain temporary variables across execu
 
 The **REPL tab** lets you search retained names, inspect definitions, see reuse counts and bounded value previews, and open the global binding workbench. Previews have type and size limits; missing, incomplete, or unreadable previews are identified explicitly, and display does not invoke user getters. The green **PTC Plus** header indicator offers a quick binding list on wide screens; use the REPL tab on narrow screens.
 
+Workbench controls provide visible keyboard focus and disabled feedback, and REPL names remain readable in light and dark themes. See the [visual contract](docs/client-visual-contract.md) for browser regression checks and their coverage limits.
+
 ![Session state and the global binding workbench in the REPL tab](assets/ptc-plus-repl-workspace-en.png)
 
 The sparkle menu beside the composer groups binding authoring, entry management, and **PTC Plus settings**. Its settings dialog and the sidebar plugin configuration page share the same configuration:

@@ -88,6 +88,7 @@
     "build": "node scripts/client-bundle.mjs build && node scripts/compiler-bundle.mjs build",
     "build:check": "node scripts/client-bundle.mjs check && node scripts/compiler-bundle.mjs check",
     "test:client": "vitest run --config scripts/client-test.config.mjs",
+    "test:client:visual": "node scripts/client-visual-check.mjs",
     "test:semantics": "node --test --test-concurrency=1 test/semantic-test262.test.js test/semantic-dialect.test.js test/semantic-boundaries.test.js",
     "semantic:check": "node scripts/semantic-obligations.mjs",
     "test:client:web": "node scripts/client-web-smoke.mjs",
@@ -111,8 +112,8 @@
     "coverage": "node scripts/coverage.mjs",
     "coverage:focus": "node scripts/coverage.mjs --focus",
     "test:ci:runtime": "node --test --test-concurrency=1 test/package-contract.test.js test/compiler-platform.test.js test/direct-surface-policy.test.js test/isolated-entrance.test.js test/plugin-native-call-transport.test.js",
-    "verify": "npm run review:validate && npm run host:baseline:verify && npm run semantic:check && npm run build:check && node --check index.js && node --check internal/kernel-worker.js && node --check scripts/migrate-session-log.mjs && node --check scripts/expensive-headless-acceptance.mjs && node --check scripts/ab-headless-trajectories.mjs && npm run test:client && npm run coverage",
-    "verify:ci": "npm run review:validate && npm run host:baseline:verify && npm run semantic:check && npm run build:check && node --check index.js && node --check internal/kernel-worker.js && node --check scripts/migrate-session-log.mjs && npm run test:client && npm run test:ci:runtime",
+    "verify": "npm run review:validate && npm run host:baseline:verify && npm run semantic:check && npm run build:check && node --check index.js && node --check internal/kernel-worker.js && node --check scripts/migrate-session-log.mjs && node --check scripts/expensive-headless-acceptance.mjs && node --check scripts/ab-headless-trajectories.mjs && npm run test:client:visual && npm run coverage",
+    "verify:ci": "npm run review:validate && npm run host:baseline:verify && npm run semantic:check && npm run build:check && node --check index.js && node --check internal/kernel-worker.js && node --check scripts/migrate-session-log.mjs && npm run test:client:visual && npm run test:ci:runtime",
     "check": "node scripts/review-findings.mjs check",
     "test:expensive": "node scripts/expensive-headless-acceptance.mjs",
     "test:ab": "node scripts/ab-headless-trajectories.mjs"

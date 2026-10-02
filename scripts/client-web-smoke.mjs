@@ -11,6 +11,7 @@ import { probeMarker, probeReason } from '../test/binding-web-adapter.js'
 import { npmCliCommand } from './npm-cli.mjs'
 import { extractPackFilename } from './npm-pack-filename.mjs'
 import { hostToolRuntime, ptcToolsMode } from './dsh-host-contract.mjs'
+import { assertControlVisual, assertVisualSurface } from './client-visual-contract.mjs'
 import {
   TERMINATION_GRACE_MS,
   decodeSessionLog,
@@ -77,6 +78,9 @@ async function verifyDock(label, width = 1440, height = 1000) {
   if (width < 1024) await page.locator('[data-sidebar-collapsed=true]').waitFor()
   const panel = page.locator('.ptcPlusBindingDock')
   await panel.waitFor()
+  for (const action of await panel.locator('.ptcPlusBindingDockActions button').all()) {
+    await assertControlVisual(action, { action: true, hover: true, disabled: true, label: `${label}/packed dock action` })
+  }
   await panel.evaluate(async element => {
     let previous
     let stable = 0
@@ -1950,6 +1954,7 @@ export async function main(argv = process.argv.slice(2)) {
         if (width < 1024) await page.locator('[data-sidebar-collapsed=true]').waitFor()
         await page.locator('.ptcPlusConsole').evaluate(element => { element.scrollTop = 0 })
         await verifyReplLayout('global')
+        await assertVisualSurface(page, page.locator('.ptcPlusConsole'), 'packed dark workbench')
         await page.screenshot({ path: join(evidence, width === 1440 ? 'repl-global.png' : `repl-global-${width}.png`),
           fullPage: true, animations: 'disabled' })
         assert.equal(await page.locator('.ptcPlusBindings').evaluate(element => element.scrollWidth <= element.clientWidth + 1), true)
@@ -1960,6 +1965,7 @@ export async function main(argv = process.argv.slice(2)) {
         await page.setViewportSize({ width, height: 1000 })
         if (width < 1024) await page.locator('[data-sidebar-collapsed=true]').waitFor()
         await verifyReplLayout('global-light')
+        await assertVisualSurface(page, page.locator('.ptcPlusConsole'), 'packed light workbench')
         await page.screenshot({ path: join(evidence, `repl-global-light-${width}.png`), fullPage: true, animations: 'disabled' })
       }
       await rpc('settings/update', { ns: 'locale', patch: { preference: 'zh' } })

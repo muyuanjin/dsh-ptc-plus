@@ -1,5 +1,7 @@
 # Client UI
 
+标准 `verify`、`check` 与 CI 的 `verify:ci` 均执行 `test:client:visual`，在一次 Client 测试生成的实际 renderer 夹具上检查关键控件的尺寸、可读性、悬停、键盘焦点、禁用反馈及布局。浏览器准备、覆盖清单、故障反例与官方宿主验收边界见 [Client visual contract](client-visual-contract.md)。
+
 PTC Plus 提供**插件设置卡片**。卡片座位由宿主代际决定：更早、未冻结的代际在 DSH Web/Desktop 的 Settings → Plugin configuration 中以 `settings.plugin.item` 渲染，当前代际在侧栏 Plugins → Installed 页面以 `plugins.row.config`（键 `<包名>#<行 id>`）渲染该 bundle 自己的配置；General 设置不是本卡片的座位，`src/client-host-compat.js` 只发布到这两个插件配置座位，由声明了槽位的那一代决定哪个生效，卡片按座位提供的 `summary`/`page` 视图分别渲染一句描述与完整表单。输入框旁的星光菜单还直接打开复用同一表单的应用内设置窗口，不依赖宿主页面的局部导航状态；菜单项悬浮提示保留原生设置座位的路径。
 
 Client 根入口只依赖 `slots`、`locale`、`connection` 和 `remote`；settings transport 由当前代的 `configForms` 或更早未冻结兼容支的 `settingsScope` 可选注入提供，两者都缺席时不再等待某个名字出现：插件以 `internal/config-spec.js` 的默认值参与订阅，transport 出现时自动接管，因此改名或裁剪设置传输只会降级设置面，不会让根入口在注册任何贡献之前挂起。功能资格只被显式关闭：可读快照按字段判定，不可读快照按同一份默认值判定，`enabled: false` 才关闭。头部贡献直接消费公开 session slot 提供的 `useProjection`；REPL 注册另依赖 `sessions` 的当前选择和 projection face。命令卡片等待公开 command slot，composer 管理入口直接消费现有管理 Remote；其中的编写动作再等待 `remote.commands` 与公开输入 hooks，不依赖已改名的 conversation registry 或未使用的 `ui-session` 模块。缺失、卸载或迟到的 slot/provider 只影响需要它的贡献；没有 `useProjection` 时不挂载依赖它的会话视图，命令卡片保留宿主结果但不提供草稿操作。没有输入 hooks 时不显示编写动作，已有全局绑定仍可查看和启停。preset 优先读取 `agentPreset` projection，缺失时依次读取会话公开摘要里的 projection 值与旧宿主的 `agentPreset` 字段；binding 值和草稿资格不采用该回退。当前会话身份取宿主已发布的选中证据：更早未冻结的选择形状在会话列表上投影 `current`，当前代际把视图选择留在 controller 之外、以主视图持有的会话表达。两者都不读取私有 store。设置和独立正文 tool view 继续可用，不读取私有 store 或自行重建会话状态。

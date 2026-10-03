@@ -11,7 +11,7 @@ import { probeMarker, probeReason } from '../test/binding-web-adapter.js'
 import { npmCliCommand } from './npm-cli.mjs'
 import { extractPackFilename } from './npm-pack-filename.mjs'
 import { hostToolRuntime, ptcToolsMode } from './dsh-host-contract.mjs'
-import { assertControlVisual, assertToolTypography, assertVisualSurface } from './client-visual-contract.mjs'
+import { assertControlVisual, assertToolLayout, assertToolTypography, assertVisualSurface } from './client-visual-contract.mjs'
 import {
   TERMINATION_GRACE_MS,
   decodeSessionLog,
@@ -272,6 +272,34 @@ async function verifyBindingScroll(rpc) {
           await source.locator('summary').click()
         }
         await captureBindingScroll(`${mode}/process-${processOpen}/source-${sourceOpen}`)
+        if (mode === 'enhanced' && processOpen) {
+          const group = page.locator('[data-chat-group-key]').filter({ has: page.locator('.ptcPlusTool') }).first()
+          if (await group.count()) {
+            const groupDisclosure = group.locator(':scope > div > button[aria-controls]').first()
+            if (await groupDisclosure.isVisible() && await groupDisclosure.getAttribute('aria-expanded') === 'false') {
+              await groupDisclosure.click()
+            }
+          }
+          const tool = page.locator('.ptcPlusTool:visible').first()
+          await tool.waitFor()
+          await tool.scrollIntoViewIfNeeded()
+          assert.ok(await tool.locator('.ptcPlusFeature').count() >= 2,
+            'Packed tool fixture must contain real recorded import/export features')
+          await assertToolTypography(tool, `packed web/${width}/tool typography`)
+          await assertToolLayout(tool, `packed web/${width}/tool layout`)
+          const disclosure = tool.locator('[data-disclosure-row],.ptcPlusToolSummary')
+          assert.equal(await disclosure.getAttribute('aria-expanded'), 'false',
+            'Packed tool must start with its own source/result collapsed')
+          await disclosure.focus()
+          assert.equal(await disclosure.evaluate(element => document.activeElement === element), true,
+            'Packed visible tool header must receive keyboard focus')
+          await page.keyboard.press('Enter')
+          await tool.locator('.ptcPlusToolBody').waitFor()
+          await assertToolLayout(tool, `packed web/${width}/expanded tool layout`)
+          await disclosure.focus()
+          await page.keyboard.press('Enter')
+          await tool.locator('.ptcPlusToolBody').waitFor({ state: 'detached' })
+        }
       }
     }
   }

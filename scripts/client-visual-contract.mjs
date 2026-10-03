@@ -310,6 +310,93 @@ export async function assertToolTypography(root, label = 'tool typography') {
   }
 }
 
+export async function assertToolLayout(root, label = 'tool layout', following) {
+  const metrics = await root.evaluate(element => {
+    const box = node => {
+      const rect = node.getBoundingClientRect()
+      return { top: rect.top, bottom: rect.bottom, left: rect.left, right: rect.right }
+    }
+    const header = element.querySelector('[data-disclosure-row],.ptcPlusToolSummary')
+    const preview = element.querySelector('.ptcPlusToolPreview')
+    const summary = element.querySelector('.ptcPlusToolSummaryLine') || (preview === null ? header : null)
+    const features = element.querySelector('.ptcPlusFeatures')
+    const body = element.querySelector('.ptcPlusToolBody')
+    const clipped = []
+    const textRegions = []
+    for (const node of element.querySelectorAll(
+      '.ptcPlusToolTitle,.ptcPlusToolState,.ptcPlusToolDescription,.ptcPlusFeatureName,.ptcPlusFeatureDetail',
+    )) {
+      const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT)
+      const rects = []
+      while (walker.nextNode()) {
+        if (walker.currentNode.textContent.trim() === '') continue
+        const range = document.createRange()
+        range.selectNodeContents(walker.currentNode)
+        for (const rect of range.getClientRects()) {
+          rects.push({ top: rect.top, bottom: rect.bottom, left: rect.left, right: rect.right })
+          for (let ancestor = node; ancestor; ancestor = ancestor.parentElement) {
+            const style = getComputedStyle(ancestor)
+            const bounds = box(ancestor)
+            const ownsVertical = ancestor === element || ancestor === header
+              || ['hidden', 'clip', 'auto', 'scroll'].includes(style.overflowY)
+            if (ownsVertical && (rect.top < bounds.top - 1 || rect.bottom > bounds.bottom + 1)) {
+              clipped.push(`${node.className}: vertical clipping by ${ancestor.className}`)
+            }
+            // Description/detail ellipsis is allowed. Titles, states and feature
+            // names must fit the card without losing their meaningful text.
+            if (!node.matches('.ptcPlusToolDescription,.ptcPlusFeatureDetail')
+              && (ancestor === element || ['hidden', 'clip'].includes(style.overflowX))
+              && (rect.left < bounds.left - 1 || rect.right > bounds.right + 1)) {
+              clipped.push(`${node.className}: horizontal clipping by ${ancestor.className}`)
+            }
+            if (ancestor === element) break
+          }
+        }
+      }
+      // The Host may paint its title with ::after instead of a text node.
+      if (rects.length === 0 && node.matches('.ptcPlusToolTitle')) rects.push(box(node))
+      textRegions.push({ name: node.className, rects })
+    }
+    const overlaps = []
+    for (let i = 0; i < textRegions.length; i += 1) {
+      for (const other of textRegions.slice(i + 1)) {
+        if (textRegions[i].rects.some(a => other.rects.some(b => (
+          Math.min(a.right, b.right) - Math.max(a.left, b.left) > 1
+          && Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top) > 1
+        )))) overlaps.push(`${textRegions[i].name} intersects ${other.name}`)
+      }
+    }
+    return { root: box(element), header: header && box(header), preview: preview && box(preview),
+      summary: summary && box(summary), features: features && box(features), body: body && box(body), clipped, overlaps }
+  })
+  assert.ok(metrics.header, `${label}: tool header is missing`)
+  assert.ok(metrics.root.right > metrics.root.left && metrics.root.bottom > metrics.root.top
+    && metrics.header.right > metrics.header.left && metrics.header.bottom > metrics.header.top,
+  `${label}: tool card or header is not rendered`)
+  assert.deepEqual(metrics.clipped, [], `${label}: tool text is clipped`)
+  assert.deepEqual(metrics.overlaps, [], `${label}: tool text overlaps`)
+  if (metrics.preview) {
+    assert.ok(metrics.preview.top >= metrics.header.top - 1
+      && metrics.preview.bottom <= metrics.header.bottom + 1,
+    `${label}: preview escapes its header`)
+  }
+  if (metrics.summary && metrics.features) {
+    assert.ok(metrics.features.top >= metrics.summary.bottom + 3,
+      `${label}: description and features have no readable vertical gap`)
+  }
+  if (metrics.features && metrics.body) {
+    assert.ok(metrics.body.top >= metrics.features.bottom,
+      `${label}: expanded body intersects feature labels`)
+  }
+  if (metrics.body) assert.ok(metrics.body.top >= metrics.header.bottom,
+    `${label}: expanded body intersects the header`)
+  if (following) {
+    const next = await following.boundingBox()
+    assert.ok(next && next.y >= metrics.root.bottom,
+      `${label}: tool card intersects the following message`)
+  }
+}
+
 export async function assertContentCounterexamples(page, { input, selected }) {
   if (input) assert.ok(await input.inputValue(), 'input contrast probe needs actual renderer value')
   if (selected) assert.equal(await selected.isDisabled(), false, 'selected hover probe needs enabled renderer control')

@@ -3,7 +3,7 @@ import { mkdir, readFile } from 'node:fs/promises'
 import { build } from 'esbuild'
 import { chromium } from 'playwright'
 import { parseArgs } from 'node:util'
-import { assertContentCounterexamples, assertControlVisual, assertToolStateVisual, assertToolTypography, assertVisualCounterexamples, assertVisualSurface, controlAppearance, setFixtureTheme } from './client-visual-contract.mjs'
+import { assertContentCounterexamples, assertControlVisual, assertToolLayout, assertToolStateVisual, assertToolTypography, assertVisualCounterexamples, assertVisualSurface, controlAppearance, setFixtureTheme } from './client-visual-contract.mjs'
 
 const { values } = parseArgs({ options: { 'browser-channel': { type: 'string' } } })
 
@@ -86,9 +86,17 @@ const buttonFixture = await build({
       useBindingReview:()=>[review,view],icons:{check:Icon,close:Icon,chevron:Icon}});
     const {PTCPlusToolRow}=createPtcToolView(React,{DisclosureRow:window.nativeButtons?DisclosureRow:undefined,
       icons:{chevron:Icon,check:Icon,inspect:Icon}});
+    const toolSource='import path from "node:path"; export const answer = 42';
+    const toolDescription='Test module syntax, top-level await, relative resolution and continuous state across computations';
+    const rewrites=[{kind:'import',description:'Adapted import.',source:'node:path'},
+      {kind:'export',description:'Removed export.'}];
     const block={kind:'tool-result',callId:'visual-tool',call:{name:'run_code',
-      argsRaw:JSON.stringify({code:'return 42',description:'Compute the answer'})},
-      content:[{type:'text',text:'42'}],isError:false,subCalls:[]};
+      argsRaw:JSON.stringify({code:toolSource,description:toolDescription})},
+      content:[{type:'text',text:'42'}],isError:false,subCalls:[],meta:{
+        dshPtcPlus:{version:3,bindingMode:'loose',rewritePolicy:{autoRewriteImports:true,
+          autoStripExports:true,autoSplitRedeclarations:true},status:'durable',calls:[],operations:[],
+          confirms:[],diagnostics:[],completion:{kind:'return',hasValue:false}},
+        dshPtcPlusRewrites:rewrites}};
     const root=createRoot(document.querySelector('#root'));
     const render=()=>root.render(h(React.Fragment,null,
       h(BindingReviewDock,{sessionId:'probe',useProjection:()=>null,t:key=>SETTINGS_COPY[window.buttonLocale][key]??key}),
@@ -96,7 +104,18 @@ const buttonFixture = await build({
         h(Button,{size:'sm',variant:'primary'},'Native reference'),
         h(ActionButton,{disabled:true},'Disabled action')),
       h(PTCPlusToolRow,{toolName:'run_code',block,inspect:()=>window.actions.push(['inspect']),
-        t:key=>SETTINGS_COPY[window.buttonLocale][key]??key})));
+        t:key=>SETTINGS_COPY[window.buttonLocale][key]??key}),
+      h('div',{id:'following-message'},'Let me do it. Also cleanup probe file later.')));
+    window.setToolExample=example=>{
+      block.call.argsRaw=JSON.stringify({code:toolSource,
+        description:example==='empty'||example==='features-only'?'':example==='short'?'Compute the answer':toolDescription});
+      block.meta.dshPtcPlusRewrites=example==='none'||example==='empty'?[]:example==='long'
+        ? [{...rewrites[0],source:'file:///workspace/'+('long-provider-path/').repeat(20)+'module.ts'},
+          rewrites[1],{kind:'redeclaration',
+            description:'split a mixed top-level declaration while preserving native pattern initialization',source:'retainedValue'}]
+        : rewrites;
+      render();
+    };
     window.setBusy=busy=>{view.busy=busy;render()};
     window.setToolState=state=>{
       block.kind=state==='running'?'tool-call':'tool-result';
@@ -178,11 +197,41 @@ try {
         await page.evaluate(() => window.setBusy(false))
         await page.waitForFunction(() => !document.querySelector('.ptcPlusBindingDockActions button').disabled)
         const tool = page.locator('.ptcPlusTool')
+        const following = page.locator('#following-message')
+        for (const example of ['none', 'short', 'long', 'empty', 'features-only', 'rewrites']) {
+          await page.evaluate(example => window.setToolExample(example), example)
+          await page.waitForFunction(example => {
+            const count=document.querySelectorAll('.ptcPlusFeature').length;
+            return count===(example==='none'||example==='empty'?0:example==='long'?3:2);
+          }, example)
+          await assertToolLayout(tool, `${theme}/${native ? 'native' : 'fallback'}/${locale}/${example}`, following)
+          await assertToolTypography(tool, `${theme}/${native ? 'native' : 'fallback'}/${locale}/${example}`)
+        }
         await assertToolTypography(tool, `${theme}/${native ? 'native' : 'fallback'}/${locale}`)
+        if (width === 320 && theme === 'light' && locale === 'en') {
+          for (const [css, failure] of native ? [
+            ['.ptcPlusTool .ptcPlusToolRow{height:24px!important;align-items:center!important}', /text is clipped|preview escapes/],
+            ['.ptcPlusToolPreview{gap:0!important}', /readable vertical gap/],
+            ['.ptcPlusTool{display:none!important}', /not rendered/],
+          ] : [
+            ['.ptcPlusTool{height:24px!important;overflow:hidden!important}', /text is clipped/],
+            ['.ptcPlusToolSummary+.ptcPlusFeatures{margin-top:0!important}', /readable vertical gap/],
+            ['.ptcPlusTool{display:none!important}', /not rendered/],
+          ]) {
+            const sheet = await page.addStyleTag({ content: css })
+            try {
+              await assert.rejects(() => assertToolLayout(tool, 'tool layout counterexample', following), failure)
+            } finally {
+              await sheet.evaluate(element => element.remove())
+            }
+          }
+          await assertToolLayout(tool, 'restored tool layout', following)
+        }
         for (const state of ['running', 'error', 'stopped', 'ok']) {
           await page.evaluate(state => window.setToolState(state), state)
           await page.waitForFunction(state => document.querySelector('.ptcPlusToolSummaryLine,.ptcPlusToolSummary')?.dataset.state === state, state)
           await assertToolTypography(tool, `${theme}/${native ? 'native' : 'fallback'}/${state}`)
+          await assertToolLayout(tool, `${theme}/${native ? 'native' : 'fallback'}/${state}`, following)
           await assertToolStateVisual(tool, `${theme}/${native ? 'native' : 'fallback'}/${state}`)
           if (state === 'error' && width === 320 && locale === 'en') {
             const sheet = await page.addStyleTag({ content: '.ptcPlusToolState{color:#010101!important;background:#010101!important}' })
@@ -199,6 +248,7 @@ try {
         await page.keyboard.press('Enter')
         await tool.locator('.ptcPlusToolBody').waitFor()
         await assertToolTypography(tool, `${theme}/${native ? 'native' : 'fallback'}/expanded`)
+        await assertToolLayout(tool, `${theme}/${native ? 'native' : 'fallback'}/expanded`, following)
         const inspect = tool.locator('.ptcPlusInspect')
         await page.keyboard.press('Tab')
         await inspect.focus()

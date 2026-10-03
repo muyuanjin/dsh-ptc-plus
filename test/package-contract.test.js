@@ -44,16 +44,23 @@ test('execution smoke rejects capability-only changes and accepts the real plugi
   assert.match(result.stdout, /session run_code\/edit_run_code continuous state proved/)
 })
 
-test('keeps host-owned DSH runtime packages out of plugin dependencies', async () => {
+test('keeps host-owned DSH service packages out of plugin dependencies', async () => {
   const manifest = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'))
-  const ordinaryDshDependencies = Object.keys(manifest.dependencies ?? {})
-    .filter(name => name.startsWith('@deepseek-ai/dsh-'))
-
-  assert.deepEqual(ordinaryDshDependencies, [])
   for (const packageName of DSH_RUNTIME_PEERS) {
+    assert.equal(manifest.dependencies?.[packageName], undefined)
     assert.equal(manifest.peerDependencies?.[packageName], '*')
     assert.equal(manifest.devDependencies?.[packageName], 'next')
   }
+})
+
+test('declares directly imported DSH utility packages for clean installs', async () => {
+  const manifest = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'))
+  const lock = JSON.parse(await readFile(new URL('../package-lock.json', import.meta.url), 'utf8'))
+  const packageName = '@deepseek-ai/dsh-util-values'
+
+  assert.equal(manifest.dependencies?.[packageName], '^0.2.0-rc.2 || ^0.2.1-alpha.1')
+  assert.equal(lock.packages[''].dependencies[packageName], manifest.dependencies[packageName])
+  assert.equal(lock.packages[`node_modules/${packageName}`].dev, undefined)
 })
 
 test('freezes official latest and next host baselines without changing ordinary installs', async () => {

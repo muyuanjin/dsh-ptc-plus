@@ -222,7 +222,7 @@ export const surfaceControls = [
   ['REPL definition', '.ptcPlusReplBindingTrigger', { hover: true }],
   ['REPL tab', '.ptcPlusReplTab', {}],
   ['source disclosure', '.ptcPlusBindingSourceDetails>summary,.ptcPlusEntrySettings>summary', {}],
-  ['dock disclosure', '.ptcPlusBindingDockToggle', { hover: true }],
+  ['dock disclosure', 'button.ptcPlusBindingDockToggle', { hover: true }],
   ['tool disclosure', '.ptcPlusToolSummary[data-expandable=true]', {}],
 ]
 
@@ -251,6 +251,139 @@ export async function assertToolStateVisual(root, label = 'tool state') {
     const appearance = await controlAppearance(text)
     assert.ok(appearance.minContrast >= 3, `${label}: unreadable tool state (${appearance.minContrast.toFixed(2)}:1)`)
   }
+}
+
+export async function assertSparkleMenuFocus(root, label = 'sparkle menu') {
+  const metrics = await root.evaluate(menu => {
+    const focus = document.activeElement
+    const scroll = menu.querySelector('.ptcPlusBindingMenuScroll')
+    const rect = focus.getBoundingClientRect()
+    const clip = scroll.getBoundingClientRect()
+    const x = rect.left + rect.width / 2
+    const y = rect.top + rect.height / 2
+    return { label: focus.textContent, owned: scroll.contains(focus), scrollTop: scroll.scrollTop,
+      centerInClip: x >= clip.left && x <= clip.right && y >= clip.top && y <= clip.bottom,
+      hit: focus.contains(document.elementFromPoint(x, y)), pageScroll: { x: scrollX, y: scrollY } }
+  })
+  assert.ok(metrics.owned && metrics.centerInClip && metrics.hit,
+    `${label}: focused catalog control is clipped or covered: ${metrics.label}`)
+  return metrics
+}
+
+export async function assertSparkleMenuTypography(root, label = 'sparkle menu typography') {
+  const metrics = await root.evaluate(menu => {
+    const content = menu.querySelector('.ptcPlusBindingMenuContent')
+    const style = getComputedStyle(content)
+    const samples = [
+      ['caption', '[aria-expanded] > span:last-child', '13px'],
+      ['name', '.ptcPlusBindingQuickName strong', '13px'],
+      ['purpose', '.ptcPlusBindingQuickPurpose', '12px'],
+      ['state', '.ptcPlusBindingQuickState', '11px'],
+    ].flatMap(([kind, selector, size]) => [...content.querySelectorAll(selector)].map(node => {
+      const appearance = getComputedStyle(node)
+      const row = node.closest('button')
+      const bounds = row.getBoundingClientRect()
+      const range = document.createRange()
+      range.selectNodeContents(node)
+      const clipped = [...range.getClientRects()].some(rect => rect.top < bounds.top - 1 || rect.bottom > bounds.bottom + 1)
+      return { kind, expectedSize: size, size: appearance.fontSize, line: appearance.lineHeight,
+        family: appearance.fontFamily, clipped }
+    }))
+    const disclosure = content.querySelector('[aria-expanded]')
+    let aligned = true
+    if (disclosure) {
+      const caret = disclosure.querySelector('.ptcPlusMenuGroupChevron').getBoundingClientRect()
+      const caption = disclosure.lastElementChild.getBoundingClientRect()
+      const captionLineHeight = parseFloat(getComputedStyle(disclosure.lastElementChild).lineHeight)
+      aligned = caption.left >= caret.right + 4
+        && Math.abs((caret.top + caret.bottom) / 2 - caption.top - captionLineHeight / 2) <= 1
+    }
+    return { size: style.fontSize, line: style.lineHeight, family: style.fontFamily, samples, aligned }
+  })
+  assert.equal(metrics.size, '13px', `${label}: menu base font size drifted`)
+  assert.equal(metrics.line, '18px', `${label}: menu base line height drifted`)
+  for (const sample of metrics.samples) {
+    assert.equal(sample.size, sample.expectedSize, `${label}/${sample.kind}: font size drifted`)
+    assert.equal(sample.line, '18px', `${label}/${sample.kind}: line height drifted`)
+    assert.equal(sample.family, metrics.family, `${label}/${sample.kind}: font family drifted`)
+    assert.equal(sample.clipped, false, `${label}/${sample.kind}: vertical text clipping`)
+  }
+  assert.equal(metrics.aligned, true, `${label}: disclosure caret and caption are misaligned`)
+  return metrics
+}
+
+export async function assertSparkleMenuLayout(root, label = 'sparkle menu') {
+  const metrics = await root.evaluate(menu => {
+    const scroll = menu.querySelector('.ptcPlusBindingMenuScroll')
+    const footer = menu.querySelector('.ptcPlusMenuActions')
+    const bounds = element => {
+      const { top, bottom, left, right, height, width } = element.getBoundingClientRect()
+      return { top, bottom, left, right, height, width }
+    }
+    return {
+      menu: bounds(menu), scroll: bounds(scroll), footer: bounds(footer),
+      readingHeight: scroll.clientHeight, scrollable: scroll.scrollHeight > scroll.clientHeight,
+      outerScroll: menu.scrollTop, menuOverflow: menu.scrollHeight - menu.clientHeight,
+      actions: [...footer.querySelectorAll('button')].map(button => {
+        const rect = bounds(button)
+        return { ...rect, label: button.textContent,
+          hit: button.contains(document.elementFromPoint((rect.left + rect.right) / 2, (rect.top + rect.bottom) / 2)) }
+      }), viewport: { width: innerWidth, height: innerHeight },
+    }
+  })
+  assert.ok(metrics.menu.top >= 0 && metrics.menu.bottom <= metrics.viewport.height + 1
+    && metrics.menu.left >= 0 && metrics.menu.right <= metrics.viewport.width + 1, `${label}: menu outside viewport`)
+  assert.ok(metrics.readingHeight >= 24, `${label}: no usable catalog reading area (${metrics.readingHeight}px; footer ${metrics.footer.height}px)`)
+  assert.ok(metrics.scroll.bottom <= metrics.footer.top + 1, `${label}: catalog overlaps footer`)
+  assert.ok(metrics.footer.height > 0 && metrics.footer.bottom <= metrics.menu.bottom + 1,
+    `${label}: footer outside menu`)
+  assert.ok(metrics.outerScroll === 0 && metrics.menuOverflow <= 1, `${label}: outer menu scrolls its footer`)
+  for (const action of metrics.actions) {
+    assert.ok(action.height >= 24 && action.width > 0 && action.top >= metrics.footer.top - 1
+      && action.bottom <= metrics.footer.bottom + 1 && action.left >= metrics.menu.left
+      && action.right <= metrics.menu.right && action.hit, `${label}: action is clipped or covered: ${action.label}`)
+  }
+  assert.ok(metrics.actions.length > 0, `${label}: footer has no action`)
+  return metrics
+}
+
+export async function assertDraftReviewLayout(root, label, enlarged = false) {
+  const metrics = await root.evaluate(element => {
+    const rect = node => node?.getBoundingClientRect().toJSON()
+    const compact = element.dataset.compact === 'true'
+    const body = compact ? null : element.querySelector('.ptcPlusBindingDockBody')
+    return { panel: rect(element), head: rect(element.querySelector('.ptcPlusBindingDockHead')),
+      controls: [...element.querySelectorAll('.ptcPlusBindingDockControls button')].map(rect).sort((a, b) => a.left - b.left),
+      compact, body: rect(body), actions: rect(element.querySelector('.ptcPlusBindingDockActions')),
+      bodyOverflow: body && getComputedStyle(body).overflowY,
+      panelOverflow: getComputedStyle(element).overflowY,
+      scrollHeight: body?.scrollHeight, clientHeight: body?.clientHeight,
+      viewport: { width: innerWidth, height: innerHeight } }
+  })
+  assert.ok(metrics.panel.width > 0 && metrics.panel.height > 0, `${label}: missing draft review`)
+  assert.equal(metrics.controls.length, 2, `${label}: resize and close must remain separate controls`)
+  assert.ok(metrics.controls[1].left - metrics.controls[0].right >= 12,
+    `${label}: resize and close controls are too close`)
+  assert.ok(metrics.panel.left >= 0 && metrics.panel.right <= metrics.viewport.width + 1
+    && metrics.panel.top >= 0 && metrics.panel.bottom <= metrics.viewport.height + 1,
+  `${label}: draft review outside viewport`)
+  if (metrics.body) {
+    assert.ok(metrics.clientHeight >= (enlarged ? 24 : 40) && ['auto', 'scroll'].includes(metrics.bodyOverflow),
+      `${label}: accepted source has no scrollable reading area ${JSON.stringify(metrics)}`)
+    assert.ok(metrics.body.top >= metrics.head.bottom - 1 && metrics.actions.top >= metrics.body.bottom - 1,
+      `${label}: source overlaps header or actions`)
+    if (enlarged) {
+      assert.ok(metrics.panel.height >= metrics.viewport.height * .7, `${label}: enlarged review is still a preview`)
+      assert.equal(metrics.panelOverflow, 'hidden', `${label}: enlarged actions scroll with source`)
+    }
+  }
+  for (const control of await root.locator('.ptcPlusBindingDockHead button,.ptcPlusBindingDockActions button').filter({ visible: true }).all()) {
+    const appearance = await controlAppearance(control)
+    assert.ok(appearance.reachable && appearance.top >= metrics.head.top - 1
+      && appearance.bottom <= metrics.panel.bottom + 1,
+    `${label}: review action is covered or clipped ${JSON.stringify({ appearance, panel: metrics.panel })}`)
+  }
+  return metrics
 }
 
 export async function assertToolTypography(root, label = 'tool typography') {

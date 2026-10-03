@@ -11,7 +11,8 @@ import { probeMarker, probeReason } from '../test/binding-web-adapter.js'
 import { npmCliCommand } from './npm-cli.mjs'
 import { extractPackFilename } from './npm-pack-filename.mjs'
 import { hostToolRuntime, ptcToolsMode } from './dsh-host-contract.mjs'
-import { assertControlVisual, assertToolLayout, assertToolTypography, assertVisualSurface } from './client-visual-contract.mjs'
+import { assertSparkleMenuTypography, assertSparkleMenuFocus, assertSparkleMenuLayout, assertDraftReviewLayout, assertControlVisual, assertToolLayout, assertToolTypography, assertVisualSurface } from './client-visual-contract.mjs'
+import { SETTINGS_COPY } from '../src/client-copy.js'
 import {
   TERMINATION_GRACE_MS,
   decodeSessionLog,
@@ -39,6 +40,7 @@ const bindingScrollMeasurements = []
 const replMeasurements = []
 const reloadMeasurements = []
 const dockMeasurements = []
+const menuMeasurements = []
 const bindingWorkbenchEvidence = {}
 let displayLogInvariant = false
 const composerSelector = '[data-composer-seat] :is(textarea, [contenteditable=true])'
@@ -78,9 +80,6 @@ async function verifyDock(label, width = 1440, height = 1000) {
   if (width < 1024) await page.locator('[data-sidebar-collapsed=true]').waitFor()
   const panel = page.locator('.ptcPlusBindingDock')
   await panel.waitFor()
-  for (const action of await panel.locator('.ptcPlusBindingDockActions button').all()) {
-    await assertControlVisual(action, { action: true, hover: true, disabled: true, label: `${label}/packed dock action` })
-  }
   await panel.evaluate(async element => {
     let previous
     let stable = 0
@@ -92,6 +91,9 @@ async function verifyDock(label, width = 1440, height = 1000) {
     }
     assertLayout: if (stable < 6) throw new Error('Dock layout did not settle')
   })
+  for (const action of await panel.locator('.ptcPlusBindingDockActions button').all()) {
+    await assertControlVisual(action, { action: true, hover: true, disabled: true, label: `${label}/packed dock action` })
+  }
   const metrics = await panel.evaluate(element => {
     const body = element.querySelector('.ptcPlusBindingDockBody')
     const composer = document.querySelector('[data-composer-seat] :is(textarea, [contenteditable=true])')
@@ -99,7 +101,7 @@ async function verifyDock(label, width = 1440, height = 1000) {
     return { panel: bounds(element), composer: bounds(composer), viewport: { width: innerWidth, height: innerHeight },
       position: getComputedStyle(element).position, background: getComputedStyle(element).backgroundColor,
       shadow: getComputedStyle(element).boxShadow,
-      anchor: bounds(element.parentElement),
+      anchor: bounds(document.querySelector('.ptcPlusBindingDockAnchor')),
       seat: bounds(document.querySelector('[data-composer-seat]')),
       scrollWidth: document.documentElement.scrollWidth,
       body: body ? { ...bounds(body), scrollHeight: body.scrollHeight, clientHeight: body.clientHeight } : null,
@@ -110,8 +112,10 @@ async function verifyDock(label, width = 1440, height = 1000) {
       }) }
   })
   assert.ok(metrics.panel.bottom <= metrics.composer.top + 1, `${label}: dock is not above the input`)
-  assert.equal(metrics.position, 'relative', `${label}: review escaped the public dock layout`)
-  assert.ok(metrics.anchor.height >= metrics.panel.height - 1, `${label}: dock does not reserve the review height`)
+  assert.equal(metrics.position, 'relative', `${label}: review panel escaped its portal layer`)
+  assert.equal(await panel.evaluate(element => getComputedStyle(element.parentElement).position), 'fixed')
+  assert.equal(metrics.anchor.height, 0, `${label}: draft consumes conversation height`)
+  await assertDraftReviewLayout(panel, label)
   assert.notEqual(metrics.shadow, 'none', `${label}: review has no elevation`)
   assert.ok(!/rgba\(.*,[\s]*0\)|transparent/.test(metrics.background), `${label}: review background is transparent`)
   assert.ok(metrics.panel.top >= -1, `${label}: dock title is unreachable: ${JSON.stringify(metrics)}`)
@@ -1547,9 +1551,15 @@ export async function main(argv = process.argv.slice(2)) {
         && document.activeElement.textContent === 'Reload')
       await writeFile(bindingsFile, bindingsSource)
       await page.keyboard.press('Enter')
-      await page.getByRole('menuitem', { name: /fileTools/ }).waitFor()
+      await page.getByRole('menuitem', { name: /textTools/ }).waitFor()
       await page.waitForFunction(() => document.activeElement?.getAttribute('role') === 'menuitem'
-        && document.activeElement.textContent.includes('fileTools'))
+        && document.activeElement.textContent.includes('textTools'))
+      const expandDisabled = async () => {
+        const group = page.getByRole('menuitem', { name: /^Disabled \(/ })
+        await group.waitFor()
+        if (await group.getAttribute('aria-expanded') === 'false') await group.press('Enter')
+      }
+      await expandDisabled()
       await entry.hover()
       await page.getByRole('menuitem', { name: /fileTools/ }).waitFor()
       assert.equal(await page.locator('.ptcPlusBindingCommand').count(), 0)
@@ -1568,6 +1578,7 @@ export async function main(argv = process.argv.slice(2)) {
       await globalToggle.focus()
       await verifyPendingMenuDismissal('disable')
       await page.keyboard.press('ArrowUp')
+      await expandDisabled()
       await globalToggle.focus()
       await page.keyboard.press('Enter')
       await page.locator('.ptcPlusBindingQuickRow[data-enabled=true]').filter({ hasText: 'fileTools' }).waitFor()
@@ -1595,7 +1606,9 @@ export async function main(argv = process.argv.slice(2)) {
         await page.screenshot({ path: join(evidence, `binding-entry-blank-${width}.png`), animations: 'disabled' })
       }
       await page.getByRole('menuitem', { name: /fileTools/ }).click()
-      await page.locator('.ptcPlusBindingQuickRow[data-enabled=false]').filter({ hasText: 'fileTools' }).waitFor()
+      await page.getByRole('menuitem', { name: 'Disabled (1)', exact: true }).waitFor()
+      await page.waitForFunction(() => document.activeElement?.getAttribute('aria-expanded') === 'false')
+      assert.equal(await page.locator('[data-binding-id=fileTools]').count(), 0)
       assert.equal((await storedBindings()).entries.find(entry => entry.id === 'fileTools').enabled, false)
       await page.keyboard.press('Escape')
       await page.setViewportSize({ width: 390, height: 400 })
@@ -1620,8 +1633,122 @@ export async function main(argv = process.argv.slice(2)) {
       await page.keyboard.press('Escape')
       await page.getByRole('menu').waitFor({ state: 'detached' })
       await clearComposer(composer)
+      const regularBindings = await readFile(bindingsFile, 'utf8')
+      const reloadFixtureCatalog = () => page.evaluate(async () => {
+        const method = 'ptcPlusBindings/invoke'
+        const response = await fetch(`/api/${method}`, { method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ type: 'client-request', rpcId: crypto.randomUUID(), method,
+            payload: { args: { operation: 'reload', payload: {} } } }) })
+        if (!response.ok) throw new Error(`Catalog fixture reload failed: HTTP ${response.status}`)
+        const envelope = (await response.json()).result
+        const result = envelope.ok === true ? envelope.value : envelope
+        if (result?.ok !== true) throw new Error('Catalog fixture reload rejected')
+      })
+      await writeFile(bindingsFile, JSON.stringify({ entries: Array.from({ length: 48 }, (_, index) => ({
+        id: `menuFixture${index}`, name: `menuFixture${index}`, scope: 'namespace', enabled: index % 3 === 0,
+        source: 'export const value = 1', purpose: 'A stored computation input for menu layout verification.',
+      })) }))
+      try {
+        await reloadFixtureCatalog()
+        for (const [width, height] of [[1440, 1000], [390, 600], [320, 420]]) {
+          await page.setViewportSize({ width, height })
+          for (const locale of ['en', 'zh']) for (const theme of ['light', 'dark']) {
+            await rpc('settings/update', { ns: 'locale', patch: { preference: locale } })
+            await rpc('settings/update', { ns: 'ui-theme', patch: { preference: theme } })
+            await entry.click()
+            const menu = page.getByRole('menu')
+            const copy = SETTINGS_COPY[locale]
+            const group = menu.getByRole('menuitem', { name: copy['bindings.quickDisabled'].replace('{count}', '32'), exact: true })
+            await group.waitFor()
+            assert.equal(await group.getAttribute('aria-expanded'), 'false')
+            assert.equal(await menu.locator('[data-binding-id]').count(), 16)
+            const label = `packed/${width}x${height}/${locale}/${theme}`
+            const initial = await assertSparkleMenuLayout(menu, label)
+            await assertSparkleMenuTypography(menu, label)
+            await group.press('Enter')
+            assert.equal(await menu.locator('[data-binding-id]').count(), 48)
+            for (const end of [true, false]) {
+              await menu.locator('.ptcPlusBindingMenuScroll').evaluate((scroll, end) => { scroll.scrollTop = end ? scroll.scrollHeight : 0 }, end)
+              assert.deepEqual((await assertSparkleMenuLayout(menu, `${label}/${end ? 'end' : 'start'}`)).footer, initial.footer)
+            }
+            await page.screenshot({ path: join(evidence, `sparkle-menu-${width}-${height}-${locale}-${theme}.png`) })
+            await menu.getByRole('menuitem', { name: copy['bindings.authorEdit'], exact: true }).click()
+            const back = menu.getByRole('menuitem', { name: copy['bindings.back'], exact: true })
+            await back.waitFor()
+            const revision = await assertSparkleMenuLayout(menu, `${label}/revision`)
+            await assertSparkleMenuTypography(menu, `${label}/revision`)
+            await menu.locator('.ptcPlusBindingMenuScroll').evaluate(scroll => { scroll.scrollTop = scroll.scrollHeight })
+            assert.deepEqual((await assertSparkleMenuLayout(menu, `${label}/revision end`)).footer, revision.footer)
+            await back.click()
+            await assertSparkleMenuFocus(menu, `${label}/back focus`)
+            await group.press('Enter')
+            await menu.locator('[data-binding-id="menuFixture0"]').click()
+            await page.waitForFunction(() => document.querySelectorAll('[data-binding-id]').length === 15)
+            const disabledFocus = await assertSparkleMenuFocus(menu, `${label}/disable collapsed`)
+            assert.deepEqual((await assertSparkleMenuLayout(menu, `${label}/disable footer`)).footer, initial.footer)
+            await menu.locator('[aria-expanded]').press('Enter')
+            await menu.locator('[data-binding-id="menuFixture0"]').click()
+            await page.waitForFunction(() => document.activeElement?.dataset.bindingId === 'menuFixture0'
+              && document.activeElement.querySelector('[data-enabled=true]'))
+            const enabledFocus = await assertSparkleMenuFocus(menu, `${label}/enable expanded`)
+            assert.deepEqual(enabledFocus.pageScroll, { x: 0, y: 0 })
+            assert.deepEqual((await assertSparkleMenuLayout(menu, `${label}/enable footer`)).footer, initial.footer)
+            if (width === 390 && locale === 'en' && theme === 'light') {
+              const pattern = '**/api/ptcPlusBindings/invoke'
+              const matches = request => request.url().endsWith('/api/ptcPlusBindings/invoke')
+                && request.postDataJSON()?.payload?.args?.operation === 'disable'
+                && request.postDataJSON()?.payload?.args?.payload?.id === 'menuFixture0'
+              let release
+              const held = new Promise(resolve => { release = resolve })
+              const handler = async route => { if (matches(route.request())) await held; await route.continue() }
+              await page.route(pattern, handler)
+              const requested = page.waitForRequest(matches)
+              const response = page.waitForResponse(response => matches(response.request()))
+              try {
+                await menu.locator('[data-binding-id="menuFixture0"]').click()
+                await requested
+                await page.keyboard.press('Escape')
+                await entry.click()
+                await page.waitForFunction(() => document.activeElement?.dataset.bindingId === 'menuFixture0')
+              } finally {
+                release()
+                await response
+                await page.unroute(pattern, handler)
+              }
+              await page.waitForFunction(() => document.activeElement?.getAttribute('aria-expanded') === 'false')
+              await assertSparkleMenuFocus(menu, `${label}/pending reopen`)
+              assert.deepEqual((await assertSparkleMenuLayout(menu, `${label}/pending reopen footer`)).footer, initial.footer)
+              await menu.locator('[aria-expanded]').press('Enter')
+              await menu.locator('[data-binding-id="menuFixture0"]').click()
+              await page.waitForFunction(() => document.activeElement?.dataset.bindingId === 'menuFixture0'
+                && document.activeElement.querySelector('[data-enabled=true]'))
+              await assertSparkleMenuFocus(menu, `${label}/restored focus`)
+            }
+            await menu.getByRole('menuitem', { name: copy['bindings.manage'], exact: true }).click()
+            const manager = page.locator('.ptcPlusBindingsModal')
+            await manager.waitFor()
+            await manager.getByRole('button', { name: copy['bindings.close'], exact: true }).click()
+            await manager.waitFor({ state: 'detached' })
+            await entry.click()
+            await group.waitFor()
+            assert.equal(await group.getAttribute('aria-expanded'), 'false')
+            await menu.getByRole('menuitem', { name: copy['settings.menuEntry'], exact: true }).click()
+            await page.locator('.ptcPlusSettingsModal').waitFor()
+            await page.keyboard.press('Escape')
+            await page.getByRole('dialog').waitFor({ state: 'detached' })
+            await page.waitForFunction(() => document.activeElement?.matches('.ptcPlusAuthorButton'))
+            menuMeasurements.push({ label, initial, revision, disabledFocus, enabledFocus })
+          }
+        }
+      } finally {
+        await writeFile(bindingsFile, regularBindings)
+        await reloadFixtureCatalog()
+        await rpc('settings/update', { ns: 'locale', patch: { preference: 'en' } })
+        await rpc('settings/update', { ns: 'ui-theme', patch: { preference: 'light' } })
+      }
       await page.setViewportSize({ width: 390, height: 1000 })
       await entry.hover()
+      await expandDisabled()
       await page.getByRole('menuitem', { name: /fileTools/ }).waitFor()
       assert.equal(await composerValue(composer), '')
       assert.deepEqual(await sessionLogBytes(), beforeMenu, 'Global menu actions before a turn alter the session log')
@@ -1684,7 +1811,7 @@ export async function main(argv = process.argv.slice(2)) {
         neighbor.dataset.ptcSmokeNeighbor = ''
         neighbor.style.cssText = 'height:64px;flex:none;box-sizing:border-box;padding:8px'
         neighbor.textContent = 'Neighbor dock layout fixture'
-        element.parentElement.before(neighbor)
+        document.querySelector('.ptcPlusBindingDockAnchor').after(neighbor)
       })
       await verifyDock('neighbor', 640, 480)
       await page.locator('[data-ptc-smoke-neighbor]').evaluate(element => {
@@ -1715,11 +1842,33 @@ export async function main(argv = process.argv.slice(2)) {
       await verifyDock('collapsed')
       const collapsedLayout = await disclosureLayout()
       assert.ok(Math.abs(collapsedLayout.seat.bottom - expandedLayout.seat.bottom) <= 1, 'Disclosure moved the composer floor')
-      assert.ok(collapsedLayout.seat.height < expandedLayout.seat.height, 'The dock did not release its reserved height')
+      assert.equal(collapsedLayout.seat.height, expandedLayout.seat.height, 'Disclosure changed composer height')
+      assert.equal(collapsedLayout.seat.top, expandedLayout.seat.top, 'Disclosure pushed the composer')
+      assert.equal(collapsedLayout.extent, expandedLayout.extent, 'Disclosure changed transcript extent')
       assert.notEqual(collapsedLayout.transform, expandedLayout.transform, 'Disclosure chevron did not change direction')
       // Click the title itself; a tiny icon-only target must fail this acceptance check.
       await dock.locator('.ptcPlusBindingDockHeading strong').click()
       await dock.locator('.ptcPlusBindingDockBody').waitFor()
+      const previewLayout = await disclosureLayout()
+      await dock.getByRole('button', { name: 'Enlarge binding draft', exact: true }).click()
+      const enlargedReview = page.getByRole('dialog').filter({ has: dock })
+      await enlargedReview.waitFor()
+      for (const [width, height] of [[1440, 1000], [390, 800], [640, 480], [320, 600]]) {
+        await page.setViewportSize({ width, height })
+        await assertDraftReviewLayout(dock, `enlarged-${width}-${height}`, true)
+        await assertVisualSurface(page, enlargedReview, `enlarged-${width}-${height}`)
+        await page.screenshot({ path: join(evidence, `binding-draft-enlarged-${width}-${height}.png`) })
+      }
+      await page.setViewportSize({ width: 1440, height: 1000 })
+      await enlargedReview.getByRole('button', { name: 'Save and enable', exact: true }).focus()
+      await page.keyboard.press('Tab')
+      assert.equal(await enlargedReview.evaluate(element => element.contains(document.activeElement)), true, 'Tab escaped enlarged review')
+      await page.keyboard.press('Escape')
+      await enlargedReview.waitFor({ state: 'detached' })
+      await page.waitForFunction(() => document.querySelector('.ptcPlusBindingDock')?.contains(document.activeElement))
+      const restoredLayout = await disclosureLayout()
+      assert.deepEqual(restoredLayout.seat, previewLayout.seat, 'Enlarging moved composer geometry')
+      assert.equal(restoredLayout.extent, previewLayout.extent, 'Enlarging changed transcript extent')
       await dock.getByRole('button', { name: 'Collapse binding draft', exact: true }).focus()
       await page.keyboard.press('Enter')
       assert.equal(await dock.locator('.ptcPlusBindingDockBody').count(), 0)
@@ -1752,6 +1901,10 @@ export async function main(argv = process.argv.slice(2)) {
         await page.screenshot({ path: resolve(evidence, `draft-menu-${width}-${height}.png`) })
         await draftItem.click()
         await dock.waitFor()
+        await page.getByRole('dialog').waitFor()
+        await assertDraftReviewLayout(dock, 'manual draft review', true)
+        await page.keyboard.press('Escape')
+        await page.getByRole('dialog').waitFor({ state: 'detached' })
         await dock.getByRole('button', { name: 'Close binding draft panel', exact: true }).click()
         await dock.waitFor({ state: 'detached' })
       }
@@ -1805,10 +1958,15 @@ export async function main(argv = process.argv.slice(2)) {
       await dock.waitFor()
       await dock.locator('.ptcPlusBindingDockBody').focus()
       await page.keyboard.press('End')
+      await page.getByRole('dialog').waitFor()
+      await page.keyboard.press('Escape')
+      await page.getByRole('dialog').waitFor({ state: 'detached' })
       await dock.getByRole('button', { name: 'Close binding draft panel', exact: true }).click()
       await dock.waitFor({ state: 'detached' })
       await cards.getByRole('button', { name: 'Open draft', exact: true }).click()
       await dock.waitFor()
+      await page.getByRole('dialog').waitFor()
+      await assertDraftReviewLayout(dock, 'historical entry manual draft review', true)
       await page.waitForTimeout(1800)
       assert.deepEqual(await sessionLogBytes(), beforeDisplay, 'Display controls changed the real session log')
       displayLogInvariant = true
@@ -1859,6 +2017,16 @@ export async function main(argv = process.argv.slice(2)) {
         }), true, 'Long-source model context cannot be reached')
         assert.match(await dock.locator('.ptcPlusBindingCommandCode').innerText(), /End of long binding source/)
       }
+      await dock.getByRole('button', { name: 'Enlarge binding draft', exact: true }).click()
+      await page.getByRole('dialog').waitFor()
+      await assertDraftReviewLayout(dock, 'enlarged long source', true)
+      const enlargedBody = dock.locator('.ptcPlusBindingDockBody')
+      const fixedActions = await dock.locator('.ptcPlusBindingDockActions').boundingBox()
+      await enlargedBody.evaluate(element => { element.scrollTop = element.scrollHeight })
+      assert.deepEqual(await dock.locator('.ptcPlusBindingDockActions').boundingBox(), fixedActions, 'Source scrolling moved actions')
+      await dock.getByText('Use this helper to return a number.', { exact: true }).scrollIntoViewIfNeeded()
+      await dock.getByRole('button', { name: 'Shrink binding draft', exact: true }).click()
+      await page.getByRole('dialog').waitFor({ state: 'detached' })
       await rpc('settings/update', { ns: 'ui-theme', patch: { preference: 'dark' } })
       await page.locator('body[data-ds-dark-theme]').waitFor()
       await verifyDock('long-source-dark', 390, 800)
@@ -2134,7 +2302,7 @@ export async function main(argv = process.argv.slice(2)) {
       pluginRpc,
       hostIconFallbacks: [...hostIconFallbacks].map(value => new URL(value).pathname),
       bindingWorkflow: values['binding-workflow'] ? { model: 'deterministic-local-adapter', measurements: bindingMeasurements,
-        scrollMeasurements: bindingScrollMeasurements, replMeasurements, reloadMeasurements, dockMeasurements, displayLogInvariant,
+        scrollMeasurements: bindingScrollMeasurements, replMeasurements, reloadMeasurements, dockMeasurements, menuMeasurements, displayLogInvariant,
         workbench: bindingWorkbenchEvidence, workbenchLogInvariant: bindingWorkbenchEvidence.takeover?.logInvariant === true,
         approval: bindingWorkbenchEvidence.approval ?? null,
         approvalLogInvariant: bindingWorkbenchEvidence.approval?.logInvariant === true } : null,

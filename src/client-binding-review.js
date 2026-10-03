@@ -191,6 +191,8 @@ export function createBindingReviews(call) {
     }
     const review = {
       getSnapshot: () => snapshot,
+      isCurrentCandidate: candidate => !disposed && attached && snapshot.action === null
+        && sameCandidate(snapshot.candidate, candidate),
       subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener) },
       sync,
       attach() {

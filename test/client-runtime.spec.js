@@ -1396,7 +1396,7 @@ test('saved cards retain exact source across remount and locale changes; catalog
   fireEvent.click(view.container.querySelectorAll('.ptcPlusReplTab')[1])
   await runtime.flush()
   const card = () => view.container.querySelector('.ptcPlusBindingCommand')
-  const panel = () => view.container.querySelector('.ptcPlusBindingDock')
+  const panel = () => document.querySelector('.ptcPlusBindingDock')
   expect(view.container.querySelectorAll('.ptcPlusGlobalItem .ptcPlusBindingState')[0].textContent).toBe('Disabled')
   expect(view.container.querySelectorAll('.ptcPlusGlobalItem .ptcPlusBindingState')[1].textContent).toBe('Enabled')
   expect(card().textContent).not.toContain('Host admission text')
@@ -1735,11 +1735,11 @@ test.each(['empty', 'conflict'])('draft card distinguishes revoked locators from
   })
   const view = runtime.renderRoot()
   await runtime.flush()
-  expect(view.container.querySelector('.ptcPlusBindingDock .ptcPlusAuthoringDraft')).not.toBeNull()
+  expect(document.querySelector('.ptcPlusBindingDock .ptcPlusAuthoringDraft')).not.toBeNull()
   revoked = true
   await vi.advanceTimersByTimeAsync(1500)
   await runtime.flush()
-  expect(view.container.querySelector('.ptcPlusBindingDock .ptcPlusAuthoringDraft')).not.toBeNull()
+  expect(document.querySelector('.ptcPlusBindingDock .ptcPlusAuthoringDraft')).not.toBeNull()
   expect(view.getByRole('button', { name: 'Save and enable' }).disabled).toBe(true)
   revoked = false
   await vi.advanceTimersByTimeAsync(1500)
@@ -1829,12 +1829,19 @@ async function openDraftMenu(view, runtime, mode = 'click') {
   return trigger
 }
 
-async function openGlobalMenu(view, runtime, mode = 'hover') {
+async function openGlobalMenu(view, runtime, mode = 'hover', expandDisabled = true) {
   const trigger = view.container.querySelector('.ptcPlusAuthorButton')
   trigger.closest('.ptcPlusComposerBindingAnchor').getClientRects = () => [new DOMRect(20, 500, 24, 24)]
   if (mode === 'hover') await hoverOpenMenu(view, trigger)
   else fireEvent.click(trigger)
   await runtime.flush()
+  // Existing catalog-operation scenarios choose a disabled row after opening
+  // its group. Group-default scenarios pass false and assert the closed state.
+  const group = view.queryByRole('menuitem', { name: /^(?:›|⌄)?\s*Disabled \(/ })
+  if (expandDisabled && group?.getAttribute('aria-expanded') === 'false') {
+    fireEvent.click(group)
+    await runtime.flush()
+  }
   return trigger
 }
 
@@ -2160,11 +2167,109 @@ test('explicit global menu reload clears a cached storage error', async () => {
   expect(view.getByText(/Invalid bindings document/)).not.toBeNull()
   fireEvent.click(view.getByRole('menuitem', { name: 'Reload' }))
   await runtime.flush()
+  fireEvent.click(view.getByRole('menuitem', { name: /Disabled \(1\)/ }))
+  await runtime.flush()
   expect(view.getByRole('menuitem', { name: /repaired/ })).not.toBeNull()
   expect(view.queryByText(/Invalid bindings document/)).toBeNull()
   expect(rpc.mock.calls.at(-1)[0]).toBe('reload')
   expect(rpc.mock.calls.filter(([endpoint]) => endpoint === 'reload')).toHaveLength(1)
   expect(rpc.mock.calls.every(([endpoint]) => ['list', 'reload'].includes(endpoint))).toBe(true)
+})
+
+test.each(['native', 'fallback'])('%s sparkle menu groups a large catalog and defaults disabled entries to collapsed', async mode => {
+  const entries = Array.from({ length: 48 }, (_, index) => ({
+    ...reviewCandidate(`group-${index}`).entry, enabled: index % 3 === 0,
+  }))
+  const rpc = vi.fn(async () => ({ ok: true, value: { revision: 'r1', entries } }))
+  const { runtime, setLocale } = await fixture({ rpc,
+    ui: mode === 'native' ? primitives : { ...primitives, Menu: undefined },
+    commands: { list: async () => ({ ok: true, value: [{ name: 'binding' }] }) },
+  })
+  const view = runtime.renderRoot()
+  await runtime.flush()
+  await openGlobalMenu(view, runtime, 'click', false)
+  const menu = view.getByRole('menu')
+  expect(view.getByText('Enabled (16)')).not.toBeNull()
+  const group = view.getByRole('menuitem', { name: 'Disabled (32)' })
+  expect(group.getAttribute('aria-expanded')).toBe('false')
+  expect(menu.querySelectorAll('[data-binding-id]')).toHaveLength(16)
+  expect(view.queryByRole('menuitem', { name: /group-1 Disabled/ })).toBeNull()
+  group.focus()
+  fireEvent.click(group)
+  await runtime.flush()
+  expect(group.getAttribute('aria-expanded')).toBe('true')
+  expect(menu.querySelectorAll('[data-binding-id]')).toHaveLength(48)
+  expect(document.activeElement).toBe(group)
+  expect(rpc.mock.calls.every(([endpoint]) => endpoint === 'list')).toBe(true)
+  setLocale('zh')
+  await runtime.flush()
+  expect(view.getByText('已启用（16）')).not.toBeNull()
+  expect(view.getByRole('menuitem', { name: '停用（32）' }).getAttribute('aria-expanded')).toBe('true')
+  fireEvent.click(view.getByRole('menuitem', { name: '停用（32）' }))
+  await runtime.flush()
+  expect(menu.querySelectorAll('[data-binding-id]')).toHaveLength(16)
+  fireEvent.click(view.getByRole('menuitem', { name: '修改绑定' }))
+  await runtime.flush()
+  expect(menu.querySelectorAll('.ptcPlusBindingMenuScroll .ptcPlusOwnedMenuRow')).toHaveLength(48)
+  expect(menu.querySelector('.ptcPlusMenuActions').textContent).toBe('返回')
+  fireEvent.click(view.getByRole('menuitem', { name: '返回' }))
+  await runtime.flush()
+  expect(menu.querySelectorAll('[data-binding-id]')).toHaveLength(16)
+  fireEvent.keyDown(document, { key: 'Escape' })
+  await runtime.flush()
+  await openGlobalMenu(view, runtime, 'click', false)
+  expect(view.getByRole('menuitem', { name: '停用（32）' }).getAttribute('aria-expanded')).toBe('false')
+})
+
+test.each(['native', 'fallback'].flatMap(mode => [
+  'menu', 'outside', 'closed', 'reopened', 'reopened-outside', 'reopened-closed', 'reopened-surviving',
+].map(focus => [mode, focus])))
+('%s regrouping preserves %s focus after a removed enabled row', async (mode, focus) => {
+  const entry = { ...reviewCandidate('regroup').entry, enabled: true }
+  const pending = deferred()
+  let catalog = { revision: 'r1', entries: [entry] }
+  const rpc = vi.fn(async (endpoint, payload) => {
+    if (endpoint === 'disable') {
+      expect(payload).toEqual({ id: entry.id, expectedRevision: 'r1' })
+      await pending.promise
+      catalog = { revision: 'r2', entries: [{ ...entry, enabled: false }] }
+    }
+    return { ok: true, value: catalog }
+  })
+  const { runtime } = await fixture({ rpc, ui: mode === 'native' ? primitives : { ...primitives, Menu: undefined } })
+  const view = runtime.renderRoot()
+  await runtime.flush()
+  await openGlobalMenu(view, runtime, 'click', false)
+  const row = view.getByRole('menuitem', { name: /regroup/ })
+  row.focus()
+  fireEvent.click(row)
+  await runtime.flush()
+  expect(document.activeElement).toBe(row)
+  let expectedFocus
+  if (focus.startsWith('reopened')) {
+    fireEvent.keyDown(document, { key: 'Escape' })
+    await runtime.flush()
+    await openGlobalMenu(view, runtime, 'click', false)
+    expect(document.activeElement).toBe(view.getByRole('menuitem', { name: /regroup/ }))
+  }
+  if (focus.endsWith('outside')) {
+    expectedFocus = document.createElement('input')
+    view.container.appendChild(expectedFocus)
+    expectedFocus.focus()
+  } else if (focus.endsWith('closed')) {
+    fireEvent.keyDown(document, { key: 'Escape' })
+    await runtime.flush()
+    expectedFocus = view.container.querySelector('.ptcPlusAuthorButton')
+  } else if (focus === 'reopened-surviving') {
+    expectedFocus = view.getByRole('menuitem', { name: 'PTC Plus settings', exact: true })
+    expectedFocus.focus()
+  }
+  pending.resolve()
+  await runtime.flush()
+  expect(view.queryByRole('menuitem', { name: /regroup/ })).toBeNull()
+  if (!focus.endsWith('closed')) expect(view.getByText('No enabled bindings')).not.toBeNull()
+  expect(document.activeElement).toBe(expectedFocus ?? view.getByRole('menuitem', { name: 'Disabled (1)' }))
+  expect(rpc.mock.calls.filter(([endpoint]) => endpoint === 'disable')).toHaveLength(1)
 })
 
 test('the composer entry opens on hover intent and leaves with the pointer', async () => {
@@ -2179,6 +2284,8 @@ test('the composer entry opens on hover intent and leaves with the pointer', asy
   // Crossing the entry leaves nothing behind; dwelling on it opens the menu.
   expect(view.queryByRole('menu')).toBeNull()
   await vi.waitFor(() => { expect(view.queryByRole('menu')).not.toBeNull() })
+  fireEvent.click(view.getByRole('menuitem', { name: /Disabled \(/ }))
+  await runtime.flush()
   // The pointer may cross the composer edge into the portaled list, so the leave
   // only arms a close that re-entering the list cancels.
   fireEvent.pointerLeave(trigger, { pointerType: 'mouse' })
@@ -2275,7 +2382,7 @@ test.each([true, false])('history and dock share read-only model context with de
   runtime.sessions.behavior('client-session').projections.set('ptcPlusBindingDraft', reviewProjection(candidate))
   const view = runtime.renderRoot()
   await runtime.flush()
-  const contexts = view.container.querySelectorAll('.ptcPlusCandidateContext')
+  const contexts = document.querySelectorAll('.ptcPlusCandidateContext')
   expect(contexts).toHaveLength(2)
   for (const context of contexts) {
     expect(context.querySelector('input,button,script')).toBeNull()
@@ -2323,13 +2430,13 @@ test.each(['expanded', 'collapsed', 'hidden'].flatMap(visibility => [
   action = { requestId: candidate.requestId, id: candidate.entry.id, state, enabled: label === 'Save and enable' }
   write.resolve({ ok: true, value: null })
   await runtime.flush()
-  expect(view.container.querySelector('.ptcPlusBindingDock')).toBeNull()
+  expect(document.querySelector('.ptcPlusBindingDock')).toBeNull()
   expect(view.queryByRole('button', { name: /Binding drafts \(1\)/ })).toBeNull()
   if (visibility !== 'hidden') expect(document.activeElement).toBe(view.container.querySelector('.ptcPlusAuthorButton'))
   projection.set('ptcPlusBindingDraft', structuredClone(reviewProjection(candidate)))
   runtime.ctx.emit('connection/reset')
   await runtime.flush()
-  expect(view.container.querySelector('.ptcPlusBindingDock')).toBeNull()
+  expect(document.querySelector('.ptcPlusBindingDock')).toBeNull()
 })
 
 test('refresh completion hides the exact candidate and cannot be reopened or hide its replacement', async () => {
@@ -2365,16 +2472,16 @@ test('automatic closure preserves focus moved outside the pending review', async
   save.focus()
   fireEvent.click(save)
   await runtime.flush()
-  expect(document.activeElement).toBe(view.container.querySelector('.ptcPlusBindingDock'))
+  expect(document.activeElement).toBe(document.querySelector('.ptcPlusBindingDock'))
   const outside = view.container.querySelector('.ptcPlusHeader')
   outside.focus()
   write.resolve({ ok: true, value: null })
   await runtime.flush()
-  expect(view.container.querySelector('.ptcPlusBindingDock')).toBeNull()
+  expect(document.querySelector('.ptcPlusBindingDock')).toBeNull()
   expect(document.activeElement).toBe(outside)
 })
 
-test.each(['expanded', 'collapsed', 'hidden'])('unconfirmed discard retains %s display without claiming success', async visibility => {
+test.each(['expanded', 'enlarged', 'collapsed', 'hidden'])('unconfirmed discard retains %s display without claiming success', async visibility => {
   const candidate = reviewCandidate('unconfirmed-discard')
   let discarded = false
   const reviews = createBindingReviews(async endpoint => {
@@ -2466,11 +2573,15 @@ test('one authoring icon owns the draft badge and hover, click and keyboard menu
   expect(view.getAllByRole('menuitem').map(item => item.textContent)).toEqual([
     'menu-draftDraft ready to save or discard', 'Write a new binding', 'Manage global bindings', 'PTC Plus settings',
   ])
-  expect(view.container.querySelector('.ptcPlusBindingDock')).toBeNull()
+  expect(document.querySelector('.ptcPlusBindingDock')).toBeNull()
   fireEvent.click(view.getAllByRole('menuitem')[0])
   await runtime.flush()
   expect(view.queryByRole('menu')).toBeNull()
-  expect(view.container.querySelector('.ptcPlusBindingDock').textContent).toContain(candidate.entry.source)
+  expect(document.querySelector('.ptcPlusBindingDock').textContent).toContain(candidate.entry.source)
+  expect(view.getByRole('dialog')).not.toBeNull()
+  fireEvent.keyDown(document, { key: 'Escape' })
+  await runtime.flush()
+  expect(view.queryByRole('dialog')).toBeNull()
   await openDraftMenu(view, runtime, 'keyboard')
   expect(document.activeElement).toBe(view.getAllByRole('menuitem')[0])
   fireEvent.keyDown(document, { key: 'Escape' })
@@ -2665,7 +2776,7 @@ test('accepted source is immediate and only dock writes; display choices survive
   projection.set('ptcPlusBindingDraft', reviewProjection(candidate))
   const view = runtime.renderRoot()
   await runtime.flush()
-  const panel = () => view.container.querySelector('.ptcPlusBindingDock')
+  const panel = () => document.querySelector('.ptcPlusBindingDock')
   const request = () => view.container.querySelector('.ptcPlusBindingCommand')
   expect(panel().textContent).toContain(candidate.entry.source)
   expect(panel().textContent).toContain(candidate.entry.modelContext.instructions)
@@ -2728,6 +2839,121 @@ test('accepted source is immediate and only dock writes; display choices survive
   expect(panel().scrollTop).toBe(0)
 })
 
+test('portaled preview and enlarged review yield when the composer is hidden and restore their display choice', async () => {
+  let visibility
+  vi.stubGlobal('IntersectionObserver', class {
+    constructor(callback) { this.callback = callback }
+    observe(element) { if (element.matches('.ptcPlusComposerBindingAnchor')) visibility = this.callback }
+    unobserve() {}
+    disconnect() {}
+  })
+  cleanups.push(() => vi.unstubAllGlobals())
+  const candidate = reviewCandidate('takeover-review')
+  const rpc = vi.fn(reviewRpc(candidate))
+  const { runtime } = await fixture({ rpc })
+  runtime.sessions.behavior('client-session').projections.set('ptcPlusBindingDraft', reviewProjection(candidate))
+  const view = runtime.renderRoot()
+  await runtime.flush()
+  visibility([{ isIntersecting: true }])
+  await runtime.flush()
+  expect(document.querySelector('.ptcPlusBindingPreviewLayer')).not.toBeNull()
+  visibility([{ isIntersecting: false }])
+  await runtime.flush()
+  expect(document.querySelector('.ptcPlusBindingPreviewLayer')).toBeNull()
+  visibility([{ isIntersecting: true }])
+  await runtime.flush()
+  fireEvent.click(view.getByRole('button', { name: 'Enlarge binding draft' }))
+  await runtime.flush()
+  expect(view.getByRole('dialog')).not.toBeNull()
+  visibility([{ isIntersecting: false }])
+  await runtime.flush()
+  expect(view.queryByRole('dialog')).toBeNull()
+  expect(document.querySelector('.ptcPlusBindingPreviewLayer')).toBeNull()
+  visibility([{ isIntersecting: true }])
+  await runtime.flush()
+  expect(view.getByRole('dialog').textContent).toContain(candidate.entry.source)
+  expect(rpc.mock.calls.every(([endpoint]) => ['list', 'draft', 'draft-review'].includes(endpoint))).toBe(true)
+})
+
+test.each(['native', 'fallback'])('enlarged %s draft shares exact candidate, eligibility and settlement across display lifecycle', async kind => {
+  const candidate = reviewCandidate('enlarged-review')
+  const write = deferred()
+  let action = null
+  const rpc = vi.fn(async endpoint => endpoint === 'save-draft' ? write.promise
+    : endpoint === 'list' ? { ok: true, value: { revision: 1, entries: [] } }
+      : endpoint === 'draft-review' ? { ok: true, value: { candidate, action } }
+        : { ok: true, value: candidate })
+  const { runtime, settings, value } = await fixture({ rpc, ui: kind === 'fallback' ? null : primitives })
+  const projection = runtime.sessions.behavior('client-session').projections
+  projection.set('ptcPlusBindingDraft', reviewProjection(candidate))
+  const view = runtime.renderRoot()
+  await runtime.flush()
+  const enlarge = () => fireEvent.click(view.getByRole('button', { name: 'Enlarge binding draft' }))
+  enlarge()
+  await runtime.flush()
+  const dialog = view.getByRole('dialog', { name: `${candidate.entry.name} · Binding draft` })
+  expect(view.container.contains(dialog)).toBe(false)
+  expect(document.querySelectorAll('.ptcPlusBindingDock')).toHaveLength(1)
+  expect(dialog.textContent).toContain(candidate.entry.source)
+  expect(dialog.textContent).toContain(candidate.entry.modelContext.instructions)
+  expect(dialog.querySelector('[aria-expanded]')).toBeNull()
+  projection.set('ptcPlusBindingDraft', structuredClone(reviewProjection(candidate)))
+  await runtime.flush()
+  expect(view.getByRole('dialog')).toBe(dialog)
+  expect(rpc.mock.calls.every(([endpoint]) => ['list', 'draft', 'draft-review'].includes(endpoint))).toBe(true)
+  fireEvent.keyDown(document, { key: 'Escape' })
+  await runtime.flush()
+  expect(view.queryByRole('dialog')).toBeNull()
+  expect(document.querySelector('.ptcPlusBindingDockBody')).not.toBeNull()
+  enlarge()
+  await runtime.flush()
+  expect(view.getByRole('button', { name: 'Close binding draft panel' })).not.toBeNull()
+  fireEvent.click(view.getByRole('button', { name: 'Shrink binding draft' }))
+  await runtime.flush()
+  expect(view.queryByRole('dialog')).toBeNull()
+  expect(document.querySelector('.ptcPlusBindingDockBody')).not.toBeNull()
+  enlarge()
+  await runtime.flush()
+  fireEvent.click(view.getByRole('button', { name: 'Close binding draft panel' }))
+  await runtime.flush()
+  expect(view.queryByRole('dialog')).toBeNull()
+  expect(document.querySelector('.ptcPlusBindingDock')).toBeNull()
+  await openGlobalMenu(view, runtime)
+  fireEvent.click(view.getByRole('menuitem', { name: new RegExp(candidate.entry.name) }))
+  await runtime.flush()
+  fireEvent.click(view.getByRole('button', { name: 'Shrink binding draft' }))
+  await runtime.flush()
+  enlarge()
+  await runtime.flush()
+  const replacement = { ...candidate, version: candidate.version + 1,
+    entry: { ...candidate.entry, source: 'export const changed = 7' } }
+  projection.set('ptcPlusBindingDraft', reviewProjection(replacement))
+  await runtime.flush()
+  expect(view.queryByRole('dialog')).toBeNull()
+  expect(document.querySelector('.ptcPlusBindingDock').textContent).toContain(replacement.entry.source)
+  expect(view.getByRole('button', { name: 'Save and enable' }).disabled).toBe(true)
+  enlarge()
+  await runtime.flush()
+  expect(view.getByRole('button', { name: 'Save and enable' }).disabled).toBe(true)
+  settings.publish({ value: { ...value, userBindingsEnabled: false } })
+  await runtime.flush()
+  expect(view.queryByRole('dialog')).toBeNull()
+  settings.publish({ value })
+  projection.set('ptcPlusBindingDraft', reviewProjection(candidate))
+  await runtime.flush()
+  expect(view.getByRole('dialog')).not.toBeNull()
+  fireEvent.click(view.getByRole('button', { name: 'Save and enable' }))
+  await runtime.flush()
+  expect(view.getByRole('button', { name: 'Save and enable' }).disabled).toBe(true)
+  fireEvent.click(view.getByRole('button', { name: 'Save and enable' }))
+  action = { requestId: candidate.requestId, id: candidate.entry.id, state: 'saved', enabled: true }
+  write.resolve({ ok: true, value: { revision: 2, entries: [] } })
+  await runtime.flush()
+  expect(view.queryByRole('dialog')).toBeNull()
+  expect(document.querySelector('.ptcPlusBindingDock')).toBeNull()
+  expect(rpc.mock.calls.filter(([endpoint]) => endpoint === 'save-draft')).toHaveLength(1)
+})
+
 test.each(['saved', 'failed', 'unconfirmed'])('hidden pending action retains %s settlement without resubmission', async result => {
   const candidate = reviewCandidate('pending-action')
   const write = deferred()
@@ -2752,6 +2978,9 @@ test.each(['saved', 'failed', 'unconfirmed'])('hidden pending action retains %s 
   fireEvent.click(view.getAllByRole('menuitem')[0])
   await runtime.flush()
   expect(view.getByRole('button', { name: 'Save and enable' }).disabled).toBe(true)
+  expect(view.getByRole('dialog')).not.toBeNull()
+  fireEvent.keyDown(document, { key: 'Escape' })
+  await runtime.flush()
   fireEvent.click(view.getByRole('button', { name: 'Close binding draft panel' }))
   await runtime.flush()
   if (result === 'saved') {
@@ -2763,7 +2992,7 @@ test.each(['saved', 'failed', 'unconfirmed'])('hidden pending action retains %s 
     write.reject(new Error('Connection lost'))
   }
   await runtime.flush()
-  expect(view.container.querySelector('.ptcPlusBindingDock')).toBeNull()
+  expect(document.querySelector('.ptcPlusBindingDock')).toBeNull()
   expect(rpc.mock.calls.filter(([endpoint]) => endpoint === 'save-draft')).toHaveLength(1)
   if (result === 'saved') {
     expect(view.queryByRole('button', { name: /Binding drafts \(1\)/ })).toBeNull()
@@ -2773,7 +3002,7 @@ test.each(['saved', 'failed', 'unconfirmed'])('hidden pending action retains %s 
     await openDraftMenu(view, runtime)
     fireEvent.click(view.getAllByRole('menuitem')[0])
     await runtime.flush()
-    expect(view.container.querySelector('.ptcPlusBindingDock').textContent).toContain('Connection lost')
+    expect(document.querySelector('.ptcPlusBindingDock').textContent).toContain('Connection lost')
     expect(view.getByRole('button', { name: 'Save and enable' }).disabled).toBe(result === 'unconfirmed')
   }
 })
@@ -2806,7 +3035,7 @@ test.each(['expanded', 'collapsed', 'hidden'].flatMap(visibility => ['empty', 'e
   await runtime.flush()
   write.resolve({ ok: true, value: null })
   await runtime.flush()
-  expect(view.container.querySelector('.ptcPlusBindingDock')).toBeNull()
+  expect(document.querySelector('.ptcPlusBindingDock')).toBeNull()
   expect(view.queryByRole('button', { name: /Binding drafts \(1\)/ })).toBeNull()
   expect(view.queryByRole('button', { name: 'Save and enable' })).toBeNull()
 })
@@ -2826,18 +3055,18 @@ test('a successful eligibility refresh clears a transient read error while the d
   failed = true
   await vi.advanceTimersByTimeAsync(1500)
   await runtime.flush()
-  expect(view.container.querySelector('.ptcPlusBindingDock').textContent).toContain('Connection lost')
+  expect(document.querySelector('.ptcPlusBindingDock').textContent).toContain('Connection lost')
   fireEvent.click(view.getByRole('button', { name: 'Close binding draft panel' }))
   await runtime.flush()
   expect(view.getByRole('button', { name: 'Binding drafts (1) · Action status needs attention' })).not.toBeNull()
   failed = false
   await vi.advanceTimersByTimeAsync(1500)
   await runtime.flush()
-  expect(view.container.querySelector('.ptcPlusBindingDock')).toBeNull()
+  expect(document.querySelector('.ptcPlusBindingDock')).toBeNull()
   await openDraftMenu(view, runtime)
   fireEvent.click(view.getAllByRole('menuitem')[0])
   await runtime.flush()
-  expect(view.container.querySelector('.ptcPlusBindingDock').textContent).not.toContain('Connection lost')
+  expect(document.querySelector('.ptcPlusBindingDock').textContent).not.toContain('Connection lost')
   expect(view.getByRole('button', { name: 'Save and enable' }).disabled).toBe(false)
 })
 
@@ -2862,23 +3091,24 @@ test('a late draft read or write cannot replace a new candidate or another sessi
   await runtime.flush()
   read.resolve({ ok: true, value: { candidate: first, action: null } })
   await runtime.flush()
-  expect(view.container.querySelector('.ptcPlusBindingDock').textContent).toContain('Use second.value')
+  expect(document.querySelector('.ptcPlusBindingDock').textContent).toContain('Use second.value')
   delayRead = false
   projection.set('ptcPlusBindingDraft', reviewProjection(first))
   await runtime.flush()
   fireEvent.click(view.getByRole('button', { name: 'Save and enable' }))
   await runtime.flush()
   await runtime.sessions.add({ id: 'other' })
+  runtime.sessions.behavior('other').projections.set('agentPreset', 'ptc')
   runtime.sessions.behavior('other').projections.set('ptcPlusBindingDraft', reviewProjection(second))
   await runtime.sessions.setCurrent('other')
   await runtime.flush()
   write.resolve({ ok: true, value: { revision: 2, entries: [] } })
   await runtime.flush()
-  expect(view.container.querySelector('.ptcPlusBindingDock').textContent).toContain('Use second.value')
+  expect(document.querySelector('.ptcPlusBindingDock').textContent).toContain('Use second.value')
   expect(view.getByRole('button', { name: 'Save and enable' }).disabled).toBe(false)
   await runtime.sessions.setCurrent('client-session')
   await runtime.flush()
-  expect(view.container.querySelector('.ptcPlusBindingDock')).toBeNull()
+  expect(document.querySelector('.ptcPlusBindingDock')).toBeNull()
   expect(view.queryByRole('button', { name: 'Save and enable' })).toBeNull()
 })
 
@@ -2904,7 +3134,7 @@ test('pending writes isolate candidates within one session and late settlement c
   projection.set('ptcPlusBindingDraft', reviewProjection(first))
   await runtime.flush()
   expect(view.getByRole('button', { name: 'Save and enable' }).disabled).toBe(true)
-  expect(view.container.querySelector('.ptcPlusBindingDock').getAttribute('aria-busy')).toBe('true')
+  expect(document.querySelector('.ptcPlusBindingDock').getAttribute('aria-busy')).toBe('true')
   projection.set('ptcPlusBindingDraft', reviewProjection(second))
   await runtime.flush()
   fireEvent.click(view.getByRole('button', { name: 'Save and enable' }))
@@ -2915,14 +3145,14 @@ test('pending writes isolate candidates within one session and late settlement c
   await openDraftMenu(view, runtime)
   fireEvent.click(view.getAllByRole('menuitem')[0])
   await runtime.flush()
-  expect(view.container.querySelector('.ptcPlusBindingDock').textContent).toContain('Use pending-second.value')
-  expect(view.container.querySelector('.ptcPlusBindingDock').getAttribute('aria-busy')).toBe('true')
+  expect(document.querySelector('.ptcPlusBindingDock').textContent).toContain('Use pending-second.value')
+  expect(document.querySelector('.ptcPlusBindingDock').getAttribute('aria-busy')).toBe('true')
   expect(view.getByRole('button', { name: 'Save and enable' }).disabled).toBe(true)
   fireEvent.click(view.getByRole('button', { name: 'Save and enable' }))
   expect(rpc.mock.calls.filter(([endpoint]) => endpoint === 'save-draft')).toHaveLength(2)
   writes.get(second.commandId).resolve({ ok: true, value: { revision: 3, entries: [] } })
   await runtime.flush()
-  expect(view.container.querySelector('.ptcPlusBindingDock')).toBeNull()
+  expect(document.querySelector('.ptcPlusBindingDock')).toBeNull()
   expect(view.queryByRole('button', { name: 'Save and enable' })).toBeNull()
 })
 
@@ -2936,7 +3166,7 @@ test.each(['saved', 'discarded'])('fresh review keeps %s history out of the dock
   runtime.sessions.behavior('client-session').projections.set('ptcPlusBindingDraft', reviewProjection(candidate, 'completed-capability', action))
   const view = runtime.renderRoot()
   await runtime.flush()
-  expect(view.container.querySelector('.ptcPlusBindingDock')).toBeNull()
+  expect(document.querySelector('.ptcPlusBindingDock')).toBeNull()
   expect(view.queryByRole('button', { name: /Binding drafts \(1\)/ })).toBeNull()
   const request = view.container.querySelector('.ptcPlusBindingCommand')
   expect(request.getAttribute('data-phase')).toBe(state)
@@ -2958,7 +3188,7 @@ test('fresh review does not open a completed legacy RPC candidate', async () => 
   })
   const view = runtime.renderRoot()
   await runtime.flush()
-  expect(view.container.querySelector('.ptcPlusBindingDock')).toBeNull()
+  expect(document.querySelector('.ptcPlusBindingDock')).toBeNull()
   expect(view.queryByRole('button', { name: /Binding drafts \(1\)/ })).toBeNull()
 })
 
@@ -2980,7 +3210,7 @@ test('history never borrows another request status or permission, including fall
   projection.set('ptcPlusBindingDraft', { ...reviewProjection(candidate), phase: 'failed', commandId: 'failed-newer' })
   await runtime.flush()
   expect(request().textContent).toContain('No saveable draft was produced')
-  expect(view.container.querySelector('.ptcPlusBindingDock')).toBeNull()
+  expect(document.querySelector('.ptcPlusBindingDock')).toBeNull()
 })
 
 test('mismatched review source cannot authorize buttons under projected source', async () => {
@@ -2991,7 +3221,7 @@ test('mismatched review source cannot authorize buttons under projected source',
   runtime.sessions.behavior('client-session').projections.set('ptcPlusBindingDraft', reviewProjection(candidate))
   const view = runtime.renderRoot()
   await runtime.flush()
-  expect(view.container.querySelector('.ptcPlusBindingDock').textContent).toContain(candidate.entry.source)
+  expect(document.querySelector('.ptcPlusBindingDock').textContent).toContain(candidate.entry.source)
   expect(view.getByRole('button', { name: 'Save and enable' }).disabled).toBe(true)
 })
 
@@ -4781,42 +5011,156 @@ test('headless fallback modal keeps the viewport mask and portal without default
   expect(document.querySelector('.ptcPlusFallbackModalBackdrop')).toBeNull()
 })
 
-test('draft viewport budgeting observes only its owned panel and releases its resize authority', async () => {
-  const observers = []
-  vi.stubGlobal('IntersectionObserver', class {
-    constructor(callback) {
-      this.callback = callback
-      this.disconnect = vi.fn()
-      observers.push(this)
-    }
-    observe(target) {
-      this.target = target
-      if (!target.matches('.ptcPlusBindingDock')) this.callback([{ target, isIntersecting: true }])
-    }
-    unobserve() {}
-  })
+test('draft preview tracks only its owned anchor and releases placement frames on hiding and disposal', async () => {
+  let nextFrame
+  const cancelFrame = vi.fn()
+  vi.stubGlobal('requestAnimationFrame', callback => { nextFrame = callback; return 37 })
+  vi.stubGlobal('cancelAnimationFrame', cancelFrame)
   cleanups.push(() => vi.unstubAllGlobals())
   const candidate = reviewCandidate('viewport-owner')
   const { runtime, feature } = await fixture({ rpc: reviewRpc(candidate) })
   runtime.sessions.behavior('client-session').projections.set('ptcPlusBindingDraft', reviewProjection(candidate))
   const view = runtime.renderRoot()
   await runtime.flush()
-  const panel = view.container.querySelector('.ptcPlusBindingDock')
-  const observer = observers.find(value => value.target === panel)
-  expect(observer).not.toBeUndefined()
+  const anchor = view.container.querySelector('.ptcPlusBindingDockAnchor')
   const host = document.createElement('div')
   host.setAttribute('style', 'max-block-size: 400px')
   view.container.appendChild(host)
-  observer.callback([{ target: panel, isIntersecting: true,
-    boundingClientRect: { top: 20 }, intersectionRect: { top: 60, height: 100 } }])
-  expect(panel.style.getPropertyValue('max-block-size')).toBe('100px')
+  let top = 500
+  anchor.getBoundingClientRect = () => ({ top, left: 20, width: 400 })
+  const preview = document.querySelector('.ptcPlusBindingPreviewLayer')
+  preview.getBoundingClientRect = () => ({ height: Math.min(440, window.innerHeight * .45, top - 16) })
+  preview.querySelector('.ptcPlusBindingDockHead').getBoundingClientRect = () => ({ height: 54 })
+  preview.querySelector('.ptcPlusBindingDockActions').getBoundingClientRect = () => ({ height: 60 })
+  await act(async () => { nextFrame() })
+  const layer = document.querySelector('.ptcPlusBindingPreviewLayer')
+  expect(layer.parentElement).toBe(document.body)
+  expect(layer.style.left).toBe('20px')
+  expect(layer.style.getPropertyValue('--ptc-plus-review-space')).toBe('484px')
+  top = 550
+  await act(async () => { nextFrame() })
+  expect(layer.style.getPropertyValue('--ptc-plus-review-space')).toBe('534px')
+  top = 100
+  await act(async () => { nextFrame() })
+  expect(document.querySelector('.ptcPlusBindingDockBody').hasAttribute('inert')).toBe(true)
+  expect(view.getByRole('button', { name: 'Enlarge binding draft' })).not.toBeNull()
+  fireEvent.click(view.getByRole('button', { name: 'Enlarge binding draft' }))
+  await runtime.flush()
+  expect(view.getByRole('dialog')).not.toBeNull()
+  expect(document.querySelector('.ptcPlusBindingDockBody')).not.toBeNull()
+  expect(document.querySelector('.ptcPlusBindingPreviewLayer')).toBeNull()
+  expect(cancelFrame).toHaveBeenCalledWith(37)
   expect(host.style.getPropertyValue('max-block-size')).toBe('400px')
-  fireEvent(window, new Event('resize'))
-  expect(panel.style.getPropertyValue('max-block-size')).toBe('')
-  observer.callback([{ target: panel, isIntersecting: true,
-    boundingClientRect: { top: 20 }, intersectionRect: { top: 60, height: 100 } }])
   await feature.dispose()
   await runtime.flush()
-  expect(observer.disconnect).toHaveBeenCalledTimes(1)
-  expect(panel.style.getPropertyValue('max-block-size')).toBe('')
+  expect(document.querySelector('.ptcPlusBindingPreviewLayer')).toBeNull()
+  expect(view.queryByRole('dialog')).toBeNull()
+})
+
+test.each(['native', 'fallback'].flatMap(kind => ['unchanged', 'clone', 'collapsed', 'hidden', 'replaced', 'completed', 'unreachable', 'disposed'].map(change => [kind, change])))('enlarged close %s focus follows exact candidate and lifecycle after %s', async (kind, change) => {
+  let nextFrameId = 0
+  const frames = new Map()
+  vi.stubGlobal('requestAnimationFrame', callback => { frames.set(++nextFrameId, callback); return nextFrameId })
+  vi.stubGlobal('cancelAnimationFrame', id => frames.delete(id))
+  cleanups.push(() => vi.unstubAllGlobals())
+  const rects = vi.spyOn(HTMLElement.prototype, 'getClientRects').mockReturnValue([new DOMRect(20, 500, 24, 24)])
+  cleanups.push(() => rects.mockRestore())
+  let visibility
+  vi.stubGlobal('IntersectionObserver', class {
+    constructor(callback) { this.callback = callback }
+    observe(element) { if (element.matches('.ptcPlusComposerBindingAnchor')) visibility = this.callback }
+    unobserve() {}
+    disconnect() {}
+  })
+  const candidate = reviewCandidate('focus-refresh')
+  const { runtime, feature } = await fixture({ rpc: reviewRpc(candidate), ui: kind === 'fallback' ? null : primitives })
+  const projection = runtime.sessions.behavior('client-session').projections
+  projection.set('ptcPlusBindingDraft', reviewProjection(candidate))
+  const view = runtime.renderRoot()
+  await runtime.flush()
+  visibility([{ isIntersecting: true }])
+  await runtime.flush()
+  const enlarge = view.getByRole('button', { name: 'Enlarge binding draft' })
+  enlarge.focus()
+  fireEvent.click(enlarge)
+  await runtime.flush()
+  expect(view.getByRole('dialog')).not.toBeNull()
+  fireEvent.keyDown(document, { key: 'Escape' })
+  await runtime.flush()
+  expect(view.queryByRole('dialog')).toBeNull()
+  if (change === 'clone') projection.set('ptcPlusBindingDraft', structuredClone(reviewProjection(candidate)))
+  if (change === 'replaced') projection.set('ptcPlusBindingDraft', reviewProjection(reviewCandidate('replacement')))
+  if (change === 'completed') {
+    const completed = reviewProjection(candidate)
+    completed.history[0].action = { requestId: candidate.requestId, id: candidate.entry.id, state: 'saved', enabled: false }
+    projection.set('ptcPlusBindingDraft', completed)
+  }
+  if (change === 'unreachable') {
+    visibility([{ isIntersecting: false }])
+  }
+  if (change === 'disposed') await feature.dispose()
+  if (change === 'collapsed') fireEvent.click(view.getByRole('button', { name: 'Collapse binding draft' }))
+  if (change === 'hidden') fireEvent.click(view.getByRole('button', { name: 'Close binding draft panel' }))
+  await runtime.flush()
+  const callbacks = [...frames.values()]
+  frames.clear()
+  await act(async () => { for (const callback of callbacks) callback(20) })
+  const panel = document.querySelector('.ptcPlusBindingDock')
+  if (change === 'unchanged' || change === 'clone') {
+    expect(panel).not.toBeNull()
+    expect(document.activeElement).toBe(panel)
+  } else expect(document.activeElement === panel && panel !== null).toBe(false)
+})
+
+
+test.each(['native', 'fallback'].flatMap(kind => [false, true].map(resizeHidden => [kind, resizeHidden])))('unfittable %s preview preserves manual enlarged access and return focus after hidden resize=%s', async (kind, resizeHidden) => {
+  let top = resizeHidden ? 500 : 40
+  let nextFrameId = 0
+  const frames = new Map()
+  vi.stubGlobal('requestAnimationFrame', callback => { frames.set(++nextFrameId, callback); return nextFrameId })
+  vi.stubGlobal('cancelAnimationFrame', id => frames.delete(id))
+  const bounds = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function () {
+    if (this.classList.contains('ptcPlusBindingDockAnchor')) return new DOMRect(20, top, 400, 0)
+    if (this.classList.contains('ptcPlusBindingPreviewLayer')) return new DOMRect(20, 8, 400, Math.max(0, top - 8))
+    if (this.classList.contains('ptcPlusBindingDockHead')) return new DOMRect(20, 8, 400, 58)
+    if (this.classList.contains('ptcPlusBindingDockActions')) return new DOMRect(20, 8, 400, 60)
+    return new DOMRect()
+  })
+  const rects = vi.spyOn(HTMLElement.prototype, 'getClientRects').mockReturnValue([new DOMRect(20, 500, 24, 24)])
+  cleanups.push(() => { bounds.mockRestore(); rects.mockRestore(); vi.unstubAllGlobals() })
+  const candidate = reviewCandidate('unfittable')
+  const turn = { data: new Map([['ptc-binding-authoring', { commandId: candidate.commandId, args: ' new helper', outcome: null }]]) }
+  const { runtime } = await fixture({ rpc: reviewRpc(candidate), turn, ui: kind === 'fallback' ? null : primitives })
+  runtime.sessions.behavior('client-session').projections.set('ptcPlusBindingDraft', reviewProjection(candidate))
+  const view = runtime.renderRoot()
+  await runtime.flush()
+  const layer = () => document.querySelector('.ptcPlusBindingPreviewLayer')
+  if (resizeHidden) {
+    expect(layer().dataset.available).toBe('true')
+    fireEvent.click(view.getByRole('button', { name: 'Close binding draft panel' }))
+    await runtime.flush()
+    top = 40
+    expect(layer()).toBeNull()
+  } else {
+    expect(layer().dataset.available).toBe('false')
+    expect(layer().hasAttribute('inert')).toBe(true)
+  }
+  fireEvent.click(view.getByRole('button', { name: 'Open draft' }))
+  await runtime.flush()
+  expect(view.getByRole('dialog')).not.toBeNull()
+  fireEvent.keyDown(document, { key: 'Escape' })
+  await runtime.flush()
+  expect(view.queryByRole('dialog')).toBeNull()
+  const callbacks = [...frames.values()]
+  frames.clear()
+  await act(async () => { for (const callback of callbacks) callback(20) })
+  expect(document.activeElement).toBe(view.container.querySelector('.ptcPlusAuthorButton'))
+  expect(layer().dataset.available).toBe('false')
+  top = 500
+  const later = [...frames.values()]
+  frames.clear()
+  await act(async () => { for (const callback of later) callback(40) })
+  expect(layer().dataset.available).toBe('true')
+  expect(layer().hasAttribute('inert')).toBe(false)
+  expect(view.queryByRole('dialog')).toBeNull()
 })

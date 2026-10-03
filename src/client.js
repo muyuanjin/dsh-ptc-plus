@@ -281,7 +281,7 @@ window.__ModuleLoader__.load({
       // One probe answer serves every session's composer entry for this Client.
       const menuChildren = createMenuChildrenEvidence()
       const { BindingAuthorButton, BindingReviewDock, BindingCommandCard } = createAuthoringView(React, {
-        ActionButton, IconButton, Menu, MenuFallback, Toast, Tooltip, CodeBlock, BindingsDialog, PTCPlusSettingsDialog,
+        ActionButton, IconButton, Menu, MenuFallback, Toast, Tooltip, CodeBlock, Modal, createPortal, BindingsDialog, PTCPlusSettingsDialog,
         useWorkbenchController, useBindingReview, catalogOwner, callUserBindings, subscribeReset,
         settingsCardSeat: settingsCard.seat, updateSetting, menuChildren,
         icons: {
@@ -306,7 +306,7 @@ window.__ModuleLoader__.load({
       }, props => h(BindingCommandCard, { ...props, key: props.node.commandId })))))
       ctx.slots.inject('conversation.input.dock', () => ctx.slots.inject('conversation.input.left', () =>
         registerGated(ctx, settingsGate('bindings', () => ctx.slots.register({
-          name: 'conversation.input.dock', id: 'ptc-plus-binding-review', order: 30, locale: LOCALE_NS,
+          name: 'conversation.input.dock', id: 'ptc-plus-binding-review', order: -30, locale: LOCALE_NS,
         }, props => typeof props.useProjection === 'function' && props.sessionId !== undefined
           ? h(BindingReviewDock, { ...props, key: props.sessionId }) : null)))))
       const availability = createBindingCommandAvailability(ctx)

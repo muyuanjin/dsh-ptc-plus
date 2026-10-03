@@ -3484,6 +3484,7 @@
       };
       const review = {
         getSnapshot: () => snapshot2,
+        isCurrentCandidate: (candidate) => !disposed && attached && snapshot2.action === null && sameCandidate(snapshot2.candidate, candidate),
         subscribe(listener) {
           listeners.add(listener);
           return () => listeners.delete(listener);
@@ -3549,6 +3550,8 @@
       Toast,
       Tooltip,
       CodeBlock,
+      Modal,
+      createPortal,
       BindingsDialog,
       PTCPlusSettingsDialog,
       useWorkbenchController,
@@ -3567,6 +3570,44 @@
       }
     } = deps;
     const h = React.createElement;
+    function EnlargeIcon() {
+      return h(
+        "svg",
+        { width: 16, height: 16, viewBox: "0 0 16 16", fill: "none", "aria-hidden": true },
+        h("path", {
+          d: "M6 2H2v4m8-4h4v4M2 10v4h4m8-4v4h-4",
+          stroke: "currentColor",
+          strokeWidth: 1.5,
+          strokeLinecap: "round",
+          strokeLinejoin: "round"
+        })
+      );
+    }
+    function RestoreIcon() {
+      return h(
+        "svg",
+        { width: 16, height: 16, viewBox: "0 0 16 16", fill: "none", "aria-hidden": true },
+        h("path", {
+          d: "M2 6h4V2m4 0v4h4M6 14v-4H2m12 0h-4v4",
+          stroke: "currentColor",
+          strokeWidth: 1.5,
+          strokeLinecap: "round",
+          strokeLinejoin: "round"
+        })
+      );
+    }
+    function ReviewCloseIcon() {
+      return h(
+        "svg",
+        { width: 16, height: 16, viewBox: "0 0 16 16", fill: "none", "aria-hidden": true },
+        h("path", {
+          d: "m4 4 8 8m0-8-8 8",
+          stroke: "currentColor",
+          strokeWidth: 1.5,
+          strokeLinecap: "round"
+        })
+      );
+    }
     const settingsPath = (t2) => t2({
       "settings.plugin.item": "settings.pathSettings",
       "plugins.row.config": "settings.pathPlugins"
@@ -3590,6 +3631,8 @@
       }, [review]);
       const menuBodyRef = React.useRef(null);
       const reloadItemRef = React.useRef(null);
+      const disabledGroupRef = React.useRef(null);
+      const [disabledOpen, setDisabledOpen] = React.useState(false);
       const focused = React.useRef(false);
       const dialogReturnFocus = React.useRef(null);
       const hoverTimer = React.useRef(void 0);
@@ -3650,7 +3693,10 @@
       React.useEffect(() => cancelHoverOpen, [cancelHoverOpen]);
       const showMenu = (mode) => {
         cancelHoverOpen();
-        if (!menuOpen && quickAccess) void refreshCatalog();
+        if (!menuOpen) {
+          setDisabledOpen(false);
+          if (quickAccess) void refreshCatalog();
+        }
         setMenu({ key: view.candidateKey, mode, step: "root" });
       };
       const hoverMenu = (event) => {
@@ -3664,6 +3710,15 @@
       const menuElement = () => menuBodyRef.current;
       const captureCatalogFocus = () => {
         catalogFocus.current = menuElement()?.contains(document.activeElement) ? document.activeElement : null;
+      };
+      const focusMenuItem = (next) => {
+        next?.focus({ preventScroll: true });
+        const scroll = menuElement()?.querySelector(".ptcPlusBindingMenuScroll");
+        if (!scroll?.contains(next)) return;
+        const viewport = scroll.getBoundingClientRect();
+        const item = next.getBoundingClientRect();
+        const offset = item.height > scroll.clientHeight ? item.top + item.height / 2 - (viewport.top + viewport.height / 2) : item.top < viewport.top ? item.top - viewport.top : item.bottom > viewport.bottom ? item.bottom - viewport.bottom : 0;
+        scroll.scrollTop += offset;
       };
       const menuAnchorRect = () => {
         const anchor = anchorRef.current;
@@ -3707,17 +3762,18 @@
         }
         if (catalogStatus === "writing" || catalogStatus === "loading") return;
         const target = catalogFocus.current;
-        catalogFocus.current = null;
-        if (!target || document.activeElement !== document.body) return;
+        if (!target || document.activeElement !== document.body && document.activeElement !== target) return;
         const root = menuElement();
-        const next = root?.contains(target) && !target.disabled ? target : reloadItemRef.current ?? root?.querySelector("button:not(:disabled)");
-        next?.focus({ preventScroll: true });
+        const bindingId = target.dataset.bindingId;
+        const currentRow = bindingId === void 0 ? null : [...root?.querySelectorAll("[data-binding-id]") ?? []].find((row) => row.dataset.bindingId === bindingId);
+        const next = root?.contains(target) && !target.disabled ? target : currentRow ?? (bindingId !== void 0 && catalog?.entries.some((entry) => entry.id === bindingId && !entry.enabled) ? disabledGroupRef.current : null) ?? reloadItemRef.current ?? root?.querySelector("button:not(:disabled)");
+        focusMenuItem(next);
       }, [catalogStatus, menuOpen]);
       React.useLayoutEffect(() => {
         if (!menuOpen || menu.mode === "hover") return;
         let cancelled = false;
         queueMicrotask(() => {
-          if (!cancelled && anchorRef.current?.getClientRects().length) menuElement()?.querySelector("button:not(:disabled)")?.focus({ preventScroll: true });
+          if (!cancelled && anchorRef.current?.getClientRects().length) focusMenuItem(menuElement()?.querySelector("button:not(:disabled)"));
         });
         return () => {
           cancelled = true;
@@ -3778,23 +3834,58 @@
           "data-attention": view.message !== null
         }, "1") : null
       );
+      const catalogRow = (entry) => ({
+        id: `global:${entry.id}`,
+        bindingId: entry.id,
+        disabled: catalog === null,
+        label: h(
+          "span",
+          { className: "ptcPlusBindingQuickRow", "data-enabled": entry.enabled },
+          h(
+            "span",
+            { className: "ptcPlusBindingQuickName" },
+            h("strong", { title: entry.name }, entry.name),
+            h("span", { className: "ptcPlusBindingQuickState" }, t2(entry.enabled ? "bindings.enabled" : "bindings.disabledEntry"))
+          ),
+          h("span", { className: "ptcPlusBindingQuickPurpose", title: entry.purpose }, entry.purpose)
+        )
+      });
+      const enabledEntries = (catalog?.entries ?? []).filter((entry) => entry.enabled);
+      const disabledEntries = (catalog?.entries ?? []).filter((entry) => !entry.enabled);
       const catalogItems = !quickAccess ? [] : [
         { id: "global-heading", type: "label", text: t2("bindings.quickHeading") },
-        ...(catalog?.entries ?? []).map((entry) => ({
-          id: `global:${entry.id}`,
-          disabled: catalog === null,
-          label: h(
-            "span",
-            { className: "ptcPlusBindingQuickRow", "data-enabled": entry.enabled },
-            h(
-              "span",
-              { className: "ptcPlusBindingQuickName" },
-              h("strong", { title: entry.name }, entry.name),
-              h("span", { className: "ptcPlusBindingQuickState" }, t2(entry.enabled ? "bindings.enabled" : "bindings.disabledEntry"))
-            ),
-            h("span", { className: "ptcPlusBindingQuickPurpose", title: entry.purpose }, entry.purpose)
-          )
-        })),
+        ...catalog === null || catalog.entries.length === 0 ? [] : [
+          { id: "enabled-heading", type: "label", text: t2("bindings.quickEnabled", { count: enabledEntries.length }) },
+          ...enabledEntries.map(catalogRow),
+          ...enabledEntries.length === 0 ? [{ id: "no-enabled", type: "label", text: t2("bindings.quickNoEnabled") }] : [],
+          ...disabledEntries.length === 0 ? [] : [
+            { id: "disabled-group", label: h(
+              React.Fragment,
+              null,
+              h(
+                "svg",
+                {
+                  className: "ptcPlusMenuGroupChevron",
+                  "aria-hidden": true,
+                  width: 14,
+                  height: 14,
+                  viewBox: "0 0 14 14",
+                  fill: "none",
+                  "data-expanded": disabledOpen
+                },
+                h("path", {
+                  d: "m5 3 4 4-4 4",
+                  stroke: "currentColor",
+                  strokeWidth: 1.5,
+                  strokeLinecap: "round",
+                  strokeLinejoin: "round"
+                })
+              ),
+              h("span", null, t2("bindings.quickDisabled", { count: disabledEntries.length }))
+            ) },
+            ...disabledOpen ? disabledEntries.map(catalogRow) : []
+          ]
+        ],
         ...catalog !== null && catalog.entries.length === 0 ? [{ id: "empty", type: "label", text: t2("memory.globalEmpty") }] : [],
         ...catalog === null && catalogStatus !== "error" ? [{ id: "pending", type: "label", text: t2(catalogStatus === "writing" ? "bindings.quickSaving" : "bindings.quickLoading") }] : [],
         ...catalogError === null ? [] : [{ id: "error", type: "label", text: t2("bindings.failed", { error: catalogError }) }]
@@ -3815,11 +3906,14 @@
             ),
             h("span", { className: "ptcPlusBindingQuickPurpose", title: entry.purpose }, entry.purpose)
           )
-        })),
-        { id: "edit-back", label: h("span", { className: "ptcPlusBindingMenuAction" }, t2("bindings.back")) }
+        }))
       ];
       const selectMenuItem = (id2) => {
         if (!anchorRef.current?.getClientRects().length) return;
+        if (id2 === "disabled-group") {
+          setDisabledOpen((open) => !open);
+          return;
+        }
         if (id2 === "edit") {
           setMenu((current) => current === null ? current : { ...current, step: "edit" });
           return;
@@ -3898,17 +3992,30 @@
       ];
       const menuContent = h(
         "div",
-        { className: "ptcPlusBindingMenuContent", ref: menuBodyRef },
-        ...menuEntries.map((entry) => entry.type === "separator" ? h("div", { key: entry.id, role: "separator", className: "ptcPlusOwnedMenuSeparator" }) : entry.type === "label" ? h("div", { key: entry.id, className: "ptcPlusMenuGroupLabel" }, entry.text) : h("button", {
+        {
+          className: "ptcPlusBindingMenuContent",
+          ref: menuBodyRef,
+          // A reopened menu can acquire foreground focus while an earlier write is
+          // pending. Recovery follows the live menu, not the initiating operation.
+          onFocusCapture: (event) => {
+            catalogFocus.current = event.target;
+          },
+          onBlurCapture: (event) => {
+            if (!event.currentTarget.contains(event.relatedTarget)) catalogFocus.current = null;
+          }
+        },
+        h("div", { className: "ptcPlusBindingMenuScroll" }, ...menuEntries.map((entry) => entry.type === "separator" ? h("div", { key: entry.id, role: "separator", className: "ptcPlusOwnedMenuSeparator" }) : entry.type === "label" ? h("div", { key: entry.id, className: "ptcPlusMenuGroupLabel" }, entry.text) : h("button", {
           key: entry.id,
           type: "button",
           role: "menuitem",
           className: "ptcPlusOwnedMenuRow",
           disabled: entry.disabled,
-          ref: entry.id === "reload" ? reloadItemRef : void 0,
+          "data-binding-id": entry.bindingId,
+          ref: entry.id === "reload" ? reloadItemRef : entry.id === "disabled-group" ? disabledGroupRef : void 0,
+          "aria-expanded": entry.id === "disabled-group" ? disabledOpen : void 0,
           onClick: () => selectMenuItem(entry.id)
-        }, entry.label)),
-        menu?.step === "edit" ? null : h("div", { className: "ptcPlusMenuActions" }, actionSections)
+        }, entry.label))),
+        h("div", { className: "ptcPlusMenuActions" }, menu?.step === "edit" ? h("div", { className: "ptcPlusMenuUtilities" }, actionButton("edit-back", "bindings.back")) : actionSections)
       );
       return h(
         "span",
@@ -4040,11 +4147,13 @@
       if (!anchor || anchor.getClientRects().length === 0) return;
       anchor.focus({ preventScroll: true });
     }
-    function openBindingReview(review, candidate = review.getSnapshot().candidate) {
-      if (!review.display("expanded", candidate)) return;
+    function openBindingReview(review, candidate = review.getSnapshot().candidate, visibility = "enlarged") {
+      if (!review.display(visibility, candidate)) return;
       requestAnimationFrame(() => {
-        if (review.getSnapshot().candidate === candidate && review.panel?.getClientRects().length) {
-          review.panel.focus({ preventScroll: true });
+        const current = review.getSnapshot();
+        if (review.isCurrentCandidate(candidate) && current.reachable && current.visibility === "expanded" && review.panel?.getClientRects().length) {
+          if (review.previewAvailable === false) focusBindingReviewAccess(review);
+          else review.panel.focus({ preventScroll: true });
         }
       });
     }
@@ -4072,28 +4181,71 @@
       }, [review, projection]);
       const title = React.useId();
       const content2 = React.useId();
-      const expanded = view.visibility === "expanded";
+      const anchor = React.useRef(null);
+      const layer2 = React.useRef(null);
+      const [compact, setCompact] = React.useState(false);
+      const enlarged = view.visibility === "enlarged";
+      const expanded = enlarged || view.visibility === "expanded" && !compact;
       const candidateKey = view.candidateKey;
       React.useLayoutEffect(() => {
-        const panel = review.panel;
-        if (!panel || typeof IntersectionObserver !== "function") return void 0;
-        const resetBudget = () => panel.style.removeProperty("max-block-size");
-        resetBudget();
-        const observer = new IntersectionObserver((entries) => {
-          const entry = entries.find((candidate) => candidate.target === panel);
-          if (!entry?.isIntersecting || entry.intersectionRect.top <= entry.boundingClientRect.top + 1) return;
-          panel.style.setProperty("max-block-size", `${Math.max(1, entry.intersectionRect.height)}px`);
-        }, { threshold: [0, 1] });
-        observer.observe(panel);
-        window.addEventListener("resize", resetBudget);
-        window.visualViewport?.addEventListener("resize", resetBudget);
-        return () => {
-          observer.disconnect();
-          window.removeEventListener("resize", resetBudget);
-          window.visualViewport?.removeEventListener("resize", resetBudget);
-          resetBudget();
+        if (enlarged || !view.reachable || view.visibility === "hidden" || view.candidate === null) return void 0;
+        let frame;
+        let previous;
+        const place = () => {
+          const rect = anchor.current?.getBoundingClientRect();
+          const surface = layer2.current;
+          if (rect && surface) {
+            const viewport = window.visualViewport;
+            const leftEdge = (viewport?.offsetLeft ?? 0) + 8;
+            const topEdge = (viewport?.offsetTop ?? 0) + 8;
+            const rightEdge = leftEdge + (viewport?.width ?? window.innerWidth) - 16;
+            const bottomEdge = topEdge + (viewport?.height ?? window.innerHeight) - 16;
+            const width = Math.min(rect.width, rightEdge - leftEdge);
+            const left = Math.max(leftEdge, Math.min(rect.left, rightEdge - width));
+            if (surface.style.width !== `${width}px`) surface.style.width = `${width}px`;
+            const panel2 = surface.querySelector(".ptcPlusBindingDock");
+            const head = panel2?.querySelector(".ptcPlusBindingDockHead");
+            const actions = panel2?.querySelector(".ptcPlusBindingDockActions");
+            const body = panel2?.querySelector(".ptcPlusBindingDockBody");
+            const panelStyle = panel2 && getComputedStyle(panel2);
+            const border = (parseFloat(panelStyle?.borderTopWidth) || 0) + (parseFloat(panelStyle?.borderBottomWidth) || 0);
+            const chrome2 = (head?.getBoundingClientRect().height ?? 0) + border;
+            const bottom = Math.max(topEdge, Math.min(Math.max(topEdge + chrome2, rect.top - 8), rect.top, bottomEdge));
+            const height = bottom - topEdge;
+            const geometry = [width, left, bottom, height, chrome2].join(",");
+            if (geometry !== previous) {
+              previous = geometry;
+              surface.style.left = `${left}px`;
+              surface.style.bottom = `${window.innerHeight - bottom}px`;
+              surface.style.setProperty("--ptc-plus-review-space", `${height}px`);
+            }
+            if (rect.width > 0) {
+              const available = surface.getBoundingClientRect().height >= chrome2 && bottom <= rect.top;
+              review.previewAvailable = available;
+              if (surface.dataset.available !== String(available)) {
+                surface.dataset.available = String(available);
+                if (available) {
+                  surface.removeAttribute("inert");
+                  surface.removeAttribute("aria-hidden");
+                } else {
+                  surface.setAttribute("inert", "");
+                  surface.setAttribute("aria-hidden", "true");
+                }
+              }
+            }
+            if (head && actions && body && rect.width > 0) {
+              const minimumBody = parseFloat(getComputedStyle(body).minBlockSize);
+              const required = chrome2 + actions.getBoundingClientRect().height + minimumBody;
+              setCompact(surface.getBoundingClientRect().height < required);
+            }
+          }
+          frame = requestAnimationFrame(place);
         };
-      }, [review, candidateKey, expanded, view.visibility]);
+        place();
+        return () => {
+          cancelAnimationFrame(frame);
+        };
+      }, [candidateKey, enlarged, view.reachable, view.visibility, view.candidate === null]);
       const close = () => {
         review.display("hidden");
         requestAnimationFrame(() => focusBindingReviewAccess(review));
@@ -4102,101 +4254,125 @@
         if (review.panel?.contains(document.activeElement)) review.panel.focus({ preventScroll: true });
         void review.act(operation, activate);
       };
+      const restorePreview = () => openBindingReview(review, view.candidate, "expanded");
       if (view.candidate === null || view.visibility === "hidden") return null;
-      return h(
-        "div",
-        { className: "ptcPlusBindingDockAnchor" },
-        h(
-          "section",
-          {
-            key: candidateKey,
-            className: "ptcPlusBindingDock",
-            "aria-labelledby": title,
-            tabIndex: -1,
-            ref: (element) => {
-              review.panel = element;
-            },
-            onFocusCapture: () => {
-              focused.current = true;
-            },
-            onBlurCapture: (event) => {
-              if (event.relatedTarget || review.getSnapshot().action === null) focused.current = false;
-            },
-            "aria-busy": view.busy
+      const panel = h(
+        "section",
+        {
+          key: candidateKey,
+          className: "ptcPlusBindingDock",
+          "aria-labelledby": title,
+          tabIndex: -1,
+          ref: (element) => {
+            review.panel = element;
           },
+          onFocusCapture: () => {
+            focused.current = true;
+          },
+          onBlurCapture: (event) => {
+            if (event.relatedTarget || review.getSnapshot().action === null) focused.current = false;
+          },
+          "aria-busy": view.busy,
+          "data-compact": !enlarged && compact
+        },
+        h(
+          "div",
+          { className: "ptcPlusBindingDockHead" },
           h(
-            "div",
-            { className: "ptcPlusBindingDockHead" },
+            enlarged ? "div" : "button",
+            {
+              type: enlarged ? void 0 : "button",
+              className: "ptcPlusBindingDockToggle",
+              "aria-label": enlarged ? void 0 : t2(expanded ? "bindings.reviewCollapse" : "bindings.reviewExpand"),
+              "aria-expanded": enlarged ? void 0 : expanded,
+              "aria-controls": expanded && !enlarged ? content2 : void 0,
+              onClick: enlarged ? void 0 : () => review.display(compact ? "enlarged" : expanded ? "collapsed" : "expanded")
+            },
+            h("span", { className: "ptcPlusBindingDockSymbol", "aria-hidden": true }, "</>"),
             h(
-              "button",
-              {
-                type: "button",
-                className: "ptcPlusBindingDockToggle",
-                "aria-label": t2(expanded ? "bindings.reviewCollapse" : "bindings.reviewExpand"),
-                "aria-expanded": expanded,
-                "aria-controls": expanded ? content2 : void 0,
-                onClick: () => review.display(expanded ? "collapsed" : "expanded")
-              },
-              h("span", { className: "ptcPlusBindingDockSymbol", "aria-hidden": true }, "</>"),
+              "span",
+              { className: "ptcPlusBindingDockHeading" },
+              h("strong", { id: title, title: view.candidate.entry.name }, view.candidate.entry.name),
               h(
                 "span",
-                { className: "ptcPlusBindingDockHeading" },
-                h("strong", { id: title, title: view.candidate.entry.name }, view.candidate.entry.name),
-                h(
-                  "span",
-                  { role: "status", title: t2(bindingReviewStatus(view)) },
-                  `${t2("bindings.reviewTitle")} \xB7 ${t2(bindingReviewStatus(view))}`
-                )
-              ),
-              h(
-                "span",
-                { className: "ptcPlusBindingDockChevron", "aria-hidden": true },
-                h(IconChevronDownOutline14, { size: 16 })
+                { role: "status", title: t2(bindingReviewStatus(view)) },
+                `${t2("bindings.reviewTitle")} \xB7 ${t2(bindingReviewStatus(view))}`
               )
             ),
-            h(IconButton, { icon: IconCloseOutline16, label: t2("bindings.reviewClose"), onClick: close })
-          ),
-          !expanded ? null : h(
-            React.Fragment,
-            null,
-            h(
-              "div",
-              {
-                className: "ptcPlusBindingDockBody",
-                id: content2,
-                tabIndex: 0,
-                role: "region",
-                "aria-label": t2("bindings.source")
-              },
-              h(BindingCandidateContent, { candidate: view.candidate, t: t2, showName: false })
-            ),
-            view.message === null ? null : h("p", { className: "ptcPlusMessage ptcPlusDanger", role: "status" }, t2(view.message)),
-            h(
-              "div",
-              { className: "ptcPlusBindingDockActions" },
-              h(ActionButton, {
-                className: "ptcPlusBindingDockDiscard",
-                "data-kind": "ghost",
-                disabled: !view.writable || view.busy,
-                onClick: () => act("discard-draft")
-              }, t2("bindings.draftDiscard")),
-              h(ActionButton, {
-                disabled: !view.writable || view.busy,
-                onClick: () => act("save-draft", false)
-              }, t2("bindings.draftSave")),
-              h(ActionButton, {
-                "data-kind": "primary",
-                disabled: !view.writable || view.busy,
-                onClick: () => act("save-draft", true)
-              }, t2("bindings.draftSaveEnable")),
-              view.message === null ? null : h(ActionButton, {
-                disabled: view.busy,
-                onClick: () => review.reset()
-              }, t2("bindings.reviewRetry"))
+            enlarged ? null : h(
+              "span",
+              { className: "ptcPlusBindingDockChevron", "aria-hidden": true },
+              h(IconChevronDownOutline14, { size: 16 })
             )
+          ),
+          h(
+            "div",
+            { className: "ptcPlusBindingDockControls" },
+            h(IconButton, {
+              icon: enlarged ? RestoreIcon : EnlargeIcon,
+              label: t2(enlarged ? "bindings.reviewRestore" : "bindings.reviewEnlarge"),
+              onClick: enlarged ? restorePreview : () => review.display("enlarged", view.candidate)
+            }),
+            h(IconButton, {
+              icon: isHostIconComponent(IconCloseOutline16) ? IconCloseOutline16 : ReviewCloseIcon,
+              label: t2("bindings.reviewClose"),
+              onClick: close
+            })
+          )
+        ),
+        !enlarged && view.visibility !== "expanded" ? null : h(
+          React.Fragment,
+          null,
+          h(
+            "div",
+            {
+              className: "ptcPlusBindingDockBody",
+              id: content2,
+              tabIndex: 0,
+              inert: !expanded ? "" : void 0,
+              "aria-hidden": !expanded ? true : void 0,
+              role: "region",
+              "aria-label": t2("bindings.source")
+            },
+            view.message === null ? null : h("p", { className: "ptcPlusMessage ptcPlusDanger", role: "status" }, t2(view.message)),
+            view.message === null ? null : h(ActionButton, {
+              disabled: view.busy,
+              onClick: () => review.reset()
+            }, t2("bindings.reviewRetry")),
+            h(BindingCandidateContent, { candidate: view.candidate, t: t2, showName: false })
+          ),
+          h(
+            "div",
+            {
+              className: "ptcPlusBindingDockActions",
+              inert: !expanded ? "" : void 0,
+              "aria-hidden": !expanded ? true : void 0
+            },
+            h(ActionButton, {
+              className: "ptcPlusBindingDockDiscard",
+              "data-kind": "ghost",
+              disabled: !view.writable || view.busy,
+              onClick: () => act("discard-draft")
+            }, t2("bindings.draftDiscard")),
+            h(ActionButton, {
+              disabled: !view.writable || view.busy,
+              onClick: () => act("save-draft", false)
+            }, t2("bindings.draftSave")),
+            h(ActionButton, {
+              "data-kind": "primary",
+              disabled: !view.writable || view.busy,
+              onClick: () => act("save-draft", true)
+            }, t2("bindings.draftSaveEnable"))
           )
         )
       );
+      return h("div", { className: "ptcPlusBindingDockAnchor", ref: anchor }, enlarged ? h(Modal, {
+        open: view.reachable,
+        title: `${view.candidate.entry.name} \xB7 ${t2("bindings.reviewTitle")}`,
+        headless: true,
+        className: "ptcPlusBindingReviewModal",
+        onClose: restorePreview
+      }, panel) : !view.reachable ? null : createPortal(h("div", { className: "ptcPlusBindingPreviewLayer", ref: layer2 }, panel), document.body));
     }
     function BindingCommandCard({ node, sessionId, t: t2, useProjection }) {
       const projection = bindingDraftProjection(useProjection?.("ptcPlusBindingDraft"));
@@ -29822,11 +29998,14 @@
   var CLIENT_STYLE_ID = "ptc-plus-client-style";
   var CLIENT_CSS = `
 .ptcPlusTool,.ptcPlusComposerBindingAnchor{--ptc-plus-warning-label:color-mix(in srgb,var(--dsw-alias-state-warn-primary,#a15c00) 65%,var(--dsw-alias-label-primary,#18191c))}.ptcPlusTool{font-family:inherit;font-size:13px;line-height:18px}.ptcPlusTool .ptcPlusToolRow{box-sizing:border-box;height:auto;min-height:24px;align-items:flex-start;padding-block:3px}.ptcPlusToolDisclosureContent{min-width:0;flex:1}.ptcPlusTool .ptcPlusToolDisclosureLayout{min-width:0;align-items:flex-start}.ptcPlusTool .ptcPlusToolTitle,.ptcPlusTool .ptcPlusToolSummary,.ptcPlusTool .ptcPlusToolSummaryLine,.ptcPlusTool .ptcPlusToolState,.ptcPlusTool .ptcPlusToolDescription,.ptcPlusTool .ptcPlusToolSep{font-size:13px;line-height:18px}.ptcPlusTool .ptcPlusToolTitle{flex:none;margin-inline-end:6px}.ptcPlusTool .ptcPlusToolState{flex:none;white-space:nowrap}.ptcPlusTool .ptcPlusToolSep{display:inline-block;min-width:6px}.ptcPlusToolSummary{display:flex;min-width:0;align-items:baseline}.ptcPlusToolSummaryLine{display:flex;min-width:0;align-items:baseline;overflow:hidden}.ptcPlusToolDescription{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.ptcPlusToolSummary .ptcPlusToolDescription{flex:1}.ptcPlusToolPreview{display:flex;flex:1;min-width:0;flex-direction:column;gap:4px;margin-inline-start:6px}.ptcPlusToolPreview .ptcPlusToolSummaryLine{display:block}.ptcPlusToolPreview .ptcPlusToolDescription{display:inline;white-space:normal;overflow-wrap:anywhere}.ptcPlusToolPreview .ptcPlusFeatures{margin:0}
-.ptcPlusBindingMenuContent{min-width:0;width:100%;max-block-size:min(440px,60dvh,var(--ptc-plus-menu-space,100dvh));overflow:auto;overscroll-behavior:contain}.ptcPlusOwnedMenuRow{appearance:none;box-sizing:border-box;display:flex;width:100%;min-width:0;min-height:38px;padding:8px 10px;border:0;border-radius:6px;background:transparent;color:inherit;font:inherit;text-align:start;cursor:pointer}.ptcPlusOwnedMenuRow:hover{background:var(--dsw-alias-interactive-bg-hover)}.ptcPlusOwnedMenuRow:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary,#4d6bfe);outline-offset:-2px}.ptcPlusOwnedMenuRow:disabled{opacity:.5;cursor:default}.ptcPlusOwnedMenuSeparator{margin:6px 0;border-top:1px solid var(--dsw-alias-border-l2)}
-.ptcPlusBindingDockAnchor{position:relative;flex:none;min-width:0;width:min(calc(100% - 32px),44rem);margin-inline:auto}
-.ptcPlusBindingDock{position:relative;box-sizing:border-box;min-width:0;display:flex;flex-direction:column;border:1px solid var(--dsw-alias-border-l3,rgba(0,0,0,.1));border-radius:14px;background:var(--dsw-alias-bg-base,#fff);color:var(--dsw-alias-label-primary,#18191c);box-shadow:0 8px 32px rgba(0,0,0,.14),0 2px 6px rgba(0,0,0,.06);max-block-size:min(440px,30dvh);overflow:auto;overscroll-behavior:contain}
-.ptcPlusBindingDockHead{display:flex;flex:none;align-items:center;gap:4px;min-width:0;padding:0 10px 0 0}.ptcPlusBindingDockToggle{appearance:none;display:flex;flex:1;align-items:center;gap:10px;min-width:0;min-height:54px;padding:10px 12px;border:0;background:transparent;color:inherit;text-align:start;font:inherit;cursor:pointer}.ptcPlusBindingDockToggle:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(38,49,72,.06))}.ptcPlusBindingDockToggle:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary,#4d6bfe);outline-offset:-3px}.ptcPlusBindingDockSymbol{display:grid;place-items:center;flex:none;width:30px;height:30px;border-radius:8px;background:var(--dsw-alias-bg-layer-2,#f3f4f6);color:var(--dsw-alias-label-secondary,#52565d);font:600 13px ui-monospace,monospace}.ptcPlusBindingDockHeading{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px;font-size:13px;line-height:18px}.ptcPlusBindingDockHeading strong,.ptcPlusBindingDockHeading>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.ptcPlusBindingDockHeading>span{font-size:11px;color:var(--dsw-alias-label-secondary,#52565d)}.ptcPlusBindingDockChevron{display:flex;flex:none;transform:rotate(180deg);transition:transform .16s ease}.ptcPlusBindingDockToggle[aria-expanded=true] .ptcPlusBindingDockChevron{transform:rotate(0deg)}
-.ptcPlusBindingDockBody{flex:1 1 auto;min-width:0;min-block-size:40px;max-block-size:20rem;overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable;border-top:1px solid var(--dsw-alias-border-l3,rgba(0,0,0,.1))}.ptcPlusBindingDockBody:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary,#4d6bfe);outline-offset:-2px}.ptcPlusBindingDockBody .ptcPlusAuthoringDraft{border:0;padding:12px 14px;background:transparent;gap:10px}.ptcPlusBindingDockBody .ptcPlusBindingCommandSource,.ptcPlusBindingDockBody .ptcPlusBindingCommandCode{max-height:none;margin:0}.ptcPlusBindingDockBody pre{font-size:12px;line-height:19px}.ptcPlusBindingDockBody .ptcPlusBindingMeta{font:11px/17px ui-monospace,monospace;overflow-wrap:anywhere}.ptcPlusBindingDockActions{display:flex;flex:none;flex-wrap:wrap;align-items:center;gap:6px;padding:10px 12px;border-top:1px solid var(--dsw-alias-border-l3,rgba(0,0,0,.1))}.ptcPlusBindingDockActions>button{min-width:0;white-space:normal}.ptcPlusBindingDockDiscard{margin-inline-end:auto}.ptcPlusBindingDock .ptcPlusMessage{margin:0;font-size:12px;line-height:19px}.ptcPlusBindingDock>.ptcPlusMessage{padding:8px 12px}.ptcPlusComposerBindingAnchor{display:inline-flex;min-width:1px;min-height:1px}.ptcPlusComposerBindingAnchor .ptcPlusAuthorButton{position:relative}.ptcPlusDraftBadge{position:absolute;top:-2px;right:-3px;display:grid;place-items:center;box-sizing:border-box;min-width:14px;height:14px;padding-inline:3px;border:1.5px solid var(--dsw-alias-bg-base,#fff);border-radius:8px;background:var(--dsw-alias-state-business-primary,#4d6bfe);color:#fff;font:600 9px/1 system-ui,sans-serif;pointer-events:none}.ptcPlusDraftBadge[data-attention=true]{background:var(--ptc-plus-warning-label);color:var(--dsw-alias-bg-base,#fff)}.ptcPlusDraftMenuItem{display:flex;min-width:0;max-width:240px;flex-direction:column;gap:3px;white-space:normal;overflow-wrap:anywhere}.ptcPlusDraftMenuItem strong{font-size:12px;font-weight:600}.ptcPlusDraftMenuItem>span{font-size:11px;color:var(--dsw-alias-label-secondary,#52565d)}.ptcPlusComposerBindingAnchor[data-text=true] .ptcPlusAuthorButtonShell{width:auto}
+.ptcPlusBindingMenuContent{font-family:inherit;font-size:13px;line-height:18px;display:flex;flex-direction:column;min-width:0;min-height:0;width:100%;max-block-size:min(440px,60dvh,var(--ptc-plus-menu-space,100dvh));overflow:hidden}.ptcPlusBindingMenuScroll{flex:1 1 auto;min-height:0;overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable}.ptcPlusMenuGroupChevron{display:block;align-self:center;width:14px;height:14px;flex:none;margin-inline-end:6px}.ptcPlusMenuGroupChevron[data-expanded=true]{transform:rotate(90deg)}.ptcPlusOwnedMenuRow{appearance:none;box-sizing:border-box;display:flex;align-items:center;width:100%;min-width:0;min-height:38px;padding:8px 10px;border:0;border-radius:6px;background:transparent;color:inherit;font:inherit;text-align:start;cursor:pointer}.ptcPlusOwnedMenuRow:hover{background:var(--dsw-alias-interactive-bg-hover)}.ptcPlusOwnedMenuRow:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary,#4d6bfe);outline-offset:-2px}.ptcPlusOwnedMenuRow:disabled{opacity:.5;cursor:default}.ptcPlusOwnedMenuSeparator{margin:6px 0;border-top:1px solid var(--dsw-alias-border-l2)}
+.ptcPlusBindingDockAnchor{position:relative;flex:none;min-width:0;block-size:0;width:min(calc(100% - 32px),44rem);margin-inline:auto}
+.ptcPlusBindingPreviewLayer{position:fixed;z-index:40;block-size:min(440px,45dvh,var(--ptc-plus-review-space,100dvh));display:flex;align-items:flex-end;pointer-events:none;font-family:inherit;font-size:13px;line-height:18px}.ptcPlusBindingPreviewLayer[data-available=false]{visibility:hidden;pointer-events:none}.ptcPlusBindingDock{position:relative;font-family:inherit;font-size:13px;line-height:18px;box-sizing:border-box;min-width:0;display:flex;flex-direction:column;border:1px solid var(--dsw-alias-border-l3,rgba(0,0,0,.1));border-radius:14px;background:var(--dsw-alias-bg-base,#fff);color:var(--dsw-alias-label-primary,#18191c);box-shadow:0 8px 32px rgba(0,0,0,.14),0 2px 6px rgba(0,0,0,.06);width:100%;max-block-size:100%;pointer-events:auto;overflow:hidden;overscroll-behavior:contain}
+.ptcPlusBindingDockHead{display:flex;flex:none;align-items:center;gap:4px;min-width:0;padding:0 10px 0 0}.ptcPlusBindingDockControls{display:flex;flex:none;align-items:center;gap:12px}.ptcPlusBindingDockToggle{box-sizing:border-box;appearance:none;display:flex;flex:1;align-items:center;gap:10px;min-width:0;min-height:54px;padding:10px 12px;border:0;background:transparent;color:inherit;text-align:start;font:inherit;cursor:pointer}.ptcPlusBindingDockToggle:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(38,49,72,.06))}.ptcPlusBindingDockToggle:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary,#4d6bfe);outline-offset:-3px}.ptcPlusBindingDockSymbol{display:grid;place-items:center;flex:none;width:30px;height:30px;border-radius:8px;background:var(--dsw-alias-bg-layer-2,#f3f4f6);color:var(--dsw-alias-label-secondary,#52565d);font:600 13px ui-monospace,monospace}.ptcPlusBindingDockHeading{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px;font-size:13px;line-height:18px}.ptcPlusBindingDockHeading strong,.ptcPlusBindingDockHeading>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.ptcPlusBindingDockHeading>span{font-size:11px;color:var(--dsw-alias-label-secondary,#52565d)}.ptcPlusBindingDockChevron{display:flex;flex:none;transform:rotate(180deg);transition:transform .16s ease}.ptcPlusBindingDockToggle[aria-expanded=true] .ptcPlusBindingDockChevron{transform:rotate(0deg)}
+.ptcPlusBindingDockBody{box-sizing:border-box;flex:1 1 auto;min-width:0;min-block-size:41px;max-block-size:20rem;overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable;border-top:1px solid var(--dsw-alias-border-l3,rgba(0,0,0,.1))}.ptcPlusBindingDockBody:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary,#4d6bfe);outline-offset:-2px}.ptcPlusBindingDockBody .ptcPlusAuthoringDraft{border:0;padding:12px 14px;background:transparent;gap:10px}.ptcPlusBindingDockBody .ptcPlusBindingCommandSource,.ptcPlusBindingDockBody .ptcPlusBindingCommandCode{max-height:none;margin:0}.ptcPlusBindingDockBody pre{font-size:12px;line-height:19px}.ptcPlusBindingDockBody .ptcPlusBindingMeta{font:11px/17px ui-monospace,monospace;overflow-wrap:anywhere}.ptcPlusBindingDockActions{display:flex;flex:none;flex-wrap:wrap;align-items:center;gap:6px;padding:10px 12px;border-top:1px solid var(--dsw-alias-border-l3,rgba(0,0,0,.1))}.ptcPlusBindingDockActions>button{width:auto;min-width:0;white-space:normal}.ptcPlusBindingDockDiscard{margin-inline-end:auto}.ptcPlusBindingDock .ptcPlusMessage{margin:0;font-size:12px;line-height:19px}.ptcPlusBindingDockBody>.ptcPlusMessage{padding:8px 12px;overflow-wrap:anywhere}.ptcPlusBindingDock[data-compact=true]>.ptcPlusBindingDockBody,.ptcPlusBindingDock[data-compact=true]>.ptcPlusBindingDockActions{position:absolute;inset-inline:0;visibility:hidden;pointer-events:none}.ptcPlusComposerBindingAnchor{display:inline-flex;min-width:1px;min-height:1px}.ptcPlusComposerBindingAnchor .ptcPlusAuthorButton{position:relative}.ptcPlusDraftBadge{position:absolute;top:-2px;right:-3px;display:grid;place-items:center;box-sizing:border-box;min-width:14px;height:14px;padding-inline:3px;border:1.5px solid var(--dsw-alias-bg-base,#fff);border-radius:8px;background:var(--dsw-alias-state-business-primary,#4d6bfe);color:#fff;font:600 9px/1 system-ui,sans-serif;pointer-events:none}.ptcPlusDraftBadge[data-attention=true]{background:var(--ptc-plus-warning-label);color:var(--dsw-alias-bg-base,#fff)}.ptcPlusDraftMenuItem{display:flex;min-width:0;max-width:240px;flex-direction:column;gap:3px;white-space:normal;overflow-wrap:anywhere}.ptcPlusDraftMenuItem strong{font-size:12px;font-weight:600}.ptcPlusDraftMenuItem>span{font-size:11px;color:var(--dsw-alias-label-secondary,#52565d)}.ptcPlusComposerBindingAnchor[data-text=true] .ptcPlusAuthorButtonShell{width:auto}
+.ptcPlusBindingReviewModal.ptcPlusBindingReviewModal{box-sizing:border-box;display:flex;flex-direction:column;width:min(1200px,calc(100vw - 48px));max-width:100%;height:min(900px,88dvh);max-height:100%;min-height:0;padding:0;gap:0;border-radius:14px;overflow:hidden}.ptcPlusBindingReviewModal .ptcPlusBindingDock{position:relative;inset:auto;flex:1;min-height:0;max-block-size:none;border:0;border-radius:0;box-shadow:none;overflow:hidden}.ptcPlusBindingReviewModal .ptcPlusBindingDockToggle{cursor:default;padding:16px 20px}.ptcPlusBindingReviewModal .ptcPlusBindingDockToggle:hover{background:transparent}.ptcPlusBindingReviewModal .ptcPlusBindingDockBody{min-block-size:0;max-block-size:none}.ptcPlusBindingReviewModal .ptcPlusAuthoringDraft{padding:18px 20px;gap:14px}.ptcPlusBindingReviewModal .ptcPlusBindingDockBody pre{font-size:13px;line-height:21px}.ptcPlusBindingReviewModal .ptcPlusBindingDockActions{padding:12px 20px}.ptcPlusBindingReviewModal .ptcPlusBindingDockHead{padding-inline-end:16px}
+@media(max-height:400px){.ptcPlusBindingReviewModal.ptcPlusBindingReviewModal{height:calc(100dvh - 24px)}.ptcPlusBindingReviewModal .ptcPlusBindingDockToggle{padding-block:8px}.ptcPlusBindingReviewModal .ptcPlusBindingDockActions{padding-block:6px}}
+@media(max-width:560px){.ptcPlusBindingDockAnchor{width:calc(100% - 16px)}.ptcPlusBindingReviewModal.ptcPlusBindingReviewModal{width:calc(100vw - 48px);height:calc(100dvh - 24px)}.ptcPlusBindingReviewModal .ptcPlusBindingDockToggle{padding:12px}.ptcPlusBindingReviewModal .ptcPlusBindingDockHead{padding-inline-end:8px}.ptcPlusBindingReviewModal .ptcPlusAuthoringDraft{padding:12px}.ptcPlusBindingReviewModal .ptcPlusBindingDockActions{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);padding:10px 12px}.ptcPlusBindingReviewModal .ptcPlusBindingDockDiscard{grid-column:1/-1;justify-self:start}}
 .ptcPlusBindingCommand .ptcPlusMessage{margin:0}.ptcPlusBindingSourceDetails{min-width:0}.ptcPlusBindingSourceDetails>summary{cursor:pointer;font-size:12px;line-height:20px}.ptcPlusBindingItem>button,.ptcPlusGlobalItem>button{align-self:center}.ptcPlusAuthoringDraft>strong{font-size:13px;line-height:20px;overflow-wrap:anywhere}.ptcPlusBindingCommand .ptcPlusBindingCommandState{max-width:100%;box-sizing:border-box;white-space:normal}.ptcPlusBindingCommand .ptcPlusAuthoringDraft{min-width:0;padding:0;border:0;border-radius:0;background:transparent}
 .ptcPlusCard{list-style:none;border:0.5px solid var(--dsw-alias-border-l4);border-radius:16px;background:var(--dsw-alias-bg-layer-3);overflow:hidden;transition:border-color .16s ease,background-color .16s ease}
 .ptcPlusCard:hover{border-color:var(--dsw-alias-label-dimmed)}
@@ -29866,14 +30045,10 @@
 /* The compatibility probe never paints: it exists so the entry can read whether
    the installed Menu mounted the region it was given. */
 .ptcPlusMenuProbe{display:none}
-/* The pinned carrier is a Client-owned label cell: the host already draws the
-   hairline above it, and the cell's own type must not leak into the grid. The
-   compound selector is load-bearing: the base .ptcPlusMenuActions rule is
-   declared later in this sheet, so an equal-specificity override loses and the
-   grid would draw a second hairline under the host's. */
-.ptcPlusMenuActions.ptcPlusMenuActionsPinned{margin-top:0;border-top:0;font-size:13px;line-height:18px;color:var(--dsw-alias-label-primary)}
-.ptcPlusBindingMenu{width:min(320px,calc(100vw - 24px));min-width:0;max-height:min(440px,60dvh);border-radius:12px}.ptcPlusBindingQuickRow{display:flex;min-width:0;flex-direction:column;gap:3px;white-space:normal}.ptcPlusBindingQuickName{display:flex;align-items:center;justify-content:space-between;gap:12px;font-size:13px}.ptcPlusBindingQuickName strong{min-width:0;overflow:hidden;text-overflow:ellipsis;font-weight:500;white-space:nowrap}.ptcPlusBindingQuickState{flex:none;min-width:5em;text-align:end;font-size:11px;color:var(--dsw-alias-label-tertiary)}.ptcPlusBindingQuickRow[data-enabled=true] .ptcPlusBindingQuickState{color:var(--dsw-alias-state-success-primary)}.ptcPlusBindingQuickPurpose{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dsw-alias-label-tertiary);font-size:12px}.ptcPlusBindingMenuAction{font-size:13px}
-.ptcPlusMenuActions{margin-top:6px;border-top:1px solid var(--dsw-alias-border-l3,rgba(0,0,0,.1))}.ptcPlusMenuAuthoring{padding:8px 4px}.ptcPlusMenuGroupLabel{padding:0 4px 6px;color:var(--dsw-alias-label-tertiary);font-size:11px;line-height:16px}.ptcPlusMenuActionGrid,.ptcPlusMenuUtilities{display:flex;gap:6px;min-width:0}.ptcPlusMenuUtilities{padding:6px 4px}.ptcPlusMenuAuthoring+.ptcPlusMenuUtilities{border-top:1px solid var(--dsw-alias-border-l3,rgba(0,0,0,.1))}.ptcPlusMenuButton{appearance:none;display:flex;flex:1;align-items:center;justify-content:center;min-width:0;min-height:34px;padding:6px 8px;border:1px solid var(--dsw-alias-border-l3,rgba(0,0,0,.1));border-radius:7px;background:transparent;color:var(--dsw-alias-label-primary);font:inherit;text-align:center;cursor:pointer}.ptcPlusMenuButton:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(38,49,72,.06))}.ptcPlusMenuButton:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary,#4d6bfe);outline-offset:-2px}.ptcPlusMenuButton .ptcPlusBindingMenuAction{white-space:normal;overflow-wrap:anywhere;line-height:18px}.ptcPlusMenuUtilities .ptcPlusMenuButton{border-color:transparent;color:var(--dsw-alias-label-secondary)}.ptcPlusMenuUtilities .ptcPlusBindingMenuAction{font-size:12px}
+.ptcPlusBindingMenu{display:flex;flex-direction:column;overflow:hidden;width:min(320px,calc(100vw - 24px));min-width:0;max-height:min(440px,60dvh);border-radius:12px}.ptcPlusBindingQuickRow{display:flex;flex:1;min-width:0;flex-direction:column;gap:3px;white-space:normal}.ptcPlusBindingQuickName{display:flex;align-items:center;justify-content:space-between;gap:12px;font-size:13px}.ptcPlusBindingQuickName strong{min-width:0;overflow:hidden;text-overflow:ellipsis;font-weight:500;white-space:nowrap}.ptcPlusBindingQuickState{flex:none;min-width:5em;text-align:end;font-size:11px;color:var(--dsw-alias-label-tertiary)}.ptcPlusBindingQuickRow[data-enabled=true] .ptcPlusBindingQuickState{color:var(--dsw-alias-state-success-primary)}.ptcPlusBindingQuickPurpose{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dsw-alias-label-tertiary);font-size:12px}.ptcPlusBindingMenuAction{font-size:13px}
+.ptcPlusMenuActions{flex:none;margin-top:0;border-top:1px solid var(--dsw-alias-border-l3,rgba(0,0,0,.1))}.ptcPlusMenuAuthoring{padding:6px 4px}.ptcPlusMenuGroupLabel{padding:0 4px 4px;color:var(--dsw-alias-label-tertiary);font-size:11px;line-height:16px}.ptcPlusMenuActionGrid,.ptcPlusMenuUtilities{display:flex;gap:6px;min-width:0}.ptcPlusMenuUtilities{padding:4px}.ptcPlusMenuAuthoring+.ptcPlusMenuUtilities{border-top:1px solid var(--dsw-alias-border-l3,rgba(0,0,0,.1))}.ptcPlusMenuButton{box-sizing:border-box;appearance:none;display:flex;flex:1;align-items:center;justify-content:center;min-width:0;min-height:34px;padding:6px 8px;border:1px solid var(--dsw-alias-border-l3,rgba(0,0,0,.1));border-radius:7px;background:transparent;color:var(--dsw-alias-label-primary);font:inherit;text-align:center;cursor:pointer}.ptcPlusMenuButton:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(38,49,72,.06))}.ptcPlusMenuButton:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary,#4d6bfe);outline-offset:-2px}.ptcPlusMenuButton .ptcPlusBindingMenuAction{white-space:normal;overflow-wrap:anywhere;line-height:18px}.ptcPlusMenuUtilities .ptcPlusMenuButton{border-color:transparent;color:var(--dsw-alias-label-secondary)}.ptcPlusMenuUtilities .ptcPlusBindingMenuAction{font-size:12px}
+@media(max-height:440px){.ptcPlusMenuAuthoring .ptcPlusMenuGroupLabel{display:none}.ptcPlusMenuAuthoring{padding-block:4px}.ptcPlusMenuButton{min-height:30px;padding:4px}}
+.ptcPlusBindingMenu.ptcPlusFallbackMenuList{overflow:hidden}
 /* Fallbacks used only when the installed generation ships no Menu or Modal. */
 .ptcPlusFallbackMenu{display:inline-flex}.ptcPlusFallbackMenuList{position:fixed;z-index:60;box-sizing:border-box;min-width:min(220px,calc(100vw - 24px));max-width:min(320px,calc(100vw - 24px));overflow:auto;overscroll-behavior:contain;padding:6px;border:1px solid var(--dsw-alias-border-l3,rgba(0,0,0,.1));border-radius:12px;background:var(--dsw-alias-bg-layer-3,#fff);color:var(--dsw-alias-label-primary,#18191c);box-shadow:0 8px 32px rgba(0,0,0,.14)}
 .ptcPlusFallbackMenuItem{display:flex;box-sizing:border-box;width:100%;align-items:center;gap:6px;padding:8px 10px;border:0;border-radius:8px;background:transparent;color:inherit;font:inherit;font-size:13px;text-align:start;cursor:pointer}
@@ -30420,6 +30595,9 @@
       "bindings.openHint": "PTC Plus \xB7 \u5168\u5C40\u7ED1\u5B9A\u4E0E\u8BBE\u7F6E",
       "bindings.draftHint": "PTC Plus \u63D2\u4EF6 \xB7 \u7ED1\u5B9A\u8349\u7A3F\u5F85\u5904\u7406\uFF0C\u70B9\u51FB\u67E5\u770B",
       "bindings.quickHeading": "\u5168\u5C40\u7528\u6237\u7ED1\u5B9A \xB7 \u5BF9\u6240\u6709\u4F1A\u8BDD\u751F\u6548",
+      "bindings.quickEnabled": "\u5DF2\u542F\u7528\uFF08{count}\uFF09",
+      "bindings.quickDisabled": "\u505C\u7528\uFF08{count}\uFF09",
+      "bindings.quickNoEnabled": "\u6682\u65E0\u542F\u7528\u7ED1\u5B9A",
       "bindings.quickDrafts": "\u5F85\u5904\u7406\u8349\u7A3F",
       "bindings.quickLoading": "\u6B63\u5728\u8BFB\u53D6\u7ED1\u5B9A\u2026",
       "bindings.quickSaving": "\u6B63\u5728\u4FDD\u5B58\u2026",
@@ -30432,6 +30610,8 @@
       "bindings.reviewExpand": "\u5C55\u5F00\u7ED1\u5B9A\u8349\u7A3F",
       "bindings.reviewCollapse": "\u6298\u53E0\u7ED1\u5B9A\u8349\u7A3F",
       "bindings.reviewClose": "\u5173\u95ED\u7ED1\u5B9A\u8349\u7A3F\u9762\u677F",
+      "bindings.reviewEnlarge": "\u653E\u5927\u67E5\u770B\u7ED1\u5B9A\u8349\u7A3F",
+      "bindings.reviewRestore": "\u7F29\u5C0F\u663E\u793A\u7ED1\u5B9A\u8349\u7A3F",
       "bindings.reviewOpen": "\u6253\u5F00\u8349\u7A3F",
       "bindings.reviewMenuLabel": "\u7ED1\u5B9A\u8349\u7A3F\uFF08{count}\uFF09",
       "bindings.reviewLoading": "\u6B63\u5728\u786E\u8BA4\u8349\u7A3F\u64CD\u4F5C\u8D44\u683C\u2026",
@@ -30591,6 +30771,9 @@
       "bindings.openHint": "PTC Plus \xB7 Global bindings and settings",
       "bindings.draftHint": "PTC Plus plugin \xB7 Binding draft pending; click to review",
       "bindings.quickHeading": "Global bindings \xB7 Applies to all sessions",
+      "bindings.quickEnabled": "Enabled ({count})",
+      "bindings.quickDisabled": "Disabled ({count})",
+      "bindings.quickNoEnabled": "No enabled bindings",
       "bindings.quickDrafts": "Pending drafts",
       "bindings.quickLoading": "Loading bindings\u2026",
       "bindings.quickSaving": "Saving\u2026",
@@ -30603,6 +30786,8 @@
       "bindings.reviewExpand": "Expand binding draft",
       "bindings.reviewCollapse": "Collapse binding draft",
       "bindings.reviewClose": "Close binding draft panel",
+      "bindings.reviewEnlarge": "Enlarge binding draft",
+      "bindings.reviewRestore": "Shrink binding draft",
       "bindings.reviewOpen": "Open draft",
       "bindings.reviewMenuLabel": "Binding drafts ({count})",
       "bindings.reviewLoading": "Confirming draft actions\u2026",
@@ -32193,6 +32378,8 @@
           Toast,
           Tooltip,
           CodeBlock,
+          Modal,
+          createPortal,
           BindingsDialog,
           PTCPlusSettingsDialog,
           useWorkbenchController,
@@ -32238,7 +32425,7 @@
         ctx.slots.inject("conversation.input.dock", () => ctx.slots.inject("conversation.input.left", () => registerGated(ctx, settingsGate("bindings", () => ctx.slots.register({
           name: "conversation.input.dock",
           id: "ptc-plus-binding-review",
-          order: 30,
+          order: -30,
           locale: LOCALE_NS
         }, (props) => typeof props.useProjection === "function" && props.sessionId !== void 0 ? h(BindingReviewDock, { ...props, key: props.sessionId }) : null)))));
         const availability = createBindingCommandAvailability(ctx);

@@ -195,9 +195,9 @@ Global bindings and the sparkle shortcut default to on. Create entries manually,
 
 ### Author, review, and enable
 
-The model can test with in-memory examples before submitting a draft. The draft appears in the public dock above the composer, using normal layout and bounded internal scrolling without depending on Host-internal DOM; where you review its source, interface, and model instructions, then choose **Save and enable**, **Save disabled**, or **Discard draft**. Submission alone neither saves nor enables a binding. If you close the panel, the sparkle button's draft badge lets you reopen it.
+The model can test with in-memory examples before submitting a draft. The draft floats above the composer; expanding or collapsing it leaves the conversation in place. Opening a draft from the composer menu or original request goes directly to the large dialog. Choose **Enlarge binding draft** to review the complete source in a large dialog with independent scrolling and save/discard actions at the bottom. The header separates resize and close controls; **Shrink binding draft** returns to preview. Review its source, interface, and model instructions, then choose **Save and enable**, **Save disabled**, or **Discard draft**. Submission alone neither saves nor enables a binding. If you close the panel, the sparkle button's draft badge lets you reopen it.
 
-The sparkle menu lists and toggles entries even before the first message; these choices apply across sessions. Enabled entries' interfaces and usage notes are provided to the model in new sessions. Changes during a session are delivered on its next allowed request.
+The sparkle menu lists and toggles entries even before the first message; these choices apply across sessions. Enabled entries appear first; the disabled group shows its count and starts collapsed. Only the binding list scrolls, keeping authoring, revision, management, and settings actions visible at the bottom. Enabled entries' interfaces and usage notes are provided to the model in new sessions. Changes during a session are delivered on its next allowed request.
 
 ### Interface guidance and independent trial runs
 

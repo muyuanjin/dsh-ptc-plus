@@ -247,6 +247,8 @@ Session state is not permanent memory. After a restart, runtime reset, or contex
 
 Unverifiable state is discarded with a diagnostic; if necessary, the current computation continues in an empty environment. Recovery neither redispatches recorded native-tool calls nor reverses historical external effects. See the [runtime reference](docs/runtime-reference.md) for recovery evidence and limits.
 
+Subagents reuse continuous computation state from their own session history. Consecutive recovery contractions show one full notice; on failure, recovery guidance accompanies the error while console output retains what the code actually printed.
+
 ## Boundaries
 
 - **Execution permissions**: primarily designed for `danger-full-access`. Code can access Node.js and the operating system directly; the plugin adds no security sandbox. DSH continues to own native-tool permissions, approvals, cancellation, and sandbox policy.

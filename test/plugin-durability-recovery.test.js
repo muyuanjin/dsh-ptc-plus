@@ -584,7 +584,9 @@ return asyncValue
   t.after(() => restored.dispose())
   const result = await restored.run(session.id, 'return asyncValue', {}, { session })
   assert.equal(result.value, undefined)
-  assert.match(result.logs[0], /unreconstructable historical cell/)
+  assert.match(result.error.message, /unreconstructable historical cell/)
+  assert.match(result.error.message, /asyncValue is not defined/)
+  assert.deepEqual(result.logs, [])
 })
 
 test('keeps result and error conversion inside a statically classified execution', async (t) => {

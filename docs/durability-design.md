@@ -8,6 +8,8 @@
 
 当前 Host 的历史读取由 `sessionQuery.observeSession` 提供。runtime bridge 为一次顶层调用取得一个不可变 event/cursor/header 切点，释放 observation lease 后仍消费其不可变 events；派生 edit 把该切点传给内层执行，恢复、call identity、provenance 和 no-op 确认不在运行中重读变化的 live log。观察切点与当前 surface 不同时，按该切点的公开 surface operations 重建顺序，而不是用较新的 replacement 撤销较早观察的证据。生产路径不调用 `snapshotEvents`、`eventAt` 或 `ownEvents`。
 
+新会话的顶层 submission 独立拥有执行上下文。委派子代理即使在父 cell 或原生子执行的能力调用期间启动，也按子会话 ID 读取上述公开 observation 与 ordered surface；不能继承父会话的日志切点、持久调用序号、组合工具结算或原生子执行 handoff。相同 submission 内的派生 edit 仍共享其外层调用的观察切点。
+
 同步 presentation 从 host-only `ptcPlusSessionLog` 单元读取。该单元与批量 journal fold 共用单事件 timeline 转移；checkpoint 仅保存关联所需的最小 call、规范 journal、身份及当前/历史 runtime records，不复制原始事件日志。pruned result 的非 content 身份保存为确定性 SHA-256 摘要。提示的已见身份、最高 ordinal、cooldown 和成功后的未解决计数在事件进入时更新；装配不扫描历史提示。checkpoint 是可丢弃的派生缓存，不证明 model knowledge、成功 initialization 或 cold replay。状态版本、schema 和 Host 的 watermark/restore 规则共同限定缓存使用，损坏或过时缓存必须重新折叠原日志。
 
 旧 array-backed session 使用同一转移的批量读取回退。缺少当前公开 reader/投影或历史 events 不是数组时明确诊断，不静默宣称空历史；不存在 session 的非会话调用仍委托其原 owner。投影注册随插件/controller 生命周期释放，运行时关闭后只保留日志事实以撤回旧 PTC 消息，不保留 worker、工具或默认模型状态投影。具体决策见 [ADR 0032](adr/0032-own-session-log-facts-in-a-host-only-projection.md)。
@@ -28,7 +30,7 @@ PTC Plus 的正确承诺是：
 - restore 命名的 durable 状态可以显式丢弃 volatile 后缀；
 - abort、timeout、worker exit、OOM、进程恢复和损坏的历史 PTC metadata 都收缩到最大可证明 frontier；没有非空 frontier 时从空 REPL 执行当前 cell；
 - 历史恢复拒绝不可信状态证据，不因这项插件自有历史损坏而永久拒绝后续 `run_code`；当前请求自身的 DSH validation、policy、authority、approval 和 cancellation 仍可拒绝执行；
-- 收缩不重新 dispatch、撤销或验证历史 effect；丢失的 binding 由一次 `PTC-R002` 明确提示模型按需重建；
+- 收缩不重新 dispatch、撤销或验证历史 effect；连续收缩期间只发出一次完整 `PTC-R002`，每次实际收缩仍持久化边界。无收缩的 cell 执行后，再次收缩开始新的提示周期。失败 cell 把恢复说明与主错误一起呈现，不混入捕获的控制台输出；
 - 可重建不是默认暴露 binding 的充分条件：恢复 frontier 还必须让 binding 的精确 provenance 保留在生成当前调用的模型可见 surface 中，或由显式选择的有界、模型可见结构化投影公开；不能只为延长隐藏状态而默认注入该投影，raw log 与 UI-only inventory 也不满足这项条件；
 - `durableReplay: false` 时，新 kernel 从空状态开始且所有已执行 live cell 都是 volatile，作为
   用户怀疑恢复正确性时的显式逃生模式；
@@ -265,7 +267,7 @@ state: ...
 help: ...
 ```
 
-通知进入正常执行缝 logs，结构化值进入当前 journal，因此成功结果和错误结果都能呈现并从 session log 重建。收缩边界随当前 result 持久化，后续 cold start 从新分支恢复，不重复撞击同一损坏历史；每个 kernel 只发送一次，避免污染后续上下文。
+成功 cell 的恢复通知进入 logs；失败 cell 的恢复说明追加到主错误之后，不混入捕获的控制台输出；其他既有诊断提示仍按各自规则呈现。发出的结构化诊断进入当前 journal，可从 session log 重建。连续收缩期间只显示一次完整通知；一个无收缩的 cell 结束提示周期，之后再次收缩会显示新的完整通知。每次实际收缩的边界仍随当前 result 持久化，后续 cold start 从新分支恢复，不重复撞击同一损坏历史。
 
 live kernel 首次进入 volatile 只更新 journal 的 `status` / `volatileReason` 和 `repl.state(list)`，不向模型投影 warning/note。该转换不要求当前任务采取行动；只有 cold recovery 已实际跳过 volatile、unknown 或 replay-abandoned 历史时才发送 `PTC-R002`。worker 在首次观察到直接 Node/OS 边界时立即通知主线程，因此后续 hard abort、timeout 或 worker exit 仍能把原因写入 discarded journal。
 

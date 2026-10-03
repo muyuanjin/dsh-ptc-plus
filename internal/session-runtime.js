@@ -96,6 +96,7 @@ class SessionKernel {
     this.recoveryNotice = history.volatileSuffix.length === 0
       ? undefined
       : recoveryDiagnostic(history.volatileSuffix.length)
+    this.recoveryNoticeShown = false
     this.active = undefined
     this.sequence = 0
     this.tail = Promise.resolve()
@@ -333,14 +334,12 @@ class SessionKernel {
       }
       if (skipped > 0) this.recoveryNotice = recoveryDiagnostic(skipped)
     }
-    const leadingDiagnostics = this.recoveryNotice === undefined ? [] : [this.recoveryNotice]
+    const leadingDiagnostics = this.recoveryNotice === undefined || this.recoveryNoticeShown
+      ? [] : [this.recoveryNotice]
+    this.recoveryNoticeShown = this.recoveryNotice !== undefined
     this.recoveryNotice = undefined
     if (request.journal !== undefined) request.journal.diagnostics.push(...leadingDiagnostics)
     const result = await this.cellExecutor.executeCell(request, undefined, config)
-    if (leadingDiagnostics.length > 0) {
-      const rendered = leadingDiagnostics.map(item => renderDiagnostic(item, request.program))
-      result.logs = [...rendered, ...result.logs]
-    }
     if (result.error === undefined) {
       this.failures.reset()
     } else {
@@ -350,6 +349,11 @@ class SessionKernel {
         result.logs = [...result.logs, renderDiagnostic(hint, request.program)]
         if (request.journal !== undefined) request.journal.diagnostics.push(hint)
       }
+    }
+    if (leadingDiagnostics.length > 0) {
+      const rendered = leadingDiagnostics.map(item => renderDiagnostic(item, request.program))
+      if (result.error === undefined) result.logs = [...rendered, ...result.logs]
+      else result.error = { ...result.error, message: [result.error.message, ...rendered].join('\n') }
     }
     return finishResult(result)
   }

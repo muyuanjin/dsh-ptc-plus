@@ -466,7 +466,9 @@ export function createRuntimeBridgeOwner({
     if (exec.parent !== undefined || id === undefined || inherited?.submission?.sessionId === id) return operation()
     const submission = sessions.beginSubmission({ id }, exec.signal)
     try {
-      return await scope.run({ ...inherited, submission }, operation)
+      // A delegated agent can start inside a session or a native child handoff.
+      // Its admission owns a fresh log/composite context and no child handoff.
+      return await scope.run({ submission }, () => childScope.run(undefined, operation))
     } finally {
       sessions.releaseSubmission(submission)
     }

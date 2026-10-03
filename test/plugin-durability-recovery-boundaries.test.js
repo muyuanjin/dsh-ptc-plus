@@ -66,6 +66,163 @@ async function executeRecordedFixture(state, session, events, callId, program, f
   return { ...execution, ...call }
 }
 
+test('delegated public sessions own their observations and retain live child bindings', async t => {
+  for (const forked of [false, true]) {
+    const state = fixture()
+    t.after(() => state.dispose())
+    const seed = appendOnlySession(`delegation-seed-${forked}`)
+    await state.runDurable(seed.id, 'const inheritedValue = 7', {}, { session: seed })
+    await state.run('delegation-parent', 'const parentSeed = 5')
+    const events = forked ? structuredClone(seed.events) : []
+    if (forked) events.push({ type: 'session/end-seed', seq: events.length, data: {} })
+    const hidden = new Set()
+    const child = {
+      id: `delegated-public-${forked}`,
+      header: { cwd: process.cwd() },
+      get seq() { return events.length },
+      snapshotEvents: () => [...events],
+      appendEvent(event) { events.push(event); return event },
+      surface: { replaceGeneration: 0, get nodes() {
+        return events.filter(event => ['assistant/message', 'tool/result'].includes(event.type)
+          && !hidden.has(event.seq)).map(event => event.seq)
+      } },
+    }
+    const observedIds = []
+    const observe = state.ctx.sessionQuery.observeSession
+    state.ctx.sessionQuery.observeSession = async (id, options) => {
+      observedIds.push(id)
+      assert.equal(options.projectionMode, 'none')
+      return observe(id, options)
+    }
+    const runChild = code => state.executeRun(child.id, code, {}, { session: child })
+    let first
+    let second
+    const parent = await state.run('delegation-parent', `
+      const parentValue = 11;
+      require('node:fs');
+      await tools.delegate({});
+      return parentValue;
+    `, { delegate: async () => {
+      first = await runChild(`const childValue = 41; require("node:fs");
+        function childHelper() { return childValue }
+        class ChildValue { read() { return childValue } }
+        const instance = new ChildValue(); return childValue`)
+      second = await runChild('childValue += 1; return [childValue, childHelper(), instance.read()]')
+      return 42
+    } })
+    assert.equal(parent.error, undefined)
+    assert.equal(parent.value, 11)
+    assert.equal(first.raw.value, 41)
+    assert.equal(first.result.meta?.dshPtcPlus?.status, 'volatile')
+    assert.equal(first.result.meta[RECOVERY_BOUNDARY_KEY], undefined)
+    assert.equal(second.raw.error, undefined)
+    assert.deepEqual(second.raw.value, [42, 42, 42])
+    assert.equal(second.result.meta[RECOVERY_BOUNDARY_KEY], undefined)
+    assert.deepEqual(second.raw.logs, [])
+    assert.deepEqual(observedIds, [child.id, child.id])
+    assert.deepEqual((await state.run('delegation-parent', 'return [parentValue, parentSeed]')).value, [11, 5])
+    const continuation = await runChild('return [childValue, typeof inheritedValue]')
+    assert.deepEqual(continuation.raw.value, [42, forked ? 'number' : 'undefined'])
+    const firstChildCall = events.find(event => event.type === 'tool/call'
+      && event.data.arguments.includes('const childValue'))
+    hidden.add(firstChildCall.seq - 1)
+    const contracted = await runChild('return typeof childValue')
+    assert.equal(contracted.raw.value, 'undefined')
+    assert.match(contracted.raw.logs[0], /PTC-R002/)
+    assert.equal(contracted.result.meta[RECOVERY_BOUNDARY_KEY][0].failedCallSeq, firstChildCall.seq)
+  }
+})
+
+test('delegation from isolated code.run preserves session ownership across native handoffs', async t => {
+  for (const nativeHandoff of [false, true]) {
+    const state = fixture()
+    t.after(() => state.dispose())
+    const events = []
+    const session = {
+      id: `delegated-native-handoff-${nativeHandoff}`,
+      header: { cwd: process.cwd() },
+      get seq() { return events.length },
+      snapshotEvents: () => [...events],
+      appendEvent(event) { events.push(event); return event },
+      surface: { replaceGeneration: 0, get nodes() {
+        return events.filter(event => ['assistant/message', 'tool/result'].includes(event.type))
+          .map(event => event.seq)
+      } },
+    }
+    let first
+    let second
+    const functions = { delegate: async () => {
+      first = await state.executeRun(session.id, 'const ownBinding=41; require("node:fs"); return ownBinding', {}, { session })
+      second = await state.executeRun(session.id, 'ownBinding+=1; return [ownBinding, typeof isolatedValue, typeof parentValue]', {}, { session })
+      return 0
+    } }
+    if (nativeHandoff) functions.run_code = async args => {
+      const raw = await state.runtime.run(state.runtime.resolve({
+        program: args.code,
+        signal: new AbortController().signal,
+        bindings: [{ global: 'tools', functions }],
+      }))
+      if (raw.error !== undefined) throw Error(raw.error.message)
+      return { logs: raw.logs, result: raw.value }
+    }
+    const parent = await state.run(`native-delegation-parent-${nativeHandoff}`, `
+      const parentValue=9;
+      const isolated = await code.run({
+        code: "const isolatedValue=5; await tools.delegate({}); return isolatedValue",
+        description: "Delegate from an isolated computation",
+      });
+      return [parentValue, isolated.result, typeof ownBinding];
+    `, functions)
+    assert.equal(parent.error, undefined)
+    assert.deepEqual(parent.value, [9, 5, 'undefined'])
+    assert.equal(first.raw.value, 41)
+    assert.equal(first.result.meta.dshPtcPlus.status, 'volatile')
+    assert.equal(second.raw.error, undefined)
+    assert.deepEqual(second.raw.value, [42, 'undefined', 'undefined'])
+    assert.equal(second.result.meta[RECOVERY_BOUNDARY_KEY], undefined)
+    assert.equal((await state.run(session.id, 'return ++ownBinding', {}, { session })).value, 43)
+  }
+})
+
+test('consecutive contractions share one notice and failure guidance stays outside captured output', async t => {
+  const state = fixture()
+  t.after(() => state.dispose())
+  const events = []
+  const hidden = new Set()
+  const session = appendOnlySession('recovery-notice-episode', events)
+  session.surface = { replaceGeneration: 0, get nodes() {
+    return events.filter(event => ['assistant/message', 'tool/result'].includes(event.type)
+      && !hidden.has(event.seq)).map(event => event.seq)
+  } }
+  const run = code => state.executeRun(session.id, code, {}, { session })
+  const hideLastSource = () => hidden.add(events.findLast(event => event.type === 'assistant/message').seq)
+  await run('const discarded = 1; require("node:fs")')
+  hideLastSource()
+  const first = await run('const nextValue = 2')
+  assert.match(first.raw.logs[0], /PTC-R002/)
+  assert.match(first.raw.logs[0], /do not reference values created only in the skipped suffix/)
+  hideLastSource()
+  const repeat = await run('const continued = 3')
+  assert.deepEqual(repeat.raw.logs, [])
+  assert.equal(repeat.result.meta.dshPtcPlus.diagnostics.some(item => item.code === 'PTC-R002'), false)
+  assert.equal(repeat.result.meta[RECOVERY_BOUNDARY_KEY].length, 1)
+  assert.equal((await run('return continued')).raw.value, 3)
+  hideLastSource()
+  const failure = await run('console.log("actual console output"); throw Error("new episode failure")')
+  assert.equal(failure.raw.logs.some(log => log.includes('PTC-R002')), false)
+  assert.deepEqual(failure.raw.logs, ['actual console output'])
+  assert.match(failure.raw.error.message, /^error\[PTC-X001\]: uncaught Error: new episode failure/)
+  assert.equal(failure.raw.error.message.match(/PTC-R002/g)?.length, 1)
+  assert.equal(failure.result.meta.dshPtcPlus.diagnostics.filter(item => item.code === 'PTC-R002').length, 1)
+  assert.equal(failure.result.meta.dshPtcPlus.completion.error.message.includes('PTC-R002'), false)
+  assert.equal(failure.result.meta[RECOVERY_BOUNDARY_KEY].length, 1)
+  hideLastSource()
+  const failedRepeat = await run('console.log("second console output"); throw Error("repeat failure")')
+  assert.deepEqual(failedRepeat.raw.logs, ['second console output'])
+  assert.equal(failedRepeat.raw.error.message.includes('PTC-R002'), false)
+  assert.equal(failedRepeat.result.meta[RECOVERY_BOUNDARY_KEY].length, 1)
+})
+
 test('ambiguous historical call sequences persist a contraction across cold restarts', async t => {
   for (const prefix of [false, true]) {
     const events = []

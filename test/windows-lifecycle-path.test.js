@@ -275,6 +275,7 @@ test('rejects an oversized PATH before using the cached DSH version', {
   await mkdir(cacheRoot)
   await copyFile(new URL('../scripts/run-dev-dsh.ps1', import.meta.url), path.join(scriptRoot, 'run-dev-dsh.ps1'))
   await copyFile(new URL('../scripts/windows-lifecycle-path.ps1', import.meta.url), path.join(scriptRoot, 'windows-lifecycle-path.ps1'))
+  await copyFile(new URL('../scripts/windows-plugin-pack.ps1', import.meta.url), path.join(scriptRoot, 'windows-plugin-pack.ps1'))
   await copyFile(new URL('../scripts/semver-compare.ps1', import.meta.url), path.join(scriptRoot, 'semver-compare.ps1'))
   await writeFile(path.join(cacheRoot, 'dsh-version.txt'), '@deepseek-ai/dsh\r\n0.1.2-test\r\n')
   const uniquePath = oversizedUniqueWindowsPath()
@@ -307,7 +308,7 @@ test('leaves unrelated lifecycle environment unchanged after an install-dev comm
   await mkdir(scriptRoot, { recursive: true })
   await mkdir(mockBin)
   await mkdir(dshHome)
-  for (const filename of ['install-dev.ps1', 'windows-lifecycle-path.ps1']) {
+  for (const filename of ['install-dev.ps1', 'windows-lifecycle-path.ps1', 'windows-plugin-pack.ps1']) {
     await copyFile(new URL(`../scripts/${filename}`, import.meta.url), path.join(scriptRoot, filename))
   }
   await writeFile(path.join(projectRoot, 'package.json'), JSON.stringify({ name: 'path-probe' }))
@@ -373,7 +374,7 @@ test('install-dev normalizes PATH even when npm and dsh are already discoverable
   await mkdir(scriptRoot, { recursive: true })
   await mkdir(mockBin)
   await mkdir(dshHome)
-  for (const filename of ['install-dev.ps1', 'windows-lifecycle-path.ps1']) {
+  for (const filename of ['install-dev.ps1', 'windows-lifecycle-path.ps1', 'windows-plugin-pack.ps1']) {
     await copyFile(new URL(`../scripts/${filename}`, import.meta.url), path.join(scriptRoot, filename))
   }
   await writeFile(path.join(projectRoot, 'package.json'), JSON.stringify({ name: 'path-probe' }))
@@ -446,6 +447,174 @@ test('Windows launchers normalize PATH without persistent system resources', asy
   assert.match(isolatedScript, /Import-LatestWindowsPath -Prepend @\(\$binRoot, \$nodeDirectory\)/u)
 })
 
+for (const shellName of ['powershell.exe', 'pwsh.exe']) {
+  test(`Windows packing isolates incompatible dependencies and recovers under ${shellName}`, {
+    skip: resolveWindowsCommand(shellName) === null,
+  }, async t => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'ptc-plus-Windows 缓存-'))
+    t.after(() => rm(root, { recursive: true, force: true }))
+    const project = path.join(root, 'checkout')
+    const destination = path.join(root, 'archives')
+    const cache = path.join(project, 'win_node_modules')
+    const report = path.join(root, 'commands.jsonl')
+    const esbuildFile = directory => path.join(directory, 'node_modules', 'esbuild', 'index.js')
+    const acornFile = directory => path.join(directory, 'node_modules', 'acorn', 'index.js')
+    const workingEsbuild = 'exports.version="fixture"; exports.transformSync=source=>({code:source});'
+    const brokenEsbuild = 'throw new Error("Linux binary cannot run under Windows");'
+    await mkdir(path.dirname(esbuildFile(project)), { recursive: true })
+    await mkdir(destination)
+    await mkdir(path.join(project, 'scripts'))
+    await mkdir(path.join(project, 'src'))
+    const manifest = { name: 'pack-probe', files: ['payload.txt', 'src'], dependencies: {
+      acorn: 'fixture', rootless: 'fixture', 'cli-only': 'fixture', 'cli-map': 'fixture',
+    }, devDependencies: { esbuild: 'fixture' } }
+    const lock = { lockfileVersion: 3, packages: {
+      'node_modules/esbuild': { version: 'fixture' }, 'node_modules/acorn': { version: 'fixture' }, 'node_modules/rootless': { version: 'fixture' },
+      'node_modules/cli-only': { version: 'fixture' }, 'node_modules/cli-map': { version: 'fixture' },
+    } }
+    await writeFile(path.join(project, 'package.json'), JSON.stringify(manifest))
+    await writeFile(path.join(project, 'package-lock.json'), JSON.stringify(lock))
+    await writeFile(path.join(project, 'payload.txt'), 'first')
+    await writeFile(path.join(project, 'src', 'obsolete.js'), 'old')
+    await writeFile(path.join(project, '.env'), 'must not copy')
+    await writeFile(esbuildFile(project), workingEsbuild)
+    for (const name of ['esbuild', 'acorn', 'rootless', 'cli-only', 'cli-map']) {
+      await mkdir(path.join(project, 'node_modules', name), { recursive: true })
+      await writeFile(path.join(project, 'node_modules', name, 'package.json'), JSON.stringify({ name, version: 'fixture',
+        ...(name === 'rootless' ? { exports: { './subpath': './subpath.js' } } : {}),
+        ...(name === 'cli-only' ? { bin: './cli.cjs' } : {}),
+        ...(name === 'cli-map' ? { bin: { command: './cli.cjs' } } : {}),
+      }))
+      if (name.startsWith('cli-')) await writeFile(path.join(project, 'node_modules', name, 'cli.cjs'), 'process.exitCode = 0;')
+    }
+    await writeFile(acornFile(project), 'module.exports = {};')
+    const mockNpm = path.join(root, 'npm.cmd')
+    const mockProgram = path.join(root, 'npm.cjs')
+    await writeFile(mockNpm, `@"${process.execPath}" "${mockProgram}" %*\r\n`)
+    await writeFile(mockProgram, String.raw`
+const { appendFileSync, mkdirSync, readFileSync, writeFileSync } = require('node:fs');
+const path = require('node:path');
+const args = process.argv.slice(2);
+appendFileSync(process.env.PTC_PACK_REPORT, JSON.stringify({ args, cwd: process.cwd() }) + '\n');
+if (args[0] === 'ci') {
+  if (process.env.PTC_PACK_FAIL_INSTALL === '1') process.exit(31);
+  const directory = path.join(process.cwd(), 'node_modules', 'esbuild');
+  mkdirSync(directory, { recursive: true });
+  writeFileSync(path.join(directory, 'index.js'), process.env.PTC_PACK_ESBUILD);
+  for (const name of ['esbuild', 'acorn', 'rootless', 'cli-only', 'cli-map']) {
+    const packageDirectory = path.join(process.cwd(), 'node_modules', name);
+    mkdirSync(packageDirectory, { recursive: true });
+    writeFileSync(path.join(packageDirectory, 'package.json'), JSON.stringify({ name, version: 'fixture',
+      ...(name === 'rootless' ? { exports: { './subpath': './subpath.js' } } : {}),
+      ...(name === 'cli-only' ? { bin: './cli.cjs' } : {}),
+      ...(name === 'cli-map' ? { bin: { command: './cli.cjs' } } : {}),
+    }));
+    if (name.startsWith('cli-')) writeFileSync(path.join(packageDirectory, 'cli.cjs'), 'process.exitCode = 0;');
+  }
+  writeFileSync(path.join(process.cwd(), 'node_modules', 'acorn', 'index.js'), 'module.exports = {};');
+} else if (args[0] === 'pack') {
+  if (process.env.PTC_PACK_FAIL_PACK === '1') process.exit(24);
+  const localRequire = require('node:module').createRequire(path.join(process.cwd(), 'package.json'));
+  localRequire('esbuild').transformSync('value');
+  localRequire('acorn');
+  localRequire('./node_modules/cli-only/cli.cjs');
+  localRequire('./node_modules/cli-map/cli.cjs');
+  const payload = readFileSync('payload.txt', 'utf8');
+  writeFileSync(path.join(args[args.indexOf('--pack-destination') + 1], 'probe.tgz'), payload);
+} else process.exit(2);
+`)
+    const wrapper = path.join(root, 'invoke.ps1')
+    await writeFile(wrapper, String.raw`
+$ErrorActionPreference = 'Stop'
+Set-StrictMode -Version Latest
+. $env:PTC_PACK_HELPER
+function Invoke-ExternalCommand {
+    param([string] $FilePath, [string[]] $ArgumentList)
+    & $FilePath @ArgumentList
+    if ($LASTEXITCODE -ne 0) { throw "Command failed with exit code $LASTEXITCODE" }
+}
+$lease = $null
+try {
+    if ($env:PTC_PACK_HOLD_LOCK -eq '1') {
+        $lease = [IO.File]::Open((Join-Path $env:PTC_PACK_ROOT 'win_node_modules\.pack.lock'), 'OpenOrCreate', 'ReadWrite', 'None')
+    }
+    Invoke-WindowsPluginPack -RepositoryRoot $env:PTC_PACK_ROOT -NpmPath $env:PTC_PACK_NPM -NodePath $env:PTC_PACK_NODE -Destination $env:PTC_PACK_DESTINATION
+} finally {
+    if ($null -ne $lease) { $lease.Dispose() }
+}
+`)
+    const run = (additions = {}) => spawnSync(resolveWindowsCommand(shellName), [
+      '-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', wrapper,
+    ], {
+      encoding: 'utf8', cwd: project,
+      env: windowsEnvironment(path.dirname(process.execPath), {
+        PTC_PACK_HELPER: fileURLToPath(new URL('../scripts/windows-plugin-pack.ps1', import.meta.url)),
+        PTC_PACK_ROOT: project, PTC_PACK_NPM: mockNpm, PTC_PACK_NODE: process.execPath,
+        PTC_PACK_DESTINATION: destination, PTC_PACK_REPORT: report, PTC_PACK_ESBUILD: workingEsbuild,
+        ...additions,
+      }),
+    })
+    const commands = async () => (await readFile(report, 'utf8')).trim().split('\n').map(line => JSON.parse(line))
+    const success = result => assert.equal(result.status, 0, result.stderr || result.stdout)
+    success(run())
+    assert.deepEqual((await commands()).map(command => [command.args[0], command.cwd]), [['pack', project]])
+    await assert.rejects(stat(cache), { code: 'ENOENT' })
+
+    await rm(acornFile(project))
+    const failedInstall = run({ PTC_PACK_FAIL_INSTALL: '1' })
+    assert.notEqual(failedInstall.status, 0)
+    assert.match(failedInstall.stderr, /exit code 31/u)
+    await assert.rejects(stat(path.join(cache, '.dependency-inputs')), { code: 'ENOENT' })
+    success(run())
+    await assert.rejects(stat(acornFile(project)), { code: 'ENOENT' })
+    assert.equal(await readFile(acornFile(cache), 'utf8'), 'module.exports = {};')
+    await writeFile(acornFile(project), 'module.exports = {};')
+    await writeFile(esbuildFile(project), brokenEsbuild)
+    assert.equal(await readFile(esbuildFile(project), 'utf8'), brokenEsbuild)
+    assert.equal(await readFile(esbuildFile(cache), 'utf8'), workingEsbuild)
+    await assert.rejects(stat(path.join(cache, '.env')), { code: 'ENOENT' })
+
+    await writeFile(path.join(project, 'payload.txt'), 'second')
+    await rm(path.join(project, 'src', 'obsolete.js'))
+    success(run())
+    assert.equal(await readFile(path.join(destination, 'probe.tgz'), 'utf8'), 'second')
+    await assert.rejects(stat(path.join(cache, 'src', 'obsolete.js')), { code: 'ENOENT' })
+    assert.equal((await commands()).filter(command => command.args[0] === 'ci').length, 2)
+    const heldLock = run({ PTC_PACK_HOLD_LOCK: '1' })
+    assert.notEqual(heldLock.status, 0)
+    assert.match(heldLock.stderr, /cache is in use/u)
+
+    lock.revision = 1
+    await writeFile(path.join(project, 'package-lock.json'), JSON.stringify(lock))
+    success(run())
+    await writeFile(esbuildFile(cache), brokenEsbuild)
+    success(run())
+    await rm(path.join(cache, 'node_modules', 'acorn', 'package.json'))
+    success(run())
+    assert.equal((await commands()).filter(command => command.args[0] === 'ci').length, 5)
+    await rm(acornFile(cache))
+    success(run())
+    assert.equal((await commands()).filter(command => command.args[0] === 'ci').length, 6)
+    const failedPack = run({ PTC_PACK_FAIL_PACK: '1' })
+    assert.notEqual(failedPack.status, 0)
+    assert.match(failedPack.stderr, /exit code 24/u)
+    await assert.rejects(stat(path.join(cache, '.dependency-inputs')), { code: 'ENOENT' })
+    success(run())
+    assert.equal((await commands()).filter(command => command.args[0] === 'ci').length, 7)
+    await writeFile(acornFile(cache), 'require("./missing-transitive.cjs");')
+    const missingTransitive = run()
+    assert.notEqual(missingTransitive.status, 0)
+    assert.match(missingTransitive.stderr, /missing-transitive/u)
+    await assert.rejects(stat(path.join(cache, '.dependency-inputs')), { code: 'ENOENT' })
+    success(run())
+    assert.equal((await commands()).filter(command => command.args[0] === 'ci').length, 8)
+    await rm(path.join(cache, 'node_modules', 'cli-only', 'cli.cjs'))
+    success(run())
+    assert.equal((await commands()).filter(command => command.args[0] === 'ci').length, 9)
+    for (const command of (await commands()).slice(1)) assert.equal(command.cwd, cache)
+  })
+}
+
 async function developmentRegistryFixture(t, { unicodeCache = false } = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'ptc-plus-dev-registry-'))
   t.after(() => rm(root, { recursive: true, force: true }))
@@ -455,7 +624,7 @@ async function developmentRegistryFixture(t, { unicodeCache = false } = {}) {
   const cacheRoot = path.join(root, unicodeCache ? '缓存目录' : 'cache')
   await mkdir(scriptRoot, { recursive: true })
   await mkdir(mockBin)
-  for (const filename of ['run-dev-dsh.ps1', 'windows-lifecycle-path.ps1', 'semver-compare.ps1', 'upstream-dsh.ps1', 'run-dev-dsh.cmd', 'run-upstream-dsh.cmd']) {
+  for (const filename of ['run-dev-dsh.ps1', 'windows-lifecycle-path.ps1', 'windows-plugin-pack.ps1', 'semver-compare.ps1', 'upstream-dsh.ps1', 'run-dev-dsh.cmd', 'run-upstream-dsh.cmd']) {
     await copyFile(new URL(`../scripts/${filename}`, import.meta.url), path.join(scriptRoot, filename))
   }
   await writeFile(path.join(projectRoot, 'package.json'), JSON.stringify({ name: 'registry-probe' }))

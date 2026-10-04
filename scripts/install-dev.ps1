@@ -7,6 +7,7 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 . (Join-Path $PSScriptRoot 'windows-lifecycle-path.ps1')
+. (Join-Path $PSScriptRoot 'windows-plugin-pack.ps1')
 
 function Get-ExecutablePath {
     param(
@@ -112,18 +113,15 @@ if ($null -eq $dshCommand) {
 $npmPath = Get-ExecutablePath $npmCommand
 $dshPath = Get-ExecutablePath $dshCommand
 $nodePath = Get-ExecutablePath $nodeCommand
+$nodeDirectory = Split-Path -Parent $nodePath
+Import-LatestWindowsPath -Prepend @($nodeDirectory)
 $dshHome = Resolve-DshHome
 $stagingDirectory = Join-Path ([IO.Path]::GetTempPath()) ("dsh-plugin-pack-" + [Guid]::NewGuid().ToString('N'))
 $snapshotFile = $null
-$locationPushed = $false
 
 try {
     New-Item -ItemType Directory -Path $stagingDirectory -Force | Out-Null
-    Push-Location $repositoryRoot
-    $locationPushed = $true
-
-    Write-Host "Packing $packageName from $repositoryRoot ..."
-    Invoke-ExternalCommand $npmPath @('pack', '--pack-destination', $stagingDirectory)
+    Invoke-WindowsPluginPack -RepositoryRoot $repositoryRoot -NpmPath $npmPath -NodePath $nodePath -Destination $stagingDirectory
 
     $archives = @(Get-ChildItem -LiteralPath $stagingDirectory -Filter '*.tgz' -File)
     if ($archives.Count -ne 1) {
@@ -155,9 +153,6 @@ try {
         Write-Host "Created immutable snapshot: $snapshotFile"
     }
 } finally {
-    if ($locationPushed) {
-        Pop-Location
-    }
     if (Test-Path -LiteralPath $stagingDirectory) {
         Remove-Item -LiteralPath $stagingDirectory -Recurse -Force
     }

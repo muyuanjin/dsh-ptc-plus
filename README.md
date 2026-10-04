@@ -45,6 +45,8 @@ dsh plugin --profile <profile> add dsh-ptc-plus
 
 Windows 源码测试：双击 `scripts\run-upstream-dsh.cmd`，拉取官方 DSH 默认分支并复用隔离的构建缓存，加载当前插件工作区。首次运行需要安装依赖和构建；详见[上游源码测试](docs/installation.md#upstream-source-development-launcher-windows)。
 
+Windows 开发脚本自动检查本地 esbuild 是否可执行；依赖缺失或由 WSL 安装时，自动使用 Git 忽略的 `win_node_modules` 隔离安装和打包，不替换工作区的 `node_modules`。
+
 ## 功能概览
 
 默认 PTC 模式的每次调用都从新环境开始：上次的变量不再存在，改动依赖前面的结果时只能重发准备代码。PTC Plus 把 `run_code` 变成会话级的 TypeScript REPL，补上下面的落差。

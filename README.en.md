@@ -45,6 +45,8 @@ Once installed, describe your task to the model as usual. The `run_code` and `ed
 
 For Windows source testing, double-click `scripts\run-upstream-dsh.cmd` to fetch the official DSH default branch, reuse an isolated build cache, and load this plugin checkout. The first run installs dependencies and builds DSH; see [upstream source testing](docs/installation.md#upstream-source-development-launcher-windows).
 
+Windows development scripts check that local esbuild can execute. If dependencies are missing or were installed by WSL, the scripts install and pack in a Git-ignored `win_node_modules` directory without replacing the checkout's `node_modules`.
+
 ## Feature overview
 
 Default PTC mode starts every execution in a fresh environment: variables from the previous call are gone, and a change that depends on earlier results means resending the setup code. PTC Plus turns `run_code` into a session-bound TypeScript REPL and closes the gaps below.

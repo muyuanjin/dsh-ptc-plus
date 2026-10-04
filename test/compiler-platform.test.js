@@ -10,14 +10,37 @@ import { URL, fileURLToPath, pathToFileURL } from 'node:url'
 import { TextDecoder, TextEncoder } from 'node:util'
 import { createContext, Script } from 'node:vm'
 import { deflateRawSync as nativeDeflate, inflateRawSync as nativeInflate } from 'node:zlib'
+import { build } from 'esbuild'
 import { installCompilerPlatform, compilerPlatformBridge } from '../internal/compiler-platform.js'
 import { createPlatform } from '../internal/compiler-platform-factory.js'
 import { compilerPlatformRequirements, validateCompilerPlatform } from '../scripts/compiler-platform-contract.mjs'
 import { deflateRawSync, inflateRawSync } from '../internal/compiler-compression.js'
-import { extractCompilerAssets } from '../scripts/compiler-assets.mjs'
+import { COMPILER_DEPENDENCY_SOURCE_FILTER, extractCompilerAssets } from '../scripts/compiler-assets.mjs'
 
 const bundleUrl = new URL('../compiler-core.cjs', import.meta.url)
 const bundleSource = readFileSync(bundleUrl, 'utf8')
+
+test('compiler dependency preprocessing preserves source under platform dependency-cache names', async () => {
+  for (const separator of ['/', '\\']) {
+    const base = ['checkout', 'win_node_modules'].join(separator)
+    const localSource = [base, 'internal', 'source.js'].join(separator)
+    const dependencySource = [base, 'node_modules', 'dependency', 'index.cjs'].join(separator)
+    const result = await build({
+      stdin: { contents: 'import {value as source} from "source"; import {value as dependency} from "dependency"; globalThis.values=[source,dependency];' },
+      bundle: true, write: false,
+      plugins: [{ name: 'dependency-source-boundary', setup(plugin) {
+        plugin.onResolve({ filter: /^(source|dependency)$/ }, ({ path: name }) => ({
+          path: name === 'source' ? localSource : dependencySource, namespace: 'fixture',
+        }))
+        plugin.onLoad({ filter: COMPILER_DEPENDENCY_SOURCE_FILTER }, () => ({ contents: 'export const value="dependency";' }))
+        plugin.onLoad({ filter: /.*/, namespace: 'fixture' }, () => ({ contents: 'export const value="source";' }))
+      } }],
+    })
+    const context = createContext()
+    new Script(result.outputFiles[0].text).runInContext(context)
+    assert.deepEqual(Array.from(context.values), ['source', 'dependency'])
+  }
+})
 
 test('packaged compiler assets preserve exact argument values without retaining data in script literals', () => {
   const value = 'data\ud800\u03bb'.repeat(20_000)

@@ -6,7 +6,7 @@ import { build, transform } from 'esbuild'
 import { compilerPlatformRequirements, validateCompilerPlatform } from './compiler-platform-contract.mjs'
 import { createPlatform } from '../internal/compiler-platform-factory.js'
 import { compilerPlatformBridge } from '../internal/compiler-platform.js'
-import { extractCompilerAssets } from './compiler-assets.mjs'
+import { COMPILER_DEPENDENCY_SOURCE_FILTER, extractCompilerAssets } from './compiler-assets.mjs'
 
 const command = process.argv[2] ?? 'check'
 if (command !== 'build' && command !== 'check') throw new Error(`unknown compiler bundle command ${command}`)
@@ -27,7 +27,7 @@ const options = { entryPoints: {
   // Remove dependency comments before readable bundle emission. Non-ASCII
   // comments can double the entire retained source string's memory footprint.
   plugins: [{ name: 'dependency-source', setup(plugin) {
-    plugin.onLoad({ filter: /node_modules[\\/].*\.[cm]?js$/ }, async ({ path }) => {
+    plugin.onLoad({ filter: COMPILER_DEPENDENCY_SOURCE_FILTER }, async ({ path }) => {
       const source = await readFile(path, 'utf8')
       const input = source.length >= 64 * 1024 ? extractCompilerAssets(source, path, assets) : source
       const result = await transform(input, { sourcefile: basename(path),

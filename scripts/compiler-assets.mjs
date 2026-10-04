@@ -2,6 +2,10 @@ import { createHash } from 'node:crypto'
 import { basename } from 'node:path'
 import { transformSync, types } from '@babel/core'
 
+// Source copies may live under win_node_modules; only a complete dependency
+// directory segment admits dependency preprocessing.
+export const COMPILER_DEPENDENCY_SOURCE_FILTER = /(?:^|[\\/])node_modules[\\/].*\.[cm]?js$/
+
 // Large immutable data belongs in packaged assets, not in retained script
 // source and V8's literal pool simultaneously. Calls still receive exact text.
 export function extractCompilerAssets(source, filename, assets) {

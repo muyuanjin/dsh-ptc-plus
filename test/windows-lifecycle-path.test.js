@@ -14,6 +14,7 @@ import {
 import os from 'node:os'
 import path from 'node:path'
 import { createServer } from 'node:net'
+import { createHash } from 'node:crypto'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { uncoveredEnvironment } from './subprocess-environment.js'
@@ -453,7 +454,7 @@ for (const shellName of ['powershell.exe', 'pwsh.exe']) {
   }, async t => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'ptc-plus-Windows 缓存-'))
     t.after(() => rm(root, { recursive: true, force: true }))
-    const project = path.join(root, 'checkout')
+    const project = path.join(root, '[checkout]')
     const destination = path.join(root, 'archives')
     const cache = path.join(project, 'win_node_modules')
     const report = path.join(root, 'commands.jsonl')
@@ -465,7 +466,10 @@ for (const shellName of ['powershell.exe', 'pwsh.exe']) {
     await mkdir(destination)
     await mkdir(path.join(project, 'scripts'))
     await mkdir(path.join(project, 'src'))
-    const manifest = { name: 'pack-probe', files: ['payload.txt', 'src'], dependencies: {
+    await mkdir(path.join(project, 'assets'))
+    await writeFile(path.join(project, 'assets', 'included.txt'), 'glob input')
+    await writeFile(path.join(project, 'assets', 'excluded.js'), 'outside glob')
+    const manifest = { name: 'pack-probe', files: ['payload.txt', 'src', 'assets/*.txt'], dependencies: {
       acorn: 'fixture', rootless: 'fixture', 'cli-only': 'fixture', 'cli-map': 'fixture',
     }, devDependencies: { esbuild: 'fixture' } }
     const lock = { lockfileVersion: 3, packages: {
@@ -495,6 +499,9 @@ for (const shellName of ['powershell.exe', 'pwsh.exe']) {
 const { appendFileSync, mkdirSync, readFileSync, writeFileSync } = require('node:fs');
 const path = require('node:path');
 const args = process.argv.slice(2);
+// npm must never be invoked in a cache missing its own package inputs.
+JSON.parse(readFileSync('package.json', 'utf8'));
+JSON.parse(readFileSync('package-lock.json', 'utf8'));
 appendFileSync(process.env.PTC_PACK_REPORT, JSON.stringify({ args, cwd: process.cwd() }) + '\n');
 if (args[0] === 'ci') {
   if (process.env.PTC_PACK_FAIL_INSTALL === '1') process.exit(31);
@@ -528,12 +535,21 @@ if (args[0] === 'ci') {
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 . $env:PTC_PACK_HELPER
+if ($env:PTC_PACK_OMIT_INPUT) {
+    $copySource = (Get-Command Copy-WindowsPackSource).ScriptBlock
+    function Copy-WindowsPackSource {
+        param([string] $RepositoryRoot, [string] $Directory, [object] $Manifest)
+        & $copySource $RepositoryRoot $Directory $Manifest
+        Remove-Item -LiteralPath (Join-Path $Directory $env:PTC_PACK_OMIT_INPUT) -Force
+    }
+}
 function Invoke-ExternalCommand {
     param([string] $FilePath, [string[]] $ArgumentList)
     & $FilePath @ArgumentList
     if ($LASTEXITCODE -ne 0) { throw "Command failed with exit code $LASTEXITCODE" }
 }
 $lease = $null
+$originalLocation = (Get-Location).ProviderPath
 try {
     if ($env:PTC_PACK_HOLD_LOCK -eq '1') {
         $lease = [IO.File]::Open((Join-Path $env:PTC_PACK_ROOT 'win_node_modules\.pack.lock'), 'OpenOrCreate', 'ReadWrite', 'None')
@@ -541,13 +557,18 @@ try {
     Invoke-WindowsPluginPack -RepositoryRoot $env:PTC_PACK_ROOT -NpmPath $env:PTC_PACK_NPM -NodePath $env:PTC_PACK_NODE -Destination $env:PTC_PACK_DESTINATION
 } finally {
     if ($null -ne $lease) { $lease.Dispose() }
+    if ((Get-Location).ProviderPath -cne $originalLocation) { throw 'Pack did not restore the caller location.' }
 }
 `)
+    const inheritedModulePath = shellName === 'powershell.exe' && resolveWindowsCommand('pwsh.exe')
+      ? execFileSync(resolveWindowsCommand('pwsh.exe'), ['-NoLogo', '-NoProfile', '-Command', '$env:PSModulePath'], { encoding: 'utf8' }).trim()
+      : process.env.PSModulePath
     const run = (additions = {}) => spawnSync(resolveWindowsCommand(shellName), [
       '-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', wrapper,
     ], {
       encoding: 'utf8', cwd: project,
       env: windowsEnvironment(path.dirname(process.execPath), {
+        ...(inheritedModulePath ? { PSModulePath: inheritedModulePath } : {}),
         PTC_PACK_HELPER: fileURLToPath(new URL('../scripts/windows-plugin-pack.ps1', import.meta.url)),
         PTC_PACK_ROOT: project, PTC_PACK_NPM: mockNpm, PTC_PACK_NODE: process.execPath,
         PTC_PACK_DESTINATION: destination, PTC_PACK_REPORT: report, PTC_PACK_ESBUILD: workingEsbuild,
@@ -573,6 +594,12 @@ try {
     assert.equal(await readFile(esbuildFile(project), 'utf8'), brokenEsbuild)
     assert.equal(await readFile(esbuildFile(cache), 'utf8'), workingEsbuild)
     await assert.rejects(stat(path.join(cache, '.env')), { code: 'ENOENT' })
+    assert.equal(await readFile(path.join(cache, 'package.json'), 'utf8'), JSON.stringify(manifest))
+    assert.equal(await readFile(path.join(cache, 'package-lock.json'), 'utf8'), JSON.stringify(lock))
+    const expectedHashes = [manifest, lock].map(input => createHash('sha256').update(JSON.stringify(input)).digest('hex'))
+    assert.deepEqual((await readFile(path.join(cache, '.dependency-inputs'), 'utf8')).replace(/^\uFEFF/u, '').split(/\r?\n/u).slice(0, 2), expectedHashes)
+    assert.equal(await readFile(path.join(cache, 'assets', 'included.txt'), 'utf8'), 'glob input')
+    await assert.rejects(stat(path.join(cache, 'assets', 'excluded.js')), { code: 'ENOENT' })
 
     await writeFile(path.join(project, 'payload.txt'), 'second')
     await rm(path.join(project, 'src', 'obsolete.js'))
@@ -610,6 +637,16 @@ try {
     assert.equal((await commands()).filter(command => command.args[0] === 'ci').length, 8)
     await rm(path.join(cache, 'node_modules', 'cli-only', 'cli.cjs'))
     success(run())
+    assert.equal((await commands()).filter(command => command.args[0] === 'ci').length, 9)
+    for (const requiredInput of ['package.json', 'package-lock.json']) {
+      const previousCommands = (await commands()).length
+      const incompleteCopy = run({ PTC_PACK_OMIT_INPUT: requiredInput })
+      assert.notEqual(incompleteCopy.status, 0)
+      assert.ok(incompleteCopy.stderr.includes(`source copy is missing ${requiredInput}`), incompleteCopy.stderr)
+      assert.equal((await commands()).length, previousCommands, 'incomplete cache must fail before invoking npm')
+      assert.equal(await readFile(esbuildFile(project), 'utf8'), brokenEsbuild)
+      success(run())
+    }
     assert.equal((await commands()).filter(command => command.args[0] === 'ci').length, 9)
     for (const command of (await commands()).slice(1)) assert.equal(command.cwd, cache)
   })

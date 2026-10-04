@@ -1,3 +1,20 @@
+function Get-Sha256 {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $Path
+    )
+
+    $stream = [IO.File]::OpenRead($Path)
+    $algorithm = [Security.Cryptography.SHA256]::Create()
+    try {
+        $hashBytes = $algorithm.ComputeHash($stream)
+        return ([BitConverter]::ToString($hashBytes)).Replace('-', '').ToLowerInvariant()
+    } finally {
+        $algorithm.Dispose()
+        $stream.Dispose()
+    }
+}
+
 function Test-WindowsBuildDependencies {
     param([string] $Directory, [string] $NodePath)
 
@@ -66,13 +83,19 @@ function Copy-WindowsPackSource {
         }
     }
     $inputs = @('package.json', 'package-lock.json', '.npmrc', '.npmignore', 'scripts', 'README.md', 'LICENSE') + @($Manifest.files)
-    foreach ($inputPath in ($inputs | Select-Object -Unique)) {
-        foreach ($item in @(Get-ChildItem -Path (Join-Path $RepositoryRoot $inputPath) -Force -ErrorAction SilentlyContinue)) {
-            $relativePath = $item.FullName.Substring($RepositoryRoot.TrimEnd('\', '/').Length + 1)
-            $destination = Join-Path $Directory $relativePath
-            New-Item -ItemType Directory -Path (Split-Path -Parent $destination) -Force | Out-Null
-            Copy-Item -LiteralPath $item.FullName -Destination $destination -Recurse -Force
+    # Resolve relative package globs from a literal checkout location.
+    Push-Location -LiteralPath $RepositoryRoot
+    try {
+        foreach ($inputPath in ($inputs | Select-Object -Unique)) {
+            foreach ($item in @(Get-ChildItem -Path $inputPath -Force -ErrorAction SilentlyContinue)) {
+                $relativePath = $item.FullName.Substring($RepositoryRoot.TrimEnd('\', '/').Length + 1)
+                $destination = Join-Path $Directory $relativePath
+                New-Item -ItemType Directory -Path (Split-Path -Parent $destination) -Force | Out-Null
+                Copy-Item -LiteralPath $item.FullName -Destination $destination -Recurse -Force
+            }
         }
+    } finally {
+        Pop-Location
     }
 }
 
@@ -112,8 +135,8 @@ function Invoke-WindowsPluginPack {
                 $nodeIdentity = & $NodePath -p "[process.version, process.platform, process.arch, process.versions.modules].join('/')"
                 if ($LASTEXITCODE -ne 0) { throw 'Unable to identify the Windows Node runtime.' }
                 $inputIdentity = @(
-                    (Get-FileHash -LiteralPath (Join-Path $RepositoryRoot 'package.json') -Algorithm SHA256).Hash
-                    (Get-FileHash -LiteralPath $lockPath -Algorithm SHA256).Hash
+                    (Get-Sha256 (Join-Path $RepositoryRoot 'package.json'))
+                    (Get-Sha256 $lockPath)
                     $nodeIdentity
                     $env:npm_config_registry
                     [Environment]::GetEnvironmentVariable('npm_config_@deepseek-ai:registry', 'Process')
@@ -122,7 +145,12 @@ function Invoke-WindowsPluginPack {
                 $sameInputs = (Test-Path -LiteralPath $marker -PathType Leaf) -and
                     (Get-Content -LiteralPath $marker -Raw).TrimEnd("`r", "`n") -ceq $inputIdentity.TrimEnd("`r", "`n")
                 Copy-WindowsPackSource $RepositoryRoot $directory $manifest
-                Push-Location $directory
+                foreach ($requiredInput in @('package.json', 'package-lock.json')) {
+                    if (-not (Test-Path -LiteralPath (Join-Path $directory $requiredInput) -PathType Leaf)) {
+                        throw "Isolated Windows source copy is missing $requiredInput; refusing to run npm in $directory."
+                    }
+                }
+                Push-Location -LiteralPath $directory
                 $locationPushed = $true
                 $cachedProbe = Test-WindowsBuildDependencies $directory $NodePath
                 if (-not $sameInputs -or -not $cachedProbe.Ready) {
@@ -140,7 +168,7 @@ function Invoke-WindowsPluginPack {
             }
         }
         if (-not $locationPushed) {
-            Push-Location $directory
+            Push-Location -LiteralPath $directory
             $locationPushed = $true
         }
         Write-Host "Packing $($manifest.name) from $RepositoryRoot ..."

@@ -77,23 +77,6 @@ function Invoke-NpmPackageInstall {
     }
 }
 
-function Get-Sha256 {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string] $Path
-    )
-
-    $stream = [IO.File]::OpenRead($Path)
-    $algorithm = [Security.Cryptography.SHA256]::Create()
-    try {
-        $hashBytes = $algorithm.ComputeHash($stream)
-        return ([BitConverter]::ToString($hashBytes)).Replace('-', '').ToLowerInvariant()
-    } finally {
-        $algorithm.Dispose()
-        $stream.Dispose()
-    }
-}
-
 function Resolve-Directory {
     param(
         [Parameter(Mandatory = $true)]

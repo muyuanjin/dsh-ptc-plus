@@ -37,23 +37,6 @@ function Invoke-ExternalCommand {
     }
 }
 
-function Get-Sha256 {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string] $Path
-    )
-
-    $stream = [IO.File]::OpenRead($Path)
-    $algorithm = [Security.Cryptography.SHA256]::Create()
-    try {
-        $hashBytes = $algorithm.ComputeHash($stream)
-        return ([BitConverter]::ToString($hashBytes)).Replace('-', '').ToLowerInvariant()
-    } finally {
-        $algorithm.Dispose()
-        $stream.Dispose()
-    }
-}
-
 function Resolve-DshHome {
     $userHome = [Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)
     $configuredHome = [Environment]::GetEnvironmentVariable('DSH_HOME', 'Process')

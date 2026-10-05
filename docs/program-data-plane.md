@@ -4,7 +4,7 @@
 
 ## Typed tools
 
-浏览、搜索和 DSH 服务调用使用当前 scope 的 native `tools.*`。canonical result 直接进入 cell，不经过 PTC 参数翻译或结果裁剪。对完全省略参数的 native call，runtime 只在 DSH 的 live object schema 验证 `{}` 合法时把 omission 规范为 `{}`；该值随后统一进入 encoding、dispatch、journal 和 replay comparison。`tools.cordis_inspect_list()` 因而等价于显式传入 `{}`，但显式 `undefined`、需要输入的工具、`capabilities.*` 和 owner-provided namespace 不受影响。具体结果可能 complete、bounded、incremental、open-world 或 unknown；模型/UI rendering 的裁剪不能反推 program value 的完整性。
+浏览、搜索和 DSH 服务调用使用当前 scope 的 native `tools.*`。canonical result 经 PTC graph IPC 进入 cell，不经过参数翻译或结果裁剪；IPC 支持域不扩展 native 工具的 JSON schema 与 lossless JSON 校验。参数编码拒绝发生在 dispatch 前；调用完成后的结果编码拒绝不能声称工具未执行，也不会自动重试。对完全省略参数的 native call，runtime 只在 DSH 的 live object schema 验证 `{}` 合法时把 omission 规范为 `{}`；该值随后统一进入 encoding、dispatch、journal 和 replay comparison。`tools.cordis_inspect_list()` 因而等价于显式传入 `{}`，但显式 `undefined`、需要输入的工具、`capabilities.*` 和 owner-provided namespace 不受影响。具体结果可能 complete、bounded、incremental、open-world 或 unknown；模型/UI rendering 的裁剪不能反推 program value 的完整性。
 
 PTC 模式的 code-only direct-tool projection 只声明模型直接调用真实注册的 `run_code` 与 `edit_run_code`。模型误发的顶层 native call 不属于这个合法 direct protocol；当 live schema 能唯一证明该工具时，transport normalization 将它包装为 `run_code`，cell 再调用同一 `tools.*` member。canonicalizer 先解析并校验一次原始 JSON：普通参数原样嵌入 JavaScript，含 own `__proto__` 的值改用安全字面量；因此派生 cell 不需要 `JSON.parse`，同时保持参数执行语义。规范化不向模型暴露 provenance、纠错提示或额外标记。参数仍由 DSH owner contract 正式验证，未知、畸形或不一致调用原样交给宿主诊断。该历史规范化只适用于无效的 out-of-surface call，不适用于已经合法声明的 `edit_run_code`。
 
@@ -19,6 +19,8 @@ DSH authority/policy -> native dispatch -> canonical result
 ```
 
 cold replay 校验相同的调用序列并返回 recorded value，不重新执行工具。这保证 REPL 计算状态可重建，但不声称外部 effect 可逆或仍与历史相同。Cordis Plugin、Run 和 Inspect observation 属于进程内实时状态；恢复出的 Cordis value 只作为历史数据保留，后续状态性决策必须先按恢复 context 执行新的 live Inspect。
+
+插件自有隔离 `code.run` 向父程序返回 canonical completion 的值图，模型展示投影仅用于外层；native 委托保持其 owner-defined result。父子 binding 保持隔离，显式 undefined 与无 return 有区别；历史 recorded-value 字符串不被重新解释。详见 [值契约](value-wire.md)。
 
 同一 settlement 规则适用于当前 request 中的全部 program binding，包括 owner-provided namespace 与 `code.run`。已结算的 value/error 可进入 durable transcript；若取消、超时或 worker failure 发生时调用仍未结算，cell heap 回滚，discarded journal 以实际 `global.member` 保留 possible-effect boundary。分类来自可观察生命周期，不来自 capability 名称表。
 

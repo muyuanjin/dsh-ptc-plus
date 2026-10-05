@@ -167,6 +167,9 @@ test('assembles a coherent byte-stable cell grammar for each selected language',
     }, { agent, scope: agent })
     const first = await assemble()
     const fullSystem = first.sections.map(section => section.text).join('\n\n')
+    assert.match(fullSystem, /Return supported values directly, including BigInt in plain objects/ )
+    assert.match(fullSystem, /Live values may exceed the transfer domain/ )
+    assert.match(fullSystem, /Native `tools\.\*` arguments must satisfy their own JSON schemas/ )
     if (current) {
       assert.match(fullSystem, /runtime `enum` and namespaces are supported/)
       assert.doesNotMatch(fullSystem, /erasable syntax only|no `enum` or namespaces/)

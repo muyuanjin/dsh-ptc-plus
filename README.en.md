@@ -241,7 +241,9 @@ The host execution provider must use TypeScript. Changing it to another language
 
 ### Preserve values beyond plain JSON
 
-Within the supported value domain, tool arguments, results, and recovery records preserve `undefined`, BigInt, `NaN`, infinities, sparse arrays, cycles, and shared references. Ordinary JSON results remain structured values; special values are displayed as readable text to the model, separately from their program values.
+Within the plugin graph IPC domain, program arguments, results, and recovery records preserve `undefined`, BigInt, `NaN`, infinities, sparse arrays, cycles, and shared references. Ordinary JSON results remain structured values; special values are displayed as readable text to the model, separately from their program values. Return supported values directly without `JSON.stringify`. Plugin-owned isolated `code.run` delivers an actual value graph to the parent while keeping their bindings separate; native delegation keeps its original contract.
+
+This does not extend native `tools.*` JSON argument or result contracts: DSH can still reject BigInt inputs, and explicit `JSON.stringify` and mixed BigInt/Number arithmetic retain native JavaScript behavior. Date, Map and similar values remain usable in live bindings but are outside the current transfer domain; explicitly select the data needed for output. Transfer failures distinguish unsupported values from budget excess. A return-value encoding failure after a call completes does not mean the tool did not execute; do not repeat the operation solely to obtain its result. See the [value contract](docs/value-wire.md).
 
 This does not make every JavaScript object transferable or persistent: functions, Promises, class instances, Date, Map, and Set are outside the value-transfer domain. Keeping a function in the REPL for later calls is different from returning that function as a tool result. Reuse session variables for continued computation; see the [value-transfer specification](docs/value-wire.md) for the complete supported domain.
 

@@ -1,5 +1,7 @@
 /** Own the execution-seam takeover, per-cell lease, journal projection, and session settlement. */
 import { AsyncLocalStorage } from 'node:async_hooks'
+import { decodeValue } from './value-wire.js'
+import { valueLimitsFromConfig } from './value-wire-schema.js'
 import { executionPolicies } from './binding-update-policy.js'
 import { assertObjectJsonSchema, validateJsonSchemaValue } from '@deepseek-ai/dsh-tools'
 import { normalizeBindingDescriptors } from './binding-descriptors.js'
@@ -128,7 +130,7 @@ const PROGRAM_CAPABILITY_METADATA = deepFreeze([
             description: 'Child console output in emission order.',
           },
           result: {
-            description: 'Child return value; omitted when the child returns undefined.',
+            description: 'Plugin-owned isolated execution preserves supported PTC Value V1 types and reference relationships; omitted for no return, present for explicit undefined. Native delegation and legacy upstream execution retain their original result contracts.',
           },
         },
         required: ['logs'],
@@ -179,16 +181,18 @@ export function createRuntimeBridgeOwner({
   const pending = new WeakMap()
   const nativeRunCodeHandoffs = new Set()
   let active = true
-  const runIsolated = async (request, executionToken, depth, cellConfig, inheritedTools) => {
+  const runIsolated = async (request, executionToken, depth, cellConfig, inheritedTools, programCompletion = false) => {
     const child = new SessionRuntime({ ...cellConfig, durableReplay: false, userBindingsEnabled: false,
       replViewEnabled: false }, { withInitiator, userBindingsCwd })
     childRuntimes.add(child)
     const projected = projectBindings(request, depth, executionToken, inheritedTools, cellConfig)
     childFinalizers.add(child)
     try {
-      return await child.run({ id: 'isolated-cell', session: { header: {
+      const execution = await child.runTentative({ id: 'isolated-cell', session: { header: {
         cwd: executionToken?.session?.header?.cwd,
-      } } }, { ...projected.request, executionToken })
+      } } }, { ...projected.request, executionToken }, { programCompletion })
+      if (execution.settlement !== undefined) child.finalize(execution.settlement, true)
+      return { result: execution.result, completion: execution.settlement?.journal.completion }
     } finally {
       projected.release()
       try {
@@ -263,11 +267,12 @@ export function createRuntimeBridgeOwner({
       }
       if (languageSemantics !== 'legacy-v1') {
         const child = await runIsolated({ ...request, program: args.code }, executionToken,
-          depth + 1, cellConfig, functions)
-        if (child.error !== undefined) {
-          throw new Error(`nested run_code failed (${child.error.kind}): ${child.error.message}`)
+          depth + 1, cellConfig, functions, true)
+        if (child.result.error !== undefined) {
+          throw new Error(`nested run_code failed (${child.result.error.kind}): ${child.result.error.message}`)
         }
-        return { logs: child.logs, ...(child.value === undefined ? {} : { result: child.value }) }
+        return { logs: child.result.logs, ...(child.completion.hasValue
+          ? { result: decodeValue(child.completion.value, valueLimitsFromConfig(cellConfig)) } : {}) }
       }
       const childProjected = projectBindings(
         { ...request, program: args.code }, depth + 1, executionToken, functions, cellConfig,
@@ -440,6 +445,7 @@ export function createRuntimeBridgeOwner({
       if (!active || !child.active) return Promise.reject(new Error('PTC execution lease expired'))
       if (executionPolicies(child.cellConfig).languageSemantics !== 'legacy-v1') {
         return runIsolated(request, child.executionToken, child.depth, child.cellConfig, child.functions)
+          .then(execution => execution.result)
       }
     }
     if (!active) return seam.runUpstream(request)

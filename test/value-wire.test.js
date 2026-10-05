@@ -5,6 +5,9 @@ import {
   VALUE_CODEC,
   decodeValue,
   encodeValue,
+  encodeValueAtBoundary,
+  valueEncodingFailure,
+  valueEncodingHelp,
   isPlainJsonTree,
   normalizeValueWire,
   prepareValueWire,
@@ -629,4 +632,69 @@ test('handles deeply nested graphs without recursive encode/decode/render calls'
   for (let depth = 0; depth < 6000; depth += 1) restored = restored[0]
   assert.equal(restored, null)
   assert.equal(renderValueWire(encodeValue([value])), `[${renderValueWire(encodeValue(value))}]`)
+})
+
+
+test('classifies excluded brands without invoking user-controlled metadata or projections', () => {
+  const values = [
+    [new Date(0), 'Date'], [new Map(), 'Map'], [new Set(), 'Set'],
+    [/x/, 'RegExp'], [new ArrayBuffer(1), 'ArrayBuffer/SharedArrayBuffer'],
+    [new Uint8Array(1), 'TypedArray/Buffer'], [Buffer.from('x'), 'TypedArray/Buffer'],
+    [new DataView(new ArrayBuffer(1)), 'DataView'], [new Error('x'), 'Error'],
+    [Promise.resolve(1), 'Promise'], [new WeakMap(), 'WeakMap'], [new WeakSet(), 'WeakSet'],
+    [new (class Custom {})(), 'unknown prototype'],
+  ]
+  let calls = 0
+  for (const [value, brand] of values) {
+    Object.defineProperty(value, Symbol.toStringTag, { get() { calls++; throw Error('tag') } })
+    Object.defineProperty(value, 'toJSON', { get() { calls++; throw Error('toJSON') } })
+    assert.throws(() => encodeValue({ nested: value }), error => {
+      assert.deepEqual(valueEncodingFailure(error), {
+        kind: 'unsupported', path: '$.nested', detail: `non-plain object (${brand})`,
+        legacyMessage: 'value at $.nested is not PTC Value V1: non-plain object',
+      })
+      assert.match(valueEncodingHelp(valueEncodingFailure(error)), /select needed data explicitly/)
+      return true
+    })
+  }
+  const constructor = function Object() {}
+  Object.defineProperty(constructor, 'name', { get() { calls++; throw Error('name') } })
+  assert.throws(() => encodeValue(Object.create(Object.assign(Object.create(null), { constructor }))), /unknown prototype/)
+  const prototype = new Proxy({}, { getPrototypeOf() { calls++; throw Error('prototype') } })
+  const value = Object.create(prototype)
+  assert.throws(() => encodeValue(value), /unknown prototype/)
+  assert.equal(calls, 0)
+
+  let reflections = 0
+  const proxy = new Proxy({}, { getPrototypeOf() { reflections++; return Date.prototype } })
+  assert.throws(() => encodeValue(proxy), error => {
+    assert.match(valueEncodingFailure(error).detail, /Proxy/)
+    return true
+  })
+  assert.equal(reflections, 1)
+})
+
+test('encoding categories determine help and preserve dispatch facts at program boundaries', () => {
+  for (const [value, limits] of [
+    [123n, { maxBigIntDigits: 2 }], ['abcd', { maxStringBytes: 3 }],
+    [{ a: {} }, { maxNodes: 1 }], [[1, 2], { maxEdges: 1 }],
+    [[1, 2], { maxArrayLength: 1 }], [[new Array(1), new Array(1)], { maxArrayLength: 2 }],
+  ]) {
+    assert.throws(() => encodeValue(value, limits), error => {
+      assert.equal(valueEncodingFailure(error).kind, 'budget')
+      assert.match(valueEncodingHelp(valueEncodingFailure(error)), /reduce the transferred graph/)
+      return true
+    })
+  }
+  assert.throws(() => encodeValueAtBoundary(new Map(), {}, 'parameter'), /parameter was not dispatched[^]*Map[^]*select needed data/)
+  assert.throws(() => encodeValueAtBoundary(new Map(), {}, 'result'), /call completed[^]*external effects[^]*do not repeat[^]*Map/)
+  assert.deepEqual(decodeValue(encodeValueAtBoundary({ big: 2n }, {}, 'parameter')), { big: 2n })
+  const trapError = new Error('trap')
+  assert.throws(() => encodeValueAtBoundary(new Proxy({}, { getPrototypeOf() { throw trapError } }), {}, 'parameter'), error => error === trapError)
+  assert.equal(valueEncodingFailure(new TypeError('not a codec failure')), undefined)
+  assert.match(valueEncodingHelp(undefined), /select needed data/)
+  assert.throws(() => encodeValue({ get x() { throw Error('getter') } }), error => {
+    assert.equal(valueEncodingFailure(error).kind, 'shape')
+    return true
+  })
 })

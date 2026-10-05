@@ -723,3 +723,78 @@ test('does not cold-replay ambient values reached through globalThis', async (t)
   const restored = await reader.run(session.id, 'return typeof ambientReplayValue', {}, { session })
   assert.equal(restored.value, 'undefined')
 })
+
+
+test('unsupported completion help preserves retained values and differs from budget help', async t => {
+  const state = fixture()
+  t.after(() => state.dispose())
+  const failed = await state.run('retained-map', 'const keptMap = new Map([["x", 2n]]); return keptMap')
+  assert.equal(failed.error.kind, 'invalid-output')
+  assert.match(failed.error.message, /PTC-O001[^]*Map[^]*worker remains live[^]*select needed data/)
+  assert.doesNotMatch(failed.error.message, /reduce the transferred graph/)
+  assert.deepEqual(await state.run('retained-map', 'return keptMap.get("x") + 1n'), { logs: [], value: '3n' })
+  const bounded = fixture({maxValueEdges: 1})
+  t.after(() => bounded.dispose())
+  const budget = await bounded.run('budget-help', 'const keptArray=[1,2]; return keptArray')
+  assert.equal(budget.error.kind, 'invalid-output')
+  assert.match(budget.error.message, /edge budget[^]*reduce the transferred graph/)
+  assert.doesNotMatch(budget.error.message, /select needed data/)
+  assert.deepEqual(await bounded.run('budget-help', 'return keptArray.length'), { logs: [], value: 2 })
+})
+
+
+test('codec-proved historical refusal messages preserve cold replay without retrying effects', async t => {
+  for (const parameter of [false, true]) {
+    const session = orderedSurfaceSession(`old-refusal-${parameter}`)
+    const first = fixture()
+    t.after(()=>first.dispose())
+    let calls = 0
+    const bindings = { read: async()=>{calls++;return 42} }
+    const source = parameter
+      ? 'const prior=7; class Data {}; await tools.read(new Data())'
+      : 'const prior=7; class Data {}; return new Data()'
+    const recorded = JSON.parse(JSON.stringify(await first.runDurable(session.id,source,bindings,{session,recordSession:'deferred-result',callId:'old-refusal'})))
+    const journal = recorded.meta.dshPtcPlus
+    assert.equal(journal.status,'durable')
+    const diagnostic = journal.diagnostics.find(item=>item.code === (parameter ? 'PTC-X001' : 'PTC-O001'))
+    diagnostic.message = parameter
+      ? 'uncaught TypeError: value at $ is not PTC Value V1: non-plain object'
+      : 'cell result could not cross the PTC Value V1 boundary: value at $ is not PTC Value V1: non-plain object'
+    diagnostic.help = ['historical output help']
+    journal.completion.error.message = renderDiagnostic(diagnostic, source)
+    appendRunCodeEvents(session.events,'old-refusal',source,JSON.parse(JSON.stringify(recorded)))
+    await first.dispose()
+    const restored = fixture()
+    t.after(()=>restored.dispose())
+    const result = await restored.run(session.id,'return prior',bindings,{session})
+    assert.deepEqual(result,{logs:[],value:7})
+    assert.equal(calls,0)
+  }
+})
+
+
+test('historical renderer budget failures restore retained state only for the codec-proved message', async t => {
+  for (const matching of [true, false]) {
+    const session = orderedSurfaceSession(`old-render-budget-${matching}`)
+    const first = fixture({maxOutputBytes:1000})
+    t.after(()=>first.dispose())
+    const source = 'const retainedBudget = 42; return new Array(3000)'
+    const recorded = JSON.parse(JSON.stringify(await first.runDurable(session.id,source,{},
+      {session,recordSession:'deferred-result',callId:'old-budget'})))
+    const journal = recorded.meta.dshPtcPlus
+    assert.equal(journal.status,'durable')
+    const diagnostic = journal.diagnostics.find(item=>item.code === 'PTC-O001')
+    diagnostic.message = 'cell result could not cross the PTC Value V1 boundary: '
+      + (matching ? 'rendered PTC value exceeds 1000 bytes' : 'unrelated old encoding failure')
+    diagnostic.help = ['the worker remains live; inspect a retained binding in a later cell without rerunning the failed cell',
+      'reduce the returned graph when it exceeds the configured value budget']
+    journal.completion.error.message = renderDiagnostic(diagnostic,source)
+    appendRunCodeEvents(session.events,'old-budget',source,recorded)
+    await first.dispose()
+    const restored = fixture({maxOutputBytes:1000})
+    t.after(()=>restored.dispose())
+    const result = await restored.run(session.id,'return typeof retainedBudget',{}, {session})
+    assert.equal(result.value,matching ? 'number' : 'undefined')
+    assert.equal(result.logs.some(log=>log.includes('PTC-R002')), !matching)
+  }
+})

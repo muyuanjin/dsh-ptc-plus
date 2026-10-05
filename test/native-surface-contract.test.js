@@ -113,6 +113,10 @@ return { tree, found, inspected, advanced }
   ])
   assert.match(observed.raw.value.advanced.symbols[1].description, /source already held as data/)
   assert.equal(observed.raw.value.advanced.symbols[1].parameters.additionalProperties, false)
+  const resultDescription = observed.raw.value.advanced.symbols[1].returns.properties.result.description
+  assert.match(resultDescription, /Plugin-owned isolated execution preserves supported PTC Value V1 types and reference relationships/)
+  assert.match(resultDescription, /omitted for no return, present for explicit undefined/)
+  assert.match(resultDescription, /Native delegation and legacy upstream execution retain their original result contracts/)
   assert.deepEqual(observed.raw.value.advanced.symbols[1].returns, {
     type: 'object',
     additionalProperties: false,
@@ -123,7 +127,7 @@ return { tree, found, inspected, advanced }
         description: 'Child console output in emission order.',
       },
       result: {
-        description: 'Child return value; omitted when the child returns undefined.',
+        description: resultDescription,
       },
     },
     required: ['logs'],

@@ -196,6 +196,26 @@ async function main() {
     })
     assert.equal(syntax.isError, false, JSON.stringify(syntax))
     assert.deepEqual(syntax.value, { logs: [], result: 42 })
+    for (const [id, code, expected] of [
+      ['direct-bigint', 'return {big:9007199254740993n,count:1}', '{big: 9007199254740993n, count: 1}'],
+      ['child-bigint', 'const child=await code.run({code:"return 2n",description:"Compute integer"}); return {type:typeof child.result,next:child.result+1n===3n}', {type:'bigint',next:true}],
+      ['child-cycle', 'const child=await code.run({code:"const x={count:1};x.self=x;return x",description:"Compute graph"}); return {type:typeof child.result,self:child.result.self===child.result}', {type:'object',self:true}],
+    ]) {
+      const result = await invoke('run_code', id, {code,description:'Check value boundary'})
+      assert.equal(result.isError, false, JSON.stringify(result))
+      assert.deepEqual(result.value, {logs:[],result:expected})
+    }
+    for (const [id, code, message] of [
+      ['explicit-json', 'return JSON.stringify({big:2n})', /Do not know how to serialize a BigInt/],
+      ['mixed-arithmetic', 'return 2n+1', /Cannot mix BigInt and other types/],
+      ['native-bigint', 'return tools.execution_smoke_echo({value:2n})', /lossless JSON/],
+      ['native-date', 'return tools.execution_smoke_echo({value:new Date(0)})', /parameter was not dispatched[^]*Date/],
+    ]) {
+      const result = await invoke('run_code', id, {code,description:'Check rejected value boundary'})
+      assert.equal(result.isError, true, JSON.stringify(result))
+      assert.match(JSON.stringify(result), message)
+    }
+    assert.equal(nativeCalls, 1, 'invalid native arguments must not dispatch')
     const finalAssembly = await root.get('systemPrompt').assemble({ agent, scope: agent, signal })
     assert.equal(stablePrompt(finalAssembly), stablePrompt(initialAssembly))
     const rejected = await invoke('run_code', 'schema-rejection', { code: 1, description: 'Invalid code type' })

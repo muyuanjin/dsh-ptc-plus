@@ -202,3 +202,7 @@ Inside a cell, omitting the JavaScript argument of a native `tools` member is ac
 - Direct `node:worker_threads` and `node:cluster` references through static import, dynamic import, or unshadowed `require` are rejected during preflight, before any cell statement executes. Calls to `process.exit`, `process.abort`, `process.kill`, and `process.chdir` are rejected through direct `process`, `require`, and dynamic or static `node:process` imports.
 - Cold recovery replays journals from the session log; there are no compressed checkpoints or worker-LRU eviction.
 - DSH services or plugin APIs not exposed as a native tool or owner-provided program binding are not made callable through name-based reflection.
+
+## 值传输失败
+
+[PTC Value V1](value-wire.md) 区分 live 值、canonical IPC 与模型展示。输出失败 `PTC-O001` 报告不支持的类型/shape 或预算超限及值路径：类型失败需显式选取支持的数据，预算失败需缩小 graph。普通输出编码失败保留 live binding，不重复执行 cell。程序参数编码失败不派发调用；已完成调用的结果编码失败明确报告可能已有外部效果，不自动重试或重置。诊断不为识别类型执行 getter、toJSON 或用户方法。

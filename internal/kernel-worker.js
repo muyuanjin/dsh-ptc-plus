@@ -14,7 +14,7 @@ import { synchronizeBuiltinEsmExports } from './builtin-esm-sync.js'
 import { createPrivateAsyncLocalStorage } from './async-local-storage-intrinsics.js'
 import { createExceptionOriginScope, errorDetails, messageOf, programBindingError } from './failure-reporting.js'
 import { DURABLE_IMPORTS, FORBIDDEN_IMPORTS } from './module-policy.js'
-import { decodeValue, encodeValue } from './value-wire.js'
+import { decodeValue, encodeValue, encodeValueAtBoundary, valueEncodingFailure } from './value-wire.js'
 import { LEGACY_USER_BINDINGS_REUSE_POLICY, LIVE_USER_BINDINGS_SHADOW_POLICY, normalizeUserBindingNames } from './session-journal-schema.js'
 import { installWorkerCwdVirtualization } from './worker-cwd-virtualization.js'
 import {
@@ -532,7 +532,7 @@ function callHost(runId, global, member, args, BoundError) {
   try {
     channel.postMessage({
       type: 'call', runId, id, global, member,
-      args: encodeValue(args, valueLimits),
+      args: encodeValueAtBoundary(args, valueLimits, 'parameter'),
     })
   } catch (error) {
     mapDelete(pending, id)
@@ -1213,7 +1213,7 @@ async function closeExecution(execution) {
 }
 
 function failureOutcome(error, phase, program) {
-  if (phase === 'encode') return { invalidOutput: messageOf(error) }
+  if (phase === 'encode') return { invalidOutput: messageOf(error), valueFailure: valueEncodingFailure(error) }
   const failure = error instanceof StaticImportFailure ? error.error : error
   // The V8 frame is reported in the executed text; validate it there so an
   // out-of-range frame is an explicit absence instead of a mapped position.
@@ -1225,6 +1225,7 @@ function failureOutcome(error, phase, program) {
   return {
     error: detail.message,
     errorName: detail.name,
+    valueFailure: valueEncodingFailure(failure),
     ...(detail.toolName === undefined ? {} : { toolName: detail.toolName }),
     ...(error instanceof StaticImportFailure ? { moduleLoadFailed: true } : {}),
     ...(position === undefined ? {} : { position }),

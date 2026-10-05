@@ -2,7 +2,9 @@ import { resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import {
   decodeValue,
-  encodeValue,
+  encodeValueAtBoundary,
+  valueEncodingFailure,
+  valueEncodingHelp,
   normalizeValueWire,
   prepareValueWire,
   valueWiresEqual,
@@ -325,7 +327,7 @@ function exceptionDiagnostic({
   })
 }
 
-function invalidOutputDiagnostic(detail) {
+function invalidOutputDiagnostic(detail, failure) {
   return diagnostic({
     code: 'PTC-O001',
     severity: 'error',
@@ -334,15 +336,16 @@ function invalidOutputDiagnostic(detail) {
     stateEffect: 'partially-applied',
     help: [
       'the worker remains live; inspect a retained binding in a later cell without rerunning the failed cell',
-      'reduce the returned graph when it exceeds the configured value budget',
+      valueEncodingHelp(failure),
     ],
   })
 }
 
 /** Retain validated recorded wording while still comparing the actual failure. */
-function replayFailureDiagnostic(actual, replay) {
+function replayFailureDiagnostic(actual, replay, legacy) {
   const recorded = replay?.diagnostics?.find(item => item.code === actual.code)
-  return recorded?.message === actual.message ? recorded : actual
+  return recorded !== undefined && (recorded.message === actual.message
+    || recorded.message === legacy?.message) ? recorded : actual
 }
 
 function stateArguments(value) {
@@ -896,7 +899,11 @@ export class SessionCellExecutor {
         longCellFailure: active.request.program.length >= LONG_CELL_CODE_UNITS,
         failureOrigin: message.failureOrigin,
       })
-      const failure = replayFailureDiagnostic(actualFailure, active.replay)
+      const legacyFailure = message.valueFailure === undefined ? undefined : exceptionDiagnostic({
+        error: { ...rawError, message: message.valueFailure.legacyMessage },
+        languageSemantics: active.prepared.languageSemantics,
+      })
+      const failure = replayFailureDiagnostic(actualFailure, active.replay, legacyFailure)
       const error = {
         kind: 'exception',
         message: renderDiagnostic(failure, active.request.program),
@@ -908,7 +915,8 @@ export class SessionCellExecutor {
       return
     }
     if (typeof message.invalidOutput === 'string') {
-      const failure = replayFailureDiagnostic(invalidOutputDiagnostic(message.invalidOutput), active.replay)
+      const failure = replayFailureDiagnostic(invalidOutputDiagnostic(message.invalidOutput, message.valueFailure), active.replay,
+        message.valueFailure === undefined ? undefined : invalidOutputDiagnostic(message.valueFailure.legacyMessage))
       const error = { kind: 'invalid-output', message: renderDiagnostic(failure, active.request.program) }
       active.diagnostics.push(failure)
       active.resolve({ logs, error })
@@ -919,7 +927,11 @@ export class SessionCellExecutor {
         || (message.hasValue ? message.value === undefined : message.value !== undefined)) {
         throw new TypeError('invalid PTC completion envelope')
       }
-      const completion = message.hasValue ? prepareValueWire(message.value, active.valueLimits) : undefined
+      const completion = message.hasValue
+        ? active.request.programCompletion === true
+          ? { wire: normalizeValueWire(message.value, active.valueLimits) }
+          : prepareValueWire(message.value, active.valueLimits)
+        : undefined
       active.completion = {
         hasValue: message.hasValue,
         ...(message.hasValue ? { value: completion.wire } : {}),
@@ -932,10 +944,13 @@ export class SessionCellExecutor {
       }
       active.resolve({
         logs,
-        ...(message.hasValue ? { value: completion.projectedValue } : {}),
+        ...(message.hasValue && active.request.programCompletion !== true
+          ? { value: completion.projectedValue } : {}),
       })
     } catch (error) {
-      const failure = replayFailureDiagnostic(invalidOutputDiagnostic(messageOf(error)), active.replay)
+      const valueFailure = valueEncodingFailure(error)
+      const failure = replayFailureDiagnostic(invalidOutputDiagnostic(messageOf(error), valueFailure), active.replay,
+        valueFailure === undefined ? undefined : invalidOutputDiagnostic(valueFailure.legacyMessage))
       const invalid = { kind: 'invalid-output', message: renderDiagnostic(failure, active.request.program) }
       active.diagnostics.push(failure)
       active.resolve({ logs, error: invalid })
@@ -990,7 +1005,7 @@ export class SessionCellExecutor {
       const value = kernel.withInitiator === undefined || agent === undefined
         ? await invoke()
         : await kernel.withInitiator(agent, invoke)
-      const valueWire = encodeValue(value, active.valueLimits)
+      const valueWire = encodeValueAtBoundary(value, active.valueLimits, 'result')
       if (call !== undefined) {
         call.ok = true
         call.value = valueWire

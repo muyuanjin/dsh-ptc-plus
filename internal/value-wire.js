@@ -1,3 +1,4 @@
+import { types } from 'node:util'
 import { assertFields, isRecord } from './record-utils.js'
 import { runtimeIntrinsics as internal } from './runtime-intrinsics.js'
 import {
@@ -23,6 +24,9 @@ const intrinsicFunctionToString = Function.prototype.toString
 const reflectApply = Reflect.apply
 const bufferByteLength = internal.bufferByteLength
 const jsonStringify = JSON.stringify
+const { isProxy, isDate, isMap, isSet, isRegExp, isAnyArrayBuffer, isTypedArray,
+  isDataView, isNativeError, isPromise, isWeakMap, isWeakSet } = types
+const encodingFailures = new WeakMap()
 
 function limitsOf(options = {}) {
   const limits = { ...DEFAULT_VALUE_LIMITS, ...options }
@@ -36,19 +40,16 @@ function limitsOf(options = {}) {
 }
 
 function hasIntrinsicConstructor(prototype, name) {
+  if (isProxy(prototype)) return false
   const constructor = Object.getOwnPropertyDescriptor(prototype, 'constructor')?.value
-  if (typeof constructor !== 'function') return false
-  try {
-    return constructor.name === name
-      && constructor.prototype === prototype
-      && reflectApply(intrinsicFunctionToString, constructor, []) === `function ${name}() { [native code] }`
-  } catch {
-    return false
-  }
+  if (typeof constructor !== 'function' || isProxy(constructor)) return false
+  return Object.getOwnPropertyDescriptor(constructor, 'name')?.value === name
+    && Object.getOwnPropertyDescriptor(constructor, 'prototype')?.value === prototype
+    && reflectApply(intrinsicFunctionToString, constructor, []) === `function ${name}() { [native code] }`
 }
 
 function isIntrinsicObjectPrototype(value) {
-  return Object.getPrototypeOf(value) === null && hasIntrinsicConstructor(value, 'Object')
+  return !isProxy(value) && Object.getPrototypeOf(value) === null && hasIntrinsicConstructor(value, 'Object')
 }
 
 function plainObjectPrototype(value) {
@@ -66,8 +67,53 @@ function hasPlainArrayPrototype(value) {
     && isIntrinsicObjectPrototype(objectPrototype)
 }
 
-function invalid(path, detail) {
-  throw new TypeError(`value at ${path} is not PTC Value V1: ${detail}`)
+function invalid(path, detail, kind = 'shape', legacyDetail = detail, legacyMessage = `value at ${path} is not PTC Value V1: ${legacyDetail}`) {
+  const error = new TypeError(`value at ${path} is not PTC Value V1: ${detail}`)
+  weakMapSet(encodingFailures, error, { kind, path, detail, legacyMessage })
+  throw error
+}
+
+/** Brand checks do not read constructor, toStringTag, getters, or Proxy traps. */
+function unsupportedObject(value) {
+  if (isProxy(value)) return 'Proxy'
+  if (isDate(value)) return 'Date'
+  if (isMap(value)) return 'Map'
+  if (isSet(value)) return 'Set'
+  if (isRegExp(value)) return 'RegExp'
+  if (isAnyArrayBuffer(value)) return 'ArrayBuffer/SharedArrayBuffer'
+  if (isTypedArray(value)) return 'TypedArray/Buffer'
+  if (isDataView(value)) return 'DataView'
+  if (isNativeError(value)) return 'Error'
+  if (isPromise(value)) return 'Promise'
+  if (isWeakMap(value)) return 'WeakMap'
+  if (isWeakSet(value)) return 'WeakSet'
+  return 'unknown prototype'
+}
+
+export function valueEncodingFailure(error) {
+  return weakMapGet(encodingFailures, error)
+}
+
+export function valueEncodingHelp(failure) {
+  return failure?.kind === 'budget'
+    ? 'reduce the transferred graph to fit the reported value budget'
+    : 'select needed data explicitly as supported primitives, plain objects or arrays; keep unsupported live values in bindings (Date: explicit ISO text or timestamp; Map/Set: explicit entries or values); do not JSON.stringify a graph containing BigInt'
+}
+
+/** Only codec-owned failures acquire boundary facts; owner exceptions remain untouched. */
+export function encodeValueAtBoundary(value, options, boundary) {
+  try {
+    return encodeValue(value, options)
+  } catch (error) {
+    const failure = valueEncodingFailure(error)
+    if (failure === undefined) throw error
+    const fact = boundary === 'parameter'
+      ? 'program binding parameter was not dispatched'
+      : 'program binding call completed, but its result could not be transferred; external effects may already have occurred; do not repeat the operation solely to obtain its result'
+    const wrapped = new TypeError(`${fact}: ${error.message}; ${valueEncodingHelp(failure)}`)
+    weakMapSet(encodingFailures, wrapped, failure)
+    throw wrapped
+  }
 }
 
 function stringBytes(value) {
@@ -86,7 +132,7 @@ export function encodeValue(value, options = {}) {
 
   const accountText = (text, path) => {
     textBytes += stringBytes(text)
-    if (textBytes > limits.maxStringBytes) invalid(path, `string budget exceeds ${limits.maxStringBytes} bytes`)
+    if (textBytes > limits.maxStringBytes) invalid(path, `string budget exceeds ${limits.maxStringBytes} bytes`, 'budget')
   }
 
   const atom = (current, path) => {
@@ -106,14 +152,14 @@ export function encodeValue(value, options = {}) {
     if (typeof current === 'bigint') {
       const text = toString(current)
       const digits = text[0] === '-' ? text.length - 1 : text.length
-      if (digits > limits.maxBigIntDigits) invalid(path, `BigInt exceeds ${limits.maxBigIntDigits} digits`)
+      if (digits > limits.maxBigIntDigits) invalid(path, `BigInt exceeds ${limits.maxBigIntDigits} digits`, 'budget')
       accountText(text, path)
       return { tag: 'bigint', value: text }
     }
-    if (typeof current !== 'object') invalid(path, typeof current)
+    if (typeof current !== 'object') invalid(path, typeof current, 'unsupported')
     const prior = weakMapGet(seen, current)
     if (prior !== undefined) return { tag: 'reference', index: prior }
-    if (nodes.length >= limits.maxNodes) invalid(path, `node budget exceeds ${limits.maxNodes}`)
+    if (nodes.length >= limits.maxNodes) invalid(path, `node budget exceeds ${limits.maxNodes}`, 'budget')
     const index = nodes.length
     weakMapSet(seen, current, index)
     appendArray(nodes, undefined)
@@ -127,10 +173,10 @@ export function encodeValue(value, options = {}) {
     const current = item.value
     if (isArray(current)) {
       if (!hasPlainArrayPrototype(current)) invalid(item.path, 'non-plain array')
-      if (current.length > limits.maxArrayLength) invalid(item.path, `array length exceeds ${limits.maxArrayLength}`)
+      if (current.length > limits.maxArrayLength) invalid(item.path, `array length exceeds ${limits.maxArrayLength}`, 'budget')
       arraySlotCount += current.length
       if (arraySlotCount > limits.maxArrayLength) {
-        invalid(item.path, `array slot budget exceeds ${limits.maxArrayLength}`)
+        invalid(item.path, `array slot budget exceeds ${limits.maxArrayLength}`, 'budget')
       }
       const entries = []
       const keys = Reflect.ownKeys(current)
@@ -147,7 +193,7 @@ export function encodeValue(value, options = {}) {
           invalid(`${item.path}[${key}]`, 'array index must be an enumerable data property')
         }
         edgeCount += 1
-        if (edgeCount > limits.maxEdges) invalid(item.path, `edge budget exceeds ${limits.maxEdges}`)
+        if (edgeCount > limits.maxEdges) invalid(item.path, `edge budget exceeds ${limits.maxEdges}`, 'budget')
         appendArray(entries, [index, atom(descriptor.value, `${item.path}[${key}]`)])
       }
       nodes[item.index] = { type: 'array', length: current.length, entries }
@@ -155,7 +201,7 @@ export function encodeValue(value, options = {}) {
     }
 
     const prototype = plainObjectPrototype(current)
-    if (prototype === undefined) invalid(item.path, 'non-plain object')
+    if (prototype === undefined) invalid(item.path, `non-plain object (${unsupportedObject(current)})`, 'unsupported', 'non-plain object')
     const entries = []
     const keys = Reflect.ownKeys(current)
     for (let keyIndex = 0; keyIndex < keys.length; keyIndex += 1) {
@@ -167,7 +213,7 @@ export function encodeValue(value, options = {}) {
       }
       accountText(key, `${item.path}.${key}`)
       edgeCount += 1
-      if (edgeCount > limits.maxEdges) invalid(item.path, `edge budget exceeds ${limits.maxEdges}`)
+      if (edgeCount > limits.maxEdges) invalid(item.path, `edge budget exceeds ${limits.maxEdges}`, 'budget')
       appendArray(entries, [key, atom(descriptor.value, `${item.path}.${key}`)])
     }
     nodes[item.index] = { type: 'object', prototype, entries }
@@ -442,7 +488,8 @@ function renderCanonicalValue(normalized, limits) {
   let bytes = 0
   const append = (text) => {
     bytes += stringBytes(text)
-    if (bytes > limits.maxStringBytes) throw new TypeError(`rendered PTC value exceeds ${limits.maxStringBytes} bytes`)
+    if (bytes > limits.maxStringBytes) invalid('$', `rendered PTC value exceeds ${limits.maxStringBytes} bytes`, 'budget', undefined,
+      `rendered PTC value exceeds ${limits.maxStringBytes} bytes`)
     appendArray(chunks, text)
   }
   const emitted = new Set()

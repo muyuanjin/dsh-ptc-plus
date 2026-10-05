@@ -693,7 +693,7 @@ export class SessionRuntime {
     return this.kernels.get(sessionId)?.observe(expected, signal)
   }
 
-  async runTentative(sessionContext, request) {
+  async runTentative(sessionContext, request, { programCompletion = false } = {}) {
     const completed = result => Object.freeze({ result, settlement: undefined })
     if (this.disposed) return completed({ logs: [], error: { kind: 'abort', message: 'PTC runtime disposed' } })
     let bindingDescriptors
@@ -787,7 +787,7 @@ export class SessionRuntime {
     const workerReservation = kernel.reserveWorkerConfiguration(cellConfig)
     let result
     try {
-      result = await kernel.run({ ...request, journal, callSeq, sourceCallSeq, sessionLog }, cellConfig)
+      result = await kernel.run({ ...request, journal, callSeq, sourceCallSeq, sessionLog, programCompletion }, cellConfig)
     } finally {
       kernel.releaseWorkerConfiguration(workerReservation)
     }

@@ -241,7 +241,9 @@ return capabilities.inspect({
 
 ### 保留超出普通 JSON 的值
 
-在支持的值范围内，工具参数、结果和恢复记录可以保留 `undefined`、BigInt、`NaN`、无穷大、稀疏数组、循环引用和共享引用关系。普通 JSON 结果仍以结构化值返回；特殊值会以可读文本展示给模型，其程序内值与展示文本分别处理。
+在插件 graph IPC 的支持域内，程序参数、结果和恢复记录可以保留 `undefined`、BigInt、`NaN`、无穷大、稀疏数组、循环引用和共享引用关系。普通 JSON 结果仍以结构化值返回；特殊值会以可读文本展示给模型，其程序内值与展示文本分别处理。直接返回支持的值无需 `JSON.stringify`。插件自有隔离 `code.run` 向父程序返回真实值图，不合并父子变量；native 委托遵守其原契约。
+
+这不扩展原生 `tools.*` 的 JSON 参数或结果契约：传入 BigInt 仍可能被 DSH 拒绝；显式 `JSON.stringify` 和 BigInt/Number 混合算术仍遵守原生 JavaScript 规则。Date、Map 等可在 live binding 内计算，但不在当前传输支持域；输出时显式选取所需数据。传输错误会区分不支持的值与预算超限；调用已完成后的返回值编码失败不意味着工具未执行，不应仅为取得结果重试。详见 [值契约](docs/value-wire.md)。
 
 这不等于任意 JavaScript 对象都可传递或持久化：函数、Promise、类实例、Date、Map、Set 等不属于值传递的支持域。在 REPL 中保留函数供后续调用，与把函数作为工具结果返回，是不同的能力。需要继续计算时应复用会话变量；完整支持域见[值传递说明](docs/value-wire.md)。
 

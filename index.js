@@ -91,7 +91,7 @@ function replGuidance({ bindingPolicy, rewritesEnabled, languageSemantics, durab
 After an execution error, earlier statements may have taken effect. Inspect relevant values in a short cell and continue from them; repeat external operations only when their retry rules and current results establish that it is safe. \`edit_run_code\` edits and reruns a complete cell.
 
 ## Cell conventions
-Use \`return\` for an explicit result and \`console\` for logs. Keep large inspection results in bindings or reduce them to targeted excerpts: \`tools.read\` is bounded inspection, not a lossless whole-file reader. ${cellConventions}
+Use \`return\` for an explicit result and \`console\` for logs. Return supported values directly, including BigInt in plain objects; output does not require JSON.stringify. Live values may exceed the transfer domain (for example Date or Map); select needed data explicitly for output. Native \`tools.*\` arguments must satisfy their own JSON schemas; PTC value transport does not widen those contracts. Keep large inspection results in bindings or reduce them to targeted excerpts: \`tools.read\` is bounded inspection, not a lossless whole-file reader. ${cellConventions}
 
 ## Available capabilities
 Use \`capabilities.tree()\`, \`capabilities.find()\`, and \`capabilities.inspect()\` for unfamiliar program APIs. Prefer direct current-cell work; reserve \`code.run\` for isolated execution of source held as data.

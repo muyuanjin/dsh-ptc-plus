@@ -7,6 +7,7 @@ import { Config } from '../index.js'
 import { createRuntimeBridgeOwner } from '../internal/runtime-bridge-owner.js'
 import { createExecutionSeam } from '../internal/execution-seam-compat.js'
 import { normalizeJournal, RECOVERY_BOUNDARY_KEY } from '../internal/session-journal.js'
+import { createReplMemorySnapshot } from '../internal/repl-memory-projection.js'
 import { SessionRuntime } from '../internal/session-runtime.js'
 import { createUserBindingsSnapshot, USER_BINDINGS_META_KEY } from '../internal/user-bindings.js'
 import { decodeValue, encodeValue, renderValueWire } from '../internal/value-wire.js'
@@ -915,4 +916,122 @@ test('distinguishes nested native missing descriptions from the outer run_code t
   assert.match(failure.message, /nested native tool arguments.*JSON path \$\.options\.description/)
   assert.match(failure.message, /outer run_code transport/)
   assert.ok(failure.help.some(item => /nested native-tool argument object/.test(item)))
+})
+
+
+test('isolated children deliver canonical graphs, distinguish undefined, and preserve binding isolation', async t => {
+  const state = fixture()
+  t.after(() => state.dispose())
+  const leaf = `const shared = { big: 2n }; const x = { a: shared, b: shared, sparse: [, undefined], nan: NaN, neg: -0 }; x.self = x; return x`
+  const nested = `const r = await code.run({code: ${JSON.stringify(leaf)}, description: 'Graph leaf'}); return r.result`
+  const result = await state.run('child-graph', `
+const child = await code.run({code: ${JSON.stringify(nested)}, description: 'Graph child'})
+const explicit = await code.run({code: 'return undefined', description: 'Explicit undefined'})
+const absent = await code.run({code: 'const hidden = 1', description: 'No completion value'})
+const text = await code.run({code: 'return "2n"', description: 'Ordinary string'})
+return { type: typeof child.result.a.big, next: child.result.a.big + 1n === 3n,
+  cycle: child.result.self === child.result, shared: child.result.a === child.result.b,
+  hole: !(0 in child.result.sparse), undefinedSlot: 1 in child.result.sparse,
+  nan: Number.isNaN(child.result.nan), neg: Object.is(child.result.neg, -0),
+  explicit: Object.hasOwn(explicit, 'result') && explicit.result === undefined,
+  absent: !Object.hasOwn(absent, 'result'), text: text.result === '2n',
+  isolated: typeof shared === 'undefined' && typeof hidden === 'undefined' }
+`)
+  assert.deepEqual(result, { logs: [], value: { type: 'bigint', next: true, cycle: true,
+    shared: true, hole: true, undefinedSlot: true, nan: true, neg: true,
+    explicit: true, absent: true, text: true, isolated: true } })
+})
+
+test('JSON-persisted child graphs replay without effects and historical display strings remain strings', async t => {
+  for (const historical of [false, true]) {
+    let dispatches = 0
+    const functions = { count: async () => { dispatches++; return 1 } }
+    const session = orderedSurfaceSession(`child-wire-replay-${historical}`)
+    const first = fixture()
+    t.after(() => first.dispose())
+    const source = `const childSaved = await code.run({code: 'await tools.count({}); const x={big:2n}; x.self=x; return x', description: 'Persist child graph'})`
+    const recorded = await first.runDurable(session.id, source, functions, { session, recordSession: 'deferred-result', callId: 'child-recorded' })
+    const persisted = JSON.parse(JSON.stringify(recorded))
+    if (historical) persisted.meta.dshPtcPlus.calls[0].value = encodeValue({ logs: [], result: '2n' })
+    appendRunCodeEvents(session.events, 'child-recorded', source, persisted)
+    await first.dispose()
+    const restored = fixture()
+    t.after(() => restored.dispose())
+    const result = await restored.run(session.id, historical
+      ? 'return {type: typeof childSaved.result, next: childSaved.result + 1n}'
+      : 'return {big: childSaved.result.big + 1n === 3n, cycle: childSaved.result.self === childSaved.result}', functions, { session })
+    assert.deepEqual(result, { logs: [], value: historical ? {type: 'string', next: '2n1'} : {big: true, cycle: true} })
+    assert.equal(dispatches, 1)
+    assert.equal(restored.upstreamCalls.length, 0)
+  }
+})
+
+test('parameter and completed-result transfer failures expose different effects without retry', async t => {
+  const state = fixture()
+  t.after(() => state.dispose())
+  let dispatches = 0
+  const functions = { rich: async () => { dispatches++; return new Date(0) } }
+  const parameter = await state.run('parameter-failure', 'return tools.rich({date: new Date(0)})', functions)
+  assert.match(parameter.error.message, /parameter was not dispatched[^]*Date[^]*select needed data/)
+  assert.equal(dispatches, 0)
+  const result = await state.run('result-failure', 'return tools.rich({})', functions)
+  assert.match(result.error.message, /ToolCallError[^]*call completed[^]*external effects[^]*do not repeat[^]*Date/)
+  assert.equal(dispatches, 1)
+  assert.deepEqual(await state.run('result-failure', 'return 42', functions), { logs: [], value: 42 })
+  assert.equal(dispatches, 1)
+})
+
+
+test('isolated computation admits sparse graphs without spending an unused presentation budget', async t => {
+  const state = fixture({maxOutputBytes: 1000})
+  t.after(() => state.dispose())
+  const result = await state.run('sparse-child', `
+const child = await code.run({code: 'return new Array(3000)', description: 'Compute sparse array'})
+return {length: child.result.length, hole: !(0 in child.result)}
+`)
+  assert.deepEqual(result, {logs: [], value: {length: 3000, hole: true}})
+  const direct = await state.run('sparse-direct', 'return new Array(3000)')
+  assert.equal(direct.error.kind, 'invalid-output')
+  assert.match(direct.error.message, /rendered PTC value exceeds 1000 bytes[^]*reduce the transferred graph/)
+})
+
+
+test('native child delegation keeps owner-defined rich results and legacy upstream errors', async t => {
+  const native = fixture()
+  t.after(() => native.dispose())
+  let dispatched = 0
+  const value = await native.run('native-rich', `
+const child = await code.run({code:'return 2n',description:'Delegate native child'})
+return {owner: child.native, next: child.answer + 1n === 3n, wrapped: Object.hasOwn(child,'result')}
+`, {run_code: async () => {dispatched++; return {native:true, answer:2n}}})
+  assert.deepEqual(value, {logs: [], value: {owner:true, next:true, wrapped:false}})
+  assert.equal(dispatched, 1)
+  const legacy = fixture({legacyBindingSettings:true}, {upstreamRun: async () => ({logs:[],error:{kind:'exception',message:'legacy child error'}})})
+  t.after(() => legacy.dispose())
+  const failed = await legacy.run('legacy-child-error', 'return code.run({code:"return 1",description:"Legacy child"})')
+  assert.equal(failed.error.kind, 'exception')
+  assert.match(failed.error.message, /nested run_code failed \(exception\): legacy child error/)
+})
+
+
+test('host validation without a runtime cell creates no settlement or replayable source', async t => {
+  const definition = {name: 'run_code', output: {}}
+  const runtime = createExecutionSeam(Object.freeze({async run() {throw Error('unexpected upstream')}}), 'codeRuntime').provider
+  const owner = createRuntimeBridgeOwner({seam:createExecutionSeam(runtime,'codeRuntime'),
+    ctx:{tools:{get:()=>definition}}, sessionConfig:{userBindingsEnabled:false},
+    presentationGeneration:'no-cell', sessionId:agent=>agent.id, toolSchemasForAgent:()=>[]})
+  t.after(()=>owner.dispose())
+  const exec = {name:'run_code',callId:'host-denied',agent:{id:'host-denied',session:orderedSurfaceSession('host-denied')}}
+  const denied = await owner.handleExecute(exec, async()=>({isError:true,content:[],error:{message:'host validation denied'}}))
+  owner.handleResult(exec,denied)
+  assert.equal(denied.meta,undefined)
+  assert.equal(await owner.observeRepl(exec.agent.id,createReplMemorySnapshot([])),undefined)
+  const next = {...exec,callId:'next'}
+  const result = await owner.handleExecute(next, async()=> {
+    const raw = await runtime.run({program:'return 42',bindings:[]})
+    return {isError:false,content:[],value:raw.value,meta:definition.output.presentationMeta({},raw.value)}
+  })
+  owner.handleResult(next,result)
+  assert.equal(result.value,42)
+  assert.equal(result.meta.dshPtcPlus.completion.kind,'return')
 })

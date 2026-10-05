@@ -52,10 +52,18 @@ DSH 的公共执行缝/tool output 只接受 JSON-safe structured value。为保
 - renderer 只是模型展示，不参与 hydrate；需要继续计算时应保留 live REPL binding；
 - journal 保存 canonical graph envelope，不保存 renderer 反解析结果，也不把 decoded rich value 交给外层 `JSON.stringify`。
 
-unsupported value 或预算超限使用 `PTC-O001`，帮助文本只要求返回受支持的 PTC value 或缩小结果；`undefined` 属于受支持值，不要求模型用 `null` 替换。
+unsupported value、shape 与预算超限使用 `PTC-O001` 并给出路径与对应帮助：预算超限要求缩小 graph；类型或 descriptor 不支持要求显式选取所需 data。已完成计算不会自动重试或清空 worker，可在后续 cell 使用 retained binding。Date 可显式选取 ISO 文本或 timestamp，Map/Set 可显式选取 entries/values；这些是调用方选择的数据投影，不是 codec 自动转换。诊断不调用 getter、toJSON、用户方法或额外的 Proxy reflection；未知原型不猜测 class name。`undefined` 属于受支持值，不要求模型用 `null` 替换。
 
 cell program binding 的参数和结果经过同一 graph IPC，因此 owner-provided binding 可以接收和返回
 完整 `PTCValueV1` 支持域，包括 `undefined`、special number、BigInt、hole、shared identity 与 cycle。
 跨 worker 后得到的是 hydrate 的值图，不是同一个 live object；function、class instance、Promise、
 accessor 和其他不在支持域内的资源会在 dispatch 前或返回 cell 前被拒绝。journal 保存相同的 canonical
 envelope，cold replay 以 recorded value 重建结果而不重新调用 owner binding。
+
+## 子计算与 native 边界
+
+插件自有隔离 `code.run` 从已结算的 canonical completion hydrate 子值，保留支持域内的类型、hole、cycle 与 shared identity，不合并父子 binding。无 return 时省略 `result`，显式 `return undefined` 时保留该属性。递归子计算使用同一边界；内部 program completion 校验 graph 与传输预算，不生成无用的模型展示，因此可在父程序中读取无需展开的稀疏数组。真实 native `run_code` member 的委托仍返回其 owner-defined canonical result；legacy upstream 分支保留原契约。历史 recorded-value 字符串原样读取，不反解析或重新执行子 cell。决策与平台 serializer 评估见 [ADR 0034](adr/0034-keep-program-values-separate-from-output-projections.md)。
+
+以上 graph IPC 能力不扩展 native `tools.*` 的 JSON 输入/输出契约。真实调用仍由 DSH 按 live schema 与 lossless JSON 验证；BigInt 在插件内部可传输，但不能据此作为 native JSON 参数。直接 `return {big: 2n}` 无需 `JSON.stringify`；显式 `JSON.stringify` 对 BigInt 的拒绝和 `2n + 1` 的混合算术错误保持原生语义，不自动丢精度转换。
+
+program binding 参数编码失败发生在 dispatch 前；已完成 binding 的返回值编码失败明确报告调用已完成及可能已有外部效果，不能仅为取得结果重复调用。完成结果的拒绝保持 worker live；参数/结果错误仍使用该程序入口的错误路径。纯数据对象不在 V1 支持域时仍可在 live binding 内计算；live 可用性不证明跨边界传输或 cold recovery 能力。

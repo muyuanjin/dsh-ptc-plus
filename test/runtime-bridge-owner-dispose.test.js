@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { encodeValue } from '../internal/value-wire.js'
 import { resolveConfig } from '../internal/runtime-config.js'
 import { createExecutionSeam } from '../internal/execution-seam-compat.js'
 
@@ -61,7 +62,15 @@ class FakeSessionRuntime {
 
   assertSubmission() {}
 
+  finalize() {}
+
   async runTentative(_session, request) {
+    if (this.index > 0) {
+      const result = await this.run()
+      return { result, settlement: { journal: { completion: {
+        hasValue: true, value: encodeValue(result.value),
+      } } } }
+    }
     const code = request.bindings.find(binding => binding.global === 'code')
     if (['late-child', 'native-handoff', 'child-retry'].includes(active.scenario)) {
       active.nestedRun = code.functions.run

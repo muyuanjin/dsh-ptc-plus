@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import test from 'node:test'
+import { createSystemMessage, createToolResultMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import {
   inspectLog,
   MAX_MODEL_RESULT_CHARS,
@@ -16,8 +17,10 @@ import {
   auditProgramWork,
   collectTrajectoryFacts,
   auditRequestHeaders,
+  auditSystemPrompts,
   auditRuntimeContexts,
   machineBudgetFailures,
+  MACHINE_BUDGET_KEYS,
   validateEditTransports,
   validateRuntimeContextConfig,
   validateRequestHeaderPolicy,
@@ -25,6 +28,7 @@ import {
 import { decodeValue, encodeValue } from '../internal/value-wire.js'
 import { editRejectedCell } from '../internal/rejected-cell-editor.js'
 import { ptcToolsMode } from '../scripts/dsh-host-contract.mjs'
+import { analyzeSession } from '../scripts/ab-headless-trajectories.mjs'
 
 const headlessRuntime = { toolsMode: 'ptc', permissionMode: 'danger-full-access' }
 
@@ -112,7 +116,7 @@ function acceptanceEvents() {
     'declare const capabilities: {}',
   ].join('\n')
   return [
-    { type: 'session', cwd: 'X:\\fixture\\workspace', id: 'session-test' },
+    { type: 'session', version: 2, cwd: 'X:\\fixture\\workspace', id: 'session-test' },
     {
       type: 'user/message',
       data: {
@@ -183,6 +187,27 @@ function resultFor(events, callId) {
   return events.find(event => event.type === 'tool/result'
     && event.data?.message?.source?.callId === callId)
 }
+
+test('preserves official message-only tool failures through shared and acceptance outcomes', () => {
+  for (const isError of [false, true]) {
+    const events = acceptanceEvents()
+    resultFor(events, 'one').data.message = createToolResultMessage({
+      callId: 'one', isError, content: [{ type: 'text', text: 'outcome' }],
+    })
+    const facts = collectTrajectoryFacts(events)
+    assert.equal(facts.timeline[0].isError, isError)
+    assert.equal(facts.timeline[0].resultError, isError)
+    const report = inspectLog(events, { id: 'official-outcome', expect: {} }, {
+      provider: 'provider', model: 'model', cwd: 'X:\\fixture\\workspace',
+    })
+    assert.equal(report.failures.some(failure => failure.includes('tool result reports error for one')), isError)
+  }
+  for (const marker of [{ isError: true }, { error: 'historical error' }]) {
+    const events = acceptanceEvents()
+    Object.assign(resultFor(events, 'one').data, marker)
+    assert.equal(collectTrajectoryFacts(events).timeline[0].isError, true)
+  }
+})
 
 test('validates a clean expensive-acceptance profile', () => {
   const rows = parseAcceptanceConfig(`
@@ -490,6 +515,44 @@ test('preserves exact nested arguments in memory and lossless report graphs', ()
   assert.match(auditProgramWork([{ nestedCalls: reported }]).failures.join('\n'), /invalid argument evidence/)
 })
 
+test('both paid reports preserve canonical result and completion types through JSON persistence', () => {
+  const shared = { count: 2n }
+  const graph = { left: shared, right: shared, numbers: [NaN, Infinity, -Infinity, -0] }
+  graph.self = graph
+  for (const value of [2n, graph, undefined]) {
+    const events = acceptanceEvents()
+    const metadata = journal({ calls: [{ global: 'code', member: 'run', value }] })
+    metadata.completion = { kind: 'return', hasValue: true, value: encodeValue(value) }
+    resultFor(events, 'one').data.meta.dshPtcPlus = metadata
+    const selectedRuntime = { provider: 'provider', model: 'model', cwd: 'X:\\fixture\\workspace' }
+    const reports = [
+      inspectLog(events, { id: 'canonical-values', expect: {} }, selectedRuntime),
+      analyzeSession(events, {
+        ...selectedRuntime, variant: 'plugin',
+        machineBudget: Object.fromEntries(MACHINE_BUDGET_KEYS.map(key => [key, 1_000_000])),
+      }),
+    ]
+    for (const report of reports) {
+      const cell = report.timeline[0]
+      assert.deepEqual(cell.nestedCalls[0].value, value)
+      assert.deepEqual(cell.nestedCalls[0].args, {})
+      assert.deepEqual(cell.completion.value, value)
+      const persisted = JSON.parse(JSON.stringify(report)).timeline[0]
+      for (const evidence of [persisted.nestedCalls[0], persisted.completion]) {
+        assert.equal(Object.hasOwn(evidence, 'value'), false)
+        const decoded = decodeValue(evidence.valueWire)
+        assert.deepEqual(decoded, value)
+        if (value === graph) {
+          assert.equal(decoded.self, decoded)
+          assert.equal(decoded.left, decoded.right)
+          assert.equal(typeof decoded.left.count, 'bigint')
+          assert.equal(Object.is(decoded.numbers[3], -0), true)
+        }
+      }
+    }
+  }
+})
+
 test('enforces the typed fixture workload while allowing focused equivalent trajectories and explicit fresh reads', async () => {
   const descriptors = JSON.parse(await readFile(new URL('../scripts/expensive-acceptance-scenarios.json', import.meta.url)))
   const policy = descriptors.find(item => item.id === 'durable-program-surface').expect.programWork
@@ -674,7 +737,7 @@ test('allows only explicitly expected pre-execution diagnostics', () => {
   assert.match(denied.failures.join('\n'), /blocking PTC diagnostic: error\[PTC-C001\]/)
 })
 
-test('rejects continuity that returns the established binding from its declaration cell', () => {
+test('void-required continuity rejects binding values and unrelated acknowledgements', () => {
   const events = acceptanceEvents()
   resultFor(events, 'one').data.meta.dshPtcPlus = journal({ completion: 20 })
   const report = inspectLog(events, {
@@ -689,11 +752,25 @@ test('rejects continuity that returns the established binding from its declarati
 
   assert.match(report.failures.join('\n'), /binding declaration cell completion hasValue is true instead of false/)
 
+  resultFor(events, 'one').data.meta.dshPtcPlus = journal({ completion: 'declared' })
+  const acknowledgement = inspectLog(events, {
+    id: 'void-setup', title: 'Void setup', task: '不要返回任何值',
+    expect: { continuityBinding: 'probe_random', declarationCellHasValue: false },
+  }, { provider: 'provider', model: 'model', cwd: 'X:\\fixture\\workspace' })
+  assert.match(acknowledgement.failures.join('\n'), /binding declaration cell completion hasValue is true instead of false/)
+
   const missingSource = inspectLog(events, {
     id: 'missing-source-sequence', title: 'Missing source sequence', task: 'task',
     expect: { requiredSourceSequence: ['not present'] },
   }, { provider: 'provider', model: 'model', cwd: 'X:\\fixture\\workspace' })
   assert.match(missingSource.failures.join('\n'), /required source fragment is missing/)
+})
+
+test('continuity descriptors explicitly prohibit any setup return required by their oracle', async () => {
+  const descriptors = JSON.parse(await readFile(new URL('../scripts/expensive-acceptance-scenarios.json', import.meta.url)))
+  const voidScenarios = descriptors.filter(item => item.expect.declarationCellHasValue === false)
+  assert.equal(voidScenarios.length, 3)
+  for (const scenario of voidScenarios) assert.match(scenario.task, /不要 return，也不要返回任何值（包括确认字符串）/)
 })
 
 test('requires truthful edits for completed and rejected cells while keeping materialized source private', () => {
@@ -969,6 +1046,164 @@ test('compares canonical request headers without schema or system approximations
   assert.match(auditRequestHeaders([
     event(1, 'initial', header), event(2, 'change', structuredClone(header)),
   ]).failures.join('\n'), /reason change but its canonical header is unchanged/)
+})
+
+test('audits actual ordered system messages even when the request header stays unchanged', () => {
+  const audit = events => auditSystemPrompts([{ type: 'session', version: 4 }, ...events])
+  const events = []
+  const append = (type, data, surfaceOp) => {
+    events.push({ seq: events.length, time: events.length, type, data, ...(surfaceOp === undefined ? {} : { surfaceOp }) })
+  }
+  const message = text => createSystemMessage(text)
+  append('step/start', { turn: 1, step: 1 })
+  append('system/message', { message: message('stable') }, 'append')
+  append('request/header', { reason: 'initial', header: { config: { provider: 'provider', model: 'model' } } })
+  append('assistant/attempt', { turn: 1, step: 1 })
+  const stable = audit(events)
+  assert.deepEqual(stable.failures, [])
+  assert.equal(stable.source, 'ordered-surface')
+  assert.equal(stable.system, 'stable')
+  assert.equal(stable.samples.length, 2)
+  assert.deepEqual(auditRequestHeaders(events).failures, [])
+  for (const version of [3, 4]) {
+    for (const system of ['retired', '', null, { text: 'retired' }]) {
+      const retired = structuredClone(events)
+      retired[2].data.header.system = system
+      const before = structuredClone(retired)
+      assert.match(auditSystemPrompts([{ type: 'session', version }, ...retired])
+        .failures.join('\n'), /must omit header.system/)
+      assert.deepEqual(retired, before)
+      const later = structuredClone(events)
+      later.push({ seq: 4, time: 4, type: 'request/header', data: {
+        reason: 'resume', header: { config: { provider: 'provider', model: 'model' }, system },
+      } })
+      assert.match(auditSystemPrompts([{ type: 'session', version }, ...later])
+        .failures.join('\n'), /must omit header.system/)
+    }
+  }
+  const blocks = structuredClone(events)
+  blocks[1].data.message.content = [{ type: 'text', text: 'sta' }, { type: 'text', text: 'ble' }]
+  assert.equal(audit(blocks).system, 'stable')
+  for (const text of ['changed', 'stable']) {
+    const next = structuredClone(events)
+    next.push({ seq: 4, time: 4, type: 'system/message', data: { message: message(text) }, surfaceOp: 'append' })
+    next.push({ seq: 5, time: 5, type: 'assistant/attempt', data: { turn: 1, step: 2 } })
+    assert.match(audit(next).failures.join('\n'), /system prompt changed systemMessages.length/)
+    assert.deepEqual(auditRequestHeaders(next).failures, [])
+  }
+  for (const text of ['stable', 'changed']) {
+    const next = structuredClone(events)
+    next.push({ seq: 4, time: 4, type: 'system/message', data: { message: message(text) },
+      sourceEventSeqs: [1], surfaceOp: { op: 'replace', startSeq: 1, endSeq: 1 } })
+    next.push({ seq: 5, time: 5, type: 'assistant/attempt', data: { turn: 1, step: 2 } })
+    const result = audit(next)
+    if (text === 'stable') assert.deepEqual(result.failures, [])
+    else assert.match(result.failures.join('\n'), /system prompt changed systemMessages\[0\]/)
+  }
+  const resegmented = structuredClone(events)
+  const fresh = message('stable')
+  assert.notEqual(fresh.id, events[1].data.message.id)
+  resegmented.push({ seq: 4, time: 4, type: 'system/message', data: { message: {
+    ...fresh, source: { kind: 'system-prompt' },
+    content: [{ type: 'text', text: 'sta' }, { type: 'text', text: 'ble' }],
+  } }, sourceEventSeqs: [1], surfaceOp: { op: 'replace', startSeq: 1, endSeq: 1 } })
+  resegmented.push({ seq: 5, time: 5, type: 'assistant/attempt', data: { turn: 1, step: 2 } })
+  assert.deepEqual(audit(resegmented).failures, [])
+  const hidden = structuredClone(events)
+  delete hidden[1].surfaceOp
+  assert.match(audit(hidden).failures.join('\n'), /requires a surfaceOp marker/)
+  const late = structuredClone(events)
+  late[1].type = 'user/message'
+  late[1].data = { role: 'user', content: [{ type: 'text', text: 'first user' }], source: { kind: 'user' } }
+  late.splice(2, 0, { seq: 0, time: 0, type: 'system/message', data: { message: message('late system') }, surfaceOp: 'append' })
+  late.forEach((event, seq) => { event.seq = seq })
+  assert.match(audit(late).failures.join('\n'), /no leading system message/)
+  const projection = structuredClone(events)
+  projection.splice(3, 0, { seq: 0, time: 0, type: 'image/offload', data: {} })
+  projection.forEach((event, seq) => { event.seq = seq })
+  assert.match(audit(projection).failures.join('\n'), /image\/offload: data/)
+  const malformed = structuredClone(events)
+  malformed[1].data.message.content[0] = { type: 'image', url: 'not-system-text' }
+  assert.match(audit(malformed).failures.join('\n'), /invalid|complete text evidence/)
+  assert.match(audit([]).failures.join('\n'), /no model-visible system prompt evidence/)
+  assert.throws(() => auditSystemPrompts(null), /must be an array/)
+  assert.equal(auditSystemPrompts([{ type: 'session', version: 2 },
+    { type: 'request/header', data: { header: { system: 'old' } } }]).system, 'old')
+  for (const version of [undefined, null, 0, -1, 1.5, '4', 1000]) {
+    assert.match(auditSystemPrompts([{ type: 'session', version }, ...events]).failures.join('\n'), /supported session format/)
+  }
+  assert.match(auditSystemPrompts([{ type: 'session', version: 2 }, ...events]).failures.join('\n'), /historical session format/)
+  assert.match(auditSystemPrompts(events).failures.join('\n'), /supported session format/)
+  assert.match(auditSystemPrompts([{ type: 'session', version: 4 }, { type: 'session', version: 4 }, ...events])
+    .failures.join('\n'), /supported session format/)
+  for (const version of [3, 4]) {
+    assert.match(auditSystemPrompts([{ type: 'session', version },
+      { seq: 0, type: 'request/header', data: { header: { config: {}, system: 'retired' } } },
+      { seq: 1, type: 'assistant/attempt', data: {} },
+    ]).failures.join('\n'), /no leading system message|must omit header.system/)
+  }
+})
+
+test('acceptance consumes current system-message evidence instead of historical header fields', () => {
+  const events = acceptanceEvents()
+  events[0].version = 4
+  const header = events.find(event => event.type === 'request/header').data.header
+  const system = header.system
+  delete header.system
+  events.splice(1, 0, { type: 'system/message', data: { message: {
+    role: 'system', content: [{ type: 'text', text: system }],
+  } }, surfaceOp: 'append' })
+  let seq = 0
+  for (const event of events) if (event.type !== 'session') {
+    event.seq = seq
+    event.time = seq++
+    if (['user/message', 'tool/result', 'assistant/message'].includes(event.type)) {
+      event.surfaceOp = 'append'
+      const message = event.type === 'user/message' ? event.data : event.data.message
+      message.role = event.type === 'user/message' ? 'user' : event.type === 'tool/result' ? 'tool' : 'assistant'
+    }
+  }
+  const result = inspectLog(events, { id: 'current-system-message', expect: {} }, {
+    provider: 'provider', model: 'model', cwd: 'X:\\fixture\\workspace',
+  })
+  assert.deepEqual(result.failures, [])
+  assert.equal(result.prompt.systemEvidence.source, 'ordered-surface')
+  assert.equal(result.prompt.systemEvidence.system, system)
+  const projected = structuredClone(events)
+  const headerIndex = projected.findIndex(event => event.type === 'request/header')
+  projected.splice(headerIndex, 0, { type: 'user/message', data: createUserMessage({
+    source: { kind: 'user' }, content: [{ type: 'text', text: 'task' }, { type: 'image',
+      attachment: { attachmentId: 'projection-proof', mediaType: 'image/png', bytes: 4, width: 1, height: 1 },
+    }],
+  }), surfaceOp: 'append' }, { type: 'image/offload', data: { targets: [{ seq: headerIndex - 1, imageIndexes: [0] }] } })
+  projected.slice(1).forEach((event, seq) => { event.seq = seq; event.time = seq })
+  assert.deepEqual(inspectLog(projected, { id: 'owned-image-projection', expect: {} }, {
+    provider: 'provider', model: 'model', cwd: 'X:\\fixture\\workspace',
+  }).failures, [])
+  const systemSeq = projected.find(event => event.type === 'system/message').seq
+  projected.splice(projected.findIndex(event => event.type === 'request/header'), 0, {
+    type: 'system/message', data: { message: createSystemMessage(system) },
+    surfaceOp: { op: 'replace', startSeq: systemSeq, endSeq: systemSeq },
+    sourceEventSeqs: [systemSeq],
+  })
+  projected.slice(1).forEach((event, seq) => { event.seq = seq; event.time = seq })
+  assert.deepEqual(auditRuntimeContexts(projected).failures, [])
+  assert.deepEqual(inspectLog(projected, {
+    id: 'owned-image-projection-replacement', expect: { headerPolicy: { historyReplacements: 1 } },
+  }, { provider: 'provider', model: 'model', cwd: 'X:\\fixture\\workspace' }).failures, [])
+  const damagedProjection = structuredClone(projected)
+  damagedProjection.find(event => event.type === 'image/offload').data.targets[0].imageIndexes = [99]
+  assert.match(auditRuntimeContexts(damagedProjection).failures.join('\n'), /cannot verify runtime context surface/)
+  for (const version of [3, 4]) {
+    for (const retired of ['retired', '', null, {}]) {
+      const invalid = structuredClone(events)
+      invalid[0].version = version
+      invalid.find(event => event.type === 'request/header').data.header.system = retired
+      assert.match(inspectLog(invalid, { id: 'retired-header', expect: {} }, {
+        provider: 'provider', model: 'model', cwd: 'X:\\fixture\\workspace',
+      }).failures.join('\n'), /must omit header.system/)
+    }
+  }
 })
 
 test('requires exact scenario policy for route, configuration, and capability transitions', () => {

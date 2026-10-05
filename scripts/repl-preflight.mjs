@@ -26,6 +26,9 @@ export async function probeReplRuntime() {
 }
 
 if (isMainThread && process.env.DSH_PTC_EVAL_PROBE === '1') {
+  // This launcher-owned request is consumed before the runtime forks its helper.
+  // Helpers are main threads too; inheriting the request would recursively probe.
+  delete process.env.DSH_PTC_EVAL_PROBE
   try {
     process.stderr.write(RUNTIME_PROBE_PREFIX + JSON.stringify(await probeReplRuntime()) + '\n')
   } catch (error) {

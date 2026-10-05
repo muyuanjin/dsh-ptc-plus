@@ -169,6 +169,7 @@
     "@deepseek-ai/dsh-client-ui-session": "next",
     "@deepseek-ai/dsh-client-ui-slots": "next",
     "@deepseek-ai/dsh-commands": "next",
+    "@deepseek-ai/dsh-compaction-image-offload": "next",
     "@deepseek-ai/dsh-home-paths": "next",
     "@deepseek-ai/dsh-llm": "next",
     "@deepseek-ai/dsh-session-format-catalog": "next",

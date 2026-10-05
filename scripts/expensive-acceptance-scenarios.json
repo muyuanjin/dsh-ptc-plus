@@ -107,7 +107,7 @@
     "id": "durable-repl-continuity",
     "title": "Durable bindings across cells",
     "default": true,
-    "task": "验证 durable 连续 REPL。先在一个 run_code cell 顶层声明 const {{binding}} = {{left}}，该 cell 不要 return 此值；再在后续独立 cell 中直接复用该 binding（不要重新声明）并加上 {{right}}，return 计算结果。最终用一句话报告结果。不要只描述步骤。",
+    "task": "验证 durable 连续 REPL。先在一个 run_code cell 顶层声明 const {{binding}} = {{left}}，该 cell 不要 return，也不要返回任何值（包括确认字符串）；再在后续独立 cell 中直接复用该 binding（不要重新声明）并加上 {{right}}，return 计算结果。最终用一句话报告结果。不要只描述步骤。",
     "expect": {
       "minCells": 2,
       "maxCells": 4,
@@ -164,7 +164,7 @@
             "recorded-value",
             "Run isolated source already held as data",
             "logs",
-            "Child return value"
+            "preserves supported PTC Value V1 types and reference relationships"
           ]
         },
         {
@@ -231,7 +231,7 @@
       "name": "node-input.txt",
       "content": "{{secret}}\n"
     },
-    "task": "验证 danger-full-access 下普通 Node.js 路径及 live 连续性。第一个 run_code cell 使用动态 import 加载 node:fs/promises 与 node:crypto（不要写静态 import 声明，不使用 tools.*），读取 {{fixturePath}} 的精确字节，计算 SHA-256，并且必须用 `const {{binding}} = ...` 在顶层声明摘要 binding，不得省略 const；该 cell 不要 return 摘要。后续独立 cell 直接复用该 binding（不要重新声明）并 return 它。最终用一句话报告小写十六进制摘要。",
+    "task": "验证 danger-full-access 下普通 Node.js 路径及 live 连续性。第一个 run_code cell 使用动态 import 加载 node:fs/promises 与 node:crypto（不要写静态 import 声明，不使用 tools.*），读取 {{fixturePath}} 的精确字节，计算 SHA-256，并且必须用 `const {{binding}} = ...` 在顶层声明摘要 binding，不得省略 const；该 cell 不要 return，也不要返回任何值（包括确认字符串）。后续独立 cell 直接复用该 binding（不要重新声明）并 return 它。最终用一句话报告小写十六进制摘要。",
     "expect": {
       "minCells": 2,
       "maxCells": 4,
@@ -271,7 +271,7 @@
       "name": "import-input.txt",
       "content": "imported-mark\n"
     },
-    "task": "验证静态 import 自动转换及其提示生命周期。第一个 run_code cell 在顶层使用静态 import 声明导入 node:path 的 basename，并声明 const {{binding}} = basename({{fixturePath}} 的字符串路径)，不要 return 该值，也不要改写为动态 import。第二个独立 run_code cell 直接 return {{binding}}，不要重新声明。最终用一句话报告文件名。",
+    "task": "验证静态 import 自动转换及其提示生命周期。第一个 run_code cell 在顶层使用静态 import 声明导入 node:path 的 basename，并声明 const {{binding}} = basename({{fixturePath}} 的字符串路径)，不要 return，也不要返回任何值（包括确认字符串），也不要改写为动态 import。第二个独立 run_code cell 直接 return {{binding}}，不要重新声明。最终用一句话报告文件名。",
     "expect": {
       "minCells": 2,
       "maxCells": 3,

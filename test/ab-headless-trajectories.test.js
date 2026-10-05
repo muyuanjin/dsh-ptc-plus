@@ -5,6 +5,8 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
+import { createSystemMessage, createToolResultMessage } from '@deepseek-ai/dsh-llm'
+import { decodeValue, encodeValue } from '../internal/value-wire.js'
 import { fileURLToPath } from 'node:url'
 import {
   analyzeSession,
@@ -313,7 +315,7 @@ test('rejects complete header drift and reports logical requests separately', ()
     tools: [{ name: 'run_code', description: 'Run.', parameters: { type: 'object' } }],
   }
   const events = [
-    { type: 'session', id: 'ab-header', cwd, createdAt: 1234 },
+    { type: 'session', version: 2, id: 'ab-header', cwd, createdAt: 1234 },
     { type: 'turn/start', seq: 1, time: 1, data: { turn: 1 } },
     {
       type: 'user/message', seq: 2,
@@ -402,7 +404,7 @@ test('counts namespace dot, whitespace, and bracket access in source cells', () 
   const provider = 'provider'
   const system = persona.replace('{{model}}', model).replace('{{cwd}}', cwd)
   const events = [
-    { type: 'session', id: 'ab-namespaces', cwd },
+    { type: 'session', version: 2, id: 'ab-namespaces', cwd },
     { type: 'turn/start', seq: 1, time: 1, data: { turn: 1 } },
     { type: 'user/message', seq: 2, data: { source: { kind: 'user' }, content: [{ type: 'text', text: 'task' }] } },
     {
@@ -441,6 +443,107 @@ test('counts namespace dot, whitespace, and bracket access in source cells', () 
     runtimeContexts: { allowed: [], requiredTransitions: [], maxSnapshotChars: 100 },
   })
   assert.deepEqual(analysis.namespaceMentions, { tools: 1, repl: 1, capabilities: 1, code: 1 })
+})
+
+test('identifies both current treatments from formal system-message evidence', () => {
+  const cwd = 'X:\\fixture\\workspace'
+  const model = 'model'
+  const provider = 'provider'
+  const machineBudget = Object.fromEntries(MACHINE_BUDGET_KEYS.map(key => [key, 1000]))
+  for (const variant of ['baseline', 'plugin']) {
+    const system = persona.replace('{{model}}', model).replace('{{cwd}}', cwd)
+      + (variant === 'plugin' ? '\n## PTC Plus program capabilities' : '')
+    const events = [{ type: 'session', version: 4, id: 'current-prompt', cwd }]
+    const append = (type, data, surfaceOp) => {
+      events.push({ seq: events.length - 1, time: events.length, type, data,
+        ...(surfaceOp === undefined ? {} : { surfaceOp }) })
+    }
+    append('turn/start', { turn: 1 })
+    append('step/start', { turn: 1, step: 1 })
+    append('system/message', { message: { role: 'system', content: [{ type: 'text', text: system }] } }, 'append')
+    append('user/message', { role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: 'task' }] }, 'append')
+    append('user/message', { role: 'user', source: {
+      kind: 'plugin', plugin: '@deepseek-ai/dsh-system-prompt', form: 'snapshot', sections: [],
+    }, content: [{ type: 'text', text: 'runtime snapshot' }] }, 'append')
+    append('request/header', { reason: 'initial', header: { config: { provider, model },
+      tools: (variant === 'plugin' ? ['run_code', 'edit_run_code'] : ['run_code']).map(name => ({ name })) } })
+    append('assistant/message', { turn: 1, step: 1, usage: { inputTokens: 10, outputTokens: 1 },
+      stream: [{ type: 'chunk', time: 1, chunk: { type: 'usage', usage: { inputTokens: 10, outputTokens: 1 } } }],
+      message: { role: 'assistant', content: [{ type: 'text', text: 'done' }] } }, 'append')
+    append('turn/end', { turn: 1, reason: { kind: 'completed' } })
+    const analysis = analyzeSession(events, { id: 'current-prompt', cwd, model, provider, variant, prompt: 'task', machineBudget,
+      runtimeContexts: { allowed: [], requiredTransitions: [], maxSnapshotChars: 100 } })
+    assert.deepEqual(analysis.failures, [])
+    assert.equal(analysis.system, system)
+    assert.equal(analysis.prompt.systemEvidence.source, 'ordered-surface')
+    const projected = structuredClone(events)
+    const user = projected.find(event => event.type === 'user/message' && event.data.source.kind === 'user')
+    user.data.content.push({ type: 'image', attachment: {
+      attachmentId: 'projection-proof', mediaType: 'image/png', bytes: 4, width: 1, height: 1,
+    } })
+    projected.splice(projected.findIndex(event => event.type === 'request/header'), 0, {
+      type: 'image/offload', time: 1, data: { targets: [{ seq: user.seq, imageIndexes: [0] }] },
+    })
+    projected.slice(1).forEach((event, seq) => { event.seq = seq })
+    assert.deepEqual(analyzeSession(projected, {
+      id: 'current-prompt', cwd, model, provider, variant, prompt: 'task', machineBudget,
+      runtimeContexts: { allowed: [], requiredTransitions: [], maxSnapshotChars: 100 },
+    }).failures, [])
+    const replaced = structuredClone(events)
+    const head = replaced.find(event => event.type === 'system/message')
+    head.data.message = createSystemMessage(system)
+    replaced.splice(-2, 0, { type: 'system/message', time: 1, data: {
+      message: createSystemMessage(system),
+    }, surfaceOp: { op: 'replace', startSeq: head.seq, endSeq: head.seq }, sourceEventSeqs: [head.seq] })
+    replaced.slice(1).forEach((event, seq) => { event.seq = seq })
+    assert.deepEqual(analyzeSession(replaced, {
+      id: 'current-prompt', cwd, model, provider, variant, prompt: 'task', machineBudget,
+      headerPolicy: { historyReplacements: 1 },
+      runtimeContexts: { allowed: [], requiredTransitions: [], maxSnapshotChars: 100 },
+    }).failures, [])
+    for (const isError of [true, false]) {
+      const outcomes = structuredClone(events)
+      outcomes.splice(-2, 0,
+        { type: 'tool/call', time: 1, data: { name: 'run_code', callId: 'outcome', arguments: '{}' } },
+        { type: 'tool/result', time: 1, data: { message: createToolResultMessage({
+          callId: 'outcome', isError, content: [{ type: 'text', text: 'outcome' }],
+        }) }, surfaceOp: 'append' })
+      outcomes.slice(1).forEach((event, seq) => { event.seq = seq })
+      const result = analyzeSession(outcomes, {
+        id: 'current-prompt', cwd, model, provider, variant, prompt: 'task', machineBudget,
+        runtimeContexts: { allowed: [], requiredTransitions: [], maxSnapshotChars: 100 },
+      })
+      assert.equal(result.toolErrorCount, isError ? 1 : 0)
+      assert.equal(createBlindPacket('opaque', { id: 'outcome' }, result).timeline[0].resultError, isError)
+    }
+    for (const version of [3, 4]) {
+      for (const retired of [system, '', null, {}]) {
+        const invalid = structuredClone(events)
+        invalid[0].version = version
+        invalid.find(event => event.type === 'request/header').data.header.system = retired
+        assert.match(analyzeSession(invalid, {
+          id: 'current-prompt', cwd, model, provider, variant, prompt: 'task', machineBudget,
+          runtimeContexts: { allowed: [], requiredTransitions: [], maxSnapshotChars: 100 },
+        }).failures.join('\n'), /must omit header.system/)
+      }
+      const corrupt = structuredClone(events).filter(event => event.type !== 'system/message')
+      corrupt[0].version = version
+      corrupt.find(event => event.type === 'request/header').data.header.system = system
+      corrupt.splice(-2, 0, { type: 'image/offload', time: 1, data: {} })
+      corrupt.slice(1).forEach((event, seq) => { event.seq = seq })
+      const rejected = analyzeSession(corrupt, { id: 'current-prompt', cwd, model, provider, variant, prompt: 'task', machineBudget })
+      assert.equal(rejected.prompt.systemEvidence.source, 'ordered-surface')
+      assert.match(rejected.failures.join('\n'), /no leading system message|must omit header.system/)
+      assert.equal(rejected.system, '')
+    }
+    const changed = structuredClone(events)
+    changed.splice(-2, 0, { seq: 0, time: 1, type: 'system/message', data: { message: {
+      role: 'system', content: [{ type: 'text', text: 'changed prompt' }],
+    } }, surfaceOp: 'append' })
+    changed.slice(1).forEach((event, seq) => { event.seq = seq })
+    assert.match(analyzeSession(changed, { id: 'current-prompt', cwd, model, provider, variant, prompt: 'task', machineBudget })
+      .failures.join('\n'), /system prompt changed/)
+  }
 })
 
 test('records test-gate subprocess outcomes without judging answer prose', async () => {
@@ -548,37 +651,42 @@ test('reads the benchmark manifest and rejects content drift', async (t) => {
   await assert.rejects(readFixtureManifest(fixture), /content SHA-256 mismatch/)
 })
 
-test('validates the package-name canary oracle through run_code', async () => {
+test('validates the package-name canary only from canonical return evidence', async () => {
   const task = { id: 'package-name', validator: 'package-name' }
   const oracle = await taskOracle(task, 'fixtures/ab-node-project-v1')
   assert.equal(oracle, 'ab-node-project-v1')
-  const pass = await validateTask(task, oracle, {
-    finalAnswer: 'The project is not ab-node-project-v1.',
-    timeline: [{ name: 'run_code', resultError: false, output: '"ab-node-project-v1"' }],
+  const validate = (completion, output = oracle) => validateTask(task, oracle, {
+    finalAnswer: oracle,
+    timeline: [{ name: 'run_code', resultError: false, output, completion }],
   }, '')
+  const returned = value => ({ kind: 'return', hasValue: true, valueWire: encodeValue(value) })
+  const pass = await validate(returned(oracle), `"${oracle}"`)
   assert.equal(pass.machineEvidence.status, 'pass')
   assert.equal(pass.answerAssessment.status, 'blind-pending')
-  const loggedPrimitive = await validateTask(task, oracle, {
-    finalAnswer: 'ab-node-project-v1',
-    timeline: [{
-      name: 'run_code', resultError: false,
-      output: 'package.json name field: ab-node-project-v1\nab-node-project-v1',
-    }],
-  }, '')
-  assert.equal(loggedPrimitive.machineEvidence.status, 'pass')
-  const wrapped = await validateTask(task, oracle, {
-    finalAnswer: 'ab-node-project-v1',
-    timeline: [{
-      name: 'run_code', resultError: false,
-      output: '{\n  "name": "ab-node-project-v1"\n}',
-    }],
-  }, '')
-  assert.equal(wrapped.machineEvidence.status, 'fail')
-  const fail = await validateTask(task, oracle, {
-    finalAnswer: '项目名是 ab-node-project-v1',
-    timeline: [{ name: 'run_code', resultError: false, output: '"another-project"' }],
-  }, '')
-  assert.equal(fail.machineEvidence.status, 'fail')
+  assert.equal((await validate(returned(JSON.stringify(oracle)), oracle)).machineEvidence.status, 'fail')
+  assert.equal((await validate(returned({ name: oracle }), oracle)).machineEvidence.status, 'fail')
+  assert.equal((await validate({ kind: 'return', hasValue: false }, oracle)).machineEvidence.status, 'fail')
+  assert.equal((await validate({ kind: 'throw' }, oracle)).machineEvidence.status, 'fail')
+  assert.equal((await validate(returned('another-project'), oracle)).machineEvidence.status, 'fail')
+  for (const output of [oracle, `"${oracle}"`, `console log\n${oracle}`, `{ "name": "${oracle}" }`]) {
+    assert.equal((await validate(undefined, output)).machineEvidence.status, 'incomplete')
+  }
+  assert.equal((await validate({ kind: 'return', hasValue: true })).machineEvidence.status, 'incomplete')
+  assert.equal((await validate({ kind: 'return', hasValue: true, valueWire: {} })).machineEvidence.status, 'incomplete')
+  const cyclic = {}; cyclic.self = cyclic
+  for (const value of [2n, cyclic]) {
+    const mismatch = await validate(returned(value))
+    assert.equal(mismatch.machineEvidence.status, 'fail')
+    const persisted = JSON.parse(JSON.stringify({ taskValidation: mismatch }))
+    const decoded = decodeValue(persisted.taskValidation.machineEvidence.observed[0].valueWire)
+    if (typeof value === 'bigint') assert.equal(decoded, value)
+    else assert.equal(decoded.self, decoded)
+    assert.equal(Object.keys(mismatch.machineEvidence.observed[0]).includes('value'), false)
+  }
+  const jsonLooking = '"123"'
+  assert.equal((await validateTask(task, jsonLooking, {
+    timeline: [{ name: 'run_code', resultError: false, completion: returned(jsonLooking) }],
+  }, '')).machineEvidence.status, 'pass')
 })
 
 test('marks semantic validation as pending blind review instead of an outcome', async () => {
@@ -626,6 +734,18 @@ test('does not schedule remaining paid work when the canary fails', async () => 
       if (result.failures.length > 0) throw new Error('canary rejected')
     },
   ), /canary rejected/)
+  assert.deepEqual(started, ['canary'])
+
+  const ambiguous = await validateTask({ validator: 'package-name' }, 'pkg', {
+    timeline: [{ name: 'run_code', resultError: false, output: '"pkg"' }],
+  }, '')
+  started.length = 0
+  await assert.rejects(runCanaryThenConcurrent(['canary', 'paid'], 2, async item => {
+    started.push(item)
+    return ambiguous
+  }, async result => {
+    if (result.machineEvidence.status !== 'pass') throw new Error('canonical canary incomplete')
+  }), /canonical canary incomplete/)
   assert.deepEqual(started, ['canary'])
 
   started.length = 0

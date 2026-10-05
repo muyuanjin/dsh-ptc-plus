@@ -8,6 +8,10 @@ import { PassThrough } from 'node:stream'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { stringify } from 'yaml'
+import { sessionFormatCatalog } from '@deepseek-ai/dsh-session-format-catalog'
+import { SESSION_FORMAT_VERSION, foldSurface } from '@deepseek-ai/dsh-session'
+import { createAssistantMessage, createSystemMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
+import { auditSystemPrompts, collectTrajectoryFacts } from '../scripts/acceptance-contract.mjs'
 import {
   HEADLESS_TOOLS_MODE,
   HEADLESS_PREREQUISITE_CODE,
@@ -16,6 +20,7 @@ import {
   changedSessionLogs,
   checkedPhase,
   dshInvocation,
+  evaluationToolResultOverlay,
   cleanupOwnedPath,
   formatHeadlessError,
   headlessConfigPatch,
@@ -26,6 +31,8 @@ import {
   requiredModelRuntime,
   runHeadlessTask,
   resolveHeadlessProvider,
+  restoreSessionLog,
+  restoreHostSessionLog,
   redactHeadlessConfig,
   runProcess,
   snapshotSessionLogs,
@@ -45,6 +52,15 @@ const runtime = {
   apiKeyEnv: 'API_KEY',
   toolsMode: HEADLESS_TOOLS_MODE,
   permissionMode: 'danger-full-access',
+}
+
+function storedLog(events = [], header = {}) {
+  const physicalHeader = sessionFormatCatalog.encodeCurrentHeader({
+    version: SESSION_FORMAT_VERSION, id: 'session-fixture', createdAt: 1, isSeeded: false,
+    delegationDepth: 0, ...header,
+  }, 0)
+  return [physicalHeader, ...events.map(event => sessionFormatCatalog.encodeCurrentEvent(event))]
+    .map(row => JSON.stringify(row)).join('\n') + '\n'
 }
 
 function configRows(disabled = false) {
@@ -143,6 +159,21 @@ test('requires provider-specific routing headers before paid model work', async 
   rows.find(row => row.id === 'llm-pi-ai').config.providers['opencode-go'].headers = { 'X-Opencode-Session': 'session' }
   const resolved = await resolveHeadlessProvider(rows, { ...runtime, provider: 'opencode-go' }, '/unused', options)
   assert.equal(resolved.providerConfig.headers['X-Opencode-Session'], 'session')
+})
+
+test('reads public volatile provider values after schema validation', async () => {
+  const provider = { api: 'openai-completions', baseURL: 'https://example.invalid', models: [{ id: 'model' }] }
+  const rows = [{ id: 'llm-pi-ai', config: { providers: { provider } } }]
+  let reads = 0
+  const Config = value => ({ providers: { get() { reads += 1; return value.providers } } })
+  const selected = await resolveHeadlessProvider(rows, { ...runtime }, '/unused', { Config })
+  assert.equal(reads, 1)
+  assert.deepEqual(selected.providerConfig, { ...provider, apiKeyEnv: runtime.apiKeyEnv })
+  const patch = parseConfigDump(headlessConfigPatch(configRows(), selected))
+  assert.deepEqual(patch.find(row => row.id === 'llm-pi-ai').config.providers.provider, selected.providerConfig)
+  await assert.rejects(resolveHeadlessProvider(rows, { ...runtime }, '/unused', {
+    Config: () => ({ providers: { get: () => ({}) } }),
+  }), /selected provider configuration violates/)
 })
 
 test('provider validation errors never retain private values in diagnostics or causes', async () => {
@@ -245,6 +276,24 @@ test('the keyless runtime probe executes real persistent cells with the current 
   assert.equal(observed.nodeVersion, process.version)
 })
 
+test('the public preload consumes its launcher request before creating helpers', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'ptc-preload-probe-'))
+  t.after(() => rm(directory, { recursive: true, force: true }))
+  const entry = join(directory, 'entry.mjs')
+  await writeFile(entry, 'console.log("application entry reached")\n')
+  const result = await runProcess(process.execPath, [
+    '--import', new URL('../scripts/repl-preflight.mjs', import.meta.url).href, entry,
+  ], { env: { ...process.env, DSH_PTC_EVAL_PROBE: '1' }, timeoutMs: 30_000 })
+  assert.equal(result.code, 0, result.stderr)
+  assert.equal(result.timedOut, false)
+  assert.equal(result.stdout.trim(), 'application entry reached')
+  const records = result.stderr.split(/\r?\n/).filter(line => line.startsWith(RUNTIME_PROBE_PREFIX))
+  assert.equal(records.length, 1)
+  assert.deepEqual(JSON.parse(records[0].slice(RUNTIME_PROBE_PREFIX.length)), {
+    nodeVersion: process.version, nodeExecutable: process.execPath, dshEntry: entry,
+  })
+})
+
 test('owns neutral config parsing and projection for both runners', () => {
   const rows = configRows()
   assert.equal(validateNeutralConfig(rows, 'acceptance config'), true)
@@ -269,6 +318,30 @@ test('owns neutral config parsing and projection for both runners', () => {
   assert.equal(functionClassLoose.find(row => row.id === 'ptc-plus').config.looseTopLevelFunctionClassRedeclarations, true)
   assert.throws(() => headlessConfigPatch(rows, { ...runtime, toolsMode: '' }), /toolsMode must be set explicitly/)
   assert.throws(() => headlessConfigPatch(rows, { ...runtime, permissionMode: undefined }), /permissionMode must be set explicitly/)
+})
+
+test('pairs the public canonical observer overlay and preserves exact Windows module paths', () => {
+  for (const modulePath of ['C:\\projects\\repo#1\\scripts\\evaluation-tool-results.mjs',
+    'C:\\projects\\repo%20 spaced\\scripts\\evaluation-tool-results.mjs']) {
+    const row = evaluationToolResultOverlay('C:\\scratch\\canonical-results', modulePath)
+    assert.equal(fileURLToPath(row.name, { windows: true }), modulePath)
+    assert.equal(new URL(row.name).hash, '')
+  }
+  const selected = { ...runtime, canonicalResultDirectory: '/mnt/c/scratch/canonical-results' }
+  const plugin = parseConfigDump(headlessConfigPatch(configRows(), selected))
+  const baseline = parseConfigDump(headlessConfigPatch(configRows(), selected, { disablePtcPlus: true }))
+  const observer = rows => rows.find(row => row.id === 'ptc-evaluation-tool-results')
+  assert.deepEqual(observer(plugin), observer(baseline))
+  assert.equal(observer(plugin).config.directory, 'C:\\scratch\\canonical-results')
+  assert.equal(validateHeadlessRuntimeConfig(plugin, 'plugin', selected), true)
+  assert.equal(validateHeadlessRuntimeConfig(baseline, 'baseline', selected), true)
+  for (const change of [{ disabled: true }, { name: 'file:///different.mjs' }, { config: { directory: 'other' } }]) {
+    const changed = structuredClone(plugin)
+    Object.assign(observer(changed), change)
+    assert.throws(() => validateHeadlessRuntimeConfig(changed, 'changed', selected), /canonical result observer/)
+  }
+  assert.throws(() => validateHeadlessRuntimeConfig(plugin.filter(row => row.id !== 'ptc-evaluation-tool-results'),
+    'missing', selected), /ptc-evaluation-tool-results/)
 })
 
 test('checks generated tools settings against the public Host schema, independently of runner expectations', () => {
@@ -326,11 +399,134 @@ test('discovers and decodes changed session logs through one owner', async (t) =
   await mkdir(join(root, 'nested'), { recursive: true })
   const before = await snapshotSessionLogs(root)
   const file = join(root, 'nested', 'session.jsonl')
-  await writeFile(file, '{"type":"session"}\n')
+  const text = storedLog()
+  await writeFile(file, text)
   const changed = await changedSessionLogs(root, before, 0)
   assert.equal(changed.length, 1)
   assert.equal(changed[0].file, file)
-  assert.deepEqual(changed[0].events, [{ type: 'session' }])
+  assert.deepEqual(changed[0].events, restoreSessionLog(text).events)
+  assert.equal(changed[0].text, text)
+  assert.equal(changed[0].storedVersion, SESSION_FORMAT_VERSION)
+  assert.equal(changed[0].inheritedEventCount, 0)
+})
+
+test('restores official stored source ranges before logical surface interpretation', () => {
+  const events = []
+  const append = (type, data, surfaceOp, sourceEventSeqs) => events.push({
+    seq: events.length, time: events.length, type, data,
+    ...(surfaceOp === undefined ? {} : { surfaceOp }),
+    ...(sourceEventSeqs === undefined ? {} : { sourceEventSeqs }),
+  })
+  append('turn/start', { turn: 1 })
+  append('step/start', { turn: 1, step: 1 })
+  append('system/message', { turn: 1, step: 1, message: createSystemMessage('stable') }, 'append')
+  for (const text of ['one', 'two', 'three']) append('user/message', createUserMessage({
+    source: { kind: 'user' }, content: [{ type: 'text', text }],
+  }), 'append')
+  append('user/message', createUserMessage({ source: { kind: 'user' },
+    content: [{ type: 'text', text: 'replacement' }],
+  }), { op: 'replace', startSeq: 3, endSeq: 5 }, [3, 4, 5])
+  append('step/end', { turn: 1, step: 1 })
+  append('turn/end', { turn: 1, reason: { kind: 'completed' } })
+  const text = storedLog(events)
+  assert.deepEqual(JSON.parse(text.trim().split('\n')[7]).sourceEventSeqs, [[3, 5]])
+  const restored = restoreSessionLog(text)
+  assert.deepEqual(restored.events[7].sourceEventSeqs, [3, 4, 5])
+  assert.deepEqual(foldSurface(restored.events.slice(1)).nodes, [2, 6])
+  for (const sources of [[[5, 3]], [[3, 6]], [[3, 1000000]], [[3, 5, 6]]]) {
+    const rows = text.trim().split('\n').map(JSON.parse)
+    rows[7].sourceEventSeqs = sources
+    assert.throws(() => restoreSessionLog(rows.map(row => JSON.stringify(row)).join('\n')), /sourceEventSeqs/)
+  }
+  assert.throws(() => restoreSessionLog(text + JSON.stringify({ seq: 99, time: 99, type: 'step/start', data: {} })), /seq|gap|dense/)
+})
+
+test('restored image offload retains its public owner during system auditing', () => {
+  const events = []
+  const append = (type, data, surfaceOp) => events.push({ seq: events.length, time: events.length,
+    type, data, ...(surfaceOp === undefined ? {} : { surfaceOp }) })
+  append('turn/start', { turn: 1 })
+  append('step/start', { turn: 1, step: 1 })
+  append('system/message', { turn: 1, step: 1, message: createSystemMessage('stable') }, 'append')
+  append('user/message', createUserMessage({ source: { kind: 'user' }, content: [
+    { type: 'text', text: 'task' }, { type: 'image', attachment: {
+      attachmentId: 'projection-proof', mediaType: 'image/png', bytes: 4, width: 1, height: 1,
+    } },
+  ] }), 'append')
+  append('image/offload', { targets: [{ seq: 3, imageIndexes: [0] }] })
+  append('request/header', { reason: 'initial', header: { config: { provider: 'provider', model: 'model' } } })
+  append('assistant/message', { turn: 1, step: 1, message: createAssistantMessage({
+    source: { provider: 'provider', model: 'model' }, content: [{ type: 'text', text: 'done' }],
+  }), usage: { inputTokens: 1, outputTokens: 1 }, stream: [{ type: 'chunk', time: 6,
+    chunk: { type: 'usage', usage: { inputTokens: 1, outputTokens: 1 } },
+  }] }, 'append')
+  append('step/end', { turn: 1, step: 1 })
+  append('turn/end', { turn: 1, reason: { kind: 'completed' } })
+  const restored = restoreSessionLog(storedLog(events))
+  assert.deepEqual(auditSystemPrompts(restored.events).failures, [])
+  assert.equal(auditSystemPrompts(restored.events).system, 'stable')
+  for (const targets of [[{ seq: 2, imageIndexes: [0] }], [{ seq: 3, imageIndexes: [1] }],
+    [{ seq: 3, imageIndexes: [0, 0] }], []]) {
+    const invalid = structuredClone(events)
+    invalid[4].data.targets = targets
+    assert.match(auditSystemPrompts([{ type: 'session', version: SESSION_FORMAT_VERSION }, ...invalid])
+      .failures.join('\n'), /image\/offload|image index/)
+  }
+})
+
+test('restores the exact last inherited cut without counting parent usage twice', () => {
+  const events = []
+  const append = (type, data, surfaceOp) => events.push({ seq: events.length, time: events.length,
+    type, data, ...(surfaceOp === undefined ? {} : { surfaceOp }) })
+  append('session/end-seed', { inherited: true })
+  const turn = (number, usage) => {
+    append('turn/start', { turn: number })
+    append('step/start', { turn: number, step: 1 })
+    if (number === 1) append('system/message', { turn: number, step: 1, message: createSystemMessage('stable') }, 'append')
+    else append('subagent/descriptor', { version: 3, mode: 'one-shot', provider: 'spawn', label: 'child-fixture' })
+    append('request/header', { reason: number === 1 ? 'initial' : 'resume', header: {
+      config: { provider: 'provider', model: 'model' },
+    } })
+    append('assistant/message', { turn: number, step: 1, message: createAssistantMessage({
+      source: { provider: 'provider', model: 'model' }, content: [{ type: 'text', text: 'answer' }],
+    }), usage, stream: [{ type: 'chunk', time: events.length, chunk: { type: 'usage', usage } }] }, 'append')
+    append('step/end', { turn: number, step: 1 })
+    append('turn/end', { turn: number, reason: { kind: 'completed' } })
+  }
+  turn(1, { inputTokens: 100, outputTokens: 20, cacheReadTokens: 30, cacheWriteTokens: 5 })
+  const cut = events.length
+  append('session/end-seed', { inherited: true })
+  turn(2, { inputTokens: 7, outputTokens: 3, cacheReadTokens: 2, cacheWriteTokens: 1 })
+  const header = sessionFormatCatalog.encodeCurrentHeader({ version: SESSION_FORMAT_VERSION,
+    id: 'child-fixture', createdAt: 1, isSeeded: true, parentSession: 'parent-fixture',
+    origin: 'subagent', delegationDepth: 1,
+  }, cut)
+  const text = [header, ...events.map(event => sessionFormatCatalog.encodeCurrentEvent(event))]
+    .map(row => JSON.stringify(row)).join('\n')
+  const restored = restoreSessionLog(text)
+  assert.equal(restored.inheritedEventCount, cut)
+  assert.equal(restored.events[0].type, 'session')
+  assert.deepEqual(collectTrajectoryFacts(restored.events.slice(1 + cut)).usage,
+    { inputTokens: 7, outputTokens: 3, cacheReadTokens: 2, cacheWriteTokens: 1 })
+})
+
+test('WSL restoration sends unchanged stored bytes to the selected Windows Node', {
+  skip: process.platform === 'win32' ? 'native Windows restores in its own execution world' : false,
+}, () => {
+  const text = storedLog()
+  let observed
+  const artifact = restoreSessionLog(text)
+  assert.deepEqual(restoreHostSessionLog(text, { nodeExecutable: 'X:\\node.exe' }, {
+    execFileSync(command, args, options) {
+      observed = { command, args, options }
+      return JSON.stringify(artifact)
+    },
+  }), artifact)
+  assert.equal(observed.command, 'pwsh.exe')
+  assert.equal(observed.options.input, text)
+  assert.match(observed.args.at(-1), /X:\\node.exe/)
+  assert.match(observed.args.at(-1), /restoreSessionLog/)
+  assert.match(observed.args.at(-1), /readFileSync\(0/)
 })
 
 test('removes owned paths and preserves primary cleanup evidence', async (t) => {
@@ -864,7 +1060,7 @@ test('runs one isolated task and collects the session logs it produced', async (
   const runProcessOption = async (executable, args, options) => {
     calls.push({ executable, args, options })
     await mkdir(sessionsRoot, { recursive: true })
-    await writeFile(join(sessionsRoot, 'session.jsonl'), '{"type":"fixture"}\n')
+    await writeFile(join(sessionsRoot, 'session.jsonl'), storedLog())
     return { code: 0, stdout: 'task complete', stderr: '', timedOut: false }
   }
   const { process: result, decoded } = await runHeadlessTask({
@@ -875,6 +1071,10 @@ test('runs one isolated task and collects the session logs it produced', async (
     cwd: root,
     overlay,
     runProcess: runProcessOption,
+    changedSessionLogs: (root, before, startedAt, options) => {
+      assert.equal(options.runtime.nodeExecutable, 'X:\\node.exe')
+      return changedSessionLogs(root, before, startedAt)
+    },
   })
   assert.equal(calls.length, 1)
   assert.equal(calls[0].executable, 'pwsh.exe')
@@ -886,7 +1086,7 @@ test('runs one isolated task and collects the session logs it produced', async (
   assert.ok(command.includes(`--patch '${windowsPath(overlay)}'`))
   assert.match(command, /'run the isolated fixture task'$/)
   assert.equal(result.stdout, 'task complete')
-  assert.deepEqual(decoded.map(entry => entry.events), [[{ type: 'fixture' }]])
+  assert.deepEqual(decoded.map(entry => entry.events), [restoreSessionLog(storedLog()).events])
 
   const infrastructure = await runHeadlessTask({
     env,

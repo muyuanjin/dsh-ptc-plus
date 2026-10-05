@@ -7,6 +7,7 @@ import {
   PTC_DIRECT_TOOLS,
   auditModelRequests,
   auditRequestHeaders,
+  auditSystemPrompts,
   auditRuntimeContexts,
   collectModelText,
   collectTrajectoryFacts,
@@ -20,6 +21,7 @@ import {
 } from './acceptance-contract.mjs'
 import { aggregateTrajectories, duplicateParagraphs, multisetDifference, paragraphs, reportMarkdown, trajectoryDelta } from './ab-trajectory-report.mjs'
 import { orderCanaryFirst, runCanaryThenConcurrent } from './acceptance-orchestration.mjs'
+import { canonicalRunCodeResults, readEvaluationToolResults } from './evaluation-tool-results.mjs'
 import {
   HEADLESS_TOOLS_MODE,
   NEUTRAL_PERSONA,
@@ -328,12 +330,12 @@ function uncertaintySignals(text) {
 }
 
 export function assertTrajectoryInvariants(events, expected, audits) {
-  const { headerAudit, contextAudit, facts, injections } = audits
-  const failures = [...headerAudit.failures, ...contextAudit.failures, ...facts.failures]
+  const { headerAudit, systemAudit, contextAudit, facts, injections } = audits
+  const failures = [...headerAudit.failures, ...systemAudit.failures, ...contextAudit.failures, ...facts.failures]
   const headers = headerAudit.headers.map(item => item.header)
   const header = headers[0]
   const session = events.find(event => event.type === 'session')
-  const system = typeof header?.system === 'string' ? header.system : ''
+  const system = systemAudit.system
   const hasPlugin = system.includes(pluginMarker)
   const { calls, results, finalAnswer, finalTurn, timeline } = facts
   const expectedPersona = neutralPersona
@@ -428,13 +430,14 @@ export function computeMetrics(facts, audits) {
 
 export function analyzeSession(events, expected) {
   const headerAudit = auditRequestHeaders(events, expected.headerPolicy)
+  const systemAudit = auditSystemPrompts(events)
   const modelRequestAudit = auditModelRequests(events)
   const contextAudit = auditRuntimeContexts(events, expected.runtimeContexts)
   const facts = collectTrajectoryFacts(events, {
     usageKeys: ['inputTokens', 'outputTokens', 'cacheReadTokens', 'cacheWriteTokens'],
   })
   const injections = initialInjections(events, expected.cwd)
-  const audits = { headerAudit, modelRequestAudit, contextAudit, facts, injections }
+  const audits = { headerAudit, systemAudit, modelRequestAudit, contextAudit, facts, injections }
   const invariants = assertTrajectoryInvariants(events, expected, audits)
   const metrics = computeMetrics(facts, audits)
   const { calls, results, usage, turnWallMs, timeline } = facts
@@ -448,6 +451,7 @@ export function analyzeSession(events, expected) {
     system,
     model: header?.config,
     prompt: {
+      systemEvidence: systemAudit,
       chars: system.length,
       bytes: Buffer.byteLength(system),
       lines: system.split(/\r?\n/).length,
@@ -582,25 +586,6 @@ export async function taskOracle(task, workspace, options = {}) {
   return undefined
 }
 
-function structuredToolResults(analysis) {
-  return (analysis.timeline ?? []).flatMap((item) => {
-    if (item.resultError === true || typeof item.output !== 'string') return []
-    try {
-      return [{ name: item.name, value: JSON.parse(item.output) }]
-    } catch {
-      // CodeRuntime output may contain console lines before its final primitive value.
-      const lines = item.output.split(/\r?\n/).map(line => line.trim()).filter(Boolean)
-      for (let index = lines.length - 1; index >= 0; index -= 1) {
-        try {
-          return [{ name: item.name, value: JSON.parse(lines[index]) }]
-        } catch {}
-      }
-      const finalLine = lines.at(-1)
-      return finalLine === undefined ? [] : [{ name: item.name, value: finalLine }]
-    }
-  })
-}
-
 function pendingAnswerAssessment() {
   return { status: 'blind-pending', reason: 'free-form answer requires blind semantic review' }
 }
@@ -616,13 +601,15 @@ export async function validateTask(task, oracle, analysis, workspace) {
   }
   if (task.validator === 'package-name') {
     const expected = String(oracle)
-    const results = structuredToolResults(analysis).filter(result => result.name === 'run_code')
-    const matched = results.some(result => isDeepStrictEqual(result.value, expected))
+    const results = canonicalRunCodeResults(analysis)
+    const matched = results.some(result => result.status === 'complete'
+      && typeof result.value === 'string' && result.value === expected)
+    const incomplete = results.some(result => result.status === 'incomplete')
     return taskValidation({
-      status: matched ? 'pass' : 'fail',
-      source: 'run_code-result',
+      status: incomplete ? 'incomplete' : matched ? 'pass' : 'fail',
+      source: 'canonical-run_code-return',
       expected,
-      observed: results.map(result => result.value),
+      observed: results,
     })
   }
   if (task.validator === 'git-status') {
@@ -832,7 +819,7 @@ async function assembleReport({
       baseline: pair.baseline,
     })),
     infrastructureFailures: sessions.flatMap(session => session.failures.map(failure => `${session.taskId}/r${session.replicate}/${session.variant}: ${failure}`)),
-    taskFailures: sessions.filter(session => session.taskValidation?.machineEvidence?.status === 'fail')
+    taskFailures: sessions.filter(session => ['fail', 'incomplete'].includes(session.taskValidation?.machineEvidence?.status))
       .map(session => `${session.taskId}/r${session.replicate}/${session.variant}`),
   }
   report.infrastructureFailures.push(...contextPairingFailures)
@@ -887,6 +874,7 @@ export async function main(env = process.env) {
   const fixtureDir = resolve(repoRoot, env.DSH_PTC_AB_FIXTURE || relative(repoRoot, defaultFixtureDir))
   const fixture = await readFixtureManifest(fixtureDir)
   const scratchRoot = join(resolve(repoRoot, '..'), '.dsh-ptc-plus-ab', runId)
+  runtime.canonicalResultDirectory = join(scratchRoot, 'canonical-results')
   const frozenWorkspace = join(scratchRoot, 'workspace')
   let scratchError
   try {
@@ -927,7 +915,7 @@ export async function main(env = process.env) {
         await writeFile(join(directory, 'dsh.stderr.log'), process.stderr)
         const matches = decoded.filter(candidate => {
           if (candidate.events === undefined || !userPrompts(candidate.events).includes(task.prompt)) return false
-          const system = candidate.events.find(event => event.type === 'request/header')?.data?.header?.system ?? ''
+          const system = auditSystemPrompts(candidate.events).system
           const sessionCwd = candidate.events.find(event => event.type === 'session')?.data?.cwd
             ?? candidate.events.find(event => event.type === 'session')?.cwd
           return system.includes(pluginMarker) === (variant === 'plugin') && sessionCwd === cwd
@@ -955,6 +943,13 @@ export async function main(env = process.env) {
             headerPolicy: task.headerPolicy,
             runtimeContexts: task.runtimeContexts[variant],
           })
+          analysis.logFormat = {
+            storedVersion: match.storedVersion,
+            logicalVersion: match.events[0].version,
+            inheritedEventCount: match.inheritedEventCount,
+          }
+          analysis.canonicalToolResults = await readEvaluationToolResults(runtime.canonicalResultDirectory, analysis.session.id)
+          await writeFile(join(directory, 'canonical-tool-results.json'), JSON.stringify(analysis.canonicalToolResults, null, 2) + '\n')
           await writeFile(join(directory, 'system.txt'), analysis.system)
           delete analysis.system
         }

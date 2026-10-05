@@ -3,7 +3,8 @@ import { normalizeJournal } from '../internal/session-journal.js'
 import { decodeValue } from '../internal/value-wire.js'
 import { PTC_BINDING_CATALOG, readRuntimeMessage, recoveryTipIdentity } from '../internal/runtime-messages.js'
 import { HOST_HEADER_REASONS, hostAssistantUsageEvents } from './dsh-host-contract.mjs'
-import { foldSurface } from '@deepseek-ai/dsh-session'
+import { foldSurface, deriveEventMessage, snapshotSessionEvent, SESSION_FORMAT_VERSION } from '@deepseek-ai/dsh-session'
+import { imageOffloadProjection } from '@deepseek-ai/dsh-compaction-image-offload/projection'
 import { isDeepStrictEqual } from 'node:util'
 import { editRejectedCell, EXPECTED_TARGET_CALL_SEQ } from '../internal/rejected-cell-editor.js'
 import { editTargetForCall } from '../internal/session-log-view.js'
@@ -14,6 +15,13 @@ import { normalizeUserBindingEntry, userBindingsSnapshotFromMeta } from '../inte
 import { constantExportProof, proveStatusSource, workflowSymbol } from './binding-status-proof.mjs'
 
 const traverse = traverseModule.default ?? traverseModule
+// The published v2-to-v3 migration moves header.system into system/message.
+const SYSTEM_MESSAGE_FORMAT_VERSION = 3
+
+// All offline surface consumers use the same published projection owners.
+function foldEvaluationSurface(events) {
+  return foldSurface(events, [imageOffloadProjection])
+}
 
 /** Conservative scenario oracle, not runtime policy or inferred effect metadata. */
 export function auditBindingWorkflow(events, scenario = {}) {
@@ -260,6 +268,12 @@ export function collectTrajectoryFacts(events, options = {}) {
     }
   }
 
+  // JSON reports retain canonical graphs; in-memory consumers use decoded values.
+  const retainValueWire = (target, name, wire, label) => Object.defineProperties(target, {
+    [`${name}Wire`]: { value: wire, enumerable: true },
+    [name]: { value: decode(wire, label) },
+  })
+
   for (const event of events) {
     if (event?.type === 'assistant/message') {
       const content = Array.isArray(event.data?.message?.content) ? event.data.message.content : []
@@ -361,7 +375,7 @@ export function collectTrajectoryFacts(events, options = {}) {
       const content = Array.isArray(message.content) ? message.content : []
       const callId = message.source?.callId ?? data.callId
       const output = collectModelText(content).join('\n')
-      const isError = data.isError === true || data.error !== undefined
+      const isError = message.isError === true || data.isError === true || data.error !== undefined
         || content.some(item => item?.isError === true)
       let journal
       if (data.meta?.dshPtcPlus !== undefined) {
@@ -372,24 +386,22 @@ export function collectTrajectoryFacts(events, options = {}) {
         }
       }
       const nestedCalls = Array.isArray(journal?.calls)
-        ? journal.calls.map((call, index) => Object.defineProperty({
+        ? journal.calls.map((call, index) => {
+          const summary = retainValueWire({
             global: String(call.global),
             member: String(call.member),
-            argsWire: call.args,
             ok: call.ok === true,
-            ...(call.ok === true ? { value: decode(call.value, `journal call ${index + 1}`) } : {}),
             ...(call.ok === false ? { error: String(call.error ?? 'unknown error') } : {}),
-          }, 'args', {
-            // Reports retain the wire graph; decoded args may contain cycles or bigint.
-            value: decode(call.args, `journal call ${index + 1} arguments`),
-          }))
+          }, 'args', call.args, `journal call ${index + 1} arguments`)
+          return call.ok === true
+            ? retainValueWire(summary, 'value', call.value, `journal call ${index + 1}`)
+            : summary
+        })
         : []
       const completion = journal?.completion?.kind === 'return'
-        ? {
-            kind: 'return',
-            hasValue: journal.completion.hasValue,
-            ...(journal.completion.hasValue ? { value: decode(journal.completion.value, 'journal completion') } : {}),
-          }
+        ? journal.completion.hasValue
+          ? retainValueWire({ kind: 'return', hasValue: true }, 'value', journal.completion.value, 'journal completion')
+          : { kind: 'return', hasValue: false }
         : journal?.completion
       if (typeof callId !== 'string') {
         failures.push(`tool result at seq ${event.seq} has no call id`)
@@ -789,6 +801,72 @@ export function auditRequestHeaders(events, policy = {}) {
   }
 }
 
+/** System text is a message-surface fact on current hosts, not a header field. */
+export function auditSystemPrompts(events) {
+  if (!Array.isArray(events)) throw new TypeError('system prompt events must be an array')
+  const failures = []
+  const samples = []
+  const sessions = events.filter(event => event?.type === 'session')
+  const formatVersion = sessions[0]?.version
+  if (sessions.length !== 1 || !Number.isSafeInteger(formatVersion)
+    || formatVersion < 1 || formatVersion > SESSION_FORMAT_VERSION) {
+    return { source: 'unproved-format', system: '', samples,
+      failures: ['system prompt evidence requires one supported session format'] }
+  }
+  const modern = formatVersion >= SYSTEM_MESSAGE_FORMAT_VERSION
+  if (!modern && events.some(event => event?.type === 'system/message')) {
+    failures.push('historical session format cannot establish system/message evidence')
+  }
+  const source = modern ? 'ordered-surface' : 'historical-header'
+  const prefix = []
+  const bySeq = new Map()
+  let previous
+  for (const event of events) {
+    if (event?.type === 'session') continue
+    if (modern && event?.type === 'request/header') {
+      try {
+        // Surface folding owns history relations; admission owns header fields.
+        // Snapshot validation preserves the caller's event graph unchanged.
+        snapshotSessionEvent(event)
+      } catch (error) {
+        failures.push(`request header evidence is invalid at seq ${event.seq}: ${error.message}`)
+      }
+    }
+    const requestBoundary = ['request/header', 'assistant/message', 'assistant/attempt'].includes(event?.type)
+    if (modern && requestBoundary) {
+      try {
+        const surface = foldEvaluationSurface(prefix)
+        const derived = surface.nodes.map(seq => deriveEventMessage(bySeq.get(seq), surface.projectedMessages))
+          .filter(Boolean)
+        if (derived[0]?.role !== 'system') throw new Error('request surface contains no leading system message')
+        const messages = derived.filter(message => message.role === 'system')
+        if (messages.some(message => !Array.isArray(message.content)
+          || message.content.some(block => block.type !== 'text' || typeof block.text !== 'string'))) {
+          throw new Error('system message is not complete text evidence')
+        }
+        // The pi-ai adapter takes only the leading system message as its prompt;
+        // later system nodes remain history. Text blocks introduce no separators.
+        const texts = messages.map(message => message.content.map(block => block.text).join(''))
+        const system = texts[0]
+        const difference = previous === undefined ? undefined
+          : firstJsonDifference(previous, texts, 'systemMessages', true)
+        if (difference !== undefined) failures.push(`system prompt changed ${difference} at request boundary seq ${event.seq}`)
+        samples.push({ seq: event.seq, source, messages, system })
+        previous = texts
+      } catch (error) {
+        failures.push(`system prompt evidence is invalid at seq ${event.seq}: ${error.message}`)
+      }
+    } else if (!modern && event?.type === 'request/header') {
+      const system = event.data?.header?.system
+      if (typeof system === 'string') samples.push({ seq: event.seq, source, system })
+    }
+    prefix.push(event)
+    bySeq.set(event.seq, event)
+  }
+  if (samples.length === 0) failures.push('session log contains no model-visible system prompt evidence')
+  return { source, formatVersion, system: samples[0]?.system ?? '', samples, failures: [...new Set(failures)] }
+}
+
 /** Count logical model loop steps without inferring physical adapter attempts. */
 export function auditModelRequests(events) {
   if (!Array.isArray(events)) throw new TypeError('model request events must be an array')
@@ -1037,7 +1115,7 @@ export function auditRuntimeContexts(events, config = {}) {
     let replacementNodes
     if (event.surfaceOp?.op === 'replace') {
       try {
-        replacementNodes = foldSurface(sourceEvents).nodes
+        replacementNodes = foldEvaluationSurface(sourceEvents).nodes
         restoreSurface(replacementNodes)
         effective = combinedState()
       } catch {

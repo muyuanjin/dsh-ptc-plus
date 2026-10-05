@@ -17,7 +17,7 @@ import {
   TERMINATION_GRACE_MS,
   decodeSessionLog,
   formatHeadlessError,
-  parseEvents,
+  restoreSessionLog,
   recordCleanupFailure,
   runProcess,
   snapshotSessionLogs,
@@ -1061,7 +1061,7 @@ async function verifyWorkbenchDraftTakeover() {
 /** Read the real session log as events, so a Host audit pair stays observable after commit. */
 async function sessionEvents() {
   const logs = await sessionLogBytes()
-  return logs.flatMap(([, text]) => parseEvents(text))
+  return logs.flatMap(([, text]) => restoreSessionLog(text).events)
 }
 
 /** Wait for the durable log to carry a matching event, so an audit read never races the commit. */

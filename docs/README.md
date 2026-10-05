@@ -6,6 +6,7 @@
 - [Global binding guide](user-bindings.en.md) ([中文](user-bindings.md)): author, review, save, configure, and test reusable helpers.
 - [Runtime Reference](runtime-reference.md): cell behavior, capability discovery, configuration, diagnostics, and limits.
 - [Evaluation](evaluation.md): paired ordinary-task protocol, metrics, configuration, and limitations.
+- [Command Goat / DeepSeek V4.1 Flash evaluation](evaluations/command-goat-deepseek-v4.1-flash.md): paid main/child acceptance, two retained A/B cohorts, independent audits, measured benefits and limits.
 
 ## Design
 

@@ -2,9 +2,10 @@
 import { execFileSync, spawn } from 'node:child_process'
 import { readdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { join, posix, relative, win32 } from 'node:path'
-import { pathToFileURL } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { isDeepStrictEqual } from 'node:util'
 import { parseDocument, stringify } from 'yaml'
+import { sessionFormatCatalog } from '@deepseek-ai/dsh-session-format-catalog'
 import { npmCliCommand } from './npm-cli.mjs'
 import { RUNTIME_PROBE_PREFIX } from './repl-preflight.mjs'
 import { hostPersonaPatch, hostProviderConfig, hostToolRuntime, ptcToolsMode, readHostPersona } from './dsh-host-contract.mjs'
@@ -468,7 +469,11 @@ export async function resolveHeadlessProvider(baseRows, runtime, dshHome, option
   let providerConfig
   try {
     const Config = options.Config ?? hostProviderConfig(runtime.dshEntry)
-    providerConfig = Config({ providers: { [runtime.provider]: { ...selected, apiKeyEnv: runtime.apiKeyEnv } } }).providers[runtime.provider]
+    const validated = Config({ providers: { [runtime.provider]: { ...selected, apiKeyEnv: runtime.apiKeyEnv } } })
+    const providers = typeof validated.providers?.get === 'function'
+      ? validated.providers.get() : validated.providers
+    providerConfig = providers?.[runtime.provider]
+    if (providerConfig === undefined) throw new TypeError('selected provider absent after validation')
   } catch {
     // Validator errors can quote private configuration values, including in their causes.
     throw new Error(`${HEADLESS_CONFIG_CODE}: selected provider configuration violates the installed DSH provider schema`)
@@ -521,7 +526,23 @@ export function validateHeadlessRuntimeConfig(rows, label, runtime) {
     && !isDeepStrictEqual(configRow(rows, 'llm-pi-ai', label).config?.providers?.[runtime.provider], runtime.providerConfig)) {
     throw new Error(`${HEADLESS_CONFIG_CODE}: ${label} changed the resolved provider configuration`)
   }
+  if (runtime.canonicalResultDirectory !== undefined) {
+    const expected = evaluationToolResultOverlay(runtime.canonicalResultDirectory)
+    const observed = configRow(rows, expected.id, label)
+    if (observed.disabled === true || observed.name !== expected.name
+      || !isDeepStrictEqual(observed.config, expected.config)) {
+      throw new Error(`${HEADLESS_CONFIG_CODE}: ${label} changed canonical result observer configuration`)
+    }
+  }
   return true
+}
+
+export function evaluationToolResultOverlay(directory, modulePath = fileURLToPath(new URL('./evaluation-tool-results.mjs', import.meta.url))) {
+  return {
+    id: 'ptc-evaluation-tool-results',
+    name: pathToFileURL(windowsPath(modulePath), { windows: true }).href,
+    config: { directory: windowsPath(directory) },
+  }
 }
 
 export function headlessConfigPatch(baseRows, runtime, options = {}) {
@@ -575,6 +596,8 @@ export function headlessConfigPatch(baseRows, runtime, options = {}) {
       ]
       : []),
     ...(options.disablePtcPlus === true ? ['- id: ptc-plus', '  disabled: true'] : []),
+    ...(runtime.canonicalResultDirectory === undefined ? []
+      : stringify([evaluationToolResultOverlay(runtime.canonicalResultDirectory)]).trimEnd().split('\n')),
     '',
   ].join('\n')
 }
@@ -622,6 +645,33 @@ export function parseEvents(text) {
   })
 }
 
+/** Restore physical rows before interpreting logical messages or provenance. */
+export function restoreSessionLog(text) {
+  const [physicalHeader, ...rows] = parseEvents(text)
+  const restore = sessionFormatCatalog.createRestore(physicalHeader, { validation: 'current', recovery: 'strict' })
+  for (const row of rows) restore.decodeRow(row)
+  const artifact = restore.finish()
+  return {
+    storedVersion: physicalHeader.version,
+    inheritedEventCount: artifact.inheritedEventCount,
+    events: [{ type: 'session', ...artifact.header }, ...artifact.events],
+  }
+}
+
+/** Public Session validation runs in the selected Host's path execution world. */
+export function restoreHostSessionLog(text, runtime, options = {}) {
+  if (process.platform === 'win32' || runtime === undefined) return restoreSessionLog(text)
+  const modulePath = windowsPath(fileURLToPath(import.meta.url))
+  const source = `import { readFileSync } from 'node:fs'; import { pathToFileURL } from 'node:url';`
+    + ` const { restoreSessionLog } = await import(pathToFileURL(${JSON.stringify(modulePath)}).href);`
+    + ` process.stdout.write(JSON.stringify(restoreSessionLog(readFileSync(0, 'utf8'))));`
+  const command = `& '${powershellPath(runtime.nodeExecutable)}' --input-type=module -e '${powershellPath(source)}'`
+  const decoded = (options.execFileSync ?? execFileSync)('pwsh.exe', [
+    '-NoLogo', '-NoProfile', '-Command', command,
+  ], { input: text, encoding: 'utf8', timeout: 60_000, maxBuffer: 256 * 1024 * 1024 })
+  return JSON.parse(decoded)
+}
+
 export async function changedSessionLogs(root, before, startedAt, options = {}) {
   const after = await (options.snapshotSessionLogs ?? snapshotSessionLogs)(root)
   const files = []
@@ -631,7 +681,7 @@ export async function changedSessionLogs(root, before, startedAt, options = {}) 
   return await Promise.all(files.map(async (file) => {
     try {
       const text = await (options.decodeSessionLog ?? decodeSessionLog)(file)
-      return { file, text, events: parseEvents(text) }
+      return { file, text, ...restoreHostSessionLog(text, options.runtime, options) }
     } catch (error) {
       return { file, error: error.message }
     }
@@ -803,6 +853,7 @@ export async function runHeadlessTask({
   overlay,
   invoke = dshInvocation,
   runProcess: runProcessOption = runProcess,
+  changedSessionLogs: changedSessionLogsOption = changedSessionLogs,
 }) {
   const before = await snapshotSessionLogs(sessionsRoot)
   const startedAt = Date.now()
@@ -815,5 +866,5 @@ export async function runHeadlessTask({
   } catch (error) {
     process = { code: 1, stdout: '', stderr: '', timedOut: false, durationMs: 0, infrastructureError: error.message }
   }
-  return Object.freeze({ process, decoded: await changedSessionLogs(sessionsRoot, before, startedAt) })
+  return Object.freeze({ process, decoded: await changedSessionLogsOption(sessionsRoot, before, startedAt, { runtime }) })
 }

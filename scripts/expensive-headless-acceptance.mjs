@@ -9,6 +9,7 @@ import {
   auditProgramWork,
   auditModelRequests,
   auditRequestHeaders,
+  auditSystemPrompts,
   auditRuntimeContexts,
   auditBindingWorkflow,
   collectModelText as collectText,
@@ -253,10 +254,11 @@ export function inspectLog(events, scenario, expectedRuntime) {
   }
   const allowedDiagnosticCodes = new Set(expect.allowedDiagnosticCodes ?? [])
   const headerAudit = auditRequestHeaders(events, expect.headerPolicy)
+  const systemAudit = auditSystemPrompts(events)
   const modelRequestAudit = auditModelRequests(events)
   const contextAudit = auditRuntimeContexts(events, expect.runtimeContexts)
   const facts = collectTrajectoryFacts(events, { compareUsageChunks: false })
-  failures.push(...headerAudit.failures, ...contextAudit.failures, ...facts.failures)
+  failures.push(...headerAudit.failures, ...systemAudit.failures, ...contextAudit.failures, ...facts.failures)
   const {
     calls, results, assistantTexts, finalAnswer, reasoningChars, usage, finalTurn, turnStartedAt, turnEndedAt, timeline,
   } = facts
@@ -312,7 +314,7 @@ export function inspectLog(events, scenario, expectedRuntime) {
       failures.push('request ' + (index + 1) + ' model route is ' + (current?.config?.provider ?? 'missing') + '/' + (current?.config?.model ?? 'missing'))
     }
   }
-  const system = typeof requestHeader?.system === 'string' ? requestHeader.system : ''
+  const system = systemAudit.system
   const expectedPersona = neutralPersona
     .replace('{{model}}', expectedRuntime.model)
     .replace('{{cwd}}', expectedRuntime.cwd)
@@ -469,6 +471,7 @@ export function inspectLog(events, scenario, expectedRuntime) {
     session: { id: header?.id, cwd: header?.cwd, createdAt: header?.createdAt },
     model: requestHeader?.config,
     prompt: {
+      systemEvidence: systemAudit,
       chars: system.length,
       modelTools: modelTools.map(tool => tool?.name),
       hasReplSdk: /declare const repl:/.test(system),
@@ -612,6 +615,11 @@ async function runAcceptance(env, modelRuntime, host, overlayRoot) {
       logFile = match.file
       await writeFile(join(scenario.root, 'session.jsonl'), match.text)
       report = inspectLog(match.events, scenario, { ...runtime, cwd: scenarioCwd })
+      report.logFormat = {
+        storedVersion: match.storedVersion,
+        logicalVersion: match.events[0].version,
+        inheritedEventCount: match.inheritedEventCount,
+      }
     }
     if (processResult.code !== 0) report.failures.push(`DSH process exited with ${processResult.code}`)
     if (processResult.timedOut) report.failures.push(`DSH process exceeded ${runtime.wallMs}ms wall timeout`)

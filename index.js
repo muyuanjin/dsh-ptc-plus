@@ -86,15 +86,15 @@ function replGuidance({ bindingPolicy, rewritesEnabled, languageSemantics, durab
   const cordisRecovery = cordisToolsEnabled
     ? 'Keep large Cordis plugin source in a binding before the tool call so it can be reused after an error. A Cordis parse or validation failure can follow external effects; repeat the call only when its retry rules and current results establish that it is safe.'
     : ''
-  return `\`run_code\` continues one persistent PTC REPL. Ordinary top-level bindings remain available to later cells, so reuse them instead of resending setup code. Choose the smallest cell that answers the request and return only the value the next step needs.
+  return `\`run_code\` continues one persistent PTC REPL. Use Node.js modules in the cell; use external processes when their environment is needed. Ordinary top-level bindings remain available to later cells, so reuse them instead of resending setup code. Choose the smallest cell that answers the request and return only the value the next step needs.
 
 After an execution error, earlier statements may have taken effect. Inspect relevant values in a short cell and continue from them; repeat external operations only when their retry rules and current results establish that it is safe. \`edit_run_code\` edits and reruns a complete cell.
 
 ## Cell conventions
-Use \`return\` for an explicit result and \`console\` for logs. Return supported values directly, including BigInt in plain objects; output does not require JSON.stringify. Live values may exceed the transfer domain (for example Date or Map); select needed data explicitly for output. Native \`tools.*\` arguments must satisfy their own JSON schemas; PTC value transport does not widen those contracts. Keep large inspection results in bindings or reduce them to targeted excerpts: \`tools.read\` is bounded inspection, not a lossless whole-file reader. ${cellConventions}
+Use \`return\` for an explicit result and \`console\` for logs. Return supported values directly, including undefined, NaN, infinities, -0 and BigInt; JSON.stringify loses distinctions or rejects BigInt. Keep functions, Date, Map and other unsupported values in bindings; return needed data or type observations. Native \`tools.*\` arguments must satisfy their own JSON schemas; PTC value transport does not widen those contracts. Keep large inspection results in bindings or reduce them to targeted excerpts: \`tools.read\` is bounded inspection, not a lossless whole-file reader. ${cellConventions}
 
 ## Available capabilities
-Use \`capabilities.tree()\`, \`capabilities.find()\`, and \`capabilities.inspect()\` for unfamiliar program APIs. Prefer direct current-cell work; reserve \`code.run\` for isolated execution of source held as data.
+Use \`capabilities.tree()\`, \`capabilities.find()\`, and \`capabilities.inspect()\` for unfamiliar program APIs. Reserve \`code.run\` for isolated execution of source held as data.
 Program API references expire when their cell ends. Reusable helpers must read the current namespace when called, for example \`async function readNow(args) { return tools.read(args) }\`, rather than retaining an earlier \`tools\` object or method. Background callbacks from completed cells cannot call program APIs.
 
 Native tool availability, executable names, shells, and path syntax depend on the current DSH profile and execution world; inspect them instead of assuming Windows, WSL, POSIX, or a particular shell. ${recovery}${cordisToolsEnabled ? ` ${cordisRecovery}` : ''}`

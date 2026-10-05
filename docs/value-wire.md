@@ -66,4 +66,6 @@ envelope，cold replay 以 recorded value 重建结果而不重新调用 owner b
 
 以上 graph IPC 能力不扩展 native `tools.*` 的 JSON 输入/输出契约。真实调用仍由 DSH 按 live schema 与 lossless JSON 验证；BigInt 在插件内部可传输，但不能据此作为 native JSON 参数。直接 `return {big: 2n}` 无需 `JSON.stringify`；显式 `JSON.stringify` 对 BigInt 的拒绝和 `2n + 1` 的混合算术错误保持原生语义，不自动丢精度转换。
 
+模型检查结果时可直接返回所需数据或类型观察。`JSON.stringify` 是显式 JSON 格式选择：它省略对象中的 `undefined` 和函数，将 `NaN`、正负 Infinity 写成 `null`，将 `-0` 写成 `0`；这些文本不再证明原值的类型或区别。函数和资源留在 live binding 中使用，输出明确选取其可传输观察，不自动过滤不支持的成员。
+
 program binding 参数编码失败发生在 dispatch 前；已完成 binding 的返回值编码失败明确报告调用已完成及可能已有外部效果，不能仅为取得结果重复调用。完成结果的拒绝保持 worker live；参数/结果错误仍使用该程序入口的错误路径。纯数据对象不在 V1 支持域时仍可在 live binding 内计算；live 可用性不证明跨边界传输或 cold recovery 能力。

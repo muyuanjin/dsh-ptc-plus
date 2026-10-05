@@ -37,14 +37,9 @@ export const BINDING_SUBMISSION = deepFreeze({
 })
 
 export const BINDING_AUTHORING_SDK = `
-During /binding, submit a draft for user review from run_code using the supplied requestId. Submission does not save, enable or execute it.
+/binding only: copy its requestId; submission does not save, enable or run the draft.
 \`\`\`ts
-declare namespace code {
-  function submitBindingDraft(args: {
-    requestId: string;
-    entry: { id: string; name: string; scope: "namespace" | "top-level"; symbols?: string[]; purpose: string; source: string; modelContext?: { includeDeclaration?: boolean; instructions?: string } };
-  }): Promise<{ accepted: true; id: string; requestId: string }>;
-}
+declare namespace code { function submitBindingDraft(args: { requestId: string; entry: { id: string; name: string; scope: "namespace" | "top-level"; symbols?: string[]; purpose: string; source: string; modelContext?: { includeDeclaration?: boolean; instructions?: string } } }): Promise<{ accepted: true; id: string; requestId: string }> }
 \`\`\``
 
 export function bindingAuthoringInstructions(requestId, cwd) {

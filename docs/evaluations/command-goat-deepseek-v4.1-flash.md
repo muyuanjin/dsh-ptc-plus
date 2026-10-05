@@ -167,6 +167,29 @@ PTC Plus 唯一直接错误为模型 code-explanation 探测结果含函数，�
 新冻结预算仍失败：23 条超限（PTC Plus 11、基线 12），涉及两组各 5 个根会话。context 配对失败为零，没有 task machine exception；free-form 正确性仍由独立盲评判定。完整家族 traffic 为 PTC Plus +5.67%，已结算步骤和直接调用更少；这些描述不能以请求减少抵消质量回退，也不能换算账单。
 
 
+## 提示契约修正轮：定向主／子代理 A/B
+
+为验证本轮提示契约修正，另以同一 Command Goat / `deepseek/deepseek-v4.1-flash` 路由
+执行四类窄任务，每类两次重复、每次都有完整主会话；两组都启用 PTC Plus，唯一差异是
+冻结的旧／新 `replGuidance`。任务覆盖特殊值观察、明确 JSON 输出、委派文本审查和
+独立 Node 引擎对照。配置预检、安装文件、模型路由、权限、fixture、预算和主／子关系
+均由独立审计核对；子代理只计 own events。独立盲评分者在揭示分组前读取 16 个匿名
+packet 并封存评分，质量 **92/92**，两组每个任务层均无质量下降。
+
+解盲后的已报告 token traffic 为候选 **560,403**、控制 **504,030**，候选高 **11.18%**；
+候选 48 个已结算模型步骤、控制 47 个，直接错误分别为 3 和 5。候选在明确 JSON 任务
+两次均避免了控制组出现的一次 literal `\\n` 外部脚本语法失败和一次路径准备错误，
+但独立引擎层仍出现 BigInt 混合算术、原生 JSON.stringify BigInt 拒绝及函数输出边界
+拒绝各类模型选择错误。它们随后都通过保留 binding、编辑或显式投影恢复；这些现象
+不是 PTC Plus codec 丢值，也不证明模型永远遵守提示。委派任务两组都保留正式 child
+完成关系和父级合并证据。
+
+因此本轮确认了：run_code schema 与 PTC cell 语言契约一致；特殊值应直接观察，显式
+JSON 是有损格式选择；当前 cell 足够时存在直接 Node module 路径，独立引擎仍可使用；
+authoring SDK 的完整类型结构保持不变。实验支持关闭四条记录的错误归因和入口缺失，
+但没有证明普遍 token、缓存或账单收益，也不能宣称任意 JavaScript 类型都可直接传输。
+完整度量、错误分类和盲评封存 hash 留在 checkout-local 评估材料中，不进入版本库。
+
 ## 可复现与限制
 
 两个仓库入口分别为 `npm run test:expensive` 和 `npm run test:ab`。先按 [配置预检](../evaluation.md#configuration-preflight) 显式配置 provider、model 与凭据变量，分别用专属 CONFIG_ONLY 入口验证隔离配置，再运行已授权模型场景。原始日志、分组映射、凭据及本机路径不进入版本库；本报告只保存方法、汇总结果和结论范围。验收、补充和两轮 A/B 共执行 138 个正式会话（129 根会话、9 子代理），合计已报告 token traffic 为 9,190,968；这不是费用清单，缺失物理尝试不按零费用解释。

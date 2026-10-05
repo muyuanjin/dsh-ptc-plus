@@ -155,6 +155,10 @@ A volatile state cannot be saved as a durable checkpoint, but a save rejection l
 
 The model can use Node.js directly to read files, process data, and run programs. Relative file paths and imports in session code resolve from the recorded session project directory. Child processes use that directory when `cwd` is omitted; an explicit directory still takes precedence.
 
+Ordinary module computations can run directly in a cell and be reused by later cells. Use a process or host tool when the task needs a separate process, a particular execution environment, or an external engine check.
+
+This can remove an unnecessary script-escaping layer for ordinary checks and lets later cells reuse completed preparation. Model steps, caching, and cost still depend on the task and provider; the plugin makes no fixed savings guarantee.
+
 For example, in a project containing `package.json`, the first call reads its dependencies:
 
 ```ts
@@ -248,6 +252,8 @@ Within the plugin graph IPC domain, program arguments, results, and recovery rec
 This does not extend native `tools.*` JSON argument or result contracts: DSH can still reject BigInt inputs, and explicit `JSON.stringify` and mixed BigInt/Number arithmetic retain native JavaScript behavior. Date, Map and similar values remain usable in live bindings but are outside the current transfer domain; explicitly select the data needed for output. Transfer failures distinguish unsupported values from budget excess. A return-value encoding failure after a call completes does not mean the tool did not execute; do not repeat the operation solely to obtain its result. See the [value contract](docs/value-wire.md).
 
 This does not make every JavaScript object transferable or persistent: functions, Promises, class instances, Date, Map, and Set are outside the value-transfer domain. Keeping a function in the REPL for later calls is different from returning that function as a tool result. Reuse session variables for continued computation; see the [value-transfer specification](docs/value-wire.md) for the complete supported domain.
+
+To inspect special values, directly return the needed fields or type observations. Explicit `JSON.stringify` omits object fields containing `undefined`, changes `NaN` and infinities to `null` and `-0` to `0`, and rejects BigInt; choose that format when JSON text is required.
 
 ### Recover state with verifiable history
 

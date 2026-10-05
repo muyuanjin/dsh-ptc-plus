@@ -167,15 +167,25 @@ test('assembles a coherent byte-stable cell grammar for each selected language',
     }, { agent, scope: agent })
     const first = await assemble()
     const fullSystem = first.sections.map(section => section.text).join('\n\n')
-    assert.match(fullSystem, /Return supported values directly, including BigInt in plain objects/ )
-    assert.match(fullSystem, /Live values may exceed the transfer domain/ )
+    assert.match(fullSystem, /Return supported values directly, including undefined, NaN, infinities, -0 and BigInt/)
+    assert.match(fullSystem, /Keep functions, Date, Map and other unsupported values in bindings/)
     assert.match(fullSystem, /Native `tools\.\*` arguments must satisfy their own JSON schemas/ )
+    assert.equal(first.tools[0].parameters.properties.code.description,
+      'Code for the next PTC TypeScript cell, following the selected language conventions.')
+    assert.doesNotMatch(JSON.stringify(first.tools), /async-function body|body of an async TypeScript function/)
     if (current) {
       assert.match(fullSystem, /runtime `enum` and namespaces are supported/)
       assert.doesNotMatch(fullSystem, /erasable syntax only|no `enum` or namespaces/)
       const result = await state.executeRun(agent.session.id, 'enum Kind { Answer=42 }; namespace Answer { export const value=Kind.Answer }; return Answer.value', {}, { session: agent.session })
       assert.deepEqual(result.raw, { logs: [], value: 42 })
       assert.equal(result.result.meta.dshPtcPlus.status, 'durable')
+      const imported = await state.run(agent.session.id,
+        'import { basename } from "node:path"; const pathInput="C:/logs/session.jsonl"; return basename(pathInput)',
+        {}, { session: agent.session })
+      assert.equal(imported.error, undefined)
+      assert.equal(imported.value, 'session.jsonl')
+      assert.deepEqual(await state.run(agent.session.id, 'return basename(pathInput)',
+        {}, { session: agent.session }), { logs: [], value: 'session.jsonl' })
       const native = await state.run(agent.session.id, 'return [eval("typeof Kind"), new Function("return typeof Kind")()]', {}, { session: agent.session })
       assert.equal(native.error, undefined)
       const nativeSyntax = await state.run(agent.session.id, 'return new Function("enum NativeKind { A=1 }")', {}, { session: agent.session })
@@ -192,6 +202,35 @@ test('assembles a coherent byte-stable cell grammar for each selected language',
   }
 })
 
+test('observes retained callable data without losing special values or repeating computation', async t => {
+  const state = fixture()
+  t.after(() => state.dispose())
+  const session = orderedSurfaceSession('output-observations')
+  const rejected = await state.executeRun(session.id, `
+let computations = 1
+const out = { func: { value: () => ++computations }, missing: undefined,
+  nan: NaN, pos: Infinity, neg: -Infinity, minusZero: -0, exact: 9007199254740993n }
+return out
+`, {}, { session })
+  assert.equal(rejected.raw.error.kind, 'invalid-output')
+  assert.match(rejected.raw.error.message, /\$\.func\.value.*function/)
+  const selected = await state.executeRun(session.id, `
+return { callable: typeof out.func.value, computations,
+  missing: out.missing, nan: out.nan, pos: out.pos, neg: out.neg,
+  minusZero: out.minusZero, exact: out.exact }
+`, {}, { session })
+  assert.equal(selected.raw.error, undefined)
+  const value = decodeValue(selected.result.meta.dshPtcPlus.completion.value)
+  assert.deepEqual(value, { callable: 'function', computations: 1, missing: undefined,
+    nan: NaN, pos: Infinity, neg: -Infinity, minusZero: -0, exact: 9007199254740993n })
+  assert.equal((await state.run(session.id, 'return out.func.value()', {}, { session })).value, 2)
+  assert.equal((await state.run(session.id, 'return JSON.stringify({ exact: out.exact })',
+    {}, { session })).error.kind, 'exception')
+  assert.match((await state.run(session.id, 'return out.exact + 1',
+    {}, { session })).error.message, /BigInt/)
+  assert.equal((await state.run(session.id, 'return computations', {}, { session })).value, 2)
+})
+
 test('presents one coherent persistent REPL contract to the model', async (t) => {
   const state = fixture()
   t.after(() => state.dispose())
@@ -204,6 +243,9 @@ test('presents one coherent persistent REPL contract to the model', async (t) =>
   assert.match(guidance, /Ordinary top-level bindings remain available to later cells, so reuse them instead of resending setup code/)
   assert.match(guidance, /Choose the smallest cell that answers the request/)
   assert.match(guidance, /return only the value the next step needs/)
+  assert.match(guidance, /Use Node\.js modules in the cell; use external processes when their environment is needed/)
+  assert.match(guidance, /JSON\.stringify loses distinctions or rejects BigInt/)
+  assert.match(guidance, /return needed data or type observations/)
   assert.match(guidance, /earlier statements may have taken effect/)
   assert.match(guidance, /`edit_run_code` edits and reruns a complete cell/)
   assert.match(guidance, /Program API references expire when their cell ends/)
@@ -221,7 +263,7 @@ test('presents one coherent persistent REPL contract to the model', async (t) =>
   assert.doesNotMatch(guidance, /capability namespaces|plugin-provided|materialized source|derived execution/)
   assert.doesNotMatch(guidance, /(?:^|[^.])`find\(\)`/)
   assert.doesNotMatch(guidance, /(?:^|[^.])`inspect\(\)`/)
-  assert.match(guidance, /reserve `code\.run` for isolated execution of source held as data/)
+  assert.match(guidance, /Reserve `code\.run` for isolated execution of source held as data/)
   assert.match(guidance, /instead of assuming Windows, WSL, POSIX, or a particular shell/)
   assert.doesNotMatch(guidance, /child_process|ComSpec|\.cmd|\.bat/)
   assert.match(guidance, /Declarations and assignments update the same logical binding within its scope/)
@@ -361,7 +403,7 @@ test('immutably adapts the model-visible run_code schema', async (t) => {
   assert.equal(adapted.tools[1].name, 'run_code')
   assert.match(adapted.tools[1].description, /next TypeScript cell.*persistent REPL/)
   assert.equal(adapted.tools[1].parameters.properties.code.description,
-    'Code for the next REPL cell, parsed as the body of an async TypeScript function.')
+    'Code for the next PTC TypeScript cell, following the selected language conventions.')
   assert.equal(adapted.tools[1].parameters.properties.description.description,
     'Short active-voice summary of what this cell does, 5-10 words (shown in the UI).')
   assert.deepEqual(adapted.tools[1].annotation, { retained: true })

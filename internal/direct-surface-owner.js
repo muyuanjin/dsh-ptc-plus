@@ -16,6 +16,7 @@ import {
 } from './run-code-description.js'
 import { userBindingsConfiguredContext } from './user-bindings.js'
 import { BINDING_AUTHORING_SDK } from './user-binding-authoring.js'
+import { executionPolicies } from './binding-update-policy.js'
 
 const RUN_CODE_TOOL_DESCRIPTION = 'Evaluate the next TypeScript cell in this session-bound persistent REPL, reusing earlier top-level bindings. Use `code` for the async-function body and `description` for its short UI summary. Successful image-bearing subtool results are attached after the cell.'
 const RUN_CODE_CODE_DESCRIPTION = 'Code for the next REPL cell, parsed as the body of an async TypeScript function.'
@@ -53,8 +54,8 @@ function adaptRunCodeSchema(tool) {
   }
 }
 
-function capabilitySdk(nativeSdk, userBindingsEnabled) {
-  return `${projectProgramSdk(nativeSdk)}
+function capabilitySdk(nativeSdk, userBindingsEnabled, languageSemantics) {
+  return `${projectProgramSdk(nativeSdk, { languageSemantics })}
 
 ## PTC Plus program capabilities
 
@@ -478,6 +479,7 @@ export function createDirectSurfaceOwner({
   let disposed = false
   let currentCanonicalizeToolCalls = canonicalizeToolCalls
   let currentAutoDescribeRunCode = runtimeConfig.autoDescribeRunCode
+  let currentLanguageSemantics = executionPolicies(runtimeConfig).languageSemantics
   const tipConfig = {
     enabled: runtimeConfig.tipsEnabled,
     cooldownMessages: runtimeConfig.tipCooldownMessages,
@@ -563,6 +565,7 @@ export function createDirectSurfaceOwner({
 
   return Object.freeze({
     reconfigure(nextConfig) {
+      currentLanguageSemantics = executionPolicies(nextConfig).languageSemantics
       currentCanonicalizeToolCalls = nextConfig.canonicalizeToolCalls
       currentAutoDescribeRunCode = nextConfig.autoDescribeRunCode
       cordisRecovery.reconfigure(nextConfig.cordisToolsEnabled)
@@ -573,6 +576,7 @@ export function createDirectSurfaceOwner({
     async assemble(initialAssembly, context, next) {
       // Keep schema projection and later execution on one configuration snapshot.
       const autoDescribeRunCode = currentAutoDescribeRunCode
+      const languageSemantics = currentLanguageSemantics
       const agent = context?.agent
       const id = sessionId(agent)
       const requestOwner = id === undefined ? undefined : sessionOwner(id)
@@ -652,7 +656,7 @@ export function createDirectSurfaceOwner({
       const sections = projectsSections
         ? assembly.sections.map(section => {
             if (section?.name === 'tools:sdk') {
-              return { ...section, text: capabilitySdk(section.text, userBindings !== undefined) }
+              return { ...section, text: capabilitySdk(section.text, userBindings !== undefined, languageSemantics) }
             }
             if (sessionPtcProjection && section?.name === completedState.collapseSectionName) {
               return { ...section, text: CODE_TRANSPORT_INSTRUCTION }

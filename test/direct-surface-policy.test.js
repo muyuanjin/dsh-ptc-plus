@@ -5,7 +5,7 @@ import { BlockAssembler, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { apply as applyLlmInvariant } from '@deepseek-ai/dsh-llm/invariant'
 import { Session } from '@deepseek-ai/dsh-session'
 import { sessionFormatCatalog } from '@deepseek-ai/dsh-session-format-catalog'
-import { validateJsonSchemaValue } from '@deepseek-ai/dsh-tools'
+import { renderToolsSdk, validateJsonSchemaValue } from '@deepseek-ai/dsh-tools'
 import { CONFIG_DEFAULTS } from '../internal/config-spec.js'
 import { createDirectSurfaceOwner } from '../internal/direct-surface-owner.js'
 import { createUserBindingsSnapshot } from '../internal/user-bindings.js'
@@ -761,6 +761,26 @@ test('a captured call policy outranks the request policy resolved from the signa
     name: 'run_code', callId: 'fresh-call', arguments: { code: 'return 2' }, agent, signal: signalB,
   }
   assert.equal(owner.executionArguments(fresh), fresh.arguments)
+})
+
+test('an in-flight SDK assembly retains its selected language across reconfiguration', async t => {
+  const owner = createOwner()
+  t.after(() => owner.dispose())
+  const agent = { id: 'language-snapshot' }
+  const input = () => ({ ...assembly(), sections: [{ name: 'tools:sdk', text: renderToolsSdk([]) }] })
+  let release
+  const paused = new Promise(resolve => { release = resolve })
+  const pending = owner.assemble(input(), { agent }, async () => { await paused; return input() })
+  owner.reconfigure({ ...CONFIG_DEFAULTS, legacyBindingSettings: true })
+  release()
+  const first = await pending
+  assert.match(first.sections[0].text, /runtime `enum` and namespaces are supported/)
+  const legacy = await owner.assemble(input(), { agent }, async () => input())
+  assert.match(legacy.sections[0].text, /erasable syntax only — no `enum` or namespaces/)
+  owner.reconfigure({ ...CONFIG_DEFAULTS, bindingUpdates: 'protected' })
+  const protectedAssembly = await owner.assemble(input(), { agent }, async () => input())
+  assert.match(protectedAssembly.sections[0].text, /runtime `enum` and namespaces are supported/)
+  assert.deepEqual(protectedAssembly.tools, first.tools)
 })
 
 test('concurrent requests keep their own captured policy', async (t) => {

@@ -3,6 +3,7 @@ import { AsyncLocalStorage } from 'node:async_hooks'
 import { access, rm } from 'node:fs/promises'
 import { isAbsolute } from 'node:path'
 import test from 'node:test'
+import { renderToolsSdk } from '@deepseek-ai/dsh-tools'
 import { Config } from '../index.js'
 import { REWRITES_KEY, normalizeJournal } from '../internal/session-journal.js'
 import { SessionRuntime } from '../internal/session-runtime.js'
@@ -148,6 +149,44 @@ test('can disable durable replay while preserving live volatile continuation', a
   assert.equal(save.isError, true)
   assert.equal(save.meta.dshPtcPlus.status, 'volatile')
   assert.match(save.error.message, /cannot save a durable REPL state from a volatile segment/)
+  assert.match(save.error.message, /durable replay disabled by configuration/)
+  assert.doesNotMatch(save.error.message, /restore a durable state first|correct the failed initializer/)
+  assert.deepEqual(await state.run(session.id, 'return liveOnlyBinding', {}, { session }), { logs: [], value: 42 })
+})
+
+test('assembles a coherent byte-stable cell grammar for each selected language', async t => {
+  for (const [config, current] of [[{}, true], [{ bindingUpdates: 'protected' }, true], [{ legacyBindingSettings: true }, false]]) {
+    const state = fixture(config)
+    t.after(() => state.dispose())
+    const agent = ptcAgent(`grammar-${current}-${config.bindingUpdates}`, orderedSurfaceSession(`grammar-${current}-${config.bindingUpdates}`))
+    const assemble = () => state.assemble({
+      sections: [
+        { name: 'tools:sdk', text: renderToolsSdk([]) },
+        { name: state.sections[0].name, text: state.sections[0].text({}) },
+      ], contexts: [], variables: {}, tools: [state.runCodeDefinition],
+    }, { agent, scope: agent })
+    const first = await assemble()
+    const fullSystem = first.sections.map(section => section.text).join('\n\n')
+    if (current) {
+      assert.match(fullSystem, /runtime `enum` and namespaces are supported/)
+      assert.doesNotMatch(fullSystem, /erasable syntax only|no `enum` or namespaces/)
+      const result = await state.executeRun(agent.session.id, 'enum Kind { Answer=42 }; namespace Answer { export const value=Kind.Answer }; return Answer.value', {}, { session: agent.session })
+      assert.deepEqual(result.raw, { logs: [], value: 42 })
+      assert.equal(result.result.meta.dshPtcPlus.status, 'durable')
+      const native = await state.run(agent.session.id, 'return [eval("typeof Kind"), new Function("return typeof Kind")()]', {}, { session: agent.session })
+      assert.equal(native.error, undefined)
+      const nativeSyntax = await state.run(agent.session.id, 'return new Function("enum NativeKind { A=1 }")', {}, { session: agent.session })
+      assert.match(nativeSyntax.error.message, /SyntaxError/)
+    } else {
+      assert.match(fullSystem, /erasable syntax only — no `enum` or namespaces/)
+      const rejected = await state.run(agent.session.id, 'enum Kind { Answer=42 }; return Kind.Answer', {}, { session: agent.session })
+      assert.match(rejected.error.message, /enum|TypeScript|SyntaxError/)
+    }
+    const next = await assemble()
+    assert.equal(JSON.stringify(next.sections), JSON.stringify(first.sections))
+    assert.equal(JSON.stringify(next.tools), JSON.stringify(first.tools))
+    assert.deepEqual(first.tools.map(tool => tool.name), ['run_code', 'edit_run_code'])
+  }
 })
 
 test('presents one coherent persistent REPL contract to the model', async (t) => {

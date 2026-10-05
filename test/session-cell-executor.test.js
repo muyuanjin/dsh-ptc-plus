@@ -37,3 +37,11 @@ test('durable replay rejects a completion after volatility is observed', () => {
     terminate: true,
   })
 })
+
+test('save rejection does not guess a volatility cause when replay evidence is absent', () => {
+  const active = { control: { names: new Set() }, journal: { operations: [] }, durability: { status: 'volatile' } }
+  const executor = new SessionCellExecutor({ active })
+  assert.throws(() => executor.controlState({ action: 'save', name: 'audit' }), /replayability is unproved.*live bindings usable/)
+  assert.deepEqual(active.journal.operations, [])
+  assert.deepEqual([...active.control.names], [])
+})

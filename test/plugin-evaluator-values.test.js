@@ -6,6 +6,7 @@ import test from 'node:test'
 import { Config } from '../index.js'
 import { RECOVERY_BOUNDARY_KEY, normalizeJournal } from '../internal/session-journal.js'
 import { SessionRuntime } from '../internal/session-runtime.js'
+import { renderDiagnostic } from '../internal/diagnostic.js'
 import { decodeValue, encodeValue, renderValueWire } from '../internal/value-wire.js'
 import {
   JOURNAL_POLICY,
@@ -443,7 +444,30 @@ throw originalError
   assert.doesNotMatch(hostileStack.error.message, /uncaught Error: stack getter/)
 })
 
-test('replays a durable runtime exception from its persisted diagnostic', async (t) => {
+test('generic exceptions preserve live execution facts without guessing an initializer failure', async t => {
+  for (const bindingUpdates of ['stateful', 'protected']) {
+    const state = fixture({ bindingUpdates })
+    t.after(() => state.dispose())
+    const id = `exception-facts-${bindingUpdates}`
+    await state.run(id, 'let retained = 40')
+    for (const source of [
+      'throw new Error("ordinary failure")',
+      'const completed = 1; retained += 1; throw new Error("later failure")',
+      'const retryable = (() => { throw new Error("initializer failure") })()',
+    ]) {
+      const failed = await state.runDurable(id, source)
+      const diagnostic = failed.meta.dshPtcPlus.diagnostics.find(item => item.code === 'PTC-X001')
+      assert.equal(diagnostic.stateEffect, 'partially-applied')
+      assert.equal(diagnostic.cause, undefined)
+      assert.match(failed.error.message, /completed declarations and actual assignments remain available/)
+      assert.doesNotMatch(diagnostic.help.join('\n'), /failed initializer|fresh names|rerun/)
+      assert.match(diagnostic.message, new RegExp(source.includes('ordinary') ? 'ordinary failure' : source.includes('later') ? 'later failure' : 'initializer failure'))
+    }
+    assert.deepEqual(await state.run(id, 'const retryable = 1; return [retained, completed, retryable]'), { logs: [], value: [41, 1, 1] })
+  }
+})
+
+test('replays a durable runtime exception with historical help from its persisted diagnostic', async (t) => {
   const events = []
   const session = orderedSurfaceSession('replay-diagnostic', events)
   const first = fixture()
@@ -456,7 +480,10 @@ test('replays a durable runtime exception from its persisted diagnostic', async 
   const thrown = await first.runDurable(session.id, throwCode, {}, { session, recordSession: 'deferred-result', callId: 'replay-throw' })
   assert.equal(thrown.meta.dshPtcPlus.status, 'durable')
   assert.equal(thrown.meta.dshPtcPlus.diagnostics[0].code, 'PTC-X001')
-  appendRunCodeEvents(events, 'replay-throw', throwCode, thrown)
+  const historical = structuredClone(thrown)
+  historical.meta.dshPtcPlus.diagnostics[0].help[1] = 'completed declarations and actual assignments remain available; correct the failed initializer and continue with the same binding names'
+  historical.meta.dshPtcPlus.completion.error.message = renderDiagnostic(historical.meta.dshPtcPlus.diagnostics[0], throwCode)
+  appendRunCodeEvents(events, 'replay-throw', throwCode, historical)
   await first.dispose()
 
   const restored = fixture()

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { projectProgramSdk } from '../internal/sdk-projection.js'
+import { renderToolsSdk } from '@deepseek-ai/dsh-tools'
 
 const PREFIX = /ptc-plus: incompatible tools SDK projection:/
 
@@ -96,6 +97,28 @@ test('is a byte-identical differential projection of the current host renderer',
     for (const ordered of [schemas, [...schemas].reverse()]) {
       assert.equal(projectProgramSdk(renderHostSdk([...ordered, EDIT_SCHEMA])), expected)
     }
+  }
+})
+
+test('projects only the current cell grammar in the official SDK introduction', () => {
+  const restriction = 'erasable syntax only — no `enum` or namespaces'
+  const schemas = [{ name: 'native', description: restriction, parameters: { type: 'object', properties: {} }, output: { type: 'number' } }]
+  const sdk = renderToolsSdk(schemas)
+  assert.match(sdk, /erasable syntax only — no `enum` or namespaces/)
+  assert.equal(projectProgramSdk(sdk), sdk)
+  const fence = sdk.indexOf('```ts\n')
+  for (const languageSemantics of ['stateful-v1', 'protected-v1']) {
+    const options = { languageSemantics }
+    const projected = projectProgramSdk(sdk, options)
+    const projectedFence = projected.indexOf('```ts\n')
+    assert.match(projected.slice(0, projectedFence), /runtime `enum` and namespaces are supported/)
+    assert.doesNotMatch(projected.slice(0, projectedFence), /erasable syntax only|no `enum`/)
+    assert.equal(projected.slice(projectedFence), sdk.slice(fence), 'native guidance and declarations stay byte-identical')
+    assert.equal(projectProgramSdk(projected, options), projected)
+    assert.equal(projectProgramSdk(sdk, options), projected)
+    assert.equal(projectProgramSdk(undefined, options), '')
+    assert.equal(projectProgramSdk('## Writing code for run_code\nno SDK fence', options), '## Writing code for run_code\nno SDK fence')
+    assert.equal(projectProgramSdk('unrelated native guidance', options), 'unrelated native guidance')
   }
 })
 

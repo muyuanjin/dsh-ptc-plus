@@ -227,11 +227,11 @@ type StateOperation =
   | { action: "delete", name: string }
 ```
 
-- `save` 只可提交到 durable node；
+- `save` 只可提交到 durable node；volatile 拒绝说明记录的降级原因，保留当前 live binding 并允许继续计算，不推荐无条件 restore；
 - cell 静态判断 durable、但在 `save` 后运行时降级时，tentative save 会被删除；
 - `delete` 可独立应用于命名索引；
-- 无名称 `restore` 选择当前 cell 之前的最后 durable head，清除 volatile suffix；
-- `restore` 把 head 切回已存在的 durable node，清除 volatile suffix；
+- 无名称 `restore` 选择当前 cell 之前的最后 durable head，清除 volatile suffix；没有 durable head 时恢复为空 REPL；
+- `restore` 把 head 切回已存在的 durable node，清除 volatile suffix；这会丢弃目标之后的计算状态，但不撤销外部效果或改变启用的全局绑定配置。仍生效的 volatile 输入和 `durableReplay: false` 可使后续 cell 继续 volatile，restore 不保证下一次 save 成功；
 - list 不写 operation，返回当前 checkpoint 名称、`mode` 和首次 `volatileReason`。
 
 状态名称由 agent 选择，内部 node index、hash、revision 和日志位置不进入模型接口。

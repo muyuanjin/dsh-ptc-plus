@@ -8,6 +8,7 @@ import { Config } from '../index.js'
 import { normalizeJournal } from '../internal/session-journal.js'
 import { LEGACY_USER_BINDINGS_SHADOW_POLICY } from '../internal/session-journal-schema.js'
 import { SessionRuntime } from '../internal/session-runtime.js'
+import { createUserBindingsSnapshot } from '../internal/user-bindings.js'
 import { decodeValue, encodeValue, renderValueWire } from '../internal/value-wire.js'
 import {
   JOURNAL_POLICY,
@@ -15,8 +16,61 @@ import {
   appendRunCodeEvents,
   fixture,
   orderedSurfaceSession,
+  runRecordedCell,
 } from './plugin-fixture.js'
 import { assertSameFilesystemEntry } from './filesystem-identity.js'
+
+test('volatile save rejection preserves computation without proposing destructive recovery', async t => {
+  const enabled = createUserBindingsSnapshot({ entries: [{
+    id: 'unused-process-helper', name: 'helper', scope: 'namespace', enabled: true, purpose: '',
+    source: "import { spawn } from 'node:child_process'; export function launch(): unknown { return spawn('never-invoked') }",
+  }] }, 1)
+  const removed = createUserBindingsSnapshot({ entries: [] }, 2)
+  for (const durablePrefix of [false, true]) await t.test(durablePrefix ? 'existing durable checkpoint' : 'no durable head', async t => {
+    const runtime = new SessionRuntime()
+    t.after(() => runtime.dispose())
+    const session = orderedSurfaceSession(`save-guidance-${durablePrefix}`)
+    let sequence = 0
+    const run = async (program, userBindings = enabled) => {
+      const result = await runRecordedCell(runtime, session, `save-guidance-${++sequence}`, { program, bindings: [], userBindings })
+      // Both snapshots activate successfully. Keep exact source evidence on the
+      // result surface, as the Host does, rather than manufacturing recovery.
+      const meta = session.events.at(-1).data.meta
+      meta.dshPtcPlusUserBindings = userBindings
+      return { result, journal: meta.dshPtcPlus }
+    }
+    if (durablePrefix) {
+      const saved = await run('let auditValue=1; return await repl.state({action:"save",name:"stable"})', removed)
+      assert.equal(saved.journal.status, 'durable')
+      assert.equal(saved.result.value.saved, true)
+    }
+    const live = await run(durablePrefix ? 'auditValue=42; return auditValue' : 'const auditValue=42; return auditValue')
+    assert.equal(live.result.value, 42)
+    assert.equal(live.journal.status, 'volatile')
+    const saveSource = 'return await repl.state({action:"save",name:"audit"})'
+    const failed = await run(saveSource)
+    assert.equal(failed.result.error.kind, 'exception')
+    assert.match(failed.result.error.message, /live bindings usable in the current worker/)
+    assert.ok(failed.result.error.message.includes(live.journal.volatileReason))
+    assert.doesNotMatch(failed.result.error.message, /restore a durable state first|failed initializer/)
+    assert.deepEqual(failed.journal.operations, [])
+    assert.equal((await run('return auditValue')).result.value, 42)
+    const restoreSource = durablePrefix ? 'return await repl.state({action:"restore",name:"stable"})' : 'return await repl.state({action:"restore"})'
+    assert.equal((await run(restoreSource)).result.value.restored, true)
+    const after = await run('return [typeof auditValue, await repl.state({action:"list"})]')
+    assert.equal(after.result.value[0], durablePrefix ? 'number' : 'undefined')
+    assert.equal(after.result.value[1].mode, 'volatile', 'restore does not change enabled inputs')
+    if (durablePrefix) assert.equal((await run('return auditValue')).result.value, 1)
+    assert.equal((await run(saveSource)).result.error.kind, 'exception')
+    const stillSticky = await run('return await repl.state({action:"list"})', removed)
+    assert.equal(stillSticky.result.value.mode, 'volatile', 'removing a source does not upgrade history')
+    await run(restoreSource, removed)
+    const fresh = await run('const freshValue=42; return await repl.state({action:"save",name:"fresh"})', removed)
+    assert.equal(fresh.journal.status, 'durable')
+    assert.equal(fresh.result.value.saved, true)
+    assert.equal((await run('return freshValue', removed)).result.value, 42)
+  })
+})
 
 test('checkpoints and cold replay retain Annex B local computation without redispatching calls', async t => {
   const session = orderedSurfaceSession('annex-b-checkpoint')

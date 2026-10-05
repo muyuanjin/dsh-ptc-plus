@@ -132,7 +132,12 @@ async function main() {
     })
     const signal = new AbortController().signal
     session.append('turn/start', { turn: 1 })
-    await root.get('systemPrompt').assemble({ agent, scope: agent, signal })
+    const initialAssembly = await root.get('systemPrompt').assemble({ agent, scope: agent, signal })
+    const stablePrompt = assembly => JSON.stringify({ sections: assembly.sections, tools: assembly.tools })
+    const systemText = initialAssembly.sections.map(section => section.text).join('\n\n')
+    assert.match(systemText, /runtime `enum` and namespaces are supported/)
+    assert.doesNotMatch(systemText, /erasable syntax only|no `enum` or namespaces/)
+    assert.deepEqual(initialAssembly.tools.map(tool => tool.name), ['run_code', 'edit_run_code'])
     const runParameters = root.get('tools').get('run_code').parameters
     let step = 0
     const invoke = async (name, callId, args) => {
@@ -185,6 +190,14 @@ async function main() {
     assert.equal(continued.isError, false, JSON.stringify(continued))
     assert.deepEqual(continued.value, { logs: [], result: 43 })
     assert.equal(nativeCalls, 1)
+    const syntax = await invoke('run_code', 'runtime-ts', {
+      code: 'enum Kind { Answer=42 }; namespace Answer { export const value=Kind.Answer }; return Answer.value',
+      description: 'Compute with TypeScript runtime forms',
+    })
+    assert.equal(syntax.isError, false, JSON.stringify(syntax))
+    assert.deepEqual(syntax.value, { logs: [], result: 42 })
+    const finalAssembly = await root.get('systemPrompt').assemble({ agent, scope: agent, signal })
+    assert.equal(stablePrompt(finalAssembly), stablePrompt(initialAssembly))
     const rejected = await invoke('run_code', 'schema-rejection', { code: 1, description: 'Invalid code type' })
     assert.equal(rejected.isError, true)
     assert.equal(nativeCalls, 1)

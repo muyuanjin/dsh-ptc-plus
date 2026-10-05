@@ -101,7 +101,7 @@ The default **stateful semantics** (`bindingUpdates: 'stateful'`) extend JavaScr
 - Blocks, functions, and loop iterations retain their separate scopes.
 - Failed initialization does not permanently reserve a name that was never successfully established. Other changes made before the failure are not rolled back.
 
-Cells support TypeScript, top-level `await` / `return`, and static `import` / `export`. To detect name overwrites instead, disable **Allow redeclarations and overrides** to select the `protected` policy. Protected runtime names such as `tools` remain unavailable for overwriting.
+Cells support TypeScript (including runtime `enum` and namespaces), top-level `await` / `return`, and static `import` / `export`. To detect name overwrites instead, disable **Allow redeclarations and overrides** to select the `protected` policy. Protected runtime names such as `tools` remain unavailable for overwriting.
 
 <details>
 <summary>When static imports and local overrides take effect</summary>
@@ -144,6 +144,8 @@ Republishing a historical result as a compacted display entry is not another exe
 | Code fails to parse | Identify the source position; at EOF, suggest a target-bound edit if appending one or two closing delimiters has exactly one validated correction |
 
 The first two behaviors default to on and can be disabled in settings. Syntax suggestions do not execute automatically or establish that the code matches the task's intent.
+
+A volatile state cannot be saved as a durable checkpoint, but a save rejection leaves current variables usable. Explicit restore discards state beyond its target; an unnamed restore empties the REPL when there is no durable head. Restore does not undo external effects or change global binding configuration, so it does not guarantee that saving will become possible.
 
 ## Project files and tool capabilities
 

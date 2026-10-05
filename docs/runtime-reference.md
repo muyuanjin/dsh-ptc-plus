@@ -37,6 +37,8 @@ Each physical cell has acknowledged start and end fences on stdout and stderr. D
 
 Prefer executing work directly in the current cell; reserve `code.run` for source already held as data. When nested source must be written inline, escape quotes, backslashes, and newlines exactly — its parse errors point only at the generated text, not at a position in the outer cell.
 
+For stateful/protected cells, the public prompt assembly projects the Host SDK introduction to describe runtime TypeScript `enum` and namespaces. Only the known cell-grammar phrase is replaced; native tool declarations and their guidance remain unchanged. Legacy cells keep the Host erasable-syntax restriction. Explicit `eval` and `Function` retain their native JavaScript syntax targets.
+
 ## Capability Discovery
 
 The default SDK declares `capabilities.tree/find/inspect` directly, so exploring the explorer's own contract is unnecessary. `find` uses case-insensitive lexical matching, prioritizing exact `namespace.member` symbols, namespace names, and member names before complete identifier or description tokens. CamelCase and punctuation separate tokens; multiple query tokens must be contiguous. Prefer a short query such as `read` over a prose request such as `read file content`. A miss means no lexical match, not proof that a capability is unavailable.
@@ -170,6 +172,8 @@ Rewrites are recorded as `meta.dshPtcPlusRewrites` on the tool result (parallel 
 | `PTC-W001` | The same cell failed 3 consecutive times with an identical binding error | Supplemental warning carries the primary failure's conservative state effect, or `unknown` when unavailable |
 | `PTC-W002` | The same cell failed 3 consecutive times with another identical error | Supplemental warning carries the primary failure's conservative state effect, or `unknown` when unavailable |
 
+Generic stateful/protected exception help does not infer an initializer failure from the language generation. Completed declarations and actual assignments remain live; continue with the same names according to execution facts and the selected update policy, inspecting relevant values when their state is uncertain.
+
 Durability describes recovery after a kernel restart; it does not certify that a failed cell is safe to execute again. A failing cell can mutate bindings or produce an external effect before the exception. Continuation follows the operation owner's retry/idempotence contract and available execution facts; there is no universal status-query prerequisite. Host tool calls restore the DSH initiator boundary, so tools that require the exact live calling agent work through `tools.*`.
 
 Repeated lexical errors direct the model to visible source, scope, and initialization. Worker-owned lease failures direct continuation to the current namespace; proved missing members recommend capability discovery. Error text cannot impersonate that provenance. The warning threshold is three consecutive identical failures, independently of tip cooldown and escalation. Platform tips consume bounded multiline message/stderr facts when no structured owner cause exists; a generic command exit alone does not establish a platform error.
@@ -182,7 +186,7 @@ Inside a cell, omitting the JavaScript argument of a native `tools` member is ac
 
 ## Named State
 
-`capabilities.inspect({ symbols: ['repl.state'] })` exposes the optional state API and its timing contract. A save/restore/delete return value acknowledges an accepted operation. Save checkpoints the final settled cell frontier, not the statement where `save` was called. Restore takes effect after settlement for the next cell; reads and writes after awaiting restore still use the current cell's state. Tentative saves can be discarded when the cell becomes volatile or discarded. These operations neither reverse external effects nor certify retry safety.
+`capabilities.inspect({ symbols: ['repl.state'] })` exposes the optional state API and its timing contract. A save/restore/delete return value acknowledges an accepted operation. Save checkpoints the final settled cell frontier, not the statement where `save` was called. Restore takes effect after settlement for the next cell; reads and writes after awaiting restore still use the current cell's state. Tentative saves can be discarded when the cell becomes volatile or discarded. A volatile save rejection reports the recorded reason and leaves live bindings usable. Restore discards state beyond the selected durable frontier; an unnamed restore selects the prior durable head, or an empty REPL when none exists. It does not change enabled global binding configuration, and subsequent cells can remain volatile because of those inputs or disabled durable replay. Restore therefore does not guarantee that saving will become possible. These operations neither reverse external effects nor certify retry safety.
 
 ## Limits
 

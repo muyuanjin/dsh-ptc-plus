@@ -71,7 +71,7 @@ const PROGRAM_CAPABILITY_METADATA = deepFreeze([
     namespace: 'repl',
     members: [{
       name: 'state',
-      description: 'Manage named REPL checkpoints. list returns checkpoint names, not variable names. Save captures the final durable state of this cell, including subsequent mutations; it is lost if the cell becomes volatile or is discarded. Save, restore and delete take effect after cell settlement and journal confirmation, not when the receipt is awaited. Restore changes bindings for subsequent cells and does not undo external effects.',
+      description: 'Manage named REPL checkpoints. list returns checkpoint names, not variable names. Save requires a durable cell; a volatile save rejection leaves live bindings usable. Save captures the final durable state of this cell, including subsequent mutations; it is lost if the cell becomes volatile or is discarded. Save, restore and delete take effect after cell settlement and journal confirmation, not when the receipt is awaited. Restore discards bindings beyond the selected durable state for subsequent cells; an omitted name selects the prior durable head, or an empty REPL if none exists. Restore does not undo external effects or change enabled binding configuration; subsequent cells may remain volatile.',
       parameters: {
         type: 'object',
         properties: {

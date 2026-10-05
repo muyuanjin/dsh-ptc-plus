@@ -318,7 +318,7 @@ function exceptionDiagnostic({
         : longCellFailure
           ? ['inspect relevant live state in a new short `run_code` cell; edit_run_code executes the complete corrected cell, not only the failing expression']
           : languageSemantics !== 'legacy-v1'
-            ? ['completed declarations and actual assignments remain available; correct the failed initializer and continue with the same binding names']
+            ? ['completed declarations and actual assignments remain available; continue with the same binding names from the execution facts, inspecting relevant live values in a short cell when their state is uncertain']
           : declared.size === 0 ? []
             : ['use fresh names for one-off top-level bindings after partial execution; later declarations may be uninitialized']),
     ],
@@ -675,7 +675,7 @@ export class SessionCellExecutor {
     }
     if (action === 'save') {
       if (active.durability.status === 'volatile') {
-        throw new Error('cannot save a durable REPL state from a volatile segment; restore a durable state first')
+        throw new Error(`cannot save a durable REPL state from a volatile segment; volatile reason: ${active.durability.reason ?? 'replayability is unproved'}. This save rejection leaves live bindings usable in the current worker; continue computation from them. It does not undo external effects.`)
       }
       active.control.names.add(name)
       active.journal.operations.push({ action, name })

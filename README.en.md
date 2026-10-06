@@ -24,11 +24,6 @@ PTC Plus provides a stateful TypeScript computation environment for DSH's **PTC 
 - **Revise directly**: update a variable or function under the same name; existing closures read the updated binding. Small changes can be sent as code deltas.
 - **Avoid routine call failures**: use familiar module syntax, recover from identifiable call omissions, and receive correction suggestions for verifiable syntax errors.
 - **Reuse common capabilities**: save functions as global bindings, provide their interfaces and usage notes to the model, and use them across sessions.
-- **Control context cost**: keep the stable prompt and ordered tool definitions reusable, append recovery and environment facts only when needed, and discover capability details progressively instead of repeating hidden state or the full environment.
-
-Paid acceptance with Command Goat / DeepSeek V4.1 Flash demonstrated direct reuse across cells, same-name function and class updates, incremental edits, and independent computation with BigInt returns in real main and child agents. In the 60-sample A/B cohort after correcting the evaluation environment, independently graded completions were 30/30 versus 25/30, with 1 versus 5 direct tool errors; reported token traffic including every child agent was 5.67% higher. Neither cohort established broad net benefits, and the corrected cohort also had a protocol deviation caused by a false machine canary pass. See the [full evaluation report](docs/evaluations/command-goat-deepseek-v4.1-flash.md) for quality, errors, benefits and limits.
-
-See the [context management note](docs/context-management.md) for the model-facing boundaries, evidence limits, and acceptance criteria. Character reductions are not presented as guaranteed token or billing savings.
 
 [Quick start](#quick-start) · [Feature overview](#feature-overview) · [Continuous computation](#continuous-computation-and-language-extensions) · [Editing and call tolerance](#code-editing-and-call-tolerance) · [Global bindings](#global-bindings-reuse-functions-across-sessions) · [Interface and settings](#interface-and-settings) · [Values and recovery](#value-transfer-and-state-recovery)
 
@@ -50,7 +45,7 @@ Once installed, describe your task to the model as usual. The `run_code` and `ed
 
 For Windows source testing, double-click `scripts\run-upstream-dsh.cmd` to fetch the official DSH default branch, reuse an isolated build cache, and load this plugin checkout. The first run installs dependencies and builds DSH; see [upstream source testing](docs/installation.md#upstream-source-development-launcher-windows).
 
-Windows development scripts check that local esbuild can execute. If dependencies are missing or were installed by WSL, the scripts install and pack in a Git-ignored `win_node_modules` directory without replacing the checkout's `node_modules`.
+Windows development scripts check that local esbuild can execute. If dependencies are missing or were installed by WSL, they install and pack in a Git-ignored `win_node_modules` directory without replacing the checkout's `node_modules`.
 
 ## Feature overview
 
@@ -150,7 +145,7 @@ Republishing a historical result as a compacted display entry is not another exe
 
 The first two behaviors default to on and can be disabled in settings. Syntax suggestions do not execute automatically or establish that the code matches the task's intent.
 
-A volatile state cannot be saved as a durable checkpoint, but a save rejection leaves current variables usable. Explicit restore discards state beyond its target; an unnamed restore empties the REPL when there is no durable head. Restore does not undo external effects or change global binding configuration, so it does not guarantee that saving will become possible.
+A volatile state cannot be saved as a durable checkpoint, but a save rejection leaves current variables usable. Explicit restore discards state beyond its target; an unnamed restore empties the REPL when there is no durable head. Restore does not undo external effects or change global binding configuration.
 
 ## Project files and tool capabilities
 
@@ -159,8 +154,6 @@ A volatile state cannot be saved as a durable checkpoint, but a save rejection l
 The model can use Node.js directly to read files, process data, and run programs. Relative file paths and imports in session code resolve from the recorded session project directory. Child processes use that directory when `cwd` is omitted; an explicit directory still takes precedence.
 
 Ordinary module computations can run directly in a cell and be reused by later cells. Use a process or host tool when the task needs a separate process, a particular execution environment, or an external engine check.
-
-This can remove an unnecessary script-escaping layer for ordinary checks and lets later cells reuse completed preparation. Model steps, caching, and cost still depend on the task and provider; the plugin makes no fixed savings guarantee.
 
 For example, in a project containing `package.json`, the first call reads its dependencies:
 
@@ -252,7 +245,7 @@ The host execution provider must use TypeScript. Changing it to another language
 
 Within the plugin graph IPC domain, program arguments, results, and recovery records preserve `undefined`, BigInt, `NaN`, infinities, sparse arrays, cycles, and shared references. Ordinary JSON results remain structured values; special values are displayed as readable text to the model, separately from their program values. Return supported values directly without `JSON.stringify`. Plugin-owned isolated `code.run` delivers an actual value graph to the parent while keeping their bindings separate; native delegation keeps its original contract.
 
-This does not extend native `tools.*` JSON argument or result contracts: DSH can still reject BigInt inputs, and explicit `JSON.stringify` and mixed BigInt/Number arithmetic retain native JavaScript behavior. Date, Map and similar values remain usable in live bindings but are outside the current transfer domain; explicitly select the data needed for output. Transfer failures distinguish unsupported values from budget excess. A return-value encoding failure after a call completes does not mean the tool did not execute; do not repeat the operation solely to obtain its result. See the [value contract](docs/value-wire.md).
+This does not extend native `tools.*` JSON argument or result contracts: DSH can still reject BigInt inputs, and explicit `JSON.stringify` and mixed BigInt/Number arithmetic retain native JavaScript behavior. Date, Map and similar values remain usable in live bindings but are outside the current transfer domain; explicitly select the data needed for output. Transfer failures distinguish unsupported values from budget excess. See the [value contract](docs/value-wire.md).
 
 This does not make every JavaScript object transferable or persistent: functions, Promises, class instances, Date, Map, and Set are outside the value-transfer domain. Keeping a function in the REPL for later calls is different from returning that function as a tool result. Reuse session variables for continued computation; see the [value-transfer specification](docs/value-wire.md) for the complete supported domain.
 
@@ -264,7 +257,7 @@ Session state is not permanent memory. After a restart, runtime reset, or contex
 
 Unverifiable state is discarded with a diagnostic; if necessary, the current computation continues in an empty environment. Recovery neither redispatches recorded native-tool calls nor reverses historical external effects. See the [runtime reference](docs/runtime-reference.md) for recovery evidence and limits.
 
-Subagents reuse continuous computation state from their own session history. Consecutive recovery contractions show one full notice; on failure, recovery guidance accompanies the error while console output retains what the code actually printed.
+Subagents reuse continuous computation state from their own session history. When the recoverable range becomes smaller, one full notice is shown; on failure, recovery guidance accompanies the error while console output retains what the code actually printed.
 
 ## Boundaries
 

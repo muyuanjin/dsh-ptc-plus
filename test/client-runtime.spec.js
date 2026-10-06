@@ -4854,7 +4854,7 @@ test('wrapped menu and modal exports retain host components', async () => {
 test('resolves every rendered primitive, with a usable fallback for each missing one', async () => {
   const { resolvePrimitives } = await import('../src/client-primitives.js')
   const resolved = resolvePrimitives({}, React)
-  for (const name of ['Button', 'CodeBlock', 'DisclosureRow', 'Menu', 'Modal', 'Toast', 'Tooltip']) {
+  for (const name of ['Button', 'CodeBlock', 'DisclosureRow', 'HoverCard', 'Menu', 'Modal', 'Toast', 'Tooltip']) {
     expect(resolved).toHaveProperty(name)
   }
   expect(typeof resolved.Menu).toBe('function')
@@ -5163,4 +5163,149 @@ test.each(['native', 'fallback'].flatMap(kind => [false, true].map(resizeHidden 
   expect(layer().dataset.available).toBe('true')
   expect(layer().hasAttribute('inert')).toBe(false)
   expect(view.queryByRole('dialog')).toBeNull()
+})
+
+
+test.each(['native', 'wrapped', 'fallback-row'])('collapsed tool hover projects recorded content with %s components without inspecting', async mode => {
+  vi.useFakeTimers()
+  const inspect = vi.fn()
+  const block = { kind: 'tool-result', callId: 'hover-call',
+    call: { name: 'run_code', argsRaw: JSON.stringify({ code: 'throw new Error("recorded only")', description: 'Recorded computation' }) },
+    content: [{ type: 'text', text: 'Recorded result' }], isError: false, subCalls: [] }
+  const ui = mode === 'wrapped' ? wrappedPrimitives() : mode === 'fallback-row'
+    ? { ...primitives, DisclosureRow: undefined, CodeBlock: undefined } : primitives
+  const { runtime, rpcCalls } = await fixture({ ui, tool: { toolName: 'run_code', block, inspect } })
+  const view = runtime.renderRoot()
+  await runtime.flush()
+  const row = view.container.querySelector('.ptcPlusTool')
+  const anchor = row.querySelector('span')
+  const header = row.querySelector('[aria-expanded]')
+  const beforeHover = [...rpcCalls]
+  fireEvent.pointerEnter(anchor)
+  await act(() => vi.advanceTimersByTimeAsync(149))
+  expect(document.querySelector('.ptcPlusToolHover')).toBeNull()
+  fireEvent.pointerLeave(anchor)
+  await act(() => vi.advanceTimersByTimeAsync(500))
+  expect(document.querySelector('.ptcPlusToolHover')).toBeNull()
+  fireEvent.pointerEnter(anchor)
+  await act(() => vi.advanceTimersByTimeAsync(150))
+  const preview = document.querySelector('.ptcPlusToolHover')
+  expect(preview).not.toBeNull()
+  expect(row.contains(preview)).toBe(false)
+  expect(preview.querySelector('.ptcPlusToolCode').textContent).toContain('throw new Error("recorded only")')
+  expect(preview.querySelector('.ptcPlusIoText').textContent).toBe('Recorded result')
+  expect(preview.querySelector('.ptcPlusInspect')).toBeNull()
+  expect(header.getAttribute('aria-expanded')).toBe('false')
+  expect(inspect).not.toHaveBeenCalled()
+  expect(rpcCalls).toEqual(beforeHover)
+  fireEvent.pointerLeave(anchor)
+  await act(() => vi.advanceTimersByTimeAsync(200))
+  await act(() => vi.advanceTimersByTimeAsync(101))
+  expect(document.querySelector('.ptcPlusToolHover')).toBeNull()
+  fireEvent.pointerEnter(anchor)
+  await act(() => vi.advanceTimersByTimeAsync(150))
+  fireEvent.click(header)
+  await runtime.flush()
+  await act(() => vi.advanceTimersByTimeAsync(101))
+  expect(document.querySelector('.ptcPlusToolHover')).toBeNull()
+  expect(header.getAttribute('aria-expanded')).toBe('true')
+  expect(row.querySelector('.ptcPlusToolBody')).not.toBeNull()
+  fireEvent.keyDown(header, { key: ' ' })
+  await runtime.flush()
+  expect(header.getAttribute('aria-expanded')).toBe('false')
+  fireEvent.keyDown(header, { key: 'Enter' })
+  await runtime.flush()
+  fireEvent.click(row.querySelector('.ptcPlusInspect'))
+  expect(inspect).toHaveBeenCalledTimes(1)
+})
+
+test.each([undefined, {}])('missing or malformed HoverCard preserves tool expansion', async HoverCard => {
+  const block = { kind: 'tool-call', callId: 'hover-fallback',
+    name: 'edit_run_code', arguments: JSON.stringify({ code: 'return 42', description: 'Edit computation' }) }
+  const { runtime } = await fixture({ ui: { ...primitives, HoverCard }, tool: { toolName: 'edit_run_code', block } })
+  const view = runtime.renderRoot()
+  await runtime.flush()
+  const header = view.container.querySelector('.ptcPlusTool [aria-expanded]')
+  fireEvent.keyDown(header, { key: 'Enter' })
+  await runtime.flush()
+  expect(header.getAttribute('aria-expanded')).toBe('true')
+  expect(view.container.querySelector('.ptcPlusToolCode').textContent).toContain('return 42')
+  expect(document.querySelector('.ptcPlusToolHover')).toBeNull()
+})
+
+test.each(['running', 'error', 'stopped'])('tool hover follows recorded %s lifecycle and locale', async state => {
+  vi.useFakeTimers()
+  const block = { kind: state === 'running' ? 'tool-call' : 'tool-result', callId: 'hover-state',
+    call: { name: 'run_code', arguments: JSON.stringify({ code: 'return 42', description: 'Compute' }) },
+    content: [{ type: 'text', text: 'Recorded output' }], isError: state === 'error',
+    error: state === 'stopped' ? { code: 'interrupted' } : undefined }
+  if (state === 'running') Object.assign(block, block.call)
+  const { runtime, setLocale } = await fixture({ tool: { toolName: 'run_code', block } })
+  const view = runtime.renderRoot()
+  await runtime.flush()
+  fireEvent.pointerEnter(view.container.querySelector('.ptcPlusTool > span'))
+  await act(() => vi.advanceTimersByTimeAsync(150))
+  expect(document.querySelector('.ptcPlusToolHover').dataset.state).toBe(state)
+  expect(document.querySelector('.ptcPlusToolHover .ptcPlusToolState').textContent).toBe(
+    SETTINGS_COPY.en[{ running: 'tool.running', error: 'tool.failed', stopped: 'tool.stopped' }[state]])
+  setLocale('zh')
+  await runtime.flush()
+  expect(document.querySelector('.ptcPlusToolHover .ptcPlusToolSectionLabel').textContent).toBe(SETTINGS_COPY.zh['tool.source'])
+  fireEvent.keyDown(window, { key: 'Escape' })
+  await act(() => vi.advanceTimersByTimeAsync(101))
+  expect(document.querySelector('.ptcPlusToolHover')).toBeNull()
+  fireEvent.pointerEnter(view.container.querySelector('.ptcPlusTool > span'))
+  await act(() => vi.advanceTimersByTimeAsync(150))
+  view.unmount()
+  await act(() => vi.advanceTimersByTimeAsync(1000))
+  expect(document.querySelector('.ptcPlusToolHover')).toBeNull()
+})
+
+
+test('inspect-only tool rows do not open an empty hover preview', async () => {
+  vi.useFakeTimers()
+  const inspect = vi.fn()
+  const block = { kind: 'tool-result', callId: 'empty-hover', call: { name: 'run_code', argsRaw: '{"code":""}' }, content: [] }
+  const { runtime } = await fixture({ tool: { toolName: 'run_code', block, inspect } })
+  const view = runtime.renderRoot()
+  await runtime.flush()
+  fireEvent.pointerEnter(view.container.querySelector('.ptcPlusTool > span'))
+  await act(() => vi.advanceTimersByTimeAsync(1000))
+  expect(document.querySelector('.ptcPlusToolHover')).toBeNull()
+  const header = view.container.querySelector('.ptcPlusTool [aria-expanded]')
+  fireEvent.keyDown(header, { key: 'Enter' })
+  await runtime.flush()
+  fireEvent.click(view.container.querySelector('.ptcPlusInspect'))
+  expect(inspect).toHaveBeenCalledTimes(1)
+})
+
+
+test.each(['native', 'fallback'])('tool hover preserves focus transfer and pointer selection with %s source', async mode => {
+  vi.useFakeTimers()
+  const block = { kind: 'tool-result', callId: 'hover-focus',
+    call: { name: 'run_code', argsRaw: JSON.stringify({ code: 'return 42', description: 'Compute' }) },
+    content: [{ type: 'text', text: '42' }] }
+  const { runtime } = await fixture({ tool: { toolName: 'run_code', block },
+    ui: mode === 'native' ? primitives : { ...primitives, DisclosureRow: undefined, CodeBlock: undefined } })
+  const view = runtime.renderRoot()
+  await runtime.flush()
+  const header = view.container.querySelector('.ptcPlusTool [aria-expanded]')
+  fireEvent.pointerEnter(view.container.querySelector('.ptcPlusTool > span'))
+  await act(() => vi.advanceTimersByTimeAsync(150))
+  await act(() => header.focus())
+  const preview = document.querySelector('.ptcPlusToolHover')
+  expect(preview).not.toBeNull()
+  fireEvent.pointerEnter(preview)
+  const source = preview.querySelector('pre')
+  fireEvent.blur(header, { relatedTarget: source })
+  await act(() => vi.advanceTimersByTimeAsync(101))
+  expect(document.querySelector('.ptcPlusToolHover')).toBe(preview)
+  fireEvent.blur(header, { relatedTarget: null })
+  await act(() => vi.advanceTimersByTimeAsync(101))
+  expect(document.querySelector('.ptcPlusToolHover')).toBe(preview)
+  expect(header.getAttribute('aria-expanded')).toBe('false')
+  fireEvent.pointerLeave(preview)
+  fireEvent.blur(header, { relatedTarget: null })
+  await act(() => vi.advanceTimersByTimeAsync(101))
+  expect(document.querySelector('.ptcPlusToolHover')).toBeNull()
 })

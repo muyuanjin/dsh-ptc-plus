@@ -223,6 +223,7 @@ export function resolvePrimitives(primitives, React, createPortal) {
     Button: primitives.Button,
     CodeBlock: primitives.CodeBlock,
     DisclosureRow: primitives.DisclosureRow,
+    HoverCard: primitives.HoverCard,
     Menu: isHostComponent(primitives.Menu) ? primitives.Menu : createFallbackMenu(React, createPortal),
     MenuFallback: createFallbackMenu(React, createPortal),
     Modal: isHostComponent(primitives.Modal) ? primitives.Modal : createFallbackModal(React, createPortal),

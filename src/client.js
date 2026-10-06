@@ -103,6 +103,7 @@ window.__ModuleLoader__.load({
       Button,
       CodeBlock,
       DisclosureRow,
+      HoverCard,
       Menu,
       MenuFallback,
       Modal,
@@ -138,7 +139,7 @@ window.__ModuleLoader__.load({
     const BindingConsole = createBindingConsole(React, { TypeScriptEditor, IconButton, ActionButton,
       icons: { play: IconPlayOutline16, stop: IconStopFill16, reset: IconRefreshOutline16, clear: IconTrashOutline16 } })
     const { PTCPlusToolRow } = createPtcToolView(React, {
-      CodeBlock, DisclosureRow,
+      CodeBlock, DisclosureRow, HoverCard,
       icons: { chevron: IconChevronDownOutline14, check: IconCheckOutline14, inspect: IconInspectOutline12 },
     })
 

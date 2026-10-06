@@ -25,6 +25,7 @@ try {
   await run(process.execPath, ['scripts/client-visual-settlement.mjs', ...channel])
   await run(process.execPath, ['scripts/client-binding-layout.mjs', '--fixtures-dir', directory, ...channel])
   await run(process.execPath, ['scripts/client-fallback-smoke.mjs', ...channel])
+  await run(process.execPath, ['scripts/client-tool-hover.mjs', ...channel])
 } finally {
   await rm(directory, { recursive: true, force: true })
 }

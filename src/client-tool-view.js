@@ -7,14 +7,23 @@ import { isHostComponent } from './client-host-compat.js'
  * DisclosureRow when the host provides it and an accessible fallback otherwise.
  */
 export function createPtcToolView(React, deps) {
-  const { CodeBlock, DisclosureRow, icons } = deps
+  const { CodeBlock, DisclosureRow, HoverCard, icons } = deps
   const h = React.createElement
   const hasDisclosureRow = isHostComponent(DisclosureRow)
+  const hasHoverCard = isHostComponent(HoverCard)
 
   function PTCPlusToolRow({ toolName, block, inspect, t }) {
     const [open, setOpen] = React.useState(false)
+    const rowRef = React.useRef(null)
+    const previewRef = React.useRef(null)
+    const pointerInPreview = React.useRef(false)
+    const attachPreview = React.useCallback(element => {
+      previewRef.current = element
+      pointerInPreview.current = false
+    }, [])
     const view = derivePtcToolView(block, toolName)
-    const expandable = view.code !== '' || view.output !== '' || typeof inspect === 'function'
+    const previewable = view.code !== '' || view.output !== ''
+    const expandable = previewable || typeof inspect === 'function'
     const stateKey = {
       running: 'tool.running',
       ok: 'tool.completed',
@@ -35,7 +44,7 @@ export function createPtcToolView(React, deps) {
         stateText === null ? null : h('span', { className: 'ptcPlusToolState' }, stateText),
         summaryText === null ? null : h('span', { className: 'ptcPlusToolSep', 'aria-hidden': true }),
         summaryText === null ? null : h('span', { className: 'ptcPlusToolDescription' }, summaryText))
-    const body = !open ? null : h('div', { className: 'ptcPlusToolBody' },
+    const renderBody = (withInspect) => h('div', { className: 'ptcPlusToolBody' },
       view.code === '' ? null : h('div', { className: 'ptcPlusToolSection' },
         h('span', { className: 'ptcPlusToolSectionLabel' }, t('tool.source')),
         isHostComponent(CodeBlock)
@@ -51,7 +60,7 @@ export function createPtcToolView(React, deps) {
             className: 'ptcPlusIoText',
             'data-error': view.state === 'error' || undefined,
           }, view.output))),
-      typeof inspect !== 'function' ? null : h('button', {
+      !withInspect || typeof inspect !== 'function' ? null : h('button', {
         type: 'button', className: 'ptcPlusInspect', onClick: inspect,
       }, h(icons.inspect, { 'aria-hidden': true }), t('tool.inspect')))
     const features = view.features.length === 0 ? null : h('div', { className: 'ptcPlusFeatures' },
@@ -62,8 +71,37 @@ export function createPtcToolView(React, deps) {
       feature.detail === '' ? null
         : h('span', { className: 'ptcPlusFeatureDetail', title: feature.detail }, feature.detail))))
     const collapsedContent = h('div', { className: 'ptcPlusToolPreview' }, summaryLine, features)
+    const body = open ? renderBody(true) : null
+    const wrapRow = anchor => h('div', {
+      className: 'ptcPlusTool', ref: rowRef,
+      onBlurCapture: event => {
+        const preview = previewRef.current
+        // The recorded preview is part of this row's focus region even though
+        // the public primitive portals it outside the anchor's DOM subtree.
+        if (preview !== null && (preview.contains(event.relatedTarget)
+          || (event.relatedTarget === null && pointerInPreview.current))) {
+          event.stopPropagation()
+        }
+      },
+    },
+      !hasHoverCard ? anchor : h(HoverCard, {
+        anchor,
+        content: h('div', {
+          ref: attachPreview, className: 'ptcPlusToolHover', 'data-state': view.state,
+          onPointerEnter: () => { pointerInPreview.current = true },
+          onPointerLeave: () => { pointerInPreview.current = false },
+        },
+          h('div', { className: 'ptcPlusToolHoverHeading' }, t(
+            toolName === 'edit_run_code' ? 'tool.codeEdit' : 'tool.code')),
+          collapsedContent, renderBody(false)),
+        disabled: open || !previewable,
+        inline: true,
+        variant: 'preview',
+        widthAnchorRef: rowRef,
+        openDelayMs: 150,
+      }))
     if (hasDisclosureRow) {
-      return h('div', { className: 'ptcPlusTool' },
+      return wrapRow(
         h(DisclosureRow, {
           icon: expandable
             ? h(icons.chevron, { size: 14 })
@@ -84,7 +122,7 @@ export function createPtcToolView(React, deps) {
           children: body,
         }))
     }
-    return h('div', { className: 'ptcPlusTool' },
+    return wrapRow(h(React.Fragment, null,
       h('div', {
         className: 'ptcPlusToolSummary', 'data-state': view.state,
         'data-expandable': expandable || undefined,
@@ -108,7 +146,7 @@ export function createPtcToolView(React, deps) {
       h('span', { className: 'ptcPlusToolSep', 'aria-hidden': true }),
       h('span', { className: 'ptcPlusToolDescription' }, summary)),
       features,
-      body)
+      body))
   }
 
   return { PTCPlusToolRow }

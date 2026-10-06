@@ -2082,13 +2082,22 @@
 
   // src/client-tool-view.js
   function createPtcToolView(React, deps) {
-    const { CodeBlock, DisclosureRow, icons } = deps;
+    const { CodeBlock, DisclosureRow, HoverCard, icons } = deps;
     const h = React.createElement;
     const hasDisclosureRow = isHostComponent(DisclosureRow);
+    const hasHoverCard = isHostComponent(HoverCard);
     function PTCPlusToolRow({ toolName, block, inspect, t: t2 }) {
       const [open, setOpen] = React.useState(false);
+      const rowRef = React.useRef(null);
+      const previewRef = React.useRef(null);
+      const pointerInPreview = React.useRef(false);
+      const attachPreview = React.useCallback((element) => {
+        previewRef.current = element;
+        pointerInPreview.current = false;
+      }, []);
       const view = derivePtcToolView(block, toolName);
-      const expandable = view.code !== "" || view.output !== "" || typeof inspect === "function";
+      const previewable = view.code !== "" || view.output !== "";
+      const expandable = previewable || typeof inspect === "function";
       const stateKey = {
         running: "tool.running",
         ok: "tool.completed",
@@ -2109,7 +2118,7 @@
         summaryText === null ? null : h("span", { className: "ptcPlusToolSep", "aria-hidden": true }),
         summaryText === null ? null : h("span", { className: "ptcPlusToolDescription" }, summaryText)
       );
-      const body = !open ? null : h(
+      const renderBody = (withInspect) => h(
         "div",
         { className: "ptcPlusToolBody" },
         view.code === "" ? null : h(
@@ -2137,7 +2146,7 @@
             }, view.output)
           )
         ),
-        typeof inspect !== "function" ? null : h("button", {
+        !withInspect || typeof inspect !== "function" ? null : h("button", {
           type: "button",
           className: "ptcPlusInspect",
           onClick: inspect
@@ -2157,10 +2166,49 @@
         ))
       );
       const collapsedContent = h("div", { className: "ptcPlusToolPreview" }, summaryLine, features);
+      const body = open ? renderBody(true) : null;
+      const wrapRow = (anchor) => h(
+        "div",
+        {
+          className: "ptcPlusTool",
+          ref: rowRef,
+          onBlurCapture: (event) => {
+            const preview = previewRef.current;
+            if (preview !== null && (preview.contains(event.relatedTarget) || event.relatedTarget === null && pointerInPreview.current)) {
+              event.stopPropagation();
+            }
+          }
+        },
+        !hasHoverCard ? anchor : h(HoverCard, {
+          anchor,
+          content: h(
+            "div",
+            {
+              ref: attachPreview,
+              className: "ptcPlusToolHover",
+              "data-state": view.state,
+              onPointerEnter: () => {
+                pointerInPreview.current = true;
+              },
+              onPointerLeave: () => {
+                pointerInPreview.current = false;
+              }
+            },
+            h("div", { className: "ptcPlusToolHoverHeading" }, t2(
+              toolName === "edit_run_code" ? "tool.codeEdit" : "tool.code"
+            )),
+            collapsedContent,
+            renderBody(false)
+          ),
+          disabled: open || !previewable,
+          inline: true,
+          variant: "preview",
+          widthAnchorRef: rowRef,
+          openDelayMs: 150
+        })
+      );
       if (hasDisclosureRow) {
-        return h(
-          "div",
-          { className: "ptcPlusTool" },
+        return wrapRow(
           h(DisclosureRow, {
             icon: expandable ? h(icons.chevron, { size: 14 }) : h(icons.check, { size: 14 }),
             title: t2(toolName === "edit_run_code" ? "tool.codeEdit" : "tool.code"),
@@ -2180,9 +2228,9 @@
           })
         );
       }
-      return h(
-        "div",
-        { className: "ptcPlusTool" },
+      return wrapRow(h(
+        React.Fragment,
+        null,
         h(
           "div",
           {
@@ -2209,7 +2257,7 @@
         ),
         features,
         body
-      );
+      ));
     }
     return { PTCPlusToolRow };
   }
@@ -29998,6 +30046,7 @@
   var CLIENT_STYLE_ID = "ptc-plus-client-style";
   var CLIENT_CSS = `
 .ptcPlusTool,.ptcPlusComposerBindingAnchor{--ptc-plus-warning-label:color-mix(in srgb,var(--dsw-alias-state-warn-primary,#a15c00) 65%,var(--dsw-alias-label-primary,#18191c))}.ptcPlusTool{font-family:inherit;font-size:13px;line-height:18px}.ptcPlusTool .ptcPlusToolRow{box-sizing:border-box;height:auto;min-height:24px;align-items:flex-start;padding-block:3px}.ptcPlusToolDisclosureContent{min-width:0;flex:1}.ptcPlusTool .ptcPlusToolDisclosureLayout{min-width:0;align-items:flex-start}.ptcPlusTool .ptcPlusToolTitle,.ptcPlusTool .ptcPlusToolSummary,.ptcPlusTool .ptcPlusToolSummaryLine,.ptcPlusTool .ptcPlusToolState,.ptcPlusTool .ptcPlusToolDescription,.ptcPlusTool .ptcPlusToolSep{font-size:13px;line-height:18px}.ptcPlusTool .ptcPlusToolTitle{flex:none;margin-inline-end:6px}.ptcPlusTool .ptcPlusToolState{flex:none;white-space:nowrap}.ptcPlusTool .ptcPlusToolSep{display:inline-block;min-width:6px}.ptcPlusToolSummary{display:flex;min-width:0;align-items:baseline}.ptcPlusToolSummaryLine{display:flex;min-width:0;align-items:baseline;overflow:hidden}.ptcPlusToolDescription{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.ptcPlusToolSummary .ptcPlusToolDescription{flex:1}.ptcPlusToolPreview{display:flex;flex:1;min-width:0;flex-direction:column;gap:4px;margin-inline-start:6px}.ptcPlusToolPreview .ptcPlusToolSummaryLine{display:block}.ptcPlusToolPreview .ptcPlusToolDescription{display:inline;white-space:normal;overflow-wrap:anywhere}.ptcPlusToolPreview .ptcPlusFeatures{margin:0}
+.ptcPlusTool>span{display:block;min-width:0}.ptcPlusToolHover{font-family:inherit;font-size:13px;line-height:18px;min-width:0;color:var(--dsw-alias-label-primary)}.ptcPlusToolHoverHeading{font-weight:600;margin-bottom:6px}.ptcPlusToolHover .ptcPlusToolPreview{margin:0}.ptcPlusToolHover .ptcPlusToolBody{margin:8px 0 0}.ptcPlusToolHover pre{max-height:none}
 .ptcPlusBindingMenuContent{font-family:inherit;font-size:13px;line-height:18px;display:flex;flex-direction:column;min-width:0;min-height:0;width:100%;max-block-size:min(440px,60dvh,var(--ptc-plus-menu-space,100dvh));overflow:hidden}.ptcPlusBindingMenuScroll{flex:1 1 auto;min-height:0;overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable}.ptcPlusMenuGroupChevron{display:block;align-self:center;width:14px;height:14px;flex:none;margin-inline-end:6px}.ptcPlusMenuGroupChevron[data-expanded=true]{transform:rotate(90deg)}.ptcPlusOwnedMenuRow{appearance:none;box-sizing:border-box;display:flex;align-items:center;width:100%;min-width:0;min-height:38px;padding:8px 10px;border:0;border-radius:6px;background:transparent;color:inherit;font:inherit;text-align:start;cursor:pointer}.ptcPlusOwnedMenuRow:hover{background:var(--dsw-alias-interactive-bg-hover)}.ptcPlusOwnedMenuRow:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary,#4d6bfe);outline-offset:-2px}.ptcPlusOwnedMenuRow:disabled{opacity:.5;cursor:default}.ptcPlusOwnedMenuSeparator{margin:6px 0;border-top:1px solid var(--dsw-alias-border-l2)}
 .ptcPlusBindingDockAnchor{position:relative;flex:none;min-width:0;block-size:0;width:min(calc(100% - 32px),44rem);margin-inline:auto}
 .ptcPlusBindingPreviewLayer{position:fixed;z-index:40;block-size:min(440px,45dvh,var(--ptc-plus-review-space,100dvh));display:flex;align-items:flex-end;pointer-events:none;font-family:inherit;font-size:13px;line-height:18px}.ptcPlusBindingPreviewLayer[data-available=false]{visibility:hidden;pointer-events:none}.ptcPlusBindingDock{position:relative;font-family:inherit;font-size:13px;line-height:18px;box-sizing:border-box;min-width:0;display:flex;flex-direction:column;border:1px solid var(--dsw-alias-border-l3,rgba(0,0,0,.1));border-radius:14px;background:var(--dsw-alias-bg-base,#fff);color:var(--dsw-alias-label-primary,#18191c);box-shadow:0 8px 32px rgba(0,0,0,.14),0 2px 6px rgba(0,0,0,.06);width:100%;max-block-size:100%;pointer-events:auto;overflow:hidden;overscroll-behavior:contain}
@@ -32094,6 +32143,7 @@
       Button: primitives.Button,
       CodeBlock: primitives.CodeBlock,
       DisclosureRow: primitives.DisclosureRow,
+      HoverCard: primitives.HoverCard,
       Menu: isHostComponent(primitives.Menu) ? primitives.Menu : createFallbackMenu(React, createPortal),
       MenuFallback: createFallbackMenu(React, createPortal),
       Modal: isHostComponent(primitives.Modal) ? primitives.Modal : createFallbackModal(React, createPortal),
@@ -32177,6 +32227,7 @@
         Button,
         CodeBlock,
         DisclosureRow,
+        HoverCard,
         Menu,
         MenuFallback,
         Modal,
@@ -32220,6 +32271,7 @@
       const { PTCPlusToolRow } = createPtcToolView(React, {
         CodeBlock,
         DisclosureRow,
+        HoverCard,
         icons: { chevron: IconChevronDownOutline14, check: IconCheckOutline14, inspect: IconInspectOutline12 }
       });
       async function apply(ctx) {

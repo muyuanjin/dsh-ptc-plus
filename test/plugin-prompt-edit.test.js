@@ -245,6 +245,7 @@ test('presents one coherent persistent REPL contract to the model', async (t) =>
   assert.match(guidance, /return only the value the next step needs/)
   assert.match(guidance, /Use Node\.js modules in the cell; use external processes when their environment is needed/)
   assert.match(guidance, /JSON\.stringify loses distinctions or rejects BigInt/)
+  assert.match(guidance, /Do not mix BigInt with Number arithmetic/)
   assert.match(guidance, /return needed data or type observations/)
   assert.match(guidance, /earlier statements may have taken effect/)
   assert.match(guidance, /`edit_run_code` edits and reruns a complete cell/)

@@ -77,8 +77,8 @@ function replGuidance({ bindingPolicy, rewritesEnabled, languageSemantics, durab
     : 'Mixed new/existing top-level destructuring remains unsupported; separate the declaration from the assignment.'
   const cellConventions = languageSemantics === 'legacy-v1'
     ? `Cells are async function bodies; ${moduleSyntax} Use dynamic import or require explicitly when static module syntax is unsupported. ${variableRedeclaration} ${functionClassRedeclaration} ${splitSyntax}`
-    : `Cells support TypeScript, top-level await, return, static import and top-level export. ${languageSemantics === 'stateful-v1'
-      ? 'Declarations and assignments update the same logical binding within its scope, including const, functions, classes and imports. A bare declaration preserves an existing value. A declaration publishes its bindings after its whole pattern initializes; explicit assignments preserve actual partial writes. Imports follow their module until locally overwritten; importing again changes that same binding source. Existing closures observe later updates, while saved values retain their identity.'
+      : `Cells support TypeScript, top-level await, return, static import and top-level export. ${languageSemantics === 'stateful-v1'
+      ? 'Declarations and assignments update the same logical binding within its scope, including const, functions, classes and imports. A bare declaration preserves an existing value. A declaration publishes its bindings after its whole pattern initializes; assignments preserve partial writes. Imports follow their module until locally overwritten; importing again changes that same binding source. Existing closures observe later updates, while saved values retain their identity.'
       : 'Redeclaration protection is enabled: existing session names cannot be redeclared, and newly created const and import bindings reject assignment. Other declarations follow native scope rules. Previously writable bindings stay writable.'}`
   const recovery = durableReplay
     ? 'Direct Node/OS access remains live but is not replayed after a kernel restart.'
@@ -88,16 +88,16 @@ function replGuidance({ bindingPolicy, rewritesEnabled, languageSemantics, durab
     : ''
   return `\`run_code\` continues one persistent PTC REPL. Use Node.js modules in the cell; use external processes when their environment is needed. Ordinary top-level bindings remain available to later cells, so reuse them instead of resending setup code. Choose the smallest cell that answers the request and return only the value the next step needs.
 
-After an execution error, earlier statements may have taken effect. Inspect relevant values in a short cell and continue from them; repeat external operations only when their retry rules and current results establish that it is safe. \`edit_run_code\` edits and reruns a complete cell.
+After an execution error, earlier statements may have taken effect. Inspect relevant values in a short cell, then continue from them; repeat external operations only when their retry rules and current results establish safety. \`edit_run_code\` edits and reruns a complete cell.
 
 ## Cell conventions
 Use \`return\` for an explicit result and \`console\` for logs. Return supported values directly, including undefined, NaN, infinities, -0 and BigInt; JSON.stringify loses distinctions or rejects BigInt. Keep functions, Date, Map and other unsupported values in bindings; return needed data or type observations. Native \`tools.*\` arguments must satisfy their own JSON schemas; PTC value transport does not widen those contracts. Keep large inspection results in bindings or reduce them to targeted excerpts: \`tools.read\` is bounded inspection, not a lossless whole-file reader. ${cellConventions}
 
 ## Available capabilities
-Use \`capabilities.tree()\`, \`capabilities.find()\`, and \`capabilities.inspect()\` for unfamiliar program APIs. Reserve \`code.run\` for isolated execution of source held as data.
-Program API references expire when their cell ends. Reusable helpers must read the current namespace when called, for example \`async function readNow(args) { return tools.read(args) }\`, rather than retaining an earlier \`tools\` object or method. Background callbacks from completed cells cannot call program APIs.
+Use \`capabilities.tree()\`, \`capabilities.find()\`, and \`capabilities.inspect()\` for unfamiliar program APIs; Reserve \`code.run\` for isolated execution of source held as data.
+Program API references expire when their cell ends. Reusable helpers must read the current namespace when called, for example \`async function readNow(args) { return tools.read(args) }\`, instead of retaining an earlier \`tools\` object or method. Completed-cell callbacks cannot call program APIs.
 
-Native tool availability, executable names, shells, and path syntax depend on the current DSH profile and execution world; inspect them instead of assuming Windows, WSL, POSIX, or a particular shell. ${recovery}${cordisToolsEnabled ? ` ${cordisRecovery}` : ''}`
+Native tool availability depends on the current DSH profile and execution world; inspect executables, shells, and paths instead of assuming Windows, WSL, POSIX, or a particular shell. ${recovery}${cordisToolsEnabled ? ` ${cordisRecovery}` : ''}`
 }
 
 /** Register the session-bound REPL runtime. */

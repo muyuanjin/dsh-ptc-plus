@@ -28,6 +28,9 @@ test('classifies bounded platform facts but leaves generic exits and application
   }
   const stderr = await state.runDurable('stderr-platform', `throw Object.assign(new Error('Command failed: sample'), { stderr: 'The system cannot find the path specified' })`)
   assert.match(tipFor(stderr).text, /current execution world/)
+  assert.match(tipFor(stderr).text, /process\.platform/)
+  assert.match(tipFor(stderr).text, /process\.execPath/)
+  assert.match(tipFor(stderr).text, /Do not dump process\.env/)
 })
 
 test('repeated warnings share the conservative state of lexical, generic and preflight failures', async t => {

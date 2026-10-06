@@ -2,6 +2,7 @@ import { PTC_STATE_NAMES, recoveryTipIdentity } from './runtime-messages.js'
 
 const PLATFORM_CAUSE_CODES = new Set(['EACCES', 'EINVAL', 'ENOTDIR', 'ENOENT', 'UNKNOWN'])
 const TIP_CONTEXT_PREFIX = 'tools:ptc-plus-tip/'
+const PLATFORM_FACTS = '`return { platform: process.platform, arch: process.arch, node: process.version, cwd: process.cwd(), execPath: process.execPath }`'
 const TIP_PREFIXES = Object.freeze({
   'repeated-binding-failure': 'The same binding failure has recurred.',
   'platform-command-failure': 'An executable, shell, or path failed in the current execution world.',
@@ -93,8 +94,8 @@ function tipCandidate(view) {
 function renderTip(id, detailed, candidate = {}) {
   if (id === 'platform-command-failure') {
     return detailed
-      ? `${TIP_PREFIXES[id]} Re-check the active execution world and the actual executable before retrying. Use direct argv for a normal executable; use a shell only when its syntax or resolution is required. Windows, WSL, POSIX, and package shims have different paths and launch rules.`
-      : `${TIP_PREFIXES[id]} Inspect the executable or path in the current execution world and choose direct argv or a shell only when required; do not assume Windows, WSL, POSIX, or one shell.`
+      ? `${TIP_PREFIXES[id]} Re-check the active execution world and the actual executable before retrying. First inspect bounded runtime facts with ${PLATFORM_FACTS}; use the result to choose the executable and path. Use direct argv for a normal executable; use a shell only when its syntax or resolution is required. Windows, WSL, POSIX, and package shims have different paths and launch rules. Do not dump process.env.`
+      : `${TIP_PREFIXES[id]} Inspect bounded runtime facts with ${PLATFORM_FACTS}, then choose the executable and path in the current execution world. Use direct argv or a shell only when required; do not assume Windows, WSL, POSIX, or one shell. Do not dump process.env.`
   }
   if (!candidate.capability) {
     return `${TIP_PREFIXES[id]} Inspect the visible cell source and results for the local name, scope, initialization, or declaration conflict. Correct that expression before continuing; capability discovery does not list session-local variables.${detailed ? ' Earlier statements may have run; use current expression evidence without assuming a failed declaration initialized its binding.' : ''}`

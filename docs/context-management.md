@@ -13,7 +13,7 @@ Session evidence shows why the boundary matters: state reuse, edit recovery, iso
 The current optimization policy is therefore:
 
 1. Keep capability discovery progressive (`tree`, short `find`, budgeted `inspect`) and do not inject a default state projection or dynamically replace the native SDK without a host contract and a measured task benefit.
-2. Keep runtime notices short, source-backed, accepted-step-only, and retractable. Journal ancestry and exact model-visible provenance remain the recovery authority; UI inventories and natural-language summaries do not extend hidden state.
+2. Keep runtime notices short, source-backed, accepted-step-only, and deduplicated so they can stop being re-emitted. Removing an already appended notice belongs to the host's surface replacement; journal ancestry and exact model-visible provenance remain the recovery authority. UI inventories and natural-language summaries do not extend hidden state.
 3. Keep parent agents, DSH child agents, and `code.run` isolated according to their existing host/runtime owners. PTC Plus does not add cross-agent memory or a second scheduler.
 4. State the value-wire boundary where it prevents a predictable model error. The stable guidance now says to return BigInt directly, avoid `JSON.stringify` for it, and never mix BigInt with `Number` arithmetic without an explicit conversion. This is a model-facing clarification; it does not change the canonical value graph or native tool JSON schemas.
 

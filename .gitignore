@@ -1,5 +1,5 @@
 node_modules/
 win_node_modules/
-coverage/
+/coverage/
 *.log
 artifacts/

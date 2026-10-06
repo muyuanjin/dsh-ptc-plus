@@ -2,19 +2,23 @@
 
 ## Purpose
 
-`npm run coverage:focus` provides a bounded diagnostic loop for executable
-changes. It checks selected gate-owned sources with the smallest test set that
-can distinguish a correction before the repository-wide release gate runs.
+`npm run coverage:focus` provides a bounded diagnostic loop for coverage
+failures while preparing a new version for release. It checks selected
+gate-owned sources with the smallest test set that can distinguish a correction
+before the full release coverage gate runs again.
 
-The focused command does not replace `npm run verify` or `npm run check` and
-does not write a verified-tree proof. [Deterministic verification](verification.md)
-owns command syntax, thresholds, generated evidence, and the final gate.
+Coverage is not part of ordinary development, review, commit preparation,
+`npm run verify`, or `npm run check`; coverage-specific suites and instrumented cases are also excluded from those daily entries. The focused command does not replace the
+full release coverage gate and does not write a verified-tree proof.
+[Deterministic verification](verification.md) owns command syntax, thresholds,
+generated evidence, and the final gates; [ADR 0035](adr/0035-run-coverage-only-before-a-new-release.md)
+owns coverage scheduling.
 
 ## Contract
 
 - Every selected source and test must exist inside the checkout.
 - Selected sources must belong to the full coverage gate, and selected tests
-  must be `test/*.test.js` files.
+  must be `.test.js` files under `test/`.
 - Selected but unexecuted sources remain in the report as uncovered.
 - The report applies the full gate's 100% line/function and 95% branch
   thresholds.
@@ -52,10 +56,12 @@ preload does not independently reinterpret a caller's entry.
 
 ## Workflow
 
-Use focused coverage after the nearest behavioral test passes or after a full
-gate identifies a narrow coverage deficit. Select every changed source whose
-threshold matters and the tests that exercise its distinct paths. A passing
-focused run establishes only that selected relation.
+During ordinary development, use the nearest behavioral tests without coverage.
+During release preparation, use focused coverage after the full release coverage
+gate identifies a narrow deficit. Select every changed source whose threshold
+matters and the tests that exercise its distinct paths. A passing focused run
+establishes only that selected relation; rerun the full coverage gate before
+packing and staging.
 
 Run one final `npm run verify` while the local review ledger has unresolved
 findings. Once every finding is terminal, run `npm run check` on a stable tree

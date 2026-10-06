@@ -59,7 +59,7 @@ jobs:
   stage:
     needs: validate-target
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 60
     environment: npm-release
     permissions:
       contents: read
@@ -106,6 +106,7 @@ jobs:
 
           npm ci
           npm run build:check
+          npm run coverage
           npm audit --omit=dev
           npx --yes publint@0.3.24
           git diff --exit-code

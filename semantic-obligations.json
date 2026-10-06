@@ -36,7 +36,7 @@
       "platforms": ["Node 22.19+", "Node 24+"],
       "consumers": ["execution-kernel", "user-bindings-and-client"],
       "oracle": "native execution for preserved source plus compiler-independent source and identity assertions",
-      "evidence": ["test/semantic-boundaries.test.js", "test/stateful-callable-source-identity.test.js", "test/stateful-module-callable-sources.test.js", "test/compiler-service.test.js", "test/compiler-platform.test.js", "scripts/compiler-assets.mjs", "scripts/compiler-bundle.mjs", "scripts/instrument-compiler-coverage.mjs", "scripts/covered-worker-entry.mjs", "scripts/instrument-worker-coverage.mjs"],
+      "evidence": ["test/semantic-boundaries.test.js", "test/stateful-callable-source-identity.test.js", "test/stateful-module-callable-sources.test.js", "test/compiler-service.test.js", "test/coverage/compiler-coverage.test.js", "test/compiler-platform.test.js", "scripts/compiler-assets.mjs", "scripts/compiler-bundle.mjs", "scripts/instrument-compiler-coverage.mjs", "scripts/covered-worker-entry.mjs", "scripts/instrument-worker-coverage.mjs"],
       "dependsOn": ["language-frontend"]
     },
     {
@@ -54,7 +54,7 @@
       "platforms": ["Windows", "WSL", "POSIX", "Node 22.19+", "Node 24+"],
       "consumers": ["persistence-and-recovery", "host-integration", "user-bindings-and-client"],
       "oracle": "plain Node worker references, protocol state assertions and canonical wire models",
-      "evidence": ["test/worker-realm-surfaces.test.js", "test/worker-output-capture.test.js", "test/kernel-worker-settlement.test.js", "test/session-cell-executor.test.js", "test/plugin-durability-recovery.test.js", "test/plugin-evaluator-values.test.js", "test/value-wire.test.js", "test/isolated-worker.test.js", "test/compiler-service.test.js"],
+      "evidence": ["test/worker-realm-surfaces.test.js", "test/worker-output-capture.test.js", "test/kernel-worker-settlement.test.js", "test/session-cell-executor.test.js", "test/plugin-durability-recovery.test.js", "test/plugin-evaluator-values.test.js", "test/value-wire.test.js", "test/isolated-worker.test.js", "test/isolated-helper.test.js", "test/coverage/isolated-helper-coverage.test.js", "test/coverage/subprocess-environment-coverage.test.js", "test/compiler-service.test.js", "test/coverage/compiler-coverage.test.js"],
       "dependsOn": ["compiler-and-callables"]
     },
     {
@@ -108,7 +108,7 @@
       "platforms": ["browser client", "Node worker", "official DSH host"],
       "consumers": ["users", "model requests", "session recovery"],
       "oracle": "isolated binding workers, storage fixtures, client host adapters and react-is component classification; bounded computed-style, text-range clipping and overlap, contrast, keyboard focus, hover, disabled and reachability oracle with retained-handler CSS counterexamples in native/fallback reference palettes and packed official Host themes (docs/client-visual-contract.md)",
-      "evidence": ["test/user-bindings-runtime.test.js", "test/user-binding-console.test.js", "test/client-host-compat.test.js", "test/repl-value-observer.test.js", "test/runtime-config.test.js", "test/plugin-settings.test.js", "test/client-runtime.spec.js", "scripts/client-web-smoke.mjs", "scripts/client-fallback-smoke.mjs", "scripts/client-binding-layout.mjs", "scripts/client-visual-contract.mjs", "scripts/client-visual-check.mjs"],
+      "evidence": ["test/user-bindings-runtime.test.js", "test/user-binding-console.test.js", "test/coverage/console-environment-coverage.test.js", "test/client-host-compat.test.js", "test/repl-value-observer.test.js", "test/runtime-config.test.js", "test/plugin-settings.test.js", "test/client-runtime.spec.js", "scripts/client-web-smoke.mjs", "scripts/client-fallback-smoke.mjs", "scripts/client-binding-layout.mjs", "scripts/client-visual-contract.mjs", "scripts/client-visual-check.mjs"],
       "dependsOn": ["compiler-and-callables", "execution-kernel", "persistence-and-recovery", "host-integration"]
     }
   ]

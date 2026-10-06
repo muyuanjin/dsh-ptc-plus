@@ -1,10 +1,11 @@
 import { spawn } from 'node:child_process'
 import { mkdir, mkdtemp, readdir, realpath, rm, stat } from 'node:fs/promises'
-import { availableParallelism } from 'node:os'
 import { resolve, join, basename, isAbsolute, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { coveredSource } from './coverage-inputs.mjs'
-import { backendTestFiles, splitBackendTestFiles } from './test-suite-files.mjs'
+import { backendTestFiles, splitBackendTestFiles, testConcurrency } from './test-suite-files.mjs'
+
+export { testConcurrency } from './test-suite-files.mjs'
 
 const root = fileURLToPath(new URL('../', import.meta.url))
 const reporter = fileURLToPath(new URL('./coverage-report.mjs', import.meta.url))
@@ -22,15 +23,6 @@ const INTERRUPTION_EXIT_CODES = { SIGINT: 130, SIGTERM: 143 }
 // liveness: keeping a few preserves the post-mortem of a recent failure, while
 // keeping every one would grow a file per run forever.
 const DIAGNOSTIC_RETENTION = 3
-
-export function testConcurrency(value, parallelism = availableParallelism()) {
-  // Each test process can also own compiler realms and runtime workers.
-  if (value === undefined) return Math.max(1, Math.min(4, Math.floor(parallelism / 2)))
-  if (!/^[1-9]\d*$/.test(value) || !Number.isSafeInteger(Number(value))) {
-    throw new Error('DSH_PTC_TEST_CONCURRENCY must be a positive integer')
-  }
-  return Number(value)
-}
 
 export function focusedCoverageArguments(argv) {
   const options = { sources: [], tests: [], testArguments: [] }
@@ -140,7 +132,7 @@ export async function runCoverage({
       env: { ...process.env, NODE_V8_COVERAGE: '', DSH_PTC_COMPILER_BYTECODE: undefined },
     })
     if (preparationCode !== 0) return preparationCode
-    const testFiles = selectedTestFiles ?? await backendTestFiles(root)
+    const testFiles = selectedTestFiles ?? await backendTestFiles(root, { coverage: true })
     // Tests that install module mocks before importing the transport must not
     // preload the real transport through the coverage setup. Run those first
     // without the instrumentation preload, then run the rest with it. Both
@@ -156,6 +148,7 @@ export async function runCoverage({
       ...process.env,
       NODE_V8_COVERAGE: temporary,
       DSH_PTC_COMPILER_BYTECODE: bytecode,
+      DSH_PTC_TEST_COVERAGE_SUITE: '1',
       ...(instrumented ? { DSH_PTC_TEST_WORKER_COVERAGE: '1' } : {}),
     } })
     const { mockPreload, ordinary: instrumented } = splitBackendTestFiles(testFiles)

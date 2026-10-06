@@ -5,15 +5,15 @@ import { tmpdir } from 'node:os'
 import { join, relative } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import test from 'node:test'
-import { coverageInputFilter } from '../scripts/coverage-inputs.mjs'
+import { coverageInputFilter } from '../../scripts/coverage-inputs.mjs'
 import {
   COVERAGE_INCLUDE,
   COVERAGE_THRESHOLDS,
   coverageReportArguments,
   createCoverageReport,
   gateSourceFiles,
-} from '../scripts/coverage-report.mjs'
-import { uncoveredEnvironment } from './subprocess-environment.js'
+} from '../../scripts/coverage-report.mjs'
+import { uncoveredEnvironment } from '../subprocess-environment.js'
 
 async function fixture(t) {
   // c8 keys coverage scripts by the real path, so the fixture root must be one
@@ -146,7 +146,7 @@ test('filtered c8 maps and uncovered counters exactly match ordinary c8', async 
     { url: 'node:fs', functions: [] },
   ] }))
   const gate = spawnSync(process.execPath,
-    [fileURLToPath(new URL('../scripts/coverage-report.mjs', import.meta.url)), directory], {
+    [fileURLToPath(new URL('../../scripts/coverage-report.mjs', import.meta.url)), directory], {
       cwd: root, env: uncoveredEnvironment(), encoding: 'utf8', timeout: 10000,
     })
   assert.equal(gate.status, 1, gate.stdout + gate.stderr)

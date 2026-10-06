@@ -11,7 +11,7 @@ import {
   runCoverage,
   testConcurrency,
   validateFocusedCoverage,
-} from '../scripts/coverage.mjs'
+} from '../../scripts/coverage.mjs'
 
 const posixOnly = process.platform === 'win32'
   ? 'a catchable SIGINT cannot be delivered to another process on Windows'
@@ -30,7 +30,7 @@ test('coverage limits default process fanout and validates explicit concurrency'
 })
 
 test('coverage CLI rejects invalid concurrency before starting the suite', () => {
-  const result = spawnSync(process.execPath, [fileURLToPath(new URL('../scripts/coverage.mjs', import.meta.url))], {
+  const result = spawnSync(process.execPath, [fileURLToPath(new URL('../../scripts/coverage.mjs', import.meta.url))], {
     env: { ...process.env, DSH_PTC_TEST_CONCURRENCY: 'invalid' },
     encoding: 'utf8', timeout: 5000,
   })
@@ -71,7 +71,7 @@ test('focused coverage requires explicit gate sources and test files', async () 
   ])), /outside the project coverage gate/)
   await assert.rejects(validateFocusedCoverage(focusedCoverageArguments([
     '--source', 'internal/source-position-map.js',
-    '--test', fileURLToPath(new URL('../package.json', import.meta.url)),
+    '--test', fileURLToPath(new URL('../../package.json', import.meta.url)),
   ])), /must be relative to the project root/)
 })
 
@@ -220,7 +220,7 @@ test('coverage retains recent completed diagnostics and every live run log', asy
 
 test('an interrupted run removes its evidence before exiting', { skip: posixOnly, timeout: 30000 }, async t => {
   const directory = await mkdtemp(join(tmpdir(), 'ptc-coverage-'))
-  const module = pathToFileURL(fileURLToPath(new URL('../scripts/coverage.mjs', import.meta.url))).href
+  const module = pathToFileURL(fileURLToPath(new URL('../../scripts/coverage.mjs', import.meta.url))).href
   const child = spawn(process.execPath, ['--input-type=module', '-e', `
     import { runCoverage } from ${JSON.stringify(module)}
     // A live run keeps its event loop busy waiting on test workers. Without that

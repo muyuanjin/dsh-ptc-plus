@@ -28,7 +28,11 @@ request to preview. Escape, blur, pointer departure, expansion, touch and
 unmount retain dismissal and original expansion semantics.
 
 Use the platform's manual Popover top layer, with a public React Portal fallback.
-Placement measures only the plugin's anchor and preview. The plugin does not
+Placement measures only the plugin's anchor, pointer and preview. Prefer the
+right of the pointer when the current viewport has enough room; otherwise
+place above or below the row. Observe live owned-anchor and viewport size changes.
+A default-enabled interface setting controls mouse and keyboard preview without
+removing explicit row expansion. The plugin does not
 inspect or write Host ancestors, cancel scrolling, forward synthetic wheel
 events, patch Host packages or add another authority boundary. The interactive
 public HoverCard remains available to other consumers; it does not own this

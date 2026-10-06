@@ -20,6 +20,7 @@ for (const width of [320, 390, 1440]) for (const theme of ['light', 'dark']) {
 }
 for (const nativeRow of [true, false]) {
   const row = nativeRow ? 'native' : 'fallback'
+  cases.push({ id: `placement/${row}`, width: 1200, height: 700, theme: 'light', locale: 'en', nativeRow, placement: true })
   cases.push({ id: `scroll/${row}`, width: 800, height: 600, theme: 'light', locale: 'en', nativeRow, scroll: true })
   cases.push({ id: `touch/${row}`, width: 390, height: 600, theme: 'light', locale: 'en', nativeRow, touch: true })
   cases.push({ id: `portal/${row}`, width: 320, height: 240, theme: 'dark', locale: 'zh', nativeRow, portalFallback: true })
@@ -131,6 +132,30 @@ await runBrowserCases(selected, async (browser, item) => {
       assert.ok((await rows.first().locator('.ptcPlusToolCode').textContent()).includes('value119'), id + '/expanded source truncated')
       assert.ok((await rows.first().locator('.ptcPlusIoText').textContent()).includes('Output 119'), id + '/expanded result truncated')
     }
+    if (item.placement) {
+      await page.addStyleTag({ content: '#root{width:480px;box-sizing:border-box}' })
+      await openHover()
+      const pointer = await header.boundingBox()
+      let box = await preview.boundingBox()
+      assert.equal(await preview.getAttribute('data-placement'), 'right', id + '/right preference')
+      assert.ok(box.x >= pointer.x + pointer.width / 2 + 15, id + '/not right of pointer')
+      // A live conversation width change alters the next hover's usable space.
+      await moveAway()
+      await page.evaluate(() => document.querySelector('#root').style.width = '1100px')
+      await header.hover({ position: { x: 1000, y: 10 } })
+      await preview.waitFor()
+      assert.equal(await preview.getAttribute('data-placement'), 'bottom', id + '/right edge fallback')
+      await moveAway()
+      await page.evaluate(() => document.querySelector('#root').style.width = '480px')
+      await openHover()
+      await page.setViewportSize({ width: 600, height: 700 })
+      await page.waitForFunction(() => document.querySelector('.ptcPlusToolHover')?.dataset.placement === 'bottom')
+      box = await preview.boundingBox()
+      assert.ok(box.x >= 0 && box.x + box.width <= 600, id + '/resized viewport')
+      await page.setViewportSize({ width: 1200, height: 700 })
+      await page.waitForFunction(() => document.querySelector('.ptcPlusToolHover')?.dataset.placement === 'right')
+      return
+    }
     if (item.touch) {
       await header.dispatchEvent('pointerover', { pointerType: 'touch' })
       await page.waitForTimeout(700)
@@ -216,7 +241,11 @@ await runBrowserCases(selected, async (browser, item) => {
     const box = await preview.boundingBox()
     const anchorBox = await header.boundingBox()
     assert.ok(box.x >= 0 && box.x + box.width <= width && box.y >= 0 && box.y + box.height <= height, id + '/viewport')
-    assert.ok(box.y >= anchorBox.y + anchorBox.height || box.y + box.height <= anchorBox.y, id + '/covers trigger')
+    if (await preview.getAttribute('data-placement') === 'right') {
+      assert.ok(box.x >= anchorBox.x + anchorBox.width / 2 + 15, id + '/covers pointer')
+    } else {
+      assert.ok(box.y >= anchorBox.y + anchorBox.height || box.y + box.height <= anchorBox.y, id + '/covers trigger')
+    }
     assert.equal(await preview.evaluate(element => getComputedStyle(element).pointerEvents), 'none', id)
     await page.screenshot({ path: `artifacts/tool-hover/${id.replaceAll('/', '-')}.png` })
     if (item.portalFallback) {
@@ -282,4 +311,4 @@ await runBrowserCases(selected, async (browser, item) => {
     return { page: browser, close: () => browser.close() }
   },
 })
-console.log(`Tool hover: ${selected.length}/${cases.length} passive preview, scroll, touch and portal cases passed.`)
+console.log(`Tool hover: ${selected.length}/${cases.length} passive preview, placement, scroll, touch and portal cases passed.`)

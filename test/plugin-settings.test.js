@@ -2015,6 +2015,7 @@ test('config schema defaults expose the settings switches', async () => {
     'legacyBindingSettings',
     'enabled',
     'enhancedToolView',
+    'toolHoverPreviewEnabled',
     'replViewEnabled',
     'bindingAuthorButtonVisible',
     'autoDescribeRunCode',
@@ -2053,7 +2054,7 @@ test('config schema defaults expose the settings switches', async () => {
   assert.deepEqual(CONFIG_GROUPS.find(group => group.key === 'switch').fields, ['enabled'])
   assert.deepEqual(
     CONFIG_GROUPS.find(group => group.key === 'interface').fields,
-    ['enhancedToolView', 'replViewEnabled', 'bindingAuthorButtonVisible'],
+    ['enhancedToolView', 'toolHoverPreviewEnabled', 'replViewEnabled', 'bindingAuthorButtonVisible'],
   )
   assert.deepEqual(
     CONFIG_GROUPS.find(group => group.key === 'calls').fields,
@@ -2075,6 +2076,7 @@ test('config schema defaults expose the settings switches', async () => {
   assert.equal(inject.includes('commands'), false)
   assert.equal(defaults.enabled, true)
   assert.equal(defaults.enhancedToolView, true)
+  assert.equal(defaults.toolHoverPreviewEnabled, true)
   assert.equal(defaults.autoDescribeRunCode, true)
   assert.equal(defaults.cordisToolsEnabled, false)
   assert.equal(defaults.userBindingsEnabled, true)
@@ -2087,6 +2089,8 @@ test('config schema defaults expose the settings switches', async () => {
   assert.equal(ns.enabled, false)
   const native = resolveConfig((await Config['~standard'].validate({ enhancedToolView: false })).value)
   assert.equal(native.enhancedToolView, false)
+  const hoverOff = resolveConfig((await Config['~standard'].validate({ toolHoverPreviewEnabled: false })).value)
+  assert.equal(hoverOff.toolHoverPreviewEnabled, false)
   const autoDescribe = resolveConfig((await Config['~standard'].validate({ autoDescribeRunCode: true })).value)
   assert.equal(autoDescribe.autoDescribeRunCode, true)
   const cordis = resolveConfig((await Config['~standard'].validate({ cordisToolsEnabled: true })).value)
@@ -2158,6 +2162,7 @@ test('re-attaching the execution seam keeps the committed volatile configuration
 
 test('runtime config rejects an invalid enabled value', () => {
   assert.throws(() => resolveConfig({ enabled: 'yes' }), /enabled must be a boolean/)
+  assert.throws(() => resolveConfig({ toolHoverPreviewEnabled: 'yes' }), /toolHoverPreviewEnabled must be a boolean/)
   assert.throws(() => resolveConfig({ enhancedToolView: 'yes' }), /enhancedToolView must be a boolean/)
   assert.throws(() => resolveConfig({ autoDescribeRunCode: 'yes' }), /autoDescribeRunCode must be a boolean/)
   assert.throws(() => resolveConfig({ cordisToolsEnabled: 'yes' }), /cordisToolsEnabled must be a boolean/)

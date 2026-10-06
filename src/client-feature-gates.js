@@ -13,6 +13,7 @@ const FEATURE_SETTINGS = Object.freeze({
   bindings: ['userBindingsEnabled'],
   // Enhanced run_code tool rows.
   toolView: ['enhancedToolView'],
+  toolHover: ['enhancedToolView', 'toolHoverPreviewEnabled'],
   // The REPL view tab; the session preset condition is added by its registration.
   replView: ['replViewEnabled'],
   // The composer authoring menu.

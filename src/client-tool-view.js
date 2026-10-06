@@ -13,7 +13,7 @@ export function createPtcToolView(React, deps) {
   const hasDisclosureRow = isHostComponent(DisclosureRow)
   const { ToolHoverAnchor } = createToolHover(React, createPortal)
 
-  function PTCPlusToolRow({ toolName, block, inspect, t }) {
+  function PTCPlusToolRow({ toolName, block, inspect, t, hoverEnabled = true }) {
     const [open, setOpen] = React.useState(false)
     const view = derivePtcToolView(block, toolName)
     const previewable = view.code !== '' || view.output !== ''
@@ -90,7 +90,7 @@ export function createPtcToolView(React, deps) {
         h('span', { className: 'ptcPlusToolHoverBounded',
           'data-truncated': sourceExcerpt.truncated || outputExcerpt.truncated || undefined,
         }, t('tool.previewBounded'))))
-    const wrapRow = anchor => h(ToolHoverAnchor, { disabled: open || !previewable, content: preview }, anchor)
+    const wrapRow = anchor => h(ToolHoverAnchor, { disabled: !hoverEnabled || open || !previewable, content: preview }, anchor)
     if (hasDisclosureRow) {
       return wrapRow(
         h(DisclosureRow, {

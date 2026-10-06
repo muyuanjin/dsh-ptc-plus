@@ -39,6 +39,15 @@ export const CONFIG_FIELDS = Object.freeze([
     descriptionEn: 'Uses enhanced tool cards when enabled and DSH native tool cards when disabled.',
   },
   {
+    key: 'toolHoverPreviewEnabled',
+    type: 'boolean',
+    default: true,
+    label: '悬停预览执行内容',
+    labelEn: 'Preview execution content on hover',
+    description: '在增强执行卡片上停留或键盘聚焦时显示简短预览；滚动时自动隐藏。',
+    descriptionEn: 'Shows a quick preview on enhanced tool cards after hovering or keyboard focus; hides while scrolling.',
+  },
+  {
     key: 'replViewEnabled',
     type: 'boolean',
     default: true,
@@ -326,7 +335,7 @@ export const CONFIG_GROUPS = Object.freeze([
     key: 'interface',
     label: '界面显示',
     labelEn: 'Interface display',
-    fields: Object.freeze(['enhancedToolView', 'replViewEnabled', 'bindingAuthorButtonVisible']),
+    fields: Object.freeze(['enhancedToolView', 'toolHoverPreviewEnabled', 'replViewEnabled', 'bindingAuthorButtonVisible']),
   },
   {
     key: 'limits',

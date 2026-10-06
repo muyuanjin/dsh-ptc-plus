@@ -1119,6 +1119,15 @@
       descriptionEn: "Uses enhanced tool cards when enabled and DSH native tool cards when disabled."
     },
     {
+      key: "toolHoverPreviewEnabled",
+      type: "boolean",
+      default: true,
+      label: "\u60AC\u505C\u9884\u89C8\u6267\u884C\u5185\u5BB9",
+      labelEn: "Preview execution content on hover",
+      description: "\u5728\u589E\u5F3A\u6267\u884C\u5361\u7247\u4E0A\u505C\u7559\u6216\u952E\u76D8\u805A\u7126\u65F6\u663E\u793A\u7B80\u77ED\u9884\u89C8\uFF1B\u6EDA\u52A8\u65F6\u81EA\u52A8\u9690\u85CF\u3002",
+      descriptionEn: "Shows a quick preview on enhanced tool cards after hovering or keyboard focus; hides while scrolling."
+    },
+    {
       key: "replViewEnabled",
       type: "boolean",
       default: true,
@@ -1404,7 +1413,7 @@
       key: "interface",
       label: "\u754C\u9762\u663E\u793A",
       labelEn: "Interface display",
-      fields: Object.freeze(["enhancedToolView", "replViewEnabled", "bindingAuthorButtonVisible"])
+      fields: Object.freeze(["enhancedToolView", "toolHoverPreviewEnabled", "replViewEnabled", "bindingAuthorButtonVisible"])
     },
     {
       key: "limits",
@@ -2081,8 +2090,8 @@
   }
 
   // src/client-tool-hover.js
-  var HOVER_DWELL_MS = 600;
-  var SCROLL_IDLE_MS = 500;
+  var HOVER_DWELL_MS = 400;
+  var SCROLL_IDLE_MS = 350;
   function toolHoverExcerpt(text, maxLines) {
     const prefix = text.slice(0, 1800).replace(/[\uD800-\uDBFF]$/, "");
     const lines = prefix.split(/\r\n|\r|\n/);
@@ -2095,7 +2104,7 @@
     });
     return { text: bounded.join("\n"), truncated };
   }
-  function placeToolHover(anchor, preview) {
+  function placeToolHover(anchor, preview, pointer) {
     const margin = 12;
     const gap = 10;
     const viewport = window.visualViewport;
@@ -2104,19 +2113,25 @@
     const width = viewport?.width ?? window.innerWidth;
     const height = viewport?.height ?? window.innerHeight;
     const rect = anchor.getBoundingClientRect();
+    const previewWidth = Math.min(420, width - margin * 2);
+    const right = pointer === null ? rect.right + gap : pointer[0] + 16;
+    const onRight = right + previewWidth <= leftEdge + width - margin;
     const below = Math.max(0, topEdge + height - rect.bottom - gap - margin);
     const above = Math.max(0, rect.top - topEdge - gap - margin);
     const onTop = below < 340 && above > below;
-    const available = Math.min(360, onTop ? above : below);
+    const available = Math.min(360, onRight ? height - margin * 2 : onTop ? above : below);
     if (available < 100 || width < 100) return false;
-    const previewWidth = Math.min(420, width - margin * 2);
     preview.style.width = `${previewWidth}px`;
     preview.style.maxHeight = `${available}px`;
-    preview.style.left = `${Math.max(
+    preview.style.left = onRight ? `${right}px` : `${Math.max(
       leftEdge + margin,
       Math.min(rect.left + 16, leftEdge + width - previewWidth - margin)
     )}px`;
-    preview.style.top = onTop ? `${rect.top - gap - Math.min(preview.offsetHeight, available)}px` : `${rect.bottom + gap}px`;
+    preview.style.top = onRight ? `${Math.max(topEdge + margin, Math.min(
+      pointer?.[1] ?? rect.top,
+      topEdge + height - margin - Math.min(preview.offsetHeight, available)
+    ))}px` : onTop ? `${rect.top - gap - Math.min(preview.offsetHeight, available)}px` : `${rect.bottom + gap}px`;
+    preview.dataset.placement = onRight ? "right" : onTop ? "top" : "bottom";
     preview.style.visibility = "visible";
     preview.dataset.clipped = String([...preview.querySelectorAll(
       ".ptcPlusToolHoverContent,.ptcPlusToolHoverSection,.ptcPlusToolHoverDescription,.ptcPlusFeatures,pre"
@@ -2173,7 +2188,7 @@
         cancelled.current = true;
         dismiss();
       }, [dismiss]);
-      React.useEffect(() => subscribe(cancel), [cancel]);
+      React.useEffect(() => disabled ? void 0 : subscribe(cancel), [disabled, cancel]);
       React.useEffect(() => () => clearPending(), [clearPending]);
       React.useLayoutEffect(() => {
         if (disabled) cancel();
@@ -2200,7 +2215,7 @@
         preview2.hidden = false;
         if (typeof preview2.showPopover === "function") preview2.showPopover();
         const place = () => {
-          if (!placeToolHover(anchor, preview2)) dismiss();
+          if (!placeToolHover(anchor, preview2, lastPointer.current)) dismiss();
         };
         place();
         const observer = typeof ResizeObserver === "function" ? new ResizeObserver(place) : null;
@@ -2243,6 +2258,7 @@
         },
         onFocusCapture: (event) => {
           if (event.target.matches(":focus-visible")) {
+            lastPointer.current = null;
             clearPending();
             show();
           }
@@ -2261,7 +2277,7 @@
     const h = React.createElement;
     const hasDisclosureRow = isHostComponent(DisclosureRow);
     const { ToolHoverAnchor } = createToolHover(React, createPortal);
-    function PTCPlusToolRow({ toolName, block, inspect, t: t2 }) {
+    function PTCPlusToolRow({ toolName, block, inspect, t: t2, hoverEnabled = true }) {
       const [open, setOpen] = React.useState(false);
       const view = derivePtcToolView(block, toolName);
       const previewable = view.code !== "" || view.output !== "";
@@ -2384,7 +2400,7 @@
           }, t2("tool.previewBounded"))
         )
       );
-      const wrapRow = (anchor) => h(ToolHoverAnchor, { disabled: open || !previewable, content: preview }, anchor);
+      const wrapRow = (anchor) => h(ToolHoverAnchor, { disabled: !hoverEnabled || open || !previewable, content: preview }, anchor);
       if (hasDisclosureRow) {
         return wrapRow(
           h(DisclosureRow, {
@@ -2513,6 +2529,7 @@
     bindings: ["userBindingsEnabled"],
     // Enhanced run_code tool rows.
     toolView: ["enhancedToolView"],
+    toolHover: ["enhancedToolView", "toolHoverPreviewEnabled"],
     // The REPL view tab; the session preset condition is added by its registration.
     replView: ["replViewEnabled"],
     // The composer authoring menu.
@@ -32542,6 +32559,10 @@
           injectProps: () => ({ ...settingsProps(), updateSetting }),
           component: PTCPlusSettingsCard
         });
+        function ConfiguredToolRow(props) {
+          const snapshot2 = React.useSyncExternalStore(preferenceScope.subscribe, preferenceScope.getSnapshot);
+          return h(PTCPlusToolRow, { ...props, hoverEnabled: featureEnabled(snapshot2, "toolHover") });
+        }
         ctx.slots.inject("tool.call.toolview", () => registerGated(ctx, settingsGate("toolView", () => {
           const disposers = [];
           try {
@@ -32549,12 +32570,12 @@
               name: "tool.call.toolview",
               key: "run_code",
               locale: LOCALE_NS
-            }, PTCPlusToolRow));
+            }, ConfiguredToolRow));
             disposers.push(ctx.slots.register({
               name: "tool.call.toolview",
               key: "edit_run_code",
               locale: LOCALE_NS
-            }, PTCPlusToolRow));
+            }, ConfiguredToolRow));
           } catch (error) {
             disposers.reverse().forEach((dispose) => dispose());
             throw error;

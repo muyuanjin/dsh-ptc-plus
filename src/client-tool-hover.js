@@ -1,5 +1,5 @@
-const HOVER_DWELL_MS = 600
-const SCROLL_IDLE_MS = 500
+const HOVER_DWELL_MS = 400
+const SCROLL_IDLE_MS = 350
 
 /** Presentation excerpt only; the expanded row retains the complete record. */
 export function toolHoverExcerpt(text, maxLines) {
@@ -17,7 +17,7 @@ export function toolHoverExcerpt(text, maxLines) {
 }
 
 /** Only the owned anchor and preview participate in placement. */
-function placeToolHover(anchor, preview) {
+function placeToolHover(anchor, preview, pointer) {
   const margin = 12
   const gap = 10
   const viewport = window.visualViewport
@@ -26,19 +26,24 @@ function placeToolHover(anchor, preview) {
   const width = viewport?.width ?? window.innerWidth
   const height = viewport?.height ?? window.innerHeight
   const rect = anchor.getBoundingClientRect()
+  const previewWidth = Math.min(420, width - margin * 2)
+  const right = pointer === null ? rect.right + gap : pointer[0] + 16
+  const onRight = right + previewWidth <= leftEdge + width - margin
   const below = Math.max(0, topEdge + height - rect.bottom - gap - margin)
   const above = Math.max(0, rect.top - topEdge - gap - margin)
   const onTop = below < 340 && above > below
-  const available = Math.min(360, onTop ? above : below)
+  const available = Math.min(360, onRight ? height - margin * 2 : onTop ? above : below)
   if (available < 100 || width < 100) return false
-  const previewWidth = Math.min(420, width - margin * 2)
   preview.style.width = `${previewWidth}px`
   preview.style.maxHeight = `${available}px`
-  preview.style.left = `${Math.max(leftEdge + margin,
+  preview.style.left = onRight ? `${right}px` : `${Math.max(leftEdge + margin,
     Math.min(rect.left + 16, leftEdge + width - previewWidth - margin))}px`
-  preview.style.top = onTop
-    ? `${rect.top - gap - Math.min(preview.offsetHeight, available)}px`
-    : `${rect.bottom + gap}px`
+  preview.style.top = onRight
+    ? `${Math.max(topEdge + margin, Math.min(pointer?.[1] ?? rect.top,
+      topEdge + height - margin - Math.min(preview.offsetHeight, available)))}px`
+    : onTop ? `${rect.top - gap - Math.min(preview.offsetHeight, available)}px`
+      : `${rect.bottom + gap}px`
+  preview.dataset.placement = onRight ? 'right' : onTop ? 'top' : 'bottom'
   preview.style.visibility = 'visible'
   preview.dataset.clipped = String([...preview.querySelectorAll(
     '.ptcPlusToolHoverContent,.ptcPlusToolHoverSection,.ptcPlusToolHoverDescription,.ptcPlusFeatures,pre',
@@ -104,7 +109,7 @@ export function createToolHover(React, createPortal) {
       cancelled.current = true
       dismiss()
     }, [dismiss])
-    React.useEffect(() => subscribe(cancel), [cancel])
+    React.useEffect(() => disabled ? undefined : subscribe(cancel), [disabled, cancel])
     React.useEffect(() => () => clearPending(), [clearPending])
     React.useLayoutEffect(() => {
       if (disabled) cancel()
@@ -132,7 +137,7 @@ export function createToolHover(React, createPortal) {
       preview.hidden = false
       if (typeof preview.showPopover === 'function') preview.showPopover()
       const place = () => {
-        if (!placeToolHover(anchor, preview)) dismiss()
+        if (!placeToolHover(anchor, preview, lastPointer.current)) dismiss()
       }
       place()
       const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(place) : null
@@ -167,7 +172,7 @@ export function createToolHover(React, createPortal) {
       onPointerDownCapture: cancel,
       onKeyDownCapture: event => { if (event.key === 'Escape') cancel() },
       onFocusCapture: event => {
-        if (event.target.matches(':focus-visible')) { clearPending(); show() }
+        if (event.target.matches(':focus-visible')) { lastPointer.current = null; clearPending(); show() }
       },
       onBlurCapture: event => {
         if (!event.currentTarget.contains(event.relatedTarget)) dismiss()

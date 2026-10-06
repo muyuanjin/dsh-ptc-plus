@@ -221,16 +221,21 @@ window.__ModuleLoader__.load({
         component: PTCPlusSettingsCard,
       })
 
+      function ConfiguredToolRow(props) {
+        const snapshot = React.useSyncExternalStore(preferenceScope.subscribe, preferenceScope.getSnapshot)
+        return h(PTCPlusToolRow, { ...props, hoverEnabled: featureEnabled(snapshot, 'toolHover') })
+      }
+
       ctx.slots.inject('tool.call.toolview', () => registerGated(ctx, settingsGate('toolView', () => {
         // Two rows share one eligibility decision; roll both back if either fails.
         const disposers = []
         try {
           disposers.push(ctx.slots.register({
             name: 'tool.call.toolview', key: 'run_code', locale: LOCALE_NS,
-          }, PTCPlusToolRow))
+          }, ConfiguredToolRow))
           disposers.push(ctx.slots.register({
             name: 'tool.call.toolview', key: 'edit_run_code', locale: LOCALE_NS,
-          }, PTCPlusToolRow))
+          }, ConfiguredToolRow))
         } catch (error) {
           disposers.reverse().forEach(dispose => dispose())
           throw error

@@ -41,6 +41,39 @@ export async function setFixtureTheme(page, theme) {
   }, theme)
 }
 
+// Visual feedback can be transitioned. Settling the transitions the probe just
+// triggered reads the destination state exactly when the browser reaches it, so
+// the probe stays deterministic without paying a fixed sleep per control.
+// Reduced-motion fixtures declare no transition and need no frame wait.
+const SETTLE_LIMIT_MS = 500
+
+export async function settleVisual(page) {
+  await page.evaluate(async limit => {
+    // getAnimations flushes pending style changes, including CSS transitions
+    // started by the preceding input. Unanimated controls need no frame wait.
+    const activeAnimations = () => document.getAnimations().filter(animation =>
+      (animation.playState === 'running' || animation.pending)
+      && animation.effect?.getComputedTiming().iterations !== Infinity)
+    let running = activeAnimations()
+    if (running.length === 0) return
+    let timer
+    const timeout = new Promise((resolve, reject) => {
+      timer = setTimeout(() => reject(new Error(`Visual transitions did not settle within ${limit} ms`)), limit)
+    })
+    try {
+      do {
+        await Promise.race([Promise.all(running.map(animation => animation.finished.catch(() => undefined))), timeout])
+        // CSS completion/cancellation events can run after finished settles.
+        // Let the browser dispatch them before checking for replacements.
+        await Promise.race([new Promise(resolve => requestAnimationFrame(resolve)), timeout])
+        running = activeAnimations()
+      } while (running.length > 0)
+    } finally {
+      clearTimeout(timer)
+    }
+  }, SETTLE_LIMIT_MS)
+}
+
 export async function controlAppearance(control) {
   return control.evaluate(element => {
     const canvas = document.createElement('canvas')
@@ -147,7 +180,7 @@ export async function assertControlVisual(control, options = {}) {
   await control.scrollIntoViewIfNeeded()
   await control.evaluate(element => element.blur())
   await page.mouse.move(0, 0)
-  await page.waitForTimeout(180)
+  await settleVisual(page)
   const normal = await controlAppearance(control)
   assert.ok(normal.height >= (action ? 28 : 16) && normal.width >= 12, `${label}: control dimensions lost`)
   assert.ok(normal.left >= -1 && normal.right <= page.viewportSize().width + 1 && normal.reachable,
@@ -159,7 +192,7 @@ export async function assertControlVisual(control, options = {}) {
     && element.closest('.ptcPlusBindingItem')?.getAttribute('data-selected') === 'true')
   if (hover && !normal.disabled) {
     await control.hover()
-    await page.waitForTimeout(180)
+    await settleVisual(page)
     const hovered = await controlAppearance(control)
     assert.ok(hovered.minContrast >= 3, `${label}: unreadable hover`)
     assert.equal(hovered.width, normal.width, `${label}: hover changes width`)
@@ -170,7 +203,7 @@ export async function assertControlVisual(control, options = {}) {
     await page.mouse.move(0, 0)
     await page.keyboard.press('Tab')
     await control.focus()
-    await page.waitForTimeout(180)
+    await settleVisual(page)
     const focused = await controlAppearance(control)
     assert.ok(focused.minContrast >= 3, `${label}: unreadable focused control (${focused.minContrast.toFixed(2)}:1)`)
     assert.equal(focused.focusVisible, true, `${label}: keyboard focus not established`)
@@ -190,6 +223,7 @@ export async function assertControlVisual(control, options = {}) {
       return value
     })
     try {
+      await settleVisual(page)
       const inactive = await controlAppearance(control)
       assert.ok(inactive.opacity < normal.opacity || (normal.disabled && inactive.opacity <= 0.6)
         || inactive.color !== normal.color || (inactive.busyFeedback && inactive.cursor === 'wait'),
@@ -554,7 +588,7 @@ export async function assertVisualCounterexamples(page, control) {
   // Faults retain component classes, handlers and DOM. Each must reach its own oracle failure.
   await page.mouse.move(0, 0)
   await control.evaluate(element => element.blur())
-  await page.waitForTimeout(180)
+  await settleVisual(page)
   const normal = await controlAppearance(control)
   for (const [name, css, options, error] of [
     ['padding', 'padding:0!important', { action: true }, /action padding lost/],

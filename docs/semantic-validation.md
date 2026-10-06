@@ -10,7 +10,7 @@
 | --- | --- | --- |
 | 保留的 JavaScript 语义 | 固定版本的 Test262 原文与官方 assertion harness；先在新的 Node Script realm 执行，再在新的 stateful/protected cell 执行 | `test/semantic-test262.test.js` |
 | PTC 方言 | 声明来源 × 后续操作的明确契约；检查旧闭包、保存的原值、完整 declarator 发布、失败后的状态与真实效果 | `test/semantic-dialect.test.js` |
-| 编译器边界 | 协议操作、参数环境或动态错误 × root/function/eval/module 入口；同一源码先在原生 Node 执行，再比较 PTC 的值与显式源码效果 | `test/semantic-boundaries.test.js` |
+| 编译器边界 | 协议操作、参数环境或动态错误 × root/function/eval/module 入口；同一源码先在原生 Node 执行，再比较 PTC 的值与显式源码效果 | `test/semantic-boundaries.test.js`、`test/semantic-boundary-{storage,promises,reflection}.test.js` |
 
 Test262 子集位于 `test/fixtures/test262/`。`manifest.json` 记录上游仓库、精确 revision、每份原始文件的 SHA-256、语义主题和适用策略。测试验证源码及 harness 的校验值，遵守 strict/noStrict 运行要求；未知 flags、缺少 includes 和未适配的 negative 测试直接使测试配置失败。harness canary 验证错误断言确实会在两个执行路径中失败。
 
@@ -19,6 +19,8 @@ Test262 子集位于 `test/fixtures/test262/`。`manifest.json` 记录上游仓�
 方言差异必须有规范依据和配对断言。例如提案 §5.1 允许 stateful 赋值先建立值，后续裸声明保留它，因此原生 TDZ 写入拒绝用例只适用于 protected；manifest 指向相应方言断言。不得为了通过而修改上游源码、悄悄跳过失败或把实现限制登记成方言差异。
 
 扩充子集时，从 manifest 的 revision 检出 Test262，原样复制所选用例、依赖的 harness 和 LICENSE，更新校验值及语义主题；升级 revision 时核对全部已选文件。普通测试始终读取仓库内固定输入。优先补齐未覆盖的语义规则与入口组合，而非堆积同一反例的拼写变体。
+
+编译器边界按参数/namespace/错误分类、存储协议、Promise 协议和反射协议分文件执行，共享 `test/semantic-boundary-fixture.js` 的源码构造与原生 oracle。协议集合互斥且完整，全部 8 个协议 × 6 种操作 × 4 个入口仍逐一比较；每次比较继续创建独立的原生 Worker 和 PTC runtime，不共享被修改的 intrinsic 或执行状态。常规 backend 与 `test:semantics` 使用同一文件并发上限。
 
 矩阵是有限笛卡尔积，失败名称会给出协议、操作和入口，可用 Node 的 `--test-name-pattern` 单独复现。原生比较不执行 lowering 产物来生成预期值。涉及对象身份或副作用顺序的规则还需要直接契约断言；相同 JSON 不能证明任意对象等价。扩大生成范围时保留稳定输入和可独立复现的最小案例，禁止无记录的随机种子或无限生成。
 

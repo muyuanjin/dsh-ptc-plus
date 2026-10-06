@@ -56,17 +56,22 @@ preload does not independently reinterpret a caller's entry.
 
 ## Workflow
 
-During ordinary development, use the nearest behavioral tests without coverage.
+During ordinary development, use the selection-required behavioral entries in
+[verification](verification.md) without coverage. Executable changes alone do not
+trigger a complete gate; [ADR 0036](adr/0036-separate-focused-development-from-delivery-verification.md)
+owns the development versus delivery boundary.
 During release preparation, use focused coverage after the full release coverage
 gate identifies a narrow deficit. Select every changed source whose threshold
 matters and the tests that exercise its distinct paths. A passing focused run
 establishes only that selected relation; rerun the full coverage gate before
 packing and staging.
 
-Run one final `npm run verify` while the local review ledger has unresolved
-findings. Once every finding is terminal, run `npm run check` on a stable tree
-to produce the proof consumed by the commit hook. Do not run `verify`
-immediately before `check` on the same tree because `check` already invokes it.
+When complete validation is requested for delivery, timing or an identified
+cross-suite risk, run one final command on the stable candidate: `npm run verify`
+with unresolved findings, otherwise `npm run check`. Terminal findings alone do
+not trigger another gate. A still-matching proof is reused for delivery; focused
+results never replace it. Do not run `verify` immediately before `check` on the
+same tree because `check` already invokes it.
 
 Temporary concurrency overrides change scheduling only. Use one only when
 current evidence identifies scheduling contention, and do not carry it into a

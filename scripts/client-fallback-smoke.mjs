@@ -1,19 +1,39 @@
 import assert from 'node:assert/strict'
 import { mkdir, readFile } from 'node:fs/promises'
 import { build } from 'esbuild'
-import { chromium } from 'playwright'
+import { browserConcurrency, runBrowserCases, selectBrowserCases } from './browser-case-runner.mjs'
 import { parseArgs } from 'node:util'
-import { assertSparkleMenuTypography, assertSparkleMenuFocus, assertSparkleMenuLayout, assertDraftReviewLayout, assertContentCounterexamples, assertControlVisual, assertToolLayout, assertToolStateVisual, assertToolTypography, assertVisualCounterexamples, assertVisualSurface, controlAppearance, setFixtureTheme } from './client-visual-contract.mjs'
+import { assertSparkleMenuTypography, assertSparkleMenuFocus, assertSparkleMenuLayout, assertDraftReviewLayout, assertContentCounterexamples, assertControlVisual, assertToolLayout, assertToolStateVisual, assertToolTypography, assertVisualCounterexamples, assertVisualSurface, controlAppearance, settleVisual, setFixtureTheme } from './client-visual-contract.mjs'
 import { SETTINGS_COPY } from '../src/client-copy.js'
 
-const { values } = parseArgs({ options: { 'browser-channel': { type: 'string' }, 'menu-only': { type: 'boolean', default: false } } })
+const { values } = parseArgs({ options: { 'browser-channel': { type: 'string' }, 'menu-only': { type: 'boolean', default: false }, concurrency: { type: 'string' }, case: { type: 'string', multiple: true }, list: { type: 'boolean' }, focus: { type: 'boolean' } } })
 
-const clientBundle = await readFile(new URL('../client.js', import.meta.url), 'utf8')
-const clientCss = clientBundle.match(/var CLIENT_CSS = `([\s\S]*?)`;/)?.[1]
-assert.ok(clientCss, 'generated client bundle does not publish CLIENT_CSS')
+const variants = [true, false].flatMap(native => ['en', 'zh'].flatMap(locale =>
+  ['light', 'dark'].map(theme => ({ native, locale, theme }))))
+const allCases = [
+  ...[320, 390, 1440].flatMap(width => variants.map(item => ({ family: 'dock', width, ...item }))),
+  ...variants.map(item => ({ family: 'single-disabled', ...item })),
+  ...[{ width: 390, height: 600 }, { width: 320, height: 420 }, { width: 320, height: 240 }]
+    .flatMap(viewport => variants.map(item => ({ family: 'catalog', viewport, ...item }))),
+  ...[{ width: 390, height: 600 }, { width: 320, height: 420 }]
+    .flatMap(viewport => ['light', 'dark'].map(theme => ({ family: 'dialogs', viewport, theme }))),
+  { family: 'hover-settlement' },
+].map(item => ({ ...item, id: [item.family, item.width ?? (item.viewport && `${item.viewport.width}x${item.viewport.height}`),
+  item.theme, item.native === undefined ? undefined : item.native ? 'native' : 'fallback', item.locale].filter(Boolean).join('/') }))
+const availableCases = values['menu-only'] ? allCases.filter(item => ['single-disabled', 'catalog'].includes(item.family)) : allCases
+const cases = selectBrowserCases(availableCases, values.case, values)
+const focused = cases.length !== availableCases.length
+const concurrency = browserConcurrency(values.concurrency)
+if (values.list) {
+  console.log(cases.map(item => item.id).join('\n'))
+} else {
+  const started = performance.now()
+  const clientBundle = await readFile(new URL('../client.js', import.meta.url), 'utf8')
+  const clientCss = clientBundle.match(/var CLIENT_CSS = `([\s\S]*?)`;/)?.[1]
+  assert.ok(clientCss, 'generated client bundle does not publish CLIENT_CSS')
 
-const fixture = await build({
-  stdin: { resolveDir: process.cwd(), sourcefile: 'fallback-fixture.js', contents: `
+  const fixture = await build({
+    stdin: { resolveDir: process.cwd(), sourcefile: 'fallback-fixture.js', contents: `
     import * as React from 'react';
     import {createRoot} from 'react-dom/client';
     import {createPortal} from 'react-dom';
@@ -76,12 +96,12 @@ const fixture = await build({
     render();
     window.disposeFixture=()=>{root.unmount();catalogOwner.dispose()};
   ` },
-  bundle: true, platform: 'browser', format: 'iife', write: false, outfile: 'menu-fixture.js',
-  loader: { '.svg': 'dataurl', '.png': 'dataurl', '.woff2': 'dataurl', '.woff': 'dataurl', '.ttf': 'dataurl' },
-  define: { __PTC_PLUS_CLIENT_MODULE_ID__: JSON.stringify('dsh-ptc-plus'), 'process.env.NODE_ENV': JSON.stringify('production') },
-})
-const buttonFixture = await build({
-  stdin: { resolveDir: process.cwd(), sourcefile: 'button-fixture.js', contents: `
+    bundle: true, platform: 'browser', format: 'iife', write: false, outfile: 'menu-fixture.js',
+    loader: { '.svg': 'dataurl', '.png': 'dataurl', '.woff2': 'dataurl', '.woff': 'dataurl', '.ttf': 'dataurl' },
+    define: { __PTC_PLUS_CLIENT_MODULE_ID__: JSON.stringify('dsh-ptc-plus'), 'process.env.NODE_ENV': JSON.stringify('production') },
+  })
+  const buttonFixture = await build({
+    stdin: { resolveDir: process.cwd(), sourcefile: 'button-fixture.js', contents: `
     import * as React from 'react';
     import {createRoot} from 'react-dom/client';
     import {Button,DisclosureRow,Modal as NativeModal} from '@deepseek-ai/dsh-client-ui-primitives';
@@ -153,24 +173,21 @@ const buttonFixture = await build({
     };
     render();
   ` },
-  bundle: true, platform: 'browser', format: 'iife', write: false, outfile: 'button-fixture.js',
-  loader: { '.svg': 'dataurl', '.png': 'dataurl', '.woff2': 'dataurl', '.woff': 'dataurl', '.ttf': 'dataurl' },
-  define: { 'process.env.NODE_ENV': JSON.stringify('production') },
-})
-const browser = await chromium.launch({ headless: true, channel: values['browser-channel'] })
-try {
-  const page = await browser.newPage({ reducedMotion: 'reduce' })
+    bundle: true, platform: 'browser', format: 'iife', write: false, outfile: 'button-fixture.js',
+    loader: { '.svg': 'dataurl', '.png': 'dataurl', '.woff2': 'dataurl', '.woff': 'dataurl', '.ttf': 'dataurl' },
+    define: { 'process.env.NODE_ENV': JSON.stringify('production') },
+  })
   await mkdir('artifacts/button-styles', { recursive: true })
-  if (!values['menu-only']) for (const { width, theme } of [320, 390, 1440].flatMap(width => ['light', 'dark'].map(theme => ({ width, theme })))) {
-    for (const native of [true, false]) {
-      for (const locale of ['en', 'zh']) {
+  console.log(`Fallback visual: ${cases.length}/${availableCases.length} cases, ${concurrency} isolated browsers`)
+  await runBrowserCases(cases, async (page, { family, width, theme, native, locale, viewport }) => {
+      if (family === 'dock') {
         await page.goto('about:blank')
         await page.setViewportSize({ width, height: 900 })
         await page.setContent(`<style>
-          :root{--dsw-radius-sm:6px}
-          body{margin:0;font:14px system-ui}button{font:inherit;background:none;border:0;padding:0}
-          #draft-seat{position:fixed;bottom:32px;inset-inline:8px}#root{padding:8px}#controls{display:flex;gap:8px;margin-top:16px}
-        </style><div id="root"></div>`)
+        :root{--dsw-radius-sm:6px}
+        body{margin:0;font:14px system-ui}button{font:inherit;background:none;border:0;padding:0}
+        #draft-seat{position:fixed;bottom:32px;inset-inline:8px}#root{padding:8px}#controls{display:flex;gap:8px;margin-top:16px}
+      </style><div id="root"></div>`)
         await setFixtureTheme(page, theme)
         await page.evaluate(({ native, locale }) => { window.nativeButtons = native; window.buttonLocale = locale }, { native, locale })
         for (const file of buttonFixture.outputFiles) {
@@ -383,262 +400,265 @@ try {
         const inspect = tool.locator('.ptcPlusInspect')
         await page.keyboard.press('Tab')
         await inspect.focus()
-        await page.waitForTimeout(180)
+        await settleVisual(page)
         assert.equal(await inspect.evaluate(element => getComputedStyle(element).opacity), '1', 'inspection action remains invisible on focus')
         await inspect.press('Enter')
         assert.deepEqual(await page.evaluate(() => window.actions), [['save-draft', true], ['inspect']])
         if (!native && width === 320 && locale === 'en') await assertVisualCounterexamples(page, actions.last())
         await page.screenshot({ path: `artifacts/button-styles/${width}-${theme}-${native ? 'native' : 'fallback'}-${locale}.png`, fullPage: true })
+        return
       }
-    }
-  }
-  for (const native of [true, false]) for (const locale of ['en', 'zh']) for (const theme of ['light', 'dark']) {
-    await page.goto('about:blank')
-    await page.setViewportSize({ width: 390, height: 600 })
-    await page.setContent('<style>body{font:24px/36px system-ui}</style><div id="composer" style="position:fixed;bottom:16px;left:16px"></div>')
-    await page.evaluate(({ native, locale }) => {
-      window.nativeMenu = native; window.menuLocale = locale; window.singleDisabled = true
-    }, { native, locale })
-    for (const output of fixture.outputFiles) {
-      if (output.path.endsWith('.css')) await page.addStyleTag({ content: output.text })
-      else await page.addScriptTag({ content: output.text })
-    }
-    await setFixtureTheme(page, theme)
-    await page.locator('.ptcPlusAuthorButton').click()
-    const menu = page.getByRole('menu')
-    const group = menu.locator('[aria-expanded]')
-    await group.waitFor()
-    await group.press('Enter')
-    await menu.locator('[data-binding-id]').waitFor()
-    const label = `single-disabled/${native ? 'native' : 'fallback'}/${locale}/${theme}`
-    await assertSparkleMenuTypography(menu, label)
-    await assertSparkleMenuLayout(menu, label)
-    const stretchedCaption = await page.addStyleTag({ content: '.ptcPlusOwnedMenuRow{align-items:stretch!important}' })
-    try {
-      await assert.rejects(() => assertSparkleMenuTypography(menu, `${label}/stretched caption`), /caret and caption are misaligned/)
-    } finally {
-      await stretchedCaption.evaluate(element => element.remove())
-    }
-    await assertSparkleMenuTypography(menu, `${label}/centered caption`)
-    assert.equal(await menu.locator('.ptcPlusBindingQuickPurpose').getAttribute('title'),
-      'Generate correctly escaped literals and text for JS/TS, JSON and other output formats.')
-    for (const [property, error] of [['font-size', /menu base font size drifted/], ['line-height', /menu base line height drifted/]]) {
-      const fault = await page.addStyleTag({ content: `.ptcPlusBindingMenuContent{${property}:inherit!important}` })
-      try {
-        await assert.rejects(() => assertSparkleMenuTypography(menu, `${label}/${property} fault`), error)
-      } finally {
-        await fault.evaluate(element => element.remove())
-      }
-      await assertSparkleMenuTypography(menu, `${label}/restored`)
-    }
-    // Smaller carrier typography is also legal; only the plugin menu owns its scale.
-    await page.evaluate(() => { document.body.style.font = '14px/21px system-ui' })
-    await assertSparkleMenuTypography(menu, `${label}/smaller carrier`)
-    await page.screenshot({ path: `artifacts/button-styles/sparkle-single-disabled-${native ? 'native' : 'fallback'}-${locale}-${theme}.png` })
-    await page.keyboard.press('Escape')
-    await page.evaluate(() => window.disposeFixture())
-  }
-  for (const viewport of [{ width: 390, height: 600 }, { width: 320, height: 420 }, { width: 320, height: 240 }]) {
-    for (const native of [true, false]) for (const locale of ['en', 'zh']) for (const theme of ['light', 'dark']) {
-      await page.goto('about:blank')
-      await page.setViewportSize(viewport)
-      await page.setContent('<div id="composer" style="position:fixed;bottom:16px;left:16px;width:calc(100vw - 32px);height:60px"></div>')
-      await page.evaluate(({ native, locale }) => { window.nativeMenu = native; window.menuLocale = locale; window.largeMenu = true }, { native, locale })
-      for (const output of fixture.outputFiles) {
-        if (output.path.endsWith('.css')) await page.addStyleTag({ content: output.text })
-        else await page.addScriptTag({ content: output.text })
-      }
-      await setFixtureTheme(page, theme)
-      const trigger = page.locator('.ptcPlusAuthorButton')
-      await trigger.click()
-      const menu = page.getByRole('menu')
-      await menu.locator('[data-binding-id]').first().waitFor()
-      const groupName = SETTINGS_COPY[locale]['bindings.quickDisabled'].replace('{count}', '32')
-      const group = menu.getByRole('menuitem', { name: groupName, exact: true })
-      assert.equal(await group.getAttribute('aria-expanded'), 'false')
-      assert.equal(await menu.locator('[data-binding-id]').count(), 16)
-      const label = `${viewport.width}x${viewport.height}/${native ? 'native' : 'fallback'}/${locale}/${theme}`
-      const initial = await assertSparkleMenuLayout(menu, label)
-      await assertSparkleMenuTypography(menu, label)
-      assert.equal(initial.scrollable, true, `${label}: large catalog does not scroll`)
-      await group.press('Enter')
-      assert.equal(await group.getAttribute('aria-expanded'), 'true')
-      assert.equal(await menu.locator('[data-binding-id]').count(), 48)
-      for (const end of [true, false]) {
-        await menu.locator('.ptcPlusBindingMenuScroll').evaluate((scroll, end) => { scroll.scrollTop = end ? scroll.scrollHeight : 0 }, end)
-        const current = await assertSparkleMenuLayout(menu, `${label}/${end ? 'end' : 'start'}`)
-        assert.deepEqual(current.footer, initial.footer, `${label}: catalog scrolling moved the footer`)
-      }
-      if (viewport.height === 600 && locale === 'en' && theme === 'light') {
-        const fault = await page.addStyleTag({ content: '.ptcPlusBindingMenuContent{display:block!important;overflow:auto!important}.ptcPlusBindingMenuScroll{overflow:visible!important}' })
-        try {
-          await assert.rejects(() => assertSparkleMenuLayout(menu, `${label}/shared scrolling fault`), /catalog overlaps footer|footer outside menu|action is clipped or covered/)
-        } finally {
-          await fault.evaluate(element => element.remove())
+      if (family === 'single-disabled') {
+        await page.goto('about:blank')
+        await page.setViewportSize({ width: 390, height: 600 })
+        await page.setContent('<style>body{font:24px/36px system-ui}</style><div id="composer" style="position:fixed;bottom:16px;left:16px"></div>')
+        await page.evaluate(({ native, locale }) => {
+          window.nativeMenu = native; window.menuLocale = locale; window.singleDisabled = true
+        }, { native, locale })
+        for (const output of fixture.outputFiles) {
+          if (output.path.endsWith('.css')) await page.addStyleTag({ content: output.text })
+          else await page.addScriptTag({ content: output.text })
         }
-        await assertSparkleMenuLayout(menu, `${label}/restored`)
-      }
-      await page.screenshot({ path: `artifacts/button-styles/sparkle-menu-${viewport.width}-${viewport.height}-${native ? 'native' : 'fallback'}-${locale}-${theme}.png` })
-      const edit = menu.getByRole('menuitem', { name: SETTINGS_COPY[locale]['bindings.authorEdit'], exact: true })
-      await edit.click()
-      const back = menu.getByRole('menuitem', { name: SETTINGS_COPY[locale]['bindings.back'], exact: true })
-      await back.waitFor()
-      const editing = await assertSparkleMenuLayout(menu, `${label}/edit`)
-      await assertSparkleMenuTypography(menu, `${label}/edit`)
-      await menu.locator('.ptcPlusBindingMenuScroll').evaluate(scroll => { scroll.scrollTop = scroll.scrollHeight })
-      assert.deepEqual((await assertSparkleMenuLayout(menu, `${label}/edit end`)).footer, editing.footer)
-      await back.click()
-      await group.waitFor()
-      await assertSparkleMenuFocus(menu, `${label}/back focus`)
-      await group.press('Enter')
-      assert.equal(await group.getAttribute('aria-expanded'), 'false')
-      await menu.locator('.ptcPlusBindingMenuScroll').evaluate(scroll => { scroll.scrollTop = 0 })
-      await menu.locator('[data-binding-id="entry-0"]').click()
-      await page.waitForFunction(() => document.querySelectorAll('[data-binding-id]').length === 15)
-      await assertSparkleMenuFocus(menu, `${label}/disable collapsed`)
-      assert.deepEqual((await assertSparkleMenuLayout(menu, `${label}/regrouped`)).footer, initial.footer)
-      const focusScroll = await menu.locator('.ptcPlusBindingMenuScroll').evaluate(scroll => scroll.scrollTop)
-      assert.ok(focusScroll > 0)
-      await menu.locator('.ptcPlusBindingMenuScroll').evaluate(scroll => { scroll.scrollTop = 0 })
-      await assert.rejects(() => assertSparkleMenuFocus(menu, `${label}/missing reveal fault`), /focused catalog control is clipped or covered/)
-      await menu.locator('.ptcPlusBindingMenuScroll').evaluate((scroll, top) => { scroll.scrollTop = top }, focusScroll)
-      await assertSparkleMenuFocus(menu, `${label}/restored reveal`)
-      const changedGroup = menu.locator('[aria-expanded]')
-      await changedGroup.press('Enter')
-      await menu.locator('[data-binding-id="entry-47"]').click()
-      await page.waitForFunction(() => document.activeElement?.dataset.bindingId === 'entry-47'
-        && document.activeElement.querySelector('[data-enabled=true]'))
-      const enabledFocus = await assertSparkleMenuFocus(menu, `${label}/enable expanded`)
-      assert.deepEqual(enabledFocus.pageScroll, { x: 0, y: 0 })
-      assert.deepEqual((await assertSparkleMenuLayout(menu, `${label}/enable expanded`)).footer, initial.footer)
-      if (viewport.height === 600 && locale === 'en' && theme === 'light') {
-        await menu.locator('[data-binding-id="entry-0"]').click()
-        await page.waitForFunction(() => document.activeElement?.dataset.bindingId === 'entry-0'
-          && document.activeElement.querySelector('[data-enabled=true]'))
-        await page.evaluate(() => { window.holdMenuWrite = true })
-        await menu.locator('[data-binding-id="entry-0"]').click()
-        await page.waitForFunction(() => typeof window.settleMenuWrite === 'function')
+        await setFixtureTheme(page, theme)
+        await page.locator('.ptcPlusAuthorButton').click()
+        const menu = page.getByRole('menu')
+        const group = menu.locator('[aria-expanded]')
+        await group.waitFor()
+        await group.press('Enter')
+        await menu.locator('[data-binding-id]').waitFor()
+        const label = `single-disabled/${native ? 'native' : 'fallback'}/${locale}/${theme}`
+        await assertSparkleMenuTypography(menu, label)
+        await assertSparkleMenuLayout(menu, label)
+        const stretchedCaption = await page.addStyleTag({ content: '.ptcPlusOwnedMenuRow{align-items:stretch!important}' })
+        try {
+          await assert.rejects(() => assertSparkleMenuTypography(menu, `${label}/stretched caption`), /caret and caption are misaligned/)
+        } finally {
+          await stretchedCaption.evaluate(element => element.remove())
+        }
+        await assertSparkleMenuTypography(menu, `${label}/centered caption`)
+        assert.equal(await menu.locator('.ptcPlusBindingQuickPurpose').getAttribute('title'),
+          'Generate correctly escaped literals and text for JS/TS, JSON and other output formats.')
+        for (const [property, error] of [['font-size', /menu base font size drifted/], ['line-height', /menu base line height drifted/]]) {
+          const fault = await page.addStyleTag({ content: `.ptcPlusBindingMenuContent{${property}:inherit!important}` })
+          try {
+            await assert.rejects(() => assertSparkleMenuTypography(menu, `${label}/${property} fault`), error)
+          } finally {
+            await fault.evaluate(element => element.remove())
+          }
+          await assertSparkleMenuTypography(menu, `${label}/restored`)
+        }
+        // Smaller carrier typography is also legal; only the plugin menu owns its scale.
+        await page.evaluate(() => { document.body.style.font = '14px/21px system-ui' })
+        await assertSparkleMenuTypography(menu, `${label}/smaller carrier`)
+        await page.screenshot({ path: `artifacts/button-styles/sparkle-single-disabled-${native ? 'native' : 'fallback'}-${locale}-${theme}.png` })
         await page.keyboard.press('Escape')
-        await trigger.click()
-        await page.waitForFunction(() => document.activeElement?.dataset.bindingId === 'entry-0')
-        await page.evaluate(() => { window.holdMenuWrite = false; window.settleMenuWrite() })
-        await page.waitForFunction(() => document.activeElement?.getAttribute('aria-expanded') === 'false')
-        await assertSparkleMenuFocus(menu, `${label}/pending reopen focus`)
-        assert.deepEqual((await assertSparkleMenuLayout(menu, `${label}/pending reopen footer`)).footer, initial.footer)
+        await page.evaluate(() => window.disposeFixture())
+        return
       }
-      await page.keyboard.press('Escape')
-      await menu.waitFor({ state: 'hidden' })
-      assert.equal(await trigger.evaluate(button => button === document.activeElement), true)
-      await page.evaluate(() => window.disposeFixture())
-    }
-  }
-  if (!values['menu-only']) {
-  for (const { viewport, theme } of [{ width: 390, height: 600 }, { width: 320, height: 420 }]
-    .flatMap(viewport => ['light', 'dark'].map(theme => ({ viewport, theme })))) {
-    await page.goto('about:blank')
-    await page.setViewportSize(viewport)
-    await page.setContent(`<button id="background" style="position:fixed;top:10px;left:10px">Host control</button>
-      <div id="composer" style="position:fixed;bottom:16px;left:16px;width:calc(100vw - 32px);height:60px;overflow:hidden;transform:translateZ(0)"></div>`)
-    await setFixtureTheme(page, theme)
-    await page.addScriptTag({ content: fixture.outputFiles[0].text })
-    const trigger = page.locator('.ptcPlusAuthorButton')
-    await trigger.click()
-    const menu = page.locator('.ptcPlusFallbackMenuList')
-    await menu.waitFor()
-    assert.equal(await menu.evaluate(element => element.parentElement === document.body), true)
-    await menu.getByRole('menuitem').first().focus()
-    await page.keyboard.press('End')
-    assert.equal(await menu.getByRole('menuitem', { name: 'settings.menuEntry', exact: true }).evaluate(element => {
-      const rect = element.getBoundingClientRect()
-      return element === document.activeElement && rect.top >= 0 && rect.bottom <= innerHeight
-        && element.contains(document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2))
-    }), true, 'keyboard navigation leaves the focused action clipped')
-    for (const action of ['bindings.manage', 'settings.menuEntry']) {
-      const button = menu.getByRole('menuitem', { name: action, exact: true })
-      await button.scrollIntoViewIfNeeded()
-      assert.equal(await button.evaluate(element => {
-        const rect = element.getBoundingClientRect()
-        return rect.top >= 0 && rect.bottom <= innerHeight
-          && element.contains(document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2))
-      }), true, `${viewport.width}x${viewport.height}: ${action} is not reachable`)
-    }
-    await menu.getByRole('menuitem', { name: 'bindings.manage', exact: true }).click()
-    const dialog = page.locator('.ptcPlusBindingsModal')
-    await dialog.waitFor()
-    await page.evaluate(() => { window.deferCatalog = true })
-    await dialog.getByRole('button', { name: 'bindings.reload', exact: true }).click()
-    await page.waitForFunction(() => document.querySelector('.ptcPlusBindings')?.getAttribute('aria-busy') === 'true')
-    for (const control of await dialog.locator('button:disabled').all()) {
-      await assertControlVisual(control, { label: 'busy workbench control' })
-    }
-    await page.evaluate(() => { window.settleCatalog(); window.deferCatalog = false })
-    await page.waitForFunction(() => document.querySelector('.ptcPlusBindings')?.getAttribute('aria-busy') === 'false')
-    assert.equal(await dialog.evaluate(element => element.parentElement.parentElement === document.body), true)
-    assert.equal(await page.locator('#background').evaluate(element => {
-      const rect = element.getBoundingClientRect()
-      return element.contains(document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2))
-    }), false, 'headless modal leaves the background clickable')
-    await dialog.locator('.ptcPlusBindingSelect').first().click()
-    await assertContentCounterexamples(page, { selected: dialog.locator('.ptcPlusBindingItem[data-selected=true] .ptcPlusBindingSelect') })
-    await dialog.locator('.ptcPlusSourceActions button').click()
-    await dialog.locator('.ptcPlusEntrySettings summary').click()
-    const purpose = dialog.getByLabel('bindings.purpose', { exact: true })
-    await purpose.fill('Unsaved purpose')
-    await assertContentCounterexamples(page, { input: purpose })
-    await purpose.evaluate(element => {
-      element.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }))
-      element.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, isComposing: true, keyCode: 229 }))
-    })
-    assert.equal(await dialog.isVisible(), true, 'composition cancellation closed the draft')
-    assert.equal(await purpose.inputValue(), 'Unsaved purpose')
-    await purpose.evaluate(element => {
-      element.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true }))
-      element.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, keyCode: 27 }))
-    })
-    assert.equal(await dialog.isVisible(), true, 'composition-closing Escape discarded the draft')
-    assert.equal(await purpose.inputValue(), 'Unsaved purpose')
-    await purpose.evaluate(element => element.dispatchEvent(new KeyboardEvent('keyup', { key: 'Escape', bubbles: true })))
-    const close = dialog.getByRole('button', { name: 'bindings.close', exact: true })
-    await close.click()
-    await dialog.waitFor({ state: 'hidden' })
-    assert.equal(await trigger.evaluate(element => element === document.activeElement), true)
-    await trigger.click()
-    await menu.getByRole('menuitem', { name: 'settings.menuEntry', exact: true }).click()
-    const settings = page.locator('.ptcPlusSettingsModal')
-    await settings.waitFor()
-    await settings.getByRole('button', { name: 'bindings.manage', exact: true }).click()
-    await dialog.waitFor()
-    await page.keyboard.down('Escape')
-    await dialog.waitFor({ state: 'hidden' })
-    assert.equal(await settings.isVisible(), true)
-    await page.keyboard.down('Escape')
-    assert.equal(await settings.isVisible(), true, 'held Escape dismissed the outer layer')
-    await page.keyboard.up('Escape')
-    await page.keyboard.press('Escape')
-    await settings.waitFor({ state: 'hidden' })
-    await page.evaluate(() => window.setAttention())
-    const badge = page.locator('.ptcPlusDraftBadge[data-attention=true]')
-    await badge.waitFor()
-    assert.ok((await controlAppearance(badge)).minContrast >= 3, 'attention badge unreadable')
-    await page.evaluate(() => window.disposeFixture())
-  }
-  await page.goto('about:blank')
-  await page.setContent('<div id="composer" style="position:fixed;bottom:16px;left:16px;height:60px"></div>')
-  await page.evaluate(() => { window.deferCatalog = true })
-  await page.addScriptTag({ content: fixture.outputFiles[0].text })
-  await page.locator('.ptcPlusAuthorButton').hover()
-  const hoverMenu = page.locator('.ptcPlusFallbackMenuList')
-  await hoverMenu.waitFor()
-  await hoverMenu.hover()
-  await page.mouse.move(319, 0)
-  await page.waitForTimeout(50)
-  await page.evaluate(() => window.settleCatalog())
-  await hoverMenu.waitFor({ state: 'hidden' })
-  await page.evaluate(() => window.disposeFixture())
-  }
-  process.stdout.write(values['menu-only']
-    ? 'Client: native/fallback sparkle menu pinned actions, grouped catalog and keyboard return passed\n'
-    : 'Client: native/fallback dock button styles and save actions, pinned sparkle menu groups, viewport keyboard/pointer actions, composition draft, hover settlement, modal mask and focus return passed\n')
-} finally {
-  await browser.close()
+      if (family === 'catalog') {
+        await page.goto('about:blank')
+        await page.setViewportSize(viewport)
+        await page.setContent('<div id="composer" style="position:fixed;bottom:16px;left:16px;width:calc(100vw - 32px);height:60px"></div>')
+        await page.evaluate(({ native, locale }) => { window.nativeMenu = native; window.menuLocale = locale; window.largeMenu = true }, { native, locale })
+        for (const output of fixture.outputFiles) {
+          if (output.path.endsWith('.css')) await page.addStyleTag({ content: output.text })
+          else await page.addScriptTag({ content: output.text })
+        }
+        await setFixtureTheme(page, theme)
+        const trigger = page.locator('.ptcPlusAuthorButton')
+        await trigger.click()
+        const menu = page.getByRole('menu')
+        await menu.locator('[data-binding-id]').first().waitFor()
+        const groupName = SETTINGS_COPY[locale]['bindings.quickDisabled'].replace('{count}', '32')
+        const group = menu.getByRole('menuitem', { name: groupName, exact: true })
+        assert.equal(await group.getAttribute('aria-expanded'), 'false')
+        assert.equal(await menu.locator('[data-binding-id]').count(), 16)
+        const label = `${viewport.width}x${viewport.height}/${native ? 'native' : 'fallback'}/${locale}/${theme}`
+        const initial = await assertSparkleMenuLayout(menu, label)
+        await assertSparkleMenuTypography(menu, label)
+        assert.equal(initial.scrollable, true, `${label}: large catalog does not scroll`)
+        await group.press('Enter')
+        assert.equal(await group.getAttribute('aria-expanded'), 'true')
+        assert.equal(await menu.locator('[data-binding-id]').count(), 48)
+        for (const end of [true, false]) {
+          await menu.locator('.ptcPlusBindingMenuScroll').evaluate((scroll, end) => { scroll.scrollTop = end ? scroll.scrollHeight : 0 }, end)
+          const current = await assertSparkleMenuLayout(menu, `${label}/${end ? 'end' : 'start'}`)
+          assert.deepEqual(current.footer, initial.footer, `${label}: catalog scrolling moved the footer`)
+        }
+        if (viewport.height === 600 && locale === 'en' && theme === 'light') {
+          const fault = await page.addStyleTag({ content: '.ptcPlusBindingMenuContent{display:block!important;overflow:auto!important}.ptcPlusBindingMenuScroll{overflow:visible!important}' })
+          try {
+            await assert.rejects(() => assertSparkleMenuLayout(menu, `${label}/shared scrolling fault`), /catalog overlaps footer|footer outside menu|action is clipped or covered/)
+          } finally {
+            await fault.evaluate(element => element.remove())
+          }
+          await assertSparkleMenuLayout(menu, `${label}/restored`)
+        }
+        await page.screenshot({ path: `artifacts/button-styles/sparkle-menu-${viewport.width}-${viewport.height}-${native ? 'native' : 'fallback'}-${locale}-${theme}.png` })
+        const edit = menu.getByRole('menuitem', { name: SETTINGS_COPY[locale]['bindings.authorEdit'], exact: true })
+        await edit.click()
+        const back = menu.getByRole('menuitem', { name: SETTINGS_COPY[locale]['bindings.back'], exact: true })
+        await back.waitFor()
+        const editing = await assertSparkleMenuLayout(menu, `${label}/edit`)
+        await assertSparkleMenuTypography(menu, `${label}/edit`)
+        await menu.locator('.ptcPlusBindingMenuScroll').evaluate(scroll => { scroll.scrollTop = scroll.scrollHeight })
+        assert.deepEqual((await assertSparkleMenuLayout(menu, `${label}/edit end`)).footer, editing.footer)
+        await back.click()
+        await group.waitFor()
+        await assertSparkleMenuFocus(menu, `${label}/back focus`)
+        await group.press('Enter')
+        assert.equal(await group.getAttribute('aria-expanded'), 'false')
+        await menu.locator('.ptcPlusBindingMenuScroll').evaluate(scroll => { scroll.scrollTop = 0 })
+        await menu.locator('[data-binding-id="entry-0"]').click()
+        await page.waitForFunction(() => document.querySelectorAll('[data-binding-id]').length === 15)
+        await assertSparkleMenuFocus(menu, `${label}/disable collapsed`)
+        assert.deepEqual((await assertSparkleMenuLayout(menu, `${label}/regrouped`)).footer, initial.footer)
+        const focusScroll = await menu.locator('.ptcPlusBindingMenuScroll').evaluate(scroll => scroll.scrollTop)
+        assert.ok(focusScroll > 0)
+        await menu.locator('.ptcPlusBindingMenuScroll').evaluate(scroll => { scroll.scrollTop = 0 })
+        await assert.rejects(() => assertSparkleMenuFocus(menu, `${label}/missing reveal fault`), /focused catalog control is clipped or covered/)
+        await menu.locator('.ptcPlusBindingMenuScroll').evaluate((scroll, top) => { scroll.scrollTop = top }, focusScroll)
+        await assertSparkleMenuFocus(menu, `${label}/restored reveal`)
+        const changedGroup = menu.locator('[aria-expanded]')
+        await changedGroup.press('Enter')
+        await menu.locator('[data-binding-id="entry-47"]').click()
+        await page.waitForFunction(() => document.activeElement?.dataset.bindingId === 'entry-47'
+          && document.activeElement.querySelector('[data-enabled=true]'))
+        const enabledFocus = await assertSparkleMenuFocus(menu, `${label}/enable expanded`)
+        assert.deepEqual(enabledFocus.pageScroll, { x: 0, y: 0 })
+        assert.deepEqual((await assertSparkleMenuLayout(menu, `${label}/enable expanded`)).footer, initial.footer)
+        if (viewport.height === 600 && locale === 'en' && theme === 'light') {
+          await menu.locator('[data-binding-id="entry-0"]').click()
+          await page.waitForFunction(() => document.activeElement?.dataset.bindingId === 'entry-0'
+            && document.activeElement.querySelector('[data-enabled=true]'))
+          await page.evaluate(() => { window.holdMenuWrite = true })
+          await menu.locator('[data-binding-id="entry-0"]').click()
+          await page.waitForFunction(() => typeof window.settleMenuWrite === 'function')
+          await page.keyboard.press('Escape')
+          await trigger.click()
+          await page.waitForFunction(() => document.activeElement?.dataset.bindingId === 'entry-0')
+          await page.evaluate(() => { window.holdMenuWrite = false; window.settleMenuWrite() })
+          await page.waitForFunction(() => document.activeElement?.getAttribute('aria-expanded') === 'false')
+          await assertSparkleMenuFocus(menu, `${label}/pending reopen focus`)
+          assert.deepEqual((await assertSparkleMenuLayout(menu, `${label}/pending reopen footer`)).footer, initial.footer)
+        }
+        await page.keyboard.press('Escape')
+        await menu.waitFor({ state: 'hidden' })
+        assert.equal(await trigger.evaluate(button => button === document.activeElement), true)
+        await page.evaluate(() => window.disposeFixture())
+        return
+      }
+      if (family === 'dialogs') {
+        await page.goto('about:blank')
+        await page.setViewportSize(viewport)
+        await page.setContent(`<button id="background" style="position:fixed;top:10px;left:10px">Host control</button>
+        <div id="composer" style="position:fixed;bottom:16px;left:16px;width:calc(100vw - 32px);height:60px;overflow:hidden;transform:translateZ(0)"></div>`)
+        await setFixtureTheme(page, theme)
+        await page.addScriptTag({ content: fixture.outputFiles[0].text })
+        const trigger = page.locator('.ptcPlusAuthorButton')
+        await trigger.click()
+        const menu = page.locator('.ptcPlusFallbackMenuList')
+        await menu.waitFor()
+        assert.equal(await menu.evaluate(element => element.parentElement === document.body), true)
+        await menu.getByRole('menuitem').first().focus()
+        await page.keyboard.press('End')
+        assert.equal(await menu.getByRole('menuitem', { name: 'settings.menuEntry', exact: true }).evaluate(element => {
+          const rect = element.getBoundingClientRect()
+          return element === document.activeElement && rect.top >= 0 && rect.bottom <= innerHeight
+            && element.contains(document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2))
+        }), true, 'keyboard navigation leaves the focused action clipped')
+        for (const action of ['bindings.manage', 'settings.menuEntry']) {
+          const button = menu.getByRole('menuitem', { name: action, exact: true })
+          await button.scrollIntoViewIfNeeded()
+          assert.equal(await button.evaluate(element => {
+            const rect = element.getBoundingClientRect()
+            return rect.top >= 0 && rect.bottom <= innerHeight
+              && element.contains(document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2))
+          }), true, `${viewport.width}x${viewport.height}: ${action} is not reachable`)
+        }
+        await menu.getByRole('menuitem', { name: 'bindings.manage', exact: true }).click()
+        const dialog = page.locator('.ptcPlusBindingsModal')
+        await dialog.waitFor()
+        await page.evaluate(() => { window.deferCatalog = true })
+        await dialog.getByRole('button', { name: 'bindings.reload', exact: true }).click()
+        await page.waitForFunction(() => document.querySelector('.ptcPlusBindings')?.getAttribute('aria-busy') === 'true')
+        for (const control of await dialog.locator('button:disabled').all()) {
+          await assertControlVisual(control, { label: 'busy workbench control' })
+        }
+        await page.evaluate(() => { window.settleCatalog(); window.deferCatalog = false })
+        await page.waitForFunction(() => document.querySelector('.ptcPlusBindings')?.getAttribute('aria-busy') === 'false')
+        assert.equal(await dialog.evaluate(element => element.parentElement.parentElement === document.body), true)
+        assert.equal(await page.locator('#background').evaluate(element => {
+          const rect = element.getBoundingClientRect()
+          return element.contains(document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2))
+        }), false, 'headless modal leaves the background clickable')
+        await dialog.locator('.ptcPlusBindingSelect').first().click()
+        await assertContentCounterexamples(page, { selected: dialog.locator('.ptcPlusBindingItem[data-selected=true] .ptcPlusBindingSelect') })
+        await dialog.locator('.ptcPlusSourceActions button').click()
+        await dialog.locator('.ptcPlusEntrySettings summary').click()
+        const purpose = dialog.getByLabel('bindings.purpose', { exact: true })
+        await purpose.fill('Unsaved purpose')
+        await assertContentCounterexamples(page, { input: purpose })
+        await purpose.evaluate(element => {
+          element.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }))
+          element.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, isComposing: true, keyCode: 229 }))
+        })
+        assert.equal(await dialog.isVisible(), true, 'composition cancellation closed the draft')
+        assert.equal(await purpose.inputValue(), 'Unsaved purpose')
+        await purpose.evaluate(element => {
+          element.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true }))
+          element.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, keyCode: 27 }))
+        })
+        assert.equal(await dialog.isVisible(), true, 'composition-closing Escape discarded the draft')
+        assert.equal(await purpose.inputValue(), 'Unsaved purpose')
+        await purpose.evaluate(element => element.dispatchEvent(new KeyboardEvent('keyup', { key: 'Escape', bubbles: true })))
+        const close = dialog.getByRole('button', { name: 'bindings.close', exact: true })
+        await close.click()
+        await dialog.waitFor({ state: 'hidden' })
+        assert.equal(await trigger.evaluate(element => element === document.activeElement), true)
+        await trigger.click()
+        await menu.getByRole('menuitem', { name: 'settings.menuEntry', exact: true }).click()
+        const settings = page.locator('.ptcPlusSettingsModal')
+        await settings.waitFor()
+        await settings.getByRole('button', { name: 'bindings.manage', exact: true }).click()
+        await dialog.waitFor()
+        await page.keyboard.down('Escape')
+        await dialog.waitFor({ state: 'hidden' })
+        assert.equal(await settings.isVisible(), true)
+        await page.keyboard.down('Escape')
+        assert.equal(await settings.isVisible(), true, 'held Escape dismissed the outer layer')
+        await page.keyboard.up('Escape')
+        await page.keyboard.press('Escape')
+        await settings.waitFor({ state: 'hidden' })
+        await page.evaluate(() => window.setAttention())
+        const badge = page.locator('.ptcPlusDraftBadge[data-attention=true]')
+        await badge.waitFor()
+        assert.ok((await controlAppearance(badge)).minContrast >= 3, 'attention badge unreadable')
+        await page.evaluate(() => window.disposeFixture())
+        return
+      }
+      if (family === 'hover-settlement') {
+        await page.goto('about:blank')
+        await page.setContent('<div id="composer" style="position:fixed;bottom:16px;left:16px;height:60px"></div>')
+        await page.evaluate(() => { window.deferCatalog = true })
+        await page.addScriptTag({ content: fixture.outputFiles[0].text })
+        await page.locator('.ptcPlusAuthorButton').hover()
+        const hoverMenu = page.locator('.ptcPlusFallbackMenuList')
+        await hoverMenu.waitFor()
+        await hoverMenu.hover()
+        await page.mouse.move(319, 0)
+        await page.waitForTimeout(50)
+        await page.evaluate(() => window.settleCatalog())
+        await hoverMenu.waitFor({ state: 'hidden' })
+        await page.evaluate(() => window.disposeFixture())
+        return
+      }
+
+  }, { concurrency, channel: values['browser-channel'], reducedMotion: 'reduce' })
+  process.stdout.write(focused
+    ? `Focused fallback visual passed: ${cases.length}/${availableCases.length} cases\n`
+    : values['menu-only']
+      ? 'Client: native/fallback sparkle menu pinned actions, grouped catalog and keyboard return passed\n'
+      : 'Client: native/fallback dock button styles and save actions, pinned sparkle menu groups, viewport keyboard/pointer actions, composition draft, hover settlement, modal mask and focus return passed\n')
+  console.log(`Fallback visual completed in ${((performance.now() - started) / 1000).toFixed(1)} s`)
 }

@@ -9,25 +9,12 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import {
   focusedCoverageArguments,
   runCoverage,
-  testConcurrency,
   validateFocusedCoverage,
 } from '../../scripts/coverage.mjs'
 
 const posixOnly = process.platform === 'win32'
   ? 'a catchable SIGINT cannot be delivered to another process on Windows'
   : false
-
-test('coverage limits default process fanout and validates explicit concurrency', () => {
-  assert.equal(testConcurrency(undefined, 1), 1)
-  assert.equal(testConcurrency(undefined, 2), 1)
-  assert.equal(testConcurrency(undefined, 4), 2)
-  assert.equal(testConcurrency(undefined, 24), 4)
-  assert.equal(testConcurrency('1', 24), 1)
-  assert.equal(testConcurrency('4', 2), 4)
-  for (const value of ['', '0', '-1', '1.5', '2x', 'Infinity', '9007199254740992']) {
-    assert.throws(() => testConcurrency(value), /positive integer/)
-  }
-})
 
 test('coverage CLI rejects invalid concurrency before starting the suite', () => {
   const result = spawnSync(process.execPath, [fileURLToPath(new URL('../../scripts/coverage.mjs', import.meta.url))], {

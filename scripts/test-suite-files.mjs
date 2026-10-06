@@ -3,12 +3,14 @@ import { readdir } from 'node:fs/promises'
 import { availableParallelism } from 'node:os'
 import { basename, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { parseArgs } from 'node:util'
 
 const projectRoot = fileURLToPath(new URL('../', import.meta.url))
 
 export function testConcurrency(value, parallelism = availableParallelism()) {
-  // Each test process can also own compiler realms and runtime workers.
-  if (value === undefined) return Math.max(1, Math.min(4, Math.floor(parallelism / 2)))
+  // Default file fanout is half the available CPUs, capped at eight; each
+  // file may also create compiler realms and runtime workers.
+  if (value === undefined) return Math.max(1, Math.min(8, Math.floor(parallelism / 2)))
   if (!/^[1-9]\d*$/.test(value) || !Number.isSafeInteger(Number(value))) {
     throw new Error('DSH_PTC_TEST_CONCURRENCY must be a positive integer')
   }
@@ -47,17 +49,58 @@ export function splitBackendTestFiles(files) {
   }
 }
 
+export function selectBackendTestFiles(files, requested = []) {
+  if (requested.length === 0) return files
+  const selected = new Set(requested)
+  for (const file of selected) {
+    if (!files.includes(file)) throw new Error(`not an ordinary backend test file: ${file}`)
+  }
+  return files.filter(file => selected.has(file))
+}
+
+export function backendArguments(arguments_) {
+  const { values, tokens } = parseArgs({
+    args: arguments_, tokens: true, allowPositionals: false,
+    options: {
+      file: { type: 'string', multiple: true },
+      list: { type: 'boolean' },
+      focus: { type: 'boolean' },
+      'test-name-pattern': { type: 'string', multiple: true },
+      'test-skip-pattern': { type: 'string', multiple: true },
+      'test-reporter': { type: 'string', multiple: true },
+      'test-reporter-destination': { type: 'string', multiple: true },
+      'test-timeout': { type: 'string' },
+      'test-concurrency': { type: 'string' },
+      'test-only': { type: 'boolean' },
+      'test-force-exit': { type: 'boolean' },
+    },
+  })
+  if (values.focus && !values.file?.length && !values.list) {
+    throw new Error('focused backend diagnostics require --file <test/path.test.js>; use --list to inspect the inventory')
+  }
+  // Diagnostic options cannot introduce another test-file input or enable
+  // coverage. Node retains ownership of the accepted option values.
+  const testArguments = tokens.filter(token => token.kind === 'option' && !['file', 'list', 'focus'].includes(token.name))
+    .map(token => token.value === undefined ? `--${token.name}` : `--${token.name}=${token.value}`)
+  return { files: values.file ?? [], testArguments, list: values.list ?? false }
+}
+
 export async function runBackendTests({
   root = projectRoot,
   concurrency = testConcurrency(process.env.DSH_PTC_TEST_CONCURRENCY),
   testArguments = [],
+  files: requestedFiles = [],
 } = {}) {
-  const files = await backendTestFiles(root)
+  const diagnostic = backendArguments(testArguments)
+  if (diagnostic.files.length > 0 || diagnostic.list) throw new Error('file selection belongs in the files option')
+  const files = selectBackendTestFiles(await backendTestFiles(root), requestedFiles)
   if (files.length === 0) throw new Error('backend test suite contains no test files')
+  const started = performance.now()
+  console.log(`Backend inventory: ${files.length} files; concurrency ${concurrency}`)
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [
       '--test', '--experimental-test-module-mocks', `--test-concurrency=${concurrency}`,
-      ...testArguments, ...files,
+      ...diagnostic.testArguments, ...files,
     ], {
       cwd: root,
       env: {
@@ -72,6 +115,7 @@ export async function runBackendTests({
     })
     child.once('error', reject)
     child.once('close', (code, signal) => {
+      console.log(`Backend completed in ${((performance.now() - started) / 1000).toFixed(1)} s (${signal ?? code ?? 1})`)
       if (signal !== null) reject(new Error(`backend tests terminated by ${signal}`))
       else resolve(code ?? 1)
     })
@@ -80,9 +124,13 @@ export async function runBackendTests({
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
+    const { files, testArguments, list } = backendArguments(process.argv.slice(2))
     const concurrency = testConcurrency(process.env.DSH_PTC_TEST_CONCURRENCY)
-    console.log(`Backend tests: file concurrency ${concurrency}`)
-    process.exitCode = await runBackendTests({ concurrency, testArguments: process.argv.slice(2) })
+    if (list) console.log(selectBackendTestFiles(await backendTestFiles(projectRoot), files).join('\n'))
+    else {
+      console.log(`Backend tests: ${files.length ? 'focused files, ' : ''}file concurrency ${concurrency}`)
+      process.exitCode = await runBackendTests({ concurrency, testArguments, files })
+    }
   } catch (error) {
     console.error(error.message)
     process.exitCode = 1

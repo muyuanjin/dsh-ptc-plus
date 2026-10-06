@@ -157,7 +157,8 @@ test('keeps npm release authority stage-only and bound to a verified tag', async
 test('daily verification retains ordinary backend tests and leaves coverage to release preparation', async () => {
   const manifest = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'))
   assert.equal(manifest.scripts['test:backend'], 'node scripts/test-suite-files.mjs')
-  assert.match(manifest.scripts.verify, /npm run test:backend(?:$| &&)/)
+  assert.match(manifest.scripts.verify, /node scripts\/deterministic-test-groups\.mjs$/)
+  assert.match(manifest.scripts['verify:ci'], /node scripts\/deterministic-test-groups\.mjs --ci$/)
   assert.doesNotMatch(manifest.scripts.verify, /coverage/)
   assert.doesNotMatch(manifest.scripts['verify:ci'], /coverage/)
   assert.equal(manifest.scripts.coverage, 'node scripts/coverage.mjs')

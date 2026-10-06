@@ -597,7 +597,7 @@ export function headlessConfigPatch(baseRows, runtime, options = {}) {
       : []),
     ...(options.disablePtcPlus === true ? ['- id: ptc-plus', '  disabled: true'] : []),
     ...(runtime.canonicalResultDirectory === undefined ? []
-      : stringify([evaluationToolResultOverlay(runtime.canonicalResultDirectory)]).trimEnd().split('\n')),
+      : stringify([{ insert: [evaluationToolResultOverlay(runtime.canonicalResultDirectory)] }]).trimEnd().split('\n')),
     '',
   ].join('\n')
 }

@@ -11,6 +11,7 @@ import { stringify } from 'yaml'
 import { sessionFormatCatalog } from '@deepseek-ai/dsh-session-format-catalog'
 import { SESSION_FORMAT_VERSION, foldSurface } from '@deepseek-ai/dsh-session'
 import { createAssistantMessage, createSystemMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
+import { composeEntries } from '@deepseek-ai/dsh-app-boot'
 import { auditSystemPrompts, collectTrajectoryFacts } from '../scripts/acceptance-contract.mjs'
 import {
   HEADLESS_TOOLS_MODE,
@@ -328,8 +329,19 @@ test('pairs the public canonical observer overlay and preserves exact Windows mo
     assert.equal(new URL(row.name).hash, '')
   }
   const selected = { ...runtime, canonicalResultDirectory: '/mnt/c/scratch/canonical-results' }
-  const plugin = parseConfigDump(headlessConfigPatch(configRows(), selected))
-  const baseline = parseConfigDump(headlessConfigPatch(configRows(), selected, { disablePtcPlus: true }))
+  const base = configRows()
+  const existing = parseConfigDump(headlessConfigPatch(base, runtime, { disablePtcPlus: true }))
+    .map(row => ({ id: row.id }))
+  const resolveOverlay = options => {
+    const warnings = []
+    const patches = parseConfigDump(headlessConfigPatch(base, selected, options))
+    // Ordinary settings are existing entries; the observer is a new registration.
+    const rows = composeEntries([[{ insert: existing }], patches], warning => warnings.push(warning))
+    assert.deepEqual(warnings, [])
+    return rows
+  }
+  const plugin = resolveOverlay()
+  const baseline = resolveOverlay({ disablePtcPlus: true })
   const observer = rows => rows.find(row => row.id === 'ptc-evaluation-tool-results')
   assert.deepEqual(observer(plugin), observer(baseline))
   assert.equal(observer(plugin).config.directory, 'C:\\scratch\\canonical-results')

@@ -10,6 +10,7 @@ import { decodeValue, encodeValue } from '../internal/value-wire.js'
 import { fileURLToPath } from 'node:url'
 import {
   analyzeSession,
+  abRunPaths,
   armScratchPaths,
   copyWorkspace,
   createBlindPacket,
@@ -26,6 +27,8 @@ import {
 import { orderCanaryFirst, runCanaryThenConcurrent } from '../scripts/acceptance-orchestration.mjs'
 import { collectTrajectoryFacts, machineBudgetFailures, MACHINE_BUDGET_KEYS, pendingBlindApproval } from '../scripts/acceptance-contract.mjs'
 import { aggregateTrajectories, trajectoryDelta } from '../scripts/ab-trajectory-report.mjs'
+import { cleanupOwnedPath } from '../scripts/headless-host.mjs'
+import { apply as observeToolResults, readEvaluationToolResults } from '../scripts/evaluation-tool-results.mjs'
 
 const persona = 'You are a coding agent powered by the {{model}} model. Your working directory is {{cwd}}.'
 const runtime = { toolsMode: 'ptc', permissionMode: 'danger-full-access' }
@@ -38,6 +41,25 @@ test('separates opaque arm scratch trees from evaluator artifacts', () => {
   assert.equal(JSON.stringify(scratch).includes('plugin'), false)
   assert.equal(JSON.stringify(scratch).includes('baseline'), false)
   assert.throws(() => armScratchPaths(scratchRoot, '../plugin'), /arm scratch nonce/)
+})
+
+test('retains child canonical observations after execution scratch cleanup', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'ptc-ab-evidence-'))
+  t.after(() => rm(directory, { recursive: true, force: true }))
+  const paths = abRunPaths(join(directory, 'repository'), 'run')
+  await mkdir(paths.scratchRoot, { recursive: true })
+  await writeFile(join(paths.scratchRoot, 'execution.tmp'), 'temporary workspace')
+  let listener
+  observeToolResults({ on(_event, callback) { listener = callback; return () => {} } },
+    { directory: paths.canonicalResultDirectory })
+  listener({ name: 'run_code', callId: 'child-call', rootCallId: 'child-call',
+    agent: { session: { id: 'child-session' } }, arguments: { code: 'return "child-value"' } },
+  { isError: false, value: { logs: [], result: 'child-value' } })
+  await cleanupOwnedPath(paths.scratchRoot)
+  await assert.rejects(readFile(join(paths.scratchRoot, 'execution.tmp')), { code: 'ENOENT' })
+  const evidence = await readEvaluationToolResults(paths.canonicalResultDirectory, 'child-session')
+  assert.equal(evidence.status, 'complete')
+  assert.equal(evidence.records[0].value, 'child-value')
 })
 
 test('redacts workspace identity from every blind packet text field', () => {

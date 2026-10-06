@@ -25,6 +25,8 @@ PTC Plus provides a stateful TypeScript computation environment for DSH's **PTC 
 - **Avoid routine call failures**: use familiar module syntax, recover from identifiable call omissions, and receive correction suggestions for verifiable syntax errors.
 - **Reuse common capabilities**: save functions as global bindings, provide their interfaces and usage notes to the model, and use them across sessions.
 
+In one complete paired [Command Goat / DeepSeek V4.1 Flash experiment](docs/evaluations/command-goat-deepseek-v4.1-flash-20261006.md), PTC Plus completed 28/30 tasks versus 25/30, with 2 versus 4 direct tool errors; the completion advantage came mainly from capability probes such as static module syntax. Across 13 ordinary tasks, both arms completed 24/26 and PTC Plus used 18.04% more token traffic including subagents. Broad cost savings remain unproved.
+
 [Quick start](#quick-start) · [Feature overview](#feature-overview) · [Continuous computation](#continuous-computation-and-language-extensions) · [Editing and call tolerance](#code-editing-and-call-tolerance) · [Global bindings](#global-bindings-reuse-functions-across-sessions) · [Interface and settings](#interface-and-settings) · [Values and recovery](#value-transfer-and-state-recovery)
 
 ## Quick start

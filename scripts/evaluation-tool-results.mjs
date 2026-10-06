@@ -22,7 +22,7 @@ export function apply(ctx, config) {
   let count = 0
   return ctx.on('tools/result', (exec, result) => {
     if (exec.name !== 'run_code' || exec.parent !== undefined) return
-    const sessionId = exec.agent?.sessionId
+    const sessionId = exec.agent?.session?.id
     if (!identity(sessionId) || !identity(exec.callId) || exec.rootCallId !== exec.callId
       || typeof exec.arguments?.code !== 'string' || count >= MAX_RECORDS) return
     count += 1

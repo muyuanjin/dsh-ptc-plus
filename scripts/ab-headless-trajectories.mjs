@@ -124,6 +124,17 @@ export function armScratchPaths(scratchRoot, nonce = randomUUID()) {
   return Object.freeze({ directory, workspace: join(directory, 'workspace') })
 }
 
+export function abRunPaths(repository, runId) {
+  const artifactRoot = join(repository, 'artifacts', 'ab-trajectories', runId)
+  const scratchRoot = join(resolve(repository, '..'), '.dsh-ptc-plus-ab', runId)
+  return {
+    artifactRoot,
+    scratchRoot,
+    frozenWorkspace: join(scratchRoot, 'workspace'),
+    canonicalResultDirectory: join(artifactRoot, 'canonical-results'),
+  }
+}
+
 export function createBlindPacket(label, task, arm) {
   const cwd = arm.session?.cwd
   const redact = value => typeof value === 'string' && typeof cwd === 'string' && cwd !== ''
@@ -852,7 +863,7 @@ export async function main(env = process.env) {
   const modelRuntime = requiredModelRuntime(env, 'DSH_PTC_AB')
   const host = await preflightHeadlessHost(repoRoot, { env })
   const runId = `${new Date().toISOString().replaceAll(':', '').replaceAll('.', '-')}-${randomUUID().slice(0, 8)}`
-  const artifactRoot = join(repoRoot, 'artifacts', 'ab-trajectories', runId)
+  const { artifactRoot, scratchRoot, frozenWorkspace, canonicalResultDirectory } = abRunPaths(repoRoot, runId)
   await mkdir(artifactRoot, { recursive: true })
   const runtime = {
     ...modelRuntime,
@@ -868,14 +879,12 @@ export async function main(env = process.env) {
     nodeExecutable: host.nodeExecutable,
     dshEntry: host.dshEntry,
     dshCommand: host.dshCommand,
+    canonicalResultDirectory,
   }
   const tasksFile = resolve(repoRoot, env.DSH_PTC_AB_TASKS_FILE || defaultTasksFile)
   const tasks = await loadTasks(tasksFile)
   const fixtureDir = resolve(repoRoot, env.DSH_PTC_AB_FIXTURE || relative(repoRoot, defaultFixtureDir))
   const fixture = await readFixtureManifest(fixtureDir)
-  const scratchRoot = join(resolve(repoRoot, '..'), '.dsh-ptc-plus-ab', runId)
-  runtime.canonicalResultDirectory = join(scratchRoot, 'canonical-results')
-  const frozenWorkspace = join(scratchRoot, 'workspace')
   let scratchError
   try {
     await mkdir(scratchRoot, { recursive: true })

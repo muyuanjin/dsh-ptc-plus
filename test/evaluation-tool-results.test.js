@@ -11,6 +11,7 @@ import { PtcRuntime } from '@deepseek-ai/dsh-ptc-runtime'
 import { ToolRuntime } from '@deepseek-ai/dsh-tools'
 import { apply, canonicalRunCodeResults, readEvaluationToolResults } from '../scripts/evaluation-tool-results.mjs'
 import { validateTask } from '../scripts/ab-headless-trajectories.mjs'
+import { bindingWorkflowHost } from './binding-workflow-fixture.js'
 
 async function fixture(t) {
   const directory = await mkdtemp(join(tmpdir(), 'ptc-canonical-result-'))
@@ -22,7 +23,7 @@ async function fixture(t) {
     listener = callback
     return () => { disposed = true }
   } }, { directory })
-  const exec = { name: 'run_code', callId: 'call', rootCallId: 'call', agent: { sessionId: 'session' }, arguments: { code: 'source' } }
+  const exec = { name: 'run_code', callId: 'call', rootCallId: 'call', agent: { session: { id: 'session' } }, arguments: { code: 'source' } }
   const analysis = { session: { id: 'session' }, timeline: [{ name: 'run_code', callId: 'call', code: 'source', resultError: false, output: 'pkg' }] }
   return { directory, exec, analysis, emit: (result, overrides = {}) => listener({ ...exec, ...overrides }, result),
     disposer, disposed: () => disposed }
@@ -59,6 +60,7 @@ test('public final observer preserves canonical strings independently of rendere
 test('records failures without successful values and ignores nested or unowned results', async t => {
   const f = await fixture(t)
   for (const overrides of [{ name: 'shell' }, { parent: Symbol() }, { agent: undefined },
+    { agent: { sessionId: 'invented' } }, { agent: { session: { id: '' } } },
     { callId: '' }, { rootCallId: 'other' }, { arguments: {} }]) {
     f.emit({ isError: false, value: { logs: [], result: 'pkg' } }, overrides)
   }
@@ -145,7 +147,7 @@ test('actual public tools/result notifies final canonical result and ctx.on disp
   await ctx.loader.await()
   assert.equal(JSON.stringify(await ctx.systemPrompt.assemble({ signal: new AbortController().signal })), before)
   const exec = { ...f.exec, arguments: { code: 'source', description: 'fixture' },
-    agent: { sessionId: 'session', session: { header: {} } }, signal: new AbortController().signal }
+    agent: { session: { id: 'session', header: {} } }, signal: new AbortController().signal }
   const result = await tools.execute(exec)
   assert.equal(result.isError, false)
   const evidence = await readEvaluationToolResults(f.directory, 'session')
@@ -156,7 +158,7 @@ test('actual public tools/result notifies final canonical result and ctx.on disp
     [{ logs: ['pkg'] }, 'fail'], [{ logs: [], value: '"123"' }, 'pass']]) {
     runtime.output = output
     const sessionId = `session-${expected}-${output.value ?? 'none'}`
-    const current = await tools.execute({ ...exec, agent: { sessionId, session: { header: {} } } })
+    const current = await tools.execute({ ...exec, agent: { session: { id: sessionId, header: {} } } })
     assert.equal(current.isError, false)
     const analysis = { ...f.analysis, session: { id: sessionId },
       canonicalToolResults: await readEvaluationToolResults(f.directory, sessionId) }
@@ -167,4 +169,19 @@ test('actual public tools/result notifies final canonical result and ctx.on disp
   assert.equal(JSON.stringify(await ctx.systemPrompt.assemble({ signal: new AbortController().signal })), before)
   await tools.execute({ ...exec, callId: 'other', rootCallId: 'other', signal: new AbortController().signal })
   assert.equal((await readEvaluationToolResults(f.directory, 'session')).records.length, 1)
+})
+
+test('captures the public session identity of a real Agent without a sessionId field', async t => {
+  const host = await bindingWorkflowHost(t)
+  const directory = join(host.home, 'canonical-observer')
+  const observer = host.ctx.plugin({ apply }, { directory })
+  await observer.await()
+  t.after(() => observer.dispose())
+  assert.equal(host.agent.sessionId, undefined)
+  assert.equal(host.agent.id, host.agent.session.id)
+  await host.run('return "real-agent-canonical-value"')
+  const evidence = await readEvaluationToolResults(directory, host.agent.session.id)
+  assert.equal(evidence.status, 'complete')
+  assert.equal(evidence.records.length, 1)
+  assert.equal(evidence.records[0].value, 'real-agent-canonical-value')
 })

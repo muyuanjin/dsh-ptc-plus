@@ -2080,21 +2080,189 @@
     return { seat: () => live, releases };
   }
 
+  // src/client-tool-hover.js
+  var HOVER_DWELL_MS = 600;
+  var SCROLL_IDLE_MS = 500;
+  function toolHoverExcerpt(text, maxLines) {
+    const prefix = text.slice(0, 1800).replace(/[\uD800-\uDBFF]$/, "");
+    const lines = prefix.split(/\r\n|\r|\n/);
+    const selected = lines.slice(0, maxLines);
+    let truncated = prefix.length < text.length || lines.length > maxLines;
+    const bounded = selected.map((line) => {
+      if (line.length <= 100) return line;
+      truncated = true;
+      return line.slice(0, 99).replace(/[\uD800-\uDBFF]$/, "") + "\u2026";
+    });
+    return { text: bounded.join("\n"), truncated };
+  }
+  function placeToolHover(anchor, preview) {
+    const margin = 12;
+    const gap = 10;
+    const viewport = window.visualViewport;
+    const leftEdge = viewport?.offsetLeft ?? 0;
+    const topEdge = viewport?.offsetTop ?? 0;
+    const width = viewport?.width ?? window.innerWidth;
+    const height = viewport?.height ?? window.innerHeight;
+    const rect = anchor.getBoundingClientRect();
+    const below = Math.max(0, topEdge + height - rect.bottom - gap - margin);
+    const above = Math.max(0, rect.top - topEdge - gap - margin);
+    const onTop = below < 340 && above > below;
+    const available = Math.min(360, onTop ? above : below);
+    if (available < 100 || width < 100) return false;
+    const previewWidth = Math.min(420, width - margin * 2);
+    preview.style.width = `${previewWidth}px`;
+    preview.style.maxHeight = `${available}px`;
+    preview.style.left = `${Math.max(
+      leftEdge + margin,
+      Math.min(rect.left + 16, leftEdge + width - previewWidth - margin)
+    )}px`;
+    preview.style.top = onTop ? `${rect.top - gap - Math.min(preview.offsetHeight, available)}px` : `${rect.bottom + gap}px`;
+    preview.style.visibility = "visible";
+    preview.dataset.clipped = String([...preview.querySelectorAll(
+      ".ptcPlusToolHoverContent,.ptcPlusToolHoverSection,.ptcPlusToolHoverDescription,.ptcPlusFeatures,pre"
+    )].some((element) => element.scrollHeight > element.clientHeight + 1 || element.scrollWidth > element.clientWidth + 1));
+    return true;
+  }
+  function createToolHover(React, createPortal) {
+    const h = React.createElement;
+    const subscribers = /* @__PURE__ */ new Set();
+    let lastScroll = -Infinity;
+    const scrolling = () => {
+      lastScroll = Date.now();
+      for (const cancel of subscribers) cancel();
+    };
+    const escaping = (event) => {
+      if (event.key === "Escape") for (const cancel of subscribers) cancel();
+    };
+    const subscribe = (cancel) => {
+      if (subscribers.size === 0) {
+        window.addEventListener("wheel", scrolling, { capture: true, passive: true });
+        window.addEventListener("scroll", scrolling, { capture: true, passive: true });
+        window.addEventListener("keydown", escaping);
+      }
+      subscribers.add(cancel);
+      return () => {
+        subscribers.delete(cancel);
+        if (subscribers.size === 0) {
+          window.removeEventListener("wheel", scrolling, true);
+          window.removeEventListener("scroll", scrolling, true);
+          window.removeEventListener("keydown", escaping);
+          lastScroll = -Infinity;
+        }
+      };
+    };
+    function ToolHoverAnchor({ disabled, content: content2, children }) {
+      const [visible, setVisible] = React.useState(false);
+      const anchorRef = React.useRef(null);
+      const previewRef = React.useRef(null);
+      const pending = React.useRef(null);
+      const visibleRef = React.useRef(false);
+      const lastPointer = React.useRef(null);
+      const cancelled = React.useRef(false);
+      const clearPending = React.useCallback(() => {
+        if (pending.current !== null) clearTimeout(pending.current);
+        pending.current = null;
+      }, []);
+      const dismiss = React.useCallback(() => {
+        clearPending();
+        visibleRef.current = false;
+        if (previewRef.current !== null) previewRef.current.hidden = true;
+        setVisible(false);
+      }, [clearPending]);
+      const cancel = React.useCallback(() => {
+        cancelled.current = true;
+        dismiss();
+      }, [dismiss]);
+      React.useEffect(() => subscribe(cancel), [cancel]);
+      React.useEffect(() => () => clearPending(), [clearPending]);
+      React.useLayoutEffect(() => {
+        if (disabled) cancel();
+      }, [disabled, cancel]);
+      const show = () => {
+        if (disabled) return;
+        cancelled.current = false;
+        visibleRef.current = true;
+        setVisible(true);
+      };
+      const arm = (event) => {
+        if (disabled || event.pointerType === "touch" || visibleRef.current || pending.current !== null || Date.now() - lastScroll < SCROLL_IDLE_MS) return;
+        cancelled.current = false;
+        pending.current = setTimeout(() => {
+          pending.current = null;
+          if (Date.now() - lastScroll >= SCROLL_IDLE_MS && !cancelled.current) show();
+        }, HOVER_DWELL_MS);
+      };
+      React.useLayoutEffect(() => {
+        if (!visible || disabled) return;
+        const preview2 = previewRef.current;
+        const anchor = anchorRef.current;
+        if (preview2 === null || anchor === null) return;
+        preview2.hidden = false;
+        if (typeof preview2.showPopover === "function") preview2.showPopover();
+        const place = () => {
+          if (!placeToolHover(anchor, preview2)) dismiss();
+        };
+        place();
+        const observer = typeof ResizeObserver === "function" ? new ResizeObserver(place) : null;
+        observer?.observe(anchor);
+        observer?.observe(preview2);
+        window.addEventListener("resize", place);
+        window.visualViewport?.addEventListener("resize", place);
+        return () => {
+          observer?.disconnect();
+          window.removeEventListener("resize", place);
+          window.visualViewport?.removeEventListener("resize", place);
+        };
+      }, [visible, disabled, dismiss, cancel]);
+      const preview = !visible || disabled ? null : h("div", {
+        ref: previewRef,
+        className: "ptcPlusToolHover",
+        popover: typeof HTMLElement.prototype.showPopover === "function" ? "manual" : void 0,
+        style: { visibility: "hidden" },
+        role: "tooltip"
+      }, content2);
+      return h("div", {
+        className: "ptcPlusTool",
+        ref: anchorRef,
+        onPointerEnter: (event) => {
+          lastPointer.current = [event.clientX, event.clientY];
+          arm(event);
+        },
+        onPointerMove: (event) => {
+          const point = lastPointer.current;
+          lastPointer.current = [event.clientX, event.clientY];
+          if (point === null || point[0] !== event.clientX || point[1] !== event.clientY) arm(event);
+        },
+        onPointerLeave: () => {
+          lastPointer.current = null;
+          dismiss();
+        },
+        onPointerDownCapture: cancel,
+        onKeyDownCapture: (event) => {
+          if (event.key === "Escape") cancel();
+        },
+        onFocusCapture: (event) => {
+          if (event.target.matches(":focus-visible")) {
+            clearPending();
+            show();
+          }
+        },
+        onBlurCapture: (event) => {
+          if (!event.currentTarget.contains(event.relatedTarget)) dismiss();
+        }
+      }, children, preview === null ? null : typeof createPortal === "function" ? createPortal(preview, document.body) : preview);
+    }
+    return { ToolHoverAnchor };
+  }
+
   // src/client-tool-view.js
   function createPtcToolView(React, deps) {
-    const { CodeBlock, DisclosureRow, HoverCard, icons } = deps;
+    const { CodeBlock, DisclosureRow, createPortal, icons } = deps;
     const h = React.createElement;
     const hasDisclosureRow = isHostComponent(DisclosureRow);
-    const hasHoverCard = isHostComponent(HoverCard);
+    const { ToolHoverAnchor } = createToolHover(React, createPortal);
     function PTCPlusToolRow({ toolName, block, inspect, t: t2 }) {
       const [open, setOpen] = React.useState(false);
-      const rowRef = React.useRef(null);
-      const previewRef = React.useRef(null);
-      const pointerInPreview = React.useRef(false);
-      const attachPreview = React.useCallback((element) => {
-        previewRef.current = element;
-        pointerInPreview.current = false;
-      }, []);
       const view = derivePtcToolView(block, toolName);
       const previewable = view.code !== "" || view.output !== "";
       const expandable = previewable || typeof inspect === "function";
@@ -2167,46 +2335,56 @@
       );
       const collapsedContent = h("div", { className: "ptcPlusToolPreview" }, summaryLine, features);
       const body = open ? renderBody(true) : null;
-      const wrapRow = (anchor) => h(
-        "div",
-        {
-          className: "ptcPlusTool",
-          ref: rowRef,
-          onBlurCapture: (event) => {
-            const preview = previewRef.current;
-            if (preview !== null && (preview.contains(event.relatedTarget) || event.relatedTarget === null && pointerInPreview.current)) {
-              event.stopPropagation();
-            }
-          }
-        },
-        !hasHoverCard ? anchor : h(HoverCard, {
-          anchor,
-          content: h(
-            "div",
-            {
-              ref: attachPreview,
-              className: "ptcPlusToolHover",
-              "data-state": view.state,
-              onPointerEnter: () => {
-                pointerInPreview.current = true;
-              },
-              onPointerLeave: () => {
-                pointerInPreview.current = false;
-              }
-            },
-            h("div", { className: "ptcPlusToolHoverHeading" }, t2(
-              toolName === "edit_run_code" ? "tool.codeEdit" : "tool.code"
-            )),
-            collapsedContent,
-            renderBody(false)
+      const sourceExcerpt = toolHoverExcerpt(view.code, 6);
+      const outputExcerpt = toolHoverExcerpt(view.output, 3);
+      const preview = h(
+        React.Fragment,
+        null,
+        h(
+          "div",
+          { className: "ptcPlusToolHoverHeader", "data-state": view.state },
+          h(
+            "span",
+            { className: "ptcPlusToolHoverHeading" },
+            t2(toolName === "edit_run_code" ? "tool.editPreview" : "tool.preview")
           ),
-          disabled: open || !previewable,
-          inline: true,
-          variant: "preview",
-          widthAnchorRef: rowRef,
-          openDelayMs: 150
-        })
+          h("span", { className: "ptcPlusToolHoverState" }, t2(stateKey))
+        ),
+        h(
+          "div",
+          { className: "ptcPlusToolHoverContent" },
+          view.description === "" ? null : h("div", { className: "ptcPlusToolHoverDescription" }, view.description),
+          view.code === "" ? null : h(
+            "div",
+            { className: "ptcPlusToolHoverSection" },
+            h("span", { className: "ptcPlusToolSectionLabel" }, `${t2("tool.source")} \xB7 TypeScript`),
+            isHostComponent(CodeBlock) ? h(CodeBlock, {
+              code: sourceExcerpt.text,
+              lang: "typescript",
+              showHeader: false,
+              lineNumbers: true,
+              className: "ptcPlusToolCode ptcPlusToolHoverCode"
+            }) : h("pre", { className: "ptcPlusToolCode ptcPlusToolHoverCode" }, sourceExcerpt.text)
+          ),
+          view.output === "" ? null : h(
+            "div",
+            { className: "ptcPlusToolHoverSection" },
+            h("span", { className: "ptcPlusToolSectionLabel" }, t2("tool.result")),
+            h("pre", { className: "ptcPlusIoText", "data-error": view.state === "error" || void 0 }, outputExcerpt.text)
+          ),
+          features
+        ),
+        h(
+          "div",
+          { className: "ptcPlusToolHoverFooter" },
+          h("span", null, t2("tool.previewHint")),
+          h("span", {
+            className: "ptcPlusToolHoverBounded",
+            "data-truncated": sourceExcerpt.truncated || outputExcerpt.truncated || void 0
+          }, t2("tool.previewBounded"))
+        )
       );
+      const wrapRow = (anchor) => h(ToolHoverAnchor, { disabled: open || !previewable, content: preview }, anchor);
       if (hasDisclosureRow) {
         return wrapRow(
           h(DisclosureRow, {
@@ -3588,7 +3766,7 @@
   }
 
   // src/client-authoring-view.js
-  var HOVER_DWELL_MS = 150;
+  var HOVER_DWELL_MS2 = 150;
   function createAuthoringView(React, deps) {
     const {
       ActionButton,
@@ -3753,7 +3931,7 @@
         hoverTimer.current = setTimeout(() => {
           hoverTimer.current = void 0;
           showMenu("hover");
-        }, HOVER_DWELL_MS);
+        }, HOVER_DWELL_MS2);
       };
       const menuElement = () => menuBodyRef.current;
       const captureCatalogFocus = () => {
@@ -4471,7 +4649,7 @@
   }
 
   // src/client-indicator-view.js
-  var HOVER_DWELL_MS2 = 150;
+  var HOVER_DWELL_MS3 = 150;
   var CLOSE_GRACE_MS = 200;
   function createIndicatorView(React, deps) {
     const {
@@ -4607,7 +4785,7 @@
           openTimer.current = void 0;
           keyboard.current = false;
           showPopover();
-        }, HOVER_DWELL_MS2);
+        }, HOVER_DWELL_MS3);
       }, [cancelClose, cancelOpen, showPopover]);
       const scheduleHide = React.useCallback(() => {
         cancelOpen();
@@ -30046,7 +30224,7 @@
   var CLIENT_STYLE_ID = "ptc-plus-client-style";
   var CLIENT_CSS = `
 .ptcPlusTool,.ptcPlusComposerBindingAnchor{--ptc-plus-warning-label:color-mix(in srgb,var(--dsw-alias-state-warn-primary,#a15c00) 65%,var(--dsw-alias-label-primary,#18191c))}.ptcPlusTool{font-family:inherit;font-size:13px;line-height:18px}.ptcPlusTool .ptcPlusToolRow{box-sizing:border-box;height:auto;min-height:24px;align-items:flex-start;padding-block:3px}.ptcPlusToolDisclosureContent{min-width:0;flex:1}.ptcPlusTool .ptcPlusToolDisclosureLayout{min-width:0;align-items:flex-start}.ptcPlusTool .ptcPlusToolTitle,.ptcPlusTool .ptcPlusToolSummary,.ptcPlusTool .ptcPlusToolSummaryLine,.ptcPlusTool .ptcPlusToolState,.ptcPlusTool .ptcPlusToolDescription,.ptcPlusTool .ptcPlusToolSep{font-size:13px;line-height:18px}.ptcPlusTool .ptcPlusToolTitle{flex:none;margin-inline-end:6px}.ptcPlusTool .ptcPlusToolState{flex:none;white-space:nowrap}.ptcPlusTool .ptcPlusToolSep{display:inline-block;min-width:6px}.ptcPlusToolSummary{display:flex;min-width:0;align-items:baseline}.ptcPlusToolSummaryLine{display:flex;min-width:0;align-items:baseline;overflow:hidden}.ptcPlusToolDescription{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.ptcPlusToolSummary .ptcPlusToolDescription{flex:1}.ptcPlusToolPreview{display:flex;flex:1;min-width:0;flex-direction:column;gap:4px;margin-inline-start:6px}.ptcPlusToolPreview .ptcPlusToolSummaryLine{display:block}.ptcPlusToolPreview .ptcPlusToolDescription{display:inline;white-space:normal;overflow-wrap:anywhere}.ptcPlusToolPreview .ptcPlusFeatures{margin:0}
-.ptcPlusTool>span{display:block;min-width:0}.ptcPlusToolHover{font-family:inherit;font-size:13px;line-height:18px;min-width:0;color:var(--dsw-alias-label-primary)}.ptcPlusToolHoverHeading{font-weight:600;margin-bottom:6px}.ptcPlusToolHover .ptcPlusToolPreview{margin:0}.ptcPlusToolHover .ptcPlusToolBody{margin:8px 0 0}.ptcPlusToolHover pre{max-height:none}
+.ptcPlusToolHover{position:fixed;inset:auto;margin:0;box-sizing:border-box;z-index:100;width:420px;max-height:360px;padding:14px 16px 0;display:flex;flex-direction:column;gap:10px;overflow:clip;pointer-events:none;user-select:none;border:1px solid var(--dsw-alias-border-l2,rgba(127,127,127,.2));border-radius:12px;background:var(--dsw-alias-bg-layer-1,var(--dsw-alias-bg-base,#fff));color:var(--dsw-alias-label-primary,#18191c);box-shadow:0 12px 36px rgba(0,0,0,.16);font-family:var(--dsw-font-family,system-ui,sans-serif);font-size:13px;line-height:19px}.ptcPlusToolHover *{pointer-events:none}.ptcPlusToolHover[hidden]{display:none}.ptcPlusToolHover::backdrop{display:none}.ptcPlusToolHoverHeader{display:flex;align-items:center;justify-content:space-between;gap:12px;flex:none}.ptcPlusToolHoverHeading{font-weight:600;min-width:0}.ptcPlusToolHoverState{white-space:nowrap;font-size:12px;color:var(--dsw-alias-label-secondary)}.ptcPlusToolHoverHeader[data-state=error] .ptcPlusToolHoverState{color:var(--dsw-alias-state-error-primary)}.ptcPlusToolHoverHeader[data-state=stopped] .ptcPlusToolHoverState{color:var(--ptc-plus-warning-label,color-mix(in srgb,var(--dsw-alias-state-warn-primary,#a15c00) 65%,var(--dsw-alias-label-primary,#18191c)))}.ptcPlusToolHoverHeader[data-state=ok] .ptcPlusToolHoverState{color:var(--dsw-alias-state-success-primary,var(--dsw-alias-label-secondary))}.ptcPlusToolHoverContent{min-height:0;overflow:clip;display:flex;flex-direction:column;gap:10px}.ptcPlusToolHoverDescription{color:var(--dsw-alias-label-secondary);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:clip;overflow-wrap:anywhere}.ptcPlusToolHoverSection{min-height:0;overflow:clip;border-top:1px solid var(--dsw-alias-border-l2,rgba(127,127,127,.2));padding-top:8px}.ptcPlusToolHover .ptcPlusToolSectionLabel{display:block;margin-bottom:5px;color:var(--dsw-alias-label-secondary);font-size:12px}.ptcPlusToolHover .ptcPlusToolHoverCode{background:none;border:0;border-radius:0;margin:0;padding:0;overflow:clip}.ptcPlusToolHover .ptcPlusToolHoverCode pre,.ptcPlusToolHover pre.ptcPlusToolHoverCode,.ptcPlusToolHover .ptcPlusIoText{background:none;border:0;border-radius:0;margin:0!important;padding:0;max-height:none;overflow:clip;white-space:pre!important;word-break:normal;font-family:var(--ds-font-family-code,ui-monospace,SFMono-Regular,Consolas,monospace);font-size:12px;line-height:19px}.ptcPlusToolHover .ptcPlusFeatures{margin:0;max-height:19px;overflow:clip}.ptcPlusToolHoverFooter{display:flex;align-items:center;justify-content:space-between;gap:12px;flex:none;padding:9px 0;border-top:1px solid var(--dsw-alias-border-l2,rgba(127,127,127,.2));color:var(--dsw-alias-label-secondary);font-size:11px;line-height:16px}.ptcPlusToolHoverBounded{display:none;white-space:nowrap}.ptcPlusToolHoverBounded[data-truncated=true],.ptcPlusToolHover[data-clipped=true] .ptcPlusToolHoverBounded{display:block}
 .ptcPlusBindingMenuContent{font-family:inherit;font-size:13px;line-height:18px;display:flex;flex-direction:column;min-width:0;min-height:0;width:100%;max-block-size:min(440px,60dvh,var(--ptc-plus-menu-space,100dvh));overflow:hidden}.ptcPlusBindingMenuScroll{flex:1 1 auto;min-height:0;overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable}.ptcPlusMenuGroupChevron{display:block;align-self:center;width:14px;height:14px;flex:none;margin-inline-end:6px}.ptcPlusMenuGroupChevron[data-expanded=true]{transform:rotate(90deg)}.ptcPlusOwnedMenuRow{appearance:none;box-sizing:border-box;display:flex;align-items:center;width:100%;min-width:0;min-height:38px;padding:8px 10px;border:0;border-radius:6px;background:transparent;color:inherit;font:inherit;text-align:start;cursor:pointer}.ptcPlusOwnedMenuRow:hover{background:var(--dsw-alias-interactive-bg-hover)}.ptcPlusOwnedMenuRow:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary,#4d6bfe);outline-offset:-2px}.ptcPlusOwnedMenuRow:disabled{opacity:.5;cursor:default}.ptcPlusOwnedMenuSeparator{margin:6px 0;border-top:1px solid var(--dsw-alias-border-l2)}
 .ptcPlusBindingDockAnchor{position:relative;flex:none;min-width:0;block-size:0;width:min(calc(100% - 32px),44rem);margin-inline:auto}
 .ptcPlusBindingPreviewLayer{position:fixed;z-index:40;block-size:min(440px,45dvh,var(--ptc-plus-review-space,100dvh));display:flex;align-items:flex-end;pointer-events:none;font-family:inherit;font-size:13px;line-height:18px}.ptcPlusBindingPreviewLayer[data-available=false]{visibility:hidden;pointer-events:none}.ptcPlusBindingDock{position:relative;font-family:inherit;font-size:13px;line-height:18px;box-sizing:border-box;min-width:0;display:flex;flex-direction:column;border:1px solid var(--dsw-alias-border-l3,rgba(0,0,0,.1));border-radius:14px;background:var(--dsw-alias-bg-base,#fff);color:var(--dsw-alias-label-primary,#18191c);box-shadow:0 8px 32px rgba(0,0,0,.14),0 2px 6px rgba(0,0,0,.06);width:100%;max-block-size:100%;pointer-events:auto;overflow:hidden;overscroll-behavior:contain}
@@ -30704,6 +30882,10 @@
       "memory.globalUnavailable": "\u65E0\u6CD5\u8BFB\u53D6\u5168\u5C40\u9ED8\u8BA4\u7ED1\u5B9A",
       "tool.code": "\u6267\u884C",
       "tool.codeEdit": "\u4FEE\u6B63\u6267\u884C",
+      "tool.preview": "\u6267\u884C\u9884\u89C8",
+      "tool.editPreview": "\u4FEE\u6B63\u6267\u884C\u9884\u89C8",
+      "tool.previewHint": "\u70B9\u51FB\u6267\u884C\u884C\u67E5\u770B\u5B8C\u6574\u5185\u5BB9",
+      "tool.previewBounded": "\u90E8\u5206\u5185\u5BB9",
       "tool.running": "\u6B63\u5728\u8FD0\u884C",
       "tool.completed": "\u6267\u884C\u5B8C\u6210",
       "tool.failed": "\u6267\u884C\u5931\u8D25",
@@ -30881,6 +31063,10 @@
       "memory.globalUnavailable": "Global default bindings are unavailable",
       "tool.code": "Code",
       "tool.codeEdit": "Code edit",
+      "tool.preview": "Code preview",
+      "tool.editPreview": "Code edit preview",
+      "tool.previewHint": "Click the row to view in full",
+      "tool.previewBounded": "Excerpt",
       "tool.running": "Running",
       "tool.completed": "Completed",
       "tool.failed": "Failed",
@@ -32143,7 +32329,6 @@
       Button: primitives.Button,
       CodeBlock: primitives.CodeBlock,
       DisclosureRow: primitives.DisclosureRow,
-      HoverCard: primitives.HoverCard,
       Menu: isHostComponent(primitives.Menu) ? primitives.Menu : createFallbackMenu(React, createPortal),
       MenuFallback: createFallbackMenu(React, createPortal),
       Modal: isHostComponent(primitives.Modal) ? primitives.Modal : createFallbackModal(React, createPortal),
@@ -32227,7 +32412,6 @@
         Button,
         CodeBlock,
         DisclosureRow,
-        HoverCard,
         Menu,
         MenuFallback,
         Modal,
@@ -32271,7 +32455,7 @@
       const { PTCPlusToolRow } = createPtcToolView(React, {
         CodeBlock,
         DisclosureRow,
-        HoverCard,
+        createPortal,
         icons: { chevron: IconChevronDownOutline14, check: IconCheckOutline14, inspect: IconInspectOutline12 }
       });
       async function apply(ctx) {

@@ -95,6 +95,7 @@
     "test:semantics": "node scripts/test-suite-files.mjs --file test/semantic-test262.test.js --file test/semantic-dialect.test.js --file test/semantic-boundaries.test.js --file test/semantic-boundary-storage.test.js --file test/semantic-boundary-promises.test.js --file test/semantic-boundary-reflection.test.js",
     "semantic:check": "node scripts/semantic-obligations.mjs",
     "test:client:web": "node scripts/client-web-smoke.mjs",
+    "test:client:tool-hover:focus": "node scripts/client-tool-hover.mjs --focus",
     "test:client:fallback:focus": "node scripts/client-fallback-smoke.mjs --focus",
     "test:client:layout:focus": "node scripts/client-binding-layout.mjs --focus",
     "test:client:fallback": "node scripts/client-fallback-smoke.mjs",

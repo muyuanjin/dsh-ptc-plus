@@ -1,5 +1,6 @@
 import { derivePtcToolView } from './client-activity.js'
 import { isHostComponent } from './client-host-compat.js'
+import { createToolHover, toolHoverExcerpt } from './client-tool-hover.js'
 
 /**
  * run_code / edit_run_code tool rows. The row is a pure projection of the
@@ -7,20 +8,13 @@ import { isHostComponent } from './client-host-compat.js'
  * DisclosureRow when the host provides it and an accessible fallback otherwise.
  */
 export function createPtcToolView(React, deps) {
-  const { CodeBlock, DisclosureRow, HoverCard, icons } = deps
+  const { CodeBlock, DisclosureRow, createPortal, icons } = deps
   const h = React.createElement
   const hasDisclosureRow = isHostComponent(DisclosureRow)
-  const hasHoverCard = isHostComponent(HoverCard)
+  const { ToolHoverAnchor } = createToolHover(React, createPortal)
 
   function PTCPlusToolRow({ toolName, block, inspect, t }) {
     const [open, setOpen] = React.useState(false)
-    const rowRef = React.useRef(null)
-    const previewRef = React.useRef(null)
-    const pointerInPreview = React.useRef(false)
-    const attachPreview = React.useCallback(element => {
-      previewRef.current = element
-      pointerInPreview.current = false
-    }, [])
     const view = derivePtcToolView(block, toolName)
     const previewable = view.code !== '' || view.output !== ''
     const expandable = previewable || typeof inspect === 'function'
@@ -72,34 +66,31 @@ export function createPtcToolView(React, deps) {
         : h('span', { className: 'ptcPlusFeatureDetail', title: feature.detail }, feature.detail))))
     const collapsedContent = h('div', { className: 'ptcPlusToolPreview' }, summaryLine, features)
     const body = open ? renderBody(true) : null
-    const wrapRow = anchor => h('div', {
-      className: 'ptcPlusTool', ref: rowRef,
-      onBlurCapture: event => {
-        const preview = previewRef.current
-        // The recorded preview is part of this row's focus region even though
-        // the public primitive portals it outside the anchor's DOM subtree.
-        if (preview !== null && (preview.contains(event.relatedTarget)
-          || (event.relatedTarget === null && pointerInPreview.current))) {
-          event.stopPropagation()
-        }
-      },
-    },
-      !hasHoverCard ? anchor : h(HoverCard, {
-        anchor,
-        content: h('div', {
-          ref: attachPreview, className: 'ptcPlusToolHover', 'data-state': view.state,
-          onPointerEnter: () => { pointerInPreview.current = true },
-          onPointerLeave: () => { pointerInPreview.current = false },
-        },
-          h('div', { className: 'ptcPlusToolHoverHeading' }, t(
-            toolName === 'edit_run_code' ? 'tool.codeEdit' : 'tool.code')),
-          collapsedContent, renderBody(false)),
-        disabled: open || !previewable,
-        inline: true,
-        variant: 'preview',
-        widthAnchorRef: rowRef,
-        openDelayMs: 150,
-      }))
+    const sourceExcerpt = toolHoverExcerpt(view.code, 6)
+    const outputExcerpt = toolHoverExcerpt(view.output, 3)
+    const preview = h(React.Fragment, null,
+      h('div', { className: 'ptcPlusToolHoverHeader', 'data-state': view.state },
+        h('span', { className: 'ptcPlusToolHoverHeading' },
+          t(toolName === 'edit_run_code' ? 'tool.editPreview' : 'tool.preview')),
+        h('span', { className: 'ptcPlusToolHoverState' }, t(stateKey))),
+      h('div', { className: 'ptcPlusToolHoverContent' },
+        view.description === '' ? null : h('div', { className: 'ptcPlusToolHoverDescription' }, view.description),
+        view.code === '' ? null : h('div', { className: 'ptcPlusToolHoverSection' },
+          h('span', { className: 'ptcPlusToolSectionLabel' }, `${t('tool.source')} · TypeScript`),
+          isHostComponent(CodeBlock) ? h(CodeBlock, {
+            code: sourceExcerpt.text, lang: 'typescript', showHeader: false, lineNumbers: true,
+            className: 'ptcPlusToolCode ptcPlusToolHoverCode',
+          }) : h('pre', { className: 'ptcPlusToolCode ptcPlusToolHoverCode' }, sourceExcerpt.text)),
+        view.output === '' ? null : h('div', { className: 'ptcPlusToolHoverSection' },
+          h('span', { className: 'ptcPlusToolSectionLabel' }, t('tool.result')),
+          h('pre', { className: 'ptcPlusIoText', 'data-error': view.state === 'error' || undefined }, outputExcerpt.text)),
+        features),
+      h('div', { className: 'ptcPlusToolHoverFooter' },
+        h('span', null, t('tool.previewHint')),
+        h('span', { className: 'ptcPlusToolHoverBounded',
+          'data-truncated': sourceExcerpt.truncated || outputExcerpt.truncated || undefined,
+        }, t('tool.previewBounded'))))
+    const wrapRow = anchor => h(ToolHoverAnchor, { disabled: open || !previewable, content: preview }, anchor)
     if (hasDisclosureRow) {
       return wrapRow(
         h(DisclosureRow, {

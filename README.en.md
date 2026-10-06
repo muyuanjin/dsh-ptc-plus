@@ -217,7 +217,7 @@ The workbench can run unsaved source and retain temporary variables across execu
 
 The **REPL tab** lets you search retained names, inspect definitions, see reuse counts and bounded value previews, and open the global binding workbench. Previews have type and size limits; missing, incomplete, or unreadable previews are identified explicitly, and display does not invoke user getters. The green **PTC Plus** header indicator offers a quick binding list on wide screens; use the REPL tab on narrow screens.
 
-Hover over a collapsed enhanced execution card to preview its recorded source, result, and feature notices; moving away closes the preview. Keyboard focus also opens it. Click or press Enter/Space to expand the card, including by tapping on touch devices. If Work step display has folded the whole process group, expand the group first. Hosts without the hover component retain click expansion.
+Pause over a collapsed enhanced execution card for a quick peek at its recorded source, result, and feature notices; keyboard focus also opens it. Long content is labeled as an excerpt. The preview never captures pointer or wheel input and hides when scrolling; passing rows during scrolling does not open it. Click or press Enter/Space to expand the full content and copy code, or tap on touch devices. Expand a folded process group first.
 
 Workbench controls provide visible keyboard focus and disabled feedback, and REPL names remain readable in light and dark themes. See the [visual contract](docs/client-visual-contract.md) for browser regression checks and their coverage limits.
 

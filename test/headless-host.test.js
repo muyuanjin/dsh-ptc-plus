@@ -47,6 +47,10 @@ import {
 import { probeReplRuntime, RUNTIME_PROBE_PREFIX } from '../scripts/repl-preflight.mjs'
 import * as hostContract from '../scripts/dsh-host-contract.mjs'
 
+const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
+// Windows evaluation accepts drive paths and WSL drive mounts, not native WSL storage.
+const windowsDriveCheckout = /^[a-zA-Z]:[\\/]|^\/mnt\/[a-zA-Z]\//.test(repoRoot)
+
 const runtime = {
   provider: 'provider',
   model: 'model',
@@ -321,13 +325,18 @@ test('owns neutral config parsing and projection for both runners', () => {
   assert.throws(() => headlessConfigPatch(rows, { ...runtime, permissionMode: undefined }), /permissionMode must be set explicitly/)
 })
 
-test('pairs the public canonical observer overlay and preserves exact Windows module paths', () => {
+test('canonical observer overlay preserves exact Windows module paths', () => {
   for (const modulePath of ['C:\\projects\\repo#1\\scripts\\evaluation-tool-results.mjs',
     'C:\\projects\\repo%20 spaced\\scripts\\evaluation-tool-results.mjs']) {
     const row = evaluationToolResultOverlay('C:\\scratch\\canonical-results', modulePath)
     assert.equal(fileURLToPath(row.name, { windows: true }), modulePath)
     assert.equal(new URL(row.name).hash, '')
   }
+})
+
+test('pairs the public canonical observer overlay across evaluation variants', {
+  skip: windowsDriveCheckout ? false : 'requires a checkout with a Windows drive path',
+}, () => {
   const selected = { ...runtime, canonicalResultDirectory: '/mnt/c/scratch/canonical-results' }
   const base = configRows()
   const existing = parseConfigDump(headlessConfigPatch(base, runtime, { disablePtcPlus: true }))
@@ -523,7 +532,8 @@ test('restores the exact last inherited cut without counting parent usage twice'
 })
 
 test('WSL restoration sends unchanged stored bytes to the selected Windows Node', {
-  skip: process.platform === 'win32' ? 'native Windows restores in its own execution world' : false,
+  skip: process.platform === 'win32' ? 'native Windows restores in its own execution world'
+    : windowsDriveCheckout ? false : 'requires a checkout with a Windows drive path',
 }, () => {
   const text = storedLog()
   let observed
@@ -1115,13 +1125,10 @@ test('runs one isolated task and collects the session logs it produced', async (
 })
 
 test('installs once and resolves every variant overlay before the runner oracle', async (t) => {
-  // The host forwards its workspace to PowerShell, which only exists on Windows
-  // or inside WSL; a native POSIX host cannot convert the path.
-  if (process.platform !== 'win32' && process.env.WSL_DISTRO_NAME === undefined) {
-    t.skip('requires a Windows or WSL-forwarded host')
+  if (!windowsDriveCheckout) {
+    t.skip('requires a checkout with a Windows drive path')
     return
   }
-  const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
   await mkdir(join(repoRoot, 'artifacts'), { recursive: true })
   const root = await mkdtemp(join(repoRoot, 'artifacts', 'ptc-prepare-configs-'))
   t.after(() => rm(root, { recursive: true, force: true }))

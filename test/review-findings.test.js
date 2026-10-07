@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { chmod, mkdir, mkdtemp, readFile, rm, symlink, unlink, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, unlink, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
@@ -144,6 +144,33 @@ function usesWindowsGitPathSemantics(root) {
   return /^[A-Za-z]:[\\/]/.test(execPath) || execPath.startsWith('\\\\')
 }
 
+test('documentation proof still requires independent review and the exact prospective index', async t => {
+  const root = await committedRepository(t, 'ptc-review-documentation-')
+  await writeFile(path.join(root, 'package.json'), JSON.stringify({ scripts: { verify: 'node -e "process.exit(77)"' } }))
+  execFileSync('git', ['add', 'package.json'], { cwd: root })
+  execFileSync('git', ['-c', 'user.name=PTC Test', '-c', 'user.email=ptc@example.test', 'commit', '--quiet', '-m', 'manifest'], { cwd: root })
+  await writeFile(path.join(root, 'README.md'), '# Guide\n')
+  await checkReviewLedger(root)
+  execFileSync('git', ['add', 'README.md'], { cwd: root })
+  await assert.rejects(() => preCommitReviewLedger(root), /no composite clean review verdict/)
+  await recordCleanVerdict(root)
+  await preCommitReviewLedger(root)
+  execFileSync('git', ['reset', '--quiet', 'HEAD', '--', 'README.md'], { cwd: root })
+  await assert.rejects(() => preCommitReviewLedger(root), /staged tree differs/)
+  await writeFile(path.join(root, 'runtime.js'), 'export const value = 42\n')
+  await assert.rejects(() => preCommitReviewLedger(root), /source tree changed/)
+})
+
+test('verification rejects a HEAD change while the candidate contents remain identical', async t => {
+  const root = await committedRepository(t, 'ptc-review-head-during-check-')
+  await assert.rejects(() => checkReviewLedger(root, {
+    verify: async () => {
+      execFileSync('git', ['-c', 'user.name=PTC Test', '-c', 'user.email=ptc@example.test',
+        'commit', '--allow-empty', '--quiet', '-m', 'concurrent'], { cwd: root })
+    },
+  }), /HEAD changed during deterministic verification/)
+})
+
 function gitConfigValue(root, key) {
   try {
     return execFileSync('git', ['config', '--bool', '--get', key], {
@@ -283,6 +310,48 @@ test('archives only after verification of an unchanged source tree', async (t) =
     head: () => 'committed-head',
   }), /HEAD moved after npm run check/)
   await assert.rejects(() => preCommitReviewLedger(root), /no review verification proof exists/)
+})
+
+test('archives a verified ledger across filesystems without replacing a prior archive', async (t) => {
+  if (process.platform !== 'linux') return t.skip('requires a separate Linux shared-memory filesystem')
+  const root = await committedRepository(t, 'ptc-review-cross-device-')
+  let sharedMemory
+  try {
+    sharedMemory = await stat('/dev/shm')
+  } catch (error) {
+    if (error.code === 'ENOENT') return t.skip('shared-memory filesystem unavailable')
+    throw error
+  }
+  if ((await stat(root)).dev === sharedMemory.dev) return t.skip('archive fixture requires distinct devices')
+  const archiveDirectory = await mkdtemp('/dev/shm/ptc-review-archive-')
+  t.after(() => rm(archiveDirectory, { recursive: true, force: true }))
+  const active = await createReviewLedger(root)
+  await writeFile(active, resolvedLedger())
+  const now = new Date('2026-08-22T10:20:30.456Z')
+  const previous = path.join(archiveDirectory, '20260822T102030456Z-REVIEW_FINDINGS.md')
+  await writeFile(previous, 'previous archive\n')
+  await assert.rejects(() => checkReviewLedger(root, {
+    archiveDirectory: '/proc/self',
+    now,
+    verify: async () => {},
+  }), error => ['ENOENT', 'EACCES', 'EPERM', 'EROFS'].includes(error.code))
+  assert.equal(await readFile(active, 'utf8'), resolvedLedger())
+  const proof = execFileSync('git', ['rev-parse', '--git-path', 'review-findings/verified-tree'], {
+    cwd: root, encoding: 'utf8',
+  }).trim()
+  await assert.rejects(() => readFile(path.resolve(root, proof)), { code: 'ENOENT' })
+  let verificationRuns = 0
+  const result = await checkReviewLedger(root, {
+    archiveDirectory,
+    now,
+    verify: async () => { verificationRuns += 1 },
+  })
+  assert.equal(verificationRuns, 1)
+  assert.equal(result.state, 'archived')
+  assert.equal(result.destination, previous.replace(/\.md$/, '-1.md'))
+  assert.equal(await readFile(previous, 'utf8'), 'previous archive\n')
+  assert.equal(await readFile(result.destination, 'utf8'), resolvedLedger())
+  await assert.rejects(() => readFile(active), { code: 'ENOENT' })
 })
 
 test('preserves the ledger when verification fails or changes the source tree', async (t) => {

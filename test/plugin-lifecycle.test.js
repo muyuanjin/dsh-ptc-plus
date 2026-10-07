@@ -742,7 +742,7 @@ test('rejects a tool assembly without a tools array', async (t) => {
   await assert.rejects(() => state.assemble({ tools: null }), /expected a tools array/)
 })
 
-test('rejects malformed direct runtime requests and hostile tool errors', async (t) => {
+test('rejects malformed direct requests and normalizes tool errors with throwing properties', async (t) => {
   const runtime = new SessionRuntime({ computeMs: 100, maxWallMs: 1_000 })
   t.after(() => runtime.dispose())
   const invalid = [
@@ -765,12 +765,12 @@ test('rejects malformed direct runtime requests and hostile tool errors', async 
     program: 'return 1', bindings: [], signal: controller.signal,
   }), { logs: [], error: { kind: 'abort', message: 'already stopped' } })
 
-  const hostile = Object.create(null)
-  Object.defineProperty(hostile, 'message', { get() { throw new Error('hidden') } })
-  hostile[Symbol.toPrimitive] = () => { throw new Error('unprintable') }
-  const thrown = await runtime.run('hostile-host-error', {
+  const throwingError = Object.create(null)
+  Object.defineProperty(throwingError, 'message', { get() { throw new Error('hidden') } })
+  throwingError[Symbol.toPrimitive] = () => { throw new Error('unprintable') }
+  const thrown = await runtime.run('throwing-host-error', {
     program: 'return api.fail({})',
-    bindings: [{ global: 'api', functions: { fail: async () => { throw hostile } } }],
+    bindings: [{ global: 'api', functions: { fail: async () => { throw throwingError } } }],
   })
   assert.equal(thrown.error.kind, 'exception')
   assert.match(thrown.error.message, /Unprintable error/)

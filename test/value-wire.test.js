@@ -148,20 +148,20 @@ test('accepts genuine cross-realm plain objects and arrays', () => {
   assert.equal(restored.array[2], restored.shared)
 })
 
-test('rejects spoofed intrinsic prototypes and survives hostile constructor metadata', () => {
+test('rejects lookalike intrinsic prototypes and handles throwing constructor-name access', () => {
   const fakeObjectPrototype = Object.create(null)
   fakeObjectPrototype.constructor = function Object() {}
   assert.throws(() => encodeValue(Object.create(fakeObjectPrototype)), /non-plain object/)
 
   const throwingConstructor = new Proxy(function Object() {}, {
     get(target, property, receiver) {
-      if (property === 'name') throw new Error('hostile name')
+      if (property === 'name') throw new Error('throwing name')
       return Reflect.get(target, property, receiver)
     },
   })
-  const hostilePrototype = Object.create(null)
-  hostilePrototype.constructor = throwingConstructor
-  assert.throws(() => encodeValue(Object.create(hostilePrototype)), /non-plain object/)
+  const throwingConstructorPrototype = Object.create(null)
+  throwingConstructorPrototype.constructor = throwingConstructor
+  assert.throws(() => encodeValue(Object.create(throwingConstructorPrototype)), /non-plain object/)
 
   const nullPrototypeArray = []
   Object.setPrototypeOf(nullPrototypeArray, null)
@@ -277,7 +277,7 @@ test('rejects every invalid own-property descriptor shape', () => {
   assert.throws(() => encodeValue(missingArrayDescriptor), /enumerable data property/)
 })
 
-test('rejects hostile array key reports before reading values', () => {
+test('rejects out-of-range and non-index array keys before reading values', () => {
   const beyondLength = new Proxy([], {
     ownKeys: () => ['length', '1'],
     getOwnPropertyDescriptor(target, key) {

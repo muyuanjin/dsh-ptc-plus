@@ -18,6 +18,8 @@ After all lanes are effective, `npm run check` produces the existing whole-sourc
 
 `REVIEW_FINDINGS.md`, `REVIEW_PLAN.json`, reports, lane records, plans, proofs, and aggregate verdicts remain checkout-local. The two root working files are installed into `.git/info/exclude`; reports must stay outside the checkout or be ignored. The old `dsh-review-verdict/v1` single-report format and `verdict` command are rejected rather than treated as composite evidence.
 
+[ADR 0039](0039-verify-documentation-without-runtime-suites.md) selects documentation or full behavioral verification within `check`. Both scopes keep the proof, review and index identities defined here; documentation proof does not establish runtime test success. The action-specific commands live in [review procedures](../review-procedure.md).
+
 ## Alternatives considered
 
 **Repeat one complete-tree review after every fix.** This binds review to exact bytes but discards unaffected independent evidence and serializes work that has explicit semantic boundaries.

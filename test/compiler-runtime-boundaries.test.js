@@ -14,12 +14,12 @@ import traverseImport from '@babel/traverse'
 import loadTypeScript from '../internal/compiler-typescript.cjs'
 import { lowerNativeLanguageSource } from '../internal/repl-scope-normalizer.js'
 
-for (const poison of ['value', 'accessor']) {
-  test(`decorator private records exclude inherited state while public contexts retain it (${poison})`, async t => {
+for (const descriptorKind of ['value', 'accessor']) {
+  test(`decorator private records exclude inherited state while public contexts retain it (${descriptorKind})`, async t => {
     const body = `let reads=0,writes=0,late,result;const observations=[],events=[];
       const previous=Object.getOwnPropertyDescriptor(Object.prototype,'v');
       try{
-        Object.defineProperty(Object.prototype,'v',{configurable:true,${poison === 'value' ? 'value:true,writable:true'
+        Object.defineProperty(Object.prototype,'v',{configurable:true,${descriptorKind === 'value' ? 'value:true,writable:true'
           : "get(){reads++;return true},set(){writes++;throw Error('inherited write')}"}});
         function decorate(value,context){
           observations.push(Object.getPrototypeOf(context)===Object.prototype,context.v===true);
@@ -35,7 +35,7 @@ for (const poison of ['value', 'accessor']) {
     const ts = loadTypeScript()
     const oracle = ts.transpileModule(`function run(){${body}}`, {compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText
     const expected = runInContext(`${oracle};run()`, createContext())
-    assert.deepEqual(structuredClone(expected), [42,1,Array(12).fill(true),['class','method','accessor'],true,poison === 'value' ? 0 : 6,0])
+    assert.deepEqual(structuredClone(expected), [42,1,Array(12).fill(true),['class','method','accessor'],true,descriptorKind === 'value' ? 0 : 6,0])
     const reflected = lowerNativeLanguageSource(`function run(){${body}}`)
     assert.deepEqual(structuredClone(runInContext(`${reflected};run()`,createContext())),structuredClone(expected))
     for (const bindingUpdates of ['stateful','protected']) {

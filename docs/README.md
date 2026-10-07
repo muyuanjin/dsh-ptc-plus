@@ -24,7 +24,9 @@
 
 ## Maintenance
 
-- [Verification and review procedures](verification.md): selection-required diagnostics, findings lifecycle, independent review, complete delivery checks, and release-only coverage; read the applicable procedure before its action as routed by [the agent contract](../AGENTS.md).
+- [Verification selection](verification.md): documentation checks, selection-required diagnostics and complete behavioral validation; read the applicable procedure before its action as routed by [the agent contract](../AGENTS.md).
+- [Findings and independent review](review-procedure.md): findings lifecycle, lane evidence, source proof and commit authorization.
+- [Release coverage](release-coverage.md): release-only coverage commands and verification implementation details.
 - [Client Visual Contract](client-visual-contract.md): browser prerequisites, control and state coverage, fault counterexamples, and packed Host evidence boundaries.
 - [Incremental Review Verdict](adr/0026-persist-the-delivery-verdict-against-the-verified-candidate.md): predeclared parallel lanes, dependency-scoped invalidation, and the composite commit verdict.
 - [Focused Verification](verification-optimization-work.md): bounded coverage diagnostics during new-version release preparation.

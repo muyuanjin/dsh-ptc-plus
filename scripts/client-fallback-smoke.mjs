@@ -127,7 +127,7 @@ if (values.list) {
     const IconButton=({icon:Icon,label,...props})=>h('button',{type:'button',className:'ptcPlusIconButton','aria-label':label,...props},h(Icon,{size:16}));
     const {BindingReviewDock,BindingCommandCard}=createAuthoringView(React,{ActionButton,IconButton,Modal,createPortal,
       useBindingReview:()=>[review,view],icons:{check:Icon,chevron:Icon}});
-    const {PTCPlusToolRow}=createPtcToolView(React,{DisclosureRow:window.nativeButtons?DisclosureRow:undefined,
+    const {PTCPlusToolRow}=createPtcToolView(React,{createPortal,DisclosureRow:window.nativeButtons?DisclosureRow:undefined,
       icons:{chevron:Icon,check:Icon,inspect:Icon}});
     const toolSource='import path from "node:path"; export const answer = 42';
     const toolDescription='Test module syntax, top-level await, relative resolution and continuous state across computations';
@@ -349,11 +349,20 @@ if (values.list) {
         for (const example of ['none', 'short', 'long', 'empty', 'features-only', 'rewrites']) {
           await page.evaluate(example => window.setToolExample(example), example)
           await page.waitForFunction(example => {
-            const count=document.querySelectorAll('.ptcPlusFeature').length;
+            const count=document.querySelector('.ptcPlusTool').querySelectorAll('.ptcPlusFeature').length;
             return count===(example==='none'||example==='empty'?0:example==='long'?3:2);
           }, example)
+          if (example === 'features-only') {
+            await tool.hover()
+            await page.getByRole('tooltip').waitFor()
+          }
           await assertToolLayout(tool, `${theme}/${native ? 'native' : 'fallback'}/${locale}/${example}`, following)
           await assertToolTypography(tool, `${theme}/${native ? 'native' : 'fallback'}/${locale}/${example}`)
+          if (example === 'features-only') {
+            await page.mouse.move(0, 0)
+            await page.keyboard.press('Escape')
+            await page.getByRole('tooltip').waitFor({ state: 'hidden' })
+          }
         }
         await assertToolTypography(tool, `${theme}/${native ? 'native' : 'fallback'}/${locale}`)
         if (width === 320 && theme === 'light' && locale === 'en') {

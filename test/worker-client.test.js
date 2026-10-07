@@ -229,7 +229,7 @@ test('an idle output-attribution failure resets immediately and fails the next e
   assert.deepEqual(failures, [])
 })
 
-test('an old-round output failure settles an active transport consumer without poisoning its successor', async () => {
+test('an old-round output failure settles the active transport consumer and resets the worker', async () => {
   const messages = []
   const failures = []
   const client = new WorkerClient({
@@ -270,7 +270,7 @@ test('an old-round output failure settles an active transport consumer without p
   await new Promise(resolve => setImmediate(resolve))
 })
 
-test('output protocol frames cannot bypass capture while completion waits for fences', async t => {
+test('output protocol frames remain captured while completion waits for fences', async t => {
   const token = 'a'.repeat(48)
   for (const [name, invalidFrame, expected] of [
     ['repeated done', { type: 'done', id: 7, outputFence: token, logs: [] }, /repeated a completion/u],

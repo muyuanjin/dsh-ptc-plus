@@ -1324,7 +1324,7 @@ test('new require preserves the managed native export identity', async t => {
 
 test('kernel bookkeeping retains captured intrinsic operations across cells', async t => {
   const worker = await bindingWorker(t)
-  const poisoned = await worker.run(`
+  const intrinsicsChanged = await worker.run(`
 globalThis.staleObserve = tools.observe
 Set.prototype.has = null
 Set.prototype.add = null
@@ -1346,8 +1346,8 @@ JSON.stringify = null
 Buffer.byteLength = null
 void 0
 `)
-  assert.equal(poisoned.error, undefined, poisoned.error)
-  assert.equal(poisoned.hasValue, false)
+  assert.equal(intrinsicsChanged.error, undefined, intrinsicsChanged.error)
+  assert.equal(intrinsicsChanged.hasValue, false)
 
   const continued = await worker.run(`
 const reply = await tools.observe({ value: 2 })

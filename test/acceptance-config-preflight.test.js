@@ -7,12 +7,11 @@ import { stringify } from 'yaml'
 import * as host from '../scripts/headless-host.mjs'
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
-// The headless acceptance host forwards its workspace to PowerShell, which only
-// exists on Windows or inside WSL; a native POSIX host cannot convert the path.
-const forwardsWindowsPaths = process.platform === 'win32' || process.env.WSL_DISTRO_NAME !== undefined
+// Windows evaluation accepts drive paths and WSL drive mounts, not native WSL storage.
+const forwardsWindowsPaths = /^[a-zA-Z]:[\\/]|^\/mnt\/[a-zA-Z]\//.test(repoRoot)
 
 test('acceptance config-only uses a shared private overlay and cleans it on success or failure',
-  { skip: forwardsWindowsPaths ? false : 'requires a Windows or WSL-forwarded host' }, async t => {
+  { skip: forwardsWindowsPaths ? false : 'requires a checkout with a Windows drive path' }, async t => {
   const artifactRoots = new Set()
   t.after(async () => {
     for (const root of artifactRoots) await fs.rm(root, { recursive: true, force: true })

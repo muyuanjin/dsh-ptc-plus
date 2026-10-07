@@ -1,6 +1,6 @@
 # Client UI
 
-标准 `verify`、`check` 与 CI 的 `verify:ci` 均执行 `test:client:visual`，在一次 Client 测试生成的实际 renderer 夹具上检查关键控件的尺寸、可读性、悬停、键盘焦点、禁用反馈及布局。浏览器准备、覆盖清单、故障反例与官方宿主验收边界见 [Client visual contract](client-visual-contract.md)。
+标准 `verify`、`check` 的完整验证分支与 CI 的 `verify:ci` 均执行 `test:client:visual`，在一次 Client 测试生成的实际 renderer 夹具上检查关键控件的尺寸、可读性、悬停、键盘焦点、禁用反馈及布局。浏览器准备、覆盖清单、故障反例与官方宿主验收边界见 [Client visual contract](client-visual-contract.md)。
 
 PTC Plus 提供**插件设置卡片**。卡片座位由宿主代际决定：更早、未冻结的代际在 DSH Web/Desktop 的 Settings → Plugin configuration 中以 `settings.plugin.item` 渲染，当前代际在侧栏 Plugins → Installed 页面以 `plugins.row.config`（键 `<包名>#<行 id>`）渲染该 bundle 自己的配置；General 设置不是本卡片的座位，`src/client-host-compat.js` 只发布到这两个插件配置座位，由声明了槽位的那一代决定哪个生效，卡片按座位提供的 `summary`/`page` 视图分别渲染一句描述与完整表单。输入框旁的星光菜单还直接打开复用同一表单的应用内设置窗口，不依赖宿主页面的局部导航状态；菜单项悬浮提示保留原生设置座位的路径。
 

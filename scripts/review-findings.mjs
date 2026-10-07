@@ -1,12 +1,13 @@
 import { spawnSync } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
-import { chmodSync, existsSync, readdirSync } from 'node:fs'
-import { mkdir, mkdtemp, readFile, rename, rm, stat, unlink, writeFile } from 'node:fs/promises'
+import { chmodSync, constants, existsSync, readdirSync } from 'node:fs'
+import { copyFile, mkdir, mkdtemp, readFile, rename, rm, stat, unlink, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { fileURLToPath } from 'node:url'
 import { parseDocument } from 'yaml'
 import { npmCliCommand } from './npm-cli.mjs'
+import { documentationChanges, verifyDocumentation } from './documentation-check.mjs'
 
 const SCRIPT_DIRECTORY = path.dirname(fileURLToPath(import.meta.url))
 export const TEMPLATE_PATH = path.resolve(SCRIPT_DIRECTORY, '../.agents/templates/REVIEW_FINDINGS.md')
@@ -638,7 +639,7 @@ function sourceHead(root) {
   return git(root, ['rev-parse', 'HEAD'], { allowFailure: true }) ?? 'unborn'
 }
 
-export async function sourceTreeSnapshot(root, { base } = {}) {
+export async function sourceTreeSnapshot(root, { base, checkWhitespace = false } = {}) {
   indexTreeFingerprint(root)
   // One tagged inventory retains raw filename bytes and distinguishes cached,
   // missing, untracked and deliberately unmaterialized worktree entries.
@@ -729,6 +730,10 @@ export async function sourceTreeSnapshot(root, { base } = {}) {
       ], { input: joinGitRecords(sourcePaths) })
     }
     const fingerprint = scratchCommand(['write-tree'])
+    if (checkWhitespace) {
+      if (base === undefined) throw new Error('candidate whitespace validation requires a base commit')
+      scratchCommand(['diff-tree', '--check', '-r', base, fingerprint])
+    }
     const entries = splitGitRecords(scratchBytes(['ls-tree', '-r', '-z', '--full-tree', fingerprint])).map((record) => {
       const separator = record.indexOf(0x09)
       if (separator < 0) throw new Error('source tree entry is malformed')
@@ -963,7 +968,10 @@ async function archiveResolvedLedger({ root, templatePath = TEMPLATE_PATH, archi
   while (await exists(destination)) {
     destination = path.join(directory, base.replace(/\.md$/, `-${suffix++}.md`))
   }
-  await rename(activePath, destination)
+  // A worktree and its Git metadata may live on different filesystems.
+  // Retain the active ledger until an exclusive archive copy succeeds.
+  await copyFile(activePath, destination, constants.COPYFILE_EXCL)
+  await unlink(activePath)
   return Object.freeze({ state: 'archived', destination, ledger })
 }
 
@@ -1048,19 +1056,19 @@ async function activeLedgerFingerprint(root) {
 export async function checkReviewLedger(root, options = {}) {
   const ready = await gateReviewLedger(root, options)
   const fingerprint = options.fingerprint ?? sourceTreeFingerprint
+  const head = (options.head ?? sourceHead)(root)
   const before = await fingerprint(root)
   const ledgerBefore = await activeLedgerFingerprint(root)
-  await options.verify()
+  const verification = await (options.verify ?? (() => verifyCandidate(root, { forceFull: options.forceFull })))()
   const after = await fingerprint(root)
   if (after !== before) throw new Error('source tree changed during deterministic verification')
   if (await activeLedgerFingerprint(root) !== ledgerBefore) {
     throw new Error('review findings ledger changed during deterministic verification')
   }
-  const head = (options.head ?? sourceHead)(root)
-  const proof = await writeVerificationProof(root, { head, fingerprint: after })
-  const verified = Object.freeze({ head, fingerprint: after, proof })
-  if (ready.state === 'absent') return Object.freeze({ ...ready, ...verified })
-  return Object.freeze({ ...(await archiveResolvedLedger({ root, ...options })), ...verified })
+  if ((options.head ?? sourceHead)(root) !== head) throw new Error('HEAD changed during deterministic verification')
+  const archived = ready.state === 'absent' ? ready : await archiveResolvedLedger({ root, ...options })
+  const proof = await writeVerificationProof(root, { head, fingerprint: after, ...(verification && { verification }) })
+  return Object.freeze({ ...archived, head, fingerprint: after, proof })
 }
 
 function affectedLaneIds(plan, laneId) {
@@ -1437,11 +1445,15 @@ async function main() {
     return
   }
   if (command === 'check') {
-    const result = await checkReviewLedger(root, { verify: () => runVerification(root) })
+    const result = await checkReviewLedger(root, { forceFull: args.includes('--full') })
     if (result.state === 'archived') console.log(`archived resolved review findings at ${result.destination}`)
     if (typeof result.head === 'string' && typeof result.fingerprint === 'string') {
       console.log(`verified ${result.head} ${result.fingerprint}`)
     }
+    return
+  }
+  if (command === 'docs') {
+    await verifyCandidate(root, { documentationOnly: true })
     return
   }
   if (command === 'pre-commit') {
@@ -1469,6 +1481,38 @@ function runVerification(root) {
   const result = spawnSync(command.executable, command.args, { cwd: root, stdio: 'inherit' })
   if (result.error !== undefined) throw new Error(`cannot start npm run verify: ${result.error.message}`)
   if (result.status !== 0) throw new Error(`npm run verify failed with exit ${result.status}`)
+}
+
+export async function verifyCandidate(root, { documentationOnly = false, forceFull = false, full = runVerification } = {}) {
+  if (forceFull) {
+    if (documentationOnly) throw new Error('documentation-only and full verification cannot be selected together')
+    console.log('Verification scope: full (explicit request)')
+    await full(root)
+    return { kind: 'full' }
+  }
+  const head = sourceHead(root)
+  const snapshot = await sourceTreeSnapshot(root)
+  const previous = head === 'unborn' ? [] : splitGitRecords(gitBytes(root, ['ls-tree', '-r', '-z', '--full-tree', head]))
+    .map(record => {
+      const separator = record.indexOf(0x09)
+      return { identity: record.subarray(0, separator).toString('ascii'), path: record.subarray(separator + 1) }
+    })
+  const files = head === 'unborn' ? undefined : documentationChanges(previous, snapshot.entries)
+  if (files === undefined) {
+    if (documentationOnly) throw new Error('documentation verification requires only ordinary Markdown changes under docs/ or the four root documentation entries')
+    console.log('Verification scope: full')
+    await full(root)
+    return { kind: 'full' }
+  }
+  console.log(`Verification scope: documentation (${files.length} changed files)`)
+  const checked = await sourceTreeSnapshot(root, { base: head, checkWhitespace: true })
+  if (checked.fingerprint !== snapshot.fingerprint) throw new Error('source tree changed during documentation classification')
+  const result = await verifyDocumentation(root, {
+    files,
+    inventory: snapshot.entries.filter(entry => entry.identity.startsWith('100644 blob ')).map(entry => entry.path.toString('utf8')),
+  })
+  console.log(`Documentation references passed: ${result.documents} changed or referring documents; semantic claims require independent review`)
+  return result
 }
 
 if (path.resolve(process.argv[1] ?? '') === fileURLToPath(import.meta.url)) {

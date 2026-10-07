@@ -67,19 +67,19 @@ test('exception source facts validate current coordinates and expire with their 
   assert.deepEqual(Reflect.ownKeys(error), [])
 })
 
-test('normalizes hostile errors and extracts active-cell details', () => {
-  const hostile = Object.create(null, {
+test('normalizes errors with throwing properties and extracts active-cell details', () => {
+  const throwingError = Object.create(null, {
     message: { get() { throw new Error('blocked') } },
     name: { get() { throw new Error('blocked') } },
     stack: { get() { throw new Error('blocked') } },
   })
-  hostile.toString = () => { throw new Error('blocked') }
-  assert.equal(safeProperty(hostile, 'message'), undefined)
-  assert.equal(messageOf(hostile), 'Unprintable error')
+  throwingError.toString = () => { throw new Error('blocked') }
+  assert.equal(safeProperty(throwingError, 'message'), undefined)
+  assert.equal(messageOf(throwingError), 'Unprintable error')
   assert.equal(firstLine('first\nsecond'), 'first')
   assert.equal(firstLine('', 'fallback'), 'fallback')
   assert.equal(oneLineMessage(new Error('bad syntax (2:3)')), 'bad syntax')
-  assert.equal(errorPosition(hostile, 'ptc-plus-repl-1'), undefined)
+  assert.equal(errorPosition(throwingError, 'ptc-plus-repl-1'), undefined)
 
   const error = new TypeError('broken')
   error.stack = 'TypeError: broken\n    at run (ptc-plus-repl-7:12:9)'
@@ -90,7 +90,7 @@ test('normalizes hostile errors and extracts active-cell details', () => {
     position: { line: 12, column: 9 },
     cause: { code: 'REMOTE', message: 'remote failure' },
   })
-  assert.deepEqual(errorDetails(hostile, 'ptc-plus-repl-1'), {
+  assert.deepEqual(errorDetails(throwingError, 'ptc-plus-repl-1'), {
     name: 'Error', message: 'Unprintable thrown value',
   })
   const toolError = Object.assign(new Error('denied'), {

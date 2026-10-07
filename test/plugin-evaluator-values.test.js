@@ -281,7 +281,7 @@ test('guides same-name continuation after a declaration initializer fails', asyn
 
   const observed = await state.executeRun(
     'partial-declaration-guidance',
-    'const initialized = 1\nconst poisoned = (() => { throw new Error("stop") })()',
+    'const initialized = 1\nconst continuedValue = (() => { throw new Error("stop") })()',
     {},
     {},
   )
@@ -290,7 +290,7 @@ test('guides same-name continuation after a declaration initializer fails', asyn
   assert.match(help[0], /failing operation may have caused effects/)
   assert.match(help[1], /completed declarations and actual assignments remain available/)
   assert.match(help[1], /continue with the same binding names/)
-  assert.deepEqual(await state.run('partial-declaration-guidance', 'const poisoned = initialized + 1\nreturn [initialized, poisoned]'), {
+  assert.deepEqual(await state.run('partial-declaration-guidance', 'const continuedValue = initialized + 1\nreturn [initialized, continuedValue]'), {
     logs: [],
     value: [1, 2],
   })
@@ -416,32 +416,32 @@ test('adds a classified one-shot hint after consecutive identical cell failures'
   assert.equal(hinted.meta.dshPtcPlus.diagnostics.some(d => d.code === 'PTC-W002'), true)
 })
 
-test('normalizes hostile thrown values without terminating the runtime', async (t) => {
+test('normalizes multiline error names and throwing cause or stack getters while keeping the runtime usable', async (t) => {
   const state = fixture()
   t.after(() => state.dispose())
 
-  const multilineName = await state.runDurable('hostile-thrown-name', `
+  const multilineName = await state.runDurable('multiline-thrown-name', `
 const namedError = new Error('named failure')
   namedError.name = 'Bad\\rName'
 throw namedError
 `)
   assert.equal(multilineName.meta.dshPtcPlus.diagnostics[0].message, 'uncaught Bad: named failure')
 
-  const throwingCause = await state.runDurable('hostile-thrown-cause', `
-const hostileThrown = { name: 'CustomError', message: 'semantic failure' }
-Object.defineProperty(hostileThrown, 'ptcCause', { get() { throw new Error('cause getter escaped') } })
-throw hostileThrown
+  const throwingCause = await state.runDurable('throwing-cause-getter', `
+const throwingValue = { name: 'CustomError', message: 'semantic failure' }
+Object.defineProperty(throwingValue, 'ptcCause', { get() { throw new Error('cause getter escaped') } })
+throw throwingValue
 `)
   assert.equal(throwingCause.meta.dshPtcPlus.diagnostics[0].message, 'uncaught CustomError: semantic failure')
   assert.equal(Object.hasOwn(throwingCause.meta.dshPtcPlus.diagnostics[0], 'cause'), false)
-  assert.deepEqual(await state.run('hostile-thrown-cause', 'return 42'), { logs: [], value: 42 })
-  const hostileStack = await state.run('hostile-thrown-stack', `
+  assert.deepEqual(await state.run('throwing-cause-getter', 'return 42'), { logs: [], value: 42 })
+  const throwingStack = await state.run('throwing-stack-getter', `
 const originalError = new Error('original failure')
 Object.defineProperty(originalError, 'stack', { get() { throw new Error('stack getter replaced original') } })
 throw originalError
 `)
-  assert.match(hostileStack.error.message, /original failure/)
-  assert.doesNotMatch(hostileStack.error.message, /uncaught Error: stack getter/)
+  assert.match(throwingStack.error.message, /original failure/)
+  assert.doesNotMatch(throwingStack.error.message, /uncaught Error: stack getter/)
 })
 
 test('generic exceptions preserve live execution facts without guessing an initializer failure', async t => {

@@ -880,7 +880,7 @@ test('ignores throwing diagnostic accessors on native tool errors', async (t) =>
   const state = fixture()
   t.after(() => state.dispose())
 
-  const observed = await state.executeRun('host-hostile-error', 'return await tools.fail({})', {
+  const observed = await state.executeRun('host-throwing-error-properties', 'return await tools.fail({})', {
     fail: async () => {
       const error = new Error('original host failure')
       Object.defineProperties(error, {
@@ -895,7 +895,7 @@ test('ignores throwing diagnostic accessors on native tool errors', async (t) =>
     message: 'original host failure',
   })
   assert.match(observed.raw.error.message, /cause: original host failure/)
-  assert.deepEqual(await state.run('host-hostile-error', 'return 42'), { logs: [], value: 42 })
+  assert.deepEqual(await state.run('host-throwing-error-properties', 'return 42'), { logs: [], value: 42 })
 })
 
 test('distinguishes nested native missing descriptions from the outer run_code transport', async (t) => {

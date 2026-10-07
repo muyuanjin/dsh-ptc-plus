@@ -123,6 +123,7 @@
     "verify": "npm run review:validate && npm run host:baseline:verify && npm run semantic:check && npm run build:check && node --check index.js && node --check internal/kernel-worker.js && node --check scripts/migrate-session-log.mjs && node --check scripts/expensive-headless-acceptance.mjs && node --check scripts/ab-headless-trajectories.mjs && node scripts/deterministic-test-groups.mjs",
     "verify:ci": "npm run review:validate && npm run host:baseline:verify && npm run semantic:check && npm run build:check && node --check index.js && node --check internal/kernel-worker.js && node --check scripts/migrate-session-log.mjs && node scripts/deterministic-test-groups.mjs --ci",
     "check": "node scripts/review-findings.mjs check",
+    "verify:docs": "node scripts/review-findings.mjs docs",
     "test:expensive": "node scripts/expensive-headless-acceptance.mjs",
     "test:ab": "node scripts/ab-headless-trajectories.mjs"
   },

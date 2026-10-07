@@ -10,7 +10,7 @@ before the full release coverage gate runs again.
 Coverage is not part of ordinary development, review, commit preparation,
 `npm run verify`, or `npm run check`; coverage-specific suites and instrumented cases are also excluded from those daily entries. The focused command does not replace the
 full release coverage gate and does not write a verified-tree proof.
-[Deterministic verification](verification.md) owns command syntax, thresholds,
+[Release coverage](release-coverage.md) owns coverage command syntax, thresholds,
 generated evidence, and the final gates; [ADR 0035](adr/0035-run-coverage-only-before-a-new-release.md)
 owns coverage scheduling.
 
@@ -68,10 +68,10 @@ packing and staging.
 
 When complete validation is requested for delivery, timing or an identified
 cross-suite risk, run one final command on the stable candidate: `npm run verify`
-with unresolved findings, otherwise `npm run check`. Terminal findings alone do
+with unresolved findings, otherwise `npm run check -- --full`. Terminal findings alone do
 not trigger another gate. A still-matching proof is reused for delivery; focused
 results never replace it. Do not run `verify` immediately before `check` on the
-same tree because `check` already invokes it.
+same tree because the full check already invokes it.
 
 Temporary concurrency overrides change scheduling only. Use one only when
 current evidence identifies scheduling contention, and do not carry it into a

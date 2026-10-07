@@ -20,6 +20,8 @@ Test262 子集位于 `test/fixtures/test262/`。`manifest.json` 记录上游仓�
 
 扩充子集时，从 manifest 的 revision 检出 Test262，原样复制所选用例、依赖的 harness 和 LICENSE，更新校验值及语义主题；升级 revision 时核对全部已选文件。普通测试始终读取仓库内固定输入。优先补齐未覆盖的语义规则与入口组合，而非堆积同一反例的拼写变体。
 
+这些测试验证用户可修改的 JavaScript 对象与插件内部编译操作之间的语义关系。例如替换 `Map.prototype.get` 后，用户对该方法的调用仍应观察替换结果，编译器私有存储则应继续完成编译。描述此类用例时，写明被修改的对象、执行入口与预期观察；已有源码、API、诊断和确实涉及安全边界的问题保留准确名称。
+
 编译器边界按参数/namespace/错误分类、存储协议、Promise 协议和反射协议分文件执行，共享 `test/semantic-boundary-fixture.js` 的源码构造与原生 oracle。协议集合互斥且完整，全部 8 个协议 × 6 种操作 × 4 个入口仍逐一比较；每次比较继续创建独立的原生 Worker 和 PTC runtime，不共享被修改的 intrinsic 或执行状态。常规 backend 与 `test:semantics` 使用同一文件并发上限。
 
 矩阵是有限笛卡尔积，失败名称会给出协议、操作和入口，可用 Node 的 `--test-name-pattern` 单独复现。原生比较不执行 lowering 产物来生成预期值。涉及对象身份或副作用顺序的规则还需要直接契约断言；相同 JSON 不能证明任意对象等价。扩大生成范围时保留稳定输入和可独立复现的最小案例，禁止无记录的随机种子或无限生成。

@@ -1107,8 +1107,8 @@
       default: "[]",
       label: "\u521D\u59CB\u5E38\u7528\u80FD\u529B",
       labelEn: "Initial common capabilities",
-      description: "JSON \u6570\u7EC4\uFF0C\u4F7F\u7528\u51C6\u786E\u80FD\u529B ID\uFF08\u4F8B\u5982 tools.read_file\uFF09\u3002\u4E0D\u751F\u6210\u4F7F\u7528\u8BB0\u5F55\u3002",
-      descriptionEn: "JSON array of exact capability IDs, such as tools.read_file. Creates no usage records."
+      description: "\u4ECE\u80FD\u529B\u5217\u8868\u52FE\u9009\u5E38\u7528\u9879\uFF0C\u7EDF\u8BA1\u4E0D\u53EF\u7528\u65F6\u4F18\u5148\u5B8C\u6574\u62AB\u9732\uFF1B\u4E0D\u751F\u6210\u4F7F\u7528\u8BB0\u5F55\u3002",
+      descriptionEn: "Select common capabilities from the list for full disclosure when statistics are unavailable. Creates no usage records."
     },
     {
       key: "capabilityOverrides",
@@ -1116,8 +1116,8 @@
       default: "{}",
       label: "\u80FD\u529B\u624B\u52A8\u9009\u62E9",
       labelEn: "Manual capability selections",
-      description: "JSON \u5BF9\u8C61\uFF1A\u80FD\u529B ID \u5BF9\u5E94 full\u3001on-demand \u6216 closed\uFF1B\u663E\u5F0F\u9009\u62E9\u4F18\u5148\u4E8E\u7EDF\u8BA1\u3002",
-      descriptionEn: "JSON object mapping capability IDs to full, on-demand or closed. Explicit selections override statistics."
+      description: "\u9010\u9879\u9009\u62E9\u81EA\u52A8\u3001\u5B8C\u6574\u3001\u6309\u9700\u6216\u5173\u95ED\uFF1B\u663E\u5F0F\u9009\u62E9\u4F18\u5148\u4E8E\u7EDF\u8BA1\u548C\u5E38\u7528\u57FA\u7EBF\u3002",
+      descriptionEn: "Choose automatic, full, on-demand or closed disclosure for each capability. Explicit choices override statistics and the common baseline."
     },
     {
       key: "capabilityStatistics",
@@ -1125,8 +1125,8 @@
       default: '{"enabled":false,"windowSize":100,"minimumSamples":10,"fullThreshold":0.5}',
       label: "\u80FD\u529B\u7EDF\u8BA1\u8BBE\u7F6E",
       labelEn: "Capability statistics settings",
-      description: "\u72EC\u7ACB JSON \u8BBE\u7F6E\u3002\u65E0\u6548\u3001\u5173\u95ED\u6216\u4E0D\u53EF\u7528\u65F6\u4FDD\u7559\u624B\u52A8\u57FA\u7EBF\uFF1B\u7A97\u53E3\u6309\u5408\u683C\u4F1A\u8BDD\u5BB6\u65CF\u8BA1\u7B97\u3002",
-      descriptionEn: "Independent JSON settings. Invalid, disabled or unusable statistics preserve the manual baseline. Windows count eligible session families."
+      description: "\u72EC\u7ACB\u542F\u7528\u4F7F\u7528\u7EDF\u8BA1\uFF0C\u5E76\u8BBE\u7F6E\u6837\u672C\u7A97\u53E3\u3001\u6700\u4F4E\u6837\u672C\u6570\u548C\u5B8C\u6574\u62AB\u9732\u9608\u503C\uFF1B\u5173\u95ED\u6216\u4E0D\u53EF\u7528\u65F6\u4FDD\u7559\u624B\u52A8\u57FA\u7EBF\u3002",
+      descriptionEn: "Enable usage statistics and set the sample window, minimum samples and full-disclosure threshold. Disabled or unavailable statistics preserve the manual baseline."
     },
     {
       key: "capabilityBudgetBytes",
@@ -2677,27 +2677,152 @@
 
   // src/client-settings-view.js
   function createPtcSettingsView(React, deps) {
-    const { ActionButton, BindingsDialog, Modal, useWorkbenchController, icons, inspectCapabilityPlans } = deps;
+    const { ActionButton, BindingsDialog, Modal, useWorkbenchController, icons, inspectCapabilityPlans, inspectCapabilityCatalog } = deps;
     const h = React.createElement;
-    function TextSetting({ field, value, disabled, onChange, label }) {
-      const [draft, setDraft] = React.useState(value ?? "");
-      React.useEffect(() => setDraft(value ?? ""), [value]);
-      return h("textarea", {
-        className: "ptcPlusInput",
-        value: draft,
-        rows: 3,
-        disabled,
-        "aria-label": label,
-        onChange: (event) => setDraft(event.target.value),
-        onBlur: () => {
-          if (draft !== value) onChange(field, draft);
+    const validStatistics = (settings) => typeof settings.enabled === "boolean" && Number.isSafeInteger(settings.windowSize) && settings.windowSize >= 1 && Number.isSafeInteger(settings.minimumSamples) && settings.minimumSamples >= 1 && settings.minimumSamples <= settings.windowSize && Number.isFinite(settings.fullThreshold) && settings.fullThreshold >= 0 && settings.fullThreshold <= 1;
+    function StatisticsSetting({ value, disabled, onChange, t: t2 }) {
+      const saved = React.useMemo(() => {
+        const defaults3 = JSON.parse(CONFIG_DEFAULTS.capabilityStatistics);
+        try {
+          const parsed = JSON.parse(value);
+          if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new TypeError();
+          const settings = { ...defaults3, ...parsed };
+          if (!validStatistics(settings)) throw new TypeError();
+          return { settings, invalid: false };
+        } catch {
+          return { settings: defaults3, invalid: true };
         }
-      });
+      }, [value]);
+      const [draft, setDraft] = React.useState(saved.settings);
+      React.useEffect(() => setDraft(saved.settings), [saved]);
+      const valid = validStatistics(draft);
+      const commit = (next) => {
+        if (!validStatistics(next)) return;
+        const serialized = JSON.stringify({
+          enabled: next.enabled,
+          windowSize: next.windowSize,
+          minimumSamples: next.minimumSamples,
+          fullThreshold: next.fullThreshold
+        });
+        if (serialized !== value) onChange(CONFIG_FIELDS.find((field) => field.key === "capabilityStatistics"), serialized);
+      };
+      const numeric = (key, min, max, scale = 1) => h(
+        "label",
+        { className: "ptcPlusBindingField", key },
+        h("span", { className: "ptcPlusBindingFieldLabel" }, t2(`capabilities.${key}`)),
+        h("input", {
+          type: "number",
+          className: "ptcPlusInput",
+          disabled,
+          min,
+          max,
+          step: scale === 1 ? 1 : "any",
+          value: draft[key] === "" ? "" : scale === 1 ? draft[key] : Number((draft[key] * scale).toFixed(8)),
+          "aria-label": t2(`capabilities.${key}`),
+          onChange: (event) => setDraft((current) => ({ ...current, [key]: event.target.value === "" ? "" : Number(event.target.value) / scale })),
+          onBlur: () => commit(draft)
+        })
+      );
+      return h(
+        "div",
+        { className: "ptcPlusCapabilityStatistics" },
+        h(
+          "label",
+          { className: "ptcPlusRow" },
+          h("span", { className: "ptcPlusMain" }, t2("capabilities.statisticsEnabled")),
+          h("input", {
+            type: "checkbox",
+            role: "switch",
+            className: "ptcPlusCheck",
+            disabled,
+            checked: draft.enabled === true,
+            "aria-label": t2("capabilities.statisticsEnabled"),
+            onChange: (event) => {
+              const next = validStatistics(draft) ? { ...draft, enabled: event.target.checked } : { ...saved.settings, enabled: event.target.checked };
+              setDraft(next);
+              commit(next);
+            }
+          })
+        ),
+        h(
+          "div",
+          { className: "ptcPlusBindingFields" },
+          numeric("windowSize", 1, Number.MAX_SAFE_INTEGER),
+          numeric("minimumSamples", 1, Number.MAX_SAFE_INTEGER),
+          numeric("fullThreshold", 0, 100, 100)
+        ),
+        !valid ? h("p", { role: "status", className: "ptcPlusMessage" }, t2("capabilities.invalidStatistics")) : saved.invalid && draft === saved.settings ? h("p", { role: "status", className: "ptcPlusMessage" }, t2("capabilities.savedStatisticsInvalid")) : null
+      );
+    }
+    function CapabilityChoices({ value, catalog, catalogError, plans, disabled, onChange, t: t2 }) {
+      const [query, setQuery] = React.useState("");
+      const baseline = JSON.parse(value.capabilityBaseline ?? CONFIG_DEFAULTS.capabilityBaseline);
+      const overrides2 = JSON.parse(value.capabilityOverrides ?? CONFIG_DEFAULTS.capabilityOverrides);
+      const entries = new Map((catalog ?? []).map((entry) => [entry.id, entry]));
+      for (const plan of plans ?? []) for (const entry of plan.effective.entries) {
+        if (!entries.has(entry.id)) entries.set(entry.id, { id: entry.id, category: entry.category });
+      }
+      for (const id2 of [...baseline, ...Object.keys(overrides2)]) if (!entries.has(id2)) entries.set(id2, { id: id2 });
+      const available = new Set((catalog ?? []).map((entry) => entry.id));
+      const filtered = [...entries.values()].sort((a, b) => a.id.localeCompare(b.id)).filter((entry) => `${entry.id} ${entry.description ?? ""}`.toLowerCase().includes(query.toLowerCase()));
+      const change = (key, next) => onChange(CONFIG_FIELDS.find((field) => field.key === key), JSON.stringify(next));
+      return h(
+        "div",
+        { className: "ptcPlusCapabilityChoices" },
+        h("div", { className: "ptcPlusLabel" }, t2("capabilityBaseline.label")),
+        h("p", { className: "ptcPlusDetail" }, t2("capabilityBaseline.description")),
+        h("div", { className: "ptcPlusLabel" }, t2("capabilityOverrides.label")),
+        h("p", { className: "ptcPlusDetail" }, t2("capabilityOverrides.description")),
+        h("input", {
+          type: "search",
+          className: "ptcPlusInput",
+          value: query,
+          "aria-label": t2("capabilities.search"),
+          onChange: (event) => setQuery(event.target.value)
+        }),
+        catalogError ? h("p", { role: "status", className: "ptcPlusMessage" }, t2("capabilities.catalogUnavailable", { error: catalogError })) : null,
+        entries.size === 0 ? h("p", { className: "ptcPlusDetail" }, t2("capabilities.catalogEmpty")) : filtered.length === 0 ? h("p", { className: "ptcPlusDetail" }, t2("capabilities.noMatches")) : h("div", { className: "ptcPlusCapabilityList" }, ...filtered.map((entry) => h(
+          "div",
+          { key: entry.id, className: "ptcPlusCapabilityItem" },
+          h(
+            "div",
+            { className: "ptcPlusMain" },
+            h("span", { className: "ptcPlusLabel", title: entry.description }, entry.id),
+            catalog !== null && !available.has(entry.id) ? h("div", { className: "ptcPlusDetail" }, t2("capabilities.notAvailable")) : null
+          ),
+          h(
+            "label",
+            { className: "ptcPlusCapabilityCommon" },
+            h("input", {
+              type: "checkbox",
+              className: "ptcPlusCheck",
+              disabled: disabled("capabilityBaseline"),
+              checked: baseline.includes(entry.id),
+              "aria-label": t2("capabilities.baselineFor", { name: entry.id }),
+              onChange: (event) => change("capabilityBaseline", event.target.checked ? [...baseline.filter((id2) => id2 !== entry.id), entry.id] : baseline.filter((id2) => id2 !== entry.id))
+            }),
+            t2("capabilities.common")
+          ),
+          h(
+            "select",
+            {
+              className: "ptcPlusSelect",
+              value: overrides2[entry.id] ?? "automatic",
+              disabled: disabled("capabilityOverrides"),
+              "aria-label": t2("capabilities.disclosureFor", { name: entry.id }),
+              onChange: (event) => {
+                const next = { ...overrides2 };
+                if (event.target.value === "automatic") delete next[entry.id];
+                else next[entry.id] = event.target.value;
+                change("capabilityOverrides", next);
+              }
+            },
+            ...["automatic", "full", "on-demand", "closed"].map((selection) => h("option", { key: selection, value: selection }, t2(`capabilities.${selection}`)))
+          )
+        )))
+      );
     }
     function fieldInput(field, value, disabled, onChange, label) {
-      if (field.type === "string") {
-        return h(TextSetting, { field, value, disabled, onChange, label });
-      }
       if (field.type === "boolean") {
         return h("input", {
           type: "checkbox",
@@ -2745,6 +2870,8 @@
       const [pending, setPending] = React.useState(() => /* @__PURE__ */ new Set());
       const [plans, setPlans] = React.useState(null);
       const [plansError, setPlansError] = React.useState(null);
+      const [catalog, setCatalog] = React.useState(null);
+      const [catalogError, setCatalogError] = React.useState(null);
       const [planRevision, setPlanRevision] = React.useState(0);
       const writeTail = React.useRef(Promise.resolve());
       const snapshot2 = usePtcSettings((snapshot3) => snapshot3);
@@ -2764,15 +2891,26 @@
         if (!enabled) {
           setPlans(null);
           setPlansError(null);
+          setCatalog(null);
+          setCatalogError(null);
           return;
         }
         if (!(open || view === "page" || view === "dialog") || !inspectCapabilityPlans) return;
         const controller = new AbortController();
         setPlansError(null);
-        Promise.resolve(inspectCapabilityPlans(controller.signal)).then((next) => {
-          if (!controller.signal.aborted) setPlans(next);
-        }, (error) => {
-          if (!controller.signal.aborted) setPlansError(String(error.message ?? error));
+        setCatalogError(null);
+        Promise.allSettled([
+          Promise.resolve().then(() => inspectCapabilityPlans(controller.signal)),
+          Promise.resolve().then(() => inspectCapabilityCatalog?.(controller.signal) ?? null)
+        ]).then(([next, available]) => {
+          if (controller.signal.aborted) return;
+          if (next.status === "fulfilled") setPlans(next.value);
+          else setPlansError(String(next.reason?.message ?? next.reason));
+          if (available.status === "fulfilled") setCatalog(available.value);
+          else {
+            setCatalog(null);
+            setCatalogError(String(available.reason?.message ?? available.reason));
+          }
         });
         return () => controller.abort();
       }, [enabled, open, view, planConfiguration, planRevision]);
@@ -2827,6 +2965,24 @@
           ...fields.map((key) => {
             const field = CONFIG_FIELDS.find((candidate) => candidate.key === key);
             if (field === void 0) return null;
+            if (field.key === "capabilityOverrides") return null;
+            if (field.key === "capabilityBaseline") return h(CapabilityChoices, {
+              key,
+              value,
+              catalog,
+              catalogError,
+              plans,
+              t: t2,
+              disabled: (key2) => fieldDisabled({ key: key2 }),
+              onChange: persist
+            });
+            if (field.key === "capabilityStatistics") return h(
+              "div",
+              { key },
+              h("div", { className: "ptcPlusLabel" }, t2(`${key}.label`)),
+              h("p", { className: "ptcPlusDetail" }, t2(`${key}.description`)),
+              h(StatisticsSetting, { value: value[key] ?? CONFIG_DEFAULTS[key], disabled: fieldDisabled(field), onChange: persist, t: t2 })
+            );
             const migratingPolicy = field.key === "bindingUpdates" && legacyMigration;
             return h(
               React.Fragment,
@@ -30441,6 +30597,8 @@
 .ptcPlusHeadText{display:flex;flex:1;min-width:0;flex-direction:column;align-items:flex-start;gap:3px}.ptcPlusName{font-size:15px;font-weight:600;line-height:1.4}.ptcPlusDescription{color:var(--dsw-alias-label-tertiary);font-size:13px;line-height:1.5;overflow-wrap:anywhere}.ptcPlusStatus{display:inline-flex;align-items:center;flex:none;padding:1px 8px;border-radius:999px;corner-shape:round;background:var(--dsw-alias-bg-module-platform);color:var(--dsw-alias-label-secondary);font-size:11px;font-weight:500;line-height:17px;white-space:nowrap}.ptcPlusStatus[data-enabled=true]{color:var(--dsw-alias-state-success-primary);background:var(--dsw-alias-state-success-tertiary)}.ptcPlusStatus[data-enabled=false]{color:var(--dsw-alias-label-secondary);background:var(--dsw-alias-bg-module-platform)}
 .ptcPlusChevron{display:flex;color:var(--dsw-alias-label-tertiary);transition:transform .18s ease}.ptcPlusChevron[data-open=true]{transform:rotate(180deg)}.ptcPlusBody{display:grid;grid-template-rows:0fr;transition:grid-template-rows .2s ease}.ptcPlusBody[data-open=true]{grid-template-rows:1fr}.ptcPlusBodyInner{min-height:0;overflow:hidden}.ptcPlusFields{margin:0 16px;padding:8px 0 12px;border-top:0.5px solid var(--dsw-alias-border-l2)}
 .ptcPlusGroup+.ptcPlusGroup{margin-top:20px;padding-top:12px;border-top:1px solid var(--dsw-alias-border-l2)}.ptcPlusGroupTitle{margin:0;padding:8px 0;color:var(--dsw-alias-label-secondary);font-size:13px;font-weight:600;letter-spacing:0;line-height:20px}.ptcPlusRow{display:flex;align-items:center;gap:12px;min-height:48px;border-top:0.5px solid var(--dsw-alias-border-l2)}.ptcPlusGroupTitle+.ptcPlusRow{border-top:0}.ptcPlusMain{flex:1;min-width:0}.ptcPlusLabel{font-size:13px;font-weight:500;line-height:1.5}.ptcPlusDetail,.ptcPlusMessage{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:1.5;overflow-wrap:anywhere}.ptcPlusInput{box-sizing:border-box;min-width:72px;width:140px;height:34px;padding:0 12px;border:0.5px solid var(--dsw-alias-border-l4);border-radius:8px;background:var(--dsw-alias-bg-layer-3);color:var(--dsw-alias-label-primary);font:inherit;font-size:13px;line-height:1.5}.ptcPlusInput:focus-visible{border-color:var(--dsw-alias-brand-primary);outline:none}.ptcPlusCheck{width:18px;height:18px;accent-color:var(--dsw-alias-brand-primary)}
+.ptcPlusCapabilityChoices,.ptcPlusCapabilityStatistics{min-width:0;margin:12px 0}.ptcPlusCapabilityChoices>.ptcPlusInput{width:100%;margin-bottom:8px}.ptcPlusCapabilityList{max-height:320px;overflow:auto;border:0.5px solid var(--dsw-alias-border-l3);border-radius:8px}.ptcPlusCapabilityItem{display:grid;grid-template-columns:minmax(0,1fr) auto minmax(120px,160px);align-items:center;gap:10px;padding:10px}.ptcPlusCapabilityItem+.ptcPlusCapabilityItem{border-top:0.5px solid var(--dsw-alias-border-l2)}.ptcPlusCapabilityItem .ptcPlusLabel{overflow-wrap:anywhere}.ptcPlusCapabilityCommon{display:flex;align-items:center;gap:4px;font-size:12px;color:var(--dsw-alias-label-secondary)}.ptcPlusCapabilityStatistics .ptcPlusInput{width:100%}
+@media(max-width:560px){.ptcPlusCapabilityItem{grid-template-columns:minmax(0,1fr) auto}.ptcPlusCapabilityItem>.ptcPlusSelect{grid-column:1/-1}.ptcPlusCapabilityStatistics .ptcPlusBindingFields{grid-template-columns:minmax(0,1fr)}}
 .ptcPlusFooter{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:8px}.ptcPlusButton{appearance:none;display:inline-flex;align-items:center;justify-content:center;gap:5px;min-height:32px;padding:4px 14px;border:0.5px solid var(--dsw-alias-border-l3);border-radius:8px;background:transparent;color:var(--dsw-alias-label-secondary);cursor:pointer;font:inherit;font-size:13px;line-height:1.5;transition:color .16s ease,border-color .16s ease,background-color .16s ease}.ptcPlusButton:hover:not(:disabled){border-color:var(--dsw-alias-label-dimmed);color:var(--dsw-alias-label-primary)}.ptcPlusButton[data-kind=primary]{background:var(--dsw-alias-label-primary);border-color:transparent;color:var(--dsw-alias-bg-layer-3)}.ptcPlusButton[data-kind=primary]:hover:not(:disabled){background:var(--dsw-alias-label-primary-dimmed);border-color:transparent;color:var(--dsw-alias-bg-layer-3)}.ptcPlusButton[data-kind=ghost]{border-color:transparent}.ptcPlusButton[data-kind=ghost]:hover:not(:disabled){border-color:var(--dsw-alias-border-l3)}.ptcPlusButton[data-kind=danger]{color:var(--dsw-alias-state-error-primary)}.ptcPlusButton[data-kind=danger]:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover-danger);border-color:var(--dsw-alias-state-error-primary);color:var(--dsw-alias-state-error-primary)}.ptcPlusButton:disabled,.ptcPlusInput:disabled,.ptcPlusCheck:disabled{cursor:not-allowed;opacity:.4}
 .ptcPlusSettingAction{padding:4px 0 12px}
 .ptcPlusSettingsModal.ptcPlusSettingsModal{width:min(760px,calc(100vw - 32px));max-width:none;max-height:calc(100dvh - 40px);border-radius:8px}.ptcPlusSettingsDialogContent{min-height:0;overflow:auto;overscroll-behavior:contain}.ptcPlusSettingsDialog{min-width:0}.ptcPlusSettingsDialog .ptcPlusFields{margin:0;padding:0 0 12px;border-top:0}
@@ -30918,6 +31076,24 @@
   var LOCALE_NS = "settings.ptcPlus";
   var CHROME_COPY = Object.freeze({
     zh: Object.freeze({
+      "capabilities.savedStatisticsInvalid": "\u5DF2\u4FDD\u5B58\u7684\u7EDF\u8BA1\u8BBE\u7F6E\u4E0D\u53EF\u7528\u3002\u4E0B\u65B9\u663E\u793A\u5EFA\u8BAE\u503C\uFF1B\u4FEE\u6539\u540E\u4FDD\u5B58\uFF0C\u624B\u52A8\u80FD\u529B\u9009\u62E9\u4ECD\u6709\u6548\u3002",
+      "capabilities.catalogUnavailable": "\u80FD\u529B\u6E05\u5355\u8BFB\u53D6\u5931\u8D25\uFF1A{error}\u3002\u5DF2\u4FDD\u5B58\u7684\u9009\u62E9\u4ECD\u53EF\u7F16\u8F91\u3002",
+      "capabilities.search": "\u641C\u7D22\u80FD\u529B\u540D\u79F0\u6216\u7528\u9014",
+      "capabilities.catalogEmpty": "\u5C1A\u65E0\u53EF\u7528\u80FD\u529B\u6E05\u5355\u3002\u6253\u5F00\u4E00\u4E2A PTC \u4F1A\u8BDD\u540E\u91CD\u65B0\u8BFB\u53D6\u3002",
+      "capabilities.noMatches": "\u6CA1\u6709\u5339\u914D\u7684\u80FD\u529B",
+      "capabilities.notAvailable": "\u5F53\u524D\u6E05\u5355\u672A\u5217\u51FA\uFF0C\u4FDD\u7559\u5DF2\u4FDD\u5B58\u9009\u62E9",
+      "capabilities.common": "\u5E38\u7528",
+      "capabilities.baselineFor": "\u8BBE\u4E3A\u5E38\u7528\uFF1A{name}",
+      "capabilities.disclosureFor": "\u62AB\u9732\u65B9\u5F0F\uFF1A{name}",
+      "capabilities.automatic": "\u81EA\u52A8\u9009\u62E9",
+      "capabilities.full": "\u5B8C\u6574\u8BF4\u660E",
+      "capabilities.on-demand": "\u6309\u9700\u67E5\u8BE2",
+      "capabilities.closed": "\u5173\u95ED\u80FD\u529B",
+      "capabilities.statisticsEnabled": "\u542F\u7528\u4F7F\u7528\u7EDF\u8BA1",
+      "capabilities.windowSize": "\u6837\u672C\u7A97\u53E3\uFF08\u4F1A\u8BDD\u5BB6\u65CF\uFF09",
+      "capabilities.minimumSamples": "\u6700\u4F4E\u6837\u672C\u6570",
+      "capabilities.fullThreshold": "\u5B8C\u6574\u62AB\u9732\u9608\u503C\uFF08%\uFF09",
+      "capabilities.invalidStatistics": "\u7A97\u53E3\u4E0E\u6700\u4F4E\u6837\u672C\u6570\u5FC5\u987B\u4E3A\u6B63\u6574\u6570\uFF0C\u6700\u4F4E\u6837\u672C\u6570\u4E0D\u80FD\u8D85\u8FC7\u7A97\u53E3\uFF1B\u9608\u503C\u987B\u4E3A 0\u2013100%\u3002",
       "capabilities.sessions": "\u5F53\u524D\u4F1A\u8BDD\u80FD\u529B\u65B9\u6848",
       "capabilities.reload": "\u91CD\u65B0\u8BFB\u53D6\u65B9\u6848",
       "capabilities.refreshHint": "\u80FD\u529B\u8BBE\u7F6E\u4F9B\u65B0\u4F1A\u8BDD\u4F7F\u7528\uFF1B\u5DF2\u6709\u4F1A\u8BDD\u6267\u884C /capabilities refresh \u540E\u540C\u6B65\u3002",
@@ -31110,6 +31286,24 @@
       "feature.stateDeleted": "\u5220\u9664 REPL \u72B6\u6001"
     }),
     en: Object.freeze({
+      "capabilities.savedStatisticsInvalid": "Saved statistics are unusable. Suggested values are shown; edit to save them. Manual capability choices remain effective.",
+      "capabilities.catalogUnavailable": "Capability catalog unavailable: {error}. Saved choices remain editable.",
+      "capabilities.search": "Search capabilities by name or purpose",
+      "capabilities.catalogEmpty": "No capability catalog is available yet. Open a PTC session, then reload.",
+      "capabilities.noMatches": "No matching capabilities",
+      "capabilities.notAvailable": "Not in the current catalog; saved selection retained",
+      "capabilities.common": "Common",
+      "capabilities.baselineFor": "Include {name} in common baseline",
+      "capabilities.disclosureFor": "Disclosure for {name}",
+      "capabilities.automatic": "Automatic",
+      "capabilities.full": "Full contract",
+      "capabilities.on-demand": "On demand",
+      "capabilities.closed": "Closed",
+      "capabilities.statisticsEnabled": "Enable usage statistics",
+      "capabilities.windowSize": "Sample window (session families)",
+      "capabilities.minimumSamples": "Minimum samples",
+      "capabilities.fullThreshold": "Full disclosure threshold (%)",
+      "capabilities.invalidStatistics": "Window and minimum samples must be positive integers, minimum cannot exceed window, and threshold must be between 0 and 100%.",
       "capabilities.sessions": "Session capability plans",
       "capabilities.reload": "Reload plans",
       "capabilities.refreshHint": "Capability settings apply to new sessions; run /capabilities refresh to update an existing session.",
@@ -32728,6 +32922,11 @@
           async inspectCapabilityPlans(signal) {
             const result = await rpc.call(RPC_CONTRACTS.capabilities, "inspect", {}, signal);
             if (result?.ok !== true) throw new Error(result?.error?.message ?? "Capability plans unavailable");
+            return result.value;
+          },
+          async inspectCapabilityCatalog(signal) {
+            const result = await rpc.call(RPC_CONTRACTS.capabilities, "catalog", {}, signal);
+            if (result?.ok !== true) throw new Error(result?.error?.message ?? "Capability catalog unavailable");
             return result.value;
           },
           icons: { chevron: IconChevronDownOutline14 }

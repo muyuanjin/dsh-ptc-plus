@@ -344,7 +344,9 @@ function installPtCRuntime(ctx, resolvedConfig, seam, toolSchemasForAgent, toolS
       maxOldGenerationSizeMb: activeConfig.maxOldGenerationSizeMb,
       valueLimits: valueLimitsFromConfig(activeConfig),
     })
-    capabilityEnvironment = createCapabilityEnvironment({ ctx, config: activeConfig, toolSchemasForAgent: toolSdkSchemasForAgent, store: new CapabilityStatisticsStore({ ctx }) })
+    capabilityEnvironment = createCapabilityEnvironment({ ctx, config: activeConfig,
+      toolSchemasForAgent: toolSdkSchemasForAgent, modelSchemasForAgent: toolSchemasForAgent,
+      store: new CapabilityStatisticsStore({ ctx }) })
     runtimeBridge = createRuntimeBridgeOwner({
       ctx,
       seam,
@@ -403,6 +405,7 @@ function installPtCRuntime(ctx, resolvedConfig, seam, toolSchemasForAgent, toolS
       const capabilitiesRpc = ctx.inject(['ptcPlusRpc'], scope => {
         scope.effect(() => scope.ptcPlusRpc.register(RPC_CONTRACTS.capabilities, async (operation, _payload, signal) => {
           signal.throwIfAborted()
+          if (operation === 'catalog') return { ok: true, value: await capabilityEnvironment.describeCatalog(signal) }
           if (operation !== 'inspect') return { ok: false, error: { code: 'UNKNOWN_OPERATION', message: 'Unknown capability plan operation', details: null } }
           return { ok: true, value: capabilityEnvironment.describeSessions() }
         }), 'ptc-plus: capability plan observation')

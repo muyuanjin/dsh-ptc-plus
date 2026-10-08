@@ -27,14 +27,16 @@ Client 按数据、传输、注册与视图分文件，沿用既有 `createX(Rea
 当前 Host half 的 `Config` 文档由 DSH 公共 `settings` 服务按 owning Loader entry 的 profile ID 寻址；更早 section installer 兼容支仍注册 `ptc-plus` 命名空间。失败补偿由 settings compatibility owner 绑定同一写入身份，不把固定 namespace 当作 profile entry ID。字段清单、默认值和校验来自 `internal/config-spec.js`，
 由 `index.js` 的 `Config` schema 与设置注册共用；client half 构建时把同一份字段清单打进 bundle，不在 UI 中复制默认值。`CONFIG_GROUPS` 独立拥有按用途排列的展示顺序：插件总开关单独置顶，其后为“能力与上下文”“调用容错”“REPL 语法”“状态与恢复”“工具扩展”“界面显示”“资源限制”。每个字段只展示一次，各组使用独立标题、留白与分隔线；末尾的当前会话能力方案显示有效选择与待刷新状态。
 
+能力列表通过能力 Remote 的只读 `catalog` 操作观察 code agent 的当前公共工具与 Skill inventory，以及已捕获 prompt sections 的 MCP server 目录，与 `inspect` 返回的冻结方案分开。用户可以按名称或用途过滤，已保存但当前清单未列出的能力仍显示并保留选择；列表失败不丢弃手动配置。无可观察 code agent 时显示提示，打开 PTC 会话后可重新读取。设置读取在关闭插件、关闭设置或 transport 释放时取消，迟到响应不能恢复旧清单。统计控件使用共用配置默认值，保存前校验正整数窗口、最低样本数不超过窗口与 0–100% 阈值；无效已保存统计显示建议值和说明，直到用户编辑才写入。
+
 ## 可用设置
 
 | 分组 | 字段 | 说明 |
 | --- | --- | --- |
 | 开关 | `enabled` | 关闭后不注册 `run_code`/`edit_run_code`、不修改 system prompt、不创建 session runtime；保留设置 UI，Host 在下一允许步骤撤销旧 PTC 声明。 |
 | 能力与上下文 | `capabilityManagementEnabled` | 默认关闭；开启实验性能力管理，冻结新会话的能力方案。 |
-| 能力与上下文 | `capabilityBaseline` / `capabilityOverrides` | JSON 常用能力 ID 数组与单项 `full`、`on-demand`、`closed` 选择；显式选择优先于统计。 |
-| 能力与上下文 | `capabilityStatistics` | 独立 JSON 统计设置；无效、关闭或无可用样本时保留手动基线。 |
+| 能力与上下文 | `capabilityBaseline` / `capabilityOverrides` | 可搜索的能力列表、常用勾选与自动/完整/按需/关闭选择；序列化由 Client 完成，显式选择优先于统计。 |
+| 能力与上下文 | `capabilityStatistics` | 统计开关及样本窗口、最低样本数、完整披露百分比输入；无效输入不提交，关闭或无可用样本时保留手动基线。 |
 | 能力与上下文 | `capabilityBudgetBytes` / `capabilityDirectoryBytes` / `capabilityRecoveryBytes` | 完整契约、导航及压缩后说明恢复的 UTF-8 字节预算；显式完整契约不截断。 |
 | 能力与上下文 | `modelPreviewTokens` | 模型展示的估计 token 预算，复用宿主 spill 服务，不改变完整程序值。 |
 | 调用容错 | `autoDescribeRunCode` / `canonicalizeToolCalls` | 默认开启；允许缺少外层摘要的 `run_code` 执行，并修复 schema 可唯一确认的顶层 native 工具误调用。 |

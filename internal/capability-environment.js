@@ -37,14 +37,11 @@ function sourcePlan(message, id) {
   const source = message?.source
   if (source?.kind !== PTC_MESSAGE_SOURCE_KIND || source.form !== CAPABILITY_PLAN_FORM || source.sessionId !== id) return undefined
   const snapshot = source.snapshot
-  const generation = snapshot?.schema === 'ptc-capability-environment/v1' ? 'ptc-capability-plan/v1'
-    : snapshot?.schema === 'ptc-capability-environment/v2' ? 'ptc-capability-plan/v2' : undefined
-  if (source.digest !== digest(snapshot) || generation === undefined
-    || !Array.isArray(snapshot.capabilities) || snapshot.plan?.schema !== generation) {
+  if (source.digest !== digest(snapshot) || snapshot?.schema !== 'ptc-capability-environment/v1'
+    || !Array.isArray(snapshot.capabilities) || snapshot.plan?.schema !== 'ptc-capability-plan/v1') {
     throw new Error('damaged session capability plan')
   }
   const expected = createCapabilityPlan({ ...snapshot.settings, capabilities: snapshot.capabilities,
-    schema: generation,
     coverage: snapshot.coverage, navigationText: NAVIGATION,
     configurationRevision: digest(snapshot.settings) })
   if (JSON.stringify(expected) !== JSON.stringify(snapshot.plan)
@@ -58,7 +55,7 @@ function planMessage(snapshot, id, refresh = false) {
   const plan = snapshot.plan
   const text = plan.enabled
     ? ['PTC Plus session capability environment' + (refresh ? ' refreshed; replaces the preceding capability plan.' : ':'),
-      ...(plan.schema === 'ptc-capability-plan/v1' ? [plan.catalogText, plan.directoryText] : [plan.directoryText, plan.catalogText]),
+      plan.directoryText, plan.catalogText,
       ...(plan.budgets.overageBytes ? [`Explicit full contracts exceed the configured budget by ${plan.budgets.overageBytes} UTF-8 bytes.`] : [])]
       .filter(Boolean).join('\n\n')
     : 'PTC Plus capability management is off for this session. Use the host-provided capability contracts.'
@@ -105,11 +102,11 @@ function toolCapability(schema, sections) {
     dependencies: sections.filter(section => section.name === `tool:${schema.name}`
       || (section.name?.startsWith('mcp:') && schema.name.startsWith(`mcp__${section.name.slice(4)}__`)))
       .map(section => ({ id: section.name, text: section.text })),
-    navigation: schema.description ?? schema.name }
+    description: schema.description ?? '' }
 }
 
 /** Derived metadata only: invocation continues through the request's original host functions. */
-export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, store }) {
+export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, modelSchemasForAgent = toolSchemasForAgent, store }) {
   let currentConfig = config
   const sessions = new Map()
   const operations = new WeakMap()
@@ -124,40 +121,46 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
     return typeof context.get === 'function' ? context.get('skills') : context.skills
   }
 
-  async function observeSkills(agent) {
+  async function observeSkills(agent, signal) {
     if (!readSkills(ctx)?.snapshot) return []
-    const projection = skillProjections.get(agent)
-    // The original providers own availability; absence markers only project selections.
-    if (projection) { projection.inventory = true; projection.control.invalidate() }
+    // Read the original provider layers through a short-lived child scope. The
+    // session projection is exact-scope-only, so catalogue reads cannot toggle
+    // a global inventory flag and create a window where closed Skills load.
+    const child = {}
+    const isolated = typeof ctx.plugin === 'function' ? createScope(ctx, child, { parent: agent }) : null
+    const view = isolated ? child : agent
     let observed
-    try { observed = await readSkills(ctx).snapshot({ cwd: agent.session.header.cwd, scope: agent, signal: agent.signal }) }
-    finally { if (projection) { projection.inventory = false; projection.control.invalidate() } }
+    try {
+      const combined = [signal, agent.signal].filter(Boolean)
+      observed = await readSkills(ctx).snapshot({ cwd: agent.session.header.cwd, scope: view,
+        signal: combined.length > 1 ? AbortSignal.any(combined) : combined[0] })
+    } finally { await isolated?.dispose() }
     if (!observed.complete) throw new Error('ptc-plus: the Skill catalog is incomplete; cannot select a new capability environment')
     return observed.skills.filter(skill => isModelInvocable(skill) || isUserInvocable(skill))
   }
 
   async function qualifySkills(agent, state) {
-    if (state.snapshot.plan.enabled) state.liveSkills = new Set((await observeSkills(agent)).map(skill => `skills.${skill.name}`))
+    if (state.snapshot.plan.enabled) state.liveSkills = new Set((await observeSkills(agent, agent.signal)).map(skill => `skills.${skill.name}`))
     return state
   }
 
-  async function inventory(agent, sections = [], settings) {
+  async function inventory(agent, sections = [], settings, signal) {
     const schemas = toolSchemasForAgent(agent).filter(schema => !TRANSPORTS.has(schema.name))
     const capabilities = schemas.map(schema => toolCapability(schema, sections))
     if (readSkills(ctx)?.snapshot !== undefined) {
-      for (const skill of await observeSkills(agent)) {
+      for (const skill of await observeSkills(agent, signal)) {
         const summary = { name: skill.name, provider: skill.provider, source: skill.source,
           description: skill.description, invocation: skill.invocation }
         capabilities.push({ id: `skills.${skill.name}`, category: 'skill', revision: digest(summary),
           contract: `${skill.description}\nLoad instructions: await tools.skill(${JSON.stringify({ name: skill.name })})`,
-          navigation: skill.description, selector: { name: skill.name }, invocation: skill.invocation })
+          description: skill.description, selector: { name: skill.name }, invocation: skill.invocation })
       }
     }
     const servers = resourceServers(sections)
     for (const server of servers) capabilities.push({ id: `mcp.${server}`, category: 'resource',
       revision: digest({ server, instructions: sections.find(section => section.name === `mcp:${server}`)?.text ?? '' }),
       dependencies: sections.filter(section => section.name === `mcp:${server}`).map(section => ({ id: section.name, text: section.text })), contract: `MCP resource server ${JSON.stringify(server)}. Use tools.list_mcp_resources({server}), tools.list_mcp_resource_templates({server}), and tools.read_mcp_resource({server,uri}); use the listed URI or expand a listed template.`,
-      navigation: `MCP resources and templates from ${server}`, selector: { server } })
+      description: `MCP resources and templates from ${server}`, selector: { server } })
     return capabilities.filter(item => {
       if (item.category !== 'tool') return true
       const category = item.schema.name === 'skill' ? 'skill'
@@ -310,7 +313,7 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
             ctx.logger?.warn?.(`ptc-plus: ${error.message}; continuing with the host environment until /capabilities refresh`)
             const settings = { ...capabilityConfiguration(currentConfig), enabled: false }
             const plan = createCapabilityPlan({ ...settings, configurationRevision: digest(settings), capabilities: [], navigationText: NAVIGATION })
-            snapshot = deepFreeze({ schema: 'ptc-capability-environment/v2', settings, capabilities: [], plan })
+            snapshot = deepFreeze({ schema: 'ptc-capability-environment/v1', settings, capabilities: [], plan })
             const notice = planMessage(snapshot, id, true)
             publishPlan(agent, notice, signal)
             const state = { snapshot, message: notice, hostSections: sections ?? [], expanded: new Set(), used: new Map() }
@@ -330,11 +333,11 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
       const historical = !force && sessionEvents(agent.session).some(event =>
         event.type === 'assistant/message' || event.type === 'tool/result')
       const settings = { ...capabilityConfiguration(currentConfig), ...(historical ? { enabled: false } : {}) }
-      const capabilities = settings.enabled ? await inventory(agent, sections ?? [], settings) : []
+      const capabilities = settings.enabled ? await inventory(agent, sections ?? [], settings, signal) : []
       const coverage = settings.statistics?.enabled === true ? await store?.coverage(agent, capabilities, settings.statistics) : undefined
       const plan = createCapabilityPlan({ ...settings, configurationRevision: digest(settings),
         capabilities, coverage, navigationText: NAVIGATION })
-      const snapshot = deepFreeze({ schema: 'ptc-capability-environment/v2', settings, capabilities, ...(coverage === undefined ? {} : { coverage }), plan })
+      const snapshot = deepFreeze({ schema: 'ptc-capability-environment/v1', settings, capabilities, ...(coverage === undefined ? {} : { coverage }), plan })
       const message = planMessage(snapshot, id, force)
       agent.signal?.throwIfAborted?.()
       signal?.throwIfAborted()
@@ -397,7 +400,7 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
       if (!state?.snapshot.plan.enabled) return []
       return ['skill', 'resource'].map(category => ({ namespace: category === 'skill' ? 'skills' : 'mcp',
         members: state.snapshot.capabilities.filter(item => item.category === category && supplied(state, item.id))
-          .map(item => ({ name: item.id.slice(item.id.indexOf('.') + 1), description: item.navigation,
+          .map(item => ({ name: item.id.slice(item.id.indexOf('.') + 1), description: item.description,
             contract: item.contract, dependencies: item.dependencies ?? [], revision: item.revision, parameters: {}, returns: {},
             completeness: 'complete', effect: 'unknown', replay: 'recorded-value' })) }))
     },
@@ -479,8 +482,7 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
       }
       // Before task history exists, the initial plan precedes admitted task messages.
       // Refresh and recovery append after committed history; they never reorder it.
-      const initial = state.snapshot.schema === 'ptc-capability-environment/v2'
-        && !sessionEvents(payload.agent.session).some(event => ['user/message', 'assistant/message', 'tool/result'].includes(event.type))
+      const initial = !sessionEvents(payload.agent.session).some(event => ['user/message', 'assistant/message', 'tool/result'].includes(event.type))
       return { ...decision, messages: initial ? [...additions, ...messages] : [...messages, ...additions] }
     },
     admitted(exec) {
@@ -554,6 +556,19 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
     describeSessions() {
       return [...sessions].map(([sessionId, state]) => ({ sessionId, effective: state.snapshot.plan,
         pendingRefresh: digest(capabilityConfiguration(currentConfig)) !== digest(state.snapshot.settings) }))
+    },
+    async describeCatalog(signal) {
+      const available = new Map()
+      for (const agent of ctx.agents?.list?.() ?? []) {
+        signal?.throwIfAborted()
+        const state = stateFor(agent)
+        if (!state && !modelSchemasForAgent(agent).some(schema => schema.name === 'run_code')) continue
+        for (const capability of await inventory(agent, state?.hostSections ?? [], capabilityConfiguration(currentConfig), signal)) {
+          available.set(capability.id, { id: capability.id, category: capability.category, description: capability.description })
+        }
+      }
+      signal?.throwIfAborted()
+      return [...available.values()].sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
     },
     async disposeAgent(agent) {
       const projection = skillProjections.get(agent)

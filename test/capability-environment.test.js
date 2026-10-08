@@ -15,7 +15,6 @@ import * as skillTool from '@deepseek-ai/dsh-tool-skill'
 import { SystemPrompt } from '@deepseek-ai/dsh-system-prompt'
 import { ToolRuntime, defineTool } from '@deepseek-ai/dsh-tools'
 import { createCapabilityEnvironment } from '../internal/capability-environment.js'
-import { createCapabilityPlan } from '../internal/capability-plan.js'
 import { capabilityInspect, capabilitySearch, toolCapabilityMetadata } from '../internal/program-bindings.js'
 import { appendOnlySession } from './plugin-fixture.js'
 
@@ -260,26 +259,26 @@ test('actual first requests share pre-task plans across sessions and preserve pi
     > refreshed.findIndex(message => content(message) === 'continue after statistics changed'))
 })
 
-test('historical v1 environment restores its exact text without adopting the v2 renderer', async () => {
-  const agent = agentFor(Session.create('historical-capability-plan-v1'))
+test('unknown local prototype format is rejected as recovery evidence without a second renderer', async () => {
+  const agent = agentFor(Session.create('unsupported-local-capability-format'))
   const env = createCapabilityEnvironment({ ctx: {}, config: config({ 'tools.pinned': 'full' }),
     toolSchemasForAgent: () => [schema('a'), schema('pinned')] })
-  const state = await env.prepare(agent, [])
+  const state = await acceptPreparation(env, agent, [])
   const snapshot = JSON.parse(JSON.stringify(state.snapshot))
-  snapshot.schema = 'ptc-capability-environment/v1'
-  snapshot.plan = createCapabilityPlan({ ...snapshot.settings, schema: 'ptc-capability-plan/v1',
-    capabilities: snapshot.capabilities, navigationText: snapshot.plan.directoryText.split('\n')[0],
-    configurationRevision: createHash('sha256').update(JSON.stringify(snapshot.settings)).digest('hex') })
-  const message = createUserMessage({ source: { ...state.message.source, snapshot,
-    digest: createHash('sha256').update(JSON.stringify(snapshot)).digest('hex') },
-  content: [{ type: 'text', text: ['PTC Plus session capability environment:', snapshot.plan.catalogText, snapshot.plan.directoryText].filter(Boolean).join('\n\n') }] })
-  agent.session.append('system/message', { turn: 1, step: 1, message: createSystemMessage({ content: [{ type: 'text', text: 'system' }] }) },
-    { surfaceOp: 'append', protected: true })
-  agent.session.append('user/message', message, { surfaceOp: 'append' })
-  const restored = createCapabilityEnvironment({ ctx: {}, config: config(), toolSchemasForAgent: () => [] })
-  const result = await restored.prepare(agent, [])
+  snapshot.schema = 'ptc-capability-environment/v2'
+  const events = JSON.parse(JSON.stringify(agent.session.snapshotEvents()))
+  const original = events.find(event => event.data?.source?.form === 'capability-plan')
+  original.data.source.snapshot = snapshot
+  original.data.source.digest = createHash('sha256').update(JSON.stringify(snapshot)).digest('hex')
+  const warnings = []
+  const restored = createCapabilityEnvironment({ ctx: { logger: { warn: message => warnings.push(message) } },
+    config: config(), toolSchemasForAgent: () => [] })
+  const reloaded = Session.create(agent.session.id, events, agent.session.header)
+  const result = await restored.prepare(agentFor(reloaded), [])
   assert.equal(result.snapshot.schema, 'ptc-capability-environment/v1')
-  assert.deepEqual(result.message.content, message.content)
+  assert.equal(result.snapshot.plan.enabled, false)
+  assert.match(warnings[0], /damaged session capability plan/)
+  assert.notEqual(result.message.id, state.message.id)
 })
 
 test('initial plan precedes the task even when the protected system head is already committed', async () => {
@@ -293,6 +292,33 @@ test('initial plan precedes the task even when the protected system head is alre
   const result = await env.preStep({ agent, signal: agent.signal }, async () => ({ kind: 'enter', messages: [task] }))
   assert.equal(result.messages[0].source.form, 'capability-plan')
   assert.equal(result.messages[1], task)
+})
+
+test('settings catalog reads current owner inventory while disabled plans and model history remain unchanged', async () => {
+  const agent = agentFor(Session.create('capability-settings-inventory'))
+  let schemas = [schema('a'), schema('b')]
+  const env = createCapabilityEnvironment({ ctx: { agents: { list: () => [agent] } },
+    config: { ...config(), capabilityManagementEnabled: false }, toolSchemasForAgent: () => schemas })
+  await env.prepare(agent, [])
+  const before = JSON.stringify(agent.session.snapshotEvents())
+  assert.deepEqual((await env.describeCatalog()).map(entry => entry.id), ['tools.a', 'tools.b'])
+  schemas = [schema('new')]
+  const entries = await env.describeCatalog()
+  assert.deepEqual(entries, [{ id: 'tools.new', category: 'tool', description: 'Owner contract for new.' }])
+  assert.equal(JSON.stringify(agent.session.snapshotEvents()), before)
+  assert.equal(env.describe(agent).effective.enabled, false)
+  const controller = new AbortController()
+  controller.abort()
+  await assert.rejects(env.describeCatalog(controller.signal), /abort/i)
+})
+
+test('settings can list a code agent before its first model step without freezing or publishing a plan', async () => {
+  const agent = agentFor(Session.create('capability-settings-before-first-step'))
+  const env = createCapabilityEnvironment({ ctx: { agents: { list: () => [agent] } }, config: config(),
+    toolSchemasForAgent: () => [schema('run_code'), schema('read')] })
+  assert.deepEqual((await env.describeCatalog()).map(entry => entry.id), ['tools.read'])
+  assert.equal(env.describe(agent).effective, null)
+  assert.deepEqual(agent.session.snapshotEvents(), [])
 })
 
 
@@ -413,11 +439,11 @@ test('closed Skills disappear from host invocation without reading bodies and re
   assert.match((await ctx.skills.get('closed-skill', { scope: child })).content, /BODY closed-skill/)
   agent.runMaintenance = operation => operation(agent.signal)
   env.reconfigure(config({ 'skills.open-skill': 'closed' }))
-  assert.equal(env.metadata(agent)[0].members.some(item => item.name === 'open-skill'), true)
+  assert.equal(env.metadata(agent)[0].members.find(item => item.name === 'open-skill').description, 'open-skill owner summary')
   await env.refresh(agent)
   const entries = env.stateFor(agent).snapshot.capabilities.filter(item => item.category === 'skill')
   assert.equal(entries.length, 2)
-  assert.equal(entries.find(item => item.id === 'skills.closed-skill').navigation, 'closed-skill owner summary')
+  assert.equal(entries.find(item => item.id === 'skills.closed-skill').description, 'closed-skill owner summary')
   assert.match((await ctx.skills.get('closed-skill', { scope: agent })).content, /BODY closed-skill/)
   assert.equal(await ctx.skills.get('open-skill', { scope: agent }), undefined)
 })

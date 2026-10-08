@@ -19,7 +19,7 @@ All fixture families exercise light and dark reference palettes, English and Chi
 
 | Surface | Actual controls | Visual states and evidence |
 | --- | --- | --- |
-| Settings and settings dialog | Disclosure, action, numeric input, select, checkbox switch | Normal, keyboard focus, disabled feedback; hover for commands/disclosure; dialog containment |
+| Settings and settings dialog | Disclosure, action, numeric input, select, checkbox switch, capability search and independently scrolling choices | Normal, keyboard focus, disabled feedback; hover for commands/disclosure; dialog containment; 48 long capability names, row nonoverlap and first/last choice reachability in both locales at narrow/wide widths |
 | Global workbench and dialog | Selection, enable switch, icon commands, action buttons, input, instructions, search | Normal, focus, hover where the control or its owner supplies it, disabled feedback, long-label geometry |
 | Draft dock and enlarged review | All three actions, disclosure, separate resize/close icon controls, author attention badge | Native and absent-Button fallback matrix; normal, hover, focus, disabled, actual busy rendering; Enter saves exactly once; combined 320×240/320/400 short-width cases with long source and RPC errors, expanded reading thresholds and near-top anchors |
 | REPL | Observation selection, search, tabs, definition disclosure, four binding-name kinds | Normal and keyboard focus, definition hover, light/dark name readability, long inventory and source geometry |

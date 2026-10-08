@@ -541,7 +541,7 @@
         "editable baseline input",
         "workspace-first coverage fallback",
         "whole rendered UTF-8 contract budget and explicit overage",
-        "bounded directory independent of automatic disclosure membership",
+        "bounded category-purpose directory without per-capability full descriptions, independent of automatic disclosure membership",
         "actual first-request pre-task capability plans and shared cross-session prefix under statistics changes",
         "immutable read model without runtime authority",
         "closed compiled members and empty shared loaders",
@@ -558,7 +558,8 @@
         "createCapabilityPlan",
         "createCapabilityEnvironment",
         "readCapabilityContextMessage",
-        "capabilityConfiguration"
+        "capabilityConfiguration",
+        "describeCatalog"
       ],
       "lifecycle": [
         "validate inputs",
@@ -571,10 +572,8 @@
         "dispose"
       ],
       "generations": [
-        "ptc-capability-plan/v1 historical dependency-first plan",
-        "ptc-capability-plan/v2 stable navigation and grouped contract rendering",
-        "ptc-capability-environment/v1 historical source-backed snapshot",
-        "ptc-capability-environment/v2 initial pre-task delivery and append-only refresh",
+        "ptc-capability-plan/v1 category navigation and grouped contract rendering",
+        "ptc-capability-environment/v1 initial pre-task delivery, exact recovery and append-only refresh",
         "ptc-capability-evidence/v1 formal result metadata"
       ],
       "platforms": [
@@ -705,7 +704,7 @@
         "canonical versus preview values",
         "feature gates",
         "settings transport registration identity and live fallback",
-        "capability settings preserve JSON drafts and frozen effective plans; plugin disable cancels inspection, clears loaded and late responses, disables reload and re-enable inspects through the capabilities RPC",
+        "capability settings use searchable baseline/disclosure choices and validated numeric statistics, preserve unavailable saved entries and frozen plans, and cancel stale plan/catalog inspection on plugin disable",
         "default-enabled bindings with explicit disable preserved",
         "compact stable authoring SDK retains complete argument and receipt types while task instructions own request facts",
         "model visibility",

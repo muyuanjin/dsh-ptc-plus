@@ -83,8 +83,8 @@ test('explicit full overage remains complete while automatic long contracts rema
 test('bounded directory retains the search entrance without requiring every long-tail name', () => {
   const plan = createCapabilityPlan(input({ capabilities: ['a', 'b', 'c'].map(id => capability(id)), manual: { baseline: [] },
     navigationText: 'Find', directoryBudgetBytes: 6 }))
-  assert.equal(plan.directoryText, 'Find\na')
-  assert.deepEqual(plan.directoryIncluded, ['a'])
+  assert.equal(plan.directoryText, 'Find')
+  assert.deepEqual(plan.directoryCategories, [])
   assert.deepEqual(plan.entries.map(item => item.selection), ['on-demand', 'on-demand', 'on-demand'])
   assert.throws(() => createCapabilityPlan(input({ directoryBudgetBytes: 1 })), /discovery guidance exceeds/)
 })
@@ -186,7 +186,7 @@ test('statistical membership changes retain navigation and explicit full contrac
   const one = make(3, 0)
   const two = make(0, 3)
   assert.equal(one.directoryText, two.directoryText)
-  assert.deepEqual(one.directoryIncluded, ['a', 'b'])
+  assert.deepEqual(one.directoryCategories, ['tool'])
   const pinned = '### dependency:Shared\nShared type\n\n### pinned\nPinned contract'
   assert.equal(one.catalogText, pinned + '\n\n### a\nComplete owner contract')
   assert.equal(two.catalogText, pinned + '\n\n### b\nComplete owner contract')
@@ -217,12 +217,18 @@ test('changed coverage rankings do not reorder unchanged automatic contracts', (
   assert.equal(make(2, 3).catalogText, make(3, 2).catalogText)
 })
 
-test('historical v1 retains dependency-first identity order and on-demand-only directory', () => {
-  const plan = createCapabilityPlan(input({ schema: 'ptc-capability-plan/v1',
-    capabilities: ['a', 'b', 'pinned'].map(id => capability(id, id, { dependencies: [{ id: 'Shared', text: 'type' }] })),
-    manual: { baseline: ['a'], overrides: { pinned: 'full' } } }))
+test('on-demand directory uses category guidance without copying long imperative descriptions', () => {
+  const description = 'MUST USE this complete description for unrelated work. '.repeat(100)
+  const plan = createCapabilityPlan(input({ capabilities: [capability('skills.long', description, {
+    category: 'skill', navigation: description,
+  }), capability('tools.long', description, { navigation: description }),
+  capability('closed-resource', description, { category: 'resource' })],
+  manual: { baseline: [], overrides: { 'closed-resource': 'closed' } }, directoryBudgetBytes: 512 }))
   assert.equal(plan.schema, 'ptc-capability-plan/v1')
-  assert.equal(plan.catalogText, '### dependency:Shared\ntype\n\n### a\na\n\n### pinned\npinned')
-  assert.equal(plan.directoryText, 'Search the owner catalog for complete contracts.\nb')
-  assert.throws(() => createCapabilityPlan(input({ schema: 'future' })), /unknown capability plan generation/)
+  assert.deepEqual(plan.directoryCategories, ['tool', 'skill'])
+  assert.doesNotMatch(plan.directoryText, /MUST USE|skills\.long|closed-resource/)
+  assert.match(plan.directoryText, /Tools: search by task/)
+  assert.match(plan.directoryText, /Skills: search by task/)
+  assert.equal(plan.catalogText, '')
+  assert.ok(Buffer.byteLength(plan.directoryText) <= 512)
 })

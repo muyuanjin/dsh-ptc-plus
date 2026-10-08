@@ -3,6 +3,13 @@ import { Buffer } from 'node:buffer'
 const MANAGED_CATEGORIES = new Set(['tool', 'skill', 'resource', 'resource-template', 'task'])
 const EXCLUDED_CATEGORIES = new Set(['language', 'node', 'repl', 'ptc-plus', 'global-binding'])
 const SELECTIONS = new Set(['full', 'on-demand', 'closed'])
+const CATEGORY_NAVIGATION = new Map([
+  ['tool', 'Tools: search by task or tools.<name> for parameters and results.'],
+  ['skill', 'Skills: search by task or skills.<name> for when to use and how to load instructions.'],
+  ['resource', 'MCP resources: search by server or resource purpose.'],
+  ['resource-template', 'MCP templates: search by server or resource purpose.'],
+  ['task', 'Tasks: search by the operation you need.'],
+])
 
 function isRecord(value) { return value !== null && typeof value === 'object' && !Array.isArray(value) }
 
@@ -73,8 +80,7 @@ function coverage(value, settings) {
 /** A frozen disclosure read model. It neither registers nor removes executable capabilities. */
 export function createCapabilityPlan(input) {
   const options = record(input, 'capability plan input')
-  const schema = options.schema ?? 'ptc-capability-plan/v2'
-  if (!['ptc-capability-plan/v1', 'ptc-capability-plan/v2'].includes(schema)) throw new TypeError('ptc-plus: unknown capability plan generation')
+  const schema = 'ptc-capability-plan/v1'
   if (typeof options.enabled !== 'boolean') throw new TypeError('ptc-plus: capability management enabled must be boolean')
   const configurationRevision = text(options.configurationRevision, 'configuration revision')
   if (!Array.isArray(options.capabilities)) throw new TypeError('ptc-plus: capabilities must be an array')
@@ -96,7 +102,6 @@ export function createCapabilityPlan(input) {
     return {
       id, revision, category: value.category,
       contract: text(value.contract, 'complete capability contract'),
-      navigation: text(value.navigation ?? id, 'capability navigation'),
       dependencies: dependencies.map(rawDependency => {
         const dependency = record(rawDependency, 'contract dependency')
         return { id: text(dependency.id, 'dependency id'), text: text(dependency.text, 'dependency contract') }
@@ -202,23 +207,23 @@ export function createCapabilityPlan(input) {
     } else candidate.entry.reason = 'contract-budget'
   }
   // Statistics choose membership, never the order of unchanged contract groups.
-  const catalogText = catalog(full, schema === 'ptc-capability-plan/v1' ? undefined
-    : capability => overrides[capability.id] === 'full' ? 0 : common.has(capability.id) ? 1 : 2)
+  const catalogText = catalog(full,
+    capability => overrides[capability.id] === 'full' ? 0 : common.has(capability.id) ? 1 : 2)
   let directoryText = navigationText
-  const directoryIncluded = []
-  for (const capability of capabilities) {
-    const selected = selections.get(capability.id).selection
-    if (schema === 'ptc-capability-plan/v1' ? selected !== 'on-demand'
-      : selected === 'closed' || overrides[capability.id] === 'full') continue
-    const proposed = `${directoryText}\n${capability.navigation}`
+  const directoryCategories = []
+  const availableCategories = new Set(capabilities.filter(capability => selections.get(capability.id).selection !== 'closed')
+    .map(capability => capability.category))
+  for (const [category, guidance] of CATEGORY_NAVIGATION) {
+    if (!availableCategories.has(category)) continue
+    const proposed = `${directoryText}\n${guidance}`
     if (bytes(proposed) <= directoryBudgetBytes) {
       directoryText = proposed
-      directoryIncluded.push(capability.id)
+      directoryCategories.push(category)
     }
   }
   return freeze({
     schema, enabled: true, configurationRevision, entries,
-    excluded: excluded.sort(compareIds), catalogText, directoryText, directoryIncluded,
+    excluded: excluded.sort(compareIds), catalogText, directoryText, directoryCategories,
     budgets: { unit: 'utf8-bytes', budgetBytes, directoryBudgetBytes, contractBytes: bytes(catalogText), directoryBytes: bytes(directoryText), overageBytes: Math.max(0, bytes(catalogText) - budgetBytes) },
     unresolvedConfigurationIds: [...new Set([...baseline, ...Object.keys(overrides)])].filter(id => !capabilities.some(entry => entry.id === id)).sort(),
     statisticsStatus: settings.usable ? 'enabled' : settings.reason,

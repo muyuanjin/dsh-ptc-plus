@@ -935,8 +935,11 @@ test('the plugin row seat renders both views when the page declares it first', a
   expect([...form.querySelectorAll('.ptcPlusGroupTitle')].map(title => title.textContent))
     .toEqual(['Plugin switch', 'Capabilities and context', 'Tool call tolerance', 'REPL syntax', 'State and recovery', 'Tool extensions', 'Interface display', 'Resource limits', 'Session capability plans'])
   expect(form.querySelector('[role=status]').textContent).toBe('Settings are saved; capability plans adopt changes in new sessions or after an explicit refresh.')
-  const fields = [...form.querySelectorAll('[role=switch], input[type=number], select, textarea')]
-  expect(fields).toHaveLength(CONFIG_GROUPS.flatMap(group => group.fields).length)
+  for (const key of CONFIG_GROUPS.flatMap(group => group.fields).filter(key => !['capabilityBaseline', 'capabilityOverrides', 'capabilityStatistics'].includes(key))) {
+    expect(form.querySelector(`[aria-label="${SETTINGS_COPY.en[`${key}.label`]}"]`)).not.toBeNull()
+  }
+  expect(form.querySelectorAll('textarea')).toHaveLength(0)
+  expect(form.querySelector('[aria-label="Enable usage statistics"]')).not.toBeNull()
   fireEvent.click(form.querySelector('[role=switch][aria-label="Enable PTC Plus"]'))
   await runtime.flush()
   // The page view is the settings form itself: its controls write through the
@@ -1093,7 +1096,8 @@ test('REPL observations and shared workbench remain separate from session execut
     symbols: ['readFileWithLongName', 'write', 'copy', 'remove'], purpose: 'Shared file utilities', enabled: false,
     source: 'export function readFileWithLongName(path: string) {\n  return path\n}', declaration: 'declare function readFileWithLongName(path: string): string;' }
   let revision = 1
-  const { runtime, settings, value, rpcCalls, setLocale } = await fixture({ repl: true, rpc: async (endpoint, payload) => {
+  const { runtime, settings, value, rpcCalls, setLocale } = await fixture({ repl: true, capabilityRpc: async endpoint => ({ ok: true, value: endpoint === 'catalog'
+    ? Array.from({ length: 48 }, (_, index) => ({ id: `tools.longCapabilityNameForNarrowLayouts${index}`, category: 'tool', description: 'Read and transform project files' })) : [] }), rpc: async (endpoint, payload) => {
     if (endpoint === 'list' || endpoint === 'reload') return { ok: true, value: { revision, entries: [entry] } }
     if (endpoint === 'load') return { ok: true, value: { revision, entry } }
     if (endpoint === 'validate') return { ok: true, value: { ...payload.entry, symbols: entry.symbols, declaration: entry.declaration } }
@@ -1302,8 +1306,8 @@ test('REPL observations and shared workbench remain separate from session execut
   settings.publish({ value: { ...value, enabled: false } })
   await runtime.flush()
   const controls = [...settingsCard.querySelectorAll('[role=switch], input[type=number], select, textarea')]
-  const visibleFieldCount = CONFIG_GROUPS.flatMap(group => group.fields).length
-  expect(controls).toHaveLength(visibleFieldCount)
+  expect(controls.some(control => control.getAttribute('aria-label') === 'Enable usage statistics')).toBe(true)
+  expect(settingsCard.querySelectorAll('textarea')).toHaveLength(0)
   expect(controls.filter(control => !control.disabled).map(control => control.getAttribute('aria-label'))).toEqual(['Enable PTC Plus'])
   settings.publish({ writable: false, value })
   await runtime.flush()
@@ -1935,7 +1939,7 @@ test('the authoring entry opens the complete settings dialog from every host sea
     expect(view.queryByRole('menu')).toBeNull()
     const dialog = view.getByRole('dialog', { name: 'PTC Plus settings' })
     expect(dialog.querySelectorAll('[role=switch], input[type=number], select, textarea'))
-      .toHaveLength(CONFIG_GROUPS.flatMap(group => group.fields).length)
+      .toHaveLength(CONFIG_GROUPS.flatMap(group => group.fields).length + 1)
     expect(dialog.querySelector('.ptcPlusHeader')).toBeNull()
     expect(dialog.querySelector('.ptcPlusSettingsDialog')).not.toBeNull()
     const ids = [...view.container.querySelectorAll('[id]'), ...dialog.querySelectorAll('[id]')]
@@ -1988,16 +1992,20 @@ test('the settings dialog falls back to its close button when the form has no en
   view.unmount()
 })
 
-test('capability settings retain JSON drafts and display frozen allocation with pending refresh', async () => {
-  const snapshot = { status: 'ready', writable: true, value: { enabled: true, userBindingsEnabled: false } }
-  const updateSetting = vi.fn(async () => null)
+test('capability settings use searchable choices and validated statistics while preserving frozen and unavailable selections', async () => {
+  const snapshot = { status: 'ready', writable: true, value: { enabled: true, userBindingsEnabled: false,
+    capabilityBaseline: '["tools.missing"]', capabilityOverrides: '{"tools.missing":"full"}',
+    capabilityStatistics: '{"enabled":true,"windowSize":10,"minimumSamples":10,"fullThreshold":0.5}' } }
+  const updateSetting = vi.fn(async (key, value) => { snapshot.value[key] = value; return null })
   const inspectCapabilityPlans = vi.fn(async () => [{ sessionId: 'frozen-session', pendingRefresh: true,
     effective: { budgets: { contractBytes: 234, overageBytes: 12 }, entries: [{ id: 'tools.probe',
       selection: 'on-demand', reason: 'manual', statisticsReason: 'statistics-disabled',
       evidence: { used: 2, eligible: 3, scope: 'workspace' } }] } }])
+  const inspectCapabilityCatalog = vi.fn(async () => [{ id: 'tools.probe', category: 'tool', description: 'Read project files' },
+    { id: 'skills.research', category: 'skill', description: 'Look up online references' }])
   const { PTCPlusSettingsCard } = createPtcSettingsView(React, {
     ActionButton: props => React.createElement('button', props), BindingsDialog: () => null,
-    useWorkbenchController: () => null, inspectCapabilityPlans, icons: {},
+    useWorkbenchController: () => null, inspectCapabilityPlans, inspectCapabilityCatalog, icons: {},
   })
   const t = (key, params = {}) => (SETTINGS_COPY.en[key] ?? key)
     .replace(/\{(\w+)\}/g, (token, name) => params[name] ?? token)
@@ -2005,20 +2013,49 @@ test('capability settings retain JSON drafts and display frozen allocation with 
     usePtcSettings: select => select(snapshot), updateSetting }))
   await act(async () => {})
   expect(view.container.textContent).toContain('Saved settings await refresh')
-  expect(view.container.textContent).toContain('tools.probe')
   expect(view.container.textContent).toContain('2/3 (workspace)')
   expect(view.container.textContent).toContain('234')
-  const input = view.getByLabelText(t('capabilityOverrides.label'))
-  fireEvent.change(input, { target: { value: '{' } })
-  expect(input.value).toBe('{')
-  expect(updateSetting).not.toHaveBeenCalled()
-  fireEvent.change(input, { target: { value: '{"tools.probe":"closed"}' } })
-  fireEvent.blur(input)
+  expect(view.container.querySelectorAll('textarea')).toHaveLength(0)
+  const search = view.getByRole('searchbox', { name: t('capabilities.search') })
+  fireEvent.change(search, { target: { value: 'project files' } })
+  expect(view.queryByLabelText('Disclosure for skills.research')).toBeNull()
+  const choice = view.getByLabelText('Disclosure for tools.probe')
+  fireEvent.change(choice, { target: { value: 'closed' } })
   await act(async () => {})
-  expect(updateSetting).toHaveBeenCalledExactlyOnceWith('capabilityOverrides', '{"tools.probe":"closed"}')
+  expect(JSON.parse(snapshot.value.capabilityOverrides)).toEqual({ 'tools.missing': 'full', 'tools.probe': 'closed' })
+  fireEvent.click(view.getByLabelText('Include tools.probe in common baseline'))
+  await act(async () => {})
+  expect(JSON.parse(snapshot.value.capabilityBaseline)).toEqual(['tools.missing', 'tools.probe'])
+  const window = view.getByLabelText('Sample window (session families)')
+  const minimum = view.getByLabelText('Minimum samples')
+  const threshold = view.getByLabelText('Full disclosure threshold (%)')
+  fireEvent.change(window, { target: { value: '5' } })
+  fireEvent.blur(window)
+  await act(async () => {})
+  expect(JSON.parse(snapshot.value.capabilityStatistics)).toEqual({ enabled: true, windowSize: 10, minimumSamples: 10, fullThreshold: 0.5 })
+  expect(view.container.textContent).toContain('minimum cannot exceed window')
+  fireEvent.click(view.getAllByRole('switch', { name: 'Enable usage statistics' })[0])
+  await act(async () => {})
+  expect(JSON.parse(snapshot.value.capabilityStatistics)).toEqual({ enabled: false, windowSize: 10, minimumSamples: 10, fullThreshold: 0.5 })
+  fireEvent.change(minimum, { target: { value: '3' } })
+  fireEvent.blur(minimum)
+  await act(async () => {})
+  fireEvent.change(threshold, { target: { value: '65' } })
+  fireEvent.blur(threshold)
+  await act(async () => {})
+  fireEvent.click(view.container.querySelector('input[aria-label="Enable usage statistics"]'))
+  await act(async () => {})
+  expect(JSON.parse(snapshot.value.capabilityStatistics)).toEqual({ enabled: true, windowSize: 10, minimumSamples: 3, fullThreshold: 0.65 })
+  fireEvent.change(search, { target: { value: '' } })
+  expect(view.container.textContent).toContain('Not in the current catalog; saved selection retained')
+  fireEvent.change(view.getByLabelText('Disclosure for tools.missing'), { target: { value: 'automatic' } })
+  await act(async () => {})
+  expect(JSON.parse(snapshot.value.capabilityOverrides)).toEqual({ 'tools.probe': 'closed' })
+  const reads = inspectCapabilityPlans.mock.calls.length
   fireEvent.click(view.getByRole('button', { name: 'Reload plans' }))
   await act(async () => {})
-  expect(inspectCapabilityPlans).toHaveBeenCalledTimes(2)
+  expect(inspectCapabilityPlans).toHaveBeenCalledTimes(reads + 1)
+  expect(inspectCapabilityCatalog).toHaveBeenCalledTimes(reads + 1)
   view.unmount()
 })
 
@@ -2031,6 +2068,7 @@ test('session plans use the capabilities RPC and clear loaded and late responses
   const { runtime, settings, value, capabilityRpcCalls, rpcCalls } = await fixture({
     enabled: false, settingsCardSeat: 'row',
     capabilityRpc: async endpoint => {
+      if (endpoint === 'catalog') return { ok: true, value: [{ id: 'tools.probe', category: 'tool', description: 'Probe owner' }] }
       expect(endpoint).toBe('inspect')
       requests += 1
       return requests === 2 ? delayed.promise : { ok: true, value: [plan(`frozen-${requests}`)] }
@@ -2048,16 +2086,16 @@ test('session plans use the capabilities RPC and clear loaded and late responses
   settings.publish({ value: { ...value, enabled: true } })
   await runtime.flush()
   expect(section().textContent).toContain('frozen-1')
-  expect(capabilityRpcCalls).toHaveLength(1)
+  expect(capabilityRpcCalls).toHaveLength(2)
   expect(rpcCalls.map(call => call.endpoint)).toEqual(['list'])
   fireEvent.click(reload())
   await runtime.flush()
-  expect(capabilityRpcCalls).toHaveLength(2)
+  expect(capabilityRpcCalls).toHaveLength(4)
   settings.publish({ value: { ...value, enabled: false } })
   await runtime.flush()
   expect(reload().disabled).toBe(true)
   expect(section().textContent).not.toContain('frozen-1')
-  expect(capabilityRpcCalls[1].signal.aborted).toBe(true)
+  expect(capabilityRpcCalls[2].signal.aborted).toBe(true)
   await act(async () => delayed.resolve({ ok: true, value: [plan('late-plan')] }))
   await runtime.flush()
   expect(section().textContent).not.toContain('late-plan')
@@ -2066,7 +2104,32 @@ test('session plans use the capabilities RPC and clear loaded and late responses
   await runtime.flush()
   expect(reload().disabled).toBe(false)
   expect(section().textContent).toContain('frozen-3')
-  expect(capabilityRpcCalls).toHaveLength(3)
+  expect(capabilityRpcCalls).toHaveLength(6)
+  view.unmount()
+})
+
+test('capability controls preserve manual selections on catalog failure and repair unusable statistics without JSON entry', async () => {
+  const snapshot = { status: 'ready', writable: true, value: { enabled: true, userBindingsEnabled: false,
+    capabilityBaseline: '["tools.saved"]', capabilityOverrides: '{"tools.saved":"full"}', capabilityStatistics: 'invalid' } }
+  const updateSetting = vi.fn(async (key, value) => { snapshot.value[key] = value; return null })
+  const { PTCPlusSettingsCard } = createPtcSettingsView(React, {
+    ActionButton: props => React.createElement('button', props), BindingsDialog: () => null, useWorkbenchController: () => null, icons: {},
+    inspectCapabilityPlans: async () => [], inspectCapabilityCatalog: async () => { throw new Error('Owner unavailable') },
+  })
+  const t = (key, params = {}) => (SETTINGS_COPY.en[key] ?? key)
+    .replace(/\{(\w+)\}/g, (token, name) => params[name] ?? token)
+  const view = render(React.createElement(PTCPlusSettingsCard, { t, view: 'page',
+    usePtcSettings: select => select(snapshot), updateSetting }))
+  await act(async () => {})
+  expect(view.container.textContent).toContain('Owner unavailable')
+  expect(view.container.textContent).toContain('Saved statistics are unusable')
+  expect(view.getByLabelText('Disclosure for tools.saved').value).toBe('full')
+  expect(updateSetting).not.toHaveBeenCalled()
+  fireEvent.click(view.container.querySelector('input[aria-label="Enable usage statistics"]'))
+  await act(async () => {})
+  expect(JSON.parse(snapshot.value.capabilityStatistics).enabled).toBe(true)
+  expect(snapshot.value.capabilityOverrides).toBe('{"tools.saved":"full"}')
+  expect(view.container.textContent).not.toContain('Saved statistics are unusable')
   view.unmount()
 })
 

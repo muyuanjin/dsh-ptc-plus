@@ -105,12 +105,20 @@ if (values.list) {
         await setFixtureTheme(page, theme)
         const visualControls = await assertVisualSurface(page, page.locator('body'), `${width}/${theme}/${state}`)
         const metrics = await page.evaluate(() => {
-          const containers = [...document.querySelectorAll('.ptcPlusConsole,.ptcPlusBindingsSurface,.ptcPlusBindingsDialog,.ptcPlusBindingEditor,.ptcPlusSettingsDialog,.ptcPlusSettingsDialogContent')]
+          const containers = [...document.querySelectorAll('.ptcPlusConsole,.ptcPlusBindingsSurface,.ptcPlusBindingsDialog,.ptcPlusBindingEditor,.ptcPlusSettingsDialog,.ptcPlusSettingsDialogContent,.ptcPlusCapabilityList')]
             .map(element => ({ name: element.className, client: element.clientWidth, scroll: element.scrollWidth }))
           const collisions = []
           for (const row of document.querySelectorAll('.ptcPlusBindingItem')) {
             const [text, action] = [...row.children].map(element => element.getBoundingClientRect())
             if (text.right > action.left + 1) collisions.push(row.textContent)
+          }
+          for (const row of document.querySelectorAll('.ptcPlusCapabilityItem')) {
+            const rectangles = [...row.children].map(element => element.getBoundingClientRect())
+            for (let i = 0; i < rectangles.length; i++) for (let j = i + 1; j < rectangles.length; j++) {
+              const a = rectangles[i], b = rectangles[j]
+              if (Math.min(a.right, b.right) > Math.max(a.left, b.left) + 1
+                && Math.min(a.bottom, b.bottom) > Math.max(a.top, b.top) + 1) collisions.push(row.textContent)
+            }
           }
           const controls = [...document.querySelectorAll('button,input,textarea,select,summary')]
             .filter(element => element.getClientRects().length > 0)
@@ -133,6 +141,22 @@ if (values.list) {
           assert.ok(metrics.settingsDialog !== null, `${width}/${state}: settings dialog missing`)
           assert.ok(metrics.settingsDialog.top >= 0 && metrics.settingsDialog.bottom <= 900,
             `${width}/${state}: settings dialog outside viewport`)
+        }
+        if (state.startsWith('settings')) {
+          const list = page.locator('.ptcPlusCapabilityList')
+          assert.equal(await list.locator('.ptcPlusCapabilityItem').count(), 48)
+          assert.equal(await page.locator('.ptcPlusCapabilityChoices textarea,.ptcPlusCapabilityStatistics textarea').count(), 0)
+          const first = list.locator('input[type=checkbox]').first()
+          const last = list.locator('select').last()
+          for (const control of [last, first]) {
+            await control.focus()
+            const reachable = await control.evaluate(element => {
+              const rect = element.getBoundingClientRect(), clip = element.closest('.ptcPlusCapabilityList').getBoundingClientRect()
+              const x = rect.left + rect.width / 2, y = rect.top + rect.height / 2
+              return y >= clip.top && y <= clip.bottom && document.elementFromPoint(x, y) === element
+            })
+            assert.ok(reachable, `${width}/${state}: capability choice is not reachable after scrolling`)
+          }
         }
         if (state.startsWith('empty')) {
           const empty = await page.locator('.ptcPlusSessionEmpty').evaluate(element => ({

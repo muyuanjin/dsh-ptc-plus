@@ -10,11 +10,11 @@
 | MCP 工具 | 普通工具投影包含 `mcp__` 成员；server instructions 作为完整契约依赖按方案披露 | `test/capability-environment.test.js`、`test/context-host-contract.test.js` |
 | MCP 资源和模板 | 以公共 server 目录为能力单元，筛选发现说明及共享加载器 selector；可用 server 为空时移除共享成员 | `test/capability-environment.test.js` 的共享 selector、空域与刷新反例 |
 | 旧工具引用 | 捕获的 callable 继续受原 cell lease 约束；普通函数在下一 cell 读取重新投影的 program namespace | `test/plugin-program-bindings.test.js` |
-| 首轮发布、刷新与通知 | 首轮 v2 方案在请求前组装，经 accepted-step 在受保护 system head 后、未提交历史的新任务前提交一次；导航和显式完整契约保持统计变化前缀；已初始化会话的 `/capabilities refresh` 经公共 `runMaintenance()` 以单次 `Session.append` 提交新方案及模型通知；首次接受前的刷新回执说明待接受，取消或写入失败不伪造提交 | `test/capability-environment.test.js` 的实际跨会话请求、统计变更前缀、真实 AgentLoop 与严格恢复 oracle |
+| 首轮发布、刷新与通知 | 首轮方案在请求前组装，经 accepted-step 在受保护 system head 后、未提交历史的新任务前提交一次；导航和显式完整契约保持统计变化前缀；已初始化会话的 `/capabilities refresh` 经公共 `runMaintenance()` 以单次 `Session.append` 提交新方案及模型通知；首次接受前的刷新回执说明待接受，取消或写入失败不伪造提交 | `test/capability-environment.test.js` 的实际跨会话请求、统计变更前缀、真实 AgentLoop 与严格恢复 oracle |
 | 恢复与压缩 | 从 source-backed 方案恢复冻结环境；正式结果元数据记录展开和使用；ordered surface 决定说明去重 | `test/capability-environment.test.js` 的 Session round trip 与 replacement 测试 |
 | 家族统计 | 公共 session lineage、turn/step 结算与家族 census，配合原子文件锁；未知结算不作负样本 | `test/capability-statistics.test.js`、`test/context-host-contract.test.js` |
 | 结果和日志 | 独立 spill policy 事件上下文读取宿主 spill 服务；canonical 值保持完整，存储失败保留原展示 | `test/context-result-preview.test.js` |
-| 设置观察 | 独立设置、JSON 草稿、有效方案、选择原因、使用覆盖率、预算超额及待刷新状态 | `test/client-runtime.spec.js` 的能力设置测试 |
+| 设置观察 | 独立设置、可搜索能力选择、统计开关与数值输入、有效方案、选择原因、使用覆盖率、预算超额及待刷新状态 | `test/client-runtime.spec.js` 的能力设置测试 |
 
 `tools.restrict()` 仅影响继承层，不能单独承担 scope 自有工具的移除。这一宿主行为由公共探针保留为对照；PTC Plus 的实际执行入口使用统一编译准备投影，因此它不再是本功能的实施阻塞。投影后的工具参数、canonical 结果和宿主错误保持原语义，没有第二套分派 registry。
 

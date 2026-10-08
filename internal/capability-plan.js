@@ -31,19 +31,26 @@ function freeze(value) {
 
 function compareIds(a, b) { return a.id < b.id ? -1 : a.id > b.id ? 1 : 0 }
 
-function catalog(entries) {
+function catalog(entries, priority = () => 0) {
   const dependencies = new Map()
-  for (const entry of entries) {
-    for (const dependency of entry.dependencies) {
-      const previous = dependencies.get(dependency.id)
-      if (previous !== undefined && previous !== dependency.text) throw new TypeError(`ptc-plus: conflicting shared contract ${dependency.id}`)
-      dependencies.set(dependency.id, dependency.text)
+  const blocks = []
+  const groups = Map.groupBy([...entries].sort(compareIds), priority)
+  for (const [, group] of [...groups].sort(([a], [b]) => a - b)) {
+    const additions = new Map()
+    for (const entry of group) {
+      for (const dependency of entry.dependencies) {
+        const previous = dependencies.get(dependency.id) ?? additions.get(dependency.id)
+        if (previous !== undefined && previous !== dependency.text) throw new TypeError(`ptc-plus: conflicting shared contract ${dependency.id}`)
+        if (previous === undefined) additions.set(dependency.id, dependency.text)
+      }
     }
+    for (const [id, body] of [...additions].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)) {
+      dependencies.set(id, body)
+      blocks.push(`### dependency:${id}\n${body}`)
+    }
+    blocks.push(...group.map(entry => `### ${entry.id}\n${entry.contract}`))
   }
-  return [
-    ...[...dependencies].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([id, body]) => `### dependency:${id}\n${body}`),
-    ...[...entries].sort(compareIds).map(entry => `### ${entry.id}\n${entry.contract}`),
-  ].join('\n\n')
+  return blocks.join('\n\n')
 }
 
 function statisticsSettings(value) {
@@ -66,6 +73,8 @@ function coverage(value, settings) {
 /** A frozen disclosure read model. It neither registers nor removes executable capabilities. */
 export function createCapabilityPlan(input) {
   const options = record(input, 'capability plan input')
+  const schema = options.schema ?? 'ptc-capability-plan/v2'
+  if (!['ptc-capability-plan/v1', 'ptc-capability-plan/v2'].includes(schema)) throw new TypeError('ptc-plus: unknown capability plan generation')
   if (typeof options.enabled !== 'boolean') throw new TypeError('ptc-plus: capability management enabled must be boolean')
   const configurationRevision = text(options.configurationRevision, 'configuration revision')
   if (!Array.isArray(options.capabilities)) throw new TypeError('ptc-plus: capabilities must be an array')
@@ -96,7 +105,7 @@ export function createCapabilityPlan(input) {
   }).filter(Boolean).sort(compareIds)
   const bytes = value => Buffer.byteLength(value, 'utf8')
   if (!options.enabled) return freeze({
-    schema: 'ptc-capability-plan/v1', enabled: false, configurationRevision,
+    schema, enabled: false, configurationRevision,
     entries: capabilities.map(({ id, revision, category }) => ({ id, revision, category, selection: 'host', reason: 'management-disabled' })),
     excluded: excluded.sort(compareIds), catalogText: '', directoryText: '',
     budgets: { unit: 'utf8-bytes', contractBytes: 0, directoryBytes: 0, overageBytes: 0 },
@@ -192,11 +201,15 @@ export function createCapabilityPlan(input) {
       candidate.entry.reason = candidate.entry.evidence ? 'statistical-coverage' : 'baseline'
     } else candidate.entry.reason = 'contract-budget'
   }
-  const catalogText = catalog(full)
+  // Statistics choose membership, never the order of unchanged contract groups.
+  const catalogText = catalog(full, schema === 'ptc-capability-plan/v1' ? undefined
+    : capability => overrides[capability.id] === 'full' ? 0 : common.has(capability.id) ? 1 : 2)
   let directoryText = navigationText
   const directoryIncluded = []
   for (const capability of capabilities) {
-    if (selections.get(capability.id).selection !== 'on-demand') continue
+    const selected = selections.get(capability.id).selection
+    if (schema === 'ptc-capability-plan/v1' ? selected !== 'on-demand'
+      : selected === 'closed' || overrides[capability.id] === 'full') continue
     const proposed = `${directoryText}\n${capability.navigation}`
     if (bytes(proposed) <= directoryBudgetBytes) {
       directoryText = proposed
@@ -204,7 +217,7 @@ export function createCapabilityPlan(input) {
     }
   }
   return freeze({
-    schema: 'ptc-capability-plan/v1', enabled: true, configurationRevision, entries,
+    schema, enabled: true, configurationRevision, entries,
     excluded: excluded.sort(compareIds), catalogText, directoryText, directoryIncluded,
     budgets: { unit: 'utf8-bytes', budgetBytes, directoryBudgetBytes, contractBytes: bytes(catalogText), directoryBytes: bytes(directoryText), overageBytes: Math.max(0, bytes(catalogText) - budgetBytes) },
     unresolvedConfigurationIds: [...new Set([...baseline, ...Object.keys(overrides)])].filter(id => !capabilities.some(entry => entry.id === id)).sort(),

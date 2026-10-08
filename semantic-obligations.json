@@ -541,7 +541,8 @@
         "editable baseline input",
         "workspace-first coverage fallback",
         "whole rendered UTF-8 contract budget and explicit overage",
-        "bounded directory",
+        "bounded directory independent of automatic disclosure membership",
+        "actual first-request pre-task capability plans and shared cross-session prefix under statistics changes",
         "immutable read model without runtime authority",
         "closed compiled members and empty shared loaders",
         "stable restored and refreshed plans",
@@ -570,8 +571,10 @@
         "dispose"
       ],
       "generations": [
-        "ptc-capability-plan/v1 deterministic plan",
-        "ptc-capability-environment/v1 persisted source-backed snapshot",
+        "ptc-capability-plan/v1 historical dependency-first plan",
+        "ptc-capability-plan/v2 stable navigation and grouped contract rendering",
+        "ptc-capability-environment/v1 historical source-backed snapshot",
+        "ptc-capability-environment/v2 initial pre-task delivery and append-only refresh",
         "ptc-capability-evidence/v1 formal result metadata"
       ],
       "platforms": [

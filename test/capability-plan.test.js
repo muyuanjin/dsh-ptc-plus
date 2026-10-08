@@ -174,3 +174,55 @@ test('disabled statistics and disabled management never read unusable statistica
   Object.defineProperty(options, 'coverage', { get() { throw new Error('disabled management read coverage') } })
   assert.equal(createCapabilityPlan(options).entries[0].selection, 'host')
 })
+
+test('statistical membership changes retain navigation and explicit full contracts as a shared prefix', () => {
+  const capabilities = [capability('a'), capability('b'), capability('pinned', 'Pinned contract', {
+    dependencies: [{ id: 'Shared', text: 'Shared type' }],
+  })]
+  const options = input({ capabilities, manual: { baseline: [], overrides: { pinned: 'full' } }, statistics: settings })
+  const make = (a, b) => createCapabilityPlan({ ...options, coverage: {
+    a: { revision: 'r1', workspace: observed(a, 3) }, b: { revision: 'r1', workspace: observed(b, 3) },
+  } })
+  const one = make(3, 0)
+  const two = make(0, 3)
+  assert.equal(one.directoryText, two.directoryText)
+  assert.deepEqual(one.directoryIncluded, ['a', 'b'])
+  const pinned = '### dependency:Shared\nShared type\n\n### pinned\nPinned contract'
+  assert.equal(one.catalogText, pinned + '\n\n### a\nComplete owner contract')
+  assert.equal(two.catalogText, pinned + '\n\n### b\nComplete owner contract')
+  const moreEvidence = make(2, 0)
+  assert.equal(one.catalogText, moreEvidence.catalogText)
+  assert.equal(one.directoryText, moreEvidence.directoryText)
+})
+
+test('manual baseline precedes statistical additions with exact shared dependency cost', () => {
+  const dependency = { id: 'Shared', text: '共享类型' }
+  const capabilities = ['a-statistical', 'z-baseline', 'pinned'].map(id => capability(id, id, { dependencies: [dependency] }))
+  const options = input({ capabilities, manual: { baseline: ['z-baseline'], overrides: { pinned: 'full' } },
+    statistics: settings, coverage: { 'a-statistical': { revision: 'r1', workspace: observed(3, 3) } } })
+  const plan = createCapabilityPlan(options)
+  assert.equal(plan.catalogText, '### dependency:Shared\n共享类型\n\n### pinned\npinned\n\n### z-baseline\nz-baseline\n\n### a-statistical\na-statistical')
+  const exact = createCapabilityPlan({ ...options, budgetBytes: Buffer.byteLength(plan.catalogText) })
+  assert.equal(exact.catalogText, plan.catalogText)
+  assert.equal(exact.budgets.overageBytes, 0)
+  assert.equal(exact.catalogText.match(/dependency:Shared/g).length, 1)
+})
+
+test('changed coverage rankings do not reorder unchanged automatic contracts', () => {
+  const options = input({ capabilities: ['a', 'b'].map(id => capability(id)),
+    manual: { baseline: [] }, statistics: settings })
+  const make = (a, b) => createCapabilityPlan({ ...options, coverage: {
+    a: { revision: 'r1', workspace: observed(a, 3) }, b: { revision: 'r1', workspace: observed(b, 3) },
+  } })
+  assert.equal(make(2, 3).catalogText, make(3, 2).catalogText)
+})
+
+test('historical v1 retains dependency-first identity order and on-demand-only directory', () => {
+  const plan = createCapabilityPlan(input({ schema: 'ptc-capability-plan/v1',
+    capabilities: ['a', 'b', 'pinned'].map(id => capability(id, id, { dependencies: [{ id: 'Shared', text: 'type' }] })),
+    manual: { baseline: ['a'], overrides: { pinned: 'full' } } }))
+  assert.equal(plan.schema, 'ptc-capability-plan/v1')
+  assert.equal(plan.catalogText, '### dependency:Shared\ntype\n\n### a\na\n\n### pinned\npinned')
+  assert.equal(plan.directoryText, 'Search the owner catalog for complete contracts.\nb')
+  assert.throws(() => createCapabilityPlan(input({ schema: 'future' })), /unknown capability plan generation/)
+})

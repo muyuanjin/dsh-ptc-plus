@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import test from 'node:test'
 import { Context } from '@deepseek-ai/cordis'
 import { AgentRegistry, agentEvents } from '@deepseek-ai/dsh-agent'
@@ -14,6 +15,7 @@ import * as skillTool from '@deepseek-ai/dsh-tool-skill'
 import { SystemPrompt } from '@deepseek-ai/dsh-system-prompt'
 import { ToolRuntime, defineTool } from '@deepseek-ai/dsh-tools'
 import { createCapabilityEnvironment } from '../internal/capability-environment.js'
+import { createCapabilityPlan } from '../internal/capability-plan.js'
 import { capabilityInspect, capabilitySearch, toolCapabilityMetadata } from '../internal/program-bindings.js'
 import { appendOnlySession } from './plugin-fixture.js'
 
@@ -191,6 +193,106 @@ test('real AgentLoop protects its first system head before accepting one capabil
   for (const event of events) restore.decodeRow(sessionFormatCatalog.encodeCurrentEvent(event))
   const artifact = restore.finish()
   assert.equal(artifact.events.filter(event => event.data?.source?.form === 'capability-plan').length, 1)
+})
+
+test('actual first requests share pre-task plans across sessions and preserve pinned prefixes across statistics', async t => {
+  const ctx = new Context()
+  new SystemPrompt(ctx, { includeHarnessIdentity: false, includeRuntimeContext: false,
+    personaPrefix: 'Fixture system prompt.', personaSuffix: '' })
+  new ToolRuntime(ctx, { mode: 'native' })
+  new AgentRegistry(ctx)
+  new SessionStore(ctx)
+  new SessionProjectionRegistry(ctx)
+  const requests = []
+  async function* stream(options) {
+    requests.push(options.messages)
+    yield { type: 'text-delta', index: 0, text: 'done' }
+    yield { type: 'finish', reason: { kind: 'stop' } }
+  }
+  ctx.effect(() => ctx.provide('llm', { async prepareCall(requestConfig) {
+    return { config: requestConfig, stream, adapterDefaults: {} }
+  }, stream }))
+  await ctx.plugin(AgentLoop, { agents: [] }).await()
+  let selected = 'a'
+  const schemas = ['a', 'b', 'pinned'].map(schema)
+  const store = { available() {}, coverage: async () => Object.fromEntries(schemas.map(item => [`tools.${item.name}`, {
+    revision: createHash('sha256').update(JSON.stringify(item)).digest('hex'),
+    workspace: { status: 'usable', windowSize: 10, eligible: 3, used: item.name === selected ? 3 : 0 },
+  }])) }
+  const env = createCapabilityEnvironment({ ctx, config: { ...config({ 'tools.pinned': 'full' }),
+    capabilityStatistics: '{"enabled":true,"windowSize":10,"minimumSamples":1,"fullThreshold":0.5}' },
+  toolSchemasForAgent: () => schemas, store })
+  ctx.on('system-prompt/assemble', async (_assembly, context, next) => {
+    const assembly = await next()
+    await env.prepare(context.agent, assembly.sections)
+    return { ...assembly, sections: env.projectSections(context.agent, assembly.sections) }
+  })
+  ctx.on('agent/pre-step', (payload, next) => env.preStep(payload, next), { prepend: true })
+  const owned = []
+  t.after(async () => { for (const item of owned) await item.dispose(); await env.dispose(); await ctx.fiber.dispose() })
+  const run = async (agent, text) => {
+    agent.send(createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text }] }), 'next-turn', true)
+    await agent.whenIdle()
+  }
+  for (const task of ['different task one', 'different task two', 'different task three']) {
+    if (owned.length === 2) selected = 'b'
+    const item = await ctx.agents.create({ sessionId: `cache-prefix-${owned.length}`,
+      meta: { cwd: process.cwd(), delegationDepth: 0 }, agentOptions: { provider: 'fixture', model: 'fixture' } })
+    owned.push(item)
+    await run(item.agent, task)
+  }
+  const content = message => message.content.map(part => part.text ?? '').join('')
+  const prefix = messages => messages.slice(0, messages.findIndex(message => message.source?.kind === 'user')).map(content)
+  assert.deepEqual(prefix(requests[0]), prefix(requests[1]), 'Different tasks must diverge only after the full initial plan.')
+  const plans = requests.slice(0, 3).map(messages => messages.find(message => message.source?.form === 'capability-plan'))
+  assert.ok(plans.every(Boolean))
+  const stable = content(plans[0]).split('\n\n### tools.a\n')[0]
+  assert.match(stable, /### tools.pinned/)
+  assert.ok(content(plans[2]).startsWith(stable + '\n\n### tools.b\n'))
+  assert.equal(prefix(requests[0])[0], prefix(requests[2])[0], 'Statistics must not change the system head.')
+  await run(owned[0].agent, 'continue after statistics changed')
+  assert.equal(content(requests[3].find(message => message.source?.form === 'capability-plan')), content(plans[0]))
+  await env.refresh(owned[0].agent)
+  await run(owned[0].agent, 'continue after explicit refresh')
+  const refreshed = requests[4]
+  assert.equal(content(refreshed.find(message => message.source?.form === 'capability-plan')), content(plans[0]))
+  assert.ok(refreshed.findLastIndex(message => message.source?.form === 'capability-plan')
+    > refreshed.findIndex(message => content(message) === 'continue after statistics changed'))
+})
+
+test('historical v1 environment restores its exact text without adopting the v2 renderer', async () => {
+  const agent = agentFor(Session.create('historical-capability-plan-v1'))
+  const env = createCapabilityEnvironment({ ctx: {}, config: config({ 'tools.pinned': 'full' }),
+    toolSchemasForAgent: () => [schema('a'), schema('pinned')] })
+  const state = await env.prepare(agent, [])
+  const snapshot = JSON.parse(JSON.stringify(state.snapshot))
+  snapshot.schema = 'ptc-capability-environment/v1'
+  snapshot.plan = createCapabilityPlan({ ...snapshot.settings, schema: 'ptc-capability-plan/v1',
+    capabilities: snapshot.capabilities, navigationText: snapshot.plan.directoryText.split('\n')[0],
+    configurationRevision: createHash('sha256').update(JSON.stringify(snapshot.settings)).digest('hex') })
+  const message = createUserMessage({ source: { ...state.message.source, snapshot,
+    digest: createHash('sha256').update(JSON.stringify(snapshot)).digest('hex') },
+  content: [{ type: 'text', text: ['PTC Plus session capability environment:', snapshot.plan.catalogText, snapshot.plan.directoryText].filter(Boolean).join('\n\n') }] })
+  agent.session.append('system/message', { turn: 1, step: 1, message: createSystemMessage({ content: [{ type: 'text', text: 'system' }] }) },
+    { surfaceOp: 'append', protected: true })
+  agent.session.append('user/message', message, { surfaceOp: 'append' })
+  const restored = createCapabilityEnvironment({ ctx: {}, config: config(), toolSchemasForAgent: () => [] })
+  const result = await restored.prepare(agent, [])
+  assert.equal(result.snapshot.schema, 'ptc-capability-environment/v1')
+  assert.deepEqual(result.message.content, message.content)
+})
+
+test('initial plan precedes the task even when the protected system head is already committed', async () => {
+  const agent = agentFor(Session.create('system-only-capability-prefix'))
+  agent.session.append('system/message', { turn: 1, step: 1,
+    message: createSystemMessage({ content: [{ type: 'text', text: 'system' }] }) }, { surfaceOp: 'append', protected: true })
+  const env = createCapabilityEnvironment({ ctx: {}, config: config(), toolSchemasForAgent: () => [schema('a')] })
+  await env.prepare(agent, [])
+  assert.equal(agent.session.snapshotEvents().length, 1, 'Preparation must not publish a plan before admission.')
+  const task = createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: 'task' }] })
+  const result = await env.preStep({ agent, signal: agent.signal }, async () => ({ kind: 'enter', messages: [task] }))
+  assert.equal(result.messages[0].source.form, 'capability-plan')
+  assert.equal(result.messages[1], task)
 })
 
 

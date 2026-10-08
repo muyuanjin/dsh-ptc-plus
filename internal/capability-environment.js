@@ -37,11 +37,14 @@ function sourcePlan(message, id) {
   const source = message?.source
   if (source?.kind !== PTC_MESSAGE_SOURCE_KIND || source.form !== CAPABILITY_PLAN_FORM || source.sessionId !== id) return undefined
   const snapshot = source.snapshot
-  if (source.digest !== digest(snapshot) || snapshot?.schema !== 'ptc-capability-environment/v1'
-    || !Array.isArray(snapshot.capabilities) || snapshot.plan?.schema !== 'ptc-capability-plan/v1') {
+  const generation = snapshot?.schema === 'ptc-capability-environment/v1' ? 'ptc-capability-plan/v1'
+    : snapshot?.schema === 'ptc-capability-environment/v2' ? 'ptc-capability-plan/v2' : undefined
+  if (source.digest !== digest(snapshot) || generation === undefined
+    || !Array.isArray(snapshot.capabilities) || snapshot.plan?.schema !== generation) {
     throw new Error('damaged session capability plan')
   }
   const expected = createCapabilityPlan({ ...snapshot.settings, capabilities: snapshot.capabilities,
+    schema: generation,
     coverage: snapshot.coverage, navigationText: NAVIGATION,
     configurationRevision: digest(snapshot.settings) })
   if (JSON.stringify(expected) !== JSON.stringify(snapshot.plan)
@@ -55,7 +58,7 @@ function planMessage(snapshot, id, refresh = false) {
   const plan = snapshot.plan
   const text = plan.enabled
     ? ['PTC Plus session capability environment' + (refresh ? ' refreshed; replaces the preceding capability plan.' : ':'),
-      plan.catalogText, plan.directoryText,
+      ...(plan.schema === 'ptc-capability-plan/v1' ? [plan.catalogText, plan.directoryText] : [plan.directoryText, plan.catalogText]),
       ...(plan.budgets.overageBytes ? [`Explicit full contracts exceed the configured budget by ${plan.budgets.overageBytes} UTF-8 bytes.`] : [])]
       .filter(Boolean).join('\n\n')
     : 'PTC Plus capability management is off for this session. Use the host-provided capability contracts.'
@@ -307,7 +310,7 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
             ctx.logger?.warn?.(`ptc-plus: ${error.message}; continuing with the host environment until /capabilities refresh`)
             const settings = { ...capabilityConfiguration(currentConfig), enabled: false }
             const plan = createCapabilityPlan({ ...settings, configurationRevision: digest(settings), capabilities: [], navigationText: NAVIGATION })
-            snapshot = deepFreeze({ schema: 'ptc-capability-environment/v1', settings, capabilities: [], plan })
+            snapshot = deepFreeze({ schema: 'ptc-capability-environment/v2', settings, capabilities: [], plan })
             const notice = planMessage(snapshot, id, true)
             publishPlan(agent, notice, signal)
             const state = { snapshot, message: notice, hostSections: sections ?? [], expanded: new Set(), used: new Map() }
@@ -331,13 +334,13 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
       const coverage = settings.statistics?.enabled === true ? await store?.coverage(agent, capabilities, settings.statistics) : undefined
       const plan = createCapabilityPlan({ ...settings, configurationRevision: digest(settings),
         capabilities, coverage, navigationText: NAVIGATION })
-      const snapshot = deepFreeze({ schema: 'ptc-capability-environment/v1', settings, capabilities, ...(coverage === undefined ? {} : { coverage }), plan })
+      const snapshot = deepFreeze({ schema: 'ptc-capability-environment/v2', settings, capabilities, ...(coverage === undefined ? {} : { coverage }), plan })
       const message = planMessage(snapshot, id, force)
       agent.signal?.throwIfAborted?.()
       signal?.throwIfAborted()
       // Initialized sessions commit a refresh and its notification atomically.
       // First-step proposals are accepted through the Host's pre-step messages.
-      if (settings.enabled || force) {
+      if (force) {
         publishPlan(agent, message, signal)
       }
       const state = { snapshot, message: !settings.enabled && !force ? undefined : message,
@@ -474,7 +477,11 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
         if (body) additions.push(createUserMessage({ source: { kind: PTC_MESSAGE_SOURCE_KIND, form: 'capability-descriptions', entries: restored },
           content: [{ type: 'text', text: body }] }))
       }
-      return { ...decision, messages: [...messages, ...additions] }
+      // Before task history exists, the initial plan precedes admitted task messages.
+      // Refresh and recovery append after committed history; they never reorder it.
+      const initial = state.snapshot.schema === 'ptc-capability-environment/v2'
+        && !sessionEvents(payload.agent.session).some(event => ['user/message', 'assistant/message', 'tool/result'].includes(event.type))
+      return { ...decision, messages: initial ? [...additions, ...messages] : [...messages, ...additions] }
     },
     admitted(exec) {
       // Host tokens correlate immutable call identity through mutable wrappers.

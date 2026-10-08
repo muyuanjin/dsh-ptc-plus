@@ -201,7 +201,7 @@ Skill 的目录查询不是正文使用。实施建议以实际正文加载并�
 
 ## 8. 用同一来源连接配置、展示和执行
 
-实施应围绕少量明确责任组织，而不是为工具、Skill 和资源各写一套互不一致的规则。下表给出责任与当前接入点；冻结环境格式为 `ptc-capability-environment/v1`，方案和统计格式见[组件说明](capability-planning-components.md)。
+实施应围绕少量明确责任组织，而不是为工具、Skill 和资源各写一套互不一致的规则。下表给出责任与当前接入点；新冻结环境格式为 `ptc-capability-environment/v2`（保留 v1 历史渲染），方案和统计格式见[组件说明](capability-planning-components.md)。
 
 | 责任 | 输入与输出 | 当前实现接入点及约束 |
 | --- | --- | --- |

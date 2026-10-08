@@ -10,6 +10,7 @@
           await: false
       config:
         originalEntryId: ptc-runtime
+        serviceName: ptcRuntime
         isolation: ptc-plus-original
     - id: ptc-plus
       name: dsh-ptc-plus

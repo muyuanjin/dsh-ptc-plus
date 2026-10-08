@@ -217,6 +217,7 @@ function hostContext(settings = undefined, agents = [], options = {}) {
     tools: {
       get: () => definition,
       schemas: () => [],
+      sdkSchemas: () => [],
       register: host.ctx.tools.register,
     },
     systemPrompt: {
@@ -344,8 +345,13 @@ function hostContext(settings = undefined, agents = [], options = {}) {
           return injection
         }
         if (services.length === 1 && services[0] === 'ptcPlusRpc') {
-          callback({ ptcPlusRpc: { register: () => () => {} } })
-          return () => {}
+          const disposers = []
+          callback({ ptcPlusRpc: { register: () => () => {} }, effect(register) {
+            const dispose = register()
+            disposers.push(dispose)
+            return dispose
+          } })
+          return () => { for (const dispose of disposers.reverse()) dispose() }
         }
         if (services.length === 1 && services[0] === 'tools') {
           const childDisposers = []
@@ -361,6 +367,7 @@ function hostContext(settings = undefined, agents = [], options = {}) {
             for (const dispose of childDisposers.reverse()) await dispose()
           }
         }
+        if (services[0] === 'commands') return serviceInjector({}, () => ctx)(services, callback)
         if (services[0] === 'typert') return () => {}
         assert.deepEqual(services, ['settings'])
         settings.fiber ??= { state: 2 }
@@ -2012,6 +2019,14 @@ test('rolls back consecutive failed Cordis updates to the committed configuratio
 
 test('config schema defaults expose the settings switches', async () => {
   const expectedOrder = [
+    'capabilityManagementEnabled',
+    'capabilityBaseline',
+    'capabilityOverrides',
+    'capabilityStatistics',
+    'capabilityBudgetBytes',
+    'capabilityDirectoryBytes',
+    'capabilityRecoveryBytes',
+    'modelPreviewTokens',
     'legacyBindingSettings',
     'enabled',
     'enhancedToolView',
@@ -2043,7 +2058,7 @@ test('config schema defaults expose the settings switches', async () => {
     'tipEscalationFailures',
   ]
   assert.deepEqual(CONFIG_FIELDS.map(field => field.key), expectedOrder)
-  assert.deepEqual(CONFIG_GROUPS.map(group => group.key), ['switch', 'calls', 'syntax', 'recovery', 'extensions', 'interface', 'limits'])
+  assert.deepEqual(CONFIG_GROUPS.map(group => group.key), ['switch', 'capabilities', 'calls', 'syntax', 'recovery', 'extensions', 'interface', 'limits'])
   assert.deepEqual(CONFIG_GROUPS.flatMap(group => group.fields).sort(), [...expectedOrder]
     .filter(key => !['legacyBindingSettings', 'looseTopLevelRedeclarations', 'looseTopLevelFunctionClassRedeclarations', 'autoRewriteImports', 'autoStripExports', 'autoSplitRedeclarations'].includes(key))
     .sort())

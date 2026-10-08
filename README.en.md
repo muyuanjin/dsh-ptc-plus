@@ -64,7 +64,7 @@ Default PTC mode starts every execution in a fresh environment: variables from t
 | Recover a misplaced top-level tool call | Undeclared top-level calls are rejected in PTC mode | Convert the call to `run_code` when the live tool definitions uniquely identify the target and validate its arguments |
 | Locate a code error | Return the native error and stack | Map the error to the cell source; suggest an edit when a missing trailing delimiter has one verified correction |
 | Work with the current project | Relative Node paths depend on the host process directory | Resolve file paths, session module imports, and default child-process directories from the session project directory |
-| Find tools and parameters | Read through the tool interfaces already supplied to the model | List and search current capabilities in code, then inspect relevant interfaces on demand |
+| Find tools and parameters | Read through the tool interfaces already supplied to the model | Retrieve matching interfaces in one byte-budgeted `capabilities.search` response, or list and inspect members |
 | Transfer data beyond plain JSON | JSON cannot fully represent `undefined`, BigInt, cycles, and similar values | Preserve supported special values and reference relationships for further computation and recovery |
 | Inspect computation state | No reusable session variables remain after a call | View retained names, source definitions, reuse counts, and bounded value previews in the REPL tab |
 | Reuse functions across sessions | Save the code yourself and reload it in later calls | Save TypeScript global bindings and supply their interfaces and usage notes to the model |
@@ -72,6 +72,8 @@ Default PTC mode starts every execution in a fresh environment: variables from t
 | Continue after a restart | No computation state spans calls, so there is nothing to recover | Recover verifiable state from session records and report what cannot be recovered |
 
 The following sections explain usage and limits. See the [runtime reference](docs/runtime-reference.md) for complete language rules, configuration fields, and diagnostics.
+
+Inside `run_code`, use `await capabilities.search({ query: "read file content", budgetBytes: 8192 })` to retrieve complete contracts within a response budget; oversized entries provide an individual retrieval reference. Enable capability management in settings to edit the common baseline and select full disclosure, on-demand disclosure or closure for tools, Skills and MCP servers. Independent statistics use actual session-family coverage and preserve manual choices when disabled or damaged. Existing sessions retain their frozen plan; `/capabilities refresh` synchronizes saved settings, runtime members and a durable model notification. Settings show allocation reasons, coverage, budgets and pending changes. Large results and logs retain complete presentation through the Host spill service without changing program values. See the [context optimization plan](docs/context-optimization-plan.md) for implementation evidence. An authorized paid comparison of seven fixed ordinary tasks plus one canary ran through blind review and unblinding. Plugin efficiency scored 15/24 versus 10/24 for baseline, and ordinary-task token traffic was 122,933 versus 325,862. Three baseline tasks exceeded their preset call or token budgets, so machine acceptance failed; this is a single-replicate observation, not a general quality or cost guarantee.
 
 ## Continuous computation and language extensions
 
@@ -176,17 +178,13 @@ This does not reread the file: it uses `manifest` already in the session. Direct
 
 ### Discover tools as needed
 
-The model can still use DSH's current native tools through `tools.*`. To discover available capabilities, `capabilities.tree()` lists the catalog, `find()` searches names and descriptions, and `inspect()` provides parameter information for selected interfaces:
+The model can still use DSH's current native tools through `tools.*`. `capabilities.search()` finds and returns complete indexed entries in one call:
 
 ```ts
-const matches = await capabilities.find('read')
-return capabilities.inspect({
-  symbols: matches.slice(0, 4).map(item => item.symbol),
-  budget: 4,
-})
+return capabilities.search({ query: 'read file content', budgetBytes: 8192 })
 ```
 
-Search uses lexical matching, so short keywords such as `read` or `session` work best. A miss does not prove that a tool is unavailable. Discovery grants no additional authority; DSH still validates and schedules calls. See [capability discovery](docs/runtime-reference.md#capability-discovery).
+Search uses English/Chinese lexical matching. A miss does not prove that a tool is unavailable. The byte budget includes the response JSON envelope; oversized interfaces remain complete and receive individual retrieval references. Existing `tree()`, `find()` and `inspect()` remain available; inspect's budget counts entries. Discovery grants no additional authority; DSH still validates and schedules calls. See [capability discovery](docs/runtime-reference.md#capability-discovery).
 
 ## Global bindings: reuse functions across sessions
 
@@ -228,6 +226,7 @@ The sparkle menu beside the composer groups binding authoring, entry management,
 | Group | What you can adjust |
 | --- | --- |
 | Plugin switch | Enable or disable PTC Plus |
+| Context and capabilities | Experimental capability management (off by default), independent statistics, common baseline, individual choices, and presentation budgets |
 | Tool call tolerance | Missing call summaries and identifiable misplaced native-tool calls |
 | REPL syntax | Allow same-name revisions or choose name protection |
 | State and recovery | Restart recovery, contextual tips, and their frequency |
@@ -237,7 +236,7 @@ The sparkle menu beside the composer groups binding authoring, entry management,
 
 Everyday computation features default to on. **Cordis development tools default to off** and can be enabled when inspecting or developing DSH plugins; see the [integration notes](docs/adr/0020-optional-cordis-tools-in-ptc-mode.md). Explicitly disabled options stay disabled, and each saved binding keeps its own enabled state.
 
-Settings usually apply immediately. A worker's memory limit cannot be changed while that worker is active or a submitted cell is preparing to execute. See the [configuration reference](docs/runtime-reference.md#configuration) for fields, defaults, and full limits.
+Capability inputs are frozen per session; saved changes apply to new sessions or `/capabilities refresh`. Other settings usually apply immediately. A worker's memory limit cannot be changed while that worker is active or a submitted cell is preparing to execute. See the [configuration reference](docs/runtime-reference.md#configuration) for fields, defaults, and full limits.
 
 The host execution provider must use TypeScript. Changing it to another language during reload withdraws the active PTC runtime and reports a diagnostic; returning to TypeScript reactivates it without changing the plugin setting.
 

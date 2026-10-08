@@ -4,15 +4,15 @@
 
 PTC Plus supplies the session-bound REPL by taking over the program-execution
 seam DSH uses for `run_code`. DSH registers that seam as a Cordis service and
-has renamed it between releases: a historical request-only generation published
-`ctx.codeRuntime` (`@deepseek-ai/dsh-code-runtime`) and the current one publishes
+has renamed it between releases: the request-only contract publishes
+`ctx.codeRuntime` (`@deepseek-ai/dsh-code-runtime`) and the resolved-spec contract publishes
 `ctx.ptcRuntime` (`@deepseek-ai/dsh-ptc-runtime`). A plugin that declares the
-removed name as a required injection never applies on the current host. Cordis
+absent name as a required injection never applies on that host. Cordis
 does not fail such a plugin: the fiber stays pending, the plugin's entry points
 are never registered, and `run_code` silently keeps executing in the host's own
 runtime instead of the session REPL.
 
-The current seam also differs in more than its name. It resolves a request before
+The resolved-spec seam also differs in more than its name. It resolves a request before
 running it (`resolve(request)` → `run(spec)`), it publishes provider descriptors
 (`executionInstructions`, `sandboxMode`, `timeout`) that gate host inputs, and it
 reports file-confinement facts on the result. Its provider resolves a file policy
@@ -33,7 +33,7 @@ original entry through public Loader resolution and injection, then registers a
 plugin-owned global provider through Cordis. The main plugin installs its
 execution callback only in that provider's private entry. The original service
 is never modified and may be frozen or sealed. Custom compositions configure
-the original entry ID and matching isolation explicitly. Entry IDs resolve in the
+the original entry ID, service name and matching isolation explicitly. `codeRuntime` takes requests directly; `ptcRuntime` requires `resolve(request)` before `run(spec)`. The selected service contract, rather than release chronology, determines delegation. Entry IDs resolve in the
 provider row’s owning Loader tree, including the profile’s Include subtree;
 they are not assumed to be root-tree IDs.
 
@@ -61,21 +61,21 @@ session runtime. The subscription and its disposer belong to the injected contro
 **Selection is a live capability.** The plugin's static injection names only the
 services both generations provide; the seam owner waits through `inject` for
 whichever execution service the host registers, in a scope that also requires the
-plugin's own services, and owns one live attachment at a time. When both are registered, the current
-generation wins, including when it appears after a preceding-generation attachment.
+plugin's own services, and owns one live attachment at a time. When both are registered, the resolved-spec
+contract wins, including when it appears after a request-only attachment.
 That transition first disposes the legacy injected fiber and its complete effect
-tree, then attaches in the current service's scope; cleanup from the retired scope
-cannot clear the new owner. If that attach fails, the owner marks the current
-service object unusable, re-arms the preceding-generation attachment
+tree, then attaches in the resolved-spec service's scope; cleanup from the retired scope
+cannot clear the new owner. If that attach fails, the owner marks the resolved-spec
+service object unusable, re-arms the request-only attachment
 immediately, and reports the failure instead of leaving the plugin with no
-execution seam; the failed object is never retried, while a replacement current
-service supersedes the restored attachment. The preceding generation therefore
-attaches only when the current one is absent or is the recorded unusable object.
+execution seam; the failed object is never retried, while a replacement resolved-spec
+service supersedes the restored attachment. The request-only contract therefore
+attaches only when the resolved-spec one is absent or is the recorded unusable object.
 Attachment runs in the injected scope, so
 the plugin is unloaded when the host unregisters that service and reattaches when
 it is registered again. A service that satisfies the name but not the contract
 (`run` or `resolve` missing) follows the same path and is reported as a load
-failure naming the service; when a preceding-generation attachment exists, the
+failure naming the service; when a request-only attachment exists, the
 report accompanies its restoration so `run_code` never silently returns to the
 host provider.
 
@@ -102,7 +102,7 @@ resolution, and sandbox escalation on those descriptors, so withholding them kee
 DSH's authority decisions with DSH instead of accepting an input the plugin would
 then ignore. Withdrawal is unconditional rather than generation-conditional,
 because the rule belongs to the plugin's execution rather than to a generation:
-the preceding generation's contract defines none of these members and nothing in
+the request-only contract defines none of these members and nothing in
 its install closure reads them, so withdrawing there is inert. These values are
 derived getters on the plugin provider, not replacement descriptors on the
 original. Releasing the private callback restores native delegation and its
@@ -161,9 +161,10 @@ escalation it thinks it is offering.
 
 ## Consequences
 
-The frozen Host graphs exercise the `ptcRuntime` resolve/run shape. The
-`codeRuntime` request-only shape is a historical compatibility branch with
-fixture coverage, not a second frozen Host generation. The evidence boundary is
+The default bundle and current official base profile use the `ptcRuntime`
+resolve/run shape, also exercised by the frozen Host graphs. Explicit
+`codeRuntime` request-only compositions retain public Loader fixture coverage
+for request identity, replacement and bundle removal. The evidence boundary is
 recorded in [Installation](../installation.md#compatibility-evidence).
 Seam tests cover selection and input preservation for both shapes. Real public
 Loader tests cover frozen originals, exact configuration and spec delegation,
@@ -175,8 +176,8 @@ pending: the host awaits loader settlement before it becomes usable, so an
 unbounded wait would park every agent, native tool, and unrelated plugin rather
 than failing this entry.
 
-A current-generation service that fails to attach cannot leave the plugin
-unattached while the preceding service is still registered: the preceding
+A resolved-spec service that fails to attach cannot leave the plugin
+unattached while the request-only service is still registered: the request-only
 attachment is restored and the failure is reported through the plugin's own
 logger in addition to the injected fiber's activation result.
 

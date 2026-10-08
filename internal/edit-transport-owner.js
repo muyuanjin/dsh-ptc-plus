@@ -19,6 +19,7 @@ import {
 } from './rejected-cell-editor.js'
 import { projectSessionLog } from './session-log-view.js'
 import { RUN_CODE } from './runtime-bridge-owner.js'
+import { CAPABILITY_EVIDENCE_KEY } from './capability-environment.js'
 import { isRecord } from './record-utils.js'
 import {
   userBindingDraftCapabilityFromMeta,
@@ -100,6 +101,7 @@ export function createEditTransportOwner(ctx, {
         description: derived.description,
       },
     }
+    if (derived.capabilityEvidence !== undefined) meta[CAPABILITY_EVIDENCE_KEY] = derived.capabilityEvidence
     if (derived.rewrites !== undefined) {
       meta[REWRITES_KEY] = normalizeRewrites(derived.rewrites)
     }
@@ -221,6 +223,7 @@ export function createEditTransportOwner(ctx, {
         replMemory,
         userBindings,
         draftCapability,
+        capabilityEvidence: inner?.meta?.[CAPABILITY_EVIDENCE_KEY],
         code: edited.code,
         description: edited.description,
       }

@@ -31,25 +31,29 @@ async function main() {
   const { createScope } = await load('@deepseek-ai/dsh-scope')
   const { createAssistantMessage, createToolResultMessage } = await load('@deepseek-ai/dsh-llm')
   const seamService = executionServiceName(readFileSync(require.resolve('@deepseek-ai/dsh-tools'), 'utf8'))
-  if (seamService !== 'ptcRuntime') throw new Error(`dsh-execution-seam-smoke: unsupported public provider service ${seamService}`)
+  if (!['ptcRuntime', 'codeRuntime'].includes(seamService)) throw new Error(`dsh-execution-seam-smoke: unsupported public provider service ${seamService}`)
   const manifestPath = require.resolve('dsh-ptc-plus/package.json')
   const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
   const bundlePath = join(dirname(manifestPath), manifest.dsh.bundle.patch)
   const bundle = loadOverlayPatches('dsh', bundlePath)
   const stateKey = '__ptcPlusPublicSeamSmoke'
   const state = globalThis[stateKey] = { runs: [], resolutions: [], originals: [] }
+  const runtimeBase = seamService === 'ptcRuntime'
+    ? `import { PtcRuntime as Runtime } from ${JSON.stringify(pathToFileURL(require.resolve('@deepseek-ai/dsh-ptc-runtime')).href)}`
+    : `import { Service as Runtime } from ${JSON.stringify(pathToFileURL(require.resolve('@deepseek-ai/cordis')).href)}`
+  const originalEntryId = seamService === 'ptcRuntime' ? 'ptc-runtime' : 'code-runtime'
   const upstreamUrl = 'data:text/javascript,' + encodeURIComponent(`
-    import { PtcRuntime } from ${JSON.stringify(pathToFileURL(require.resolve('@deepseek-ai/dsh-ptc-runtime')).href)}
+    ${runtimeBase}
     const state = globalThis[${JSON.stringify(stateKey)}]
     export const name = 'frozen-upstream'
     export function apply(ctx, config) {
-      class FrozenOriginal extends PtcRuntime {
+      class FrozenOriginal extends Runtime {
         language = 'typescript'
         isolation = 'process'
         get executionInstructions() { return 'provider program guidance' }
         get sandboxMode() { return 'workspace-write' }
         get timeout() { return { defaultMs: 1000, maxMs: 2000 } }
-        constructor(ctx) { super(ctx); Object.freeze(this) }
+        constructor(ctx) { super(ctx${seamService === 'codeRuntime' ? ", 'codeRuntime'" : ''}); Object.freeze(this) }
         resolve(request) {
           state.resolutions.push(request)
           return Object.freeze({ ...request, cwd: request.cwd ?? config.cwd,
@@ -62,11 +66,13 @@ async function main() {
       state.originals.push({ original: state.original, descriptors: state.descriptors })
     }
   `)
-  const originalRow = { id: 'ptc-runtime', name: upstreamUrl, config: { cwd: consumer } }
+  const originalRow = { id: originalEntryId, name: upstreamUrl, config: { cwd: consumer } }
   const rows = composeEntries([[{ insert: [originalRow] }], bundle])
   const adapterRow = rows.find(row => row.id === 'ptc-plus-execution')
   const mainRow = rows.find(row => row.id === 'ptc-plus')
   if (adapterRow === undefined || mainRow === undefined) throw new Error('dsh-execution-seam-smoke: bundle lacks public provider composition')
+  assert.equal(adapterRow.config.originalEntryId, originalEntryId)
+  assert.equal(adapterRow.config.serviceName, seamService)
   adapterRow.name = pathToFileURL(require.resolve(adapterRow.name)).href
   mainRow.name = pathToFileURL(require.resolve(pluginSpecifier)).href
   mainRow.config = { userBindingsEnabled: false, cordisToolsEnabled: false }
@@ -177,7 +183,7 @@ async function main() {
     assert.equal(second.isError, false, JSON.stringify(second))
     assert.deepEqual(second.value, { logs: [], result: 42 })
     originalRow.config = { cwd: consumer, profileTag: 'reloaded' }
-    await profileTree.resolve('ptc-runtime').update({ config: originalRow.config })
+    await profileTree.resolve(originalEntryId).update({ config: originalRow.config })
     await root.loader.await()
     assert.equal(root.get(seamService), provider)
     assert.equal(seam.active, true)
@@ -237,7 +243,7 @@ async function main() {
     await profileTree.resolve('ptc-plus').update({ disabled: false })
     await root.loader.await()
     assert.equal(root.get(seamService).timeout, undefined)
-    await profileTree.root.update([originalRow])
+    await profileTree.root.update([{ ...originalRow, isolate: null }])
     await root.loader.await()
     assert.ok(root.get(seamService))
     assert.equal(root.get(seamService).executionInstructions, 'provider program guidance')

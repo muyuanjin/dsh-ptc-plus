@@ -1,3 +1,5 @@
+import { resolveConfig } from '../internal/runtime-config.js'
+import { capabilityConfiguration, readCapabilityContextMessage } from '../internal/capability-environment.js'
 import { createHash, randomUUID } from 'node:crypto'
 import { cp, mkdir, readdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, join, relative, resolve } from 'node:path'
@@ -81,6 +83,8 @@ export function validateConfigPair(pluginRows, baselineRows, runtime) {
     pluginSha256: sha256(JSON.stringify(pluginRows)),
     baselineSha256: sha256(JSON.stringify(baselineRows)),
     onlyDifference: 'ptc-plus.disabled',
+    capabilityManagementEnabled: pluginRows.find(row => row.id === 'ptc-plus')?.config?.capabilityManagementEnabled === true,
+    capabilitySettings: capabilityConfiguration(resolveConfig(pluginRows.find(row => row.id === 'ptc-plus')?.config)),
   }
 }
 
@@ -94,9 +98,12 @@ export function initialInjections(events, cwd) {
   return events.flatMap(event => {
     if (event.type !== 'user/message' || event.seq >= firstRequestSeq || event.data?.source?.kind === 'user') return []
     const text = collectModelText(event.data?.content).join('\n')
+    const capability = readCapabilityContextMessage(event.data, events.find(item => item.type === 'session')?.id)
     return [{
       seq: event.seq,
       source: sourceLabel(event.data?.source),
+      ...(capability?.form === 'capability-plan' && capability.enabled === true
+        ? { treatment: 'capability-environment', capabilitySettings: capability.settings } : {}),
       chars: text.length,
       bytes: Buffer.byteLength(text),
       sha256: sha256(text),
@@ -353,8 +360,18 @@ export function assertTrajectoryInvariants(events, expected, audits) {
     .replace('{{model}}', expected.model)
     .replace('{{cwd}}', expected.cwd)
   if (!system.startsWith(expectedPersona)) failures.push('system prompt does not start with the neutral A/B persona')
-  if (injections.length === 0 || injections.some(item => !isRuntimeContextSource(item.source))) {
+  if (injections.length === 0 || injections.some(item => !isRuntimeContextSource(item.source)
+    && !(expected.variant === 'plugin' && expected.capabilityManagementEnabled === true
+      && item.treatment === 'capability-environment'))) {
     failures.push('unexpected initial context sources: ' + (injections.map(item => item.source).join(', ') || '(none)'))
+  }
+  const treatmentCount = injections.filter(item => item.treatment === 'capability-environment').length
+  if (treatmentCount !== (expected.variant === 'plugin' && expected.capabilityManagementEnabled === true ? 1 : 0)) {
+    failures.push('initial capability plan does not match resolved capability management configuration')
+  }
+  if (treatmentCount && injections.some(item => item.treatment === 'capability-environment'
+    && !isDeepStrictEqual(item.capabilitySettings, expected.capabilitySettings))) {
+    failures.push('initial capability plan settings do not match resolved capability configuration')
   }
   const prompts = userPrompts(events)
   if (prompts.length !== 1 || prompts[0] !== expected.prompt) {
@@ -671,7 +688,7 @@ async function preflightConfigs({ env, runtime, artifactRoot, tasks, fixture, ho
     tasks,
     configPreflight,
   }, null, 2) + '\n')
-  return overlays
+  return { overlays, capabilityManagementEnabled: configPreflight.capabilityManagementEnabled, capabilitySettings: configPreflight.capabilitySettings }
 }
 
 async function runAllPairs({ tasks, runtime, runId, artifactRoot, runArm }) {
@@ -701,7 +718,7 @@ async function runAllPairs({ tasks, runtime, runId, artifactRoot, runArm }) {
     }
   }, async (firstPair) => {
     if (firstPair.error !== undefined) throw firstPair.error
-    const injectionSignature = variant => JSON.stringify(firstPair[variant].prompt.injections.map(item => ({
+    const injectionSignature = variant => JSON.stringify(firstPair[variant].prompt.injections.filter(item => item.treatment !== 'capability-environment').map(item => ({
       source: item.source,
       chars: item.chars,
       normalizedSha256: item.normalizedSha256,
@@ -775,7 +792,7 @@ async function assembleReport({
     if (hashes.size !== 1) contextPairingFailures.push(`${variant} system prompt varied across sessions`)
   }
   for (const pair of pairs) {
-    const injectionSignature = session => JSON.stringify(session.prompt.injections.map(item => ({
+    const injectionSignature = session => JSON.stringify(session.prompt.injections.filter(item => item.treatment !== 'capability-environment').map(item => ({
       source: item.source,
       chars: item.chars,
       normalizedSha256: item.normalizedSha256,
@@ -802,7 +819,8 @@ async function assembleReport({
     baselineOnlyParagraphs: multisetDifference(paragraphs(baselineSystem), paragraphs(pluginSystem)),
     pluginDuplicateParagraphs: exemplar.plugin.prompt.duplicateParagraphs,
     baselineDuplicateParagraphs: exemplar.baseline.prompt.duplicateParagraphs,
-    sharedInitialInjections: exemplar.plugin.prompt.injections,
+    sharedInitialInjections: exemplar.plugin.prompt.injections.filter(item => item.treatment !== 'capability-environment'),
+    capabilityTreatmentInjections: exemplar.plugin.prompt.injections.filter(item => item.treatment === 'capability-environment'),
   }
   const report = {
     runtime,
@@ -889,7 +907,7 @@ export async function main(env = process.env) {
   try {
     await mkdir(scratchRoot, { recursive: true })
     await materializeFixture(fixtureDir, frozenWorkspace)
-    const overlays = await preflightConfigs({ env, runtime, artifactRoot, tasks, fixture, host, scratchRoot })
+    const { overlays, capabilityManagementEnabled, capabilitySettings } = await preflightConfigs({ env, runtime, artifactRoot, tasks, fixture, host, scratchRoot })
     if (env.DSH_PTC_AB_CONFIG_ONLY === '1') {
       console.log(`A/B config preflight completed; artifacts: ${relative(repoRoot, artifactRoot)}`)
       return
@@ -944,6 +962,8 @@ export async function main(env = process.env) {
           await writeFile(join(directory, 'session.jsonl'), match.text)
           analysis = analyzeSession(match.events, {
             ...runtime,
+            capabilityManagementEnabled,
+            capabilitySettings,
             cwd,
             variant,
             prompt: task.prompt,

@@ -64,7 +64,7 @@ Windows 开发脚本会检查本地 esbuild 是否可执行；依赖缺失或由
 | 误发顶层工具调用 | PTC 模式下未声明的顶层调用被拒绝 | 当前工具定义能唯一确认目标且参数合法时，转为对应的 `run_code` |
 | 定位代码错误 | 只返回原生错误与堆栈 | 对应到 cell 源码位置；末尾缺少闭合符且修正可唯一验证时给出编辑建议 |
 | 访问当前项目 | 相对路径按宿主进程目录解析 | 按会话项目目录解析文件路径、会话模块导入和默认子进程目录 |
-| 查找工具和参数 | 只能翻已经提供给模型的工具说明 | 在代码中列出、搜索当前可用能力，按需查看接口说明 |
+| 查找工具和参数 | 只能翻已经提供给模型的工具说明 | 用 `capabilities.search` 一次取得匹配接口，按字节限制响应；也可列目录或单项检查 |
 | 传递 JSON 不易表达的数据 | JSON 无法完整表达 `undefined`、BigInt、循环引用等 | 在支持的值范围内保留特殊值和引用关系，供后续计算与恢复 |
 | 查看当前计算状态 | 执行结束后没有可继续使用的会话变量可查 | REPL 页签展示保留的名称、定义来源、复用次数和有界值预览 |
 | 跨会话使用常用函数 | 自己保存代码，并在后续调用中重新加载 | 全局绑定保存 TypeScript 源码，并向模型提供接口与使用提示 |
@@ -72,6 +72,8 @@ Windows 开发脚本会检查本地 esbuild 是否可执行；依赖缺失或由
 | 重启后继续工作 | 没有跨调用的计算状态可供恢复 | 从会话记录恢复可验证的状态，无法恢复的部分明确提示 |
 
 以下各节介绍具体用法和边界；完整语言规则、配置字段与诊断见[运行时参考](docs/runtime-reference.md)。
+
+能力查询可在 `run_code` 内使用 `await capabilities.search({ query: "read file content", budgetBytes: 8192 })`，一次读取预算内的完整接口，过长条目提供单项读取指针。设置中开启能力管理后，可编辑常用基线，并对工具、Skill 和 MCP server 显式选择完整、按需或关闭；独立统计按会话家族计算实际使用覆盖率，损坏或关闭时保留手动选择。已有会话使用冻结方案，保存设置后执行 `/capabilities refresh` 才同步运行环境与模型通知。设置页显示选择原因、覆盖率、预算和待刷新状态。大结果与日志通过宿主 spill 服务保留完整展示，预览不改变程序值。实现和验证范围见[上下文优化计划](docs/context-optimization-plan.md)；固定 7 项普通任务加 1 项 canary 的付费配对已运行并完成盲评；插件侧效率评分为 15/24，基线为 10/24，普通任务 token traffic 为 122,933 对 325,862。原生基线有 3 项超出预设调用或 token 上限，机器验收未通过；这是单 replicate 观察，不能保证普遍质量或成本收益。
 
 ## 连续计算与语言扩展
 
@@ -176,17 +178,13 @@ return deps.map(dep => dep + '@' + manifest.dependencies[dep])
 
 ### 按需发现工具
 
-模型仍可通过 `tools.*` 使用 DSH 当前提供的原生工具。需要了解可用能力时，`capabilities.tree()` 列出目录，`find()` 搜索名称和描述，`inspect()` 查看选中接口的参数说明：
+模型仍可通过 `tools.*` 使用 DSH 当前提供的原生工具。`capabilities.search()` 一次查找并返回完整索引条目：
 
 ```ts
-const matches = await capabilities.find('read')
-return capabilities.inspect({
-  symbols: matches.slice(0, 4).map(item => item.symbol),
-  budget: 4,
-})
+return capabilities.search({ query: 'read file content', budgetBytes: 8192 })
 ```
 
-搜索使用词法匹配，适合 `read`、`session` 这样的短关键词；没有匹配不代表工具一定不存在。发现工具不会增加权限，实际调用仍由 DSH 校验和调度。更多用法见[能力发现](docs/runtime-reference.md#capability-discovery)。
+搜索使用中英文词法匹配，没有匹配不代表工具一定不存在。字节预算包含结果 JSON 包装，过长接口保持完整并返回单项读取指针。原有 `tree()`、`find()`、`inspect()` 仍可使用；其中 inspect 的 budget 是条目数。发现工具不会增加权限，实际调用仍由 DSH 校验和调度。更多用法见[能力发现](docs/runtime-reference.md#capability-discovery)。
 
 ## 全局绑定：跨会话复用常用函数
 
@@ -228,6 +226,7 @@ return capabilities.inspect({
 | 分组 | 可以调整的内容 |
 | --- | --- |
 | 插件开关 | 启用或停用 PTC Plus |
+| 上下文与能力 | 实验性能力管理（默认关闭）、独立统计、常用基线、单项选择及展示预算 |
 | 调用容错 | 缺少摘要的调用、可准确识别的顶层工具误调用 |
 | REPL 语法 | 允许同名修订，或选择名称保护策略 |
 | 状态与恢复 | 重启恢复、按需提示与提示频率 |
@@ -237,7 +236,7 @@ return capabilities.inspect({
 
 面向日常计算的功能默认开启。**Cordis 开发工具默认关闭**，适用于检查或开发 DSH 插件，按需开启即可；详见[集成说明](docs/adr/0020-optional-cordis-tools-in-ptc-mode.md)。已有配置中显式关闭的选项会保持关闭，条目是否启用也由各自的保存状态决定。
 
-设置通常即时生效；活动 worker 存在或已提交的 cell 正在准备执行时不能修改其内存上限。字段、默认值和完整限制见[配置参考](docs/runtime-reference.md#configuration)。
+能力配置对每个会话冻结，保存后用于新会话，已有会话通过 `/capabilities refresh` 刷新。其他设置通常即时生效；活动 worker 存在或已提交的 cell 正在准备执行时不能修改其内存上限。字段、默认值和完整限制见[配置参考](docs/runtime-reference.md#configuration)。
 
 宿主执行 provider 必须使用 TypeScript。热重载改为其他语言时，PTC Plus 撤出当前接管并报告诊断；恢复 TypeScript 后重新启用，插件开关保持原选择。
 

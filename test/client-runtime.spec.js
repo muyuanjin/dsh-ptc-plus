@@ -163,7 +163,7 @@ async function clientPlugin(ui = primitives) {
   })
 }
 
-async function fixture({ enabled = true, bindings, conversation = true, repl = false, composer = false, dock = true, uiSession = true, settingsCardSeat = 'legacy', settingsTransport = 'configForms', rpc, watchRpc, observeRpc, commands, turn, tool, ui, setupEvents } = {}) {
+async function fixture({ enabled = true, bindings, conversation = true, repl = false, composer = false, dock = true, uiSession = true, settingsCardSeat = 'legacy', settingsTransport = 'configForms', rpc, capabilityRpc, watchRpc, observeRpc, commands, turn, tool, ui, setupEvents } = {}) {
   const runtime = await SlotTestRuntime.create()
   cleanups.push(() => runtime.dispose())
   installSessionSelectionCompat(runtime)
@@ -177,6 +177,7 @@ async function fixture({ enabled = true, bindings, conversation = true, repl = f
     runtime.ctx.provide('settingsScope', { bind: () => settings.scope })
   }
   const rpcCalls = []
+  const capabilityRpcCalls = []
   runtime.ctx.provide('connection', {
     start: () => ({ stop() {} }),
     registerGenerationSource: () => () => {},
@@ -184,6 +185,10 @@ async function fixture({ enabled = true, bindings, conversation = true, repl = f
     expect(channel).toBe('/api')
     const { operation: endpoint, payload } = wire.args
     const value = await (async () => {
+    if (method === 'ptcPlusCapabilities/invoke') {
+      capabilityRpcCalls.push({ endpoint, payload, signal })
+      return capabilityRpc ? capabilityRpc(endpoint, payload, signal) : { ok: true, value: [] }
+    }
     if (method === 'ptcPlusRepl/invoke') {
       rpcCalls.push({ endpoint, payload, signal })
       if (endpoint === 'observe') return observeRpc ? observeRpc(payload, signal) : { ok: true, value: null }
@@ -204,10 +209,8 @@ async function fixture({ enabled = true, bindings, conversation = true, repl = f
     const invoke = service => (operation, payload, signal) => runtime.ctx.connection.rpc.call(
       '/api', `${service}/invoke`, { args: { operation, payload } }, signal,
     )
-    runtime.remote.provideNamespaces({
-      ptcPlusBindings: { invoke: invoke('ptcPlusBindings') },
-      ptcPlusRepl: { invoke: invoke('ptcPlusRepl') },
-    })
+    runtime.remote.provideNamespaces(Object.fromEntries(Object.values(RPC_CONTRACTS)
+      .map(({ service }) => [service, { invoke: invoke(service) }])))
     runtime.remote.$mount = async () => {}
   }
   const dictionaries = new Map()
@@ -289,7 +292,7 @@ async function fixture({ enabled = true, bindings, conversation = true, repl = f
     inject: plugin.inject,
     apply(ctx) { return plugin.apply(ctx.isolate('uiSession')) },
   })
-  return { runtime, settings, value, events, feature, provideConversation, conversationProvider, remote, input, rpcCalls,
+  return { runtime, settings, value, events, feature, provideConversation, conversationProvider, remote, input, rpcCalls, capabilityRpcCalls,
     setLocale(active) { localeSnapshot.active = active; localeSnapshot.revision++; for (const listener of localeListeners) listener() } }
 }
 
@@ -930,9 +933,9 @@ test('the plugin row seat renders both views when the page declares it first', a
   expect(summary.textContent).toBe('The session-bound TypeScript REPL for PTC mode.')
   const form = view.container.querySelector('[data-view=page]')
   expect([...form.querySelectorAll('.ptcPlusGroupTitle')].map(title => title.textContent))
-    .toEqual(['Plugin switch', 'Tool call tolerance', 'REPL syntax', 'State and recovery', 'Tool extensions', 'Interface display', 'Resource limits'])
-  expect(form.querySelector('[role=status]').textContent).toBe('Changes take effect immediately.')
-  const fields = [...form.querySelectorAll('[role=switch], input[type=number], select')]
+    .toEqual(['Plugin switch', 'Capabilities and context', 'Tool call tolerance', 'REPL syntax', 'State and recovery', 'Tool extensions', 'Interface display', 'Resource limits', 'Session capability plans'])
+  expect(form.querySelector('[role=status]').textContent).toBe('Settings are saved; capability plans adopt changes in new sessions or after an explicit refresh.')
+  const fields = [...form.querySelectorAll('[role=switch], input[type=number], select, textarea')]
   expect(fields).toHaveLength(CONFIG_GROUPS.flatMap(group => group.fields).length)
   fireEvent.click(form.querySelector('[role=switch][aria-label="Enable PTC Plus"]'))
   await runtime.flush()
@@ -1243,7 +1246,7 @@ test('REPL observations and shared workbench remain separate from session execut
   await runtime.flush()
   const settingsCard = view.container.querySelector('.ptcPlusCard')
   const groupTitles = () => [...settingsCard.querySelectorAll('.ptcPlusGroupTitle')].map(title => title.textContent)
-  expect(groupTitles()).toEqual(['插件开关', '调用容错', 'REPL 语法', '状态与恢复', '工具扩展', '界面显示', '资源限制'])
+  expect(groupTitles()).toEqual(['插件开关', '能力与上下文', '调用容错', 'REPL 语法', '状态与恢复', '工具扩展', '界面显示', '资源限制', '当前会话能力方案'])
   const recoveryGroup = settingsCard.querySelector('[aria-labelledby="ptc-plus-settings-group-recovery"]')
   expect(recoveryGroup.querySelectorAll('input[type=number]')).toHaveLength(2)
   const managementAction = settingsCard.querySelector('.ptcPlusSettingAction')
@@ -1252,7 +1255,7 @@ test('REPL observations and shared workbench remain separate from session execut
   await saveLayout('settings-zh', view.container.querySelector('.ptcPlusCard'))
   setLocale('en')
   await runtime.flush()
-  expect(groupTitles()).toEqual(['Plugin switch', 'Tool call tolerance', 'REPL syntax', 'State and recovery', 'Tool extensions', 'Interface display', 'Resource limits'])
+  expect(groupTitles()).toEqual(['Plugin switch', 'Capabilities and context', 'Tool call tolerance', 'REPL syntax', 'State and recovery', 'Tool extensions', 'Interface display', 'Resource limits', 'Session capability plans'])
   await saveLayout('settings-en', view.container.querySelector('.ptcPlusCard'))
   await runtime.sessions.setCurrent('client-session')
   await runtime.flush()
@@ -1298,7 +1301,7 @@ test('REPL observations and shared workbench remain separate from session execut
   expect(rpcCalls).toHaveLength(calls)
   settings.publish({ value: { ...value, enabled: false } })
   await runtime.flush()
-  const controls = [...settingsCard.querySelectorAll('[role=switch], input[type=number], select')]
+  const controls = [...settingsCard.querySelectorAll('[role=switch], input[type=number], select, textarea')]
   const visibleFieldCount = CONFIG_GROUPS.flatMap(group => group.fields).length
   expect(controls).toHaveLength(visibleFieldCount)
   expect(controls.filter(control => !control.disabled).map(control => control.getAttribute('aria-label'))).toEqual(['Enable PTC Plus'])
@@ -1931,7 +1934,7 @@ test('the authoring entry opens the complete settings dialog from every host sea
     await runtime.flush()
     expect(view.queryByRole('menu')).toBeNull()
     const dialog = view.getByRole('dialog', { name: 'PTC Plus settings' })
-    expect(dialog.querySelectorAll('[role=switch], input[type=number], select'))
+    expect(dialog.querySelectorAll('[role=switch], input[type=number], select, textarea'))
       .toHaveLength(CONFIG_GROUPS.flatMap(group => group.fields).length)
     expect(dialog.querySelector('.ptcPlusHeader')).toBeNull()
     expect(dialog.querySelector('.ptcPlusSettingsDialog')).not.toBeNull()
@@ -1939,7 +1942,7 @@ test('the authoring entry opens the complete settings dialog from every host sea
       .map(element => element.id)
     expect(new Set(ids).size).toBe(ids.length)
     expect(document.body.textContent).not.toContain(`PTC Plus settings: ${path}`)
-    expect(document.activeElement).toBe(dialog.querySelector('[role=switch]'))
+    expect(document.activeElement).toBe(dialog.querySelector('[role=switch][aria-label="Enable PTC Plus"]'))
     const controls = [...dialog.querySelectorAll('button:not(:disabled),input:not(:disabled),textarea:not(:disabled),select:not(:disabled),[href],[tabindex]:not([tabindex="-1"]),[contenteditable=true],summary')]
     controls[0].focus()
     fireEvent.keyDown(document, { key: 'Tab', shiftKey: true })
@@ -1982,6 +1985,88 @@ test('the settings dialog falls back to its close button when the form has no en
     onClose: () => {},
   }))
   expect(document.activeElement).toBe(view.getByRole('button', { name: 'settings.close' }))
+  view.unmount()
+})
+
+test('capability settings retain JSON drafts and display frozen allocation with pending refresh', async () => {
+  const snapshot = { status: 'ready', writable: true, value: { enabled: true, userBindingsEnabled: false } }
+  const updateSetting = vi.fn(async () => null)
+  const inspectCapabilityPlans = vi.fn(async () => [{ sessionId: 'frozen-session', pendingRefresh: true,
+    effective: { budgets: { contractBytes: 234, overageBytes: 12 }, entries: [{ id: 'tools.probe',
+      selection: 'on-demand', reason: 'manual', statisticsReason: 'statistics-disabled',
+      evidence: { used: 2, eligible: 3, scope: 'workspace' } }] } }])
+  const { PTCPlusSettingsCard } = createPtcSettingsView(React, {
+    ActionButton: props => React.createElement('button', props), BindingsDialog: () => null,
+    useWorkbenchController: () => null, inspectCapabilityPlans, icons: {},
+  })
+  const t = (key, params = {}) => (SETTINGS_COPY.en[key] ?? key)
+    .replace(/\{(\w+)\}/g, (token, name) => params[name] ?? token)
+  const view = render(React.createElement(PTCPlusSettingsCard, { t, view: 'page',
+    usePtcSettings: select => select(snapshot), updateSetting }))
+  await act(async () => {})
+  expect(view.container.textContent).toContain('Saved settings await refresh')
+  expect(view.container.textContent).toContain('tools.probe')
+  expect(view.container.textContent).toContain('2/3 (workspace)')
+  expect(view.container.textContent).toContain('234')
+  const input = view.getByLabelText(t('capabilityOverrides.label'))
+  fireEvent.change(input, { target: { value: '{' } })
+  expect(input.value).toBe('{')
+  expect(updateSetting).not.toHaveBeenCalled()
+  fireEvent.change(input, { target: { value: '{"tools.probe":"closed"}' } })
+  fireEvent.blur(input)
+  await act(async () => {})
+  expect(updateSetting).toHaveBeenCalledExactlyOnceWith('capabilityOverrides', '{"tools.probe":"closed"}')
+  fireEvent.click(view.getByRole('button', { name: 'Reload plans' }))
+  await act(async () => {})
+  expect(inspectCapabilityPlans).toHaveBeenCalledTimes(2)
+  view.unmount()
+})
+
+test('session plans use the capabilities RPC and clear loaded and late responses when the plugin is disabled', async () => {
+  const delayed = deferred()
+  const plan = sessionId => ({ sessionId, pendingRefresh: false,
+    effective: { budgets: { contractBytes: 234, overageBytes: 0 }, entries: [{ id: 'tools.probe',
+      selection: 'on-demand', reason: 'manual', statisticsReason: 'statistics-disabled' }] } })
+  let requests = 0
+  const { runtime, settings, value, capabilityRpcCalls, rpcCalls } = await fixture({
+    enabled: false, settingsCardSeat: 'row',
+    capabilityRpc: async endpoint => {
+      expect(endpoint).toBe('inspect')
+      requests += 1
+      return requests === 2 ? delayed.promise : { ok: true, value: [plan(`frozen-${requests}`)] }
+    },
+  })
+  const view = runtime.renderRoot()
+  await runtime.flush()
+  const reload = () => view.getByRole('button', { name: 'Reload plans' })
+  const section = () => reload().closest('section')
+  expect(reload().disabled).toBe(true)
+  expect(section().textContent).toContain('Disabled')
+  expect(section().textContent).not.toContain('Syncing')
+  expect(capabilityRpcCalls).toHaveLength(0)
+
+  settings.publish({ value: { ...value, enabled: true } })
+  await runtime.flush()
+  expect(section().textContent).toContain('frozen-1')
+  expect(capabilityRpcCalls).toHaveLength(1)
+  expect(rpcCalls.map(call => call.endpoint)).toEqual(['list'])
+  fireEvent.click(reload())
+  await runtime.flush()
+  expect(capabilityRpcCalls).toHaveLength(2)
+  settings.publish({ value: { ...value, enabled: false } })
+  await runtime.flush()
+  expect(reload().disabled).toBe(true)
+  expect(section().textContent).not.toContain('frozen-1')
+  expect(capabilityRpcCalls[1].signal.aborted).toBe(true)
+  await act(async () => delayed.resolve({ ok: true, value: [plan('late-plan')] }))
+  await runtime.flush()
+  expect(section().textContent).not.toContain('late-plan')
+  expect(section().textContent).toContain('Disabled')
+  settings.publish({ value: { ...value, enabled: true } })
+  await runtime.flush()
+  expect(reload().disabled).toBe(false)
+  expect(section().textContent).toContain('frozen-3')
+  expect(capabilityRpcCalls).toHaveLength(3)
   view.unmount()
 })
 

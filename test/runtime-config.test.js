@@ -59,6 +59,21 @@ test('follows volatile config handles without restarting the fiber', () => {
 test('validates every declared field from its CONFIG_FIELDS type and bounds', () => {
   for (const field of CONFIG_FIELDS) {
     assert.equal(Object.hasOwn(CONFIG_DEFAULTS, field.key), true)
+    if (field.type === 'string') {
+      assert.equal(typeof field.default, 'string')
+      const value = {
+        capabilityBaseline: '["tools.probe"]',
+        capabilityOverrides: '{"tools.probe":"on-demand"}',
+        capabilityStatistics: '{"enabled":false}',
+      }[field.key]
+      assert.equal(typeof value, 'string')
+      assert.equal(resolveConfig({ [field.key]: value })[field.key], value)
+      for (const invalid of [true, 0, null, undefined, {}]) {
+        assert.throws(() => resolveConfig({ [field.key]: invalid }),
+          new RegExp(`ptc-plus: ${field.key} must be a string`))
+      }
+      continue
+    }
     if (field.type === 'boolean') {
       assert.equal(typeof field.default, 'boolean')
       assert.equal(resolveConfig({ [field.key]: !field.default })[field.key], !field.default)
@@ -79,6 +94,7 @@ test('validates every declared field from its CONFIG_FIELDS type and bounds', ()
     assert.equal(field.type, 'integer')
     assert.equal(Number.isSafeInteger(field.min), true)
     assert.equal(Number.isSafeInteger(field.max), true)
+    assert.equal(resolveConfig({ [field.key]: field.min })[field.key], field.min)
     assert.equal(resolveConfig({ [field.key]: field.max })[field.key], field.max)
     for (const invalid of [0, -1, 1.5, NaN, '8', undefined, field.max + 1]) {
       assert.throws(

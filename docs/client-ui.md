@@ -25,13 +25,18 @@ Client 按数据、传输、注册与视图分文件，沿用既有 `createX(Rea
 ## 设置命名空间
 
 当前 Host half 的 `Config` 文档由 DSH 公共 `settings` 服务按 owning Loader entry 的 profile ID 寻址；更早 section installer 兼容支仍注册 `ptc-plus` 命名空间。失败补偿由 settings compatibility owner 绑定同一写入身份，不把固定 namespace 当作 profile entry ID。字段清单、默认值和校验来自 `internal/config-spec.js`，
-由 `index.js` 的 `Config` schema 与设置注册共用；client half 构建时把同一份字段清单打进 bundle，不在 UI 中复制默认值。`CONFIG_GROUPS` 独立拥有按用途排列的展示顺序：插件总开关单独置顶，其后为“调用容错”“REPL 语法”“状态与恢复”“工具扩展”“界面显示”“资源限制”。每个字段只展示一次，各组使用独立标题、留白与分隔线。
+由 `index.js` 的 `Config` schema 与设置注册共用；client half 构建时把同一份字段清单打进 bundle，不在 UI 中复制默认值。`CONFIG_GROUPS` 独立拥有按用途排列的展示顺序：插件总开关单独置顶，其后为“能力与上下文”“调用容错”“REPL 语法”“状态与恢复”“工具扩展”“界面显示”“资源限制”。每个字段只展示一次，各组使用独立标题、留白与分隔线；末尾的当前会话能力方案显示有效选择与待刷新状态。
 
 ## 可用设置
 
 | 分组 | 字段 | 说明 |
 | --- | --- | --- |
 | 开关 | `enabled` | 关闭后不注册 `run_code`/`edit_run_code`、不修改 system prompt、不创建 session runtime；保留设置 UI，Host 在下一允许步骤撤销旧 PTC 声明。 |
+| 能力与上下文 | `capabilityManagementEnabled` | 默认关闭；开启实验性能力管理，冻结新会话的能力方案。 |
+| 能力与上下文 | `capabilityBaseline` / `capabilityOverrides` | JSON 常用能力 ID 数组与单项 `full`、`on-demand`、`closed` 选择；显式选择优先于统计。 |
+| 能力与上下文 | `capabilityStatistics` | 独立 JSON 统计设置；无效、关闭或无可用样本时保留手动基线。 |
+| 能力与上下文 | `capabilityBudgetBytes` / `capabilityDirectoryBytes` / `capabilityRecoveryBytes` | 完整契约、导航及压缩后说明恢复的 UTF-8 字节预算；显式完整契约不截断。 |
+| 能力与上下文 | `modelPreviewTokens` | 模型展示的估计 token 预算，复用宿主 spill 服务，不改变完整程序值。 |
 | 调用容错 | `autoDescribeRunCode` / `canonicalizeToolCalls` | 默认开启；允许缺少外层摘要的 `run_code` 执行，并修复 schema 可唯一确认的顶层 native 工具误调用。 |
 | REPL 语法 | `bindingUpdates` | 默认 `stateful`；同作用域的声明与赋值更新变量、函数、类和导入。选择 `protected` 后保护新建 const/import，并检测跨 cell 重声明。两种策略均支持静态 import/export。 |
 | 状态与恢复 | `durableReplay` / `tipsEnabled` | 默认开启；控制 worker 重启后的状态恢复与失败恢复提示。 |
@@ -49,9 +54,11 @@ Client 按数据、传输、注册与视图分文件，沿用既有 `createX(Rea
 
 旧配置的五个开关（`looseTopLevelRedeclarations`、`looseTopLevelFunctionClassRedeclarations`、`autoRewriteImports`、`autoStripExports`、`autoSplitRedeclarations`）先由共享 resolver 迁移。完整策略映射到 `stateful` 或 `protected`；混合选择保留显式兼容态，只有该状态才显示旧控件。兼容态的统一策略控件显示“沿用旧版设置（尚未迁移）”，可直接选择“允许重声明和覆盖”或“启用名称保护”；选择后一次写入同时保存 `bindingUpdates` 并清除兼容标记，随后执行和模型指引采用相同的新语言策略，设置页恢复统一开关。仅查看设置不触发写入。
 
+能力 JSON 字段在输入期间保留草稿，包括尚未构成合法 JSON 的中间文本；失焦时才尝试校验和保存，失败保留文本并显示错误。方案展示通过公共能力 RPC 读取当前会话的选择原因、覆盖率、预算超额和待刷新状态，保存配置本身不等于旧会话已更新。
+
 ## enabled 开关与正文功能标记
 
-所有字段都是实时设置：Host 在 settings watch 中安装、卸载或重配置 runtime。已提交的 cell 固定使用提交时的配置快照，运行中的更新从随后提交的 cell 开始使用；这不会替换 session-bound REPL 或已有 binding。`maxOldGenerationSizeMb` 在活动 worker 存在时因 Node 的创建期限制而拒绝并回滚，其他可重配置字段照常交给 owner。关闭后唯一的宿主副作用是注册 settings 命名空间，
+保存设置后，Host 在 settings watch 中安装、卸载或重配置对应 owner。能力管理配置用于新会话；已有会话保持冻结方案，执行 `/capabilities refresh` 后才同步说明、发现与执行成员。其他可重配置字段即时生效。已提交的 cell 固定使用提交时的配置快照，运行中的更新从随后提交的 cell 开始使用；这不会替换 session-bound REPL 或已有 binding。`maxOldGenerationSizeMb` 在活动 worker 存在时因 Node 的创建期限制而拒绝并回滚，其他可重配置字段照常交给 owner。关闭后唯一的宿主副作用是注册 settings 命名空间，
 保证设置卡片仍然可读；此时只有 `enabled` 可写，其他控件被禁用。运行时重配置失败时回滚到上一次已应用值。
 
 `cordisToolsEnabled` 默认关闭并即时生效。它不切换 preset，而是把官方 Cordis 工具、owner guidance 与 `cordis-plugin-development` Skill 作为一个 agent-scoped mount 加入或移出同时暴露 `run_code`、`skill` 工具与 preset/Skill service 的 PTC agent；顶层仍为 `run_code` / `edit_run_code`，普通 agent 不继承。暴露面齐全但挂载失败时，启用会完整回滚；agent scope 缺少 companion surface 时只是延后，不报错也不发布。完整运行要求见 [运行时参考](runtime-reference.md)。

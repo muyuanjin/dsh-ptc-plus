@@ -153,6 +153,18 @@ test('materializes only the selected provider before neutralizing settings', asy
     { ...runtime }, '/unused', options), /default DSH settings-file/)
 })
 
+test('current profile settings resolves its provider without reading removed settings.yaml layers', async () => {
+  const provider = { api: 'openai-completions', baseURL: 'https://example.invalid', models: [{ id: 'model' }] }
+  const rows = [{ id: 'settings', name: '@deepseek-ai/dsh-settings' }, {
+    id: 'llm-pi-ai', config: { providers: { provider } },
+  }]
+  const options = { Config: value => value, readFile() { throw new Error('stale settings must not be read') } }
+  const selected = await resolveHeadlessProvider(rows, { ...runtime }, '/unused', options)
+  assert.deepEqual(selected.providerConfig, { ...provider, apiKeyEnv: runtime.apiKeyEnv })
+  await assert.rejects(resolveHeadlessProvider(rows.map(row => row.id === 'llm-pi-ai' ? { ...row, config: {} } : row),
+    { ...runtime }, '/unused', options), /selected provider must be configured/)
+})
+
 test('requires provider-specific routing headers before paid model work', async () => {
   const rows = [...configRows(), { id: 'settings', name: '@deepseek-ai/dsh-settings-file' }, {
     id: 'llm-pi-ai', config: { providers: {

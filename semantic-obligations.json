@@ -1,24 +1,88 @@
 {
   "schema": "dsh-semantic-obligations/v1",
-  "languageGenerations": ["legacy-v1", "protected-v1", "stateful-v1"],
-  "moduleTransforms": ["amaro@1.1.11", "protected-module-v1+amaro@1.1.11", "stateful-module-v1+amaro@1.1.11", "stateful-module-v2+amaro@1.1.11"],
+  "languageGenerations": [
+    "legacy-v1",
+    "protected-v1",
+    "stateful-v1"
+  ],
+  "moduleTransforms": [
+    "amaro@1.1.11",
+    "protected-module-v1+amaro@1.1.11",
+    "stateful-module-v1+amaro@1.1.11",
+    "stateful-module-v2+amaro@1.1.11"
+  ],
   "obligations": [
     {
       "id": "language-frontend",
       "disposition": "intentional-difference",
       "owner": "Cell parsing, analysis, normalization and rewrite contracts",
       "implementation": [
-        "internal/ast-traversal.js", "internal/binding-declaration-contract.js", "internal/binding-pattern-traversal.js", "internal/binding-pattern.js", "internal/binding-source-analysis.js", "internal/binding-update-policy.js", "internal/cell-analysis-contract.js", "internal/cell-analysis.js", "internal/cell-error.js", "internal/cell-parser.js", "internal/cell-rewriter.js", "internal/language-semantics.js", "internal/legacy-cell-analysis.js", "internal/legacy-cell-parser.js", "internal/legacy-cell-rewriter.js", "internal/legacy-repl-convenience.js", "internal/repl-convenience.js", "internal/repl-rewrite-contract.js", "internal/repl-scope-normalizer.js", "internal/source-position-map.js", "internal/typescript-transform.js", "internal/validated-parse-repair.js"
+        "internal/ast-traversal.js",
+        "internal/binding-declaration-contract.js",
+        "internal/binding-pattern-traversal.js",
+        "internal/binding-pattern.js",
+        "internal/binding-source-analysis.js",
+        "internal/binding-update-policy.js",
+        "internal/cell-analysis-contract.js",
+        "internal/cell-analysis.js",
+        "internal/cell-error.js",
+        "internal/cell-parser.js",
+        "internal/cell-rewriter.js",
+        "internal/language-semantics.js",
+        "internal/legacy-cell-analysis.js",
+        "internal/legacy-cell-parser.js",
+        "internal/legacy-cell-rewriter.js",
+        "internal/legacy-repl-convenience.js",
+        "internal/repl-convenience.js",
+        "internal/repl-rewrite-contract.js",
+        "internal/repl-scope-normalizer.js",
+        "internal/source-position-map.js",
+        "internal/typescript-transform.js",
+        "internal/validated-parse-repair.js"
       ],
       "contract": "docs/stateful-binding-updates-proposal.md",
-      "observables": ["scope", "declaration ownership", "initialization", "completion", "source positions", "unique target-bound EOF repair within two closing tokens"],
-      "entries": ["root cell", "function", "eval", "Function", "module"],
-      "lifecycle": ["prepare", "execute", "failure continuation"],
-      "generations": ["legacy-v1", "protected-v1", "stateful-v1"],
-      "platforms": ["Node 22.19+", "Node 24+"],
-      "consumers": ["compiler-and-callables", "persistence-and-recovery"],
+      "observables": [
+        "scope",
+        "declaration ownership",
+        "initialization",
+        "completion",
+        "source positions",
+        "unique target-bound EOF repair within two closing tokens"
+      ],
+      "entries": [
+        "root cell",
+        "function",
+        "eval",
+        "Function",
+        "module"
+      ],
+      "lifecycle": [
+        "prepare",
+        "execute",
+        "failure continuation"
+      ],
+      "generations": [
+        "legacy-v1",
+        "protected-v1",
+        "stateful-v1"
+      ],
+      "platforms": [
+        "Node 22.19+",
+        "Node 24+"
+      ],
+      "consumers": [
+        "compiler-and-callables",
+        "persistence-and-recovery"
+      ],
       "oracle": "native Node for preserved JavaScript; explicit PTC dialect assertions for declared differences",
-      "evidence": ["test/semantic-test262.test.js", "test/semantic-dialect.test.js", "test/stateful-source-line-mapping.test.js", "test/validated-parse-repair.test.js", "test/plugin-prompt-edit-execution.test.js", "test/stateful-root-bindings.test.js"],
+      "evidence": [
+        "test/semantic-test262.test.js",
+        "test/semantic-dialect.test.js",
+        "test/stateful-source-line-mapping.test.js",
+        "test/validated-parse-repair.test.js",
+        "test/plugin-prompt-edit-execution.test.js",
+        "test/stateful-root-bindings.test.js"
+      ],
       "dependsOn": []
     },
     {
@@ -26,90 +90,698 @@
       "disposition": "preserved",
       "owner": "Compiler service, root/module compilers and callable reconstruction",
       "implementation": [
-        "internal/callable-definition-environment.js", "internal/callable-source-catalog.js", "internal/callable-source-encoding.js", "internal/callable-source-facts.js", "internal/callable-source-format.js", "internal/callable-source-lowering.js", "internal/commonjs-export-evidence.js", "internal/commonjs-source-evidence.js", "internal/compiler-amaro.cjs", "internal/compiler-compression.js", "internal/compiler-data.js", "internal/compiler-descriptors.js", "internal/compiler-dynamic-cache.js", "internal/compiler-entry.js", "internal/compiler-generated-names.js", "internal/compiler-intrinsics.js", "internal/compiler-module-links.js", "internal/compiler-operations.js", "internal/compiler-platform-factory.js", "internal/compiler-platform.js", "internal/compiler-record-roles.js", "internal/compiler-region-output.js", "internal/compiler-resource-lowering.js", "internal/compiler-scope-facts.js", "internal/compiler-service.js", "internal/compiler-source-cache.js", "internal/compiler-source-pieces.js", "internal/compiler-source-regions.js", "internal/compiler-storage-source.js", "internal/compiler-text.js", "internal/compiler-typescript.cjs", "internal/dynamic-binding-evidence.js", "internal/dynamic-environment-compiler.js", "internal/dynamic-environment-integration.js", "internal/dynamic-scope-analysis.js", "internal/managed-module-operations.js", "internal/module-compilation.js", "internal/module-policy.js", "internal/module-transform-contract.js", "internal/native-await-declarations.js", "internal/native-root-compilation.js", "internal/stateful-module-compiler.js", "internal/stateful-root-compiler.js"
+        "internal/callable-definition-environment.js",
+        "internal/callable-source-catalog.js",
+        "internal/callable-source-encoding.js",
+        "internal/callable-source-facts.js",
+        "internal/callable-source-format.js",
+        "internal/callable-source-lowering.js",
+        "internal/commonjs-export-evidence.js",
+        "internal/commonjs-source-evidence.js",
+        "internal/compiler-amaro.cjs",
+        "internal/compiler-compression.js",
+        "internal/compiler-data.js",
+        "internal/compiler-descriptors.js",
+        "internal/compiler-dynamic-cache.js",
+        "internal/compiler-entry.js",
+        "internal/compiler-generated-names.js",
+        "internal/compiler-intrinsics.js",
+        "internal/compiler-module-links.js",
+        "internal/compiler-operations.js",
+        "internal/compiler-platform-factory.js",
+        "internal/compiler-platform.js",
+        "internal/compiler-record-roles.js",
+        "internal/compiler-region-output.js",
+        "internal/compiler-resource-lowering.js",
+        "internal/compiler-scope-facts.js",
+        "internal/compiler-service.js",
+        "internal/compiler-source-cache.js",
+        "internal/compiler-source-pieces.js",
+        "internal/compiler-source-regions.js",
+        "internal/compiler-storage-source.js",
+        "internal/compiler-text.js",
+        "internal/compiler-typescript.cjs",
+        "internal/dynamic-binding-evidence.js",
+        "internal/dynamic-environment-compiler.js",
+        "internal/dynamic-environment-integration.js",
+        "internal/dynamic-scope-analysis.js",
+        "internal/managed-module-operations.js",
+        "internal/module-compilation.js",
+        "internal/module-policy.js",
+        "internal/module-transform-contract.js",
+        "internal/native-await-declarations.js",
+        "internal/native-root-compilation.js",
+        "internal/stateful-module-compiler.js",
+        "internal/stateful-root-compiler.js"
       ],
       "contract": "docs/adr/0025-use-versioned-logical-binding-identities.md",
-      "observables": ["callable source identity", "lexical environment", "module links", "generated names", "intrinsic isolation", "deployment environment cannot select compiler cache files", "dependency preprocessing requires a complete node_modules path segment", "cold platform byte codecs bypass caller typed-array length protocols", "testing bootstrap preserves ordinary worker argv entry identity"],
-      "entries": ["root", "nested callable", "eval", "Function", "static module", "dynamic module", "test-only compiler instrumentation"],
-      "lifecycle": ["compile", "instantiate", "reuse", "reconstruct"],
-      "generations": ["legacy-v1", "protected-v1", "stateful-v1"],
-      "platforms": ["Node 22.19+", "Node 24+"],
-      "consumers": ["execution-kernel", "user-bindings-and-client"],
+      "observables": [
+        "callable source identity",
+        "lexical environment",
+        "module links",
+        "generated names",
+        "intrinsic isolation",
+        "deployment environment cannot select compiler cache files",
+        "dependency preprocessing requires a complete node_modules path segment",
+        "cold platform byte codecs bypass caller typed-array length protocols",
+        "testing bootstrap preserves ordinary worker argv entry identity"
+      ],
+      "entries": [
+        "root",
+        "nested callable",
+        "eval",
+        "Function",
+        "static module",
+        "dynamic module",
+        "test-only compiler instrumentation"
+      ],
+      "lifecycle": [
+        "compile",
+        "instantiate",
+        "reuse",
+        "reconstruct"
+      ],
+      "generations": [
+        "legacy-v1",
+        "protected-v1",
+        "stateful-v1"
+      ],
+      "platforms": [
+        "Node 22.19+",
+        "Node 24+"
+      ],
+      "consumers": [
+        "execution-kernel",
+        "user-bindings-and-client"
+      ],
       "oracle": "native execution for preserved source plus compiler-independent source and identity assertions",
-      "evidence": ["test/semantic-boundaries.test.js", "test/semantic-boundary-fixture.js", "test/semantic-boundary-storage.test.js", "test/semantic-boundary-promises.test.js", "test/semantic-boundary-reflection.test.js", "test/stateful-callable-source-identity.test.js", "test/stateful-module-callable-sources.test.js", "test/compiler-service.test.js", "test/coverage/compiler-coverage.test.js", "test/compiler-platform.test.js", "scripts/compiler-assets.mjs", "scripts/compiler-bundle.mjs", "scripts/instrument-compiler-coverage.mjs", "scripts/covered-worker-entry.mjs", "scripts/instrument-worker-coverage.mjs"],
-      "dependsOn": ["language-frontend"]
+      "evidence": [
+        "test/semantic-boundaries.test.js",
+        "test/semantic-boundary-fixture.js",
+        "test/semantic-boundary-storage.test.js",
+        "test/semantic-boundary-promises.test.js",
+        "test/semantic-boundary-reflection.test.js",
+        "test/stateful-callable-source-identity.test.js",
+        "test/stateful-module-callable-sources.test.js",
+        "test/compiler-service.test.js",
+        "test/coverage/compiler-coverage.test.js",
+        "test/compiler-platform.test.js",
+        "scripts/compiler-assets.mjs",
+        "scripts/compiler-bundle.mjs",
+        "scripts/instrument-compiler-coverage.mjs",
+        "scripts/covered-worker-entry.mjs",
+        "scripts/instrument-worker-coverage.mjs"
+      ],
+      "dependsOn": [
+        "language-frontend"
+      ]
     },
     {
       "id": "execution-kernel",
       "disposition": "preserved",
       "owner": "Killable worker execution, realm mutation, settlement and value/output transport",
       "implementation": [
-        "internal/async-local-storage-intrinsics.js", "internal/bounded-worker-round.js", "internal/builtin-esm-sync.js", "internal/cell-completion.js", "internal/diagnostic.js", "internal/dynamic-environment-runtime.js", "internal/dynamic-native-runtime.js", "internal/failure-reporting.js", "internal/isolated-worker.js", "internal/kernel-child.js", "internal/kernel-worker.js", "internal/module-runtime-platform.js", "internal/native-root-dynamic.js", "internal/program-bindings.js", "internal/repl-value-observer.js", "internal/runtime-intrinsics.js", "internal/runtime-messages.js", "internal/session-cell-executor.js", "internal/stateful-module-runtime.js", "internal/stateful-root-runtime.js", "internal/value-wire-schema.js", "internal/value-wire.js", "internal/worker-client.js", "internal/worker-cwd-virtualization.js", "internal/worker-environment.js", "internal/worker-output-capture.js", "internal/worker-output-fence.js", "internal/worker-output-relay.js", "internal/worker-realm-surfaces.js", "internal/worker-repl-realm.js", "internal/worker-shutdown.js"
+        "internal/async-local-storage-intrinsics.js",
+        "internal/bounded-worker-round.js",
+        "internal/builtin-esm-sync.js",
+        "internal/cell-completion.js",
+        "internal/diagnostic.js",
+        "internal/dynamic-environment-runtime.js",
+        "internal/dynamic-native-runtime.js",
+        "internal/failure-reporting.js",
+        "internal/isolated-worker.js",
+        "internal/kernel-child.js",
+        "internal/kernel-worker.js",
+        "internal/module-runtime-platform.js",
+        "internal/native-root-dynamic.js",
+        "internal/program-bindings.js",
+        "internal/repl-value-observer.js",
+        "internal/runtime-intrinsics.js",
+        "internal/runtime-messages.js",
+        "internal/session-cell-executor.js",
+        "internal/stateful-module-runtime.js",
+        "internal/stateful-root-runtime.js",
+        "internal/value-wire-schema.js",
+        "internal/value-wire.js",
+        "internal/worker-client.js",
+        "internal/worker-cwd-virtualization.js",
+        "internal/worker-environment.js",
+        "internal/worker-output-capture.js",
+        "internal/worker-output-fence.js",
+        "internal/worker-output-relay.js",
+        "internal/worker-realm-surfaces.js",
+        "internal/worker-repl-realm.js",
+        "internal/worker-shutdown.js"
       ],
       "contract": "docs/runtime-reference.md",
-      "observables": ["realm identity", "descriptor behavior", "volatile checkpoint rejection preserves live state and reports recorded cause without unconditional restore", "generic execution help follows committed state without inferring initializer provenance", "settlement ordering", "output attribution", "canonical values", "codec-owned unsupported/shape/budget failures with safe brand classification and boundary dispatch facts", "resource bounds", "absolute worker entry identity for URL, file URL string and filename", "testing entry restoration uses the classified realm write boundary"],
-      "entries": ["cell worker", "helper process", "host transport", "binding console worker"],
-      "lifecycle": ["startup", "round", "late output", "timeout", "reset", "shutdown"],
-      "generations": ["legacy-v1", "protected-v1", "stateful-v1"],
-      "platforms": ["Windows", "WSL", "POSIX", "Node 22.19+", "Node 24+"],
-      "consumers": ["persistence-and-recovery", "host-integration", "user-bindings-and-client"],
+      "observables": [
+        "realm identity",
+        "descriptor behavior",
+        "volatile checkpoint rejection preserves live state and reports recorded cause without unconditional restore",
+        "generic execution help follows committed state without inferring initializer provenance",
+        "settlement ordering",
+        "output attribution",
+        "canonical values",
+        "codec-owned unsupported/shape/budget failures with safe brand classification and boundary dispatch facts",
+        "resource bounds",
+        "absolute worker entry identity for URL, file URL string and filename",
+        "testing entry restoration uses the classified realm write boundary"
+      ],
+      "entries": [
+        "cell worker",
+        "helper process",
+        "host transport",
+        "binding console worker"
+      ],
+      "lifecycle": [
+        "startup",
+        "round",
+        "late output",
+        "timeout",
+        "reset",
+        "shutdown"
+      ],
+      "generations": [
+        "legacy-v1",
+        "protected-v1",
+        "stateful-v1"
+      ],
+      "platforms": [
+        "Windows",
+        "WSL",
+        "POSIX",
+        "Node 22.19+",
+        "Node 24+"
+      ],
+      "consumers": [
+        "persistence-and-recovery",
+        "host-integration",
+        "user-bindings-and-client"
+      ],
       "oracle": "plain Node worker references, protocol state assertions and canonical wire models",
-      "evidence": ["test/worker-realm-surfaces.test.js", "test/worker-output-capture.test.js", "test/kernel-worker-settlement.test.js", "test/session-cell-executor.test.js", "test/plugin-durability-recovery.test.js", "test/plugin-evaluator-values.test.js", "test/value-wire.test.js", "test/isolated-worker.test.js", "test/isolated-helper.test.js", "test/coverage/isolated-helper-coverage.test.js", "test/coverage/subprocess-environment-coverage.test.js", "test/compiler-service.test.js", "test/coverage/compiler-coverage.test.js"],
-      "dependsOn": ["compiler-and-callables"]
+      "evidence": [
+        "test/worker-realm-surfaces.test.js",
+        "test/worker-output-capture.test.js",
+        "test/kernel-worker-settlement.test.js",
+        "test/session-cell-executor.test.js",
+        "test/plugin-durability-recovery.test.js",
+        "test/plugin-evaluator-values.test.js",
+        "test/value-wire.test.js",
+        "test/isolated-worker.test.js",
+        "test/isolated-helper.test.js",
+        "test/coverage/isolated-helper-coverage.test.js",
+        "test/coverage/subprocess-environment-coverage.test.js",
+        "test/compiler-service.test.js",
+        "test/coverage/compiler-coverage.test.js"
+      ],
+      "dependsOn": [
+        "compiler-and-callables"
+      ]
     },
     {
       "id": "persistence-and-recovery",
       "disposition": "intentional-difference",
       "owner": "Journal schema, recovery, migration and verified-frontier contraction",
       "implementation": [
-        "internal/legacy-binding-catalog.js", "internal/record-utils.js", "internal/recovery-tips.js", "internal/session-journal-recovery.js", "internal/session-journal-schema.js", "internal/session-journal.js", "internal/session-log-view.js", "internal/session-state.js", "scripts/migrate-session-log.mjs"
+        "internal/legacy-binding-catalog.js",
+        "internal/record-utils.js",
+        "internal/recovery-tips.js",
+        "internal/session-journal-recovery.js",
+        "internal/session-journal-schema.js",
+        "internal/session-journal.js",
+        "internal/session-log-view.js",
+        "internal/session-state.js",
+        "scripts/migrate-session-log.mjs"
       ],
       "contract": "docs/durability-design.md",
-      "observables": ["recorded generations", "proven ancestry", "replay effects", "frontier contraction", "current-cell availability", "shared single-event timeline", "host-only JSON checkpoint facts", "ordered surface replacement", "incremental notice cooldown and escalation", "prune republication preserves settlement chronology", "typed checkpoint admission before suffix application", "selection chronology derived from settlement publications and retained clear history", "edit source and claim eligibility derived at dispatch from first-observed settlements", "persistent edit claims match reconstructed dispatch and settlement lifecycles", "ordinary result deduplication requires matching first observation evidence", "complete checkpoint timeline reconstruction uses the live transition and normalized event facts", "ordered visibility and presentation caches reconstruct from public surface and message inputs", "settlement and journal cache agreement before transcript publication", "pending and seen identity caches derive from retained normalized event facts", "active prune window requires public prune and adjacent result provenance", "turn reset retires both directions of pending edit claims", "tip delivery positions survive earlier reconstructed success"],
-      "entries": ["live settlement", "cold replay", "damaged history", "migration", "sessionProjections", "normalized timeline fact reconstruction for checkpoint admission", "synchronous prompt consumers"],
-      "lifecycle": ["append", "recover", "contract", "reset", "checkpoint restore", "fork", "runtime disabled", "plugin unload"],
-      "generations": ["journal-v1..v10", "legacy-v1", "protected-v1", "stateful-v1", "ptcPlusSessionLog-state-v1..v8"],
-      "platforms": ["all supported hosts"],
-      "consumers": ["host-integration", "user-bindings-and-client"],
+      "observables": [
+        "recorded generations",
+        "proven ancestry",
+        "replay effects",
+        "frontier contraction",
+        "current-cell availability",
+        "shared single-event timeline",
+        "host-only JSON checkpoint facts",
+        "ordered surface replacement",
+        "incremental notice cooldown and escalation",
+        "prune republication preserves settlement chronology",
+        "typed checkpoint admission before suffix application",
+        "selection chronology derived from settlement publications and retained clear history",
+        "edit source and claim eligibility derived at dispatch from first-observed settlements",
+        "persistent edit claims match reconstructed dispatch and settlement lifecycles",
+        "ordinary result deduplication requires matching first observation evidence",
+        "complete checkpoint timeline reconstruction uses the live transition and normalized event facts",
+        "ordered visibility and presentation caches reconstruct from public surface and message inputs",
+        "settlement and journal cache agreement before transcript publication",
+        "pending and seen identity caches derive from retained normalized event facts",
+        "active prune window requires public prune and adjacent result provenance",
+        "turn reset retires both directions of pending edit claims",
+        "tip delivery positions survive earlier reconstructed success"
+      ],
+      "entries": [
+        "live settlement",
+        "cold replay",
+        "damaged history",
+        "migration",
+        "sessionProjections",
+        "normalized timeline fact reconstruction for checkpoint admission",
+        "synchronous prompt consumers"
+      ],
+      "lifecycle": [
+        "append",
+        "recover",
+        "contract",
+        "reset",
+        "checkpoint restore",
+        "fork",
+        "runtime disabled",
+        "plugin unload"
+      ],
+      "generations": [
+        "journal-v1..v10",
+        "legacy-v1",
+        "protected-v1",
+        "stateful-v1",
+        "ptcPlusSessionLog-state-v1..v8"
+      ],
+      "platforms": [
+        "all supported hosts"
+      ],
+      "consumers": [
+        "host-integration",
+        "user-bindings-and-client"
+      ],
       "oracle": "closed journal schema and independently constructed damaged-history fixtures",
-      "evidence": ["test/session-journal.test.js", "test/session-recovery-boundary-faults.test.js", "test/user-bindings-recovery.test.js", "test/runtime-messages.test.js", "test/recovery-tips.test.js"],
-      "dependsOn": ["language-frontend", "compiler-and-callables", "execution-kernel"]
+      "evidence": [
+        "test/session-journal.test.js",
+        "test/session-recovery-boundary-faults.test.js",
+        "test/user-bindings-recovery.test.js",
+        "test/runtime-messages.test.js",
+        "test/recovery-tips.test.js"
+      ],
+      "dependsOn": [
+        "language-frontend",
+        "compiler-and-callables",
+        "execution-kernel"
+      ]
     },
     {
       "id": "host-integration",
       "disposition": "bounded-external",
       "owner": "Official DSH extension seam, direct tools, settings, RPC and Cordis lifecycle",
       "implementation": [
-        "index.js", "internal/binding-descriptors.js", "internal/config-spec.js", "internal/cordis-tools-owner.js", "internal/direct-surface-owner.js", "internal/dynamic-native-calls.js", "internal/edit-transport-owner.js", "internal/execution-provider-owner.js", "internal/execution-seam-compat.js", "internal/host-rpc.js", "internal/message-sources.js", "internal/rejected-cell-editor.js", "internal/rpc-contract.js", "internal/run-code-description.js", "internal/runtime-bridge-owner.js", "internal/runtime-config.js", "internal/runtime-contexts.js", "internal/sdk-projection.js", "internal/session-events.js", "internal/session-runtime.js", "internal/settings-compat.js", "internal/tool-call-canonicalizer.js", "internal/typert-codec-compat.js"
+        "index.js",
+        "internal/binding-descriptors.js",
+        "internal/config-spec.js",
+        "internal/cordis-tools-owner.js",
+        "internal/direct-surface-owner.js",
+        "internal/dynamic-native-calls.js",
+        "internal/edit-transport-owner.js",
+        "internal/execution-provider-owner.js",
+        "internal/execution-seam-compat.js",
+        "internal/host-rpc.js",
+        "internal/message-sources.js",
+        "internal/rejected-cell-editor.js",
+        "internal/rpc-contract.js",
+        "internal/run-code-description.js",
+        "internal/runtime-bridge-owner.js",
+        "internal/runtime-config.js",
+        "internal/runtime-contexts.js",
+        "internal/sdk-projection.js",
+        "internal/session-events.js",
+        "internal/session-runtime.js",
+        "internal/settings-compat.js",
+        "internal/tool-call-canonicalizer.js",
+        "internal/typert-codec-compat.js"
       ],
       "contract": "CONTEXT.md",
-      "observables": ["tool identity", "selected cell grammar agrees across direct schema, stable SDK introduction and REPL guidance with native member guidance preserved", "public provider registration without original-instance mutation", "activation reads the current original generation language", "enabled runtime follows source language qualification and rejects mismatch before cleanup", "bundle removal restores the configured original provider", "host policy authority", "active Host package provenance", "companion resolution reads the current Host package service after preset resolution", "registration disposal", "edit identity", "RPC failure isolation", "durable message source admission", "original entry resolution in the owning profile Include tree", "resolved execution spec identity without a second resolution", "generation-specific settings compensation identity", "run and edit submission admission before the first asynchronous observation", "disposal invalidates pending preparation", "presentation callback dynamic selection and descriptor restoration", "delegated submissions own their public session observation and composite identity", "independent delegated sessions do not inherit native child execution handoffs", "plugin-owned isolated completion preserves value graphs without decoding public projection or historical strings and avoids unused renderer budgets", "stable guidance separates live values, supported direct observations, explicit JSON loss and native JSON contracts", "direct Node cell computation preserves the external execution-world choice", "consecutive recovery contractions emit one full notice outside failed captured output", "evaluation-only public final canonical return observer preserves native return type/value independently of renderer text, with bounded identity evidence and missing-evidence contraction", "evaluation observer insertion uses the official profile patch composer in both arms rather than updating an absent entry", "evaluation observer uses public Agent session identity and retains formally linked child canonical sidecars after execution scratch cleanup"],
-      "entries": ["run_code", "edit_run_code", "Cordis plugin", "profile Include composition", "client RPC", "runtime message", "binding authoring and action message", "argument diagnostic inbox message", "A/B evaluation canonical tools/result observer", "headless evaluation overlay insertion", "A/B family evidence lifecycle through abRunPaths"],
-      "lifecycle": ["register", "invoke", "reconfigure", "dispose", "unavailable"],
-      "generations": ["official latest and next DSH public surfaces", "preceding and current typert codecs"],
-      "platforms": ["official DSH release", "Electron host", "Node host"],
-      "consumers": ["DSH agent loop", "client", "user-bindings-and-client"],
-      "oracle": "public host contract fixtures, lifecycle fakes and official session codec round trips; external host internals are explicitly excluded",
-      "evidence": ["scripts/dsh-cordis-companion-smoke.mjs", "scripts/dsh-execution-seam-smoke.mjs", "scripts/dsh-host-contract-suite.mjs", "scripts/dsh-message-persistence-smoke.mjs", "scripts/dsh-rpc-contract-smoke.mjs", "test/direct-surface-policy.test.js", "test/sdk-projection.test.js", "test/plugin-prompt-edit.test.js", "test/plugin-program-bindings.test.js", "test/package-contract.test.js", "test/plugin-native-call-transport.test.js", "test/plugin-lifecycle.test.js", "test/plugin-edit-settlement.test.js", "test/runtime-bridge-owner-dispose.test.js", "test/plugin-durability-recovery-boundaries.test.js", "test/settings-compat.test.js", "test/stateful-legacy-root-transitions.test.js", "test/runtime-messages.test.js", "test/binding-workflow.test.js", "test/execution-seam-compat.test.js", "test/execution-provider-owner.test.js", "scripts/evaluation-tool-results.mjs", "scripts/headless-host.mjs", "test/evaluation-tool-results.test.js", "test/ab-headless-trajectories.test.js", "test/headless-host.test.js", "scripts/deterministic-test-groups.mjs", "test/deterministic-test-groups.test.js", "scripts/test-suite-files.mjs", "test/test-suite-files.test.js", "test/verification-workflow.test.js", "scripts/client-focused-tests.mjs"],
-      "dependsOn": ["execution-kernel", "persistence-and-recovery"]
+      "observables": [
+        "tool identity",
+        "whole discovery contracts within serialized UTF-8 byte budgets with catalog-bound continuation and explicit oversized references",
+        "request-local discovery index shares the cell lease and recorded-value replay",
+        "selected cell grammar agrees across direct schema, stable SDK introduction and REPL guidance with native member guidance preserved",
+        "public provider registration without original-instance mutation",
+        "activation reads the current original generation language",
+        "enabled runtime follows source language qualification and rejects mismatch before cleanup",
+        "bundle removal restores the configured original provider",
+        "host policy authority",
+        "active Host package provenance",
+        "companion resolution reads the current Host package service after preset resolution",
+        "registration disposal",
+        "edit identity",
+        "RPC failure isolation",
+        "durable message source admission",
+        "original entry resolution in the owning profile Include tree",
+        "resolved execution spec identity without a second resolution",
+        "request-only codeRuntime public Loader composition preserves request identity and original lifecycle",
+        "generation-specific settings compensation identity",
+        "run and edit submission admission before the first asynchronous observation",
+        "disposal invalidates pending preparation",
+        "presentation callback dynamic selection and descriptor restoration",
+        "delegated submissions own their public session observation and composite identity",
+        "independent delegated sessions do not inherit native child execution handoffs",
+        "plugin-owned isolated completion preserves value graphs without decoding public projection or historical strings and avoids unused renderer budgets",
+        "stable guidance separates live values, supported direct observations, explicit JSON loss and native JSON contracts",
+        "direct Node cell computation preserves the external execution-world choice",
+        "consecutive recovery contractions emit one full notice outside failed captured output",
+        "evaluation-only public final canonical return observer preserves native return type/value independently of renderer text, with bounded identity evidence and missing-evidence contraction",
+        "evaluation observer insertion uses the official profile patch composer in both arms rather than updating an absent entry",
+        "evaluation observer uses public Agent session identity and retains formally linked child canonical sidecars after execution scratch cleanup"
+      ],
+      "entries": [
+        "run_code",
+        "edit_run_code",
+        "capabilities.search",
+        "Cordis plugin",
+        "profile Include composition",
+        "client RPC",
+        "runtime message",
+        "binding authoring and action message",
+        "argument diagnostic inbox message",
+        "A/B evaluation canonical tools/result observer",
+        "headless evaluation overlay insertion",
+        "A/B family evidence lifecycle through abRunPaths"
+      ],
+      "lifecycle": [
+        "register",
+        "invoke",
+        "reconfigure",
+        "dispose",
+        "unavailable"
+      ],
+      "generations": [
+        "official latest and next DSH public surfaces",
+        "preceding and current typert codecs"
+      ],
+      "platforms": [
+        "official DSH release",
+        "Electron host",
+        "Node host"
+      ],
+      "consumers": [
+        "DSH agent loop",
+        "client",
+        "user-bindings-and-client"
+      ],
+      "oracle": "public host contract fixtures, lifecycle fakes, official session codec round trips and request-local discovery budgets; external host internals are explicitly excluded",
+      "evidence": [
+        "scripts/dsh-cordis-companion-smoke.mjs",
+        "scripts/dsh-execution-seam-smoke.mjs",
+        "scripts/dsh-host-contract-suite.mjs",
+        "scripts/dsh-message-persistence-smoke.mjs",
+        "scripts/dsh-rpc-contract-smoke.mjs",
+        "test/context-host-contract.test.js",
+        "test/context-result-preview.test.js",
+        "test/program-bindings.test.js",
+        "test/direct-surface-policy.test.js",
+        "test/sdk-projection.test.js",
+        "test/plugin-prompt-edit.test.js",
+        "test/plugin-program-bindings.test.js",
+        "test/package-contract.test.js",
+        "test/plugin-native-call-transport.test.js",
+        "test/plugin-lifecycle.test.js",
+        "test/plugin-edit-settlement.test.js",
+        "test/runtime-bridge-owner-dispose.test.js",
+        "test/plugin-durability-recovery-boundaries.test.js",
+        "test/settings-compat.test.js",
+        "test/stateful-legacy-root-transitions.test.js",
+        "test/runtime-messages.test.js",
+        "test/binding-workflow.test.js",
+        "test/execution-seam-compat.test.js",
+        "test/execution-provider-owner.test.js",
+        "scripts/evaluation-tool-results.mjs",
+        "scripts/headless-host.mjs",
+        "test/evaluation-tool-results.test.js",
+        "test/ab-headless-trajectories.test.js",
+        "test/headless-host.test.js",
+        "scripts/deterministic-test-groups.mjs",
+        "test/deterministic-test-groups.test.js",
+        "scripts/test-suite-files.mjs",
+        "test/test-suite-files.test.js",
+        "test/verification-workflow.test.js",
+        "scripts/client-focused-tests.mjs"
+      ],
+      "dependsOn": [
+        "execution-kernel",
+        "persistence-and-recovery"
+      ]
+    },
+    {
+      "id": "capability-planning",
+      "disposition": "bounded-external",
+      "owner": "Capability environment owns frozen session plan projection across prompt, discovery and compiled tools",
+      "implementation": [
+        "internal/capability-plan.js",
+        "internal/capability-environment.js"
+      ],
+      "contract": "docs/capability-planning-components.md",
+      "observables": [
+        "independent management and statistics inputs",
+        "manual selection precedence",
+        "editable baseline input",
+        "workspace-first coverage fallback",
+        "whole rendered UTF-8 contract budget and explicit overage",
+        "bounded directory",
+        "immutable read model without runtime authority",
+        "closed compiled members and empty shared loaders",
+        "stable restored and refreshed plans",
+        "persistent expanded and used API evidence",
+        "ordered surface description deduplication",
+        "bounded capability context accounting through formal surface replacement",
+        "validated initial capability plan matching resolved A/B treatment",
+        "current public Skill and MCP owner removal contracts frozen availability",
+        "additive description subset accounting and exact resolved capability settings",
+        "current SDK input/output schemas, signature and revision agree in search and inspect; output-only changes invalidate recovery and cursors"
+      ],
+      "entries": [
+        "createCapabilityPlan",
+        "createCapabilityEnvironment",
+        "readCapabilityContextMessage",
+        "capabilityConfiguration"
+      ],
+      "lifecycle": [
+        "validate inputs",
+        "derive disclosure",
+        "freeze result",
+        "prepare",
+        "restore",
+        "refresh",
+        "project",
+        "dispose"
+      ],
+      "generations": [
+        "ptc-capability-plan/v1 deterministic plan",
+        "ptc-capability-environment/v1 persisted source-backed snapshot",
+        "ptc-capability-evidence/v1 formal result metadata"
+      ],
+      "platforms": [
+        "Node 22.19+",
+        "Node 24+"
+      ],
+      "consumers": [
+        "index.js",
+        "internal/direct-surface-owner.js",
+        "internal/runtime-bridge-owner.js",
+        "scripts/acceptance-contract.mjs",
+        "scripts/ab-headless-trajectories.mjs"
+      ],
+      "oracle": "Real ToolRuntime SDK input/output schemas and output-only revision counterexamples, real AgentLoop first-step acceptance and strict sessionFormatCatalog restoration, plus Host contract and focused program binding tests",
+      "evidence": [
+        "test/capability-plan.test.js",
+        "test/capability-statistics.test.js",
+        "test/context-host-contract.test.js",
+        "test/capability-environment.test.js",
+        "test/plugin-program-bindings.test.js",
+        "test/context-result-preview.test.js",
+        "test/expensive-acceptance.test.js",
+        "test/ab-headless-trajectories.test.js"
+      ],
+      "dependsOn": [
+        "capability-family-statistics"
+      ]
+    },
+    {
+      "id": "capability-family-statistics",
+      "disposition": "bounded-external",
+      "owner": "Capability statistics pure reducer plus locked metadata store",
+      "implementation": [
+        "internal/capability-statistics.js",
+        "internal/capability-statistics-store.js"
+      ],
+      "contract": "docs/capability-planning-components.md",
+      "observables": [
+        "one family contribution per capability",
+        "actual availability denominator",
+        "per-capability per-scope eligible windows",
+        "workspace and global deduplication",
+        "immutable qualification order",
+        "pending families excluded",
+        "incomplete evicted windows withdraw allocation evidence until settled samples refill",
+        "revision isolation",
+        "bounded state collapse without fabricated zero usage"
+      ],
+      "entries": [
+        "createCapabilityStatistics",
+        "reduceCapabilityStatistics",
+        "validateCapabilityStatistics",
+        "capabilityCoverage",
+        "CapabilityStatisticsStore"
+      ],
+      "lifecycle": [
+        "observe supplied evidence",
+        "settle",
+        "resume",
+        "revise",
+        "evict",
+        "reject corruption",
+        "collapse at capacity",
+        "locked read-modify-write",
+        "manual fallback on damage"
+      ],
+      "generations": [
+        "ptc-capability-statistics/v1 reducer state",
+        "ptc-capability-statistics-store/v1 bounded metadata file"
+      ],
+      "platforms": [
+        "Node 22.19+",
+        "Node 24+"
+      ],
+      "consumers": [
+        "internal/capability-environment.js"
+      ],
+      "oracle": "Deterministic reducer tests and atomic-store owner evidence",
+      "evidence": [
+        "test/capability-statistics.test.js",
+        "test/context-host-contract.test.js"
+      ],
+      "dependsOn": []
     },
     {
       "id": "user-bindings-and-client",
       "disposition": "intentional-difference",
       "owner": "Global User Binding storage/activation and bounded REPL client presentation",
       "implementation": [
-        "client.js", "internal/repl-memory-projection.js", "internal/repl-observation-interest.js", "internal/user-binding-authoring.js", "internal/user-binding-console-worker.js", "internal/user-binding-console.js", "internal/user-binding-draft-projection.js", "internal/user-binding-model-context.js", "internal/user-binding-runner.js", "internal/user-bindings-owner.js", "internal/user-bindings-store.js", "internal/user-bindings.js", "src/client-activity.js", "src/client-authoring-view.js", "src/client-binding-review.js", "src/client-bindings-data.js", "src/client-catalog.js", "src/client-code-editor.js", "src/client-console.js", "src/client-copy.js", "src/client-feature-gates.js", "src/client-host-compat.js", "src/client-indicator-view.js", "src/client-primitives.js", "src/client-repl-view.js", "src/client-rpc.js", "src/client-settings-view.js", "src/client-styles.js", "src/client-tool-hover.js", "src/client-tool-view.js", "src/client-transport.js", "src/client-workbench.js", "src/client.js"
+        "client.js",
+        "internal/repl-memory-projection.js",
+        "internal/repl-observation-interest.js",
+        "internal/user-binding-authoring.js",
+        "internal/user-binding-console-worker.js",
+        "internal/user-binding-console.js",
+        "internal/user-binding-draft-projection.js",
+        "internal/user-binding-model-context.js",
+        "internal/user-binding-runner.js",
+        "internal/user-bindings-owner.js",
+        "internal/user-bindings-store.js",
+        "internal/user-bindings.js",
+        "src/client-activity.js",
+        "src/client-authoring-view.js",
+        "src/client-binding-review.js",
+        "src/client-bindings-data.js",
+        "src/client-catalog.js",
+        "src/client-code-editor.js",
+        "src/client-console.js",
+        "src/client-copy.js",
+        "src/client-feature-gates.js",
+        "src/client-host-compat.js",
+        "src/client-indicator-view.js",
+        "src/client-primitives.js",
+        "src/client-repl-view.js",
+        "src/client-rpc.js",
+        "src/client-settings-view.js",
+        "src/client-styles.js",
+        "src/client-tool-hover.js",
+        "src/client-tool-view.js",
+        "src/client-transport.js",
+        "src/client-workbench.js",
+        "src/client.js"
       ],
       "contract": "docs/adr/0023-global-user-bindings.md",
-      "observables": ["activation ownership", "shadow policy", "canonical versus preview values", "feature gates", "settings transport registration identity and live fallback", "default-enabled bindings with explicit disable preserved", "compact stable authoring SDK retains complete argument and receipt types while task instructions own request facts", "model visibility", "plugin-owned menu and modal focus lifecycle", "portaled sparkle content owns base typography and binding text hierarchy independently of carrier font size and line-height; SVG disclosure aligns with the caption line rather than a stretched flex box", "sparkle catalog scrolls independently of fixed root and revision actions", "enabled-first counts and default-collapsed disabled entries retain exact revision and live foreground focus after regrouping with reveal confined to the owned catalog", "zero-height public dock preview without host ancestor writes", "CSS-owned preview budget selects stable inert compact chrome", "unfittable preview yields to manual enlarged review without covering neighboring dock actions", "deferred return focus uses exact semantic candidate and current lifecycle", "short enlarged native and fallback keep readable source and reachable actions including RPC errors", "enlarged draft shares candidate authority and fixed actions while yielding to composer takeover", "spaced resize and close header controls distinguish shrinking to preview from hiding the draft", "fallback portaled viewport placement and headless modal mask", "composition closing-key lifetime", "held Escape cannot dismiss nested parent", "valid React host component types including wrappers retain native rendering", "plain action fallback owns button styling and type without caller classes", "multi-line tool previews fit public native headers without text clipping or overlap", "feature labels remain separate from summaries, expanded bodies and following messages", "passive tool quick peeks bound recorded source/result with visible excerpt labels and theme-aware single-layer chrome; native Popover or public React portal escapes clipping without hit-testable or scrollable overlay content; shared passive wheel/scroll observation cancels dwell and visible previews, requires scroll idle and fresh pointer motion before reopening; live default-on hover settings cancel pending and visible previews; pointer-right placement adapts to owned-anchor and viewport width changes, while explicit row expansion retains complete source/result and Copy"],
-      "entries": ["session activation", "binding workbench", "RPC", "client renderer", "model context"],
-      "lifecycle": ["load", "validate", "activate", "replace", "disable", "observe"],
-      "generations": ["whole-entry", "per-name", "legacy and current module transforms"],
-      "platforms": ["browser client", "Node worker", "official DSH host"],
-      "consumers": ["users", "model requests", "session recovery"],
+      "observables": [
+        "activation ownership",
+        "shadow policy",
+        "canonical versus preview values",
+        "feature gates",
+        "settings transport registration identity and live fallback",
+        "capability settings preserve JSON drafts and frozen effective plans; plugin disable cancels inspection, clears loaded and late responses, disables reload and re-enable inspects through the capabilities RPC",
+        "default-enabled bindings with explicit disable preserved",
+        "compact stable authoring SDK retains complete argument and receipt types while task instructions own request facts",
+        "model visibility",
+        "plugin-owned menu and modal focus lifecycle",
+        "portaled sparkle content owns base typography and binding text hierarchy independently of carrier font size and line-height; SVG disclosure aligns with the caption line rather than a stretched flex box",
+        "sparkle catalog scrolls independently of fixed root and revision actions",
+        "enabled-first counts and default-collapsed disabled entries retain exact revision and live foreground focus after regrouping with reveal confined to the owned catalog",
+        "zero-height public dock preview without host ancestor writes",
+        "CSS-owned preview budget selects stable inert compact chrome",
+        "unfittable preview yields to manual enlarged review without covering neighboring dock actions",
+        "deferred return focus uses exact semantic candidate and current lifecycle",
+        "short enlarged native and fallback keep readable source and reachable actions including RPC errors",
+        "enlarged draft shares candidate authority and fixed actions while yielding to composer takeover",
+        "spaced resize and close header controls distinguish shrinking to preview from hiding the draft",
+        "fallback portaled viewport placement and headless modal mask",
+        "composition closing-key lifetime",
+        "held Escape cannot dismiss nested parent",
+        "valid React host component types including wrappers retain native rendering",
+        "plain action fallback owns button styling and type without caller classes",
+        "multi-line tool previews fit public native headers without text clipping or overlap",
+        "feature labels remain separate from summaries, expanded bodies and following messages",
+        "passive tool quick peeks bound recorded source/result with visible excerpt labels and theme-aware single-layer chrome; native Popover or public React portal escapes clipping without hit-testable or scrollable overlay content; shared passive wheel/scroll observation cancels dwell and visible previews, requires scroll idle and fresh pointer motion before reopening; live default-on hover settings cancel pending and visible previews; pointer-right placement adapts to owned-anchor and viewport width changes, while explicit row expansion retains complete source/result and Copy"
+      ],
+      "entries": [
+        "session activation",
+        "binding workbench",
+        "RPC",
+        "client renderer",
+        "model context"
+      ],
+      "lifecycle": [
+        "load",
+        "validate",
+        "activate",
+        "replace",
+        "disable",
+        "observe"
+      ],
+      "generations": [
+        "whole-entry",
+        "per-name",
+        "legacy and current module transforms"
+      ],
+      "platforms": [
+        "browser client",
+        "Node worker",
+        "official DSH host"
+      ],
+      "consumers": [
+        "users",
+        "model requests",
+        "session recovery"
+      ],
       "oracle": "isolated binding workers, storage fixtures, client host adapters and react-is component classification; bounded computed-style, text-range clipping and overlap, contrast, keyboard focus, hover, disabled and reachability oracle with retained-handler CSS counterexamples in native/fallback reference palettes and packed official Host themes; complete case inventories, exact focused selection, isolated bounded browser lanes and failure/cleanup propagation (docs/client-visual-contract.md)",
-      "evidence": ["test/user-bindings-runtime.test.js", "test/user-binding-console.test.js", "test/coverage/console-environment-coverage.test.js", "test/client-host-compat.test.js", "test/repl-value-observer.test.js", "test/runtime-config.test.js", "test/plugin-settings.test.js", "test/client-runtime.spec.js", "scripts/client-web-smoke.mjs", "scripts/client-fallback-smoke.mjs", "scripts/client-binding-layout.mjs", "scripts/client-visual-contract.mjs", "scripts/client-visual-check.mjs", "scripts/browser-case-runner.mjs", "test/browser-case-runner.test.js", "scripts/client-visual-settlement.mjs", "scripts/client-tool-hover.mjs"],
-      "dependsOn": ["compiler-and-callables", "execution-kernel", "persistence-and-recovery", "host-integration"]
+      "evidence": [
+        "test/user-bindings-runtime.test.js",
+        "test/user-binding-console.test.js",
+        "test/coverage/console-environment-coverage.test.js",
+        "test/client-host-compat.test.js",
+        "test/repl-value-observer.test.js",
+        "test/runtime-config.test.js",
+        "test/plugin-settings.test.js",
+        "test/client-runtime.spec.js",
+        "scripts/client-web-smoke.mjs",
+        "scripts/client-fallback-smoke.mjs",
+        "scripts/client-binding-layout.mjs",
+        "scripts/client-visual-contract.mjs",
+        "scripts/client-visual-check.mjs",
+        "scripts/browser-case-runner.mjs",
+        "test/browser-case-runner.test.js",
+        "scripts/client-visual-settlement.mjs",
+        "scripts/client-tool-hover.mjs"
+      ],
+      "dependsOn": [
+        "compiler-and-callables",
+        "execution-kernel",
+        "persistence-and-recovery",
+        "host-integration"
+      ]
     }
   ]
 }

@@ -1025,7 +1025,8 @@
   ]).required();
   var RPC_CONTRACTS = Object.freeze({
     bindings: Object.freeze({ service: "ptcPlusBindings" }),
-    repl: Object.freeze({ service: "ptcPlusRepl" })
+    repl: Object.freeze({ service: "ptcPlusRepl" }),
+    capabilities: Object.freeze({ service: "ptcPlusCapabilities" })
   });
   function rpcDescriptor({ service }) {
     return {
@@ -1091,6 +1092,86 @@
   var MAX_TIMER_DELAY_MS = 2147483647;
   var SETTINGS_NAMESPACE = "ptc-plus";
   var CONFIG_FIELDS = Object.freeze([
+    {
+      key: "capabilityManagementEnabled",
+      type: "boolean",
+      default: false,
+      label: "\u5B9E\u9A8C\u6027\u80FD\u529B\u7BA1\u7406",
+      labelEn: "Experimental capability management",
+      description: "\u4E3A\u65B0 PTC \u4F1A\u8BDD\u51BB\u7ED3\u5B8C\u6574\u3001\u6309\u9700\u548C\u5173\u95ED\u9009\u62E9\uFF1B\u5DF2\u6709\u4F1A\u8BDD\u4F7F\u7528 /capabilities refresh \u751F\u6548\u3002\u6536\u76CA\u5C1A\u672A\u7ECF\u8FC7\u6A21\u578B\u5BF9\u7167\u9A8C\u6536\u3002",
+      descriptionEn: "Freezes full, on-demand and closed selections for new PTC sessions. Use /capabilities refresh for existing sessions. Model cost benefits remain unverified."
+    },
+    {
+      key: "capabilityBaseline",
+      type: "string",
+      default: "[]",
+      label: "\u521D\u59CB\u5E38\u7528\u80FD\u529B",
+      labelEn: "Initial common capabilities",
+      description: "JSON \u6570\u7EC4\uFF0C\u4F7F\u7528\u51C6\u786E\u80FD\u529B ID\uFF08\u4F8B\u5982 tools.read_file\uFF09\u3002\u4E0D\u751F\u6210\u4F7F\u7528\u8BB0\u5F55\u3002",
+      descriptionEn: "JSON array of exact capability IDs, such as tools.read_file. Creates no usage records."
+    },
+    {
+      key: "capabilityOverrides",
+      type: "string",
+      default: "{}",
+      label: "\u80FD\u529B\u624B\u52A8\u9009\u62E9",
+      labelEn: "Manual capability selections",
+      description: "JSON \u5BF9\u8C61\uFF1A\u80FD\u529B ID \u5BF9\u5E94 full\u3001on-demand \u6216 closed\uFF1B\u663E\u5F0F\u9009\u62E9\u4F18\u5148\u4E8E\u7EDF\u8BA1\u3002",
+      descriptionEn: "JSON object mapping capability IDs to full, on-demand or closed. Explicit selections override statistics."
+    },
+    {
+      key: "capabilityStatistics",
+      type: "string",
+      default: '{"enabled":false,"windowSize":100,"minimumSamples":10,"fullThreshold":0.5}',
+      label: "\u80FD\u529B\u7EDF\u8BA1\u8BBE\u7F6E",
+      labelEn: "Capability statistics settings",
+      description: "\u72EC\u7ACB JSON \u8BBE\u7F6E\u3002\u65E0\u6548\u3001\u5173\u95ED\u6216\u4E0D\u53EF\u7528\u65F6\u4FDD\u7559\u624B\u52A8\u57FA\u7EBF\uFF1B\u7A97\u53E3\u6309\u5408\u683C\u4F1A\u8BDD\u5BB6\u65CF\u8BA1\u7B97\u3002",
+      descriptionEn: "Independent JSON settings. Invalid, disabled or unusable statistics preserve the manual baseline. Windows count eligible session families."
+    },
+    {
+      key: "capabilityBudgetBytes",
+      type: "integer",
+      default: 16384,
+      min: 1,
+      max: Number.MAX_SAFE_INTEGER,
+      label: "\u5B8C\u6574\u8BF4\u660E\u9884\u7B97 (UTF-8 bytes)",
+      labelEn: "Full contract budget (UTF-8 bytes)",
+      description: "\u663E\u5F0F full \u53EF\u4EE5\u8D85\u51FA\u6B64\u9884\u7B97\uFF1B\u4E0D\u622A\u65AD\u8C03\u7528\u5951\u7EA6\u3002",
+      descriptionEn: "Explicit full selections may exceed this budget; calling contracts are never truncated."
+    },
+    {
+      key: "capabilityDirectoryBytes",
+      type: "integer",
+      default: 2048,
+      min: 512,
+      max: Number.MAX_SAFE_INTEGER,
+      label: "\u80FD\u529B\u5BFC\u822A\u9884\u7B97 (UTF-8 bytes)",
+      labelEn: "Capability navigation budget (UTF-8 bytes)",
+      description: "",
+      descriptionEn: ""
+    },
+    {
+      key: "capabilityRecoveryBytes",
+      type: "integer",
+      default: 8192,
+      min: 1,
+      max: Number.MAX_SAFE_INTEGER,
+      label: "\u538B\u7F29\u540E\u8BF4\u660E\u6062\u590D\u9884\u7B97 (UTF-8 bytes)",
+      labelEn: "Description recovery budget (UTF-8 bytes)",
+      description: "",
+      descriptionEn: ""
+    },
+    {
+      key: "modelPreviewTokens",
+      type: "integer",
+      default: 4096,
+      min: 1,
+      max: Number.MAX_SAFE_INTEGER,
+      label: "\u6A21\u578B\u7ED3\u679C\u9884\u89C8\u9884\u7B97 (estimated tokens)",
+      labelEn: "Model result preview budget (estimated tokens)",
+      description: "\u80FD\u529B\u7BA1\u7406\u5F00\u542F\u65F6\u590D\u7528 DSH spill policy\uFF1B\u5B8C\u6574\u5185\u5BB9\u9700\u8981\u5BBF\u4E3B spill store\uFF0C\u7A0B\u5E8F\u503C\u4FDD\u6301\u5B8C\u6574\u3002",
+      descriptionEn: "Uses DSH spill policy when capability management is enabled. Complete content requires a host spill store; program values remain complete."
+    },
     {
       key: "legacyBindingSettings",
       type: "boolean",
@@ -1382,6 +1463,21 @@
       label: "\u63D2\u4EF6\u5F00\u5173",
       labelEn: "Plugin switch",
       fields: Object.freeze(["enabled"])
+    },
+    {
+      key: "capabilities",
+      label: "\u80FD\u529B\u4E0E\u4E0A\u4E0B\u6587",
+      labelEn: "Capabilities and context",
+      fields: Object.freeze([
+        "capabilityManagementEnabled",
+        "capabilityBaseline",
+        "capabilityOverrides",
+        "capabilityStatistics",
+        "capabilityBudgetBytes",
+        "capabilityDirectoryBytes",
+        "capabilityRecoveryBytes",
+        "modelPreviewTokens"
+      ])
     },
     {
       key: "calls",
@@ -2467,6 +2563,10 @@
     }
   }
   function assertField(field, value) {
+    if (field.type === "string") {
+      if (typeof value !== "string") throw new TypeError(`ptc-plus: ${field.key} must be a string`);
+      return;
+    }
     if (field.type === "boolean") {
       if (typeof value !== "boolean") {
         throw new TypeError(`ptc-plus: ${field.key} must be a boolean`);
@@ -2504,6 +2604,17 @@
       resolved[field.key] = liveConfigValue(resolved[field.key], CONFIG_DEFAULTS[field.key]);
     }
     for (const field of CONFIG_FIELDS) assertField(field, resolved[field.key]);
+    for (const [key, array] of [["capabilityBaseline", true], ["capabilityOverrides", false]]) {
+      let value;
+      try {
+        value = JSON.parse(resolved[key]);
+      } catch {
+        throw new TypeError(`ptc-plus: ${key} must contain valid JSON`);
+      }
+      if (array ? !Array.isArray(value) || value.some((id2) => typeof id2 !== "string" || !id2.trim()) : value === null || typeof value !== "object" || Array.isArray(value) || Object.entries(value).some(([id2, selection]) => !id2.trim() || !["full", "on-demand", "closed"].includes(selection))) {
+        throw new TypeError(`ptc-plus: invalid ${key}`);
+      }
+    }
     const legacyKeys = [
       "looseTopLevelRedeclarations",
       "looseTopLevelFunctionClassRedeclarations",
@@ -2566,9 +2677,27 @@
 
   // src/client-settings-view.js
   function createPtcSettingsView(React, deps) {
-    const { ActionButton, BindingsDialog, Modal, useWorkbenchController, icons } = deps;
+    const { ActionButton, BindingsDialog, Modal, useWorkbenchController, icons, inspectCapabilityPlans } = deps;
     const h = React.createElement;
+    function TextSetting({ field, value, disabled, onChange, label }) {
+      const [draft, setDraft] = React.useState(value ?? "");
+      React.useEffect(() => setDraft(value ?? ""), [value]);
+      return h("textarea", {
+        className: "ptcPlusInput",
+        value: draft,
+        rows: 3,
+        disabled,
+        "aria-label": label,
+        onChange: (event) => setDraft(event.target.value),
+        onBlur: () => {
+          if (draft !== value) onChange(field, draft);
+        }
+      });
+    }
     function fieldInput(field, value, disabled, onChange, label) {
+      if (field.type === "string") {
+        return h(TextSetting, { field, value, disabled, onChange, label });
+      }
       if (field.type === "boolean") {
         return h("input", {
           type: "checkbox",
@@ -2614,6 +2743,9 @@
       const bindingsAction = React.useRef(null);
       const [status, setStatus] = React.useState(null);
       const [pending, setPending] = React.useState(() => /* @__PURE__ */ new Set());
+      const [plans, setPlans] = React.useState(null);
+      const [plansError, setPlansError] = React.useState(null);
+      const [planRevision, setPlanRevision] = React.useState(0);
       const writeTail = React.useRef(Promise.resolve());
       const snapshot2 = usePtcSettings((snapshot3) => snapshot3);
       const value = snapshot2.status === "ready" ? resolveConfig(snapshot2.value ?? {}) : {};
@@ -2627,6 +2759,23 @@
       const legacyMigration = value.legacyBindingSettings === true;
       const enabled = featureEnabled(snapshot2, "plugin");
       const globalEnabled = featureEnabled(snapshot2, "bindings");
+      const planConfiguration = JSON.stringify(CONFIG_FIELDS.filter((field) => field.key.startsWith("capability") || field.key === "modelPreviewTokens").map((field) => value[field.key]));
+      React.useEffect(() => {
+        if (!enabled) {
+          setPlans(null);
+          setPlansError(null);
+          return;
+        }
+        if (!(open || view === "page" || view === "dialog") || !inspectCapabilityPlans) return;
+        const controller = new AbortController();
+        setPlansError(null);
+        Promise.resolve(inspectCapabilityPlans(controller.signal)).then((next) => {
+          if (!controller.signal.aborted) setPlans(next);
+        }, (error) => {
+          if (!controller.signal.aborted) setPlansError(String(error.message ?? error));
+        });
+        return () => controller.abort();
+      }, [enabled, open, view, planConfiguration, planRevision]);
       const groupIdPrefix = view === "dialog" ? "ptc-plus-settings-dialog-group" : "ptc-plus-settings-group";
       const workbench = useWorkbenchController({ enabled: globalEnabled && bindingsOpen, callUserBindings });
       const setBindingsDialogOpen = (next) => {
@@ -2730,6 +2879,36 @@
           { className: "ptcPlusFields" },
           snapshot2.status === "loading" ? h("p", { className: "ptcPlusMessage" }, t2("state.syncing")) : snapshot2.status === "unavailable" ? h("p", { className: "ptcPlusMessage" }, t2("state.unavailable")) : [
             ...settingsFields(),
+            inspectCapabilityPlans ? h(
+              "section",
+              { key: "capability-plans", className: "ptcPlusGroup" },
+              h("h3", { className: "ptcPlusGroupTitle" }, t2("capabilities.sessions")),
+              h(ActionButton, { type: "button", disabled: !enabled, onClick: () => setPlanRevision((current) => current + 1) }, t2("capabilities.reload")),
+              h("p", { className: "ptcPlusDetail" }, t2("capabilities.refreshHint")),
+              !enabled ? h("p", null, t2("status.disabled")) : plansError ? h("p", { role: "status" }, t2("capabilities.unavailable", { error: plansError })) : plans === null ? h("p", null, t2("state.syncing")) : plans.length === 0 ? h("p", null, t2("capabilities.empty")) : plans.map((plan) => h(
+                "details",
+                { key: plan.sessionId },
+                h("summary", null, `${plan.sessionId} \xB7 ${t2(plan.pendingRefresh ? "capabilities.pending" : "capabilities.current")}`),
+                h("p", null, t2("capabilities.budget", { bytes: plan.effective.budgets.contractBytes, overage: plan.effective.budgets.overageBytes })),
+                h(
+                  "table",
+                  null,
+                  h("thead", null, h(
+                    "tr",
+                    null,
+                    ...["member", "selection", "reason", "coverage"].map((key) => h("th", { key }, t2(`capabilities.${key}`)))
+                  )),
+                  h("tbody", null, ...plan.effective.entries.map((entry) => h(
+                    "tr",
+                    { key: entry.id },
+                    h("td", null, entry.id),
+                    h("td", null, entry.selection),
+                    h("td", null, [entry.reason, entry.statisticsReason].filter(Boolean).join(" \xB7 ")),
+                    h("td", null, entry.evidence ? `${entry.evidence.used}/${entry.evidence.eligible} (${entry.evidence.scope})` : "\u2014")
+                  )))
+                )
+              ))
+            ) : null,
             h(
               "div",
               { key: "footer", className: "ptcPlusFooter" },
@@ -30739,6 +30918,18 @@
   var LOCALE_NS = "settings.ptcPlus";
   var CHROME_COPY = Object.freeze({
     zh: Object.freeze({
+      "capabilities.sessions": "\u5F53\u524D\u4F1A\u8BDD\u80FD\u529B\u65B9\u6848",
+      "capabilities.reload": "\u91CD\u65B0\u8BFB\u53D6\u65B9\u6848",
+      "capabilities.refreshHint": "\u80FD\u529B\u8BBE\u7F6E\u4F9B\u65B0\u4F1A\u8BDD\u4F7F\u7528\uFF1B\u5DF2\u6709\u4F1A\u8BDD\u6267\u884C /capabilities refresh \u540E\u540C\u6B65\u3002",
+      "capabilities.unavailable": "\u65B9\u6848\u8BFB\u53D6\u5931\u8D25\uFF1A{error}",
+      "capabilities.empty": "\u5C1A\u65E0\u5DF2\u51C6\u5907\u7684\u4F1A\u8BDD\u65B9\u6848",
+      "capabilities.pending": "\u4FDD\u5B58\u914D\u7F6E\u5F85\u5237\u65B0",
+      "capabilities.current": "\u4F7F\u7528\u5DF2\u51BB\u7ED3\u65B9\u6848",
+      "capabilities.budget": "\u5B8C\u6574\u8BF4\u660E {bytes} \u5B57\u8282\uFF0C\u663E\u5F0F\u8D85\u989D {overage} \u5B57\u8282",
+      "capabilities.member": "\u80FD\u529B",
+      "capabilities.selection": "\u62AB\u9732",
+      "capabilities.reason": "\u9009\u62E9\u4E0E\u7EDF\u8BA1\u4F9D\u636E",
+      "capabilities.coverage": "\u4F7F\u7528\u5BB6\u65CF / \u53EF\u7528\u5BB6\u65CF",
       "console.session": "\u4F1A\u8BDD\u7ED1\u5B9A",
       "console.global": "\u5168\u5C40\u7ED1\u5B9A",
       "console.definition": "\u5B9A\u4E49",
@@ -30774,9 +30965,9 @@
       "bindingPolicy.protected": "\u542F\u7528\u540D\u79F0\u4FDD\u62A4",
       "bindingPolicy.migrationDescription": "\u5F53\u524D\u6309\u4E0B\u65B9\u65E7\u7248\u5F00\u5173\u6267\u884C\u3002\u9009\u62E9\u7EDF\u4E00\u7B56\u7565\u540E\u505C\u7528\u65E7\u7248\u5F00\u5173\uFF0C\u5E76\u5BF9\u540E\u7EED\u4EE3\u7801\u751F\u6548\u3002",
       "state.unavailable": "\u5F53\u524D DSH \u5B9E\u4F8B\u672A\u63D0\u4F9B\u8BBE\u7F6E\u670D\u52A1",
-      "footer.live": "\u8BBE\u7F6E\u4F1A\u5728\u4FEE\u6539\u540E\u7ACB\u5373\u751F\u6548",
+      "footer.live": "\u8BBE\u7F6E\u5DF2\u4FDD\u5B58\uFF1B\u80FD\u529B\u65B9\u6848\u7531\u65B0\u4F1A\u8BDD\u6216\u4E3B\u52A8\u5237\u65B0\u91C7\u7528",
       "footer.readOnly": "\u5F53\u524D\u8BBE\u7F6E\u4E3A\u53EA\u8BFB",
-      "status.applied": "\u8BBE\u7F6E\u5DF2\u7ACB\u5373\u751F\u6548",
+      "status.applied": "\u8BBE\u7F6E\u5DF2\u4FDD\u5B58",
       "status.conflict": "\u8BBE\u7F6E\u672A\u751F\u6548\uFF0C\u8BF7\u68C0\u67E5\u8BBE\u7F6E\u51B2\u7A81",
       "status.failed": "\u8BBE\u7F6E\u5931\u8D25\uFF1A{error}",
       "bindings.title": "\u5168\u5C40\u7528\u6237\u7ED1\u5B9A",
@@ -30919,6 +31110,18 @@
       "feature.stateDeleted": "\u5220\u9664 REPL \u72B6\u6001"
     }),
     en: Object.freeze({
+      "capabilities.sessions": "Session capability plans",
+      "capabilities.reload": "Reload plans",
+      "capabilities.refreshHint": "Capability settings apply to new sessions; run /capabilities refresh to update an existing session.",
+      "capabilities.unavailable": "Cannot read plans: {error}",
+      "capabilities.empty": "No prepared session plans",
+      "capabilities.pending": "Saved settings await refresh",
+      "capabilities.current": "Using frozen plan",
+      "capabilities.budget": "Full contracts: {bytes} bytes; explicit overage: {overage} bytes",
+      "capabilities.member": "Capability",
+      "capabilities.selection": "Disclosure",
+      "capabilities.reason": "Selection and statistical basis",
+      "capabilities.coverage": "Used families / available families",
       "console.session": "Session bindings",
       "console.global": "Global bindings",
       "console.definition": "Definition",
@@ -30954,9 +31157,9 @@
       "bindingPolicy.protected": "Protect names",
       "bindingPolicy.migrationDescription": "The legacy switches below currently apply. Choosing a unified policy replaces those switches for subsequent code.",
       "state.unavailable": "This DSH instance does not provide a settings service",
-      "footer.live": "Changes take effect immediately.",
+      "footer.live": "Settings are saved; capability plans adopt changes in new sessions or after an explicit refresh.",
       "footer.readOnly": "These settings are read-only.",
-      "status.applied": "Setting applied immediately.",
+      "status.applied": "Setting saved.",
       "status.conflict": "The setting did not take effect; check for conflicting settings.",
       "status.failed": "Could not save: {error}",
       "bindings.title": "Global User Bindings",
@@ -32522,6 +32725,11 @@
           BindingsDialog,
           Modal,
           useWorkbenchController,
+          async inspectCapabilityPlans(signal) {
+            const result = await rpc.call(RPC_CONTRACTS.capabilities, "inspect", {}, signal);
+            if (result?.ok !== true) throw new Error(result?.error?.message ?? "Capability plans unavailable");
+            return result.value;
+          },
           icons: { chevron: IconChevronDownOutline14 }
         });
         const { ReplComposer, ReplConsole, ReplMemoryCard, replPopoverIsOpen, placeReplPopover } = createReplView(React, {

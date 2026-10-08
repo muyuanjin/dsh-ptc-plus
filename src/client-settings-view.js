@@ -8,10 +8,22 @@ import { featureEnabled } from './client-feature-gates.js'
  * action only while global bindings are eligible.
  */
 export function createPtcSettingsView(React, deps) {
-  const { ActionButton, BindingsDialog, Modal, useWorkbenchController, icons } = deps
+  const { ActionButton, BindingsDialog, Modal, useWorkbenchController, icons, inspectCapabilityPlans } = deps
   const h = React.createElement
 
+  function TextSetting({ field, value, disabled, onChange, label }) {
+    const [draft, setDraft] = React.useState(value ?? '')
+    React.useEffect(() => setDraft(value ?? ''), [value])
+    return h('textarea', { className: 'ptcPlusInput', value: draft, rows: 3,
+      disabled, 'aria-label': label,
+      onChange: event => setDraft(event.target.value),
+      onBlur: () => { if (draft !== value) onChange(field, draft) } })
+  }
+
   function fieldInput(field, value, disabled, onChange, label) {
+    if (field.type === 'string') {
+      return h(TextSetting, { field, value, disabled, onChange, label })
+    }
     if (field.type === 'boolean') {
       return h('input', {
         type: 'checkbox', role: 'switch', className: 'ptcPlusCheck', checked: value === true,
@@ -45,6 +57,9 @@ export function createPtcSettingsView(React, deps) {
     const bindingsAction = React.useRef(null)
     const [status, setStatus] = React.useState(null)
     const [pending, setPending] = React.useState(() => new Set())
+    const [plans, setPlans] = React.useState(null)
+    const [plansError, setPlansError] = React.useState(null)
+    const [planRevision, setPlanRevision] = React.useState(0)
     const writeTail = React.useRef(Promise.resolve())
     const snapshot = usePtcSettings(snapshot => snapshot)
     const value = snapshot.status === 'ready' ? resolveConfig(snapshot.value ?? {}) : {}
@@ -53,6 +68,22 @@ export function createPtcSettingsView(React, deps) {
     const legacyMigration = value.legacyBindingSettings === true
     const enabled = featureEnabled(snapshot, 'plugin')
     const globalEnabled = featureEnabled(snapshot, 'bindings')
+    const planConfiguration = JSON.stringify(CONFIG_FIELDS.filter(field => field.key.startsWith('capability') || field.key === 'modelPreviewTokens')
+      .map(field => value[field.key]))
+    React.useEffect(() => {
+      if (!enabled) {
+        setPlans(null)
+        setPlansError(null)
+        return
+      }
+      if (!(open || view === 'page' || view === 'dialog') || !inspectCapabilityPlans) return
+      const controller = new AbortController()
+      setPlansError(null)
+      Promise.resolve(inspectCapabilityPlans(controller.signal)).then(next => {
+        if (!controller.signal.aborted) setPlans(next)
+      }, error => { if (!controller.signal.aborted) setPlansError(String(error.message ?? error)) })
+      return () => controller.abort()
+    }, [enabled, open, view, planConfiguration, planRevision])
     const groupIdPrefix = view === 'dialog' ? 'ptc-plus-settings-dialog-group' : 'ptc-plus-settings-group'
     // The open dialog owns the management session: closing it releases the draft
     // and drops every response the host has not answered yet.
@@ -139,6 +170,23 @@ export function createPtcSettingsView(React, deps) {
           ? h('p', { className: 'ptcPlusMessage' }, t('state.unavailable'))
           : [
             ...settingsFields(),
+            inspectCapabilityPlans ? h('section', { key: 'capability-plans', className: 'ptcPlusGroup' },
+              h('h3', { className: 'ptcPlusGroupTitle' }, t('capabilities.sessions')),
+              h(ActionButton, { type: 'button', disabled: !enabled, onClick: () => setPlanRevision(current => current + 1) }, t('capabilities.reload')),
+              h('p', { className: 'ptcPlusDetail' }, t('capabilities.refreshHint')),
+              !enabled ? h('p', null, t('status.disabled'))
+                : plansError ? h('p', { role: 'status' }, t('capabilities.unavailable', { error: plansError }))
+                : plans === null ? h('p', null, t('state.syncing'))
+                  : plans.length === 0 ? h('p', null, t('capabilities.empty'))
+                    : plans.map(plan => h('details', { key: plan.sessionId },
+                      h('summary', null, `${plan.sessionId} · ${t(plan.pendingRefresh ? 'capabilities.pending' : 'capabilities.current')}`),
+                      h('p', null, t('capabilities.budget', { bytes: plan.effective.budgets.contractBytes, overage: plan.effective.budgets.overageBytes })),
+                      h('table', null, h('thead', null, h('tr', null,
+                        ...['member', 'selection', 'reason', 'coverage'].map(key => h('th', { key }, t(`capabilities.${key}`))))),
+                      h('tbody', null, ...plan.effective.entries.map(entry => h('tr', { key: entry.id },
+                        h('td', null, entry.id), h('td', null, entry.selection),
+                        h('td', null, [entry.reason, entry.statisticsReason].filter(Boolean).join(' · ')),
+                        h('td', null, entry.evidence ? `${entry.evidence.used}/${entry.evidence.eligible} (${entry.evidence.scope})` : '—')))))))) : null,
             h('div', { key: 'footer', className: 'ptcPlusFooter' },
               h('span', { className: 'ptcPlusMessage', role: 'status' }, status === null
                 ? t(snapshot.writable ? 'footer.live' : 'footer.readOnly')

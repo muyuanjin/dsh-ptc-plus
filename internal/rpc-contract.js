@@ -17,6 +17,7 @@ const resultSchema = Schema.union([
 export const RPC_CONTRACTS = Object.freeze({
   bindings: Object.freeze({ service: 'ptcPlusBindings' }),
   repl: Object.freeze({ service: 'ptcPlusRepl' }),
+  capabilities: Object.freeze({ service: 'ptcPlusCapabilities' }),
 })
 
 export function rpcDescriptor({ service }) {

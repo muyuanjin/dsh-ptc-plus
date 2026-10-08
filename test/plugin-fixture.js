@@ -90,6 +90,9 @@ export function ptcAgent(id, session = { id, events: [] }) {
       const inherited = inheritedSchemas(scope).filter(definition => !definitions.has(definition.name))
       return scope === agent ? [...inherited, ...definitions.values()] : inherited
     },
+    sdkSchemas(scope) {
+      return this.schemas(scope).filter(schema => schema.name !== 'run_code')
+    },
     register(definition) {
       if (definitions.has(definition.name)) throw new Error(`duplicate scoped tool ${definition.name}`)
       definitions.set(definition.name, definition)
@@ -197,13 +200,18 @@ export function fixture(config = {}, fixtureOptions = {}) {
     inject(names, callback) {
       if (names.length === 1 && names[0] === 'ptcPlusRpc') {
         if (fixtureOptions.bindingRpc === undefined) return () => {}
-        callback({ ptcPlusRpc: {
-          register(_channel, handler) {
-            fixtureOptions.bindingRpc(handler)
+        const disposers = []
+        callback({ effect(register) {
+          const dispose = register()
+          disposers.push(dispose)
+          return dispose
+        }, ptcPlusRpc: {
+          register(channel, handler) {
+            if (channel.service !== 'ptcPlusCapabilities') fixtureOptions.bindingRpc(handler)
             return () => {}
           },
         } })
-        return () => {}
+        return () => { for (const dispose of disposers.reverse()) dispose() }
       }
       return seamInject(names, callback)
     },
@@ -242,9 +250,12 @@ export function fixture(config = {}, fixtureOptions = {}) {
         for (const listener of listeners.get('tools/result') ?? []) await listener(options, result)
         return result
       },
-      schemas: scope => typeof scope?.ctx?.tools?.schemas === 'function'
+      schemas: scope => (typeof scope?.ctx?.tools?.schemas === 'function'
         ? scope.ctx.tools.schemas(scope)
-        : [...definitions.values(), ...(fixtureOptions.schemas ?? [])],
+        : [...definitions.values(), ...(fixtureOptions.schemas ?? [])]).map(({ output, ...schema }) => schema),
+      sdkSchemas: scope => (typeof scope?.ctx?.tools?.sdkSchemas === 'function'
+        ? scope.ctx.tools.sdkSchemas(scope)
+        : [...definitions.values(), ...(fixtureOptions.schemas ?? [])]).filter(schema => schema.name !== 'run_code'),
     },
     agents: fixtureOptions.agents ?? { list: () => [] },
     systemPrompt: {

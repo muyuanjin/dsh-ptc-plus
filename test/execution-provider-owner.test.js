@@ -14,25 +14,27 @@ import { installExecutionSeam } from '../internal/execution-seam-compat.js'
 import * as composition from '../internal/execution-provider-owner.js'
 
 const moduleUrl = source => 'data:text/javascript,' + encodeURIComponent(source)
+const resolvedComposition = { originalEntryId: 'ptc-runtime', serviceName: 'ptcRuntime' }
 const runtimeUrl = import.meta.resolve('@deepseek-ai/dsh-ptc-runtime')
 const compositionUrl = new URL('../internal/execution-provider-owner.js', import.meta.url).href
 let sequence = 0
 
-async function loaderFixture(t, { originalEntryId = 'ptc-runtime', isolation = 'ptc-plus-original', originalConfig = {}, adapterFirst = false, adapterUrl = compositionUrl, included = false } = {}) {
+async function loaderFixture(t, { originalEntryId = 'ptc-runtime', isolation = 'ptc-plus-original', originalConfig = {}, adapterFirst = false, adapterUrl = compositionUrl, included = false, serviceName = 'ptcRuntime' } = {}) {
   const key = `__ptcComposition${sequence++}`
   const state = globalThis[key] = { originals: [], resolutions: [], runs: [], effects: [] }
   const originalUrl = moduleUrl(`
     import { PtcRuntime } from ${JSON.stringify(runtimeUrl)}
+    import { Service } from ${JSON.stringify(import.meta.resolve('@deepseek-ai/cordis'))}
     const state = globalThis[${JSON.stringify(key)}]
     export const name = 'frozen-original'
     export function apply(ctx, config) {
-      class Original extends PtcRuntime {
+      class Original ${serviceName === 'ptcRuntime' ? 'extends PtcRuntime' : 'extends Service'} {
         language = config.language ?? 'typescript'
         isolation = 'process'
         get executionInstructions() { return config.guidance ?? 'original guidance' }
         get sandboxMode() { return config.mode ?? 'workspace-write' }
         get timeout() { return config.timeout ?? { defaultMs: 1000, maxMs: 2000 } }
-        constructor(ctx) { super(ctx); Object.freeze(this) }
+        constructor(ctx) { ${serviceName === 'ptcRuntime' ? 'super(ctx)' : "super(ctx, 'codeRuntime')"}; Object.freeze(this) }
         resolve(request) {
           state.resolutions.push(request)
           return Object.freeze({ ...request, cwd: request.cwd ?? config.cwd ?? process.cwd(),
@@ -51,11 +53,11 @@ async function loaderFixture(t, { originalEntryId = 'ptc-runtime', isolation = '
   await root.plugin(Loader, { baseUrl: new URL('../', import.meta.url).href }).await()
   const originalRow = {
     id: originalEntryId, name: originalUrl,
-    isolate: { ptcRuntime: isolation }, config: originalConfig,
+    isolate: { [serviceName]: isolation }, config: originalConfig,
   }
   const adapterRow = {
     id: 'ptc-plus-execution', name: adapterUrl,
-    intercept: { loader: { await: false } }, config: { originalEntryId, isolation },
+    intercept: { loader: { await: false } }, config: { originalEntryId, isolation, serviceName },
   }
   const rows = adapterFirst ? [adapterRow, originalRow] : [originalRow, adapterRow]
   let tree = root.loader
@@ -70,7 +72,7 @@ async function loaderFixture(t, { originalEntryId = 'ptc-runtime', isolation = '
     await tree.root.update(rows)
   }
   await root.loader.await()
-  assert.ok(root.get('ptcRuntime'))
+  assert.ok(root.get(serviceName))
   return { root, tree, state, originalUrl, originalRow, adapterRow, originalEntry: tree.resolve(originalEntryId) }
 }
 
@@ -92,14 +94,17 @@ for (const adapterFirst of [false, true]) test(`official profile include resolve
 })
 
 test('default bundle composition keeps the original module and full profile config', async () => {
-  const base = parse(await readFile(new URL('../node_modules/@deepseek-ai/dsh-base/cordis.patch.yml', import.meta.url), 'utf8'))
+  const base = [{ insert: [{ id: 'ptc-runtime', name: '@deepseek-ai/dsh-ptc-runtime-node' }] }]
   const bundle = parse(await readFile(new URL('../cordis.patch.yml', import.meta.url), 'utf8'))
-  const config = { timeoutMs: 777, maxTimeoutMs: 999, maxOutputBytes: 123456, launch: { opaque: true } }
-  const rows = composeEntries([base, bundle, [{ id: 'ptc-runtime', config }]])
+  const config = { maxWallMs: 777, maxOutputBytes: 123456, launch: { opaque: true } }
+  const warnings = []
+  const rows = composeEntries([base, bundle, [{ id: 'ptc-runtime', config }]], warning => warnings.push(warning))
+  assert.deepEqual(warnings, [])
   const original = rows.find(row => row.id === 'ptc-runtime')
   assert.equal(original.name, '@deepseek-ai/dsh-ptc-runtime-node')
   assert.deepEqual(original.config, config)
   assert.deepEqual(original.isolate, { ptcRuntime: 'ptc-plus-original' })
+  assert.equal(rows.find(row => row.id === 'ptc-plus-execution').config.serviceName, 'ptcRuntime')
   assert.equal(rows.find(row => row.id === 'ptc-plus-execution').name, 'dsh-ptc-plus/execution-provider')
   assert.equal(rows.find(row => row.id === 'ptc-plus').name, 'dsh-ptc-plus')
 })
@@ -337,7 +342,7 @@ test('isolation removal during original startup settles composition without a la
   `)
   await root.loader.root.update([
     { id: 'ptc-runtime', name: originalUrl, isolate: { ptcRuntime: 'ptc-plus-original' } },
-    { id: 'ptc-plus-execution', name: observedComposition, intercept: { loader: { await: false } } },
+    { id: 'ptc-plus-execution', name: observedComposition, intercept: { loader: { await: false } }, config: resolvedComposition },
   ])
   const owner = root.loader.resolve('ptc-plus-execution').fiber
   await applying
@@ -365,7 +370,7 @@ test('invalid entry mapping and isolation are explicit startup errors', async t 
   assert.throws(() => composition.apply(root, { isolation: 1 }), /requires an original entry id/)
   assert.throws(() => composition.apply(root, { originalEntryId: 'missing' }), /does not exist|cannot resolve/)
   await root.loader.root.update([{ id: 'ptc-runtime', name: moduleUrl('export function apply() {}') }])
-  assert.throws(() => composition.apply(root), /must isolate/)
+  assert.throws(() => composition.apply(root, resolvedComposition), /must isolate/)
 })
 
 test('an occupied global slot rejects child activation without modifying either original or incumbent', async t => {
@@ -374,7 +379,7 @@ test('an occupied global slot rejects child activation without modifying either 
   await root.loader.await()
   const incumbent = Object.freeze({ owner: 'another provider' })
   root.effect(() => root.provide('ptcRuntime', incumbent))
-  const activation = composition.apply(root)
+  const activation = composition.apply(root, resolvedComposition)
   await assert.rejects(activation, /service "ptcRuntime" has been registered/)
   assert.equal(root.get('ptcRuntime'), incumbent)
   assert.equal(originalEntry.disabled, false)
@@ -428,7 +433,7 @@ test('an original entry that never publishes its provider rejects the bounded st
     isolate: { ptcRuntime: 'ptc-plus-original' } }])
   await root.loader.await()
   t.mock.timers.enable({ apis: ['setTimeout'] })
-  const activation = composition.apply(root)
+  const activation = composition.apply(root, resolvedComposition)
   const rejection = assert.rejects(activation, /original execution entry ptc-runtime did not publish ptcRuntime/)
   await new Promise(resolve => setImmediate(resolve))
   t.mock.timers.tick(30_000)
@@ -443,7 +448,7 @@ test('disabled original startup settles without a provider and attaches after pu
   await root.loader.await()
   await root.loader.root.update([originalRow])
   await root.loader.await()
-  await composition.apply(root)
+  await composition.apply(root, resolvedComposition)
   assert.equal(root.get('ptcRuntime'), undefined)
   await originalEntry.update({ disabled: false })
   await root.loader.await()
@@ -453,4 +458,36 @@ test('disabled original startup settles without a provider and attaches after pu
   assert.equal(provider.isolation, 'process')
   assert.equal((await provider.run(provider.resolve({ program: 'return 1', bindings: [] }))).value, 'original')
   assert.equal(originalEntry.disabled, false)
+})
+
+for (const adapterFirst of [false, true]) test(`request-only codeRuntime composition preserves requests and lifecycle with adapter ${adapterFirst ? 'first' : 'last'}`, async t => {
+  const { root, tree, state, originalEntry, originalUrl } = await loaderFixture(t, {
+    serviceName: 'codeRuntime', originalEntryId: 'code-runtime', included: true,
+    adapterFirst, originalConfig: { tag: 'request-only' },
+  })
+  const provider = root.get('codeRuntime')
+  const request = Object.freeze({ program: 'return 3', bindings: Object.freeze([]), signal: new AbortController().signal })
+  assert.equal((await provider.run(request)).value, 'request-only')
+  assert.equal(state.runs[0], request)
+  assert.deepEqual(state.resolutions, [])
+  let seam
+  const main = root.plugin({ apply(scope) {
+    return installExecutionSeam(scope, { attach(_scope, value) { seam = value } })
+  } })
+  await main.await()
+  const release = seam.installExecute(input => ({ logs: [], value: input === request ? 'plugin' : 'wrong request' }))
+  assert.equal((await provider.run(request)).value, 'plugin')
+  release()
+  await seam.invokeUpstream(request)
+  assert.equal(state.runs[1], request)
+  assert.deepEqual(state.resolutions, [])
+  await originalEntry.update({ config: { tag: 'reloaded request-only' } })
+  await root.loader.await()
+  assert.equal(root.get('codeRuntime'), provider)
+  assert.equal((await provider.run(request)).value, 'reloaded request-only')
+  await main.dispose()
+  await tree.root.update([{ id: 'code-runtime', name: originalUrl, config: { tag: 'reloaded request-only' } }])
+  await root.loader.await()
+  assert.equal((await root.get('codeRuntime').run(request)).value, 'reloaded request-only')
+  assert.throws(() => provider.run(request), /generation is unavailable/)
 })

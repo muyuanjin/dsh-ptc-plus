@@ -25,12 +25,17 @@ profile 使用 `node:fs/promises.readFile` 或 stream，并接受该直接 I/O �
 ## Descriptive explorer
 
 ```ts
+await capabilities.search({ query: "read file content", budgetBytes: 8192 })
 await capabilities.tree()
 await capabilities.find("session")
 await capabilities.inspect({ symbols: ["tools.session_search"], budget: 8 })
 await capabilities.inspect({ symbols: ["repl.state", "code.run"], budget: 2 })
 ```
 
+- `search({ query, budgetBytes?, limit?, cursor? })` 用中英文词项、名称及当前索引的 owner 描述/关键词查找；一次返回完整索引条目，包括参数、返回 schema 和已有 metadata。精确 symbol/name 优先，多词不要求连续；它是词法检索，不是模型语义推断。它不读取未公开的 Skill、资源或服务，也不补造 owner 指引。
+- `search` 默认 16384 UTF-8 JSON 字节、至少 512 字节，默认每页考虑 10 个匹配项。这些是检索响应边界，不是已校准的 token 最优值。`usedBytes` 计入整个返回 JSON 的包装、游标和省略指针；外层 `run_code` 格式及值图展示另有成本。契约无法容纳时不截断 schema，返回 `oversized` 与单项 `inspect` 参数；调用者可提高字节预算，或显式使用原有无字节预算的 inspect。
+- `cursor` 在相同 query 与索引内容下继续；契约/目录变化时拒绝旧游标。`remaining` 表示还未考虑的匹配项，不表示缺少的 API。每个 cell 构建一次派生索引，调用不执行被描述的能力、不请求模型，并沿用 cell lease 和 recorded-value replay。
+- search 在规范化前校验并快照原始 owner/member 及嵌套 schema 的无损 JSON 数据；accessor、非枚举字段和非普通对象会被拒绝，校验不调用 getter。这个新增边界不改变 tree/find/inspect 的原有元数据接受规则。
 - `tree()` 返回 `tools`、`repl`、`code` namespace 与 member 名称，适合低成本定位；
 - `find(query)` 在 symbol 与 description 中做确定性查找，返回 completeness、effect 和 replay 摘要；
 - `inspect({ symbols?, budget? })` 批量返回 live JSON schema 与 metadata，并显式返回 `omitted`、`unknown` 和实际 budget；不传 symbols 时检查当前 view 的前 50 项。
@@ -38,6 +43,8 @@ await capabilities.inspect({ symbols: ["repl.state", "code.run"], budget: 2 })
 当前 replay 分类为 `recorded-value`：PTC journal 会在 cold replay 返回已记录的 canonical value，不重新 dispatch tool。它不表示外部 effect 被撤销、重做或验证。`owner-replay`、`volatile` 与 `unknown` 已属于 metadata vocabulary，但只有 owner/DSH 提供证据后才能声明。
 
 explorer 不调用 capability、不提升 authority、不读取隐藏服务、不触发辅助模型请求。`tools` metadata 来自执行时 agent scope 的 live schemas；`repl.state` 与 `code.run` metadata 由插件自身契约提供。模型若要根据探索结果决定下一步，仍会发生正常的后续 turn。当前公共扩展面没有跨 prompt assembly 与 runtime dispatch 的冻结 token，因此定义变化不能被描述成原子 snapshot。
+
+能力管理开启时，同一冻结方案拥有首轮完整契约、按需目录及编译前实际成员投影，原生全量 SDK 被固定 bootstrap 替代。配置保存不重排已有会话；`/capabilities refresh` 同步环境并提交持久通知。search 的字节边界不能独自证明完整任务 token 降低；接入证据见[公共接口覆盖](context-public-interface-coverage.md)，格式和恢复路径见[组件说明](capability-planning-components.md)。
 
 `code.run` 返回 `{ logs: string[], result?: unknown }`：`logs` 按发出顺序保存 child console 输出，child 返回 `undefined` 时省略 `result`。该结构描述不改变其中任意值的 completeness，也不表示 child 无外部 effect。
 

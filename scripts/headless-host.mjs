@@ -447,7 +447,8 @@ function mergeProviderLayers(base, user) {
 export async function resolveHeadlessProvider(baseRows, runtime, dshHome, options = {}) {
   const settingsRow = baseRows.find(row => row.id === 'settings')
   let settings = {}
-  if (settingsRow !== undefined && settingsRow.disabled !== true) {
+  if (settingsRow !== undefined && settingsRow.disabled !== true
+    && settingsRow.name !== '@deepseek-ai/dsh-settings') {
     if (settingsRow.name !== '@deepseek-ai/dsh-settings-file'
       || Object.keys(settingsRow.config ?? {}).length > 0) {
       throw new Error(`${HEADLESS_CONFIG_CODE}: provider resolution requires the default DSH settings-file source or settings disabled with a complete provider in the profile`)

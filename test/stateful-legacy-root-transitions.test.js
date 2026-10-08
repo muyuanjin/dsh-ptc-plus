@@ -266,7 +266,7 @@ test('public settings updates preserve the active worker logical roots', async t
   }, required: ['code', 'description'], additionalProperties: false }, output: {} }
   const codeRuntime = createFixtureExecutionProvider({ language: 'typescript', isolation: 'worker-thread', run() { throw new Error('unexpected upstream execution') } }, 'codeRuntime')
   const ctx = { ...host.ctx, fiber: { state: 2 }, codeRuntime,
-    tools: { ...host.ctx.tools, get: () => definition, schemas: () => [definition] },
+    tools: { ...host.ctx.tools, get: () => definition, schemas: () => [definition], sdkSchemas: () => [] },
     inject(names, callback) {
       if (names.length === 1 && names[0] === 'settings') callback({ settings, effect: host.ctx.effect, fiber: { state: 2 } })
       else if (names.includes('codeRuntime')) callback(ctx)

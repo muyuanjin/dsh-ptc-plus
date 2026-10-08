@@ -59,14 +59,15 @@ function capabilitySdk(nativeSdk, userBindingsEnabled, languageSemantics) {
 
 ## PTC Plus program capabilities
 
-Discover program APIs without calling them. \`tree()\` lists namespaces and members; \`inspect()\` describes selected \`namespace.member\` symbols. \`find()\` matches case-insensitive symbols or contiguous words, separating CamelCase and punctuation. Use short queries such as \`"read"\`; if none match, shorten the query or check \`tree()\`. Missing metadata is unknown.
+Discover program APIs without calling them. \`search({query})\` retrieves whole indexed API descriptions by English/Chinese words; its UTF-8 JSON byte budget includes the envelope, with a continuation cursor and inspect references for oversized entries. \`tree()\` lists namespaces and members; \`find()\` matches case-insensitive symbols or contiguous words, separating CamelCase and punctuation; \`inspect()\` returns selected \`namespace.member\` symbols with an item-count budget. Missing metadata is unknown.
 
 \`\`\`ts
-declare class CapabilityExplorationError extends Error { readonly operation: "tree" | "find" | "inspect" }
+declare class CapabilityExplorationError extends Error { readonly operation: "tree" | "find" | "inspect" | "search" }
 declare const capabilities: {
   tree(): Promise<Array<{ namespace: string; members: string[] }>>
   find(query: string): Promise<Array<{ symbol: string; description?: string; completeness: string; effect: string; replay: string }>>
   inspect(args?: { symbols?: string[]; budget?: number }): Promise<{ symbols: unknown[]; omitted: number; unknown: string[]; budget: number }>
+  search(args: { query: string; budgetBytes?: number; limit?: number; cursor?: string }): Promise<{ matches: Array<{ symbol: string; owner: unknown; contract: unknown }>; oversized: Array<{ symbol: string; requiredBytes: number; inspect: { symbols: string[]; budget: number } }>; total: number; remaining: number; cursor: string | null; budgetBytes: number; usedBytes: number; unit: "utf8-json-bytes" }>
 }
 \`\`\`${userBindingsEnabled ? `\n${BINDING_AUTHORING_SDK}` : ''}`
 }
@@ -466,6 +467,7 @@ export function createDirectSurfaceOwner({
   userBindingsForAgent = async () => undefined,
   setAgentPresentation = async () => {},
   sessionLogView,
+  capabilityEnvironment,
 }) {
   // Composition is anchored to Agent identity because DSH selects presentation
   // once per composed agent. Request signals bind the exact assembly to stream
@@ -629,10 +631,11 @@ export function createDirectSurfaceOwner({
       if (!isCurrent()) return assembly
       const sessionPtc = presentation !== 'native' && id !== undefined
       const sessionPtcProjection = presentation === 'ptc' && id !== undefined
+      if (sessionPtc) await capabilityEnvironment?.prepare(agent, assembly.sections)
       const userBindings = sessionPtc ? await userBindingsForAgent(agent) : undefined
       if (!isCurrent()) return assembly
       const runCode = tools.find(tool => tool?.name === RUN_CODE)
-      let directTools = tools
+      let directTools = sessionPtc ? capabilityEnvironment?.visibleSchemas(agent, tools) ?? tools : tools
       if (sessionPtcProjection) {
         editTransport.ensureInstalled(agent)
         directTools = [adaptRunCodeSchema(runCode), editRunCodeSchema()]
@@ -654,9 +657,10 @@ export function createDirectSurfaceOwner({
         && assembly.sections.some(section => section?.name === 'tools:sdk'
           || (sessionPtcProjection && section?.name === completedState.collapseSectionName))
       const sections = projectsSections
-        ? assembly.sections.map(section => {
+        ? (capabilityEnvironment?.projectSections(agent, assembly.sections) ?? assembly.sections).map(section => {
             if (section?.name === 'tools:sdk') {
-              return { ...section, text: capabilitySdk(section.text, userBindings !== undefined, languageSemantics) }
+              return { ...section, text: capabilitySdk(capabilityEnvironment?.sdk(agent, section.text) ?? section.text,
+                userBindings !== undefined, languageSemantics) }
             }
             if (sessionPtcProjection && section?.name === completedState.collapseSectionName) {
               return { ...section, text: CODE_TRANSPORT_INSTRUCTION }
@@ -666,7 +670,7 @@ export function createDirectSurfaceOwner({
         : assembly.sections
       if (id !== undefined) {
         const nativeSchemas = presentation === 'ptc'
-          ? new Map(toolSchemasForAgent(agent)
+          ? new Map((capabilityEnvironment?.visibleSchemas(agent, toolSchemasForAgent(agent)) ?? toolSchemasForAgent(agent))
             .filter(schema => typeof schema?.name === 'string'
               && schema.name !== RUN_CODE && schema.name !== EDIT_RUN_CODE)
             .map(schema => [schema.name, schema]))

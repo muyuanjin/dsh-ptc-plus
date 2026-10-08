@@ -10,6 +10,7 @@ import { decodeValue, encodeValue } from '../internal/value-wire.js'
 import { fileURLToPath } from 'node:url'
 import {
   analyzeSession,
+  assertTrajectoryInvariants,
   abRunPaths,
   armScratchPaths,
   copyWorkspace,
@@ -29,9 +30,58 @@ import { collectTrajectoryFacts, machineBudgetFailures, MACHINE_BUDGET_KEYS, pen
 import { aggregateTrajectories, trajectoryDelta } from '../scripts/ab-trajectory-report.mjs'
 import { cleanupOwnedPath } from '../scripts/headless-host.mjs'
 import { apply as observeToolResults, readEvaluationToolResults } from '../scripts/evaluation-tool-results.mjs'
+import { Session } from '@deepseek-ai/dsh-session'
+import { capabilityConfiguration, createCapabilityEnvironment } from '../internal/capability-environment.js'
 
 const persona = 'You are a coding agent powered by the {{model}} model. Your working directory is {{cwd}}.'
 const runtime = { toolsMode: 'ptc', permissionMode: 'danger-full-access' }
+
+test('permits only validated enabled capability plans matching the resolved A/B treatment', async () => {
+  const session = Session.create('capability-ab-treatment')
+  const env = createCapabilityEnvironment({ ctx: {}, config: { capabilityManagementEnabled: true,
+    capabilityBaseline: '[]', capabilityOverrides: '{}', capabilityStatistics: '{"enabled":false}' },
+    toolSchemasForAgent: () => [] })
+  const agent = { id: session.id, session }
+  await env.prepare(agent, [])
+  assert.deepEqual(initialInjections([{ type: 'session', id: session.id }, ...session.snapshotEvents()], 'workspace'), [])
+  const accepted = await env.preStep({ agent }, async () => ({ kind: 'enter', messages: [] }))
+  session.append('system/message', { turn: 1, step: 1,
+    message: createSystemMessage({ source: { kind: 'system-prompt' }, content: [{ type: 'text', text: 'Fixture system prompt.' }] }) },
+    { surfaceOp: 'append' })
+  for (const message of accepted.messages) session.append('user/message', message, { surfaceOp: 'append' })
+  const plan = session.snapshotEvents().find(event => event.data?.source?.form === 'capability-plan')
+  const events = [{ type: 'session', id: session.id }, plan, { type: 'request/header', seq: 2 }]
+  const injections = initialInjections(events, 'workspace')
+  assert.equal(injections[0].treatment, 'capability-environment')
+  assert.equal(injections[0].bytes, Buffer.byteLength(injections[0].text))
+  const audits = { headerAudit: { failures: [], headers: [] }, systemAudit: { failures: [], system: '' },
+    contextAudit: { failures: [] }, injections,
+    facts: { failures: [], calls: new Map(), results: new Map(), finalAnswer: 'done', timeline: [], finalTurn: { data: { reason: { kind: 'completed' } } } } }
+  const settings = events[1].data.source.snapshot.settings
+  const expected = { variant: 'plugin', capabilityManagementEnabled: true, capabilitySettings: settings, model: 'model', cwd: 'workspace' }
+  const relevant = options => assertTrajectoryInvariants(events, options, audits).failures.filter(failure => /initial context|initial capability/.test(failure))
+  assert.deepEqual(relevant(expected), [])
+  for (const patch of [{ manual: { baseline: ['tools.probe'], overrides: {} } },
+    { manual: { baseline: [], overrides: { 'tools.probe': 'closed' } } },
+    { statistics: { enabled: false, windowSize: 20 } }, { budgetBytes: 100 },
+    { directoryBudgetBytes: 512 }, { recoveryBytes: 100 }, { previewTokens: 100 }]) {
+    assert.match(relevant({ ...expected, capabilitySettings: { ...settings, ...patch } }).join('\n'), /settings do not match/)
+  }
+  assert.match(relevant({ ...expected, capabilityManagementEnabled: false }).join('\n'), /resolved capability management/)
+  assert.match(relevant({ ...expected, variant: 'baseline' }).join('\n'), /resolved capability management/)
+  const forged = structuredClone(events)
+  forged[1].data.content[0].text += 'unapproved context'
+  assert.equal(initialInjections(forged, 'workspace')[0].treatment, undefined)
+  const plugin = rows(false)
+  const baseline = rows(true)
+  plugin.find(row => row.id === 'ptc-plus').config = { capabilityManagementEnabled: true }
+  baseline.find(row => row.id === 'ptc-plus').config = { capabilityManagementEnabled: true }
+  const pair = validateConfigPair(plugin, baseline, runtime)
+  assert.equal(pair.capabilityManagementEnabled, true)
+  assert.deepEqual(pair.capabilitySettings.manual, { baseline: [], overrides: {} })
+  assert.equal(pair.capabilitySettings.statistics.windowSize, 100)
+  assert.equal(validateConfigPair(rows(false), rows(true), runtime).capabilityManagementEnabled, false)
+})
 
 test('separates opaque arm scratch trees from evaluator artifacts', () => {
   const scratchRoot = join(tmpdir(), 'ptc-ab-scratch')

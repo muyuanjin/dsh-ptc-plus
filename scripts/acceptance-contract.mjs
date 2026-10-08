@@ -1,3 +1,4 @@
+import { readCapabilityContextMessage } from '../internal/capability-environment.js'
 import { isHostRuntimeContextSource, isPtcMessageSource } from '../internal/message-sources.js'
 import { normalizeJournal } from '../internal/session-journal.js'
 import { decodeValue } from '../internal/value-wire.js'
@@ -1091,22 +1092,38 @@ export function auditRuntimeContexts(events, config = {}) {
   const deliveredNotices = new Set()
   const producerStates = new Map()
   const committedSnapshots = new Map()
+  const descriptionEntries = new Map()
   const sourceEvents = []
-  const combinedState = () => new Map([
+  const combinedState = () => {
+    const combined = new Map([
     ...[...(producerStates.get('aggregate') ?? [])].filter(([name]) => (
       !producerStates.has('ptc-plus') || !name.startsWith('tools:ptc-plus-')
     )),
     ...(producerStates.get('ptc-plus') ?? []),
     ...(producerStates.get('ptc-plus/catalog') ?? []),
-  ])
+    ...['capability-plan', 'capability-navigation'].flatMap(form =>
+      [...(producerStates.get(`ptc-plus/${form}`) ?? [])]),
+    ])
+    for (const [producer, state] of producerStates) {
+      if (!producer.startsWith('ptc-plus/capability-descriptions/')) continue
+      for (const [name, section] of state) {
+        const previous = combined.get(name)
+        combined.set(name, previous ? { ...section, text: previous.text + section.text,
+          chars: previous.chars + section.chars } : section)
+      }
+    }
+    return combined
+  }
   const restoreSurface = nodes => {
     producerStates.clear()
     priorSignatures.clear()
+    descriptionEntries.clear()
     for (const seq of nodes) {
       const record = committedSnapshots.get(seq)
       if (record === undefined) continue
       producerStates.set(record.producer, record.state)
       priorSignatures.set(record.producer, record.signature)
+      if (record.entries) descriptionEntries.set(seq, record.entries)
     }
   }
   let nextRequestIndex = 1
@@ -1122,6 +1139,7 @@ export function auditRuntimeContexts(events, config = {}) {
         failures.push(`cannot verify runtime context surface at seq ${String(event.seq)}`)
         producerStates.clear()
         priorSignatures.clear()
+        descriptionEntries.clear()
         effective.clear()
       }
     }
@@ -1129,9 +1147,11 @@ export function auditRuntimeContexts(events, config = {}) {
     const aggregate = event.type === 'user/message' && isHostRuntimeContextSource(source)
     const aggregateClear = aggregate && source.form === undefined
       && collectModelText(event.data?.content).join('\n') === 'Current runtime context: none. Earlier runtime-context snapshots no longer apply.'
-    const ptc = event.type === 'user/message' ? readRuntimeMessage(event.data) : undefined
+    const capability = event.type === 'user/message'
+      ? readCapabilityContextMessage(event.data, events.find(item => item.type === 'session')?.id) : undefined
+    const ptc = event.type === 'user/message' ? readRuntimeMessage(event.data) ?? capability : undefined
     if (event.type === 'user/message' && isPtcMessageSource(source)
-      && ['snapshot', 'notice', 'catalog'].includes(source.form) && ptc === undefined
+      && ['snapshot', 'notice', 'catalog', 'capability-plan', 'capability-navigation', 'capability-descriptions'].includes(source.form) && ptc === undefined
       && readBindingAction(event.data) === undefined) {
       failures.push(`malformed PTC runtime message at seq ${String(event.seq ?? 'unknown')}`)
     }
@@ -1141,8 +1161,17 @@ export function auditRuntimeContexts(events, config = {}) {
       const rawSections = aggregateClear ? [] : ptc?.form === 'notice' ? [{ name: ptc.name, text: ptc.text }]
         : ptc?.sections ?? event.data.source.sections
       const sections = snapshotSections({ ...event, data: { source: { sections: rawSections } } }, failures, allowed, maxSnapshotChars)
-      const producer = aggregate ? 'aggregate' : ptc?.form === 'catalog' ? 'ptc-plus/catalog' : 'ptc-plus'
+      const producer = aggregate ? 'aggregate' : capability ? `ptc-plus/${capability.form}`
+        + (capability.form === 'capability-descriptions' ? `/${event.seq}` : '')
+        : ptc?.form === 'catalog' ? 'ptc-plus/catalog' : 'ptc-plus'
       const signature = JSON.stringify(sections.map(({ name, text }) => [name, text]))
+      const entries = capability?.form === 'capability-descriptions' ? event.data.source.entries : undefined
+      if (entries) {
+        const visibleEntries = new Set([...descriptionEntries.values()].flat())
+        if (entries.some(id => visibleEntries.has(id))) {
+          failures.push(`runtime descriptions at seq ${String(event.seq)} repeat a visible capability entry`)
+        }
+      }
       if (ptc?.form === 'notice' ? deliveredNotices.has(ptc.name) : signature === priorSignatures.get(producer)) {
         failures.push(ptc?.form === 'notice'
           ? `PTC notice at seq ${String(event.seq ?? 'unknown')} repeats a delivered identity`
@@ -1163,10 +1192,19 @@ export function auditRuntimeContexts(events, config = {}) {
       }
       if (ptc?.form !== 'notice') {
         producerStates.set(producer, current)
-        committedSnapshots.set(event.seq, { producer, state: current, signature })
+        committedSnapshots.set(event.seq, { producer, state: current, signature, entries })
+        if (entries) descriptionEntries.set(event.seq, entries)
         if (replacementNodes !== undefined) restoreSurface(replacementNodes)
       }
       const combined = combinedState()
+      if (descriptionEntries.size) {
+        const name = 'tools:ptc-plus-capability-descriptions'
+        const chars = combined.get(name)?.chars ?? 0
+        const bound = allowed.get(name)
+        if (bound !== undefined && chars > bound) failures.push(`runtime context ${name} has ${chars} visible chars; budget is ${bound}`)
+        const total = [...combined.values()].reduce((sum, section) => sum + section.chars, 0)
+        if (total > maxSnapshotChars) failures.push(`runtime snapshot has ${total} visible section chars; budget is ${maxSnapshotChars}`)
+      }
       const ptcNames = new Set([
         ...[...effective.keys()].filter(name => name.startsWith('tools:ptc-plus-')),
         ...[...combined.keys()].filter(name => name.startsWith('tools:ptc-plus-')),

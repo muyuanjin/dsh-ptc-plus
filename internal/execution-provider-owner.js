@@ -1,20 +1,23 @@
-import { createExecutionSeam, EXECUTION_SEAM_SERVICE } from './execution-seam-compat.js'
+import { createExecutionSeam, EXECUTION_SEAM_SERVICE, LEGACY_EXECUTION_SEAM_SERVICE } from './execution-seam-compat.js'
 
 export const name = 'ptc-plus-execution-provider'
 export const inject = ['loader']
 
 export function apply(ctx, config = {}) {
   const ownerFiber = ctx.fiber
-  const { originalEntryId = 'ptc-runtime', isolation = 'ptc-plus-original' } = config
+  const { originalEntryId = 'ptc-runtime', isolation = 'ptc-plus-original', serviceName = EXECUTION_SEAM_SERVICE } = config
   if (typeof originalEntryId !== 'string' || originalEntryId.length === 0
     || typeof isolation !== 'string' || isolation.length === 0) {
     throw new TypeError('ptc-plus: execution provider requires an original entry id and named isolation')
   }
+  if (![EXECUTION_SEAM_SERVICE, LEGACY_EXECUTION_SEAM_SERVICE].includes(serviceName)) {
+    throw new TypeError('ptc-plus: execution provider serviceName must be codeRuntime or ptcRuntime')
+  }
   // Profile rows belong to the Include's tree; the global Loader resolves root IDs.
   const entryTree = ownerFiber.entry?.parent.tree ?? ctx.loader
   const originalEntry = entryTree.resolve(originalEntryId)
-  const isolated = () => originalEntry.options.isolate?.[EXECUTION_SEAM_SERVICE] === isolation
-  if (!isolated()) throw new Error(`ptc-plus: original entry ${originalEntryId} must isolate ${EXECUTION_SEAM_SERVICE} as ${isolation}`)
+  const isolated = () => originalEntry.options.isolate?.[serviceName] === isolation
+  if (!isolated()) throw new Error(`ptc-plus: original entry ${originalEntryId} must isolate ${serviceName} as ${isolation}`)
   const originalContext = originalEntry.context.extend({ [originalEntry.constructor.key]: undefined })
   let watcher
   let live
@@ -29,9 +32,9 @@ export function apply(ctx, config = {}) {
     rejectAttachment = reject
   })
   const readOriginal = () => {
-    const original = isolated() ? originalContext.get(EXECUTION_SEAM_SERVICE) : undefined
+    const original = isolated() ? originalContext.get(serviceName) : undefined
     if (stopped || original === undefined) {
-      throw new Error(`ptc-plus: original ${EXECUTION_SEAM_SERVICE} generation is unavailable`)
+      throw new Error(`ptc-plus: original ${serviceName} generation is unavailable`)
     }
     return original
   }
@@ -69,7 +72,7 @@ export function apply(ctx, config = {}) {
       get timeout() { return readOriginal().timeout },
       resolve(request) {
         const original = readOriginal()
-        const spec = original.resolve(request)
+        const spec = serviceName === EXECUTION_SEAM_SERVICE ? original.resolve(request) : request
         if (spec !== null && typeof spec === 'object') {
           resolutions.set(spec, { original, generation })
         }
@@ -82,7 +85,7 @@ export function apply(ctx, config = {}) {
         return original.run(spec)
       },
     }
-    const seam = createExecutionSeam(delegate, EXECUTION_SEAM_SERVICE)
+    const seam = createExecutionSeam(delegate, serviceName)
     const entry = { seam }
     live = entry
     entry.disposeChild = ctx.effect(() => {
@@ -91,7 +94,7 @@ export function apply(ctx, config = {}) {
         apply(childContext) {
           childContext.effect(() => {
             if (stopped || live !== entry || !isolated()) return () => {}
-            entry.unregister = childContext.provide(EXECUTION_SEAM_SERVICE, seam.provider)
+            entry.unregister = childContext.provide(serviceName, seam.provider)
             return () => entry.unregister()
           }, 'ptc-plus owned execution registration')
         },
@@ -109,9 +112,9 @@ export function apply(ctx, config = {}) {
   const watch = () => {
     if (stopped || watcher !== undefined || !isolated()) return
     ctx.effect(() => {
-      const observer = originalContext.inject([EXECUTION_SEAM_SERVICE], scope => {
+      const observer = originalContext.inject([serviceName], scope => {
         if (stopped || !isolated()) return
-        createExecutionSeam(scope.get(EXECUTION_SEAM_SERVICE), EXECUTION_SEAM_SERVICE)
+        createExecutionSeam(scope.get(serviceName), serviceName)
         const currentGeneration = { active: true }
         generation = currentGeneration
         scope.effect(() => () => {
@@ -146,7 +149,7 @@ export function apply(ctx, config = {}) {
   }, 'ptc-plus execution provider composition')
   if (originalEntry.disabled) resolveAttachment()
   const timer = setTimeout(() => rejectAttachment(new Error(
-    `ptc-plus: original execution entry ${originalEntryId} did not publish ${EXECUTION_SEAM_SERVICE}`,
+    `ptc-plus: original execution entry ${originalEntryId} did not publish ${serviceName}`,
   )), 30_000)
   ctx.effect(() => () => clearTimeout(timer), 'ptc-plus original execution provider wait')
   const originalReady = originalEntry.fiber?.await() ?? Promise.resolve()

@@ -21,6 +21,10 @@ function assertIntegerField(field, value) {
 
 /** Validate one field against its CONFIG_FIELDS declaration. */
 function assertField(field, value) {
+  if (field.type === 'string') {
+    if (typeof value !== 'string') throw new TypeError(`ptc-plus: ${field.key} must be a string`)
+    return
+  }
   if (field.type === 'boolean') {
     if (typeof value !== 'boolean') {
       throw new TypeError(`ptc-plus: ${field.key} must be a boolean`)
@@ -74,6 +78,15 @@ export function resolveConfig(config = {}) {
     resolved[field.key] = liveConfigValue(resolved[field.key], CONFIG_DEFAULTS[field.key])
   }
   for (const field of CONFIG_FIELDS) assertField(field, resolved[field.key])
+  for (const [key, array] of [['capabilityBaseline', true], ['capabilityOverrides', false]]) {
+    let value
+    try { value = JSON.parse(resolved[key]) } catch { throw new TypeError(`ptc-plus: ${key} must contain valid JSON`) }
+    if (array ? !Array.isArray(value) || value.some(id => typeof id !== 'string' || !id.trim())
+      : value === null || typeof value !== 'object' || Array.isArray(value)
+        || Object.entries(value).some(([id, selection]) => !id.trim() || !['full', 'on-demand', 'closed'].includes(selection))) {
+      throw new TypeError(`ptc-plus: invalid ${key}`)
+    }
+  }
   // Migrate complete old policies; mixed choices retain their explicit
   // compatibility state until the user selects the unified language.
   const legacyKeys = [

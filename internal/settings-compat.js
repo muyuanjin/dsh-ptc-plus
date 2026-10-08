@@ -38,6 +38,8 @@ export function hostOwnsSettingsDocument(settingsModule) {
 export function configFieldSchema({ Schema, field, settingsModule }) {
   const base = field.type === 'boolean'
     ? Schema.boolean().default(field.default)
+    : field.type === 'string'
+      ? Schema.string().default(field.default)
     : field.type === 'enum'
       // Keep omission visible until resolveConfig migrates legacy policies.
       ? Schema.union(field.options.map(option => Schema.const(option)))

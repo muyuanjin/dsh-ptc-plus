@@ -29,8 +29,79 @@ import { decodeValue, encodeValue } from '../internal/value-wire.js'
 import { editRejectedCell } from '../internal/rejected-cell-editor.js'
 import { ptcToolsMode } from '../scripts/dsh-host-contract.mjs'
 import { analyzeSession } from '../scripts/ab-headless-trajectories.mjs'
+import { Session } from '@deepseek-ai/dsh-session'
+import { createCapabilityEnvironment } from '../internal/capability-environment.js'
 
 const headlessRuntime = { toolsMode: 'ptc', permissionMode: 'danger-full-access' }
+
+test('accounts for capability plans, navigation and recovered descriptions with bounds and replacement evidence', async () => {
+  const session = Session.create('capability-context-audit')
+  const env = createCapabilityEnvironment({ ctx: {}, config: { capabilityManagementEnabled: true,
+    capabilityBaseline: '[]', capabilityOverrides: '{}', capabilityStatistics: '{"enabled":false}',
+    capabilityBudgetBytes: 4096, capabilityDirectoryBytes: 4096 }, toolSchemasForAgent: () => [] })
+  const agent = { id: session.id, session }
+  await env.prepare(agent, [])
+  assert.equal(session.snapshotEvents().some(event => event.data?.source?.form === 'capability-plan'), false)
+  const accepted = await env.preStep({ agent }, async () => ({ kind: 'enter', messages: [] }))
+  session.append('system/message', { turn: 1, step: 1,
+    message: createSystemMessage({ source: { kind: 'system-prompt' }, content: [{ type: 'text', text: 'Fixture system prompt.' }] }) },
+    { surfaceOp: 'append' })
+  for (const message of accepted.messages) session.append('user/message', message, { surfaceOp: 'append' })
+  const committed = session.snapshotEvents().find(event => event.data?.source?.form === 'capability-plan')
+  const plan = { ...committed, seq: 0 }
+  const message = (form, text, extra = {}) => createUserMessage({ source: { kind: 'plugin:ptc-plus', form, ...extra },
+    content: [{ type: 'text', text }] })
+  const navigation = { type: 'user/message', seq: 1, time: 1, surfaceOp: 'append', data: message('capability-navigation', 'Discover with capabilities.search.') }
+  const descriptions = { type: 'user/message', seq: 2, time: 2, surfaceOp: 'append',
+    data: message('capability-descriptions', 'Complete probe contract.', { entries: ['tools.probe'] }) }
+  const header = { type: 'session', id: session.id }
+  const events = [header, plan, navigation, descriptions, { type: 'request/header', seq: 3 }]
+  const forms = ['capability-plan', 'capability-navigation', 'capability-descriptions']
+  const config = { allowed: forms.map(form => ({ name: `tools:ptc-plus-${form}`, maxChars: 4096 })), maxSnapshotChars: 4096 }
+  const audit = auditRuntimeContexts(events, config)
+  assert.deepEqual(audit.failures, [])
+  assert.equal(audit.totalMessageChars, [plan, navigation, descriptions].reduce((sum, event) => sum + event.data.content[0].text.length, 0))
+  assert.equal(audit.requests[0].sections.length, 3)
+  assert.match(auditRuntimeContexts(events).failures.join('\n'), /disallowed PTC Plus section/)
+  const bounded = structuredClone(config)
+  bounded.allowed[2].maxChars = 1
+  assert.match(auditRuntimeContexts(events, bounded).failures.join('\n'), /budget is 1/)
+  const corrupt = structuredClone(events)
+  corrupt[1].data.source.digest = 'damaged'
+  assert.match(auditRuntimeContexts(corrupt, config).failures.join('\n'), /malformed PTC runtime message/)
+  assert.match(auditRuntimeContexts([...events, { ...navigation, seq: 4 }], config).failures.join('\n'), /repeats an unchanged/)
+  const replacement = { type: 'user/message', seq: 4, time: 4,
+    data: createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: 'Compacted.' }] }),
+    surfaceOp: { op: 'replace', startSeq: 1, endSeq: 2 }, sourceEventSeqs: [1, 2] }
+  const recovered = auditRuntimeContexts([...events, replacement, { ...navigation, seq: 5 },
+    { ...descriptions, seq: 6 }, { type: 'request/header', seq: 7 }], config)
+  assert.deepEqual(recovered.failures, [])
+  assert.equal(recovered.requests.at(-1).sections.length, 3)
+})
+
+test('additive recovered descriptions retain visible subsets, enforce their total and reassert only removed entries', () => {
+  const description = (seq, id, text) => ({ type: 'user/message', seq, time: seq, surfaceOp: 'append',
+    data: createUserMessage({ source: { kind: 'plugin:ptc-plus', form: 'capability-descriptions', entries: [id] },
+      content: [{ type: 'text', text }] }) })
+  const a = description(0, 'tools.a', 'A'.repeat(20))
+  const b = description(1, 'tools.b', 'B'.repeat(20))
+  const header = seq => ({ type: 'request/header', seq })
+  const config = { allowed: [{ name: 'tools:ptc-plus-capability-descriptions', maxChars: 100 }], maxSnapshotChars: 100 }
+  const audit = auditRuntimeContexts([a, b, header(2)], config)
+  assert.deepEqual(audit.failures, [])
+  assert.equal(audit.requests[0].sections[0].text, a.data.content[0].text + b.data.content[0].text)
+  assert.equal(audit.requests[0].sections[0].chars, 40)
+  assert.match(auditRuntimeContexts([a, b, { ...a, seq: 3 }], config).failures.join('\n'), /repeat a visible capability entry/)
+  assert.match(auditRuntimeContexts([a, b], { ...config, maxSnapshotChars: 30 }).failures.join('\n'), /40 visible section chars/)
+  assert.match(auditRuntimeContexts([a, b], { ...config, allowed: [{ name: config.allowed[0].name, maxChars: 30 }] }).failures.join('\n'), /40 visible chars/)
+  const replacement = { type: 'user/message', seq: 3, time: 3,
+    data: createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: 'Compacted A.' }] }),
+    surfaceOp: { op: 'replace', startSeq: 0, endSeq: 0 }, sourceEventSeqs: [0] }
+  const restored = auditRuntimeContexts([a, b, header(2), replacement, { ...a, seq: 4 }, header(5)], config)
+  assert.deepEqual(restored.failures, [])
+  assert.equal(restored.requests.at(-1).sections[0].chars, 40)
+  assert.match(auditRuntimeContexts([a, b, header(2), replacement, { ...b, seq: 4 }], config).failures.join('\n'), /repeat a visible capability entry/)
+})
 
 test('public series headers keep exact prefix checks while bundled streams retain accounting', () => {
   const header = { system: 'stable', config: { provider: 'fixture', model: 'fixture' }, tools: [] }

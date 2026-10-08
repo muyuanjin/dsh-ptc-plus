@@ -3,7 +3,9 @@ import test from 'node:test'
 import {
   capabilityFind,
   capabilityInspect,
+  capabilitySearch,
   capabilityTree,
+  createCapabilitySearcher,
   toolCapabilityMetadata,
 } from '../internal/program-bindings.js'
 
@@ -156,4 +158,183 @@ test('preserves every replay classification through find and inspect', () => {
     capabilityInspect(metadata).symbols.map(member => member.replay),
     replay,
   )
+  assert.deepEqual(capabilitySearch(metadata, { query: 'tools' }).matches.map(member => member.contract.replay), replay)
+})
+
+function assertSearchBudget(page, budgetBytes) {
+  assert.equal(page.unit, 'utf8-json-bytes')
+  assert.equal(page.budgetBytes, budgetBytes)
+  assert.equal(page.usedBytes, Buffer.byteLength(JSON.stringify(page), 'utf8'))
+  assert.ok(page.usedBytes <= budgetBytes)
+}
+
+test('search retrieves complete owner contracts for non-contiguous English and Chinese tasks', () => {
+  const metadata = [{
+    namespace: 'files', owner: 'public-files-owner', revision: 'r2', keywords: ['repository'],
+    members: [{
+      name: 'readFile', description: 'Read a bounded file window. 读取文件的指定窗口。',
+      keywords: ['content', '内容'], parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] },
+      returns: { type: 'string' }, sourceRef: { kind: 'authored', path: 'public/files.ts' },
+      completeness: 'bounded', replay: 'owner-replay', effect: 'filesystem.read',
+    }],
+  }, { namespace: 'state', members: [{ name: 'read', description: 'Read checkpoint names.' }] }]
+  for (const query of ['Please read file content from the repository', '请帮我读取文件的内容', 'read window']) {
+    const page = capabilitySearch(metadata, { query, budgetBytes: 4096 })
+    assertSearchBudget(page, 4096)
+    assert.equal(page.matches[0].symbol, 'files.readFile')
+    assert.deepEqual(page.matches[0].contract, metadata[0].members[0])
+    assert.deepEqual(page.matches[0].owner, {
+      namespace: 'files', owner: 'public-files-owner', revision: 'r2', keywords: ['repository'],
+    })
+    assert.equal(page.cursor, null)
+    assert.equal(page.remaining, 0)
+  }
+  assert.deepEqual(capabilitySearch(metadata, { query: 'rea' }).matches, [])
+  assert.deepEqual(capabilitySearch(metadata, { query: 'unrelated' }).matches, [])
+  assert.deepEqual(capabilityFind(metadata, 'read window'), [])
+})
+
+test('search ranks exact identities before task words and distinguishes same names across namespaces', () => {
+  const metadata = [
+    { namespace: 'b', members: [{ name: 'read', description: 'Read a read file.' }] },
+    { namespace: 'a', members: [{ name: 'read', description: 'Read file.' }] },
+    { namespace: 'b', members: [{ name: 'lookup', description: 'Read file.' }] },
+    { namespace: 'other', members: [{ name: 'a', description: 'Read file.' }] },
+  ]
+  assert.equal(capabilitySearch(metadata, { query: 'A.READ' }).matches[0].symbol, 'a.read')
+  assert.equal(capabilitySearch(metadata, { query: 'b' }).matches[0].symbol, 'b.lookup')
+  assert.deepEqual(capabilitySearch(metadata, { query: 'read' }).matches.map(item => item.symbol), [
+    'a.read', 'b.read', 'b.lookup', 'other.a',
+  ])
+  assert.equal(capabilitySearch(metadata, { query: 'read file' }).matches[0].symbol, 'a.read')
+  assert.deepEqual(capabilitySearch(metadata, { query: 'read' }), capabilitySearch([...metadata].reverse(), { query: 'read' }))
+  assert.throws(() => capabilitySearch([...metadata, metadata[0]], { query: 'read' }), /ambiguous symbol b\.read/)
+})
+
+test('search bounds thousands of members including wrappers and resumes without missing or repeating matches', () => {
+  const metadata = [{
+    namespace: 'tools', members: Array.from({ length: 2500 }, (_, index) => ({
+      name: `read${String(index).padStart(4, '0')}`, description: 'Read a file.',
+      parameters: { type: 'object', properties: { path: { type: 'string' } } },
+    })),
+  }]
+  const search = createCapabilitySearcher(metadata)
+  let page = search({ query: 'read file', budgetBytes: 2048, limit: 7 })
+  assert.equal(page.total, 2500)
+  assert.ok(page.matches.length > 0 && page.matches.length <= 7)
+  const visited = []
+  do {
+    assertSearchBudget(page, 2048)
+    visited.push(...page.matches.map(item => item.symbol))
+    assert.deepEqual(page.oversized, [])
+    if (page.cursor === null) break
+    const cursor = page.cursor
+    page = search({ query: 'read file', budgetBytes: 2048, limit: 7, cursor })
+    assert.deepEqual(page, search({ query: 'read file', budgetBytes: 2048, limit: 7, cursor }))
+  } while (page.remaining >= 0)
+  assert.equal(visited.length, 2500)
+  assert.equal(new Set(visited).size, 2500)
+  assert.deepEqual(visited, metadata[0].members.map(item => `tools.${item.name}`))
+})
+
+test('search reports oversized schemas without truncation and counts Chinese, escaping and continuation bytes', () => {
+  const parameters = {
+    type: 'object', $defs: { shared: { type: 'string', description: '中文🙂\\\"'.repeat(500) } },
+    properties: { value: { $ref: '#/$defs/shared' } }, required: ['value'],
+  }
+  const metadata = [{ namespace: 'tools', members: [
+    { name: 'readA', description: 'Read a file.', parameters },
+    { name: 'readB', description: 'Read a file.', parameters: {} },
+  ] }]
+  const page = capabilitySearch(metadata, { query: 'read file', budgetBytes: 1024 })
+  assertSearchBudget(page, 1024)
+  assert.deepEqual(page.matches.map(item => item.symbol), ['tools.readB'])
+  assert.deepEqual(page.oversized[0].inspect, { symbols: ['tools.readA'], budget: 1 })
+  assert.ok(page.oversized[0].requiredBytes > 1024)
+  assert.deepEqual(capabilityInspect(metadata, page.oversized[0].inspect.symbols, 1).symbols[0].parameters, parameters)
+  const expanded = capabilitySearch(metadata, { query: 'tools.readA', budgetBytes: 20000 })
+  assertSearchBudget(expanded, 20000)
+  assert.deepEqual(expanded.matches[0].contract.parameters, parameters)
+  assert.ok(Buffer.byteLength(JSON.stringify(expanded), 'utf8') > JSON.stringify(expanded).length)
+  assert.equal(expanded.unit.includes('token'), false)
+  assert.deepEqual(metadata[0].members[0].parameters, parameters)
+})
+
+test('search rejects malformed parameters, changed cursors and non-JSON contracts without changing legacy APIs', () => {
+  const metadata = [{ namespace: 'files', members: [{ name: 'read' }, { name: 'readAll' }] }]
+  for (const params of [undefined, null, [], {}, { query: null }, { query: '' }, { query: ' ' },
+    { query: 'read', budgetBytes: 1 }, { query: 'read', budgetBytes: 1024.5 }, { query: 'read', budgetBytes: null },
+    { query: 'read', limit: 0 }, { query: 'read', limit: null }, { query: 'read', limit: Infinity },
+    { query: 'read', surprise: true }, { query: 'read', cursor: null }, { query: 'read', cursor: 'broken' }]) {
+    assert.throws(() => capabilitySearch(metadata, params), TypeError)
+  }
+  const first = capabilitySearch(metadata, { query: 'read', limit: 1 })
+  assert.ok(first.cursor)
+  assert.throws(() => capabilitySearch(metadata, { query: 'readAll', cursor: first.cursor }), /catalog\/query changed/)
+  assert.throws(() => capabilitySearch([{ namespace: 'files', members: [{ name: 'read', revision: 'changed' }, { name: 'readAll' }] }], {
+    query: 'read', cursor: first.cursor,
+  }), /catalog\/query changed/)
+  assert.deepEqual(capabilitySearch(metadata, { query: 'read', limit: 1, cursor: first.cursor }).matches.map(item => item.symbol), ['files.readAll'])
+  const reordered = [{ members: [{ name: 'read' }, { name: 'readAll' }], namespace: 'files' }]
+  assert.deepEqual(capabilitySearch(reordered, { query: 'read', limit: 1, cursor: first.cursor }).matches.map(item => item.symbol), ['files.readAll'])
+  const camelMetadata = [{ namespace: 'files', members: [{ name: 'readFile' }, { name: 'other', description: 'Read a file.' }] }]
+  const camelPage = capabilitySearch(camelMetadata, { query: 'readFile', limit: 1 })
+  assert.ok(camelPage.cursor)
+  assert.throws(() => capabilitySearch(camelMetadata, { query: 'readfile', cursor: camelPage.cursor }), /catalog\/query changed/)
+  for (const parameters of [{ impossible: undefined }, { impossible: 1n }, { impossible: new Date() }, { impossible: NaN },
+    { impossible: new Map() }, { impossible: [, 1] }]) {
+    const value = [{ namespace: 'files', members: [{ name: 'read', parameters }] }]
+    assert.throws(() => capabilitySearch(value, { query: 'read' }), /lossless JSON data/)
+    assert.deepEqual(capabilityInspect(value).symbols[0].parameters, parameters)
+  }
+  const hugeName = `read${'字'.repeat(1000)}`
+  assert.throws(() => capabilitySearch([{ namespace: 'files', members: [{ name: hugeName }] }], {
+    query: hugeName, budgetBytes: 512,
+  }), /needs at least.*inspect reference/)
+})
+
+test('search retains an immutable request-local catalog snapshot', () => {
+  const metadata = [{ namespace: 'files', members: [{ name: 'read', parameters: { type: 'object' } }] }]
+  const search = createCapabilitySearcher(metadata)
+  metadata[0].members[0].parameters.type = 'string'
+  const first = search({ query: 'read' })
+  assert.equal(first.matches[0].contract.parameters.type, 'object')
+  assert.throws(() => { first.matches[0].contract.parameters.type = 'number' }, TypeError)
+  assert.deepEqual(search({ query: 'read' }), first)
+})
+
+test('search validates original owner member and nested JSON structure before normalization', () => {
+  for (const level of ['owner', 'member', 'parameters']) {
+    for (const kind of ['accessor', 'non-enumerable', 'prototype']) {
+      let reads = 0
+      const parameters = { type: 'object' }
+      const member = { name: 'read', parameters }
+      const owner = { namespace: 'files', members: [member] }
+      const target = level === 'owner' ? owner : level === 'member' ? member : parameters
+      if (kind === 'prototype') Object.setPrototypeOf(target, { description: 'Read file.' })
+      else Object.defineProperty(target, 'description', kind === 'accessor'
+        ? { enumerable: true, get() { reads += 1; return 'Read file.' } }
+        : { enumerable: false, value: 'Read file.' })
+      assert.throws(() => createCapabilitySearcher([owner]), /lossless JSON data/, `${level}: ${kind}`)
+      assert.equal(reads, 0, `${level}: ${kind} must not invoke accessors`)
+      // Existing discovery retains its historical metadata acceptance boundary.
+      assert.equal(capabilityTree([owner])[0].members[0], 'read')
+      assert.equal(capabilityInspect([owner]).symbols[0].name, 'read')
+    }
+  }
+  for (const level of ['catalog', 'members', 'parameters']) {
+    let reads = 0
+    const parameters = ['native']
+    const metadata = [{ namespace: 'files', members: [{ name: 'read', parameters }] }]
+    const target = level === 'catalog' ? metadata : level === 'members' ? metadata[0].members : parameters
+    const prototype = Object.create(Array.prototype)
+    Object.defineProperty(prototype, 'toJSON', {
+      get() { reads += 1; return () => ['changed'] },
+    })
+    Object.setPrototypeOf(target, prototype)
+    assert.throws(() => createCapabilitySearcher(metadata), /lossless JSON data/)
+    assert.equal(reads, 0, `${level} array must not invoke inherited toJSON`)
+    Object.setPrototypeOf(target, null)
+    assert.deepEqual(createCapabilitySearcher(metadata)({ query: 'read' }).matches[0].contract.parameters, ['native'])
+  }
 })

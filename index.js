@@ -9,6 +9,8 @@
 import Schema from '@deepseek-ai/schemastery'
 import { randomUUID } from 'node:crypto'
 import { createDirectSurfaceOwner } from './internal/direct-surface-owner.js'
+import { CapabilityStatisticsStore } from './internal/capability-statistics-store.js'
+import { createCapabilityEnvironment } from './internal/capability-environment.js'
 import { createRuntimeMessageOwner } from './internal/runtime-contexts.js'
 import { createSessionLogOwner } from './internal/session-log-view.js'
 import { PTC_DELIVERY_CONTEXT } from './internal/runtime-messages.js'
@@ -27,6 +29,7 @@ import { createReplMemoryProjection } from './internal/repl-memory-projection.js
 import { createUserBindingDraftProjection } from './internal/user-binding-draft-projection.js'
 import { createUserBindingsOwner } from './internal/user-bindings-owner.js'
 import { createHostRpc } from './internal/host-rpc.js'
+import { RPC_CONTRACTS } from './internal/rpc-contract.js'
 import { createReplObservationInterest } from './internal/repl-observation-interest.js'
 import { guidancePolicies } from './internal/binding-update-policy.js'
 import * as dshSettings from '@deepseek-ai/dsh-settings'
@@ -101,7 +104,7 @@ Native tool availability depends on the current DSH profile and execution world;
 }
 
 /** Register the session-bound REPL runtime. */
-function installPtCRuntime(ctx, resolvedConfig, seam, toolSchemasForAgent, sessionId, sessionLog) {
+function installPtCRuntime(ctx, resolvedConfig, seam, toolSchemasForAgent, toolSdkSchemasForAgent, sessionId, sessionLog) {
   const presentationGeneration = randomUUID()
   const replMemoryProjection = createReplMemoryProjection(presentationGeneration)
   const userBindingDraftProjection = createUserBindingDraftProjection(presentationGeneration)
@@ -112,6 +115,7 @@ function installPtCRuntime(ctx, resolvedConfig, seam, toolSchemasForAgent, sessi
   let runtimeBridge
   let editTransport
   let directSurface
+  let capabilityEnvironment
   let userBindings
   let observationInterest
   let ready
@@ -340,6 +344,7 @@ function installPtCRuntime(ctx, resolvedConfig, seam, toolSchemasForAgent, sessi
       maxOldGenerationSizeMb: activeConfig.maxOldGenerationSizeMb,
       valueLimits: valueLimitsFromConfig(activeConfig),
     })
+    capabilityEnvironment = createCapabilityEnvironment({ ctx, config: activeConfig, toolSchemasForAgent: toolSdkSchemasForAgent, store: new CapabilityStatisticsStore({ ctx }) })
     runtimeBridge = createRuntimeBridgeOwner({
       ctx,
       seam,
@@ -350,7 +355,8 @@ function installPtCRuntime(ctx, resolvedConfig, seam, toolSchemasForAgent, sessi
       maxNestedRunCodeDepth: activeConfig.maxNestedRunCodeDepth,
       presentationGeneration,
       sessionId,
-      toolSchemasForAgent,
+      toolSchemasForAgent: toolSdkSchemasForAgent,
+      capabilityEnvironment,
       userBindingDraftForAgent: agent => userBindings.draftCapabilityForAgent(agent),
       bindingSubmissionForAgent: (agent, ensureLease, onAccepted) => userBindings.submissionForAgent(agent, ensureLease, onAccepted),
     })
@@ -370,6 +376,7 @@ function installPtCRuntime(ctx, resolvedConfig, seam, toolSchemasForAgent, sessi
       canonicalizeToolCalls: activeConfig.canonicalizeToolCalls,
       sessionId,
       toolSchemasForAgent,
+      capabilityEnvironment,
       userBindingsForAgent: () => userBindings.snapshot(),
       setAgentPresentation: (agent, presentation) => (
         userBindings.setAgentPresentation(agent, presentation)
@@ -386,6 +393,38 @@ function installPtCRuntime(ctx, resolvedConfig, seam, toolSchemasForAgent, sessi
     disposers.push(ctx.on('system-prompt/assemble', (assembly, context, next) => (
       directSurface.assemble(assembly, context, next)
     )))
+    disposers.push(() => capabilityEnvironment.dispose())
+    disposers.push(ctx.on('agent/pre-step', (payload, next) => capabilityEnvironment.preStep(payload, next), { prepend: true }))
+    disposers.push(ctx.on('tools/post-execute', (exec, result, next) => capabilityEnvironment.postExecute(exec, result, next), { prepend: true }))
+    disposers.push(ctx.on('tools/ptc-dispatch-log', (dispatch, next) => capabilityEnvironment.dispatchLog(dispatch, next), { prepend: true }))
+    disposers.push(ctx.on('agent/status', payload => { if (payload?.agent) capabilityEnvironment.status(payload.agent, payload.status) }))
+    disposers.push(ctx.on('agent/created', ({ agent }) => capabilityEnvironment.status(agent, agent.status)))
+    if (typeof ctx.inject === 'function') {
+      const capabilitiesRpc = ctx.inject(['ptcPlusRpc'], scope => {
+        scope.effect(() => scope.ptcPlusRpc.register(RPC_CONTRACTS.capabilities, async (operation, _payload, signal) => {
+          signal.throwIfAborted()
+          if (operation !== 'inspect') return { ok: false, error: { code: 'UNKNOWN_OPERATION', message: 'Unknown capability plan operation', details: null } }
+          return { ok: true, value: capabilityEnvironment.describeSessions() }
+        }), 'ptc-plus: capability plan observation')
+      })
+      if (typeof capabilitiesRpc === 'function') disposers.push(capabilitiesRpc)
+      else if (typeof capabilitiesRpc?.dispose === 'function') disposers.push(() => capabilitiesRpc.dispose())
+      const commands = ctx.inject(['commands'], scope => {
+        scope.effect(() => scope.commands.register({ name: 'capabilities',
+          description: 'Inspect the session capability plan or refresh it from saved settings.',
+          handler: async ({ agent, rawInput, signal }) => {
+            if (rawInput.trim() === 'refresh') {
+              await capabilityEnvironment.refresh(agent, undefined, signal)
+              return { kind: 'success', text: capabilityEnvironment.describe(agent).publication === 'pending'
+                ? 'Session capability environment prepared; its notification awaits the first accepted model step.'
+                : 'Session capability environment refreshed; the model-visible notification is recorded.' }
+            }
+            return { kind: 'success', text: JSON.stringify(capabilityEnvironment.describe(agent), null, 2) }
+          } }), 'ptc-plus capability command')
+      })
+      if (typeof commands === 'function') disposers.push(commands)
+      else if (typeof commands?.dispose === 'function') disposers.push(() => commands.dispose())
+    }
     disposers.push(ctx.on('llm/stream', (options, next) => directSurface.stream(options, next), { global: true }))
     disposers.push(ctx.on('tools/execute', (exec, next) => {
       const rejected = directSurface.executionRejection(exec)
@@ -402,9 +441,12 @@ function installPtCRuntime(ctx, resolvedConfig, seam, toolSchemasForAgent, sessi
           .then(result => directSurface.argumentDiagnostic(exec, result))
       }
       if (exec.name === EDIT_RUN_CODE) return runtimeBridge.withSubmission(exec, next)
+      capabilityEnvironment.validateSupply(exec.agent, exec.name, exec.arguments)
+      capabilityEnvironment.admitted(exec)
       return next()
     }))
     disposers.push(ctx.on('tools/result', (exec, result) => {
+      capabilityEnvironment.dispatched(exec, result)
       directSurface.handleResult(exec)
       if (exec.name === EDIT_RUN_CODE) return editTransport.handleResult(exec, result)
       if (exec.name === RUN_CODE) return runtimeBridge.handleResult(exec, result)
@@ -423,6 +465,7 @@ function installPtCRuntime(ctx, resolvedConfig, seam, toolSchemasForAgent, sessi
       () => editTransport.disposeAgent(agent),
       () => runtimeBridge.disposeAgent(agent),
       () => userBindings.clearAgentPresentation(agent),
+      () => capabilityEnvironment.disposeAgent(agent),
     ], 'ptc-plus: agent disposal failed')))
     disposers.push(ctx.on('session/disposed', session => disposeLifecycleOwners([
       () => directSurface.disposeSession(session),
@@ -495,6 +538,7 @@ function installPtCRuntime(ctx, resolvedConfig, seam, toolSchemasForAgent, sessi
         }
       }
       activeConfig = nextConfig
+      capabilityEnvironment.reconfigure(nextConfig)
       observationInterest.reconfigure(nextConfig.replViewEnabled)
     } catch (error) {
       const rollbackFailures = []
@@ -538,6 +582,8 @@ function applyWithExecutionSeam(ctx, resolvedConfig, seam, volatileHost, volatil
   const toolSchemasForAgent = agent => typeof ctx.tools.schemas === 'function'
     ? ctx.tools.schemas(agent)
     : []
+  // SDK contracts include output schemas; model-facing schemas remain unchanged.
+  const toolSdkSchemasForAgent = agent => ctx.tools.sdkSchemas(agent)
   const sessionId = agent => {
     const id = agent?.session?.id ?? agent?.id
     return id === undefined ? undefined : String(id)
@@ -621,7 +667,7 @@ function applyWithExecutionSeam(ctx, resolvedConfig, seam, volatileHost, volatil
     }
     let candidate
     try {
-      candidate = installPtCRuntime(ctx, record.config, seam, toolSchemasForAgent, sessionId, sessionLog)
+      candidate = installPtCRuntime(ctx, record.config, seam, toolSchemasForAgent, toolSdkSchemasForAgent, sessionId, sessionLog)
       record.runtime = candidate
     } catch (error) {
       const failedRuntime = error?.[INSTALL_CLEANUP]

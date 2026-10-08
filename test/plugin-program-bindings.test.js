@@ -14,6 +14,7 @@ import { decodeValue, encodeValue, renderValueWire } from '../internal/value-wir
 import {
   JOURNAL_POLICY,
   appendRunCodeEvents,
+  appendOnlySession,
   fixture,
   orderedSurfaceSession,
   ptcAgent,
@@ -578,6 +579,7 @@ const nestedOutcome = await code.run({
   code: ${JSON.stringify(childCode)},
   description: 'Execute isolated child code',
 })
+
 return { parentOnly, nestedOutcome }
 `, functions, {})
 
@@ -596,6 +598,68 @@ return { parentOnly, nestedOutcome }
   assert.deepEqual(await state.run('recursive-isolation', `
 return { parentOnly, childOnly: typeof childOnly }
 `), { logs: [], value: { parentOnly: 41, childOnly: 'undefined' } })
+})
+
+test('capabilities.search retrieves bounded native contracts and preserves leases and canonical invocation', async (t) => {
+  const parameters = { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] }
+  const state = fixture({}, { schemas: [{
+    name: 'readFile', description: 'Read a bounded file window. 读取文件内容。', parameters,
+    output: { type: 'string' },
+  }] })
+  t.after(() => state.dispose())
+  let calls = 0
+  const session = orderedSurfaceSession('search-integration')
+  const first = await state.executeRun(session.id, `
+const capturedSearch = capabilities.search
+const searchPage = await capabilities.search({query:'read file window',budgetBytes:4096})
+return searchPage
+`, { readFile: async () => { calls += 1; return 'body' } }, { session })
+  assert.equal(first.raw.error, undefined)
+  assert.equal(calls, 0)
+  const page = first.raw.value
+  assert.equal(page.matches[0].symbol, 'tools.readFile')
+  assert.deepEqual(page.matches[0].contract.parameters, parameters)
+  assert.deepEqual(page.matches[0].contract.returns, { type: 'string' })
+  assert.equal(page.matches[0].contract.replay, 'recorded-value')
+  assert.equal(page.matches[0].contract.completeness, 'unknown')
+  assert.equal(page.usedBytes, Buffer.byteLength(JSON.stringify(page), 'utf8'))
+  assert.ok(page.usedBytes <= 4096)
+  assert.equal(first.result.meta.dshPtcPlus.status, 'durable')
+  assert.deepEqual(first.result.meta.dshPtcPlus.calls.map(call => [call.global, call.member]), [['capabilities', 'search']])
+  const second = await state.run(session.id, `
+let expired
+try { await capturedSearch({query:'read'}) } catch (error) { expired=error.message }
+return {expired, body:await tools.readFile({path:'native.txt'}), match:(await capabilities.search({query:'读取文件'})).matches[0].symbol}
+`, { readFile: async args => { calls += 1; assert.deepEqual(args, { path: 'native.txt' }); return 'body' } }, { session })
+  assert.deepEqual(second.value, { expired: 'PTC execution lease expired', body: 'body', match: 'tools.readFile' })
+  assert.equal(calls, 1)
+  for (const args of ['null', '{}', '{query:"read",budgetBytes:0}', '{query:"read",limit:null}']) {
+    const result = await state.run(`invalid-search-${args}`, `return capabilities.search(${args})`)
+    assert.equal(result.error.kind, 'exception')
+    assert.match(result.error.message, /capability search/)
+  }
+})
+
+test('capabilities.search cold replay retains recorded descriptions while new calls use the current owner catalog', async (t) => {
+  const oldSchema = { name: 'readFile', description: 'Read the prior file contract.', parameters: { type: 'object' }, output: {} }
+  const first = fixture({}, { schemas: [oldSchema] })
+  t.after(() => first.dispose())
+  const session = orderedSurfaceSession('search-replay')
+  const recorded = await first.executeRun(session.id, `
+const oldSearchPage = await capabilities.search({query:'read file',budgetBytes:4096})
+return oldSearchPage.matches[0].contract.description
+`, { readFile: async () => { throw new Error('discovery must not invoke the tool') } }, { session })
+  assert.equal(recorded.raw.error, undefined)
+  assert.equal(recorded.raw.value, oldSchema.description)
+  assert.equal(recorded.result.meta.dshPtcPlus.status, 'durable')
+  await first.dispose()
+  const restored = fixture({}, { schemas: [{ ...oldSchema, description: 'Read the changed file contract.' }] })
+  t.after(() => restored.dispose())
+  const result = await restored.run(session.id, `
+return {old:oldSearchPage.matches[0].contract.description, current:(await capabilities.search({query:'read file'})).matches[0].contract.description}
+`, { readFile: async () => { throw new Error('restoration must not invoke the tool') } }, { session })
+  assert.equal(result.error, undefined)
+  assert.deepEqual(result.value, { old: oldSchema.description, current: 'Read the changed file contract.' })
 })
 
 test('preserves an existing native run_code binding', async (t) => {
@@ -1034,4 +1098,52 @@ test('host validation without a runtime cell creates no settlement or replayable
   owner.handleResult(next,result)
   assert.equal(result.value,42)
   assert.equal(result.meta.dshPtcPlus.completion.kind,'return')
+})
+
+
+test('managed scope tools are absent from compiled cells and contracts while retained functions use the supplied view', async t => {
+  const schemas = ['closedProbe', 'keptProbe'].map(name => ({ name, description: `${name} complete contract`,
+    parameters: { type: 'object' }, output: { type: 'string' } }))
+  const state = fixture({ capabilityManagementEnabled: true, capabilityBaseline: '[]',
+    capabilityOverrides: '{"tools.closedProbe":"closed"}', capabilityStatistics: '{"enabled":false}' }, { scopedSchemas: schemas })
+  t.after(() => state.dispose())
+  const session = appendOnlySession('managed-compiled-tools')
+  const agent = ptcAgent(session.id, session)
+  const assembly = { sections: [{ name: 'tools:code-only', text: 'run_code only' },
+    { name: 'tools:sdk', text: 'full native SDK' }], contexts: [], variables: {}, tools: [state.runCodeDefinition] }
+  const projected = await state.assembleStep(assembly, { agent, scope: agent, signal: new AbortController().signal })
+  assert.doesNotMatch(projected.sections.map(section => section.text).join('\n'), /closedProbe|full native SDK/)
+  let calls = 0
+  const functions = { closedProbe: async () => { calls++; return 'closed' }, keptProbe: async () => { calls++; return 'kept' } }
+  const first = await state.executeRun(session.id, `
+const captured = tools.keptProbe
+function currentProbe() { return typeof tools.keptProbe }
+const disclosure = await capabilities.search({query:'keptProbe'})
+return {closed:typeof tools.closedProbe, kept:await tools.keptProbe({}), keys:Object.keys(tools), contract:disclosure.matches[0].symbol}
+`, functions, { session, recordSession: true })
+  assert.equal(first.raw.error, undefined)
+  assert.deepEqual(first.raw.value, { closed: 'undefined', kept: 'kept', keys: ['keptProbe'], contract: 'tools.keptProbe' })
+  assert.equal(calls, 1)
+  assert.ok(first.result.meta.dshPtcPlusCapabilities.expanded.includes('tools.keptProbe'))
+  const second = await state.executeRun(session.id, `return {live:currentProbe(), expired:await captured({}).then(()=>false,()=>true)}`, functions, { session, recordSession: true })
+  assert.deepEqual(second.raw.value, {live:'function', expired:true})
+})
+
+
+test('managed both and PTC prompt projections retain their computation transports', async t => {
+  for (const [id, text] of [['both', ''], ['ptc', 'run_code only']]) {
+    const state = fixture({ capabilityManagementEnabled: true, capabilityBaseline: '[]',
+      capabilityOverrides: '{"tools.closedProbe":"closed"}', capabilityStatistics: '{"enabled":false}' },
+    { scopedSchemas: [{ name: 'closedProbe', description: 'Closed contract', parameters: { type: 'object' }, output: {} }] })
+    t.after(() => state.dispose())
+    const session = appendOnlySession(`managed-transports-${id}`)
+    const agent = ptcAgent(session.id, session)
+    const projected = await state.assembleStep({ sections: [{ name: 'tools:code-only', text },
+      { name: 'tools:sdk', text: 'native sdk' }], contexts: [], variables: {},
+    tools: [state.runCodeDefinition, { name: 'closedProbe', parameters: { type: 'object' } }] },
+    { agent, scope: agent, signal: agent.signal })
+    assert.ok(projected.tools.some(schema => schema.name === 'run_code'))
+    assert.equal(projected.tools.some(schema => schema.name === 'closedProbe'), false)
+    if (id === 'ptc') assert.deepEqual(projected.tools.map(schema => schema.name), ['run_code', 'edit_run_code'])
+  }
 })

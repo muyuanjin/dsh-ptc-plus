@@ -414,6 +414,14 @@ test('exports a Cordis config schema with validated runtime defaults', async () 
       && typeof value.get === 'function' ? value.get() : value])
     .filter(([, value]) => value !== undefined))
   assert.deepEqual(defaults, {
+      capabilityManagementEnabled: false,
+      capabilityBaseline: '[]',
+      capabilityOverrides: '{}',
+      capabilityStatistics: '{"enabled":false,"windowSize":100,"minimumSamples":10,"fullThreshold":0.5}',
+      capabilityBudgetBytes: 16384,
+      capabilityDirectoryBytes: 2048,
+      capabilityRecoveryBytes: 8192,
+      modelPreviewTokens: 4096,
       legacyBindingSettings: false,
       enabled: true,
       enhancedToolView: true,

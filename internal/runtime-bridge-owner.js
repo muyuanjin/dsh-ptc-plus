@@ -19,6 +19,7 @@ import {
   capabilityFind,
   capabilityInspect,
   capabilityTree,
+  createCapabilitySearcher,
   toolCapabilityMetadata,
 } from './program-bindings.js'
 import { deepFreeze } from './record-utils.js'
@@ -156,6 +157,7 @@ export function createRuntimeBridgeOwner({
   toolSchemasForAgent,
   userBindingDraftForAgent,
   bindingSubmissionForAgent,
+  capabilityEnvironment,
 }) {
   const scope = new AsyncLocalStorage()
   const childScope = new AsyncLocalStorage()
@@ -289,7 +291,8 @@ export function createRuntimeBridgeOwner({
       return { logs: child.logs, ...(child.value === undefined ? {} : { result: child.value }) }
     }
 
-    const schemas = toolSchemasForAgent(executionToken?.agent)
+    const nativeSchemas = toolSchemasForAgent(executionToken?.agent)
+    const schemas = (capabilityEnvironment?.visibleSchemas(executionToken?.agent, nativeSchemas) ?? nativeSchemas)
       .filter(schema => schema?.name === RUN_CODE
         || (schema?.name !== EDIT_RUN_CODE && typeof functions[schema?.name] === 'function'))
     const emptyObjectTools = new Set(schemas.flatMap(schema => (
@@ -299,20 +302,28 @@ export function createRuntimeBridgeOwner({
     )))
     const projected = bindingDescriptors.namespaces.map((binding) => {
       const wrapped = Object.create(null)
-      for (const key of binding.members) {
+      const members = binding.global === 'tools'
+        ? capabilityEnvironment?.projectMembers(executionToken?.agent, binding.members) ?? binding.members
+        : binding.members
+      for (const key of members) {
+        const original = (...args) => binding.functions[key](...args)
+        const invoke = binding.global === 'tools'
+          ? capabilityEnvironment?.adaptFunction(executionToken?.agent, key, original) ?? original
+          : original
         Object.defineProperty(wrapped, key, {
           enumerable: true,
           value: async (...args) => {
             ensureLease()
-            return binding.functions[key](...args)
+            return invoke(...args)
           },
         })
       }
       const emptyObjectMembers = binding.global === 'tools'
-        ? binding.members.filter(member => emptyObjectTools.has(member))
+        ? members.filter(member => emptyObjectTools.has(member))
         : []
       return {
         ...binding,
+        members,
         functions: wrapped,
         ...(binding.global === 'tools' ? { emptyObjectMembers } : {}),
       }
@@ -323,12 +334,14 @@ export function createRuntimeBridgeOwner({
         : []
     )))
     const metadata = Object.freeze([
-      ...toolCapabilityMetadata(schemas, annotations),
+      ...(capabilityEnvironment?.toolMetadata(executionToken?.agent, toolCapabilityMetadata(schemas, annotations), schemas) ?? toolCapabilityMetadata(schemas, annotations)),
+      ...(capabilityEnvironment?.metadata(executionToken?.agent) ?? []),
       ...PROGRAM_CAPABILITY_METADATA.map(entry => entry.namespace === 'code'
         && cellConfig.userBindingsEnabled === true
         ? { ...entry, members: [...entry.members, BINDING_SUBMISSION] }
         : entry),
     ])
+    let searchCapabilities
     projected.push(namespace('capabilities', {
       tree: async value => {
         if (value !== undefined) throw new TypeError('capabilities.tree does not accept arguments')
@@ -342,11 +355,24 @@ export function createRuntimeBridgeOwner({
       },
       inspect: async value => {
         ensureLease()
-        if (value === undefined) return capabilityInspect(metadata)
+        if (value === undefined) {
+          const result = capabilityInspect(metadata)
+          capabilityEnvironment?.explored(executionToken?.agent, result)
+          return result
+        }
         if (value === null || typeof value !== 'object' || Array.isArray(value)) {
           throw new TypeError('capabilities.inspect expects an object')
         }
-        return capabilityInspect(metadata, value.symbols, value.budget)
+        const result = capabilityInspect(metadata, value.symbols, value.budget)
+        capabilityEnvironment?.explored(executionToken?.agent, result)
+        return result
+      },
+      search: async value => {
+        ensureLease()
+        searchCapabilities ??= createCapabilitySearcher(metadata)
+        const result = searchCapabilities(value)
+        capabilityEnvironment?.explored(executionToken?.agent, result)
+        return result
       },
     }, 'CapabilityExplorationError', 'operation'))
     projected.push(namespace('code', {
@@ -395,7 +421,8 @@ export function createRuntimeBridgeOwner({
       }
       meta = generatedRunCodeDescriptionMeta(args, meta)
       meta = withReplMemorySnapshot(meta, settlement.replMemory, presentationGeneration)
-      return withDraftCapability(meta, current)
+      meta = withDraftCapability(meta, current)
+      return capabilityEnvironment?.complete(current, { meta }).meta ?? meta
     }
     const ownExecute = Object.getOwnPropertyDescriptor(definition, 'execute')
     const originalExecute = definition.execute
@@ -528,6 +555,7 @@ export function createRuntimeBridgeOwner({
       return withSubmission(exec, async () => {
         const id = sessionId(exec.agent)
         if (id === undefined) return next()
+        await capabilityEnvironment?.prepare(exec.agent)
         patchRunCodeDefinition(exec.agent)
         const inherited = scope.getStore()
         const persistedCallSeq = inherited?.persistedCallSeq
@@ -564,7 +592,7 @@ export function createRuntimeBridgeOwner({
             }
             meta = withReplMemorySnapshot(meta, settlement.replMemory, presentationGeneration)
             meta = withDraftCapability(meta, current)
-            return { ...result, meta }
+            return capabilityEnvironment?.complete(current, { ...result, meta }) ?? { ...result, meta }
           }
           return result
         })

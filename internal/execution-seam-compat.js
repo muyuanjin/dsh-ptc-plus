@@ -1,7 +1,7 @@
-/** Cordis service name registered by the current DSH generation. */
+/** Resolved-spec Cordis execution contract. */
 export const EXECUTION_SEAM_SERVICE = 'ptcRuntime'
 
-/** Historical request-only service name, retained with fixture evidence. */
+/** Request-only Cordis execution contract. */
 export const LEGACY_EXECUTION_SEAM_SERVICE = 'codeRuntime'
 
 const SEAM_SERVICES = Object.freeze([EXECUTION_SEAM_SERVICE, LEGACY_EXECUTION_SEAM_SERVICE])
@@ -86,9 +86,9 @@ export function createExecutionSeam(service, serviceName) {
       return Promise.all([...sourceListeners].map(listener => listener())).then(() => undefined)
     },
     /**
-     * Run one program through the provider this plugin wraps. The current
-     * generation resolves the request before running it, exactly as its own
-     * consumer does; the preceding generation accepts the request directly.
+     * Run one program through the provider this plugin wraps. The resolved-spec
+     * contract resolves the request before running it, exactly as its consumer
+     * does; the request-only contract accepts the request directly.
      */
     invokeUpstream(request) {
       requireCompatible()
@@ -132,9 +132,9 @@ function registeredExecutionSeam(service, serviceName) {
 /**
  * Wait for the host's execution seam and attach the plugin to the live one.
  *
- * The current service is preferred whenever both are live; the preceding
- * generation attaches only when the current one is absent, and a current
- * service registered later retires the live legacy injection before attaching.
+ * The resolved-spec service is preferred whenever both contracts are live; the
+ * request-only service attaches when it is absent. A resolved-spec service
+ * registered later retires the request-only injection before attaching.
  * The injected scope requires the plugin's own core
  * services as well, so the callback receives a context the plugin can work in,
  * and everything the plugin registers there belongs to the seam the host

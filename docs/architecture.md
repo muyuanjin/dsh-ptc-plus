@@ -116,9 +116,9 @@ PTC 动态状态通过 DSH 公共 `agent/pre-step` 追加为 `source.kind: plugi
 
 ## 能力表面
 
-cell 直接使用 DSH 为当前 request 提供的 `tools.*`，不按工具名过滤，不翻译已提供的 program-call 参数或 canonical result。只有完全省略参数且 DSH 的 live object schema 验证 `{}` 合法时，worker 才在 encoding 前把 omission 规范为 `{}`；显式 `undefined`、需要输入的 member 与其他 namespace 不变，调用方携带的内部 metadata 不能扩大这项集合。模型 direct-call 边界与这个 data-plane contract 分离：声明的顶层 transport 是 `run_code` 和 `edit_run_code`；可证明的误发 native call 可先规范为 `run_code`，native member 随后在 cell 内 nested dispatch。所有 native member、`capabilities.*`、`repl.state` 和 `code.*` 共享 cell lease；cell 结束后，捕获的函数统一失效。调用时仍由 DSH 检查 scope、policy、取消和 scheduler。
+cell 直接使用 DSH 为当前 request 提供的 `tools.*`，仅按显式启用的冻结会话方案移除关闭成员，不翻译已提供的 program-call 参数或 canonical result。只有完全省略参数且 DSH 的 live object schema 验证 `{}` 合法时，worker 才在 encoding 前把 omission 规范为 `{}`；显式 `undefined`、需要输入的 member 与其他 namespace 不变，调用方携带的内部 metadata 不能扩大这项集合。模型 direct-call 边界与这个 data-plane contract 分离：声明的顶层 transport 是 `run_code` 和 `edit_run_code`；可证明的误发 native call 可先规范为 `run_code`，native member 随后在 cell 内 nested dispatch。所有 native member、`capabilities.*`、`repl.state` 和 `code.*` 共享 cell lease；cell 结束后，捕获的函数统一失效。调用时仍由 DSH 检查 scope、policy、取消和 scheduler。
 
-`capabilities.tree/find/inspect` 是描述 API，不是反射调用入口。默认 SDK 展开这个导航器，Global User Bindings 开启时另声明稳定的 `code.submitBindingDraft`；`repl.state` 与 `code.run` 保持可调用，但其完整契约只在 explorer 中按需返回。explorer 合并 live tool schema 与插件自有 program-binding 描述；可证明的 metadata 包括名称、描述、输入/输出 schema、authority 和 replay。effect 与 result completeness 没有 owner 证据时保持 `unknown`。探索不会授予权限或触发额外模型调用。
+`capabilities.tree/find/inspect/search` 是描述 API，不是反射调用入口。search 的 cell-local 派生索引返回完整匹配条目，计量完整 JSON 的 UTF-8 字节，延续游标绑定目录及 query，过长条目给出明确 inspect 指针。默认 SDK 展开这个导航器，Global User Bindings 开启时另声明稳定的 `code.submitBindingDraft`；`repl.state` 与 `code.run` 保持可调用，但其完整契约只在 explorer 中按需返回。explorer 合并 live tool schema 与插件自有 program-binding 描述；可证明的 metadata 包括名称、描述、输入/输出 schema、authority 和 replay。effect 与 result completeness 没有 owner 证据时保持 `unknown`。探索不会授予权限或触发额外模型调用。
 
 当前公共扩展面没有跨 prompt assembly 与 cell dispatch 的冻结 view token。PTC Plus 使用同一 agent scope 分别读取 prompt 和 runtime view，并让实际 request binding 成为执行事实；能力在两阶段之间变化时，不伪造原子快照保证。
 

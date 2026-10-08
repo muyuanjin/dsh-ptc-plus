@@ -926,7 +926,7 @@ test('the Plugins page claims the row-configuration seat only while it is mounte
 })
 
 test('the plugin row seat renders both views when the page declares it first', async () => {
-  const { runtime, settings } = await fixture({ settingsCardSeat: 'row' })
+  const { runtime, settings, value } = await fixture({ settingsCardSeat: 'row' })
   expect(runtime.slots.entries('settings.plugin.item')).toHaveLength(0)
   expect(runtime.slots.entries('settings.general.item')).toHaveLength(0)
   expect(runtime.slots.entries(ROW_CONFIG_SLOT).map(entry => entry.options.key)).toEqual([ROW_CONFIG_KEY])
@@ -938,7 +938,7 @@ test('the plugin row seat renders both views when the page declares it first', a
   expect(summary.textContent).toBe('The session-bound TypeScript REPL for PTC mode.')
   const form = view.container.querySelector('[data-view=page]')
   expect([...form.querySelectorAll('.ptcPlusGroupTitle')].map(title => title.textContent))
-    .toEqual([ 'REPL syntax', 'State and recovery', 'Tool extensions', 'Tool call tolerance', 'Interface display', 'Resource limits', 'Capabilities and context', 'Session capability plans'])
+    .toEqual([ 'REPL syntax', 'State and recovery', 'Tool extensions', 'Tool call tolerance', 'Interface display', 'Resource limits', 'Capabilities and context'])
   expect(form.querySelector('[role=status]').textContent).toBe('Settings are saved; capability plans adopt changes in new sessions or after an explicit refresh.')
   for (const key of CONFIG_GROUPS.flatMap(group => group.fields).filter(key => !['capabilityBaseline', 'capabilityOverrides', 'capabilityStatistics'].includes(key))) {
     expect(form.querySelector(`[aria-label="${SETTINGS_COPY.en[`${key}.label`]}"]`)).not.toBeNull()
@@ -946,17 +946,37 @@ test('the plugin row seat renders both views when the page declares it first', a
   expect(form.querySelectorAll('textarea')).toHaveLength(0)
   expect(form.querySelector('[aria-label="Enable usage statistics"]')).not.toBeNull()
   const fields = form.querySelector('.ptcPlusFields')
+  Object.defineProperty(fields, 'clientHeight', { configurable: true, value: 500 })
   fields.getBoundingClientRect = () => new DOMRect(0, 100, 600, 500)
   fields.scrollTop = 40
   form.querySelector('#ptc-plus-settings-group-capabilities').getBoundingClientRect = () => new DOMRect(0, 500, 200, 20)
   fireEvent.click(form.querySelector('.ptcPlusSettingsNav [data-experimental=true]'))
   expect(fields.scrollTop).toBe(424)
-  fireEvent.click(form.querySelector('[role=switch][aria-label="Enable PTC Plus"]'))
+  const titleSwitch = form.querySelector('.ptcPlusSettingsTitleSwitch')
+  expect(titleSwitch.textContent).toBe('PTC Plus')
+  expect(form.querySelector('.ptcPlusSettingsNavSwitch')).toBeNull()
+  expect(form.querySelector('.ptcPlusSettingsHero')).toBeNull()
+  expect(form.querySelector('.ptcPlusSettingsNavModuleTitle').closest('button')).toBeNull()
+  expect(form.querySelectorAll('.ptcPlusSettingsNavIcon')).toHaveLength(7)
+  fireEvent.click(titleSwitch)
   await runtime.flush()
   // The page view is the settings form itself: its controls write through the
   // same scope the legacy card uses, and the registration survives the write.
   expect(settings.set).toHaveBeenCalledWith('enabled', false)
   expect(runtime.slots.entries(ROW_CONFIG_SLOT)).toHaveLength(1)
+  settings.publish({ value: { ...value, enabled: false } })
+  await runtime.flush()
+  expect(titleSwitch.querySelector('input').disabled).toBe(false)
+  expect(form.querySelector(`[aria-label="${SETTINGS_COPY.en['bindingUpdates.label']}"]`).disabled).toBe(true)
+  fireEvent.click(titleSwitch)
+  await runtime.flush()
+  expect(settings.set).toHaveBeenCalledWith('enabled', true)
+  settings.publish({ writable: false })
+  await runtime.flush()
+  const writes = settings.set.mock.calls.length
+  fireEvent.click(titleSwitch)
+  await runtime.flush()
+  expect(settings.set).toHaveBeenCalledTimes(writes)
 })
 
 test('the settings-section seat stays the only claim where the generation declares it', async () => {
@@ -1261,7 +1281,7 @@ test('REPL observations and shared workbench remain separate from session execut
   await runtime.flush()
   const settingsCard = view.container.querySelector('.ptcPlusCard')
   const groupTitles = () => [...settingsCard.querySelectorAll('.ptcPlusGroupTitle')].map(title => title.textContent)
-  expect(groupTitles()).toEqual(['插件开关', 'REPL 语法', '状态与恢复', '工具扩展', '调用容错', '界面显示', '资源限制', '能力与上下文', '当前会话能力方案'])
+  expect(groupTitles()).toEqual(['插件开关', 'REPL 语法', '状态与恢复', '工具扩展', '调用容错', '界面显示', '资源限制', '能力与上下文'])
   expect(settingsCard.querySelector('.ptcPlusSettingsLayout')).toBeNull()
   expect(settingsCard.querySelector('[data-experimental=true] .ptcPlusGroupTitle').getAttribute('data-experimental-label')).toBe('实验性')
   const recoveryGroup = settingsCard.querySelector('[aria-labelledby="ptc-plus-settings-group-recovery"]')
@@ -1272,7 +1292,7 @@ test('REPL observations and shared workbench remain separate from session execut
   await saveLayout('settings-zh', view.container.querySelector('.ptcPlusCard'))
   setLocale('en')
   await runtime.flush()
-  expect(groupTitles()).toEqual(['Plugin switch', 'REPL syntax', 'State and recovery', 'Tool extensions', 'Tool call tolerance', 'Interface display', 'Resource limits', 'Capabilities and context', 'Session capability plans'])
+  expect(groupTitles()).toEqual(['Plugin switch', 'REPL syntax', 'State and recovery', 'Tool extensions', 'Tool call tolerance', 'Interface display', 'Resource limits', 'Capabilities and context'])
   await saveLayout('settings-en', view.container.querySelector('.ptcPlusCard'))
   await runtime.sessions.setCurrent('client-session')
   await runtime.flush()
@@ -1968,12 +1988,16 @@ test('the authoring entry opens the complete settings dialog from every host sea
     expect(dialog.querySelector('.ptcPlusHeader')).toBeNull()
     expect(dialog.querySelector('.ptcPlusSettingsDialog')).not.toBeNull()
     const capabilityHeading = dialog.querySelector('#ptc-plus-settings-dialog-group-capabilities')
-    const scroller = dialog.querySelector('.ptcPlusSettingsDialogContent')
+    const scroller = dialog.querySelector('.ptcPlusFields')
     capabilityHeading.getBoundingClientRect = () => new DOMRect(0, 500, 200, 20)
+    Object.defineProperty(scroller, 'clientHeight', { configurable: true, value: 500 })
     scroller.getBoundingClientRect = () => new DOMRect(0, 100, 600, 500)
     scroller.scrollTop = 40
     fireEvent.click(dialog.querySelector('.ptcPlusSettingsNav [data-experimental=true]'))
     expect(scroller.scrollTop).toBe(424)
+    expect(dialog.querySelector('.ptcPlusSettingsDialogContent').scrollTop).toBe(0)
+    expect(dialog.querySelector('.ptcPlusSettingsHero')).toBeNull()
+    expect(dialog.querySelector('.ptcPlusSettingsNav [aria-current=location]').dataset.section).toBe('capabilities')
     expect(dialog.querySelector('.ptcPlusSettingsDialogHead h2').textContent).toBe('PTC Plus settings')
     const ids = [...view.container.querySelectorAll('[id]'), ...dialog.querySelectorAll('[id]')]
       .map(element => element.id)
@@ -2026,7 +2050,7 @@ test('the settings dialog falls back to its close button when the form has no en
 })
 
 test('capability settings use searchable choices and validated statistics while preserving frozen and unavailable selections', async () => {
-  const snapshot = { status: 'ready', writable: true, value: { enabled: true, userBindingsEnabled: false,
+  const snapshot = { status: 'ready', writable: true, value: { enabled: true, userBindingsEnabled: false, capabilityManagementEnabled: true,
     capabilityBaseline: '["tools.missing"]', capabilityOverrides: '{"tools.missing":"full"}',
     capabilityStatistics: '{"enabled":true,"windowSize":10,"minimumSamples":10,"fullThreshold":0.5}' } }
   const updateSetting = vi.fn(async (key, value) => { snapshot.value[key] = value; return null })
@@ -2050,6 +2074,9 @@ test('capability settings use searchable choices and validated statistics while 
   expect(view.container.textContent).toContain('234')
   expect(view.container.querySelectorAll('textarea')).toHaveLength(0)
   const search = view.getByRole('searchbox', { name: t('capabilities.search') })
+  expect(search.getAttribute('placeholder')).toBe(t('capabilities.search'))
+  expect(search.closest('.ptcPlusSearch').querySelector('svg[aria-hidden=true]')).not.toBeNull()
+  expect(view.container.querySelector('.ptcPlusCapabilityPlans').closest('[data-experimental=true]')).not.toBeNull()
   fireEvent.change(search, { target: { value: 'project files' } })
   expect(view.queryByLabelText('Disclosure for skills.research')).toBeNull()
   const choice = view.getByLabelText('Disclosure for tools.probe')
@@ -2092,13 +2119,13 @@ test('capability settings use searchable choices and validated statistics while 
   view.unmount()
 })
 
-test('session plans use the capabilities RPC and clear loaded and late responses when the plugin is disabled', async () => {
+test('session plans follow capability management and plugin switches while manual choices retain their catalog', async () => {
   const delayed = deferred()
   const plan = sessionId => ({ sessionId, pendingRefresh: false,
     effective: { budgets: { contractBytes: 234, overageBytes: 0 }, entries: [{ id: 'tools.probe',
       selection: 'on-demand', reason: 'manual', statisticsReason: 'statistics-disabled' }] } })
   let requests = 0
-  const { runtime, settings, value, capabilityRpcCalls, rpcCalls } = await fixture({
+  const { runtime, settings, value, capabilityRpcCalls } = await fixture({
     enabled: false, settingsCardSeat: 'row',
     capabilityRpc: async endpoint => {
       if (endpoint === 'catalog') return { ok: true, value: [{ id: 'tools.probe', category: 'tool', description: 'Probe owner' }] }
@@ -2109,35 +2136,47 @@ test('session plans use the capabilities RPC and clear loaded and late responses
   })
   const view = runtime.renderRoot()
   await runtime.flush()
-  const reload = () => view.getByRole('button', { name: 'Reload plans' })
-  const section = () => reload().closest('section')
-  expect(reload().disabled).toBe(true)
-  expect(section().textContent).toContain('Disabled')
-  expect(section().textContent).not.toContain('Syncing')
+  const reload = () => view.queryByRole('button', { name: 'Reload plans' })
+  const plans = () => view.container.querySelector('.ptcPlusCapabilityPlans')
+  expect(reload()).toBeNull()
   expect(capabilityRpcCalls).toHaveLength(0)
 
-  settings.publish({ value: { ...value, enabled: true } })
+  settings.publish({ value: { ...value, enabled: true, capabilityManagementEnabled: false } })
   await runtime.flush()
-  expect(section().textContent).toContain('frozen-1')
-  expect(capabilityRpcCalls).toHaveLength(2)
-  expect(rpcCalls.map(call => call.endpoint)).toEqual(['list'])
+  expect(reload()).toBeNull()
+  expect(requests).toBe(0)
+  expect(view.getByLabelText('Disclosure for tools.probe').disabled).toBe(false)
+  expect(capabilityRpcCalls.map(call => call.endpoint)).toEqual(['catalog'])
+
+  settings.publish({ value: { ...value, enabled: true, capabilityManagementEnabled: true } })
+  await runtime.flush()
+  expect(plans().closest('[data-experimental=true]')).not.toBeNull()
+  expect(plans().textContent).toContain('frozen-1')
   fireEvent.click(reload())
   await runtime.flush()
-  expect(capabilityRpcCalls).toHaveLength(4)
-  settings.publish({ value: { ...value, enabled: false } })
+  expect(requests).toBe(2)
+  const pendingRead = capabilityRpcCalls.filter(call => call.endpoint === 'inspect').at(-1)
+  settings.publish({ value: { ...value, enabled: true, capabilityManagementEnabled: false } })
   await runtime.flush()
-  expect(reload().disabled).toBe(true)
-  expect(section().textContent).not.toContain('frozen-1')
-  expect(capabilityRpcCalls[2].signal.aborted).toBe(true)
+  expect(plans()).toBeNull()
+  expect(pendingRead.signal.aborted).toBe(true)
   await act(async () => delayed.resolve({ ok: true, value: [plan('late-plan')] }))
   await runtime.flush()
-  expect(section().textContent).not.toContain('late-plan')
-  expect(section().textContent).toContain('Disabled')
-  settings.publish({ value: { ...value, enabled: true } })
+  expect(view.container.textContent).not.toContain('late-plan')
+  expect(view.getByLabelText('Disclosure for tools.probe').disabled).toBe(false)
+
+  settings.publish({ value: { ...value, enabled: true, capabilityManagementEnabled: true } })
   await runtime.flush()
-  expect(reload().disabled).toBe(false)
-  expect(section().textContent).toContain('frozen-3')
-  expect(capabilityRpcCalls).toHaveLength(6)
+  expect(plans().textContent).toContain('frozen-3')
+  settings.publish({ value: { ...value, enabled: false, capabilityManagementEnabled: true } })
+  await runtime.flush()
+  expect(plans()).toBeNull()
+  const reads = capabilityRpcCalls.length
+  await runtime.flush()
+  expect(capabilityRpcCalls).toHaveLength(reads)
+  settings.publish({ value: { ...value, enabled: true, capabilityManagementEnabled: true } })
+  await runtime.flush()
+  expect(plans().textContent).toContain('frozen-4')
   view.unmount()
 })
 

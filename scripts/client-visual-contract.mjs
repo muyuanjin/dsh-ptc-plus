@@ -117,7 +117,7 @@ export async function controlAppearance(control) {
     const textNodes = [element, ...element.querySelectorAll('*')].filter(node =>
       [...node.childNodes].some(child => child.nodeType === Node.TEXT_NODE && child.textContent.trim())
       && node.getClientRects().length > 0)
-    const formValue = element.matches('input,textarea') && element.value
+    const formValue = element.matches('input:not([type=checkbox]):not([type=radio]),textarea') && element.value
       ? [element] : element.matches('select') && element.selectedOptions.length
         ? [element] : []
     const foregrounds = textNodes.length ? textNodes : formValue.length ? formValue : element.querySelector('svg') ? [element] : []
@@ -136,7 +136,11 @@ export async function controlAppearance(control) {
       const bg = background(node.parentElement)
       return contrast(blend(color, bg), bg)
     }
-    const minContrast = Math.min(...foregrounds.map(textContrast))
+    const thumb = getComputedStyle(element, '::before')
+    const thumbContrast = element.matches('input[type=checkbox][role=switch]')
+      && style.appearance === 'none' && thumb.content !== 'none'
+      ? [contrast(blend(rgba(thumb.backgroundColor), background(element)), background(element))] : []
+    const minContrast = Math.min(...foregrounds.map(textContrast), ...thumbContrast)
     const busyOwner = element.closest('.ptcPlusBindings[aria-busy=true]')
     const busyStatus = busyOwner?.querySelector('.ptcPlusWorkbenchFeedback[role=status]')
     return {

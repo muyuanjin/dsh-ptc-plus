@@ -2685,6 +2685,59 @@
   function createPtcSettingsView(React, deps) {
     const { ActionButton, BindingsDialog, Modal, useWorkbenchController, icons, inspectCapabilityPlans, inspectCapabilityCatalog } = deps;
     const h = React.createElement;
+    const enabledField = CONFIG_FIELDS.find((field) => field.key === "enabled");
+    function SectionIcon({ section }) {
+      const paths = {
+        syntax: ["m8 5-5 5 5 5", "m16 5 5 5-5 5", "m14 3-4 14"],
+        recovery: ["M3 10a9 9 0 1 1 2.6 8", "M3 4v6h6", "M12 7v5l3 2"],
+        extensions: ["M9 3H5v6a3 3 0 1 1 0 6v6h6a3 3 0 1 1 6 0h4v-6a3 3 0 1 1 0-6V5h-6a3 3 0 1 0-6-2Z"],
+        calls: ["M12 3 3 7v6c0 5 9 8 9 8s9-3 9-8V7l-9-4Z", "m8 12 3 3 5-6"],
+        interface: ["M3 4h18v13H3Z", "M8 21h8", "M12 17v4"],
+        limits: ["M3 6h5m4 0h9", "M3 12h11m4 0h3", "M3 18h3m4 0h11", "M8 3v6", "M14 9v6", "M6 15v6"],
+        capabilities: ["M9 3h6", "M10 3v6L4 19a1.3 1.3 0 0 0 1 2h14a1.3 1.3 0 0 0 1-2L14 9V3", "M7 15h10"]
+      };
+      return h("svg", {
+        width: 16,
+        height: 16,
+        viewBox: "0 0 24 24",
+        fill: "none",
+        stroke: "currentColor",
+        strokeWidth: 1.6,
+        strokeLinecap: "round",
+        strokeLinejoin: "round",
+        "aria-hidden": true,
+        className: "ptcPlusSettingsNavIcon"
+      }, ...paths[section].map((d, key) => h("path", { key, d })));
+    }
+    function SearchIcon() {
+      return isHostIconComponent(icons.search) ? h(icons.search, { size: 16, "aria-hidden": true }) : h(
+        "svg",
+        {
+          width: 16,
+          height: 16,
+          viewBox: "0 0 24 24",
+          fill: "none",
+          stroke: "currentColor",
+          strokeWidth: 1.6,
+          strokeLinecap: "round",
+          "aria-hidden": true
+        },
+        h("circle", { cx: 10.5, cy: 10.5, r: 6.5 }),
+        h("path", { d: "m16 16 5 5" })
+      );
+    }
+    function NavigationArrow() {
+      return isHostIconComponent(icons.chevron) ? h(icons.chevron, { size: 12 }) : h("svg", {
+        width: 12,
+        height: 12,
+        viewBox: "0 0 24 24",
+        fill: "none",
+        stroke: "currentColor",
+        strokeWidth: 1.6,
+        strokeLinecap: "round",
+        strokeLinejoin: "round"
+      }, h("path", { d: "m6 9 6 6 6-6" }));
+    }
     const validStatistics = (settings) => typeof settings.enabled === "boolean" && Number.isSafeInteger(settings.windowSize) && settings.windowSize >= 1 && Number.isSafeInteger(settings.minimumSamples) && settings.minimumSamples >= 1 && settings.minimumSamples <= settings.windowSize && Number.isFinite(settings.fullThreshold) && settings.fullThreshold >= 0 && settings.fullThreshold <= 1;
     function StatisticsSetting({ value, disabled, onChange, t: t2 }) {
       const saved = React.useMemo(() => {
@@ -2779,13 +2832,18 @@
         h("p", { className: "ptcPlusDetail" }, t2("capabilityBaseline.description")),
         h("div", { className: "ptcPlusLabel" }, t2("capabilityOverrides.label")),
         h("p", { className: "ptcPlusDetail" }, t2("capabilityOverrides.description")),
-        h("input", {
-          type: "search",
-          className: "ptcPlusInput",
-          value: query,
-          "aria-label": t2("capabilities.search"),
-          onChange: (event) => setQuery(event.target.value)
-        }),
+        h(
+          "label",
+          { className: "ptcPlusSearch" },
+          h(SearchIcon),
+          h("input", {
+            type: "search",
+            value: query,
+            "aria-label": t2("capabilities.search"),
+            placeholder: t2("capabilities.search"),
+            onChange: (event) => setQuery(event.target.value)
+          })
+        ),
         catalogError ? h("p", { role: "status", className: "ptcPlusMessage" }, t2("capabilities.catalogUnavailable", { error: catalogError })) : null,
         entries.size === 0 ? h("p", { className: "ptcPlusDetail" }, t2("capabilities.catalogEmpty")) : filtered.length === 0 ? h("p", { className: "ptcPlusDetail" }, t2("capabilities.noMatches")) : h("div", { className: "ptcPlusCapabilityList" }, ...filtered.map((entry) => h(
           "div",
@@ -2880,6 +2938,7 @@
       const [catalog, setCatalog] = React.useState(null);
       const [catalogError, setCatalogError] = React.useState(null);
       const [planRevision, setPlanRevision] = React.useState(0);
+      const [activeSection, setActiveSection] = React.useState("syntax");
       const writeTail = React.useRef(Promise.resolve());
       const snapshot2 = usePtcSettings((snapshot3) => snapshot3);
       const value = snapshot2.status === "ready" ? resolveConfig(snapshot2.value ?? {}) : {};
@@ -2893,34 +2952,43 @@
       const legacyMigration = value.legacyBindingSettings === true;
       const enabled = featureEnabled(snapshot2, "plugin");
       const globalEnabled = featureEnabled(snapshot2, "bindings");
+      const plansEnabled = enabled && value.capabilityManagementEnabled === true;
       const planConfiguration = JSON.stringify(CONFIG_FIELDS.filter((field) => field.key.startsWith("capability") || field.key === "modelPreviewTokens").map((field) => value[field.key]));
       React.useEffect(() => {
         if (!enabled) {
-          setPlans(null);
-          setPlansError(null);
           setCatalog(null);
           setCatalogError(null);
+          return;
+        }
+        if (!(open || view === "page" || view === "dialog") || !inspectCapabilityCatalog) return;
+        const controller = new AbortController();
+        setCatalogError(null);
+        Promise.resolve().then(() => inspectCapabilityCatalog(controller.signal)).then((available) => {
+          if (controller.signal.aborted) return;
+          setCatalog(available);
+        }, (error) => {
+          if (controller.signal.aborted) return;
+          setCatalog(null);
+          setCatalogError(String(error?.message ?? error));
+        });
+        return () => controller.abort();
+      }, [enabled, open, view, planConfiguration, planRevision]);
+      React.useEffect(() => {
+        if (!plansEnabled) {
+          setPlans(null);
+          setPlansError(null);
           return;
         }
         if (!(open || view === "page" || view === "dialog") || !inspectCapabilityPlans) return;
         const controller = new AbortController();
         setPlansError(null);
-        setCatalogError(null);
-        Promise.allSettled([
-          Promise.resolve().then(() => inspectCapabilityPlans(controller.signal)),
-          Promise.resolve().then(() => inspectCapabilityCatalog?.(controller.signal) ?? null)
-        ]).then(([next, available]) => {
-          if (controller.signal.aborted) return;
-          if (next.status === "fulfilled") setPlans(next.value);
-          else setPlansError(String(next.reason?.message ?? next.reason));
-          if (available.status === "fulfilled") setCatalog(available.value);
-          else {
-            setCatalog(null);
-            setCatalogError(String(available.reason?.message ?? available.reason));
-          }
+        Promise.resolve().then(() => inspectCapabilityPlans(controller.signal)).then((next) => {
+          if (!controller.signal.aborted) setPlans(next);
+        }, (error) => {
+          if (!controller.signal.aborted) setPlansError(String(error?.message ?? error));
         });
         return () => controller.abort();
-      }, [enabled, open, view, planConfiguration, planRevision]);
+      }, [plansEnabled, open, view, planConfiguration, planRevision]);
       const groupIdPrefix = view === "dialog" ? "ptc-plus-settings-dialog-group" : "ptc-plus-settings-group";
       const workbench = useWorkbenchController({ enabled: globalEnabled && bindingsOpen, callUserBindings });
       const setBindingsDialogOpen = (next) => {
@@ -2965,10 +3033,10 @@
           value,
           catalog,
           catalogError,
-          plans,
           t: t2,
           disabled: (key2) => fieldDisabled({ key: key2 }),
-          onChange: persist
+          onChange: persist,
+          plans: plansEnabled ? plans : null
         });
         if (field.key === "capabilityStatistics") return h(
           "div",
@@ -3014,6 +3082,39 @@
           ) : null
         );
       };
+      const renderPlans = () => plansEnabled && inspectCapabilityPlans ? h(
+        "section",
+        {
+          className: "ptcPlusCapabilityPlans",
+          "aria-labelledby": `${groupIdPrefix}-plans`
+        },
+        h("h4", { id: `${groupIdPrefix}-plans`, className: "ptcPlusGroupTitle" }, t2("capabilities.sessions")),
+        h(ActionButton, { type: "button", disabled: !enabled, onClick: () => setPlanRevision((current) => current + 1) }, t2("capabilities.reload")),
+        h("p", { className: "ptcPlusDetail" }, t2("capabilities.refreshHint")),
+        plansError ? h("p", { role: "status" }, t2("capabilities.unavailable", { error: plansError })) : plans === null ? h("p", null, t2("state.syncing")) : plans.length === 0 ? h("p", null, t2("capabilities.empty")) : plans.map((plan) => h(
+          "details",
+          { key: plan.sessionId },
+          h("summary", null, `${plan.sessionId} \xB7 ${t2(plan.pendingRefresh ? "capabilities.pending" : "capabilities.current")}`),
+          h("p", null, t2("capabilities.budget", { bytes: plan.effective.budgets.contractBytes, overage: plan.effective.budgets.overageBytes })),
+          h(
+            "table",
+            null,
+            h("thead", null, h(
+              "tr",
+              null,
+              ...["member", "selection", "reason", "coverage"].map((key) => h("th", { key }, t2(`capabilities.${key}`)))
+            )),
+            h("tbody", null, ...plan.effective.entries.map((entry) => h(
+              "tr",
+              { key: entry.id },
+              h("td", null, entry.id),
+              h("td", null, entry.selection),
+              h("td", null, [entry.reason, entry.statisticsReason].filter(Boolean).join(" \xB7 ")),
+              h("td", null, entry.evidence ? `${entry.evidence.used}/${entry.evidence.eligible} (${entry.evidence.scope})` : "\u2014")
+            )))
+          )
+        ))
+      ) : null;
       const renderGroup = (group) => {
         const fields = group.key === "syntax" && legacyMigration ? [...group.fields, ...legacyKeys] : group.fields;
         return h(
@@ -3029,7 +3130,8 @@
             className: "ptcPlusGroupTitle",
             "data-experimental-label": group.key === "capabilities" ? t2("settings.experimental") : void 0
           }, t2(`group.${group.key}`)),
-          ...fields.map(renderField)
+          ...fields.map(renderField),
+          group.key === "capabilities" ? renderPlans() : null
         );
       };
       const settingsFields = (navigable) => [
@@ -3047,13 +3149,34 @@
       ];
       const settingsBody = (expanded, id2) => {
         const navigable = view === "page" || view === "dialog";
-        const groupIds = new Map(CONFIG_GROUPS.map((group) => [group.key, `${groupIdPrefix}-${group.key}`]));
-        const revealSection = (id3) => {
+        const revealSection = (key) => {
+          const id3 = `${groupIdPrefix}-${key}`;
           const root = settingsRoot.current;
           const heading2 = root?.querySelector(`[id="${id3}"]`);
-          const scroller = view === "page" ? root?.querySelector(".ptcPlusFields") : root?.closest(".ptcPlusSettingsDialogContent");
+          const scroller = root?.querySelector(".ptcPlusFields");
           if (!heading2 || !scroller) return;
-          scroller.scrollTop += heading2.getBoundingClientRect().top - scroller.getBoundingClientRect().top - scroller.clientTop - 16;
+          const headingBounds = heading2.getBoundingClientRect();
+          const inset = Math.min(16, Math.max(0, scroller.clientHeight - headingBounds.height));
+          scroller.scrollTop += headingBounds.top - scroller.getBoundingClientRect().top - scroller.clientTop - inset;
+          setActiveSection(key);
+        };
+        const trackSection = (event) => {
+          const scroller = event.currentTarget;
+          const threshold = scroller.getBoundingClientRect().top + scroller.clientTop + 20;
+          let next = "syntax";
+          for (const group of CONFIG_GROUPS.slice(1)) {
+            const heading2 = scroller.querySelector(`[id="${groupIdPrefix}-${group.key}"]`);
+            if (heading2 && heading2.getBoundingClientRect().top <= threshold) next = group.key;
+          }
+          setActiveSection(next);
+        };
+        const revealNavigationItem = (element) => {
+          const scroller = element.closest(".ptcPlusSettingsNavList");
+          if (!scroller || scroller.scrollWidth <= scroller.clientWidth) return;
+          const item = element.getBoundingClientRect();
+          const clip2 = scroller.getBoundingClientRect();
+          if (item.right > clip2.right) scroller.scrollLeft += item.right - clip2.right;
+          else if (item.left < clip2.left) scroller.scrollLeft += item.left - clip2.left;
         };
         const navigation = navigable ? h(
           "nav",
@@ -3064,11 +3187,14 @@
           h(
             "div",
             { className: "ptcPlusSettingsNavIntro" },
-            h("span", { className: "ptcPlusSettingsEyebrow" }, t2("settings.navigationEyebrow")),
-            h("strong", null, t2("settings.navigationTitle")),
+            h(
+              "label",
+              { className: "ptcPlusSettingsTitleSwitch", "data-disabled": fieldDisabled(enabledField) },
+              h("strong", null, t2("settings.navigationTitle")),
+              fieldInput(enabledField, enabled, fieldDisabled(enabledField), persist, t2("enabled.label"))
+            ),
             h("p", null, t2("settings.navigationHint"))
           ),
-          h("div", { className: "ptcPlusSettingsNavSwitch" }, renderField("enabled")),
           h("div", { className: "ptcPlusSettingsNavList" }, ...CONFIG_MODULES.map((module) => h(
             "div",
             {
@@ -3086,10 +3212,15 @@
                   className: "ptcPlusSettingsNavItem",
                   "data-section": key,
                   "data-experimental": key === "capabilities" ? "true" : void 0,
-                  onClick: () => revealSection(groupIds.get(key))
+                  title: t2(`group.${group.key}`),
+                  "aria-current": activeSection === key ? "location" : void 0,
+                  onClick: () => revealSection(key),
+                  onFocus: (event) => revealNavigationItem(event.currentTarget)
                 },
+                h(SectionIcon, { section: key }),
                 h("span", { className: "ptcPlusSettingsNavLabel" }, t2(`group.${group.key}`)),
-                key === "capabilities" ? h("span", { className: "ptcPlusSettingsNavBadge" }, t2("settings.experimental")) : null
+                key === "capabilities" ? h("span", { className: "ptcPlusSettingsNavBadge" }, t2("settings.experimental")) : null,
+                h("span", { className: "ptcPlusSettingsNavArrow", "aria-hidden": true }, h(NavigationArrow))
               );
             }))
           )))
@@ -3106,56 +3237,15 @@
           h(
             "div",
             { className: "ptcPlusBodyInner" },
-            view === "dialog" ? h(
-              "div",
-              { className: "ptcPlusSettingsHero" },
-              h(
-                "div",
-                { className: "ptcPlusSettingsHeroCopy" },
-                h("span", { className: "ptcPlusSettingsEyebrow" }, t2("settings.navigationEyebrow")),
-                h("p", null, t2("settings.dialogHint"))
-              ),
-              h("span", { className: "ptcPlusStatus", "data-enabled": enabled }, t2(enabled ? "status.enabled" : "status.disabled"))
-            ) : null,
             h(
               "div",
               { className: navigable ? "ptcPlusSettingsLayout" : void 0 },
               navigation,
               h(
                 "div",
-                { className: "ptcPlusFields" },
+                { className: "ptcPlusFields", onScroll: navigable ? trackSection : void 0 },
                 snapshot2.status === "loading" ? h("p", { className: "ptcPlusMessage" }, t2("state.syncing")) : snapshot2.status === "unavailable" ? h("p", { className: "ptcPlusMessage" }, t2("state.unavailable")) : [
                   ...settingsFields(navigable),
-                  inspectCapabilityPlans ? h(
-                    "section",
-                    { key: "capability-plans", className: "ptcPlusGroup" },
-                    h("h3", { className: "ptcPlusGroupTitle" }, t2("capabilities.sessions")),
-                    h(ActionButton, { type: "button", disabled: !enabled, onClick: () => setPlanRevision((current) => current + 1) }, t2("capabilities.reload")),
-                    h("p", { className: "ptcPlusDetail" }, t2("capabilities.refreshHint")),
-                    !enabled ? h("p", null, t2("status.disabled")) : plansError ? h("p", { role: "status" }, t2("capabilities.unavailable", { error: plansError })) : plans === null ? h("p", null, t2("state.syncing")) : plans.length === 0 ? h("p", null, t2("capabilities.empty")) : plans.map((plan) => h(
-                      "details",
-                      { key: plan.sessionId },
-                      h("summary", null, `${plan.sessionId} \xB7 ${t2(plan.pendingRefresh ? "capabilities.pending" : "capabilities.current")}`),
-                      h("p", null, t2("capabilities.budget", { bytes: plan.effective.budgets.contractBytes, overage: plan.effective.budgets.overageBytes })),
-                      h(
-                        "table",
-                        null,
-                        h("thead", null, h(
-                          "tr",
-                          null,
-                          ...["member", "selection", "reason", "coverage"].map((key) => h("th", { key }, t2(`capabilities.${key}`)))
-                        )),
-                        h("tbody", null, ...plan.effective.entries.map((entry) => h(
-                          "tr",
-                          { key: entry.id },
-                          h("td", null, entry.id),
-                          h("td", null, entry.selection),
-                          h("td", null, [entry.reason, entry.statisticsReason].filter(Boolean).join(" \xB7 ")),
-                          h("td", null, entry.evidence ? `${entry.evidence.used}/${entry.evidence.eligible} (${entry.evidence.scope})` : "\u2014")
-                        )))
-                      )
-                    ))
-                  ) : null,
                   h(
                     "div",
                     { key: "footer", className: "ptcPlusFooter" },
@@ -30700,17 +30790,29 @@
 .ptcPlusHeadText{display:flex;flex:1;min-width:0;flex-direction:column;align-items:flex-start;gap:3px}.ptcPlusName{font-size:15px;font-weight:600;line-height:1.4}.ptcPlusDescription{color:var(--dsw-alias-label-tertiary);font-size:13px;line-height:1.5;overflow-wrap:anywhere}.ptcPlusStatus{display:inline-flex;align-items:center;flex:none;padding:1px 8px;border-radius:999px;corner-shape:round;background:var(--dsw-alias-bg-module-platform);color:var(--dsw-alias-label-secondary);font-size:11px;font-weight:500;line-height:17px;white-space:nowrap}.ptcPlusStatus[data-enabled=true]{color:var(--dsw-alias-state-success-primary);background:var(--dsw-alias-state-success-tertiary)}.ptcPlusStatus[data-enabled=false]{color:var(--dsw-alias-label-secondary);background:var(--dsw-alias-bg-module-platform)}
 .ptcPlusChevron{display:flex;color:var(--dsw-alias-label-tertiary);transition:transform .18s ease}.ptcPlusChevron[data-open=true]{transform:rotate(180deg)}.ptcPlusBody{display:grid;grid-template-rows:0fr;transition:grid-template-rows .2s ease}.ptcPlusBody[data-open=true]{grid-template-rows:1fr}.ptcPlusBodyInner{min-height:0;overflow:hidden}.ptcPlusFields{margin:0 16px;padding:8px 0 12px;border-top:0.5px solid var(--dsw-alias-border-l2)}
 .ptcPlusGroup+.ptcPlusGroup{margin-top:20px;padding-top:12px;border-top:1px solid var(--dsw-alias-border-l2)}.ptcPlusGroupTitle{margin:0;padding:8px 0;color:var(--dsw-alias-label-secondary);font-size:13px;font-weight:600;letter-spacing:0;line-height:20px}.ptcPlusGroup[data-experimental=true]{padding:14px 16px;border:1px solid color-mix(in srgb,var(--dsw-alias-state-warn-primary,#a15c00) 25%,var(--dsw-alias-border-l2));border-radius:12px;background:var(--dsw-alias-bg-layer-3)}.ptcPlusGroup[data-experimental=true]>.ptcPlusGroupTitle{display:flex;align-items:center;gap:8px}.ptcPlusGroup[data-experimental=true]>.ptcPlusGroupTitle::after{content:attr(data-experimental-label);padding:2px 7px;border-radius:999px;background:color-mix(in srgb,var(--dsw-alias-state-warn-primary,#a15c00) 12%,transparent);color:color-mix(in srgb,var(--dsw-alias-state-warn-primary,#a15c00) 60%,var(--dsw-alias-label-primary));font-size:10px;font-weight:600;line-height:15px}.ptcPlusRow{display:flex;align-items:center;gap:12px;min-height:48px;border-top:0.5px solid var(--dsw-alias-border-l2)}.ptcPlusGroupTitle+.ptcPlusRow{border-top:0}.ptcPlusMain{flex:1;min-width:0}.ptcPlusLabel{font-size:13px;font-weight:500;line-height:1.5}.ptcPlusDetail,.ptcPlusMessage{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:1.5;overflow-wrap:anywhere}.ptcPlusInput{box-sizing:border-box;min-width:72px;width:140px;height:34px;padding:0 12px;border:0.5px solid var(--dsw-alias-border-l4);border-radius:8px;background:var(--dsw-alias-bg-layer-3);color:var(--dsw-alias-label-primary);font:inherit;font-size:13px;line-height:1.5}.ptcPlusInput:focus-visible{border-color:var(--dsw-alias-brand-primary);outline:none}.ptcPlusCheck{width:18px;height:18px;accent-color:var(--dsw-alias-brand-primary)}
-.ptcPlusCapabilityChoices,.ptcPlusCapabilityStatistics{min-width:0;margin:12px 0}.ptcPlusCapabilityChoices>.ptcPlusInput{width:100%;margin-bottom:8px}.ptcPlusCapabilityList{max-height:320px;overflow:auto;border:0.5px solid var(--dsw-alias-border-l3);border-radius:8px}.ptcPlusCapabilityItem{display:grid;grid-template-columns:minmax(0,1fr) auto minmax(120px,160px);align-items:center;gap:10px;padding:10px}.ptcPlusCapabilityItem+.ptcPlusCapabilityItem{border-top:0.5px solid var(--dsw-alias-border-l2)}.ptcPlusCapabilityItem .ptcPlusLabel{overflow-wrap:anywhere}.ptcPlusCapabilityCommon{display:flex;align-items:center;gap:4px;font-size:12px;color:var(--dsw-alias-label-secondary)}.ptcPlusCapabilityStatistics .ptcPlusInput{width:100%}
+.ptcPlusCapabilityChoices,.ptcPlusCapabilityStatistics{min-width:0;margin:12px 0}.ptcPlusCapabilityChoices>.ptcPlusSearch{width:100%;margin-bottom:8px}.ptcPlusCapabilityList{max-height:320px;overflow:auto;border:0.5px solid var(--dsw-alias-border-l3);border-radius:8px}.ptcPlusCapabilityItem{display:grid;grid-template-columns:minmax(0,1fr) auto minmax(120px,160px);align-items:center;gap:10px;padding:10px}.ptcPlusCapabilityItem+.ptcPlusCapabilityItem{border-top:0.5px solid var(--dsw-alias-border-l2)}.ptcPlusCapabilityItem .ptcPlusLabel{overflow-wrap:anywhere}.ptcPlusCapabilityCommon{display:flex;align-items:center;gap:4px;font-size:12px;color:var(--dsw-alias-label-secondary)}.ptcPlusCapabilityStatistics .ptcPlusInput{width:100%}
 @media(max-width:560px){.ptcPlusCapabilityItem{grid-template-columns:minmax(0,1fr) auto}.ptcPlusCapabilityItem>.ptcPlusSelect{grid-column:1/-1}.ptcPlusCapabilityStatistics .ptcPlusBindingFields{grid-template-columns:minmax(0,1fr)}}
 .ptcPlusFooter{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:8px}.ptcPlusButton{appearance:none;display:inline-flex;align-items:center;justify-content:center;gap:5px;min-height:32px;padding:4px 14px;border:0.5px solid var(--dsw-alias-border-l3);border-radius:8px;background:transparent;color:var(--dsw-alias-label-secondary);cursor:pointer;font:inherit;font-size:13px;line-height:1.5;transition:color .16s ease,border-color .16s ease,background-color .16s ease}.ptcPlusButton:hover:not(:disabled){border-color:var(--dsw-alias-label-dimmed);color:var(--dsw-alias-label-primary)}.ptcPlusButton[data-kind=primary]{background:var(--dsw-alias-label-primary);border-color:transparent;color:var(--dsw-alias-bg-layer-3)}.ptcPlusButton[data-kind=primary]:hover:not(:disabled){background:var(--dsw-alias-label-primary-dimmed);border-color:transparent;color:var(--dsw-alias-bg-layer-3)}.ptcPlusButton[data-kind=ghost]{border-color:transparent}.ptcPlusButton[data-kind=ghost]:hover:not(:disabled){border-color:var(--dsw-alias-border-l3)}.ptcPlusButton[data-kind=danger]{color:var(--dsw-alias-state-error-primary)}.ptcPlusButton[data-kind=danger]:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover-danger);border-color:var(--dsw-alias-state-error-primary);color:var(--dsw-alias-state-error-primary)}.ptcPlusButton:disabled,.ptcPlusInput:disabled,.ptcPlusCheck:disabled{cursor:not-allowed;opacity:.4}
 .ptcPlusSettingAction{padding:4px 0 12px}
-.ptcPlusSettingsModal.ptcPlusSettingsModal{container:ptcPlusSettingsModal/size;box-sizing:border-box;width:min(1080px,calc(100vw - 48px));height:min(860px,calc(100dvh - 48px));max-width:100%;max-height:100%;min-height:0;display:flex;flex-direction:column;padding:0;gap:0;overflow:hidden;border-radius:16px}.ptcPlusSettingsDialogHead{display:flex;flex:none;align-items:center;justify-content:space-between;gap:16px;padding:20px 24px;border-bottom:1px solid var(--dsw-alias-border-l2)}.ptcPlusSettingsDialogHead h2{margin:0;font-size:18px;line-height:26px;font-weight:600}.ptcPlusSettingsDialogHead p{margin:4px 0 0;color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px}.ptcPlusSettingsDialogContent{container:ptcPlusSettingsDialogContent/size;flex:1;min-height:0;padding:20px 24px;overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable}.ptcPlusSettingsDialog{min-width:0}.ptcPlusSettingsDialog .ptcPlusSettingsNav{max-height:100cqh;overflow:auto;overscroll-behavior:contain}.ptcPlusSettingsDialog .ptcPlusSettingsNav>*{flex-shrink:0}.ptcPlusSettingsDialog .ptcPlusBody{display:block}.ptcPlusSettingsDialog .ptcPlusBodyInner{overflow:visible}.ptcPlusSettingsDialog .ptcPlusFields{margin:0;padding:0 0 12px;border-top:0}.ptcPlusSettingsHero{display:flex;align-items:flex-end;justify-content:space-between;gap:20px;margin:0 0 20px;padding:4px 0 18px;border-bottom:1px solid var(--dsw-alias-border-l2)}.ptcPlusSettingsHeroCopy{min-width:0}.ptcPlusSettingsHeroCopy p{margin:4px 0 0;color:var(--dsw-alias-label-secondary);font-size:13px;line-height:20px}.ptcPlusSettingsEyebrow{display:block;color:var(--dsw-alias-label-tertiary);font-size:10px;font-weight:700;letter-spacing:.08em;line-height:16px;text-transform:uppercase}.ptcPlusSettingsLayout{display:grid;grid-template-columns:minmax(190px,220px) minmax(0,1fr);align-items:start;gap:28px}.ptcPlusSettingsNav{position:sticky;top:0;display:flex;min-width:0;flex-direction:column;gap:18px}.ptcPlusSettingsNavIntro{display:flex;flex-direction:column;gap:3px;padding:4px 4px 0}.ptcPlusSettingsNavIntro strong{font-size:15px;line-height:22px}.ptcPlusSettingsNavIntro p{margin:4px 0 0;color:var(--dsw-alias-label-tertiary);font-size:11px;line-height:17px}.ptcPlusSettingsNavList{display:flex;flex-direction:column;gap:3px}.ptcPlusSettingsNavItem{appearance:none;display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:36px;padding:7px 10px;border:0;border-radius:8px;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:12px;line-height:18px;text-align:start;cursor:pointer}.ptcPlusSettingsNavItem:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}.ptcPlusSettingsNavItem:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:-2px}.ptcPlusSettingsNavItem[data-experimental=true]{color:var(--dsw-alias-label-secondary)}.ptcPlusSettingsNavLabel{min-width:0;overflow-wrap:anywhere}.ptcPlusSettingsNavBadge{color:color-mix(in srgb,var(--dsw-alias-state-warn-primary,#a15c00) 60%,var(--dsw-alias-label-primary));flex:none;padding:1px 5px;border-radius:999px;background:color-mix(in srgb,var(--dsw-alias-state-warn-primary,#a15c00) 12%,transparent);font-size:10px;line-height:15px}.ptcPlusSettingsLayout>.ptcPlusFields{min-width:0}.ptcPlusSettingsLayout .ptcPlusGroup{padding:14px 18px;border:1px solid var(--dsw-alias-border-l2);border-radius:12px;background:var(--dsw-alias-bg-layer-3)}.ptcPlusSettingsLayout .ptcPlusGroup+.ptcPlusGroup{margin-top:14px}.ptcPlusSettingsLayout .ptcPlusGroup:first-child{margin-top:0}.ptcPlusSettingsLayout .ptcPlusGroupTitle{scroll-margin-top:16px;font-size:14px}.ptcPlusSettingsLayout .ptcPlusRow{padding-block:10px}
-.ptcPlusSettingsModule+.ptcPlusSettingsModule,.ptcPlusFields>.ptcPlusGroup+.ptcPlusSettingsModule,.ptcPlusSettingsModule+.ptcPlusGroup{margin-top:24px}.ptcPlusSettingsModuleTitle{margin:0 0 10px;color:var(--dsw-alias-label-secondary);font-size:12px;font-weight:600;line-height:20px}.ptcPlusSettingsNavSwitch{padding:10px 12px;border:1px solid var(--dsw-alias-border-l2);border-radius:10px;background:var(--dsw-alias-bg-layer-3)}.ptcPlusSettingsNavSwitch>.ptcPlusRow{min-height:30px;padding:0;border:0;align-items:center;flex-direction:row;gap:8px}.ptcPlusSettingsNavSwitch .ptcPlusLabel{font-size:12px}.ptcPlusSettingsNavModule+.ptcPlusSettingsNavModule{margin-top:14px}.ptcPlusSettingsNavModuleTitle{display:block;padding:0 10px;margin-bottom:6px;color:var(--dsw-alias-label-tertiary);font-size:10px;font-weight:600;line-height:16px}.ptcPlusSettingsNavModuleItems{display:flex;flex-direction:column;gap:3px}
-.ptcPlusSettingsPage{box-sizing:border-box;container:ptcPlusSettingsPage / inline-size;padding:20px 24px}.ptcPlusSettingsPage .ptcPlusBody{display:block}.ptcPlusSettingsPage .ptcPlusBodyInner{overflow:visible}.ptcPlusSettingsPage .ptcPlusSettingsLayout{gap:24px}.ptcPlusSettingsPage .ptcPlusSettingsNav{position:static;max-height:min(720px,75dvh);padding:2px;overflow:auto;overscroll-behavior:contain}.ptcPlusSettingsPage .ptcPlusFields{margin:0;padding:2px 8px 12px 2px;border:0;max-height:min(720px,75dvh);overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable}
-@container ptcPlusSettingsPage (max-width:760px){.ptcPlusSettingsPage .ptcPlusSettingsLayout{grid-template-columns:1fr;gap:16px}.ptcPlusSettingsPage .ptcPlusSettingsNav{max-height:none;overflow:visible;gap:10px}.ptcPlusSettingsPage .ptcPlusSettingsNavIntro{display:none}.ptcPlusSettingsPage .ptcPlusSettingsNavList{display:flex;gap:4px;padding:2px;overflow:auto;overscroll-behavior:contain}.ptcPlusSettingsPage .ptcPlusSettingsNavItem{flex:none}.ptcPlusSettingsPage .ptcPlusSettingsNavModule{flex:none}.ptcPlusSettingsPage .ptcPlusSettingsNavModule+.ptcPlusSettingsNavModule{margin-top:0}.ptcPlusSettingsPage .ptcPlusSettingsNavModuleItems{flex-direction:row}.ptcPlusSettingsPage .ptcPlusSettingsNavBadge{display:none}}
+.ptcPlusSettingsModal.ptcPlusSettingsModal{container:ptcPlusSettingsModal/size;box-sizing:border-box;width:min(1080px,calc(100vw - 48px));height:min(860px,calc(100dvh - 48px));max-width:100%;max-height:100%;min-height:0;display:flex;flex-direction:column;padding:0;gap:0;overflow:hidden;border-radius:16px}
+.ptcPlusSettingsDialogHead{display:flex;flex:none;align-items:center;justify-content:space-between;gap:16px;padding:20px 24px;border-bottom:1px solid var(--dsw-alias-border-l2)}
+.ptcPlusSettingsDialogHead h2{margin:0;font-size:18px;line-height:26px;font-weight:600}.ptcPlusSettingsDialogHead p{margin:4px 0 0;color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px}
+.ptcPlusSettingsDialogContent{flex:1;min-height:0;padding:20px 24px;overflow:hidden}.ptcPlusSettingsDialog{min-width:0;height:100%}.ptcPlusSettingsDialog .ptcPlusBody{display:block;height:100%}.ptcPlusSettingsDialog .ptcPlusBodyInner{height:100%;overflow:hidden}
+.ptcPlusSettingsLayout{display:grid;grid-template-columns:248px minmax(0,1fr);gap:28px;min-height:0;align-items:start}.ptcPlusSettingsDialog .ptcPlusSettingsLayout{height:100%;align-items:stretch}
+.ptcPlusSettingsNav{display:flex;flex-direction:column;gap:18px;min-width:0;padding:2px;overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable}.ptcPlusSettingsDialog .ptcPlusSettingsNav{min-height:0;max-height:100%}
+.ptcPlusSettingsNavIntro{display:flex;flex-direction:column;gap:4px;padding:0 6px}.ptcPlusSettingsNavIntro p{margin:0;color:var(--dsw-alias-label-tertiary);font-size:11px;line-height:18px}
+.ptcPlusSettingsTitleSwitch{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:32px;cursor:pointer}.ptcPlusSettingsTitleSwitch strong{font-size:16px;line-height:24px;font-weight:600;color:var(--dsw-alias-label-primary)}.ptcPlusSettingsTitleSwitch[data-disabled=true]{cursor:not-allowed}
+.ptcPlusSettingsTitleSwitch>.ptcPlusCheck{appearance:none;position:relative;flex:none;box-sizing:border-box;width:30px;height:18px;margin:0;border:0;border-radius:999px;background:var(--dsw-alias-label-dimmed);cursor:inherit}.ptcPlusSettingsTitleSwitch>.ptcPlusCheck:checked{background:var(--dsw-alias-brand-primary)}.ptcPlusSettingsTitleSwitch>.ptcPlusCheck:disabled{cursor:not-allowed}.ptcPlusSettingsTitleSwitch>.ptcPlusCheck::before{position:absolute;top:3px;left:3px;width:12px;height:12px;border-radius:50%;background:var(--dsw-alias-bg-base);content:''}.ptcPlusSettingsTitleSwitch>.ptcPlusCheck:checked::before{left:15px}.ptcPlusSettingsTitleSwitch>.ptcPlusCheck:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:3px}
+.ptcPlusSettingsNavList{display:flex;flex-direction:column;gap:20px}.ptcPlusSettingsNavModule{min-width:0}.ptcPlusSettingsNavModuleTitle{display:block;margin:0 6px 6px;padding-top:12px;border-top:1px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-tertiary);font-size:10px;font-weight:500;line-height:16px}.ptcPlusSettingsNavModuleItems{display:flex;flex-direction:column;gap:3px}
+.ptcPlusSettingsNavItem{appearance:none;display:flex;align-items:center;gap:9px;box-sizing:border-box;min-height:36px;padding:8px 10px;border:0;border-radius:7px;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:12px;line-height:20px;text-align:start;cursor:pointer}.ptcPlusSettingsNavItem:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}.ptcPlusSettingsNavItem:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:-2px}
+.ptcPlusSettingsNavItem[aria-current=location]{background:color-mix(in srgb,var(--dsw-alias-brand-primary) 10%,var(--dsw-alias-bg-layer-3));color:var(--dsw-alias-brand-primary);box-shadow:inset 2px 0 var(--dsw-alias-brand-primary)}.ptcPlusSettingsNavItem[aria-current=location]:hover{background:color-mix(in srgb,var(--dsw-alias-brand-primary) 16%,var(--dsw-alias-bg-layer-3))}.ptcPlusSettingsNavIcon,.ptcPlusSettingsNavArrow{flex:none}.ptcPlusSettingsNavLabel{flex:1;min-width:0;overflow-wrap:anywhere}.ptcPlusSettingsNavArrow{display:flex;transform:rotate(-90deg);color:var(--dsw-alias-label-tertiary)}
+.ptcPlusSettingsNavBadge{flex:none;padding:1px 5px;border-radius:999px;color:color-mix(in srgb,var(--dsw-alias-state-warn-primary,#a15c00) 60%,var(--dsw-alias-label-primary));background:color-mix(in srgb,var(--dsw-alias-state-warn-primary,#a15c00) 12%,transparent);font-size:10px;line-height:15px}
+.ptcPlusSettingsLayout>.ptcPlusFields{min-width:0}.ptcPlusSettingsDialog .ptcPlusFields{min-height:0;height:100%;box-sizing:border-box;margin:0;padding:2px 8px 12px 2px;border:0;overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable}.ptcPlusSettingsLayout .ptcPlusGroup{padding:14px 18px;border:1px solid var(--dsw-alias-border-l2);border-radius:12px;background:var(--dsw-alias-bg-layer-3)}.ptcPlusSettingsLayout .ptcPlusGroup+.ptcPlusGroup{margin-top:14px}.ptcPlusSettingsLayout .ptcPlusGroup:first-child{margin-top:0}.ptcPlusSettingsLayout .ptcPlusGroupTitle{font-size:14px}.ptcPlusSettingsLayout .ptcPlusRow{padding-block:10px}
+.ptcPlusSettingsModule+.ptcPlusSettingsModule{margin-top:24px}.ptcPlusSettingsModuleTitle{margin:0 0 10px;color:var(--dsw-alias-label-secondary);font-size:12px;font-weight:600;line-height:20px}.ptcPlusCapabilityPlans{margin-top:16px;padding-top:8px;border-top:1px solid var(--dsw-alias-border-l2)}
+.ptcPlusSettingsPage{box-sizing:border-box;container:ptcPlusSettingsPage/inline-size;padding:20px 24px}.ptcPlusSettingsPage .ptcPlusBody{display:block}.ptcPlusSettingsPage .ptcPlusBodyInner{overflow:visible}.ptcPlusSettingsPage .ptcPlusSettingsLayout{gap:24px}.ptcPlusSettingsPage .ptcPlusSettingsNav{max-height:min(720px,75dvh)}.ptcPlusSettingsPage .ptcPlusFields{margin:0;padding:2px 8px 12px 2px;border:0;max-height:min(720px,75dvh);overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable}
+@container ptcPlusSettingsPage (max-width:760px){.ptcPlusSettingsPage .ptcPlusSettingsLayout{grid-template-columns:1fr;gap:12px}.ptcPlusSettingsPage .ptcPlusSettingsNav{max-height:none;overflow:hidden;gap:6px}.ptcPlusSettingsPage .ptcPlusSettingsNavIntro p{display:none}.ptcPlusSettingsPage .ptcPlusSettingsNavList{flex-direction:row;gap:12px;padding:2px;overflow:auto;overscroll-behavior:contain}.ptcPlusSettingsPage .ptcPlusSettingsNavModule{flex:none}.ptcPlusSettingsPage .ptcPlusSettingsNavModuleTitle{margin:0 6px 3px;padding:0;border:0}.ptcPlusSettingsPage .ptcPlusSettingsNavModuleItems{flex-direction:row}.ptcPlusSettingsPage .ptcPlusSettingsNavItem{flex:none}.ptcPlusSettingsPage .ptcPlusSettingsNavBadge{display:none}}
 @container ptcPlusSettingsPage (max-width:560px){.ptcPlusSettingsPage .ptcPlusRow{align-items:flex-start;flex-direction:column;gap:6px}.ptcPlusSettingsPage .ptcPlusInput{width:100%}.ptcPlusSettingsPage .ptcPlusCapabilityItem{grid-template-columns:minmax(0,1fr) auto}.ptcPlusSettingsPage .ptcPlusCapabilityItem>.ptcPlusSelect{grid-column:1/-1}.ptcPlusSettingsPage .ptcPlusCapabilityStatistics .ptcPlusBindingFields{grid-template-columns:minmax(0,1fr)}.ptcPlusSettingsPage .ptcPlusFooter{align-items:stretch;flex-direction:column}}
 @media(max-width:560px){.ptcPlusSettingsPage{padding:14px}}
-@container ptcPlusSettingsModal (max-height:320px){.ptcPlusSettingsDialogHead{padding:8px 16px}.ptcPlusSettingsDialogHead p,.ptcPlusSettingsHero,.ptcPlusSettingsNavIntro{display:none}.ptcPlusSettingsDialogContent{padding:4px 16px}}
 .ptcPlusDanger{color:var(--dsw-alias-state-error-primary)}
 .ptcPlusActiveShell{display:inline-flex;align-items:center}.ptcPlusActive{appearance:none;display:inline-flex;height:24px;align-items:center;gap:5px;padding:0 8px;border:1px solid color-mix(in srgb,var(--dsw-alias-state-success-primary,#16794f) 32%,transparent);border-radius:6px;background:var(--dsw-alias-state-success-tertiary,#e7f7ef);color:var(--dsw-alias-state-success-primary,#16794f);cursor:help;font-family:inherit;font-size:12px;font-weight:600;line-height:18px;white-space:nowrap;transition:background-color .14s ease,border-color .14s ease}.ptcPlusActive:hover,.ptcPlusActive[aria-expanded=true]{border-color:color-mix(in srgb,var(--dsw-alias-state-success-primary,#16794f) 48%,transparent);background:color-mix(in srgb,var(--dsw-alias-state-success-primary,#16794f) 16%,var(--dsw-alias-bg-layer-3,#fff))}.ptcPlusActive:focus-visible{outline:2px solid var(--dsw-alias-state-success-primary,#16794f);outline-offset:2px}.ptcPlusReplPopover{position:fixed;z-index:2147483000;inset:auto;display:none;box-sizing:border-box;margin:0;padding:0;border:0;overflow:visible;background:transparent;color:var(--dsw-alias-label-primary,#18191c)}.ptcPlusReplPopover:popover-open,.ptcPlusReplPopover[data-open=true]{display:block}.ptcPlusReplPopover::backdrop{background:transparent}.ptcPlusReplCard{display:flex;max-height:inherit;overflow:hidden;flex-direction:column;border:1px solid color-mix(in srgb,var(--dsw-alias-state-success-primary,#16794f) 22%,var(--dsw-alias-border-l2,rgba(0,0,0,.1)));border-top:3px solid var(--dsw-alias-state-success-primary,#16794f);border-radius:8px;background:var(--dsw-alias-bg-layer-3,#fff);box-shadow:0 14px 36px rgba(16,24,40,.2),0 3px 10px rgba(16,24,40,.1);color:var(--dsw-alias-label-primary,#18191c);white-space:normal}.ptcPlusReplHead{display:grid;flex:none;grid-template-columns:auto minmax(0,1fr);align-items:center;column-gap:8px;padding:11px 13px 10px;border-bottom:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1));background:color-mix(in srgb,var(--dsw-alias-state-success-primary,#16794f) 7%,var(--dsw-alias-bg-layer-3,#fff))}.ptcPlusReplStatusDot{grid-row:1/3;width:8px;height:8px;border-radius:50%;background:var(--dsw-alias-state-success-primary,#16794f);box-shadow:0 0 0 3px color-mix(in srgb,var(--dsw-alias-state-success-primary,#16794f) 14%,transparent)}.ptcPlusReplTitle,.ptcPlusReplSummary{display:block;min-width:0}.ptcPlusReplTitle{font-size:13px;font-weight:600;line-height:19px}.ptcPlusReplSummary{min-height:16px;overflow-wrap:anywhere;color:var(--dsw-alias-label-tertiary,#74777d);font-size:11px;line-height:16px}.ptcPlusReplList{min-height:0;margin:0;padding:5px 0;overflow:auto;overscroll-behavior:contain;list-style:none;scrollbar-gutter:stable}.ptcPlusReplBinding{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:4px 10px;padding:7px 12px}.ptcPlusReplBinding:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(38,49,72,.06))}.ptcPlusReplIdentity{display:flex;min-width:0;align-items:center;gap:7px}.ptcPlusReplName{min-width:0;overflow:hidden;font:12px/18px ui-monospace,SFMono-Regular,Consolas,monospace;text-overflow:ellipsis;white-space:nowrap}.ptcPlusReplKind{flex:none;padding:1px 6px;border:1px solid color-mix(in srgb,currentColor 22%,transparent);border-radius:999px;background:color-mix(in srgb,currentColor 10%,transparent);font-size:10px;font-weight:600;line-height:15px}.ptcPlusReplKind[data-kind=variable]{color:var(--dsw-alias-state-business-primary,#315fbd)}.ptcPlusReplKind[data-kind=function]{color:#7651b5}.ptcPlusReplKind[data-kind=class]{color:var(--dsw-alias-state-warn-primary,#946200)}.ptcPlusReplKind[data-kind=import]{color:#14766f}.ptcPlusReplPreview{grid-column:1;min-width:0;overflow:hidden;color:var(--dsw-alias-label-tertiary,#74777d);font:11px/16px ui-monospace,SFMono-Regular,Consolas,monospace;text-overflow:ellipsis;white-space:nowrap}.ptcPlusReplInspect{grid-column:2;grid-row:1/3;display:inline-flex;align-items:center;gap:4px;padding:3px 5px;border:0;border-radius:4px;background:transparent;color:var(--dsw-alias-label-secondary,#52565d);cursor:pointer;font:500 11px/17px inherit;white-space:nowrap}.ptcPlusReplInspect:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(38,49,72,.06));color:var(--dsw-alias-state-business-primary,#4d6bfe)}.ptcPlusReplInspect:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary,#4d6bfe);outline-offset:1px}.ptcPlusReplDefinition{grid-column:1/-1;min-width:0;margin-top:4px;padding:8px;border-left:2px solid var(--dsw-alias-state-business-primary,#4d6bfe);background:var(--dsw-alias-bg-layer-2,rgba(38,49,72,.03))}.ptcPlusReplLocation{display:block;margin-bottom:5px;color:var(--dsw-alias-label-tertiary,#74777d);font-size:10px;line-height:15px}.ptcPlusReplCode{max-height:180px;margin:0;overflow:auto;color:inherit;font:11px/16px ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere}.ptcPlusReplEmpty,.ptcPlusReplMore{display:block;color:var(--dsw-alias-label-tertiary,#74777d)}.ptcPlusReplEmpty{padding:18px 13px;font-size:12px;line-height:18px}.ptcPlusReplMore{padding:8px 13px;border-top:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1));background:var(--dsw-alias-bg-layer-2,rgba(38,49,72,.03));font-size:11px;line-height:17px}
 .ptcPlusReplTabs{display:flex;flex:none;padding:6px 8px 0;border-bottom:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1))}.ptcPlusReplTab{flex:1;padding:5px 6px;border:0;border-bottom:2px solid transparent;background:transparent;color:var(--dsw-alias-label-secondary,#52565d);cursor:pointer;font-family:inherit;font-size:11px;font-weight:600;line-height:17px}.ptcPlusReplTab[aria-selected=true]{border-bottom-color:var(--dsw-alias-state-business-primary,#4d6bfe);color:var(--dsw-alias-label-primary,#18191c)}.ptcPlusGlobalPane{display:flex;min-height:0;flex-direction:column;gap:8px;padding:8px 12px}.ptcPlusGlobalList{min-height:0;margin:0 -12px -8px;padding:5px 0;overflow:auto;list-style:none}.ptcPlusGlobalItem{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:6px 10px;padding:7px 12px;border-radius:8px}.ptcPlusGlobalItem:hover{background:var(--dsw-alias-interactive-bg-hover)}.ptcPlusGlobalItem .ptcPlusGlobalSource,.ptcPlusGlobalItem .ptcPlusReplEmpty{grid-column:1/-1}.ptcPlusAuthoringDraft{display:flex;flex-direction:column;gap:6px;padding:10px 12px;border:0.5px solid var(--dsw-alias-border-l4);border-radius:12px;background:var(--dsw-alias-bg-layer-3)}.ptcPlusGlobalSource{max-height:180px;margin:6px 0 0;padding:8px 10px;overflow:auto;background:var(--dsw-alias-markdown-code-block);border-radius:8px;font:12px/18px ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere}
@@ -30720,8 +30822,10 @@
 .ptcPlusToolBody{margin:4px 0 8px 23px;border-left:2px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1));background:var(--dsw-alias-bg-layer-2,rgba(38,49,72,.03))}.ptcPlusToolSection{display:flex;min-width:0;flex-direction:column;gap:4px;padding:9px 11px}.ptcPlusToolSection+.ptcPlusToolSection{border-top:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1))}.ptcPlusToolSectionLabel{color:var(--dsw-alias-label-tertiary,#74777d);font-size:10px;font-weight:600;line-height:16px;text-transform:uppercase}.ptcPlusToolCode{max-height:320px;margin:0;overflow:auto;color:inherit;font:12px/18px ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere}.ptcPlusIoCard{display:flex;flex-direction:column;border:1px solid var(--dsw-alias-border-l1,rgba(0,0,0,.1));border-radius:12px;background:var(--dsw-alias-markdown-code-block,rgba(38,49,72,.06));overflow:hidden}.ptcPlusIoText{max-height:320px;margin:0;padding:12px 16px;overflow:auto;color:var(--dsw-alias-label-secondary,#52565d);font:12px/18px ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere}.ptcPlusIoText[data-error]{color:var(--dsw-alias-state-error-primary,#c43d3d)}.ptcPlusInspect{display:inline-flex;align-self:flex-start;align-items:center;gap:4px;margin:4px 0 2px 4px;padding:2px 8px;border:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1));border-radius:999px;background:var(--dsw-alias-bg-base,#fff);color:var(--dsw-alias-label-secondary,#52565d);cursor:pointer;opacity:0;font-size:11px;line-height:16px;transition:opacity .1s ease;display:inline-flex}.ptcPlusTool:hover .ptcPlusInspect,.ptcPlusInspect:focus-visible{opacity:1}.ptcPlusInspect:hover{background:var(--dsw-alias-interactive-bg-hover-solid,rgba(38,49,72,.06));color:var(--dsw-alias-label-primary,#18191c)}
 .ptcPlusAuthorButtonShell{display:inline-flex;width:28px;height:28px;flex:none;align-items:center;justify-content:center}.ptcPlusAuthorButton{appearance:none;display:inline-flex;box-sizing:border-box;width:28px;height:28px;align-items:center;justify-content:center;padding:0;border:0;border-radius:6px;background:transparent;color:var(--dsw-alias-label-secondary,#52565d);cursor:pointer}.ptcPlusAuthorButton:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(38,49,72,.06));color:var(--dsw-alias-state-business-primary,#4d6bfe)}.ptcPlusAuthorButton:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary,#4d6bfe);outline-offset:1px}.ptcPlusAuthorButtonShell[data-text=true]{width:auto}.ptcPlusAuthorButtonLabel{padding:0 4px;font-size:12px;line-height:18px;font-weight:500}.ptcPlusComposerNotice{max-width:160px;color:var(--dsw-alias-label-secondary,#52565d);font-size:11px;line-height:17px;overflow-wrap:anywhere}.ptcPlusButton>svg{flex:none;margin-right:5px;vertical-align:-2px}
 @media(max-width:760px){.ptcPlusBindingsGrid{grid-template-columns:1fr}.ptcPlusBindingFields{grid-template-columns:1fr}.ptcPlusBindingField[data-wide=true]{grid-column:auto}.ptcPlusBindingSourceGrid{grid-template-columns:1fr}.ptcPlusBindingDebugBody{grid-template-columns:1fr}.ptcPlusBindingDebugBody .ptcPlusButton{width:100%}.ptcPlusBindingDebugWarning{grid-column:1}}
-@media(max-width:860px){.ptcPlusSettingsModal.ptcPlusSettingsModal{width:min(920px,calc(100vw - 32px))}.ptcPlusSettingsLayout{grid-template-columns:1fr;gap:16px}.ptcPlusSettingsNav{position:static;gap:10px}.ptcPlusSettingsDialog .ptcPlusSettingsNav{max-height:none;overflow:visible}.ptcPlusSettingsNavIntro{display:none}.ptcPlusSettingsNavList{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:4px}.ptcPlusSettingsLayout .ptcPlusFields{padding-top:0}}
-@media(max-width:560px){.ptcPlusHeader{padding:12px}.ptcPlusFields{margin:0 12px}.ptcPlusSettingsModal.ptcPlusSettingsModal{width:calc(100vw - 16px);height:calc(100dvh - 16px);border-radius:12px}.ptcPlusSettingsDialog .ptcPlusFields{margin:0}.ptcPlusSettingsDialogContent{padding:14px}.ptcPlusSettingsDialogHead{padding:14px}.ptcPlusSettingsHero{align-items:flex-start;flex-direction:column;gap:10px;margin-bottom:14px;padding-bottom:14px}.ptcPlusSettingsNavItem{padding:6px 8px}.ptcPlusSettingsNavBadge{display:none}.ptcPlusSettingsLayout .ptcPlusGroup{padding:10px 12px}.ptcPlusGroup[data-experimental=true]{padding:12px}.ptcPlusRow{align-items:flex-start;flex-direction:column;gap:6px;padding:10px 0}.ptcPlusInput{width:100%}.ptcPlusFooter,.ptcPlusBindingsHead{align-items:stretch;flex-direction:column}.ptcPlusButton{width:100%}.ptcPlusFeatures,.ptcPlusToolBody{margin-left:0}.ptcPlusToolSummary .ptcPlusToolDescription{white-space:normal;overflow-wrap:anywhere}}
+@media(max-width:860px){.ptcPlusSettingsModal.ptcPlusSettingsModal{width:min(920px,calc(100vw - 32px))}.ptcPlusSettingsLayout{grid-template-columns:1fr;gap:12px}.ptcPlusSettingsDialog .ptcPlusSettingsLayout{grid-template-rows:auto minmax(0,1fr)}.ptcPlusSettingsDialog .ptcPlusSettingsNav{max-height:none;overflow:hidden;gap:6px}.ptcPlusSettingsNavIntro p{display:none}.ptcPlusSettingsNavList{flex-direction:row;gap:12px;overflow:auto;padding:2px;overscroll-behavior:contain}.ptcPlusSettingsNavModule{flex:none}.ptcPlusSettingsNavModuleTitle{margin:0 6px 3px;padding:0;border:0}.ptcPlusSettingsNavModuleItems{flex-direction:row}.ptcPlusSettingsNavItem{flex:none}.ptcPlusSettingsLayout .ptcPlusFields{padding-top:2px}}
+@media(max-width:560px){.ptcPlusHeader{padding:12px}.ptcPlusFields{margin:0 12px}.ptcPlusSettingsModal.ptcPlusSettingsModal{width:calc(100vw - 16px);height:calc(100dvh - 16px);border-radius:12px}.ptcPlusSettingsDialog .ptcPlusFields{margin:0}.ptcPlusSettingsDialogContent{padding:14px}.ptcPlusSettingsDialogHead{padding:14px}.ptcPlusSettingsNavItem{padding:6px 8px}.ptcPlusSettingsNavBadge{display:none}.ptcPlusSettingsLayout .ptcPlusGroup{padding:10px 12px}.ptcPlusGroup[data-experimental=true]{padding:12px}.ptcPlusRow{align-items:flex-start;flex-direction:column;gap:6px;padding:10px 0}.ptcPlusInput{width:100%}.ptcPlusFooter,.ptcPlusBindingsHead{align-items:stretch;flex-direction:column}.ptcPlusButton{width:100%}.ptcPlusFeatures,.ptcPlusToolBody{margin-left:0}.ptcPlusToolSummary .ptcPlusToolDescription{white-space:normal;overflow-wrap:anywhere}}
+@container ptcPlusSettingsModal (max-height:320px){.ptcPlusSettingsModal .ptcPlusSettingsDialogHead{padding:8px 16px}.ptcPlusSettingsDialogHead p,.ptcPlusSettingsNavIntro p{display:none}.ptcPlusSettingsModal .ptcPlusSettingsDialogContent{padding:4px 16px}@media(max-width:860px){.ptcPlusSettingsDialog .ptcPlusSettingsNav{flex-direction:row;align-items:center;gap:8px;scrollbar-gutter:auto}.ptcPlusSettingsDialog .ptcPlusSettingsNavIntro{flex:none;padding:0 2px}.ptcPlusSettingsDialog .ptcPlusSettingsTitleSwitch{min-height:28px}.ptcPlusSettingsDialog .ptcPlusSettingsTitleSwitch strong{font-size:14px}.ptcPlusSettingsDialog .ptcPlusSettingsNavList{flex:1;min-width:0}.ptcPlusSettingsDialog .ptcPlusSettingsNavModule,.ptcPlusSettingsDialog .ptcPlusSettingsNavModuleItems{display:contents}.ptcPlusSettingsDialog .ptcPlusSettingsNavIcon,.ptcPlusSettingsDialog .ptcPlusSettingsNavArrow{display:none}.ptcPlusSettingsDialog .ptcPlusSettingsNavLabel{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ptcPlusSettingsDialog .ptcPlusSettingsNavModuleTitle{display:none}.ptcPlusSettingsDialog .ptcPlusSettingsNavItem{min-height:28px;max-width:100%;padding:4px 8px}.ptcPlusSettingsDialog .ptcPlusSettingsLayout{gap:6px}}}
+@container ptcPlusSettingsModal (max-height:160px){.ptcPlusSettingsModal .ptcPlusSettingsDialogHead{padding:0 10px}.ptcPlusSettingsDialogHead h2{font-size:14px;line-height:20px}.ptcPlusSettingsDialogHead .ptcPlusDialogClose{width:28px;height:28px}.ptcPlusSettingsModal .ptcPlusSettingsDialogContent{padding:2px 10px}@media(max-width:860px){.ptcPlusSettingsDialog .ptcPlusSettingsNav{padding:0}.ptcPlusSettingsDialog .ptcPlusSettingsTitleSwitch{min-height:24px}.ptcPlusSettingsDialog .ptcPlusSettingsNavItem{min-height:24px;padding-block:2px}.ptcPlusSettingsDialog .ptcPlusSettingsLayout{gap:2px}.ptcPlusSettingsDialog .ptcPlusGroupTitle{padding-block:2px}}}
 @media(prefers-reduced-motion:reduce){.ptcPlusHeader,.ptcPlusChevron,.ptcPlusBody,.ptcPlusButton,.ptcPlusActive,.ptcPlusToolChevron,.ptcPlusReplChevron,.ptcPlusReplDefinitionWrap,.ptcPlusInspect,.ptcPlusBindingDockChevron{transition:none}}
 /* The summary button owns disclosure; definition content is a separate grid item. */
 .ptcPlusReplBinding{padding:0;cursor:default}.ptcPlusReplBindingTrigger{appearance:none;display:grid;width:100%;grid-column:1/-1;grid-template-columns:minmax(0,1fr) 24px;gap:3px 8px;min-height:36px;padding:5px 12px;border:0;background:transparent;color:inherit;text-align:left;cursor:pointer;font:inherit;transition:background-color .16s ease}.ptcPlusReplBindingTrigger:hover,.ptcPlusReplBindingTrigger[aria-expanded=true]{background:color-mix(in srgb,var(--dsw-alias-state-business-primary,#4d6bfe) 5%,transparent)}.ptcPlusReplBindingTrigger:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary,#4d6bfe);outline-offset:-2px}
@@ -31237,10 +31341,8 @@
       "settings.dialogTitle": "PTC Plus \u8BBE\u7F6E",
       "settings.close": "\u5173\u95ED PTC Plus \u8BBE\u7F6E",
       "settings.navigation": "\u8BBE\u7F6E\u5206\u533A",
-      "settings.navigationEyebrow": "\u5DE5\u4F5C\u533A\u8BBE\u7F6E",
       "settings.navigationTitle": "PTC Plus",
       "settings.navigationHint": "\u8FDE\u7EED\u8BA1\u7B97\u3001\u5168\u5C40\u7ED1\u5B9A\u4E0E\u4F1A\u8BDD\u4F53\u9A8C\u3002",
-      "settings.dialogHint": "\u8C03\u6574\u8FD0\u884C\u3001\u6062\u590D\u3001\u6269\u5C55\u548C\u663E\u793A\u884C\u4E3A\u3002",
       "settings.experimental": "\u5B9E\u9A8C\u6027",
       "settings.pathSettings": "\u8BBE\u7F6E \u2192 \u63D2\u4EF6\u914D\u7F6E \u2192 PTC Plus",
       "settings.pathPlugins": "\u4FA7\u680F Plugins \u2192 dsh-ptc-plus \u2192 \u884C ptc-plus \u2192 Configure",
@@ -31453,10 +31555,8 @@
       "settings.dialogTitle": "PTC Plus settings",
       "settings.close": "Close PTC Plus settings",
       "settings.navigation": "Settings sections",
-      "settings.navigationEyebrow": "WORKSPACE SETTINGS",
       "settings.navigationTitle": "PTC Plus",
       "settings.navigationHint": "Continuous computation, global bindings, and your session experience.",
-      "settings.dialogHint": "Tune runtime, recovery, extensions, and display behavior.",
       "settings.experimental": "Experimental",
       "settings.pathSettings": "Settings \u2192 Plugin configuration \u2192 PTC Plus",
       "settings.pathPlugins": "Side bar Plugins \u2192 dsh-ptc-plus \u2192 row ptc-plus \u2192 Configure",
@@ -33054,7 +33154,7 @@
             if (result?.ok !== true) throw new Error(result?.error?.message ?? "Capability catalog unavailable");
             return result.value;
           },
-          icons: { chevron: IconChevronDownOutline14 }
+          icons: { search: IconSearchOutline16, chevron: IconChevronDownOutline14 }
         });
         const { ReplComposer, ReplConsole, ReplMemoryCard, replPopoverIsOpen, placeReplPopover } = createReplView(React, {
           CodeBlock,

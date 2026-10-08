@@ -188,7 +188,7 @@ window.__ModuleLoader__.load({
           if (result?.ok !== true) throw new Error(result?.error?.message ?? 'Capability catalog unavailable')
           return result.value
         },
-        icons: { chevron: IconChevronDownOutline14 },
+        icons: { search: IconSearchOutline16, chevron: IconChevronDownOutline14 },
       })
       const { ReplComposer, ReplConsole, ReplMemoryCard, replPopoverIsOpen, placeReplPopover } = createReplView(React, {
         CodeBlock, featureEnabled, normalizeReplMemorySnapshot, unavailableReplMemorySnapshot,

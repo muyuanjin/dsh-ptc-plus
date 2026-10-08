@@ -18,6 +18,7 @@ const allCases = [
   ...[{ width: 390, height: 600 }, { width: 320, height: 420 }]
     .flatMap(viewport => ['light', 'dark'].map(theme => ({ family: 'dialogs', viewport, theme }))),
   ...[240, 420, 600].flatMap(height => variants.map(item => ({ family: 'settings-dialog', viewport: { width: 1440, height }, ...item }))),
+  ...[320, 390].flatMap(width => variants.filter(item => item.native).map(item => ({ family: 'settings-dialog', viewport: { width, height: 240 }, ...item }))),
   ...[320, 390, 1440].flatMap(width => ['en', 'zh'].flatMap(locale =>
     ['light', 'dark'].map(theme => ({ family: 'settings-page', width, locale, theme })))),
   { family: 'hover-settlement' },
@@ -92,11 +93,12 @@ if (values.list) {
     const root=createRoot(document.querySelector('#composer'));
     const t=(key,args={})=>window.menuLocale?Object.entries(args).reduce((text,[name,value])=>
       text.replaceAll('{'+name+'}',String(value)),SETTINGS_COPY[window.menuLocale][key]??key):key;
+    let settingsValue={enabled:true};window.settingsWrites=[];
+    const updateSetting=async(key,value)=>{window.settingsWrites.push([key,value]);settingsValue={...settingsValue,[key]:value};render();return null};
+    const usePtcSettings=select=>select({status:'ready',writable:true,value:settingsValue});
     const render=()=>root.render(window.settingsDialog?h(PTCPlusSettingsDialog,{t,onClose:()=>{},
-      usePtcSettings:select=>select({status:'ready',writable:true,value:{enabled:true}}),
-      updateSetting:async()=>{},callUserBindings}):window.settingsPage?h(PTCPlusSettingsCard,{view:'page',t,
-      usePtcSettings:select=>select({status:'ready',writable:true,value:{enabled:true}}),
-      updateSetting:async()=>{},callUserBindings}):h(BindingAuthorButton,{sessionId:'fallback-session',t,
+      usePtcSettings,updateSetting,callUserBindings}):window.settingsPage?h(PTCPlusSettingsCard,{view:'page',t,
+      usePtcSettings,updateSetting,callUserBindings}):h(BindingAuthorButton,{sessionId:'fallback-session',t,
       useInput:select=>select({draft:''}),inputActions:{setDraft:()=>{}},
       usePtcSettings:select=>select({status:'ready',writable:true,value:{enabled:true}}),useBindingCommand:()=>true}));
     window.setAttention=()=>{view.mounted=true;view.candidate={entry:{name:'Attention'}};view.message='Attention';render()};
@@ -580,13 +582,63 @@ if (values.list) {
         await dialog.waitFor()
         const navigation = dialog.locator('.ptcPlusSettingsNav')
         const label = `${viewport.width}x${viewport.height}/${native ? 'native' : 'fallback'}/${locale}/${theme}`
+        const fields = dialog.locator('.ptcPlusFields')
+        const scrollFrame = () => dialog.evaluate(element => {
+          const rail = element.querySelector('.ptcPlusSettingsNav').getBoundingClientRect()
+          const head = element.querySelector('.ptcPlusSettingsDialogHead').getBoundingClientRect()
+          return { railTop: rail.top, railLeft: rail.left, railHeight: rail.height, headTop: head.top,
+            bodyScroll: element.querySelector('.ptcPlusSettingsDialogContent').scrollTop, documentScroll: scrollY }
+        })
+        assert.equal(await dialog.locator('.ptcPlusSettingsHero,.ptcPlusSettingsNavSwitch,.ptcPlusStatus').count(), 0,
+          `${label}: duplicate switch or workspace/status chrome remains`)
+        const titleSwitch = navigation.locator('.ptcPlusSettingsTitleSwitch')
+        assert.equal(await titleSwitch.locator('strong').innerText(), 'PTC Plus')
+        assert.equal(await titleSwitch.evaluate(element => getComputedStyle(element).borderTopWidth), '0px')
+        await titleSwitch.locator('strong').click()
+        await page.waitForFunction(() => {
+          const toggle = document.querySelector('.ptcPlusSettingsTitleSwitch input')
+          return toggle.checked === false && !toggle.disabled
+        })
+        const toggle = titleSwitch.locator('input[role=switch]')
+        await toggle.focus()
+        await page.keyboard.press('Space')
+        await page.waitForFunction(() => {
+          const toggle = document.querySelector('.ptcPlusSettingsTitleSwitch input')
+          return toggle.checked === true && !toggle.disabled
+        })
+        assert.deepEqual(await page.evaluate(() => window.settingsWrites), [['enabled', false], ['enabled', true]],
+          `${label}: title pointer and keyboard toggle bypassed the settings writer`)
+        const hierarchy = await navigation.evaluate(element => {
+          const caption = element.querySelector('.ptcPlusSettingsNavModuleTitle')
+          const row = element.querySelector('.ptcPlusSettingsNavItem')
+          const title = element.querySelector('.ptcPlusSettingsTitleSwitch strong').getBoundingClientRect()
+          const toggle = element.querySelector('.ptcPlusSettingsTitleSwitch input').getBoundingClientRect()
+          const capability = element.querySelector('[data-section=capabilities] .ptcPlusSettingsNavLabel')
+          const word = document.createRange()
+          word.setStart(capability.firstChild, 0)
+          word.setEnd(capability.firstChild, capability.textContent.startsWith('Capabilities') ? 'Capabilities'.length : capability.textContent.length)
+          return { titleGap: toggle.left - title.right, toggleRightGap: element.querySelector('.ptcPlusSettingsTitleSwitch').getBoundingClientRect().right - toggle.right, capabilityWordLines: word.getClientRects().length,
+            captionSize: parseFloat(getComputedStyle(caption).fontSize),
+            itemSize: parseFloat(getComputedStyle(row).fontSize), captionClickable: Boolean(caption.closest('button,a')),
+            icons: element.querySelectorAll('.ptcPlusSettingsNavIcon').length,
+            arrows: element.querySelectorAll('.ptcPlusSettingsNavArrow').length }
+        })
+        assert.ok(hierarchy.titleGap >= 12 && Math.abs(hierarchy.toggleRightGap) <= 1, `${label}: title switch lost its approved right-hand placement`)
+        if (viewport.width >= 860) assert.equal(hierarchy.capabilityWordLines, 1, `${label}: capability navigation word is split by its badge`)
+        assert.ok(hierarchy.itemSize >= hierarchy.captionSize + 2 && !hierarchy.captionClickable
+          && hierarchy.icons === 7 && hierarchy.arrows === 7, `${label}: module captions resemble navigation rows`)
+        let fixedFrame = await scrollFrame()
+        await fields.hover()
+        await page.mouse.wheel(0, 200)
+        await page.waitForFunction(() => document.querySelector('.ptcPlusSettingsDialog .ptcPlusFields').scrollTop > 0)
+        assert.deepEqual(await scrollFrame(), fixedFrame, `${label}: settings wheel scroll moved navigation or modal frame`)
         const assertNavigationFocus = async control => {
           const result = await control.evaluate(element => {
             const rect = element.getBoundingClientRect()
             const viewport = element.closest('.ptcPlusSettingsDialogContent').getBoundingClientRect()
             const rail = element.closest('.ptcPlusSettingsNav').getBoundingClientRect()
             const x = rect.left + rect.width / 2, y = rect.top + rect.height / 2
-            return { focused: document.activeElement === element, top: rect.top, bottom: rect.bottom,
+            return { text: element.textContent, left: rect.left, right: rect.right, list: element.closest('.ptcPlusSettingsNavList')?.getBoundingClientRect().toJSON(), hitClass: document.elementFromPoint(x, y)?.className, focused: document.activeElement === element, top: rect.top, bottom: rect.bottom,
               clipTop: Math.max(viewport.top, rail.top), clipBottom: Math.min(viewport.bottom, rail.bottom),
               navigationHeight: rail.height, navigationLimit: getComputedStyle(element.closest('.ptcPlusSettingsNav')).maxHeight, contentHeight: viewport.height,
               hit: element.contains(document.elementFromPoint(x, y)) }
@@ -606,10 +658,12 @@ if (values.list) {
             await page.keyboard.press('Enter')
             await assertNavigationFocus(button)
             const visible = await dialog.locator(`#ptc-plus-settings-dialog-group-${key}`).evaluate(element => {
-              const heading = element.getBoundingClientRect(), clip = element.closest('.ptcPlusSettingsDialogContent').getBoundingClientRect()
-              return heading.top >= clip.top - 1 && heading.bottom <= clip.bottom + 1
+              const heading = element.getBoundingClientRect(), clip = element.closest('.ptcPlusFields').getBoundingClientRect()
+              return { visible: heading.top >= clip.top - 1 && heading.bottom <= clip.bottom + 1, headingTop: heading.top, headingBottom: heading.bottom, clipTop: clip.top, clipBottom: clip.bottom, navDirection: getComputedStyle(element.closest('.ptcPlusSettingsModal').querySelector('.ptcPlusSettingsNav')).flexDirection, modalHeight: element.closest('.ptcPlusSettingsModal').clientHeight, navHeight: element.closest('.ptcPlusSettingsModal').querySelector('.ptcPlusSettingsNav').clientHeight, headHeight: element.closest('.ptcPlusSettingsModal').querySelector('.ptcPlusSettingsDialogHead').clientHeight }
             })
-            assert.equal(visible, true, `${label}: selected heading is clipped`)
+            assert.equal(visible.visible, true, `${label}/${key}: selected heading is clipped ${JSON.stringify(visible)}`)
+            assert.deepEqual(await scrollFrame(), fixedFrame, `${label}: section navigation moved the rail or modal frame`)
+            assert.equal(await button.getAttribute('aria-current'), 'location')
           }
           const close = dialog.locator('.ptcPlusDialogClose')
           assert.equal(await close.evaluate(element => {
@@ -619,6 +673,17 @@ if (values.list) {
           }), true, `${label}: navigation obscured the fixed close action`)
         }
         await checkNavigation()
+        if (viewport.height === 600 && theme === 'light' && locale === 'en') {
+          const fault = await page.addStyleTag({ content: '.ptcPlusSettingsDialogContent{overflow:auto!important}.ptcPlusSettingsDialog,.ptcPlusSettingsDialog .ptcPlusBody,.ptcPlusSettingsDialog .ptcPlusBodyInner,.ptcPlusSettingsDialog .ptcPlusSettingsLayout{height:auto!important}.ptcPlusSettingsDialog .ptcPlusFields{height:auto!important;overflow:visible!important}' })
+          try {
+            await dialog.locator('.ptcPlusSettingsDialogContent').evaluate(element => { element.scrollTop = 240 })
+            assert.notDeepEqual(await scrollFrame(), fixedFrame, `${label}: frame oracle did not reject shared navigation/content scrolling`)
+          } finally {
+            await fault.evaluate(element => element.remove())
+            await dialog.locator('.ptcPlusSettingsDialogContent').evaluate(element => { element.scrollTop = 0 })
+          }
+          await checkNavigation()
+        }
         if (viewport.height === 420) {
           const fault = await page.addStyleTag({ content: '.ptcPlusSettingsDialog .ptcPlusSettingsNav{max-height:none!important;overflow:visible!important}' })
           try {
@@ -630,13 +695,34 @@ if (values.list) {
         }
         if (native) {
           await page.evaluate(() => document.documentElement.style.setProperty('--dsh-frame-overlay-top', '64px'))
+          fixedFrame = await scrollFrame()
           await checkNavigation()
+          if (viewport.width < 860) {
+            for (const key of ['syntax', 'recovery', 'extensions', 'calls', 'interface', 'limits', 'capabilities']) {
+              const group = dialog.locator(`#ptc-plus-settings-dialog-group-${key}`).locator('..')
+              const control = group.locator('input:not(:disabled),button:not(:disabled),select:not(:disabled)').first()
+              await control.focus()
+              const reachable = await control.evaluate(element => {
+                const rect = element.getBoundingClientRect(), clip = element.closest('.ptcPlusFields').getBoundingClientRect()
+                return rect.top >= clip.top - 1 && rect.bottom <= clip.bottom + 1
+                  && element.contains(document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2))
+              })
+              assert.equal(reachable, true, `${label}: focused section control is clipped under Host inset`)
+            }
+            const fault = await page.addStyleTag({ content: '.ptcPlusSettingsDialog .ptcPlusSettingsNav{flex-direction:column!important;align-items:stretch!important}' })
+            try {
+              await assert.rejects(checkNavigation, /selected heading is clipped|focused settings navigation is clipped or covered/)
+            } finally {
+              await fault.evaluate(element => element.remove())
+            }
+            await checkNavigation()
+          }
         }
         await page.evaluate(() => {
-          document.querySelector('.ptcPlusSettingsDialogContent').scrollTop = 0
+          document.querySelector('.ptcPlusSettingsDialog .ptcPlusFields').scrollTop = 0
           document.querySelector('.ptcPlusSettingsNav').scrollTop = 0
         })
-        await page.screenshot({ path: `artifacts/button-styles/settings-dialog-${viewport.height}-${native ? 'native' : 'fallback'}-${locale}-${theme}.png` })
+        await page.screenshot({ path: `artifacts/button-styles/settings-dialog-${viewport.width}x${viewport.height}-${native ? 'native' : 'fallback'}-${locale}-${theme}.png` })
         await page.evaluate(() => window.disposeFixture())
         return
       }

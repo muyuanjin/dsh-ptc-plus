@@ -104,6 +104,18 @@ if (values.list) {
         await page.goto(pathToFileURL(resolve(directory, `${state}.html`)).href)
         await setFixtureTheme(page, theme)
         const visualControls = await assertVisualSurface(page, page.locator('body'), `${width}/${theme}/${state}`)
+        if (state === 'settings-dialog-en' && theme === 'dark' && width === 320) {
+          const toggle = page.locator('.ptcPlusSettingsTitleSwitch input')
+          const fault = await page.addStyleTag({ content: '.ptcPlusSettingsTitleSwitch input::before{background:white!important}' })
+          try {
+            await assert.rejects(() => assertControlVisual(toggle, { focus: false }), /unreadable control/)
+          } finally {
+            await fault.evaluate(element => element.remove())
+          }
+        }
+        for (const item of await page.locator('.ptcPlusSettingsNavItem').all()) {
+          await assertControlVisual(item, { hover: true, label: `${width}/${theme}/${state}/section navigation` })
+        }
         const metrics = await page.evaluate(() => {
           const containers = [...document.querySelectorAll('.ptcPlusConsole,.ptcPlusBindingsSurface,.ptcPlusBindingsDialog,.ptcPlusBindingEditor,.ptcPlusSettingsDialog,.ptcPlusSettingsDialogContent,.ptcPlusCapabilityList')]
             .map(element => ({ name: element.className, client: element.clientWidth, scroll: element.scrollWidth }))
@@ -124,7 +136,7 @@ if (values.list) {
             .filter(element => element.getClientRects().length > 0)
             .map(element => {
               const { left, right, width, height } = element.getBoundingClientRect()
-              return { label: element.getAttribute('aria-label') ?? element.textContent, left, right, width, height }
+              return { label: element.getAttribute('aria-label') ?? element.textContent, left, right, width, height, navigation: element.matches('.ptcPlusSettingsNavItem') }
             })
           const settingsDialog = document.querySelector('.ptcPlusSettingsModal')
           const settingsDialogBounds = settingsDialog === null ? null : settingsDialog.getBoundingClientRect()
@@ -144,7 +156,7 @@ if (values.list) {
         assert.ok(metrics.pageWidth <= width, `${width}/${state}: viewport overflow`)
         assert.ok(metrics.containers.every(item => item.scroll <= item.client + 1), `${width}/${state}: ${JSON.stringify(metrics.containers)}`)
         assert.deepEqual(metrics.collisions, [], `${width}/${state}: overlapping binding actions`)
-        assert.ok(metrics.controls.every(item => item.width > 0 && item.height >= 16 && item.left >= 0 && item.right <= width), `${width}/${state}: controls outside viewport`)
+        assert.ok(metrics.controls.filter(item => !item.navigation).every(item => item.width > 0 && item.height >= 16 && item.left >= 0 && item.right <= width), `${width}/${state}: controls outside viewport ${JSON.stringify(metrics.controls.filter(item => !item.navigation && (item.left < 0 || item.right > width)))}`)
         if (state.startsWith('settings-dialog-')) {
           assert.ok(metrics.settingsDialog !== null, `${width}/${state}: settings dialog missing`)
           assert.ok(metrics.settingsDialog.top >= 0 && metrics.settingsDialog.bottom <= 900,
@@ -193,7 +205,8 @@ if (values.list) {
           assert.equal(await page.locator('.ptcPlusConsole .ptcPlusBindings').count(), 1)
           assert.equal(await page.locator('.ptcPlusObservationCode').count(), 1)
         }
-        if (state.startsWith('settings-dialog-')) await page.locator('.ptcPlusSettingsDialogContent')
+        if (state.startsWith('settings')) await page.locator('.ptcPlusSettingsNavList').evaluateAll(elements => { for (const element of elements) element.scrollLeft = 0 })
+        if (state.startsWith('settings-dialog-')) await page.locator('.ptcPlusSettingsDialog .ptcPlusFields')
           .evaluate(element => { element.scrollTop = 0 })
         await page.screenshot({ path: resolve(output, `${width}-${theme}-${state}.png`), fullPage: true })
         if (state.startsWith('settings-dialog-')) {

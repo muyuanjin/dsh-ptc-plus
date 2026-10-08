@@ -1,6 +1,7 @@
 import { CONFIG_DEFAULTS, CONFIG_FIELDS, CONFIG_GROUPS, CONFIG_MODULES } from '../internal/config-spec.js'
 import { resolveConfig } from '../internal/runtime-config.js'
 import { featureEnabled } from './client-feature-gates.js'
+import { isHostIconComponent } from './client-host-compat.js'
 
 /**
  * Settings card with structured capability controls and one serialized write
@@ -10,6 +11,35 @@ import { featureEnabled } from './client-feature-gates.js'
 export function createPtcSettingsView(React, deps) {
   const { ActionButton, BindingsDialog, Modal, useWorkbenchController, icons, inspectCapabilityPlans, inspectCapabilityCatalog } = deps
   const h = React.createElement
+  const enabledField = CONFIG_FIELDS.find(field => field.key === 'enabled')
+
+  function SectionIcon({ section }) {
+    const paths = {
+      syntax: ['m8 5-5 5 5 5', 'm16 5 5 5-5 5', 'm14 3-4 14'],
+      recovery: ['M3 10a9 9 0 1 1 2.6 8', 'M3 4v6h6', 'M12 7v5l3 2'],
+      extensions: ['M9 3H5v6a3 3 0 1 1 0 6v6h6a3 3 0 1 1 6 0h4v-6a3 3 0 1 1 0-6V5h-6a3 3 0 1 0-6-2Z'],
+      calls: ['M12 3 3 7v6c0 5 9 8 9 8s9-3 9-8V7l-9-4Z', 'm8 12 3 3 5-6'],
+      interface: ['M3 4h18v13H3Z', 'M8 21h8', 'M12 17v4'],
+      limits: ['M3 6h5m4 0h9', 'M3 12h11m4 0h3', 'M3 18h3m4 0h11', 'M8 3v6', 'M14 9v6', 'M6 15v6'],
+      capabilities: ['M9 3h6', 'M10 3v6L4 19a1.3 1.3 0 0 0 1 2h14a1.3 1.3 0 0 0 1-2L14 9V3', 'M7 15h10'],
+    }
+    return h('svg', { width: 16, height: 16, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor',
+      strokeWidth: 1.6, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true,
+      className: 'ptcPlusSettingsNavIcon' }, ...paths[section].map((d, key) => h('path', { key, d })))
+  }
+
+  function SearchIcon() {
+    return isHostIconComponent(icons.search) ? h(icons.search, { size: 16, 'aria-hidden': true })
+      : h('svg', { width: 16, height: 16, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor',
+        strokeWidth: 1.6, strokeLinecap: 'round', 'aria-hidden': true },
+      h('circle', { cx: 10.5, cy: 10.5, r: 6.5 }), h('path', { d: 'm16 16 5 5' }))
+  }
+
+  function NavigationArrow() {
+    return isHostIconComponent(icons.chevron) ? h(icons.chevron, { size: 12 })
+      : h('svg', { width: 12, height: 12, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor',
+        strokeWidth: 1.6, strokeLinecap: 'round', strokeLinejoin: 'round' }, h('path', { d: 'm6 9 6 6 6-6' }))
+  }
 
   const validStatistics = settings => typeof settings.enabled === 'boolean'
     && Number.isSafeInteger(settings.windowSize) && settings.windowSize >= 1
@@ -81,8 +111,9 @@ export function createPtcSettingsView(React, deps) {
       h('p', { className: 'ptcPlusDetail' }, t('capabilityBaseline.description')),
       h('div', { className: 'ptcPlusLabel' }, t('capabilityOverrides.label')),
       h('p', { className: 'ptcPlusDetail' }, t('capabilityOverrides.description')),
-      h('input', { type: 'search', className: 'ptcPlusInput', value: query, 'aria-label': t('capabilities.search'),
-        onChange: event => setQuery(event.target.value) }),
+      h('label', { className: 'ptcPlusSearch' }, h(SearchIcon),
+        h('input', { type: 'search', value: query, 'aria-label': t('capabilities.search'),
+          placeholder: t('capabilities.search'), onChange: event => setQuery(event.target.value) })),
       catalogError ? h('p', { role: 'status', className: 'ptcPlusMessage' }, t('capabilities.catalogUnavailable', { error: catalogError })) : null,
       entries.size === 0 ? h('p', { className: 'ptcPlusDetail' }, t('capabilities.catalogEmpty'))
         : filtered.length === 0 ? h('p', { className: 'ptcPlusDetail' }, t('capabilities.noMatches'))
@@ -142,6 +173,7 @@ export function createPtcSettingsView(React, deps) {
     const [catalog, setCatalog] = React.useState(null)
     const [catalogError, setCatalogError] = React.useState(null)
     const [planRevision, setPlanRevision] = React.useState(0)
+    const [activeSection, setActiveSection] = React.useState('syntax')
     const writeTail = React.useRef(Promise.resolve())
     const snapshot = usePtcSettings(snapshot => snapshot)
     const value = snapshot.status === 'ready' ? resolveConfig(snapshot.value ?? {}) : {}
@@ -150,30 +182,44 @@ export function createPtcSettingsView(React, deps) {
     const legacyMigration = value.legacyBindingSettings === true
     const enabled = featureEnabled(snapshot, 'plugin')
     const globalEnabled = featureEnabled(snapshot, 'bindings')
+    const plansEnabled = enabled && value.capabilityManagementEnabled === true
     const planConfiguration = JSON.stringify(CONFIG_FIELDS.filter(field => field.key.startsWith('capability') || field.key === 'modelPreviewTokens')
       .map(field => value[field.key]))
     React.useEffect(() => {
       if (!enabled) {
-        setPlans(null)
-        setPlansError(null)
         setCatalog(null)
         setCatalogError(null)
+        return
+      }
+      if (!(open || view === 'page' || view === 'dialog') || !inspectCapabilityCatalog) return
+      const controller = new AbortController()
+      setCatalogError(null)
+      Promise.resolve().then(() => inspectCapabilityCatalog(controller.signal)).then(available => {
+        if (controller.signal.aborted) return
+        setCatalog(available)
+      }, error => {
+        if (controller.signal.aborted) return
+        setCatalog(null)
+        setCatalogError(String(error?.message ?? error))
+      })
+      return () => controller.abort()
+    }, [enabled, open, view, planConfiguration, planRevision])
+    React.useEffect(() => {
+      if (!plansEnabled) {
+        setPlans(null)
+        setPlansError(null)
         return
       }
       if (!(open || view === 'page' || view === 'dialog') || !inspectCapabilityPlans) return
       const controller = new AbortController()
       setPlansError(null)
-      setCatalogError(null)
-      Promise.allSettled([Promise.resolve().then(() => inspectCapabilityPlans(controller.signal)),
-        Promise.resolve().then(() => inspectCapabilityCatalog?.(controller.signal) ?? null)]).then(([next, available]) => {
-        if (controller.signal.aborted) return
-        if (next.status === 'fulfilled') setPlans(next.value)
-        else setPlansError(String(next.reason?.message ?? next.reason))
-        if (available.status === 'fulfilled') setCatalog(available.value)
-        else { setCatalog(null); setCatalogError(String(available.reason?.message ?? available.reason)) }
+      Promise.resolve().then(() => inspectCapabilityPlans(controller.signal)).then(next => {
+        if (!controller.signal.aborted) setPlans(next)
+      }, error => {
+        if (!controller.signal.aborted) setPlansError(String(error?.message ?? error))
       })
       return () => controller.abort()
-    }, [enabled, open, view, planConfiguration, planRevision])
+    }, [plansEnabled, open, view, planConfiguration, planRevision])
     const groupIdPrefix = view === 'dialog' ? 'ptc-plus-settings-dialog-group' : 'ptc-plus-settings-group'
     // The open dialog owns the management session: closing it releases the draft
     // and drops every response the host has not answered yet.
@@ -216,8 +262,8 @@ export function createPtcSettingsView(React, deps) {
       const field = CONFIG_FIELDS.find(candidate => candidate.key === key)
       if (field === undefined) return null
       if (field.key === 'capabilityOverrides') return null
-      if (field.key === 'capabilityBaseline') return h(CapabilityChoices, { key, value, catalog, catalogError, plans, t,
-        disabled: key => fieldDisabled({ key }), onChange: persist })
+      if (field.key === 'capabilityBaseline') return h(CapabilityChoices, { key, value, catalog, catalogError, t,
+        disabled: key => fieldDisabled({ key }), onChange: persist, plans: plansEnabled ? plans : null })
       if (field.key === 'capabilityStatistics') return h('div', { key },
         h('div', { className: 'ptcPlusLabel' }, t(`${key}.label`)),
         h('p', { className: 'ptcPlusDetail' }, t(`${key}.description`)),
@@ -243,6 +289,24 @@ export function createPtcSettingsView(React, deps) {
             h(ActionButton, { type: 'button', className: 'ptcPlusButton', onClick: () => setBindingsDialogOpen(true) }, t('bindings.manage')))
           : null)
     }
+    const renderPlans = () => plansEnabled && inspectCapabilityPlans ? h('section', { className: 'ptcPlusCapabilityPlans',
+      'aria-labelledby': `${groupIdPrefix}-plans` },
+      h('h4', { id: `${groupIdPrefix}-plans`, className: 'ptcPlusGroupTitle' }, t('capabilities.sessions')),
+      h(ActionButton, { type: 'button', disabled: !enabled, onClick: () => setPlanRevision(current => current + 1) }, t('capabilities.reload')),
+      h('p', { className: 'ptcPlusDetail' }, t('capabilities.refreshHint')),
+      plansError ? h('p', { role: 'status' }, t('capabilities.unavailable', { error: plansError }))
+        : plans === null ? h('p', null, t('state.syncing'))
+          : plans.length === 0 ? h('p', null, t('capabilities.empty'))
+            : plans.map(plan => h('details', { key: plan.sessionId },
+              h('summary', null, `${plan.sessionId} · ${t(plan.pendingRefresh ? 'capabilities.pending' : 'capabilities.current')}`),
+              h('p', null, t('capabilities.budget', { bytes: plan.effective.budgets.contractBytes, overage: plan.effective.budgets.overageBytes })),
+              h('table', null, h('thead', null, h('tr', null,
+                ...['member', 'selection', 'reason', 'coverage'].map(key => h('th', { key }, t(`capabilities.${key}`))))),
+              h('tbody', null, ...plan.effective.entries.map(entry => h('tr', { key: entry.id },
+                h('td', null, entry.id), h('td', null, entry.selection),
+                h('td', null, [entry.reason, entry.statisticsReason].filter(Boolean).join(' · ')),
+                h('td', null, entry.evidence ? `${entry.evidence.used}/${entry.evidence.eligible} (${entry.evidence.scope})` : '—')))))))) : null
+
     const renderGroup = group => {
       const fields = group.key === 'syntax' && legacyMigration
         ? [...group.fields, ...legacyKeys]
@@ -258,7 +322,7 @@ export function createPtcSettingsView(React, deps) {
         className: 'ptcPlusGroupTitle',
         'data-experimental-label': group.key === 'capabilities' ? t('settings.experimental') : undefined,
       }, t(`group.${group.key}`)),
-      ...fields.map(renderField))
+      ...fields.map(renderField), group.key === 'capabilities' ? renderPlans() : null)
     }
 
     const settingsFields = navigable => [
@@ -272,26 +336,45 @@ export function createPtcSettingsView(React, deps) {
 
     const settingsBody = (expanded, id) => {
       const navigable = view === 'page' || view === 'dialog'
-      const groupIds = new Map(CONFIG_GROUPS.map(group => [group.key, `${groupIdPrefix}-${group.key}`]))
-      const revealSection = id => {
+      const revealSection = key => {
+        const id = `${groupIdPrefix}-${key}`
         const root = settingsRoot.current
         const heading = root?.querySelector(`[id="${id}"]`)
-        const scroller = view === 'page'
-          ? root?.querySelector('.ptcPlusFields')
-          : root?.closest('.ptcPlusSettingsDialogContent')
+        const scroller = root?.querySelector('.ptcPlusFields')
         if (!heading || !scroller) return
-        scroller.scrollTop += heading.getBoundingClientRect().top
-          - scroller.getBoundingClientRect().top - scroller.clientTop - 16
+        const headingBounds = heading.getBoundingClientRect()
+        const inset = Math.min(16, Math.max(0, scroller.clientHeight - headingBounds.height))
+        scroller.scrollTop += headingBounds.top
+          - scroller.getBoundingClientRect().top - scroller.clientTop - inset
+        setActiveSection(key)
+      }
+      const trackSection = event => {
+        const scroller = event.currentTarget
+        const threshold = scroller.getBoundingClientRect().top + scroller.clientTop + 20
+        let next = 'syntax'
+        for (const group of CONFIG_GROUPS.slice(1)) {
+          const heading = scroller.querySelector(`[id="${groupIdPrefix}-${group.key}"]`)
+          if (heading && heading.getBoundingClientRect().top <= threshold) next = group.key
+        }
+        setActiveSection(next)
+      }
+      const revealNavigationItem = element => {
+        const scroller = element.closest('.ptcPlusSettingsNavList')
+        if (!scroller || scroller.scrollWidth <= scroller.clientWidth) return
+        const item = element.getBoundingClientRect()
+        const clip = scroller.getBoundingClientRect()
+        if (item.right > clip.right) scroller.scrollLeft += item.right - clip.right
+        else if (item.left < clip.left) scroller.scrollLeft += item.left - clip.left
       }
       const navigation = navigable ? h('nav', {
         className: 'ptcPlusSettingsNav',
         'aria-label': t('settings.navigation'),
       },
       h('div', { className: 'ptcPlusSettingsNavIntro' },
-        h('span', { className: 'ptcPlusSettingsEyebrow' }, t('settings.navigationEyebrow')),
-        h('strong', null, t('settings.navigationTitle')),
+        h('label', { className: 'ptcPlusSettingsTitleSwitch', 'data-disabled': fieldDisabled(enabledField) },
+          h('strong', null, t('settings.navigationTitle')),
+          fieldInput(enabledField, enabled, fieldDisabled(enabledField), persist, t('enabled.label'))),
         h('p', null, t('settings.navigationHint'))),
-      h('div', { className: 'ptcPlusSettingsNavSwitch' }, renderField('enabled')),
       h('div', { className: 'ptcPlusSettingsNavList' }, ...CONFIG_MODULES.map(module => h('div', {
         key: module.key, className: 'ptcPlusSettingsNavModule',
       }, h('span', { className: 'ptcPlusSettingsNavModuleTitle' }, t(`module.${module.key}`)),
@@ -299,46 +382,27 @@ export function createPtcSettingsView(React, deps) {
         const group = CONFIG_GROUPS.find(group => group.key === key)
         return h('button', {
           key, type: 'button', className: 'ptcPlusSettingsNavItem', 'data-section': key,
-          'data-experimental': key === 'capabilities' ? 'true' : undefined,
-          onClick: () => revealSection(groupIds.get(key)),
-        }, h('span', { className: 'ptcPlusSettingsNavLabel' }, t(`group.${group.key}`)),
-        key === 'capabilities' ? h('span', { className: 'ptcPlusSettingsNavBadge' }, t('settings.experimental')) : null)
+          'data-experimental': key === 'capabilities' ? 'true' : undefined, title: t(`group.${group.key}`),
+          'aria-current': activeSection === key ? 'location' : undefined,
+          onClick: () => revealSection(key), onFocus: event => revealNavigationItem(event.currentTarget),
+        }, h(SectionIcon, { section: key }),
+        h('span', { className: 'ptcPlusSettingsNavLabel' }, t(`group.${group.key}`)),
+        key === 'capabilities' ? h('span', { className: 'ptcPlusSettingsNavBadge' }, t('settings.experimental')) : null,
+        h('span', { className: 'ptcPlusSettingsNavArrow', 'aria-hidden': true }, h(NavigationArrow)))
       })))))) : null
       return h('div', {
       id, ref: settingsRoot, className: 'ptcPlusBody', 'data-open': expanded, hidden: !expanded,
     },
     h('div', { className: 'ptcPlusBodyInner' },
-      view === 'dialog' ? h('div', { className: 'ptcPlusSettingsHero' },
-        h('div', { className: 'ptcPlusSettingsHeroCopy' },
-          h('span', { className: 'ptcPlusSettingsEyebrow' }, t('settings.navigationEyebrow')),
-          h('p', null, t('settings.dialogHint'))),
-        h('span', { className: 'ptcPlusStatus', 'data-enabled': enabled }, t(enabled ? 'status.enabled' : 'status.disabled'))) : null,
       h('div', { className: navigable ? 'ptcPlusSettingsLayout' : undefined },
         navigation,
-        h('div', { className: 'ptcPlusFields' },
+        h('div', { className: 'ptcPlusFields', onScroll: navigable ? trackSection : undefined },
       snapshot.status === 'loading'
         ? h('p', { className: 'ptcPlusMessage' }, t('state.syncing'))
         : snapshot.status === 'unavailable'
           ? h('p', { className: 'ptcPlusMessage' }, t('state.unavailable'))
           : [
             ...settingsFields(navigable),
-            inspectCapabilityPlans ? h('section', { key: 'capability-plans', className: 'ptcPlusGroup' },
-              h('h3', { className: 'ptcPlusGroupTitle' }, t('capabilities.sessions')),
-              h(ActionButton, { type: 'button', disabled: !enabled, onClick: () => setPlanRevision(current => current + 1) }, t('capabilities.reload')),
-              h('p', { className: 'ptcPlusDetail' }, t('capabilities.refreshHint')),
-              !enabled ? h('p', null, t('status.disabled'))
-                : plansError ? h('p', { role: 'status' }, t('capabilities.unavailable', { error: plansError }))
-                : plans === null ? h('p', null, t('state.syncing'))
-                  : plans.length === 0 ? h('p', null, t('capabilities.empty'))
-                    : plans.map(plan => h('details', { key: plan.sessionId },
-                      h('summary', null, `${plan.sessionId} · ${t(plan.pendingRefresh ? 'capabilities.pending' : 'capabilities.current')}`),
-                      h('p', null, t('capabilities.budget', { bytes: plan.effective.budgets.contractBytes, overage: plan.effective.budgets.overageBytes })),
-                      h('table', null, h('thead', null, h('tr', null,
-                        ...['member', 'selection', 'reason', 'coverage'].map(key => h('th', { key }, t(`capabilities.${key}`))))),
-                      h('tbody', null, ...plan.effective.entries.map(entry => h('tr', { key: entry.id },
-                        h('td', null, entry.id), h('td', null, entry.selection),
-                        h('td', null, [entry.reason, entry.statisticsReason].filter(Boolean).join(' · ')),
-                        h('td', null, entry.evidence ? `${entry.evidence.used}/${entry.evidence.eligible} (${entry.evidence.scope})` : '—')))))))) : null,
             h('div', { key: 'footer', className: 'ptcPlusFooter' },
               h('span', { className: 'ptcPlusMessage', role: 'status' }, status === null
                 ? t(snapshot.writable ? 'footer.live' : 'footer.readOnly')

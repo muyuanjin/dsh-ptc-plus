@@ -128,9 +128,17 @@ if (values.list) {
             })
           const settingsDialog = document.querySelector('.ptcPlusSettingsModal')
           const settingsDialogBounds = settingsDialog === null ? null : settingsDialog.getBoundingClientRect()
+          const settingsLayout = document.querySelector('.ptcPlusSettingsDialog .ptcPlusSettingsLayout')
+          const settingsColumns = settingsLayout === null ? null : [...settingsLayout.children].map(element => {
+            const { left, right, top, width } = element.getBoundingClientRect()
+            return { left, right, top, width }
+          })
+          const settingsHead = document.querySelector('.ptcPlusSettingsDialogHead')?.getBoundingClientRect()
           return { containers, collisions, controls, pageWidth: document.documentElement.scrollWidth,
+            settingsColumns,
             settingsDialog: settingsDialogBounds === null ? null : {
               top: settingsDialogBounds.top, bottom: settingsDialogBounds.bottom, height: settingsDialogBounds.height,
+              width: settingsDialogBounds.width, headTop: settingsHead?.top, headBottom: settingsHead?.bottom,
             } }
         })
         assert.ok(metrics.pageWidth <= width, `${width}/${state}: viewport overflow`)
@@ -141,6 +149,17 @@ if (values.list) {
           assert.ok(metrics.settingsDialog !== null, `${width}/${state}: settings dialog missing`)
           assert.ok(metrics.settingsDialog.top >= 0 && metrics.settingsDialog.bottom <= 900,
             `${width}/${state}: settings dialog outside viewport`)
+          assert.ok(metrics.settingsDialog.headTop >= metrics.settingsDialog.top
+            && metrics.settingsDialog.headBottom <= metrics.settingsDialog.bottom,
+          `${width}/${state}: fixed settings header lost`)
+          assert.equal(metrics.settingsColumns.length, 2, `${width}/${state}: settings navigation or content missing`)
+          const [navigation, content] = metrics.settingsColumns
+          if (width === 1440) {
+            assert.ok(metrics.settingsDialog.width >= 1000, `${width}/${state}: settings dialog remained narrow`)
+            assert.ok(navigation.right < content.left && content.width > navigation.width,
+              `${width}/${state}: navigation and form did not form two columns`)
+          } else assert.ok(Math.abs(navigation.left - content.left) <= 1,
+            `${width}/${state}: narrow settings did not stack`)
         }
         if (state.startsWith('settings')) {
           const list = page.locator('.ptcPlusCapabilityList')
@@ -174,7 +193,28 @@ if (values.list) {
           assert.equal(await page.locator('.ptcPlusConsole .ptcPlusBindings').count(), 1)
           assert.equal(await page.locator('.ptcPlusObservationCode').count(), 1)
         }
+        if (state.startsWith('settings-dialog-')) await page.locator('.ptcPlusSettingsDialogContent')
+          .evaluate(element => { element.scrollTop = 0 })
         await page.screenshot({ path: resolve(output, `${width}-${theme}-${state}.png`), fullPage: true })
+        if (state.startsWith('settings-dialog-')) {
+          await page.evaluate(() => document.documentElement.style.setProperty('--dsh-frame-overlay-top', '64px'))
+          for (const height of [900, 240]) {
+            await page.setViewportSize({ width, height })
+            const inset = await page.locator('.ptcPlusSettingsModal').evaluate(element => {
+              const dialog = element.getBoundingClientRect(), overlay = element.parentElement.getBoundingClientRect()
+              const padding = getComputedStyle(element.parentElement)
+              const button = element.querySelector('.ptcPlusSettingsDialogHead button')
+              const close = button.getBoundingClientRect()
+              return { top: dialog.top, bottom: dialog.bottom,
+                allowedTop: overlay.top + parseFloat(padding.paddingTop),
+                allowedBottom: overlay.bottom - parseFloat(padding.paddingBottom),
+                closeReachable: document.elementFromPoint(close.left + close.width / 2, close.top + close.height / 2) === button }
+            })
+            assert.ok(inset.top >= inset.allowedTop - 1 && inset.bottom <= inset.allowedBottom + 1,
+              `${width}x${height}/${state}: settings dialog crossed Host overlay insets ${JSON.stringify(inset)}`)
+            assert.equal(inset.closeReachable, true, `${width}x${height}/${state}: settings close action is covered`)
+          }
+        }
         return { width, theme, state, visualControls, ...metrics }
     }, { concurrency, channel: values['browser-channel'] })
     for (const { width, theme } of matrix) for (const locale of ['en', 'zh']) {
@@ -187,7 +227,7 @@ if (values.list) {
     }
     const covered = new Set(measurements.flatMap(item => item.visualControls))
     if (!focused) for (const name of ['action', 'settings disclosure', 'binding selection', 'binding switch', 'icon command',
-      'input', 'instructions', 'settings switch', 'select', 'search', 'REPL observation', 'REPL definition', 'REPL tab', 'source disclosure']) {
+      'input', 'instructions', 'settings switch', 'settings navigation', 'settings close', 'select', 'search', 'REPL observation', 'REPL definition', 'REPL tab', 'source disclosure']) {
       assert.ok(covered.has(name), `Visual fixture lost responsibility: ${name}`)
     }
     await writeFile(resolve(output, focused ? 'measurements-focused.json' : 'measurements.json'), JSON.stringify(measurements, null, 2) + '\n')

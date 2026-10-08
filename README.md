@@ -221,18 +221,18 @@ return capabilities.search({ query: 'read file content', budgetBytes: 8192 })
 
 ![REPL 页签中的会话状态与全局绑定工作台](assets/ptc-plus-repl-workspace-zh.png)
 
-输入框旁的星光菜单将绑定编写、条目管理和 **PTC Plus 设置** 分组提供。设置弹窗与侧边栏插件配置页使用同一套配置：
+输入框旁的星光菜单将绑定编写、条目管理和 **PTC Plus 设置** 分组提供。星光入口打开大尺寸设置窗口，宽屏使用左侧分区导航与右侧设置卡片，小屏自动变为单列。日常运行选项在前，实验性能力管理在后并明确标记。设置弹窗与侧边栏插件配置页使用同一套配置：
 
 | 分组 | 可以调整的内容 |
 | --- | --- |
 | 插件开关 | 启用或停用 PTC Plus |
-| 上下文与能力 | 实验性能力管理（默认关闭）、独立统计、常用基线、单项选择及展示预算 |
 | 调用容错 | 缺少摘要的调用、可准确识别的顶层工具误调用 |
 | REPL 语法 | 允许同名修订，或选择名称保护策略 |
 | 状态与恢复 | 重启恢复、按需提示与提示频率 |
 | 工具扩展 | 全局绑定及其管理入口、官方 Cordis 工具集成 |
 | 界面显示 | 增强工具卡片、REPL 页签与星光快捷入口 |
 | 资源限制 | 执行时间、内存和输出上限 |
+| 上下文与能力 | 实验性能力管理（默认关闭）、独立统计、常用基线、单项选择及展示预算 |
 
 面向日常计算的功能默认开启。**Cordis 开发工具默认关闭**，适用于检查或开发 DSH 插件，按需开启即可；详见[集成说明](docs/adr/0020-optional-cordis-tools-in-ptc-mode.md)。已有配置中显式关闭的选项会保持关闭，条目是否启用也由各自的保存状态决定。
 
@@ -240,7 +240,7 @@ return capabilities.search({ query: 'read file content', budgetBytes: 8192 })
 
 宿主执行 provider 必须使用 TypeScript。热重载改为其他语言时，PTC Plus 撤出当前接管并报告诊断；恢复 TypeScript 后重新启用，插件开关保持原选择。
 
-![PTC Plus 设置卡片](assets/ptc-plus-settings-zh.png)
+![PTC Plus 设置窗口](assets/ptc-plus-settings-zh.png)
 
 ## 值传递与状态恢复
 

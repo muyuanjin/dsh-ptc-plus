@@ -1465,21 +1465,6 @@
       fields: Object.freeze(["enabled"])
     },
     {
-      key: "capabilities",
-      label: "\u80FD\u529B\u4E0E\u4E0A\u4E0B\u6587",
-      labelEn: "Capabilities and context",
-      fields: Object.freeze([
-        "capabilityManagementEnabled",
-        "capabilityBaseline",
-        "capabilityOverrides",
-        "capabilityStatistics",
-        "capabilityBudgetBytes",
-        "capabilityDirectoryBytes",
-        "capabilityRecoveryBytes",
-        "modelPreviewTokens"
-      ])
-    },
-    {
       key: "calls",
       label: "\u8C03\u7528\u5BB9\u9519",
       labelEn: "Tool call tolerance",
@@ -1525,6 +1510,21 @@
         "maxValueEdges",
         "maxValueArrayLength",
         "maxValueBigIntDigits"
+      ])
+    },
+    {
+      key: "capabilities",
+      label: "\u80FD\u529B\u4E0E\u4E0A\u4E0B\u6587",
+      labelEn: "Capabilities and context",
+      fields: Object.freeze([
+        "capabilityManagementEnabled",
+        "capabilityBaseline",
+        "capabilityOverrides",
+        "capabilityStatistics",
+        "capabilityBudgetBytes",
+        "capabilityDirectoryBytes",
+        "capabilityRecoveryBytes",
+        "modelPreviewTokens"
       ])
     }
   ]);
@@ -2866,6 +2866,7 @@
       const [open, setOpen] = React.useState(false);
       const [bindingsOpen, setBindingsOpen] = React.useState(false);
       const bindingsAction = React.useRef(null);
+      const settingsRoot = React.useRef(null);
       const [status, setStatus] = React.useState(null);
       const [pending, setPending] = React.useState(() => /* @__PURE__ */ new Set());
       const [plans, setPlans] = React.useState(null);
@@ -2956,11 +2957,13 @@
           {
             key: group.key,
             className: "ptcPlusGroup",
+            "data-experimental": group.key === "capabilities" ? "true" : void 0,
             "aria-labelledby": `${groupIdPrefix}-${group.key}`
           },
           h("h3", {
             id: `${groupIdPrefix}-${group.key}`,
-            className: "ptcPlusGroupTitle"
+            className: "ptcPlusGroupTitle",
+            "data-experimental-label": group.key === "capabilities" ? t2("settings.experimental") : void 0
           }, t2(`group.${group.key}`)),
           ...fields.map((key) => {
             const field = CONFIG_FIELDS.find((candidate) => candidate.key === key);
@@ -3022,57 +3025,117 @@
           })
         );
       });
-      const settingsBody = (expanded, id2) => h(
-        "div",
-        {
-          id: id2,
-          className: "ptcPlusBody",
-          "data-open": expanded,
-          hidden: !expanded
-        },
-        h("div", { className: "ptcPlusBodyInner" }, h(
+      const settingsBody = (expanded, id2) => {
+        const navigable = view === "page" || view === "dialog";
+        const groupIds = new Map(CONFIG_GROUPS.map((group) => [group.key, `${groupIdPrefix}-${group.key}`]));
+        const navigation = navigable ? h(
+          "nav",
+          {
+            className: "ptcPlusSettingsNav",
+            "aria-label": t2("settings.navigation")
+          },
+          h(
+            "div",
+            { className: "ptcPlusSettingsNavIntro" },
+            h("span", { className: "ptcPlusSettingsEyebrow" }, t2("settings.navigationEyebrow")),
+            h("strong", null, t2("settings.navigationTitle")),
+            h("p", null, t2("settings.navigationHint"))
+          ),
+          h("div", { className: "ptcPlusSettingsNavList" }, ...CONFIG_GROUPS.map((group) => {
+            const target = groupIds.get(group.key);
+            return h(
+              "button",
+              {
+                key: group.key,
+                type: "button",
+                className: "ptcPlusSettingsNavItem",
+                "data-experimental": group.key === "capabilities" ? "true" : void 0,
+                onClick: () => settingsRoot.current?.querySelector(`[id="${target}"]`)?.scrollIntoView({ block: "start" })
+              },
+              h("span", { className: "ptcPlusSettingsNavLabel" }, t2(`group.${group.key}`)),
+              group.key === "capabilities" ? h("span", { className: "ptcPlusSettingsNavBadge" }, t2("settings.experimental")) : null
+            );
+          })),
+          h(
+            "div",
+            { className: "ptcPlusSettingsNavStatus", "data-enabled": enabled },
+            h("span", { className: "ptcPlusSettingsNavStatusDot", "aria-hidden": true }),
+            h("span", null, t2(enabled ? "status.enabled" : "status.disabled"))
+          )
+        ) : null;
+        return h(
           "div",
-          { className: "ptcPlusFields" },
-          snapshot2.status === "loading" ? h("p", { className: "ptcPlusMessage" }, t2("state.syncing")) : snapshot2.status === "unavailable" ? h("p", { className: "ptcPlusMessage" }, t2("state.unavailable")) : [
-            ...settingsFields(),
-            inspectCapabilityPlans ? h(
-              "section",
-              { key: "capability-plans", className: "ptcPlusGroup" },
-              h("h3", { className: "ptcPlusGroupTitle" }, t2("capabilities.sessions")),
-              h(ActionButton, { type: "button", disabled: !enabled, onClick: () => setPlanRevision((current) => current + 1) }, t2("capabilities.reload")),
-              h("p", { className: "ptcPlusDetail" }, t2("capabilities.refreshHint")),
-              !enabled ? h("p", null, t2("status.disabled")) : plansError ? h("p", { role: "status" }, t2("capabilities.unavailable", { error: plansError })) : plans === null ? h("p", null, t2("state.syncing")) : plans.length === 0 ? h("p", null, t2("capabilities.empty")) : plans.map((plan) => h(
-                "details",
-                { key: plan.sessionId },
-                h("summary", null, `${plan.sessionId} \xB7 ${t2(plan.pendingRefresh ? "capabilities.pending" : "capabilities.current")}`),
-                h("p", null, t2("capabilities.budget", { bytes: plan.effective.budgets.contractBytes, overage: plan.effective.budgets.overageBytes })),
-                h(
-                  "table",
-                  null,
-                  h("thead", null, h(
-                    "tr",
-                    null,
-                    ...["member", "selection", "reason", "coverage"].map((key) => h("th", { key }, t2(`capabilities.${key}`)))
-                  )),
-                  h("tbody", null, ...plan.effective.entries.map((entry) => h(
-                    "tr",
-                    { key: entry.id },
-                    h("td", null, entry.id),
-                    h("td", null, entry.selection),
-                    h("td", null, [entry.reason, entry.statisticsReason].filter(Boolean).join(" \xB7 ")),
-                    h("td", null, entry.evidence ? `${entry.evidence.used}/${entry.evidence.eligible} (${entry.evidence.scope})` : "\u2014")
-                  )))
-                )
-              ))
+          {
+            id: id2,
+            ref: settingsRoot,
+            className: "ptcPlusBody",
+            "data-open": expanded,
+            hidden: !expanded
+          },
+          h(
+            "div",
+            { className: "ptcPlusBodyInner" },
+            view === "dialog" ? h(
+              "div",
+              { className: "ptcPlusSettingsHero" },
+              h(
+                "div",
+                { className: "ptcPlusSettingsHeroCopy" },
+                h("span", { className: "ptcPlusSettingsEyebrow" }, t2("settings.navigationEyebrow")),
+                h("p", null, t2("settings.dialogHint"))
+              ),
+              h("span", { className: "ptcPlusStatus", "data-enabled": enabled }, t2(enabled ? "status.enabled" : "status.disabled"))
             ) : null,
             h(
               "div",
-              { key: "footer", className: "ptcPlusFooter" },
-              h("span", { className: "ptcPlusMessage", role: "status" }, status === null ? t2(snapshot2.writable ? "footer.live" : "footer.readOnly") : t2(status.key, status.params))
+              { className: navigable ? "ptcPlusSettingsLayout" : void 0 },
+              navigation,
+              h(
+                "div",
+                { className: "ptcPlusFields" },
+                snapshot2.status === "loading" ? h("p", { className: "ptcPlusMessage" }, t2("state.syncing")) : snapshot2.status === "unavailable" ? h("p", { className: "ptcPlusMessage" }, t2("state.unavailable")) : [
+                  ...settingsFields(),
+                  inspectCapabilityPlans ? h(
+                    "section",
+                    { key: "capability-plans", className: "ptcPlusGroup" },
+                    h("h3", { className: "ptcPlusGroupTitle" }, t2("capabilities.sessions")),
+                    h(ActionButton, { type: "button", disabled: !enabled, onClick: () => setPlanRevision((current) => current + 1) }, t2("capabilities.reload")),
+                    h("p", { className: "ptcPlusDetail" }, t2("capabilities.refreshHint")),
+                    !enabled ? h("p", null, t2("status.disabled")) : plansError ? h("p", { role: "status" }, t2("capabilities.unavailable", { error: plansError })) : plans === null ? h("p", null, t2("state.syncing")) : plans.length === 0 ? h("p", null, t2("capabilities.empty")) : plans.map((plan) => h(
+                      "details",
+                      { key: plan.sessionId },
+                      h("summary", null, `${plan.sessionId} \xB7 ${t2(plan.pendingRefresh ? "capabilities.pending" : "capabilities.current")}`),
+                      h("p", null, t2("capabilities.budget", { bytes: plan.effective.budgets.contractBytes, overage: plan.effective.budgets.overageBytes })),
+                      h(
+                        "table",
+                        null,
+                        h("thead", null, h(
+                          "tr",
+                          null,
+                          ...["member", "selection", "reason", "coverage"].map((key) => h("th", { key }, t2(`capabilities.${key}`)))
+                        )),
+                        h("tbody", null, ...plan.effective.entries.map((entry) => h(
+                          "tr",
+                          { key: entry.id },
+                          h("td", null, entry.id),
+                          h("td", null, entry.selection),
+                          h("td", null, [entry.reason, entry.statisticsReason].filter(Boolean).join(" \xB7 ")),
+                          h("td", null, entry.evidence ? `${entry.evidence.used}/${entry.evidence.eligible} (${entry.evidence.scope})` : "\u2014")
+                        )))
+                      )
+                    ))
+                  ) : null,
+                  h(
+                    "div",
+                    { key: "footer", className: "ptcPlusFooter" },
+                    h("span", { className: "ptcPlusMessage", role: "status" }, status === null ? t2(snapshot2.writable ? "footer.live" : "footer.readOnly") : t2(status.key, status.params))
+                  )
+                ]
+              )
             )
-          ]
-        ))
-      );
+          )
+        );
+      };
       const openBindings = globalEnabled && bindingsOpen ? h(BindingsDialog, {
         controller: workbench,
         t: t2,
@@ -3114,19 +3177,28 @@
       const close = () => {
         if (!bindingsOpen) onClose();
       };
-      return h(Modal, {
-        open: true,
-        onClose: close,
-        title: t2("settings.dialogTitle"),
-        closeLabel: t2("settings.close"),
-        description: t2("card.description"),
-        className: "ptcPlusSettingsModal",
-        contentClassName: "ptcPlusSettingsDialogContent"
-      }, h(
-        "div",
-        { className: "ptcPlusSettingsDialog" },
-        h(PTCPlusSettingsCard, { ...props, view: "dialog", onBindingsOpenChange: setBindingsOpen })
-      ));
+      return h(
+        Modal,
+        {
+          open: true,
+          onClose: close,
+          title: t2("settings.dialogTitle"),
+          closeLabel: t2("settings.close"),
+          headless: true,
+          className: "ptcPlusSettingsModal"
+        },
+        h(
+          "div",
+          { className: "ptcPlusSettingsDialogHead" },
+          h("div", null, h("h2", null, t2("settings.dialogTitle")), h("p", null, t2("card.description"))),
+          h("button", { type: "button", className: "ptcPlusDialogClose", "aria-label": t2("settings.close"), onClick: close }, "\xD7")
+        ),
+        h("div", { className: "ptcPlusSettingsDialogContent" }, h(
+          "div",
+          { className: "ptcPlusSettingsDialog" },
+          h(PTCPlusSettingsCard, { ...props, view: "dialog", onBindingsOpenChange: setBindingsOpen })
+        ))
+      );
     }
     return { PTCPlusSettingsCard, PTCPlusSettingsDialog };
   }
@@ -30596,12 +30668,12 @@
 .ptcPlusBindingSelect:disabled,.ptcPlusSelect:disabled,.ptcPlusTextarea:disabled{cursor:not-allowed;opacity:.4}
 .ptcPlusHeadText{display:flex;flex:1;min-width:0;flex-direction:column;align-items:flex-start;gap:3px}.ptcPlusName{font-size:15px;font-weight:600;line-height:1.4}.ptcPlusDescription{color:var(--dsw-alias-label-tertiary);font-size:13px;line-height:1.5;overflow-wrap:anywhere}.ptcPlusStatus{display:inline-flex;align-items:center;flex:none;padding:1px 8px;border-radius:999px;corner-shape:round;background:var(--dsw-alias-bg-module-platform);color:var(--dsw-alias-label-secondary);font-size:11px;font-weight:500;line-height:17px;white-space:nowrap}.ptcPlusStatus[data-enabled=true]{color:var(--dsw-alias-state-success-primary);background:var(--dsw-alias-state-success-tertiary)}.ptcPlusStatus[data-enabled=false]{color:var(--dsw-alias-label-secondary);background:var(--dsw-alias-bg-module-platform)}
 .ptcPlusChevron{display:flex;color:var(--dsw-alias-label-tertiary);transition:transform .18s ease}.ptcPlusChevron[data-open=true]{transform:rotate(180deg)}.ptcPlusBody{display:grid;grid-template-rows:0fr;transition:grid-template-rows .2s ease}.ptcPlusBody[data-open=true]{grid-template-rows:1fr}.ptcPlusBodyInner{min-height:0;overflow:hidden}.ptcPlusFields{margin:0 16px;padding:8px 0 12px;border-top:0.5px solid var(--dsw-alias-border-l2)}
-.ptcPlusGroup+.ptcPlusGroup{margin-top:20px;padding-top:12px;border-top:1px solid var(--dsw-alias-border-l2)}.ptcPlusGroupTitle{margin:0;padding:8px 0;color:var(--dsw-alias-label-secondary);font-size:13px;font-weight:600;letter-spacing:0;line-height:20px}.ptcPlusRow{display:flex;align-items:center;gap:12px;min-height:48px;border-top:0.5px solid var(--dsw-alias-border-l2)}.ptcPlusGroupTitle+.ptcPlusRow{border-top:0}.ptcPlusMain{flex:1;min-width:0}.ptcPlusLabel{font-size:13px;font-weight:500;line-height:1.5}.ptcPlusDetail,.ptcPlusMessage{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:1.5;overflow-wrap:anywhere}.ptcPlusInput{box-sizing:border-box;min-width:72px;width:140px;height:34px;padding:0 12px;border:0.5px solid var(--dsw-alias-border-l4);border-radius:8px;background:var(--dsw-alias-bg-layer-3);color:var(--dsw-alias-label-primary);font:inherit;font-size:13px;line-height:1.5}.ptcPlusInput:focus-visible{border-color:var(--dsw-alias-brand-primary);outline:none}.ptcPlusCheck{width:18px;height:18px;accent-color:var(--dsw-alias-brand-primary)}
+.ptcPlusGroup+.ptcPlusGroup{margin-top:20px;padding-top:12px;border-top:1px solid var(--dsw-alias-border-l2)}.ptcPlusGroupTitle{margin:0;padding:8px 0;color:var(--dsw-alias-label-secondary);font-size:13px;font-weight:600;letter-spacing:0;line-height:20px}.ptcPlusGroup[data-experimental=true]{padding:14px 16px;border:1px solid color-mix(in srgb,var(--dsw-alias-state-warn-primary,#a15c00) 25%,var(--dsw-alias-border-l2));border-radius:12px;background:var(--dsw-alias-bg-layer-3)}.ptcPlusGroup[data-experimental=true]>.ptcPlusGroupTitle{display:flex;align-items:center;gap:8px}.ptcPlusGroup[data-experimental=true]>.ptcPlusGroupTitle::after{content:attr(data-experimental-label);padding:2px 7px;border-radius:999px;background:color-mix(in srgb,var(--dsw-alias-state-warn-primary,#a15c00) 12%,transparent);color:color-mix(in srgb,var(--dsw-alias-state-warn-primary,#a15c00) 60%,var(--dsw-alias-label-primary));font-size:10px;font-weight:600;line-height:15px}.ptcPlusRow{display:flex;align-items:center;gap:12px;min-height:48px;border-top:0.5px solid var(--dsw-alias-border-l2)}.ptcPlusGroupTitle+.ptcPlusRow{border-top:0}.ptcPlusMain{flex:1;min-width:0}.ptcPlusLabel{font-size:13px;font-weight:500;line-height:1.5}.ptcPlusDetail,.ptcPlusMessage{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:1.5;overflow-wrap:anywhere}.ptcPlusInput{box-sizing:border-box;min-width:72px;width:140px;height:34px;padding:0 12px;border:0.5px solid var(--dsw-alias-border-l4);border-radius:8px;background:var(--dsw-alias-bg-layer-3);color:var(--dsw-alias-label-primary);font:inherit;font-size:13px;line-height:1.5}.ptcPlusInput:focus-visible{border-color:var(--dsw-alias-brand-primary);outline:none}.ptcPlusCheck{width:18px;height:18px;accent-color:var(--dsw-alias-brand-primary)}
 .ptcPlusCapabilityChoices,.ptcPlusCapabilityStatistics{min-width:0;margin:12px 0}.ptcPlusCapabilityChoices>.ptcPlusInput{width:100%;margin-bottom:8px}.ptcPlusCapabilityList{max-height:320px;overflow:auto;border:0.5px solid var(--dsw-alias-border-l3);border-radius:8px}.ptcPlusCapabilityItem{display:grid;grid-template-columns:minmax(0,1fr) auto minmax(120px,160px);align-items:center;gap:10px;padding:10px}.ptcPlusCapabilityItem+.ptcPlusCapabilityItem{border-top:0.5px solid var(--dsw-alias-border-l2)}.ptcPlusCapabilityItem .ptcPlusLabel{overflow-wrap:anywhere}.ptcPlusCapabilityCommon{display:flex;align-items:center;gap:4px;font-size:12px;color:var(--dsw-alias-label-secondary)}.ptcPlusCapabilityStatistics .ptcPlusInput{width:100%}
 @media(max-width:560px){.ptcPlusCapabilityItem{grid-template-columns:minmax(0,1fr) auto}.ptcPlusCapabilityItem>.ptcPlusSelect{grid-column:1/-1}.ptcPlusCapabilityStatistics .ptcPlusBindingFields{grid-template-columns:minmax(0,1fr)}}
 .ptcPlusFooter{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:8px}.ptcPlusButton{appearance:none;display:inline-flex;align-items:center;justify-content:center;gap:5px;min-height:32px;padding:4px 14px;border:0.5px solid var(--dsw-alias-border-l3);border-radius:8px;background:transparent;color:var(--dsw-alias-label-secondary);cursor:pointer;font:inherit;font-size:13px;line-height:1.5;transition:color .16s ease,border-color .16s ease,background-color .16s ease}.ptcPlusButton:hover:not(:disabled){border-color:var(--dsw-alias-label-dimmed);color:var(--dsw-alias-label-primary)}.ptcPlusButton[data-kind=primary]{background:var(--dsw-alias-label-primary);border-color:transparent;color:var(--dsw-alias-bg-layer-3)}.ptcPlusButton[data-kind=primary]:hover:not(:disabled){background:var(--dsw-alias-label-primary-dimmed);border-color:transparent;color:var(--dsw-alias-bg-layer-3)}.ptcPlusButton[data-kind=ghost]{border-color:transparent}.ptcPlusButton[data-kind=ghost]:hover:not(:disabled){border-color:var(--dsw-alias-border-l3)}.ptcPlusButton[data-kind=danger]{color:var(--dsw-alias-state-error-primary)}.ptcPlusButton[data-kind=danger]:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover-danger);border-color:var(--dsw-alias-state-error-primary);color:var(--dsw-alias-state-error-primary)}.ptcPlusButton:disabled,.ptcPlusInput:disabled,.ptcPlusCheck:disabled{cursor:not-allowed;opacity:.4}
 .ptcPlusSettingAction{padding:4px 0 12px}
-.ptcPlusSettingsModal.ptcPlusSettingsModal{width:min(760px,calc(100vw - 32px));max-width:none;max-height:calc(100dvh - 40px);border-radius:8px}.ptcPlusSettingsDialogContent{min-height:0;overflow:auto;overscroll-behavior:contain}.ptcPlusSettingsDialog{min-width:0}.ptcPlusSettingsDialog .ptcPlusFields{margin:0;padding:0 0 12px;border-top:0}
+.ptcPlusSettingsModal.ptcPlusSettingsModal{box-sizing:border-box;width:min(1080px,calc(100vw - 48px));height:min(860px,calc(100dvh - 48px));max-width:100%;max-height:100%;min-height:0;display:flex;flex-direction:column;padding:0;gap:0;overflow:hidden;border-radius:16px}.ptcPlusSettingsDialogHead{display:flex;flex:none;align-items:center;justify-content:space-between;gap:16px;padding:20px 24px;border-bottom:1px solid var(--dsw-alias-border-l2)}.ptcPlusSettingsDialogHead h2{margin:0;font-size:18px;line-height:26px;font-weight:600}.ptcPlusSettingsDialogHead p{margin:4px 0 0;color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px}.ptcPlusSettingsDialogContent{flex:1;min-height:0;padding:20px 24px;overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable}.ptcPlusSettingsDialog{min-width:0}.ptcPlusSettingsDialog .ptcPlusBody{display:block}.ptcPlusSettingsDialog .ptcPlusBodyInner{overflow:visible}.ptcPlusSettingsDialog .ptcPlusFields{margin:0;padding:0 0 12px;border-top:0}.ptcPlusSettingsHero{display:flex;align-items:flex-end;justify-content:space-between;gap:20px;margin:0 0 20px;padding:4px 0 18px;border-bottom:1px solid var(--dsw-alias-border-l2)}.ptcPlusSettingsHeroCopy{min-width:0}.ptcPlusSettingsHeroCopy p{margin:4px 0 0;color:var(--dsw-alias-label-secondary);font-size:13px;line-height:20px}.ptcPlusSettingsEyebrow{display:block;color:var(--dsw-alias-label-tertiary);font-size:10px;font-weight:700;letter-spacing:.08em;line-height:16px;text-transform:uppercase}.ptcPlusSettingsLayout{display:grid;grid-template-columns:minmax(190px,220px) minmax(0,1fr);align-items:start;gap:28px}.ptcPlusSettingsNav{position:sticky;top:0;display:flex;min-width:0;flex-direction:column;gap:18px}.ptcPlusSettingsNavIntro{display:flex;flex-direction:column;gap:3px;padding:4px 4px 0}.ptcPlusSettingsNavIntro strong{font-size:15px;line-height:22px}.ptcPlusSettingsNavIntro p{margin:4px 0 0;color:var(--dsw-alias-label-tertiary);font-size:11px;line-height:17px}.ptcPlusSettingsNavList{display:flex;flex-direction:column;gap:3px}.ptcPlusSettingsNavItem{appearance:none;display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:36px;padding:7px 10px;border:0;border-radius:8px;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:12px;line-height:18px;text-align:start;cursor:pointer}.ptcPlusSettingsNavItem:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}.ptcPlusSettingsNavItem:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:-2px}.ptcPlusSettingsNavItem[data-experimental=true]{color:var(--dsw-alias-label-secondary)}.ptcPlusSettingsNavLabel{min-width:0;overflow-wrap:anywhere}.ptcPlusSettingsNavBadge{color:color-mix(in srgb,var(--dsw-alias-state-warn-primary,#a15c00) 60%,var(--dsw-alias-label-primary));flex:none;padding:1px 5px;border-radius:999px;background:color-mix(in srgb,var(--dsw-alias-state-warn-primary,#a15c00) 12%,transparent);font-size:10px;line-height:15px}.ptcPlusSettingsNavStatus{display:flex;align-items:center;gap:8px;margin-top:auto;padding:9px 10px;border:1px solid var(--dsw-alias-border-l2);border-radius:10px;color:var(--dsw-alias-label-secondary);font-size:11px;line-height:17px}.ptcPlusSettingsNavStatusDot{width:7px;height:7px;flex:none;border-radius:50%;background:var(--dsw-alias-label-tertiary)}.ptcPlusSettingsNavStatus[data-enabled=true] .ptcPlusSettingsNavStatusDot{background:var(--dsw-alias-state-success-primary)}.ptcPlusSettingsLayout>.ptcPlusFields{min-width:0}.ptcPlusSettingsLayout .ptcPlusGroup{padding:14px 18px;border:1px solid var(--dsw-alias-border-l2);border-radius:12px;background:var(--dsw-alias-bg-layer-3)}.ptcPlusSettingsLayout .ptcPlusGroup+.ptcPlusGroup{margin-top:14px}.ptcPlusSettingsLayout .ptcPlusGroup:first-child{margin-top:0}.ptcPlusSettingsLayout .ptcPlusGroupTitle{scroll-margin-top:16px;font-size:14px}.ptcPlusSettingsLayout .ptcPlusRow{padding-block:10px}
 .ptcPlusDanger{color:var(--dsw-alias-state-error-primary)}
 .ptcPlusActiveShell{display:inline-flex;align-items:center}.ptcPlusActive{appearance:none;display:inline-flex;height:24px;align-items:center;gap:5px;padding:0 8px;border:1px solid color-mix(in srgb,var(--dsw-alias-state-success-primary,#16794f) 32%,transparent);border-radius:6px;background:var(--dsw-alias-state-success-tertiary,#e7f7ef);color:var(--dsw-alias-state-success-primary,#16794f);cursor:help;font-family:inherit;font-size:12px;font-weight:600;line-height:18px;white-space:nowrap;transition:background-color .14s ease,border-color .14s ease}.ptcPlusActive:hover,.ptcPlusActive[aria-expanded=true]{border-color:color-mix(in srgb,var(--dsw-alias-state-success-primary,#16794f) 48%,transparent);background:color-mix(in srgb,var(--dsw-alias-state-success-primary,#16794f) 16%,var(--dsw-alias-bg-layer-3,#fff))}.ptcPlusActive:focus-visible{outline:2px solid var(--dsw-alias-state-success-primary,#16794f);outline-offset:2px}.ptcPlusReplPopover{position:fixed;z-index:2147483000;inset:auto;display:none;box-sizing:border-box;margin:0;padding:0;border:0;overflow:visible;background:transparent;color:var(--dsw-alias-label-primary,#18191c)}.ptcPlusReplPopover:popover-open,.ptcPlusReplPopover[data-open=true]{display:block}.ptcPlusReplPopover::backdrop{background:transparent}.ptcPlusReplCard{display:flex;max-height:inherit;overflow:hidden;flex-direction:column;border:1px solid color-mix(in srgb,var(--dsw-alias-state-success-primary,#16794f) 22%,var(--dsw-alias-border-l2,rgba(0,0,0,.1)));border-top:3px solid var(--dsw-alias-state-success-primary,#16794f);border-radius:8px;background:var(--dsw-alias-bg-layer-3,#fff);box-shadow:0 14px 36px rgba(16,24,40,.2),0 3px 10px rgba(16,24,40,.1);color:var(--dsw-alias-label-primary,#18191c);white-space:normal}.ptcPlusReplHead{display:grid;flex:none;grid-template-columns:auto minmax(0,1fr);align-items:center;column-gap:8px;padding:11px 13px 10px;border-bottom:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1));background:color-mix(in srgb,var(--dsw-alias-state-success-primary,#16794f) 7%,var(--dsw-alias-bg-layer-3,#fff))}.ptcPlusReplStatusDot{grid-row:1/3;width:8px;height:8px;border-radius:50%;background:var(--dsw-alias-state-success-primary,#16794f);box-shadow:0 0 0 3px color-mix(in srgb,var(--dsw-alias-state-success-primary,#16794f) 14%,transparent)}.ptcPlusReplTitle,.ptcPlusReplSummary{display:block;min-width:0}.ptcPlusReplTitle{font-size:13px;font-weight:600;line-height:19px}.ptcPlusReplSummary{min-height:16px;overflow-wrap:anywhere;color:var(--dsw-alias-label-tertiary,#74777d);font-size:11px;line-height:16px}.ptcPlusReplList{min-height:0;margin:0;padding:5px 0;overflow:auto;overscroll-behavior:contain;list-style:none;scrollbar-gutter:stable}.ptcPlusReplBinding{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:4px 10px;padding:7px 12px}.ptcPlusReplBinding:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(38,49,72,.06))}.ptcPlusReplIdentity{display:flex;min-width:0;align-items:center;gap:7px}.ptcPlusReplName{min-width:0;overflow:hidden;font:12px/18px ui-monospace,SFMono-Regular,Consolas,monospace;text-overflow:ellipsis;white-space:nowrap}.ptcPlusReplKind{flex:none;padding:1px 6px;border:1px solid color-mix(in srgb,currentColor 22%,transparent);border-radius:999px;background:color-mix(in srgb,currentColor 10%,transparent);font-size:10px;font-weight:600;line-height:15px}.ptcPlusReplKind[data-kind=variable]{color:var(--dsw-alias-state-business-primary,#315fbd)}.ptcPlusReplKind[data-kind=function]{color:#7651b5}.ptcPlusReplKind[data-kind=class]{color:var(--dsw-alias-state-warn-primary,#946200)}.ptcPlusReplKind[data-kind=import]{color:#14766f}.ptcPlusReplPreview{grid-column:1;min-width:0;overflow:hidden;color:var(--dsw-alias-label-tertiary,#74777d);font:11px/16px ui-monospace,SFMono-Regular,Consolas,monospace;text-overflow:ellipsis;white-space:nowrap}.ptcPlusReplInspect{grid-column:2;grid-row:1/3;display:inline-flex;align-items:center;gap:4px;padding:3px 5px;border:0;border-radius:4px;background:transparent;color:var(--dsw-alias-label-secondary,#52565d);cursor:pointer;font:500 11px/17px inherit;white-space:nowrap}.ptcPlusReplInspect:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(38,49,72,.06));color:var(--dsw-alias-state-business-primary,#4d6bfe)}.ptcPlusReplInspect:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary,#4d6bfe);outline-offset:1px}.ptcPlusReplDefinition{grid-column:1/-1;min-width:0;margin-top:4px;padding:8px;border-left:2px solid var(--dsw-alias-state-business-primary,#4d6bfe);background:var(--dsw-alias-bg-layer-2,rgba(38,49,72,.03))}.ptcPlusReplLocation{display:block;margin-bottom:5px;color:var(--dsw-alias-label-tertiary,#74777d);font-size:10px;line-height:15px}.ptcPlusReplCode{max-height:180px;margin:0;overflow:auto;color:inherit;font:11px/16px ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere}.ptcPlusReplEmpty,.ptcPlusReplMore{display:block;color:var(--dsw-alias-label-tertiary,#74777d)}.ptcPlusReplEmpty{padding:18px 13px;font-size:12px;line-height:18px}.ptcPlusReplMore{padding:8px 13px;border-top:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1));background:var(--dsw-alias-bg-layer-2,rgba(38,49,72,.03));font-size:11px;line-height:17px}
 .ptcPlusReplTabs{display:flex;flex:none;padding:6px 8px 0;border-bottom:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1))}.ptcPlusReplTab{flex:1;padding:5px 6px;border:0;border-bottom:2px solid transparent;background:transparent;color:var(--dsw-alias-label-secondary,#52565d);cursor:pointer;font-family:inherit;font-size:11px;font-weight:600;line-height:17px}.ptcPlusReplTab[aria-selected=true]{border-bottom-color:var(--dsw-alias-state-business-primary,#4d6bfe);color:var(--dsw-alias-label-primary,#18191c)}.ptcPlusGlobalPane{display:flex;min-height:0;flex-direction:column;gap:8px;padding:8px 12px}.ptcPlusGlobalList{min-height:0;margin:0 -12px -8px;padding:5px 0;overflow:auto;list-style:none}.ptcPlusGlobalItem{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:6px 10px;padding:7px 12px;border-radius:8px}.ptcPlusGlobalItem:hover{background:var(--dsw-alias-interactive-bg-hover)}.ptcPlusGlobalItem .ptcPlusGlobalSource,.ptcPlusGlobalItem .ptcPlusReplEmpty{grid-column:1/-1}.ptcPlusAuthoringDraft{display:flex;flex-direction:column;gap:6px;padding:10px 12px;border:0.5px solid var(--dsw-alias-border-l4);border-radius:12px;background:var(--dsw-alias-bg-layer-3)}.ptcPlusGlobalSource{max-height:180px;margin:6px 0 0;padding:8px 10px;overflow:auto;background:var(--dsw-alias-markdown-code-block);border-radius:8px;font:12px/18px ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere}
@@ -30611,7 +30683,8 @@
 .ptcPlusToolBody{margin:4px 0 8px 23px;border-left:2px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1));background:var(--dsw-alias-bg-layer-2,rgba(38,49,72,.03))}.ptcPlusToolSection{display:flex;min-width:0;flex-direction:column;gap:4px;padding:9px 11px}.ptcPlusToolSection+.ptcPlusToolSection{border-top:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1))}.ptcPlusToolSectionLabel{color:var(--dsw-alias-label-tertiary,#74777d);font-size:10px;font-weight:600;line-height:16px;text-transform:uppercase}.ptcPlusToolCode{max-height:320px;margin:0;overflow:auto;color:inherit;font:12px/18px ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere}.ptcPlusIoCard{display:flex;flex-direction:column;border:1px solid var(--dsw-alias-border-l1,rgba(0,0,0,.1));border-radius:12px;background:var(--dsw-alias-markdown-code-block,rgba(38,49,72,.06));overflow:hidden}.ptcPlusIoText{max-height:320px;margin:0;padding:12px 16px;overflow:auto;color:var(--dsw-alias-label-secondary,#52565d);font:12px/18px ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere}.ptcPlusIoText[data-error]{color:var(--dsw-alias-state-error-primary,#c43d3d)}.ptcPlusInspect{display:inline-flex;align-self:flex-start;align-items:center;gap:4px;margin:4px 0 2px 4px;padding:2px 8px;border:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1));border-radius:999px;background:var(--dsw-alias-bg-base,#fff);color:var(--dsw-alias-label-secondary,#52565d);cursor:pointer;opacity:0;font-size:11px;line-height:16px;transition:opacity .1s ease;display:inline-flex}.ptcPlusTool:hover .ptcPlusInspect,.ptcPlusInspect:focus-visible{opacity:1}.ptcPlusInspect:hover{background:var(--dsw-alias-interactive-bg-hover-solid,rgba(38,49,72,.06));color:var(--dsw-alias-label-primary,#18191c)}
 .ptcPlusAuthorButtonShell{display:inline-flex;width:28px;height:28px;flex:none;align-items:center;justify-content:center}.ptcPlusAuthorButton{appearance:none;display:inline-flex;box-sizing:border-box;width:28px;height:28px;align-items:center;justify-content:center;padding:0;border:0;border-radius:6px;background:transparent;color:var(--dsw-alias-label-secondary,#52565d);cursor:pointer}.ptcPlusAuthorButton:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(38,49,72,.06));color:var(--dsw-alias-state-business-primary,#4d6bfe)}.ptcPlusAuthorButton:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary,#4d6bfe);outline-offset:1px}.ptcPlusAuthorButtonShell[data-text=true]{width:auto}.ptcPlusAuthorButtonLabel{padding:0 4px;font-size:12px;line-height:18px;font-weight:500}.ptcPlusComposerNotice{max-width:160px;color:var(--dsw-alias-label-secondary,#52565d);font-size:11px;line-height:17px;overflow-wrap:anywhere}.ptcPlusButton>svg{flex:none;margin-right:5px;vertical-align:-2px}
 @media(max-width:760px){.ptcPlusBindingsGrid{grid-template-columns:1fr}.ptcPlusBindingFields{grid-template-columns:1fr}.ptcPlusBindingField[data-wide=true]{grid-column:auto}.ptcPlusBindingSourceGrid{grid-template-columns:1fr}.ptcPlusBindingDebugBody{grid-template-columns:1fr}.ptcPlusBindingDebugBody .ptcPlusButton{width:100%}.ptcPlusBindingDebugWarning{grid-column:1}}
-@media(max-width:560px){.ptcPlusHeader{padding:12px}.ptcPlusFields{margin:0 12px}.ptcPlusSettingsModal.ptcPlusSettingsModal{width:calc(100vw - 16px);max-height:calc(100dvh - 16px)}.ptcPlusSettingsDialog .ptcPlusFields{margin:0}.ptcPlusRow{align-items:flex-start;flex-direction:column;gap:6px;padding:10px 0}.ptcPlusInput{width:100%}.ptcPlusFooter,.ptcPlusBindingsHead{align-items:stretch;flex-direction:column}.ptcPlusButton{width:100%}.ptcPlusFeatures,.ptcPlusToolBody{margin-left:0}.ptcPlusToolSummary .ptcPlusToolDescription{white-space:normal;overflow-wrap:anywhere}}
+@media(max-width:860px){.ptcPlusSettingsModal.ptcPlusSettingsModal{width:min(920px,calc(100vw - 32px))}.ptcPlusSettingsLayout{grid-template-columns:1fr;gap:16px}.ptcPlusSettingsNav{position:static;gap:10px}.ptcPlusSettingsNavIntro{display:none}.ptcPlusSettingsNavList{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:4px}.ptcPlusSettingsNavStatus{margin-top:0}.ptcPlusSettingsLayout .ptcPlusFields{padding-top:0}}
+@media(max-width:560px){.ptcPlusHeader{padding:12px}.ptcPlusFields{margin:0 12px}.ptcPlusSettingsModal.ptcPlusSettingsModal{width:calc(100vw - 16px);height:calc(100dvh - 16px);border-radius:12px}.ptcPlusSettingsDialog .ptcPlusFields{margin:0}.ptcPlusSettingsDialogContent{padding:14px}.ptcPlusSettingsDialogHead{padding:14px}.ptcPlusSettingsHero{align-items:flex-start;flex-direction:column;gap:10px;margin-bottom:14px;padding-bottom:14px}.ptcPlusSettingsNavItem{padding:6px 8px}.ptcPlusSettingsNavBadge{display:none}.ptcPlusSettingsLayout .ptcPlusGroup{padding:10px 12px}.ptcPlusGroup[data-experimental=true]{padding:12px}.ptcPlusRow{align-items:flex-start;flex-direction:column;gap:6px;padding:10px 0}.ptcPlusInput{width:100%}.ptcPlusFooter,.ptcPlusBindingsHead{align-items:stretch;flex-direction:column}.ptcPlusButton{width:100%}.ptcPlusFeatures,.ptcPlusToolBody{margin-left:0}.ptcPlusToolSummary .ptcPlusToolDescription{white-space:normal;overflow-wrap:anywhere}}
 @media(prefers-reduced-motion:reduce){.ptcPlusHeader,.ptcPlusChevron,.ptcPlusBody,.ptcPlusButton,.ptcPlusActive,.ptcPlusToolChevron,.ptcPlusReplChevron,.ptcPlusReplDefinitionWrap,.ptcPlusInspect,.ptcPlusBindingDockChevron{transition:none}}
 /* The summary button owns disclosure; definition content is a separate grid item. */
 .ptcPlusReplBinding{padding:0;cursor:default}.ptcPlusReplBindingTrigger{appearance:none;display:grid;width:100%;grid-column:1/-1;grid-template-columns:minmax(0,1fr) 24px;gap:3px 8px;min-height:36px;padding:5px 12px;border:0;background:transparent;color:inherit;text-align:left;cursor:pointer;font:inherit;transition:background-color .16s ease}.ptcPlusReplBindingTrigger:hover,.ptcPlusReplBindingTrigger[aria-expanded=true]{background:color-mix(in srgb,var(--dsw-alias-state-business-primary,#4d6bfe) 5%,transparent)}.ptcPlusReplBindingTrigger:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary,#4d6bfe);outline-offset:-2px}
@@ -31126,6 +31199,12 @@
       "settings.menuEntry": "PTC Plus \u8BBE\u7F6E",
       "settings.dialogTitle": "PTC Plus \u8BBE\u7F6E",
       "settings.close": "\u5173\u95ED PTC Plus \u8BBE\u7F6E",
+      "settings.navigation": "\u8BBE\u7F6E\u5206\u533A",
+      "settings.navigationEyebrow": "\u5DE5\u4F5C\u533A\u8BBE\u7F6E",
+      "settings.navigationTitle": "PTC Plus",
+      "settings.navigationHint": "\u8FDE\u7EED\u8BA1\u7B97\u3001\u5168\u5C40\u7ED1\u5B9A\u4E0E\u4F1A\u8BDD\u4F53\u9A8C\u3002",
+      "settings.dialogHint": "\u8C03\u6574\u8FD0\u884C\u3001\u6062\u590D\u3001\u6269\u5C55\u548C\u663E\u793A\u884C\u4E3A\u3002",
+      "settings.experimental": "\u5B9E\u9A8C\u6027",
       "settings.pathSettings": "\u8BBE\u7F6E \u2192 \u63D2\u4EF6\u914D\u7F6E \u2192 PTC Plus",
       "settings.pathPlugins": "\u4FA7\u680F Plugins \u2192 dsh-ptc-plus \u2192 \u884C ptc-plus \u2192 Configure",
       "bindings.entry": "\u6761\u76EE\u914D\u7F6E",
@@ -31336,6 +31415,12 @@
       "settings.menuEntry": "PTC Plus settings",
       "settings.dialogTitle": "PTC Plus settings",
       "settings.close": "Close PTC Plus settings",
+      "settings.navigation": "Settings sections",
+      "settings.navigationEyebrow": "WORKSPACE SETTINGS",
+      "settings.navigationTitle": "PTC Plus",
+      "settings.navigationHint": "Continuous computation, global bindings, and your session experience.",
+      "settings.dialogHint": "Tune runtime, recovery, extensions, and display behavior.",
+      "settings.experimental": "Experimental",
       "settings.pathSettings": "Settings \u2192 Plugin configuration \u2192 PTC Plus",
       "settings.pathPlugins": "Side bar Plugins \u2192 dsh-ptc-plus \u2192 row ptc-plus \u2192 Configure",
       "bindings.entry": "Entry configuration",

@@ -250,6 +250,8 @@ export const surfaceControls = [
   ['input', '.ptcPlusInput:not([type=checkbox])', { disabled: true }],
   ['instructions', 'textarea.ptcPlusInput,.ptcPlusTextarea', { disabled: true }],
   ['settings switch', '.ptcPlusCheck', { disabled: true }],
+  ['settings navigation', '.ptcPlusSettingsNavItem', { hover: true }],
+  ['settings close', '.ptcPlusSettingsDialogHead .ptcPlusDialogClose', { hover: true }],
   ['select', '.ptcPlusSelect', {}],
   ['search', '.ptcPlusSearch input', {}],
   ['REPL observation', '.ptcPlusObservationSelect', {}],

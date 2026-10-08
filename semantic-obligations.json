@@ -704,6 +704,7 @@
         "canonical versus preview values",
         "feature gates",
         "settings transport registration identity and live fallback",
+        "settings order keeps experimental capabilities after core controls; wide workbench uses scoped section navigation and fixed modal header with independently scrollable body; narrow layouts retain reachable controls and native/fallback modal focus",
         "capability settings use searchable baseline/disclosure choices and validated numeric statistics, preserve unavailable saved entries and frozen plans, and cancel stale plan/catalog inspection on plugin disable",
         "default-enabled bindings with explicit disable preserved",
         "compact stable authoring SDK retains complete argument and receipt types while task instructions own request facts",

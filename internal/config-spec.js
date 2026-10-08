@@ -333,9 +333,6 @@ export const CONFIG_GROUPS = Object.freeze([
     labelEn: 'Plugin switch',
     fields: Object.freeze(['enabled']),
   },
-  { key: 'capabilities', label: '能力与上下文', labelEn: 'Capabilities and context',
-    fields: Object.freeze(['capabilityManagementEnabled', 'capabilityBaseline', 'capabilityOverrides',
-      'capabilityStatistics', 'capabilityBudgetBytes', 'capabilityDirectoryBytes', 'capabilityRecoveryBytes', 'modelPreviewTokens']) },
   {
     key: 'calls',
     label: '调用容错',
@@ -384,6 +381,9 @@ export const CONFIG_GROUPS = Object.freeze([
       'maxValueBigIntDigits',
     ]),
   },
+  { key: 'capabilities', label: '能力与上下文', labelEn: 'Capabilities and context',
+    fields: Object.freeze(['capabilityManagementEnabled', 'capabilityBaseline', 'capabilityOverrides',
+      'capabilityStatistics', 'capabilityBudgetBytes', 'capabilityDirectoryBytes', 'capabilityRecoveryBytes', 'modelPreviewTokens']) },
 ])
 
 /** Resolved defaults, derived once from the field definitions. */

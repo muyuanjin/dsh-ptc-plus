@@ -221,18 +221,18 @@ Workbench controls provide visible keyboard focus and disabled feedback, and REP
 
 ![Session state and the global binding workbench in the REPL tab](assets/ptc-plus-repl-workspace-en.png)
 
-The sparkle menu beside the composer groups binding authoring, entry management, and **PTC Plus settings**. Its settings dialog and the sidebar plugin configuration page share the same configuration:
+The sparkle menu beside the composer groups binding authoring, entry management, and **PTC Plus settings**. The sparkle entry opens a large settings window with a navigation rail and settings cards on wide screens, and one column on small screens. Everyday runtime options appear first; experimental capability controls follow with a clear label. The settings dialog and the sidebar plugin configuration page share the same configuration:
 
 | Group | What you can adjust |
 | --- | --- |
 | Plugin switch | Enable or disable PTC Plus |
-| Context and capabilities | Experimental capability management (off by default), independent statistics, common baseline, individual choices, and presentation budgets |
 | Tool call tolerance | Missing call summaries and identifiable misplaced native-tool calls |
 | REPL syntax | Allow same-name revisions or choose name protection |
 | State and recovery | Restart recovery, contextual tips, and their frequency |
 | Tool extensions | Global bindings and their management entry, official Cordis tool integration |
 | Interface display | Enhanced tool cards, the REPL tab, and the sparkle shortcut |
 | Resource limits | Execution time, memory, and output budgets |
+| Context and capabilities | Experimental capability management (off by default), independent statistics, common baseline, individual choices, and presentation budgets |
 
 Everyday computation features default to on. **Cordis development tools default to off** and can be enabled when inspecting or developing DSH plugins; see the [integration notes](docs/adr/0020-optional-cordis-tools-in-ptc-mode.md). Explicitly disabled options stay disabled, and each saved binding keeps its own enabled state.
 
@@ -240,7 +240,7 @@ Capability inputs are frozen per session; saved changes apply to new sessions or
 
 The host execution provider must use TypeScript. Changing it to another language during reload withdraws the active PTC runtime and reports a diagnostic; returning to TypeScript reactivates it without changing the plugin setting.
 
-![PTC Plus settings card](assets/ptc-plus-settings-en.png)
+![PTC Plus settings window](assets/ptc-plus-settings-en.png)
 
 ## Value transfer and state recovery
 

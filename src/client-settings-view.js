@@ -134,6 +134,7 @@ export function createPtcSettingsView(React, deps) {
     const [open, setOpen] = React.useState(false)
     const [bindingsOpen, setBindingsOpen] = React.useState(false)
     const bindingsAction = React.useRef(null)
+    const settingsRoot = React.useRef(null)
     const [status, setStatus] = React.useState(null)
     const [pending, setPending] = React.useState(() => new Set())
     const [plans, setPlans] = React.useState(null)
@@ -218,11 +219,13 @@ export function createPtcSettingsView(React, deps) {
       return h('section', {
       key: group.key,
       className: 'ptcPlusGroup',
+      'data-experimental': group.key === 'capabilities' ? 'true' : undefined,
       'aria-labelledby': `${groupIdPrefix}-${group.key}`,
     },
     h('h3', {
       id: `${groupIdPrefix}-${group.key}`,
       className: 'ptcPlusGroupTitle',
+      'data-experimental-label': group.key === 'capabilities' ? t('settings.experimental') : undefined,
     }, t(`group.${group.key}`)),
     ...fields.map(key => {
       const field = CONFIG_FIELDS.find(candidate => candidate.key === key)
@@ -256,10 +259,43 @@ export function createPtcSettingsView(React, deps) {
           : null)
     }))
     })
-    const settingsBody = (expanded, id) => h('div', {
-      id, className: 'ptcPlusBody', 'data-open': expanded, hidden: !expanded,
+    const settingsBody = (expanded, id) => {
+      const navigable = view === 'page' || view === 'dialog'
+      const groupIds = new Map(CONFIG_GROUPS.map(group => [group.key, `${groupIdPrefix}-${group.key}`]))
+      const navigation = navigable ? h('nav', {
+        className: 'ptcPlusSettingsNav',
+        'aria-label': t('settings.navigation'),
+      },
+      h('div', { className: 'ptcPlusSettingsNavIntro' },
+        h('span', { className: 'ptcPlusSettingsEyebrow' }, t('settings.navigationEyebrow')),
+        h('strong', null, t('settings.navigationTitle')),
+        h('p', null, t('settings.navigationHint'))),
+      h('div', { className: 'ptcPlusSettingsNavList' }, ...CONFIG_GROUPS.map(group => {
+        const target = groupIds.get(group.key)
+        return h('button', {
+          key: group.key,
+          type: 'button',
+          className: 'ptcPlusSettingsNavItem',
+          'data-experimental': group.key === 'capabilities' ? 'true' : undefined,
+          onClick: () => settingsRoot.current?.querySelector(`[id="${target}"]`)?.scrollIntoView({ block: 'start' }),
+        }, h('span', { className: 'ptcPlusSettingsNavLabel' }, t(`group.${group.key}`)),
+        group.key === 'capabilities' ? h('span', { className: 'ptcPlusSettingsNavBadge' }, t('settings.experimental')) : null)
+      })),
+      h('div', { className: 'ptcPlusSettingsNavStatus', 'data-enabled': enabled },
+        h('span', { className: 'ptcPlusSettingsNavStatusDot', 'aria-hidden': true }),
+        h('span', null, t(enabled ? 'status.enabled' : 'status.disabled')))) : null
+      return h('div', {
+      id, ref: settingsRoot, className: 'ptcPlusBody', 'data-open': expanded, hidden: !expanded,
     },
-    h('div', { className: 'ptcPlusBodyInner' }, h('div', { className: 'ptcPlusFields' },
+    h('div', { className: 'ptcPlusBodyInner' },
+      view === 'dialog' ? h('div', { className: 'ptcPlusSettingsHero' },
+        h('div', { className: 'ptcPlusSettingsHeroCopy' },
+          h('span', { className: 'ptcPlusSettingsEyebrow' }, t('settings.navigationEyebrow')),
+          h('p', null, t('settings.dialogHint'))),
+        h('span', { className: 'ptcPlusStatus', 'data-enabled': enabled }, t(enabled ? 'status.enabled' : 'status.disabled'))) : null,
+      h('div', { className: navigable ? 'ptcPlusSettingsLayout' : undefined },
+        navigation,
+        h('div', { className: 'ptcPlusFields' },
       snapshot.status === 'loading'
         ? h('p', { className: 'ptcPlusMessage' }, t('state.syncing'))
         : snapshot.status === 'unavailable'
@@ -287,7 +323,8 @@ export function createPtcSettingsView(React, deps) {
               h('span', { className: 'ptcPlusMessage', role: 'status' }, status === null
                 ? t(snapshot.writable ? 'footer.live' : 'footer.readOnly')
                 : t(status.key, status.params))),
-          ])))
+          ]))))
+    }
     const openBindings = globalEnabled && bindingsOpen
       ? h(BindingsDialog, {
         controller: workbench, t, onClose: () => setBindingsDialogOpen(false),
@@ -327,11 +364,13 @@ export function createPtcSettingsView(React, deps) {
       onClose: close,
       title: t('settings.dialogTitle'),
       closeLabel: t('settings.close'),
-      description: t('card.description'),
+      headless: true,
       className: 'ptcPlusSettingsModal',
-      contentClassName: 'ptcPlusSettingsDialogContent',
-    }, h('div', { className: 'ptcPlusSettingsDialog' },
-      h(PTCPlusSettingsCard, { ...props, view: 'dialog', onBindingsOpenChange: setBindingsOpen })))
+    }, h('div', { className: 'ptcPlusSettingsDialogHead' },
+      h('div', null, h('h2', null, t('settings.dialogTitle')), h('p', null, t('card.description'))),
+      h('button', { type: 'button', className: 'ptcPlusDialogClose', 'aria-label': t('settings.close'), onClick: close }, '\u00d7')),
+    h('div', { className: 'ptcPlusSettingsDialogContent' }, h('div', { className: 'ptcPlusSettingsDialog' },
+      h(PTCPlusSettingsCard, { ...props, view: 'dialog', onBindingsOpenChange: setBindingsOpen }))))
   }
 
   return { PTCPlusSettingsCard, PTCPlusSettingsDialog }

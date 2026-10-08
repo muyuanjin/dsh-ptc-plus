@@ -704,7 +704,7 @@
         "canonical versus preview values",
         "feature gates",
         "settings transport registration identity and live fallback",
-        "settings order keeps experimental capabilities after core controls; wide workbench uses scoped section navigation and fixed modal header with independently scrollable body; narrow layouts retain reachable controls and native/fallback modal focus",
+        "settings functional modules order REPL syntax and recovery, extensions and call tolerance, interface and resources, then experimental capabilities; page/dialog have one main switch in navigation and legacy cards keep their switch section; official page has inner spacing, container-responsive columns and a bounded owned content scroller; section navigation leaves outer scroll offsets unchanged; dialog keeps a fixed modal header with independently scrollable body and navigation bounded by the actual content viewport; short native/fallback desktop dialogs reveal Tab-focused navigation and Enter targets, including Host insets; narrow layouts retain reachable controls and native/fallback modal focus",
         "capability settings use searchable baseline/disclosure choices and validated numeric statistics, preserve unavailable saved entries and frozen plans, and cancel stale plan/catalog inspection on plugin disable",
         "default-enabled bindings with explicit disable preserved",
         "compact stable authoring SDK retains complete argument and receipt types while task instructions own request facts",

@@ -12,12 +12,22 @@ test('public browser inventories retain all layout and fallback combinations wit
   }).trim().split('\n')
   const layouts = list('scripts/client-binding-layout.mjs')
   const fallbacks = list('scripts/client-fallback-smoke.mjs')
-  assert.equal(layouts.length, 156)
-  assert.equal(new Set(layouts).size, 156)
-  assert.equal(fallbacks.length, 61)
-  assert.equal(new Set(fallbacks).size, 61)
+  assert.equal(layouts.length, 168)
+  assert.equal(new Set(layouts).size, 168)
+  assert.equal(fallbacks.length, 97)
+  assert.equal(new Set(fallbacks).size, 97)
   assert.equal(fallbacks.filter(id => id.startsWith('dock/')).length, 24)
   assert.equal(fallbacks.filter(id => id.startsWith('catalog/')).length, 24)
+  const pageVariants = [320, 390, 1440].flatMap(width => ['light', 'dark'].flatMap(theme =>
+    ['en', 'zh'].map(locale => ({ width, theme, locale }))))
+  assert.deepEqual(layouts.filter(id => /\/settings-page-(en|zh)$/.test(id)).sort(),
+    pageVariants.map(({ width, theme, locale }) => `${width}/${theme}/settings-page-${locale}`).sort())
+  assert.deepEqual(fallbacks.filter(id => id.startsWith('settings-page/')).sort(),
+    pageVariants.map(({ width, theme, locale }) => `settings-page/${width}/${theme}/${locale}`).sort())
+  const dialogIds = [240, 420, 600].flatMap(height => ['native', 'fallback'].flatMap(surface =>
+    ['en', 'zh'].flatMap(locale => ['light', 'dark'].map(theme =>
+      `settings-dialog/1440x${height}/${theme}/${surface}/${locale}`))))
+  assert.deepEqual(fallbacks.filter(id => id.startsWith('settings-dialog/')).sort(), dialogIds.sort())
   assert.equal(list('scripts/client-fallback-smoke.mjs', ['--menu-only']).length, 32)
   assert.deepEqual(list('scripts/client-binding-layout.mjs', ['--case', '320/light/ready-en']), ['320/light/ready-en'])
 })

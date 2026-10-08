@@ -13,7 +13,7 @@ const matrix = [320, 390, 1440].flatMap(width => ['light', 'dark'].map(theme => 
 const cardStates = ['ready-en', 'ready-zh', 'saved-en', 'saved-zh', 'kinds-en', 'kinds-zh',
   ...['en', 'zh'].flatMap(locale => ['unavailable', 'session', 'global'].map(tab => `popover-${tab}-${locale}`))]
 const surfaceStates = ['console-en', 'console-zh', 'workbench-en', 'workbench-zh', 'modal-en', 'modal-zh',
-  'empty-en', 'empty-zh', 'settings-en', 'settings-zh', 'settings-dialog-en', 'settings-dialog-zh', 'prompt-edit-en', 'prompt-edit-zh']
+  'empty-en', 'empty-zh', 'settings-en', 'settings-zh', 'settings-page-en', 'settings-page-zh', 'settings-dialog-en', 'settings-dialog-zh', 'prompt-edit-en', 'prompt-edit-zh']
 const allCases = matrix.flatMap(({ width, theme }) => [...cardStates, ...surfaceStates]
   .map(state => ({ id: `${width}/${theme}/${state}`, width, theme, state })))
 const cases = selectBrowserCases(allCases, values.case, values)

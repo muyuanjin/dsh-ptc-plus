@@ -25,38 +25,38 @@ Client 按数据、传输、注册与视图分文件，沿用既有 `createX(Rea
 ## 设置命名空间
 
 当前 Host half 的 `Config` 文档由 DSH 公共 `settings` 服务按 owning Loader entry 的 profile ID 寻址；更早 section installer 兼容支仍注册 `ptc-plus` 命名空间。失败补偿由 settings compatibility owner 绑定同一写入身份，不把固定 namespace 当作 profile entry ID。字段清单、默认值和校验来自 `internal/config-spec.js`，
-由 `index.js` 的 `Config` schema 与设置注册共用；client half 构建时把同一份字段清单打进 bundle，不在 UI 中复制默认值。`CONFIG_GROUPS` 独立拥有按用途排列的展示顺序：插件总开关单独置顶，其后为“调用容错”“REPL 语法”“状态与恢复”“工具扩展”“界面显示”“资源限制”，再显示带实验性标记的“能力与上下文”。设置工作台在宽屏下使用左侧分区导航与右侧内容双列布局，小屏回退为单列；每个字段只展示一次，各组使用独立标题、留白与分隔线；末尾的当前会话能力方案显示有效选择与待刷新状态。
+由 `index.js` 的 `Config` schema 与设置注册共用；client half 构建时把同一份字段清单打进 bundle，不在 UI 中复制默认值。`CONFIG_MODULES` 与 `CONFIG_GROUPS` 独立拥有功能模块和展示顺序：核心工作区（REPL 语法、状态与恢复）、扩展与容错（工具扩展、调用容错）、界面与资源（界面显示、资源限制）、实验性（能力与上下文）。配置页与弹窗在导航顶部直接提供总开关，正文不重复；旧折叠卡片保留置顶的总开关。设置工作台在宽屏下使用左侧分区导航与右侧内容双列布局，小屏回退为单列；官方插件配置页使用独立留白和以实际容器宽度决定的分栏，正文有界滚动，小容器导航变为横向列表；桌面弹窗导航的高度受实际正文视口约束，短窗口中独立滚动以显示键盘焦点。分区导航只设置插件自有正文的滚动位置，不调用会连带移动外层页面的 `scrollIntoView()`；每个字段只展示一次，各组使用独立标题、留白与分隔线；末尾的当前会话能力方案显示有效选择与待刷新状态。
 
 能力列表通过能力 Remote 的只读 `catalog` 操作观察 code agent 的当前公共工具与 Skill inventory，以及已捕获 prompt sections 的 MCP server 目录，与 `inspect` 返回的冻结方案分开。用户可以按名称或用途过滤，已保存但当前清单未列出的能力仍显示并保留选择；列表失败不丢弃手动配置。无可观察 code agent 时显示提示，打开 PTC 会话后可重新读取。设置读取在关闭插件、关闭设置或 transport 释放时取消，迟到响应不能恢复旧清单。统计控件使用共用配置默认值，保存前校验正整数窗口、最低样本数不超过窗口与 0–100% 阈值；无效已保存统计显示建议值和说明，直到用户编辑才写入。
 
 ## 可用设置
 
-| 分组 | 字段 | 说明 |
-| --- | --- | --- |
-| 开关 | `enabled` | 关闭后不注册 `run_code`/`edit_run_code`、不修改 system prompt、不创建 session runtime；保留设置 UI，Host 在下一允许步骤撤销旧 PTC 声明。 |
-| 能力与上下文 | `capabilityManagementEnabled` | 默认关闭；开启实验性能力管理，冻结新会话的能力方案。 |
-| 能力与上下文 | `capabilityBaseline` / `capabilityOverrides` | 可搜索的能力列表、常用勾选与自动/完整/按需/关闭选择；序列化由 Client 完成，显式选择优先于统计。 |
-| 能力与上下文 | `capabilityStatistics` | 统计开关及样本窗口、最低样本数、完整披露百分比输入；无效输入不提交，关闭或无可用样本时保留手动基线。 |
-| 能力与上下文 | `capabilityBudgetBytes` / `capabilityDirectoryBytes` / `capabilityRecoveryBytes` | 完整契约、导航及压缩后说明恢复的 UTF-8 字节预算；显式完整契约不截断。 |
-| 能力与上下文 | `modelPreviewTokens` | 模型展示的估计 token 预算，复用宿主 spill 服务，不改变完整程序值。 |
-| 调用容错 | `autoDescribeRunCode` / `canonicalizeToolCalls` | 默认开启；允许缺少外层摘要的 `run_code` 执行，并修复 schema 可唯一确认的顶层 native 工具误调用。 |
-| REPL 语法 | `bindingUpdates` | 默认 `stateful`；同作用域的声明与赋值更新变量、函数、类和导入。选择 `protected` 后保护新建 const/import，并检测跨 cell 重声明。两种策略均支持静态 import/export。 |
-| 状态与恢复 | `durableReplay` / `tipsEnabled` | 默认开启；控制 worker 重启后的状态恢复与失败恢复提示。 |
-| 状态与恢复 | `tipCooldownMessages` / `tipEscalationFailures` | 同类提示间隔与详细提示阈值。 |
-| 工具扩展 | `userBindingsEnabled` | 默认开启，显式关闭仍有效；开启时加载跨会话 TypeScript helper，并在开关下方显示管理按钮，同时启用全局绑定工作台与 `/binding` Agent 编写入口。 |
-| 工具扩展 | `cordisToolsEnabled` | 默认关闭；开启后为 PTC agent 加入官方 Cordis 工具、指引与精确的 `cordis-plugin-development` companion Skill，不发布同目录 sibling。 |
-| 界面显示 | `toolHoverPreviewEnabled` | 默认开启；控制执行行的悬停与键盘聚焦预览，即时生效。 |
-| 界面显示 | `enhancedToolView` | 默认开启；关闭后注销 PTC Plus 的两个 keyed tool view，恢复 DSH 原生 generic row。 |
-| 界面显示 | `replViewEnabled` | 默认开启；控制顶级 REPL 页签，关闭时释放观察订阅，不影响设置中的全局管理入口。 |
-| 界面显示 | `bindingAuthorButtonVisible` | 默认开启；控制输入框旁的 PTC Plus 快捷入口（全局绑定查看/启停/编写，以及直接打开完整插件设置窗口），不撤销 `/binding` 命令。 |
-| 资源限制 | `computeMs` / `maxWallMs` | 单 cell event-loop active（包括同步阻塞）与总耗时预算；前者不证明 CPU 消耗。 |
-| 资源限制 | `maxOldGenerationSizeMb` / `maxNestedRunCodeDepth` | kernel worker 内存与嵌套执行深度。 |
-| 资源限制 | `maxOutputBytes` | 单 cell 日志与返回结果的合计字节上限。 |
-| 资源限制 | `maxValueNodes` / `maxValueEdges` / `maxValueArrayLength` / `maxValueBigIntDigits` | Value Graph 与大数组、BigInt 的返回上限；数组长度限制同时约束单数组和一份 graph 的累计槽位。 |
+| 功能模块 | 分组 | 字段 | 说明 |
+| --- | --- | --- | --- |
+| 插件开关 | 开关 | `enabled` | 关闭后不注册 `run_code`/`edit_run_code`、不修改 system prompt、不创建 session runtime；保留设置 UI，Host 在下一允许步骤撤销旧 PTC 声明。 |
+| 核心工作区 | REPL 语法 | `bindingUpdates` | 默认 `stateful`；同作用域的声明与赋值更新变量、函数、类和导入。选择 `protected` 后保护新建 const/import，并检测跨 cell 重声明。两种策略均支持静态 import/export。 |
+| 核心工作区 | 状态与恢复 | `durableReplay` / `tipsEnabled` | 默认开启；控制 worker 重启后的状态恢复与失败恢复提示。 |
+| 核心工作区 | 状态与恢复 | `tipCooldownMessages` / `tipEscalationFailures` | 同类提示间隔与详细提示阈值。 |
+| 扩展与容错 | 工具扩展 | `userBindingsEnabled` | 默认开启，显式关闭仍有效；开启时加载跨会话 TypeScript helper，并在开关下方显示管理按钮，同时启用全局绑定工作台与 `/binding` Agent 编写入口。 |
+| 扩展与容错 | 工具扩展 | `cordisToolsEnabled` | 默认关闭；开启后为 PTC agent 加入官方 Cordis 工具、指引与精确的 `cordis-plugin-development` companion Skill，不发布同目录 sibling。 |
+| 扩展与容错 | 调用容错 | `autoDescribeRunCode` / `canonicalizeToolCalls` | 默认开启；允许缺少外层摘要的 `run_code` 执行，并修复 schema 可唯一确认的顶层 native 工具误调用。 |
+| 界面与资源 | 界面显示 | `enhancedToolView` | 默认开启；关闭后注销 PTC Plus 的两个 keyed tool view，恢复 DSH 原生 generic row。 |
+| 界面与资源 | 界面显示 | `toolHoverPreviewEnabled` | 默认开启；控制执行行的悬停与键盘聚焦预览，即时生效。 |
+| 界面与资源 | 界面显示 | `replViewEnabled` | 默认开启；控制顶级 REPL 页签，关闭时释放观察订阅，不影响设置中的全局管理入口。 |
+| 界面与资源 | 界面显示 | `bindingAuthorButtonVisible` | 默认开启；控制输入框旁的 PTC Plus 快捷入口（全局绑定查看/启停/编写，以及直接打开完整插件设置窗口），不撤销 `/binding` 命令。 |
+| 界面与资源 | 资源限制 | `computeMs` / `maxWallMs` | 单 cell event-loop active（包括同步阻塞）与总耗时预算；前者不证明 CPU 消耗。 |
+| 界面与资源 | 资源限制 | `maxOldGenerationSizeMb` / `maxNestedRunCodeDepth` | kernel worker 内存与嵌套执行深度。 |
+| 界面与资源 | 资源限制 | `maxOutputBytes` | 单 cell 日志与返回结果的合计字节上限。 |
+| 界面与资源 | 资源限制 | `maxValueNodes` / `maxValueEdges` / `maxValueArrayLength` / `maxValueBigIntDigits` | Value Graph 与大数组、BigInt 的返回上限；数组长度限制同时约束单数组和一份 graph 的累计槽位。 |
+| 实验性 | 能力与上下文 | `capabilityManagementEnabled` | 默认关闭；开启实验性能力管理，冻结新会话的能力方案。 |
+| 实验性 | 能力与上下文 | `capabilityBaseline` / `capabilityOverrides` | 可搜索的能力列表、常用勾选与自动/完整/按需/关闭选择；序列化由 Client 完成，显式选择优先于统计。 |
+| 实验性 | 能力与上下文 | `capabilityStatistics` | 统计开关及样本窗口、最低样本数、完整披露百分比输入；无效输入不提交，关闭或无可用样本时保留手动基线。 |
+| 实验性 | 能力与上下文 | `capabilityBudgetBytes` / `capabilityDirectoryBytes` / `capabilityRecoveryBytes` | 完整契约、导航及压缩后说明恢复的 UTF-8 字节预算；显式完整契约不截断。 |
+| 实验性 | 能力与上下文 | `modelPreviewTokens` | 模型展示的估计 token 预算，复用宿主 spill 服务，不改变完整程序值。 |
 
 旧配置的五个开关（`looseTopLevelRedeclarations`、`looseTopLevelFunctionClassRedeclarations`、`autoRewriteImports`、`autoStripExports`、`autoSplitRedeclarations`）先由共享 resolver 迁移。完整策略映射到 `stateful` 或 `protected`；混合选择保留显式兼容态，只有该状态才显示旧控件。兼容态的统一策略控件显示“沿用旧版设置（尚未迁移）”，可直接选择“允许重声明和覆盖”或“启用名称保护”；选择后一次写入同时保存 `bindingUpdates` 并清除兼容标记，随后执行和模型指引采用相同的新语言策略，设置页恢复统一开关。仅查看设置不触发写入。
 
-能力 JSON 字段在输入期间保留草稿，包括尚未构成合法 JSON 的中间文本；失焦时才尝试校验和保存，失败保留文本并显示错误。方案展示通过公共能力 RPC 读取当前会话的选择原因、覆盖率、预算超额和待刷新状态，保存配置本身不等于旧会话已更新。
+能力配置通过可搜索列表、常用勾选与自动/完整/按需/关闭选择编辑，统计配置通过独立开关和数字控件编辑，Client 负责序列化。统计数字输入保留未完成或无效草稿，失焦时仅保存有效组合；无效草稿显示错误，统计开关仍可独立保存并恢复最近有效的数字组合。方案展示通过公共能力 RPC 读取当前会话的选择原因、覆盖率、预算超额和待刷新状态，保存配置本身不等于旧会话已更新。
 
 ## enabled 开关与正文功能标记
 

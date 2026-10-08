@@ -1,4 +1,4 @@
-import { CONFIG_FIELDS, CONFIG_GROUPS } from '../internal/config-spec.js'
+import { CONFIG_FIELDS, CONFIG_GROUPS, CONFIG_MODULES } from '../internal/config-spec.js'
 
 /** Locale namespace owning every settings-card string (field copy plus chrome). */
 const LOCALE_NS = 'settings.ptcPlus'
@@ -66,7 +66,7 @@ const CHROME_COPY = Object.freeze({
     'settings.pathPlugins': '侧栏 Plugins → dsh-ptc-plus → 行 ptc-plus → Configure',
     'bindings.entry': '条目配置',
     'bindings.close': '关闭全局绑定工作台',
-    'card.description': 'PTC 模式的会话级 TypeScript REPL。',
+    'card.description': 'PTC 模式的会话级 TypeScript REPL',
     'status.enabled': '已启用',
     'status.disabled': '已停用',
     'action.expand': '展开 PTC Plus 设置',
@@ -454,6 +454,9 @@ const SETTINGS_COPY = Object.freeze(Object.fromEntries(
     ...CHROME_COPY[locale],
     ...Object.assign({}, ...CONFIG_GROUPS.map(group => ({
       [`group.${group.key}`]: locale === 'en' ? group.labelEn : group.label,
+    }))),
+    ...Object.assign({}, ...CONFIG_MODULES.map(module => ({
+      [`module.${module.key}`]: locale === 'en' ? module.labelEn : module.label,
     }))),
     ...Object.assign({}, ...CONFIG_FIELDS.map(field => fieldCopy(field, locale))),
   })]),

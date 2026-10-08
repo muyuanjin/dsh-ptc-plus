@@ -221,18 +221,18 @@ Workbench controls provide visible keyboard focus and disabled feedback, and REP
 
 ![Session state and the global binding workbench in the REPL tab](assets/ptc-plus-repl-workspace-en.png)
 
-The sparkle menu beside the composer groups binding authoring, entry management, and **PTC Plus settings**. The sparkle entry opens a large settings window with a navigation rail and settings cards on wide screens, and one column on small screens. Everyday runtime options appear first; experimental capability controls follow with a clear label. The settings dialog and the sidebar plugin configuration page share the same configuration:
+The sparkle menu beside the composer groups binding authoring, entry management, and **PTC Plus settings**. The sparkle entry opens a large settings window with a navigation rail and settings cards on wide screens, and one column on small screens. The main switch sits at the top of navigation. Core workspace, extensions and tolerance, interface and resources, and experimental modules organize the form, starting with REPL syntax; experimental capability controls follow with a clear label. The settings dialog and the sidebar plugin configuration page share the same configuration. The page scrolls settings within its own content area; section navigation keeps the surrounding page in place:
 
-| Group | What you can adjust |
-| --- | --- |
-| Plugin switch | Enable or disable PTC Plus |
-| Tool call tolerance | Missing call summaries and identifiable misplaced native-tool calls |
-| REPL syntax | Allow same-name revisions or choose name protection |
-| State and recovery | Restart recovery, contextual tips, and their frequency |
-| Tool extensions | Global bindings and their management entry, official Cordis tool integration |
-| Interface display | Enhanced tool cards, the REPL tab, and the sparkle shortcut |
-| Resource limits | Execution time, memory, and output budgets |
-| Context and capabilities | Experimental capability management (off by default), independent statistics, common baseline, individual choices, and presentation budgets |
+| Functional module | Group | What you can adjust |
+| --- | --- | --- |
+| Plugin switch | Main switch at the top of navigation | Enable or disable PTC Plus |
+| Core workspace | REPL syntax | Allow same-name revisions or choose name protection |
+| Core workspace | State and recovery | Restart recovery, contextual tips, and their frequency |
+| Extensions and tolerance | Tool extensions | Global bindings and their management entry, official Cordis tool integration |
+| Extensions and tolerance | Tool call tolerance | Missing call summaries and identifiable misplaced native-tool calls |
+| Interface and resources | Interface display | Enhanced tool cards, the REPL tab, and the sparkle shortcut |
+| Interface and resources | Resource limits | Execution time, memory, and output budgets |
+| Experimental | Capabilities and context | Experimental capability management (off by default), independent statistics, common baseline, individual choices, and presentation budgets |
 
 Everyday computation features default to on. **Cordis development tools default to off** and can be enabled when inspecting or developing DSH plugins; see the [integration notes](docs/adr/0020-optional-cordis-tools-in-ptc-mode.md). Explicitly disabled options stay disabled, and each saved binding keeps its own enabled state.
 

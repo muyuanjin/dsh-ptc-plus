@@ -334,12 +334,6 @@ export const CONFIG_GROUPS = Object.freeze([
     fields: Object.freeze(['enabled']),
   },
   {
-    key: 'calls',
-    label: '调用容错',
-    labelEn: 'Tool call tolerance',
-    fields: Object.freeze(['autoDescribeRunCode', 'canonicalizeToolCalls']),
-  },
-  {
     key: 'syntax',
     label: 'REPL 语法',
     labelEn: 'REPL syntax',
@@ -358,6 +352,12 @@ export const CONFIG_GROUPS = Object.freeze([
     label: '工具扩展',
     labelEn: 'Tool extensions',
     fields: Object.freeze(['userBindingsEnabled', 'cordisToolsEnabled']),
+  },
+  {
+    key: 'calls',
+    label: '调用容错',
+    labelEn: 'Tool call tolerance',
+    fields: Object.freeze(['autoDescribeRunCode', 'canonicalizeToolCalls']),
   },
   {
     key: 'interface',
@@ -385,6 +385,14 @@ export const CONFIG_GROUPS = Object.freeze([
     fields: Object.freeze(['capabilityManagementEnabled', 'capabilityBaseline', 'capabilityOverrides',
       'capabilityStatistics', 'capabilityBudgetBytes', 'capabilityDirectoryBytes', 'capabilityRecoveryBytes', 'modelPreviewTokens']) },
 ])
+
+/** Functional modules share the same section order across every settings entry. */
+export const CONFIG_MODULES = Object.freeze([
+  { key: 'workspace', label: '核心工作区', labelEn: 'Core workspace', groups: Object.freeze(['syntax', 'recovery']) },
+  { key: 'extensions', label: '扩展与容错', labelEn: 'Extensions and tolerance', groups: Object.freeze(['extensions', 'calls']) },
+  { key: 'presentation', label: '界面与资源', labelEn: 'Interface and resources', groups: Object.freeze(['interface', 'limits']) },
+  { key: 'experimental', label: '实验性', labelEn: 'Experimental', groups: Object.freeze(['capabilities']) },
+].map(Object.freeze))
 
 /** Resolved defaults, derived once from the field definitions. */
 export const CONFIG_DEFAULTS = Object.freeze(

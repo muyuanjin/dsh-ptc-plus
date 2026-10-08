@@ -1,4 +1,4 @@
-import { CONFIG_DEFAULTS, CONFIG_FIELDS, CONFIG_GROUPS } from '../internal/config-spec.js'
+import { CONFIG_DEFAULTS, CONFIG_FIELDS, CONFIG_GROUPS, CONFIG_MODULES } from '../internal/config-spec.js'
 import { resolveConfig } from '../internal/runtime-config.js'
 import { featureEnabled } from './client-feature-gates.js'
 
@@ -212,22 +212,7 @@ export function createPtcSettingsView(React, deps) {
     const fieldDisabled = field => unavailable
       || pending.has(field.key)
       || (field.key !== 'enabled' && !enabled)
-    const settingsFields = () => CONFIG_GROUPS.map(group => {
-      const fields = group.key === 'syntax' && legacyMigration
-        ? [...group.fields, ...legacyKeys]
-        : group.fields
-      return h('section', {
-      key: group.key,
-      className: 'ptcPlusGroup',
-      'data-experimental': group.key === 'capabilities' ? 'true' : undefined,
-      'aria-labelledby': `${groupIdPrefix}-${group.key}`,
-    },
-    h('h3', {
-      id: `${groupIdPrefix}-${group.key}`,
-      className: 'ptcPlusGroupTitle',
-      'data-experimental-label': group.key === 'capabilities' ? t('settings.experimental') : undefined,
-    }, t(`group.${group.key}`)),
-    ...fields.map(key => {
+    const renderField = key => {
       const field = CONFIG_FIELDS.find(candidate => candidate.key === key)
       if (field === undefined) return null
       if (field.key === 'capabilityOverrides') return null
@@ -257,11 +242,47 @@ export function createPtcSettingsView(React, deps) {
           ? h('div', { className: 'ptcPlusSettingAction', ref: bindingsAction },
             h(ActionButton, { type: 'button', className: 'ptcPlusButton', onClick: () => setBindingsDialogOpen(true) }, t('bindings.manage')))
           : null)
-    }))
-    })
+    }
+    const renderGroup = group => {
+      const fields = group.key === 'syntax' && legacyMigration
+        ? [...group.fields, ...legacyKeys]
+        : group.fields
+      return h('section', {
+        key: group.key,
+        className: 'ptcPlusGroup',
+        'data-experimental': group.key === 'capabilities' ? 'true' : undefined,
+        'aria-labelledby': `${groupIdPrefix}-${group.key}`,
+      },
+      h('h3', {
+        id: `${groupIdPrefix}-${group.key}`,
+        className: 'ptcPlusGroupTitle',
+        'data-experimental-label': group.key === 'capabilities' ? t('settings.experimental') : undefined,
+      }, t(`group.${group.key}`)),
+      ...fields.map(renderField))
+    }
+
+    const settingsFields = navigable => [
+      navigable ? null : renderGroup(CONFIG_GROUPS[0]),
+      ...CONFIG_MODULES.map(module => h('section', {
+        key: module.key, className: 'ptcPlusSettingsModule',
+        'aria-labelledby': `${groupIdPrefix}-module-${module.key}`,
+      }, h('h2', { id: `${groupIdPrefix}-module-${module.key}`, className: 'ptcPlusSettingsModuleTitle' }, t(`module.${module.key}`)),
+      ...module.groups.map(key => renderGroup(CONFIG_GROUPS.find(group => group.key === key))))),
+    ]
+
     const settingsBody = (expanded, id) => {
       const navigable = view === 'page' || view === 'dialog'
       const groupIds = new Map(CONFIG_GROUPS.map(group => [group.key, `${groupIdPrefix}-${group.key}`]))
+      const revealSection = id => {
+        const root = settingsRoot.current
+        const heading = root?.querySelector(`[id="${id}"]`)
+        const scroller = view === 'page'
+          ? root?.querySelector('.ptcPlusFields')
+          : root?.closest('.ptcPlusSettingsDialogContent')
+        if (!heading || !scroller) return
+        scroller.scrollTop += heading.getBoundingClientRect().top
+          - scroller.getBoundingClientRect().top - scroller.clientTop - 16
+      }
       const navigation = navigable ? h('nav', {
         className: 'ptcPlusSettingsNav',
         'aria-label': t('settings.navigation'),
@@ -270,20 +291,19 @@ export function createPtcSettingsView(React, deps) {
         h('span', { className: 'ptcPlusSettingsEyebrow' }, t('settings.navigationEyebrow')),
         h('strong', null, t('settings.navigationTitle')),
         h('p', null, t('settings.navigationHint'))),
-      h('div', { className: 'ptcPlusSettingsNavList' }, ...CONFIG_GROUPS.map(group => {
-        const target = groupIds.get(group.key)
+      h('div', { className: 'ptcPlusSettingsNavSwitch' }, renderField('enabled')),
+      h('div', { className: 'ptcPlusSettingsNavList' }, ...CONFIG_MODULES.map(module => h('div', {
+        key: module.key, className: 'ptcPlusSettingsNavModule',
+      }, h('span', { className: 'ptcPlusSettingsNavModuleTitle' }, t(`module.${module.key}`)),
+      h('div', { className: 'ptcPlusSettingsNavModuleItems' }, ...module.groups.map(key => {
+        const group = CONFIG_GROUPS.find(group => group.key === key)
         return h('button', {
-          key: group.key,
-          type: 'button',
-          className: 'ptcPlusSettingsNavItem',
-          'data-experimental': group.key === 'capabilities' ? 'true' : undefined,
-          onClick: () => settingsRoot.current?.querySelector(`[id="${target}"]`)?.scrollIntoView({ block: 'start' }),
+          key, type: 'button', className: 'ptcPlusSettingsNavItem', 'data-section': key,
+          'data-experimental': key === 'capabilities' ? 'true' : undefined,
+          onClick: () => revealSection(groupIds.get(key)),
         }, h('span', { className: 'ptcPlusSettingsNavLabel' }, t(`group.${group.key}`)),
-        group.key === 'capabilities' ? h('span', { className: 'ptcPlusSettingsNavBadge' }, t('settings.experimental')) : null)
-      })),
-      h('div', { className: 'ptcPlusSettingsNavStatus', 'data-enabled': enabled },
-        h('span', { className: 'ptcPlusSettingsNavStatusDot', 'aria-hidden': true }),
-        h('span', null, t(enabled ? 'status.enabled' : 'status.disabled')))) : null
+        key === 'capabilities' ? h('span', { className: 'ptcPlusSettingsNavBadge' }, t('settings.experimental')) : null)
+      })))))) : null
       return h('div', {
       id, ref: settingsRoot, className: 'ptcPlusBody', 'data-open': expanded, hidden: !expanded,
     },
@@ -301,7 +321,7 @@ export function createPtcSettingsView(React, deps) {
         : snapshot.status === 'unavailable'
           ? h('p', { className: 'ptcPlusMessage' }, t('state.unavailable'))
           : [
-            ...settingsFields(),
+            ...settingsFields(navigable),
             inspectCapabilityPlans ? h('section', { key: 'capability-plans', className: 'ptcPlusGroup' },
               h('h3', { className: 'ptcPlusGroupTitle' }, t('capabilities.sessions')),
               h(ActionButton, { type: 'button', disabled: !enabled, onClick: () => setPlanRevision(current => current + 1) }, t('capabilities.reload')),
@@ -335,7 +355,7 @@ export function createPtcSettingsView(React, deps) {
     // with its own save control (the form already writes on change). The legacy
     // card seat asks for neither and keeps the whole collapsible card.
     if (view === 'summary') return h('span', { className: 'ptcPlusDescription' }, t('card.description'))
-    if (view === 'page') return h('div', { className: 'ptcPlusCard' }, settingsBody(true), openBindings)
+    if (view === 'page') return h('div', { className: 'ptcPlusCard ptcPlusSettingsPage' }, settingsBody(true), openBindings)
     if (view === 'dialog') return h(React.Fragment, null, settingsBody(true), openBindings)
     return h('li', { className: 'ptcPlusCard' },
       h('button', {

@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import test, { after } from 'node:test'
 import { apply, Config, inject } from '../index.js'
-import { CONFIG_FIELDS, CONFIG_GROUPS, SETTINGS_NAMESPACE } from '../internal/config-spec.js'
+import { CONFIG_FIELDS, CONFIG_GROUPS, CONFIG_MODULES, SETTINGS_NAMESPACE } from '../internal/config-spec.js'
 import { resolveConfig } from '../internal/runtime-config.js'
 import { executionPolicies } from '../internal/binding-update-policy.js'
 import { Session } from '@deepseek-ai/dsh-session'
@@ -2058,7 +2058,10 @@ test('config schema defaults expose the settings switches', async () => {
     'tipEscalationFailures',
   ]
   assert.deepEqual(CONFIG_FIELDS.map(field => field.key), expectedOrder)
-  assert.deepEqual(CONFIG_GROUPS.map(group => group.key), ['switch', 'calls', 'syntax', 'recovery', 'extensions', 'interface', 'limits', 'capabilities'])
+  assert.deepEqual(CONFIG_GROUPS.map(group => group.key), ['switch', 'syntax', 'recovery', 'extensions', 'calls', 'interface', 'limits', 'capabilities'])
+  assert.deepEqual(CONFIG_MODULES.map(module => module.key), ['workspace', 'extensions', 'presentation', 'experimental'])
+  assert.deepEqual(CONFIG_MODULES.map(module => module.groups), [['syntax', 'recovery'], ['extensions', 'calls'], ['interface', 'limits'], ['capabilities']])
+  assert.deepEqual(CONFIG_MODULES.flatMap(module => module.groups), CONFIG_GROUPS.slice(1).map(group => group.key))
   assert.deepEqual(CONFIG_GROUPS.flatMap(group => group.fields).sort(), [...expectedOrder]
     .filter(key => !['legacyBindingSettings', 'looseTopLevelRedeclarations', 'looseTopLevelFunctionClassRedeclarations', 'autoRewriteImports', 'autoStripExports', 'autoSplitRedeclarations'].includes(key))
     .sort())

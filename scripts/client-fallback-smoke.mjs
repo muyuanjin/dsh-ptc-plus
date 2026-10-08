@@ -17,6 +17,9 @@ const allCases = [
     .flatMap(viewport => variants.map(item => ({ family: 'catalog', viewport, ...item }))),
   ...[{ width: 390, height: 600 }, { width: 320, height: 420 }]
     .flatMap(viewport => ['light', 'dark'].map(theme => ({ family: 'dialogs', viewport, theme }))),
+  ...[240, 420, 600].flatMap(height => variants.map(item => ({ family: 'settings-dialog', viewport: { width: 1440, height }, ...item }))),
+  ...[320, 390, 1440].flatMap(width => ['en', 'zh'].flatMap(locale =>
+    ['light', 'dark'].map(theme => ({ family: 'settings-page', width, locale, theme })))),
   { family: 'hover-settlement' },
 ].map(item => ({ ...item, id: [item.family, item.width ?? (item.viewport && `${item.viewport.width}x${item.viewport.height}`),
   item.theme, item.native === undefined ? undefined : item.native ? 'native' : 'fallback', item.locale].filter(Boolean).join('/') }))
@@ -37,7 +40,7 @@ if (values.list) {
     import * as React from 'react';
     import {createRoot} from 'react-dom/client';
     import {createPortal} from 'react-dom';
-    import {Menu as NativeMenu} from '@deepseek-ai/dsh-client-ui-primitives';
+    import {Menu as NativeMenu,Modal as NativeModal} from '@deepseek-ai/dsh-client-ui-primitives';
     import {createActionButton,resolvePrimitives} from './src/client-primitives.js';
     import {installStyles} from './src/client-styles.js';
     import {createCatalogOwner} from './src/client-catalog.js';
@@ -48,7 +51,7 @@ if (values.list) {
     import {SETTINGS_COPY} from './src/client-copy.js';
     const h=React.createElement;
     installStyles();
-    const {Menu,Modal}=resolvePrimitives(window.nativeMenu?{Menu:NativeMenu}:{},React,createPortal);
+    const {Menu,Modal}=resolvePrimitives({...window.nativeMenu?{Menu:NativeMenu}:{},...window.nativeSettingsModal?{Modal:NativeModal}:{}},React,createPortal);
     let entries=Array.from({length:window.largeMenu?48:8},(_,index)=>({id:'entry-'+index,name:'Entry '+index,
       scope:'namespace',symbols:['value'],purpose:'Stored input',source:'export const value=1',enabled:!window.largeMenu||index%3===0}));
     if(window.largeMenu)entries[0]={...entries[0],name:'Entry 0 '+('long binding name '.repeat(20)),
@@ -76,7 +79,7 @@ if (values.list) {
     const workbench=createUserBindingsWorkbench(React,{TypeScriptEditor:()=>null,BindingConsole:()=>null,
       IconButton,ActionButton,Modal,catalogOwner,icons:{refresh:Icon,plus:Icon,close:Icon,search:Icon,chevron:Icon,
         edit:Icon,check:Icon,trash:Icon}});
-    const {PTCPlusSettingsDialog}=createPtcSettingsView(React,{ActionButton,
+    const {PTCPlusSettingsDialog,PTCPlusSettingsCard}=createPtcSettingsView(React,{ActionButton,
       BindingsDialog:workbench.BindingsDialog,Modal,useWorkbenchController:workbench.useWorkbenchController,
       icons:{chevron:Icon}});
     const view={mounted:false,reachable:true,candidate:null,candidateKey:null,action:null,message:null};
@@ -89,7 +92,11 @@ if (values.list) {
     const root=createRoot(document.querySelector('#composer'));
     const t=(key,args={})=>window.menuLocale?Object.entries(args).reduce((text,[name,value])=>
       text.replaceAll('{'+name+'}',String(value)),SETTINGS_COPY[window.menuLocale][key]??key):key;
-    const render=()=>root.render(h(BindingAuthorButton,{sessionId:'fallback-session',t,
+    const render=()=>root.render(window.settingsDialog?h(PTCPlusSettingsDialog,{t,onClose:()=>{},
+      usePtcSettings:select=>select({status:'ready',writable:true,value:{enabled:true}}),
+      updateSetting:async()=>{},callUserBindings}):window.settingsPage?h(PTCPlusSettingsCard,{view:'page',t,
+      usePtcSettings:select=>select({status:'ready',writable:true,value:{enabled:true}}),
+      updateSetting:async()=>{},callUserBindings}):h(BindingAuthorButton,{sessionId:'fallback-session',t,
       useInput:select=>select({draft:''}),inputActions:{setDraft:()=>{}},
       usePtcSettings:select=>select({status:'ready',writable:true,value:{enabled:true}}),useBindingCommand:()=>true}));
     window.setAttention=()=>{view.mounted=true;view.candidate={entry:{name:'Attention'}};view.message='Attention';render()};
@@ -554,6 +561,152 @@ if (values.list) {
         await page.keyboard.press('Escape')
         await menu.waitFor({ state: 'hidden' })
         assert.equal(await trigger.evaluate(button => button === document.activeElement), true)
+        await page.evaluate(() => window.disposeFixture())
+        return
+      }
+      if (family === 'settings-dialog') {
+        await page.goto('about:blank')
+        await page.setViewportSize(viewport)
+        await page.setContent('<style>body{margin:0;font:14px Arial,sans-serif}</style><div id="composer"></div>')
+        await setFixtureTheme(page, theme)
+        await page.evaluate(({ native, locale }) => {
+          window.settingsDialog = true; window.nativeSettingsModal = native; window.menuLocale = locale
+        }, { native, locale })
+        for (const output of fixture.outputFiles) {
+          if (output.path.endsWith('.css')) await page.addStyleTag({ content: output.text })
+          else await page.addScriptTag({ content: output.text })
+        }
+        const dialog = page.locator('.ptcPlusSettingsModal')
+        await dialog.waitFor()
+        const navigation = dialog.locator('.ptcPlusSettingsNav')
+        const label = `${viewport.width}x${viewport.height}/${native ? 'native' : 'fallback'}/${locale}/${theme}`
+        const assertNavigationFocus = async control => {
+          const result = await control.evaluate(element => {
+            const rect = element.getBoundingClientRect()
+            const viewport = element.closest('.ptcPlusSettingsDialogContent').getBoundingClientRect()
+            const rail = element.closest('.ptcPlusSettingsNav').getBoundingClientRect()
+            const x = rect.left + rect.width / 2, y = rect.top + rect.height / 2
+            return { focused: document.activeElement === element, top: rect.top, bottom: rect.bottom,
+              clipTop: Math.max(viewport.top, rail.top), clipBottom: Math.min(viewport.bottom, rail.bottom),
+              navigationHeight: rail.height, navigationLimit: getComputedStyle(element.closest('.ptcPlusSettingsNav')).maxHeight, contentHeight: viewport.height,
+              hit: element.contains(document.elementFromPoint(x, y)) }
+          })
+          assert.ok(result.focused && result.top >= result.clipTop - 1
+            && result.bottom <= result.clipBottom + 1 && result.hit,
+          `${label}: focused settings navigation is clipped or covered ${JSON.stringify(result)}`)
+        }
+        const checkNavigation = async () => {
+          const toggle = navigation.locator('input[role=switch]')
+          await toggle.focus()
+          await assertNavigationFocus(toggle)
+          for (const key of ['syntax', 'recovery', 'extensions', 'calls', 'interface', 'limits', 'capabilities']) {
+            const button = navigation.locator(`[data-section=${key}]`)
+            await page.keyboard.press('Tab')
+            await assertNavigationFocus(button)
+            await page.keyboard.press('Enter')
+            await assertNavigationFocus(button)
+            const visible = await dialog.locator(`#ptc-plus-settings-dialog-group-${key}`).evaluate(element => {
+              const heading = element.getBoundingClientRect(), clip = element.closest('.ptcPlusSettingsDialogContent').getBoundingClientRect()
+              return heading.top >= clip.top - 1 && heading.bottom <= clip.bottom + 1
+            })
+            assert.equal(visible, true, `${label}: selected heading is clipped`)
+          }
+          const close = dialog.locator('.ptcPlusDialogClose')
+          assert.equal(await close.evaluate(element => {
+            const rect = element.getBoundingClientRect()
+            return rect.top >= 0 && rect.bottom <= innerHeight
+              && element.contains(document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2))
+          }), true, `${label}: navigation obscured the fixed close action`)
+        }
+        await checkNavigation()
+        if (viewport.height === 420) {
+          const fault = await page.addStyleTag({ content: '.ptcPlusSettingsDialog .ptcPlusSettingsNav{max-height:none!important;overflow:visible!important}' })
+          try {
+            await assert.rejects(checkNavigation, /focused settings navigation is clipped or covered/)
+          } finally {
+            await fault.evaluate(element => element.remove())
+          }
+          await checkNavigation()
+        }
+        if (native) {
+          await page.evaluate(() => document.documentElement.style.setProperty('--dsh-frame-overlay-top', '64px'))
+          await checkNavigation()
+        }
+        await page.evaluate(() => {
+          document.querySelector('.ptcPlusSettingsDialogContent').scrollTop = 0
+          document.querySelector('.ptcPlusSettingsNav').scrollTop = 0
+        })
+        await page.screenshot({ path: `artifacts/button-styles/settings-dialog-${viewport.height}-${native ? 'native' : 'fallback'}-${locale}-${theme}.png` })
+        await page.evaluate(() => window.disposeFixture())
+        return
+      }
+      if (family === 'settings-page') {
+        await page.goto('about:blank')
+        await page.setViewportSize({ width, height: 900 })
+        await page.setContent(`<style>body{margin:0;font:14px Arial,sans-serif}#host-page{height:850px;overflow:auto;padding:18px}
+          #host-header{height:240px}#composer{margin:0 auto}#host-footer{height:800px}</style>
+          <div style="height:30px">Host frame</div><div id="host-page"><header id="host-header"><h1>PTC Plus</h1>Plugin configuration</header>
+          <div id="composer"></div><div id="host-footer"></div></div><div style="height:800px"></div>`)
+        await setFixtureTheme(page, theme)
+        await page.evaluate(locale => { window.settingsPage = true; window.menuLocale = locale }, locale)
+        for (const output of fixture.outputFiles) {
+          if (output.path.endsWith('.css')) await page.addStyleTag({ content: output.text })
+          else await page.addScriptTag({ content: output.text })
+        }
+        const settings = page.locator('#composer .ptcPlusCard')
+        await settings.waitFor()
+        // Keep both external scroll ancestors nonzero, with the navigation visible.
+        await page.evaluate(() => { window.scrollTo(0, 20); document.querySelector('#host-page').scrollTop = 240 })
+        const baseline = await page.evaluate(() => ({ document: window.scrollY, host: document.querySelector('#host-page').scrollTop }))
+        const navigation = settings.locator('.ptcPlusSettingsNav')
+        const geometry = await settings.evaluate(element => {
+          const outer = element.getBoundingClientRect(), nav = element.querySelector('.ptcPlusSettingsNav').getBoundingClientRect()
+          const content = element.querySelector('.ptcPlusFields').getBoundingClientRect()
+          return { leftInset: nav.left - outer.left, topInset: nav.top - outer.top,
+            rightInset: outer.right - content.right, navRight: nav.right, contentLeft: content.left,
+            navLeft: nav.left, navTop: nav.top, contentTop: content.top }
+        })
+        assert.ok(geometry.leftInset >= 14 && geometry.topInset >= 14 && geometry.rightInset >= 14,
+          `${width}/${theme}/${locale}: official settings page lacks inner spacing ${JSON.stringify(geometry)}`)
+        if (width === 1440) assert.ok(geometry.navRight < geometry.contentLeft, 'official page lost two columns')
+        else assert.ok(Math.abs(geometry.navLeft - geometry.contentLeft) <= 1, 'narrow official page did not stack')
+        for (const key of ['capabilities', 'calls', 'syntax']) {
+          const target = settings.locator(`#ptc-plus-settings-group-${key}`)
+          const button = navigation.locator(`[data-section=${key}]`)
+          await button.evaluate(element => {
+            const track = element.closest('.ptcPlusSettingsNavList')
+            if (getComputedStyle(track).overflowX === 'auto') track.scrollLeft += element.getBoundingClientRect().left - track.getBoundingClientRect().left
+          })
+          if (key === 'calls') {
+            await button.evaluate(element => element.focus({ preventScroll: true }))
+            await page.keyboard.press('Enter')
+          } else await button.click()
+          const result = await page.evaluate(() => ({ document: window.scrollY, host: document.querySelector('#host-page').scrollTop }))
+          assert.deepEqual(result, baseline, `${width}/${locale}: settings navigation moved the Host page`)
+          const visible = await target.evaluate(element => {
+            const heading = element.getBoundingClientRect(), viewport = element.closest('.ptcPlusFields').getBoundingClientRect()
+            return heading.top >= viewport.top && heading.bottom <= viewport.bottom
+          })
+          assert.equal(visible, true, `${width}/${locale}: selected settings heading was not revealed`)
+        }
+        await settings.locator('#ptc-plus-settings-group-capabilities').evaluate(element => element.scrollIntoView({ block: 'start' }))
+        const misplaced = await page.evaluate(() => ({ document: window.scrollY, host: document.querySelector('#host-page').scrollTop }))
+        assert.notDeepEqual(misplaced, baseline, 'outer-scroll assertion cannot reject the original scrollIntoView behavior')
+        await page.evaluate(baseline => {
+          window.scrollTo(0, baseline.document)
+          document.querySelector('#host-page').scrollTop = baseline.host
+          document.querySelector('.ptcPlusFields').scrollTop = 0
+        }, baseline)
+        if (width === 1440) {
+          await page.locator('#composer').evaluate(element => { element.style.width = '600px' })
+          const stacked = await settings.evaluate(element => {
+            const nav = element.querySelector('.ptcPlusSettingsNav').getBoundingClientRect(), content = element.querySelector('.ptcPlusFields').getBoundingClientRect()
+            return Math.abs(nav.left - content.left) <= 1 && content.top >= nav.bottom
+          })
+          assert.equal(stacked, true, 'narrow official page container kept desktop columns')
+          await page.locator('#composer').evaluate(element => { element.style.width = '' })
+        }
+        await page.screenshot({ path: `artifacts/button-styles/settings-page-${width}-${theme}-${locale}.png` })
         await page.evaluate(() => window.disposeFixture())
         return
       }

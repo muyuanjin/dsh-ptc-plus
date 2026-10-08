@@ -11,7 +11,7 @@ import { SlotTestRuntime, TestRemote } from '@deepseek-ai/dsh-client-test-runtim
 import { Context } from '@deepseek-ai/cordis'
 import * as gatewayClient from '@deepseek-ai/dsh-api-gateway/client'
 import { TypertRegistry } from '@deepseek-ai/dsh-typert-registry'
-import { CONFIG_FIELDS, CONFIG_GROUPS } from '../internal/config-spec.js'
+import { CONFIG_FIELDS, CONFIG_GROUPS, CONFIG_MODULES } from '../internal/config-spec.js'
 import { createClientRpc } from '../src/client-rpc.js'
 import { RPC_CONTRACTS } from '../internal/rpc-contract.js'
 import { createBindingReviews } from '../src/client-binding-review.js'
@@ -909,7 +909,12 @@ test('the Plugins page claims the row-configuration seat only while it is mounte
   expect(view.container.querySelector('[data-view=summary] .ptcPlusDescription').textContent)
     .toBe('The session-bound TypeScript REPL for PTC mode.')
   const form = view.container.querySelector('[data-view=page]')
+  expect([...form.querySelectorAll('.ptcPlusSettingsModuleTitle')].map(title => title.textContent))
+    .toEqual(['Core workspace', 'Extensions and tolerance', 'Interface and resources', 'Experimental'])
+  expect(form.querySelectorAll('[aria-label="Enable PTC Plus"]')).toHaveLength(1)
+  expect(form.querySelector('[aria-label="Enable PTC Plus"]').closest('.ptcPlusSettingsNav')).not.toBeNull()
   expect(form.querySelector('.ptcPlusFields')).not.toBeNull()
+  expect(form.querySelector('.ptcPlusSettingsPage')).not.toBeNull()
   expect(form.querySelector('.ptcPlusBody').hasAttribute('hidden')).toBe(false)
   // The page draws the title, the icon and the crumb; the entry draws only the form.
   expect(form.querySelector('.ptcPlusHeader')).toBeNull()
@@ -933,13 +938,19 @@ test('the plugin row seat renders both views when the page declares it first', a
   expect(summary.textContent).toBe('The session-bound TypeScript REPL for PTC mode.')
   const form = view.container.querySelector('[data-view=page]')
   expect([...form.querySelectorAll('.ptcPlusGroupTitle')].map(title => title.textContent))
-    .toEqual(['Plugin switch', 'Tool call tolerance', 'REPL syntax', 'State and recovery', 'Tool extensions', 'Interface display', 'Resource limits', 'Capabilities and context', 'Session capability plans'])
+    .toEqual([ 'REPL syntax', 'State and recovery', 'Tool extensions', 'Tool call tolerance', 'Interface display', 'Resource limits', 'Capabilities and context', 'Session capability plans'])
   expect(form.querySelector('[role=status]').textContent).toBe('Settings are saved; capability plans adopt changes in new sessions or after an explicit refresh.')
   for (const key of CONFIG_GROUPS.flatMap(group => group.fields).filter(key => !['capabilityBaseline', 'capabilityOverrides', 'capabilityStatistics'].includes(key))) {
     expect(form.querySelector(`[aria-label="${SETTINGS_COPY.en[`${key}.label`]}"]`)).not.toBeNull()
   }
   expect(form.querySelectorAll('textarea')).toHaveLength(0)
   expect(form.querySelector('[aria-label="Enable usage statistics"]')).not.toBeNull()
+  const fields = form.querySelector('.ptcPlusFields')
+  fields.getBoundingClientRect = () => new DOMRect(0, 100, 600, 500)
+  fields.scrollTop = 40
+  form.querySelector('#ptc-plus-settings-group-capabilities').getBoundingClientRect = () => new DOMRect(0, 500, 200, 20)
+  fireEvent.click(form.querySelector('.ptcPlusSettingsNav [data-experimental=true]'))
+  expect(fields.scrollTop).toBe(424)
   fireEvent.click(form.querySelector('[role=switch][aria-label="Enable PTC Plus"]'))
   await runtime.flush()
   // The page view is the settings form itself: its controls write through the
@@ -1250,7 +1261,7 @@ test('REPL observations and shared workbench remain separate from session execut
   await runtime.flush()
   const settingsCard = view.container.querySelector('.ptcPlusCard')
   const groupTitles = () => [...settingsCard.querySelectorAll('.ptcPlusGroupTitle')].map(title => title.textContent)
-  expect(groupTitles()).toEqual(['插件开关', '调用容错', 'REPL 语法', '状态与恢复', '工具扩展', '界面显示', '资源限制', '能力与上下文', '当前会话能力方案'])
+  expect(groupTitles()).toEqual(['插件开关', 'REPL 语法', '状态与恢复', '工具扩展', '调用容错', '界面显示', '资源限制', '能力与上下文', '当前会话能力方案'])
   expect(settingsCard.querySelector('.ptcPlusSettingsLayout')).toBeNull()
   expect(settingsCard.querySelector('[data-experimental=true] .ptcPlusGroupTitle').getAttribute('data-experimental-label')).toBe('实验性')
   const recoveryGroup = settingsCard.querySelector('[aria-labelledby="ptc-plus-settings-group-recovery"]')
@@ -1261,7 +1272,7 @@ test('REPL observations and shared workbench remain separate from session execut
   await saveLayout('settings-zh', view.container.querySelector('.ptcPlusCard'))
   setLocale('en')
   await runtime.flush()
-  expect(groupTitles()).toEqual(['Plugin switch', 'Tool call tolerance', 'REPL syntax', 'State and recovery', 'Tool extensions', 'Interface display', 'Resource limits', 'Capabilities and context', 'Session capability plans'])
+  expect(groupTitles()).toEqual(['Plugin switch', 'REPL syntax', 'State and recovery', 'Tool extensions', 'Tool call tolerance', 'Interface display', 'Resource limits', 'Capabilities and context', 'Session capability plans'])
   await saveLayout('settings-en', view.container.querySelector('.ptcPlusCard'))
   await runtime.sessions.setCurrent('client-session')
   await runtime.flush()
@@ -1271,7 +1282,7 @@ test('REPL observations and shared workbench remain separate from session execut
   const settingsDialog = () => document.querySelector('.ptcPlusSettingsModal')
   expect(settingsDialog()).not.toBeNull()
   expect(settingsDialog().querySelector('.ptcPlusSettingsLayout')).not.toBeNull()
-  expect(settingsDialog().querySelectorAll('.ptcPlusSettingsNavItem')).toHaveLength(CONFIG_GROUPS.length)
+  expect(settingsDialog().querySelectorAll('.ptcPlusSettingsNavItem')).toHaveLength(CONFIG_GROUPS.length - 1)
   expect(settingsDialog().querySelector('.ptcPlusSettingsNavItem[data-experimental=true]').textContent).toContain('Experimental')
   await saveLayout('settings-dialog-en', settingsDialog().parentElement)
   setLocale('zh')
@@ -1279,6 +1290,15 @@ test('REPL observations and shared workbench remain separate from session execut
   await saveLayout('settings-dialog-zh', settingsDialog().parentElement)
   fireEvent.click(view.getByRole('button', { name: '关闭 PTC Plus 设置' }))
   await runtime.flush()
+  const rowFixture = await fixture({ settingsCardSeat: 'row', capabilityRpc: async endpoint => ({ ok: true, value: endpoint === 'catalog'
+    ? Array.from({ length: 48 }, (_, index) => ({ id: `tools.longCapabilityNameForNarrowLayouts${index}`, category: 'tool', description: 'Read and transform project files' })) : [] }) })
+  const rowView = rowFixture.runtime.renderRoot()
+  await rowFixture.runtime.flush()
+  await saveLayout('settings-page-en', rowView.container.querySelector('.ptcPlusSettingsPage'))
+  rowFixture.setLocale('zh')
+  await rowFixture.runtime.flush()
+  await saveLayout('settings-page-zh', rowView.container.querySelector('.ptcPlusSettingsPage'))
+  rowView.unmount()
   await runtime.sessions.setCurrent(undefined)
   await runtime.flush()
   setLocale('zh')
@@ -1948,9 +1968,12 @@ test('the authoring entry opens the complete settings dialog from every host sea
     expect(dialog.querySelector('.ptcPlusHeader')).toBeNull()
     expect(dialog.querySelector('.ptcPlusSettingsDialog')).not.toBeNull()
     const capabilityHeading = dialog.querySelector('#ptc-plus-settings-dialog-group-capabilities')
-    capabilityHeading.scrollIntoView = vi.fn()
+    const scroller = dialog.querySelector('.ptcPlusSettingsDialogContent')
+    capabilityHeading.getBoundingClientRect = () => new DOMRect(0, 500, 200, 20)
+    scroller.getBoundingClientRect = () => new DOMRect(0, 100, 600, 500)
+    scroller.scrollTop = 40
     fireEvent.click(dialog.querySelector('.ptcPlusSettingsNav [data-experimental=true]'))
-    expect(capabilityHeading.scrollIntoView).toHaveBeenCalledWith({ block: 'start' })
+    expect(scroller.scrollTop).toBe(424)
     expect(dialog.querySelector('.ptcPlusSettingsDialogHead h2').textContent).toBe('PTC Plus settings')
     const ids = [...view.container.querySelectorAll('[id]'), ...dialog.querySelectorAll('[id]')]
       .map(element => element.id)
@@ -3443,6 +3466,10 @@ test('locale dictionaries derive every settings string from the shared config sp
   for (const group of CONFIG_GROUPS) {
     expect(SETTINGS_COPY.zh[`group.${group.key}`]).toBe(group.label)
     expect(SETTINGS_COPY.en[`group.${group.key}`]).toBe(group.labelEn)
+  }
+  for (const module of CONFIG_MODULES) {
+    expect(SETTINGS_COPY.zh[`module.${module.key}`]).toBe(module.label)
+    expect(SETTINGS_COPY.en[`module.${module.key}`]).toBe(module.labelEn)
   }
 })
 

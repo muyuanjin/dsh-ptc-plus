@@ -1465,12 +1465,6 @@
       fields: Object.freeze(["enabled"])
     },
     {
-      key: "calls",
-      label: "\u8C03\u7528\u5BB9\u9519",
-      labelEn: "Tool call tolerance",
-      fields: Object.freeze(["autoDescribeRunCode", "canonicalizeToolCalls"])
-    },
-    {
       key: "syntax",
       label: "REPL \u8BED\u6CD5",
       labelEn: "REPL syntax",
@@ -1489,6 +1483,12 @@
       label: "\u5DE5\u5177\u6269\u5C55",
       labelEn: "Tool extensions",
       fields: Object.freeze(["userBindingsEnabled", "cordisToolsEnabled"])
+    },
+    {
+      key: "calls",
+      label: "\u8C03\u7528\u5BB9\u9519",
+      labelEn: "Tool call tolerance",
+      fields: Object.freeze(["autoDescribeRunCode", "canonicalizeToolCalls"])
     },
     {
       key: "interface",
@@ -1528,6 +1528,12 @@
       ])
     }
   ]);
+  var CONFIG_MODULES = Object.freeze([
+    { key: "workspace", label: "\u6838\u5FC3\u5DE5\u4F5C\u533A", labelEn: "Core workspace", groups: Object.freeze(["syntax", "recovery"]) },
+    { key: "extensions", label: "\u6269\u5C55\u4E0E\u5BB9\u9519", labelEn: "Extensions and tolerance", groups: Object.freeze(["extensions", "calls"]) },
+    { key: "presentation", label: "\u754C\u9762\u4E0E\u8D44\u6E90", labelEn: "Interface and resources", groups: Object.freeze(["interface", "limits"]) },
+    { key: "experimental", label: "\u5B9E\u9A8C\u6027", labelEn: "Experimental", groups: Object.freeze(["capabilities"]) }
+  ].map(Object.freeze));
   var CONFIG_DEFAULTS = Object.freeze(
     Object.fromEntries(CONFIG_FIELDS.map((field) => [field.key, field.default]))
   );
@@ -2950,7 +2956,65 @@
         });
       };
       const fieldDisabled = (field) => unavailable || pending.has(field.key) || field.key !== "enabled" && !enabled;
-      const settingsFields = () => CONFIG_GROUPS.map((group) => {
+      const renderField = (key) => {
+        const field = CONFIG_FIELDS.find((candidate) => candidate.key === key);
+        if (field === void 0) return null;
+        if (field.key === "capabilityOverrides") return null;
+        if (field.key === "capabilityBaseline") return h(CapabilityChoices, {
+          key,
+          value,
+          catalog,
+          catalogError,
+          plans,
+          t: t2,
+          disabled: (key2) => fieldDisabled({ key: key2 }),
+          onChange: persist
+        });
+        if (field.key === "capabilityStatistics") return h(
+          "div",
+          { key },
+          h("div", { className: "ptcPlusLabel" }, t2(`${key}.label`)),
+          h("p", { className: "ptcPlusDetail" }, t2(`${key}.description`)),
+          h(StatisticsSetting, { value: value[key] ?? CONFIG_DEFAULTS[key], disabled: fieldDisabled(field), onChange: persist, t: t2 })
+        );
+        const migratingPolicy = field.key === "bindingUpdates" && legacyMigration;
+        return h(
+          React.Fragment,
+          { key: field.key },
+          h(
+            "div",
+            { className: "ptcPlusRow" },
+            h(
+              "div",
+              { className: "ptcPlusMain" },
+              h("div", { className: "ptcPlusLabel" }, t2(`${field.key}.label`)),
+              field.description === "" ? null : h(
+                "div",
+                { className: "ptcPlusDetail" },
+                t2(migratingPolicy ? "bindingPolicy.migrationDescription" : `${field.key}.description`)
+              )
+            ),
+            migratingPolicy ? h(
+              "select",
+              {
+                className: "ptcPlusSelect",
+                value: "legacy",
+                disabled: fieldDisabled(field),
+                "aria-label": t2(`${field.key}.label`),
+                onChange: (event) => persist(field, event.target.value)
+              },
+              h("option", { value: "legacy", disabled: true }, t2("bindingPolicy.legacy")),
+              ...field.options.map((policy) => h("option", { key: policy, value: policy }, t2(`bindingPolicy.${policy}`)))
+            ) : fieldInput(field, value[field.key], fieldDisabled(field), persist, t2(`${field.key}.label`))
+          ),
+          field.key === "userBindingsEnabled" && globalEnabled ? h(
+            "div",
+            { className: "ptcPlusSettingAction", ref: bindingsAction },
+            h(ActionButton, { type: "button", className: "ptcPlusButton", onClick: () => setBindingsDialogOpen(true) }, t2("bindings.manage"))
+          ) : null
+        );
+      };
+      const renderGroup = (group) => {
         const fields = group.key === "syntax" && legacyMigration ? [...group.fields, ...legacyKeys] : group.fields;
         return h(
           "section",
@@ -2965,69 +3029,32 @@
             className: "ptcPlusGroupTitle",
             "data-experimental-label": group.key === "capabilities" ? t2("settings.experimental") : void 0
           }, t2(`group.${group.key}`)),
-          ...fields.map((key) => {
-            const field = CONFIG_FIELDS.find((candidate) => candidate.key === key);
-            if (field === void 0) return null;
-            if (field.key === "capabilityOverrides") return null;
-            if (field.key === "capabilityBaseline") return h(CapabilityChoices, {
-              key,
-              value,
-              catalog,
-              catalogError,
-              plans,
-              t: t2,
-              disabled: (key2) => fieldDisabled({ key: key2 }),
-              onChange: persist
-            });
-            if (field.key === "capabilityStatistics") return h(
-              "div",
-              { key },
-              h("div", { className: "ptcPlusLabel" }, t2(`${key}.label`)),
-              h("p", { className: "ptcPlusDetail" }, t2(`${key}.description`)),
-              h(StatisticsSetting, { value: value[key] ?? CONFIG_DEFAULTS[key], disabled: fieldDisabled(field), onChange: persist, t: t2 })
-            );
-            const migratingPolicy = field.key === "bindingUpdates" && legacyMigration;
-            return h(
-              React.Fragment,
-              { key: field.key },
-              h(
-                "div",
-                { className: "ptcPlusRow" },
-                h(
-                  "div",
-                  { className: "ptcPlusMain" },
-                  h("div", { className: "ptcPlusLabel" }, t2(`${field.key}.label`)),
-                  field.description === "" ? null : h(
-                    "div",
-                    { className: "ptcPlusDetail" },
-                    t2(migratingPolicy ? "bindingPolicy.migrationDescription" : `${field.key}.description`)
-                  )
-                ),
-                migratingPolicy ? h(
-                  "select",
-                  {
-                    className: "ptcPlusSelect",
-                    value: "legacy",
-                    disabled: fieldDisabled(field),
-                    "aria-label": t2(`${field.key}.label`),
-                    onChange: (event) => persist(field, event.target.value)
-                  },
-                  h("option", { value: "legacy", disabled: true }, t2("bindingPolicy.legacy")),
-                  ...field.options.map((policy) => h("option", { key: policy, value: policy }, t2(`bindingPolicy.${policy}`)))
-                ) : fieldInput(field, value[field.key], fieldDisabled(field), persist, t2(`${field.key}.label`))
-              ),
-              field.key === "userBindingsEnabled" && globalEnabled ? h(
-                "div",
-                { className: "ptcPlusSettingAction", ref: bindingsAction },
-                h(ActionButton, { type: "button", className: "ptcPlusButton", onClick: () => setBindingsDialogOpen(true) }, t2("bindings.manage"))
-              ) : null
-            );
-          })
+          ...fields.map(renderField)
         );
-      });
+      };
+      const settingsFields = (navigable) => [
+        navigable ? null : renderGroup(CONFIG_GROUPS[0]),
+        ...CONFIG_MODULES.map((module) => h(
+          "section",
+          {
+            key: module.key,
+            className: "ptcPlusSettingsModule",
+            "aria-labelledby": `${groupIdPrefix}-module-${module.key}`
+          },
+          h("h2", { id: `${groupIdPrefix}-module-${module.key}`, className: "ptcPlusSettingsModuleTitle" }, t2(`module.${module.key}`)),
+          ...module.groups.map((key) => renderGroup(CONFIG_GROUPS.find((group) => group.key === key)))
+        ))
+      ];
       const settingsBody = (expanded, id2) => {
         const navigable = view === "page" || view === "dialog";
         const groupIds = new Map(CONFIG_GROUPS.map((group) => [group.key, `${groupIdPrefix}-${group.key}`]));
+        const revealSection = (id3) => {
+          const root = settingsRoot.current;
+          const heading2 = root?.querySelector(`[id="${id3}"]`);
+          const scroller = view === "page" ? root?.querySelector(".ptcPlusFields") : root?.closest(".ptcPlusSettingsDialogContent");
+          if (!heading2 || !scroller) return;
+          scroller.scrollTop += heading2.getBoundingClientRect().top - scroller.getBoundingClientRect().top - scroller.clientTop - 16;
+        };
         const navigation = navigable ? h(
           "nav",
           {
@@ -3041,27 +3068,31 @@
             h("strong", null, t2("settings.navigationTitle")),
             h("p", null, t2("settings.navigationHint"))
           ),
-          h("div", { className: "ptcPlusSettingsNavList" }, ...CONFIG_GROUPS.map((group) => {
-            const target = groupIds.get(group.key);
-            return h(
-              "button",
-              {
-                key: group.key,
-                type: "button",
-                className: "ptcPlusSettingsNavItem",
-                "data-experimental": group.key === "capabilities" ? "true" : void 0,
-                onClick: () => settingsRoot.current?.querySelector(`[id="${target}"]`)?.scrollIntoView({ block: "start" })
-              },
-              h("span", { className: "ptcPlusSettingsNavLabel" }, t2(`group.${group.key}`)),
-              group.key === "capabilities" ? h("span", { className: "ptcPlusSettingsNavBadge" }, t2("settings.experimental")) : null
-            );
-          })),
-          h(
+          h("div", { className: "ptcPlusSettingsNavSwitch" }, renderField("enabled")),
+          h("div", { className: "ptcPlusSettingsNavList" }, ...CONFIG_MODULES.map((module) => h(
             "div",
-            { className: "ptcPlusSettingsNavStatus", "data-enabled": enabled },
-            h("span", { className: "ptcPlusSettingsNavStatusDot", "aria-hidden": true }),
-            h("span", null, t2(enabled ? "status.enabled" : "status.disabled"))
-          )
+            {
+              key: module.key,
+              className: "ptcPlusSettingsNavModule"
+            },
+            h("span", { className: "ptcPlusSettingsNavModuleTitle" }, t2(`module.${module.key}`)),
+            h("div", { className: "ptcPlusSettingsNavModuleItems" }, ...module.groups.map((key) => {
+              const group = CONFIG_GROUPS.find((group2) => group2.key === key);
+              return h(
+                "button",
+                {
+                  key,
+                  type: "button",
+                  className: "ptcPlusSettingsNavItem",
+                  "data-section": key,
+                  "data-experimental": key === "capabilities" ? "true" : void 0,
+                  onClick: () => revealSection(groupIds.get(key))
+                },
+                h("span", { className: "ptcPlusSettingsNavLabel" }, t2(`group.${group.key}`)),
+                key === "capabilities" ? h("span", { className: "ptcPlusSettingsNavBadge" }, t2("settings.experimental")) : null
+              );
+            }))
+          )))
         ) : null;
         return h(
           "div",
@@ -3094,7 +3125,7 @@
                 "div",
                 { className: "ptcPlusFields" },
                 snapshot2.status === "loading" ? h("p", { className: "ptcPlusMessage" }, t2("state.syncing")) : snapshot2.status === "unavailable" ? h("p", { className: "ptcPlusMessage" }, t2("state.unavailable")) : [
-                  ...settingsFields(),
+                  ...settingsFields(navigable),
                   inspectCapabilityPlans ? h(
                     "section",
                     { key: "capability-plans", className: "ptcPlusGroup" },
@@ -3143,7 +3174,7 @@
         getReturnFocus: () => bindingsAction.current?.querySelector("button")
       }) : null;
       if (view === "summary") return h("span", { className: "ptcPlusDescription" }, t2("card.description"));
-      if (view === "page") return h("div", { className: "ptcPlusCard" }, settingsBody(true), openBindings);
+      if (view === "page") return h("div", { className: "ptcPlusCard ptcPlusSettingsPage" }, settingsBody(true), openBindings);
       if (view === "dialog") return h(React.Fragment, null, settingsBody(true), openBindings);
       return h(
         "li",
@@ -30673,7 +30704,13 @@
 @media(max-width:560px){.ptcPlusCapabilityItem{grid-template-columns:minmax(0,1fr) auto}.ptcPlusCapabilityItem>.ptcPlusSelect{grid-column:1/-1}.ptcPlusCapabilityStatistics .ptcPlusBindingFields{grid-template-columns:minmax(0,1fr)}}
 .ptcPlusFooter{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:8px}.ptcPlusButton{appearance:none;display:inline-flex;align-items:center;justify-content:center;gap:5px;min-height:32px;padding:4px 14px;border:0.5px solid var(--dsw-alias-border-l3);border-radius:8px;background:transparent;color:var(--dsw-alias-label-secondary);cursor:pointer;font:inherit;font-size:13px;line-height:1.5;transition:color .16s ease,border-color .16s ease,background-color .16s ease}.ptcPlusButton:hover:not(:disabled){border-color:var(--dsw-alias-label-dimmed);color:var(--dsw-alias-label-primary)}.ptcPlusButton[data-kind=primary]{background:var(--dsw-alias-label-primary);border-color:transparent;color:var(--dsw-alias-bg-layer-3)}.ptcPlusButton[data-kind=primary]:hover:not(:disabled){background:var(--dsw-alias-label-primary-dimmed);border-color:transparent;color:var(--dsw-alias-bg-layer-3)}.ptcPlusButton[data-kind=ghost]{border-color:transparent}.ptcPlusButton[data-kind=ghost]:hover:not(:disabled){border-color:var(--dsw-alias-border-l3)}.ptcPlusButton[data-kind=danger]{color:var(--dsw-alias-state-error-primary)}.ptcPlusButton[data-kind=danger]:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover-danger);border-color:var(--dsw-alias-state-error-primary);color:var(--dsw-alias-state-error-primary)}.ptcPlusButton:disabled,.ptcPlusInput:disabled,.ptcPlusCheck:disabled{cursor:not-allowed;opacity:.4}
 .ptcPlusSettingAction{padding:4px 0 12px}
-.ptcPlusSettingsModal.ptcPlusSettingsModal{box-sizing:border-box;width:min(1080px,calc(100vw - 48px));height:min(860px,calc(100dvh - 48px));max-width:100%;max-height:100%;min-height:0;display:flex;flex-direction:column;padding:0;gap:0;overflow:hidden;border-radius:16px}.ptcPlusSettingsDialogHead{display:flex;flex:none;align-items:center;justify-content:space-between;gap:16px;padding:20px 24px;border-bottom:1px solid var(--dsw-alias-border-l2)}.ptcPlusSettingsDialogHead h2{margin:0;font-size:18px;line-height:26px;font-weight:600}.ptcPlusSettingsDialogHead p{margin:4px 0 0;color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px}.ptcPlusSettingsDialogContent{flex:1;min-height:0;padding:20px 24px;overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable}.ptcPlusSettingsDialog{min-width:0}.ptcPlusSettingsDialog .ptcPlusBody{display:block}.ptcPlusSettingsDialog .ptcPlusBodyInner{overflow:visible}.ptcPlusSettingsDialog .ptcPlusFields{margin:0;padding:0 0 12px;border-top:0}.ptcPlusSettingsHero{display:flex;align-items:flex-end;justify-content:space-between;gap:20px;margin:0 0 20px;padding:4px 0 18px;border-bottom:1px solid var(--dsw-alias-border-l2)}.ptcPlusSettingsHeroCopy{min-width:0}.ptcPlusSettingsHeroCopy p{margin:4px 0 0;color:var(--dsw-alias-label-secondary);font-size:13px;line-height:20px}.ptcPlusSettingsEyebrow{display:block;color:var(--dsw-alias-label-tertiary);font-size:10px;font-weight:700;letter-spacing:.08em;line-height:16px;text-transform:uppercase}.ptcPlusSettingsLayout{display:grid;grid-template-columns:minmax(190px,220px) minmax(0,1fr);align-items:start;gap:28px}.ptcPlusSettingsNav{position:sticky;top:0;display:flex;min-width:0;flex-direction:column;gap:18px}.ptcPlusSettingsNavIntro{display:flex;flex-direction:column;gap:3px;padding:4px 4px 0}.ptcPlusSettingsNavIntro strong{font-size:15px;line-height:22px}.ptcPlusSettingsNavIntro p{margin:4px 0 0;color:var(--dsw-alias-label-tertiary);font-size:11px;line-height:17px}.ptcPlusSettingsNavList{display:flex;flex-direction:column;gap:3px}.ptcPlusSettingsNavItem{appearance:none;display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:36px;padding:7px 10px;border:0;border-radius:8px;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:12px;line-height:18px;text-align:start;cursor:pointer}.ptcPlusSettingsNavItem:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}.ptcPlusSettingsNavItem:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:-2px}.ptcPlusSettingsNavItem[data-experimental=true]{color:var(--dsw-alias-label-secondary)}.ptcPlusSettingsNavLabel{min-width:0;overflow-wrap:anywhere}.ptcPlusSettingsNavBadge{color:color-mix(in srgb,var(--dsw-alias-state-warn-primary,#a15c00) 60%,var(--dsw-alias-label-primary));flex:none;padding:1px 5px;border-radius:999px;background:color-mix(in srgb,var(--dsw-alias-state-warn-primary,#a15c00) 12%,transparent);font-size:10px;line-height:15px}.ptcPlusSettingsNavStatus{display:flex;align-items:center;gap:8px;margin-top:auto;padding:9px 10px;border:1px solid var(--dsw-alias-border-l2);border-radius:10px;color:var(--dsw-alias-label-secondary);font-size:11px;line-height:17px}.ptcPlusSettingsNavStatusDot{width:7px;height:7px;flex:none;border-radius:50%;background:var(--dsw-alias-label-tertiary)}.ptcPlusSettingsNavStatus[data-enabled=true] .ptcPlusSettingsNavStatusDot{background:var(--dsw-alias-state-success-primary)}.ptcPlusSettingsLayout>.ptcPlusFields{min-width:0}.ptcPlusSettingsLayout .ptcPlusGroup{padding:14px 18px;border:1px solid var(--dsw-alias-border-l2);border-radius:12px;background:var(--dsw-alias-bg-layer-3)}.ptcPlusSettingsLayout .ptcPlusGroup+.ptcPlusGroup{margin-top:14px}.ptcPlusSettingsLayout .ptcPlusGroup:first-child{margin-top:0}.ptcPlusSettingsLayout .ptcPlusGroupTitle{scroll-margin-top:16px;font-size:14px}.ptcPlusSettingsLayout .ptcPlusRow{padding-block:10px}
+.ptcPlusSettingsModal.ptcPlusSettingsModal{container:ptcPlusSettingsModal/size;box-sizing:border-box;width:min(1080px,calc(100vw - 48px));height:min(860px,calc(100dvh - 48px));max-width:100%;max-height:100%;min-height:0;display:flex;flex-direction:column;padding:0;gap:0;overflow:hidden;border-radius:16px}.ptcPlusSettingsDialogHead{display:flex;flex:none;align-items:center;justify-content:space-between;gap:16px;padding:20px 24px;border-bottom:1px solid var(--dsw-alias-border-l2)}.ptcPlusSettingsDialogHead h2{margin:0;font-size:18px;line-height:26px;font-weight:600}.ptcPlusSettingsDialogHead p{margin:4px 0 0;color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px}.ptcPlusSettingsDialogContent{container:ptcPlusSettingsDialogContent/size;flex:1;min-height:0;padding:20px 24px;overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable}.ptcPlusSettingsDialog{min-width:0}.ptcPlusSettingsDialog .ptcPlusSettingsNav{max-height:100cqh;overflow:auto;overscroll-behavior:contain}.ptcPlusSettingsDialog .ptcPlusSettingsNav>*{flex-shrink:0}.ptcPlusSettingsDialog .ptcPlusBody{display:block}.ptcPlusSettingsDialog .ptcPlusBodyInner{overflow:visible}.ptcPlusSettingsDialog .ptcPlusFields{margin:0;padding:0 0 12px;border-top:0}.ptcPlusSettingsHero{display:flex;align-items:flex-end;justify-content:space-between;gap:20px;margin:0 0 20px;padding:4px 0 18px;border-bottom:1px solid var(--dsw-alias-border-l2)}.ptcPlusSettingsHeroCopy{min-width:0}.ptcPlusSettingsHeroCopy p{margin:4px 0 0;color:var(--dsw-alias-label-secondary);font-size:13px;line-height:20px}.ptcPlusSettingsEyebrow{display:block;color:var(--dsw-alias-label-tertiary);font-size:10px;font-weight:700;letter-spacing:.08em;line-height:16px;text-transform:uppercase}.ptcPlusSettingsLayout{display:grid;grid-template-columns:minmax(190px,220px) minmax(0,1fr);align-items:start;gap:28px}.ptcPlusSettingsNav{position:sticky;top:0;display:flex;min-width:0;flex-direction:column;gap:18px}.ptcPlusSettingsNavIntro{display:flex;flex-direction:column;gap:3px;padding:4px 4px 0}.ptcPlusSettingsNavIntro strong{font-size:15px;line-height:22px}.ptcPlusSettingsNavIntro p{margin:4px 0 0;color:var(--dsw-alias-label-tertiary);font-size:11px;line-height:17px}.ptcPlusSettingsNavList{display:flex;flex-direction:column;gap:3px}.ptcPlusSettingsNavItem{appearance:none;display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:36px;padding:7px 10px;border:0;border-radius:8px;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:12px;line-height:18px;text-align:start;cursor:pointer}.ptcPlusSettingsNavItem:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}.ptcPlusSettingsNavItem:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:-2px}.ptcPlusSettingsNavItem[data-experimental=true]{color:var(--dsw-alias-label-secondary)}.ptcPlusSettingsNavLabel{min-width:0;overflow-wrap:anywhere}.ptcPlusSettingsNavBadge{color:color-mix(in srgb,var(--dsw-alias-state-warn-primary,#a15c00) 60%,var(--dsw-alias-label-primary));flex:none;padding:1px 5px;border-radius:999px;background:color-mix(in srgb,var(--dsw-alias-state-warn-primary,#a15c00) 12%,transparent);font-size:10px;line-height:15px}.ptcPlusSettingsLayout>.ptcPlusFields{min-width:0}.ptcPlusSettingsLayout .ptcPlusGroup{padding:14px 18px;border:1px solid var(--dsw-alias-border-l2);border-radius:12px;background:var(--dsw-alias-bg-layer-3)}.ptcPlusSettingsLayout .ptcPlusGroup+.ptcPlusGroup{margin-top:14px}.ptcPlusSettingsLayout .ptcPlusGroup:first-child{margin-top:0}.ptcPlusSettingsLayout .ptcPlusGroupTitle{scroll-margin-top:16px;font-size:14px}.ptcPlusSettingsLayout .ptcPlusRow{padding-block:10px}
+.ptcPlusSettingsModule+.ptcPlusSettingsModule,.ptcPlusFields>.ptcPlusGroup+.ptcPlusSettingsModule,.ptcPlusSettingsModule+.ptcPlusGroup{margin-top:24px}.ptcPlusSettingsModuleTitle{margin:0 0 10px;color:var(--dsw-alias-label-secondary);font-size:12px;font-weight:600;line-height:20px}.ptcPlusSettingsNavSwitch{padding:10px 12px;border:1px solid var(--dsw-alias-border-l2);border-radius:10px;background:var(--dsw-alias-bg-layer-3)}.ptcPlusSettingsNavSwitch>.ptcPlusRow{min-height:30px;padding:0;border:0;align-items:center;flex-direction:row;gap:8px}.ptcPlusSettingsNavSwitch .ptcPlusLabel{font-size:12px}.ptcPlusSettingsNavModule+.ptcPlusSettingsNavModule{margin-top:14px}.ptcPlusSettingsNavModuleTitle{display:block;padding:0 10px;margin-bottom:6px;color:var(--dsw-alias-label-tertiary);font-size:10px;font-weight:600;line-height:16px}.ptcPlusSettingsNavModuleItems{display:flex;flex-direction:column;gap:3px}
+.ptcPlusSettingsPage{box-sizing:border-box;container:ptcPlusSettingsPage / inline-size;padding:20px 24px}.ptcPlusSettingsPage .ptcPlusBody{display:block}.ptcPlusSettingsPage .ptcPlusBodyInner{overflow:visible}.ptcPlusSettingsPage .ptcPlusSettingsLayout{gap:24px}.ptcPlusSettingsPage .ptcPlusSettingsNav{position:static;max-height:min(720px,75dvh);padding:2px;overflow:auto;overscroll-behavior:contain}.ptcPlusSettingsPage .ptcPlusFields{margin:0;padding:2px 8px 12px 2px;border:0;max-height:min(720px,75dvh);overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable}
+@container ptcPlusSettingsPage (max-width:760px){.ptcPlusSettingsPage .ptcPlusSettingsLayout{grid-template-columns:1fr;gap:16px}.ptcPlusSettingsPage .ptcPlusSettingsNav{max-height:none;overflow:visible;gap:10px}.ptcPlusSettingsPage .ptcPlusSettingsNavIntro{display:none}.ptcPlusSettingsPage .ptcPlusSettingsNavList{display:flex;gap:4px;padding:2px;overflow:auto;overscroll-behavior:contain}.ptcPlusSettingsPage .ptcPlusSettingsNavItem{flex:none}.ptcPlusSettingsPage .ptcPlusSettingsNavModule{flex:none}.ptcPlusSettingsPage .ptcPlusSettingsNavModule+.ptcPlusSettingsNavModule{margin-top:0}.ptcPlusSettingsPage .ptcPlusSettingsNavModuleItems{flex-direction:row}.ptcPlusSettingsPage .ptcPlusSettingsNavBadge{display:none}}
+@container ptcPlusSettingsPage (max-width:560px){.ptcPlusSettingsPage .ptcPlusRow{align-items:flex-start;flex-direction:column;gap:6px}.ptcPlusSettingsPage .ptcPlusInput{width:100%}.ptcPlusSettingsPage .ptcPlusCapabilityItem{grid-template-columns:minmax(0,1fr) auto}.ptcPlusSettingsPage .ptcPlusCapabilityItem>.ptcPlusSelect{grid-column:1/-1}.ptcPlusSettingsPage .ptcPlusCapabilityStatistics .ptcPlusBindingFields{grid-template-columns:minmax(0,1fr)}.ptcPlusSettingsPage .ptcPlusFooter{align-items:stretch;flex-direction:column}}
+@media(max-width:560px){.ptcPlusSettingsPage{padding:14px}}
+@container ptcPlusSettingsModal (max-height:320px){.ptcPlusSettingsDialogHead{padding:8px 16px}.ptcPlusSettingsDialogHead p,.ptcPlusSettingsHero,.ptcPlusSettingsNavIntro{display:none}.ptcPlusSettingsDialogContent{padding:4px 16px}}
 .ptcPlusDanger{color:var(--dsw-alias-state-error-primary)}
 .ptcPlusActiveShell{display:inline-flex;align-items:center}.ptcPlusActive{appearance:none;display:inline-flex;height:24px;align-items:center;gap:5px;padding:0 8px;border:1px solid color-mix(in srgb,var(--dsw-alias-state-success-primary,#16794f) 32%,transparent);border-radius:6px;background:var(--dsw-alias-state-success-tertiary,#e7f7ef);color:var(--dsw-alias-state-success-primary,#16794f);cursor:help;font-family:inherit;font-size:12px;font-weight:600;line-height:18px;white-space:nowrap;transition:background-color .14s ease,border-color .14s ease}.ptcPlusActive:hover,.ptcPlusActive[aria-expanded=true]{border-color:color-mix(in srgb,var(--dsw-alias-state-success-primary,#16794f) 48%,transparent);background:color-mix(in srgb,var(--dsw-alias-state-success-primary,#16794f) 16%,var(--dsw-alias-bg-layer-3,#fff))}.ptcPlusActive:focus-visible{outline:2px solid var(--dsw-alias-state-success-primary,#16794f);outline-offset:2px}.ptcPlusReplPopover{position:fixed;z-index:2147483000;inset:auto;display:none;box-sizing:border-box;margin:0;padding:0;border:0;overflow:visible;background:transparent;color:var(--dsw-alias-label-primary,#18191c)}.ptcPlusReplPopover:popover-open,.ptcPlusReplPopover[data-open=true]{display:block}.ptcPlusReplPopover::backdrop{background:transparent}.ptcPlusReplCard{display:flex;max-height:inherit;overflow:hidden;flex-direction:column;border:1px solid color-mix(in srgb,var(--dsw-alias-state-success-primary,#16794f) 22%,var(--dsw-alias-border-l2,rgba(0,0,0,.1)));border-top:3px solid var(--dsw-alias-state-success-primary,#16794f);border-radius:8px;background:var(--dsw-alias-bg-layer-3,#fff);box-shadow:0 14px 36px rgba(16,24,40,.2),0 3px 10px rgba(16,24,40,.1);color:var(--dsw-alias-label-primary,#18191c);white-space:normal}.ptcPlusReplHead{display:grid;flex:none;grid-template-columns:auto minmax(0,1fr);align-items:center;column-gap:8px;padding:11px 13px 10px;border-bottom:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1));background:color-mix(in srgb,var(--dsw-alias-state-success-primary,#16794f) 7%,var(--dsw-alias-bg-layer-3,#fff))}.ptcPlusReplStatusDot{grid-row:1/3;width:8px;height:8px;border-radius:50%;background:var(--dsw-alias-state-success-primary,#16794f);box-shadow:0 0 0 3px color-mix(in srgb,var(--dsw-alias-state-success-primary,#16794f) 14%,transparent)}.ptcPlusReplTitle,.ptcPlusReplSummary{display:block;min-width:0}.ptcPlusReplTitle{font-size:13px;font-weight:600;line-height:19px}.ptcPlusReplSummary{min-height:16px;overflow-wrap:anywhere;color:var(--dsw-alias-label-tertiary,#74777d);font-size:11px;line-height:16px}.ptcPlusReplList{min-height:0;margin:0;padding:5px 0;overflow:auto;overscroll-behavior:contain;list-style:none;scrollbar-gutter:stable}.ptcPlusReplBinding{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:4px 10px;padding:7px 12px}.ptcPlusReplBinding:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(38,49,72,.06))}.ptcPlusReplIdentity{display:flex;min-width:0;align-items:center;gap:7px}.ptcPlusReplName{min-width:0;overflow:hidden;font:12px/18px ui-monospace,SFMono-Regular,Consolas,monospace;text-overflow:ellipsis;white-space:nowrap}.ptcPlusReplKind{flex:none;padding:1px 6px;border:1px solid color-mix(in srgb,currentColor 22%,transparent);border-radius:999px;background:color-mix(in srgb,currentColor 10%,transparent);font-size:10px;font-weight:600;line-height:15px}.ptcPlusReplKind[data-kind=variable]{color:var(--dsw-alias-state-business-primary,#315fbd)}.ptcPlusReplKind[data-kind=function]{color:#7651b5}.ptcPlusReplKind[data-kind=class]{color:var(--dsw-alias-state-warn-primary,#946200)}.ptcPlusReplKind[data-kind=import]{color:#14766f}.ptcPlusReplPreview{grid-column:1;min-width:0;overflow:hidden;color:var(--dsw-alias-label-tertiary,#74777d);font:11px/16px ui-monospace,SFMono-Regular,Consolas,monospace;text-overflow:ellipsis;white-space:nowrap}.ptcPlusReplInspect{grid-column:2;grid-row:1/3;display:inline-flex;align-items:center;gap:4px;padding:3px 5px;border:0;border-radius:4px;background:transparent;color:var(--dsw-alias-label-secondary,#52565d);cursor:pointer;font:500 11px/17px inherit;white-space:nowrap}.ptcPlusReplInspect:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(38,49,72,.06));color:var(--dsw-alias-state-business-primary,#4d6bfe)}.ptcPlusReplInspect:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary,#4d6bfe);outline-offset:1px}.ptcPlusReplDefinition{grid-column:1/-1;min-width:0;margin-top:4px;padding:8px;border-left:2px solid var(--dsw-alias-state-business-primary,#4d6bfe);background:var(--dsw-alias-bg-layer-2,rgba(38,49,72,.03))}.ptcPlusReplLocation{display:block;margin-bottom:5px;color:var(--dsw-alias-label-tertiary,#74777d);font-size:10px;line-height:15px}.ptcPlusReplCode{max-height:180px;margin:0;overflow:auto;color:inherit;font:11px/16px ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere}.ptcPlusReplEmpty,.ptcPlusReplMore{display:block;color:var(--dsw-alias-label-tertiary,#74777d)}.ptcPlusReplEmpty{padding:18px 13px;font-size:12px;line-height:18px}.ptcPlusReplMore{padding:8px 13px;border-top:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1));background:var(--dsw-alias-bg-layer-2,rgba(38,49,72,.03));font-size:11px;line-height:17px}
 .ptcPlusReplTabs{display:flex;flex:none;padding:6px 8px 0;border-bottom:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1))}.ptcPlusReplTab{flex:1;padding:5px 6px;border:0;border-bottom:2px solid transparent;background:transparent;color:var(--dsw-alias-label-secondary,#52565d);cursor:pointer;font-family:inherit;font-size:11px;font-weight:600;line-height:17px}.ptcPlusReplTab[aria-selected=true]{border-bottom-color:var(--dsw-alias-state-business-primary,#4d6bfe);color:var(--dsw-alias-label-primary,#18191c)}.ptcPlusGlobalPane{display:flex;min-height:0;flex-direction:column;gap:8px;padding:8px 12px}.ptcPlusGlobalList{min-height:0;margin:0 -12px -8px;padding:5px 0;overflow:auto;list-style:none}.ptcPlusGlobalItem{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:6px 10px;padding:7px 12px;border-radius:8px}.ptcPlusGlobalItem:hover{background:var(--dsw-alias-interactive-bg-hover)}.ptcPlusGlobalItem .ptcPlusGlobalSource,.ptcPlusGlobalItem .ptcPlusReplEmpty{grid-column:1/-1}.ptcPlusAuthoringDraft{display:flex;flex-direction:column;gap:6px;padding:10px 12px;border:0.5px solid var(--dsw-alias-border-l4);border-radius:12px;background:var(--dsw-alias-bg-layer-3)}.ptcPlusGlobalSource{max-height:180px;margin:6px 0 0;padding:8px 10px;overflow:auto;background:var(--dsw-alias-markdown-code-block);border-radius:8px;font:12px/18px ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere}
@@ -30683,7 +30720,7 @@
 .ptcPlusToolBody{margin:4px 0 8px 23px;border-left:2px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1));background:var(--dsw-alias-bg-layer-2,rgba(38,49,72,.03))}.ptcPlusToolSection{display:flex;min-width:0;flex-direction:column;gap:4px;padding:9px 11px}.ptcPlusToolSection+.ptcPlusToolSection{border-top:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1))}.ptcPlusToolSectionLabel{color:var(--dsw-alias-label-tertiary,#74777d);font-size:10px;font-weight:600;line-height:16px;text-transform:uppercase}.ptcPlusToolCode{max-height:320px;margin:0;overflow:auto;color:inherit;font:12px/18px ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere}.ptcPlusIoCard{display:flex;flex-direction:column;border:1px solid var(--dsw-alias-border-l1,rgba(0,0,0,.1));border-radius:12px;background:var(--dsw-alias-markdown-code-block,rgba(38,49,72,.06));overflow:hidden}.ptcPlusIoText{max-height:320px;margin:0;padding:12px 16px;overflow:auto;color:var(--dsw-alias-label-secondary,#52565d);font:12px/18px ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere}.ptcPlusIoText[data-error]{color:var(--dsw-alias-state-error-primary,#c43d3d)}.ptcPlusInspect{display:inline-flex;align-self:flex-start;align-items:center;gap:4px;margin:4px 0 2px 4px;padding:2px 8px;border:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1));border-radius:999px;background:var(--dsw-alias-bg-base,#fff);color:var(--dsw-alias-label-secondary,#52565d);cursor:pointer;opacity:0;font-size:11px;line-height:16px;transition:opacity .1s ease;display:inline-flex}.ptcPlusTool:hover .ptcPlusInspect,.ptcPlusInspect:focus-visible{opacity:1}.ptcPlusInspect:hover{background:var(--dsw-alias-interactive-bg-hover-solid,rgba(38,49,72,.06));color:var(--dsw-alias-label-primary,#18191c)}
 .ptcPlusAuthorButtonShell{display:inline-flex;width:28px;height:28px;flex:none;align-items:center;justify-content:center}.ptcPlusAuthorButton{appearance:none;display:inline-flex;box-sizing:border-box;width:28px;height:28px;align-items:center;justify-content:center;padding:0;border:0;border-radius:6px;background:transparent;color:var(--dsw-alias-label-secondary,#52565d);cursor:pointer}.ptcPlusAuthorButton:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(38,49,72,.06));color:var(--dsw-alias-state-business-primary,#4d6bfe)}.ptcPlusAuthorButton:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary,#4d6bfe);outline-offset:1px}.ptcPlusAuthorButtonShell[data-text=true]{width:auto}.ptcPlusAuthorButtonLabel{padding:0 4px;font-size:12px;line-height:18px;font-weight:500}.ptcPlusComposerNotice{max-width:160px;color:var(--dsw-alias-label-secondary,#52565d);font-size:11px;line-height:17px;overflow-wrap:anywhere}.ptcPlusButton>svg{flex:none;margin-right:5px;vertical-align:-2px}
 @media(max-width:760px){.ptcPlusBindingsGrid{grid-template-columns:1fr}.ptcPlusBindingFields{grid-template-columns:1fr}.ptcPlusBindingField[data-wide=true]{grid-column:auto}.ptcPlusBindingSourceGrid{grid-template-columns:1fr}.ptcPlusBindingDebugBody{grid-template-columns:1fr}.ptcPlusBindingDebugBody .ptcPlusButton{width:100%}.ptcPlusBindingDebugWarning{grid-column:1}}
-@media(max-width:860px){.ptcPlusSettingsModal.ptcPlusSettingsModal{width:min(920px,calc(100vw - 32px))}.ptcPlusSettingsLayout{grid-template-columns:1fr;gap:16px}.ptcPlusSettingsNav{position:static;gap:10px}.ptcPlusSettingsNavIntro{display:none}.ptcPlusSettingsNavList{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:4px}.ptcPlusSettingsNavStatus{margin-top:0}.ptcPlusSettingsLayout .ptcPlusFields{padding-top:0}}
+@media(max-width:860px){.ptcPlusSettingsModal.ptcPlusSettingsModal{width:min(920px,calc(100vw - 32px))}.ptcPlusSettingsLayout{grid-template-columns:1fr;gap:16px}.ptcPlusSettingsNav{position:static;gap:10px}.ptcPlusSettingsDialog .ptcPlusSettingsNav{max-height:none;overflow:visible}.ptcPlusSettingsNavIntro{display:none}.ptcPlusSettingsNavList{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:4px}.ptcPlusSettingsLayout .ptcPlusFields{padding-top:0}}
 @media(max-width:560px){.ptcPlusHeader{padding:12px}.ptcPlusFields{margin:0 12px}.ptcPlusSettingsModal.ptcPlusSettingsModal{width:calc(100vw - 16px);height:calc(100dvh - 16px);border-radius:12px}.ptcPlusSettingsDialog .ptcPlusFields{margin:0}.ptcPlusSettingsDialogContent{padding:14px}.ptcPlusSettingsDialogHead{padding:14px}.ptcPlusSettingsHero{align-items:flex-start;flex-direction:column;gap:10px;margin-bottom:14px;padding-bottom:14px}.ptcPlusSettingsNavItem{padding:6px 8px}.ptcPlusSettingsNavBadge{display:none}.ptcPlusSettingsLayout .ptcPlusGroup{padding:10px 12px}.ptcPlusGroup[data-experimental=true]{padding:12px}.ptcPlusRow{align-items:flex-start;flex-direction:column;gap:6px;padding:10px 0}.ptcPlusInput{width:100%}.ptcPlusFooter,.ptcPlusBindingsHead{align-items:stretch;flex-direction:column}.ptcPlusButton{width:100%}.ptcPlusFeatures,.ptcPlusToolBody{margin-left:0}.ptcPlusToolSummary .ptcPlusToolDescription{white-space:normal;overflow-wrap:anywhere}}
 @media(prefers-reduced-motion:reduce){.ptcPlusHeader,.ptcPlusChevron,.ptcPlusBody,.ptcPlusButton,.ptcPlusActive,.ptcPlusToolChevron,.ptcPlusReplChevron,.ptcPlusReplDefinitionWrap,.ptcPlusInspect,.ptcPlusBindingDockChevron{transition:none}}
 /* The summary button owns disclosure; definition content is a separate grid item. */
@@ -31209,7 +31246,7 @@
       "settings.pathPlugins": "\u4FA7\u680F Plugins \u2192 dsh-ptc-plus \u2192 \u884C ptc-plus \u2192 Configure",
       "bindings.entry": "\u6761\u76EE\u914D\u7F6E",
       "bindings.close": "\u5173\u95ED\u5168\u5C40\u7ED1\u5B9A\u5DE5\u4F5C\u53F0",
-      "card.description": "PTC \u6A21\u5F0F\u7684\u4F1A\u8BDD\u7EA7 TypeScript REPL\u3002",
+      "card.description": "PTC \u6A21\u5F0F\u7684\u4F1A\u8BDD\u7EA7 TypeScript REPL",
       "status.enabled": "\u5DF2\u542F\u7528",
       "status.disabled": "\u5DF2\u505C\u7528",
       "action.expand": "\u5C55\u5F00 PTC Plus \u8BBE\u7F6E",
@@ -31593,6 +31630,9 @@
       ...CHROME_COPY[locale],
       ...Object.assign({}, ...CONFIG_GROUPS.map((group) => ({
         [`group.${group.key}`]: locale === "en" ? group.labelEn : group.label
+      }))),
+      ...Object.assign({}, ...CONFIG_MODULES.map((module) => ({
+        [`module.${module.key}`]: locale === "en" ? module.labelEn : module.label
       }))),
       ...Object.assign({}, ...CONFIG_FIELDS.map((field) => fieldCopy(field, locale)))
     })])

@@ -282,7 +282,7 @@ export function inspectLog(events, scenario, expectedRuntime) {
       continue
     }
   }
-  for (const result of results.values()) {
+  for (const result of [...results.values(), ...editAudit.derivedExecutions]) {
     if (result.journalStatus === undefined && !editAudit.rejectedCallIds.has(result.callId)) {
       failures.push('PTC transport result ' + result.callId + ' has no journal')
     }
@@ -292,8 +292,11 @@ export function inspectLog(events, scenario, expectedRuntime) {
     if (result.outputChars > MAX_MODEL_RESULT_CHARS) {
       failures.push('capability result ' + result.callId + ' exceeds the ' + MAX_MODEL_RESULT_CHARS + '-character model-content budget (' + result.outputChars + ' chars)')
     }
-    const expectedRejection = result.isError && result.journal?.status === 'noop'
-      && result.journal.diagnostics.some(diagnostic => allowedDiagnosticCodes.has(diagnostic.code))
+    const expectedDiagnostic = result.diagnostics.some(diagnostic => diagnostic.severity === 'error'
+      && allowedDiagnosticCodes.has(diagnostic.code))
+    const expectedRejection = result.isError && expectedDiagnostic
+      && (result.journal?.status === 'noop' || (result.kind === 'derived'
+        && expect.allowedJournalStatuses?.includes(result.journalStatus)))
     if (result.isError && !expectedRejection) failures.push('tool result reports error for ' + result.callId)
     for (const diagnostic of result.diagnostics) {
       const rendered = diagnostic.severity + '[' + diagnostic.code + ']: ' + diagnostic.message
@@ -338,7 +341,7 @@ export function inspectLog(events, scenario, expectedRuntime) {
   if (expect.maxCells !== undefined && timeline.length > expect.maxCells) {
     failures.push(timeline.length + ' cells exceed scenario maximum ' + expect.maxCells)
   }
-  const statuses = timeline.map(cell => cell.journalStatus).filter(status => status !== undefined)
+  const statuses = [...timeline, ...editAudit.derivedExecutions].map(cell => cell.journalStatus).filter(status => status !== undefined)
   if (Array.isArray(expect.allowedJournalStatuses)) {
     for (const status of statuses) {
       if (!expect.allowedJournalStatuses.includes(status)) failures.push('journal status ' + status + ' is not allowed by scenario')
@@ -426,7 +429,7 @@ export function inspectLog(events, scenario, expectedRuntime) {
       failures.push('binding declaration cell completion hasValue is ' + String(timeline[declarationIndex]?.completion?.hasValue) + ' instead of ' + expect.declarationCellHasValue)
     }
   }
-  const completionValues = timeline
+  const completionValues = [...timeline, ...editAudit.derivedExecutions]
     .filter(cell => cell.completion?.kind === 'return' && cell.completion.hasValue)
     .map(cell => cell.completion.value)
   for (const expected of expect.completionEqualsAny ?? []) {
@@ -493,6 +496,7 @@ export function inspectLog(events, scenario, expectedRuntime) {
     toolCallCount: calls.size,
     toolResultCount: results.size,
     timeline,
+    derivedExecutions: editAudit.derivedExecutions,
     finalAnswerChars: finalAnswer.length,
     reasoningChars,
     ...(bindingWorkflow === undefined ? {} : { bindingWorkflow }),

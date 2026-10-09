@@ -7,7 +7,7 @@ import { isHostComponent, isHostIconComponent } from './client-host-compat.js'
  */
 export function createReplView(React, deps) {
   const {
-    CodeBlock, featureEnabled, normalizeReplMemorySnapshot,
+    CodeBlock, Select, featureEnabled, normalizeReplMemorySnapshot,
     unavailableReplMemorySnapshot, useSessionPreset, sessionUsesPtcPreset,
     useWorkbenchController, UserBindingsWorkbench,
     icons: { search: IconSearchOutline16, chevron: IconChevronDownOutline14 },
@@ -73,10 +73,9 @@ export function createReplView(React, deps) {
               isHostIconComponent(IconSearchOutline16) ? h(IconSearchOutline16, { size: 16 }) : null,
               h('input', { value: query, onChange: event => setQuery(event.target.value),
                 placeholder: t('console.search'), 'aria-label': t('console.search') })),
-            h('select', { className: 'ptcPlusSelect', value: kind, onChange: event => setKind(event.target.value),
-              'aria-label': t('console.kind') },
-              ['all', 'variable', 'function', 'class', 'import'].map(value => h('option', { key: value, value },
-                t(value === 'all' ? 'console.allKinds' : `memory.kind.${value}`))))),
+            h(Select, { value: kind, onChange: setKind, label: t('console.kind'),
+              options: ['all', 'variable', 'function', 'class', 'import'].map(value => ({ value,
+                label: t(value === 'all' ? 'console.allKinds' : `memory.kind.${value}`) })) })),
           h('div', { className: 'ptcPlusObservations' },
             h('table', { className: 'ptcPlusObservationTable', 'aria-label': t('console.session') },
               h('thead', null, h('tr', null,

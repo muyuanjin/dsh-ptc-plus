@@ -14,15 +14,16 @@ const options = {
   entryPoints: [entry],
   bundle: true,
   platform: 'browser',
-  format: 'iife',
+  format: 'cjs',
   target: 'chrome120',
   write: false,
-  define: {
-    __PTC_PLUS_CLIENT_MODULE_ID__: JSON.stringify(packageJson.name),
-  },
+  define: { __PTC_PLUS_CLIENT_MODULE_ID__: JSON.stringify(packageJson.name) },
+  banner: { js: `window.__ModuleLoader__.load({ id: ${JSON.stringify(packageJson.name)}, factory: (require) => { const module = { exports: {} };` },
+  footer: { js: 'return module.exports.createClientPlugin(require); } });' },
   sourcemap: false,
   external: [
     'react',
+    'react-dom',
     '@deepseek-ai/dsh-client-*',
   ],
 }

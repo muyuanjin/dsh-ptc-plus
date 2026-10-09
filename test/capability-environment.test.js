@@ -36,6 +36,113 @@ const schema = name => ({ name, description: `Owner contract for ${name}.`, para
 const sections = [{ name: 'tools:sdk', text: 'native sdk' }, { name: 'tool:closed_capability', text: 'closed guidance' }]
 const agentFor = (session, id = session.id) => ({ id, session, signal: new AbortController().signal })
 
+test('session catalog observation requires the same active PTC agent and returns saved, temporary and effective facts', async t => {
+  let agents = [agentFor(Session.create('observed-session'))]
+  let releaseAssembly
+  let holdAssembly = false
+  const ctx = { agents: { list: () => agents }, systemPrompt: { assemble: async () => {
+    if (holdAssembly) await new Promise(resolve => { releaseAssembly = resolve })
+    return { sections: [] }
+  } } }
+  const env = createCapabilityEnvironment({ ctx, config: config({ 'tools.probe': 'full' }),
+    toolSchemasForAgent: () => [schema('run_code'), schema('probe')] })
+  t.after(() => env.dispose())
+  await acceptPreparation(env, agents[0], [])
+  const before = agents[0].session.snapshotEvents().length
+  const catalog = await env.describeSessionCatalog({ sessionId: 'observed-session' }, agents[0].signal)
+  assert.deepEqual(catalog.find(entry => entry.id === 'tools.probe') && {
+    saved: catalog.find(entry => entry.id === 'tools.probe').saved,
+    sessionSourceSelection: catalog.find(entry => entry.id === 'tools.probe').sessionSourceSelection,
+    temporary: catalog.find(entry => entry.id === 'tools.probe').temporary,
+    effective: catalog.find(entry => entry.id === 'tools.probe').effective,
+    source: catalog.find(entry => entry.id === 'tools.probe').source,
+  }, { saved: 'full', sessionSourceSelection: 'full', temporary: 'inherit', effective: 'full', source: { kind: 'host' } })
+  assert.equal(agents[0].session.snapshotEvents().length, before)
+  await assert.rejects(env.describeSessionCatalog({ sessionId: 'missing' }), /active PTC session/)
+  agents = []
+  await assert.rejects(env.describeSessionCatalog({ sessionId: 'observed-session' }), /active PTC session/)
+  agents = [agentFor(Session.create('observed-session'))]
+  const controller = new AbortController()
+  controller.abort()
+  await assert.rejects(env.describeSessionCatalog({ sessionId: 'observed-session' }, controller.signal), /abort/i)
+  agents = [agentFor(Session.create('observed-session'))]
+  holdAssembly = true
+  const pending = env.describeSessionCatalog({ sessionId: 'observed-session' }, agents[0].signal)
+  while (!releaseAssembly) await new Promise(resolve => setImmediate(resolve))
+  agents = [agentFor(Session.create('observed-session'))]
+  releaseAssembly()
+  await assert.rejects(pending, /no longer available/)
+})
+
+for (const frozenClosed of [true, false]) test(`session catalog preserves frozen ${frozenClosed ? 'closed' : 'automatic'} source after opposite global save without refresh, including cold observation`, async t => {
+  const hostSections = [{ name: 'mcp-resource-servers', text: 'as the server argument: ["docs"].' },
+    { name: 'mcp:docs', text: 'Docs server' }]
+  const schemas = ['run_code', 'probe', 'mcp__docs__search', 'read_mcp_resource'].map(schema)
+  const sourceTool = frozenClosed ? 'full' : 'on-demand'
+  const source = config({ ...(frozenClosed ? { 'mcpServers.docs': 'closed' } : {}),
+    'tools.probe': sourceTool, 'tools.mcp__docs__search': 'on-demand', 'mcp.docs': 'full' })
+  const current = config({ ...(!frozenClosed ? { 'mcpServers.docs': 'closed' } : {}),
+    'tools.probe': frozenClosed ? 'on-demand' : 'full', 'tools.mcp__docs__search': 'closed', 'mcp.docs': 'closed' })
+  const agent = agentFor(Session.create(`frozen-catalog-${frozenClosed}`))
+  agent.runMaintenance = operation => operation(agent.signal)
+  let agents = [agent]
+  const ctx = { agents: { list: () => agents }, systemPrompt: { assemble: async () => ({ sections: hostSections }) } }
+  const env = createCapabilityEnvironment({ ctx, config: source, toolSchemasForAgent: () => schemas })
+  t.after(() => env.dispose())
+  await acceptPreparation(env, agent, hostSections)
+  await env.change(agent, { scope: 'session', id: 'mcpServers.docs', selection: 'automatic' }, agent.signal)
+  env.reconfigure(current)
+  const sourceBefore = structuredClone(env.describe(agent).sourceSettings)
+  const eventsBefore = agent.session.snapshotEvents()
+  const catalog = await env.describeSessionCatalog({ sessionId: agent.session.id }, agent.signal)
+  const byId = id => catalog.find(entry => entry.id === id)
+  assert.equal(byId('mcpServers.docs').saved, frozenClosed ? 'automatic' : 'closed')
+  assert.equal(byId('mcpServers.docs').sessionSourceSelection, frozenClosed ? 'closed' : 'automatic')
+  assert.equal(byId('mcpServers.docs').temporary, 'automatic')
+  assert.equal(byId('mcpServers.docs').effective, 'enabled')
+  assert.equal(byId('tools.probe').sessionSourceSelection, sourceTool)
+  assert.equal(byId('tools.probe').saved, frozenClosed ? 'on-demand' : 'full')
+  assert.equal(byId('tools.mcp__docs__search').sessionSourceSelection, 'on-demand')
+  assert.equal(byId('tools.mcp__docs__search').saved, 'closed')
+  assert.equal(byId('mcp.docs').sessionSourceSelection, 'full')
+  assert.equal(byId('mcp.docs').saved, 'closed')
+  assert.deepEqual(agent.session.snapshotEvents(), eventsBefore, 'Catalog observation must not append commands or model messages.')
+  assert.deepEqual(env.describe(agent).sourceSettings, sourceBefore)
+  const restored = agentFor(Session.create(agent.session.id, eventsBefore, agent.session.header))
+  agents = [restored]
+  const cold = createCapabilityEnvironment({ ctx, config: current, toolSchemasForAgent: () => schemas })
+  t.after(() => cold.dispose())
+  const restoredEventsBefore = restored.session.snapshotEvents()
+  const observed = await cold.describeSessionCatalog({ sessionId: restored.session.id }, restored.signal)
+  assert.deepEqual(observed, catalog, 'Cold catalog must recover frozen source facts from the recorded plan.')
+  assert.equal(cold.stateFor(restored), undefined, 'Catalog reads must not prepare a new session environment.')
+  assert.deepEqual(restored.session.snapshotEvents(), restoredEventsBefore)
+  agents = [agent]
+  await env.change(agent, { scope: 'session', id: 'mcpServers.docs', selection: 'inherit' }, agent.signal)
+  const inherited = (await env.catalogFor(agent, agent.signal)).find(entry => entry.id === 'mcpServers.docs')
+  assert.equal(inherited.effective, frozenClosed ? 'closed' : 'enabled')
+  assert.equal(inherited.sessionSourceSelection, frozenClosed ? 'closed' : 'automatic')
+  assert.equal(inherited.saved, frozenClosed ? 'automatic' : 'closed')
+  assert.equal(inherited.temporary, 'inherit')
+  assert.deepEqual(env.describe(agent).sourceSettings, sourceBefore)
+})
+
+test('session catalog leaves inheritance unknown without a validated live or recorded snapshot', async t => {
+  const agent = agentFor(Session.create('catalog-without-source'))
+  const hostSections = [{ name: 'mcp-resource-servers', text: 'as the server argument: ["docs"].' },
+    { name: 'mcp:docs', text: 'Docs server' }]
+  const ctx = { agents: { list: () => [agent] }, systemPrompt: { assemble: async () => ({ sections: hostSections }) } }
+  const env = createCapabilityEnvironment({ ctx, config: config({ 'mcpServers.docs': 'closed' }),
+    toolSchemasForAgent: () => ['run_code', 'probe', 'mcp__docs__search'].map(schema) })
+  t.after(() => env.dispose())
+  const catalog = await env.describeSessionCatalog({ sessionId: agent.session.id }, agent.signal)
+  assert.ok(catalog.length > 0)
+  assert.ok(catalog.every(entry => entry.sessionSourceSelection === 'unknown' && entry.effective === 'pending'))
+  assert.equal(catalog.find(entry => entry.id === 'mcpServers.docs').saved, 'closed')
+  assert.equal(env.stateFor(agent), undefined)
+  assert.deepEqual(agent.session.snapshotEvents(), [])
+})
+
 test('session capability choices preserve their sources across refresh, global changes and cold restore', async t => {
   let saved = { ...config({ 'tools.probe': 'closed' }), capabilityBaseline: '["tools.probe"]' }
   let revision = 1

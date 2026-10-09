@@ -29,7 +29,7 @@ In one complete paired [Command Goat / DeepSeek V4.1 Flash experiment](docs/eval
 
 [Quick start](#quick-start) · [Feature overview](#feature-overview) · [Continuous computation](#continuous-computation-and-language-extensions) · [Editing and call tolerance](#code-editing-and-call-tolerance) · [Global bindings](#global-bindings-reuse-functions-across-sessions) · [Interface and settings](#interface-and-settings) · [Values and recovery](#value-transfer-and-state-recovery)
 
-Current public DSH native/PTC composition does not jointly admit both original top-level `run_code` and `edit_run_code` names. The editor integration remains a [pending architecture boundary](docs/adr/0005-temporary-rejected-cell-edit-transport.md#public-integration-status); internal examples and tests do not establish complete compatibility with the latest official Host.
+PTC mode declares only `run_code` as a top-level tool. Code edits use `tools.edit_run_code` inside a cell and run through DSH's native tool pipeline. See the [editor contract](docs/adr/0005-temporary-rejected-cell-edit-transport.md).
 
 ## Quick start
 
@@ -47,12 +47,12 @@ With the default interface settings, the session has a **REPL** tab; wide screen
 
 To upgrade an installed plugin, run `dsh plugin --profile <profile> add dsh-ptc-plus@latest` and restart that Host. Use `add` with an absolute tarball or pinned Git revision to replace the profile dependency.
 
-Once installed, describe your task to the model as usual. The `run_code` and `edit_run_code` examples below show how the model uses these features. See the [installation guide](docs/installation.md) for other installation methods, Desktop, the local development launcher, upgrades, and troubleshooting.
+Once installed, describe your task to the model as usual. The `run_code` and in-program `tools.edit_run_code` examples below show how the model uses these features. See the [installation guide](docs/installation.md) for other installation methods, Desktop, the local development launcher, upgrades, and troubleshooting.
 
 For Windows source testing, double-click `scripts\run-upstream-dsh.cmd` to fetch the official DSH default branch, reuse an isolated build cache, and load this plugin checkout. The first run installs dependencies and builds DSH; see [upstream source testing](docs/installation.md#upstream-source-development-launcher-windows).
 
 Windows development scripts check that local esbuild can execute. If dependencies are missing or were installed by WSL, they install and pack in a Git-ignored `win_node_modules` directory without replacing the checkout's `node_modules`.
-The sparkle menu also provides session capability controls: search Skills, ordinary tools, MCP servers/resources and MCP tools, choose a temporary session override or explicitly save globally and update this session in one human command. Ordinary refresh preserves temporary choices; a global action clears only the same identity’s temporary choice. Filling a command draft never submits it or overwrites existing text. Named configuration copies exclude temporary choices. Receipts distinguish applied, pending first acceptance and saved-but-not-applied outcomes; no model task is started. On disablement, an accepted step withdraws old plugin declarations; complete unload persists provider handback through public session ownership and reports persistence failures. See [provider lifecycle](docs/adr/0042-persist-provider-availability-and-handback.md).
+The sparkle menu opens a session capability workbench. Search Skills, ordinary tools, MCP servers and their capabilities by type, source, and state, then inspect current global settings, the frozen session inheritance source, temporary choices, and effective choices separately. Saving global settings without refreshing a session leaves its inheritance source unchanged; clearing a temporary choice still uses that frozen source. An automatic strategy does not predict the final allocation. Session-only and globally saved choices have explicit scopes. Multiple pending choices run as individual human commands; unconfirmed drafts remain available to retry after a partial failure. Ordinary refresh preserves temporary choices, while a global action clears only the same identity's temporary choice. The workbench preserves unsent composer text and starts no model task. Command cards show the actual `/capabilities` operation and its receipt. Named configuration copies exclude temporary choices. On disablement, an accepted step withdraws old plugin declarations; complete unload persists provider handback through public session ownership and reports persistence failures. See [provider lifecycle](docs/adr/0042-persist-provider-availability-and-handback.md).
 
 
 ## Feature overview
@@ -132,20 +132,21 @@ This captures the function value at that moment; a static import follows its mod
 
 ### Send only the change
 
-The model can use `edit_run_code` to change the most recent editable cell in the current model turn without resending its complete source. If the second cell above has just completed and the same turn is still running, its filter can be changed to `value >= 10`:
+The model can use `tools.edit_run_code` inside a new `run_code` cell to change the most recent editable cell in the current turn without resending its complete source. If the second cell above has just completed and the same turn is still running, its filter can be changed to `value >= 10`:
 
 ```js
-edit_run_code({
+const receipt = await tools.edit_run_code({
   edits: [{ old_string: 'value >= 8', new_string: 'value >= 10' }]
 })
+return receipt
 ```
 
-An edit **reruns the entire cell**; this example returns `12`. Earlier state changes are not rolled back. If the code writes files or calls external services, rerunning still requires considering duplicate effects. Edits can repair failed code or refine a successful computation.
+An `accepted: true, scheduled: true` receipt means the edit is scheduled. After the outer cell finishes, the entire target cell reruns; its derived result is reported with that `run_code` result, and the next cell reads the revised value (`12` here). Reads later in the accepting cell still see the old state. Earlier state changes are not rolled back. If the code writes files or calls external services, rerunning still requires considering duplicate effects. Edits can repair failed code or refine a successful computation.
 
 Each regular-expression edit requires `pattern`, `flags`, `replacement`, and `expected_matches`. `flags` must be a string; pass `""` explicitly when no flags are needed:
 
 ```js
-edit_run_code({
+await tools.edit_run_code({
   regex_edits: [{ pattern: "value >= 8", flags: "", replacement: "value >= 10", expected_matches: 1 }]
 })
 ```

@@ -24,9 +24,10 @@ import {
   appendRunCodeEvents,
   fixture,
   ptcAgent,
+  runNestedEditCell,
 } from './plugin-fixture.js'
 
-test('canonicalizes proven native miscalls while declared edit calls keep their identity', async (t) => {
+test('canonicalizes proven native miscalls while undeclared editor calls keep their identity for rejection', async (t) => {
   const readSchema = {
     name: 'read',
     parameters: {
@@ -68,7 +69,7 @@ test('canonicalizes proven native miscalls while declared edit calls keep their 
   ]
   const transformed = await state.stream({
     sessionId, signal,
-    tools: [{ name: 'run_code' }, { name: 'edit_run_code' }],
+    tools: [{ name: 'run_code' }],
   }, source)
   const delta = transformed.find(chunk => chunk.type === 'tool-call-delta')
   assert.equal(delta.name, 'run_code')
@@ -93,7 +94,7 @@ test('canonicalizes proven native miscalls while declared edit calls keep their 
   })
   const deepTransport = await state.stream({
     sessionId, signal,
-    tools: [{ name: 'run_code' }, { name: 'edit_run_code' }],
+    tools: [{ name: 'run_code' }],
   }, deepSource)
   const deepCode = JSON.parse(
     deepTransport.find(chunk => chunk.type === 'tool-call-delta').argumentsDelta,
@@ -135,7 +136,7 @@ test('canonicalizes proven native miscalls while declared edit calls keep their 
   })
   const qualified = await state.stream({
     sessionId, signal,
-    tools: [{ name: 'run_code' }, { name: 'edit_run_code' }],
+    tools: [{ name: 'run_code' }],
   }, qualifiedSource)
   const qualifiedDelta = qualified.find(chunk => chunk.type === 'tool-call-delta')
   assert.equal(qualifiedDelta.id, 'native-call-id')
@@ -168,7 +169,7 @@ test('canonicalizes proven native miscalls while declared edit calls keep their 
   ]
   const parallel = await state.stream({
     sessionId, signal,
-    tools: [{ name: 'run_code' }, { name: 'edit_run_code' }],
+    tools: [{ name: 'run_code' }],
   }, parallelSource)
   const parallelDeltas = parallel.filter(chunk => chunk.type === 'tool-call-delta')
   assert.deepEqual(parallelDeltas.map(chunk => [chunk.id, chunk.name]), [
@@ -191,11 +192,11 @@ test('canonicalizes proven native miscalls while declared edit calls keep their 
     return chunk
   })
   assert.deepEqual(await state.stream({
-    sessionId, signal, tools: [{ name: 'run_code' }, { name: 'edit_run_code' }],
+    sessionId, signal, tools: [{ name: 'run_code' }],
   }, editSource), editSource)
   assert.deepEqual(await state.stream({
     sessionId: 'different-session', signal,
-    tools: [{ name: 'run_code' }, { name: 'edit_run_code' }],
+    tools: [{ name: 'run_code' }],
   }, source), source)
 
   const execute = state.listeners.get('tools/execute')[0]
@@ -205,16 +206,20 @@ test('canonicalizes proven native miscalls while declared edit calls keep their 
     assert.match(rejected.error.message, /not a direct PTC tool/)
     assert.equal(rejected.content.length, 1)
     assert.match(rejected.content[0].text, /not a direct PTC tool/)
-    assert.match(rejected.content[0].text, new RegExp(`use run_code or edit_run_code`))
+    assert.match(rejected.content[0].text, /use run_code directly/)
   }
   let nestedEditDispatched = false
   const nestedEdit = await execute({ name: 'edit_run_code', parent: { name: 'run_code' }, agent }, async () => {
     nestedEditDispatched = true
-    return { value: 'must not run' }
+    return { value: 'nested editor dispatch' }
   })
-  assert.equal(nestedEdit.isError, true)
-  assert.equal(nestedEditDispatched, false)
-  assert.match(nestedEdit.content[0].text, /edit_run_code is only callable directly/)
+  assert.deepEqual(nestedEdit, { value: 'nested editor dispatch' })
+  assert.equal(nestedEditDispatched, true)
+  const directEdit = await execute({ name: 'edit_run_code', agent }, async () => {
+    throw new Error('top-level editor must not dispatch')
+  })
+  assert.equal(directEdit.isError, true)
+  assert.match(directEdit.error.message, /must be called through tools\.edit_run_code inside run_code/)
   assert.deepEqual(await execute({ name: 'read', parent: {}, agent }, async () => ({ value: 'nested' })), {
     value: 'nested',
   })
@@ -516,9 +521,9 @@ test('does not revive request policy from an assembly cleared while awaiting', a
   )
   releaseNativePresentation()
   await staleNative
-  assert.equal(replacementOwner.executionRejection({
+  assert.match(replacementOwner.executionRejection({
     name: 'edit_run_code', agent: replacementAgent,
-  }), undefined)
+  }).error.message, /must be called through tools\.edit_run_code inside run_code/)
 })
 
 test('preserves canonical run_code results through the real DSH ToolRuntime pipeline', async (t) => {
@@ -678,52 +683,35 @@ test('preserves canonical run_code results through the real DSH ToolRuntime pipe
     'Execute the next TypeScript cell in this session',
   )
 
+  session.append('turn/start', { turn: 1 })
   const editableSource = 'const editable = 1\nreturn editable'
   const editable = await executeRunCode('editable-cell', {
     code: editableSource,
     description: 'Create an editable cell',
   })
   assert.equal(editable.isError, false)
-  const editCall = session.append('tool/call', {
-    turn: 1,
-    step: 1,
-    callId: 'registered-edit-call',
-    name: 'edit_run_code',
-    arguments: JSON.stringify({ edits: [{ old_string: '= 1', new_string: '= 2' }] }),
-  })
-  const edit = await ctx.tools.execute({
-    name: 'edit_run_code',
-    callId: editCall.data.callId,
-    arguments: { edits: [{ old_string: '= 1', new_string: '= 2' }] },
-    signal,
-    agent,
+  const edit = await executeRunCode('registered-edit-root', {
+    code: 'return await tools.edit_run_code({ edits: [{ old_string: "= 1", new_string: "= 2" }] })',
+    description: 'Schedule a scoped edit of the prior cell',
   })
   assert.equal(edit.isError, false, JSON.stringify(edit))
-  assert.equal(edit.value.edited, true)
-  assert.deepEqual(edit.value.value, 2)
-  session.append('tool/result', {
-    turn: 1,
-    step: 1,
-    message: { source: { kind: 'tool', callId: editCall.data.callId } },
-    ...(edit.meta === undefined ? {} : { meta: edit.meta }),
-  }, { sourceEventSeqs: [editCall.seq] })
-  const malformedEditCall = session.append('tool/call', {
-    turn: 1,
-    step: 1,
-    callId: 'registered-malformed-edit',
-    name: 'edit_run_code',
-    arguments: JSON.stringify({ edits: [{ old_string: '= 2', new_string: '= 2' }] }),
+  assert.deepEqual(edit.value.result, { accepted: true, scheduled: true,
+    target_call_seq: session.events.find(event => event.type === 'tool/call' && event.data.callId === 'editable-cell').seq })
+  assert.ok(edit.meta.dshPtcPlusPostEdit, JSON.stringify({ edit, dispatches: session.events.filter(event => event.type.startsWith('tool/ptc-dispatch')) }))
+  assert.equal(edit.meta.dshPtcPlusPostEdit.meta.dshPtcPlusDerivedRun.code, 'const editable = 2\nreturn editable')
+  assert.match(edit.content.map(block => block.text ?? '').join('\n'), /2/)
+  const edited = await executeRunCode('registered-edit-inspect', {
+    code: 'return editable', description: 'Inspect the derived edit value',
   })
-  const malformedEdit = await ctx.tools.execute({
-    name: 'edit_run_code',
-    callId: malformedEditCall.data.callId,
-    arguments: { edits: [{ old_string: '= 2', new_string: '= 2' }] },
-    signal,
-    agent,
+  assert.equal(edited.value.result, 2)
+  const malformedEdit = await executeRunCode('registered-malformed-edit', {
+    code: 'return await tools.edit_run_code({ edits: [{ old_string: "= 2", new_string: "= 2" }] })',
+    description: 'Reject an unchanged replacement',
   })
   assert.equal(malformedEdit.isError, false)
-  assert.equal(malformedEdit.value.edited, false)
-  assert.match(malformedEdit.value.reason, /old_string and new_string must differ/)
+  assert.equal(malformedEdit.value.result.accepted, false)
+  assert.equal(malformedEdit.value.result.scheduled, false)
+  assert.match(malformedEdit.value.result.reason, /old_string and new_string must differ/)
   await agentScope.dispose()
   await ctx.fiber.dispose()
   assert.deepEqual(Object.getOwnPropertyDescriptor(hostOutput, 'presentationMeta'), originalCallbackDescriptor)
@@ -804,7 +792,7 @@ test('preserves disabled derived edit bindings across visible surface generation
     { sections: [], contexts: [], variables: {}, tools: [state.runCodeDefinition] },
     { agent, scope: agent, signal },
   )
-  const run = async (callId, code) => {
+  const run = async (callId, code, nestedEditor = false) => {
     const argumentsValue = JSON.stringify({ code, description: 'test cell' })
     const assistant = session.append('assistant/message', {
       message: {
@@ -818,9 +806,12 @@ test('preserves disabled derived edit bindings across visible surface generation
       arguments: argumentsValue,
     })
     surfaceNodes = [...surfaceNodes, assistant.seq]
-    const result = await state.ctx.tools.execute({
-      name: 'run_code', callId, arguments: { code, description: 'test cell' }, signal, agent,
-    })
+    const executed = nestedEditor
+      ? await runNestedEditCell(state, { session, agent, callId, code, description: 'test cell',
+        signal, recordSession: 'deferred-result' })
+      : await state.executeRun(session.id, code, {}, { session, callId, description: 'test cell',
+        controller: { signal }, recordSession: 'deferred-result' })
+    const result = executed.result
     const resultEvent = session.append('tool/result', {
       message: { source: { callId } },
       ...(result.meta === undefined ? {} : { meta: result.meta }),
@@ -828,30 +819,13 @@ test('preserves disabled derived edit bindings across visible surface generation
     surfaceNodes = [...surfaceNodes, resultEvent.seq]
     return { call, result }
   }
+  session.append('turn/start', { turn: 1 })
   const source = await run('disabled-edit-source', 'let editableSurface = 1')
   assert.equal(source.result.isError, false)
-  const editArguments = JSON.stringify({ edits: [{ old_string: '1', new_string: '2' }] })
-  const editAssistant = session.append('assistant/message', {
-    message: {
-      role: 'assistant',
-      content: [{ type: 'tool-call', id: 'disabled-edit-call', name: 'edit_run_code', arguments: editArguments }],
-    },
-  })
-  const editCall = session.append('tool/call', {
-    callId: 'disabled-edit-call',
-    name: 'edit_run_code',
-    arguments: editArguments,
-  })
-  surfaceNodes = [...surfaceNodes, editAssistant.seq]
-  const edit = await state.ctx.tools.execute({
-    name: 'edit_run_code',
-    callId: editCall.data.callId,
-    arguments: { edits: [{ old_string: '1', new_string: '2' }] },
-    signal,
-    agent,
-  })
-  assert.equal(edit.isError, false)
-  assert.equal(edit.value.edited, true)
+  const edit = await run('disabled-edit-root',
+    'return await tools.edit_run_code({ edits: [{ old_string: "1", new_string: "2" }] })', true)
+  assert.equal(edit.result.isError, false)
+  assert.deepEqual(edit.result.value, { accepted: true, scheduled: true, target_call_seq: source.call.seq })
   generation = 1
   const inspected = await run('disabled-edit-inspect', 'return editableSurface')
   assert.equal(inspected.result.value, 2)
@@ -940,23 +914,22 @@ test('keeps native tools inside run_code after a later broader assembly', async 
   const mixed = await state.assemble(mixedAssembly, {
     agent, scope: agent, signal: broadSignal,
   })
-  assert.deepEqual(mixed.tools.map(tool => tool.name), ['run_code', 'edit_run_code'])
+  assert.deepEqual(mixed.tools.map(tool => tool.name), ['run_code'])
   assert.equal(agent.ctx.tools.get('edit_run_code')?.name, 'edit_run_code')
 
   const edit = await state.ctx.tools.execute({
     name: 'edit_run_code', callId: 'active-code-only-edit', arguments: { edits: [] },
     agent, signal: codeSignal,
   })
-  assert.equal(edit.isError, false)
-  assert.equal(edit.value.edited, false)
-  assert.match(edit.value.reason, /no run_code cell/)
+  assert.equal(edit.isError, true)
+  assert.match(edit.error.message, /must be called through tools\.edit_run_code inside run_code/)
 
   const broadEdit = await state.ctx.tools.execute({
     name: 'edit_run_code', callId: 'mixed-request-edit', arguments: { edits: [] },
     agent, signal: broadSignal,
   })
-  assert.equal(broadEdit.isError, false)
-  assert.equal(broadEdit.value.edited, false)
+  assert.equal(broadEdit.isError, true)
+  assert.match(broadEdit.error.message, /must be called through tools\.edit_run_code inside run_code/)
 
   const execute = state.listeners.get('tools/execute')[0]
   let dispatched = false
@@ -971,7 +944,7 @@ test('keeps native tools inside run_code after a later broader assembly', async 
   assert.match(native.error.message, /not a direct PTC tool/)
 })
 
-test('preserves both as a distinct PTC presentation across native capability views', async (t) => {
+test('projects the scoped editor and run_code across empty collapse and native capability views', async (t) => {
   const readSchema = {
     name: 'read',
     parameters: { type: 'object', properties: { file_path: { type: 'string' } } },
@@ -982,12 +955,12 @@ test('preserves both as a distinct PTC presentation across native capability vie
   ]) {
     const state = fixture({}, { scopedSchemas: nativeSchemas })
     t.after(() => state.dispose())
-    const session = { id: `both-mode-${id}-session`, events: [{ type: 'turn/start' }] }
-    const agent = ptcAgent(`both-mode-${id}-agent`, session)
+    const session = { id: `ptc-view-${id}-session`, events: [{ type: 'turn/start' }] }
+    const agent = ptcAgent(`ptc-view-${id}-agent`, session)
     const code = `export const ${id}Value = 1\nreturn ${id}Value`
-    const run = await state.runDurable(session.id, code, {}, { session, recordSession: 'deferred-result', callId: `both-mode-${id}-run` })
+    const run = await state.runDurable(session.id, code, {}, { session, recordSession: 'deferred-result', callId: `ptc-view-${id}-run` })
     assert.equal(run.isError, false)
-    appendRunCodeEvents(session.events, `both-mode-${id}-run`, code, run)
+    appendRunCodeEvents(session.events, `ptc-view-${id}-run`, code, run)
     const signal = new AbortController().signal
     const assembly = {
       sections: [
@@ -997,14 +970,14 @@ test('preserves both as a distinct PTC presentation across native capability vie
       contexts: [], variables: {}, tools: [state.runCodeDefinition, ...nativeSchemas],
     }
     const projected = await state.assemble(assembly, { agent, scope: agent, signal })
-    assert.deepEqual(projected.tools.map(tool => tool.name), ['run_code', ...nativeSchemas.map(tool => tool.name)])
-    assert.equal(projected.sections.find(section => section.name === 'tools:ptc-only').text, '')
-    assert.equal(agent.ctx.tools.get('edit_run_code'), undefined)
+    assert.deepEqual(projected.tools.map(tool => tool.name), ['run_code'])
+    assert.match(projected.sections.find(section => section.name === 'tools:ptc-only').text, /`run_code` is the only tool callable directly/)
+    assert.equal(agent.ctx.tools.get('edit_run_code')?.name, 'edit_run_code')
     const repeated = await state.assemble(assembly, {
       agent, scope: agent, signal: new AbortController().signal,
     })
     assert.deepEqual(repeated.tools, projected.tools)
-    assert.equal(agent.ctx.tools.get('edit_run_code'), undefined)
+    assert.equal(agent.ctx.tools.get('edit_run_code')?.name, 'edit_run_code')
     const sdk = projected.sections.find(section => section.name === 'tools:sdk').text
     assert.match(sdk, /^declare const tools: unknown/)
     assert.match(sdk, /declare const capabilities:/)
@@ -1013,7 +986,7 @@ test('preserves both as a distinct PTC presentation across native capability vie
       false,
     )
 
-    const callId = `both-mode-${id}-read`
+    const callId = `ptc-view-${id}-read`
     const source = [
       {
         type: 'tool-call-delta', index: 0, id: callId, name: 'read',
@@ -1027,21 +1000,23 @@ test('preserves both as a distinct PTC presentation across native capability vie
         },
       },
     ]
-    assert.deepEqual(await state.stream({
-      sessionId: session.id, signal, tools: projected.tools,
-    }, source), source)
-
+    const streamed = await state.stream({ sessionId: session.id, signal, tools: projected.tools }, source)
     if (nativeSchemas.length > 0) {
-      let dispatched = false
-      const result = await state.listeners.get('tools/execute')[0]({
-        name: 'read', callId, agent, signal,
-      }, async () => {
-        dispatched = true
-        return { value: 'native' }
-      })
-      assert.deepEqual(result, { value: 'native' })
-      assert.equal(dispatched, true)
+      assert.equal(streamed.find(chunk => chunk.type === 'tool-call-delta').name, 'run_code')
+      assert.equal(streamed.find(chunk => chunk.type === 'tool-call-delta').id, callId)
+    } else {
+      assert.deepEqual(streamed, source)
     }
+    let dispatched = false
+    const result = await state.listeners.get('tools/execute')[0]({
+      name: 'read', callId, agent, signal,
+    }, async () => {
+      dispatched = true
+      return { value: 'native' }
+    })
+    assert.equal(result.isError, true)
+    assert.match(result.error.message, /not a direct PTC tool/)
+    assert.equal(dispatched, false)
   }
 })
 
@@ -1050,11 +1025,11 @@ test('prefers the current PTC collapse section when both generations are present
   for (const { id, currentText, legacyText, expectedTools } of [
     {
       id: 'current-both', currentText: '', legacyText: 'legacy PTC-only guidance',
-      expectedTools: ['run_code', 'read'],
+      expectedTools: ['run_code'],
     },
     {
       id: 'current-ptc', currentText: 'current PTC-only guidance', legacyText: '',
-      expectedTools: ['run_code', 'edit_run_code'],
+      expectedTools: ['run_code'],
     },
   ]) {
     const state = fixture({}, { scopedSchemas: [readSchema] })
@@ -1076,9 +1051,7 @@ test('prefers the current PTC collapse section when both generations are present
     )
     assert.equal(
       projected.sections.find(section => section.name === 'tools:ptc-only').text,
-      currentText === ''
-        ? ''
-        : '`run_code` and `edit_run_code` are the only tools callable directly. Call every native tool declared by the SDK from inside a program.',
+      '`run_code` is the only tool callable directly. Call `tools.edit_run_code` and other SDK tools from inside a program. An accepted edit runs after the current cell finishes.',
     )
   }
 })
@@ -1102,9 +1075,9 @@ test('preserves code-only projection after edit registration expands the base sc
     tools: [state.runCodeDefinition, agent.ctx.tools.get('edit_run_code'), readSchema],
   }
   const projected = await state.assemble(expanded, { agent, scope: agent, signal })
-  assert.deepEqual(projected.tools.map(tool => tool.name), ['run_code', 'edit_run_code'])
+  assert.deepEqual(projected.tools.map(tool => tool.name), ['run_code'])
   assert.equal(projected.sections.find(section => section.name === 'tools:code-only').text,
-    '`run_code` and `edit_run_code` are the only tools callable directly. Call every native tool declared by the SDK from inside a program.')
+    '`run_code` is the only tool callable directly. Call `tools.edit_run_code` and other SDK tools from inside a program. An accepted edit runs after the current cell finishes.')
 })
 
 test('binds execution policy to call identity when dispatch replaces the request signal', async (t) => {
@@ -1128,25 +1101,9 @@ test('binds execution policy to call identity when dispatch replaces the request
       block: { type: 'tool-call', id, name, arguments: argumentsValue },
     },
   ]
-  const editSource = toolCall('replaced-signal-edit', 'edit_run_code', '{"edits":[]}')
   const nativeSource = toolCall('replaced-signal-read', 'read', '{}')
-  assert.deepEqual(await state.stream(streamOptions, editSource), editSource)
   assert.deepEqual(await state.stream(streamOptions, nativeSource), nativeSource)
-
   const replacementSignal = new AbortController().signal
-  const edit = await state.ctx.tools.execute({
-    name: 'edit_run_code', callId: 'replaced-signal-edit', arguments: { edits: [] },
-    agent, signal: replacementSignal,
-  })
-  assert.equal(edit.isError, false)
-  assert.equal(edit.value.edited, false)
-
-  const retired = await state.listeners.get('tools/execute')[0]({
-    name: 'edit_run_code', callId: 'replaced-signal-edit', arguments: { edits: [] },
-    agent, signal: replacementSignal,
-  }, async () => ({ value: 'must not run' }))
-  assert.equal(retired.isError, true)
-
   const execute = state.listeners.get('tools/execute')[0]
   let dispatched = false
   const native = await execute({
@@ -1158,6 +1115,12 @@ test('binds execution policy to call identity when dispatch replaces the request
   assert.equal(native.isError, true)
   assert.equal(dispatched, false)
   assert.match(native.error.message, /not a direct PTC tool/)
+  await state.emit('tools/result', { name: 'read', callId: 'replaced-signal-read', agent }, native)
+  const retired = await execute({
+    name: 'read', callId: 'replaced-signal-read', agent, signal: replacementSignal,
+  }, async () => ({ value: 'unbound native dispatch' }))
+  assert.deepEqual(retired, { value: 'unbound native dispatch' })
+
 })
 
 test('does not publish execution policy for an interrupted partial tool call', async (t) => {
@@ -1177,14 +1140,14 @@ test('does not publish execution policy for an interrupted partial tool call', a
   const source = async function* () {
     yield { type: 'block-start', index: 0, blockType: 'tool-call' }
     yield {
-      type: 'tool-call-delta', index: 0, id: 'interrupted-edit', name: 'edit_run_code',
-      argumentsDelta: '{"edits":',
+      type: 'tool-call-delta', index: 0, id: 'interrupted-read', name: 'read',
+      argumentsDelta: '{',
     }
   }
   const stream = state.listeners.get('llm/stream')[0]({
     sessionId: session.id,
     signal,
-    tools: [{ name: 'run_code' }, { name: 'edit_run_code' }],
+    tools: [{ name: 'run_code' }],
   }, source)
   for await (const chunk of stream) {
     if (chunk.type === 'tool-call-delta') break
@@ -1192,15 +1155,14 @@ test('does not publish execution policy for an interrupted partial tool call', a
 
   let dispatched = false
   const result = await state.listeners.get('tools/execute')[0]({
-    name: 'edit_run_code', callId: 'interrupted-edit', arguments: { edits: [] },
+    name: 'read', callId: 'interrupted-read', arguments: {},
     agent, signal: new AbortController().signal,
   }, async () => {
     dispatched = true
-    return { value: 'must not run' }
+    return { value: 'unbound native dispatch' }
   })
-  assert.equal(result.isError, true)
-  assert.equal(dispatched, false)
-  assert.match(result.error.message, /not declared for this request/)
+  assert.deepEqual(result, { value: 'unbound native dispatch' })
+  assert.equal(dispatched, true)
 })
 
 test('keeps one code composition across both overlapping assembly completion orders', async (t) => {
@@ -1232,32 +1194,32 @@ test('keeps one code composition across both overlapping assembly completion ord
 
     if (codeCompletesFirst) {
       finishCode(codeInput)
-      assert.deepEqual((await code).tools.map(tool => tool.name), ['run_code', 'edit_run_code'])
+      assert.deepEqual((await code).tools.map(tool => tool.name), ['run_code'])
       finishBroad(broadInput)
-      assert.deepEqual((await broad).tools.map(tool => tool.name), ['run_code', 'edit_run_code'])
+      assert.deepEqual((await broad).tools.map(tool => tool.name), ['run_code'])
     } else {
       finishBroad(broadInput)
-      assert.deepEqual((await broad).tools.map(tool => tool.name), ['run_code', 'edit_run_code'])
+      assert.deepEqual((await broad).tools.map(tool => tool.name), ['run_code'])
       finishCode(codeInput)
-      assert.deepEqual((await code).tools.map(tool => tool.name), ['run_code', 'edit_run_code'])
+      assert.deepEqual((await code).tools.map(tool => tool.name), ['run_code'])
     }
 
-    const edit = await state.ctx.tools.execute({
-      name: 'edit_run_code', callId: `overlap-edit-${suffix}`, arguments: { edits: [] },
-      agent, signal: codeSignal,
-    })
-    assert.equal(edit.isError, false)
-    assert.equal(edit.value.edited, false)
-    const broadEdit = await state.ctx.tools.execute({
-      name: 'edit_run_code', callId: `overlap-broad-edit-${suffix}`, arguments: { edits: [] },
-      agent, signal: broadSignal,
-    })
-    assert.equal(broadEdit.isError, false)
-    assert.equal(broadEdit.value.edited, false)
+    const execute = state.listeners.get('tools/execute')[0]
+    for (const signal of [codeSignal, broadSignal]) {
+      const native = await execute({ name: 'read', callId: `overlap-read-${suffix}`, agent, signal },
+        async () => { throw new Error('captured PTC requests must not dispatch native tools directly') })
+      assert.equal(native.isError, true)
+      assert.match(native.error.message, /not a direct PTC tool/)
+      const edit = await execute({ name: 'edit_run_code', callId: `overlap-edit-${suffix}`, agent, signal },
+        async () => { throw new Error('editor must remain scoped') })
+      assert.equal(edit.isError, true)
+      assert.match(edit.error.message, /must be called through tools\.edit_run_code inside run_code/)
+    }
     assert.equal(agent.registration.disposals, 0)
     await state.emit('agent/disposed', { agent })
     assert.equal(agent.registration.disposals, 1)
-    assert.equal(agent.presentation.disposals, 1)
+    assert.equal(agent.presentation.disposals, 0)
+    assert.deepEqual(agent.presentation.calls, [])
   }
 })
 
@@ -1281,12 +1243,12 @@ test('keeps the first captured composition when an earlier inconclusive assembly
     contexts: [], variables: {}, tools: [state.runCodeDefinition],
   }
   const code = await state.assemble(codeInput, { agent, scope: agent })
-  assert.deepEqual(code.tools.map(tool => tool.name), ['run_code', 'edit_run_code'])
+  assert.deepEqual(code.tools.map(tool => tool.name), ['run_code'])
 
   finishMixed()
-  assert.deepEqual((await mixed).tools.map(tool => tool.name), ['run_code', 'edit_run_code'])
+  assert.deepEqual((await mixed).tools.map(tool => tool.name), ['run_code'])
   const repeated = await state.assemble(mixedResult, { agent, scope: agent })
-  assert.deepEqual(repeated.tools.map(tool => tool.name), ['run_code', 'edit_run_code'])
+  assert.deepEqual(repeated.tools.map(tool => tool.name), ['run_code'])
 })
 
 test('invalidates request-bound direct policy when its owner is disposed', async () => {
@@ -1326,15 +1288,15 @@ test('invalidates request-bound direct policy when its owner is disposed', async
     for await (const chunk of stream(streamOptions, staleStream)) streamed.push(chunk)
     assert.deepEqual(streamed, source)
     let dispatched = false
-    const edit = await execute({
-      name: 'edit_run_code', callId: `disposed-edit-${disposal}`, arguments: { edits: [] },
+    const native = await execute({
+      name: 'read', callId: 'disposed-read', arguments: {},
       agent, signal,
     }, async () => {
       dispatched = true
-      return { value: 'must not run' }
+      return { value: 'unbound native dispatch' }
     })
-    assert.equal(edit.isError, true)
-    assert.equal(dispatched, false)
+    assert.deepEqual(native, { value: 'unbound native dispatch' })
+    assert.equal(dispatched, true)
     if (disposal !== 'plugin') await state.dispose()
   }
 })
@@ -1376,8 +1338,8 @@ test('keeps section rendering pure and retains per-agent edit ownership after as
   const mixedResult = await state.assemble(mixedAssembly, {
     agent: mixedAgent, scope: mixedAgent,
   })
-  assert.deepEqual(mixedResult.tools.map(tool => tool.name), ['run_code', 'read'])
-  assert.equal(mixedAgent.ctx.tools.get('edit_run_code'), undefined)
+  assert.deepEqual(mixedResult.tools.map(tool => tool.name), ['run_code'])
+  assert.equal(mixedAgent.ctx.tools.get('edit_run_code')?.name, 'edit_run_code')
 
   const provisionalAgent = ptcAgent('provisional-mixed', { id: 'provisional-mixed', events: [] })
   const initial = { sections: [], contexts: [], variables: {}, tools: [state.runCodeDefinition] }
@@ -1385,7 +1347,7 @@ test('keeps section rendering pure and retains per-agent edit ownership after as
   const provisionalResult = await state.assemble(initial, {
     agent: provisionalAgent, scope: provisionalAgent,
   }, async () => final)
-  assert.deepEqual(provisionalResult.tools.map(tool => tool.name), ['run_code', 'edit_run_code'])
+  assert.deepEqual(provisionalResult.tools.map(tool => tool.name), ['run_code'])
   assert.deepEqual(provisionalAgent.registration.calls, ['edit_run_code'])
   assert.equal(provisionalAgent.registration.disposals, 0)
   assert.equal(provisionalAgent.presentation.disposals, 0)

@@ -4,13 +4,16 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
-import { renderPrompt } from '@deepseek-ai/dsh-system-prompt'
+import { Context } from '@deepseek-ai/cordis'
+import { createScope } from '@deepseek-ai/dsh-scope'
+import { renderPrompt, SystemPrompt } from '@deepseek-ai/dsh-system-prompt'
+import { ToolRuntime } from '@deepseek-ai/dsh-tools'
 import { readRuntimeMessage } from '../internal/runtime-messages.js'
 import { JOURNAL_KEY } from '../internal/session-journal.js'
-import { JOURNAL_VERSION } from '../internal/session-journal-schema.js'
+import { JOURNAL_VERSION, POST_EDIT_KEY } from '../internal/session-journal-schema.js'
 import { USER_BINDING_DRAFT_META_KEY } from '../internal/user-binding-draft-projection.js'
 import { createUserBindingsSnapshot, storedUserBindingsDocument, USER_BINDINGS_META_KEY } from '../internal/user-bindings.js'
-import { appendRunCodeEvents, fixture, orderedSurfaceSession, ptcAgent } from './plugin-fixture.js'
+import { appendOnlySession, appendRunCodeEvents, fixture, orderedSurfaceSession, ptcAgent, runNestedEditCell } from './plugin-fixture.js'
 
 const codeOnlyAssembly = state => ({
   sections: [
@@ -21,6 +24,27 @@ const codeOnlyAssembly = state => ({
   variables: {},
   tools: [state.runCodeDefinition],
 })
+
+async function publicModelToolSchemas(assembly) {
+  const ctx = new Context()
+  new SystemPrompt(ctx, { includeHarnessIdentity: false, includeRuntimeContext: false, persona: '' })
+  new ToolRuntime(ctx, { mode: 'ptc' })
+  const agent = { id: 'model-schema-snapshot' }
+  const scope = createScope(ctx, agent)
+  try {
+    for (const definition of assembly.tools) {
+      if (definition.name === 'run_code') {
+        Object.defineProperties(ctx.tools.get('run_code', agent), Object.getOwnPropertyDescriptors(definition))
+      } else {
+        scope.ctx.effect(() => scope.ctx.tools.register(definition))
+      }
+    }
+    return ctx.tools.schemas(agent)
+  } finally {
+    await scope.dispose()
+    await ctx.fiber.dispose()
+  }
+}
 
 function document(value) {
   return {
@@ -80,54 +104,26 @@ function evaluationWitness(log) {
   }
 }
 
-function appendEditCall(events, callId, args) {
-  const argumentsValue = JSON.stringify(args)
-  const assistantSeq = events.length
-  events.push({
-    type: 'assistant/message',
-    seq: assistantSeq,
-    time: assistantSeq,
-    surfaceOp: 'append',
-    data: {
-      turn: 0,
-      step: 0,
-      message: {
-        id: `message-assistant-${callId}`,
-        role: 'assistant',
-        source: { kind: 'model', provider: 'fixture', model: 'fixture' },
-        content: [{ type: 'tool-call', id: callId, name: 'edit_run_code', arguments: argumentsValue }],
-      },
-    },
-  })
-  const seq = events.length
-  events.push({
-    type: 'tool/call',
-    seq,
-    time: seq,
-    data: { turn: 0, step: 0, callId, name: 'edit_run_code', arguments: argumentsValue },
-  })
-  return seq
-}
-
-function appendEditResult(events, callId, callSeq, result) {
-  const seq = events.length
-  events.push({
-    type: 'tool/result',
-    seq,
-    time: seq,
-    sourceEventSeqs: [callSeq],
-    surfaceOp: 'append',
-    data: {
-      message: {
-        id: `message-${callId}`,
-        role: 'user',
-        source: { kind: 'tool', callId },
-        content: [{ type: 'tool-result', toolCallId: callId, content: result.content }],
-      },
-      meta: result.meta,
-    },
-  })
-}
+test('public scoped model schemas retain fields and detach parameters from definitions', async () => {
+  const parameters = { type: 'object', additionalProperties: false,
+    properties: { value: { type: 'string', description: 'Initial value' } }, required: ['value'] }
+  const definition = { name: 'run_code', description: 'Initial schema', parameters, deferLoading: true,
+    execute: () => 'unused', projectContent: () => [],
+    output: { schema: { type: 'string' }, render: () => [] } }
+  const first = await publicModelToolSchemas({ tools: [definition] })
+  const recorded = first.find(tool => tool.name === 'run_code')
+  assert.deepEqual(recorded, { name: 'run_code', description: 'Initial schema',
+    parameters: structuredClone(parameters), deferLoading: true })
+  assert.deepEqual(first.map(tool => tool.name), ['run_code'])
+  const bytes = JSON.stringify(recorded)
+  parameters.properties.value.description = 'Changed value'
+  definition.description = 'Changed schema'
+  assert.equal(JSON.stringify(recorded), bytes)
+  const next = (await publicModelToolSchemas({ tools: [definition] })).find(tool => tool.name === 'run_code')
+  assert.equal(next.description, 'Changed schema')
+  assert.equal(next.parameters.properties.value.description, 'Changed value')
+  assert.notEqual(JSON.stringify(next), bytes)
+})
 
 test('advertises configured APIs before activation, keeps the prefix stable and cold-replays recorded bindings', async (t) => {
   const home = await mkdtemp(join(tmpdir(), 'ptc-plus-recovery-'))
@@ -146,6 +142,8 @@ test('advertises configured APIs before activation, keeps the prefix stable and 
   const first = fixture({ userBindingsEnabled: true })
   t.after(() => first.dispose())
   const assembly = await rememberRequest(first, session, agent)
+  const prefix = JSON.stringify({ system: renderPrompt(assembly),
+    tools: await publicModelToolSchemas(assembly) })
   const sdk = assembly.sections.find(section => section.name === 'tools:sdk').text
   assert.doesNotMatch(sdk, /User-global REPL bindings|declare const defaults|private-1/)
   assert.equal(assembly.contexts.some(item => item.name === 'tools:ptc-plus-user-bindings'), false)
@@ -166,7 +164,8 @@ test('advertises configured APIs before activation, keeps the prefix stable and 
   const activatedAssembly = await rememberRequest(first, session, agent)
   assert.deepEqual(activatedAssembly.sections, assembly.sections)
   assert.equal(renderPrompt(activatedAssembly), renderPrompt(assembly))
-  assert.deepEqual(activatedAssembly.tools, assembly.tools)
+  assert.equal(JSON.stringify({ system: renderPrompt(activatedAssembly),
+    tools: await publicModelToolSchemas(activatedAssembly) }), prefix)
   assert.deepEqual(activatedAssembly.ptcContexts, assembly.ptcContexts)
   assert.equal(firstResult.meta[USER_BINDINGS_META_KEY].entries[0].source, document(1).entries[0].source)
   await first.dispose()
@@ -851,7 +850,8 @@ test('cold-replays the binding snapshot used by a derived edit cell', async (t) 
   await writeBindings(home, 1)
 
   const events = []
-  const session = orderedSurfaceSession('user-binding-edit-recovery', events)
+  const session = appendOnlySession('user-binding-edit-recovery', events)
+  session.append('turn/start', { turn: 1 })
   const agent = ptcAgent('user-binding-edit-recovery-agent', session)
   const first = fixture({ userBindingsEnabled: true })
   t.after(() => first.dispose())
@@ -861,19 +861,30 @@ test('cold-replays the binding snapshot used by a derived edit cell', async (t) 
   const setup = await first.runDurable(session.id, source, {}, { session, recordSession: 'deferred-result', callId: 'binding-edit-source' })
   appendRunCodeEvents(events, 'binding-edit-source', source, setup)
 
-  const editArgs = { edits: [{ old_string: '= 0', new_string: '= defaults.value' }] }
-  const editCallId = 'binding-edit'
-  const editCallSeq = appendEditCall(events, editCallId, editArgs)
-  const edited = await first.ctx.tools.execute({
-    callId: editCallId,
-    name: 'edit_run_code',
-    arguments: editArgs,
-    agent,
-    signal: requestSignal,
+  const edited = await runNestedEditCell(first, { session, agent, signal: requestSignal,
+    callId: 'binding-edit-root',
+    code: 'return await tools.edit_run_code({ edits: [{ old_string: "= 0", new_string: "= defaults.value" }] })',
   })
-  assert.equal(edited.isError, false, JSON.stringify(edited))
-  assert.equal(edited.meta[USER_BINDINGS_META_KEY].entries[0].source, document(1).entries[0].source)
-  appendEditResult(events, editCallId, editCallSeq, edited)
+  assert.equal(edited.result.isError, false, JSON.stringify(edited.result))
+  assert.equal(edited.receipt.accepted, true)
+  assert.equal(edited.receipt.scheduled, true)
+  const post = edited.result.meta[POST_EDIT_KEY]
+  assert.equal(post.meta[USER_BINDINGS_META_KEY].entries[0].source, document(1).entries[0].source)
+  const editorStart = events.find(event => event.seq === post.startSeq)
+  const editorSettled = events.find(event => event.type === 'tool/ptc-dispatch'
+    && event.data.subCallId === editorStart.data.subCallId)
+  const derivedStart = events.find(event => event.seq === post.executionStartSeq)
+  const derivedSettled = events.find(event => event.type === 'tool/ptc-dispatch'
+    && event.data.subCallId === derivedStart.data.subCallId)
+  assert.equal(editorStart.data.name, 'edit_run_code')
+  assert.equal(editorStart.data.rootCallId, 'binding-edit-root')
+  assert.equal(editorSettled.data.isError, false)
+  assert.equal(derivedStart.data.name, 'run_code')
+  assert.equal(derivedStart.data.parentCallId, 'binding-edit-root')
+  assert.equal(derivedSettled.data.isError, false)
+  assert.deepEqual(derivedSettled.data.meta[JOURNAL_KEY], post.meta[JOURNAL_KEY])
+  assert.equal(events.filter(event => event.type === 'tool/ptc-dispatch-start'
+    && event.data.name === 'edit_run_code').length, 1)
   await first.dispose()
 
   await writeBindings(home, 2)
@@ -883,10 +894,12 @@ test('cold-replays the binding snapshot used by a derived edit cell', async (t) 
   const result = await restored.runDurable(
     session.id,
     'return [editedBindingValue, defaults.value]',
-    {},
+    { edit_run_code: async () => { throw new Error('cold binding recovery redispatched the editor') } },
     { session },
   )
   assert.deepEqual(result.value, [1, 2])
+  assert.equal(events.filter(event => event.type === 'tool/ptc-dispatch-start'
+    && event.data.name === 'edit_run_code').length, 1)
 })
 
 test('leaves prompt and runtime context unchanged when the capability is disabled or empty', async (t) => {

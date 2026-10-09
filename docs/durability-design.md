@@ -6,9 +6,9 @@
 
 ## 日志读取与派生事实
 
-当前 Host 的历史读取由 `sessionQuery.observeSession` 提供。runtime bridge 为一次顶层调用取得一个不可变 event/cursor/header 切点，释放 observation lease 后仍消费其不可变 events；派生 edit 把该切点传给内层执行，恢复、call identity、provenance 和 no-op 确认不在运行中重读变化的 live log。观察切点与当前 surface 不同时，按该切点的公开 surface operations 重建顺序，而不是用较新的 replacement 撤销较早观察的证据。生产路径不调用 `snapshotEvents`、`eventAt` 或 `ownEvents`。
+当前 Host 的历史读取由 `sessionQuery.observeSession` 提供。runtime bridge 为一次顶层调用取得一个不可变 event/cursor/header 切点，释放 observation lease 后仍消费其不可变 events；editor 在自身正式 start 切点捕获目标；派生执行开始前另取一个不可变切点，实际 `Session.append` 返回的派生 start 序号拥有该执行身份。各执行的恢复、call identity、provenance 和 no-op 确认只消费其已选切点，不混入较新的 live log。观察切点与当前 surface 不同时，按该切点的公开 surface operations 重建顺序，而不是用较新的 replacement 撤销较早观察的证据。生产路径不调用 `snapshotEvents`、`eventAt` 或 `ownEvents`。
 
-新会话的顶层 submission 独立拥有执行上下文。委派子代理即使在父 cell 或原生子执行的能力调用期间启动，也按子会话 ID 读取上述公开 observation 与 ordered surface；不能继承父会话的日志切点、持久调用序号、组合工具结算或原生子执行 handoff。相同 submission 内的派生 edit 仍共享其外层调用的观察切点。
+新会话的顶层 submission 独立拥有执行上下文。委派子代理即使在父 cell 或原生子执行的能力调用期间启动，也按子会话 ID 读取上述公开 observation 与 ordered surface；不能继承父会话的日志切点、持久调用序号、组合工具结算或原生子执行 handoff。同会话派生 edit 使用新 admission，并只保留已证明的根来源、派生执行序号、不可变观察切点与组合结算；不能复用已释放的根 admission。
 
 同步 presentation 从 host-only `ptcPlusSessionLog` 单元读取。该单元与批量 journal fold 共用单事件 timeline 转移；checkpoint 仅保存关联所需的最小 call、规范 journal、身份及当前/历史 runtime records，不复制原始事件日志。pruned result 的非 content 身份保存为确定性 SHA-256 摘要。提示的已见身份、最高 ordinal、cooldown 和成功后的未解决计数在事件进入时更新；装配不扫描历史提示。checkpoint 是可丢弃的派生缓存，不证明 model knowledge、成功 initialization 或 cold replay。状态版本、schema 和 Host 的 watermark/restore 规则共同限定缓存使用，损坏或过时缓存必须重新折叠原日志。
 
@@ -146,8 +146,8 @@ pre-execute -> tools/execute -> post-execute
 
 1. `tools/execute` 保存 execution 对象与 session context；
 2. 执行缝的 `run` 真正进入 kernel 时创建 tentative journal；
-3. 成功结果由 `presentationMeta` 投影 journal，失败结果由 around hook 附加；
-4. `tools/result` 规范化最终 `meta.dshPtcPlus` 与 runtime tentative journal；
+3. 根成功结果由 `presentationMeta` 投影 journal，失败结果由 around hook 附加；真实派生成功的受限私有凭证见下文；
+4. `tools/result` 规范化最终 `meta.dshPtcPlus` 或已证明的派生私有凭证，与 runtime tentative journal 比较；
 5. 两者语义完全相同时确认 tentative 状态；
 6. cell 已执行但 metadata 缺失、损坏或被替换时，live kernel 单调降为 volatile；
 7. 从未进入 runtime 时，把 call id 加入 pending no-op；
@@ -168,15 +168,17 @@ pre-execute -> tools/execute -> post-execute
 
 ## Nested run_code
 
-模型直接发起的 top-level `run_code` 与真实注册的 `edit_run_code` 派生执行都创建本 schema 的 cell journal。前者随 `run_code` result 持久化；后者随外层 edit result 的 derived metadata 持久化，并与模型原始 edit call 关联。隔离 child binding 不创建 child PTC journal，也不产生可合并到父 heap 的 binding。
+模型直接发起的 top-level `run_code` 与程序内 `tools.edit_run_code` 接受后的派生执行都创建本 schema 的 cell journal。根 journal 随 `run_code` result 持久化；派生 journal 随同一根结果的私有 `dshPtcPlusPostEdit` metadata 持久化，并与 editor 及真实派生执行的两个正式 start/settle pairs、根 journal 收据和原始目标关联。`startSeq` 保留 editor 因果身份，`executionStartSeq` 拥有派生 cell 身份；每个 editor 与真实派生 sub-call 身份必须在其根 call 到最终 result 的窗口内各有且只有一个 start 和一个随后 settle，指定 start 序号还须指向这唯一 start。窗口外已结算的相同 ID 可独立复用；派生 settle 的 canonical journal 和 error 状态必须与根私有证据一致。历史顶层 editor result 仍按其原有 derived metadata 契约恢复。隔离 child binding 不创建 child PTC journal，也不产生可合并到父 heap 的 binding。
+
+公开 Host 若从未为本次 nested success 调用 `output.presentationMeta`，runtime bridge 可在只读 `projectContent` 中捕获该次 canonical frozen value 与 tentative settlement。只在 execution token、session、parent 和受控 continuation 精确匹配，最初没有插件 journal，最终仍成功且保留同一 value 对象、原 metadata，并且之后没有调用 projector 时，插件才把此私有凭证用于真实派生 settle 和根关联。此路径不修改 Host result、metadata、content 或 contexts；最终 content 始终采用 Host 决定。缺少 capture、block/error、value replacement、已有 metadata 被删除或 projector 已被调用都不得补凭证。根最终 metadata 仍须通过原确认规则；移除它会否定恢复证据。公开依据是 Host canonical value 的冻结与对象身份、`projectContent` 的政策前观察及 `tools/result` 的政策后结算，不是缺少 metadata 本身。
 
 父 cell 把隔离 child 当成普通 program binding call，记录 graph-encoded arguments、canonical result/error 和 settlement order。正常结算后，cold replay 返回 recorded child result，不重新执行 child 源码。若取消、超时或 worker failure 发生在调用结算前，`discarded` journal 以 `code.run` 保留 possible-effect boundary。这个结果来自所有 program binding 共用的 pending/settled 生命周期，不是 `code.run` 名称特例。它不注册第二个模型工具，也不伪造 UI、policy hook、调用树或事件。
 
 ## 日志折叠
 
-恢复以当前请求需要的 head 为目标，沿可证明 parent 关系向更早 frontier 收缩；实现可以前向折叠 event 建图，但不得把 unknown boundary 两侧的日志位置当作状态依赖证据。恢复入口先把当前 call id 解析为持久化 `tool/call.seq`，再把该序号作为 live boundary 传入折叠器；对应的在途 call event 不属于历史。每个 `edit_run_code` 在其 call event 处，根据此前已经结算的调用确定并固定可编辑目标；之后出现的 result 只影响随后发起的 edit：
+恢复以当前请求需要的 head 为目标，沿可证明 parent 关系向更早 frontier 收缩；实现可以前向折叠 event 建图，但不得把 unknown boundary 两侧的日志位置当作状态依赖证据。恢复入口先把当前 call id 解析为持久化 `tool/call.seq`，再把该序号作为 live boundary 传入折叠器；对应的在途 call event 不属于历史。当前 editor 在正式 `tool/ptc-dispatch-start` 处捕获此前已结算的可编辑目标；根结果证明收据、两个真实 dispatch pairs、canonical 结算事实和目标变换后，以实际派生 start 序号将派生 cell 折叠在根计算之后。历史 direct editor 在其 `tool/call` 处捕获目标。后续 result 不追溯改变已捕获的目标：
 
-1. 用 `sourceEventSeqs[0]` 关联 `tool/result` 与 `tool/call`；若 result 同时带有 `message.source.callId`，两种身份必须指向同一个 call，否则该 call 建立 untrusted boundary。每个 ordinary result 在 journal 解析前闭合一次 call settlement；同一 call 的第二个 ordinary result 被拒绝。经过结构校验的 prune replacement 是唯一不占用第二次 ordinary settlement 的替代表示；
+1. 用正式 `message.source.callId` 关联 `tool/result` 与 `tool/call`；若 result 另带 `sourceEventSeqs`，它必须准确指向同一个 call，否则该 call 建立 untrusted boundary。历史只携带 sequence relation 的结果按其旧格式校验。每个 ordinary result 在 journal 解析前闭合一次 call settlement；同一 call 的第二个 ordinary result 被拒绝。经过结构校验的 prune replacement 是唯一不占用第二次 ordinary settlement 的替代表示；
 2. 预收集 valid journal 中的 `confirms`；
 3. 排除与 live boundary 序号相同的在途 call，并让已确认 no-op 的无 journal call 不改变状态；
 4. 缺失源码、缺失/损坏 journal 或无法验证的 call/result/prune 关联建立 untrusted boundary，不作为旧 binding 的证据；
@@ -197,7 +199,7 @@ pre-execute -> tools/execute -> post-execute
 
 DSH session 同时提供两个不同投影：append-only event log 保存审计、journal 与 replay evidence；ordered surface/derived request history 是模型请求实际可见的消息历史。PTC Plus 的默认状态 frontier 是“结构可重建”和“模型可知”的交集，不能用 raw log 的存在替代 surface evidence。模型可知只采用外部可验证事实，不猜模型内部记忆：可见 assistant tool-call block 必须以相同 call id、tool name 和原始 JSON arguments 精确对应 raw dispatch，或插件/宿主通过有界结构把准确 binding identity 与 provenance 放入模型上下文。只匹配 call id、可见 `tool/result`、result source relation 或 raw log 不能证明声明源码可见。若 ordered surface 缺失、格式错误或不可读取，就没有历史 executable provenance 可证明，恢复必须收缩到空 frontier；这只否定历史 binding 证据，当前有效 cell 仍从空 REPL 正常执行。
 
-surface replacement 是否删除状态取决于模型失去了什么，而不取决于是否出现 `compaction/prune` 这个名字。只替换过长 tool result、仍保留 assistant `run_code`/`edit_run_code` 调用及源码时，模型仍知道该 cell，可继续使用其 journal。若 replacement 或 summary 遮蔽了声明 provenance，raw journal 即使完整也不能让 binding 默认继续存在；自然语言 summary 不解析为依赖或 binding 证明。当前没有模型可见的完整 binding inventory，因此缺少精确 provenance 时按 cell 与依赖后缀收缩。
+surface replacement 是否删除状态取决于模型失去了什么，而不取决于是否出现 `compaction/prune` 这个名字。只替换过长 tool result、仍保留 assistant `run_code` 调用及源码时，模型仍知道该 cell；当前派生编辑还要求原始目标的源码与发起 nested editor 的根源码同时可见。历史 direct editor 保留其原有 source relation。满足这些关系后才可继续使用对应 journal。若 replacement 或 summary 遮蔽了声明 provenance，raw journal 即使完整也不能让 binding 默认继续存在；自然语言 summary 不解析为依赖或 binding 证明。当前没有模型可见的完整 binding inventory，因此缺少精确 provenance 时按 cell 与依赖后缀收缩。
 
 该规则也约束 live worker。structured host session 的 runtime 在每个后续 cell 前都重新读取 DSH public ordered surface，并验证所有现存 live call 的精确 assistant provenance；`replaceGeneration` 没有变化不构成继续复用的证明。generation 改变、缺失或不可读取也进入同一验证。若现存 binding 超出模型可知 frontier，先重置 worker、重建交集 frontier，再执行当前 cell。只有不带 host session 的内部 primitive session id 明确使用 live-only 连续性。Client header card 的 `dshPtcPlusBindings` 只帮助用户检查，不进入模型上下文，也不延长 binding 生命周期；相同 contraction 应让 UI inventory 进入不可确认状态。未来若新增模型可见状态投影，它必须由用户、模型或明确配置选择，有固定 schema、硬预算、append-only runtime-context 证据和明确清除条件，不能仅为延长隐藏状态而默认注入，也不能污染稳定 prompt prefix。
 
@@ -217,7 +219,7 @@ surface replacement 是否删除状态取决于模型失去了什么，而不取
 - recovery divergence；
 - durable replay 触发 volatile capability。
 
-基础设施失败会终止当前 worker，并把 log-only recovery boundary 放入当前已结算 `tool/result` 的私有 metadata。kernel 从失败 node 的 parent 重新重放；若该 frontier 仍失败则继续向 parent 收缩，直到最大可验证 frontier 或空 REPL。触发恢复的当前 `run_code` 在候选 frontier 验证成功前不执行，验证后在同一次请求中继续。boundary 无效或历史本身无法完整折叠时，相关记录和可能依赖它的状态不得进入 frontier；这类历史 PTC metadata 损坏本身不返回永久 recovery error，而是继续收缩，最差用空 worker 执行当前 cell，并在其最终 result 持久表达新 ancestry。已经写入旧版自定义 boundary event 的日志必须先通过显式、非破坏迁移转换为 DSH 可加载的 metadata；迁移失败时不得覆盖原始日志。
+基础设施失败会终止当前 worker，并把 log-only recovery boundary 放入当前已结算 `tool/result` 的私有 metadata。kernel 从失败 node 的 parent 重新重放；若该 frontier 仍失败则继续向 parent 收缩，直到最大可验证 frontier 或空 REPL。触发恢复的当前 `run_code` 在候选 frontier 验证成功前不执行，验证后在同一次请求中继续。boundary 的失败身份可为顶层 call，或已经由共享 timeline 证明两组 dispatch pairs 和根最终关联的真实派生 start 序号；原始 nested start 不足以证明该身份。收缩保留失败 node 的已证明 parent，之后独立的有效 carrier 仍可进入新 ancestry。boundary 无效或历史本身无法完整折叠时，相关记录和可能依赖它的状态不得进入 frontier；这类历史 PTC metadata 损坏本身不返回永久 recovery error，而是继续收缩，最差用空 worker 执行当前 cell，并在其最终 result 持久表达新 ancestry。已经写入旧版自定义 boundary event 的日志必须先通过显式、非破坏迁移转换为 DSH 可加载的 metadata；迁移失败时不得覆盖原始日志。
 
 ## State Operations
 

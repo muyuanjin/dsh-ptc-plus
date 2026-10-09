@@ -255,39 +255,39 @@ function assemble(source, replacements) {
 export function editRunCodeSchema() {
   return {
     name: 'edit_run_code',
-    description: 'Edit the most recent eligible cell captured at dispatch and run the complete corrected cell. A successful edit becomes the next target. This reruns the entire cell, including prior effects; use it after pre-execution rejection or when repeating those effects is safe under the called API\'s retry rules. Otherwise continue in a new run_code cell using retained values. A diagnostic may supply a localized correction; use it when it matches your intent and preserve its expected_target_call_seq. Send exactly one edits or regex_edits array: edits replaces unique literal fragments; regex_edits replaces a counted set of pattern matches. All ranges must be non-overlapping in the original cell. Regex replacements use JavaScript $1/$<name> captures, not \\1.',
+    description: 'Call this from within a run_code cell. It accepts an edit of the most recent eligible cell captured at nested dispatch and returns { accepted, scheduled, target_call_seq } when scheduled. The corrected cell runs after the current run_code cell releases its worker; its result is reported with that cell, and a successful edit becomes the next target. This reruns the entire target cell, including prior effects; use it after pre-execution rejection or when repeating those effects is safe under the called API\'s retry rules. Otherwise continue in a new run_code cell using retained values. A diagnostic may supply a localized correction; use it when it matches your intent and preserve its expected_target_call_seq. Send exactly one edits or regex_edits array: edits replaces unique literal fragments; regex_edits replaces a counted set of pattern matches. All ranges must be non-overlapping in the original cell. Regex replacements use JavaScript $1/$<name> captures, not \\1.',
     parameters: {
       type: 'object',
       additionalProperties: false,
       properties: {
         edits: {
-          type: 'array', minItems: 1, maxItems: EDIT_LIMITS.exactEdits,
+          type: 'array',
           description: 'Atomic exact replacements, all resolved against the original target cell.',
           items: {
             type: 'object', additionalProperties: false,
             properties: {
-              old_string: { type: 'string', minLength: 1, description: 'Exact text in the target cell. It must occur exactly once.' },
+              old_string: { type: 'string', description: 'Nonempty exact text in the target cell. It must occur exactly once.' },
               new_string: { type: 'string', description: 'Literal replacement text. Use an empty string to delete the match.' },
             },
             required: ['old_string', 'new_string'],
           },
         },
         regex_edits: {
-          type: 'array', minItems: 1, maxItems: EDIT_LIMITS.regexEdits,
+          type: 'array',
           description: 'Atomic regular-expression replacements, all matched against the original target cell with JavaScript pattern and replacement semantics; each replacement is a JavaScript template (see replacement).',
           items: {
             type: 'object', additionalProperties: false,
             properties: {
-              pattern: { type: 'string', minLength: 1, description: 'JavaScript regular-expression source without delimiters or flags (for example \\d+px, not /\\d+px/). Zero-length matches are rejected.' },
-              flags: { type: 'string', pattern: '^(?!.*(.).*\\1)[gimsu]*$', description: 'Unique JavaScript g, i, m, s, or u flags. Global matching is always applied.' },
+              pattern: { type: 'string', description: 'Nonempty JavaScript regular-expression source without delimiters or flags (for example \\d+px, not /\\d+px/). Zero-length matches are rejected.' },
+              flags: { type: 'string', description: 'Unique JavaScript g, i, m, s, or u flags. Global matching is always applied.' },
               replacement: { type: 'string', description: 'JavaScript replacement template. Reference captures as $1, $2, ... or $<name> (for example "<$1>" inserts capture 1); backslash escapes such as \\1 are NOT capture references and stay literal text; write a literal dollar sign as $$.' },
-              expected_matches: { type: 'integer', minimum: 1, maximum: EDIT_LIMITS.regexMatches, description: 'Exact match count required before any replacement is applied.' },
+              expected_matches: { type: 'integer', description: 'Positive exact match count required before any replacement is applied.' },
             },
             required: ['pattern', 'flags', 'replacement', 'expected_matches'],
           },
         },
         [EXPECTED_TARGET_CALL_SEQ]: {
-          type: 'integer', minimum: 0,
+          type: 'integer',
           description: 'Optional target precondition copied from a validated diagnostic. The edit is rejected if the captured cell has another call sequence.',
         },
       },

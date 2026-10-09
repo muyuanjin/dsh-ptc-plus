@@ -14,8 +14,8 @@ test('public browser inventories retain all layout and fallback combinations wit
   const fallbacks = list('scripts/client-fallback-smoke.mjs')
   assert.equal(layouts.length, 168)
   assert.equal(new Set(layouts).size, 168)
-  assert.equal(fallbacks.length, 137)
-  assert.equal(new Set(fallbacks).size, 137)
+  assert.equal(fallbacks.length, 157)
+  assert.equal(new Set(fallbacks).size, 157)
   assert.equal(fallbacks.filter(id => id.startsWith('dock/')).length, 24)
   assert.equal(fallbacks.filter(id => id.startsWith('catalog/')).length, 24)
   const pageVariants = [320, 390, 1440].flatMap(width => ['light', 'dark'].flatMap(theme =>
@@ -30,11 +30,14 @@ test('public browser inventories retain all layout and fallback combinations wit
   dialogIds.push(...[320, 390].flatMap(width => ['en', 'zh'].flatMap(locale => ['light', 'dark'].map(theme =>
     `settings-dialog/${width}x240/${theme}/native/${locale}`))))
   assert.deepEqual(fallbacks.filter(id => id.startsWith('settings-dialog/')).sort(), dialogIds.sort())
+  assert.deepEqual(fallbacks.filter(id => id.startsWith('dialogs/')).sort(),
+    ['390x600', '320x420'].flatMap(viewport => ['light', 'dark'].flatMap(theme =>
+      [`dialogs/${viewport}/${theme}`, `dialogs/${viewport}/${theme}/native`])).sort())
   const capabilityIds = [320, 1920].flatMap(width => ['native', 'fallback'].flatMap(surface =>
     ['en', 'zh'].flatMap(locale => ['light', 'dark'].map(theme =>
       `capability-workbench/${width}/${theme}/${surface}/${locale}`))))
   assert.deepEqual(fallbacks.filter(id => id.startsWith('capability-workbench/')).sort(), capabilityIds.sort())
-  const sessionIds = ['390x600', '320x240'].flatMap(viewport => ['native', 'fallback'].flatMap(surface =>
+  const sessionIds = ['390x600', '768x720', '1440x900', '320x240'].flatMap(viewport => ['native', 'fallback'].flatMap(surface =>
     ['en', 'zh'].flatMap(locale => ['light', 'dark'].map(theme =>
       `session-capabilities/${viewport}/${theme}/${surface}/${locale}`))))
   assert.deepEqual(fallbacks.filter(id => id.startsWith('session-capabilities/')).sort(), sessionIds.sort())

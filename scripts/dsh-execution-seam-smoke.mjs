@@ -28,6 +28,7 @@ async function main() {
   const { SessionStore } = await load('@deepseek-ai/dsh-session')
   const { SessionQueryEngine } = await load('@deepseek-ai/dsh-session-query')
   const { SessionProjectionRegistry } = await load('@deepseek-ai/dsh-session-projection')
+  const { agentEvents } = await load('@deepseek-ai/dsh-agent')
   const { createScope } = await load('@deepseek-ai/dsh-scope')
   const { createAssistantMessage, createToolResultMessage } = await load('@deepseek-ai/dsh-llm')
   const seamService = executionServiceName(readFileSync(require.resolve('@deepseek-ai/dsh-tools'), 'utf8'))
@@ -149,18 +150,37 @@ async function main() {
     })
     const signal = new AbortController().signal
     session.append('turn/start', { turn: 1 })
+    await agentEvents(root, agent).serial('agent/created', { source: 'startup', signal })
+    const enterStep = step => agentEvents(root, agent).waterfall('agent/pre-step', {
+      agent, messages: [], turn: 1, step, signal,
+    }, async () => ({ kind: 'enter', messages: [] }))
     const initialAssembly = await root.get('systemPrompt').assemble({ agent, scope: agent, signal })
+    await enterStep(1)
     const stablePrompt = assembly => JSON.stringify({ sections: assembly.sections, tools: assembly.tools })
     const systemText = initialAssembly.sections.map(section => section.text).join('\n\n')
     assert.match(systemText, /runtime `enum` and namespaces are supported/)
     assert.doesNotMatch(systemText, /erasable syntax only|no `enum` or namespaces/)
-    assert.deepEqual(initialAssembly.tools.map(tool => tool.name), ['run_code', 'edit_run_code'])
+    assert.deepEqual(initialAssembly.tools.map(tool => tool.name), ['run_code'])
+    const editorSdk = initialAssembly.sections.find(section => section.name === 'tools:sdk')?.text
+    assert.match(editorSdk, /edit_run_code: \{/)
+    for (const [field, type] of [['old_string', 'string'], ['new_string', 'string'],
+      ['pattern', 'string'], ['flags', 'string'], ['replacement', 'string'],
+      ['expected_matches', 'number'], ['accepted', 'boolean'], ['scheduled', 'boolean']]) {
+      assert.match(editorSdk, new RegExp(`\\b${field}\\??: ${type}`))
+    }
+    assert.match(editorSdk, /regex_edits\??:/)
+    assert.doesNotMatch(editorSdk, /edit_run_code: unknown/)
+    assert.equal(root.get('tools').get('edit_run_code'), undefined, 'editor must remain agent scoped')
     const runParameters = root.get('tools').get('run_code').parameters
     let step = 0
     const invoke = async (name, callId, args) => {
       step += 1
       session.append('step/start', { turn: 1, step })
-      await root.get('systemPrompt').assemble({ agent, scope: agent, signal })
+      const assembly = await root.get('systemPrompt').assemble({ agent, scope: agent, signal })
+      await enterStep(step)
+      assert.deepEqual(assembly.tools.map(tool => tool.name), ['run_code'])
+      assert.match(assembly.sections.find(section => section.name === 'tools:sdk')?.text, /edit_run_code: \{/)
+      if (step === 2) assert.equal(stablePrompt(assembly), stablePrompt(initialAssembly))
       const argumentsValue = JSON.stringify(args)
       session.append('assistant/message', {
         turn: 1, step,
@@ -199,10 +219,17 @@ async function main() {
     assert.equal(root.get(seamService), provider)
     assert.equal(seam.active, true)
     assert.equal(state.originals.length, 2)
-    const edited = await invoke('edit_run_code', 'derived-cell', { edits: [{ old_string: '+= 2', new_string: '+= 1' }] })
+    const edited = await invoke('run_code', 'derived-cell', {
+      code: 'return await tools.edit_run_code({ edits: [{ old_string: "+= 2", new_string: "+= 1" }] })',
+      description: 'Revise the preceding cell',
+    })
     assert.equal(edited.isError, false, JSON.stringify(edited))
-    assert.equal(edited.value.edited, true, JSON.stringify(edited))
-    assert.equal(edited.value.value, 43)
+    assert.equal(edited.value.result.accepted, true, JSON.stringify(edited))
+    assert.equal(edited.value.result.scheduled, true, JSON.stringify(edited))
+    assert.match(edited.value.logs.at(-1), /edit_run_code settled/)
+    assert.ok(edited.content.some(block => block.type === 'text' && block.text === '43'),
+      'root presentation must include the Host-rendered derived value')
+    assert.ok(edited.meta?.dshPtcPlusPostEdit)
     const continued = await invoke('run_code', 'after-edit', { code: 'return shared', description: 'Read edited state' })
     assert.equal(continued.isError, false, JSON.stringify(continued))
     assert.deepEqual(continued.value, { logs: [], result: 43 })

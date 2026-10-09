@@ -4,6 +4,9 @@ import { fileURLToPath } from 'node:url'
 import { runInNewContext } from 'node:vm'
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import * as React from 'react'
+import * as ReactDOM from 'react-dom'
+import * as JsxRuntime from 'react/jsx-runtime'
 import { LOCALE_NS } from '../src/client-copy.js'
 
 const root = fileURLToPath(new URL('..', import.meta.url))
@@ -22,18 +25,13 @@ async function loadBundle() {
   assert.equal(registrations.length, 1, 'the bundle registers exactly one client module')
   const loaded = registrations[0]
   const requested = []
-  // Enough React and UI primitives to construct the module's component
-  // factories; apply() is not called here.
-  const react = {
-    createElement: () => null, useState: value => [value, () => {}], useRef: value => ({ current: value }),
-    useCallback: value => value, useMemo: value => value(), useEffect: () => {},
-    useSyncExternalStore: () => undefined, useId: () => 'id', Fragment: 'Fragment',
-  }
+  // Runtime modules come from the same baseline entries as the browser loader.
   const primitives = new Proxy({}, { get: () => undefined })
   const exported = loaded.factory(name => {
     requested.push(name)
-    if (name === 'react') return react
-    if (name === 'react-dom') return { createPortal: value => value }
+    if (name === 'react') return React
+    if (name === 'react/jsx-runtime') return JsxRuntime
+    if (name === 'react-dom') return ReactDOM
     if (name === '@deepseek-ai/dsh-client-ui-primitives') return primitives
     throw new Error(`unexpected client dependency ${name}`)
   })
@@ -51,7 +49,7 @@ test('keeps generated client bundle checkout bytes stable', () => {
 test('checked client bundle loads through the DSH module loader contract', async () => {
   const { loaded, exported, packageJson, requested } = await loadBundle()
   assert.equal(loaded.id, packageJson.name)
-  assert.deepEqual([...new Set(requested)], ['react', 'react-dom', '@deepseek-ai/dsh-client-ui-primitives'])
+  assert.deepEqual([...new Set(requested)].sort(), ['react', 'react-dom', 'react/jsx-runtime', '@deepseek-ai/dsh-client-ui-primitives'].sort())
   assert.equal(Array.from(exported.inject).join(','), 'slots,locale,connection,remote')
   assert.equal(typeof exported.apply, 'function')
   assert.equal(packageJson.dsh.client.platform, 'web')

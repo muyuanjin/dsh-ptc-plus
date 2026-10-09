@@ -13,6 +13,7 @@ import {
   valueContains,
 } from '../scripts/expensive-headless-acceptance.mjs'
 import {
+  auditEditCalls,
   auditModelRequests,
   auditProgramWork,
   collectTrajectoryFacts,
@@ -246,7 +247,7 @@ function acceptanceEvents() {
         reason: 'initial',
         header: {
           config: { provider: 'provider', model: 'model' },
-          tools: [{ name: 'run_code' }, { name: 'edit_run_code' }],
+          tools: [{ name: 'run_code' }],
           system,
         },
       },
@@ -553,7 +554,7 @@ test('makes complete header drift a runner-level acceptance failure', () => {
   const events = acceptanceEvents()
   const initial = events.find(event => event.type === 'request/header').data.header
   const changed = structuredClone(initial)
-  changed.tools[1].parameters = { type: 'object', properties: { extra: { type: 'boolean' } } }
+  changed.tools[0].parameters = { type: 'object', properties: { extra: { type: 'boolean' } } }
   events.push({
     type: 'request/header',
     data: { reason: 'change', header: changed },
@@ -565,7 +566,7 @@ test('makes complete header drift a runner-level acceptance failure', () => {
   assert.equal(report.modelRequests, 2)
   assert.equal(report.headerEpochs, 2)
   assert.equal(report.headerChanges, 1)
-  assert.match(report.failures.join('\n'), /changed tools\[1\]/)
+  assert.match(report.failures.join('\n'), /changed tools\[0\]/)
 })
 
 test('audits discovery before native and isolated binding use', () => {
@@ -707,7 +708,7 @@ test('enforces the typed fixture workload while allowing focused equivalent traj
   assert.match(inspectLog(events, inspectScenario, runtime).failures.join('\n'), /invalid PTC journal/)
 })
 
-function editEvents(args) {
+function historicalEditEvents(args) {
   const source = 'const value = 1; return value'
   const correction = editRejectedCell(args, source)
   const events = acceptanceEvents().slice(0, 3)
@@ -735,6 +736,165 @@ function editEvents(args) {
   return events
 }
 
+// Convert archived direct-editor audit fixtures into the current nested protocol.
+function nestedEditorEvents(archived, { includeReads = false } = {}) {
+  const events = []
+  const mappedSeqs = new Map()
+  let nextSequence = 9
+  for (const event of archived) {
+    if (event.type !== 'tool/call' || event.data.name !== 'edit_run_code') {
+      if (event.type === 'tool/result'
+        && archived.some(call => call.type === 'tool/call' && call.data.name === 'edit_run_code'
+          && call.data.callId === event.data.message.source.callId)) continue
+      const copy = structuredClone(event)
+      if (events.length >= 3) copy.seq = nextSequence++
+      if (Number.isSafeInteger(event.seq)) mappedSeqs.set(event.seq, copy.seq)
+      events.push(copy)
+      continue
+    }
+    const args = JSON.parse(event.data.arguments)
+    const original = resultFor(archived, event.data.callId)
+    const targetCallSeq = mappedSeqs.get(original.data.meta.dshPtcPlusEdit.targetCallSeq)
+    const mismatch = args.expected_target_call_seq !== undefined
+      && args.expected_target_call_seq !== targetCallSeq
+    const receipt = mismatch
+      ? { accepted: false, scheduled: false,
+          reason: `validated repair targets run_code call ${args.expected_target_call_seq}, but this edit captured call ${targetCallSeq}` }
+      : { accepted: true, scheduled: true, target_call_seq: targetCallSeq }
+    const rootCallSeq = nextSequence
+    nextSequence += mismatch ? 4 : includeReads ? 8 : 6
+    const rootCallId = event.data.callId
+    const subCallId = `${rootCallId}:ptc:1`
+    const data = { rootCallId, parentCallId: rootCallId, subCallId,
+      name: 'edit_run_code', arguments: args }
+    const code = `return await tools.edit_run_code(${JSON.stringify(args)})`
+    const meta = { dshPtcPlus: journal({ calls: [{ global: 'tools', member: 'edit_run_code',
+      args, value: receipt }], completion: receipt }) }
+    if (!mismatch) meta.dshPtcPlusPostEdit = {
+      rootCallSeq, startSeq: rootCallSeq + 1, executionStartSeq: rootCallSeq + 3, subCallId,
+      meta: { ...original.data.meta, dshPtcPlusEdit: { targetCallSeq } },
+    }
+    events.push(
+      { type: 'tool/call', seq: rootCallSeq, data: { callId: rootCallId, name: 'run_code',
+        arguments: JSON.stringify({ code, description: 'Schedule a localized correction' }) } },
+      { type: 'tool/ptc-dispatch-start', seq: rootCallSeq + 1, data },
+      { type: 'tool/ptc-dispatch', seq: rootCallSeq + 2, data: { ...data, isError: false,
+        content: [{ type: 'text', text: JSON.stringify(receipt) }] } },
+      ...(!mismatch ? [
+        { type: 'tool/ptc-dispatch-start', seq: rootCallSeq + 3, data: {
+          rootCallId, parentCallId: rootCallId, subCallId: `${subCallId}:derived`, name: 'run_code',
+          arguments: original.data.meta.dshPtcPlusDerivedRun,
+        } },
+        { type: 'tool/ptc-dispatch', seq: rootCallSeq + 4, data: {
+          rootCallId, parentCallId: rootCallId, subCallId: `${subCallId}:derived`, name: 'run_code',
+          arguments: original.data.meta.dshPtcPlusDerivedRun, isError: false,
+          content: original.data.message.content, meta: { dshPtcPlus: original.data.meta.dshPtcPlus },
+        } },
+      ] : []),
+      { type: 'tool/result', seq: rootCallSeq + (mismatch ? 3 : 5), data: { message: { source: { callId: rootCallId },
+        content: [{ type: 'text', text: JSON.stringify(receipt) }, ...original.data.message.content] }, meta } },
+    )
+    if (includeReads && !mismatch) {
+      const readId = `${rootCallId}:read`
+      const code = original.data.meta.dshPtcPlusDerivedRun.code.split('\n').at(-1)
+      events.push(
+        { type: 'tool/call', seq: rootCallSeq + 6, data: { callId: readId, name: 'run_code',
+          arguments: JSON.stringify({ code, description: 'Read the revised binding' }) } },
+        { type: 'tool/result', seq: rootCallSeq + 7, data: { message: { source: { callId: readId },
+          content: original.data.message.content }, meta: { dshPtcPlus: original.data.meta.dshPtcPlus } } },
+      )
+    }
+  }
+  return events
+}
+
+function editEvents(args) { return nestedEditorEvents(historicalEditEvents(args)) }
+
+test('retains canonical archived direct editor audit without treating it as a current root tool', () => {
+  const events = historicalEditEvents({ edits: [{ old_string: '1', new_string: '2' }] })
+  assert.deepEqual(auditEditCalls(events, collectTrajectoryFacts(events).timeline).failures, [])
+})
+
+test('audits reused settled root and nested call IDs by their source sequences', () => {
+  const args = { edits: [{ old_string: '1', new_string: '2' }] }
+  const events = editEvents(args)
+  const repeated = editEvents(args).slice(3)
+  for (const event of repeated) {
+    event.seq += 40
+    const post = event.data?.meta?.dshPtcPlusPostEdit
+    if (post === undefined) continue
+    post.rootCallSeq += 40
+    post.startSeq += 40
+    post.executionStartSeq += 40
+    post.meta.dshPtcPlusEdit.targetCallSeq += 40
+    const receipt = { accepted: true, scheduled: true,
+      target_call_seq: post.meta.dshPtcPlusEdit.targetCallSeq }
+    event.data.meta.dshPtcPlus = journal({ calls: [{ global: 'tools',
+      member: 'edit_run_code', args, value: receipt }], completion: receipt })
+    const settledReceipt = repeated.find(candidate => candidate.type === 'tool/ptc-dispatch'
+      && candidate.seq === post.startSeq + 1 && candidate.data.name === 'edit_run_code')
+    settledReceipt.data.content = [{ type: 'text', text: JSON.stringify(receipt) }]
+  }
+  events.push(...repeated)
+  const facts = collectTrajectoryFacts(events, { compareUsageChunks: false })
+  assert.deepEqual(facts.failures, [])
+  assert.equal(facts.calls.size, 4)
+  assert.equal(facts.results.size, 4)
+  assert.deepEqual(auditEditCalls(events, facts.timeline).failures, [])
+
+  const forged = structuredClone(events)
+  const rootResults = forged.filter(event => event.type === 'tool/result'
+    && event.data?.meta?.dshPtcPlusPostEdit !== undefined)
+  rootResults[1].sourceEventSeqs = [rootResults[0].data.meta.dshPtcPlusPostEdit.rootCallSeq]
+  assert.match(collectTrajectoryFacts(forged, { compareUsageChunks: false }).failures.join('\n'),
+    /no unique matching call|no matching result/)
+})
+
+function insertAuditDispatch(events, source, beforeSeq) {
+  const index = events.findIndex(event => event.seq === beforeSeq)
+  const inserted = { ...structuredClone(source), seq: beforeSeq }
+  for (const event of events) {
+    if (event.seq >= beforeSeq) event.seq++
+    if (event.sourceEventSeqs !== undefined) {
+      event.sourceEventSeqs = event.sourceEventSeqs.map(seq => seq >= beforeSeq ? seq + 1 : seq)
+    }
+    const post = event.data?.meta?.dshPtcPlusPostEdit
+    if (post !== undefined) {
+      for (const key of ['rootCallSeq', 'startSeq', 'executionStartSeq']) {
+        if (post[key] >= beforeSeq) post[key]++
+      }
+    }
+  }
+  events.splice(index, 0, inserted)
+}
+
+for (const name of ['edit_run_code', 'run_code']) {
+  for (const type of ['tool/ptc-dispatch-start', 'tool/ptc-dispatch']) {
+    test(`rejects duplicate ${name} ${type} inside its root result window`, () => {
+      const events = editEvents({ edits: [{ old_string: '1', new_string: '2' }] })
+      const selected = events.find(event => event.type === type && event.data.name === name)
+      const settled = events.find(event => event.type === 'tool/ptc-dispatch' && event.data.name === name)
+      const root = resultFor(events, 'edit')
+      root.sourceEventSeqs = [root.data.meta.dshPtcPlusPostEdit.rootCallSeq]
+      insertAuditDispatch(events, selected, settled.seq)
+      const facts = collectTrajectoryFacts(events, { compareUsageChunks: false })
+      assert.deepEqual(facts.failures, [])
+      assert.match(auditEditCalls(events, facts.timeline).failures.join('\n'),
+        /no matching nested dispatch and root result|no proved actual derived execution pair/)
+    })
+  }
+  test(`rejects a selected ${name} start sequence that names its settlement`, () => {
+    const events = editEvents({ edits: [{ old_string: '1', new_string: '2' }] })
+    const settled = events.find(event => event.type === 'tool/ptc-dispatch' && event.data.name === name)
+    const post = resultFor(events, 'edit').data.meta.dshPtcPlusPostEdit
+    post[name === 'edit_run_code' ? 'startSeq' : 'executionStartSeq'] = settled.seq
+    const facts = collectTrajectoryFacts(events, { compareUsageChunks: false })
+    assert.deepEqual(facts.failures, [])
+    assert.match(auditEditCalls(events, facts.timeline).failures.join('\n'),
+      /no proved accepted receipt|no proved actual derived execution pair/)
+  })
+}
+
 test('audits both canonical delta forms with absent or correct guards and rejects invalid arguments', () => {
   const scenario = { id: 'edit', title: 'Edit', task: 'task', expect: {} }
   const runtime = { provider: 'provider', model: 'model', cwd: 'X:\\fixture\\workspace' }
@@ -754,32 +914,87 @@ test('audits both canonical delta forms with absent or correct guards and reject
       assert.match(report.failures.join('\n'), /canonical edit validation/)
     }
     const events = editEvents({ ...delta, expected_target_call_seq: 10 })
-    resultFor(events, 'edit').data.meta.dshPtcPlusEdit.targetCallSeq = 11
+    resultFor(events, 'edit').data.meta.dshPtcPlusPostEdit.meta.dshPtcPlusEdit.targetCallSeq = 11
     assert.match(inspectLog(events, scenario, runtime).failures.join('\n'), /does not identify its captured target/)
   }
 })
 
-test('recognizes only explicitly expected guard rejection without journal or derived execution', () => {
+test('rejects contradictory derived outcomes and nested editor receipt content', () => {
+  const args = { edits: [{ old_string: '1', new_string: '2' }] }
+  const events = editEvents(args)
+  const audit = () => auditEditCalls(events, collectTrajectoryFacts(events).timeline)
+  assert.deepEqual(audit().failures, [])
+  const derived = events.find(event => event.type === 'tool/ptc-dispatch' && event.data.name === 'run_code')
+  derived.data.isError = true
+  assert.match(audit().failures.join('\n'), /actual derived outcome contradicts its execution journal/)
+  derived.data.isError = false
+  const receipt = events.find(event => event.type === 'tool/ptc-dispatch' && event.data.name === 'edit_run_code')
+  receipt.data.content = [{ type: 'text', text: '{"accepted":false,"scheduled":false,"reason":"rejected"}' }]
+  assert.match(audit().failures.join('\n'), /nested receipt content contradicts its recorded canonical value/)
+})
+
+test('inspects derived journal diagnostics and status without changing direct cell counts', () => {
+  const events = editEvents({ edits: [{ old_string: '1', new_string: '2' }] })
+  const runtime = { provider: 'provider', model: 'model', cwd: 'X:\\fixture\\workspace' }
+  const scenario = { id: 'derived-failure', expect: { allowedJournalStatuses: ['durable'] } }
+  const derived = events.find(event => event.type === 'tool/ptc-dispatch' && event.data.name === 'run_code')
+  const root = resultFor(events, 'edit')
+  const failed = journal({ status: 'volatile', diagnostics: [{ code: 'PTC-X001', severity: 'error',
+    phase: 'execute', message: 'expected derived failure', stateEffect: 'partially-applied', dispatchState: 'completed' }] })
+  failed.volatileReason = 'expected execution failure'
+  failed.completion = { kind: 'throw', error: { kind: 'exception', message: 'expected derived failure' } }
+  derived.data.isError = true
+  derived.data.meta.dshPtcPlus = structuredClone(failed)
+  root.data.meta.dshPtcPlusPostEdit.meta.dshPtcPlus = structuredClone(failed)
+  assert.deepEqual(auditEditCalls(events, collectTrajectoryFacts(events).timeline).failures, [])
+  const denied = inspectLog(events, scenario, runtime)
+  assert.match(denied.failures.join('\n'), /tool result reports error for edit:ptc:1:derived/)
+  assert.match(denied.failures.join('\n'), /blocking PTC diagnostic: error\[PTC-X001\]/)
+  assert.match(denied.failures.join('\n'), /journal status volatile is not allowed/)
+  const allowed = inspectLog(events, { ...scenario, expect: {
+    allowedDiagnosticCodes: ['PTC-X001'], allowedJournalStatuses: ['durable', 'volatile'],
+    requiredJournalStatuses: ['volatile'], requiredDirectToolSequence: ['run_code', 'run_code'], maxCells: 2,
+  } }, runtime)
+  assert.deepEqual(allowed.failures, [])
+  assert.equal(allowed.timeline.length, 2)
+  assert.equal(allowed.derivedExecutions.length, 1)
+  assert.equal(allowed.derivedExecutions[0].rootCallId, 'edit')
+  assert.equal(allowed.derivedExecutions[0].isError, true)
+  assert.match(allowed.diagnostics.join('\n'), /expected derived failure/)
+})
+
+test('the current edit canary uses four roots and canonical derived completions', async () => {
+  const descriptors = JSON.parse(await readFile(new URL('../scripts/expensive-acceptance-scenarios.json', import.meta.url), 'utf8'))
+  const canary = descriptors.find(descriptor => descriptor.id === 'rejected-cell-editing')
+  assert.deepEqual(canary.expect.requiredDirectToolSequence, ['run_code', 'run_code', 'run_code', 'run_code'])
+  assert.match(canary.task, /tools\.edit_run_code/)
+  assert.match(canary.task, /accepted\/scheduled.*接收回执/)
+  const events = editEvents({ edits: [{ old_string: '1', new_string: '2' }] })
+  const runtime = { provider: 'provider', model: 'model', cwd: 'X:\\fixture\\workspace' }
+  const scenario = { id: 'derived-completion', expect: { completionEqualsAny: [2], completionIncludes: ['2'] } }
+  assert.deepEqual(inspectLog(events, scenario, runtime).failures, [])
+  const derived = events.find(event => event.type === 'tool/ptc-dispatch' && event.data.name === 'run_code')
+  derived.data.meta.dshPtcPlus = journal({ completion: 3 })
+  resultFor(events, 'edit').data.meta.dshPtcPlusPostEdit.meta.dshPtcPlus = journal({ completion: 3 })
+  // The original rendered text still says 2; only canonical completions satisfy the oracle.
+  assert.match(inspectLog(events, scenario, runtime).failures.join('\n'), /decoded cell completions do not equal 2/)
+})
+
+test('recognizes only explicitly expected guard rejection without derived execution', () => {
   const args = { edits: [{ old_string: '1', new_string: '2' }], expected_target_call_seq: 8 }
   const events = editEvents(args)
   const result = resultFor(events, 'edit')
-  result.data.meta = {}
-  result.data.message.content = [{ type: 'text', text: JSON.stringify({
-    edited: false, reason: 'validated repair targets run_code call 8, but this edit captured call 10',
-  }) }]
   const runtime = { provider: 'provider', model: 'model', cwd: 'X:\\fixture\\workspace' }
   const scenario = { id: 'guard-rejection', title: 'Guard rejection', task: 'task', expect: { guardMismatchEdits: [1] } }
   assert.deepEqual(inspectLog(events, scenario, runtime).failures, [])
   assert.match(inspectLog(events, { ...scenario, expect: {} }, runtime).failures.join('\n'), /guard does not match/)
-  result.data.meta.dshPtcPlus = journal()
+  result.data.meta.dshPtcPlusPostEdit = { meta: {} }
   assert.match(inspectLog(events, scenario, runtime).failures.join('\n'), /did not prove guard rejection/)
-  result.data.meta = { dshPtcPlusDerivedRun: { code: 'return 2' } }
-  assert.match(inspectLog(events, scenario, runtime).failures.join('\n'), /did not prove guard rejection/)
-  result.data.meta = {}
-  result.data.message.content = [{ type: 'text', text: 'not JSON' }]
-  assert.match(inspectLog(events, scenario, runtime).failures.join('\n'), /did not prove guard rejection/)
-  result.data.message.content = [{ type: 'text', text: '{"edited":true}' }]
-  assert.match(inspectLog(events, scenario, runtime).failures.join('\n'), /did not prove guard rejection/)
+  delete result.data.meta.dshPtcPlusPostEdit
+  for (const value of [undefined, { accepted: true, scheduled: true, target_call_seq: 10 }]) {
+    result.data.meta.dshPtcPlus = journal({ calls: [{ global: 'tools', member: 'edit_run_code', args, value }] })
+    assert.match(inspectLog(events, scenario, runtime).failures.join('\n'), /did not prove guard rejection/)
+  }
 })
 
 test('records a handled nested error as a diagnostic instead of a product failure', () => {
@@ -887,7 +1102,7 @@ test('requires truthful edits for completed and rejected cells while keeping mat
   const adjustedSource = 'const adjustmentSource = "long-source"\nreturn `adjusted:${adjustmentSource.length}:${adjustmentSource.slice(-8)}`'
   const rejectedSource = 'const repairSource = "long-source"\nreturn repairSource.length:'
   const repairedSource = 'const repairSource = "long-source"\nreturn `${repairSource.length}:${repairSource.slice(-8)}`'
-  const events = acceptanceEvents().slice(0, 3)
+  let events = acceptanceEvents().slice(0, 3)
   events.push(
     { type: 'turn/start', seq: 9, data: {} },
     {
@@ -963,14 +1178,15 @@ test('requires truthful edits for completed and rejected cells while keeping mat
     { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: 'adjusted:11:ng-source; 11:ng-source' }] }, usage: { inputTokens: 10, outputTokens: 2 } } },
     { type: 'turn/end', data: { reason: { kind: 'completed' } } },
   )
+  events = nestedEditorEvents(events, { includeReads: true })
   const scenario = {
     id: 'edit-transport', title: 'Edit transport', task: 'task',
     expect: {
-      minCells: 4,
-      maxCells: 4,
+      minCells: 6,
+      maxCells: 6,
       allowedJournalStatuses: ['noop', 'durable'],
       allowedDiagnosticCodes: ['PTC-C001'],
-      requiredDirectToolSequence: ['run_code', 'edit_run_code', 'run_code', 'edit_run_code'],
+      requiredDirectToolSequence: Array(6).fill('run_code'),
       editTransports: [
         {
           originalSource: completedSource,
@@ -999,8 +1215,10 @@ test('requires truthful edits for completed and rejected cells while keeping mat
   secondEdit.data.name = 'run_code'
   secondEdit.data.arguments = JSON.stringify({ code: repairedSource, description: 'Pretend model resend' })
   const failures = inspectLog(falsified, scenario, runtime).failures.join('\n')
-  assert.match(failures, /direct tool sequence/)
-  assert.match(failures, /was not followed by edit_run_code/)
+  delete resultFor(falsified, 'repair').data.meta.dshPtcPlusPostEdit
+  const missingEvidence = inspectLog(falsified, scenario, runtime).failures.join('\n')
+  assert.match(missingEvidence, /root post-edit evidence/)
+  assert.match(missingEvidence, /was not followed by edit_run_code/)
   assert.match(failures, /resent as a model-authored run_code/)
 
   const exposed = structuredClone(events)

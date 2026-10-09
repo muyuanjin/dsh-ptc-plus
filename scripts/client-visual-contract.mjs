@@ -283,7 +283,7 @@ export const surfaceControls = [
   ['capability management switch', '.ptcPlusCapabilityManagement input,.ptcPlusCapabilityServerSwitch input', { disabled: true }],
   ['settings navigation', '.ptcPlusSettingsNavItem', { hover: true }],
   ['settings close', '.ptcPlusSettingsDialogHead .ptcPlusDialogClose', { hover: true }],
-  ['select', '.ptcPlusSelect', {}],
+  ['select', '.ptcPlusSelectTrigger[role=combobox]', { hover: true, disabled: true }],
   ['search', '.ptcPlusSearch input', {}],
   ['REPL observation', '.ptcPlusObservationSelect', {}],
   ['REPL definition', '.ptcPlusReplBindingTrigger', { hover: true }],
@@ -308,6 +308,10 @@ export async function assertVisualSurface(page, root = page.locator('body'), lab
       if (control) await assertControlVisual(control, { ...options, label: `${label}/${name}/unselected` })
     }
     checked.push(name)
+  }
+  const choices = await root.locator('[role=combobox][class*=ptcPlus]').all()
+  if ((await Promise.all(choices.map(choice => choice.isVisible()))).some(Boolean)) {
+    assert.ok(checked.includes('select'), `${label}: visible plugin Select controls escaped the visual oracle`)
   }
   return checked
 }

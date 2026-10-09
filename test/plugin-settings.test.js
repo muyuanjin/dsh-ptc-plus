@@ -414,6 +414,12 @@ function cordisAgent(disposeGate = undefined, options = {}) {
       inject: serviceInjector({}, () => agent.ctx),
       tools: {
         get: name => definitions.get(name),
+        register(definition) {
+          definitions.set(definition.name, definition)
+          return () => {
+            if (definitions.get(definition.name) === definition) definitions.delete(definition.name)
+          }
+        },
       },
       get(name) {
         if (name === 'dynamicCordisRunner' || name === 'cordisInspect') return {}

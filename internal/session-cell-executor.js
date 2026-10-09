@@ -90,11 +90,11 @@ function parseDiagnostic(error, source, position, repair) {
     }),
     help: repair === undefined
       ? source.length >= LONG_CELL_CODE_UNITS
-        ? ['this cell was not executed; when edit_run_code is declared for the current request and the correction is small and localized, use it to avoid resending this long source; otherwise retry only this cell with corrected source in run_code']
+        ? ['this cell was not executed; when tools.edit_run_code is available in the program SDK and the correction is small and localized, call it inside a new run_code cell to avoid resending this long source; otherwise retry only this cell with corrected source in run_code']
         : ['this cell was not executed; correct the reported syntax and retry only this cell with run_code']
       : [
           `this cell was not executed; validated syntax repair: append ${JSON.stringify(repair.delimiter)} at the end of this cell`,
-          `when this correction matches your intent and edit_run_code is declared, prefer the direct tool call ${repair.invocation} with its target guard to run the complete corrected cell; validation proves syntax/preflight acceptance, not intended behavior; otherwise submit corrected source in run_code`,
+          `when this correction matches your intent and tools.edit_run_code is available in the program SDK, use ${repair.invocation} inside a new run_code cell with its target guard; the accepted edit runs the complete corrected cell after that new cell finishes; validation proves syntax/preflight acceptance, not intended behavior; otherwise submit corrected source in run_code`,
         ],
   })
 }
@@ -318,7 +318,7 @@ function exceptionDiagnostic({
         && error.toolName.startsWith('cordis_')
         ? ['bindings assigned before this Cordis failure remain live; reuse them instead of resending large source']
         : longCellFailure
-          ? ['inspect relevant live state in a new short `run_code` cell; edit_run_code executes the complete corrected cell, not only the failing expression']
+          ? ['inspect relevant live state in a new short `run_code` cell; tools.edit_run_code accepts a complete corrected-cell run after that new cell finishes; it reruns prior effects, so acceptance does not prove a retry is safe']
           : languageSemantics !== 'legacy-v1'
             ? ['completed declarations and actual assignments remain available; continue with the same binding names from the execution facts, inspecting relevant live values in a short cell when their state is uncertain']
           : declared.size === 0 ? []
@@ -451,7 +451,10 @@ export class SessionCellExecutor {
     } catch (error) {
       const result = earlyResult('exception', messageOf(error))
       const position = parseCellPosition(error)
+      // sourceCallSeq proves the assistant ancestor, not the editable identity
+      // of derived text. A parse-rejected derived edit does not publish that text.
       const repair = error instanceof PreflightError || replayRecord !== undefined
+        || request.callSeq !== request.sourceCallSeq
         ? undefined
         : validatedEofClosureRepair({
             source: request.program,

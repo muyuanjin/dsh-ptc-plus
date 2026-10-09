@@ -340,10 +340,18 @@
         "pending and seen identity caches derive from retained normalized event facts",
         "active prune window requires public prune and adjacent result provenance",
         "turn reset retires both directions of pending edit claims",
+        "nested edit start captures the current live target and root settlement publishes a validated derived source",
+        "nested editor receipt, dispatch relation and derived journal reconstruct from typed checkpoint facts",
+        "editor cause and actual derived execution retain distinct start sequences; actual start-settle arguments and canonical outcome qualify root metadata and JSON checkpoint recovery",
+        "settled root and nested call ID reuse retains exact current source sequence, bounded settlement pair and checkpoint ancestry",
+        "editor and actual derived dispatch identities require unique starts and settlements within the root/result window; correctly mapped model surfaces reject duplicate identities while settled IDs remain reusable outside the window",
+        "recovery boundaries admit only proved actual derived start identities, retain their parent and later valid carrier, and cold recovery never redispatches contracted effects",
+        "derived source visibility follows the shared proved root-result timeline rather than historical call ID lookup",
         "tip delivery positions survive earlier reconstructed success",
         "raw execution ancestry is qualified against exact derived assistant source at the same immutable observation cut; pure message projection contracts live, cold and fork state",
         "cold REPL inventory uses the journal timeline settlement owner and optional-source-free callId pairing; actual result/image projections preserve exact assistant-source eligibility",
-        "v11 exact per-cell executionCwd and v1-v10 historical directory fallback remain distinct from the new request directory"
+        "v11 exact per-cell executionCwd and v1-v10 historical directory fallback remain distinct from the new request directory",
+        "acceptance audit derivedExecutions preserves proved actual start/settle sequences, canonical completion values, error and policy evidence for inspectLog and scenario descriptors"
       ],
       "entries": [
         "live settlement",
@@ -369,14 +377,17 @@
         "legacy-v1",
         "protected-v1",
         "stateful-v1",
-        "ptcPlusSessionLog-state-v1..v8"
+        "ptcPlusSessionLog-state-v1..v9"
       ],
       "platforms": [
         "all supported hosts"
       ],
       "consumers": [
         "host-integration",
-        "user-bindings-and-client"
+        "user-bindings-and-client",
+        "scripts/acceptance-contract.mjs",
+        "scripts/expensive-headless-acceptance.mjs",
+        "scripts/expensive-acceptance-scenarios.json"
       ],
       "oracle": "closed journal schema and independently constructed damaged-history fixtures",
       "evidence": [
@@ -386,7 +397,9 @@
         "test/runtime-messages.test.js",
         "test/recovery-tips.test.js",
         "test/plugin-durability-recovery-boundaries.test.js",
-        "test/plugin-durability-recovery.test.js"
+        "test/plugin-durability-recovery.test.js",
+        "test/plugin-nested-edit.test.js",
+        "test/expensive-acceptance.test.js"
       ],
       "dependsOn": [
         "language-frontend",
@@ -445,9 +458,19 @@
         "resolved execution spec identity without a second resolution",
         "request-only codeRuntime public Loader composition preserves request identity and original lifecycle",
         "generation-specific settings compensation identity",
-        "run and edit submission admission before the first asynchronous observation",
+        "root run submission admission before the first asynchronous observation and editor capture at its persisted official nested start",
+        "run_code-only direct presentation with first-request registered edit_run_code SDK and byte-stable prefix",
+        "accepted editor receipt defers complete-target execution until the outer worker finishes while preserving root canonical return or failure and forwarding Host presentation",
+        "one accepted edit per root cell with lease cancellation and disposal preventing unstarted derived dispatch",
+        "same-session derived edits obtain a fresh admission while preserving source sequences and deferred settlement; delegated submissions receive fresh source scope",
+        "actual derived tools.execute uses the live root token and distinct identity, public Session.append records its true start and settlement, and public scoped dispatch-log retention receives the real root execution",
+        "failed derived start publication prevents dispatch and failed settlement publication contracts future state without redispatch or fabricated completions",
+        "derived parse diagnostics cannot claim a target-bound repair for the different source of the outer root cell",
         "disposal invalidates pending preparation",
         "presentation callback dynamic selection and descriptor restoration",
+        "run_code projectContent captured before dispatch installs derived content before root post-policy while the canonical result identity and metadata survive Host normalization",
+        "nested projector omission yields private derived evidence only with exact continuation token and unchanged frozen canonical value identity across policy; projected metadata removal, block, error, value replacement and missing capture reject evidence without changing Host results",
+        "deferred contexts and turn conclusion use the root ToolExecution methods; Host block and replacement decisions govern the final derived presentation",
         "delegated submissions own their public session observation and composite identity",
         "independent delegated sessions do not inherit native child execution handoffs",
         "plugin-owned isolated completion preserves value graphs without decoding public projection or historical strings and avoids unused renderer budgets",
@@ -463,7 +486,8 @@
         "installed projector preserves Host JSON validity through policy reprojection and retirement without manufacturing journal evidence",
         "pure model message content generation invalidates stale worker observations independently of surface node membership",
         "provider availability withdraws only plugin-owned declarations through accepted steps and public single-writer persistence on release",
-        "locale-independent capability command receipt distinguishes prepared and recorded without replaying model notifications"
+        "locale-independent capability command receipt distinguishes prepared and recorded without replaying model notifications",
+        "deferred editor acceptance audit and inspectLog consume the actual derived execution completion and failure rather than the outer receipt completion"
       ],
       "entries": [
         "run_code",
@@ -504,7 +528,10 @@
       "consumers": [
         "DSH agent loop",
         "client",
-        "user-bindings-and-client"
+        "user-bindings-and-client",
+        "scripts/acceptance-contract.mjs",
+        "scripts/expensive-headless-acceptance.mjs",
+        "scripts/expensive-acceptance-scenarios.json"
       ],
       "oracle": "public host contract fixtures, lifecycle fakes, official session codec round trips and request-local discovery budgets; external host internals are explicitly excluded",
       "evidence": [
@@ -524,6 +551,7 @@
         "test/plugin-native-call-transport.test.js",
         "test/plugin-lifecycle.test.js",
         "test/plugin-edit-settlement.test.js",
+        "test/plugin-nested-edit.test.js",
         "test/runtime-bridge-owner-dispose.test.js",
         "test/plugin-durability-recovery-boundaries.test.js",
         "test/settings-compat.test.js",
@@ -543,7 +571,8 @@
         "test/test-suite-files.test.js",
         "test/verification-workflow.test.js",
         "scripts/client-focused-tests.mjs",
-        "scripts/dsh-packed-lifecycle-smoke.mjs"
+        "scripts/dsh-packed-lifecycle-smoke.mjs",
+        "test/expensive-acceptance.test.js"
       ],
       "dependsOn": [
         "execution-kernel",
@@ -577,8 +606,9 @@
         "current public Skill and MCP owner removal contracts frozen availability",
         "additive description subset accounting and exact resolved capability settings",
         "current SDK input/output schemas, signature and revision agree in search and inspect; output-only changes invalidate recovery and cursors",
-        "settings-only catalog name and source metadata from public Skill provider/source and captured MCP owner sections without loading bodies, name-based provenance guesses or mutation of frozen model context",
+        "settings-only catalog name and source metadata from public Skill provider/source and captured MCP owner sections without loading bodies, name-based provenance guesses or mutation of frozen model context; read-only session catalog publishes current saved preferences separately from sessionSourceSelection in the validated live or recorded frozen source, retaining unknown without a snapshot and both directions of divergence after global save without refresh",
         "read-only active PTC identity observation does not read or prepare plans, including management-off synchronization",
+        "read-only session capability catalog binds to one live PTC agent identity, rejects replacement and abort, and reports source, saved, temporary and effective facts without a command transaction",
         "MCP server closure precedes independent child choices using frozen owner membership, preserves other servers and old inventories, and rejects ambiguous ownership rather than guessing; catalog observation captures public sections without session preparation or binding loads",
         "empty or whitespace-only public Host instruction sections create no dependencies while MCP ownership and SDK/resource contracts survive initial preparation, discovery, restoration and refresh; malformed dependencies remain invalid",
         "read-only allocation RPC observes explicit live PTC target workspace/global coverage and recomputes exact budget choices without session preparation, publication, sample registration, Skill body loads or model calls; frozen session inspection exposes its source settings separately",
@@ -786,6 +816,7 @@
         "passive tool quick peeks bound recorded source/result with visible excerpt labels and theme-aware single-layer chrome; native Popover or public React portal escapes clipping without hit-testable or scrollable overlay content; shared passive wheel/scroll observation cancels dwell and visible previews, requires scroll idle and fresh pointer motion before reopening; live default-on hover settings cancel pending and visible previews; pointer-right placement adapts to owned-anchor and viewport width changes, while explicit row expansion retains complete source/result and Copy",
         "capability workbench separates typed Tools, Skills and MCP resources, independent source/strategy/common/availability filters and stable sorting, editable unavailable preferences, catalog failure evidence, and saved manual settings from explicitly selected frozen session plans; tab keyboard and bounded responsive detail layouts remain inside plugin-owned settings",
         "shared session capability refresh uses exact selected/current session through public commands; duplicate clicks, cancellation, connection/preset generations, readonly/plugin disable, session switch and disposal cannot publish stale success; binding disable preserves PTC utilities and target-read failures block execution independently of frozen-plan reads",
+        "session capability workbench groups Tools, Skills, MCP servers/resources and MCP tools with resource membership preserved in type filters, reads its catalog without a command card, preserves unsent composer text, keeps drafts per explicit scope, submits individual public commands, and retains unconfirmed choices after partial or saved-only outcomes; MCP child closure notices consume the proposed parent selection in the selected scope, with staged automatic cancelling source closure and staged inherit restoring the explicit frozen sessionSourceSelection, separately displayed from current global saved preferences; missing source facts remain unknown without guessing from saved or effective state, while current effective closure and child choices remain independent; responsive list/detail and shared accessible Select keep controls reachable with modal focus return; fixture resolution proves native Host Modal versus fallback DOM, Select uses a distinct bounded portal, Escape dismisses the popup before the Modal and returns focus, and keyboard navigation updates choices",
         "one permanent compatible type/source filter bar; statistics and budget preview show scoped evidence with stale reply invalidation; named bounded capability configurations save rename delete import export and switch through one public settings mutation, and copy recorded session configuration without copying program state or refreshing sessions; official switch tokens and sparkle utility labels remain readable",
         "confirmed binding enablement receipt distinct from model catalog delivery and worker initialization",
         "public Conversation configuration receipt is appended after the Host system head or delivered through an accepted first-step batch; no first-system-head displacement or user/turn-trigger identity",
@@ -825,7 +856,7 @@
         "model requests",
         "session recovery"
       ],
-      "oracle": "isolated binding workers, storage fixtures, client host adapters and react-is component classification; bounded computed-style, text-range clipping and overlap, contrast, keyboard focus, hover, disabled and reachability oracle with retained-handler CSS counterexamples in native/fallback reference palettes and packed official Host themes; complete case inventories, exact focused selection, isolated bounded browser lanes and failure/cleanup propagation (docs/client-visual-contract.md)",
+      "oracle": "isolated binding workers, storage fixtures, client host adapters and react-is component classification; bounded computed-style, text-range clipping and overlap, contrast, keyboard focus, hover, disabled and reachability oracle with retained-handler CSS counterexamples in native/fallback reference palettes and packed official Host themes; visible shared Select triggers receive nonempty contrast/focus/hover/disabled coverage while hidden Radix form-transport selects are excluded from viewport and focus measurements; complete case inventories, exact focused selection, isolated bounded browser lanes and failure/cleanup propagation (docs/client-visual-contract.md)",
       "evidence": [
         "test/user-bindings-runtime.test.js",
         "test/user-binding-console.test.js",

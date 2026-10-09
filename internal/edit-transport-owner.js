@@ -5,7 +5,7 @@ import {
   JOURNAL_KEY,
   RECOVERY_BOUNDARY_KEY,
   REWRITES_KEY,
-  derivedEditResultsEqual,
+  isCanonicalSequence,
   liveToolCallSeq,
   normalizeJournal,
   normalizeRecoveryBoundaries,
@@ -18,6 +18,9 @@ import {
   editRunCodeSchema,
 } from './rejected-cell-editor.js'
 import { projectSessionLog } from './session-log-view.js'
+import { sessionEvents } from './session-events.js'
+import { deepEqualJson, snapshotJsonValue } from '@deepseek-ai/dsh-util-values'
+import { scopeTarget } from '@deepseek-ai/dsh-scope'
 import { RUN_CODE } from './runtime-bridge-owner.js'
 import { CAPABILITY_EVIDENCE_KEY } from './capability-environment.js'
 import { isRecord } from './record-utils.js'
@@ -35,6 +38,34 @@ import {
 } from './repl-memory-projection.js'
 
 export const EDIT_RUN_CODE = 'edit_run_code'
+
+function nestedEditStart(sessionLog, exec) {
+  const events = sessionEvents(sessionLog)
+  if (!Array.isArray(events) || typeof exec?.callId !== 'string'
+    || typeof exec?.rootCallId !== 'string') return undefined
+  const rootCallSeq = liveToolCallSeq(sessionLog, exec.rootCallId, RUN_CODE)
+  if (rootCallSeq === undefined) return undefined
+  const roots = events.flatMap((event, index) => event?.seq === rootCallSeq
+    ? [{ event, index }] : [])
+  if (roots.length !== 1 || roots[0].event?.type !== 'tool/call'
+    || roots[0].event.data?.callId !== exec.rootCallId
+    || roots[0].event.data?.name !== RUN_CODE) return undefined
+  const matches = events.flatMap((event, index) => (
+    index > roots[0].index && event?.type === 'tool/ptc-dispatch-start'
+      && event.data?.subCallId === exec.callId
+      && event.data?.name === EDIT_RUN_CODE
+      ? [{ event, index }] : []
+  ))
+  if (matches.length !== 1) return undefined
+  const { event, index } = matches[0]
+  if (!isCanonicalSequence(event.seq) || event.seq <= rootCallSeq
+    || events.filter(candidate => candidate?.seq === event.seq).length !== 1
+    || event.data.rootCallId !== exec.rootCallId
+    || event.data.parentCallId !== exec.rootCallId
+    || !deepEqualJson(event.data.arguments, exec.arguments)) return undefined
+  const target = projectSessionLog({ session: { events: events.slice(0, index + 1) } }).editableRun
+  return { startSeq: event.seq, rootCallSeq, target }
+}
 
 function unavailableDerivedResult(inner) {
   if (inner?.isError !== true) {
@@ -62,19 +93,25 @@ function derivedEditResult(inner) {
   return result
 }
 
+function derivedPresentation(inner) {
+  return {
+    content: inner.content,
+    ...(inner.additionalContexts === undefined ? {} : { additionalContexts: inner.additionalContexts }),
+    ...(inner.concludesTurn === true ? { concludesTurn: true } : {}),
+  }
+}
+
 export function createEditTransportOwner(ctx, {
-  durableReplay,
+  canScheduleEdit,
   executeTentative,
   presentationGeneration,
+  scheduleEdit,
   sessionId,
   toolSchemasForAgent,
   readSessionLog,
-  sessionLogView = projectSessionLog,
 }) {
-  let currentDurableReplay = durableReplay
-  const editExecutionMetadata = new WeakMap()
   const editClaims = new Map()
-  const pendingSettlements = new Map()
+  const pendingAcceptances = new Map()
   const installedScopes = new Map()
 
   const releaseClaim = (id, targetCallSeq) => {
@@ -84,10 +121,10 @@ export function createEditTransportOwner(ctx, {
   }
 
   const discardSettlements = (id) => {
-    for (const [exec, pending] of pendingSettlements) {
+    for (const [exec, pending] of pendingAcceptances) {
       if (id !== undefined && pending.id !== id) continue
-      pendingSettlements.delete(exec)
-      pending.finalize(false)
+      pendingAcceptances.delete(exec)
+      pending.finish(false)
     }
   }
 
@@ -127,126 +164,162 @@ export function createEditTransportOwner(ctx, {
       type: 'object',
       additionalProperties: false,
       properties: {
-        edited: { type: 'boolean' },
+        accepted: { type: 'boolean' },
+        scheduled: { type: 'boolean' },
+        target_call_seq: { type: 'integer' },
         reason: { type: 'string' },
-        error: { type: 'string' },
-        value: {},
-        logs: { type: 'array', items: { type: 'string' } },
       },
-      required: ['edited'],
+      required: ['accepted', 'scheduled'],
     },
     render: (_args, value) => [{ type: 'text', text: JSON.stringify(value ?? {}) }],
-    presentationMeta: (args) => {
-      const meta = {}
-      if (!isRecord(args)) return meta
-      const derived = editExecutionMetadata.get(args)
-      if (derived === undefined) return meta
-      return derivedMetadata(derived)
-    },
   }
   definition.execute = async (args, exec) => {
-    const agent = exec?.agent
-    const callId = typeof exec?.callId === 'string' ? exec.callId : undefined
-    const sessionLog = await readSessionLog(agent?.session, exec.signal)
-    const persistedTargetCallSeq = liveToolCallSeq(sessionLog, callId, EDIT_RUN_CODE)
-    if (persistedTargetCallSeq === undefined && sessionLogView(agent).editableRun !== undefined) {
-      throw new Error('ptc-plus: edit_run_code requires a unique persisted tool/call event')
+    if (canScheduleEdit?.(exec) !== true) {
+      return { accepted: false, scheduled: false, reason: 'edit requires an active root run_code cell' }
     }
-    const target = persistedTargetCallSeq === undefined
-      ? undefined
-      : sessionLogView(agent, { callId, callSeq: persistedTargetCallSeq }).requestedEditTarget
+    const agent = exec?.agent
+    const sessionLog = await readSessionLog(agent?.session, exec.signal)
+    const start = nestedEditStart(sessionLog, exec)
+    if (start === undefined) {
+      throw new Error('ptc-plus: edit_run_code requires a unique persisted PTC sub-call start')
+    }
+    const target = start.target
     if (target?.source === undefined || target.callSeq === undefined) {
-      return { edited: false, reason: 'no run_code cell is currently eligible for safe editing' }
+      return { accepted: false, scheduled: false, reason: 'no run_code cell is currently eligible for safe editing' }
     }
     const edited = editRejectedCell(args, target.source)
-    if (!edited.edited) return edited
+    if (!edited.edited) return { accepted: false, scheduled: false, reason: edited.reason }
     const expectedTargetCallSeq = args[EXPECTED_TARGET_CALL_SEQ]
     if (expectedTargetCallSeq !== undefined && expectedTargetCallSeq !== target.callSeq) {
       return {
-        edited: false,
+        accepted: false,
+        scheduled: false,
         reason: `validated repair targets run_code call ${expectedTargetCallSeq}, but this edit captured call ${target.callSeq}`,
       }
     }
     if (typeof ctx.tools.execute !== 'function') {
       throw new Error('ptc-plus: DSH tools.execute is required for derived edit execution')
     }
-    const persistedCallSeq = persistedTargetCallSeq
     const id = sessionId(agent)
     let claims = editClaims.get(id)
     if (claims === undefined) {
       claims = new Map()
       editClaims.set(id, claims)
-    } else {
-      for (const [callSeq, phase] of claims) {
-        if (phase === 'settled' && callSeq !== target.callSeq) claims.delete(callSeq)
-      }
     }
     if (claims.has(target.callSeq)) {
-      return { edited: false, reason: 'the current edit target already has a derived execution' }
+      return { accepted: false, scheduled: false, reason: 'the current edit target already has a derived execution' }
     }
-    claims.set(target.callSeq, 'executing')
-    let retainClaim = false
-    let finalizeTentative
-    try {
-      const dispatch = () => ctx.tools.execute({
-        callId: `${String(exec.callId)}:derived`,
-        name: RUN_CODE,
-        arguments: { code: edited.code, description: edited.description },
-        agent,
-        signal: exec.signal,
-      })
-      const tentative = await executeTentative(persistedCallSeq, dispatch, sessionLog)
-      const inner = tentative.result
-      finalizeTentative = tentative.finalize
-      const journalValue = isRecord(inner?.meta) && Object.hasOwn(inner.meta, JOURNAL_KEY)
-        ? inner.meta[JOURNAL_KEY]
-        : undefined
-      const journal = journalValue === undefined ? undefined : normalizeJournal(journalValue)
-      if (journal === undefined || journal.status === 'noop') return unavailableDerivedResult(inner)
-      const rewrites = validatedRewrites(inner.meta)
-      const recoveryBoundaries = isRecord(inner?.meta)
-        && Object.hasOwn(inner.meta, RECOVERY_BOUNDARY_KEY)
-        ? normalizeRecoveryBoundaries(inner.meta[RECOVERY_BOUNDARY_KEY])
-        : undefined
-      const replMemory = validatedReplMemorySnapshot(inner?.meta, presentationGeneration)
-      const userBindings = userBindingsSnapshotFromMeta(inner?.meta)
-      const draftCapability = userBindingDraftCapabilityFromMeta(
-        inner?.meta,
-        presentationGeneration,
-      )
-      const value = derivedEditResult(inner)
-      const derived = {
-        targetCallSeq: target.callSeq,
-        journal,
-        rewrites,
-        recoveryBoundaries,
-        replMemory,
-        userBindings,
-        draftCapability,
-        capabilityEvidence: inner?.meta?.[CAPABILITY_EVIDENCE_KEY],
-        code: edited.code,
-        description: edited.description,
-      }
-      editExecutionMetadata.set(args, derived)
-      claims.set(target.callSeq, 'settled')
-      pendingSettlements.set(exec, {
-        id,
-        targetCallSeq: target.callSeq,
-        expectedMeta: derivedMetadata(derived),
-        finalize: finalizeTentative,
-      })
-      finalizeTentative = undefined
-      retainClaim = true
-      return value
-    } finally {
-      finalizeTentative?.(false)
-      if (!retainClaim) releaseClaim(id, target.callSeq)
+    claims.set(target.callSeq, 'scheduled')
+    const receipt = { accepted: true, scheduled: true, target_call_seq: target.callSeq }
+    const pending = {
+      id,
+      receipt,
+      confirmed: false,
+      startSeq: start.startSeq,
+      rootCallSeq: start.rootCallSeq,
+      subCallId: exec.callId,
+      targetCallSeq: target.callSeq,
+      finalized: false,
+      finalizeTentative: undefined,
+      finish(confirmed) {
+        if (this.finalized) return
+        this.finalized = true
+        pendingAcceptances.delete(exec)
+        this.finalizeTentative?.(confirmed)
+        releaseClaim(id, target.callSeq)
+      },
+      async dispatch(rootSignal, rootExec) {
+        if (!this.confirmed || this.finalized || rootSignal.aborted) {
+          this.finish(false)
+          return { outcome: { edited: false, reason: 'accepted edit was cancelled before derived execution' } }
+        }
+        if (rootExec?.name !== RUN_CODE || rootExec.callId !== exec.rootCallId
+          || rootExec.agent !== agent || rootExec.token === undefined) {
+          throw new Error('ptc-plus: derived edit requires its actual root transport execution')
+        }
+        const argumentsValue = snapshotJsonValue({ code: edited.code, description: edited.description })
+        if (argumentsValue === undefined) throw new Error('ptc-plus: derived source is not losslessly JSON-serializable')
+        const executionLog = await readSessionLog(agent.session, rootSignal)
+        if (rootSignal.aborted || this.finalized) {
+          this.finish(false)
+          return { outcome: { edited: false, reason: 'accepted edit was cancelled before derived execution' } }
+        }
+        const data = { rootCallId: exec.rootCallId, parentCallId: rootExec.callId,
+          subCallId: `${String(exec.callId)}:derived`, name: RUN_CODE, arguments: argumentsValue }
+        const executionStart = agent.session.append('tool/ptc-dispatch-start', data)
+        const derivedExec = { callId: data.subCallId, rootCallId: data.rootCallId,
+          parent: rootExec.token, name: RUN_CODE, arguments: argumentsValue, agent, signal: rootSignal }
+        const dispatch = () => ctx.tools.execute(derivedExec)
+        const tentative = await executeTentative(executionStart.seq, start.rootCallSeq,
+          dispatch, executionLog, derivedExec)
+        const inner = tentative.result
+        const metadata = tentative.metadata ?? inner.meta
+        this.finalizeTentative = tentative.finalize
+        let content = inner.content
+        try {
+          content = await ctx.waterfall(scopeTarget(ctx.tools, agent), 'tools/ptc-dispatch-log', {
+            exec: rootExec, agent, subCallId: data.subCallId, name: RUN_CODE,
+            isError: inner.isError, content: inner.content,
+          }, () => Promise.resolve(inner.content))
+        } catch {
+          // A log projector cannot change the settled execution or omit its fact.
+          content = inner.content
+        }
+        try {
+          agent.session.append('tool/ptc-dispatch', { ...data, isError: inner.isError,
+            ...(inner.error?.info === undefined ? {} : { error: inner.error.info }),
+            content,
+            ...(metadata === undefined ? {} : { meta: metadata }),
+          })
+        } catch (error) {
+          this.finish(false)
+          throw error
+        }
+        const journalValue = isRecord(metadata) && Object.hasOwn(metadata, JOURNAL_KEY)
+          ? metadata[JOURNAL_KEY] : undefined
+        const journal = journalValue === undefined ? undefined : normalizeJournal(journalValue)
+        if (journal === undefined || journal.status === 'noop'
+          || inner.isError !== (journal.completion?.kind === 'throw' || journal.status === 'discarded')) {
+          this.finish(false)
+          return { outcome: unavailableDerivedResult(inner), presentation: derivedPresentation(inner) }
+        }
+        const derived = {
+          targetCallSeq: target.callSeq,
+          journal,
+          rewrites: validatedRewrites(metadata),
+          recoveryBoundaries: isRecord(metadata) && Object.hasOwn(metadata, RECOVERY_BOUNDARY_KEY)
+            ? normalizeRecoveryBoundaries(metadata[RECOVERY_BOUNDARY_KEY]) : undefined,
+          replMemory: validatedReplMemorySnapshot(metadata, presentationGeneration),
+          userBindings: userBindingsSnapshotFromMeta(metadata),
+          draftCapability: userBindingDraftCapabilityFromMeta(metadata, presentationGeneration),
+          capabilityEvidence: metadata?.[CAPABILITY_EVIDENCE_KEY],
+          code: edited.code,
+          description: edited.description,
+        }
+        return {
+          outcome: derivedEditResult(inner),
+          presentation: derivedPresentation(inner),
+          provenance: {
+            startSeq: start.startSeq,
+            executionStartSeq: executionStart.seq,
+            rootCallSeq: start.rootCallSeq,
+            subCallId: exec.callId,
+            meta: derivedMetadata(derived),
+          },
+        }
+      },
     }
+    if (scheduleEdit?.(exec, pending) !== true) {
+      pending.finish(false)
+      return { accepted: false, scheduled: false, reason: 'edit requires an active root run_code cell' }
+    }
+    pendingAcceptances.set(exec, pending)
+    return receipt
   }
 
   const disposeInstalled = (installed) => {
     const failures = []
-    for (const key of ['disposePresentation', 'disposeRegistration']) {
+    for (const key of ['disposeRegistration']) {
       const dispose = installed[key]
       if (dispose === undefined) continue
       try {
@@ -267,8 +340,7 @@ export function createEditTransportOwner(ctx, {
     try {
       disposeInstalled(installed)
     } finally {
-      if (installed.disposePresentation === undefined
-        && installed.disposeRegistration === undefined) {
+      if (installed.disposeRegistration === undefined) {
         installedScopes.delete(agent)
       }
     }
@@ -276,19 +348,14 @@ export function createEditTransportOwner(ctx, {
 
   return Object.freeze({
     definition,
-    reconfigure(nextConfig) {
-      currentDurableReplay = nextConfig.durableReplay
-    },
     isInstalled(agent) {
       const installed = installedScopes.get(agent)
-      return installed?.disposePresentation !== undefined
-        && installed.disposeRegistration !== undefined
+      return installed?.disposeRegistration !== undefined
     },
     ensureInstalled(agent) {
       const installed = installedScopes.get(agent)
       if (installed !== undefined) {
-        if (installed.disposePresentation !== undefined
-          && installed.disposeRegistration !== undefined) {
+        if (installed.disposeRegistration !== undefined) {
           return installed.definition
         }
         uninstall(agent)
@@ -301,8 +368,8 @@ export function createEditTransportOwner(ctx, {
         throw new Error('ptc-plus: cannot install edit_run_code; the agent scope already owns that tool name')
       }
       const scopedTools = agent?.ctx?.tools
-      if (typeof scopedTools?.register !== 'function' || typeof scopedTools.presentAs !== 'function') {
-        throw new Error('ptc-plus: DSH agent-scoped tools.register and tools.presentAs are required to expose edit_run_code')
+      if (typeof scopedTools?.register !== 'function') {
+        throw new Error('ptc-plus: DSH agent-scoped tools.register is required to expose edit_run_code')
       }
       const disposeRegistration = scopedTools.register(definition)
       if (typeof disposeRegistration !== 'function') {
@@ -310,43 +377,19 @@ export function createEditTransportOwner(ctx, {
       }
       const nextInstalled = {
         definition,
-        disposePresentation: undefined,
         disposeRegistration,
         sessionId: sessionId(agent),
       }
       installedScopes.set(agent, nextInstalled)
-      try {
-        const disposePresentation = scopedTools.presentAs('both')
-        if (typeof disposePresentation !== 'function') {
-          throw new Error('ptc-plus: DSH tools.presentAs did not return a disposer')
-        }
-        nextInstalled.disposePresentation = disposePresentation
-      } catch (error) {
-        try {
-          uninstall(agent)
-        } catch (cleanupError) {
-          throw new AggregateError(
-            [error, cleanupError],
-            'ptc-plus: edit_run_code installation and rollback failed',
-            { cause: error },
-          )
-        }
-        throw error
-      }
       return definition
     },
     handleResult(exec, result) {
-      const pending = pendingSettlements.get(exec)
-      pendingSettlements.delete(exec)
+      const pending = pendingAcceptances.get(exec)
       if (pending === undefined) return
-      const persisted = derivedEditResultsEqual(
-        result?.meta,
-        pending.expectedMeta,
-        pending.targetCallSeq,
-      )
-      pending.finalize(persisted)
-      if (persisted) return
-      releaseClaim(pending.id, pending.targetCallSeq)
+      const accepted = result?.isError === false
+        && deepEqualJson(result.value, pending.receipt)
+      pending.confirmed = accepted
+      if (!accepted) pending.finish(false)
     },
     disposeAgent(agent) {
       let failure

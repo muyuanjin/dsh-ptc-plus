@@ -3,7 +3,7 @@ import { RPC_CONTRACTS } from '../internal/rpc-contract.js'
 import { CONFIG_DEFAULTS, SETTINGS_NAMESPACE } from '../internal/config-spec.js'
 import { createPtcToolView } from './client-tool-view.js'
 import { createPtcSettingsView } from './client-settings-view.js'
-import { capabilityCommandText, createCapabilityRefreshView, createSessionCapabilityControlsView } from './client-capabilities-view.js'
+import { createCapabilityCommandCard, createCapabilityRefreshView, createSessionCapabilityControlsView } from './client-capabilities-view.js'
 import { capabilityProfileConfiguration } from '../internal/runtime-config.js'
 import { createReplView } from './client-repl-view.js'
 import { createAuthoringView } from './client-authoring-view.js'
@@ -90,10 +90,7 @@ function createPreferenceScope(ctx) {
   })
 }
 
-window.__ModuleLoader__.load({
-  // Replaced by the bundle entry with the package name from package.json.
-  id: __PTC_PLUS_CLIENT_MODULE_ID__,
-  factory: (require) => {
+export function createClientPlugin(require) {
     const React = require('react')
     const { createPortal } = require('react-dom')
     let primitives
@@ -109,6 +106,7 @@ window.__ModuleLoader__.load({
       Menu,
       MenuFallback,
       Modal,
+      Select,
       Toast,
       Tooltip,
     } = resolvePrimitives(primitives, React, createPortal)
@@ -126,7 +124,6 @@ window.__ModuleLoader__.load({
       play: IconPlayOutline16,
       stop: IconStopFill16,
     } = hostIconComponents(primitives)
-    const module = { exports: {} }
     const h = React.createElement
     const TypeScriptEditor = createTypeScriptEditor(React)
 
@@ -170,7 +167,7 @@ window.__ModuleLoader__.load({
       const catalogOwner = createCatalogOwner({ callUserBindings })
       ctx.effect(() => () => catalogOwner.dispose(), 'ptc-plus: binding catalog sources')
       const { useWorkbenchController, UserBindingsWorkbench, BindingsDialog } = createUserBindingsWorkbench(React, {
-        TypeScriptEditor, BindingConsole, IconButton, ActionButton, CodeBlock, Modal,
+        TypeScriptEditor, BindingConsole, IconButton, ActionButton, CodeBlock, Modal, Select,
         catalogOwner,
         icons: {
           refresh: IconRefreshOutline16, plus: IconPlusOutline16, check: IconCheckOutline14,
@@ -180,10 +177,18 @@ window.__ModuleLoader__.load({
       })
       const { observeRepl } = createReplObserver({ rpc, ctx })
       const capabilityCommands = createCommandAccess(ctx, 'capabilities')
+      const CapabilityCommandCard = createCapabilityCommandCard(React)
       const CapabilityRefreshButton = createCapabilityRefreshView(React, capabilityCommands)
-      const SessionCapabilityControls = createSessionCapabilityControlsView(React, capabilityCommands)
+      const SessionCapabilityControls = createSessionCapabilityControlsView(React, {
+        commands: capabilityCommands, Modal, Select,
+        async inspectSessionCatalog(sessionId, signal) {
+          const result = await rpc.call(RPC_CONTRACTS.capabilities, 'session-catalog', { sessionId }, signal)
+          if (result?.ok !== true) throw new Error(result?.error?.message ?? 'Session capability catalog unavailable')
+          return result.value
+        },
+      })
       const { PTCPlusSettingsCard, PTCPlusSettingsDialog } = createPtcSettingsView(React, {
-        ActionButton, BindingsDialog, Modal, useWorkbenchController, CapabilityRefreshButton,
+        ActionButton, BindingsDialog, Modal, Select, useWorkbenchController, CapabilityRefreshButton,
         async inspectCapabilityTargets(signal) {
           const result = await rpc.call(RPC_CONTRACTS.capabilities, 'targets', {}, signal)
           if (result?.ok !== true) throw new Error(result?.error?.message ?? 'Capability refresh targets unavailable')
@@ -207,7 +212,7 @@ window.__ModuleLoader__.load({
         icons: { search: IconSearchOutline16, chevron: IconChevronDownOutline14 },
       })
       const { ReplComposer, ReplConsole, ReplMemoryCard, replPopoverIsOpen, placeReplPopover, useObservedReplMemory } = createReplView(React, {
-        CodeBlock, featureEnabled, normalizeReplMemorySnapshot, unavailableReplMemorySnapshot,
+        CodeBlock, Select, featureEnabled, normalizeReplMemorySnapshot, unavailableReplMemorySnapshot,
         useSessionPreset, sessionUsesPtcPreset, useWorkbenchController, UserBindingsWorkbench,
         icons: { search: IconSearchOutline16, chevron: IconChevronDownOutline14 },
       })
@@ -347,10 +352,7 @@ window.__ModuleLoader__.load({
       }, props => h(BindingCommandCard, { ...props, key: props.node.commandId })))))
       ctx.slots.inject('conversation.chat.commandview', () => registerGated(ctx, settingsGate('plugin', () => ctx.slots.register({
         name: 'conversation.chat.commandview', key: 'capabilities', locale: LOCALE_NS,
-      }, ({ node, t }) => h('section', { className: 'ptcPlusCapabilityReceipt', 'aria-label': t('capabilities.receipt.title') },
-        h('strong', null, t('capabilities.receipt.title')),
-        h('p', { role: 'status' }, node.outcome ? capabilityCommandText(t, node.outcome.text)
-          ?? t('capabilities.refreshAcknowledged') : t('capabilities.refreshing')))))))
+      }, props => h(CapabilityCommandCard, props)))))
       ctx.inject(['uiConversation'], scope => scope.effect(() => scope.uiConversation.events.register(bindingToggleConversationDefinition),
         'ptc-plus binding configuration receipts'))
       ctx.slots.inject('conversation.chat.node', () => ctx.effect(() => ctx.slots.register({
@@ -390,10 +392,8 @@ window.__ModuleLoader__.load({
       })
     }
 
-    module.exports = {
+    return {
       apply,
       inject: ['slots', 'locale', 'connection', 'remote'],
     }
-    return module.exports
-  },
-})
+}

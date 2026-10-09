@@ -205,7 +205,11 @@ test('PTC Plus starts a model turn with empty tool and MCP instructions', async 
   }
   assert.deepEqual(errors, [])
   assert.equal(requests.length, 2)
-  assert.deepEqual(requests[0].tools.map(tool => tool.name), ['run_code', 'edit_run_code'])
+  assert.deepEqual(requests[0].tools.map(tool => tool.name), ['run_code'])
+  assert.deepEqual(requests[1].tools.map(tool => tool.name), ['run_code'])
+  for (const request of requests) {
+    assert.match(JSON.stringify(request.messages), /edit_run_code/)
+  }
   const plans = owner.agent.session.snapshotEvents().filter(event => event.data?.source?.form === 'capability-plan')
   assert.equal(plans.length, 1)
   assert.match(plans[0].data.content[0].text, /tools\.mcp__docs__probe/)

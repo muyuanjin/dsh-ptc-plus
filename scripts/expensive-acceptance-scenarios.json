@@ -41,7 +41,7 @@
     "id": "rejected-cell-editing",
     "title": "Completed and rejected cell delta repair",
     "default": true,
-    "task": "严格验证 edit transport。不要创建 todo 或计划，不要调用任何无关工具，不要并行或重试；唯一允许的工具活动是严格按 run_code、edit_run_code、run_code、edit_run_code 顺序各调用一次。先把下面第一段源码原样作为一个 run_code cell 执行，不要缩短其中字符串：\n\n{{completedSource}}\n\n它会成功执行，但结果需要微调；只调用一次 edit_run_code，用唯一 literal edit 把 {{adjustmentOld}} 替换为 {{adjustmentNew}}，不要用 run_code 重发修改后源码。然后把下面第二段源码原样作为新的 run_code cell 执行，不要提前修正：\n\n{{rejectedSource}}\n\n它被拒绝后，只调用一次 edit_run_code，用唯一 literal edit 把 {{repairOld}} 替换为 {{repairNew}}，仍然不要用 run_code 重发修改后源码。edit 参数和最终回答都不得包含任一完整源码。最终只报告两次 edit 执行返回的 {{expectedAdjustment}} 和 {{expectedRepair}}。",
+    "task": "严格验证 edit transport。不要创建 todo 或计划，不要调用任何无关工具，不要并行或重试；严格按顺序调用四次顶层 run_code。先把下面第一段源码原样作为第一个 run_code cell 执行，不要缩短其中字符串：\n\n{{completedSource}}\n\n它会成功执行，但结果需要微调。第二个 run_code 只执行并返回一次 tools.edit_run_code 调用，用唯一 literal edit 把 {{adjustmentOld}} 替换为 {{adjustmentNew}}，不要重发修改后源码。SDK 返回的 accepted/scheduled 是接收回执，修订计算的值由该顶层调用的正式结果展示提供。第三个 run_code 把下面第二段源码原样作为新 cell 执行，不要提前修正：\n\n{{rejectedSource}}\n\n它被拒绝后，第四个 run_code 只执行并返回一次 tools.edit_run_code 调用，用唯一 literal edit 把 {{repairOld}} 替换为 {{repairNew}}，仍然不要重发修改后源码。edit 参数、编辑程序和最终回答都不得包含任一完整源码。最终只报告两次修订计算在正式结果展示中的 {{expectedAdjustment}} 和 {{expectedRepair}}。",
     "expect": {
       "minCells": 4,
       "maxCells": 4,
@@ -58,9 +58,9 @@
       ],
       "requiredDirectToolSequence": [
         "run_code",
-        "edit_run_code",
         "run_code",
-        "edit_run_code"
+        "run_code",
+        "run_code"
       ],
       "editTransports": [
         {

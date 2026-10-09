@@ -85,6 +85,7 @@ export function createAuthoringView(React, deps) {
     const hoverTimer = React.useRef(undefined)
     const [menu, setMenu] = React.useState(null)
     const [managing, setManaging] = React.useState(false)
+    const [capabilitiesOpen, setCapabilitiesOpen] = React.useState(false)
     const [settingsOpen, setSettingsOpen] = React.useState(false)
     // The composer entry's four actions live in the host Menu's `children`
     // region. Preceding Clients accept that prop and mount nothing, so the entry
@@ -110,7 +111,7 @@ export function createAuthoringView(React, deps) {
     const quickAccess = featureEnabled(settings, 'authorButton')
     const pluginEnabled = featureEnabled(settings, 'plugin') && (hasDraft || featureEnabled(settings, 'ptcMenu'))
     const canAuthor = quickAccess && available && typeof useInput === 'function' && typeof inputActions?.setDraft === 'function'
-    const menuOpen = pluginEnabled && view.reachable && !managing && !settingsOpen
+    const menuOpen = pluginEnabled && view.reachable && !managing && !capabilitiesOpen && !settingsOpen
       && menu !== null && menu.key === view.candidateKey
     // The dialog owns the management session; losing the input surface only
     // suspends reads, so a draft survives a temporary Host takeover.
@@ -131,6 +132,7 @@ export function createAuthoringView(React, deps) {
         catalogSource.reset()
         setMenu(null)
         setManaging(false)
+        setCapabilitiesOpen(false)
         setSettingsOpen(false)
       }
       const unsubscribe = subscribeReset(reset)
@@ -383,6 +385,7 @@ export function createAuthoringView(React, deps) {
         setSettingsOpen(true)
         return
       }
+      if (id === 'capabilities') { hideMenu(); setCapabilitiesOpen(true); return }
       hideMenu()
       if (id === 'new') openAuthoring()
       else if (id === 'manage') {
@@ -409,17 +412,11 @@ export function createAuthoringView(React, deps) {
           (catalog?.entries?.length ?? 0) > 0 ? actionButton('edit', 'bindings.authorEdit') : null)) : null,
       h('div', { key: 'utilities', className: 'ptcPlusMenuUtilities' },
         quickAccess ? actionButton('manage', 'bindings.manage') : null,
-        SessionCapabilityControls ? h(SessionCapabilityControls, { sessionId, t,
-          enabled: pluginEnabled && settings.status === 'ready' && settings.writable === true,
-          onPrefill: typeof inputActions?.setDraft === 'function' ? command => {
-            if (typeof input?.draft === 'string' && input.draft.trim() !== '') {
-              toastSequence.current++; setToast({ sequence: toastSequence.current, key: 'bindings.composerBusy' }); return
-            }
-            inputActions.setDraft(command); hideMenu()
-          } : undefined }) : null,
+        SessionCapabilityControls ? actionButton('capabilities', 'capabilities.quick.title') : null,
         CapabilityRefreshButton ? h(CapabilityRefreshButton, { sessionId, t, menu: true,
           enabled: pluginEnabled && settings.status === 'ready' && settings.writable === true,
-          onStatus: text => { toastSequence.current++; setToast({ sequence: toastSequence.current, text }) } }) : null,
+          onStatus: text => { if (text?.key === 'capabilities.refreshFailed') {
+            toastSequence.current++; setToast({ sequence: toastSequence.current, text }) } } }) : null,
         actionButton('settings', 'settings.menuEntry')),
     ]
     const menuEntries = menu?.step === 'edit' ? editItems : [
@@ -488,6 +485,14 @@ export function createAuthoringView(React, deps) {
           controller: workbench, t, onClose: () => setManaging(false), returnFocusRef: dialogReturnFocus,
           getReturnFocus: () => anchorRef.current?.querySelector('.ptcPlusAuthorButton'),
         }) : null,
+      SessionCapabilityControls && capabilitiesOpen && view.reachable
+        ? h(SessionCapabilityControls, { sessionId, open: true, t,
+          enabled: pluginEnabled && settings.status === 'ready' && settings.writable === true,
+          onClose: () => {
+            setCapabilitiesOpen(false)
+            queueMicrotask(() => anchorRef.current?.querySelector('.ptcPlusAuthorButton')
+              ?.focus({ preventScroll: true }))
+          } }) : null,
       settingsOpen && view.reachable
         ? h(PTCPlusSettingsDialog, {
           t, usePtcSettings, updateSetting, updateCapabilityConfiguration, callUserBindings,

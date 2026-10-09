@@ -24,7 +24,7 @@ function settingsScrollGeometry(element) {
  * action only while global bindings are eligible.
  */
 export function createPtcSettingsView(React, deps) {
-  const { ActionButton, BindingsDialog, Modal, useWorkbenchController, icons, inspectCapabilityPlans, inspectCapabilityCatalog,
+  const { ActionButton, BindingsDialog, Modal, Select, useWorkbenchController, icons, inspectCapabilityPlans, inspectCapabilityCatalog,
     inspectCapabilityTargets, inspectCapabilityAllocation, CapabilityRefreshButton } = deps
   const h = React.createElement
   const enabledField = CONFIG_FIELDS.find(field => field.key === 'enabled')
@@ -109,7 +109,7 @@ export function createPtcSettingsView(React, deps) {
         : saved.invalid && draft === saved.settings ? h('p', { role: 'status', className: 'ptcPlusMessage' }, t('capabilities.savedStatisticsInvalid')) : null)
   }
 
-  const { CapabilityWorkbench } = createCapabilitySettingsViews(React, { SearchIcon })
+  const { CapabilityWorkbench } = createCapabilitySettingsViews(React, { SearchIcon, Select })
 
   function fieldInput(field, value, disabled, onChange, label) {
     if (field.type === 'boolean') {
@@ -329,13 +329,10 @@ export function createPtcSettingsView(React, deps) {
             field.description === '' ? null : h('div', { className: 'ptcPlusDetail' },
               t(migratingPolicy ? 'bindingPolicy.migrationDescription' : `${field.key}.description`))),
           migratingPolicy
-            ? h('select', {
-              className: 'ptcPlusSelect', value: 'legacy', disabled: fieldDisabled(field),
-              'aria-label': t(`${field.key}.label`),
-              onChange: event => persist(field, event.target.value),
-            },
-            h('option', { value: 'legacy', disabled: true }, t('bindingPolicy.legacy')),
-            ...field.options.map(policy => h('option', { key: policy, value: policy }, t(`bindingPolicy.${policy}`))))
+            ? h(Select, { value: 'legacy', disabled: fieldDisabled(field), label: t(`${field.key}.label`),
+              options: [{ value: 'legacy', label: t('bindingPolicy.legacy'), disabled: true },
+                ...field.options.map(policy => ({ value: policy, label: t(`bindingPolicy.${policy}`) }))],
+              onChange: next => persist(field, next) })
             : fieldInput(field, value[field.key], fieldDisabled(field), persist, t(`${field.key}.label`))),
         field.key === 'userBindingsEnabled' && globalEnabled
           ? h('div', { className: 'ptcPlusSettingAction', ref: bindingsAction },
@@ -364,10 +361,10 @@ export function createPtcSettingsView(React, deps) {
     const renderRefresh = ({ observation = false } = {}) => CapabilityRefreshButton ? h('section', { className: 'ptcPlusCapabilityApply',
       'aria-label': t(observation ? 'capabilities.observationGroup' : 'capabilities.applyGroup') },
       h('label', { className: 'ptcPlusCapabilityFilter' }, h('span', null, t(observation ? 'capabilities.observationSession' : 'capabilities.targetSession')),
-        h('select', { className: 'ptcPlusSelect', value: refreshSessionId, 'aria-label': t(observation ? 'capabilities.observationSession' : 'capabilities.targetSession'),
-          disabled: !enabled || unavailable || targets === null || Boolean(targetsError), onChange: event => setRefreshSessionId(event.target.value) },
-        h('option', { value: '' }, t('capabilities.chooseSession')),
-        ...(targets ?? []).map(target => h('option', { key: target.sessionId, value: target.sessionId }, target.sessionId)))),
+        h(Select, { value: refreshSessionId, label: t(observation ? 'capabilities.observationSession' : 'capabilities.targetSession'),
+          disabled: !enabled || unavailable || targets === null || Boolean(targetsError), onChange: setRefreshSessionId,
+          options: [{ value: '', label: t('capabilities.chooseSession') },
+            ...(targets ?? []).map(target => ({ value: target.sessionId, label: target.sessionId }))] })),
       observation ? h('p', { className: 'ptcPlusDetail' }, t('capabilities.observationOnly')) : h(CapabilityRefreshButton, { sessionId: refreshSessionId, t,
         enabled: enabled && !unavailable && pending.size === 0 && !targetsError
           && (targets ?? []).some(target => target.sessionId === refreshSessionId),

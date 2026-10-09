@@ -149,7 +149,11 @@ if (values.list) {
             }
           }
           const controls = [...document.querySelectorAll('button,input,textarea,select,summary')]
-            .filter(element => element.getClientRects().length > 0)
+            .filter(element => {
+              const style = getComputedStyle(element)
+              return element.getClientRects().length > 0 && style.visibility !== 'hidden'
+                && style.display !== 'none' && !element.closest('[aria-hidden=true],[hidden]')
+            })
             .map(element => {
               const { left, right, width, height } = element.getBoundingClientRect()
               return { label: element.getAttribute('aria-label') ?? element.textContent, left, right, width, height, navigation: element.matches('.ptcPlusSettingsNavItem') }
@@ -172,7 +176,7 @@ if (values.list) {
         assert.ok(metrics.pageWidth <= width, `${width}/${state}: viewport overflow`)
         assert.ok(metrics.containers.every(item => item.scroll <= item.client + 1), `${width}/${state}: ${JSON.stringify(metrics.containers)}`)
         assert.deepEqual(metrics.collisions, [], `${width}/${state}: overlapping binding actions`)
-        assert.ok(metrics.controls.filter(item => !item.navigation).every(item => item.width > 0 && item.height >= 16 && item.left >= 0 && item.right <= width), `${width}/${state}: controls outside viewport ${JSON.stringify(metrics.controls.filter(item => !item.navigation && (item.left < 0 || item.right > width)))}`)
+        assert.ok(metrics.controls.filter(item => !item.navigation).every(item => item.width > 0 && item.height >= 16 && item.left >= 0 && item.right <= width), `${width}/${state}: controls outside viewport ${JSON.stringify(metrics.controls.filter(item => !item.navigation && (item.width <= 0 || item.height < 16 || item.left < 0 || item.right > width)))}`)
         if (state.startsWith('settings-dialog-')) {
           assert.ok(metrics.settingsDialog !== null, `${width}/${state}: settings dialog missing`)
           assert.ok(metrics.settingsDialog.top >= 0 && metrics.settingsDialog.bottom <= 900,
@@ -194,7 +198,7 @@ if (values.list) {
           assert.equal(await list.locator('.ptcPlusCapabilityItem').count(), 48)
           assert.equal(await page.locator('.ptcPlusCapabilityChoices textarea,.ptcPlusCapabilityStatistics textarea').count(), 0)
           const first = list.locator('input[type=checkbox]').first()
-          const last = list.locator('select').last()
+          const last = list.getByRole('combobox').last()
           for (const control of [last, first]) {
             await control.focus()
             const reachable = await control.evaluate(element => {

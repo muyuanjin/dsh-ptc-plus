@@ -29,7 +29,7 @@ PTC Plus 为 DSH 的 **PTC 模式**提供有状态的 TypeScript 计算环境。
 
 [快速开始](#快速开始) · [功能概览](#功能概览) · [连续计算](#连续计算与语言扩展) · [代码编辑与容错](#代码编辑与调用容错) · [全局绑定](#全局绑定跨会话复用常用函数) · [界面与设置](#界面与设置) · [状态与恢复](#值传递与状态恢复)
 
-当前 DSH 的公开 native/PTC 组合不能同时准入原名顶层 `run_code` 与 `edit_run_code`。编辑 transport 仍是[待决架构边界](docs/adr/0005-temporary-rejected-cell-edit-transport.md#public-integration-status)；下面的内部能力示例和测试不能证明对最新官方宿主的完整兼容。
+PTC 模式只将 `run_code` 声明为顶层工具；代码编辑经 cell 内的 `tools.edit_run_code` 调用，并由 DSH 原生工具流水线执行。见[编辑契约](docs/adr/0005-temporary-rejected-cell-edit-transport.md)。
 
 ## 快速开始
 
@@ -47,12 +47,12 @@ dsh plugin --profile <profile> add dsh-ptc-plus
 
 升级已安装插件时，运行 `dsh plugin --profile <profile> add dsh-ptc-plus@latest`，然后重启该宿主；本地 tarball 与固定 Git revision 同样使用 `add` 更新 profile 依赖。
 
-安装完成后正常向模型描述任务即可，下面的 `run_code` 和 `edit_run_code` 示例说明模型如何使用这些能力。其他安装方式、Desktop、本地开发启动器、升级和故障排查见[安装指南](docs/installation.md)。
+安装完成后正常向模型描述任务即可，下面的 `run_code` 和程序内 `tools.edit_run_code` 示例说明模型如何使用这些能力。其他安装方式、Desktop、本地开发启动器、升级和故障排查见[安装指南](docs/installation.md)。
 
 Windows 源码测试：双击 `scripts\run-upstream-dsh.cmd`，拉取官方 DSH 默认分支并复用隔离的构建缓存，加载当前插件工作区。首次运行需要安装依赖和构建；详见[上游源码测试](docs/installation.md#upstream-source-development-launcher-windows)。
 
 Windows 开发脚本会检查本地 esbuild 是否可执行；依赖缺失或由 WSL 安装时，使用 Git 忽略的 `win_node_modules` 隔离安装和打包，不替换工作区的 `node_modules`。
-星光菜单还提供会话能力控制：检索 Skills、普通 Tools、MCP 服务/资源和 MCP Tools，选择仅本会话临时覆盖，或明确全局保存并在同一正式命令中更新本会话。普通刷新保留临时选择；全局操作只清除同一项临时覆盖。填入命令草稿不会提交或覆盖已有输入；复制命名配置不带临时选择。回执区分已更新、待首次接受与已保存但未生效，不启动模型任务。关闭插件后在获准步骤撤销旧声明；完整卸载经公开会话持久化交还 provider，写入失败明确报告。详见[生命周期契约](docs/adr/0042-persist-provider-availability-and-handback.md)。
+星光菜单可打开会话能力工作台：按类别、来源和状态检索 Skills、普通 Tools、MCP 服务及其能力，在详情中分别查看当前全局保存、会话冻结的继承策略、临时覆盖与当前生效的选择。全局保存但未刷新时，取消临时覆盖仍继承该会话的冻结来源；界面不把自动策略当作已确定的最终分配。仅本会话和全局保存是两个明确的范围；多个待应用选择会逐项通过正式命令提交，部分失败时保留未确认的草稿供重试。普通刷新保留临时选择；全局操作只清除同一项临时覆盖。工作台不覆盖输入框中未发送的草稿，也不启动模型任务；命令卡片显示实际 `/capabilities` 操作及其回执。复制命名配置不带临时选择。关闭插件后在获准步骤撤销旧声明；完整卸载经公开会话持久化交还 provider，写入失败明确报告。详见[生命周期契约](docs/adr/0042-persist-provider-availability-and-handback.md)。
 
 
 ## 功能概览
@@ -132,20 +132,21 @@ join = (await import('node:path')).join
 
 ### 小改动只发送差异
 
-模型可以调用 `edit_run_code` 修改当前轮模型运行中最近的可编辑 cell，无需重新发送整段源码。假设前面的第二个 cell 刚执行完，且仍在同一轮运行中，可以把筛选条件改为 `value >= 10`：
+模型可以在新的 `run_code` cell 内调用 `tools.edit_run_code` 修改当前轮最近的可编辑 cell，无需重新发送整段源码。假设前面的第二个 cell 刚执行完，且仍在同一轮运行中，可以把筛选条件改为 `value >= 10`：
 
 ```js
-edit_run_code({
+const receipt = await tools.edit_run_code({
   edits: [{ old_string: 'value >= 8', new_string: 'value >= 10' }]
 })
+return receipt
 ```
 
-修改后会**重新执行整个 cell**，以上例子返回 `12`。已发生的状态修改不会回滚；如果代码涉及写文件或外部服务，重跑仍需考虑重复效果。编辑既可用于修复失败的代码，也可用于微调已成功的计算。
+收据中的 `accepted: true, scheduled: true` 表示已安排编辑；外层 cell 结束后才**重新执行整个目标 cell**，派生结果会随这次 `run_code` 结果报告，下一次 cell 可读取修订后的值（以上例子为 `12`）。调用编辑后同一 cell 中的读取仍是旧状态。已发生的状态修改不会回滚；如果代码涉及写文件或外部服务，重跑仍需考虑重复效果。编辑既可用于修复失败的代码，也可用于微调已成功的计算。
 
 正则编辑的每项必须包含 `pattern`、`flags`、`replacement`、`expected_matches`。`flags` 必须是字符串；不需要标志时显式传 `""`：
 
 ```js
-edit_run_code({
+await tools.edit_run_code({
   regex_edits: [{ pattern: "value >= 8", flags: "", replacement: "value >= 10", expected_matches: 1 }]
 })
 ```

@@ -1245,9 +1245,9 @@ test('renders parse failures with a cell-relative code frame and unchanged state
   const longSource = `/*${'x'.repeat(LONG_CELL_CODE_UNITS)}*/\nconst longValue =`
   const long = await state.executeRun('long-parse-diagnostic', longSource, {}, {})
   assert.deepEqual(long.result.meta.dshPtcPlus.diagnostics[0].help, [
-    'this cell was not executed; when edit_run_code is declared for the current request and the correction is small and localized, use it to avoid resending this long source; otherwise retry only this cell with corrected source in run_code',
+    'this cell was not executed; when tools.edit_run_code is available in the program SDK and the correction is small and localized, call it inside a new run_code cell to avoid resending this long source; otherwise retry only this cell with corrected source in run_code',
   ])
-  assert.match(long.raw.error.message, /when edit_run_code is declared for the current request/)
+  assert.match(long.raw.error.message, /tools\.edit_run_code is available in the program SDK/)
   assert.match(long.raw.error.message, /correction is small and localized/)
   assert.match(long.raw.error.message, /otherwise retry only this cell with corrected source in run_code/)
   assert.doesNotMatch(long.raw.error.message, /reuse (?:it|the existing bindings)/)

@@ -1,4 +1,5 @@
 import { isHostComponent } from './client-host-compat.js'
+import * as RadixSelect from '@radix-ui/react-select'
 
 /**
  * Resolve the Harness Client components this plugin renders against the
@@ -187,7 +188,7 @@ function createFallbackModal(React, createPortal = content => content) {
         if (!event.repeat) close.current?.()
       } else if (event.key === 'Tab') {
         const controls = [...root.current.querySelectorAll(focusable)]
-          .filter(control => control.getClientRects().length > 0)
+          .filter(control => control.getClientRects().length > 0 && !control.closest('[aria-hidden=true],[hidden]'))
         const target = event.shiftKey ? controls.at(-1) : controls[0]
         const boundary = event.shiftKey ? controls[0] : controls.at(-1)
         if (controls.length === 0 || document.activeElement === boundary || !root.current.contains(document.activeElement)) {
@@ -225,10 +226,38 @@ export function resolvePrimitives(primitives, React, createPortal) {
     DisclosureRow: primitives.DisclosureRow,
     Menu: isHostComponent(primitives.Menu) ? primitives.Menu : createFallbackMenu(React, createPortal),
     MenuFallback: createFallbackMenu(React, createPortal),
+    Select: createSelect(React),
     Modal: isHostComponent(primitives.Modal) ? primitives.Modal : createFallbackModal(React, createPortal),
     Toast: primitives.Toast,
     Tooltip: primitives.Tooltip,
   })
+}
+
+/** Shared themed choice control; Radix owns listbox focus, typeahead, and dismissal. */
+export function createSelect(React) {
+  const h = React.createElement
+  return function Select({ value, options, onChange, label, disabled = false, className = '',
+    placeholder, dataStrategy, autoFocus = false }) {
+    const [open, setOpen] = React.useState(false)
+    React.useEffect(() => { if (disabled) setOpen(false) }, [disabled])
+    const chosen = options.find(option => option.value === value)
+    let emptyToken = '__ptc_plus_empty_choice__'
+    while (options.some(option => option.value === emptyToken)) emptyToken += '_'
+    return h(RadixSelect.Root, { value: value === '' ? emptyToken : value, open, disabled,
+      onOpenChange: setOpen, onValueChange: next => onChange(next === emptyToken ? '' : next) },
+      h(RadixSelect.Trigger, { className: ['ptcPlusSelectTrigger', className].filter(Boolean).join(' '),
+        'aria-label': label, 'data-strategy': dataStrategy, 'data-modal-autofocus': autoFocus || undefined },
+      h(RadixSelect.Value, { placeholder: placeholder ?? chosen?.label ?? '' }),
+      h(RadixSelect.Icon, { className: 'ptcPlusSelectChevron', 'aria-hidden': true }, '⌄')),
+      h(RadixSelect.Portal, null,
+        h(RadixSelect.Content, { className: 'ptcPlusSelectMenu', position: 'popper', sideOffset: 4,
+          onEscapeKeyDown: event => event.stopPropagation() },
+        h(RadixSelect.Viewport, { className: 'ptcPlusSelectViewport' },
+          ...options.map(option => h(RadixSelect.Item, { key: option.value, value: option.value === '' ? emptyToken : option.value,
+            disabled: option.disabled === true, className: 'ptcPlusSelectOption' },
+          h(RadixSelect.ItemText, null, option.label),
+          h(RadixSelect.ItemIndicator, { className: 'ptcPlusSelectCheck' }, '✓')))))))
+  }
 }
 
 /** Adapt host action styling, or own it completely when the primitive is absent. */

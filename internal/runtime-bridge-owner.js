@@ -1,7 +1,7 @@
 /** Own the execution-seam takeover, per-cell lease, journal projection, and session settlement. */
 import { AsyncLocalStorage } from 'node:async_hooks'
-import { snapshotJsonValue } from '@deepseek-ai/dsh-util-values'
-import { decodeValue } from './value-wire.js'
+import { deepEqualJson, snapshotJsonValue } from '@deepseek-ai/dsh-util-values'
+import { decodeValue, renderValueWire } from './value-wire.js'
 import { valueLimitsFromConfig } from './value-wire-schema.js'
 import { executionPolicies } from './binding-update-policy.js'
 import { assertObjectJsonSchema, validateJsonSchemaValue } from '@deepseek-ai/dsh-tools'
@@ -24,8 +24,9 @@ import {
   toolCapabilityMetadata,
 } from './program-bindings.js'
 import { deepFreeze } from './record-utils.js'
-import { withReplMemorySnapshot } from './repl-memory-projection.js'
+import { REPL_MEMORY_META_KEY, withReplMemorySnapshot } from './repl-memory-projection.js'
 import { withUserBindingDraftCapability } from './user-binding-draft-projection.js'
+import { POST_EDIT_KEY } from './session-journal-schema.js'
 import { generatedRunCodeDescriptionMeta } from './run-code-description.js'
 import { BINDING_SUBMISSION } from './user-binding-authoring.js'
 import {
@@ -318,7 +319,9 @@ export function createRuntimeBridgeOwner({
           enumerable: true,
           value: async (...args) => {
             ensureLease()
-            return invoke(...args)
+            return binding.global === 'tools' && key === EDIT_RUN_CODE
+              ? scope.run(executionToken, () => invoke(...args))
+              : invoke(...args)
           },
         })
       }
@@ -402,6 +405,10 @@ export function createRuntimeBridgeOwner({
     const output = definition.output
     const ownPresentationMeta = Object.getOwnPropertyDescriptor(output, 'presentationMeta')
     const patchedPresentationMeta = (args, value) => {
+      const projectedCurrent = scope.getStore()
+      if (projectedCurrent !== undefined) {
+        projectedCurrent.presentationMetaCalls = (projectedCurrent.presentationMetaCalls ?? 0) + 1
+      }
       const prototype = Object.getPrototypeOf(output)
       const originalPresentationMeta = ownPresentationMeta === undefined
         ? prototype === null ? undefined : Reflect.get(prototype, 'presentationMeta', output)
@@ -430,10 +437,50 @@ export function createRuntimeBridgeOwner({
       if (settlement.userBindings !== undefined) {
         meta = withUserBindingsSnapshot(meta, settlement.userBindings)
       }
+      if (current.postEdit?.provenance !== undefined) {
+        meta = { ...meta, [POST_EDIT_KEY]: current.postEdit.provenance }
+      }
       meta = generatedRunCodeDescriptionMeta(args, meta)
       meta = withReplMemorySnapshot(meta, settlement.replMemory, presentationGeneration)
+      if (current.postEdit?.provenance?.meta?.[REPL_MEMORY_META_KEY] !== undefined) {
+        meta = { ...meta,
+          [REPL_MEMORY_META_KEY]: current.postEdit.provenance.meta[REPL_MEMORY_META_KEY] }
+      }
       meta = withDraftCapability(meta, current)
       return capabilityEnvironment?.complete(current, { meta }).meta ?? meta
+    }
+    const ownProjectContent = Object.getOwnPropertyDescriptor(definition, 'projectContent')
+    const patchedProjectContent = (exec, result) => {
+      const prototype = Object.getPrototypeOf(definition)
+      const originalProjectContent = ownProjectContent === undefined
+        ? prototype === null ? undefined : Reflect.get(prototype, 'projectContent', definition)
+        : Object.hasOwn(ownProjectContent, 'value')
+          ? ownProjectContent.value : ownProjectContent.get?.call(definition)
+      const original = originalProjectContent?.call(definition, exec, result)
+      const current = active ? pending.get(exec) : undefined
+      const derived = current?.derivedExecution
+      // Some public Host implementations omit the metadata projector for a
+      // nested success. Capture its canonical value before policy; the private
+      // relation is admitted only if policy retains that same frozen value.
+      if (current?.deferredSettlement?.current === current && derived !== undefined
+        && current.exec === exec && exec.token !== undefined && exec.parent !== undefined
+        && current.id === sessionId(exec.agent) && derived.agent === exec.agent
+        && derived.callId === exec.callId && derived.rootCallId === exec.rootCallId
+        && derived.parent === exec.parent && deepEqualJson(derived.arguments, exec.arguments)
+        && current.presentationMetaCalls === undefined && result.isError === false
+        && result.value !== null && typeof result.value === 'object'
+        && Object.isFrozen(result.value) && result.meta?.[JOURNAL_KEY] === undefined
+        && current.settlement !== undefined) {
+        const metadata = scope.run(current, () => patchedPresentationMeta(exec.arguments, result.value))
+        if (metadata?.[JOURNAL_KEY] !== undefined) {
+          current.deferredSettlement.projection = { exec, token: exec.token,
+            value: result.value, meta: snapshotJsonValue(result.meta), metadata,
+            presentationMetaCalls: current.presentationMetaCalls }
+        }
+      }
+      const presentation = active ? pending.get(exec)?.postEdit?.presentation : undefined
+      if (presentation === undefined) return original
+      return [...original ?? result.content, ...presentation.content]
     }
     const ownExecute = Object.getOwnPropertyDescriptor(definition, 'execute')
     const originalExecute = definition.execute
@@ -452,6 +499,10 @@ export function createRuntimeBridgeOwner({
         value: patchedPresentationMeta,
       })
       presentationPatched = true
+      Object.defineProperty(definition, 'projectContent', {
+        configurable: true, enumerable: ownProjectContent?.enumerable ?? true,
+        writable: true, value: patchedProjectContent,
+      })
       if (patchedExecute !== undefined) {
         Object.defineProperty(definition, 'execute', {
           configurable: true,
@@ -465,10 +516,20 @@ export function createRuntimeBridgeOwner({
         output,
         ownPresentationMeta,
         patchedPresentationMeta,
+        ownProjectContent,
+        patchedProjectContent,
         ownExecute,
         patchedExecute,
       })
     } catch (error) {
+      if (definition.projectContent === patchedProjectContent) {
+        if (ownProjectContent === undefined) delete definition.projectContent
+        else Object.defineProperty(definition, 'projectContent', ownProjectContent)
+      }
+      if (patchedExecute !== undefined && definition.execute === patchedExecute) {
+        if (ownExecute === undefined) delete definition.execute
+        else Object.defineProperty(definition, 'execute', ownExecute)
+      }
       if (presentationPatched && output.presentationMeta === patchedPresentationMeta) {
         if (ownPresentationMeta === undefined) delete output.presentationMeta
         else Object.defineProperty(output, 'presentationMeta', ownPresentationMeta)
@@ -495,24 +556,90 @@ export function createRuntimeBridgeOwner({
       executionToken: current,
       ...(current.userBindings === undefined ? {} : { userBindings: current.userBindings }),
     })
-      .then((execution) => {
+      .then(async (execution) => {
         current.settlement = execution.settlement
-        return execution.result
+        const pendingEdit = current.pendingEdit
+        if (pendingEdit === undefined) return execution.result
+        if (!pendingEdit.confirmed || current.signal.aborted) {
+          pendingEdit.finish(false)
+          return execution.result
+        }
+        try {
+          const postEdit = await pendingEdit.dispatch(current.signal, current.exec)
+          current.postEdit = postEdit
+          for (const context of postEdit.presentation?.additionalContexts ?? []) {
+            current.exec.deferContext?.(context)
+          }
+          if (postEdit.presentation?.concludesTurn === true && execution.result.error === undefined) {
+            current.exec.concludeTurn?.()
+          }
+          const outcome = postEdit.outcome
+          const value = postEdit.provenance?.meta?.[JOURNAL_KEY]?.completion
+          const hasRenderedContent = postEdit.presentation?.content?.length > 0
+          let valueText = ''
+          if (!hasRenderedContent && value?.kind === 'return' && value.hasValue) {
+            try {
+              valueText = `; value: ${renderValueWire(value.value, {
+                ...valueLimitsFromConfig(current.submission?.config ?? currentConfig),
+                maxStringBytes: 2048,
+              })}`
+            } catch {
+              valueText = '; value omitted from preview'
+            }
+          }
+          const status = outcome.edited
+            ? `edit_run_code settled${outcome.error === undefined ? '' : ' with execution error'}`
+            : 'edit_run_code did not execute the accepted revision'
+          const detail = [
+            ...(hasRenderedContent || !Array.isArray(outcome.logs) ? [] : outcome.logs),
+            ...(!hasRenderedContent && typeof outcome.error === 'string' ? [outcome.error] : []),
+            ...(!hasRenderedContent && typeof outcome.reason === 'string' ? [outcome.reason] : []),
+          ].filter(item => typeof item === 'string').join('\n')
+          return { ...execution.result,
+            logs: [...execution.result.logs, `${status}${valueText}${detail ? `: ${detail}` : ''}`] }
+        } catch (error) {
+          pendingEdit.finish(false)
+          return { ...execution.result,
+            logs: [...execution.result.logs,
+              `edit_run_code failed after acceptance: ${error instanceof Error ? error.message : String(error)}`] }
+        }
       })
       .finally(projected.release)
   }
 
   const releaseSeam = seam.installExecute(patchedRun)
 
+  const ownedDerivedScope = (exec, executionArguments = exec.arguments) => {
+    const inherited = scope.getStore()
+    const derived = inherited?.derivedExecution
+    if (inherited?.deferredSettlement === undefined
+      || inherited.id !== sessionId(exec.agent) || derived?.agent !== exec.agent
+      || derived.callId !== exec.callId || derived.rootCallId !== exec.rootCallId
+      || derived.parent !== exec.parent || exec.name !== RUN_CODE
+      || !deepEqualJson(derived.arguments, executionArguments)) return undefined
+    return inherited
+  }
+
   const withSubmission = async (exec, operation) => {
     const id = sessionId(exec.agent)
     const inherited = scope.getStore()
-    if (exec.parent !== undefined || id === undefined || inherited?.submission?.sessionId === id) return operation()
+    const ownsDerived = ownedDerivedScope(exec) !== undefined
+    if ((exec.parent !== undefined && !ownsDerived) || id === undefined
+      || inherited?.submission?.sessionId === id) return operation()
     const submission = sessions.beginSubmission({ id }, exec.signal)
+    const composite = inherited?.deferredSettlement !== undefined && inherited.id === id
+      ? {
+          persistedCallSeq: inherited.persistedCallSeq,
+          sourceCallSeq: inherited.sourceCallSeq,
+          sessionLog: inherited.sessionLog,
+          deferredSettlement: inherited.deferredSettlement,
+          derivedExecution: inherited.derivedExecution,
+        }
+      : {}
     try {
-      // A delegated agent can start inside a session or a native child handoff.
-      // Its admission owns a fresh log/composite context and no child handoff.
-      return await scope.run({ submission }, () => childScope.run(undefined, operation))
+      // Derived edits retain their proved source under a fresh admission for
+      // the same session. Delegated agents own a fresh log and no child handoff.
+      return await scope.run({ ...composite, submission }, () => childScope.run(undefined, operation))
     } finally {
       sessions.releaseSubmission(submission)
     }
@@ -525,6 +652,25 @@ export function createRuntimeBridgeOwner({
     return sessionLog
   }
 
+  const readNestedDispatchLog = async (session, signal) => {
+    const inherited = scope.getStore()
+    if (inherited === undefined || inherited.session !== session
+      || inherited.signal.aborted || signal?.aborted) {
+      throw new Error('ptc-plus: nested edit has no active root run_code cell')
+    }
+    return readSessionLog(session, signal)
+  }
+
+  const rootEditScope = exec => {
+    const current = scope.getStore()
+    if (!active || current === undefined || childScope.getStore() !== undefined
+      || current.deferredSettlement !== undefined
+      || current.callId !== exec.rootCallId || current.agent !== exec.agent
+      || current.session !== exec.agent?.session || current.signal.aborted
+      || exec.signal?.aborted) return undefined
+    return current
+  }
+
   return Object.freeze({
     config: sessions.config,
     reconfigure(nextConfig) {
@@ -534,8 +680,18 @@ export function createRuntimeBridgeOwner({
     observeRepl(id, memory, signal) { return sessions.observe(id, memory, signal) },
     withSubmission,
     readSubmissionLog,
+    readNestedDispatchLog,
+    prepareAgent(agent) { patchRunCodeDefinition(agent) },
+    canScheduleEdit(exec) { return rootEditScope(exec) !== undefined },
+    scheduleEdit(exec, pendingEdit) {
+      const current = rootEditScope(exec)
+      if (current === undefined || current.pendingEdit !== undefined) return false
+      current.pendingEdit = pendingEdit
+      return true
+    },
     // A composite tool's outer result owns the final durability decision.
-    async executeTentative(callSeq, operation, sessionLog) {
+    async executeTentative(callSeq, sourceCallSeq, operation, sessionLog, derivedExecution) {
+      const id = scope.getStore()?.id
       const settlement = {
         current: undefined,
         innerConfirmed: false,
@@ -550,19 +706,23 @@ export function createRuntimeBridgeOwner({
       }
       try {
         const result = await scope.run({
-          ...(scope.getStore()?.submission === undefined ? {} : { submission: scope.getStore().submission }),
+          id,
           ...(callSeq === undefined ? {} : { persistedCallSeq: callSeq }),
+          ...(sourceCallSeq === undefined ? {} : { sourceCallSeq }),
           ...(sessionLog === undefined ? {} : { sessionLog }),
           deferredSettlement: settlement,
+          derivedExecution,
         }, operation)
-        return Object.freeze({ result, finalize })
+        return Object.freeze({ result, finalize,
+          ...(settlement.metadata === undefined ? {} : { metadata: settlement.metadata }) })
       } catch (error) {
         finalize(false)
         throw error
       }
     },
     async handleExecute(exec, next, executionArguments = exec.arguments, userBindings = undefined) {
-      if (exec.parent !== undefined) return scope.run(undefined, next)
+      const ownsDerived = ownedDerivedScope(exec, executionArguments) !== undefined
+      if (exec.parent !== undefined && !ownsDerived) return scope.run(undefined, next)
       return withSubmission(exec, async () => {
         const id = sessionId(exec.agent)
         if (id === undefined) return next()
@@ -575,12 +735,16 @@ export function createRuntimeBridgeOwner({
           submission: inherited?.submission,
           callId: String(exec.callId),
           ...(persistedCallSeq === undefined ? {} : { persistedCallSeq }),
+          ...(inherited?.sourceCallSeq === undefined ? {} : { sourceCallSeq: inherited.sourceCallSeq }),
           ...(inherited?.deferredSettlement === undefined
             ? {}
-            : { deferredSettlement: inherited.deferredSettlement }),
+            : { deferredSettlement: inherited.deferredSettlement,
+                derivedExecution: inherited.derivedExecution }),
           session: exec.agent?.session,
+          signal: exec.signal,
           sessionLog: await readSubmissionLog(exec.agent?.session, exec.signal),
           agent: exec.agent,
+          exec,
           executionArguments,
           ...(userBindings === undefined ? {} : { userBindings }),
         }
@@ -601,7 +765,14 @@ export function createRuntimeBridgeOwner({
             if (settlement.userBindings !== undefined) {
               meta = withUserBindingsSnapshot(meta, settlement.userBindings)
             }
+            if (current.postEdit?.provenance !== undefined) {
+              meta = { ...meta, [POST_EDIT_KEY]: current.postEdit.provenance }
+            }
             meta = withReplMemorySnapshot(meta, settlement.replMemory, presentationGeneration)
+            if (current.postEdit?.provenance?.meta?.[REPL_MEMORY_META_KEY] !== undefined) {
+              meta = { ...meta,
+                [REPL_MEMORY_META_KEY]: current.postEdit.provenance.meta[REPL_MEMORY_META_KEY] }
+            }
             meta = withDraftCapability(meta, current)
             return capabilityEnvironment?.complete(current, { ...result, meta }) ?? { ...result, meta }
           }
@@ -610,17 +781,31 @@ export function createRuntimeBridgeOwner({
       })
     },
     handleResult(exec, result) {
-      if (exec.parent !== undefined) return
+      if (exec.parent !== undefined && !pending.has(exec)) return
       const id = sessionId(exec.agent)
       if (id === undefined) return
       const current = pending.get(exec)
       pending.delete(exec)
       const settlement = current?.settlement
       if (settlement === undefined) {
+        current?.pendingEdit?.finish(false)
         sessions.noteNoop(id, current?.sessionLog, exec.callId)
         return
       }
-      const meta = result?.meta
+      const deferred = current.deferredSettlement
+      const projection = deferred?.projection
+      const derived = current.derivedExecution
+      const privateMetadata = projection !== undefined && projection.exec === exec
+        && deferred.current === current && current.exec === exec && current.id === id
+        && derived?.agent === exec.agent && derived.callId === exec.callId
+        && derived.rootCallId === exec.rootCallId && derived.parent === exec.parent
+        && deepEqualJson(derived.arguments, exec.arguments)
+        && projection.token === exec.token && projection.value === result?.value
+        && result.isError === false && deepEqualJson(projection.meta, result.meta)
+        && projection.presentationMetaCalls === current.presentationMetaCalls
+        ? projection.metadata : undefined
+      if (deferred !== undefined) deferred.metadata = privateMetadata
+      const meta = privateMetadata ?? result?.meta
       const confirmed = meta !== null && typeof meta === 'object' && !Array.isArray(meta)
         && Object.hasOwn(meta, JOURNAL_KEY)
         && journalsEqual(meta[JOURNAL_KEY], settlement.journal)
@@ -639,6 +824,8 @@ export function createRuntimeBridgeOwner({
         return
       }
       sessions.finalize(settlement, confirmed)
+      current.pendingEdit?.finish(confirmed && current.postEdit?.provenance !== undefined
+        && deepEqualJson(meta?.[POST_EDIT_KEY], current.postEdit.provenance))
     },
     disposeAgent(agent) {
       return sessions.disposeSession(sessionId(agent) ?? String(agent.id))
@@ -666,6 +853,10 @@ export function createRuntimeBridgeOwner({
         if (patched.output.presentationMeta === patched.patchedPresentationMeta) {
           if (patched.ownPresentationMeta === undefined) delete patched.output.presentationMeta
           else Object.defineProperty(patched.output, 'presentationMeta', patched.ownPresentationMeta)
+        }
+        if (patched.definition.projectContent === patched.patchedProjectContent) {
+          if (patched.ownProjectContent === undefined) delete patched.definition.projectContent
+          else Object.defineProperty(patched.definition, 'projectContent', patched.ownProjectContent)
         }
         if (patched.patchedExecute !== undefined
           && patched.definition.execute === patched.patchedExecute) {

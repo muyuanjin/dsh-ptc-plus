@@ -17,6 +17,7 @@ const HOST_PACKAGES = [
   '@deepseek-ai/cordis',
   '@deepseek-ai/cordis-plugin-loader',
   '@deepseek-ai/dsh',
+  '@deepseek-ai/dsh-agent',
   '@deepseek-ai/dsh-app-boot',
   '@deepseek-ai/dsh-ptc-runtime',
   '@deepseek-ai/dsh-system-prompt',
@@ -145,7 +146,7 @@ async function verifyConsumer(consumer, label, host) {
     }
     process.stdout.write(result.stdout)
   }
-  console.log(`${label}: official DSH ${hostVersion} ${lifecycleOnly ? 'packed lifecycle observations completed; see admission boundary' : executionOnly ? 'packed public execution contract' : 'bounded host contracts; joint direct admission remains pending'} passed`)
+  console.log(`${label}: official DSH ${hostVersion} ${lifecycleOnly ? 'packed lifecycle contract' : executionOnly ? 'packed public execution contract' : 'bounded host contracts'} passed`)
 }
 
 async function installFrozenHost(temporary, label, fixture) {

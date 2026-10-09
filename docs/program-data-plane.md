@@ -6,9 +6,9 @@
 
 浏览、搜索和 DSH 服务调用使用当前 scope 的 native `tools.*`。canonical result 经 PTC graph IPC 进入 cell，不经过参数翻译或结果裁剪；IPC 支持域不扩展 native 工具的 JSON schema 与 lossless JSON 校验。参数编码拒绝发生在 dispatch 前；调用完成后的结果编码拒绝不能声称工具未执行，也不会自动重试。对完全省略参数的 native call，runtime 只在 DSH 的 live object schema 验证 `{}` 合法时把 omission 规范为 `{}`；该值随后统一进入 encoding、dispatch、journal 和 replay comparison。`tools.cordis_inspect_list()` 因而等价于显式传入 `{}`，但显式 `undefined`、需要输入的工具、`capabilities.*` 和 owner-provided namespace 不受影响。具体结果可能 complete、bounded、incremental、open-world 或 unknown；模型/UI rendering 的裁剪不能反推 program value 的完整性。
 
-PTC 模式的 code-only direct-tool projection 只声明模型直接调用真实注册的 `run_code` 与 `edit_run_code`。模型误发的顶层 native call 不属于这个合法 direct protocol；当 live schema 能唯一证明该工具时，transport normalization 将它包装为 `run_code`，cell 再调用同一 `tools.*` member。canonicalizer 先解析并校验一次原始 JSON：普通参数原样嵌入 JavaScript，含 own `__proto__` 的值改用安全字面量；因此派生 cell 不需要 `JSON.parse`，同时保持参数执行语义。规范化不向模型暴露 provenance、纠错提示或额外标记。参数仍由 DSH owner contract 正式验证，未知、畸形或不一致调用原样交给宿主诊断。该历史规范化只适用于无效的 out-of-surface call，不适用于已经合法声明的 `edit_run_code`。
+PTC 模式的 code-only direct-tool projection 只声明顶层 `run_code`。真实注册的 editor 从首轮 program SDK 通过 `tools.edit_run_code` 调用。模型误发的顶层 native call 只有在 live schema 唯一证明该工具时才可规范为调用同一 member 的 `run_code`；editor 不由这条修复路径取得执行资格。canonicalizer 保留原始 JSON 参数，含 own `__proto__` 的值使用安全字面量，超过 TypeScript parser 安全深度的 JSON 使用浅层 `JSON.parse` 表达式。DSH 仍拥有正式 validation、authority 和 result semantics。
 
-`edit_run_code` 是宿主 composite tool：外层 result 向模型返回精简的编辑状态、值与日志，完整物化源码和 journal 只进入标记为 derived 的私有 metadata。cold replay 消费该记录，不把完整源码重新投影给模型，也不把派生 `run_code` 归因给 assistant。
+`tools.edit_run_code` 返回接受或拒绝收据；接受安排完整修订源码在当前外层 cell 结束后经 DSH 正式工具流水线执行。根结果保留外层 canonical return/error，并转发派生执行的正式展示内容。完整派生源码、journal 和 nested 来源关系进入根结果的私有 metadata。cold replay 验证该证据并返回 recorded program-call 值，不重新派发 editor，不把派生 `run_code` 归因给 assistant。参见 [编辑与结算契约](adr/0005-temporary-rejected-cell-edit-transport.md)。
 
 每次调用进入 journal：
 

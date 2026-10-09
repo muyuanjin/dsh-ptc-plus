@@ -53,7 +53,7 @@ function renderInvocation(argumentsValue) {
   const json = JSON.stringify(argumentsValue)
     .replaceAll('\u2028', '\\u2028')
     .replaceAll('\u2029', '\\u2029')
-  return `edit_run_code(${json})`
+  return `await tools.edit_run_code(${json})`
 }
 
 /** Requires exactly one valid suffix across all one- and two-token EOF closures. */

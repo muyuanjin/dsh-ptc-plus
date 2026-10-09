@@ -1,5 +1,6 @@
 import { apply } from '../index.js'
 import { Context } from '@deepseek-ai/cordis'
+import { deepFreeze } from '@deepseek-ai/dsh-util-values'
 import { SessionProjectionRegistry } from '@deepseek-ai/dsh-session-projection'
 import { recordedSessionEvents as sessionEvents } from './session-observation-fixture.js'
 import { normalizeJournal } from '../internal/session-journal.js'
@@ -52,6 +53,47 @@ export function appendOnlySession(id, events = []) {
       return event
     },
   }
+}
+
+export async function runNestedEditCell(state, {
+  session,
+  agent,
+  callId,
+  code,
+  description = 'Edit the previous cell',
+  functions = {},
+  signal = new AbortController().signal,
+  finalizeResult,
+  transformNestedResult,
+  recordSession,
+}) {
+  if (Object.hasOwn(functions, 'edit_run_code')) {
+    throw new Error('nested editor fixture owns edit_run_code')
+  }
+  const subCallId = `${callId}:ptc:1`
+  let nestedResult
+  const bindings = { ...functions, edit_run_code: async dispatchedArgs => {
+    const data = { rootCallId: callId, parentCallId: callId, subCallId,
+      name: 'edit_run_code', arguments: dispatchedArgs }
+    session.append('tool/ptc-dispatch-start', data)
+    const original = await state.ctx.tools.execute({
+      callId: subCallId, rootCallId: callId, parent: {}, name: 'edit_run_code',
+      arguments: dispatchedArgs, agent, signal,
+    })
+    nestedResult = transformNestedResult === undefined
+      ? original : transformNestedResult(original)
+    session.append('tool/ptc-dispatch', { ...data, isError: nestedResult.isError,
+      content: nestedResult.content,
+      ...(nestedResult.meta === undefined ? {} : { meta: nestedResult.meta }) })
+    if (nestedResult.isError) throw new Error(nestedResult.error.message)
+    return nestedResult.value
+  } }
+  const root = await state.executeRun(session.id, code, bindings, {
+    session, callId, description, controller: { signal },
+    ...(recordSession === undefined ? {} : { recordSession }),
+    ...(finalizeResult === undefined ? {} : { finalizeResult }),
+  })
+  return { ...root, nestedResult, subCallId, receipt: root.raw.value }
 }
 
 function appendSessionEvents(session, appended) {
@@ -224,11 +266,13 @@ export function fixture(config = {}, fixtureOptions = {}) {
     },
     [seamServiceName]: runtime,
     tools: {
+      ctx: undefined,
       get: (name, scope) => scope?.ctx?.tools?.get(name) ?? definitions.get(name)
         ?? sdkDefinitions.get(name),
       register: host.ctx.tools.register,
       async execute(options) {
         const definition = options.agent?.ctx?.tools?.get(options.name) ?? definitions.get(options.name)
+        const projectContent = definition?.projectContent?.bind(definition)
         if (options.name === 'run_code') {
           const observed = await executeRun(
             options.agent?.id,
@@ -237,6 +281,9 @@ export function fixture(config = {}, fixtureOptions = {}) {
             {
               session: options.agent?.session,
               callId: options.callId,
+              rootCallId: options.rootCallId,
+              description: options.arguments.description,
+              parent: options.parent,
               recordSession: false,
             },
           )
@@ -248,13 +295,18 @@ export function fixture(config = {}, fixtureOptions = {}) {
           }
           try {
             const value = await definition.execute(options.arguments, options)
-            return { isError: false, value, content: [], meta: definition.output?.presentationMeta?.(options.arguments, value) }
+            return { isError: false, value,
+              content: definition.output?.render?.(options.arguments, value) ?? [],
+              meta: definition.output?.presentationMeta?.(options.arguments, value) }
           } catch (error) {
             return { isError: true, content: [], error: { message: error.message } }
           }
         }
         const execute = listeners.get('tools/execute')?.[0]
-        const result = execute === undefined ? await dispatch() : await execute(options, dispatch)
+        const dispatched = execute === undefined ? await dispatch() : await execute(options, dispatch)
+        const projectedContent = projectContent?.(options, dispatched)
+        const projected = projectedContent === undefined ? dispatched : { ...dispatched, content: projectedContent }
+        const result = await postExecute(options, projected, definition?.output)
         for (const listener of listeners.get('tools/result') ?? []) await listener(options, result)
         return result
       },
@@ -269,7 +321,12 @@ export function fixture(config = {}, fixtureOptions = {}) {
     },
     on: host.ctx.on,
     effect: host.ctx.effect,
+    waterfall(_scope, name, ...args) {
+      const fallback = args.pop()
+      return runHookChain([...listeners.get(name) ?? []], args, fallback)
+    },
   }
+  ctx.tools.ctx = ctx
   const invokeSeam = request => (seamServiceName === 'ptcRuntime'
     ? runtime.run(runtime.resolve(request))
     : runtime.run(request))
@@ -290,6 +347,30 @@ export function fixture(config = {}, fixtureOptions = {}) {
     maxOldGenerationSizeMb: 64,
     ...config,
   })
+
+  async function postExecute(exec, result, output) {
+    const entries = [...listeners.get('tools/post-execute') ?? []]
+    const decision = await runHookChain(entries, [exec, result], () => Promise.resolve({ kind: 'accept' }))
+    if (decision.kind === 'block') {
+      return { isError: true, content: decision.feedback,
+        error: { message: decision.feedback.filter(block => block.type === 'text').map(block => block.text).join('\n') },
+        ...(decision.additionalContexts === undefined ? {} : { additionalContexts: decision.additionalContexts }) }
+    }
+    if (Object.hasOwn(decision, 'content') && Object.hasOwn(decision, 'value')) {
+      throw new TypeError('tools/post-execute accept decision cannot replace both value and content')
+    }
+    let accepted = result
+    if (Object.hasOwn(decision, 'value')) {
+      if (result.isError) throw new TypeError('tools/post-execute cannot replace the value of a failed result')
+      accepted = { isError: false, value: decision.value,
+        content: output?.render?.(exec.arguments, decision.value) ?? [],
+        meta: output?.presentationMeta?.(exec.arguments, decision.value) }
+    }
+    const additionalContexts = [...result.additionalContexts ?? [], ...decision.additionalContexts ?? []]
+    return { ...accepted,
+      ...(decision.content === undefined ? {} : { content: decision.content }),
+      ...(additionalContexts.length === 0 ? {} : { additionalContexts }) }
+  }
 
   async function executeRun(session, program, functions, options) {
     const execute = listeners.get('tools/execute')[0]
@@ -361,11 +442,20 @@ export function fixture(config = {}, fixtureOptions = {}) {
         appendSessionEvents(agentSession, pendingEvents)
       }
     }
+    let concludesTurn = false
+    const deferredContexts = []
+    const projectContent = runCodeDefinition.projectContent?.bind(runCodeDefinition)
     const exec = {
       name: 'run_code',
       callId,
+      rootCallId: options.rootCallId ?? callId,
+      token: Symbol('fixture.tool.execution'),
+      ...(options.parent === undefined ? {} : { parent: options.parent }),
+      arguments: { code: program, description: options.description ?? 'test cell' },
       signal,
       agent: requestContext?.agent ?? { id: session, session: agentSession },
+      concludeTurn() { concludesTurn = true },
+      deferContext(context) { deferredContexts.push(context) },
     }
     let raw
     let result = await execute(exec, async () => {
@@ -382,19 +472,28 @@ export function fixture(config = {}, fixtureOptions = {}) {
         }, ...(options.bindings ?? [])],
         signal,
       })
-      const meta = runCodeDefinition.output.presentationMeta?.({}, raw.value)
+      if (fixtureOptions.skipNestedPresentationMeta === true && exec.parent !== undefined) deepFreeze(raw.value)
+      const meta = fixtureOptions.skipNestedPresentationMeta === true && exec.parent !== undefined
+        ? undefined : runCodeDefinition.output.presentationMeta?.({}, raw.value)
       if (raw.error) {
         return { isError: true, content: [], error: { message: raw.error.message }, meta }
       }
-      return { isError: false, value: raw.value, content: [], meta }
+      return { isError: false, value: raw.value, content: [], meta,
+        ...(concludesTurn ? { concludesTurn: true } : {}) }
     })
+    if (deferredContexts.length > 0) {
+      result = { ...result, additionalContexts: [...deferredContexts, ...result.additionalContexts ?? []] }
+    }
+    const projectedContent = projectContent?.(exec, result)
+    if (projectedContent !== undefined) result = { ...result, content: projectedContent }
+    result = await postExecute(exec, result, runCodeDefinition.output)
     if (options.finalizeResult !== undefined) result = options.finalizeResult(result)
     for (const listener of listeners.get('tools/result') ?? []) await listener(exec, result)
     if (call !== undefined && !deferResult) {
       const resultEvents = []
       appendRunCodeResult(resultEvents, callId, 0, result)
-      resultEvents[0].seq = call.callSeq + 1
-      resultEvents[0].time = call.callSeq + 1
+      resultEvents[0].seq = sessionEvents(agentSession).length
+      resultEvents[0].time = resultEvents[0].seq
       resultEvents[0].sourceEventSeqs = [call.callSeq]
       appendSessionEvents(agentSession, resultEvents)
     }
@@ -414,6 +513,7 @@ export function fixture(config = {}, fixtureOptions = {}) {
     if (session !== undefined) {
       if (session.id === undefined) session.id = String(context.agent.id)
       defaultSessions.set(session.id, session)
+      requestContexts.set(session.id, context)
     }
     if (context.agent !== undefined) {
       context.agent.ctx ??= {}

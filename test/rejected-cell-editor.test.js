@@ -24,15 +24,17 @@ test('publishes the closed edit tool schema', () => {
   ])
   assert.deepEqual(schema.parameters.properties[EXPECTED_TARGET_CALL_SEQ], {
     type: 'integer',
-    minimum: 0,
     description: 'Optional target precondition copied from a validated diagnostic. The edit is rejected if the captured cell has another call sequence.',
   })
-  assert.equal(schema.parameters.properties.edits.maxItems, EDIT_LIMITS.exactEdits)
-  assert.equal(schema.parameters.properties.regex_edits.maxItems, EDIT_LIMITS.regexEdits)
-  assert.match(schema.description, /most recent eligible cell captured at dispatch/)
+  assert.equal(schema.parameters.properties.edits.maxItems, undefined)
+  assert.equal(schema.parameters.properties.regex_edits.maxItems, undefined)
+  assert.equal(EDIT_LIMITS.exactEdits, 16)
+  assert.equal(EDIT_LIMITS.regexEdits, 16)
+  assert.match(schema.description, /most recent eligible cell captured at nested dispatch/)
   assert.match(schema.description, /successful edit becomes the next target/)
-  assert.match(schema.description, /run the complete corrected cell/)
-  assert.match(schema.description, /reruns the entire cell, including prior effects/)
+  assert.match(schema.description, /returns \{ accepted, scheduled, target_call_seq \}/)
+  assert.match(schema.description, /after the current run_code cell releases its worker/)
+  assert.match(schema.description, /reruns the entire target cell, including prior effects/)
 })
 
 test('validates exact edit sets and applies them atomically', () => {

@@ -610,16 +610,21 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
       const recorded = recordedPlan(history, String(agent.session.id ?? agent.id))
       const snapshot = stateFor(agent)?.snapshot ?? (recorded && sourcePlan(recorded, String(agent.session.id ?? agent.id)))
       const state = snapshot ? { snapshot } : undefined
+      const sourceSettings = snapshot?.sourceSettings ?? snapshot?.settings
+      const sourceOverrides = sourceSettings?.manual?.overrides
+      const sessionSourceSelection = id => sourceOverrides?.[id] ?? (sourceOverrides ? 'automatic' : 'unknown')
       const entries = capabilities.map(capability => ({ id: capability.id, category: capability.category,
         description: capability.description, ...presentation.get(capability.id),
         ...(capability.mcpServer === undefined ? {} : { mcpServer: capability.mcpServer }),
         saved: capabilityConfiguration(currentConfig).manual.overrides[capability.id] ?? 'automatic',
+        sessionSourceSelection: sessionSourceSelection(capability.id),
         temporary: state?.snapshot.sessionOverrides?.[capability.id] ?? 'inherit',
         effective: state?.snapshot.plan.entries.find(entry => entry.id === capability.id)?.selection ?? 'pending' }))
       for (const server of new Set(capabilities.map(item => item.mcpServer).filter(Boolean))) {
         const id = `mcpServers.${server}`
         entries.push({ id, category: 'server', name: server, description: `MCP server ${server}`,
           source: { kind: 'mcp', server }, saved: capabilityConfiguration(currentConfig).manual.overrides[id] ?? 'automatic',
+          sessionSourceSelection: sessionSourceSelection(id),
           temporary: state?.snapshot.sessionOverrides?.[id] ?? 'inherit',
           effective: state?.snapshot.settings.manual.overrides[id] === 'closed' ? 'closed' : state ? 'enabled' : 'pending' })
       }
@@ -902,6 +907,20 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
     describeTargets() {
       return (ctx.agents?.list?.() ?? []).filter(canRefresh)
         .map(agent => ({ sessionId: String(agent.session.id ?? agent.id) }))
+    },
+    async describeSessionCatalog({ sessionId } = {}, signal) {
+      signal?.throwIfAborted()
+      if (typeof sessionId !== 'string' || !sessionId) throw new TypeError('ptc-plus: select an active PTC session')
+      const agent = (ctx.agents?.list?.() ?? []).find(candidate =>
+        String(candidate.session.id ?? candidate.id) === sessionId && canRefresh(candidate))
+      if (!agent) throw new TypeError('ptc-plus: select an active PTC session')
+      const entries = await this.catalogFor(agent, signal)
+      signal?.throwIfAborted()
+      if (!(ctx.agents?.list?.() ?? []).includes(agent) || !canRefresh(agent)
+        || String(agent.session.id ?? agent.id) !== sessionId) {
+        throw new Error('ptc-plus: capability observation target is no longer available')
+      }
+      return entries
     },
     async observeAllocation({ sessionId, configuration } = {}, signal) {
       signal?.throwIfAborted()

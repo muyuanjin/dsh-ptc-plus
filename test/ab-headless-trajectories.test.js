@@ -456,10 +456,11 @@ test('keeps failed result markers and bounded output previews in shared facts', 
     },
   ])
 
-  assert.equal(facts.results.get('call-1').isError, true)
-  assert.equal(facts.results.get('call-1').resultError, true)
-  assert.equal(facts.results.get('call-1').outputChars, output.length)
-  assert.equal(facts.results.get('call-1').output.length < output.length, true)
+  assert.equal(facts.results.get(1).callId, 'call-1')
+  assert.equal(facts.results.get(1).isError, true)
+  assert.equal(facts.results.get(1).resultError, true)
+  assert.equal(facts.results.get(1).outputChars, output.length)
+  assert.equal(facts.results.get(1).output.length < output.length, true)
   assert.equal(facts.timeline[0].resultError, true)
   assert.equal(facts.timeline[0].output.length < output.length, true)
   assert.match(facts.timeline[0].output, /\.\.\.<truncated>\.\.\./)
@@ -541,7 +542,7 @@ test('identifies both current treatments from formal system-message evidence', (
       kind: 'plugin', plugin: '@deepseek-ai/dsh-system-prompt', form: 'snapshot', sections: [],
     }, content: [{ type: 'text', text: 'runtime snapshot' }] }, 'append')
     append('request/header', { reason: 'initial', header: { config: { provider, model },
-      tools: (variant === 'plugin' ? ['run_code', 'edit_run_code'] : ['run_code']).map(name => ({ name })) } })
+      tools: [{ name: 'run_code' }] } })
     append('assistant/message', { turn: 1, step: 1, usage: { inputTokens: 10, outputTokens: 1 },
       stream: [{ type: 'chunk', time: 1, chunk: { type: 'usage', usage: { inputTokens: 10, outputTokens: 1 } } }],
       message: { role: 'assistant', content: [{ type: 'text', text: 'done' }] } }, 'append')

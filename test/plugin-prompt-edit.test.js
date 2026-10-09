@@ -198,7 +198,7 @@ test('assembles a coherent byte-stable cell grammar for each selected language',
     const next = await assemble()
     assert.equal(JSON.stringify(next.sections), JSON.stringify(first.sections))
     assert.equal(JSON.stringify(next.tools), JSON.stringify(first.tools))
-    assert.deepEqual(first.tools.map(tool => tool.name), ['run_code', 'edit_run_code'])
+    assert.deepEqual(first.tools.map(tool => tool.name), ['run_code'])
   }
 })
 
@@ -415,7 +415,7 @@ test('immutably adapts the model-visible run_code schema', async (t) => {
   assert.equal(adapted.tools[1].parameters.properties.description.maxLength, 80)
 })
 
-test('registers edit_run_code and preserves its model-authored stream', async (t) => {
+test('registers the nested editor while keeping model-authored root calls visible', async (t) => {
   const state = fixture()
   t.after(() => state.dispose())
 
@@ -428,7 +428,10 @@ test('registers edit_run_code and preserves its model-authored stream', async (t
   const definition = agent.ctx.tools.get('edit_run_code')
   assert.equal(definition.name, 'edit_run_code')
   assert.equal(typeof definition.execute, 'function')
-  assert.match(definition.description, /run the complete corrected cell/)
+  assert.match(definition.description, /captured at nested dispatch/)
+  assert.match(definition.description, /returns \{ accepted, scheduled, target_call_seq \}/)
+  assert.match(definition.description, /after the current run_code cell releases its worker/)
+  assert.match(definition.description, /reruns the entire target cell, including prior effects/)
   assert.match(definition.description, /safe under the called API's retry rules/)
   assert.deepEqual(agent.registration.calls, ['edit_run_code'])
 
@@ -441,7 +444,7 @@ test('registers edit_run_code and preserves its model-authored stream', async (t
   assert.deepEqual(await state.stream({ tools: [state.runCodeDefinition, definition] }, chunks), chunks)
 })
 
-test('keeps edit_run_code out of the program SDK while preserving the direct surface', async (t) => {
+test('retains edit_run_code in the program SDK with only run_code directly callable', async (t) => {
   const state = fixture()
   t.after(() => state.dispose())
   const agent = ptcAgent('direct-only-edit-registration', { id: 'direct-only-edit-registration', events: [] })
@@ -475,10 +478,10 @@ interface ToolOutputMap {
     },
   )
   assert.equal(observed?.name, 'edit_run_code')
-  assert.deepEqual(assembly.tools.map(tool => tool.name), ['run_code', 'edit_run_code'])
+  assert.deepEqual(assembly.tools.map(tool => tool.name), ['run_code'])
   assert.equal(agent.ctx.tools.get('edit_run_code')?.name, 'edit_run_code')
   const sdk = assembly.sections.find(section => section.name === 'tools:sdk').text
-  assert.doesNotMatch(sdk, /edit_run_code/)
+  assert.match(sdk, /edit_run_code: \{ edits: unknown\[\] \}/)
   assert.match(sdk, /read: \{ file_path: string \}/)
   assert.match(sdk, /case-insensitive symbols or contiguous words/)
   assert.match(sdk, /`tree\(\)` lists namespaces and members/)
@@ -534,7 +537,7 @@ interface ToolOutputMap {
   const subsequent = await assembleEpoch(state, agent)
   assert.equal(stableView(concurrent), stableView(first))
   assert.equal(stableView(subsequent), stableView(first))
-  assert.equal(first.sections[0].text.includes('interface ToolArgsMap {}'), true)
+  assert.match(first.sections[0].text, /edit_run_code: \{ edits: unknown\[\] \}/)
   assert.equal(first.contexts.some(context => /edit/i.test(context?.name ?? '')), false)
 
   await state.emit('agent/disposed', { agent })
@@ -545,12 +548,12 @@ interface ToolOutputMap {
   assert.equal(stableView(resumed), stableView(first))
 })
 
-test('defers edit registration until the first code composition is captured', async (t) => {
+test('registers the editor when the owning agent is created before its first SDK assembly', async (t) => {
   const state = fixture()
   t.after(() => state.dispose())
   const agent = ptcAgent('created-edit-registration', { id: 'created-edit-registration', events: [] })
   await state.emit('agent/created', { agent })
-  assert.equal(agent.ctx.tools.get('edit_run_code'), undefined)
+  assert.equal(agent.ctx.tools.get('edit_run_code')?.name, 'edit_run_code')
   await state.assemble(
     {
       sections: [{ name: 'tools:code-only', text: 'upstream code-only guidance' }],
@@ -559,6 +562,31 @@ test('defers edit registration until the first code composition is captured', as
     { agent, scope: agent },
   )
   assert.equal(agent.ctx.tools.get('edit_run_code')?.name, 'edit_run_code')
+})
+
+test('registers the editor for an existing PTC agent before its first plugin SDK assembly', async t => {
+  const agent = ptcAgent('existing-ptc-agent', { id: 'existing-ptc-agent', events: [] })
+  agent.ctx.tools.bindFixtureRegistry(
+    name => name === 'run_code' ? { name: 'run_code', output: { schema: {}, render: () => [] } } : undefined,
+    () => [{ name: 'run_code' }],
+  )
+  const state = fixture({}, { agents: { list: () => [agent] } })
+  t.after(() => state.dispose())
+  const editor = agent.ctx.tools.get('edit_run_code')
+  assert.equal(editor?.name, 'edit_run_code')
+  const sdk = renderToolsSdk([{ name: editor.name, description: editor.description,
+    parameters: editor.parameters, output: editor.output.schema }])
+  const first = await state.assemble({
+    sections: [{ name: 'tools:sdk', text: sdk }],
+    contexts: [], variables: {}, tools: [state.runCodeDefinition],
+  }, { agent, scope: agent })
+  assert.deepEqual(first.tools.map(tool => tool.name), ['run_code'])
+  const firstSdk = first.sections.find(section => section.name === 'tools:sdk').text
+  assert.match(firstSdk, /edit_run_code: \{/)
+  for (const field of ['old_string', 'new_string', 'accepted', 'scheduled']) {
+    assert.match(firstSdk, new RegExp(field))
+  }
+  assert.equal(state.ctx.tools.get('edit_run_code'), undefined)
 })
 
 test('captures a code composition first supplied by downstream prompt assembly', async t => {
@@ -572,7 +600,7 @@ test('captures a code composition first supplied by downstream prompt assembly',
     tools: [state.runCodeDefinition],
   }))
   assert.equal(agent.ctx.tools.get('edit_run_code')?.name, 'edit_run_code')
-  assert.deepEqual(assembled.tools.map(tool => tool.name), ['run_code', 'edit_run_code'])
+  assert.deepEqual(assembled.tools.map(tool => tool.name), ['run_code'])
 })
 
 test('reclassifies an empty session after preset recomposition', async (t) => {
@@ -601,7 +629,7 @@ test('reclassifies an empty session after preset recomposition', async (t) => {
 
   await state.emit('agent-preset/selected', agent.session.id)
   const recomposed = await state.assemble(ptcAssembly, { agent, scope: agent })
-  assert.deepEqual(recomposed.tools.map(tool => tool.name), ['run_code', 'edit_run_code'])
+  assert.deepEqual(recomposed.tools.map(tool => tool.name), ['run_code'])
 })
 
 test('fails closed when a native edit_run_code name already occupies the agent scope', async (t) => {
@@ -627,32 +655,32 @@ test('fails closed when a native edit_run_code name already occupies the agent s
   assert.equal(agent.registration.disposals, 0)
 })
 
-test('retains the code composition when edit registration broadens later assemblies', async (t) => {
+test('retains the run_code direct surface when later assemblies include the scoped editor', async (t) => {
   const state = fixture()
   t.after(() => state.dispose())
   const agent = ptcAgent('scoped-edit-agent', { id: 'scoped-edit-session', events: [] })
   const first = await state.assemble({
     sections: [], contexts: [], variables: {}, tools: [state.runCodeDefinition],
   }, { agent, scope: agent })
-  assert.deepEqual(first.tools.map(tool => tool.name), ['run_code', 'edit_run_code'])
-  assert.deepEqual(agent.presentation.calls, ['both'])
+  assert.deepEqual(first.tools.map(tool => tool.name), ['run_code'])
+  assert.deepEqual(agent.presentation.calls, [])
 
   const second = await state.assemble({
     sections: [{ name: 'tools:code-only', text: '' }], contexts: [], variables: {},
     tools: [state.runCodeDefinition, agent.ctx.tools.get('edit_run_code'), { name: 'read' }],
   }, { agent, scope: agent })
-  assert.deepEqual(second.tools.map(tool => tool.name), ['run_code', 'edit_run_code'])
+  assert.deepEqual(second.tools.map(tool => tool.name), ['run_code'])
   assert.equal(
     second.sections.find(section => section.name === 'tools:code-only').text,
-    '`run_code` and `edit_run_code` are the only tools callable directly. Call every native tool declared by the SDK from inside a program.',
+    '`run_code` is the only tool callable directly. Call `tools.edit_run_code` and other SDK tools from inside a program. An accepted edit runs after the current cell finishes.',
   )
-  assert.deepEqual(agent.presentation.calls, ['both'])
+  assert.deepEqual(agent.presentation.calls, [])
   assert.equal(agent.presentation.disposals, 0)
   assert.equal(agent.registration.disposals, 0)
   assert.equal(agent.ctx.tools.get('edit_run_code')?.name, 'edit_run_code')
 
   await state.emit('agent/disposed', { agent })
-  assert.equal(agent.presentation.disposals, 1)
+  assert.equal(agent.presentation.disposals, 0)
   assert.equal(agent.registration.disposals, 1)
   assert.equal(agent.ctx.tools.get('edit_run_code'), undefined)
 })
@@ -681,9 +709,9 @@ test('keeps edit registration inside each owning PTC agent scope', async () => {
   const mixedNativeResult = await state.assemble(mixedNativeAssembly, {
     agent: mixedNative, scope: mixedNative,
   })
-  assert.deepEqual(mixedNativeResult.tools.map(tool => tool.name), ['run_code', 'read'])
-  assert.deepEqual(mixedNative.registration.calls, [])
-  assert.equal(mixedNative.ctx.tools.get('edit_run_code'), undefined)
+  assert.deepEqual(mixedNativeResult.tools.map(tool => tool.name), ['run_code'])
+  assert.deepEqual(mixedNative.registration.calls, ['edit_run_code'])
+  assert.equal(mixedNative.ctx.tools.get('edit_run_code')?.name, 'edit_run_code')
 
   const first = ptcAgent('first-ptc-agent', { id: 'first-ptc-session', events: [] })
   const second = ptcAgent('second-ptc-agent', { id: 'second-ptc-session', events: [] })
@@ -700,7 +728,7 @@ test('keeps edit registration inside each owning PTC agent scope', async () => {
   await state.dispose()
   assert.equal(second.ctx.tools.get('edit_run_code'), undefined)
   assert.equal(second.registration.disposals, 1)
-  assert.equal(second.presentation.disposals, 1)
+  assert.equal(second.presentation.disposals, 0)
 })
 
 test('revokes edit registration on session disposal without agent disposal', async (t) => {
@@ -717,56 +745,14 @@ test('revokes edit registration on session disposal without agent disposal', asy
   await state.emit('session/disposed', session)
   assert.equal(agent.ctx.tools.get('edit_run_code'), undefined)
   assert.equal(agent.registration.disposals, 1)
-  assert.equal(agent.presentation.disposals, 1)
+  assert.equal(agent.presentation.disposals, 0)
 
   await state.emit('agent/disposed', { agent })
-  assert.equal(agent.registration.disposals, 1)
-  assert.equal(agent.presentation.disposals, 1)
-})
-
-test('retries a failed edit presentation cleanup after disposing its siblings', async (t) => {
-  const state = fixture()
-  t.after(() => state.dispose())
-  const session = { id: 'edit-presentation-cleanup-fault', events: [] }
-  const agent = ptcAgent('edit-presentation-cleanup-agent', session)
-  const presentAs = agent.ctx.tools.presentAs
-  let failPresentation = true
-  agent.ctx.tools.presentAs = (...args) => {
-    const dispose = presentAs(...args)
-    return () => {
-      if (failPresentation) throw new Error('presentation cleanup fault')
-      return dispose()
-    }
-  }
-  await state.run(session.id, 'const liveBeforeCleanupFault = process.pid')
-  await state.assemble(
-    { sections: [], contexts: [], variables: {}, tools: [state.runCodeDefinition] },
-    { agent, scope: agent },
-  )
-
-  await assert.rejects(
-    state.emit('agent/disposed', { agent }),
-    error => error instanceof AggregateError
-      && error.message === 'ptc-plus: agent disposal failed'
-      && errorTreeHasMessage(error, 'presentation cleanup fault'),
-  )
   assert.equal(agent.registration.disposals, 1)
   assert.equal(agent.presentation.disposals, 0)
-  assert.equal(agent.ctx.tools.get('edit_run_code'), undefined)
-  assert.equal(
-    (await state.run(session.id, 'return typeof liveBeforeCleanupFault')).value,
-    'undefined',
-  )
-
-  failPresentation = false
-  await state.emit('agent/disposed', { agent })
-  assert.equal(agent.registration.disposals, 1)
-  assert.equal(agent.presentation.disposals, 1)
-  await state.emit('agent/disposed', { agent })
-  assert.equal(agent.presentation.disposals, 1)
 })
 
-test('retries a failed edit registration cleanup without repeating presentation cleanup', async (t) => {
+test('retries a failed scoped editor registration cleanup', async (t) => {
   const state = fixture()
   t.after(() => state.dispose())
   const session = { id: 'edit-registration-cleanup-fault', events: [] }
@@ -791,13 +777,13 @@ test('retries a failed edit registration cleanup without repeating presentation 
       && error.message === 'ptc-plus: session disposal failed'
       && errorTreeHasMessage(error, 'registration cleanup fault'),
   )
-  assert.equal(agent.presentation.disposals, 1)
+  assert.equal(agent.presentation.disposals, 0)
   assert.equal(agent.registration.disposals, 0)
   assert.equal(agent.ctx.tools.get('edit_run_code')?.name, 'edit_run_code')
 
   failRegistration = false
   await state.emit('session/disposed', session)
-  assert.equal(agent.presentation.disposals, 1)
+  assert.equal(agent.presentation.disposals, 0)
   assert.equal(agent.registration.disposals, 1)
   assert.equal(agent.ctx.tools.get('edit_run_code'), undefined)
 })
@@ -810,14 +796,7 @@ test('fails before advertising edit_run_code without the required scoped host su
 
   await assert.rejects(state.assemble(assembly, {
     agent: { id: session.id, session }, scope: {},
-  }), /agent-scoped tools\.register and tools\.presentAs are required/)
-
-  const invalidDisposer = ptcAgent('invalid-disposer', { id: 'invalid-disposer', events: [] })
-  invalidDisposer.ctx.tools.presentAs = () => undefined
-  await assert.rejects(state.assemble(assembly, {
-    agent: invalidDisposer, scope: invalidDisposer,
-  }), /tools\.presentAs did not return a disposer/)
-  assert.equal(invalidDisposer.registration.disposals, 1)
+  }), /agent-scoped tools\.register is required/)
 
   const invalidRegistration = ptcAgent('invalid-registration', { id: 'invalid-registration', events: [] })
   invalidRegistration.ctx.tools.register = () => undefined
@@ -826,53 +805,7 @@ test('fails before advertising edit_run_code without the required scoped host su
   }), /tools\.register did not return a disposer/)
 })
 
-test('retains a failed partial edit installation rollback for lifecycle retry', async (t) => {
-  const state = fixture()
-  t.after(() => state.dispose())
-  const agent = ptcAgent('partial-edit-rollback', { id: 'partial-edit-rollback', events: [] })
-  const register = agent.ctx.tools.register
-  let failRollback = true
-  let failPresentation = true
-  agent.ctx.tools.register = definition => {
-    const dispose = register(definition)
-    return () => {
-      if (failRollback) throw new Error('registration rollback fault')
-      return dispose()
-    }
-  }
-  const presentAs = agent.ctx.tools.presentAs
-  agent.ctx.tools.presentAs = (...args) => {
-    if (failPresentation) throw new Error('presentation installation fault')
-    return presentAs(...args)
-  }
-
-  await assert.rejects(
-    state.assemble(
-      { sections: [], contexts: [], variables: {}, tools: [state.runCodeDefinition] },
-      { agent, scope: agent },
-    ),
-    error => error instanceof AggregateError
-      && errorTreeHasMessage(error, 'presentation installation fault')
-      && errorTreeHasMessage(error, 'registration rollback fault'),
-  )
-  assert.equal(agent.ctx.tools.get('edit_run_code')?.name, 'edit_run_code')
-  assert.equal(agent.registration.disposals, 0)
-
-  failRollback = false
-  failPresentation = false
-  await state.assemble(
-    { sections: [], contexts: [], variables: {}, tools: [state.runCodeDefinition] },
-    { agent, scope: agent },
-  )
-  assert.equal(agent.registration.disposals, 1)
-  assert.equal(agent.registration.calls.length, 2)
-  assert.equal(agent.presentation.calls.length, 1)
-  await state.emit('agent/disposed', { agent })
-  assert.equal(agent.ctx.tools.get('edit_run_code'), undefined)
-  assert.equal(agent.registration.disposals, 2)
-})
-
-test('reports edit owner cleanup failure after attempting both plugin disposers', async () => {
+test('reports scoped editor cleanup failure on plugin disposal', async () => {
   const state = fixture()
   const agent = ptcAgent('plugin-edit-cleanup-fault', {
     id: 'plugin-edit-cleanup-fault', events: [],
@@ -885,14 +818,6 @@ test('reports edit owner cleanup failure after attempting both plugin disposers'
       throw new Error('plugin registration cleanup fault')
     }
   }
-  const presentAs = agent.ctx.tools.presentAs
-  agent.ctx.tools.presentAs = (...args) => {
-    const dispose = presentAs(...args)
-    return () => {
-      dispose()
-      throw new Error('plugin presentation cleanup fault')
-    }
-  }
   await state.assemble(
     { sections: [], contexts: [], variables: {}, tools: [state.runCodeDefinition] },
     { agent, scope: agent },
@@ -900,9 +825,8 @@ test('reports edit owner cleanup failure after attempting both plugin disposers'
 
   await assert.rejects(
     state.dispose(),
-    error => errorTreeHasMessage(error, 'plugin registration cleanup fault')
-      && errorTreeHasMessage(error, 'plugin presentation cleanup fault'),
+    error => errorTreeHasMessage(error, 'plugin registration cleanup fault'),
   )
   assert.equal(agent.registration.disposals, 1)
-  assert.equal(agent.presentation.disposals, 1)
+  assert.equal(agent.presentation.disposals, 0)
 })

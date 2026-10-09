@@ -66,7 +66,7 @@ Client 按数据、传输、注册与视图分文件，沿用既有 `createX(Rea
 保存设置后，Host 在 settings watch 中安装、卸载或重配置对应 owner。能力管理配置用于新会话；已有会话保持冻结方案，执行 `/capabilities refresh` 后才同步说明、发现与执行成员。其他可重配置字段即时生效。已提交的 cell 固定使用提交时的配置快照，运行中的更新从随后提交的 cell 开始使用；这不会替换 session-bound REPL 或已有 binding。`maxOldGenerationSizeMb` 在活动 worker 存在时因 Node 的创建期限制而拒绝并回滚，其他可重配置字段照常交给 owner。关闭后唯一的宿主副作用是注册 settings 命名空间，
 保证设置卡片仍然可读；此时只有 `enabled` 可写，其他控件被禁用。运行时重配置失败时回滚到上一次已应用值。
 
-`cordisToolsEnabled` 默认关闭并即时生效。它不切换 preset，而是把官方 Cordis 工具、owner guidance 与 `cordis-plugin-development` Skill 作为一个 agent-scoped mount 加入或移出同时暴露 `run_code`、`skill` 工具与 preset/Skill service 的 PTC agent；顶层仍为 `run_code` / `edit_run_code`，普通 agent 不继承。暴露面齐全但挂载失败时，启用会完整回滚；agent scope 缺少 companion surface 时只是延后，不报错也不发布。完整运行要求见 [运行时参考](runtime-reference.md)。
+`cordisToolsEnabled` 默认关闭并即时生效。它不切换 preset，而是把官方 Cordis 工具、owner guidance 与 `cordis-plugin-development` Skill 作为一个 agent-scoped mount 加入或移出同时暴露 `run_code`、`skill` 工具与 preset/Skill service 的 PTC agent；顶层仍只有 `run_code`，编辑器通过程序内的 `tools.edit_run_code` 调用，普通 agent 不继承。暴露面齐全但挂载失败时，启用会完整回滚；agent scope 缺少 companion surface 时只是延后，不报错也不发布。完整运行要求见 [运行时参考](runtime-reference.md)。
 
 ## 全局用户 Binding 工作台
 

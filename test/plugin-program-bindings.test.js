@@ -1130,8 +1130,8 @@ return {closed:typeof tools.closedProbe, kept:await tools.keptProbe({}), keys:Ob
 })
 
 
-test('managed both and PTC prompt projections retain their computation transports', async t => {
-  for (const [id, text] of [['both', ''], ['ptc', 'run_code only']]) {
+test('managed PTC prompts retain run_code and the scoped editor across empty and populated collapse sections', async t => {
+  for (const [id, text] of [['empty', ''], ['populated', 'run_code only']]) {
     const state = fixture({ capabilityManagementEnabled: true, capabilityBaseline: '[]',
       capabilityOverrides: '{"tools.closedProbe":"closed"}', capabilityStatistics: '{"enabled":false}' },
     { scopedSchemas: [{ name: 'closedProbe', description: 'Closed contract', parameters: { type: 'object' }, output: {} }] })
@@ -1144,6 +1144,8 @@ test('managed both and PTC prompt projections retain their computation transport
     { agent, scope: agent, signal: agent.signal })
     assert.ok(projected.tools.some(schema => schema.name === 'run_code'))
     assert.equal(projected.tools.some(schema => schema.name === 'closedProbe'), false)
-    if (id === 'ptc') assert.deepEqual(projected.tools.map(schema => schema.name), ['run_code', 'edit_run_code'])
+    assert.deepEqual(projected.tools.map(schema => schema.name), ['run_code'])
+    assert.equal(agent.ctx.tools.get('edit_run_code')?.name, 'edit_run_code')
+    assert.equal(state.ctx.tools.get('edit_run_code'), undefined)
   }
 })

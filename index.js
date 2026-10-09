@@ -365,10 +365,12 @@ function installPtCRuntime(ctx, resolvedConfig, seam, toolSchemasForAgent, toolS
       bindingSubmissionForAgent: (agent, ensureLease, onAccepted) => userBindings.submissionForAgent(agent, ensureLease, onAccepted),
     })
     editTransport = createEditTransportOwner(ctx, {
-      readSessionLog: runtimeBridge.readSubmissionLog,
+      readSessionLog: runtimeBridge.readNestedDispatchLog,
       sessionLogView: sessionLog.project,
       durableReplay: activeConfig.durableReplay,
       executeTentative: runtimeBridge.executeTentative,
+      canScheduleEdit: runtimeBridge.canScheduleEdit,
+      scheduleEdit: runtimeBridge.scheduleEdit,
       presentationGeneration,
       sessionId,
       toolSchemasForAgent,
@@ -394,11 +396,25 @@ function installPtCRuntime(ctx, resolvedConfig, seam, toolSchemasForAgent, toolS
         return replGuidance(guidancePolicies(activeConfig))
       },
     }))
-    disposers.push(ctx.on('system-prompt/assemble', (assembly, context, next) => (
-      directSurface.assemble(assembly, context, next)
-    )))
+    disposers.push(ctx.on('system-prompt/assemble', async (assembly, context, next) => {
+      const projected = await directSurface.assemble(assembly, context, next)
+      if (ctx.tools.get(RUN_CODE, context?.agent) !== undefined) runtimeBridge.prepareAgent(context?.agent)
+      return projected
+    }))
     disposers.push(() => capabilityEnvironment.dispose())
     disposers.push(ctx.on('agent/pre-step', (payload, next) => capabilityEnvironment.preStep(payload, next), { prepend: true }))
+    disposers.push(ctx.on('agent/created', ({ agent }) => {
+      if (ctx.tools.get(RUN_CODE, agent) !== undefined) {
+        runtimeBridge.prepareAgent(agent)
+        editTransport.ensureInstalled(agent)
+      }
+    }))
+    for (const agent of ctx.agents?.list?.() ?? []) {
+      if (ctx.tools.get(RUN_CODE, agent) !== undefined) {
+        runtimeBridge.prepareAgent(agent)
+        editTransport.ensureInstalled(agent)
+      }
+    }
     disposers.push(ctx.on('agent/pre-step', (payload, next) => userBindings.preStep(payload, next)))
     disposers.push(ctx.on('session/event', (session, event) => userBindings.committedEvent(session, event)))
     disposers.push(ctx.on('tools/post-execute', (exec, result, next) => capabilityEnvironment.postExecute(exec, result, next), { prepend: true }))
@@ -411,6 +427,7 @@ function installPtCRuntime(ctx, resolvedConfig, seam, toolSchemasForAgent, toolS
           signal.throwIfAborted()
           if (operation === 'catalog') return { ok: true, value: await capabilityEnvironment.describeCatalog(signal) }
           if (operation === 'targets') return { ok: true, value: capabilityEnvironment.describeTargets() }
+          if (operation === 'session-catalog') return { ok: true, value: await capabilityEnvironment.describeSessionCatalog(payload, signal) }
           if (operation === 'allocation') return { ok: true, value: await capabilityEnvironment.observeAllocation(payload, signal) }
           if (operation !== 'inspect') return { ok: false, error: { code: 'UNKNOWN_OPERATION', message: 'Unknown capability plan operation', details: null } }
           return { ok: true, value: capabilityEnvironment.describeSessions() }
@@ -544,8 +561,6 @@ function installPtCRuntime(ctx, resolvedConfig, seam, toolSchemasForAgent, toolS
     try {
       runtimeBridge.reconfigure(nextConfig)
       rollbacks.push(() => runtimeBridge.reconfigure(previousConfig))
-      editTransport.reconfigure(nextConfig)
-      rollbacks.push(() => editTransport.reconfigure(previousConfig))
       directSurface.reconfigure(nextConfig)
       rollbacks.push(() => directSurface.reconfigure(previousConfig))
       await userBindings.reconfigure(nextConfig)

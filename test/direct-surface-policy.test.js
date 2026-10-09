@@ -86,7 +86,7 @@ function malformedToolCall(name, raw, options = {}) {
   ]
 }
 
-test('recovers the archived trailing-brace edit call only after schema validation', async (t) => {
+test('preserves an archived malformed editor call for rejection by the current direct surface', async (t) => {
   const owner = createOwner()
   t.after(() => owner.dispose())
   const agent = { id: 'malformed-edit-session' }
@@ -113,12 +113,12 @@ test('recovers the archived trailing-brace edit call only after schema validatio
   assert.deepEqual(streamed.slice(0, prefix.length), prefix)
   const toolChunks = streamed.slice(prefix.length)
   assert.equal(toolChunks.filter(chunk => chunk.type === 'tool-call-delta')
-    .map(chunk => chunk.argumentsDelta).join(''), raw.slice(0, -1))
+    .map(chunk => chunk.argumentsDelta).join(''), raw)
   assert.deepEqual(toolChunks.find(chunk => chunk.type === 'block-end').block, {
     type: 'tool-call',
     id: 'malformed-direct-call',
     name: 'edit_run_code',
-    arguments: raw.slice(0, -1),
+    arguments: raw,
   })
   assert.deepEqual(toolChunks.at(-2), usage)
   assert.deepEqual(toolChunks.at(-1), { type: 'finish', reason: { kind: 'tool-calls' } })
@@ -129,9 +129,9 @@ test('recovers the archived trailing-brace edit call only after schema validatio
     {},
     async function* () { yield* streamed },
   )), streamed)
-  assert.equal(owner.executionRejection({
+  assert.match(owner.executionRejection({
     name: 'edit_run_code', callId: 'malformed-direct-call', agent,
-  }), undefined)
+  }).error.message, /must be called through tools\.edit_run_code inside run_code/)
 })
 
 test('recovers the same bounded trailing delimiter shape for run_code', async (t) => {
@@ -608,10 +608,10 @@ test('turns unsafe malformed-response streams into one guaranteed rejected tool 
   }
 })
 
-test('settles malformed tool JSON for a captured both-mode request', async (t) => {
+test('settles malformed native tool JSON under the captured run_code direct surface', async (t) => {
   const owner = createOwner()
   t.after(() => owner.dispose())
-  const agent = { id: 'malformed-both-mode' }
+  const agent = { id: 'malformed-native-json-ptc' }
   const signal = new AbortController().signal
   const broadAssembly = {
     ...assembly(),
@@ -736,7 +736,7 @@ test('a captured call policy outranks the request policy resolved from the signa
   const agent = { id: 'pinned-call-session' }
   const signalA = new AbortController().signal
   const projected = await owner.assemble(assembly(), { agent, signal: signalA }, async () => assembly())
-  assert.deepEqual(projected.tools.map(tool => tool.name), ['run_code', 'edit_run_code'])
+  assert.deepEqual(projected.tools.map(tool => tool.name), ['run_code'])
 
   const chunks = [
     { type: 'tool-call-delta', index: 0, id: 'pinned-call' },

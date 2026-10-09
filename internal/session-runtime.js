@@ -649,6 +649,7 @@ function sessionOf(sessionContext) {
     session,
     callId: sessionContext.callId,
     persistedCallSeq: sessionContext.persistedCallSeq,
+    sourceCallSeq: sessionContext.sourceCallSeq,
     cwd: typeof session?.header?.cwd === 'string' ? session.header.cwd : undefined,
     surfaceProvenanceRequired: true,
   }
@@ -758,6 +759,7 @@ export class SessionRuntime {
       session,
       callId,
       persistedCallSeq,
+      sourceCallSeq: provedSourceCallSeq,
       cwd,
       surfaceProvenanceRequired,
     } = sessionOf(sessionContext)
@@ -780,11 +782,15 @@ export class SessionRuntime {
         && !isCanonicalSequence(persistedCallSeq)) {
         throw new Error('persisted tool call sequence must be a non-negative safe integer')
       }
+      if (provedSourceCallSeq !== undefined
+        && !isCanonicalSequence(provedSourceCallSeq)) {
+        throw new Error('source tool call sequence must be a non-negative safe integer')
+      }
       if (cellConfig.durableReplay) {
-        sourceCallSeq = liveToolCallSeq(sessionLog, callId, 'run_code')
+        sourceCallSeq = provedSourceCallSeq ?? liveToolCallSeq(sessionLog, callId, 'run_code')
         callSeq = persistedCallSeq ?? sourceCallSeq
       } else {
-        sourceCallSeq = persistedCallSeq
+        sourceCallSeq = provedSourceCallSeq ?? persistedCallSeq
         if (sourceCallSeq === undefined) {
           try {
             sourceCallSeq = liveToolCallSeq(sessionLog, callId, 'run_code')

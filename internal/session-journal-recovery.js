@@ -12,6 +12,7 @@ import {
   REWRITES_KEY,
   EDIT_TARGET_KEY,
   DERIVED_RUN_KEY,
+  POST_EDIT_KEY,
 } from './session-journal-schema.js'
 import {
   isCanonicalSequence,
@@ -22,6 +23,8 @@ import {
   userBindingsForJournal,
   validatedRewrites,
 } from './session-journal.js'
+import { decodeValue } from './value-wire.js'
+import { editRejectedCell } from './rejected-cell-editor.js'
 
 const RECOVERY_BOUNDARY_EVIDENCE = Symbol('recoveryBoundaryEvidence')
 const RUN_SELECTION_CLEAR_REASONS = new Set([
@@ -220,6 +223,13 @@ export function visibleExecutableCallSeqs(session) {
     if (event?.type !== 'tool/call' || !REPL_TOOL_NAMES.has(event.data?.name)) continue
     if (visibleAssistantCallSeqs.has(event.seq)) calls.add(event.seq)
   }
+  const timeline = foldSessionTimeline(events)
+  for (const root of timeline.calls) {
+    const post = timeline.results.get(root.seq)?.postEdit
+    if (post !== undefined && calls.has(root.seq) && calls.has(post.targetCallSeq)) {
+      calls.add(post.executionStartSeq)
+    }
+  }
   return calls
 }
 
@@ -259,7 +269,11 @@ function successfulTimelineRun(run) {
 function settlementRun(settlement) {
   const publication = settlement.publication
   if (publication === undefined) return undefined
-  const result = { data: { meta: { [REWRITES_KEY]: publication.rewrites } } }
+  const result = { data: { meta: { [REWRITES_KEY]: publication.postEditRewrites ?? publication.rewrites } } }
+  if (publication.postEdit !== undefined) {
+    return timelineJson(timelineDerivedRun({ seq: publication.postEdit.executionStartSeq }, result,
+      publication.index, publication.postEdit.derived))
+  }
   return timelineJson(publication.derived === undefined
     ? timelineRun(settlement.call, result, publication.index, publication.journal)
     : timelineDerivedRun(settlement.call, result, publication.index, publication.derived))
@@ -404,6 +418,18 @@ function republishedTimelineResult(result, event) {
 
 function correlationEvent(event) {
   return timelineJson({ seq: event.seq, type: event.type,
+    ...(['tool/ptc-dispatch-start', 'tool/ptc-dispatch'].includes(event.type) ? { data: {
+      rootCallId: event.data?.rootCallId,
+      parentCallId: event.data?.parentCallId,
+      subCallId: event.data?.subCallId,
+      name: event.data?.name,
+      arguments: event.data?.arguments,
+      ...(event.type === 'tool/ptc-dispatch' ? {
+        isError: event.data?.isError,
+        ...(event.data?.name === 'run_code' && event.data.meta?.[JOURNAL_KEY] !== undefined
+          ? { meta: { [JOURNAL_KEY]: event.data.meta[JOURNAL_KEY] } } : {}),
+      } : {}),
+    } } : {}),
     ...(event.type === 'tool/call' && typeof event.data?.callId === 'string'
       ? { data: timelineCallEvent(event).data } : {}),
     ...(event.type === 'tool/result' ? { data: { message: { source: {
@@ -592,11 +618,26 @@ export function validateSessionTimelineState(value) {
     return true
   }
   const normalizedResult = result => {
-    if (!fields(result, ['eventSeq', 'eventIndex', 'positionSeq', 'error', 'journal', 'derived', 'userBindings'])
+    if (!fields(result, ['eventSeq', 'eventIndex', 'positionSeq', 'error', 'journal', 'derived', 'userBindings',
+      'postEdit', 'postEditError'])
       || !isCanonicalSequence(result.eventSeq) || !isCanonicalSequence(result.eventIndex)
       || !optional(result.positionSeq, isCanonicalSequence)) return false
     if (result.error !== undefined) return typeof result.error === 'string' && result.journal === undefined && result.derived === undefined
     return journalFacts(result)
+      && optional(result.postEditError, error => typeof error === 'string')
+      && optional(result.postEdit, post => fields(post, ['startSeq', 'executionStartSeq', 'targetCallSeq', 'derived', 'rewrites'])
+        && isCanonicalSequence(post.startSeq) && isCanonicalSequence(post.executionStartSeq)
+        && isCanonicalSequence(post.targetCallSeq)
+        && deepEqualJson(normalizeDerivedEditResult({
+          [JOURNAL_KEY]: post.derived?.journal,
+          [EDIT_TARGET_KEY]: { targetCallSeq: post.targetCallSeq },
+          [DERIVED_RUN_KEY]: { code: post.derived?.code, description: post.derived?.description },
+          ...(post.derived?.recoveryBoundaries === undefined ? {} : {
+            [RECOVERY_BOUNDARY_KEY]: post.derived.recoveryBoundaries }),
+          ...(post.derived?.userBindings === undefined ? {} : {
+            [USER_BINDINGS_META_KEY]: post.derived.userBindings }),
+        }, post.targetCallSeq), post.derived)
+        && deepEqualJson(validatedRewrites({ [REWRITES_KEY]: post.rewrites }) ?? null, post.rewrites ?? null))
   }
   const results = table('results', isCanonicalSequence, normalizedResult)
   const targets = table('editTargets', isCanonicalSequence, (field, seq) => (
@@ -635,10 +676,12 @@ export function validateSessionTimelineState(value) {
     && (!REPL_TOOL_NAMES.has(settlement.call.data.name)
       || deepEqualJson(executable.get(settlement.call.seq)?.event, settlement.call))
     && optional(settlement.publication, publication => fields(publication,
-      ['index', 'journal', 'derived', 'userBindings', 'rewrites'])
+      ['index', 'journal', 'derived', 'userBindings', 'rewrites', 'postEdit', 'postEditRewrites'])
       && deepEqualJson(publication.journal ?? null, settlement.normalized?.journal ?? null)
       && deepEqualJson(publication.derived ?? null, settlement.normalized?.derived ?? null)
       && deepEqualJson(publication.userBindings ?? null, settlement.normalized?.userBindings ?? null)
+      && deepEqualJson(publication.postEdit ?? null, settlement.normalized?.postEdit ?? null)
+      && deepEqualJson(publication.postEditRewrites ?? null, settlement.normalized?.postEdit?.rewrites ?? null)
       && !settlement.entry.ambiguous && isCanonicalSequence(publication.index)
       && publication.index === (settlement.ordinary ? settlement.observedIndex : settlement.entry.eventIndex)
       && ((settlement.call.data.name === 'run_code' && publication.derived === undefined)
@@ -657,13 +700,18 @@ export function validateSessionTimelineState(value) {
   let correlationIndex = -1
   for (const observation of value.eventFacts) {
     requireFact(fields(observation, ['eventIndex', 'event', 'identity', 'hasJournal', 'normalized',
-      'boundaries', 'boundaryFailure', 'rewrites'])
+      'boundaries', 'boundaryFailure', 'rewrites', 'selectedTarget'])
       && isCanonicalSequence(observation.eventIndex) && observation.eventIndex > correlationIndex
       && value.lastEventIndex !== null && observation.eventIndex <= value.lastEventIndex
       && isRecord(observation.event) && isCanonicalSequence(observation.event.seq)
-      && ['turn/start', 'turn/end', RECOVERY_BOUNDARY_EVENT, 'compaction/prune', 'tool/call', 'tool/result']
+      && ['turn/start', 'turn/end', RECOVERY_BOUNDARY_EVENT, 'compaction/prune', 'tool/call', 'tool/result',
+        'tool/ptc-dispatch-start', 'tool/ptc-dispatch']
         .includes(observation.event.type)
       && deepEqualJson(correlationEvent(observation.event), observation.event)
+      && (observation.event.type === 'tool/ptc-dispatch-start'
+        && observation.event.data?.name === 'edit_run_code'
+        ? observation.selectedTarget === null || target(observation.selectedTarget)
+        : observation.selectedTarget === undefined)
       && (observation.event.type === 'tool/result'
         ? typeof observation.identity === 'string' && /^[a-f0-9]{64}$/u.test(observation.identity)
           && typeof observation.hasJournal === 'boolean'
@@ -754,8 +802,9 @@ export function validateSessionTimelineState(value) {
       lastSuccessfulRunIndex = Math.max(lastSuccessfulRunIndex ?? -1, settlement.publication.index)
     }
   }
-  requireFact(selectedRun === undefined || (executable.get(selectedRun.callSeq)?.scope === value.scope
-    && !executable.get(selectedRun.callSeq).ambiguous))
+  requireFact(selectedRun === undefined || publications.some(settlement =>
+    settlement.entry.scope === value.scope && !settlement.entry.ambiguous
+    && settlementRun(settlement).callSeq === selectedRun.callSeq))
   requireFact(selectedRun === undefined ? value.latestRun === undefined && value.editableRun === undefined
     : deepEqualJson(value.latestRun ?? null, selectedRun) && deepEqualJson(value.editableRun ?? null, selectedRun))
   requireFact(value.lastSuccessfulRunIndex === lastSuccessfulRunIndex
@@ -793,8 +842,119 @@ export function replaySessionTimelineFact(previous, fact) {
   return advanceTimelineEvent(previous, fact.event, fact.eventIndex, fact)
 }
 
+function dispatchPairWithinRoot(facts, call, resultEvent, startSeq) {
+  const selectedStarts = facts.filter(fact => fact.event.type === 'tool/ptc-dispatch-start'
+    && fact.event.seq === startSeq)
+  if (selectedStarts.length !== 1) return undefined
+  const subCallId = selectedStarts[0].event.data?.subCallId
+  if (typeof subCallId !== 'string') return undefined
+  // A sequence locates a start; the bounded root window must also prove that
+  // its dispatch identity names exactly one start and settlement. Settled ID
+  // reuse outside this root/result window does not change this execution.
+  const identityFacts = facts.filter(fact => fact.event.seq > call.seq
+    && fact.event.seq < resultEvent.seq && fact.event.data?.subCallId === subCallId)
+  const starts = identityFacts.filter(fact => fact.event.type === 'tool/ptc-dispatch-start')
+  const settlements = identityFacts.filter(fact => fact.event.type === 'tool/ptc-dispatch')
+  if (starts.length !== 1 || settlements.length !== 1
+    || starts[0].event.seq !== startSeq || startSeq >= settlements[0].event.seq) return undefined
+  return { start: starts[0], settled: settlements[0] }
+}
+
+function normalizePostEditFact(facts, call, resultEvent, result, replayPostEdit) {
+  const post = replayPostEdit === undefined ? resultEvent.data?.meta?.[POST_EDIT_KEY] : {
+    startSeq: replayPostEdit.startSeq,
+    executionStartSeq: replayPostEdit.executionStartSeq,
+    rootCallSeq: call.seq,
+    subCallId: facts.find(fact => fact.event.seq === replayPostEdit.startSeq)?.event.data?.subCallId,
+    meta: {
+      [JOURNAL_KEY]: replayPostEdit.derived.journal,
+      [EDIT_TARGET_KEY]: { targetCallSeq: replayPostEdit.targetCallSeq },
+      [DERIVED_RUN_KEY]: { code: replayPostEdit.derived.code, description: replayPostEdit.derived.description },
+      ...(replayPostEdit.derived.recoveryBoundaries === undefined ? {} : {
+        [RECOVERY_BOUNDARY_KEY]: replayPostEdit.derived.recoveryBoundaries }),
+      ...(replayPostEdit.derived.userBindings === undefined ? {} : {
+        [USER_BINDINGS_META_KEY]: replayPostEdit.derived.userBindings }),
+      ...(replayPostEdit.rewrites === undefined ? {} : { [REWRITES_KEY]: replayPostEdit.rewrites }),
+    },
+  }
+  const acceptedCalls = result.journal?.calls?.filter(entry => (
+    entry.global === 'tools' && entry.member === 'edit_run_code' && entry.ok === true
+    && decodeValue(entry.value)?.accepted === true
+  )) ?? []
+  if (post === undefined && acceptedCalls.length === 0) return undefined
+  const fail = reason => ({ error: `unproved deferred edit: ${reason}` })
+  if (!isRecord(post) || !isCanonicalSequence(post.startSeq)
+    || !isCanonicalSequence(post.executionStartSeq)
+    || post.rootCallSeq !== call.seq || typeof post.subCallId !== 'string'
+    || !isRecord(post.meta) || acceptedCalls.length !== 1) return fail('root metadata or receipt is missing')
+  const editorPair = dispatchPairWithinRoot(facts, call, resultEvent, post.startSeq)
+  if (editorPair === undefined || editorPair.start.event.data.subCallId !== post.subCallId) {
+    return fail('nested dispatch pair is incomplete or ambiguous')
+  }
+  const start = editorPair.start.event
+  const settled = editorPair.settled.event
+  const target = editorPair.start.selectedTarget
+  if (start.seq <= call.seq || start.seq >= settled.seq || settled.seq >= resultEvent.seq
+    || start.data.rootCallId !== call.data.callId || start.data.parentCallId !== call.data.callId
+    || settled.data.rootCallId !== start.data.rootCallId
+    || settled.data.parentCallId !== start.data.parentCallId
+    || settled.data.name !== 'edit_run_code' || start.data.name !== 'edit_run_code'
+    || !deepEqualJson(start.data.arguments, settled.data.arguments)
+    || settled.data.isError !== false) return fail('nested dispatch relation changed')
+  const receipt = decodeValue(acceptedCalls[0].value)
+  if (!deepEqualJson(receipt, { accepted: true, scheduled: true,
+    target_call_seq: post.meta?.[EDIT_TARGET_KEY]?.targetCallSeq })
+    || !deepEqualJson(decodeValue(acceptedCalls[0].args), start.data.arguments)) {
+    return fail('nested receipt does not match root journal')
+  }
+  let derived
+  try {
+    derived = normalizeDerivedEditResult(post.meta, target?.callSeq)
+  } catch (error) {
+    return fail(error.message)
+  }
+  if (target?.source === undefined || sourceForRunCall(call) === undefined) {
+    return fail('nested edit has no selected source')
+  }
+  const edit = editRejectedCell(start.data.arguments, target.source)
+  if (!edit.edited || edit.code !== derived.code || edit.description !== derived.description
+    || (start.data.arguments.expected_target_call_seq !== undefined
+      && start.data.arguments.expected_target_call_seq !== target.callSeq)) {
+    return fail('derived source does not match selected edit')
+  }
+  const executionPair = dispatchPairWithinRoot(facts, call, resultEvent, post.executionStartSeq)
+  if (executionPair === undefined) return fail('derived execution dispatch pair is incomplete or ambiguous')
+  const executionStart = executionPair.start.event
+  const executionSettled = executionPair.settled.event
+  const argumentsValue = { code: derived.code, description: derived.description }
+  if (executionStart.seq <= settled.seq || executionStart.data.rootCallId !== call.data.callId
+    || executionStart.data.parentCallId !== call.data.callId
+    || executionStart.data.name !== 'run_code' || executionSettled.data.name !== 'run_code'
+    || executionSettled.data.rootCallId !== executionStart.data.rootCallId
+    || executionSettled.data.parentCallId !== executionStart.data.parentCallId
+    || !deepEqualJson(executionStart.data.arguments, argumentsValue)
+    || !deepEqualJson(executionSettled.data.arguments, argumentsValue)
+    || !deepEqualJson(executionSettled.data.meta?.[JOURNAL_KEY], derived.journal)
+    || typeof executionSettled.data.isError !== 'boolean'
+    || executionSettled.data.isError !== (derived.journal.completion?.kind === 'throw'
+      || derived.journal.status === 'discarded')) {
+    return fail('derived execution relation changed')
+  }
+  const rewrites = validatedRewrites(post.meta)
+  return { startSeq: start.seq, executionStartSeq: executionStart.seq,
+    targetCallSeq: target.callSeq, derived,
+    ...(rewrites === undefined ? {} : { rewrites }) }
+}
+
 function advanceTimelineEvent(previous, inputEvent, eventIndex, replayFact) {
-  if (!['turn/start', 'turn/end', RECOVERY_BOUNDARY_EVENT, 'compaction/prune', 'tool/call', 'tool/result'].includes(inputEvent?.type)) {
+  const nested = inputEvent?.type === 'tool/ptc-dispatch-start'
+    || inputEvent?.type === 'tool/ptc-dispatch'
+  if (nested && inputEvent.data?.name !== 'edit_run_code'
+    && inputEvent.data?.name !== 'run_code'
+    && !previous.eventFacts.some(fact => fact.event.type === 'tool/ptc-dispatch-start'
+      && fact.event.data?.subCallId === inputEvent.data?.subCallId)) return previous
+  if (!['turn/start', 'turn/end', RECOVERY_BOUNDARY_EVENT, 'compaction/prune', 'tool/call', 'tool/result',
+    'tool/ptc-dispatch-start', 'tool/ptc-dispatch'].includes(inputEvent?.type)) {
     return previous
   }
   const observation = { eventIndex, event: correlationEvent(inputEvent),
@@ -872,6 +1032,16 @@ function advanceTimelineEvent(previous, inputEvent, eventIndex, replayFact) {
       pruneReplacementWindow = pruneWindowForEvent(event, eventIndex)
       continue
     }
+    if (event?.type === 'tool/ptc-dispatch-start') {
+      if (event.data?.name !== 'edit_run_code') continue
+      observation.selectedTarget = state.editableRun?.source === undefined ? null
+        : timelineJson({ callSeq: state.editableRun.callSeq, source: state.editableRun.source })
+      if (replayFact !== undefined && !deepEqualJson(observation.selectedTarget, replayFact.selectedTarget)) {
+        throw new TypeError('invalid PTC session-log projection nested edit target fact')
+      }
+      continue
+    }
+    if (event?.type === 'tool/ptc-dispatch') continue
     if (event?.type === 'tool/call' && typeof event.data?.callId === 'string') {
       const executable = REPL_TOOL_NAMES.has(event.data.name)
       let entry = { event: timelineCallEvent(event), eventIndex, scope }
@@ -1039,6 +1209,14 @@ function advanceTimelineEvent(previous, inputEvent, eventIndex, replayFact) {
               journal,
               ...(userBindings === undefined ? {} : { userBindings }),
             }
+            let postEdit
+            try {
+              postEdit = normalizePostEditFact(state.eventFacts, call, event, normalized)
+            } catch (error) {
+              postEdit = { error: `unproved deferred edit: ${error.message}` }
+            }
+            if (postEdit?.error !== undefined) normalized.postEditError = postEdit.error
+            else if (postEdit !== undefined) normalized.postEdit = postEdit
           }
         } catch (error) {
           normalized = { ...raw, error: error.message }
@@ -1056,6 +1234,12 @@ function advanceTimelineEvent(previous, inputEvent, eventIndex, replayFact) {
         })) throw new TypeError('invalid PTC session-log projection timeline checkpoint result facts')
         if (replayFact.boundaries !== undefined) observation.boundaries = replayFact.boundaries
         if (replayFact.boundaryFailure !== undefined) observation.boundaryFailure = replayFact.boundaryFailure
+        if (normalized.postEdit !== undefined) {
+          const checked = normalizePostEditFact(state.eventFacts, call, event, normalized, normalized.postEdit)
+          if (checked?.error !== undefined || !deepEqualJson(checked, normalized.postEdit)) {
+            throw new TypeError(`invalid PTC session-log projection deferred edit fact: ${checked?.error ?? 'derived fact changed'}`)
+          }
+        }
       }
       observation.normalized = normalized
       if (observation.boundaries !== undefined) {
@@ -1080,6 +1264,10 @@ function advanceTimelineEvent(previous, inputEvent, eventIndex, replayFact) {
         derived: normalized?.derived,
         userBindings: normalized?.userBindings,
         rewrites,
+        ...(normalized?.postEdit === undefined ? {} : {
+          postEdit: normalized.postEdit,
+          postEditRewrites: normalized.postEdit.rewrites,
+        }),
       }
     }
     if (settlement !== undefined && isCanonicalSequence(event.seq)) {
@@ -1249,7 +1437,20 @@ export function recoverJournal(session, currentCallSeq, options = {}) {
       const boundary = boundaries[boundaryIndex++]
       const carrierCallSeq = carrierCallSeqForBoundary(boundary)
       const failedCall = executableCalls.get(boundary.failedCallSeq)
-      if (failedCall === undefined || failedCall.event.seq >= boundary.eventSeq) {
+      // Derived records exist only after the shared timeline has proved both
+      // dispatch pairs and the final root publication. A raw nested start does
+      // not establish a program identity or a completed recovery boundary.
+      const derivedRecords = failedCall === undefined ? orderedRecords.filter(record => (
+        record.call.seq === boundary.failedCallSeq
+        && record.call.type === 'tool/ptc-dispatch-start'
+        && record.call.data?.name === 'run_code' && record.result?.derived !== undefined
+      )) : []
+      const failedExecution = failedCall === undefined && derivedRecords.length === 1
+        ? derivedRecords[0] : undefined
+      const isEarlierExecution = failedCall === undefined
+        ? failedExecution !== undefined && recordEventSeq(failedExecution) < boundary.eventSeq
+        : failedCall.event.seq < boundary.eventSeq
+      if (!isEarlierExecution) {
         rejectBoundary(boundary, 'recovery boundary does not identify an earlier executable call')
         continue
       }
@@ -1305,6 +1506,22 @@ export function recoverJournal(session, currentCallSeq, options = {}) {
     if (call.data?.name === 'edit_run_code' && record.code === undefined && result === undefined) continue
     if (result?.journal === undefined && confirmedNoops.has(call.seq)) continue
     orderedRecords.push(record)
+    if (call.data?.name === 'run_code' && result?.journal !== undefined) {
+      if (result.postEditError !== undefined) {
+        invalidResultReasons.set(call.seq, result.postEditError)
+        registerUnavailable({ seq: call.seq, reason: result.postEditError })
+      } else if (result.postEdit !== undefined) {
+        const postEdit = result.postEdit
+        orderedRecords.push({
+          call: timeline.eventFacts.find(fact => fact.event.seq === postEdit.executionStartSeq).event,
+          code: postEdit.derived.code,
+          result: { eventSeq: result.eventSeq, journal: postEdit.derived.journal,
+            derived: postEdit.derived, userBindings: postEdit.derived.userBindings },
+          hidden: visibleCalls instanceof Set && (!visibleCalls.has(call.seq)
+            || !visibleCalls.has(postEdit.targetCallSeq)),
+        })
+      }
+    }
   }
   orderedRecords.sort((left, right) => (
     recordEventSeq(left) - recordEventSeq(right) || left.call.seq - right.call.seq

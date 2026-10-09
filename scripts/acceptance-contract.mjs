@@ -1,6 +1,7 @@
 import { readCapabilityContextMessage } from '../internal/capability-environment.js'
 import { isHostRuntimeContextSource, isPtcMessageSource } from '../internal/message-sources.js'
-import { normalizeJournal } from '../internal/session-journal.js'
+import { isCanonicalSequence, liveToolCallSeq, normalizeJournal } from '../internal/session-journal.js'
+import { POST_EDIT_KEY } from '../internal/session-journal-schema.js'
 import { decodeValue } from '../internal/value-wire.js'
 import { PTC_BINDING_CATALOG, readRuntimeMessage, recoveryTipIdentity } from '../internal/runtime-messages.js'
 import { HOST_HEADER_REASONS, hostAssistantUsageEvents } from './dsh-host-contract.mjs'
@@ -8,7 +9,7 @@ import { foldSurface, deriveEventMessage, snapshotSessionEvent, SESSION_FORMAT_V
 import { imageOffloadProjection } from '@deepseek-ai/dsh-compaction-image-offload/projection'
 import { isDeepStrictEqual } from 'node:util'
 import { editRejectedCell, EXPECTED_TARGET_CALL_SEQ } from '../internal/rejected-cell-editor.js'
-import { editTargetForCall } from '../internal/session-log-view.js'
+import { editTargetForCall, projectSessionLog } from '../internal/session-log-view.js'
 import { parse } from '@babel/parser'
 import traverseModule from '@babel/traverse'
 import { createUserBindingDraftProjection, readBindingAction } from '../internal/user-binding-draft-projection.js'
@@ -151,7 +152,7 @@ export function auditBindingWorkflow(events, scenario = {}) {
     finalAnswer: { seq: closing?.seq ?? null, review: 'semantic-review-required' } }
 }
 
-export const PTC_DIRECT_TOOLS = Object.freeze(['run_code', 'edit_run_code'])
+export const PTC_DIRECT_TOOLS = Object.freeze(['run_code'])
 
 export function isRuntimeContextSource(source) {
   return [
@@ -232,6 +233,48 @@ export function collectModelText(value, output = []) {
   return output
 }
 
+function retainJournalValues(failures) {
+  const decode = (value, label) => {
+    try {
+      return decodeValue(value)
+    } catch (error) {
+      failures.push(`${label} contains an invalid PTC value: ${error.message}`)
+      return undefined
+    }
+  }
+
+  // JSON reports retain canonical graphs; in-memory consumers use decoded values.
+  const retainValueWire = (target, name, wire, label) => Object.defineProperties(target, {
+    [`${name}Wire`]: { value: wire, enumerable: true },
+    [name]: { value: decode(wire, label) },
+  })
+
+  return retainValueWire
+}
+
+function journalFacts(journal, failures) {
+  const retainValueWire = retainJournalValues(failures)
+  const nestedCalls = Array.isArray(journal?.calls)
+    ? journal.calls.map((call, index) => {
+      const summary = retainValueWire({
+        global: String(call.global),
+        member: String(call.member),
+        ok: call.ok === true,
+        ...(call.ok === false ? { error: String(call.error ?? 'unknown error') } : {}),
+      }, 'args', call.args, `journal call ${index + 1} arguments`)
+      return call.ok === true
+        ? retainValueWire(summary, 'value', call.value, `journal call ${index + 1}`)
+        : summary
+    })
+    : []
+  const completion = journal?.completion?.kind === 'return'
+    ? journal.completion.hasValue
+      ? retainValueWire({ kind: 'return', hasValue: true }, 'value', journal.completion.value, 'journal completion')
+      : { kind: 'return', hasValue: false }
+    : journal?.completion
+  return { journal, journalStatus: journal?.status, diagnostics: journal?.diagnostics ?? [], nestedCalls, completion }
+}
+
 /** Normalize the event facts shared by every headless acceptance report. */
 export function collectTrajectoryFacts(events, options = {}) {
   if (!Array.isArray(events)) throw new TypeError('trajectory events must be an array')
@@ -243,6 +286,7 @@ export function collectTrajectoryFacts(events, options = {}) {
   const failures = []
   const calls = new Map()
   const results = new Map()
+  const pendingCalls = new Map()
   const assistantTexts = []
   let reasoningChars = 0
   let pendingAnswer = ''
@@ -259,21 +303,6 @@ export function collectTrajectoryFacts(events, options = {}) {
   let turnStartedAt
   let turnEndedAt
   let finalTurn
-
-  const decode = (value, label) => {
-    try {
-      return decodeValue(value)
-    } catch (error) {
-      failures.push(`${label} contains an invalid PTC value: ${error.message}`)
-      return undefined
-    }
-  }
-
-  // JSON reports retain canonical graphs; in-memory consumers use decoded values.
-  const retainValueWire = (target, name, wire, label) => Object.defineProperties(target, {
-    [`${name}Wire`]: { value: wire, enumerable: true },
-    [name]: { value: decode(wire, label) },
-  })
 
   for (const event of events) {
     if (event?.type === 'assistant/message') {
@@ -360,8 +389,11 @@ export function collectTrajectoryFacts(events, options = {}) {
       } catch {
         failures.push(`tool call ${data.callId} has invalid JSON arguments`)
       }
-      if (calls.has(data.callId)) failures.push(`duplicate tool call id ${data.callId}`)
-      calls.set(data.callId, {
+      if (!isCanonicalSequence(event.seq) || calls.has(event.seq)) {
+        failures.push(`tool call ${data.callId} has an invalid or duplicate sequence`)
+        continue
+      }
+      calls.set(event.seq, {
         seq: event.seq,
         callId: data.callId,
         name: data.name,
@@ -369,6 +401,7 @@ export function collectTrajectoryFacts(events, options = {}) {
         code: args?.code,
         description: args?.description,
       })
+      pendingCalls.set(data.callId, [...pendingCalls.get(data.callId) ?? [], event.seq])
     }
     if (event?.type === 'tool/result') {
       const data = event.data ?? {}
@@ -386,30 +419,24 @@ export function collectTrajectoryFacts(events, options = {}) {
           failures.push(`invalid PTC journal for ${String(callId ?? 'unknown')}: ${error.message}`)
         }
       }
-      const nestedCalls = Array.isArray(journal?.calls)
-        ? journal.calls.map((call, index) => {
-          const summary = retainValueWire({
-            global: String(call.global),
-            member: String(call.member),
-            ok: call.ok === true,
-            ...(call.ok === false ? { error: String(call.error ?? 'unknown error') } : {}),
-          }, 'args', call.args, `journal call ${index + 1} arguments`)
-          return call.ok === true
-            ? retainValueWire(summary, 'value', call.value, `journal call ${index + 1}`)
-            : summary
-        })
-        : []
-      const completion = journal?.completion?.kind === 'return'
-        ? journal.completion.hasValue
-          ? retainValueWire({ kind: 'return', hasValue: true }, 'value', journal.completion.value, 'journal completion')
-          : { kind: 'return', hasValue: false }
-        : journal?.completion
+      const { nestedCalls, completion } = journalFacts(journal, failures)
       if (typeof callId !== 'string') {
         failures.push(`tool result at seq ${event.seq} has no call id`)
         continue
       }
-      if (results.has(callId)) failures.push(`duplicate tool result id ${callId}`)
-      results.set(callId, {
+      const candidates = pendingCalls.get(callId) ?? []
+      const callSeq = event.sourceEventSeqs === undefined
+        ? candidates.length === 1 ? candidates[0] : undefined
+        : Array.isArray(event.sourceEventSeqs) && event.sourceEventSeqs.length === 1
+          && isCanonicalSequence(event.sourceEventSeqs[0])
+          ? event.sourceEventSeqs[0] : undefined
+      if (callSeq === undefined || calls.get(callSeq)?.callId !== callId
+        || results.has(callSeq)) {
+        failures.push(`tool result ${callId} has no unique matching call`)
+        continue
+      }
+      pendingCalls.set(callId, candidates.filter(seq => seq !== callSeq))
+      results.set(callSeq, {
         resultSeq: event.seq,
         callId,
         isError,
@@ -423,16 +450,16 @@ export function collectTrajectoryFacts(events, options = {}) {
         completion,
         editTarget: data.meta?.dshPtcPlusEdit,
         derivedRun: data.meta?.dshPtcPlusDerivedRun,
+        postEdit: data.meta?.[POST_EDIT_KEY],
       })
     }
   }
 
-  for (const [callId, call] of calls) {
-    const result = results.get(callId)
-    if (result === undefined) failures.push(`tool call ${callId} has no matching result`)
-    else if (result.resultSeq <= call.seq) failures.push(`tool result ${callId} does not follow its call`)
+  for (const [callSeq, call] of calls) {
+    const result = results.get(callSeq)
+    if (result === undefined) failures.push(`tool call ${call.callId} has no matching result`)
+    else if (result.resultSeq <= call.seq) failures.push(`tool result ${call.callId} does not follow its call`)
   }
-  for (const callId of results.keys()) if (!calls.has(callId)) failures.push(`tool result ${callId} has no matching call`)
   if (compareUsageChunks && !isDeepStrictEqual(messageUsages, chunkUsages)) {
     usageComplete = false
     failures.push('assistant message usage does not match usage chunks')
@@ -442,7 +469,7 @@ export function collectTrajectoryFacts(events, options = {}) {
   }
   const timeline = [...calls.values()].sort((left, right) => left.seq - right.seq).map(call => ({
     ...call,
-    ...(results.get(call.callId) ?? { resultMissing: true }),
+    ...(results.get(call.seq) ?? { resultMissing: true }),
   }))
   return {
     failures: [...new Set(failures)],
@@ -560,14 +587,73 @@ export function validateGuardMismatchEdits(ordinals = []) {
 }
 
 /** Audit the canonical editor and dispatch-time target, independently of task deltas. */
+function uniqueRootDispatchPair(events, root, selectedStartSeq) {
+  if (root === undefined) return undefined
+  const selected = events.filter(event => event.type === 'tool/ptc-dispatch-start'
+    && event.seq === selectedStartSeq)
+  if (selected.length !== 1 || typeof selected[0].data?.subCallId !== 'string') return undefined
+  const identity = selected[0].data.subCallId
+  const window = events.filter(event => event.seq > root.seq && event.seq < root.resultSeq
+    && event.data?.subCallId === identity)
+  const starts = window.filter(event => event.type === 'tool/ptc-dispatch-start')
+  const settled = window.filter(event => event.type === 'tool/ptc-dispatch')
+  if (starts.length !== 1 || settled.length !== 1 || starts[0] !== selected[0]
+    || settled[0].seq <= selectedStartSeq) return undefined
+  return { started: starts[0], settled: settled[0] }
+}
+
 export function auditEditCalls(events, timeline, guardMismatchEdits = []) {
   const expectedMismatches = new Set(validateGuardMismatchEdits(guardMismatchEdits))
   const rejectedCallIds = new Set()
   const failures = []
-  const edits = timeline.filter(call => call.name === 'edit_run_code')
+  const derivedExecutions = []
+  const nested = events.flatMap((event, index) => {
+    if (event?.type !== 'tool/ptc-dispatch-start' || event.data?.name !== 'edit_run_code') return []
+    let rootCallSeq
+    try {
+      rootCallSeq = liveToolCallSeq({ events: events.slice(0, index + 1) },
+        event.data.rootCallId, 'run_code')
+    } catch { /* Ambiguous roots do not prove an edit relation. */ }
+    const roots = timeline.filter(call => call.seq === rootCallSeq)
+    const root = roots.length === 1 ? roots[0] : undefined
+    const pair = uniqueRootDispatchPair(events, root, event.seq)
+    const settlement = pair === undefined ? [] : [pair.settled]
+    const target = projectSessionLog({ session: { events: events.slice(0, index + 1) } }).editableRun
+    const journalCalls = root?.nestedCalls?.filter(call => call.global === 'tools'
+      && call.member === 'edit_run_code' && isDeepStrictEqual(call.args, event.data.arguments)) ?? []
+    const receipt = journalCalls.length === 1 && journalCalls[0].ok ? journalCalls[0].value : undefined
+    return [{ kind: 'nested', seq: event.seq, callId: event.data.subCallId,
+      arguments: event.data.arguments, parentCallId: event.data.parentCallId,
+      root, settlement, target, receipt,
+      editTarget: root?.postEdit?.meta?.dshPtcPlusEdit,
+      derivedRun: root?.postEdit?.meta?.dshPtcPlusDerivedRun,
+      journal: root?.postEdit?.meta?.dshPtcPlus }]
+  })
+  const edits = [...timeline.filter(call => call.name === 'edit_run_code'), ...nested]
+    .sort((left, right) => left.seq - right.seq)
   for (const [index, edit] of edits.entries()) {
     const label = `edit_run_code call ${edit.callId}`
-    const target = editTargetForCall({ session: { events } }, edit.callId, edit.seq)
+    const target = edit.kind === 'nested' ? edit.target
+      : editTargetForCall({ session: { events } }, edit.callId, edit.seq)
+    if (edit.kind === 'nested') {
+      if (edit.root?.name !== 'run_code' || edit.parentCallId !== edit.root.callId
+        || edit.root.seq >= edit.seq
+        || edit.root.resultSeq <= edit.seq || edit.settlement.length !== 1
+        || edit.settlement[0].seq <= edit.seq || edit.settlement[0].seq >= edit.root.resultSeq
+        || edit.settlement[0].data?.rootCallId !== edit.root.callId
+        || edit.settlement[0].data?.parentCallId !== edit.root.callId
+        || !isDeepStrictEqual(edit.settlement[0].data?.arguments, edit.arguments)) {
+        failures.push(`${label} has no matching nested dispatch and root result`)
+        continue
+      }
+    }
+    if (edit.kind === 'nested') {
+      let publicReceipt
+      try { publicReceipt = JSON.parse(collectModelText(edit.settlement[0].data.content).join('\n')) } catch {}
+      if (!isDeepStrictEqual(publicReceipt, edit.receipt)) {
+        failures.push(`${label} nested receipt content contradicts its recorded canonical value`)
+      }
+    }
     const correction = editRejectedCell(edit.arguments, target?.source)
     if (!correction.edited) {
       failures.push(`${label} fails canonical edit validation: ${correction.reason}`)
@@ -575,30 +661,88 @@ export function auditEditCalls(events, timeline, guardMismatchEdits = []) {
     }
     const guard = edit.arguments[EXPECTED_TARGET_CALL_SEQ]
     const mismatch = guard !== undefined && guard !== target.callSeq
-    let value
-    try { value = JSON.parse(edit.output) } catch { /* The editor renders one JSON result. */ }
+    let value = edit.receipt
+    if (edit.kind !== 'nested') {
+      try { value = JSON.parse(edit.output) } catch { /* Historical editor renders JSON. */ }
+    }
     if (expectedMismatches.has(index + 1)) {
-      if (!mismatch || edit.isError || !isRecord(value) || value.edited !== false
-        || typeof value.reason !== 'string' || value.reason === ''
-        || Object.keys(value).some(key => !['edited', 'reason'].includes(key))
-        || edit.journal !== undefined || edit.editTarget !== undefined || edit.derivedRun !== undefined) {
+      const rejected = edit.kind === 'nested'
+        ? edit.settlement[0].data?.isError !== true && isRecord(value)
+          && value.accepted === false && value.scheduled === false
+          && typeof value.reason === 'string' && value.reason !== ''
+          && edit.root.postEdit === undefined
+        : !edit.isError && isRecord(value) && value.edited === false
+          && typeof value.reason === 'string' && value.reason !== ''
+          && Object.keys(value).every(key => ['edited', 'reason'].includes(key))
+      if (!mismatch || !rejected || edit.journal !== undefined
+        || edit.editTarget !== undefined || edit.derivedRun !== undefined) {
         failures.push(`${label} did not prove guard rejection without derived execution`)
-      } else rejectedCallIds.add(edit.callId)
+      } else if (edit.kind !== 'nested') rejectedCallIds.add(edit.callId)
     } else {
       if (mismatch) failures.push(`${label} guard does not match its captured target`)
-      if (!isRecord(value) || value.edited !== true) failures.push(`${label} result does not report an applied edit`)
+      if (edit.kind === 'nested') {
+        if (edit.settlement[0].data?.isError === true || !isRecord(value)
+          || value.accepted !== true || value.scheduled !== true
+          || value.target_call_seq !== target?.callSeq
+          || edit.root.postEdit?.rootCallSeq !== edit.root.seq
+          || edit.root.postEdit?.startSeq !== edit.seq
+          || edit.root.postEdit?.subCallId !== edit.callId) {
+          failures.push(`${label} has no proved accepted receipt and root post-edit evidence`)
+        }
+        const execution = uniqueRootDispatchPair(events, edit.root, edit.root.postEdit?.executionStartSeq)
+        const started = execution?.started
+        const settled = execution?.settled
+        const pairValid = !(started?.seq <= edit.settlement[0].seq
+          || started?.data.name !== 'run_code' || started?.data.rootCallId !== edit.root.callId
+          || started?.data.parentCallId !== edit.root.callId
+          || !isDeepStrictEqual(started?.data.arguments, edit.derivedRun)
+          || settled?.data.name !== 'run_code' || settled?.data.rootCallId !== edit.root.callId
+          || settled?.data.parentCallId !== edit.root.callId
+          || !isDeepStrictEqual(settled?.data.arguments, edit.derivedRun)
+          || !isDeepStrictEqual(settled?.data.meta?.dshPtcPlus, edit.journal))
+        if (!pairValid) {
+          failures.push(`${label} has no proved actual derived execution pair`)
+        }
+        if (pairValid) {
+          try {
+            const executionJournal = normalizeJournal(edit.journal)
+            const failed = executionJournal.completion?.kind === 'throw' || executionJournal.status === 'discarded'
+            if (typeof settled.data.isError !== 'boolean' || settled.data.isError !== failed) {
+              failures.push(`${label} actual derived outcome contradicts its execution journal`)
+            }
+            const output = collectModelText(settled.data.content).join('\n')
+            derivedExecutions.push({ kind: 'derived', seq: started.seq, resultSeq: settled.seq,
+              callId: started.data.subCallId, rootCallId: started.data.rootCallId,
+              parentCallId: started.data.parentCallId, name: 'run_code',
+              code: started.data.arguments.code, description: started.data.arguments.description,
+              isError: settled.data.isError, output: boundedTrajectoryOutput(output), outputChars: output.length,
+              ...journalFacts(executionJournal, failures) })
+          } catch {
+            failures.push(`${label} actual derived result has no valid execution journal`)
+          }
+        }
+      } else if (!isRecord(value) || value.edited !== true) {
+        failures.push(`${label} result does not report an applied edit`)
+      }
       if (edit.editTarget?.targetCallSeq !== target.callSeq) {
         failures.push(`${label} result does not identify its captured target`)
       }
       if (edit.derivedRun?.code !== correction.code || edit.derivedRun?.description !== correction.description) {
         failures.push(`${label} derived run does not match the canonical edit`)
       }
+      if (edit.kind === 'nested') {
+        try {
+          if (normalizeJournal(edit.journal).status === 'noop') throw new Error('no execution')
+        } catch {
+          failures.push(`${label} root result has no valid derived execution journal`)
+        }
+      }
     }
   }
   for (const ordinal of expectedMismatches) {
     if (ordinal > edits.length) failures.push(`guardMismatchEdits names missing edit ${ordinal}`)
   }
-  return { failures, rejectedCallIds }
+  return { failures, rejectedCallIds, edits, derivedExecutions }
 }
 
 function canonicalRequestHeader(header) {
@@ -940,7 +1084,15 @@ export function auditEditTransports(timeline, transports) {
       continue
     }
     const run = timeline[runIndex]
-    const edit = timeline[runIndex + 1]
+    const next = timeline[runIndex + 1]
+    const accepted = next?.nestedCalls?.filter(call => call.global === 'tools'
+      && call.member === 'edit_run_code' && call.ok === true
+      && call.value?.accepted === true && call.value?.scheduled === true) ?? []
+    const edit = next?.name === 'run_code' && next.postEdit !== undefined && accepted.length === 1
+      ? { name: 'edit_run_code', arguments: accepted[0].args, output: next.output,
+          derivedRun: next.postEdit.meta?.dshPtcPlusDerivedRun,
+          editTarget: next.postEdit.meta?.dshPtcPlusEdit }
+      : next
     cursor = runIndex + 2
     if (timeline.some(call => call?.name === 'run_code' && call.seq > run.seq
       && call.code === transport.repairedSource)) {

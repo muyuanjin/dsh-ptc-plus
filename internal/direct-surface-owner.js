@@ -3,7 +3,6 @@ import { boundContextSummary, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { validateJsonSchemaValue } from '@deepseek-ai/dsh-tools'
 import { PTC_MESSAGE_SOURCE_KIND } from './message-sources.js'
 import { canonicalizeToolCallStream } from './tool-call-canonicalizer.js'
-import { editRunCodeSchema } from './rejected-cell-editor.js'
 import { sessionRuntimeContexts } from './runtime-contexts.js'
 import { projectProgramSdk } from './sdk-projection.js'
 import { EDIT_RUN_CODE } from './edit-transport-owner.js'
@@ -21,7 +20,7 @@ import { executionPolicies } from './binding-update-policy.js'
 const RUN_CODE_TOOL_DESCRIPTION = 'Evaluate the next TypeScript cell in this session-bound persistent REPL, reusing earlier top-level bindings. Use `code` for the cell and `description` for its short UI summary. Successful image-bearing subtool results are attached after the cell.'
 const RUN_CODE_CODE_DESCRIPTION = 'Code for the next PTC TypeScript cell, following the selected language conventions.'
 const RUN_CODE_DESCRIPTION_DESCRIPTION = 'Short active-voice summary of what this cell does, 5-10 words (shown in the UI).'
-const CODE_TRANSPORT_INSTRUCTION = '`run_code` and `edit_run_code` are the only tools callable directly. Call every native tool declared by the SDK from inside a program.'
+const CODE_TRANSPORT_INSTRUCTION = '`run_code` is the only tool callable directly. Call `tools.edit_run_code` and other SDK tools from inside a program. An accepted edit runs after the current cell finishes.'
 const PTC_COLLAPSE_SECTION_NAMES = Object.freeze(['tools:ptc-only', 'tools:code-only'])
 const INVALID_TOOL_JSON_FAILURE = Object.freeze({
   code: 'MALFORMED_RESPONSE',
@@ -120,16 +119,8 @@ function presentationState(assembly) {
   const collapse = PTC_COLLAPSE_SECTION_NAMES
     .map(name => assembly?.sections?.find(section => section?.name === name))
     .find(section => section !== undefined)
-  if (collapse !== undefined) {
-    const presentation = typeof collapse.text === 'string' && collapse.text.trim().length > 0
-      ? 'ptc'
-      : 'both'
-    return { presentation, ownerProven: true, collapseSectionName: collapse.name }
-  }
-  const presentation = tools.every(tool => tool?.name === RUN_CODE || tool?.name === EDIT_RUN_CODE)
-    ? 'ptc'
-    : 'both'
-  return { presentation, ownerProven: false, collapseSectionName: undefined }
+  return { presentation: 'ptc', ownerProven: collapse !== undefined,
+    collapseSectionName: collapse?.name }
 }
 
 async function* bindCallPolicies(source, policy, calls) {
@@ -640,7 +631,7 @@ export function createDirectSurfaceOwner({
       let directTools = sessionPtc ? capabilityEnvironment?.visibleSchemas(agent, tools) ?? tools : tools
       if (sessionPtcProjection) {
         editTransport.ensureInstalled(agent)
-        directTools = [adaptRunCodeSchema(runCode), editRunCodeSchema()]
+        directTools = [adaptRunCodeSchema(runCode)]
       }
       const runtimeContexts = sessionPtc
         ? sessionRuntimeContexts(agent, tipConfig, {
@@ -716,20 +707,17 @@ export function createDirectSurfaceOwner({
       return bindCallPolicies(recovered, policy, policy.owner.calls)
     },
     executionRejection(exec) {
-      if (exec.name === EDIT_RUN_CODE && exec.parent !== undefined) {
-        return rejection(`tool ${EDIT_RUN_CODE} is only callable directly in PTC mode; call native tools from inside run_code`)
-      }
       const policy = dispatchPolicy(exec)
       if (exec.name === EDIT_RUN_CODE) {
-        return policy?.presentation === 'ptc'
+        return exec.parent !== undefined
           ? undefined
-          : rejection(`tool ${EDIT_RUN_CODE} is not declared for this request`)
+          : rejection(`tool ${EDIT_RUN_CODE} must be called through tools.${EDIT_RUN_CODE} inside run_code`)
       }
       if (exec.name === RUN_CODE || exec.parent !== undefined) {
         return undefined
       }
       if (policy?.presentation !== 'ptc') return undefined
-      return rejection(`tool ${exec.name} is not a direct PTC tool; use run_code or edit_run_code directly, and call native tools from inside run_code`)
+      return rejection(`tool ${exec.name} is not a direct PTC tool; use run_code directly, and call SDK tools from inside run_code`)
     },
     executionArguments(exec) {
       const policy = dispatchPolicy(exec)

@@ -12,7 +12,7 @@ import { isHostComponent, isHostIconComponent } from './client-host-compat.js'
  * discard an unsaved draft.
  */
 export function createUserBindingsWorkbench(React, deps) {
-  const { TypeScriptEditor, BindingConsole, IconButton, ActionButton, CodeBlock, Modal, icons, catalogOwner } = deps
+  const { TypeScriptEditor, BindingConsole, IconButton, ActionButton, CodeBlock, Modal, Select, icons, catalogOwner } = deps
   const h = React.createElement
 
   const initialState = Object.freeze({
@@ -450,10 +450,9 @@ export function createUserBindingsWorkbench(React, deps) {
                     })),
                   h('label', { className: 'ptcPlusBindingField' },
                     h('span', { className: 'ptcPlusBindingFieldLabel' }, t('bindings.scope')),
-                    h('select', {
-                      className: 'ptcPlusSelect', value: state.draft.scope, disabled: state.busy || !state.editing,
-                      onChange: event => edit('scope', event.target.value),
-                    }, h('option', { value: 'namespace' }, 'namespace'), h('option', { value: 'top-level' }, 'top-level'))),
+                    h(Select, { value: state.draft.scope, disabled: state.busy || !state.editing,
+                      label: t('bindings.scope'), onChange: next => edit('scope', next),
+                      options: [{ value: 'namespace', label: 'namespace' }, { value: 'top-level', label: 'top-level' }] })),
                   h('label', { className: 'ptcPlusBindingField' },
                     h('span', { className: 'ptcPlusBindingFieldLabel' }, t('bindings.symbols')),
                     h('input', {
@@ -502,7 +501,7 @@ export function createUserBindingsWorkbench(React, deps) {
     const trapFocus = event => {
       if (event.key !== 'Tab') return
       const controls = [...content.current.querySelectorAll('button:not(:disabled),input:not(:disabled),textarea:not(:disabled),select:not(:disabled),[contenteditable=true],summary')]
-        .filter(element => element.getClientRects().length > 0)
+        .filter(element => element.getClientRects().length > 0 && !element.closest('[aria-hidden=true],[hidden]'))
       const first = controls[0]
       const last = controls.at(-1)
       if ((event.shiftKey && document.activeElement === first) || (!event.shiftKey && document.activeElement === last)) {

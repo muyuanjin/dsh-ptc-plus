@@ -1,179 +1,41 @@
-# Register Edit And Run As A Truthful Composite Tool
+# Execute Rejected-Cell Edits Through The PTC Program SDK
 
-A small correction to a long `run_code` cell should not require the model to emit the complete
-source again. This applies both to cells rejected by the runtime and to cells that completed but did
-not achieve the intended result. PTC Plus therefore registers `edit_run_code` as a real DSH tool:
+A small correction to a long `run_code` cell should require only a delta. The official PTC presentation admits `run_code` as its sole top-level tool and exposes registered native tools inside its program SDK. PTC Plus registers `edit_run_code` in the agent scope before the first prompt assembly. Models call it through `tools.edit_run_code` in any ordinary JavaScript expression inside a `run_code` cell; aliases and computed member access retain the same meaning. The plugin does not use the unpublished `both` presentation or add a top-level editor schema.
 
 ```ts
-edit_run_code({
-  edits: Array<{ old_string: string; new_string: string }>,
-  expected_target_call_seq?: number
-})
-
-edit_run_code({
-  regex_edits: Array<{
-    pattern: string
-    flags: string
-    replacement: string
-    expected_matches: number
-  }>,
-  expected_target_call_seq?: number
+await tools.edit_run_code({
+  edits: [{ old_string: 'value >= 8', new_string: 'value >= 10' }],
+  expected_target_call_seq: 12, // optional stale-target guard
 })
 ```
 
 ## Public integration status
 
-The required direct surface is `[run_code, edit_run_code]`, preserving each original name, JSON arguments and call identity through Host validation, policy and result settlement. The current published public ToolPresentationMode contains only `native` and `ptc`. This requirement is not fully implementable through that public composition: native mode admits the registered editor but does not supply reserved `run_code`; PTC mode supplies `run_code` and rejects a top-level editor before policy or around-execute hooks. Registering or shadowing `run_code` is prohibited in either mode. Projection of an additional schema does not grant execution admission.
+DSH's published `ptc` mode owns the top-level `run_code` transport and the nested tool scheduler. The editor's registration is agent-scoped, and the official SDK includes its schema before the first model request. Nested dispatch passes the original tool name and JSON arguments through DSH validation, policy, scheduling, cancellation and result projection. The same configured agent has a stable `run_code`-only direct schema across requests. The first and later prompt assemblies must expose the same editor SDK contract.
 
-The implementation's scoped `tools.presentAs('both')` is outside that public contract. The Host's current lack of runtime rejection for this value is not supported composition, and an empty `tools:ptc-only` section does not prove a public third mode. Existing fixture success and source-level editor semantics therefore do not establish current packed-Host compatibility. This boundary remains pending; the plugin must not be published or described as fully compatible on the strength of that path.
+## Edit and settlement
 
-The needed upstream surface is an agent-scoped direct admission set that includes the reserved PTC transport and the registered editor, while retaining the complete nested SDK and the Host's original validation, policy, scheduling and result owners. One declared composition must own both wire presentation and direct admission. Public ordered schema projection alone, or a later execution hook, cannot substitute for admission.
+The editor captures the most recent eligible cell at the persisted `tool/ptc-dispatch-start` event. It identifies that event by root, parent and sub-call IDs, exact arguments and sequence. Intervening native calls do not change the target. An optional `expected_target_call_seq` must match the captured target. An unavailable target, invalid edit or mismatched guard returns `{ accepted: false, scheduled: false, reason }`; no derived source executes.
 
-**Native mode plus a synthetic run_code schema.** Native execution has no reserved transport definition, and registration is forbidden; the model-visible schema cannot create it.
+The editor accepts exactly one `edits` or `regex_edits` array. Exact edits require unique nonempty `old_string` matches. Each regex edit requires `pattern`, `flags`, `replacement` and `expected_matches`; replacement uses JavaScript `$1`, `$<name>` and `$$` syntax. At most 16 nonoverlapping edits are applied atomically. `internal/rejected-cell-editor.js` owns matching, expansion and CPU/source budgets.
 
-**PTC mode plus the editor schema.** The editor is collapsed before public policy and execution hooks, so these hooks cannot admit it.
+For an accepted edit, the nested SDK call returns `{ accepted: true, scheduled: true, target_call_seq }`. This is an acceptance receipt, not the revised computation's value or an idempotence promise. The current outer cell continues with its existing state and original return value or error. After that cell releases its worker, but before its top-level `run_code` result settles, PTC Plus dispatches the complete revised source through DSH's real `tools.execute({ name: 'run_code', ... })` pipeline. The root result retains that outer canonical value or error and forwards the derived result's Host-rendered content, images, additional contexts and, for a successful root result, turn-conclusion flag. The definition-owned `projectContent` callback is installed before dispatch starts, so derived content reaches root post-policy; `exec.deferContext` and `exec.concludeTurn` carry contexts and the successful root conclusion. Root policy may replace or block that presentation. The runtime bridge preserves existing callbacks and their property descriptors, restores only its own installed callbacks on disposal, and unwinds partial installation on failure. The next cell sees the revised bindings. A nested receipt rejected or changed before acceptance prevents dispatch; cancellation or disposal before dispatch does likewise. Removal of the final root metadata after a derived run has executed invalidates recovery evidence but cannot undo its effects.
 
-**Use the undeclared both mode.** Its incidental JavaScript behavior is outside the published extension contract and cannot ground current compatibility.
+The model-authored outer `run_code` remains the sole top-level call in assistant history. Official nested events retain the editor's real name, arguments and settled receipt. The plugin records its actual derived `tools.execute` call through public `Session.append`: the start carries losslessly detached arguments, a distinct sub-call identity, the original root ID and that still-running root's ID as its parent. The actual execution uses the root's real token as `parent`. Its settled event records the canonical error status and metadata; rendered content passes through the public scoped `tools/ptc-dispatch-log` waterfall with the real root execution. A throwing log projector falls back to the original settled content. These records describe actual executions and do not invent an assistant call, parent or completion. Recovery proves exactly one start and one later settlement for each editor and actual derived sub-call identity within its root-call/final-result window. A metadata start sequence alone cannot resolve duplicate dispatch identities; settled ID reuse outside that window remains independent.
 
-**Rename the editor, dispatch it as a nested call, or replace Host dispatch.** These approaches abandon original direct call identity or DSH authority. They do not satisfy the required contract and are not accepted substitutes.
+If the public Host never invokes `presentationMeta` for this owned nested success, the bridge may capture its canonical frozen value and tentative settlement through the read-only pre-policy `projectContent` callback. Private evidence is admissible only for the exact execution token, session, parent and continuation, with no initial plugin journal, no subsequent projector call, unchanged base metadata, final success and the same canonical value object. Host value replacement, block/error, missing capture or removal of already projected metadata rejects it. The sidecar supplies only the plugin-owned actual derived settlement and root relation; it never changes the Host result or restores pre-policy content. Final root metadata remains required. The proof comes from public canonical value identity and the before/after policy callbacks, without a Host version branch.
 
-The internal editing, compilation and journal contracts below remain required and independently testable. Revisit this integration boundary when the official public admission surface changes; no literal release identity selects runtime behavior.
 
-`edit_run_code` targets the most recent editable cell in the current turn when its persisted
-`tool/call` event is recorded. Execution resolves that snapshot through the event sequence rather
-than reading the latest target when the handler begins. Intervening inspection tools do not erase
-the target, and later settlements or handler scheduling do not retarget the in-flight edit. A call
-that could otherwise edit a cell but lacks a unique persisted event is rejected instead of using
-the latest target. The derived cell enters replay history at the outer `tool/result` event, so a
-delayed handler is recovered after every cell that settled before it executed. A successful edit
-creates a new derived cell, which
-becomes the next editable source, so successive small adjustments do not require a full resend.
-Invalid edit arguments return `{ edited: false, reason }` and leave the target unchanged.
-Process-local target claims distinguish executing and settled derived dispatches. A rejection,
-cancellation, or result without a valid PTC journal releases the claim because no owned fact proves
-that the derived cell entered the runtime. A journaled dispatch retains the claim through outer
-result projection, closing the interval before the session log exposes the derived edit as the new
-target. If final policy removes that private metadata, `tools/result` releases the claim. The
-session-log projection captures the eligible target at the edit call event and accepts a derived
-source only when its target sequence matches that snapshot and its journal is valid and non-noop,
-so live and recovered eligibility derive from the same persisted relation.
+The root result's private `dshPtcPlusPostEdit` evidence keeps the editor cause in `startSeq` and the actual derived execution in `executionStartSeq`, alongside the derived source, journal and target sequence. Recovery validates both start/settle pairs, the root journal's accepted editor arguments and receipt, the canonical derived outcome and the transform against the captured target. It folds the derived journal after the root cell using the actual execution-start sequence. Model-visible provenance comes from the root source and the original target's source; raw dispatch records alone do not prove it. Losing either source or a required execution fact contracts the derived binding frontier. A failed start append prevents dispatch; a failed settlement append invalidates future recovery evidence without repeating or undoing an execution. Cold replay uses recorded nested results and does not redispatch the editor or repeat external effects. A successfully published derived source becomes the next editable target through its own execution-start sequence.
 
-The public schema is one closed object with optional `edits`, `regex_edits`, and
-`expected_target_call_seq` properties, avoiding duplicated object alternatives in the provider
-prompt. Runtime validation still requires exactly one of `edits` or `regex_edits`, plus an optional
-non-negative `expected_target_call_seq` precondition. The precondition must equal the call sequence of the target
-captured for the persisted edit event; a mismatch returns an unedited result before derived
-dispatch. Ordinary model-authored edits omit it and retain latest-target selection. Exact edits
-contain at most 16 items; each
-non-empty `old_string` must differ from `new_string` and occur exactly once in the target. Regular
-expression edits also contain at most 16 items, use unique `gimsu` flags, reject zero-length matches,
-and require an exact `expected_matches` count. All ranges resolve against the original target and
-must not overlap. Search work, match count, capture records, replacement templates, expansion,
-materialized replacement text, final source size, and regular-expression CPU time have fixed
-budgets.
+The derived source itself may contain an editor call. Such a call does not gain a fresh root edit authority during the derived execution: it receives an unavailable receipt rather than recursively scheduling another derived run. Each model-authored root call can accept at most one deferred edit. This bounds recursion and prevents a derived call from resetting the root edit lifecycle.
 
-`internal/rejected-cell-editor.js` owns the schema, validation, range collection, replacement
-semantics, budgets, and atomic linear assembly. The registered tool passes the materialized source
-to DSH's public `tools.execute()` as a derived `run_code`. DSH remains the owner of validation,
-authorization, scheduling, cancellation, execution, and result projection.
+## Provider and diagnostic handling
 
-The session history preserves the model-authored call:
+The stream adapter only repairs an exact invalid-tool-JSON `MALFORMED_RESPONSE`. A trusted complete `run_code` block may lose one extra final `}` when the resulting object passes its live schema. Otherwise complete consistent calls keep their identity and arguments for DSH validation. Incomplete or inconsistent buffered tool material becomes a deterministic schema-rejected `run_code` call, allowing the model another step without executing partial code. This rule never promotes an undeclared top-level `edit_run_code` into an executable call.
 
-```text
-assistant/tool-call: edit_run_code(delta)
-tool/result:          { edited: true, value?, error?, logs }
-```
-
-The complete derived source, its journal, and its target call sequence are stored only in private tool-result metadata, including
-when the derived cell fails after entering the runtime. Cold
-recovery folds that explicitly marked derived run into the durable REPL history. The source is not
-copied into the model-visible edit result. Valid assistant stream chunks for the two declared
-transports pass through unchanged.
-Consequently the UI and later model requests do not attribute a generated `run_code` call to the
-model.
-
-The stream owner handles one bounded provider protocol failure before DSH assembles the assistant
-message. It buffers tool-call material until the terminal event. If the response reports the exact
-invalid-tool-JSON `MALFORMED_RESPONSE` as a terminal chunk or stream exception, it changes that
-terminal reason to `tool-calls`.
-DSH's existing Agent Loop
-then preserves an unparseable argument as a string and routes it through ordinary tool validation,
-execution, and result recording, after which the model receives another step. A malformed tool argument therefore
-cannot become a turn-ending provider failure merely because this adapter parses it earlier than the
-Agent Loop.
-
-The stream owner preserves calls only when the buffered body consists entirely of
-tool-call-specific framing plus at most one `usage` event. When that trusted body contains exactly
-one complete, internally consistent declared `run_code` or `edit_run_code` block, the stream owner
-first considers one correction: delete exactly one final `}`. The block index, call ID, name,
-concatenated deltas, and final arguments must agree, and the candidate must parse as an object
-accepted by that request's live direct-tool schema. A successful correction changes the final delta
-and final block arguments before the same `tool-calls` settlement. Without that proof, trusted
-internally consistent complete blocks retain their original identity and argument bytes for the
-ordinary tool-error path. The owner re-emits those calls with canonical
-`block-start`, full-argument delta, and `block-end` framing so provider variants tolerated by the
-assembler also satisfy DSH's stream invariant. A final `block-end` is canonical even when the
-provider emitted no deltas; when deltas exist, their supplied identity fields and accumulated
-arguments must agree with it. An already visible open text or reasoning block is closed from its
-accumulated content before the synthetic call. If any tool block is incomplete or inconsistent, or no tool block was
-emitted, more than one usage event appears, or any other event occurs in the buffered body, the owner
-removes unsafe block and unknown events, retains at most the first protocol-valid `usage`, and emits
-one deterministic `run_code` call with an argument string that cannot parse as a JSON object. That
-call can only fail DSH's ordinary schema
-validation, so no untrusted partial call executes and the model still receives another step. Valid streams and every
-other provider failure pass through unchanged. The rule does not insert missing delimiters, search
-arbitrary edits, reinterpret native calls, or retry effects.
-
-No edit-specific runtime context is emitted. The truthful call/result pair already carries the
-operation and outcome; changing an aggregate runtime-context snapshot merely to restate that fact
-would repeat unrelated policy context. Rewrite feedback and unrelated recovery tips retain their
-own independently justified lifecycles.
-
-A live `PTC-C001` at the exact source EOF may carry a validated one-call repair. The analyzer tries
-only the 12 suffixes of one or two closing tokens drawn from `}`, `)`, and `]` against the same
-binding catalog, reserved bindings, redeclaration mode, rewrite policy, and import state as the
-rejected cell. Exactly one candidate across both lengths must complete preparation without a binding
-collision, and the existing exact editor must be able to express it from a bounded unique source suffix. The rejected call must also have a
-persistent event sequence. The diagnostic then renders those already-validated
-`edit_run_code({ edits: [...], expected_target_call_seq })` arguments on one help line. At dispatch,
-the precondition binds the proof to that rejected cell even if another matching source has become
-editable. This evidence takes precedence over the generic source-length recommendation, but remains
-conditional on
-`edit_run_code` being declared for that request. Zero or multiple candidates, non-EOF errors,
-editor budget failures, missing target identity, and candidates rejected later in preparation
-retain the generic guidance.
-The plugin never applies this repair itself: syntax/preflight acceptance does not prove model
-intent, and explicit edit dispatch preserves DSH authority and truthful history.
-
-## Alternatives considered
-
-**Rewrite `edit_run_code` to `run_code` before persistence.** This reuses DSH's default `run_code`-only
-transport, but falsifies the model-authored history, duplicates complete source in model context,
-and requires later prose to reinterpret the stored call. It is rejected.
-
-**Return the materialized source in the edit result.** This makes the derivation visible, but sends
-the same large source back into the next model request. Private derived metadata gives recovery the
-required bytes without paying that context cost.
-
-**Limit editing to pre-execution failures.** That avoids retrying an effectful failed cell, but it
-also prevents the common case where execution succeeded and only the intended result needs a small
-adjustment. The tool edits the recorded source and performs a new explicit execution; it does not
-claim that the earlier execution was undone or idempotent.
-
-**Forbid all stream normalization.** A valid declared call and an invalid
-out-of-surface call are different protocol facts. Rewriting a real `edit_run_code` destroys a valid
-identity; normalizing a live-schema-proven native miscall to the declared `run_code` transport gives
-an otherwise invalid call its executable representation. Native-call canonicalization therefore
-remains available. The bounded malformed-input correction likewise retains a declared call's identity.
-Fallback settlement preserves arguments for trusted complete internally consistent blocks. Unsafe,
-partial, or mixed buffered material is replaced by a validation-rejected `run_code` call only after
-the provider itself reports the exact terminal protocol failure.
+At exact source EOF, a `PTC-C001` diagnostic may prove one closing-delimiter correction using the current preparation context and editor budget. It reports `tools.edit_run_code({ edits: [...], expected_target_call_seq })` arguments for use inside a new `run_code` cell. The correction is advisory: the model still selects whether to rerun a possibly effectful target. A failed or cancelled historical effect is neither undone nor safe to retry merely because the edit is syntactically valid.
 
 ## Consequences
 
-Tool name, schema, and order remain stable regardless of target availability. `edit_run_code` is a
-normal provider tool call, not a synthetic wire alias. The derived run is auditable and replayable,
-but is explicitly host-generated and excluded from model-visible history. This adds no editor DSL,
-authority layer, or retry guarantee; it only avoids re-emitting source already owned by the session.
-Provable top-level native-call repair remains a separate, intentionally history-normalizing transport
-feature.
+DSH retains authority over tools and the top-level PTC transport. The editor receipt is intentionally distinct from the later derived computation, and only the latter may establish revised bindings. The private evidence links source, nested dispatch, journal and model-visible ancestry without duplicating the full revised source in the model request.

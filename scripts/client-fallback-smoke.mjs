@@ -15,10 +15,12 @@ const allCases = [
   ...variants.map(item => ({ family: 'single-disabled', ...item })),
   ...[{ width: 390, height: 600 }, { width: 320, height: 420 }, { width: 320, height: 240 }]
     .flatMap(viewport => variants.map(item => ({ family: 'catalog', viewport, ...item }))),
-  ...[{ width: 390, height: 600 }, { width: 320, height: 240 }]
+  ...[{ width: 390, height: 600 }, { width: 768, height: 720 }, { width: 1440, height: 900 }, { width: 320, height: 240 }]
     .flatMap(viewport => variants.map(item => ({ family: 'session-capabilities', viewport, ...item }))),
   ...[{ width: 390, height: 600 }, { width: 320, height: 420 }]
     .flatMap(viewport => ['light', 'dark'].map(theme => ({ family: 'dialogs', viewport, theme }))),
+  ...[{ width: 390, height: 600 }, { width: 320, height: 420 }]
+    .flatMap(viewport => ['light', 'dark'].map(theme => ({ family: 'dialogs', viewport, theme, native: true }))),
   ...[240, 420, 600].flatMap(height => variants.map(item => ({ family: 'settings-dialog', viewport: { width: 1440, height }, ...item }))),
   ...[320, 390].flatMap(width => variants.filter(item => item.native).map(item => ({ family: 'settings-dialog', viewport: { width, height: 240 }, ...item }))),
   ...[320, 390, 1440].flatMap(width => ['en', 'zh'].flatMap(locale =>
@@ -52,12 +54,14 @@ if (values.list) {
     import {createAuthoringView} from './src/client-authoring-view.js';
     import {createUserBindingsWorkbench} from './src/client-workbench.js';
     import {createPtcSettingsView} from './src/client-settings-view.js';
-    import {createCapabilityRefreshView,createSessionCapabilityControlsView} from './src/client-capabilities-view.js';
+    import {createCapabilityCommandCard,createCapabilityRefreshView,createSessionCapabilityControlsView} from './src/client-capabilities-view.js';
+    import {capabilityCommandReceipt} from './internal/capability-command-receipt.js';
     import {SETTINGS_COPY} from './src/client-copy.js';
     import {capabilityProfileConfiguration} from './internal/runtime-config.js';
     const h=React.createElement;
     installStyles();
-    const {Menu,Modal}=resolvePrimitives({...window.nativeMenu?{Menu:NativeMenu}:{},...window.nativeSettingsModal?{Modal:NativeModal}:{}},React,createPortal);
+    const {Menu,Modal,Select}=resolvePrimitives({...window.nativeMenu?{Menu:NativeMenu}:{},...window.nativeSettingsModal?{Modal:NativeModal}:{}},React,createPortal);
+    window.nativeModalUsed=Modal===NativeModal;
     let entries=Array.from({length:window.largeMenu?48:8},(_,index)=>({id:'entry-'+index,name:'Entry '+index,
       scope:'namespace',symbols:['value'],purpose:'Stored input',source:'export const value=1',enabled:!window.largeMenu||index%3===0}));
     if(window.largeMenu)entries[0]={...entries[0],name:'Entry 0 '+('long binding name '.repeat(20)),
@@ -83,7 +87,7 @@ if (values.list) {
     const ActionButton=createActionButton(React);
     const IconButton=({icon,label,...props})=>h('button',{...props,'aria-label':label},label);
     const workbench=createUserBindingsWorkbench(React,{TypeScriptEditor:()=>null,BindingConsole:()=>null,
-      IconButton,ActionButton,Modal,catalogOwner,icons:{refresh:Icon,plus:Icon,close:Icon,search:Icon,chevron:Icon,
+      IconButton,ActionButton,Modal,Select,catalogOwner,icons:{refresh:Icon,plus:Icon,close:Icon,search:Icon,chevron:Icon,
         edit:Icon,check:Icon,trash:Icon}});
     window.refreshCalls=[];
     const CapabilityRefreshButton=createCapabilityRefreshView(React,{
@@ -91,18 +95,36 @@ if (values.list) {
       run:async(sessionId,input,signal)=>{window.refreshCalls.push({sessionId,input});
         signal.throwIfAborted();return {kind:'success',text:'Host accepted refresh'};}
     });
+    window.capabilityEntries=[...Array.from({length:80},(_,index)=>({id:'tools.probe'+index,name:'probe'+index,category:'tool',
+      description:'A capability with its own choices.',source:{kind:'host'},saved:'automatic',sessionSourceSelection:'automatic',temporary:'inherit',effective:'on-demand'})),
+      {id:'skills.design',name:'design',category:'skill',source:{kind:'skill',bucket:'project-dsh'},saved:'automatic',sessionSourceSelection:'automatic',temporary:'inherit',effective:'on-demand'},
+      {id:'mcpServers.docs',name:'docs',category:'server',source:{kind:'mcp',server:'docs'},saved:'automatic',sessionSourceSelection:'automatic',temporary:'inherit',effective:'enabled'},
+      {id:'tools.mcp__docs__search',name:'docs search',category:'tool',source:{kind:'mcp',server:'docs'},saved:'automatic',sessionSourceSelection:'automatic',temporary:'inherit',effective:'on-demand'}];
     const SessionCapabilityControls=createSessionCapabilityControlsView(React,{
-      source:()=>({getSnapshot:()=>true,subscribe:()=>()=>{}}),
-      run:async(sessionId,input,signal)=>{
-        signal.throwIfAborted();window.sessionCapabilityCalls.push({sessionId,input});
-        return {kind:'success',text:input==='list all'?JSON.stringify({schema:'ptc-capability-catalog/v1',
-          entries:Array.from({length:20},(_,index)=>({id:'tools.probe'+index,category:'tool',
-            description:'A capability with its own choices.',source:{kind:'host'},saved:'automatic',temporary:'inherit',effective:'on-demand'}))}):'Host accepted session choice'};
+      commands:{source:()=>({getSnapshot:()=>true,subscribe:()=>()=>{}}),
+        run:async(sessionId,input,signal)=>{
+          signal.throwIfAborted();window.sessionCapabilityCalls.push({sessionId,input});
+          const [,scope,id,choice]=input.split(' ');
+          const entry=window.capabilityEntries.find(entry=>entry.id===decodeURIComponent(id));
+          entry[scope==='session'?'temporary':'saved']=choice;
+          return {kind:'success',text:capabilityCommandReceipt('recorded',sessionId)};
+        }},Modal,Select,
+      inspectSessionCatalog:async(sessionId,signal)=>{
+        signal.throwIfAborted();return structuredClone(window.capabilityEntries);
       }
     });
+    const CapabilityCommandCard=createCapabilityCommandCard(React);
+    window.showCapabilityReceipt=()=>{
+      const composer=document.querySelector('#composer');
+      composer.style.cssText='position:relative;width:min(760px,calc(100vw - 32px));height:auto;margin:48px auto';
+      root.render(h(CapabilityCommandCard,{node:{name:'capabilities',args:'refresh',
+        outcome:{kind:'success',text:capabilityCommandReceipt('recorded','fallback-session')}},
+        t:(key,args={})=>Object.entries(args).reduce((text,[name,value])=>
+          text.replaceAll('{'+name+'}',String(value)),SETTINGS_COPY[window.menuLocale][key]??key)}));
+    };
     window.sessionCapabilityCalls=[];
     const {PTCPlusSettingsDialog,PTCPlusSettingsCard}=createPtcSettingsView(React,{ActionButton,
-      BindingsDialog:workbench.BindingsDialog,Modal,useWorkbenchController:workbench.useWorkbenchController,
+      BindingsDialog:workbench.BindingsDialog,Modal,Select,useWorkbenchController:workbench.useWorkbenchController,
       icons:{chevron:Icon},CapabilityRefreshButton,
       inspectCapabilityTargets:async()=>[{sessionId:'ptc-session'},{sessionId:'other-session'}],
       inspectCapabilityAllocation:async({sessionId,configuration})=>({sessionId,workspace:'G:/Project',configuration,
@@ -234,6 +256,10 @@ if (values.list) {
   await mkdir('artifacts/button-styles', { recursive: true })
   console.log(`Fallback visual: ${cases.length}/${availableCases.length} cases, ${concurrency} isolated browsers`)
   await runBrowserCases(cases, async (page, { family, width, theme, native, locale, viewport }) => {
+    const chooseSelect = async (root, label, option) => {
+      await root.getByRole('combobox', { name: label, exact: true }).click()
+      await page.getByRole('option', { name: option, exact: true }).click()
+    }
       if (family === 'dock') {
         await page.goto('about:blank')
         await page.setViewportSize({ width, height: 900 })
@@ -524,8 +550,8 @@ if (values.list) {
       if (family === 'session-capabilities') {
         await page.goto('about:blank')
         await page.setViewportSize(viewport)
-        await page.setContent('<div id="composer" style="position:fixed;bottom:16px;left:16px;width:calc(100vw - 32px);height:60px"></div>')
-        await page.evaluate(({ native, locale }) => { window.nativeMenu = native; window.menuLocale = locale }, { native, locale })
+        await page.setContent('<style>body{font:13px/1.5 system-ui,sans-serif}</style><div id="composer" style="position:fixed;bottom:16px;left:16px;width:calc(100vw - 32px);height:60px"></div>')
+        await page.evaluate(({ native, locale }) => { window.nativeMenu = native; window.nativeSettingsModal = native; window.menuLocale = locale }, { native, locale })
         for (const output of fixture.outputFiles) {
           if (output.path.endsWith('.css')) await page.addStyleTag({ content: output.text })
           else await page.addScriptTag({ content: output.text })
@@ -535,34 +561,109 @@ if (values.list) {
         const menu = page.getByRole('menu')
         const toggle = menu.getByRole('menuitem', { name: SETTINGS_COPY[locale]['capabilities.quick.title'], exact: true })
         await toggle.click()
-        const items = menu.locator('.ptcPlusSessionCapabilityItem')
+        const panel = page.getByRole('dialog', { name: SETTINGS_COPY[locale]['capabilities.quick.modalTitle'] })
+        assert.equal(await page.evaluate(() => window.nativeModalUsed), native, 'fixture must resolve the requested Modal implementation')
+        assert.equal(await panel.evaluate(element => element.classList.contains('ptcPlusFallbackModal')), !native,
+          'native workbench must render the official Modal DOM')
+        assert.equal(await panel.evaluate(element => element.parentElement.parentElement === document.body), true,
+          'workbench Modal must be portaled outside the composer')
+        const items = panel.locator('.ptcPlusSessionCapabilityRow')
         await items.first().waitFor()
-        const panel = menu.locator('.ptcPlusSessionCapabilityPanel')
-        assert.equal(await items.count(), 20)
+        assert.equal(await items.count(), 83)
         const geometry = await panel.evaluate(element => {
-          const rect = element.getBoundingClientRect(), parent = element.closest('.ptcPlusMenuUtilities').getBoundingClientRect()
-          const owner = element.closest('.ptcPlusMenuActions')
-          return { fullWidth: rect.width >= parent.width - 10, scrollable: owner.scrollHeight > owner.clientHeight,
-            overflowX: owner.scrollWidth > owner.clientWidth + 1 }
+          const rect = element.getBoundingClientRect(), list = element.querySelector('.ptcPlusSessionCapabilityList')
+          return { bounded: rect.left >= 0 && rect.right <= innerWidth && rect.top >= 0 && rect.bottom <= innerHeight,
+            scrollable: list.scrollHeight > list.clientHeight,
+            overflowX: element.scrollWidth > element.clientWidth + 1 }
         })
-        assert.equal(geometry.fullWidth, true, 'expanded session controls must span the menu')
-        assert.equal(geometry.scrollable, true, 'session controls must share the bounded menu scroll owner')
-        assert.equal(geometry.overflowX, false, 'session controls must not overflow horizontally')
-        // Playwright cannot click a clipped action: these exercise first and last
-        // entries through the actual component and command boundary fixture.
-        for (const index of [0, 19]) {
-          const item = items.nth(index)
-          await item.locator('select').selectOption('closed')
-          await item.getByRole('button', { name: SETTINGS_COPY[locale]['capabilities.quick.apply'], exact: true }).click()
+        assert.equal(geometry.bounded, true, 'session workbench must stay in the viewport')
+        assert.equal(geometry.scrollable, true, 'session catalog must scroll independently')
+        assert.equal(geometry.overflowX, false, `session workbench must not overflow horizontally: ${JSON.stringify(await panel.evaluate(element => {
+          const rect = element.getBoundingClientRect()
+          return { width: element.clientWidth, scroll: element.scrollWidth, rectWidth: rect.width, children: [...element.children].map(child => ({ name: child.className, width: child.clientWidth, scroll: child.scrollWidth })) }
+        }))}`)
+        await page.screenshot({ path: `artifacts/button-styles/session-capabilities-${viewport.width}-${viewport.height}-${native ? 'native' : 'fallback'}-${locale}-${theme}.png` })
+        assert.equal(await items.first().evaluate(element => {
+          const row = element.getBoundingClientRect(), clip = element.closest('.ptcPlusSessionCapabilityList').getBoundingClientRect()
+          return row.top >= clip.top && row.bottom <= clip.bottom
+        }), true, `${viewport.width}x${viewport.height}/${native ? 'native' : 'fallback'}/${locale}/${theme}: at least one complete catalog row must be readable ${JSON.stringify(await items.first().evaluate(element => {
+          const row = element.getBoundingClientRect(), list = element.closest('.ptcPlusSessionCapabilityList'), clip = list.getBoundingClientRect()
+          return { row: { top: row.top, bottom: row.bottom }, clip: { top: clip.top, bottom: clip.bottom }, sections: [...element.closest('[role=dialog]').children].map(child => ({ name: child.className, height: child.getBoundingClientRect().height })) }
+        }))}`)
+        const scope = panel.getByRole('combobox', { name: SETTINGS_COPY[locale]['capabilities.quick.scope'] })
+        await scope.click()
+        const popup = page.getByRole('listbox')
+        await page.getByRole('option', { name: SETTINGS_COPY[locale]['capabilities.quick.global'] }).waitFor()
+        assert.equal(await popup.evaluate(element => element.closest('[role=dialog]') === null), true,
+          'Select must use its own portal above the native or fallback Modal')
+        assert.equal(await popup.evaluate(element => {
+          const rect = element.getBoundingClientRect()
+          return rect.left >= 0 && rect.right <= innerWidth && rect.top >= 0 && rect.bottom <= innerHeight
+        }), true, 'Select popup must stay in the viewport')
+        await page.screenshot({ path: `artifacts/button-styles/session-capabilities-open-select-${viewport.width}-${viewport.height}-${native ? 'native' : 'fallback'}-${locale}-${theme}.png` })
+        await page.keyboard.press('Escape')
+        assert.equal(await panel.isVisible(), true, 'first Escape closes only the Select popup')
+        assert.equal(await popup.count(), 0, 'Escape must dismiss the Select listbox')
+        await page.waitForFunction(label => document.activeElement?.getAttribute('role') === 'combobox'
+          && document.activeElement.getAttribute('aria-label') === label, SETTINGS_COPY[locale]['capabilities.quick.scope'])
+        assert.equal(await scope.evaluate(element => document.activeElement === element), true,
+          'Select dismissal returns focus to its trigger')
+        await scope.focus()
+        await page.keyboard.press('ArrowDown')
+        await popup.waitFor()
+        await page.keyboard.press('End')
+        await page.waitForFunction(label => document.activeElement?.getAttribute('role') === 'option'
+          && document.activeElement.textContent.includes(label), SETTINGS_COPY[locale]['capabilities.quick.global'])
+        await page.keyboard.press('Enter')
+        assert.equal(await scope.locator('span').first().innerText(), SETTINGS_COPY[locale]['capabilities.quick.global'])
+        await page.waitForFunction(label => document.activeElement?.getAttribute('role') === 'combobox'
+          && document.activeElement.getAttribute('aria-label') === label, SETTINGS_COPY[locale]['capabilities.quick.scope'])
+        await page.keyboard.press('ArrowDown')
+        await popup.waitFor()
+        await page.keyboard.press('Home')
+        await page.waitForFunction(label => document.activeElement?.getAttribute('role') === 'option'
+          && document.activeElement.textContent.includes(label), SETTINGS_COPY[locale]['capabilities.quick.session'])
+        await page.keyboard.press('Enter')
+        assert.equal(await scope.locator('span').first().innerText(), SETTINGS_COPY[locale]['capabilities.quick.session'])
+        await page.waitForFunction(label => document.activeElement?.getAttribute('role') === 'combobox'
+          && document.activeElement.getAttribute('aria-label') === label, SETTINGS_COPY[locale]['capabilities.quick.scope'])
+        await page.keyboard.press('Tab')
+        assert.equal(await panel.getByRole('searchbox').evaluate(element => document.activeElement === element), true,
+          `Tab from the closed Select reaches the next workbench control: ${await page.evaluate(() => document.activeElement?.outerHTML)}`)
+        const kind = panel.getByRole('combobox', { name: SETTINGS_COPY[locale]['capabilities.quick.kind'], exact: true })
+        await kind.focus()
+        await page.keyboard.press('ArrowDown')
+        await popup.waitFor()
+        await page.keyboard.press('s')
+        await page.waitForFunction(() => document.activeElement?.getAttribute('role') === 'option'
+          && document.activeElement.textContent.startsWith('Skills'))
+        await page.keyboard.press('Enter')
+        assert.equal(await items.count(), 1, 'typeahead chooses the Skills filter')
+        await chooseSelect(panel, SETTINGS_COPY[locale]['capabilities.quick.kind'], SETTINGS_COPY[locale]['capabilities.quick.all'])
+        const controls = await assertVisualSurface(page, panel, 'session capability workbench')
+        assert.ok(controls.includes('select'), 'session workbench Select must receive visual coverage')
+        for (const index of [0, 79]) {
+          if (index !== 0 && viewport.width <= 650) await panel.getByRole('button', { name: SETTINGS_COPY[locale]['capabilities.quick.backToList'] }).click()
+          await panel.getByRole('button', { name: new RegExp(`probe${index}`) }).click()
+          await panel.getByRole('combobox', { name: SETTINGS_COPY[locale]['capabilities.quick.choice'] }).click()
+          await page.getByRole('option', { name: SETTINGS_COPY[locale]['capabilities.closed'] }).click()
+          await panel.getByRole('button', { name: SETTINGS_COPY[locale]['capabilities.quick.apply'], exact: true }).click()
           await page.waitForFunction(index => window.sessionCapabilityCalls.some(call => call.input === `set session tools.probe${index} closed`), index)
         }
-        await panel.getByRole('searchbox').fill('probe19')
+        if (viewport.width <= 650) await panel.getByRole('button', { name: SETTINGS_COPY[locale]['capabilities.quick.backToList'] }).click()
+        await panel.getByRole('searchbox').fill('probe79')
         assert.equal(await items.count(), 1)
-        await page.screenshot({ path: `artifacts/button-styles/session-capabilities-${viewport.width}-${viewport.height}-${native ? 'native' : 'fallback'}-${locale}-${theme}.png` })
-        await toggle.click()
-        await panel.waitFor({ state: 'hidden' })
-        await menu.locator('[data-binding-id]').first().waitFor()
         await page.keyboard.press('Escape')
+        await panel.waitFor({ state: 'hidden' })
+        assert.equal(await page.locator('.ptcPlusAuthorButton').evaluate(element => document.activeElement === element), true,
+          'closing the workbench returns focus to the sparkle button')
+        if (viewport.width === 1440 && locale === 'en' && theme === 'light' && native) {
+          await page.evaluate(() => window.showCapabilityReceipt())
+          const card = page.locator('.ptcPlusCapabilityReceipt')
+          await card.waitFor()
+          assert.equal(await card.locator('code').innerText(), '/capabilities refresh')
+          await card.screenshot({ path: 'artifacts/button-styles/capability-refresh-command-card-native-en-light.png' })
+        }
         await page.evaluate(() => window.disposeFixture())
         return
       }
@@ -738,19 +839,19 @@ if (values.list) {
         assert.equal(await dialog.locator('[aria-current=location]').count(), 1)
         assert.equal(await dialog.locator('[data-section=capabilities]').getAttribute('aria-current'), 'location')
         const before = await dialog.evaluate(element => ({ navTop: element.querySelector('.ptcPlusSettingsNav').getBoundingClientRect().top, document: scrollY }))
-        await workbench.getByLabel(labels['capabilities.types'], { exact: true }).selectOption('skill')
+        await chooseSelect(workbench, labels['capabilities.types'], labels['capabilities.type.skill'])
         assert.equal(await workbench.locator('.ptcPlusCapabilityItem').count(), 2)
-        await workbench.getByLabel(labels['capabilities.strategyFilter'], { exact: true }).selectOption('full')
+        await chooseSelect(workbench, labels['capabilities.strategyFilter'], labels['capabilities.full'])
         assert.equal(await workbench.locator('.ptcPlusCapabilityItem').count(), 1)
         assert.match(await workbench.locator('.ptcPlusCapabilityDetail').innerText(), /rightapi-image-generator/)
         assert.match(await workbench.locator('.ptcPlusCapabilityDetail').innerText(), new RegExp(labels['capabilities.pending']))
         await workbench.getByRole('button', { name: labels['capabilities.clear'], exact: true }).click()
-        await workbench.getByLabel(labels['capabilities.sort'], { exact: true }).selectOption('id')
+        await chooseSelect(workbench, labels['capabilities.sort'], labels['capabilities.sort.id'])
         await workbench.getByRole('button', { name: labels['capabilities.ascending'], exact: true }).click()
         const toolIds = await workbench.locator('.ptcPlusCapabilityList>section').first().locator('.ptcPlusCapabilityIdentity code').allTextContents()
         assert.deepEqual(toolIds, ['tools.read', 'tools.edit', 'tools.bash'])
         await workbench.getByRole('button', { name: labels['capabilities.descending'], exact: true }).click()
-        await workbench.getByLabel(labels['capabilities.availabilityFilter'], { exact: true }).selectOption('unavailable')
+        await chooseSelect(workbench, labels['capabilities.availabilityFilter'], labels['capabilities.availability.unavailable'])
         assert.equal(await workbench.locator('.ptcPlusCapabilityItem').count(), 1)
         await workbench.getByRole('button', { name: labels['capabilities.removeSaved'], exact: true }).click()
         await page.waitForFunction(() => window.settingsWrites.some(([key]) => key === 'capabilityOverrides'))
@@ -779,10 +880,12 @@ if (values.list) {
         await workbench.locator('.ptcPlusCapabilityList').evaluate(element => { element.scrollTop = 0 })
         await page.screenshot({ path: `artifacts/button-styles/capability-workbench-${width}-${theme}-${native ? 'native' : 'fallback'}-${locale}.png` })
         await workbench.getByRole('tab', { name: labels['capabilities.tab.plans'], exact: true }).click()
-        const target = dialog.getByLabel(labels['capabilities.targetSession'], { exact: true })
         const refresh = dialog.getByRole('button', { name: labels['capabilities.applySession'], exact: true })
         assert.equal(await refresh.isDisabled(), true)
-        await target.selectOption('other-session')
+        await chooseSelect(dialog, labels['capabilities.targetSession'], 'other-session')
+        // The session selector is below the tab row. Return to the section before
+        // checking tab changes, so Playwright's click scrolling is not the oracle.
+        await dialog.locator('[data-section=capabilities]').click()
         assert.equal(await workbench.locator('details.ptcPlusCapabilityFilters').count(), 0)
         assert.equal(await workbench.locator('.ptcPlusCapabilityTypes').count(), 0)
         await workbench.getByRole('tab', { name: labels['capabilities.tab.statistics'], exact: true }).click()
@@ -792,7 +895,11 @@ if (values.list) {
         await page.screenshot({ path: `artifacts/button-styles/capability-statistics-${width}-${theme}-${native ? 'native' : 'fallback'}-${locale}.png` })
         await workbench.getByRole('tab', { name: labels['capabilities.tab.budgets'], exact: true }).click()
         await workbench.getByRole('progressbar').waitFor()
-        assert.equal(await dialog.locator('[data-section=capabilities]').getAttribute('aria-current'), 'location')
+        assert.equal(await dialog.locator('[data-section=capabilities]').getAttribute('aria-current'), 'location',
+          `${label}: switching a capability tab changed section navigation ${JSON.stringify(await dialog.evaluate(element => {
+            const scroller = element.querySelector('.ptcPlusFields'), rect = scroller.getBoundingClientRect()
+            return { active: element.querySelector('[aria-current=location]')?.getAttribute('data-section'), scrollTop: scroller.scrollTop, height: scroller.clientHeight, scrollHeight: scroller.scrollHeight, top: rect.top, bottom: rect.bottom, groups: [...scroller.children].map(group => ({ name: group.getAttribute('aria-labelledby'), top: group.getBoundingClientRect().top, bottom: group.getBoundingClientRect().bottom })) }
+          }))}`)
         await assertVisualSurface(page, workbench.locator('[role=tabpanel]:not([hidden])'), `${label}: budget preview`)
         await page.screenshot({ path: `artifacts/button-styles/capability-budgets-${width}-${theme}-${native ? 'native' : 'fallback'}-${locale}.png` })
         await workbench.getByRole('tab', { name: labels['capabilities.tab.plans'], exact: true }).click()
@@ -863,13 +970,13 @@ if (values.list) {
           const word = document.createRange()
           word.setStart(capability.firstChild, 0)
           word.setEnd(capability.firstChild, capability.textContent.startsWith('Capabilities') ? 'Capabilities'.length : capability.textContent.length)
-          return { titleGap: toggle.left - title.right, toggleRightGap: element.querySelector('.ptcPlusSettingsTitleSwitch').getBoundingClientRect().right - toggle.right, capabilityWordLines: word.getClientRects().length,
+          return { titleGap: toggle.left - title.right, capabilityWordLines: word.getClientRects().length,
             captionSize: parseFloat(getComputedStyle(caption).fontSize),
             itemSize: parseFloat(getComputedStyle(row).fontSize), captionClickable: Boolean(caption.closest('button,a')),
             icons: element.querySelectorAll('.ptcPlusSettingsNavIcon').length,
             arrows: element.querySelectorAll('.ptcPlusSettingsNavArrow').length }
         })
-        assert.ok(hierarchy.titleGap >= 12 && Math.abs(hierarchy.toggleRightGap) <= 1, `${label}: title switch lost its approved right-hand placement`)
+        assert.ok(hierarchy.titleGap >= 7 && hierarchy.titleGap <= 10, `${label}: title switch is separated from PTC Plus`)
         if (viewport.width >= 860) assert.equal(hierarchy.capabilityWordLines, 1, `${label}: capability navigation word is split by its badge`)
         assert.ok(hierarchy.itemSize >= hierarchy.captionSize + 2 && !hierarchy.captionClickable
           && hierarchy.icons === 7 && hierarchy.arrows === 7, `${label}: module captions resemble navigation rows`)
@@ -985,6 +1092,12 @@ if (values.list) {
           document.querySelector('.ptcPlusSettingsNav').scrollTop = 0
         })
         await page.screenshot({ path: `artifacts/button-styles/settings-dialog-${viewport.width}x${viewport.height}-${native ? 'native' : 'fallback'}-${locale}-${theme}.png` })
+        if (viewport.width === 1440 && viewport.height >= 600) {
+          await dialog.locator('.ptcPlusSelectTrigger').first().click()
+          await page.getByRole('option').first().waitFor()
+          await page.screenshot({ path: `artifacts/button-styles/settings-dialog-open-select-${viewport.width}x${viewport.height}-${native ? 'native' : 'fallback'}-${locale}-${theme}.png` })
+          await page.keyboard.press('Escape')
+        }
         await page.evaluate(() => window.disposeFixture())
         return
       }
@@ -1057,6 +1170,12 @@ if (values.list) {
           await page.locator('#composer').evaluate(element => { element.style.width = '' })
         }
         await page.screenshot({ path: `artifacts/button-styles/settings-page-${width}-${theme}-${locale}.png` })
+        if (width === 1440) {
+          await settings.locator('.ptcPlusSelectTrigger').first().click()
+          await page.getByRole('option').first().waitFor()
+          await page.screenshot({ path: `artifacts/button-styles/settings-page-open-select-${width}-${theme}-${locale}.png` })
+          await page.keyboard.press('Escape')
+        }
         await page.evaluate(() => window.disposeFixture())
         return
       }
@@ -1065,13 +1184,18 @@ if (values.list) {
         await page.setViewportSize(viewport)
         await page.setContent(`<button id="background" style="position:fixed;top:10px;left:10px">Host control</button>
         <div id="composer" style="position:fixed;bottom:16px;left:16px;width:calc(100vw - 32px);height:60px;overflow:hidden;transform:translateZ(0)"></div>`)
+        await page.evaluate(native => { window.nativeMenu = native === true; window.nativeSettingsModal = native === true }, native)
+        for (const output of fixture.outputFiles) {
+          if (output.path.endsWith('.css')) await page.addStyleTag({ content: output.text })
+          else await page.addScriptTag({ content: output.text })
+        }
         await setFixtureTheme(page, theme)
-        await page.addScriptTag({ content: fixture.outputFiles[0].text })
         const trigger = page.locator('.ptcPlusAuthorButton')
         await trigger.click()
-        const menu = page.locator('.ptcPlusFallbackMenuList')
+        const menu = page.getByRole('menu')
         await menu.waitFor()
-        assert.equal(await menu.evaluate(element => element.parentElement === document.body), true)
+        assert.equal(await menu.evaluate(element => element.closest('#composer') === null), true, 'menu must escape the clipped composer')
+        if (native !== true) assert.equal(await menu.evaluate(element => element.parentElement === document.body), true)
         await menu.getByRole('menuitem').first().focus()
         await page.keyboard.press('End')
         assert.equal(await menu.getByRole('menuitem', { name: 'settings.menuEntry', exact: true }).evaluate(element => {
@@ -1091,11 +1215,15 @@ if (values.list) {
         await menu.getByRole('menuitem', { name: 'bindings.manage', exact: true }).click()
         const dialog = page.locator('.ptcPlusBindingsModal')
         await dialog.waitFor()
+        assert.equal(await page.evaluate(() => window.nativeModalUsed), native === true)
+        assert.equal(await dialog.evaluate(element => element.classList.contains('ptcPlusFallbackModal')), native !== true)
+        assert.equal(await dialog.locator('.ptcPlusBindings').count(), 1, 'Manage global bindings must render its complete workbench')
         await page.evaluate(() => { window.deferCatalog = true })
         await dialog.getByRole('button', { name: 'bindings.reload', exact: true }).click()
         await page.waitForFunction(() => document.querySelector('.ptcPlusBindings')?.getAttribute('aria-busy') === 'true')
         for (const control of await dialog.locator('button:disabled').all()) {
-          await assertControlVisual(control, { label: 'busy workbench control' })
+          if (!await control.isVisible()) continue
+          await assertControlVisual(control, { label: `busy workbench control/${await control.getAttribute('aria-label') ?? await control.innerText()}` })
         }
         await page.evaluate(() => { window.settleCatalog(); window.deferCatalog = false })
         await page.waitForFunction(() => document.querySelector('.ptcPlusBindings')?.getAttribute('aria-busy') === 'false')

@@ -9,51 +9,10 @@ import {
   fixture,
   ptcAgent,
   runRecordedCell,
+  runNestedEditCell,
 } from './plugin-fixture.js'
 import { RECOVERY_BOUNDARY_KEY } from '../internal/session-journal.js'
 import { recordedSessionEvents as sessionEvents } from './session-observation-fixture.js'
-
-function appendEditCall(events, callId, args) {
-  const argumentsValue = JSON.stringify(args)
-  const assistantSeq = events.length
-  events.push({
-    type: 'assistant/message',
-    seq: assistantSeq,
-    time: assistantSeq,
-    surfaceOp: 'append',
-    data: {
-      message: {
-        role: 'assistant',
-        content: [{
-          type: 'tool-call',
-          id: callId,
-          name: 'edit_run_code',
-          arguments: argumentsValue,
-        }],
-      },
-    },
-  })
-  const seq = events.length
-  events.push({
-    type: 'tool/call',
-    seq,
-    time: seq,
-    surfaceOp: 'append',
-    data: { callId, name: 'edit_run_code', arguments: argumentsValue },
-  })
-  return seq
-}
-
-function appendEditResult(events, callId, callSeq, meta) {
-  events.push({
-    type: 'tool/result',
-    seq: events.length,
-    time: events.length,
-    sourceEventSeqs: [callSeq],
-    surfaceOp: 'append',
-    data: { message: { source: { callId } }, meta },
-  })
-}
 
 test('rejects pending fixture calls whose exact source identity does not match', async (t) => {
   for (const [label, configure, requested] of [
@@ -101,12 +60,13 @@ test('shared recorded-cell owner appends through the official Session API', asyn
   ])
 })
 
-test('records direct cells but not edit-derived runs in an official session', async (t) => {
+test('records a nested editor and its derived result under the original official run_code call', async (t) => {
   const session = Session.create('official-session-recording')
   const state = fixture()
   t.after(() => state.dispose())
   const agent = ptcAgent(session.id, session)
   const signal = new AbortController().signal
+  session.append('turn/start', { turn: 1 })
   await state.assemble(
     { sections: [], contexts: [], variables: {}, tools: [state.runCodeDefinition] },
     { agent, scope: agent, signal },
@@ -119,57 +79,34 @@ test('records direct cells but not edit-derived runs in an official session', as
   })
   assert.equal(setup.value, 1)
   assert.deepEqual(sessionEvents(session).map(event => event.type), [
+    'turn/start',
     'assistant/message',
     'tool/call',
     'tool/result',
   ])
 
-  const args = { edits: [{ old_string: '= 1', new_string: '= 2' }] }
-  const argumentsValue = JSON.stringify(args)
-  session.append('assistant/message', {
-    turn: 0,
-    step: 1,
-    message: {
-      id: 'message-assistant-official-session-edit',
-      role: 'assistant',
-      source: { kind: 'model', provider: 'fixture', model: 'fixture' },
-      content: [{
-        type: 'tool-call',
-        id: 'official-session-edit',
-        name: 'edit_run_code',
-        arguments: argumentsValue,
-      }],
-    },
-  }, { surfaceOp: 'append' })
-  const editCall = session.append('tool/call', {
-    turn: 0,
-    step: 1,
-    callId: 'official-session-edit',
-    name: 'edit_run_code',
-    arguments: argumentsValue,
+  const edit = await runNestedEditCell(state, {
+    session, agent, callId: 'official-session-edit', signal,
+    code: 'return await tools.edit_run_code({ edits: [{ old_string: "= 1", new_string: "= 2" }] })',
   })
-  const edit = await state.ctx.tools.execute({
-    callId: 'official-session-edit',
-    name: 'edit_run_code',
-    arguments: args,
-    agent,
-    signal,
-  })
-  assert.equal(edit.isError, false, JSON.stringify(edit))
-  assert.equal(edit.value.edited, true)
+  assert.equal(edit.result.isError, false, JSON.stringify(edit.result))
+  assert.equal(edit.receipt.accepted, true, JSON.stringify(edit))
+  assert.equal(edit.receipt.scheduled, true)
+  assert.ok(edit.result.meta.dshPtcPlusPostEdit)
   assert.equal(
     sessionEvents(session).filter(event => event.type === 'tool/call' && event.data.name === 'run_code').length,
-    1,
+    2,
   )
-  session.append('tool/result', {
-    message: {
-      id: 'message-official-session-edit',
-      role: 'user',
-      source: { kind: 'tool', callId: 'official-session-edit' },
-      content: [{ type: 'tool-result', toolCallId: 'official-session-edit', content: [] }],
-    },
-    meta: edit.meta,
-  }, { surfaceOp: 'append', sourceEventSeqs: [editCall.seq] })
+  const events = sessionEvents(session)
+  assert.equal(events.filter(event => event.type === 'tool/call' && event.data.name === 'edit_run_code').length, 0)
+  const start = events.find(event => event.type === 'tool/ptc-dispatch-start'
+    && event.data.rootCallId === 'official-session-edit')
+  const settled = events.find(event => event.type === 'tool/ptc-dispatch'
+    && event.data.subCallId === start?.data.subCallId)
+  assert.equal(start?.data.name, 'edit_run_code')
+  assert.equal(settled?.data.isError, false)
+  assert.equal(events.findLast(event => event.type === 'tool/result')?.data.message.source.callId,
+    'official-session-edit')
 })
 
 test('production edit observation cannot execute after its submission is disposed', async t => {
@@ -183,16 +120,8 @@ test('production edit observation cannot execute after its submission is dispose
       { sections: [], contexts: [], variables: {}, tools: [state.runCodeDefinition] },
       { agent, scope: agent, signal },
     )
+    session.append('turn/start', { turn: 1 })
     await state.runDurable(session.id, 'let editOrphan = 1; return editOrphan', {}, { session })
-    const args = { edits: [{ old_string: '= 1', new_string: '= 2' }] }
-    const argumentsValue = JSON.stringify(args)
-    session.append('assistant/message', { turn: 0, step: 1, message: {
-      id: `edit-observation-message-${lifecycle}`, role: 'assistant',
-      source: { kind: 'model', provider: 'fixture', model: 'fixture' },
-      content: [{ type: 'tool-call', id: 'pending-edit', name: 'edit_run_code', arguments: argumentsValue }],
-    } }, { surfaceOp: 'append' })
-    session.append('tool/call', { turn: 0, step: 1, callId: 'pending-edit',
-      name: 'edit_run_code', arguments: argumentsValue })
     const original = state.ctx.sessionQuery.observeSession
     const reading = Promise.withResolvers()
     const suspended = Promise.withResolvers()
@@ -202,15 +131,17 @@ test('production edit observation cannot execute after its submission is dispose
       await suspended.promise
       return cut
     }
-    const pending = state.ctx.tools.execute({ callId: 'pending-edit', name: 'edit_run_code',
-      arguments: args, agent, signal })
+    const pending = runNestedEditCell(state, {
+      session, agent, callId: 'pending-edit', signal,
+      code: 'return await tools.edit_run_code({ edits: [{ old_string: "= 1", new_string: "= 2" }] })',
+    })
     await reading.promise
     if (lifecycle === 'session') await state.emit('session/disposed', session)
     else await state.dispose()
     suspended.resolve()
-    const rejected = await pending
-    assert.equal(rejected.isError, true)
-    assert.match(rejected.error.message, new RegExp(`PTC ${lifecycle} disposed`))
+    await assert.rejects(pending, new RegExp(`PTC ${lifecycle} disposed`))
+    assert.equal(sessionEvents(session).some(event => event.type === 'tool/result'
+      && event.data?.message?.source?.callId === 'pending-edit'), false)
     if (lifecycle === 'session') {
       state.ctx.sessionQuery.observeSession = original
       assert.equal((await state.run(session.id, 'return typeof editOrphan', {}, { session })).value, 'undefined')
@@ -218,18 +149,18 @@ test('production edit observation cannot execute after its submission is dispose
   })
 })
 
-test('keeps a derived run tentative until exact outer metadata persists', async (t) => {
+test('contracts to the verified setup when outer nested-edit metadata is not preserved', async (t) => {
   const cases = [
-    ['removed', false, () => ({})],
-    ['changed', true, meta => ({
+    ['removed', () => ({})],
+    ['changed', meta => ({
       ...meta,
-      dshPtcPlusDerivedRun: {
-        ...meta.dshPtcPlusDerivedRun,
-        code: 'unconfirmedEditValue = 999',
+      dshPtcPlusPostEdit: {
+        ...meta.dshPtcPlusPostEdit,
+        subCallId: 'another-sub-call',
       },
     })],
   ]
-  for (const [label, expectsRecoveryBoundary, finalizeMeta] of cases) {
+  for (const [label, finalizeMeta] of cases) {
     const events = [{ type: 'turn/start', seq: 0, time: 0, data: {} }]
     const session = appendOnlySession(`unconfirmed-derived-${label}`, events)
     const state = fixture()
@@ -244,29 +175,24 @@ test('keeps a derived run tentative until exact outer metadata persists', async 
     const setupCode = 'let unconfirmedEditValue = 1; return unconfirmedEditValue'
     const setup = await state.runDurable(session.id, setupCode, {}, { session, recordSession: 'deferred-result', callId: `${label}-setup` })
     const setupEventSeqs = appendRunCodeEvents(events, `${label}-setup`, setupCode, setup)
-    const args = { edits: [{ old_string: '= 1', new_string: '= 2' }] }
-    const callId = `${label}-edit`
-    const callSeq = appendEditCall(events, callId, args)
-    const definition = agent.ctx.tools.get('edit_run_code')
-    const presentationMeta = definition.output.presentationMeta
-    definition.output.presentationMeta = (editArgs, value) => (
-      finalizeMeta(presentationMeta(editArgs, value))
-    )
-    let edit
-    try {
-      edit = await state.ctx.tools.execute({
-        callId,
-        name: 'edit_run_code',
-        arguments: args,
-        agent,
-        signal: requestSignal,
-      })
-    } finally {
-      definition.output.presentationMeta = presentationMeta
+    let derivedDispatches = 0
+    const execute = state.ctx.tools.execute
+    state.ctx.tools.execute = async options => {
+      if (options.name === 'run_code' && options.callId.endsWith(':derived')) derivedDispatches++
+      return execute(options)
     }
-    assert.equal(edit.isError, false, JSON.stringify(edit))
-    assert.equal(edit.value.edited, true)
-    appendEditResult(events, callId, callSeq, edit.meta)
+    const callId = `${label}-edit`
+    const edit = await runNestedEditCell(state, {
+      session, agent, callId, signal: requestSignal,
+      code: 'return await tools.edit_run_code({ edits: [{ old_string: "= 1", new_string: "= 2" }] })',
+      finalizeResult: result => ({ ...result, meta: finalizeMeta(result.meta) }),
+    })
+    assert.equal(edit.result.isError, false, JSON.stringify(edit.result))
+    assert.equal(edit.receipt.accepted, true)
+    assert.match(edit.raw.logs.at(-1), /edit_run_code settled; value: 2/)
+    assert.equal(derivedDispatches, 1, 'derived source executed once before outer evidence was rejected')
+    const callSeq = events.find(event => event.type === 'tool/call'
+      && event.data.callId === callId).seq
 
     const dependentCode = [
       'const afterUnconfirmedEdit = unconfirmedEditValue + 1',
@@ -278,8 +204,8 @@ test('keeps a derived run tentative until exact outer metadata persists', async 
       {},
       { session, recordSession: 'deferred-result', callId: `${label}-dependent` },
     )
-    assert.deepEqual(dependent.raw.value, [2, 3])
-    assert.equal(dependent.result.meta.dshPtcPlus.status, 'volatile')
+    assert.deepEqual(dependent.raw.value, [1, 2])
+    assert.equal(dependent.result.meta.dshPtcPlus.status, 'durable')
     appendRunCodeEvents(events, `${label}-dependent`, dependentCode, dependent.result)
     await state.dispose()
 
@@ -287,21 +213,19 @@ test('keeps a derived run tentative until exact outer metadata persists', async 
     t.after(() => restored.dispose())
     const coldResult = await restored.runDurable(
       session.id,
-      'return [unconfirmedEditValue, typeof afterUnconfirmedEdit]',
+      'return [unconfirmedEditValue, afterUnconfirmedEdit]',
       {},
       { session, recordSession: 'deferred-result', callId: `${label}-cold` },
     )
     assert.equal(coldResult.isError, false, JSON.stringify(coldResult))
-    assert.deepEqual(coldResult.value, [1, 'undefined'])
-    appendRunCodeEvents(events, `${label}-cold`, 'return [unconfirmedEditValue, typeof afterUnconfirmedEdit]', coldResult)
+    assert.deepEqual(coldResult.value, [1, 2])
+    appendRunCodeEvents(events, `${label}-cold`, 'return [unconfirmedEditValue, afterUnconfirmedEdit]', coldResult)
     const boundaries = events.flatMap(event => event.data?.meta?.[RECOVERY_BOUNDARY_KEY] ?? [])
-    assert.equal(boundaries.length, expectsRecoveryBoundary ? 1 : 0)
-    if (expectsRecoveryBoundary) {
-      assert.deepEqual(boundaries[0], {
-        failedCallSeq: callSeq,
-        frontierCallSeq: setupEventSeqs.callSeq,
-      })
-    }
+    assert.equal(boundaries.length, 1)
+    assert.deepEqual(boundaries[0], {
+      failedCallSeq: callSeq,
+      frontierCallSeq: setupEventSeqs.callSeq,
+    })
   }
 })
 
@@ -312,6 +236,7 @@ test('carries derived recovery boundaries through the outer edit result', async 
   t.after(() => state.dispose())
   const agent = ptcAgent(session.id, session)
   const requestSignal = new AbortController().signal
+  session.append('turn/start', { turn: 1 })
   await state.assemble(
     { sections: [], contexts: [], variables: {}, tools: [state.runCodeDefinition] },
     { agent, scope: agent, signal: requestSignal },
@@ -319,7 +244,6 @@ test('carries derived recovery boundaries through the outer edit result', async 
   const setupCode = 'let derivedBoundaryValue = 1; return derivedBoundaryValue'
   const setup = await state.runDurable(session.id, setupCode, {}, { session, recordSession: 'deferred-result', callId: 'derived-boundary-setup' })
   appendRunCodeEvents(events, 'derived-boundary-setup', setupCode, setup)
-  appendEditCall(events, 'derived-boundary-edit', { edits: [{ old_string: '= 1', new_string: '= 2' }] })
 
   const originalExecute = state.ctx.tools.execute
   state.ctx.tools.execute = async options => {
@@ -333,13 +257,12 @@ test('carries derived recovery boundaries through the outer edit result', async 
       },
     }
   }
-  const edit = await state.ctx.tools.execute({
-    callId: 'derived-boundary-edit',
-    name: 'edit_run_code',
-    arguments: { edits: [{ old_string: '= 1', new_string: '= 2' }] },
-    agent,
-    signal: requestSignal,
+  const edit = await runNestedEditCell(state, {
+    session, agent, callId: 'derived-boundary-edit', signal: requestSignal,
+    code: 'return await tools.edit_run_code({ edits: [{ old_string: "= 1", new_string: "= 2" }] })',
   })
-  assert.equal(edit.isError, false, JSON.stringify(edit))
-  assert.deepEqual(edit.meta[RECOVERY_BOUNDARY_KEY], [{ failedCallSeq: 9, frontierCallSeq: 1 }])
+  assert.equal(edit.result.isError, false, JSON.stringify(edit.result))
+  assert.equal(edit.receipt.accepted, true)
+  assert.deepEqual(edit.result.meta.dshPtcPlusPostEdit.meta[RECOVERY_BOUNDARY_KEY],
+    [{ failedCallSeq: 9, frontierCallSeq: 1 }])
 })

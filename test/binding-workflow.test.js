@@ -392,7 +392,7 @@ test('public binding lifecycle preserves each configured prompt and separates sa
   for (const [index, request] of host.requests.entries()) {
     assert.equal(JSON.stringify({ system: requestSystemPrompt(request), tools: request.tools }),
       index < configuredStart ? prefix : configuredPrefix)
-    assert.deepEqual(request.tools.map(tool => tool.name), ['run_code', 'edit_run_code'])
+    assert.deepEqual(request.tools.map(tool => tool.name), ['run_code'])
   }
   await host.restart()
   const replayed = await host.run('return acceptedReceipt')

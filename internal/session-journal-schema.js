@@ -8,6 +8,7 @@ import {
 export const JOURNAL_KEY = 'dshPtcPlus'
 export const EDIT_TARGET_KEY = 'dshPtcPlusEdit'
 export const DERIVED_RUN_KEY = 'dshPtcPlusDerivedRun'
+export const POST_EDIT_KEY = 'dshPtcPlusPostEdit'
 export const REWRITES_KEY = 'dshPtcPlusRewrites'
 export const RECOVERY_BOUNDARY_KEY = 'dshPtcPlusRecoveryBoundaries'
 export const IMPORT_BOUNDARY_JOURNAL_VERSION = 7

@@ -1,5 +1,6 @@
 import { bindingDraftProjection, bindingReviewStatus } from './client-binding-review.js'
 import { bindingModelPreferences } from '../internal/user-binding-model-context.js'
+import { capabilityCommandText } from './client-capabilities-view.js'
 import { featureEnabled } from './client-feature-gates.js'
 import {
   MENU_CHILDREN_PROBE_SENTINEL,
@@ -25,7 +26,7 @@ export function createAuthoringView(React, deps) {
   const {
     ActionButton, IconButton, Menu, MenuFallback, Toast, Tooltip, CodeBlock, Modal, createPortal, BindingsDialog, PTCPlusSettingsDialog,
     useWorkbenchController, useBindingReview, catalogOwner, callUserBindings, subscribeReset,
-    settingsCardSeat, updateSetting, updateCapabilityConfiguration, menuChildren, CapabilityRefreshButton,
+    settingsCardSeat, updateSetting, updateCapabilityConfiguration, menuChildren, CapabilityRefreshButton, SessionCapabilityControls,
     icons: {
       sparkle: IconSparkle16, chevron: IconChevronDownOutline14,
       close: IconCloseOutline16, check: IconCheckOutline14,
@@ -141,9 +142,14 @@ export function createAuthoringView(React, deps) {
     const toggleBinding = async entry => {
       if (!catalogReady || !quickAccess) return
       captureCatalogFocus()
-      await catalogSource.write(() => callUserBindings(entry.enabled ? 'disable' : 'enable', {
+      const next = await catalogSource.write(() => callUserBindings(entry.enabled ? 'disable' : 'enable', {
         id: entry.id, expectedRevision: catalog.revision,
       }))
+      const saved = next?.entries.find(item => item.id === entry.id)
+      if (saved) {
+        toastSequence.current++
+        setToast({ sequence: toastSequence.current, key: saved.enabled ? 'bindings.toggleEnabled' : 'bindings.toggleDisabled', params: { name: saved.name } })
+      }
     }
     const cancelHoverOpen = React.useCallback(() => {
       if (hoverTimer.current === undefined) return
@@ -403,6 +409,14 @@ export function createAuthoringView(React, deps) {
           (catalog?.entries?.length ?? 0) > 0 ? actionButton('edit', 'bindings.authorEdit') : null)) : null,
       h('div', { key: 'utilities', className: 'ptcPlusMenuUtilities' },
         quickAccess ? actionButton('manage', 'bindings.manage') : null,
+        SessionCapabilityControls ? h(SessionCapabilityControls, { sessionId, t,
+          enabled: pluginEnabled && settings.status === 'ready' && settings.writable === true,
+          onPrefill: typeof inputActions?.setDraft === 'function' ? command => {
+            if (typeof input?.draft === 'string' && input.draft.trim() !== '') {
+              toastSequence.current++; setToast({ sequence: toastSequence.current, key: 'bindings.composerBusy' }); return
+            }
+            inputActions.setDraft(command); hideMenu()
+          } : undefined }) : null,
         CapabilityRefreshButton ? h(CapabilityRefreshButton, { sessionId, t, menu: true,
           enabled: pluginEnabled && settings.status === 'ready' && settings.writable === true,
           onStatus: text => { toastSequence.current++; setToast({ sequence: toastSequence.current, text }) } }) : null,
@@ -486,13 +500,13 @@ export function createAuthoringView(React, deps) {
       toast === null ? null : isHostComponent(Toast)
         ? h(Toast, {
           key: toast.sequence,
-          text: toast.text,
+          text: toast.key ? t(toast.key, toast.params) : capabilityCommandText(t, toast.text),
           anchor: anchorRef.current,
           onDone: () => setToast(null),
         })
         : h('span', {
           key: toast.sequence, className: 'ptcPlusComposerNotice', role: 'status',
-        }, toast.text))
+        }, toast.key ? t(toast.key, toast.params) : capabilityCommandText(t, toast.text)))
   }
 
   function BindingCandidateContent({ candidate, t, showName = true }) {

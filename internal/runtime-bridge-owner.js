@@ -1,5 +1,6 @@
 /** Own the execution-seam takeover, per-cell lease, journal projection, and session settlement. */
 import { AsyncLocalStorage } from 'node:async_hooks'
+import { snapshotJsonValue } from '@deepseek-ai/dsh-util-values'
 import { decodeValue } from './value-wire.js'
 import { valueLimitsFromConfig } from './value-wire-schema.js'
 import { executionPolicies } from './binding-update-policy.js'
@@ -177,7 +178,10 @@ export function createRuntimeBridgeOwner({
   const withInitiator = ctx.agents === undefined || typeof ctx.agents.withInitiator !== 'function'
     ? undefined
     : (agent, operation) => ctx.agents.withInitiator(agent, operation)
-  const sessions = new SessionRuntime(sessionConfig, { withInitiator, userBindingsCwd, observeSession, readSessionLog })
+  const sessions = new SessionRuntime(sessionConfig, {
+    withInitiator, userBindingsCwd, observeSession, readSessionLog,
+    sessionForId: id => ctx.sessions?.get(id),
+  })
   let currentConfig = sessions.config
   const patchedDefinitions = new Map()
   const pending = new WeakMap()
@@ -191,7 +195,7 @@ export function createRuntimeBridgeOwner({
     childFinalizers.add(child)
     try {
       const execution = await child.runTentative({ id: 'isolated-cell', session: { header: {
-        cwd: executionToken?.session?.header?.cwd,
+        cwd: request.cwd ?? executionToken?.session?.header?.cwd,
       } } }, { ...projected.request, executionToken }, { programCompletion })
       if (execution.settlement !== undefined) child.finalize(execution.settlement, true)
       return { result: execution.result, completion: execution.settlement?.journal.completion }
@@ -405,8 +409,15 @@ export function createRuntimeBridgeOwner({
           ? ownPresentationMeta.value
           : ownPresentationMeta.get?.call(output)
       const base = originalPresentationMeta === undefined
-        ? undefined
-        : originalPresentationMeta.call(output, args, value)
+        // Installing a projector replaces an optional Host callback with a
+        // required JSON-producing callback, including policy reprojection
+        // after the execution scope has ended. An empty object conveys no
+        // computation evidence; a stale settlement must never fill that gap.
+        ? {}
+        : snapshotJsonValue(originalPresentationMeta.call(output, args, value))
+      // An invalid upstream projection is still the Host's output failure;
+      // adding plugin metadata must not make it appear valid.
+      if (base === undefined) return undefined
       if (!active) return base
       const current = scope.getStore()
       const settlement = current?.settlement

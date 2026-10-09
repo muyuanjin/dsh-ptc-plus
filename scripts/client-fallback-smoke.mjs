@@ -15,6 +15,8 @@ const allCases = [
   ...variants.map(item => ({ family: 'single-disabled', ...item })),
   ...[{ width: 390, height: 600 }, { width: 320, height: 420 }, { width: 320, height: 240 }]
     .flatMap(viewport => variants.map(item => ({ family: 'catalog', viewport, ...item }))),
+  ...[{ width: 390, height: 600 }, { width: 320, height: 240 }]
+    .flatMap(viewport => variants.map(item => ({ family: 'session-capabilities', viewport, ...item }))),
   ...[{ width: 390, height: 600 }, { width: 320, height: 420 }]
     .flatMap(viewport => ['light', 'dark'].map(theme => ({ family: 'dialogs', viewport, theme }))),
   ...[240, 420, 600].flatMap(height => variants.map(item => ({ family: 'settings-dialog', viewport: { width: 1440, height }, ...item }))),
@@ -25,7 +27,7 @@ const allCases = [
   { family: 'hover-settlement' },
 ].map(item => ({ ...item, id: [item.family, item.width ?? (item.viewport && `${item.viewport.width}x${item.viewport.height}`),
   item.theme, item.native === undefined ? undefined : item.native ? 'native' : 'fallback', item.locale].filter(Boolean).join('/') }))
-const availableCases = values['menu-only'] ? allCases.filter(item => ['single-disabled', 'catalog'].includes(item.family)) : allCases
+const availableCases = values['menu-only'] ? allCases.filter(item => ['single-disabled', 'catalog', 'session-capabilities'].includes(item.family)) : allCases
 const cases = selectBrowserCases(availableCases, values.case, values)
 const focused = cases.length !== availableCases.length
 const concurrency = browserConcurrency(values.concurrency)
@@ -50,7 +52,7 @@ if (values.list) {
     import {createAuthoringView} from './src/client-authoring-view.js';
     import {createUserBindingsWorkbench} from './src/client-workbench.js';
     import {createPtcSettingsView} from './src/client-settings-view.js';
-    import {createCapabilityRefreshView} from './src/client-capabilities-view.js';
+    import {createCapabilityRefreshView,createSessionCapabilityControlsView} from './src/client-capabilities-view.js';
     import {SETTINGS_COPY} from './src/client-copy.js';
     import {capabilityProfileConfiguration} from './internal/runtime-config.js';
     const h=React.createElement;
@@ -89,6 +91,16 @@ if (values.list) {
       run:async(sessionId,input,signal)=>{window.refreshCalls.push({sessionId,input});
         signal.throwIfAborted();return {kind:'success',text:'Host accepted refresh'};}
     });
+    const SessionCapabilityControls=createSessionCapabilityControlsView(React,{
+      source:()=>({getSnapshot:()=>true,subscribe:()=>()=>{}}),
+      run:async(sessionId,input,signal)=>{
+        signal.throwIfAborted();window.sessionCapabilityCalls.push({sessionId,input});
+        return {kind:'success',text:input==='list all'?JSON.stringify({schema:'ptc-capability-catalog/v1',
+          entries:Array.from({length:20},(_,index)=>({id:'tools.probe'+index,category:'tool',
+            description:'A capability with its own choices.',source:{kind:'host'},saved:'automatic',temporary:'inherit',effective:'on-demand'}))}):'Host accepted session choice'};
+      }
+    });
+    window.sessionCapabilityCalls=[];
     const {PTCPlusSettingsDialog,PTCPlusSettingsCard}=createPtcSettingsView(React,{ActionButton,
       BindingsDialog:workbench.BindingsDialog,Modal,useWorkbenchController:workbench.useWorkbenchController,
       icons:{chevron:Icon},CapabilityRefreshButton,
@@ -116,7 +128,7 @@ if (values.list) {
     const view={mounted:false,reachable:true,candidate:null,candidateKey:null,action:null,message:null};
     const review={reachable:()=>{},getSnapshot:()=>view};
     const {BindingAuthorButton}=createAuthoringView(React,{ActionButton,IconButton,Menu,MenuFallback:Menu,
-      BindingsDialog:workbench.BindingsDialog,PTCPlusSettingsDialog,CapabilityRefreshButton,
+      BindingsDialog:workbench.BindingsDialog,PTCPlusSettingsDialog,CapabilityRefreshButton,SessionCapabilityControls,
       useWorkbenchController:workbench.useWorkbenchController,useBindingReview:()=>[review,view],
       catalogOwner,callUserBindings,subscribeReset:()=>()=>{},menuChildren:createMenuChildrenEvidence(),
       icons:{sparkle:Icon,chevron:Icon,close:Icon,check:Icon}});
@@ -473,9 +485,12 @@ if (values.list) {
         await setFixtureTheme(page, theme)
         await page.locator('.ptcPlusAuthorButton').click()
         const menu = page.getByRole('menu')
-        const group = menu.locator('[aria-expanded]')
+        const groupName = SETTINGS_COPY[locale]['bindings.quickDisabled'].replace('{count}', '1')
+        const group = menu.getByRole('menuitem', { name: groupName, exact: true })
         await group.waitFor()
+        assert.equal(await group.getAttribute('aria-expanded'), 'false')
         await group.press('Enter')
+        assert.equal(await group.getAttribute('aria-expanded'), 'true')
         await menu.locator('[data-binding-id]').waitFor()
         const label = `single-disabled/${native ? 'native' : 'fallback'}/${locale}/${theme}`
         await assertSparkleMenuTypography(menu, label)
@@ -502,6 +517,51 @@ if (values.list) {
         await page.evaluate(() => { document.body.style.font = '14px/21px system-ui' })
         await assertSparkleMenuTypography(menu, `${label}/smaller carrier`)
         await page.screenshot({ path: `artifacts/button-styles/sparkle-single-disabled-${native ? 'native' : 'fallback'}-${locale}-${theme}.png` })
+        await page.keyboard.press('Escape')
+        await page.evaluate(() => window.disposeFixture())
+        return
+      }
+      if (family === 'session-capabilities') {
+        await page.goto('about:blank')
+        await page.setViewportSize(viewport)
+        await page.setContent('<div id="composer" style="position:fixed;bottom:16px;left:16px;width:calc(100vw - 32px);height:60px"></div>')
+        await page.evaluate(({ native, locale }) => { window.nativeMenu = native; window.menuLocale = locale }, { native, locale })
+        for (const output of fixture.outputFiles) {
+          if (output.path.endsWith('.css')) await page.addStyleTag({ content: output.text })
+          else await page.addScriptTag({ content: output.text })
+        }
+        await setFixtureTheme(page, theme)
+        await page.locator('.ptcPlusAuthorButton').click()
+        const menu = page.getByRole('menu')
+        const toggle = menu.getByRole('menuitem', { name: SETTINGS_COPY[locale]['capabilities.quick.title'], exact: true })
+        await toggle.click()
+        const items = menu.locator('.ptcPlusSessionCapabilityItem')
+        await items.first().waitFor()
+        const panel = menu.locator('.ptcPlusSessionCapabilityPanel')
+        assert.equal(await items.count(), 20)
+        const geometry = await panel.evaluate(element => {
+          const rect = element.getBoundingClientRect(), parent = element.closest('.ptcPlusMenuUtilities').getBoundingClientRect()
+          const owner = element.closest('.ptcPlusMenuActions')
+          return { fullWidth: rect.width >= parent.width - 10, scrollable: owner.scrollHeight > owner.clientHeight,
+            overflowX: owner.scrollWidth > owner.clientWidth + 1 }
+        })
+        assert.equal(geometry.fullWidth, true, 'expanded session controls must span the menu')
+        assert.equal(geometry.scrollable, true, 'session controls must share the bounded menu scroll owner')
+        assert.equal(geometry.overflowX, false, 'session controls must not overflow horizontally')
+        // Playwright cannot click a clipped action: these exercise first and last
+        // entries through the actual component and command boundary fixture.
+        for (const index of [0, 19]) {
+          const item = items.nth(index)
+          await item.locator('select').selectOption('closed')
+          await item.getByRole('button', { name: SETTINGS_COPY[locale]['capabilities.quick.apply'], exact: true }).click()
+          await page.waitForFunction(index => window.sessionCapabilityCalls.some(call => call.input === `set session tools.probe${index} closed`), index)
+        }
+        await panel.getByRole('searchbox').fill('probe19')
+        assert.equal(await items.count(), 1)
+        await page.screenshot({ path: `artifacts/button-styles/session-capabilities-${viewport.width}-${viewport.height}-${native ? 'native' : 'fallback'}-${locale}-${theme}.png` })
+        await toggle.click()
+        await panel.waitFor({ state: 'hidden' })
+        await menu.locator('[data-binding-id]').first().waitFor()
         await page.keyboard.press('Escape')
         await page.evaluate(() => window.disposeFixture())
         return
@@ -578,7 +638,7 @@ if (values.list) {
         await assert.rejects(() => assertSparkleMenuFocus(menu, `${label}/missing reveal fault`), /focused catalog control is clipped or covered/)
         await menu.locator('.ptcPlusBindingMenuScroll').evaluate((scroll, top) => { scroll.scrollTop = top }, focusScroll)
         await assertSparkleMenuFocus(menu, `${label}/restored reveal`)
-        const changedGroup = menu.locator('[aria-expanded]')
+        const changedGroup = menu.locator('.ptcPlusBindingMenuScroll [aria-expanded]')
         await changedGroup.press('Enter')
         await menu.locator('[data-binding-id="entry-47"]').click()
         await page.waitForFunction(() => document.activeElement?.dataset.bindingId === 'entry-47'
@@ -674,6 +734,9 @@ if (values.list) {
             await fault.evaluate(element => element.remove())
           }
         }
+        await dialog.locator('[data-section=capabilities]').evaluate(element => element.click())
+        assert.equal(await dialog.locator('[aria-current=location]').count(), 1)
+        assert.equal(await dialog.locator('[data-section=capabilities]').getAttribute('aria-current'), 'location')
         const before = await dialog.evaluate(element => ({ navTop: element.querySelector('.ptcPlusSettingsNav').getBoundingClientRect().top, document: scrollY }))
         await workbench.getByLabel(labels['capabilities.types'], { exact: true }).selectOption('skill')
         assert.equal(await workbench.locator('.ptcPlusCapabilityItem').count(), 2)
@@ -715,6 +778,7 @@ if (values.list) {
         await dialog.locator('[data-section=capabilities]').evaluate(element => element.click())
         await workbench.locator('.ptcPlusCapabilityList').evaluate(element => { element.scrollTop = 0 })
         await page.screenshot({ path: `artifacts/button-styles/capability-workbench-${width}-${theme}-${native ? 'native' : 'fallback'}-${locale}.png` })
+        await workbench.getByRole('tab', { name: labels['capabilities.tab.plans'], exact: true }).click()
         const target = dialog.getByLabel(labels['capabilities.targetSession'], { exact: true })
         const refresh = dialog.getByRole('button', { name: labels['capabilities.applySession'], exact: true })
         assert.equal(await refresh.isDisabled(), true)
@@ -728,6 +792,7 @@ if (values.list) {
         await page.screenshot({ path: `artifacts/button-styles/capability-statistics-${width}-${theme}-${native ? 'native' : 'fallback'}-${locale}.png` })
         await workbench.getByRole('tab', { name: labels['capabilities.tab.budgets'], exact: true }).click()
         await workbench.getByRole('progressbar').waitFor()
+        assert.equal(await dialog.locator('[data-section=capabilities]').getAttribute('aria-current'), 'location')
         await assertVisualSurface(page, workbench.locator('[role=tabpanel]:not([hidden])'), `${label}: budget preview`)
         await page.screenshot({ path: `artifacts/button-styles/capability-budgets-${width}-${theme}-${native ? 'native' : 'fallback'}-${locale}.png` })
         await workbench.getByRole('tab', { name: labels['capabilities.tab.plans'], exact: true }).click()
@@ -736,7 +801,6 @@ if (values.list) {
         await page.waitForFunction(() => window.settingsWrites.some(([key]) => key === 'capabilityProfiles'))
         await assertVisualSurface(page, workbench.locator('[role=tabpanel]:not([hidden])'), `${label}: named configurations`)
         await page.screenshot({ path: `artifacts/button-styles/capability-configurations-${width}-${theme}-${native ? 'native' : 'fallback'}-${locale}.png` })
-        await workbench.getByRole('tab', { name: labels['capabilities.tab.manual'], exact: true }).click()
         await refresh.click()
         await page.waitForFunction(() => window.refreshCalls.length === 1)
         assert.deepEqual(await page.evaluate(() => window.refreshCalls), [{sessionId:'other-session',input:'refresh'}])
@@ -900,6 +964,22 @@ if (values.list) {
             await checkNavigation()
           }
         }
+        for (const zoom of [1, 1.25]) {
+          await dialog.evaluate((element, zoom) => { element.style.zoom = zoom }, zoom)
+          for (const key of ['syntax', 'calls', 'limits', 'capabilities']) {
+            await fields.evaluate((element, { key, zoom }) => {
+              const group = element.querySelector('[aria-labelledby="ptc-plus-settings-dialog-group-' + key + '"]')
+              // The fixture applies this exact zoom; do not infer it from rounded offsetHeight.
+              element.scrollTop += (group.getBoundingClientRect().top - element.getBoundingClientRect().top) / zoom - element.clientTop
+              element.dispatchEvent(new Event('scroll'))
+            }, { key, zoom })
+            await page.waitForFunction(key => document.querySelector('[data-section=' + key + ']').getAttribute('aria-current') === 'location', key)
+            assert.equal(await navigation.locator('[aria-current=location]').count(), 1)
+          }
+          await fields.evaluate(element => { element.scrollTop = element.scrollHeight; element.dispatchEvent(new Event('scroll')) })
+          await page.waitForFunction(() => document.querySelector('[data-section=capabilities]').getAttribute('aria-current') === 'location')
+        }
+        await dialog.evaluate(element => { element.style.zoom = '' })
         await page.evaluate(() => {
           document.querySelector('.ptcPlusSettingsDialog .ptcPlusFields').scrollTop = 0
           document.querySelector('.ptcPlusSettingsNav').scrollTop = 0
@@ -956,6 +1036,8 @@ if (values.list) {
             return heading.top >= viewport.top && heading.bottom <= viewport.bottom
           })
           assert.equal(visible, true, `${width}/${locale}: selected settings heading was not revealed`)
+          assert.equal(await button.getAttribute('aria-current'), 'location')
+          assert.equal(await navigation.locator('[aria-current=location]').count(), 1)
         }
         await settings.locator('#ptc-plus-settings-group-capabilities').evaluate(element => element.scrollIntoView({ block: 'start' }))
         const misplaced = await page.evaluate(() => ({ document: window.scrollY, host: document.querySelector('#host-page').scrollTop }))

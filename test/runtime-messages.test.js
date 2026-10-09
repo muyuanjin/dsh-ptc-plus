@@ -15,13 +15,13 @@ import { ToolRuntime } from '@deepseek-ai/dsh-tools'
 import { JOURNAL_KEY } from '../internal/session-journal.js'
 import { encodeValue } from '../internal/value-wire.js'
 import { auditRuntimeContexts, isRuntimeContextSource } from '../scripts/acceptance-contract.mjs'
-import { createRuntimeMessageOwner, projectRuntimeMessages, sessionRuntimeContexts } from '../internal/runtime-contexts.js'
+import { createRuntimeMessageOwner, handBackRuntimeSessions, projectRuntimeMessages, sessionRuntimeContexts } from '../internal/runtime-contexts.js'
 import { latestRecoveryTip } from '../internal/recovery-tips.js'
 import { createUserBindingsSnapshot, userBindingsConfiguredContext } from '../internal/user-bindings.js'
 import { createSessionLogOwner, createSessionLogProjection, projectSessionLog, runtimeMessageFacts, systemPromptSnapshotSections } from '../internal/session-log-view.js'
 import {
   PTC_BINDING_CATALOG, PTC_DELIVERY_CONTEXT, PTC_STATE_NAMES, readRuntimeMessage, recoveryTipIdentity,
-  runtimeBindingCatalogMessage, runtimeNoticeMessage, runtimeStateMessage,
+  runtimeBindingCatalogMessage, runtimeNoticeMessage, runtimeStateMessage, runtimeAvailabilityMessage, readRuntimeAvailability, projectRuntimeAvailability,
 } from '../internal/runtime-messages.js'
 
 const state = text => [{ name: PTC_STATE_NAMES[0], text }]
@@ -67,6 +67,89 @@ const usesHeaderSnapshots = (() => {
 const requestHeader = () => usesHeaderSnapshots
   ? { header: { config: { provider: 'fixture', model: 'fixture' } }, reason: 'initial' }
   : {}
+
+test('provider availability withdraws only plugin declarations at an accepted step and reconciles reenablement', async () => {
+  const session = Session.create('provider-availability')
+  const catalog = runtimeBindingCatalogMessage({ name: PTC_BINDING_CATALOG, text: 'Configured API' })
+  append(session, catalog)
+  append(session, user('Keep this user task'))
+  const signal = new AbortController().signal
+  const agent = { session }
+  let active = false
+  const owner = createRuntimeMessageOwner(() => [], viewForAgent, () => active, { observeSession: async () => ({ events: session.snapshotEvents(), cursor: session.seq - 1, header: session.header, [Symbol.dispose]() {} }) })
+  const context = { agent, signal }
+  const witness = { contexts: [{ name: PTC_DELIVERY_CONTEXT, text: '' }] }
+  await owner.assemble(witness, context, async () => witness)
+  assert.equal((await owner.preStep(context, async () => ({ kind: 'stop', messages: [] }))).messages.length, 0)
+  const cancelled = new AbortController(); cancelled.abort()
+  assert.equal((await owner.preStep({ agent, signal: cancelled.signal }, async () => ({ kind: 'enter', messages: [] }))).messages.length, 0)
+  const accepted = await owner.preStep(context, async () => ({ kind: 'enter', messages: [] }))
+  assert.equal(accepted.messages.map(readRuntimeAvailability).filter(Boolean).at(-1), 'disabled')
+  assert.equal(session.deriveMessages().some(message => readRuntimeAvailability(message)), false)
+  for (const message of accepted.messages) append(session, message)
+  assert.equal((await owner.preStep(context, async () => ({ kind: 'enter', messages: [] }))).messages.length, 0)
+  assert.ok(session.deriveMessages().some(message => message.id === catalog.id))
+  assert.ok(session.deriveMessages().some(message => message.content[0].text === 'Keep this user task'))
+  active = true
+  const resumed = await owner.preStep(context, async () => ({ kind: 'enter', messages: [] }))
+  assert.equal(readRuntimeAvailability(resumed.messages.at(-1)), 'active')
+  assert.equal(projectRuntimeAvailability([user('task only')], false), undefined)
+})
+
+test('provider handback persists live and unloaded sessions without creating an agent or waking a model', async t => {
+  const ctx = new Context()
+  new SessionStore(ctx)
+  const live = ctx.sessions.create('live-handback')
+  append(live, runtimeBindingCatalogMessage({ name: PTC_BINDING_CATALOG, text: 'Live API' }))
+  const offline = Session.create('offline-handback')
+  append(offline, runtimeBindingCatalogMessage({ name: PTC_BINDING_CATALOG, text: 'Offline API' }))
+  let events = offline.snapshotEvents()
+  let flushed = 0
+  let closed = 0
+  ctx.effect(() => ctx.provide('sessionPersistence', {
+    list: async () => [{ header: live.header }, { header: offline.header }],
+    open: async (id, mode) => {
+      assert.equal(id, offline.id); assert.equal(mode, 'write')
+      return { id, header: offline.header, inheritedEventCount: 0,
+        read: async () => ({ events }), append: async tail => { events = [...events, ...tail] },
+        flush: async () => { flushed++ }, close: async () => { closed++ } }
+    },
+  }))
+  ctx.effect(() => ctx.on('session/flush', async () => {}))
+  ctx.effect(() => ctx.provide('sessionQuery', { observeSession: async id => {
+    const session = id === live.id ? live : Session.fromRestore(offline.id, events, offline.header, 0)
+    return { source: id === live.id ? 'live' : 'prepared', events: session.snapshotEvents(), header: session.header,
+      cursor: session.seq - 1, [Symbol.dispose]() {} }
+  } }))
+  t.after(() => ctx.fiber.dispose())
+  await handBackRuntimeSessions(ctx)
+  assert.equal(readRuntimeAvailability(live.deriveMessages().at(-1)), 'unloaded')
+  const restored = Session.fromRestore(offline.id, events, offline.header, 0)
+  assert.equal(readRuntimeAvailability(restored.deriveMessages().at(-1)), 'unloaded')
+  assert.equal(flushed, 1); assert.equal(closed, 1)
+  const count = events.length
+  await handBackRuntimeSessions(ctx)
+  assert.equal(events.length, count)
+  assert.equal(flushed, 1); assert.equal(closed, 2)
+})
+
+test('provider handback rejects missing public owners and an unconfirmed durability checkpoint', async t => {
+  await assert.rejects(handBackRuntimeSessions({ get: () => undefined }), /requires the public session/)
+  const ctx = new Context(); new SessionStore(ctx)
+  t.after(() => ctx.fiber.dispose())
+  const session = ctx.sessions.create('unconfirmed-handback')
+  append(session, runtimeBindingCatalogMessage({ name: PTC_BINDING_CATALOG, text: 'Binding API' }))
+  ctx.effect(() => ctx.provide('sessionPersistence', { list: async () => [], open: async () => assert.fail('No offline session') }))
+  ctx.effect(() => ctx.provide('sessionQuery', { observeSession: async () => ({ source: 'live', events: session.snapshotEvents(),
+    header: session.header, cursor: session.seq - 1, [Symbol.dispose]() {} }) }))
+  await assert.rejects(handBackRuntimeSessions(ctx), error => error instanceof AggregateError
+    && error.errors.some(item => /durability listener/.test(item.cause?.message)))
+  const withdrawals = session.deriveMessages().filter(message => readRuntimeAvailability(message) === 'unloaded')
+  assert.equal(withdrawals.length, 1, 'An accepted append stays a real memory fact even when durability fails.')
+  ctx.effect(() => ctx.on('session/flush', async () => {}))
+  await handBackRuntimeSessions(ctx)
+  assert.equal(session.deriveMessages().filter(message => readRuntimeAvailability(message) === 'unloaded').length, 1)
+})
 
 test('host-only log facts survive public checkpoint restore and session forks', async t => {
   const ctx = new Context()

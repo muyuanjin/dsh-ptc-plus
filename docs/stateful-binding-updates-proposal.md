@@ -626,7 +626,7 @@ C2/C3/C4 要求分别描述：
 
 ### 8.4 journal 代际与旧代码
 
-当前封闭 schema 的版本常量与字段集由 [session-journal-schema.js](../internal/session-journal-schema.js) 拥有，JOURNAL_VERSION 为 10；schema 包含 languageSemantics、精确的 moduleTransform、bindingPolicy、rewritePolicy、moduleSemantics（含 `importExpressionBoundary`）、userBindingsFingerprint、userBindingsReusePolicy、userBindingsShadowPolicy 与 userBindingNames 等字段。字段校验、journal 创建与旧代际迁移由 [session-journal.js](../internal/session-journal.js) 拥有，事件关联与折叠恢复由 [session-journal-recovery.js](../internal/session-journal-recovery.js) 拥有。旧 ADR 描述其决策发生时的版本，不能用历史版本叙述替代当前 schema 事实。
+当前封闭 schema 的版本常量与字段集由 [session-journal-schema.js](../internal/session-journal-schema.js) 拥有，JOURNAL_VERSION 为 11；schema 以 executionCwd 记录每个 cell 的绝对执行目录，v1–v10 仍采用其历史 header/worker 基准（[ADR 0041](adr/0041-record-cell-execution-directories.md)）；schema 包含 languageSemantics、精确的 moduleTransform、bindingPolicy、rewritePolicy、moduleSemantics（含 `importExpressionBoundary`）、userBindingsFingerprint、userBindingsReusePolicy、userBindingsShadowPolicy 与 userBindingNames 等字段。字段校验、journal 创建与旧代际迁移由 [session-journal.js](../internal/session-journal.js) 拥有，事件关联与折叠恢复由 [session-journal-recovery.js](../internal/session-journal-recovery.js) 拥有。旧 ADR 描述其决策发生时的版本，不能用历史版本叙述替代当前 schema 事实。
 
 新代际必须区分：所有作用域可写规则、裸声明、声明 pattern 提交、import/default 来源关联、特殊命名空间、动态 grammar goal、独立单元、name 级用户绑定覆盖和实际操作证据。只重解释原有两个布尔值无法表达这些变化。
 

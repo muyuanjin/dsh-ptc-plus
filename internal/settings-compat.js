@@ -70,7 +70,10 @@ export function installSettingsSectionCompat({
     const writeNamespace = sectionInstalled ? namespace : (ownerFiber ?? ctx.fiber)?.entry?.options?.id
     const writer = typeof provider?.update === 'function'
       && typeof writeNamespace === 'string' && writeNamespace.length > 0
-      ? Object.freeze({ update: patch => provider.update(writeNamespace, patch) }) : undefined
+      ? Object.freeze({
+        update: (patch, expectedRevision) => provider.update(writeNamespace, patch, expectedRevision),
+        read: () => provider.describe?.().find(descriptor => descriptor.ns === writeNamespace),
+      }) : undefined
     const unbind = onProvider(provider, writer)
     if (typeof unbind === 'function') settingsContext.effect(() => unbind, 'ptc-plus settings writer')
     if (typeof provider?.installSection === 'function') {

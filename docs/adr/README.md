@@ -16,3 +16,7 @@ This directory records stable design constraints for PTC Plus. An ADR states a d
   - `## Consequences` — what the trade-off cost and bought; older entries may carry `## Verification` instead or omit it
 - **Supersession.** When a later decision replaces an ADR, fold every unique rationale, alternative, and consequence into the current owner and repair inbound links before deleting the old file. Partial supersession keeps both files cross-linked. Git history is not the only copy of rationale.
 - **Kept current.** When the code later moves a file, renames a surface, or changes a default, update the owning ADR in the same change (facts only, not the decision itself).
+
+- [0041: Record Cell Execution Directories](0041-record-cell-execution-directories.md) — current execution, captured module sources and historical replay use distinct directory evidence.
+
+- [0042: Persist Provider Availability And Handback](0042-persist-provider-availability-and-handback.md) — accepted-step availability, public persistent release and separately sourced configuration receipts.

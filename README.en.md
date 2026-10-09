@@ -29,6 +29,8 @@ In one complete paired [Command Goat / DeepSeek V4.1 Flash experiment](docs/eval
 
 [Quick start](#quick-start) · [Feature overview](#feature-overview) · [Continuous computation](#continuous-computation-and-language-extensions) · [Editing and call tolerance](#code-editing-and-call-tolerance) · [Global bindings](#global-bindings-reuse-functions-across-sessions) · [Interface and settings](#interface-and-settings) · [Values and recovery](#value-transfer-and-state-recovery)
 
+Current public DSH native/PTC composition does not jointly admit both original top-level `run_code` and `edit_run_code` names. The editor integration remains a [pending architecture boundary](docs/adr/0005-temporary-rejected-cell-edit-transport.md#public-integration-status); internal examples and tests do not establish complete compatibility with the latest official Host.
+
 ## Quick start
 
 Requires Node.js `^22.19.0 || >=24.0.0` and the latest available official DSH release. Install into the profile you actually use:
@@ -43,11 +45,15 @@ Session history uses DSH's public reader, and the Host incrementally projects pr
 
 With the default interface settings, the session has a **REPL** tab; wide screens also show a green **PTC Plus** header indicator. The sparkle button beside the composer opens the global binding menu and **PTC Plus settings**. You can also open **Plugins → Installed → dsh-ptc-plus → Configure** in the sidebar to check the main switch and all plugin settings.
 
+To upgrade an installed plugin, run `dsh plugin --profile <profile> add dsh-ptc-plus@latest` and restart that Host. Use `add` with an absolute tarball or pinned Git revision to replace the profile dependency.
+
 Once installed, describe your task to the model as usual. The `run_code` and `edit_run_code` examples below show how the model uses these features. See the [installation guide](docs/installation.md) for other installation methods, Desktop, the local development launcher, upgrades, and troubleshooting.
 
 For Windows source testing, double-click `scripts\run-upstream-dsh.cmd` to fetch the official DSH default branch, reuse an isolated build cache, and load this plugin checkout. The first run installs dependencies and builds DSH; see [upstream source testing](docs/installation.md#upstream-source-development-launcher-windows).
 
 Windows development scripts check that local esbuild can execute. If dependencies are missing or were installed by WSL, they install and pack in a Git-ignored `win_node_modules` directory without replacing the checkout's `node_modules`.
+The sparkle menu also provides session capability controls: search Skills, ordinary tools, MCP servers/resources and MCP tools, choose a temporary session override or explicitly save globally and update this session in one human command. Ordinary refresh preserves temporary choices; a global action clears only the same identity’s temporary choice. Filling a command draft never submits it or overwrites existing text. Named configuration copies exclude temporary choices. Receipts distinguish applied, pending first acceptance and saved-but-not-applied outcomes; no model task is started. On disablement, an accepted step withdraws old plugin declarations; complete unload persists provider handback through public session ownership and reports persistence failures. See [provider lifecycle](docs/adr/0042-persist-provider-availability-and-handback.md).
+
 
 ## Feature overview
 
@@ -63,7 +69,7 @@ Default PTC mode starts every execution in a fresh environment: variables from t
 | Provider rejects malformed tool JSON | The whole turn ends with a provider error | Repair or preserve a buffered tool-call tail containing only tool framing and at most one usage event; route every other buffered tail through schema rejection so the model continues |
 | Recover a misplaced top-level tool call | Undeclared top-level calls are rejected in PTC mode | Convert the call to `run_code` when the live tool definitions uniquely identify the target and validate its arguments |
 | Locate a code error | Return the native error and stack | Map the error to the cell source; suggest an edit when a missing trailing delimiter has one verified correction |
-| Work with the current project | Relative Node paths depend on the host process directory | Resolve file paths, session module imports, and default child-process directories from the session project directory |
+| Work with the current directory | Execute in the directory resolved by the Host for the current call | New-cell file operations, imports, and default child processes use the current execution directory; existing modules and import closures retain their source base |
 | Find tools and parameters | Read through the tool interfaces already supplied to the model | Retrieve matching interfaces in one byte-budgeted `capabilities.search` response, or list and inspect members |
 | Transfer data beyond plain JSON | JSON cannot fully represent `undefined`, BigInt, cycles, and similar values | Preserve supported special values and reference relationships for further computation and recovery |
 | Inspect computation state | No reusable session variables remain after a call | View retained names, source definitions, reuse counts, and bounded value previews in the REPL tab |
@@ -73,7 +79,7 @@ Default PTC mode starts every execution in a fresh environment: variables from t
 
 The following sections explain usage and limits. See the [runtime reference](docs/runtime-reference.md) for complete language rules, configuration fields, and diagnostics.
 
-Inside `run_code`, use `await capabilities.search({ query: "read file content", budgetBytes: 8192 })` to retrieve complete contracts within a response budget; oversized entries provide an individual retrieval reference. In settings, search the capability list directly, check common capabilities and select automatic, full, on-demand or closed disclosure for tools, Skills and MCP resources. Each MCP server also has an enable switch, while its individual tools retain independent policies. No JSON entry is required. Enable capability management to apply the saved configuration and display session capability plans. Statistics use a switch, sample counts and a percentage input. Independent statistics use actual session-family coverage and preserve manual choices when disabled or damaged. New sessions assemble capability descriptions before the first request and place them before task text. Concise category-purpose navigation and manually pinned contracts precede statistically selected descriptions to improve cross-session prefix reuse; actual cache hits depend on the provider. Existing sessions retain their frozen plan; `/capabilities refresh` synchronizes saved settings, runtime members and a durable model notification. Refresh the current session from the sparkle menu, or select an explicit target in capability settings. Both buttons use the official Host command without starting a model task. Capability settings use one permanent filter bar with compatible type/source selections. Usage statistics show workspace and global eligible-family counts and coverage. Budget preview recomputes the current inventory using the same allocation rules. Configurations and sessions separates named settings (save, rename, delete, file import/export and atomic switching) from frozen session results; a session’s source settings can be copied into a named configuration. Changing a configuration does not implicitly refresh existing sessions. All switches use the official DSH appearance. Large results and logs retain complete presentation through the Host spill service without changing program values. See the [context optimization plan](docs/context-optimization-plan.md) for implementation evidence. An authorized paid comparison of seven fixed ordinary tasks plus one canary ran through blind review and unblinding. Plugin efficiency scored 15/24 versus 10/24 for baseline, and ordinary-task token traffic was 122,933 versus 325,862. Three baseline tasks exceeded their preset call or token budgets, so machine acceptance failed; this is a single-replicate observation, not a general quality or cost guarantee.
+Inside `run_code`, use `await capabilities.search({ query: "read file content", budgetBytes: 8192 })` to retrieve complete contracts within a response budget; oversized entries provide an individual retrieval reference. In settings, search the capability list directly, check common capabilities and select automatic, full, on-demand or closed disclosure for tools, Skills and MCP resources. Each MCP server also has an enable switch, while its individual tools retain independent policies. No JSON entry is required. Enable capability management to apply the saved configuration and display session capability plans. Statistics use a switch, sample counts and a percentage input. Independent statistics use actual session-family coverage and preserve manual choices when disabled or damaged. New sessions assemble capability descriptions before the first request and place them before task text. Concise category-purpose navigation and manually pinned contracts precede statistically selected descriptions to improve cross-session prefix reuse; actual cache hits depend on the provider. Existing sessions retain their enablement and disclosure choices. Host contract revisions or removals are announced through appended context without waiting for a settings refresh. User-only Skills describe their /name entry and never recommend model loading through tools.skill; `/capabilities refresh` synchronizes saved settings, runtime members and a durable model notification. Refresh the current session from the sparkle menu, or select an explicit target in capability settings. Both buttons use the official Host command without starting a model task. Capability settings use one permanent filter bar with compatible type/source selections. Usage statistics show workspace and global eligible-family counts and coverage. Budget preview recomputes the current inventory using the same allocation rules. Configurations and sessions separates named settings (save, rename, delete, file import/export and atomic switching) from frozen session results; a session’s source settings can be copied into a named configuration. Changing a configuration does not implicitly refresh existing sessions. All switches use the official DSH appearance. Large results and logs retain complete presentation through the Host spill service without changing program values. See the [context optimization plan](docs/context-optimization-plan.md) for implementation evidence. An authorized paid comparison of seven fixed ordinary tasks plus one canary ran through blind review and unblinding. Plugin efficiency scored 15/24 versus 10/24 for baseline, and ordinary-task token traffic was 122,933 versus 325,862. Three baseline tasks exceeded their preset call or token budgets, so machine acceptance failed; this is a single-replicate observation, not a general quality or cost guarantee.
 
 ## Continuous computation and language extensions
 
@@ -136,6 +142,14 @@ edit_run_code({
 
 An edit **reruns the entire cell**; this example returns `12`. Earlier state changes are not rolled back. If the code writes files or calls external services, rerunning still requires considering duplicate effects. Edits can repair failed code or refine a successful computation.
 
+Each regular-expression edit requires `pattern`, `flags`, `replacement`, and `expected_matches`. `flags` must be a string; pass `""` explicitly when no flags are needed:
+
+```js
+edit_run_code({
+  regex_edits: [{ pattern: "value >= 8", flags: "", replacement: "value >= 10", expected_matches: 1 }]
+})
+```
+
 Republishing a historical result as a compacted display entry is not another execution and does not make the older cell the new edit target. A newer failed cell remains available for correction.
 
 ### Recover from identifiable call problems
@@ -153,9 +167,9 @@ A volatile state cannot be saved as a durable checkpoint, but a save rejection l
 
 ## Project files and tool capabilities
 
-### Start from the session project directory
+### Start from the current working directory
 
-The model can use Node.js directly to read files, process data, and run programs. Relative file paths and imports in session code resolve from the recorded session project directory. Child processes use that directory when `cwd` is omitted; an explicit directory still takes precedence.
+The model can use Node.js directly to read files, process data, and run programs. New cells resolve relative file operations, imports and child processes without an explicit `cwd` from DSH’s current working directory. Switching directories preserves existing bindings and modules; escaped import closures and captured `require` retain their source bases. Recovery uses each cell’s recorded directory. Explicit paths and directory options still take precedence.
 
 Ordinary module computations can run directly in a cell and be reused by later cells. Use a process or host tool when the task needs a separate process, a particular execution environment, or an external engine check.
 

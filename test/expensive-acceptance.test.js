@@ -30,7 +30,11 @@ import { editRejectedCell } from '../internal/rejected-cell-editor.js'
 import { ptcToolsMode } from '../scripts/dsh-host-contract.mjs'
 import { analyzeSession } from '../scripts/ab-headless-trajectories.mjs'
 import { Session } from '@deepseek-ai/dsh-session'
-import { createCapabilityEnvironment } from '../internal/capability-environment.js'
+import { createCapabilityEnvironment as createEnvironment } from '../internal/capability-environment.js'
+
+const createCapabilityEnvironment = options => createEnvironment({ ...options,
+  sessionHistoryForAgent: async agent => ({ events: agent.session.snapshotEvents() }),
+})
 
 const headlessRuntime = { toolsMode: 'ptc', permissionMode: 'danger-full-access' }
 
@@ -101,6 +105,40 @@ test('additive recovered descriptions retain visible subsets, enforce their tota
   assert.deepEqual(restored.failures, [])
   assert.equal(restored.requests.at(-1).sections[0].chars, 40)
   assert.match(auditRuntimeContexts([a, b, header(2), replacement, { ...b, seq: 4 }], config).failures.join('\n'), /repeat a visible capability entry/)
+})
+
+test('calling-contract updates account for every retained notification and reject damaged provenance', async () => {
+  const session = Session.create('calling-contract-context-audit')
+  const agent = { id: session.id, session }
+  let schemas = [{ name: 'probe', parameters: { type: 'object' }, output: { type: 'string' } }]
+  const env = createCapabilityEnvironment({ ctx: {}, config: { capabilityManagementEnabled: true,
+    capabilityBaseline: '[]', capabilityOverrides: '{"tools.probe":"full"}', capabilityStatistics: '{"enabled":false}',
+    capabilityBudgetBytes: 4096, capabilityDirectoryBytes: 4096 }, toolSchemasForAgent: () => schemas })
+  session.append('system/message', { turn: 1, step: 1,
+    message: createSystemMessage({ source: { kind: 'system-prompt' }, content: [{ type: 'text', text: 'Fixture system prompt.' }] }) },
+    { surfaceOp: 'append' })
+  await env.prepare(agent, [])
+  const accept = async () => {
+    const decision = await env.preStep({ agent }, async () => ({ kind: 'enter', messages: [] }))
+    for (const message of decision.messages) session.append('user/message', message, { surfaceOp: 'append' })
+  }
+  await accept()
+  schemas = [{ ...schemas[0], output: { type: 'number' } }]
+  await accept()
+  schemas = [{ ...schemas[0], output: { type: 'boolean' } }]
+  await accept()
+  const events = [{ type: 'session', id: session.id }, ...session.snapshotEvents(), { type: 'request/header', seq: session.seq }]
+  const config = { allowed: ['capability-plan', 'capability-contracts'].map(form => ({ name: `tools:ptc-plus-${form}`, maxChars: 16384 })), maxSnapshotChars: 32768 }
+  const audit = auditRuntimeContexts(events, config)
+  assert.deepEqual(audit.failures, [])
+  const updates = events.filter(event => event.data?.source?.form === 'capability-contracts')
+  assert.equal(updates.length, 2)
+  assert.equal(audit.requests[0].sections.find(item => item.name === 'tools:ptc-plus-capability-contracts').chars,
+    updates.reduce((sum, event) => sum + event.data.content[0].text.length, 0))
+  const damaged = structuredClone(events)
+  damaged.find(event => event.data?.source?.form === 'capability-contracts').data.source.digest = 'damaged'
+  assert.match(auditRuntimeContexts(damaged, config).failures.join('\n'), /malformed PTC runtime message/)
+  await env.dispose()
 })
 
 test('public series headers keep exact prefix checks while bundled streams retain accounting', () => {

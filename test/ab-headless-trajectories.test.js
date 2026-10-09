@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { createFixtureSessionServices } from './host-fixture.js'
 import { ptcToolsMode } from '../scripts/dsh-host-contract.mjs'
 import { execFileSync } from 'node:child_process'
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
@@ -38,7 +39,9 @@ const runtime = { toolsMode: 'ptc', permissionMode: 'danger-full-access' }
 
 test('permits only validated enabled capability plans matching the resolved A/B treatment', async () => {
   const session = Session.create('capability-ab-treatment')
-  const env = createCapabilityEnvironment({ ctx: {}, config: { capabilityManagementEnabled: true,
+  const services = createFixtureSessionServices()
+  services.remember(session)
+  const env = createCapabilityEnvironment({ ctx: { sessionQuery: services.sessionQuery }, config: { capabilityManagementEnabled: true,
     capabilityBaseline: '[]', capabilityOverrides: '{}', capabilityStatistics: '{"enabled":false}' },
     toolSchemasForAgent: () => [] })
   const agent = { id: session.id, session }

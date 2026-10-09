@@ -10,6 +10,7 @@ import {
   reduceStateOperations,
 } from './session-journal.js'
 import {
+  foldSessionTimeline,
   pathToHead,
   recoveryBoundaryForHistory,
   recoverJournal,
@@ -26,6 +27,7 @@ import { executionPolicies } from './binding-update-policy.js'
 import {
   createReplMemorySnapshot,
   normalizeReplMemorySnapshot,
+  REPL_MEMORY_META_KEY,
   unavailableReplMemorySnapshot,
 } from './repl-memory-projection.js'
 
@@ -34,8 +36,12 @@ const UNAVAILABLE_SURFACE_GENERATION = Symbol('unavailableSurfaceGeneration')
 
 function surfaceGeneration(session, provenanceRequired = true) {
   try {
-    return session?.surface?.replaceGeneration
-      ?? (provenanceRequired ? UNAVAILABLE_SURFACE_GENERATION : undefined)
+    const surface = session?.surface
+    const generation = surface?.replaceGeneration
+    if (generation === undefined) return provenanceRequired ? UNAVAILABLE_SURFACE_GENERATION : undefined
+    return surface.contentGeneration === undefined
+      ? generation
+      : `${generation}:${surface.contentGeneration}`
   } catch {
     return provenanceRequired ? UNAVAILABLE_SURFACE_GENERATION : undefined
   }
@@ -145,17 +151,25 @@ class SessionKernel {
     } catch (error) {
       record.failed = true
       record.reason = error
-      return
+      return Promise.resolve(record)
     }
     const attempt = Promise.resolve(reset).then(
-      () => { this.reclamationRecords.delete(sequence) },
+      () => { this.reclamationRecords.delete(sequence); return record },
       error => {
         record.failed = true
         record.reason = error
+        return record
       },
     )
     this.reclamationAttempts.add(attempt)
     attempt.then(() => { this.reclamationAttempts.delete(attempt) })
+    return attempt
+  }
+
+  async prepareWorker() {
+    await Promise.all([...this.reclamationAttempts])
+    const failures = [...this.reclamationRecords.values()].filter(record => record.failed).map(record => record.reason)
+    if (failures.length) throw new AggregateError(failures, 'previous computation helper reclamation failed; dispose the session before continuing')
   }
 
   valueLimits(config = this.config) {
@@ -480,7 +494,17 @@ class SessionKernel {
       this.workerObservation = undefined
       // A refused reclamation stays recorded on this kernel instead of becoming
       // an unhandled rejection; the kernel keeps the worker until dispose.
-      this.resetWorker(worker)
+      void this.resetWorker(worker).then(record => {
+        if (record.failed) {
+          result = { ...result, error: { ...result.error,
+            message: `${result.error?.message ?? 'cell terminated'}; helper reclamation failed: ${String(record.reason?.message ?? record.reason)}` } }
+          if (journal !== undefined && replay === undefined) {
+            this.completeJournal(journal, 'discarded', result, journal.volatileReason, active.diagnostics)
+          }
+        }
+        active.finish(result)
+      })
+      return
     }
     if (!terminate && active.observing && replay === undefined) {
       // Computation and journal settlement are complete. Observation cannot change either.
@@ -646,6 +670,7 @@ export class SessionRuntime {
     this.withInitiator = typeof options.withInitiator === 'function' ? options.withInitiator : undefined
     this.observeSession = options.observeSession ?? (() => false)
     this.readSessionLog = options.readSessionLog ?? (async session => session)
+    this.sessionForId = options.sessionForId
     this.disposal = undefined
   }
 
@@ -690,7 +715,29 @@ export class SessionRuntime {
     if (this.disposed || !this.config.replViewEnabled) return undefined
     const { observation: _observation, ...expected } = normalizeReplMemorySnapshot(memory)
     if (!expected.available || expected.entries.length === 0) return undefined
-    return this.kernels.get(sessionId)?.observe(expected, signal)
+    const kernel = this.kernels.get(sessionId)
+    const session = kernel?.session ?? this.sessionForId?.(sessionId)
+    if (session !== undefined && kernel?.surfaceProvenanceRequired !== false) {
+      const observed = await this.readSessionLog(session, signal)
+      signal?.throwIfAborted()
+      const visible = visibleExecutableCallSeqs(observed)
+      if (kernel !== undefined) {
+        if ([...kernel.liveCallSeqs].some(seq => !visible.has(seq))) return unavailableReplMemorySnapshot()
+        kernel.surfaceGeneration = surfaceGeneration(session)
+      } else {
+        const timeline = foldSessionTimeline(observed.events)
+        const history = recoverJournal(observed, undefined, { visibleCallSeqs: visible })
+        const head = history.nodes[history.head]
+        if (head === undefined) return unavailableReplMemorySnapshot()
+        // A cold inventory can describe a proved recorded frontier without
+        // instantiating a worker. It cannot describe a discarded suffix.
+        const resultSeq = timeline.results.get(head.callSeq)?.eventSeq
+        const result = observed.events.find(event => event.type === 'tool/result' && event.seq === resultSeq)
+        const recorded = result?.data?.meta?.[REPL_MEMORY_META_KEY]?.memory
+        if (!isDeepStrictEqual(recorded, memory)) return unavailableReplMemorySnapshot()
+      }
+    }
+    return kernel?.observe(expected, signal)
   }
 
   async runTentative(sessionContext, request, { programCompletion = false } = {}) {
@@ -703,6 +750,9 @@ export class SessionRuntime {
       return completed({ logs: [], error: { kind: 'exception', message: messageOf(error) } })
     }
     request = { ...request, bindings: bindingDescriptors.namespaces, bindingDescriptors }
+    if (request.cwd !== undefined && (typeof request.cwd !== 'string' || !isAbsolute(request.cwd))) {
+      return completed({ logs: [], error: { kind: 'exception', message: 'PTC execution cwd must be an absolute path' } })
+    }
     const {
       id: sessionId,
       session,
@@ -783,6 +833,7 @@ export class SessionRuntime {
       policies.rewritesEnabled,
       policies.languageSemantics,
       policies.moduleTransform,
+      request.cwd ?? cwd ?? null,
     )
     const workerReservation = kernel.reserveWorkerConfiguration(cellConfig)
     let result

@@ -3,7 +3,7 @@ import test from 'node:test'
 import { spawnSync } from 'node:child_process'
 import { uncoveredEnvironment } from './subprocess-environment.js'
 import { createContext, runInContext } from 'node:vm'
-import { mkdtemp, writeFile, rm } from 'node:fs/promises'
+import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -110,24 +110,80 @@ for (const bindingUpdates of ['stateful', 'protected']) {
 test('managed module helpers retain captured intrinsics after earlier module effects', async t => {
   const directory = await mkdtemp(join(tmpdir(), 'ptc-captured-intrinsics-'))
   t.after(() => rm(directory, { recursive: true, force: true }))
-  for (const extension of ['mjs','cjs']) {
-    const mutation = join(directory, `mutate.${extension}`)
-    const use = join(directory, `use.${extension}`)
-    await writeFile(mutation, 'Object.prototype.constructor=null;Function.prototype.constructor=null;')
-    const body = `const d=C=>C;@d class C{value=4};
-      const p=()=>{};class Legacy{constructor(@p public value:number){}}
-      function f(){let x=2;return x};const result=[f(),new C().value,new Legacy(5).value];`
-    await writeFile(use, body + (extension === 'mjs' ? 'export {result}' : 'exports.result=result'))
-    const runtime = new SessionRuntime({ bindingUpdates: 'stateful', durableReplay: false })
-    t.after(() => runtime.dispose())
-    const load = path => extension === 'mjs' ? `await import(${JSON.stringify(pathToFileURL(path).href)})`
-      : `require(${JSON.stringify(path)})`
-    const first = await runtime.run(`module-intrinsics-${extension}`, { program: `${load(mutation)};return 1`, bindings: [] })
-    assert.equal(first.error, undefined, JSON.stringify(first.error))
-    const result = await runtime.run(`module-intrinsics-${extension}`, { program: `return JSON.stringify((${load(use)}).result)`, bindings: [] })
-    assert.equal(result.error, undefined, JSON.stringify(result.error))
-    assert.equal(result.value, '[2,4,5]')
+  for (const extension of ['mjs', 'cjs']) for (const explicitCwd of [false, true]) for (const mutate of [false, true]) {
+    await t.test(`${extension} ${explicitCwd ? 'explicit cwd' : 'native REPL cwd'} ${mutate ? 'mutated' : 'native'} intrinsics`, async t => {
+      const mutation = join(directory, `mutate.${extension}`)
+      const use = join(directory, `use.${extension}`)
+      await writeFile(mutation, mutate ? 'Object.prototype.constructor=null;Function.prototype.constructor=null;' : 'void 0;')
+      const body = `const d=C=>C;@d class C{value=4};
+        const p=()=>{};class Legacy{constructor(@p public value:number){}}
+        function f(){let x=2;return x};const result=[f(),new C().value,new Legacy(5).value];`
+      await writeFile(use, body + (extension === 'mjs' ? 'export {result}' : 'exports.result=result'))
+      const runtime = new SessionRuntime({ bindingUpdates: 'stateful', durableReplay: false })
+      t.after(() => runtime.dispose())
+      const load = path => extension === 'mjs' ? `await import(${JSON.stringify(pathToFileURL(path).href)})`
+        : `require(${JSON.stringify(path)})`
+      const request = program => ({ program, bindings: [], ...(explicitCwd ? { cwd: directory } : {}) })
+      const first = await runtime.run('module-intrinsics', request(`${load(mutation)};return 1`))
+      assert.equal(first.error, undefined, JSON.stringify(first.error))
+      const result = await runtime.run('module-intrinsics', request(`return JSON.stringify((${load(use)}).result)`))
+      assert.equal(result.error, undefined, JSON.stringify(result.error))
+      assert.equal(result.value, '[2,4,5]')
+      if (!explicitCwd && extension === 'cjs') {
+        const paths = await runtime.run('module-intrinsics', request(`return require.resolve.paths("ptc-lookup-probe").includes(${JSON.stringify(join(process.cwd(), 'repl', 'node_modules'))})`))
+        assert.equal(paths.error, undefined)
+        assert.equal(paths.value, true,
+          'Owned compilation must preserve the native REPL require search path.')
+      }
+    })
   }
+})
+
+test('escaped PTC imports and requires compile uncached modules from their captured directory', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'ptc-first-module-source-'))
+  t.after(() => rm(directory, { recursive: true, force: true }))
+  const [first, second] = ['first', 'second'].map(name => join(directory, name))
+  for (const [index, cwd] of [first, second].entries()) {
+    await mkdir(cwd)
+    await writeFile(join(cwd, 'late.mjs'), `export const value:number=${index + 1};`)
+    await writeFile(join(cwd, 'late.cjs'), `const value:number=${index + 1};exports.value=value;`)
+  }
+  for (const bindingUpdates of ['stateful', 'protected']) {
+    const runtime = new SessionRuntime({ bindingUpdates, durableReplay: false })
+    t.after(() => runtime.dispose())
+    const earlier = await runtime.run(bindingUpdates, { cwd: first, bindings: [], program: `
+      const oldLoad=()=>import('./late.mjs'); const oldRequire=require;
+      const oldEval=()=> (0,eval)("import('./late.mjs')");
+      const oldFunction=()=>Function("return import('./late.mjs')")();return 0;` })
+    assert.equal(earlier.error, undefined)
+    const loaded = await runtime.run(bindingUpdates, { cwd: second, bindings: [], program: `
+      return [(await oldLoad()).value,oldRequire('./late.cjs').value,
+        (await oldEval()).value,(await oldFunction()).value,
+        (await import('./late.mjs')).value,require('./late.cjs').value];` })
+    assert.equal(loaded.error, undefined, JSON.stringify(loaded.error))
+    assert.deepEqual(loaded.value, [1, 1, 1, 1, 2, 2])
+  }
+})
+
+test('escaped module loaders retain their compilation generation before a first load', async t => {
+  const cwd = await mkdtemp(join(tmpdir(), 'ptc-uncached-generation-'))
+  t.after(() => rm(cwd, { recursive: true, force: true }))
+  for (const name of ['old', 'current']) {
+    await writeFile(join(cwd, `${name}.mjs`), 'export const value:number=1;export function write(){value=2;return value}')
+    await writeFile(join(cwd, `${name}.cjs`), 'const value:number=1;exports.write=()=>{value=2;return value}')
+  }
+  const runtime = new SessionRuntime({ bindingUpdates: 'protected', durableReplay: false })
+  t.after(() => runtime.dispose())
+  const first = await runtime.run('module-generation', { cwd, bindings: [],
+    program: "const oldImport=()=>import('./old.mjs');const oldRequire=require;return 0" })
+  assert.equal(first.error, undefined)
+  runtime.reconfigure({ bindingUpdates: 'stateful', durableReplay: false })
+  const result = await runtime.run('module-generation', { cwd, bindings: [], program: `
+    const oldModule=await oldImport(),oldCommon=oldRequire('./old.cjs');const checks=[];
+    for(const write of [oldModule.write,oldCommon.write])try{checks.push(write())}catch(error){checks.push(error.name)}
+    checks.push((await import('./current.mjs')).write(),require('./current.cjs').write());return checks;` })
+  assert.equal(result.error, undefined, JSON.stringify(result.error))
+  assert.deepEqual(result.value, ['TypeError', 'TypeError', 2, 2])
 })
 
 test('private method bookkeeping retains captured WeakSet operations in cells and modules', async t => {

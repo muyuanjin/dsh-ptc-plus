@@ -3,7 +3,7 @@ import test from 'node:test'
 import { createReplObservationInterest, REPL_OBSERVATION_RPC_CONTRACT } from '../internal/repl-observation-interest.js'
 import { SessionRuntime } from '../internal/session-runtime.js'
 
-function fixture(scoped = true, observe) {
+function fixture(scoped = true, observe, eventListeners) {
   let handler
   let registered = false
   let connect
@@ -11,6 +11,10 @@ function fixture(scoped = true, observe) {
   const effect = register => { const release = register(); effects.push(release); return release }
   const ctx = {
     effect,
+    ...(eventListeners === undefined ? {} : { on(name, listener) {
+      eventListeners.set(name, listener)
+      return () => eventListeners.delete(name)
+    } }),
     inject(names, callback) {
       assert.deepEqual(names, ['ptcPlusRpc'])
       connect = callback
@@ -64,6 +68,20 @@ test('visible observation interest is bounded, cancellable and scoped to its pub
     await target.owner.dispose()
   }
   await createReplObservationInterest({}, false).dispose()
+})
+
+test('committed session changes wake only the matching observation reader without starting computation', async () => {
+  const listeners = new Map()
+  const target = fixture(true, undefined, listeners)
+  const a = target.call('watch', { sessionId: 'a' }, new AbortController().signal)
+  const b = target.call('watch', { sessionId: 'b' }, new AbortController().signal)
+  listeners.get('session/event')({ id: 'a' }, { type: 'arbitrary/pure-message-projection' })
+  assert.deepEqual(await a, { ok: true, value: { changed: true } })
+  assert.equal(target.owner.has('b'), true)
+  assert.equal(target.owner.has('a'), false)
+  await target.owner.dispose()
+  assert.deepEqual(await b, { ok: true, value: null })
+  assert.equal(listeners.size, 0)
 })
 
 test('one-shot observation validates requests and cancels reads on owner disablement', async () => {

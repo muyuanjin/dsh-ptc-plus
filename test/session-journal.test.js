@@ -91,6 +91,7 @@ function journal(overrides = {}) {
     version,
     ...(version >= LANGUAGE_SEMANTICS_JOURNAL_VERSION ? { languageSemantics: 'legacy-v1' } : {}),
     ...(version > LANGUAGE_SEMANTICS_JOURNAL_VERSION ? { moduleTransform: LEGACY_USER_BINDING_TRANSFORM } : {}),
+    ...(version >= 11 ? { executionCwd: null } : {}),
     ...(version >= 4 ? {
       bindingPolicy: { variableRedeclarations: true, functionClassRedeclarations: false },
       rewritePolicy: { autoRewriteImports: true, autoStripExports: true, autoSplitRedeclarations: true },
@@ -544,9 +545,37 @@ test('reader reconstructs the observation surface rather than using a newer live
     return { events, cursor: 1, header: {}, [Symbol.dispose]() {} }
   } })
   assert.deepEqual(observed.surface.nodes, [0, 1])
+  assert.deepEqual(observed.surface.sourceMessages, [])
   const nodes = [0, 1]
   assert.equal(advanceSessionSurface(nodes, { surfaceOp: { op: 'replace', startSeq: 99, endSeq: 1 } }), nodes)
   assert.equal(advanceSessionSurface(nodes, { surfaceOp: { op: 'replace', startSeq: 1, endSeq: 0 } }), nodes)
+})
+
+test('source qualification uses projected assistant arguments from the same observed cut', async () => {
+  const args = JSON.stringify({ code: 'const retained = 41; return retained' })
+  const message = { id: 'source-message', role: 'assistant', content: [{
+    type: 'tool-call', id: 'projected-call', name: 'run_code', arguments: args,
+  }] }
+  const events = [
+    { seq: 0, type: 'assistant/message', data: { message }, surfaceOp: 'append' },
+    { seq: 1, type: 'tool/call', data: { callId: 'projected-call', name: 'run_code', arguments: args } },
+  ]
+  let projected = message
+  const session = { id: 'projected-source', seq: 2, surface: { nodes: [0] },
+    deriveEventMessage: () => projected }
+  const query = { async observeSession() {
+    return { events, cursor: 1, header: {}, [Symbol.dispose]() {} }
+  } }
+  const before = await readSessionLog(session, query)
+  assert.deepEqual([...visibleExecutableCallSeqs(before)], [1])
+  projected = { ...message, content: [{ ...message.content[0], arguments: '{"code":"return 9"}' }] }
+  const after = await readSessionLog(session, query)
+  assert.deepEqual([...visibleExecutableCallSeqs(after)], [])
+  assert.deepEqual([...visibleExecutableCallSeqs(before)], [1])
+  assert.deepEqual(after.events, events)
+  assert.deepEqual(after.surface.nodes, before.surface.nodes)
+  session.seq = 3
+  assert.deepEqual([...visibleExecutableCallSeqs(await readSessionLog(session, query))], [])
 })
 
 test('ignores an unjournaled edit call with an invalid historical sequence', () => {
@@ -656,6 +685,7 @@ test('creates journals, compares semantics, validates names, and merges metadata
     bindingPolicy: { variableRedeclarations: false, functionClassRedeclarations: false },
     rewritePolicy: { autoRewriteImports: true, autoStripExports: true, autoSplitRedeclarations: true },
     moduleSemantics: { defaultExportBinding: 'live-readonly', importExpressionBoundary: 'statement-safe' },
+    executionCwd: null,
     userBindingsFingerprint: null,
     userBindingsReusePolicy: 'implementation-v1',
     userBindingsShadowPolicy: 'per-name',
@@ -2211,6 +2241,18 @@ test('requires complete name evidence tied to the full activated snapshot before
   }))), /matching provider/)
 })
 
+test('records exact execution directories and preserves predecessor directory semantics', () => {
+  const current = journal({ executionCwd: process.cwd() })
+  assert.equal(normalizeJournal(current).executionCwd, process.cwd())
+  const predecessor = journal({ version: 10 })
+  assert.equal(normalizeJournal(predecessor).executionCwd, null)
+  assert.equal(normalizeJournal(normalizeJournal(predecessor)).executionCwd, null)
+  assert.throws(() => normalizeJournal({ ...predecessor, executionCwd: process.cwd() }), /invalid.*field executionCwd/)
+  for (const executionCwd of [undefined, '', 'relative', 1]) {
+    assert.throws(() => normalizeJournal({ ...current, executionCwd }), /execution directory/)
+  }
+})
+
 test('migrates predecessor journals and only unambiguous legacy call identities', () => {
   const relationless = normalizeJournal(journal({ version: 4 }))
   assert.equal(relationless.version, JOURNAL_VERSION)
@@ -2224,6 +2266,7 @@ test('migrates predecessor journals and only unambiguous legacy call identities'
     version: JOURNAL_VERSION,
     languageSemantics: 'legacy-v1',
     moduleTransform: LEGACY_USER_BINDING_TRANSFORM,
+    executionCwd: null,
     bindingPolicy: { variableRedeclarations: true, functionClassRedeclarations: false },
     rewritePolicy: { autoRewriteImports: false, autoStripExports: false, autoSplitRedeclarations: false },
     moduleSemantics: { defaultExportBinding: 'legacy-variable', importExpressionBoundary: 'legacy' },

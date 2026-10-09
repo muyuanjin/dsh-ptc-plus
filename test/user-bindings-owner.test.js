@@ -5,7 +5,16 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { Worker } from 'node:worker_threads'
+import { readBindingToggle } from '../internal/binding-toggle-receipt.js'
 import { Session } from '@deepseek-ai/dsh-session'
+import { Context } from '@deepseek-ai/cordis'
+import { AgentRegistry } from '@deepseek-ai/dsh-agent'
+import { AgentLoop } from '@deepseek-ai/dsh-agent-loop'
+import { SessionStore } from '@deepseek-ai/dsh-session'
+import { SessionProjectionRegistry } from '@deepseek-ai/dsh-session-projection'
+import { SystemPrompt } from '@deepseek-ai/dsh-system-prompt'
+import { ToolRuntime } from '@deepseek-ai/dsh-tools'
+import { createSystemMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { assertObjectJsonSchema, assertSupportedJsonSchema } from '@deepseek-ai/dsh-tools'
 import {
   USER_BINDINGS_RPC_CONTRACT,
@@ -62,6 +71,90 @@ function injectedAgentContext(services) {
 function nestedExecution(agent) {
   return { agent, parent: { name: 'run_code' } }
 }
+
+test('confirmed binding toggles publish a configuration receipt without waking or claiming initialization', async t => {
+  const session = Session.create('binding-toggle-receipt')
+  session.append('system/message', { turn: 1, step: 1, message: createSystemMessage('Host system') }, { surfaceOp: 'append' })
+  const agent = { session }
+  const target = ownerFixture()
+  target.ctx.agents = { list: () => [agent, agent] }
+  const store = fakeStore()
+  const owner = createUserBindingsOwner(target.ctx, { enabled: true, store })
+  t.after(() => owner.dispose())
+  const result = await call(target, 'enable', { id: 'x', expectedRevision: 3 })
+  assert.equal(result.ok, true)
+  const receipts = session.snapshotEvents().filter(event => event.type === 'user/message').map(event => readBindingToggle(event.data)).filter(Boolean)
+  assert.deepEqual(receipts, [{ schema: 'ptc-binding-toggle/v1', id: 'x', name: 'x', enabled: true, revision: 4 }])
+  assert.match(session.deriveMessages()[1].content[0].text, /does not prove model catalog delivery or worker initialization/)
+  store.setEnabled = async () => { throw new Error('CAS conflict') }
+  assert.equal((await call(target, 'disable', { id: 'x', expectedRevision: 3 })).ok, false)
+  assert.equal(session.snapshotEvents().length, 2)
+})
+
+test('binding configuration receipts wait for first accepted step and preserve the protected system head', async t => {
+  const ctx = new Context()
+  new SystemPrompt(ctx, { includeHarnessIdentity: false, includeRuntimeContext: false, personaPrefix: 'Fixture system prompt.', personaSuffix: '' })
+  new ToolRuntime(ctx, { mode: 'native' }); new AgentRegistry(ctx); new SessionStore(ctx); new SessionProjectionRegistry(ctx)
+  const requests = []
+  async function* stream(request) {
+    requests.push(request.messages)
+    yield { type: 'text-delta', index: 0, text: 'done' }
+    yield { type: 'finish', reason: { kind: 'stop' } }
+  }
+  ctx.effect(() => ctx.provide('llm', { async prepareCall(config) { return { config, stream, adapterDefaults: {} } }, stream }))
+  await ctx.plugin(AgentLoop, { agents: [] }).await()
+  const owned = await ctx.agents.create({ sessionId: 'binding-receipt-head', meta: { cwd: process.cwd(), delegationDepth: 0 }, agentOptions: { provider: 'fixture', model: 'fixture' } })
+  const target = ownerFixture(); target.ctx.agents = { list: () => [owned.agent] }
+  const owner = createUserBindingsOwner(target.ctx, { enabled: true, store: fakeStore() })
+  ctx.on('agent/pre-step', (payload, next) => owner.preStep(payload, next))
+  ctx.on('session/event', (session, event) => owner.committedEvent(session, event))
+  t.after(async () => { await owner.dispose(); await owned.dispose(); await ctx.fiber.dispose() })
+  assert.equal((await call(target, 'enable', { id: 'x', expectedRevision: 3 })).ok, true)
+  assert.equal(requests.length, 0)
+  assert.equal(owned.agent.session.seq, 0)
+  const agent = owned.agent
+  agent.send(createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: 'First task' }] }), 'next-turn', true)
+  await agent.whenIdle()
+  const events = agent.session.snapshotEvents()
+  const head = events.find(event => event.surfaceOp)
+  assert.equal(head.type, 'system/message')
+  assert.equal(requests.length, 1)
+  assert.equal(requests[0][0].role, 'system')
+  assert.equal(requests[0].filter(readBindingToggle).length, 1)
+  assert.throws(() => agent.session.append('user/message', createUserMessage('replace system'), {
+    surfaceOp: { op: 'replace', startSeq: head.seq, endSeq: head.seq }, sourceEventSeqs: [head.seq],
+  }), /protected|system|node 0/)
+  const before = agent.session.deriveMessages()
+  assert.equal((await call(target, 'disable', { id: 'x', expectedRevision: 4 })).ok, true)
+  assert.equal(agent.session.deriveMessages().length, before.length + 1)
+  assert.equal(agent.session.snapshotEvents().filter(event => readBindingToggle(event.data)).length, 2)
+})
+
+test('binding receipt admission distinguishes pending, cancelled and committed facts after compaction', async t => {
+  const ctx = new Context(); new SessionStore(ctx)
+  const session = ctx.sessions.create('binding-receipt-compaction')
+  const agent = { session, signal: new AbortController().signal }
+  const target = ownerFixture(); target.ctx.agents = { list: () => [agent] }
+  const owner = createUserBindingsOwner(target.ctx, { enabled: true, store: fakeStore() })
+  ctx.on('session/event', (session, event) => owner.committedEvent(session, event))
+  t.after(async () => { await owner.dispose(); await ctx.fiber.dispose() })
+  assert.equal((await call(target, 'enable', { id: 'x', expectedRevision: 3 })).ok, true)
+  const refused = { kind: 'stop' }
+  assert.equal(await owner.preStep({ agent }, async () => refused), refused)
+  const controller = new AbortController(); controller.abort()
+  assert.deepEqual((await owner.preStep({ agent, signal: controller.signal }, async () => ({ kind: 'enter', messages: [] }))).messages, [])
+  session.append('system/message', { turn: 1, step: 1, message: createSystemMessage('Host system') }, { surfaceOp: 'append' })
+  const proposal = await owner.preStep({ agent }, async () => ({ kind: 'enter', messages: [] }))
+  assert.equal(proposal.messages.length, 1)
+  assert.equal((await owner.preStep({ agent }, async () => ({ kind: 'enter', messages: proposal.messages }))).messages.length, 1)
+  const receipt = session.append('user/message', proposal.messages[0], { surfaceOp: 'append' })
+  session.append('user/message', createUserMessage('Compacted receipt'), {
+    surfaceOp: { op: 'replace', startSeq: receipt.seq, endSeq: receipt.seq }, sourceEventSeqs: [receipt.seq],
+  })
+  assert.equal((await call(target, 'disable', { id: 'x', expectedRevision: 4 })).ok, true)
+  assert.deepEqual((await owner.preStep({ agent }, async () => ({ kind: 'enter', messages: [] }))).messages, [])
+  assert.equal(session.snapshotEvents().filter(event => readBindingToggle(event.data)).length, 2)
+})
 
 test('submission identity and cell lease cannot be borrowed by a later request', async t => {
   const state = await acceptedDraftFixture()
@@ -189,7 +282,8 @@ function fakeStore() {
     save: async (...args) => (calls.push(['save', ...args]), 'save'),
     create: async (...args) => (calls.push(['create', ...args]), 'created'),
     update: async (...args) => (calls.push(['update', ...args]), 'updated'),
-    setEnabled: async (...args) => (calls.push(['setEnabled', ...args]), 'enabled'),
+    setEnabled: async (...args) => (calls.push(['setEnabled', ...args]), { revision: args[2] + 1,
+      entries: [{ id: args[0], name: args[0], enabled: args[1] }] }),
     remove: async (...args) => (calls.push(['remove', ...args]), 'removed'),
     importFile: async (...args) => (calls.push(['importFile', ...args]), 'imported'),
   }
@@ -344,8 +438,8 @@ test('routes management operations through one revision-aware store owner', asyn
   assert.equal((await call(target, 'save', {
     intent: 'update', originalId: 'x', entry, expectedRevision: 2,
   })).value, 'updated')
-  assert.equal((await call(target, 'enable', { id: 'x', expectedRevision: 3 })).value, 'enabled')
-  assert.equal((await call(target, 'disable', { id: 'x', expectedRevision: 4 })).value, 'enabled')
+  assert.equal((await call(target, 'enable', { id: 'x', expectedRevision: 3 })).value.entries[0].enabled, true)
+  assert.equal((await call(target, 'disable', { id: 'x', expectedRevision: 4 })).value.entries[0].enabled, false)
   assert.equal((await call(target, 'remove', { id: 'x', expectedRevision: 5 })).value, 'removed')
   assert.equal((await call(target, 'import', { path: 'x.ts', expectedRevision: 6, options: {} })).value, 'imported')
   assert.deepEqual(store.calls[0], ['create', entry, 1])

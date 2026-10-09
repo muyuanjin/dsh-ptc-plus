@@ -438,6 +438,7 @@ test('preserves feature evidence for versioned and legacy binding reuse policies
   delete legacy.userBindingNames
   delete legacy.languageSemantics
   delete legacy.moduleTransform
+  delete legacy.executionCwd
   assert.equal(derivePtcToolView(result({ dshPtcPlus: legacy })).ptc, true)
   assert.equal(derivePtcToolView(result({ dshPtcPlus: { ...legacy, userBindingsReusePolicy: 'implementation-v1' } })).ptc, false)
 })
@@ -461,6 +462,7 @@ test('validates current and historical import-expression semantics independently
   delete historical.userBindingNames
   delete historical.languageSemantics
   delete historical.moduleTransform
+  delete historical.executionCwd
   assert.equal(derivePtcToolView(result({ dshPtcPlus: historical })).ptc, true)
   assert.equal(derivePtcToolView(result({ dshPtcPlus: {
     ...historical,
@@ -488,6 +490,7 @@ test('validates language generations without accepting new fields in historical 
   const historical = { ...current, version: PER_NAME_USER_BINDINGS_JOURNAL_VERSION }
   delete historical.languageSemantics
   delete historical.moduleTransform
+  delete historical.executionCwd
   assert.equal(derivePtcToolView(result({ dshPtcPlus: historical })).ptc, true)
   assert.equal(derivePtcToolView(result({ dshPtcPlus: { ...historical, languageSemantics: 'stateful-v1' } })).ptc, false)
 })
@@ -535,6 +538,7 @@ test('validates per-name facts while preserving historical whole-entry presentat
     delete historical.userBindingsShadowPolicy
     delete historical.languageSemantics
     delete historical.moduleTransform
+    delete historical.executionCwd
     if (version === 1) delete historical.rewritePolicy
     if (version < 6) delete historical.userBindingsReusePolicy
     if (version < 5) delete historical.userBindingsFingerprint

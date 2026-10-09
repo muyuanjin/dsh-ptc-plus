@@ -1563,7 +1563,8 @@
   var PER_NAME_USER_BINDINGS_JOURNAL_VERSION = 8;
   var LANGUAGE_SEMANTICS_JOURNAL_VERSION = 9;
   var MODULE_TRANSFORM_JOURNAL_VERSION = 10;
-  var JOURNAL_VERSION = MODULE_TRANSFORM_JOURNAL_VERSION;
+  var EXECUTION_DIRECTORY_JOURNAL_VERSION = 11;
+  var JOURNAL_VERSION = EXECUTION_DIRECTORY_JOURNAL_VERSION;
   var LIVE_USER_BINDINGS_SHADOW_POLICY = "per-name";
   var LEGACY_USER_BINDINGS_SHADOW_POLICY = "whole-entry";
   var LIVE_USER_BINDINGS_REUSE_POLICY = "implementation-v1";
@@ -1579,7 +1580,8 @@
   var WHOLE_ENTRY_JOURNAL_FIELDS = /* @__PURE__ */ new Set(["version", "bindingPolicy", "rewritePolicy", "moduleSemantics", "userBindingsFingerprint", "userBindingsReusePolicy", "status", "calls", "operations", "confirms", "diagnostics", "completion", "volatileReason"]);
   var PER_NAME_JOURNAL_FIELDS = /* @__PURE__ */ new Set([...WHOLE_ENTRY_JOURNAL_FIELDS, "userBindingsShadowPolicy", "userBindingNames"]);
   var LANGUAGE_SEMANTICS_JOURNAL_FIELDS = /* @__PURE__ */ new Set([...PER_NAME_JOURNAL_FIELDS, "languageSemantics"]);
-  var JOURNAL_FIELDS = /* @__PURE__ */ new Set([...LANGUAGE_SEMANTICS_JOURNAL_FIELDS, "moduleTransform"]);
+  var MODULE_TRANSFORM_JOURNAL_FIELDS = /* @__PURE__ */ new Set([...LANGUAGE_SEMANTICS_JOURNAL_FIELDS, "moduleTransform"]);
+  var JOURNAL_FIELDS = /* @__PURE__ */ new Set([...MODULE_TRANSFORM_JOURNAL_FIELDS, "executionCwd"]);
   var FINGERPRINT_REUSE_JOURNAL_FIELDS = new Set([...WHOLE_ENTRY_JOURNAL_FIELDS].filter((field) => field !== "userBindingsReusePolicy"));
   var RELATIONLESS_JOURNAL_FIELDS = new Set([...FINGERPRINT_REUSE_JOURNAL_FIELDS].filter((field) => field !== "userBindingsFingerprint"));
   var PREDECESSOR_JOURNAL_FIELDS = /* @__PURE__ */ new Set(["version", "bindingMode", "rewritePolicy", "status", "calls", "operations", "confirms", "diagnostics", "completion", "volatileReason"]);
@@ -1604,7 +1606,7 @@
   var ERROR_FIELDS = /* @__PURE__ */ new Set(["kind", "message"]);
   var EDIT_TARGET_FIELDS = /* @__PURE__ */ new Set(["targetCallSeq"]);
   var DERIVED_RUN_FIELDS = /* @__PURE__ */ new Set(["code", "description"]);
-  var JOURNAL_VERSIONS = /* @__PURE__ */ new Set([LEGACY_JOURNAL_VERSION, INTERMEDIATE_JOURNAL_VERSION, PREVIOUS_JOURNAL_VERSION, USER_BINDING_RELATIONLESS_JOURNAL_VERSION, FINGERPRINT_REUSE_JOURNAL_VERSION, VERSIONED_BINDING_REUSE_JOURNAL_VERSION, IMPORT_BOUNDARY_JOURNAL_VERSION, PER_NAME_USER_BINDINGS_JOURNAL_VERSION, LANGUAGE_SEMANTICS_JOURNAL_VERSION, JOURNAL_VERSION]);
+  var JOURNAL_VERSIONS = /* @__PURE__ */ new Set([LEGACY_JOURNAL_VERSION, INTERMEDIATE_JOURNAL_VERSION, PREVIOUS_JOURNAL_VERSION, USER_BINDING_RELATIONLESS_JOURNAL_VERSION, FINGERPRINT_REUSE_JOURNAL_VERSION, VERSIONED_BINDING_REUSE_JOURNAL_VERSION, IMPORT_BOUNDARY_JOURNAL_VERSION, PER_NAME_USER_BINDINGS_JOURNAL_VERSION, LANGUAGE_SEMANTICS_JOURNAL_VERSION, MODULE_TRANSFORM_JOURNAL_VERSION, JOURNAL_VERSION]);
   var USER_BINDINGS_REUSE_POLICIES = /* @__PURE__ */ new Set([LEGACY_USER_BINDINGS_REUSE_POLICY, LIVE_USER_BINDINGS_REUSE_POLICY]);
   var USER_BINDINGS_SHADOW_POLICIES = /* @__PURE__ */ new Set([LEGACY_USER_BINDINGS_SHADOW_POLICY, LIVE_USER_BINDINGS_SHADOW_POLICY]);
   var USER_BINDING_NAME_STATES = /* @__PURE__ */ new Set(["provider", "local", "absent", "unknown"]);
@@ -2723,7 +2725,38 @@
     });
   }
 
+  // internal/capability-command-receipt.js
+  var PREFIX = "\n\nPTC Plus capability refresh receipt:\n";
+  var FALLBACKS = Object.freeze({
+    "saved-only": "Global choice saved, but the session update failed; inspect and retry session",
+    recorded: "Capabilities updated for session",
+    pending: "Capabilities prepared; they take effect at the first accepted model step for session",
+    unavailable: "Select an active PTC session; the command did not update session",
+    usage: "Use /capabilities to inspect or /capabilities refresh to apply saved settings for session"
+  });
+  var STATES = /* @__PURE__ */ new Set(["recorded", "pending", "unavailable", "usage", "saved-only"]);
+  function capabilityCommandReceipt(state, sessionId, error, proposal) {
+    if (!STATES.has(state) || typeof sessionId !== "string" || !sessionId) throw new TypeError("invalid capability command receipt");
+    if (error !== void 0 && (state !== "saved-only" || typeof error !== "string" || !error)) throw new TypeError("invalid capability command error");
+    if (proposal !== void 0 && (state !== "pending" || !proposal || typeof proposal.commandId !== "string" || typeof proposal.rawInput !== "string" || !proposal.message)) throw new TypeError("invalid capability proposal receipt");
+    return `${FALLBACKS[state]} ${sessionId}.${error ? ` ${error}` : ""}` + PREFIX + JSON.stringify({ schema: "ptc-capability-command/v1", state, sessionId, ...error === void 0 ? {} : { error }, ...proposal === void 0 ? {} : { proposal } });
+  }
+  function readCapabilityCommandReceipt(text) {
+    if (typeof text !== "string" || !text.includes(PREFIX)) return void 0;
+    try {
+      const receipt = JSON.parse(text.slice(text.indexOf(PREFIX) + PREFIX.length));
+      return receipt?.schema === "ptc-capability-command/v1" && STATES.has(receipt.state) && typeof receipt.sessionId === "string" && receipt.sessionId && capabilityCommandReceipt(receipt.state, receipt.sessionId, receipt.error, receipt.proposal) === text ? receipt : void 0;
+    } catch {
+      return void 0;
+    }
+  }
+
   // src/client-capabilities-view.js
+  function capabilityCommandText(t2, text) {
+    if (text?.key) return t2(text.key, text.params);
+    const receipt = readCapabilityCommandReceipt(text);
+    return receipt ? t2(`capabilities.receipt.${receipt.state}`, { session: receipt.sessionId, error: receipt.error ?? "" }) : text;
+  }
   var selections = ["automatic", "full", "on-demand", "closed"];
   var kinds = ["all", "tool", "skill", "resource", "other"];
   var compare = (a, b) => a < b ? -1 : a > b ? 1 : 0;
@@ -3064,6 +3097,16 @@
             }, t2("capabilities.restoreAutomatic")) : null,
             entry.common && entry.manual === "closed" ? h("p", { className: "ptcPlusDetail" }, t2("capabilities.closedBaseline")) : null,
             entry.kind === "skill" ? h("p", { className: "ptcPlusCapabilityNotice" }, t2("capabilities.skillDisclosure")) : null,
+            entry.kind === "skill" && entry.invocationConflict ? h(
+              "p",
+              { className: "ptcPlusCapabilityNotice" },
+              t2("capabilities.invocation.varies")
+            ) : null,
+            entry.kind === "skill" && entry.invocation ? h(
+              "p",
+              { className: "ptcPlusCapabilityNotice" },
+              t2(entry.invocation.modelInvocable ? entry.invocation.userInvocable ? "capabilities.invocation.both" : "capabilities.invocation.model" : "capabilities.invocation.user", { name: entry.name })
+            ) : null,
             entry.description ? h(
               "details",
               { className: "ptcPlusCapabilityDescription", key: entry.id },
@@ -3120,6 +3163,7 @@
         ),
         h("p", { className: "ptcPlusDetail" }, t2("capabilities.observationScope", { workspace: allocation.workspace, session: allocation.sessionId })),
         h("p", { className: "ptcPlusDetail" }, t2(statistics ? "capabilities.usageEvidenceHint" : "capabilities.previewHint")),
+        !statistics ? h("p", { className: "ptcPlusCapabilityNotice" }, t2("capabilities.coldStartHint")) : null,
         !statistics ? h(
           React.Fragment,
           null,
@@ -3153,6 +3197,8 @@
       const library = validateCapabilityProfiles(JSON.parse(value.capabilityProfiles ?? CONFIG_DEFAULTS.capabilityProfiles));
       const [selectedId, setSelectedId] = React.useState("");
       const [name2, setName] = React.useState("");
+      const [rename, setRename] = React.useState("");
+      const [copyName, setCopyName] = React.useState("");
       const [status, setStatus] = React.useState(null);
       const [busy, setBusy] = React.useState(false);
       const [sessionId, setSessionId] = React.useState("");
@@ -3179,9 +3225,9 @@
       }, [writable]);
       const selected = library.profiles.find((profile) => profile.id === selectedId);
       const current = () => capabilityProfileConfiguration(Object.fromEntries(CAPABILITY_CONFIGURATION_KEYS.map((key) => [key, value[key]])));
-      const perform = async (operation) => {
+      const perform = async (area, operation) => {
         if (!mounted.current || !live.current?.writable || running.current) return;
-        const token = {};
+        const token = { area };
         running.current = token;
         const generation = lifecycle.current;
         setBusy(true);
@@ -3191,9 +3237,9 @@
         };
         try {
           await operation(assertCurrent);
-          if (generation === lifecycle.current) setStatus(t2("capabilities.configurationSaved"));
+          if (generation === lifecycle.current) setStatus({ area, key: "capabilities.configurationSaved" });
         } catch (error) {
-          if (generation === lifecycle.current) setStatus(String(error?.message ?? error));
+          if (generation === lifecycle.current) setStatus({ area, error: String(error?.message ?? error) });
         } finally {
           if (running.current === token) running.current = null;
           if (generation === lifecycle.current) setBusy(false);
@@ -3204,11 +3250,12 @@
         const next = validateCapabilityProfiles({ schema: library.schema, profiles });
         if (!await onChange(field("capabilityProfiles"), JSON.stringify(next))) throw new Error(t2("capabilities.configurationUnavailable"));
       };
-      const save = async (configuration) => {
-        const existing = library.profiles.find((profile2) => profile2.name === name2.trim());
-        const profile = { id: existing?.id ?? configurationId(), name: name2.trim(), configuration };
+      const save = async (configuration, requestedName = name2) => {
+        const existing = library.profiles.find((profile2) => profile2.name === requestedName.trim());
+        const profile = { id: existing?.id ?? configurationId(), name: requestedName.trim(), configuration };
         await saveLibrary([...library.profiles.filter((item) => item.id !== profile.id), profile]);
         setSelectedId(profile.id);
+        setRename(profile.name);
       };
       const exportProfiles = () => {
         const document2 = { schema: library.schema, profiles: selected ? [selected] : library.profiles };
@@ -3224,7 +3271,7 @@
         const file = event.target.files?.[0];
         event.target.value = "";
         if (!file) return;
-        void perform(async (assertCurrent) => {
+        void perform("transfer", async (assertCurrent) => {
           if (file.size > 2e6) throw new Error(t2("capabilities.configurationTooLarge"));
           const imported = validateCapabilityProfiles(JSON.parse(await file.text()));
           assertCurrent();
@@ -3241,6 +3288,7 @@
           await saveLibrary(merged);
         });
       };
+      const feedback = (area) => h("p", { className: "ptcPlusTaskFeedback", role: "status" }, status?.area === area ? status.error ?? t2(status.key) : busy && running.current?.area === area ? t2("state.syncing") : "\xA0");
       const frozen = plans?.find((plan) => plan.sessionId === sessionId);
       let matches = false;
       try {
@@ -3254,95 +3302,175 @@
         h("p", { className: "ptcPlusDetail" }, t2("capabilities.configurationsHint")),
         h(
           "div",
-          { className: "ptcPlusProfileControls" },
+          { className: "ptcPlusCapabilityTasks" },
           h(
-            "label",
-            { className: "ptcPlusCapabilityFilter" },
-            h("span", null, t2("capabilities.configurationName")),
-            h("input", {
-              className: "ptcPlusInput",
-              value: name2,
-              maxLength: 80,
-              disabled: unavailable,
-              onChange: (event) => setName(event.target.value),
-              "aria-label": t2("capabilities.configurationName")
-            })
-          ),
-          h("button", { type: "button", className: "ptcPlusButton", disabled: unavailable || !name2.trim(), onClick: () => perform(() => save(current())) }, t2("capabilities.saveConfiguration")),
-          h(
-            "label",
-            { className: "ptcPlusCapabilityFilter" },
-            h("span", null, t2("capabilities.savedConfigurations")),
+            "section",
+            { className: "ptcPlusCapabilityTask" },
+            h("h5", null, t2("capabilities.saveConfiguration")),
             h(
-              "select",
-              {
-                className: "ptcPlusSelect",
-                value: selectedId,
-                disabled: unavailable,
-                "aria-label": t2("capabilities.savedConfigurations"),
-                onChange: (event) => {
-                  setSelectedId(event.target.value);
-                  setName(library.profiles.find((item) => item.id === event.target.value)?.name ?? "");
-                }
-              },
-              h("option", { value: "" }, t2("capabilities.chooseConfiguration")),
-              ...library.profiles.map((profile) => h("option", { key: profile.id, value: profile.id }, profile.name))
-            )
+              "div",
+              { className: "ptcPlusTaskControls" },
+              h(
+                "label",
+                { className: "ptcPlusCapabilityFilter" },
+                h("span", null, t2("capabilities.configurationName")),
+                h("input", {
+                  className: "ptcPlusInput",
+                  value: name2,
+                  maxLength: 80,
+                  disabled: unavailable,
+                  onChange: (event) => setName(event.target.value),
+                  "aria-label": t2("capabilities.configurationName")
+                })
+              ),
+              h("button", {
+                type: "button",
+                className: "ptcPlusButton",
+                disabled: unavailable || !name2.trim(),
+                onClick: () => perform("save", () => save(current()))
+              }, t2("capabilities.saveConfiguration"))
+            ),
+            feedback("save")
           ),
-          h("button", {
-            type: "button",
-            className: "ptcPlusButton",
-            disabled: unavailable || !selected || !onApplyConfiguration,
-            onClick: () => perform(() => onApplyConfiguration(selected.configuration))
-          }, t2("capabilities.applyConfiguration")),
-          h("button", {
-            type: "button",
-            className: "ptcPlusButton",
-            disabled: unavailable || !selected || !name2.trim(),
-            onClick: () => perform(() => saveLibrary(library.profiles.map((profile) => profile.id === selected.id ? { ...profile, name: name2.trim() } : profile)))
-          }, t2("capabilities.renameConfiguration")),
-          h("button", {
-            type: "button",
-            className: "ptcPlusButton",
-            disabled: unavailable || !selected,
-            onClick: () => perform(async () => {
-              await saveLibrary(library.profiles.filter((profile) => profile.id !== selected.id));
-              setSelectedId("");
-              setName("");
-            })
-          }, t2("capabilities.deleteConfiguration")),
-          h("button", { type: "button", className: "ptcPlusButton", disabled: library.profiles.length === 0, onClick: exportProfiles }, t2(selected ? "capabilities.exportConfiguration" : "capabilities.exportConfigurations")),
-          h("button", { type: "button", className: "ptcPlusButton", disabled: unavailable, onClick: () => fileInput.current.click() }, t2("capabilities.importConfigurations")),
-          h("input", {
-            ref: fileInput,
-            type: "file",
-            accept: ".json,application/json",
-            hidden: true,
-            disabled: unavailable,
-            onChange: importProfiles,
-            "aria-label": t2("capabilities.importConfigurations")
-          })
-        ),
-        selected ? h("p", { className: "ptcPlusDetail" }, t2(matches ? "capabilities.configurationMatches" : "capabilities.configurationDifferent")) : null,
-        h(
-          "div",
-          { className: "ptcPlusProfileSessionCopy" },
-          h("h5", null, t2("capabilities.copyFromSession")),
-          h("p", { className: "ptcPlusDetail" }, t2("capabilities.copySessionHint")),
           h(
-            "select",
-            { className: "ptcPlusSelect", value: sessionId, disabled: unavailable, "aria-label": t2("capabilities.copyFromSession"), onChange: (event) => setSessionId(event.target.value) },
-            h("option", { value: "" }, t2("capabilities.chooseSession")),
-            ...(plans ?? []).map((plan) => h("option", { key: plan.sessionId, value: plan.sessionId }, plan.sessionId))
+            "section",
+            { className: "ptcPlusCapabilityTask" },
+            h("h5", null, t2("capabilities.savedConfigurations")),
+            h(
+              "label",
+              { className: "ptcPlusCapabilityFilter" },
+              h("span", null, t2("capabilities.savedConfigurations")),
+              h(
+                "select",
+                {
+                  className: "ptcPlusSelect",
+                  value: selectedId,
+                  disabled: unavailable,
+                  "aria-label": t2("capabilities.savedConfigurations"),
+                  onChange: (event) => {
+                    setSelectedId(event.target.value);
+                    setRename(library.profiles.find((item) => item.id === event.target.value)?.name ?? "");
+                  }
+                },
+                h("option", { value: "" }, t2("capabilities.chooseConfiguration")),
+                ...library.profiles.map((profile) => h("option", { key: profile.id, value: profile.id }, profile.name))
+              )
+            ),
+            h(
+              "div",
+              { className: "ptcPlusTaskControls" },
+              h("button", {
+                type: "button",
+                className: "ptcPlusButton",
+                disabled: unavailable || !selected || !onApplyConfiguration,
+                onClick: () => perform("library", () => onApplyConfiguration(selected.configuration))
+              }, t2("capabilities.applyConfiguration")),
+              h("button", {
+                type: "button",
+                className: "ptcPlusButton",
+                disabled: unavailable || !selected,
+                onClick: () => perform("library", async () => {
+                  await saveLibrary(library.profiles.filter((profile) => profile.id !== selected.id));
+                  setSelectedId("");
+                  setRename("");
+                })
+              }, t2("capabilities.deleteConfiguration"))
+            ),
+            selected ? h(
+              React.Fragment,
+              null,
+              h("p", { className: "ptcPlusDetail" }, t2(matches ? "capabilities.configurationMatches" : "capabilities.configurationDifferent")),
+              h(
+                "div",
+                { className: "ptcPlusTaskControls" },
+                h(
+                  "label",
+                  { className: "ptcPlusCapabilityFilter" },
+                  h("span", null, t2("capabilities.renameTo")),
+                  h("input", {
+                    className: "ptcPlusInput",
+                    value: rename,
+                    maxLength: 80,
+                    disabled: unavailable,
+                    onChange: (event) => setRename(event.target.value),
+                    "aria-label": t2("capabilities.renameTo")
+                  })
+                ),
+                h("button", {
+                  type: "button",
+                  className: "ptcPlusButton",
+                  disabled: unavailable || !rename.trim(),
+                  onClick: () => perform("library", () => saveLibrary(library.profiles.map((profile) => profile.id === selected.id ? { ...profile, name: rename.trim() } : profile)))
+                }, t2("capabilities.renameConfiguration"))
+              )
+            ) : null,
+            feedback("library")
           ),
-          h("button", {
-            type: "button",
-            className: "ptcPlusButton",
-            disabled: unavailable || !name2.trim() || !frozen?.configuration,
-            onClick: () => perform(() => save(capabilityProfileConfiguration(frozen.configuration)))
-          }, t2("capabilities.saveSessionConfiguration"))
+          h(
+            "section",
+            { className: "ptcPlusCapabilityTask" },
+            h("h5", null, t2("capabilities.transferConfigurations")),
+            h("p", { className: "ptcPlusDetail" }, t2("capabilities.importHint")),
+            h(
+              "div",
+              { className: "ptcPlusTaskControls" },
+              h("button", { type: "button", className: "ptcPlusButton", disabled: library.profiles.length === 0, onClick: exportProfiles }, t2(selected ? "capabilities.exportConfiguration" : "capabilities.exportConfigurations")),
+              h("button", { type: "button", className: "ptcPlusButton", disabled: unavailable, onClick: () => fileInput.current.click() }, t2("capabilities.importConfigurations")),
+              h("input", {
+                ref: fileInput,
+                type: "file",
+                accept: ".json,application/json",
+                hidden: true,
+                disabled: unavailable,
+                onChange: importProfiles,
+                "aria-label": t2("capabilities.importConfigurations")
+              })
+            ),
+            feedback("transfer")
+          ),
+          h(
+            "section",
+            { className: "ptcPlusCapabilityTask" },
+            h("h5", null, t2("capabilities.copyFromSession")),
+            h("p", { className: "ptcPlusDetail" }, t2("capabilities.copySessionHint")),
+            h(
+              "label",
+              { className: "ptcPlusCapabilityFilter" },
+              h("span", null, t2("capabilities.copyFromSession")),
+              h(
+                "select",
+                { className: "ptcPlusSelect", value: sessionId, disabled: unavailable, "aria-label": t2("capabilities.copyFromSession"), onChange: (event) => setSessionId(event.target.value) },
+                h("option", { value: "" }, t2("capabilities.chooseSession")),
+                ...(plans ?? []).map((plan) => h("option", { key: plan.sessionId, value: plan.sessionId }, plan.sessionId))
+              )
+            ),
+            h(
+              "div",
+              { className: "ptcPlusTaskControls" },
+              h(
+                "label",
+                { className: "ptcPlusCapabilityFilter" },
+                h("span", null, t2("capabilities.copyName")),
+                h("input", {
+                  className: "ptcPlusInput",
+                  value: copyName,
+                  maxLength: 80,
+                  disabled: unavailable,
+                  onChange: (event) => setCopyName(event.target.value),
+                  "aria-label": t2("capabilities.copyName")
+                })
+              ),
+              h("button", {
+                type: "button",
+                className: "ptcPlusButton",
+                disabled: unavailable || !copyName.trim() || !frozen?.configuration,
+                onClick: () => perform("copy", () => save(capabilityProfileConfiguration(frozen.configuration), copyName))
+              }, t2("capabilities.saveSessionConfiguration"))
+            ),
+            feedback("copy")
+          )
         ),
-        status ? h("p", { role: "status", className: "ptcPlusMessage" }, status) : null
+        null
       );
     }
     function CapabilityWorkbench({
@@ -3374,7 +3502,6 @@
         { className: "ptcPlusCapabilityWorkbench" },
         h("p", { className: "ptcPlusDetail" }, t2("capabilities.refreshHint")),
         value.capabilityManagementEnabled !== true ? h("p", { className: "ptcPlusCapabilityNotice" }, t2("capabilities.managementOff")) : null,
-        renderRefresh?.(),
         h(
           "div",
           { className: "ptcPlusCapabilityTabs", role: "tablist", "aria-label": t2("capabilities.settingsTabs") },
@@ -3407,15 +3534,17 @@
             "aria-labelledby": `${id2}-tab-${key}`,
             hidden: tab !== key
           },
-          key === "manual" ? h(CapabilityChoices, { value, catalog, catalogError, plans, plansError, disabled, onChange, onReload, t: t2, selectedSessionId, onSessionSelect }) : key === "statistics" ? h(React.Fragment, null, renderField("capabilityStatistics"), h(AllocationEvidence, { allocation, allocationError, allocationPending, selectedSessionId, statistics: true, onReload, t: t2 })) : key === "budgets" ? h(
+          key === "manual" ? h(CapabilityChoices, { value, catalog, catalogError, plans, plansError, disabled, onChange, onReload, t: t2, selectedSessionId, onSessionSelect }) : key === "statistics" ? h(React.Fragment, null, renderField("capabilityStatistics"), tab === key ? renderRefresh?.({ observation: true }) : null, h(AllocationEvidence, { allocation, allocationError, allocationPending, selectedSessionId, statistics: true, onReload, t: t2 })) : key === "budgets" ? h(
             React.Fragment,
             null,
             ...["capabilityBudgetBytes", "capabilityDirectoryBytes", "capabilityRecoveryBytes", "modelPreviewTokens"].map(renderField),
+            tab === key ? renderRefresh?.({ observation: true }) : null,
             h(AllocationEvidence, { allocation, allocationError, allocationPending, selectedSessionId, onReload, t: t2 })
           ) : h(
             React.Fragment,
             null,
             h(ConfigurationProfiles, { value, plans, disabled, writable: configurationWritable, onChange, onApplyConfiguration, t: t2 }),
+            tab === key ? renderRefresh?.() : null,
             value.capabilityManagementEnabled === true ? renderPlans() : h("p", { className: "ptcPlusDetail" }, t2("capabilities.managementOff"))
           )
         ))
@@ -3451,7 +3580,7 @@
         request.current?.abort();
         request.current = null;
         setPending(false);
-        setStatus(t2("capabilities.refreshCancelled"));
+        setStatus({ key: "capabilities.refreshCancelled" });
         onApplied?.();
       };
       const execute = async (event) => {
@@ -3464,11 +3593,12 @@
         try {
           const result = await commands.run(sessionId, "refresh", controller.signal);
           if (controller.signal.aborted || request.current !== controller) return;
-          setStatus(result.text ?? t2("capabilities.refreshAcknowledged"));
+          setStatus(result.text ?? { key: "capabilities.refreshAcknowledged" });
           onApplied?.();
         } catch (error) {
           if (!controller.signal.aborted && request.current === controller) {
-            setStatus(t2("capabilities.refreshFailed", { error: String(error?.message ?? error) }));
+            const text = String(error?.message ?? error);
+            setStatus(readCapabilityCommandReceipt(text) ? text : { key: "capabilities.refreshFailed", params: { error: text } });
           }
         } finally {
           if (request.current === controller) {
@@ -3493,12 +3623,182 @@
           t2(pending ? menu ? "capabilities.cancelRefresh" : "capabilities.refreshing" : "capabilities.applySession")
         )),
         pending && !menu ? h("button", { type: "button", className: "ptcPlusButton", onClick: cancel }, t2("capabilities.cancelRefresh")) : null,
-        status && !menu ? h("p", { className: "ptcPlusDetail", role: "status" }, status) : !available && !menu ? h("p", { className: "ptcPlusDetail" }, t2(sessionId ? "capabilities.refreshUnavailable" : "capabilities.chooseSession")) : null
+        status && !menu ? h("p", { className: "ptcPlusDetail", role: "status" }, capabilityCommandText(t2, status)) : !available && !menu ? h("p", { className: "ptcPlusDetail" }, t2(sessionId ? "capabilities.refreshUnavailable" : "capabilities.chooseSession")) : null
+      );
+    };
+  }
+  function createSessionCapabilityControlsView(React, commands) {
+    const h = React.createElement;
+    return function SessionCapabilityControls({ sessionId, enabled, t: t2, onPrefill }) {
+      const source = React.useMemo(() => commands.source(sessionId), [sessionId]);
+      const available = React.useSyncExternalStore(source.subscribe, source.getSnapshot);
+      const [open, setOpen] = React.useState(false);
+      const [catalog, setCatalog] = React.useState([]);
+      const [scope, setScope] = React.useState("session");
+      const [query, setQuery] = React.useState("");
+      const [kind, setKind] = React.useState("all");
+      const [choices, setChoices] = React.useState({});
+      const [pending, setPending] = React.useState(false);
+      const [status, setStatus] = React.useState(null);
+      const request = React.useRef(null);
+      React.useEffect(() => {
+        setOpen(false);
+        setCatalog([]);
+        setChoices({});
+        setStatus(null);
+        setPending(false);
+        return () => {
+          request.current?.abort();
+          request.current = null;
+        };
+      }, [sessionId, enabled, available]);
+      const load = async (controller) => {
+        const result = await commands.run(sessionId, "list all", controller.signal);
+        const document2 = JSON.parse(result.text);
+        if (document2?.schema !== "ptc-capability-catalog/v1" || !Array.isArray(document2.entries)) throw new Error("Invalid capability catalog");
+        if (request.current === controller && !controller.signal.aborted) setCatalog(document2.entries);
+      };
+      const perform = async (operation) => {
+        if (!enabled || !available || request.current) return;
+        const controller = new AbortController();
+        request.current = controller;
+        setPending(true);
+        setStatus(null);
+        try {
+          await operation(controller);
+        } catch (error) {
+          if (request.current === controller && !controller.signal.aborted) {
+            const text = String(error?.message ?? error);
+            const receipt = readCapabilityCommandReceipt(text);
+            setStatus(receipt ? text : { key: "capabilities.refreshFailed", params: { error: text } });
+            if (receipt?.state === "saved-only") {
+              try {
+                await load(controller);
+              } catch {
+              }
+            }
+          }
+        } finally {
+          if (request.current === controller) {
+            request.current = null;
+            setPending(false);
+          }
+        }
+      };
+      const cancel = () => {
+        request.current?.abort();
+        request.current = null;
+        setPending(false);
+        setStatus({ key: "capabilities.refreshCancelled" });
+      };
+      const stateLabel = (value) => t2(value === "inherit" ? "capabilities.quick.inherit" : ["enabled", "pending"].includes(value) ? `capabilities.quick.${value}` : `capabilities.${value}`);
+      const command2 = (id2, selection) => `set ${scope} ${encodeURIComponent(id2)} ${selection}`;
+      const matching = catalog.filter((entry) => (!query || `${entry.id} ${entry.description}`.toLocaleLowerCase().includes(query.toLocaleLowerCase())) && (kind === "all" || kind === "skills" && entry.category === "skill" || kind === "tools" && entry.category === "tool" && entry.source?.kind !== "mcp" || kind === "mcp" && ["server", "resource"].includes(entry.category) || kind === "mcp_tools" && entry.category === "tool" && entry.source?.kind === "mcp"));
+      return h(
+        "section",
+        { className: "ptcPlusSessionCapabilities", "data-open": open, "aria-label": t2("capabilities.quick.title") },
+        h("button", {
+          type: "button",
+          role: "menuitem",
+          className: "ptcPlusMenuButton",
+          disabled: !enabled || !available,
+          "aria-expanded": open,
+          onClick: () => {
+            if (open) {
+              request.current?.abort();
+              request.current = null;
+              setPending(false);
+              setOpen(false);
+            } else {
+              setOpen(true);
+              void perform(load);
+            }
+          }
+        }, t2("capabilities.quick.title")),
+        open ? h(
+          "div",
+          { className: "ptcPlusSessionCapabilityPanel" },
+          h("label", null, t2("capabilities.quick.scope"), h("select", {
+            className: "ptcPlusSelect",
+            value: scope,
+            disabled: pending,
+            onChange: (event) => {
+              setScope(event.target.value);
+              setChoices({});
+            }
+          }, ...["session", "global"].map((value) => h("option", { key: value, value }, t2(`capabilities.quick.${value}`))))),
+          h("p", { className: "ptcPlusDetail" }, t2(`capabilities.quick.${scope}Hint`)),
+          h(
+            "label",
+            { className: "ptcPlusSearch" },
+            h("svg", { viewBox: "0 0 24 24", width: 16, height: 16, "aria-hidden": true }, h("circle", { cx: 10, cy: 10, r: 6, fill: "none", stroke: "currentColor", strokeWidth: 2 }), h("path", { d: "m15 15 6 6", fill: "none", stroke: "currentColor", strokeWidth: 2 })),
+            h("input", { type: "search", value: query, "aria-label": t2("capabilities.search"), placeholder: t2("capabilities.search"), onChange: (event) => setQuery(event.target.value) })
+          ),
+          h(
+            "select",
+            { className: "ptcPlusSelect", "aria-label": t2("capabilities.quick.kind"), value: kind, onChange: (event) => setKind(event.target.value) },
+            ...["all", "skills", "tools", "mcp", "mcp_tools"].map((value) => h("option", { key: value, value }, t2(`capabilities.quick.${value}`)))
+          ),
+          h("div", { className: "ptcPlusSessionCapabilityList" }, ...matching.slice(0, 64).map((entry) => {
+            const choice = choices[entry.id] ?? (scope === "session" ? entry.temporary === "inherit" ? "inherit" : entry.temporary : entry.saved);
+            return h(
+              "div",
+              { key: entry.id, className: "ptcPlusSessionCapabilityItem" },
+              h("code", null, entry.id),
+              h("p", { className: "ptcPlusDetail" }, t2("capabilities.quick.states", { saved: stateLabel(entry.saved), temporary: stateLabel(entry.temporary), effective: stateLabel(entry.effective) })),
+              h(
+                "select",
+                {
+                  className: "ptcPlusSelect",
+                  value: choice,
+                  disabled: pending,
+                  "aria-label": entry.id,
+                  onChange: (event) => setChoices((current) => ({ ...current, [entry.id]: event.target.value }))
+                },
+                ...[...scope === "session" ? ["inherit"] : [], "automatic", ...entry.category === "server" ? [] : ["full", "on-demand"], "closed"].map((value) => h("option", { key: value, value }, t2(value === "inherit" ? "capabilities.quick.inherit" : `capabilities.${value}`)))
+              ),
+              h(
+                "div",
+                { className: "ptcPlusSessionCapabilityActions" },
+                h("button", { type: "button", className: "ptcPlusButton", disabled: pending, onClick: () => void perform(async (controller) => {
+                  const result = await commands.run(sessionId, command2(entry.id, choice), controller.signal);
+                  if (request.current !== controller || controller.signal.aborted) return;
+                  setStatus(result.text);
+                  await load(controller);
+                }) }, t2("capabilities.quick.apply")),
+                h("button", {
+                  type: "button",
+                  className: "ptcPlusButton",
+                  disabled: pending || !onPrefill,
+                  onClick: () => onPrefill?.(`/capabilities ${command2(entry.id, choice)}`)
+                }, t2("capabilities.quick.prefill"))
+              )
+            );
+          })),
+          h("p", { className: "ptcPlusDetail" }, `${Math.min(64, matching.length)} / ${matching.length}`),
+          pending ? h("button", { type: "button", className: "ptcPlusButton", onClick: cancel }, t2("capabilities.cancelRefresh")) : null,
+          status ? h("p", { role: "status", className: "ptcPlusDetail" }, capabilityCommandText(t2, status)) : null
+        ) : null
       );
     };
   }
 
   // src/client-settings-view.js
+  function settingsScrollGeometry(element) {
+    const bounds = element.getBoundingClientRect();
+    const style = element.ownerDocument.defaultView.getComputedStyle(element);
+    const number2 = (value) => Number.parseFloat(value) || 0;
+    const borderTop = number2(style.borderTopWidth), borderBottom = number2(style.borderBottomWidth);
+    const cssHeight = number2(style.height) + (style.boxSizing === "border-box" ? 0 : number2(style.paddingTop) + number2(style.paddingBottom) + borderTop + borderBottom);
+    const scale = cssHeight > 0 ? bounds.height / cssHeight : 1;
+    return {
+      bounds,
+      scale,
+      top: bounds.top + borderTop * scale,
+      bottom: bounds.bottom - borderBottom * scale,
+      borderTop
+    };
+  }
   function createPtcSettingsView(React, deps) {
     const {
       ActionButton,
@@ -3582,7 +3882,7 @@
       }, [value]);
       const [draft, setDraft] = React.useState(saved.settings);
       React.useEffect(() => setDraft(saved.settings), [saved]);
-      const valid = validStatistics(draft);
+      const valid2 = validStatistics(draft);
       const commit = (next) => {
         if (!validStatistics(next)) return;
         const serialized = JSON.stringify({
@@ -3638,7 +3938,7 @@
           numeric("minimumSamples", 1, Number.MAX_SAFE_INTEGER),
           numeric("fullThreshold", 0, 100, 100)
         ),
-        !valid ? h("p", { role: "status", className: "ptcPlusMessage" }, t2("capabilities.invalidStatistics")) : saved.invalid && draft === saved.settings ? h("p", { role: "status", className: "ptcPlusMessage" }, t2("capabilities.savedStatisticsInvalid")) : null
+        !valid2 ? h("p", { role: "status", className: "ptcPlusMessage" }, t2("capabilities.invalidStatistics")) : saved.invalid && draft === saved.settings ? h("p", { role: "status", className: "ptcPlusMessage" }, t2("capabilities.savedStatisticsInvalid")) : null
       );
     }
     const { CapabilityWorkbench } = createCapabilitySettingsViews(React, { SearchIcon });
@@ -3794,6 +4094,36 @@
         return () => controller.abort();
       }, [plansEnabled, open, view, planConfiguration, planRevision]);
       const groupIdPrefix = view === "dialog" ? "ptc-plus-settings-dialog-group" : "ptc-plus-settings-group";
+      const trackSection = React.useCallback(() => {
+        const scroller = settingsRoot.current?.querySelector(".ptcPlusFields");
+        if (!scroller || scroller.clientHeight === 0) return;
+        const { scale, top: top2, bottom } = settingsScrollGeometry(scroller);
+        const sections = CONFIG_GROUPS.slice(1).map((group) => ({
+          key: group.key,
+          bounds: scroller.querySelector(`[aria-labelledby="${groupIdPrefix}-${group.key}"]`)?.getBoundingClientRect()
+        })).filter((section) => section.bounds);
+        const visible = sections.filter((section) => section.bounds.bottom > top2 && section.bounds.top < bottom);
+        const atEnd = scroller.scrollHeight > scroller.clientHeight && scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 1;
+        const next = atEnd ? visible.at(-1) : visible.find((section) => section.bounds.bottom > top2 + 20 * scale);
+        if (next) setActiveSection(next.key);
+      }, [groupIdPrefix]);
+      React.useLayoutEffect(() => {
+        if (!(view === "page" || view === "dialog") || !settingsRoot.current) return;
+        const scroller = settingsRoot.current.querySelector(".ptcPlusFields");
+        if (!scroller) return;
+        trackSection();
+        const resize = typeof ResizeObserver === "function" ? new ResizeObserver(trackSection) : null;
+        resize?.observe(scroller);
+        for (const section of scroller.querySelectorAll(".ptcPlusSettingsModule,.ptcPlusGroup")) resize?.observe(section);
+        const changes = typeof MutationObserver === "function" ? new MutationObserver(trackSection) : null;
+        changes?.observe(scroller, { subtree: true, childList: true, attributes: true, attributeFilter: ["hidden", "open"] });
+        globalThis.addEventListener?.("resize", trackSection);
+        return () => {
+          resize?.disconnect();
+          changes?.disconnect();
+          globalThis.removeEventListener?.("resize", trackSection);
+        };
+      }, [view, open, snapshot2.status, trackSection]);
       const workbench = useWorkbenchController({ enabled: globalEnabled && bindingsOpen, callUserBindings });
       const setBindingsDialogOpen = (next) => {
         setBindingsOpen(next);
@@ -3932,22 +4262,22 @@
           )
         ))
       ) : null;
-      const renderRefresh = () => CapabilityRefreshButton ? h(
+      const renderRefresh = ({ observation = false } = {}) => CapabilityRefreshButton ? h(
         "section",
         {
           className: "ptcPlusCapabilityApply",
-          "aria-label": t2("capabilities.applyGroup")
+          "aria-label": t2(observation ? "capabilities.observationGroup" : "capabilities.applyGroup")
         },
         h(
           "label",
           { className: "ptcPlusCapabilityFilter" },
-          h("span", null, t2("capabilities.targetSession")),
+          h("span", null, t2(observation ? "capabilities.observationSession" : "capabilities.targetSession")),
           h(
             "select",
             {
               className: "ptcPlusSelect",
               value: refreshSessionId,
-              "aria-label": t2("capabilities.targetSession"),
+              "aria-label": t2(observation ? "capabilities.observationSession" : "capabilities.targetSession"),
               disabled: !enabled || unavailable || targets === null || Boolean(targetsError),
               onChange: (event) => setRefreshSessionId(event.target.value)
             },
@@ -3955,7 +4285,7 @@
             ...(targets ?? []).map((target) => h("option", { key: target.sessionId, value: target.sessionId }, target.sessionId))
           )
         ),
-        h(CapabilityRefreshButton, {
+        observation ? h("p", { className: "ptcPlusDetail" }, t2("capabilities.observationOnly")) : h(CapabilityRefreshButton, {
           sessionId: refreshSessionId,
           t: t2,
           enabled: enabled && !unavailable && pending.size === 0 && !targetsError && (targets ?? []).some((target) => target.sessionId === refreshSessionId),
@@ -4045,19 +4375,11 @@
           const scroller = root?.querySelector(".ptcPlusFields");
           if (!heading2 || !scroller) return;
           const headingBounds = heading2.getBoundingClientRect();
-          const inset = Math.min(16, Math.max(0, scroller.clientHeight - headingBounds.height));
-          scroller.scrollTop += headingBounds.top - scroller.getBoundingClientRect().top - scroller.clientTop - inset;
+          const { bounds: scrollerBounds, scale, borderTop } = settingsScrollGeometry(scroller);
+          const inset = Math.min(16, Math.max(0, scroller.clientHeight - headingBounds.height / scale));
+          scroller.scrollTop += (headingBounds.top - scrollerBounds.top) / scale - borderTop - inset;
           setActiveSection(key);
-        };
-        const trackSection = (event) => {
-          const scroller = event.currentTarget;
-          const threshold = scroller.getBoundingClientRect().top + scroller.clientTop + 20;
-          let next = "syntax";
-          for (const group of CONFIG_GROUPS.slice(1)) {
-            const heading2 = scroller.querySelector(`[id="${groupIdPrefix}-${group.key}"]`);
-            if (heading2 && heading2.getBoundingClientRect().top <= threshold) next = group.key;
-          }
-          setActiveSection(next);
+          trackSection();
         };
         const revealNavigationItem = (element) => {
           const scroller = element.closest(".ptcPlusSettingsNavList");
@@ -4230,6 +4552,23 @@
     function ReplComposer() {
       return null;
     }
+    function useObservedReplMemory({ sessionId, projected, active, elementRef, observeRepl }) {
+      const memory = React.useMemo(() => {
+        try {
+          return normalizeReplMemorySnapshot2(projected);
+        } catch {
+          return unavailableReplMemorySnapshot2();
+        }
+      }, [projected]);
+      const [observed, setObserved] = React.useState(null);
+      React.useEffect(() => active && typeof observeRepl === "function" ? observeRepl(
+        sessionId,
+        elementRef.current,
+        memory,
+        (value) => setObserved({ sessionId, source: memory, value })
+      ) : void 0, [active, observeRepl, sessionId, memory, elementRef]);
+      return observed?.sessionId === sessionId && observed.source === memory ? observed.value : memory;
+    }
     function ReplBindingInspector({ entry, preview, t: t2 }) {
       const readable = preview?.status === "readable";
       return h(
@@ -4387,29 +4726,22 @@
       const globalEnabled = featureEnabled2(settings, "bindings");
       const workbench = useWorkbenchController({ enabled: globalEnabled, active: true, callUserBindings });
       const eligible = featureEnabled2(settings, "replView") && sessionUsesPtcPreset2(preset);
-      const memory = React.useMemo(() => {
-        try {
-          return normalizeReplMemorySnapshot2(projected);
-        } catch {
-          return unavailableReplMemorySnapshot2();
-        }
-      }, [projected]);
-      const [observed, setObserved] = React.useState(null);
       const observationRegion = React.useRef(null);
-      React.useEffect(() => eligible ? hideComposer(sessionId) : void 0, [eligible, hideComposer, sessionId]);
-      React.useEffect(() => eligible ? observeRepl(
+      const memory = useObservedReplMemory({
         sessionId,
-        observationRegion.current,
-        memory,
-        (value) => setObserved({ sessionId, source: memory, value })
-      ) : void 0, [eligible, observeRepl, sessionId, memory]);
+        projected,
+        active: eligible,
+        elementRef: observationRegion,
+        observeRepl
+      });
+      React.useEffect(() => eligible ? hideComposer(sessionId) : void 0, [eligible, hideComposer, sessionId]);
       if (!eligible) return null;
       return h(
         "div",
         { className: "ptcPlusConsole", "data-conversation-composer-overlay": "" },
         h("div", { className: "ptcPlusConsoleSection", ref: observationRegion }, h(ReplSessionBindings, {
           key: sessionId,
-          memory: observed?.sessionId === sessionId && observed.source === memory ? observed.value : memory,
+          memory,
           t: t2
         })),
         globalEnabled ? h(
@@ -4622,7 +4954,13 @@
         )
       );
     }
-    return { ReplComposer, ReplConsole, ReplMemoryCard, replPopoverIsOpen, placeReplPopover };
+    return { ReplComposer, ReplConsole, ReplMemoryCard, replPopoverIsOpen, placeReplPopover, useObservedReplMemory };
+  }
+
+  // internal/message-sources.js
+  var PTC_MESSAGE_SOURCE_KIND = "plugin:ptc-plus";
+  function isPtcMessageSource(source) {
+    return source?.kind === PTC_MESSAGE_SOURCE_KIND || source?.kind === "plugin" && source.plugin === "ptc-plus";
   }
 
   // internal/compiler-descriptors.js
@@ -4784,6 +5122,7 @@
   if (typeof Buffer === "function") {
     runtimeIntrinsics.bufferByteLength = Buffer.byteLength;
     runtimeIntrinsics.bufferConcat = Buffer.concat;
+    runtimeIntrinsics.bufferFrom = Buffer.from;
     runtimeIntrinsics.bufferIsBuffer = Buffer.isBuffer;
     runtimeIntrinsics.bufferSubarray = uncurry2(Buffer.prototype.subarray);
     runtimeIntrinsics.bufferToString = uncurry2(Buffer.prototype.toString);
@@ -5224,6 +5563,7 @@
       updateCapabilityConfiguration,
       menuChildren,
       CapabilityRefreshButton,
+      SessionCapabilityControls,
       icons: {
         sparkle: IconSparkle16,
         chevron: IconChevronDownOutline14,
@@ -5348,10 +5688,15 @@
       const toggleBinding = async (entry) => {
         if (!catalogReady || !quickAccess) return;
         captureCatalogFocus();
-        await catalogSource.write(() => callUserBindings(entry.enabled ? "disable" : "enable", {
+        const next = await catalogSource.write(() => callUserBindings(entry.enabled ? "disable" : "enable", {
           id: entry.id,
           expectedRevision: catalog.revision
         }));
+        const saved = next?.entries.find((item) => item.id === entry.id);
+        if (saved) {
+          toastSequence.current++;
+          setToast({ sequence: toastSequence.current, key: saved.enabled ? "bindings.toggleEnabled" : "bindings.toggleDisabled", params: { name: saved.name } });
+        }
       };
       const cancelHoverOpen = React.useCallback(() => {
         if (hoverTimer.current === void 0) return;
@@ -5642,6 +5987,20 @@
           "div",
           { key: "utilities", className: "ptcPlusMenuUtilities" },
           quickAccess ? actionButton("manage", "bindings.manage") : null,
+          SessionCapabilityControls ? h(SessionCapabilityControls, {
+            sessionId,
+            t: t2,
+            enabled: pluginEnabled && settings.status === "ready" && settings.writable === true,
+            onPrefill: typeof inputActions?.setDraft === "function" ? (command2) => {
+              if (typeof input?.draft === "string" && input.draft.trim() !== "") {
+                toastSequence.current++;
+                setToast({ sequence: toastSequence.current, key: "bindings.composerBusy" });
+                return;
+              }
+              inputActions.setDraft(command2);
+              hideMenu();
+            } : void 0
+          }) : null,
           CapabilityRefreshButton ? h(CapabilityRefreshButton, {
             sessionId,
             t: t2,
@@ -5764,14 +6123,14 @@
         }) : null,
         toast === null ? null : isHostComponent(Toast) ? h(Toast, {
           key: toast.sequence,
-          text: toast.text,
+          text: toast.key ? t2(toast.key, toast.params) : capabilityCommandText(t2, toast.text),
           anchor: anchorRef.current,
           onDone: () => setToast(null)
         }) : h("span", {
           key: toast.sequence,
           className: "ptcPlusComposerNotice",
           role: "status"
-        }, toast.text)
+        }, toast.key ? t2(toast.key, toast.params) : capabilityCommandText(t2, toast.text))
       );
     }
     function BindingCandidateContent({ candidate, t: t2, showName = true }) {
@@ -6101,6 +6460,44 @@
     return { BindingAuthorButton, BindingReviewDock, BindingCommandCard };
   }
 
+  // internal/binding-toggle-receipt.js
+  var PREFIX2 = "Global binding configuration saved. This does not prove model catalog delivery or worker initialization:\n";
+  function valid(receipt) {
+    return receipt?.schema === "ptc-binding-toggle/v1" && typeof receipt.id === "string" && receipt.id.length > 0 && receipt.id.length <= 64 && typeof receipt.name === "string" && receipt.name.length <= 256 && typeof receipt.enabled === "boolean" && Number.isSafeInteger(receipt.revision) && receipt.revision >= 0 && Object.keys(receipt).length === 5;
+  }
+  function readBindingToggle(message) {
+    const receipt = message?.source?.receipt;
+    return isPtcMessageSource(message?.source) && message.source.form === "binding-toggle" && valid(receipt) && message.content?.length === 1 && message.content[0]?.type === "text" && message.content[0].text === PREFIX2 + JSON.stringify(receipt) ? receipt : void 0;
+  }
+
+  // src/client-binding-toggle.js
+  var bindingToggleConversationDefinition = Object.freeze({
+    kind: "ptc-plus-binding-toggle",
+    target: "chat",
+    match(event) {
+      return event.type === "user/message" && event.surfaceOp === "append" && readBindingToggle(event.data) ? { id: event.data.id, role: "start" } : null;
+    },
+    start(_context, match) {
+      return { seq: match.event.seq, receipt: readBindingToggle(match.event.data) };
+    },
+    update(context) {
+      return context.state;
+    },
+    buildViewNode(context) {
+      if (!context.state?.receipt) return null;
+      return {
+        key: context.key,
+        id: context.id,
+        kind: "ptc-plus-binding-toggle",
+        target: "chat",
+        anchorSeq: context.state.seq,
+        location: context.start?.location ?? { kind: "unresolved" },
+        visibility: "visible",
+        data: context.state.receipt
+      };
+    }
+  });
+
   // src/client-indicator-view.js
   var HOVER_DWELL_MS3 = 150;
   var CLOSE_GRACE_MS = 200;
@@ -6115,7 +6512,9 @@
       replPopoverIsOpen,
       placeReplPopover,
       catalogOwner,
-      subscribeReset
+      subscribeReset,
+      useObservedReplMemory,
+      observeRepl
     } = deps;
     const h = React.createElement;
     function PTCPlusSessionIndicator({
@@ -6319,13 +6718,14 @@
           }
         };
       }, [cancelClose, cancelOpen, schedulePlacement]);
+      const memory = useObservedReplMemory({
+        sessionId,
+        projected: projectionMemory,
+        active: expanded && sessionUsesPtcPreset2(preset) && featureEnabled2(settings, "plugin"),
+        elementRef: popoverRef,
+        observeRepl
+      });
       if (!sessionUsesPtcPreset2(preset) || !featureEnabled2(settings, "plugin")) return null;
-      let memory;
-      try {
-        memory = normalizeReplMemorySnapshot2(projectionMemory);
-      } catch {
-        memory = unavailableReplMemorySnapshot2();
-      }
       const popoverId = `ptc-plus-repl-${String(resolvedSessionId).replace(/[^A-Za-z0-9_-]/g, "-")}`;
       const titleId = `${popoverId}-title`;
       return h(
@@ -31702,6 +32102,8 @@
 .ptcPlusCapabilityApply{display:flex;flex-wrap:wrap;align-items:flex-end;gap:8px;margin:8px 0 14px}.ptcPlusCapabilityApply>.ptcPlusCapabilityFilter{flex:1 1 200px}.ptcPlusCapabilityRefresh{display:flex;flex-wrap:wrap;align-items:center;gap:8px;min-width:0}.ptcPlusCapabilityRefresh p{flex-basis:100%;margin:0;overflow-wrap:anywhere}.ptcPlusMenuUtilities .ptcPlusCapabilityRefresh{flex:1;align-self:stretch}.ptcPlusMenuUtilities .ptcPlusCapabilityRefresh>.ptcPlusMenuButton{width:100%}.ptcPlusCapabilityWorkbench{container:ptcPlusCapabilities/inline-size;min-width:0}.ptcPlusCapabilityTabs,.ptcPlusCapabilityTypes{display:flex;gap:4px;overflow:auto;border-bottom:1px solid var(--dsw-alias-border-l2);overscroll-behavior:contain}.ptcPlusCapabilityTabs button,.ptcPlusCapabilityTypes button{flex:none;appearance:none;padding:10px 12px;border:0;border-bottom:2px solid transparent;background:none;color:var(--dsw-alias-label-secondary);font:inherit;cursor:pointer}.ptcPlusCapabilityTabs [aria-selected=true],.ptcPlusCapabilityTypes [aria-pressed=true]{border-bottom-color:var(--dsw-alias-state-business-primary,#4d6bfe);color:var(--dsw-alias-state-business-primary,#4d6bfe)}.ptcPlusCapabilityPane{padding-top:14px;min-width:0}.ptcPlusCapabilityPane[hidden]{display:none}.ptcPlusCapabilityChoices,.ptcPlusCapabilityStatistics{min-width:0;margin:0}.ptcPlusCapabilityFoundation{display:flex;flex-wrap:wrap;gap:4px 12px;align-items:center;padding:12px;margin-bottom:12px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-layer-2);font-size:12px}.ptcPlusCapabilityFoundation code{overflow-wrap:anywhere;font-size:11px}.ptcPlusCapabilityFoundation>span{color:var(--dsw-alias-label-secondary);font-size:11px}.ptcPlusCapabilityToolbar{display:flex;flex-wrap:wrap;align-items:flex-end;gap:8px;margin:12px 0}.ptcPlusCapabilityToolbar>.ptcPlusSearch{flex:1 1 200px;min-width:0}.ptcPlusCapabilityFilter{display:flex;flex-direction:column;min-width:0;gap:4px;font-size:11px;color:var(--dsw-alias-label-secondary)}.ptcPlusCapabilityFilter>.ptcPlusSelect{width:100%;max-width:100%;font-size:12px}.ptcPlusCapabilityDirection{box-sizing:border-box;flex:none;width:32px;height:32px;border:1px solid var(--dsw-alias-border-l2);border-radius:6px;background:var(--dsw-alias-bg-layer-3);color:inherit;cursor:pointer}.ptcPlusCapabilityFilters>summary{padding:6px 0;font-size:12px;cursor:pointer}.ptcPlusCapabilityFilterFields{display:flex;align-items:flex-end;flex-wrap:wrap;gap:8px;padding-bottom:10px}.ptcPlusCapabilityFilterFields>.ptcPlusCapabilityFilter{flex:1 1 135px}.ptcPlusCapabilityOnlyCommon input{width:16px;height:16px;margin:0;flex:none}.ptcPlusCapabilityOnlyCommon{display:flex;align-items:center;gap:4px;padding:7px 0;font-size:12px;white-space:nowrap}.ptcPlusCapabilityResultLine{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px;margin:8px 0;color:var(--dsw-alias-label-secondary);font-size:11px}.ptcPlusCapabilityLink{appearance:none;padding:4px 0;border:0;background:none;color:var(--dsw-alias-state-business-primary,#4d6bfe);font:inherit;font-size:12px;text-align:start;cursor:pointer}.ptcPlusCapabilityLink:disabled{opacity:.5;cursor:default}.ptcPlusCapabilityWorkspace,.ptcPlusCapabilityTable{min-width:0}.ptcPlusCapabilityColumns,.ptcPlusCapabilityItem{display:grid;grid-template-columns:minmax(0,1fr) 66px minmax(120px,156px);align-items:center;gap:8px}.ptcPlusCapabilityColumns{padding:8px 10px;color:var(--dsw-alias-label-secondary);font-size:11px;border-bottom:1px solid var(--dsw-alias-border-l2)}.ptcPlusCapabilityColumns span:nth-child(2){text-align:center}.ptcPlusCapabilityList{max-height:480px;overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable}.ptcPlusCapabilityGroup{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:0;padding:10px;color:var(--dsw-alias-label-secondary);font-size:12px;font-weight:500}.ptcPlusCapabilityGroup h4{min-width:0;max-width:100%;margin:0;font:inherit;overflow-wrap:anywhere}.ptcPlusCapabilityServerSwitch{display:flex;align-items:center;gap:8px;margin-left:auto;font-size:11px}.ptcPlusCapabilityServerHint{padding:0 10px;margin:0 0 8px}.ptcPlusCapabilityGroup>span{font-weight:400;color:var(--dsw-alias-label-tertiary)}.ptcPlusCapabilityItem{padding:8px 10px;border-radius:6px;border-bottom:1px solid var(--dsw-alias-border-l2)}.ptcPlusCapabilityItem[data-selected=true]{background:color-mix(in srgb,var(--dsw-alias-state-business-primary,#4d6bfe) 8%,transparent)}.ptcPlusCapabilityIdentity{appearance:none;display:flex;flex-direction:column;gap:2px;min-width:0;padding:0;border:0;background:none;color:inherit;text-align:start;cursor:pointer;font:inherit}.ptcPlusCapabilityIdentity code,.ptcPlusCapabilityIdentity small{max-width:100%;color:var(--dsw-alias-label-secondary);font-size:10px;line-height:15px;overflow-wrap:anywhere}.ptcPlusCapabilityName{display:flex;flex-wrap:wrap;align-items:center;gap:5px;font-size:12px;overflow-wrap:anywhere}.ptcPlusCapabilityBadge{display:inline-block;flex:none;padding:0 5px;border-radius:4px;background:color-mix(in srgb,var(--dsw-alias-state-business-primary,#4d6bfe) 10%,transparent);color:var(--dsw-alias-state-business-primary,#4d6bfe);font-size:10px;line-height:16px}.ptcPlusCapabilityBadge[data-kind=skill]{background:color-mix(in srgb,var(--dsw-alias-state-warn-primary,#946200) 10%,transparent);color:var(--dsw-alias-label-secondary)}.ptcPlusCapabilityCommon{position:relative;display:flex;align-items:center;justify-content:center;justify-self:center;box-sizing:border-box;width:24px;height:24px}.ptcPlusCapabilityCommon input{position:absolute;inset:0;margin:0;width:24px;height:24px;opacity:0;cursor:pointer}.ptcPlusCapabilityCommon svg{fill:none;stroke:var(--dsw-alias-label-tertiary);stroke-width:1.5;pointer-events:none}.ptcPlusCapabilityCommon input:checked+svg{fill:var(--dsw-alias-state-business-primary,#4d6bfe);stroke:var(--dsw-alias-state-business-primary,#4d6bfe)}.ptcPlusCapabilityCommon:has(input:disabled){opacity:.5}.ptcPlusCapabilityCommon:has(input:focus-visible){outline:2px solid var(--dsw-alias-state-business-primary,#4d6bfe);outline-offset:2px;border-radius:4px}.ptcPlusCapabilityItem>.ptcPlusSelect{min-width:0;width:100%;font-size:12px}.ptcPlusCapabilityItem>.ptcPlusSelect[data-strategy]{--ptc-plus-strategy-color:var(--dsw-alias-label-secondary);padding-left:20px;background-image:radial-gradient(circle,var(--ptc-plus-strategy-color) 0 2px,transparent 2.5px);background-size:8px 8px;background-repeat:no-repeat;background-position:7px center}.ptcPlusCapabilityItem>.ptcPlusSelect[data-strategy=full]{--ptc-plus-strategy-color:var(--dsw-alias-state-business-primary,#4d6bfe)}.ptcPlusCapabilityItem>.ptcPlusSelect[data-strategy=on-demand]{--ptc-plus-strategy-color:var(--dsw-alias-state-warn-primary,#946200)}.ptcPlusCapabilityIdentity:hover .ptcPlusCapabilityName{color:var(--dsw-alias-state-business-primary,#4d6bfe)}.ptcPlusCapabilityCommon:hover{background:var(--dsw-alias-interactive-bg-hover);border-radius:4px}.ptcPlusCapabilityTabs button:hover,.ptcPlusCapabilityTypes button:hover{background:var(--dsw-alias-interactive-bg-hover)}
 .ptcPlusCapabilityDetail{min-width:0;padding:16px;margin-top:14px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-layer-2);font-size:12px;overflow-wrap:anywhere}.ptcPlusCapabilityDetail h4{margin:0 0 6px;font-size:14px}.ptcPlusCapabilityDetail>code{display:block;margin-top:8px;font-size:11px;overflow-wrap:anywhere}.ptcPlusCapabilityDetail dl{display:grid;grid-template-columns:auto minmax(0,1fr);gap:8px;margin:14px 0 8px}.ptcPlusCapabilityDetail dt{color:var(--dsw-alias-label-secondary)}.ptcPlusCapabilityDetail dd{margin:0;text-align:end}.ptcPlusCapabilityNotice{padding:10px;border-radius:6px;background:color-mix(in srgb,var(--dsw-alias-state-business-primary,#4d6bfe) 7%,transparent);font-size:12px;overflow-wrap:anywhere}.ptcPlusCapabilityDescription{margin-top:12px;padding-top:10px;border-top:1px solid var(--dsw-alias-border-l2)}.ptcPlusCapabilityDescription summary{line-height:20px;cursor:pointer;color:var(--dsw-alias-label-secondary)}.ptcPlusCapabilityDescription p{white-space:pre-wrap;overflow-wrap:anywhere}.ptcPlusCapabilitySessionDetail{padding-top:12px;margin-top:12px;border-top:1px solid var(--dsw-alias-border-l2)}.ptcPlusCapabilitySessionDetail h5{margin:0 0 10px;font-size:12px}.ptcPlusCapabilitySessionDetail code{font-size:10px;overflow-wrap:anywhere}.ptcPlusCapabilityEmpty{padding:20px 10px;text-align:center}.ptcPlusCapabilityStatistics .ptcPlusInput{width:100%}.ptcPlusCapabilityPlans table{width:100%;table-layout:fixed;border-collapse:collapse;font-size:11px}.ptcPlusCapabilityPlans th,.ptcPlusCapabilityPlans td{padding:6px;text-align:start;overflow-wrap:anywhere;border-bottom:1px solid var(--dsw-alias-border-l2)}.ptcPlusCapabilityPlans summary{overflow-wrap:anywhere}.ptcPlusCapabilityWorkbench button:focus-visible,.ptcPlusCapabilityDescription summary:focus-visible,.ptcPlusCapabilityFilters summary:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary,#4d6bfe);outline-offset:2px}
 @container ptcPlusCapabilities (min-width:900px){.ptcPlusCapabilityWorkspace{display:grid;grid-template-columns:minmax(0,1fr) minmax(240px,28%);align-items:start;gap:20px}.ptcPlusCapabilityDetail{margin-top:0}}
+.ptcPlusCapabilityTasks{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:14px}.ptcPlusCapabilityTask{min-width:0;padding:14px;border:1px solid var(--dsw-alias-border-l2);border-radius:10px;background:var(--dsw-alias-bg-layer-2)}.ptcPlusCapabilityTask h5{margin:0 0 12px;font-size:13px}.ptcPlusTaskControls{display:flex;flex-wrap:wrap;align-items:flex-end;gap:8px;margin-top:10px}.ptcPlusTaskControls>.ptcPlusCapabilityFilter{flex:1 1 180px}.ptcPlusTaskControls .ptcPlusInput{width:100%;min-width:0;box-sizing:border-box}.ptcPlusTaskFeedback{min-height:18px;margin:10px 0 0;font-size:12px;overflow-wrap:anywhere;color:var(--dsw-alias-label-secondary)}.ptcPlusCapabilityApply{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:start;gap:8px;padding:12px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px}.ptcPlusCapabilityApply>.ptcPlusCapabilityFilter{display:contents}.ptcPlusCapabilityApply>.ptcPlusCapabilityFilter>span{grid-column:1/-1;font-size:12px;color:var(--dsw-alias-label-secondary)}.ptcPlusCapabilityApply>.ptcPlusCapabilityFilter>select{grid-column:1}.ptcPlusCapabilityApply>.ptcPlusDetail{grid-column:1/-1;margin:0}.ptcPlusCapabilityApply>.ptcPlusCapabilityRefresh{align-self:start}.ptcPlusCapabilityTask .ptcPlusSelect{min-width:0;max-width:100%}.ptcPlusCapabilityPlans table{width:100%;table-layout:fixed;overflow-wrap:anywhere}.ptcPlusCapabilityPlans summary{overflow-wrap:anywhere}
+@container ptcPlusCapabilities (max-width:600px){.ptcPlusCapabilityTasks{grid-template-columns:1fr}.ptcPlusCapabilityApply{grid-template-columns:1fr}.ptcPlusCapabilityApply>.ptcPlusCapabilityRefresh{grid-column:1}.ptcPlusTaskControls>.ptcPlusButton{flex:1}}
 @container ptcPlusCapabilities (max-width:600px){.ptcPlusCapabilityTabs{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);overflow:visible}.ptcPlusCapabilityTabs button{min-width:0;overflow-wrap:anywhere}.ptcPlusCapabilityTypes{flex-wrap:wrap;overflow:visible}.ptcPlusCapabilityTypes button{max-width:100%;overflow-wrap:anywhere}}
 @container ptcPlusCapabilities (max-width:480px){.ptcPlusCapabilityColumns{display:none}.ptcPlusCapabilityItem{grid-template-columns:minmax(0,1fr) 24px}.ptcPlusCapabilityItem>.ptcPlusSelect{grid-column:1/-1}.ptcPlusCapabilityToolbar>.ptcPlusSearch{flex-basis:100%}.ptcPlusCapabilityToolbar>.ptcPlusCapabilityFilter{flex:1}.ptcPlusCapabilityTypes button,.ptcPlusCapabilityTabs button{padding:8px}.ptcPlusCapabilityFilterFields>.ptcPlusCapabilityFilter{flex-basis:100%}.ptcPlusCapabilityList{max-height:360px}.ptcPlusCapabilityStatistics .ptcPlusBindingFields{grid-template-columns:minmax(0,1fr)}.ptcPlusCapabilityFoundation{flex-direction:column;align-items:flex-start}.ptcPlusCapabilityDetail{padding:12px}}
 
@@ -31769,9 +32171,10 @@
 .ptcPlusFallbackModal{box-sizing:border-box;width:min(760px,calc(100vw - 32px));max-height:calc(100dvh - 40px);overflow:auto;padding:16px 18px;border:1px solid var(--dsw-alias-border-l3,rgba(0,0,0,.1));border-radius:8px;background:var(--dsw-alias-bg-base,#fff);color:var(--dsw-alias-label-primary,#18191c)}
 .ptcPlusFallbackModalHead{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px}.ptcPlusFallbackModalHead h2{margin:0;font-size:17px;line-height:24px}
 
-.ptcPlusMenuUtilities{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:2px}.ptcPlusMenuUtilities .ptcPlusCapabilityRefresh{display:block;min-width:0;grid-column:1/-1;order:-1}.ptcPlusMenuUtilities .ptcPlusMenuButton{white-space:nowrap;min-width:0}.ptcPlusMenuUtilities .ptcPlusBindingMenuAction{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}.ptcPlusMenuUtilities .ptcPlusCapabilityRefresh>.ptcPlusMenuButton{white-space:nowrap}
-.ptcPlusAllocationEvidence,.ptcPlusConfigurationProfiles{min-width:0;margin-top:20px;padding-top:16px;border-top:1px solid var(--dsw-alias-border-l2)}.ptcPlusAllocationEvidence h4,.ptcPlusConfigurationProfiles h4{margin:0;font-size:14px}.ptcPlusAllocationMetrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin:16px 0}.ptcPlusAllocationMetrics>div{display:flex;min-width:0;flex-direction:column;gap:4px;padding:12px;border-radius:8px;background:var(--dsw-alias-bg-layer-2)}.ptcPlusAllocationMetrics strong{font-size:18px;overflow-wrap:anywhere}.ptcPlusAllocationMetrics span{font-size:11px;color:var(--dsw-alias-label-secondary)}.ptcPlusAllocationEvidence progress{width:100%;height:6px;accent-color:var(--dsw-alias-brand-primary)}.ptcPlusCapabilityEvidenceTable{max-height:440px;overflow:auto;overscroll-behavior:contain;margin-top:12px}.ptcPlusCapabilityEvidenceTable table{width:100%;table-layout:fixed;border-collapse:collapse;font-size:12px}.ptcPlusCapabilityEvidenceTable td,.ptcPlusCapabilityEvidenceTable th{padding:10px 6px;text-align:start;overflow-wrap:anywhere;border-bottom:1px solid var(--dsw-alias-border-l2)}.ptcPlusCapabilityEvidenceTable th{color:var(--dsw-alias-label-secondary);font-weight:500}.ptcPlusProfileControls,.ptcPlusProfileSessionCopy{display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;margin-top:14px}.ptcPlusProfileControls>.ptcPlusCapabilityFilter{flex:1 1 240px}.ptcPlusProfileSessionCopy{padding-top:16px;border-top:1px solid var(--dsw-alias-border-l2)}.ptcPlusProfileSessionCopy h5,.ptcPlusProfileSessionCopy p{flex-basis:100%;margin:0}.ptcPlusProfileSessionCopy>.ptcPlusSelect{flex:1 1 200px}.ptcPlusCapabilityFilterFields{align-items:flex-end}.ptcPlusCapabilityFilters>span{display:block;margin-bottom:8px}
-@container ptcPlusCapabilities (max-width:600px){.ptcPlusAllocationMetrics{grid-template-columns:repeat(2,minmax(0,1fr))}.ptcPlusProfileControls>.ptcPlusCapabilityFilter{flex-basis:100%}}
+.ptcPlusMenuUtilities{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:2px}.ptcPlusMenuUtilities .ptcPlusCapabilityRefresh{display:block;min-width:0;order:-1}.ptcPlusMenuUtilities .ptcPlusMenuButton{white-space:nowrap;min-width:0}.ptcPlusMenuUtilities .ptcPlusBindingMenuAction{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}.ptcPlusMenuUtilities .ptcPlusCapabilityRefresh>.ptcPlusMenuButton{white-space:nowrap}.ptcPlusMenuUtilities>.ptcPlusSessionCapabilities{order:-1}.ptcPlusSessionCapabilities>.ptcPlusMenuButton{width:100%;overflow:hidden;text-overflow:ellipsis;font-size:12px}
+.ptcPlusSessionCapabilities[data-open=true]{grid-column:1/-1;order:-2}.ptcPlusBindingMenuContent:has(.ptcPlusSessionCapabilities[data-open=true])>.ptcPlusBindingMenuScroll{display:none}.ptcPlusBindingMenuContent:has(.ptcPlusSessionCapabilities[data-open=true])>.ptcPlusMenuActions{flex:1;min-height:0;overflow:auto;overscroll-behavior:contain}.ptcPlusSessionCapabilities[data-open=true] .ptcPlusSessionCapabilityList{max-height:none;overflow:visible}
+.ptcPlusSessionCapabilities{min-width:0}.ptcPlusSessionCapabilityPanel{display:grid;gap:10px;min-width:0;max-width:100%;padding:10px}.ptcPlusSessionCapabilityPanel label{display:grid;gap:6px}.ptcPlusSessionCapabilityPanel select{width:100%;max-width:100%}.ptcPlusSessionCapabilityList{max-height:320px;overflow:auto;overscroll-behavior:contain}.ptcPlusSessionCapabilityItem{display:grid;gap:6px;min-width:0;padding:10px 0;border-bottom:1px solid var(--dsw-alias-border-l2)}.ptcPlusSessionCapabilityItem code{overflow-wrap:anywhere;font-size:12px}.ptcPlusSessionCapabilityItem p{margin:0}.ptcPlusSessionCapabilityActions{display:flex;gap:8px;flex-wrap:wrap}.ptcPlusSessionCapabilityActions button{flex:1;min-width:0;font-size:12px}.ptcPlusCapabilityReceipt{margin:8px 0;padding:10px 12px;border-radius:8px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);overflow-wrap:anywhere}.ptcPlusCapabilityReceipt p{margin:6px 0 0}.ptcPlusAllocationEvidence,.ptcPlusConfigurationProfiles{min-width:0;margin-top:20px;padding-top:16px;border-top:1px solid var(--dsw-alias-border-l2)}.ptcPlusAllocationEvidence h4,.ptcPlusConfigurationProfiles h4{margin:0;font-size:14px}.ptcPlusAllocationMetrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin:16px 0}.ptcPlusAllocationMetrics>div{display:flex;min-width:0;flex-direction:column;gap:4px;padding:12px;border-radius:8px;background:var(--dsw-alias-bg-layer-2)}.ptcPlusAllocationMetrics strong{font-size:18px;overflow-wrap:anywhere}.ptcPlusAllocationMetrics span{font-size:11px;color:var(--dsw-alias-label-secondary)}.ptcPlusAllocationEvidence progress{width:100%;height:6px;accent-color:var(--dsw-alias-brand-primary)}.ptcPlusCapabilityEvidenceTable{max-height:440px;overflow:auto;overscroll-behavior:contain;margin-top:12px}.ptcPlusCapabilityEvidenceTable table{width:100%;table-layout:fixed;border-collapse:collapse;font-size:12px}.ptcPlusCapabilityEvidenceTable td,.ptcPlusCapabilityEvidenceTable th{padding:10px 6px;text-align:start;overflow-wrap:anywhere;border-bottom:1px solid var(--dsw-alias-border-l2)}.ptcPlusCapabilityEvidenceTable th{color:var(--dsw-alias-label-secondary);font-weight:500}.ptcPlusCapabilityFilterFields{align-items:flex-end}.ptcPlusCapabilityFilters>span{display:block;margin-bottom:8px}
+@container ptcPlusCapabilities (max-width:600px){.ptcPlusAllocationMetrics{grid-template-columns:repeat(2,minmax(0,1fr))}}
 
 `;
   var BINDING_WORKBENCH_CSS = `
@@ -32212,7 +32615,41 @@
       "capabilities.observedUsage": "\u5B9E\u9645\u4F7F\u7528\u7EDF\u8BA1",
       "capabilities.budgetPreview": "\u5F53\u524D\u80FD\u529B\u5206\u914D\u9884\u89C8",
       "capabilities.observationUnavailable": "\u65E0\u6CD5\u8BFB\u53D6\u80FD\u529B\u9884\u89C8\uFF0C\u8BF7\u91CD\u65B0\u8BFB\u53D6\u3002",
-      "capabilities.selectObservation": "\u5728\u4E0A\u65B9\u9009\u62E9\u4E00\u4E2A\u6D3B\u8DC3 PTC \u4F1A\u8BDD\uFF0C\u67E5\u770B\u5176\u5DE5\u4F5C\u533A\u7EDF\u8BA1\u548C\u5F53\u524D\u914D\u7F6E\u7684\u9884\u7B97\u9884\u89C8\u3002",
+      "capabilities.selectObservation": "\u9009\u62E9\u4E00\u4E2A\u6D3B\u8DC3 PTC \u4F1A\u8BDD\uFF0C\u67E5\u770B\u5176\u5DE5\u4F5C\u533A\u7EDF\u8BA1\u548C\u5F53\u524D\u914D\u7F6E\u7684\u9884\u7B97\u9884\u89C8\u3002",
+      "capabilities.quick.title": "\u4F1A\u8BDD\u80FD\u529B\u63A7\u5236",
+      "capabilities.quick.enabled": "\u5DF2\u542F\u7528",
+      "capabilities.quick.pending": "\u5F85\u751F\u6548",
+      "capabilities.quick.scope": "\u751F\u6548\u8303\u56F4",
+      "capabilities.quick.session": "\u4EC5\u672C\u4F1A\u8BDD",
+      "capabilities.quick.global": "\u5168\u5C40\u4FDD\u5B58\u5E76\u66F4\u65B0\u672C\u4F1A\u8BDD",
+      "capabilities.quick.sessionHint": "\u4E34\u65F6\u8986\u76D6\u4EC5\u5C5E\u4E8E\u6B64\u4F1A\u8BDD\uFF1B\u666E\u901A\u5237\u65B0\u4FDD\u7559\u8FD9\u4E9B\u9009\u62E9\u3002",
+      "capabilities.quick.globalHint": "\u4FDD\u5B58\u4E3A\u65B0\u4F1A\u8BDD\u7684\u9ED8\u8BA4\u9009\u62E9\uFF0C\u5E76\u7ACB\u5373\u66F4\u65B0\u672C\u4F1A\u8BDD\uFF1B\u5176\u4ED6\u5DF2\u6709\u4F1A\u8BDD\u4FDD\u6301\u539F\u65B9\u6848\u3002",
+      "capabilities.quick.kind": "\u80FD\u529B\u7C7B\u522B",
+      "capabilities.quick.all": "\u5168\u90E8\u80FD\u529B",
+      "capabilities.quick.skills": "Skills",
+      "capabilities.quick.tools": "\u666E\u901A Tools",
+      "capabilities.quick.mcp": "MCP \u670D\u52A1\u4E0E\u8D44\u6E90",
+      "capabilities.quick.mcp_tools": "MCP Tools",
+      "capabilities.quick.inherit": "\u53D6\u6D88\u4E34\u65F6\u8986\u76D6\uFF0C\u7EE7\u627F\u6E90\u8BBE\u7F6E",
+      "capabilities.quick.states": "\u5DF2\u4FDD\u5B58\uFF1A{saved} \xB7 \u4E34\u65F6\uFF1A{temporary} \xB7 \u751F\u6548\uFF1A{effective}",
+      "capabilities.quick.apply": "\u63D0\u4EA4\u5E76\u751F\u6548",
+      "capabilities.quick.prefill": "\u586B\u5165\u547D\u4EE4\u8349\u7A3F",
+      "capabilities.receipt.title": "\u4F1A\u8BDD\u80FD\u529B",
+      "capabilities.receipt.saved-only": "\u5168\u5C40\u9009\u62E9\u5DF2\u4FDD\u5B58\uFF0C\u4F46\u4F1A\u8BDD {session} \u66F4\u65B0\u5931\u8D25\uFF1B\u8BF7\u8BFB\u53D6\u5F53\u524D\u65B9\u6848\u5E76\u91CD\u8BD5\u3002{error}",
+      "capabilities.receipt.recorded": "\u4F1A\u8BDD {session} \u7684\u80FD\u529B\u5DF2\u66F4\u65B0\u3002",
+      "capabilities.receipt.pending": "\u4F1A\u8BDD {session} \u7684\u80FD\u529B\u5DF2\u51C6\u5907\uFF0C\u5C06\u5728\u9996\u6B21\u63A5\u53D7\u7684\u6A21\u578B\u6B65\u9AA4\u751F\u6548\u3002",
+      "capabilities.receipt.unavailable": "\u8BF7\u9009\u62E9\u4ECD\u6D3B\u8DC3\u7684 PTC \u4F1A\u8BDD\u3002",
+      "capabilities.receipt.usage": "\u4F7F\u7528 /capabilities \u67E5\u770B\uFF0C\u6216 /capabilities refresh \u540C\u6B65\u5DF2\u4FDD\u5B58\u8BBE\u7F6E\u3002",
+      "bindings.toggleEnabled": "\u5DF2\u4FDD\u5B58\u201C{name}\u201D\u7684\u542F\u7528\u9009\u62E9\uFF1B\u6A21\u578B\u76EE\u5F55\u5728\u4E0B\u4E00\u6B21\u83B7\u51C6\u6B65\u9AA4\u66F4\u65B0\uFF0C\u7A0B\u5E8F\u503C\u5C1A\u672A\u8BC1\u660E\u521D\u59CB\u5316\u3002",
+      "bindings.toggleDisabled": "\u5DF2\u4FDD\u5B58\u201C{name}\u201D\u7684\u505C\u7528\u9009\u62E9\uFF1B\u6A21\u578B\u76EE\u5F55\u5728\u4E0B\u4E00\u6B21\u83B7\u51C6\u6B65\u9AA4\u64A4\u9500\uFF0C\u4E0D\u64A4\u9500\u5DF2\u7ECF\u53D1\u751F\u7684\u6548\u679C\u3002",
+      "capabilities.observationGroup": "\u53EA\u8BFB\u4F1A\u8BDD\u89C2\u5BDF",
+      "capabilities.observationSession": "\u89C2\u5BDF\u4F1A\u8BDD",
+      "capabilities.observationOnly": "\u4EC5\u67E5\u770B\u5F53\u524D\u76EE\u5F55\u7684\u7EDF\u8BA1\u548C\u9884\u7B97\uFF0C\u4E0D\u4FEE\u6539\u4F1A\u8BDD\u65B9\u6848\u3002",
+      "capabilities.renameTo": "\u65B0\u914D\u7F6E\u540D\u79F0",
+      "capabilities.copyName": "\u590D\u5236\u540E\u7684\u914D\u7F6E\u540D\u79F0",
+      "capabilities.transferConfigurations": "\u5BFC\u5165\u4E0E\u5BFC\u51FA",
+      "capabilities.importHint": "\u5BFC\u5165\u53EA\u52A0\u5165\u914D\u7F6E\u5E93\uFF1B\u9009\u62E9\u5E76\u5207\u6362\u540E\u624D\u5E94\u7528\u3002\u5DF2\u6709\u4F1A\u8BDD\u9700\u660E\u786E\u5237\u65B0\u3002",
+      "capabilities.coldStartHint": "\u5B8C\u6574\u62AB\u9732\uFF1A\u9996\u8F6E\u63D0\u4F9B\u5B8C\u6574\u5951\u7EA6\u3002\u6309\u9700\u62AB\u9732\uFF1A\u80FD\u529B\u4ECD\u53EF\u7528\uFF0C\u6A21\u578B\u53EF\u901A\u8FC7 capabilities.search \u53D6\u5F97\u76EE\u5F55\u63CF\u8FF0\uFF1BSkills \u6309\u58F0\u660E\u8D44\u683C\u52A0\u8F7D\u6B63\u6587\u3002\u5173\u95ED\uFF1A\u5F53\u524D\u4F1A\u8BDD\u4E0D\u63D0\u4F9B\u8BE5\u80FD\u529B\u3002\u6CA1\u6709\u5408\u683C\u7EDF\u8BA1\u65F6\uFF0C\u5E38\u7528\u57FA\u7EBF\u548C\u624B\u52A8\u9009\u62E9\u4ECD\u6709\u6548\uFF1B\u5176\u4ED6\u5DF2\u542F\u7528\u80FD\u529B\u6309\u9700\u53D1\u73B0\u3002\u68C0\u7D22\u548C\u9884\u7B97\u9884\u89C8\u4E0D\u8BA1\u5165\u4F7F\u7528\u3002",
       "capabilities.reloadObservation": "\u91CD\u65B0\u8BFB\u53D6\u7EDF\u8BA1\u4E0E\u9884\u89C8",
       "capabilities.observationScope": "\u5DE5\u4F5C\u533A\uFF1A{workspace} \xB7 \u89C2\u5BDF\u4F1A\u8BDD\uFF1A{session}",
       "capabilities.usageEvidenceHint": "\u4F7F\u7528\u6570 / \u5B9E\u9645\u53EF\u7528\u4F1A\u8BDD\u5BB6\u65CF\u6570\u3002\u91CD\u590D\u8C03\u7528\u4E0D\u91CD\u590D\u8BA1\u6570\uFF1B\u5DE5\u4F5C\u533A\u4F18\u5148\uFF0C\u5168\u5C40\u53EA\u4F5C\u51B7\u542F\u52A8\u53C2\u8003\u3002\u5173\u95ED\u7EDF\u8BA1\u4E0D\u4F1A\u5220\u9664\u5DF2\u6709\u8BB0\u5F55\u3002",
@@ -32319,6 +32756,10 @@
       "capabilities.restoreAutomatic": "\u6062\u590D\u81EA\u52A8",
       "capabilities.closedBaseline": "\u5173\u95ED\u9009\u62E9\u4F18\u5148\uFF1B\u4FDD\u7559\u7684\u5E38\u7528\u57FA\u7EBF\u6682\u4E0D\u53C2\u4E0E\u5206\u914D\u3002",
       "capabilities.skillDisclosure": "Skill \u7684\u5B8C\u6574\u8BF4\u660E\u4EC5\u63D0\u4F9B\u76EE\u5F55\u63CF\u8FF0\uFF0C\u6B63\u6587\u5728\u5B9E\u9645\u4F7F\u7528\u65F6\u52A0\u8F7D\u3002",
+      "capabilities.invocation.both": "\u6A21\u578B\u53EF\u4EE5\u52A0\u8F7D\u6B63\u6587\uFF0C\u7528\u6237\u4E5F\u53EF\u4EE5\u901A\u8FC7 /{name} \u8C03\u7528\u3002",
+      "capabilities.invocation.model": "\u4EC5\u5141\u8BB8\u6A21\u578B\u52A0\u8F7D\u6B63\u6587\uFF1B\u6B64 Skill \u4E0D\u63D0\u4F9B\u7528\u6237\u659C\u6760\u8C03\u7528\u3002",
+      "capabilities.invocation.user": "\u4EC5\u5141\u8BB8\u7528\u6237\u901A\u8FC7 /{name} \u8C03\u7528\uFF1B\u6A21\u578B\u4E0D\u80FD\u4F7F\u7528 tools.skill \u52A0\u8F7D\u5B83\u3002",
+      "capabilities.invocation.varies": "\u6B64 Skill \u7684\u8C03\u7528\u8D44\u683C\u968F\u4F1A\u8BDD\u800C\u5F02\uFF1B\u8BF7\u5728\u76EE\u6807\u4F1A\u8BDD\u4E2D\u786E\u8BA4\u6A21\u578B\u52A0\u8F7D\u548C\u7528\u6237\u659C\u6760\u8C03\u7528\u662F\u5426\u53EF\u7528\u3002",
       "capabilities.viewDescription": "\u67E5\u770B\u5B8C\u6574\u76EE\u5F55\u63CF\u8FF0",
       "capabilities.removeSaved": "\u79FB\u9664\u5DF2\u4FDD\u5B58\u914D\u7F6E",
       "capabilities.currentSession": "\u6240\u9009\u4F1A\u8BDD\u65B9\u6848",
@@ -32560,7 +33001,41 @@
       "capabilities.observedUsage": "Observed usage",
       "capabilities.budgetPreview": "Current allocation preview",
       "capabilities.observationUnavailable": "Capability preview is unavailable; reload the observation.",
-      "capabilities.selectObservation": "Select an active PTC session above to view its workspace statistics and allocation preview for the current configuration.",
+      "capabilities.selectObservation": "Select an active PTC session to view its workspace statistics and allocation preview for the current configuration.",
+      "capabilities.quick.title": "Session capability controls",
+      "capabilities.quick.enabled": "Enabled",
+      "capabilities.quick.pending": "Pending",
+      "capabilities.quick.scope": "Apply to",
+      "capabilities.quick.session": "This session only",
+      "capabilities.quick.global": "Save globally and update this session",
+      "capabilities.quick.sessionHint": "Temporary choices belong to this session; ordinary refresh preserves them.",
+      "capabilities.quick.globalHint": "Save defaults for new sessions and update this one immediately. Other existing sessions retain their plans.",
+      "capabilities.quick.kind": "Capability category",
+      "capabilities.quick.all": "All capabilities",
+      "capabilities.quick.skills": "Skills",
+      "capabilities.quick.tools": "Ordinary tools",
+      "capabilities.quick.mcp": "MCP servers and resources",
+      "capabilities.quick.mcp_tools": "MCP tools",
+      "capabilities.quick.inherit": "Clear temporary choice; inherit source settings",
+      "capabilities.quick.states": "Saved: {saved} \xB7 Temporary: {temporary} \xB7 Effective: {effective}",
+      "capabilities.quick.apply": "Submit and apply",
+      "capabilities.quick.prefill": "Fill command draft",
+      "capabilities.receipt.title": "Session capabilities",
+      "capabilities.receipt.saved-only": "Global choice saved, but session {session} could not be updated. Inspect its plan and retry. {error}",
+      "capabilities.receipt.recorded": "Capabilities updated for session {session}.",
+      "capabilities.receipt.pending": "Capabilities prepared for session {session}; they take effect at its first accepted model step.",
+      "capabilities.receipt.unavailable": "Select an active PTC session.",
+      "capabilities.receipt.usage": "Use /capabilities to inspect or /capabilities refresh to apply saved settings.",
+      "bindings.toggleEnabled": "Enabled \u201C{name}\u201D in saved configuration. The model catalog updates at the next accepted step; worker initialization is not yet established.",
+      "bindings.toggleDisabled": "Disabled \u201C{name}\u201D in saved configuration. The model catalog withdraws it at the next accepted step; earlier effects are unchanged.",
+      "capabilities.observationGroup": "Read-only session observation",
+      "capabilities.observationSession": "Observation session",
+      "capabilities.observationOnly": "Inspect current-directory statistics and allocation without changing the session plan.",
+      "capabilities.renameTo": "New configuration name",
+      "capabilities.copyName": "Copied configuration name",
+      "capabilities.transferConfigurations": "Import and export",
+      "capabilities.importHint": "Import adds to the library only. Select and switch to apply; existing sessions require explicit refresh.",
+      "capabilities.coldStartHint": "Full disclosure supplies complete contracts in the first request. On-demand capabilities remain available through capabilities.search; Skills load their bodies according to declared invocation eligibility. Closed capabilities are not supplied. Without qualified statistics, the common baseline and manual choices still apply; other enabled capabilities remain discoverable on demand. Search and allocation previews do not count as use.",
       "capabilities.reloadObservation": "Reload statistics and preview",
       "capabilities.observationScope": "Workspace: {workspace} \xB7 Observed session: {session}",
       "capabilities.usageEvidenceHint": "Uses / eligible session families. Repeated calls count once; workspace evidence takes priority and global evidence supplies cold-start fallback. Disabling collection does not erase existing records.",
@@ -32667,6 +33142,10 @@
       "capabilities.restoreAutomatic": "Restore automatic",
       "capabilities.closedBaseline": "Closed selection takes priority; the retained common preference does not participate.",
       "capabilities.skillDisclosure": "Full Skill disclosure supplies its catalog description; the body loads only when used.",
+      "capabilities.invocation.both": "The model can load the body; users can also invoke /{name}.",
+      "capabilities.invocation.model": "Only the model can load the body; this Skill has no user slash invocation.",
+      "capabilities.invocation.user": "Only users can invoke /{name}; the model cannot load it with tools.skill.",
+      "capabilities.invocation.varies": "Invocation eligibility varies by session. Check model loading and user slash invocation in the target session.",
       "capabilities.viewDescription": "View complete catalog description",
       "capabilities.removeSaved": "Remove saved preferences",
       "capabilities.currentSession": "Selected session plan",
@@ -32676,7 +33155,7 @@
       "capabilities.managementOff": "Capability management is off. Manual preferences remain editable; refresh existing sessions to apply the disabled configuration.",
       "capabilities.applyGroup": "Apply session capability settings",
       "settings.toolsMenu": "PTC Plus tools",
-      "capabilities.targetSession": "Observe or refresh session",
+      "capabilities.targetSession": "Refresh target session",
       "capabilities.chooseSession": "Choose a target session",
       "capabilities.applySession": "Refresh session capabilities",
       "capabilities.refreshing": "Refreshing\u2026",
@@ -33195,7 +33674,7 @@
             next.consoleVersion = state.consoleVersion + 1;
           }
           if (action.imported === true) next.importPath = "";
-          next.message = action.removed === true ? { key: "bindings.removed" } : action.imported === true ? { key: "bindings.imported" } : state.message;
+          next.message = action.removed === true ? { key: "bindings.removed" } : action.imported === true ? { key: "bindings.imported" } : stored ? { key: stored.enabled ? "bindings.toggleEnabled" : "bindings.toggleDisabled", params: { name: stored.name } } : state.message;
           return next;
         }
         case "reloadResult": {
@@ -33758,8 +34237,9 @@
         previous?.abort();
       };
       const watch = async (current) => {
+        let receipt;
         try {
-          await rpc.call(RPC_CONTRACTS.repl, "watch", { sessionId }, current.signal);
+          receipt = await rpc.call(RPC_CONTRACTS.repl, "watch", { sessionId }, current.signal);
         } catch {
         }
         if (disposed || controller !== current) return;
@@ -33767,6 +34247,11 @@
         current.abort();
         if (!visible || document.visibilityState === "hidden") {
           stop();
+          return;
+        }
+        if (receipt?.ok === true && receipt.value?.changed === true) {
+          retries = 0;
+          sync();
           return;
         }
         const delay = retryDelays[retries++];
@@ -33777,13 +34262,14 @@
         }, delay);
       };
       const read = async (current) => {
-        if (!memory.available || memory.entries.length === 0 || memory.observation !== void 0) return;
+        if (!memory.available || memory.entries.length === 0) return;
         try {
           const result = await rpc.call(RPC_CONTRACTS.repl, "observe", { sessionId, memory }, current.signal);
           if (disposed || controller !== current || current.signal.aborted || result?.ok !== true || result.value === null) return;
           const observed = normalizeReplMemorySnapshot(result.value);
           const { observation, ...inventory } = observed;
-          if (observation !== void 0 && JSON.stringify(inventory) === JSON.stringify(memory)) onObservation(observed);
+          const { observation: _previousObservation, ...expected } = memory;
+          if (!observed.available || observation !== void 0 && JSON.stringify(inventory) === JSON.stringify(expected)) onObservation(observed);
         } catch {
         }
       };
@@ -34350,7 +34836,9 @@
           }
         });
         const { observeRepl } = createReplObserver({ rpc, ctx });
-        const CapabilityRefreshButton = createCapabilityRefreshView(React, createCommandAccess(ctx, "capabilities"));
+        const capabilityCommands = createCommandAccess(ctx, "capabilities");
+        const CapabilityRefreshButton = createCapabilityRefreshView(React, capabilityCommands);
+        const SessionCapabilityControls = createSessionCapabilityControlsView(React, capabilityCommands);
         const { PTCPlusSettingsCard, PTCPlusSettingsDialog } = createPtcSettingsView(React, {
           ActionButton,
           BindingsDialog,
@@ -34379,7 +34867,7 @@
           },
           icons: { search: IconSearchOutline16, chevron: IconChevronDownOutline14 }
         });
-        const { ReplComposer, ReplConsole, ReplMemoryCard, replPopoverIsOpen, placeReplPopover } = createReplView(React, {
+        const { ReplComposer, ReplConsole, ReplMemoryCard, replPopoverIsOpen, placeReplPopover, useObservedReplMemory } = createReplView(React, {
           CodeBlock,
           featureEnabled,
           normalizeReplMemorySnapshot,
@@ -34513,6 +35001,7 @@
           updateCapabilityConfiguration,
           menuChildren,
           CapabilityRefreshButton,
+          SessionCapabilityControls,
           icons: {
             sparkle: IconSparkle16,
             chevron: IconChevronDownOutline14,
@@ -34530,7 +35019,9 @@
           replPopoverIsOpen,
           placeReplPopover,
           catalogOwner,
-          subscribeReset
+          subscribeReset,
+          useObservedReplMemory,
+          observeRepl
         });
         ctx.slots.inject("conversation.session.header.actions", () => registerGated(ctx, settingsGate("plugin", () => ctx.slots.register({
           name: "conversation.session.header.actions",
@@ -34545,6 +35036,29 @@
           locale: LOCALE_NS,
           inject: settingsProps
         }, (props) => h(BindingCommandCard, { ...props, key: props.node.commandId })))));
+        ctx.slots.inject("conversation.chat.commandview", () => registerGated(ctx, settingsGate("plugin", () => ctx.slots.register({
+          name: "conversation.chat.commandview",
+          key: "capabilities",
+          locale: LOCALE_NS
+        }, ({ node, t: t2 }) => h(
+          "section",
+          { className: "ptcPlusCapabilityReceipt", "aria-label": t2("capabilities.receipt.title") },
+          h("strong", null, t2("capabilities.receipt.title")),
+          h("p", { role: "status" }, node.outcome ? capabilityCommandText(t2, node.outcome.text) ?? t2("capabilities.refreshAcknowledged") : t2("capabilities.refreshing"))
+        )))));
+        ctx.inject(["uiConversation"], (scope) => scope.effect(
+          () => scope.uiConversation.events.register(bindingToggleConversationDefinition),
+          "ptc-plus binding configuration receipts"
+        ));
+        ctx.slots.inject("conversation.chat.node", () => ctx.effect(() => ctx.slots.register({
+          name: "conversation.chat.node",
+          key: "ptc-plus-binding-toggle",
+          locale: LOCALE_NS
+        }, ({ node, t: t2 }) => h(
+          "p",
+          { className: "ptcPlusCapabilityReceipt", role: "status" },
+          t2(node.data.enabled ? "bindings.toggleEnabled" : "bindings.toggleDisabled", { name: node.data.name })
+        )), "ptc-plus binding configuration receipt renderer"));
         ctx.slots.inject("conversation.input.dock", () => ctx.slots.inject("conversation.input.left", () => registerGated(ctx, settingsGate("bindings", () => ctx.slots.register({
           name: "conversation.input.dock",
           id: "ptc-plus-binding-review",

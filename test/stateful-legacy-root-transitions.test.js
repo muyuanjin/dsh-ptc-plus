@@ -10,7 +10,7 @@ import {
   appendRunCodeResult,
   orderedSurfaceSession,
 } from './plugin-fixture.js'
-import { createFixtureExecutionProvider, createHostContext } from './host-fixture.js'
+import { createFixtureExecutionProvider, createFixtureSessionServices, createHostContext } from './host-fixture.js'
 import { apply } from '../index.js'
 import { createContext, runInContext } from 'node:vm'
 import { createNativeRootDynamic } from '../internal/native-root-dynamic.js'
@@ -250,6 +250,8 @@ test('mixed logical and legacy journals replay their recorded policies and share
 test('public settings updates preserve the active worker logical roots', async t => {
   const host = createHostContext()
   const session = orderedSurfaceSession('root-settings')
+  const sessionServices = createFixtureSessionServices()
+  sessionServices.remember(session)
   t.after(async () => { while (host.cleanups.length > 0) await host.cleanups.pop()() })
   let current = { enabled: true, durableReplay: false, maxWallMs: 10_000 }
   let update
@@ -265,7 +267,7 @@ test('public settings updates preserve the active worker logical roots', async t
     code: { type: 'string' }, description: { type: 'string' },
   }, required: ['code', 'description'], additionalProperties: false }, output: {} }
   const codeRuntime = createFixtureExecutionProvider({ language: 'typescript', isolation: 'worker-thread', run() { throw new Error('unexpected upstream execution') } }, 'codeRuntime')
-  const ctx = { ...host.ctx, fiber: { state: 2 }, codeRuntime,
+  const ctx = { ...host.ctx, get: name => sessionServices[name], sessionQuery: sessionServices.sessionQuery, fiber: { state: 2 }, codeRuntime,
     tools: { ...host.ctx.tools, get: () => definition, schemas: () => [definition], sdkSchemas: () => [] },
     inject(names, callback) {
       if (names.length === 1 && names[0] === 'settings') callback({ settings, effect: host.ctx.effect, fiber: { state: 2 } })

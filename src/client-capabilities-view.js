@@ -1,5 +1,12 @@
 import { CONFIG_DEFAULTS, CONFIG_FIELDS } from '../internal/config-spec.js'
 import { CAPABILITY_CONFIGURATION_KEYS, capabilityProfileConfiguration, validateCapabilityProfiles } from '../internal/runtime-config.js'
+import { readCapabilityCommandReceipt } from '../internal/capability-command-receipt.js'
+
+export function capabilityCommandText(t, text) {
+  if (text?.key) return t(text.key, text.params)
+  const receipt = readCapabilityCommandReceipt(text)
+  return receipt ? t(`capabilities.receipt.${receipt.state}`, { session: receipt.sessionId, error: receipt.error ?? '' }) : text
+}
 
 const selections = ['automatic', 'full', 'on-demand', 'closed']
 const kinds = ['all', 'tool', 'skill', 'resource', 'other']
@@ -199,6 +206,11 @@ export function createCapabilitySettingsViews(React, { SearchIcon }) {
                 onClick: () => setManual(entry.id, 'automatic') }, t('capabilities.restoreAutomatic')) : null,
               entry.common && entry.manual === 'closed' ? h('p', { className: 'ptcPlusDetail' }, t('capabilities.closedBaseline')) : null,
               entry.kind === 'skill' ? h('p', { className: 'ptcPlusCapabilityNotice' }, t('capabilities.skillDisclosure')) : null,
+              entry.kind === 'skill' && entry.invocationConflict ? h('p', { className: 'ptcPlusCapabilityNotice' },
+                t('capabilities.invocation.varies')) : null,
+              entry.kind === 'skill' && entry.invocation ? h('p', { className: 'ptcPlusCapabilityNotice' },
+                t(entry.invocation.modelInvocable ? entry.invocation.userInvocable ? 'capabilities.invocation.both'
+                  : 'capabilities.invocation.model' : 'capabilities.invocation.user', { name: entry.name })) : null,
               entry.description ? h('details', { className: 'ptcPlusCapabilityDescription', key: entry.id },
                 h('summary', { tabIndex: 0 }, t('capabilities.viewDescription')), h('p', null, entry.description)) : null,
               entry.availability === 'unavailable' ? h('button', { type: 'button', className: 'ptcPlusCapabilityLink',
@@ -234,6 +246,7 @@ export function createCapabilitySettingsViews(React, { SearchIcon }) {
         h('button', { type: 'button', className: 'ptcPlusCapabilityLink', onClick: onReload }, t('capabilities.reloadObservation'))),
       h('p', { className: 'ptcPlusDetail' }, t('capabilities.observationScope', { workspace: allocation.workspace, session: allocation.sessionId })),
       h('p', { className: 'ptcPlusDetail' }, t(statistics ? 'capabilities.usageEvidenceHint' : 'capabilities.previewHint')),
+      !statistics ? h('p', { className: 'ptcPlusCapabilityNotice' }, t('capabilities.coldStartHint')) : null,
       !statistics ? h(React.Fragment, null,
         h('div', { className: 'ptcPlusAllocationMetrics' },
           ...['full', 'on-demand', 'closed'].map(selection => h('div', { key: selection }, h('strong', null, count(selection)), h('span', null, t(`capabilities.${selection}`)))),
@@ -260,6 +273,8 @@ export function createCapabilitySettingsViews(React, { SearchIcon }) {
     const library = validateCapabilityProfiles(JSON.parse(value.capabilityProfiles ?? CONFIG_DEFAULTS.capabilityProfiles))
     const [selectedId, setSelectedId] = React.useState('')
     const [name, setName] = React.useState('')
+    const [rename, setRename] = React.useState('')
+    const [copyName, setCopyName] = React.useState('')
     const [status, setStatus] = React.useState(null)
     const [busy, setBusy] = React.useState(false)
     const [sessionId, setSessionId] = React.useState('')
@@ -276,17 +291,17 @@ export function createCapabilitySettingsViews(React, { SearchIcon }) {
     }, [writable])
     const selected = library.profiles.find(profile => profile.id === selectedId)
     const current = () => capabilityProfileConfiguration(Object.fromEntries(CAPABILITY_CONFIGURATION_KEYS.map(key => [key, value[key]])))
-    const perform = async operation => {
+    const perform = async (area, operation) => {
       if (!mounted.current || !live.current?.writable || running.current) return
-      const token = {}
+      const token = { area }
       running.current = token
       const generation = lifecycle.current
       setBusy(true); setStatus(null)
       const assertCurrent = () => {
         if (!mounted.current || !live.current?.writable || generation !== lifecycle.current) throw new Error(t('capabilities.configurationUnavailable'))
       }
-      try { await operation(assertCurrent); if (generation === lifecycle.current) setStatus(t('capabilities.configurationSaved')) }
-      catch (error) { if (generation === lifecycle.current) setStatus(String(error?.message ?? error)) }
+      try { await operation(assertCurrent); if (generation === lifecycle.current) setStatus({ area, key: 'capabilities.configurationSaved' }) }
+      catch (error) { if (generation === lifecycle.current) setStatus({ area, error: String(error?.message ?? error) }) }
       finally { if (running.current === token) running.current = null; if (generation === lifecycle.current) setBusy(false) }
     }
     const saveLibrary = async profiles => {
@@ -294,11 +309,12 @@ export function createCapabilitySettingsViews(React, { SearchIcon }) {
       const next = validateCapabilityProfiles({ schema: library.schema, profiles })
       if (!await onChange(field('capabilityProfiles'), JSON.stringify(next))) throw new Error(t('capabilities.configurationUnavailable'))
     }
-    const save = async configuration => {
-      const existing = library.profiles.find(profile => profile.name === name.trim())
-      const profile = { id: existing?.id ?? configurationId(), name: name.trim(), configuration }
+    const save = async (configuration, requestedName = name) => {
+      const existing = library.profiles.find(profile => profile.name === requestedName.trim())
+      const profile = { id: existing?.id ?? configurationId(), name: requestedName.trim(), configuration }
       await saveLibrary([...library.profiles.filter(item => item.id !== profile.id), profile])
       setSelectedId(profile.id)
+      setRename(profile.name)
     }
     const exportProfiles = () => {
       const document = { schema: library.schema, profiles: selected ? [selected] : library.profiles }
@@ -311,7 +327,7 @@ export function createCapabilitySettingsViews(React, { SearchIcon }) {
     const importProfiles = event => {
       const file = event.target.files?.[0]; event.target.value = ''
       if (!file) return
-      void perform(async assertCurrent => {
+      void perform('transfer', async assertCurrent => {
         if (file.size > 2_000_000) throw new Error(t('capabilities.configurationTooLarge'))
         const imported = validateCapabilityProfiles(JSON.parse(await file.text()))
         assertCurrent()
@@ -326,39 +342,61 @@ export function createCapabilitySettingsViews(React, { SearchIcon }) {
         await saveLibrary(merged)
       })
     }
+    const feedback = area => h('p', { className: 'ptcPlusTaskFeedback', role: 'status' }, status?.area === area ? status.error ?? t(status.key) : busy && running.current?.area === area ? t('state.syncing') : '\u00a0')
     const frozen = plans?.find(plan => plan.sessionId === sessionId)
     let matches = false
     try { matches = selected && JSON.stringify(selected.configuration) === JSON.stringify(current()) } catch {}
     return h('section', { className: 'ptcPlusConfigurationProfiles', 'aria-label': t('capabilities.savedConfigurations') },
       h('h4', null, t('capabilities.savedConfigurations')),
       h('p', { className: 'ptcPlusDetail' }, t('capabilities.configurationsHint')),
-      h('div', { className: 'ptcPlusProfileControls' },
-        h('label', { className: 'ptcPlusCapabilityFilter' }, h('span', null, t('capabilities.configurationName')),
-          h('input', { className: 'ptcPlusInput', value: name, maxLength: 80, disabled: unavailable,
-            onChange: event => setName(event.target.value), 'aria-label': t('capabilities.configurationName') })),
-        h('button', { type: 'button', className: 'ptcPlusButton', disabled: unavailable || !name.trim(), onClick: () => perform(() => save(current())) }, t('capabilities.saveConfiguration')),
-        h('label', { className: 'ptcPlusCapabilityFilter' }, h('span', null, t('capabilities.savedConfigurations')),
-          h('select', { className: 'ptcPlusSelect', value: selectedId, disabled: unavailable, 'aria-label': t('capabilities.savedConfigurations'),
-            onChange: event => { setSelectedId(event.target.value); setName(library.profiles.find(item => item.id === event.target.value)?.name ?? '') } },
-          h('option', { value: '' }, t('capabilities.chooseConfiguration')), ...library.profiles.map(profile => h('option', { key: profile.id, value: profile.id }, profile.name)))),
-        h('button', { type: 'button', className: 'ptcPlusButton', disabled: unavailable || !selected || !onApplyConfiguration,
-          onClick: () => perform(() => onApplyConfiguration(selected.configuration)) }, t('capabilities.applyConfiguration')),
-        h('button', { type: 'button', className: 'ptcPlusButton', disabled: unavailable || !selected || !name.trim(),
-          onClick: () => perform(() => saveLibrary(library.profiles.map(profile => profile.id === selected.id ? { ...profile, name: name.trim() } : profile))) }, t('capabilities.renameConfiguration')),
-        h('button', { type: 'button', className: 'ptcPlusButton', disabled: unavailable || !selected,
-          onClick: () => perform(async () => { await saveLibrary(library.profiles.filter(profile => profile.id !== selected.id)); setSelectedId(''); setName('') }) }, t('capabilities.deleteConfiguration')),
-        h('button', { type: 'button', className: 'ptcPlusButton', disabled: library.profiles.length === 0, onClick: exportProfiles }, t(selected ? 'capabilities.exportConfiguration' : 'capabilities.exportConfigurations')),
-        h('button', { type: 'button', className: 'ptcPlusButton', disabled: unavailable, onClick: () => fileInput.current.click() }, t('capabilities.importConfigurations')),
-        h('input', { ref: fileInput, type: 'file', accept: '.json,application/json', hidden: true, disabled: unavailable, onChange: importProfiles,
-          'aria-label': t('capabilities.importConfigurations') })),
-      selected ? h('p', { className: 'ptcPlusDetail' }, t(matches ? 'capabilities.configurationMatches' : 'capabilities.configurationDifferent')) : null,
-      h('div', { className: 'ptcPlusProfileSessionCopy' }, h('h5', null, t('capabilities.copyFromSession')),
-        h('p', { className: 'ptcPlusDetail' }, t('capabilities.copySessionHint')),
-        h('select', { className: 'ptcPlusSelect', value: sessionId, disabled: unavailable, 'aria-label': t('capabilities.copyFromSession'), onChange: event => setSessionId(event.target.value) },
-          h('option', { value: '' }, t('capabilities.chooseSession')), ...(plans ?? []).map(plan => h('option', { key: plan.sessionId, value: plan.sessionId }, plan.sessionId))),
-        h('button', { type: 'button', className: 'ptcPlusButton', disabled: unavailable || !name.trim() || !frozen?.configuration,
-          onClick: () => perform(() => save(capabilityProfileConfiguration(frozen.configuration))) }, t('capabilities.saveSessionConfiguration'))),
-      status ? h('p', { role: 'status', className: 'ptcPlusMessage' }, status) : null)
+      h('div', { className: 'ptcPlusCapabilityTasks' },
+        h('section', { className: 'ptcPlusCapabilityTask' },
+          h('h5', null, t('capabilities.saveConfiguration')),
+          h('div', { className: 'ptcPlusTaskControls' },
+            h('label', { className: 'ptcPlusCapabilityFilter' }, h('span', null, t('capabilities.configurationName')),
+              h('input', { className: 'ptcPlusInput', value: name, maxLength: 80, disabled: unavailable,
+                onChange: event => setName(event.target.value), 'aria-label': t('capabilities.configurationName') })),
+            h('button', { type: 'button', className: 'ptcPlusButton', disabled: unavailable || !name.trim(),
+              onClick: () => perform('save', () => save(current())) }, t('capabilities.saveConfiguration'))), feedback('save')),
+        h('section', { className: 'ptcPlusCapabilityTask' },
+          h('h5', null, t('capabilities.savedConfigurations')),
+          h('label', { className: 'ptcPlusCapabilityFilter' }, h('span', null, t('capabilities.savedConfigurations')),
+            h('select', { className: 'ptcPlusSelect', value: selectedId, disabled: unavailable, 'aria-label': t('capabilities.savedConfigurations'),
+              onChange: event => { setSelectedId(event.target.value); setRename(library.profiles.find(item => item.id === event.target.value)?.name ?? '') } },
+              h('option', { value: '' }, t('capabilities.chooseConfiguration')),
+              ...library.profiles.map(profile => h('option', { key: profile.id, value: profile.id }, profile.name)))),
+          h('div', { className: 'ptcPlusTaskControls' },
+            h('button', { type: 'button', className: 'ptcPlusButton', disabled: unavailable || !selected || !onApplyConfiguration,
+              onClick: () => perform('library', () => onApplyConfiguration(selected.configuration)) }, t('capabilities.applyConfiguration')),
+            h('button', { type: 'button', className: 'ptcPlusButton', disabled: unavailable || !selected,
+              onClick: () => perform('library', async () => { await saveLibrary(library.profiles.filter(profile => profile.id !== selected.id)); setSelectedId(''); setRename('') }) }, t('capabilities.deleteConfiguration'))),
+          selected ? h(React.Fragment, null,
+            h('p', { className: 'ptcPlusDetail' }, t(matches ? 'capabilities.configurationMatches' : 'capabilities.configurationDifferent')),
+            h('div', { className: 'ptcPlusTaskControls' },
+              h('label', { className: 'ptcPlusCapabilityFilter' }, h('span', null, t('capabilities.renameTo')),
+                h('input', { className: 'ptcPlusInput', value: rename, maxLength: 80, disabled: unavailable,
+                  onChange: event => setRename(event.target.value), 'aria-label': t('capabilities.renameTo') })),
+              h('button', { type: 'button', className: 'ptcPlusButton', disabled: unavailable || !rename.trim(),
+                onClick: () => perform('library', () => saveLibrary(library.profiles.map(profile => profile.id === selected.id ? { ...profile, name: rename.trim() } : profile))) }, t('capabilities.renameConfiguration')))) : null, feedback('library')),
+        h('section', { className: 'ptcPlusCapabilityTask' }, h('h5', null, t('capabilities.transferConfigurations')),
+          h('p', { className: 'ptcPlusDetail' }, t('capabilities.importHint')),
+          h('div', { className: 'ptcPlusTaskControls' },
+            h('button', { type: 'button', className: 'ptcPlusButton', disabled: library.profiles.length === 0, onClick: exportProfiles }, t(selected ? 'capabilities.exportConfiguration' : 'capabilities.exportConfigurations')),
+            h('button', { type: 'button', className: 'ptcPlusButton', disabled: unavailable, onClick: () => fileInput.current.click() }, t('capabilities.importConfigurations')),
+            h('input', { ref: fileInput, type: 'file', accept: '.json,application/json', hidden: true, disabled: unavailable, onChange: importProfiles,
+              'aria-label': t('capabilities.importConfigurations') })), feedback('transfer')),
+        h('section', { className: 'ptcPlusCapabilityTask' }, h('h5', null, t('capabilities.copyFromSession')),
+          h('p', { className: 'ptcPlusDetail' }, t('capabilities.copySessionHint')),
+          h('label', { className: 'ptcPlusCapabilityFilter' }, h('span', null, t('capabilities.copyFromSession')),
+            h('select', { className: 'ptcPlusSelect', value: sessionId, disabled: unavailable, 'aria-label': t('capabilities.copyFromSession'), onChange: event => setSessionId(event.target.value) },
+              h('option', { value: '' }, t('capabilities.chooseSession')), ...(plans ?? []).map(plan => h('option', { key: plan.sessionId, value: plan.sessionId }, plan.sessionId)))),
+          h('div', { className: 'ptcPlusTaskControls' },
+            h('label', { className: 'ptcPlusCapabilityFilter' }, h('span', null, t('capabilities.copyName')),
+              h('input', { className: 'ptcPlusInput', value: copyName, maxLength: 80, disabled: unavailable,
+                onChange: event => setCopyName(event.target.value), 'aria-label': t('capabilities.copyName') })),
+            h('button', { type: 'button', className: 'ptcPlusButton', disabled: unavailable || !copyName.trim() || !frozen?.configuration,
+              onClick: () => perform('copy', () => save(capabilityProfileConfiguration(frozen.configuration), copyName)) }, t('capabilities.saveSessionConfiguration'))), feedback('copy'))),
+      null)
   }
 
   function CapabilityWorkbench({ value, catalog, catalogError, plans, plansError, disabled, onChange, onReload, t, renderField, renderPlans, renderRefresh, id, selectedSessionId, onSessionSelect,
@@ -368,7 +406,6 @@ export function createCapabilitySettingsViews(React, { SearchIcon }) {
     return h('div', { className: 'ptcPlusCapabilityWorkbench' },
       h('p', { className: 'ptcPlusDetail' }, t('capabilities.refreshHint')),
       value.capabilityManagementEnabled !== true ? h('p', { className: 'ptcPlusCapabilityNotice' }, t('capabilities.managementOff')) : null,
-      renderRefresh?.(),
       h('div', { className: 'ptcPlusCapabilityTabs', role: 'tablist', 'aria-label': t('capabilities.settingsTabs') },
         ...tabs.map((key, index) => h('button', { key, type: 'button', role: 'tab', id: `${id}-tab-${key}`,
           'aria-controls': `${id}-pane-${key}`, 'aria-selected': tab === key, tabIndex: tab === key ? 0 : -1,
@@ -382,11 +419,11 @@ export function createCapabilitySettingsViews(React, { SearchIcon }) {
       ...tabs.map(key => h('div', { key, className: 'ptcPlusCapabilityPane', role: 'tabpanel', id: `${id}-pane-${key}`,
         'aria-labelledby': `${id}-tab-${key}`, hidden: tab !== key },
       key === 'manual' ? h(CapabilityChoices, { value, catalog, catalogError, plans, plansError, disabled, onChange, onReload, t, selectedSessionId, onSessionSelect })
-        : key === 'statistics' ? h(React.Fragment, null, renderField('capabilityStatistics'), h(AllocationEvidence, { allocation, allocationError, allocationPending, selectedSessionId, statistics: true, onReload, t }))
+        : key === 'statistics' ? h(React.Fragment, null, renderField('capabilityStatistics'), tab === key ? renderRefresh?.({ observation: true }) : null, h(AllocationEvidence, { allocation, allocationError, allocationPending, selectedSessionId, statistics: true, onReload, t }))
           : key === 'budgets' ? h(React.Fragment, null, ...['capabilityBudgetBytes', 'capabilityDirectoryBytes', 'capabilityRecoveryBytes', 'modelPreviewTokens'].map(renderField),
-            h(AllocationEvidence, { allocation, allocationError, allocationPending, selectedSessionId, onReload, t }))
+            tab === key ? renderRefresh?.({ observation: true }) : null, h(AllocationEvidence, { allocation, allocationError, allocationPending, selectedSessionId, onReload, t }))
             : h(React.Fragment, null, h(ConfigurationProfiles, { value, plans, disabled, writable: configurationWritable, onChange, onApplyConfiguration, t }),
-              value.capabilityManagementEnabled === true ? renderPlans() : h('p', { className: 'ptcPlusDetail' }, t('capabilities.managementOff'))))))
+              tab === key ? renderRefresh?.() : null, value.capabilityManagementEnabled === true ? renderPlans() : h('p', { className: 'ptcPlusDetail' }, t('capabilities.managementOff'))))))
   }
   return { CapabilityWorkbench }
 }
@@ -412,7 +449,7 @@ export function createCapabilityRefreshView(React, commands) {
     const cancel = event => {
       event.stopPropagation()
       request.current?.abort(); request.current = null; setPending(false)
-      setStatus(t('capabilities.refreshCancelled'))
+      setStatus({ key: 'capabilities.refreshCancelled' })
       onApplied?.()
     }
     const execute = async event => {
@@ -425,11 +462,12 @@ export function createCapabilityRefreshView(React, commands) {
       try {
         const result = await commands.run(sessionId, 'refresh', controller.signal)
         if (controller.signal.aborted || request.current !== controller) return
-        setStatus(result.text ?? t('capabilities.refreshAcknowledged'))
+        setStatus(result.text ?? { key: 'capabilities.refreshAcknowledged' })
         onApplied?.()
       } catch (error) {
         if (!controller.signal.aborted && request.current === controller) {
-          setStatus(t('capabilities.refreshFailed', { error: String(error?.message ?? error) }))
+          const text = String(error?.message ?? error)
+          setStatus(readCapabilityCommandReceipt(text) ? text : { key: 'capabilities.refreshFailed', params: { error: text } })
         }
       } finally {
         if (request.current === controller) { request.current = null; setPending(false) }
@@ -442,7 +480,100 @@ export function createCapabilityRefreshView(React, commands) {
         onClick: menu && pending ? cancel : execute }, h('span', { className: menu ? 'ptcPlusBindingMenuAction' : undefined },
           t(pending ? menu ? 'capabilities.cancelRefresh' : 'capabilities.refreshing' : 'capabilities.applySession'))),
       pending && !menu ? h('button', { type: 'button', className: 'ptcPlusButton', onClick: cancel }, t('capabilities.cancelRefresh')) : null,
-      status && !menu ? h('p', { className: 'ptcPlusDetail', role: 'status' }, status)
+      status && !menu ? h('p', { className: 'ptcPlusDetail', role: 'status' }, capabilityCommandText(t, status))
         : !available && !menu ? h('p', { className: 'ptcPlusDetail' }, t(sessionId ? 'capabilities.refreshUnavailable' : 'capabilities.chooseSession')) : null)
+  }
+}
+
+/** Session actions share the formal command boundary with slash submission. */
+export function createSessionCapabilityControlsView(React, commands) {
+  const h = React.createElement
+  return function SessionCapabilityControls({ sessionId, enabled, t, onPrefill }) {
+    const source = React.useMemo(() => commands.source(sessionId), [sessionId])
+    const available = React.useSyncExternalStore(source.subscribe, source.getSnapshot)
+    const [open, setOpen] = React.useState(false)
+    const [catalog, setCatalog] = React.useState([])
+    const [scope, setScope] = React.useState('session')
+    const [query, setQuery] = React.useState('')
+    const [kind, setKind] = React.useState('all')
+    const [choices, setChoices] = React.useState({})
+    const [pending, setPending] = React.useState(false)
+    const [status, setStatus] = React.useState(null)
+    const request = React.useRef(null)
+    React.useEffect(() => {
+      setOpen(false); setCatalog([]); setChoices({}); setStatus(null); setPending(false)
+      return () => { request.current?.abort(); request.current = null }
+    }, [sessionId, enabled, available])
+    const load = async (controller) => {
+      const result = await commands.run(sessionId, 'list all', controller.signal)
+      const document = JSON.parse(result.text)
+      if (document?.schema !== 'ptc-capability-catalog/v1' || !Array.isArray(document.entries)) throw new Error('Invalid capability catalog')
+      if (request.current === controller && !controller.signal.aborted) setCatalog(document.entries)
+    }
+    const perform = async operation => {
+      if (!enabled || !available || request.current) return
+      const controller = new AbortController()
+      request.current = controller; setPending(true); setStatus(null)
+      try { await operation(controller) } catch (error) {
+        if (request.current === controller && !controller.signal.aborted) {
+          const text = String(error?.message ?? error)
+          const receipt = readCapabilityCommandReceipt(text)
+          setStatus(receipt ? text : { key: 'capabilities.refreshFailed', params: { error: text } })
+          if (receipt?.state === 'saved-only') {
+            try { await load(controller) } catch { /* The original partial-save receipt remains authoritative. */ }
+          }
+        }
+      } finally {
+        if (request.current === controller) { request.current = null; setPending(false) }
+      }
+    }
+    const cancel = () => {
+      request.current?.abort(); request.current = null; setPending(false)
+      setStatus({ key: 'capabilities.refreshCancelled' })
+    }
+    const stateLabel = value => t(value === 'inherit' ? 'capabilities.quick.inherit'
+      : ['enabled', 'pending'].includes(value) ? `capabilities.quick.${value}` : `capabilities.${value}`)
+    const command = (id, selection) => `set ${scope} ${encodeURIComponent(id)} ${selection}`
+    const matching = catalog.filter(entry => (!query || `${entry.id} ${entry.description}`.toLocaleLowerCase().includes(query.toLocaleLowerCase()))
+      && (kind === 'all' || kind === 'skills' && entry.category === 'skill'
+        || kind === 'tools' && entry.category === 'tool' && entry.source?.kind !== 'mcp'
+        || kind === 'mcp' && ['server', 'resource'].includes(entry.category)
+        || kind === 'mcp_tools' && entry.category === 'tool' && entry.source?.kind === 'mcp'))
+    return h('section', { className: 'ptcPlusSessionCapabilities', 'data-open': open, 'aria-label': t('capabilities.quick.title') },
+      h('button', { type: 'button', role: 'menuitem', className: 'ptcPlusMenuButton', disabled: !enabled || !available,
+        'aria-expanded': open, onClick: () => {
+          if (open) { request.current?.abort(); request.current = null; setPending(false); setOpen(false) }
+          else { setOpen(true); void perform(load) }
+        } }, t('capabilities.quick.title')),
+      open ? h('div', { className: 'ptcPlusSessionCapabilityPanel' },
+        h('label', null, t('capabilities.quick.scope'), h('select', { className: 'ptcPlusSelect', value: scope, disabled: pending,
+          onChange: event => { setScope(event.target.value); setChoices({}) } }, ...['session', 'global'].map(value => h('option', { key: value, value }, t(`capabilities.quick.${value}`))))),
+        h('p', { className: 'ptcPlusDetail' }, t(`capabilities.quick.${scope}Hint`)),
+        h('label', { className: 'ptcPlusSearch' },
+          h('svg', { viewBox: '0 0 24 24', width: 16, height: 16, 'aria-hidden': true }, h('circle', { cx: 10, cy: 10, r: 6, fill: 'none', stroke: 'currentColor', strokeWidth: 2 }), h('path', { d: 'm15 15 6 6', fill: 'none', stroke: 'currentColor', strokeWidth: 2 })),
+          h('input', { type: 'search', value: query, 'aria-label': t('capabilities.search'), placeholder: t('capabilities.search'), onChange: event => setQuery(event.target.value) })),
+        h('select', { className: 'ptcPlusSelect', 'aria-label': t('capabilities.quick.kind'), value: kind, onChange: event => setKind(event.target.value) },
+          ...['all', 'skills', 'tools', 'mcp', 'mcp_tools'].map(value => h('option', { key: value, value }, t(`capabilities.quick.${value}`)))),
+        h('div', { className: 'ptcPlusSessionCapabilityList' }, ...matching.slice(0, 64).map(entry => {
+          const choice = choices[entry.id] ?? (scope === 'session' ? entry.temporary === 'inherit' ? 'inherit' : entry.temporary : entry.saved)
+          return h('div', { key: entry.id, className: 'ptcPlusSessionCapabilityItem' },
+            h('code', null, entry.id),
+            h('p', { className: 'ptcPlusDetail' }, t('capabilities.quick.states', { saved: stateLabel(entry.saved), temporary: stateLabel(entry.temporary), effective: stateLabel(entry.effective) })),
+            h('select', { className: 'ptcPlusSelect', value: choice, disabled: pending, 'aria-label': entry.id,
+              onChange: event => setChoices(current => ({ ...current, [entry.id]: event.target.value })) },
+              ...[...(scope === 'session' ? ['inherit'] : []), 'automatic', ...(entry.category === 'server' ? [] : ['full', 'on-demand']), 'closed']
+                .map(value => h('option', { key: value, value }, t(value === 'inherit' ? 'capabilities.quick.inherit' : `capabilities.${value}`)))),
+            h('div', { className: 'ptcPlusSessionCapabilityActions' },
+              h('button', { type: 'button', className: 'ptcPlusButton', disabled: pending, onClick: () => void perform(async controller => {
+                const result = await commands.run(sessionId, command(entry.id, choice), controller.signal)
+                if (request.current !== controller || controller.signal.aborted) return
+                setStatus(result.text); await load(controller)
+              }) }, t('capabilities.quick.apply')),
+              h('button', { type: 'button', className: 'ptcPlusButton', disabled: pending || !onPrefill,
+                onClick: () => onPrefill?.(`/capabilities ${command(entry.id, choice)}`) }, t('capabilities.quick.prefill'))))
+        })),
+        h('p', { className: 'ptcPlusDetail' }, `${Math.min(64, matching.length)} / ${matching.length}`),
+        pending ? h('button', { type: 'button', className: 'ptcPlusButton', onClick: cancel }, t('capabilities.cancelRefresh')) : null,
+        status ? h('p', { role: 'status', className: 'ptcPlusDetail' }, capabilityCommandText(t, status)) : null) : null)
   }
 }

@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createAssistantMessage } from '@deepseek-ai/dsh-llm'
 import { pathToHead, recoverJournal } from '../internal/session-journal-recovery.js'
-import { JOURNAL_VERSION, JOURNAL_VERSIONS, LANGUAGE_SEMANTICS_JOURNAL_VERSION, PER_NAME_USER_BINDINGS_JOURNAL_VERSION } from '../internal/session-journal-schema.js'
+import { JOURNAL_VERSION, JOURNAL_VERSIONS, MODULE_TRANSFORM_JOURNAL_VERSION, LANGUAGE_SEMANTICS_JOURNAL_VERSION, PER_NAME_USER_BINDINGS_JOURNAL_VERSION } from '../internal/session-journal-schema.js'
 import { LEGACY_USER_BINDING_TRANSFORM, USER_BINDING_TRANSFORM } from '../internal/typescript-transform.js'
 import { createUserBindingsSnapshot, normalizeUserBindingEntry, normalizeUserBindingsSnapshot, USER_BINDINGS_META_KEY } from '../internal/user-bindings.js'
 import { encodeValue } from '../internal/value-wire.js'
@@ -765,7 +765,8 @@ test('format migration preserves confirmed no-ops across every historical journa
     const journal = result.data.meta.dshPtcPlus
     journal.version = version
     journal.confirms = [version === 1 ? calls[0].data.callId : calls[0].seq]
-    if (version < JOURNAL_VERSION) delete journal.moduleTransform
+    if (version < MODULE_TRANSFORM_JOURNAL_VERSION) delete journal.moduleTransform
+    if (version < JOURNAL_VERSION) delete journal.executionCwd
     if (version < LANGUAGE_SEMANTICS_JOURNAL_VERSION) {
       assert.equal(journal.languageSemantics, 'legacy-v1')
       delete journal.languageSemantics
@@ -865,7 +866,7 @@ test('format migration preserves whole-entry and per-name saved values with empt
   const full = createUserBindingsSnapshot({ entries }, 1)
   const predecessorFull = predecessorBindingsSnapshot(entries)
   const predecessorEmpty = predecessorBindingsSnapshot([])
-  for (const version of [6, 7, PER_NAME_USER_BINDINGS_JOURNAL_VERSION, JOURNAL_VERSION]) await t.test(`journal ${version}`, async t => {
+  for (const version of [6, 7, PER_NAME_USER_BINDINGS_JOURNAL_VERSION, MODULE_TRANSFORM_JOURNAL_VERSION, JOURNAL_VERSION]) await t.test(`journal ${version}`, async t => {
     const perName = version >= PER_NAME_USER_BINDINGS_JOURNAL_VERSION
     const currentLanguage = version >= LANGUAGE_SEMANTICS_JOURNAL_VERSION
     const events = [{ seq: 0, type: 'assistant/chunk', data: {} }]
@@ -880,7 +881,8 @@ test('format migration preserves whole-entry and per-name saved values with empt
       const journal = {
         version,
         ...(currentLanguage ? { languageSemantics: 'stateful-v1' } : {}),
-        ...(version === JOURNAL_VERSION ? { moduleTransform: USER_BINDING_TRANSFORM } : {}),
+        ...(version >= MODULE_TRANSFORM_JOURNAL_VERSION ? { moduleTransform: USER_BINDING_TRANSFORM } : {}),
+        ...(version >= JOURNAL_VERSION ? { executionCwd: null } : {}),
         bindingPolicy: { variableRedeclarations: true, functionClassRedeclarations: true },
         rewritePolicy: { autoRewriteImports: true, autoStripExports: true, autoSplitRedeclarations: true },
         moduleSemantics: { defaultExportBinding: 'live-readonly',

@@ -8,6 +8,29 @@
 // services and failure injection its scenario needs.
 
 import { createExecutionSeam } from '../internal/execution-seam-compat.js'
+import { recordedSessionEvents } from './session-observation-fixture.js'
+
+// These assembly fixtures own no persisted sessions. History must still come
+// from an explicitly registered session, never from a fabricated empty log.
+export function createFixtureSessionServices() {
+  const observed = new Map()
+  return {
+    remember(session) { if (session?.id !== undefined) observed.set(session.id, session) },
+    sessions: { list: () => [], flush: async () => false, messageProjections: [] },
+    sessionPersistence: {
+      list: async () => [],
+      open: async () => { throw new Error('No persisted fixture session') },
+    },
+    sessionQuery: {
+      async observeSession(id) {
+        const session = observed.get(id)
+        if (session === undefined) throw new Error(`fixture has no observation source for ${id}`)
+        const events = Object.freeze(structuredClone(recordedSessionEvents(session)))
+        return { events, header: structuredClone(session.header), cursor: events.length - 1, [Symbol.dispose]() {} }
+      },
+    },
+  }
+}
 
 export function createFixtureExecutionProvider(original, serviceName = 'ptcRuntime') {
   return createExecutionSeam(original, serviceName).provider

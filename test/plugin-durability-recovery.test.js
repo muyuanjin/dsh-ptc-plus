@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { AsyncLocalStorage } from 'node:async_hooks'
-import { access, mkdir, mkdtemp, rm, symlink } from 'node:fs/promises'
+import { access, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import { isAbsolute, join } from 'node:path'
 import { tmpdir } from 'node:os'
 import test from 'node:test'
@@ -19,6 +19,158 @@ import {
   runRecordedCell,
 } from './plugin-fixture.js'
 import { assertSameFilesystemEntry } from './filesystem-identity.js'
+
+test('cancellation settles only after the computation helper has exited and stopped ambient writes', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'ptc-cancellation-'))
+  const path = join(root, 'effects.txt')
+  const runtime = new SessionRuntime({ durableReplay: false, userBindingsEnabled: false, computeMs: 10000, maxWallMs: 15000 })
+  t.after(async () => { await runtime.dispose(); await rm(root, { recursive: true, force: true }) })
+  const started = Promise.withResolvers()
+  const controller = new AbortController()
+  const running = runtime.run('cancel-helper', { cwd: root, signal: controller.signal,
+    program: `const fs = await import('node:fs'); fs.writeFileSync(${JSON.stringify(path)}, 'initial');
+      setInterval(() => fs.appendFileSync(${JSON.stringify(path)}, 'tick'), 10);
+      await api.ready({}); await new Promise(() => {});`,
+    bindings: [{ global: 'api', functions: { ready: async () => { started.resolve(); return null } } }],
+  })
+  await started.promise
+  const worker = runtime.kernels.get('cancel-helper').client.worker
+  controller.abort('test stop')
+  const result = await running
+  assert.equal(result.error.kind, 'abort')
+  assert.equal(worker.exited, true)
+  const settled = await readFile(path, 'utf8')
+  await new Promise(resolve => setTimeout(resolve, 40))
+  assert.equal(await readFile(path, 'utf8'), settled)
+})
+
+test('refused helper reclamation prevents a later cell from starting another helper', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'ptc-reclamation-refused-'))
+  const runtime = new SessionRuntime({ durableReplay: false, userBindingsEnabled: false, computeMs: 10000, maxWallMs: 15000 })
+  t.after(async () => { await runtime.dispose(); await rm(root, { recursive: true, force: true }) })
+  const started = Promise.withResolvers()
+  const controller = new AbortController()
+  const running = runtime.runTentative('refused-helper', { cwd: root, signal: controller.signal,
+    program: 'await api.ready({}); await new Promise(() => {})',
+    bindings: [{ global: 'api', functions: { ready: async () => { started.resolve(); return null } } }],
+  })
+  await started.promise
+  const kernel = runtime.kernels.get('refused-helper')
+  const worker = kernel.client.worker
+  const terminate = worker.terminate.bind(worker)
+  worker.terminate = async () => { throw new Error('helper stop refused') }
+  try {
+    controller.abort('test stop')
+    const aborted = await running
+    assert.match(aborted.result.error.message, /helper reclamation failed: helper stop refused/)
+    assert.equal(aborted.settlement.journal.completion.error.message, aborted.result.error.message)
+    assert.equal(worker.exited, false)
+    const next = await runtime.run('refused-helper', { cwd: root, program: 'return 42', bindings: [] })
+    assert.match(next.error.message, /previous computation helper reclamation failed/)
+    assert.equal(next.value, undefined)
+    assert.equal(kernel.client.worker, undefined)
+  } finally { worker.terminate = terminate }
+  await assert.rejects(runtime.dispose(), error => error instanceof AggregateError)
+  assert.equal(worker.exited, true)
+  await runtime.dispose()
+})
+
+test('resolved cell cwd changes new I/O and imports while retaining old sources and continuous bindings', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'ptc-execution-directory-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const directories = ['a', 'b'].map(name => join(root, name))
+  for (const [index, directory] of directories.entries()) {
+    await mkdir(directory)
+    await writeFile(join(directory, 'value.mjs'), `export const value = ${index + 1}`)
+    await writeFile(join(directory, 'value.cjs'), `module.exports = ${index + 1}`)
+    await writeFile(join(directory, 'input.txt'), String(index + 1))
+  }
+  const state = fixture()
+  t.after(() => state.dispose())
+  const session = { ...orderedSurfaceSession('execution-directory'), header: { cwd: directories[0] } }
+  const first = await state.run(session.id, `
+    import { value as earlier } from './value.mjs';
+    const loadEarlier = () => import('./value.mjs');
+    const evalEarlier = () => eval('import("./value.mjs")');
+    const savedRequire = require;
+    const relativePath = Buffer.from('input.txt');
+    Buffer.from = () => { throw new Error('source Buffer.from override'); };
+    let count = 1;
+    return [process.cwd(), earlier, import.meta.dirname];
+  `, {}, { session, cwd: directories[0] })
+  assert.deepEqual(first.value, [directories[0], 1, directories[0]])
+  const second = await state.run(session.id, `
+    import { value as current } from './value.mjs';
+    const fs = await import('node:fs/promises');
+    const childProcess = await import('node:child_process');
+    count += 1;
+    return { cwd: process.cwd(), dirname: import.meta.dirname, count, earlier, current,
+      captured: (await loadEarlier()).value, evalCaptured: (await evalEarlier()).value,
+      oldRequire: savedRequire.resolve('./value.cjs'), newRequire: require.resolve('./value.cjs'),
+      file: await fs.readFile(relativePath, 'utf8'),
+      processDirectory: childProcess.execFileSync(process.execPath, ['-e', 'process.stdout.write(process.cwd())'], { encoding: 'utf8' }),
+      child: await code.run({ code: 'return [process.cwd(), (await import("./value.mjs")).value]', description: 'Inspect new child directory' }) };
+  `, {}, { session, cwd: directories[1] })
+  assert.equal(second.error, undefined)
+  assert.deepEqual(second.value, { cwd: directories[1], dirname: directories[1], count: 2, earlier: 1, current: 2,
+    captured: 1, evalCaptured: 1, oldRequire: join(directories[0], 'value.cjs'), newRequire: join(directories[1], 'value.cjs'),
+    file: '2', processDirectory: directories[1], child: { logs: [], result: [directories[1], 2] } })
+  assert.equal(session.header.cwd, directories[0])
+})
+
+for (const bindingUpdates of ['stateful', 'protected']) {
+  test(`old indirect eval and Function calls retain their cell import base in ${bindingUpdates} mode`, async t => {
+    const root = await mkdtemp(join(tmpdir(), 'ptc-dynamic-directory-'))
+    t.after(() => rm(root, { recursive: true, force: true }))
+    const directories = ['a', 'b'].map(name => join(root, name))
+    for (const [index, directory] of directories.entries()) {
+      await mkdir(directory)
+      await writeFile(join(directory, 'value.mjs'), `export const value = ${index + 1}`)
+    }
+    const state = fixture({ bindingUpdates })
+    t.after(() => state.dispose())
+    const session = { ...orderedSurfaceSession(`dynamic-directory-${bindingUpdates}`), header: { cwd: directories[0] } }
+    const first = await state.run(session.id, `
+      const oldConstruct = () => Function("return import('./value.mjs')")();
+      const oldEval = () => (0, eval)("import('./value.mjs')");
+      return [(await oldConstruct()).value, (await oldEval()).value];
+    `, {}, { session, cwd: directories[0] })
+    assert.deepEqual(first.value, [1, 1])
+    const second = await state.run(session.id, `
+      return [(await oldConstruct()).value, (await oldEval()).value,
+        (await Function("return import('./value.mjs')")()).value,
+        (await (0, eval)("import('./value.mjs')")).value];
+    `, {}, { session, cwd: directories[1] })
+    assert.equal(second.error, undefined)
+    assert.deepEqual(second.value, [1, 1, 2, 2])
+  })
+}
+
+test('cold replay retains recorded cell directories and applies the current directory only to new computation', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'ptc-recorded-directory-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const directories = ['a', 'b', 'c'].map(name => join(root, name))
+  for (const directory of directories) await mkdir(directory)
+  const session = { ...orderedSurfaceSession('recorded-directory'), header: { cwd: directories[0] } }
+  const state = fixture()
+  t.after(() => state.dispose())
+  const first = await state.runDurable(session.id, 'const firstDirectory = import.meta.dirname; let count = 1; return firstDirectory', {},
+    { session, cwd: directories[0] })
+  assert.equal(first.meta.dshPtcPlus.executionCwd, directories[0])
+  const second = await state.runDurable(session.id, 'const secondDirectory = import.meta.dirname; count += 1; return secondDirectory', {},
+    { session, cwd: directories[1] })
+  assert.equal(second.meta.dshPtcPlus.status, 'durable')
+  assert.equal(second.meta.dshPtcPlus.executionCwd, directories[1])
+  await state.dispose()
+  const restored = fixture()
+  t.after(() => restored.dispose())
+  const result = await restored.run(session.id, 'return [firstDirectory, secondDirectory, count, import.meta.dirname, process.cwd()]', {},
+    { session, cwd: directories[2] })
+  assert.deepEqual(result, { logs: [], value: [directories[0], directories[1], 2, directories[2], directories[2]] })
+  const invalid = await restored.run(session.id, 'count += 1', {}, { session, cwd: 'relative' })
+  assert.equal(invalid.error.message, 'PTC execution cwd must be an absolute path')
+  assert.equal((await restored.run(session.id, 'return count', {}, { session, cwd: directories[2] })).value, 2)
+})
 
 test('volatile save rejection preserves computation without proposing destructive recovery', async t => {
   const enabled = createUserBindingsSnapshot({ entries: [{
@@ -161,6 +313,7 @@ return predecessorBinding
   delete predecessor.meta.dshPtcPlus.userBindingNames
   delete predecessor.meta.dshPtcPlus.languageSemantics
   delete predecessor.meta.dshPtcPlus.moduleTransform
+  delete predecessor.meta.dshPtcPlus.executionCwd
   const normalizedPredecessor = normalizeJournal(predecessor.meta.dshPtcPlus)
   assert.equal(normalizedPredecessor.languageSemantics, 'legacy-v1')
   assert.equal(normalizedPredecessor.userBindingsShadowPolicy, LEGACY_USER_BINDINGS_SHADOW_POLICY)
@@ -199,6 +352,7 @@ test('cold-replays predecessor default exports with their recorded writable bind
       delete result.meta.dshPtcPlus.userBindingNames
       delete result.meta.dshPtcPlus.languageSemantics
       delete result.meta.dshPtcPlus.moduleTransform
+      delete result.meta.dshPtcPlus.executionCwd
       const normalized = normalizeJournal(result.meta.dshPtcPlus)
       assert.equal(normalized.languageSemantics, 'legacy-v1')
       assert.equal(normalized.userBindingsShadowPolicy, LEGACY_USER_BINDINGS_SHADOW_POLICY)

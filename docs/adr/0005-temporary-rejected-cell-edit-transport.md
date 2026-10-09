@@ -21,52 +21,23 @@ edit_run_code({
 })
 ```
 
-PTC mode requests using the code-only direct-tool projection expose `[run_code, edit_run_code]` in
-that order. The first conclusive prompt assembly creates one per-agent composition owner before any
-plugin-owned presentation effect changes the nearest DSH scope. A non-empty `tools:ptc-only`
-section proves `ptc`, an empty section proves `both`, and the preceding generation's
-`tools:code-only` alias proves the same composition; the current section wins when both appear, and
-only a missing owner signal permits a tool-shape inference. For a code composition, the same owner
-registers `edit_run_code` through `agent.ctx.tools.register()` and uses the same scope's
-`tools.presentAs('both')` to admit both direct calls. It retains both exact disposers and releases
-registration and presentation together with the owning session, agent, or plugin. Native-mode and unrelated agent
-scopes never inherit the tool. Unrelated native tools remain in the program SDK. A top-level native call is outside that
-valid direct protocol. The stream canonicalizer may deliberately replace it with the equivalent
-`run_code` transport when the live schema uniquely proves the native member; otherwise the call
-remains unchanged for host diagnosis. A nested native call from a cell continues through the
-ordinary DSH pipeline. Each assembly derives its `native`, `code`, or `both` presentation from the
-lifecycle owner rather than inferring composition mode again from the plugin-modified scope. Only
-`code` collapses direct tools, normalizes top-level native calls, or
-rejects native dispatch. Both PTC presentations adapt `run_code`, append the program SDK, and
-project session runtime contexts, while `both` also preserves native direct calls. The initial
-transport-only shape may bootstrap the first scoped registration, but the resulting
-`tools.presentAs('both')` declaration is only the executor-enabling effect for the two transports
-and cannot become a second mode owner. Each completed prompt assembly therefore preserves the
-agent composition's direct projection without releasing the per-agent registration. The
-model stream binds every complete tool call's session and call ID to that assembly policy, and
-execution consumes this stable relation even when another public wrapper replaces the cancellation
-signal. A settled result retires the relation. The retained registration does not authorize the
-tool outside a code composition, and one shared session lifecycle revokes outstanding request and
-call records on session, agent, or plugin disposal.
+## Public integration status
 
-The code composition deliberately retains a complete native registry and nested
-SDK while the public assembly hook projects only the two direct transports.
-This is an accepted exception to the Host recommendation that assembly hooks
-should not change the visible tool list; registry and model-visible lists need
-not be identical. Requiring stock `ptc` collapse would reject the editor, and
-restricting the registry to the two transports would remove native program
-bindings. Live-schema-proven native-call normalization is therefore retained
-before persistence and Host dispatch, preserving call identity and native JSON
-arguments through ordinary DSH validation, policy and approval. Stable
-configuration still requires byte-stable plugin text and ordered schemas.
+The required direct surface is `[run_code, edit_run_code]`, preserving each original name, JSON arguments and call identity through Host validation, policy and result settlement. The current published public ToolPresentationMode contains only `native` and `ptc`. This requirement is not fully implementable through that public composition: native mode admits the registered editor but does not supply reserved `run_code`; PTC mode supplies `run_code` and rejects a top-level editor before policy or around-execute hooks. Registering or shadowing `run_code` is prohibited in either mode. Projection of an additional schema does not grant execution admission.
 
-An unchanged native root call, including one left unchanged when canonicalization
-is disabled, is rejected by the plugin's execution hook. Because Host
-pre-execution approval precedes that hook, such a call can prompt for approval
-before rejection; this ordering is an accepted limitation, not a registry-level
-admission guarantee. Acceptance does not establish a new public direct-set API.
-Revisit the projection if the official Host changes the assembly contract or
-provides independent direct-tool admission without narrowing the nested SDK.
+The implementation's scoped `tools.presentAs('both')` is outside that public contract. The Host's current lack of runtime rejection for this value is not supported composition, and an empty `tools:ptc-only` section does not prove a public third mode. Existing fixture success and source-level editor semantics therefore do not establish current packed-Host compatibility. This boundary remains pending; the plugin must not be published or described as fully compatible on the strength of that path.
+
+The needed upstream surface is an agent-scoped direct admission set that includes the reserved PTC transport and the registered editor, while retaining the complete nested SDK and the Host's original validation, policy, scheduling and result owners. One declared composition must own both wire presentation and direct admission. Public ordered schema projection alone, or a later execution hook, cannot substitute for admission.
+
+**Native mode plus a synthetic run_code schema.** Native execution has no reserved transport definition, and registration is forbidden; the model-visible schema cannot create it.
+
+**PTC mode plus the editor schema.** The editor is collapsed before public policy and execution hooks, so these hooks cannot admit it.
+
+**Use the undeclared both mode.** Its incidental JavaScript behavior is outside the published extension contract and cannot ground current compatibility.
+
+**Rename the editor, dispatch it as a nested call, or replace Host dispatch.** These approaches abandon original direct call identity or DSH authority. They do not satisfy the required contract and are not accepted substitutes.
+
+The internal editing, compilation and journal contracts below remain required and independently testable. Revisit this integration boundary when the official public admission surface changes; no literal release identity selects runtime behavior.
 
 `edit_run_code` targets the most recent editable cell in the current turn when its persisted
 `tool/call` event is recorded. Execution resolves that snapshot through the event sequence rather

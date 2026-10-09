@@ -610,17 +610,21 @@ test('fails closed when a native edit_run_code name already occupies the agent s
     description: 'Host-owned edit tool.',
     parameters: { type: 'object', properties: {} },
   }
-  const state = fixture({}, { scopedSchemas: [nativeEdit] })
+  const state = fixture()
   t.after(() => state.dispose())
   const agent = ptcAgent('native-edit-collision', { id: 'native-edit-collision', events: [] })
+  const releaseNative = agent.ctx.tools.register(nativeEdit)
+  t.after(releaseNative)
+  const nativeRegistrations = [...agent.registration.calls]
 
   await assert.rejects(state.assemble(
     { sections: [], contexts: [], variables: {}, tools: [state.runCodeDefinition] },
     { agent, scope: agent },
   ), /cannot install edit_run_code; the agent scope already owns that tool name/)
-  assert.deepEqual(agent.registration.calls, [])
+  assert.deepEqual(agent.registration.calls, nativeRegistrations)
   assert.deepEqual(agent.presentation.calls, [])
-  assert.equal(agent.ctx.tools.get('edit_run_code'), undefined)
+  assert.equal(agent.ctx.tools.get('edit_run_code'), nativeEdit)
+  assert.equal(agent.registration.disposals, 0)
 })
 
 test('retains the code composition when edit registration broadens later assemblies', async (t) => {

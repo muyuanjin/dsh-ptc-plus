@@ -7,7 +7,7 @@ import {
   installProjectedProcessCwd,
 } from './worker-realm-surfaces.js'
 
-const { Reflect: privateReflect, appendArray, bufferConcat, bufferIsBuffer, bufferToString,
+const { Reflect: privateReflect, appendArray, bufferConcat, bufferFrom, bufferIsBuffer, bufferToString,
   copyArray, isArray, regexpTest } = internal
 const TRAILING_SEPARATOR = /[\\/]$/
 
@@ -108,29 +108,32 @@ export function projectChildProcessArguments(name, args, sessionCwd) {
     : withDefaultOptions(2)
 }
 
-/** Install one session's cwd projection into Node builtins loaded by the worker. */
-export function installWorkerCwdVirtualization(sessionCwd, originalRequire, markVolatile) {
+/** Install stable Node wrappers; the execution owner supplies each cell's cwd. */
+export function installWorkerCwdVirtualization(sessionCwd, originalRequire, markVolatile, readCwd = () => sessionCwd) {
+  const nativeCwd = process.cwd
+  const currentCwd = () => readCwd() ?? privateReflect.apply(nativeCwd, process, [])
   if (sessionCwd === undefined) {
-    const nativeCwd = process.cwd
     assignWorkerRealmProperty(WORKER_REALM_MUTATION.STABLE, 'process.cwd', process, 'cwd', () => {
-      markVolatile('process.cwd')
-      return privateReflect.apply(nativeCwd, process, [])
+      if (readCwd() === undefined) markVolatile('process.cwd')
+      return currentCwd()
     })
-    return
-  }
+  } else installProjectedProcessCwd(process, currentCwd)
   const nativeResolve = resolve
-  const bufferPrefix = Buffer.from(sessionCwd + (regexpTest(TRAILING_SEPARATOR, sessionCwd) ? '' : sep))
+  const directoryPrefix = () => {
+    const cwd = currentCwd()
+    return cwd + (regexpTest(TRAILING_SEPARATOR, cwd) ? '' : sep)
+  }
   const sessionPath = (value) => {
-    if (typeof value === 'string') return isAbsolute(value) ? value : nativeResolve(sessionCwd, value)
+    if (typeof value === 'string') return isAbsolute(value) ? value : nativeResolve(currentCwd(), value)
     if (bufferIsBuffer(value)) {
       const absolute = isAbsolute(bufferToString(value, 'utf8', 0, 3))
-      return absolute ? value : bufferConcat([bufferPrefix, value])
+      return absolute ? value : bufferConcat([bufferFrom(directoryPrefix()), value])
     }
     return value
   }
   const sessionPathPrefix = (value) => {
     if (typeof value !== 'string' || isAbsolute(value) || parse(value).root !== '') return sessionPath(value)
-    return sessionCwd + (regexpTest(TRAILING_SEPARATOR, sessionCwd) ? '' : sep) + value
+    return directoryPrefix() + value
   }
   const projectPaths = (args, indices) => {
     const next = copyArray(args)
@@ -148,18 +151,17 @@ export function installWorkerCwdVirtualization(sessionCwd, originalRequire, mark
   const sessionGlobOptions = (args) => {
     if (typeof args[1] === 'function') {
       const next = copyArray(args, 0, 1)
-      appendArray(next, { cwd: sessionCwd })
+      appendArray(next, { cwd: currentCwd() })
       return copyArray(args, 1, args.length, next)
     }
     const next = copyArray(args)
-    if (next[1] === undefined) next[1] = { cwd: sessionCwd }
+    if (next[1] === undefined) next[1] = { cwd: currentCwd() }
     else if (next[1] !== null && typeof next[1] === 'object' && next[1].cwd === undefined) {
-      next[1] = { ...next[1], cwd: sessionCwd }
+      next[1] = { ...next[1], cwd: currentCwd() }
     }
     return next
   }
 
-  installProjectedProcessCwd(process, sessionCwd)
   const fs = originalRequire('node:fs')
   const path = originalRequire('node:path')
   for (const [name, indices] of Object.entries(FILE_SYSTEM_PATH_ARGUMENTS)) {
@@ -174,10 +176,10 @@ export function installWorkerCwdVirtualization(sessionCwd, originalRequire, mark
     wrapBuiltin(fs, name, sessionGlobOptions)
     wrapBuiltin(fs.promises, name, sessionGlobOptions)
   }
-  wrapBuiltin(path, 'resolve', args => copyArray(args, 0, args.length, [sessionCwd]))
+  wrapBuiltin(path, 'resolve', args => copyArray(args, 0, args.length, [currentCwd()]))
   const childProcess = originalRequire('node:child_process')
   for (const name of ['exec', 'execFile', 'execFileSync', 'execSync', 'fork', 'spawn', 'spawnSync']) {
     wrapBuiltin(childProcess, name,
-      args => projectChildProcessArguments(name, args, sessionCwd), CHILD_PROCESS_PROJECTED_PROPERTIES[name])
+      args => projectChildProcessArguments(name, args, currentCwd()), CHILD_PROCESS_PROJECTED_PROPERTIES[name])
   }
 }

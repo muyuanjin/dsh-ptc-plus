@@ -4,7 +4,10 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { Context } from '@deepseek-ai/cordis'
-import { Session } from '@deepseek-ai/dsh-session'
+import { SessionStore } from '@deepseek-ai/dsh-session'
+import { SessionQueryEngine } from '@deepseek-ai/dsh-session-query'
+import { SessionProjectionRegistry } from '@deepseek-ai/dsh-session-projection'
+import { toolSdkSchemas } from '../internal/program-bindings.js'
 import { SpillStore } from '@deepseek-ai/dsh-spill'
 import { LocalSpillStore } from '@deepseek-ai/dsh-spill-local'
 import * as spillPolicy from '@deepseek-ai/dsh-spill-policy'
@@ -45,10 +48,14 @@ async function fixture(t, storage, managed = true) {
       additionalProperties: false }, render: () => content },
     async execute() { executions += 1; return canonical },
   })))
-  const agent = { id: 'preview-agent', session: Session.create('preview-session') }
+  new SessionStore(ctx)
+  new SessionProjectionRegistry(ctx)
+  await ctx.plugin(SessionQueryEngine).await()
+  const agent = { id: 'preview-agent', session: ctx.sessions.create('preview-session') }
   const env = createCapabilityEnvironment({ ctx, config: { capabilityManagementEnabled: managed,
     capabilityBaseline: '[]', capabilityOverrides: '{}', capabilityStatistics: '{"enabled":false}',
-    modelPreviewTokens: 256 }, toolSchemasForAgent: target => ctx.tools.sdkSchemas(target) })
+    modelPreviewTokens: 256 }, toolSchemasForAgent: target => toolSdkSchemas(ctx.tools, target),
+    modelSchemasForAgent: target => ctx.tools.schemas(target) })
   t.after(() => env.dispose())
   await env.prepare(agent, [])
   ctx.on('tools/post-execute', (exec, result, next) => env.postExecute(exec, result, next), { prepend: true })

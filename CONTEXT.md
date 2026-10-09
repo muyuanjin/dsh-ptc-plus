@@ -59,7 +59,7 @@ PTC Plus 是个人维护的社区实验插件。它把 DSH PTC 模式的顶层 `
 ## Core constraints
 
 1. `danger-full-access` 是一等体验：保留模型熟悉的 Node、process、filesystem、network、shell、生态 SDK 与 DSH native typed `tools.*`。其他 profile 的 native tool surface 只按 live request 简单降级，不模拟缺失能力；更窄 tool view 不构成 Node ambient sandbox。
-2. 后续 cell 直接复用 binding，不搬运源码、不嵌套转义、不增加普通继续求值的模型往返。
+2. 后续 cell 直接复用 binding，不搬运源码、不嵌套转义、不增加普通继续求值的模型往返。 新 cell 使用宿主解析的当前执行目录；已加载模块和导入闭包保留自身来源，恢复逐 cell 消费 journal v11 的 `executionCwd`，v1–v10 保留历史 header/worker 基准（[ADR 0041](docs/adr/0041-record-cell-execution-directories.md)）。
 3. DSH/宿主拥有 authority 和 policy。PTC Plus 是可独立分发的社区插件，始终面向未经修改的官方 DSH 最新可用 release 的已发布公共扩展面；不得修改 DSH 源码或安装包，或要求用户编译、安装定制宿主。插件可通过这些契约实现自有 UI、独立面板和 renderer 替换，不要求全部沿用原生组件或消息布局。宿主源码仅作为只读研究证据，缺失的公共能力不能通过本地补丁变成插件依赖。插件不接入私有 scheduler、不伪造 session event，也不以版本号白名单替代能力和契约验收。验收脚本在运行时记录实际 DSH 版本；上游升级后，当前 release 立即成为兼容目标。分发与交付判据见 [ADR 0017](docs/adr/0017-track-the-latest-dsh-public-surface.md)。
 4. 无法由 session log 重建的 Node/OS 输入与 effect 进入 sticky volatile；live worker 继续可用。cold recovery 只保留 ancestry 或独立性可由插件自有证据证明的最大 frontier，保守丢弃可能依赖 unknown boundary 的状态；没有非空 frontier 时从空 REPL 继续当前合法 cell。历史 PTC Plus metadata 损坏只能否定旧 binding 的恢复资格，不能成为永久拒绝后续 `run_code` 的 availability gate。volatile 是恢复分类，不是权限，收缩不表示历史 effect 被撤销或可安全重试。
 5. shell 是解释命令文本的通用入口，不是 REPL、权限系统或普通 argv spawn 的前置条件。PTY/ConPTY 只用于交互进程；Windows、WSL 与 POSIX execution world 必须分别探查。
@@ -88,7 +88,7 @@ PTC Plus 是个人维护的社区实验插件。它把 DSH PTC 模式的顶层 `
 - 当前 DSH `tools.read` 契约是 bounded inspection，不是 lossless whole-file API；这项使用注意不构成 PTC metadata 注解。需要完整文件时，一等 profile 使用 `node:fs/promises.readFile` 或 stream；该直接 I/O 没有 call transcript，因此进入 volatile。
 - model/UI rendering 与 canonical program value 是不同层；展示被裁剪不能证明 program value 被裁剪，反之亦然。
 - `code.run` 在隔离 child runtime 执行 source，不合并父 binding。正常结算后记录并重放结果；若基础设施终止时调用仍未结算，discarded journal 以 `code.run` 记录 possible-effect boundary。该规则由所有 program binding 共用的 pending/settled 生命周期决定，不由 capability 名称决定。
-- PTC 模式的 code-only direct-tool projection 固定暴露 `[run_code, edit_run_code]`，但 DSH 默认只投影 `run_code` 不是插件必须继承的架构约束。DSH owner 为一个 agent composition 选择一次 `native`、`ptc` 或 `both`；PTC Plus 必须在自己的 agent-scoped presentation effect 生效前捕获首次可证明的 composition mode，并在该 agent 生命周期内只从这项事实派生 direct projection、native-call normalization 与 dispatch rejection。非空 `tools:ptc-only` rule 证明 `ptc`，同名空 section 证明 `both`；`tools:code-only` 仅在 `tools:ptc-only` 缺失时作为同语义兼容别名，两者同时存在时以 `tools:ptc-only` 为准。插件为执行 `edit_run_code` 调用的 `tools.presentAs('both')` 只是宿主执行效果，不能成为后续模式证据。PTC Plus 通过 DSH 的公共工具注册与 agent 级呈现接口真实注册并呈现 `edit_run_code`；无关 native tools 仍只作为程序内 `tools.*` 能力提供。`edit_run_code` 保留模型原始调用与参数，使用独立 editor 对同一未结束 turn 中调用发起时最近的可编辑 cell 原子应用至多 16 个唯一、非重叠的字面替换，或至多 16 条带显式预期匹配数的正则替换；发起后的其他 settlement 不追溯改变该目标。普通 edit 可省略目标前置条件；携带 `expected_target_call_seq` 时，捕获目标的 call sequence 必须相同，否则不编辑、不执行。目标既可以是被拒绝或失败的 cell，也可以是已成功执行但仍需微调的 cell；成功 edit 的派生源码成为下一目标。完整物化源码只进入插件派生的 `run_code` 执行和可恢复日志元数据，不替换或重复进入模型 assistant history；执行结果由外层 `edit_run_code` result 表达。调用身份、派生执行、journal、恢复与 UI 展示必须保持可区分；`llm/stream` 不得重命名合法的 `edit_run_code`，也不得添加 edit 专用 runtime context。所有匹配、长度、capture、展开和 CPU 预算仍由 editor 统一拥有；失败、取消、未知 effect 与冷恢复语义必须从 session log 重建。
+- PTC 模式要求 code-only direct-tool projection 保留 `[run_code, edit_run_code]` 真实名称、原始参数及 Host 准入、validation、policy 和 result 所有权。当前公开 composition 只有 `native` 与 `ptc`，前者不提供 reserved run_code，后者在公共执行 hook 之前拒绝顶层 editor；非法 `both` 值与空 collapse section 均不能证明受支持组合。此集成边界仍待官方独立 direct admission 契约，详见 [ADR 0005](docs/adr/0005-temporary-rejected-cell-edit-transport.md#public-integration-status)；不能以内部编译器/editor 测试代替最新官方打包兼容证据。`edit_run_code` 保留模型原始调用与参数，使用独立 editor 对同一未结束 turn 中调用发起时最近的可编辑 cell 原子应用至多 16 个唯一、非重叠的字面替换，或至多 16 条带显式预期匹配数的正则替换；发起后的其他 settlement 不追溯改变该目标。普通 edit 可省略目标前置条件；携带 `expected_target_call_seq` 时，捕获目标的 call sequence 必须相同，否则不编辑、不执行。目标既可以是被拒绝或失败的 cell，也可以是已成功执行但仍需微调的 cell；成功 edit 的派生源码成为下一目标。完整物化源码只进入插件派生的 `run_code` 执行和可恢复日志元数据，不替换或重复进入模型 assistant history；执行结果由外层 `edit_run_code` result 表达。调用身份、派生执行、journal、恢复与 UI 展示必须保持可区分；`llm/stream` 不得重命名合法的 `edit_run_code`，也不得添加 edit 专用 runtime context。所有匹配、长度、capture、展开和 CPU 预算仍由 editor 统一拥有；失败、取消、未知 effect 与冷恢复语义必须从 session log 重建。
 
 ## Journal facts
 
@@ -114,7 +114,7 @@ DSH 原生 tool guidance 与 typed SDK 保持 owner 提供的内容。PTC Plus �
 
 普通成功 cell 不产生 PTC warning/note。宽松重声明和首次进入 volatile 都是正常运行状态；后者只进入 journal 与 `repl.state(list)`。只有执行失败或 cold recovery 实际跳过历史状态时才投影可行动诊断。同一失败指纹在单个 kernel 内连续出现 3 次时，失败 cell 追加一次分类提示：可证明的 binding 错误使用 `PTC-W001`，其中 lexical 错误指向可见源码、作用域与初始化，只有 worker-owned capability 错误建议 live capability 探查；其他错误使用 `PTC-W002` 且只要求重新检查其具体 cause。附加提示沿用失败 cell 的 stateEffect，不声称此前语句未生效。成功或不同失败会重置计数；提示不重写原始错误。
 
-当前公共扩展面没有跨 prompt assembly 与 runtime dispatch 的冻结 capability token。插件在两个阶段使用同一 agent scope，但以实际 request binding 为执行事实，不承诺不存在定义漂移。
+能力管理冻结启用与披露选择，不冻结宿主 calling contract。当前参数、结果、说明依赖及 Skill 调用资格由 live owner 拥有；变化经允许且接受的步骤追加一次 capability-contracts 消息，撤销或替换对应旧契约，不重分配选择或修改历史/稳定前缀。用户专用 Skill 保留用户配置与 /name 入口，不推荐模型加载。当前公共扩展面没有跨 prompt assembly 与 runtime dispatch 的冻结 capability token。插件在两个阶段使用同一 agent scope，但以实际 request binding 为执行事实，不承诺不存在定义漂移。
 
 ## 设置 UI
 

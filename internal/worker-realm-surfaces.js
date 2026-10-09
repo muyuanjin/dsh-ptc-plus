@@ -41,7 +41,7 @@ export const WORKER_REALM_SURFACE_CONTRACT = objectFreeze([
     surface: 'process.cwd',
     owner: 'internal/worker-cwd-virtualization.js',
     classification: WORKER_REALM_MUTATION.STABLE,
-    contract: 'recorded cwd; immutable and non-configurable when a session cwd exists',
+    contract: 'current recorded cell cwd; callable immutable and non-configurable when a session cwd exists',
     reference: 'plain Node worker process descriptor',
     verification: 'cwd-descriptor',
   }),
@@ -49,7 +49,7 @@ export const WORKER_REALM_SURFACE_CONTRACT = objectFreeze([
     surface: 'cwd-projected Node builtins',
     owner: 'internal/worker-cwd-virtualization.js',
     classification: WORKER_REALM_MUTATION.STABLE,
-    contract: 'relative fs, path, and child-process calls use the recorded cwd while retaining callable descriptors',
+    contract: 'relative fs, path, and new child-process calls use the current recorded cell cwd while retaining callable descriptors',
     reference: 'plain Node worker fs, fs/promises, path, and child_process callable descriptors',
     verification: 'cwd-projected-builtins',
   }),
@@ -148,7 +148,7 @@ export function installProjectedProcessCwd(processObject, cwd) {
     configurable: false,
     enumerable: true,
     writable: false,
-    value: () => cwd,
+    value: typeof cwd === 'function' ? cwd : () => cwd,
   })
 }
 

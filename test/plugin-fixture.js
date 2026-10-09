@@ -90,9 +90,6 @@ export function ptcAgent(id, session = { id, events: [] }) {
       const inherited = inheritedSchemas(scope).filter(definition => !definitions.has(definition.name))
       return scope === agent ? [...inherited, ...definitions.values()] : inherited
     },
-    sdkSchemas(scope) {
-      return this.schemas(scope).filter(schema => schema.name !== 'run_code')
-    },
     register(definition) {
       if (definitions.has(definition.name)) throw new Error(`duplicate scoped tool ${definition.name}`)
       definitions.set(definition.name, definition)
@@ -138,6 +135,12 @@ export function fixture(config = {}, fixtureOptions = {}) {
   const { listeners, sections, contexts, cleanups } = host
   let disposal
   const upstreamCalls = []
+  // Supplied SDK schemas and registered tool definitions are distinct Host
+  // contracts. Adapt fixture input once; registry reads never rewrite outputs.
+  const sdkDefinitions = new Map((fixtureOptions.schemas ?? []).map(schema => [schema.name,
+    { ...schema, output: { schema: schema.output ?? {} } }]))
+  const scopedSdkDefinitions = new Map((fixtureOptions.scopedSchemas ?? []).map(schema => [schema.name,
+    { ...schema, output: { schema: schema.output ?? {} } }]))
   const defaultSessions = new Map()
   const requestContexts = new Map()
   let nextCallId = 0
@@ -153,7 +156,7 @@ export function fixture(config = {}, fixtureOptions = {}) {
       },
       required: ['code', 'description'],
     },
-    output: {},
+    output: { schema: {} },
   }
   const definitions = host.toolDefinitions
   definitions.set('run_code', runCodeDefinition)
@@ -174,7 +177,7 @@ export function fixture(config = {}, fixtureOptions = {}) {
     },
     resolve(request) {
       if (fixtureOptions.resolveSeam !== undefined) return fixtureOptions.resolveSeam(request)
-      return { ...request, cwd: '/fixture-workspace', timeoutMs: request.timeoutMs ?? null }
+      return { ...request, timeoutMs: request.timeoutMs ?? null }
     },
     async run(request) {
       upstreamCalls.push(request)
@@ -183,7 +186,11 @@ export function fixture(config = {}, fixtureOptions = {}) {
     },
   })
   const runtime = createFixtureExecutionProvider(originalRuntime, seamServiceName)
+  // These focused runtime fixtures do not publish SessionStore lifecycles or
+  // acquire persisted sessions. Real handback tests use the official store.
   const services = { [seamServiceName]: runtime,
+    sessions: { list: () => [], flush: async () => false, messageProjections: [] },
+    sessionPersistence: { list: async () => [], open: async () => { throw new Error('No persisted fixture session') } },
     sessionProjections: new SessionProjectionRegistry(new Context()),
     sessionQuery: { async observeSession(id) {
       const session = defaultSessions.get(id)
@@ -217,7 +224,8 @@ export function fixture(config = {}, fixtureOptions = {}) {
     },
     [seamServiceName]: runtime,
     tools: {
-      get: (name, scope) => scope?.ctx?.tools?.get(name) ?? definitions.get(name),
+      get: (name, scope) => scope?.ctx?.tools?.get(name) ?? definitions.get(name)
+        ?? sdkDefinitions.get(name),
       register: host.ctx.tools.register,
       async execute(options) {
         const definition = options.agent?.ctx?.tools?.get(options.name) ?? definitions.get(options.name)
@@ -253,9 +261,6 @@ export function fixture(config = {}, fixtureOptions = {}) {
       schemas: scope => (typeof scope?.ctx?.tools?.schemas === 'function'
         ? scope.ctx.tools.schemas(scope)
         : [...definitions.values(), ...(fixtureOptions.schemas ?? [])]).map(({ output, ...schema }) => schema),
-      sdkSchemas: scope => (typeof scope?.ctx?.tools?.sdkSchemas === 'function'
-        ? scope.ctx.tools.sdkSchemas(scope)
-        : [...definitions.values(), ...(fixtureOptions.schemas ?? [])]).filter(schema => schema.name !== 'run_code'),
     },
     agents: fixtureOptions.agents ?? { list: () => [] },
     systemPrompt: {
@@ -366,6 +371,7 @@ export function fixture(config = {}, fixtureOptions = {}) {
     let result = await execute(exec, async () => {
       raw = await invokeSeam({
         program,
+        cwd: options.cwd ?? agentSession.header?.cwd,
         bindings: [{
           global: 'tools',
           functions,
@@ -404,12 +410,19 @@ export function fixture(config = {}, fixtureOptions = {}) {
   }
 
   async function assemble(assembly, context = {}, next) {
+    const session = context.agent?.session
+    if (session !== undefined) {
+      if (session.id === undefined) session.id = String(context.agent.id)
+      defaultSessions.set(session.id, session)
+    }
     if (context.agent !== undefined) {
       context.agent.ctx ??= {}
       context.agent.ctx.inject ??= serviceInjector({}, () => context.agent.ctx)
     }
     context.agent?.ctx?.tools?.bindFixtureRegistry?.(
-      name => definitions.get(name),
+      name => definitions.get(name)
+        ?? scopedSdkDefinitions.get(name)
+        ?? sdkDefinitions.get(name),
       scope => [
         ...definitions.values(),
         ...(fixtureOptions.schemas ?? []),

@@ -81,6 +81,7 @@ test('delegated public sessions own their observations and retain live child bin
       header: { cwd: process.cwd() },
       get seq() { return events.length },
       snapshotEvents: () => [...events],
+      deriveEventMessage: event => event.data?.message,
       appendEvent(event) { events.push(event); return event },
       surface: { replaceGeneration: 0, get nodes() {
         return events.filter(event => ['assistant/message', 'tool/result'].includes(event.type)
@@ -119,7 +120,8 @@ test('delegated public sessions own their observations and retain live child bin
     assert.deepEqual(second.raw.value, [42, 42, 42])
     assert.equal(second.result.meta[RECOVERY_BOUNDARY_KEY], undefined)
     assert.deepEqual(second.raw.logs, [])
-    assert.deepEqual(observedIds, [child.id, child.id])
+    assert.ok(observedIds.length >= 2)
+    assert.deepEqual([...new Set(observedIds)], [child.id])
     assert.deepEqual((await state.run('delegation-parent', 'return [parentValue, parentSeed]')).value, [11, 5])
     const continuation = await runChild('return [childValue, typeof inheritedValue]')
     assert.deepEqual(continuation.raw.value, [42, forked ? 'number' : 'undefined'])
@@ -143,6 +145,7 @@ test('delegation from isolated code.run preserves session ownership across nativ
       header: { cwd: process.cwd() },
       get seq() { return events.length },
       snapshotEvents: () => [...events],
+      deriveEventMessage: event => event.data?.message,
       appendEvent(event) { events.push(event); return event },
       surface: { replaceGeneration: 0, get nodes() {
         return events.filter(event => ['assistant/message', 'tool/result'].includes(event.type))

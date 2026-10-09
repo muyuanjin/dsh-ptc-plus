@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import test from 'node:test'
 import { parse } from 'yaml'
+import { parse as parseJavaScript } from '@babel/parser'
+import { selectPublishedRelease, update, validatePublishedRelease, verifyCurrent, verifyInstalledHostGraph } from '../scripts/dsh-dependency-baseline.mjs'
 
 const DSH_RUNTIME_PEERS = [
   '@deepseek-ai/dsh-atomic-write',
@@ -63,6 +65,41 @@ test('declares directly imported DSH utility packages for clean installs', async
   assert.equal(lock.packages[`node_modules/${packageName}`].dev, undefined)
 })
 
+test('packed production imports declare their Host peers instead of depending on incidental hoisting', async () => {
+  const manifest = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'))
+  const lock = JSON.parse(await readFile(new URL('../package-lock.json', import.meta.url), 'utf8'))
+  const paths = ['index.js', ...(await readdir(new URL('../internal/', import.meta.url)))
+    .filter(name => name.endsWith('.js')).map(name => `internal/${name}`)]
+  for (const path of paths) {
+    const ast = parseJavaScript(await readFile(new URL(`../${path}`, import.meta.url), 'utf8'), { sourceType: 'module' })
+    for (const entry of ast.program.body) {
+      const specifier = entry.source?.value
+      if (!specifier?.startsWith('@deepseek-ai/')) continue
+      const packageName = specifier.split('/').slice(0, 2).join('/')
+      const role = manifest.dependencies?.[packageName] ? 'dependencies' : 'peerDependencies'
+      assert.ok(manifest[role]?.[packageName], `${path} imports undeclared ${packageName}`)
+      assert.equal(lock.packages[''][role]?.[packageName], manifest[role][packageName])
+    }
+  }
+})
+
+test('reused frozen Host rejects installed service drift despite unchanged lock inputs', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'ptc-installed-host-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const packages = { 'node_modules/@deepseek-ai/dsh': { version: '8.0.0' },
+    'node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-tools': { version: '8.0.0' } }
+  for (const path of Object.keys(packages)) {
+    await mkdir(join(root, path), { recursive: true })
+    await writeFile(join(root, path, 'package.json'), JSON.stringify({ name: path.slice(path.lastIndexOf('@deepseek-ai/')), version: '8.0.0' }))
+  }
+  await verifyInstalledHostGraph(root, { packages })
+  for (const path of Object.keys(packages)) {
+    await writeFile(join(root, path, 'package.json'), JSON.stringify({ name: path.slice(path.lastIndexOf('@deepseek-ai/')), version: '0.0.0-stale' }))
+    await assert.rejects(() => verifyInstalledHostGraph(root, { packages }), /installed Host .* differs from its frozen lock/)
+    await writeFile(join(root, path, 'package.json'), JSON.stringify({ name: path.slice(path.lastIndexOf('@deepseek-ai/')), version: '8.0.0' }))
+  }
+})
+
 test('freezes official latest and next host baselines without changing ordinary installs', async () => {
   const manifest = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'))
   const lock = JSON.parse(await readFile(new URL('../package-lock.json', import.meta.url), 'utf8'))
@@ -83,6 +120,77 @@ test('freezes official latest and next host baselines without changing ordinary 
   assert.doesNotMatch(hostSuite, /npm\(\[['"]install['"]/)
   assert.match(hostSuite, /run\('tar', \['-xzf'/)
   assert.match(hostSuite, /exposePluginDependencies\(consumer\)/)
+  const current = JSON.parse(await readFile(new URL('../compat/current/package.json', import.meta.url), 'utf8'))
+  const currentLock = JSON.parse(await readFile(new URL('../compat/current/package-lock.json', import.meta.url), 'utf8'))
+  const source = JSON.parse(await readFile(new URL('../compat/current/release.json', import.meta.url), 'utf8'))
+  assert.equal(current.dependencies['@deepseek-ai/dsh'], source.channel)
+  assert.equal(currentLock.packages[''].dependencies['@deepseek-ai/dsh'], source.channel)
+  assert.equal(currentLock.packages['node_modules/@deepseek-ai/dsh'].version, source.version)
+  assert.ok(Object.entries(currentLock.packages).filter(([name]) => /node_modules\/@deepseek-ai\/dsh(?:-[^/]+)?$/.test(name))
+    .every(([, value]) => value.version === source.version))
+})
+
+test('published release discovery follows a moved prerelease channel while latest and next remain unchanged', () => {
+  const tags = { latest: '7.0.0', next: '7.0.0', preview: '8.0.0-beta.3', canary: '9.0.0-dev.1' }
+  const releases = [
+    { draft: false, tag_name: 'dsh-v7.0.0', published_at: '2020-01-01T00:00:00Z' },
+    { draft: true, tag_name: 'dsh-v9.0.0-dev.1', published_at: '2020-03-01T00:00:00Z' },
+    { draft: false, tag_name: 'dsh-v8.0.0-beta.3', published_at: '2020-02-01T00:00:00Z', prerelease: true },
+  ]
+  assert.deepEqual(selectPublishedRelease(tags, releases), {
+    version: tags.preview, channel: 'preview', releaseTag: 'dsh-v8.0.0-beta.3', publishedAt: '2020-02-01T00:00:00Z',
+  })
+  assert.throws(() => selectPublishedRelease({ latest: tags.latest, next: tags.next }, releases), /has no official npm channel/)
+})
+
+test('published baseline refresh captures channel and provenance changes without rediscovering an unchanged cohort', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'ptc-published-baseline-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const latestRoot = join(root, 'latest')
+  const currentRoot = join(root, 'current')
+  await Promise.all([mkdir(latestRoot), mkdir(currentRoot)])
+  const host = '@deepseek-ai/dsh'
+  const writeJson = (folder, filename, value) => writeFile(join(folder, filename), JSON.stringify(value, null, 2) + '\n')
+  const lock = (channel, dependencyKey, version) => ({ lockfileVersion: 3, packages: {
+    '': { [dependencyKey]: { [host]: channel } }, [`node_modules/${host}`]: { version, resolved: `https://registry.npmjs.org/@deepseek-ai/dsh/-/dsh-${version}.tgz` },
+  } })
+  const release = { version: '8.0.0-beta.3', channel: 'beta', releaseTag: 'dsh-v8.0.0-beta.3', publishedAt: '2020-02-01T00:00:00Z' }
+  await Promise.all([
+    writeJson(root, 'package.json', { devDependencies: { [host]: 'next' } }), writeJson(root, 'package-lock.json', lock('next', 'devDependencies', '7.0.0')),
+    writeJson(latestRoot, 'package.json', { dependencies: { [host]: 'latest' } }), writeJson(latestRoot, 'package-lock.json', lock('latest', 'dependencies', '7.0.0')),
+    writeFile(join(latestRoot, '.npmrc'), 'registry=https://registry.npmjs.org/\n'),
+    writeJson(currentRoot, 'package.json', { dependencies: { [host]: 'beta' } }), writeJson(currentRoot, 'package-lock.json', lock('beta', 'dependencies', release.version)),
+    writeJson(currentRoot, 'release.json', release),
+  ])
+  let selected = release
+  let lookups = 0
+  const calls = []
+  const options = { root, latestRoot, currentRoot, readTags: () => ({ latest: '7.0.0', next: '7.0.0', [selected.channel]: selected.version }),
+    readRelease: async () => { lookups++; return selected }, runNpm: (args, options) => calls.push({ args, options }) }
+  await update(options)
+  assert.equal(lookups, 1)
+  assert.deepEqual(calls, [])
+  selected = { ...release, channel: 'preview' }
+  await update(options)
+  assert.deepEqual(await verifyCurrent(currentRoot), selected)
+  const changedLock = JSON.parse(await readFile(join(currentRoot, 'package-lock.json'), 'utf8'))
+  assert.equal(changedLock.packages[''].dependencies[host], 'preview')
+  assert.deepEqual(changedLock.packages[`node_modules/${host}`], lock('beta', 'dependencies', release.version).packages[`node_modules/${host}`])
+  assert.deepEqual(calls.map(call => call.args), [['ci', '--dry-run', '--ignore-scripts']])
+  selected = { ...selected, publishedAt: '2020-02-02T00:00:00Z' }
+  await update(options)
+  assert.deepEqual(await verifyCurrent(currentRoot), selected)
+  assert.equal(calls.length, 1, 'Provenance-only updates reuse the frozen graph without running npm.')
+  const before = await readFile(join(currentRoot, 'release.json'), 'utf8')
+  await update(options)
+  assert.equal(await readFile(join(currentRoot, 'release.json'), 'utf8'), before)
+  assert.equal(calls.length, 1)
+  for (const invalid of [{ ...selected, releaseTag: 'unrelated-tag' }, { ...selected, publishedAt: 42 },
+    { ...selected, publishedAt: '2020-02-31T00:00:00Z' }, { ...selected, publishedAt: undefined }, { ...selected, channel: '' }]) {
+    assert.throws(() => validatePublishedRelease(invalid), /invalid frozen published/)
+    await writeJson(currentRoot, 'release.json', invalid)
+    await assert.rejects(() => verifyCurrent(currentRoot), /invalid frozen published/)
+  }
 })
 
 test('keeps npm release authority stage-only and bound to a verified tag', async () => {

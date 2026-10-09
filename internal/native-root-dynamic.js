@@ -6,26 +6,25 @@ const { Map, Set, mapGet, mapSet, mapHas, mapDelete, setHas, setAdd, appendArray
 /** Native storage and catalog-proved logical roots share a captured legacy view. */
 export function createNativeRootDynamic({ intrinsics, importModule, read, write, typeOf, remove, logicalReference }) {
   const interfaceOwner = {}
-  const runtime = createDynamicEnvironmentRuntime({ ...intrinsics, importModule, interfaceOwner }).installIntrinsics()
   const descriptor = name => ({ kind: 'var', get: () => read(name),
     set: (value, strict) => write(name, value, strict), delete: () => remove(name), typeof: () => typeOf(name) })
-  const environment = runtime.environment({
-    ambient(name, strict) {
-      return runtime.reference(name, descriptor(name), undefined, strict)
-    },
-    declareVars: runtime.declareGlobals,
-    createVar: descriptor,
-  })
-  runtime.setRootEnvironment(() => environment)
   return {
-    environment(callableSources, awaitRoot = false, logicalRoots = [], writableRoots = []) {
+    environment(callableSources, awaitRoot = false, logicalRoots = [], writableRoots = [], cellImportModule = importModule) {
       if (logicalRoots.length === 0) {
-        runtime.registerSources(callableSources)
-        return awaitRoot ? environment.awaitActivation() : environment
+        const cellRuntime = createDynamicEnvironmentRuntime({ ...intrinsics,
+          importModule: cellImportModule, interfaceOwner }).installIntrinsics()
+        const captured = cellRuntime.environment({
+          ambient: (name, strict) => cellRuntime.reference(name, descriptor(name), undefined, strict),
+          declareVars: cellRuntime.declareGlobals,
+          createVar: descriptor,
+        })
+        cellRuntime.setRootEnvironment(() => captured)
+        cellRuntime.registerSources(callableSources)
+        return awaitRoot ? captured.awaitActivation() : captured
       }
       // Each captured legacy environment keeps its own root view. Installing a
       // later bridge must not change escaped eval/Function calls from old cells.
-      const bridgedRuntime = createDynamicEnvironmentRuntime({ ...intrinsics, importModule, interfaceOwner }).installIntrinsics()
+      const bridgedRuntime = createDynamicEnvironmentRuntime({ ...intrinsics, importModule: cellImportModule, interfaceOwner }).installIntrinsics()
       const writable = new Set()
       for (let index = 0; index < writableRoots.length; index++) setAdd(writable, writableRoots[index])
       const bindings = new Map(), varFrame = new Map(), roots = new Map()

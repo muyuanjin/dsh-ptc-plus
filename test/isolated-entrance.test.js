@@ -226,19 +226,18 @@ test('reports every refused reset in start order after both helpers exit late', 
     assert.equal(firstResult.error.kind, 'timeout')
     await new Promise(resolve => setImmediate(resolve))
 
-    const secondRun = runtime.run(session, { program: 'while (true) {}', bindings: [] })
-    for (let index = 0; index < 20; index += 1) {
-      secondWorker = workerOf(runtime, session)
-      if (secondWorker !== undefined && secondWorker !== firstWorker) break
-      await new Promise(resolve => setImmediate(resolve))
-    }
-    assert.notEqual(secondWorker, undefined)
+    const blocked = await runtime.run(session, { program: 'return 2', bindings: [] })
+    assert.match(blocked.error.message, /previous computation helper reclamation failed/)
+    assert.equal(workerOf(runtime, session), undefined)
+    assert.equal(kernel.client.owner.instances.size, 1,
+      'A later cell cannot create another helper after reclamation was refused.')
+
+    // Exercise ordered reclamation directly at its owner. No second cell is
+    // admitted; this explicit transport setup supplies the second failure.
+    secondWorker = await kernel.client.ensure()
     assert.notEqual(secondWorker, firstWorker)
     secondWorker.terminate = async () => { throw secondFailure }
-
-    const secondResult = await secondRun
-    assert.equal(secondResult.error.kind, 'timeout')
-    await new Promise(resolve => setImmediate(resolve))
+    await kernel.resetWorker(secondWorker)
     assert.deepEqual(recordedReclamationFailures(kernel), [firstFailure, secondFailure])
 
     assert.equal(firstWorker.child.kill('SIGKILL'), true)

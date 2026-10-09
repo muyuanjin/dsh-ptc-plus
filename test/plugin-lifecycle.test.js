@@ -10,7 +10,7 @@ import {
   GENERATED_RUN_CODE_DESCRIPTION_KEY,
   markGeneratedRunCodeArguments,
 } from '../internal/run-code-description.js'
-import { RECOVERY_BOUNDARY_KEY, normalizeJournal } from '../internal/session-journal.js'
+import { JOURNAL_KEY, RECOVERY_BOUNDARY_KEY, normalizeJournal } from '../internal/session-journal.js'
 import { SessionRuntime } from '../internal/session-runtime.js'
 import { decodeValue, encodeValue, renderValueWire } from '../internal/value-wire.js'
 import { resolveConfig } from '../internal/runtime-config.js'
@@ -506,7 +506,7 @@ test('retired runtime consumers and metadata wrappers stay transparent across ou
     logs: ['upstream'],
     value: 'upstream',
   })
-  assert.equal(state.runCodeDefinition.output.presentationMeta({}, undefined), undefined)
+  assert.deepEqual(state.runCodeDefinition.output.presentationMeta({}, undefined), {})
 
   runtimeConsumer = state.runtime
   state.runCodeDefinition.output.presentationMeta = ptcPresentation
@@ -515,7 +515,7 @@ test('retired runtime consumers and metadata wrappers stay transparent across ou
     logs: ['upstream'],
     value: 'upstream',
   })
-  assert.equal(state.runCodeDefinition.output.presentationMeta({}, undefined), undefined)
+  assert.deepEqual(state.runCodeDefinition.output.presentationMeta({}, undefined), {})
 })
 
 test('releases execution normally when an outer consumer and metadata wrapper unload first', async testContext => {
@@ -1449,12 +1449,42 @@ test('annotates generated run_code calls and leaves other calls untouched', asyn
     () => state.runtime.run({ program: 'return 1', bindings: null }),
   ), /bindings must be an array/)
   const presentationMeta = state.runCodeDefinition.output.presentationMeta
-  assert.equal(presentationMeta({}, undefined), undefined)
-  assert.equal(presentationMeta({}, { value: 1 }), undefined)
+  assert.deepEqual(presentationMeta({}, undefined), {})
+  assert.deepEqual(presentationMeta({}, { value: 1 }), {})
   assert.deepEqual(
     presentationMeta(markGeneratedRunCodeArguments({ code: 'return 1', description: 'Generated' }), undefined),
     { [GENERATED_RUN_CODE_DESCRIPTION_KEY]: GENERATED_RUN_CODE_DESCRIPTION },
   )
+})
+
+test('policy value reprojection preserves success without attributing the old journal to the new value', async t => {
+  const state = fixture()
+  t.after(() => state.dispose())
+  const args = { code: 'let policyActual = 3; return policyActual', description: 'Compute' }
+  const result = await state.runDurable('policy-reprojection', args.code, {}, {
+    finalizeResult: original => {
+      assert.ok(original.meta[JOURNAL_KEY])
+      const value = { logs: ['policy'], result: 99 }
+      const meta = state.runCodeDefinition.output.presentationMeta(args, value)
+      assert.deepEqual(meta, {})
+      return { ...original, value, meta }
+    },
+  })
+  assert.equal(result.isError, false)
+  assert.deepEqual(result.value, { logs: ['policy'], result: 99 })
+  assert.equal((await state.run('policy-reprojection', 'return policyActual')).value, 3)
+})
+
+test('journal and generated descriptions do not conceal invalid Host presentation metadata', async t => {
+  for (const invalid of [undefined, NaN, { missing: undefined }]) {
+    const state = fixture()
+    t.after(() => state.dispose())
+    state.runCodeDefinition.output.presentationMeta = () => invalid
+    const result = await state.runDurable('invalid-host-projector', 'let value = 3; return value')
+    assert.equal(result.meta, undefined)
+    const generated = markGeneratedRunCodeArguments({ code: 'return 3', description: 'Generated' })
+    assert.equal(state.runCodeDefinition.output.presentationMeta(generated, 3), undefined)
+  }
 })
 
 test('disposes an anonymous agent without disturbing a live session', async (t) => {
@@ -1551,6 +1581,8 @@ test('releases plugin execution without adding an own patch to an inherited orig
   const ctx = {
     ptcRuntime: runtime,
     agents: { list: () => [] },
+    sessions: { list: () => [], flush: async () => false },
+    sessionPersistence: { list: async () => [], open: async () => { throw new Error('No persisted fixture session') } },
     tools: { get: () => definition, schemas: () => [], register: () => () => {} },
     systemPrompt: { section() {}, context: () => () => {} },
     on(name, listener) {
@@ -1559,6 +1591,7 @@ test('releases plugin execution without adding an own patch to an inherited orig
     },
     effect(register) { cleanups.push(register()) },
   }
+  ctx.get = name => ctx[name]
   ctx.inject = serviceInjector({ ptcRuntime: runtime }, () => ctx)
   let disposed = false
   const dispose = async () => {

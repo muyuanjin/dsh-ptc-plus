@@ -15,6 +15,7 @@ import { McpResourceRuntime } from '@deepseek-ai/dsh-mcp-resources'
 import { TextRetainer } from '@deepseek-ai/dsh-output-retention'
 import { createScope } from '@deepseek-ai/dsh-scope'
 import { Session, SessionStore, SESSION_FORMAT_VERSION } from '@deepseek-ai/dsh-session'
+import { SessionQueryEngine } from '@deepseek-ai/dsh-session-query'
 import { SessionProjectionRegistry } from '@deepseek-ai/dsh-session-projection'
 import { SkillRegistry } from '@deepseek-ai/dsh-skill'
 import { LocalSpillStore } from '@deepseek-ai/dsh-spill-local'
@@ -177,6 +178,7 @@ test('PTC Plus starts a model turn with empty tool and MCP instructions', async 
   new AgentRegistry(ctx)
   new SessionStore(ctx)
   new SessionProjectionRegistry(ctx)
+  await ctx.plugin(SessionQueryEngine).await()
   ctx.effect(() => ctx.tools.register(echo('mcp__docs__probe')))
   for (const name of ['tool:mcp__docs__probe', 'mcp:docs']) {
     ctx.effect(() => ctx.systemPrompt.section({ name, order: 10, text: '' }))
@@ -217,6 +219,7 @@ test('capability commands advertise refresh input and apply through the public h
   new AgentRegistry(ctx)
   new SessionStore(ctx)
   new SessionProjectionRegistry(ctx)
+  await ctx.plugin(SessionQueryEngine).await()
   let requests = 0
   ctx.provide('llm', { stream() { requests++; throw new Error('Human commands must not request a model') } })
   await ctx.plugin(AgentLoop, { agents: [] }).await()
@@ -286,6 +289,7 @@ test('the public agent factory provides real ownership and durable non-waking ma
   new AgentRegistry(ctx)
   new SessionStore(ctx)
   new SessionProjectionRegistry(ctx)
+  await ctx.plugin(SessionQueryEngine).await()
   let requests = 0
   ctx.provide('llm', { stream() { requests += 1; throw new Error('This probe must never request a model.') } })
   await ctx.plugin(AgentLoop, { agents: [] }).await()

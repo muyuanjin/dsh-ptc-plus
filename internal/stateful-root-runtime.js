@@ -13,7 +13,7 @@ export function createStatefulRootRuntime({ readAmbient, typeofAmbient, writeAmb
   const entries = new Map()
   const intrinsics = captureCompilerIntrinsics(dynamicIntrinsics?.realmFunction)
   errors ??= intrinsics
-  const dynamicRuntime = createDynamicEnvironmentRuntime({ ...dynamicIntrinsics, importModule })
+  const defaultDynamicRuntime = createDynamicEnvironmentRuntime({ ...dynamicIntrinsics, importModule })
   const moduleRuntime = dynamicIntrinsics === undefined ? undefined : createDynamicEnvironmentRuntime()
   let commit
   const read = name => {
@@ -59,7 +59,11 @@ export function createStatefulRootRuntime({ readAmbient, typeofAmbient, writeAmb
     return value
   }
   const begin = ({ declared = [], known = [], readOnly = [], legacyImports = [], legacyWritable = [], legacyLexicals = [], legacyObjects = [],
-    declarationKinds = [], declaredKinds = [], callableSources = [], languageSemantics = 'stateful-v1', committed }) => {
+    declarationKinds = [], declaredKinds = [], callableSources = [], languageSemantics = 'stateful-v1', committed,
+    importModule: cellImportModule = importModule }) => {
+    // Each cell owns dynamic-source resolution; shared logical roots remain live.
+    const dynamicRuntime = createDynamicEnvironmentRuntime({ ...dynamicIntrinsics,
+      importModule: cellImportModule }).installIntrinsics()
     dynamicRuntime.registerSources(callableSources)
     commit = committed
     const kinds = new Map()
@@ -127,7 +131,7 @@ export function createStatefulRootRuntime({ readAmbient, typeofAmbient, writeAmb
     const result = {
       values,
       intrinsics,
-      importModule,
+      importModule: cellImportModule,
       dynamic({ realm = false } = {}) {
         const pendingKinds = new Map()
         for (let index = 0; index < declaredKinds.length; index++) mapSet(pendingKinds, declaredKinds[index][0], declaredKinds[index][1])
@@ -155,6 +159,7 @@ export function createStatefulRootRuntime({ readAmbient, typeofAmbient, writeAmb
         const varFrame = { has: name => variableKind(kindFor(name)), get: name => varFrame.has(name) ? descriptor(name, 'var') : undefined,
           set() {} }
         return dynamicRuntime.environment({
+          importModule: cellImportModule,
           varFrame, frames: [{ kind: 'lexical', bindings: lexicalFrame }],
           declareVars: realm ? (names, functionNames) => {
             const globals = []
@@ -288,7 +293,7 @@ export function createStatefulRootRuntime({ readAmbient, typeofAmbient, writeAmb
     // Only new-generation environments select intrinsic interfaces. Native
     // global/prototype properties and saved legacy identities remain intact.
     if (dynamicIntrinsics !== undefined) {
-      dynamicRuntime.installIntrinsics()
+      defaultDynamicRuntime.installIntrinsics()
       moduleRuntime.installIntrinsics()
     }
     return result

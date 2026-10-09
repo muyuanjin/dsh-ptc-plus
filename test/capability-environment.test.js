@@ -7,6 +7,8 @@ import { createSystemMessage, createToolResultMessage, createUserMessage } from 
 import { McpResourceRuntime } from '@deepseek-ai/dsh-mcp-resources'
 import { createScope } from '@deepseek-ai/dsh-scope'
 import { Session, SessionStore } from '@deepseek-ai/dsh-session'
+import { CommandRuntime } from '@deepseek-ai/dsh-commands'
+import { capabilityCommandReceipt } from '../internal/capability-command-receipt.js'
 import { AgentLoop } from '@deepseek-ai/dsh-agent-loop'
 import { SessionProjectionRegistry } from '@deepseek-ai/dsh-session-projection'
 import { sessionFormatCatalog } from '@deepseek-ai/dsh-session-format-catalog'
@@ -14,10 +16,17 @@ import { SkillRegistry } from '@deepseek-ai/dsh-skill'
 import * as skillTool from '@deepseek-ai/dsh-tool-skill'
 import { SystemPrompt } from '@deepseek-ai/dsh-system-prompt'
 import { ToolRuntime, defineTool } from '@deepseek-ai/dsh-tools'
-import { createCapabilityEnvironment } from '../internal/capability-environment.js'
-import { capabilityInspect, capabilitySearch, toolCapabilityMetadata } from '../internal/program-bindings.js'
+import { createCapabilityEnvironment as createEnvironment } from '../internal/capability-environment.js'
+import { capabilityInspect, capabilitySearch, toolCapabilityMetadata, toolSdkSchemas } from '../internal/program-bindings.js'
 import { appendOnlySession } from './plugin-fixture.js'
+import { runtimeAvailabilityMessage } from '../internal/runtime-messages.js'
 import { capabilityProfileConfiguration } from '../internal/runtime-config.js'
+
+// Repository test readers supply the immutable public-query cut; production
+// observes it through sessionQuery rather than deprecated synchronous readers.
+const createCapabilityEnvironment = options => createEnvironment({ ...options,
+  sessionHistoryForAgent: async agent => ({ events: agent.session.snapshotEvents?.() ?? agent.session.events ?? [] }),
+})
 
 const config = overrides => ({ capabilityManagementEnabled: true,
   capabilityBaseline: '[]', capabilityOverrides: JSON.stringify(overrides ?? {}),
@@ -26,6 +35,271 @@ const config = overrides => ({ capabilityManagementEnabled: true,
 const schema = name => ({ name, description: `Owner contract for ${name}.`, parameters: { type: 'object' }, output: { type: 'string' } })
 const sections = [{ name: 'tools:sdk', text: 'native sdk' }, { name: 'tool:closed_capability', text: 'closed guidance' }]
 const agentFor = (session, id = session.id) => ({ id, session, signal: new AbortController().signal })
+
+test('session capability choices preserve their sources across refresh, global changes and cold restore', async t => {
+  let saved = { ...config({ 'tools.probe': 'closed' }), capabilityBaseline: '["tools.probe"]' }
+  let revision = 1
+  const agents = ['choices-a', 'choices-b'].map(id => agentFor(Session.create(id)))
+  for (const agent of agents) agent.runMaintenance = operation => operation(agent.signal)
+  const ctx = { agents: { list: () => agents }, systemPrompt: { assemble: async () => ({ sections: [] }) } }
+  const env = createCapabilityEnvironment({ ctx, config: saved, toolSchemasForAgent: () => [schema('run_code'), schema('probe'), schema('other')] })
+  t.after(() => env.dispose())
+  for (const agent of agents) await acceptPreparation(env, agent, [])
+  const selection = (agent, id = 'tools.probe') => env.describe(agent).effective.entries.find(entry => entry.id === id).selection
+  const change = (agent, id, choice, scope = 'session') => env.change(agent, { id, selection: choice, scope }, agent.signal, {
+    read: () => ({ value: saved, revision }), update: async (patch, expected) => {
+      assert.equal(expected, revision); saved = { ...saved, ...patch }; revision++; env.reconfigure(saved)
+    },
+  })
+  await change(agents[0], 'tools.probe', 'automatic')
+  assert.equal(selection(agents[0]), 'full')
+  assert.equal(selection(agents[1]), 'closed')
+  assert.equal(JSON.parse(saved.capabilityOverrides)['tools.probe'], 'closed')
+  await change(agents[0], 'tools.probe', 'inherit')
+  assert.equal(selection(agents[0]), 'closed')
+  await change(agents[0], 'tools.other', 'closed')
+  await change(agents[0], 'tools.probe', 'closed')
+  saved = { ...saved, capabilityOverrides: '{"tools.probe":"full"}' }; env.reconfigure(saved)
+  await env.refresh(agents[0], [], agents[0].signal)
+  assert.equal(selection(agents[0]), 'closed')
+  assert.equal(env.describe(agents[0]).pendingRefresh, false)
+  await change(agents[0], 'tools.probe', 'full', 'global')
+  assert.equal(selection(agents[0]), 'full')
+  assert.equal(selection(agents[0], 'tools.other'), 'closed')
+  assert.equal(selection(agents[1]), 'closed')
+  assert.deepEqual(env.describe(agents[0]).sessionOverrides, { 'tools.other': 'closed' })
+  assert.deepEqual(env.describeSessions().find(item => item.sessionId === agents[0].session.id).configuration.capabilityOverrides, saved.capabilityOverrides)
+  const restored = createCapabilityEnvironment({ ctx, config: saved, toolSchemasForAgent: () => [schema('run_code'), schema('probe'), schema('other')] })
+  t.after(() => restored.dispose())
+  await restored.prepare(agents[0], [])
+  assert.deepEqual(restored.describe(agents[0]).sessionOverrides, { 'tools.other': 'closed' })
+  assert.equal(restored.describe(agents[0]).effective.entries.find(entry => entry.id === 'tools.other').selection, 'closed')
+  const entries = await env.catalogFor(agents[0], agents[0].signal)
+  assert.equal(entries.find(entry => entry.id === 'tools.other').effective, 'closed')
+  assert.equal(entries.find(entry => entry.id === 'tools.other').temporary, 'closed')
+})
+
+test('global capability save failure and session publication failure keep distinct confirmed outcomes', async t => {
+  let saved = config()
+  const agent = agentFor(Session.create('choice-failures'))
+  agent.runMaintenance = operation => operation(agent.signal)
+  const ctx = { systemPrompt: { assemble: async () => ({ sections: [] }) } }
+  const env = createCapabilityEnvironment({ ctx, config: saved, toolSchemasForAgent: () => [schema('run_code'), schema('probe')] })
+  t.after(() => env.dispose())
+  await acceptPreparation(env, agent, [])
+  const before = env.stateFor(agent)
+  const intent = { scope: 'global', id: 'tools.probe', selection: 'closed' }
+  await assert.rejects(env.change(agent, intent, agent.signal, { read: () => ({ value: saved, revision: 1 }),
+    update: async () => { throw new Error('revision conflict') } }), /revision conflict/)
+  assert.equal(env.stateFor(agent), before)
+  const append = agent.session.append.bind(agent.session)
+  agent.session.append = () => { throw new Error('publication refused') }
+  const result = await env.change(agent, intent, agent.signal, { read: () => ({ value: saved, revision: 1 }),
+    update: async patch => { saved = { ...saved, ...patch }; env.reconfigure(saved) } })
+  assert.deepEqual(result, { globalSaved: true, sessionApplied: false, error: 'publication refused' })
+  assert.equal(env.stateFor(agent), before)
+  assert.equal(JSON.parse(saved.capabilityOverrides)['tools.probe'], 'closed')
+  agent.session.append = append
+  const busy = agent.runMaintenance
+  agent.runMaintenance = () => { throw new Error('maintenance busy') }
+  let writes = 0
+  await assert.rejects(env.change(agent, intent, agent.signal, { update: () => { writes++ } }), /maintenance busy/)
+  assert.equal(writes, 0)
+  agent.runMaintenance = busy
+})
+
+test('capability choices publish only after Skill preparation and preserve confirmed saves if the follow-up read fails', async t => {
+  const ctx = new Context()
+  const skills = { snapshot: async () => ({ complete: true, skills: [] }) }
+  ctx.effect(() => ctx.provide('skills', skills))
+  new SystemPrompt(ctx, { includeHarnessIdentity: false, includeRuntimeContext: false })
+  const agent = agentFor(Session.create('choice-projection-failure')); agent.runMaintenance = operation => operation(agent.signal)
+  const env = createCapabilityEnvironment({ ctx, config: config(), toolSchemasForAgent: () => [schema('run_code'), schema('probe')] })
+  t.after(async () => { await env.dispose(); await ctx.fiber.dispose() })
+  await acceptPreparation(env, agent, [])
+  const previous = env.stateFor(agent); const count = agent.session.seq
+  skills.registerProvider = () => { throw new Error('Skill provider registration failed') }
+  await assert.rejects(env.change(agent, { scope: 'session', id: 'tools.probe', selection: 'closed' }, agent.signal), /Skill provider registration failed/)
+  assert.equal(env.stateFor(agent), previous)
+  assert.equal(agent.session.seq, count, 'A rejected preparation must not publish a replacement plan.')
+  delete skills.registerProvider
+  let reads = 0; let writes = 0
+  const partial = await env.change(agent, { scope: 'global', id: 'tools.probe', selection: 'closed' }, agent.signal, {
+    read: () => { if (++reads > 1) throw new Error('Saved settings read failed'); return { value: config(), revision: 1 } },
+    update: async () => { writes++ },
+  })
+  assert.equal(writes, 1)
+  assert.deepEqual(partial, { globalSaved: true, sessionApplied: false, error: 'Saved settings read failed' })
+  assert.equal(env.stateFor(agent), previous)
+})
+
+test('cold session controls restore prior temporary choices before change or refresh and keep MCP parent choices separate', async t => {
+  const hostSections = [{ name: 'mcp-resource-servers', text: 'as the server argument: ["docs","other"].' }]
+  const schemas = ['run_code', 'probe', 'other', 'mcp__docs__search', 'mcp__docs__edit', 'mcp__other__search', 'read_mcp_resource'].map(schema)
+  const saved = config({ 'tools.mcp__docs__search': 'full', 'tools.mcp__docs__edit': 'closed' })
+  const ctx = { systemPrompt: { assemble: async () => ({ sections: hostSections }) } }
+  const make = () => { const env = createCapabilityEnvironment({ ctx, config: saved, toolSchemasForAgent: () => schemas }); t.after(() => env.dispose()); return env }
+  const agent = agentFor(Session.create('cold-controls'))
+  agent.runMaintenance = operation => operation(agent.signal)
+  const original = make()
+  await acceptPreparation(original, agent, hostSections)
+  await original.change(agent, { scope: 'session', id: 'tools.probe', selection: 'closed' }, agent.signal)
+  const restored = agentFor(Session.create(agent.session.id, agent.session.snapshotEvents(), agent.session.header))
+  restored.runMaintenance = operation => operation(restored.signal)
+  const cold = make()
+  const observed = await cold.catalogFor(restored, restored.signal)
+  assert.equal(observed.find(item => item.id === 'tools.probe').temporary, 'closed')
+  assert.equal(cold.stateFor(restored), undefined, 'Read-only listing must not prepare an effective environment.')
+  await cold.change(restored, { scope: 'session', id: 'tools.other', selection: 'closed' }, restored.signal)
+  assert.deepEqual(cold.describe(restored).sessionOverrides, { 'tools.probe': 'closed', 'tools.other': 'closed' })
+  const fresh = make()
+  await fresh.refresh(restored)
+  assert.deepEqual(fresh.describe(restored).sessionOverrides, { 'tools.probe': 'closed', 'tools.other': 'closed' })
+  await fresh.change(restored, { scope: 'session', id: 'mcpServers.docs', selection: 'closed' }, restored.signal)
+  assert.ok(!fresh.projectMembers(restored, schemas.map(item => item.name)).includes('mcp__docs__search'))
+  assert.ok(fresh.projectMembers(restored, schemas.map(item => item.name)).includes('mcp__other__search'))
+  await fresh.change(restored, { scope: 'session', id: 'mcpServers.docs', selection: 'inherit' }, restored.signal)
+  const reopened = fresh.projectMembers(restored, schemas.map(item => item.name))
+  assert.ok(reopened.includes('mcp__docs__search'))
+  assert.ok(!reopened.includes('mcp__docs__edit'))
+  await assert.rejects(fresh.change(restored, { scope: 'session', id: 'mcpServers.docs', selection: 'full' }, restored.signal), /MCP server choices/)
+})
+
+test('formal command receipts retain pending choices before the first system head and reject unpaired or failed sources', async t => {
+  const ctx = new Context()
+  new CommandRuntime(ctx)
+  new SystemPrompt(ctx, { includeHarnessIdentity: false, includeRuntimeContext: false })
+  const saved = config()
+  const make = () => { const env = createCapabilityEnvironment({ ctx, config: saved, toolSchemasForAgent: () => [schema('run_code'), schema('probe')] }); t.after(() => env.dispose()); return env }
+  const env = make()
+  const session = Session.create('pending-choice-command')
+  const agent = agentFor(session); agent.runMaintenance = operation => operation(agent.signal)
+  ctx.effect(() => ctx.commands.register({ name: 'capabilities', description: 'Change the session choice',
+    handler: async ({ commandId, rawInput, agent, signal }) => {
+      await env.change(agent, { scope: 'session', id: 'tools.probe', selection: 'closed', commandId }, signal)
+      return { kind: 'success', text: capabilityCommandReceipt('pending', session.id, undefined,
+        { commandId, rawInput, message: env.pendingChoiceMessage(agent) }) }
+    } }))
+  t.after(() => ctx.fiber.dispose())
+  await ctx.commands.execute(agent, '/capabilities set session tools.probe closed', [], agent.signal)
+  assert.equal(session.deriveMessages().length, 0)
+  assert.ok(!session.snapshotEvents().some(event => event.type.startsWith('plugin:')))
+  const events = session.snapshotEvents()
+  for (const variant of ['success', 'failed', 'unpaired']) {
+    const seed = events.map(event => event.type === 'command/done' && variant === 'failed'
+      ? { ...event, data: { ...event.data, kind: 'error' } } : event).filter(event => variant !== 'unpaired' || event.type !== 'command/run')
+      .map((event, seq) => ({ ...event, seq }))
+    const restored = agentFor(Session.create(session.id, seed, session.header))
+    const cold = make()
+    await cold.prepare(restored, [])
+    assert.equal(cold.describe(restored).effective.entries.find(item => item.id === 'tools.probe').selection, variant === 'success' ? 'closed' : 'on-demand')
+  }
+})
+
+for (const action of ['choice', 'refresh']) test(`cancelled first-session ${action} commands cannot publish an unconfirmed plan on a later accepted step`, async t => {
+  const ctx = new Context(); new CommandRuntime(ctx)
+  new SystemPrompt(ctx, { includeHarnessIdentity: false, includeRuntimeContext: false })
+  const env = createCapabilityEnvironment({ ctx, config: config(), toolSchemasForAgent: () => [schema('run_code'), schema('probe')] })
+  const agent = agentFor(Session.create('cancel-pending-choice')); agent.runMaintenance = operation => operation(agent.signal)
+  let ready; const prepared = new Promise(resolve => { ready = resolve })
+  let release; const afterCancellation = new Promise(resolve => { release = resolve })
+  ctx.effect(() => ctx.commands.register({ name: 'capabilities', description: 'Cancel pending choice',
+    handler: async ({ commandId, rawInput, agent, signal }) => {
+      if (action === 'choice') await env.change(agent, { scope: 'session', id: 'tools.probe', selection: 'closed', commandId }, signal)
+      else {
+        await env.prepare(agent, [])
+        env.reconfigure(config({ 'tools.probe': 'full' }))
+        await env.refresh(agent, undefined, signal, commandId)
+      }
+      const proposal = { commandId, rawInput, message: env.pendingChoiceMessage(agent) }
+      ready(); await afterCancellation
+      return { kind: 'success', text: capabilityCommandReceipt('pending', agent.session.id, undefined, proposal) }
+    } }))
+  t.after(async () => { release(); await env.dispose(); await ctx.fiber.dispose() })
+  const caller = new AbortController()
+  const command = ctx.commands.execute(agent, action === 'choice' ? '/capabilities set session tools.probe closed' : '/capabilities refresh', [], caller.signal)
+  await prepared; caller.abort(new Error('User cancelled'))
+  await assert.rejects(command, /User cancelled/)
+  assert.equal((await env.catalogFor(agent, agent.signal)).find(item => item.id === 'tools.probe').effective, 'on-demand')
+  const entered = await env.preStep({ agent, signal: agent.signal }, async () => ({ kind: 'enter', messages: [] }))
+  assert.equal(env.describe(agent).effective.entries.find(item => item.id === 'tools.probe').selection, 'on-demand')
+  assert.ok(!entered.messages.some(message => message.source?.snapshot?.sessionOverrides?.['tools.probe'] === 'closed'))
+  release(); await new Promise(resolve => setImmediate(resolve))
+  assert.equal(agent.session.snapshotEvents().filter(event => event.type === 'command/done').length, 1)
+})
+
+test('successful first-session refresh receipts retain the refreshed source after cold restore', async t => {
+  const ctx = new Context(); new CommandRuntime(ctx)
+  new SystemPrompt(ctx, { includeHarnessIdentity: false, includeRuntimeContext: false })
+  const make = settings => createCapabilityEnvironment({ ctx, config: settings, toolSchemasForAgent: () => [schema('run_code'), schema('probe')] })
+  const env = make(config()); t.after(() => env.dispose())
+  const agent = agentFor(Session.create('refresh-pending-success')); agent.runMaintenance = operation => operation(agent.signal)
+  await env.prepare(agent, [])
+  env.reconfigure(config({ 'tools.probe': 'full' }))
+  ctx.effect(() => ctx.commands.register({ name: 'capabilities', description: 'Refresh capabilities', handler: async ({ commandId, rawInput, agent, signal }) => {
+    await env.refresh(agent, undefined, signal, commandId)
+    return { kind: 'success', text: capabilityCommandReceipt('pending', agent.session.id, undefined,
+      { commandId, rawInput, message: env.pendingChoiceMessage(agent) }) }
+  } }))
+  t.after(() => ctx.fiber.dispose())
+  await ctx.commands.execute(agent, '/capabilities refresh', [], agent.signal)
+  const cold = make(config()); t.after(() => cold.dispose())
+  const restored = agentFor(Session.create(agent.session.id, agent.session.snapshotEvents(), agent.session.header))
+  await cold.prepare(restored, [])
+  assert.equal(cold.describe(restored).effective.entries.find(item => item.id === 'tools.probe').selection, 'full')
+  const entered = await cold.preStep({ agent: restored, signal: restored.signal }, async () => ({ kind: 'enter', messages: [] }))
+  assert.equal(entered.messages[0].source.snapshot.sourceSettings.manual.overrides['tools.probe'], 'full')
+})
+
+test('SDK output contracts use only public scoped schemas and definitions with detached JSON', async t => {
+  const ctx = new Context()
+  new SystemPrompt(ctx, { includeHarnessIdentity: false, includeRuntimeContext: false })
+  new ToolRuntime(ctx, { mode: 'native' })
+  const agent = agentFor(Session.create('public-sdk-contract'))
+  const scope = createScope(ctx, agent)
+  t.after(async () => { await scope.dispose(); await ctx.fiber.dispose() })
+  const register = (target, type) => target.effect(() => target.tools.register(defineTool({
+    name: 'probe', description: 'Scoped output', parameters: {},
+    output: { schema: { type }, render: () => [] }, execute: async () => undefined,
+  })))
+  register(ctx, 'string')
+  register(scope.ctx, 'number')
+  const publicTools = { schemas: target => ctx.tools.schemas(target), get: (name, target) => ctx.tools.get(name, target) }
+  assert.equal(toolSdkSchemas(publicTools)[0].output.type, 'string')
+  const observed = toolSdkSchemas(publicTools, agent)
+  assert.equal(observed[0].output.type, 'number')
+  observed[0].output.type = 'boolean'
+  assert.equal(toolSdkSchemas(publicTools, agent)[0].output.type, 'number')
+  assert.equal(Object.hasOwn(ctx.tools.schemas(agent)[0], 'output'), false)
+  assert.throws(() => toolSdkSchemas({ schemas: () => [schema('missing')], get: () => undefined }), /output schema must be lossless JSON/)
+})
+
+test('settings preserve conflicting Skill invocation eligibility across workspace ordering', async t => {
+  const ctx = new Context()
+  new SkillRegistry(ctx)
+  const agents = ['user', 'model', 'user-again'].map(name => {
+    const initial = Session.create(`invocation-${name}`)
+    return agentFor(Session.create(initial.id, [], { ...initial.header, cwd: `/tmp/${name}` }))
+  })
+  const scopes = agents.map(agent => createScope(ctx, agent))
+  ctx.effect(() => ctx.provide('agents', { list: () => agents }))
+  ctx.effect(() => ctx.skills.registerProvider(() => ({ name: 'workspace',
+    list: async ({ cwd }) => [{ name: 'shared', provider: 'workspace', source: 'same-source',
+      description: 'Shared Skill', rank: 100, locator: cwd,
+      invocation: { modelInvocable: cwd.endsWith('/model'), userInvocable: !cwd.endsWith('/model') } }],
+    get: async () => assert.fail('Catalog must not load Skill bodies'),
+  })))
+  const env = createCapabilityEnvironment({ ctx, config: config(), toolSchemasForAgent: () => [schema('run_code')] })
+  t.after(async () => { await env.dispose(); for (const scope of scopes) await scope.dispose(); await ctx.fiber.dispose() })
+  const first = (await env.describeCatalog()).find(entry => entry.id === 'skills.shared')
+  assert.equal(first.invocation, undefined)
+  assert.equal(first.invocationConflict, true)
+  agents.reverse()
+  assert.deepEqual((await env.describeCatalog()).find(entry => entry.id === 'skills.shared'), first)
+  agents.splice(0, agents.length, agents.find(agent => agent.session.header.cwd.endsWith('/model')))
+  assert.deepEqual((await env.describeCatalog()).find(entry => entry.id === 'skills.shared').invocation,
+    { modelInvocable: true, userInvocable: false })
+})
 
 test('allocation observation reads workspace coverage and budget choices without publishing or freezing a session', async t => {
   const initial = Session.create('allocation-observation')
@@ -87,6 +361,40 @@ test('allocation observation reads workspace coverage and budget choices without
   assert.equal(env.stateFor(agent), undefined)
 })
 
+test('Skill inventory follows the public current directory while saved plans and project statistics stay distinct', async t => {
+  const ctx = new Context()
+  new SystemPrompt(ctx, { includeHarnessIdentity: false, includeRuntimeContext: false })
+  new SkillRegistry(ctx)
+  const initial = Session.create('current-skill-directory')
+  const agent = agentFor(Session.create(initial.id, [], { ...initial.header, cwd: '/original-project' }))
+  agent.runMaintenance = operation => operation(agent.signal)
+  const scope = createScope(ctx, agent)
+  let cwd = '/first-directory'
+  ctx.effect(() => ctx.provide('workingDirectory', { get: session => { assert.equal(session, agent.session); return cwd } }))
+  ctx.effect(() => ctx.provide('agents', { list: () => [agent] }))
+  let observedDirectory
+  ctx.effect(() => ctx.skills.registerProvider(() => ({ name: 'directory-skills',
+    list: async options => { observedDirectory = options.cwd; return [{ name: options.cwd.slice(1), provider: 'directory-skills',
+      source: 'project', description: 'Current project Skill', rank: 100, locator: options.cwd,
+      invocation: { modelInvocable: true, userInvocable: true } }] },
+    get: async () => assert.fail('Inventory must not load Skill bodies'),
+  })))
+  const env = createCapabilityEnvironment({ ctx, config: config(), toolSchemasForAgent: () => [schema('run_code')] })
+  t.after(async () => { await env.dispose(); await scope.dispose(); await ctx.fiber.dispose() })
+  const original = await acceptPreparation(env, agent, [])
+  assert.equal(observedDirectory, cwd)
+  const frozen = JSON.stringify(original.snapshot)
+  cwd = '/second-directory'
+  assert.ok((await env.describeCatalog()).some(item => item.id === 'skills.second-directory'))
+  const observation = await env.observeAllocation({ sessionId: agent.id }, agent.signal)
+  assert.ok(observation.plan.entries.some(item => item.id === 'skills.second-directory'))
+  assert.equal(observation.workspace, '/original-project')
+  assert.equal(JSON.stringify(env.stateFor(agent).snapshot), frozen)
+  await env.refresh(agent, [], agent.signal)
+  assert.ok(env.stateFor(agent).snapshot.capabilities.some(item => item.id === 'skills.second-directory'))
+  assert.equal(agent.session.header.cwd, '/original-project')
+})
+
 test('empty Host instructions preserve tool and MCP contracts, ownership, restoration and refresh', async t => {
   const ctx = new Context()
   new SystemPrompt(ctx, { includeHarnessIdentity: false, includeRuntimeContext: false, personaPrefix: '', personaSuffix: '' })
@@ -105,7 +413,7 @@ test('empty Host instructions preserve tool and MCP contracts, ownership, restor
   const agent = agentFor(Session.create('empty-host-instructions'))
   agent.runMaintenance = operation => operation(agent.signal)
   const options = { ctx, config: config({ 'tools.probe': 'full', 'tools.mcp__docs__search': 'full', 'mcp.docs': 'full' }),
-    toolSchemasForAgent: target => ctx.tools.sdkSchemas(target) }
+    toolSchemasForAgent: target => toolSdkSchemas(ctx.tools, target) }
   const env = createCapabilityEnvironment(options)
   t.after(() => env.dispose())
   const assembled = async () => (await ctx.systemPrompt.assemble({ agent, scope: agent })).sections
@@ -117,7 +425,7 @@ test('empty Host instructions preserve tool and MCP contracts, ownership, restor
   assert.equal(original.snapshot.capabilities.find(item => item.id === 'tools.mcp__docs__search').mcpServer, 'docs')
   assert.match(original.snapshot.plan.catalogText, /Promise<string>/)
   assert.doesNotMatch(original.snapshot.plan.catalogText, /### dependency:/)
-  const schemas = ctx.tools.sdkSchemas(agent)
+  const schemas = toolSdkSchemas(ctx.tools, agent)
   const metadata = env.toolMetadata(agent, toolCapabilityMetadata(schemas), schemas)
   assert.deepEqual(capabilityInspect(metadata, ['tools.mcp__docs__search']).symbols[0].dependencies, [])
   assert.deepEqual(env.metadata(agent).find(item => item.namespace === 'mcp').members[0].dependencies, [])
@@ -150,6 +458,61 @@ test('empty Host instructions preserve tool and MCP contracts, ownership, restor
   t.after(() => malformed.dispose())
   await assert.rejects(() => malformed.prepare(agentFor(Session.create('malformed-host-instructions')),
     [{ name: 'tool:probe', text: undefined }]), /dependency contract must be a non-empty string/)
+})
+
+test('reenabling after provider withdrawal cannot restore an earlier frozen capability plan', async t => {
+  const session = Session.create('withdrawn-plan')
+  const agent = agentFor(session)
+  const ctx = { systemPrompt: { assemble: async () => ({ sections: [] }) } }
+  const original = createCapabilityEnvironment({ ctx, config: config({ 'tools.probe': 'closed' }), toolSchemasForAgent: () => [schema('probe')] })
+  await acceptPreparation(original, agent, [])
+  session.append('user/message', runtimeAvailabilityMessage('disabled'), { surfaceOp: 'append' })
+  await original.dispose()
+  const resumed = createCapabilityEnvironment({ ctx, config: config({ 'tools.probe': 'full' }), toolSchemasForAgent: () => [schema('probe')] })
+  t.after(() => resumed.dispose())
+  const state = await acceptPreparation(resumed, agent, [])
+  assert.equal(state.snapshot.plan.entries.find(entry => entry.id === 'tools.probe').selection, 'full')
+})
+
+test('new Skills outside a frozen plan are blocked before loading and become available after explicit refresh', async t => {
+  const ctx = new Context()
+  new SystemPrompt(ctx, { includeHarnessIdentity: false, includeRuntimeContext: false })
+  new ToolRuntime(ctx, { mode: 'native' })
+  new SkillRegistry(ctx)
+  skillTool.apply(ctx)
+  const agent = agentFor(Session.create('new-skill'))
+  agent.runMaintenance = operation => operation(agent.signal)
+  const scope = createScope(ctx, agent)
+  agent.ctx = scope.ctx
+  let names = ['original']
+  let bodyReads = 0
+  let control
+  ctx.effect(() => ctx.skills.registerProvider(owner => {
+    control = owner
+    return { name: 'changing',
+      list: async () => names.map(name => ({ name, provider: 'changing', source: 'fixture',
+        description: name, rank: 100, locator: name, invocation: { modelInvocable: true, userInvocable: true } })),
+      get: async entry => { bodyReads++; return { ...entry, content: `BODY ${entry.name}` } },
+    }
+  }))
+  const env = createCapabilityEnvironment({ ctx, config: config(), toolSchemasForAgent: target => toolSdkSchemas(ctx.tools, target) })
+  t.after(async () => { await env.dispose(); await scope.dispose(); await ctx.fiber.dispose() })
+  await acceptPreparation(env, agent, [])
+  names = ['original', 'new-skill']
+  control.invalidate()
+  const invoke = async () => {
+    const messages = [createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: '/new-skill task' }] })]
+    return env.preStep({ agent, signal: agent.signal }, () => agentEvents(ctx, agent).waterfall('agent/pre-step',
+      { messages, turn: 2, step: 1, signal: agent.signal }, async () => ({ kind: 'enter', messages })))
+  }
+  const closed = await invoke()
+  assert.equal(bodyReads, 0)
+  assert.equal(closed.messages.some(message => message.source.kind === 'skill-invocation'), false)
+  assert.equal(env.stateFor(agent).snapshot.capabilities.some(item => item.id === 'skills.new-skill'), false)
+  await env.refresh(agent, [], agent.signal)
+  const opened = await invoke()
+  assert.equal(bodyReads, 1)
+  assert.match(opened.messages.find(message => message.source.kind === 'skill-invocation').content[0].text, /BODY new-skill/)
 })
 
 async function acceptPreparation(env, agent, sections) {
@@ -186,7 +549,7 @@ test('real ToolRuntime preserves SDK output contracts and detects output-only ch
   const modelSchemas = JSON.stringify(ctx.tools.schemas(agent))
   assert.equal(Object.hasOwn(ctx.tools.schemas(agent)[0], 'output'), false)
   const env = createCapabilityEnvironment({ ctx, config: config({ 'tools.read': 'full' }),
-    toolSchemasForAgent: target => ctx.tools.sdkSchemas(target) })
+    toolSchemasForAgent: target => toolSdkSchemas(ctx.tools, target) })
   t.after(() => env.dispose())
   const state = await acceptPreparation(env, agent, [])
   const capability = state.snapshot.capabilities.find(item => item.id === 'tools.read')
@@ -196,7 +559,7 @@ test('real ToolRuntime preserves SDK output contracts and detects output-only ch
   assert.match(capability.contract, /number: number/)
   assert.match(capability.contract, /text: string/)
   assert.doesNotMatch(capability.contract, /Promise<unknown>/)
-  const oldSchemas = ctx.tools.sdkSchemas(agent)
+  const oldSchemas = toolSdkSchemas(ctx.tools, agent)
   const oldMetadata = env.toolMetadata(agent, toolCapabilityMetadata(oldSchemas), oldSchemas)
   const oldPage = capabilitySearch(oldMetadata, { query: 'read', limit: 1 })
   assert.ok(oldPage.cursor)
@@ -213,7 +576,7 @@ test('real ToolRuntime preserves SDK output contracts and detects output-only ch
   assert.equal(JSON.stringify(ctx.tools.schemas(agent)), modelSchemas, 'An output-only change leaves model-facing schemas byte-stable.')
   assert.equal((await step()).messages.some(message => message.source?.form === 'capability-descriptions'), false,
     'The recorded output contract must not be restored as the current API after an output-only change.')
-  const currentSchemas = ctx.tools.sdkSchemas(agent)
+  const currentSchemas = toolSdkSchemas(ctx.tools, agent)
   const currentMetadata = env.toolMetadata(agent, toolCapabilityMetadata(currentSchemas), currentSchemas)
   const match = capabilitySearch(currentMetadata, { query: 'tools.read' }).matches.find(item => item.symbol === 'tools.read').contract
   assert.deepEqual(match.returns, { type: 'string' })
@@ -229,6 +592,84 @@ test('real ToolRuntime preserves SDK output contracts and detects output-only ch
   const refreshed = await env.refresh(agent)
   assert.notEqual(refreshed.snapshot.capabilities.find(item => item.id === 'tools.read').revision, capability.revision)
   assert.match(refreshed.snapshot.capabilities.find(item => item.id === 'tools.read').contract, /Promise<string>/)
+})
+
+test('Host calling contract changes append accepted updates while saved choices and historical plans stay frozen', async t => {
+  const agent = agentFor(Session.create('live-calling-contracts'))
+  let schemas = [schema('probe'), schema('other')]
+  const available = []
+  const env = createCapabilityEnvironment({ ctx: {}, config: config({ 'tools.probe': 'full' }),
+    toolSchemasForAgent: () => schemas, store: { available: (_agent, snapshot) => available.push(snapshot) } })
+  t.after(() => env.dispose())
+  const original = await acceptPreparation(env, agent, [])
+  const frozen = JSON.stringify(original.snapshot)
+  const step = (signal = agent.signal, kind = 'enter') => env.preStep({ agent, signal }, async () => ({ kind, messages: [] }))
+  const accept = async () => {
+    const proposal = await step()
+    for (const message of proposal.messages) agent.session.append('user/message', message, { surfaceOp: 'append' })
+    return proposal.messages.find(message => message.source.form === 'capability-contracts')
+  }
+  env.reconfigure({ ...config({ 'tools.probe': 'closed', 'tools.other': 'full' }),
+    capabilityStatistics: '{"enabled":true,"windowSize":10,"minimumSamples":1,"fullThreshold":0}' })
+  assert.equal(await accept(), undefined, 'Saving settings or statistics must not revise an existing plan.')
+  schemas = [{ ...schema('probe'), parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] }, output: { type: 'number' } }, schema('other')]
+  assert.equal((await step(agent.signal, 'reject')).messages.length, 0)
+  assert.equal((await step(AbortSignal.abort())).messages.length, 0)
+  assert.equal(agent.session.snapshotEvents().filter(event => event.data?.source?.form === 'capability-contracts').length, 0)
+  const notice = await accept()
+  assert.match(notice.content[0].text, /path: string/)
+  assert.match(notice.content[0].text, /Promise<number>/)
+  assert.equal(notice.source.snapshot.changes[0].disclosure, 'full')
+  assert.equal(JSON.stringify(env.stateFor(agent).snapshot), frozen)
+  assert.deepEqual(env.projectMembers(agent, ['probe', 'other']), ['probe', 'other'])
+  assert.equal(await accept(), undefined)
+  assert.equal(available.at(-1).plan.entries.find(entry => entry.id === 'tools.probe').revision,
+    createHash('sha256').update(JSON.stringify(schemas[0])).digest('hex'))
+  const restored = createCapabilityEnvironment({ ctx: {}, config: config({ 'tools.probe': 'closed' }), toolSchemasForAgent: () => schemas })
+  t.after(() => restored.dispose())
+  await restored.prepare(agent, [])
+  assert.equal((await restored.preStep({ agent, signal: agent.signal }, async () => ({ kind: 'enter', messages: [] })))
+    .messages.some(message => message.source.form === 'capability-contracts'), false)
+  schemas = [schema('other')]
+  const removal = await accept()
+  assert.match(removal.content[0].text, /Host no longer supplies/)
+  assert.equal(removal.source.snapshot.changes[0].capability, null)
+  assert.deepEqual(env.projectMembers(agent, ['probe', 'other']), ['other'])
+  assert.equal(await accept(), undefined)
+  schemas = [schema('probe'), schema('other')]
+  const reinstated = await accept()
+  assert.match(reinstated.content[0].text, /Promise<string>/)
+  assert.deepEqual(env.projectMembers(agent, ['probe', 'other']), ['probe', 'other'])
+  assert.equal(JSON.stringify(env.stateFor(agent).snapshot), frozen)
+})
+
+test('live Skill eligibility and owner guidance revisions update contracts without loading bodies or reallocating choices', async t => {
+  const agent = agentFor(Session.create('live-skill-contracts'))
+  let skills = [{ name: 'design', provider: 'fixture', source: 'fixture', description: 'Design a page.',
+    invocation: { modelInvocable: true, userInvocable: true } }]
+  const ctx = { skills: { snapshot: async () => ({ complete: true, skills }) } }
+  const env = createCapabilityEnvironment({ ctx, config: { ...config({ 'skills.design': 'full', 'tools.probe': 'full' }), capabilityBudgetBytes: 1 },
+    toolSchemasForAgent: () => [schema('probe'), schema('skill')] })
+  t.after(() => env.dispose())
+  await acceptPreparation(env, agent, [{ name: 'tool:probe', text: 'Original owner guidance.' }])
+  const frozen = JSON.stringify(env.stateFor(agent).snapshot)
+  skills = [{ ...skills[0], invocation: { modelInvocable: false, userInvocable: true } }]
+  await env.prepare(agent, [{ name: 'tool:probe', text: 'Updated owner guidance.' }])
+  const changed = await env.preStep({ agent, signal: agent.signal }, async () => ({ kind: 'enter', messages: [] }))
+  const notice = changed.messages.find(message => message.source.form === 'capability-contracts')
+  assert.match(notice.content[0].text, /Updated owner guidance/)
+  assert.match(notice.content[0].text, /User-only Skill/)
+  assert.doesNotMatch(notice.content[0].text, /await tools\.skill/)
+  assert.match(notice.content[0].text, /exceed the configured budget/)
+  assert.equal(env.metadata(agent)[0].members[0].invocation.modelInvocable, false)
+  assert.deepEqual(env.projectMembers(agent, ['probe', 'skill']), ['probe'])
+  assert.equal(JSON.stringify(env.stateFor(agent).snapshot), frozen)
+  for (const message of changed.messages) agent.session.append('user/message', message, { surfaceOp: 'append' })
+  skills = []
+  const removed = await env.preStep({ agent, signal: agent.signal }, async () => ({ kind: 'enter', messages: [] }))
+  assert.match(removed.messages.find(message => message.source.form === 'capability-contracts').content[0].text, /Host no longer supplies/)
+  assert.deepEqual(env.metadata(agent)[0].members, [])
+  assert.equal(JSON.stringify(env.stateFor(agent).snapshot), frozen)
 })
 
 test('first capability plan remains provisional across rejected and aborted steps and enters once', async () => {
@@ -283,7 +724,7 @@ test('real AgentLoop protects its first system head before accepting one capabil
     return { config: requestConfig, stream, adapterDefaults: {} }
   }, stream }))
   await ctx.plugin(AgentLoop, { agents: [] }).await()
-  const env = createCapabilityEnvironment({ ctx, config: config(), toolSchemasForAgent: target => ctx.tools.sdkSchemas(target) })
+  const env = createCapabilityEnvironment({ ctx, config: config(), toolSchemasForAgent: target => toolSdkSchemas(ctx.tools, target) })
   ctx.on('system-prompt/assemble', async (_assembly, context, next) => {
     const assembly = await next()
     await env.prepare(context.agent, assembly.sections)
@@ -395,7 +836,7 @@ test('unknown local prototype format is rejected as recovery evidence without a 
     toolSchemasForAgent: () => [schema('a'), schema('pinned')] })
   const state = await acceptPreparation(env, agent, [])
   const snapshot = JSON.parse(JSON.stringify(state.snapshot))
-  snapshot.schema = 'ptc-capability-environment/v2'
+  snapshot.schema = 'ptc-capability-environment/v3'
   const events = JSON.parse(JSON.stringify(agent.session.snapshotEvents()))
   const original = events.find(event => event.data?.source?.form === 'capability-plan')
   original.data.source.snapshot = snapshot
@@ -409,6 +850,28 @@ test('unknown local prototype format is rejected as recovery evidence without a 
   assert.equal(result.snapshot.plan.enabled, false)
   assert.match(warnings[0], /damaged session capability plan/)
   assert.notEqual(result.message.id, state.message.id)
+})
+
+for (const missing of ['sourceSettings', 'sessionOverrides', 'manual']) test(`damaged v2 ${missing} produces an owned recovery diagnostic and host fallback`, async t => {
+  const agent = agentFor(Session.create(`damaged-v2-${missing}`)); agent.runMaintenance = operation => operation(agent.signal)
+  const ctx = { systemPrompt: { assemble: async () => ({ sections: [] }) } }
+  const env = createCapabilityEnvironment({ ctx, config: config(), toolSchemasForAgent: () => [schema('run_code'), schema('probe')] })
+  t.after(() => env.dispose())
+  await acceptPreparation(env, agent, [])
+  await env.change(agent, { scope: 'session', id: 'tools.probe', selection: 'closed' }, agent.signal)
+  const events = structuredClone(agent.session.snapshotEvents())
+  const original = events.findLast(event => event.data?.source?.form === 'capability-plan')
+  assert.equal(original.data.source.snapshot.schema, 'ptc-capability-environment/v2')
+  if (missing === 'manual') original.data.source.snapshot.sourceSettings.manual = null
+  else delete original.data.source.snapshot[missing]
+  original.data.source.digest = createHash('sha256').update(JSON.stringify(original.data.source.snapshot)).digest('hex')
+  const warnings = []
+  const fresh = createCapabilityEnvironment({ ctx: { logger: { warn: message => warnings.push(message) } }, config: config(), toolSchemasForAgent: () => [] })
+  t.after(() => fresh.dispose())
+  const state = await fresh.prepare(agentFor(Session.create(agent.session.id, events, agent.session.header)), [])
+  assert.equal(state.snapshot.plan.enabled, false)
+  assert.match(warnings[0], /damaged session capability choices/)
+  assert.doesNotMatch(warnings[0], /Cannot read properties|TypeError/)
 })
 
 test('initial plan precedes the task even when the protected system head is already committed', async () => {
@@ -504,6 +967,67 @@ test('settings source metadata follows Skill providers and captured MCP ownershi
 })
 
 
+test('Skill contracts preserve model and user invocation eligibility across disclosure, discovery and Host loading', async t => {
+  const ctx = new Context()
+  new SystemPrompt(ctx, { includeHarnessIdentity: false, includeRuntimeContext: false, personaPrefix: '', personaSuffix: '' })
+  new ToolRuntime(ctx, { mode: 'native' })
+  new SkillRegistry(ctx)
+  skillTool.apply(ctx)
+  const agent = agentFor(Session.create('skill-invocation-contracts'))
+  const scope = createScope(ctx, agent)
+  agent.ctx = scope.ctx
+  ctx.effect(() => ctx.provide('agents', { list: () => [agent] }))
+  const invocations = {
+    'model-only': { modelInvocable: true, userInvocable: false },
+    'user-only': { modelInvocable: false, userInvocable: true },
+    both: { modelInvocable: true, userInvocable: true },
+    neither: { modelInvocable: false, userInvocable: false },
+    closed: { modelInvocable: false, userInvocable: true },
+    'user-demand': { modelInvocable: false, userInvocable: true },
+  }
+  let bodyReads = 0
+  scope.ctx.effect(() => scope.ctx.skills.registerProvider(() => ({ name: 'invocation-provider',
+    list: async () => Object.entries(invocations).map(([name, invocation]) => ({ name, invocation,
+      description: `${name} owner summary`, provider: 'invocation-provider', source: 'fixture', rank: 100, locator: name })),
+    get: async entry => { bodyReads++; return { ...entry, content: `BODY ${entry.name}` } },
+  })))
+  const used = []
+  const env = createCapabilityEnvironment({ ctx,
+    config: config({ 'skills.model-only': 'full', 'skills.user-only': 'full', 'skills.both': 'full', 'skills.closed': 'closed' }),
+    toolSchemasForAgent: target => toolSdkSchemas(ctx.tools, target), store: { used: (...args) => used.push(args) } })
+  t.after(async () => { await env.dispose(); await scope.dispose(); await ctx.fiber.dispose() })
+  const state = await acceptPreparation(env, agent, [])
+  assert.equal(bodyReads, 0)
+  assert.match(state.snapshot.plan.catalogText, /User-only Skill: the user can invoke \/user-only/)
+  assert.doesNotMatch(state.snapshot.capabilities.find(item => item.id === 'skills.user-only').contract, /await tools\.skill/)
+  assert.doesNotMatch(state.snapshot.plan.directoryText, /load the body with tools\.skill/)
+  const metadata = env.metadata(agent)
+  for (const name of ['model-only', 'user-only', 'both', 'user-demand']) {
+    const item = capabilityInspect(metadata, [`skills.${name}`]).symbols[0]
+    assert.deepEqual(item.invocation, invocations[name])
+    const match = capabilitySearch(metadata, { query: `skills.${name}` }).matches[0].contract
+    assert.deepEqual(match.invocation, invocations[name])
+    if (invocations[name].modelInvocable) assert.match(match.contract, /await tools\.skill/)
+    else assert.match(match.contract, /The model cannot load this Skill with tools\.skill/)
+  }
+  assert.deepEqual(capabilityInspect(metadata, ['skills.neither', 'skills.closed']).unknown, ['skills.neither', 'skills.closed'])
+  const catalog = await env.describeCatalog()
+  assert.deepEqual(catalog.find(item => item.id === 'skills.user-only').invocation, invocations['user-only'])
+  assert.ok(catalog.some(item => item.id === 'skills.closed'), 'The user can still configure a closed entry.')
+  assert.equal(bodyReads, 0)
+  const rejected = await ctx.tools.execute({ agent, name: 'skill', arguments: { name: 'user-only' }, callId: 'user-only-model', signal: agent.signal })
+  assert.equal(rejected.isError, true)
+  assert.match(rejected.error.message, /not available for model invocation/)
+  assert.equal(bodyReads, 0)
+  const messages = [createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: '/user-only task' }] })]
+  const loaded = await env.preStep({ agent, signal: agent.signal }, () => agentEvents(ctx, agent)
+    .waterfall('agent/pre-step', { messages, turn: 1, step: 1, signal: agent.signal }, async () => ({ kind: 'enter', messages })))
+  assert.match(loaded.messages.find(message => message.source?.kind === 'skill-invocation').content[0].text, /BODY user-only/)
+  assert.equal(bodyReads, 1)
+  await new Promise(resolve => setImmediate(resolve))
+  assert.ok(used.some(args => args[2] === 'skills.user-only' && args[3] === 'skill-body-accepted'))
+})
+
 test('anonymous preparation preserves disabled management and identifies the enabled Session requirement', async () => {
   const agent = { id: 'anonymous' }
   const disabled = createCapabilityEnvironment({ ctx: {}, config: { capabilityManagementEnabled: false }, toolSchemasForAgent: () => [] })
@@ -594,7 +1118,7 @@ test('closed Skills disappear from host invocation without reading bodies and re
     get: async entry => { bodyReads++; return { ...entry, content: `BODY ${entry.name}` } },
   })))
   const env = createCapabilityEnvironment({ ctx, config: config({ 'skills.closed-skill': 'closed' }),
-    toolSchemasForAgent: target => ctx.tools.sdkSchemas(target) })
+    toolSchemasForAgent: target => toolSdkSchemas(ctx.tools, target) })
   t.after(async () => { await env.dispose(); await scope.dispose(); await ctx.fiber.dispose() })
   ctx.on('system-prompt/assemble', async (_assembly, context, next) => {
     const assembly = await next()
@@ -894,7 +1418,7 @@ test('disposing an MCP resource provider removes discovery, selectors and recove
   const scope = createScope(ctx, agent)
   agent.ctx = scope.ctx
   t.after(() => scope.dispose())
-  const env = createCapabilityEnvironment({ ctx, config: config(), toolSchemasForAgent: () => ctx.tools.sdkSchemas(agent) })
+  const env = createCapabilityEnvironment({ ctx, config: config(), toolSchemasForAgent: () => toolSdkSchemas(ctx.tools, agent) })
   const assemble = () => ctx.systemPrompt.assemble({ agent, scope: agent, signal: agent.signal })
   await acceptPreparation(env, agent, (await assemble()).sections)
   env.explored(agent, { matches: [{ symbol: 'mcp.probe' }] })

@@ -600,6 +600,64 @@ test('trusted-host observation supplies missing previews without writing project
   assert.equal((await state.runDurable('open-after-cell', 'return answer')).value, 42)
 })
 
+test('current inventory withdraws hidden assistant source while preserving result-only and image-only observations', async t => {
+  for (const changed of ['source', 'result', 'image']) {
+    const { state, observe } = observedFixture()
+    t.after(() => state.dispose())
+    const session = orderedSurfaceSession(`inventory-${changed}`)
+    state.ctx.sessions = { get: id => id === session.id ? session : undefined }
+    const result = await state.runDurable(session.id, 'const retained = 41; const old = () => retained; return old()', {}, { session })
+    const memory = resultMemory(result)
+    let projected = false
+    session.deriveEventMessage = event => {
+      const message = event.data?.message
+      if (!projected) return message
+      if (event.type === 'assistant/message' && changed === 'source') {
+        return { ...message, content: message.content.map(part => part.type === 'tool-call'
+          ? { ...part, arguments: '{"code":"return 9"}' } : part) }
+      }
+      if (event.type === 'tool/result' && changed !== 'source') {
+        return { ...message, content: changed === 'result'
+          ? [{ type: 'text', text: 'Projected result summary.' }]
+          : [{ type: 'image', image: 'projected-image' }] }
+      }
+      return message
+    }
+    session.surface.contentGeneration = 0
+    assert.equal((await observe(session.id, memory)).value.available, true)
+    const before = JSON.stringify(session.events)
+    projected = true
+    session.surface.contentGeneration++
+    if (changed !== 'source') assert.notDeepEqual(
+      session.deriveEventMessage(session.events.find(event => event.type === 'tool/result')).content,
+      session.events.find(event => event.type === 'tool/result').data.message.content)
+    const current = await observe(session.id, memory)
+    assert.equal(current.ok, true)
+    assert.equal(current.value.available, changed !== 'source')
+    assert.equal(JSON.stringify(session.events), before)
+    await state.emit('agent/disposed', { agent: { id: session.id, session } })
+    const cold = await observe(session.id, memory)
+    if (changed === 'source') assert.deepEqual(cold.value, unavailableReplMemorySnapshot())
+    else assert.equal(cold.value, null, 'A proved cold inventory is retained without a new value preview.')
+    const continued = await state.runDurable(session.id, 'return [typeof retained, typeof old]', {}, { session })
+    assert.deepEqual(continued.value, changed === 'source' ? ['undefined', 'undefined'] : ['number', 'function'])
+  }
+})
+
+test('cold inventory uses the proved journal settlement when optional source relations are absent', async t => {
+  const { state, observe } = observedFixture()
+  t.after(() => state.dispose())
+  const session = orderedSurfaceSession('cold-inventory-call-identity')
+  state.ctx.sessions = { get: id => id === session.id ? session : undefined }
+  const result = await state.runDurable(session.id, 'const retained = 41; return retained', {}, { session })
+  const memory = resultMemory(result)
+  for (const event of session.events) if (event.type === 'tool/result') delete event.sourceEventSeqs
+  await state.emit('agent/disposed', { agent: { id: session.id, session } })
+  const before = JSON.stringify(session.events)
+  assert.equal((await observe(session.id, memory)).value, null)
+  assert.equal(JSON.stringify(session.events), before)
+})
+
 test('worker observations preserve getter and Proxy counters and canonical results', async t => {
   const { state, watch } = observedFixture()
   t.after(() => state.dispose())

@@ -4,6 +4,20 @@ import { featureEnabled } from './client-feature-gates.js'
 import { isHostIconComponent } from './client-host-compat.js'
 import { capabilityPlanReason, createCapabilitySettingsViews } from './client-capabilities-view.js'
 
+// DOM integer dimensions lose fractional pixels under zoom. Convert viewport
+// positions using the resolved CSS border box, shared by tracking and reveal.
+function settingsScrollGeometry(element) {
+  const bounds = element.getBoundingClientRect()
+  const style = element.ownerDocument.defaultView.getComputedStyle(element)
+  const number = value => Number.parseFloat(value) || 0
+  const borderTop = number(style.borderTopWidth), borderBottom = number(style.borderBottomWidth)
+  const cssHeight = number(style.height) + (style.boxSizing === 'border-box' ? 0
+    : number(style.paddingTop) + number(style.paddingBottom) + borderTop + borderBottom)
+  const scale = cssHeight > 0 ? bounds.height / cssHeight : 1
+  return { bounds, scale, top: bounds.top + borderTop * scale,
+    bottom: bounds.bottom - borderBottom * scale, borderTop }
+}
+
 /**
  * Settings card with structured capability controls and one serialized write
  * tail so rapid edits cannot race, plus the manage-bindings
@@ -218,6 +232,31 @@ export function createPtcSettingsView(React, deps) {
       return () => controller.abort()
     }, [plansEnabled, open, view, planConfiguration, planRevision])
     const groupIdPrefix = view === 'dialog' ? 'ptc-plus-settings-dialog-group' : 'ptc-plus-settings-group'
+    const trackSection = React.useCallback(() => {
+      const scroller = settingsRoot.current?.querySelector('.ptcPlusFields')
+      if (!scroller || scroller.clientHeight === 0) return
+      const { scale, top, bottom } = settingsScrollGeometry(scroller)
+      const sections = CONFIG_GROUPS.slice(1).map(group => ({ key: group.key,
+        bounds: scroller.querySelector(`[aria-labelledby="${groupIdPrefix}-${group.key}"]`)?.getBoundingClientRect() }))
+        .filter(section => section.bounds)
+      const visible = sections.filter(section => section.bounds.bottom > top && section.bounds.top < bottom)
+      const atEnd = scroller.scrollHeight > scroller.clientHeight && scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 1
+      const next = atEnd ? visible.at(-1) : visible.find(section => section.bounds.bottom > top + 20 * scale)
+      if (next) setActiveSection(next.key)
+    }, [groupIdPrefix])
+    React.useLayoutEffect(() => {
+      if (!(view === 'page' || view === 'dialog') || !settingsRoot.current) return
+      const scroller = settingsRoot.current.querySelector('.ptcPlusFields')
+      if (!scroller) return
+      trackSection()
+      const resize = typeof ResizeObserver === 'function' ? new ResizeObserver(trackSection) : null
+      resize?.observe(scroller)
+      for (const section of scroller.querySelectorAll('.ptcPlusSettingsModule,.ptcPlusGroup')) resize?.observe(section)
+      const changes = typeof MutationObserver === 'function' ? new MutationObserver(trackSection) : null
+      changes?.observe(scroller, { subtree: true, childList: true, attributes: true, attributeFilter: ['hidden', 'open'] })
+      globalThis.addEventListener?.('resize', trackSection)
+      return () => { resize?.disconnect(); changes?.disconnect(); globalThis.removeEventListener?.('resize', trackSection) }
+    }, [view, open, snapshot.status, trackSection])
     // The open dialog owns the management session: closing it releases the draft
     // and drops every response the host has not answered yet.
     const workbench = useWorkbenchController({ enabled: globalEnabled && bindingsOpen, callUserBindings })
@@ -322,14 +361,14 @@ export function createPtcSettingsView(React, deps) {
                 h('td', null, capabilityPlanReason(t, entry)),
                 h('td', null, entry.evidence ? `${entry.evidence.used}/${entry.evidence.eligible} (${entry.evidence.scope})` : '—')))))))) : null
 
-    const renderRefresh = () => CapabilityRefreshButton ? h('section', { className: 'ptcPlusCapabilityApply',
-      'aria-label': t('capabilities.applyGroup') },
-      h('label', { className: 'ptcPlusCapabilityFilter' }, h('span', null, t('capabilities.targetSession')),
-        h('select', { className: 'ptcPlusSelect', value: refreshSessionId, 'aria-label': t('capabilities.targetSession'),
+    const renderRefresh = ({ observation = false } = {}) => CapabilityRefreshButton ? h('section', { className: 'ptcPlusCapabilityApply',
+      'aria-label': t(observation ? 'capabilities.observationGroup' : 'capabilities.applyGroup') },
+      h('label', { className: 'ptcPlusCapabilityFilter' }, h('span', null, t(observation ? 'capabilities.observationSession' : 'capabilities.targetSession')),
+        h('select', { className: 'ptcPlusSelect', value: refreshSessionId, 'aria-label': t(observation ? 'capabilities.observationSession' : 'capabilities.targetSession'),
           disabled: !enabled || unavailable || targets === null || Boolean(targetsError), onChange: event => setRefreshSessionId(event.target.value) },
         h('option', { value: '' }, t('capabilities.chooseSession')),
         ...(targets ?? []).map(target => h('option', { key: target.sessionId, value: target.sessionId }, target.sessionId)))),
-      h(CapabilityRefreshButton, { sessionId: refreshSessionId, t,
+      observation ? h('p', { className: 'ptcPlusDetail' }, t('capabilities.observationOnly')) : h(CapabilityRefreshButton, { sessionId: refreshSessionId, t,
         enabled: enabled && !unavailable && pending.size === 0 && !targetsError
           && (targets ?? []).some(target => target.sessionId === refreshSessionId),
         onApplied: () => setPlanRevision(current => current + 1) }),
@@ -383,20 +422,11 @@ export function createPtcSettingsView(React, deps) {
         const scroller = root?.querySelector('.ptcPlusFields')
         if (!heading || !scroller) return
         const headingBounds = heading.getBoundingClientRect()
-        const inset = Math.min(16, Math.max(0, scroller.clientHeight - headingBounds.height))
-        scroller.scrollTop += headingBounds.top
-          - scroller.getBoundingClientRect().top - scroller.clientTop - inset
+        const { bounds: scrollerBounds, scale, borderTop } = settingsScrollGeometry(scroller)
+        const inset = Math.min(16, Math.max(0, scroller.clientHeight - headingBounds.height / scale))
+        scroller.scrollTop += (headingBounds.top - scrollerBounds.top) / scale - borderTop - inset
         setActiveSection(key)
-      }
-      const trackSection = event => {
-        const scroller = event.currentTarget
-        const threshold = scroller.getBoundingClientRect().top + scroller.clientTop + 20
-        let next = 'syntax'
-        for (const group of CONFIG_GROUPS.slice(1)) {
-          const heading = scroller.querySelector(`[id="${groupIdPrefix}-${group.key}"]`)
-          if (heading && heading.getBoundingClientRect().top <= threshold) next = group.key
-        }
-        setActiveSection(next)
+        trackSection()
       }
       const revealNavigationItem = element => {
         const scroller = element.closest('.ptcPlusSettingsNavList')

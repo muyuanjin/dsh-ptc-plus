@@ -54,7 +54,7 @@ const asBindings = value => {
 
 /** Native reference operations over compiler-proved lexical and object frames. */
 export function createDynamicEnvironmentRuntime({
-  importModule = (source, options) => import(source, options),
+  importModule: defaultImportModule = (source, options) => import(source, options),
   intrinsicEval = defaultIntrinsics.intrinsicEval, realmFunction = defaultIntrinsics.realmFunction, globalObject = defaultIntrinsics.globalObject,
   errors, reflect = defaultIntrinsics.reflect, object, interfaceOwner, resolveAmbient = programAmbientResolver,
 } = {}) {
@@ -173,7 +173,7 @@ export function createDynamicEnvironmentRuntime({
 
   function environment({ frames = [], varFrame = new internal.Map(), strict = false, origin, lexicalContext = {},
     getThis = () => globalObject, getNewTarget = () => undefined, allowNewTarget = false,
-    ambient = ambientReference, createVar, declareVars, nativeAwait = false } = {}) {
+    ambient = ambientReference, createVar, declareVars, nativeAwait = false, importModule = defaultImportModule } = {}) {
     varFrame = asBindings(varFrame)
     const capturedFrames = []
     for (let index = 0; index < frames.length; index++) {
@@ -268,19 +268,19 @@ export function createDynamicEnvironmentRuntime({
           internal.copyArray(captured, rootIndex, captured.length, combined)
           internal.copyArray(frames, boundary, frames.length, combined)
         }
-        return environment({ frames: combined,
+        return environment({ importModule, frames: combined,
           varFrame, strict: nextStrict, getThis, getNewTarget, allowNewTarget, ambient, createVar, declareVars, nativeAwait, origin, lexicalContext })
       },
       awaitActivation() {
         const local = new internal.Map()
-        return environment({ frames: internal.copyArray(frames, 0, frames.length, [{ kind: 'lexical', bindings: local }]), varFrame: local,
+        return environment({ importModule, frames: internal.copyArray(frames, 0, frames.length, [{ kind: 'lexical', bindings: local }]), varFrame: local,
           strict, getThis, getNewTarget, allowNewTarget, ambient, nativeAwait: true, origin, lexicalContext })
       },
       activation(bindings, nextGetThis = getThis, nextGetNewTarget = getNewTarget, nextStrict = strict, ownFunction = true, selfBindings) {
         bindings = asBindings(bindings)
         const activationFrames = [{ kind: 'lexical', bindings }]
         if (selfBindings !== undefined) internal.appendArray(activationFrames, { kind: 'self', bindings: asBindings(selfBindings) })
-        return environment({ frames: internal.copyArray(frames, 0, frames.length, activationFrames), varFrame: bindings,
+        return environment({ importModule, frames: internal.copyArray(frames, 0, frames.length, activationFrames), varFrame: bindings,
           strict: nextStrict, getThis: nextGetThis, getNewTarget: nextGetNewTarget, allowNewTarget: ownFunction || allowNewTarget, ambient, origin,
           lexicalContext: ownFunction ? { privateReferences: lexicalContext.privateReferences } : lexicalContext })
       },
@@ -294,7 +294,7 @@ export function createDynamicEnvironmentRuntime({
           }
           const parameterFrames = [{ kind: 'lexical', bindings }]
           if (selfBindings !== undefined) internal.appendArray(parameterFrames, { kind: 'self', bindings: asBindings(selfBindings) })
-          selected = environment({ frames: internal.copyArray(frames, 0, frames.length, parameterFrames), varFrame: bindings,
+          selected = environment({ importModule, frames: internal.copyArray(frames, 0, frames.length, parameterFrames), varFrame: bindings,
             strict: nextStrict, getThis: nextGetThis, getNewTarget: nextGetNewTarget, allowNewTarget: ownFunction || allowNewTarget, ambient, origin, lexicalContext })
           internal.weakMapSet(parameterEnvironments, key, selected)
         }
@@ -309,15 +309,15 @@ export function createDynamicEnvironmentRuntime({
         } })
         return nativeCalls.registerCallableSourceTarget(adapter, fn)
       },
-      context(options) { return environment({ frames, varFrame, strict: options.strict ?? strict,
+      context(options) { return environment({ importModule, frames, varFrame, strict: options.strict ?? strict,
         getThis: options.getThis ?? getThis, getNewTarget: options.getNewTarget ?? getNewTarget,
         allowNewTarget: options.allowNewTarget ?? allowNewTarget, ambient, createVar, declareVars, nativeAwait, origin,
         lexicalContext: { ...lexicalContext, ...options } }) },
-      at(nextOrigin) { return environment({ frames, varFrame, strict, getThis, getNewTarget,
+      at(nextOrigin) { return environment({ importModule, frames, varFrame, strict, getThis, getNewTarget,
         allowNewTarget, ambient, createVar, declareVars, nativeAwait, origin: nextOrigin, lexicalContext }) },
       withObject(value) {
         if (value === null || value === undefined) throw new errors.TypeError('Cannot convert undefined or null to object')
-        return environment({ frames: internal.copyArray(frames, 0, frames.length, [{ kind: 'object', object: object(value) }]),
+        return environment({ importModule, frames: internal.copyArray(frames, 0, frames.length, [{ kind: 'object', object: object(value) }]),
           varFrame, strict, getThis, getNewTarget, allowNewTarget, ambient, createVar, declareVars, nativeAwait, origin, lexicalContext })
       },
       declareEvalVars(names) {

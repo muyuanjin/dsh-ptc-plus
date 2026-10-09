@@ -3,10 +3,11 @@ import { RPC_CONTRACTS } from '../internal/rpc-contract.js'
 import { CONFIG_DEFAULTS, SETTINGS_NAMESPACE } from '../internal/config-spec.js'
 import { createPtcToolView } from './client-tool-view.js'
 import { createPtcSettingsView } from './client-settings-view.js'
-import { createCapabilityRefreshView } from './client-capabilities-view.js'
+import { capabilityCommandText, createCapabilityRefreshView, createSessionCapabilityControlsView } from './client-capabilities-view.js'
 import { capabilityProfileConfiguration } from '../internal/runtime-config.js'
 import { createReplView } from './client-repl-view.js'
 import { createAuthoringView } from './client-authoring-view.js'
+import { bindingToggleConversationDefinition } from './client-binding-toggle.js'
 import { createIndicatorView } from './client-indicator-view.js'
 import { createTypeScriptEditor } from './client-code-editor.js'
 import { createBindingConsole } from './client-console.js'
@@ -178,7 +179,9 @@ window.__ModuleLoader__.load({
         },
       })
       const { observeRepl } = createReplObserver({ rpc, ctx })
-      const CapabilityRefreshButton = createCapabilityRefreshView(React, createCommandAccess(ctx, 'capabilities'))
+      const capabilityCommands = createCommandAccess(ctx, 'capabilities')
+      const CapabilityRefreshButton = createCapabilityRefreshView(React, capabilityCommands)
+      const SessionCapabilityControls = createSessionCapabilityControlsView(React, capabilityCommands)
       const { PTCPlusSettingsCard, PTCPlusSettingsDialog } = createPtcSettingsView(React, {
         ActionButton, BindingsDialog, Modal, useWorkbenchController, CapabilityRefreshButton,
         async inspectCapabilityTargets(signal) {
@@ -203,7 +206,7 @@ window.__ModuleLoader__.load({
         },
         icons: { search: IconSearchOutline16, chevron: IconChevronDownOutline14 },
       })
-      const { ReplComposer, ReplConsole, ReplMemoryCard, replPopoverIsOpen, placeReplPopover } = createReplView(React, {
+      const { ReplComposer, ReplConsole, ReplMemoryCard, replPopoverIsOpen, placeReplPopover, useObservedReplMemory } = createReplView(React, {
         CodeBlock, featureEnabled, normalizeReplMemorySnapshot, unavailableReplMemorySnapshot,
         useSessionPreset, sessionUsesPtcPreset, useWorkbenchController, UserBindingsWorkbench,
         icons: { search: IconSearchOutline16, chevron: IconChevronDownOutline14 },
@@ -320,7 +323,7 @@ window.__ModuleLoader__.load({
       const { BindingAuthorButton, BindingReviewDock, BindingCommandCard } = createAuthoringView(React, {
         ActionButton, IconButton, Menu, MenuFallback, Toast, Tooltip, CodeBlock, Modal, createPortal, BindingsDialog, PTCPlusSettingsDialog,
         useWorkbenchController, useBindingReview, catalogOwner, callUserBindings, subscribeReset,
-        settingsCardSeat: settingsCard.seat, updateSetting, updateCapabilityConfiguration, menuChildren, CapabilityRefreshButton,
+        settingsCardSeat: settingsCard.seat, updateSetting, updateCapabilityConfiguration, menuChildren, CapabilityRefreshButton, SessionCapabilityControls,
         icons: {
           sparkle: IconSparkle16, chevron: IconChevronDownOutline14,
           close: IconCloseOutline16, check: IconCheckOutline14,
@@ -331,6 +334,7 @@ window.__ModuleLoader__.load({
         normalizeReplMemorySnapshot, unavailableReplMemorySnapshot,
         ReplMemoryCard, replPopoverIsOpen, placeReplPopover,
         catalogOwner, subscribeReset,
+        useObservedReplMemory, observeRepl,
       })
 
       ctx.slots.inject('conversation.session.header.actions', () => registerGated(ctx, settingsGate('plugin', () => ctx.slots.register({
@@ -341,6 +345,18 @@ window.__ModuleLoader__.load({
         name: 'conversation.chat.commandview', key: 'binding', locale: LOCALE_NS,
         inject: settingsProps,
       }, props => h(BindingCommandCard, { ...props, key: props.node.commandId })))))
+      ctx.slots.inject('conversation.chat.commandview', () => registerGated(ctx, settingsGate('plugin', () => ctx.slots.register({
+        name: 'conversation.chat.commandview', key: 'capabilities', locale: LOCALE_NS,
+      }, ({ node, t }) => h('section', { className: 'ptcPlusCapabilityReceipt', 'aria-label': t('capabilities.receipt.title') },
+        h('strong', null, t('capabilities.receipt.title')),
+        h('p', { role: 'status' }, node.outcome ? capabilityCommandText(t, node.outcome.text)
+          ?? t('capabilities.refreshAcknowledged') : t('capabilities.refreshing')))))))
+      ctx.inject(['uiConversation'], scope => scope.effect(() => scope.uiConversation.events.register(bindingToggleConversationDefinition),
+        'ptc-plus binding configuration receipts'))
+      ctx.slots.inject('conversation.chat.node', () => ctx.effect(() => ctx.slots.register({
+        name: 'conversation.chat.node', key: 'ptc-plus-binding-toggle', locale: LOCALE_NS,
+      }, ({ node, t }) => h('p', { className: 'ptcPlusCapabilityReceipt', role: 'status' },
+        t(node.data.enabled ? 'bindings.toggleEnabled' : 'bindings.toggleDisabled', { name: node.data.name }))), 'ptc-plus binding configuration receipt renderer'))
       ctx.slots.inject('conversation.input.dock', () => ctx.slots.inject('conversation.input.left', () =>
         registerGated(ctx, settingsGate('bindings', () => ctx.slots.register({
           name: 'conversation.input.dock', id: 'ptc-plus-binding-review', order: -30, locale: LOCALE_NS,

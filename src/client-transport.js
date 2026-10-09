@@ -28,25 +28,33 @@ export function createReplObserver({ rpc, ctx }) {
       previous?.abort()
     }
     const watch = async current => {
+      let receipt
       try {
-        await rpc.call(RPC_CONTRACTS.repl, 'watch', { sessionId }, current.signal)
+        receipt = await rpc.call(RPC_CONTRACTS.repl, 'watch', { sessionId }, current.signal)
       } catch {}
       if (disposed || controller !== current) return
       controller = undefined
       current.abort()
       if (!visible || document.visibilityState === 'hidden') { stop(); return }
+      if (receipt?.ok === true && receipt.value?.changed === true) {
+        retries = 0
+        sync()
+        return
+      }
       const delay = retryDelays[retries++]
       if (delay === undefined) return
       retryTimer = setTimeout(() => { retryTimer = undefined; sync() }, delay)
     }
     const read = async current => {
-      if (!memory.available || memory.entries.length === 0 || memory.observation !== undefined) return
+      if (!memory.available || memory.entries.length === 0) return
       try {
         const result = await rpc.call(RPC_CONTRACTS.repl, 'observe', { sessionId, memory }, current.signal)
         if (disposed || controller !== current || current.signal.aborted || result?.ok !== true || result.value === null) return
         const observed = normalizeReplMemorySnapshot(result.value)
         const { observation, ...inventory } = observed
-        if (observation !== undefined && JSON.stringify(inventory) === JSON.stringify(memory)) onObservation(observed)
+        const { observation: _previousObservation, ...expected } = memory
+        if (!observed.available || (observation !== undefined
+          && JSON.stringify(inventory) === JSON.stringify(expected))) onObservation(observed)
       } catch {}
     }
     const sync = () => {

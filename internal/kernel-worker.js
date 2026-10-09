@@ -8,7 +8,7 @@ import { USER_BINDING_TRANSFORM, LEGACY_USER_BINDING_TRANSFORM } from './module-
 import { isAbsolute, resolve } from 'node:path'
 import repl from 'node:repl'
 import { PassThrough, Writable } from 'node:stream'
-import { pathToFileURL } from 'node:url'
+import { pathToFileURL } from './module-runtime-platform.js'
 import { MessageChannel, parentPort, workerData } from 'node:worker_threads'
 import { synchronizeBuiltinEsmExports } from './builtin-esm-sync.js'
 import { createPrivateAsyncLocalStorage } from './async-local-storage-intrinsics.js'
@@ -114,6 +114,10 @@ const output = new PassThrough()
 output.resume()
 const evaluationScope = createPrivateAsyncLocalStorage()
 const sessionCwd = typeof workerData?.cwd === 'string' ? workerData.cwd : undefined
+let executionCwd = sessionCwd
+const resolveModuleFilename = resolve
+const isAbsoluteDirectory = isAbsolute
+const nativeCreateRequire = createRequire
 if (sessionCwd !== undefined && !isAbsolute(sessionCwd)) {
   throw new Error(`ptc-plus session cwd must be absolute, got ${jsonStringify(sessionCwd)}`)
 }
@@ -181,11 +185,11 @@ const nativeRootDynamic = createNativeRootDynamic({
 let valueObserver
 const REPL_IMPORT_CANARY = 'data:text/javascript,export default 1'
 let replParent
-const sessionReplParent = sessionCwd === undefined ? undefined : pathToFileURL(resolve(sessionCwd, 'repl')).href
-const staticAdapterParents = new Set()
+const cellModuleParent = () => executionCwd === undefined ? replParent : pathToFileURL(resolveModuleFilename(executionCwd, 'repl')).href
+const staticAdapterParents = new Map()
 const userBindingModuleParents = new Map()
 const userModuleCompilation = createUserModuleCompilationHooks({
-  transformForParent: parent => (parent === replParent || parent === sessionReplParent) && activeExecution !== undefined
+  transformForParent: parent => (parent === replParent || parent === cellModuleParent()) && activeExecution !== undefined
     ? activeExecution.moduleTransform : undefined,
 })
 registerHooks({
@@ -193,10 +197,11 @@ registerHooks({
     if (specifier === REPL_IMPORT_CANARY && replParent === undefined) replParent = context.parentURL
     return userModuleCompilation.resolve(specifier, context, (source, resolvedContext) => {
       const userBindingParent = mapGet(userBindingModuleParents, resolvedContext.parentURL)
+      const adapterParent = mapGet(staticAdapterParents, resolvedContext.parentURL)
       return nextResolve(source, userBindingParent !== undefined
         ? { ...resolvedContext, parentURL: userBindingParent }
-        : resolvedContext.parentURL === replParent || setHas(staticAdapterParents, resolvedContext.parentURL)
-          ? { ...resolvedContext, parentURL: sessionReplParent ?? replParent }
+        : adapterParent !== undefined
+          ? { ...resolvedContext, parentURL: adapterParent }
           : resolvedContext)
     })
   },
@@ -356,23 +361,50 @@ installWorkerCwdVirtualization(sessionCwd, originalRequire, reason => {
     return
   }
   markVolatile(reason)
-})
+}, () => executionCwd)
 synchronizeBuiltinEsmExports()
-const providedRequire = sessionReplParent === undefined ? originalRequire : createRequire(sessionReplParent)
-function selectProvidedRequire(args) {
-  const specifier = args[0]
-  if (setHas(FORBIDDEN_IMPORTS, specifier)) throw new Error(`module ${specifier} is forbidden because it exposes kernel control`)
-  if (!setHas(DURABLE_IMPORTS, specifier)) markVolatile(`require(${jsonStringify(specifier)})`)
-  return managedRequire(activeExecution?.languageSemantics === 'legacy-v1' ? replParent : sessionReplParent ?? replParent,
-    activeExecution?.languageSemantics === 'legacy-v1' ? originalRequire : providedRequire)
+function recordCellModuleResolution(transform) {
+  // An escaped loader retains its source generation. Native resolution still
+  // selects the URL; the module compiler owns adaptation before its first load.
+  return (parent, source, attributes, resolution) => userModuleCompilation.recordResolution(
+    parent, source, attributes, resolution, transform)
 }
-defineWorkerRealmProperty(WORKER_REALM_MUTATION.STABLE, 'cell module metadata', context, 'require', {
-  configurable: true,
-  value: new Proxy(providedRequire, {
-    apply: (_, receiver, args) => privateReflect.apply(selectProvidedRequire(args), receiver, args),
-    construct: (_, args, newTarget) => privateReflect.construct(selectProvidedRequire(args), args, newTarget),
-  }),
-})
+
+function cellImportModuleFor(parent, transform) {
+  const recordResolution = recordCellModuleResolution(transform)
+  return (source, options) => managedModuleImport(parent, source, options, replModuleRealm, recordResolution)
+}
+
+function providedRequireFor(parent, legacy, transform, explicitCwd) {
+  const recordResolution = recordCellModuleResolution(transform)
+  const nativeRequire = legacy || !explicitCwd ? originalRequire : nativeCreateRequire(parent)
+  const select = args => {
+    const specifier = args[0]
+    if (setHas(FORBIDDEN_IMPORTS, specifier)) throw new Error(`module ${specifier} is forbidden because it exposes kernel control`)
+    if (!setHas(DURABLE_IMPORTS, specifier)) markVolatile(`require(${jsonStringify(specifier)})`)
+    return managedRequire(legacy ? replParent : parent ?? replParent, legacy ? originalRequire : nativeRequire, recordResolution)
+  }
+  return new Proxy(nativeRequire, {
+    apply: (_, receiver, args) => privateReflect.apply(select(args), receiver, args),
+    construct: (_, args, newTarget) => privateReflect.construct(select(args), args, newTarget),
+  })
+}
+let providedRequireParent = cellModuleParent()
+let providedRequireLegacy = false
+let providedRequireTransform
+let providedRequireExplicitCwd
+function installProvidedRequire(parent, legacy = false, transform, explicitCwd = executionCwd !== undefined) {
+  defineWorkerRealmProperty(WORKER_REALM_MUTATION.STABLE, 'cell module metadata', context, 'require', {
+    configurable: true,
+    value: providedRequireFor(parent, legacy, transform, explicitCwd),
+  })
+  providedRequireParent = parent
+  providedRequireLegacy = legacy
+  providedRequireTransform = transform
+  providedRequireExplicitCwd = explicitCwd
+}
+installProvidedRequire(providedRequireParent)
+
 function evaluate(program, completionSignal, asyncCompletion = false) {
   return new ControlPromise((resolve, reject) => {
     let settled = false
@@ -483,14 +515,16 @@ function staticAdapterSource(load) {
 }
 
 async function loadStaticModule(load) {
+  const parent = cellModuleParent()
+  const importModule = cellImportModuleFor(parent, activeExecution?.moduleTransform)
   if (load.operation === 'native-dynamic') return { namespace: nativeRootDynamic.environment(load.callableSources,
     load.awaitRoot === true, filterArray(load.logicalRoots, name => statefulRoots.has(name)
-      && rootBindingStorage(name, moduleRuntimeIntrinsics.includes(load.nativeLexicals, name)) !== 'lexical'), load.writableRoots) }
+      && rootBindingStorage(name, moduleRuntimeIntrinsics.includes(load.nativeLexicals, name)) !== 'lexical'), load.writableRoots, importModule) }
   if (load.operation === 'import') {
-    return { namespace: (source, options) => managedModuleImport(replParent, source, options, replModuleRealm) }
+    return { namespace: importModule }
   }
   const adapter = `data:text/javascript,${encodeURIComponent(staticAdapterSource(load))}#${++nextStaticAdapterId}`
-  setAdd(staticAdapterParents, adapter)
+  mapSet(staticAdapterParents, adapter, cellModuleParent())
   userModuleCompilation.mark(adapter, { compiled: true,
     transform: activeExecution?.moduleTransform })
   try {
@@ -499,7 +533,7 @@ async function loadStaticModule(load) {
     const namespace = readModuleImport(adapter, load.source, null, () => completion.value.namespace, load.options?.with)
     return { namespace }
   } finally {
-    setDelete(staticAdapterParents, adapter)
+    mapDelete(staticAdapterParents, adapter)
   }
 }
 
@@ -1307,6 +1341,17 @@ async function sendCompletion(message, execution, userBindings, committedRedecla
 
 async function runCell(message) {
   if (activeExecution !== undefined) throw new Error('kernel received overlapping cells')
+  if (message.cwd !== undefined && (typeof message.cwd !== 'string' || !isAbsoluteDirectory(message.cwd))) {
+    throw new Error('ptc-plus cell cwd must be absolute')
+  }
+  executionCwd = message.cwd ?? sessionCwd
+  const parent = cellModuleParent()
+  const legacyRequire = message.languageSemantics === 'legacy-v1'
+  const explicitCwd = executionCwd !== undefined
+  if (parent !== providedRequireParent || legacyRequire !== providedRequireLegacy || message.moduleTransform !== providedRequireTransform
+    || explicitCwd !== providedRequireExplicitCwd) {
+    installProvidedRequire(parent, legacyRequire, message.moduleTransform, explicitCwd)
+  }
   await writeOutputFence(nativeStdoutWrite, outputFenceMarker(message.outputFence, 'stdout', 'start'))
   await writeOutputFence(nativeStderrWrite, outputFenceMarker(message.outputFence, 'stderr', 'start'))
   await new ControlPromise(resolve => {
@@ -1369,6 +1414,7 @@ async function runCell(message) {
             context, message.rootRuntimeName, {
             configurable: true,
             value: statefulRoots.begin({ ...message.rootBindings,
+              importModule: cellImportModuleFor(parent, message.moduleTransform),
               legacyLexicals,
               legacyWritable,
               legacyObjects: filterArray(legacyWritable, name => mapGet(legacyStorage, name) !== 'lexical'),

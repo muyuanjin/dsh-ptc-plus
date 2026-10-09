@@ -11,7 +11,9 @@ import { randomUUID } from 'node:crypto'
 import { createDirectSurfaceOwner } from './internal/direct-surface-owner.js'
 import { CapabilityStatisticsStore } from './internal/capability-statistics-store.js'
 import { createCapabilityEnvironment } from './internal/capability-environment.js'
-import { createRuntimeMessageOwner } from './internal/runtime-contexts.js'
+import { capabilityCommandReceipt } from './internal/capability-command-receipt.js'
+import { toolSdkSchemas } from './internal/program-bindings.js'
+import { createRuntimeMessageOwner, handBackRuntimeSessions } from './internal/runtime-contexts.js'
 import { createSessionLogOwner } from './internal/session-log-view.js'
 import { PTC_DELIVERY_CONTEXT } from './internal/runtime-messages.js'
 import { createCordisToolsOwner } from './internal/cordis-tools-owner.js'
@@ -104,7 +106,7 @@ Native tool availability depends on the current DSH profile and execution world;
 }
 
 /** Register the session-bound REPL runtime. */
-function installPtCRuntime(ctx, resolvedConfig, seam, toolSchemasForAgent, toolSdkSchemasForAgent, sessionId, sessionLog) {
+function installPtCRuntime(ctx, resolvedConfig, seam, toolSchemasForAgent, toolSdkSchemasForAgent, sessionId, sessionLog, settingsForCommand) {
   const presentationGeneration = randomUUID()
   const replMemoryProjection = createReplMemoryProjection(presentationGeneration)
   const userBindingDraftProjection = createUserBindingDraftProjection(presentationGeneration)
@@ -397,6 +399,8 @@ function installPtCRuntime(ctx, resolvedConfig, seam, toolSchemasForAgent, toolS
     )))
     disposers.push(() => capabilityEnvironment.dispose())
     disposers.push(ctx.on('agent/pre-step', (payload, next) => capabilityEnvironment.preStep(payload, next), { prepend: true }))
+    disposers.push(ctx.on('agent/pre-step', (payload, next) => userBindings.preStep(payload, next)))
+    disposers.push(ctx.on('session/event', (session, event) => userBindings.committedEvent(session, event)))
     disposers.push(ctx.on('tools/post-execute', (exec, result, next) => capabilityEnvironment.postExecute(exec, result, next), { prepend: true }))
     disposers.push(ctx.on('tools/ptc-dispatch-log', (dispatch, next) => capabilityEnvironment.dispatchLog(dispatch, next), { prepend: true }))
     disposers.push(ctx.on('agent/status', payload => { if (payload?.agent) capabilityEnvironment.status(payload.agent, payload.status) }))
@@ -416,19 +420,41 @@ function installPtCRuntime(ctx, resolvedConfig, seam, toolSchemasForAgent, toolS
       else if (typeof capabilitiesRpc?.dispose === 'function') disposers.push(() => capabilitiesRpc.dispose())
       const commands = ctx.inject(['commands'], scope => {
         scope.effect(() => scope.commands.register({ name: 'capabilities',
-          description: 'Inspect the session capability plan or refresh it from saved settings.',
-          input: { hint: 'refresh (or leave empty to inspect)' },
-          handler: async ({ agent, rawInput, signal }) => {
+          description: 'Inspect, search or change session capabilities; global choices also save settings.',
+          input: { hint: 'refresh | list [all|skills|tools|mcp|mcp_tools] [query] | set session|global <id> <choice>' },
+          handler: async ({ commandId, agent, rawInput, signal }) => {
             const input = rawInput.trim()
-            if (input !== '' && input !== 'refresh') return { kind: 'error', text: 'Use /capabilities to inspect or /capabilities refresh to apply saved settings.' }
+            const receipt = (state, error) => capabilityCommandReceipt(state, String(agent.session.id), error,
+              state === 'pending' && capabilityEnvironment.pendingChoiceMessage(agent)
+                ? { commandId, rawInput, message: capabilityEnvironment.pendingChoiceMessage(agent) } : undefined)
+            const selection = /^set (session|global) (\S+) (full|on-demand|closed|automatic|inherit)$/.exec(input)
+            if (selection) {
+              if (!capabilityEnvironment.canRefresh(agent)) return { kind: 'error', text: receipt('unavailable') }
+              const changed = await capabilityEnvironment.change(agent, {
+                scope: selection[1], id: decodeURIComponent(selection[2]), selection: selection[3], commandId,
+              }, signal, settingsForCommand?.())
+              return { kind: changed.sessionApplied ? 'success' : 'error',
+                text: receipt(changed.sessionApplied ? changed.publication === 'pending' ? 'pending' : 'recorded' : 'saved-only', changed.error) }
+            }
+            const listing = /^list(?: (all|skills|tools|mcp|mcp_tools))?(?: (.*))?$/.exec(input)
+            if (listing) {
+              const entries = await capabilityEnvironment.catalogFor(agent, signal)
+              const query = (listing[2] ?? '').toLocaleLowerCase()
+              const kind = listing[1] ?? 'all'
+              return { kind: 'success', text: JSON.stringify({ schema: 'ptc-capability-catalog/v1', entries: entries.filter(entry => (
+                kind === 'all' || kind === 'skills' && entry.category === 'skill'
+                || kind === 'tools' && entry.category === 'tool' && entry.source?.kind !== 'mcp'
+                || kind === 'mcp' && ['server', 'resource'].includes(entry.category)
+                || kind === 'mcp_tools' && entry.category === 'tool' && entry.source?.kind === 'mcp'
+              ) && (!query || `${entry.id} ${entry.description}`.toLocaleLowerCase().includes(query))) }) }
+            }
+            if (input !== '' && input !== 'refresh') return { kind: 'error', text: receipt('usage') }
             if (input === 'refresh') {
               if (!capabilityEnvironment.canRefresh(agent)) {
-                return { kind: 'error', text: 'Capability refresh requires an active PTC session.' }
+                return { kind: 'error', text: receipt('unavailable') }
               }
-              await capabilityEnvironment.refresh(agent, undefined, signal)
-              return { kind: 'success', text: capabilityEnvironment.describe(agent).publication === 'pending'
-                ? 'Session capability environment prepared; its notification awaits the first accepted model step.'
-                : 'Session capability environment refreshed; the model-visible notification is recorded.' }
+              await capabilityEnvironment.refresh(agent, undefined, signal, commandId)
+              return { kind: 'success', text: receipt(capabilityEnvironment.describe(agent).publication === 'pending' ? 'pending' : 'recorded') }
             }
             return { kind: 'success', text: JSON.stringify(capabilityEnvironment.describe(agent), null, 2) }
           } }), 'ptc-plus capability command')
@@ -589,12 +615,13 @@ export const apply = (ctx, config = {}) => {
 
 /** Install the plugin into the scope of the seam the host registered. */
 function applyWithExecutionSeam(ctx, resolvedConfig, seam, volatileHost, volatileConfig) {
+  let settingsWriter
   const sessionLog = createSessionLogOwner(ctx)
   const toolSchemasForAgent = agent => typeof ctx.tools.schemas === 'function'
     ? ctx.tools.schemas(agent)
     : []
   // SDK contracts include output schemas; model-facing schemas remain unchanged.
-  const toolSdkSchemasForAgent = agent => ctx.tools.sdkSchemas(agent)
+  const toolSdkSchemasForAgent = agent => toolSdkSchemas(ctx.tools, agent)
   const sessionId = agent => {
     const id = agent?.session?.id ?? agent?.id
     return id === undefined ? undefined : String(id)
@@ -678,7 +705,7 @@ function applyWithExecutionSeam(ctx, resolvedConfig, seam, volatileHost, volatil
     }
     let candidate
     try {
-      candidate = installPtCRuntime(ctx, record.config, seam, toolSchemasForAgent, toolSdkSchemasForAgent, sessionId, sessionLog)
+      candidate = installPtCRuntime(ctx, record.config, seam, toolSchemasForAgent, toolSdkSchemasForAgent, sessionId, sessionLog, () => settingsWriter)
       record.runtime = candidate
     } catch (error) {
       const failedRuntime = error?.[INSTALL_CLEANUP]
@@ -820,9 +847,10 @@ function applyWithExecutionSeam(ctx, resolvedConfig, seam, volatileHost, volatil
   }
   ctx.effect(() => async () => controller.dispose(), 'ptc-plus runtime lifecycle')
 
+  const handbackOwners = Object.fromEntries(['sessions', 'sessionPersistence', 'sessionQuery'].map(name => [name, ctx.get(name)]))
   const messageOwner = createRuntimeMessageOwner(context => (
     committed?.retiring ? [] : committed?.runtime.contextsForRequest(context) ?? []
-  ), sessionLog.project)
+  ), sessionLog.project, () => committed !== undefined && committed.retiring !== true, handbackOwners.sessionQuery)
   ctx.effect(() => ctx.systemPrompt.context({
     name: PTC_DELIVERY_CONTEXT, order: 98, text: '',
   }), 'ptc-plus dynamic message delivery witness')
@@ -834,10 +862,13 @@ function applyWithExecutionSeam(ctx, resolvedConfig, seam, volatileHost, volatil
   )), 'ptc-plus accepted messages')
   ctx.effect(() => ctx.on('agent/disposed', ({ agent }) => messageOwner.disposeAgent(agent)), 'ptc-plus message agent disposal')
   ctx.effect(() => () => messageOwner.dispose(), 'ptc-plus dynamic message lifecycle')
+  ctx.effect(() => async () => {
+    await controller.dispose()
+    await handBackRuntimeSessions(ctx, handbackOwners)
+  }, 'ptc-plus provider handback')
 
   let configSource = () => resolveConfig(volatileConfig ?? resolvedConfig)
   let configurationGeneration = 0
-  let settingsWriter
   let configurationRollback = false
   const reportActivationFailure = (error) => {
     ctx.logger?.warn?.('ptc-plus: runtime activation failed', error)

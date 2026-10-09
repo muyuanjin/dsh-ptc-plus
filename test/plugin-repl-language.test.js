@@ -639,6 +639,7 @@ test('replays each journal node with its recorded binding mode', async (t) => {
   // Downgrading the live record must leave exactly the historical v3 field
   // set; the shared journal schema rejects any field introduced after it.
   const strictPredecessor = structuredClone(strictResult)
+  delete strictPredecessor.meta.dshPtcPlus.executionCwd
   strictPredecessor.meta.dshPtcPlus.version = 3
   strictPredecessor.meta.dshPtcPlus.bindingMode = 'strict'
   delete strictPredecessor.meta.dshPtcPlus.bindingPolicy

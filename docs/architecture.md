@@ -112,7 +112,7 @@ PTC 动态状态通过 DSH 公共 `agent/pre-step` 追加为 `source.kind: plugi
 
 全局绑定条目属于可变的用户计算输入；修改其提示词、接口、源码或启用集合通过上述追加通道同步，不能套用静态插件配置变化的例外来重写 header。配置说明可从已提交 PTC catalog 重建，且不为保留隐藏的 session-local 状态提供额外证明。
 
-能力方案在首个请求前组装完成；会话尚无已提交任务历史时，经 `agent/pre-step` 将初始方案放在接受批次的任务文本之前，受保护 system head 仍由 Host 先提交。正文依次为有界的固定类别用途导航、显式完整契约、已选基线、其余统计选择的契约，各组按身份排序并去重共享依赖。自动选择改变不改导航；样本数和 digest 不渲染。相同方案的不同任务可共享整个能力说明前缀，统计改变成员时尽量共享变化组之前的文本。已有会话冻结，显式刷新和恢复仍追加，不为提高缓存率重排历史。初始能力格式统一为 v1，恢复核验方案及正文。目录不复制单项完整描述，保持预算与缓存前缀两项约束。
+能力方案在首个请求前组装完成；会话尚无已提交任务历史时，经 `agent/pre-step` 将初始方案放在接受批次的任务文本之前，受保护 system head 仍由 Host 先提交。正文依次为有界的固定类别用途导航、显式完整契约、已选基线、其余统计选择的契约，各组按身份排序并去重共享依赖。自动选择改变不改导航；样本数和 digest 不渲染。相同方案的不同任务可共享整个能力说明前缀，统计改变成员时尽量共享变化组之前的文本。已有会话冻结启用与披露选择；宿主实际契约修订或撤下能力以 capability-contracts 追加说明，不重分配选择。显式刷新和恢复仍追加，不为提高缓存率重排历史。初始能力格式统一为 v1，恢复核验方案及正文。目录不复制单项完整描述，保持预算与缓存前缀两项约束。
 
 缓存稳定性必须有 keyless contract test：跨每个相关生命周期状态序列化并比较完整 system text 与有序 tool schemas，同时断言 edit 不增加 runtime context。真实模型的 `cacheReadTokens` 只作为端到端补充；“不破坏缓存”表示插件保留已有可复用前缀，不承诺 provider 建立、保留或命中缓存。
 
@@ -150,7 +150,8 @@ cell 的静态 import 与 remote re-export 产生有序 preload，Node 继续拥
 
 ```ts
 {
-  version: 10,
+  version: 11,
+  executionCwd: string | null,
   languageSemantics: "legacy-v1" | "stateful-v1" | "protected-v1",
   moduleTransform: "amaro@1.1.11" | "stateful-module-v1+amaro@1.1.11" |
     "stateful-module-v2+amaro@1.1.11" | "protected-module-v1+amaro@1.1.11",
@@ -177,7 +178,7 @@ cell 的静态 import 与 remote re-export 产生有序 preload，Node 继续拥
 }
 ```
 
-`languageSemantics` 选择语言契约，`moduleTransform` 选择确切 parser、compiler 与 lowering generation；两者必须是允许的配对。v1–v8 固定迁移为 legacy transform，v9 按发布时映射恢复，其中 `stateful-v1` 使用 `stateful-module-v1`，不能按当前 transform 重解释。`bindingPolicy`、`rewritePolicy` 与 `moduleSemantics` 保留历史细分契约；新代际从统一策略派生它们，旧代际由冻结编译器消费。`userBindingsFingerprint` 以 `null` 证明不存在 Global User Binding 输入，或以 SHA-256 绑定并行私有快照；声明存在但快照缺失或不一致时，node 形成 unknown boundary。`userBindingsShadowPolicy` 固化该 cell 的 session-local 覆盖粒度，`userBindingNames` 以按名称排序的 `{name, state}` 记录结算时的 provider/local/absent/unknown 事实，因此 cold replay 按历史粒度重放覆盖关系，不从当前实现推断 v1-v7 cell 的整条 entry 语义；provider 事实必须对应并行快照的条目 ID，并覆盖该快照公开的每个名称，否则 node 形成 unknown boundary。`calls` 只保存 global、member、PTC Value Graph 编码的 args/result 或 error，以及 settlement 序号。cold replay 校验调用名称、参数、数量和提交顺序，并按 recorded settlement order 释放 recorded result；不会重新 dispatch program binding 或重做外部 effect。该规则同样适用于 native tools、owner-provided namespace 和 `code.run`，不按名称分支。Cordis 的进程内对象不会因此被宣称已恢复；presentation 可以从已验证 transcript 派生重新检查要求，但不能改变 replay。若基础设施终止时仍有未结算 binding，heap 回滚到 durable frontier，discarded journal 以最先观察到的 `global.member` 保留 possible-effect boundary。effect、completeness 和 source metadata 属于 capability explorer，不伪装成 journal 字段。
+`executionCwd` 记录本 cell 的已解析当前目录；重放消费记录值，v1–v10 保留 header/worker 基准，不按当前目录重解释历史（[ADR 0041](adr/0041-record-cell-execution-directories.md)）。`languageSemantics` 选择语言契约，`moduleTransform` 选择确切 parser、compiler 与 lowering generation；两者必须是允许的配对。v1–v8 固定迁移为 legacy transform，v9 按发布时映射恢复，其中 `stateful-v1` 使用 `stateful-module-v1`，不能按当前 transform 重解释。`bindingPolicy`、`rewritePolicy` 与 `moduleSemantics` 保留历史细分契约；新代际从统一策略派生它们，旧代际由冻结编译器消费。`userBindingsFingerprint` 以 `null` 证明不存在 Global User Binding 输入，或以 SHA-256 绑定并行私有快照；声明存在但快照缺失或不一致时，node 形成 unknown boundary。`userBindingsShadowPolicy` 固化该 cell 的 session-local 覆盖粒度，`userBindingNames` 以按名称排序的 `{name, state}` 记录结算时的 provider/local/absent/unknown 事实，因此 cold replay 按历史粒度重放覆盖关系，不从当前实现推断 v1-v7 cell 的整条 entry 语义；provider 事实必须对应并行快照的条目 ID，并覆盖该快照公开的每个名称，否则 node 形成 unknown boundary。`calls` 只保存 global、member、PTC Value Graph 编码的 args/result 或 error，以及 settlement 序号。cold replay 校验调用名称、参数、数量和提交顺序，并按 recorded settlement order 释放 recorded result；不会重新 dispatch program binding 或重做外部 effect。该规则同样适用于 native tools、owner-provided namespace 和 `code.run`，不按名称分支。Cordis 的进程内对象不会因此被宣称已恢复；presentation 可以从已验证 transcript 派生重新检查要求，但不能改变 replay。若基础设施终止时仍有未结算 binding，heap 回滚到 durable frontier，discarded journal 以最先观察到的 `global.member` 保留 possible-effect boundary。effect、completeness 和 source metadata 属于 capability explorer，不伪装成 journal 字段。
 
 journal 通过 `run_code.output.presentationMeta` 附着到最终 result，再由 `tools/result` 做两阶段确认。live binding catalog 在 worker 结算时随实际状态更新，下一条排队 cell 使用这份目录准备；journal 确认只推进持久历史，迟到或逆序的确认不能覆盖较新的 live 目录，也不能恢复已重置的状态。缺失、损坏或被替换的 journal 形成 unknown/volatile 边界；未进入 runtime 的 call 由后续 `confirms` 以对应 `tool/call.seq` 证明为 no-op。volatile 源码保留在原 session log，但不参与 cold replay。
 

@@ -88,7 +88,8 @@ and returns its disposer. The plugin's entry receives the complete input.
 provider, retaining its object identity, cwd, deadline, sandbox policy and future
 execution fields. Non-session callers use this path without resolving again.
 Fresh isolated requests still use `invokeUpstream(request)`. Session cells consume
-their program, bindings and signal under the session's own execution contract;
+their program, bindings, signal and resolved cwd under the session's own execution contract;
+[ADR 0041](0041-record-cell-execution-directories.md) records per-cell directory ownership;
 the boundary never drops fields before choosing which consumer owns execution.
 
 **The seam describes the execution the plugin performs.** While the plugin owns
@@ -150,8 +151,8 @@ semantics for callers that never reach its REPL.
 not grant mutation ownership. Such attachment fails on frozen providers and
 cannot establish a durable extension contract; it is not a compatibility fallback.
 
-**Forward the resolved spec's directory, deadline, and policy to the session
-kernel.** The kernel has its own directory, budgets, and journal semantics; a
+**Forward the resolved spec's deadline and policy to the session
+kernel.** Current directory is integrated separately by ADR 0041. The kernel has its own budgets and journal semantics; a
 per-call host deadline would have to be reconciled with the configured budget,
 and confinement the plugin cannot enforce would be reported as if it applied.
 

@@ -120,7 +120,7 @@ export function createUserBindingsWorkbench(React, deps) {
         }
         if (action.imported === true) next.importPath = ''
         next.message = action.removed === true ? { key: 'bindings.removed' }
-          : action.imported === true ? { key: 'bindings.imported' } : state.message
+          : action.imported === true ? { key: 'bindings.imported' } : stored ? { key: stored.enabled ? 'bindings.toggleEnabled' : 'bindings.toggleDisabled', params: { name: stored.name } } : state.message
         return next
       }
       case 'reloadResult': {

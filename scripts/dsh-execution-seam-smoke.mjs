@@ -91,6 +91,17 @@ async function main() {
       })
       await fiber.await()
     }
+    // Current public tool execution resolves cwd through the official service.
+    // Older frozen cohorts have no such package and retain their earlier seam.
+    let workingDirectory
+    try { workingDirectory = require.resolve('@deepseek-ai/dsh-working-directory') } catch (error) {
+      if (error.code !== 'MODULE_NOT_FOUND') throw error
+    }
+    if (workingDirectory) {
+      await root.plugin((await load('@deepseek-ai/dsh-fs-local')).default).await()
+      await root.plugin((await import(pathToFileURL(workingDirectory).href)).default,
+        { defaultDirectory: consumer }).await()
+    }
     await root.plugin(Loader, { baseUrl: pathToFileURL(consumer + '/').href }).await()
     const filename = join(profile, 'cordis.json')
     await writeFile(filename, JSON.stringify(rows))

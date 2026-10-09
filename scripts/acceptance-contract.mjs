@@ -1105,7 +1105,7 @@ export function auditRuntimeContexts(events, config = {}) {
       [...(producerStates.get(`ptc-plus/${form}`) ?? [])]),
     ])
     for (const [producer, state] of producerStates) {
-      if (!producer.startsWith('ptc-plus/capability-descriptions/')) continue
+      if (!['capability-descriptions', 'capability-contracts'].some(form => producer.startsWith(`ptc-plus/${form}/`))) continue
       for (const [name, section] of state) {
         const previous = combined.get(name)
         combined.set(name, previous ? { ...section, text: previous.text + section.text,
@@ -1151,7 +1151,7 @@ export function auditRuntimeContexts(events, config = {}) {
       ? readCapabilityContextMessage(event.data, events.find(item => item.type === 'session')?.id) : undefined
     const ptc = event.type === 'user/message' ? readRuntimeMessage(event.data) ?? capability : undefined
     if (event.type === 'user/message' && isPtcMessageSource(source)
-      && ['snapshot', 'notice', 'catalog', 'capability-plan', 'capability-navigation', 'capability-descriptions'].includes(source.form) && ptc === undefined
+      && ['snapshot', 'notice', 'catalog', 'capability-plan', 'capability-navigation', 'capability-descriptions', 'capability-contracts'].includes(source.form) && ptc === undefined
       && readBindingAction(event.data) === undefined) {
       failures.push(`malformed PTC runtime message at seq ${String(event.seq ?? 'unknown')}`)
     }
@@ -1162,7 +1162,7 @@ export function auditRuntimeContexts(events, config = {}) {
         : ptc?.sections ?? event.data.source.sections
       const sections = snapshotSections({ ...event, data: { source: { sections: rawSections } } }, failures, allowed, maxSnapshotChars)
       const producer = aggregate ? 'aggregate' : capability ? `ptc-plus/${capability.form}`
-        + (capability.form === 'capability-descriptions' ? `/${event.seq}` : '')
+        + (['capability-descriptions', 'capability-contracts'].includes(capability.form) ? `/${event.seq}` : '')
         : ptc?.form === 'catalog' ? 'ptc-plus/catalog' : 'ptc-plus'
       const signature = JSON.stringify(sections.map(({ name, text }) => [name, text]))
       const entries = capability?.form === 'capability-descriptions' ? event.data.source.entries : undefined
@@ -1197,11 +1197,13 @@ export function auditRuntimeContexts(events, config = {}) {
         if (replacementNodes !== undefined) restoreSurface(replacementNodes)
       }
       const combined = combinedState()
-      if (descriptionEntries.size) {
-        const name = 'tools:ptc-plus-capability-descriptions'
-        const chars = combined.get(name)?.chars ?? 0
-        const bound = allowed.get(name)
-        if (bound !== undefined && chars > bound) failures.push(`runtime context ${name} has ${chars} visible chars; budget is ${bound}`)
+      if (descriptionEntries.size || capability?.form === 'capability-contracts') {
+        for (const form of ['capability-descriptions', 'capability-contracts']) {
+          const name = `tools:ptc-plus-${form}`
+          const chars = combined.get(name)?.chars ?? 0
+          const bound = allowed.get(name)
+          if (bound !== undefined && chars > bound) failures.push(`runtime context ${name} has ${chars} visible chars; budget is ${bound}`)
+        }
         const total = [...combined.values()].reduce((sum, section) => sum + section.chars, 0)
         if (total > maxSnapshotChars) failures.push(`runtime snapshot has ${total} visible section chars; budget is ${maxSnapshotChars}`)
       }

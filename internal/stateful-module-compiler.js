@@ -96,9 +96,9 @@ export function createUserModuleCompilationHooks({ transformForParent = () => un
       }
     }
   }
-  const recordResolution = (parentUrl, specifier, importAttributes, result) => {
+  const recordResolution = (parentUrl, specifier, importAttributes, result,
+    transform = mapGet(modules, parentUrl) ?? transformForParent(parentUrl)) => {
     recordStatefulModuleResolution(parentUrl, specifier, importAttributes, result.url)
-    const transform = mapGet(modules, parentUrl) ?? transformForParent(parentUrl)
     // Runtime links are outside the user compilation graph. Skipping only
     // their load would still propagate user transforms to their dependencies.
     if (transform !== undefined && !startsWith(result.url, 'node:')
@@ -106,6 +106,7 @@ export function createUserModuleCompilationHooks({ transformForParent = () => un
   }
   return {
     mark,
+    recordResolution,
     resolve(specifier, context, nextResolve) {
       const evidence = commonJsEvidence.resolve(specifier, context, recordResolution)
       if (evidence !== undefined) return evidence

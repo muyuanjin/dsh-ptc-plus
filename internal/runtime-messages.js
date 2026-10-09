@@ -23,6 +23,36 @@ const STATE_PREFIX = 'PTC Plus recovery status. Replaces earlier PTC recovery st
 const CATALOG_PREFIX = 'Global binding API reference for run_code (replaces the previous global binding reference):'
 const EMPTY_CATALOG = 'No entries documented.'
 const PREVIOUS_EMPTY_CATALOG = 'No global binding API documentation is currently configured. Earlier binding catalogs no longer apply.'
+const AVAILABILITY_TEXT = Object.freeze({
+  active: 'PTC Plus is the current continuous-computation provider. Follow its current tool schemas and newly supplied capability plan; earlier withdrawals do not restore old computation state.',
+  disabled: 'PTC Plus is disabled. Earlier PTC Plus continuous-computation instructions, capability plans, discovery instructions, calling-contract disclosures and global binding references no longer describe the current runtime. Use the current Host tools and contracts. Historical computations and effects remain historical; no old PTC Plus heap has been restored. Tasks, Skill instructions, other producers and tool results are unchanged.',
+  unloaded: 'PTC Plus has released its computation provider. Earlier PTC Plus continuous-computation instructions, capability plans, discovery instructions, calling-contract disclosures and global binding references no longer describe the current runtime. Use the current Host tools and contracts. Historical computations and effects remain historical; no old PTC Plus heap has been restored. Tasks, Skill instructions, other producers and tool results are unchanged.',
+})
+
+export function runtimeAvailabilityMessage(state) {
+  if (!Object.hasOwn(AVAILABILITY_TEXT, state)) throw new TypeError('invalid PTC provider availability')
+  return createUserMessage({ source: { kind: PTC_MESSAGE_SOURCE_KIND, form: 'runtime-availability', state },
+    content: [{ type: 'text', text: AVAILABILITY_TEXT[state] }] })
+}
+
+export function readRuntimeAvailability(message) {
+  const state = message?.source?.state
+  return isPtcMessageSource(message?.source) && message.source.form === 'runtime-availability'
+    && Object.hasOwn(AVAILABILITY_TEXT, state) && message.content?.length === 1
+    && message.content[0]?.type === 'text' && message.content[0].text === AVAILABILITY_TEXT[state] ? state : undefined
+}
+
+/** Availability reconciles plugin declarations only, never tasks or other producers. */
+export function projectRuntimeAvailability(messages, active, computationDeclared = false) {
+  const last = messages.map(readRuntimeAvailability).filter(Boolean).at(-1)
+  if (active) return last && last !== 'active' ? runtimeAvailabilityMessage('active') : undefined
+  if (last === 'disabled' || last === 'unloaded') return undefined
+  const declared = computationDeclared || last === 'active' || messages.some(message => isPtcMessageSource(message?.source)
+    && (['capability-navigation', 'capability-descriptions', 'capability-contracts'].includes(message.source.form)
+      || message.source.form === 'capability-plan' && message.source.snapshot?.plan?.enabled === true
+      || readRuntimeMessage(message)?.form === 'catalog' && readRuntimeMessage(message).sections.length > 0))
+  return declared ? runtimeAvailabilityMessage('disabled') : undefined
+}
 
 export function recoveryTipIdentity(name) {
   if (typeof name !== 'string') return undefined
@@ -60,6 +90,8 @@ export function readRuntimeMessage(message) {
     || !Array.isArray(message.content) || message.content.length !== 1
     || message.content[0]?.type !== 'text') return undefined
   const text = message.content[0].text
+  const availability = readRuntimeAvailability(message)
+  if (availability !== undefined) return { form: 'runtime-availability', state: availability }
   if (source.form === 'snapshot') {
     const sections = stateSections(source.sections)
     if (sections !== undefined && [STATE_PREFIX, PREVIOUS_STATE_PREFIX, LEGACY_STATE_PREFIX]

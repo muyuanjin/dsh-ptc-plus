@@ -18,6 +18,34 @@ export function advanceSessionSurface(nodes, event) {
   return next
 }
 
+/** Read model source from the Host projection, independently of execution history. */
+export function sessionSourceMessages(session, events, nodes) {
+  if (Array.isArray(session?.surface?.sourceMessages)) {
+    return new Map(session.surface.sourceMessages)
+  }
+  const visible = new Set(nodes)
+  const sources = new Map()
+  const messages = typeof session?.deriveMessages === 'function'
+    ? session.deriveMessages()
+    : undefined
+  for (const event of events) {
+    if (event.type !== 'assistant/message' || !visible.has(event.seq)) continue
+    let message
+    if (typeof session?.deriveEventMessage === 'function') {
+      message = session.deriveEventMessage(event)
+    } else if (messages !== undefined) {
+      const id = event.data?.message?.id
+      const matches = typeof id === 'string' ? messages.filter(item => item.id === id) : []
+      if (matches.length === 1) message = matches[0]
+    } else if (Array.isArray(session?.events)) {
+      // The historical array-backed contract has no pure message projections.
+      message = event.data?.message
+    }
+    if (message !== undefined && message !== null) sources.set(event.seq, message)
+  }
+  return sources
+}
+
 export async function readSessionLog(session, query, signal) {
   if (session === undefined || session === null || Array.isArray(session.events)) return session
   if (typeof query?.observeSession !== 'function') {
@@ -31,10 +59,16 @@ export async function readSessionLog(session, query, signal) {
       nodes = []
       for (const event of observation.events) nodes = advanceSessionSurface(nodes, event)
     }
+    // Do not pair an immutable raw cut with a newer live message projection.
+    // A cut without exact model-source evidence cannot retain old bindings.
+    const sources = session.seq - 1 === observation.cursor
+      ? sessionSourceMessages(session, observation.events, nodes)
+      : new Map()
     return Object.freeze({
       id: session.id, header: observation.header, events: observation.events,
       surface: Object.freeze({
         nodes: Object.freeze([...nodes]),
+        sourceMessages: Object.freeze([...sources].map(entry => Object.freeze(entry))),
       }),
     })
   } finally {

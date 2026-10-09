@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from 'node:util'
+import { isAbsolute } from 'node:path'
 import { decodeValue, encodeValue, normalizeValueWire } from './value-wire.js'
 import { normalizeDiagnostic } from './diagnostic.js'
 import { assertOwnFields, isRecord } from './record-utils.js'
@@ -19,6 +20,8 @@ import {
   REWRITES_KEY,
   RECOVERY_BOUNDARY_KEY,
   JOURNAL_VERSION,
+  MODULE_TRANSFORM_JOURNAL_VERSION,
+  MODULE_TRANSFORM_JOURNAL_FIELDS,
   LANGUAGE_SEMANTICS_JOURNAL_VERSION,
   LANGUAGE_SEMANTICS_JOURNAL_FIELDS,
   IMPORT_BOUNDARY_JOURNAL_VERSION,
@@ -262,6 +265,10 @@ function normalizeUserBindingsFingerprint(value) {
 
 function migrateJournal(value, resolveLegacyConfirm) {
   if (value.version === JOURNAL_VERSION) return value
+  if (value.version === MODULE_TRANSFORM_JOURNAL_VERSION) {
+    assertOwnFields(value, MODULE_TRANSFORM_JOURNAL_FIELDS, 'dsh-ptc-plus journal')
+    return { ...value, version: JOURNAL_VERSION, executionCwd: null }
+  }
   if (value.version === LANGUAGE_SEMANTICS_JOURNAL_VERSION) {
     assertOwnFields(value, LANGUAGE_SEMANTICS_JOURNAL_FIELDS, 'dsh-ptc-plus journal')
     const languageSemantics = normalizeLanguageSemantics(value.languageSemantics)
@@ -332,6 +339,13 @@ function migrateJournal(value, resolveLegacyConfirm) {
   }
 }
 
+function normalizeExecutionCwd(value) {
+  if (value !== null && (typeof value !== 'string' || !isAbsolute(value))) {
+    throw new Error('invalid dsh-ptc-plus journal execution directory')
+  }
+  return value
+}
+
 /** Validate and detach one journal emitted by the runtime. */
 export function normalizeJournal(value, options = {}) {
   if (!isRecord(value)) throw new Error('invalid dsh-ptc-plus journal')
@@ -339,10 +353,12 @@ export function normalizeJournal(value, options = {}) {
     || !STATUSES.has(value.status)) {
     throw new Error('invalid dsh-ptc-plus journal')
   }
-  const migrated = migrateJournal(value, options.resolveLegacyConfirm)
+  const migrated = { ...migrateJournal(value, options.resolveLegacyConfirm),
+    ...(value.version < JOURNAL_VERSION ? { executionCwd: null } : {}) }
   assertOwnFields(migrated, JOURNAL_FIELDS, 'dsh-ptc-plus journal')
   const languageSemantics = normalizeLanguageSemantics(migrated.languageSemantics)
   const moduleTransform = normalizeModuleTransform(migrated.moduleTransform, languageSemantics)
+  const executionCwd = normalizeExecutionCwd(migrated.executionCwd)
   const bindingPolicy = normalizeBindingPolicy(migrated.bindingPolicy)
   const rewritePolicy = normalizeRewritePolicy(migrated.rewritePolicy)
   const moduleSemantics = normalizeModuleSemantics(migrated.moduleSemantics)
@@ -374,6 +390,7 @@ export function normalizeJournal(value, options = {}) {
     version: JOURNAL_VERSION,
     languageSemantics,
     moduleTransform,
+    executionCwd,
     bindingPolicy,
     rewritePolicy,
     moduleSemantics,
@@ -1022,7 +1039,7 @@ export function liveToolCallSeq(session, callId, toolName) {
 
 /** Start a mutable journal for one live cell. */
 export function createJournal(confirms = [], bindingPolicy, rewritePolicy, languageSemantics = LEGACY_LANGUAGE_SEMANTICS,
-  moduleTransform = moduleTransformForLanguage(languageSemantics)) {
+  moduleTransform = moduleTransformForLanguage(languageSemantics), executionCwd = null) {
   if (typeof bindingPolicy === 'string') {
     if (!BINDING_MODES.has(bindingPolicy)) throw new TypeError('invalid dsh-ptc-plus journal binding mode')
     bindingPolicy = {
@@ -1035,6 +1052,7 @@ export function createJournal(confirms = [], bindingPolicy, rewritePolicy, langu
     version: JOURNAL_VERSION,
     languageSemantics,
     moduleTransform: normalizeModuleTransform(moduleTransform, languageSemantics),
+    executionCwd: normalizeExecutionCwd(executionCwd),
     bindingPolicy: normalizeBindingPolicy(bindingPolicy),
     rewritePolicy: normalizeRewritePolicy(rewritePolicy),
     moduleSemantics: normalizeModuleSemantics(LIVE_MODULE_SEMANTICS),

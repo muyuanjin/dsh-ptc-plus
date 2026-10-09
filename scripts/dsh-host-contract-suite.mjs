@@ -4,11 +4,15 @@ import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import { parseArgs } from 'node:util'
+import { createHash } from 'node:crypto'
 import { extractPackFilename } from './npm-pack-filename.mjs'
 import { npmCliCommand } from './npm-cli.mjs'
+import { verifyInstalledHostGraph } from './dsh-dependency-baseline.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const LATEST_FIXTURE = join(ROOT, 'compat', 'latest')
+const CURRENT_FIXTURE = join(ROOT, 'compat', 'current')
 const HOST_PACKAGES = [
   '@deepseek-ai/cordis',
   '@deepseek-ai/cordis-plugin-loader',
@@ -23,6 +27,16 @@ const HOST_PACKAGES = [
   '@deepseek-ai/dsh-session-persistence-jsonl',
   '@deepseek-ai/dsh-typert-registry',
   '@deepseek-ai/dsh-util-values',
+
+]
+const PROFILE_HOST_PACKAGES = [
+  '@deepseek-ai/dsh-fs-local',
+  '@deepseek-ai/dsh-working-directory',
+  '@deepseek-ai/dsh-tool-working-directory',
+  '@deepseek-ai/dsh-ptc-runtime-node',
+  '@deepseek-ai/dsh-subprocess-local',
+  '@deepseek-ai/dsh-sandbox-local',
+  '@deepseek-ai/dsh-sandbox-policy',
 ]
 const scripts = [
   'dsh-cordis-companion-smoke.mjs',
@@ -67,9 +81,14 @@ async function exposeHostPackages(consumer, host) {
   const dshRequire = createRequire(hostRequire.resolve('@deepseek-ai/dsh/package.json'))
   const baseRequire = createRequire(dshRequire.resolve('@deepseek-ai/dsh-base/package.json'))
   const requires = [hostRequire, dshRequire, baseRequire]
-  const names = [...new Set([...Object.keys(manifest.peerDependencies ?? {}), ...HOST_PACKAGES])]
+  const names = [...new Set([...Object.keys(manifest.peerDependencies ?? {}), ...HOST_PACKAGES, ...PROFILE_HOST_PACKAGES])]
   for (const name of names) {
-    const targetManifest = resolveHostPackage(requires, name)
+    let targetManifest
+    try { targetManifest = resolveHostPackage(requires, name) } catch (error) {
+      if (!lifecycleOnly && PROFILE_HOST_PACKAGES.includes(name)
+        && error.message === `official DSH graph does not provide ${name}`) continue
+      throw error
+    }
     const target = dirname(targetManifest)
     const link = join(consumer, 'node_modules', ...name.split('/'))
     try {
@@ -110,12 +129,12 @@ async function verifyConsumer(consumer, label, host) {
     [hostRequire, dshRequire, baseRequire],
     '@deepseek-ai/dsh-agent-preset',
   ))
-  for (const script of executionOnly ? ['dsh-execution-seam-smoke.mjs'] : scripts) {
+  for (const script of lifecycleOnly ? ['dsh-packed-lifecycle-smoke.mjs'] : executionOnly ? ['dsh-execution-seam-smoke.mjs'] : scripts) {
     const result = spawnSync(process.execPath, [join(ROOT, 'scripts', script), 'dsh-ptc-plus'], {
       cwd: consumer,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
-      timeout: 30_000,
+      timeout: lifecycleOnly ? 120_000 : 30_000,
       env: {
         ...process.env,
         DSH_PTC_ACTIVE_PRESET_PACKAGE: activePresetPackage,
@@ -126,16 +145,17 @@ async function verifyConsumer(consumer, label, host) {
     }
     process.stdout.write(result.stdout)
   }
-  console.log(`${label}: official DSH ${hostVersion} ${executionOnly ? 'packed public execution contract' : 'host contracts'} passed`)
+  console.log(`${label}: official DSH ${hostVersion} ${lifecycleOnly ? 'packed lifecycle observations completed; see admission boundary' : executionOnly ? 'packed public execution contract' : 'bounded host contracts; joint direct admission remains pending'} passed`)
 }
 
-async function installLatestHost(temporary) {
-  const host = join(temporary, 'latest-host')
+async function installFrozenHost(temporary, label, fixture) {
+  const host = join(temporary, `${label}-host`)
   await mkdir(host)
   for (const filename of ['package.json', 'package-lock.json', '.npmrc']) {
-    await copyFile(join(LATEST_FIXTURE, filename), join(host, filename))
+    await copyFile(join(fixture, filename), join(host, filename))
   }
   npm(['ci', '--ignore-scripts', '--no-audit', '--no-fund'], { cwd: host })
+  await verifyInstalledHostGraph(host)
   return host
 }
 
@@ -157,10 +177,33 @@ async function verifyPackedConsumer(temporary, label, host, archive) {
   await verifyConsumer(consumer, label, host)
 }
 
-const selection = process.argv[2] ?? 'all'
-const executionOnly = process.argv[3] === '--execution-only'
-if (!['all', 'next', 'latest'].includes(selection)) {
-  throw new Error('usage: dsh-host-contract-suite.mjs [all|next|latest] [--execution-only]')
+const { values, positionals } = parseArgs({ allowPositionals: true, options: {
+  'execution-only': { type: 'boolean', default: false },
+  'lifecycle-only': { type: 'boolean', default: false },
+  'existing-host': { type: 'string' },
+} })
+const selection = positionals[0] ?? 'all'
+const executionOnly = values['execution-only']
+const lifecycleOnly = values['lifecycle-only']
+if (!['all', 'next', 'latest', 'current'].includes(selection)) {
+  throw new Error('usage: dsh-host-contract-suite.mjs [all|next|latest|current] [--execution-only|--lifecycle-only] [--existing-host <path>]')
+}
+if (positionals.length > 1 || executionOnly && lifecycleOnly || values['existing-host'] && selection !== 'current') throw new Error('invalid host contract selection')
+async function selectedCurrentHost(temporary) {
+  if (!values['existing-host']) return installFrozenHost(temporary, 'current', CURRENT_FIXTURE)
+  const host = resolve(values['existing-host'])
+  for (const filename of ['package.json', 'package-lock.json']) {
+    const actual = await readFile(join(host, filename))
+    const frozen = await readFile(join(CURRENT_FIXTURE, filename))
+    if (!actual.equals(frozen)) throw new Error(`existing Host ${filename} differs from the frozen current cohort`)
+  }
+  // Resolve only through this installed graph; equality of lock inputs alone
+  // does not prove the runtime packages actually loaded from it.
+  const require = createRequire(join(host, 'package.json'))
+  require.resolve('@deepseek-ai/dsh/package.json')
+  await verifyInstalledHostGraph(host)
+  console.log(`existing frozen Host lock SHA256 ${createHash('sha256').update(await readFile(join(host, 'package-lock.json'))).digest('hex')}`)
+  return host
 }
 const temporary = await mkdtemp(join(tmpdir(), 'ptc-host-contracts-'))
 try {
@@ -169,12 +212,17 @@ try {
     capture: true,
   })
   const archive = join(temporary, extractPackFilename(JSON.parse(report)))
-  if (selection !== 'latest') {
+  console.log(`packed candidate SHA256 ${createHash('sha256').update(await readFile(archive)).digest('hex')}`)
+  if (selection === 'all' || selection === 'next') {
     await verifyPackedConsumer(temporary, 'next baseline', ROOT, archive)
   }
-  if (selection !== 'next') {
-    const latestHost = executionOnly ? LATEST_FIXTURE : await installLatestHost(temporary)
+  if (selection === 'all' || selection === 'latest') {
+    const latestHost = executionOnly ? LATEST_FIXTURE : await installFrozenHost(temporary, 'latest', LATEST_FIXTURE)
     await verifyPackedConsumer(temporary, 'latest baseline', latestHost, archive)
+  }
+  if (selection === 'all' || selection === 'current') {
+    const currentHost = await selectedCurrentHost(temporary)
+    await verifyPackedConsumer(temporary, 'published baseline', currentHost, archive)
   }
 } finally {
   await rm(temporary, { recursive: true, force: true })

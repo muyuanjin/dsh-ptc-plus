@@ -15,7 +15,7 @@
 | `coverage` | 按准确能力 ID 索引的 `{revision, workspace, global}`；覆盖证据形状由下述归约组件提供 |
 | `budgetBytes`、`directoryBudgetBytes`、`navigationText` | 完整契约和目录分别按 UTF-8 字节计量；固定发现指引必须在目录预算内 |
 
-受管类别为 `tool`、`skill`、`resource`、`resource-template`、`task`；`language`、`node`、`repl`、`ptc-plus`、`global-binding` 保持范围外。适配器必须提供真实来源身份和完整契约；本组件不从工具名字猜测来源，也不加载 Skill 正文。
+受管类别为 `tool`、`skill`、`resource`、`resource-template`、`task`；`language`、`node`、`repl`、`ptc-plus`、`global-binding` 保持范围外。适配器必须提供真实来源身份和完整契约；本组件不从工具名字猜测来源，也不加载 Skill 正文。Skill 库存、完整契约、检索与设置来源元数据保留 owner 的 `modelInvocable`/`userInvocable`：模型可调用项说明 `tools.skill({name})`，用户专用项说明 `/name` 用户入口；两者关闭的项不进入可用目录。披露不能扩大加载权限。
 
 统计不足时使用基线；工作区样本足够时优先采用，工作区不足时才参考全局，不将重叠家族相加。无效设置或不可用证据不撤销手动选择。纯描述或 schema 的修订继承尚未由公共适配器证明，因此当前不同 `revision` 隔离。
 
@@ -48,13 +48,17 @@ capabilityCoverage(state, { userId, workspaceId, id, revision })
 
 ## 会话接入
 
-`ptc-capability-environment/v1` 源消息记录设置、完整 owner inventory、统计依据与派生方案，digest、方案重算与精确正文共同校验恢复。首次准备在模型请求之前完成，只产生待接受方案；尚无已提交任务历史时，通过公共 `agent/pre-step` 将新方案放在本次接受消息批次的任务之前，由 Host 在受保护 system head 之后提交一次。已有历史不重排，拒绝、取消或请求准备失败不构成方案恢复证据。已提交方案不重复追加，被压缩的正文不因原始日志仍有记录而复活。
+`ptc-capability-environment/v1` 源消息记录设置、完整 owner inventory、统计依据与派生方案，digest、方案重算与精确正文共同校验恢复。新方案显式记录当前 `navigationText`；缺少该字段的既存 v1 方案按其原固定导航重算和核验，升级不重写历史正文。首次准备在模型请求之前完成，只产生待接受方案；尚无已提交任务历史时，通过公共 `agent/pre-step` 将新方案放在本次接受消息批次的任务之前，由 Host 在受保护 system head 之后提交一次。已有历史不重排，拒绝、取消或请求准备失败不构成方案恢复证据。已提交方案不重复追加，被压缩的正文不因原始日志仍有记录而复活。
 
 宿主 prompt section 的空字符串或纯空白说明不形成契约依赖，但其 section 身份仍可证明 MCP server 归属。工具签名和资源契约保持可发现；非空说明原样保留并去重，非字符串等无效依赖仍由方案校验拒绝。
 
-工具完整契约与程序检索元数据来自公共 `ToolRuntime.sdkSchemas(scope)`，包含参数及返回值 schema；输出 schema 也参与修订身份和恢复比较。新 cell 的检索与 inspect 从同一份当前 SDK 快照派生结构化 schema、签名、依赖及修订，不将冻结方案中的旧签名覆盖到新返回值类型上；冻结的是启用与披露选择。顶层模型工具 schema、准入与调用规范化继续使用独立的 `ToolRuntime.schemas(scope)`，不向模型工具定义追加 SDK 输出字段。
+工具完整契约与程序检索元数据来自公共 `ToolRuntime.schemas(scope)` 与 `ToolRuntime.get(name, scope).output.schema` 的准确 JSON 快照，包含参数及返回值 schema；输出 schema 也参与修订身份和恢复比较。新 cell 的检索与 inspect 从同一份当前 SDK 快照派生结构化 schema、签名、依赖及修订，不将冻结方案中的旧签名覆盖到新返回值类型上；冻结的是启用与披露选择。每次准备与接受步骤重新读取 live owner 契约；同名工具的参数、输出或说明依赖变化，以及 Skill 调用资格变化或能力移除，以 `capability-contracts` 的 `ptc-capability-contracts/v1` 来源消息更新当前效力。消息记录原方案 digest、当前修订向量、变化项和当前完整说明超额，digest 与精确正文共同校验；不修改原方案。仍选完整的项提供完整新契约和去重依赖，按需项要求检索当前契约，移除项明确撤销。投递经 accepted step，拒绝与取消不提交；未变视图不重复追加，恢复按正式可见消息协调。实际可用和使用统计采用当时的契约修订，已准入调用保留捕获时的观察身份。顶层模型工具 schema、准入与调用规范化继续使用独立的 `ToolRuntime.schemas(scope)`，不向模型工具定义追加 SDK 输出字段。
 
-保存设置不改已有会话；正式命令声明 `input.hint`，使公共 Client 输入匹配器接收 `/capabilities refresh` 的参数。裸 `/capabilities` 只检查状态，其他参数明确报错。`/capabilities refresh` 在已初始化会话的公共 maintenance 边界以单次消息追加提交新方案及通知。消息追加失败或取消保留旧环境。尚未接受首轮的会话刷新后仍待首个 accepted step，命令回执明确说明通知待接受，不声称已记录模型通知。历史没有方案的会话保留原提供方式，损坏方案通过同一发布边界通知关闭管理并继续宿主环境，用户可主动刷新。
+保存普通设置不改已有会话；`/capabilities refresh` 在公共 maintenance 边界主动同步。`/capabilities list [all|skills|tools|mcp|mcp_tools] [query]` 只读检索当前受管库存，关闭项仍可查、可重新启用。`/capabilities set session|global <id> full|on-demand|closed|automatic|inherit` 明确操作范围：`session` 只改变本会话临时选择，`global` 以真实设置 namespace 和 revision CAS 保存并在同一次操作内更新本会话，不刷新其他已有会话；`inherit` 仅用于取消临时覆盖，`automatic` 撤销该项显式选择。MCP server 只接受关闭、恢复自动和取消临时覆盖，重新启用仍保留子项策略。ID 由命令草稿入口编码，输入匹配由正式 `input.hint` 声明。
+
+`ptc-capability-environment/v2` 独立记录 `sourceSettings`、`sessionOverrides` 和合并后的 `settings`；恢复校验合并结果、完整方案及精确正文。普通刷新保留临时选择，全局单项快捷操作清除同项旧临时覆盖；命名配置只导出全局源设置。恢复后的首次检索、刷新或修改均从同一已验证输入来源读取，不要求先发一个模型请求。检索不准备方案或制造统计。
+
+已初始化会话在完成所有可失败的 Skill 投影准备后，追加一次正式计划消息；准备或追加失败保留旧完整环境。首轮前不得越过受保护 system head；实际命令回执在 `CommandResult.text` 内保留结构化 pending 提案，由 Host 记录配对的 `command/run` 和成功 `command/done`，首次 accepted step 才将其通知投递给模型。取消、失败、缺少配对或损坏回执不能证明临时选择，也不能由迟到的 handler 返回值重新激活。只调用导出的 `appendPluginRecord` 仍违反外部插件禁令，故不采用。全局保存成功而后续读取或会话发布失败时报告 saved-only 及原因，不回滚已经确认的全局写入，不假称本会话已更新。历史无方案的会话保持原提供方式，损坏方案通过真实发布边界关闭管理并继续宿主环境，用户可主动刷新。
 
 家族资格顺序和单调观察修订独立于可淘汰样本保存在统计文件的 `families` provenance 中；缺失或损坏的 provenance 不作为有效统计。
 

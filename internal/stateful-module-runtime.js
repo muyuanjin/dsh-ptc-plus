@@ -198,7 +198,7 @@ const nativeModuleRealm = {
   importModule: (source, options) => import(source, options),
 }
 
-export function managedModuleImport(parentUrl, specifier, options, realm = nativeModuleRealm) {
+export function managedModuleImport(parentUrl, specifier, options, realm = nativeModuleRealm, recordResolution) {
   return new realm.Promise((resolve, reject) => {
     // Template conversion follows native import's ToString (including Symbols).
     const source = realm.stringify(specifier)
@@ -216,6 +216,7 @@ export function managedModuleImport(parentUrl, specifier, options, realm = nativ
       if (request !== url) return nextResolve(request, context)
       const resolution = nextResolve(source, { ...context, parentURL: parentUrl })
       const attributes = resolution.importAttributes ?? context.importAttributes
+      recordResolution?.(parentUrl, source, attributes, resolution)
       return { url: resolveManagedModuleAdapter(resolution, attributes), format: 'module',
         importAttributes: attributes, shortCircuit: true }
     })
@@ -259,13 +260,16 @@ export function loadManagedModuleAdapter(url) {
 }
 
 /** Only PTC-provided require paths decode formally compiled ESM returns. */
-export function managedRequire(parentUrl, nativeRequire) {
+export function managedRequire(parentUrl, nativeRequire, recordResolution) {
   const acquire = (target, receiver, args) => {
     let url
     let value
     const dispose = registerModuleResolutionHook((source, context, nextResolve) => {
       const result = nextResolve(source, context)
-      if (source === args[0] && url === undefined) url = result.url
+      if (source === args[0] && url === undefined) {
+        url = result.url
+        recordResolution?.(parentUrl, source, context.importAttributes, result)
+      }
       return result
     })
     try {

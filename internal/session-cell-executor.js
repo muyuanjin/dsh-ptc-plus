@@ -420,7 +420,9 @@ export class SessionCellExecutor {
     const priorBindingCatalog = userBindingPlan.catalog
     const catalog = priorBindingCatalog.inputs()
     const { bindingPolicy, rewritesEnabled, moduleSemantics, languageSemantics, moduleTransform } = executionPolicies(config, replayRecord)
-    const moduleDirectory = kernel.cwd ?? process.cwd()
+    const executionCwd = replayRecord === undefined ? request.cwd ?? kernel.cwd
+      : replayRecord.executionCwd ?? kernel.cwd
+    const moduleDirectory = executionCwd ?? process.cwd()
     const moduleFilename = resolve(moduleDirectory, 'repl')
     const prepareCell = program => prepareProgram(program, {
       knownBindings: catalog.knownBindings,
@@ -477,6 +479,7 @@ export class SessionCellExecutor {
 
     let worker
     try {
+      await kernel.prepareWorker()
       worker = await kernel.client.ensure(config.maxOldGenerationSizeMb)
     } catch (error) {
       const result = earlyResult('worker-exit', messageOf(error))
@@ -486,11 +489,12 @@ export class SessionCellExecutor {
     }
     if (request.signal?.aborted) {
       const result = earlyResult('abort', String(request.signal.reason))
-      kernel.completeJournal(request.journal, 'discarded', result)
       kernel.rollbackToDurable()
       // A refused reclamation stays recorded on the kernel so disposal remains
       // observable instead of becoming an unhandled rejection after this abort.
-      kernel.resetWorker(worker)
+      const reclamation = await kernel.resetWorker(worker)
+      if (reclamation.failed) result.error.message += `; helper reclamation failed: ${messageOf(reclamation.reason)}`
+      kernel.completeJournal(request.journal, 'discarded', result)
       return result
     }
 
@@ -589,6 +593,7 @@ export class SessionCellExecutor {
             moduleLoads: prepared.moduleLoads,
             languageSemantics,
             moduleTransform,
+            cwd: executionCwd,
             rootRuntimeName: prepared.rootRuntimeName,
             rootBindings: prepared.rootBindings,
             importBindingNamespaces: new Map([...catalog.importBindings].map(([name, binding]) => [name, binding.namespace])),

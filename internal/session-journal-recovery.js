@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import { deepEqualJson, isJsonValue } from '@deepseek-ai/dsh-util-values'
 import { deepFreeze, isRecord } from './record-utils.js'
-import { sessionEvents } from './session-events.js'
+import { sessionEvents, sessionSourceMessages } from './session-events.js'
 import { USER_BINDINGS_META_KEY } from './user-bindings.js'
 import {
   JOURNAL_KEY,
@@ -156,6 +156,12 @@ export function visibleExecutableCallSeqs(session) {
     return new Set()
   }
   if (!Array.isArray(events) || !Array.isArray(nodes)) return new Set()
+  let sourceMessages
+  try {
+    sourceMessages = sessionSourceMessages(session, events, nodes)
+  } catch {
+    return new Set()
+  }
   const eventBySeq = new Map()
   const duplicateEventSeqs = new Set()
   for (const event of events) {
@@ -180,7 +186,7 @@ export function visibleExecutableCallSeqs(session) {
     }
     if (event?.type === 'assistant/message') {
       pendingAssistantCalls.clear()
-      const content = event.data?.message?.content
+      const content = sourceMessages.get(event.seq)?.content
       if (Array.isArray(content)) {
         for (const part of content) {
           if (part?.type === 'tool-call' && typeof part.id === 'string') {

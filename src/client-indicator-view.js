@@ -22,6 +22,7 @@ export function createIndicatorView(React, deps) {
     normalizeReplMemorySnapshot, unavailableReplMemorySnapshot,
     ReplMemoryCard, replPopoverIsOpen, placeReplPopover,
     catalogOwner, subscribeReset,
+    useObservedReplMemory, observeRepl,
   } = deps
   const h = React.createElement
 
@@ -225,13 +226,10 @@ export function createIndicatorView(React, deps) {
         }
       }
     }, [cancelClose, cancelOpen, schedulePlacement])
+    const memory = useObservedReplMemory({ sessionId, projected: projectionMemory,
+      active: expanded && sessionUsesPtcPreset(preset) && featureEnabled(settings, 'plugin'),
+      elementRef: popoverRef, observeRepl })
     if (!sessionUsesPtcPreset(preset) || !featureEnabled(settings, 'plugin')) return null
-    let memory
-    try {
-      memory = normalizeReplMemorySnapshot(projectionMemory)
-    } catch {
-      memory = unavailableReplMemorySnapshot()
-    }
     const popoverId = `ptc-plus-repl-${String(resolvedSessionId).replace(/[^A-Za-z0-9_-]/g, '-')}`
     const titleId = `${popoverId}-title`
     return h('span', { className: 'ptcPlusActiveShell', ref: shellRef },

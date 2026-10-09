@@ -6,19 +6,42 @@ import { isModelInvocable, isUserInvocable } from '@deepseek-ai/dsh-skill'
 import { createScope } from '@deepseek-ai/dsh-scope'
 import { Context } from '@deepseek-ai/cordis'
 import * as spillPolicy from '@deepseek-ai/dsh-spill-policy'
+import { readSessionLog } from './session-events.js'
+import { readCapabilityCommandReceipt } from './capability-command-receipt.js'
 import { createCapabilityPlan } from './capability-plan.js'
 import { PTC_MESSAGE_SOURCE_KIND } from './message-sources.js'
 import { deepFreeze } from './record-utils.js'
 import { capabilityProfileConfiguration } from './runtime-config.js'
+import { readRuntimeAvailability } from './runtime-messages.js'
 
 export const CAPABILITY_PLAN_FORM = 'capability-plan'
 export const CAPABILITY_EVIDENCE_KEY = 'dshPtcPlusCapabilities'
 const EVIDENCE_KEY = CAPABILITY_EVIDENCE_KEY
 const TRANSPORTS = new Set(['run_code', 'edit_run_code'])
-const NAVIGATION = 'Use capabilities.search({query}) to retrieve complete tool, Skill and MCP contracts. Unlisted capabilities remain discoverable. Skill descriptions are summaries; load the body with tools.skill({name}) before following it.'
+const LEGACY_NAVIGATION = 'Use capabilities.search({query}) to retrieve complete tool, Skill and MCP contracts. Unlisted capabilities remain discoverable. Skill descriptions are summaries; load the body with tools.skill({name}) before following it.'
+const NAVIGATION = 'Use capabilities.search({query}) to retrieve complete tool, Skill and MCP contracts. Unlisted capabilities remain discoverable. Skill descriptions are summaries; follow each Skill\'s declared invocation eligibility to load its body before following it.'
 const digest = value => createHash('sha256').update(JSON.stringify(value)).digest('hex')
 const messageText = message => message?.content?.filter(block => block.type === 'text').map(block => block.text).join('\n') ?? ''
-const sessionEvents = session => session?.snapshotEvents?.() ?? session?.events ?? []
+
+/** Saved inputs and explicit session choices are distinct; automatic cancels a saved override. */
+export function sessionCapabilitySettings(sourceSettings, sessionOverrides = {}) {
+  if (!sourceSettings || typeof sourceSettings !== 'object' || Array.isArray(sourceSettings)
+    || !sourceSettings.manual || typeof sourceSettings.manual !== 'object' || Array.isArray(sourceSettings.manual)
+    || !Array.isArray(sourceSettings.manual.baseline) || !sourceSettings.manual.overrides
+    || typeof sourceSettings.manual.overrides !== 'object' || Array.isArray(sourceSettings.manual.overrides)) {
+    throw new TypeError('invalid capability source settings')
+  }
+  if (!sessionOverrides || typeof sessionOverrides !== 'object' || Array.isArray(sessionOverrides)) throw new TypeError('invalid session capability choices')
+  const overrides = { ...sourceSettings.manual.overrides }
+  for (const [id, selection] of Object.entries(sessionOverrides)) {
+    if (!/^(tools|skills|mcp|mcpServers)\..+$/.test(id)
+      || !['full', 'on-demand', 'closed', 'automatic'].includes(selection)
+      || id.startsWith('mcpServers.') && !['closed', 'automatic'].includes(selection)) throw new TypeError('invalid session capability choice')
+    if (selection === 'automatic') delete overrides[id]
+    else overrides[id] = selection
+  }
+  return { ...sourceSettings, manual: { ...sourceSettings.manual, overrides } }
+}
 
 export function capabilityConfiguration(config) {
   let statistics
@@ -38,12 +61,23 @@ function sourcePlan(message, id) {
   const source = message?.source
   if (source?.kind !== PTC_MESSAGE_SOURCE_KIND || source.form !== CAPABILITY_PLAN_FORM || source.sessionId !== id) return undefined
   const snapshot = source.snapshot
-  if (source.digest !== digest(snapshot) || snapshot?.schema !== 'ptc-capability-environment/v1'
+  if (source.digest !== digest(snapshot) || !['ptc-capability-environment/v1', 'ptc-capability-environment/v2'].includes(snapshot?.schema)
     || !Array.isArray(snapshot.capabilities) || snapshot.plan?.schema !== 'ptc-capability-plan/v1') {
     throw new Error('damaged session capability plan')
   }
+  if (snapshot.schema === 'ptc-capability-environment/v2') {
+    let merged
+    try {
+      if (snapshot.sessionOverrides === undefined) throw new TypeError('missing session choices')
+      merged = sessionCapabilitySettings(snapshot.sourceSettings, snapshot.sessionOverrides)
+    } catch (cause) {
+      throw new Error('damaged session capability choices', { cause })
+    }
+    if (JSON.stringify(merged) !== JSON.stringify(snapshot.settings)) throw new Error('inconsistent session capability choices')
+  }
+  if (snapshot.navigationText !== undefined && snapshot.navigationText !== NAVIGATION) throw new Error('unknown capability navigation contract')
   const expected = createCapabilityPlan({ ...snapshot.settings, capabilities: snapshot.capabilities,
-    coverage: snapshot.coverage, navigationText: NAVIGATION,
+    coverage: snapshot.coverage, navigationText: snapshot.navigationText ?? LEGACY_NAVIGATION,
     configurationRevision: digest(snapshot.settings) })
   if (JSON.stringify(expected) !== JSON.stringify(snapshot.plan)
     || messageText(message) !== messageText(planMessage(snapshot, id, source.refresh === true))) {
@@ -68,12 +102,14 @@ function planMessage(snapshot, id, refresh = false) {
 export function readCapabilityContextMessage(message, sessionId) {
   const source = message?.source
   if (source?.kind !== PTC_MESSAGE_SOURCE_KIND
-    || !['capability-plan', 'capability-navigation', 'capability-descriptions'].includes(source.form)
+    || !['capability-plan', 'capability-navigation', 'capability-descriptions', 'capability-contracts'].includes(source.form)
     || message.content?.length !== 1 || message.content[0]?.type !== 'text'
     || typeof message.content[0].text !== 'string' || !message.content[0].text) return undefined
   if (source.form === CAPABILITY_PLAN_FORM) {
     try { if (!sourcePlan(message, sessionId)) return undefined } catch { return undefined }
   }
+  if (source.form === 'capability-contracts'
+    && !readContractUpdate(message, source.snapshot?.planDigest, sessionId)) return undefined
   if (source.form === 'capability-descriptions' && (!Array.isArray(source.entries)
     || source.entries.length === 0 || source.entries.some(id => typeof id !== 'string' || !id)
     || new Set(source.entries).size !== source.entries.length)) return undefined
@@ -119,13 +155,99 @@ function toolCapability(schema, sections) {
     description: schema.description ?? '' }
 }
 
+function skillCapability(skill) {
+  const invocation = { modelInvocable: isModelInvocable(skill), userInvocable: isUserInvocable(skill) }
+  const summary = { name: skill.name, provider: skill.provider, source: skill.source,
+    description: skill.description, invocation }
+  const loading = invocation.modelInvocable
+    ? `Load instructions: await tools.skill(${JSON.stringify({ name: skill.name })})`
+    : `User-only Skill: the user can invoke /${skill.name}. The model cannot load this Skill with tools.skill.`
+  return { id: `skills.${skill.name}`, category: 'skill', revision: digest(summary),
+    contract: `${skill.description}\nInvocation: modelInvocable=${invocation.modelInvocable}, userInvocable=${invocation.userInvocable}.\n${loading}`,
+    description: skill.description, selector: { name: skill.name }, invocation }
+}
+
+const callingRevision = capability => capability === undefined ? null : digest({
+  revision: capability.revision, contract: capability.contract, dependencies: capability.dependencies ?? [],
+  ...(capability.invocation === undefined ? {} : { invocation: capability.invocation }),
+})
+
+function contractUpdateMessage(snapshot, sessionId) {
+  const dependencies = new Map()
+  const text = ['PTC Plus current calling contracts. These updates replace the earlier contracts for the listed capabilities only; session enablement and disclosure choices are unchanged.',
+    ...snapshot.changes.map(change => change.capability === null
+      ? `### ${change.id}\nThe Host no longer supplies this capability. Its earlier calling contract no longer applies.`
+      : change.disclosure === 'full'
+        ? [...(change.capability.dependencies ?? []).flatMap(item => {
+          const previous = dependencies.get(item.id)
+          if (previous !== undefined && previous !== item.text) throw new Error(`conflicting current contract dependency ${item.id}`)
+          if (previous !== undefined) return []
+          dependencies.set(item.id, item.text)
+          return [`### dependency:${item.id}\n${item.text}`]
+        }), `### ${change.id}\n${change.capability.contract}`].join('\n\n')
+        : `### ${change.id}\nThe Host calling contract has changed. Retrieve the current complete contract with capabilities.search(${JSON.stringify({ query: change.id })}) before invoking it.`),
+    ...(snapshot.overageBytes > 0 ? [`The currently selected full contracts exceed the configured budget by ${snapshot.overageBytes} UTF-8 bytes.`] : [])].join('\n\n')
+  return createUserMessage({ source: { kind: PTC_MESSAGE_SOURCE_KIND, form: 'capability-contracts', sessionId,
+    digest: digest(snapshot), snapshot }, content: [{ type: 'text', text }] })
+}
+
+function readContractUpdate(message, planDigest, sessionId) {
+  const source = message?.source
+  const snapshot = source?.snapshot
+  if (source?.kind !== PTC_MESSAGE_SOURCE_KIND || source.form !== 'capability-contracts'
+    || source.sessionId !== sessionId || snapshot?.schema !== 'ptc-capability-contracts/v1'
+    || snapshot.planDigest !== planDigest || source.digest !== digest(snapshot)
+    || !Array.isArray(snapshot.views) || !Array.isArray(snapshot.changes)
+    || !Number.isSafeInteger(snapshot.overageBytes) || snapshot.overageBytes < 0) return undefined
+  try {
+    if (snapshot.views.some(pair => !Array.isArray(pair) || pair.length !== 2 || typeof pair[0] !== 'string' || !pair[0]
+      || (pair[1] !== null && (typeof pair[1] !== 'string' || !pair[1])))
+      || new Set(snapshot.views.map(pair => pair[0])).size !== snapshot.views.length) return undefined
+    const views = new Map(snapshot.views)
+    if (snapshot.changes.length === 0 || new Set(snapshot.changes.map(change => change?.id)).size !== snapshot.changes.length
+      || snapshot.changes.some(change => !views.has(change?.id) || !['full', 'on-demand'].includes(change.disclosure)
+        || callingRevision(change.capability ?? undefined) !== views.get(change.id)
+        || (change.capability !== null && (change.capability?.id !== change.id
+          || typeof change.capability?.contract !== 'string' || !change.capability.contract)))) return undefined
+    if (messageText(message) !== messageText(contractUpdateMessage(snapshot, sessionId))) return undefined
+  } catch { return undefined }
+  return snapshot
+}
+
 /** Derived metadata only: invocation continues through the request's original host functions. */
-export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, modelSchemasForAgent = toolSchemasForAgent, store }) {
+export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, modelSchemasForAgent = toolSchemasForAgent, store, sessionHistoryForAgent }) {
   let currentConfig = config
   const sessions = new Map()
+  const histories = new WeakMap()
+  const sessionEvents = session => Array.isArray(session?.events) ? session.events : histories.get(session) ?? []
+  async function observeHistory(agent, signal) {
+    const query = typeof ctx.get === 'function' ? ctx.get('sessionQuery') : ctx.sessionQuery
+    const log = sessionHistoryForAgent ? await sessionHistoryForAgent(agent, signal) : await readSessionLog(agent.session, query, signal)
+    const events = log?.events ?? []
+    histories.set(agent.session, events)
+    return events
+  }
+  function recordedPlan(history, id) {
+    const withdrawn = history.findLastIndex(event => event.type === 'user/message'
+      && ['disabled', 'unloaded'].includes(readRuntimeAvailability(event.data)))
+    const runs = new Map()
+    let latest
+    for (const event of history.slice(withdrawn + 1)) {
+      if (event.type === 'command/run' && event.data?.name === 'capabilities') runs.set(event.data.commandId, event.data)
+      let message = event.type === 'user/message' ? event.data : undefined
+      if (event.type === 'command/done' && event.data?.kind === 'success') {
+        const receipt = readCapabilityCommandReceipt(event.data.text)
+        const proposal = receipt?.proposal
+        const run = runs.get(event.data.commandId)
+        if (receipt?.sessionId === id && proposal?.commandId === event.data.commandId && proposal.rawInput === run?.args) message = proposal.message
+      }
+      if (message?.source?.kind === PTC_MESSAGE_SOURCE_KIND && message.source.form === CAPABILITY_PLAN_FORM && message.source.sessionId === id) latest = message
+    }
+    return latest
+  }
   const operations = new WeakMap()
   const completions = new WeakMap()
-  const admitted = new WeakSet()
+  const admitted = new WeakMap()
   const skillProjections = new Map()
   const previewPolicies = new Map()
   const report = error => ctx.logger?.warn?.('ptc-plus: capability statistics unavailable', error)
@@ -133,6 +255,11 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
 
   function readSkills(context) {
     return typeof context.get === 'function' ? context.get('skills') : context.skills
+  }
+
+  function currentDirectory(agent) {
+    const directories = typeof ctx.get === 'function' ? ctx.get('workingDirectory') : ctx.workingDirectory
+    return directories?.get(agent.session) ?? agent.session.header.cwd
   }
 
   async function observeSkills(agent, signal) {
@@ -146,15 +273,19 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
     let observed
     try {
       const combined = [signal, agent.signal].filter(Boolean)
-      observed = await readSkills(ctx).snapshot({ cwd: agent.session.header.cwd, scope: view,
+      observed = await readSkills(ctx).snapshot({ cwd: currentDirectory(agent), scope: view,
         signal: combined.length > 1 ? AbortSignal.any(combined) : combined[0] })
     } finally { await isolated?.dispose() }
     if (!observed.complete) throw new Error('ptc-plus: the Skill catalog is incomplete; cannot select a new capability environment')
     return observed.skills.filter(skill => isModelInvocable(skill) || isUserInvocable(skill))
   }
 
-  async function qualifySkills(agent, state) {
-    if (state.snapshot.plan.enabled) state.liveSkills = new Set((await observeSkills(agent, agent.signal)).map(skill => `skills.${skill.name}`))
+  async function qualifyCapabilities(agent, state, signal = agent.signal) {
+    if (state.snapshot.plan.enabled) {
+      state.liveCapabilities = new Map((await inventory(agent, state.hostSections, state.snapshot.settings, signal))
+        .map(item => [item.id, item]))
+      await installSkillProjection(agent, state)
+    }
     return state
   }
 
@@ -173,13 +304,10 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
     }
     if (readSkills(ctx)?.snapshot !== undefined) {
       for (const skill of await observeSkills(agent, signal)) {
-        const summary = { name: skill.name, provider: skill.provider, source: skill.source,
-          description: skill.description, invocation: skill.invocation }
-        capabilities.push({ id: `skills.${skill.name}`, category: 'skill', revision: digest(summary),
-          contract: `${skill.description}\nLoad instructions: await tools.skill(${JSON.stringify({ name: skill.name })})`,
-          description: skill.description, selector: { name: skill.name }, invocation: skill.invocation })
+        capabilities.push(skillCapability(skill))
         presentation?.set(`skills.${skill.name}`, { name: skill.name,
-          source: { kind: 'skill', bucket: skill.source, provider: skill.provider } })
+          source: { kind: 'skill', bucket: skill.source, provider: skill.provider },
+          invocation: { modelInvocable: isModelInvocable(skill), userInvocable: isUserInvocable(skill) } })
       }
     }
     const servers = resourceServers(sections)
@@ -193,6 +321,7 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
       const category = item.schema.name === 'skill' ? 'skill'
         : ['list_mcp_resources', 'list_mcp_resource_templates', 'read_mcp_resource'].includes(item.schema.name) ? 'resource' : undefined
       return category === undefined || capabilities.some(member => member.category === category
+        && (category !== 'skill' || member.invocation.modelInvocable)
         && settings?.manual.overrides[member.id] !== 'closed'
         && (member.mcpServer === undefined || settings?.manual.overrides[`mcpServers.${member.mcpServer}`] !== 'closed'))
     })
@@ -201,8 +330,9 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
   function stateFor(agent) { return sessions.get(String(agent?.session?.id ?? agent?.id)) }
   const canRefresh = agent => modelSchemasForAgent(agent).some(schema => schema.name === 'run_code')
   function planCommitted(agent, message) {
-    return message !== undefined && sessionEvents(agent.session).some(event =>
+    return message !== undefined && (sessionEvents(agent.session).some(event =>
       event.type === 'user/message' && event.data?.id === message.id)
+      || (agent.session.deriveMessages?.() ?? []).some(item => item.id === message.id))
   }
   function publishPlan(agent, message, signal) {
     signal?.throwIfAborted()
@@ -217,7 +347,7 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
     if (!state?.snapshot.plan.enabled) return true
     if (!['full', 'on-demand'].includes(selection(state, id))) return false
     const capability = state.snapshot.capabilities.find(item => item.id === id)
-    if (capability?.category === 'skill') return state.liveSkills.has(id)
+    if (state.liveCapabilities && !state.liveCapabilities.has(id)) return false
     return capability?.category !== 'resource'
       || resourceServers(state.hostSections).includes(capability.selector.server)
   }
@@ -225,11 +355,18 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
     const category = name === 'skill' ? 'skill'
       : ['list_mcp_resources', 'list_mcp_resource_templates', 'read_mcp_resource'].includes(name) ? 'resource' : undefined
     return category === undefined ? undefined : state.snapshot.capabilities
-      .filter(item => item.category === category && supplied(state, item.id))
+      .filter(item => item.category === category && supplied(state, item.id)
+        && (category !== 'skill' || (state.liveCapabilities?.get(item.id) ?? item).invocation?.modelInvocable !== false))
       .map(item => item.selector[category === 'skill' ? 'name' : 'server'])
   }
   function memberSupplied(state, name) {
     return TRANSPORTS.has(name) || (supplied(state, `tools.${name}`) && sharedMembers(state, name)?.length !== 0)
+  }
+  function statisticsSnapshot(state) {
+    if (!state.liveCapabilities) return state.snapshot
+    return { ...state.snapshot, plan: { ...state.snapshot.plan,
+      entries: state.snapshot.plan.entries.filter(entry => supplied(state, entry.id))
+        .map(entry => ({ ...entry, revision: state.liveCapabilities.get(entry.id).revision })) } }
   }
   function restoreEvidence(agent, state) {
     state.pendingExpanded ??= new Set()
@@ -269,19 +406,21 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
     }
   }
 
-  function installSkillProjection(agent, state) {
+  async function installSkillProjection(agent, state) {
     let projection = skillProjections.get(agent)
     if (!projection && state.snapshot.plan.enabled && readSkills(ctx)?.registerProvider) {
       const scope = createScope(ctx, agent)
       projection = { scope, state, inventory: false }
-      skillProjections.set(agent, projection)
+      try {
       scope.ctx.effect(() => readSkills(scope.ctx).registerProvider(control => {
         projection.control = control
         const name = 'ptc-plus-session-capabilities'
         return { name,
           async list(options) {
             if (options.scope !== agent || projection.inventory || !projection.state.snapshot.plan.enabled) return []
-            return projection.state.snapshot.capabilities.filter(item => item.category === 'skill'
+            const capabilities = new Map(projection.state.snapshot.capabilities.map(item => [item.id, item]))
+            for (const [id, item] of projection.state.liveCapabilities ?? []) capabilities.set(id, item)
+            return [...capabilities.values()].filter(item => item.category === 'skill'
               && !supplied(projection.state, item.id)).map(item => ({
               name: item.selector.name, description: 'Unavailable in this session capability environment.',
               invocation: { modelInvocable: false, userInvocable: false },
@@ -294,8 +433,37 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
           async get() { return undefined },
         }
       }), 'ptc-plus: session Skill projection')
+      skillProjections.set(agent, projection)
+      } catch (error) {
+        await scope.dispose()
+        throw error
+      }
     }
     if (projection) { projection.state = state; projection.control.invalidate() }
+  }
+
+  async function acceptState(agent, state, publish, signal) {
+    const preceding = skillProjections.get(agent)
+    const precedingState = preceding?.state
+    try {
+      await installSkillProjection(agent, state)
+      signal?.throwIfAborted()
+      if (publish) publishPlan(agent, state.message, signal)
+    } catch (error) {
+      const projection = skillProjections.get(agent)
+      if (preceding) {
+        preceding.state = precedingState
+        try { preceding.control.invalidate() } catch (restoration) {
+          throw new AggregateError([error, restoration], 'PTC Plus Skill projection restoration failed')
+        }
+      } else if (projection) {
+        skillProjections.delete(agent)
+        await projection.scope.dispose()
+      }
+      throw error
+    }
+    sessions.set(String(agent.session.id ?? agent.id), state)
+    return state
   }
 
   async function previewPolicy(agent) {
@@ -317,74 +485,89 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
     return previewPolicies.get(cap)
   }
 
-  async function prepare(agent, sections, force = false, signal = agent?.signal) {
+  async function prepare(agent, sections, force = false, signal = agent?.signal, choice) {
     signal?.throwIfAborted()
     if (agent?.session === undefined) {
       if (!capabilityConfiguration(currentConfig).enabled) return undefined
       throw new TypeError('ptc-plus: capability management requires an agent Session')
     }
+    await observeHistory(agent, signal)
+    await reconcilePendingChoice(agent, signal)
     const id = String(agent.session.id ?? agent.id)
     if (!force && sessions.has(id)) {
       const state = sessions.get(id)
       if (sections !== undefined) state.hostSections = sections
-      return qualifySkills(agent, state)
+      return qualifyCapabilities(agent, state, signal)
     }
     const pending = operations.get(agent)
     if (pending !== undefined && !force) return pending
     const task = (async () => {
       if (!force) {
-        const recorded = sessionEvents(agent.session).filter(event => event.type === 'user/message'
-          && event.data?.source?.kind === PTC_MESSAGE_SOURCE_KIND
-          && event.data.source.form === CAPABILITY_PLAN_FORM && event.data.source.sessionId === id).at(-1)?.data
+        const history = sessionEvents(agent.session)
+        const recorded = recordedPlan(history, id)
         if (recorded !== undefined) {
           let snapshot
           try { snapshot = sourcePlan(recorded, id) } catch (error) {
             ctx.logger?.warn?.(`ptc-plus: ${error.message}; continuing with the host environment until /capabilities refresh`)
             const settings = { ...capabilityConfiguration(currentConfig), enabled: false }
             const plan = createCapabilityPlan({ ...settings, configurationRevision: digest(settings), capabilities: [], navigationText: NAVIGATION })
-            snapshot = deepFreeze({ schema: 'ptc-capability-environment/v1', settings, capabilities: [], plan })
+            snapshot = deepFreeze({ schema: 'ptc-capability-environment/v1', navigationText: NAVIGATION, settings, capabilities: [], plan })
             const notice = planMessage(snapshot, id, true)
-            publishPlan(agent, notice, signal)
             const state = { snapshot, message: notice, hostSections: sections ?? [], expanded: new Set(), used: new Map() }
-            sessions.set(id, state)
-            installSkillProjection(agent, state)
-            return state
+            return acceptState(agent, state, true, signal)
           }
           const restored = { snapshot, message: snapshot.plan.enabled || recorded.source.refresh ? recorded : undefined, hostSections: sections ?? [], expanded: new Set(), used: new Map() }
-          await qualifySkills(agent, restored)
+          await qualifyCapabilities(agent, restored, signal)
           signal?.throwIfAborted()
           restoreEvidence(agent, restored)
-          sessions.set(id, restored)
-          installSkillProjection(agent, restored)
-          return restored
+          return acceptState(agent, restored, false, signal)
         }
       }
-      const historical = !force && sessionEvents(agent.session).some(event =>
+      const historical = !force && !sessionEvents(agent.session).some(event => event.type === 'user/message'
+        && ['disabled', 'unloaded'].includes(readRuntimeAvailability(event.data))) && sessionEvents(agent.session).some(event =>
         event.type === 'assistant/message' || event.type === 'tool/result')
-      const settings = { ...capabilityConfiguration(currentConfig), ...(historical ? { enabled: false } : {}) }
+      const previous = stateFor(agent)?.snapshot
+      const sourceSettings = choice?.sourceSettings ?? { ...capabilityConfiguration(currentConfig), ...(historical ? { enabled: false } : {}) }
+      const sessionOverrides = choice?.sessionOverrides ?? previous?.sessionOverrides ?? {}
+      const settings = sessionCapabilitySettings(sourceSettings, sessionOverrides)
       const capabilities = settings.enabled ? await inventory(agent, sections ?? [], settings, signal) : []
       const coverage = settings.statistics?.enabled === true ? await store?.coverage(agent, capabilities, settings.statistics) : undefined
       const plan = createCapabilityPlan({ ...settings, configurationRevision: digest(settings),
         capabilities, coverage, navigationText: NAVIGATION })
-      const snapshot = deepFreeze({ schema: 'ptc-capability-environment/v1', settings, capabilities, ...(coverage === undefined ? {} : { coverage }), plan })
+      const hasChoices = choice !== undefined || previous?.schema === 'ptc-capability-environment/v2'
+      const snapshot = deepFreeze({ schema: hasChoices ? 'ptc-capability-environment/v2' : 'ptc-capability-environment/v1',
+        ...(hasChoices ? { sourceSettings, sessionOverrides } : {}), navigationText: NAVIGATION, settings, capabilities, ...(coverage === undefined ? {} : { coverage }), plan })
       const message = planMessage(snapshot, id, force)
       agent.signal?.throwIfAborted?.()
       signal?.throwIfAborted()
       // Initialized sessions commit a refresh and its notification atomically.
       // First-step proposals are accepted through the Host's pre-step messages.
-      if (force) {
-        publishPlan(agent, message, signal)
-      }
       const state = { snapshot, message: !settings.enabled && !force ? undefined : message,
         hostSections: sections ?? [], expanded: new Set(), used: new Map(),
-        liveSkills: new Set(capabilities.filter(item => item.category === 'skill').map(item => item.id)) }
+        liveCapabilities: new Map(capabilities.map(item => [item.id, item])) }
       restoreEvidence(agent, state)
-      sessions.set(id, state)
-      installSkillProjection(agent, state)
-      return state
+      if (choice?.commandId && !sessionEvents(agent.session).some(event => event.type === 'system/message')) {
+        state.pendingCommand = choice.commandId
+        state.pendingPrevious = stateFor(agent)
+      }
+      return acceptState(agent, state, force, signal)
     })()
     operations.set(agent, task)
     try { return await task } finally { if (operations.get(agent) === task) operations.delete(agent) }
+  }
+
+  async function reconcilePendingChoice(agent, signal, requireReceipt = false) {
+    const state = stateFor(agent)
+    if (!state?.pendingCommand || planCommitted(agent, state.message)) return
+    const history = sessionEvents(agent.session)
+    const done = history.findLast(event => event.type === 'command/done' && event.data?.commandId === state.pendingCommand)
+    if (!done && !requireReceipt) return
+    const proved = recordedPlan(history, String(agent.session.id ?? agent.id))
+    if (proved?.id === state.message.id) {
+      delete state.pendingCommand; delete state.pendingPrevious
+      return
+    }
+    await acceptState(agent, state.pendingPrevious, false, signal)
   }
 
   function visibleSchemas(agent, schemas) {
@@ -399,16 +582,106 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
     stateFor,
     visibleSchemas,
     validateSupply,
-    async refresh(agent, sections, signal) {
+    async refresh(agent, sections, signal, commandId) {
       signal?.throwIfAborted()
       if (typeof agent.runMaintenance !== 'function') throw new Error('ptc-plus: capability refresh requires the public agent maintenance boundary')
       return agent.runMaintenance(async maintenanceSignal => {
+        await prepare(agent, sections, false, maintenanceSignal)
         const assembly = await ctx.systemPrompt.assemble({ agent, scope: agent, signal: maintenanceSignal })
         signal?.throwIfAborted()
         maintenanceSignal.throwIfAborted()
         const preparationSignal = AbortSignal.any([signal, maintenanceSignal, agent.signal].filter(Boolean))
-        return prepare(agent, stateFor(agent)?.hostSections ?? assembly.sections, true, preparationSignal)
+        const previous = stateFor(agent)?.snapshot
+        return prepare(agent, stateFor(agent)?.hostSections ?? assembly.sections, true, preparationSignal,
+          commandId === undefined ? undefined : {
+            sourceSettings: capabilityConfiguration(currentConfig), sessionOverrides: previous?.sessionOverrides ?? {}, commandId,
+          })
       })
+    },
+    async catalogFor(agent, signal) {
+      if (!canRefresh(agent)) throw new Error('ptc-plus: select an active PTC session')
+      const assembly = await ctx.systemPrompt.assemble({ agent, scope: agent, signal, ptcPlusCapabilityObservation: true })
+      const presentation = new Map()
+      const capabilities = await inventory(agent, assembly.sections,
+        { ...capabilityConfiguration(currentConfig), manual: { baseline: [], overrides: {} } }, signal, presentation)
+      signal?.throwIfAborted()
+      const history = await observeHistory(agent, signal)
+      await reconcilePendingChoice(agent, signal)
+      const recorded = recordedPlan(history, String(agent.session.id ?? agent.id))
+      const snapshot = stateFor(agent)?.snapshot ?? (recorded && sourcePlan(recorded, String(agent.session.id ?? agent.id)))
+      const state = snapshot ? { snapshot } : undefined
+      const entries = capabilities.map(capability => ({ id: capability.id, category: capability.category,
+        description: capability.description, ...presentation.get(capability.id),
+        ...(capability.mcpServer === undefined ? {} : { mcpServer: capability.mcpServer }),
+        saved: capabilityConfiguration(currentConfig).manual.overrides[capability.id] ?? 'automatic',
+        temporary: state?.snapshot.sessionOverrides?.[capability.id] ?? 'inherit',
+        effective: state?.snapshot.plan.entries.find(entry => entry.id === capability.id)?.selection ?? 'pending' }))
+      for (const server of new Set(capabilities.map(item => item.mcpServer).filter(Boolean))) {
+        const id = `mcpServers.${server}`
+        entries.push({ id, category: 'server', name: server, description: `MCP server ${server}`,
+          source: { kind: 'mcp', server }, saved: capabilityConfiguration(currentConfig).manual.overrides[id] ?? 'automatic',
+          temporary: state?.snapshot.sessionOverrides?.[id] ?? 'inherit',
+          effective: state?.snapshot.settings.manual.overrides[id] === 'closed' ? 'closed' : state ? 'enabled' : 'pending' })
+      }
+      return entries
+    },
+    async change(agent, intent, signal, globalSettings) {
+      if (!canRefresh(agent)) throw new Error('ptc-plus: select an active PTC session')
+      if (!['session', 'global'].includes(intent.scope) || !['full', 'on-demand', 'closed', 'automatic', 'inherit'].includes(intent.selection)
+        || intent.scope === 'global' && intent.selection === 'inherit') throw new TypeError('invalid capability change')
+      if (typeof agent.runMaintenance !== 'function') throw new Error('ptc-plus: capability changes require public agent maintenance')
+      return agent.runMaintenance(async maintenanceSignal => {
+        const combined = AbortSignal.any([signal, maintenanceSignal, agent.signal].filter(Boolean))
+        combined.throwIfAborted()
+        await prepare(agent, undefined, false, combined)
+        const assembly = await ctx.systemPrompt.assemble({ agent, scope: agent, signal: combined, ptcPlusCapabilityObservation: true })
+        const completeSettings = { ...capabilityConfiguration(currentConfig), manual: { baseline: [], overrides: {} } }
+        const available = await inventory(agent, assembly.sections, completeSettings, combined)
+        if (intent.id.startsWith('mcpServers.')) {
+          const server = intent.id.slice('mcpServers.'.length)
+          if (!available.some(item => item.mcpServer === server)) throw new Error('unknown MCP server in this session')
+          if (!['closed', 'automatic', 'inherit'].includes(intent.selection)) throw new Error('MCP server choices are closed, automatic or inherit')
+        } else if (!available.some(item => item.id === intent.id)) throw new Error('unknown managed capability in this session')
+        const previous = stateFor(agent)?.snapshot
+        let sourceSettings = previous?.sourceSettings ?? previous?.settings ?? capabilityConfiguration(currentConfig)
+        if (!sourceSettings.enabled || !capabilityConfiguration(currentConfig).enabled) throw new Error('ptc-plus: enable capability management before changing a session choice')
+        const sessionOverrides = { ...previous?.sessionOverrides }
+        let globalSaved = false
+        if (intent.scope === 'session') {
+          if (intent.selection === 'inherit') delete sessionOverrides[intent.id]
+          else sessionOverrides[intent.id] = intent.selection
+        } else {
+          if (!globalSettings?.read || !globalSettings?.update) throw new Error('ptc-plus: global capability changes require the public settings writer')
+          const before = globalSettings.read()
+          if (!before || !Number.isSafeInteger(before.revision)) throw new Error('ptc-plus: global capability changes require settings revision evidence')
+          if (before.value.capabilityManagementEnabled === false) throw new Error('ptc-plus: enable capability management before changing a global choice')
+          const overrides = JSON.parse(before.value.capabilityOverrides ?? '{}')
+          if (intent.selection === 'automatic') delete overrides[intent.id]
+          else overrides[intent.id] = intent.selection
+          combined.throwIfAborted()
+          await globalSettings.update({ capabilityOverrides: JSON.stringify(overrides) }, before.revision)
+          globalSaved = true
+        }
+        try {
+          if (globalSaved) {
+            const saved = globalSettings.read()
+            if (!saved?.value || !Number.isSafeInteger(saved.revision)) throw new Error('ptc-plus: saved settings could not be confirmed for this session')
+            sourceSettings = capabilityConfiguration({ ...currentConfig, ...saved.value })
+            delete sessionOverrides[intent.id]
+          }
+          combined.throwIfAborted()
+          if (!sourceSettings.enabled) throw new Error('ptc-plus: enable capability management before changing a session choice')
+          await prepare(agent, assembly.sections, true, combined, { sourceSettings, sessionOverrides, commandId: intent.commandId })
+          return { globalSaved, sessionApplied: true, publication: planCommitted(agent, stateFor(agent).message) ? 'accepted' : 'pending' }
+        } catch (error) {
+          if (globalSaved) return { globalSaved: true, sessionApplied: false, error: String(error?.message ?? error) }
+          throw error
+        }
+      })
+    },
+    pendingChoiceMessage(agent) {
+      const state = stateFor(agent)
+      return state?.snapshot.schema === 'ptc-capability-environment/v2' && !planCommitted(agent, state.message) ? state.message : undefined
     },
     projectSections(agent, sections) {
       const state = stateFor(agent)
@@ -429,8 +702,10 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
       if (!state?.snapshot.plan.enabled) return []
       return ['skill', 'resource'].map(category => ({ namespace: category === 'skill' ? 'skills' : 'mcp',
         members: state.snapshot.capabilities.filter(item => item.category === category && supplied(state, item.id))
+          .map(item => state.liveCapabilities?.get(item.id) ?? item)
           .map(item => ({ name: item.id.slice(item.id.indexOf('.') + 1), description: item.description,
             contract: item.contract, dependencies: item.dependencies ?? [], revision: item.revision, parameters: {}, returns: {},
+            ...(item.invocation === undefined ? {} : { invocation: item.invocation }),
             completeness: 'complete', effect: 'unknown', replay: 'recorded-value' })) }))
     },
     adaptFunction(agent, name, original) {
@@ -451,15 +726,18 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
     async preStep(payload, next) {
       // Preparation precedes the host's explicit Skill loading, using the same
       // public composition entry that owns PTC/native selection and MCP sections.
-      if (!stateFor(payload.agent) && ctx.systemPrompt?.assemble) {
+      if (ctx.systemPrompt?.assemble) {
         await ctx.systemPrompt.assemble({ agent: payload.agent, scope: payload.agent, signal: payload.signal })
       }
       const prepared = stateFor(payload.agent)
-      if (prepared) await qualifySkills(payload.agent, prepared)
+      if (prepared) await qualifyCapabilities(payload.agent, prepared, payload.signal)
       const decision = await next()
+      if (decision.kind !== 'enter' || payload.signal?.aborted) return decision
+      await observeHistory(payload.agent, payload.signal)
+      await reconcilePendingChoice(payload.agent, payload.signal, true)
       const state = stateFor(payload.agent)
       if (decision.kind !== 'enter' || !state || payload.signal?.aborted) return decision
-      await statisticsOperation(() => store?.available(payload.agent, state.snapshot))
+      await statisticsOperation(() => store?.available(payload.agent, statisticsSnapshot(state)))
       restoreEvidence(payload.agent, state)
       const visible = payload.agent.session.deriveMessages?.() ?? []
       const messages = state.snapshot.plan.enabled ? decision.messages.filter(message =>
@@ -467,22 +745,50 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
         && !(message.source?.kind === 'skill-invocation' && !supplied(state, `skills.${message.source.name}`))) : decision.messages
       // An uncommitted proposal enters once through Host acceptance. A committed
       // plan is already in history; its ancestry cannot resurrect compacted text.
-      const planVisible = state.message && visible.some(message => message.id === state.message.id)
+      const planVisible = state.message && visible.some(message => message.id === state.message.id
+        && readCapabilityContextMessage(message, String(payload.agent.session.id ?? payload.agent.id))?.form === CAPABILITY_PLAN_FORM)
       const additions = state.message && !planCommitted(payload.agent, state.message)
         && !messages.some(message => message.id === state.message.id) ? [state.message] : []
       const planSupplied = planVisible || [...messages, ...additions].some(message => message.id === state.message?.id)
       if (state.snapshot.plan.enabled) {
+        const planDigest = digest(state.snapshot)
+        const sessionId = String(payload.agent.session.id ?? payload.agent.id)
+        const recordedUpdate = [...visible, ...messages].map(message => readContractUpdate(message, planDigest, sessionId))
+          .filter(Boolean).at(-1)
+        const selected = state.snapshot.plan.entries.filter(entry => ['full', 'on-demand'].includes(entry.selection))
+        const preceding = new Map(recordedUpdate?.views ?? selected.map(entry => [entry.id,
+          callingRevision(state.snapshot.capabilities.find(item => item.id === entry.id))]))
+        const views = selected.map(entry => [entry.id, callingRevision(state.liveCapabilities.get(entry.id))])
+        const changes = selected.filter(entry => preceding.get(entry.id) !== callingRevision(state.liveCapabilities.get(entry.id)))
+          .map(entry => ({ id: entry.id, disclosure: entry.selection, capability: state.liveCapabilities.get(entry.id) ?? null }))
+        if (changes.length) {
+          const livePlan = createCapabilityPlan({ ...state.snapshot.settings, capabilities: [...state.liveCapabilities.values()]
+            .filter(item => state.snapshot.capabilities.some(original => original.id === item.id)),
+          manual: { baseline: [], overrides: Object.fromEntries(state.snapshot.plan.entries.map(entry => [entry.id, entry.selection])) },
+          navigationText: NAVIGATION, configurationRevision: state.snapshot.plan.configurationRevision })
+          additions.push(contractUpdateMessage({ schema: 'ptc-capability-contracts/v1', planDigest, views, changes,
+            overageBytes: livePlan.budgets.overageBytes }, sessionId))
+        }
         for (const message of messages) {
           if (message.source?.kind === 'skill-invocation' && supplied(state, `skills.${message.source.name}`)) {
-            void statisticsOperation(() => store?.used(payload.agent, state.snapshot,
+            const observedSnapshot = statisticsSnapshot(state)
+            void statisticsOperation(() => store?.used(payload.agent, observedSnapshot,
               `skills.${message.source.name}`, 'skill-body-accepted', 'complete'))
           }
         }
         const expandedVisible = new Set([...visible, ...messages].flatMap(message => message.source?.form === 'capability-descriptions'
           ? message.source.entries ?? [] : state.visibleExpansions?.get(message.id) ?? []))
-        if ([...visible, ...messages, ...additions].some(message => message.id === state.message?.id)) {
+        for (const message of [...visible, ...messages, ...additions]) {
+          const update = readContractUpdate(message, planDigest, sessionId)
+          for (const change of update?.changes ?? []) {
+            if (change.disclosure === 'full' && change.capability !== null
+              && callingRevision(change.capability) === callingRevision(state.liveCapabilities.get(change.id))) expandedVisible.add(change.id)
+          }
+        }
+        if (planSupplied) {
           for (const entry of state.snapshot.plan.entries.filter(entry => entry.selection === 'full')) {
-            expandedVisible.add(entry.id)
+            if (callingRevision(state.snapshot.capabilities.find(item => item.id === entry.id))
+              === callingRevision(state.liveCapabilities.get(entry.id))) expandedVisible.add(entry.id)
             if (!state.expanded.has(entry.id)) state.pendingExpanded.add(entry.id)
             state.expanded.add(entry.id)
           }
@@ -496,7 +802,7 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
         const dependencies = new Set()
         const currentSchemas = new Map(toolSchemasForAgent(payload.agent).map(schema => [`tools.${schema.name}`, digest(schema)]))
         for (const id of [...state.used.keys()].reverse()) {
-          const capability = state.snapshot.capabilities.find(item => item.id === id)
+          const capability = state.liveCapabilities.get(id)
           if (!capability || capability.category === 'skill' || !state.expanded.has(id) || expandedVisible.has(id) || !supplied(state, id)) continue
           if (capability.category === 'tool' && currentSchemas.get(id) !== capability.revision) continue
           const missing = (capability.dependencies ?? []).filter(item => !dependencies.has(item.id))
@@ -516,24 +822,26 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
     },
     admitted(exec) {
       // Host tokens correlate immutable call identity through mutable wrappers.
-      if (exec.token && stateFor(exec.agent)?.snapshot.plan.enabled) admitted.add(exec.token)
+      const state = stateFor(exec.agent)
+      if (exec.token && state?.snapshot.plan.enabled) admitted.set(exec.token, statisticsSnapshot(state))
     },
     dispatched(exec, result) {
       const state = stateFor(exec.agent)
-      if (!exec.token || !admitted.has(exec.token) || !state?.snapshot.plan.enabled || !supplied(state, `tools.${exec.name}`)
+      const observation = exec.token && admitted.get(exec.token)
+      if (!observation || !state?.snapshot.plan.enabled || !observation.plan.entries.some(entry => entry.id === `tools.${exec.name}`)
         || result?.error?.info?.code === 'ABORTED_BEFORE_DISPATCH' || result?.error?.info?.code === 'UNKNOWN_TOOL') return
       admitted.delete(exec.token)
       state.used.delete(`tools.${exec.name}`)
       state.used.set(`tools.${exec.name}`, true)
-      void statisticsOperation(() => store?.used(exec.agent, state.snapshot, `tools.${exec.name}`, 'host-execution-result', result?.error?.info?.code === 'ABORTED' ? 'cancelled' : result?.isError ? 'failed' : 'complete'))
+      void statisticsOperation(() => store?.used(exec.agent, observation, `tools.${exec.name}`, 'host-execution-result', result?.error?.info?.code === 'ABORTED' ? 'cancelled' : result?.isError ? 'failed' : 'complete'))
       if (exec.name === 'skill' && !result?.isError && typeof exec.arguments?.name === 'string') {
-        void statisticsOperation(() => store?.used(exec.agent, state.snapshot, `skills.${exec.arguments.name}`, 'skill-body-accepted', 'complete'))
+        void statisticsOperation(() => store?.used(exec.agent, observation, `skills.${exec.arguments.name}`, 'skill-body-accepted', 'complete'))
       }
       if (exec.name === 'read_mcp_resource' && !result?.isError && typeof exec.arguments?.server === 'string') {
         const id = `mcp.${exec.arguments.server}`
         state.used.delete(id)
         state.used.set(id, true)
-        void statisticsOperation(() => store?.used(exec.agent, state.snapshot, `mcp.${exec.arguments.server}`, 'resource-access', 'complete'))
+        void statisticsOperation(() => store?.used(exec.agent, observation, `mcp.${exec.arguments.server}`, 'resource-access', 'complete'))
       }
     },
     toolMetadata(agent, metadata, schemas = toolSchemasForAgent(agent)) {
@@ -580,12 +888,15 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
       return state === undefined ? { configured: capabilityConfiguration(currentConfig), effective: null }
         : { configured: capabilityConfiguration(currentConfig), effective: state.snapshot.plan,
           publication: state.message === undefined ? 'not-required' : planCommitted(agent, state.message) ? 'accepted' : 'pending',
-          pendingRefresh: digest(capabilityConfiguration(currentConfig)) !== digest(state.snapshot.settings) }
+          sourceSettings: state.snapshot.sourceSettings ?? state.snapshot.settings,
+          sessionOverrides: state.snapshot.sessionOverrides ?? {},
+          pendingRefresh: digest(capabilityConfiguration(currentConfig)) !== digest(state.snapshot.sourceSettings ?? state.snapshot.settings) }
     },
     describeSessions() {
       return [...sessions].map(([sessionId, state]) => ({ sessionId, effective: state.snapshot.plan,
-        configuration: savedConfiguration(state.snapshot.settings),
-        pendingRefresh: digest(capabilityConfiguration(currentConfig)) !== digest(state.snapshot.settings) }))
+        configuration: savedConfiguration(state.snapshot.sourceSettings ?? state.snapshot.settings),
+        sessionOverrides: state.snapshot.sessionOverrides ?? {},
+        pendingRefresh: digest(capabilityConfiguration(currentConfig)) !== digest(state.snapshot.sourceSettings ?? state.snapshot.settings) }))
     },
     canRefresh,
     describeTargets() {
@@ -626,7 +937,9 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
           const previous = available.get(capability.id)
           available.set(capability.id, { id: capability.id, category: capability.category, description: capability.description,
             ...display, ...(capability.mcpServer === undefined ? {} : { mcpServer: capability.mcpServer }), ...(previous && JSON.stringify(previous.source) !== JSON.stringify(display?.source)
-              ? { source: { kind: 'unknown' }, mcpServer: undefined } : {}) })
+              ? { source: { kind: 'unknown' }, mcpServer: undefined } : {}),
+            ...(previous && (previous.invocationConflict || JSON.stringify(previous.invocation) !== JSON.stringify(display?.invocation))
+              ? { invocation: undefined, invocationConflict: true } : {}) })
         }
       }
       signal?.throwIfAborted()

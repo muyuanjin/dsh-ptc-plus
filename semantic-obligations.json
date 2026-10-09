@@ -139,6 +139,7 @@
         "callable source identity",
         "lexical environment",
         "module links",
+        "owned require and escaped imports preserve native resolution while compiling uncached modules with captured source transforms",
         "generated names",
         "intrinsic isolation",
         "deployment environment cannot select compiler cache files",
@@ -245,7 +246,10 @@
         "codec-owned unsupported/shape/budget failures with safe brand classification and boundary dispatch facts",
         "resource bounds",
         "absolute worker entry identity for URL, file URL string and filename",
-        "testing entry restoration uses the classified realm write boundary"
+        "testing entry restoration uses the classified realm write boundary",
+        "resolved current cell cwd reaches stable Node wrappers and new child computations without resetting continuous bindings; escaped import environments retain their module source parent",
+        "terminated cells settle after helper reclamation; cleanup refusal remains observable without claiming process exit",
+        "per-cell dynamic eval and Function import resolution retains its source owner while native interfaces and live logical identities remain shared"
       ],
       "entries": [
         "cell worker",
@@ -336,7 +340,10 @@
         "pending and seen identity caches derive from retained normalized event facts",
         "active prune window requires public prune and adjacent result provenance",
         "turn reset retires both directions of pending edit claims",
-        "tip delivery positions survive earlier reconstructed success"
+        "tip delivery positions survive earlier reconstructed success",
+        "raw execution ancestry is qualified against exact derived assistant source at the same immutable observation cut; pure message projection contracts live, cold and fork state",
+        "cold REPL inventory uses the journal timeline settlement owner and optional-source-free callId pairing; actual result/image projections preserve exact assistant-source eligibility",
+        "v11 exact per-cell executionCwd and v1-v10 historical directory fallback remain distinct from the new request directory"
       ],
       "entries": [
         "live settlement",
@@ -358,7 +365,7 @@
         "plugin unload"
       ],
       "generations": [
-        "journal-v1..v10",
+        "journal-v1..v11",
         "legacy-v1",
         "protected-v1",
         "stateful-v1",
@@ -377,7 +384,9 @@
         "test/session-recovery-boundary-faults.test.js",
         "test/user-bindings-recovery.test.js",
         "test/runtime-messages.test.js",
-        "test/recovery-tips.test.js"
+        "test/recovery-tips.test.js",
+        "test/plugin-durability-recovery-boundaries.test.js",
+        "test/plugin-durability-recovery.test.js"
       ],
       "dependsOn": [
         "language-frontend",
@@ -392,6 +401,7 @@
       "implementation": [
         "index.js",
         "internal/binding-descriptors.js",
+        "internal/capability-command-receipt.js",
         "internal/config-spec.js",
         "internal/cordis-tools-owner.js",
         "internal/direct-surface-owner.js",
@@ -449,7 +459,11 @@
         "evaluation observer uses public Agent session identity and retains formally linked child canonical sidecars after execution scratch cleanup",
         "public composer accepts refresh arguments without starting a model request and preserves inspect/invalid input behavior",
         "bounded ptc-capability-profiles/v1 validates capability-only named configurations, duplicates, numeric settings and imports; configuration library remains outside model prefix/plan revision",
-        "read-only capability allocation and catalog assembly preserve active accepted-request runtime-message delivery evidence"
+        "read-only capability allocation and catalog assembly preserve active accepted-request runtime-message delivery evidence",
+        "installed projector preserves Host JSON validity through policy reprojection and retirement without manufacturing journal evidence",
+        "pure model message content generation invalidates stale worker observations independently of surface node membership",
+        "provider availability withdraws only plugin-owned declarations through accepted steps and public single-writer persistence on release",
+        "locale-independent capability command receipt distinguishes prepared and recorded without replaying model notifications"
       ],
       "entries": [
         "run_code",
@@ -466,18 +480,21 @@
         "A/B family evidence lifecycle through abRunPaths",
         "human /capabilities input matching and authenticated command execution",
         "capabilityProfileConfiguration",
-        "validateCapabilityProfiles"
+        "validateCapabilityProfiles",
+        "handBackRuntimeSessions"
       ],
       "lifecycle": [
         "register",
         "invoke",
         "reconfigure",
         "dispose",
-        "unavailable"
+        "unavailable",
+        "provider handback"
       ],
       "generations": [
         "official latest and next DSH public surfaces",
-        "preceding and current typert codecs"
+        "preceding and current typert codecs",
+        "ptc-capability-command/v1"
       ],
       "platforms": [
         "official DSH release",
@@ -525,7 +542,8 @@
         "scripts/test-suite-files.mjs",
         "test/test-suite-files.test.js",
         "test/verification-workflow.test.js",
-        "scripts/client-focused-tests.mjs"
+        "scripts/client-focused-tests.mjs",
+        "scripts/dsh-packed-lifecycle-smoke.mjs"
       ],
       "dependsOn": [
         "execution-kernel",
@@ -537,8 +555,8 @@
       "disposition": "bounded-external",
       "owner": "Capability environment owns frozen session plan projection across prompt, discovery and compiled tools",
       "implementation": [
-        "internal/capability-plan.js",
-        "internal/capability-environment.js"
+        "internal/capability-environment.js",
+        "internal/capability-plan.js"
       ],
       "contract": "docs/capability-planning-components.md",
       "observables": [
@@ -563,7 +581,15 @@
         "read-only active PTC identity observation does not read or prepare plans, including management-off synchronization",
         "MCP server closure precedes independent child choices using frozen owner membership, preserves other servers and old inventories, and rejects ambiguous ownership rather than guessing; catalog observation captures public sections without session preparation or binding loads",
         "empty or whitespace-only public Host instruction sections create no dependencies while MCP ownership and SDK/resource contracts survive initial preparation, discovery, restoration and refresh; malformed dependencies remain invalid",
-        "read-only allocation RPC observes explicit live PTC target workspace/global coverage and recomputes exact budget choices without session preparation, publication, sample registration, Skill body loads or model calls; frozen session inspection exposes its source settings separately"
+        "read-only allocation RPC observes explicit live PTC target workspace/global coverage and recomputes exact budget choices without session preparation, publication, sample registration, Skill body loads or model calls; frozen session inspection exposes its source settings separately",
+        "model/user Skill invocation eligibility retained across full disclosure, search/inspect, settings catalog and Host loading without body reads or permission changes",
+        "frozen enablement/disclosure choices with live Host parameter/output/dependency/Skill contract revisions and withdrawals delivered exactly once through accepted append-only context; saved inputs remain frozen",
+        "retained calling-contract notifications contribute complete visible context accounting and damaged provenance is rejected",
+        "cold first change/refresh preserves recorded temporary choices without a prior model request; read-only catalog lists closed capabilities without preparing a plan",
+        "MCP server choices only enable or close the parent; reopening preserves independent child disclosure and closure",
+        "pending explicit choices persist through real paired successful command outcomes before the protected system head; failed, cancelled and unpaired outcomes cannot establish a choice",
+        "global save uses actual settings namespace and revision CAS; all post-save failures report saved-only and retain old complete session state",
+        "temporary automatic clears the inherited saved override; inherit removes only the session choice; ordinary refresh preserves temporary choices and named configuration export excludes them"
       ],
       "entries": [
         "createCapabilityPlan",
@@ -572,7 +598,11 @@
         "capabilityConfiguration",
         "describeCatalog",
         "describeTargets",
-        "observeAllocation"
+        "observeAllocation",
+        "sessionCapabilitySettings",
+        "catalogFor",
+        "change",
+        "pendingChoiceMessage"
       ],
       "lifecycle": [
         "validate inputs",
@@ -582,12 +612,20 @@
         "restore",
         "refresh",
         "project",
-        "dispose"
+        "dispose",
+        "restore inputs before human maintenance",
+        "session-only explicit choice",
+        "global revision CAS and current-session refresh",
+        "pending proposal in paired successful Host command result",
+        "prepare Skill projection before plan append and restore on rejection"
       ],
       "generations": [
         "ptc-capability-plan/v1 category navigation and grouped contract rendering",
         "ptc-capability-environment/v1 initial pre-task delivery, exact recovery and append-only refresh",
-        "ptc-capability-evidence/v1 formal result metadata"
+        "ptc-capability-evidence/v1 formal result metadata",
+        "ptc-capability-contracts/v1 accepted revision vector and changed complete contracts or withdrawals",
+        "ptc-capability-environment/v1 optional explicit navigation text with exact historical fallback",
+        "ptc-capability-environment/v2 saved source settings, temporary choices and validated merged effective settings"
       ],
       "platforms": [
         "Node 22.19+",
@@ -622,8 +660,8 @@
       "disposition": "bounded-external",
       "owner": "Capability statistics pure reducer plus locked metadata store",
       "implementation": [
-        "internal/capability-statistics.js",
-        "internal/capability-statistics-store.js"
+        "internal/capability-statistics-store.js",
+        "internal/capability-statistics.js"
       ],
       "contract": "docs/capability-planning-components.md",
       "observables": [
@@ -679,6 +717,7 @@
       "owner": "Global User Binding storage/activation and bounded REPL client presentation",
       "implementation": [
         "client.js",
+        "internal/binding-toggle-receipt.js",
         "internal/repl-memory-projection.js",
         "internal/repl-observation-interest.js",
         "internal/user-binding-authoring.js",
@@ -693,7 +732,9 @@
         "src/client-activity.js",
         "src/client-authoring-view.js",
         "src/client-binding-review.js",
+        "src/client-binding-toggle.js",
         "src/client-bindings-data.js",
+        "src/client-capabilities-view.js",
         "src/client-catalog.js",
         "src/client-code-editor.js",
         "src/client-console.js",
@@ -704,7 +745,6 @@
         "src/client-primitives.js",
         "src/client-repl-view.js",
         "src/client-rpc.js",
-        "src/client-capabilities-view.js",
         "src/client-settings-view.js",
         "src/client-styles.js",
         "src/client-tool-hover.js",
@@ -746,7 +786,10 @@
         "passive tool quick peeks bound recorded source/result with visible excerpt labels and theme-aware single-layer chrome; native Popover or public React portal escapes clipping without hit-testable or scrollable overlay content; shared passive wheel/scroll observation cancels dwell and visible previews, requires scroll idle and fresh pointer motion before reopening; live default-on hover settings cancel pending and visible previews; pointer-right placement adapts to owned-anchor and viewport width changes, while explicit row expansion retains complete source/result and Copy",
         "capability workbench separates typed Tools, Skills and MCP resources, independent source/strategy/common/availability filters and stable sorting, editable unavailable preferences, catalog failure evidence, and saved manual settings from explicitly selected frozen session plans; tab keyboard and bounded responsive detail layouts remain inside plugin-owned settings",
         "shared session capability refresh uses exact selected/current session through public commands; duplicate clicks, cancellation, connection/preset generations, readonly/plugin disable, session switch and disposal cannot publish stale success; binding disable preserves PTC utilities and target-read failures block execution independently of frozen-plan reads",
-        "one permanent compatible type/source filter bar; statistics and budget preview show scoped evidence with stale reply invalidation; named bounded capability configurations save rename delete import export and switch through one public settings mutation, and copy recorded session configuration without copying program state or refreshing sessions; official switch tokens and sparkle utility labels remain readable"
+        "one permanent compatible type/source filter bar; statistics and budget preview show scoped evidence with stale reply invalidation; named bounded capability configurations save rename delete import export and switch through one public settings mutation, and copy recorded session configuration without copying program state or refreshing sessions; official switch tokens and sparkle utility labels remain readable",
+        "confirmed binding enablement receipt distinct from model catalog delivery and worker initialization",
+        "public Conversation configuration receipt is appended after the Host system head or delivered through an accepted first-step batch; no first-system-head displacement or user/turn-trigger identity",
+        "capability task inputs and feedback local to observation, refresh, named library and session copy"
       ],
       "entries": [
         "session activation",
@@ -755,7 +798,8 @@
         "client renderer",
         "model context",
         "createCommandAccess",
-        "CapabilityRefreshButton"
+        "CapabilityRefreshButton",
+        "bindingToggleConversationDefinition"
       ],
       "lifecycle": [
         "load",
@@ -768,7 +812,8 @@
       "generations": [
         "whole-entry",
         "per-name",
-        "legacy and current module transforms"
+        "legacy and current module transforms",
+        "ptc-binding-toggle/v1"
       ],
       "platforms": [
         "browser client",

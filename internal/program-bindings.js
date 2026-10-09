@@ -1,6 +1,19 @@
 /** Deterministic capability metadata derived from the current DSH tool view. */
 import { record, text } from './record-utils.js'
 import { createHash } from 'node:crypto'
+import { snapshotJsonValue } from '@deepseek-ai/dsh-util-values'
+
+/** Derive SDK contracts from the public, scope-qualified tool registry. */
+export function toolSdkSchemas(tools, scope) {
+  return tools.schemas(scope).filter(schema => schema.name !== 'run_code').map(schema => {
+    const definition = tools.get(schema.name, scope)
+    const output = snapshotJsonValue(definition?.output?.schema)
+    if (output === undefined) {
+      throw new TypeError(`ptc-plus: tool "${schema.name}" output schema must be lossless JSON before SDK projection`)
+    }
+    return { ...schema, output }
+  })
+}
 
 const COMPLETENESS = new Set(['complete', 'bounded', 'incremental', 'open-world', 'unknown'])
 const SOURCE_KINDS = new Set(['authored', 'runtime', 'tests', 'docs'])

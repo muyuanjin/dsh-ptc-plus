@@ -11,7 +11,7 @@ import { resolveConfig } from '../internal/runtime-config.js'
 import { executionPolicies } from '../internal/binding-update-policy.js'
 import { Session } from '@deepseek-ai/dsh-session'
 import { readRuntimeMessage, runtimeStateMessage } from '../internal/runtime-messages.js'
-import { createFixtureExecutionProvider, createHostContext, describeSections, executionInstalled, runHookChain, serviceInjector } from './host-fixture.js'
+import { createFixtureExecutionProvider, createFixtureSessionServices, createHostContext, describeSections, executionInstalled, runHookChain, serviceInjector } from './host-fixture.js'
 
 // Default-enabled bindings must read an isolated store, never the user's helpers.
 const previousDshHome = process.env.DSH_HOME
@@ -177,6 +177,7 @@ function settingsContext(scope) {
 function hostContext(settings = undefined, agents = [], options = {}) {
   const host = createHostContext()
   const { listeners, cleanups, sections, contexts } = host
+  const sessionServices = createFixtureSessionServices()
   const projectionDefinitions = []
   const projectionInjections = []
   const inheritedRun = async () => ({ logs: [] })
@@ -185,7 +186,9 @@ function hostContext(settings = undefined, agents = [], options = {}) {
     isolation: 'worker-thread',
   }))
   const runtime = createFixtureExecutionProvider(originalRuntime, 'codeRuntime')
-  const definition = { name: 'run_code', output: {} }
+  const definition = { name: 'run_code', parameters: { type: 'object', properties: {
+    code: { type: 'string' }, description: { type: 'string' },
+  }, required: ['code', 'description'], additionalProperties: false }, output: { schema: {} } }
   const on = options.failHook === undefined
     ? host.ctx.on
     : (name, listener, registrationOptions) => {
@@ -212,6 +215,7 @@ function hostContext(settings = undefined, agents = [], options = {}) {
   }
   const ctx = {
     fiber: { state: 2 },
+    sessionQuery: sessionServices.sessionQuery,
     agents: { list: () => agents },
     codeRuntime: runtime,
     tools: {
@@ -224,12 +228,14 @@ function hostContext(settings = undefined, agents = [], options = {}) {
       context: host.ctx.systemPrompt.context,
       section,
       async assemble(context = {}) {
+        sessionServices.remember(context.agent?.session)
         const assembly = {
-          sections: describeSections(sections, context),
+          sections: [...describeSections(sections, context),
+            ...(options.mode === 'ptc' ? [{ name: 'tools:ptc-only', text: 'PTC mode' }] : [])],
           contexts: [...contexts],
-          tools: TEST_CORDIS_TOOL_NAMES
-            .filter(name => context.scope?.definitions.has(name))
-            .map(name => ({ name })),
+          tools: [...(options.mode === 'ptc' ? [definition] : []), ...TEST_CORDIS_TOOL_NAMES
+            .filter(name => (context.scope?.definitions ?? context.agent?.definitions)?.has(name))
+            .map(name => ({ name }))],
           variables: {},
         }
         const entries = [...listeners.get('system-prompt/assemble') ?? []]
@@ -244,6 +250,7 @@ function hostContext(settings = undefined, agents = [], options = {}) {
     },
     get(name) {
       if (name === 'pluginPackages') return options.pluginPackages
+      return sessionServices[name]
     },
     ...(settings === undefined ? {
       inject: serviceInjector({ codeRuntime: runtime }, () => ctx),
@@ -678,7 +685,7 @@ test('settings kill switch leaves no runtime side effects when disabled', async 
 
 test('plugin disable clears committed declarations and re-enable reconciles current facts', async t => {
   const scope = settingsScope({ enabled: true })
-  const host = hostContext(settingsContext(scope))
+  const host = hostContext(settingsContext(scope), [], { mode: 'ptc' })
   apply(host.ctx)
   t.after(async () => { for (const cleanup of host.cleanups.reverse()) await cleanup() })
   const agent = bindingCommandAgent().agent

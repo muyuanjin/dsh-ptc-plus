@@ -16,6 +16,18 @@ export function createReplView(React, deps) {
 
   function ReplComposer() { return null }
 
+  function useObservedReplMemory({ sessionId, projected, active, elementRef, observeRepl }) {
+    const memory = React.useMemo(() => {
+      try { return normalizeReplMemorySnapshot(projected) } catch { return unavailableReplMemorySnapshot() }
+    }, [projected])
+    const [observed, setObserved] = React.useState(null)
+    React.useEffect(() => active && typeof observeRepl === 'function'
+      ? observeRepl(sessionId, elementRef.current, memory,
+        value => setObserved({ sessionId, source: memory, value }))
+      : undefined, [active, observeRepl, sessionId, memory, elementRef])
+    return observed?.sessionId === sessionId && observed.source === memory ? observed.value : memory
+  }
+
   function ReplBindingInspector({ entry, preview, t }) {
     const readable = preview?.status === 'readable'
     return h('aside', { className: 'ptcPlusBindingInspector', 'aria-label': entry.name },
@@ -98,18 +110,14 @@ export function createReplView(React, deps) {
     const globalEnabled = featureEnabled(settings, 'bindings')
     const workbench = useWorkbenchController({ enabled: globalEnabled, active: true, callUserBindings })
     const eligible = featureEnabled(settings, 'replView') && sessionUsesPtcPreset(preset)
-    const memory = React.useMemo(() => {
-      try { return normalizeReplMemorySnapshot(projected) } catch { return unavailableReplMemorySnapshot() }
-    }, [projected])
-    const [observed, setObserved] = React.useState(null)
     const observationRegion = React.useRef(null)
+    const memory = useObservedReplMemory({ sessionId, projected, active: eligible,
+      elementRef: observationRegion, observeRepl })
     React.useEffect(() => eligible ? hideComposer(sessionId) : undefined, [eligible, hideComposer, sessionId])
-    React.useEffect(() => eligible ? observeRepl(sessionId, observationRegion.current, memory,
-      value => setObserved({ sessionId, source: memory, value })) : undefined, [eligible, observeRepl, sessionId, memory])
     if (!eligible) return null
     return h('div', { className: 'ptcPlusConsole', 'data-conversation-composer-overlay': '' },
       h('div', { className: 'ptcPlusConsoleSection', ref: observationRegion }, h(ReplSessionBindings, {
-        key: sessionId, memory: observed?.sessionId === sessionId && observed.source === memory ? observed.value : memory, t })),
+        key: sessionId, memory, t })),
       globalEnabled ? h('div', { className: 'ptcPlusConsoleSection ptcPlusBindingsSurface' },
         h(UserBindingsWorkbench, { controller: workbench, t, headingLabel: t('console.global') })) : null)
   }
@@ -290,5 +298,5 @@ export function createReplView(React, deps) {
         : h('span', { className: 'ptcPlusReplMore' }, t('memory.more', { count: memory.omitted }))))
   }
 
-  return { ReplComposer, ReplConsole, ReplMemoryCard, replPopoverIsOpen, placeReplPopover }
+  return { ReplComposer, ReplConsole, ReplMemoryCard, replPopoverIsOpen, placeReplPopover, useObservedReplMemory }
 }

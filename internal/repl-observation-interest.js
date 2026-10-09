@@ -12,6 +12,11 @@ export function createReplObservationInterest(ctx, initiallyEnabled, observe = a
     for (const watcher of [...watchers]) watcher.release()
     for (const controller of inspections) controller.abort()
   }
+  const releaseEvents = typeof ctx.on === 'function' ? ctx.effect(() => ctx.on('session/event', session => {
+    for (const watcher of [...watchers]) {
+      if (watcher.sessionId === session.id) watcher.changed()
+    }
+  }), 'ptc-plus: model source observation changes') : undefined
   const handler = async (endpoint, payload, signal) => {
     if (!enabled || !['watch', 'observe'].includes(endpoint) || typeof payload?.sessionId !== 'string'
       || payload.sessionId.length === 0 || payload.sessionId.length > 256
@@ -32,11 +37,13 @@ export function createReplObservationInterest(ctx, initiallyEnabled, observe = a
       }
     }
     return new Promise(resolve => {
-      const watcher = { sessionId: payload.sessionId, release() {
+      const finish = value => {
         signal.removeEventListener('abort', watcher.release)
         watchers.delete(watcher)
-        resolve({ ok: true, value: null })
-      } }
+        resolve({ ok: true, value })
+      }
+      const watcher = { sessionId: payload.sessionId,
+        release: () => finish(null), changed: () => finish({ changed: true }) }
       watchers.add(watcher)
       signal.addEventListener('abort', watcher.release, { once: true })
       if (signal.aborted) watcher.release()
@@ -62,6 +69,7 @@ export function createReplObservationInterest(ctx, initiallyEnabled, observe = a
     async dispose() {
       enabled = false
       clear()
+      await releaseEvents?.()
       for (const release of [...registrations]) await release()
       if (typeof injection === 'function') await injection()
       else await injection?.dispose?.()

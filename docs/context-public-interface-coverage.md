@@ -19,3 +19,7 @@
 `tools.restrict()` 仅影响继承层，不能单独承担 scope 自有工具的移除。这一宿主行为由公共探针保留为对照；PTC Plus 的实际执行入口使用统一编译准备投影，因此它不再是本功能的实施阻塞。投影后的工具参数、canonical 结果和宿主错误保持原语义，没有第二套分派 registry。
 
 资源和模板按 server 管理，同一 server 下的 URI 与模板继续由宿主列表与读取协议拥有。插件不为组装 prompt 枚举远程资源或读取 Skill 正文。无模型测试证明执行和生命周期关系；普通任务质量与全家族 token 收益仍需独立授权的任务对照，不能从 prompt 字节缩短推断。
+
+能力刷新用户入口的证据：`test/context-host-contract.test.js` 从正式 CommandUiRuntime 的输入匹配进入公共 CommandRuntime，分别验证带参数刷新、裸命令检查、未知参数与零模型请求。`test/client-runtime.spec.js` 覆盖星光当前会话、设置明确目标、管理/绑定关闭、取消、失败及失效回执；`scripts/client-fallback-smoke.mjs` 使用候选的共享刷新组件检查实际按钮与目标。只读 `targets` 的无方案准备行为由 `test/capability-environment.test.js` 验证。
+
+MCP 两级控制由 `test/capability-environment.test.js` 验证 server 工具/资源同步关闭、单工具配置保留、其它 server 独立及刷新边界；正式 Host 无首轮副作用观察由 `test/context-host-contract.test.js` 验证，Client server 分组和独立子项写入由 `test/client-runtime.spec.js` 验证。

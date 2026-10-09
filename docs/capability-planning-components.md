@@ -52,14 +52,18 @@ capabilityCoverage(state, { userId, workspaceId, id, revision })
 
 工具完整契约与程序检索元数据来自公共 `ToolRuntime.sdkSchemas(scope)`，包含参数及返回值 schema；输出 schema 也参与修订身份和恢复比较。新 cell 的检索与 inspect 从同一份当前 SDK 快照派生结构化 schema、签名、依赖及修订，不将冻结方案中的旧签名覆盖到新返回值类型上；冻结的是启用与披露选择。顶层模型工具 schema、准入与调用规范化继续使用独立的 `ToolRuntime.schemas(scope)`，不向模型工具定义追加 SDK 输出字段。
 
-保存设置不改已有会话；`/capabilities refresh` 在已初始化会话的公共 maintenance 边界以单次消息追加提交新方案及通知。消息追加失败或取消保留旧环境。尚未接受首轮的会话刷新后仍待首个 accepted step，命令回执明确说明通知待接受，不声称已记录模型通知。历史没有方案的会话保留原提供方式，损坏方案通过同一发布边界通知关闭管理并继续宿主环境，用户可主动刷新。
+保存设置不改已有会话；正式命令声明 `input.hint`，使公共 Client 输入匹配器接收 `/capabilities refresh` 的参数。裸 `/capabilities` 只检查状态，其他参数明确报错。`/capabilities refresh` 在已初始化会话的公共 maintenance 边界以单次消息追加提交新方案及通知。消息追加失败或取消保留旧环境。尚未接受首轮的会话刷新后仍待首个 accepted step，命令回执明确说明通知待接受，不声称已记录模型通知。历史没有方案的会话保留原提供方式，损坏方案通过同一发布边界通知关闭管理并继续宿主环境，用户可主动刷新。
 
 家族资格顺序和单调观察修订独立于可淘汰样本保存在统计文件的 `families` provenance 中；缺失或损坏的 provenance 不作为有效统计。
 
 正式 `tool/result` 的 `dshPtcPlusCapabilities` 元数据记录 `ptc-capability-evidence/v1` 的方案 digest、展开与使用身份。恢复按原方案和当前 ordered surface 中完整契约及依赖的实际文本去重；计算内展开不等于模型可见，在独立预算内补回近期实际使用且已展开的 API 契约及依赖，不补回 Skill 正文，不改变 binding 保留规则。`run_code` 的正式 output presentation metadata 与 `edit_run_code` 的派生结果共同携带证据。
 
-设置清单通过只读 `ptcPlusCapabilities/invoke` 的 `catalog` 操作读取 code agent 当前的公共工具与 Skill inventory，以及已捕获 prompt sections 的 MCP server 目录，不创建模型请求、发布方案或加载 Skill 正文；`inspect` 独立提供冻结会话方案。没有可观察 code agent 时展示明确空状态，读取失败保留已保存选择。
+设置清单通过只读 `ptcPlusCapabilities/invoke` 的 `catalog` 操作读取 code agent 当前的公共工具与 Skill inventory，以及已捕获 prompt sections 的 MCP server 目录，不创建模型请求、发布方案或加载 Skill 正文；`inspect` 独立提供冻结会话方案。目录的 `name` 与 `source` 仅为 UI 展示：普通 Tool 说明来自 DSH 注册表，捕获的 MCP owner section 才能证明具体服务器；Skill 来源取公开 provider/source，跨 agent 来源冲突标为未确认。它们不进入冻结能力快照、修订或模型说明。没有可观察 code agent 时展示明确空状态，读取失败保留最后观察结果及已保存选择，可用状态改为未确认。
 
-管理默认关闭。设置通过可搜索能力列表提供常用勾选与披露选择，通过开关和数值输入提供独立统计及预算。配置序列化由 Client 完成，用户无需编写 JSON；最低样本数超过窗口等无效输入不提交。已有配置中暂不可用的能力选择保留并可撤销。展示有效方案、原因、覆盖率、显式超额和待刷新状态。有界 `capabilities.search` 的原接口保持兼容，见[能力投影](capability-projection.md)。大结果和日志使用宿主 spill 服务保留完整展示，存储失败回退原文；canonical 程序值不受预览影响。
+设置刷新按钮通过只读 `targets` 获取活跃 PTC 会话身份，并要求明确选择目标；星光按钮使用公共 slot 的当前会话。两处共享 `CapabilityRefreshButton` 和 authenticated `commands.execute`，委托同一 Host 刷新 owner。身份观察不读取或准备冻结方案，管理关闭时仍可主动同步关闭配置。目录/方案重读保持只读。Client 在取消、断线、preset 改变、会话切换、卸载或插件关闭后丢弃迟到回执；停止等待不表示撤销已提交的 Host 效果。
+
+管理默认关闭。设置工作台将手动配置、独立统计、上下文预算及冻结会话方案分为四个页签。手动列表区分 Tools、Skills 和按 server 分组的 MCP 工具与资源，支持类型、来源、策略、常用与可用状态组合筛选，以及稳定排序；常用星标与披露选择独立，详情区分保存值与所选会话结果。开关和数值输入提供独立统计及预算。配置序列化由 Client 完成，用户无需编写 JSON；最低样本数超过窗口等无效输入不提交。已有配置中暂不可用的能力选择保留并可撤销。展示有效方案、原因、覆盖率、显式超额和待刷新状态。有界 `capabilities.search` 的原接口保持兼容，见[能力投影](capability-projection.md)。大结果和日志使用宿主 spill 服务保留完整展示，存储失败回退原文；canonical 程序值不受预览影响。
 
 组件和接入证据见 `test/capability-plan.test.js`、`test/capability-statistics.test.js`、`test/capability-environment.test.js`、`test/plugin-program-bindings.test.js`、`test/context-result-preview.test.js` 与能力设置 Client 用例。固定 7 项普通任务加 1 项 canary 的 Command Goat / DeepSeek V4.1 Flash 付费配对已运行并完成 16 份盲评。插件侧盲评总分为 correctness 22/24、efficiency 15/24、clarity 21/24，原生基线为 22/24、10/24、21/24；机器验收因原生基线 3 项超过预设调用或 token 上限而阻止。全任务 traffic 为插件 132,332、基线 340,712（普通任务排除 canary 后为 122,933 对 325,862），这是一轮单 replicate 结果，不构成普遍收益保证。
+
+MCP server 总开关复用手动覆盖中的 `mcpServers.<server>: closed` 配置身份，工具和资源仍保留其单项配置。纯方案先应用已捕获的 `mcpServer` 归属关闭，再处理子项披露；目录、共享资源 server 枚举和编译成员同取该冻结结果。来源以公共 server 目录/归属段与已注册限定命名空间为证，重叠且无法区分的命名空间在刷新前报告缺少准确 owner，不猜测删除。原有无归属字段的历史库存按原单项语义恢复。目录观察使用 `ptcPlusCapabilityObservation` 的公共 assembly context，直接 surface owner 在该只读路径跳过会话准备和绑定输入加载。

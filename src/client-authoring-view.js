@@ -25,7 +25,7 @@ export function createAuthoringView(React, deps) {
   const {
     ActionButton, IconButton, Menu, MenuFallback, Toast, Tooltip, CodeBlock, Modal, createPortal, BindingsDialog, PTCPlusSettingsDialog,
     useWorkbenchController, useBindingReview, catalogOwner, callUserBindings, subscribeReset,
-    settingsCardSeat, updateSetting, menuChildren,
+    settingsCardSeat, updateSetting, menuChildren, CapabilityRefreshButton,
     icons: {
       sparkle: IconSparkle16, chevron: IconChevronDownOutline14,
       close: IconCloseOutline16, check: IconCheckOutline14,
@@ -105,16 +105,22 @@ export function createAuthoringView(React, deps) {
     const catalogFocus = React.useRef(null)
     const toastSequence = React.useRef(0)
     const [toast, setToast] = React.useState(null)
-    const hasDraft = view.mounted && view.candidate !== null && view.action === null
+    const hasDraft = featureEnabled(settings, 'bindings') && view.mounted && view.candidate !== null && view.action === null
     const quickAccess = featureEnabled(settings, 'authorButton')
+    const pluginEnabled = featureEnabled(settings, 'plugin') && (hasDraft || featureEnabled(settings, 'ptcMenu'))
     const canAuthor = quickAccess && available && typeof useInput === 'function' && typeof inputActions?.setDraft === 'function'
-    const menuOpen = (hasDraft || quickAccess) && view.reachable && !managing && !settingsOpen
+    const menuOpen = pluginEnabled && view.reachable && !managing && !settingsOpen
       && menu !== null && menu.key === view.candidateKey
     // The dialog owns the management session; losing the input surface only
     // suspends reads, so a draft survives a temporary Host takeover.
     const workbench = useWorkbenchController({
       enabled: quickAccess && managing, active: view.reachable, callUserBindings,
     })
+    React.useEffect(() => {
+      if (!quickAccess) {
+        setManaging(false)
+      }
+    }, [quickAccess])
     const refreshCatalog = React.useCallback(async (reload = false) => {
       if (reload) captureCatalogFocus()
       await catalogSource.read({ reload })
@@ -260,8 +266,8 @@ export function createAuthoringView(React, deps) {
       return () => clearTimeout(timer)
     }, [toast])
     const label = hasDraft ? t('bindings.reviewMenuLabel', { count: 1 })
-      + (view.message ? ` · ${t('bindings.reviewAttention')}` : '') : t('bindings.open')
-    const hint = t(hasDraft ? 'bindings.draftHint' : 'bindings.openHint')
+      + (view.message ? ` · ${t('bindings.reviewAttention')}` : '') : t(quickAccess ? 'bindings.open' : 'settings.toolsMenu')
+    const hint = t(hasDraft ? 'bindings.draftHint' : quickAccess ? 'bindings.openHint' : 'settings.toolsMenu')
     // Every authoring action goes through the same busy guard and input owner, so a
     // new or revision request can never overwrite an unsent user draft.
     const prefillAuthoring = value => {
@@ -397,6 +403,9 @@ export function createAuthoringView(React, deps) {
           (catalog?.entries?.length ?? 0) > 0 ? actionButton('edit', 'bindings.authorEdit') : null)) : null,
       h('div', { key: 'utilities', className: 'ptcPlusMenuUtilities' },
         quickAccess ? actionButton('manage', 'bindings.manage') : null,
+        CapabilityRefreshButton ? h(CapabilityRefreshButton, { sessionId, t, menu: true,
+          enabled: pluginEnabled && settings.status === 'ready' && settings.writable === true,
+          onStatus: text => { toastSequence.current++; setToast({ sequence: toastSequence.current, text }) } }) : null,
         actionButton('settings', 'settings.menuEntry')),
     ]
     const menuEntries = menu?.step === 'edit' ? editItems : [
@@ -435,7 +444,7 @@ export function createAuthoringView(React, deps) {
       'data-text': isHostIconComponent(IconSparkle16) ? undefined : true,
       ref: attachAnchor,
     },
-      !hasDraft && !quickAccess ? null : h(menuChildrenRegion ? Menu : MenuFallback, {
+      !pluginEnabled ? null : h(menuChildrenRegion ? Menu : MenuFallback, {
         className: 'ptcPlusAuthorButtonShell', open: menuOpen,
         anchor: isHostComponent(Tooltip)
           ? h(Tooltip, { label: hint, delayMs: 700, disabled: menuOpen || managing || settingsOpen }, starButton) : starButton,

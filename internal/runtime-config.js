@@ -83,7 +83,8 @@ export function resolveConfig(config = {}) {
     try { value = JSON.parse(resolved[key]) } catch { throw new TypeError(`ptc-plus: ${key} must contain valid JSON`) }
     if (array ? !Array.isArray(value) || value.some(id => typeof id !== 'string' || !id.trim())
       : value === null || typeof value !== 'object' || Array.isArray(value)
-        || Object.entries(value).some(([id, selection]) => !id.trim() || !['full', 'on-demand', 'closed'].includes(selection))) {
+        || Object.entries(value).some(([id, selection]) => !id.trim() || !['full', 'on-demand', 'closed'].includes(selection)
+          || (id.startsWith('mcpServers.') && (id === 'mcpServers.' || selection !== 'closed')))) {
       throw new TypeError(`ptc-plus: invalid ${key}`)
     }
   }

@@ -254,6 +254,7 @@ export const surfaceControls = [
   ['input', '.ptcPlusInput:not([type=checkbox])', { disabled: true }],
   ['instructions', 'textarea.ptcPlusInput,.ptcPlusTextarea', { disabled: true }],
   ['settings switch', '.ptcPlusCheck', { disabled: true }],
+  ['capability management switch', '.ptcPlusCapabilityManagement input,.ptcPlusCapabilityServerSwitch input', { disabled: true }],
   ['settings navigation', '.ptcPlusSettingsNavItem', { hover: true }],
   ['settings close', '.ptcPlusSettingsDialogHead .ptcPlusDialogClose', { hover: true }],
   ['select', '.ptcPlusSelect', {}],
@@ -261,7 +262,7 @@ export const surfaceControls = [
   ['REPL observation', '.ptcPlusObservationSelect', {}],
   ['REPL definition', '.ptcPlusReplBindingTrigger', { hover: true }],
   ['REPL tab', '.ptcPlusReplTab', {}],
-  ['source disclosure', '.ptcPlusBindingSourceDetails>summary,.ptcPlusEntrySettings>summary', {}],
+  ['source disclosure', '.ptcPlusBindingSourceDetails>summary,.ptcPlusEntrySettings>summary,.ptcPlusCapabilityDescription>summary', {}],
   ['dock disclosure', 'button.ptcPlusBindingDockToggle', { hover: true }],
   ['tool disclosure', '.ptcPlusToolSummary[data-expandable=true]', {}],
 ]

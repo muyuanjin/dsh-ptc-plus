@@ -202,7 +202,8 @@ export function createBindingReviews(call) {
         return () => {
           attached = false
           invalidate()
-          publish({ mounted: false, reachable: false, writable: false })
+          // The composer observer owns reachability independently of draft mounting.
+          publish({ mounted: false, writable: false })
         }
       },
       reset() {

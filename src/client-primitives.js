@@ -161,7 +161,7 @@ function createFallbackModal(React, createPortal = content => content) {
     const close = React.useRef(onClose)
     close.current = onClose
     const isComposing = useCompositionGuard(React, open)
-    const focusable = 'button:not(:disabled),input:not(:disabled),textarea:not(:disabled),select:not(:disabled),[href],[tabindex]:not([tabindex="-1"])'
+    const focusable = 'button:not(:disabled),input:not(:disabled),textarea:not(:disabled),select:not(:disabled),[href],[tabindex]:not([tabindex="-1"]),[contenteditable=true],summary'
     React.useLayoutEffect(() => {
       if (!open) return undefined
       const previous = document.activeElement

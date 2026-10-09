@@ -10,7 +10,7 @@ test('semantic obligation graph closes the tracked implementation and evidence',
   const report = await semanticObligationReport()
   assert.deepEqual(report, {
     schema: 'dsh-semantic-obligations/v1',
-    sources: 165,
+    sources: 166,
     obligations: 8,
     dispositions: {
       preserved: 2,

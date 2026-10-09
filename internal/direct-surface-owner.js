@@ -576,6 +576,8 @@ export function createDirectSurfaceOwner({
       tipConfig.escalationFailures = nextConfig.tipEscalationFailures
     },
     async assemble(initialAssembly, context, next) {
+      // Settings observes Host-owned catalogs without preparing a session environment.
+      if (context?.ptcPlusCapabilityObservation === true) return next()
       // Keep schema projection and later execution on one configuration snapshot.
       const autoDescribeRunCode = currentAutoDescribeRunCode
       const languageSemantics = currentLanguageSemantics

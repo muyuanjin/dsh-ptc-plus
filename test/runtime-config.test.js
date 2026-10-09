@@ -139,3 +139,11 @@ test('migrates only complete old policy choices and preserves mixed compatibilit
   assert.equal(selected.legacyBindingSettings, false)
   assert.deepEqual(resolveConfig(selected), selected)
 })
+
+
+test('MCP server controls validate at configuration resolution without changing individual tool strategies', () => {
+  const overrides = {'mcpServers.docs':'closed','tools.mcp__docs__search':'full'}
+  assert.equal(resolveConfig({capabilityOverrides:JSON.stringify(overrides)}).capabilityOverrides, JSON.stringify(overrides))
+  for (const choice of ['full','on-demand']) assert.throws(()=>resolveConfig({capabilityOverrides:JSON.stringify({'mcpServers.docs':choice})}), /invalid capabilityOverrides/)
+  assert.throws(()=>resolveConfig({capabilityOverrides:'{"mcpServers.":"closed"}'}), /invalid capabilityOverrides/)
+})

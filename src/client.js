@@ -3,6 +3,7 @@ import { RPC_CONTRACTS } from '../internal/rpc-contract.js'
 import { CONFIG_DEFAULTS, SETTINGS_NAMESPACE } from '../internal/config-spec.js'
 import { createPtcToolView } from './client-tool-view.js'
 import { createPtcSettingsView } from './client-settings-view.js'
+import { createCapabilityRefreshView } from './client-capabilities-view.js'
 import { createReplView } from './client-repl-view.js'
 import { createAuthoringView } from './client-authoring-view.js'
 import { createIndicatorView } from './client-indicator-view.js'
@@ -29,7 +30,7 @@ import { installStyles } from './client-styles.js'
 import { featureEnabled, registerGated } from './client-feature-gates.js'
 import { createCatalogOwner } from './client-catalog.js'
 import { createUserBindingsWorkbench } from './client-workbench.js'
-import { createBindingCommandAvailability, createReplObserver } from './client-transport.js'
+import { createBindingCommandAvailability, createCommandAccess, createReplObserver } from './client-transport.js'
 import { createActionButton, resolvePrimitives } from './client-primitives.js'
 
 /** Settings snapshot used until the installed generation serves a transport. */
@@ -176,8 +177,14 @@ window.__ModuleLoader__.load({
         },
       })
       const { observeRepl } = createReplObserver({ rpc, ctx })
+      const CapabilityRefreshButton = createCapabilityRefreshView(React, createCommandAccess(ctx, 'capabilities'))
       const { PTCPlusSettingsCard, PTCPlusSettingsDialog } = createPtcSettingsView(React, {
-        ActionButton, BindingsDialog, Modal, useWorkbenchController,
+        ActionButton, BindingsDialog, Modal, useWorkbenchController, CapabilityRefreshButton,
+        async inspectCapabilityTargets(signal) {
+          const result = await rpc.call(RPC_CONTRACTS.capabilities, 'targets', {}, signal)
+          if (result?.ok !== true) throw new Error(result?.error?.message ?? 'Capability refresh targets unavailable')
+          return result.value
+        },
         async inspectCapabilityPlans(signal) {
           const result = await rpc.call(RPC_CONTRACTS.capabilities, 'inspect', {}, signal)
           if (result?.ok !== true) throw new Error(result?.error?.message ?? 'Capability plans unavailable')
@@ -298,7 +305,7 @@ window.__ModuleLoader__.load({
       const { BindingAuthorButton, BindingReviewDock, BindingCommandCard } = createAuthoringView(React, {
         ActionButton, IconButton, Menu, MenuFallback, Toast, Tooltip, CodeBlock, Modal, createPortal, BindingsDialog, PTCPlusSettingsDialog,
         useWorkbenchController, useBindingReview, catalogOwner, callUserBindings, subscribeReset,
-        settingsCardSeat: settingsCard.seat, updateSetting, menuChildren,
+        settingsCardSeat: settingsCard.seat, updateSetting, menuChildren, CapabilityRefreshButton,
         icons: {
           sparkle: IconSparkle16, chevron: IconChevronDownOutline14,
           close: IconCloseOutline16, check: IconCheckOutline14,
@@ -341,7 +348,7 @@ window.__ModuleLoader__.load({
             return () => { unsubscribePreset(); unsubscribeSettings() }
           },
           isEnabled: () => sessionUsesPtcPreset(preset)
-            && featureEnabled(preferenceScope.getSnapshot(), 'bindings'),
+            && featureEnabled(preferenceScope.getSnapshot(), 'plugin'),
           register: () => ctx.slots.register({
             name: 'conversation.input.left', id: 'ptc-plus-binding-author', order: 20, locale: LOCALE_NS,
             inject: sessionId => ({

@@ -144,9 +144,19 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
     return state
   }
 
-  async function inventory(agent, sections = [], settings, signal) {
+  async function inventory(agent, sections = [], settings, signal, presentation) {
     const schemas = toolSchemasForAgent(agent).filter(schema => !TRANSPORTS.has(schema.name))
     const capabilities = schemas.map(schema => toolCapability(schema, sections))
+    const declaredServers = new Set([...resourceServers(sections),
+      ...sections.filter(section => section.name?.startsWith('mcp:')).map(section => section.name.slice(4))])
+    for (const capability of capabilities) {
+      const servers = [...declaredServers].filter(server => capability.schema.name.startsWith(`mcp__${server}__`))
+      if (servers.length === 1) capability.mcpServer = servers[0]
+      else if (servers.length > 1) capability.mcpServerCandidates = servers
+      presentation?.set(capability.id, { name: capability.schema.name,
+        source: servers.length === 1 ? { kind: 'mcp', server: servers[0] } : servers.length > 1
+          ? { kind: 'unknown' } : { kind: 'host' } })
+    }
     if (readSkills(ctx)?.snapshot !== undefined) {
       for (const skill of await observeSkills(agent, signal)) {
         const summary = { name: skill.name, provider: skill.provider, source: skill.source,
@@ -154,23 +164,28 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
         capabilities.push({ id: `skills.${skill.name}`, category: 'skill', revision: digest(summary),
           contract: `${skill.description}\nLoad instructions: await tools.skill(${JSON.stringify({ name: skill.name })})`,
           description: skill.description, selector: { name: skill.name }, invocation: skill.invocation })
+        presentation?.set(`skills.${skill.name}`, { name: skill.name,
+          source: { kind: 'skill', bucket: skill.source, provider: skill.provider } })
       }
     }
     const servers = resourceServers(sections)
-    for (const server of servers) capabilities.push({ id: `mcp.${server}`, category: 'resource',
+    for (const server of servers) capabilities.push({ id: `mcp.${server}`, category: 'resource', mcpServer: server,
       revision: digest({ server, instructions: sections.find(section => section.name === `mcp:${server}`)?.text ?? '' }),
       dependencies: sections.filter(section => section.name === `mcp:${server}`).map(section => ({ id: section.name, text: section.text })), contract: `MCP resource server ${JSON.stringify(server)}. Use tools.list_mcp_resources({server}), tools.list_mcp_resource_templates({server}), and tools.read_mcp_resource({server,uri}); use the listed URI or expand a listed template.`,
       description: `MCP resources and templates from ${server}`, selector: { server } })
+    for (const server of servers) presentation?.set(`mcp.${server}`, { name: server, source: { kind: 'mcp', server } })
     return capabilities.filter(item => {
       if (item.category !== 'tool') return true
       const category = item.schema.name === 'skill' ? 'skill'
         : ['list_mcp_resources', 'list_mcp_resource_templates', 'read_mcp_resource'].includes(item.schema.name) ? 'resource' : undefined
       return category === undefined || capabilities.some(member => member.category === category
-        && settings?.manual.overrides[member.id] !== 'closed')
+        && settings?.manual.overrides[member.id] !== 'closed'
+        && (member.mcpServer === undefined || settings?.manual.overrides[`mcpServers.${member.mcpServer}`] !== 'closed'))
     })
   }
 
   function stateFor(agent) { return sessions.get(String(agent?.session?.id ?? agent?.id)) }
+  const canRefresh = agent => modelSchemasForAgent(agent).some(schema => schema.name === 'run_code')
   function planCommitted(agent, message) {
     return message !== undefined && sessionEvents(agent.session).some(event =>
       event.type === 'user/message' && event.data?.id === message.id)
@@ -557,14 +572,27 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
       return [...sessions].map(([sessionId, state]) => ({ sessionId, effective: state.snapshot.plan,
         pendingRefresh: digest(capabilityConfiguration(currentConfig)) !== digest(state.snapshot.settings) }))
     },
+    canRefresh,
+    describeTargets() {
+      return (ctx.agents?.list?.() ?? []).filter(canRefresh)
+        .map(agent => ({ sessionId: String(agent.session.id ?? agent.id) }))
+    },
     async describeCatalog(signal) {
       const available = new Map()
       for (const agent of ctx.agents?.list?.() ?? []) {
         signal?.throwIfAborted()
         const state = stateFor(agent)
         if (!state && !modelSchemasForAgent(agent).some(schema => schema.name === 'run_code')) continue
-        for (const capability of await inventory(agent, state?.hostSections ?? [], capabilityConfiguration(currentConfig), signal)) {
-          available.set(capability.id, { id: capability.id, category: capability.category, description: capability.description })
+        const hostSections = ctx.systemPrompt?.assemble
+          ? (await ctx.systemPrompt.assemble({ agent, scope: agent, signal, ptcPlusCapabilityObservation: true })).sections
+          : state?.hostSections ?? []
+        const presentation = new Map()
+        for (const capability of await inventory(agent, hostSections, capabilityConfiguration(currentConfig), signal, presentation)) {
+          const display = presentation.get(capability.id)
+          const previous = available.get(capability.id)
+          available.set(capability.id, { id: capability.id, category: capability.category, description: capability.description,
+            ...display, ...(capability.mcpServer === undefined ? {} : { mcpServer: capability.mcpServer }), ...(previous && JSON.stringify(previous.source) !== JSON.stringify(display?.source)
+              ? { source: { kind: 'unknown' }, mcpServer: undefined } : {}) })
         }
       }
       signal?.throwIfAborted()

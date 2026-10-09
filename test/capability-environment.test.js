@@ -304,7 +304,7 @@ test('settings catalog reads current owner inventory while disabled plans and mo
   assert.deepEqual((await env.describeCatalog()).map(entry => entry.id), ['tools.a', 'tools.b'])
   schemas = [schema('new')]
   const entries = await env.describeCatalog()
-  assert.deepEqual(entries, [{ id: 'tools.new', category: 'tool', description: 'Owner contract for new.' }])
+  assert.deepEqual(entries, [{ id: 'tools.new', name: 'new', category: 'tool', description: 'Owner contract for new.', source: { kind: 'host' } }])
   assert.equal(JSON.stringify(agent.session.snapshotEvents()), before)
   assert.equal(env.describe(agent).effective.enabled, false)
   const controller = new AbortController()
@@ -318,6 +318,58 @@ test('settings can list a code agent before its first model step without freezin
     toolSchemasForAgent: () => [schema('run_code'), schema('read')] })
   assert.deepEqual((await env.describeCatalog()).map(entry => entry.id), ['tools.read'])
   assert.equal(env.describe(agent).effective, null)
+  assert.deepEqual(agent.session.snapshotEvents(), [])
+})
+
+test('refresh targets expose only live PTC identities without reading or preparing frozen plans when management is off', () => {
+  const code = agentFor(Session.create('refresh-code'))
+  const native = agentFor(Session.create('refresh-native'))
+  let live = [code, native]
+  let ptc = true
+  const env = createCapabilityEnvironment({ ctx: { agents: { list: () => live } },
+    config: { ...config(), capabilityManagementEnabled: false }, toolSchemasForAgent: () => [],
+    modelSchemasForAgent: agent => agent === code && ptc ? [schema('run_code')] : [schema('read')] })
+  assert.deepEqual(env.describeTargets(), [{ sessionId: 'refresh-code' }])
+  assert.equal(env.canRefresh(native), false)
+  assert.equal(env.describe(code).effective, null)
+  assert.deepEqual(code.session.snapshotEvents(), [])
+  ptc = false
+  assert.deepEqual(env.describeTargets(), [])
+  ptc = true; live = []
+  assert.deepEqual(env.describeTargets(), [])
+})
+
+test('settings source metadata follows Skill providers and captured MCP ownership without changing frozen model contracts', async t => {
+  const owner = new Context()
+  new SkillRegistry(owner)
+  let bodies = 0
+  owner.effect(() => owner.skills.registerProvider(() => ({ name: 'filesystem',
+    list: async () => [{ name: 'image-design', description: 'Generate a UI design', source: 'user-agents',
+      provider: 'filesystem', rank: 100, locator: 'image-design', invocation: { modelInvocable: true, userInvocable: true } }],
+    get: async candidate => { bodies++; return { ...candidate, content: 'Skill body' } },
+  })))
+  const agent = agentFor(Session.create('settings-source-metadata'))
+  const scope = createScope(owner, agent)
+  owner.effect(() => owner.provide('agents', { list: () => [agent] }))
+  const ctx = owner
+  const env = createCapabilityEnvironment({ ctx, config: config(),
+    toolSchemasForAgent: () => [schema('run_code'), schema('read'), schema('mcp__docs__search')] })
+  t.after(async () => { await env.dispose(); await scope.dispose(); await owner.fiber.dispose() })
+  const first = await env.describeCatalog()
+  assert.deepEqual(first.find(entry => entry.id === 'skills.image-design').source,
+    { kind: 'skill', bucket: 'user-agents', provider: 'filesystem' })
+  assert.equal(first.find(entry => entry.id === 'skills.image-design').name, 'image-design')
+  assert.deepEqual(first.find(entry => entry.id === 'tools.mcp__docs__search').source, { kind: 'host' },
+    'A tool name alone cannot prove its MCP source.')
+  assert.equal(env.describe(agent).effective, null)
+  const state = await env.prepare(agent, [{ name: 'mcp:docs', text: 'Docs server owner instructions' }])
+  const frozen = JSON.stringify(state.snapshot)
+  const catalog = await env.describeCatalog()
+  assert.deepEqual(catalog.find(entry => entry.id === 'tools.mcp__docs__search').source, { kind: 'mcp', server: 'docs' })
+  assert.deepEqual(catalog.find(entry => entry.id === 'tools.read').source, { kind: 'host' })
+  assert.equal(JSON.stringify(state.snapshot), frozen)
+  assert.equal(Object.hasOwn(state.snapshot.capabilities.find(entry => entry.id === 'skills.image-design'), 'source'), false)
+  assert.equal(bodies, 0)
   assert.deepEqual(agent.session.snapshotEvents(), [])
 })
 
@@ -737,4 +789,50 @@ test('disposing an MCP resource provider removes discovery, selectors and recove
     && message.source.entries.includes('mcp.probe')), false)
   const frozen = env.stateFor(agent).snapshot.plan.entries.find(entry => entry.id === 'mcp.probe')
   assert.equal(frozen.selection, 'on-demand')
+})
+
+
+test('MCP server closure removes its tools and resources while per-tool choices and other servers survive refresh', async () => {
+  const agent = agentFor(Session.create('mcp-server-master'))
+  agent.runMaintenance = operation => operation(agent.signal)
+  const hostSections = [{ name: 'mcp-resource-servers', text: 'as the server argument: ["docs","other"].' }]
+  const schemas = ['run_code','mcp__docs__search','mcp__docs__edit','mcp__other__search','read_mcp_resource','list_mcp_resources'].map(schema)
+  const ctx = { agents: { list: () => [agent] }, systemPrompt: { assemble: async () => ({sections:hostSections}) } }
+  const individual = { 'tools.mcp__docs__search': 'full', 'tools.mcp__docs__edit': 'closed' }
+  const env = createCapabilityEnvironment({ ctx, config: config(individual), toolSchemasForAgent: () => schemas })
+  const original = await acceptPreparation(env, agent, hostSections)
+  const catalog = await env.describeCatalog(agent.signal)
+  assert.deepEqual(catalog.find(item => item.id === 'tools.mcp__docs__search').source, { kind: 'mcp', server: 'docs' })
+  assert.equal(catalog.find(item => item.id === 'tools.mcp__docs__search').mcpServer, 'docs')
+  const open = env.projectMembers(agent, schemas.map(item => item.name))
+  assert.ok(open.includes('mcp__docs__search'))
+  assert.ok(!open.includes('mcp__docs__edit'))
+  env.reconfigure(config({ ...individual, 'mcpServers.docs': 'closed' }))
+  assert.deepEqual(env.projectMembers(agent, schemas.map(item => item.name)), open, 'Saved closure is pending until explicit refresh.')
+  await env.refresh(agent, hostSections, agent.signal)
+  const closed = env.projectMembers(agent, schemas.map(item => item.name))
+  assert.ok(!closed.some(name => name.startsWith('mcp__docs__')))
+  assert.ok(closed.includes('mcp__other__search'))
+  const snapshot = env.describe(agent)
+  assert.equal(snapshot.effective.entries.find(item => item.id === 'tools.mcp__docs__search').reason, 'mcp-server-disabled')
+  const resource = env.adaptFunction(agent, 'read_mcp_resource', args => args)
+  assert.deepEqual(resource({server:'other',uri:'other://resource'}), {server:'other',uri:'other://resource'})
+  assert.throws(() => resource({server:'docs',uri:'docs://resource'}), /not available/)
+  assert.throws(() => env.validateSupply(agent, 'mcp__docs__search', {}), /not found|unknown|available/i)
+  assert.throws(() => env.validateSupply(agent, 'read_mcp_resource', {server:'docs'}), /not available/)
+  env.reconfigure(config(individual))
+  await env.refresh(agent, hostSections, agent.signal)
+  assert.deepEqual(env.projectMembers(agent, schemas.map(item => item.name)), open)
+  assert.equal(original.snapshot.settings.manual.overrides['tools.mcp__docs__edit'], 'closed')
+  env.reconfigure(config({...individual,'mcpServers.docs':'closed','mcpServers.other':'closed','tools.read_mcp_resource':'full'}))
+  await env.refresh(agent,hostSections,agent.signal)
+  assert.ok(!env.projectMembers(agent,schemas.map(item=>item.name)).includes('read_mcp_resource'))
+  assert.ok(!env.describe(agent).effective.entries.some(item=>item.id==='tools.read_mcp_resource'))
+})
+
+test('MCP namespace ambiguity cannot close another server by guessing ownership', async () => {
+  const agent = agentFor(Session.create('mcp-ambiguous'))
+  const env = createCapabilityEnvironment({ ctx: {}, config: config({'mcpServers.docs':'closed'}),
+    toolSchemasForAgent: () => [schema('mcp__docs__nested__search')] })
+  await assert.rejects(() => env.prepare(agent, [{name:'mcp-resource-servers',text:'as the server argument: ["docs","docs__nested"].'}]), /cannot determine the MCP server owner/)
 })

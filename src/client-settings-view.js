@@ -2,6 +2,7 @@ import { CONFIG_DEFAULTS, CONFIG_FIELDS, CONFIG_GROUPS, CONFIG_MODULES } from '.
 import { resolveConfig } from '../internal/runtime-config.js'
 import { featureEnabled } from './client-feature-gates.js'
 import { isHostIconComponent } from './client-host-compat.js'
+import { capabilityPlanReason, createCapabilitySettingsViews } from './client-capabilities-view.js'
 
 /**
  * Settings card with structured capability controls and one serialized write
@@ -9,7 +10,8 @@ import { isHostIconComponent } from './client-host-compat.js'
  * action only while global bindings are eligible.
  */
 export function createPtcSettingsView(React, deps) {
-  const { ActionButton, BindingsDialog, Modal, useWorkbenchController, icons, inspectCapabilityPlans, inspectCapabilityCatalog } = deps
+  const { ActionButton, BindingsDialog, Modal, useWorkbenchController, icons, inspectCapabilityPlans, inspectCapabilityCatalog,
+    inspectCapabilityTargets, CapabilityRefreshButton } = deps
   const h = React.createElement
   const enabledField = CONFIG_FIELDS.find(field => field.key === 'enabled')
 
@@ -93,45 +95,7 @@ export function createPtcSettingsView(React, deps) {
         : saved.invalid && draft === saved.settings ? h('p', { role: 'status', className: 'ptcPlusMessage' }, t('capabilities.savedStatisticsInvalid')) : null)
   }
 
-  function CapabilityChoices({ value, catalog, catalogError, plans, disabled, onChange, t }) {
-    const [query, setQuery] = React.useState('')
-    const baseline = JSON.parse(value.capabilityBaseline ?? CONFIG_DEFAULTS.capabilityBaseline)
-    const overrides = JSON.parse(value.capabilityOverrides ?? CONFIG_DEFAULTS.capabilityOverrides)
-    const entries = new Map((catalog ?? []).map(entry => [entry.id, entry]))
-    for (const plan of plans ?? []) for (const entry of plan.effective.entries) {
-      if (!entries.has(entry.id)) entries.set(entry.id, { id: entry.id, category: entry.category })
-    }
-    for (const id of [...baseline, ...Object.keys(overrides)]) if (!entries.has(id)) entries.set(id, { id })
-    const available = new Set((catalog ?? []).map(entry => entry.id))
-    const filtered = [...entries.values()].sort((a, b) => a.id.localeCompare(b.id))
-      .filter(entry => `${entry.id} ${entry.description ?? ''}`.toLowerCase().includes(query.toLowerCase()))
-    const change = (key, next) => onChange(CONFIG_FIELDS.find(field => field.key === key), JSON.stringify(next))
-    return h('div', { className: 'ptcPlusCapabilityChoices' },
-      h('div', { className: 'ptcPlusLabel' }, t('capabilityBaseline.label')),
-      h('p', { className: 'ptcPlusDetail' }, t('capabilityBaseline.description')),
-      h('div', { className: 'ptcPlusLabel' }, t('capabilityOverrides.label')),
-      h('p', { className: 'ptcPlusDetail' }, t('capabilityOverrides.description')),
-      h('label', { className: 'ptcPlusSearch' }, h(SearchIcon),
-        h('input', { type: 'search', value: query, 'aria-label': t('capabilities.search'),
-          placeholder: t('capabilities.search'), onChange: event => setQuery(event.target.value) })),
-      catalogError ? h('p', { role: 'status', className: 'ptcPlusMessage' }, t('capabilities.catalogUnavailable', { error: catalogError })) : null,
-      entries.size === 0 ? h('p', { className: 'ptcPlusDetail' }, t('capabilities.catalogEmpty'))
-        : filtered.length === 0 ? h('p', { className: 'ptcPlusDetail' }, t('capabilities.noMatches'))
-          : h('div', { className: 'ptcPlusCapabilityList' }, ...filtered.map(entry => h('div', { key: entry.id, className: 'ptcPlusCapabilityItem' },
-            h('div', { className: 'ptcPlusMain' }, h('span', { className: 'ptcPlusLabel', title: entry.description }, entry.id),
-              catalog !== null && !available.has(entry.id) ? h('div', { className: 'ptcPlusDetail' }, t('capabilities.notAvailable')) : null),
-            h('label', { className: 'ptcPlusCapabilityCommon' },
-              h('input', { type: 'checkbox', className: 'ptcPlusCheck', disabled: disabled('capabilityBaseline'),
-                checked: baseline.includes(entry.id), 'aria-label': t('capabilities.baselineFor', { name: entry.id }),
-                onChange: event => change('capabilityBaseline', event.target.checked
-                  ? [...baseline.filter(id => id !== entry.id), entry.id] : baseline.filter(id => id !== entry.id)) }),
-              t('capabilities.common')),
-            h('select', { className: 'ptcPlusSelect', value: overrides[entry.id] ?? 'automatic', disabled: disabled('capabilityOverrides'),
-              'aria-label': t('capabilities.disclosureFor', { name: entry.id }),
-              onChange: event => { const next = { ...overrides }; if (event.target.value === 'automatic') delete next[entry.id]
-                else next[entry.id] = event.target.value; change('capabilityOverrides', next) } },
-            ...['automatic', 'full', 'on-demand', 'closed'].map(selection => h('option', { key: selection, value: selection }, t(`capabilities.${selection}`))))))))
-  }
+  const { CapabilityWorkbench } = createCapabilitySettingsViews(React, { SearchIcon })
 
   function fieldInput(field, value, disabled, onChange, label) {
     if (field.type === 'boolean') {
@@ -173,6 +137,9 @@ export function createPtcSettingsView(React, deps) {
     const [catalog, setCatalog] = React.useState(null)
     const [catalogError, setCatalogError] = React.useState(null)
     const [planRevision, setPlanRevision] = React.useState(0)
+    const [targets, setTargets] = React.useState(null)
+    const [targetsError, setTargetsError] = React.useState(null)
+    const [refreshSessionId, setRefreshSessionId] = React.useState('')
     const [activeSection, setActiveSection] = React.useState('syntax')
     const writeTail = React.useRef(Promise.resolve())
     const snapshot = usePtcSettings(snapshot => snapshot)
@@ -185,6 +152,20 @@ export function createPtcSettingsView(React, deps) {
     const plansEnabled = enabled && value.capabilityManagementEnabled === true
     const planConfiguration = JSON.stringify(CONFIG_FIELDS.filter(field => field.key.startsWith('capability') || field.key === 'modelPreviewTokens')
       .map(field => value[field.key]))
+    React.useEffect(() => {
+      if (!enabled) { setTargets(null); setTargetsError(null); setRefreshSessionId(''); return }
+      if (!(open || view === 'page' || view === 'dialog') || !inspectCapabilityTargets) return
+      const controller = new AbortController()
+      setTargetsError(null)
+      Promise.resolve().then(() => inspectCapabilityTargets(controller.signal)).then(next => {
+        if (controller.signal.aborted) return
+        setTargets(next)
+        setRefreshSessionId(current => next.some(target => target.sessionId === current) ? current : '')
+      }, error => {
+        if (!controller.signal.aborted) setTargetsError(String(error?.message ?? error))
+      })
+      return () => controller.abort()
+    }, [enabled, open, view, planRevision])
     React.useEffect(() => {
       if (!enabled) {
         setCatalog(null)
@@ -199,7 +180,6 @@ export function createPtcSettingsView(React, deps) {
         setCatalog(available)
       }, error => {
         if (controller.signal.aborted) return
-        setCatalog(null)
         setCatalogError(String(error?.message ?? error))
       })
       return () => controller.abort()
@@ -262,8 +242,7 @@ export function createPtcSettingsView(React, deps) {
       const field = CONFIG_FIELDS.find(candidate => candidate.key === key)
       if (field === undefined) return null
       if (field.key === 'capabilityOverrides') return null
-      if (field.key === 'capabilityBaseline') return h(CapabilityChoices, { key, value, catalog, catalogError, t,
-        disabled: key => fieldDisabled({ key }), onChange: persist, plans: plansEnabled ? plans : null })
+      if (field.key === 'capabilityBaseline') return null
       if (field.key === 'capabilityStatistics') return h('div', { key },
         h('div', { className: 'ptcPlusLabel' }, t(`${key}.label`)),
         h('p', { className: 'ptcPlusDetail' }, t(`${key}.description`)),
@@ -298,31 +277,55 @@ export function createPtcSettingsView(React, deps) {
         : plans === null ? h('p', null, t('state.syncing'))
           : plans.length === 0 ? h('p', null, t('capabilities.empty'))
             : plans.map(plan => h('details', { key: plan.sessionId },
-              h('summary', null, `${plan.sessionId} · ${t(plan.pendingRefresh ? 'capabilities.pending' : 'capabilities.current')}`),
+              h('summary', { tabIndex: 0 }, `${plan.sessionId} · ${t(plan.pendingRefresh ? 'capabilities.pending' : 'capabilities.current')}`),
               h('p', null, t('capabilities.budget', { bytes: plan.effective.budgets.contractBytes, overage: plan.effective.budgets.overageBytes })),
               h('table', null, h('thead', null, h('tr', null,
                 ...['member', 'selection', 'reason', 'coverage'].map(key => h('th', { key }, t(`capabilities.${key}`))))),
               h('tbody', null, ...plan.effective.entries.map(entry => h('tr', { key: entry.id },
                 h('td', null, entry.id), h('td', null, entry.selection),
-                h('td', null, [entry.reason, entry.statisticsReason].filter(Boolean).join(' · ')),
+                h('td', null, capabilityPlanReason(t, entry)),
                 h('td', null, entry.evidence ? `${entry.evidence.used}/${entry.evidence.eligible} (${entry.evidence.scope})` : '—')))))))) : null
+
+    const renderRefresh = () => CapabilityRefreshButton ? h('section', { className: 'ptcPlusCapabilityApply',
+      'aria-label': t('capabilities.applyGroup') },
+      h('label', { className: 'ptcPlusCapabilityFilter' }, h('span', null, t('capabilities.targetSession')),
+        h('select', { className: 'ptcPlusSelect', value: refreshSessionId, 'aria-label': t('capabilities.targetSession'),
+          disabled: !enabled || unavailable || targets === null || Boolean(targetsError), onChange: event => setRefreshSessionId(event.target.value) },
+        h('option', { value: '' }, t('capabilities.chooseSession')),
+        ...(targets ?? []).map(target => h('option', { key: target.sessionId, value: target.sessionId }, target.sessionId)))),
+      h(CapabilityRefreshButton, { sessionId: refreshSessionId, t,
+        enabled: enabled && !unavailable && pending.size === 0 && !targetsError
+          && (targets ?? []).some(target => target.sessionId === refreshSessionId),
+        onApplied: () => setPlanRevision(current => current + 1) }),
+      targetsError ? h('p', { role: 'status', className: 'ptcPlusDetail' }, t('capabilities.unavailable', { error: targetsError })) : null) : null
 
     const renderGroup = group => {
       const fields = group.key === 'syntax' && legacyMigration
         ? [...group.fields, ...legacyKeys]
         : group.fields
+      const heading = h('h3', {
+        id: `${groupIdPrefix}-${group.key}`,
+        className: 'ptcPlusGroupTitle',
+        'data-experimental-label': group.key === 'capabilities' ? t('settings.experimental') : undefined,
+      }, t(`group.${group.key}`))
+      const management = CONFIG_FIELDS.find(field => field.key === 'capabilityManagementEnabled')
       return h('section', {
         key: group.key,
         className: 'ptcPlusGroup',
         'data-experimental': group.key === 'capabilities' ? 'true' : undefined,
         'aria-labelledby': `${groupIdPrefix}-${group.key}`,
       },
-      h('h3', {
-        id: `${groupIdPrefix}-${group.key}`,
-        className: 'ptcPlusGroupTitle',
-        'data-experimental-label': group.key === 'capabilities' ? t('settings.experimental') : undefined,
-      }, t(`group.${group.key}`)),
-      ...fields.map(renderField), group.key === 'capabilities' ? renderPlans() : null)
+      group.key === 'capabilities' ? h('div', { className: 'ptcPlusCapabilityHead' }, heading,
+        h('label', { className: 'ptcPlusCapabilityManagement', title: t('capabilityManagementEnabled.description') },
+          h('span', null, t('capabilities.management')), fieldInput(management, value.capabilityManagementEnabled,
+            fieldDisabled(management), persist, t('capabilityManagementEnabled.label')))) : heading,
+      ...(group.key === 'capabilities' ? [
+        h(CapabilityWorkbench, { key: 'capability-workbench', id: `${groupIdPrefix}-capability-workbench`,
+          value, catalog, catalogError, plans: plansEnabled ? plans : null, plansError,
+          disabled: key => fieldDisabled({ key }), onChange: persist,
+          onReload: () => setPlanRevision(current => current + 1), t, renderField, renderPlans, renderRefresh,
+          selectedSessionId: refreshSessionId, onSessionSelect: setRefreshSessionId })]
+        : fields.map(renderField)))
     }
 
     const settingsFields = navigable => [

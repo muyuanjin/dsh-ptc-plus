@@ -7,9 +7,9 @@ import { normalizeReplMemorySnapshot } from '../internal/repl-memory-projection.
  * - observeRepl watches one visible REPL region, retries the watch with bounded
  *   backoff and only reports an observation that still matches the requested
  *   inventory. Everything it starts is aborted by its disposer.
- * - createBindingCommandAvailability publishes one boolean per session for the
- *   `binding` command, keyed by epoch so a late `commands.list` answer can never
- *   revive a subscription that already ended.
+ * - createCommandAccess publishes command availability per session, keyed by
+ *   epoch so late directory replies cannot revive an ended subscription.
+ *   Execution receipts must also match the connection and preset generations.
  */
 export function createReplObserver({ rpc, ctx }) {
   function observeRepl(sessionId, element, memory, onObservation) {
@@ -78,14 +78,15 @@ export function createReplObserver({ rpc, ctx }) {
   return { observeRepl }
 }
 
-export function createBindingCommandAvailability(scope) {
+export function createCommandAccess(scope, name) {
   const entries = new Map()
   let commandRemote
+  let connectionGeneration = 0
   const entryFor = (sessionId) => {
     const id = String(sessionId)
     let entry = entries.get(id)
     if (entry === undefined) {
-      entry = { available: false, epoch: 0, listeners: new Set() }
+      entry = { available: false, epoch: 0, commandGeneration: 0, listeners: new Set() }
       entry.source = {
         getSnapshot: () => entry.available,
         subscribe(listener) {
@@ -119,7 +120,7 @@ export function createBindingCommandAvailability(scope) {
       const result = await commandRemote?.list(String(sessionId))
       available = result?.ok === true
         && Array.isArray(result.value)
-        && result.value.some(command => command?.name === 'binding')
+        && result.value.some(command => command?.name === name)
     } catch {}
     if (entry.epoch === epoch) publish(entry, available)
   }
@@ -128,10 +129,12 @@ export function createBindingCommandAvailability(scope) {
     const entry = entries.get(String(sessionId))
     if (entry === undefined || entry.listeners.size === 0) return
     entry.epoch += 1
+    entry.commandGeneration += 1
     publish(entry, false)
     void refresh(sessionId)
   }
   scope.inject(['remote', 'remote.commands'], commandScope => {
+    connectionGeneration++
     commandRemote = commandScope.get('remote.commands')
     commandScope.effect(() => commandScope.remote.$on('commands/change', () => {
       for (const sessionId of entries.keys()) void refresh(sessionId)
@@ -139,6 +142,7 @@ export function createBindingCommandAvailability(scope) {
     commandScope.effect(() => commandScope.remote.$on('agent-preset/selected', reset))
     for (const sessionId of entries.keys()) void refresh(sessionId)
     commandScope.effect(() => () => {
+      connectionGeneration++
       commandRemote = undefined
       for (const entry of entries.values()) {
         entry.epoch++
@@ -147,13 +151,36 @@ export function createBindingCommandAvailability(scope) {
     })
   })
   scope.on('connection/reset', () => {
+    connectionGeneration++
     for (const sessionId of entries.keys()) reset(sessionId)
   })
   scope.effect(() => () => {
+    connectionGeneration++
     for (const entry of entries.values()) entry.epoch++
     entries.clear()
   })
   return Object.freeze({
     source: sessionId => entryFor(sessionId).source,
+    async run(sessionId, input, signal) {
+      signal?.throwIfAborted()
+      const remote = commandRemote
+      const generation = connectionGeneration
+      const entry = entries.get(String(sessionId))
+      const commandGeneration = entry?.commandGeneration
+      if (!entries.get(String(sessionId))?.available || typeof remote?.execute !== 'function') {
+        throw new Error(`/${name} is unavailable in this session`)
+      }
+      const result = await remote.execute(String(sessionId), `/${name}${input ? ` ${input}` : ''}`, [], signal)
+      signal?.throwIfAborted()
+      if (remote !== commandRemote || generation !== connectionGeneration
+        || commandGeneration !== entry?.commandGeneration) throw new Error('Command connection changed')
+      if (result?.ok !== true || !result.value) throw new Error(result?.error?.message ?? 'Command was not accepted')
+      if (result.value.result?.kind !== 'success') throw new Error(result.value.result?.text ?? 'Command failed')
+      return result.value.result
+    },
   })
+}
+
+export function createBindingCommandAvailability(scope) {
+  return createCommandAccess(scope, 'binding')
 }

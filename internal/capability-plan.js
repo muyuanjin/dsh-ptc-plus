@@ -101,6 +101,8 @@ export function createCapabilityPlan(input) {
     if (!Array.isArray(dependencies)) throw new TypeError('ptc-plus: contract dependencies must be an array')
     return {
       id, revision, category: value.category,
+      ...(value.mcpServer === undefined ? {} : { mcpServer: text(value.mcpServer, 'MCP server identity') }),
+      ...(value.mcpServerCandidates === undefined ? {} : { mcpServerCandidates: value.mcpServerCandidates.map(server => text(server, 'MCP server candidate')) }),
       contract: text(value.contract, 'complete capability contract'),
       dependencies: dependencies.map(rawDependency => {
         const dependency = record(rawDependency, 'contract dependency')
@@ -138,8 +140,12 @@ export function createCapabilityPlan(input) {
   const full = []
   const candidates = []
   for (const capability of capabilities) {
-    const explicit = Object.hasOwn(overrides, capability.id) ? overrides[capability.id] : undefined
-    const entry = { id: capability.id, revision: capability.revision, category: capability.category, selection: explicit ?? 'on-demand', reason: explicit ? 'manual-override' : 'baseline-not-selected' }
+    if (capability.mcpServerCandidates?.some(server => overrides[`mcpServers.${server}`] === 'closed')) {
+      throw new TypeError(`ptc-plus: cannot determine the MCP server owner of ${capability.id}; conflicting namespaces: ${capability.mcpServerCandidates.join(', ')}`)
+    }
+    const serverClosed = capability.mcpServer !== undefined && overrides[`mcpServers.${capability.mcpServer}`] === 'closed'
+    const explicit = serverClosed ? 'closed' : Object.hasOwn(overrides, capability.id) ? overrides[capability.id] : undefined
+    const entry = { id: capability.id, revision: capability.revision, category: capability.category, selection: explicit ?? 'on-demand', reason: serverClosed ? 'mcp-server-disabled' : explicit ? 'manual-override' : 'baseline-not-selected' }
     entries.push(entry)
     selections.set(capability.id, entry)
     if (explicit === 'full') full.push(capability)

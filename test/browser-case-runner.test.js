@@ -14,8 +14,8 @@ test('public browser inventories retain all layout and fallback combinations wit
   const fallbacks = list('scripts/client-fallback-smoke.mjs')
   assert.equal(layouts.length, 168)
   assert.equal(new Set(layouts).size, 168)
-  assert.equal(fallbacks.length, 105)
-  assert.equal(new Set(fallbacks).size, 105)
+  assert.equal(fallbacks.length, 121)
+  assert.equal(new Set(fallbacks).size, 121)
   assert.equal(fallbacks.filter(id => id.startsWith('dock/')).length, 24)
   assert.equal(fallbacks.filter(id => id.startsWith('catalog/')).length, 24)
   const pageVariants = [320, 390, 1440].flatMap(width => ['light', 'dark'].flatMap(theme =>
@@ -30,6 +30,10 @@ test('public browser inventories retain all layout and fallback combinations wit
   dialogIds.push(...[320, 390].flatMap(width => ['en', 'zh'].flatMap(locale => ['light', 'dark'].map(theme =>
     `settings-dialog/${width}x240/${theme}/native/${locale}`))))
   assert.deepEqual(fallbacks.filter(id => id.startsWith('settings-dialog/')).sort(), dialogIds.sort())
+  const capabilityIds = [320, 1920].flatMap(width => ['native', 'fallback'].flatMap(surface =>
+    ['en', 'zh'].flatMap(locale => ['light', 'dark'].map(theme =>
+      `capability-workbench/${width}/${theme}/${surface}/${locale}`))))
+  assert.deepEqual(fallbacks.filter(id => id.startsWith('capability-workbench/')).sort(), capabilityIds.sort())
   assert.equal(list('scripts/client-fallback-smoke.mjs', ['--menu-only']).length, 32)
   assert.deepEqual(list('scripts/client-binding-layout.mjs', ['--case', '320/light/ready-en']), ['320/light/ready-en'])
 })

@@ -21,6 +21,7 @@ const allCases = [
   ...[320, 390].flatMap(width => variants.filter(item => item.native).map(item => ({ family: 'settings-dialog', viewport: { width, height: 240 }, ...item }))),
   ...[320, 390, 1440].flatMap(width => ['en', 'zh'].flatMap(locale =>
     ['light', 'dark'].map(theme => ({ family: 'settings-page', width, locale, theme })))),
+  ...[320, 1920].flatMap(width => variants.map(item => ({ family: 'capability-workbench', width, ...item }))),
   { family: 'hover-settlement' },
 ].map(item => ({ ...item, id: [item.family, item.width ?? (item.viewport && `${item.viewport.width}x${item.viewport.height}`),
   item.theme, item.native === undefined ? undefined : item.native ? 'native' : 'fallback', item.locale].filter(Boolean).join('/') }))
@@ -49,6 +50,7 @@ if (values.list) {
     import {createAuthoringView} from './src/client-authoring-view.js';
     import {createUserBindingsWorkbench} from './src/client-workbench.js';
     import {createPtcSettingsView} from './src/client-settings-view.js';
+    import {createCapabilityRefreshView} from './src/client-capabilities-view.js';
     import {SETTINGS_COPY} from './src/client-copy.js';
     const h=React.createElement;
     installStyles();
@@ -80,20 +82,41 @@ if (values.list) {
     const workbench=createUserBindingsWorkbench(React,{TypeScriptEditor:()=>null,BindingConsole:()=>null,
       IconButton,ActionButton,Modal,catalogOwner,icons:{refresh:Icon,plus:Icon,close:Icon,search:Icon,chevron:Icon,
         edit:Icon,check:Icon,trash:Icon}});
+    window.refreshCalls=[];
+    const CapabilityRefreshButton=createCapabilityRefreshView(React,{
+      source:()=>({getSnapshot:()=>true,subscribe:()=>()=>{}}),
+      run:async(sessionId,input,signal)=>{window.refreshCalls.push({sessionId,input});
+        signal.throwIfAborted();return {kind:'success',text:'Host accepted refresh'};}
+    });
     const {PTCPlusSettingsDialog,PTCPlusSettingsCard}=createPtcSettingsView(React,{ActionButton,
       BindingsDialog:workbench.BindingsDialog,Modal,useWorkbenchController:workbench.useWorkbenchController,
-      icons:{chevron:Icon}});
+      icons:{chevron:Icon},CapabilityRefreshButton,
+      inspectCapabilityTargets:async()=>[{sessionId:'ptc-session'},{sessionId:'other-session'}],
+      inspectCapabilityCatalog:async()=>window.capabilityWorkbench?[
+        {id:'tools.read',name:'read',category:'tool',description:'Read file contents.',source:{kind:'host'}},
+        {id:'tools.edit',name:'edit',category:'tool',description:'Edit project files.',source:{kind:'host'}},
+        {id:'tools.bash',name:'bash',category:'tool',description:'Run terminal commands.',source:{kind:'host'}},
+        {id:'tools.mcp__github__search',name:'search',category:'tool',description:'Search code.',source:{kind:'mcp',server:'github'}},
+        {id:'tools.mcp__'+('a'.repeat(64))+'__search',name:'search',category:'tool',description:'Search a server with a long identifier.',source:{kind:'mcp',server:'a'.repeat(64)}},
+        {id:'skills.rightapi-image-generator',name:'rightapi-image-generator',category:'skill',description:'Generate, edit and localize images through RightAPI.',source:{kind:'skill',bucket:'user-agents',provider:'filesystem'}},
+        {id:'skills.documentation-freshness-auditor',name:'documentation-freshness-auditor',category:'skill',description:'Keep project documentation consistent with its implementation.',source:{kind:'skill',bucket:'project-agents',provider:'filesystem'}},
+        {id:'mcp.project-docs',name:'project-docs',category:'resource',description:'Project documentation resources.',source:{kind:'mcp',server:'project-docs'}}
+      ]:[],
+      inspectCapabilityPlans:async()=>window.capabilityWorkbench?[{sessionId:'ptc-session',pendingRefresh:true,
+        effective:{budgets:{contractBytes:1200,overageBytes:0},entries:[{id:'skills.rightapi-image-generator',category:'skill',selection:'on-demand',reason:'baseline-not-selected',statisticsReason:'statistics-disabled'}]}}]:[]});
     const view={mounted:false,reachable:true,candidate:null,candidateKey:null,action:null,message:null};
     const review={reachable:()=>{},getSnapshot:()=>view};
     const {BindingAuthorButton}=createAuthoringView(React,{ActionButton,IconButton,Menu,MenuFallback:Menu,
-      BindingsDialog:workbench.BindingsDialog,PTCPlusSettingsDialog,
+      BindingsDialog:workbench.BindingsDialog,PTCPlusSettingsDialog,CapabilityRefreshButton,
       useWorkbenchController:workbench.useWorkbenchController,useBindingReview:()=>[review,view],
       catalogOwner,callUserBindings,subscribeReset:()=>()=>{},menuChildren:createMenuChildrenEvidence(),
       icons:{sparkle:Icon,chevron:Icon,close:Icon,check:Icon}});
     const root=createRoot(document.querySelector('#composer'));
     const t=(key,args={})=>window.menuLocale?Object.entries(args).reduce((text,[name,value])=>
       text.replaceAll('{'+name+'}',String(value)),SETTINGS_COPY[window.menuLocale][key]??key):key;
-    let settingsValue={enabled:true};window.settingsWrites=[];
+    let settingsValue={enabled:true,...window.capabilityWorkbench?{capabilityManagementEnabled:true,
+      capabilityBaseline:JSON.stringify(['tools.read','tools.bash','skills.rightapi-image-generator']),
+      capabilityOverrides:JSON.stringify({'tools.edit':'full','tools.mcp__github__search':'on-demand','skills.rightapi-image-generator':'full','tools.previous':'closed'})}: {}};window.settingsWrites=[];
     const updateSetting=async(key,value)=>{window.settingsWrites.push([key,value]);settingsValue={...settingsValue,[key]:value};render();return null};
     const usePtcSettings=select=>select({status:'ready',writable:true,value:settingsValue});
     const render=()=>root.render(window.settingsDialog?h(PTCPlusSettingsDialog,{t,onClose:()=>{},
@@ -492,6 +515,9 @@ if (values.list) {
         assert.equal(await group.getAttribute('aria-expanded'), 'false')
         assert.equal(await menu.locator('[data-binding-id]').count(), 16)
         const label = `${viewport.width}x${viewport.height}/${native ? 'native' : 'fallback'}/${locale}/${theme}`
+        const refresh = menu.getByRole('menuitem', { name: SETTINGS_COPY[locale]['capabilities.applySession'], exact: true })
+        await refresh.click()
+        assert.deepEqual(await page.evaluate(() => window.refreshCalls), [{sessionId:'fallback-session',input:'refresh'}])
         const initial = await assertSparkleMenuLayout(menu, label)
         await assertSparkleMenuTypography(menu, label)
         assert.equal(initial.scrollable, true, `${label}: large catalog does not scroll`)
@@ -563,6 +589,128 @@ if (values.list) {
         await page.keyboard.press('Escape')
         await menu.waitFor({ state: 'hidden' })
         assert.equal(await trigger.evaluate(button => button === document.activeElement), true)
+        await page.evaluate(() => window.disposeFixture())
+        return
+      }
+      if (family === 'capability-workbench') {
+        await page.goto('about:blank')
+        await page.setViewportSize({ width, height: 1080 })
+        await page.setContent('<style>body{margin:0;font:14px Arial,sans-serif}</style><div id="composer"></div>')
+        await setFixtureTheme(page, theme)
+        await page.evaluate(({ native, locale }) => {
+          window.settingsDialog = true; window.nativeSettingsModal = native; window.menuLocale = locale; window.capabilityWorkbench = true
+        }, { native, locale })
+        for (const output of fixture.outputFiles) {
+          if (output.path.endsWith('.css')) await page.addStyleTag({ content: output.text })
+          else await page.addScriptTag({ content: output.text })
+        }
+        const dialog = page.locator('.ptcPlusSettingsModal')
+        await dialog.waitFor()
+        await dialog.locator('[data-section=capabilities]').evaluate(element => element.click())
+        const labels = SETTINGS_COPY[locale]
+        const workbench = dialog.locator('.ptcPlusCapabilityWorkbench')
+        await workbench.locator('.ptcPlusCapabilityItem').first().waitFor()
+        assert.equal(await workbench.locator('.ptcPlusCapabilityItem').count(), 9)
+        assert.equal(await workbench.locator('textarea').count(), 0)
+        const serverSwitch = workbench.getByRole('switch', {name:labels['capabilities.serverToggle'].replace('{name}','github'),exact:true})
+        assert.equal(await serverSwitch.isChecked(),true)
+        await serverSwitch.click()
+        await page.waitForFunction(()=>JSON.parse(window.settingsWrites.filter(([key])=>key==='capabilityOverrides').at(-1)[1])['mcpServers.github']==='closed')
+        await serverSwitch.click()
+        await page.waitForFunction(()=>!Object.hasOwn(JSON.parse(window.settingsWrites.filter(([key])=>key==='capabilityOverrides').at(-1)[1]),'mcpServers.github'))
+        const longServer = workbench.locator(`[data-mcp-server="${'a'.repeat(64)}"]`)
+        const assertServerLayout = async () => {
+          const geometry = await longServer.evaluate(element => {
+            const list = element.closest('.ptcPlusCapabilityList')
+            const heading = element.querySelector('h4').getBoundingClientRect()
+            const bounds = list.getBoundingClientRect()
+            return { overflow: list.scrollWidth > list.clientWidth + 1,
+              contained: heading.left >= bounds.left && heading.right <= bounds.right + 1 }
+          })
+          assert.equal(geometry.overflow, false, 'long MCP server name overflows the capability list')
+          assert.equal(geometry.contained, true, 'long MCP server heading is clipped')
+        }
+        await assertServerLayout()
+        await assertControlVisual(longServer.locator('input'), { label: `${width}/${theme}/${native}/${locale}: long MCP server master`, disabled: true })
+        if (width === 320) {
+          const fault = await page.addStyleTag({ content: '.ptcPlusCapabilityGroup h4{overflow-wrap:normal!important}' })
+          try {
+            await assert.rejects(assertServerLayout, /long MCP server/)
+          } finally {
+            await fault.evaluate(element => element.remove())
+          }
+          await assertServerLayout()
+        }
+        assert.ok(await workbench.locator('.ptcPlusSearch svg').count() > 0)
+        const management = dialog.locator('.ptcPlusCapabilityManagement input')
+        await assertControlVisual(management, { label: `${width}/${theme}/${native}/${locale}: capability management`, disabled: true })
+        await management.evaluate(element => { element.checked = false })
+        try {
+          await assertControlVisual(management, { label: `${width}/${theme}/${native}/${locale}: capability management off`, disabled: true })
+        } finally {
+          await management.evaluate(element => { element.checked = true })
+        }
+        if (theme === 'dark') {
+          const fault = await page.addStyleTag({ content: '.ptcPlusCapabilityManagement input:before{background:#fff!important}' })
+          try {
+            await assert.rejects(() => assertControlVisual(management, { label: 'capability management thumb fault', focus: false }), /unreadable control/)
+          } finally {
+            await fault.evaluate(element => element.remove())
+          }
+        }
+        const before = await dialog.evaluate(element => ({ navTop: element.querySelector('.ptcPlusSettingsNav').getBoundingClientRect().top, document: scrollY }))
+        await workbench.getByRole('button', { name: labels['capabilities.type.skill'], exact: true }).click()
+        assert.equal(await workbench.locator('.ptcPlusCapabilityItem').count(), 2)
+        await workbench.getByLabel(labels['capabilities.strategyFilter'], { exact: true }).selectOption('full')
+        assert.equal(await workbench.locator('.ptcPlusCapabilityItem').count(), 1)
+        assert.match(await workbench.locator('.ptcPlusCapabilityDetail').innerText(), /rightapi-image-generator/)
+        assert.match(await workbench.locator('.ptcPlusCapabilityDetail').innerText(), new RegExp(labels['capabilities.pending']))
+        await workbench.getByRole('button', { name: labels['capabilities.clear'], exact: true }).click()
+        await workbench.getByLabel(labels['capabilities.sort'], { exact: true }).selectOption('id')
+        await workbench.getByRole('button', { name: labels['capabilities.ascending'], exact: true }).click()
+        const toolIds = await workbench.locator('.ptcPlusCapabilityList>section').first().locator('.ptcPlusCapabilityIdentity code').allTextContents()
+        assert.deepEqual(toolIds, ['tools.read', 'tools.edit', 'tools.bash'])
+        await workbench.getByRole('button', { name: labels['capabilities.descending'], exact: true }).click()
+        await workbench.getByLabel(labels['capabilities.availabilityFilter'], { exact: true }).selectOption('unavailable')
+        assert.equal(await workbench.locator('.ptcPlusCapabilityItem').count(), 1)
+        await workbench.getByRole('button', { name: labels['capabilities.removeSaved'], exact: true }).click()
+        await page.waitForFunction(() => window.settingsWrites.some(([key]) => key === 'capabilityOverrides'))
+        await workbench.getByRole('button', { name: labels['capabilities.clear'], exact: true }).first().click()
+        await workbench.getByRole('searchbox').fill('rightapi-image-generator')
+        assert.equal(await workbench.locator('.ptcPlusCapabilityItem').count(), 1)
+        await workbench.getByRole('tab', { name: labels['capabilities.tab.manual'], exact: true }).focus()
+        await page.keyboard.press('ArrowRight')
+        assert.equal(await workbench.getByRole('tab', { name: labels['capabilities.tab.statistics'], exact: true }).getAttribute('aria-selected'), 'true')
+        await workbench.getByRole('tab', { name: labels['capabilities.tab.manual'], exact: true }).click()
+        await workbench.getByRole('searchbox').fill('')
+        await workbench.locator('.ptcPlusCapabilityIdentity').filter({ hasText: 'skills.rightapi-image-generator' }).click()
+        const after = await dialog.evaluate(element => ({ navTop: element.querySelector('.ptcPlusSettingsNav').getBoundingClientRect().top, document: scrollY }))
+        assert.deepEqual(after, before, 'capability filters and tabs moved the navigation or document')
+        const geometry = await workbench.evaluate(element => {
+          const list = element.querySelector('.ptcPlusCapabilityTable').getBoundingClientRect()
+          const details = element.querySelector('.ptcPlusCapabilityDetail').getBoundingClientRect()
+          return { sideBySide: details.left >= list.right, stacked: details.top >= list.bottom,
+            overflow: element.scrollWidth > element.clientWidth }
+        })
+        assert.equal(geometry.overflow, false, 'capability workbench overflows its content viewport')
+        assert.equal(width === 1920 ? geometry.sideBySide : geometry.stacked, true, 'capability detail layout did not adapt')
+        const visibleSurface = workbench.locator('[role=tabpanel]:not([hidden])')
+        await assertVisualSurface(page, visibleSurface, `${width}/${theme}/${native}/${locale}: capability workbench`)
+        await dialog.locator('[data-section=capabilities]').evaluate(element => element.click())
+        await workbench.locator('.ptcPlusCapabilityList').evaluate(element => { element.scrollTop = 0 })
+        await page.screenshot({ path: `artifacts/button-styles/capability-workbench-${width}-${theme}-${native ? 'native' : 'fallback'}-${locale}.png` })
+        const target = dialog.getByLabel(labels['capabilities.targetSession'], { exact: true })
+        const refresh = dialog.getByRole('button', { name: labels['capabilities.applySession'], exact: true })
+        assert.equal(await refresh.isDisabled(), true)
+        await target.selectOption('other-session')
+        await refresh.click()
+        await page.waitForFunction(() => window.refreshCalls.length === 1)
+        assert.deepEqual(await page.evaluate(() => window.refreshCalls), [{sessionId:'other-session',input:'refresh'}])
+        await management.click()
+        assert.equal(await refresh.isEnabled(), true)
+        await refresh.click()
+        await page.waitForFunction(() => window.refreshCalls.length === 2)
+        assert.equal(await page.evaluate(() => window.refreshCalls.every(call=>call.sessionId==='other-session')), true)
         await page.evaluate(() => window.disposeFixture())
         return
       }

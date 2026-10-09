@@ -18,6 +18,8 @@ const FEATURE_SETTINGS = Object.freeze({
   replView: ['replViewEnabled'],
   // The composer authoring menu.
   authorButton: ['userBindingsEnabled', 'bindingAuthorButtonVisible'],
+  // Settings and capability refresh do not require Global User Bindings.
+  ptcMenu: ['bindingAuthorButtonVisible'],
 })
 
 /**

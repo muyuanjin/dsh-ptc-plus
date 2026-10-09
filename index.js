@@ -406,6 +406,7 @@ function installPtCRuntime(ctx, resolvedConfig, seam, toolSchemasForAgent, toolS
         scope.effect(() => scope.ptcPlusRpc.register(RPC_CONTRACTS.capabilities, async (operation, _payload, signal) => {
           signal.throwIfAborted()
           if (operation === 'catalog') return { ok: true, value: await capabilityEnvironment.describeCatalog(signal) }
+          if (operation === 'targets') return { ok: true, value: capabilityEnvironment.describeTargets() }
           if (operation !== 'inspect') return { ok: false, error: { code: 'UNKNOWN_OPERATION', message: 'Unknown capability plan operation', details: null } }
           return { ok: true, value: capabilityEnvironment.describeSessions() }
         }), 'ptc-plus: capability plan observation')
@@ -415,8 +416,14 @@ function installPtCRuntime(ctx, resolvedConfig, seam, toolSchemasForAgent, toolS
       const commands = ctx.inject(['commands'], scope => {
         scope.effect(() => scope.commands.register({ name: 'capabilities',
           description: 'Inspect the session capability plan or refresh it from saved settings.',
+          input: { hint: 'refresh (or leave empty to inspect)' },
           handler: async ({ agent, rawInput, signal }) => {
-            if (rawInput.trim() === 'refresh') {
+            const input = rawInput.trim()
+            if (input !== '' && input !== 'refresh') return { kind: 'error', text: 'Use /capabilities to inspect or /capabilities refresh to apply saved settings.' }
+            if (input === 'refresh') {
+              if (!capabilityEnvironment.canRefresh(agent)) {
+                return { kind: 'error', text: 'Capability refresh requires an active PTC session.' }
+              }
               await capabilityEnvironment.refresh(agent, undefined, signal)
               return { kind: 'success', text: capabilityEnvironment.describe(agent).publication === 'pending'
                 ? 'Session capability environment prepared; its notification awaits the first accepted model step.'

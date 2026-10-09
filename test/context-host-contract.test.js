@@ -2,6 +2,8 @@ import assert from 'node:assert/strict'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { createRequire } from 'node:module'
+import { runInNewContext } from 'node:vm'
 import test from 'node:test'
 import { Context } from '@deepseek-ai/cordis'
 import { AgentRegistry, agentEvents } from '@deepseek-ai/dsh-agent'
@@ -20,6 +22,7 @@ import { SystemPrompt } from '@deepseek-ai/dsh-system-prompt'
 import * as skillTool from '@deepseek-ai/dsh-tool-skill'
 import { ToolRuntime, defineTool } from '@deepseek-ai/dsh-tools'
 import { createFixtureExecutionProvider } from './host-fixture.js'
+import * as ptcPlus from '../index.js'
 
 const signal = () => new AbortController().signal
 const session = (id, parentSession) => Session.create(id, [], {
@@ -169,6 +172,66 @@ test('command receipts remain outside model history until a surface message is a
   assert.equal(restored.deriveMessages().at(-1).id, notice.id)
 })
 
+test('capability commands advertise refresh input and apply through the public human-command runtime without model requests', async t => {
+  const { ctx } = host(t, 'ptc')
+  new CommandRuntime(ctx)
+  new AgentRegistry(ctx)
+  new SessionStore(ctx)
+  new SessionProjectionRegistry(ctx)
+  let requests = 0
+  ctx.provide('llm', { stream() { requests++; throw new Error('Human commands must not request a model') } })
+  await ctx.plugin(AgentLoop, { agents: [] }).await()
+  await ctx.plugin(ptcPlus, { userBindingsEnabled: false, cordisToolsEnabled: false, capabilityManagementEnabled: true,
+    capabilityStatistics: '{"enabled":false,"windowSize":10,"minimumSamples":1,"fullThreshold":0.5}' }).await()
+  const owner = await ctx.agents.create({ sessionId: 'human-capability-refresh', meta: { cwd: process.cwd() },
+    agentOptions: { provider: 'fixture', model: 'fixture' } })
+  t.after(() => owner.dispose())
+  const agent = owner.agent
+  const command = ctx.commands.list(agent).find(command => command.name === 'capabilities')
+  assert.match(command.input.hint, /refresh/)
+  let definition
+  const require = createRequire(import.meta.url)
+  runInNewContext(await readFile(require.resolve('@deepseek-ai/dsh-client-ui-commands/client'), 'utf8'), {
+    window: { __ModuleLoader__: { load(value) { definition = value } } }, AbortController, console,
+  })
+  const modules = new Map(await Promise.all(['@deepseek-ai/cordis', '@deepseek-ai/dsh-client-store', 'react', 'react/jsx-runtime']
+    .map(async name => [name, await import(name)])))
+  const { CommandUiRuntime } = definition.factory(name => name === '@deepseek-ai/dsh-client-ui-primitives' ? {} : modules.get(name))
+  const ui = new Context()
+  t.after(() => ui.fiber.dispose())
+  ui.provide('locale', { bind: () => key => key })
+  let inputSource
+  ui.provide('inputTriggers', { registerSource(source) { inputSource = source; return () => {} } })
+  ui.provide('sessions', {
+    subagentAddress: () => undefined, binding: () => ({}),
+    using: async (_id, _lease, callback) => callback({ binding: { session: { getSnapshot: () => ({ openState: 'open' }) } } }),
+  })
+  const remoteCommands = {
+    list: async id => { assert.equal(id, agent.id); return { ok: true, value: ctx.commands.list(agent) } },
+    execute: async (id, line, attachments) => {
+      assert.equal(id, agent.id)
+      return { ok: true, value: await ctx.commands.execute(agent, line, attachments, signal()) }
+    },
+  }
+  ui.provide('remote', { commands: remoteCommands, $on: () => () => {} })
+  ui.provide('remote.commands', remoteCommands)
+  new CommandUiRuntime(ui)
+  const bare = await ctx.commands.execute(agent, '/capabilities', [], signal())
+  assert.equal(bare.result.kind, 'success')
+  const matched = await inputSource.matchEnter({ sessionId: agent.id }, '/capabilities refresh', signal(), { attachments: 0 })
+  assert.equal(matched.claim.name, 'capabilities')
+  assert.equal((await matched.claim.submit('refresh', ui, [])).kind, 'success')
+  const completed = agent.session.snapshotEvents().filter(event => event.type === 'command/done').at(-1)
+  assert.match(completed.data.text, /first accepted model step/)
+  const inspect = await ctx.commands.execute(agent, '/capabilities', [], signal())
+  assert.equal(JSON.parse(inspect.result.text).publication, 'pending')
+  const invalid = await ctx.commands.execute(agent, '/capabilities surprise', [], signal())
+  assert.equal(invalid.result.kind, 'error')
+  assert.match(invalid.result.text, /Use \/capabilities/)
+  assert.equal(requests, 0)
+  assert.equal(agent.session.deriveMessages().some(message => message.content?.some(block => block.text === '/capabilities refresh')), false)
+})
+
 test('durable session lineage survives restoration without asserting that a family has ended', () => {
   const root = session('family-root')
   const child = session('family-child', root.id)
@@ -229,4 +292,24 @@ test('public retention and spill preserve complete presentation without rerunnin
   assert.equal(saved.bytes, Buffer.byteLength(presentation))
   assert.match(saved.retrievalHint, /read|grep/)
   assert.deepEqual(JSON.parse(await readFile(saved.locator, 'utf8')), canonical)
+})
+
+
+test('settings catalog captures public MCP ownership before the first request without preparing plans or bindings', async t => {
+  const {ctx,agent} = host(t,'ptc')
+  new AgentRegistry(ctx)
+  ctx.agents.list = () => [agent]
+  const operations = new Map()
+  ctx.provide('ptcPlusRpc',{register(contract,handler){ operations.set(contract.service,handler); return ()=>operations.delete(contract.service) }})
+  new McpResourceRuntime(ctx)
+  ctx.effect(()=>ctx.mcpResources.register('docs',{request:async()=>({resources:[]})}))
+  ctx.effect(()=>ctx.tools.register(echo('mcp__docs__search')))
+  await ctx.plugin(ptcPlus,{userBindingsEnabled:false,cordisToolsEnabled:false,capabilityManagementEnabled:true}).await()
+  const before = agent.session.snapshotEvents()
+  const catalog = await operations.get('ptcPlusCapabilities')('catalog',{},signal())
+  assert.equal(catalog.ok,true)
+  assert.equal(catalog.value.find(entry=>entry.id==='tools.mcp__docs__search').mcpServer,'docs')
+  assert.deepEqual(agent.session.snapshotEvents(),before)
+  const inspection = await operations.get('ptcPlusCapabilities')('inspect',{},signal())
+  assert.deepEqual(inspection.value,[])
 })

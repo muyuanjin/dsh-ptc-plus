@@ -446,7 +446,8 @@
         "consecutive recovery contractions emit one full notice outside failed captured output",
         "evaluation-only public final canonical return observer preserves native return type/value independently of renderer text, with bounded identity evidence and missing-evidence contraction",
         "evaluation observer insertion uses the official profile patch composer in both arms rather than updating an absent entry",
-        "evaluation observer uses public Agent session identity and retains formally linked child canonical sidecars after execution scratch cleanup"
+        "evaluation observer uses public Agent session identity and retains formally linked child canonical sidecars after execution scratch cleanup",
+        "public composer accepts refresh arguments without starting a model request and preserves inspect/invalid input behavior"
       ],
       "entries": [
         "run_code",
@@ -460,7 +461,8 @@
         "argument diagnostic inbox message",
         "A/B evaluation canonical tools/result observer",
         "headless evaluation overlay insertion",
-        "A/B family evidence lifecycle through abRunPaths"
+        "A/B family evidence lifecycle through abRunPaths",
+        "human /capabilities input matching and authenticated command execution"
       ],
       "lifecycle": [
         "register",
@@ -552,14 +554,18 @@
         "validated initial capability plan matching resolved A/B treatment",
         "current public Skill and MCP owner removal contracts frozen availability",
         "additive description subset accounting and exact resolved capability settings",
-        "current SDK input/output schemas, signature and revision agree in search and inspect; output-only changes invalidate recovery and cursors"
+        "current SDK input/output schemas, signature and revision agree in search and inspect; output-only changes invalidate recovery and cursors",
+        "settings-only catalog name and source metadata from public Skill provider/source and captured MCP owner sections without loading bodies, name-based provenance guesses or mutation of frozen model context",
+        "read-only active PTC identity observation does not read or prepare plans, including management-off synchronization",
+        "MCP server closure precedes independent child choices using frozen owner membership, preserves other servers and old inventories, and rejects ambiguous ownership rather than guessing; catalog observation captures public sections without session preparation or binding loads"
       ],
       "entries": [
         "createCapabilityPlan",
         "createCapabilityEnvironment",
         "readCapabilityContextMessage",
         "capabilityConfiguration",
-        "describeCatalog"
+        "describeCatalog",
+        "describeTargets"
       ],
       "lifecycle": [
         "validate inputs",
@@ -585,7 +591,9 @@
         "internal/direct-surface-owner.js",
         "internal/runtime-bridge-owner.js",
         "scripts/acceptance-contract.mjs",
-        "scripts/ab-headless-trajectories.mjs"
+        "scripts/ab-headless-trajectories.mjs",
+        "src/client-capabilities-view.js",
+        "internal/direct-surface-owner.js"
       ],
       "oracle": "Real ToolRuntime SDK input/output schemas and output-only revision counterexamples, real AgentLoop first-step acceptance and strict sessionFormatCatalog restoration, plus Host contract and focused program binding tests",
       "evidence": [
@@ -689,6 +697,7 @@
         "src/client-primitives.js",
         "src/client-repl-view.js",
         "src/client-rpc.js",
+        "src/client-capabilities-view.js",
         "src/client-settings-view.js",
         "src/client-styles.js",
         "src/client-tool-hover.js",
@@ -727,14 +736,18 @@
         "plain action fallback owns button styling and type without caller classes",
         "multi-line tool previews fit public native headers without text clipping or overlap",
         "feature labels remain separate from summaries, expanded bodies and following messages",
-        "passive tool quick peeks bound recorded source/result with visible excerpt labels and theme-aware single-layer chrome; native Popover or public React portal escapes clipping without hit-testable or scrollable overlay content; shared passive wheel/scroll observation cancels dwell and visible previews, requires scroll idle and fresh pointer motion before reopening; live default-on hover settings cancel pending and visible previews; pointer-right placement adapts to owned-anchor and viewport width changes, while explicit row expansion retains complete source/result and Copy"
+        "passive tool quick peeks bound recorded source/result with visible excerpt labels and theme-aware single-layer chrome; native Popover or public React portal escapes clipping without hit-testable or scrollable overlay content; shared passive wheel/scroll observation cancels dwell and visible previews, requires scroll idle and fresh pointer motion before reopening; live default-on hover settings cancel pending and visible previews; pointer-right placement adapts to owned-anchor and viewport width changes, while explicit row expansion retains complete source/result and Copy",
+        "capability workbench separates typed Tools, Skills and MCP resources, independent source/strategy/common/availability filters and stable sorting, editable unavailable preferences, catalog failure evidence, and saved manual settings from explicitly selected frozen session plans; tab keyboard and bounded responsive detail layouts remain inside plugin-owned settings",
+        "shared session capability refresh uses exact selected/current session through public commands; duplicate clicks, cancellation, connection/preset generations, readonly/plugin disable, session switch and disposal cannot publish stale success; binding disable preserves PTC utilities and target-read failures block execution independently of frozen-plan reads"
       ],
       "entries": [
         "session activation",
         "binding workbench",
         "RPC",
         "client renderer",
-        "model context"
+        "model context",
+        "createCommandAccess",
+        "CapabilityRefreshButton"
       ],
       "lifecycle": [
         "load",

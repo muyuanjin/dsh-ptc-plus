@@ -557,7 +557,8 @@
         "current SDK input/output schemas, signature and revision agree in search and inspect; output-only changes invalidate recovery and cursors",
         "settings-only catalog name and source metadata from public Skill provider/source and captured MCP owner sections without loading bodies, name-based provenance guesses or mutation of frozen model context",
         "read-only active PTC identity observation does not read or prepare plans, including management-off synchronization",
-        "MCP server closure precedes independent child choices using frozen owner membership, preserves other servers and old inventories, and rejects ambiguous ownership rather than guessing; catalog observation captures public sections without session preparation or binding loads"
+        "MCP server closure precedes independent child choices using frozen owner membership, preserves other servers and old inventories, and rejects ambiguous ownership rather than guessing; catalog observation captures public sections without session preparation or binding loads",
+        "empty or whitespace-only public Host instruction sections create no dependencies while MCP ownership and SDK/resource contracts survive initial preparation, discovery, restoration and refresh; malformed dependencies remain invalid"
       ],
       "entries": [
         "createCapabilityPlan",
@@ -595,7 +596,7 @@
         "src/client-capabilities-view.js",
         "internal/direct-surface-owner.js"
       ],
-      "oracle": "Real ToolRuntime SDK input/output schemas and output-only revision counterexamples, real AgentLoop first-step acceptance and strict sessionFormatCatalog restoration, plus Host contract and focused program binding tests",
+      "oracle": "Real ToolRuntime SDK input/output schemas and output-only revision counterexamples, real AgentLoop first-step acceptance including the installed plugin with empty tool/MCP instructions and strict sessionFormatCatalog restoration, plus Host contract and focused program binding tests",
       "evidence": [
         "test/capability-plan.test.js",
         "test/capability-statistics.test.js",

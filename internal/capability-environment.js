@@ -94,14 +94,19 @@ function resourceServers(sections) {
   return names
 }
 
+/** Host sections may carry no instructions while still proving owner identity. */
+function sectionDependencies(sections) {
+  return sections.filter(section => typeof section.text !== 'string' || section.text.trim().length > 0)
+    .map(section => ({ id: section.name, text: section.text }))
+}
+
 /** One SDK snapshot owns a tool's signature, schemas and revision. */
 function toolCapability(schema, sections) {
   return { id: `tools.${schema.name}`, category: 'tool',
     revision: digest(schema), schema,
     contract: `\`\`\`ts\n${schema.description ? `/** ${schema.description.replaceAll('*/', '* /')} */\n` : ''}tools[${JSON.stringify(schema.name)}](args: ${jsonSchemaToTs(schema.parameters)}): Promise<${jsonSchemaToTs(schema.output)}>\n\`\`\``,
-    dependencies: sections.filter(section => section.name === `tool:${schema.name}`
-      || (section.name?.startsWith('mcp:') && schema.name.startsWith(`mcp__${section.name.slice(4)}__`)))
-      .map(section => ({ id: section.name, text: section.text })),
+    dependencies: sectionDependencies(sections.filter(section => section.name === `tool:${schema.name}`
+      || (section.name?.startsWith('mcp:') && schema.name.startsWith(`mcp__${section.name.slice(4)}__`)))),
     description: schema.description ?? '' }
 }
 
@@ -171,7 +176,7 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
     const servers = resourceServers(sections)
     for (const server of servers) capabilities.push({ id: `mcp.${server}`, category: 'resource', mcpServer: server,
       revision: digest({ server, instructions: sections.find(section => section.name === `mcp:${server}`)?.text ?? '' }),
-      dependencies: sections.filter(section => section.name === `mcp:${server}`).map(section => ({ id: section.name, text: section.text })), contract: `MCP resource server ${JSON.stringify(server)}. Use tools.list_mcp_resources({server}), tools.list_mcp_resource_templates({server}), and tools.read_mcp_resource({server,uri}); use the listed URI or expand a listed template.`,
+      dependencies: sectionDependencies(sections.filter(section => section.name === `mcp:${server}`)), contract: `MCP resource server ${JSON.stringify(server)}. Use tools.list_mcp_resources({server}), tools.list_mcp_resource_templates({server}), and tools.read_mcp_resource({server,uri}); use the listed URI or expand a listed template.`,
       description: `MCP resources and templates from ${server}`, selector: { server } })
     for (const server of servers) presentation?.set(`mcp.${server}`, { name: server, source: { kind: 'mcp', server } })
     return capabilities.filter(item => {

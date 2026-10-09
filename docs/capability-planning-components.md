@@ -50,6 +50,8 @@ capabilityCoverage(state, { userId, workspaceId, id, revision })
 
 `ptc-capability-environment/v1` 源消息记录设置、完整 owner inventory、统计依据与派生方案，digest、方案重算与精确正文共同校验恢复。首次准备在模型请求之前完成，只产生待接受方案；尚无已提交任务历史时，通过公共 `agent/pre-step` 将新方案放在本次接受消息批次的任务之前，由 Host 在受保护 system head 之后提交一次。已有历史不重排，拒绝、取消或请求准备失败不构成方案恢复证据。已提交方案不重复追加，被压缩的正文不因原始日志仍有记录而复活。
 
+宿主 prompt section 的空字符串或纯空白说明不形成契约依赖，但其 section 身份仍可证明 MCP server 归属。工具签名和资源契约保持可发现；非空说明原样保留并去重，非字符串等无效依赖仍由方案校验拒绝。
+
 工具完整契约与程序检索元数据来自公共 `ToolRuntime.sdkSchemas(scope)`，包含参数及返回值 schema；输出 schema 也参与修订身份和恢复比较。新 cell 的检索与 inspect 从同一份当前 SDK 快照派生结构化 schema、签名、依赖及修订，不将冻结方案中的旧签名覆盖到新返回值类型上；冻结的是启用与披露选择。顶层模型工具 schema、准入与调用规范化继续使用独立的 `ToolRuntime.schemas(scope)`，不向模型工具定义追加 SDK 输出字段。
 
 保存设置不改已有会话；正式命令声明 `input.hint`，使公共 Client 输入匹配器接收 `/capabilities refresh` 的参数。裸 `/capabilities` 只检查状态，其他参数明确报错。`/capabilities refresh` 在已初始化会话的公共 maintenance 边界以单次消息追加提交新方案及通知。消息追加失败或取消保留旧环境。尚未接受首轮的会话刷新后仍待首个 accepted step，命令回执明确说明通知待接受，不声称已记录模型通知。历史没有方案的会话保留原提供方式，损坏方案通过同一发布边界通知关闭管理并继续宿主环境，用户可主动刷新。

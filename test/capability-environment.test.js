@@ -26,6 +26,71 @@ const schema = name => ({ name, description: `Owner contract for ${name}.`, para
 const sections = [{ name: 'tools:sdk', text: 'native sdk' }, { name: 'tool:closed_capability', text: 'closed guidance' }]
 const agentFor = (session, id = session.id) => ({ id, session, signal: new AbortController().signal })
 
+test('empty Host instructions preserve tool and MCP contracts, ownership, restoration and refresh', async t => {
+  const ctx = new Context()
+  new SystemPrompt(ctx, { includeHarnessIdentity: false, includeRuntimeContext: false, personaPrefix: '', personaSuffix: '' })
+  new ToolRuntime(ctx, { mode: 'native' })
+  t.after(() => ctx.fiber.dispose())
+  let instructions = ''
+  for (const name of ['probe', 'mcp__docs__search', 'read_mcp_resource']) {
+    ctx.effect(() => ctx.tools.register(defineTool({ name, description: `Contract for ${name}.`, parameters: {},
+      output: { schema: { type: 'string' }, render: () => [] }, execute: async () => name })))
+  }
+  for (const name of ['tool:probe', 'mcp:docs']) {
+    ctx.effect(() => ctx.systemPrompt.section({ name, order: 10, text: () => instructions }))
+  }
+  ctx.effect(() => ctx.systemPrompt.section({ name: 'mcp-resource-servers', order: 20,
+    text: 'as the server argument: ["docs"].' }))
+  const agent = agentFor(Session.create('empty-host-instructions'))
+  agent.runMaintenance = operation => operation(agent.signal)
+  const options = { ctx, config: config({ 'tools.probe': 'full', 'tools.mcp__docs__search': 'full', 'mcp.docs': 'full' }),
+    toolSchemasForAgent: target => ctx.tools.sdkSchemas(target) }
+  const env = createCapabilityEnvironment(options)
+  t.after(() => env.dispose())
+  const assembled = async () => (await ctx.systemPrompt.assemble({ agent, scope: agent })).sections
+  const original = await acceptPreparation(env, agent, await assembled())
+  for (const id of ['tools.probe', 'tools.mcp__docs__search', 'mcp.docs']) {
+    assert.deepEqual(original.snapshot.capabilities.find(item => item.id === id).dependencies, [])
+    assert.ok(original.snapshot.plan.entries.some(item => item.id === id && item.selection === 'full'))
+  }
+  assert.equal(original.snapshot.capabilities.find(item => item.id === 'tools.mcp__docs__search').mcpServer, 'docs')
+  assert.match(original.snapshot.plan.catalogText, /Promise<string>/)
+  assert.doesNotMatch(original.snapshot.plan.catalogText, /### dependency:/)
+  const schemas = ctx.tools.sdkSchemas(agent)
+  const metadata = env.toolMetadata(agent, toolCapabilityMetadata(schemas), schemas)
+  assert.deepEqual(capabilityInspect(metadata, ['tools.mcp__docs__search']).symbols[0].dependencies, [])
+  assert.deepEqual(env.metadata(agent).find(item => item.namespace === 'mcp').members[0].dependencies, [])
+  const restored = createCapabilityEnvironment(options)
+  t.after(() => restored.dispose())
+  assert.deepEqual((await restored.prepare(agent, await assembled())).snapshot, original.snapshot)
+  ctx.on('system-prompt/assemble', async (_assembly, context, next) => {
+    const assembly = await next()
+    await env.prepare(context.agent, assembly.sections)
+    return assembly
+  })
+  instructions = ' \n\t '
+  await env.refresh(agent, await assembled(), agent.signal)
+  assert.equal(env.stateFor(agent).snapshot.plan.catalogText, original.snapshot.plan.catalogText)
+  instructions = 'Exact owner instructions.'
+  await env.refresh(agent, await assembled(), agent.signal)
+  const updated = env.stateFor(agent).snapshot
+  assert.deepEqual(updated.capabilities.find(item => item.id === 'mcp.docs').dependencies,
+    [{ id: 'mcp:docs', text: instructions }])
+  assert.deepEqual(updated.capabilities.find(item => item.id === 'tools.probe').dependencies,
+    [{ id: 'tool:probe', text: instructions }])
+  assert.equal(updated.plan.catalogText.match(/### dependency:mcp:docs/g).length, 1)
+  assert.match(updated.plan.catalogText, /Exact owner instructions\./)
+  instructions = ''
+  env.reconfigure(config({ 'mcpServers.docs': 'closed' }))
+  await env.refresh(agent, await assembled(), agent.signal)
+  assert.deepEqual(env.visibleSchemas(agent, schemas).map(item => item.name), ['probe'])
+  assert.deepEqual(env.metadata(agent).find(item => item.namespace === 'mcp').members, [])
+  const malformed = createCapabilityEnvironment(options)
+  t.after(() => malformed.dispose())
+  await assert.rejects(() => malformed.prepare(agentFor(Session.create('malformed-host-instructions')),
+    [{ name: 'tool:probe', text: undefined }]), /dependency contract must be a non-empty string/)
+})
+
 async function acceptPreparation(env, agent, sections) {
   const state = await env.prepare(agent, sections)
   const decision = await env.preStep({ agent, signal: agent.signal }, async () => ({ kind: 'enter', messages: [] }))
@@ -139,6 +204,10 @@ test('real AgentLoop protects its first system head before accepting one capabil
   new AgentRegistry(ctx)
   new SessionStore(ctx)
   new SessionProjectionRegistry(ctx)
+  ctx.effect(() => ctx.tools.register(defineTool({ name: 'mcp__docs__probe', description: 'MCP probe.', parameters: {},
+    output: { schema: { type: 'string' }, render: () => [] }, execute: async () => 'probe' })))
+  ctx.effect(() => ctx.systemPrompt.section({ name: 'mcp:docs', order: 10, text: '' }))
+  ctx.effect(() => ctx.systemPrompt.section({ name: 'tool:mcp__docs__probe', order: 11, text: '' }))
   const errors = []
   ctx.on('agent/error', payload => errors.push(payload.error))
   let failPreparation = true

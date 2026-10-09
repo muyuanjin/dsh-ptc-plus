@@ -172,6 +172,45 @@ test('command receipts remain outside model history until a surface message is a
   assert.equal(restored.deriveMessages().at(-1).id, notice.id)
 })
 
+test('PTC Plus starts a model turn with empty tool and MCP instructions', async t => {
+  const { ctx } = host(t, 'ptc')
+  new AgentRegistry(ctx)
+  new SessionStore(ctx)
+  new SessionProjectionRegistry(ctx)
+  ctx.effect(() => ctx.tools.register(echo('mcp__docs__probe')))
+  for (const name of ['tool:mcp__docs__probe', 'mcp:docs']) {
+    ctx.effect(() => ctx.systemPrompt.section({ name, order: 10, text: '' }))
+  }
+  const requests = []
+  const errors = []
+  ctx.on('agent/error', payload => errors.push(payload.error))
+  async function* stream(options) {
+    requests.push(options)
+    yield { type: 'text-delta', index: 0, text: 'done' }
+    yield { type: 'finish', reason: { kind: 'stop' } }
+  }
+  ctx.effect(() => ctx.provide('llm', { async prepareCall(config) { return { config, stream, adapterDefaults: {} } }, stream }))
+  await ctx.plugin(AgentLoop, { agents: [] }).await()
+  await ctx.plugin(ptcPlus, { userBindingsEnabled: false, cordisToolsEnabled: false, capabilityManagementEnabled: true,
+    capabilityOverrides: '{"tools.mcp__docs__probe":"full"}',
+    capabilityStatistics: '{"enabled":false,"windowSize":10,"minimumSamples":1,"fullThreshold":0.5}' }).await()
+  const owner = await ctx.agents.create({ sessionId: 'empty-instructions-ptc-turn', meta: { cwd: process.cwd() },
+    agentOptions: { provider: 'fixture', model: 'fixture' } })
+  t.after(() => owner.dispose())
+  for (const text of ['probe', 'continue']) {
+    owner.agent.send(createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text }] }), 'next-turn', true)
+    await owner.agent.whenIdle()
+  }
+  assert.deepEqual(errors, [])
+  assert.equal(requests.length, 2)
+  assert.deepEqual(requests[0].tools.map(tool => tool.name), ['run_code', 'edit_run_code'])
+  const plans = owner.agent.session.snapshotEvents().filter(event => event.data?.source?.form === 'capability-plan')
+  assert.equal(plans.length, 1)
+  assert.match(plans[0].data.content[0].text, /tools\.mcp__docs__probe/)
+  assert.deepEqual(owner.agent.session.snapshotEvents().filter(event => event.type === 'turn/end')
+    .map(event => event.data.reason.kind), ['completed', 'completed'])
+})
+
 test('capability commands advertise refresh input and apply through the public human-command runtime without model requests', async t => {
   const { ctx } = host(t, 'ptc')
   new CommandRuntime(ctx)

@@ -1,5 +1,5 @@
 import { CONFIG_DEFAULTS, CONFIG_FIELDS, CONFIG_GROUPS, CONFIG_MODULES } from '../internal/config-spec.js'
-import { resolveConfig } from '../internal/runtime-config.js'
+import { CAPABILITY_CONFIGURATION_KEYS, capabilityProfileConfiguration, resolveConfig } from '../internal/runtime-config.js'
 import { featureEnabled } from './client-feature-gates.js'
 import { isHostIconComponent } from './client-host-compat.js'
 import { capabilityPlanReason, createCapabilitySettingsViews } from './client-capabilities-view.js'
@@ -11,7 +11,7 @@ import { capabilityPlanReason, createCapabilitySettingsViews } from './client-ca
  */
 export function createPtcSettingsView(React, deps) {
   const { ActionButton, BindingsDialog, Modal, useWorkbenchController, icons, inspectCapabilityPlans, inspectCapabilityCatalog,
-    inspectCapabilityTargets, CapabilityRefreshButton } = deps
+    inspectCapabilityTargets, inspectCapabilityAllocation, CapabilityRefreshButton } = deps
   const h = React.createElement
   const enabledField = CONFIG_FIELDS.find(field => field.key === 'enabled')
 
@@ -125,7 +125,7 @@ export function createPtcSettingsView(React, deps) {
     })
   }
 
-  function PTCPlusSettingsCard({ t, usePtcSettings, updateSetting, callUserBindings, view, onBindingsOpenChange }) {
+  function PTCPlusSettingsCard({ t, usePtcSettings, updateSetting, updateCapabilityConfiguration, callUserBindings, view, onBindingsOpenChange }) {
     const [open, setOpen] = React.useState(false)
     const [bindingsOpen, setBindingsOpen] = React.useState(false)
     const bindingsAction = React.useRef(null)
@@ -140,6 +140,9 @@ export function createPtcSettingsView(React, deps) {
     const [targets, setTargets] = React.useState(null)
     const [targetsError, setTargetsError] = React.useState(null)
     const [refreshSessionId, setRefreshSessionId] = React.useState('')
+    const [allocation, setAllocation] = React.useState(null)
+    const [allocationError, setAllocationError] = React.useState(null)
+    const [allocationPending, setAllocationPending] = React.useState(false)
     const [activeSection, setActiveSection] = React.useState('syntax')
     const writeTail = React.useRef(Promise.resolve())
     const snapshot = usePtcSettings(snapshot => snapshot)
@@ -150,8 +153,22 @@ export function createPtcSettingsView(React, deps) {
     const enabled = featureEnabled(snapshot, 'plugin')
     const globalEnabled = featureEnabled(snapshot, 'bindings')
     const plansEnabled = enabled && value.capabilityManagementEnabled === true
-    const planConfiguration = JSON.stringify(CONFIG_FIELDS.filter(field => field.key.startsWith('capability') || field.key === 'modelPreviewTokens')
+    const planConfiguration = JSON.stringify(CONFIG_FIELDS.filter(field => CAPABILITY_CONFIGURATION_KEYS.includes(field.key))
       .map(field => value[field.key]))
+    const allocationConfiguration = JSON.stringify(Object.fromEntries(CAPABILITY_CONFIGURATION_KEYS.map(key => [key, value[key]])))
+    React.useEffect(() => {
+      setAllocation(null); setAllocationError(null); setAllocationPending(false)
+      if (!enabled || !refreshSessionId || !inspectCapabilityAllocation || !(open || view === 'page' || view === 'dialog')) return
+      const controller = new AbortController()
+      setAllocationPending(true)
+      Promise.resolve().then(() => inspectCapabilityAllocation({ sessionId: refreshSessionId,
+        configuration: JSON.parse(allocationConfiguration) }, controller.signal)).then(result => {
+        if (!controller.signal.aborted) { setAllocation(result); setAllocationPending(false) }
+      }, error => {
+        if (!controller.signal.aborted) { setAllocationError(String(error?.message ?? error)); setAllocationPending(false) }
+      })
+      return () => controller.abort()
+    }, [enabled, open, view, refreshSessionId, allocationConfiguration, planRevision])
     React.useEffect(() => {
       if (!enabled) { setTargets(null); setTargetsError(null); setRefreshSessionId(''); return }
       if (!(open || view === 'page' || view === 'dialog') || !inspectCapabilityTargets) return
@@ -220,11 +237,13 @@ export function createPtcSettingsView(React, deps) {
         try {
           const key = await updateSetting(field.key, nextValue)
           if (key !== null) setStatus({ key })
+          return key === 'status.applied' || (key === null && value[field.key] === nextValue)
         } catch (error) {
           setStatus({
             key: 'status.failed',
             params: { error: error instanceof Error ? error.message : String(error) },
           })
+          return false
         } finally {
           setPending(current => {
             const next = new Set(current)
@@ -234,6 +253,21 @@ export function createPtcSettingsView(React, deps) {
         }
       })
       writeTail.current = operation.catch(() => {})
+      return operation
+    }
+    const persistConfiguration = configuration => {
+      if (unavailable || !enabled || !updateCapabilityConfiguration) return Promise.reject(new Error(t('capabilities.configurationUnavailable')))
+      const validated = capabilityProfileConfiguration(configuration)
+      const operation = writeTail.current.then(async () => {
+        setPending(current => new Set([...current, ...CAPABILITY_CONFIGURATION_KEYS]))
+        try {
+          const key = await updateCapabilityConfiguration(validated)
+          setStatus({ key: key ?? 'status.applied' })
+          setPlanRevision(current => current + 1)
+        } finally { setPending(current => new Set([...current].filter(key => !CAPABILITY_CONFIGURATION_KEYS.includes(key)))) }
+      })
+      writeTail.current = operation.catch(() => {})
+      return operation
     }
     const fieldDisabled = field => unavailable
       || pending.has(field.key)
@@ -243,6 +277,7 @@ export function createPtcSettingsView(React, deps) {
       if (field === undefined) return null
       if (field.key === 'capabilityOverrides') return null
       if (field.key === 'capabilityBaseline') return null
+      if (field.key === 'capabilityProfiles') return null
       if (field.key === 'capabilityStatistics') return h('div', { key },
         h('div', { className: 'ptcPlusLabel' }, t(`${key}.label`)),
         h('p', { className: 'ptcPlusDetail' }, t(`${key}.description`)),
@@ -278,11 +313,12 @@ export function createPtcSettingsView(React, deps) {
           : plans.length === 0 ? h('p', null, t('capabilities.empty'))
             : plans.map(plan => h('details', { key: plan.sessionId },
               h('summary', { tabIndex: 0 }, `${plan.sessionId} · ${t(plan.pendingRefresh ? 'capabilities.pending' : 'capabilities.current')}`),
+              h('p', { className: 'ptcPlusDetail' }, t('capabilities.frozenHint')),
               h('p', null, t('capabilities.budget', { bytes: plan.effective.budgets.contractBytes, overage: plan.effective.budgets.overageBytes })),
               h('table', null, h('thead', null, h('tr', null,
                 ...['member', 'selection', 'reason', 'coverage'].map(key => h('th', { key }, t(`capabilities.${key}`))))),
               h('tbody', null, ...plan.effective.entries.map(entry => h('tr', { key: entry.id },
-                h('td', null, entry.id), h('td', null, entry.selection),
+                h('td', null, entry.id), h('td', null, t(`capabilities.${entry.selection}`)),
                 h('td', null, capabilityPlanReason(t, entry)),
                 h('td', null, entry.evidence ? `${entry.evidence.used}/${entry.evidence.eligible} (${entry.evidence.scope})` : '—')))))))) : null
 
@@ -324,7 +360,8 @@ export function createPtcSettingsView(React, deps) {
           value, catalog, catalogError, plans: plansEnabled ? plans : null, plansError,
           disabled: key => fieldDisabled({ key }), onChange: persist,
           onReload: () => setPlanRevision(current => current + 1), t, renderField, renderPlans, renderRefresh,
-          selectedSessionId: refreshSessionId, onSessionSelect: setRefreshSessionId })]
+          selectedSessionId: refreshSessionId, onSessionSelect: setRefreshSessionId,
+          allocation, allocationError, allocationPending, configurationWritable: !unavailable && enabled, onApplyConfiguration: updateCapabilityConfiguration ? persistConfiguration : undefined })]
         : fields.map(renderField)))
     }
 

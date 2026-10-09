@@ -403,10 +403,11 @@ function installPtCRuntime(ctx, resolvedConfig, seam, toolSchemasForAgent, toolS
     disposers.push(ctx.on('agent/created', ({ agent }) => capabilityEnvironment.status(agent, agent.status)))
     if (typeof ctx.inject === 'function') {
       const capabilitiesRpc = ctx.inject(['ptcPlusRpc'], scope => {
-        scope.effect(() => scope.ptcPlusRpc.register(RPC_CONTRACTS.capabilities, async (operation, _payload, signal) => {
+        scope.effect(() => scope.ptcPlusRpc.register(RPC_CONTRACTS.capabilities, async (operation, payload, signal) => {
           signal.throwIfAborted()
           if (operation === 'catalog') return { ok: true, value: await capabilityEnvironment.describeCatalog(signal) }
           if (operation === 'targets') return { ok: true, value: capabilityEnvironment.describeTargets() }
+          if (operation === 'allocation') return { ok: true, value: await capabilityEnvironment.observeAllocation(payload, signal) }
           if (operation !== 'inspect') return { ok: false, error: { code: 'UNKNOWN_OPERATION', message: 'Unknown capability plan operation', details: null } }
           return { ok: true, value: capabilityEnvironment.describeSessions() }
         }), 'ptc-plus: capability plan observation')

@@ -3,12 +3,28 @@ import test from 'node:test'
 import { CONFIG_DEFAULTS, CONFIG_FIELDS } from '../internal/config-spec.js'
 import {
   MAX_TIMER_DELAY_MS,
+  capabilityProfileConfiguration,
+  validateCapabilityProfiles,
   hasVolatileFields,
   resolveConfig,
   validateMaxWallMs,
   watchVolatileConfig,
 } from '../internal/runtime-config.js'
 import { SessionRuntime } from '../internal/session-runtime.js'
+
+test('named capability configurations validate portable settings independently of frozen session state', () => {
+  const configuration = capabilityProfileConfiguration({ capabilityBaseline: '["tools.probe"]', capabilityOverrides: '{"mcpServers.docs":"closed"}' })
+  const document = { schema: 'ptc-capability-profiles/v1', profiles: [{ id: 'profile-a', name: ' Daily ', configuration }] }
+  const valid = validateCapabilityProfiles(document)
+  assert.equal(valid.profiles[0].name, 'Daily')
+  assert.equal(resolveConfig({ capabilityProfiles: JSON.stringify(valid) }).capabilityProfiles, JSON.stringify(valid))
+  assert.equal(configuration.capabilityBudgetBytes, CONFIG_DEFAULTS.capabilityBudgetBytes)
+  assert.throws(() => capabilityProfileConfiguration({ sessionId: 'old-session' }), /configuration fields/)
+  assert.throws(() => capabilityProfileConfiguration({ capabilityStatistics: '{"enabled":true,"windowSize":1,"minimumSamples":2,"fullThreshold":0.5}' }), /statistics settings/)
+  assert.throws(() => validateCapabilityProfiles({ ...document, profiles: [...document.profiles, ...document.profiles] }), /duplicate/)
+  assert.throws(() => validateCapabilityProfiles({ ...document, profiles: Array(101).fill(document.profiles[0]) }), /profiles document/)
+  assert.throws(() => validateCapabilityProfiles({ ...document, profiles: [{ ...document.profiles[0], configuration: { apiKey: 'not-a-secret' } }] }), /configuration fields/)
+})
 
 test('owns the runtime wall-clock ceiling', () => {
   assert.equal(validateMaxWallMs(MAX_TIMER_DELAY_MS), MAX_TIMER_DELAY_MS)
@@ -62,6 +78,7 @@ test('validates every declared field from its CONFIG_FIELDS type and bounds', ()
     if (field.type === 'string') {
       assert.equal(typeof field.default, 'string')
       const value = {
+        capabilityProfiles: CONFIG_DEFAULTS.capabilityProfiles,
         capabilityBaseline: '["tools.probe"]',
         capabilityOverrides: '{"tools.probe":"on-demand"}',
         capabilityStatistics: '{"enabled":false}',

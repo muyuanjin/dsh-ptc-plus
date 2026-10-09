@@ -17,6 +17,7 @@ import { ToolRuntime, defineTool } from '@deepseek-ai/dsh-tools'
 import { createCapabilityEnvironment } from '../internal/capability-environment.js'
 import { capabilityInspect, capabilitySearch, toolCapabilityMetadata } from '../internal/program-bindings.js'
 import { appendOnlySession } from './plugin-fixture.js'
+import { capabilityProfileConfiguration } from '../internal/runtime-config.js'
 
 const config = overrides => ({ capabilityManagementEnabled: true,
   capabilityBaseline: '[]', capabilityOverrides: JSON.stringify(overrides ?? {}),
@@ -25,6 +26,66 @@ const config = overrides => ({ capabilityManagementEnabled: true,
 const schema = name => ({ name, description: `Owner contract for ${name}.`, parameters: { type: 'object' }, output: { type: 'string' } })
 const sections = [{ name: 'tools:sdk', text: 'native sdk' }, { name: 'tool:closed_capability', text: 'closed guidance' }]
 const agentFor = (session, id = session.id) => ({ id, session, signal: new AbortController().signal })
+
+test('allocation observation reads workspace coverage and budget choices without publishing or freezing a session', async t => {
+  const initial = Session.create('allocation-observation')
+  const agent = agentFor(Session.create(initial.id, [], { ...initial.header, cwd: process.cwd() }))
+  const schemas = [schema('run_code'), schema('probe'), schema('other')]
+  const ctx = { agents: { list: () => [agent] }, systemPrompt: { assemble: async context => {
+    assert.equal(context.ptcPlusCapabilityObservation, true)
+    return { sections: [{ name: 'tool:probe', text: 'Shared owner guidance.' }] }
+  } } }
+  const revisions = Object.fromEntries(schemas.map(item => [item.name, createHash('sha256').update(JSON.stringify(item)).digest('hex')]))
+  let reads = 0
+  const coverage = Object.fromEntries(['probe', 'other'].map(name => [`tools.${name}`, { revision: revisions[name],
+    workspace: { status: 'usable', windowSize: 100, eligible: 20, used: name === 'probe' ? 18 : 1, coverage: name === 'probe' ? .9 : .05 },
+    global: { status: 'usable', windowSize: 100, eligible: 50, used: 3, coverage: .06 } }]))
+  const env = createCapabilityEnvironment({ ctx, config: config(), toolSchemasForAgent: () => schemas,
+    store: { coverage: async target => { assert.equal(target, agent); reads++; return coverage },
+      available: () => assert.fail('Observation must not register eligibility'), used: () => assert.fail('Observation must not register use') } })
+  t.after(() => env.dispose())
+  const configuration = capabilityProfileConfiguration({ capabilityManagementEnabled: true,
+    capabilityStatistics: '{"enabled":true,"windowSize":100,"minimumSamples":10,"fullThreshold":0.5}' })
+  const events = agent.session.snapshotEvents()
+  const observed = await env.observeAllocation({ sessionId: agent.id, configuration }, agent.signal)
+  assert.deepEqual(observed.coverage, coverage)
+  assert.equal(observed.plan.entries.find(entry => entry.id === 'tools.probe').selection, 'full')
+  assert.equal(observed.plan.entries.find(entry => entry.id === 'tools.other').selection, 'on-demand')
+  assert.match(observed.plan.catalogText, /Shared owner guidance/)
+  assert.equal(observed.plan.budgets.contractBytes, Buffer.byteLength(observed.plan.catalogText))
+  const small = await env.observeAllocation({ sessionId: agent.id, configuration: { ...configuration, capabilityBudgetBytes: 1 } }, agent.signal)
+  assert.equal(small.plan.entries.find(entry => entry.id === 'tools.probe').reason, 'contract-budget')
+  const pinned = await env.observeAllocation({ sessionId: agent.id, configuration: { ...configuration, capabilityBudgetBytes: 1, capabilityOverrides: '{"tools.probe":"full"}' } }, agent.signal)
+  assert.equal(pinned.plan.entries.find(entry => entry.id === 'tools.probe').selection, 'full')
+  assert.ok(pinned.plan.budgets.overageBytes > 0)
+  assert.equal(reads, 3)
+  const damaged = await env.observeAllocation({ sessionId: agent.id, configuration: { ...configuration,
+    capabilityStatistics: 'damaged', capabilityBaseline: '["tools.other"]' } }, agent.signal)
+  assert.equal(damaged.coverage, null)
+  assert.equal(damaged.plan.entries.find(entry => entry.id === 'tools.other').selection, 'full')
+  assert.deepEqual(agent.session.snapshotEvents(), events)
+  assert.equal(env.stateFor(agent), undefined)
+  assert.deepEqual(env.describeSessions(), [])
+  await assert.rejects(() => env.observeAllocation({ sessionId: 'missing', configuration }, agent.signal), /active PTC session/)
+  await assert.rejects(() => env.observeAllocation({ sessionId: agent.id, configuration: { ...configuration, apiKey: 'not-a-secret' } }, agent.signal), /configuration fields/)
+  await assert.rejects(() => env.observeAllocation({ sessionId: agent.id, configuration }, AbortSignal.abort()), /abort/i)
+  const gate = Promise.withResolvers()
+  ctx.systemPrompt.assemble = async () => { await gate.promise; return { sections: [] } }
+  const closing = env.observeAllocation({ sessionId: agent.id, configuration }, agent.signal)
+  ctx.agents.list = () => []
+  gate.resolve()
+  await assert.rejects(closing, /no longer available/)
+  ctx.agents.list = () => [agent]
+  const cancelGate = Promise.withResolvers()
+  ctx.systemPrompt.assemble = async () => { await cancelGate.promise; return { sections: [] } }
+  const controller = new AbortController()
+  const cancelled = env.observeAllocation({ sessionId: agent.id, configuration }, controller.signal)
+  controller.abort()
+  cancelGate.resolve()
+  await assert.rejects(cancelled, /abort/i)
+  assert.deepEqual(agent.session.snapshotEvents(), events)
+  assert.equal(env.stateFor(agent), undefined)
+})
 
 test('empty Host instructions preserve tool and MCP contracts, ownership, restoration and refresh', async t => {
   const ctx = new Context()

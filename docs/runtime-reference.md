@@ -71,6 +71,7 @@ Capability management is experimental and defaults to off. These inputs are froz
 | `capabilityBaseline` | `'[]'` | JSON array of common capability identities |
 | `capabilityOverrides` | `'{}'` | JSON object mapping identities to `full`, `on-demand`, or `closed` |
 | `capabilityStatistics` | `'{"enabled":false,"windowSize":100,"minimumSamples":10,"fullThreshold":0.5}'` | Independent family coverage settings |
+| `capabilityProfiles` | `{"schema":"ptc-capability-profiles/v1","profiles":[]}` | Up to 100 named reusable capability configurations; structured UI save/import/export/switch, separate from frozen session plans; [ADR 0040](adr/0040-separate-capability-configurations-from-session-observations.md) |
 | `capabilityBudgetBytes` | `16384` | Full-contract budget in UTF-8 bytes, minimum 1 |
 | `capabilityDirectoryBytes` | `2048` | Navigation budget in UTF-8 bytes, minimum 512 |
 | `capabilityRecoveryBytes` | `8192` | Separate description-recovery budget in UTF-8 bytes, minimum 1 |

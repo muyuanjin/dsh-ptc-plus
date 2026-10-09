@@ -983,6 +983,30 @@ test('pending assembly and pre-step cannot reacquire delivery after disposal', a
   assert.equal(await pending, decision)
 })
 
+test('read-only capability observation cannot replace accepted request message delivery', async () => {
+  const owner = createRuntimeMessageOwner(() => state('required request context'), viewForAgent)
+  const agent = { session: Session.create('observation-interleaving') }
+  const request = { agent, signal: new AbortController().signal }
+  const witness = { contexts: [{ name: PTC_DELIVERY_CONTEXT, text: '' }] }
+  const decision = { kind: 'enter', messages: [] }
+  await owner.assemble(witness, request, async () => witness)
+  const entering = Promise.withResolvers()
+  const pending = owner.preStep(request, () => entering.promise)
+  for (const signal of [new AbortController().signal, AbortSignal.abort()]) {
+    const observation = { agent, signal, ptcPlusCapabilityObservation: true }
+    assert.deepEqual((await owner.assemble(witness, observation, async () => witness)).contexts, [])
+    assert.equal(await owner.preStep(observation, async () => decision), decision)
+  }
+  entering.resolve(decision)
+  assert.equal((await pending).messages.length, 1)
+  const cancelled = new AbortController()
+  await owner.assemble(witness, { agent, signal: cancelled.signal }, async () => witness)
+  cancelled.abort()
+  await owner.assemble(witness, { agent, signal: request.signal, ptcPlusCapabilityObservation: true }, async () => witness)
+  assert.equal(await owner.preStep({ agent, signal: cancelled.signal }, async () => decision), decision)
+  owner.dispose()
+})
+
 test('delivery requires a matching permitted assembly and a live request signal', async () => {
   const owner = createRuntimeMessageOwner(() => state('eligible'), viewForAgent)
   const agent = { session: Session.create('assembly-permission') }

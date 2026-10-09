@@ -4,6 +4,7 @@ import { CONFIG_DEFAULTS, SETTINGS_NAMESPACE } from '../internal/config-spec.js'
 import { createPtcToolView } from './client-tool-view.js'
 import { createPtcSettingsView } from './client-settings-view.js'
 import { createCapabilityRefreshView } from './client-capabilities-view.js'
+import { capabilityProfileConfiguration } from '../internal/runtime-config.js'
 import { createReplView } from './client-repl-view.js'
 import { createAuthoringView } from './client-authoring-view.js'
 import { createIndicatorView } from './client-indicator-view.js'
@@ -195,6 +196,11 @@ window.__ModuleLoader__.load({
           if (result?.ok !== true) throw new Error(result?.error?.message ?? 'Capability catalog unavailable')
           return result.value
         },
+        async inspectCapabilityAllocation(payload, signal) {
+          const result = await rpc.call(RPC_CONTRACTS.capabilities, 'allocation', payload, signal)
+          if (result?.ok !== true) throw new Error(result?.error?.message ?? 'Capability allocation unavailable')
+          return result.value
+        },
         icons: { search: IconSearchOutline16, chevron: IconChevronDownOutline14 },
       })
       const { ReplComposer, ReplConsole, ReplMemoryCard, replPopoverIsOpen, placeReplPopover } = createReplView(React, {
@@ -221,6 +227,15 @@ window.__ModuleLoader__.load({
           && (key !== 'bindingUpdates' || after.value.legacyBindingSettings !== true)
           ? 'status.applied' : 'status.conflict'
       }
+      const updateCapabilityConfiguration = async configuration => {
+        const before = preferenceScope.getSnapshot()
+        if (before.status !== 'ready' || before.writable !== true || !featureEnabled(before, 'plugin')) throw new Error('Capability settings are not writable')
+        const validated = capabilityProfileConfiguration(configuration)
+        await preferenceScope.mutate(Object.entries(validated).map(([key, value]) => ({ op: 'set', path: [key], value })))
+        const after = preferenceScope.getSnapshot()
+        if (after.status !== 'ready' || Object.entries(validated).some(([key, value]) => after.value?.[key] !== value)) throw new Error('Capability configuration was not applied')
+        return 'status.applied'
+      }
       // One gated-registration shape for every settings-driven contribution.
       const settingsGate = (feature, register) => ({
         subscribe: listener => preferenceScope.subscribe(listener),
@@ -234,7 +249,7 @@ window.__ModuleLoader__.load({
       const settingsCard = publishSettingsCard(ctx, {
         bundleName: __PTC_PLUS_CLIENT_MODULE_ID__,
         locale: LOCALE_NS,
-        injectProps: () => ({ ...settingsProps(), updateSetting }),
+        injectProps: () => ({ ...settingsProps(), updateSetting, updateCapabilityConfiguration }),
         component: PTCPlusSettingsCard,
       })
 
@@ -305,7 +320,7 @@ window.__ModuleLoader__.load({
       const { BindingAuthorButton, BindingReviewDock, BindingCommandCard } = createAuthoringView(React, {
         ActionButton, IconButton, Menu, MenuFallback, Toast, Tooltip, CodeBlock, Modal, createPortal, BindingsDialog, PTCPlusSettingsDialog,
         useWorkbenchController, useBindingReview, catalogOwner, callUserBindings, subscribeReset,
-        settingsCardSeat: settingsCard.seat, updateSetting, menuChildren, CapabilityRefreshButton,
+        settingsCardSeat: settingsCard.seat, updateSetting, updateCapabilityConfiguration, menuChildren, CapabilityRefreshButton,
         icons: {
           sparkle: IconSparkle16, chevron: IconChevronDownOutline14,
           close: IconCloseOutline16, check: IconCheckOutline14,

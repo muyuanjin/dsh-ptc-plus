@@ -6,7 +6,7 @@ import { pathToFileURL } from 'node:url'
 import { parseArgs } from 'node:util'
 import { browserConcurrency, runBrowserCases, selectBrowserCases } from './browser-case-runner.mjs'
 import { npmCliCommand } from './npm-cli.mjs'
-import { assertControlVisual, assertVisualSurface, setFixtureTheme } from './client-visual-contract.mjs'
+import { assertControlVisual, assertVisualSurface, controlAppearance, setFixtureTheme } from './client-visual-contract.mjs'
 
 const { values } = parseArgs({ options: { 'browser-channel': { type: 'string' }, 'fixtures-dir': { type: 'string' }, concurrency: { type: 'string' }, case: { type: 'string', multiple: true }, list: { type: 'boolean' }, focus: { type: 'boolean' } } })
 const matrix = [320, 390, 1440].flatMap(width => ['light', 'dark'].map(theme => ({ width, theme })))
@@ -104,9 +104,25 @@ if (values.list) {
         await page.goto(pathToFileURL(resolve(directory, `${state}.html`)).href)
         await setFixtureTheme(page, theme)
         const visualControls = await assertVisualSurface(page, page.locator('body'), `${width}/${theme}/${state}`)
+        if (state === 'workbench-en' && width === 320) {
+          const toggle = page.locator('.ptcPlusBindingSwitch').first()
+          const normal = await controlAppearance(toggle)
+          assert.equal(normal.officialSwitch, true, 'binding switch differs from official appearance')
+          const fault = await page.addStyleTag({ content: '.ptcPlusBindingSwitch span{background-color:inherit!important}' })
+          try {
+            const unreadable = await controlAppearance(toggle)
+            assert.ok(Number.isFinite(unreadable.minContrast) && unreadable.minContrast < 3, 'binding thumb contrast was not measured')
+            await assert.rejects(() => assertControlVisual(toggle, { focus: false }), /unreadable control|official switch appearance lost/)
+          } finally { await fault.evaluate(element => element.remove()) }
+          await assertControlVisual(toggle)
+          const checked = await toggle.getAttribute('aria-checked')
+          await toggle.evaluate(element => element.setAttribute('aria-checked', 'false'))
+          try { await assertControlVisual(toggle) }
+          finally { await toggle.evaluate((element, checked) => element.setAttribute('aria-checked', checked), checked) }
+        }
         if (state === 'settings-dialog-en' && theme === 'dark' && width === 320) {
           const toggle = page.locator('.ptcPlusSettingsTitleSwitch input')
-          const fault = await page.addStyleTag({ content: '.ptcPlusSettingsTitleSwitch input::before{background:white!important}' })
+          const fault = await page.addStyleTag({ content: '.ptcPlusSettingsTitleSwitch input::before{background:var(--dsw-alias-brand-primary)!important}' })
           try {
             await assert.rejects(() => assertControlVisual(toggle, { focus: false }), /unreadable control/)
           } finally {

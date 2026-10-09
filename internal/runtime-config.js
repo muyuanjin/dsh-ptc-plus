@@ -6,6 +6,43 @@ import {
 
 export { MAX_TIMER_DELAY_MS }
 
+/** Reusable configurations contain capability settings, never session evidence. */
+export const CAPABILITY_CONFIGURATION_KEYS = Object.freeze(CONFIG_FIELDS
+  .filter(field => (field.key.startsWith('capability') && field.key !== 'capabilityProfiles') || field.key === 'modelPreviewTokens')
+  .map(field => field.key))
+
+export function capabilityProfileConfiguration(value, { allowInvalidStatistics = false } = {}) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)
+    || Object.keys(value).some(key => !CAPABILITY_CONFIGURATION_KEYS.includes(key))) {
+    throw new TypeError('ptc-plus: invalid capability configuration fields')
+  }
+  const resolved = resolveConfig(value)
+  let statistics
+  try { statistics = JSON.parse(resolved.capabilityStatistics) } catch {}
+  if (!allowInvalidStatistics && (!statistics || typeof statistics.enabled !== 'boolean'
+    || !Number.isSafeInteger(statistics.windowSize) || statistics.windowSize < 1
+    || !Number.isSafeInteger(statistics.minimumSamples) || statistics.minimumSamples < 1 || statistics.minimumSamples > statistics.windowSize
+    || !Number.isFinite(statistics.fullThreshold) || statistics.fullThreshold < 0 || statistics.fullThreshold > 1)) {
+    throw new TypeError('ptc-plus: invalid saved capability statistics settings')
+  }
+  return Object.fromEntries(CAPABILITY_CONFIGURATION_KEYS.map(key => [key, resolved[key]]))
+}
+
+export function validateCapabilityProfiles(value) {
+  if (!value || value.schema !== 'ptc-capability-profiles/v1' || !Array.isArray(value.profiles) || value.profiles.length > 100) {
+    throw new TypeError('ptc-plus: invalid capability profiles document')
+  }
+  const ids = new Set()
+  const names = new Set()
+  return { schema: value.schema, profiles: value.profiles.map(profile => {
+    if (!profile || typeof profile.id !== 'string' || !profile.id.trim() || profile.id.length > 100
+      || typeof profile.name !== 'string' || !profile.name.trim() || profile.name.length > 80
+      || ids.has(profile.id) || names.has(profile.name.trim())) throw new TypeError('ptc-plus: invalid or duplicate capability profile')
+    ids.add(profile.id); names.add(profile.name.trim())
+    return { id: profile.id, name: profile.name.trim(), configuration: capabilityProfileConfiguration(profile.configuration) }
+  }) }
+}
+
 /** The wall-clock ceiling field carries the platform timer limit as its maximum. */
 const MAX_WALL_MS_FIELD = CONFIG_FIELDS.find(field => field.key === 'maxWallMs')
 
@@ -78,6 +115,7 @@ export function resolveConfig(config = {}) {
     resolved[field.key] = liveConfigValue(resolved[field.key], CONFIG_DEFAULTS[field.key])
   }
   for (const field of CONFIG_FIELDS) assertField(field, resolved[field.key])
+  validateCapabilityProfiles(JSON.parse(resolved.capabilityProfiles))
   for (const [key, array] of [['capabilityBaseline', true], ['capabilityOverrides', false]]) {
     let value
     try { value = JSON.parse(resolved[key]) } catch { throw new TypeError(`ptc-plus: ${key} must contain valid JSON`) }

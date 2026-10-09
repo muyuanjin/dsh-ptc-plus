@@ -9,6 +9,7 @@ import * as spillPolicy from '@deepseek-ai/dsh-spill-policy'
 import { createCapabilityPlan } from './capability-plan.js'
 import { PTC_MESSAGE_SOURCE_KIND } from './message-sources.js'
 import { deepFreeze } from './record-utils.js'
+import { capabilityProfileConfiguration } from './runtime-config.js'
 
 export const CAPABILITY_PLAN_FORM = 'capability-plan'
 export const CAPABILITY_EVIDENCE_KEY = 'dshPtcPlusCapabilities'
@@ -98,6 +99,14 @@ function resourceServers(sections) {
 function sectionDependencies(sections) {
   return sections.filter(section => typeof section.text !== 'string' || section.text.trim().length > 0)
     .map(section => ({ id: section.name, text: section.text }))
+}
+
+function savedConfiguration(settings) {
+  return { capabilityManagementEnabled: settings.enabled,
+    capabilityBaseline: JSON.stringify(settings.manual.baseline), capabilityOverrides: JSON.stringify(settings.manual.overrides),
+    capabilityStatistics: JSON.stringify(settings.statistics), capabilityBudgetBytes: settings.budgetBytes,
+    capabilityDirectoryBytes: settings.directoryBudgetBytes, capabilityRecoveryBytes: settings.recoveryBytes,
+    modelPreviewTokens: settings.previewTokens }
 }
 
 /** One SDK snapshot owns a tool's signature, schemas and revision. */
@@ -575,12 +584,32 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
     },
     describeSessions() {
       return [...sessions].map(([sessionId, state]) => ({ sessionId, effective: state.snapshot.plan,
+        configuration: savedConfiguration(state.snapshot.settings),
         pendingRefresh: digest(capabilityConfiguration(currentConfig)) !== digest(state.snapshot.settings) }))
     },
     canRefresh,
     describeTargets() {
       return (ctx.agents?.list?.() ?? []).filter(canRefresh)
         .map(agent => ({ sessionId: String(agent.session.id ?? agent.id) }))
+    },
+    async observeAllocation({ sessionId, configuration } = {}, signal) {
+      signal?.throwIfAborted()
+      const agent = (ctx.agents?.list?.() ?? []).find(agent => String(agent.session.id ?? agent.id) === sessionId && canRefresh(agent))
+      if (!agent) throw new TypeError('ptc-plus: select an active PTC session to observe its capability inventory and workspace statistics')
+      const raw = configuration === undefined ? savedConfiguration(capabilityConfiguration(currentConfig)) : configuration
+      const validated = capabilityProfileConfiguration(raw, { allowInvalidStatistics: true })
+      const settings = capabilityConfiguration(validated)
+      const assembly = await ctx.systemPrompt.assemble({ agent, scope: agent, signal, ptcPlusCapabilityObservation: true })
+      const capabilities = await inventory(agent, assembly.sections, settings, signal)
+      const coverage = Number.isSafeInteger(settings.statistics?.windowSize) && settings.statistics.windowSize > 0
+        ? await store?.coverage(agent, capabilities, settings.statistics) ?? null : null
+      signal?.throwIfAborted()
+      if (!(ctx.agents?.list?.() ?? []).includes(agent) || !canRefresh(agent)) throw new Error('ptc-plus: capability observation target is no longer available')
+      const plan = createCapabilityPlan({ ...settings, capabilities, coverage, navigationText: NAVIGATION,
+        configurationRevision: digest(settings) })
+      return { sessionId, workspace: agent.session.header.cwd, configuration: validated, plan, coverage,
+        capabilities: capabilities.map(item => ({ id: item.id, revision: item.revision, category: item.category,
+          contractBytes: Buffer.byteLength(item.contract, 'utf8') })) }
     },
     async describeCatalog(signal) {
       const available = new Map()

@@ -84,7 +84,7 @@ export function createRuntimeMessageOwner(contextsForRequest, sessionLogView = p
   return Object.freeze({
     async assemble(initial, context, next) {
       const assembly = await next()
-      if (!disposed && context?.agent !== null && typeof context?.agent === 'object'
+      if (!disposed && context?.ptcPlusCapabilityObservation !== true && context?.agent !== null && typeof context?.agent === 'object'
         && !disposedAgents.has(context.agent)) requests.set(context.agent, {
         context,
         allowed: hasWitness(initial) && hasWitness(assembly),

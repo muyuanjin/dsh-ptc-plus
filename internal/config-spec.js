@@ -28,6 +28,10 @@ export const CONFIG_FIELDS = Object.freeze([
     label: '能力统计设置', labelEn: 'Capability statistics settings',
     description: '独立启用使用统计，并设置样本窗口、最低样本数和完整披露阈值；关闭或不可用时保留手动基线。',
     descriptionEn: 'Enable usage statistics and set the sample window, minimum samples and full-disclosure threshold. Disabled or unavailable statistics preserve the manual baseline.' },
+  { key: 'capabilityProfiles', type: 'string', default: '{"schema":"ptc-capability-profiles/v1","profiles":[]}',
+    label: '保存的能力配置', labelEn: 'Saved capability configurations',
+    description: '在能力工作台命名保存、导入导出和切换配置；已有会话需要主动刷新。',
+    descriptionEn: 'Name, save, import, export and switch configurations in the capability workbench. Existing sessions require explicit refresh.' },
   { key: 'capabilityBudgetBytes', type: 'integer', default: 16384, min: 1, max: Number.MAX_SAFE_INTEGER,
     label: '完整说明预算 (UTF-8 bytes)', labelEn: 'Full contract budget (UTF-8 bytes)',
     description: '显式 full 可以超出此预算；不截断调用契约。', descriptionEn: 'Explicit full selections may exceed this budget; calling contracts are never truncated.' },
@@ -383,7 +387,7 @@ export const CONFIG_GROUPS = Object.freeze([
   },
   { key: 'capabilities', label: '能力与上下文', labelEn: 'Capabilities and context',
     fields: Object.freeze(['capabilityManagementEnabled', 'capabilityBaseline', 'capabilityOverrides',
-      'capabilityStatistics', 'capabilityBudgetBytes', 'capabilityDirectoryBytes', 'capabilityRecoveryBytes', 'modelPreviewTokens']) },
+      'capabilityStatistics', 'capabilityProfiles', 'capabilityBudgetBytes', 'capabilityDirectoryBytes', 'capabilityRecoveryBytes', 'modelPreviewTokens']) },
 ])
 
 /** Functional modules share the same section order across every settings entry. */

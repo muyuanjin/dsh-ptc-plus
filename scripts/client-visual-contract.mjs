@@ -11,6 +11,7 @@ export async function setFixtureTheme(page, theme) {
       'label-tertiary': dark ? '#a0a0a8' : '#66676b',
       'label-dimmed': dark ? '#888890' : '#888990',
       'label-primary-foreground': dark ? '#17171a' : '#ffffff',
+      'switch-thumb': dark ? '#adb2b8' : '#ffffff',
       'bg-base': dark ? '#17171a' : '#ffffff',
       'bg-layer-2': dark ? '#222226' : '#f6f7f8',
       'bg-layer-3': dark ? '#29292e' : '#ffffff',
@@ -136,15 +137,39 @@ export async function controlAppearance(control) {
       const bg = background(node.parentElement)
       return contrast(blend(color, bg), bg)
     }
-    const thumb = getComputedStyle(element, '::before')
-    const thumbContrast = element.matches('input[type=checkbox][role=switch]')
-      && style.appearance === 'none' && thumb.content !== 'none'
+    const checkboxSwitch = element.matches('input[type=checkbox][role=switch]')
+    const bindingThumb = element.matches('button.ptcPlusBindingSwitch[role=switch]') ? element.querySelector('span') : null
+    const thumb = checkboxSwitch ? getComputedStyle(element, '::before') : bindingThumb ? getComputedStyle(bindingThumb) : null
+    const hasSwitchThumb = Boolean(thumb && (bindingThumb || thumb.content !== 'none') && style.appearance === 'none')
+    const thumbContrast = hasSwitchThumb
       ? [contrast(blend(rgba(thumb.backgroundColor), background(element)), background(element))] : []
     const minContrast = Math.min(...foregrounds.map(textContrast), ...thumbContrast)
+    // Official off switches use a muted track. Require their exact public
+    // tokens and geometry rather than imposing text contrast on that track.
+    const tokenColor = name => {
+      const probe = document.createElement('span')
+      probe.style.backgroundColor = `var(--dsw-alias-${name})`
+      element.parentElement.append(probe)
+      const color = getComputedStyle(probe).backgroundColor
+      probe.remove()
+      return color
+    }
+    const switchChecked = checkboxSwitch ? element.checked : element.getAttribute('aria-checked') === 'true'
+    const thumbBounds = bindingThumb?.getBoundingClientRect()
+    const officialThumbPosition = bindingThumb
+      ? Math.abs(thumbBounds.left - rect.left - (switchChecked ? 18 : 2)) < 1 && Math.abs(thumbBounds.top - rect.top - 2) < 1
+      : thumb?.left === '2px' && thumb?.top === '2px'
+    const officialSwitch = hasSwitchThumb && rect.width === 36 && rect.height === 20
+      && thumb.width === '16px' && thumb.height === '16px' && officialThumbPosition
+      && style.backgroundColor === tokenColor(switchChecked ? 'brand-primary' : 'border-l3')
+      && thumb.backgroundColor === tokenColor(switchChecked ? 'label-primary-foreground' : 'switch-thumb')
+      && thumbContrast[0] > 1
+    const officialOffSwitch = officialSwitch && !switchChecked
+
     const busyOwner = element.closest('.ptcPlusBindings[aria-busy=true]')
     const busyStatus = busyOwner?.querySelector('.ptcPlusWorkbenchFeedback[role=status]')
     return {
-      width: rect.width, height: rect.height, left: rect.left, right: rect.right,
+      hasSwitchThumb, officialSwitch, officialOffSwitch, width: rect.width, height: rect.height, left: rect.left, right: rect.right,
       top: rect.top, bottom: rect.bottom,
       reachable: element.contains(document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2)),
       padding: parseFloat(style.paddingLeft), minContrast,
@@ -191,14 +216,15 @@ export async function assertControlVisual(control, options = {}) {
     `${label}: control is clipped or covered`)
   if (action) assert.ok(normal.padding >= 10, `${label}: action padding lost`)
   if (normal.primary) assert.ok(normal.fillAlpha > 0, `${label}: primary fill lost`)
-  if (!normal.disabled) assert.ok(normal.minContrast >= 3, `${label}: unreadable control (${normal.minContrast.toFixed(2)}:1)`)
+  if (!normal.disabled) assert.ok(normal.minContrast >= 3 || normal.officialOffSwitch, `${label}: unreadable control (${normal.minContrast.toFixed(2)}:1)`)
+  if (normal.hasSwitchThumb) assert.ok(normal.officialSwitch, `${label}: official switch appearance lost`)
   const selectedBinding = await control.evaluate(element => element.matches('.ptcPlusBindingSelect')
     && element.closest('.ptcPlusBindingItem')?.getAttribute('data-selected') === 'true')
   if (hover && !normal.disabled) {
     await control.hover()
     await settleVisual(page)
     const hovered = await controlAppearance(control)
-    assert.ok(hovered.minContrast >= 3, `${label}: unreadable hover`)
+    assert.ok(hovered.minContrast >= 3 || hovered.officialOffSwitch, `${label}: unreadable hover`)
     assert.equal(hovered.width, normal.width, `${label}: hover changes width`)
     assert.equal(hovered.height, normal.height, `${label}: hover changes height`)
     if (!selectedBinding) assert.notDeepEqual(feedback(hovered), feedback(normal), `${label}: hover feedback lost`)
@@ -209,7 +235,7 @@ export async function assertControlVisual(control, options = {}) {
     await control.focus()
     await settleVisual(page)
     const focused = await controlAppearance(control)
-    assert.ok(focused.minContrast >= 3, `${label}: unreadable focused control (${focused.minContrast.toFixed(2)}:1)`)
+    assert.ok(focused.minContrast >= 3 || focused.officialOffSwitch, `${label}: unreadable focused control (${focused.minContrast.toFixed(2)}:1)`)
     assert.equal(focused.focusVisible, true, `${label}: keyboard focus not established`)
     assert.ok((focused.outline !== 'none' && focused.outlineWidth >= 1 && focused.outlineContrast >= 3)
       || (focused.parentFocus?.outline !== 'none' && focused.parentFocus?.width >= 1

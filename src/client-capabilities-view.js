@@ -1,8 +1,10 @@
 import { CONFIG_DEFAULTS, CONFIG_FIELDS } from '../internal/config-spec.js'
+import { CAPABILITY_CONFIGURATION_KEYS, capabilityProfileConfiguration, validateCapabilityProfiles } from '../internal/runtime-config.js'
 
 const selections = ['automatic', 'full', 'on-demand', 'closed']
 const kinds = ['all', 'tool', 'skill', 'resource', 'other']
 const compare = (a, b) => a < b ? -1 : a > b ? 1 : 0
+const configurationId = () => Array.from(globalThis.crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join('')
 
 /** Catalog facts and saved preferences stay separate from frozen session results. */
 export function capabilitySettingsEntries(value, catalog, plans, uncertain = false) {
@@ -63,9 +65,16 @@ export function createCapabilitySettingsViews(React, { SearchIcon }) {
       if (entry.source?.kind === 'mcp') return `MCP${entry.source.server ? ` · ${entry.source.server}` : ''}`
       return t(`capabilities.source.${entry.source?.kind === 'host' ? 'host' : 'unknown'}`)
     }
-    const sources = new Map(entries.map(entry => [sourceKey(entry), sourceLabel(entry)]))
+    const matchesKind = (entry, type) => type === 'all' || (type === 'resource' ? entry.source?.kind === 'mcp'
+      : type === 'tool' ? entry.kind === 'tool' && entry.source?.kind !== 'mcp' : type === entry.kind)
+    const sources = new Map(entries.filter(entry => matchesKind(entry, kind)).map(entry => [sourceKey(entry), sourceLabel(entry)]))
+    const setType = next => { setKind(next); if (!entries.some(entry => matchesKind(entry, next) && sourceKey(entry) === source)) setSource('all') }
+    const setCompatibleSource = next => {
+      setSource(next)
+      if (next !== 'all' && !entries.some(entry => matchesKind(entry, kind) && sourceKey(entry) === next)) setKind('all')
+    }
     const normalizedQuery = query.trim().toLowerCase()
-    const filtered = entries.filter(entry => (kind === 'all' || (kind === 'resource' ? entry.source?.kind === 'mcp' : kind === entry.kind))
+    const filtered = entries.filter(entry => matchesKind(entry, kind)
       && (source === 'all' || sourceKey(entry) === source)
       && (strategy === 'all' || entry.manual === strategy)
       && (!onlyCommon || entry.common)
@@ -111,7 +120,7 @@ export function createCapabilitySettingsViews(React, { SearchIcon }) {
       change('capabilityOverrides', next)
     }
     const clear = () => { setQuery(''); setKind('all'); setSource('all'); setStrategy('all'); setOnlyCommon(false); setAvailability('all') }
-    const activeFilters = Number(source !== 'all') + Number(strategy !== 'all') + Number(onlyCommon) + Number(availability !== 'all')
+    const activeFilters = Number(kind !== 'all') + Number(source !== 'all') + Number(strategy !== 'all') + Number(onlyCommon) + Number(availability !== 'all')
     const select = (label, current, update, options) => h('label', { className: 'ptcPlusCapabilityFilter' },
       h('span', null, label), h('select', { className: 'ptcPlusSelect', 'aria-label': label, value: current,
         onChange: event => update(event.target.value) }, ...options.map(([key, text]) => h('option', { key, value: key }, text))))
@@ -131,10 +140,6 @@ export function createCapabilitySettingsViews(React, { SearchIcon }) {
       h('div', { className: 'ptcPlusCapabilityFoundation' },
         h('strong', null, t('capabilities.foundation')), h('code', null, 'run_code · edit_run_code · capabilities.*'),
         h('span', null, t('capabilities.foundationHint'))),
-      h('div', { className: 'ptcPlusCapabilityTypes', role: 'group', 'aria-label': t('capabilities.types') },
-        ...kinds.filter(key => key !== 'other' || entries.some(item => item.kind === 'other')).map(key => h('button', {
-          key, type: 'button', 'aria-pressed': kind === key, onClick: () => setKind(key),
-        }, t(`capabilities.type.${key}`)))),
       h('div', { className: 'ptcPlusCapabilityToolbar' },
         h('label', { className: 'ptcPlusSearch' }, h(SearchIcon),
           h('input', { type: 'search', value: query, 'aria-label': t('capabilities.search'), placeholder: t('capabilities.search'),
@@ -142,10 +147,11 @@ export function createCapabilitySettingsViews(React, { SearchIcon }) {
         select(t('capabilities.sort'), sort, setSort, ['name', 'id', 'strategy', 'common'].map(key => [key, t(`capabilities.sort.${key}`)])),
         h('button', { type: 'button', className: 'ptcPlusCapabilityDirection', 'aria-label': t(descending ? 'capabilities.descending' : 'capabilities.ascending'),
           onClick: () => setDescending(current => !current) }, descending ? '↓' : '↑')),
-      h('details', { className: 'ptcPlusCapabilityFilters', open: true },
-        h('summary', { tabIndex: 0 }, t('capabilities.filters', { count: activeFilters })),
+      h('div', { className: 'ptcPlusCapabilityFilters' },
+        h('span', { className: 'ptcPlusDetail' }, t('capabilities.filters', { count: activeFilters })),
         h('div', { className: 'ptcPlusCapabilityFilterFields' },
-          select(t('capabilities.sourceFilter'), source, setSource, [['all', t('capabilities.allSources')], ...sources,
+          select(t('capabilities.types'), kind, setType, kinds.filter(key => key !== 'other' || entries.some(item => item.kind === 'other')).map(key => [key, t(`capabilities.type.${key}`)])),
+          select(t('capabilities.sourceFilter'), source, setCompatibleSource, [['all', t('capabilities.allSources')], ...sources,
             ...(source !== 'all' && !sources.has(source) ? [[source, t('capabilities.previousSource')]] : [])]),
           select(t('capabilities.strategyFilter'), strategy, setStrategy, [['all', t('capabilities.allStrategies')],
             ...selections.map(key => [key, t(`capabilities.${key}`)])]),
@@ -214,7 +220,149 @@ export function createCapabilitySettingsViews(React, { SearchIcon }) {
       h('p', { className: 'ptcPlusDetail' }, t('capabilities.baselineHint')))
   }
 
-  function CapabilityWorkbench({ value, catalog, catalogError, plans, plansError, disabled, onChange, onReload, t, renderField, renderPlans, renderRefresh, id, selectedSessionId, onSessionSelect }) {
+  function AllocationEvidence({ allocation, allocationError, allocationPending, selectedSessionId, statistics = false, onReload, t }) {
+    if (allocationPending) return h('p', { role: 'status' }, t('state.syncing'))
+    if (allocationError) return h('p', { role: 'status', className: 'ptcPlusMessage' }, t('capabilities.unavailable', { error: allocationError }))
+    if (!allocation) return h('p', { className: 'ptcPlusCapabilityNotice' }, t(selectedSessionId ? 'capabilities.observationUnavailable' : 'capabilities.selectObservation'))
+    const { plan, coverage, configuration } = allocation
+    const count = selection => plan.entries.filter(entry => entry.selection === selection).length
+    const numeric = evidence => evidence?.status === 'usable' && evidence.eligible !== null
+      ? `${evidence.used}/${evidence.eligible} · ${evidence.coverage === null ? '—' : `${Math.round(evidence.coverage * 100)}%`}`
+      : t(`capabilities.statStatus.${evidence?.status ?? 'unavailable'}`)
+    return h('section', { className: 'ptcPlusAllocationEvidence', 'aria-label': t(statistics ? 'capabilities.observedUsage' : 'capabilities.budgetPreview') },
+      h('div', { className: 'ptcPlusCapabilityResultLine' }, h('h4', null, t(statistics ? 'capabilities.observedUsage' : 'capabilities.budgetPreview')),
+        h('button', { type: 'button', className: 'ptcPlusCapabilityLink', onClick: onReload }, t('capabilities.reloadObservation'))),
+      h('p', { className: 'ptcPlusDetail' }, t('capabilities.observationScope', { workspace: allocation.workspace, session: allocation.sessionId })),
+      h('p', { className: 'ptcPlusDetail' }, t(statistics ? 'capabilities.usageEvidenceHint' : 'capabilities.previewHint')),
+      !statistics ? h(React.Fragment, null,
+        h('div', { className: 'ptcPlusAllocationMetrics' },
+          ...['full', 'on-demand', 'closed'].map(selection => h('div', { key: selection }, h('strong', null, count(selection)), h('span', null, t(`capabilities.${selection}`)))),
+          h('div', null, h('strong', null, `${plan.budgets.contractBytes} / ${configuration.capabilityBudgetBytes}`), h('span', null, 'UTF-8 bytes'))),
+        h('progress', { max: configuration.capabilityBudgetBytes, value: Math.min(configuration.capabilityBudgetBytes, plan.budgets.contractBytes),
+          'aria-label': t('capabilities.budgetPreview') }),
+        h('p', { className: 'ptcPlusDetail' }, t('capabilities.budget', { bytes: plan.budgets.contractBytes, overage: plan.budgets.overageBytes })),
+        h('p', { className: 'ptcPlusDetail' }, t('capabilities.directoryUsage', { bytes: plan.budgets.directoryBytes, budget: configuration.capabilityDirectoryBytes })),
+        !plan.enabled ? h('p', { className: 'ptcPlusCapabilityNotice' }, t('capabilities.managementOff')) : null)
+        : coverage === null ? h('p', { role: 'status' }, t('capabilities.statStatus.unavailable')) : null,
+      h('div', { className: 'ptcPlusCapabilityEvidenceTable' }, h('table', null,
+        h('thead', null, h('tr', null, ...[t('capabilities.member'), ...(statistics
+          ? [t('capabilities.workspaceCoverage'), t('capabilities.globalCoverage')]
+          : [t('capabilities.selection'), t('capabilities.reason'), t('capabilities.contractSize')])].map((label, key) => h('th', { key }, label)))),
+        h('tbody', null, ...allocation.capabilities.map(item => {
+          const entry = plan.entries.find(entry => entry.id === item.id)
+          return h('tr', { key: item.id }, h('td', null, item.id), ...(statistics
+            ? [h('td', { key: 'workspace' }, numeric(coverage?.[item.id]?.workspace)), h('td', { key: 'global' }, numeric(coverage?.[item.id]?.global))]
+            : [h('td', { key: 'selection' }, t(`capabilities.${entry?.selection ?? 'host'}`)), h('td', { key: 'reason' }, entry ? capabilityPlanReason(t, entry) : '—'), h('td', { key: 'size' }, `${item.contractBytes} B`)]))
+        })))))
+  }
+
+  function ConfigurationProfiles({ value, plans, disabled, writable, onChange, onApplyConfiguration, t }) {
+    const library = validateCapabilityProfiles(JSON.parse(value.capabilityProfiles ?? CONFIG_DEFAULTS.capabilityProfiles))
+    const [selectedId, setSelectedId] = React.useState('')
+    const [name, setName] = React.useState('')
+    const [status, setStatus] = React.useState(null)
+    const [busy, setBusy] = React.useState(false)
+    const [sessionId, setSessionId] = React.useState('')
+    const fileInput = React.useRef(null)
+    const live = React.useRef(null)
+    const lifecycle = React.useRef(0)
+    const mounted = React.useRef(true)
+    const running = React.useRef(null)
+    const unavailable = disabled('capabilityProfiles') || busy
+    live.current = { library, writable }
+    React.useEffect(() => { mounted.current = true; return () => { lifecycle.current++; mounted.current = false } }, [])
+    React.useEffect(() => {
+      if (!writable) { lifecycle.current++; running.current = null; setBusy(false) }
+    }, [writable])
+    const selected = library.profiles.find(profile => profile.id === selectedId)
+    const current = () => capabilityProfileConfiguration(Object.fromEntries(CAPABILITY_CONFIGURATION_KEYS.map(key => [key, value[key]])))
+    const perform = async operation => {
+      if (!mounted.current || !live.current?.writable || running.current) return
+      const token = {}
+      running.current = token
+      const generation = lifecycle.current
+      setBusy(true); setStatus(null)
+      const assertCurrent = () => {
+        if (!mounted.current || !live.current?.writable || generation !== lifecycle.current) throw new Error(t('capabilities.configurationUnavailable'))
+      }
+      try { await operation(assertCurrent); if (generation === lifecycle.current) setStatus(t('capabilities.configurationSaved')) }
+      catch (error) { if (generation === lifecycle.current) setStatus(String(error?.message ?? error)) }
+      finally { if (running.current === token) running.current = null; if (generation === lifecycle.current) setBusy(false) }
+    }
+    const saveLibrary = async profiles => {
+      if (!mounted.current || !live.current?.writable) throw new Error(t('capabilities.configurationUnavailable'))
+      const next = validateCapabilityProfiles({ schema: library.schema, profiles })
+      if (!await onChange(field('capabilityProfiles'), JSON.stringify(next))) throw new Error(t('capabilities.configurationUnavailable'))
+    }
+    const save = async configuration => {
+      const existing = library.profiles.find(profile => profile.name === name.trim())
+      const profile = { id: existing?.id ?? configurationId(), name: name.trim(), configuration }
+      await saveLibrary([...library.profiles.filter(item => item.id !== profile.id), profile])
+      setSelectedId(profile.id)
+    }
+    const exportProfiles = () => {
+      const document = { schema: library.schema, profiles: selected ? [selected] : library.profiles }
+      const url = URL.createObjectURL(new Blob([JSON.stringify(document, null, 2) + '\n'], { type: 'application/json' }))
+      const link = globalThis.document.createElement('a')
+      link.href = url; link.download = 'ptc-plus-capability-configurations.json'; link.click()
+      const revoke = URL.revokeObjectURL.bind(URL)
+      setTimeout(() => revoke(url), 0)
+    }
+    const importProfiles = event => {
+      const file = event.target.files?.[0]; event.target.value = ''
+      if (!file) return
+      void perform(async assertCurrent => {
+        if (file.size > 2_000_000) throw new Error(t('capabilities.configurationTooLarge'))
+        const imported = validateCapabilityProfiles(JSON.parse(await file.text()))
+        assertCurrent()
+        const currentLibrary = live.current.library
+        const names = new Set(currentLibrary.profiles.map(profile => profile.name))
+        const merged = [...currentLibrary.profiles]
+        for (const profile of imported.profiles) {
+          let name = profile.name; let suffix = 2
+          while (names.has(name)) name = `${profile.name.slice(0, 68)} (${suffix++})`
+          names.add(name); merged.push({ ...profile, id: configurationId(), name })
+        }
+        await saveLibrary(merged)
+      })
+    }
+    const frozen = plans?.find(plan => plan.sessionId === sessionId)
+    let matches = false
+    try { matches = selected && JSON.stringify(selected.configuration) === JSON.stringify(current()) } catch {}
+    return h('section', { className: 'ptcPlusConfigurationProfiles', 'aria-label': t('capabilities.savedConfigurations') },
+      h('h4', null, t('capabilities.savedConfigurations')),
+      h('p', { className: 'ptcPlusDetail' }, t('capabilities.configurationsHint')),
+      h('div', { className: 'ptcPlusProfileControls' },
+        h('label', { className: 'ptcPlusCapabilityFilter' }, h('span', null, t('capabilities.configurationName')),
+          h('input', { className: 'ptcPlusInput', value: name, maxLength: 80, disabled: unavailable,
+            onChange: event => setName(event.target.value), 'aria-label': t('capabilities.configurationName') })),
+        h('button', { type: 'button', className: 'ptcPlusButton', disabled: unavailable || !name.trim(), onClick: () => perform(() => save(current())) }, t('capabilities.saveConfiguration')),
+        h('label', { className: 'ptcPlusCapabilityFilter' }, h('span', null, t('capabilities.savedConfigurations')),
+          h('select', { className: 'ptcPlusSelect', value: selectedId, disabled: unavailable, 'aria-label': t('capabilities.savedConfigurations'),
+            onChange: event => { setSelectedId(event.target.value); setName(library.profiles.find(item => item.id === event.target.value)?.name ?? '') } },
+          h('option', { value: '' }, t('capabilities.chooseConfiguration')), ...library.profiles.map(profile => h('option', { key: profile.id, value: profile.id }, profile.name)))),
+        h('button', { type: 'button', className: 'ptcPlusButton', disabled: unavailable || !selected || !onApplyConfiguration,
+          onClick: () => perform(() => onApplyConfiguration(selected.configuration)) }, t('capabilities.applyConfiguration')),
+        h('button', { type: 'button', className: 'ptcPlusButton', disabled: unavailable || !selected || !name.trim(),
+          onClick: () => perform(() => saveLibrary(library.profiles.map(profile => profile.id === selected.id ? { ...profile, name: name.trim() } : profile))) }, t('capabilities.renameConfiguration')),
+        h('button', { type: 'button', className: 'ptcPlusButton', disabled: unavailable || !selected,
+          onClick: () => perform(async () => { await saveLibrary(library.profiles.filter(profile => profile.id !== selected.id)); setSelectedId(''); setName('') }) }, t('capabilities.deleteConfiguration')),
+        h('button', { type: 'button', className: 'ptcPlusButton', disabled: library.profiles.length === 0, onClick: exportProfiles }, t(selected ? 'capabilities.exportConfiguration' : 'capabilities.exportConfigurations')),
+        h('button', { type: 'button', className: 'ptcPlusButton', disabled: unavailable, onClick: () => fileInput.current.click() }, t('capabilities.importConfigurations')),
+        h('input', { ref: fileInput, type: 'file', accept: '.json,application/json', hidden: true, disabled: unavailable, onChange: importProfiles,
+          'aria-label': t('capabilities.importConfigurations') })),
+      selected ? h('p', { className: 'ptcPlusDetail' }, t(matches ? 'capabilities.configurationMatches' : 'capabilities.configurationDifferent')) : null,
+      h('div', { className: 'ptcPlusProfileSessionCopy' }, h('h5', null, t('capabilities.copyFromSession')),
+        h('p', { className: 'ptcPlusDetail' }, t('capabilities.copySessionHint')),
+        h('select', { className: 'ptcPlusSelect', value: sessionId, disabled: unavailable, 'aria-label': t('capabilities.copyFromSession'), onChange: event => setSessionId(event.target.value) },
+          h('option', { value: '' }, t('capabilities.chooseSession')), ...(plans ?? []).map(plan => h('option', { key: plan.sessionId, value: plan.sessionId }, plan.sessionId))),
+        h('button', { type: 'button', className: 'ptcPlusButton', disabled: unavailable || !name.trim() || !frozen?.configuration,
+          onClick: () => perform(() => save(capabilityProfileConfiguration(frozen.configuration))) }, t('capabilities.saveSessionConfiguration'))),
+      status ? h('p', { role: 'status', className: 'ptcPlusMessage' }, status) : null)
+  }
+
+  function CapabilityWorkbench({ value, catalog, catalogError, plans, plansError, disabled, onChange, onReload, t, renderField, renderPlans, renderRefresh, id, selectedSessionId, onSessionSelect,
+    allocation, allocationError, allocationPending, onApplyConfiguration, configurationWritable }) {
     const [tab, setTab] = React.useState('manual')
     const tabs = ['manual', 'statistics', 'budgets', 'plans']
     return h('div', { className: 'ptcPlusCapabilityWorkbench' },
@@ -234,9 +382,11 @@ export function createCapabilitySettingsViews(React, { SearchIcon }) {
       ...tabs.map(key => h('div', { key, className: 'ptcPlusCapabilityPane', role: 'tabpanel', id: `${id}-pane-${key}`,
         'aria-labelledby': `${id}-tab-${key}`, hidden: tab !== key },
       key === 'manual' ? h(CapabilityChoices, { value, catalog, catalogError, plans, plansError, disabled, onChange, onReload, t, selectedSessionId, onSessionSelect })
-        : key === 'statistics' ? renderField('capabilityStatistics')
-          : key === 'budgets' ? ['capabilityBudgetBytes', 'capabilityDirectoryBytes', 'capabilityRecoveryBytes', 'modelPreviewTokens'].map(renderField)
-            : value.capabilityManagementEnabled === true ? renderPlans() : h('p', { className: 'ptcPlusDetail' }, t('capabilities.managementOff')))))
+        : key === 'statistics' ? h(React.Fragment, null, renderField('capabilityStatistics'), h(AllocationEvidence, { allocation, allocationError, allocationPending, selectedSessionId, statistics: true, onReload, t }))
+          : key === 'budgets' ? h(React.Fragment, null, ...['capabilityBudgetBytes', 'capabilityDirectoryBytes', 'capabilityRecoveryBytes', 'modelPreviewTokens'].map(renderField),
+            h(AllocationEvidence, { allocation, allocationError, allocationPending, selectedSessionId, onReload, t }))
+            : h(React.Fragment, null, h(ConfigurationProfiles, { value, plans, disabled, writable: configurationWritable, onChange, onApplyConfiguration, t }),
+              value.capabilityManagementEnabled === true ? renderPlans() : h('p', { className: 'ptcPlusDetail' }, t('capabilities.managementOff'))))))
   }
   return { CapabilityWorkbench }
 }

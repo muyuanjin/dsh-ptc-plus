@@ -25,7 +25,7 @@ export function createAuthoringView(React, deps) {
   const {
     ActionButton, IconButton, Menu, MenuFallback, Toast, Tooltip, CodeBlock, Modal, createPortal, BindingsDialog, PTCPlusSettingsDialog,
     useWorkbenchController, useBindingReview, catalogOwner, callUserBindings, subscribeReset,
-    settingsCardSeat, updateSetting, menuChildren, CapabilityRefreshButton,
+    settingsCardSeat, updateSetting, updateCapabilityConfiguration, menuChildren, CapabilityRefreshButton,
     icons: {
       sparkle: IconSparkle16, chevron: IconChevronDownOutline14,
       close: IconCloseOutline16, check: IconCheckOutline14,
@@ -476,7 +476,7 @@ export function createAuthoringView(React, deps) {
         }) : null,
       settingsOpen && view.reachable
         ? h(PTCPlusSettingsDialog, {
-          t, usePtcSettings, updateSetting, callUserBindings,
+          t, usePtcSettings, updateSetting, updateCapabilityConfiguration, callUserBindings,
           onClose: () => {
             setSettingsOpen(false)
             queueMicrotask(() => anchorRef.current?.querySelector('.ptcPlusAuthorButton')

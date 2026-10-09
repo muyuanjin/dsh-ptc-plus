@@ -418,6 +418,7 @@ test('exports a Cordis config schema with validated runtime defaults', async () 
       capabilityBaseline: '[]',
       capabilityOverrides: '{}',
       capabilityStatistics: '{"enabled":false,"windowSize":100,"minimumSamples":10,"fullThreshold":0.5}',
+      capabilityProfiles: '{"schema":"ptc-capability-profiles/v1","profiles":[]}',
       capabilityBudgetBytes: 16384,
       capabilityDirectoryBytes: 2048,
       capabilityRecoveryBytes: 8192,

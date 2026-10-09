@@ -2023,6 +2023,7 @@ test('config schema defaults expose the settings switches', async () => {
     'capabilityBaseline',
     'capabilityOverrides',
     'capabilityStatistics',
+    'capabilityProfiles',
     'capabilityBudgetBytes',
     'capabilityDirectoryBytes',
     'capabilityRecoveryBytes',

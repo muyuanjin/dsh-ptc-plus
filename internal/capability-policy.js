@@ -6,7 +6,10 @@ export const CAPABILITY_POLICY_DEFAULT = JSON.stringify({
   allocation: { baseline: true, statistics: false, budget: true },
 })
 
-export const CAPABILITY_CATEGORIES = ['tool', 'skill', 'resource', 'resource-template', 'task']
+/** Categories produced by the current Host integration; resources and templates share a server entry. */
+export const CAPABILITY_INVENTORY_CATEGORIES = Object.freeze({ tool: 'tool', skill: 'skill', resource: 'resource' })
+// The configuration format also accepts independent template/task entries supplied to the pure planner.
+export const CAPABILITY_CATEGORIES = [...Object.values(CAPABILITY_INVENTORY_CATEGORIES), 'resource-template', 'task']
 export const CAPABILITY_DISCLOSURES = ['host', 'full', 'on-demand', 'adaptive']
 const isRecord = value => value !== null && typeof value === 'object' && !Array.isArray(value)
 const own = (value, key) => Object.hasOwn(value, key) ? value[key] : undefined

@@ -198,13 +198,13 @@ if (values.list) {
           assert.equal(await list.locator('.ptcPlusCapabilityItem').count(), 48)
           assert.equal(await page.locator('.ptcPlusCapabilityChoices textarea,.ptcPlusCapabilityStatistics textarea').count(), 0)
           const first = list.locator('input[type=checkbox]').first()
-          const last = list.getByRole('combobox').last()
+          const last = list.locator('.ptcPlusCapabilityContext').last()
           for (const control of [last, first]) {
             await control.focus()
             const reachable = await control.evaluate(element => {
               const rect = element.getBoundingClientRect(), clip = element.closest('.ptcPlusCapabilityList').getBoundingClientRect()
               const x = rect.left + rect.width / 2, y = rect.top + rect.height / 2
-              return y >= clip.top && y <= clip.bottom && document.elementFromPoint(x, y) === element
+              return y >= clip.top && y <= clip.bottom && element.contains(document.elementFromPoint(x, y))
             })
             assert.ok(reachable, `${width}/${state}: capability choice is not reachable after scrolling`)
           }

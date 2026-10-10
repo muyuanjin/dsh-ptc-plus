@@ -17,6 +17,25 @@ function input(extra = {}) {
 const settings = { enabled: true, windowSize: 20, minimumSamples: 3, fullThreshold: 0.5 }
 function observed(used, eligible) { return { status: 'usable', windowSize: 20, used, eligible } }
 
+test('policy format retains independent template and task rules while joint MCP entries use resource rules', () => {
+  const policy = JSON.parse(CAPABILITY_POLICY_DEFAULT)
+  policy.categories = {
+    resource: { availability: 'enabled', disclosure: 'full' },
+    'resource-template': { availability: 'enabled', disclosure: 'on-demand' },
+    task: { availability: 'closed', disclosure: 'full' },
+  }
+  const saved = validateCapabilityPolicy(JSON.parse(JSON.stringify(policy)))
+  assert.deepEqual(saved.categories, policy.categories)
+  const plan = createCapabilityPlan(input({ policy: saved, capabilities: [
+    capability('mcp.docs', 'List resources, list templates and read a URI.', { category: 'resource' }),
+    capability('standalone-template', 'Independent template contract', { category: 'resource-template' }),
+    capability('standalone-task', 'Independent task contract', { category: 'task' }),
+  ] }))
+  assert.deepEqual(plan.entries.map(({ id, selection }) => [id, selection]), [
+    ['mcp.docs', 'full'], ['standalone-task', 'closed'], ['standalone-template', 'on-demand'],
+  ])
+})
+
 test('explicit disclosure and closure override coverage independently of statistics', () => {
   const plan = createCapabilityPlan(input({
     capabilities: ['full', 'demand', 'closed', 'automatic'].map(id => capability(id)),

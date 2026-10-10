@@ -103,8 +103,8 @@ export function createPtcSettingsView(React, deps) {
             setDraft(next)
             commit(next)
           } })),
-      h('div', { className: 'ptcPlusBindingFields' }, numeric('windowSize', 1, Number.MAX_SAFE_INTEGER),
-        numeric('minimumSamples', 1, Number.MAX_SAFE_INTEGER), numeric('fullThreshold', 0, 100, 100)),
+      h('details', null, h('summary', null, t('capabilities.statisticsSettings')), h('div', { className: 'ptcPlusBindingFields' }, numeric('windowSize', 1, Number.MAX_SAFE_INTEGER),
+        numeric('minimumSamples', 1, Number.MAX_SAFE_INTEGER), numeric('fullThreshold', 0, 100, 100))),
       !valid ? h('p', { role: 'status', className: 'ptcPlusMessage' }, t('capabilities.invalidStatistics'))
         : saved.invalid && draft === saved.settings ? h('p', { role: 'status', className: 'ptcPlusMessage' }, t('capabilities.savedStatisticsInvalid')) : null)
   }
@@ -145,6 +145,7 @@ export function createPtcSettingsView(React, deps) {
     const bindingsAction = React.useRef(null)
     const settingsRoot = React.useRef(null)
     const [status, setStatus] = React.useState(null)
+    const [capabilityStatus, setCapabilityStatus] = React.useState(null)
     const [pending, setPending] = React.useState(() => new Set())
     const [plans, setPlans] = React.useState(null)
     const [plansError, setPlansError] = React.useState(null)
@@ -233,7 +234,7 @@ export function createPtcSettingsView(React, deps) {
       return () => controller.abort()
     }, [plansEnabled, open, view, planConfiguration, planRevision])
     const groupIdPrefix = view === 'dialog' ? 'ptc-plus-settings-dialog-group' : 'ptc-plus-settings-group'
-    const trackSection = React.useCallback(() => {
+    const trackSection = React.useCallback((preserveFocus = false) => {
       const scroller = settingsRoot.current?.querySelector('.ptcPlusFields')
       if (!scroller || scroller.clientHeight === 0) return
       const { scale, top, bottom } = settingsScrollGeometry(scroller)
@@ -242,7 +243,12 @@ export function createPtcSettingsView(React, deps) {
         .filter(section => section.bounds)
       const visible = sections.filter(section => section.bounds.bottom > top && section.bounds.top < bottom)
       const atEnd = scroller.scrollHeight > scroller.clientHeight && scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 1
-      const next = atEnd ? visible.at(-1) : visible.find(section => section.bounds.bottom > top + 20 * scale)
+      const focusedControl = preserveFocus === true ? scroller.ownerDocument.activeElement : null
+      const focusedBounds = focusedControl?.getBoundingClientRect()
+      const focusedGroup = focusedBounds && focusedBounds.bottom > top && focusedBounds.top < bottom
+        ? focusedControl.closest('.ptcPlusGroup')?.getAttribute('aria-labelledby') : null
+      const focused = visible.find(section => focusedGroup === `${groupIdPrefix}-${section.key}`)
+      const next = focused ?? (atEnd ? visible.at(-1) : visible.find(section => section.bounds.bottom > top + 20 * scale))
       if (next) setActiveSection(next.key)
     }, [groupIdPrefix])
     React.useLayoutEffect(() => {
@@ -250,10 +256,10 @@ export function createPtcSettingsView(React, deps) {
       const scroller = settingsRoot.current.querySelector('.ptcPlusFields')
       if (!scroller) return
       trackSection()
-      const resize = typeof ResizeObserver === 'function' ? new ResizeObserver(trackSection) : null
+      const resize = typeof ResizeObserver === 'function' ? new ResizeObserver(() => trackSection(true)) : null
       resize?.observe(scroller)
       for (const section of scroller.querySelectorAll('.ptcPlusSettingsModule,.ptcPlusGroup')) resize?.observe(section)
-      const changes = typeof MutationObserver === 'function' ? new MutationObserver(trackSection) : null
+      const changes = typeof MutationObserver === 'function' ? new MutationObserver(() => trackSection(true)) : null
       changes?.observe(scroller, { subtree: true, childList: true, attributes: true, attributeFilter: ['hidden', 'open'] })
       globalThis.addEventListener?.('resize', trackSection)
       return () => { resize?.disconnect(); changes?.disconnect(); globalThis.removeEventListener?.('resize', trackSection) }
@@ -269,18 +275,26 @@ export function createPtcSettingsView(React, deps) {
       if (!globalEnabled) setBindingsDialogOpen(false)
     }, [globalEnabled])
     const unavailable = snapshot.status !== 'ready' || snapshot.writable !== true
+    const isCapabilityField = key => CAPABILITY_CONFIGURATION_KEYS.includes(key)
+      || ['capabilityProfiles', 'capabilityConfiguration'].includes(key)
+    const recordStatus = next => {
+      setStatus(next)
+      if (isCapabilityField(next.fieldKey)) setCapabilityStatus(next)
+    }
     const persist = (field, nextValue) => {
       if (unavailable || pending.has(field.key)) return
       const operation = writeTail.current.then(async () => {
         setPending(current => new Set(current).add(field.key))
         setStatus(null)
+        if (isCapabilityField(field.key)) setCapabilityStatus(null)
         try {
           const key = await updateSetting(field.key, nextValue)
-          if (key !== null) setStatus({ key })
+          if (key !== null) recordStatus({ key, fieldKey: field.key })
           return key === 'status.applied' || (key === null && value[field.key] === nextValue)
         } catch (error) {
-          setStatus({
+          recordStatus({
             key: 'status.failed',
+            fieldKey: field.key,
             params: { error: error instanceof Error ? error.message : String(error) },
           })
           return false
@@ -300,10 +314,15 @@ export function createPtcSettingsView(React, deps) {
       const validated = capabilityProfileConfiguration(configuration)
       const operation = writeTail.current.then(async () => {
         setPending(current => new Set([...current, ...CAPABILITY_CONFIGURATION_KEYS]))
+        setCapabilityStatus(null)
         try {
           const key = await updateCapabilityConfiguration(validated)
-          setStatus({ key: key ?? 'status.applied' })
+          recordStatus({ key: key ?? 'status.applied', fieldKey: 'capabilityConfiguration' })
           setPlanRevision(current => current + 1)
+        } catch (error) {
+          recordStatus({ key: 'status.failed', fieldKey: 'capabilityConfiguration',
+            params: { error: error instanceof Error ? error.message : String(error) } })
+          throw error
         } finally { setPending(current => new Set([...current].filter(key => !CAPABILITY_CONFIGURATION_KEYS.includes(key)))) }
       })
       writeTail.current = operation.catch(() => {})
@@ -319,8 +338,6 @@ export function createPtcSettingsView(React, deps) {
       if (field.key === 'capabilityBaseline') return null
       if (field.key === 'capabilityProfiles') return null
       if (field.key === 'capabilityStatistics') return h('div', { key },
-        h('div', { className: 'ptcPlusLabel' }, t(`${key}.label`)),
-        h('p', { className: 'ptcPlusDetail' }, t(`${key}.description`)),
         h(StatisticsSetting, { value: value[key] ?? CONFIG_DEFAULTS[key], disabled: fieldDisabled(field), onChange: persist, t }))
       const migratingPolicy = field.key === 'bindingUpdates' && legacyMigration
       return h(React.Fragment, { key: field.key },
@@ -366,7 +383,7 @@ export function createPtcSettingsView(React, deps) {
           disabled: !enabled || unavailable || targets === null || Boolean(targetsError), onChange: setRefreshSessionId,
           options: [{ value: '', label: t('capabilities.chooseSession') },
             ...(targets ?? []).map(target => ({ value: target.sessionId, label: target.sessionId }))] })),
-      observation ? h('p', { className: 'ptcPlusDetail' }, t('capabilities.observationOnly')) : h(CapabilityRefreshButton, { sessionId: refreshSessionId, t,
+      observation ? null : h(CapabilityRefreshButton, { sessionId: refreshSessionId, t,
         enabled: enabled && !unavailable && pending.size === 0 && !targetsError
           && (targets ?? []).some(target => target.sessionId === refreshSessionId),
         onApplied: () => setPlanRevision(current => current + 1) }),
@@ -381,24 +398,20 @@ export function createPtcSettingsView(React, deps) {
         className: 'ptcPlusGroupTitle',
         'data-experimental-label': group.key === 'capabilities' ? t('settings.experimental') : undefined,
       }, t(`group.${group.key}`))
-      const management = CONFIG_FIELDS.find(field => field.key === 'capabilityManagementEnabled')
       return h('section', {
         key: group.key,
         className: 'ptcPlusGroup',
         'data-experimental': group.key === 'capabilities' ? 'true' : undefined,
         'aria-labelledby': `${groupIdPrefix}-${group.key}`,
       },
-      group.key === 'capabilities' ? h('div', { className: 'ptcPlusCapabilityHead' }, heading,
-        h('label', { className: 'ptcPlusCapabilityManagement', title: t('capabilityManagementEnabled.description') },
-          h('span', null, t('capabilities.management')), fieldInput(management, value.capabilityManagementEnabled,
-            fieldDisabled(management), persist, t('capabilityManagementEnabled.label')))) : heading,
+      heading,
       ...(group.key === 'capabilities' ? [
         h(CapabilityWorkbench, { key: 'capability-workbench', id: `${groupIdPrefix}-capability-workbench`,
           value, catalog, catalogError, plans: plansEnabled ? plans : null, plansError,
           disabled: key => fieldDisabled({ key }), onChange: persist,
           onReload: () => setPlanRevision(current => current + 1), t, renderField, renderPlans, renderRefresh,
           selectedSessionId: refreshSessionId, onSessionSelect: setRefreshSessionId,
-          allocation, allocationError, allocationPending, configurationWritable: !unavailable && enabled, onApplyConfiguration: updateCapabilityConfiguration ? persistConfiguration : undefined })]
+          allocation, allocationError, allocationPending, saving: [...pending].some(key => CAPABILITY_CONFIGURATION_KEYS.includes(key) || key === 'capabilityProfiles'), saveStatus: capabilityStatus, configurationWritable: !unavailable && enabled, onApplyConfiguration: updateCapabilityConfiguration ? persistConfiguration : undefined })]
         : fields.map(renderField)))
     }
 
@@ -464,7 +477,7 @@ export function createPtcSettingsView(React, deps) {
     h('div', { className: 'ptcPlusBodyInner' },
       h('div', { className: navigable ? 'ptcPlusSettingsLayout' : undefined },
         navigation,
-        h('div', { className: 'ptcPlusFields', onScroll: navigable ? trackSection : undefined },
+        h('div', { className: 'ptcPlusFields', onScroll: navigable ? () => trackSection(true) : undefined },
       snapshot.status === 'loading'
         ? h('p', { className: 'ptcPlusMessage' }, t('state.syncing'))
         : snapshot.status === 'unavailable'

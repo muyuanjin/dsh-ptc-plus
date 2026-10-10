@@ -142,11 +142,11 @@ if (values.list) {
         {id:'tools.read',name:'read',category:'tool',description:'Read file contents.',source:{kind:'host'}},
         {id:'tools.edit',name:'edit',category:'tool',description:'Edit project files.',source:{kind:'host'}},
         {id:'tools.bash',name:'bash',category:'tool',description:'Run terminal commands.',source:{kind:'host'}},
-        {id:'tools.mcp__github__search',name:'search',category:'tool',description:'Search code.',source:{kind:'mcp',server:'github'}},
-        {id:'tools.mcp__'+('a'.repeat(64))+'__search',name:'search',category:'tool',description:'Search a server with a long identifier.',source:{kind:'mcp',server:'a'.repeat(64)}},
+        {id:'tools.mcp__github__search',name:'search',category:'tool',mcpServer:'github',description:'Search code.',source:{kind:'mcp',server:'github'}},
+        {id:'tools.mcp__'+('a'.repeat(64))+'__search',name:'search',category:'tool',mcpServer:'a'.repeat(64),description:'Search a server with a long identifier.',source:{kind:'mcp',server:'a'.repeat(64)}},
         {id:'skills.rightapi-image-generator',name:'rightapi-image-generator',category:'skill',description:'Generate, edit and localize images through RightAPI.',source:{kind:'skill',bucket:'user-agents',provider:'filesystem'}},
         {id:'skills.documentation-freshness-auditor',name:'documentation-freshness-auditor',category:'skill',description:'Keep project documentation consistent with its implementation.',source:{kind:'skill',bucket:'project-agents',provider:'filesystem'}},
-        {id:'mcp.project-docs',name:'project-docs',category:'resource',description:'Project documentation resources.',source:{kind:'mcp',server:'project-docs'}}
+        {id:'mcp.project-docs',name:'project-docs',category:'resource',mcpServer:'project-docs',description:'Project documentation resources.',source:{kind:'mcp',server:'project-docs'}}
       ]:[],
       inspectCapabilityPlans:async()=>window.capabilityWorkbench?[{sessionId:'ptc-session',pendingRefresh:true,
         configuration:capabilityProfileConfiguration({capabilityManagementEnabled:true,capabilityBaseline:'["tools.read"]'}),
@@ -264,6 +264,14 @@ if (values.list) {
     const chooseSelect = async (root, label, option) => {
       await root.getByRole('combobox', { name: label, exact: true }).click()
       await page.getByRole('option', { name: option, exact: true }).click()
+    }
+    const openContextDisclosure = async root => {
+      const labels = SETTINGS_COPY[locale]
+      await root.locator('.ptcPlusSettingsNav [data-section=capabilities]').click()
+      const workbench = root.locator('.ptcPlusCapabilityWorkbench')
+      await workbench.getByRole('tab', { name: labels['capabilities.tab.budgets'], exact: true }).click()
+      await workbench.getByRole('tab', { name: labels['capabilities.context.description'], exact: true }).click()
+      await workbench.getByRole('combobox', { name: labels['capabilities.defaultDisclosure'], exact: true }).click()
     }
       if (family === 'dock') {
         await page.goto('about:blank')
@@ -852,43 +860,27 @@ if (values.list) {
         await workbench.locator('.ptcPlusCapabilityItem').first().waitFor()
         assert.equal(await workbench.locator('.ptcPlusCapabilityItem').count(), 9)
         assert.equal(await workbench.locator('textarea').count(), 0)
-        assert.equal(await workbench.locator('.ptcPlusCapabilityRuleFields').count(), 9)
-        const itemRules=workbench.locator('.ptcPlusCapabilityRuleFields').first()
-        for(const control of await itemRules.getByRole('combobox').all()){
-          await control.scrollIntoViewIfNeeded()
-          await assertControlVisual(control,{label:`${label}: independent capability rule`})
-          assert.equal(await control.evaluate(element=>{const rect=element.getBoundingClientRect(),list=element.closest('.ptcPlusCapabilityList').getBoundingClientRect();
-            return rect.left>=list.left&&rect.right<=list.right+1}),true,'independent rule selector clipped')
-        }
-        const serverAvailability = labels['capabilities.policy.availabilityFor'].replace('{name}', 'github')
+        assert.equal(await workbench.locator('.ptcPlusCapabilityRuleFields').count(), 0)
+        assert.equal(await workbench.locator('.ptcPlusCapabilityDetail').count(), 0)
+        assert.equal(await workbench.locator('.ptcPlusCapabilityFilterFields').count(), 0)
+        await page.screenshot({ path: `artifacts/button-styles/capability-default-${width}-${theme}-${native ? 'native' : 'fallback'}-${locale}.png` })
+        const openEntry = async id => workbench.getByRole('button', {
+          name: labels['capabilities.editContextFor'].replace('{name}', id), exact: true }).click()
+        await openEntry('tools.read')
+        for (const control of await workbench.locator('.ptcPlusCapabilityDetail').getByRole('combobox').all())
+          await assertControlVisual(control, { label: `${label}: independent capability rule` })
+        await workbench.getByRole('button', { name: labels['capabilities.closeDetails'], exact: true }).click()
+        await workbench.getByRole('button', { name: labels['capabilities.batchSettings'], exact: true }).click()
+        await workbench.locator('.ptcPlusPolicyRules').getByText(labels['capabilities.sourceRules'], { exact: true }).click()
+        const serverAvailability = `github · ${labels['capabilities.policy.availability']}`
         await chooseSelect(workbench, serverAvailability, labels['capabilities.closed'])
         await page.waitForFunction(()=>JSON.parse(window.settingsWrites.filter(([key])=>key==='capabilityPolicy').at(-1)[1]).mcpServers.github.availability==='closed')
         await chooseSelect(workbench, serverAvailability, labels['capabilities.policy.inheritRule'])
         await page.waitForFunction(()=>JSON.parse(window.settingsWrites.filter(([key])=>key==='capabilityPolicy').at(-1)[1]).mcpServers.github?.availability===undefined)
-        const longServer = workbench.locator(`[data-mcp-server="${'a'.repeat(64)}"]`).locator('..')
-        const assertServerLayout = async () => {
-          const geometry = await longServer.evaluate(element => {
-            const list = element.closest('.ptcPlusCapabilityList')
-            const heading = element.querySelector('h4').getBoundingClientRect()
-            const bounds = list.getBoundingClientRect()
-            return { overflow: list.scrollWidth > list.clientWidth + 1,
-              contained: heading.left >= bounds.left && heading.right <= bounds.right + 1 }
-          })
-          assert.equal(geometry.overflow, false, 'long MCP server name overflows the capability list')
-          assert.equal(geometry.contained, true, 'long MCP server heading is clipped')
-        }
-        await assertServerLayout()
-        for(const control of await longServer.locator('.ptcPlusCapabilityServerRule [role=combobox]').all())
-          await assertControlVisual(control, { label: `${width}/${theme}/${native}/${locale}: long MCP source rule`, disabled: true })
-        if (width === 320) {
-          const fault = await page.addStyleTag({ content: '.ptcPlusCapabilityGroup h4{overflow-wrap:normal!important}' })
-          try {
-            await assert.rejects(assertServerLayout, /long MCP server/)
-          } finally {
-            await fault.evaluate(element => element.remove())
-          }
-          await assertServerLayout()
-        }
+        await workbench.getByRole('button', { name: labels['capabilities.batchSettings'], exact: true }).click()
+        const longSource = workbench.locator('.ptcPlusCapabilitySource').filter({ hasText: 'a'.repeat(64) })
+        const sourceGeometry = await longSource.evaluate(element => ({ overflow: element.scrollWidth > element.clientWidth + 1 }))
+        assert.equal(sourceGeometry.overflow, false, 'long source name overflows its column')
         assert.ok(await workbench.locator('.ptcPlusSearch svg').count() > 0)
         const management = dialog.locator('.ptcPlusCapabilityManagement input')
         await assertControlVisual(management, { label: `${width}/${theme}/${native}/${locale}: capability management`, disabled: true })
@@ -910,20 +902,25 @@ if (values.list) {
         assert.equal(await dialog.locator('[aria-current=location]').count(), 1)
         assert.equal(await dialog.locator('[data-section=capabilities]').getAttribute('aria-current'), 'location')
         const before = await dialog.evaluate(element => ({ navTop: element.querySelector('.ptcPlusSettingsNav').getBoundingClientRect().top, document: scrollY }))
-        await chooseSelect(workbench, labels['capabilities.types'], labels['capabilities.type.skill'])
+        await workbench.locator('.ptcPlusCapabilityTypes').getByRole('button', { name: labels['capabilities.type.skill'], exact: true }).click()
+        await workbench.getByRole('button', { name: labels['capabilities.filterAction'], exact: true }).click()
         assert.equal(await workbench.locator('.ptcPlusCapabilityItem').count(), 2)
         await chooseSelect(workbench, labels['capabilities.policy.disclosureFilter'], labels['capabilities.full'])
         assert.equal(await workbench.locator('.ptcPlusCapabilityItem').count(), 1)
+        await openEntry('skills.rightapi-image-generator')
+        await workbench.locator('.ptcPlusCapabilitySessionDetail summary').click()
+        await chooseSelect(workbench, labels['capabilities.sessionSelector'], 'ptc-session')
         assert.match(await workbench.locator('.ptcPlusCapabilityDetail').innerText(), /rightapi-image-generator/)
         assert.match(await workbench.locator('.ptcPlusCapabilityDetail').innerText(), new RegExp(labels['capabilities.pending']))
         await workbench.getByRole('button', { name: labels['capabilities.clear'], exact: true }).click()
         await chooseSelect(workbench, labels['capabilities.sort'], labels['capabilities.sort.id'])
         await workbench.getByRole('button', { name: labels['capabilities.ascending'], exact: true }).click()
-        const toolIds = await workbench.locator('.ptcPlusCapabilityList>section').first().locator('.ptcPlusCapabilityIdentity code').allTextContents()
+        const toolIds = (await workbench.locator('.ptcPlusCapabilityIdentity code').allTextContents()).filter(id => ['tools.read','tools.edit','tools.bash'].includes(id))
         assert.deepEqual(toolIds, ['tools.read', 'tools.edit', 'tools.bash'])
         await workbench.getByRole('button', { name: labels['capabilities.descending'], exact: true }).click()
         await chooseSelect(workbench, labels['capabilities.availabilityFilter'], labels['capabilities.availability.unavailable'])
         assert.equal(await workbench.locator('.ptcPlusCapabilityItem').count(), 1)
+        await openEntry('tools.previous')
         await workbench.getByRole('button', { name: labels['capabilities.removeSaved'], exact: true }).click()
         await page.waitForFunction(() => window.settingsWrites.some(([key]) => key === 'capabilityPolicy'))
         await workbench.getByRole('button', { name: labels['capabilities.clear'], exact: true }).first().click()
@@ -931,10 +928,10 @@ if (values.list) {
         assert.equal(await workbench.locator('.ptcPlusCapabilityItem').count(), 1)
         await workbench.getByRole('tab', { name: labels['capabilities.tab.manual'], exact: true }).focus()
         await page.keyboard.press('ArrowRight')
-        assert.equal(await workbench.getByRole('tab', { name: labels['capabilities.tab.statistics'], exact: true }).getAttribute('aria-selected'), 'true')
+        assert.equal(await workbench.getByRole('tab', { name: labels['capabilities.tab.budgets'], exact: true }).getAttribute('aria-selected'), 'true')
         await workbench.getByRole('tab', { name: labels['capabilities.tab.manual'], exact: true }).click()
         await workbench.getByRole('searchbox').fill('')
-        await workbench.locator('.ptcPlusCapabilityIdentity').filter({ hasText: 'skills.rightapi-image-generator' }).click()
+        await openEntry('skills.rightapi-image-generator')
         const after = await dialog.evaluate(element => ({ navTop: element.querySelector('.ptcPlusSettingsNav').getBoundingClientRect().top, document: scrollY }))
         assert.deepEqual(after, before, 'capability filters and tabs moved the navigation or document')
         const geometry = await workbench.evaluate(element => {
@@ -944,44 +941,93 @@ if (values.list) {
             overflow: element.scrollWidth > element.clientWidth }
         })
         assert.equal(geometry.overflow, false, 'capability workbench overflows its content viewport')
-        assert.equal(width === 1920 ? geometry.sideBySide : geometry.stacked, true, 'capability detail layout did not adapt')
-        const visibleSurface = workbench.locator('[role=tabpanel]:not([hidden])')
+        assert.equal(geometry.stacked, true, 'local capability editor must follow the list')
+        const visibleSurface = workbench.locator('.ptcPlusCapabilityPane:not([hidden])')
         await assertVisualSurface(page, visibleSurface, `${width}/${theme}/${native}/${locale}: capability workbench`)
         await dialog.locator('[data-section=capabilities]').evaluate(element => element.click())
         await workbench.locator('.ptcPlusCapabilityList').evaluate(element => { element.scrollTop = 0 })
         await page.screenshot({ path: `artifacts/button-styles/capability-workbench-${width}-${theme}-${native ? 'native' : 'fallback'}-${locale}.png` })
         await workbench.getByRole('tab', { name: labels['capabilities.tab.plans'], exact: true }).click()
+        await workbench.locator('.ptcPlusCapabilitySessionTools>summary').click()
         const refresh = dialog.getByRole('button', { name: labels['capabilities.applySession'], exact: true })
-        assert.equal(await refresh.isDisabled(), true)
+        assert.equal(await refresh.isEnabled(), true)
         await chooseSelect(dialog, labels['capabilities.targetSession'], 'other-session')
         // The session selector is below the tab row. Return to the section before
         // checking tab changes, so Playwright's click scrolling is not the oracle.
         await dialog.locator('[data-section=capabilities]').click()
         assert.equal(await workbench.locator('details.ptcPlusCapabilityFilters').count(), 0)
-        assert.equal(await workbench.locator('.ptcPlusCapabilityTypes').count(), 0)
+        assert.equal(await workbench.locator('.ptcPlusCapabilityTypes').isVisible(), false)
         await workbench.getByRole('tab', { name: labels['capabilities.tab.statistics'], exact: true }).click()
         const usage = workbench.getByRole('region', { name: labels['capabilities.observedUsage'], exact: true })
         await usage.waitFor()
-        assert.match(await usage.innerText(), /14\/20/)
+        assert.deepEqual((await usage.locator('tbody tr').first().locator('td').allTextContents()).slice(1), ['14', '20', '70%'])
         await page.screenshot({ path: `artifacts/button-styles/capability-statistics-${width}-${theme}-${native ? 'native' : 'fallback'}-${locale}.png` })
         await workbench.getByRole('tab', { name: labels['capabilities.tab.budgets'], exact: true }).click()
-        await workbench.getByRole('progressbar').waitFor()
+        const contextNav = workbench.locator('.ptcPlusContextNavigation')
+        assert.equal(await contextNav.getByRole('tab').count(), 3)
+        assert.equal(await contextNav.locator('small,summary,input').count(), 0)
+        assert.deepEqual(await contextNav.locator('.ptcPlusContextState').allTextContents(), [labels['capabilities.context.custom'], labels['capabilities.serverOn'], labels['capabilities.serverOn']])
+        await assertVisualSurface(page, contextNav, `${label}: context status navigation`)
+        await page.screenshot({ path: `artifacts/button-styles/capability-context-default-${width}-${theme}-${native ? 'native' : 'fallback'}-${locale}.png` })
+        await contextNav.getByRole('tab', { name: labels['capabilities.context.recovery'], exact: true }).click()
+        const recoverySwitch = workbench.getByRole('switch', { name: labels['capabilities.recoveryEnabled'], exact: true })
+        await recoverySwitch.click()
+        assert.deepEqual(await contextNav.locator('.ptcPlusContextState').allTextContents(), [labels['capabilities.context.custom'], labels['capabilities.serverOff'], labels['capabilities.serverOn']])
+        await page.screenshot({ path: `artifacts/button-styles/capability-context-states-${width}-${theme}-${native ? 'native' : 'fallback'}-${locale}.png` })
+        await recoverySwitch.click()
+        await workbench.getByRole('tab', { name: labels['capabilities.tab.manual'], exact: true }).click()
+        const managementSwitch = workbench.getByRole('switch', { name: labels['capabilities.management'], exact: true })
+        await managementSwitch.click()
+        await workbench.getByRole('tab', { name: labels['capabilities.tab.budgets'], exact: true }).click()
+        assert.deepEqual(await contextNav.locator('.ptcPlusContextState').allTextContents(), [labels['capabilities.host'], labels['capabilities.serverOn'], labels['capabilities.serverOn']])
+        const contextBounds = await contextNav.getByRole('tab').evaluateAll(tabs => tabs.map(tab => {
+          const bounds = tab.getBoundingClientRect()
+          return { name: tab.getAttribute('aria-label'), width: tab.clientWidth, scrollWidth: tab.scrollWidth,
+            wordsIntact: [...tab.querySelectorAll('span')].every(span => [...span.textContent.matchAll(/\S+/g)].every(word => {
+              const range = document.createRange()
+              range.setStart(span.firstChild, word.index)
+              range.setEnd(span.firstChild, word.index + word[0].length)
+              return new Set([...range.getClientRects()].map(rect => Math.round(rect.top))).size <= 1
+            })),
+            contained: [...tab.querySelectorAll('span')].every(span => {
+              const text = span.getBoundingClientRect()
+              return text.left >= bounds.left - 1 && text.right <= bounds.right + 1
+            }) }
+        }))
+        for (const tab of contextBounds) {
+          assert.ok(tab.scrollWidth <= tab.width + 1, `${label}: context ${tab.name} text overflows its button ${JSON.stringify(tab)}`)
+          assert.equal(tab.contained, true, `${label}: context ${tab.name} text leaves its button ${JSON.stringify(tab)}`)
+          if (locale === 'en') assert.equal(tab.wordsIntact, true, `${label}: context ${tab.name} splits English words ${JSON.stringify(tab)}`)
+        }
+        await page.screenshot({ path: `artifacts/button-styles/capability-context-host-${width}-${theme}-${native ? 'native' : 'fallback'}-${locale}.png` })
+        await workbench.getByRole('tab', { name: labels['capabilities.tab.manual'], exact: true }).click()
+        await managementSwitch.click()
+        await workbench.getByRole('tab', { name: labels['capabilities.tab.budgets'], exact: true }).click()
+        await contextNav.getByRole('tab', { name: labels['capabilities.context.description'], exact: true }).click()
+        await workbench.locator('.ptcPlusAllocationPreview>summary').click()
+        await workbench.getByRole('progressbar').first().waitFor()
         assert.equal(await dialog.locator('[data-section=capabilities]').getAttribute('aria-current'), 'location',
           `${label}: switching a capability tab changed section navigation ${JSON.stringify(await dialog.evaluate(element => {
             const scroller = element.querySelector('.ptcPlusFields'), rect = scroller.getBoundingClientRect()
             return { active: element.querySelector('[aria-current=location]')?.getAttribute('data-section'), scrollTop: scroller.scrollTop, height: scroller.clientHeight, scrollHeight: scroller.scrollHeight, top: rect.top, bottom: rect.bottom, groups: [...scroller.children].map(group => ({ name: group.getAttribute('aria-labelledby'), top: group.getBoundingClientRect().top, bottom: group.getBoundingClientRect().bottom })) }
           }))}`)
-        await assertVisualSurface(page, workbench.locator('[role=tabpanel]:not([hidden])'), `${label}: budget preview`)
+        await assertVisualSurface(page, workbench.locator('.ptcPlusCapabilityPane:not([hidden])'), `${label}: budget preview`)
         await page.screenshot({ path: `artifacts/button-styles/capability-budgets-${width}-${theme}-${native ? 'native' : 'fallback'}-${locale}.png` })
         await workbench.getByRole('tab', { name: labels['capabilities.tab.plans'], exact: true }).click()
-        await workbench.getByLabel(labels['capabilities.configurationName'], { exact: true }).fill('Daily')
+        await workbench.locator('.ptcPlusConfigurationProfiles').waitFor({ state: 'visible' })
+        assert.equal(await workbench.getByRole('button', { name: labels['capabilities.saveConfiguration'], exact: true }).count(), 1, JSON.stringify({ label: labels['capabilities.saveConfiguration'], text: await workbench.locator('.ptcPlusCapabilityPane:not([hidden])').innerText() }))
         await workbench.getByRole('button', { name: labels['capabilities.saveConfiguration'], exact: true }).click()
+        await workbench.getByLabel(labels['capabilities.configurationName'], { exact: true }).fill('Daily')
+        await workbench.getByRole('button', { name: labels['capabilities.confirmSave'], exact: true }).click()
         await page.waitForFunction(() => window.settingsWrites.some(([key]) => key === 'capabilityProfiles'))
-        await assertVisualSurface(page, workbench.locator('[role=tabpanel]:not([hidden])'), `${label}: named configurations`)
+        await page.waitForFunction(() => document.activeElement?.classList.contains('ptcPlusConfigurationSave'))
+        assert.equal(await dialog.locator('[data-section=capabilities]').getAttribute('aria-current'), 'location', 'saving a configuration lost the active settings section')
+        await assertVisualSurface(page, workbench.locator('.ptcPlusCapabilityPane:not([hidden])'), `${label}: named configurations`)
         await page.screenshot({ path: `artifacts/button-styles/capability-configurations-${width}-${theme}-${native ? 'native' : 'fallback'}-${locale}.png` })
         await refresh.click()
         await page.waitForFunction(() => window.refreshCalls.length === 1)
         assert.deepEqual(await page.evaluate(() => window.refreshCalls), [{sessionId:'other-session',input:'refresh'}])
+        await workbench.getByRole('tab', { name: labels['capabilities.tab.manual'], exact: true }).click()
         await management.click()
         assert.equal(await refresh.isEnabled(), true)
         await refresh.click()
@@ -1164,7 +1210,7 @@ if (values.list) {
         })
         await page.screenshot({ path: `artifacts/button-styles/settings-dialog-${viewport.width}x${viewport.height}-${native ? 'native' : 'fallback'}-${locale}-${theme}.png` })
         if (viewport.width === 1440 && viewport.height >= 600) {
-          await dialog.locator('.ptcPlusSelectTrigger').first().click()
+          await openContextDisclosure(dialog)
           await page.getByRole('option').first().waitFor()
           await page.screenshot({ path: `artifacts/button-styles/settings-dialog-open-select-${viewport.width}x${viewport.height}-${native ? 'native' : 'fallback'}-${locale}-${theme}.png` })
           await page.keyboard.press('Escape')
@@ -1242,7 +1288,7 @@ if (values.list) {
         }
         await page.screenshot({ path: `artifacts/button-styles/settings-page-${width}-${theme}-${locale}.png` })
         if (width === 1440) {
-          await settings.locator('.ptcPlusSelectTrigger').first().click()
+          await openContextDisclosure(settings)
           await page.getByRole('option').first().waitFor()
           await page.screenshot({ path: `artifacts/button-styles/settings-page-open-select-${width}-${theme}-${locale}.png` })
           await page.keyboard.press('Escape')

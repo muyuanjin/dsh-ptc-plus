@@ -1111,7 +1111,7 @@ test('refresh targets expose only live PTC identities without reading or prepari
   assert.deepEqual(env.describeTargets(), [])
 })
 
-test('settings source metadata follows Skill providers and captured MCP ownership without changing frozen model contracts', async t => {
+test('settings inventory integrates tools Skills and joint MCP resources and templates without changing frozen model contracts', async t => {
   const owner = new Context()
   new SkillRegistry(owner)
   let bodies = 0
@@ -1125,7 +1125,8 @@ test('settings source metadata follows Skill providers and captured MCP ownershi
   owner.effect(() => owner.provide('agents', { list: () => [agent] }))
   const ctx = owner
   const env = createCapabilityEnvironment({ ctx, config: config(),
-    toolSchemasForAgent: () => [schema('run_code'), schema('read'), schema('mcp__docs__search')] })
+    toolSchemasForAgent: () => ['run_code', 'read', 'mcp__docs__search', 'list_mcp_resources',
+      'list_mcp_resource_templates', 'read_mcp_resource'].map(name => schema(name)) })
   t.after(async () => { await env.dispose(); await scope.dispose(); await owner.fiber.dispose() })
   const first = await env.describeCatalog()
   assert.deepEqual(first.find(entry => entry.id === 'skills.image-design').source,
@@ -1134,9 +1135,16 @@ test('settings source metadata follows Skill providers and captured MCP ownershi
   assert.deepEqual(first.find(entry => entry.id === 'tools.mcp__docs__search').source, { kind: 'host' },
     'A tool name alone cannot prove its MCP source.')
   assert.equal(env.describe(agent).effective, null)
-  const state = await env.prepare(agent, [{ name: 'mcp:docs', text: 'Docs server owner instructions' }])
+  const state = await env.prepare(agent, [{ name: 'mcp-resource-servers', text: 'as the server argument: ["docs"].' },
+    { name: 'mcp:docs', text: 'Docs server owner instructions' }])
   const frozen = JSON.stringify(state.snapshot)
   const catalog = await env.describeCatalog()
+  assert.deepEqual([...new Set(catalog.map(entry => entry.category))].sort(), ['resource', 'skill', 'tool'])
+  const resources = state.snapshot.capabilities.filter(entry => entry.category === 'resource')
+  assert.deepEqual(resources.map(entry => entry.id), ['mcp.docs'])
+  assert.match(resources[0].contract, /tools\.list_mcp_resources/)
+  assert.match(resources[0].contract, /tools\.list_mcp_resource_templates/)
+  assert.match(resources[0].contract, /tools\.read_mcp_resource/)
   assert.deepEqual(catalog.find(entry => entry.id === 'tools.mcp__docs__search').source, { kind: 'mcp', server: 'docs' })
   assert.deepEqual(catalog.find(entry => entry.id === 'tools.read').source, { kind: 'host' })
   assert.equal(JSON.stringify(state.snapshot), frozen)

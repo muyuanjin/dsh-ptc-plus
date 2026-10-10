@@ -1,4 +1,4 @@
-import { capabilityRule, capabilityPolicyForConfig, changeCapabilityRule, CAPABILITY_DISCLOSURES } from './capability-policy.js'
+import { capabilityRule, capabilityPolicyForConfig, changeCapabilityRule, CAPABILITY_DISCLOSURES, CAPABILITY_INVENTORY_CATEGORIES } from './capability-policy.js'
 /** One session-owned capability view for presentation, discovery and preparation. */
 import { createHash } from 'node:crypto'
 import { jsonSchemaToTs, renderToolsSdk, ToolNotFoundError } from '@deepseek-ai/dsh-tools'
@@ -185,7 +185,7 @@ function savedConfiguration(settings) {
 
 /** One SDK snapshot owns a tool's signature, schemas and revision. */
 function toolCapability(schema, sections) {
-  return { id: `tools.${schema.name}`, category: 'tool',
+  return { id: `tools.${schema.name}`, category: CAPABILITY_INVENTORY_CATEGORIES.tool,
     revision: digest(schema), schema,
     contract: `\`\`\`ts\n${schema.description ? `/** ${schema.description.replaceAll('*/', '* /')} */\n` : ''}tools[${JSON.stringify(schema.name)}](args: ${jsonSchemaToTs(schema.parameters)}): Promise<${jsonSchemaToTs(schema.output)}>\n\`\`\``,
     dependencies: sectionDependencies(sections.filter(section => section.name === `tool:${schema.name}`
@@ -202,7 +202,7 @@ function skillCapability(skill, modelLoaderAvailable = true) {
     ? `Load instructions: await tools.skill(${JSON.stringify({ name: skill.name })})`
     : invocation.userInvocable ? `User-only Skill: the user can invoke /${skill.name}. The model cannot load this Skill with tools.skill.`
       : 'No invocation path is available in this session.'
-  return { id: `skills.${skill.name}`, category: 'skill', revision: digest(summary),
+  return { id: `skills.${skill.name}`, category: CAPABILITY_INVENTORY_CATEGORIES.skill, revision: digest(summary),
     contract: `${skill.description}\nInvocation: modelInvocable=${invocation.modelInvocable}, userInvocable=${invocation.userInvocable}.\n${loading}`,
     description: skill.description, selector: { name: skill.name }, invocation,
     ...(!modelLoaderAvailable ? { nativeInvocation, effectiveAvailability: invocation.userInvocable ? 'enabled' : 'closed' } : {}) }
@@ -358,7 +358,7 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
     const servers = resourceServers(sections)
     const resourceOperations = ['list_mcp_resources', 'list_mcp_resource_templates', 'read_mcp_resource']
       .filter(name => !policyPaths || hasOperation(name))
-    for (const server of servers) capabilities.push({ id: `mcp.${server}`, category: 'resource', mcpServer: server,
+    for (const server of servers) capabilities.push({ id: `mcp.${server}`, category: CAPABILITY_INVENTORY_CATEGORIES.resource, mcpServer: server,
       revision: digest({ server, instructions: sections.find(section => section.name === `mcp:${server}`)?.text ?? '' }),
       dependencies: sectionDependencies(sections.filter(section => section.name === `mcp:${server}`)), ...(policyPaths && resourceOperations.length === 0 ? { effectiveAvailability: 'closed' } : {}),
       contract: !policyPaths ? `MCP resource server ${JSON.stringify(server)}. Use tools.list_mcp_resources({server}), tools.list_mcp_resource_templates({server}), and tools.read_mcp_resource({server,uri}); use the listed URI or expand a listed template.`

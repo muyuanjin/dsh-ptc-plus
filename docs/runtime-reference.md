@@ -69,6 +69,7 @@ Capability management is experimental and defaults to off. These inputs are froz
 
 | Field | Default | Meaning |
 | --- | --- | --- |
+| `capabilityContextEnabled` | `true` | Pause rules, collection, recovery and plugin previews together without changing saved child settings; applies on new session or refresh |
 | `capabilityManagementEnabled` | `false` | Enable capability planning and projection |
 | `capabilityBaseline` | `'[]'` | JSON array of common capability identities |
 | `capabilityPolicy` | host disclosure, enabled availability, baseline/budget allocation selected, statistics allocation off | Independent default/category/MCP-source/item rules and allocation inputs; [ADR 0043](adr/0043-compose-capability-and-context-policies.md) |

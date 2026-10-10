@@ -14,6 +14,13 @@ export const CAPABILITY_DISCLOSURES = ['host', 'full', 'on-demand', 'adaptive']
 const isRecord = value => value !== null && typeof value === 'object' && !Array.isArray(value)
 const own = (value, key) => Object.hasOwn(value, key) ? value[key] : undefined
 
+/** The group pauses application, never the retained independent choices. Missing denotes historical behavior. */
+export function effectiveCapabilitySettings(settings) {
+  if (settings.contextEnabled !== false) return settings
+  return { ...settings, enabled: false, recoveryEnabled: false, previewEnabled: false,
+    statistics: { ...settings.statistics, enabled: false } }
+}
+
 export function validateCapabilityPolicy(value) {
   const fail = () => { throw new TypeError('ptc-plus: invalid capability policy') }
   if (!isRecord(value) || value.schema !== 'ptc-capability-policy/v1'

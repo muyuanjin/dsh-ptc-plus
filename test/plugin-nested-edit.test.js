@@ -1,10 +1,13 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { registerHooks } from 'node:module'
+import { editRejectedCell } from '../internal/rejected-cell-editor.js'
 import { appendOnlySession, fixture, orderedSurfaceSession, ptcAgent, runNestedEditCell } from './plugin-fixture.js'
 import { POST_EDIT_KEY, RECOVERY_BOUNDARY_KEY } from '../internal/session-journal-schema.js'
-import { decodeValue } from '../internal/value-wire.js'
+import { createEditTransportOwner } from '../internal/edit-transport-owner.js'
+import { decodeValue, encodeValue } from '../internal/value-wire.js'
 import { REPL_MEMORY_META_KEY } from '../internal/repl-memory-projection.js'
-import { recoverJournal, recoveryBoundaryForHistory, visibleExecutableCallSeqs } from '../internal/session-journal-recovery.js'
+import { validateSessionTimelineState, recoverJournal, recoveryBoundaryForHistory, visibleExecutableCallSeqs } from '../internal/session-journal-recovery.js'
 import { createSessionLogProjection, projectSessionLog } from '../internal/session-log-view.js'
 
 function projectedView(session) {
@@ -257,13 +260,55 @@ test('actual derived dispatch records its parent and public retained result with
   assert.equal(projectedView(session).editableRun.source,
     'let recordedEditValue = 3; return recordedEditValue')
 
-  const damaged = { events: structuredClone(session.events), surface: session.surface }
-  damaged.events.find(event => event.seq === settled.seq).data.isError = true
-  const contracted = recoverJournal(damaged, undefined,
-    { visibleCallSeqs: visibleExecutableCallSeqs(damaged) })
+  const mutations = [
+    events => { events.find(event => event.type === 'tool/call' && event.data.callId === 'recorded-root').data.arguments = '{}' },
+    events => { events.find(event => event.seq === settled.seq).data.isError = true },
+    events => { events.find(event => event.type === 'tool/result' && event.data.message?.source?.callId === 'recorded-root')
+      .data.meta.dshPtcPlus.calls.find(call => call.member === 'edit_run_code').value = encodeValue({ accepted: true, scheduled: true, target_call_seq: 999 }) },
+    events => { events.find(event => event.type === 'tool/result' && event.data.message?.source?.callId === 'recorded-root')
+      .data.meta[POST_EDIT_KEY].meta.dshPtcPlusDerivedRun.description = 'different edit' },
+    events => { events.find(event => event.type === 'tool/result' && event.data.message?.source?.callId === 'recorded-root')
+      .data.meta.dshPtcPlus.calls.find(call => call.member === 'edit_run_code').value = { type: 'unknown-wire-tag' } },
+  ]
+  for (const mutate of mutations) {
+    const damaged = { events: structuredClone(session.events), surface: session.surface }
+    mutate(damaged.events)
+    const contracted = recoverJournal(damaged, undefined,
+      { visibleCallSeqs: visibleExecutableCallSeqs(damaged) })
+    assert.equal(contracted.available, false)
+    assert.deepEqual(contracted.nodes.map(node => node.code),
+      ['let recordedEditValue = 1; return recordedEditValue'])
+  }
+  const recoveryUrl = new URL('../internal/session-journal-recovery.js?deferred-edit-fault', import.meta.url).href
+  const editorUrl = new URL('../internal/rejected-cell-editor.js', import.meta.url).href
+  const fixtureUrl = new URL('./deferred-edit-editor-fixture.js', import.meta.url).href
+  const hooks = registerHooks({ resolve(specifier, context, next) {
+    const resolved = next(specifier, context)
+    return context.parentURL === recoveryUrl && resolved.url === editorUrl
+      ? next(fixtureUrl, context) : resolved
+  } })
+  t.after(() => hooks.deregister())
+  t.mock.module(fixtureUrl, { namedExports: { editRejectedCell: (...args) => {
+    if (args[0].edits?.[0]?.new_string === '= 2') throw new Error('deferred editor reconstruction failed')
+    return editRejectedCell(...args)
+  } } })
+  const faultedRecovery = await import(recoveryUrl)
+  const contracted = faultedRecovery.recoverJournal(session, undefined,
+    { visibleCallSeqs: faultedRecovery.visibleExecutableCallSeqs(session) })
   assert.equal(contracted.available, false)
-  assert.deepEqual(contracted.nodes.map(node => node.code),
-    ['let recordedEditValue = 1; return recordedEditValue'])
+  assert.deepEqual(contracted.nodes.map(node => node.code), ['let recordedEditValue = 1; return recordedEditValue'])
+  hooks.deregister()
+  const projection = createSessionLogProjection()
+  let checkpoint = projection.init()
+  session.events.forEach((event, index) => { checkpoint = projection.apply(checkpoint, event, index) })
+  assert.doesNotThrow(() => validateSessionTimelineState(checkpoint.timeline))
+  const wrongTarget = structuredClone(checkpoint.timeline)
+  wrongTarget.eventFacts.find(fact => fact.event.seq === post.startSeq).selectedTarget.source = 'return 999'
+  assert.throws(() => validateSessionTimelineState(wrongTarget), /nested edit target fact/)
+  const wrongDerived = structuredClone(checkpoint.timeline)
+  wrongDerived.eventFacts.find(fact => fact.normalized?.postEdit).normalized.postEdit.derived.description = 'changed description'
+  assert.throws(() => validateSessionTimelineState(wrongDerived), /deferred edit fact/)
+
 })
 
 test('failed actual derived event publication contracts future state without repeating execution', async t => {
@@ -698,4 +743,104 @@ test('a root cell accepts one edit while surrounding code continues with its old
   const next = await state.runDurable(session.id, 'return onceEditValue', tools,
     { session, callId: 'once-continued' })
   assert.equal(next.value, 2)
+})
+
+test('edit scheduling releases claims after refusal, invalid root and cancellation during log read', async t => {
+  const state = fixture()
+  t.after(() => state.dispose())
+  const session = appendOnlySession('edit-owner-admission')
+  session.append('turn/start', {})
+  await state.runDurable(session.id, 'let editOwnerValue = 1; return editOwnerValue', {}, { session, callId: 'setup' })
+  const agent = ptcAgent(session.id, session)
+  const controller = new AbortController()
+  const args = { edits: [{ old_string: '= 1', new_string: '= 2' }] }
+  session.append('tool/call', { callId: 'root', name: 'run_code', arguments: { code: 'return 0', description: 'edit root' } })
+  const exec = { agent, name: 'edit_run_code', callId: 'sub', rootCallId: 'root', arguments: args, signal: controller.signal }
+  let pending
+  let schedule = false
+  let cancelRead = false
+  let reads = 0
+  const owner = createEditTransportOwner(state.ctx, {
+    canScheduleEdit: () => true,
+    executeTentative: () => { throw new Error('cancelled edit executed') },
+    scheduleEdit: (_exec, item) => { pending = item; return schedule },
+    sessionId: agent => agent.session.id,
+    readSessionLog: async () => { reads++; if (cancelRead) controller.abort(); return session },
+  })
+  t.after(() => owner.dispose())
+  await assert.rejects(owner.definition.execute(args, exec), /unique persisted PTC sub-call start/)
+  session.append('tool/ptc-dispatch-start', { rootCallId: 'root', parentCallId: 'root', subCallId: 'sub', name: 'edit_run_code', arguments: args })
+  assert.equal((await owner.definition.execute(args, exec)).accepted, false)
+  assert.equal(pending.finalized, true)
+  schedule = true
+  const receipt = await owner.definition.execute(args, exec)
+  assert.equal(receipt.accepted, true, 'Refused scheduling must release its target claim.')
+  owner.handleResult(exec, { isError: false, value: receipt })
+  await assert.rejects(pending.dispatch(controller.signal, { name: 'run_code', callId: 'foreign', agent, token: {} }), /actual root transport/)
+  pending.finish(false)
+  const retried = await owner.definition.execute(args, exec)
+  assert.equal(retried.accepted, true)
+  owner.handleResult(exec, { isError: false, value: retried })
+  const count = session.events.length
+  cancelRead = true
+  const cancelled = await pending.dispatch(controller.signal, { name: 'run_code', callId: 'root', agent, token: {} })
+  assert.equal(cancelled.outcome.edited, false)
+  assert.equal(pending.finalized, true)
+  assert.equal(session.events.length, count, 'Cancellation while reading must not publish a derived dispatch.')
+  assert.ok(reads >= 4)
+})
+
+
+test('a derived edit execution error retains the original root result and allows the next cell', async t => {
+  const state = fixture()
+  t.after(() => state.dispose())
+  const session = appendOnlySession('derived-edit-error')
+  session.append('turn/start', {})
+  const agent = ptcAgent(session.id, session)
+  const signal = new AbortController().signal
+  await state.assemble({ sections: [], contexts: [], variables: {}, tools: [state.runCodeDefinition] }, { agent, scope: agent, signal })
+  await state.runDurable(session.id, 'let derivedErrorValue = 1; return derivedErrorValue', {}, { session, callId: 'setup' })
+  const root = await runNestedEditCell(state, { session, agent, signal, callId: 'edit-error',
+    code: `return await tools.edit_run_code(${JSON.stringify({ edits: [
+      { old_string: 'return derivedErrorValue', new_string: 'throw new Error("derived failure")' },
+    ] })})` })
+  assert.equal(root.receipt.accepted, true)
+  assert.equal(root.result.isError, false)
+  assert.equal(root.result.meta[POST_EDIT_KEY].meta.dshPtcPlus.completion.kind, 'throw')
+  assert.match(root.raw.logs.join('\n'), /derived failure/)
+  assert.equal((await state.run(session.id, 'return derivedErrorValue + 1', {}, { session })).value, 2)
+})
+
+test('unconfirmed edit receipts cannot dispatch and a large derived value keeps its full canonical result', async t => {
+  const state = fixture()
+  t.after(() => state.dispose())
+  const session = appendOnlySession('edit-confirmation-preview')
+  session.append('turn/start', {})
+  const agent = ptcAgent(session.id, session)
+  const signal = new AbortController().signal
+  await state.assemble({ sections: [], contexts: [], variables: {}, tools: [state.runCodeDefinition] }, { agent, scope: agent, signal })
+  await state.runDurable(session.id, 'let editPreviewValue = "short"; return editPreviewValue', {}, { session, callId: 'setup' })
+  const rejectReceipt = (exec, result) => {
+    if (exec.name === 'edit_run_code' && result.isError === false) result.value = { accepted: false, scheduled: false }
+  }
+  state.listeners.get('tools/result').unshift(rejectReceipt)
+  const refused = await runNestedEditCell(state, { session, agent, signal, callId: 'unconfirmed',
+    code: 'return await tools.edit_run_code({edits:[{old_string:"short",new_string:"changed"}]})' })
+  assert.equal(refused.receipt.accepted, false)
+  assert.equal(refused.result.meta[POST_EDIT_KEY], undefined)
+  assert.equal(session.events.some(event => event.data?.subCallId === 'unconfirmed:ptc:1:derived'), false)
+  state.listeners.get('tools/result').splice(state.listeners.get('tools/result').indexOf(rejectReceipt), 1)
+  const execute = state.ctx.tools.execute
+  state.ctx.tools.execute = async exec => {
+    const result = await execute(exec)
+    return exec.name === 'run_code' ? { ...result, content: [] } : result
+  }
+  await state.runDurable(session.id, 'let editPreviewValue = "short"; return editPreviewValue', {}, { session, callId: 'preview-setup' })
+  const large = 'x'.repeat(4096)
+  const edited = await runNestedEditCell(state, { session, agent, signal, callId: 'large-preview',
+    code: `return await tools.edit_run_code(${JSON.stringify({ edits: [{ old_string: 'short', new_string: large }] })})` })
+  assert.equal(edited.receipt.accepted, true)
+  assert.match(edited.raw.logs.join('\n'), /value omitted from preview/)
+  assert.equal(decodeValue(edited.result.meta[POST_EDIT_KEY].meta.dshPtcPlus.completion.value), large)
+  assert.equal((await state.run(session.id, 'return editPreviewValue.length', {}, { session })).value, 4096)
 })

@@ -4,10 +4,11 @@
 
 ## 方案计算
 
-`internal/capability-plan.js` 导出 `createCapabilityPlan(input)`，有 `policy` 输入时返回递归冻结的 `ptc-capability-plan/v2`；没有该输入时保留 `v1` 计算，专用于历史环境校验。
+`internal/capability-plan.js` 导出 `createCapabilityPlan(input)`，有 `contextEnabled` 输入时返回递归冻结的 `ptc-capability-plan/v3`，记录整体选择及有效管理状态；缺省该维度时，有 `policy` 输入使用 `v2`，否则使用 `v1`，保留历史精确校验。
 
 | 输入 | 契约 |
 | --- | --- |
+| `contextEnabled` | 整组是否选用；false 通过 `effectiveCapabilitySettings` 暂停管理、采集、恢复和预览，不改写独立保存输入 |
 | `enabled`、`configurationRevision` | 独立管理开关和配置修订；关闭时条目选择为 `host`，不修改宿主 |
 | `capabilities` | owner 提供的准确 `{id, revision, category, contract, dependencies?}`；依赖为 `{id, text}` |
 | `policy` | `ptc-capability-policy/v1`：默认、类别、MCP 来源、单项分别保存 availability 与 disclosure，allocation 分别选择 baseline/statistics/budget；见下文 |
@@ -55,7 +56,7 @@ capabilityCoverage(state, { userId, workspaceId, id, revision })
 
 ## 会话接入
 
-新环境为 `ptc-capability-environment/v3`：`sourceSettings` 保存采用的复用配置，`sessionOverrides` 保存独立临时维度，`settings` 与 v2 `plan` 为验证后的派生值；其中 `recoveryEnabled` 和 `previewEnabled` 冻结额外说明恢复与插件预览选择。旧 v1/v2 环境仍用原方案计算和正文恢复，保留其管理耦合行为，不套新默认值。配置迁移把旧完整/按需/关闭选择转为规则，并保留原 adaptive 默认、统计分配及已开启管理的恢复/预览；新配置默认 host，恢复/预览关闭。
+历史 `ptc-capability-environment/v3`：`sourceSettings` 保存采用的复用配置，`sessionOverrides` 保存独立临时维度，`settings` 与 v2 `plan` 为验证后的派生值；其中 `recoveryEnabled` 和 `previewEnabled` 冻结额外说明恢复与插件预览选择。旧 v1/v2 环境仍用原方案计算和正文恢复，保留其管理耦合行为，不套新默认值。配置迁移把旧完整/按需/关闭选择转为规则，并保留原 adaptive 默认、统计分配及已开启管理的恢复/预览；新配置默认 host，恢复/预览关闭。
 
 独立命令为 `/capabilities set session|global <id> availability enabled|closed|automatic|inherit` 与 `/capabilities set session|global <id> disclosure host|full|on-demand|adaptive|automatic|inherit`。`automatic` 仅撤销该维度单项覆盖、重新消费上层规则；`inherit` 仅取消该维度临时选择，恢复冻结源。同项全局保存只清除对应临时维度，保留其它维度。原组合命令仍兼容：closed 关闭且保留说明偏好，full/on-demand 恢复可用并选用说明，automatic 撤销两项单项选择。
 
@@ -68,6 +69,8 @@ capabilityCoverage(state, { userId, workspaceId, id, revision })
 工具完整契约与程序检索元数据来自公共 `ToolRuntime.schemas(scope)` 与 `ToolRuntime.get(name, scope).output.schema` 的准确 JSON 快照，包含参数及返回值 schema；输出 schema 也参与修订身份和恢复比较。新 cell 的检索与 inspect 从同一份当前 SDK 快照派生结构化 schema、签名、依赖及修订，不将冻结方案中的旧签名覆盖到新返回值类型上；冻结的是启用与披露选择。每次准备与接受步骤重新读取 live owner 契约；同名工具的参数、输出或说明依赖变化，以及 Skill 调用资格变化或能力移除，以 `capability-contracts` 的 `ptc-capability-contracts/v1` 来源消息更新当前效力。消息记录原方案 digest、当前修订向量、变化项和当前完整说明超额，digest 与精确正文共同校验；不修改原方案。仍选完整的项提供完整新契约和去重依赖，按需项要求检索当前契约，移除项明确撤销。投递经 accepted step，拒绝与取消不提交；未变视图不重复追加，恢复按正式可见消息协调。实际可用和使用统计采用当时的契约修订，已准入调用保留捕获时的观察身份。顶层模型工具 schema、准入与调用规范化继续使用独立的 `ToolRuntime.schemas(scope)`，不向模型工具定义追加 SDK 输出字段。
 
 保存普通设置不改已有会话；`/capabilities refresh` 在公共 maintenance 边界主动同步。`/capabilities list [all|skills|tools|mcp|mcp_tools] [query]` 只读检索当前受管库存，关闭项仍可查、可重新启用。`/capabilities set session|global <id> full|on-demand|closed|automatic|inherit` 明确操作范围：`session` 只改变本会话临时选择，`global` 以真实设置 namespace 和 revision CAS 保存并在同一次操作内更新本会话，不刷新其他已有会话；`inherit` 仅用于取消临时覆盖，`automatic` 撤销该项显式选择。旧组合命令的 MCP server 只接受关闭、恢复自动和取消临时覆盖；新维度命令支持独立可用性与说明规则，重新启用仍保留子项策略。ID 由命令草稿入口编码，输入匹配由正式 `input.hint` 声明。
+
+新环境 `ptc-capability-environment/v4` 冻结总选择 `settings.contextEnabled` 与原子项，即使整组暂停也通过 accepted 计划消息保存来源；新会话和明确刷新使用最新设置。历史 v1-v3 不接受这一新维度，保持原代际解释。
 
 `ptc-capability-environment/v2` 独立记录 `sourceSettings`、`sessionOverrides` 和合并后的 `settings`；恢复校验合并结果、完整方案及精确正文。普通刷新保留临时选择，全局单项快捷操作清除同项旧临时覆盖；命名配置只导出全局源设置。恢复后的首次检索、刷新或修改均从同一已验证输入来源读取，不要求先发一个模型请求。检索不准备方案或制造统计。
 

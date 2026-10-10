@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { advanceSessionSurface, readSessionLog } from '../internal/session-events.js'
+import { advanceSessionSurface, readSessionLog, sessionSourceMessages } from '../internal/session-events.js'
 import test from 'node:test'
 import { RELEASED_V0_EVENT_TYPES } from '@deepseek-ai/dsh-session-format-v0-to-v1'
 import {
@@ -3160,4 +3160,15 @@ test('contracts later-folded settlements when a recovery boundary is rejected', 
   // The carrier and everything after it stay unproved; the contracted window
   // keeps no node at all.
   assert.deepEqual(recovered.volatileSuffix.map(item => item.seq).sort(), [2, 4])
+})
+
+
+test('source qualification requires a unique projected assistant message and rejects projection failures', () => {
+  const events = [{ seq: 0, type: 'assistant/message', data: { message: { id: 'source' } } },
+    { seq: 1, type: 'assistant/message', data: { message: {} } }]
+  const message = { id: 'source', content: [] }
+  assert.deepEqual([...sessionSourceMessages({ deriveMessages: () => [message] }, events, [0, 1])], [[0, message]])
+  assert.equal(sessionSourceMessages({ deriveMessages: () => [message, message] }, events, [0]).size, 0)
+  const session = { events, surface: { nodes: [0] }, deriveMessages() { throw new Error('projection unavailable') } }
+  assert.deepEqual([...visibleExecutableCallSeqs(session)], [])
 })

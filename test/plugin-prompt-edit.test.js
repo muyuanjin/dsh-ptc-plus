@@ -781,6 +781,9 @@ test('retries a failed scoped editor registration cleanup', async (t) => {
   assert.equal(agent.registration.disposals, 0)
   assert.equal(agent.ctx.tools.get('edit_run_code')?.name, 'edit_run_code')
 
+  await assert.rejects(state.emit('agent/disposed', { agent }), /agent disposal failed/)
+  assert.equal(agent.registration.disposals, 0)
+
   failRegistration = false
   await state.emit('session/disposed', session)
   assert.equal(agent.presentation.disposals, 0)

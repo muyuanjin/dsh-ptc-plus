@@ -138,7 +138,10 @@ test('serves the current settings generation from the exported volatile Config',
 test('binds compensating writes to the owning entry or historical section, never another entry', async () => {
   for (const shape of ['host-owned', 'provider-section', 'package-section']) {
     const writes = []
-    const provider = { update: async (namespace, patch) => writes.push({ namespace, patch }) }
+    const expectedNamespace = shape === 'host-owned' ? 'custom-ptc' : 'ptc-plus'
+    const descriptor = { ns: expectedNamespace, revision: 3, value: { enabled: true } }
+    const provider = { update: async (namespace, patch) => writes.push({ namespace, patch }),
+      describe: () => [{ ns: 'another-entry', value: { enabled: false } }, descriptor] }
     if (shape === 'provider-section') provider.installSection = () => {}
     const settingsModule = shape === 'package-section' ? { installSettingsSection() {} } : {}
     const { ctx, settingsContext } = fixture(provider)
@@ -151,6 +154,7 @@ test('binds compensating writes to the owning entry or historical section, never
         writer = bound
         return () => { if (writer === bound) writer = undefined }
       } })
+    assert.equal(writer.read(), descriptor)
     await writer.update({ enabled: false })
     assert.deepEqual(writes, [{ namespace: shape === 'host-owned' ? 'custom-ptc' : 'ptc-plus',
       patch: { enabled: false } }])

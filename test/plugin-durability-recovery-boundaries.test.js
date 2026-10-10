@@ -1042,6 +1042,7 @@ test('runs the current cell from an empty frontier when the session surface is u
       { id: session.id, session, callId: 'surface-call' },
       { program: 'return typeof surfaceHidden', bindings: [], signal: new AbortController().signal },
     )
+    assert.equal(execution.error, undefined, JSON.stringify(execution))
     assert.equal(execution.value, 'undefined')
     assert.match(execution.logs[0], /Restored the durable head and skipped 1 unreconstructable historical cell/u)
   })

@@ -414,6 +414,7 @@ test('exports a Cordis config schema with validated runtime defaults', async () 
       && typeof value.get === 'function' ? value.get() : value])
     .filter(([, value]) => value !== undefined))
   assert.deepEqual(defaults, {
+      capabilityContextEnabled: true,
       capabilityManagementEnabled: false,
       capabilityBaseline: '[]',
       capabilityOverrides: '{}',
@@ -1612,4 +1613,52 @@ test('releases plugin execution without adding an own patch to an inherited orig
   assert.equal(Object.getPrototypeOf(original), prototype)
   assert.deepEqual(Object.getOwnPropertyDescriptors(original), descriptors)
   assert.deepEqual(await runtime.run({ program: 'return 1', bindings: [] }), { logs: [] })
+})
+
+
+test('invalid source call sequence fails before kernel creation and leaves later computation usable', async t => {
+  const runtime = new SessionRuntime({ durableReplay: false })
+  t.after(() => runtime.dispose())
+  for (const sourceCallSeq of [-1, -0, 1.5, '1']) {
+    const result = await runtime.runTentative({ id: 'invalid-source-sequence', sourceCallSeq }, { program: 'return 42', bindings: [] })
+    assert.match(result.result.error.message, /source tool call sequence must be a non-negative safe integer/)
+    assert.equal(workerOf(runtime, 'invalid-source-sequence'), undefined)
+  }
+  assert.equal((await runtime.run('invalid-source-sequence', { program: 'return 42', bindings: [] })).value, 42)
+})
+
+test('runtime bridge restores own projector and execute descriptors after partial Host attachment failure', async t => {
+  for (const ownExecute of [false, true]) {
+    const base = { execute() {} }
+    const definition = Object.create(ownExecute ? Object.prototype : base)
+    definition.output = {}
+    definition.projectContent = () => ['original']
+    if (ownExecute) definition.execute = () => 'original'
+    const before = Object.getOwnPropertyDescriptors(definition)
+    let fail = true
+    const wrapped = new Proxy(definition, { defineProperty(target, key, descriptor) {
+      Reflect.defineProperty(target, key, descriptor)
+      if (key === 'execute' && fail) { fail = false; throw new Error('Host rejected partial execute patch') }
+      return true
+    } })
+    const owner = createRuntimeBridgeOwner({ ctx: { tools: { get: () => wrapped } },
+      seam: createExecutionSeam({ run() {} }, 'codeRuntime'), sessionConfig: { userBindingsEnabled: false },
+      sessionId: agent => agent.id, toolSchemasForAgent: () => [], presentationGeneration: 'attachment-failure' })
+    t.after(() => owner.dispose())
+    assert.throws(() => owner.prepareAgent({ id: 'attachment-failure' }), /Host rejected partial execute patch/)
+    assert.deepEqual(Object.getOwnPropertyDescriptors(definition), before)
+    assert.equal(Object.hasOwn(definition.output, 'presentationMeta'), false)
+    owner.prepareAgent({ id: 'attachment-failure' })
+    assert.deepEqual(definition.projectContent({}, {}), ['original'])
+    await owner.dispose()
+    assert.deepEqual(Object.getOwnPropertyDescriptors(definition), before)
+  }
+})
+
+test('nested edit log observation rejects a caller without an active root execution', async t => {
+  const owner = createRuntimeBridgeOwner({ ctx: { tools: { get: () => ({ output: {} }) } },
+    seam: createExecutionSeam({ run() {} }, 'codeRuntime'), sessionConfig: { userBindingsEnabled: false },
+    sessionId: agent => agent.id, toolSchemasForAgent: () => [], presentationGeneration: 'inactive-nested-log' })
+  t.after(() => owner.dispose())
+  await assert.rejects(owner.readNestedDispatchLog({ id: 'outside-root' }), /no active root run_code cell/)
 })

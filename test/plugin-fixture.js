@@ -231,6 +231,8 @@ export function fixture(config = {}, fixtureOptions = {}) {
   // These focused runtime fixtures do not publish SessionStore lifecycles or
   // acquire persisted sessions. Real handback tests use the official store.
   const services = { [seamServiceName]: runtime,
+    ...(fixtureOptions.commands === undefined ? {} : { commands: fixtureOptions.commands }),
+    ...(fixtureOptions.settings === undefined ? {} : { settings: fixtureOptions.settings }),
     sessions: { list: () => [], flush: async () => false, messageProjections: [] },
     sessionPersistence: { list: async () => [], open: async () => { throw new Error('No persisted fixture session') } },
     sessionProjections: new SessionProjectionRegistry(new Context()),

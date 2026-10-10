@@ -262,6 +262,16 @@ test('restored statistics stores retain family qualification and revisions after
     assert.equal(coverage[scope].eligible, 2)
     assert.equal(coverage[scope].used, 0)
   }
+  for (const corrupt of [
+    value => { value.state.families[0].userId = 'another-user' },
+    value => { value.families.find(item => item.id === value.state.families[0].familyId).observationRevision++ },
+    value => { value.state.windows[0].userId = 'another-user' },
+    value => { value.state.windows[0].floor = value.nextOrder },
+  ]) {
+    const damaged = structuredClone(after); corrupt(damaged)
+    await writeFile(filename, JSON.stringify(damaged))
+    assert.equal(await restored.coverage(agents[0], [{ id: 'tools.probe', revision: 'one' }], settings), null)
+  }
   after.nextOrder = 1
   await writeFile(filename, JSON.stringify(after))
   assert.equal(await restored.coverage(agents[0], [{ id: 'tools.probe', revision: 'one' }], settings), null)
@@ -358,6 +368,11 @@ test('composed collection records host availability without management and stopp
   await store.available(agent, stopped); await store.used(agent, stopped, 'tools.probe', 'host-execution-result', 'complete')
   await store.status(agent, stopped, 'idle')
   assert.equal(await readFile(filename, 'utf8'), before)
+  const paused = { ...snapshot, settings: { ...snapshot.settings, contextEnabled: false } }
+  await store.available(agent, paused); await store.used(agent, paused, 'tools.probe', 'host-execution-result', 'complete')
+  await store.status(agent, paused, 'idle')
+  assert.equal(await readFile(filename, 'utf8'), before, 'Paused collection preserves retained observations and enabled child choice.')
+  assert.equal(paused.settings.statistics.enabled, true)
   assert.deepEqual(await store.coverage(agent, capabilities, settings), observed)
   const { CAPABILITY_POLICY_DEFAULT } = await import('../internal/capability-policy.js')
   const policy = JSON.parse(CAPABILITY_POLICY_DEFAULT)
@@ -370,4 +385,21 @@ test('composed collection records host availability without management and stopp
   assert.equal(createCapabilityPlan(allocationInput).entries[0].reason, 'statistical-coverage')
   assert.equal(createCapabilityPlan({ ...allocationInput, policy: { ...policy, allocation: { ...policy.allocation, statistics: false } } }).entries[0].selection, 'on-demand')
   assert.equal(await readFile(filename, 'utf8'), before, 'allocation consumes retained observations without collecting')
+})
+
+
+test('statistics family follows Host parent lineage and rejects missing or cyclic ancestry', async () => {
+  const { CapabilityStatisticsStore } = await import('../internal/capability-statistics-store.js')
+  const parent = { id: 'parent', header: {} }
+  const child = { id: 'child', header: { origin: 'subagent', parentSession: 'parent' } }
+  const grandchild = { id: 'grandchild', header: { origin: 'subagent', parentSession: 'child' } }
+  const sessions = new Map([[parent.id, parent], [child.id, child]])
+  const store = new CapabilityStatisticsStore({ filename: 'unused', ctx: { sessions: { get: id => sessions.get(id) } } })
+  assert.equal(store.family({ session: grandchild }), 'parent')
+  sessions.delete('parent')
+  assert.equal(store.family({ session: grandchild }), null)
+  const fallback = new CapabilityStatisticsStore({ filename: 'unused', ctx: { agents: { get: id => id === 'parent' ? { session: parent } : undefined } } })
+  assert.equal(fallback.family({ session: child }), 'parent')
+  sessions.set('parent', { ...parent, header: { origin: 'subagent', parentSession: 'child' } })
+  assert.equal(store.family({ session: grandchild }), null)
 })

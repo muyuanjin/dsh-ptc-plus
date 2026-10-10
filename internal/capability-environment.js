@@ -1,4 +1,4 @@
-import { capabilityRule, capabilityPolicyForConfig, changeCapabilityRule, CAPABILITY_DISCLOSURES, CAPABILITY_INVENTORY_CATEGORIES } from './capability-policy.js'
+import { capabilityRule, capabilityPolicyForConfig, changeCapabilityRule, effectiveCapabilitySettings, CAPABILITY_DISCLOSURES, CAPABILITY_INVENTORY_CATEGORIES } from './capability-policy.js'
 /** One session-owned capability view for presentation, discovery and preparation. */
 import { createHash } from 'node:crypto'
 import { jsonSchemaToTs, renderToolsSdk, ToolNotFoundError } from '@deepseek-ai/dsh-tools'
@@ -66,6 +66,7 @@ export function capabilityConfiguration(config) {
   let statistics
   try { statistics = JSON.parse(config.capabilityStatistics) } catch { statistics = null }
   return {
+    ...(config.capabilityContextEnabled === undefined ? {} : { contextEnabled: config.capabilityContextEnabled }),
     enabled: config.capabilityManagementEnabled === true,
     ...(config.capabilityPolicy ? { policy: capabilityPolicyForConfig(config),
       recoveryEnabled: config.capabilityRecoveryEnabled === true, previewEnabled: config.modelPreviewEnabled === true } : {}),
@@ -82,11 +83,12 @@ function sourcePlan(message, id) {
   const source = message?.source
   if (source?.kind !== PTC_MESSAGE_SOURCE_KIND || source.form !== CAPABILITY_PLAN_FORM || source.sessionId !== id) return undefined
   const snapshot = source.snapshot
-  if (source.digest !== digest(snapshot) || !['ptc-capability-environment/v1', 'ptc-capability-environment/v2', 'ptc-capability-environment/v3'].includes(snapshot?.schema)
-    || !Array.isArray(snapshot.capabilities) || snapshot.plan?.schema !== (snapshot?.schema === 'ptc-capability-environment/v3' ? 'ptc-capability-plan/v2' : 'ptc-capability-plan/v1')) {
+  const generation = ['ptc-capability-environment/v1', 'ptc-capability-environment/v2', 'ptc-capability-environment/v3', 'ptc-capability-environment/v4'].indexOf(snapshot?.schema)
+  if (source.digest !== digest(snapshot) || generation < 0
+    || !Array.isArray(snapshot.capabilities) || snapshot.plan?.schema !== (generation === 3 ? 'ptc-capability-plan/v3' : generation === 2 ? 'ptc-capability-plan/v2' : 'ptc-capability-plan/v1')) {
     throw new Error('damaged session capability plan')
   }
-  if (['ptc-capability-environment/v2', 'ptc-capability-environment/v3'].includes(snapshot.schema)) {
+  if (generation >= 1) {
     let merged
     try {
       if (snapshot.sessionOverrides === undefined) throw new TypeError('missing session choices')
@@ -96,7 +98,10 @@ function sourcePlan(message, id) {
     }
     if (JSON.stringify(merged) !== JSON.stringify(snapshot.settings)) throw new Error('inconsistent session capability choices')
   }
-  if (snapshot.schema === 'ptc-capability-environment/v3') {
+  if (generation === 3 ? typeof snapshot.settings.contextEnabled !== 'boolean' : snapshot.settings.contextEnabled !== undefined) {
+    throw new Error('inconsistent capability context generation')
+  }
+  if (generation === 2 || generation === 3 && snapshot.settings.policy !== undefined) {
     if (!snapshot.settings.policy || typeof snapshot.settings.recoveryEnabled !== 'boolean'
       || typeof snapshot.settings.previewEnabled !== 'boolean') throw new Error('damaged capability policy settings')
   } else if (snapshot.settings.policy !== undefined) throw new Error('inconsistent historical capability generation')
@@ -118,7 +123,9 @@ function planMessage(snapshot, id, refresh = false) {
       plan.directoryText, plan.catalogText,
       ...(plan.budgets.overageBytes ? [`Explicit full contracts exceed the configured budget by ${plan.budgets.overageBytes} UTF-8 bytes.`] : [])]
       .filter(Boolean).join('\n\n')
-    : 'PTC Plus capability management is off for this session. Use the host-provided capability contracts.'
+    : snapshot.settings.contextEnabled === false
+      ? 'PTC Plus capability and context settings are paused for this session. Use the host-provided capability contracts and result presentation.'
+      : 'PTC Plus capability management is off for this session. Use the host-provided capability contracts.'
   return createUserMessage({ source: { kind: PTC_MESSAGE_SOURCE_KIND, form: CAPABILITY_PLAN_FORM,
     sessionId: id, refresh, digest: digest(snapshot), snapshot }, content: [{ type: 'text', text }] })
 }
@@ -163,6 +170,7 @@ function sectionDependencies(sections) {
 }
 
 function requiresCapabilityInventory(settings) {
+  settings = effectiveCapabilitySettings(settings)
   return settings.enabled || settings.policy && (settings.statistics?.enabled === true || settings.recoveryEnabled)
 }
 
@@ -175,6 +183,7 @@ function temporaryCapabilityRule(selection) {
 
 function savedConfiguration(settings) {
   return { capabilityManagementEnabled: settings.enabled,
+    ...(settings.contextEnabled === undefined ? {} : { capabilityContextEnabled: settings.contextEnabled }),
     capabilityBaseline: JSON.stringify(settings.manual.baseline), capabilityOverrides: JSON.stringify(settings.manual.overrides),
     capabilityStatistics: JSON.stringify(settings.statistics), capabilityBudgetBytes: settings.budgetBytes,
     capabilityDirectoryBytes: settings.directoryBudgetBytes, capabilityRecoveryBytes: settings.recoveryBytes,
@@ -332,6 +341,7 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
   }
 
   async function inventory(agent, sections = [], settings, signal, presentation, frozenIds) {
+    if (settings) settings = effectiveCapabilitySettings(settings)
     const schemas = toolSchemasForAgent(agent).filter(schema => !TRANSPORTS.has(schema.name))
     const capabilities = schemas.map(schema => toolCapability(schema, sections))
     const declaredServers = new Set([...resourceServers(sections),
@@ -513,13 +523,15 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
       }
       throw error
     }
+    state.session = agent.session
     sessions.set(String(agent.session.id ?? agent.id), state)
     return state
   }
 
   async function previewPolicy(agent) {
     const state = stateFor(agent)
-    if (!(state?.snapshot.settings.policy ? state.snapshot.settings.previewEnabled : state?.snapshot.plan.enabled)) return undefined
+    const settings = state && effectiveCapabilitySettings(state.snapshot.settings)
+    if (!(settings?.policy ? settings.previewEnabled : state?.snapshot.plan.enabled)) return undefined
     const cap = state.snapshot.settings.previewTokens
     if (!previewPolicies.has(cap)) {
       // Cordis core events are context infrastructure, not an isolatable service.
@@ -539,7 +551,7 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
   async function prepare(agent, sections, force = false, signal = agent?.signal, choice) {
     signal?.throwIfAborted()
     if (agent?.session === undefined) {
-      if (!capabilityConfiguration(currentConfig).enabled) return undefined
+      if (!effectiveCapabilitySettings(capabilityConfiguration(currentConfig)).enabled) return undefined
       throw new TypeError('ptc-plus: capability management requires an agent Session')
     }
     await observeHistory(agent, signal)
@@ -562,12 +574,12 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
             ctx.logger?.warn?.(`ptc-plus: ${error.message}; continuing with the host environment until /capabilities refresh`)
             const settings = { ...capabilityConfiguration(currentConfig), enabled: false, ...(currentConfig.capabilityPolicy ? { recoveryEnabled: false, previewEnabled: false, statistics: { ...capabilityConfiguration(currentConfig).statistics, enabled: false } } : {}) }
             const plan = createCapabilityPlan({ ...settings, configurationRevision: digest(settings), capabilities: [], navigationText: NAVIGATION })
-            snapshot = deepFreeze({ schema: settings.policy ? 'ptc-capability-environment/v3' : 'ptc-capability-environment/v1', ...(settings.policy ? { sourceSettings: settings, sessionOverrides: {} } : {}), navigationText: NAVIGATION, settings, capabilities: [], plan })
+            snapshot = deepFreeze({ schema: settings.contextEnabled !== undefined ? 'ptc-capability-environment/v4' : settings.policy ? 'ptc-capability-environment/v3' : 'ptc-capability-environment/v1', ...(settings.policy || settings.contextEnabled !== undefined ? { sourceSettings: settings, sessionOverrides: {} } : {}), navigationText: NAVIGATION, settings, capabilities: [], plan })
             const notice = planMessage(snapshot, id, true)
             const state = { snapshot, message: notice, hostSections: sections ?? [], expanded: new Set(), used: new Map() }
             return acceptState(agent, state, true, signal)
           }
-          const restored = { snapshot, message: snapshot.plan.enabled || snapshot.settings.policy && (snapshot.settings.statistics?.enabled || snapshot.settings.recoveryEnabled || snapshot.settings.previewEnabled) || recorded.source.refresh ? recorded : undefined, hostSections: sections ?? [], expanded: new Set(), used: new Map() }
+          const restored = { snapshot, message: snapshot.settings.contextEnabled !== undefined || snapshot.plan.enabled || snapshot.settings.policy && (snapshot.settings.statistics?.enabled || snapshot.settings.recoveryEnabled || snapshot.settings.previewEnabled) || recorded.source.refresh ? recorded : undefined, hostSections: sections ?? [], expanded: new Set(), used: new Map() }
           await qualifyCapabilities(agent, restored, signal)
           signal?.throwIfAborted()
           restoreEvidence(agent, restored)
@@ -582,18 +594,19 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
       const sessionOverrides = choice?.sessionOverrides ?? previous?.sessionOverrides ?? {}
       const settings = sessionCapabilitySettings(sourceSettings, sessionOverrides)
       const capabilities = requiresCapabilityInventory(settings) ? await inventory(agent, sections ?? [], settings, signal) : []
-      const coverage = (settings.policy ? settings.policy.allocation.statistics : settings.statistics?.enabled === true) ? await store?.coverage(agent, capabilities, settings.statistics) : undefined
+      const effective = effectiveCapabilitySettings(settings)
+      const coverage = (effective.policy ? effective.enabled && effective.policy.allocation.statistics : effective.statistics?.enabled === true) ? await store?.coverage(agent, capabilities, settings.statistics) : undefined
       const plan = createCapabilityPlan({ ...settings, configurationRevision: digest(settings),
         capabilities, coverage, navigationText: NAVIGATION })
-      const hasChoices = settings.policy !== undefined || choice !== undefined || previous?.schema === 'ptc-capability-environment/v2'
-      const snapshot = deepFreeze({ schema: settings.policy ? 'ptc-capability-environment/v3' : hasChoices ? 'ptc-capability-environment/v2' : 'ptc-capability-environment/v1',
+      const hasChoices = settings.contextEnabled !== undefined || settings.policy !== undefined || choice !== undefined || previous?.schema === 'ptc-capability-environment/v2'
+      const snapshot = deepFreeze({ schema: settings.contextEnabled !== undefined ? 'ptc-capability-environment/v4' : settings.policy ? 'ptc-capability-environment/v3' : hasChoices ? 'ptc-capability-environment/v2' : 'ptc-capability-environment/v1',
         ...(hasChoices ? { sourceSettings, sessionOverrides } : {}), navigationText: NAVIGATION, settings, capabilities, ...(coverage === undefined ? {} : { coverage }), plan })
       const message = planMessage(snapshot, id, force)
       agent.signal?.throwIfAborted?.()
       signal?.throwIfAborted()
       // Initialized sessions commit a refresh and its notification atomically.
       // First-step proposals are accepted through the Host's pre-step messages.
-      const state = { snapshot, message: !settings.enabled && !force && !(settings.policy && (settings.statistics?.enabled || settings.recoveryEnabled || settings.previewEnabled)) ? undefined : message,
+      const state = { snapshot, message: settings.contextEnabled === undefined && !effective.enabled && !force && !(effective.policy && (effective.statistics?.enabled || effective.recoveryEnabled || effective.previewEnabled)) ? undefined : message,
         hostSections: sections ?? [], expanded: new Set(), used: new Map(),
         ...(requiresCapabilityInventory(settings) ? { liveCapabilities: new Map(capabilities.map(item => [item.id, item])) } : {}) }
       restoreEvidence(agent, state)
@@ -666,15 +679,15 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
       const sessionSourceSelection = id => sourceOverrides?.[id] ?? (sourceOverrides ? 'automatic' : 'unknown')
       const dimensions = capability => {
         const saved = capabilityConfiguration(currentConfig)
-        if (!saved.policy && !snapshot?.settings.policy) return { managementEnabled: snapshot?.settings.enabled }
+        if (!saved.policy && !snapshot?.settings.policy) return { managementEnabled: snapshot && effectiveCapabilitySettings(snapshot.settings).enabled }
         const source = sourceSettings?.policy ? capabilityRule(sourceSettings.policy, capability) : undefined
         const temporary = snapshot?.sessionOverrides?.[capability.id]
         const rule = rules => capability.id.startsWith('mcpServers.') ? rules.mcpServers[capability.id.slice(11)] ?? {} : rules.items[capability.id] ?? {}
-        return { managementEnabled: snapshot?.settings.enabled, ...(saved.policy ? { savedRule: rule(saved.policy) } : {}),
+        return { managementEnabled: snapshot && effectiveCapabilitySettings(snapshot.settings).enabled, ...(saved.policy ? { savedRule: rule(saved.policy) } : {}),
           ...(sourceSettings?.policy ? { sourceRule: rule(sourceSettings.policy), sourceDimensions: source } : {}),
           temporaryRule: temporaryCapabilityRule(temporary),
           ...(snapshot?.settings.policy ? { effectiveDimensions: snapshot.plan.entries.find(entry => entry.id === capability.id)
-            ?? (capability.category === 'server' ? snapshot.settings.enabled
+            ?? (capability.category === 'server' ? effectiveCapabilitySettings(snapshot.settings).enabled
               ? capabilityRule(snapshot.settings.policy, capability) : { availability: 'enabled', disclosure: 'host', availabilitySource: 'host', disclosureSource: 'host' } : undefined) } : {}) }
       }
       const entries = capabilities.map(capability => ({ id: capability.id, category: capability.category,
@@ -686,10 +699,10 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
         effective: state?.snapshot.plan.entries.find(entry => entry.id === capability.id)?.selection ?? 'pending' }))
       for (const server of new Set(capabilities.map(item => item.mcpServer).filter(Boolean))) {
         const id = `mcpServers.${server}`
-        const enclosingClosure = state ? state.snapshot.settings.enabled && (state.snapshot.settings.policy
+        const enclosingClosure = state ? effectiveCapabilitySettings(state.snapshot.settings).enabled && (state.snapshot.settings.policy
           ? state.snapshot.settings.policy.mcpServers[server]?.availability === 'closed'
           : state.snapshot.settings.manual.overrides[id] === 'closed') : undefined
-        const effective = state ? state.snapshot.settings.policy && state.snapshot.settings.enabled
+        const effective = state ? state.snapshot.settings.policy && effectiveCapabilitySettings(state.snapshot.settings).enabled
           ? capabilityRule(state.snapshot.settings.policy, { id, category: 'server', mcpServer: server }).availability
           : enclosingClosure ? 'closed' : 'enabled' : 'pending'
         entries.push({ id, category: 'server', name: server, description: `MCP server ${server}`,
@@ -726,7 +739,7 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
         if (dimension && !sourceSettings.policy) {
           sourceSettings = capabilityConfiguration(capabilityProfileConfiguration(savedConfiguration(sourceSettings)))
         }
-        if (!sourceSettings.enabled || !capabilityConfiguration(currentConfig).enabled) throw new Error('ptc-plus: enable capability management before changing a session choice')
+        if (!effectiveCapabilitySettings(sourceSettings).enabled || !effectiveCapabilitySettings(capabilityConfiguration(currentConfig)).enabled) throw new Error('ptc-plus: enable capability management before changing a session choice')
         const sessionOverrides = { ...previous?.sessionOverrides }
         let globalSaved = false
         if (intent.scope === 'session') {
@@ -747,7 +760,7 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
           if (!globalSettings?.read || !globalSettings?.update) throw new Error('ptc-plus: global capability changes require the public settings writer')
           const before = globalSettings.read()
           if (!before || !Number.isSafeInteger(before.revision)) throw new Error('ptc-plus: global capability changes require settings revision evidence')
-          if (before.value.capabilityManagementEnabled === false) throw new Error('ptc-plus: enable capability management before changing a global choice')
+          if (!effectiveCapabilitySettings(capabilityConfiguration({ ...currentConfig, ...before.value })).enabled) throw new Error('ptc-plus: enable capability management before changing a global choice')
           const overrides = JSON.parse(before.value.capabilityOverrides ?? '{}')
           if (intent.selection === 'automatic') delete overrides[intent.id]
           else overrides[intent.id] = intent.selection
@@ -776,7 +789,7 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
             } else delete sessionOverrides[intent.id]
           }
           combined.throwIfAborted()
-          if (!sourceSettings.enabled) throw new Error('ptc-plus: enable capability management before changing a session choice')
+          if (!effectiveCapabilitySettings(sourceSettings).enabled) throw new Error('ptc-plus: enable capability management before changing a session choice')
           await prepare(agent, assembly.sections, true, combined, { sourceSettings, sessionOverrides, commandId: intent.commandId })
           return { globalSaved, sessionApplied: true, publication: planCommitted(agent, stateFor(agent).message) ? 'accepted' : 'pending' }
         } catch (error) {
@@ -787,7 +800,7 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
     },
     pendingChoiceMessage(agent) {
       const state = stateFor(agent)
-      return ['ptc-capability-environment/v2', 'ptc-capability-environment/v3'].includes(state?.snapshot.schema) && !planCommitted(agent, state.message) ? state.message : undefined
+      return ['ptc-capability-environment/v2', 'ptc-capability-environment/v3', 'ptc-capability-environment/v4'].includes(state?.snapshot.schema) && !planCommitted(agent, state.message) ? state.message : undefined
     },
     projectSections(agent, sections) {
       const state = stateFor(agent)
@@ -874,7 +887,7 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
       const additions = state.message && !planCommitted(payload.agent, state.message)
         && !messages.some(message => message.id === state.message.id) ? [state.message] : []
       const planSupplied = planVisible || [...messages, ...additions].some(message => message.id === state.message?.id)
-      if (state.snapshot.plan.enabled || state.snapshot.settings.policy && state.snapshot.settings.recoveryEnabled) {
+      if (state.snapshot.plan.enabled || state.snapshot.settings.policy && effectiveCapabilitySettings(state.snapshot.settings).recoveryEnabled) {
         const planDigest = digest(state.snapshot)
         const sessionId = String(payload.agent.session.id ?? payload.agent.id)
         const recordedUpdate = [...visible, ...messages].map(message => readContractUpdate(message, planDigest, sessionId))
@@ -921,7 +934,7 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
         const restored = []
         const dependencies = new Set()
         const currentSchemas = new Map(toolSchemasForAgent(payload.agent).map(schema => [`tools.${schema.name}`, digest(schema)]))
-        for (const id of (state.snapshot.settings.policy && !state.snapshot.settings.recoveryEnabled ? [] : [...state.used.keys()].reverse())) {
+        for (const id of (state.snapshot.settings.policy && !effectiveCapabilitySettings(state.snapshot.settings).recoveryEnabled ? [] : [...state.used.keys()].reverse())) {
           const capability = state.liveCapabilities.get(id)
           if (!capability || capability.category === 'skill' || !state.expanded.has(id) || expandedVisible.has(id) || !supplied(state, id)) continue
           if (capability.category === 'tool' && currentSchemas.get(id) !== capability.revision) continue
@@ -1021,6 +1034,7 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
     },
     describeSessions() {
       return [...sessions].map(([sessionId, state]) => ({ sessionId, effective: state.snapshot.plan,
+        publication: state.message === undefined ? 'not-required' : planCommitted({ session: state.session }, state.message) ? 'accepted' : 'pending',
         configuration: savedConfiguration(state.snapshot.sourceSettings ?? state.snapshot.settings),
         sessionOverrides: state.snapshot.sessionOverrides ?? {},
         pendingRefresh: digest(capabilityConfiguration(currentConfig)) !== digest(state.snapshot.sourceSettings ?? state.snapshot.settings) }))

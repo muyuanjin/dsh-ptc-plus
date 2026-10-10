@@ -881,6 +881,7 @@ test('both policies combine actual assignments with descriptors across return an
 ${write}
 Object.defineProperty(this, 'shared', installed)
 ${hasValue ? `return ${read}` : 'void 0'}`, initial, policy)
+          assert.deepEqual(done.userBindingFailures, [], JSON.stringify(done))
           assert.equal(done.error, undefined)
           assert.equal(done.hasValue, hasValue)
           if (hasValue) assert.equal(decodeValue(done.value), 1)
@@ -1400,4 +1401,18 @@ test('binding module writes through a bridged request namespace are rejected', a
   assert.deepEqual(done.activatedUserBindings, [])
   assert.deepEqual(done.userBindingFailures.map(failure => failure.id), ['namespace-write'])
   assert.match(done.userBindingFailures[0].error, /trap returned falsish|TypeError|read.only|Cannot assign/)
+})
+
+
+test('worker rejects malformed cell cwd before executing source and accepts a later valid cell', async t => {
+  const runtime = new SessionRuntime({ durableReplay: false })
+  t.after(() => runtime.dispose())
+  assert.equal((await runtime.run('invalid-worker-cwd', { program: 'return 1', bindings: [] })).value, 1)
+  const original = interceptWorkerPosts(runtime, 'invalid-worker-cwd', message =>
+    message.type === 'run' ? { ...message, cwd: 'relative-directory' } : message)
+  const result = await runtime.run('invalid-worker-cwd', { program: 'throw new Error("source must not execute")', bindings: [] })
+  original.restore()
+  assert.match(result.error.message, /cell cwd must be absolute/)
+  assert.doesNotMatch(result.error.message, /source must not execute/)
+  assert.equal((await runtime.run('invalid-worker-cwd', { program: 'return 42', bindings: [] })).value, 42)
 })

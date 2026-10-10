@@ -68,3 +68,22 @@ test('does not read the mutable Array iterator while projecting arguments', () =
 
   assert.deepEqual(projected, ['node', ['arg'], { cwd: SESSION_CWD }])
 })
+
+
+test('cwd virtualization uses the session directory when no per-cell reader is supplied', async () => {
+  const { Worker } = await import('node:worker_threads')
+  const moduleUrl = new URL('../internal/worker-cwd-virtualization.js', import.meta.url).href
+  const worker = new Worker(`
+    const { parentPort } = require('node:worker_threads');
+    import(${JSON.stringify(moduleUrl)}).then(({ installWorkerCwdVirtualization }) => {
+      const cwd = process.cwd();
+      installWorkerCwdVirtualization(cwd, require, () => { throw new Error('known cwd must not be volatile') });
+      parentPort.postMessage({ cwd: process.cwd(), expected: cwd, resolved: require('node:path').resolve('package.json') });
+    });
+  `, { eval: true })
+  const result = await new Promise((resolve, reject) => { worker.once('message', resolve); worker.once('error', reject) })
+  await worker.terminate()
+  assert.equal(result.cwd, result.expected)
+  const { join } = await import('node:path')
+  assert.equal(result.resolved, join(result.expected, 'package.json'))
+})

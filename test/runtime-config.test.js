@@ -203,3 +203,18 @@ test('composition migration retains legacy unresolved preferences without expand
   ] })
   assert.deepEqual(validateCapabilityProfiles(JSON.parse(JSON.stringify(doc))), doc)
 })
+
+
+test('capability context choice survives portable profile round trips and preserves latent child settings', () => {
+  assert.equal(resolveConfig({}).capabilityContextEnabled, true)
+  const saved = capabilityProfileConfiguration({ capabilityContextEnabled: false, capabilityManagementEnabled: true,
+    capabilityRecoveryEnabled: true, modelPreviewEnabled: true })
+  const document = validateCapabilityProfiles(JSON.parse(JSON.stringify({ schema: 'ptc-capability-profiles/v1',
+    profiles: [{ id: 'paused', name: 'Paused', configuration: saved }] })))
+  assert.equal(document.profiles[0].configuration.capabilityContextEnabled, false)
+  assert.equal(saved.capabilityManagementEnabled, true)
+  assert.equal(saved.capabilityRecoveryEnabled, true)
+  assert.equal(saved.modelPreviewEnabled, true)
+  assert.equal(capabilityProfileConfiguration({}).capabilityContextEnabled, true)
+  assert.throws(() => resolveConfig({ capabilityContextEnabled: 'false' }), /capabilityContextEnabled/)
+})

@@ -121,20 +121,20 @@ test('management off preserves native previews and an installed host policy does
 })
 
 
-for (const management of [true, false]) for (const preview of [true, false]) {
-  test(`composed result and log preview management=${management} preview=${preview} preserves canonical values`, async t => {
+for (const contextEnabled of [true, false]) for (const management of [true, false]) for (const preview of [true, false]) {
+  test(`composed result and log preview group=${contextEnabled} management=${management} preview=${preview} preserves canonical values`, async t => {
     const state = await fixture(t, 'local', management, { capabilityPolicy: CONFIG_DEFAULTS.capabilityPolicy,
-      capabilityRecoveryEnabled: false, modelPreviewEnabled: preview })
+      capabilityContextEnabled: contextEnabled, capabilityRecoveryEnabled: false, modelPreviewEnabled: preview })
     const result = await state.execute()
     assert.deepEqual(result.value, state.canonical)
     assert.equal(result.isError, false)
-    assert.equal(state.store.saved.length, preview ? 1 : 0)
-    if (!preview) assert.deepEqual(result.content, state.content)
+    assert.equal(state.store.saved.length, contextEnabled && preview ? 1 : 0)
+    if (!contextEnabled || !preview) assert.deepEqual(result.content, state.content)
     else assert.ok(estimateContent(result.content) <= 256)
     const original = [{ type: 'text', text: state.canonical.body }]
     const dispatch = { exec: { agent: state.agent }, name: 'preview_probe', subCallId: 'nested-preview' }
     const logs = await state.ctx.waterfall('tools/ptc-dispatch-log', dispatch, async () => original)
-    if (preview) assert.ok(estimateContent(logs) <= 256)
+    if (contextEnabled && preview) assert.ok(estimateContent(logs) <= 256)
     else assert.deepEqual(logs, original)
     assert.equal(state.executions(), 1)
   })

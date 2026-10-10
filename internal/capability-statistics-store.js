@@ -1,3 +1,4 @@
+import { effectiveCapabilitySettings } from './capability-policy.js'
 import { createHash } from 'node:crypto'
 import { mkdir, readFile } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
@@ -86,7 +87,7 @@ export class CapabilityStatisticsStore {
   }
 
   mutate(agent, snapshot, additions = [], status = 'active') {
-    const settings = snapshot.settings.statistics
+    const settings = effectiveCapabilitySettings(snapshot.settings).statistics
     if (!snapshot.settings.policy && !snapshot.plan.enabled || settings?.enabled !== true || !Number.isSafeInteger(settings.windowSize)
       || settings.windowSize < 1 || settings.windowSize > 10000) return Promise.resolve()
     const familyId = this.family(agent)

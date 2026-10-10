@@ -14,6 +14,7 @@ import {
   assignWorkerRealmProperty,
   defineWorkerRealmProperty,
   workerRealmSurfaceFacts,
+  installProjectedProcessCwd,
 } from '../internal/worker-realm-surfaces.js'
 import { createPrivateAsyncLocalStorage } from '../internal/async-local-storage-intrinsics.js'
 import { fixture as pluginFixture } from './plugin-fixture.js'
@@ -488,4 +489,15 @@ return observed
     assert.equal(ownCode, true)
     assert.equal(setterCalls, 0)
   }
+})
+
+
+test('projected process cwd retains a literal directory through an immutable callable surface', () => {
+  const processObject = {}
+  installProjectedProcessCwd(processObject, '/recorded-session')
+  assert.equal(processObject.cwd(), '/recorded-session')
+  assert.equal(Object.getOwnPropertyDescriptor(processObject, 'cwd').writable, false)
+  assert.equal(Object.getOwnPropertyDescriptor(processObject, 'cwd').configurable, false)
+  assert.throws(() => { processObject.cwd = () => '/foreign' }, TypeError)
+  assert.equal(processObject.cwd(), '/recorded-session')
 })

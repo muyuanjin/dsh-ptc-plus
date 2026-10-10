@@ -10,6 +10,7 @@ import { CONFIG_FIELDS, CONFIG_GROUPS, CONFIG_MODULES, SETTINGS_NAMESPACE } from
 import { resolveConfig } from '../internal/runtime-config.js'
 import { executionPolicies } from '../internal/binding-update-policy.js'
 import { Session } from '@deepseek-ai/dsh-session'
+import { readCapabilityContextMessage } from '../internal/capability-environment.js'
 import { readRuntimeMessage, runtimeStateMessage } from '../internal/runtime-messages.js'
 import { createFixtureExecutionProvider, createFixtureSessionServices, createHostContext, describeSections, executionInstalled, runHookChain, serviceInjector } from './host-fixture.js'
 
@@ -698,6 +699,7 @@ test('plugin disable clears committed declarations and re-enable reconciles curr
   agent.session = Session.create('settings-message-lifecycle')
   const append = message => agent.session.append('user/message', message, { surfaceOp: 'append' })
   append(runtimeStateMessage([{ name: 'tools:ptc-plus-user-bindings', text: 'Earlier activated helper.' }]))
+  const plans = []
   async function step() {
     const signal = new AbortController().signal
     if (scope.get().enabled) await assemblePtc(host, agent, signal)
@@ -708,7 +710,14 @@ test('plugin disable clears committed declarations and re-enable reconciles curr
       : entries[index]({ agent, signal }, () => dispatch(index + 1))
     const { messages } = await dispatch(0)
     messages.forEach(append)
-    return messages.map(readRuntimeMessage)
+    return messages.flatMap(message => {
+      const runtime = readRuntimeMessage(message)
+      if (runtime) return [runtime]
+      const capability = readCapabilityContextMessage(message, agent.session.id)
+      assert.equal(capability?.form, 'capability-plan', 'Every extra message must be a valid frozen capability plan.')
+      plans.push(capability)
+      return []
+    })
   }
   scope.set({ enabled: false })
   await new Promise(resolve => setImmediate(resolve))
@@ -719,6 +728,9 @@ test('plugin disable clears committed declarations and re-enable reconciles curr
   await new Promise(resolve => setImmediate(resolve))
   assert.equal(executionInstalled(host.runtime), true)
   assert.deepEqual(await step(), [])
+  assert.equal(plans.length, 1)
+  assert.equal(plans[0].settings.contextEnabled, true)
+  assert.equal(plans[0].enabled, false)
   agent.session.append('turn/start', {})
   agent.session.append('tool/call', { callId: 'rewrite', name: 'run_code', arguments: '{"code":"export const value = 1"}' })
   agent.session.append('tool/result', { message: { source: { callId: 'rewrite' } }, meta: {
@@ -2032,6 +2044,7 @@ test('rolls back consecutive failed Cordis updates to the committed configuratio
 
 test('config schema defaults expose the settings switches', async () => {
   const expectedOrder = [
+    'capabilityContextEnabled',
     'capabilityManagementEnabled',
     'capabilityPolicy',
     'capabilityRecoveryEnabled',
@@ -2083,6 +2096,7 @@ test('config schema defaults expose the settings switches', async () => {
     .filter(key => !['legacyBindingSettings', 'looseTopLevelRedeclarations', 'looseTopLevelFunctionClassRedeclarations', 'autoRewriteImports', 'autoStripExports', 'autoSplitRedeclarations'].includes(key))
     .sort())
   const fieldByKey = new Map(CONFIG_FIELDS.map(field => [field.key, field]))
+  assert.equal(fieldByKey.get('capabilityContextEnabled').default, true)
   for (const group of CONFIG_GROUPS) {
     assert.ok(group.fields.every(key => fieldByKey.has(key)))
   }

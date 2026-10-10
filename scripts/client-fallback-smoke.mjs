@@ -863,6 +863,22 @@ if (values.list) {
         assert.equal(await workbench.locator('.ptcPlusCapabilityRuleFields').count(), 0)
         assert.equal(await workbench.locator('.ptcPlusCapabilityDetail').count(), 0)
         assert.equal(await workbench.locator('.ptcPlusCapabilityFilterFields').count(), 0)
+        const combinationChoices = workbench.locator('.ptcPlusCombinationChoices button')
+        assert.equal(await combinationChoices.count(), 4)
+        for (const button of await combinationChoices.all()) {
+          const alignment = await button.evaluate(element => {
+            const style = getComputedStyle(element)
+            return { text: style.textAlign, items: style.alignItems, content: style.justifyContent }
+          })
+          assert.deepEqual(alignment, { text: 'center', items: 'center', content: 'center' }, `${label}: combination choice alignment`)
+        }
+        const writesBeforeNavigation = await page.evaluate(() => window.settingsWrites.length)
+        const recoveryChoice = combinationChoices.filter({ hasText: labels['capabilities.combination.recovery'] })
+        await recoveryChoice.focus()
+        await recoveryChoice.press('Enter')
+        assert.equal(await workbench.getByRole('tab', { name: labels['capabilities.context.recovery'], exact: true }).getAttribute('aria-selected'), 'true')
+        await workbench.getByRole('tab', { name: labels['capabilities.tab.manual'], exact: true }).click()
+        assert.equal(await page.evaluate(() => window.settingsWrites.length), writesBeforeNavigation, 'combination navigation must not save settings')
         await page.screenshot({ path: `artifacts/button-styles/capability-default-${width}-${theme}-${native ? 'native' : 'fallback'}-${locale}.png` })
         const openEntry = async id => workbench.getByRole('button', {
           name: labels['capabilities.editContextFor'].replace('{name}', id), exact: true }).click()
@@ -882,7 +898,9 @@ if (values.list) {
         const sourceGeometry = await longSource.evaluate(element => ({ overflow: element.scrollWidth > element.clientWidth + 1 }))
         assert.equal(sourceGeometry.overflow, false, 'long source name overflows its column')
         assert.ok(await workbench.locator('.ptcPlusSearch svg').count() > 0)
-        const management = dialog.locator('.ptcPlusCapabilityManagement input')
+        const master = dialog.getByRole('switch', { name: labels['group.capabilities'], exact: true })
+        await assertControlVisual(master, { label: `${label}: capability context master`, disabled: true })
+        const management = dialog.getByRole('switch', { name: labels['capabilities.management'], exact: true })
         await assertControlVisual(management, { label: `${width}/${theme}/${native}/${locale}: capability management`, disabled: true })
         await management.evaluate(element => { element.checked = false })
         try {

@@ -13,6 +13,10 @@ export const SETTINGS_NAMESPACE = 'ptc-plus'
  * exists in both locales or in neither.
  */
 export const CONFIG_FIELDS = Object.freeze([
+  { key: 'capabilityContextEnabled', type: 'boolean', default: true,
+    label: '能力与上下文', labelEn: 'Capabilities and context',
+    description: '整体暂停能力规则、统计采集、说明恢复和结果预览，保留各项设置；新会话或明确刷新后生效。',
+    descriptionEn: 'Pauses capability rules, statistics collection, description recovery and result previews while retaining each setting. Applies to new sessions or explicit refreshes.' },
   { key: 'capabilityManagementEnabled', type: 'boolean', default: false,
     label: '实验性能力管理', labelEn: 'Experimental capability management',
     description: '为新 PTC 会话应用可用性与说明规则；已有会话使用 /capabilities refresh 生效。收益尚未经过模型对照验收。',
@@ -400,7 +404,7 @@ export const CONFIG_GROUPS = Object.freeze([
     ]),
   },
   { key: 'capabilities', label: '能力与上下文', labelEn: 'Capabilities and context',
-    fields: Object.freeze(['capabilityManagementEnabled', 'capabilityBaseline', 'capabilityOverrides',
+    fields: Object.freeze(['capabilityContextEnabled', 'capabilityManagementEnabled', 'capabilityBaseline', 'capabilityOverrides',
       'capabilityStatistics', 'capabilityPolicy', 'capabilityRecoveryEnabled', 'modelPreviewEnabled', 'capabilityProfiles', 'capabilityBudgetBytes', 'capabilityDirectoryBytes', 'capabilityRecoveryBytes', 'modelPreviewTokens']) },
 ])
 

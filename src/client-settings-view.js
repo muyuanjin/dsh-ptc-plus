@@ -149,6 +149,8 @@ export function createPtcSettingsView(React, deps) {
     const [pending, setPending] = React.useState(() => new Set())
     const [plans, setPlans] = React.useState(null)
     const [plansError, setPlansError] = React.useState(null)
+    const [plansPending, setPlansPending] = React.useState(false)
+    const [plansObservedConfiguration, setPlansObservedConfiguration] = React.useState(null)
     const [catalog, setCatalog] = React.useState(null)
     const [catalogError, setCatalogError] = React.useState(null)
     const [planRevision, setPlanRevision] = React.useState(0)
@@ -167,8 +169,7 @@ export function createPtcSettingsView(React, deps) {
     const legacyMigration = value.legacyBindingSettings === true
     const enabled = featureEnabled(snapshot, 'plugin')
     const globalEnabled = featureEnabled(snapshot, 'bindings')
-    const plansEnabled = enabled && (value.capabilityManagementEnabled === true || value.capabilityRecoveryEnabled === true
-      || value.modelPreviewEnabled === true || (() => { try { return JSON.parse(value.capabilityStatistics ?? '{}')?.enabled === true } catch { return false } })())
+    const plansEnabled = enabled
     const planConfiguration = JSON.stringify(CONFIG_FIELDS.filter(field => CAPABILITY_CONFIGURATION_KEYS.includes(field.key))
       .map(field => value[field.key]))
     const allocationConfiguration = JSON.stringify(Object.fromEntries(CAPABILITY_CONFIGURATION_KEYS.map(key => [key, value[key]])))
@@ -193,7 +194,8 @@ export function createPtcSettingsView(React, deps) {
       Promise.resolve().then(() => inspectCapabilityTargets(controller.signal)).then(next => {
         if (controller.signal.aborted) return
         setTargets(next)
-        setRefreshSessionId(current => next.some(target => target.sessionId === current) ? current : '')
+        setRefreshSessionId(current => next.some(target => target.sessionId === current)
+          || plans?.some(plan => plan.sessionId === current) ? current : '')
       }, error => {
         if (!controller.signal.aborted) setTargetsError(String(error?.message ?? error))
       })
@@ -221,15 +223,20 @@ export function createPtcSettingsView(React, deps) {
       if (!plansEnabled) {
         setPlans(null)
         setPlansError(null)
+        setPlansPending(false)
+        setPlansObservedConfiguration(null)
         return
       }
       if (!(open || view === 'page' || view === 'dialog') || !inspectCapabilityPlans) return
       const controller = new AbortController()
       setPlansError(null)
+      setPlansPending(true)
       Promise.resolve().then(() => inspectCapabilityPlans(controller.signal)).then(next => {
-        if (!controller.signal.aborted) setPlans(next)
+        if (!controller.signal.aborted) {
+          setPlans(next); setPlansPending(false); setPlansObservedConfiguration(planConfiguration)
+        }
       }, error => {
-        if (!controller.signal.aborted) setPlansError(String(error?.message ?? error))
+        if (!controller.signal.aborted) { setPlansError(String(error?.message ?? error)); setPlansPending(false) }
       })
       return () => controller.abort()
     }, [plansEnabled, open, view, planConfiguration, planRevision])
@@ -365,8 +372,8 @@ export function createPtcSettingsView(React, deps) {
       plansError ? h('p', { role: 'status' }, t('capabilities.unavailable', { error: plansError }))
         : plans === null ? h('p', null, t('state.syncing'))
           : plans.length === 0 ? h('p', null, t('capabilities.empty'))
-            : plans.map(plan => h('details', { key: plan.sessionId },
-              h('summary', { tabIndex: 0 }, `${plan.sessionId} · ${t(plan.pendingRefresh ? 'capabilities.pending' : 'capabilities.current')}`),
+            : plans.filter(plan => plan.sessionId === refreshSessionId).map(plan => h('details', { key: plan.sessionId },
+              h('summary', { tabIndex: 0 }, `${plan.sessionId} · ${t('capabilities.combination.lastRead')}`),
               h('p', { className: 'ptcPlusDetail' }, t('capabilities.frozenHint')),
               h('p', null, t('capabilities.budget', { bytes: plan.effective.budgets.contractBytes, overage: plan.effective.budgets.overageBytes })),
               h('table', null, h('thead', null, h('tr', null,
@@ -376,16 +383,19 @@ export function createPtcSettingsView(React, deps) {
                 h('td', null, capabilityPlanReason(t, entry)),
                 h('td', null, entry.evidence ? `${entry.evidence.used}/${entry.evidence.eligible} (${entry.evidence.scope})` : '—')))))))) : null
 
-    const renderRefresh = ({ observation = false } = {}) => CapabilityRefreshButton ? h('section', { className: 'ptcPlusCapabilityApply',
+    const comparisonTargets = targets === null && inspectCapabilityTargets ? null
+      : [...new Set([...(targets ?? []).map(target => target.sessionId), ...(plans ?? []).map(plan => plan.sessionId)])]
+    const renderRefresh = ({ observation = false } = {}) => CapabilityRefreshButton || inspectCapabilityPlans ? h('section', { className: 'ptcPlusCapabilityApply',
       'aria-label': t(observation ? 'capabilities.observationGroup' : 'capabilities.applyGroup') },
       h('label', { className: 'ptcPlusCapabilityFilter' }, h('span', null, t(observation ? 'capabilities.observationSession' : 'capabilities.targetSession')),
         h(Select, { value: refreshSessionId, label: t(observation ? 'capabilities.observationSession' : 'capabilities.targetSession'),
-          disabled: !enabled || unavailable || targets === null || Boolean(targetsError), onChange: setRefreshSessionId,
+          disabled: !enabled || comparisonTargets === null || Boolean(targetsError), onChange: setRefreshSessionId,
           options: [{ value: '', label: t('capabilities.chooseSession') },
-            ...(targets ?? []).map(target => ({ value: target.sessionId, label: target.sessionId }))] })),
-      observation ? null : h(CapabilityRefreshButton, { sessionId: refreshSessionId, t,
+            ...(comparisonTargets ?? []).map(sessionId => ({ value: sessionId, label: sessionId }))] })),
+      observation || !CapabilityRefreshButton ? null : h(CapabilityRefreshButton, { sessionId: refreshSessionId, t,
         enabled: enabled && !unavailable && pending.size === 0 && !targetsError
           && (targets ?? []).some(target => target.sessionId === refreshSessionId),
+        onInvalidated: () => setPlansObservedConfiguration(null),
         onApplied: () => setPlanRevision(current => current + 1) }),
       targetsError ? h('p', { role: 'status', className: 'ptcPlusDetail' }, t('capabilities.unavailable', { error: targetsError })) : null) : null
 
@@ -404,10 +414,16 @@ export function createPtcSettingsView(React, deps) {
         'data-experimental': group.key === 'capabilities' ? 'true' : undefined,
         'aria-labelledby': `${groupIdPrefix}-${group.key}`,
       },
-      heading,
+      group.key === 'capabilities' ? h('div', { className: 'ptcPlusCapabilityHead' }, heading,
+        h('label', { className: 'ptcPlusCapabilityManagement' },
+          h('span', { role: 'status' }, t(value.capabilityContextEnabled === false ? 'capabilities.groupPaused' : 'capabilities.serverOn')),
+          h('input', { type: 'checkbox', role: 'switch', className: 'ptcPlusCheck', checked: value.capabilityContextEnabled !== false,
+            disabled: fieldDisabled({ key: 'capabilityContextEnabled' }), 'aria-label': t('group.capabilities'),
+            onChange: event => persist(CONFIG_FIELDS.find(field => field.key === 'capabilityContextEnabled'), event.target.checked) }))) : heading,
       ...(group.key === 'capabilities' ? [
         h(CapabilityWorkbench, { key: 'capability-workbench', id: `${groupIdPrefix}-capability-workbench`,
-          value, catalog, catalogError, plans: plansEnabled ? plans : null, plansError,
+          value, configurationReady: snapshot.status === 'ready', catalog, catalogError, plans: plansEnabled ? plans : null, plansError, plansPending,
+          plansStale: plansObservedConfiguration !== planConfiguration,
           disabled: key => fieldDisabled({ key }), onChange: persist,
           onReload: () => setPlanRevision(current => current + 1), t, renderField, renderPlans, renderRefresh,
           selectedSessionId: refreshSessionId, onSessionSelect: setRefreshSessionId,

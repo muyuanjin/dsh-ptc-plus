@@ -149,7 +149,7 @@ const completionObserver = createCellCompletionObserver(runInWorkerReplRealm('Fu
 let replModuleRealm
 const statefulRoots = createStatefulRootRuntime({
   refresh: name => refreshLegacyPublication(name),
-  importModule: (source, options) => managedModuleImport(replParent, source, options, replModuleRealm),
+  importModule: moduleImportFor(),
   errors: runInWorkerReplRealm('({ ReferenceError, TypeError })'),
   dynamicIntrinsics: runInWorkerReplRealm('({intrinsicEval:eval,realmFunction:Function,globalObject:globalThis,errors:{ReferenceError,TypeError,SyntaxError},reflect:Reflect,object:Object})'),
   readAmbient: name => runInWorkerReplRealm(name),
@@ -173,7 +173,7 @@ const statefulRoots = createStatefulRootRuntime({
 const nativeRootDynamic = createNativeRootDynamic({
   logicalReference: (name, writable) => statefulRoots.legacyReference(name, writable),
   intrinsics: runInWorkerReplRealm('({intrinsicEval:eval,realmFunction:Function,globalObject:globalThis,errors:{ReferenceError,TypeError,SyntaxError},reflect:Reflect,object:Object})'),
-  importModule: (source, options) => managedModuleImport(replParent, source, options, replModuleRealm),
+  importModule: moduleImportFor(),
   read: name => runInWorkerReplRealm(name),
   typeOf: name => runInWorkerReplRealm(`typeof ${name}`),
   write(name, value, strict) {
@@ -370,9 +370,12 @@ function recordCellModuleResolution(transform) {
     parent, source, attributes, resolution, transform)
 }
 
+function moduleImportFor(parent, recordResolution) {
+  return (source, options) => managedModuleImport(parent ?? replParent, source, options, replModuleRealm, recordResolution)
+}
+
 function cellImportModuleFor(parent, transform) {
-  const recordResolution = recordCellModuleResolution(transform)
-  return (source, options) => managedModuleImport(parent, source, options, replModuleRealm, recordResolution)
+  return moduleImportFor(parent, recordCellModuleResolution(transform))
 }
 
 function providedRequireFor(parent, legacy, transform, explicitCwd) {

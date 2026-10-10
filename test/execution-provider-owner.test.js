@@ -367,6 +367,7 @@ test('invalid entry mapping and isolation are explicit startup errors', async t 
   await root.plugin(Loader).await()
   assert.throws(() => composition.apply(root, { originalEntryId: '' }), /requires an original entry id/)
   assert.throws(() => composition.apply(root, { isolation: '' }), /requires an original entry id/)
+  assert.throws(() => composition.apply(root, { serviceName: 'foreignRuntime' }), /serviceName must be codeRuntime or ptcRuntime/)
   assert.throws(() => composition.apply(root, { isolation: 1 }), /requires an original entry id/)
   assert.throws(() => composition.apply(root, { originalEntryId: 'missing' }), /does not exist|cannot resolve/)
   await root.loader.root.update([{ id: 'ptc-runtime', name: moduleUrl('export function apply() {}') }])

@@ -255,7 +255,8 @@
         "cell worker",
         "helper process",
         "host transport",
-        "binding console worker"
+        "binding console worker",
+        "moduleImportFor: default late REPL parent/realm and cell-captured resolution recorder"
       ],
       "lifecycle": [
         "startup",
@@ -625,7 +626,8 @@
         "availability-only control retains host SDK and shared instructions; default, category, proven MCP source and item rules resolve independent dimensions, parent closure preserves child preferences",
         "collection and read-only observation independent of statistics allocation and capability management; host eligibility from actual public inventory",
         "optional description recovery and model result/log preview independent from availability and disclosure; unselected previews preserve existing Host policy",
-        "historical environment v1/v2 derives its exact original plan and rendering rather than current defaults"
+        "historical environment v1/v2 derives its exact original plan and rendering rather than current defaults",
+        "persistent group selection pauses rules, collection, recovery and previews without rewriting saved children; profiles and frozen copies retain intent; explicit refresh restores the combination; paused children differ from disabled children"
       ],
       "entries": [
         "createCapabilityPlan",
@@ -642,7 +644,9 @@
         "validateCapabilityPolicy",
         "capabilityPolicyForConfig",
         "capabilityRule",
-        "changeCapabilityRule"
+        "changeCapabilityRule",
+        "effectiveCapabilitySettings",
+        "describeSessions: plan notification publication from the retained actual Session"
       ],
       "lifecycle": [
         "validate inputs",
@@ -673,7 +677,10 @@
         "combined temporary choice migration preserves unrelated dimensions during global saves",
         "independent saved-rule filters, source inheritance and nonblank frozen provenance display",
         "ptc-capability-plan/v2 host disclosure and independent allocation inputs",
-        "ptc-capability-environment/v3 source policy, dimension overrides and optional recovery/preview selections"
+        "ptc-capability-environment/v3 source policy, dimension overrides and optional recovery/preview selections",
+        "ptc-capability-plan/v3 effective group selection preserving independent intent",
+        "persistent new-session selection summary and explicit target comparison retain publication, frozen source, temporary overrides and stale observations without defaulting historical missing dimensions",
+        "ptc-capability-environment/v4 frozen contextEnabled and retained source settings, including paused initial plans; historical v1-v3 forbid new selection"
       ],
       "platforms": [
         "Node 22.19+",
@@ -686,7 +693,8 @@
         "scripts/acceptance-contract.mjs",
         "scripts/ab-headless-trajectories.mjs",
         "src/client-capabilities-view.js",
-        "internal/direct-surface-owner.js"
+        "internal/direct-surface-owner.js",
+        "internal/capability-statistics-store.js"
       ],
       "oracle": "Real ToolRuntime SDK input/output schemas and output-only revision counterexamples, real AgentLoop first-step acceptance including the installed plugin with empty tool/MCP instructions and strict sessionFormatCatalog restoration, plus Host contract and focused program binding tests",
       "evidence": [

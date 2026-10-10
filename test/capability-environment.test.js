@@ -17,7 +17,7 @@ import { SkillRegistry } from '@deepseek-ai/dsh-skill'
 import * as skillTool from '@deepseek-ai/dsh-tool-skill'
 import { SystemPrompt } from '@deepseek-ai/dsh-system-prompt'
 import { ToolRuntime, defineTool } from '@deepseek-ai/dsh-tools'
-import { createCapabilityEnvironment as createEnvironment } from '../internal/capability-environment.js'
+import { createCapabilityEnvironment as createEnvironment, sessionCapabilitySettings } from '../internal/capability-environment.js'
 import { capabilityInspect, capabilitySearch, toolCapabilityMetadata, toolSdkSchemas } from '../internal/program-bindings.js'
 import { appendOnlySession } from './plugin-fixture.js'
 import { runtimeAvailabilityMessage } from '../internal/runtime-messages.js'
@@ -363,6 +363,8 @@ test('formal command receipts retain pending choices before the first system hea
   await ctx.commands.execute(agent, '/capabilities set session tools.probe closed', [], agent.signal)
   assert.equal(session.deriveMessages().length, 0)
   assert.ok(!session.snapshotEvents().some(event => event.type.startsWith('plugin:')))
+  await env.prepare(agent, [])
+  assert.equal(env.describe(agent).effective.entries.find(item => item.id === 'tools.probe').selection, 'closed')
   const events = session.snapshotEvents()
   for (const variant of ['success', 'failed', 'unpaired']) {
     const seed = events.map(event => event.type === 'command/done' && variant === 'failed'
@@ -857,6 +859,7 @@ test('first capability plan remains provisional across rejected and aborted step
   const state = await env.prepare(agent, sections)
   assert.equal(agent.session.snapshotEvents().length, 0)
   assert.equal(env.describe(agent).publication, 'pending')
+  assert.equal(env.describeSessions()[0].publication, 'pending')
   const reject = { kind: 'reject', messages: [] }
   assert.equal(await env.preStep({ agent, signal: agent.signal }, async () => reject), reject)
   const cancellation = new AbortController()
@@ -872,6 +875,7 @@ test('first capability plan remains provisional across rejected and aborted step
   assert.equal(env.describe(agent).publication, 'pending', 'An enter proposal has not been committed by the Host.')
   await acceptPreparation(env, agent, sections)
   assert.equal(env.describe(agent).publication, 'accepted')
+  assert.equal(env.describeSessions()[0].publication, 'accepted')
   const next = await env.preStep({ agent, signal: agent.signal }, async () => ({ kind: 'enter', messages: [] }))
   assert.equal(next.messages.some(message => message.id === state.message.id), false)
   assert.equal(agent.session.snapshotEvents().filter(event => event.data?.source?.form === 'capability-plan').length, 1)
@@ -1263,7 +1267,7 @@ test('description recovery survives Session restoration and follows the ordered 
   const result = first.complete({ agent }, { isError: false, value: 42 })
   const call = session.append('tool/call', { turn: 1, step: 1, name: 'run_code', callId: 'explore', arguments: '{}' })
   const message = createToolResultMessage({ callId: 'explore', isError: false, content: [{ type: 'text', text: first.stateFor(agent).snapshot.capabilities[0].contract + '\n' + guidance[0].text }] })
-  const completion = session.append('tool/result', { turn: 1, step: 1, message, meta: result.meta }, { surfaceOp: 'append', sourceEventSeqs: [call.seq] })
+  const completion = session.append('tool/result', { turn: 1, step: 1, message, ...(result.meta === undefined ? {} : { meta: result.meta }) }, { surfaceOp: 'append', sourceEventSeqs: [call.seq] })
   const reloaded = Session.create(session.id, JSON.parse(JSON.stringify(session.snapshotEvents())), session.header)
   const second = make()
   const target = agentFor(reloaded)
@@ -1575,7 +1579,7 @@ test('initial full contracts and mixed inspect evidence recover identically afte
     if (!full) result.meta.dshPtcPlusCapabilities.expanded.push('code.run', 'repl.state')
     const call = session.append('tool/call', { turn: 1, step: 1, name: 'run_code', callId: 'probe', arguments: '{}' })
     const message = createToolResultMessage({ callId: 'probe', isError: false, content: [{ type: 'text', text: '42' }] })
-    session.append('tool/result', { turn: 1, step: 1, message, meta: result.meta }, { surfaceOp: 'append', sourceEventSeqs: [call.seq] })
+    session.append('tool/result', { turn: 1, step: 1, message, ...(result.meta === undefined ? {} : { meta: result.meta }) }, { surfaceOp: 'append', sourceEventSeqs: [call.seq] })
     const visible = session.snapshotEvents().filter(event => event.type !== 'system/message'
       && (event.surfaceOp === 'append' || event.surfaceOp?.op === 'append'))
     session.append('user/message', createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: 'Compacted.' }] }),
@@ -1716,13 +1720,13 @@ test('composed availability controls retain host SDK and shared instructions whi
   assert.equal(cold.describe(coldAgent).pendingRefresh, true)
 })
 
-for (const recoveryEnabled of [false, true]) test(`composed description recovery=${recoveryEnabled} changes only optional restoration`, async t => {
+for (const contextEnabled of [undefined, true, false]) for (const recoveryEnabled of [false, true]) test(`composed description group=${contextEnabled} recovery=${recoveryEnabled} changes only optional restoration`, async t => {
   const policy = JSON.parse(CONFIG_DEFAULTS.capabilityPolicy)
   policy.defaults.disclosure = 'on-demand'
   const session = Session.create(`composed-recovery-${recoveryEnabled}`)
   const agent = agentFor(session)
   let schemas = [schema('probe')]
-  const env = createCapabilityEnvironment({ ctx: {}, config: composedConfig(policy, { capabilityRecoveryEnabled: recoveryEnabled }),
+  const env = createCapabilityEnvironment({ ctx: {}, config: composedConfig(policy, { capabilityContextEnabled: contextEnabled, capabilityRecoveryEnabled: recoveryEnabled }),
     toolSchemasForAgent: () => schemas })
   t.after(() => env.dispose())
   await acceptPreparation(env, agent, [])
@@ -1731,21 +1735,21 @@ for (const recoveryEnabled of [false, true]) test(`composed description recovery
   const result = env.complete({ agent }, { isError: false, value: 42 })
   const call = session.append('tool/call', { turn: 1, step: 1, name: 'run_code', callId: 'expanded', arguments: '{}' })
   const message = createToolResultMessage({ callId: 'expanded', isError: false,
-    content: [{ type: 'text', text: env.stateFor(agent).snapshot.capabilities[0].contract }] })
-  const completion = session.append('tool/result', { turn: 1, step: 1, message, meta: result.meta }, { surfaceOp: 'append', sourceEventSeqs: [call.seq] })
+    content: [{ type: 'text', text: contextEnabled === false ? 'Host-provided probe contract.' : env.stateFor(agent).snapshot.capabilities[0].contract }] })
+  const completion = session.append('tool/result', { turn: 1, step: 1, message, ...(result.meta === undefined ? {} : { meta: result.meta }) }, { surfaceOp: 'append', sourceEventSeqs: [call.seq] })
   const step = () => env.preStep({ agent, signal: agent.signal }, async () => ({ kind: 'enter', messages: [] }))
   assert.equal((await step()).messages.some(item => item.source.form === 'capability-descriptions'), false)
   session.append('user/message', createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: 'Compacted.' }] }),
     { surfaceOp: { op: 'replace', startSeq: completion.seq, endSeq: completion.seq }, sourceEventSeqs: [completion.seq] })
   const recovery = (await step()).messages.find(item => item.source.form === 'capability-descriptions')
-  assert.equal(Boolean(recovery), recoveryEnabled)
+  assert.equal(Boolean(recovery), contextEnabled !== false && recoveryEnabled)
   if (recovery) {
     session.append('user/message', recovery, { surfaceOp: 'append' })
     assert.equal((await step()).messages.some(item => item.source.form === 'capability-descriptions'), false)
   }
   schemas = [{ ...schema('probe'), description: 'Updated calling contract' }]
   const updates = (await step()).messages.filter(item => item.source.form === 'capability-contracts')
-  assert.equal(updates.length, 1, 'Necessary contract revisions survive recovery opt-out.')
+  assert.equal(updates.length, contextEnabled === false ? 0 : 1, 'Necessary contract revisions survive recovery opt-out while group selection delegates the Host.')
   assert.equal(result.value, 42)
 })
 
@@ -1966,4 +1970,241 @@ test('composed closed Skill loader preserves public user injection and replaces 
   assert.equal(decision.messages.some(message => message.source.kind === 'skill-catalog'), false)
   assert.match(env.describe(agent).effective.catalogText, /user can invoke \/algebra/)
   assert.doesNotMatch(env.describe(agent).effective.catalogText, /Load instructions: await tools\.skill/)
+})
+
+
+test('capability context switch freezes a paused group, retains choices, and restores them only on refresh', async t => {
+  const policy = JSON.parse(CONFIG_DEFAULTS.capabilityPolicy)
+  policy.items['tools.probe'] = { availability: 'closed', disclosure: 'full' }
+  const selected = composedConfig(policy, { capabilityContextEnabled: false, capabilityRecoveryEnabled: true, modelPreviewEnabled: true,
+    capabilityStatistics: '{"enabled":true,"windowSize":10,"minimumSamples":1,"fullThreshold":0.5}' })
+  const host = [schema('run_code'), schema('probe')]
+  const agent = agentFor(Session.create('paused-capability-context'))
+  agent.runMaintenance = operation => operation(agent.signal)
+  const ctx = { agents: { list: () => [agent] }, systemPrompt: { assemble: async () => ({ sections }) } }
+  const env = createCapabilityEnvironment({ ctx, config: selected, toolSchemasForAgent: () => host })
+  t.after(() => env.dispose())
+  await acceptPreparation(env, agent, sections)
+  const paused = env.stateFor(agent).snapshot
+  assert.equal(paused.schema, 'ptc-capability-environment/v4')
+  assert.equal(paused.settings.enabled, true)
+  assert.equal(paused.settings.recoveryEnabled, true)
+  assert.equal(paused.settings.previewEnabled, true)
+  assert.equal(paused.settings.statistics.enabled, true)
+  assert.equal(paused.plan.enabled, false)
+  assert.equal(env.sdk(agent, 'native sdk'), 'native sdk')
+  assert.deepEqual(env.projectSections(agent, sections), sections)
+  assert.deepEqual(env.projectMembers(agent, ['probe']), ['probe'])
+  assert.doesNotThrow(() => env.validateSupply(agent, 'probe', {}))
+  const catalog = await env.catalogFor(agent, agent.signal)
+  assert.equal(catalog.find(item => item.id === 'tools.probe').managementEnabled, false)
+  assert.equal(env.describeSessions()[0].configuration.capabilityContextEnabled, false)
+  assert.equal(env.describeSessions()[0].configuration.capabilityRecoveryEnabled, true)
+  env.reconfigure({ ...selected, capabilityContextEnabled: true })
+  await env.prepare(agent, sections)
+  assert.equal(env.stateFor(agent).snapshot, paused)
+  assert.equal(env.describe(agent).pendingRefresh, true)
+  const coldAgent = agentFor(Session.create(agent.session.id, JSON.parse(JSON.stringify(agent.session.snapshotEvents())), agent.session.header))
+  const cold = createCapabilityEnvironment({ ctx, config: { ...selected, capabilityContextEnabled: true }, toolSchemasForAgent: () => host })
+  t.after(() => cold.dispose())
+  await cold.prepare(coldAgent, sections)
+  assert.deepEqual(cold.stateFor(coldAgent).snapshot, paused)
+  assert.equal(cold.sdk(coldAgent, 'native sdk'), 'native sdk')
+  await env.refresh(agent, sections, agent.signal)
+  assert.equal(env.stateFor(agent).snapshot.settings.contextEnabled, true)
+  assert.equal(env.describe(agent).effective.entries.find(item => item.id === 'tools.probe').selection, 'closed')
+  assert.deepEqual(env.projectMembers(agent, ['probe']), [])
+  assert.equal(env.describe(agent).sourceSettings.recoveryEnabled, true)
+})
+
+
+test('session choices migrate combined preferences independently and reject unknown dimension evidence', () => {
+  const source = { enabled: true, policy: JSON.parse(CONFIG_DEFAULTS.capabilityPolicy), manual: { baseline: [], overrides: { 'tools.probe': 'closed' } } }
+  source.policy.items['tools.probe'] = { availability: 'closed', disclosure: 'full' }
+  const automatic = sessionCapabilitySettings(source, { 'tools.probe': 'automatic' })
+  assert.equal(automatic.manual.overrides['tools.probe'], undefined)
+  assert.equal(automatic.policy.items['tools.probe'], undefined)
+  const opened = sessionCapabilitySettings(source, { 'tools.probe': 'on-demand' })
+  assert.deepEqual(opened.policy.items['tools.probe'], { availability: 'enabled', disclosure: 'on-demand' })
+  const closed = sessionCapabilitySettings(source, { 'tools.probe': 'closed' })
+  assert.deepEqual(closed.policy.items['tools.probe'], { availability: 'closed', disclosure: 'full' })
+  assert.deepEqual(source.policy.items['tools.probe'], { availability: 'closed', disclosure: 'full' })
+  for (const patch of [{ bogus: 'enabled' }, {}, { availability: 'invalid' }]) {
+    assert.throws(() => sessionCapabilitySettings(source, { 'tools.probe': patch }), /invalid session capability choice/)
+  }
+})
+
+for (const damage of ['missing', 'wrong-type', 'historical', 'plan-mismatch']) test(`capability context generation rejects ${damage} evidence and delegates the Host`, async t => {
+  const agent = agentFor(Session.create(`damaged-group-${damage}`))
+  const env = createCapabilityEnvironment({ ctx: {}, config: composedConfig(null, { capabilityContextEnabled: false }), toolSchemasForAgent: () => [schema('probe')] })
+  t.after(() => env.dispose()); await acceptPreparation(env, agent, [])
+  const events = JSON.parse(JSON.stringify(agent.session.snapshotEvents()))
+  const source = events.find(event => event.data?.source?.form === 'capability-plan').data.source
+  const snapshot = source.snapshot
+  if (damage === 'plan-mismatch') snapshot.plan.catalogText = 'unproved catalog'
+  else if (damage === 'historical') { snapshot.schema = 'ptc-capability-environment/v3'; snapshot.plan.schema = 'ptc-capability-plan/v2' }
+  else {
+    if (damage === 'missing') { delete snapshot.settings.contextEnabled; delete snapshot.sourceSettings.contextEnabled }
+    else { snapshot.settings.contextEnabled = 'false'; snapshot.sourceSettings.contextEnabled = 'false' }
+  }
+  source.digest = createHash('sha256').update(JSON.stringify(snapshot)).digest('hex')
+  const warnings = []
+  const restored = createCapabilityEnvironment({ ctx: { logger: { warn: message => warnings.push(message) } }, config: composedConfig(), toolSchemasForAgent: () => [schema('probe')] })
+  t.after(() => restored.dispose())
+  const coldAgent = agentFor(Session.create(agent.session.id, events, agent.session.header))
+  await restored.prepare(coldAgent, [])
+  assert.equal(restored.describe(coldAgent).effective.enabled, false)
+  assert.equal(restored.sdk(coldAgent, 'native sdk'), 'native sdk')
+  assert.match(warnings[0], damage === 'plan-mismatch' ? /inconsistent session capability plan/ : /capability context generation/)
+})
+
+
+test('global capability choices require writer revision and preserve the session after unconfirmed or disabled saves', async t => {
+  const agent = agentFor(Session.create('global-choice-evidence'))
+  agent.runMaintenance = operation => operation(agent.signal)
+  const env = createCapabilityEnvironment({ ctx: { systemPrompt: { assemble: async () => ({ sections: [] }) } },
+    config: config(), toolSchemasForAgent: () => [schema('run_code'), schema('probe')] })
+  t.after(() => env.dispose())
+  await acceptPreparation(env, agent, [])
+  const previous = env.stateFor(agent)
+  const intent = { scope: 'global', id: 'tools.probe', selection: 'closed' }
+  let writes = 0
+  for (const [writer, error] of [
+    [{}, /public settings writer/],
+    [{ read: () => undefined, update: () => writes++ }, /revision evidence/],
+    [{ read: () => ({ value: config(), revision: '1' }), update: () => writes++ }, /revision evidence/],
+    [{ read: () => ({ value: { ...config(), capabilityContextEnabled: false }, revision: 1 }), update: () => writes++ }, /enable capability management/],
+  ]) {
+    await assert.rejects(env.change(agent, intent, agent.signal, writer), error)
+    assert.equal(env.stateFor(agent), previous)
+  }
+  assert.equal(writes, 0)
+  for (const saved of [undefined, { value: config(), revision: undefined },
+    { value: { ...config(), capabilityContextEnabled: false }, revision: 2 }]) {
+    let reads = 0
+    const outcome = await env.change(agent, intent, agent.signal, {
+      read: () => ++reads === 1 ? { value: config(), revision: 1 } : saved,
+      update: () => { writes++ },
+    })
+    assert.equal(outcome.globalSaved, true)
+    assert.equal(outcome.sessionApplied, false)
+    assert.match(outcome.error, /saved settings could not be confirmed|enable capability management/)
+    assert.equal(env.stateFor(agent), previous)
+  }
+  assert.equal(writes, 3)
+  await env.change(agent, { scope: 'session', id: 'tools.probe', dimension: 'availability', selection: 'closed' }, agent.signal)
+  assert.equal(env.describe(agent).sessionOverrides['tools.probe'].availability, 'closed',
+    'A legacy frozen source must migrate dimensions before applying a temporary choice.')
+})
+
+test('Skill projection restores its prior state after publication failure and reports failed restoration', async t => {
+  const ctx = new Context()
+  let failInvalidation = false
+  let invalidations = 0
+  let failAfter = Infinity
+  let disposals = 0
+  const skills = {
+    snapshot: async () => ({ complete: true, skills: [] }),
+    registerProvider: factory => {
+      factory({ invalidate: () => { if (failInvalidation && ++invalidations >= failAfter) throw new Error('projection invalidate failed') } })
+      return () => { disposals++ }
+    },
+  }
+  ctx.effect(() => ctx.provide('skills', skills))
+  new SystemPrompt(ctx, { includeHarnessIdentity: false, includeRuntimeContext: false })
+  const agent = agentFor(Session.create('skill-projection-rollback'))
+  agent.runMaintenance = operation => operation(agent.signal)
+  const env = createCapabilityEnvironment({ ctx, config: config(), toolSchemasForAgent: () => [schema('run_code'), schema('probe')] })
+  t.after(async () => { failInvalidation = false; await env.dispose(); await ctx.fiber.dispose() })
+  await acceptPreparation(env, agent, [])
+  const previous = env.stateFor(agent)
+  const append = agent.session.append.bind(agent.session)
+  agent.session.append = () => { throw new Error('publication failed') }
+  await assert.rejects(env.change(agent, { scope: 'session', id: 'tools.probe', selection: 'closed' }, agent.signal), /publication failed/)
+  assert.equal(env.stateFor(agent), previous)
+  failInvalidation = true
+  failAfter = 2
+  await assert.rejects(env.refresh(agent, []), error => error instanceof AggregateError
+    && error.message === 'PTC Plus Skill projection restoration failed'
+    && error.errors.every(item => /projection invalidate failed/.test(item.message)))
+  assert.equal(env.stateFor(agent), previous)
+  failInvalidation = false
+  agent.session.append = append
+  await env.refresh(agent, [])
+  assert.notEqual(env.stateFor(agent), previous)
+  await env.dispose()
+  assert.equal(disposals, 1)
+})
+
+
+
+test('a first Skill projection is disposed when its new plan cannot be published', async t => {
+  const ctx = new Context()
+  new SystemPrompt(ctx, { includeHarnessIdentity: false, includeRuntimeContext: false })
+  let disposals = 0
+  ctx.effect(() => ctx.provide('skills', {
+    snapshot: async () => ({ complete: true, skills: [] }),
+    registerProvider: factory => { factory({ invalidate() {} }); return () => { disposals++ } },
+  }))
+  const agent = agentFor(Session.create('first-skill-rollback'))
+  agent.runMaintenance = operation => operation(agent.signal)
+  const env = createCapabilityEnvironment({ ctx, config: { ...config(), capabilityContextEnabled: false },
+    toolSchemasForAgent: () => [schema('run_code'), schema('probe')] })
+  t.after(async () => { await env.dispose(); await ctx.fiber.dispose() })
+  await acceptPreparation(env, agent, [])
+  const previous = env.stateFor(agent)
+  env.reconfigure(config())
+  const append = agent.session.append.bind(agent.session)
+  agent.session.append = () => { throw new Error('first projection publication failed') }
+  await assert.rejects(env.refresh(agent, []), /first projection publication failed/)
+  assert.equal(env.stateFor(agent), previous)
+  assert.equal(disposals, 1)
+  agent.session.append = append
+  await env.refresh(agent, [])
+  assert.equal(env.stateFor(agent).snapshot.plan.enabled, true)
+  await env.dispose()
+  assert.equal(disposals, 2)
+})
+
+test('resource dispatch records actual access without relying on description exploration', async t => {
+  const uses = []
+  const agent = agentFor(Session.create('resource-use-evidence'))
+  const env = createCapabilityEnvironment({ ctx: { skills: { snapshot: async () => ({ complete: true, skills: [{ name: 'research', description: 'Research', provider: 'test', source: 'test', invocation: { modelInvocable: true, userInvocable: true } }] }) } }, config: config(),
+    toolSchemasForAgent: () => [schema('read_mcp_resource'), schema('skill')], store: { used: (...args) => uses.push(args) } })
+  t.after(() => env.dispose())
+  await acceptPreparation(env, agent, [{ name: 'mcp-resource-servers', text: 'as the server argument: ["docs"].' }])
+  for (let index = 0; index < 2; index++) {
+    const exec = { agent, token: {}, name: 'read_mcp_resource', arguments: { server: 'docs', uri: 'docs://item' } }
+    env.admitted(exec)
+    env.dispatched(exec, { isError: false })
+    await Promise.resolve()
+  }
+  const skill = { agent, token: {}, name: 'skill', arguments: { name: 'research' } }
+  env.admitted(skill)
+  env.dispatched(skill, { isError: false })
+  await Promise.resolve()
+  assert.equal(uses.filter(args => args[2] === 'skills.research' && args[3] === 'skill-body-accepted').length, 1)
+  assert.equal(uses.filter(args => args[2] === 'mcp.docs' && args[3] === 'resource-access').length, 2)
+  assert.ok(env.complete({ agent }, { isError: false }).meta.dshPtcPlusCapabilities.used.includes('mcp.docs'))
+})
+
+test('composed temporary and global changes remove only inherited dimensions and retain Host resource guidance', async t => {
+  let saved = composedConfig()
+  const agent = agentFor(Session.create('dimension-removal'))
+  agent.runMaintenance = operation => operation(agent.signal)
+  const sections = [{ name: 'mcp-resource-servers', text: 'as the server argument: ["docs"].' }]
+  const env = createCapabilityEnvironment({ ctx: { systemPrompt: { assemble: async () => ({ sections }) } }, config: saved,
+    toolSchemasForAgent: () => [schema('run_code'), schema('probe'), schema('read_mcp_resource')] })
+  t.after(() => env.dispose()); await acceptPreparation(env, agent, sections)
+  assert.deepEqual(env.projectSections(agent, sections), [
+    { name: 'mcp-resource-servers', text: 'Use the following MCP resource servers as the server argument: ["docs"].' },
+  ])
+  const sessionChange = (selection, dimension) => env.change(agent, { scope: 'session', id: 'tools.probe', selection, dimension }, agent.signal)
+  await sessionChange('full')
+  await sessionChange('inherit')
+  assert.equal(env.describe(agent).sessionOverrides['tools.probe'], undefined)
+  await sessionChange('closed', 'availability')
+  const writer = { read: () => ({ value: saved, revision: 1 }), update: async patch => { saved = { ...saved, ...patch }; env.reconfigure(saved) } }
+  await env.change(agent, { scope: 'global', id: 'tools.probe', selection: 'enabled', dimension: 'availability' }, agent.signal, writer)
+  assert.equal(env.describe(agent).sessionOverrides['tools.probe'], undefined)
 })

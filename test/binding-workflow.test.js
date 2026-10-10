@@ -174,7 +174,8 @@ test('export failure and continuation retain values without repeating the bindin
       .map(block => block.text).join('\n')
     assert.equal(text.split('declare const auditCounter: {').length - 1, 1)
   }
-  assert.deepEqual(auditRuntimeContexts(host.events(), { allowed: [
+  assert.deepEqual(auditRuntimeContexts([{ type: 'session', ...host.agent.session.header }, ...host.events()], { allowed: [
+    { name: 'tools:ptc-plus-capability-plan', maxChars: 16384 },
     { name: 'tools:ptc-plus-user-binding-defaults', maxChars: 16384 },
   ] }).failures, [])
   assertStablePrefix(host)

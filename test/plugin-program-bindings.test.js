@@ -570,6 +570,11 @@ return inspected.symbols[0].description
 `)
   assert.match(description.value, /top-level code\.run binding/)
   assert.match(description.value, /do not use tools\.code\.run/)
+  const allDescriptions = await state.run('capability-default-inspection', `
+return (await capabilities.inspect()).symbols.map(item => item.namespace + '.' + item.name)
+`)
+  assert.equal(allDescriptions.error, undefined)
+  assert.equal(allDescriptions.value.includes('code.run'), true)
   const childCode = 'const childOnly = 1; return [childOnly, await tools.read({})]'
   const functions = { read: async () => 'visible' }
 
@@ -1147,5 +1152,46 @@ test('managed PTC prompts retain run_code and the scoped editor across empty and
     assert.deepEqual(projected.tools.map(schema => schema.name), ['run_code'])
     assert.equal(agent.ctx.tools.get('edit_run_code')?.name, 'edit_run_code')
     assert.equal(state.ctx.tools.get('edit_run_code'), undefined)
+  }
+})
+
+
+test('registered capability command filters public inventory and reports pending or unavailable choices', async t => {
+  const { ptcAgent, appendOnlySession } = await import('./plugin-fixture.js')
+  const { readCapabilityCommandReceipt } = await import('../internal/capability-command-receipt.js')
+  let command
+  const state = fixture({ capabilityManagementEnabled: true }, { commands: { register(definition) { command = definition; return () => {} } },
+    schemas: [{ name: 'probe', description: 'Ordinary probe', parameters: {} },
+      { name: 'mcp__docs__search', description: 'Search docs', parameters: {} },
+      { name: 'read_mcp_resource', description: 'Read MCP resource', parameters: {} }] })
+  t.after(() => state.dispose())
+  state.ctx.skills = { snapshot: async () => ({ complete: true, skills: [{ name: 'research', description: 'Research skill',
+    provider: 'test', source: 'test', invocation: { modelInvocable: true, userInvocable: true } }] }) }
+  const hostSections = [{ name: 'mcp-resource-servers', text: 'as the server argument: ["docs"].' }]
+  const agent = ptcAgent('command-choices', appendOnlySession('command-choices'))
+  const signal = new AbortController().signal
+  agent.signal = signal; agent.runMaintenance = operation => operation(signal)
+  await state.assemble({ sections: hostSections, contexts: [], variables: {}, tools: [state.runCodeDefinition] }, { agent, scope: agent, signal })
+  state.ctx.systemPrompt.assemble = async () => ({ sections: hostSections })
+  const invoke = rawInput => command.handler({ commandId: 'test-command', rawInput, agent, signal })
+  const list = async rawInput => JSON.parse((await invoke(rawInput)).text).entries
+  assert.equal((await list('list tools probe')).length, 1)
+  assert.ok((await list('list tools')).every(entry => entry.category === 'tool' && entry.source.kind !== 'mcp'))
+  assert.deepEqual((await list('list skills')).map(entry => entry.id), ['skills.research'])
+  assert.ok((await list('list mcp')).every(entry => ['resource', 'server'].includes(entry.category)))
+  assert.deepEqual((await list('list mcp_tools')).map(entry => entry.id), ['tools.mcp__docs__search'])
+  assert.ok((await list('list')).length > (await list('list tools')).length)
+  assert.equal((await list('list all no-matching-entry')).length, 0)
+  const changed = await invoke('set session tools.probe availability closed')
+  assert.equal(changed.kind, 'success')
+  assert.equal(readCapabilityCommandReceipt(changed.text).state, 'pending')
+  assert.equal(JSON.parse((await invoke('')).text).effective.entries.find(entry => entry.id === 'tools.probe').selection, 'closed')
+  const refreshed = await invoke('refresh')
+  assert.equal(readCapabilityCommandReceipt(refreshed.text).state, 'pending')
+  state.ctx.tools.schemas = () => []
+  for (const rawInput of ['set session tools.probe closed', 'refresh']) {
+    const result = await invoke(rawInput)
+    assert.equal(result.kind, 'error')
+    assert.equal(readCapabilityCommandReceipt(result.text).state, 'unavailable')
   }
 })

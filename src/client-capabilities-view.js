@@ -1,4 +1,4 @@
-import { capabilityPolicyForConfig, capabilityRule, changeCapabilityRule, CAPABILITY_DISCLOSURES, CAPABILITY_INVENTORY_CATEGORIES } from '../internal/capability-policy.js'
+import { capabilityPolicyForConfig, capabilityRule, changeCapabilityRule, effectiveCapabilitySettings, CAPABILITY_DISCLOSURES, CAPABILITY_INVENTORY_CATEGORIES } from '../internal/capability-policy.js'
 import { CONFIG_DEFAULTS, CONFIG_FIELDS } from '../internal/config-spec.js'
 import { CAPABILITY_CONFIGURATION_KEYS, capabilityProfileConfiguration, validateCapabilityProfiles } from '../internal/runtime-config.js'
 import { readCapabilityCommandReceipt } from '../internal/capability-command-receipt.js'
@@ -126,6 +126,78 @@ export function capabilityPlanReason(t, entry) {
 export function createCapabilitySettingsViews(React, { SearchIcon, Select }) {
   const h = React.createElement
   const field = key => CONFIG_FIELDS.find(item => item.key === key)
+  const responsibilities = ['rules', 'statistics', 'recovery', 'preview']
+  const choicesFor = (configuration, plan) => {
+    const historical = plan && ['ptc-capability-plan/v1', 'ptc-capability-plan/v3'].includes(plan.schema)
+      && configuration && configuration.capabilityPolicy === undefined
+    let statistics
+    try { statistics = JSON.parse(configuration?.capabilityStatistics ?? 'null') } catch { statistics = null }
+    return { historical, contextEnabled: plan ? plan.contextEnabled : configuration?.capabilityContextEnabled,
+      enabled: configuration?.capabilityManagementEnabled ?? plan?.enabled,
+      statistics,
+      recoveryEnabled: configuration?.capabilityRecoveryEnabled ?? (historical ? plan.enabled : undefined),
+      previewEnabled: configuration?.modelPreviewEnabled ?? (historical ? plan.enabled : undefined) }
+  }
+  const flagsFor = settings => ({ rules: settings.enabled, statistics: settings.statistics?.enabled,
+    recovery: settings.recoveryEnabled, preview: settings.previewEnabled })
+  const choiceState = (retained, applied, key) => typeof retained[key] !== 'boolean' ? 'unknown'
+    : retained[key] ? typeof applied[key] !== 'boolean' ? 'unknown' : applied[key] === false ? 'paused' : 'selected'
+      : key === 'rules' ? 'host' : 'unselected'
+
+  function CombinationSummary({ value, configurationReady, plans, plansError, plansPending, plansStale, selectedSessionId,
+    feedback, onNavigate, onReload, renderRefresh, renderPlans, t, id }) {
+    const saved = choicesFor(configurationReady ? value : undefined)
+    const retained = flagsFor(saved)
+    const applied = flagsFor(effectiveCapabilitySettings(saved))
+    const selected = responsibilities.filter(key => retained[key] === true)
+    const effect = !configurationReady ? t('capabilities.combination.unknownSettings')
+      : saved.contextEnabled === false ? t('capabilities.combination.pausedEffect')
+        : selected.length === 0 ? t('capabilities.combination.hostEffect')
+          : selected.length === 1 && selected[0] === 'rules' ? t('capabilities.combination.rulesOnly')
+            : t('capabilities.combination.selectedEffect', { features: selected.map(key => t(`capabilities.combination.${key}`)).join(t('capabilities.combination.separator')) })
+    const plan = selectedSessionId ? plans?.find(item => item.sessionId === selectedSessionId) : undefined
+    const frozen = plan && choicesFor(plan.configuration, plan.effective)
+    const frozenRetained = frozen && flagsFor(frozen)
+    const frozenApplied = frozen && flagsFor(effectiveCapabilitySettings(frozen))
+    if (frozenApplied) {
+      frozenApplied.rules = plan.effective.enabled
+      if (frozen.historical && plan.effective.enabled === false) frozenApplied.statistics = false
+    }
+    const publication = ['accepted', 'pending', 'not-required'].includes(plan?.publication) ? plan.publication : 'unknown'
+    const stale = !configurationReady || plansStale || Boolean(plansError) || plansPending
+    return h('section', { className: 'ptcPlusCombination', 'aria-label': t('capabilities.combination.saved') },
+      h('div', { className: 'ptcPlusTaskHead' }, h('h4', null, t('capabilities.combination.saved')),
+        h('span', { className: 'ptcPlusCapabilitySaveState', role: 'status' }, feedback)),
+      h('div', { className: 'ptcPlusCombinationChoices' }, ...responsibilities.map(key => {
+        const state = choiceState(retained, applied, key)
+        return h('button', { key, type: 'button', className: 'ptcPlusCombinationChoice', 'data-state': state,
+          'aria-controls': `${id}-pane-${key === 'rules' ? 'manual' : key === 'statistics' ? 'statistics' : 'budgets'}`,
+          onClick: () => onNavigate(key) }, h('span', null, t(`capabilities.combination.${key}`)),
+          h('small', null, t(`capabilities.combination.state.${state}`)))
+      })),
+      h('p', { className: 'ptcPlusDetail', role: 'status' }, effect),
+      h('details', { className: 'ptcPlusCapabilitySessionTools' }, h('summary', { tabIndex: 0 }, t('capabilities.existingSessions')),
+        renderRefresh?.(),
+        h('button', { type: 'button', className: 'ptcPlusCapabilityLink', onClick: onReload }, t('capabilities.reloadObservation')),
+        h('div', { className: 'ptcPlusCombinationSession', 'aria-label': t('capabilities.combination.observed'), 'data-stale': stale },
+          !selectedSessionId ? h('p', { className: 'ptcPlusDetail' }, t('capabilities.combination.chooseTarget'))
+            : h(React.Fragment, null,
+              h('p', { className: 'ptcPlusDetail' }, t('capabilities.combination.target', { session: selectedSessionId })),
+              plansPending ? h('p', { role: 'status' }, t('state.syncing')) : null,
+              plansError ? h('p', { role: 'status' }, t('capabilities.combination.readFailed', { error: plansError })) : null,
+              plan ? h(React.Fragment, null,
+                h('p', { role: 'status', className: 'ptcPlusDetail' }, t('capabilities.combination.lastRead'), ' · ', t(`capabilities.combination.publication.${publication}`)),
+                frozen.contextEnabled === undefined ? h('p', { className: 'ptcPlusDetail' }, t('capabilities.combination.historical')) : null,
+                h('div', { className: 'ptcPlusCombinationFacts' }, ...responsibilities.map(key => h('span', { key },
+                  t(`capabilities.combination.${key}`), ' · ', t(`capabilities.combination.state.${choiceState(frozenRetained, frozenApplied, key)}`)))),
+                h('p', { role: 'status', className: 'ptcPlusDetail' }, t(stale ? 'capabilities.combination.stale'
+                  : typeof plan.pendingRefresh !== 'boolean' ? 'capabilities.combination.differenceUnknown'
+                    : plan.pendingRefresh ? 'capabilities.combination.different' : 'capabilities.combination.same')),
+                Object.keys(plan.sessionOverrides ?? {}).length ? h('p', { className: 'ptcPlusDetail' }, t('capabilities.combination.overrides')) : null,
+                h('details', null, h('summary', { tabIndex: 0 }, t('capabilities.combination.inspectPlan')), renderPlans?.()))
+                : !plansPending ? h('p', { role: 'status', className: 'ptcPlusDetail' }, t('capabilities.combination.noPlan')) : null)))
+    )
+  }
 
   function PolicyRules({ value, catalog, disabled, onChange, t }) {
     const policy = capabilityPolicyForConfig(value)
@@ -244,8 +316,8 @@ export function createCapabilitySettingsViews(React, { SearchIcon, Select }) {
       h('svg', { width: 18, height: 18, viewBox: '0 0 24 24', 'aria-hidden': true },
         h('path', { d: 'm12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2L12 17.3l-5.6 2.9 1.1-6.2L3 9.6l6.2-.9Z' })))
     const state = item => item.availability === 'unknown' ? 'unknown' : item.availability === 'unavailable' ? 'unavailable'
-      : item.resolvedRule.availabilitySource.startsWith('mcp:') && item.resolvedRule.availability === 'closed' ? 'source-closed'
-        : value.capabilityManagementEnabled !== true ? 'unapplied' : item.resolvedRule.availability
+      : value.capabilityContextEnabled === false || value.capabilityManagementEnabled !== true ? 'unapplied'
+        : item.resolvedRule.availabilitySource.startsWith('mcp:') && item.resolvedRule.availability === 'closed' ? 'source-closed' : item.resolvedRule.availability
     const type = item => item.source?.kind === 'mcp' ? 'resource' : item.kind
     const filterLabels = [kind !== 'all' ? t(`capabilities.type.${kind}`) : null,
       source !== 'all' ? sources.get(source) ?? t('capabilities.previousSource') : null,
@@ -323,6 +395,11 @@ export function createCapabilitySettingsViews(React, { SearchIcon, Select }) {
           h('button', { type: 'button', className: 'ptcPlusButton', onClick: closeEditor }, t('capabilities.closeDetails'))),
         h('code', null, entry.id), h('p', { className: 'ptcPlusDetail' }, t('capabilities.contextHelp')),
         manualSelect(entry), h('div', { className: 'ptcPlusCapabilityCommonChoice' }, common(entry), h('span', null, t('capabilities.commonBaseline'))),
+        h('p', { className: 'ptcPlusDetail' }, t(value.capabilityContextEnabled === false ? 'capabilities.effect.paused'
+          : value.capabilityManagementEnabled !== true ? 'capabilities.effect.rulesOff'
+            : entry.resolvedRule.availabilitySource.startsWith('mcp:') && entry.resolvedRule.availability === 'closed' ? 'capabilities.effect.sourceClosed'
+              : entry.resolvedRule.availability === 'closed' ? 'capabilities.effect.closed'
+                : `capabilities.effect.disclosure.${entry.resolvedRule.disclosure}`)),
         h('p', { className: 'ptcPlusDetail' }, t('capabilities.policy.resolved', {
           availability: t(entry.resolvedRule.availability === 'enabled' ? 'capabilities.quick.enabled' : 'capabilities.closed'),
           disclosure: t(`capabilities.${entry.resolvedRule.disclosure}`),
@@ -348,7 +425,7 @@ export function createCapabilitySettingsViews(React, { SearchIcon, Select }) {
             const next = { ...policy, items: { ...policy.items } }; delete next.items[entry.id]; change('capabilityPolicy', next)
             if (baseline.includes(entry.id)) change('capabilityBaseline', baseline.filter(id => id !== entry.id))
           } }, t('capabilities.removeSaved')) : null,
-        value.capabilityManagementEnabled === true ? h('details', { className: 'ptcPlusCapabilitySessionDetail' },
+        value.capabilityContextEnabled !== false && value.capabilityManagementEnabled === true ? h('details', { className: 'ptcPlusCapabilitySessionDetail' },
           h('summary', { tabIndex: 0 }, t('capabilities.currentSession')),
           select(t('capabilities.sessionSelector'), sessionId ?? '', setSessionId, [['', t('capabilities.chooseSession')], ...(plans ?? []).map(item => [item.sessionId, item.sessionId])]),
           plansError ? h('p', { role: 'status' }, t('capabilities.unavailable', { error: plansError }))
@@ -541,6 +618,7 @@ export function createCapabilitySettingsViews(React, { SearchIcon, Select }) {
               await saveLibrary(library.profiles.filter(profile => profile.id !== selected.id)); setSelectedId(''); finishAction()
             }), unavailable, { 'data-kind': 'danger' }))),
         h('div', { className: 'ptcPlusConfigurationSummary' },
+          setting('group.capabilities', enabled('capabilityContextEnabled')),
           setting('capabilities.management', enabled('capabilityManagementEnabled')),
           setting('capabilities.statisticsEnabled', t(JSON.parse(configuration.capabilityStatistics).enabled ? 'capabilities.serverOn' : 'capabilities.serverOff')),
           setting('capabilities.defaultDisclosure', t(`capabilities.${policy.defaults.disclosure}`)),
@@ -566,8 +644,7 @@ export function createCapabilitySettingsViews(React, { SearchIcon, Select }) {
         : h('p', { className: 'ptcPlusDetail' }, t('capabilities.chooseConfiguration'))), feedback)
   }
 
-  function ContextSettings({ value, disabled, onChange, t, renderField, allocation, allocationError, allocationPending, selectedSessionId, onReload, renderRefresh, id }) {
-    const [section, setSection] = React.useState('description')
+  function ContextSettings({ value, disabled, onChange, t, renderField, allocation, allocationError, allocationPending, selectedSessionId, onReload, renderRefresh, id, section, setSection }) {
     const sections = ['description', 'recovery', 'preview']
     const featureKeys = { description: 'capabilityManagementEnabled', recovery: 'capabilityRecoveryEnabled', preview: 'modelPreviewEnabled' }
     const policy = capabilityPolicyForConfig(value)
@@ -581,7 +658,12 @@ export function createCapabilitySettingsViews(React, { SearchIcon, Select }) {
           'aria-label': t(`capabilities.policy.allocate.${key}`),
           onChange: event => write({ ...policy, allocation: { ...policy.allocation, [key]: event.target.checked } }) }),
         h('span', null, t(`capabilities.allocation.${key}`))))),
-      h('p', { className: 'ptcPlusDetail' }, t('capabilities.allocationHint')))
+      h('p', { className: 'ptcPlusDetail' }, t(value.capabilityContextEnabled === false ? 'capabilities.effect.paused'
+        : value.capabilityManagementEnabled !== true ? 'capabilities.effect.rulesOff'
+          : adaptive ? 'capabilities.effect.allocationActive' : 'capabilities.effect.allocationRetained')),
+      policy.allocation.statistics ? h('p', { className: 'ptcPlusDetail' }, t('capabilities.effect.historicalStatistics')) : null,
+      h('details', null, h('summary', { tabIndex: 0 }, t('capabilities.effect.conditions')),
+        h('p', { className: 'ptcPlusDetail' }, t('capabilities.effect.allocationLimits'))))
     const feature = (key, label) => h('label', { className: 'ptcPlusRow' }, h('span', { className: 'ptcPlusMain' }, t(label)),
       h('input', { type: 'checkbox', role: 'switch', className: 'ptcPlusCheck', checked: value[key] === true,
         disabled: disabled(key), 'aria-label': t(label), onChange: event => onChange(field(key), event.target.checked) }))
@@ -589,14 +671,16 @@ export function createCapabilitySettingsViews(React, { SearchIcon, Select }) {
       h('div', { className: 'ptcPlusContextNavigation', role: 'tablist', 'aria-orientation': 'vertical', 'aria-label': t('capabilities.contextNavigation') },
         ...sections.map((key, index) => {
           const active = value[featureKeys[key]] === true
-          const state = key === 'description' ? (active ? 'capabilities.context.custom' : 'capabilities.host')
+          const paused = value.capabilityContextEnabled === false && active
+          const state = paused ? 'capabilities.paused' : key === 'description' ? (active ? 'capabilities.context.custom' : value.capabilityContextEnabled === false ? 'capabilities.serverOff' : 'capabilities.host')
             : active ? 'capabilities.serverOn' : 'capabilities.serverOff'
           return h('button', { key, type: 'button', role: 'tab', id: `${id}-context-tab-${key}`,
             'aria-label': t(`capabilities.context.${key}`), 'aria-describedby': `${id}-context-state-${key}`,
             'aria-controls': `${id}-context-pane-${key}`, 'aria-selected': section === key, tabIndex: section === key ? 0 : -1,
             onClick: () => setSection(key), onKeyDown: event => navigateTabs(event, sections, index, setSection),
           }, h('span', null, t(`capabilities.context.${key}`)),
-          h('span', { className: 'ptcPlusContextState', id: `${id}-context-state-${key}`, 'data-enabled': active }, t(state)))
+          h('span', { className: 'ptcPlusContextState', id: `${id}-context-state-${key}`, 'data-enabled': active && !paused,
+            'data-paused': paused }, t(state)))
         })),
       h('div', { className: 'ptcPlusContextContent' }, ...sections.map(key => h('section', { key, role: 'tabpanel',
         id: `${id}-context-pane-${key}`, 'aria-labelledby': `${id}-context-tab-${key}`, hidden: section !== key },
@@ -607,6 +691,8 @@ export function createCapabilitySettingsViews(React, { SearchIcon, Select }) {
             h(Select, { value: policy.defaults.disclosure, disabled: disabled('capabilityPolicy'), label: t('capabilities.defaultDisclosure'),
               options: CAPABILITY_DISCLOSURES.map(choice => ({ value: choice, label: t(`capabilities.${choice}`) })),
               onChange: disclosure => write({ ...policy, defaults: { ...policy.defaults, disclosure } }) })),
+          h('p', { className: 'ptcPlusDetail' }, t(value.capabilityContextEnabled === false ? 'capabilities.effect.paused'
+            : value.capabilityManagementEnabled !== true ? 'capabilities.effect.rulesOff' : `capabilities.effect.disclosure.${policy.defaults.disclosure}`)),
           adaptive ? criteria : h('details', null, h('summary', { tabIndex: 0 }, t('capabilities.allocationTitle')), criteria),
           h('details', { className: 'ptcPlusContextQuota' }, h('summary', { tabIndex: 0 }, t('capabilities.quotaSettings')),
             ...['capabilityBudgetBytes', 'capabilityDirectoryBytes'].map(renderField)),
@@ -616,9 +702,13 @@ export function createCapabilitySettingsViews(React, { SearchIcon, Select }) {
           : key === 'recovery' ? h(React.Fragment, null,
             h('p', { className: 'ptcPlusDetail' }, t('capabilities.recoveryHelp')),
             feature('capabilityRecoveryEnabled', 'capabilities.recoveryEnabled'),
+            h('p', { className: 'ptcPlusDetail' }, t(value.capabilityContextEnabled === false && value.capabilityRecoveryEnabled === true
+              ? 'capabilities.effect.paused' : value.capabilityRecoveryEnabled === true ? 'capabilities.effect.recoveryOn' : 'capabilities.effect.recoveryOff')),
             h('details', { className: 'ptcPlusContextQuota' }, h('summary', { tabIndex: 0 }, t('capabilities.quotaSettings')), renderField('capabilityRecoveryBytes')))
             : h(React.Fragment, null, h('p', { className: 'ptcPlusDetail' }, t('capabilities.previewHelp')),
               feature('modelPreviewEnabled', 'capabilities.previewEnabled'),
+              h('p', { className: 'ptcPlusDetail' }, t(value.capabilityContextEnabled === false && value.modelPreviewEnabled === true
+                ? 'capabilities.effect.paused' : value.modelPreviewEnabled === true ? 'capabilities.effect.previewOn' : 'capabilities.effect.previewOff')),
               value.modelPreviewEnabled === true ? renderField('modelPreviewTokens')
                 : h('details', { className: 'ptcPlusContextQuota' }, h('summary', { tabIndex: 0 }, t('capabilities.quotaSettings')), renderField('modelPreviewTokens')))))))
   }
@@ -631,13 +721,19 @@ export function createCapabilitySettingsViews(React, { SearchIcon, Select }) {
     event.currentTarget.parentElement.querySelectorAll('[role=tab]')[next].focus({ preventScroll: true })
   }
 
-  function CapabilityWorkbench({ value, catalog, catalogError, plans, plansError, disabled, onChange, onReload, t, renderField, renderPlans, renderRefresh, id, selectedSessionId, onSessionSelect,
+  function CapabilityWorkbench({ value, configurationReady, catalog, catalogError, plans, plansError, plansPending, plansStale, disabled, onChange, onReload, t, renderField, renderPlans, renderRefresh, id, selectedSessionId, onSessionSelect,
     allocation, allocationError, allocationPending, onApplyConfiguration, configurationWritable, saving, saveStatus }) {
     const [tab, setTab] = React.useState('manual')
+    const [contextSection, setContextSection] = React.useState('description')
     const tabs = ['manual', 'budgets', 'statistics', 'plans']
     const feedback = saving ? t('state.syncing') : saveStatus && saveStatus.key !== 'status.applied' ? t(saveStatus.key, saveStatus.params)
       : t(configurationWritable ? 'capabilities.savedForNew' : 'footer.readOnly')
     return h('div', { className: 'ptcPlusCapabilityWorkbench' },
+      h(CombinationSummary, { value, configurationReady, plans, plansError, plansPending, plansStale, selectedSessionId,
+        feedback, onReload, renderRefresh, renderPlans, t, id, onNavigate: key => {
+          setTab(key === 'rules' ? 'manual' : key === 'statistics' ? 'statistics' : 'budgets')
+          if (key === 'recovery' || key === 'preview') setContextSection(key)
+        } }),
       h('div', { className: 'ptcPlusCapabilityTabs', role: 'tablist', 'aria-label': t('capabilities.settingsTabs') },
         ...tabs.map((key, index) => h('button', { key, type: 'button', role: 'tab', id: `${id}-tab-${key}`,
           'aria-controls': `${id}-pane-${key}`, 'aria-selected': tab === key, tabIndex: tab === key ? 0 : -1,
@@ -649,18 +745,19 @@ export function createCapabilitySettingsViews(React, { SearchIcon, Select }) {
           key === 'manual' ? h('label', { className: 'ptcPlusCapabilityManagement' }, h('span', null, t('capabilities.management')),
             h('input', { type: 'checkbox', role: 'switch', className: 'ptcPlusCheck', checked: value.capabilityManagementEnabled === true,
               disabled: disabled('capabilityManagementEnabled'), 'aria-label': t('capabilities.management'),
-              onChange: event => onChange(field('capabilityManagementEnabled'), event.target.checked) })) : null,
-          h('span', { className: 'ptcPlusCapabilitySaveState', role: 'status' }, feedback)),
-        key === 'manual' ? h(React.Fragment, null, h('p', { className: 'ptcPlusDetail' }, t('capabilities.managementHelp')),
+              onChange: event => onChange(field('capabilityManagementEnabled'), event.target.checked) })) : null),
+        key === 'manual' ? h(React.Fragment, null, h('p', { className: 'ptcPlusDetail' }, t(value.capabilityContextEnabled === false ? 'capabilities.effect.paused'
+          : value.capabilityManagementEnabled === true ? 'capabilities.managementHelp' : 'capabilities.effect.rulesOff')),
           h(CapabilityChoices, { value, catalog, catalogError, plans, plansError, disabled, onChange, onReload, t, selectedSessionId, onSessionSelect }))
           : key === 'statistics' ? h(React.Fragment, null, renderRefresh?.({ observation: true }), renderField('capabilityStatistics'),
+            h('p', { className: 'ptcPlusDetail' }, t(value.capabilityContextEnabled === false ? 'capabilities.effect.paused'
+              : choicesFor(value).statistics?.enabled === true ? 'capabilities.effect.collectionOn'
+                : choicesFor(value).statistics?.enabled === false ? 'capabilities.effect.collectionOff' : 'capabilities.combination.unknownSettings')),
+            h('p', { className: 'ptcPlusDetail' }, t('capabilities.effect.statisticsIndependent')),
             h(AllocationEvidence, { allocation, allocationError, allocationPending, selectedSessionId, statistics: true, onReload, t }))
             : key === 'budgets' ? h(ContextSettings, { value, disabled, onChange, t, renderField, allocation, allocationError, allocationPending,
-              selectedSessionId, onReload, renderRefresh, id })
-              : h(ConfigurationProfiles, { value, plans, disabled, writable: configurationWritable, onChange, onApplyConfiguration, t }))),
-      h('details', { className: 'ptcPlusCapabilitySessionTools', hidden: tab === 'statistics' },
-        h('summary', { tabIndex: 0 }, t('capabilities.existingSessions')),
-        renderRefresh?.(), plans ? renderPlans() : null))
+              selectedSessionId, onReload, renderRefresh, id, section: contextSection, setSection: setContextSection })
+              : h(ConfigurationProfiles, { value, plans, disabled, writable: configurationWritable, onChange, onApplyConfiguration, t }))))
   }
 
   return { CapabilityWorkbench }
@@ -670,7 +767,7 @@ export function createCapabilitySettingsViews(React, { SearchIcon, Select }) {
 export function createCapabilityRefreshView(React, commands) {
   const h = React.createElement
   const absent = Object.freeze({ getSnapshot: () => false, subscribe: () => () => {} })
-  return function CapabilityRefreshButton({ sessionId, enabled, t, onApplied }) {
+  return function CapabilityRefreshButton({ sessionId, enabled, t, onApplied, onInvalidated }) {
     const source = React.useMemo(() => sessionId ? commands.source(sessionId) : absent, [sessionId])
     const available = React.useSyncExternalStore(source.subscribe, source.getSnapshot)
     const [pending, setPending] = React.useState(false)
@@ -694,6 +791,7 @@ export function createCapabilityRefreshView(React, commands) {
       request.current = controller
       setPending(true)
       setStatus(null)
+      onInvalidated?.()
       try {
         const result = await commands.run(sessionId, 'refresh', controller.signal)
         if (controller.signal.aborted || request.current !== controller) return
@@ -705,6 +803,7 @@ export function createCapabilityRefreshView(React, commands) {
           if (!readCapabilityCommandReceipt(text)) {
             setStatus({ key: 'capabilities.refreshFailed', params: { error: text } })
           }
+          onApplied?.()
         }
       } finally {
         if (request.current === controller) { request.current = null; setPending(false) }

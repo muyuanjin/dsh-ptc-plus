@@ -354,12 +354,7 @@ export function createEditTransportOwner(ctx, {
     },
     ensureInstalled(agent) {
       const installed = installedScopes.get(agent)
-      if (installed !== undefined) {
-        if (installed.disposeRegistration !== undefined) {
-          return installed.definition
-        }
-        uninstall(agent)
-      }
+      if (installed !== undefined) return installed.definition
       const liveSchemas = typeof toolSchemasForAgent === 'function'
         ? toolSchemasForAgent(agent)
         : []

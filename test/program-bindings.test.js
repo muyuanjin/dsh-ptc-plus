@@ -338,3 +338,24 @@ test('search validates original owner member and nested JSON structure before no
     assert.deepEqual(createCapabilitySearcher(metadata)({ query: 'read' }).matches[0].contract.parameters, ['native'])
   }
 })
+
+
+test('search rejects invalid keyword evidence and paginates oversized inspect references within the byte budget', () => {
+  for (const keywords of [42, ['read', 2]]) {
+    assert.throws(() => createCapabilitySearcher([{ namespace: 'files', members: [{ name: 'read', keywords }] }]), /keywords must be a string or string array/)
+    assert.throws(() => createCapabilitySearcher([{ namespace: 'files', keywords, members: [{ name: 'read' }] }]), /keywords must be a string or string array/)
+  }
+  const names = [0, 1, 2].map(index => `read${index}${'x'.repeat(240)}`)
+  const search = createCapabilitySearcher([{ namespace: 'files', members: names.map(name => ({ name, description: 'read ' + 'large '.repeat(1000) })) }])
+  let cursor
+  const found = []
+  do {
+    const page = search({ query: 'read', budgetBytes: 1024, cursor })
+    assert.ok(page.usedBytes <= 1024)
+    assert.equal(page.matches.length, 0)
+    assert.equal(page.oversized.length, 1)
+    found.push(page.oversized[0].symbol)
+    cursor = page.cursor ?? undefined
+  } while (cursor)
+  assert.deepEqual(found, names.map(name => `files.${name}`))
+})

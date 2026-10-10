@@ -1,4 +1,4 @@
-import { capabilityRule, validateCapabilityPolicy } from './capability-policy.js'
+import { capabilityRule, validateCapabilityPolicy, effectiveCapabilitySettings } from './capability-policy.js'
 import { Buffer } from 'node:buffer'
 
 const MANAGED_CATEGORIES = new Set(['tool', 'skill', 'resource', 'resource-template', 'task'])
@@ -239,6 +239,12 @@ function createLegacyCapabilityPlan(input) {
 
 /** The old planner remains the replay oracle for environment v1/v2. */
 export function createCapabilityPlan(input) {
+  if (input.contextEnabled !== undefined) {
+    if (typeof input.contextEnabled !== 'boolean') throw new TypeError('ptc-plus: capability context enabled must be boolean')
+    const effective = effectiveCapabilitySettings(input)
+    const { contextEnabled, ...historicalInput } = effective
+    return freeze({ ...createCapabilityPlan(historicalInput), schema: 'ptc-capability-plan/v3', contextEnabled })
+  }
   if (input.policy === undefined) return createLegacyCapabilityPlan(input)
   const policy = validateCapabilityPolicy(input.policy)
   const rules = new Map(input.capabilities.filter(item => MANAGED_CATEGORIES.has(item.category))

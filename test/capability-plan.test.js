@@ -1,4 +1,4 @@
-import { CAPABILITY_POLICY_DEFAULT, capabilityRule, validateCapabilityPolicy, changeCapabilityRule } from '../internal/capability-policy.js'
+import { CAPABILITY_POLICY_DEFAULT, capabilityRule, validateCapabilityPolicy, changeCapabilityRule, effectiveCapabilitySettings } from '../internal/capability-policy.js'
 import assert from 'node:assert/strict'
 import { Buffer } from 'node:buffer'
 import test from 'node:test'
@@ -343,4 +343,31 @@ test('composed unresolved preferences remain diagnostic inputs and cannot manage
   assert.equal(plan.entries.length, 1)
   assert.deepEqual(plan.excluded.map(entry => entry.id), ['repl.inspect'])
   assert.deepEqual(plan.unresolvedConfigurationIds, ['removed-tool'])
+})
+
+
+test('capability context switch pauses independent choices without mutating or reinterpreting historical inputs', () => {
+  const policy = JSON.parse(CAPABILITY_POLICY_DEFAULT)
+  policy.items['tools.probe'] = { availability: 'closed', disclosure: 'full' }
+  const saved = composed({ contextEnabled: false, policy, recoveryEnabled: true, previewEnabled: true, statistics: settings })
+  const before = structuredClone(saved)
+  const paused = createCapabilityPlan(saved)
+  assert.equal(paused.schema, 'ptc-capability-plan/v3')
+  assert.equal(paused.contextEnabled, false)
+  assert.equal(paused.enabled, false)
+  assert.ok(paused.entries.every(entry => entry.selection === 'host'))
+  assert.equal(paused.catalogText, '')
+  const effective = effectiveCapabilitySettings(saved)
+  assert.equal(effective.recoveryEnabled, false)
+  assert.equal(effective.previewEnabled, false)
+  assert.equal(effective.statistics.enabled, false)
+  assert.deepEqual(saved, before)
+  const resumed = createCapabilityPlan({ ...saved, contextEnabled: true })
+  assert.equal(resumed.entries.find(entry => entry.id === 'tools.probe').selection, 'closed')
+  assert.equal(resumed.entries.find(entry => entry.id === 'tools.probe').disclosure, 'full')
+  const { contextEnabled, ...historical } = saved
+  assert.equal(createCapabilityPlan(historical).schema, 'ptc-capability-plan/v2')
+  assert.equal(effectiveCapabilitySettings(historical), historical)
+  assert.equal(createCapabilityPlan({ ...saved, contextEnabled: true, enabled: false }).enabled, false)
+  assert.throws(() => createCapabilityPlan({ ...saved, contextEnabled: 'false' }), /context enabled must be boolean/)
 })

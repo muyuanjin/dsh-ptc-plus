@@ -1419,8 +1419,10 @@ test('REPL observations and shared workbench remain separate from session execut
   settings.publish({ writable: false, value })
   await runtime.flush()
   const readonlyControls = [...settingsCard.querySelectorAll('[role=switch], [role=combobox], input[type=number], select, textarea')]
-  expect(readonlyControls.filter(control => !control.closest('.ptcPlusCapabilityToolbar,.ptcPlusCapabilityFilterFields'))
+  expect(readonlyControls.filter(control => !control.closest('.ptcPlusCapabilityToolbar,.ptcPlusCapabilityFilterFields,.ptcPlusCapabilityApply'))
     .every(control => control.disabled)).toBe(true)
+  expect([...settingsCard.querySelectorAll('.ptcPlusCapabilityApply [role=combobox]')]
+    .every(control => !control.disabled)).toBe(true)
 })
 
 test('workbench edits and saves per-entry model prompts while preserving cancel and reload semantics', async () => {
@@ -2255,7 +2257,7 @@ test('settings refresh selects an exact session with management off and rejects 
   pending.resolve({ ok: true, value: { commandId: 'stale', result: { kind: 'success', text: 'STALE_REFRESH_RECEIPT' } } })
   await runtime.flush()
   expect(view.queryByText('STALE_REFRESH_RECEIPT')).toBeNull()
-  expect(capabilityRpcCalls.filter(call => call.endpoint === 'inspect')).toEqual([])
+  expect(capabilityRpcCalls.filter(call => call.endpoint === 'inspect')).toHaveLength(1)
   expect(settings.set).not.toHaveBeenCalled()
 })
 
@@ -2864,7 +2866,9 @@ test('capability settings use searchable choices and validated statistics while 
   const view = render(React.createElement(PTCPlusSettingsCard, { t, view: 'page',
     usePtcSettings: select => select(snapshot), updateSetting }))
   await act(async () => {})
-  expect(view.container.textContent).toContain('Saved settings await refresh')
+  await chooseCapabilityOption(view, SETTINGS_COPY.en['capabilities.targetSession'], 'frozen-session')
+  await act(async () => {})
+  expect(view.container.textContent).toContain(SETTINGS_COPY.en['capabilities.combination.different'])
   expect(view.container.textContent).toContain('234')
   expect(view.container.querySelectorAll('textarea')).toHaveLength(0)
   const search = view.getByRole('searchbox', { name: t('capabilities.search') })
@@ -2915,7 +2919,7 @@ test('capability settings use searchable choices and validated statistics while 
   view.unmount()
 })
 
-test('session plans follow capability management and plugin switches while manual choices retain their catalog', async () => {
+test('session plan observations follow plugin lifecycle independently of saved capability rules', async () => {
   const delayed = deferred()
   const plan = sessionId => ({ sessionId, pendingRefresh: false,
     effective: { budgets: { contractBytes: 234, overageBytes: 0 }, entries: [{ id: 'tools.probe',
@@ -2926,57 +2930,56 @@ test('session plans follow capability management and plugin switches while manua
     capabilityRpc: async endpoint => {
       if (endpoint === 'catalog') return { ok: true, value: [{ id: 'tools.probe', category: 'tool', description: 'Probe owner' }] }
       if (endpoint === 'targets') return { ok: true, value: [] }
+      if (endpoint === 'allocation') return { ok: false, error: { message: 'Allocation observation unavailable' } }
       expect(endpoint).toBe('inspect')
       requests += 1
       return requests === 2 ? delayed.promise : { ok: true, value: [plan(`frozen-${requests}`)] }
     },
   })
   const view = runtime.renderRoot()
-  await runtime.flush()
-  const reload = () => view.queryByRole('button', { name: 'Reload plans' })
-  const plans = () => view.container.querySelector('.ptcPlusCapabilityPlans')
-  expect(reload()).toBeNull()
-  expect(capabilityRpcCalls).toHaveLength(0)
-
-  settings.publish({ value: { ...value, enabled: true, capabilityManagementEnabled: false } })
-  await runtime.flush()
-  expect(reload()).toBeNull()
-  expect(requests).toBe(0)
-  fireEvent.click(view.getByRole('button', { name: 'Edit context settings: tools.probe' }))
-  expect(view.getByLabelText('Disclosure for tools.probe').disabled).toBe(false)
-  expect(capabilityRpcCalls.map(call => call.endpoint)).toEqual(['targets', 'catalog'])
-
-  settings.publish({ value: { ...value, enabled: true, capabilityManagementEnabled: true } })
-  await runtime.flush()
-  expect(plans().closest('[data-experimental=true]')).not.toBeNull()
-  expect(plans().textContent).toContain('frozen-1')
-  fireEvent.click(view.getByRole('tab', { name: SETTINGS_COPY.en['capabilities.tab.plans'] }))
-  fireEvent.click(reload())
-  await runtime.flush()
-  expect(requests).toBe(2)
-  const pendingRead = capabilityRpcCalls.filter(call => call.endpoint === 'inspect').at(-1)
-  settings.publish({ value: { ...value, enabled: true, capabilityManagementEnabled: false } })
-  await runtime.flush()
-  expect(plans()).toBeNull()
-  expect(pendingRead.signal.aborted).toBe(true)
-  await act(async () => delayed.resolve({ ok: true, value: [plan('late-plan')] }))
-  await runtime.flush()
-  expect(view.container.textContent).not.toContain('late-plan')
-  expect(view.getByLabelText('Disclosure for tools.probe').disabled).toBe(false)
-
-  settings.publish({ value: { ...value, enabled: true, capabilityManagementEnabled: true } })
-  await runtime.flush()
-  expect(plans().textContent).toContain('frozen-3')
-  settings.publish({ value: { ...value, enabled: false, capabilityManagementEnabled: true } })
-  await runtime.flush()
-  expect(plans()).toBeNull()
-  const reads = capabilityRpcCalls.length
-  await runtime.flush()
-  expect(capabilityRpcCalls).toHaveLength(reads)
-  settings.publish({ value: { ...value, enabled: true, capabilityManagementEnabled: true } })
-  await runtime.flush()
-  expect(plans().textContent).toContain('frozen-4')
-  view.unmount()
+  try {
+    await runtime.flush()
+    const plans = () => view.container.querySelector('.ptcPlusCapabilityPlans')
+    expect(plans()).toBeNull()
+    expect(capabilityRpcCalls).toHaveLength(0)
+    settings.publish({ value: { ...value, enabled: true, capabilityManagementEnabled: false } })
+    await runtime.flush()
+    expect(requests).toBe(1)
+    expect(view.getByLabelText(SETTINGS_COPY.en['capabilities.targetSession']).value).toBe('')
+    await chooseCapabilityOption(view, SETTINGS_COPY.en['capabilities.targetSession'], 'frozen-1')
+    await runtime.flush()
+    expect(plans().textContent).toContain('frozen-1')
+    fireEvent.click(view.getByRole('button', { name: 'Edit context settings: tools.probe' }))
+    expect(view.getByLabelText('Disclosure for tools.probe').disabled).toBe(false)
+    expect(capabilityRpcCalls.map(call => call.endpoint)).toEqual(['targets', 'catalog', 'inspect', 'allocation'])
+    fireEvent.click(view.getByRole('button', { name: SETTINGS_COPY.en['capabilities.reloadObservation'] }))
+    await runtime.flush()
+    expect(requests).toBe(2)
+    const pendingRead = capabilityRpcCalls.filter(call => call.endpoint === 'inspect').at(-1)
+    settings.publish({ value: { ...value, enabled: true, capabilityManagementEnabled: true } })
+    await runtime.flush()
+    expect(pendingRead.signal.aborted).toBe(true)
+    await act(async () => delayed.resolve({ ok: true, value: [plan('late-plan')] }))
+    await runtime.flush()
+    expect(view.container.textContent).not.toContain('late-plan')
+    await chooseCapabilityOption(view, SETTINGS_COPY.en['capabilities.targetSession'], 'frozen-3')
+    await runtime.flush()
+    expect(plans().closest('[data-experimental=true]')).not.toBeNull()
+    expect(plans().textContent).toContain('frozen-3')
+    expect(view.getByLabelText('Disclosure for tools.probe').disabled).toBe(false)
+    settings.publish({ value: { ...value, enabled: false, capabilityManagementEnabled: true } })
+    await runtime.flush()
+    expect(plans()).toBeNull()
+    const reads = capabilityRpcCalls.length
+    await runtime.flush()
+    expect(capabilityRpcCalls).toHaveLength(reads)
+    settings.publish({ value: { ...value, enabled: true, capabilityManagementEnabled: true } })
+    await runtime.flush()
+    expect(view.getByLabelText(SETTINGS_COPY.en['capabilities.targetSession']).value).toBe('')
+    await chooseCapabilityOption(view, SETTINGS_COPY.en['capabilities.targetSession'], 'frozen-4')
+    await runtime.flush()
+    expect(plans().textContent).toContain('frozen-4')
+  } finally { view.unmount() }
 })
 
 test('capability controls preserve manual selections on catalog failure and repair unusable statistics without JSON entry', async () => {
@@ -3006,18 +3009,21 @@ test('capability controls preserve manual selections on catalog failure and repa
   view.unmount()
 })
 
-async function capabilityWorkbenchFixture({ catalog, plans = [], baseline = [], overrides = {}, catalogReader, configuration = {}, allocationReader, locale = 'en' } = {}) {
+async function capabilityWorkbenchFixture({ catalog, plans = [], baseline = [], overrides = {}, catalogReader, plansReader, targetsReader, configuration = {}, allocationReader, locale = 'en' } = {}) {
   const snapshot = { status: 'ready', writable: true, value: { enabled: true, userBindingsEnabled: false,
     capabilityManagementEnabled: true, capabilityBaseline: JSON.stringify(baseline), capabilityOverrides: JSON.stringify(overrides), ...configuration } }
   const updateSetting = vi.fn(async (key, value) => { snapshot.value[key] = value; return 'status.applied' })
   const updateCapabilityConfiguration = vi.fn(async next => { Object.assign(snapshot.value, next); return 'status.applied' })
   const inspectCapabilityCatalog = vi.fn(catalogReader ?? (async () => catalog))
+  const inspectCapabilityPlans = vi.fn(plansReader ?? (async () => plans))
   const { PTCPlusSettingsCard } = createPtcSettingsView(React, {
     ActionButton: props => React.createElement('button', props), BindingsDialog: () => null,
     Select: createSelect(React),
-    useWorkbenchController: () => null, icons: {}, inspectCapabilityCatalog, inspectCapabilityPlans: async () => plans,
-    inspectCapabilityAllocation: allocationReader, inspectCapabilityTargets: allocationReader ? async () => plans.map(plan => ({ sessionId: plan.sessionId })) : undefined,
-    CapabilityRefreshButton: allocationReader ? () => React.createElement('button', null, 'Refresh observation target') : undefined,
+    useWorkbenchController: () => null, icons: {}, inspectCapabilityCatalog, inspectCapabilityPlans,
+    inspectCapabilityAllocation: allocationReader, inspectCapabilityTargets: targetsReader ?? (allocationReader ? async () => plans.map(plan => ({ sessionId: plan.sessionId })) : undefined),
+    CapabilityRefreshButton: allocationReader || targetsReader ? ({ onApplied, onInvalidated, enabled }) => React.createElement('button', {
+      disabled: !enabled, onClick: () => { onInvalidated?.(); onApplied?.() },
+    }, 'Refresh observation target') : undefined,
   })
   const t = (key, params = {}) => (SETTINGS_COPY[locale][key] ?? key)
     .replace(/\{(\w+)\}/g, (token, name) => params[name] ?? token)
@@ -3026,7 +3032,7 @@ async function capabilityWorkbenchFixture({ catalog, plans = [], baseline = [], 
   const view = render(element())
   await act(async () => {})
   const ids = () => [...view.container.querySelectorAll('.ptcPlusCapabilityIdentity code')].map(item => item.textContent)
-  return { view, ids, snapshot, updateSetting, updateCapabilityConfiguration, inspectCapabilityCatalog, rerender: () => view.rerender(element()) }
+  return { view, ids, snapshot, updateSetting, updateCapabilityConfiguration, inspectCapabilityCatalog, inspectCapabilityPlans, rerender: () => view.rerender(element()) }
 }
 
 test('capability filters reconcile source and type while advanced filters open only on request', async () => {
@@ -3210,7 +3216,7 @@ test('switching a saved capability configuration uses one public settings mutati
   fireEvent.click(apply)
   await runtime.flush()
   expect(view.getByText('Capability configuration was not applied')).not.toBeNull()
-  const feedback = () => view.container.querySelector('.ptcPlusCapabilityPane:not([hidden]) .ptcPlusCapabilitySaveState').textContent
+  const feedback = () => view.container.querySelector('.ptcPlusCombination .ptcPlusCapabilitySaveState').textContent
   expect(feedback()).toBe('Could not save: Capability configuration was not applied')
   fireEvent.click(view.getByRole('switch', { name: 'Allow redeclarations and overrides' }))
   await runtime.flush()
@@ -6873,6 +6879,21 @@ test('MCP source rules preserve independent child preferences and direct source-
   expect(policy.items['tools.mcp__docs__edit']).toEqual({ availability: 'closed' })
   expect(view.getByRole('switch', { name: 'Availability for tools.mcp__docs__search' }).disabled).toBe(true)
   expect(view.container.querySelector('[data-state=source-closed]').textContent).toContain('Source disabled')
+  fireEvent.click(view.getByRole('switch', { name: SETTINGS_COPY.en['capabilities.management'], exact: true }))
+  rerender(); await act(async () => {})
+  expect(view.getByRole('switch', { name: 'Availability for tools.mcp__docs__search' }).disabled).toBe(false)
+  expect(view.container.querySelector('[data-state=unapplied]').textContent).toContain('Not applied')
+  expect(JSON.parse(snapshot.value.capabilityPolicy)).toEqual(policy)
+  fireEvent.click(view.getByRole('switch', { name: SETTINGS_COPY.en['capabilities.management'], exact: true }))
+  rerender(); await act(async () => {})
+  expect(view.getByRole('switch', { name: 'Availability for tools.mcp__docs__search' }).disabled).toBe(true)
+  snapshot.value = { ...snapshot.value, capabilityContextEnabled: false }
+  rerender(); await act(async () => {})
+  expect(view.getByRole('switch', { name: 'Availability for tools.mcp__docs__search' }).disabled).toBe(false)
+  expect(view.container.querySelector('[data-state=unapplied]').textContent).toContain('Not applied')
+  expect(JSON.parse(snapshot.value.capabilityPolicy)).toEqual(policy)
+  snapshot.value = { ...snapshot.value, capabilityContextEnabled: true }
+  rerender(); await act(async () => {})
   await chooseCapabilityOption(view, 'docs · Availability', 'Use parent rules')
   rerender(); await act(async () => {})
   expect(view.getByRole('switch', { name: 'Availability for tools.mcp__docs__search' }).disabled).toBe(false)
@@ -6882,7 +6903,7 @@ test('MCP source rules preserve independent child preferences and direct source-
   fireEvent.click(view.getByRole('switch', { name: 'Availability for tools.mcp__docs__search' }))
   rerender(); await act(async () => {})
   expect(JSON.parse(snapshot.value.capabilityPolicy).items['tools.mcp__docs__search']).toEqual({ availability: 'enabled', disclosure: 'full' })
-  expect(updateSetting.mock.calls.every(([key]) => key === 'capabilityPolicy')).toBe(true)
+  expect(updateSetting.mock.calls.every(([key]) => ['capabilityPolicy', 'capabilityManagementEnabled'].includes(key))).toBe(true)
   fireEvent.click(view.getByRole('button', { name: 'Edit context settings: tools.mcp__docs__search' }))
   snapshot.writable = false; rerender()
   const sourceControls = view.getByRole('complementary').querySelector('details')
@@ -7071,7 +7092,7 @@ test('capability save feedback reflects its own pending or conflicting writes', 
   updateSetting.mockResolvedValue('status.conflict')
   fireEvent.click(view.getByRole('switch', { name: 'Allow redeclarations and overrides' }))
   await act(async () => {})
-  const feedback = () => view.container.querySelector('.ptcPlusCapabilityPane:not([hidden]) .ptcPlusCapabilitySaveState').textContent
+  const feedback = () => view.container.querySelector('.ptcPlusCombination .ptcPlusCapabilitySaveState').textContent
   expect(feedback()).toBe('Saved · used by new sessions')
   const pending = deferred()
   updateSetting.mockImplementationOnce(() => pending.promise)
@@ -7196,4 +7217,210 @@ test('composed rules retain source disclosure on availability inheritance and fi
   await chooseCapabilityOption(view, 'Saved availability', 'All strategies')
   expect(ids()).toEqual(['tools.adaptive'])
   view.unmount()
+})
+
+
+test.each(['zh', 'en'])('capability context master switch retains child choices and distinguishes paused state in %s', async locale => {
+  const copy = SETTINGS_COPY[locale]
+  const { view, snapshot, updateSetting, rerender } = await capabilityWorkbenchFixture({ locale, catalog: [],
+    configuration: { capabilityContextEnabled: true, capabilityManagementEnabled: true, capabilityRecoveryEnabled: false, modelPreviewEnabled: true } })
+  const master = () => view.getByRole('switch', { name: copy['group.capabilities'], exact: true })
+  expect(master().checked).toBe(true)
+  fireEvent.click(master()); rerender(); await act(async () => {})
+  expect(updateSetting.mock.calls.map(([key]) => key)).toEqual(['capabilityContextEnabled'])
+  expect(snapshot.value.capabilityManagementEnabled).toBe(true)
+  expect(snapshot.value.capabilityRecoveryEnabled).toBe(false)
+  expect(snapshot.value.modelPreviewEnabled).toBe(true)
+  expect(view.getByText(copy['capabilities.groupPaused'])).toBeTruthy()
+  fireEvent.click(view.getByRole('tab', { name: copy['capabilities.tab.budgets'], exact: true }))
+  const states = () => [...view.container.querySelectorAll('.ptcPlusContextState')].map(item => item.textContent)
+  expect(states()).toEqual([copy['capabilities.paused'], copy['capabilities.serverOff'], copy['capabilities.paused']])
+  expect(view.getAllByRole('switch', { name: copy['group.capabilities'], exact: true })).toHaveLength(1)
+  fireEvent.click(master()); rerender(); await act(async () => {})
+  expect(states()).toEqual([copy['capabilities.context.custom'], copy['capabilities.serverOff'], copy['capabilities.serverOn']])
+  snapshot.writable = false; rerender(); await act(async () => {})
+  expect(master().disabled).toBe(true)
+  expect(snapshot.value.capabilityRecoveryEnabled).toBe(false)
+  view.unmount()
+})
+
+
+test.each(['zh', 'en'])('combination summary navigates independent choices and retains them through pause in %s', async locale => {
+  const copy = SETTINGS_COPY[locale]
+  const { view, snapshot, updateSetting, rerender } = await capabilityWorkbenchFixture({ locale, catalog: [],
+    configuration: { capabilityManagementEnabled: true, capabilityPolicy: CAPABILITY_POLICY_DEFAULT,
+      capabilityRecoveryEnabled: false, modelPreviewEnabled: false } })
+  try {
+    const summary = within(view.getByRole('region', { name: copy['capabilities.combination.saved'] }))
+    const tile = key => summary.getByRole('button', { name: new RegExp(`^${copy[`capabilities.combination.${key}`]}`) })
+    const state = key => tile(key).querySelector('small').textContent
+    expect(['rules', 'statistics', 'recovery', 'preview'].map(state)).toEqual([
+      copy['capabilities.combination.state.selected'], ...Array(3).fill(copy['capabilities.combination.state.unselected'])])
+    expect(summary.getByText(copy['capabilities.combination.rulesOnly'])).toBeTruthy()
+    fireEvent.click(tile('recovery'))
+    expect(view.getByRole('tab', { name: copy['capabilities.context.recovery'], selected: true })).toBeTruthy()
+    fireEvent.click(view.getByRole('switch', { name: copy['capabilities.recoveryEnabled'] }))
+    rerender(); await act(async () => {})
+    expect(snapshot.value.capabilityRecoveryEnabled).toBe(true)
+    fireEvent.click(view.getByRole('switch', { name: copy['group.capabilities'], exact: true }))
+    rerender(); await act(async () => {})
+    expect(state('rules')).toBe(copy['capabilities.combination.state.paused'])
+    expect(state('recovery')).toBe(copy['capabilities.combination.state.paused'])
+    expect(state('preview')).toBe(copy['capabilities.combination.state.unselected'])
+    fireEvent.click(view.getByRole('switch', { name: copy['group.capabilities'], exact: true }))
+    rerender(); await act(async () => {})
+    expect(state('rules')).toBe(copy['capabilities.combination.state.selected'])
+    expect(state('recovery')).toBe(copy['capabilities.combination.state.selected'])
+    expect(updateSetting.mock.calls.map(([key]) => key)).toEqual(['capabilityRecoveryEnabled', 'capabilityContextEnabled', 'capabilityContextEnabled'])
+    snapshot.writable = false; rerender(); await act(async () => {})
+    tile('preview').focus(); fireEvent.click(tile('preview'))
+    expect(view.getByRole('tab', { name: copy['capabilities.context.preview'], selected: true })).toBeTruthy()
+    expect(view.getByRole('switch', { name: copy['capabilities.previewEnabled'] }).disabled).toBe(true)
+    expect(view.getAllByRole('switch', { name: copy['group.capabilities'], exact: true })).toHaveLength(1)
+    expect(view.getAllByRole('tablist', { name: copy['capabilities.settingsTabs'] })).toHaveLength(1)
+    expect(snapshot.value.modelPreviewEnabled).toBe(false)
+  } finally { view.unmount() }
+})
+
+test('combination summary shows DSH defaults and permits collection and previews without capability rules', async () => {
+  const { view, snapshot, updateSetting, rerender } = await capabilityWorkbenchFixture({ catalog: [],
+    configuration: { capabilityManagementEnabled: false, capabilityPolicy: CAPABILITY_POLICY_DEFAULT } })
+  try {
+    const summary = within(view.getByRole('region', { name: 'New session settings' }))
+    expect(summary.getByText(SETTINGS_COPY.en['capabilities.combination.hostEffect'])).toBeTruthy()
+    fireEvent.click(summary.getByRole('button', { name: /^Usage collection/ }))
+    fireEvent.click(view.getByRole('switch', { name: 'Collect usage statistics' }))
+    rerender(); await act(async () => {})
+    fireEvent.click(summary.getByRole('button', { name: /^Result previews/ }))
+    fireEvent.click(view.getByRole('switch', { name: 'Limit results and logs' }))
+    rerender(); await act(async () => {})
+    expect(summary.getByRole('button', { name: /^Capability rules/ }).textContent).toContain('Use DSH')
+    expect(summary.getByRole('button', { name: /^Usage collection/ }).textContent).toContain('Selected')
+    expect(summary.getByRole('button', { name: /^Result previews/ }).textContent).toContain('Selected')
+    expect(snapshot.value.capabilityManagementEnabled).toBe(false)
+    expect(updateSetting.mock.calls.map(([key]) => key)).toEqual(['capabilityStatistics', 'modelPreviewEnabled'])
+  } finally { view.unmount() }
+})
+
+function observedCombinationPlan(sessionId, extra = {}) {
+  return { sessionId, publication: 'pending', pendingRefresh: false,
+    configuration: { capabilityContextEnabled: true, capabilityManagementEnabled: true, capabilityPolicy: CAPABILITY_POLICY_DEFAULT,
+      capabilityRecoveryEnabled: false, modelPreviewEnabled: false, capabilityStatistics: '{"enabled":false}' },
+    effective: { schema: 'ptc-capability-plan/v3', contextEnabled: true, enabled: true, budgets: { contractBytes: 0, overageBytes: 0 }, entries: [] },
+    sessionOverrides: {}, ...extra }
+}
+
+test('combination comparison distinguishes saved choices, pending notifications and session overrides', async () => {
+  let plan = observedCombinationPlan('target', { pendingRefresh: true, sessionOverrides: { 'tools.read': { disclosure: 'full' } } })
+  const { view, snapshot, rerender, updateSetting } = await capabilityWorkbenchFixture({ catalog: [],
+    configuration: { capabilityManagementEnabled: false, capabilityPolicy: CAPABILITY_POLICY_DEFAULT },
+    plansReader: async () => [structuredClone(plan)], targetsReader: async () => [{ sessionId: 'target' }] })
+  try {
+    expect(view.getByText(SETTINGS_COPY.en['capabilities.combination.chooseTarget'])).toBeTruthy()
+    expect(view.queryByText(SETTINGS_COPY.en['capabilities.combination.publication.pending'])).toBeNull()
+    expect(view.getByLabelText(SETTINGS_COPY.en['capabilities.targetSession']).value).toBe('')
+    await chooseCapabilityOption(view, SETTINGS_COPY.en['capabilities.targetSession'], 'target')
+    await act(async () => {})
+    const comparison = () => within(view.container.querySelector('.ptcPlusCombinationSession'))
+    expect(comparison().getByText(/Plan notification awaiting acceptance/)).toBeTruthy()
+    expect(comparison().getByText(SETTINGS_COPY.en['capabilities.combination.different'])).toBeTruthy()
+    expect(comparison().getByText(SETTINGS_COPY.en['capabilities.combination.overrides'])).toBeTruthy()
+    plan = { ...plan, publication: 'accepted', pendingRefresh: false }
+    fireEvent.click(view.getByRole('button', { name: SETTINGS_COPY.en['capabilities.reloadObservation'] }))
+    await act(async () => {})
+    expect(comparison().getByText(/Plan notification recorded/)).toBeTruthy()
+    expect(comparison().getByText(SETTINGS_COPY.en['capabilities.combination.same'])).toBeTruthy()
+    snapshot.writable = false; rerender(); await act(async () => {})
+    expect(view.getByLabelText(SETTINGS_COPY.en['capabilities.targetSession']).disabled).toBe(false)
+    expect(view.getByRole('button', { name: 'Refresh observation target' }).disabled).toBe(true)
+    expect(updateSetting).not.toHaveBeenCalled()
+  } finally { view.unmount() }
+})
+
+test('combination comparison retains failed observations without claiming synchronization and excludes other targets', async () => {
+  const pending = deferred()
+  let response = () => Promise.resolve([observedCombinationPlan('first', { publication: 'accepted' })])
+  const { view, inspectCapabilityPlans } = await capabilityWorkbenchFixture({ catalog: [],
+    plansReader: () => response(), targetsReader: async () => ['first', 'second'].map(sessionId => ({ sessionId })) })
+  try {
+    const comparison = () => within(view.container.querySelector('.ptcPlusCombinationSession'))
+    await chooseCapabilityOption(view, SETTINGS_COPY.en['capabilities.targetSession'], 'first')
+    await act(async () => {})
+    response = () => Promise.reject(new Error('observation unavailable'))
+    fireEvent.click(view.getByRole('button', { name: SETTINGS_COPY.en['capabilities.reloadObservation'] }))
+    await act(async () => {})
+    expect(comparison().getByText(/Read failed: observation unavailable/)).toBeTruthy()
+    expect(comparison().getByText(SETTINGS_COPY.en['capabilities.combination.stale'])).toBeTruthy()
+    expect(comparison().queryByText(SETTINGS_COPY.en['capabilities.combination.same'])).toBeNull()
+    response = () => pending.promise
+    fireEvent.click(view.getByRole('button', { name: SETTINGS_COPY.en['capabilities.reloadObservation'] }))
+    await act(async () => {})
+    await chooseCapabilityOption(view, SETTINGS_COPY.en['capabilities.targetSession'], 'second')
+    await act(async () => pending.resolve([observedCombinationPlan('first', { publication: 'accepted' })]))
+    expect(comparison().getByText(SETTINGS_COPY.en['capabilities.combination.noPlan'])).toBeTruthy()
+    expect(comparison().queryByText(/Plan notification recorded/)).toBeNull()
+    expect(inspectCapabilityPlans).toHaveBeenCalledTimes(3)
+  } finally { view.unmount() }
+})
+
+test('combination comparison preserves historical choices and missing evidence without current defaults', async () => {
+  const old = observedCombinationPlan('historical', { publication: undefined, pendingRefresh: undefined,
+    configuration: { capabilityManagementEnabled: true }, effective: { schema: 'ptc-capability-plan/v1', enabled: true,
+      budgets: { contractBytes: 0, overageBytes: 0 }, entries: [] } })
+  const { view } = await capabilityWorkbenchFixture({ catalog: [], plans: [old], targetsReader: async () => [{ sessionId: 'historical' }] })
+  try {
+    await chooseCapabilityOption(view, SETTINGS_COPY.en['capabilities.targetSession'], 'historical')
+    await act(async () => {})
+    const comparison = within(view.container.querySelector('.ptcPlusCombinationSession'))
+    expect(comparison.getByText(SETTINGS_COPY.en['capabilities.combination.historical'])).toBeTruthy()
+    expect(comparison.getByText(/Notification status unknown/)).toBeTruthy()
+    expect(comparison.getByText(SETTINGS_COPY.en['capabilities.combination.differenceUnknown'])).toBeTruthy()
+    expect(comparison.getByText('Usage collection · Unknown')).toBeTruthy()
+    expect(comparison.getByText('Description recovery · Selected')).toBeTruthy()
+  } finally { view.unmount() }
+})
+
+for (const [name, schema, enabled, configuration, expected] of [
+  ['legacy management off', 'ptc-capability-plan/v1', false, {}, 'Paused'],
+  ['legacy management on', 'ptc-capability-plan/v1', true, {}, 'Selected'],
+  ['legacy group paused', 'ptc-capability-plan/v3', false, { capabilityContextEnabled: false }, 'Paused'],
+  ['independent collection with management off', 'ptc-capability-plan/v3', false,
+    { capabilityContextEnabled: true, capabilityPolicy: CAPABILITY_POLICY_DEFAULT, capabilityRecoveryEnabled: false, modelPreviewEnabled: false }, 'Selected'],
+]) test(`combination comparison respects frozen collection semantics: ${name}`, async () => {
+  const old = observedCombinationPlan('frozen-collection', {
+    configuration: { capabilityManagementEnabled: enabled, capabilityStatistics: '{"enabled":true}', ...configuration },
+    effective: { schema, enabled, ...(schema.endsWith('/v3') ? { contextEnabled: configuration.capabilityContextEnabled } : {}),
+      budgets: { contractBytes: 0, overageBytes: 0 }, entries: [] },
+  })
+  const { view, snapshot, updateSetting } = await capabilityWorkbenchFixture({ catalog: [], plans: [old],
+    configuration: { capabilityManagementEnabled: true, capabilityPolicy: CAPABILITY_POLICY_DEFAULT, capabilityStatistics: '{"enabled":false}' } })
+  try {
+    await chooseCapabilityOption(view, SETTINGS_COPY.en['capabilities.targetSession'], 'frozen-collection')
+    await act(async () => {})
+    const comparison = within(view.container.querySelector('.ptcPlusCombinationSession'))
+    expect(comparison.getByText(`Usage collection · ${expected}`)).toBeTruthy()
+    expect(old.configuration.capabilityStatistics).toBe('{"enabled":true}')
+    expect(snapshot.value.capabilityStatistics).toBe('{"enabled":false}')
+    expect(updateSetting).not.toHaveBeenCalled()
+  } finally { view.unmount() }
+})
+
+test('combination conditions keep collection separate from adaptive allocation and preserve full contracts', async () => {
+  const policy = JSON.parse(CAPABILITY_POLICY_DEFAULT)
+  policy.allocation.statistics = true
+  const { view, snapshot, rerender } = await capabilityWorkbenchFixture({ catalog: [], configuration: { capabilityPolicy: JSON.stringify(policy) } })
+  try {
+    fireEvent.click(view.getByRole('tab', { name: 'Context', exact: true }))
+    fireEvent.click(view.getByText('Allocation criteria', { selector: 'summary' }))
+    expect(view.getByText(SETTINGS_COPY.en['capabilities.effect.allocationRetained'])).toBeTruthy()
+    expect(view.getByText(SETTINGS_COPY.en['capabilities.effect.historicalStatistics'])).toBeTruthy()
+    await chooseCapabilityOption(view, 'Default disclosure', SETTINGS_COPY.en['capabilities.adaptive'])
+    rerender(); await act(async () => {})
+    expect(view.getByText(SETTINGS_COPY.en['capabilities.effect.allocationActive'])).toBeTruthy()
+    expect(snapshot.value.capabilityStatistics).toBeUndefined()
+    await chooseCapabilityOption(view, 'Default disclosure', 'Full contract')
+    rerender(); await act(async () => {})
+    expect(view.getByText(SETTINGS_COPY.en['capabilities.effect.disclosure.full'])).toBeTruthy()
+    expect(JSON.parse(snapshot.value.capabilityPolicy).allocation.statistics).toBe(true)
+  } finally { view.unmount() }
 })

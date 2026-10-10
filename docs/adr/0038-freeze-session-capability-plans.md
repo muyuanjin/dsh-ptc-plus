@@ -10,6 +10,8 @@ PTC Plus can improve continuous computation while increasing the context consume
 
 Capabilities also constitute the model's working environment. Redistributing them whenever statistics or saved settings change makes that environment unpredictable, even if each new distribution looks efficient in isolation. A capability advertised as removed must be absent from the supplied discovery and execution surfaces; a callable placeholder that rejects later does not establish that absence.
 
+[ADR 0043](0043-compose-capability-and-context-policies.md) extends new environments with independent availability/disclosure rules, allocation inputs, collection, recovery and preview selections. The contracts below remain the historical v1/v2 recovery basis; freezing, authority and observation boundaries remain applicable.
+
 ## Decision
 
 The managed domain is the task capabilities that DSH and its other plugins expose to the model, including tools, Skills and MCP resources or resource templates where public owner surfaces permit consistent integration. JavaScript/TypeScript, Node, the REPL, PTC Plus's own public APIs and Global User Bindings remain outside this management domain. DSH retains authorization, policy, dispatch and lifecycle ownership. The plugin uses published public extensions of the current official Host and does not create a parallel dispatch registry or patch Host packages.

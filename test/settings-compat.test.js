@@ -6,6 +6,8 @@ import { join } from 'node:path'
 import Schema from '@deepseek-ai/schemastery'
 import { SettingsForms } from '@deepseek-ai/dsh-settings'
 import { Config } from '../index.js'
+import { resolveConfig } from '../internal/runtime-config.js'
+import { CAPABILITY_POLICY_DEFAULT } from '../internal/capability-policy.js'
 import { CONFIG_FIELDS } from '../internal/config-spec.js'
 import { createFixtureExecutionProvider } from './host-fixture.js'
 import {
@@ -299,4 +301,24 @@ test('keeps provider-installed fields plain and rejects missing required volatil
     () => configFieldSchema({ Schema: { number: () => described }, field: numberField, settingsModule: {} }),
     /host settings contract requires @deepseek-ai\/schemastery with volatile\(\); reinstall the plugin/,
   )
+})
+
+
+test('Host Config preserves omitted composition inputs for legacy migration and explicit new opt-outs', async () => {
+  const legacy = { capabilityManagementEnabled: true, capabilityOverrides: '{"tools.probe":"full"}' }
+  for (const settingsModule of [{}, { installSettingsSection() {} }]) {
+    const schema = Schema.object(Object.fromEntries(CONFIG_FIELDS.map(field => [field.key,
+      configFieldSchema({ Schema, field, settingsModule })])))
+    const migrated = resolveConfig((await schema['~standard'].validate(legacy)).value)
+    assert.equal(JSON.parse(migrated.capabilityPolicy).defaults.disclosure, 'adaptive')
+    assert.deepEqual(JSON.parse(migrated.capabilityPolicy).items['tools.probe'], { disclosure: 'full' })
+    assert.equal(migrated.capabilityRecoveryEnabled, true)
+    assert.equal(migrated.modelPreviewEnabled, true)
+    const explicit = resolveConfig((await schema['~standard'].validate({ ...legacy,
+      capabilityPolicy: CAPABILITY_POLICY_DEFAULT, capabilityRecoveryEnabled: false, modelPreviewEnabled: false })).value)
+    assert.equal(JSON.parse(explicit.capabilityPolicy).defaults.disclosure, 'host')
+    assert.equal(explicit.capabilityRecoveryEnabled, false)
+    assert.equal(explicit.modelPreviewEnabled, false)
+  }
+  assert.throws(() => resolveConfig({ capabilityPolicy: '' }), /JSON/)
 })

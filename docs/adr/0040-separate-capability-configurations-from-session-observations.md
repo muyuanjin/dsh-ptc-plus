@@ -8,6 +8,8 @@ Accepted.
 
 The settings must distinguish reusable user choices, actual statistical evidence and a session’s frozen effective environment. Configuration-only statistics and budgets cannot explain allocation, and a session-plan list alone cannot provide named portable configurations.
 
+[ADR 0043](0043-compose-capability-and-context-policies.md) extends new environments with independent availability/disclosure rules, allocation inputs, collection, recovery and preview selections. The contracts below remain the historical v1/v2 recovery basis; freezing, authority and observation boundaries remain applicable.
+
 ## Decision
 
 Named capability configurations are reusable settings, separate from a session's frozen effective plan and from actual usage evidence. The `capabilityProfiles` setting contains a `ptc-capability-profiles/v1` document with a `profiles` array. Each entry has a unique `id`, a unique trimmed `name` of at most 80 characters, and a `configuration` containing only management enablement, manual baseline/overrides, statistics settings and context budgets. The library contains at most 100 entries. The runtime configuration owner validates the format and settings. It contains no session identity, usage observations, program values, messages, provider choices or credentials.

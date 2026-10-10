@@ -1,3 +1,4 @@
+import { capabilityPolicyForConfig, capabilityRule, changeCapabilityRule, CAPABILITY_DISCLOSURES, CAPABILITY_CATEGORIES } from '../internal/capability-policy.js'
 import { CONFIG_DEFAULTS, CONFIG_FIELDS } from '../internal/config-spec.js'
 import { CAPABILITY_CONFIGURATION_KEYS, capabilityProfileConfiguration, validateCapabilityProfiles } from '../internal/runtime-config.js'
 import { readCapabilityCommandReceipt } from '../internal/capability-command-receipt.js'
@@ -8,15 +9,86 @@ export function capabilityCommandText(t, text) {
   return receipt ? t(`capabilities.receipt.${receipt.state}`, { session: receipt.sessionId, error: receipt.error ?? '' }) : text
 }
 
+function capabilityChoiceLabel(t, value) {
+  return t(value === 'inherit' ? 'capabilities.quick.noOverride'
+    : ['enabled', 'pending', 'unknown'].includes(value) ? `capabilities.quick.${value}`
+      : [...selections, ...CAPABILITY_DISCLOSURES].includes(value) ? `capabilities.${value}` : 'capabilities.quick.unknown')
+}
+
+function capabilityRuleLabel(t, rule, empty = 'capabilities.policy.inheritRule') {
+  const dimensions = ['availability', 'disclosure'].filter(dimension => rule?.[dimension] !== undefined)
+  return dimensions.length ? dimensions.map(dimension => `${t(`capabilities.policy.${dimension}`)}: ${rule[dimension] === 'automatic'
+    ? t('capabilities.policy.inheritRule') : capabilityChoiceLabel(t, rule[dimension])}`).join(' · ') : t(empty)
+}
+
+function validCatalogRule(rule, temporary = false) {
+  return rule !== null && typeof rule === 'object' && !Array.isArray(rule)
+    && Object.entries(rule).every(([dimension, choice]) => ['availability', 'disclosure'].includes(dimension)
+      && (temporary && choice === 'automatic' || (dimension === 'availability'
+        ? ['enabled', 'closed'].includes(choice) : CAPABILITY_DISCLOSURES.includes(choice))))
+}
+
 export function createCapabilityCommandCard(React) {
   const h = React.createElement
   return function CapabilityCommandCard({ node, t }) {
+    const [showSource, setShowSource] = React.useState(false)
     const command = `/${node.name ?? 'capabilities'}${node.args ? ` ${String(node.args).trim()}` : ''}`
-    const outcome = node.outcome ? capabilityCommandText(t, node.outcome.text)
-      ?? t(node.outcome.kind === 'error' ? 'capabilities.commandFailed' : 'capabilities.refreshAcknowledged')
-      : t('capabilities.refreshing')
+    const text = node.outcome?.text
+    const receipt = readCapabilityCommandReceipt(text)
+    const legacyRefresh = text === 'Session capability environment refreshed; the model-visible notification is recorded.'
+    if (receipt || String(node.args ?? '').trim() === 'refresh' || legacyRefresh) {
+      const outcome = receipt ? t(`capabilities.card.${receipt.state}`, { error: receipt.error ?? '' })
+        : legacyRefresh ? t('capabilities.card.recorded')
+          : node.outcome ? (typeof text === 'string' && !text.trim() ? undefined : capabilityCommandText(t, text))
+            ?? t(node.outcome.kind === 'error' ? 'capabilities.commandFailed' : 'capabilities.refreshAcknowledged')
+            : t('capabilities.refreshing')
+      return h('p', { className: 'ptcPlusCapabilityCommandNotice',
+        role: node.outcome?.kind === 'error' ? 'alert' : 'status',
+        'data-state': node.outcome?.kind ?? 'pending' }, outcome)
+    }
+    let json
+    if (typeof text === 'string') {
+      try { json = JSON.parse(text) } catch { /* Plain command outcomes remain readable text. */ }
+    }
+    const entries = json?.schema === 'ptc-capability-catalog/v1' && Array.isArray(json.entries)
+      && json.entries.every(entry => entry && typeof entry.id === 'string'
+        && ['name', 'description', 'effective', 'saved', 'temporary']
+          .every(key => entry[key] === undefined || typeof entry[key] === 'string')
+        && ['savedRule', 'temporaryRule'].every(key => entry[key] === undefined || validCatalogRule(entry[key], key === 'temporaryRule'))) ? json.entries : null
+    const outcome = entries ? t('capabilities.card.catalogCount', { count: entries.length })
+      : json ? t('capabilities.card.details')
+        : node.outcome ? capabilityCommandText(t, text)
+          ?? t(node.outcome.kind === 'error' ? 'capabilities.commandFailed' : 'capabilities.refreshAcknowledged')
+          : t('capabilities.refreshing')
+    const label = (entry, key) => {
+      const ruleKey = key === 'saved' ? 'savedRule' : key === 'temporary' ? 'temporaryRule' : 'effectiveDimensions'
+      const rule = entry[ruleKey]
+      if (rule !== undefined && (key !== 'effective' || validCatalogRule({ availability: rule?.availability, disclosure: rule?.disclosure }))) {
+        const dimensions = capabilityRuleLabel(t, rule, key === 'temporary' ? 'capabilities.quick.noOverride' : 'capabilities.policy.inheritRule')
+        return key === 'effective' ? `${capabilityChoiceLabel(t, entry.effective)} (${dimensions})` : dimensions
+      }
+      return capabilityChoiceLabel(t, entry[key])
+    }
     return h('section', { className: 'ptcPlusCapabilityReceipt', 'aria-label': t('capabilities.receipt.title') },
-      h('strong', null, h('code', null, command)), h('p', { role: 'status' }, outcome))
+      h('div', { className: 'ptcPlusCapabilityReceiptHead' },
+        h('code', null, command),
+        h('span', { className: 'ptcPlusCapabilityReceiptState', 'data-state': node.outcome?.kind ?? 'pending' },
+          t(!node.outcome ? 'capabilities.card.running' : node.outcome.kind === 'error'
+            ? 'capabilities.card.failed' : 'capabilities.card.completed'))),
+      h('p', { className: 'ptcPlusCapabilityReceiptSummary', role: 'status' }, outcome),
+      entries?.length ? h('details', { className: 'ptcPlusCapabilityReceiptCatalog' },
+        h('summary', null, t('capabilities.card.browse')),
+        h('div', { className: 'ptcPlusCapabilityReceiptTable' }, h('table', null,
+          h('thead', null, h('tr', null, ...['member', 'quick.effective', 'quick.globalSaved', 'quick.temporary']
+            .map(key => h('th', { key, scope: 'col' }, t(`capabilities.${key}`))))),
+          h('tbody', null, ...entries.map((entry, index) => h('tr', { key: `${entry.id}-${index}` },
+            h('td', null, h('strong', null, entry.name ?? entry.id),
+              entry.description ? h('small', null, entry.description) : null),
+            ...['effective', 'saved', 'temporary'].map(key => h('td', { key }, label(entry, key))))))))) : null,
+      text ? h('details', { className: 'ptcPlusCapabilityReceiptSource',
+        onToggle: event => setShowSource(event.currentTarget.open) },
+        h('summary', null, t('capabilities.card.source')),
+        showSource ? h('pre', null, text) : null) : null)
   }
 }
 
@@ -33,20 +105,22 @@ export function capabilitySettingsEntries(value, catalog, plans, uncertain = fal
   for (const plan of plans ?? []) for (const entry of plan.effective.entries) {
     if (!entries.has(entry.id)) entries.set(entry.id, { id: entry.id, category: entry.category })
   }
-  for (const id of [...baseline, ...Object.keys(overrides)].filter(id => !id.startsWith('mcpServers.'))) if (!entries.has(id)) entries.set(id, { id })
+  const policy = value.capabilityPolicy ? capabilityPolicyForConfig(value) : null
+  for (const id of [...baseline, ...Object.keys(policy?.items ?? overrides)].filter(id => !id.startsWith('mcpServers.'))) if (!entries.has(id)) entries.set(id, { id })
   return [...entries.values()].map(entry => ({ ...entry,
     name: entry.name ?? entry.id,
     kind: ['tool', 'skill'].includes(entry.category) ? entry.category
       : ['resource', 'resource-template'].includes(entry.category) ? 'resource' : 'other',
     availability: catalog === null || uncertain ? 'unknown' : entry.available ? 'available' : 'unavailable',
-    common: baseline.includes(entry.id), manual: overrides[entry.id] ?? 'automatic',
+    common: baseline.includes(entry.id), manual: policy ? policy.items[entry.id]?.availability === 'closed' ? 'closed' : policy.items[entry.id]?.disclosure ?? 'automatic' : overrides[entry.id] ?? 'automatic',
+    ...(policy ? { rule: policy.items[entry.id] ?? {}, resolvedRule: capabilityRule(policy, entry) } : {}),
   }))
 }
 
 export function capabilityPlanReason(t, entry) {
   const known = ['manual-override', 'baseline-not-selected', 'baseline', 'coverage-below-threshold', 'statistical-coverage',
     'mcp-server-disabled', 'contract-budget', 'management-disabled', 'statistics-disabled', 'statistics-settings-invalid', 'statistics-data-invalid',
-    'statistics-unavailable', 'workspace', 'global']
+    'statistics-unavailable', 'workspace', 'global', 'host-disclosure', 'availability-rule', 'disclosure-rule']
   return [entry.reason, entry.statisticsReason].filter(Boolean)
     .map(reason => known.includes(reason) ? t(`capabilities.reason.${reason}`) : reason).join(' · ')
 }
@@ -55,11 +129,37 @@ export function createCapabilitySettingsViews(React, { SearchIcon, Select }) {
   const h = React.createElement
   const field = key => CONFIG_FIELDS.find(item => item.key === key)
 
+  function PolicyRules({ value, disabled, onChange, t }) {
+    const policy = capabilityPolicyForConfig(value)
+    const write = next => onChange(field('capabilityPolicy'), JSON.stringify(next))
+    const ruleControls = (rule, update, label, defaults = false) => h('div', { className: 'ptcPlusPolicyRule', key: label },
+      h('strong', null, label), ...['availability', 'disclosure'].map(dimension => h('div', { className: 'ptcPlusCapabilityFilter', key: dimension },
+        h('span', null, t(`capabilities.policy.${dimension}`)), h(Select, {
+          label: `${label} · ${t(`capabilities.policy.${dimension}`)}`, disabled: disabled('capabilityPolicy'),
+          value: rule[dimension] ?? 'automatic', onChange: choice => {
+            const next = { ...rule }; if (choice === 'automatic') delete next[dimension]; else next[dimension] = choice; update(next)
+          }, options: [...(defaults ? [] : ['automatic']), ...(dimension === 'availability' ? ['enabled', 'closed'] : CAPABILITY_DISCLOSURES)]
+            .map(choice => ({ value: choice, label: t(choice === 'automatic' ? 'capabilities.policy.inheritRule' : `capabilities.${choice === 'enabled' ? 'quick.enabled' : choice}`) })) }))))
+    return h('section', { className: 'ptcPlusPolicyRules', 'aria-label': t('capabilities.policy.rules') },
+      h('h4', null, t('capabilities.policy.rules')), h('p', { className: 'ptcPlusDetail' }, t('capabilities.policy.precedence')),
+      ruleControls(policy.defaults, defaults => write({ ...policy, defaults }), t('capabilities.policy.default'), true),
+      h('details', null, h('summary', { tabIndex: 0 }, t('capabilities.policy.categories')),
+        ...CAPABILITY_CATEGORIES.map(category => ruleControls(policy.categories[category] ?? {}, rule =>
+          write({ ...policy, categories: { ...policy.categories, [category]: rule } }), t(`capabilities.policy.category.${category}`)))),
+      h('div', { className: 'ptcPlusPolicyAllocation' }, ...['baseline', 'statistics', 'budget'].map(key => h('label', { className: 'ptcPlusRow', key },
+        h('span', { className: 'ptcPlusMain' }, t(`capabilities.policy.allocate.${key}`)),
+        h('input', { type: 'checkbox', role: 'switch', className: 'ptcPlusCheck', disabled: disabled('capabilityPolicy'),
+          'aria-label': t(`capabilities.policy.allocate.${key}`), checked: policy.allocation[key],
+          onChange: event => write({ ...policy, allocation: { ...policy.allocation, [key]: event.target.checked } }) }))),
+        h('p', { className: 'ptcPlusDetail' }, t('capabilities.policy.adaptiveHint'))))
+  }
+
   function CapabilityChoices({ value, catalog, catalogError, plans, plansError, disabled, onChange, onReload, t, selectedSessionId, onSessionSelect }) {
     const [query, setQuery] = React.useState('')
     const [kind, setKind] = React.useState('all')
     const [source, setSource] = React.useState('all')
     const [strategy, setStrategy] = React.useState('all')
+    const [availabilityRule, setAvailabilityRule] = React.useState('all')
     const [onlyCommon, setOnlyCommon] = React.useState(false)
     const [availability, setAvailability] = React.useState('all')
     const [sort, setSort] = React.useState('name')
@@ -70,6 +170,7 @@ export function createCapabilitySettingsViews(React, { SearchIcon, Select }) {
     const setSessionId = next => { setLocalSessionId(next); onSessionSelect?.(next) }
     const baseline = JSON.parse(value.capabilityBaseline ?? CONFIG_DEFAULTS.capabilityBaseline)
     const overrides = JSON.parse(value.capabilityOverrides ?? CONFIG_DEFAULTS.capabilityOverrides)
+    const policy = value.capabilityPolicy ? capabilityPolicyForConfig(value) : null
     const entries = capabilitySettingsEntries(value, catalog, plans, Boolean(catalogError))
     const sourceKey = entry => JSON.stringify([entry.source?.kind ?? 'unknown', entry.source?.server ?? null,
       entry.source?.bucket ?? null, entry.source?.provider ?? null])
@@ -95,12 +196,15 @@ export function createCapabilitySettingsViews(React, { SearchIcon, Select }) {
     const normalizedQuery = query.trim().toLowerCase()
     const filtered = entries.filter(entry => matchesKind(entry, kind)
       && (source === 'all' || sourceKey(entry) === source)
-      && (strategy === 'all' || entry.manual === strategy)
+      && (strategy === 'all' || (policy ? entry.rule.disclosure ?? 'automatic' : entry.manual) === strategy)
+      && (availabilityRule === 'all' || (entry.rule?.availability ?? 'automatic') === availabilityRule)
       && (!onlyCommon || entry.common)
       && (availability === 'all' || entry.availability === availability)
       && `${entry.name} ${entry.id} ${entry.description ?? ''} ${sourceLabel(entry)}`.toLowerCase().includes(normalizedQuery))
     const order = (a, b) => {
       const primary = sort === 'common' ? Number(b.common) - Number(a.common)
+        : sort === 'availabilityRule' ? compare(a.rule?.availability ?? 'automatic', b.rule?.availability ?? 'automatic')
+        : sort === 'disclosureRule' ? compare(a.rule?.disclosure ?? 'automatic', b.rule?.disclosure ?? 'automatic')
         : sort === 'strategy' ? selections.indexOf(a.manual) - selections.indexOf(b.manual)
           : compare((sort === 'id' ? a.id : a.name).toLowerCase(), (sort === 'id' ? b.id : b.name).toLowerCase())
       return (descending ? -1 : 1) * (primary || compare(a.id, b.id))
@@ -113,11 +217,11 @@ export function createCapabilitySettingsViews(React, { SearchIcon, Select }) {
       if (!groups.has(group)) groups.set(group, [])
       groups.get(group).push(entry)
     }
-    for (const id of Object.keys(overrides).filter(id => id.startsWith('mcpServers.'))) {
+    for (const id of (policy ? Object.keys(policy.mcpServers).map(server => `mcpServers.${server}`) : Object.keys(overrides)).filter(id => id.startsWith('mcpServers.'))) {
       const server = id.slice('mcpServers.'.length)
       const serverAvailability = catalog === null || catalogError ? 'unknown' : 'unavailable'
       if (!observedServers.has(server) && (kind === 'all' || kind === 'resource') && source === 'all'
-        && !normalizedQuery && strategy === 'all' && !onlyCommon
+        && !normalizedQuery && strategy === 'all' && availabilityRule === 'all' && !onlyCommon
         && (availability === 'all' || availability === serverAvailability)) groups.set(`mcp:${server}`, [])
     }
     const groupOrder = ['tool', ...[...groups.keys()].filter(key => key.startsWith('mcp:')).sort(compare), 'skill', 'resource', 'other', 'unavailable']
@@ -127,26 +231,37 @@ export function createCapabilitySettingsViews(React, { SearchIcon, Select }) {
     const effective = plan?.effective.entries.find(item => item.id === entry?.id)
     const change = (key, next) => onChange(field(key), JSON.stringify(next))
     const setServer = (server, enabled) => {
+      if (policy) { change('capabilityPolicy', changeCapabilityRule(policy, `mcpServers.${server}`, 'availability', enabled ? 'enabled' : 'closed')); return }
       const next = { ...overrides }
       if (enabled) delete next[`mcpServers.${server}`]
       else next[`mcpServers.${server}`] = 'closed'
       change('capabilityOverrides', next)
     }
     const setManual = (id, selection) => {
+      if (policy) { change('capabilityPolicy', changeCapabilityRule(policy, id, 'disclosure', selection)); return }
       const next = { ...overrides }
       if (selection === 'automatic') delete next[id]
       else next[id] = selection
       change('capabilityOverrides', next)
     }
-    const clear = () => { setQuery(''); setKind('all'); setSource('all'); setStrategy('all'); setOnlyCommon(false); setAvailability('all') }
-    const activeFilters = Number(kind !== 'all') + Number(source !== 'all') + Number(strategy !== 'all') + Number(onlyCommon) + Number(availability !== 'all')
+    const clear = () => { setQuery(''); setKind('all'); setSource('all'); setStrategy('all'); setAvailabilityRule('all'); setOnlyCommon(false); setAvailability('all') }
+    const activeFilters = Number(kind !== 'all') + Number(source !== 'all') + Number(strategy !== 'all') + Number(availabilityRule !== 'all') + Number(onlyCommon) + Number(availability !== 'all')
     const select = (label, current, update, options) => h('div', { className: 'ptcPlusCapabilityFilter' },
       h('span', null, label), h(Select, { label, value: current, onChange: update,
         options: options.map(([key, text]) => ({ value: key, label: text })) }))
-    const manualSelect = item => h(Select, { value: item.manual, dataStrategy: item.manual,
-      disabled: disabled('capabilityOverrides'), label: t('capabilities.disclosureFor', { name: item.id }),
-      onChange: next => setManual(item.id, next),
-      options: selections.map(selection => ({ value: selection, label: t(`capabilities.${selection}`) })) })
+    const manualSelect = item => policy ? h('div', { className: 'ptcPlusCapabilityRuleFields' },
+      h(Select, { value: item.rule.availability ?? 'automatic', disabled: disabled('capabilityPolicy'),
+        label: t('capabilities.policy.availabilityFor', { name: item.id }),
+        onChange: next => change('capabilityPolicy', changeCapabilityRule(policy, item.id, 'availability', next)),
+        options: ['automatic', 'enabled', 'closed'].map(choice => ({ value: choice, label: t(choice === 'automatic' ? 'capabilities.policy.inheritRule' : choice === 'enabled' ? 'capabilities.quick.enabled' : `capabilities.${choice}`) })) }),
+      h(Select, { value: item.rule.disclosure ?? 'automatic', disabled: disabled('capabilityPolicy'),
+        label: t('capabilities.disclosureFor', { name: item.id }),
+        onChange: next => setManual(item.id, next), options: ['automatic', ...CAPABILITY_DISCLOSURES]
+          .map(choice => ({ value: choice, label: t(choice === 'automatic' ? 'capabilities.policy.inheritRule' : `capabilities.${choice}`) })) }))
+      : h(Select, { value: item.manual, dataStrategy: item.manual,
+        disabled: disabled('capabilityOverrides'), label: t('capabilities.disclosureFor', { name: item.id }),
+        onChange: next => setManual(item.id, next),
+        options: selections.map(selection => ({ value: selection, label: t(`capabilities.${selection}`) })) })
     const common = item => h('label', { className: 'ptcPlusCapabilityCommon', title: t('capabilities.baselineFor', { name: item.id }) },
       h('input', { type: 'checkbox', disabled: disabled('capabilityBaseline'), checked: item.common,
         'aria-label': t('capabilities.baselineFor', { name: item.id }),
@@ -163,7 +278,7 @@ export function createCapabilitySettingsViews(React, { SearchIcon, Select }) {
         h('label', { className: 'ptcPlusSearch' }, h(SearchIcon),
           h('input', { type: 'search', value: query, 'aria-label': t('capabilities.search'), placeholder: t('capabilities.search'),
             onChange: event => setQuery(event.target.value) })),
-        select(t('capabilities.sort'), sort, setSort, ['name', 'id', 'strategy', 'common'].map(key => [key, t(`capabilities.sort.${key}`)])),
+        select(t('capabilities.sort'), sort, setSort, ['name', 'id', ...(policy ? ['availabilityRule', 'disclosureRule'] : ['strategy']), 'common'].map(key => [key, t(`capabilities.sort.${key}`)])),
         h('button', { type: 'button', className: 'ptcPlusCapabilityDirection', 'aria-label': t(descending ? 'capabilities.descending' : 'capabilities.ascending'),
           onClick: () => setDescending(current => !current) }, descending ? '↓' : '↑')),
       h('div', { className: 'ptcPlusCapabilityFilters' },
@@ -172,8 +287,10 @@ export function createCapabilitySettingsViews(React, { SearchIcon, Select }) {
           select(t('capabilities.types'), kind, setType, kinds.filter(key => key !== 'other' || entries.some(item => item.kind === 'other')).map(key => [key, t(`capabilities.type.${key}`)])),
           select(t('capabilities.sourceFilter'), source, setCompatibleSource, [['all', t('capabilities.allSources')], ...sources,
             ...(source !== 'all' && !sources.has(source) ? [[source, t('capabilities.previousSource')]] : [])]),
-          select(t('capabilities.strategyFilter'), strategy, setStrategy, [['all', t('capabilities.allStrategies')],
-            ...selections.map(key => [key, t(`capabilities.${key}`)])]),
+          select(t(policy ? 'capabilities.policy.disclosureFilter' : 'capabilities.strategyFilter'), strategy, setStrategy, [['all', t('capabilities.allStrategies')],
+            ...(policy ? ['automatic', ...CAPABILITY_DISCLOSURES] : selections).map(key => [key, t(policy && key === 'automatic' ? 'capabilities.policy.inheritRule' : `capabilities.${key}`)])]),
+          policy ? select(t('capabilities.policy.availabilityFilter'), availabilityRule, setAvailabilityRule, [['all', t('capabilities.allStrategies')],
+            ...['automatic', 'enabled', 'closed'].map(key => [key, t(key === 'automatic' ? 'capabilities.policy.inheritRule' : key === 'enabled' ? 'capabilities.quick.enabled' : 'capabilities.closed')])]) : null,
           h('label', { className: 'ptcPlusCapabilityOnlyCommon' }, h('input', { type: 'checkbox', checked: onlyCommon,
             onChange: event => setOnlyCommon(event.target.checked) }), t('capabilities.onlyCommon')),
           select(t('capabilities.availabilityFilter'), availability, setAvailability,
@@ -193,14 +310,21 @@ export function createCapabilitySettingsViews(React, { SearchIcon, Select }) {
                 h('div', { className: 'ptcPlusCapabilityGroup', 'data-mcp-server': group.startsWith('mcp:') ? group.slice(4) : undefined },
                   h('h4', null, group.startsWith('mcp:') ? `MCP · ${group.slice(4)}` : t(`capabilities.group.${group}`)),
                   h('span', null, groups.get(group).length),
-                  group.startsWith('mcp:') ? h('label', { className: 'ptcPlusCapabilityServerSwitch' },
-                    h('span', null, t(overrides[`mcpServers.${group.slice(4)}`] === 'closed' ? 'capabilities.serverOff' : 'capabilities.serverOn')),
+                  group.startsWith('mcp:') && !policy ? h('label', { className: 'ptcPlusCapabilityServerSwitch' },
+                    h('span', null, t((policy ? policy.mcpServers[group.slice(4)]?.availability : overrides[`mcpServers.${group.slice(4)}`]) === 'closed' ? 'capabilities.serverOff' : 'capabilities.serverOn')),
                     h('input', { type: 'checkbox', role: 'switch', className: 'ptcPlusCheck',
                       'aria-label': t('capabilities.serverToggle', { name: group.slice(4) }),
-                      disabled: disabled('capabilityOverrides'), checked: overrides[`mcpServers.${group.slice(4)}`] !== 'closed',
+                      disabled: disabled('capabilityOverrides'), checked: (policy ? policy.mcpServers[group.slice(4)]?.availability : overrides[`mcpServers.${group.slice(4)}`]) !== 'closed',
                       onChange: event => setServer(group.slice(4), event.target.checked) })) : null),
-                group.startsWith('mcp:') && overrides[`mcpServers.${group.slice(4)}`] === 'closed'
+                group.startsWith('mcp:') && (policy ? policy.mcpServers[group.slice(4)]?.availability : overrides[`mcpServers.${group.slice(4)}`]) === 'closed'
                   ? h('p', { className: 'ptcPlusDetail ptcPlusCapabilityServerHint' }, t('capabilities.serverDisabledHint')) : null,
+                ...(policy && group.startsWith('mcp:') ? ['availability', 'disclosure'].map(dimension => h('div', { className: 'ptcPlusCapabilityFilter ptcPlusCapabilityServerRule', key: `server-${dimension}` },
+                  h('span', null, t(`capabilities.policy.${dimension}`)),
+                  h(Select, { value: policy.mcpServers[group.slice(4)]?.[dimension] ?? 'automatic', disabled: disabled('capabilityPolicy'),
+                    label: t(dimension === 'availability' ? 'capabilities.policy.availabilityFor' : 'capabilities.disclosureFor', { name: group.slice(4) }),
+                    options: ['automatic', ...(dimension === 'availability' ? ['enabled', 'closed'] : CAPABILITY_DISCLOSURES)].map(choice => ({ value: choice,
+                      label: t(choice === 'automatic' ? 'capabilities.policy.inheritRule' : choice === 'enabled' ? 'capabilities.quick.enabled' : `capabilities.${choice}`) })),
+                    onChange: choice => change('capabilityPolicy', changeCapabilityRule(policy, `mcpServers.${group.slice(4)}`, dimension, choice)) }))) : []),
                 ...groups.get(group).sort(order).map(item => h('div', { key: item.id, className: 'ptcPlusCapabilityItem',
                   'data-selected': entry?.id === item.id, 'data-availability': item.availability },
                 h('button', { type: 'button', className: 'ptcPlusCapabilityIdentity', 'aria-pressed': entry?.id === item.id,
@@ -211,10 +335,16 @@ export function createCapabilitySettingsViews(React, { SearchIcon, Select }) {
                 item.availability === 'unavailable' ? h('small', null, t('capabilities.notAvailable')) : null), common(item), manualSelect(item))))))),
             entry ? h('aside', { className: 'ptcPlusCapabilityDetail', 'aria-label': t('capabilities.details') },
               h('h4', null, entry.name), h('span', { className: 'ptcPlusCapabilityBadge', 'data-kind': entry.kind }, t(`capabilities.type.${entry.kind}`)),
+              policy ? h('p', { className: 'ptcPlusDetail' }, t('capabilities.policy.resolved', {
+                availability: t(entry.resolvedRule.availability === 'enabled' ? 'capabilities.quick.enabled' : 'capabilities.closed'),
+                disclosure: t(`capabilities.${entry.resolvedRule.disclosure}`),
+                source: `${entry.resolvedRule.availabilitySource} · ${entry.resolvedRule.disclosureSource}` })) : null,
               h('code', null, entry.id), h('p', { className: 'ptcPlusDetail' }, sourceLabel(entry)),
               h('dl', null, h('dt', null, t('capabilities.commonBaseline')), h('dd', null, t(entry.common ? 'capabilities.inBaseline' : 'capabilities.notInBaseline')),
-                h('dt', null, t('capabilities.savedStrategy')), h('dd', null, t(`capabilities.${entry.manual}`))),
-              entry.manual !== 'automatic' ? h('button', { type: 'button', className: 'ptcPlusCapabilityLink', disabled: disabled('capabilityOverrides'),
+                h('dt', null, t(policy ? 'capabilities.policy.rules' : 'capabilities.savedStrategy')), h('dd', null, policy
+                  ? ['availability', 'disclosure'].map(dimension => `${t(`capabilities.policy.${dimension}`)}: ${entry.rule[dimension] ? t(entry.rule[dimension] === 'enabled' ? 'capabilities.quick.enabled' : `capabilities.${entry.rule[dimension]}`) : t('capabilities.policy.inheritRule')}`).join(' · ')
+                  : t(`capabilities.${entry.manual}`))),
+              (policy ? entry.rule.disclosure !== undefined : entry.manual !== 'automatic') ? h('button', { type: 'button', className: 'ptcPlusCapabilityLink', disabled: disabled('capabilityOverrides'),
                 onClick: () => setManual(entry.id, 'automatic') }, t('capabilities.restoreAutomatic')) : null,
               entry.common && entry.manual === 'closed' ? h('p', { className: 'ptcPlusDetail' }, t('capabilities.closedBaseline')) : null,
               entry.kind === 'skill' ? h('p', { className: 'ptcPlusCapabilityNotice' }, t('capabilities.skillDisclosure')) : null,
@@ -227,8 +357,13 @@ export function createCapabilitySettingsViews(React, { SearchIcon, Select }) {
                 h('summary', { tabIndex: 0 }, t('capabilities.viewDescription')), h('p', null, entry.description)) : null,
               entry.availability === 'unavailable' ? h('button', { type: 'button', className: 'ptcPlusCapabilityLink',
                 disabled: disabled('capabilityBaseline') || disabled('capabilityOverrides'), onClick: () => {
-                  const next = { ...overrides }; delete next[entry.id]
-                  if (Object.hasOwn(overrides, entry.id)) change('capabilityOverrides', next)
+                  if (policy) {
+                    const next = { ...policy, items: { ...policy.items } }; delete next.items[entry.id]
+                    change('capabilityPolicy', next)
+                  } else {
+                    const next = { ...overrides }; delete next[entry.id]
+                    if (Object.hasOwn(overrides, entry.id)) change('capabilityOverrides', next)
+                  }
                   if (baseline.includes(entry.id)) change('capabilityBaseline', baseline.filter(id => id !== entry.id))
                 } }, t('capabilities.removeSaved')) : null,
               value.capabilityManagementEnabled === true ? h('section', { className: 'ptcPlusCapabilitySessionDetail' },
@@ -431,12 +566,12 @@ export function createCapabilitySettingsViews(React, { SearchIcon, Select }) {
           } }, t(`capabilities.tab.${key}`)))),
       ...tabs.map(key => h('div', { key, className: 'ptcPlusCapabilityPane', role: 'tabpanel', id: `${id}-pane-${key}`,
         'aria-labelledby': `${id}-tab-${key}`, hidden: tab !== key },
-      key === 'manual' ? h(CapabilityChoices, { value, catalog, catalogError, plans, plansError, disabled, onChange, onReload, t, selectedSessionId, onSessionSelect })
+      key === 'manual' ? h(React.Fragment, null, h(PolicyRules, { value, disabled, onChange, t }), h(CapabilityChoices, { value, catalog, catalogError, plans, plansError, disabled, onChange, onReload, t, selectedSessionId, onSessionSelect }))
         : key === 'statistics' ? h(React.Fragment, null, renderField('capabilityStatistics'), tab === key ? renderRefresh?.({ observation: true }) : null, h(AllocationEvidence, { allocation, allocationError, allocationPending, selectedSessionId, statistics: true, onReload, t }))
-          : key === 'budgets' ? h(React.Fragment, null, ...['capabilityBudgetBytes', 'capabilityDirectoryBytes', 'capabilityRecoveryBytes', 'modelPreviewTokens'].map(renderField),
+          : key === 'budgets' ? h(React.Fragment, null, ...['capabilityBudgetBytes', 'capabilityDirectoryBytes', 'capabilityRecoveryEnabled', 'capabilityRecoveryBytes', 'modelPreviewEnabled', 'modelPreviewTokens'].map(renderField),
             tab === key ? renderRefresh?.({ observation: true }) : null, h(AllocationEvidence, { allocation, allocationError, allocationPending, selectedSessionId, onReload, t }))
             : h(React.Fragment, null, h(ConfigurationProfiles, { value, plans, disabled, writable: configurationWritable, onChange, onApplyConfiguration, t }),
-              tab === key ? renderRefresh?.() : null, value.capabilityManagementEnabled === true ? renderPlans() : h('p', { className: 'ptcPlusDetail' }, t('capabilities.managementOff'))))))
+              tab === key ? renderRefresh?.() : null, plans ? renderPlans() : h('p', { className: 'ptcPlusDetail' }, t('capabilities.managementOff'))))))
   }
   return { CapabilityWorkbench }
 }
@@ -445,7 +580,7 @@ export function createCapabilitySettingsViews(React, { SearchIcon, Select }) {
 export function createCapabilityRefreshView(React, commands) {
   const h = React.createElement
   const absent = Object.freeze({ getSnapshot: () => false, subscribe: () => () => {} })
-  return function CapabilityRefreshButton({ sessionId, enabled, t, onApplied, onStatus, menu = false }) {
+  return function CapabilityRefreshButton({ sessionId, enabled, t, onApplied }) {
     const source = React.useMemo(() => sessionId ? commands.source(sessionId) : absent, [sessionId])
     const available = React.useSyncExternalStore(source.subscribe, source.getSnapshot)
     const [pending, setPending] = React.useState(false)
@@ -456,9 +591,6 @@ export function createCapabilityRefreshView(React, commands) {
       setPending(false)
       return () => { request.current?.abort(); request.current = null }
     }, [sessionId, enabled, available])
-    const statusCallback = React.useRef(onStatus)
-    statusCallback.current = onStatus
-    React.useEffect(() => { if (menu && status) statusCallback.current?.(status) }, [menu, status])
     const cancel = event => {
       event.stopPropagation()
       request.current?.abort(); request.current = null; setPending(false)
@@ -475,7 +607,7 @@ export function createCapabilityRefreshView(React, commands) {
       try {
         const result = await commands.run(sessionId, 'refresh', controller.signal)
         if (controller.signal.aborted || request.current !== controller) return
-        if (!menu) setStatus(result.text ?? { key: 'capabilities.refreshAcknowledged' })
+        setStatus(result.text ?? { key: 'capabilities.refreshAcknowledged' })
         onApplied?.()
       } catch (error) {
         if (!controller.signal.aborted && request.current === controller) {
@@ -489,28 +621,25 @@ export function createCapabilityRefreshView(React, commands) {
       }
     }
     return h('div', { className: 'ptcPlusCapabilityRefresh' },
-      h('button', { type: 'button', role: menu ? 'menuitem' : undefined,
-        className: menu ? 'ptcPlusMenuButton' : 'ptcPlusButton', disabled: !enabled || !available || (!menu && pending),
+      h('button', { type: 'button', className: 'ptcPlusButton', disabled: !enabled || !available || pending,
         title: !available ? t(sessionId ? 'capabilities.refreshUnavailable' : 'capabilities.chooseSession') : undefined,
-        onClick: menu && pending ? cancel : execute }, h('span', { className: menu ? 'ptcPlusBindingMenuAction' : undefined },
-          t(pending ? menu ? 'capabilities.cancelRefresh' : 'capabilities.refreshing' : 'capabilities.applySession'))),
-      pending && !menu ? h('button', { type: 'button', className: 'ptcPlusButton', onClick: cancel }, t('capabilities.cancelRefresh')) : null,
-      status && !menu ? h('p', { className: 'ptcPlusDetail', role: 'status' }, capabilityCommandText(t, status))
-        : !available && !menu ? h('p', { className: 'ptcPlusDetail' }, t(sessionId ? 'capabilities.refreshUnavailable' : 'capabilities.chooseSession')) : null)
+        onClick: execute }, t(pending ? 'capabilities.refreshing' : 'capabilities.applySession')),
+      pending ? h('button', { type: 'button', className: 'ptcPlusButton', onClick: cancel }, t('capabilities.cancelRefresh')) : null,
+      status ? h('p', { className: 'ptcPlusDetail', role: 'status' }, capabilityCommandText(t, status))
+        : !available ? h('p', { className: 'ptcPlusDetail' }, t(sessionId ? 'capabilities.refreshUnavailable' : 'capabilities.chooseSession')) : null)
   }
 }
 
 /** Session capability choices use the real command transaction and a read-only catalog observation. */
 export function createSessionCapabilityControlsView(React, { commands, Modal, Select, inspectSessionCatalog }) {
   const h = React.createElement
-  const emptyDrafts = () => ({ session: {}, global: {} })
+  const emptyDrafts = () => ({})
   return function SessionCapabilityControls({ sessionId, open, enabled, t, onClose }) {
     const source = React.useMemo(() => commands.source(sessionId), [sessionId])
     const available = React.useSyncExternalStore(source.subscribe, source.getSnapshot)
     const [catalog, setCatalog] = React.useState([])
     const [loading, setLoading] = React.useState(false)
     const [error, setError] = React.useState(null)
-    const [scope, setScope] = React.useState('session')
     const [drafts, setDrafts] = React.useState(emptyDrafts)
     const [selectedId, setSelectedId] = React.useState(null)
     const [pane, setPane] = React.useState('list')
@@ -536,7 +665,6 @@ export function createSessionCapabilityControlsView(React, { commands, Modal, Se
       setDrafts(emptyDrafts())
       setSelectedId(null)
       setPane('list')
-      setScope('session')
       setStatus(null)
       setPending(false)
       setError(null)
@@ -573,8 +701,8 @@ export function createSessionCapabilityControlsView(React, { commands, Modal, Se
         setPending(false)
       }
     }, [enabled, available])
-    const choices = drafts[scope]
-    const choiceFor = entry => choices[entry.id] ?? (scope === 'session' ? entry.temporary ?? 'inherit' : entry.saved ?? 'automatic')
+    const choices = drafts
+    const choiceFor = entry => choices[entry.id] ?? entry.temporary ?? 'inherit'
     const sourceKey = entry => entry.source?.kind === 'mcp' ? 'mcp:' + (entry.source.server ?? '')
       : entry.source?.kind === 'skill' ? 'skill:' + (entry.source.bucket ?? '')
         : entry.source?.kind ?? 'unknown'
@@ -607,22 +735,33 @@ export function createSessionCapabilityControlsView(React, { commands, Modal, Se
       : (a.name ?? a.id).localeCompare(b.name ?? b.id) || a.id.localeCompare(b.id))
     const selected = matches.find(entry => entry.id === selectedId)
       ?? ['tools', 'skills', 'mcp', 'mcp_tools'].map(group => matches.find(entry => category(entry) === group)).find(Boolean)
-    const staged = Object.entries(choices)
+    const staged = Object.entries(choices).flatMap(([id, choice]) => typeof choice === 'object'
+      ? Object.entries(choice).map(([dimension, selection]) => [id, selection, dimension]) : [[id, choice]])
+    const chooseDimension = (id, dimension, choice) => {
+      setDrafts(current => {
+        const patch = typeof current[id] === 'object' ? { ...current[id] } : {}
+        const original = catalog.find(entry => entry.id === id)?.temporaryRule?.[dimension] ?? 'inherit'
+        if (choice === original && choice === 'inherit') delete patch[dimension]
+        else patch[dimension] = choice
+        const next = { ...current }; if (Object.keys(patch).length) next[id] = patch; else delete next[id]; return next
+      })
+    }
     const choose = (id, next) => {
       const entry = catalog.find(item => item.id === id)
       if (!entry) return
-      const original = scope === 'session' ? entry.temporary ?? 'inherit' : entry.saved ?? 'automatic'
+      const original = entry.temporary ?? 'inherit'
       setDrafts(current => {
-        const nextChoices = { ...current[scope] }
-        if (next === original) delete nextChoices[id]
+        const nextChoices = { ...current }
+        if (next === original && next === 'inherit') delete nextChoices[id]
         else nextChoices[id] = next
-        return { ...current, [scope]: nextChoices }
+        return nextChoices
       })
     }
-    const apply = async () => {
+    const hasInheritanceReset = staged.some(([, selection]) => selection === 'inherit')
+    const apply = async targetScope => {
       if (applying.current || !enabled || !available || staged.length === 0) return
-      const targetScope = scope
-      const submitted = Object.fromEntries(staged)
+      if (targetScope === 'global' && hasInheritanceReset) return
+      const submitted = structuredClone(choices)
       applying.current = true
       setPending(true)
       setStatus(null)
@@ -633,10 +772,10 @@ export function createSessionCapabilityControlsView(React, { commands, Modal, Se
       let pendingCount = 0
       let failure = null
       let savedOnly = null
-      for (const [id, selection] of staged) {
+      for (const [id, selection, dimension] of staged) {
         if (controller.signal.aborted) break
         try {
-          const result = await commands.run(sessionId, `set ${targetScope} ${encodeURIComponent(id)} ${selection}`, controller.signal)
+          const result = await commands.run(sessionId, `set ${targetScope} ${encodeURIComponent(id)} ${dimension ? dimension + ' ' : ''}${selection}`, controller.signal)
           const receipt = readCapabilityCommandReceipt(result.text)
           if (!receipt || receipt.sessionId !== sessionId || !['recorded', 'pending'].includes(receipt.state)) {
             throw new Error(receipt ? capabilityCommandText(t, result.text) : t('capabilities.quick.unknownReceipt'))
@@ -653,14 +792,25 @@ export function createSessionCapabilityControlsView(React, { commands, Modal, Se
       if (request.current !== controller || controller.signal.aborted || !mounted.current) return
       const refreshed = await load(controller.signal)
       if (request.current !== controller || controller.signal.aborted || !mounted.current) return
-      const confirmed = refreshed ? staged.slice(0, completed).filter(([id, selection]) => {
+      const confirmed = refreshed ? staged.slice(0, completed).filter(([id, selection, dimension]) => {
         const entry = refreshed.find(item => item.id === id)
-        return entry && (targetScope === 'session' ? entry.temporary === selection : entry.saved === selection)
-      }).map(([id]) => id) : []
+        if (dimension) return entry && (targetScope === 'session'
+          ? (entry.temporaryRule?.[dimension] ?? 'inherit') === selection
+          : (entry.savedRule?.[dimension] ?? 'automatic') === selection && entry.temporaryRule?.[dimension] === undefined)
+        return entry && (targetScope === 'session' ? entry.temporary === selection
+          : entry.saved === selection && entry.temporary === 'inherit')
+      }) : []
       setDrafts(current => {
-        const nextChoices = { ...current[targetScope] }
-        for (const id of confirmed) if (nextChoices[id] === submitted[id] && !(savedOnly && id === staged[completed]?.[0])) delete nextChoices[id]
-        return { ...current, [targetScope]: nextChoices }
+        const nextChoices = { ...current }
+        for (const [id, selection, dimension] of confirmed) {
+          if (savedOnly && id === staged[completed]?.[0] && dimension === staged[completed]?.[2]) continue
+          if (dimension) {
+            if (nextChoices[id]?.[dimension] !== submitted[id]?.[dimension]) continue
+            const patch = { ...nextChoices[id] }; delete patch[dimension]
+            if (Object.keys(patch).length) nextChoices[id] = patch; else delete nextChoices[id]
+          } else if (nextChoices[id] === submitted[id]) delete nextChoices[id]
+        }
+        return nextChoices
       })
       if (savedOnly) setStatus({ key: 'capabilities.quick.savedOnly', params: { count: completed, error: savedOnly.error ?? '' } })
       else if (failure || !refreshed || confirmed.length < completed) setStatus({ key: 'capabilities.quick.partial',
@@ -668,7 +818,7 @@ export function createSessionCapabilityControlsView(React, { commands, Modal, Se
       else setStatus({ key: pendingCount ? 'capabilities.quick.pendingApplied' : 'capabilities.quick.applied', params: { count: completed } })
       if (request.current === controller) { request.current = null; applying.current = false; setPending(false) }
     }
-    const discard = () => setDrafts(current => ({ ...current, [scope]: {} }))
+    const discard = () => { setDrafts(emptyDrafts()); setStatus(null) }
     const close = () => {
       request.current?.abort()
       request.current = null
@@ -682,23 +832,19 @@ export function createSessionCapabilityControlsView(React, { commands, Modal, Se
       h('span', null, label), h(Select, { label, value, onChange, disabled,
         options: options.map(([key, text]) => ({ value: key, label: text })) }))
     const choiceOptions = selected ? [
-      ...(scope === 'session' ? ['inherit'] : []), 'automatic',
+      'inherit', 'automatic',
       ...(selected.category === 'server' ? [] : ['full', 'on-demand']), 'closed',
     ].map(choice => ({ value: choice, label: t(choice === 'inherit' ? 'capabilities.quick.inherit' : `capabilities.${choice}`) })) : []
-    const statusLabel = value => t(value === 'inherit' ? 'capabilities.quick.inherit'
-      : ['enabled', 'pending', 'unknown'].includes(value) ? `capabilities.quick.${value}` : `capabilities.${value}`)
+    const ruleLabel = (rule, empty) => capabilityRuleLabel(t, rule, empty)
+    const dimensionFacts = dimensions => ['availability', 'disclosure'].map(dimension =>
+      `${t(`capabilities.policy.${dimension}`)}: ${statusLabel(dimensions[dimension])} (${dimensions[`${dimension}Source`] ?? t('capabilities.quick.unknown')})`).join(' · ')
+    const statusLabel = value => value && typeof value === 'object' ? ruleLabel(value) : capabilityChoiceLabel(t, value)
     return h(Modal, { open, onClose: close, title: t('capabilities.quick.modalTitle'),
       closeLabel: t('settings.close'), headless: true, className: 'ptcPlusSessionCapabilityModal' },
     h('div', { className: 'ptcPlusSessionCapabilityHead' },
       h('div', null, h('h2', null, t('capabilities.quick.modalTitle')),
         h('p', null, t('capabilities.quick.sessionIdentity', { session: sessionId }))),
       h('button', { type: 'button', className: 'ptcPlusDialogClose', 'aria-label': t('settings.close'), onClick: close }, '×')),
-    h('div', { className: 'ptcPlusSessionCapabilityScope' },
-      filter(t('capabilities.quick.scope'), scope, setScope, [
-        ['session', t('capabilities.quick.session')], ['global', t('capabilities.quick.global')],
-      ], pending),
-      h('p', { className: 'ptcPlusDetail' }, t(`capabilities.quick.${scope}Hint`)),
-      h('p', { className: 'ptcPlusDetail' }, t('capabilities.quick.otherScopeChanges', { count: Object.keys(drafts[scope === 'session' ? 'global' : 'session']).length }))),
     h('div', { className: 'ptcPlusSessionCapabilityToolbar' },
       h('label', { className: 'ptcPlusSearch' },
         h('svg', { viewBox: '0 0 24 24', width: 16, height: 16, 'aria-hidden': true },
@@ -746,17 +892,22 @@ export function createSessionCapabilityControlsView(React, { commands, Modal, Se
           selected.description ? h('p', null, selected.description) : null,
           h('dl', null,
             h('dt', null, t('capabilities.sourceFilter')), h('dd', null, sourceLabel(selected)),
-            h('dt', null, t('capabilities.quick.globalSaved')), h('dd', null, statusLabel(selected.saved)),
-            h('dt', null, t('capabilities.quick.sessionSource')), h('dd', null, statusLabel(selected.sessionSourceSelection ?? 'unknown')),
-            h('dt', null, t('capabilities.quick.temporary')), h('dd', null, statusLabel(selected.temporary)),
-            h('dt', null, t('capabilities.quick.effective')), h('dd', null, statusLabel(selected.effective))),
+            h('dt', null, t('capabilities.quick.globalSaved')), h('dd', null, selected.savedRule ? ruleLabel(selected.savedRule) : statusLabel(selected.saved)),
+            h('dt', null, t('capabilities.quick.sessionSource')), h('dd', null, selected.sourceRule ? ruleLabel(selected.sourceRule) : statusLabel(selected.sessionSourceSelection ?? 'unknown')),
+            h('dt', null, t('capabilities.quick.temporary')), h('dd', null, selected.temporaryRule ? ruleLabel(selected.temporaryRule, 'capabilities.quick.noOverride') : statusLabel(selected.temporary)),
+            h('dt', null, t('capabilities.quick.effective')), h('dd', null, statusLabel(selected.effective)),
+            selected.sourceDimensions ? h(React.Fragment, null, h('dt', null, t('capabilities.policy.frozenSource')), h('dd', null, dimensionFacts(selected.sourceDimensions))) : null,
+            selected.effectiveDimensions ? h(React.Fragment, null, h('dt', null, t('capabilities.policy.effectiveDimensions')), h('dd', null, dimensionFacts(selected.effectiveDimensions))) : null),
           selected.source?.kind === 'mcp' && selected.category !== 'server'
             ? (() => {
               const server = catalog.find(entry => entry.category === 'server' && entry.source?.server === selected.source.server)
               if (!server) return null
               const proposed = choiceFor(server)
-              const pendingClose = (scope === 'session' && proposed === 'inherit' ? server.sessionSourceSelection : proposed) === 'closed'
-              const key = server.effective === 'closed' ? 'capabilities.quick.disabledByServer'
+              const availability = server.savedRule ? choices[server.id]?.availability ?? server.temporaryRule?.availability ?? 'inherit' : proposed
+              const sourceAvailability = server.sourceRule !== undefined ? server.sourceRule.availability : server.sessionSourceSelection
+              const pendingClose = server.managementEnabled !== false && (availability === 'inherit' ? sourceAvailability : availability) === 'closed'
+              const currentlyClosed = server.enclosingClosure ?? server.effective === 'closed'
+              const key = currentlyClosed ? 'capabilities.quick.disabledByServer'
                 : pendingClose ? 'capabilities.quick.pendingServerClose' : null
               return key ? h('p', { className: 'ptcPlusCapabilityNotice' }, t(key, { server: selected.source.server })) : null
             })() : null,
@@ -765,18 +916,33 @@ export function createSessionCapabilityControlsView(React, { commands, Modal, Se
             h('ul', null, ...catalog.filter(entry => entry.id !== selected.id
               && entry.source?.kind === 'mcp' && entry.source.server === selected.source?.server)
               .map(entry => h('li', { key: entry.id }, entry.name ?? entry.id)))) : null,
-          h('div', { className: 'ptcPlusCapabilityFilter' },
-            h('span', null, t('capabilities.quick.choice')),
-            h(Select, { label: t('capabilities.quick.choice'), value: choiceFor(selected),
-              disabled: !enabled || !available || pending, options: choiceOptions,
-              onChange: next => choose(selected.id, next) }))) : h('p', null, t('capabilities.noMatches')))),
+          selected.savedRule ? h(React.Fragment, null, ...['availability', 'disclosure'].map(dimension =>
+            h('div', { className: 'ptcPlusCapabilityFilter', key: dimension },
+              h('span', null, t(`capabilities.policy.${dimension}`)),
+              h(Select, { label: t(`capabilities.policy.${dimension}`), disabled: !enabled || !available || pending,
+                value: choices[selected.id]?.[dimension] ?? selected.temporaryRule?.[dimension] ?? 'inherit',
+                onChange: next => chooseDimension(selected.id, dimension, next),
+                options: ['inherit', 'automatic', ...(dimension === 'availability' ? ['enabled', 'closed'] : CAPABILITY_DISCLOSURES)]
+                  .map(choice => ({ value: choice, label: t(choice === 'inherit' ? 'capabilities.quick.inherit'
+                    : choice === 'automatic' ? 'capabilities.policy.inheritRule' : choice === 'enabled' ? 'capabilities.quick.enabled' : `capabilities.${choice}`) })) }))))
+            : h('div', { className: 'ptcPlusCapabilityFilter' },
+              h('span', null, t('capabilities.quick.choice')),
+              h(Select, { label: t('capabilities.quick.choice'), value: choiceFor(selected),
+                disabled: !enabled || !available || pending, options: choiceOptions,
+                onChange: next => choose(selected.id, next) })),
+          choices[selected.id] === 'inherit' ? h('p', { className: 'ptcPlusDetail' },
+            t('capabilities.quick.inheritSessionOnly')) : null) : h('p', null, t('capabilities.noMatches')))),
     h('div', { className: 'ptcPlusSessionCapabilityFooter' },
-      h('span', { role: 'status' }, status ? t(status.key, status.params)
+      h('span', { role: 'status' }, pending ? t('capabilities.quick.applying') : status ? t(status.key, status.params)
         : t('capabilities.quick.changes', { count: staged.length })),
       h('button', { type: 'button', className: 'ptcPlusButton', disabled: pending || staged.length === 0, onClick: discard },
         t('capabilities.quick.discard')),
+      h('button', { type: 'button', className: 'ptcPlusButton', title: t('capabilities.quick.sessionHint'),
+        disabled: pending || !enabled || !available || staged.length === 0, onClick: () => void apply('session') },
+        t('capabilities.quick.applySession')),
       h('button', { type: 'button', className: 'ptcPlusButton', 'data-kind': 'primary',
-        disabled: pending || !enabled || !available || staged.length === 0, onClick: () => void apply() },
-        t(pending ? 'capabilities.quick.applying' : 'capabilities.quick.apply'))))
+        title: t(hasInheritanceReset ? 'capabilities.quick.inheritSessionOnly' : 'capabilities.quick.globalHint'),
+        disabled: pending || !enabled || !available || staged.length === 0 || hasInheritanceReset, onClick: () => void apply('global') },
+        t('capabilities.quick.applyGlobal'))))
   }
 }

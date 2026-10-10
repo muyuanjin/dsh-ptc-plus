@@ -100,13 +100,17 @@ if (values.list) {
       {id:'skills.design',name:'design',category:'skill',source:{kind:'skill',bucket:'project-dsh'},saved:'automatic',sessionSourceSelection:'automatic',temporary:'inherit',effective:'on-demand'},
       {id:'mcpServers.docs',name:'docs',category:'server',source:{kind:'mcp',server:'docs'},saved:'automatic',sessionSourceSelection:'automatic',temporary:'inherit',effective:'enabled'},
       {id:'tools.mcp__docs__search',name:'docs search',category:'tool',source:{kind:'mcp',server:'docs'},saved:'automatic',sessionSourceSelection:'automatic',temporary:'inherit',effective:'on-demand'}];
+    window.capabilityEntries=window.capabilityEntries.map(entry=>({...entry,savedRule:{},sourceRule:{},temporaryRule:{},
+      sourceDimensions:{availability:'enabled',disclosure:'on-demand'},effectiveDimensions:{availability:'enabled',disclosure:'on-demand'}}));
     const SessionCapabilityControls=createSessionCapabilityControlsView(React,{
       commands:{source:()=>({getSnapshot:()=>true,subscribe:()=>()=>{}}),
         run:async(sessionId,input,signal)=>{
           signal.throwIfAborted();window.sessionCapabilityCalls.push({sessionId,input});
-          const [,scope,id,choice]=input.split(' ');
+          const [,scope,id,dimension,choice]=input.split(' ');
           const entry=window.capabilityEntries.find(entry=>entry.id===decodeURIComponent(id));
-          entry[scope==='session'?'temporary':'saved']=choice;
+          const rule=entry[scope==='session'?'temporaryRule':'savedRule'];
+          if(['automatic','inherit'].includes(choice))delete rule[dimension];else rule[dimension]=choice;
+          if(scope==='global')delete entry.temporaryRule[dimension];
           return {kind:'success',text:capabilityCommandReceipt('recorded',sessionId)};
         }},Modal,Select,
       inspectSessionCatalog:async(sessionId,signal)=>{
@@ -114,11 +118,11 @@ if (values.list) {
       }
     });
     const CapabilityCommandCard=createCapabilityCommandCard(React);
-    window.showCapabilityReceipt=()=>{
+    window.showCapabilityReceipt=(args='refresh',text=capabilityCommandReceipt('recorded','fallback-session'))=>{
       const composer=document.querySelector('#composer');
       composer.style.cssText='position:relative;width:min(760px,calc(100vw - 32px));height:auto;margin:48px auto';
-      root.render(h(CapabilityCommandCard,{node:{name:'capabilities',args:'refresh',
-        outcome:{kind:'success',text:capabilityCommandReceipt('recorded','fallback-session')}},
+      root.render(h(CapabilityCommandCard,{node:{name:'capabilities',args,
+        outcome:{kind:'success',text}},
         t:(key,args={})=>Object.entries(args).reduce((text,[name,value])=>
           text.replaceAll('{'+name+'}',String(value)),SETTINGS_COPY[window.menuLocale][key]??key)}));
     };
@@ -150,7 +154,7 @@ if (values.list) {
     const view={mounted:false,reachable:true,candidate:null,candidateKey:null,action:null,message:null};
     const review={reachable:()=>{},getSnapshot:()=>view};
     const {BindingAuthorButton}=createAuthoringView(React,{ActionButton,IconButton,Menu,MenuFallback:Menu,
-      BindingsDialog:workbench.BindingsDialog,PTCPlusSettingsDialog,CapabilityRefreshButton,SessionCapabilityControls,
+      BindingsDialog:workbench.BindingsDialog,PTCPlusSettingsDialog,SessionCapabilityControls,
       useWorkbenchController:workbench.useWorkbenchController,useBindingReview:()=>[review,view],
       catalogOwner,callUserBindings,subscribeReset:()=>()=>{},menuChildren:createMenuChildrenEvidence(),
       icons:{sparkle:Icon,chevron:Icon,close:Icon,check:Icon}});
@@ -159,14 +163,15 @@ if (values.list) {
       text.replaceAll('{'+name+'}',String(value)),SETTINGS_COPY[window.menuLocale][key]??key):key;
     let settingsValue={enabled:true,...window.capabilityWorkbench?{capabilityManagementEnabled:true,
       capabilityBaseline:JSON.stringify(['tools.read','tools.bash','skills.rightapi-image-generator']),
-      capabilityOverrides:JSON.stringify({'tools.edit':'full','tools.mcp__github__search':'on-demand','skills.rightapi-image-generator':'full','tools.previous':'closed'})}: {}};window.settingsWrites=[];
+      capabilityOverrides:JSON.stringify({'tools.edit':'full','tools.mcp__github__search':'on-demand','skills.rightapi-image-generator':'full','tools.previous':'closed'})}: {}};
+    settingsValue={...settingsValue,...capabilityProfileConfiguration(settingsValue.capabilityManagementEnabled?Object.fromEntries(Object.entries(settingsValue).filter(([key])=>key.startsWith('capability'))):{})};window.settingsWrites=[];
     const updateSetting=async(key,value)=>{window.settingsWrites.push([key,value]);settingsValue={...settingsValue,[key]:value};render();return 'status.applied'};
     const updateCapabilityConfiguration=async configuration=>{window.settingsWrites.push(['configuration',configuration]);settingsValue={...settingsValue,...configuration};render();return 'status.applied'};
     const usePtcSettings=select=>select({status:'ready',writable:true,value:settingsValue});
     const render=()=>root.render(window.settingsDialog?h(PTCPlusSettingsDialog,{t,onClose:()=>{},
       usePtcSettings,updateSetting,updateCapabilityConfiguration,callUserBindings}):window.settingsPage?h(PTCPlusSettingsCard,{view:'page',t,
       usePtcSettings,updateSetting,updateCapabilityConfiguration,callUserBindings}):h(BindingAuthorButton,{sessionId:'fallback-session',t,
-      useInput:select=>select({draft:''}),inputActions:{setDraft:()=>{}},
+      useInput:select=>select({draft:''}),inputActions:{setDraft:draft=>{window.commandDraft=draft}},useCapabilityCommand:()=>true,
       usePtcSettings:select=>select({status:'ready',writable:true,value:{enabled:true}}),useBindingCommand:()=>true}));
     window.setAttention=()=>{view.mounted=true;view.candidate={entry:{name:'Attention'}};view.message='Attention';render()};
     render();
@@ -521,6 +526,26 @@ if (values.list) {
         const label = `single-disabled/${native ? 'native' : 'fallback'}/${locale}/${theme}`
         await assertSparkleMenuTypography(menu, label)
         await assertSparkleMenuLayout(menu, label)
+        if (native && locale === 'zh' && theme === 'light') {
+          for (const [property, value] of [['border-width', '0'], ['border-radius', '0'], ['box-shadow', 'none']]) {
+            const fault = await page.addStyleTag({ content: `.ptcPlusBindingMenu{${property}:${value}!important}` })
+            try {
+              await assert.rejects(() => assertSparkleMenuTypography(menu, `${label}/${property} fault`), /menu surface styles lost/)
+            } finally {
+              await fault.evaluate(element => element.remove())
+            }
+            await assertSparkleMenuTypography(menu, `${label}/restored surface`)
+          }
+          for (const [property, value] of [['text-align', 'left'], ['border', '1px solid black']]) {
+            const fault = await page.addStyleTag({ content: `.ptcPlusMenuButton{${property}:${value}!important}` })
+            try {
+              await assert.rejects(() => assertSparkleMenuTypography(menu, `${label}/${property} fault`), /centered caption and no border/)
+            } finally {
+              await fault.evaluate(element => element.remove())
+            }
+            await assertSparkleMenuTypography(menu, `${label}/restored action`)
+          }
+        }
         const stretchedCaption = await page.addStyleTag({ content: '.ptcPlusOwnedMenuRow{align-items:stretch!important}' })
         try {
           await assert.rejects(() => assertSparkleMenuTypography(menu, `${label}/stretched caption`), /caret and caption are misaligned/)
@@ -550,7 +575,7 @@ if (values.list) {
       if (family === 'session-capabilities') {
         await page.goto('about:blank')
         await page.setViewportSize(viewport)
-        await page.setContent('<style>body{font:13px/1.5 system-ui,sans-serif}</style><div id="composer" style="position:fixed;bottom:16px;left:16px;width:calc(100vw - 32px);height:60px"></div>')
+        await page.setContent('<style>body{font:24px/36px system-ui,sans-serif}</style><div id="composer" style="position:fixed;bottom:16px;left:16px;width:calc(100vw - 32px);height:60px"></div>')
         await page.evaluate(({ native, locale }) => { window.nativeMenu = native; window.nativeSettingsModal = native; window.menuLocale = locale }, { native, locale })
         for (const output of fixture.outputFiles) {
           if (output.path.endsWith('.css')) await page.addStyleTag({ content: output.text })
@@ -590,10 +615,10 @@ if (values.list) {
           const row = element.getBoundingClientRect(), list = element.closest('.ptcPlusSessionCapabilityList'), clip = list.getBoundingClientRect()
           return { row: { top: row.top, bottom: row.bottom }, clip: { top: clip.top, bottom: clip.bottom }, sections: [...element.closest('[role=dialog]').children].map(child => ({ name: child.className, height: child.getBoundingClientRect().height })) }
         }))}`)
-        const scope = panel.getByRole('combobox', { name: SETTINGS_COPY[locale]['capabilities.quick.scope'] })
-        await scope.click()
+        const kind = panel.getByRole('combobox', { name: SETTINGS_COPY[locale]['capabilities.quick.kind'] })
+        await kind.click()
         const popup = page.getByRole('listbox')
-        await page.getByRole('option', { name: SETTINGS_COPY[locale]['capabilities.quick.global'] }).waitFor()
+        await page.getByRole('option', { name: SETTINGS_COPY[locale]['capabilities.quick.mcp_tools'] }).waitFor()
         assert.equal(await popup.evaluate(element => element.closest('[role=dialog]') === null), true,
           'Select must use its own portal above the native or fallback Modal')
         assert.equal(await popup.evaluate(element => {
@@ -605,32 +630,31 @@ if (values.list) {
         assert.equal(await panel.isVisible(), true, 'first Escape closes only the Select popup')
         assert.equal(await popup.count(), 0, 'Escape must dismiss the Select listbox')
         await page.waitForFunction(label => document.activeElement?.getAttribute('role') === 'combobox'
-          && document.activeElement.getAttribute('aria-label') === label, SETTINGS_COPY[locale]['capabilities.quick.scope'])
-        assert.equal(await scope.evaluate(element => document.activeElement === element), true,
+          && document.activeElement.getAttribute('aria-label') === label, SETTINGS_COPY[locale]['capabilities.quick.kind'])
+        assert.equal(await kind.evaluate(element => document.activeElement === element), true,
           'Select dismissal returns focus to its trigger')
-        await scope.focus()
+        await kind.focus()
         await page.keyboard.press('ArrowDown')
         await popup.waitFor()
         await page.keyboard.press('End')
         await page.waitForFunction(label => document.activeElement?.getAttribute('role') === 'option'
-          && document.activeElement.textContent.includes(label), SETTINGS_COPY[locale]['capabilities.quick.global'])
+          && document.activeElement.textContent.includes(label), SETTINGS_COPY[locale]['capabilities.quick.mcp_tools'])
         await page.keyboard.press('Enter')
-        assert.equal(await scope.locator('span').first().innerText(), SETTINGS_COPY[locale]['capabilities.quick.global'])
+        assert.equal(await kind.locator('span').first().innerText(), SETTINGS_COPY[locale]['capabilities.quick.mcp_tools'])
         await page.waitForFunction(label => document.activeElement?.getAttribute('role') === 'combobox'
-          && document.activeElement.getAttribute('aria-label') === label, SETTINGS_COPY[locale]['capabilities.quick.scope'])
+          && document.activeElement.getAttribute('aria-label') === label, SETTINGS_COPY[locale]['capabilities.quick.kind'])
         await page.keyboard.press('ArrowDown')
         await popup.waitFor()
         await page.keyboard.press('Home')
         await page.waitForFunction(label => document.activeElement?.getAttribute('role') === 'option'
-          && document.activeElement.textContent.includes(label), SETTINGS_COPY[locale]['capabilities.quick.session'])
+          && document.activeElement.textContent.includes(label), SETTINGS_COPY[locale]['capabilities.quick.all'])
         await page.keyboard.press('Enter')
-        assert.equal(await scope.locator('span').first().innerText(), SETTINGS_COPY[locale]['capabilities.quick.session'])
+        assert.equal(await kind.locator('span').first().innerText(), SETTINGS_COPY[locale]['capabilities.quick.all'])
         await page.waitForFunction(label => document.activeElement?.getAttribute('role') === 'combobox'
-          && document.activeElement.getAttribute('aria-label') === label, SETTINGS_COPY[locale]['capabilities.quick.scope'])
+          && document.activeElement.getAttribute('aria-label') === label, SETTINGS_COPY[locale]['capabilities.quick.kind'])
         await page.keyboard.press('Tab')
-        assert.equal(await panel.getByRole('searchbox').evaluate(element => document.activeElement === element), true,
-          `Tab from the closed Select reaches the next workbench control: ${await page.evaluate(() => document.activeElement?.outerHTML)}`)
-        const kind = panel.getByRole('combobox', { name: SETTINGS_COPY[locale]['capabilities.quick.kind'], exact: true })
+        assert.equal(await panel.getByRole('combobox', { name: SETTINGS_COPY[locale]['capabilities.sourceFilter'] }).evaluate(element => document.activeElement === element), true,
+          `Tab from the category Select reaches the source filter: ${await page.evaluate(() => document.activeElement?.outerHTML)}`)
         await kind.focus()
         await page.keyboard.press('ArrowDown')
         await popup.waitFor()
@@ -640,15 +664,26 @@ if (values.list) {
         await page.keyboard.press('Enter')
         assert.equal(await items.count(), 1, 'typeahead chooses the Skills filter')
         await chooseSelect(panel, SETTINGS_COPY[locale]['capabilities.quick.kind'], SETTINGS_COPY[locale]['capabilities.quick.all'])
+        const typography = await panel.evaluate(element => {
+          const detail = element.querySelector('.ptcPlusSessionCapabilityDetail')
+          const trigger = element.querySelector('.ptcPlusSelectTrigger')
+          const icon = trigger.querySelector('svg').getBoundingClientRect(), bounds = trigger.getBoundingClientRect()
+          return { bodySize: getComputedStyle(detail).fontSize, iconOffset: Math.abs((icon.top + icon.bottom - bounds.top - bounds.bottom) / 2) }
+        })
+        assert.equal(typography.bodySize, '13px', 'capability detail owns its readable body typography')
+        assert.ok(typography.iconOffset < 1, 'Select SVG is vertically centered')
         const controls = await assertVisualSurface(page, panel, 'session capability workbench')
         assert.ok(controls.includes('select'), 'session workbench Select must receive visual coverage')
         for (const index of [0, 79]) {
           if (index !== 0 && viewport.width <= 650) await panel.getByRole('button', { name: SETTINGS_COPY[locale]['capabilities.quick.backToList'] }).click()
           await panel.getByRole('button', { name: new RegExp(`probe${index}`) }).click()
-          await panel.getByRole('combobox', { name: SETTINGS_COPY[locale]['capabilities.quick.choice'] }).click()
+          await chooseSelect(panel, SETTINGS_COPY[locale]['capabilities.policy.disclosure'], SETTINGS_COPY[locale]['capabilities.full'])
+          await panel.getByRole('combobox', { name: SETTINGS_COPY[locale]['capabilities.policy.availability'] }).click()
           await page.getByRole('option', { name: SETTINGS_COPY[locale]['capabilities.closed'] }).click()
-          await panel.getByRole('button', { name: SETTINGS_COPY[locale]['capabilities.quick.apply'], exact: true }).click()
-          await page.waitForFunction(index => window.sessionCapabilityCalls.some(call => call.input === `set session tools.probe${index} closed`), index)
+          await panel.getByRole('button', { name: SETTINGS_COPY[locale]['capabilities.quick.applySession'], exact: true }).click()
+          await page.waitForFunction(index => window.sessionCapabilityCalls.some(call => call.input === `set session tools.probe${index} availability closed`)
+            && window.sessionCapabilityCalls.some(call => call.input === `set session tools.probe${index} disclosure full`), index)
+          assert.equal(await panel.getByRole('combobox', {name: SETTINGS_COPY[locale]['capabilities.policy.disclosure']}).innerText(), SETTINGS_COPY[locale]['capabilities.full'])
         }
         if (viewport.width <= 650) await panel.getByRole('button', { name: SETTINGS_COPY[locale]['capabilities.quick.backToList'] }).click()
         await panel.getByRole('searchbox').fill('probe79')
@@ -657,12 +692,27 @@ if (values.list) {
         await panel.waitFor({ state: 'hidden' })
         assert.equal(await page.locator('.ptcPlusAuthorButton').evaluate(element => document.activeElement === element), true,
           'closing the workbench returns focus to the sparkle button')
-        if (viewport.width === 1440 && locale === 'en' && theme === 'light' && native) {
-          await page.evaluate(() => window.showCapabilityReceipt())
+        await page.evaluate(() => window.showCapabilityReceipt())
+        const notice = page.locator('.ptcPlusCapabilityCommandNotice')
+        await notice.waitFor()
+        assert.equal(await notice.innerText(), SETTINGS_COPY[locale]['capabilities.card.recorded'])
+        assert.equal(await notice.locator('code, details, .ptcPlusCapabilityReceiptState').count(), 0)
+        assert.equal(await page.locator('.ptcPlusCapabilityReceipt').count(), 0, 'refresh renders no command card')
+        assert.equal(await notice.evaluate(element => getComputedStyle(element).fontSize), '13px')
+        assert.ok((await notice.boundingBox()).height <= 22, 'refresh receipt is a single text line')
+        await notice.screenshot({ path: `artifacts/button-styles/capability-refresh-notice-${viewport.width}-${native ? 'native' : 'fallback'}-${locale}-${theme}.png` })
+        if (viewport.width === 1440 && native) {
+          await page.evaluate(() => window.showCapabilityReceipt('list all', JSON.stringify({schema:'ptc-capability-catalog/v1',entries:window.capabilityEntries})))
           const card = page.locator('.ptcPlusCapabilityReceipt')
-          await card.waitFor()
-          assert.equal(await card.locator('code').innerText(), '/capabilities refresh')
-          await card.screenshot({ path: 'artifacts/button-styles/capability-refresh-command-card-native-en-light.png' })
+          await card.getByText(SETTINGS_COPY[locale]['capabilities.card.catalogCount'].replace('{count}', '83'), {exact:true}).waitFor()
+          assert.ok((await card.boundingBox()).height < 190, 'catalog does not dump JSON into the conversation')
+          await card.getByText(SETTINGS_COPY[locale]['capabilities.card.browse'], {exact:true}).click()
+          assert.equal(await card.locator('tbody tr').count(), 83)
+          await card.screenshot({path:`artifacts/button-styles/capability-catalog-command-card-native-${locale}-${theme}.png`})
+          await card.getByText(SETTINGS_COPY[locale]['capabilities.card.source'], {exact:true}).click()
+          await page.waitForFunction(() => document.querySelector('.ptcPlusCapabilityReceiptSource pre'))
+          assert.equal(await card.locator('pre').innerText(), await page.evaluate(() => JSON.stringify({schema:'ptc-capability-catalog/v1',entries:window.capabilityEntries})))
+
         }
         await page.evaluate(() => window.disposeFixture())
         return
@@ -693,7 +743,10 @@ if (values.list) {
           return new Set(lines.map(rect => Math.round(rect.top))).size
         }), 1, 'sparkle capability refresh wraps across lines')
         await refresh.click()
-        assert.deepEqual(await page.evaluate(() => window.refreshCalls), [{sessionId:'fallback-session',input:'refresh'}])
+        assert.equal(await page.evaluate(() => window.commandDraft), '/capabilities refresh')
+        assert.deepEqual(await page.evaluate(() => window.refreshCalls), [])
+        await page.getByRole('button', { name: SETTINGS_COPY[locale]['bindings.open'] }).click()
+        await menu.locator('[data-binding-id]').first().waitFor()
         const initial = await assertSparkleMenuLayout(menu, label)
         await assertSparkleMenuTypography(menu, label)
         assert.equal(initial.scrollable, true, `${label}: large catalog does not scroll`)
@@ -721,6 +774,16 @@ if (values.list) {
         await back.waitFor()
         const editing = await assertSparkleMenuLayout(menu, `${label}/edit`)
         await assertSparkleMenuTypography(menu, `${label}/edit`)
+        if (viewport.height === 600 && locale === 'en' && theme === 'light') {
+          const fault = await page.addStyleTag({ content: '.ptcPlusBindingQuickState{color:#666!important;background:#eee!important}' })
+          try {
+            await assert.rejects(() => assertSparkleMenuTypography(menu, `${label}/indistinguishable state fault`), /enabled and disabled badges need distinct/)
+          } finally {
+            await fault.evaluate(element => element.remove())
+          }
+          await assertSparkleMenuTypography(menu, `${label}/restored states`)
+        }
+        await menu.screenshot({ path: `artifacts/button-styles/sparkle-edit-${viewport.width}-${viewport.height}-${native ? 'native' : 'fallback'}-${locale}-${theme}.png` })
         await menu.locator('.ptcPlusBindingMenuScroll').evaluate(scroll => { scroll.scrollTop = scroll.scrollHeight })
         assert.deepEqual((await assertSparkleMenuLayout(menu, `${label}/edit end`)).footer, editing.footer)
         await back.click()
@@ -789,13 +852,20 @@ if (values.list) {
         await workbench.locator('.ptcPlusCapabilityItem').first().waitFor()
         assert.equal(await workbench.locator('.ptcPlusCapabilityItem').count(), 9)
         assert.equal(await workbench.locator('textarea').count(), 0)
-        const serverSwitch = workbench.getByRole('switch', {name:labels['capabilities.serverToggle'].replace('{name}','github'),exact:true})
-        assert.equal(await serverSwitch.isChecked(),true)
-        await serverSwitch.click()
-        await page.waitForFunction(()=>JSON.parse(window.settingsWrites.filter(([key])=>key==='capabilityOverrides').at(-1)[1])['mcpServers.github']==='closed')
-        await serverSwitch.click()
-        await page.waitForFunction(()=>!Object.hasOwn(JSON.parse(window.settingsWrites.filter(([key])=>key==='capabilityOverrides').at(-1)[1]),'mcpServers.github'))
-        const longServer = workbench.locator(`[data-mcp-server="${'a'.repeat(64)}"]`)
+        assert.equal(await workbench.locator('.ptcPlusCapabilityRuleFields').count(), 9)
+        const itemRules=workbench.locator('.ptcPlusCapabilityRuleFields').first()
+        for(const control of await itemRules.getByRole('combobox').all()){
+          await control.scrollIntoViewIfNeeded()
+          await assertControlVisual(control,{label:`${label}: independent capability rule`})
+          assert.equal(await control.evaluate(element=>{const rect=element.getBoundingClientRect(),list=element.closest('.ptcPlusCapabilityList').getBoundingClientRect();
+            return rect.left>=list.left&&rect.right<=list.right+1}),true,'independent rule selector clipped')
+        }
+        const serverAvailability = labels['capabilities.policy.availabilityFor'].replace('{name}', 'github')
+        await chooseSelect(workbench, serverAvailability, labels['capabilities.closed'])
+        await page.waitForFunction(()=>JSON.parse(window.settingsWrites.filter(([key])=>key==='capabilityPolicy').at(-1)[1]).mcpServers.github.availability==='closed')
+        await chooseSelect(workbench, serverAvailability, labels['capabilities.policy.inheritRule'])
+        await page.waitForFunction(()=>JSON.parse(window.settingsWrites.filter(([key])=>key==='capabilityPolicy').at(-1)[1]).mcpServers.github?.availability===undefined)
+        const longServer = workbench.locator(`[data-mcp-server="${'a'.repeat(64)}"]`).locator('..')
         const assertServerLayout = async () => {
           const geometry = await longServer.evaluate(element => {
             const list = element.closest('.ptcPlusCapabilityList')
@@ -808,7 +878,8 @@ if (values.list) {
           assert.equal(geometry.contained, true, 'long MCP server heading is clipped')
         }
         await assertServerLayout()
-        await assertControlVisual(longServer.locator('input'), { label: `${width}/${theme}/${native}/${locale}: long MCP server master`, disabled: true })
+        for(const control of await longServer.locator('.ptcPlusCapabilityServerRule [role=combobox]').all())
+          await assertControlVisual(control, { label: `${width}/${theme}/${native}/${locale}: long MCP source rule`, disabled: true })
         if (width === 320) {
           const fault = await page.addStyleTag({ content: '.ptcPlusCapabilityGroup h4{overflow-wrap:normal!important}' })
           try {
@@ -841,7 +912,7 @@ if (values.list) {
         const before = await dialog.evaluate(element => ({ navTop: element.querySelector('.ptcPlusSettingsNav').getBoundingClientRect().top, document: scrollY }))
         await chooseSelect(workbench, labels['capabilities.types'], labels['capabilities.type.skill'])
         assert.equal(await workbench.locator('.ptcPlusCapabilityItem').count(), 2)
-        await chooseSelect(workbench, labels['capabilities.strategyFilter'], labels['capabilities.full'])
+        await chooseSelect(workbench, labels['capabilities.policy.disclosureFilter'], labels['capabilities.full'])
         assert.equal(await workbench.locator('.ptcPlusCapabilityItem').count(), 1)
         assert.match(await workbench.locator('.ptcPlusCapabilityDetail').innerText(), /rightapi-image-generator/)
         assert.match(await workbench.locator('.ptcPlusCapabilityDetail').innerText(), new RegExp(labels['capabilities.pending']))
@@ -854,7 +925,7 @@ if (values.list) {
         await chooseSelect(workbench, labels['capabilities.availabilityFilter'], labels['capabilities.availability.unavailable'])
         assert.equal(await workbench.locator('.ptcPlusCapabilityItem').count(), 1)
         await workbench.getByRole('button', { name: labels['capabilities.removeSaved'], exact: true }).click()
-        await page.waitForFunction(() => window.settingsWrites.some(([key]) => key === 'capabilityOverrides'))
+        await page.waitForFunction(() => window.settingsWrites.some(([key]) => key === 'capabilityPolicy'))
         await workbench.getByRole('button', { name: labels['capabilities.clear'], exact: true }).first().click()
         await workbench.getByRole('searchbox').fill('rightapi-image-generator')
         assert.equal(await workbench.locator('.ptcPlusCapabilityItem').count(), 1)

@@ -20,3 +20,5 @@ This directory records stable design constraints for PTC Plus. An ADR states a d
 - [0041: Record Cell Execution Directories](0041-record-cell-execution-directories.md) — current execution, captured module sources and historical replay use distinct directory evidence.
 
 - [0042: Persist Provider Availability And Handback](0042-persist-provider-availability-and-handback.md) — accepted-step availability, public persistent release and separately sourced configuration receipts.
+
+- [0043: Compose Capability and Context Policies](0043-compose-capability-and-context-policies.md) — independent availability, disclosure, allocation, collection, recovery and presentation inputs with historical replay generations.

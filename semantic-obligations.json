@@ -585,7 +585,8 @@
       "owner": "Capability environment owns frozen session plan projection across prompt, discovery and compiled tools",
       "implementation": [
         "internal/capability-environment.js",
-        "internal/capability-plan.js"
+        "internal/capability-plan.js",
+        "internal/capability-policy.js"
       ],
       "contract": "docs/capability-planning-components.md",
       "observables": [
@@ -619,7 +620,11 @@
         "MCP server choices only enable or close the parent; reopening preserves independent child disclosure and closure",
         "pending explicit choices persist through real paired successful command outcomes before the protected system head; failed, cancelled and unpaired outcomes cannot establish a choice",
         "global save uses actual settings namespace and revision CAS; all post-save failures report saved-only and retain old complete session state",
-        "temporary automatic clears the inherited saved override; inherit removes only the session choice; ordinary refresh preserves temporary choices and named configuration export excludes them"
+        "temporary automatic clears the inherited saved override; inherit removes only the session choice; ordinary refresh preserves temporary choices and named configuration export excludes them",
+        "availability-only control retains host SDK and shared instructions; default, category, proven MCP source and item rules resolve independent dimensions, parent closure preserves child preferences",
+        "collection and read-only observation independent of statistics allocation and capability management; host eligibility from actual public inventory",
+        "optional description recovery and model result/log preview independent from availability and disclosure; unselected previews preserve existing Host policy",
+        "historical environment v1/v2 derives its exact original plan and rendering rather than current defaults"
       ],
       "entries": [
         "createCapabilityPlan",
@@ -632,7 +637,11 @@
         "sessionCapabilitySettings",
         "catalogFor",
         "change",
-        "pendingChoiceMessage"
+        "pendingChoiceMessage",
+        "validateCapabilityPolicy",
+        "capabilityPolicyForConfig",
+        "capabilityRule",
+        "changeCapabilityRule"
       ],
       "lifecycle": [
         "validate inputs",
@@ -655,7 +664,15 @@
         "ptc-capability-evidence/v1 formal result metadata",
         "ptc-capability-contracts/v1 accepted revision vector and changed complete contracts or withdrawals",
         "ptc-capability-environment/v1 optional explicit navigation text with exact historical fallback",
-        "ptc-capability-environment/v2 saved source settings, temporary choices and validated merged effective settings"
+        "ptc-capability-environment/v2 saved source settings, temporary choices and validated merged effective settings",
+        "ptc-capability-policy/v1 independent rule dimensions and ordered specificity",
+        "retained statistics allocation after collection stops and unresolved legacy preference migration",
+        "selected operational inventory, live Host additions and withdrawals without changing frozen config",
+        "native Skill eligibility versus effective model/user paths and selected MCP resource operations",
+        "combined temporary choice migration preserves unrelated dimensions during global saves",
+        "independent saved-rule filters, source inheritance and nonblank frozen provenance display",
+        "ptc-capability-plan/v2 host disclosure and independent allocation inputs",
+        "ptc-capability-environment/v3 source policy, dimension overrides and optional recovery/preview selections"
       ],
       "platforms": [
         "Node 22.19+",
@@ -679,7 +696,9 @@
         "test/plugin-program-bindings.test.js",
         "test/context-result-preview.test.js",
         "test/expensive-acceptance.test.js",
-        "test/ab-headless-trajectories.test.js"
+        "test/ab-headless-trajectories.test.js",
+        "test/runtime-config.test.js",
+        "test/client-runtime.spec.js"
       ],
       "dependsOn": [
         "capability-family-statistics"
@@ -703,7 +722,8 @@
         "pending families excluded",
         "incomplete evicted windows withdraw allocation evidence until settled samples refill",
         "revision isolation",
-        "bounded state collapse without fabricated zero usage"
+        "bounded state collapse without fabricated zero usage",
+        "host-disclosed eligible families record true host exposure without capability management; stopping collection retains readable observations"
       ],
       "entries": [
         "createCapabilityStatistics",
@@ -796,8 +816,8 @@
         "compact stable authoring SDK retains complete argument and receipt types while task instructions own request facts",
         "model visibility",
         "plugin-owned menu and modal focus lifecycle",
-        "portaled sparkle content owns base typography and binding text hierarchy independently of carrier font size and line-height; SVG disclosure aligns with the caption line rather than a stretched flex box",
-        "sparkle catalog scrolls independently of fixed root and revision actions",
+        "native and fallback sparkle public Menu class slots retain owned border, radius, padding and shadow when Host CSS loads later, with border/radius/shadow removal counterexamples; portaled sparkle content owns base typography and binding text hierarchy independently of carrier font size and line-height; SVG disclosure aligns with the caption line rather than a stretched flex box",
+        "sparkle catalog scrolls independently of fixed root and revision actions; the enabled group starts the catalog without a scope caption, disabled disclosure uses a neutral rounded row, root and revision lists share explicit enabled state and distinct green enabled versus gray disabled pills, with missing-state and same-color counterexamples, and the two-column authoring and utility buttons use centered captions between balanced icon gutters with borderless soft fill, independently measured against each button",
         "enabled-first counts and default-collapsed disabled entries retain exact revision and live foreground focus after regrouping with reveal confined to the owned catalog",
         "zero-height public dock preview without host ancestor writes",
         "CSS-owned preview budget selects stable inert compact chrome",
@@ -815,12 +835,13 @@
         "feature labels remain separate from summaries, expanded bodies and following messages",
         "passive tool quick peeks bound recorded source/result with visible excerpt labels and theme-aware single-layer chrome; native Popover or public React portal escapes clipping without hit-testable or scrollable overlay content; shared passive wheel/scroll observation cancels dwell and visible previews, requires scroll idle and fresh pointer motion before reopening; live default-on hover settings cancel pending and visible previews; pointer-right placement adapts to owned-anchor and viewport width changes, while explicit row expansion retains complete source/result and Copy",
         "capability workbench separates typed Tools, Skills and MCP resources, independent source/strategy/common/availability filters and stable sorting, editable unavailable preferences, catalog failure evidence, and saved manual settings from explicitly selected frozen session plans; tab keyboard and bounded responsive detail layouts remain inside plugin-owned settings",
-        "shared session capability refresh uses exact selected/current session through public commands; duplicate clicks, cancellation, connection/preset generations, readonly/plugin disable, session switch and disposal cannot publish stale success; binding disable preserves PTC utilities and target-read failures block execution independently of frozen-plan reads",
-        "session capability workbench groups Tools, Skills, MCP servers/resources and MCP tools with resource membership preserved in type filters, reads its catalog without a command card, preserves unsent composer text, keeps drafts per explicit scope, submits individual public commands, and retains unconfirmed choices after partial or saved-only outcomes; MCP child closure notices consume the proposed parent selection in the selected scope, with staged automatic cancelling source closure and staged inherit restoring the explicit frozen sessionSourceSelection, separately displayed from current global saved preferences; missing source facts remain unknown without guessing from saved or effective state, while current effective closure and child choices remain independent; responsive list/detail and shared accessible Select keep controls reachable with modal focus return; fixture resolution proves native Host Modal versus fallback DOM, Select uses a distinct bounded portal, Escape dismisses the popup before the Modal and returns focus, and keyboard navigation updates choices",
+        "sparkle refresh shares the authoring composer guard and prefills /capabilities refresh without execution or replacement of unsent text, independently of global-binding availability; settings refresh uses an exact selected session through public commands; duplicate clicks, cancellation, connection/preset generations, readonly/plugin disable, session switch and disposal cannot publish stale success; binding disable preserves PTC utilities and target-read failures block execution independently of frozen-plan reads",
+        "session capability workbench groups Tools, Skills, MCP servers/resources and MCP tools with resource membership preserved in type filters, reads its catalog without a command card, preserves unsent composer text, keeps one shared draft with explicit session/global footer actions and a session-only inheritance reset, submits individual public commands, and retains unconfirmed choices after partial or saved-only outcomes; MCP child closure notices consume the proposed parent selection in the shared draft, with staged automatic cancelling source closure and staged inherit restoring the explicit frozen sessionSourceSelection, separately displayed from current global saved preferences; missing source facts remain unknown without guessing from saved or effective state, while current effective closure and child choices remain independent; responsive list/detail and shared accessible Select keep controls reachable with modal focus return; fixture resolution proves native Host Modal versus fallback DOM, Select uses a distinct bounded portal, Escape dismisses the popup before the Modal and returns focus, and keyboard navigation updates choices",
         "one permanent compatible type/source filter bar; statistics and budget preview show scoped evidence with stale reply invalidation; named bounded capability configurations save rename delete import export and switch through one public settings mutation, and copy recorded session configuration without copying program state or refreshing sessions; official switch tokens and sparkle utility labels remain readable",
         "confirmed binding enablement receipt distinct from model catalog delivery and worker initialization",
         "public Conversation configuration receipt is appended after the Host system head or delivered through an accepted first-step batch; no first-system-head displacement or user/turn-trigger identity",
-        "capability task inputs and feedback local to observation, refresh, named library and session copy"
+        "capability task inputs and feedback local to observation, refresh, named library and session copy",
+        "capability refresh and structured status receipts show one localized outcome line without command header, duplicate status or raw-result disclosure, preserve pending/error distinctions, display actual-kind fallbacks for blank outcomes and retain exact historical results, and localize exact legacy refresh receipts; catalog command cards own compact body typography, preserve exact commands and summarize catalogs by count with an expandable complete scrollable table and raw-result disclosure; shared Select SVG centers independently of carrier typography; global draft confirmation requires saved choice and cleared temporary override"
       ],
       "entries": [
         "session activation",

@@ -1,3 +1,4 @@
+import { capabilityRule, validateCapabilityPolicy } from './capability-policy.js'
 import { Buffer } from 'node:buffer'
 
 const MANAGED_CATEGORIES = new Set(['tool', 'skill', 'resource', 'resource-template', 'task'])
@@ -78,7 +79,7 @@ function coverage(value, settings) {
 }
 
 /** A frozen disclosure read model. It neither registers nor removes executable capabilities. */
-export function createCapabilityPlan(input) {
+function createLegacyCapabilityPlan(input) {
   const options = record(input, 'capability plan input')
   const schema = 'ptc-capability-plan/v1'
   if (typeof options.enabled !== 'boolean') throw new TypeError('ptc-plus: capability management enabled must be boolean')
@@ -234,4 +235,45 @@ export function createCapabilityPlan(input) {
     unresolvedConfigurationIds: [...new Set([...baseline, ...Object.keys(overrides)])].filter(id => !capabilities.some(entry => entry.id === id)).sort(),
     statisticsStatus: settings.usable ? 'enabled' : settings.reason,
   })
+}
+
+/** The old planner remains the replay oracle for environment v1/v2. */
+export function createCapabilityPlan(input) {
+  if (input.policy === undefined) return createLegacyCapabilityPlan(input)
+  const policy = validateCapabilityPolicy(input.policy)
+  const rules = new Map(input.capabilities.filter(item => MANAGED_CATEGORIES.has(item.category))
+    .map(item => {
+      const rule = input.enabled ? capabilityRule(policy, item) : { availability: 'enabled', disclosure: 'host', availabilitySource: 'host', disclosureSource: 'host' }
+      return [item.id, item.effectiveAvailability === 'closed'
+        ? { ...rule, availability: 'closed', availabilitySource: 'invocation-path' } : rule]
+    }))
+  const mixedSkills = input.enabled && input.capabilities.some(item => item.category === 'skill'
+    && rules.get(item.id)?.availability !== 'closed' && (rules.get(item.id)?.disclosure !== 'host' || item.nativeInvocation !== undefined))
+  const overrides = Object.fromEntries([...rules].flatMap(([id, rule]) => rule.availability === 'closed'
+    ? [[id, 'closed']] : rule.disclosure === 'adaptive' ? []
+      : [[id, rule.disclosure === 'host' ? mixedSkills && input.capabilities.find(item => item.id === id)?.category === 'skill' ? 'full' : 'on-demand' : rule.disclosure]]))
+  const planned = createLegacyCapabilityPlan({ ...input,
+    budgetBytes: policy.allocation.budget ? input.budgetBytes : Number.MAX_SAFE_INTEGER,
+    manual: { baseline: policy.allocation.baseline ? input.manual?.baseline ?? [] : [], overrides },
+    statistics: policy.allocation.statistics ? { ...input.statistics, enabled: true } : { enabled: false },
+  })
+  const entries = planned.entries.map(entry => {
+    const rule = rules.get(entry.id)
+    const selection = rule.availability === 'closed' ? 'closed' : !input.enabled || rule.disclosure === 'host' ? 'host' : entry.selection
+    return { ...entry, ...rule, selection,
+      availability: rule.availability,
+      disclosure: !input.enabled ? 'host' : rule.disclosure,
+      ...((selection === 'host' && input.enabled) ? { reason: 'host-disclosure' }
+        : rule.availability === 'closed' ? { reason: rule.availabilitySource.startsWith('mcp:') ? 'mcp-server-disabled' : 'availability-rule' }
+          : rule.disclosure !== 'adaptive' && input.enabled ? { reason: 'disclosure-rule' } : {}) }
+  })
+  // Navigation is needed only for deliberately deferred explanations.
+  const onDemand = entries.some(entry => entry.selection === 'on-demand')
+  return freeze({ ...planned, schema: 'ptc-capability-plan/v2', entries,
+    directoryText: onDemand ? planned.directoryText : '', directoryCategories: onDemand ? planned.directoryCategories : [],
+    budgets: { ...planned.budgets, ...(input.enabled ? { budgetBytes: input.budgetBytes } : {}),
+      directoryBytes: onDemand ? planned.budgets.directoryBytes : 0,
+      overageBytes: input.enabled ? Math.max(0, planned.budgets.contractBytes - input.budgetBytes) : 0 },
+    ...(input.enabled ? { unresolvedConfigurationIds: [...new Set([...(input.manual?.baseline ?? []), ...Object.keys(policy.items)])]
+      .filter(id => !input.capabilities.some(item => item.id === id)).sort(), allocation: policy.allocation } : {}) })
 }

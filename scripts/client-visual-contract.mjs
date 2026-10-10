@@ -345,6 +345,20 @@ export async function assertSparkleMenuTypography(root, label = 'sparkle menu ty
   const metrics = await root.evaluate(menu => {
     const content = menu.querySelector('.ptcPlusBindingMenuContent')
     const style = getComputedStyle(content)
+    const surface = getComputedStyle(menu)
+    const states = [...content.querySelectorAll('.ptcPlusBindingQuickState')].map(node => {
+      const appearance = getComputedStyle(node)
+      return { enabled: node.closest('.ptcPlusBindingQuickRow').getAttribute('data-enabled'),
+        color: appearance.color, background: appearance.backgroundColor }
+    })
+    const actions = [...content.querySelectorAll('.ptcPlusMenuButton')].map(button => {
+      const bounds = button.getBoundingClientRect()
+      const caption = button.querySelector('.ptcPlusBindingMenuAction').getBoundingClientRect()
+      const appearance = getComputedStyle(button)
+      return { centered: appearance.textAlign === 'center'
+        && Math.abs((caption.left + caption.right - bounds.left - bounds.right) / 2) <= 1,
+      border: parseFloat(appearance.borderTopWidth) }
+    })
     const samples = [
       ['caption', '[aria-expanded] > span:last-child', '13px'],
       ['name', '.ptcPlusBindingQuickName strong', '13px'],
@@ -369,8 +383,22 @@ export async function assertSparkleMenuTypography(root, label = 'sparkle menu ty
       aligned = caption.left >= caret.right + 4
         && Math.abs((caret.top + caret.bottom) / 2 - caption.top - captionLineHeight / 2) <= 1
     }
-    return { size: style.fontSize, line: style.lineHeight, family: style.fontFamily, samples, aligned }
+    return { size: style.fontSize, line: style.lineHeight, family: style.fontFamily, samples, aligned, actions, states,
+      surface: { border: parseFloat(surface.borderTopWidth), radius: parseFloat(surface.borderTopLeftRadius),
+        padding: parseFloat(surface.paddingTop), shadow: surface.boxShadow } }
   })
+  assert.ok(metrics.surface.border >= 1 && metrics.surface.radius >= 8 && metrics.surface.padding >= 6
+    && metrics.surface.shadow !== 'none', `${label}: menu surface styles lost`)
+  for (const action of metrics.actions) {
+    assert.ok(action.centered && action.border === 0, `${label}: menu action must have a centered caption and no border`)
+  }
+  for (const state of metrics.states) assert.ok(['true', 'false'].includes(state.enabled), `${label}: binding row omits its enabled state`)
+  const enabled = metrics.states.find(state => state.enabled === 'true')
+  const disabled = metrics.states.find(state => state.enabled === 'false')
+  if (enabled && disabled) {
+    assert.notEqual(enabled.color, disabled.color, `${label}: enabled and disabled badges need distinct text colors`)
+    assert.notEqual(enabled.background, disabled.background, `${label}: enabled and disabled badges need distinct backgrounds`)
+  }
   assert.equal(metrics.size, '13px', `${label}: menu base font size drifted`)
   assert.equal(metrics.line, '18px', `${label}: menu base line height drifted`)
   for (const sample of metrics.samples) {

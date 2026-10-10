@@ -26,7 +26,7 @@ export function createAuthoringView(React, deps) {
   const {
     ActionButton, IconButton, Menu, MenuFallback, Toast, Tooltip, CodeBlock, Modal, createPortal, BindingsDialog, PTCPlusSettingsDialog,
     useWorkbenchController, useBindingReview, catalogOwner, callUserBindings, subscribeReset,
-    settingsCardSeat, updateSetting, updateCapabilityConfiguration, menuChildren, CapabilityRefreshButton, SessionCapabilityControls,
+    settingsCardSeat, updateSetting, updateCapabilityConfiguration, menuChildren, SessionCapabilityControls,
     icons: {
       sparkle: IconSparkle16, chevron: IconChevronDownOutline14,
       close: IconCloseOutline16, check: IconCheckOutline14,
@@ -65,10 +65,11 @@ export function createAuthoringView(React, deps) {
   }[settingsCardSeat?.()] ?? 'settings.menuEntry')
 
   function BindingAuthorButton({
-    sessionId, t, useInput, inputActions, usePtcSettings, useBindingCommand,
+    sessionId, t, useInput, inputActions, usePtcSettings, useBindingCommand, useCapabilityCommand,
   }) {
     const input = useInput?.(snapshot => snapshot)
     const available = useBindingCommand(snapshot => snapshot)
+    const capabilityAvailable = useCapabilityCommand?.(snapshot => snapshot) === true
     const settings = usePtcSettings(snapshot => snapshot)
     const [review, view] = useBindingReview(sessionId)
     const anchorRef = React.useRef(null)
@@ -110,7 +111,10 @@ export function createAuthoringView(React, deps) {
     const hasDraft = featureEnabled(settings, 'bindings') && view.mounted && view.candidate !== null && view.action === null
     const quickAccess = featureEnabled(settings, 'authorButton')
     const pluginEnabled = featureEnabled(settings, 'plugin') && (hasDraft || featureEnabled(settings, 'ptcMenu'))
-    const canAuthor = quickAccess && available && typeof useInput === 'function' && typeof inputActions?.setDraft === 'function'
+    const canPrefill = typeof useInput === 'function' && typeof inputActions?.setDraft === 'function'
+    const canAuthor = quickAccess && available && canPrefill
+    const canRefresh = pluginEnabled && settings.status === 'ready' && settings.writable === true
+      && capabilityAvailable && canPrefill
     const menuOpen = pluginEnabled && view.reachable && !managing && !capabilitiesOpen && !settingsOpen
       && menu !== null && menu.key === view.candidateKey
     // The dialog owns the management session; losing the input surface only
@@ -276,11 +280,10 @@ export function createAuthoringView(React, deps) {
     const label = hasDraft ? t('bindings.reviewMenuLabel', { count: 1 })
       + (view.message ? ` · ${t('bindings.reviewAttention')}` : '') : t(quickAccess ? 'bindings.open' : 'settings.toolsMenu')
     const hint = t(hasDraft ? 'bindings.draftHint' : quickAccess ? 'bindings.openHint' : 'settings.toolsMenu')
-    // Every authoring action goes through the same busy guard and input owner, so a
-    // new or revision request can never overwrite an unsent user draft.
-    const prefillAuthoring = value => {
+    // Command shortcuts share the composer guard; submission remains the user's action.
+    const prefillCommand = (value, allowed) => {
       hideMenu()
-      if (!canAuthor) return
+      if (!allowed) return
       if (typeof input?.draft === 'string' && input.draft.trim() !== '') {
         toastSequence.current += 1
         setToast({ sequence: toastSequence.current, text: t('bindings.composerBusy') })
@@ -288,8 +291,8 @@ export function createAuthoringView(React, deps) {
       }
       inputActions.setDraft(value)
     }
-    const openAuthoring = () => prefillAuthoring('/binding new ')
-    const openAuthoringEdit = entry => prefillAuthoring(`/binding edit ${entry.id} `)
+    const openAuthoring = () => prefillCommand('/binding new ', canAuthor)
+    const openAuthoringEdit = entry => prefillCommand(`/binding edit ${entry.id} `, canAuthor)
     const starButton = h('button', {
       type: 'button', className: 'ptcPlusAuthorButton', 'aria-label': label,
       // Older UI-kit lines ship no Tooltip primitive; the native title carries the hint there.
@@ -323,7 +326,6 @@ export function createAuthoringView(React, deps) {
     const enabledEntries = (catalog?.entries ?? []).filter(entry => entry.enabled)
     const disabledEntries = (catalog?.entries ?? []).filter(entry => !entry.enabled)
     const catalogItems = !quickAccess ? [] : [
-      { id: 'global-heading', type: 'label', text: t('bindings.quickHeading') },
       ...(catalog === null || catalog.entries.length === 0 ? [] : [
         { id: 'enabled-heading', type: 'label', text: t('bindings.quickEnabled', { count: enabledEntries.length }) },
         ...enabledEntries.map(catalogRow),
@@ -349,14 +351,7 @@ export function createAuthoringView(React, deps) {
     // submenu here would lose the bounded, scrollable catalog this step needs.
     const editItems = [
       { id: 'edit-heading', type: 'label', text: t('bindings.quickEditHeading') },
-      ...(catalog?.entries ?? []).map(entry => ({
-        id: `edit:${entry.id}`,
-        disabled: catalog === null,
-        label: h('span', { className: 'ptcPlusBindingQuickRow' },
-          h('span', { className: 'ptcPlusBindingQuickName' }, h('strong', { title: entry.name }, entry.name),
-            h('span', { className: 'ptcPlusBindingQuickState' }, t(entry.enabled ? 'bindings.enabled' : 'bindings.disabledEntry'))),
-          h('span', { className: 'ptcPlusBindingQuickPurpose', title: entry.purpose }, entry.purpose)),
-      })),
+      ...(catalog?.entries ?? []).map(entry => ({ ...catalogRow(entry), id: `edit:${entry.id}` })),
     ]
     const selectMenuItem = id => {
       if (!anchorRef.current?.getClientRects().length) return
@@ -386,6 +381,7 @@ export function createAuthoringView(React, deps) {
         return
       }
       if (id === 'capabilities') { hideMenu(); setCapabilitiesOpen(true); return }
+      if (id === 'refresh') { prefillCommand('/capabilities refresh', canRefresh); return }
       hideMenu()
       if (id === 'new') openAuthoring()
       else if (id === 'manage') {
@@ -396,12 +392,27 @@ export function createAuthoringView(React, deps) {
     }
     // One copy of each action label serves the grid the plugin renders itself,
     // in whichever carrier the installed Menu publishes for it.
-    const actionCopy = (id, copy) => h('span', {
+    const actionPaths = {
+      new: 'M8 3v10M3 8h10',
+      edit: 'm10 3 3 3M3 13l3-.7 7-7a1.4 1.4 0 0 0-3-3l-7 7L3 13Z',
+      refresh: 'M13 6a5 5 0 0 0-9-2L2 6m0-3v3h3M3 10a5 5 0 0 0 9 2l2-2m0 3v-3h-3',
+      manage: 'M2 4h5l1.5 2H14v7H2V4Z',
+      capabilities: 'M3 4h10M3 8h10M3 12h10M6 2v4M10 6v4M6 10v4',
+      settings: 'M6 2h4l.5 2 1.5 1.5 2 .5v4l-2 .5-1.5 1.5-.5 2H6l-.5-2L4 10.5 2 10V6l2-.5L5.5 4 6 2ZM10 8a2 2 0 1 0-4 0 2 2 0 0 0 4 0Z',
+      'edit-back': 'm7 3-5 5 5 5M2 8h12',
+    }
+    const actionCopy = (id, copy) => h(React.Fragment, null,
+      h('svg', { className: 'ptcPlusMenuActionIcon', width: 16, height: 16, viewBox: '0 0 16 16',
+        fill: 'none', 'aria-hidden': true }, h('path', { d: actionPaths[id], stroke: 'currentColor',
+        strokeWidth: 1.4, strokeLinecap: 'round', strokeLinejoin: 'round' })), h('span', {
       className: 'ptcPlusBindingMenuAction',
       title: id === 'settings' ? settingsPath(t) : undefined,
-    }, t(copy))
+    }, t(copy)))
     const actionButton = (id, copy) => h('button', {
       type: 'button', role: 'menuitem', className: 'ptcPlusMenuButton',
+      disabled: id === 'refresh' && !canRefresh,
+      title: id === 'refresh' && !capabilityAvailable ? t('capabilities.refreshUnavailable')
+        : id === 'settings' ? settingsPath(t) : t(copy),
       onClick: () => selectMenuItem(id),
     }, actionCopy(id, copy))
     const actionSections = [
@@ -411,12 +422,9 @@ export function createAuthoringView(React, deps) {
           actionButton('new', 'bindings.authorNewDraft'),
           (catalog?.entries?.length ?? 0) > 0 ? actionButton('edit', 'bindings.authorEdit') : null)) : null,
       h('div', { key: 'utilities', className: 'ptcPlusMenuUtilities' },
+        actionButton('refresh', 'capabilities.applySession'),
         quickAccess ? actionButton('manage', 'bindings.manage') : null,
         SessionCapabilityControls ? actionButton('capabilities', 'capabilities.quick.title') : null,
-        CapabilityRefreshButton ? h(CapabilityRefreshButton, { sessionId, t, menu: true,
-          enabled: pluginEnabled && settings.status === 'ready' && settings.writable === true,
-          onStatus: text => { if (text?.key === 'capabilities.refreshFailed') {
-            toastSequence.current++; setToast({ sequence: toastSequence.current, text }) } } }) : null,
         actionButton('settings', 'settings.menuEntry')),
     ]
     const menuEntries = menu?.step === 'edit' ? editItems : [
@@ -441,7 +449,8 @@ export function createAuthoringView(React, deps) {
         : entry.type === 'label'
           ? h('div', { key: entry.id, className: 'ptcPlusMenuGroupLabel' }, entry.text)
           : h('button', {
-            key: entry.id, type: 'button', role: 'menuitem', className: 'ptcPlusOwnedMenuRow',
+            key: entry.id, type: 'button', role: 'menuitem',
+            className: entry.id === 'disabled-group' ? 'ptcPlusOwnedMenuRow ptcPlusMenuDisclosure' : 'ptcPlusOwnedMenuRow',
             disabled: entry.disabled, 'data-binding-id': entry.bindingId,
             ref: entry.id === 'reload' ? reloadItemRef : entry.id === 'disabled-group' ? disabledGroupRef : undefined,
             'aria-expanded': entry.id === 'disabled-group' ? disabledOpen : undefined,

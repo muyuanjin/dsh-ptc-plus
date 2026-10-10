@@ -2033,6 +2033,9 @@ test('rolls back consecutive failed Cordis updates to the committed configuratio
 test('config schema defaults expose the settings switches', async () => {
   const expectedOrder = [
     'capabilityManagementEnabled',
+    'capabilityPolicy',
+    'capabilityRecoveryEnabled',
+    'modelPreviewEnabled',
     'capabilityBaseline',
     'capabilityOverrides',
     'capabilityStatistics',

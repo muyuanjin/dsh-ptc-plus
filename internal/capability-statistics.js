@@ -40,7 +40,7 @@ function observation(raw) {
   const value = record(raw, 'availability observation')
   const category = value.category
   if (!CATEGORIES.has(category)) fail('category')
-  if (!['full', 'on-demand'].includes(value.disclosure)) fail('availability disclosure')
+  if (!['full', 'on-demand', 'host'].includes(value.disclosure)) fail('availability disclosure')
   const useEvidence = value.useEvidence ?? null
   if (useEvidence !== null && useEvidence !== USE_EVIDENCE.get(category)) fail('owner use evidence')
   const outcome = useEvidence === null ? null : value.outcome ?? 'unknown'
@@ -63,7 +63,7 @@ function sampleObservation(value) {
     || new Set(item.outcomes).size !== item.outcomes.length || item.used !== (item.outcomes.length > 0)) fail('retained outcomes')
   for (const exposure of item.exposures) {
     record(exposure, 'retained exposure')
-    if (!['full', 'on-demand'].includes(exposure.disclosure)) fail('retained disclosure')
+    if (!['full', 'on-demand', 'host'].includes(exposure.disclosure)) fail('retained disclosure')
     identity(exposure.planRevision, 'retained plan revision')
   }
 }

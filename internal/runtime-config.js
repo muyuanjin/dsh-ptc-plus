@@ -1,3 +1,4 @@
+import { capabilityPolicyForConfig } from './capability-policy.js'
 import {
   CONFIG_DEFAULTS,
   CONFIG_FIELDS,
@@ -8,7 +9,7 @@ export { MAX_TIMER_DELAY_MS }
 
 /** Reusable configurations contain capability settings, never session evidence. */
 export const CAPABILITY_CONFIGURATION_KEYS = Object.freeze(CONFIG_FIELDS
-  .filter(field => (field.key.startsWith('capability') && field.key !== 'capabilityProfiles') || field.key === 'modelPreviewTokens')
+  .filter(field => (field.key.startsWith('capability') && field.key !== 'capabilityProfiles') || ['modelPreviewTokens', 'modelPreviewEnabled'].includes(field.key))
   .map(field => field.key))
 
 export function capabilityProfileConfiguration(value, { allowInvalidStatistics = false } = {}) {
@@ -125,6 +126,11 @@ export function resolveConfig(config = {}) {
           || (id.startsWith('mcpServers.') && (id === 'mcpServers.' || selection !== 'closed')))) {
       throw new TypeError(`ptc-plus: invalid ${key}`)
     }
+  }
+  resolved.capabilityPolicy = JSON.stringify(capabilityPolicyForConfig(provided.has('capabilityPolicy') ? resolved : { ...resolved, capabilityPolicy: undefined }))
+  if (!provided.has('capabilityPolicy') && resolved.capabilityManagementEnabled) {
+    if (!provided.has('capabilityRecoveryEnabled')) resolved.capabilityRecoveryEnabled = true
+    if (!provided.has('modelPreviewEnabled')) resolved.modelPreviewEnabled = true
   }
   // Migrate complete old policies; mixed choices retain their explicit
   // compatibility state until the user selects the unified language.

@@ -36,14 +36,16 @@ export function hostOwnsSettingsDocument(settingsModule) {
  * @returns the Cordis schema field for that definition.
  */
 export function configFieldSchema({ Schema, field, settingsModule }) {
-  const base = field.type === 'boolean'
-    ? Schema.boolean().default(field.default)
+  const schema = field.type === 'boolean'
+    ? Schema.boolean()
     : field.type === 'string'
-      ? Schema.string().default(field.default)
+      ? Schema.string()
     : field.type === 'enum'
-      // Keep omission visible until resolveConfig migrates legacy policies.
       ? Schema.union(field.options.map(option => Schema.const(option)))
-      : Schema.number().step(1).min(field.min).max(field.max).default(field.default)
+      : Schema.number().step(1).min(field.min).max(field.max)
+  // Migration must distinguish omitted legacy inputs from explicit new choices.
+  // Runtime defaults belong to resolveConfig; the Host must preserve omission.
+  const base = field.preserveOmission || field.type === 'enum' ? schema : schema.default(field.default)
   const described = base.description(field.description)
   if (!hostOwnsSettingsDocument(settingsModule)) return described
   if (typeof described.volatile !== 'function') {

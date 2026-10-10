@@ -325,3 +325,49 @@ test('storage capacity exhaustion persists manual fallback for reconstructed and
     assert.equal(plan.entries[0].reason, 'baseline')
   }
 })
+
+
+test('composed collection records host availability without management and stopping collection preserves observations', async t => {
+  const { mkdtemp, readFile, rm } = await import('node:fs/promises')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const { Session, SESSION_FORMAT_VERSION } = await import('@deepseek-ai/dsh-session')
+  const { CapabilityStatisticsStore } = await import('../internal/capability-statistics-store.js')
+  const root = await mkdtemp(join(tmpdir(), 'ptc-host-statistics-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const session = Session.create('host-family', [], { version: SESSION_FORMAT_VERSION, id: 'host-family', createdAt: 0, cwd: root, isSeeded: false })
+  session.append('turn/start', { turn: 1 }); session.append('step/start', { turn: 1, step: 1 })
+  session.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
+  const agent = { session, status: 'idle' }
+  const ctx = { agents: { list: () => [agent] }, sessions: { list: () => [session] } }
+  const filename = join(root, 'statistics.json')
+  const store = new CapabilityStatisticsStore({ filename, ctx })
+  const settings = { enabled: true, windowSize: 10 }
+  const snapshot = { settings: { policy: {}, statistics: settings }, plan: { enabled: false, configurationRevision: 'host-config',
+    entries: [{ id: 'tools.probe', revision: 'one', category: 'tool', selection: 'host' }] } }
+  await store.available(agent, snapshot)
+  await store.used(agent, snapshot, 'tools.probe', 'host-execution-result', 'failed')
+  await store.status(agent, snapshot, 'idle')
+  const capabilities = [{ id: 'tools.probe', revision: 'one' }]
+  const observed = await store.coverage(agent, capabilities, settings)
+  assert.equal(observed['tools.probe'].workspace.eligible, 1)
+  assert.equal(observed['tools.probe'].workspace.used, 1)
+  const before = await readFile(filename, 'utf8')
+  assert.equal(JSON.parse(before).state.families[0].observations[0].exposures[0].disclosure, 'host')
+  const stopped = { ...snapshot, settings: { ...snapshot.settings, statistics: { ...settings, enabled: false } } }
+  await store.available(agent, stopped); await store.used(agent, stopped, 'tools.probe', 'host-execution-result', 'complete')
+  await store.status(agent, stopped, 'idle')
+  assert.equal(await readFile(filename, 'utf8'), before)
+  assert.deepEqual(await store.coverage(agent, capabilities, settings), observed)
+  const { CAPABILITY_POLICY_DEFAULT } = await import('../internal/capability-policy.js')
+  const policy = JSON.parse(CAPABILITY_POLICY_DEFAULT)
+  policy.defaults.disclosure = 'adaptive'; policy.allocation.baseline = false; policy.allocation.statistics = true
+  const allocationInput = { enabled: true, configurationRevision: 'retained-statistics', policy, capabilities: [{ ...capabilities[0], category: 'tool', contract: 'probe()' }],
+    statistics: { ...settings, enabled: false, minimumSamples: 1, fullThreshold: .5 }, manual: { baseline: [] },
+    budgetBytes: 1000, directoryBudgetBytes: 1000, navigationText: 'Search capabilities.',
+    coverage: await store.coverage(agent, capabilities, { ...settings, enabled: false }) }
+  assert.equal(createCapabilityPlan(allocationInput).entries[0].selection, 'full')
+  assert.equal(createCapabilityPlan(allocationInput).entries[0].reason, 'statistical-coverage')
+  assert.equal(createCapabilityPlan({ ...allocationInput, policy: { ...policy, allocation: { ...policy.allocation, statistics: false } } }).entries[0].selection, 'on-demand')
+  assert.equal(await readFile(filename, 'utf8'), before, 'allocation consumes retained observations without collecting')
+})

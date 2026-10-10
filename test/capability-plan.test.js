@@ -1,3 +1,4 @@
+import { CAPABILITY_POLICY_DEFAULT, capabilityRule, validateCapabilityPolicy, changeCapabilityRule } from '../internal/capability-policy.js'
 import assert from 'node:assert/strict'
 import { Buffer } from 'node:buffer'
 import test from 'node:test'
@@ -231,4 +232,96 @@ test('on-demand directory uses category guidance without copying long imperative
   assert.match(plan.directoryText, /Skills: search by task/)
   assert.equal(plan.catalogText, '')
   assert.ok(Buffer.byteLength(plan.directoryText) <= 512)
+})
+
+function composed(extra = {}) {
+  return input({ capabilities: [capability('tools.probe'), capability('tools.other')],
+    manual: { baseline: [] }, policy: JSON.parse(CAPABILITY_POLICY_DEFAULT), ...extra })
+}
+
+test('composed availability-only rules retain host explanations and independent disclosure preferences', () => {
+  const policy = JSON.parse(CAPABILITY_POLICY_DEFAULT)
+  policy.items['tools.probe'] = { availability: 'closed', disclosure: 'full' }
+  const closed = createCapabilityPlan(composed({ policy }))
+  assert.equal(closed.schema, 'ptc-capability-plan/v2')
+  assert.equal(closed.entries.find(entry => entry.id === 'tools.other').selection, 'host')
+  assert.equal(closed.entries.find(entry => entry.id === 'tools.probe').selection, 'closed')
+  assert.equal(closed.entries.find(entry => entry.id === 'tools.probe').disclosure, 'full')
+  assert.equal(closed.directoryText, '')
+  policy.items['tools.probe'].availability = 'enabled'
+  const reopened = createCapabilityPlan(composed({ policy, budgetBytes: 1 }))
+  assert.equal(reopened.entries.find(entry => entry.id === 'tools.probe').selection, 'full')
+  assert.ok(reopened.catalogText.includes('Complete owner contract'))
+  assert.ok(reopened.budgets.overageBytes > 0)
+})
+
+for (const enabled of [false, true]) test(`composed actual invocation unavailability is preserved with management ${enabled}`, () => {
+  const policy = JSON.parse(CAPABILITY_POLICY_DEFAULT)
+  policy.items['tools.probe'] = { availability: 'closed' }
+  const capabilities = [capability('tools.probe'), capability('skills.missing', 'No invocation path', { category: 'skill', effectiveAvailability: 'closed' }),
+    capability('skills.user', 'User invocation retained', { category: 'skill', effectiveAvailability: 'enabled' })]
+  const plan = createCapabilityPlan(composed({ enabled, policy, capabilities }))
+  const missing = plan.entries.find(entry => entry.id === 'skills.missing')
+  assert.equal(missing.availability, 'closed')
+  assert.equal(missing.availabilitySource, 'invocation-path')
+  assert.equal(missing.selection, 'closed')
+  assert.equal(plan.entries.find(entry => entry.id === 'skills.user').selection, 'host')
+  assert.equal(plan.entries.find(entry => entry.id === 'tools.probe').selection, enabled ? 'closed' : 'host')
+  assert.equal(createCapabilityPlan(composed({ enabled: false, policy: undefined, capabilities })).entries.find(entry => entry.id === 'skills.missing').selection, 'host', 'Historical planners retain their recorded semantics.')
+})
+
+test('composed default category source and item rules resolve each dimension and enclosing closure preserves children', () => {
+  const policy = JSON.parse(CAPABILITY_POLICY_DEFAULT)
+  policy.categories.tool = { disclosure: 'on-demand' }
+  policy.mcpServers.docs = { disclosure: 'full', availability: 'closed' }
+  policy.items['tools.probe'] = { availability: 'enabled', disclosure: 'host' }
+  const member = capability('tools.probe', 'contract', { mcpServer: 'docs' })
+  assert.deepEqual(capabilityRule(policy, member), { availability: 'closed', disclosure: 'host',
+    availabilitySource: 'mcp:docs', disclosureSource: 'item:tools.probe' })
+  policy.mcpServers.docs.availability = 'enabled'
+  assert.equal(createCapabilityPlan(composed({ capabilities: [member], policy })).entries[0].selection, 'host')
+  assert.throws(() => validateCapabilityPolicy({ ...policy, allocation: { ...policy.allocation, unknown: true } }), /invalid capability policy/)
+  policy.mcpServers.docs.availability = 'closed'
+  assert.throws(() => createCapabilityPlan(composed({ policy, capabilities: [capability('tools.ambiguous', 'contract',
+    { mcpServerCandidates: ['docs', 'docs__nested'] })] })), /cannot determine the MCP server owner/)
+})
+
+test('composed allocation selects its basis and budget independently without changing explicit contracts or availability', () => {
+  const policy = JSON.parse(CAPABILITY_POLICY_DEFAULT)
+  policy.defaults.disclosure = 'adaptive'
+  const options = composed({ policy, statistics: settings, manual: { baseline: ['tools.probe'] }, budgetBytes: 1,
+    coverage: { 'tools.other': { revision: 'r1', workspace: observed(3, 3) } } })
+  const budgeted = createCapabilityPlan(options)
+  assert.deepEqual(budgeted.entries.map(entry => entry.selection), ['on-demand', 'on-demand'])
+  policy.allocation.budget = false
+  assert.deepEqual(createCapabilityPlan(options).entries.map(entry => entry.selection), ['on-demand', 'full'])
+  policy.allocation.statistics = true
+  policy.allocation.baseline = false
+  assert.deepEqual(createCapabilityPlan(options).entries.map(entry => entry.selection), ['full', 'on-demand'])
+  policy.items['tools.probe'] = { disclosure: 'full' }
+  policy.allocation.budget = true
+  const pinned = createCapabilityPlan(options)
+  assert.equal(pinned.entries.find(entry => entry.id === 'tools.probe').selection, 'full')
+  assert.ok(pinned.entries.every(entry => entry.availability === 'enabled'))
+})
+
+
+test('capability rules retain a proven MCP server literally named __proto__ without changing prototypes', async () => {
+  const { changeCapabilityRule, capabilityPolicyForConfig } = await import('../internal/capability-policy.js')
+  const policy = changeCapabilityRule(JSON.parse(CAPABILITY_POLICY_DEFAULT), 'mcpServers.__proto__', 'availability', 'closed')
+  assert.equal(Object.getPrototypeOf(policy.mcpServers), Object.prototype)
+  assert.equal(Object.hasOwn(policy.mcpServers, '__proto__'), true)
+  assert.equal(capabilityRule(policy, capability('tools.probe', 'contract', { mcpServer: '__proto__' })).availability, 'closed')
+  const migrated = capabilityPolicyForConfig({ capabilityOverrides: '{"mcpServers.__proto__":"closed"}' })
+  assert.equal(capabilityRule(migrated, capability('tools.probe', 'contract', { mcpServer: '__proto__' })).availability, 'closed')
+})
+
+
+test('composed unresolved preferences remain diagnostic inputs and cannot manage out-of-domain capabilities', () => {
+  const policy = JSON.parse(CAPABILITY_POLICY_DEFAULT)
+  policy.items = { 'removed-tool': { disclosure: 'full' }, 'repl.inspect': { availability: 'closed' } }
+  const plan = createCapabilityPlan(composed({ policy, capabilities: [capability('tools.probe'), capability('repl.inspect', 'native REPL', { category: 'repl' })] }))
+  assert.equal(plan.entries.length, 1)
+  assert.deepEqual(plan.excluded.map(entry => entry.id), ['repl.inspect'])
+  assert.deepEqual(plan.unresolvedConfigurationIds, ['removed-tool'])
 })

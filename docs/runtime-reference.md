@@ -71,12 +71,15 @@ Capability management is experimental and defaults to off. These inputs are froz
 | --- | --- | --- |
 | `capabilityManagementEnabled` | `false` | Enable capability planning and projection |
 | `capabilityBaseline` | `'[]'` | JSON array of common capability identities |
-| `capabilityOverrides` | `'{}'` | JSON object mapping identities to `full`, `on-demand`, or `closed` |
-| `capabilityStatistics` | `'{"enabled":false,"windowSize":100,"minimumSamples":10,"fullThreshold":0.5}'` | Independent family coverage settings |
+| `capabilityPolicy` | host disclosure, enabled availability, baseline/budget allocation selected, statistics allocation off | Independent default/category/MCP-source/item rules and allocation inputs; [ADR 0043](adr/0043-compose-capability-and-context-policies.md) |
+| `capabilityOverrides` | `'{}'` | Legacy JSON choices migrated when no capabilityPolicy is supplied |
+| `capabilityStatistics` | `'{"enabled":false,"windowSize":100,"minimumSamples":10,"fullThreshold":0.5}'` | Independent collection and family coverage settings; policy allocation.statistics separately consumes evidence |
 | `capabilityProfiles` | `{"schema":"ptc-capability-profiles/v1","profiles":[]}` | Up to 100 named reusable capability configurations; structured UI save/import/export/switch, separate from frozen session plans; [ADR 0040](adr/0040-separate-capability-configurations-from-session-observations.md) |
 | `capabilityBudgetBytes` | `16384` | Full-contract budget in UTF-8 bytes, minimum 1 |
 | `capabilityDirectoryBytes` | `2048` | Navigation budget in UTF-8 bytes, minimum 512 |
+| `capabilityRecoveryEnabled` | `false` | Select optional description recovery independently |
 | `capabilityRecoveryBytes` | `8192` | Separate description-recovery budget in UTF-8 bytes, minimum 1 |
+| `modelPreviewEnabled` | `false` | Select plugin result/log previews; otherwise delegate to the Host policy |
 | `modelPreviewTokens` | `4096` | Estimated model-presentation token cap, minimum 1 |
 
 The configuration uses `ptc-plus` as the DSH plugin ID and `dsh-ptc-plus` as the package name. The distinction is intentional: the former is the runtime/settings identity, while the latter is the repository and npm package identity.

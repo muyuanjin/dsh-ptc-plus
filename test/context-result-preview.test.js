@@ -1,3 +1,4 @@
+import { CONFIG_DEFAULTS } from '../internal/config-spec.js'
 import assert from 'node:assert/strict'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -30,7 +31,7 @@ class FailedSpillStore extends SpillStore {
   async saveText() { throw new Error('fixture storage unavailable') }
 }
 
-async function fixture(t, storage, managed = true) {
+async function fixture(t, storage, managed = true, choices = {}) {
   const ctx = new Context()
   new SystemPrompt(ctx, { includeHarnessIdentity: false, includeRuntimeContext: false,
     personaPrefix: '', personaSuffix: '' })
@@ -54,7 +55,7 @@ async function fixture(t, storage, managed = true) {
   const agent = { id: 'preview-agent', session: ctx.sessions.create('preview-session') }
   const env = createCapabilityEnvironment({ ctx, config: { capabilityManagementEnabled: managed,
     capabilityBaseline: '[]', capabilityOverrides: '{}', capabilityStatistics: '{"enabled":false}',
-    modelPreviewTokens: 256 }, toolSchemasForAgent: target => toolSdkSchemas(ctx.tools, target),
+    modelPreviewTokens: 256, ...choices }, toolSchemasForAgent: target => toolSdkSchemas(ctx.tools, target),
     modelSchemasForAgent: target => ctx.tools.schemas(target) })
   t.after(() => env.dispose())
   await env.prepare(agent, [])
@@ -117,4 +118,35 @@ test('management off preserves native previews and an installed host policy does
   await managed.ctx.plugin(spillPolicy, { maxInlineTokens: 512 }).await()
   assert.ok(estimateContent((await managed.execute()).content) <= 256)
   assert.equal(managed.store.saved.length, 1)
+})
+
+
+for (const management of [true, false]) for (const preview of [true, false]) {
+  test(`composed result and log preview management=${management} preview=${preview} preserves canonical values`, async t => {
+    const state = await fixture(t, 'local', management, { capabilityPolicy: CONFIG_DEFAULTS.capabilityPolicy,
+      capabilityRecoveryEnabled: false, modelPreviewEnabled: preview })
+    const result = await state.execute()
+    assert.deepEqual(result.value, state.canonical)
+    assert.equal(result.isError, false)
+    assert.equal(state.store.saved.length, preview ? 1 : 0)
+    if (!preview) assert.deepEqual(result.content, state.content)
+    else assert.ok(estimateContent(result.content) <= 256)
+    const original = [{ type: 'text', text: state.canonical.body }]
+    const dispatch = { exec: { agent: state.agent }, name: 'preview_probe', subCallId: 'nested-preview' }
+    const logs = await state.ctx.waterfall('tools/ptc-dispatch-log', dispatch, async () => original)
+    if (preview) assert.ok(estimateContent(logs) <= 256)
+    else assert.deepEqual(logs, original)
+    assert.equal(state.executions(), 1)
+  })
+}
+
+test('composed unselected preview delegates to an installed host policy independently of management', async t => {
+  const state = await fixture(t, 'local', true, { capabilityPolicy: CONFIG_DEFAULTS.capabilityPolicy,
+    modelPreviewEnabled: false })
+  await state.ctx.plugin(spillPolicy, { maxInlineTokens: 512 }).await()
+  const result = await state.execute()
+  assert.deepEqual(result.value, state.canonical)
+  assert.ok(estimateContent(result.content) <= 512)
+  assert.equal(state.store.saved.length, 1)
+  assert.equal(state.executions(), 1)
 })

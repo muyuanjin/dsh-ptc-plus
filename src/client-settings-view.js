@@ -166,7 +166,8 @@ export function createPtcSettingsView(React, deps) {
     const legacyMigration = value.legacyBindingSettings === true
     const enabled = featureEnabled(snapshot, 'plugin')
     const globalEnabled = featureEnabled(snapshot, 'bindings')
-    const plansEnabled = enabled && value.capabilityManagementEnabled === true
+    const plansEnabled = enabled && (value.capabilityManagementEnabled === true || value.capabilityRecoveryEnabled === true
+      || value.modelPreviewEnabled === true || (() => { try { return JSON.parse(value.capabilityStatistics ?? '{}')?.enabled === true } catch { return false } })())
     const planConfiguration = JSON.stringify(CONFIG_FIELDS.filter(field => CAPABILITY_CONFIGURATION_KEYS.includes(field.key))
       .map(field => value[field.key]))
     const allocationConfiguration = JSON.stringify(Object.fromEntries(CAPABILITY_CONFIGURATION_KEYS.map(key => [key, value[key]])))
@@ -314,7 +315,7 @@ export function createPtcSettingsView(React, deps) {
     const renderField = key => {
       const field = CONFIG_FIELDS.find(candidate => candidate.key === key)
       if (field === undefined) return null
-      if (field.key === 'capabilityOverrides') return null
+      if (['capabilityOverrides', 'capabilityPolicy'].includes(field.key)) return null
       if (field.key === 'capabilityBaseline') return null
       if (field.key === 'capabilityProfiles') return null
       if (field.key === 'capabilityStatistics') return h('div', { key },

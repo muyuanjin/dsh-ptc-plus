@@ -1,3 +1,5 @@
+import { CAPABILITY_POLICY_DEFAULT } from './capability-policy.js'
+
 /** Configuration fields shared by the Host schema and settings card. */
 export const MAX_TIMER_DELAY_MS = 2_147_483_647
 
@@ -13,21 +15,33 @@ export const SETTINGS_NAMESPACE = 'ptc-plus'
 export const CONFIG_FIELDS = Object.freeze([
   { key: 'capabilityManagementEnabled', type: 'boolean', default: false,
     label: '实验性能力管理', labelEn: 'Experimental capability management',
-    description: '为新 PTC 会话冻结完整、按需和关闭选择；已有会话使用 /capabilities refresh 生效。收益尚未经过模型对照验收。',
-    descriptionEn: 'Freezes full, on-demand and closed selections for new PTC sessions. Use /capabilities refresh for existing sessions. Model cost benefits remain unverified.' },
+    description: '为新 PTC 会话应用可用性与说明规则；已有会话使用 /capabilities refresh 生效。收益尚未经过模型对照验收。',
+    descriptionEn: 'Applies availability and disclosure rules to new PTC sessions. Use /capabilities refresh for existing sessions. Model cost benefits remain unverified.' },
+  { key: 'capabilityPolicy', preserveOmission: true, type: 'string', default: CAPABILITY_POLICY_DEFAULT,
+    label: '能力规则', labelEn: 'Capability rules',
+    description: '分别设置可用性、说明方式以及常用集、统计和预算分配；默认、类别、MCP 来源、单项依次覆盖。',
+    descriptionEn: 'Choose availability, disclosure and baseline, statistics and budget allocation separately. Default, category, MCP source and item rules apply in order.' },
+  { key: 'capabilityRecoveryEnabled', preserveOmission: true, type: 'boolean', default: false,
+    label: '压缩后恢复已使用的 API 说明', labelEn: 'Recover used API descriptions after compaction',
+    description: '只补回已展开、仍有效且不可见的近期 API 说明，不恢复 Skill 正文。',
+    descriptionEn: 'Restores only expanded, current, no longer visible API descriptions from recent use; never Skill bodies.' },
+  { key: 'modelPreviewEnabled', preserveOmission: true, type: 'boolean', default: false,
+    label: '限制模型侧结果与日志展示', labelEn: 'Bound model-facing results and logs',
+    description: '独立使用插件预览预算；关闭时沿用宿主展示，程序值始终完整。',
+    descriptionEn: 'Independently selects the plugin preview budget. Otherwise retains Host presentation; program values remain complete.' },
   { key: 'capabilityBaseline', type: 'string', default: '[]',
     label: '初始常用能力', labelEn: 'Initial common capabilities',
-    description: '从能力列表勾选常用项，统计不可用时优先完整披露；不生成使用记录。',
-    descriptionEn: 'Select common capabilities from the list for full disclosure when statistics are unavailable. Creates no usage records.' },
+    description: '从能力列表勾选常用项；adaptive 选用常用集依据时参与分配，不生成使用记录。',
+    descriptionEn: 'Select common capabilities as an optional allocation basis for adaptive disclosure. Creates no usage records.' },
   { key: 'capabilityOverrides', type: 'string', default: '{}',
-    label: '能力手动选择', labelEn: 'Manual capability selections',
-    description: '逐项选择自动、完整、按需或关闭；显式选择优先于统计和常用基线。',
-    descriptionEn: 'Choose automatic, full, on-demand or closed disclosure for each capability. Explicit choices override statistics and the common baseline.' },
+    label: '旧版能力选择', labelEn: 'Legacy capability selections',
+    description: '旧配置迁移输入；新规则由能力工作台分别保存可用性与说明方式。',
+    descriptionEn: 'Migration input for older settings. The workbench saves availability and disclosure separately in the policy.' },
   { key: 'capabilityStatistics', type: 'string',
     default: '{"enabled":false,"windowSize":100,"minimumSamples":10,"fullThreshold":0.5}',
     label: '能力统计设置', labelEn: 'Capability statistics settings',
-    description: '独立启用使用统计，并设置样本窗口、最低样本数和完整披露阈值；关闭或不可用时保留手动基线。',
-    descriptionEn: 'Enable usage statistics and set the sample window, minimum samples and full-disclosure threshold. Disabled or unavailable statistics preserve the manual baseline.' },
+    description: '独立采集使用统计，并设置样本窗口、最低样本数和完整披露阈值；关闭或不可用时保留手动基线。',
+    descriptionEn: 'Collect usage statistics independently and set the sample window, minimum samples and full-disclosure threshold. Disabled or unavailable statistics preserve the manual baseline.' },
   { key: 'capabilityProfiles', type: 'string', default: '{"schema":"ptc-capability-profiles/v1","profiles":[]}',
     label: '保存的能力配置', labelEn: 'Saved capability configurations',
     description: '在能力工作台命名保存、导入导出和切换配置；已有会话需要主动刷新。',
@@ -41,8 +55,8 @@ export const CONFIG_FIELDS = Object.freeze([
     label: '压缩后说明恢复预算 (UTF-8 bytes)', labelEn: 'Description recovery budget (UTF-8 bytes)', description: '', descriptionEn: '' },
   { key: 'modelPreviewTokens', type: 'integer', default: 4096, min: 1, max: Number.MAX_SAFE_INTEGER,
     label: '模型结果预览预算 (estimated tokens)', labelEn: 'Model result preview budget (estimated tokens)',
-    description: '能力管理开启时复用 DSH spill policy；完整内容需要宿主 spill store，程序值保持完整。',
-    descriptionEn: 'Uses DSH spill policy when capability management is enabled. Complete content requires a host spill store; program values remain complete.' },
+    description: '选用模型侧预览时复用 DSH spill policy；完整内容需要宿主 spill store，程序值保持完整。',
+    descriptionEn: 'Uses DSH spill policy when model-facing previews are selected. Complete content requires a host spill store; program values remain complete.' },
   {
     key: 'legacyBindingSettings',
     type: 'boolean',
@@ -387,7 +401,7 @@ export const CONFIG_GROUPS = Object.freeze([
   },
   { key: 'capabilities', label: '能力与上下文', labelEn: 'Capabilities and context',
     fields: Object.freeze(['capabilityManagementEnabled', 'capabilityBaseline', 'capabilityOverrides',
-      'capabilityStatistics', 'capabilityProfiles', 'capabilityBudgetBytes', 'capabilityDirectoryBytes', 'capabilityRecoveryBytes', 'modelPreviewTokens']) },
+      'capabilityStatistics', 'capabilityPolicy', 'capabilityRecoveryEnabled', 'modelPreviewEnabled', 'capabilityProfiles', 'capabilityBudgetBytes', 'capabilityDirectoryBytes', 'capabilityRecoveryBytes', 'modelPreviewTokens']) },
 ])
 
 /** Functional modules share the same section order across every settings entry. */

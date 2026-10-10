@@ -328,7 +328,7 @@ export function createClientPlugin(require) {
       const { BindingAuthorButton, BindingReviewDock, BindingCommandCard } = createAuthoringView(React, {
         ActionButton, IconButton, Menu, MenuFallback, Toast, Tooltip, CodeBlock, Modal, createPortal, BindingsDialog, PTCPlusSettingsDialog,
         useWorkbenchController, useBindingReview, catalogOwner, callUserBindings, subscribeReset,
-        settingsCardSeat: settingsCard.seat, updateSetting, updateCapabilityConfiguration, menuChildren, CapabilityRefreshButton, SessionCapabilityControls,
+        settingsCardSeat: settingsCard.seat, updateSetting, updateCapabilityConfiguration, menuChildren, SessionCapabilityControls,
         icons: {
           sparkle: IconSparkle16, chevron: IconChevronDownOutline14,
           close: IconCloseOutline16, check: IconCheckOutline14,
@@ -385,7 +385,8 @@ export function createClientPlugin(require) {
           register: () => ctx.slots.register({
             name: 'conversation.input.left', id: 'ptc-plus-binding-author', order: 20, locale: LOCALE_NS,
             inject: sessionId => ({
-              hooks: { ptcSettings: preferenceScope, bindingCommand: availability.source(sessionId) },
+              hooks: { ptcSettings: preferenceScope, bindingCommand: availability.source(sessionId),
+                capabilityCommand: capabilityCommands.source(sessionId) },
             }),
           }, props => props.sessionId === undefined ? null : h(BindingAuthorButton, { ...props, key: props.sessionId })),
         }))

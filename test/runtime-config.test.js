@@ -3,6 +3,7 @@ import test from 'node:test'
 import { CONFIG_DEFAULTS, CONFIG_FIELDS } from '../internal/config-spec.js'
 import {
   MAX_TIMER_DELAY_MS,
+  CAPABILITY_CONFIGURATION_KEYS,
   capabilityProfileConfiguration,
   validateCapabilityProfiles,
   hasVolatileFields,
@@ -78,6 +79,7 @@ test('validates every declared field from its CONFIG_FIELDS type and bounds', ()
     if (field.type === 'string') {
       assert.equal(typeof field.default, 'string')
       const value = {
+        capabilityPolicy: CONFIG_DEFAULTS.capabilityPolicy,
         capabilityProfiles: CONFIG_DEFAULTS.capabilityProfiles,
         capabilityBaseline: '["tools.probe"]',
         capabilityOverrides: '{"tools.probe":"on-demand"}',
@@ -163,4 +165,41 @@ test('MCP server controls validate at configuration resolution without changing 
   assert.equal(resolveConfig({capabilityOverrides:JSON.stringify(overrides)}).capabilityOverrides, JSON.stringify(overrides))
   for (const choice of ['full','on-demand']) assert.throws(()=>resolveConfig({capabilityOverrides:JSON.stringify({'mcpServers.docs':choice})}), /invalid capabilityOverrides/)
   assert.throws(()=>resolveConfig({capabilityOverrides:'{"mcpServers.":"closed"}'}), /invalid capabilityOverrides/)
+})
+
+
+test('composed configuration defaults and legacy migration preserve distinct reusable choices', () => {
+  const fresh = resolveConfig()
+  assert.equal(JSON.parse(fresh.capabilityPolicy).defaults.disclosure, 'host')
+  assert.equal(fresh.capabilityRecoveryEnabled, false)
+  assert.equal(fresh.modelPreviewEnabled, false)
+  const legacy = resolveConfig({ capabilityManagementEnabled: true, capabilityOverrides: '{"tools.probe":"full","mcpServers.docs":"closed"}',
+    capabilityStatistics: '{"enabled":true,"windowSize":20,"minimumSamples":2,"fullThreshold":0.5}' })
+  const policy = JSON.parse(legacy.capabilityPolicy)
+  assert.equal(policy.defaults.disclosure, 'adaptive')
+  assert.deepEqual(policy.items['tools.probe'], { disclosure: 'full' })
+  assert.deepEqual(policy.mcpServers.docs, { availability: 'closed' })
+  assert.equal(policy.allocation.statistics, true)
+  assert.equal(legacy.capabilityRecoveryEnabled, true)
+  assert.equal(legacy.modelPreviewEnabled, true)
+  const selected = resolveConfig({ ...legacy, capabilityPolicy: fresh.capabilityPolicy, capabilityRecoveryEnabled: false, modelPreviewEnabled: false })
+  assert.equal(JSON.parse(selected.capabilityPolicy).defaults.disclosure, 'host')
+  assert.equal(selected.capabilityRecoveryEnabled, false)
+  assert.equal(selected.modelPreviewEnabled, false)
+  const profile = capabilityProfileConfiguration(Object.fromEntries(CAPABILITY_CONFIGURATION_KEYS.map(key => [key, selected[key]])))
+  assert.deepEqual(capabilityProfileConfiguration(profile), profile)
+  assert.equal(profile.modelPreviewEnabled, false)
+})
+
+
+test('composition migration retains legacy unresolved preferences without expanding the managed domain', () => {
+  const legacy = { capabilityManagementEnabled: false, capabilityOverrides: '{"removed-tool":"full","repl.inspect":"full"}' }
+  const resolved = resolveConfig(legacy)
+  assert.deepEqual(JSON.parse(resolved.capabilityPolicy).items, {
+    'removed-tool': { disclosure: 'full' }, 'repl.inspect': { disclosure: 'full' },
+  })
+  const doc = validateCapabilityProfiles({ schema: 'ptc-capability-profiles/v1', profiles: [
+    { id: 'old', name: 'Old', configuration: legacy },
+  ] })
+  assert.deepEqual(validateCapabilityProfiles(JSON.parse(JSON.stringify(doc))), doc)
 })

@@ -44,7 +44,7 @@ await capabilities.inspect({ symbols: ["repl.state", "code.run"], budget: 2 })
 
 explorer 不调用 capability、不提升 authority、不读取隐藏服务、不触发辅助模型请求。`tools` metadata 来自执行时 agent scope 的 live schemas；`repl.state` 与 `code.run` metadata 由插件自身契约提供。模型若要根据探索结果决定下一步，仍会发生正常的后续 turn。当前公共扩展面没有跨 prompt assembly 与 runtime dispatch 的冻结 token，因此定义变化不能被描述成原子 snapshot。
 
-能力管理开启时，同一冻结方案拥有启用与披露选择，当前宿主契约拥有首轮完整说明、按需检索及编译前实际成员投影，原生全量 SDK 被固定 bootstrap 替代。配置保存不重排已有会话；`/capabilities refresh` 同步环境并提交持久通知。search 的字节边界不能独自证明完整任务 token 降低；接入证据见[公共接口覆盖](context-public-interface-coverage.md)，格式和恢复路径见[组件说明](capability-planning-components.md)。
+能力管理开启时，同一冻结方案拥有启用与披露选择，当前宿主契约拥有首轮说明、按需检索及编译前实际成员投影。可用性与说明分别选择；host 项继续保留原说明路径，只有完整或按需项由方案替代其 SDK 说明。分配、统计采集、恢复与预览各自独立；见 [ADR 0043](adr/0043-compose-capability-and-context-policies.md)。配置保存不重排已有会话；`/capabilities refresh` 同步环境并提交持久通知。search 的字节边界不能独自证明完整任务 token 降低；接入证据见[公共接口覆盖](context-public-interface-coverage.md)，格式和恢复路径见[组件说明](capability-planning-components.md)。
 
 `code.run` 返回 `{ logs: string[], result?: unknown }`：`logs` 按发出顺序保存 child console 输出，child 返回 `undefined` 时省略 `result`。该结构描述不改变其中任意值的 completeness，也不表示 child 无外部 effect。
 

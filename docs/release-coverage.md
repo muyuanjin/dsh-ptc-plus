@@ -71,4 +71,3 @@ instead of a generator and a per-run segment object. Rehomed compiler messages
 write their owned data descriptor directly rather than copying a generic
 descriptor first. Every one of these paths produced identical output before and
 after the change; only the immediately discarded allocations are gone.
-

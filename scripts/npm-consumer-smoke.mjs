@@ -50,6 +50,57 @@ export async function smokePackedConsumer(archive, { host = ROOT } = {}) {
       }
       console.log('Packed consumer installation and ESM import passed');
     `], { cwd: consumer, stdio: 'inherit' })
+    // The compiler stack ships vendored: this proves the packed artifact loads
+    // its compiler entry, TypeScript, and amaro from package files with only
+    // the declared dependencies installed. The dependency classification in
+    // package.json relies on this packed-consumer evidence.
+    execFileSync(process.execPath, ['--input-type=module', '-e', `
+      import { createRequire } from 'node:module';
+      import { readFileSync } from 'node:fs';
+      import { createContext, Script } from 'node:vm';
+      import { dirname, join } from 'node:path';
+      import { pathToFileURL } from 'node:url';
+      const require = createRequire(process.cwd() + '/package.json');
+      const root = dirname(require.resolve(${JSON.stringify(plugin.name + '/package.json')}));
+      const { installCompilerPlatform } = await import(pathToFileURL(join(root, 'internal', 'compiler-platform.js')).href);
+      const bundlePath = join(root, 'compiler-core.cjs');
+      const context = createContext({
+        __compilerBaseUrl: pathToFileURL(join(root, 'internal', 'compiler-service.js')).href,
+        __filename: bundlePath, __dirname: root, module: { exports: {} },
+      });
+      installCompilerPlatform(context);
+      const compile = new Script(readFileSync(bundlePath, 'utf8') + '\\nmodule.exports.compile', { displayErrors: false })
+        .runInContext(context, { displayErrors: false });
+      if (typeof compile !== 'function') throw new Error('packed compiler entry did not load');
+      const typescript = new Script('require("typescript")').runInContext(context);
+      const output = typescript.transpileModule('const value: number = 42', {
+        compilerOptions: { target: typescript.ScriptTarget.ES2022, module: typescript.ModuleKind.ESNext },
+      }).outputText;
+      if (!output.includes('const value = 42')) throw new Error('packed TypeScript compiler did not transpile');
+      const amaro = new Script('require("amaro")').runInContext(context);
+      const stripped = amaro.transformSync('const typed: number = 1', { mode: 'strip-only' });
+      if (typeof stripped.code !== 'string' || !stripped.code.includes('const typed')) {
+        throw new Error('packed amaro transform did not run');
+      }
+      const prepared = compile('prepareProgram', ['const value: number = 42',
+        { languageSemantics: 'stateful-v1', nativeUsing: false }]);
+      if (prepared.error !== undefined || typeof prepared.value?.code !== 'string') {
+        throw new Error('packed compiler entry did not prepare a PTC cell');
+      }
+      const { Worker } = await import('node:worker_threads');
+      await new Promise((resolve, reject) => {
+        // Clear execArgv: this probe runs with --input-type=module, which a
+        // file-backed worker entry must not inherit.
+        const worker = new Worker(pathToFileURL(join(root, 'internal', 'kernel-worker.js')),
+          { workerData: {}, execArgv: [] });
+        let settled = false;
+        const finish = (settle, value) => { if (settled) return; settled = true; clearTimeout(timer); settle(value); };
+        const timer = setTimeout(() => { finish(resolve); worker.terminate(); }, 5000);
+        worker.once('error', error => finish(reject, new Error('packed kernel worker failed to load: ' + error.message)));
+        worker.once('exit', code => { if (code !== 0) finish(reject, new Error('packed kernel worker exited early with code ' + code)); });
+      });
+      console.log('Packed compiler stack (TypeScript ' + typescript.version + ', amaro) and kernel worker loaded');
+    `], { cwd: consumer, stdio: 'inherit' })
   } finally {
     await rm(consumer, { recursive: true, force: true })
   }

@@ -6,11 +6,13 @@ import { transformTypeScriptModule, LEGACY_USER_BINDING_TRANSFORM, PREVIOUS_USER
 
 test('records the exact installed compiler generation', async () => {
   const manifest = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'))
-  assert.equal(LEGACY_USER_BINDING_TRANSFORM, `amaro@${manifest.dependencies.amaro}`)
+  // The recorded generation tracks the pinned build-input compiler: the
+  // vendored compiler-amaro.cjs bundle is built from this devDependency.
+  assert.equal(LEGACY_USER_BINDING_TRANSFORM, `amaro@${manifest.devDependencies.amaro}`)
   assert.equal(PREVIOUS_USER_BINDING_TRANSFORM, `stateful-module-v1+${LEGACY_USER_BINDING_TRANSFORM}`)
   assert.equal(USER_BINDING_TRANSFORM, `stateful-module-v2+${LEGACY_USER_BINDING_TRANSFORM}`)
   assert.equal(PROTECTED_MODULE_TRANSFORM, `protected-module-v1+${LEGACY_USER_BINDING_TRANSFORM}`)
-  assert.match(manifest.dependencies.amaro, /^\d+\.\d+\.\d+$/)
+  assert.match(manifest.devDependencies.amaro, /^\d+\.\d+\.\d+$/)
 })
 
 test('current protected modules retain a distinct generation without changing persisted binding identities', () => {

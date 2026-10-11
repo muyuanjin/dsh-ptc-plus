@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict'
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { spawnSync } from 'node:child_process'
+import { builtinModules } from 'node:module'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, posix } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import test from 'node:test'
 import { parse } from 'yaml'
@@ -19,6 +20,112 @@ const DSH_RUNTIME_PEERS = [
   '@deepseek-ai/dsh-tools',
   '@deepseek-ai/dsh-typert-protocol',
 ]
+
+const PACKAGE_ROOT = fileURLToPath(new URL('..', import.meta.url))
+const NODE_BUILTINS = new Set(builtinModules)
+const MODULE_SOURCE = /\.(?:js|mjs|cjs)$/
+// esbuild bundles whose bare specifiers resolve through the DSH client module
+// loader (client.cjs) or the compiler platform contract (compiler-*.cjs);
+// the bundle build check owns their contents. Every other shipped module is
+// parsed so its specifiers resolve through the package dependency graph.
+const HOST_RESOLVED_BUNDLES = new Set([
+  'client.cjs', 'compiler-core.cjs', 'compiler-platform.cjs',
+  'compiler-typescript.cjs', 'compiler-amaro.cjs',
+])
+
+/** Visit every AST node without assuming a specific production grammar. */
+function eachNode(node, visit) {
+  if (!node || typeof node !== 'object') return
+  if (Array.isArray(node)) {
+    for (const item of node) eachNode(item, visit)
+    return
+  }
+  if (typeof node.type === 'string') visit(node)
+  for (const value of Object.values(node)) eachNode(value, visit)
+}
+
+/**
+ * Literal references a shipped runtime module resolves: relative specifiers are
+ * local modules, bare specifiers resolve through the package dependency graph.
+ * Bundles expose local references only here; their internal specifiers belong
+ * to the compiler platform contract and the bundle build check.
+ */
+function runtimeReferences(source, { bundle = false } = {}) {
+  const local = new Set()
+  const bare = new Set()
+  const record = specifier => {
+    if (specifier.startsWith('.')) local.add(specifier.split(/[?#]/, 1)[0])
+    else if (!specifier.startsWith('node:') && !NODE_BUILTINS.has(specifier)
+      && !/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(specifier)) bare.add(specifier)
+  }
+  if (bundle) {
+    for (const match of source.matchAll(/(?:require|import)\s*\(\s*['"](\.[^'"]+)['"]/g)) record(match[1])
+    return { local, bare }
+  }
+  const importMetaUrl = node => node?.type === 'MemberExpression'
+    && node.object?.type === 'MetaProperty' && node.property?.name === 'url'
+  eachNode(parseJavaScript(source, { sourceType: 'module' }).program, node => {
+    if ((node.type === 'ImportDeclaration' || node.type === 'ExportNamedDeclaration'
+      || node.type === 'ExportAllDeclaration') && node.source?.type === 'StringLiteral') record(node.source.value)
+    else if (node.type === 'ImportExpression' && node.source?.type === 'StringLiteral') record(node.source.value)
+    else if (node.type === 'CallExpression' && node.arguments?.[0]?.type === 'StringLiteral') {
+      const callee = node.callee
+      if (callee?.type === 'Import' || callee?.name === 'import' || callee?.name === 'require') {
+        record(node.arguments[0].value)
+      } else if (callee?.type === 'MemberExpression' && callee.object?.name === 'require'
+        && callee.property?.name === 'resolve') {
+        record(node.arguments[0].value)
+      }
+    } else if (node.type === 'NewExpression' && (node.callee?.name === 'URL' || node.callee?.name === 'NativeURL')
+      && node.arguments?.[0]?.type === 'StringLiteral' && importMetaUrl(node.arguments?.[1])) {
+      record(node.arguments[0].value)
+    }
+  })
+  return { local, bare }
+}
+
+/** Every tracked or untracked non-ignored file: the set npm packlist selects from. */
+async function workingTreePaths() {
+  const listed = spawnSync('git', ['-C', PACKAGE_ROOT, 'ls-files', '--cached', '--others', '--exclude-standard', '-z'],
+    { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 })
+  assert.equal(listed.status, 0, listed.error ? listed.error.message : listed.stderr)
+  return listed.stdout.split('\0').filter(Boolean)
+}
+
+/** Follow every module the packaged entries load from the working tree. */
+async function runtimeModuleGraph() {
+  const manifest = JSON.parse(await readFile(join(PACKAGE_ROOT, 'package.json'), 'utf8'))
+  const entries = [manifest.main, ...Object.values(manifest.exports ?? {})]
+    .filter(value => typeof value === 'string' && !value.includes('*') && MODULE_SOURCE.test(value))
+    .map(value => value.replace(/^\.\//, ''))
+  const present = new Set(await workingTreePaths())
+  const graph = new Map()
+  const queue = [...new Set(entries)]
+  while (queue.length > 0) {
+    const path = queue.pop()
+    if (graph.has(path)) continue
+    assert.ok(present.has(path), `packed entry is outside the working tree: ${path}`)
+    const references = runtimeReferences(await readFile(join(PACKAGE_ROOT, path), 'utf8'),
+      { bundle: HOST_RESOLVED_BUNDLES.has(path) })
+    const targets = []
+    for (const reference of references.local) {
+      const target = posix.normalize(posix.join(posix.dirname(path), reference))
+      assert.ok(!target.startsWith('..'), `${path} resolves outside the package root: ${reference}`)
+      assert.ok(present.has(target), `${path} loads a file the working tree does not contain: ${target}`)
+      targets.push(target)
+    }
+    graph.set(path, { targets, bare: references.bare })
+    // Non-JavaScript targets stay surface evidence; only modules are parsed.
+    queue.push(...targets.filter(target => MODULE_SOURCE.test(target)))
+  }
+  return graph
+}
+
+/** Match one npm files selector: literal paths, directories, and segment globs. */
+function packageFileSelector(selector) {
+  const pattern = selector.split('*').map(part => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('[^/]*')
+  return new RegExp(`^${pattern}$`)
+}
 
 test('execution smoke rejects capability-only changes and accepts the real plugin', async t => {
   const directory = await mkdtemp(join(tmpdir(), 'ptc-seam-smoke-'))
@@ -65,21 +172,68 @@ test('declares directly imported DSH utility packages for clean installs', async
   assert.equal(lock.packages[`node_modules/${packageName}`].dev, undefined)
 })
 
-test('packed production imports declare their Host peers instead of depending on incidental hoisting', async () => {
-  const manifest = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'))
-  const lock = JSON.parse(await readFile(new URL('../package-lock.json', import.meta.url), 'utf8'))
-  const paths = ['index.js', ...(await readdir(new URL('../internal/', import.meta.url)))
-    .filter(name => name.endsWith('.js')).map(name => `internal/${name}`)]
-  for (const path of paths) {
-    const ast = parseJavaScript(await readFile(new URL(`../${path}`, import.meta.url), 'utf8'), { sourceType: 'module' })
-    for (const entry of ast.program.body) {
-      const specifier = entry.source?.value
-      if (!specifier?.startsWith('@deepseek-ai/')) continue
-      const packageName = specifier.split('/').slice(0, 2).join('/')
-      const role = manifest.dependencies?.[packageName] ? 'dependencies' : 'peerDependencies'
-      assert.ok(manifest[role]?.[packageName], `${path} imports undeclared ${packageName}`)
-      assert.equal(lock.packages[''][role]?.[packageName], manifest[role][packageName])
+test('packed production imports declare Host peers and runtime dependencies instead of depending on incidental hoisting', async () => {
+  const manifest = JSON.parse(await readFile(join(PACKAGE_ROOT, 'package.json'), 'utf8'))
+  const lock = JSON.parse(await readFile(join(PACKAGE_ROOT, 'package-lock.json'), 'utf8'))
+  const imports = new Map()
+  for (const [path, { bare }] of await runtimeModuleGraph()) {
+    for (const specifier of bare) {
+      const packageName = specifier.split('/').slice(0, specifier.startsWith('@') ? 2 : 1).join('/')
+      if (!imports.has(packageName)) imports.set(packageName, new Set())
+      imports.get(packageName).add(`${path} imports ${specifier}`)
     }
+  }
+  for (const [packageName, sources] of imports) {
+    assert.ok(manifest.dependencies?.[packageName] || manifest.peerDependencies?.[packageName],
+      `${[...sources][0]}, which is not declared in dependencies or peerDependencies`)
+    const role = manifest.dependencies?.[packageName] ? 'dependencies' : 'peerDependencies'
+    assert.equal(lock.packages[''][role]?.[packageName], manifest[role][packageName])
+  }
+  for (const packageName of Object.keys(manifest.dependencies ?? {})) {
+    assert.ok(imports.has(packageName),
+      `dependencies.${packageName} is not imported by any packed runtime module; build-only packages belong in devDependencies`)
+  }
+})
+
+test('packed surface ships every artifact the runtime loads', async () => {
+  const manifest = JSON.parse(await readFile(join(PACKAGE_ROOT, 'package.json'), 'utf8'))
+  for (const [key, value] of Object.entries(manifest.exports ?? {})) {
+    assert.equal(typeof value, 'string', `exports.${key} must be a literal path string for surface auditing`)
+  }
+  const tree = await workingTreePaths()
+  const present = new Set(tree)
+  const shipped = new Set()
+  for (const selector of manifest.files ?? []) {
+    const normalized = selector.replace(/^\.\//, '').replace(/\/+$/, '')
+    const matched = normalized.includes('*')
+      ? tree.filter(path => packageFileSelector(normalized).test(path))
+      : present.has(normalized)
+        ? [normalized]
+        : tree.filter(path => path.startsWith(`${normalized}/`))
+    assert.ok(matched.length > 0, `manifest files entry matches no working-tree file: ${selector}`)
+    for (const path of matched) shipped.add(path)
+  }
+  // npm always includes the manifest and root notices even when files omits them.
+  for (const path of tree) {
+    if (path === 'package.json' || /^(?:README|LICEN[CS]E|COPYING)(?:\.[^/]*)?$/i.test(path)) shipped.add(path)
+  }
+  const declared = [manifest.main, manifest.icon, manifest.dsh?.bundle?.patch, ...Object.values(manifest.exports ?? {})]
+    .filter(value => typeof value === 'string')
+    .map(value => value.replace(/^\.\//, ''))
+  for (const target of new Set(declared)) {
+    const matched = target.includes('*')
+      ? [...shipped].some(path => packageFileSelector(target).test(path))
+      : shipped.has(target)
+    assert.ok(matched, `declared runtime artifact is not shipped: ${target}`)
+  }
+  for (const [path, { targets }] of await runtimeModuleGraph()) {
+    for (const target of targets) {
+      assert.ok(shipped.has(target), `${path} loads ${target}, which the packaged files list omits`)
+    }
+  }
+  const assets = JSON.parse(await readFile(join(PACKAGE_ROOT, 'compiler-assets.json'), 'utf8'))
+  for (const [name, file] of Object.entries(assets)) {
+    assert.ok(shipped.has(file), `compiler asset ${name} is not shipped: ${file}`)
   }
 })
 

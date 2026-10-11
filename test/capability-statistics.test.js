@@ -192,7 +192,7 @@ test('locked statistics storage merges concurrent family observations and preser
     return { session, status: 'idle' }
   }
   const agents = [makeAgent('family-one'), makeAgent('family-two')]
-  const ctx = { agents: { list: () => agents }, sessions: { list: () => agents.map(item => item.session) } }
+  const ctx = { get: name => ({ agents: { list: () => agents }, sessions: { list: () => agents.map(item => item.session) } })[name] }
   const filename = join(root, 'statistics.json')
   const a = new CapabilityStatisticsStore({ filename, ctx })
   const b = new CapabilityStatisticsStore({ filename, ctx })
@@ -233,7 +233,7 @@ test('restored statistics stores retain family qualification and revisions after
     session.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
     return { session, status: 'idle' }
   })
-  const ctx = { agents: { list: () => agents }, sessions: { list: () => agents.map(agent => agent.session) } }
+  const ctx = { get: name => ({ agents: { list: () => agents }, sessions: { list: () => agents.map(agent => agent.session) } })[name] }
   const filename = join(root, 'statistics.json')
   const store = new CapabilityStatisticsStore({ filename, ctx })
   const settings = { enabled: true, windowSize: 2 }
@@ -296,7 +296,7 @@ test('storage capacity exhaustion persists manual fallback for reconstructed and
   const original = makeAgent('original')
   const incoming = makeAgent('incoming')
   const agents = [original, incoming]
-  const ctx = { agents: { list: () => agents }, sessions: { list: () => agents.map(agent => agent.session) } }
+  const ctx = { get: name => ({ agents: { list: () => agents }, sessions: { list: () => agents.map(agent => agent.session) } })[name] }
   const filename = join(root, 'statistics.json')
   const store = new CapabilityStatisticsStore({ filename, ctx })
   const settings = { enabled: true, windowSize: 2, minimumSamples: 1, fullThreshold: 0.5 }
@@ -349,7 +349,7 @@ test('composed collection records host availability without management and stopp
   session.append('turn/start', { turn: 1 }); session.append('step/start', { turn: 1, step: 1 })
   session.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
   const agent = { session, status: 'idle' }
-  const ctx = { agents: { list: () => [agent] }, sessions: { list: () => [session] } }
+  const ctx = { get: name => ({ agents: { list: () => [agent] }, sessions: { list: () => [session] } })[name] }
   const filename = join(root, 'statistics.json')
   const store = new CapabilityStatisticsStore({ filename, ctx })
   const settings = { enabled: true, windowSize: 10 }
@@ -394,12 +394,15 @@ test('statistics family follows Host parent lineage and rejects missing or cycli
   const child = { id: 'child', header: { origin: 'subagent', parentSession: 'parent' } }
   const grandchild = { id: 'grandchild', header: { origin: 'subagent', parentSession: 'child' } }
   const sessions = new Map([[parent.id, parent], [child.id, child]])
-  const store = new CapabilityStatisticsStore({ filename: 'unused', ctx: { sessions: { get: id => sessions.get(id) } } })
+  const store = new CapabilityStatisticsStore({ filename: 'unused', ctx: { get: name => name === 'sessions' ? { get: id => sessions.get(id) } : undefined } })
   assert.equal(store.family({ session: grandchild }), 'parent')
   sessions.delete('parent')
   assert.equal(store.family({ session: grandchild }), null)
-  const fallback = new CapabilityStatisticsStore({ filename: 'unused', ctx: { agents: { get: id => id === 'parent' ? { session: parent } : undefined } } })
+  const fallback = new CapabilityStatisticsStore({ filename: 'unused', ctx: { get: name => name === 'agents' ? { get: id => id === 'parent' ? { session: parent } : undefined } : undefined } })
   assert.equal(fallback.family({ session: child }), 'parent')
+  const absent = new CapabilityStatisticsStore({ filename: 'unused', ctx: { get: () => undefined } })
+  assert.equal(absent.family({ session: child }), null)
+  assert.equal(absent.family({ session: parent }), 'parent')
   sessions.set('parent', { ...parent, header: { origin: 'subagent', parentSession: 'child' } })
   assert.equal(store.family({ session: grandchild }), null)
 })

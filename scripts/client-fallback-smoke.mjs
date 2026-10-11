@@ -864,13 +864,16 @@ if (values.list) {
         assert.equal(await workbench.locator('.ptcPlusCapabilityDetail').count(), 0)
         assert.equal(await workbench.locator('.ptcPlusCapabilityFilterFields').count(), 0)
         const combinationChoices = workbench.locator('.ptcPlusCombinationChoices button')
-        assert.equal(await combinationChoices.count(), 4)
+        assert.equal(await combinationChoices.count(), 5)
+        assert.deepEqual(await combinationChoices.locator('>span').allTextContents(),
+          ['rules', 'description', 'recovery', 'preview', 'statistics'].map(key => labels[`capabilities.combination.${key}`]))
         for (const button of await combinationChoices.all()) {
           const alignment = await button.evaluate(element => {
             const style = getComputedStyle(element)
             return { text: style.textAlign, items: style.alignItems, content: style.justifyContent }
           })
-          assert.deepEqual(alignment, { text: 'center', items: 'center', content: 'center' }, `${label}: combination choice alignment`)
+          assert.deepEqual(alignment, width <= 720 ? { text: 'start', items: 'center', content: 'space-between' }
+            : { text: 'center', items: 'center', content: 'center' }, `${label}: combination choice alignment`)
         }
         const writesBeforeNavigation = await page.evaluate(() => window.settingsWrites.length)
         const recoveryChoice = combinationChoices.filter({ hasText: labels['capabilities.combination.recovery'] })
@@ -984,20 +987,20 @@ if (values.list) {
         const contextNav = workbench.locator('.ptcPlusContextNavigation')
         assert.equal(await contextNav.getByRole('tab').count(), 3)
         assert.equal(await contextNav.locator('small,summary,input').count(), 0)
-        assert.deepEqual(await contextNav.locator('.ptcPlusContextState').allTextContents(), [labels['capabilities.context.custom'], labels['capabilities.serverOn'], labels['capabilities.serverOn']])
+        assert.deepEqual(await contextNav.locator('.ptcPlusContextState').allTextContents(), [labels['capabilities.combination.state.selected'], labels['capabilities.combination.state.selected'], labels['capabilities.combination.state.selected']])
         await assertVisualSurface(page, contextNav, `${label}: context status navigation`)
         await page.screenshot({ path: `artifacts/button-styles/capability-context-default-${width}-${theme}-${native ? 'native' : 'fallback'}-${locale}.png` })
         await contextNav.getByRole('tab', { name: labels['capabilities.context.recovery'], exact: true }).click()
         const recoverySwitch = workbench.getByRole('switch', { name: labels['capabilities.recoveryEnabled'], exact: true })
         await recoverySwitch.click()
-        assert.deepEqual(await contextNav.locator('.ptcPlusContextState').allTextContents(), [labels['capabilities.context.custom'], labels['capabilities.serverOff'], labels['capabilities.serverOn']])
+        assert.deepEqual(await contextNav.locator('.ptcPlusContextState').allTextContents(), [labels['capabilities.combination.state.selected'], labels['capabilities.combination.state.unselected'], labels['capabilities.combination.state.selected']])
         await page.screenshot({ path: `artifacts/button-styles/capability-context-states-${width}-${theme}-${native ? 'native' : 'fallback'}-${locale}.png` })
         await recoverySwitch.click()
         await workbench.getByRole('tab', { name: labels['capabilities.tab.manual'], exact: true }).click()
         const managementSwitch = workbench.getByRole('switch', { name: labels['capabilities.management'], exact: true })
         await managementSwitch.click()
         await workbench.getByRole('tab', { name: labels['capabilities.tab.budgets'], exact: true }).click()
-        assert.deepEqual(await contextNav.locator('.ptcPlusContextState').allTextContents(), [labels['capabilities.host'], labels['capabilities.serverOn'], labels['capabilities.serverOn']])
+        assert.deepEqual(await contextNav.locator('.ptcPlusContextState').allTextContents(), [labels['capabilities.combination.state.host'], labels['capabilities.combination.state.selected'], labels['capabilities.combination.state.selected']])
         const contextBounds = await contextNav.getByRole('tab').evaluateAll(tabs => tabs.map(tab => {
           const bounds = tab.getBoundingClientRect()
           return { name: tab.getAttribute('aria-label'), width: tab.clientWidth, scrollWidth: tab.scrollWidth,

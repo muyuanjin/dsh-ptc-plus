@@ -488,7 +488,8 @@
         "pure model message content generation invalidates stale worker observations independently of surface node membership",
         "provider availability withdraws only plugin-owned declarations through accepted steps and public single-writer persistence on release",
         "locale-independent capability command receipt distinguishes prepared and recorded without replaying model notifications",
-        "deferred editor acceptance audit and inspectLog consume the actual derived execution completion and failure rather than the outer receipt completion"
+        "deferred editor acceptance audit and inspectLog consume the actual derived execution completion and failure rather than the outer receipt completion",
+        "optional public session lookup for REPL observation tolerates an absent service without creating a runtime"
       ],
       "entries": [
         "run_code",
@@ -679,7 +680,7 @@
         "ptc-capability-plan/v2 host disclosure and independent allocation inputs",
         "ptc-capability-environment/v3 source policy, dimension overrides and optional recovery/preview selections",
         "ptc-capability-plan/v3 effective group selection preserving independent intent",
-        "persistent new-session selection summary and explicit target comparison retain publication, frozen source, temporary overrides and stale observations without defaulting historical missing dimensions",
+        "persistent five-responsibility new-session selection summary groups capability configuration, initial prompts, prompt recovery, output excerpts and statistics; initial prompts share capability-management activation, summary and editors share saved states and explicit target comparison retains publication, frozen source, temporary overrides and stale observations without defaulting historical missing dimensions",
         "ptc-capability-environment/v4 frozen contextEnabled and retained source settings, including paused initial plans; historical v1-v3 forbid new selection"
       ],
       "platforms": [
@@ -732,7 +733,8 @@
         "incomplete evicted windows withdraw allocation evidence until settled samples refill",
         "revision isolation",
         "bounded state collapse without fabricated zero usage",
-        "host-disclosed eligible families record true host exposure without capability management; stopping collection retains readable observations"
+        "host-disclosed eligible families record true host exposure without capability management; stopping collection retains readable observations",
+        "public optional service access preserves spawn/fork child creation under Cordis plugin injection and conservatively rejects unproved ancestry"
       ],
       "entries": [
         "createCapabilityStatistics",
@@ -750,7 +752,8 @@
         "reject corruption",
         "collapse at capacity",
         "locked read-modify-write",
-        "manual fallback on damage"
+        "manual fallback on damage",
+        "agent creation and disposal through the Host subagent lifecycle"
       ],
       "generations": [
         "ptc-capability-statistics/v1 reducer state",
@@ -761,7 +764,8 @@
         "Node 24+"
       ],
       "consumers": [
-        "internal/capability-environment.js"
+        "internal/capability-environment.js",
+        "index.js"
       ],
       "oracle": "Deterministic reducer tests and atomic-store owner evidence",
       "evidence": [

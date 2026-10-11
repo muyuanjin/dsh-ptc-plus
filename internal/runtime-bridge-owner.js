@@ -181,7 +181,7 @@ export function createRuntimeBridgeOwner({
     : (agent, operation) => ctx.agents.withInitiator(agent, operation)
   const sessions = new SessionRuntime(sessionConfig, {
     withInitiator, userBindingsCwd, observeSession, readSessionLog,
-    sessionForId: id => ctx.sessions?.get(id),
+    sessionForId: id => ctx.get('sessions')?.get(id),
   })
   let currentConfig = sessions.config
   const patchedDefinitions = new Map()

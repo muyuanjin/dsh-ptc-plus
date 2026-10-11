@@ -126,7 +126,12 @@ export function capabilityPlanReason(t, entry) {
 export function createCapabilitySettingsViews(React, { SearchIcon, Select }) {
   const h = React.createElement
   const field = key => CONFIG_FIELDS.find(item => item.key === key)
-  const responsibilities = ['rules', 'statistics', 'recovery', 'preview']
+  const responsibilityGroups = [
+    { tab: 'manual', keys: ['rules'] },
+    { tab: 'budgets', keys: ['description', 'recovery', 'preview'] },
+    { tab: 'statistics', keys: ['statistics'] },
+  ]
+  const responsibilities = responsibilityGroups.flatMap(group => group.keys)
   const choicesFor = (configuration, plan) => {
     const historical = plan && ['ptc-capability-plan/v1', 'ptc-capability-plan/v3'].includes(plan.schema)
       && configuration && configuration.capabilityPolicy === undefined
@@ -138,11 +143,11 @@ export function createCapabilitySettingsViews(React, { SearchIcon, Select }) {
       recoveryEnabled: configuration?.capabilityRecoveryEnabled ?? (historical ? plan.enabled : undefined),
       previewEnabled: configuration?.modelPreviewEnabled ?? (historical ? plan.enabled : undefined) }
   }
-  const flagsFor = settings => ({ rules: settings.enabled, statistics: settings.statistics?.enabled,
+  const flagsFor = settings => ({ rules: settings.enabled, description: settings.enabled, statistics: settings.statistics?.enabled,
     recovery: settings.recoveryEnabled, preview: settings.previewEnabled })
   const choiceState = (retained, applied, key) => typeof retained[key] !== 'boolean' ? 'unknown'
     : retained[key] ? typeof applied[key] !== 'boolean' ? 'unknown' : applied[key] === false ? 'paused' : 'selected'
-      : key === 'rules' ? 'host' : 'unselected'
+      : key === 'rules' || key === 'description' ? 'host' : 'unselected'
 
   function CombinationSummary({ value, configurationReady, plans, plansError, plansPending, plansStale, selectedSessionId,
     feedback, onNavigate, onReload, renderRefresh, renderPlans, t, id }) {
@@ -153,7 +158,7 @@ export function createCapabilitySettingsViews(React, { SearchIcon, Select }) {
     const effect = !configurationReady ? t('capabilities.combination.unknownSettings')
       : saved.contextEnabled === false ? t('capabilities.combination.pausedEffect')
         : selected.length === 0 ? t('capabilities.combination.hostEffect')
-          : selected.length === 1 && selected[0] === 'rules' ? t('capabilities.combination.rulesOnly')
+          : selected.length === 2 && selected.includes('rules') && selected.includes('description') ? t('capabilities.combination.rulesOnly')
             : t('capabilities.combination.selectedEffect', { features: selected.map(key => t(`capabilities.combination.${key}`)).join(t('capabilities.combination.separator')) })
     const plan = selectedSessionId ? plans?.find(item => item.sessionId === selectedSessionId) : undefined
     const frozen = plan && choicesFor(plan.configuration, plan.effective)
@@ -161,6 +166,7 @@ export function createCapabilitySettingsViews(React, { SearchIcon, Select }) {
     const frozenApplied = frozen && flagsFor(effectiveCapabilitySettings(frozen))
     if (frozenApplied) {
       frozenApplied.rules = plan.effective.enabled
+      frozenApplied.description = plan.effective.enabled
       if (frozen.historical && plan.effective.enabled === false) frozenApplied.statistics = false
     }
     const publication = ['accepted', 'pending', 'not-required'].includes(plan?.publication) ? plan.publication : 'unknown'
@@ -168,13 +174,17 @@ export function createCapabilitySettingsViews(React, { SearchIcon, Select }) {
     return h('section', { className: 'ptcPlusCombination', 'aria-label': t('capabilities.combination.saved') },
       h('div', { className: 'ptcPlusTaskHead' }, h('h4', null, t('capabilities.combination.saved')),
         h('span', { className: 'ptcPlusCapabilitySaveState', role: 'status' }, feedback)),
-      h('div', { className: 'ptcPlusCombinationChoices' }, ...responsibilities.map(key => {
-        const state = choiceState(retained, applied, key)
-        return h('button', { key, type: 'button', className: 'ptcPlusCombinationChoice', 'data-state': state,
-          'aria-controls': `${id}-pane-${key === 'rules' ? 'manual' : key === 'statistics' ? 'statistics' : 'budgets'}`,
-          onClick: () => onNavigate(key) }, h('span', null, t(`capabilities.combination.${key}`)),
-          h('small', null, t(`capabilities.combination.state.${state}`)))
-      })),
+      h('div', { className: 'ptcPlusCombinationChoices' }, ...responsibilityGroups.map(group =>
+        h('div', { key: group.tab, className: 'ptcPlusCombinationGroup', role: 'group',
+          'aria-label': t(`capabilities.tab.${group.tab}`) },
+        h('strong', { className: 'ptcPlusCombinationGroupTitle' }, t(`capabilities.tab.${group.tab}`)),
+        h('div', { className: 'ptcPlusCombinationGroupChoices' }, ...group.keys.map(key => {
+          const state = choiceState(retained, applied, key)
+          return h('button', { key, type: 'button', className: 'ptcPlusCombinationChoice', 'data-state': state,
+            'aria-controls': key === 'rules' || key === 'statistics' ? `${id}-pane-${group.tab}` : `${id}-context-pane-${key}`,
+            onClick: () => onNavigate(key) }, h('span', null, t(`capabilities.combination.${key}`)),
+            h('small', null, t(`capabilities.combination.state.${state}`)))
+        }))))),
       h('p', { className: 'ptcPlusDetail', role: 'status' }, effect),
       h('details', { className: 'ptcPlusCapabilitySessionTools' }, h('summary', { tabIndex: 0 }, t('capabilities.existingSessions')),
         renderRefresh?.(),
@@ -644,9 +654,11 @@ export function createCapabilitySettingsViews(React, { SearchIcon, Select }) {
         : h('p', { className: 'ptcPlusDetail' }, t('capabilities.chooseConfiguration'))), feedback)
   }
 
-  function ContextSettings({ value, disabled, onChange, t, renderField, allocation, allocationError, allocationPending, selectedSessionId, onReload, renderRefresh, id, section, setSection }) {
+  function ContextSettings({ value, configurationReady, disabled, onChange, t, renderField, allocation, allocationError, allocationPending, selectedSessionId, onReload, renderRefresh, id, section, setSection }) {
     const sections = ['description', 'recovery', 'preview']
-    const featureKeys = { description: 'capabilityManagementEnabled', recovery: 'capabilityRecoveryEnabled', preview: 'modelPreviewEnabled' }
+    const saved = choicesFor(configurationReady ? value : undefined)
+    const retained = flagsFor(saved)
+    const applied = flagsFor(effectiveCapabilitySettings(saved))
     const policy = capabilityPolicyForConfig(value)
     const write = next => onChange(field('capabilityPolicy'), JSON.stringify(next))
     const adaptive = [policy.defaults, ...Object.values(policy.categories), ...Object.values(policy.mcpServers), ...Object.values(policy.items)]
@@ -670,23 +682,22 @@ export function createCapabilitySettingsViews(React, { SearchIcon, Select }) {
     return h('div', { className: 'ptcPlusContextLayout' },
       h('div', { className: 'ptcPlusContextNavigation', role: 'tablist', 'aria-orientation': 'vertical', 'aria-label': t('capabilities.contextNavigation') },
         ...sections.map((key, index) => {
-          const active = value[featureKeys[key]] === true
-          const paused = value.capabilityContextEnabled === false && active
-          const state = paused ? 'capabilities.paused' : key === 'description' ? (active ? 'capabilities.context.custom' : value.capabilityContextEnabled === false ? 'capabilities.serverOff' : 'capabilities.host')
-            : active ? 'capabilities.serverOn' : 'capabilities.serverOff'
+          const state = choiceState(retained, applied, key)
+          const paused = state === 'paused'
           return h('button', { key, type: 'button', role: 'tab', id: `${id}-context-tab-${key}`,
             'aria-label': t(`capabilities.context.${key}`), 'aria-describedby': `${id}-context-state-${key}`,
             'aria-controls': `${id}-context-pane-${key}`, 'aria-selected': section === key, tabIndex: section === key ? 0 : -1,
             onClick: () => setSection(key), onKeyDown: event => navigateTabs(event, sections, index, setSection),
           }, h('span', null, t(`capabilities.context.${key}`)),
-          h('span', { className: 'ptcPlusContextState', id: `${id}-context-state-${key}`, 'data-enabled': active && !paused,
-            'data-paused': paused }, t(state)))
+          h('span', { className: 'ptcPlusContextState', id: `${id}-context-state-${key}`, 'data-enabled': state === 'selected',
+            'data-paused': paused }, t(`capabilities.combination.state.${state}`)))
         })),
       h('div', { className: 'ptcPlusContextContent' }, ...sections.map(key => h('section', { key, role: 'tabpanel',
         id: `${id}-context-pane-${key}`, 'aria-labelledby': `${id}-context-tab-${key}`, hidden: section !== key },
         h('h4', null, t(`capabilities.context.${key}`)),
         key === 'description' ? h(React.Fragment, null,
           h('p', { className: 'ptcPlusDetail' }, t('capabilities.descriptionHelp')),
+          h('p', { className: 'ptcPlusDetail' }, t('capabilities.descriptionDependency')),
           h('div', { className: 'ptcPlusCapabilityFilter' }, h('span', null, t('capabilities.defaultDisclosure')),
             h(Select, { value: policy.defaults.disclosure, disabled: disabled('capabilityPolicy'), label: t('capabilities.defaultDisclosure'),
               options: CAPABILITY_DISCLOSURES.map(choice => ({ value: choice, label: t(`capabilities.${choice}`) })),
@@ -732,7 +743,7 @@ export function createCapabilitySettingsViews(React, { SearchIcon, Select }) {
       h(CombinationSummary, { value, configurationReady, plans, plansError, plansPending, plansStale, selectedSessionId,
         feedback, onReload, renderRefresh, renderPlans, t, id, onNavigate: key => {
           setTab(key === 'rules' ? 'manual' : key === 'statistics' ? 'statistics' : 'budgets')
-          if (key === 'recovery' || key === 'preview') setContextSection(key)
+          if (['description', 'recovery', 'preview'].includes(key)) setContextSection(key)
         } }),
       h('div', { className: 'ptcPlusCapabilityTabs', role: 'tablist', 'aria-label': t('capabilities.settingsTabs') },
         ...tabs.map((key, index) => h('button', { key, type: 'button', role: 'tab', id: `${id}-tab-${key}`,
@@ -755,7 +766,7 @@ export function createCapabilitySettingsViews(React, { SearchIcon, Select }) {
                 : choicesFor(value).statistics?.enabled === false ? 'capabilities.effect.collectionOff' : 'capabilities.combination.unknownSettings')),
             h('p', { className: 'ptcPlusDetail' }, t('capabilities.effect.statisticsIndependent')),
             h(AllocationEvidence, { allocation, allocationError, allocationPending, selectedSessionId, statistics: true, onReload, t }))
-            : key === 'budgets' ? h(ContextSettings, { value, disabled, onChange, t, renderField, allocation, allocationError, allocationPending,
+            : key === 'budgets' ? h(ContextSettings, { value, configurationReady, disabled, onChange, t, renderField, allocation, allocationError, allocationPending,
               selectedSessionId, onReload, renderRefresh, id, section: contextSection, setSection: setContextSection })
               : h(ConfigurationProfiles, { value, plans, disabled, writable: configurationWritable, onChange, onApplyConfiguration, t }))))
   }

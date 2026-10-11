@@ -1087,7 +1087,7 @@ test('host validation without a runtime cell creates no settlement or replayable
   const definition = {name: 'run_code', output: {}}
   const runtime = createExecutionSeam(Object.freeze({async run() {throw Error('unexpected upstream')}}), 'codeRuntime').provider
   const owner = createRuntimeBridgeOwner({seam:createExecutionSeam(runtime,'codeRuntime'),
-    ctx:{tools:{get:()=>definition}}, sessionConfig:{userBindingsEnabled:false},
+    ctx:{tools:{get:()=>definition},get:()=>undefined}, sessionConfig:{userBindingsEnabled:false},
     presentationGeneration:'no-cell', sessionId:agent=>agent.id, toolSchemasForAgent:()=>[]})
   t.after(()=>owner.dispose())
   const exec = {name:'run_code',callId:'host-denied',agent:{id:'host-denied',session:orderedSurfaceSession('host-denied')}}
@@ -1095,6 +1095,9 @@ test('host validation without a runtime cell creates no settlement or replayable
   owner.handleResult(exec,denied)
   assert.equal(denied.meta,undefined)
   assert.equal(await owner.observeRepl(exec.agent.id,createReplMemorySnapshot([])),undefined)
+  assert.equal(await owner.observeRepl(exec.agent.id, createReplMemorySnapshot([{ name: 'retained', kind: 'variable',
+    definition: { source: 'let retained = 1', line: 1, column: 1 } }])), undefined,
+  'An absent public session service does not create or restore a runtime for observation.')
   const next = {...exec,callId:'next'}
   const result = await owner.handleExecute(next, async()=> {
     const raw = await runtime.run({program:'return 42',bindings:[]})

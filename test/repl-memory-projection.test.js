@@ -86,9 +86,9 @@ function binding(name, kind = 'variable', source = `const ${name} = 1`, line = 1
 
 // A visible Client holds one cancellable `watch` request while it inspects the
 // session, then requests bounded observations through the same RPC contract.
-function observedFixture(config = {}) {
+function observedFixture(config = {}, fixtureOptions = {}) {
   let rpc
-  const state = fixture(config, { bindingRpc: handler => { rpc = handler } })
+  const state = fixture(config, { ...fixtureOptions, bindingRpc: handler => { rpc = handler } })
   return {
     state,
     watch(sessionId) {
@@ -602,10 +602,11 @@ test('trusted-host observation supplies missing previews without writing project
 
 test('current inventory withdraws hidden assistant source while preserving result-only and image-only observations', async t => {
   for (const changed of ['source', 'result', 'image']) {
-    const { state, observe } = observedFixture()
-    t.after(() => state.dispose())
     const session = orderedSurfaceSession(`inventory-${changed}`)
-    state.ctx.sessions = { get: id => id === session.id ? session : undefined }
+    const { state, observe } = observedFixture({}, {
+      sessions: { get: id => id === session.id ? session : undefined },
+    })
+    t.after(() => state.dispose())
     const result = await state.runDurable(session.id, 'const retained = 41; const old = () => retained; return old()', {}, { session })
     const memory = resultMemory(result)
     let projected = false
@@ -645,10 +646,11 @@ test('current inventory withdraws hidden assistant source while preserving resul
 })
 
 test('cold inventory uses the proved journal settlement when optional source relations are absent', async t => {
-  const { state, observe } = observedFixture()
-  t.after(() => state.dispose())
   const session = orderedSurfaceSession('cold-inventory-call-identity')
-  state.ctx.sessions = { get: id => id === session.id ? session : undefined }
+  const { state, observe } = observedFixture({}, {
+    sessions: { get: id => id === session.id ? session : undefined },
+  })
+  t.after(() => state.dispose())
   const result = await state.runDurable(session.id, 'const retained = 41; return retained', {}, { session })
   const memory = resultMemory(result)
   for (const event of session.events) if (event.type === 'tool/result') delete event.sourceEventSeqs

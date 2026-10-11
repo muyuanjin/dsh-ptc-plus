@@ -18,12 +18,18 @@ import { Session, SessionStore, SESSION_FORMAT_VERSION } from '@deepseek-ai/dsh-
 import { SessionQueryEngine } from '@deepseek-ai/dsh-session-query'
 import { SessionProjectionRegistry } from '@deepseek-ai/dsh-session-projection'
 import { SkillRegistry } from '@deepseek-ai/dsh-skill'
+import { SubagentRuntime } from '@deepseek-ai/dsh-subagent'
+import * as subagentSpawn from '@deepseek-ai/dsh-subagent-spawn-in-process'
+import * as subagentFork from '@deepseek-ai/dsh-subagent-fork-in-process'
 import { LocalSpillStore } from '@deepseek-ai/dsh-spill-local'
 import { SystemPrompt } from '@deepseek-ai/dsh-system-prompt'
 import * as skillTool from '@deepseek-ai/dsh-tool-skill'
+import * as subagentTool from '@deepseek-ai/dsh-tool-subagent'
 import { ToolRuntime, defineTool } from '@deepseek-ai/dsh-tools'
 import { createFixtureExecutionProvider } from './host-fixture.js'
+import { appendRunCodeCall, appendRunCodeResult } from './plugin-fixture.js'
 import * as ptcPlus from '../index.js'
+import { CapabilityStatisticsStore } from '../internal/capability-statistics-store.js'
 
 const signal = () => new AbortController().signal
 const session = (id, parentSession) => Session.create(id, [], {
@@ -52,6 +58,103 @@ function host(t, mode = 'native', run = async () => ({ logs: [], value: null }))
   agent.ctx = scope.ctx
   t.after(() => scope.dispose())
   return { ctx, agent }
+}
+
+for (const statisticsEnabled of [false, true]) {
+  test(`PTC delegates through injected Host spawn and fork tools with statistics ${statisticsEnabled ? 'enabled' : 'disabled'}`, async t => {
+    const root = await mkdtemp(join(tmpdir(), 'ptc-subagent-host-'))
+    const previousDshHome = process.env.DSH_HOME
+    process.env.DSH_HOME = root
+    const ctx = new Context()
+    t.after(async () => {
+      try { await ctx.fiber.dispose() } finally {
+        if (previousDshHome === undefined) delete process.env.DSH_HOME
+        else process.env.DSH_HOME = previousDshHome
+        await rm(root, { recursive: true, force: true })
+      }
+    })
+    // Register services in their own plugin fibers: root construction bypasses
+    // Cordis injection checks and cannot prove the Host lifecycle contract.
+    await ctx.plugin(SystemPrompt, { includeHarnessIdentity: false, includeRuntimeContext: false,
+      personaPrefix: '', personaSuffix: '' }).await()
+    ctx.effect(() => ctx.provide('ptcRuntime', createFixtureExecutionProvider({
+      language: 'typescript', isolation: 'worker-thread',
+      resolve(request) { return { ...request, cwd: root, timeoutMs: null } },
+      async run() { throw new Error('PTC Plus must own execution in this fixture') },
+    })))
+    await ctx.plugin(ToolRuntime, { mode: 'ptc' }).await()
+    await ctx.plugin(AgentRegistry).await()
+    await ctx.plugin(SessionStore).await()
+    await ctx.plugin(SessionProjectionRegistry).await()
+    await ctx.plugin(SessionQueryEngine).await()
+    const requests = []
+    async function* stream(options) {
+      requests.push(options)
+      yield { type: 'text-delta', index: 0, text: 'fixture answer' }
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    }
+    ctx.effect(() => ctx.provide('llm', { async prepareCall(config) { return { config, stream, adapterDefaults: {} } }, stream }))
+    await ctx.plugin(AgentLoop, { agents: [] }).await()
+    await ctx.plugin(SubagentRuntime).await()
+    await ctx.plugin(subagentSpawn).await()
+    await ctx.plugin(subagentFork).await()
+    await ctx.plugin(subagentTool, { provider: 'spawn' }).await()
+    await ctx.plugin(subagentTool, { provider: 'fork', toolName: 'subagent_fork' }).await()
+    await ctx.plugin(ptcPlus, { userBindingsEnabled: false, cordisToolsEnabled: false,
+      capabilityStatistics: JSON.stringify({ enabled: statisticsEnabled, windowSize: 10, minimumSamples: 1, fullThreshold: 0.5 }) }).await()
+    const created = []
+    const disposed = []
+    const errors = []
+    ctx.on('agent/created', ({ agent }) => created.push(agent))
+    ctx.on('agent/disposed', ({ agent }) => disposed.push(agent.id))
+    ctx.on('agent/error', payload => errors.push(payload.error))
+    const owner = await ctx.agents.create({ sessionId: `delegating-parent-${statisticsEnabled}`, meta: { cwd: root },
+      agentOptions: { provider: 'fixture', model: 'fixture' } })
+    const invoke = async (callId, code) => {
+      const description = 'Delegate through the public Host tool pipeline'
+      const calls = []
+      appendRunCodeCall(calls, callId, code, description)
+      for (const event of calls) owner.agent.session.append(event.type, event.data,
+        event.surfaceOp ? { surfaceOp: event.surfaceOp } : {})
+      const result = await ctx.tools.execute({ name: 'run_code', callId, agent: owner.agent,
+        signal: signal(), arguments: { code, description } })
+      const results = []
+      appendRunCodeResult(results, callId, 0, result)
+      owner.agent.session.append('tool/result', results[0].data, { surfaceOp: 'append' })
+      return result
+    }
+    const initial = await invoke('parent-initial', 'let retained = 40; return retained')
+    assert.equal(initial.isError, false)
+    for (const name of ['subagent', 'subagent_fork']) {
+      const result = await invoke(`delegate-${name}`, `return await tools.${name}({ description: 'Fixture delegation', prompt: 'Answer fixture' })`)
+      assert.equal(result.isError, false, JSON.stringify(result.error))
+      assert.match(JSON.stringify(result.value), /fixture answer/)
+      const child = created.at(-1)
+      assert.notEqual(child.id, owner.agent.id)
+      assert.equal(child.session.header.origin, 'subagent')
+      assert.equal(child.session.header.parentSession, owner.agent.session.id)
+      assert.ok(disposed.includes(child.id), 'The Host releases the child after collecting its result.')
+      assert.equal(ctx.agents.get(child.id), undefined)
+      const store = new CapabilityStatisticsStore({ filename: join(root, 'lineage.json'), ctx })
+      assert.equal(store.family(child), owner.agent.session.id)
+      const continued = await invoke(`continue-${name}`, 'retained += 1; return retained')
+      assert.equal(continued.isError, false, JSON.stringify(continued.error))
+      assert.equal(continued.value.result, name === 'subagent' ? 41 : 42)
+    }
+    assert.equal(created.length, 3)
+    assert.equal(requests.length, 2)
+    assert.deepEqual(errors, [])
+    await owner.dispose()
+    assert.deepEqual(ctx.agents.list(), [])
+    // Disposal drains statistics operations before inspecting the isolated file.
+    await ctx.fiber.dispose()
+    if (statisticsEnabled) {
+      const document = JSON.parse(await readFile(join(root, 'ptc-plus', 'capability-statistics.json'), 'utf8'))
+      assert.equal(document.families.length, 1)
+      assert.equal(document.families[0].id, owner.agent.session.id)
+      assert.deepEqual(new Set(document.members.map(member => member.id)), new Set(created.map(agent => agent.session.id)))
+    }
+  })
 }
 
 test('public restrictions remove inherited tools from schemas and the next PTC bindings', async t => {

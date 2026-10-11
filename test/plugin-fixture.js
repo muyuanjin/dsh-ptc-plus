@@ -233,7 +233,7 @@ export function fixture(config = {}, fixtureOptions = {}) {
   const services = { [seamServiceName]: runtime,
     ...(fixtureOptions.commands === undefined ? {} : { commands: fixtureOptions.commands }),
     ...(fixtureOptions.settings === undefined ? {} : { settings: fixtureOptions.settings }),
-    sessions: { list: () => [], flush: async () => false, messageProjections: [] },
+    sessions: { list: () => [], flush: async () => false, messageProjections: [], ...fixtureOptions.sessions },
     sessionPersistence: { list: async () => [], open: async () => { throw new Error('No persisted fixture session') } },
     sessionProjections: new SessionProjectionRegistry(new Context()),
     sessionQuery: { async observeSession(id) {

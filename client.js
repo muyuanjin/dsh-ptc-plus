@@ -3063,7 +3063,12 @@ function capabilityPlanReason(t2, entry) {
 function createCapabilitySettingsViews(React32, { SearchIcon, Select: Select2 }) {
   const h = React32.createElement;
   const field = (key) => CONFIG_FIELDS.find((item) => item.key === key);
-  const responsibilities = ["rules", "statistics", "recovery", "preview"];
+  const responsibilityGroups = [
+    { tab: "manual", keys: ["rules"] },
+    { tab: "budgets", keys: ["description", "recovery", "preview"] },
+    { tab: "statistics", keys: ["statistics"] }
+  ];
+  const responsibilities = responsibilityGroups.flatMap((group) => group.keys);
   const choicesFor = (configuration, plan) => {
     const historical = plan && ["ptc-capability-plan/v1", "ptc-capability-plan/v3"].includes(plan.schema) && configuration && configuration.capabilityPolicy === void 0;
     let statistics;
@@ -3083,11 +3088,12 @@ function createCapabilitySettingsViews(React32, { SearchIcon, Select: Select2 })
   };
   const flagsFor = (settings) => ({
     rules: settings.enabled,
+    description: settings.enabled,
     statistics: settings.statistics?.enabled,
     recovery: settings.recoveryEnabled,
     preview: settings.previewEnabled
   });
-  const choiceState = (retained, applied, key) => typeof retained[key] !== "boolean" ? "unknown" : retained[key] ? typeof applied[key] !== "boolean" ? "unknown" : applied[key] === false ? "paused" : "selected" : key === "rules" ? "host" : "unselected";
+  const choiceState = (retained, applied, key) => typeof retained[key] !== "boolean" ? "unknown" : retained[key] ? typeof applied[key] !== "boolean" ? "unknown" : applied[key] === false ? "paused" : "selected" : key === "rules" || key === "description" ? "host" : "unselected";
   function CombinationSummary({
     value,
     configurationReady,
@@ -3108,13 +3114,14 @@ function createCapabilitySettingsViews(React32, { SearchIcon, Select: Select2 })
     const retained = flagsFor(saved);
     const applied = flagsFor(effectiveCapabilitySettings(saved));
     const selected = responsibilities.filter((key) => retained[key] === true);
-    const effect = !configurationReady ? t2("capabilities.combination.unknownSettings") : saved.contextEnabled === false ? t2("capabilities.combination.pausedEffect") : selected.length === 0 ? t2("capabilities.combination.hostEffect") : selected.length === 1 && selected[0] === "rules" ? t2("capabilities.combination.rulesOnly") : t2("capabilities.combination.selectedEffect", { features: selected.map((key) => t2(`capabilities.combination.${key}`)).join(t2("capabilities.combination.separator")) });
+    const effect = !configurationReady ? t2("capabilities.combination.unknownSettings") : saved.contextEnabled === false ? t2("capabilities.combination.pausedEffect") : selected.length === 0 ? t2("capabilities.combination.hostEffect") : selected.length === 2 && selected.includes("rules") && selected.includes("description") ? t2("capabilities.combination.rulesOnly") : t2("capabilities.combination.selectedEffect", { features: selected.map((key) => t2(`capabilities.combination.${key}`)).join(t2("capabilities.combination.separator")) });
     const plan = selectedSessionId ? plans?.find((item) => item.sessionId === selectedSessionId) : void 0;
     const frozen = plan && choicesFor(plan.configuration, plan.effective);
     const frozenRetained = frozen && flagsFor(frozen);
     const frozenApplied = frozen && flagsFor(effectiveCapabilitySettings(frozen));
     if (frozenApplied) {
       frozenApplied.rules = plan.effective.enabled;
+      frozenApplied.description = plan.effective.enabled;
       if (frozen.historical && plan.effective.enabled === false) frozenApplied.statistics = false;
     }
     const publication = ["accepted", "pending", "not-required"].includes(plan?.publication) ? plan.publication : "unknown";
@@ -3128,22 +3135,32 @@ function createCapabilitySettingsViews(React32, { SearchIcon, Select: Select2 })
         h("h4", null, t2("capabilities.combination.saved")),
         h("span", { className: "ptcPlusCapabilitySaveState", role: "status" }, feedback)
       ),
-      h("div", { className: "ptcPlusCombinationChoices" }, ...responsibilities.map((key) => {
-        const state = choiceState(retained, applied, key);
-        return h(
-          "button",
-          {
-            key,
-            type: "button",
-            className: "ptcPlusCombinationChoice",
-            "data-state": state,
-            "aria-controls": `${id2}-pane-${key === "rules" ? "manual" : key === "statistics" ? "statistics" : "budgets"}`,
-            onClick: () => onNavigate(key)
-          },
-          h("span", null, t2(`capabilities.combination.${key}`)),
-          h("small", null, t2(`capabilities.combination.state.${state}`))
-        );
-      })),
+      h("div", { className: "ptcPlusCombinationChoices" }, ...responsibilityGroups.map((group) => h(
+        "div",
+        {
+          key: group.tab,
+          className: "ptcPlusCombinationGroup",
+          role: "group",
+          "aria-label": t2(`capabilities.tab.${group.tab}`)
+        },
+        h("strong", { className: "ptcPlusCombinationGroupTitle" }, t2(`capabilities.tab.${group.tab}`)),
+        h("div", { className: "ptcPlusCombinationGroupChoices" }, ...group.keys.map((key) => {
+          const state = choiceState(retained, applied, key);
+          return h(
+            "button",
+            {
+              key,
+              type: "button",
+              className: "ptcPlusCombinationChoice",
+              "data-state": state,
+              "aria-controls": key === "rules" || key === "statistics" ? `${id2}-pane-${group.tab}` : `${id2}-context-pane-${key}`,
+              onClick: () => onNavigate(key)
+            },
+            h("span", null, t2(`capabilities.combination.${key}`)),
+            h("small", null, t2(`capabilities.combination.state.${state}`))
+          );
+        }))
+      ))),
       h("p", { className: "ptcPlusDetail", role: "status" }, effect),
       h(
         "details",
@@ -3970,9 +3987,11 @@ function createCapabilitySettingsViews(React32, { SearchIcon, Select: Select2 })
       feedback
     );
   }
-  function ContextSettings({ value, disabled, onChange, t: t2, renderField, allocation, allocationError, allocationPending, selectedSessionId, onReload, renderRefresh, id: id2, section, setSection }) {
+  function ContextSettings({ value, configurationReady, disabled, onChange, t: t2, renderField, allocation, allocationError, allocationPending, selectedSessionId, onReload, renderRefresh, id: id2, section, setSection }) {
     const sections = ["description", "recovery", "preview"];
-    const featureKeys = { description: "capabilityManagementEnabled", recovery: "capabilityRecoveryEnabled", preview: "modelPreviewEnabled" };
+    const saved = choicesFor(configurationReady ? value : void 0);
+    const retained = flagsFor(saved);
+    const applied = flagsFor(effectiveCapabilitySettings(saved));
     const policy = capabilityPolicyForConfig(value);
     const write2 = (next) => onChange(field("capabilityPolicy"), JSON.stringify(next));
     const adaptive = [policy.defaults, ...Object.values(policy.categories), ...Object.values(policy.mcpServers), ...Object.values(policy.items)].some((rule) => rule.disclosure === "adaptive");
@@ -4023,9 +4042,8 @@ function createCapabilitySettingsViews(React32, { SearchIcon, Select: Select2 })
         "div",
         { className: "ptcPlusContextNavigation", role: "tablist", "aria-orientation": "vertical", "aria-label": t2("capabilities.contextNavigation") },
         ...sections.map((key, index2) => {
-          const active = value[featureKeys[key]] === true;
-          const paused = value.capabilityContextEnabled === false && active;
-          const state = paused ? "capabilities.paused" : key === "description" ? active ? "capabilities.context.custom" : value.capabilityContextEnabled === false ? "capabilities.serverOff" : "capabilities.host" : active ? "capabilities.serverOn" : "capabilities.serverOff";
+          const state = choiceState(retained, applied, key);
+          const paused = state === "paused";
           return h(
             "button",
             {
@@ -4045,9 +4063,9 @@ function createCapabilitySettingsViews(React32, { SearchIcon, Select: Select2 })
             h("span", {
               className: "ptcPlusContextState",
               id: `${id2}-context-state-${key}`,
-              "data-enabled": active && !paused,
+              "data-enabled": state === "selected",
               "data-paused": paused
-            }, t2(state))
+            }, t2(`capabilities.combination.state.${state}`))
           );
         })
       ),
@@ -4065,6 +4083,7 @@ function createCapabilitySettingsViews(React32, { SearchIcon, Select: Select2 })
           React32.Fragment,
           null,
           h("p", { className: "ptcPlusDetail" }, t2("capabilities.descriptionHelp")),
+          h("p", { className: "ptcPlusDetail" }, t2("capabilities.descriptionDependency")),
           h(
             "div",
             { className: "ptcPlusCapabilityFilter" },
@@ -4169,7 +4188,7 @@ function createCapabilitySettingsViews(React32, { SearchIcon, Select: Select2 })
         id: id2,
         onNavigate: (key) => {
           setTab(key === "rules" ? "manual" : key === "statistics" ? "statistics" : "budgets");
-          if (key === "recovery" || key === "preview") setContextSection(key);
+          if (["description", "recovery", "preview"].includes(key)) setContextSection(key);
         }
       }),
       h(
@@ -4231,6 +4250,7 @@ function createCapabilitySettingsViews(React32, { SearchIcon, Select: Select2 })
           h(AllocationEvidence, { allocation, allocationError, allocationPending, selectedSessionId, statistics: true, onReload, t: t2 })
         ) : key === "budgets" ? h(ContextSettings, {
           value,
+          configurationReady,
           disabled,
           onChange,
           t: t2,
@@ -33120,7 +33140,7 @@ var autoCloseTags = /* @__PURE__ */ EditorView.inputHandler.of((view, from2, to,
 // src/client-styles.js
 var CLIENT_STYLE_ID = "ptc-plus-client-style";
 var CLIENT_CSS = `
-.ptcPlusCombination{margin-bottom:16px;padding:12px;border:1px solid var(--dsw-alias-border-l2);border-radius:10px;min-width:0}.ptcPlusCombination .ptcPlusTaskHead{margin-bottom:10px}.ptcPlusCombinationChoices{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px}.ptcPlusCombinationChoice{appearance:none;box-sizing:border-box;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;min-width:0;min-height:62px;padding:8px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);font:inherit;font-size:12px;line-height:18px;text-align:center;overflow-wrap:anywhere;cursor:pointer}.ptcPlusCombinationChoice small{font-size:11px;color:var(--dsw-alias-label-tertiary)}.ptcPlusCombinationChoice[data-state=selected]{border-color:color-mix(in srgb,var(--dsw-alias-state-business-primary,#4d6bfe) 20%,transparent);background:color-mix(in srgb,var(--dsw-alias-state-business-primary,#4d6bfe) 6%,var(--dsw-alias-bg-layer-2))}.ptcPlusCombinationChoice[data-state=selected] small{color:var(--dsw-alias-state-business-primary,#4d6bfe)}.ptcPlusCombinationChoice[data-state=paused] small{color:var(--dsw-alias-state-warning-primary,#9b6e22)}.ptcPlusCombinationChoice:hover{background:var(--dsw-alias-interactive-bg-hover)}.ptcPlusCombinationChoice:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary,#4d6bfe);outline-offset:2px}.ptcPlusCombinationFacts{display:flex;flex-wrap:wrap;gap:6px 14px;font-size:12px;line-height:20px}.ptcPlusCombinationSession{margin-top:10px;min-width:0;overflow-wrap:anywhere}.ptcPlusCombination .ptcPlusCapabilitySessionTools{margin-top:12px}.ptcPlusCombination .ptcPlusCapabilitySaveState{max-width:100%;overflow-wrap:anywhere}@media(max-width:720px){.ptcPlusCombinationChoices{grid-template-columns:repeat(2,minmax(0,1fr))}.ptcPlusCombination{padding:10px}.ptcPlusCombination .ptcPlusTaskHead{align-items:flex-start;flex-wrap:wrap}}
+.ptcPlusCombination{margin-bottom:16px;padding:12px;border:1px solid var(--dsw-alias-border-l2);border-radius:10px;min-width:0}.ptcPlusCombination .ptcPlusTaskHead{margin-bottom:10px}.ptcPlusCombinationChoices{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,3fr) minmax(0,1fr);gap:12px}.ptcPlusCombinationGroup{display:flex;flex-direction:column;min-width:0;gap:6px}.ptcPlusCombinationGroupTitle{font-size:11px;line-height:18px;color:var(--dsw-alias-label-tertiary);font-weight:500}.ptcPlusCombinationGroupChoices{display:grid;grid-auto-flow:column;grid-auto-columns:minmax(0,1fr);gap:6px;flex:1}.ptcPlusCombinationChoice{appearance:none;box-sizing:border-box;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;min-width:0;min-height:62px;padding:8px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);font:inherit;font-size:12px;line-height:18px;text-align:center;overflow-wrap:anywhere;cursor:pointer}.ptcPlusCombinationChoice small{font-size:11px;color:var(--dsw-alias-label-tertiary)}.ptcPlusCombinationChoice[data-state=selected]{border-color:color-mix(in srgb,var(--dsw-alias-state-business-primary,#4d6bfe) 20%,transparent);background:color-mix(in srgb,var(--dsw-alias-state-business-primary,#4d6bfe) 6%,var(--dsw-alias-bg-layer-2))}.ptcPlusCombinationChoice[data-state=selected] small{color:var(--dsw-alias-state-business-primary,#4d6bfe)}.ptcPlusCombinationChoice[data-state=paused] small{color:var(--dsw-alias-state-warning-primary,#9b6e22)}.ptcPlusCombinationChoice:hover{background:var(--dsw-alias-interactive-bg-hover)}.ptcPlusCombinationChoice:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary,#4d6bfe);outline-offset:2px}.ptcPlusCombinationFacts{display:flex;flex-wrap:wrap;gap:6px 14px;font-size:12px;line-height:20px}.ptcPlusCombinationSession{margin-top:10px;min-width:0;overflow-wrap:anywhere}.ptcPlusCombination .ptcPlusCapabilitySessionTools{margin-top:12px}.ptcPlusCombination .ptcPlusCapabilitySaveState{max-width:100%;overflow-wrap:anywhere}@media(max-width:720px){.ptcPlusCombinationChoices{grid-template-columns:minmax(0,1fr)}.ptcPlusCombinationGroupChoices{grid-auto-flow:row;grid-auto-columns:auto}.ptcPlusCombinationChoice{flex-direction:row;justify-content:space-between;min-height:40px;text-align:start;gap:10px}.ptcPlusCombinationChoice small{white-space:nowrap}.ptcPlusCombination{padding:10px}.ptcPlusCombination .ptcPlusTaskHead{align-items:flex-start;flex-wrap:wrap}}
 .ptcPlusSelectTrigger{box-sizing:border-box;display:inline-flex;align-items:center;justify-content:space-between;gap:12px;width:100%;min-width:0;height:34px;padding:0 11px;border:1px solid var(--dsw-alias-border-l4);border-radius:8px;background:var(--dsw-alias-bg-layer-3);color:var(--dsw-alias-label-primary);font:inherit;font-size:13px;text-align:start;cursor:pointer}.ptcPlusSelectTrigger>span:first-child{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.ptcPlusSelectTrigger:hover:not(:disabled){border-color:var(--dsw-alias-label-dimmed)}.ptcPlusSelectTrigger:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary,#4d6bfe);outline-offset:1px}.ptcPlusSelectTrigger:disabled{opacity:.45;cursor:not-allowed}.ptcPlusSelectChevron{display:inline-flex;align-items:center;justify-content:center;flex:none;width:16px;height:16px;color:var(--dsw-alias-label-secondary);line-height:0}.ptcPlusSelectChevron svg{display:block}.ptcPlusSelectMenu{z-index:1100;box-sizing:border-box;min-width:var(--radix-select-trigger-width);max-width:min(380px,calc(100vw - 24px));max-height:min(360px,var(--radix-select-content-available-height));overflow:hidden;border:1px solid var(--dsw-alias-border-l3);border-radius:10px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);box-shadow:var(--dsw-elevation-prominent,0 12px 32px rgba(0,0,0,.18));font:13px/20px var(--dsw-font-family,system-ui,sans-serif)}.ptcPlusSelectViewport{max-height:inherit;overflow-y:auto;overscroll-behavior:contain;padding:5px}.ptcPlusSelectOption{position:relative;display:flex;align-items:center;min-height:32px;padding:5px 30px 5px 10px;outline:none;border-radius:6px;overflow-wrap:anywhere;cursor:pointer}.ptcPlusSelectOption[data-highlighted]{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}.ptcPlusSelectOption[data-state=checked]{color:var(--dsw-alias-state-business-primary,#4d6bfe)}.ptcPlusSelectOption[data-disabled]{opacity:.45;cursor:not-allowed}.ptcPlusSelectCheck{position:absolute;right:10px;color:var(--dsw-alias-state-business-primary,#4d6bfe)}
 .ptcPlusTool,.ptcPlusComposerBindingAnchor{--ptc-plus-warning-label:color-mix(in srgb,var(--dsw-alias-state-warn-primary,#a15c00) 65%,var(--dsw-alias-label-primary,#18191c))}.ptcPlusTool{font-family:inherit;font-size:13px;line-height:18px}.ptcPlusTool .ptcPlusToolRow{box-sizing:border-box;height:auto;min-height:24px;align-items:flex-start;padding-block:3px}.ptcPlusToolDisclosureContent{min-width:0;flex:1}.ptcPlusTool .ptcPlusToolDisclosureLayout{min-width:0;align-items:flex-start}.ptcPlusTool .ptcPlusToolTitle,.ptcPlusTool .ptcPlusToolSummary,.ptcPlusTool .ptcPlusToolSummaryLine,.ptcPlusTool .ptcPlusToolState,.ptcPlusTool .ptcPlusToolDescription,.ptcPlusTool .ptcPlusToolSep{font-size:13px;line-height:18px}.ptcPlusTool .ptcPlusToolTitle{flex:none;margin-inline-end:6px}.ptcPlusTool .ptcPlusToolState{flex:none;white-space:nowrap}.ptcPlusTool .ptcPlusToolSep{display:inline-block;min-width:6px}.ptcPlusToolSummary{display:flex;min-width:0;align-items:baseline}.ptcPlusToolSummaryLine{display:flex;min-width:0;align-items:baseline;overflow:hidden}.ptcPlusToolDescription{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.ptcPlusToolSummary .ptcPlusToolDescription{flex:1}.ptcPlusToolPreview{display:flex;flex:1;min-width:0;flex-direction:column;gap:4px;margin-inline-start:6px}.ptcPlusToolPreview .ptcPlusToolSummaryLine{display:block}.ptcPlusToolPreview .ptcPlusToolDescription{display:inline;white-space:normal;overflow-wrap:anywhere}.ptcPlusToolPreview .ptcPlusFeatures{margin:0}
 .ptcPlusToolHover{position:fixed;inset:auto;margin:0;box-sizing:border-box;z-index:100;width:420px;max-height:360px;padding:14px 16px 0;display:flex;flex-direction:column;gap:10px;overflow:clip;pointer-events:none;user-select:none;border:1px solid var(--dsw-alias-border-l2,rgba(127,127,127,.2));border-radius:12px;background:var(--dsw-alias-bg-layer-1,var(--dsw-alias-bg-base,#fff));color:var(--dsw-alias-label-primary,#18191c);box-shadow:0 12px 36px rgba(0,0,0,.16);font-family:var(--dsw-font-family,system-ui,sans-serif);font-size:13px;line-height:19px}.ptcPlusToolHover *{pointer-events:none}.ptcPlusToolHover[hidden]{display:none}.ptcPlusToolHover::backdrop{display:none}.ptcPlusToolHoverHeader{display:flex;align-items:center;justify-content:space-between;gap:12px;flex:none}.ptcPlusToolHoverHeading{font-weight:600;min-width:0}.ptcPlusToolHoverState{white-space:nowrap;font-size:12px;color:var(--dsw-alias-label-secondary)}.ptcPlusToolHoverHeader[data-state=error] .ptcPlusToolHoverState{color:var(--dsw-alias-state-error-primary)}.ptcPlusToolHoverHeader[data-state=stopped] .ptcPlusToolHoverState{color:var(--ptc-plus-warning-label,color-mix(in srgb,var(--dsw-alias-state-warn-primary,#a15c00) 65%,var(--dsw-alias-label-primary,#18191c)))}.ptcPlusToolHoverHeader[data-state=ok] .ptcPlusToolHoverState{color:var(--dsw-alias-state-success-primary,var(--dsw-alias-label-secondary))}.ptcPlusToolHoverContent{min-height:0;overflow:clip;display:flex;flex-direction:column;gap:10px}.ptcPlusToolHoverDescription{color:var(--dsw-alias-label-secondary);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:clip;overflow-wrap:anywhere}.ptcPlusToolHoverSection{min-height:0;overflow:clip;border-top:1px solid var(--dsw-alias-border-l2,rgba(127,127,127,.2));padding-top:8px}.ptcPlusToolHover .ptcPlusToolSectionLabel{display:block;margin-bottom:5px;color:var(--dsw-alias-label-secondary);font-size:12px}.ptcPlusToolHover .ptcPlusToolHoverCode{background:none;border:0;border-radius:0;margin:0;padding:0;overflow:clip}.ptcPlusToolHover .ptcPlusToolHoverCode pre,.ptcPlusToolHover pre.ptcPlusToolHoverCode,.ptcPlusToolHover .ptcPlusIoText{background:none;border:0;border-radius:0;margin:0!important;padding:0;max-height:none;overflow:clip;white-space:pre!important;word-break:normal;font-family:var(--ds-font-family-code,ui-monospace,SFMono-Regular,Consolas,monospace);font-size:12px;line-height:19px}.ptcPlusToolHover .ptcPlusFeatures{margin:0;max-height:19px;overflow:clip}.ptcPlusToolHoverFooter{display:flex;align-items:center;justify-content:space-between;gap:12px;flex:none;padding:9px 0;border-top:1px solid var(--dsw-alias-border-l2,rgba(127,127,127,.2));color:var(--dsw-alias-label-secondary);font-size:11px;line-height:16px}.ptcPlusToolHoverBounded{display:none;white-space:nowrap}.ptcPlusToolHoverBounded[data-truncated=true],.ptcPlusToolHover[data-clipped=true] .ptcPlusToolHoverBounded{display:block}
@@ -33698,10 +33718,11 @@ var LOCALE_NS = "settings.ptcPlus";
 var CHROME_COPY = Object.freeze({
   zh: Object.freeze({
     "capabilities.combination.saved": "\u65B0\u4F1A\u8BDD\u8BBE\u7F6E",
-    "capabilities.combination.rules": "\u80FD\u529B\u89C4\u5219",
-    "capabilities.combination.statistics": "\u4F7F\u7528\u91C7\u96C6",
-    "capabilities.combination.recovery": "\u8BF4\u660E\u6062\u590D",
-    "capabilities.combination.preview": "\u7ED3\u679C\u9884\u89C8",
+    "capabilities.combination.rules": "\u80FD\u529B\u914D\u7F6E",
+    "capabilities.combination.description": "\u521D\u59CB\u63D0\u793A",
+    "capabilities.combination.statistics": "\u4F7F\u7528\u7EDF\u8BA1",
+    "capabilities.combination.recovery": "\u63D0\u793A\u6062\u590D",
+    "capabilities.combination.preview": "\u8F93\u51FA\u8282\u9009",
     "capabilities.combination.state.selected": "\u5DF2\u9009\u7528",
     "capabilities.combination.state.unselected": "\u672A\u9009\u7528",
     "capabilities.combination.state.paused": "\u5DF2\u6682\u505C",
@@ -33709,7 +33730,7 @@ var CHROME_COPY = Object.freeze({
     "capabilities.combination.state.unknown": "\u672A\u786E\u8BA4",
     "capabilities.combination.separator": "\u3001",
     "capabilities.combination.selectedEffect": "\u65B0\u4F1A\u8BDD\u5C06\u4F7F\u7528\uFF1A{features}\u3002\u5176\u4F59\u6CBF\u7528 DSH\u3002",
-    "capabilities.combination.rulesOnly": "\u4EC5\u4F7F\u7528\u80FD\u529B\u89C4\u5219\uFF1B\u4E0D\u91C7\u96C6\u4F7F\u7528\u60C5\u51B5\uFF0C\u4E0D\u6062\u590D\u8BF4\u660E\uFF0C\u4E0D\u9650\u5236\u7ED3\u679C\u4E0E\u65E5\u5FD7\u3002",
+    "capabilities.combination.rulesOnly": "\u4EC5\u5E94\u7528\u80FD\u529B\u914D\u7F6E\u53CA\u521D\u59CB\u63D0\u793A\uFF1B\u4E0D\u91C7\u96C6\u4F7F\u7528\u60C5\u51B5\uFF0C\u4E0D\u6062\u590D\u8BF4\u660E\uFF0C\u4E0D\u9650\u5236\u7ED3\u679C\u4E0E\u65E5\u5FD7\u3002",
     "capabilities.combination.hostEffect": "\u8FD9\u7EC4\u529F\u80FD\u5747\u6CBF\u7528 DSH\u3002",
     "capabilities.combination.pausedEffect": "\u6574\u7EC4\u5DF2\u6682\u505C\uFF0C\u91CD\u65B0\u5F00\u542F\u6062\u590D\u8FD9\u4E9B\u9009\u62E9\u3002",
     "capabilities.combination.unknownSettings": "\u5C1A\u672A\u8BFB\u5230\u5DF2\u4FDD\u5B58\u8BBE\u7F6E\u3002",
@@ -33731,7 +33752,7 @@ var CHROME_COPY = Object.freeze({
     "capabilities.combination.inspectPlan": "\u67E5\u770B\u9010\u9879\u65B9\u6848",
     "capabilities.combination.noPlan": "\u5C1A\u672A\u89C2\u5BDF\u5230\u6B64\u4F1A\u8BDD\u7684\u51BB\u7ED3\u65B9\u6848\uFF0C\u4E0D\u80FD\u6839\u636E\u4FDD\u5B58\u8BBE\u7F6E\u63A8\u65AD\u3002",
     "capabilities.effect.paused": "\u8BBE\u7F6E\u5DF2\u4FDD\u7559\uFF0C\u6574\u7EC4\u6682\u505C\u671F\u95F4\u4E0D\u5E94\u7528\u3002",
-    "capabilities.effect.rulesOff": "\u80FD\u529B\u89C4\u5219\u6CBF\u7528 DSH\uFF1B\u91C7\u96C6\u3001\u6062\u590D\u548C\u9884\u89C8\u53EF\u5355\u72EC\u9009\u7528\u3002",
+    "capabilities.effect.rulesOff": "\u80FD\u529B\u914D\u7F6E\u6CBF\u7528 DSH\uFF1B\u91C7\u96C6\u3001\u6062\u590D\u548C\u9884\u89C8\u53EF\u5355\u72EC\u9009\u7528\u3002",
     "capabilities.effect.sourceClosed": "\u6765\u6E90\u5173\u95ED\u4F18\u5148\u4E8E\u5355\u9879\u5F00\u542F\uFF0C\u5355\u9879\u504F\u597D\u4ECD\u4FDD\u7559\u3002",
     "capabilities.effect.closed": "\u80FD\u529B\u5DF2\u9009\u505C\u7528\uFF0C\u8BF4\u660E\u504F\u597D\u4ECD\u4FDD\u7559\u3002",
     "capabilities.effect.disclosure.host": "\u6CBF\u7528 DSH \u7684\u8BF4\u660E\uFF1B\u5206\u914D\u4F9D\u636E\u4EC5\u4FDD\u5B58\u5907\u7528\u3002",
@@ -33743,13 +33764,13 @@ var CHROME_COPY = Object.freeze({
     "capabilities.effect.historicalStatistics": "\u505C\u6B62\u91C7\u96C6\u540E\u4ECD\u53EF\u4F7F\u7528\u6709\u6548\u5386\u53F2\u7EDF\u8BA1\uFF1B\u6CA1\u6709\u6709\u6548\u6837\u672C\u4E0D\u7B49\u4E8E\u96F6\u4F7F\u7528\u3002",
     "capabilities.effect.conditions": "\u4E86\u89E3\u9002\u7528\u6761\u4EF6",
     "capabilities.effect.allocationLimits": "\u5355\u9879\u6700\u7EC8\u8BF4\u660E\u9009\u62E9\u51B3\u5B9A\u662F\u5426\u5206\u914D\u3002\u6765\u6E90\u5173\u95ED\u4F18\u5148\uFF1B\u663E\u5F0F\u5B8C\u6574\u8BF4\u660E\u4E0D\u4F1A\u56E0\u9884\u7B97\u88AB\u622A\u65AD\u6216\u964D\u7EA7\u3002",
-    "capabilities.effect.recoveryOn": "\u9009\u7528\u538B\u7F29\u540E\u7684\u8BF4\u660E\u6062\u590D\uFF1B\u80FD\u529B\u542F\u505C\u4E0E\u8BF4\u660E\u5206\u914D\u4FDD\u6301\u4E0D\u53D8\u3002",
+    "capabilities.effect.recoveryOn": "\u9009\u7528\u538B\u7F29\u540E\u7684\u63D0\u793A\u6062\u590D\uFF1B\u80FD\u529B\u542F\u505C\u4E0E\u8BF4\u660E\u5206\u914D\u4FDD\u6301\u4E0D\u53D8\u3002",
     "capabilities.effect.recoveryOff": "\u4E0D\u8865\u56DE\u8FD1\u671F API \u8BF4\u660E\uFF1B\u5FC5\u8981\u7684\u73AF\u5883\u901A\u77E5\u4ECD\u7531\u539F\u6D41\u7A0B\u63D0\u4F9B\u3002",
     "capabilities.effect.previewOn": "\u4EC5\u9650\u5236\u6A21\u578B\u4E0A\u4E0B\u6587\u7684\u5C55\u793A\uFF0C\u5B8C\u6574\u503C\u548C\u6267\u884C\u72B6\u6001\u4E0D\u53D8\u3002",
     "capabilities.effect.previewOff": "\u7ED3\u679C\u4E0E\u65E5\u5FD7\u6CBF\u7528 DSH \u7684\u5C55\u793A\u3002",
     "capabilities.effect.collectionOn": "\u8BB0\u5F55\u5B9E\u9645\u4F7F\u7528\u60C5\u51B5\uFF1B\u4E0D\u4F1A\u81EA\u52A8\u9009\u62E9\u7EDF\u8BA1\u5206\u914D\u3002",
     "capabilities.effect.collectionOff": "\u505C\u6B62\u91C7\u96C6\u65B0\u8BB0\u5F55\uFF0C\u5386\u53F2\u7EDF\u8BA1\u4ECD\u4FDD\u7559\u5E76\u53EF\u9009\u4F5C\u5206\u914D\u4F9D\u636E\u3002",
-    "capabilities.effect.statisticsIndependent": "\u91C7\u96C6\u4E0E\u5206\u914D\u72EC\u7ACB\uFF1B\u662F\u5426\u4F7F\u7528\u7EDF\u8BA1\u5728\u201C\u4E0A\u4E0B\u6587 \u2192 \u80FD\u529B\u8BF4\u660E\u201D\u4E2D\u9009\u62E9\u3002",
+    "capabilities.effect.statisticsIndependent": "\u91C7\u96C6\u4E0E\u5206\u914D\u72EC\u7ACB\uFF1B\u662F\u5426\u4F7F\u7528\u7EDF\u8BA1\u5728\u201C\u63D0\u793A\u8BBE\u7F6E \u2192 \u521D\u59CB\u63D0\u793A\u201D\u4E2D\u9009\u62E9\u3002",
     "capabilities.sourceRules": "\u6765\u6E90\u89C4\u5219",
     "capabilities.filterAction": "\u7B5B\u9009",
     "capabilities.batchSettings": "\u6279\u91CF\u8BBE\u7F6E",
@@ -33777,9 +33798,9 @@ var CHROME_COPY = Object.freeze({
     "capabilities.coverageFor": "{name} \u7684\u8986\u76D6\u7387",
     "capabilities.familyHint": "\u4F1A\u8BDD\u5BB6\u65CF\uFF1A\u4E00\u4E2A\u4E3B\u4F1A\u8BDD\u53CA\u5176\u5B50\u4EE3\u7406\u5408\u8BA1\u4E00\u6B21\u3002\u5173\u95ED\u91C7\u96C6\u4ECD\u53EF\u67E5\u770B\u5DF2\u6709\u8BB0\u5F55\u3002",
     "capabilities.contextNavigation": "\u4E0A\u4E0B\u6587\u529F\u80FD",
-    "capabilities.context.description": "\u80FD\u529B\u8BF4\u660E",
-    "capabilities.context.recovery": "\u8BF4\u660E\u6062\u590D",
-    "capabilities.context.preview": "\u7ED3\u679C\u4E0E\u65E5\u5FD7",
+    "capabilities.context.description": "\u521D\u59CB\u63D0\u793A",
+    "capabilities.context.recovery": "\u63D0\u793A\u6062\u590D",
+    "capabilities.context.preview": "\u8F93\u51FA\u8282\u9009",
     "capabilities.context.custom": "\u81EA\u5B9A\u4E49",
     "capabilities.paused": "\u5DF2\u6682\u505C",
     "capabilities.groupPaused": "\u5DF2\u5173\u95ED\uFF0C\u8BBE\u7F6E\u5DF2\u4FDD\u7559",
@@ -33789,19 +33810,20 @@ var CHROME_COPY = Object.freeze({
     "capabilities.allocation.budget": "\u9884\u7B97\u7EA6\u675F",
     "capabilities.allocationHint": "\u4EC5\u5F71\u54CD\u201C\u6309\u4F9D\u636E\u5206\u914D\u201D\uFF0C\u4E0D\u6539\u53D8\u663E\u5F0F\u9009\u62E9\u7684\u201C\u5B8C\u6574\u63D0\u4F9B\u201D\u3002",
     "capabilities.quotaSettings": "\u989D\u5EA6\u8BBE\u7F6E",
-    "capabilities.descriptionInactive": "\u9700\u5F00\u542F\u80FD\u529B\u9875\u7684\u201C\u81EA\u5B9A\u4E49\u80FD\u529B\u8BBE\u7F6E\u201D\u624D\u80FD\u5E94\u7528\u8BF4\u660E\u8BBE\u7F6E\u3002",
+    "capabilities.descriptionInactive": "\u9700\u5F00\u542F\u201C\u80FD\u529B\u914D\u7F6E\u201D\u624D\u80FD\u5E94\u7528\u8BF4\u660E\u8BBE\u7F6E\u3002",
     "capabilities.recoveryHelp": "\u5BF9\u8BDD\u538B\u7F29\u540E\uFF0C\u6062\u590D\u8FD1\u671F\u5DF2\u7528\u3001\u4ECD\u6709\u6548\u7684 API \u8BF4\u660E\u3002\u4E0D\u6062\u590D Skill \u6B63\u6587\uFF0C\u4E5F\u4E0D\u66F4\u6539\u4F1A\u8BDD\u80FD\u529B\u65B9\u6848\u3002",
-    "capabilities.recoveryEnabled": "\u6062\u590D\u5DF2\u7528\u8BF4\u660E",
+    "capabilities.recoveryEnabled": "\u63D0\u793A\u6062\u590D",
     "capabilities.previewHelp": "\u9650\u5236\u6A21\u578B\u4E0A\u4E0B\u6587\u4E2D\u7ED3\u679C\u4E0E\u65E5\u5FD7\u7684\u957F\u5EA6\uFF0C\u7701\u7565\u5185\u5BB9\u4ECD\u53EF\u8BFB\u53D6\uFF1B\u5B8C\u6574\u7ED3\u679C\u548C\u6267\u884C\u72B6\u6001\u4E0D\u53D8\u3002",
-    "capabilities.previewEnabled": "\u9650\u5236\u7ED3\u679C\u4E0E\u65E5\u5FD7\u957F\u5EA6",
+    "capabilities.previewEnabled": "\u8F93\u51FA\u8282\u9009",
     "capabilities.estimatedTokens": "\u7EA6 {count} token",
-    "capabilities.descriptionHelp": "\u8BBE\u7F6E\u80FD\u529B\u8BF4\u660E\u5982\u4F55\u8FDB\u5165\u6A21\u578B\u4E0A\u4E0B\u6587\uFF0C\u5355\u9879\u8BBE\u7F6E\u4F18\u5148\u3002",
+    "capabilities.descriptionDependency": "\u521D\u59CB\u63D0\u793A\u91C7\u7528\u80FD\u529B\u914D\u7F6E\u4E2D\u7684\u8BF4\u660E\u89C4\u5219\uFF1B\u5E38\u7528\u96C6\u5728\u80FD\u529B\u914D\u7F6E\u4E2D\u7F16\u8F91\u3002\u63D0\u793A\u6062\u590D\u3001\u8F93\u51FA\u8282\u9009\u548C\u4F7F\u7528\u7EDF\u8BA1\u53EF\u72EC\u7ACB\u9009\u7528\u3002",
+    "capabilities.descriptionHelp": "\u8BBE\u7F6E\u65B0\u4F1A\u8BDD\u7684\u521D\u59CB\u80FD\u529B\u63D0\u793A\uFF1A\u5B8C\u6574\u8BF4\u660E\u3001\u6309\u9700\u76EE\u5F55\u6216\u6309\u4F9D\u636E\u5206\u914D\uFF1B\u5355\u9879\u8BBE\u7F6E\u4F18\u5148\u3002",
     "capabilities.defaultDisclosure": "\u9ED8\u8BA4\u63D0\u4F9B\u65B9\u5F0F",
     "capabilities.savedForNew": "\u5DF2\u4FDD\u5B58 \xB7 \u65B0\u4F1A\u8BDD\u91C7\u7528",
-    "capabilities.title.manual": "\u80FD\u529B\u8BBE\u7F6E",
-    "capabilities.title.budgets": "\u4E0A\u4E0B\u6587\u8BBE\u7F6E",
-    "capabilities.title.statistics": "\u67E5\u770B\u80FD\u529B\u4F7F\u7528\u60C5\u51B5",
-    "capabilities.title.plans": "\u914D\u7F6E",
+    "capabilities.title.manual": "\u80FD\u529B\u914D\u7F6E",
+    "capabilities.title.budgets": "\u63D0\u793A\u8BBE\u7F6E",
+    "capabilities.title.statistics": "\u4F7F\u7528\u7EDF\u8BA1",
+    "capabilities.title.plans": "\u914D\u7F6E\u65B9\u6848",
     "capabilities.existingSessions": "\u5BF9\u7167\u5DF2\u6709\u4F1A\u8BDD",
     "capabilities.managementHelp": "\u5F00\u542F\u540E\u4F7F\u7528\u4E0B\u65B9\u8BBE\u7F6E\uFF0C\u63A7\u5236\u80FD\u529B\u542F\u7528\u53CA\u63D0\u4F9B\u7ED9\u6A21\u578B\u7684\u8BF4\u660E\uFF1B\u5173\u95ED\u5219\u6CBF\u7528 DSH\u3002",
     "capabilities.noConfigurations": "\u6682\u65E0\u5DF2\u4FDD\u5B58\u914D\u7F6E",
@@ -33900,7 +33922,7 @@ var CHROME_COPY = Object.freeze({
     "capabilities.reloadObservation": "\u91CD\u65B0\u8BFB\u53D6\u7EDF\u8BA1\u4E0E\u9884\u89C8",
     "capabilities.observationScope": "\u5DE5\u4F5C\u533A\uFF1A{workspace} \xB7 \u89C2\u5BDF\u4F1A\u8BDD\uFF1A{session}",
     "capabilities.usageEvidenceHint": "\u4F7F\u7528\u6570 / \u5B9E\u9645\u53EF\u7528\u4F1A\u8BDD\u5BB6\u65CF\u6570\u3002\u91CD\u590D\u8C03\u7528\u4E0D\u91CD\u590D\u8BA1\u6570\uFF1B\u5DE5\u4F5C\u533A\u4F18\u5148\uFF0C\u5168\u5C40\u53EA\u4F5C\u51B7\u542F\u52A8\u53C2\u8003\u3002\u5173\u95ED\u7EDF\u8BA1\u4E0D\u4F1A\u5220\u9664\u5DF2\u6709\u8BB0\u5F55\u3002",
-    "capabilities.previewHint": "\u6309\u5F53\u524D\u914D\u7F6E\u3001\u6B64\u4F1A\u8BDD\u7684\u53EF\u7528\u80FD\u529B\u548C\u771F\u5B9E\u7EDF\u8BA1\u91CD\u65B0\u8BA1\u7B97\u3002\u9884\u89C8\u4E0D\u4F1A\u6539\u53D8\u5DF2\u6709\u4F1A\u8BDD\uFF1B\u603B\u91CF\u5305\u542B\u5171\u4EAB\u4F9D\u8D56\u548C\u6807\u9898\uFF0C\u5355\u9879\u5927\u5C0F\u4EC5\u8BA1\u63A5\u53E3\u6B63\u6587\u3002\u6062\u590D\u548C\u7ED3\u679C\u9884\u89C8\u9884\u7B97\u5728\u5B9E\u9645\u538B\u7F29\u6216\u8FD4\u56DE\u7ED3\u679C\u65F6\u4F7F\u7528\uFF0C\u4E0D\u9884\u4F30\u672A\u6765\u5185\u5BB9\u3002",
+    "capabilities.previewHint": "\u6309\u5F53\u524D\u914D\u7F6E\u3001\u6B64\u4F1A\u8BDD\u7684\u53EF\u7528\u80FD\u529B\u548C\u771F\u5B9E\u7EDF\u8BA1\u91CD\u65B0\u8BA1\u7B97\u3002\u9884\u89C8\u4E0D\u4F1A\u6539\u53D8\u5DF2\u6709\u4F1A\u8BDD\uFF1B\u603B\u91CF\u5305\u542B\u5171\u4EAB\u4F9D\u8D56\u548C\u6807\u9898\uFF0C\u5355\u9879\u5927\u5C0F\u4EC5\u8BA1\u63A5\u53E3\u6B63\u6587\u3002\u6062\u590D\u548C\u8F93\u51FA\u8282\u9009\u9884\u7B97\u5728\u5B9E\u9645\u538B\u7F29\u6216\u8FD4\u56DE\u7ED3\u679C\u65F6\u4F7F\u7528\uFF0C\u4E0D\u9884\u4F30\u672A\u6765\u5185\u5BB9\u3002",
     "capabilities.workspaceCoverage": "\u5DE5\u4F5C\u533A \u4F7F\u7528 / \u6837\u672C",
     "capabilities.globalCoverage": "\u5168\u5C40 \u4F7F\u7528 / \u6837\u672C",
     "capabilities.contractSize": "\u63A5\u53E3\u6B63\u6587\u5927\u5C0F",
@@ -33977,7 +33999,7 @@ var CHROME_COPY = Object.freeze({
     "capabilities.reason.availability-rule": "\u53EF\u7528\u6027\u89C4\u5219",
     "capabilities.reason.disclosure-rule": "\u8BF4\u660E\u89C4\u5219",
     "capabilities.previousSource": "\u5148\u524D\u6765\u6E90\uFF08\u5F53\u524D\u672A\u5217\u51FA\uFF09",
-    "capabilities.management": "\u81EA\u5B9A\u4E49\u80FD\u529B\u8BBE\u7F6E",
+    "capabilities.management": "\u80FD\u529B\u914D\u7F6E",
     "capabilities.foundation": "\u57FA\u7840\u6267\u884C\u73AF\u5883",
     "capabilities.foundationHint": "\u4E0D\u53D7\u80FD\u529B\u7BA1\u7406\u63A7\u5236",
     "capabilities.types": "\u80FD\u529B\u7C7B\u578B",
@@ -34055,10 +34077,10 @@ var CHROME_COPY = Object.freeze({
     "capabilities.refreshUnavailable": "\u5F53\u524D\u4F1A\u8BDD\u7684\u5237\u65B0\u547D\u4EE4\u4E0D\u53EF\u7528\u3002",
     "capabilities.refreshAcknowledged": "DSH \u5DF2\u786E\u8BA4\u5237\u65B0\u64CD\u4F5C\u3002",
     "capabilities.settingsTabs": "\u80FD\u529B\u8BBE\u7F6E\u9875\u7B7E",
-    "capabilities.tab.manual": "\u80FD\u529B",
-    "capabilities.tab.statistics": "\u7EDF\u8BA1",
-    "capabilities.tab.budgets": "\u4E0A\u4E0B\u6587",
-    "capabilities.tab.plans": "\u914D\u7F6E",
+    "capabilities.tab.manual": "\u80FD\u529B\u914D\u7F6E",
+    "capabilities.tab.statistics": "\u4F7F\u7528\u7EDF\u8BA1",
+    "capabilities.tab.budgets": "\u63D0\u793A\u8BBE\u7F6E",
+    "capabilities.tab.plans": "\u914D\u7F6E\u65B9\u6848",
     "capabilities.savedStatisticsInvalid": "\u5DF2\u4FDD\u5B58\u7684\u7EDF\u8BA1\u8BBE\u7F6E\u4E0D\u53EF\u7528\u3002\u4E0B\u65B9\u663E\u793A\u5EFA\u8BAE\u503C\uFF1B\u4FEE\u6539\u540E\u4FDD\u5B58\uFF0C\u624B\u52A8\u80FD\u529B\u9009\u62E9\u4ECD\u6709\u6548\u3002",
     "capabilities.catalogUnavailable": "\u80FD\u529B\u6E05\u5355\u8BFB\u53D6\u5931\u8D25\uFF1A{error}\u3002\u5DF2\u4FDD\u5B58\u7684\u9009\u62E9\u4ECD\u53EF\u7F16\u8F91\u3002",
     "capabilities.search": "\u641C\u7D22\u80FD\u529B\uFF08\u540D\u79F0\u3001ID \u6216\u6765\u6E90\uFF09",
@@ -34072,7 +34094,7 @@ var CHROME_COPY = Object.freeze({
     "capabilities.full": "\u5B8C\u6574\u63D0\u4F9B",
     "capabilities.on-demand": "\u6309\u9700\u63D0\u4F9B",
     "capabilities.closed": "\u5173\u95ED\u80FD\u529B",
-    "capabilities.statisticsEnabled": "\u91C7\u96C6\u4F7F\u7528\u7EDF\u8BA1",
+    "capabilities.statisticsEnabled": "\u4F7F\u7528\u7EDF\u8BA1",
     "capabilities.windowSize": "\u6837\u672C\u7A97\u53E3\uFF08\u4F1A\u8BDD\u5BB6\u65CF\uFF09",
     "capabilities.minimumSamples": "\u6700\u4F4E\u6837\u672C\u6570",
     "capabilities.fullThreshold": "\u5B8C\u6574\u62AB\u9732\u9608\u503C\uFF08%\uFF09",
@@ -34273,10 +34295,11 @@ var CHROME_COPY = Object.freeze({
   }),
   en: Object.freeze({
     "capabilities.combination.saved": "New session settings",
-    "capabilities.combination.rules": "Capability rules",
-    "capabilities.combination.statistics": "Usage collection",
-    "capabilities.combination.recovery": "Description recovery",
-    "capabilities.combination.preview": "Result previews",
+    "capabilities.combination.rules": "Capability configuration",
+    "capabilities.combination.description": "Initial prompt",
+    "capabilities.combination.statistics": "Usage statistics",
+    "capabilities.combination.recovery": "Prompt recovery",
+    "capabilities.combination.preview": "Output excerpts",
     "capabilities.combination.state.selected": "Selected",
     "capabilities.combination.state.unselected": "Not selected",
     "capabilities.combination.state.paused": "Paused",
@@ -34284,7 +34307,7 @@ var CHROME_COPY = Object.freeze({
     "capabilities.combination.state.unknown": "Unknown",
     "capabilities.combination.separator": ", ",
     "capabilities.combination.selectedEffect": "New sessions will use: {features}. Other behavior stays with DSH.",
-    "capabilities.combination.rulesOnly": "Only capability rules are selected; no usage collection, description recovery or result/log limits.",
+    "capabilities.combination.rulesOnly": "Only capability configuration and initial prompts are selected; no usage collection, description recovery or result/log limits.",
     "capabilities.combination.hostEffect": "All behavior in this group stays with DSH.",
     "capabilities.combination.pausedEffect": "This group is paused. Turning it on restores these choices.",
     "capabilities.combination.unknownSettings": "Saved settings have not been read.",
@@ -34306,7 +34329,7 @@ var CHROME_COPY = Object.freeze({
     "capabilities.combination.inspectPlan": "Inspect the member plan",
     "capabilities.combination.noPlan": "No frozen plan has been observed for this session. Saved settings cannot establish it.",
     "capabilities.effect.paused": "Settings are retained and do not apply while the group is paused.",
-    "capabilities.effect.rulesOff": "Capability rules stay with DSH. Collection, recovery and previews remain independent choices.",
+    "capabilities.effect.rulesOff": "Capability configuration stays with DSH. Collection, recovery and previews remain independent choices.",
     "capabilities.effect.sourceClosed": "A source closure overrides member enablement and retains member preferences.",
     "capabilities.effect.closed": "This capability is selected for closure; its disclosure preference is retained.",
     "capabilities.effect.disclosure.host": "Use DSH descriptions; allocation criteria are retained for later use.",
@@ -34324,7 +34347,7 @@ var CHROME_COPY = Object.freeze({
     "capabilities.effect.previewOff": "DSH owns result and log presentation.",
     "capabilities.effect.collectionOn": "Record actual usage; this does not select statistics-based allocation.",
     "capabilities.effect.collectionOff": "Stop collecting new records; retained statistics remain available as allocation evidence.",
-    "capabilities.effect.statisticsIndependent": "Collection and allocation are independent. Select statistics use under Context \u2192 Capability descriptions.",
+    "capabilities.effect.statisticsIndependent": "Collection and allocation are independent. Select statistics use under Prompt settings \u2192 Initial prompt.",
     "capabilities.sourceRules": "Source rules",
     "capabilities.filterAction": "Filter",
     "capabilities.batchSettings": "Batch settings",
@@ -34352,9 +34375,9 @@ var CHROME_COPY = Object.freeze({
     "capabilities.coverageFor": "Coverage for {name}",
     "capabilities.familyHint": "A family counts one main session and its subagents together. Existing records remain available when collection is off.",
     "capabilities.contextNavigation": "Context features",
-    "capabilities.context.description": "Capability descriptions",
-    "capabilities.context.recovery": "Description recovery",
-    "capabilities.context.preview": "Results and logs",
+    "capabilities.context.description": "Initial prompt",
+    "capabilities.context.recovery": "Prompt recovery",
+    "capabilities.context.preview": "Output excerpts",
     "capabilities.context.custom": "Custom",
     "capabilities.paused": "Paused",
     "capabilities.groupPaused": "Off \xB7 settings retained",
@@ -34364,18 +34387,19 @@ var CHROME_COPY = Object.freeze({
     "capabilities.allocation.budget": "Budget limit",
     "capabilities.allocationHint": "Only affects adaptive disclosure. Explicit full disclosure stays complete.",
     "capabilities.quotaSettings": "Limits",
-    "capabilities.descriptionInactive": "Enable custom capability settings on the Capabilities page to apply disclosure settings.",
+    "capabilities.descriptionInactive": "Enable Capability configuration to apply disclosure settings.",
     "capabilities.recoveryHelp": "After compaction, restore recently used API descriptions that are still valid. Skill bodies and the session capability plan are unaffected.",
-    "capabilities.recoveryEnabled": "Restore used descriptions",
+    "capabilities.recoveryEnabled": "Prompt recovery",
     "capabilities.previewHelp": "Limit result and log length in model context. Omitted content remains readable; complete results and execution status are preserved.",
-    "capabilities.previewEnabled": "Limit results and logs",
+    "capabilities.previewEnabled": "Output excerpts",
     "capabilities.estimatedTokens": "{count} estimated tokens",
-    "capabilities.descriptionHelp": "Choose how capability descriptions enter model context. Individual settings take precedence.",
+    "capabilities.descriptionDependency": "Initial prompts use the description rules in Capability configuration, where the common set is edited. Prompt recovery, output excerpts and usage statistics are independent choices.",
+    "capabilities.descriptionHelp": "Choose first-turn capability prompts for new sessions: full descriptions, an on-demand directory, or allocation from evidence. Individual settings take precedence.",
     "capabilities.defaultDisclosure": "Default disclosure",
     "capabilities.savedForNew": "Saved \xB7 used by new sessions",
-    "capabilities.title.manual": "Capability settings",
-    "capabilities.title.budgets": "Context settings",
-    "capabilities.title.statistics": "Capability usage",
+    "capabilities.title.manual": "Capability configuration",
+    "capabilities.title.budgets": "Prompt settings",
+    "capabilities.title.statistics": "Usage statistics",
     "capabilities.title.plans": "Configurations",
     "capabilities.existingSessions": "Compare an existing session",
     "capabilities.managementHelp": "Enable to use the settings below for availability and model descriptions. When off, DSH settings apply.",
@@ -34552,7 +34576,7 @@ var CHROME_COPY = Object.freeze({
     "capabilities.reason.availability-rule": "Availability rule",
     "capabilities.reason.disclosure-rule": "Disclosure rule",
     "capabilities.previousSource": "Previous source (not currently listed)",
-    "capabilities.management": "Custom capability settings",
+    "capabilities.management": "Capability configuration",
     "capabilities.foundation": "Core execution environment",
     "capabilities.foundationHint": "Outside capability management",
     "capabilities.types": "Capability types",
@@ -34630,9 +34654,9 @@ var CHROME_COPY = Object.freeze({
     "capabilities.refreshUnavailable": "The refresh command is unavailable in this session.",
     "capabilities.refreshAcknowledged": "DSH acknowledged the refresh operation.",
     "capabilities.settingsTabs": "Capability settings tabs",
-    "capabilities.tab.manual": "Capabilities",
-    "capabilities.tab.statistics": "Statistics",
-    "capabilities.tab.budgets": "Context",
+    "capabilities.tab.manual": "Capability configuration",
+    "capabilities.tab.statistics": "Usage statistics",
+    "capabilities.tab.budgets": "Prompt settings",
     "capabilities.tab.plans": "Configurations",
     "capabilities.savedStatisticsInvalid": "Saved statistics are unusable. Suggested values are shown; edit to save them. Manual capability choices remain effective.",
     "capabilities.catalogUnavailable": "Capability catalog unavailable: {error}. Saved choices remain editable.",
@@ -34647,7 +34671,7 @@ var CHROME_COPY = Object.freeze({
     "capabilities.full": "Full contract",
     "capabilities.on-demand": "On demand",
     "capabilities.closed": "Closed",
-    "capabilities.statisticsEnabled": "Collect usage statistics",
+    "capabilities.statisticsEnabled": "Usage statistics",
     "capabilities.windowSize": "Sample window (session families)",
     "capabilities.minimumSamples": "Minimum samples",
     "capabilities.fullThreshold": "Full disclosure threshold (%)",

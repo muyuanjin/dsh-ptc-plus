@@ -66,8 +66,8 @@ export class CapabilityStatisticsStore {
     while (session.header?.origin === 'subagent' && session.header?.parentSession) {
       if (visited.has(session.id)) return null
       visited.add(session.id)
-      session = this.ctx?.sessions?.get?.(session.header.parentSession)
-        ?? this.ctx?.agents?.get?.(session.header.parentSession)?.session
+      session = this.ctx?.get('sessions')?.get?.(session.header.parentSession)
+        ?? this.ctx?.get('agents')?.get?.(session.header.parentSession)?.session
       if (!session) return null
     }
     return session.id
@@ -103,8 +103,8 @@ export class CapabilityStatisticsStore {
           await writeFileAtomic(this.filename, JSON.stringify(retained) + '\n', { mode: 0o600, dirMode: 0o700 })
         }
         if (additions.length > document.state.limits.maxCapabilitiesPerFamily) return capacityExceeded()
-        const liveAgents = this.ctx?.agents?.list?.()
-        const sessions = this.ctx?.sessions?.list?.()
+        const liveAgents = this.ctx?.get('agents')?.list?.()
+        const sessions = this.ctx?.get('sessions')?.list?.()
         const completeCensus = Array.isArray(liveAgents) && Array.isArray(sessions)
         const known = new Map((sessions ?? []).map(session => [session.id, session]))
         for (const live of liveAgents ?? []) known.set(live.session.id, live.session)

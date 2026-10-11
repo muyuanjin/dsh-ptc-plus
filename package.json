@@ -86,6 +86,7 @@
     "test:client:layout:focus": "node scripts/client-binding-layout.mjs --focus",
     "test:client:fallback": "node scripts/client-fallback-smoke.mjs",
     "test:client:layout": "node scripts/client-binding-layout.mjs",
+    "readme:screenshots": "node scripts/readme-screenshots.mjs",
     "host:baseline:update": "node scripts/dsh-dependency-baseline.mjs update",
     "host:baseline:verify": "node scripts/dsh-dependency-baseline.mjs verify",
     "test:host-contract": "node scripts/dsh-host-contract-suite.mjs",

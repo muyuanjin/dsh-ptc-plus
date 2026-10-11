@@ -1000,10 +1000,13 @@ test('the plugin row seat renders both views when the page declares it first', a
   expect(view.queryByRole('dialog', { name: 'Batch settings' })).toBeNull()
   expect(settings.set).toHaveBeenCalledTimes(writesBeforeBatch)
   fireEvent.click(within(form).getByRole('button', { name: SETTINGS_COPY.en['capabilities.inheritedRules'] }))
-  expect(within(form).getByRole('region', { name: SETTINGS_COPY.en['capabilities.policy.rules'] })).not.toBeNull()
+  const inheritedRules = view.getByRole('dialog', { name: SETTINGS_COPY.en['capabilities.inheritedRules'] })
+  expect(within(inheritedRules).getByRole('region', { name: SETTINGS_COPY.en['capabilities.policy.rules'] })).not.toBeNull()
   for (const dimension of ['availability', 'disclosure']) {
-    expect(within(form).getByLabelText(`${SETTINGS_COPY.en['capabilities.policy.default']} · ${SETTINGS_COPY.en[`capabilities.policy.${dimension}`]}`)).not.toBeNull()
+    expect(within(inheritedRules).getByLabelText(`${SETTINGS_COPY.en['capabilities.policy.default']} · ${SETTINGS_COPY.en[`capabilities.policy.${dimension}`]}`)).not.toBeNull()
   }
+  fireEvent.click(within(inheritedRules).getByRole('button', { name: SETTINGS_COPY.en['capabilities.dialogDone'] }))
+  expect(view.queryByRole('dialog', { name: SETTINGS_COPY.en['capabilities.inheritedRules'] })).toBeNull()
   fireEvent.click(within(form).getByRole('tab', { name: 'Prompt settings', exact: true }))
   for (const basis of ['baseline', 'statistics', 'budget']) {
     expect(within(form).getByRole('switch', { name: SETTINGS_COPY.en[`capabilities.policy.allocate.${basis}`] })).not.toBeNull()
@@ -1871,7 +1874,7 @@ async function chooseCapabilityOption(view, label, option) {
     fireEvent.click(view.getByRole('button', { name: `Edit context settings: ${id}` }))
   }
   if (['Capability source', 'Saved disclosure', 'Saved availability', 'Availability', 'Sort by'].includes(label)
-      && view.container.querySelector('.ptcPlusCapabilityToolbar') && !view.container.querySelector('.ptcPlusCapabilityFilterFields')) {
+      && view.container.querySelector('.ptcPlusCapabilityToolbar') && !view.queryByRole('dialog', { name: 'Filter' })) {
     fireEvent.click(view.getByRole('button', { name: 'Filter', exact: true }))
   }
   const trigger = view.getByRole('combobox', { name: label })
@@ -2785,7 +2788,10 @@ test('the authoring entry opens the complete settings dialog from every host sea
     await runtime.flush()
     expect(dialog.querySelector('[aria-label="Saved disclosure"]')).toBeNull()
     fireEvent.click(within(dialog).getByRole('button', { name: 'Filter', exact: true }))
-    expect(dialog.querySelector('[aria-label="Saved disclosure"]')).not.toBeNull()
+    const filterDialog = view.getByRole('dialog', { name: 'Filter' })
+    expect(filterDialog.querySelector('[aria-label="Saved disclosure"]')).not.toBeNull()
+    fireEvent.click(within(filterDialog).getByRole('button', { name: SETTINGS_COPY.en['capabilities.dialogDone'] }))
+    expect(view.queryByRole('dialog', { name: 'Filter' })).toBeNull()
     expect(dialog.querySelector('textarea')).toBeNull()
     expect(dialog.querySelector('.ptcPlusHeader')).toBeNull()
     expect(dialog.querySelector('.ptcPlusSettingsDialog')).not.toBeNull()
@@ -3052,9 +3058,9 @@ test('capability filters reconcile source and type while advanced filters open o
     { id: 'tools.mcp__docs__search', name: 'Search', category: 'tool', source: { kind: 'mcp', server: 'docs' } },
   ] })
   expect(view.container.querySelector('.ptcPlusCapabilityTypes')).not.toBeNull()
-  expect(view.container.querySelector('.ptcPlusCapabilityFilterFields')).toBeNull()
+  expect(view.queryByRole('dialog', { name: 'Filter' })).toBeNull()
   fireEvent.click(view.getByRole('button', { name: 'Filter', exact: true }))
-  expect(view.container.querySelector('details.ptcPlusCapabilityFilters')).toBeNull()
+  expect(view.getByRole('dialog', { name: 'Filter' }).querySelector('.ptcPlusCapabilityFilterFields')).not.toBeNull()
   const source = view.getByLabelText('Capability source')
   await chooseCapabilityOption(view, 'Capability source', 'User skill (.agents) · filesystem')
   expect(ids()).toEqual(['skills.research'])
@@ -3335,7 +3341,7 @@ test('capability workbench combines type, source, manual strategy, common and av
   fireEvent.change(view.getByRole('searchbox'), { target: { value: 'generate images' } })
   expect(ids()).toEqual(['skills.zebra'])
   fireEvent.click(view.getByRole('button', { name: 'Edit context settings: skills.zebra' }))
-  expect(view.getByRole('complementary').textContent).toContain('body loads only when used')
+  expect(view.getByRole('dialog', { name: 'Zebra' }).textContent).toContain('body loads only when used')
   expect(updateSetting).not.toHaveBeenCalled()
   view.unmount()
 })
@@ -3393,7 +3399,7 @@ test.each([
     expect(header.getAttribute('aria-sort')).toBe(direction)
     expect(ids()).toEqual(expectedIds)
     expect(view.container.querySelector('.ptcPlusCapabilityItem[data-selected=true] code').textContent).toBe('tools.z')
-    expect(view.getByRole('complementary').textContent).toContain('tools.z')
+    expect(view.getByRole('dialog', { name: 'Zeta' }).textContent).toContain('tools.z')
     expect(view.getByRole('switch', { name: 'Availability for mcp.z' }).disabled).toBe(true)
   }
   expect(view.container.querySelectorAll('.ptcPlusCapabilityColumns [aria-sort=none]')).toHaveLength(5)
@@ -3419,7 +3425,7 @@ test('capability header sorting retains filters hidden selections and unknown ca
   expect(ids()).toEqual(['mcp.a', 'mcp.z'])
   fireEvent.change(view.getByRole('searchbox'), { target: { value: 'Zeta' } })
   expect(ids()).toEqual(['mcp.z'])
-  expect(view.queryByRole('complementary')).toBeNull()
+  expect(view.queryByRole('dialog')).toBeNull()
   fireEvent.click(view.getAllByRole('button', { name: 'Clear filters' })[0])
   expect(view.container.querySelector('.ptcPlusCapabilityItem[data-selected=true] code').textContent).toBe('mcp.a')
   failCatalog = true
@@ -3441,9 +3447,9 @@ test('capability workbench separates saved preferences from each selected frozen
     baseline: ['skills.images'], overrides: { 'skills.images': 'full' },
     plans: [plan('older', 'on-demand', true), plan('newer', 'closed', false)],
   })
-  expect(view.queryByRole('complementary')).toBeNull()
+  expect(view.queryByRole('dialog')).toBeNull()
   fireEvent.click(view.getByRole('button', { name: 'Edit context settings: skills.images' }))
-  const details = view.getByRole('complementary')
+  const details = view.getByRole('dialog', { name: 'Images' })
   expect(details.textContent).toContain('Full contract')
   expect(view.getByLabelText('Inspect session').textContent).toContain('Choose a target session')
   await chooseCapabilityOption(view, 'Inspect session', 'older')
@@ -3474,8 +3480,8 @@ test('Skill preferences explain user-only loading without hiding the configurabl
     overrides: { 'skills.images': 'full' },
   })
   fireEvent.click(view.getByRole('button', { name: 'Edit context settings: skills.images' }))
-  expect(view.getByRole('complementary').textContent).toContain('Only users can invoke /images')
-  expect(view.getByRole('complementary').textContent).toContain('model cannot load it with tools.skill')
+  expect(view.getByRole('dialog', { name: 'images' }).textContent).toContain('Only users can invoke /images')
+  expect(view.getByRole('dialog', { name: 'images' }).textContent).toContain('model cannot load it with tools.skill')
   expect(view.getByLabelText('Disclosure for skills.images').textContent).toContain('Full contract')
   expect(updateSetting).not.toHaveBeenCalled()
   view.unmount()
@@ -3485,7 +3491,7 @@ test('Skill preferences explain eligibility conflicts without claiming model or 
   const { view } = await capabilityWorkbenchFixture({ catalog: [{ id: 'skills.images', name: 'images', category: 'skill',
     description: 'Image design', invocationConflict: true, source: { kind: 'skill', bucket: 'bundled', provider: 'shipped' } }] })
   fireEvent.click(view.getByRole('button', { name: 'Edit context settings: skills.images' }))
-  const details = view.getByRole('complementary').textContent
+  const details = view.getByRole('dialog', { name: 'images' }).textContent
   expect(details).toContain('Invocation eligibility varies by session')
   expect(details).not.toContain('Only users can invoke')
   expect(details).not.toContain('Only the model can load')
@@ -3512,13 +3518,40 @@ test('capability workbench retains last observed descriptions on catalog failure
   expect(view.container.textContent).toContain('Disconnected catalog')
   expect(ids()).toEqual(['tools.live'])
   fireEvent.click(view.getByRole('button', { name: 'Edit context settings: tools.live' }))
-  fireEvent.click(view.getByText('View complete catalog description'))
+  expect(view.getByText('Capability description')).not.toBeNull()
   expect(view.getByText('Retained owner description')).not.toBeNull()
   await chooseCapabilityOption(view, 'Availability', 'Unconfirmed')
   expect(ids()).toEqual(['tools.live'])
   await chooseCapabilityOption(view, 'Availability', 'Currently unavailable')
   expect(ids()).toEqual([])
   view.unmount()
+})
+
+test('capability rows select their own item from any cell while the availability switch keeps its own meaning', async () => {
+  const { view, snapshot, updateSetting } = await capabilityWorkbenchFixture({ catalog: [
+    { id: 'tools.row', name: 'Row', category: 'tool', description: 'Row description', source: { kind: 'host' } },
+  ] })
+  try {
+    const row = view.container.querySelector('.ptcPlusCapabilityItem')
+    for (const selector of ['.ptcPlusCapabilityIdentity', '.ptcPlusCapabilityBadge', '.ptcPlusCapabilitySource',
+      '.ptcPlusCapabilityAvailability', '.ptcPlusCapabilityContextCell']) {
+      const cell = row.querySelector(selector)
+      expect(cell).not.toBeNull()
+      fireEvent.click(cell)
+      expect(view.getByRole('dialog', { name: 'Row' })).not.toBeNull()
+      fireEvent.click(view.getByRole('button', { name: 'Close details' }))
+      expect(view.queryByRole('dialog')).toBeNull()
+    }
+    fireEvent.click(row.querySelector('.ptcPlusCapabilityAvailability label'))
+    await act(async () => {})
+    expect(view.queryByRole('dialog')).toBeNull()
+    expect(JSON.parse(snapshot.value.capabilityPolicy).items['tools.row']).toEqual({ availability: 'closed' })
+    fireEvent.click(view.getByRole('switch', { name: 'Availability for tools.row' }))
+    await act(async () => {})
+    expect(view.queryByRole('dialog')).toBeNull()
+    expect(JSON.parse(snapshot.value.capabilityPolicy).items['tools.row']).toEqual({ availability: 'enabled' })
+    expect(updateSetting.mock.calls.every(([key]) => key === 'capabilityPolicy')).toBe(true)
+  } finally { view.unmount() }
 })
 
 test('capability workbench keeps browsing available while write controls follow read-only and plugin disable', async () => {
@@ -7011,8 +7044,10 @@ test('MCP source rules preserve independent child preferences and direct source-
   expect(updateSetting.mock.calls.every(([key]) => ['capabilityPolicy', 'capabilityManagementEnabled'].includes(key))).toBe(true)
   fireEvent.click(view.getByRole('button', { name: 'Edit context settings: tools.mcp__docs__search' }))
   snapshot.writable = false; rerender()
-  const sourceControls = view.getByRole('complementary').querySelector('details')
-  expect([...sourceControls.querySelectorAll('[role=combobox]')].every(control => control.disabled)).toBe(true)
+  const editor = view.getByRole('dialog', { name: 'tools.mcp__docs__search' })
+  for (const dimension of ['Availability', 'Disclosure']) {
+    expect(within(editor).getByRole('combobox', { name: `docs · ${dimension}` }).disabled).toBe(true)
+  }
   view.unmount()
 })
 
@@ -7141,7 +7176,7 @@ test('capability task navigation keeps fixed context features and their independ
   expect(row.querySelector('code').textContent).toBe('tools.ask_user_question')
   expect(row.textContent).not.toContain('A provider description')
   expect(row.querySelector('[data-state=unapplied]').textContent).toBe('Not applied')
-  expect(view.queryByRole('complementary')).toBeNull()
+  expect(view.queryByRole('dialog')).toBeNull()
   fireEvent.click(view.getByRole('tab', { name: 'Prompt settings', exact: true }))
   const navigation = view.container.querySelector('.ptcPlusContextNavigation')
   expect([...navigation.querySelectorAll('button')].map(item => item.getAttribute('aria-label'))).toEqual(['Initial prompt', 'Prompt recovery', 'Output excerpts'])
@@ -7584,7 +7619,8 @@ test.each(['zh', 'en'])('capability batch dialog confirms filtered catalog items
     expect(snapshot.value.capabilityContextEnabled).toBe(false)
     expect(view.queryByRole('dialog', { name: copy['capabilities.batchSettings'] })).toBeNull()
     fireEvent.click(view.getByRole('button', { name: copy['capabilities.inheritedRules'] }))
-    expect(view.container.querySelector('.ptcPlusPolicyRules').textContent).toContain(copy['capabilities.inheritedRulesHelp'])
+    expect(view.getByRole('dialog', { name: copy['capabilities.inheritedRules'] }).textContent)
+      .toContain(copy['capabilities.inheritedRulesHelp'])
     expect(updateSetting).toHaveBeenCalledTimes(1)
   } finally { view.unmount() }
 })
@@ -7846,6 +7882,9 @@ test('session capability columns cycle all five sorts across categories and pres
     const actual = table.querySelector('[data-capability-id="tools.zulu"]')
     expect(actual.querySelector('.ptcPlusCapabilityAvailability').textContent).toBe('Enabled')
     expect(actual.querySelector('.ptcPlusCapabilityContextCell').textContent).toBe('Full contract')
+    // Any cell selects the row, so the wide empty cells are not dead space.
+    fireEvent.click(actual.querySelector('.ptcPlusCapabilitySource'))
+    expect(view.getByRole('complementary').querySelector('h3').textContent).toBe('Zulu')
     fireEvent.click(within(actual).getByRole('button', { name: 'Availability for tools.zulu' }))
     expect(document.activeElement).toBe(view.getByRole('combobox', { name: 'Availability' }))
     await chooseCapabilityOption(view, 'Availability', 'Closed')

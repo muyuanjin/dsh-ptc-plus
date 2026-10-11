@@ -96,7 +96,7 @@ Full Changelog: https://github.com/muyuanjin/dsh-ptc-plus/compare/<上一个 tag
 
 * 适配 DSH 0.1.7 的公共扩展面：设置卡片注册到宿主的插件配置座位（侧栏 **插件 → 已安装** 的 `plugins.row.config`），星光入口的四个动作进入公共 `Menu` 的 `children` 区域
 * 不渲染 `children` 的宿主同样可用：同一套插件自有动作区由 pinned 区域承载，上一代设置座位 `settings.plugin.item` 继续生效
-* 兼容性由公共能力探测决定：探测只记录一次已挂载观测，支持 `children` 的宿主不会重复渲染
+* 兼容性由公共能力探测决定：支持 `children` 的宿主不会重复渲染
 ````
 
 同一版的 `feat(review)`、`chore(release)` 等内部提交不进入 notes；测试夹具修复属于交付记录，不作为用户条目。

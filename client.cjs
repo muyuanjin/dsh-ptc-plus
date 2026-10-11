@@ -8770,6 +8770,32 @@ function createCapabilitySettingsViews(React32, { SearchIcon, Select: Select2, M
       )
     );
   }
+  function CapabilityDialog({ title, onClose, t: t2, className, children, footer }) {
+    return h(
+      Modal,
+      {
+        open: true,
+        onClose,
+        title,
+        closeLabel: t2("capabilities.closeDialog"),
+        headless: true,
+        className: `ptcPlusCapabilityDialog ${className ?? ""}`.trim()
+      },
+      h(
+        "div",
+        { className: "ptcPlusCapabilityDialogHead" },
+        h("h2", null, title),
+        h("button", {
+          type: "button",
+          className: "ptcPlusDialogClose",
+          "aria-label": t2("capabilities.closeDialog"),
+          onClick: onClose
+        }, "\xD7")
+      ),
+      h("div", { className: "ptcPlusCapabilityDialogBody" }, children),
+      footer ? h("div", { className: "ptcPlusCapabilityDialogFooter" }, footer) : null
+    );
+  }
   function CapabilityBatchDialog({ operation, value, entries, disabled, onChange, onClose, t: t2 }) {
     const [choices, setChoices] = React32.useState({ availability: "keep", disclosure: "keep" });
     const [pending, setPending] = React32.useState(false);
@@ -8969,39 +8995,43 @@ function createCapabilitySettingsViews(React32, { SearchIcon, Select: Select2, M
         options: options2.map(([key, text]) => ({ value: key, label: text }))
       })
     );
+    const editorField = (label, control) => h("div", { className: "ptcPlusCapabilityField" }, h("span", null, label), control);
     const manualSelect = (item) => h(
       "div",
-      { className: "ptcPlusCapabilityRuleFields" },
-      h(Select2, {
+      { className: "ptcPlusCapabilityEditorFields" },
+      editorField(t2("capabilities.enabledColumn"), h(Select2, {
         value: item.rule.availability ?? "automatic",
         disabled: disabled("capabilityPolicy"),
         label: t2("capabilities.policy.availabilityFor", { name: item.id }),
         onChange: (next) => change("capabilityPolicy", changeCapabilityRule(policy, item.id, "availability", next)),
         options: ["automatic", "enabled", "closed"].map((choice) => ({ value: choice, label: t2(choice === "automatic" ? "capabilities.policy.inheritRule" : choice === "enabled" ? "capabilities.quick.enabled" : `capabilities.${choice}`) }))
-      }),
-      h(Select2, {
+      })),
+      editorField(t2("capabilities.contextColumn"), h(Select2, {
         value: item.rule.disclosure ?? "automatic",
         disabled: disabled("capabilityPolicy"),
         label: t2("capabilities.disclosureFor", { name: item.id }),
         onChange: (next) => setManual(item.id, next),
         options: ["automatic", ...CAPABILITY_DISCLOSURES].map((choice) => ({ value: choice, label: t2(choice === "automatic" ? "capabilities.policy.inheritRule" : `capabilities.${choice}`) }))
-      })
+      }))
     );
-    const common = (item) => h(
-      "label",
-      { className: "ptcPlusCapabilityCommon", title: t2("capabilities.baselineFor", { name: item.id }) },
+    const commonSwitch = (item) => h(
+      "div",
+      { className: "ptcPlusCapabilitySwitchRow" },
+      h(
+        "div",
+        { className: "ptcPlusCapabilitySwitchText" },
+        h("span", { className: "ptcPlusCapabilitySwitchLabel" }, t2("capabilities.commonBaseline")),
+        h("span", { className: "ptcPlusCapabilitySwitchHint" }, t2(item.common ? "capabilities.inBaseline" : "capabilities.notInBaseline"))
+      ),
       h("input", {
         type: "checkbox",
-        disabled: disabled("capabilityBaseline"),
+        role: "switch",
+        className: "ptcPlusCheck",
         checked: item.common,
+        disabled: disabled("capabilityBaseline"),
         "aria-label": t2("capabilities.baselineFor", { name: item.id }),
         onChange: (event) => change("capabilityBaseline", event.target.checked ? [...baseline.filter((id2) => id2 !== item.id), item.id] : baseline.filter((id2) => id2 !== item.id))
-      }),
-      h(
-        "svg",
-        { width: 18, height: 18, viewBox: "0 0 24 24", "aria-hidden": true },
-        h("path", { d: "m12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2L12 17.3l-5.6 2.9 1.1-6.2L3 9.6l6.2-.9Z" })
-      )
+      })
     );
     const filterLabels = [
       kind !== "all" ? t2(`capabilities.type.${kind}`) : null,
@@ -9047,8 +9077,8 @@ function createCapabilitySettingsViews(React32, { SearchIcon, Select: Select2, M
         h("button", {
           type: "button",
           className: "ptcPlusButton",
-          "aria-expanded": filtersOpen,
-          onClick: () => setFiltersOpen((current) => !current)
+          "aria-haspopup": "dialog",
+          onClick: () => setFiltersOpen(true)
         }, t2("capabilities.filterAction")),
         h("button", {
           type: "button",
@@ -9064,13 +9094,24 @@ function createCapabilitySettingsViews(React32, { SearchIcon, Select: Select2, M
         h("button", {
           type: "button",
           className: "ptcPlusButton",
-          "aria-expanded": inheritedRulesOpen,
-          onClick: () => setInheritedRulesOpen((current) => !current)
+          "aria-haspopup": "dialog",
+          onClick: () => setInheritedRulesOpen(true)
         }, t2("capabilities.inheritedRules"))
       ),
       filtersOpen ? h(
-        "div",
-        { className: "ptcPlusCapabilityFilters" },
+        CapabilityDialog,
+        {
+          title: t2("capabilities.filterAction"),
+          onClose: () => setFiltersOpen(false),
+          t: t2,
+          className: "ptcPlusCapabilityFilterDialog",
+          footer: h("button", {
+            type: "button",
+            className: "ptcPlusButton",
+            "data-kind": "primary",
+            onClick: () => setFiltersOpen(false)
+          }, t2("capabilities.dialogDone"))
+        },
         h(
           "div",
           { className: "ptcPlusCapabilityFilterFields" },
@@ -9100,7 +9141,21 @@ function createCapabilitySettingsViews(React32, { SearchIcon, Select: Select2, M
           )
         )
       ) : null,
-      inheritedRulesOpen ? h(PolicyRules, { value, catalog, disabled, onChange, t: t2 }) : null,
+      inheritedRulesOpen ? h(
+        CapabilityDialog,
+        {
+          title: t2("capabilities.inheritedRules"),
+          onClose: () => setInheritedRulesOpen(false),
+          t: t2,
+          footer: h("button", {
+            type: "button",
+            className: "ptcPlusButton",
+            "data-kind": "primary",
+            onClick: () => setInheritedRulesOpen(false)
+          }, t2("capabilities.dialogDone"))
+        },
+        h(PolicyRules, { value, catalog, disabled, onChange, t: t2 })
+      ) : null,
       batchOperation ? h(CapabilityBatchDialog, {
         operation: batchOperation,
         value,
@@ -9156,8 +9211,7 @@ function createCapabilitySettingsViews(React32, { SearchIcon, Select: Select2, M
                 capabilitySortDirection(sort2, column.key) === "ascending" ? "\u2191" : capabilitySortDirection(sort2, column.key) === "descending" ? "\u2193" : "\u2195"
               )
             )
-          )),
-          h("span", { role: "columnheader" }, t2("capabilities.actionsColumn"))
+          ))
         ),
         h("div", { className: "ptcPlusCapabilityList", role: "rowgroup" }, ...visible.map((item) => h(
           "div",
@@ -9166,24 +9220,32 @@ function createCapabilitySettingsViews(React32, { SearchIcon, Select: Select2, M
             className: "ptcPlusCapabilityItem",
             role: "row",
             "data-selected": entry?.id === item.id,
-            "data-availability": item.availability
+            "data-availability": item.availability,
+            onClick: () => setSelected(item.id)
           },
           h("div", { className: "ptcPlusCapabilityIdentity", role: "cell" }, h("span", { className: "ptcPlusCapabilityName" }, item.name), h("code", null, item.id)),
           h("span", { className: "ptcPlusCapabilityBadge", role: "cell", "data-kind": type(item) }, t2(`capabilities.type.${type(item)}`)),
           h("span", { className: "ptcPlusCapabilitySource", role: "cell" }, displayedSource(item)),
+          // The cell stays a plain cell so its empty area selects the row; only the switch and
+          // its own label swallow the click, keeping a toggle from also opening the row editor.
           h(
-            "label",
+            "div",
             { className: "ptcPlusCapabilityAvailability", role: "cell", "data-state": state(item) },
             h("input", {
               type: "checkbox",
               role: "switch",
               className: "ptcPlusCheck",
+              id: `ptcPlusCapabilityAvailability-${item.id}`,
               checked: item.resolvedRule.availability === "enabled",
               disabled: disabled("capabilityPolicy") || state(item) === "source-closed",
               "aria-label": t2("capabilities.policy.availabilityFor", { name: item.id }),
+              onClick: (event) => event.stopPropagation(),
               onChange: (event) => change("capabilityPolicy", changeCapabilityRule(policy, item.id, "availability", event.target.checked ? "enabled" : "closed"))
             }),
-            h("span", null, t2(`capabilities.rowState.${state(item)}`))
+            h("label", {
+              htmlFor: `ptcPlusCapabilityAvailability-${item.id}`,
+              onClick: (event) => event.stopPropagation()
+            }, t2(`capabilities.rowState.${state(item)}`))
           ),
           h("div", { role: "cell", className: "ptcPlusCapabilityContextCell" }, h(
             "button",
@@ -9192,8 +9254,11 @@ function createCapabilitySettingsViews(React32, { SearchIcon, Select: Select2, M
               className: "ptcPlusCapabilityContext",
               "data-capability-edit-id": item.id,
               "aria-label": t2("capabilities.editContextFor", { name: item.id }),
-              "aria-expanded": selected === item.id,
-              onClick: () => setSelected(selected === item.id ? null : item.id)
+              "aria-haspopup": "dialog",
+              onClick: (event) => {
+                event.stopPropagation();
+                setSelected(item.id);
+              }
             },
             h("span", null, t2(`capabilities.${item.resolvedRule.disclosure}`)),
             h(
@@ -9201,29 +9266,22 @@ function createCapabilitySettingsViews(React32, { SearchIcon, Select: Select2, M
               { width: 16, height: 16, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 1.5, "aria-hidden": true },
               h("path", { d: "m15 5 4 4M4 20l4-1L20 7l-4-4L4 15Z" })
             )
-          )),
-          h("div", { role: "cell", className: "ptcPlusCapabilityMoreCell" }, h("button", {
-            type: "button",
-            className: "ptcPlusCapabilityMore",
-            "aria-label": t2("capabilities.moreFor", { name: item.id }),
-            "aria-expanded": selected === item.id,
-            onClick: () => setSelected(selected === item.id ? null : item.id)
-          }, "\u2026"))
+          ))
         )))
       ),
       entry ? h(
-        "aside",
-        { className: "ptcPlusCapabilityDetail", "aria-label": t2("capabilities.details") },
-        h(
-          "div",
-          { className: "ptcPlusTaskHead" },
-          h("h4", null, entry.name),
-          h("button", { type: "button", className: "ptcPlusButton", onClick: closeEditor }, t2("capabilities.closeDetails"))
-        ),
+        CapabilityDialog,
+        {
+          title: entry.name,
+          onClose: closeEditor,
+          t: t2,
+          className: "ptcPlusCapabilityEditorDialog",
+          footer: h("button", { type: "button", className: "ptcPlusButton", onClick: closeEditor }, t2("capabilities.closeDetails"))
+        },
         h("code", null, entry.id),
         h("p", { className: "ptcPlusDetail" }, t2("capabilities.contextHelp")),
         manualSelect(entry),
-        h("div", { className: "ptcPlusCapabilityCommonChoice" }, common(entry), h("span", null, t2("capabilities.commonBaseline"))),
+        commonSwitch(entry),
         h("p", { className: "ptcPlusDetail" }, t2(value.capabilityContextEnabled === false ? "capabilities.effect.paused" : value.capabilityManagementEnabled !== true ? "capabilities.effect.rulesOff" : entry.resolvedRule.availabilitySource.startsWith("mcp:") && entry.resolvedRule.availability === "closed" ? "capabilities.effect.sourceClosed" : entry.resolvedRule.availability === "closed" ? "capabilities.effect.closed" : `capabilities.effect.disclosure.${entry.resolvedRule.disclosure}`)),
         h("p", { className: "ptcPlusDetail" }, t2("capabilities.policy.resolved", {
           availability: t2(entry.resolvedRule.availability === "enabled" ? "capabilities.quick.enabled" : "capabilities.closed"),
@@ -9237,20 +9295,27 @@ function createCapabilitySettingsViews(React32, { SearchIcon, Select: Select2, M
           onClick: () => setManual(entry.id, "automatic")
         }, t2("capabilities.restoreAutomatic")) : null,
         entry.source?.kind === "mcp" && entry.mcpServer ? h(
-          "details",
-          null,
-          h("summary", { tabIndex: 0 }, t2("capabilities.sourceRules")),
+          "section",
+          { className: "ptcPlusCapabilityEditorSection" },
+          h("h5", null, t2("capabilities.sourceRules")),
           h("p", { className: "ptcPlusDetail" }, t2("capabilities.serverHint")),
-          ...["availability", "disclosure"].map((dimension) => select(
-            t2(`capabilities.policy.${dimension}`),
-            policy.mcpServers[entry.mcpServer]?.[dimension] ?? "automatic",
-            (next) => change("capabilityPolicy", changeCapabilityRule(policy, `mcpServers.${entry.mcpServer}`, dimension, next)),
-            ["automatic", ...dimension === "availability" ? ["enabled", "closed"] : CAPABILITY_DISCLOSURES].map((key) => [
-              key,
-              t2(key === "automatic" ? "capabilities.policy.inheritRule" : key === "enabled" ? "capabilities.quick.enabled" : `capabilities.${key}`)
-            ]),
-            disabled("capabilityPolicy")
-          ))
+          h(
+            "div",
+            { className: "ptcPlusCapabilityEditorFields" },
+            ...["availability", "disclosure"].map((dimension) => editorField(
+              t2(`capabilities.policy.${dimension}`),
+              h(Select2, {
+                value: policy.mcpServers[entry.mcpServer]?.[dimension] ?? "automatic",
+                disabled: disabled("capabilityPolicy"),
+                label: `${entry.mcpServer} \xB7 ${t2(`capabilities.policy.${dimension}`)}`,
+                onChange: (next) => change("capabilityPolicy", changeCapabilityRule(policy, `mcpServers.${entry.mcpServer}`, dimension, next)),
+                options: ["automatic", ...dimension === "availability" ? ["enabled", "closed"] : CAPABILITY_DISCLOSURES].map((key) => ({
+                  value: key,
+                  label: t2(key === "automatic" ? "capabilities.policy.inheritRule" : key === "enabled" ? "capabilities.quick.enabled" : `capabilities.${key}`)
+                }))
+              })
+            ))
+          )
         ) : null,
         entry.kind === "skill" ? h("p", { className: "ptcPlusDetail" }, t2("capabilities.skillDisclosure")) : null,
         entry.kind === "skill" && entry.invocationConflict ? h("p", { className: "ptcPlusDetail" }, t2("capabilities.invocation.varies")) : null,
@@ -9260,10 +9325,10 @@ function createCapabilitySettingsViews(React32, { SearchIcon, Select: Select2, M
           t2(entry.invocation.modelInvocable ? entry.invocation.userInvocable ? "capabilities.invocation.both" : "capabilities.invocation.model" : "capabilities.invocation.user", { name: entry.name })
         ) : null,
         entry.description ? h(
-          "details",
-          { className: "ptcPlusCapabilityDescription", key: entry.id },
-          h("summary", { tabIndex: 0 }, t2("capabilities.viewDescription")),
-          h("p", null, entry.description)
+          "section",
+          { className: "ptcPlusCapabilityEditorSection" },
+          h("h5", null, t2("capabilities.catalogDescription")),
+          h("p", { className: "ptcPlusCapabilityProse" }, entry.description)
         ) : null,
         entry.availability === "unavailable" ? h("button", {
           type: "button",
@@ -9277,11 +9342,16 @@ function createCapabilitySettingsViews(React32, { SearchIcon, Select: Select2, M
           }
         }, t2("capabilities.removeSaved")) : null,
         value.capabilityContextEnabled !== false && value.capabilityManagementEnabled === true ? h(
-          "details",
-          { className: "ptcPlusCapabilitySessionDetail" },
-          h("summary", { tabIndex: 0 }, t2("capabilities.currentSession")),
-          select(t2("capabilities.sessionSelector"), sessionId ?? "", setSessionId, [["", t2("capabilities.chooseSession")], ...(plans ?? []).map((item) => [item.sessionId, item.sessionId])]),
-          plansError ? h("p", { role: "status" }, t2("capabilities.unavailable", { error: plansError })) : !plan ? h("p", { className: "ptcPlusDetail" }, t2("capabilities.selectObservation")) : h(
+          "section",
+          { className: "ptcPlusCapabilityEditorSection" },
+          h("h5", null, t2("capabilities.currentSession")),
+          editorField(t2("capabilities.sessionSelector"), h(Select2, {
+            value: sessionId ?? "",
+            label: t2("capabilities.sessionSelector"),
+            onChange: setSessionId,
+            options: [{ value: "", label: t2("capabilities.chooseSession") }, ...(plans ?? []).map((item) => ({ value: item.sessionId, label: item.sessionId }))]
+          })),
+          plansError ? h("p", { role: "status", className: "ptcPlusDetail" }, t2("capabilities.unavailable", { error: plansError })) : !plan ? h("p", { className: "ptcPlusDetail" }, t2("capabilities.selectObservation")) : h(
             React32.Fragment,
             null,
             h("p", null, effective ? t2(`capabilities.${effective.selection}`) : t2("capabilities.notInSession")),
@@ -9494,6 +9564,7 @@ function createCapabilitySettingsViews(React32, { SearchIcon, Select: Select2, M
       onClick: click,
       ...extra2
     }, t2(label));
+    const closeAction = () => setAction(null);
     const setting = (label, text) => h("div", { className: "ptcPlusConfigurationSummaryRow", key: label }, h("span", null, t2(label)), h("span", null, text));
     const configuration = selected?.configuration;
     const policy = configuration ? capabilityPolicyForConfig(configuration) : null;
@@ -9524,26 +9595,26 @@ function createCapabilitySettingsViews(React32, { SearchIcon, Select: Select2, M
         button(
           "capabilities.saveConfiguration",
           () => {
-            setAction(action === "save" ? null : "save");
+            setAction("save");
             setStatus(null);
           },
           unavailable,
-          { ref: saveAction, className: "ptcPlusButton ptcPlusConfigurationSave", "aria-label": t2("capabilities.saveConfiguration"), "aria-expanded": action === "save" }
+          { ref: saveAction, className: "ptcPlusButton ptcPlusConfigurationSave", "aria-label": t2("capabilities.saveConfiguration"), "aria-haspopup": "dialog" }
         ),
         h(
           "div",
           { className: "ptcPlusConfigurationLibraryActions" },
           button("capabilities.importConfigurations", () => fileInput.current.click(), unavailable),
-          h(
-            "details",
-            { className: "ptcPlusConfigurationMenu" },
-            h("summary", { "aria-label": t2("capabilities.libraryMore") }, "\xB7\xB7\xB7"),
-            button("capabilities.exportConfigurations", () => exportProfiles("all"), !library.profiles.length),
-            button("capabilities.copyFromSession", () => {
-              setAction("copy");
+          h("button", {
+            type: "button",
+            className: "ptcPlusButton ptcPlusConfigurationMore",
+            "aria-label": t2("capabilities.libraryMore"),
+            "aria-haspopup": "dialog",
+            onClick: () => {
+              setAction("library");
               setStatus(null);
-            }, unavailable)
-          )
+            }
+          }, "\xB7\xB7\xB7")
         ),
         h("input", {
           ref: fileInput,
@@ -9554,32 +9625,81 @@ function createCapabilitySettingsViews(React32, { SearchIcon, Select: Select2, M
           onChange: importProfiles,
           "aria-label": t2("capabilities.importConfigurations")
         }),
+        action === "library" ? h(
+          CapabilityDialog,
+          {
+            title: t2("capabilities.libraryActions"),
+            onClose: closeAction,
+            t: t2,
+            className: "ptcPlusCapabilityConfigurationDialog"
+          },
+          h(
+            "div",
+            { className: "ptcPlusCapabilityDialogActions" },
+            button("capabilities.exportConfigurations", () => {
+              exportProfiles("all");
+              closeAction();
+            }, !library.profiles.length),
+            button("capabilities.copyFromSession", () => {
+              setAction("copy");
+              setStatus(null);
+            }, unavailable)
+          )
+        ) : null,
         action === "save" ? h(
-          "form",
-          { className: "ptcPlusConfigurationAction", onSubmit: (event) => {
-            event.preventDefault();
-            if (!unavailable && name2.trim()) void perform("save", () => save(current()));
-          } },
-          input("capabilities.configurationName", name2, setName),
-          h("p", { className: "ptcPlusDetail" }, t2("capabilities.sameNameHint")),
-          button("capabilities.confirmSave", void 0, unavailable || !name2.trim(), { type: "submit" })
+          CapabilityDialog,
+          {
+            title: t2("capabilities.saveConfiguration"),
+            onClose: closeAction,
+            t: t2,
+            className: "ptcPlusCapabilityConfigurationDialog"
+          },
+          h(
+            "form",
+            { className: "ptcPlusConfigurationAction", onSubmit: (event) => {
+              event.preventDefault();
+              if (!unavailable && name2.trim()) void perform("save", () => save(current()));
+            } },
+            input("capabilities.configurationName", name2, setName),
+            h("p", { className: "ptcPlusDetail" }, t2("capabilities.sameNameHint")),
+            h(
+              "div",
+              { className: "ptcPlusCapabilityDialogActions" },
+              h("button", { type: "button", className: "ptcPlusButton", onClick: closeAction }, t2("capabilities.batch.cancel")),
+              button("capabilities.confirmSave", void 0, unavailable || !name2.trim(), { type: "submit" })
+            )
+          )
         ) : null,
         action === "copy" ? h(
-          "div",
-          { className: "ptcPlusConfigurationAction" },
-          h("p", { className: "ptcPlusDetail" }, t2("capabilities.copySessionHint")),
-          h(Select2, {
-            value: sessionId,
-            disabled: unavailable,
-            label: t2("capabilities.copyFromSession"),
-            onChange: setSessionId,
-            options: [{ value: "", label: t2("capabilities.chooseSession") }, ...(plans ?? []).map((plan) => ({ value: plan.sessionId, label: plan.sessionId }))]
-          }),
-          input("capabilities.copyName", copyName, setCopyName),
-          button(
-            "capabilities.saveSessionConfiguration",
-            () => perform("copy", () => save(capabilityProfileConfiguration(frozen.configuration), copyName)),
-            unavailable || !copyName.trim() || !frozen?.configuration
+          CapabilityDialog,
+          {
+            title: t2("capabilities.copyFromSession"),
+            onClose: closeAction,
+            t: t2,
+            className: "ptcPlusCapabilityConfigurationDialog"
+          },
+          h(
+            "div",
+            { className: "ptcPlusConfigurationAction" },
+            h("p", { className: "ptcPlusDetail" }, t2("capabilities.copySessionHint")),
+            h(Select2, {
+              value: sessionId,
+              disabled: unavailable,
+              label: t2("capabilities.copyFromSession"),
+              onChange: setSessionId,
+              options: [{ value: "", label: t2("capabilities.chooseSession") }, ...(plans ?? []).map((plan) => ({ value: plan.sessionId, label: plan.sessionId }))]
+            }),
+            input("capabilities.copyName", copyName, setCopyName),
+            h(
+              "div",
+              { className: "ptcPlusCapabilityDialogActions" },
+              h("button", { type: "button", className: "ptcPlusButton", onClick: closeAction }, t2("capabilities.batch.cancel")),
+              button(
+                "capabilities.saveSessionConfiguration",
+                () => perform("copy", () => save(capabilityProfileConfiguration(frozen.configuration), copyName)),
+                unavailable || !copyName.trim() || !frozen?.configuration
+              )
+            )
           )
         ) : null
       ),
@@ -9596,22 +9716,43 @@ function createCapabilitySettingsViews(React32, { SearchIcon, Select: Select2, M
             unavailable || !onApplyConfiguration,
             { "data-kind": "primary" }
           ),
+          h("button", {
+            type: "button",
+            className: "ptcPlusButton ptcPlusConfigurationMore",
+            "aria-label": t2("capabilities.profileMore"),
+            "aria-haspopup": "dialog",
+            onClick: () => {
+              setRename(selected.name);
+              setAction("profile");
+            }
+          }, "\xB7\xB7\xB7")
+        ),
+        action === "profile" ? h(
+          CapabilityDialog,
+          {
+            title: t2("capabilities.profileActions"),
+            onClose: closeAction,
+            t: t2,
+            className: "ptcPlusCapabilityConfigurationDialog"
+          },
           h(
-            "details",
-            { className: "ptcPlusConfigurationMenu" },
-            h("summary", { "aria-label": t2("capabilities.profileMore") }, "\xB7\xB7\xB7"),
+            "div",
+            { className: "ptcPlusCapabilityDialogActions" },
             button("capabilities.renameConfiguration", () => {
               setRename(selected.name);
               setAction("rename");
             }, unavailable),
-            button("capabilities.exportConfiguration", () => exportProfiles("selected")),
+            button("capabilities.exportConfiguration", () => {
+              exportProfiles("selected");
+              closeAction();
+            }),
             button("capabilities.deleteConfiguration", () => perform("library", async () => {
               await saveLibrary(library.profiles.filter((profile) => profile.id !== selected.id));
               setSelectedId("");
               finishAction();
             }), unavailable, { "data-kind": "danger" })
           )
-        ),
+        ) : null,
         h(
           "div",
           { className: "ptcPlusConfigurationSummary" },
@@ -9642,13 +9783,32 @@ function createCapabilitySettingsViews(React32, { SearchIcon, Select: Select2, M
         ),
         h("p", { className: "ptcPlusDetail" }, t2(matches ? "capabilities.configurationMatches" : "capabilities.configurationDifferent")),
         h("p", { className: "ptcPlusDetail" }, t2("capabilities.configurationsHint")),
-        action === "rename" ? h("form", { className: "ptcPlusConfigurationAction", onSubmit: (event) => {
-          event.preventDefault();
-          if (!unavailable && rename.trim()) void perform("library", async () => {
-            await saveLibrary(library.profiles.map((profile) => profile.id === selected.id ? { ...profile, name: rename.trim() } : profile));
-            finishAction();
-          });
-        } }, input("capabilities.renameTo", rename, setRename), button("capabilities.confirmRename", void 0, unavailable || !rename.trim(), { type: "submit" })) : null
+        action === "rename" ? h(
+          CapabilityDialog,
+          {
+            title: t2("capabilities.renameConfiguration"),
+            onClose: closeAction,
+            t: t2,
+            className: "ptcPlusCapabilityConfigurationDialog"
+          },
+          h(
+            "form",
+            { className: "ptcPlusConfigurationAction", onSubmit: (event) => {
+              event.preventDefault();
+              if (!unavailable && rename.trim()) void perform("library", async () => {
+                await saveLibrary(library.profiles.map((profile) => profile.id === selected.id ? { ...profile, name: rename.trim() } : profile));
+                finishAction();
+              });
+            } },
+            input("capabilities.renameTo", rename, setRename),
+            h(
+              "div",
+              { className: "ptcPlusCapabilityDialogActions" },
+              h("button", { type: "button", className: "ptcPlusButton", onClick: closeAction }, t2("capabilities.batch.cancel")),
+              button("capabilities.confirmRename", void 0, unavailable || !rename.trim(), { type: "submit" })
+            )
+          )
+        ) : null
       ) : h("p", { className: "ptcPlusDetail" }, t2("capabilities.chooseConfiguration"))),
       feedback
     );
@@ -10263,7 +10423,8 @@ function createSessionCapabilityControlsView(React32, { commands, Modal, Select:
         role: "row",
         className: "ptcPlusSessionCapabilityRow ptcPlusCapabilityItem",
         "data-capability-id": entry.id,
-        "data-selected": selected?.id === entry.id
+        "data-selected": selected?.id === entry.id,
+        onClick: () => openEditor(entry)
       },
       h(
         "div",
@@ -10272,7 +10433,10 @@ function createSessionCapabilityControlsView(React32, { commands, Modal, Select:
           type: "button",
           className: "ptcPlusSessionCapabilityName ptcPlusCapabilityName",
           "aria-current": selected?.id === entry.id ? "true" : void 0,
-          onClick: () => openEditor(entry)
+          onClick: (event) => {
+            event.stopPropagation();
+            openEditor(entry);
+          }
         }, entry.name ?? entry.id),
         entry.name && entry.name !== entry.id ? h("code", null, entry.id) : null
       ),
@@ -10286,7 +10450,10 @@ function createSessionCapabilityControlsView(React32, { commands, Modal, Select:
           className: "ptcPlusCapabilityContext",
           "aria-label": t2("capabilities.policy.availabilityFor", { name: entry.id }),
           title: t2("capabilities.quick.effective"),
-          onClick: () => openEditor(entry, "availability")
+          onClick: (event) => {
+            event.stopPropagation();
+            openEditor(entry, "availability");
+          }
         }, statusLabel(effectiveAvailability(entry)))
       ),
       h(
@@ -10297,7 +10464,10 @@ function createSessionCapabilityControlsView(React32, { commands, Modal, Select:
           className: "ptcPlusCapabilityContext",
           "aria-label": t2("capabilities.editContextFor", { name: entry.id }),
           title: t2("capabilities.quick.effective"),
-          onClick: () => openEditor(entry, "disclosure")
+          onClick: (event) => {
+            event.stopPropagation();
+            openEditor(entry, "disclosure");
+          }
         }, statusLabel(effectiveContext(entry)))
       ),
       h(
@@ -38920,15 +39090,15 @@ var CLIENT_CSS = `
 .ptcPlusTaskHead{display:flex;flex-wrap:wrap;align-items:center;gap:10px}.ptcPlusTaskHead h4{margin:0;flex:1;font-size:16px}.ptcPlusCapabilityManagement{display:flex;align-items:center;gap:8px;font-size:12px}.ptcPlusCapabilitySaveState{color:var(--dsw-alias-label-secondary);font-size:11px}.ptcPlusCapabilityPane>.ptcPlusDetail{margin:8px 0 16px}
 .ptcPlusCapabilityToolbar{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:12px 0}.ptcPlusCapabilityToolbar>.ptcPlusSearch{flex:1 1 220px;min-width:0}.ptcPlusCapabilityTypes{display:flex;flex-wrap:wrap;gap:5px}.ptcPlusCapabilityTypes button{appearance:none;padding:6px 10px;border:1px solid var(--dsw-alias-border-l2);border-radius:6px;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;text-align:center;cursor:pointer}.ptcPlusCapabilityTypes [aria-pressed=true]{border-color:transparent;background:var(--dsw-alias-state-business-primary,#4d6bfe);color:var(--dsw-alias-bg-base,#fff)}
 .ptcPlusCapabilityFilter{display:flex;flex-direction:column;min-width:0;gap:6px;font-size:12px;color:var(--dsw-alias-label-secondary)}.ptcPlusCapabilityFilter>.ptcPlusSelectTrigger{width:100%;max-width:100%;font-size:12px}.ptcPlusCapabilityFilterFields{display:flex;align-items:flex-end;flex-wrap:wrap;gap:12px;padding:12px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px}.ptcPlusCapabilityFilterFields>.ptcPlusCapabilityFilter{flex:1 1 160px}.ptcPlusCapabilityOnlyCommon{display:flex;align-items:center;gap:6px;font-size:12px}.ptcPlusCapabilityOnlyCommon input{width:16px;height:16px;margin:0}.ptcPlusCapabilityResultLine,.ptcPlusActiveFilters{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px;margin:8px 0;color:var(--dsw-alias-label-secondary);font-size:11px}.ptcPlusCapabilityLink{appearance:none;padding:4px 0;border:0;background:transparent;color:var(--dsw-alias-state-business-primary,#4d6bfe);font:inherit;font-size:12px;cursor:pointer}.ptcPlusCapabilityLink:disabled{opacity:.5;cursor:default}
-.ptcPlusCapabilityTable{min-width:0;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;overflow:hidden}.ptcPlusCapabilityColumns,.ptcPlusCapabilityItem{display:grid;grid-template-columns:minmax(140px,1.6fr) 54px minmax(65px,.75fr) minmax(92px,1fr) minmax(104px,1fr) 28px;align-items:center;gap:10px;padding:10px 12px}.ptcPlusCapabilityColumns{color:var(--dsw-alias-label-tertiary);font-size:11px;background:var(--dsw-alias-bg-layer-2)}.ptcPlusCapabilitySort{appearance:none;display:flex;align-items:center;justify-content:space-between;gap:4px;width:100%;min-height:28px;padding:3px 0;border:0;border-radius:4px;background:transparent;color:inherit;font:inherit;text-align:start;cursor:pointer}.ptcPlusCapabilitySort>span{flex:none}.ptcPlusCapabilityColumns [aria-sort=ascending],.ptcPlusCapabilityColumns [aria-sort=descending]{color:var(--dsw-alias-state-business-primary,#4d6bfe)}.ptcPlusCapabilityContextCell>.ptcPlusCapabilityContext,.ptcPlusCapabilityMoreCell>.ptcPlusCapabilityMore{width:100%}.ptcPlusCapabilityList{max-height:480px;overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable}.ptcPlusCapabilityItem{border-bottom:1px solid var(--dsw-alias-border-l2)}.ptcPlusCapabilityItem:last-child{border-bottom:0}.ptcPlusCapabilityItem[data-selected=true]{background:color-mix(in srgb,var(--dsw-alias-state-business-primary,#4d6bfe) 6%,transparent)}.ptcPlusCapabilityItem>*{min-width:0}.ptcPlusCapabilityIdentity{display:flex;flex-direction:column;gap:3px;min-width:0}.ptcPlusCapabilityName{font-size:13px;overflow-wrap:anywhere}.ptcPlusCapabilityIdentity code{color:var(--dsw-alias-label-tertiary);font-size:10px;line-height:15px;overflow-wrap:anywhere}.ptcPlusCapabilitySource{color:var(--dsw-alias-label-secondary);font-size:11px;overflow-wrap:anywhere}.ptcPlusCapabilityBadge{justify-self:start;padding:2px 6px;border-radius:4px;background:color-mix(in srgb,var(--dsw-alias-state-business-primary,#4d6bfe) 8%,transparent);color:var(--dsw-alias-state-business-primary,#4d6bfe);font-size:10px;line-height:17px}.ptcPlusCapabilityBadge[data-kind=skill]{color:var(--dsw-alias-label-secondary);background:var(--dsw-alias-bg-layer-2)}.ptcPlusCapabilityAvailability{display:flex;align-items:center;gap:6px;font-size:11px}.ptcPlusCapabilityAvailability[data-state=closed],.ptcPlusCapabilityAvailability[data-state=unapplied],.ptcPlusCapabilityAvailability[data-state=source-closed],.ptcPlusCapabilityAvailability[data-state=unknown],.ptcPlusCapabilityAvailability[data-state=unavailable]{color:var(--dsw-alias-label-tertiary)}.ptcPlusCapabilityContext,.ptcPlusCapabilityMore{appearance:none;display:flex;align-items:center;justify-content:center;gap:6px;padding:5px 2px;border:0;border-radius:5px;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:12px;text-align:center;cursor:pointer}.ptcPlusCapabilityContext{justify-content:space-between;text-align:start}.ptcPlusCapabilityContext svg{flex:none;color:var(--dsw-alias-label-tertiary)}.ptcPlusCapabilityMore{font-size:18px}.ptcPlusCapabilityWorkbench button:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}
-.ptcPlusCapabilityDetail{min-width:0;padding:16px;margin-top:16px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-layer-2);font-size:12px;overflow-wrap:anywhere}.ptcPlusCapabilityDetail>code{display:block;margin:8px 0;font-size:11px}.ptcPlusCapabilityRuleFields{display:flex;flex-wrap:wrap;gap:8px}.ptcPlusCapabilityRuleFields>.ptcPlusSelectTrigger{flex:1 1 160px;min-width:0}.ptcPlusCapabilityCommonChoice{display:flex;align-items:center;gap:8px;margin-top:10px}.ptcPlusCapabilityCommon{position:relative;display:flex;align-items:center;justify-content:center;width:24px;height:24px;flex:none}.ptcPlusCapabilityCommon input{position:absolute;inset:0;width:24px;height:24px;margin:0;opacity:0;cursor:pointer}.ptcPlusCapabilityCommon svg{fill:none;stroke:var(--dsw-alias-label-tertiary);stroke-width:1.5;pointer-events:none}.ptcPlusCapabilityCommon input:checked+svg{fill:var(--dsw-alias-state-business-primary,#4d6bfe);stroke:var(--dsw-alias-state-business-primary,#4d6bfe)}.ptcPlusCapabilityCommon:has(input:disabled){opacity:.5}.ptcPlusCapabilityCommon:has(input:focus-visible){outline:2px solid var(--dsw-alias-state-business-primary,#4d6bfe);outline-offset:2px;border-radius:4px}.ptcPlusCapabilityNotice{padding:10px;border-radius:6px;background:var(--dsw-alias-bg-layer-2);font-size:12px;overflow-wrap:anywhere}.ptcPlusCapabilityDescription,.ptcPlusCapabilitySessionDetail{margin-top:12px;padding-top:10px;border-top:1px solid var(--dsw-alias-border-l2)}.ptcPlusCapabilityDescription p{white-space:pre-wrap;overflow-wrap:anywhere}.ptcPlusCapabilityEmpty{padding:20px 10px;text-align:center}
+.ptcPlusCapabilityTable{min-width:0;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;overflow:hidden}.ptcPlusCapabilityColumns,.ptcPlusCapabilityItem{display:grid;grid-template-columns:minmax(140px,1.6fr) 54px minmax(65px,.75fr) minmax(92px,1fr) minmax(104px,1fr);align-items:center;gap:10px;padding:10px 12px}.ptcPlusCapabilityColumns{color:var(--dsw-alias-label-tertiary);font-size:11px;background:var(--dsw-alias-bg-layer-2)}.ptcPlusCapabilitySort{appearance:none;display:inline-flex;align-items:center;justify-content:flex-start;gap:4px;width:100%;min-height:28px;padding:3px 0;border:0;border-radius:4px;background:transparent;color:inherit;font:inherit;text-align:start;cursor:pointer}.ptcPlusCapabilitySort>span{display:inline-flex;flex:none;align-items:center;justify-content:center;width:11px;height:11px;font-size:10px;line-height:1}.ptcPlusCapabilityColumns [aria-sort=ascending],.ptcPlusCapabilityColumns [aria-sort=descending]{color:var(--dsw-alias-state-business-primary,#4d6bfe)}.ptcPlusCapabilityContextCell>.ptcPlusCapabilityContext{width:100%}.ptcPlusCapabilityList{max-height:480px;overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable}.ptcPlusCapabilityItem{border-bottom:1px solid var(--dsw-alias-border-l2)}.ptcPlusCapabilityItem:last-child{border-bottom:0}.ptcPlusCapabilityItem[data-selected=true]{background:color-mix(in srgb,var(--dsw-alias-state-business-primary,#4d6bfe) 6%,transparent)}.ptcPlusCapabilityItem:not([data-selected=true]){cursor:pointer}.ptcPlusCapabilityItem:not([data-selected=true]):hover{background:var(--dsw-alias-interactive-bg-hover)}.ptcPlusCapabilityItem>*{min-width:0}.ptcPlusCapabilityIdentity{display:flex;flex-direction:column;gap:3px;min-width:0}.ptcPlusCapabilityName{font-size:13px;overflow-wrap:anywhere}.ptcPlusCapabilityIdentity code{color:var(--dsw-alias-label-tertiary);font-size:10px;line-height:15px;overflow-wrap:anywhere}.ptcPlusCapabilitySource{color:var(--dsw-alias-label-secondary);font-size:11px;overflow-wrap:anywhere}.ptcPlusCapabilityBadge{justify-self:start;padding:2px 6px;border-radius:4px;background:color-mix(in srgb,var(--dsw-alias-state-business-primary,#4d6bfe) 8%,transparent);color:var(--dsw-alias-state-business-primary,#4d6bfe);font-size:10px;line-height:17px}.ptcPlusCapabilityBadge[data-kind=skill]{color:var(--dsw-alias-label-secondary);background:var(--dsw-alias-bg-layer-2)}.ptcPlusCapabilityAvailability{display:flex;align-items:center;gap:6px;font-size:11px}.ptcPlusCapabilityAvailability[data-state=closed],.ptcPlusCapabilityAvailability[data-state=unapplied],.ptcPlusCapabilityAvailability[data-state=source-closed],.ptcPlusCapabilityAvailability[data-state=unknown],.ptcPlusCapabilityAvailability[data-state=unavailable]{color:var(--dsw-alias-label-tertiary)}.ptcPlusCapabilityContext{appearance:none;display:flex;align-items:center;justify-content:center;gap:6px;padding:5px 2px;border:0;border-radius:5px;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:12px;text-align:center;cursor:pointer}.ptcPlusCapabilityContext{justify-content:space-between;text-align:start}.ptcPlusCapabilityContext svg{flex:none;color:var(--dsw-alias-label-tertiary)}.ptcPlusCapabilityWorkbench button:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}
+.ptcPlusCapabilityEditorFields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:14px}.ptcPlusCapabilityField{display:flex;flex-direction:column;gap:6px;min-width:0;font-size:11px;color:var(--dsw-alias-label-secondary)}.ptcPlusCapabilityField>.ptcPlusSelectTrigger{width:100%;max-width:100%}.ptcPlusCapabilitySwitchRow{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:16px}.ptcPlusCapabilitySwitchText{display:flex;flex-direction:column;gap:3px;min-width:0}.ptcPlusCapabilitySwitchLabel{font-size:13px}.ptcPlusCapabilitySwitchHint{font-size:11px;color:var(--dsw-alias-label-tertiary)}@media(max-width:520px){.ptcPlusCapabilityEditorFields{grid-template-columns:minmax(0,1fr)}}.ptcPlusCapabilityNotice{padding:10px;border-radius:6px;background:var(--dsw-alias-bg-layer-2);font-size:12px;overflow-wrap:anywhere}.ptcPlusCapabilityEditorSection{margin-top:16px;padding-top:12px;border-top:1px solid var(--dsw-alias-border-l2);min-width:0}.ptcPlusCapabilityEditorSection h5{margin:0 0 8px;font-size:11px;line-height:18px;font-weight:500;color:var(--dsw-alias-label-tertiary)}.ptcPlusCapabilityEditorSection>.ptcPlusCapabilityProse{margin:0;font-size:12px;line-height:20px;white-space:pre-wrap;overflow-wrap:anywhere}.ptcPlusCapabilityEditorSection>.ptcPlusDetail{margin:0 0 8px}.ptcPlusCapabilityEmpty{padding:20px 10px;text-align:center}
 .ptcPlusPolicyRules{padding:14px;margin:12px 0;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-layer-2)}.ptcPlusPolicyRules h4{margin:0}.ptcPlusPolicyRule{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:10px 0}.ptcPlusPolicyRule>strong{flex:1 1 100px;min-width:0;overflow-wrap:anywhere;font-size:12px}.ptcPlusPolicyRule>.ptcPlusCapabilityFilter{flex:1 1 160px}
 .ptcPlusContextLayout{display:grid;grid-template-columns:minmax(140px,27%) minmax(0,1fr);gap:20px;margin-top:16px}.ptcPlusContextNavigation{display:flex;flex-direction:column;gap:6px;padding:12px 12px 12px 0;border-right:1px solid var(--dsw-alias-border-l2)}.ptcPlusContextNavigation button{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:6px 10px;appearance:none;border:0;border-left:3px solid transparent;border-radius:4px;padding:14px 12px;background:transparent;color:var(--dsw-alias-label-primary);font:inherit;text-align:start;cursor:pointer}.ptcPlusContextNavigation [aria-selected=true]{border-left-color:var(--dsw-alias-state-business-primary,#4d6bfe);background:color-mix(in srgb,var(--dsw-alias-state-business-primary,#4d6bfe) 6%,transparent);color:var(--dsw-alias-state-business-primary,#4d6bfe)}.ptcPlusContextState{font-size:11px;line-height:18px;white-space:nowrap;color:var(--dsw-alias-label-secondary)}.ptcPlusContextState[data-enabled=true]{color:var(--dsw-alias-state-success-primary)}.ptcPlusContextState[data-paused=true]{color:var(--dsw-alias-state-warn-primary)}.ptcPlusContextSummary{flex-basis:100%;min-width:0;font-size:11px;line-height:18px;color:var(--dsw-alias-label-secondary);white-space:normal;overflow-wrap:anywhere}.ptcPlusContextContent{min-width:0;padding:12px 0}.ptcPlusContextContent h4{font-size:16px;margin:0}.ptcPlusContextContent h5{font-size:13px;line-height:20px;margin:0 0 12px}.ptcPlusContextContent>.ptcPlusCapabilityFilter{margin-top:16px}.ptcPlusPolicyAllocation{margin:18px 0}.ptcPlusAllocationChoices{display:flex;flex-wrap:wrap;gap:16px}.ptcPlusAllocationChoices label{display:flex;align-items:center;gap:8px;font-size:12px}.ptcPlusContextQuota,.ptcPlusAllocationPreview{margin:16px 0;padding:12px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px}
 .ptcPlusCapabilityWorkbench .ptcPlusButton[data-kind=primary]{background:var(--dsw-alias-state-business-primary,#4d6bfe);color:var(--dsw-alias-bg-base,#fff);border-color:transparent}.ptcPlusCapabilityWorkbench summary{cursor:pointer;line-height:22px;font-size:12px}.ptcPlusCapabilityWorkbench summary:focus-visible,.ptcPlusCapabilityWorkbench button:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary,#4d6bfe);outline-offset:2px}.ptcPlusCapabilitySessionTools{margin-top:18px;padding-top:10px;border-top:1px solid var(--dsw-alias-border-l2)}.ptcPlusCapabilityApply{display:flex;flex-wrap:wrap;align-items:flex-end;gap:10px;margin:12px 0}.ptcPlusCapabilityApply>.ptcPlusCapabilityFilter{flex:1 1 200px}.ptcPlusCapabilityRefresh{display:flex;flex-wrap:wrap;align-items:center;gap:8px;min-width:0}.ptcPlusCapabilityRefresh p{flex-basis:100%;margin:0;overflow-wrap:anywhere}.ptcPlusMenuUtilities .ptcPlusCapabilityRefresh{flex:1;align-self:stretch}.ptcPlusMenuUtilities .ptcPlusCapabilityRefresh>.ptcPlusMenuButton{width:100%}
-.ptcPlusConfigurationProfiles{display:grid;grid-template-columns:minmax(180px,34%) minmax(0,1fr);gap:18px;margin-top:14px;min-width:0}.ptcPlusConfigurationLibrary,.ptcPlusConfigurationDetail{min-width:0;padding:14px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px}.ptcPlusConfigurationProfiles h4{margin:0 0 12px;font-size:15px}.ptcPlusConfigurationList{max-height:320px;overflow:auto;overscroll-behavior:contain}.ptcPlusConfigurationChoice{appearance:none;display:block;width:100%;padding:12px 10px;border:0;border-left:3px solid transparent;border-radius:5px;background:transparent;color:inherit;font:inherit;text-align:start;overflow-wrap:anywhere;cursor:pointer}.ptcPlusConfigurationChoice[aria-pressed=true]{border-left-color:var(--dsw-alias-state-business-primary,#4d6bfe);background:color-mix(in srgb,var(--dsw-alias-state-business-primary,#4d6bfe) 6%,transparent)}.ptcPlusConfigurationSave.ptcPlusButton{width:100%;margin-top:14px;border:1px dashed var(--dsw-alias-border-l2);justify-content:center}.ptcPlusConfigurationSave::before{content:'+';font-size:20px;line-height:16px}.ptcPlusConfigurationLibraryActions{display:flex;align-items:start;gap:8px;margin-top:10px}.ptcPlusConfigurationLibraryActions>.ptcPlusButton{flex:1}.ptcPlusConfigurationMenu{min-width:36px;max-width:100%;position:relative}.ptcPlusConfigurationMenu summary{padding:4px 10px;text-align:center;list-style:none;border:1px solid var(--dsw-alias-border-l2);border-radius:6px;font-size:18px}.ptcPlusConfigurationMenu[open]{display:flex;flex-direction:column;gap:6px}.ptcPlusConfigurationMenu>.ptcPlusButton{display:flex;width:100%;margin-top:6px}.ptcPlusConfigurationSummary{margin-top:14px;border:1px solid var(--dsw-alias-border-l2);border-radius:6px;overflow:hidden}.ptcPlusConfigurationSummaryRow{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px;padding:10px;font-size:12px;border-bottom:1px solid var(--dsw-alias-border-l2);overflow-wrap:anywhere}.ptcPlusConfigurationSummaryRow:last-child{border:0}.ptcPlusConfigurationSummaryRow>span:first-child{color:var(--dsw-alias-label-secondary)}.ptcPlusConfigurationAction{display:flex;flex-direction:column;gap:10px;margin-top:14px}.ptcPlusConfigurationAction .ptcPlusInput{width:100%;box-sizing:border-box}.ptcPlusTaskFeedback{grid-column:1/-1;margin:8px 0;font-size:12px;overflow-wrap:anywhere}
+.ptcPlusConfigurationProfiles{display:grid;grid-template-columns:minmax(180px,34%) minmax(0,1fr);gap:18px;margin-top:14px;min-width:0}.ptcPlusConfigurationLibrary,.ptcPlusConfigurationDetail{min-width:0;padding:14px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px}.ptcPlusConfigurationProfiles h4{margin:0 0 12px;font-size:15px}.ptcPlusConfigurationList{max-height:320px;overflow:auto;overscroll-behavior:contain}.ptcPlusConfigurationChoice{appearance:none;display:block;width:100%;padding:12px 10px;border:0;border-left:3px solid transparent;border-radius:5px;background:transparent;color:inherit;font:inherit;text-align:start;overflow-wrap:anywhere;cursor:pointer}.ptcPlusConfigurationChoice[aria-pressed=true]{border-left-color:var(--dsw-alias-state-business-primary,#4d6bfe);background:color-mix(in srgb,var(--dsw-alias-state-business-primary,#4d6bfe) 6%,transparent)}.ptcPlusConfigurationSave.ptcPlusButton{width:100%;margin-top:14px;border:1px dashed var(--dsw-alias-border-l2);justify-content:center}.ptcPlusConfigurationSave::before{content:'+';font-size:20px;line-height:16px}.ptcPlusConfigurationLibraryActions{display:flex;align-items:start;gap:8px;margin-top:10px}.ptcPlusConfigurationLibraryActions>.ptcPlusButton{flex:1}.ptcPlusConfigurationSummary{margin-top:14px;border:1px solid var(--dsw-alias-border-l2);border-radius:6px;overflow:hidden}.ptcPlusConfigurationSummaryRow{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px;padding:10px;font-size:12px;border-bottom:1px solid var(--dsw-alias-border-l2);overflow-wrap:anywhere}.ptcPlusConfigurationSummaryRow:last-child{border:0}.ptcPlusConfigurationSummaryRow>span:first-child{color:var(--dsw-alias-label-secondary)}.ptcPlusConfigurationAction{display:flex;flex-direction:column;gap:10px;margin-top:14px}.ptcPlusConfigurationAction .ptcPlusInput{width:100%;box-sizing:border-box}.ptcPlusTaskFeedback{grid-column:1/-1;margin:8px 0;font-size:12px;overflow-wrap:anywhere}
 .ptcPlusCapabilityEvidenceTable{max-height:480px;overflow:auto}.ptcPlusCapabilityEvidenceTable table,.ptcPlusCapabilityPlans table{width:100%;table-layout:fixed;border-collapse:collapse;font-size:12px}.ptcPlusCapabilityEvidenceTable th,.ptcPlusCapabilityEvidenceTable td,.ptcPlusCapabilityPlans th,.ptcPlusCapabilityPlans td{padding:10px;text-align:start;border-bottom:1px solid var(--dsw-alias-border-l2);overflow-wrap:anywhere}.ptcPlusCapabilityEvidenceTable th{color:var(--dsw-alias-label-tertiary);font-weight:500;background:var(--dsw-alias-bg-layer-2)}.ptcPlusCapabilityEvidenceTable progress{display:block;width:100%;height:5px;margin-top:5px;accent-color:var(--dsw-alias-state-business-primary,#4d6bfe)}.ptcPlusCapabilityStatistics .ptcPlusInput{width:100%}.ptcPlusCapabilityStatistics .ptcPlusBindingFields{margin-top:10px}
 .ptcPlusStatisticsParameters{margin-top:12px}.ptcPlusStatisticsParameters h5{margin:0;font-size:12px;line-height:20px;font-weight:600}.ptcPlusStatisticsObservationHeading{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 12px;min-width:0;line-height:20px}.ptcPlusStatisticsObservationHeading>span:first-child{flex:none}.ptcPlusStatisticsObservationHint{flex:1 1 260px;min-width:0;color:var(--dsw-alias-label-tertiary);white-space:normal;overflow-wrap:anywhere}
-@container ptcPlusCapabilities (max-width:760px){.ptcPlusCapabilityColumns{display:flex;flex-wrap:wrap;gap:4px 12px}.ptcPlusCapabilityColumns>span:last-child{display:none}.ptcPlusCapabilityItem{grid-template-columns:minmax(0,1fr) auto 28px;gap:8px 12px}.ptcPlusCapabilityIdentity{grid-column:1}.ptcPlusCapabilityBadge{grid-column:2}.ptcPlusCapabilityMoreCell{grid-column:3;grid-row:1}.ptcPlusCapabilitySource{grid-column:1;grid-row:2}.ptcPlusCapabilityAvailability{grid-column:1;grid-row:3}.ptcPlusCapabilityContextCell{grid-column:2/4;grid-row:3}.ptcPlusContextLayout{grid-template-columns:minmax(100px,27%) minmax(0,1fr);gap:12px}.ptcPlusContextNavigation button{padding:10px 6px}.ptcPlusConfigurationProfiles{grid-template-columns:1fr}.ptcPlusConfigurationList{max-height:220px}}
+@container ptcPlusCapabilities (max-width:760px){.ptcPlusCapabilityColumns{display:flex;flex-wrap:wrap;gap:4px 12px}.ptcPlusCapabilityItem{grid-template-columns:minmax(0,1fr) auto;gap:8px 12px}.ptcPlusCapabilityIdentity{grid-column:1}.ptcPlusCapabilityBadge{grid-column:2}.ptcPlusCapabilitySource{grid-column:1;grid-row:2}.ptcPlusCapabilityAvailability{grid-column:1;grid-row:3}.ptcPlusCapabilityContextCell{grid-column:1/3;grid-row:3}.ptcPlusContextLayout{grid-template-columns:minmax(100px,27%) minmax(0,1fr);gap:12px}.ptcPlusContextNavigation button{padding:10px 6px}.ptcPlusConfigurationProfiles{grid-template-columns:1fr}.ptcPlusConfigurationList{max-height:220px}}
 @container ptcPlusCapabilities (max-width:480px){.ptcPlusCapabilityTabs{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));overflow:visible}.ptcPlusCapabilityTabs button{min-width:0;padding:8px;overflow-wrap:anywhere}.ptcPlusCapabilityIdentity{grid-column:1/3}.ptcPlusCapabilityBadge{grid-row:2}.ptcPlusCapabilityAvailability{grid-column:1/-1}.ptcPlusCapabilityContextCell{grid-column:1/-1;grid-row:4}.ptcPlusCapabilityToolbar>.ptcPlusSearch{flex-basis:100%}.ptcPlusCapabilityTypes button{padding:6px 8px}.ptcPlusCapabilityList{max-height:360px}.ptcPlusCapabilityStatistics .ptcPlusBindingFields{grid-template-columns:minmax(0,1fr)}.ptcPlusContextLayout{grid-template-columns:1fr;gap:8px}.ptcPlusContextNavigation{flex-direction:column;border-right:0;border-bottom:1px solid var(--dsw-alias-border-l2);padding:0 0 8px}.ptcPlusContextNavigation button{min-width:0;font-size:12px}.ptcPlusContextNavigation button>span{max-width:100%;white-space:normal;overflow-wrap:anywhere}.ptcPlusContextNavigation button>span:first-child{flex:1;min-width:0}.ptcPlusContextState{flex:none;text-align:end}.ptcPlusCapabilitySaveState{flex-basis:100%}}
 .ptcPlusFooter{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:8px}.ptcPlusButton{appearance:none;display:inline-flex;align-items:center;justify-content:center;gap:5px;min-height:32px;padding:4px 14px;border:0.5px solid var(--dsw-alias-border-l3);border-radius:8px;background:transparent;color:var(--dsw-alias-label-secondary);cursor:pointer;font:inherit;font-size:13px;line-height:1.5;transition:color .16s ease,border-color .16s ease,background-color .16s ease}.ptcPlusButton:hover:not(:disabled){border-color:var(--dsw-alias-label-dimmed);color:var(--dsw-alias-label-primary)}.ptcPlusButton[data-kind=primary]{background:var(--dsw-alias-label-primary);border-color:transparent;color:var(--dsw-alias-bg-layer-3)}.ptcPlusButton[data-kind=primary]:hover:not(:disabled){background:var(--dsw-alias-label-primary-dimmed);border-color:transparent;color:var(--dsw-alias-bg-layer-3)}.ptcPlusButton[data-kind=ghost]{border-color:transparent}.ptcPlusButton[data-kind=ghost]:hover:not(:disabled){border-color:var(--dsw-alias-border-l3)}.ptcPlusButton[data-kind=danger]{color:var(--dsw-alias-state-error-primary)}.ptcPlusButton[data-kind=danger]:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover-danger);border-color:var(--dsw-alias-state-error-primary);color:var(--dsw-alias-state-error-primary)}.ptcPlusButton:disabled,.ptcPlusInput:disabled,.ptcPlusCheck:disabled{cursor:not-allowed;opacity:.4}
 .ptcPlusSettingAction{padding:4px 0 12px}
@@ -39021,7 +39191,7 @@ var CLIENT_CSS = `
 
 .ptcPlusCapabilityCommandNotice{box-sizing:border-box;min-width:0;margin:8px 0;padding:0;border:0;background:transparent;color:var(--dsw-alias-label-secondary);font:13px/20px var(--dsw-font-family,system-ui,sans-serif);overflow-wrap:anywhere}.ptcPlusCapabilityCommandNotice[data-state=error]{color:var(--dsw-alias-state-error-primary)}
 
-.ptcPlusCapabilityReceipt{box-sizing:border-box;min-width:0;margin:8px 0;padding:12px 14px;border:1px solid var(--dsw-alias-border-l2);border-radius:10px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);font:13px/20px var(--dsw-font-family,system-ui,sans-serif);overflow-wrap:anywhere}.ptcPlusCapabilityReceiptHead{display:flex;align-items:center;gap:12px;justify-content:space-between}.ptcPlusCapabilityReceiptHead>code{min-width:0;font:12px/18px var(--ds-font-family-code,ui-monospace,SFMono-Regular,Consolas,monospace);font-weight:500}.ptcPlusCapabilityReceiptState{flex:none;font-size:11px;color:var(--dsw-alias-label-secondary)}.ptcPlusCapabilityReceiptState[data-state=error]{color:var(--dsw-alias-state-error-primary)}.ptcPlusCapabilityReceipt p{margin:6px 0 0}.ptcPlusCapabilityReceiptSummary{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}.ptcPlusCapabilityReceipt details{margin-top:8px}.ptcPlusCapabilityReceipt summary{width:fit-content;color:var(--dsw-alias-label-secondary);font-size:12px;cursor:pointer}.ptcPlusCapabilityReceipt summary:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary,#4d6bfe);outline-offset:2px}.ptcPlusCapabilityReceipt pre{box-sizing:border-box;max-height:280px;overflow:auto;overscroll-behavior:contain;margin:8px 0 0;padding:10px;border:1px solid var(--dsw-alias-border-l2);border-radius:6px;background:var(--dsw-alias-bg-layer-1);font:12px/18px var(--ds-font-family-code,ui-monospace,SFMono-Regular,Consolas,monospace);white-space:pre-wrap;overflow-wrap:anywhere}.ptcPlusCapabilityReceiptTable{max-height:320px;overflow:auto;overscroll-behavior:contain;margin-top:8px}.ptcPlusCapabilityReceipt table{width:100%;min-width:480px;table-layout:fixed;border-collapse:collapse;font:12px/18px var(--dsw-font-family,system-ui,sans-serif)}.ptcPlusCapabilityReceipt th,.ptcPlusCapabilityReceipt td{padding:8px;text-align:start;vertical-align:top;border-bottom:1px solid var(--dsw-alias-border-l2)}.ptcPlusCapabilityReceipt th{position:sticky;top:0;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-secondary);font-weight:500}.ptcPlusCapabilityReceipt th:first-child{width:44%}.ptcPlusCapabilityReceipt td strong{display:block;font-weight:500}.ptcPlusCapabilityReceipt td small{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;margin-top:3px;color:var(--dsw-alias-label-secondary);font-size:11px}.ptcPlusAllocationEvidence,.ptcPlusConfigurationProfiles{min-width:0;margin-top:20px;padding-top:16px;border-top:1px solid var(--dsw-alias-border-l2)}.ptcPlusAllocationEvidence h4,.ptcPlusConfigurationProfiles h4{margin:0;font-size:14px}.ptcPlusAllocationMetrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin:16px 0}.ptcPlusAllocationMetrics>div{display:flex;min-width:0;flex-direction:column;gap:4px;padding:12px;border-radius:8px;background:var(--dsw-alias-bg-layer-2)}.ptcPlusAllocationMetrics strong{font-size:18px;overflow-wrap:anywhere}.ptcPlusAllocationMetrics span{font-size:11px;color:var(--dsw-alias-label-secondary)}.ptcPlusAllocationEvidence progress{width:100%;height:6px;accent-color:var(--dsw-alias-brand-primary)}.ptcPlusCapabilityEvidenceTable{max-height:440px;overflow:auto;overscroll-behavior:contain;margin-top:12px}.ptcPlusCapabilityEvidenceTable table{width:100%;table-layout:fixed;border-collapse:collapse;font-size:12px}.ptcPlusCapabilityEvidenceTable td,.ptcPlusCapabilityEvidenceTable th{padding:10px 6px;text-align:start;overflow-wrap:anywhere;border-bottom:1px solid var(--dsw-alias-border-l2)}.ptcPlusCapabilityEvidenceTable th{color:var(--dsw-alias-label-secondary);font-weight:500}.ptcPlusCapabilityFilterFields{align-items:flex-end}.ptcPlusCapabilityFilters>span{display:block;margin-bottom:8px}
+.ptcPlusCapabilityReceipt{box-sizing:border-box;min-width:0;margin:8px 0;padding:12px 14px;border:1px solid var(--dsw-alias-border-l2);border-radius:10px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);font:13px/20px var(--dsw-font-family,system-ui,sans-serif);overflow-wrap:anywhere}.ptcPlusCapabilityReceiptHead{display:flex;align-items:center;gap:12px;justify-content:space-between}.ptcPlusCapabilityReceiptHead>code{min-width:0;font:12px/18px var(--ds-font-family-code,ui-monospace,SFMono-Regular,Consolas,monospace);font-weight:500}.ptcPlusCapabilityReceiptState{flex:none;font-size:11px;color:var(--dsw-alias-label-secondary)}.ptcPlusCapabilityReceiptState[data-state=error]{color:var(--dsw-alias-state-error-primary)}.ptcPlusCapabilityReceipt p{margin:6px 0 0}.ptcPlusCapabilityReceiptSummary{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}.ptcPlusCapabilityReceipt details{margin-top:8px}.ptcPlusCapabilityReceipt summary{width:fit-content;color:var(--dsw-alias-label-secondary);font-size:12px;cursor:pointer}.ptcPlusCapabilityReceipt summary:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary,#4d6bfe);outline-offset:2px}.ptcPlusCapabilityReceipt pre{box-sizing:border-box;max-height:280px;overflow:auto;overscroll-behavior:contain;margin:8px 0 0;padding:10px;border:1px solid var(--dsw-alias-border-l2);border-radius:6px;background:var(--dsw-alias-bg-layer-1);font:12px/18px var(--ds-font-family-code,ui-monospace,SFMono-Regular,Consolas,monospace);white-space:pre-wrap;overflow-wrap:anywhere}.ptcPlusCapabilityReceiptTable{max-height:320px;overflow:auto;overscroll-behavior:contain;margin-top:8px}.ptcPlusCapabilityReceipt table{width:100%;min-width:480px;table-layout:fixed;border-collapse:collapse;font:12px/18px var(--dsw-font-family,system-ui,sans-serif)}.ptcPlusCapabilityReceipt th,.ptcPlusCapabilityReceipt td{padding:8px;text-align:start;vertical-align:top;border-bottom:1px solid var(--dsw-alias-border-l2)}.ptcPlusCapabilityReceipt th{position:sticky;top:0;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-secondary);font-weight:500}.ptcPlusCapabilityReceipt th:first-child{width:44%}.ptcPlusCapabilityReceipt td strong{display:block;font-weight:500}.ptcPlusCapabilityReceipt td small{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;margin-top:3px;color:var(--dsw-alias-label-secondary);font-size:11px}.ptcPlusAllocationEvidence,.ptcPlusConfigurationProfiles{min-width:0;margin-top:20px;padding-top:16px;border-top:1px solid var(--dsw-alias-border-l2)}.ptcPlusAllocationEvidence h4,.ptcPlusConfigurationProfiles h4{margin:0;font-size:14px}.ptcPlusAllocationMetrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin:16px 0}.ptcPlusAllocationMetrics>div{display:flex;min-width:0;flex-direction:column;gap:4px;padding:12px;border-radius:8px;background:var(--dsw-alias-bg-layer-2)}.ptcPlusAllocationMetrics strong{font-size:18px;overflow-wrap:anywhere}.ptcPlusAllocationMetrics span{font-size:11px;color:var(--dsw-alias-label-secondary)}.ptcPlusAllocationEvidence progress{width:100%;height:6px;accent-color:var(--dsw-alias-brand-primary)}.ptcPlusCapabilityEvidenceTable{max-height:440px;overflow:auto;overscroll-behavior:contain;margin-top:12px}.ptcPlusCapabilityEvidenceTable table{width:100%;table-layout:fixed;border-collapse:collapse;font-size:12px}.ptcPlusCapabilityEvidenceTable td,.ptcPlusCapabilityEvidenceTable th{padding:10px 6px;text-align:start;overflow-wrap:anywhere;border-bottom:1px solid var(--dsw-alias-border-l2)}.ptcPlusCapabilityEvidenceTable th{color:var(--dsw-alias-label-secondary);font-weight:500}.ptcPlusCapabilityFilterFields{align-items:flex-end}
 @container ptcPlusCapabilities (max-width:600px){.ptcPlusAllocationMetrics{grid-template-columns:repeat(2,minmax(0,1fr))}}
 
 .ptcPlusSessionCapabilityModal.ptcPlusSessionCapabilityModal{box-sizing:border-box;width:min(1180px,calc(100vw - 48px));height:min(800px,calc(100dvh - 48px));max-height:100%;max-width:100%;display:flex;flex-direction:column;gap:0;padding:0;border-radius:16px;overflow:hidden;background:var(--dsw-alias-bg-layer-1,var(--dsw-alias-bg-base,#fff));color:var(--dsw-alias-label-primary,#18191c);font:13px/20px var(--dsw-font-family,system-ui,sans-serif)}
@@ -39036,6 +39206,15 @@ var CLIENT_CSS = `
 @media(max-width:900px){.ptcPlusSessionCapabilityToolbar{grid-template-columns:repeat(3,minmax(0,1fr))}.ptcPlusSessionCapabilityToolbar .ptcPlusSearch{grid-column:1/-1}.ptcPlusSessionCapabilityWorkspace{grid-template-columns:minmax(0,1fr) minmax(240px,.8fr)}.ptcPlusSessionCapabilityColumns.ptcPlusCapabilityColumns{display:flex;gap:4px 12px;overflow-x:auto;overscroll-behavior:contain;padding-block:4px}.ptcPlusSessionCapabilityColumns>span{flex:none}.ptcPlusSessionCapabilityRow.ptcPlusCapabilityItem{grid-template-columns:minmax(0,1fr) auto;gap:4px 12px}.ptcPlusSessionCapabilityRow .ptcPlusCapabilityIdentity{grid-column:1/-1}.ptcPlusSessionCapabilityRow .ptcPlusCapabilitySource{grid-column:1;grid-row:2}.ptcPlusSessionCapabilityRow .ptcPlusCapabilityBadge{grid-column:2;grid-row:2}.ptcPlusSessionCapabilityRow .ptcPlusCapabilityAvailability{grid-column:1;grid-row:3}.ptcPlusSessionCapabilityRow .ptcPlusCapabilityContextCell{grid-column:2;grid-row:3}.ptcPlusSessionCapabilityRow .ptcPlusSessionCapabilityPending{grid-column:1/-1;grid-row:4}.ptcPlusSessionCapabilityPending[data-changed=true]:before{content:attr(data-label) ": "}.ptcPlusSessionCapabilityPending[data-changed=false]{display:none}}
 @media(max-width:650px){.ptcPlusSessionCapabilityModal.ptcPlusSessionCapabilityModal{width:calc(100vw - 16px);height:calc(100dvh - 16px);max-height:100%}.ptcPlusSessionCapabilityHead,.ptcPlusSessionCapabilityToolbar,.ptcPlusSessionCapabilityFooter{padding-left:14px;padding-right:14px}.ptcPlusSessionCapabilityHead{padding-top:10px;padding-bottom:10px}.ptcPlusSessionCapabilityToolbar{gap:5px;padding-top:7px;padding-bottom:7px}.ptcPlusSessionCapabilityWorkspace{display:block;flex:1 1 0;min-height:0;overflow:hidden}.ptcPlusSessionCapabilityList,.ptcPlusSessionCapabilityDetail{box-sizing:border-box;height:100%;border:0}.ptcPlusSessionCapabilityWorkspace[data-pane=list] .ptcPlusSessionCapabilityDetail,.ptcPlusSessionCapabilityWorkspace[data-pane=detail] .ptcPlusSessionCapabilityList{display:none}.ptcPlusSessionCapabilityDetail{padding:14px}.ptcPlusSessionCapabilityBack{display:inline-block;margin:0 0 14px;padding:0;border:0;background:transparent;color:var(--dsw-alias-brand-primary);font:inherit;cursor:pointer}.ptcPlusSessionCapabilityFooter{flex-wrap:wrap;gap:6px;padding-top:7px;padding-bottom:7px}.ptcPlusSessionCapabilityFooter [role=status]{flex-basis:100%}.ptcPlusSessionCapabilityFooter button{flex:1;min-width:0;width:auto}}
 @media(max-width:650px) and (max-height:480px){.ptcPlusSessionCapabilityModal.ptcPlusSessionCapabilityModal{height:calc(100dvh - 8px);max-height:100%}.ptcPlusSessionCapabilityHead{padding-top:2px;padding-bottom:2px}.ptcPlusSessionCapabilityHead h2{font-size:12px;line-height:16px}.ptcPlusSessionCapabilityHead .ptcPlusDialogClose{width:22px;height:22px}.ptcPlusSessionCapabilityHead p{display:none}.ptcPlusSessionCapabilityToolbar .ptcPlusCapabilityFilter>span{display:none}.ptcPlusSessionCapabilityToolbar{display:flex;gap:6px;overflow-x:auto;overscroll-behavior:contain;padding-top:2px;padding-bottom:2px}.ptcPlusSessionCapabilityToolbar .ptcPlusSearch{flex:0 0 145px;height:27px}.ptcPlusSessionCapabilityToolbar{padding-block:1px}.ptcPlusSessionCapabilityToolbar .ptcPlusCapabilityFilter{flex:0 0 130px}.ptcPlusSessionCapabilityToolbar .ptcPlusSelectTrigger{height:27px}.ptcPlusSessionCapabilityColumns.ptcPlusCapabilityColumns{padding-block:0}.ptcPlusSessionCapabilityColumns .ptcPlusCapabilitySort{min-height:24px;padding-block:1px}.ptcPlusSessionCapabilityList{padding-block:0}.ptcPlusSessionCapabilityGroup h3{padding-top:0;padding-bottom:0;line-height:10px}.ptcPlusSessionCapabilityRow.ptcPlusCapabilityItem{grid-template-columns:minmax(0,1fr) auto auto;min-height:30px;padding-block:2px;gap:0 8px;line-height:16px}.ptcPlusSessionCapabilityRow .ptcPlusCapabilityIdentity{grid-column:1/3;grid-row:1}.ptcPlusSessionCapabilityRow .ptcPlusSessionCapabilityName{font-size:12px;line-height:16px}.ptcPlusSessionCapabilityRow .ptcPlusCapabilityBadge{grid-column:3;grid-row:1;padding-block:0}.ptcPlusSessionCapabilityRow .ptcPlusCapabilitySource{grid-column:1;grid-row:2}.ptcPlusSessionCapabilityRow .ptcPlusCapabilityAvailability{grid-column:2;grid-row:2}.ptcPlusSessionCapabilityRow .ptcPlusCapabilityContextCell{grid-column:3;grid-row:2}.ptcPlusSessionCapabilityRow .ptcPlusSessionCapabilityPending{grid-row:3}.ptcPlusSessionCapabilityRow .ptcPlusCapabilityIdentity code{display:none}.ptcPlusSessionCapabilityRow .ptcPlusCapabilityContext{padding-block:0}.ptcPlusSessionCapabilityFooter{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:4px;padding:4px 6px}.ptcPlusSessionCapabilityFooter [role=status]{grid-column:1/-1;font-size:10px;line-height:12px}.ptcPlusSessionCapabilityFooter button{min-width:0;width:100%;min-height:28px;padding:3px 10px;font-size:10px;line-height:14px;white-space:normal}}
+
+.ptcPlusCapabilityDialog.ptcPlusCapabilityDialog{box-sizing:border-box;width:min(520px,calc(100vw - 32px));max-height:calc(100dvh - 32px);display:flex;flex-direction:column;padding:0;overflow:hidden;background:var(--dsw-alias-bg-base,#fff);color:var(--dsw-alias-label-primary,#18191c)}
+.ptcPlusCapabilityDialog.ptcPlusCapabilityEditorDialog{width:min(640px,calc(100vw - 32px))}
+.ptcPlusCapabilityDialogHead{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 18px;border-bottom:1px solid var(--dsw-alias-border-l2)}.ptcPlusCapabilityDialogHead h2{margin:0;font-size:16px;line-height:24px;overflow-wrap:anywhere}
+.ptcPlusCapabilityDialogBody{min-height:0;overflow:auto;overscroll-behavior:contain;padding:14px 18px}.ptcPlusCapabilityDialogBody>p{margin:0 0 10px;overflow-wrap:anywhere}.ptcPlusCapabilityDialogBody .ptcPlusCapabilityFilterFields{padding:0;border:0}
+.ptcPlusCapabilityDialogFooter{display:flex;align-items:center;justify-content:flex-end;gap:10px;padding:12px 18px;border-top:1px solid var(--dsw-alias-border-l2)}
+.ptcPlusCapabilityDialogActions{display:flex;flex-direction:column;gap:8px;margin-top:12px}.ptcPlusCapabilityDialogActions>.ptcPlusButton{justify-content:center;width:100%}
+.ptcPlusConfigurationMore.ptcPlusButton{padding:0 10px;font-size:16px;line-height:1}
+@media(max-width:420px){.ptcPlusCapabilityDialogFooter{flex-wrap:wrap}.ptcPlusCapabilityDialogFooter button{flex:1;min-width:0}}
 
 `;
 var BINDING_WORKBENCH_CSS = `
@@ -39551,7 +39730,6 @@ var CHROME_COPY = Object.freeze({
     "capabilities.sourceColumn": "\u6765\u6E90",
     "capabilities.enabledColumn": "\u662F\u5426\u542F\u7528",
     "capabilities.contextColumn": "\u4E0A\u4E0B\u6587",
-    "capabilities.actionsColumn": "\u64CD\u4F5C",
     "capabilities.rowState.unknown": "\u672A\u786E\u8BA4",
     "capabilities.rowState.unavailable": "\u5F53\u524D\u4E0D\u53EF\u7528",
     "capabilities.rowState.source-closed": "\u6765\u6E90\u5DF2\u505C\u7528",
@@ -39559,7 +39737,6 @@ var CHROME_COPY = Object.freeze({
     "capabilities.rowState.enabled": "\u5DF2\u542F\u7528",
     "capabilities.rowState.closed": "\u5DF2\u505C\u7528",
     "capabilities.editContextFor": "\u7F16\u8F91\u4E0A\u4E0B\u6587\u8BBE\u7F6E\uFF1A{name}",
-    "capabilities.moreFor": "\u66F4\u591A\u8BBE\u7F6E\uFF1A{name}",
     "capabilities.closeDetails": "\u6536\u8D77\u8BE6\u60C5",
     "capabilities.contextHelp": "\u542F\u505C\u548C\u4E0A\u4E0B\u6587\u5206\u522B\u4FDD\u5B58\uFF1B\u66F4\u6539\u8BF4\u660E\u4E0D\u4F1A\u6539\u53D8\u80FD\u529B\u662F\u5426\u53EF\u7528\u3002",
     "capabilities.coverageScope": "\u7EDF\u8BA1\u8303\u56F4",
@@ -39711,6 +39888,10 @@ var CHROME_COPY = Object.freeze({
     "capabilities.savedConfigurations": "\u5DF2\u4FDD\u5B58\u914D\u7F6E",
     "capabilities.configurationsHint": "\u4FDD\u5B58\u4E0E\u5E94\u7528\u7528\u4E8E\u65B0\u4F1A\u8BDD\uFF1B\u5DF2\u6709\u4F1A\u8BDD\u9700\u660E\u786E\u5237\u65B0\u3002\u5BFC\u5165\u4EC5\u52A0\u5165\u914D\u7F6E\u5E93\u3002",
     "capabilities.configurationName": "\u914D\u7F6E\u540D\u79F0",
+    "capabilities.dialogDone": "\u5B8C\u6210",
+    "capabilities.closeDialog": "\u5173\u95ED",
+    "capabilities.libraryActions": "\u914D\u7F6E\u5E93\u64CD\u4F5C",
+    "capabilities.profileActions": "\u6B64\u914D\u7F6E\u64CD\u4F5C",
     "capabilities.saveConfiguration": "\u4FDD\u5B58\u5F53\u524D\u8BBE\u7F6E",
     "capabilities.chooseConfiguration": "\u9009\u62E9\u5DF2\u4FDD\u5B58\u914D\u7F6E",
     "capabilities.applyConfiguration": "\u5E94\u7528\u5230\u4FDD\u5B58\u8BBE\u7F6E",
@@ -39836,7 +40017,7 @@ var CHROME_COPY = Object.freeze({
     "capabilities.invocation.model": "\u4EC5\u5141\u8BB8\u6A21\u578B\u52A0\u8F7D\u6B63\u6587\uFF1B\u6B64 Skill \u4E0D\u63D0\u4F9B\u7528\u6237\u659C\u6760\u8C03\u7528\u3002",
     "capabilities.invocation.user": "\u4EC5\u5141\u8BB8\u7528\u6237\u901A\u8FC7 /{name} \u8C03\u7528\uFF1B\u6A21\u578B\u4E0D\u80FD\u4F7F\u7528 tools.skill \u52A0\u8F7D\u5B83\u3002",
     "capabilities.invocation.varies": "\u6B64 Skill \u7684\u8C03\u7528\u8D44\u683C\u968F\u4F1A\u8BDD\u800C\u5F02\uFF1B\u8BF7\u5728\u76EE\u6807\u4F1A\u8BDD\u4E2D\u786E\u8BA4\u6A21\u578B\u52A0\u8F7D\u548C\u7528\u6237\u659C\u6760\u8C03\u7528\u662F\u5426\u53EF\u7528\u3002",
-    "capabilities.viewDescription": "\u67E5\u770B\u5B8C\u6574\u76EE\u5F55\u63CF\u8FF0",
+    "capabilities.catalogDescription": "\u80FD\u529B\u8BF4\u660E",
     "capabilities.removeSaved": "\u79FB\u9664\u5DF2\u4FDD\u5B58\u914D\u7F6E",
     "capabilities.currentSession": "\u6240\u9009\u4F1A\u8BDD\u65B9\u6848",
     "capabilities.sessionSelector": "\u67E5\u770B\u4F1A\u8BDD",
@@ -40151,7 +40332,6 @@ var CHROME_COPY = Object.freeze({
     "capabilities.sourceColumn": "Source",
     "capabilities.enabledColumn": "Enabled",
     "capabilities.contextColumn": "Context",
-    "capabilities.actionsColumn": "Actions",
     "capabilities.rowState.unknown": "Unconfirmed",
     "capabilities.rowState.unavailable": "Unavailable",
     "capabilities.rowState.source-closed": "Source disabled",
@@ -40159,7 +40339,6 @@ var CHROME_COPY = Object.freeze({
     "capabilities.rowState.enabled": "Enabled",
     "capabilities.rowState.closed": "Disabled",
     "capabilities.editContextFor": "Edit context settings: {name}",
-    "capabilities.moreFor": "More settings: {name}",
     "capabilities.closeDetails": "Close details",
     "capabilities.contextHelp": "Availability and context are saved separately. Changing disclosure does not enable or disable a capability.",
     "capabilities.coverageScope": "Statistics scope",
@@ -40311,6 +40490,10 @@ var CHROME_COPY = Object.freeze({
     "capabilities.savedConfigurations": "Saved configurations",
     "capabilities.configurationsHint": "Saved settings apply to new sessions; existing sessions require explicit refresh. Import only adds to the library.",
     "capabilities.configurationName": "Configuration name",
+    "capabilities.dialogDone": "Done",
+    "capabilities.closeDialog": "Close",
+    "capabilities.libraryActions": "Library actions",
+    "capabilities.profileActions": "Configuration actions",
     "capabilities.saveConfiguration": "Save current settings",
     "capabilities.chooseConfiguration": "Choose a saved configuration",
     "capabilities.applyConfiguration": "Apply to saved settings",
@@ -40436,7 +40619,7 @@ var CHROME_COPY = Object.freeze({
     "capabilities.invocation.model": "Only the model can load the body; this Skill has no user slash invocation.",
     "capabilities.invocation.user": "Only users can invoke /{name}; the model cannot load it with tools.skill.",
     "capabilities.invocation.varies": "Invocation eligibility varies by session. Check model loading and user slash invocation in the target session.",
-    "capabilities.viewDescription": "View complete catalog description",
+    "capabilities.catalogDescription": "Capability description",
     "capabilities.removeSaved": "Remove saved preferences",
     "capabilities.currentSession": "Selected session plan",
     "capabilities.sessionSelector": "Inspect session",

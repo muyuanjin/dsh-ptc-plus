@@ -237,6 +237,17 @@ export function createCapabilitySettingsViews(React, { SearchIcon, Select, Modal
 
   }
 
+  /** Capability-group edits open their own window; the group never expands controls into the settings page. */
+  function CapabilityDialog({ title, onClose, t, className, children, footer }) {
+    return h(Modal, { open: true, onClose, title, closeLabel: t('capabilities.closeDialog'), headless: true,
+      className: `ptcPlusCapabilityDialog ${className ?? ''}`.trim() },
+      h('div', { className: 'ptcPlusCapabilityDialogHead' }, h('h2', null, title),
+        h('button', { type: 'button', className: 'ptcPlusDialogClose', 'aria-label': t('capabilities.closeDialog'),
+          onClick: onClose }, '\u00d7')),
+      h('div', { className: 'ptcPlusCapabilityDialogBody' }, children),
+      footer ? h('div', { className: 'ptcPlusCapabilityDialogFooter' }, footer) : null)
+  }
+
   function CapabilityBatchDialog({ operation, value, entries, disabled, onChange, onClose, t }) {
     const [choices, setChoices] = React.useState({ availability: 'keep', disclosure: 'keep' })
     const [pending, setPending] = React.useState(false)
@@ -378,22 +389,24 @@ export function createCapabilitySettingsViews(React, { SearchIcon, Select, Modal
     const select = (label, current, update, options, blocked = false) => h('div', { className: 'ptcPlusCapabilityFilter' },
       h('span', null, label), h(Select, { label, value: current, disabled: blocked, onChange: update,
         options: options.map(([key, text]) => ({ value: key, label: text })) }))
-    const manualSelect = item => h('div', { className: 'ptcPlusCapabilityRuleFields' },
-      h(Select, { value: item.rule.availability ?? 'automatic', disabled: disabled('capabilityPolicy'),
+    const editorField = (label, control) => h('div', { className: 'ptcPlusCapabilityField' }, h('span', null, label), control)
+    const manualSelect = item => h('div', { className: 'ptcPlusCapabilityEditorFields' },
+      editorField(t('capabilities.enabledColumn'), h(Select, { value: item.rule.availability ?? 'automatic', disabled: disabled('capabilityPolicy'),
         label: t('capabilities.policy.availabilityFor', { name: item.id }),
         onChange: next => change('capabilityPolicy', changeCapabilityRule(policy, item.id, 'availability', next)),
-        options: ['automatic', 'enabled', 'closed'].map(choice => ({ value: choice, label: t(choice === 'automatic' ? 'capabilities.policy.inheritRule' : choice === 'enabled' ? 'capabilities.quick.enabled' : `capabilities.${choice}`) })) }),
-      h(Select, { value: item.rule.disclosure ?? 'automatic', disabled: disabled('capabilityPolicy'),
+        options: ['automatic', 'enabled', 'closed'].map(choice => ({ value: choice, label: t(choice === 'automatic' ? 'capabilities.policy.inheritRule' : choice === 'enabled' ? 'capabilities.quick.enabled' : `capabilities.${choice}`) })) })),
+      editorField(t('capabilities.contextColumn'), h(Select, { value: item.rule.disclosure ?? 'automatic', disabled: disabled('capabilityPolicy'),
         label: t('capabilities.disclosureFor', { name: item.id }),
         onChange: next => setManual(item.id, next), options: ['automatic', ...CAPABILITY_DISCLOSURES]
-          .map(choice => ({ value: choice, label: t(choice === 'automatic' ? 'capabilities.policy.inheritRule' : `capabilities.${choice}`) })) }))
-    const common = item => h('label', { className: 'ptcPlusCapabilityCommon', title: t('capabilities.baselineFor', { name: item.id }) },
-      h('input', { type: 'checkbox', disabled: disabled('capabilityBaseline'), checked: item.common,
-        'aria-label': t('capabilities.baselineFor', { name: item.id }),
+          .map(choice => ({ value: choice, label: t(choice === 'automatic' ? 'capabilities.policy.inheritRule' : `capabilities.${choice}`) })) })))
+    const commonSwitch = item => h('div', { className: 'ptcPlusCapabilitySwitchRow' },
+      h('div', { className: 'ptcPlusCapabilitySwitchText' },
+        h('span', { className: 'ptcPlusCapabilitySwitchLabel' }, t('capabilities.commonBaseline')),
+        h('span', { className: 'ptcPlusCapabilitySwitchHint' }, t(item.common ? 'capabilities.inBaseline' : 'capabilities.notInBaseline'))),
+      h('input', { type: 'checkbox', role: 'switch', className: 'ptcPlusCheck', checked: item.common,
+        disabled: disabled('capabilityBaseline'), 'aria-label': t('capabilities.baselineFor', { name: item.id }),
         onChange: event => change('capabilityBaseline', event.target.checked
-          ? [...baseline.filter(id => id !== item.id), item.id] : baseline.filter(id => id !== item.id)) }),
-      h('svg', { width: 18, height: 18, viewBox: '0 0 24 24', 'aria-hidden': true },
-        h('path', { d: 'm12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2L12 17.3l-5.6 2.9 1.1-6.2L3 9.6l6.2-.9Z' })))
+          ? [...baseline.filter(id => id !== item.id), item.id] : baseline.filter(id => id !== item.id)) }))
     const filterLabels = [kind !== 'all' ? t(`capabilities.type.${kind}`) : null,
       source !== 'all' ? sources.get(source) ?? t('capabilities.previousSource') : null,
       strategy !== 'all' ? t(strategy === 'automatic' ? 'capabilities.policy.inheritRule' : `capabilities.${strategy}`) : null,
@@ -414,17 +427,19 @@ export function createCapabilitySettingsViews(React, { SearchIcon, Select, Modal
           ...kinds.filter(key => key !== 'other' || entries.some(item => item.kind === 'other')).map(key => h('button', {
             key, type: 'button', 'aria-pressed': kind === key, onClick: () => setType(key),
           }, t(`capabilities.type.${key}`)))),
-        h('button', { type: 'button', className: 'ptcPlusButton', 'aria-expanded': filtersOpen,
-          onClick: () => setFiltersOpen(current => !current) }, t('capabilities.filterAction')),
+        h('button', { type: 'button', className: 'ptcPlusButton', 'aria-haspopup': 'dialog',
+          onClick: () => setFiltersOpen(true) }, t('capabilities.filterAction')),
         h('button', { type: 'button', className: 'ptcPlusButton', 'aria-haspopup': 'dialog',
           disabled: disabled('capabilityPolicy'), onClick: () => setBatchOperation({
             targets: visible.filter(item => item.availability === 'available').map(item => ({ id: item.id, name: item.name })),
             excluded: visible.filter(item => item.availability !== 'available').length,
             scope: [...filterLabels, ...(query.trim() ? [t('capabilities.batch.search', { query: query.trim() })] : [])].join(' · ') || t('capabilities.batch.all'),
           }) }, t('capabilities.batchSettings')),
-        h('button', { type: 'button', className: 'ptcPlusButton', 'aria-expanded': inheritedRulesOpen,
-          onClick: () => setInheritedRulesOpen(current => !current) }, t('capabilities.inheritedRules'))),
-      filtersOpen ? h('div', { className: 'ptcPlusCapabilityFilters' },
+        h('button', { type: 'button', className: 'ptcPlusButton', 'aria-haspopup': 'dialog',
+          onClick: () => setInheritedRulesOpen(true) }, t('capabilities.inheritedRules'))),
+      filtersOpen ? h(CapabilityDialog, { title: t('capabilities.filterAction'), onClose: () => setFiltersOpen(false), t,
+        className: 'ptcPlusCapabilityFilterDialog', footer: h('button', { type: 'button', className: 'ptcPlusButton',
+          'data-kind': 'primary', onClick: () => setFiltersOpen(false) }, t('capabilities.dialogDone')) },
         h('div', { className: 'ptcPlusCapabilityFilterFields' },
           select(t('capabilities.sourceFilter'), source, setCompatibleSource, [['all', t('capabilities.allSources')], ...sources,
             ...(source !== 'all' && !sources.has(source) ? [[source, t('capabilities.previousSource')]] : [])]),
@@ -436,7 +451,10 @@ export function createCapabilitySettingsViews(React, { SearchIcon, Select, Modal
             onChange: event => setOnlyCommon(event.target.checked) }), t('capabilities.onlyCommon')),
           select(t('capabilities.availabilityFilter'), availability, setAvailability,
             ['all', 'available', 'unavailable', 'unknown'].map(key => [key, t(`capabilities.availability.${key}`)])))) : null,
-      inheritedRulesOpen ? h(PolicyRules, { value, catalog, disabled, onChange, t }) : null,
+      inheritedRulesOpen ? h(CapabilityDialog, { title: t('capabilities.inheritedRules'), onClose: () => setInheritedRulesOpen(false), t,
+        footer: h('button', { type: 'button', className: 'ptcPlusButton', 'data-kind': 'primary',
+          onClick: () => setInheritedRulesOpen(false) }, t('capabilities.dialogDone')) },
+        h(PolicyRules, { value, catalog, disabled, onChange, t })) : null,
       batchOperation ? h(CapabilityBatchDialog, { operation: batchOperation, value, entries, disabled, onChange,
         onClose: () => setBatchOperation(null), t }) : null,
       activeFilters ? h('div', { className: 'ptcPlusActiveFilters' }, h('span', null, filterLabels.join(' · ')),
@@ -454,33 +472,34 @@ export function createCapabilitySettingsViews(React, { SearchIcon, Select, Modal
                 h('button', { type: 'button', className: 'ptcPlusCapabilitySort', title: t('capabilities.sortCycle'),
                   onClick: () => setSort(current => cycleCapabilitySort(current, column.key)) },
                 t(`capabilities.${column.label}`), h('span', { 'aria-hidden': true },
-                  capabilitySortDirection(sort, column.key) === 'ascending' ? '↑' : capabilitySortDirection(sort, column.key) === 'descending' ? '↓' : '↕')))),
-              h('span', { role: 'columnheader' }, t('capabilities.actionsColumn'))),
+                  capabilitySortDirection(sort, column.key) === 'ascending' ? '↑' : capabilitySortDirection(sort, column.key) === 'descending' ? '↓' : '↕'))))),
             h('div', { className: 'ptcPlusCapabilityList', role: 'rowgroup' }, ...visible.map(item => h('div', { key: item.id, className: 'ptcPlusCapabilityItem', role: 'row',
-              'data-selected': entry?.id === item.id, 'data-availability': item.availability },
+              'data-selected': entry?.id === item.id, 'data-availability': item.availability,
+              onClick: () => setSelected(item.id) },
               h('div', { className: 'ptcPlusCapabilityIdentity', role: 'cell' }, h('span', { className: 'ptcPlusCapabilityName' }, item.name), h('code', null, item.id)),
               h('span', { className: 'ptcPlusCapabilityBadge', role: 'cell', 'data-kind': type(item) }, t(`capabilities.type.${type(item)}`)),
               h('span', { className: 'ptcPlusCapabilitySource', role: 'cell' }, displayedSource(item)),
-              h('label', { className: 'ptcPlusCapabilityAvailability', role: 'cell', 'data-state': state(item) },
-                h('input', { type: 'checkbox', role: 'switch', className: 'ptcPlusCheck',
+              // The cell stays a plain cell so its empty area selects the row; only the switch and
+              // its own label swallow the click, keeping a toggle from also opening the row editor.
+              h('div', { className: 'ptcPlusCapabilityAvailability', role: 'cell', 'data-state': state(item) },
+                h('input', { type: 'checkbox', role: 'switch', className: 'ptcPlusCheck', id: `ptcPlusCapabilityAvailability-${item.id}`,
                   checked: item.resolvedRule.availability === 'enabled',
                   disabled: disabled('capabilityPolicy') || state(item) === 'source-closed',
                   'aria-label': t('capabilities.policy.availabilityFor', { name: item.id }),
+                  onClick: event => event.stopPropagation(),
                   onChange: event => change('capabilityPolicy', changeCapabilityRule(policy, item.id, 'availability', event.target.checked ? 'enabled' : 'closed')) }),
-                h('span', null, t(`capabilities.rowState.${state(item)}`))),
+                h('label', { htmlFor: `ptcPlusCapabilityAvailability-${item.id}`,
+                  onClick: event => event.stopPropagation() }, t(`capabilities.rowState.${state(item)}`))),
               h('div', { role: 'cell', className: 'ptcPlusCapabilityContextCell' }, h('button', { type: 'button', className: 'ptcPlusCapabilityContext', 'data-capability-edit-id': item.id,
-                'aria-label': t('capabilities.editContextFor', { name: item.id }), 'aria-expanded': selected === item.id,
-                onClick: () => setSelected(selected === item.id ? null : item.id) },
+                'aria-label': t('capabilities.editContextFor', { name: item.id }), 'aria-haspopup': 'dialog',
+                onClick: event => { event.stopPropagation(); setSelected(item.id) } },
                 h('span', null, t(`capabilities.${item.resolvedRule.disclosure}`)),
                 h('svg', { width: 16, height: 16, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.5, 'aria-hidden': true },
-                  h('path', { d: 'm15 5 4 4M4 20l4-1L20 7l-4-4L4 15Z' })))),
-              h('div', { role: 'cell', className: 'ptcPlusCapabilityMoreCell' }, h('button', { type: 'button', className: 'ptcPlusCapabilityMore', 'aria-label': t('capabilities.moreFor', { name: item.id }),
-                'aria-expanded': selected === item.id, onClick: () => setSelected(selected === item.id ? null : item.id) }, '…')))))),
-      entry ? h('aside', { className: 'ptcPlusCapabilityDetail', 'aria-label': t('capabilities.details') },
-        h('div', { className: 'ptcPlusTaskHead' }, h('h4', null, entry.name),
-          h('button', { type: 'button', className: 'ptcPlusButton', onClick: closeEditor }, t('capabilities.closeDetails'))),
+                  h('path', { d: 'm15 5 4 4M4 20l4-1L20 7l-4-4L4 15Z' })))))))),
+      entry ? h(CapabilityDialog, { title: entry.name, onClose: closeEditor, t, className: 'ptcPlusCapabilityEditorDialog',
+        footer: h('button', { type: 'button', className: 'ptcPlusButton', onClick: closeEditor }, t('capabilities.closeDetails')) },
         h('code', null, entry.id), h('p', { className: 'ptcPlusDetail' }, t('capabilities.contextHelp')),
-        manualSelect(entry), h('div', { className: 'ptcPlusCapabilityCommonChoice' }, common(entry), h('span', null, t('capabilities.commonBaseline'))),
+        manualSelect(entry), commonSwitch(entry),
         h('p', { className: 'ptcPlusDetail' }, t(value.capabilityContextEnabled === false ? 'capabilities.effect.paused'
           : value.capabilityManagementEnabled !== true ? 'capabilities.effect.rulesOff'
             : entry.resolvedRule.availabilitySource.startsWith('mcp:') && entry.resolvedRule.availability === 'closed' ? 'capabilities.effect.sourceClosed'
@@ -492,29 +511,33 @@ export function createCapabilitySettingsViews(React, { SearchIcon, Select, Modal
           source: `${entry.resolvedRule.availabilitySource} · ${entry.resolvedRule.disclosureSource}` })),
         entry.rule.disclosure !== undefined ? h('button', { type: 'button', className: 'ptcPlusCapabilityLink', disabled: disabled('capabilityPolicy'),
           onClick: () => setManual(entry.id, 'automatic') }, t('capabilities.restoreAutomatic')) : null,
-        entry.source?.kind === 'mcp' && entry.mcpServer ? h('details', null,
-          h('summary', { tabIndex: 0 }, t('capabilities.sourceRules')),
+        entry.source?.kind === 'mcp' && entry.mcpServer ? h('section', { className: 'ptcPlusCapabilityEditorSection' },
+          h('h5', null, t('capabilities.sourceRules')),
           h('p', { className: 'ptcPlusDetail' }, t('capabilities.serverHint')),
-          ...['availability', 'disclosure'].map(dimension => select(t(`capabilities.policy.${dimension}`), policy.mcpServers[entry.mcpServer]?.[dimension] ?? 'automatic',
-            next => change('capabilityPolicy', changeCapabilityRule(policy, `mcpServers.${entry.mcpServer}`, dimension, next)),
-            ['automatic', ...(dimension === 'availability' ? ['enabled', 'closed'] : CAPABILITY_DISCLOSURES)].map(key => [key,
-              t(key === 'automatic' ? 'capabilities.policy.inheritRule' : key === 'enabled' ? 'capabilities.quick.enabled' : `capabilities.${key}`)]), disabled('capabilityPolicy')))) : null,
+          h('div', { className: 'ptcPlusCapabilityEditorFields' },
+            ...['availability', 'disclosure'].map(dimension => editorField(t(`capabilities.policy.${dimension}`),
+              h(Select, { value: policy.mcpServers[entry.mcpServer]?.[dimension] ?? 'automatic', disabled: disabled('capabilityPolicy'),
+                label: `${entry.mcpServer} · ${t(`capabilities.policy.${dimension}`)}`,
+                onChange: next => change('capabilityPolicy', changeCapabilityRule(policy, `mcpServers.${entry.mcpServer}`, dimension, next)),
+                options: ['automatic', ...(dimension === 'availability' ? ['enabled', 'closed'] : CAPABILITY_DISCLOSURES)].map(key => ({ value: key,
+                  label: t(key === 'automatic' ? 'capabilities.policy.inheritRule' : key === 'enabled' ? 'capabilities.quick.enabled' : `capabilities.${key}`) })) }))))) : null,
         entry.kind === 'skill' ? h('p', { className: 'ptcPlusDetail' }, t('capabilities.skillDisclosure')) : null,
         entry.kind === 'skill' && entry.invocationConflict ? h('p', { className: 'ptcPlusDetail' }, t('capabilities.invocation.varies')) : null,
         entry.kind === 'skill' && entry.invocation ? h('p', { className: 'ptcPlusDetail' },
           t(entry.invocation.modelInvocable ? entry.invocation.userInvocable ? 'capabilities.invocation.both'
             : 'capabilities.invocation.model' : 'capabilities.invocation.user', { name: entry.name })) : null,
-        entry.description ? h('details', { className: 'ptcPlusCapabilityDescription', key: entry.id },
-          h('summary', { tabIndex: 0 }, t('capabilities.viewDescription')), h('p', null, entry.description)) : null,
+        entry.description ? h('section', { className: 'ptcPlusCapabilityEditorSection' },
+          h('h5', null, t('capabilities.catalogDescription')), h('p', { className: 'ptcPlusCapabilityProse' }, entry.description)) : null,
         entry.availability === 'unavailable' ? h('button', { type: 'button', className: 'ptcPlusCapabilityLink',
           disabled: disabled('capabilityBaseline') || disabled('capabilityPolicy'), onClick: () => {
             const next = { ...policy, items: { ...policy.items } }; delete next.items[entry.id]; change('capabilityPolicy', next)
             if (baseline.includes(entry.id)) change('capabilityBaseline', baseline.filter(id => id !== entry.id))
           } }, t('capabilities.removeSaved')) : null,
-        value.capabilityContextEnabled !== false && value.capabilityManagementEnabled === true ? h('details', { className: 'ptcPlusCapabilitySessionDetail' },
-          h('summary', { tabIndex: 0 }, t('capabilities.currentSession')),
-          select(t('capabilities.sessionSelector'), sessionId ?? '', setSessionId, [['', t('capabilities.chooseSession')], ...(plans ?? []).map(item => [item.sessionId, item.sessionId])]),
-          plansError ? h('p', { role: 'status' }, t('capabilities.unavailable', { error: plansError }))
+        value.capabilityContextEnabled !== false && value.capabilityManagementEnabled === true ? h('section', { className: 'ptcPlusCapabilityEditorSection' },
+          h('h5', null, t('capabilities.currentSession')),
+          editorField(t('capabilities.sessionSelector'), h(Select, { value: sessionId ?? '', label: t('capabilities.sessionSelector'), onChange: setSessionId,
+            options: [{ value: '', label: t('capabilities.chooseSession') }, ...(plans ?? []).map(item => ({ value: item.sessionId, label: item.sessionId }))] })),
+          plansError ? h('p', { role: 'status', className: 'ptcPlusDetail' }, t('capabilities.unavailable', { error: plansError }))
             : !plan ? h('p', { className: 'ptcPlusDetail' }, t('capabilities.selectObservation')) : h(React.Fragment, null,
               h('p', null, effective ? t(`capabilities.${effective.selection}`) : t('capabilities.notInSession')),
               effective ? h('p', { className: 'ptcPlusDetail' }, capabilityPlanReason(t, effective)) : null,
@@ -662,6 +685,7 @@ export function createCapabilitySettingsViews(React, { SearchIcon, Select, Modal
         onChange: event => update(event.target.value), 'aria-label': t(label) }))
     const button = (label, click, blocked = false, extra = {}) => h('button', { type: 'button', className: 'ptcPlusButton',
       disabled: blocked, onClick: click, ...extra }, t(label))
+    const closeAction = () => setAction(null)
     const setting = (label, text) => h('div', { className: 'ptcPlusConfigurationSummaryRow', key: label }, h('span', null, t(label)), h('span', null, text))
     const configuration = selected?.configuration
     const policy = configuration ? capabilityPolicyForConfig(configuration) : null
@@ -673,36 +697,52 @@ export function createCapabilitySettingsViews(React, { SearchIcon, Select, Modal
             className: 'ptcPlusConfigurationChoice', 'aria-pressed': selected?.id === profile.id,
             onClick: () => { setSelectedId(profile.id); setRename(profile.name); setAction(null) } }, profile.name)),
           !library.profiles.length ? h('p', { className: 'ptcPlusDetail' }, t('capabilities.noConfigurations')) : null),
-        button('capabilities.saveConfiguration', () => { setAction(action === 'save' ? null : 'save'); setStatus(null) }, unavailable,
-          { ref: saveAction, className: 'ptcPlusButton ptcPlusConfigurationSave', 'aria-label': t('capabilities.saveConfiguration'), 'aria-expanded': action === 'save' }),
+        button('capabilities.saveConfiguration', () => { setAction('save'); setStatus(null) }, unavailable,
+          { ref: saveAction, className: 'ptcPlusButton ptcPlusConfigurationSave', 'aria-label': t('capabilities.saveConfiguration'), 'aria-haspopup': 'dialog' }),
         h('div', { className: 'ptcPlusConfigurationLibraryActions' },
           button('capabilities.importConfigurations', () => fileInput.current.click(), unavailable),
-          h('details', { className: 'ptcPlusConfigurationMenu' }, h('summary', { 'aria-label': t('capabilities.libraryMore') }, '···'),
-            button('capabilities.exportConfigurations', () => exportProfiles('all'), !library.profiles.length),
-            button('capabilities.copyFromSession', () => { setAction('copy'); setStatus(null) }, unavailable))),
+          h('button', { type: 'button', className: 'ptcPlusButton ptcPlusConfigurationMore', 'aria-label': t('capabilities.libraryMore'),
+            'aria-haspopup': 'dialog', onClick: () => { setAction('library'); setStatus(null) } }, '···')),
         h('input', { ref: fileInput, type: 'file', accept: '.json,application/json', hidden: true, disabled: unavailable,
           onChange: importProfiles, 'aria-label': t('capabilities.importConfigurations') }),
-        action === 'save' ? h('form', { className: 'ptcPlusConfigurationAction', onSubmit: event => {
-          event.preventDefault(); if (!unavailable && name.trim()) void perform('save', () => save(current()))
-        } }, input('capabilities.configurationName', name, setName),
-          h('p', { className: 'ptcPlusDetail' }, t('capabilities.sameNameHint')),
-          button('capabilities.confirmSave', undefined, unavailable || !name.trim(), { type: 'submit' })) : null,
-        action === 'copy' ? h('div', { className: 'ptcPlusConfigurationAction' }, h('p', { className: 'ptcPlusDetail' }, t('capabilities.copySessionHint')),
-          h(Select, { value: sessionId, disabled: unavailable, label: t('capabilities.copyFromSession'), onChange: setSessionId,
-            options: [{ value: '', label: t('capabilities.chooseSession') }, ...(plans ?? []).map(plan => ({ value: plan.sessionId, label: plan.sessionId }))] }),
-          input('capabilities.copyName', copyName, setCopyName),
-          button('capabilities.saveSessionConfiguration', () => perform('copy', () => save(capabilityProfileConfiguration(frozen.configuration), copyName)),
-            unavailable || !copyName.trim() || !frozen?.configuration)) : null),
+        action === 'library' ? h(CapabilityDialog, { title: t('capabilities.libraryActions'), onClose: closeAction, t,
+          className: 'ptcPlusCapabilityConfigurationDialog' },
+          h('div', { className: 'ptcPlusCapabilityDialogActions' },
+            button('capabilities.exportConfigurations', () => { exportProfiles('all'); closeAction() }, !library.profiles.length),
+            button('capabilities.copyFromSession', () => { setAction('copy'); setStatus(null) }, unavailable))) : null,
+        action === 'save' ? h(CapabilityDialog, { title: t('capabilities.saveConfiguration'), onClose: closeAction, t,
+          className: 'ptcPlusCapabilityConfigurationDialog' },
+          h('form', { className: 'ptcPlusConfigurationAction', onSubmit: event => {
+            event.preventDefault(); if (!unavailable && name.trim()) void perform('save', () => save(current()))
+          } }, input('capabilities.configurationName', name, setName),
+            h('p', { className: 'ptcPlusDetail' }, t('capabilities.sameNameHint')),
+            h('div', { className: 'ptcPlusCapabilityDialogActions' },
+              h('button', { type: 'button', className: 'ptcPlusButton', onClick: closeAction }, t('capabilities.batch.cancel')),
+              button('capabilities.confirmSave', undefined, unavailable || !name.trim(), { type: 'submit' })))) : null,
+        action === 'copy' ? h(CapabilityDialog, { title: t('capabilities.copyFromSession'), onClose: closeAction, t,
+          className: 'ptcPlusCapabilityConfigurationDialog' },
+          h('div', { className: 'ptcPlusConfigurationAction' }, h('p', { className: 'ptcPlusDetail' }, t('capabilities.copySessionHint')),
+            h(Select, { value: sessionId, disabled: unavailable, label: t('capabilities.copyFromSession'), onChange: setSessionId,
+              options: [{ value: '', label: t('capabilities.chooseSession') }, ...(plans ?? []).map(plan => ({ value: plan.sessionId, label: plan.sessionId }))] }),
+            input('capabilities.copyName', copyName, setCopyName),
+            h('div', { className: 'ptcPlusCapabilityDialogActions' },
+              h('button', { type: 'button', className: 'ptcPlusButton', onClick: closeAction }, t('capabilities.batch.cancel')),
+              button('capabilities.saveSessionConfiguration', () => perform('copy', () => save(capabilityProfileConfiguration(frozen.configuration), copyName)),
+                unavailable || !copyName.trim() || !frozen?.configuration)))) : null),
       h('div', { className: 'ptcPlusConfigurationDetail' }, selected ? h(React.Fragment, null,
         h('div', { className: 'ptcPlusTaskHead' }, h('h4', null, selected.name),
           button('capabilities.applyConfiguration', () => perform('library', () => onApplyConfiguration(selected.configuration)), unavailable || !onApplyConfiguration,
             { 'data-kind': 'primary' }),
-          h('details', { className: 'ptcPlusConfigurationMenu' }, h('summary', { 'aria-label': t('capabilities.profileMore') }, '···'),
+          h('button', { type: 'button', className: 'ptcPlusButton ptcPlusConfigurationMore', 'aria-label': t('capabilities.profileMore'),
+            'aria-haspopup': 'dialog', onClick: () => { setRename(selected.name); setAction('profile') } }, '···')),
+        action === 'profile' ? h(CapabilityDialog, { title: t('capabilities.profileActions'), onClose: closeAction, t,
+          className: 'ptcPlusCapabilityConfigurationDialog' },
+          h('div', { className: 'ptcPlusCapabilityDialogActions' },
             button('capabilities.renameConfiguration', () => { setRename(selected.name); setAction('rename') }, unavailable),
-            button('capabilities.exportConfiguration', () => exportProfiles('selected')),
+            button('capabilities.exportConfiguration', () => { exportProfiles('selected'); closeAction() }),
             button('capabilities.deleteConfiguration', () => perform('library', async () => {
               await saveLibrary(library.profiles.filter(profile => profile.id !== selected.id)); setSelectedId(''); finishAction()
-            }), unavailable, { 'data-kind': 'danger' }))),
+            }), unavailable, { 'data-kind': 'danger' }))) : null,
         h('div', { className: 'ptcPlusConfigurationSummary' },
           setting('group.capabilities', enabled('capabilityContextEnabled')),
           setting('capabilities.management', enabled('capabilityManagementEnabled')),
@@ -722,11 +762,16 @@ export function createCapabilitySettingsViews(React, { SearchIcon, Select, Modal
               key === 'fullThreshold' ? `${Math.round(JSON.parse(configuration.capabilityStatistics)[key] * 100)}%` : JSON.parse(configuration.capabilityStatistics)[key])))),
         h('p', { className: 'ptcPlusDetail' }, t(matches ? 'capabilities.configurationMatches' : 'capabilities.configurationDifferent')),
         h('p', { className: 'ptcPlusDetail' }, t('capabilities.configurationsHint')),
-        action === 'rename' ? h('form', { className: 'ptcPlusConfigurationAction', onSubmit: event => {
-          event.preventDefault(); if (!unavailable && rename.trim()) void perform('library', async () => {
-            await saveLibrary(library.profiles.map(profile => profile.id === selected.id ? { ...profile, name: rename.trim() } : profile)); finishAction()
-          })
-        } }, input('capabilities.renameTo', rename, setRename), button('capabilities.confirmRename', undefined, unavailable || !rename.trim(), { type: 'submit' })) : null)
+        action === 'rename' ? h(CapabilityDialog, { title: t('capabilities.renameConfiguration'), onClose: closeAction, t,
+          className: 'ptcPlusCapabilityConfigurationDialog' },
+          h('form', { className: 'ptcPlusConfigurationAction', onSubmit: event => {
+            event.preventDefault(); if (!unavailable && rename.trim()) void perform('library', async () => {
+              await saveLibrary(library.profiles.map(profile => profile.id === selected.id ? { ...profile, name: rename.trim() } : profile)); finishAction()
+            })
+          } }, input('capabilities.renameTo', rename, setRename),
+            h('div', { className: 'ptcPlusCapabilityDialogActions' },
+              h('button', { type: 'button', className: 'ptcPlusButton', onClick: closeAction }, t('capabilities.batch.cancel')),
+              button('capabilities.confirmRename', undefined, unavailable || !rename.trim(), { type: 'submit' })))) : null)
         : h('p', { className: 'ptcPlusDetail' }, t('capabilities.chooseConfiguration'))), feedback)
   }
 
@@ -1159,21 +1204,25 @@ export function createSessionCapabilityControlsView(React, { commands, Modal, Se
     const statusLabel = value => value && typeof value === 'object' ? ruleLabel(value) : capabilityChoiceLabel(t, value)
     const openEditor = (entry, dimension = 'availability') => { setSelectedId(entry.id); setPane('detail'); setFocusDimension(dimension) }
     const renderRow = entry => h('div', { key: entry.id, role: 'row',
-      className: 'ptcPlusSessionCapabilityRow ptcPlusCapabilityItem', 'data-capability-id': entry.id, 'data-selected': selected?.id === entry.id },
+      className: 'ptcPlusSessionCapabilityRow ptcPlusCapabilityItem', 'data-capability-id': entry.id, 'data-selected': selected?.id === entry.id,
+      onClick: () => openEditor(entry) },
       h('div', { role: 'cell', className: 'ptcPlusCapabilityIdentity' },
         h('button', { type: 'button', className: 'ptcPlusSessionCapabilityName ptcPlusCapabilityName',
-          'aria-current': selected?.id === entry.id ? 'true' : undefined, onClick: () => openEditor(entry) }, entry.name ?? entry.id),
+          'aria-current': selected?.id === entry.id ? 'true' : undefined,
+          onClick: event => { event.stopPropagation(); openEditor(entry) } }, entry.name ?? entry.id),
         entry.name && entry.name !== entry.id ? h('code', null, entry.id) : null),
       h('span', { role: 'cell', className: 'ptcPlusCapabilityBadge', 'data-kind': type(entry) }, t(`capabilities.type.${type(entry)}`)),
       h('span', { role: 'cell', className: 'ptcPlusCapabilitySource' }, displayedSource(entry)),
       h('div', { role: 'cell', className: 'ptcPlusCapabilityAvailability', 'data-state': effectiveAvailability(entry) },
         h('button', { type: 'button', className: 'ptcPlusCapabilityContext',
           'aria-label': t('capabilities.policy.availabilityFor', { name: entry.id }),
-          title: t('capabilities.quick.effective'), onClick: () => openEditor(entry, 'availability') }, statusLabel(effectiveAvailability(entry)))),
+          title: t('capabilities.quick.effective'),
+          onClick: event => { event.stopPropagation(); openEditor(entry, 'availability') } }, statusLabel(effectiveAvailability(entry)))),
       h('div', { role: 'cell', className: 'ptcPlusCapabilityContextCell' },
         h('button', { type: 'button', className: 'ptcPlusCapabilityContext',
           'aria-label': t('capabilities.editContextFor', { name: entry.id }),
-          title: t('capabilities.quick.effective'), onClick: () => openEditor(entry, 'disclosure') }, statusLabel(effectiveContext(entry)))),
+          title: t('capabilities.quick.effective'),
+          onClick: event => { event.stopPropagation(); openEditor(entry, 'disclosure') } }, statusLabel(effectiveContext(entry)))),
       h('span', { role: 'cell', className: 'ptcPlusSessionCapabilityPending', 'data-changed': Object.hasOwn(choices, entry.id),
         'data-label': t('capabilities.quick.changed') },
         Object.hasOwn(choices, entry.id) ? statusLabel(choices[entry.id]) : '—'))

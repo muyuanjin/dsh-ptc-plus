@@ -1,7 +1,8 @@
 import { availableParallelism } from 'node:os'
 
 export function browserConcurrency(value, parallelism = availableParallelism()) {
-  if (value === undefined) return Math.max(1, Math.min(3, Math.floor(parallelism / 4)))
+  // Browser lanes await rendering and input; keep CPU headroom while overlapping waits.
+  if (value === undefined) return Math.max(1, Math.min(3, Math.ceil(parallelism / 2)))
   if (!/^[1-9]\d*$/.test(value) || !Number.isSafeInteger(Number(value))) {
     throw new Error('browser concurrency must be a positive integer')
   }

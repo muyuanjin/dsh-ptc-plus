@@ -47,8 +47,12 @@ test('public browser inventories retain all layout and fallback combinations wit
 })
 
 test('browser pools reserve CPU headroom and exact case selection cannot silently drop unknown cases', () => {
-  for (const [cpus, expected] of [[1, 1], [4, 1], [8, 2], [12, 3], [24, 3]]) {
+  for (const [cpus, expected] of [[1, 1], [2, 1], [3, 2], [4, 2], [5, 3], [8, 3], [12, 3], [24, 3]]) {
     assert.equal(browserConcurrency(undefined, cpus), expected)
+  }
+  for (let cpus = 2; cpus <= 64; cpus += 1) {
+    const lanes = browserConcurrency(undefined, cpus)
+    assert.ok(lanes < cpus && lanes <= 3)
   }
   assert.equal(browserConcurrency('2', 1), 2)
   for (const value of ['0', '-1', '1.5', 'Infinity', '9007199254740992']) {

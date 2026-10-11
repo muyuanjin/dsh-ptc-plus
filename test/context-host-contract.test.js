@@ -60,8 +60,8 @@ function host(t, mode = 'native', run = async () => ({ logs: [], value: null }))
   return { ctx, agent }
 }
 
-for (const statisticsEnabled of [false, true]) {
-  test(`PTC delegates through injected Host spawn and fork tools with statistics ${statisticsEnabled ? 'enabled' : 'disabled'}`, async t => {
+for (const [statisticsEnabled, incompleteSkills] of [[false, false], [true, false], [true, true]]) {
+  test(`PTC delegates through injected Host spawn and fork tools with statistics ${statisticsEnabled ? 'enabled' : 'disabled'}${incompleteSkills ? ' and incomplete Skill discovery after child completion' : ''}`, async t => {
     const root = await mkdtemp(join(tmpdir(), 'ptc-subagent-host-'))
     const previousDshHome = process.env.DSH_HOME
     process.env.DSH_HOME = root
@@ -87,10 +87,24 @@ for (const statisticsEnabled of [false, true]) {
     await ctx.plugin(SessionStore).await()
     await ctx.plugin(SessionProjectionRegistry).await()
     await ctx.plugin(SessionQueryEngine).await()
+    let skillsComplete = true
+    let skillControl
+    if (incompleteSkills) {
+      await ctx.plugin(SkillRegistry).await()
+      await ctx.plugin(skillTool).await()
+      ctx.effect(() => ctx.skills.registerProvider(control => {
+        skillControl = control
+        return { name: 'delegation-skills', list: async () => ({ complete: skillsComplete, candidates: [{ name: 'fixture',
+          description: 'Fixture Skill', source: 'fixture', provider: 'delegation-skills', rank: 1, locator: 'fixture',
+          invocation: { modelInvocable: true, userInvocable: true } }] }),
+        get: async entry => ({ ...entry, content: 'Fixture body' }) }
+      }))
+    }
     const requests = []
     async function* stream(options) {
       requests.push(options)
       yield { type: 'text-delta', index: 0, text: 'fixture answer' }
+      if (incompleteSkills) { skillsComplete = false; skillControl.invalidate() }
       yield { type: 'finish', reason: { kind: 'stop' } }
     }
     ctx.effect(() => ctx.provide('llm', { async prepareCall(config) { return { config, stream, adapterDefaults: {} } }, stream }))
@@ -101,6 +115,7 @@ for (const statisticsEnabled of [false, true]) {
     await ctx.plugin(subagentTool, { provider: 'spawn' }).await()
     await ctx.plugin(subagentTool, { provider: 'fork', toolName: 'subagent_fork' }).await()
     await ctx.plugin(ptcPlus, { userBindingsEnabled: false, cordisToolsEnabled: false,
+      ...(incompleteSkills ? { capabilityManagementEnabled: true } : {}),
       capabilityStatistics: JSON.stringify({ enabled: statisticsEnabled, windowSize: 10, minimumSamples: 1, fullThreshold: 0.5 }) }).await()
     const created = []
     const disposed = []
@@ -126,8 +141,10 @@ for (const statisticsEnabled of [false, true]) {
     const initial = await invoke('parent-initial', 'let retained = 40; return retained')
     assert.equal(initial.isError, false)
     for (const name of ['subagent', 'subagent_fork']) {
+      if (incompleteSkills) { skillsComplete = true; skillControl.invalidate() }
       const result = await invoke(`delegate-${name}`, `return await tools.${name}({ description: 'Fixture delegation', prompt: 'Answer fixture' })`)
       assert.equal(result.isError, false, JSON.stringify(result.error))
+      if (incompleteSkills) assert.equal(skillsComplete, false)
       assert.match(JSON.stringify(result.value), /fixture answer/)
       const child = created.at(-1)
       assert.notEqual(child.id, owner.agent.id)

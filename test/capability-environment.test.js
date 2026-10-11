@@ -1801,6 +1801,232 @@ for (const collection of [false, true]) test(`management off keeps Host tool wit
   if(collection)assert.deepEqual(observations.at(-1).sort(), ['tools.added', 'tools.kept'])
 })
 
+
+test('stable parent and child Skill projections do not invalidate an overlapping public catalog read', async t => {
+  const ctx = new Context(); new SkillRegistry(ctx)
+  const parent = agentFor(Session.create('stable-parent-skills'))
+  const parentScope = createScope(ctx, parent); parent.ctx = parentScope.ctx
+  const child = agentFor(Session.create('stable-child-skills'))
+  const childScope = createScope(parentScope.ctx, child, { parent }); child.ctx = childScope.ctx
+  let overlap = false
+  let invalidations = 0
+  ctx.on('skills/change', () => { invalidations++ })
+  const env = createCapabilityEnvironment({ ctx, config: config({ 'skills.closed': 'closed' }),
+    toolSchemasForAgent: () => [schema('skill')] })
+  ctx.effect(() => ctx.skills.registerProvider(() => ({ name: 'shared-skills',
+    list: async options => {
+      if (overlap && options.scope === parent) await env.prepare(child, [])
+      return ['closed', 'open'].map(name => ({ name, description: name, source: 'fixture', provider: 'shared-skills', rank: 1,
+        locator: name, invocation: { modelInvocable: true, userInvocable: true } }))
+    }, get: async entry => ({ ...entry, content: entry.name }),
+  })))
+  t.after(async () => { await env.dispose(); await childScope.dispose(); await parentScope.dispose(); await ctx.fiber.dispose() })
+  await acceptPreparation(env, parent, []); await acceptPreparation(env, child, [])
+  const before = invalidations
+  overlap = true
+  const observed = await ctx.skills.snapshot({ scope: parent, cwd: 'uncached-parent-view', signal: parent.signal })
+  assert.equal(observed.complete, true)
+  assert.equal(invalidations, before, 'An unchanged child projection must leave the shared registry revision stable.')
+  assert.equal(observed.skills.find(item => item.name === 'closed').invocation.modelInvocable, false)
+  assert.equal((await ctx.skills.get('open', { scope: child })).content, 'open')
+})
+
+test('an incomplete Skill observation keeps only the proved frozen Skills and does not record their availability', async t => {
+  const ctx = new Context(); new SkillRegistry(ctx)
+  const agent = agentFor(Session.create('retained-incomplete-skills'))
+  const scope = createScope(ctx, agent); agent.ctx = scope.ctx
+  let complete = true
+  let names = ['closed', 'kept', 'removed']
+  let providerControl
+  ctx.effect(() => ctx.skills.registerProvider(control => {
+    providerControl = control
+    return { name: 'changing-skills', list: async () => ({ complete, candidates: names.map(name => ({ name, description: name,
+      source: 'fixture', provider: 'changing-skills', rank: 1, locator: name, invocation: { modelInvocable: true, userInvocable: true } })) }),
+    get: async entry => ({ ...entry, content: entry.name }) }
+  }))
+  let tools = ['skill', 'old']
+  const availability = []
+  const env = createCapabilityEnvironment({ ctx, config: config({ 'skills.closed': 'closed' }),
+    toolSchemasForAgent: () => tools.map(schema), store: { available: (_agent, snapshot) => availability.push(snapshot) } })
+  t.after(async () => { await env.dispose(); await scope.dispose(); await ctx.fiber.dispose() })
+  const state = await acceptPreparation(env, agent, [])
+  const frozen = JSON.stringify(state.snapshot)
+  complete = false; names = ['closed', 'unproved']; tools = ['skill']; providerControl.invalidate()
+  await env.prepare(agent, [])
+  const step = await env.preStep({ agent, signal: agent.signal }, async () => ({ kind: 'enter', messages: [] }))
+  assert.equal(step.kind, 'enter')
+  assert.equal(JSON.stringify(state.snapshot), frozen)
+  assert.deepEqual(env.metadata(agent)[0].members.map(item => item.name), ['kept', 'removed'])
+  assert.deepEqual(env.projectMembers(agent, ['skill', 'old']), ['skill'])
+  assert.throws(() => env.validateSupply(agent, 'skill', { name: 'closed' }), /unknown or no longer available/)
+  assert.throws(() => env.validateSupply(agent, 'skill', { name: 'unproved' }), /unknown or no longer available/)
+  assert.equal(await ctx.skills.get('closed', { scope: agent }), undefined)
+  assert.equal(await ctx.skills.get('unproved', { scope: agent }), undefined, 'Partial candidates cannot bypass frozen invocation through the Host loader.')
+  assert.equal(availability.at(-1).plan.entries.some(item => item.category === 'skill'), false)
+  assert.equal(step.messages.some(item => item.source?.form === 'capability-contracts'
+    && item.source.snapshot.changes.some(change => change.id.startsWith('skills.'))), false)
+  complete = true; names = ['closed', 'kept', 'unproved']; providerControl.invalidate()
+  await env.prepare(agent, [])
+  assert.deepEqual(env.metadata(agent)[0].members.map(item => item.name), ['kept'])
+  assert.throws(() => env.validateSupply(agent, 'skill', { name: 'removed' }), /unknown or no longer available/)
+})
+
+
+test('public AgentLoop completes parent and child turns and resumes them after an incomplete Skill observation', async t => {
+  const ctx = new Context()
+  new SystemPrompt(ctx, { includeHarnessIdentity: false, includeRuntimeContext: false })
+  new ToolRuntime(ctx, { mode: 'native' }); new SkillRegistry(ctx); skillTool.apply(ctx)
+  new AgentRegistry(ctx); new SessionStore(ctx); new SessionProjectionRegistry(ctx)
+  let complete = true
+  let control
+  ctx.effect(() => ctx.skills.registerProvider(owner => {
+    control = owner
+    return { name: 'lifecycle-skills', list: async () => ({ complete, candidates: [{ name: 'fixture', description: 'Fixture Skill',
+      source: 'fixture', provider: 'lifecycle-skills', rank: 1, locator: 'fixture', invocation: { modelInvocable: true, userInvocable: true } }] }),
+    get: async entry => ({ ...entry, content: 'Fixture body' }) }
+  }))
+  let parent
+  let sendCalls = 0
+  ctx.effect(() => ctx.tools.register(defineTool({ name: 'send_message', description: 'Deliver the child report.', parameters: {},
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value }] },
+    execute: async () => {
+      sendCalls++
+      parent.agent.send(createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: 'Child report.' }] }), 'next-turn', false)
+      complete = false; control.invalidate()
+      return 'delivered'
+    } })))
+  const errors = []
+  const requests = new Map()
+  ctx.on('agent/error', payload => errors.push(payload.error))
+  async function* stream(options) {
+    const sessionId = options.messages.find(message => message.source?.form === 'capability-plan').source.sessionId
+    const count = (requests.get(sessionId) ?? 0) + 1; requests.set(sessionId, count)
+    if (sessionId === 'lifecycle-child' && count === 1) {
+      const block = { type: 'tool-call', id: 'child-report', name: 'send_message', arguments: '{}' }
+      yield { type: 'tool-call-delta', index: 0, id: block.id, name: block.name, argumentsDelta: block.arguments }
+      yield { type: 'block-end', index: 0, block }
+      yield { type: 'finish', reason: { kind: 'tool-calls' } }
+    } else {
+      yield { type: 'text-delta', index: 0, text: 'done' }
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    }
+  }
+  ctx.effect(() => ctx.provide('llm', { prepareCall: async requestConfig => ({ config: requestConfig, stream, adapterDefaults: {} }), stream }))
+  await ctx.plugin(AgentLoop, { agents: [] }).await()
+  const env = createCapabilityEnvironment({ ctx, config: config(), toolSchemasForAgent: target => toolSdkSchemas(ctx.tools, target) })
+  ctx.on('system-prompt/assemble', async (_assembly, context, next) => {
+    const assembly = await next(); await env.prepare(context.agent, assembly.sections)
+    return { ...assembly, sections: env.projectSections(context.agent, assembly.sections) }
+  })
+  ctx.on('agent/pre-step', (payload, next) => env.preStep(payload, next), { prepend: true })
+  parent = await ctx.agents.create({ sessionId: 'lifecycle-parent', meta: { cwd: process.cwd(), delegationDepth: 0 },
+    agentOptions: { provider: 'fixture', model: 'fixture' } })
+  let child
+  t.after(async () => { await child?.dispose(); await parent.dispose(); await env.dispose(); await ctx.fiber.dispose() })
+  const run = async agent => {
+    agent.send(createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: 'Continue.' }] }), 'next-turn', true)
+    await agent.whenIdle()
+  }
+  await run(parent.agent)
+  child = await ctx.agents.create({ sessionId: 'lifecycle-child', parentAgent: parent.agent,
+    meta: { cwd: process.cwd(), parentSession: parent.agent.session.id, origin: 'subagent', delegationDepth: 1 },
+    agentOptions: { provider: 'fixture', model: 'fixture' } })
+  await run(child.agent); await run(parent.agent); await run(child.agent)
+  assert.equal(sendCalls, 1)
+  assert.deepEqual(errors, [])
+  assert.equal(requests.get('lifecycle-parent'), 3)
+  assert.equal(requests.get('lifecycle-child'), 3)
+  for (const agent of [parent.agent, child.agent]) {
+    const events = agent.session.snapshotEvents()
+    assert.equal(events.filter(event => event.data?.source?.form === 'capability-plan').length, 1)
+    assert.ok(events.filter(event => event.type === 'turn/end').every(event => event.data.reason.kind === 'completed'))
+    assert.equal(env.stateFor(agent).skillInventoryComplete, false)
+  }
+})
+
+
+for (const userInvocable of [false, true]) test(`incomplete Skill discovery retains native eligibility while a proved loader withdrawal takes effect with user entry ${userInvocable}`, async t => {
+  const policy = JSON.parse(CONFIG_DEFAULTS.capabilityPolicy)
+  let complete = true
+  let loader = true
+  const agent = agentFor(Session.create(`partial-loader-withdrawal-${userInvocable}`))
+  const env = createCapabilityEnvironment({ ctx: { skills: { snapshot: async () => ({ complete, skills: complete ? [{ name: 'fixture',
+    description: 'Fixture Skill', invocation: { modelInvocable: true, userInvocable } }] : [] }) } },
+    config: { ...CONFIG_DEFAULTS, capabilityManagementEnabled: true, capabilityPolicy: JSON.stringify(policy) },
+    toolSchemasForAgent: () => (loader ? ['run_code', 'skill'] : ['run_code']).map(schema) })
+  t.after(() => env.dispose()); await acceptPreparation(env, agent, [])
+  complete = false; loader = false
+  await env.prepare(agent, [])
+  assert.deepEqual(env.projectMembers(agent, ['run_code', 'skill']), ['run_code'])
+  const retained = env.stateFor(agent).liveCapabilities.get('skills.fixture')
+  assert.deepEqual(retained.invocation, { modelInvocable: false, userInvocable })
+  assert.doesNotMatch(retained.contract, /Load instructions: await tools\.skill/)
+  assert.equal(env.metadata(agent)[0].members.length, userInvocable ? 1 : 0)
+  loader = true
+  await env.prepare(agent, [])
+  assert.deepEqual(env.stateFor(agent).liveCapabilities.get('skills.fixture').invocation, { modelInvocable: true, userInvocable })
+})
+
+
+test('cold capability restoration keeps accepted Skill withdrawals during incomplete discovery and ignores unproved updates', async t => {
+  let complete = true
+  let names = ['kept', 'removed']
+  const ctx = { skills: { snapshot: async () => ({ complete, skills: names.map(name => ({ name, description: name,
+    invocation: { modelInvocable: true, userInvocable: true } })) }) } }
+  const agent = agentFor(Session.create('cold-partial-skills'))
+  const make = () => createCapabilityEnvironment({ ctx, config: config(), toolSchemasForAgent: () => [schema('skill')] })
+  const env = make(); t.after(() => env.dispose())
+  await acceptPreparation(env, agent, [])
+  names = ['kept']
+  const decision = await env.preStep({ agent, signal: agent.signal }, async () => ({ kind: 'enter', messages: [] }))
+  const update = decision.messages.find(message => message.source?.form === 'capability-contracts')
+  assert.equal(update.source.snapshot.changes.find(change => change.id === 'skills.removed').capability, null)
+  agent.session.append('user/message', update, { surfaceOp: 'append' })
+  const foreign = structuredClone(update)
+  foreign.id += '-foreign'; foreign.source.sessionId = 'other-session'
+  foreign.source.snapshot.changes = [{ id: 'skills.kept', disclosure: 'on-demand', capability: null }]
+  foreign.source.snapshot.views = foreign.source.snapshot.views.map(([id, revision]) => [id, id === 'skills.kept' ? null : revision])
+  foreign.source.digest = createHash('sha256').update(JSON.stringify(foreign.source.snapshot)).digest('hex')
+  foreign.content[0].text = foreign.content[0].text.replace('skills.removed', 'skills.kept')
+  agent.session.append('user/message', foreign, { surfaceOp: 'append' })
+  const damaged = structuredClone(foreign)
+  damaged.id += '-damaged'; damaged.source.sessionId = agent.session.id; damaged.source.digest = 'damaged'
+  agent.session.append('user/message', damaged, { surfaceOp: 'append' })
+  const wrongPlan = structuredClone(foreign)
+  wrongPlan.id += '-wrong-plan'; wrongPlan.source.sessionId = agent.session.id; wrongPlan.source.snapshot.planDigest = 'other-plan'
+  wrongPlan.source.digest = createHash('sha256').update(JSON.stringify(wrongPlan.source.snapshot)).digest('hex')
+  agent.session.append('user/message', wrongPlan, { surfaceOp: 'append' })
+  const coldAgent = agentFor(Session.create(agent.session.id, JSON.parse(JSON.stringify(agent.session.snapshotEvents())), agent.session.header))
+  const cold = make(); t.after(() => cold.dispose())
+  complete = false; names = ['removed', 'unproved']
+  await cold.prepare(coldAgent, [])
+  assert.deepEqual(cold.metadata(coldAgent)[0].members.map(item => item.name), ['kept'])
+  assert.throws(() => cold.validateSupply(coldAgent, 'skill', { name: 'removed' }), /unknown or no longer available/)
+  assert.throws(() => cold.validateSupply(coldAgent, 'skill', { name: 'unproved' }), /unknown or no longer available/)
+  const resumed = await cold.preStep({ agent: coldAgent, signal: coldAgent.signal }, async () => ({ kind: 'enter', messages: [] }))
+  assert.equal(resumed.kind, 'enter')
+})
+
+test('initial and refreshed capability plans require a complete Skill observation without replacing a proved plan', async t => {
+  let complete = false
+  const agent = agentFor(Session.create('incomplete-initial-and-refresh'))
+  agent.runMaintenance = operation => operation(agent.signal)
+  const ctx = { skills: { snapshot: async () => ({ complete, skills: [] }) },
+    systemPrompt: { assemble: async () => ({ sections: [] }) } }
+  const env = createCapabilityEnvironment({ ctx, config: config(), toolSchemasForAgent: () => [schema('probe')] })
+  t.after(() => env.dispose())
+  await assert.rejects(env.prepare(agent, []), /Skill catalog is incomplete/)
+  assert.equal(env.stateFor(agent), undefined)
+  complete = true
+  const original = await acceptPreparation(env, agent, [])
+  const before = agent.session.snapshotEvents()
+  complete = false
+  await assert.rejects(env.refresh(agent), /Skill catalog is incomplete/)
+  assert.equal(env.stateFor(agent), original)
+  assert.deepEqual(agent.session.snapshotEvents(), before)
+  assert.equal((await env.preStep({ agent, signal: agent.signal }, async () => ({ kind: 'enter', messages: [] }))).kind, 'enter')
+})
+
 test('all unselected features and preview-only delegate the public incomplete Skill catalog lifecycle', async t => {
   const ctx = new Context(); t.after(() => ctx.fiber.dispose())
   new SystemPrompt(ctx, { includeHarnessIdentity: false, includeRuntimeContext: false })
@@ -2104,9 +2330,9 @@ test('Skill projection restores its prior state after publication failure and re
   let failAfter = Infinity
   let disposals = 0
   const skills = {
-    snapshot: async () => ({ complete: true, skills: [] }),
+    snapshot: async () => ({ complete: true, skills: [{ name: 'fixture', description: 'Fixture', invocation: { modelInvocable: true, userInvocable: true } }] }),
     registerProvider: factory => {
-      factory({ invalidate: () => { if (failInvalidation && ++invalidations >= failAfter) throw new Error('projection invalidate failed') } })
+      factory({ invalidate: () => { invalidations++; if (failInvalidation && invalidations >= failAfter) throw new Error('projection invalidate failed') } })
       return () => { disposals++ }
     },
   }
@@ -2114,7 +2340,7 @@ test('Skill projection restores its prior state after publication failure and re
   new SystemPrompt(ctx, { includeHarnessIdentity: false, includeRuntimeContext: false })
   const agent = agentFor(Session.create('skill-projection-rollback'))
   agent.runMaintenance = operation => operation(agent.signal)
-  const env = createCapabilityEnvironment({ ctx, config: config(), toolSchemasForAgent: () => [schema('run_code'), schema('probe')] })
+  const env = createCapabilityEnvironment({ ctx, config: config(), toolSchemasForAgent: () => [schema('run_code'), schema('skill'), schema('probe')] })
   t.after(async () => { failInvalidation = false; await env.dispose(); await ctx.fiber.dispose() })
   await acceptPreparation(env, agent, [])
   const previous = env.stateFor(agent)
@@ -2122,8 +2348,10 @@ test('Skill projection restores its prior state after publication failure and re
   agent.session.append = () => { throw new Error('publication failed') }
   await assert.rejects(env.change(agent, { scope: 'session', id: 'tools.probe', selection: 'closed' }, agent.signal), /publication failed/)
   assert.equal(env.stateFor(agent), previous)
+  assert.equal(invalidations, 0, 'A tool-only failed publication leaves the unchanged Skill projection alone.')
+  env.reconfigure(config({ 'skills.fixture': 'closed' }))
   failInvalidation = true
-  failAfter = 2
+  failAfter = invalidations + 1
   await assert.rejects(env.refresh(agent, []), error => error instanceof AggregateError
     && error.message === 'PTC Plus Skill projection restoration failed'
     && error.errors.every(item => /projection invalidate failed/.test(item.message)))

@@ -15,7 +15,7 @@ const allCases = [
   ...variants.map(item => ({ family: 'single-disabled', ...item })),
   ...[{ width: 390, height: 600 }, { width: 320, height: 420 }, { width: 320, height: 240 }]
     .flatMap(viewport => variants.map(item => ({ family: 'catalog', viewport, ...item }))),
-  ...[{ width: 390, height: 600 }, { width: 768, height: 720 }, { width: 1440, height: 900 }, { width: 320, height: 240 }]
+  ...[{ width: 390, height: 600 }, { width: 768, height: 720 }, { width: 1440, height: 900 }, { width: 1920, height: 1080 }, { width: 320, height: 420 }, { width: 320, height: 240 }]
     .flatMap(viewport => variants.map(item => ({ family: 'session-capabilities', viewport, ...item }))),
   ...[{ width: 390, height: 600 }, { width: 320, height: 420 }]
     .flatMap(viewport => ['light', 'dark'].map(theme => ({ family: 'dialogs', viewport, theme }))),
@@ -603,6 +603,29 @@ if (values.list) {
         const items = panel.locator('.ptcPlusSessionCapabilityRow')
         await items.first().waitFor()
         assert.equal(await items.count(), 83)
+        const initialOrder = await items.evaluateAll(rows => rows.map(row => row.dataset.capabilityId))
+        const columns = panel.locator('.ptcPlusSessionCapabilityColumns')
+        assert.equal(await columns.getByRole('columnheader').count(), 6, 'session catalog exposes the five shared columns and pending changes')
+        for (const [index, key] of ['member', 'typesColumn', 'sourceColumn', 'enabledColumn', 'contextColumn'].entries()) {
+          const header = columns.getByRole('columnheader', { name: SETTINGS_COPY[locale]['capabilities.' + key], exact: true })
+          const trigger = header.getByRole('button')
+          await trigger.scrollIntoViewIfNeeded()
+          await trigger.focus()
+          for (const [activation, direction] of [['Enter', 'ascending'], ['Space', 'descending'], ['Enter', 'none']]) {
+            await page.keyboard.press(activation)
+            assert.equal(await header.getAttribute('aria-sort'), direction, 'keyboard activation cycles header sorting')
+            assert.equal(await trigger.evaluate(element => document.activeElement === element), true, 'sorting retains header focus')
+            if (direction !== 'none') {
+              assert.equal(await panel.locator('.ptcPlusSessionCapabilityGroup').count(), 0, 'column sorting compares across category groups')
+              const values = await items.evaluateAll((rows, column) => rows.map(row => (column === 0 ? row.querySelector('.ptcPlusSessionCapabilityName') : row.children[column]).textContent.toLowerCase()), index)
+              assert.ok(values.slice(1).every((value, offset) => direction === 'ascending'
+                ? values[offset] <= value : values[offset] >= value), 'rows follow the displayed effective column values')
+            } else assert.deepEqual(await items.evaluateAll(rows => rows.map(row => row.dataset.capabilityId)), initialOrder,
+              'the third header activation restores the original groups and row order')
+          }
+        }
+        await columns.evaluate(element => { element.scrollLeft = 0 })
+        await panel.locator('.ptcPlusSessionCapabilityList').evaluate(element => { element.scrollTop = 0 })
         const geometry = await panel.evaluate(element => {
           const rect = element.getBoundingClientRect(), list = element.querySelector('.ptcPlusSessionCapabilityList')
           return { bounded: rect.left >= 0 && rect.right <= innerWidth && rect.top >= 0 && rect.bottom <= innerHeight,
@@ -684,7 +707,12 @@ if (values.list) {
         assert.ok(controls.includes('select'), 'session workbench Select must receive visual coverage')
         for (const index of [0, 79]) {
           if (index !== 0 && viewport.width <= 650) await panel.getByRole('button', { name: SETTINGS_COPY[locale]['capabilities.quick.backToList'] }).click()
-          await panel.getByRole('button', { name: new RegExp(`probe${index}`) }).click()
+          const member = panel.locator('.ptcPlusSessionCapabilityName').filter({ hasText: new RegExp(`^probe${index}$`) })
+          await member.scrollIntoViewIfNeeded()
+          await member.focus()
+          await page.keyboard.press('Enter')
+          await page.waitForFunction(label => document.activeElement?.getAttribute('role') === 'combobox'
+            && document.activeElement.getAttribute('aria-label') === label, SETTINGS_COPY[locale]['capabilities.policy.availability'])
           await chooseSelect(panel, SETTINGS_COPY[locale]['capabilities.policy.disclosure'], SETTINGS_COPY[locale]['capabilities.full'])
           await panel.getByRole('combobox', { name: SETTINGS_COPY[locale]['capabilities.policy.availability'] }).click()
           await page.getByRole('option', { name: SETTINGS_COPY[locale]['capabilities.closed'] }).click()
@@ -693,7 +721,11 @@ if (values.list) {
             && window.sessionCapabilityCalls.some(call => call.input === `set session tools.probe${index} disclosure full`), index)
           assert.equal(await panel.getByRole('combobox', {name: SETTINGS_COPY[locale]['capabilities.policy.disclosure']}).innerText(), SETTINGS_COPY[locale]['capabilities.full'])
         }
-        if (viewport.width <= 650) await panel.getByRole('button', { name: SETTINGS_COPY[locale]['capabilities.quick.backToList'] }).click()
+        if (viewport.width <= 650) {
+          await panel.getByRole('button', { name: SETTINGS_COPY[locale]['capabilities.quick.backToList'] }).click()
+          assert.equal(await panel.locator('[data-capability-id="tools.probe79"] .ptcPlusSessionCapabilityName')
+            .evaluate(element => document.activeElement === element), true, 'Back to list returns focus to the selected capability')
+        }
         await panel.getByRole('searchbox').fill('probe79')
         assert.equal(await items.count(), 1)
         await page.keyboard.press('Escape')
@@ -859,6 +891,22 @@ if (values.list) {
         const workbench = dialog.locator('.ptcPlusCapabilityWorkbench')
         await workbench.locator('.ptcPlusCapabilityItem').first().waitFor()
         assert.equal(await workbench.locator('.ptcPlusCapabilityItem').count(), 9)
+        const defaultCapabilityIds = await workbench.locator('.ptcPlusCapabilityIdentity code').allTextContents()
+        const writesBeforeSorting = await page.evaluate(() => window.settingsWrites.length)
+        for (const key of ['member', 'typesColumn', 'sourceColumn', 'enabledColumn', 'contextColumn']) {
+          const header = workbench.getByRole('columnheader', { name: labels[`capabilities.${key}`], exact: true })
+          const button = header.getByRole('button')
+          assert.equal(await button.isVisible(), true, `${label}: ${key} sorting must remain available`)
+          await button.focus()
+          for (const [press, direction] of [['Enter', 'ascending'], ['Space', 'descending'], ['Enter', 'none']]) {
+            await button.press(press)
+            assert.equal(await header.getAttribute('aria-sort'), direction, `${label}: ${key}/${press}`)
+            assert.equal(await button.evaluate(element => element === document.activeElement), true)
+          }
+          assert.deepEqual(await workbench.locator('.ptcPlusCapabilityIdentity code').allTextContents(), defaultCapabilityIds,
+            `${label}: ${key} default sorting must restore the existing presentation order`)
+        }
+        assert.equal(await page.evaluate(() => window.settingsWrites.length), writesBeforeSorting, 'header sorting must not save settings')
         assert.equal(await workbench.locator('textarea').count(), 0)
         assert.equal(await workbench.locator('.ptcPlusCapabilityRuleFields').count(), 0)
         assert.equal(await workbench.locator('.ptcPlusCapabilityDetail').count(), 0)
@@ -889,14 +937,32 @@ if (values.list) {
         for (const control of await workbench.locator('.ptcPlusCapabilityDetail').getByRole('combobox').all())
           await assertControlVisual(control, { label: `${label}: independent capability rule` })
         await workbench.getByRole('button', { name: labels['capabilities.closeDetails'], exact: true }).click()
-        await workbench.getByRole('button', { name: labels['capabilities.batchSettings'], exact: true }).click()
+        await workbench.getByRole('button', { name: labels['capabilities.inheritedRules'], exact: true }).click()
         await workbench.locator('.ptcPlusPolicyRules').getByText(labels['capabilities.sourceRules'], { exact: true }).click()
         const serverAvailability = `github · ${labels['capabilities.policy.availability']}`
         await chooseSelect(workbench, serverAvailability, labels['capabilities.closed'])
         await page.waitForFunction(()=>JSON.parse(window.settingsWrites.filter(([key])=>key==='capabilityPolicy').at(-1)[1]).mcpServers.github.availability==='closed')
         await chooseSelect(workbench, serverAvailability, labels['capabilities.policy.inheritRule'])
         await page.waitForFunction(()=>JSON.parse(window.settingsWrites.filter(([key])=>key==='capabilityPolicy').at(-1)[1]).mcpServers.github?.availability===undefined)
+        await workbench.getByRole('button', { name: labels['capabilities.inheritedRules'], exact: true }).click()
+        const writesBeforeBatch = await page.evaluate(() => window.settingsWrites.length)
         await workbench.getByRole('button', { name: labels['capabilities.batchSettings'], exact: true }).click()
+        const batch = page.getByRole('dialog', { name: labels['capabilities.batchSettings'], exact: true })
+        await batch.waitFor()
+        assert.equal(await batch.locator('.ptcPlusCapabilityBatchTargets li').count(), 8)
+        assert.match(await batch.innerText(), new RegExp(labels['capabilities.batch.targets'].replace('{count}', '8')))
+        await chooseSelect(batch, labels['capabilities.batch.disclosure'], labels['capabilities.full'])
+        assert.equal(await page.evaluate(() => window.settingsWrites.length), writesBeforeBatch, 'batch edits must not save before confirmation')
+        const batchGeometry = await batch.evaluate(element => {
+          const bounds = element.getBoundingClientRect()
+          return { width: bounds.width, left: bounds.left, right: bounds.right, overflow: element.scrollWidth > element.clientWidth + 1 }
+        })
+        assert.ok(batchGeometry.width <= 480 && batchGeometry.left >= 0 && batchGeometry.right <= width, `${label}: batch dialog is not a small in-viewport surface`)
+        assert.equal(batchGeometry.overflow, false, `${label}: batch dialog overflows horizontally`)
+        await assertVisualSurface(page, batch, `${label}: batch settings`)
+        await page.keyboard.press('Escape')
+        await batch.waitFor({ state: 'hidden' })
+        assert.equal(await page.evaluate(() => window.settingsWrites.length), writesBeforeBatch, 'canceling batch changes must not save')
         const longSource = workbench.locator('.ptcPlusCapabilitySource').filter({ hasText: 'a'.repeat(64) })
         const sourceGeometry = await longSource.evaluate(element => ({ overflow: element.scrollWidth > element.clientWidth + 1 }))
         assert.equal(sourceGeometry.overflow, false, 'long source name overflows its column')
@@ -934,11 +1000,12 @@ if (values.list) {
         assert.match(await workbench.locator('.ptcPlusCapabilityDetail').innerText(), /rightapi-image-generator/)
         assert.match(await workbench.locator('.ptcPlusCapabilityDetail').innerText(), new RegExp(labels['capabilities.pending']))
         await workbench.getByRole('button', { name: labels['capabilities.clear'], exact: true }).click()
-        await chooseSelect(workbench, labels['capabilities.sort'], labels['capabilities.sort.id'])
-        await workbench.getByRole('button', { name: labels['capabilities.ascending'], exact: true }).click()
+        const capabilitySort = workbench.getByRole('columnheader', { name: labels['capabilities.member'], exact: true }).getByRole('button')
+        await capabilitySort.press('Enter')
+        await capabilitySort.press('Space')
         const toolIds = (await workbench.locator('.ptcPlusCapabilityIdentity code').allTextContents()).filter(id => ['tools.read','tools.edit','tools.bash'].includes(id))
         assert.deepEqual(toolIds, ['tools.read', 'tools.edit', 'tools.bash'])
-        await workbench.getByRole('button', { name: labels['capabilities.descending'], exact: true }).click()
+        await capabilitySort.press('Enter')
         await chooseSelect(workbench, labels['capabilities.availabilityFilter'], labels['capabilities.availability.unavailable'])
         assert.equal(await workbench.locator('.ptcPlusCapabilityItem').count(), 1)
         await openEntry('tools.previous')
@@ -979,6 +1046,41 @@ if (values.list) {
         assert.equal(await workbench.locator('details.ptcPlusCapabilityFilters').count(), 0)
         assert.equal(await workbench.locator('.ptcPlusCapabilityTypes').isVisible(), false)
         await workbench.getByRole('tab', { name: labels['capabilities.tab.statistics'], exact: true }).click()
+        const statisticsPane = workbench.locator('.ptcPlusCapabilityPane:not([hidden])')
+        const statisticsParameters = statisticsPane.locator('.ptcPlusStatisticsParameters')
+        assert.equal(await statisticsParameters.locator('input').count(), 3)
+        assert.equal(await statisticsParameters.locator('input').evaluateAll(inputs => inputs.some(input => input.closest('details'))), false)
+        const observationHeading = statisticsPane.locator('.ptcPlusStatisticsObservationHeading')
+        const observationHint = observationHeading.locator('.ptcPlusStatisticsObservationHint')
+        assert.equal(await observationHint.textContent(), labels['capabilities.selectObservation'])
+        const observationGeometry = await observationHeading.evaluate(element => {
+          const caption = element.firstElementChild
+          const hint = element.querySelector('.ptcPlusStatisticsObservationHint')
+          const bounds = element.getBoundingClientRect()
+          const captionBounds = caption.getBoundingClientRect()
+          const range = document.createRange()
+          range.setStart(hint.firstChild, 0)
+          range.setEnd(hint.firstChild, Math.min(8, hint.firstChild.length))
+          const firstLine = range.getBoundingClientRect()
+          const captionRange = document.createRange()
+          captionRange.selectNodeContents(caption)
+          const captionLine = captionRange.getBoundingClientRect()
+          const colorProbe = document.createElement('span')
+          colorProbe.style.color = 'var(--dsw-alias-label-tertiary)'
+          element.append(colorProbe)
+          const expectedColor = getComputedStyle(colorProbe).color
+          colorProbe.remove()
+          return { sameLine: Math.abs(firstLine.bottom - captionLine.bottom) < 2,
+            wrappedBelow: firstLine.top >= captionBounds.bottom - 1,
+            contained: hint.getBoundingClientRect().left >= bounds.left - 1 && hint.getBoundingClientRect().right <= bounds.right + 1,
+            gray: getComputedStyle(hint).color === expectedColor,
+            overflow: element.scrollWidth > element.clientWidth + 1 }
+        })
+        assert.equal(observationGeometry.gray, true, `${label}: observation guidance must use the tertiary gray`)
+        assert.equal(observationGeometry.contained, true, `${label}: observation guidance must remain inside its heading`)
+        assert.equal(observationGeometry.overflow, false, `${label}: observation guidance must wrap without horizontal overflow`)
+        assert.equal(width > 760 ? observationGeometry.sameLine : observationGeometry.sameLine || observationGeometry.wrappedBelow,
+          true, `${label}: observation guidance must align with its label or wrap below it`)
         const usage = workbench.getByRole('region', { name: labels['capabilities.observedUsage'], exact: true })
         await usage.waitFor()
         assert.deepEqual((await usage.locator('tbody tr').first().locator('td').allTextContents()).slice(1), ['14', '20', '70%'])
@@ -988,6 +1090,9 @@ if (values.list) {
         assert.equal(await contextNav.getByRole('tab').count(), 3)
         assert.equal(await contextNav.locator('small,summary,input').count(), 0)
         assert.deepEqual(await contextNav.locator('.ptcPlusContextState').allTextContents(), [labels['capabilities.combination.state.selected'], labels['capabilities.combination.state.selected'], labels['capabilities.combination.state.selected']])
+        assert.equal(await contextNav.locator('.ptcPlusContextSummary').count(), 3)
+        assert.ok((await contextNav.locator('.ptcPlusContextSummary').allTextContents()).every(text => text.length > 0))
+        assert.equal(await workbench.locator('.ptcPlusContextContent details').count(), 0)
         await assertVisualSurface(page, contextNav, `${label}: context status navigation`)
         await page.screenshot({ path: `artifacts/button-styles/capability-context-default-${width}-${theme}-${native ? 'native' : 'fallback'}-${locale}.png` })
         await contextNav.getByRole('tab', { name: labels['capabilities.context.recovery'], exact: true }).click()
@@ -1025,7 +1130,8 @@ if (values.list) {
         await managementSwitch.click()
         await workbench.getByRole('tab', { name: labels['capabilities.tab.budgets'], exact: true }).click()
         await contextNav.getByRole('tab', { name: labels['capabilities.context.description'], exact: true }).click()
-        await workbench.locator('.ptcPlusAllocationPreview>summary').click()
+        assert.equal(await workbench.locator('section.ptcPlusAllocationPreview').isVisible(), true)
+        assert.equal(await workbench.locator('.ptcPlusContextContent details').count(), 0)
         await workbench.getByRole('progressbar').first().waitFor()
         assert.equal(await dialog.locator('[data-section=capabilities]').getAttribute('aria-current'), 'location',
           `${label}: switching a capability tab changed section navigation ${JSON.stringify(await dialog.evaluate(element => {

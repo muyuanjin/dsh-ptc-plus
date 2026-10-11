@@ -202,18 +202,33 @@ function toolCapability(schema, sections) {
     description: schema.description ?? '' }
 }
 
+function skillInvocationContract(name, description, invocation) {
+  const loading = invocation.modelInvocable
+    ? `Load instructions: await tools.skill(${JSON.stringify({ name })})`
+    : invocation.userInvocable ? `User-only Skill: the user can invoke /${name}. The model cannot load this Skill with tools.skill.`
+      : 'No invocation path is available in this session.'
+  return `${description}\nInvocation: modelInvocable=${invocation.modelInvocable}, userInvocable=${invocation.userInvocable}.\n${loading}`
+}
+
 function skillCapability(skill, modelLoaderAvailable = true) {
   const nativeInvocation = { modelInvocable: isModelInvocable(skill), userInvocable: isUserInvocable(skill) }
   const invocation = { ...nativeInvocation, modelInvocable: nativeInvocation.modelInvocable && modelLoaderAvailable }
   const summary = { name: skill.name, provider: skill.provider, source: skill.source,
     description: skill.description, invocation }
-  const loading = invocation.modelInvocable
-    ? `Load instructions: await tools.skill(${JSON.stringify({ name: skill.name })})`
-    : invocation.userInvocable ? `User-only Skill: the user can invoke /${skill.name}. The model cannot load this Skill with tools.skill.`
-      : 'No invocation path is available in this session.'
   return { id: `skills.${skill.name}`, category: CAPABILITY_INVENTORY_CATEGORIES.skill, revision: digest(summary),
-    contract: `${skill.description}\nInvocation: modelInvocable=${invocation.modelInvocable}, userInvocable=${invocation.userInvocable}.\n${loading}`,
+    contract: skillInvocationContract(skill.name, skill.description, invocation),
     description: skill.description, selector: { name: skill.name }, invocation,
+    ...(!modelLoaderAvailable ? { nativeInvocation, effectiveAvailability: invocation.userInvocable ? 'enabled' : 'closed' } : {}) }
+}
+
+/** Retain proved Skill identity while the live loader still owns model invocation. */
+function retainedSkillCapability(capability, modelLoaderAvailable) {
+  const nativeInvocation = capability.nativeInvocation ?? capability.invocation
+  const invocation = { ...nativeInvocation, modelInvocable: nativeInvocation.modelInvocable && modelLoaderAvailable }
+  if (JSON.stringify(invocation) === JSON.stringify(capability.invocation)) return capability
+  const { nativeInvocation: _nativeInvocation, effectiveAvailability: _availability, ...retained } = capability
+  return { ...retained, invocation, revision: digest({ revision: capability.revision, invocation }),
+    contract: skillInvocationContract(capability.selector.name, capability.description, invocation),
     ...(!modelLoaderAvailable ? { nativeInvocation, effectiveAvailability: invocation.userInvocable ? 'enabled' : 'closed' } : {}) }
 }
 
@@ -313,7 +328,7 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
   }
 
   async function observeSkills(agent, signal) {
-    if (!readSkills(ctx)?.snapshot) return []
+    if (!readSkills(ctx)?.snapshot) return { skills: [], complete: true }
     // Read the original provider layers through a short-lived child scope. The
     // session projection is exact-scope-only, so catalogue reads cannot toggle
     // a global inventory flag and create a window where closed Skills load.
@@ -326,21 +341,44 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
       observed = await readSkills(ctx).snapshot({ cwd: currentDirectory(agent), scope: view,
         signal: combined.length > 1 ? AbortSignal.any(combined) : combined[0] })
     } finally { await isolated?.dispose() }
-    if (!observed.complete) throw new Error('ptc-plus: the Skill catalog is incomplete; cannot select a new capability environment')
-    return observed.skills.filter(skill => isModelInvocable(skill) || isUserInvocable(skill))
+    return { ...observed, skills: observed.skills.filter(skill => isModelInvocable(skill) || isUserInvocable(skill)) }
+  }
+
+  function recordedSkills(agent, state) {
+    const skills = new Map(state.snapshot.capabilities.filter(item => item.category === 'skill').map(item => [item.id, item]))
+    const history = sessionEvents(agent.session)
+    const planIndex = state.message ? history.findLastIndex(event => event.type === 'user/message' && event.data?.id === state.message.id) : -1
+    const planDigest = digest(state.snapshot)
+    const sessionId = String(agent.session.id ?? agent.id)
+    // Accepted contract updates prove inventory state independently of whether
+    // their descriptions remain visible. They do not establish model knowledge.
+    for (const event of history.slice(planIndex + 1)) {
+      const update = event.type === 'user/message' && readContractUpdate(event.data, planDigest, sessionId)
+      for (const change of update?.changes ?? []) {
+        if (!change.id.startsWith('skills.')) continue
+        if (change.capability === null) skills.delete(change.id)
+        else if (change.capability.category === 'skill') skills.set(change.id, change.capability)
+      }
+    }
+    return [...skills.values()]
   }
 
   async function qualifyCapabilities(agent, state, signal = agent.signal) {
     if (requiresCapabilityInventory(state.snapshot.settings)) {
-      state.liveCapabilities = new Map((await inventory(agent, state.hostSections, state.snapshot.settings, signal, undefined, state.snapshot.plan.enabled
-        ? new Set(state.snapshot.plan.entries.filter(entry => entry.selection !== 'closed').map(entry => entry.id)) : undefined))
-        .map(item => [item.id, item]))
+      const skills = { retained: state.provedSkills ?? recordedSkills(agent, state) }
+      const capabilities = await inventory(agent, state.hostSections, state.snapshot.settings, signal, undefined, state.snapshot.plan.enabled
+        ? new Set(state.snapshot.plan.entries.filter(entry => entry.selection !== 'closed').map(entry => entry.id)) : undefined, skills)
+      signal?.throwIfAborted()
+      state.liveCapabilities = new Map(capabilities.map(item => [item.id, item]))
+      state.skillInventoryComplete = skills.complete
+      state.partialSkillNames = skills.partialNames
+      if (skills.complete) state.provedSkills = capabilities.filter(item => item.category === 'skill')
       await installSkillProjection(agent, state)
     }
     return state
   }
 
-  async function inventory(agent, sections = [], settings, signal, presentation, frozenIds) {
+  async function inventory(agent, sections = [], settings, signal, presentation, frozenIds, skillObservation) {
     if (settings) settings = effectiveCapabilitySettings(settings)
     const schemas = toolSchemasForAgent(agent).filter(schema => !TRANSPORTS.has(schema.name))
     const capabilities = schemas.map(schema => toolCapability(schema, sections))
@@ -354,11 +392,22 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
         source: servers.length === 1 ? { kind: 'mcp', server: servers[0] } : servers.length > 1
           ? { kind: 'unknown' } : { kind: 'host' } })
     }
+    if (skillObservation) skillObservation.complete = true
     const hasOperation = name => (!frozenIds || frozenIds.has(`tools.${name}`)) && capabilities.some(item => item.id === `tools.${name}`
       && (!settings?.enabled || !settings.policy || capabilityRule(settings.policy, item).availability !== 'closed'))
     const policyPaths = Boolean(settings?.policy)
     if (readSkills(ctx)?.snapshot !== undefined) {
-      for (const skill of await observeSkills(agent, signal)) {
+      const observed = await observeSkills(agent, signal)
+      if (skillObservation) {
+        skillObservation.complete = observed.complete
+        skillObservation.partialNames = observed.complete ? [] : observed.skills.map(skill => skill.name)
+      }
+      if (!observed.complete && !skillObservation) throw new Error('ptc-plus: the Skill catalog is incomplete; cannot select a new capability environment')
+      // A partial catalog cannot prove a withdrawal or a new Skill. Preserve only
+      // the last complete view; native dispatch still uses the live Host scope.
+      if (!observed.complete) capabilities.push(...skillObservation.retained.map(item =>
+        retainedSkillCapability(item, !policyPaths || hasOperation('skill'))))
+      for (const skill of observed.complete ? observed.skills : []) {
         capabilities.push(skillCapability(skill, !policyPaths || hasOperation('skill')))
         presentation?.set(`skills.${skill.name}`, { name: skill.name,
           source: { kind: 'skill', bucket: skill.source, provider: skill.provider },
@@ -423,10 +472,11 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
   }
   function statisticsSnapshot(state) {
     if (!state.liveCapabilities) return state.snapshot
+    const eligible = item => state.skillInventoryComplete !== false || item.category !== 'skill'
     return { ...state.snapshot, plan: { ...state.snapshot.plan,
-      entries: state.snapshot.plan.enabled ? state.snapshot.plan.entries.filter(entry => supplied(state, entry.id) && state.liveCapabilities.has(entry.id))
+      entries: state.snapshot.plan.enabled ? state.snapshot.plan.entries.filter(entry => supplied(state, entry.id) && state.liveCapabilities.has(entry.id) && eligible(entry))
         .map(entry => ({ ...entry, revision: state.liveCapabilities.get(entry.id).revision }))
-        : [...state.liveCapabilities.values()].filter(item => supplied(state, item.id))
+        : [...state.liveCapabilities.values()].filter(item => supplied(state, item.id) && eligible(item))
           .map(item => ({ id: item.id, revision: item.revision, category: item.category, selection: 'host' })) } }
   }
   function restoreEvidence(agent, state) {
@@ -467,45 +517,57 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
     }
   }
 
+  function skillProjectionEntries(state) {
+    if (!state.snapshot.plan.enabled) return []
+    const capabilities = new Map(state.snapshot.capabilities.map(item => [item.id, item]))
+    for (const [id, item] of state.liveCapabilities ?? []) capabilities.set(id, item)
+    for (const name of state.partialSkillNames ?? []) {
+      const id = `skills.${name}`
+      if (!capabilities.has(id)) capabilities.set(id, { id, category: 'skill', selector: { name } })
+    }
+    return [...capabilities.values()].filter(item => item.category === 'skill' && !supplied(state, item.id))
+      .map(item => ({ name: item.selector.name, description: 'Unavailable in this session capability environment.',
+        invocation: { modelInvocable: false, userInvocable: false }, source: 'ptc-plus-session-capabilities',
+        provider: 'ptc-plus-session-capabilities', rank: -Number.MAX_VALUE, locator: item.id }))
+      .sort((left, right) => left.name < right.name ? -1 : left.name > right.name ? 1 : 0)
+  }
+
   async function installSkillProjection(agent, state) {
     let projection = skillProjections.get(agent)
     if (!projection && state.snapshot.plan.enabled && readSkills(ctx)?.registerProvider) {
       const scope = createScope(ctx, agent)
-      projection = { scope, state, inventory: false }
+      projection = { scope, entries: skillProjectionEntries(state) }
       try {
-      scope.ctx.effect(() => readSkills(scope.ctx).registerProvider(control => {
-        projection.control = control
-        const name = 'ptc-plus-session-capabilities'
-        return { name,
-          async list(options) {
-            if (options.scope !== agent || projection.inventory || !projection.state.snapshot.plan.enabled) return []
-            const capabilities = new Map(projection.state.snapshot.capabilities.map(item => [item.id, item]))
-            for (const [id, item] of projection.state.liveCapabilities ?? []) capabilities.set(id, item)
-            return [...capabilities.values()].filter(item => item.category === 'skill'
-              && !supplied(projection.state, item.id)).map(item => ({
-              name: item.selector.name, description: 'Unavailable in this session capability environment.',
-              invocation: { modelInvocable: false, userInvocable: false },
-              source: 'ptc-plus-session-capabilities', provider: name, rank: -Number.MAX_VALUE,
-              locator: item.id,
-            }))
-          },
-          // A closed winning entry has no body. Neither model loading nor an
-          // explicit user gesture can invoke the original provider.
-          async get() { return undefined },
-        }
-      }), 'ptc-plus: session Skill projection')
-      skillProjections.set(agent, projection)
+        scope.ctx.effect(() => readSkills(scope.ctx).registerProvider(control => {
+          projection.control = control
+          const name = 'ptc-plus-session-capabilities'
+          return { name,
+            async list(options) {
+              return options.scope === agent ? projection.entries : []
+            },
+            // A closed winning entry has no body. Neither model loading nor an
+            // explicit user gesture can invoke the original provider.
+            async get() { return undefined },
+          }
+        }), 'ptc-plus: session Skill projection')
+        skillProjections.set(agent, projection)
       } catch (error) {
         await scope.dispose()
         throw error
       }
     }
-    if (projection) { projection.state = state; projection.control.invalidate() }
+    if (projection) {
+      const entries = skillProjectionEntries(state)
+      if (JSON.stringify(entries) !== JSON.stringify(projection.entries)) {
+        projection.entries = entries
+        projection.control.invalidate()
+      }
+    }
   }
 
   async function acceptState(agent, state, publish, signal) {
     const preceding = skillProjections.get(agent)
-    const precedingState = preceding?.state
+    const precedingEntries = preceding?.entries
     try {
       await installSkillProjection(agent, state)
       signal?.throwIfAborted()
@@ -513,8 +575,9 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
     } catch (error) {
       const projection = skillProjections.get(agent)
       if (preceding) {
-        preceding.state = precedingState
-        try { preceding.control.invalidate() } catch (restoration) {
+        const changed = JSON.stringify(preceding.entries) !== JSON.stringify(precedingEntries)
+        preceding.entries = precedingEntries
+        try { if (changed) preceding.control.invalidate() } catch (restoration) {
           throw new AggregateError([error, restoration], 'PTC Plus Skill projection restoration failed')
         }
       } else if (projection) {
@@ -859,6 +922,7 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
       }
     },
     async preStep(payload, next) {
+      if (payload.signal?.aborted) return next()
       // Preparation precedes the host's explicit Skill loading, using the same
       // public composition entry that owns PTC/native selection and MCP sections.
       if (ctx.systemPrompt?.assemble) {

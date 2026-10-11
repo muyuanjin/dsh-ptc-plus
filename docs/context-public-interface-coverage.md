@@ -6,12 +6,12 @@
 | --- | --- | --- |
 | 继承及 scope 自有工具 | 在 execution seam 提供的 `tools` descriptor 上移除关闭成员；仅调用宿主原函数 | `test/plugin-program-bindings.test.js` 的受管工具编译测试、`test/capability-environment.test.js` |
 | 原生 SDK | `system-prompt/assemble` 将全量 SDK 替换为固定语言与发现 bootstrap，完整契约进入首轮源消息；保留 `complete` section | `test/plugin-program-bindings.test.js`、`test/context-host-contract.test.js` |
-| Skill | 公共 scope provider 提供关闭条目的不可调用 winning entry；目录、加载和显式用户调用共用该视图；刷新枚举原 provider | `test/capability-environment.test.js` 的真实 SkillRegistry 测试 |
+| Skill | 公共 scope provider 提供关闭条目的不可调用 winning entry；目录、加载和显式用户调用共用该视图；刷新枚举原 provider；稳定投影不重复 invalidate，父子并行目录读取不因无变化准备失效；暂时不完整保留已证明 Skill，不发布新资格 | `test/capability-environment.test.js` 的真实 SkillRegistry 测试 |
 | MCP 工具 | 普通工具投影包含 `mcp__` 成员；server instructions 作为完整契约依赖按方案披露 | `test/capability-environment.test.js`、`test/context-host-contract.test.js` |
 | MCP 资源和模板 | 以公共 server 目录为能力单元，筛选发现说明及共享加载器 selector；可用 server 为空时移除共享成员 | `test/capability-environment.test.js` 的共享 selector、空域与刷新反例 |
 | 旧工具引用 | 捕获的 callable 继续受原 cell lease 约束；普通函数在下一 cell 读取重新投影的 program namespace | `test/plugin-program-bindings.test.js` |
 | 首轮发布、刷新与通知 | 首轮方案在请求前组装，经 accepted-step 在受保护 system head 后、未提交历史的新任务前提交一次；导航和显式完整契约保持统计变化前缀；已初始化会话的 `/capabilities refresh` 经公共 `runMaintenance()` 以单次 `Session.append` 提交新方案及模型通知；首次接受前的刷新回执说明待接受，取消或写入失败不伪造提交 | `test/capability-environment.test.js` 的实际跨会话请求、统计变更前缀、真实 AgentLoop 与严格恢复 oracle |
-| 恢复与压缩 | 从 source-backed 方案恢复冻结环境；正式结果元数据记录展开和使用；ordered surface 决定说明去重 | `test/capability-environment.test.js` 的 Session round trip 与 replacement 测试 |
+| 恢复与压缩 | 从 source-backed 方案恢复冻结环境；已接受且校验的本会话契约更新保留最近 Skill 视图，目录暂时不完整不复活已撤下项；正式结果元数据记录展开和使用；ordered surface 决定说明去重 | `test/capability-environment.test.js` 的 Session round trip 与 replacement 测试 |
 | 家族统计 | 公共 session lineage、turn/step 结算与家族 census，配合原子文件锁；未知结算不作负样本 | `test/capability-statistics.test.js`、`test/context-host-contract.test.js` |
 | 结果和日志 | 独立 spill policy 事件上下文读取宿主 spill 服务；canonical 值保持完整，存储失败保留原展示 | `test/context-result-preview.test.js` |
 | 设置观察 | 独立设置、可搜索能力选择、统计开关与数值输入、有效方案、选择原因、使用覆盖率、预算超额及待刷新状态 | `test/client-runtime.spec.js` 的能力设置测试 |

@@ -632,7 +632,10 @@
         "collection and read-only observation independent of statistics allocation and capability management; host eligibility from actual public inventory",
         "optional description recovery and model result/log preview independent from availability and disclosure; unselected previews preserve existing Host policy",
         "historical environment v1/v2 derives its exact original plan and rendering rather than current defaults",
-        "persistent group selection pauses rules, collection, recovery and previews without rewriting saved children; profiles and frozen copies retain intent; explicit refresh restores the combination; paused children differ from disabled children"
+        "persistent group selection pauses rules, collection, recovery and previews without rewriting saved children; profiles and frozen copies retain intent; explicit refresh restores the combination; paused children differ from disabled children",
+        "stable exact-scope Skill projection entries invalidate only on actual output change; public parent/child SkillRegistry observations and official injected spawn/fork completion retain continued parent bindings",
+        "incomplete Skill discovery preserves only the last proved frozen/live Skill view, suppresses new Skill availability evidence and preserves native loader withdrawal; initial selection and explicit refresh still require complete catalogs",
+        "cold capability restoration derives last proved Skills from validated accepted same-session same-plan capability-contracts changes, retaining confirmed withdrawals without treating raw history as model knowledge"
       ],
       "entries": [
         "createCapabilityPlan",
@@ -666,7 +669,8 @@
         "session-only explicit choice",
         "global revision CAS and current-session refresh",
         "pending proposal in paired successful Host command result",
-        "prepare Skill projection before plan append and restore on rejection"
+        "prepare Skill projection before plan append and restore on rejection",
+        "incomplete discovery continuation and next-boundary re-observation"
       ],
       "generations": [
         "ptc-capability-plan/v1 category navigation and grouped contract rendering",
@@ -802,6 +806,7 @@
         "src/client-binding-toggle.js",
         "src/client-bindings-data.js",
         "src/client-capabilities-view.js",
+        "src/client-capability-sort.js",
         "src/client-catalog.js",
         "src/client-code-editor.js",
         "src/client-console.js",
@@ -859,7 +864,10 @@
         "confirmed binding enablement receipt distinct from model catalog delivery and worker initialization",
         "public Conversation configuration receipt is appended after the Host system head or delivered through an accepted first-step batch; no first-system-head displacement or user/turn-trigger identity",
         "capability task inputs and feedback local to observation, refresh, named library and session copy",
-        "capability refresh and structured status receipts show one localized outcome line without command header, duplicate status or raw-result disclosure, preserve pending/error distinctions, display actual-kind fallbacks for blank outcomes and retain exact historical results, and localize exact legacy refresh receipts; catalog command cards own compact body typography, preserve exact commands and summarize catalogs by count with an expandable complete scrollable table and raw-result disclosure; shared Select SVG centers independently of carrier typography; global draft confirmation requires saved choice and cleared temporary override"
+        "capability refresh and structured status receipts show one localized outcome line without command header, duplicate status or raw-result disclosure, preserve pending/error distinctions, display actual-kind fallbacks for blank outcomes and retain exact historical results, and localize exact legacy refresh receipts; catalog command cards own compact body typography, preserve exact commands and summarize catalogs by count with an expandable complete scrollable table and raw-result disclosure; shared Select SVG centers independently of carrier typography; global draft confirmation requires saved choice and cleared temporary override",
+        "settings and session capability headers share stable ascending/descending/default display sorting across name/type/source/availability/context, preserve filters and selected drafts, expose keyboard and aria-sort on narrow layouts, and never change settings by sorting",
+        "one-time batch dialog freezes filtered available targets, keeps independent dimensions as local drafts, validates current inventory and latest policy on one confirmation write, preserves non-target rules and failures, and distinguishes persistent inheritance rules",
+        "prompt sidebar shows default disclosure and allocation criteria, recovery bytes and output token limits with paused/unknown intent preserved; short allocation/quota/current allocation and statistics parameters remain expanded; read-only observation guidance aligns in tertiary gray and wraps within narrow containers"
       ],
       "entries": [
         "session activation",

@@ -103,13 +103,15 @@ export function createPtcSettingsView(React, deps) {
             setDraft(next)
             commit(next)
           } })),
-      h('details', null, h('summary', null, t('capabilities.statisticsSettings')), h('div', { className: 'ptcPlusBindingFields' }, numeric('windowSize', 1, Number.MAX_SAFE_INTEGER),
-        numeric('minimumSamples', 1, Number.MAX_SAFE_INTEGER), numeric('fullThreshold', 0, 100, 100))),
+      h('section', { className: 'ptcPlusStatisticsParameters', 'aria-label': t('capabilities.statisticsSettings') },
+        h('h5', null, t('capabilities.statisticsSettings')),
+        h('div', { className: 'ptcPlusBindingFields' }, numeric('windowSize', 1, Number.MAX_SAFE_INTEGER),
+          numeric('minimumSamples', 1, Number.MAX_SAFE_INTEGER), numeric('fullThreshold', 0, 100, 100))),
       !valid ? h('p', { role: 'status', className: 'ptcPlusMessage' }, t('capabilities.invalidStatistics'))
         : saved.invalid && draft === saved.settings ? h('p', { role: 'status', className: 'ptcPlusMessage' }, t('capabilities.savedStatisticsInvalid')) : null)
   }
 
-  const { CapabilityWorkbench } = createCapabilitySettingsViews(React, { SearchIcon, Select })
+  const { CapabilityWorkbench } = createCapabilitySettingsViews(React, { SearchIcon, Select, Modal })
 
   function fieldInput(field, value, disabled, onChange, label) {
     if (field.type === 'boolean') {
@@ -387,7 +389,11 @@ export function createPtcSettingsView(React, deps) {
       : [...new Set([...(targets ?? []).map(target => target.sessionId), ...(plans ?? []).map(plan => plan.sessionId)])]
     const renderRefresh = ({ observation = false } = {}) => CapabilityRefreshButton || inspectCapabilityPlans ? h('section', { className: 'ptcPlusCapabilityApply',
       'aria-label': t(observation ? 'capabilities.observationGroup' : 'capabilities.applyGroup') },
-      h('label', { className: 'ptcPlusCapabilityFilter' }, h('span', null, t(observation ? 'capabilities.observationSession' : 'capabilities.targetSession')),
+      h('label', { className: `ptcPlusCapabilityFilter${observation ? ' ptcPlusStatisticsObservation' : ''}` },
+        observation ? h('span', { className: 'ptcPlusStatisticsObservationHeading' },
+          h('span', null, t('capabilities.observationSession')),
+          h('span', { className: 'ptcPlusStatisticsObservationHint' }, t('capabilities.selectObservation')))
+          : h('span', null, t('capabilities.targetSession')),
         h(Select, { value: refreshSessionId, label: t(observation ? 'capabilities.observationSession' : 'capabilities.targetSession'),
           disabled: !enabled || comparisonTargets === null || Boolean(targetsError), onChange: setRefreshSessionId,
           options: [{ value: '', label: t('capabilities.chooseSession') },

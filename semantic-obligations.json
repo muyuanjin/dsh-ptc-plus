@@ -489,7 +489,8 @@
         "provider availability withdraws only plugin-owned declarations through accepted steps and public single-writer persistence on release",
         "locale-independent capability command receipt distinguishes prepared and recorded without replaying model notifications",
         "deferred editor acceptance audit and inspectLog consume the actual derived execution completion and failure rather than the outer receipt completion",
-        "optional public session lookup for REPL observation tolerates an absent service without creating a runtime"
+        "optional public session lookup for REPL observation tolerates an absent service without creating a runtime",
+        "release tarball consumer installation selects the verified installed Host peer cohort without independently resolving package dist-tags"
       ],
       "entries": [
         "run_code",
@@ -507,7 +508,8 @@
         "human /capabilities input matching and authenticated command execution",
         "capabilityProfileConfiguration",
         "validateCapabilityProfiles",
-        "handBackRuntimeSessions"
+        "handBackRuntimeSessions",
+        "test:package:consumer"
       ],
       "lifecycle": [
         "register",
@@ -574,7 +576,9 @@
         "test/verification-workflow.test.js",
         "scripts/client-focused-tests.mjs",
         "scripts/dsh-packed-lifecycle-smoke.mjs",
-        "test/expensive-acceptance.test.js"
+        "test/expensive-acceptance.test.js",
+        "scripts/npm-consumer-smoke.mjs",
+        "test/npm-consumer-smoke.test.js"
       ],
       "dependsOn": [
         "execution-kernel",
@@ -779,7 +783,7 @@
       "disposition": "intentional-difference",
       "owner": "Global User Binding storage/activation and bounded REPL client presentation",
       "implementation": [
-        "client.js",
+        "client.cjs",
         "internal/binding-toggle-receipt.js",
         "internal/repl-memory-projection.js",
         "internal/repl-observation-interest.js",

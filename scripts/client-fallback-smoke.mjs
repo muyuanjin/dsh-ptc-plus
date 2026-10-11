@@ -37,7 +37,7 @@ if (values.list) {
   console.log(cases.map(item => item.id).join('\n'))
 } else {
   const started = performance.now()
-  const clientBundle = await readFile(new URL('../client.js', import.meta.url), 'utf8')
+  const clientBundle = await readFile(new URL('../client.cjs', import.meta.url), 'utf8')
   const clientCss = clientBundle.match(/var CLIENT_CSS = `([\s\S]*?)`;/)?.[1]
   assert.ok(clientCss, 'generated client bundle does not publish CLIENT_CSS')
 

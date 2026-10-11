@@ -7,8 +7,8 @@
 *.yml text eol=lf
 *.yaml text eol=lf
 
-# client.js is a generated artifact checked byte-for-byte on every supported platform.
-/client.js text eol=lf
+# client.cjs is a generated artifact checked byte-for-byte on every supported platform.
+/client.cjs text eol=lf
 
 # The versioned A/B fixture is hashed byte-for-byte before materialization.
 /fixtures/ab-node-project-v1/** text eol=lf

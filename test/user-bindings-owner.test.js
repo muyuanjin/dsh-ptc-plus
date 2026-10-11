@@ -2032,23 +2032,26 @@ export async function add(value: number) {
   await owner.dispose()
 })
 
-test('cancels, times out, and bounds candidate output', async () => {
+test('cancels, times out, and bounds candidate output', async t => {
   const scenarios = [
     {
       options: { maxWallMs: 20, maxOutputBytes: 1024 },
       source: 'while (true) {}',
-      expected: /exceeded/,
+      expected: /candidate execution exceeded 20ms/,
     },
     {
-      options: { maxWallMs: 1_000, maxOutputBytes: 8 },
+      // Output checks include cold helper/compiler startup, as console fixtures do.
+      options: { maxWallMs: 10_000, maxOutputBytes: 8 },
       source: 'console.log("output too large"); export const value = 1',
       expected: /output exceeded/,
+      expectedCode: 'bindings/output-limit',
     },
     {
-      options: { maxWallMs: 1_000, maxOutputBytes: 512 },
+      options: { maxWallMs: 10_000, maxOutputBytes: 512 },
       source: 'export function values() { return Array.from({ length: 100 }, (_, index) => index) }',
       invocation: { symbol: 'values', args: [] },
       expected: /output exceeded/,
+      expectedCode: 'bindings/output-limit',
     },
   ]
   for (const scenario of scenarios) {
@@ -2061,12 +2064,14 @@ test('cancels, times out, and bounds candidate output', async () => {
       valueLimits: {},
       ...scenario.options,
     })
+    t.after(() => owner.dispose())
     const result = await call(target, 'run', {
       source: scenario.source,
       ...(scenario.invocation === undefined ? {} : { invocation: scenario.invocation }),
     })
     assert.equal(result.ok, false)
     assert.match(result.error.message, scenario.expected)
+    if (scenario.expectedCode !== undefined) assert.equal(result.error.code, scenario.expectedCode)
     await owner.dispose()
   }
 
@@ -2080,6 +2085,7 @@ test('cancels, times out, and bounds candidate output', async () => {
     maxOldGenerationSizeMb: 32,
     valueLimits: {},
   })
+  t.after(() => owner.dispose())
   const controller = new AbortController()
   controller.abort()
   const cancelled = await call(target, 'run', {

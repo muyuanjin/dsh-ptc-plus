@@ -174,13 +174,13 @@ live 配置若因宿主能力缺失或 runtime 安装/重配置失败，会先�
 
 ## Client bundle
 
-浏览器入口为 `src/client.js`，构建为 `client.js`：
+浏览器入口为 `src/client.js`，构建为 `client.cjs`：
 
 ```sh
 npm run build
 ```
 
-`package.json` 声明 `dsh.client` 与 `./client` export，并声明当前公共 UI 模块的依赖图。`npm run build` 从 `src/client.js` 生成 `client.js`，`npm run build:check` 比较确定性产物；`prepack` 会阻止陈旧 bundle 发布。
+`client.cjs` 保持 DSH ModuleLoader 所需的 CommonJS factory 格式，扩展名明确区分于包内 ESM 源码；公开入口仍为 `./client`。`package.json` 声明 `dsh.client` 与 `./client` export，并声明当前公共 UI 模块的依赖图。`npm run build` 从 `src/client.js` 生成 `client.cjs`，`npm run build:check` 比较确定性产物；`prepack` 会阻止陈旧 bundle 发布。
 
 `npm run test:client` 使用 DSH 发布的 Cordis、SlotTestRuntime、renderer 和 conversation registry/assembler 验证激活、Location 关联、响应式更新和释放。产物测试（`test/client-bundle.test.js`）只断言构建产物契约：可加载、公开 slot 与 entry 身份、依赖边界和检出换行属性；它不读取 `src/client.js`，也不断言源码写法、CSS 数值或文案字面量，界面行为归运行测试。测试 loader 只适配发布的 ModuleLoader 格式，并为上游 test-runtime 缺失的两个源码引用暴露同一发布 renderer 的函数，不复制其行为。打包后的浏览器启动另由 `npm run test:client:web` 验证，前置条件与命令见 [安装指南](installation.md)。
 

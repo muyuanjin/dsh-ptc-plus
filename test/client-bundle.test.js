@@ -10,7 +10,7 @@ import * as JsxRuntime from 'react/jsx-runtime'
 import { LOCALE_NS } from '../src/client-copy.js'
 
 const root = fileURLToPath(new URL('..', import.meta.url))
-const bundleUrl = new URL('../client.js', import.meta.url)
+const bundleUrl = new URL('../client.cjs', import.meta.url)
 
 // Artifact contract only: how the built bundle loads, which public slots and
 // identities it carries, and what it is allowed to depend on. Reactive
@@ -39,11 +39,11 @@ async function loadBundle() {
 }
 
 test('keeps generated client bundle checkout bytes stable', () => {
-  const attribute = execFileSync('git', ['check-attr', 'eol', '--', 'client.js'], {
+  const attribute = execFileSync('git', ['check-attr', 'eol', '--', 'client.cjs'], {
     cwd: root,
     encoding: 'utf8',
   }).trim()
-  assert.equal(attribute, 'client.js: eol: lf')
+  assert.equal(attribute, 'client.cjs: eol: lf')
 })
 
 test('checked client bundle loads through the DSH module loader contract', async () => {

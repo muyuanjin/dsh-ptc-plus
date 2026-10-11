@@ -254,6 +254,8 @@ test('keeps npm release authority stage-only and bound to a verified tag', async
   const packStep = release.jobs.stage.steps.find(step => step.id === 'pack')
   assert.match(packStep.run, /npm run coverage/)
   assert.ok(packStep.run.indexOf('npm run coverage') < packStep.run.indexOf('archive='))
+  assert.match(packStep.run, /npm run test:package:consumer -- "\$archive_path"/)
+  assert.doesNotMatch(packStep.run, /npm install[^\n]*archive_path/)
   assert.match(serializedRelease, /npm audit --omit=dev/)
   assert.match(serializedRelease, /node scripts\/npm-pack-filename\.mjs/)
   assert.match(serializedRelease, /npm@12\.0\.2/)

@@ -1,6 +1,6 @@
 {
   "name": "dsh-ptc-plus",
-  "version": "0.4.10",
+  "version": "0.4.11",
   "icon": "assets/ptc-plus-icon.svg",
   "description": "A session-bound agent-native REPL for DeepSeek Harness PTC mode.",
   "type": "module",
@@ -8,13 +8,13 @@
   "exports": {
     ".": "./index.js",
     "./execution-provider": "./internal/execution-provider-owner.js",
-    "./client": "./client.js",
+    "./client": "./client.cjs",
     "./package.json": "./package.json",
     "./locale/*.json": "./locale/*.json"
   },
   "files": [
     "index.js",
-    "client.js",
+    "client.cjs",
     "compiler-core.cjs",
     "compiler-core.cjs.map",
     "compiler-platform.cjs",
@@ -131,7 +131,8 @@
     "check": "node scripts/review-findings.mjs check",
     "verify:docs": "node scripts/review-findings.mjs docs",
     "test:expensive": "node scripts/expensive-headless-acceptance.mjs",
-    "test:ab": "node scripts/ab-headless-trajectories.mjs"
+    "test:ab": "node scripts/ab-headless-trajectories.mjs",
+    "test:package:consumer": "node scripts/npm-consumer-smoke.mjs"
   },
   "keywords": [
     "deepseek-harness",

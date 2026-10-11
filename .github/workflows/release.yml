@@ -112,16 +112,11 @@ jobs:
           git diff --exit-code
 
           pack_dir="$(mktemp -d)"
-          consumer_dir="$(mktemp -d)"
           archive="$(npm pack --silent --pack-destination "$pack_dir" --json | node scripts/npm-pack-filename.mjs)"
           archive_path="$pack_dir/$archive"
           sha512sum "$archive_path"
 
-          cd "$consumer_dir"
-          npm init --yes
-          npm install --ignore-scripts "$archive_path"
-          node --input-type=module -e "const plugin = await import('$PACKAGE_NAME'); if (plugin.name !== 'ptc-plus' || typeof plugin.apply !== 'function') throw new Error('invalid package exports')"
-          cd "$GITHUB_WORKSPACE"
+          npm run test:package:consumer -- "$archive_path"
 
           echo "archive-path=$archive_path" >> "$GITHUB_OUTPUT"
       - name: Stage package on npm for maintainer 2FA approval

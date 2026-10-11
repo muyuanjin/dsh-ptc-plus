@@ -4,7 +4,7 @@ import { build } from 'esbuild'
 import { parse } from 'acorn'
 
 const entry = fileURLToPath(new URL('../src/client.js', import.meta.url))
-const output = fileURLToPath(new URL('../client.js', import.meta.url))
+const output = fileURLToPath(new URL('../client.cjs', import.meta.url))
 const packageJson = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'))
 if (typeof packageJson.name !== 'string' || packageJson.name.length === 0) {
   throw new Error('package.json must declare a non-empty package name for the client module id')
@@ -51,6 +51,6 @@ if (command === 'build') {
 } else {
   const committed = await readFile(output, 'utf8')
   if (committed !== generated) {
-    throw new Error('client.js is stale; run npm run build and review the generated bundle')
+    throw new Error('client.cjs is stale; run npm run build and review the generated bundle')
   }
 }

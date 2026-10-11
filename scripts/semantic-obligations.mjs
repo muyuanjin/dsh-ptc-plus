@@ -14,7 +14,7 @@ const REQUIRED_ARRAYS = Object.freeze([
 ])
 
 async function sourceFiles(root) {
-  const files = ['client.js', 'index.js', 'scripts/migrate-session-log.mjs']
+  const files = ['client.cjs', 'index.js', 'scripts/migrate-session-log.mjs']
   for (const directory of ['internal', 'src']) {
     const entries = await readdir(join(root, directory), { withFileTypes: true })
     for (const entry of entries) {

@@ -2065,6 +2065,22 @@ test.each([
   expect(view.getByRole('combobox', { name: 'Selection strategy' }).disabled).toBe(true)
 })
 
+test('a session without capability management names Host rules and how to enable editing', async () => {
+  const entries = [
+    { id: 'tools.probe', category: 'tool', source: { kind: 'host' }, saved: 'closed', temporary: 'inherit', effective: 'host' },
+  ]
+  const { runtime } = await fixture({ bindings: false,
+    capabilityRpc: async endpoint => ({ ok: true, value: endpoint === 'session-catalog'
+      ? sessionCatalog(entries, 'off', { enabled: false, contextEnabled: true }) : [] }),
+    commands: { list: async () => ({ ok: true, value: [{ name: 'capabilities' }] }) } })
+  const view = runtime.renderRoot(); await runtime.flush(); await openGlobalMenu(view, runtime, 'click')
+  fireEvent.click(view.getByRole('menuitem', { name: 'Session capability controls' })); await runtime.flush()
+  expect(view.getByText(/Enable it under Capabilities & Context in settings and refresh/)).not.toBeNull()
+  expect(view.getByRole('button', { name: /^tools.probe$/ })).not.toBeNull()
+  fireEvent.click(view.getByRole('button', { name: /^tools.probe$/ }))
+  expect(view.getByRole('combobox', { name: 'Selection strategy' }).disabled).toBe(true)
+})
+
 test('session capability rows mark a session temporary choice beside the frozen effective state', async () => {
   const entries = [
     { id: 'tools.temporary-on', category: 'tool', source: { kind: 'host' }, saved: 'automatic', sessionSourceSelection: 'automatic',

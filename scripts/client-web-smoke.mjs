@@ -13,6 +13,8 @@ import { extractPackFilename } from './npm-pack-filename.mjs'
 import { hostToolRuntime, ptcToolsMode } from './dsh-host-contract.mjs'
 import { assertSparkleMenuTypography, assertSparkleMenuFocus, assertSparkleMenuLayout, assertDraftReviewLayout, assertControlVisual, assertToolLayout, assertToolTypography, assertVisualSurface } from './client-visual-contract.mjs'
 import { SETTINGS_COPY } from '../src/client-copy.js'
+/** Conventional exit status per interruption signal, matching the repository's coverage runner. */
+const INTERRUPTION_EXIT_CODES = Object.freeze({ SIGINT: 130, SIGTERM: 143 })
 import {
   TERMINATION_GRACE_MS,
   decodeSessionLog,
@@ -1357,6 +1359,26 @@ export async function main(argv = process.argv.slice(2)) {
   temporary = await mkdtemp(join(tmpdir(), 'ptc-client-web-'))
   evidence = resolve(repository, 'artifacts/client-web-smoke')
   env = { ...process.env, DSH_HOME: join(temporary, 'dsh-home') }
+  /**
+   * The `finally` below covers failures, but not signals: with no listener Node terminates on the
+   * spot, so an interrupted smoke would strand its isolated profile and the Host it owns.
+   */
+  const ownedResources = () => [
+    ['browser', async () => { await browser?.close() }],
+    ['web host process', () => stopOwnedProcess(host, { state: hostEnd })],
+    ['temporary profile', () => rm(temporary, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })],
+  ]
+  const interruptions = new Map()
+  for (const [signal, code] of Object.entries(INTERRUPTION_EXIT_CODES)) {
+    const handler = () => {
+      const exit = () => process.exit(code)
+      // Cleanup that fails anyway must not keep an interrupted run alive.
+      releaseResources(ownedResources(), undefined).then(exit, exit)
+    }
+    interruptions.set(signal, handler)
+    process.on(signal, handler)
+  }
+  const releaseInterruptions = () => { for (const [signal, handler] of interruptions) process.off(signal, handler) }
   let primaryError
   try {
     await mkdir(evidence, { recursive: true })
@@ -1429,7 +1451,10 @@ export async function main(argv = process.argv.slice(2)) {
         reject(new Error(`Web Host exited ${code}: ${output.slice(-4000)}`))
       })
     })
-    browser = await chromium.launch({ headless: true, channel: values['browser-channel'] })
+    // The smoke owns interruption cleanup, so Playwright must not install its own SIGINT/SIGTERM
+    // handlers: they would `process.exit` before this run releases the Host and its profile.
+    browser = await chromium.launch({ headless: true, channel: values['browser-channel'],
+      handleSIGINT: false, handleSIGTERM: false })
     page = await browser.newPage({ viewport: { width: 1440, height: 1000 } })
     page.setDefaultTimeout(10000)
     const errors = []
@@ -2316,11 +2341,8 @@ export async function main(argv = process.argv.slice(2)) {
     }
     throw error
   } finally {
-    await releaseResources([
-      ['browser', async () => { await browser?.close() }],
-      ['web host process', () => stopOwnedProcess(host, { state: hostEnd })],
-      ['temporary profile', () => rm(temporary, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })],
-    ], primaryError)
+    releaseInterruptions()
+    await releaseResources(ownedResources(), primaryError)
   }
 }
 

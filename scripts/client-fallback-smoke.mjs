@@ -1034,6 +1034,9 @@ if (values.list) {
         assert.equal(await editor.locator('.ptcPlusCapabilityEditorSection:not(:has(>h5))').count(), 0,
           `${label}: every MCP editor section needs its own caption`)
         await closeEditor()
+        // The navigation and document offsets are sampled before the first window opens here, so the
+        // comparison below covers every capability window this case opens, not only the last two.
+        const before = await dialog.evaluate(element => ({ navTop: element.querySelector('.ptcPlusSettingsNav').getBoundingClientRect().top, document: scrollY }))
         await workbench.getByRole('button', { name: labels['capabilities.inheritedRules'], exact: true }).click()
         const rules = page.getByRole('dialog', { name: labels['capabilities.inheritedRules'], exact: true })
         await rules.waitFor()
@@ -1089,7 +1092,6 @@ if (values.list) {
         await dialog.locator('[data-section=capabilities]').evaluate(element => element.click())
         assert.equal(await dialog.locator('[aria-current=location]').count(), 1)
         assert.equal(await dialog.locator('[data-section=capabilities]').getAttribute('aria-current'), 'location')
-        const before = await dialog.evaluate(element => ({ navTop: element.querySelector('.ptcPlusSettingsNav').getBoundingClientRect().top, document: scrollY }))
         const filterDialog = page.getByRole('dialog', { name: labels['capabilities.filterAction'], exact: true })
         const openFilters = async () => {
           await workbench.getByRole('button', { name: labels['capabilities.filterAction'], exact: true }).click()
@@ -1136,7 +1138,7 @@ if (values.list) {
         await workbench.getByRole('searchbox').fill('')
         await openEntry('skills.rightapi-image-generator')
         const after = await dialog.evaluate(element => ({ navTop: element.querySelector('.ptcPlusSettingsNav').getBoundingClientRect().top, document: scrollY }))
-        assert.deepEqual(after, before, 'capability filters and tabs moved the navigation or document')
+        assert.deepEqual(after, before, 'capability windows, filters and tabs moved the navigation or document')
         const geometry = await page.evaluate(() => {
           const surface = document.querySelector('.ptcPlusCapabilityEditorDialog')
           const pageSurface = document.querySelector('.ptcPlusSettingsDialog') ?? document.querySelector('[data-view=page]')

@@ -114,7 +114,8 @@ if (values.list) {
           return {kind:'success',text:capabilityCommandReceipt('recorded',sessionId)};
         }},Modal,Select,
       inspectSessionCatalog:async(sessionId,signal)=>{
-        signal.throwIfAborted();return structuredClone(window.capabilityEntries);
+        signal.throwIfAborted();
+        return {schema:'ptc-capability-session-catalog/v1',management:'managed',entries:structuredClone(window.capabilityEntries)};
       }
     });
     const CapabilityCommandCard=createCapabilityCommandCard(React);

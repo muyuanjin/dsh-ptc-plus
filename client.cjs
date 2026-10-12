@@ -10179,6 +10179,7 @@ function createSessionCapabilityControlsView(React32, { commands, Modal, Select:
     const source = React32.useMemo(() => commands.source(sessionId), [sessionId]);
     const available = React32.useSyncExternalStore(source.subscribe, source.getSnapshot);
     const [catalog, setCatalog] = React32.useState([]);
+    const [management, setManagement] = React32.useState("unknown");
     const [loading, setLoading] = React32.useState(false);
     const [error, setError] = React32.useState(null);
     const [drafts, setDrafts] = React32.useState(emptyDrafts);
@@ -10216,6 +10217,7 @@ function createSessionCapabilityControlsView(React32, { commands, Modal, Select:
       request.current = null;
       applying.current = false;
       setCatalog([]);
+      setManagement("unknown");
       setDrafts(emptyDrafts());
       setSelectedId(null);
       setPane("list");
@@ -10227,12 +10229,15 @@ function createSessionCapabilityControlsView(React32, { commands, Modal, Select:
     const load = React32.useCallback(async (signal) => {
       setLoading(true);
       try {
-        const entries = await inspectSessionCatalog(sessionId, signal);
+        const payload = await inspectSessionCatalog(sessionId, signal);
         if (signal.aborted || !mounted.current || request.current?.signal !== signal) return;
-        if (!Array.isArray(entries)) throw new Error("Invalid capability catalog");
-        setCatalog(entries);
+        if (payload?.schema !== "ptc-capability-session-catalog/v1" || !Array.isArray(payload.entries)) {
+          throw new Error("Invalid capability catalog");
+        }
+        setCatalog(payload.entries);
+        setManagement(["managed", "paused", "off", "unknown"].includes(payload.management) ? payload.management : "unknown");
         setError(null);
-        return entries;
+        return payload.entries;
       } catch (failure) {
         if (!signal.aborted && mounted.current && request.current?.signal === signal) setError(String(failure?.message ?? failure));
       } finally {
@@ -10264,10 +10269,11 @@ function createSessionCapabilityControlsView(React32, { commands, Modal, Select:
     }, [enabled, available]);
     const choices = drafts;
     const choiceFor = (entry) => choices[entry.id] ?? entry.temporary ?? "inherit";
+    const writesBlocked = management === "paused" || management === "off";
     const sourceKey = (entry) => entry.source?.kind === "mcp" ? "mcp:" + (entry.source.server ?? "") : entry.source?.kind === "skill" ? "skill:" + (entry.source.bucket ?? "") : entry.source?.kind ?? "unknown";
     const sourceLabel = (entry) => entry.source?.kind === "mcp" ? `MCP \xB7 ${entry.source.server ?? ""}` : entry.source?.kind === "skill" ? `Skill \xB7 ${entry.source.bucket ? t2(`capabilities.source.${entry.source.bucket}`) : t2("capabilities.source.unknown")}` : t2(`capabilities.source.${entry.source?.kind === "host" ? "host" : "unknown"}`);
     const category = (entry) => entry.category === "skill" ? "skills" : ["server", "resource"].includes(entry.category) ? "mcp" : entry.source?.kind === "mcp" ? "mcp_tools" : "tools";
-    const type = (entry) => entry.source?.kind === "mcp" ? "resource" : entry.category === "skill" ? "skill" : ["server", "resource"].includes(entry.category) ? "resource" : entry.category === "tool" ? "tool" : "other";
+    const type = (entry) => entry.category === "server" ? "server" : entry.source?.kind === "mcp" ? "resource" : entry.category === "skill" ? "skill" : entry.category === "resource" ? "resource" : entry.category === "tool" ? "tool" : "other";
     const displayedSource = (entry) => entry.source?.kind === "mcp" ? entry.source.server ?? sourceLabel(entry) : sourceLabel(entry);
     const effectiveAvailability = (entry) => entry.effective === "pending" ? "pending" : entry.enclosingClosure || entry.effective === "closed" ? "closed" : entry.effectiveDimensions?.availability ?? (["full", "on-demand", "host", "enabled"].includes(entry.effective) ? "enabled" : "unknown");
     const effectiveContext = (entry) => entry.effective === "pending" ? "pending" : effectiveAvailability(entry) === "closed" ? "closed" : entry.effectiveDimensions?.disclosure ?? (["full", "on-demand", "host"].includes(entry.effective) ? entry.effective : "unknown");
@@ -10314,7 +10320,7 @@ function createSessionCapabilityControlsView(React32, { commands, Modal, Select:
     };
     const hasInheritanceReset = staged.some(([, selection]) => selection === "inherit");
     const apply = async (targetScope) => {
-      if (applying.current || !enabled || !available || staged.length === 0) return;
+      if (applying.current || !enabled || !available || writesBlocked || staged.length === 0) return;
       if (targetScope === "global" && hasInheritanceReset) return;
       const submitted = structuredClone(choices);
       applying.current = true;
@@ -10548,6 +10554,11 @@ function createSessionCapabilityControlsView(React32, { commands, Modal, Select:
           ]
         )
       ),
+      writesBlocked ? h(
+        "p",
+        { className: "ptcPlusCapabilityNotice", role: "status" },
+        t2(management === "paused" ? "capabilities.quick.sessionPaused" : "capabilities.quick.sessionManagementOff")
+      ) : null,
       h(
         "div",
         { className: "ptcPlusSessionCapabilityWorkspace", "data-pane": pane },
@@ -10648,7 +10659,7 @@ function createSessionCapabilityControlsView(React32, { commands, Modal, Select:
               h("span", null, t2(`capabilities.policy.${dimension}`)),
               h(Select2, {
                 label: t2(`capabilities.policy.${dimension}`),
-                disabled: !enabled || !available || pending,
+                disabled: !enabled || !available || pending || writesBlocked,
                 value: choices[selected.id]?.[dimension] ?? selected.temporaryRule?.[dimension] ?? "inherit",
                 onChange: (next) => chooseDimension(selected.id, dimension, next),
                 options: ["inherit", "automatic", ...dimension === "availability" ? ["enabled", "closed"] : CAPABILITY_DISCLOSURES].map((choice) => ({ value: choice, label: t2(choice === "inherit" ? "capabilities.quick.inherit" : choice === "automatic" ? "capabilities.policy.inheritRule" : choice === "enabled" ? "capabilities.quick.enabled" : `capabilities.${choice}`) }))
@@ -10660,7 +10671,7 @@ function createSessionCapabilityControlsView(React32, { commands, Modal, Select:
               h(Select2, {
                 label: t2("capabilities.quick.choice"),
                 value: choiceFor(selected),
-                disabled: !enabled || !available || pending,
+                disabled: !enabled || !available || pending || writesBlocked,
                 options: choiceOptions,
                 onChange: (next) => choose(selected.id, next)
               })
@@ -10688,7 +10699,7 @@ function createSessionCapabilityControlsView(React32, { commands, Modal, Select:
             type: "button",
             className: "ptcPlusButton",
             title: t2("capabilities.quick.sessionHint"),
-            disabled: pending || !enabled || !available || staged.length === 0,
+            disabled: pending || !enabled || !available || writesBlocked || staged.length === 0,
             onClick: () => void apply("session")
           },
           t2("capabilities.quick.applySession")
@@ -10700,7 +10711,7 @@ function createSessionCapabilityControlsView(React32, { commands, Modal, Select:
             className: "ptcPlusButton",
             "data-kind": "primary",
             title: t2(hasInheritanceReset ? "capabilities.quick.inheritSessionOnly" : "capabilities.quick.globalHint"),
-            disabled: pending || !enabled || !available || staged.length === 0 || hasInheritanceReset,
+            disabled: pending || !enabled || !available || writesBlocked || staged.length === 0 || hasInheritanceReset,
             onClick: () => void apply("global")
           },
           t2("capabilities.quick.applyGlobal")
@@ -39811,7 +39822,7 @@ var CHROME_COPY = Object.freeze({
     "capabilities.quick.catalogError": "\u80FD\u529B\u6E05\u5355\u8BFB\u53D6\u5931\u8D25\uFF1A{error}",
     "capabilities.quick.changes": "{count} \u9879\u5F85\u5E94\u7528",
     "capabilities.quick.applySession": "\u5E94\u7528\u5230\u4F1A\u8BDD",
-    "capabilities.quick.applyGlobal": "\u4FDD\u5B58\u5E76\u5E94\u7528",
+    "capabilities.quick.applyGlobal": "\u5E94\u7528\u5230\u5168\u5C40",
     "capabilities.quick.noOverride": "\u65E0\u8986\u76D6",
     "capabilities.quick.inheritSessionOnly": "\u64A4\u9500\u4E34\u65F6\u8986\u76D6\u53EA\u9002\u7528\u4E8E\u672C\u4F1A\u8BDD\u3002\u8BF7\u7528\u201C\u5E94\u7528\u5230\u4F1A\u8BDD\u201D\u63D0\u4EA4\u3002",
     "capabilities.quick.discard": "\u653E\u5F03\u66F4\u6539",
@@ -39829,6 +39840,8 @@ var CHROME_COPY = Object.freeze({
     "capabilities.quick.pendingServerClose": "MCP \u670D\u52A1 {server} \u6709\u5F85\u751F\u6548\u7684\u5173\u95ED\u9009\u62E9\uFF1B\u5B50\u9879\u9009\u62E9\u4ECD\u4FDD\u7559\u3002",
     "capabilities.quick.enabled": "\u5DF2\u542F\u7528",
     "capabilities.quick.pending": "\u5F85\u751F\u6548",
+    "capabilities.quick.sessionPaused": "\u672C\u4F1A\u8BDD\u7684\u80FD\u529B\u4E0E\u4E0A\u4E0B\u6587\u5DF2\u6682\u505C\uFF1B\u6E05\u5355\u663E\u793A\u5BBF\u4E3B\u9ED8\u8BA4\uFF0C\u9700\u5728\u8BBE\u7F6E\u4E2D\u91CD\u65B0\u5F00\u542F\u5E76\u5237\u65B0\u540E\u624D\u4F1A\u5E94\u7528\u65B0\u7684\u66F4\u6539\u3002",
+    "capabilities.quick.sessionManagementOff": "\u672C\u4F1A\u8BDD\u672A\u542F\u7528\u80FD\u529B\u7BA1\u7406\uFF1B\u80FD\u529B\u6CBF\u7528\u5BBF\u4E3B\u914D\u7F6E\u3002",
     "capabilities.quick.scope": "\u751F\u6548\u8303\u56F4",
     "capabilities.quick.session": "\u4EC5\u672C\u4F1A\u8BDD",
     "capabilities.quick.global": "\u5168\u5C40\u4FDD\u5B58\u5E76\u66F4\u65B0\u672C\u4F1A\u8BDD",
@@ -39965,6 +39978,7 @@ var CHROME_COPY = Object.freeze({
     "capabilities.type.tool": "Tools",
     "capabilities.type.skill": "Skills",
     "capabilities.type.resource": "MCP",
+    "capabilities.type.server": "MCP \u6765\u6E90",
     "capabilities.type.other": "\u5176\u5B83 / \u5F85\u786E\u8BA4",
     "capabilities.sort": "\u6392\u5E8F",
     "capabilities.sort.name": "\u540D\u79F0",
@@ -40413,7 +40427,7 @@ var CHROME_COPY = Object.freeze({
     "capabilities.quick.catalogError": "Could not read capabilities: {error}",
     "capabilities.quick.changes": "{count} pending changes",
     "capabilities.quick.applySession": "Apply to session",
-    "capabilities.quick.applyGlobal": "Save and apply",
+    "capabilities.quick.applyGlobal": "Apply to global",
     "capabilities.quick.noOverride": "None",
     "capabilities.quick.inheritSessionOnly": "Clearing a temporary override applies only to this session. Use Apply to session.",
     "capabilities.quick.discard": "Discard changes",
@@ -40431,6 +40445,8 @@ var CHROME_COPY = Object.freeze({
     "capabilities.quick.pendingServerClose": "MCP server {server} has a close choice awaiting effect; child choices are retained.",
     "capabilities.quick.enabled": "Enabled",
     "capabilities.quick.pending": "Pending",
+    "capabilities.quick.sessionPaused": "Capabilities and context are paused for this session; the list shows Host defaults. Re-enable them in settings and refresh before changes can apply.",
+    "capabilities.quick.sessionManagementOff": "Capability management is off for this session; capabilities stay with the Host.",
     "capabilities.quick.scope": "Apply to",
     "capabilities.quick.session": "This session only",
     "capabilities.quick.global": "Save globally and update this session",
@@ -40567,6 +40583,7 @@ var CHROME_COPY = Object.freeze({
     "capabilities.type.tool": "Tools",
     "capabilities.type.skill": "Skills",
     "capabilities.type.resource": "MCP",
+    "capabilities.type.server": "MCP source",
     "capabilities.type.other": "Other / Unconfirmed",
     "capabilities.sort": "Sort by",
     "capabilities.sort.name": "Name",

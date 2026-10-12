@@ -160,6 +160,11 @@ export function isRuntimeContextSource(source) {
     'plugin:@deepseek-ai/dsh-system-prompt:snapshot',
     'plugin:@deepseek-ai/dsh-system-prompt',
     'plugin:ptc-plus:snapshot', 'plugin:ptc-plus:notice', 'plugin:ptc-plus:catalog',
+    'plugin:ptc-plus:capability-plan', 'plugin:ptc-plus:capability-navigation',
+    'plugin:ptc-plus:capability-descriptions', 'plugin:ptc-plus:capability-contracts',
+    'plugin:ptc-plus:runtime-availability',
+    // Official Host-owned context producers a delegated session produces.
+    'agent-message:relay', 'subagent-settled:notice', 'repeat-tool-reminder:notice',
   ].includes(source)
 }
 
@@ -946,11 +951,21 @@ export function auditRequestHeaders(events, policy = {}) {
   }
 }
 
-/** System text is a message-surface fact on current hosts, not a header field. */
-export function auditSystemPrompts(events) {
+/**
+ * System text is a message-surface fact on current hosts, not a header field.
+ * A scenario declares the expected number of system-text changes (default
+ * zero); a change is only lawful when the native capability view or the model
+ * route changed with it.
+ */
+export function auditSystemPrompts(events, policy = {}) {
+  const allowedChanges = policy?.allowedChanges ?? 0
+  if (!Number.isSafeInteger(allowedChanges) || allowedChanges < 0) {
+    throw new TypeError('system prompt policy allowedChanges must be a non-negative safe integer')
+  }
   if (!Array.isArray(events)) throw new TypeError('system prompt events must be an array')
   const failures = []
   const samples = []
+  const changes = []
   const sessions = events.filter(event => event?.type === 'session')
   const formatVersion = sessions[0]?.version
   if (sessions.length !== 1 || !Number.isSafeInteger(formatVersion)
@@ -995,7 +1010,7 @@ export function auditSystemPrompts(events) {
         const system = texts[0]
         const difference = previous === undefined ? undefined
           : firstJsonDifference(previous, texts, 'systemMessages', true)
-        if (difference !== undefined) failures.push(`system prompt changed ${difference} at request boundary seq ${event.seq}`)
+        if (difference !== undefined) changes.push({ seq: event.seq, difference })
         samples.push({ seq: event.seq, source, messages, system })
         previous = texts
       } catch (error) {
@@ -1009,7 +1024,14 @@ export function auditSystemPrompts(events) {
     bySeq.set(event.seq, event)
   }
   if (samples.length === 0) failures.push('session log contains no model-visible system prompt evidence')
-  return { source, formatVersion, system: samples[0]?.system ?? '', samples, failures: [...new Set(failures)] }
+  if (allowedChanges === 0) {
+    for (const change of changes) {
+      failures.push(`system prompt changed ${change.difference} at request boundary seq ${change.seq}`)
+    }
+  } else if (changes.length !== allowedChanges) {
+    failures.push(`system prompt changes are ${changes.length}; scenario policy requires ${allowedChanges}`)
+  }
+  return { source, formatVersion, system: samples[0]?.system ?? '', samples, changes, failures: [...new Set(failures)] }
 }
 
 /** Count logical model loop steps without inferring physical adapter attempts. */
@@ -1160,22 +1182,22 @@ function allowedSections(config) {
   return allowed
 }
 
-function requiredTransitions(config, allowed) {
-  const entries = config?.requiredTransitions ?? []
-  if (!Array.isArray(entries)) throw new TypeError('runtimeContexts.requiredTransitions must be an array')
+function transitionEntries(config, allowed, field, label) {
+  const entries = config?.[field] ?? []
+  if (!Array.isArray(entries)) throw new TypeError(`runtimeContexts.${field} must be an array`)
   const seen = new Set()
   return entries.map((entry) => {
     if (entry === null || typeof entry !== 'object' || Array.isArray(entry)
       || typeof entry.name !== 'string' || !['append', 'update', 'clear'].includes(entry.type)) {
-      throw new TypeError('runtimeContexts.requiredTransitions entries require name and append, update, or clear type')
+      throw new TypeError(`runtimeContexts.${field} entries require name and append, update, or clear type`)
     }
     const extra = Object.keys(entry).filter(key => !['name', 'type'].includes(key))
-    if (extra.length > 0) throw new TypeError(`runtimeContexts.requiredTransitions entry contains unknown field ${extra[0]}`)
+    if (extra.length > 0) throw new TypeError(`runtimeContexts.${field} entry contains unknown field ${extra[0]}`)
     if (!allowed.has(entry.name)) {
-      throw new TypeError(`runtimeContexts.requiredTransitions names unallowed context ${entry.name}`)
+      throw new TypeError(`runtimeContexts.${field} names unallowed context ${entry.name}`)
     }
     const key = `${entry.name}\0${entry.type}`
-    if (seen.has(key)) throw new TypeError(`duplicate required runtime context transition ${entry.name}/${entry.type}`)
+    if (seen.has(key)) throw new TypeError(`duplicate ${label} runtime context transition ${entry.name}/${entry.type}`)
     seen.add(key)
     return { name: entry.name, type: entry.type }
   })
@@ -1185,15 +1207,16 @@ export function validateRuntimeContextConfig(config) {
   if (config === null || typeof config !== 'object' || Array.isArray(config)) {
     throw new TypeError('runtimeContexts must be an object')
   }
-  const extra = Object.keys(config).filter(key => !['allowed', 'requiredTransitions', 'maxSnapshotChars'].includes(key))
+  const extra = Object.keys(config).filter(key => !['allowed', 'requiredTransitions', 'forbiddenTransitions', 'maxSnapshotChars'].includes(key))
   if (extra.length > 0) throw new TypeError(`runtimeContexts contains unknown field ${extra[0]}`)
   const allowed = allowedSections(config)
-  const required = requiredTransitions(config, allowed)
+  const required = transitionEntries(config, allowed, 'requiredTransitions', 'required')
+  const forbidden = transitionEntries(config, allowed, 'forbiddenTransitions', 'forbidden')
   const maxSnapshotChars = config.maxSnapshotChars ?? 16_384
   if (!Number.isSafeInteger(maxSnapshotChars) || maxSnapshotChars < 1) {
     throw new TypeError('runtimeContexts.maxSnapshotChars must be a positive safe integer')
   }
-  return { allowed, required, maxSnapshotChars }
+  return { allowed, required, forbidden, maxSnapshotChars }
 }
 
 function snapshotSections(event, failures, allowed, maxSnapshotChars) {
@@ -1235,7 +1258,7 @@ function snapshotSections(event, failures, allowed, maxSnapshotChars) {
 /** Audit independently owned state and notices alongside historical aggregates. */
 export function auditRuntimeContexts(events, config = {}) {
   const failures = []
-  const { allowed, required, maxSnapshotChars } = validateRuntimeContextConfig(config)
+  const { allowed, required, forbidden, maxSnapshotChars } = validateRuntimeContextConfig(config)
   const snapshots = []
   const requests = []
   const sources = []
@@ -1311,11 +1334,14 @@ export function auditRuntimeContexts(events, config = {}) {
     if (event.type === 'user/message' && source?.kind !== 'user') sources.push(sourceLabel(source))
     if (isSnapshot) {
       const rawSections = aggregateClear ? [] : ptc?.form === 'notice' ? [{ name: ptc.name, text: ptc.text }]
+        : ptc?.form === 'runtime-availability' ? [{ name: 'tools:ptc-plus-runtime-availability',
+          text: collectModelText(event.data?.content).join('\n') }]
         : ptc?.sections ?? event.data.source.sections
       const sections = snapshotSections({ ...event, data: { source: { sections: rawSections } } }, failures, allowed, maxSnapshotChars)
       const producer = aggregate ? 'aggregate' : capability ? `ptc-plus/${capability.form}`
         + (['capability-descriptions', 'capability-contracts'].includes(capability.form) ? `/${event.seq}` : '')
-        : ptc?.form === 'catalog' ? 'ptc-plus/catalog' : 'ptc-plus'
+        : ptc?.form === 'catalog' ? 'ptc-plus/catalog'
+          : ptc?.form === 'runtime-availability' ? 'ptc-plus/runtime-availability' : 'ptc-plus'
       const signature = JSON.stringify(sections.map(({ name, text }) => [name, text]))
       const entries = capability?.form === 'capability-descriptions' ? event.data.source.entries : undefined
       if (entries) {
@@ -1402,6 +1428,11 @@ export function auditRuntimeContexts(events, config = {}) {
   for (const expected of required) {
     if (!observedTransitions.some(item => item.name === expected.name && item.type === expected.type)) {
       failures.push(`runtime context ${expected.name} never performed required ${expected.type}`)
+    }
+  }
+  for (const rejected of forbidden) {
+    if (observedTransitions.some(item => item.name === rejected.name && item.type === rejected.type)) {
+      failures.push(`runtime context ${rejected.name} performed forbidden ${rejected.type}`)
     }
   }
   return {

@@ -19,7 +19,7 @@
 
 `internal/capability-policy.js` 统一校验和解析可复用规则。`defaults` 必须同时包含 `availability: enabled|closed` 和 `disclosure: host|full|on-demand|adaptive`；`categories`、`mcpServers`、`items` 可分别覆盖其中一个维度。默认 → 类别 → 已证明 MCP 来源 → 单项按维度覆盖；MCP 来源关闭是外层移除，优先于子项启用，但不删除子项偏好。每个派生条目保留两项原意、各自来源和兼容的有效 `selection`，关闭时仍保留 disclosure。未解析的非空单项 ID 保留为可撤销输入，只有真实受管库存使规则生效。管理关闭时所有实际能力沿用 host；未选用的关闭规则不参与库存过滤或归属诊断。
 
-`host` 保留已有 PTC 提供方说明路径；纯启停不会让其余能力变成按需。共享说明只在没有沿用宿主的消费者时移除，SDK 仅保留 host 披露的可用工具；全体仍为 host 时保留原 SDK。Skill 全部沿用时保留宿主目录；混合披露时完整保留 host Skill 的目录说明并隐藏按需说明，不加载正文。按需项始终可获取完整契约。v3 另外区分 Skill 原生准入与有效调用路径：关闭模型 loader 不关闭独立用户入口；无可用入口时派生不可用而保留偏好，管理关闭也不将缺失入口计入实际供给或统计资格；未选用的关闭偏好不参与该事实。MCP 资源契约只列实际可用且未关闭的操作。全部功能未选用或只使用预览时不强制读取能力库存。
+`host` 保留已有 PTC 提供方说明路径；纯启停不会让其余能力变成按需。共享说明只在没有沿用宿主的消费者时移除，SDK 仅保留 host 披露的可用工具与始终可调用的编辑传输成员（`edit_run_code` 不属于管理域，每次渲染都保留其宿主签名）；全体仍为 host 时保留原 SDK。Skill 全部沿用时保留宿主目录；混合披露时完整保留 host Skill 的目录说明并隐藏按需说明，不加载正文。按需项始终可获取完整契约。v3 另外区分 Skill 原生准入与有效调用路径：关闭模型 loader 不关闭独立用户入口；无可用入口时派生不可用而保留偏好，管理关闭也不将缺失入口计入实际供给或统计资格；未选用的关闭偏好不参与该事实。MCP 资源契约只列实际可用且未关闭的操作。全部功能未选用或只使用预览时不强制读取能力库存。
 
 只有 adaptive 项消费 `allocation.baseline`、`allocation.statistics` 和 `allocation.budget`；关闭预算约束时允许全部选中的分配候选，仍计量正文与超额。显式 full 不因任一预算选择被降级或截断。统计采集由 `capabilityStatistics.enabled` 单独拥有，不取决于管理或分配是否选用；管理关闭时从公共 live inventory 取得真实资格，记录 host 披露；Host 增删沿真实 live inventory 更新统计资格，不变更冻结配置。停止采集后仍可选用留存有效证据。只读观察既不采集也不需要启用统计分配。
 
@@ -66,7 +66,7 @@ capabilityCoverage(state, { userId, workspaceId, id, revision })
 
 宿主 prompt section 的空字符串或纯空白说明不形成契约依赖，但其 section 身份仍可证明 MCP server 归属。工具签名和资源契约保持可发现；非空说明原样保留并去重，非字符串等无效依赖仍由方案校验拒绝。
 
-工具完整契约与程序检索元数据来自公共 `ToolRuntime.schemas(scope)` 与 `ToolRuntime.get(name, scope).output.schema` 的准确 JSON 快照，包含参数及返回值 schema；输出 schema 也参与修订身份和恢复比较。新 cell 的检索与 inspect 从同一份当前 SDK 快照派生结构化 schema、签名、依赖及修订，不将冻结方案中的旧签名覆盖到新返回值类型上；冻结的是启用与披露选择。每次准备与接受步骤重新读取 live owner 契约；同名工具的参数、输出或说明依赖变化，以及 Skill 调用资格变化或能力移除，以 `capability-contracts` 的 `ptc-capability-contracts/v1` 来源消息更新当前效力。消息记录原方案 digest、当前修订向量、变化项和当前完整说明超额，digest 与精确正文共同校验；不修改原方案。仍选完整的项提供完整新契约和去重依赖，按需项要求检索当前契约，移除项明确撤销。投递经 accepted step，拒绝与取消不提交；未变视图不重复追加，恢复按正式可见消息协调。实际可用和使用统计采用当时的契约修订，已准入调用保留捕获时的观察身份。顶层模型工具 schema、准入与调用规范化继续使用独立的 `ToolRuntime.schemas(scope)`，不向模型工具定义追加 SDK 输出字段。
+工具完整契约与程序检索元数据来自公共 `ToolRuntime.schemas(scope)` 与 `ToolRuntime.get(name, scope).output.schema` 的准确 JSON 快照，包含参数及返回值 schema；输出 schema 也参与修订身份和恢复比较。新 cell 的检索与 inspect 从同一份当前 SDK 快照派生结构化 schema、签名、依赖及修订，不将冻结方案中的旧签名覆盖到新返回值类型上；冻结的是启用与披露选择。每次准备与接受步骤重新读取 live owner 契约；同名工具的参数、输出或说明依赖变化，以及 Skill 调用资格变化或能力移除，以 `capability-contracts` 的 `ptc-capability-contracts/v1` 来源消息更新当前效力。消息记录原方案 digest、当前修订向量、变化项和当前完整说明超额，digest 与精确正文共同校验；不修改原方案。仍选完整的项提供完整新契约和去重依赖，按需项要求检索当前契约，移除项明确撤销。投递经 accepted step，拒绝与取消不提交；未变视图不重复追加，恢复按正式可见消息协调。实际可用和使用统计采用当时的契约修订，已准入调用保留捕获时的观察身份。顶层模型工具 schema、准入与调用规范化继续使用独立的 `ToolRuntime.schemas(scope)`，不向模型工具定义追加 SDK 输出字段。冻结方案只为冻结时已捕获的身份保存选择；宿主随后 live 提供且未被显式关闭的新成员保持宿主声明（工具保留 SDK 命名成员与类型化签名，Skill 保持可加载），刷新才把它折入方案，刷新边界不把成员身份从声明、检索或分派面移除。
 
 Skill 目录的 `snapshot.complete` 由公共 registry 拥有，表示本次 provider 发现与 revision 稳定性已证明。暂时不完整不证明某个 Skill 已撤下：已有冻结环境保留最近完整观察或已校验、已接受的本会话 `capability-contracts` 更新所证明的 Skill 视图，不发布未完整证明的新 Skill，也不把这轮 Skill 观察计为新的统计资格。工具与 MCP 继续消费当前 live owner。冷恢复沿同一已接受契约来源保留确证撤下结果，不能由初始快照复活旧 Skill。新环境和显式刷新仍要求完整目录，失败保留旧环境；取消和真实 Host 错误保持原语义。session Skill projection 仅在实际输出变化时调用 registration-scoped `invalidate()`，不因每次父子会话准备使全局 revision 无意义变化。
 

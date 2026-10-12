@@ -59,6 +59,25 @@ const defaultScenarioFile = join(repoRoot, 'scripts', 'expensive-acceptance-scen
 const neutralPersona = NEUTRAL_PERSONA
 export const MAX_MODEL_RESULT_CHARS = 8_192
 
+// The managed variants freeze one reproducible capability policy without a
+// local statistics store: adaptive allocation over the common baseline, one
+// closed member and one explicitly Host-disclosed member.
+export const MANAGED_PTC_PLUS = Object.freeze({
+  capabilityManagementEnabled: true,
+  capabilityContextEnabled: true,
+  capabilityPolicy: JSON.stringify({
+    schema: 'ptc-capability-policy/v1',
+    defaults: { availability: 'enabled', disclosure: 'adaptive' },
+    categories: {},
+    mcpServers: {},
+    items: { 'tools.write': { availability: 'closed' }, 'tools.pwsh': { disclosure: 'host' } },
+    allocation: { baseline: true, statistics: false, budget: true },
+  }),
+  capabilityStatistics: JSON.stringify({ enabled: false, windowSize: 100, minimumSamples: 10, fullThreshold: 0.5 }),
+  capabilityBudgetBytes: 16_384,
+  capabilityDirectoryBytes: 2_048,
+})
+
 export function parseAcceptanceConfig(text, label = 'DSH config dump') {
   return parseConfigDump(text, label)
 }
@@ -66,10 +85,28 @@ export function parseAcceptanceConfig(text, label = 'DSH config dump') {
 export function validateAcceptanceConfig(rows, runtime, expectations = {}) {
   validateNeutralConfig(rows, 'acceptance config', 'enabled')
   validateHeadlessRuntimeConfig(rows, 'acceptance config', runtime)
+  const ptcPlus = rows.find(row => row?.id === 'ptc-plus')
   if (expectations.looseTopLevelFunctionClassRedeclarations === true) {
-    const ptcPlus = rows.find(row => row?.id === 'ptc-plus')
     if (ptcPlus?.config?.looseTopLevelFunctionClassRedeclarations !== true) {
       throw new Error('acceptance config does not enable looseTopLevelFunctionClassRedeclarations')
+    }
+  }
+  if (expectations.managed === true) {
+    const policy = typeof ptcPlus?.config?.capabilityPolicy === 'string'
+      ? JSON.parse(ptcPlus.config.capabilityPolicy)
+      : undefined
+    if (ptcPlus?.config?.capabilityManagementEnabled !== true
+      || ptcPlus?.config?.capabilityContextEnabled !== true
+      || policy?.schema !== 'ptc-capability-policy/v1'
+      || policy?.defaults?.disclosure !== 'adaptive'
+      || policy?.items?.['tools.write']?.availability !== 'closed'
+      || policy?.items?.['tools.pwsh']?.disclosure !== 'host') {
+      throw new Error('acceptance config does not carry the managed capability fixture')
+    }
+  }
+  for (const id of expectations.disabledModules ?? []) {
+    if (rows.find(row => row?.id === id)?.disabled !== true) {
+      throw new Error(`acceptance config does not disable module ${id}`)
     }
   }
   return true
@@ -135,8 +172,51 @@ function assertScenarioDescriptor(value, ids) {
   if (typeof value.title !== 'string' || value.title.trim() === '') throw new Error(`${value.id}: title is required`)
   if (typeof value.task !== 'string' || value.task.trim() === '') throw new Error(`${value.id}: task is required`)
   if (typeof value.default !== 'boolean') throw new Error(`${value.id}: default must be a boolean`)
+  const variantName = name => typeof name === 'string' && /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(name)
+  if (value.variant !== undefined && !variantName(value.variant)) {
+    throw new Error(`${value.id}: variant must be a kebab-case name`)
+  }
+  if (value.phases !== undefined) {
+    if (!Array.isArray(value.phases) || value.phases.length === 0) throw new Error(`${value.id}: phases must be a non-empty array`)
+    for (const [index, phase] of value.phases.entries()) {
+      if (phase === null || typeof phase !== 'object' || Array.isArray(phase)
+        || typeof phase.task !== 'string' || phase.task.trim() === ''
+        || Object.keys(phase).some(key => !['task', 'variant'].includes(key))
+        || (phase.variant !== undefined && !variantName(phase.variant))) {
+        throw new Error(`${value.id}: phase ${index + 1} requires a task and an optional variant name`)
+      }
+    }
+  }
   if (value.expect === null || typeof value.expect !== 'object' || Array.isArray(value.expect)) {
     throw new Error(`${value.id}: expect must be an object`)
+  }
+  for (const field of ['systemIncludes', 'systemExcludes', 'forbiddenDiagnosticCodes']) {
+    const fragments = value.expect[field]
+    if (fragments !== undefined
+      && (!Array.isArray(fragments) || fragments.length === 0
+        || fragments.some(fragment => typeof fragment !== 'string' || fragment === ''))) {
+      throw new Error(`${value.id}.expect.${field} must be a non-empty array of literals`)
+    }
+  }
+  if (value.expect.systemChanges !== undefined
+    && (!Number.isSafeInteger(value.expect.systemChanges) || value.expect.systemChanges < 0)) {
+    throw new Error(`${value.id}.expect.systemChanges must be a non-negative safe integer`)
+  }
+  if (value.expect.childSession !== undefined) {
+    const child = value.expect.childSession
+    if (child === null || typeof child !== 'object' || Array.isArray(child)) {
+      throw new Error(`${value.id}.expect.childSession must be an object`)
+    }
+    if (child.runtimeContexts !== undefined) validateRuntimeContextConfig(child.runtimeContexts)
+    if (child.machineBudget !== undefined) validateMachineBudget(child.machineBudget, `${value.id}.expect.childSession.machineBudget`)
+    for (const field of ['systemIncludes', 'systemExcludes', 'forbiddenDiagnosticCodes']) {
+      const fragments = child[field]
+      if (fragments !== undefined
+        && (!Array.isArray(fragments) || fragments.length === 0
+          || fragments.some(fragment => typeof fragment !== 'string' || fragment === ''))) {
+        throw new Error(`${value.id}.expect.childSession.${field} must be a non-empty array of literals`)
+      }
+    }
   }
   validateMachineBudget(value.expect.machineBudget, `${value.id}.expect.machineBudget`)
   validateRequestHeaderPolicy(value.expect.headerPolicy)
@@ -224,6 +304,7 @@ async function prepareScenarios(scenarioFile, artifactRoot, selectedIds) {
       const content = renderTemplate(descriptor.fixture.content, variables)
       await writeFile(fixturePath, content)
       variables.fixturePath = windowsPath(fixturePath)
+      variables.fixturePathSource = JSON.stringify(variables.fixturePath)
       variables.fixtureSha256 = createHash('sha256').update(content).digest('hex')
     }
     const expect = renderTree(descriptor.expect, variables)
@@ -233,7 +314,12 @@ async function prepareScenarios(scenarioFile, artifactRoot, selectedIds) {
     return {
       ...descriptor,
       root: scenarioRoot,
+      variant: descriptor.variant ?? 'acceptance',
       task: renderTemplate(descriptor.task, variables),
+      phases: (descriptor.phases ?? []).map(phase => ({
+        task: renderTemplate(phase.task, variables),
+        variant: phase.variant ?? descriptor.variant ?? 'acceptance',
+      })),
       expect,
     }
   }))
@@ -253,8 +339,9 @@ export function inspectLog(events, scenario, expectedRuntime) {
     failures.push(...bindingWorkflow.failures)
   }
   const allowedDiagnosticCodes = new Set(expect.allowedDiagnosticCodes ?? [])
+  const forbiddenDiagnosticCodes = new Set(expect.forbiddenDiagnosticCodes ?? [])
   const headerAudit = auditRequestHeaders(events, expect.headerPolicy)
-  const systemAudit = auditSystemPrompts(events)
+  const systemAudit = auditSystemPrompts(events, { allowedChanges: expect.systemChanges ?? 0 })
   const modelRequestAudit = auditModelRequests(events)
   const contextAudit = auditRuntimeContexts(events, expect.runtimeContexts)
   const facts = collectTrajectoryFacts(events, { compareUsageChunks: false })
@@ -301,6 +388,10 @@ export function inspectLog(events, scenario, expectedRuntime) {
     for (const diagnostic of result.diagnostics) {
       const rendered = diagnostic.severity + '[' + diagnostic.code + ']: ' + diagnostic.message
       warnings.push(rendered)
+      if (forbiddenDiagnosticCodes.has(diagnostic.code)) {
+        failures.push('forbidden PTC diagnostic: ' + rendered)
+        continue
+      }
       if (diagnostic.severity === 'error' && !allowedDiagnosticCodes.has(diagnostic.code)) {
         failures.push('blocking PTC diagnostic: ' + rendered)
       }
@@ -318,10 +409,14 @@ export function inspectLog(events, scenario, expectedRuntime) {
     }
   }
   const system = systemAudit.system
-  const expectedPersona = neutralPersona
-    .replace('{{model}}', expectedRuntime.model)
-    .replace('{{cwd}}', expectedRuntime.cwd)
+  const expectedPersona = neutralPersona.replace('{{model}}', expectedRuntime.model)
   if (!system.startsWith(expectedPersona)) failures.push('system prompt does not start with the neutral acceptance persona')
+  for (const fragment of expect.systemIncludes ?? []) {
+    if (!system.includes(fragment)) failures.push('system prompt omits required literal ' + JSON.stringify(fragment))
+  }
+  for (const fragment of expect.systemExcludes ?? []) {
+    if (system.includes(fragment)) failures.push('system prompt contains forbidden literal ' + JSON.stringify(fragment))
+  }
   if (contextSources.length === 0 || contextSources.some(source => !isRuntimeContextSource(source))) {
     failures.push('unexpected initial context sources: ' + (contextSources.join(', ') || '(none)'))
   }
@@ -476,6 +571,7 @@ export function inspectLog(events, scenario, expectedRuntime) {
     prompt: {
       systemEvidence: systemAudit,
       chars: system.length,
+      systemChanges: (systemAudit.changes ?? []).map(change => change.seq),
       modelTools: modelTools.map(tool => tool?.name),
       hasReplSdk: /declare const repl:/.test(system),
       hasToolsSdk: /declare const tools:/.test(system),
@@ -545,13 +641,32 @@ async function runAcceptance(env, modelRuntime, host, overlayRoot) {
     scenarios: scenarios.map(scenario => ({
       id: scenario.id,
       title: scenario.title,
+      variant: scenario.variant,
       task: scenario.task,
+      phases: scenario.phases,
       expect: scenario.expect,
     })),
   }, null, 2) + '\n')
   const enableFunctionClassRedeclarations = scenarios.some(
     scenario => scenario.id === 'function-class-redeclaration-iteration',
   )
+  const variants = [
+    {
+      id: 'acceptance',
+      patchOptions: { looseTopLevelFunctionClassRedeclarations: enableFunctionClassRedeclarations },
+      expectations: { looseTopLevelFunctionClassRedeclarations: enableFunctionClassRedeclarations },
+    },
+    {
+      id: 'managed',
+      patchOptions: { ptcPlus: MANAGED_PTC_PLUS },
+      expectations: { managed: true },
+    },
+    {
+      id: 'managed-no-fs',
+      patchOptions: { ptcPlus: MANAGED_PTC_PLUS, disabledModules: ['tool-fs'] },
+      expectations: { managed: true, disabledModules: ['tool-fs'] },
+    },
+  ]
   const { overlays } = await prepareHeadlessConfigs({
     repoRoot,
     env,
@@ -559,18 +674,25 @@ async function runAcceptance(env, modelRuntime, host, overlayRoot) {
     host,
     artifactRoot,
     overlayRoot,
-    variants: [{
-      id: 'acceptance',
-      patchOptions: { looseTopLevelFunctionClassRedeclarations: enableFunctionClassRedeclarations },
-    }],
-    validate: configs => validateAcceptanceConfig(configs.acceptance, runtime, {
-      looseTopLevelFunctionClassRedeclarations: enableFunctionClassRedeclarations,
-    }),
+    variants,
+    validate: configs => {
+      for (const variant of variants) {
+        validateAcceptanceConfig(configs[variant.id], runtime, variant.expectations)
+      }
+      return true
+    },
     label: 'acceptance',
     invoke: dshInvocation,
     resolveProvider: resolveHeadlessProvider,
     runProcess,
   })
+  for (const scenario of scenarios) {
+    for (const phase of [{ variant: scenario.variant }, ...scenario.phases]) {
+      if (!Object.hasOwn(overlays, phase.variant)) {
+        throw new Error(`acceptance scenario ${scenario.id} names unknown variant ${phase.variant}`)
+      }
+    }
+  }
   if (env.DSH_PTC_ACCEPTANCE_CONFIG_ONLY === '1') {
     console.log(`expensive acceptance config preflight passed; artifacts: ${relative(repoRoot, artifactRoot)}`)
     return
@@ -579,22 +701,40 @@ async function runAcceptance(env, modelRuntime, host, overlayRoot) {
 
   const sessionsRoot = host.sessionsRoot
   const executeScenario = async (scenario) => {
-    const { process: processResult, decoded } = await runHeadlessTask({
-      env,
-      runtime,
-      sessionsRoot,
-      task: scenario.task,
-      cwd: scenario.root,
-      overlay: overlays.acceptance,
-      invoke: dshInvocation,
-      runProcess,
-    })
-    await writeFile(join(scenario.root, 'dsh.stdout.log'), processResult.stdout)
-    await writeFile(join(scenario.root, 'dsh.stderr.log'), processResult.stderr)
     const scenarioCwd = windowsPath(scenario.root)
-    const matches = decoded.filter(item => item.events !== undefined
-      && item.events.some(event => event.type === 'session' && event.cwd === scenarioCwd)
-      && sourceUserPrompts(item.events).includes(scenario.task))
+    const phases = [{ task: scenario.task, variant: scenario.variant }, ...scenario.phases]
+    const processResults = []
+    let decoded = []
+    let sessionId
+    let phaseFailure
+    for (const [index, phase] of phases.entries()) {
+      const { process: processResult, decoded: runDecoded } = await runHeadlessTask({
+        env,
+        runtime,
+        sessionsRoot,
+        task: phase.task,
+        cwd: scenario.root,
+        overlay: overlays[phase.variant],
+        ...(sessionId === undefined ? {} : { sessionId }),
+        invoke: dshInvocation,
+        runProcess,
+      })
+      await writeFile(join(scenario.root, `dsh.phase-${index + 1}.stdout.log`), processResult.stdout)
+      await writeFile(join(scenario.root, `dsh.phase-${index + 1}.stderr.log`), processResult.stderr)
+      processResults.push(processResult)
+      decoded = runDecoded
+      if (sessionId === undefined) {
+        const created = runDecoded.filter(item => item.events !== undefined
+          && item.events.some(event => event.type === 'session' && event.cwd === scenarioCwd)
+          && sourceUserPrompts(item.events).includes(phase.task))
+        if (created.length !== 1) {
+          phaseFailure = `found ${created.length} matching session logs in phase 1; expected exactly one`
+          break
+        }
+        sessionId = created[0].events.find(event => event.type === 'session')?.id
+      }
+    }
+    const matches = sessionId === undefined ? [] : decoded.filter(item => item.events?.some(event => event.type === 'session' && event.id === sessionId))
     let report
     let logFile
     if (matches.length !== 1) {
@@ -612,7 +752,7 @@ async function runAcceptance(env, modelRuntime, host, overlayRoot) {
         },
         eventCount: 0, toolCallCount: 0, toolResultCount: 0,
         usage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 }, usageComplete: false, timeline: [], finalAnswerChars: 0,
-        diagnostics: [], failures: [`found ${matches.length} matching session logs; expected exactly one`],
+        diagnostics: [], failures: [phaseFailure ?? `found ${matches.length} matching session logs; expected exactly one`],
       }
     } else {
       const match = matches[0]
@@ -624,14 +764,42 @@ async function runAcceptance(env, modelRuntime, host, overlayRoot) {
         logicalVersion: match.events[0].version,
         inheritedEventCount: match.inheritedEventCount,
       }
+      if (scenario.expect.childSession !== undefined) {
+        const sessionEvent = match.events.find(event => event.type === 'session')
+        const children = decoded.filter(item => item.events?.some(event => event.type === 'session' && event.parentSession === sessionEvent.id))
+        if (children.length !== 1) {
+          report.failures.push(`found ${children.length} delegated session logs; expected exactly one`)
+        } else {
+          const childScenario = {
+            id: `${scenario.id}/child`,
+            title: `${scenario.title} (delegated)`,
+            task: '(delegated task)',
+            expect: scenario.expect.childSession,
+          }
+          const child = inspectLog(children[0].events, childScenario, { ...runtime, cwd: scenarioCwd })
+          await writeFile(join(scenario.root, 'child-session.jsonl'), children[0].text)
+          await writeFile(join(scenario.root, 'child-analysis.json'), JSON.stringify(child, null, 2) + '\n')
+          report.failures.push(...child.failures.map(failure => `delegated session: ${failure}`))
+          report.childSession = {
+            id: child.session?.id,
+            toolCallCount: child.toolCallCount,
+            usage: child.usage,
+            diagnostics: child.diagnostics,
+            failures: child.failures,
+          }
+        }
+      }
     }
-    if (processResult.code !== 0) report.failures.push(`DSH process exited with ${processResult.code}`)
-    if (processResult.timedOut) report.failures.push(`DSH process exceeded ${runtime.wallMs}ms wall timeout`)
-    if (processResult.infrastructureError !== undefined) report.failures.push(`DSH process failed to start: ${processResult.infrastructureError}`)
+    for (const [index, processResult] of processResults.entries()) {
+      const phase = phases.length === 1 ? '' : ` phase ${index + 1}`
+      if (processResult.code !== 0) report.failures.push(`DSH process${phase} exited with ${processResult.code}`)
+      if (processResult.timedOut) report.failures.push(`DSH process${phase} exceeded ${runtime.wallMs}ms wall timeout`)
+      if (processResult.infrastructureError !== undefined) report.failures.push(`DSH process${phase} failed to start: ${processResult.infrastructureError}`)
+    }
     report.failures = [...new Set(report.failures)]
     await writeFile(join(scenario.root, 'analysis.json'), JSON.stringify({ ...report, logFile }, null, 2) + '\n')
     await writeFile(join(scenario.root, 'analysis.md'), scenarioMarkdown(report))
-    return { report, processCode: processResult.code }
+    return { report, processCode: processResults.at(-1)?.code ?? 1 }
   }
   const scenarioResults = await runCanaryThenConcurrent(
     scenarios,

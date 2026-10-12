@@ -96,6 +96,15 @@ test('provider availability withdraws only plugin declarations at an accepted st
   assert.equal(projectRuntimeAvailability([user('task only')], false), undefined)
 })
 
+test('historical availability wording stays readable while new messages use the current text', () => {
+  const legacy = createUserMessage({ source: { kind: 'plugin:ptc-plus', form: 'runtime-availability', state: 'active' },
+    content: [{ type: 'text', text: 'PTC Plus is the current continuous-computation provider. Follow its current tool schemas and newly supplied capability plan; earlier withdrawals do not restore old computation state.' }] })
+  assert.equal(readRuntimeAvailability(legacy), 'active')
+  const current = runtimeAvailabilityMessage('active')
+  assert.equal(readRuntimeAvailability(current), 'active')
+  assert.doesNotMatch(current.content[0].text, /newly supplied/)
+})
+
 test('provider handback persists live and unloaded sessions without creating an agent or waking a model', async t => {
   const ctx = new Context()
   new SessionStore(ctx)

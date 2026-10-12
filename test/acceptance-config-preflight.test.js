@@ -69,7 +69,10 @@ test('acceptance config-only uses a shared private overlay and cleans it on succ
     calls = 0
     if (failPreflight) await assert.rejects(main(env), /acceptance config preflight failed/)
     else await main(env)
-    assert.equal(calls, 3)
+    // One install, one base dump and one resolved dump per overlay variant
+    // (acceptance, managed, managed-no-fs); a failing preflight aborts at the
+    // first variant dump.
+    assert.equal(calls, failPreflight ? 3 : 5)
     await assert.rejects(fs.stat(dirname(overlay)), { code: 'ENOENT' })
   }
   assert.equal(artifactRoots.size, 2)

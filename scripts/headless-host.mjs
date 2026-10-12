@@ -10,7 +10,10 @@ import { npmCliCommand } from './npm-cli.mjs'
 import { RUNTIME_PROBE_PREFIX } from './repl-preflight.mjs'
 import { hostPersonaPatch, hostProviderConfig, hostToolRuntime, ptcToolsMode, readHostPersona } from './dsh-host-contract.mjs'
 
-export const NEUTRAL_PERSONA = 'You are a coding agent powered by the {{model}} model. Your working directory is {{cwd}}.'
+// The persona uses only variables every supported Host release registers.
+// The working directory belongs to the Host deployment persona (removed on
+// newer releases); the fixture must resolve on rc and alpha hosts alike.
+export const NEUTRAL_PERSONA = 'You are a coding agent powered by the {{model}} model.'
 export const HEADLESS_PREREQUISITE_CODE = 'PTC-EVAL-PREREQ'
 export const HEADLESS_CONFIG_CODE = 'PTC-EVAL-CONFIG'
 export const HEADLESS_TOOLS_MODE = 'ptc'
@@ -549,6 +552,17 @@ export function evaluationToolResultOverlay(directory, modulePath = fileURLToPat
 export function headlessConfigPatch(baseRows, runtime, options = {}) {
   const policy = headlessRuntimePolicy(runtime)
   const prompt = configRow(baseRows, 'system-prompt', 'base DSH config').config
+  const ptcPlusConfig = {
+    ...(options.looseTopLevelFunctionClassRedeclarations === true
+      ? { looseTopLevelFunctionClassRedeclarations: true }
+      : {}),
+    ...(options.ptcPlus ?? {}),
+  }
+  const disabledModules = options.disabledModules ?? []
+  if (!Array.isArray(disabledModules)
+    || disabledModules.some(id => typeof id !== 'string' || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(id))) {
+    throw new TypeError('headless patch disabledModules must be module id strings')
+  }
   return [
     '- id: settings',
     '  disabled: true',
@@ -589,14 +603,13 @@ export function headlessConfigPatch(baseRows, runtime, options = {}) {
     '    providers:',
     `      ${JSON.stringify(runtime.provider)}:`,
     ...stringify(runtime.providerConfig ?? { apiKeyEnv: runtime.apiKeyEnv }).trimEnd().split('\n').map(line => `        ${line}`),
-    ...(options.looseTopLevelFunctionClassRedeclarations === true
-      ? [
-        '- id: ptc-plus',
-        '  config:',
-        '    looseTopLevelFunctionClassRedeclarations: true',
-      ]
-      : []),
+    ...(Object.keys(ptcPlusConfig).length === 0 ? [] : [
+      '- id: ptc-plus',
+      '  config:',
+      ...Object.entries(ptcPlusConfig).map(([key, value]) => `    ${key}: ${JSON.stringify(value)}`),
+    ]),
     ...(options.disablePtcPlus === true ? ['- id: ptc-plus', '  disabled: true'] : []),
+    ...disabledModules.flatMap(id => [`- id: ${id}`, '  disabled: true']),
     ...(runtime.canonicalResultDirectory === undefined ? []
       : stringify([{ insert: [evaluationToolResultOverlay(runtime.canonicalResultDirectory)] }]).trimEnd().split('\n')),
     '',
@@ -852,17 +865,19 @@ export async function runHeadlessTask({
   task,
   cwd,
   overlay,
+  sessionId,
   invoke = dshInvocation,
   runProcess: runProcessOption = runProcess,
   changedSessionLogs: changedSessionLogsOption = changedSessionLogs,
 }) {
   const before = await snapshotSessionLogs(sessionsRoot)
   const startedAt = Date.now()
+  const resume = sessionId === undefined ? '' : ` --session-id '${powershellPath(String(sessionId))}'`
   let process
   try {
     process = await runProcessOption('pwsh.exe', [
       '-NoLogo', '-NoProfile', '-Command',
-      `${invoke(runtime)} --profile '${powershellPath(runtime.profile)}' --patch '${powershellPath(windowsPath(overlay))}' '${powershellPath(task)}'`,
+      `${invoke(runtime)} --profile '${powershellPath(runtime.profile)}' --patch '${powershellPath(windowsPath(overlay))}'${resume} '${powershellPath(task)}'`,
     ], { cwd, env, timeoutMs: runtime.wallMs })
   } catch (error) {
     process = { code: 1, stdout: '', stderr: '', timedOut: false, durationMs: 0, infrastructureError: error.message }

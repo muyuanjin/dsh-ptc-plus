@@ -53,7 +53,7 @@ Default PTC mode starts every execution in a fresh environment: the previous cal
 | Provider rejects malformed tool JSON | The whole turn ends with a provider error | A repairable call tail continues; anything else becomes a schema rejection result so the model can continue |
 | Recover a misplaced top-level tool call | Undeclared top-level calls are rejected in PTC mode | Convert the call to `run_code` when the live tool definitions uniquely identify the target and validate its arguments |
 | Locate a code error | Return the native error and stack | Map the error to the cell source; suggest an edit when a missing trailing delimiter has one verified correction |
-| Work with the current directory | Execute in the directory resolved by the Host for the current call | New-cell file operations, imports, and default child processes use the current execution directory; existing modules and import closures retain their source base |
+| Work with the current directory | Execute in the directory resolved by the Host for the current call | Relative file operations and default child processes use the session's current directory when they run, and an in-cell `tools.working_directory({ cd })` applies to the rest of that cell; module imports keep the starting directory, and existing modules and import closures retain their source base |
 | Find tools and parameters | Read through the tool interfaces already supplied to the model | Retrieve matching interfaces in one byte-budgeted `capabilities.search` response, or list and inspect members |
 | Transfer data beyond plain JSON | JSON cannot fully represent `undefined`, BigInt, cycles, and similar values | Preserve supported special values and reference relationships for further computation and recovery |
 | Inspect computation state | No reusable session variables remain after a call | View retained names, source definitions, reuse counts, and value previews in the REPL tab |
@@ -114,7 +114,7 @@ The first two behaviors are on by default and can be disabled in settings. Synta
 
 ## Project files and tool capabilities
 
-The model can use Node.js directly to read files, process data, and run programs. Relative paths, imports, and child processes without an explicit `cwd` resolve from DSH's current working directory; switching directories keeps existing bindings and modules, while escaped import closures and captured `require` keep resolving from their original base. File, network, and other external inputs stay usable in the live environment, but a restart is not guaranteed to recover them.
+The model can use Node.js directly to read files, process data, and run programs. Relative paths and child processes without an explicit `cwd` use the session's current directory when they run, so an in-cell `tools.working_directory({ cd })` applies to the rest of that cell and matches the Host tools. Module imports and `import.meta` keep the starting directory; loaded modules, escaped import closures, and captured `require` keep their original base, and `process.chdir` is unavailable inside a cell. File, network, and other external inputs stay usable in the live environment, but a restart is not guaranteed to recover them.
 
 `capabilities.search()` finds and returns complete interfaces in one call, budgeted in bytes, with oversized entries kept complete and given an individual retrieval reference; `tree()`, `find()`, and `inspect()` remain available.
 

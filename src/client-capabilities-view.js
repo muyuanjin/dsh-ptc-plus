@@ -972,6 +972,7 @@ export function createSessionCapabilityControlsView(React, { commands, Modal, Se
     const source = React.useMemo(() => commands.source(sessionId), [sessionId])
     const available = React.useSyncExternalStore(source.subscribe, source.getSnapshot)
     const [catalog, setCatalog] = React.useState([])
+    const [management, setManagement] = React.useState('unknown')
     const [loading, setLoading] = React.useState(false)
     const [error, setError] = React.useState(null)
     const [drafts, setDrafts] = React.useState(emptyDrafts)
@@ -1007,6 +1008,7 @@ export function createSessionCapabilityControlsView(React, { commands, Modal, Se
       request.current = null
       applying.current = false
       setCatalog([])
+      setManagement('unknown')
       setDrafts(emptyDrafts())
       setSelectedId(null)
       setPane('list')
@@ -1018,12 +1020,16 @@ export function createSessionCapabilityControlsView(React, { commands, Modal, Se
     const load = React.useCallback(async signal => {
       setLoading(true)
       try {
-        const entries = await inspectSessionCatalog(sessionId, signal)
+        const payload = await inspectSessionCatalog(sessionId, signal)
         if (signal.aborted || !mounted.current || request.current?.signal !== signal) return
-        if (!Array.isArray(entries)) throw new Error('Invalid capability catalog')
-        setCatalog(entries)
+        if (payload?.schema !== 'ptc-capability-session-catalog/v1' || !Array.isArray(payload.entries)) {
+          throw new Error('Invalid capability catalog')
+        }
+        setCatalog(payload.entries)
+        setManagement(['managed', 'paused', 'off', 'unknown'].includes(payload.management)
+          ? payload.management : 'unknown')
         setError(null)
-        return entries
+        return payload.entries
       } catch (failure) {
         if (!signal.aborted && mounted.current && request.current?.signal === signal) setError(String(failure?.message ?? failure))
       } finally {
@@ -1049,6 +1055,7 @@ export function createSessionCapabilityControlsView(React, { commands, Modal, Se
     }, [enabled, available])
     const choices = drafts
     const choiceFor = entry => choices[entry.id] ?? entry.temporary ?? 'inherit'
+    const writesBlocked = management === 'paused' || management === 'off'
     const sourceKey = entry => entry.source?.kind === 'mcp' ? 'mcp:' + (entry.source.server ?? '')
       : entry.source?.kind === 'skill' ? 'skill:' + (entry.source.bucket ?? '')
         : entry.source?.kind ?? 'unknown'
@@ -1059,9 +1066,11 @@ export function createSessionCapabilityControlsView(React, { commands, Modal, Se
     const category = entry => entry.category === 'skill' ? 'skills'
       : ['server', 'resource'].includes(entry.category) ? 'mcp'
         : entry.source?.kind === 'mcp' ? 'mcp_tools' : 'tools'
-    const type = entry => entry.source?.kind === 'mcp' ? 'resource' : entry.category === 'skill' ? 'skill'
-      : ['server', 'resource'].includes(entry.category) ? 'resource'
-        : entry.category === 'tool' ? 'tool' : 'other'
+    const type = entry => entry.category === 'server' ? 'server'
+      : entry.source?.kind === 'mcp' ? 'resource'
+        : entry.category === 'skill' ? 'skill'
+          : entry.category === 'resource' ? 'resource'
+            : entry.category === 'tool' ? 'tool' : 'other'
     const displayedSource = entry => entry.source?.kind === 'mcp' ? entry.source.server ?? sourceLabel(entry) : sourceLabel(entry)
     const effectiveAvailability = entry => entry.effective === 'pending' ? 'pending'
       : entry.enclosingClosure || entry.effective === 'closed' ? 'closed'
@@ -1122,7 +1131,7 @@ export function createSessionCapabilityControlsView(React, { commands, Modal, Se
     }
     const hasInheritanceReset = staged.some(([, selection]) => selection === 'inherit')
     const apply = async targetScope => {
-      if (applying.current || !enabled || !available || staged.length === 0) return
+      if (applying.current || !enabled || !available || writesBlocked || staged.length === 0) return
       if (targetScope === 'global' && hasInheritanceReset) return
       const submitted = structuredClone(choices)
       applying.current = true
@@ -1247,6 +1256,8 @@ export function createSessionCapabilityControlsView(React, { commands, Modal, Se
       filter(t('capabilities.quick.state'), stateFilter, setStateFilter,
         [['all', t('capabilities.quick.allStates')], ['changed', t('capabilities.quick.changed')],
           ...['full', 'on-demand', 'closed', 'pending'].map(key => [key, statusLabel(key)])])),
+    writesBlocked ? h('p', { className: 'ptcPlusCapabilityNotice', role: 'status' },
+      t(management === 'paused' ? 'capabilities.quick.sessionPaused' : 'capabilities.quick.sessionManagementOff')) : null,
     h('div', { className: 'ptcPlusSessionCapabilityWorkspace', 'data-pane': pane },
       h('div', { className: 'ptcPlusSessionCapabilityList', role: 'table', 'aria-label': t('capabilities.quick.members'), ref: list },
         h('div', { className: 'ptcPlusSessionCapabilityColumns ptcPlusCapabilityColumns', role: 'row' },
@@ -1300,7 +1311,7 @@ export function createSessionCapabilityControlsView(React, { commands, Modal, Se
           selected.savedRule ? h(React.Fragment, null, ...['availability', 'disclosure'].map(dimension =>
             h('div', { className: 'ptcPlusCapabilityFilter', key: dimension, 'data-capability-dimension': dimension },
               h('span', null, t(`capabilities.policy.${dimension}`)),
-              h(Select, { label: t(`capabilities.policy.${dimension}`), disabled: !enabled || !available || pending,
+              h(Select, { label: t(`capabilities.policy.${dimension}`), disabled: !enabled || !available || pending || writesBlocked,
                 value: choices[selected.id]?.[dimension] ?? selected.temporaryRule?.[dimension] ?? 'inherit',
                 onChange: next => chooseDimension(selected.id, dimension, next),
                 options: ['inherit', 'automatic', ...(dimension === 'availability' ? ['enabled', 'closed'] : CAPABILITY_DISCLOSURES)]
@@ -1309,7 +1320,7 @@ export function createSessionCapabilityControlsView(React, { commands, Modal, Se
             : h('div', { className: 'ptcPlusCapabilityFilter' },
               h('span', null, t('capabilities.quick.choice')),
               h(Select, { label: t('capabilities.quick.choice'), value: choiceFor(selected),
-                disabled: !enabled || !available || pending, options: choiceOptions,
+                disabled: !enabled || !available || pending || writesBlocked, options: choiceOptions,
                 onChange: next => choose(selected.id, next) })),
           choices[selected.id] === 'inherit' ? h('p', { className: 'ptcPlusDetail' },
             t('capabilities.quick.inheritSessionOnly')) : null) : h('p', null, t('capabilities.noMatches')))),
@@ -1319,11 +1330,12 @@ export function createSessionCapabilityControlsView(React, { commands, Modal, Se
       h('button', { type: 'button', className: 'ptcPlusButton', disabled: pending || staged.length === 0, onClick: discard },
         t('capabilities.quick.discard')),
       h('button', { type: 'button', className: 'ptcPlusButton', title: t('capabilities.quick.sessionHint'),
-        disabled: pending || !enabled || !available || staged.length === 0, onClick: () => void apply('session') },
+        disabled: pending || !enabled || !available || writesBlocked || staged.length === 0, onClick: () => void apply('session') },
         t('capabilities.quick.applySession')),
       h('button', { type: 'button', className: 'ptcPlusButton', 'data-kind': 'primary',
         title: t(hasInheritanceReset ? 'capabilities.quick.inheritSessionOnly' : 'capabilities.quick.globalHint'),
-        disabled: pending || !enabled || !available || staged.length === 0 || hasInheritanceReset, onClick: () => void apply('global') },
+        disabled: pending || !enabled || !available || writesBlocked || staged.length === 0 || hasInheritanceReset,
+        onClick: () => void apply('global') },
         t('capabilities.quick.applyGlobal'))))
   }
 }

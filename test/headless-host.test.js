@@ -80,7 +80,7 @@ function configRows(disabled = false) {
       config: {
         includeHarnessIdentity: false,
         includeRuntimeContext: true,
-        persona: 'You are a coding agent powered by the {{model}} model. Your working directory is {{cwd}}.',
+        persona: 'You are a coding agent powered by the {{model}} model.',
       },
     },
     { id: 'ptc-plus', ...(disabled ? { disabled: true } : {}) },
@@ -333,6 +333,18 @@ test('owns neutral config parsing and projection for both runners', () => {
     looseTopLevelFunctionClassRedeclarations: true,
   }))
   assert.equal(functionClassLoose.find(row => row.id === 'ptc-plus').config.looseTopLevelFunctionClassRedeclarations, true)
+  const managed = parseConfigDump(headlessConfigPatch(rows, runtime, {
+    looseTopLevelFunctionClassRedeclarations: true,
+    ptcPlus: { capabilityManagementEnabled: true, capabilityPolicy: '{"schema":"ptc-capability-policy/v1"}' },
+    disabledModules: ['tool-fs'],
+  }))
+  const managedRow = managed.find(row => row.id === 'ptc-plus')
+  assert.equal(managedRow.config.looseTopLevelFunctionClassRedeclarations, true)
+  assert.equal(managedRow.config.capabilityManagementEnabled, true)
+  assert.equal(managedRow.config.capabilityPolicy, '{"schema":"ptc-capability-policy/v1"}')
+  assert.equal(managed.find(row => row.id === 'tool-fs').disabled, true)
+  assert.throws(() => headlessConfigPatch(rows, runtime, { disabledModules: ['Tool_FS'] }),
+    /disabledModules must be module id strings/)
   assert.throws(() => headlessConfigPatch(rows, { ...runtime, toolsMode: '' }), /toolsMode must be set explicitly/)
   assert.throws(() => headlessConfigPatch(rows, { ...runtime, permissionMode: undefined }), /permissionMode must be set explicitly/)
 })

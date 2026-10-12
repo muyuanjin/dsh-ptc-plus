@@ -17,6 +17,7 @@ import {
   visibleExecutableCallSeqs,
 } from './session-journal-recovery.js'
 import { valueLimitsFromConfig } from './value-wire-schema.js'
+import { encodeValueAtBoundary, valueWiresEqual } from './value-wire.js'
 import { normalizeBindingDescriptors } from './binding-descriptors.js'
 import { resolveConfig } from './runtime-config.js'
 import { WorkerClient } from './worker-client.js'
@@ -374,12 +375,19 @@ class SessionKernel {
 
   async replayHistory(request, config) {
     this.bindingCatalog = new BindingCatalog()
+    const limits = this.valueLimits(config)
+    const emptyArgsWire = encodeValueAtBoundary({}, limits, 'parameter')
     const path = pathToHead(this.history)
     for (const node of path) {
+      const bindings = replayBindingNamespaces(request.bindings, node.journal, limits, emptyArgsWire)
+      const bindingDescriptors = bindings === request.bindings
+        ? request.bindingDescriptors : normalizeBindingDescriptors(bindings)
       try {
         const result = await this.cellExecutor.executeCell(
           {
             ...request,
+            bindings: bindingDescriptors.namespaces,
+            bindingDescriptors,
             program: node.code,
             journal: undefined,
             ...(node.userBindings === undefined ? { userBindings: undefined } : { userBindings: node.userBindings }),
@@ -653,6 +661,36 @@ function sessionOf(sessionContext) {
     cwd: typeof session?.header?.cwd === 'string' ? session.header.cwd : undefined,
     surfaceProvenanceRequired: true,
   }
+}
+
+/**
+ * Recorded-value replay settles a host call from its journal entry without
+ * dispatching it. A member the Host no longer supplies must therefore stay
+ * visible to the replayed cell as a replay-only stub; otherwise a routine
+ * capability removal would make an otherwise provable cell unreconstructable
+ * and contract the durable frontier. Zero-argument calls keep their recorded
+ * empty-object form so the args wire still matches the journal.
+ */
+function replayBindingNamespaces(namespaces, journal, limits, emptyArgsWire) {
+  const calls = journal?.calls ?? []
+  let changed = false
+  const next = namespaces.map(namespace => {
+    const recorded = calls.filter(call => call.global === namespace.global)
+    const missing = [...new Set(recorded.map(call => call.member))]
+      .filter(member => !namespace.members.includes(member))
+    if (missing.length === 0) return namespace
+    changed = true
+    const functions = { ...namespace.functions }
+    const emptyObjectMembers = [...(namespace.emptyObjectMembers ?? [])]
+    for (const member of missing) {
+      functions[member] = () => { throw new Error(`replay-only member ${namespace.global}.${member}`) }
+      if (recorded.some(call => call.member === member && valueWiresEqual(call.args, emptyArgsWire, limits))) {
+        emptyObjectMembers.push(member)
+      }
+    }
+    return { ...namespace, functions, emptyObjectMembers }
+  })
+  return changed ? next : namespaces
 }
 
 export class SessionRuntime {

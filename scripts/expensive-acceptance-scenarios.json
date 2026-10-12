@@ -21,7 +21,10 @@
       "completionEqualsAny": ["new-function-new-class"],
       "finalAnswerIncludes": ["new-function-new-class"],
       "runtimeContexts": {
-        "allowed": [],
+        "allowed": [
+          { "name": "tools:ptc-plus-capability-plan", "maxChars": 512 },
+          { "name": "tools:ptc-plus-runtime-availability", "maxChars": 1024 }
+        ],
         "requiredTransitions": [],
         "maxSnapshotChars": 8192
       },
@@ -87,7 +90,10 @@
         "{{expectedRepair}}"
       ],
       "runtimeContexts": {
-        "allowed": [],
+        "allowed": [
+          { "name": "tools:ptc-plus-capability-plan", "maxChars": 512 },
+          { "name": "tools:ptc-plus-runtime-availability", "maxChars": 1024 }
+        ],
         "requiredTransitions": [],
         "maxSnapshotChars": 8192
       },
@@ -123,7 +129,10 @@
         "{{expectedSum}}"
       ],
       "runtimeContexts": {
-        "allowed": [],
+        "allowed": [
+          { "name": "tools:ptc-plus-capability-plan", "maxChars": 512 },
+          { "name": "tools:ptc-plus-runtime-availability", "maxChars": 1024 }
+        ],
         "requiredTransitions": [],
         "maxSnapshotChars": 8192
       },
@@ -207,7 +216,10 @@
         "{{expectedChild}}"
       ],
       "runtimeContexts": {
-        "allowed": [],
+        "allowed": [
+          { "name": "tools:ptc-plus-capability-plan", "maxChars": 512 },
+          { "name": "tools:ptc-plus-runtime-availability", "maxChars": 1024 }
+        ],
         "requiredTransitions": [],
         "maxSnapshotChars": 8192
       },
@@ -247,7 +259,10 @@
         "{{fixtureSha256}}"
       ],
       "runtimeContexts": {
-        "allowed": [],
+        "allowed": [
+          { "name": "tools:ptc-plus-capability-plan", "maxChars": 512 },
+          { "name": "tools:ptc-plus-runtime-availability", "maxChars": 1024 }
+        ],
         "requiredTransitions": [],
         "maxSnapshotChars": 8192
       },
@@ -287,7 +302,10 @@
         "import-input.txt"
       ],
       "runtimeContexts": {
-        "allowed": [],
+        "allowed": [
+          { "name": "tools:ptc-plus-capability-plan", "maxChars": 512 },
+          { "name": "tools:ptc-plus-runtime-availability", "maxChars": 1024 }
+        ],
         "requiredTransitions": [],
         "maxSnapshotChars": 8192
       },
@@ -319,7 +337,10 @@
         "split value: {{right}}"
       ],
       "runtimeContexts": {
-        "allowed": [],
+        "allowed": [
+          { "name": "tools:ptc-plus-capability-plan", "maxChars": 512 },
+          { "name": "tools:ptc-plus-runtime-availability", "maxChars": 1024 }
+        ],
         "requiredTransitions": [],
         "maxSnapshotChars": 8192
       },
@@ -332,6 +353,228 @@
         "maxAssistantChars": 10000,
         "maxTokenTraffic": 50000,
         "maxRuntimeContextChars": 24000
+      }
+    }
+  },
+  {
+    "id": "managed-adaptive-surface",
+    "title": "Managed adaptive capability surface",
+    "default": false,
+    "variant": "managed",
+    "task": "严格验证托管能力面。只用 run_code，不要创建 todo，不要重试。用一到两个 run_code cell 完成：先调用一次 capabilities.search({ query: 'pwsh' }) 查看 pwsh 的调用契约，但不要把完整搜索结果返回或打印到对话里；再调用一次 tools.pwsh({ command: \"Write-Output '{{secret}}'\", description: 'Capability probe' }) 并保留它的输出；在最后一个 cell 里 return 一个对象 { output: <pwsh 输出中包含 {{secret}} 的那一行文本>, writeType: typeof tools.write, editType: typeof tools.edit_run_code }。不要调用 tools.write。最终只报告 {{secret}}。",
+    "expect": {
+      "minCells": 1,
+      "maxCells": 2,
+      "allowedJournalStatuses": ["durable"],
+      "requiredJournalStatuses": ["durable"],
+      "requiredCalls": [
+        { "global": "tools", "member": "pwsh", "min": 1, "max": 2, "valueIncludes": ["{{secret}}"] }
+      ],
+      "completionIncludes": ["{{secret}}"],
+      "finalAnswerIncludes": ["{{secret}}"],
+      "systemIncludes": ["\n  pwsh: ", "\n  edit_run_code: "],
+      "systemExcludes": ["interface ToolArgsMap {}", "\n  write: "],
+      "runtimeContexts": {
+        "allowed": [
+          { "name": "tools:ptc-plus-capability-plan", "maxChars": 2048 },
+          { "name": "tools:ptc-plus-capability-navigation", "maxChars": 4096 },
+          { "name": "tools:ptc-plus-capability-descriptions", "maxChars": 65536 },
+          { "name": "tools:ptc-plus-capability-contracts", "maxChars": 65536 },
+          { "name": "tools:ptc-plus-runtime-availability", "maxChars": 1024 }
+        ],
+        "requiredTransitions": [],
+        "maxSnapshotChars": 131072
+      },
+      "machineBudget": {
+        "maxModelRequests": 8,
+        "maxDirectCalls": 3,
+        "maxSourceChars": 12000,
+        "maxRepeatedSourceCalls": 1,
+        "maxResultChars": 30000,
+        "maxAssistantChars": 20000,
+        "maxTokenTraffic": 120000,
+        "maxRuntimeContextChars": 100000
+      }
+    }
+  },
+  {
+    "id": "managed-session-resume",
+    "title": "Managed session keeps its frozen plan across a routine resume",
+    "default": false,
+    "variant": "managed",
+    "task": "严格验证恢复后的托管会话保持原冻结方案。本轮只做一件事：用一段 run_code cell 声明顶层绑定 resumeMark 为字符串 '{{secret}}'，同一 cell return resumeMark。不要创建 todo。最终只报告该字符串。",
+    "phases": [
+      {
+        "task": "继续同一会话，保持原有冻结方案：用一个 run_code cell 直接 return 已有绑定 resumeMark（不要重新声明、不要重新计算、不要重发上一轮源码），最终只报告它的值。",
+        "variant": "managed"
+      }
+    ],
+    "expect": {
+      "minCells": 2,
+      "maxCells": 3,
+      "allowedJournalStatuses": ["durable"],
+      "requiredJournalStatuses": ["durable"],
+      "continuityBinding": "resumeMark",
+      "completionIncludes": ["{{secret}}"],
+      "finalAnswerIncludes": ["{{secret}}"],
+      "systemIncludes": ["\n  edit_run_code: "],
+      "systemExcludes": ["interface ToolArgsMap {}"],
+      "forbiddenDiagnosticCodes": ["PTC-R002"],
+      "headerPolicy": {
+        "allowedTransitions": [],
+        "historyReplacements": 0
+      },
+      "runtimeContexts": {
+        "allowed": [
+          { "name": "tools:ptc-plus-capability-plan", "maxChars": 2048 },
+          { "name": "tools:ptc-plus-capability-navigation", "maxChars": 4096 },
+          { "name": "tools:ptc-plus-capability-descriptions", "maxChars": 65536 },
+          { "name": "tools:ptc-plus-capability-contracts", "maxChars": 65536 },
+          { "name": "tools:ptc-plus-runtime-availability", "maxChars": 1024 }
+        ],
+        "requiredTransitions": [],
+        "forbiddenTransitions": [
+          { "name": "tools:ptc-plus-capability-plan", "type": "update" }
+        ],
+        "maxSnapshotChars": 131072
+      },
+      "machineBudget": {
+        "maxModelRequests": 8,
+        "maxDirectCalls": 4,
+        "maxSourceChars": 8000,
+        "maxRepeatedSourceCalls": 0,
+        "maxResultChars": 30000,
+        "maxAssistantChars": 20000,
+        "maxTokenTraffic": 120000,
+        "maxRuntimeContextChars": 100000
+      }
+    }
+  },
+  {
+    "id": "managed-surface-change",
+    "title": "Managed session survives a Host tool-surface change across resumes",
+    "default": false,
+    "variant": "managed-no-fs",
+    "fixture": {
+      "name": "surface-probe.txt",
+      "content": "surface fixture {{nonce}}\n"
+    },
+    "task": "严格验证托管会话在宿主工具面变化后的恢复。本轮只做一件事：用一段 run_code cell 声明顶层绑定 surfaceMarker 为字符串 '{{secret}}'，同一 cell return surfaceMarker。不要读取文件，不要创建 todo。最终只报告该字符串。",
+    "phases": [
+      {
+        "task": "继续同一会话：用一个 run_code cell 调用一次 tools.read({ file_path: {{fixturePathSource}} })（该参数已是可直接写入源码的字符串字面量），把结果保存到顶层绑定 fileProbe，同一 cell return { marker: surfaceMarker, probe: fileProbe }。不要重新声明 surfaceMarker，不要重发第一阶段源码。最终报告文件内容。",
+        "variant": "managed"
+      },
+      {
+        "task": "继续同一会话：只用一段 run_code cell return { marker: surfaceMarker, probe: fileProbe }，不要重新声明这两个绑定，不要读取任何文件，不要重发之前的源码。最终报告文件内容和 marker。",
+        "variant": "managed-no-fs"
+      }
+    ],
+    "expect": {
+      "minCells": 3,
+      "maxCells": 5,
+      "allowedJournalStatuses": ["durable"],
+      "requiredJournalStatuses": ["durable"],
+      "continuityBinding": "surfaceMarker",
+      "requiredCalls": [
+        { "global": "tools", "member": "read", "min": 1, "max": 2, "valueIncludes": ["{{nonce}}"] }
+      ],
+      "completionIncludes": ["{{nonce}}"],
+      "finalAnswerIncludes": ["{{nonce}}"],
+      "systemIncludes": ["\n  edit_run_code: "],
+      "systemExcludes": ["interface ToolArgsMap {}"],
+      "forbiddenDiagnosticCodes": ["PTC-R002"],
+      "systemChanges": 2,
+      "headerPolicy": {
+        "allowedTransitions": [],
+        "historyReplacements": 2
+      },
+      "runtimeContexts": {
+        "allowed": [
+          { "name": "tools:ptc-plus-capability-plan", "maxChars": 2048 },
+          { "name": "tools:ptc-plus-capability-navigation", "maxChars": 4096 },
+          { "name": "tools:ptc-plus-capability-descriptions", "maxChars": 65536 },
+          { "name": "tools:ptc-plus-capability-contracts", "maxChars": 65536 },
+          { "name": "tools:ptc-plus-runtime-availability", "maxChars": 1024 }
+        ],
+        "requiredTransitions": [],
+        "forbiddenTransitions": [
+          { "name": "tools:ptc-plus-capability-plan", "type": "update" }
+        ],
+        "maxSnapshotChars": 131072
+      },
+      "machineBudget": {
+        "maxModelRequests": 12,
+        "maxDirectCalls": 6,
+        "maxSourceChars": 12000,
+        "maxRepeatedSourceCalls": 1,
+        "maxResultChars": 30000,
+        "maxAssistantChars": 30000,
+        "maxTokenTraffic": 160000,
+        "maxRuntimeContextChars": 120000
+      }
+    }
+  },
+  {
+    "id": "subagent-continuity",
+    "title": "Delegated session runs PTC Plus end to end",
+    "default": false,
+    "task": "严格验证子代理的 PTC Plus 行为。只用 run_code，不要创建 todo。用一到两个 run_code cell：调用一次 tools.subagent({ description: '子代理乘法验证', prompt: '请用一段 run_code cell 计算 {{left}} * {{right}}，在该 cell 中直接用 return 返回乘积数字，不要做其他事。' })；如果返回时子代理仍在运行，可以用 tools.list_agents() 观察直到它完成；最后 return 子代理的会话 id。最终只报告子代理会话 id 和它计算出的乘积数字。",
+    "expect": {
+      "minCells": 1,
+      "maxCells": 3,
+      "allowedJournalStatuses": ["durable", "volatile"],
+      "requiredCalls": [
+        { "global": "tools", "member": "subagent", "min": 1, "max": 1 }
+      ],
+      "finalAnswerIncludes": ["{{expectedProduct}}"],
+      "headerPolicy": {
+        "allowedTransitions": [],
+        "historyReplacements": 0
+      },
+      "runtimeContexts": {
+        "allowed": [
+          { "name": "tools:ptc-plus-capability-plan", "maxChars": 512 },
+          { "name": "tools:ptc-plus-runtime-availability", "maxChars": 1024 }
+        ],
+        "requiredTransitions": [],
+        "maxSnapshotChars": 8192
+      },
+      "childSession": {
+        "minCells": 1,
+        "maxCells": 3,
+        "allowedJournalStatuses": ["durable"],
+        "requiredJournalStatuses": ["durable"],
+        "completionEqualsAny": ["{{expectedProduct}}"],
+        "systemIncludes": ["\n  edit_run_code: "],
+        "runtimeContexts": {
+          "allowed": [
+            { "name": "tools:ptc-plus-capability-plan", "maxChars": 512 },
+            { "name": "tools:ptc-plus-runtime-availability", "maxChars": 1024 }
+          ],
+          "requiredTransitions": [],
+          "maxSnapshotChars": 8192
+        },
+        "machineBudget": {
+          "maxModelRequests": 4,
+          "maxDirectCalls": 2,
+          "maxSourceChars": 4000,
+          "maxRepeatedSourceCalls": 0,
+          "maxResultChars": 20000,
+          "maxAssistantChars": 20000,
+          "maxTokenTraffic": 60000,
+          "maxRuntimeContextChars": 24000
+        }
+      },
+      "machineBudget": {
+        "maxModelRequests": 8,
+        "maxDirectCalls": 4,
+        "maxSourceChars": 8000,
+        "maxRepeatedSourceCalls": 1,
+        "maxResultChars": 60000,
+        "maxAssistantChars": 20000,
+        "maxTokenTraffic": 120000,
+        "maxRuntimeContextChars": 60000
       }
     }
   }

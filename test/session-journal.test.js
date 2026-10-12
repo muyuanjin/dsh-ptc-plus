@@ -2244,6 +2244,14 @@ test('requires complete name evidence tied to the full activated snapshot before
 test('records exact execution directories and preserves predecessor directory semantics', () => {
   const current = journal({ executionCwd: process.cwd() })
   assert.equal(normalizeJournal(current).executionCwd, process.cwd())
+  // The recorded directory belongs to the executing Host world, so both path
+  // spellings stay valid evidence regardless of the platform reading them.
+  for (const executionCwd of ['C:\\TSWorkSpace\\proj', 'C:/TSWorkSpace/proj', '\\\\server\\share\\proj', '/world/proj']) {
+    assert.equal(normalizeJournal({ ...current, executionCwd }).executionCwd, executionCwd)
+  }
+  for (const executionCwd of ['C:relative', 'relative', 'proj/', 'C:']) {
+    assert.throws(() => normalizeJournal({ ...current, executionCwd }), /execution directory/)
+  }
   const predecessor = journal({ version: 10 })
   assert.equal(normalizeJournal(predecessor).executionCwd, null)
   assert.equal(normalizeJournal(normalizeJournal(predecessor)).executionCwd, null)

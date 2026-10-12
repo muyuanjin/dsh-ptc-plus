@@ -18,7 +18,9 @@ import { readRuntimeAvailability } from './runtime-messages.js'
 export const CAPABILITY_PLAN_FORM = 'capability-plan'
 export const CAPABILITY_EVIDENCE_KEY = 'dshPtcPlusCapabilities'
 const EVIDENCE_KEY = CAPABILITY_EVIDENCE_KEY
-const TRANSPORTS = new Set(['run_code', 'edit_run_code'])
+const DIRECT_TRANSPORT = 'run_code'
+const EDIT_TRANSPORT = 'edit_run_code'
+const TRANSPORTS = new Set([DIRECT_TRANSPORT, EDIT_TRANSPORT])
 const LEGACY_NAVIGATION = 'Use capabilities.search({query}) to retrieve complete tool, Skill and MCP contracts. Unlisted capabilities remain discoverable. Skill descriptions are summaries; load the body with tools.skill({name}) before following it.'
 const NAVIGATION = 'Use capabilities.search({query}) to retrieve complete tool, Skill and MCP contracts. Unlisted capabilities remain discoverable. Skill descriptions are summaries; follow each Skill\'s declared invocation eligibility to load its body before following it.'
 const digest = value => createHash('sha256').update(JSON.stringify(value)).digest('hex')
@@ -193,10 +195,20 @@ function savedConfiguration(settings) {
 }
 
 /** One SDK snapshot owns a tool's signature, schemas and revision. */
+// Mirrors the Host SDK generator's member rule: bare name for a valid
+// identifier, quoted index only for an exotic name, so a contract never
+// disagrees with the declaration the model programs against.
+const SDK_MEMBER_IDENTIFIER = /^[A-Za-z_$][A-Za-z0-9_$]*$/
+function sdkMemberCall(name, callArguments) {
+  return SDK_MEMBER_IDENTIFIER.test(name)
+    ? `tools.${name}(${callArguments})`
+    : `tools[${JSON.stringify(name)}](${callArguments})`
+}
+
 function toolCapability(schema, sections) {
   return { id: `tools.${schema.name}`, category: CAPABILITY_INVENTORY_CATEGORIES.tool,
     revision: digest(schema), schema,
-    contract: `\`\`\`ts\n${schema.description ? `/** ${schema.description.replaceAll('*/', '* /')} */\n` : ''}tools[${JSON.stringify(schema.name)}](args: ${jsonSchemaToTs(schema.parameters)}): Promise<${jsonSchemaToTs(schema.output)}>\n\`\`\``,
+    contract: `\`\`\`ts\n${schema.description ? `/** ${schema.description.replaceAll('*/', '* /')} */\n` : ''}${sdkMemberCall(schema.name, `args: ${jsonSchemaToTs(schema.parameters)}`)}: Promise<${jsonSchemaToTs(schema.output)}>\n\`\`\``,
     dependencies: sectionDependencies(sections.filter(section => section.name === `tool:${schema.name}`
       || (section.name?.startsWith('mcp:') && schema.name.startsWith(`mcp__${section.name.slice(4)}__`)))),
     description: schema.description ?? '' }
@@ -293,8 +305,12 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
     return events
   }
   function recordedPlan(history, id) {
+    // A routine provider release (`unloaded`) is an infrastructure fact, not a
+    // user decision: the session's frozen plan stays its restored baseline.
+    // Only an explicit disablement lets a resumed session recompose from the
+    // current saved configuration.
     const withdrawn = history.findLastIndex(event => event.type === 'user/message'
-      && ['disabled', 'unloaded'].includes(readRuntimeAvailability(event.data)))
+      && readRuntimeAvailability(event.data) === 'disabled')
     const runs = new Map()
     let latest
     for (const event of history.slice(withdrawn + 1)) {
@@ -422,7 +438,8 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
       dependencies: sectionDependencies(sections.filter(section => section.name === `mcp:${server}`)), ...(policyPaths && resourceOperations.length === 0 ? { effectiveAvailability: 'closed' } : {}),
       contract: !policyPaths ? `MCP resource server ${JSON.stringify(server)}. Use tools.list_mcp_resources({server}), tools.list_mcp_resource_templates({server}), and tools.read_mcp_resource({server,uri}); use the listed URI or expand a listed template.`
         : `MCP resource server ${JSON.stringify(server)}. ${resourceOperations.length ? 'Available operations: ' + resourceOperations.map(name => `tools.${name}(${name === 'read_mcp_resource' ? '{server,uri}' : '{server}'})`).join(', ') + '.' : 'No resource operation is available in this session.'}`,
-      description: `MCP resources and templates from ${server}`, selector: { server } })
+      description: `MCP resource access registered by the Host for server ${server}. This records the registered resource layer and the session's resource operations, not a proved list of exposed resources or templates.`,
+      selector: { server } })
     for (const server of servers) presentation?.set(`mcp.${server}`, { name: server, source: { kind: 'mcp', server } })
     return capabilities.filter(item => {
       if (item.category !== 'tool') return true
@@ -451,18 +468,44 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
     agent.session.append('user/message', message, { surfaceOp: 'append' })
   }
   function selection(state, id) { return state?.snapshot.plan.entries.find(entry => entry.id === id)?.selection }
+  function liveCapability(state, id) {
+    return state?.liveCapabilities?.get(id) ?? state?.snapshot.capabilities.find(item => item.id === id)
+  }
+  function declaredCapabilities(state) {
+    const merged = new Map(state?.snapshot.capabilities.map(item => [item.id, item]) ?? [])
+    for (const [id, item] of state?.liveCapabilities ?? []) merged.set(id, item)
+    return merged
+  }
+  /**
+   * The plan owns the allocation of every identity it froze. A live Host member
+   * that the frozen plan never captured stays declared with the Host's own
+   * presentation (or its explicit availability closure) until an explicit
+   * refresh folds it into the plan; a refresh boundary must not remove the
+   * member's identity from the model-visible surface.
+   */
+  function declaredSelection(state, id) {
+    const planned = selection(state, id)
+    if (planned !== undefined || !state?.snapshot.plan.enabled) return planned
+    const live = state.liveCapabilities?.get(id)
+    if (live === undefined) return undefined
+    const settings = state.snapshot.settings
+    if (settings.policy) return capabilityRule(settings.policy, live).availability === 'closed' ? 'closed' : 'host'
+    const overrides = settings.manual?.overrides ?? {}
+    return overrides[id] === 'closed'
+      || (live.mcpServer !== undefined && overrides[`mcpServers.${live.mcpServer}`] === 'closed') ? 'closed' : 'host'
+  }
   function supplied(state, id) {
     if (state?.liveCapabilities && (!state.liveCapabilities.has(id) || state.liveCapabilities.get(id).effectiveAvailability === 'closed')) return false
     if (!state?.snapshot.plan.enabled) return Boolean(state?.liveCapabilities) || !state?.snapshot.settings.policy || selection(state, id) !== 'closed'
-    if (!['full', 'on-demand', 'host'].includes(selection(state, id))) return false
-    const capability = state.snapshot.capabilities.find(item => item.id === id)
+    if (!['full', 'on-demand', 'host'].includes(declaredSelection(state, id))) return false
+    const capability = liveCapability(state, id)
     return capability?.category !== 'resource'
       || resourceServers(state.hostSections).includes(capability.selector.server)
   }
   function sharedMembers(state, name) {
     const category = name === 'skill' ? 'skill'
       : ['list_mcp_resources', 'list_mcp_resource_templates', 'read_mcp_resource'].includes(name) ? 'resource' : undefined
-    return category === undefined ? undefined : state.snapshot.capabilities
+    return category === undefined ? undefined : [...declaredCapabilities(state).values()]
       .filter(item => item.category === category && supplied(state, item.id)
         && (category !== 'skill' || (state.liveCapabilities?.get(item.id) ?? item).invocation?.modelInvocable !== false))
       .map(item => item.selector[category === 'skill' ? 'name' : 'server'])
@@ -650,7 +693,7 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
         }
       }
       const historical = !force && !sessionEvents(agent.session).some(event => event.type === 'user/message'
-        && ['disabled', 'unloaded'].includes(readRuntimeAvailability(event.data))) && sessionEvents(agent.session).some(event =>
+        && readRuntimeAvailability(event.data) === 'disabled') && sessionEvents(agent.session).some(event =>
         event.type === 'assistant/message' || event.type === 'tool/result')
       const previous = stateFor(agent)?.snapshot
       const sourceSettings = choice?.sourceSettings ?? { ...capabilityConfiguration(currentConfig), ...(historical ? { enabled: false, ...(currentConfig.capabilityPolicy ? { recoveryEnabled: false, previewEnabled: false, statistics: { ...capabilityConfiguration(currentConfig).statistics, enabled: false } } : {}) } : {}) }
@@ -725,7 +768,7 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
           })
       })
     },
-    async catalogFor(agent, signal) {
+    async catalogObservation(agent, signal) {
       if (!canRefresh(agent)) throw new Error('ptc-plus: select an active PTC session')
       const assembly = await ctx.systemPrompt.assemble({ agent, scope: agent, signal, ptcPlusCapabilityObservation: true })
       const presentation = new Map()
@@ -740,6 +783,13 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
       const sourceSettings = snapshot?.sourceSettings ?? snapshot?.settings
       const sourceOverrides = sourceSettings?.manual?.overrides
       const sessionSourceSelection = id => sourceOverrides?.[id] ?? (sourceOverrides ? 'automatic' : 'unknown')
+      // A paused or unmanaged session has no frozen allocation to report: every
+      // row then states the one truth that applies, the Host default. Only a
+      // managed session may report a pending refresh boundary.
+      const planManaged = state !== undefined && effectiveCapabilitySettings(state.snapshot.settings).enabled === true
+      const management = state === undefined ? 'unknown'
+        : state.snapshot.settings.contextEnabled === false ? 'paused'
+          : planManaged ? 'managed' : 'off'
       const dimensions = capability => {
         const saved = capabilityConfiguration(currentConfig)
         if (!saved.policy && !snapshot?.settings.policy) return { managementEnabled: snapshot && effectiveCapabilitySettings(snapshot.settings).enabled }
@@ -759,22 +809,29 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
         saved: capabilityConfiguration(currentConfig).manual.overrides[capability.id] ?? 'automatic',
         sessionSourceSelection: sessionSourceSelection(capability.id),
         temporary: typeof state?.snapshot.sessionOverrides?.[capability.id] === 'object' ? 'inherit' : state?.snapshot.sessionOverrides?.[capability.id] ?? 'inherit',
-        effective: state?.snapshot.plan.entries.find(entry => entry.id === capability.id)?.selection ?? 'pending' }))
+        effective: state === undefined ? 'pending'
+          : planManaged ? state.snapshot.plan.entries.find(entry => entry.id === capability.id)?.selection ?? 'pending'
+            : 'host' }))
       for (const server of new Set(capabilities.map(item => item.mcpServer).filter(Boolean))) {
         const id = `mcpServers.${server}`
         const enclosingClosure = state ? effectiveCapabilitySettings(state.snapshot.settings).enabled && (state.snapshot.settings.policy
           ? state.snapshot.settings.policy.mcpServers[server]?.availability === 'closed'
           : state.snapshot.settings.manual.overrides[id] === 'closed') : undefined
-        const effective = state ? state.snapshot.settings.policy && effectiveCapabilitySettings(state.snapshot.settings).enabled
-          ? capabilityRule(state.snapshot.settings.policy, { id, category: 'server', mcpServer: server }).availability
-          : enclosingClosure ? 'closed' : 'enabled' : 'pending'
+        const effective = state === undefined ? 'pending'
+          : !planManaged ? 'host'
+            : state.snapshot.settings.policy
+              ? capabilityRule(state.snapshot.settings.policy, { id, category: 'server', mcpServer: server }).availability
+              : enclosingClosure ? 'closed' : 'enabled'
         entries.push({ id, category: 'server', name: server, description: `MCP server ${server}`,
           source: { kind: 'mcp', server }, ...dimensions({ id, category: 'server', mcpServer: server }), saved: capabilityConfiguration(currentConfig).manual.overrides[id] ?? 'automatic',
           sessionSourceSelection: sessionSourceSelection(id),
           temporary: typeof state?.snapshot.sessionOverrides?.[id] === 'object' ? 'inherit' : state?.snapshot.sessionOverrides?.[id] ?? 'inherit',
           enclosingClosure, effective })
       }
-      return entries
+      return { management, entries }
+    },
+    async catalogFor(agent, signal) {
+      return (await this.catalogObservation(agent, signal)).entries
     },
     async change(agent, intent, signal, globalSettings) {
       if (!canRefresh(agent)) throw new Error('ptc-plus: select an active PTC session')
@@ -868,9 +925,10 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
     projectSections(agent, sections) {
       const state = stateFor(agent)
       if (!state?.snapshot.plan.enabled) return sections
-      const retained = state.snapshot.capabilities.filter(item => selection(state, item.id) === 'host' && supplied(state, item.id))
+      const inventory = [...declaredCapabilities(state).values()]
+      const retained = inventory.filter(item => declaredSelection(state, item.id) === 'host' && supplied(state, item.id))
       const retainedSections = new Set(retained.flatMap(item => item.dependencies ?? []).map(item => item.id))
-      const ownedSections = new Set(state.snapshot.capabilities.flatMap(item => item.dependencies ?? []).map(item => item.id))
+      const ownedSections = new Set(inventory.flatMap(item => item.dependencies ?? []).map(item => item.id))
       return sections.flatMap(section => {
         if (section.name === 'mcp-resource-servers') {
           const servers = retained.filter(item => item.category === 'resource').map(item => item.selector.server)
@@ -878,16 +936,23 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
         }
         if (ownedSections.has(section.name) && !retainedSections.has(section.name)) return []
         if (section.name?.startsWith('tool:') && !TRANSPORTS.has(section.name.slice(5))
-          && selection(state, `tools.${section.name.slice(5)}`) !== 'host') return []
+          && declaredSelection(state, `tools.${section.name.slice(5)}`) !== 'host') return []
         return [section]
       })
     },
     sdk(agent, nativeSdk) {
       const state = stateFor(agent)
       if (!state?.snapshot.plan.enabled) return nativeSdk
-      const schemas = toolSchemasForAgent(agent).filter(schema => !TRANSPORTS.has(schema.name))
-      const host = schemas.filter(schema => selection(state, `tools.${schema.name}`) === 'host' && memberSupplied(state, schema.name))
-      return host.length === schemas.length ? nativeSdk : renderToolsSdk(host)
+      const candidates = toolSchemasForAgent(agent)
+      const schemas = candidates.filter(schema => !TRANSPORTS.has(schema.name))
+      const host = schemas.filter(schema => declaredSelection(state, `tools.${schema.name}`) === 'host'
+        && memberSupplied(state, schema.name))
+      if (host.length === schemas.length) return nativeSdk
+      // The edit transport is callable inside every program and is not part of
+      // the managed disclosure, so its Host schema stays declared in every
+      // managed render. The direct transport is never an SDK member.
+      const editTransport = candidates.find(schema => schema.name === EDIT_TRANSPORT)
+      return renderToolsSdk(editTransport === undefined ? host : [...host, editTransport])
     },
     projectMembers(agent, members) {
       const state = stateFor(agent)
@@ -897,8 +962,9 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
     metadata(agent) {
       const state = stateFor(agent)
       if (!state?.snapshot.plan.enabled) return []
+      const capabilities = declaredCapabilities(state)
       return ['skill', 'resource'].map(category => ({ namespace: category === 'skill' ? 'skills' : 'mcp',
-        members: state.snapshot.capabilities.filter(item => item.category === category && supplied(state, item.id))
+        members: [...capabilities.values()].filter(item => item.category === category && supplied(state, item.id))
           .map(item => state.liveCapabilities?.get(item.id) ?? item)
           .map(item => ({ name: item.id.slice(item.id.indexOf('.') + 1), description: item.description,
             contract: item.contract, dependencies: item.dependencies ?? [], revision: item.revision, parameters: {}, returns: {},
@@ -916,7 +982,7 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
       const state = stateFor(agent)
       for (const item of result?.matches ?? result?.symbols ?? []) {
         const id = item.symbol ?? `${item.namespace}.${item.name}`
-        if (!state?.snapshot.capabilities.some(item => item.id === id) || !supplied(state, id)) continue
+        if (liveCapability(state, id) === undefined || !supplied(state, id)) continue
         state.expanded.add(id)
         state?.pendingExpanded?.add(id)
       }
@@ -1114,13 +1180,13 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
       const agent = (ctx.agents?.list?.() ?? []).find(candidate =>
         String(candidate.session.id ?? candidate.id) === sessionId && canRefresh(candidate))
       if (!agent) throw new TypeError('ptc-plus: select an active PTC session')
-      const entries = await this.catalogFor(agent, signal)
+      const { management, entries } = await this.catalogObservation(agent, signal)
       signal?.throwIfAborted()
       if (!(ctx.agents?.list?.() ?? []).includes(agent) || !canRefresh(agent)
         || String(agent.session.id ?? agent.id) !== sessionId) {
         throw new Error('ptc-plus: capability observation target is no longer available')
       }
-      return entries
+      return { schema: 'ptc-capability-session-catalog/v1', management, entries }
     },
     async observeAllocation({ sessionId, configuration } = {}, signal) {
       signal?.throwIfAborted()

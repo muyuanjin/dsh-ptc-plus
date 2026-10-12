@@ -114,7 +114,12 @@ const output = new PassThrough()
 output.resume()
 const evaluationScope = createPrivateAsyncLocalStorage()
 const sessionCwd = typeof workerData?.cwd === 'string' ? workerData.cwd : undefined
+// The module source base is fixed when a cell starts; the operation directory
+// follows the Session's working directory while the cell runs, so a confirmed
+// `tools.working_directory` change rebases the rest of the cell exactly as the
+// Host tools, which resolve at call time, already do.
 let executionCwd = sessionCwd
+let cellOperationCwd = sessionCwd
 const resolveModuleFilename = resolve
 const isAbsoluteDirectory = isAbsolute
 const nativeCreateRequire = createRequire
@@ -361,7 +366,7 @@ installWorkerCwdVirtualization(sessionCwd, originalRequire, reason => {
     return
   }
   markVolatile(reason)
-}, () => executionCwd)
+}, () => cellOperationCwd)
 synchronizeBuiltinEsmExports()
 function recordCellModuleResolution(transform) {
   // An escaped loader retains its source generation. Native resolution still
@@ -547,6 +552,18 @@ function hasExecutionLease(runId) {
 // BoundError is the error class installed by this cell's wrapper, not a name
 // looked up later: the cell can replace or delete the context binding while a
 // call is pending, and the call must keep its submitted error identity.
+// A confirmed Session directory change rebases the rest of the cell: Host tools
+// resolve against the session service at call time, and this worker's relative
+// operations now resolve against the same directory. The cell's module source
+// base (imports, import.meta, provided require) stays fixed at its start.
+function adoptConfirmedCellDirectory(call, value) {
+  if (call.global !== 'tools' || call.member !== 'working_directory') return
+  if (activeRun !== call.runId) return
+  const cwd = value?.cwd
+  if (typeof cwd !== 'string' || cwd.length === 0 || !isAbsoluteDirectory(cwd)) return
+  cellOperationCwd = cwd
+}
+
 function callHost(runId, global, member, args, BoundError) {
   if (!hasExecutionLease(runId)) {
     return promiseReject(programBindingError('lease', 'PTC execution lease expired'))
@@ -565,7 +582,7 @@ function callHost(runId, global, member, args, BoundError) {
   const settled = new ControlPromise(resolve => {
     moduleRuntimeIntrinsics.Reflect.apply(moduleRuntimeIntrinsics.promiseThen, result, [resolve, resolve])
   })
-  mapSet(pending, id, { ...settle, runId, valueLimits, settled, member, BoundError })
+  mapSet(pending, id, { ...settle, runId, valueLimits, settled, global, member, BoundError })
   try {
     channel.postMessage({
       type: 'call', runId, id, global, member,
@@ -1348,6 +1365,7 @@ async function runCell(message) {
     throw new Error('ptc-plus cell cwd must be absolute')
   }
   executionCwd = message.cwd ?? sessionCwd
+  cellOperationCwd = executionCwd
   const parent = cellModuleParent()
   const legacyRequire = message.languageSemantics === 'legacy-v1'
   const explicitCwd = executionCwd !== undefined
@@ -1536,7 +1554,11 @@ channel.on('message', (message) => {
     if (call === undefined || call.runId !== message.runId) return
     mapDelete(pending, message.id)
     try {
-      if (message.ok) call.resolve(decodeValue(message.value, call.valueLimits))
+      if (message.ok) {
+        const value = decodeValue(message.value, call.valueLimits)
+        adoptConfirmedCellDirectory(call, value)
+        call.resolve(value)
+      }
       else if (call.BoundError === undefined) {
         const error = new Error(message.error)
         if (message.cause !== undefined) error.ptcCause = message.cause

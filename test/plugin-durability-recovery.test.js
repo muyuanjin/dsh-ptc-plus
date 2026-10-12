@@ -118,6 +118,88 @@ test('resolved cell cwd changes new I/O and imports while retaining old sources 
   assert.equal(session.header.cwd, directories[0])
 })
 
+test('a confirmed in-cell directory change rebases the rest of the cell while imports keep the starting directory', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'ptc-in-cell-directory-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const directories = ['a', 'b'].map(name => join(root, name))
+  for (const [index, directory] of directories.entries()) {
+    await mkdir(directory)
+    await writeFile(join(directory, 'input.txt'), String(index + 1))
+    await writeFile(join(directory, 'value.mjs'), `export const value = ${index + 1}`)
+  }
+  const state = fixture()
+  t.after(() => state.dispose())
+  const session = { ...orderedSurfaceSession('in-cell-directory'), header: { cwd: directories[0] } }
+  const calls = []
+  const first = await state.run(session.id, `
+    const fs = await import('node:fs');
+    const before = fs.readFileSync('./input.txt', 'utf8');
+    const receipt = await tools.working_directory({ cd: 'b' });
+    const after = fs.readFileSync('./input.txt', 'utf8');
+    return { before, after, receipt, cwd: process.cwd(), dirname: import.meta.dirname,
+      child: require.resolve('./value.mjs') };
+  `, { working_directory: async args => { calls.push(args); return { cwd: directories[1] } } },
+  { session, cwd: directories[0] })
+  assert.equal(first.error, undefined)
+  assert.deepEqual(first.value, { before: '1', after: '2', receipt: { cwd: directories[1] },
+    cwd: directories[1], dirname: directories[0], child: join(directories[0], 'value.mjs') })
+  assert.deepEqual(calls, [{ cd: 'b' }])
+  const failed = await state.run(session.id, `
+    const fs = await import('node:fs');
+    try { await tools.working_directory({ cd: 'missing' }) } catch {}
+    return fs.readFileSync('./input.txt', 'utf8');
+  `, { working_directory: async () => { throw new Error('ENOENT: no such directory') } },
+  { session, cwd: directories[0] })
+  assert.equal(failed.error, undefined)
+  assert.equal(failed.value, '1')
+})
+
+test('cold replay settles a recorded in-cell directory change for later relative reads', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'ptc-replayed-directory-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const directories = ['a', 'b'].map(name => join(root, name))
+  for (const directory of directories) await mkdir(directory)
+  const session = { ...orderedSurfaceSession('replayed-in-cell-directory'), header: { cwd: directories[0] } }
+  const state = fixture()
+  t.after(() => state.dispose())
+  const first = await state.runDurable(session.id, `
+    const receipt = await tools.working_directory({ cd: 'b' });
+    const movedDirectory = process.cwd();
+    return [receipt.cwd, movedDirectory];
+  `, { working_directory: async () => ({ cwd: directories[1] }) }, { session, cwd: directories[0] })
+  assert.equal(first.meta.dshPtcPlus.status, 'durable')
+  assert.deepEqual(first.value, [directories[1], directories[1]])
+  await state.dispose()
+  const restored = fixture()
+  t.after(() => restored.dispose())
+  // Replay settles the recorded host call from its journal entry; the binding
+  // must still exist on the request but is not dispatched again.
+  const replayed = await restored.run(session.id, 'return [receipt, movedDirectory, process.cwd()]',
+    { working_directory: async () => { throw new Error('replayed call was dispatched') } },
+    { session, cwd: directories[1] })
+  assert.equal(replayed.error, undefined)
+  assert.deepEqual(replayed.value, [{ cwd: directories[1] }, directories[1], directories[1]])
+})
+
+test('replaying a durable cell settles recorded host calls whose member is no longer supplied', async t => {
+  const session = { ...orderedSurfaceSession('replay-missing-member'), header: { cwd: process.cwd() } }
+  const state = fixture()
+  t.after(() => state.dispose())
+  const first = await state.runDurable(session.id,
+    'const earlier = await tools.probe({ label: "kept" }); return earlier',
+    { probe: async () => 'recorded-value' }, { session })
+  assert.equal(first.meta.dshPtcPlus.status, 'durable')
+  assert.equal(first.value, 'recorded-value')
+  await state.dispose()
+  const restored = fixture()
+  t.after(() => restored.dispose())
+  const replayed = await restored.run(session.id, 'return [earlier, typeof tools.probe]', {}, { session })
+  assert.equal(replayed.error, undefined)
+  assert.deepEqual(replayed.value, ['recorded-value', 'undefined'])
+  assert.equal(replayed.logs.some(line => /unreconstructable/.test(line)), false,
+    'a removed host member must not make an otherwise provable recorded cell unreconstructable')
+})
+
 for (const bindingUpdates of ['stateful', 'protected']) {
   test(`old indirect eval and Function calls retain their cell import base in ${bindingUpdates} mode`, async t => {
     const root = await mkdtemp(join(tmpdir(), 'ptc-dynamic-directory-'))

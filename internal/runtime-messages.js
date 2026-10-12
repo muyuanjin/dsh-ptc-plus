@@ -24,9 +24,15 @@ const CATALOG_PREFIX = 'Global binding API reference for run_code (replaces the 
 const EMPTY_CATALOG = 'No entries documented.'
 const PREVIOUS_EMPTY_CATALOG = 'No global binding API documentation is currently configured. Earlier binding catalogs no longer apply.'
 const AVAILABILITY_TEXT = Object.freeze({
-  active: 'PTC Plus is the current continuous-computation provider. Follow its current tool schemas and newly supplied capability plan; earlier withdrawals do not restore old computation state.',
+  active: 'PTC Plus is the current continuous-computation provider. Follow its current tool schemas and capability plan; earlier withdrawals do not restore old computation state.',
   disabled: 'PTC Plus is disabled. Earlier PTC Plus continuous-computation instructions, capability plans, discovery instructions, calling-contract disclosures and global binding references no longer describe the current runtime. Use the current Host tools and contracts. Historical computations and effects remain historical; no old PTC Plus heap has been restored. Tasks, Skill instructions, other producers and tool results are unchanged.',
   unloaded: 'PTC Plus has released its computation provider. Earlier PTC Plus continuous-computation instructions, capability plans, discovery instructions, calling-contract disclosures and global binding references no longer describe the current runtime. Use the current Host tools and contracts. Historical computations and effects remain historical; no old PTC Plus heap has been restored. Tasks, Skill instructions, other producers and tool results are unchanged.',
+})
+
+// Historical wording stays readable so recorded sessions keep their provenance;
+// new messages use the current text above.
+const PREVIOUS_AVAILABILITY_TEXT = Object.freeze({
+  active: ['PTC Plus is the current continuous-computation provider. Follow its current tool schemas and newly supplied capability plan; earlier withdrawals do not restore old computation state.'],
 })
 
 export function runtimeAvailabilityMessage(state) {
@@ -37,9 +43,12 @@ export function runtimeAvailabilityMessage(state) {
 
 export function readRuntimeAvailability(message) {
   const state = message?.source?.state
-  return isPtcMessageSource(message?.source) && message.source.form === 'runtime-availability'
-    && Object.hasOwn(AVAILABILITY_TEXT, state) && message.content?.length === 1
-    && message.content[0]?.type === 'text' && message.content[0].text === AVAILABILITY_TEXT[state] ? state : undefined
+  if (!isPtcMessageSource(message?.source) || message.source.form !== 'runtime-availability'
+    || !Object.hasOwn(AVAILABILITY_TEXT, state) || message.content?.length !== 1
+    || message.content[0]?.type !== 'text') return undefined
+  const text = message.content[0].text
+  return text === AVAILABILITY_TEXT[state]
+    || (PREVIOUS_AVAILABILITY_TEXT[state] ?? []).includes(text) ? state : undefined
 }
 
 /** Availability reconciles plugin declarations only, never tasks or other producers. */

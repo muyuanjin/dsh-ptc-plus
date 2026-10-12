@@ -356,9 +356,7 @@ export function assertTrajectoryInvariants(events, expected, audits) {
   const system = systemAudit.system
   const hasPlugin = system.includes(pluginMarker)
   const { calls, results, finalAnswer, finalTurn, timeline } = facts
-  const expectedPersona = neutralPersona
-    .replace('{{model}}', expected.model)
-    .replace('{{cwd}}', expected.cwd)
+  const expectedPersona = neutralPersona.replace('{{model}}', expected.model)
   if (!system.startsWith(expectedPersona)) failures.push('system prompt does not start with the neutral A/B persona')
   if (injections.length === 0 || injections.some(item => !isRuntimeContextSource(item.source)
     && !(expected.variant === 'plugin' && expected.capabilityManagementEnabled === true

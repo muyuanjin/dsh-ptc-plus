@@ -34,7 +34,7 @@ import { apply as observeToolResults, readEvaluationToolResults } from '../scrip
 import { Session } from '@deepseek-ai/dsh-session'
 import { capabilityConfiguration, createCapabilityEnvironment } from '../internal/capability-environment.js'
 
-const persona = 'You are a coding agent powered by the {{model}} model. Your working directory is {{cwd}}.'
+const persona = 'You are a coding agent powered by the {{model}} model.'
 const runtime = { toolsMode: 'ptc', permissionMode: 'danger-full-access' }
 
 test('permits only validated enabled capability plans matching the resolved A/B treatment', async () => {
@@ -383,7 +383,7 @@ test('rejects complete header drift and reports logical requests separately', ()
   const cwd = 'X:\\fixture\\workspace'
   const model = 'model'
   const provider = 'provider'
-  const system = persona.replace('{{model}}', model).replace('{{cwd}}', cwd)
+  const system = persona.replace('{{model}}', model)
   const header = {
     config: { provider, model },
     system,
@@ -478,7 +478,7 @@ test('counts namespace dot, whitespace, and bracket access in source cells', () 
   const cwd = 'X:\\fixture\\workspace'
   const model = 'model'
   const provider = 'provider'
-  const system = persona.replace('{{model}}', model).replace('{{cwd}}', cwd)
+  const system = persona.replace('{{model}}', model)
   const events = [
     { type: 'session', version: 2, id: 'ab-namespaces', cwd },
     { type: 'turn/start', seq: 1, time: 1, data: { turn: 1 } },
@@ -527,7 +527,7 @@ test('identifies both current treatments from formal system-message evidence', (
   const provider = 'provider'
   const machineBudget = Object.fromEntries(MACHINE_BUDGET_KEYS.map(key => [key, 1000]))
   for (const variant of ['baseline', 'plugin']) {
-    const system = persona.replace('{{model}}', model).replace('{{cwd}}', cwd)
+    const system = persona.replace('{{model}}', model)
       + (variant === 'plugin' ? '\n## PTC Plus program capabilities' : '')
     const events = [{ type: 'session', version: 4, id: 'current-prompt', cwd }]
     const append = (type, data, surfaceOp) => {

@@ -29,6 +29,9 @@ import { createFallbackModal, createSelect } from '../src/client-primitives.js'
 import { createSessionCapabilityControlsView } from '../src/client-capabilities-view.js'
 import { cycleCapabilitySort, sortCapabilityEntries } from '../src/client-capability-sort.js'
 
+const sessionCatalog = (entries, management = 'managed') => (
+  { schema: 'ptc-capability-session-catalog/v1', management, entries })
+
 function wrappedPrimitives() {
   return Object.fromEntries(Object.entries(primitives).map(([name, component]) => [name,
     isHostComponent(component) ? React.memo(component) : component]))
@@ -1930,7 +1933,7 @@ test('sparkle session capability workbench reads a catalog, groups sources and p
     return { ok: true, value: { commandId: 'control', result: { kind: 'success', text: capabilityCommandReceipt('recorded', sessionId) } } }
   })
   const { runtime, input, rpcCalls, capabilityRpcCalls } = await fixture({ bindings: false,
-    capabilityRpc: async endpoint => ({ ok: true, value: endpoint === 'session-catalog' ? structuredClone(entries) : [] }),
+    capabilityRpc: async endpoint => ({ ok: true, value: endpoint === 'session-catalog' ? sessionCatalog(entries) : [] }),
     commands: { list: async () => ({ ok: true, value: [{ name: 'capabilities' }] }), execute } })
   const view = runtime.renderRoot(); await runtime.flush()
   await openGlobalMenu(view, runtime, 'click')
@@ -1975,15 +1978,15 @@ test('sparkle session capability controls reload saved-only facts and cancel or 
     return pending.promise
   })
   const { runtime, setLocale } = await fixture({ bindings: false,
-    capabilityRpc: async endpoint => ({ ok: true, value: endpoint === 'session-catalog' ? structuredClone(entries) : [] }),
+    capabilityRpc: async endpoint => ({ ok: true, value: endpoint === 'session-catalog' ? sessionCatalog(entries) : [] }),
     commands: { list: async () => ({ ok: true, value: [{ name: 'capabilities' }] }), execute } })
   const view = runtime.renderRoot(); await runtime.flush(); await openGlobalMenu(view, runtime, 'click')
   fireEvent.click(view.getByRole('menuitem', { name: 'Session capability controls' })); await runtime.flush()
   await chooseCapabilityOption(view, 'Selection strategy', 'Closed')
-  fireEvent.click(view.getByRole('button', { name: 'Save and apply' })); await runtime.flush()
+  fireEvent.click(view.getByRole('button', { name: 'Apply to global' })); await runtime.flush()
   expect(document.body.textContent).toContain('Publication refused')
   expect(document.body.textContent).toContain('Closed')
-  fireEvent.click(view.getByRole('button', { name: 'Save and apply' })); await runtime.flush()
+  fireEvent.click(view.getByRole('button', { name: 'Apply to global' })); await runtime.flush()
   const signal = execute.mock.calls.at(-1)[3]
   fireEvent.click(view.getByRole('button', { name: 'Close PTC Plus settings' })); await runtime.flush()
   expect(signal.aborted).toBe(true)
@@ -2001,7 +2004,7 @@ test.each(['pending', 'usage'])('sparkle session capability %s receipt reports o
       text: capabilityCommandReceipt(state, sessionId) } } }
   })
   const { runtime } = await fixture({ bindings: false,
-    capabilityRpc: async endpoint => ({ ok: true, value: endpoint === 'session-catalog' ? structuredClone(entries) : [] }),
+    capabilityRpc: async endpoint => ({ ok: true, value: endpoint === 'session-catalog' ? sessionCatalog(entries) : [] }),
     commands: { list: async () => ({ ok: true, value: [{ name: 'capabilities' }] }), execute } })
   const view = runtime.renderRoot(); await runtime.flush(); await openGlobalMenu(view, runtime, 'click')
   fireEvent.click(view.getByRole('menuitem', { name: 'Session capability controls' })); await runtime.flush()
@@ -2017,6 +2020,44 @@ test.each(['pending', 'usage'])('sparkle session capability %s receipt reports o
   }
 })
 
+test('a paused session capability list states Host defaults and blocks staged writes', async () => {
+  const entries = [
+    { id: 'tools.probe', category: 'tool', source: { kind: 'host' }, saved: 'closed', temporary: 'inherit', effective: 'host' },
+    { id: 'mcpServers.docs', category: 'server', source: { kind: 'mcp', server: 'docs' }, saved: 'closed', temporary: 'inherit', effective: 'host' },
+  ]
+  const { runtime } = await fixture({ bindings: false,
+    capabilityRpc: async endpoint => ({ ok: true, value: endpoint === 'session-catalog'
+      ? sessionCatalog(entries, 'paused') : [] }),
+    commands: { list: async () => ({ ok: true, value: [{ name: 'capabilities' }] }) } })
+  const view = runtime.renderRoot(); await runtime.flush(); await openGlobalMenu(view, runtime, 'click')
+  fireEvent.click(view.getByRole('menuitem', { name: 'Session capability controls' })); await runtime.flush()
+  expect(view.getByText(/paused for this session/)).not.toBeNull()
+  const row = view.getByRole('button', { name: /^tools.probe$/ }).closest('.ptcPlusSessionCapabilityRow')
+  expect(row.textContent).toContain('Enabled')
+  expect(row.textContent).not.toContain('Pending')
+  const serverRow = view.getByRole('button', { name: /^mcpServers.docs$/ }).closest('.ptcPlusSessionCapabilityRow')
+  expect(serverRow.textContent).toContain('Host defaults')
+  fireEvent.click(view.getByRole('button', { name: /^tools.probe$/ }))
+  expect(view.getByRole('combobox', { name: 'Selection strategy' }).disabled).toBe(true)
+})
+
+test('session capability rows distinguish an MCP source rule from its resource capability', async () => {
+  const entries = [
+    { id: 'mcpServers.docs', category: 'server', source: { kind: 'mcp', server: 'docs' }, saved: 'automatic', temporary: 'inherit', effective: 'enabled' },
+    { id: 'mcp.docs', category: 'resource', source: { kind: 'mcp', server: 'docs' }, saved: 'automatic', temporary: 'inherit', effective: 'on-demand' },
+  ]
+  const { runtime } = await fixture({ bindings: false,
+    capabilityRpc: async endpoint => ({ ok: true, value: endpoint === 'session-catalog'
+      ? sessionCatalog(entries) : [] }),
+    commands: { list: async () => ({ ok: true, value: [{ name: 'capabilities' }] }) } })
+  const view = runtime.renderRoot(); await runtime.flush(); await openGlobalMenu(view, runtime, 'click')
+  fireEvent.click(view.getByRole('menuitem', { name: 'Session capability controls' })); await runtime.flush()
+  const serverRow = view.getByRole('button', { name: /^mcpServers.docs$/ }).closest('.ptcPlusSessionCapabilityRow')
+  const resourceRow = view.getByRole('button', { name: /^mcp.docs$/ }).closest('.ptcPlusSessionCapabilityRow')
+  expect(serverRow.querySelector('.ptcPlusCapabilityBadge').textContent).toBe('MCP source')
+  expect(resourceRow.querySelector('.ptcPlusCapabilityBadge').textContent).toBe('MCP')
+})
+
 test('session capability filters keep type and source compatible', async () => {
   const entries = [
     { id: 'tools.read', category: 'tool', source: { kind: 'host' }, effective: 'on-demand' },
@@ -2024,7 +2065,7 @@ test('session capability filters keep type and source compatible', async () => {
     { id: 'tools.mcp__docs__search', category: 'tool', source: { kind: 'mcp', server: 'docs' }, effective: 'on-demand' },
   ]
   const { runtime } = await fixture({ bindings: false,
-    capabilityRpc: async endpoint => ({ ok: true, value: endpoint === 'session-catalog' ? entries : [] }),
+    capabilityRpc: async endpoint => ({ ok: true, value: endpoint === 'session-catalog' ? sessionCatalog(entries) : [] }),
     commands: { list: async () => ({ ok: true, value: [{ name: 'capabilities' }] }) } })
   const view = runtime.renderRoot(); await runtime.flush(); await openGlobalMenu(view, runtime, 'click')
   fireEvent.click(view.getByRole('menuitem', { name: 'Session capability controls' })); await runtime.flush()
@@ -2051,7 +2092,7 @@ test.each([
       saved: 'automatic', temporary: 'inherit', effective: 'on-demand' },
   ]
   const { runtime } = await fixture({ bindings: false,
-    capabilityRpc: async endpoint => ({ ok: true, value: endpoint === 'session-catalog' ? entries : [] }),
+    capabilityRpc: async endpoint => ({ ok: true, value: endpoint === 'session-catalog' ? sessionCatalog(entries) : [] }),
     commands: { list: async () => ({ ok: true, value: [{ name: 'capabilities' }] }) } })
   const view = runtime.renderRoot(); await runtime.flush(); await openGlobalMenu(view, runtime, 'click')
   fireEvent.click(view.getByRole('menuitem', { name: 'Session capability controls' })); await runtime.flush()
@@ -2084,7 +2125,7 @@ test.each([
   const before = structuredClone(entries)
   const execute = vi.fn()
   const { runtime } = await fixture({ bindings: false,
-    capabilityRpc: async endpoint => ({ ok: true, value: endpoint === 'session-catalog' ? structuredClone(entries) : [] }),
+    capabilityRpc: async endpoint => ({ ok: true, value: endpoint === 'session-catalog' ? sessionCatalog(entries) : [] }),
     commands: { list: async () => ({ ok: true, value: [{ name: 'capabilities' }] }), execute } })
   const view = runtime.renderRoot(); await runtime.flush(); await openGlobalMenu(view, runtime, 'click')
   fireEvent.click(view.getByRole('menuitem', { name: 'Session capability controls' })); await runtime.flush()
@@ -2116,12 +2157,12 @@ test.each(['session', 'global'])('session capability footer applies the same dra
   expect(view.queryByRole('combobox', { name: 'Apply to' })).toBeNull()
   await chooseCapabilityOption(view, 'Selection strategy', 'Closed')
   expect(view.getByRole('button', { name: 'Apply to session' }).disabled).toBe(false)
-  expect(view.getByRole('button', { name: 'Save and apply' }).disabled).toBe(false)
+  expect(view.getByRole('button', { name: 'Apply to global' }).disabled).toBe(false)
   fireEvent.click(view.getByRole('button', { name: 'Discard changes' }))
   expect(commands.run).not.toHaveBeenCalled()
   expect(view.getByRole('button', { name: 'Apply to session' }).disabled).toBe(true)
   await chooseCapabilityOption(view, 'Selection strategy', 'Closed')
-  fireEvent.click(view.getByRole('button', { name: scope === 'session' ? 'Apply to session' : 'Save and apply' }))
+  fireEvent.click(view.getByRole('button', { name: scope === 'session' ? 'Apply to session' : 'Apply to global' }))
   await act(async () => {})
   expect(commands.run).toHaveBeenCalledTimes(1)
   expect(view.getByRole('button', { name: 'Discard changes' }).disabled).toBe(true)
@@ -2137,12 +2178,12 @@ test('global capability application retains a draft until the same temporary ove
       return { kind: 'success', text: capabilityCommandReceipt('recorded', sessionId) }
     } })
   await chooseCapabilityOption(view, 'Selection strategy', 'Closed')
-  fireEvent.click(view.getByRole('button', { name: 'Save and apply' }))
+  fireEvent.click(view.getByRole('button', { name: 'Apply to global' }))
   await act(async () => {})
   expect(view.getByText(/remaining changes were not applied/)).not.toBeNull()
-  expect(view.getByRole('button', { name: 'Save and apply' }).disabled).toBe(false)
+  expect(view.getByRole('button', { name: 'Apply to global' }).disabled).toBe(false)
   await chooseCapabilityOption(view, 'Selection strategy', 'Inherit session settings')
-  expect(view.getByRole('button', { name: 'Save and apply' }).disabled).toBe(true)
+  expect(view.getByRole('button', { name: 'Apply to global' }).disabled).toBe(true)
   expect(view.getByRole('button', { name: 'Apply to session' }).disabled).toBe(false)
   view.unmount()
 })
@@ -2154,7 +2195,7 @@ async function sessionControlsFixture({ read, run, sessionId = 'client-session' 
     subscribers.add(listener); return () => subscribers.delete(listener)
   } }
   const commands = { source: () => source, run: vi.fn(run) }
-  const inspectSessionCatalog = vi.fn(read)
+  const inspectSessionCatalog = vi.fn(async (sessionId, signal) => sessionCatalog(await read(sessionId, signal)))
   const SessionCapabilityControls = createSessionCapabilityControlsView(React, {
     commands, Modal: createFallbackModal(React, createPortal), Select: createSelect(React), inspectSessionCatalog,
   })
@@ -2203,7 +2244,7 @@ test.each(['feature', 'service', 'session'])('session controls abort an in-fligh
   await chooseCapabilityOption(view, 'Selection strategy', 'Closed')
   fireEvent.click(view.getByRole('button', { name: 'Apply to session' })); await act(async () => {})
   expect(view.queryByRole('combobox', { name: 'Apply to' })).toBeNull()
-  expect(view.getByRole('button', { name: 'Save and apply' }).disabled).toBe(true)
+  expect(view.getByRole('button', { name: 'Apply to global' }).disabled).toBe(true)
   expect(view.getByRole('button', { name: 'Discard changes' }).disabled).toBe(true)
   const signal = commands.run.mock.calls[0][2]
   if (change === 'feature') { props.enabled = false; rerender() }
@@ -7896,7 +7937,7 @@ test('session capability columns cycle all five sorts across categories and pres
     expect(actual.querySelector('.ptcPlusSessionCapabilityPending').textContent).toBe('Availability: Closed · Disclosure: On demand')
     const cases = [
       ['Capability', ['Alpha', 'Bravo', 'Delta', 'Echo', 'Zulu'], ['Zulu', 'Echo', 'Delta', 'Bravo', 'Alpha']],
-      ['Type', ['Echo', 'Delta', 'Alpha', 'Bravo', 'Zulu'], ['Bravo', 'Zulu', 'Alpha', 'Echo', 'Delta']],
+      ['Type', ['Delta', 'Echo', 'Alpha', 'Bravo', 'Zulu'], ['Bravo', 'Zulu', 'Alpha', 'Echo', 'Delta']],
       ['Source', ['Echo', 'Delta', 'Bravo', 'Zulu', 'Alpha'], ['Alpha', 'Bravo', 'Zulu', 'Echo', 'Delta']],
       ['Enabled', ['Bravo', 'Zulu', 'Alpha', 'Echo', 'Delta'], ['Delta', 'Zulu', 'Alpha', 'Echo', 'Bravo']],
       ['Context', ['Bravo', 'Zulu', 'Echo', 'Alpha', 'Delta'], ['Delta', 'Alpha', 'Echo', 'Zulu', 'Bravo']],

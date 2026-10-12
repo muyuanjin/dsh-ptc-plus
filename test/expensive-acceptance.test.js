@@ -20,6 +20,7 @@ import {
   auditRequestHeaders,
   auditSystemPrompts,
   auditRuntimeContexts,
+  isRuntimeContextSource,
   machineBudgetFailures,
   MACHINE_BUDGET_KEYS,
   validateEditTransports,
@@ -28,6 +29,7 @@ import {
 } from '../scripts/acceptance-contract.mjs'
 import { decodeValue, encodeValue } from '../internal/value-wire.js'
 import { editRejectedCell } from '../internal/rejected-cell-editor.js'
+import { runtimeAvailabilityMessage } from '../internal/runtime-messages.js'
 import { ptcToolsMode } from '../scripts/dsh-host-contract.mjs'
 import { analyzeSession } from '../scripts/ab-headless-trajectories.mjs'
 import { Session } from '@deepseek-ai/dsh-session'
@@ -82,6 +84,28 @@ test('accounts for capability plans, navigation and recovered descriptions with 
     { ...descriptions, seq: 6 }, { type: 'request/header', seq: 7 }], config)
   assert.deepEqual(recovered.failures, [])
   assert.equal(recovered.requests.at(-1).sections.length, 3)
+})
+
+test('accounts for released provider availability as a bounded runtime-context state', () => {
+  const header = { type: 'session', id: 'availability-context-audit' }
+  const config = { allowed: [{ name: 'tools:ptc-plus-runtime-availability', maxChars: 4096 }], maxSnapshotChars: 4096 }
+  const availability = (seq, state) => ({ type: 'user/message', seq, time: seq, surfaceOp: 'append',
+    data: runtimeAvailabilityMessage(state) })
+  const audit = auditRuntimeContexts([header, availability(1, 'unloaded')], config)
+  assert.deepEqual(audit.failures, [])
+  assert.deepEqual(audit.sources, ['plugin:ptc-plus:runtime-availability'])
+  assert.equal(isRuntimeContextSource('plugin:ptc-plus:runtime-availability'), true)
+  assert.equal(isRuntimeContextSource('agent-message:relay'), true)
+  assert.equal(isRuntimeContextSource('subagent-settled:notice'), true)
+  assert.equal(isRuntimeContextSource('repeat-tool-reminder:notice'), true)
+  assert.equal(audit.snapshots.at(-1).sections[0].name, 'tools:ptc-plus-runtime-availability')
+  assert.equal(audit.snapshots.at(-1).sections[0].chars, availability(1, 'unloaded').data.content[0].text.length)
+  assert.match(auditRuntimeContexts([header, availability(1, 'unloaded')]).failures.join('\n'),
+    /disallowed PTC Plus section tools:ptc-plus-runtime-availability/)
+  assert.match(auditRuntimeContexts([header, availability(1, 'unloaded')],
+    { ...config, allowed: [{ name: config.allowed[0].name, maxChars: 1 }] }).failures.join('\n'), /budget is 1/)
+  assert.match(auditRuntimeContexts([header, availability(1, 'unloaded'), availability(2, 'unloaded')], config)
+    .failures.join('\n'), /repeats an unchanged/)
 })
 
 test('additive recovered descriptions retain visible subsets, enforce their total and reassert only removed entries', () => {
@@ -221,7 +245,7 @@ function journal({ calls = [], completion, diagnostics = [], status = 'durable' 
 
 function acceptanceEvents() {
   const system = [
-    'You are a coding agent powered by the model model. Your working directory is X:\\fixture\\workspace.',
+    'You are a coding agent powered by the model model.',
     'declare const tools: {}',
     'declare const capabilities: {}',
   ].join('\n')
@@ -337,7 +361,7 @@ test('validates a clean expensive-acceptance profile', () => {
   config:
     includeHarnessIdentity: false
     includeRuntimeContext: true
-    persona: 'You are a coding agent powered by the {{model}} model. Your working directory is {{cwd}}.'
+    persona: 'You are a coding agent powered by the {{model}} model.'
 - id: ptc-plus
   name: dsh-ptc-plus
 - id: tools
@@ -364,6 +388,24 @@ test('validates a clean expensive-acceptance profile', () => {
   assert.throws(() => validateAcceptanceConfig(rows, headlessRuntime, {
     looseTopLevelFunctionClassRedeclarations: true,
   }), /does not enable looseTopLevelFunctionClassRedeclarations/)
+  const managed = structuredClone(rows)
+  managed.find(row => row.id === 'ptc-plus').config = {
+    capabilityManagementEnabled: true,
+    capabilityContextEnabled: true,
+    capabilityPolicy: JSON.stringify({ schema: 'ptc-capability-policy/v1',
+      defaults: { availability: 'enabled', disclosure: 'adaptive' },
+      categories: {}, mcpServers: {},
+      items: { 'tools.write': { availability: 'closed' }, 'tools.pwsh': { disclosure: 'host' } },
+      allocation: { baseline: true, statistics: false, budget: true } }),
+  }
+  assert.equal(validateAcceptanceConfig(managed, headlessRuntime, { managed: true }), true)
+  assert.throws(() => validateAcceptanceConfig(rows, headlessRuntime, { managed: true }),
+    /does not carry the managed capability fixture/)
+  const shrunk = structuredClone(managed)
+  shrunk.push({ id: 'tool-fs', disabled: true })
+  assert.equal(validateAcceptanceConfig(shrunk, headlessRuntime, { managed: true, disabledModules: ['tool-fs'] }), true)
+  assert.throws(() => validateAcceptanceConfig(managed, headlessRuntime, { managed: true, disabledModules: ['tool-fs'] }),
+    /does not disable module tool-fs/)
 
   const contaminated = structuredClone(rows)
   contaminated.find(row => row.id === 'agent-instructions').disabled = false
@@ -507,6 +549,68 @@ test('requires acceptance source groups to land in distinct cells', () => {
     },
   }, { provider: 'provider', model: 'model', cwd: 'X:\\fixture\\workspace' })
   assert.match(report.failures.join('\n'), /required source cell group is missing/)
+})
+
+test('enforces declared system literals and rejects forbidden model-visible text', () => {
+  const accepted = inspectLog(acceptanceEvents(), {
+    id: 'system-literals', title: 'System literals', task: 'task',
+    expect: {
+      systemIncludes: ['declare const tools: {}', 'declare const capabilities: {}'],
+      systemExcludes: ['interface ToolArgsMap {}'],
+    },
+  }, { provider: 'provider', model: 'model', cwd: 'X:\\fixture\\workspace' })
+  assert.deepEqual(accepted.failures, [])
+  const rejected = inspectLog(acceptanceEvents(), {
+    id: 'system-literals', title: 'System literals', task: 'task',
+    expect: {
+      systemIncludes: ['interface ToolArgsMap {}'],
+      systemExcludes: ['declare const tools: {}'],
+    },
+  }, { provider: 'provider', model: 'model', cwd: 'X:\\fixture\\workspace' })
+  assert.match(rejected.failures.join('\n'), /system prompt omits required literal/)
+  assert.match(rejected.failures.join('\n'), /system prompt contains forbidden literal/)
+})
+
+test('rejects explicitly forbidden diagnostics from a settled result', () => {
+  const events = acceptanceEvents()
+  const result = events.find(event => event.type === 'tool/result' && event.data.message.source.callId === 'two')
+  result.data.meta.dshPtcPlus = journal({
+    calls: [{ global: 'tools', member: 'read', value: { lines: [{ text: 'sentinel' }] } }],
+    completion: 42,
+    diagnostics: [{ severity: 'warning', code: 'PTC-R002', phase: 'replay', stateEffect: 'unchanged',
+      message: 'skipped 1 unreconstructable historical cell(s)' }],
+  })
+  const report = inspectLog(events, {
+    id: 'forbidden-diagnostic', title: 'Forbidden diagnostic', task: 'task',
+    expect: { forbiddenDiagnosticCodes: ['PTC-R002'] },
+  }, { provider: 'provider', model: 'model', cwd: 'X:\\fixture\\workspace' })
+  assert.match(report.failures.join('\n'), /forbidden PTC diagnostic: warning\[PTC-R002\]/)
+})
+
+test('validates phased managed scenario descriptors and their child expectations', () => {
+  const budget = { maxModelRequests: 4, maxDirectCalls: 2, maxSourceChars: 2000, maxRepeatedSourceCalls: 0,
+    maxResultChars: 4000, maxAssistantChars: 4000, maxTokenTraffic: 20000, maxRuntimeContextChars: 8000 }
+  const descriptor = {
+    id: 'managed-fixture', title: 'Managed fixture', default: false, task: 'task', variant: 'managed',
+    phases: [{ task: 'next', variant: 'managed-no-fs' }],
+    expect: { machineBudget: budget, runtimeContexts: { allowed: [], requiredTransitions: [], maxSnapshotChars: 4096 } },
+  }
+  assert.equal(selectScenarioDescriptors([descriptor], ['managed-fixture']).length, 1)
+  assert.throws(() => selectScenarioDescriptors([{ ...descriptor, variant: 'Managed' }], ['managed-fixture']),
+    /variant must be a kebab-case name/)
+  assert.throws(() => selectScenarioDescriptors([{ ...descriptor, phases: [] }], ['managed-fixture']),
+    /phases must be a non-empty array/)
+  assert.throws(() => selectScenarioDescriptors([{ ...descriptor, phases: [{ task: '' }] }], ['managed-fixture']),
+    /requires a task and an optional variant name/)
+  assert.throws(() => selectScenarioDescriptors([{ ...descriptor, phases: [{ task: 'next', extra: true }] }], ['managed-fixture']),
+    /requires a task and an optional variant name/)
+  assert.throws(() => selectScenarioDescriptors([{ ...descriptor, expect: { ...descriptor.expect, systemIncludes: [] } }], ['managed-fixture']),
+    /systemIncludes must be a non-empty array of literals/)
+  assert.throws(() => selectScenarioDescriptors([{ ...descriptor, expect: { ...descriptor.expect, systemChanges: -1 } }], ['managed-fixture']),
+    /systemChanges must be a non-negative safe integer/)
+  assert.throws(() => selectScenarioDescriptors([{ ...descriptor,
+    expect: { ...descriptor.expect, childSession: { runtimeContexts: { allowed: [], maxSnapshotChars: 0 } } } }], ['managed-fixture']),
+    /maxSnapshotChars must be a positive safe integer/)
 })
 
 test('counts cache-write tokens in expensive acceptance traffic budgets', () => {
@@ -1306,6 +1410,49 @@ test('audits named runtime-context append, update, clearance, narration, and bou
   }), /maxSnapshotChars must be a positive safe integer/)
 })
 
+test('rejects a replanned capability plan when the scenario forbids plan updates', async () => {
+  const session = Session.create('managed-plan-update')
+  const agent = { id: session.id, session }
+  const planFrom = async (overrides, schemas) => {
+    const env = createCapabilityEnvironment({ ctx: {}, config: { capabilityManagementEnabled: true,
+      capabilityBaseline: '[]', capabilityOverrides: JSON.stringify(overrides), capabilityStatistics: '{"enabled":false}',
+      capabilityBudgetBytes: 4096, capabilityDirectoryBytes: 4096 }, toolSchemasForAgent: () => schemas })
+    await env.prepare(agent, [])
+    const accepted = await env.preStep({ agent }, async () => ({ kind: 'enter', messages: [] }))
+    return accepted.messages.find(message => message.source?.form === 'capability-plan')
+  }
+  const schema = name => ({ name, description: `Owner contract for ${name}.`, parameters: { type: 'object' }, output: { type: 'string' } })
+  const frozen = await planFrom({}, [])
+  const replanned = await planFrom({ 'tools.probe': 'full' }, [schema('probe')])
+  assert.ok(frozen !== undefined && replanned !== undefined && frozen.content[0].text !== replanned.content[0].text)
+  const events = [
+    { type: 'session', id: session.id },
+    { type: 'user/message', seq: 1, data: frozen },
+    { type: 'request/header', seq: 2 },
+    { type: 'user/message', seq: 3, data: replanned },
+  ]
+  const config = {
+    allowed: [{ name: 'tools:ptc-plus-capability-plan', maxChars: 4096 }],
+    requiredTransitions: [],
+    forbiddenTransitions: [{ name: 'tools:ptc-plus-capability-plan', type: 'update' }],
+    maxSnapshotChars: 4096,
+  }
+  assert.match(auditRuntimeContexts(events, config).failures.join('\n'),
+    /tools:ptc-plus-capability-plan performed forbidden update/)
+  assert.deepEqual(auditRuntimeContexts(events, { ...config, forbiddenTransitions: [] }).failures, [])
+  assert.throws(() => validateRuntimeContextConfig({
+    allowed: [], forbiddenTransitions: [{ name: 'tools:ptc-plus-capability-plan', type: 'update' }], maxSnapshotChars: 64,
+  }), /forbiddenTransitions names unallowed context/)
+  assert.throws(() => validateRuntimeContextConfig({
+    allowed: [{ name: 'tools:ptc-plus-capability-plan', maxChars: 4096 }], requiredTransitions: [],
+    forbiddenTransitions: [
+      { name: 'tools:ptc-plus-capability-plan', type: 'update' },
+      { name: 'tools:ptc-plus-capability-plan', type: 'update' },
+    ],
+    maxSnapshotChars: 64,
+  }), /duplicate forbidden runtime context transition/)
+})
+
 test('compares canonical request headers without schema or system approximations', () => {
   const tool = (name, description = 'schema') => ({
     name,
@@ -1418,6 +1565,16 @@ test('audits actual ordered system messages even when the request header stays u
     assert.match(audit(next).failures.join('\n'), /system prompt changed systemMessages.length/)
     assert.deepEqual(auditRequestHeaders(next).failures, [])
   }
+  const declared = structuredClone(events)
+  declared.push({ seq: 4, time: 4, type: 'system/message', data: { message: message('changed') }, surfaceOp: 'append' })
+  declared.push({ seq: 5, time: 5, type: 'assistant/attempt', data: { turn: 1, step: 2 } })
+  const permitted = auditSystemPrompts([{ type: 'session', version: 4 }, ...declared], { allowedChanges: 1 })
+  assert.deepEqual(permitted.failures, [])
+  assert.deepEqual(permitted.changes.map(change => change.seq), [5])
+  assert.match(auditSystemPrompts([{ type: 'session', version: 4 }, ...declared], { allowedChanges: 2 })
+    .failures.join('\n'), /system prompt changes are 1; scenario policy requires 2/)
+  assert.throws(() => auditSystemPrompts([{ type: 'session', version: 4 }, ...declared], { allowedChanges: -1 }),
+    /allowedChanges must be a non-negative safe integer/)
   for (const text of ['stable', 'changed']) {
     const next = structuredClone(events)
     next.push({ seq: 4, time: 4, type: 'system/message', data: { message: message(text) },
@@ -1649,6 +1806,11 @@ test('derives the five ADR-owned default workflows from scenario descriptors', a
   ])
   assert.deepEqual(selectScenarioDescriptors(descriptors, ['function-class-redeclaration-iteration']).map(item => item.id), [
     'function-class-redeclaration-iteration',
+  ])
+  assert.deepEqual(selectScenarioDescriptors(descriptors, [
+    'managed-adaptive-surface', 'managed-session-resume', 'managed-surface-change', 'subagent-continuity',
+  ]).map(item => item.id), [
+    'managed-adaptive-surface', 'managed-session-resume', 'managed-surface-change', 'subagent-continuity',
   ])
   assert.throws(() => selectScenarioDescriptors(descriptors, ['missing']), /unknown acceptance scenario/)
   for (const programWork of [

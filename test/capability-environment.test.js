@@ -16,7 +16,7 @@ import { sessionFormatCatalog } from '@deepseek-ai/dsh-session-format-catalog'
 import { SkillRegistry } from '@deepseek-ai/dsh-skill'
 import * as skillTool from '@deepseek-ai/dsh-tool-skill'
 import { SystemPrompt } from '@deepseek-ai/dsh-system-prompt'
-import { ToolRuntime, defineTool } from '@deepseek-ai/dsh-tools'
+import { ToolRuntime, defineTool, renderToolsSdk } from '@deepseek-ai/dsh-tools'
 import { createCapabilityEnvironment as createEnvironment, sessionCapabilitySettings } from '../internal/capability-environment.js'
 import { capabilityInspect, capabilitySearch, toolCapabilityMetadata, toolSdkSchemas } from '../internal/program-bindings.js'
 import { appendOnlySession } from './plugin-fixture.js'
@@ -51,7 +51,10 @@ test('session catalog observation requires the same active PTC agent and returns
   t.after(() => env.dispose())
   await acceptPreparation(env, agents[0], [])
   const before = agents[0].session.snapshotEvents().length
-  const catalog = await env.describeSessionCatalog({ sessionId: 'observed-session' }, agents[0].signal)
+  const observation = await env.describeSessionCatalog({ sessionId: 'observed-session' }, agents[0].signal)
+  assert.equal(observation.schema, 'ptc-capability-session-catalog/v1')
+  assert.equal(observation.management, 'managed')
+  const catalog = observation.entries
   assert.deepEqual(catalog.find(entry => entry.id === 'tools.probe') && {
     saved: catalog.find(entry => entry.id === 'tools.probe').saved,
     sessionSourceSelection: catalog.find(entry => entry.id === 'tools.probe').sessionSourceSelection,
@@ -97,7 +100,7 @@ for (const frozenClosed of [true, false]) test(`session catalog preserves frozen
   const sourceBefore = structuredClone(env.describe(agent).sourceSettings)
   const eventsBefore = agent.session.snapshotEvents()
   const catalog = await env.describeSessionCatalog({ sessionId: agent.session.id }, agent.signal)
-  const byId = id => catalog.find(entry => entry.id === id)
+  const byId = id => catalog.entries.find(entry => entry.id === id)
   assert.equal(byId('mcpServers.docs').saved, frozenClosed ? 'automatic' : 'closed')
   assert.equal(byId('mcpServers.docs').sessionSourceSelection, frozenClosed ? 'closed' : 'automatic')
   assert.equal(byId('mcpServers.docs').temporary, 'automatic')
@@ -147,15 +150,15 @@ for (const generation of [1, 2]) test(`composed saved policy preserves historica
   const current = composedConfig(policy)
   env.reconfigure(current)
   const before = agent.session.snapshotEvents()
-  const catalog = await env.catalogFor(agent, agent.signal)
-  const probe = catalog.find(entry => entry.id === 'tools.probe')
+  const catalog = await env.describeSessionCatalog({ sessionId: agent.session.id }, agent.signal)
+  const probe = catalog.entries.find(entry => entry.id === 'tools.probe')
   assert.deepEqual(probe.savedRule, { disclosure: 'on-demand' })
   assert.equal(probe.sessionSourceSelection, 'full')
   assert.equal(probe.effective, 'full')
   assert.equal(Object.hasOwn(probe, 'sourceRule'), false)
   assert.equal(Object.hasOwn(probe, 'sourceDimensions'), false)
   assert.equal(Object.hasOwn(probe, 'effectiveDimensions'), false)
-  const server = catalog.find(entry => entry.id === 'mcpServers.docs')
+  const server = catalog.entries.find(entry => entry.id === 'mcpServers.docs')
   assert.equal(server.sessionSourceSelection, 'closed')
   assert.equal(server.enclosingClosure, true)
   assert.equal(server.effective, 'closed')
@@ -178,7 +181,7 @@ for (const generation of [1, 2]) test(`composed saved policy preserves historica
   assert.deepEqual(cleared.temporaryRule, { availability: 'automatic', disclosure: 'automatic' })
 })
 
-test('composed saved policy observes historical disabled management as actual Host enablement while preserving closure preference', async t => {
+test('composed saved policy reports a historical management-off session as Host delegation while preserving closure preference', async t => {
   const hostSections = [{ name: 'mcp-resource-servers', text: 'as the server argument: ["docs"].' }, { name: 'mcp:docs', text: 'Docs server' }]
   const schemas = ['run_code', 'mcp__docs__search', 'read_mcp_resource'].map(schema)
   const agent = agentFor(Session.create('mixed-disabled-management'))
@@ -193,7 +196,7 @@ test('composed saved policy observes historical disabled management as actual Ho
   const server = (await env.catalogFor(agent, agent.signal)).find(entry => entry.id === 'mcpServers.docs')
   assert.equal(server.sessionSourceSelection, 'closed')
   assert.equal(server.enclosingClosure, false)
-  assert.equal(server.effective, 'enabled')
+  assert.equal(server.effective, 'host')
   assert.equal(server.managementEnabled, false)
   assert.deepEqual(env.projectMembers(agent, ['mcp__docs__search', 'read_mcp_resource']), ['mcp__docs__search', 'read_mcp_resource'])
   assert.deepEqual(agent.session.snapshotEvents(), before)
@@ -208,11 +211,30 @@ test('session catalog leaves inheritance unknown without a validated live or rec
     toolSchemasForAgent: () => ['run_code', 'probe', 'mcp__docs__search'].map(schema) })
   t.after(() => env.dispose())
   const catalog = await env.describeSessionCatalog({ sessionId: agent.session.id }, agent.signal)
-  assert.ok(catalog.length > 0)
-  assert.ok(catalog.every(entry => entry.sessionSourceSelection === 'unknown' && entry.effective === 'pending'))
-  assert.equal(catalog.find(entry => entry.id === 'mcpServers.docs').saved, 'closed')
+  assert.equal(catalog.management, 'unknown')
+  assert.ok(catalog.entries.length > 0)
+  assert.ok(catalog.entries.every(entry => entry.sessionSourceSelection === 'unknown' && entry.effective === 'pending'))
+  assert.equal(catalog.entries.find(entry => entry.id === 'mcpServers.docs').saved, 'closed')
   assert.equal(env.stateFor(agent), undefined)
   assert.deepEqual(agent.session.snapshotEvents(), [])
+})
+
+test('a paused session catalog states the Host default for every row instead of an unconverging pending state', async t => {
+  const hostSections = [{ name: 'mcp-resource-servers', text: 'as the server argument: ["docs"].' }, { name: 'mcp:docs', text: 'Docs server' }]
+  const schemas = ['run_code', 'probe', 'mcp__docs__search', 'read_mcp_resource'].map(schema)
+  const agent = agentFor(Session.create('paused-catalog'))
+  const ctx = { agents: { list: () => [agent] }, systemPrompt: { assemble: async () => ({ sections: hostSections }) } }
+  const env = createCapabilityEnvironment({ ctx, config: composedConfig(undefined, { capabilityContextEnabled: false }),
+    toolSchemasForAgent: () => schemas })
+  t.after(() => env.dispose())
+  await acceptPreparation(env, agent, hostSections)
+  const catalog = await env.describeSessionCatalog({ sessionId: agent.session.id }, agent.signal)
+  assert.equal(catalog.management, 'paused')
+  assert.ok(catalog.entries.length > 0)
+  assert.ok(catalog.entries.every(entry => entry.effective === 'host'),
+    'a paused session has no allocation to report, so every row states the Host default')
+  assert.equal(catalog.entries.find(entry => entry.id === 'mcpServers.docs').effective, 'host')
+  assert.equal(catalog.entries.find(entry => entry.id === 'tools.mcp__docs__search').effective, 'host')
 })
 
 test('session capability choices preserve their sources across refresh, global changes and cold restore', async t => {
@@ -655,7 +677,26 @@ test('reenabling after provider withdrawal cannot restore an earlier frozen capa
   assert.equal(state.snapshot.plan.entries.find(entry => entry.id === 'tools.probe').selection, 'full')
 })
 
-test('new Skills outside a frozen plan are blocked before loading and become available after explicit refresh', async t => {
+test('a routine provider release keeps the frozen plan when the session resumes', async t => {
+  const session = Session.create('unloaded-plan-restore')
+  const agent = agentFor(session)
+  const ctx = { systemPrompt: { assemble: async () => ({ sections: [] }) } }
+  const original = createCapabilityEnvironment({ ctx, config: config({ 'tools.probe': 'closed' }), toolSchemasForAgent: () => [schema('probe')] })
+  const prepared = await acceptPreparation(original, agent, [])
+  const frozenPlan = JSON.stringify(prepared.snapshot.plan)
+  session.append('user/message', runtimeAvailabilityMessage('unloaded'), { surfaceOp: 'append' })
+  await original.dispose()
+  const resumed = createCapabilityEnvironment({ ctx, config: config({ 'tools.probe': 'full' }), toolSchemasForAgent: () => [schema('probe')] })
+  t.after(() => resumed.dispose())
+  const state = await acceptPreparation(resumed, agent, [])
+  assert.equal(JSON.stringify(state.snapshot.plan), frozenPlan,
+    'saved configuration must not redistribute a session that resumed after a routine release')
+  assert.equal(state.snapshot.plan.entries.find(entry => entry.id === 'tools.probe').selection, 'closed')
+  assert.equal(session.snapshotEvents().filter(event => event.data?.source?.form === 'capability-plan').length, 1,
+    'resuming after a routine release must not publish a second plan')
+})
+
+test('new Skills outside a frozen plan stay declared and usable until refresh folds them into the plan', async t => {
   const ctx = new Context()
   new SystemPrompt(ctx, { includeHarnessIdentity: false, includeRuntimeContext: false })
   new ToolRuntime(ctx, { mode: 'native' })
@@ -687,13 +728,56 @@ test('new Skills outside a frozen plan are blocked before loading and become ava
       { messages, turn: 2, step: 1, signal: agent.signal }, async () => ({ kind: 'enter', messages })))
   }
   const closed = await invoke()
-  assert.equal(bodyReads, 0)
-  assert.equal(closed.messages.some(message => message.source.kind === 'skill-invocation'), false)
+  assert.equal(bodyReads, 1)
+  assert.match(closed.messages.find(message => message.source.kind === 'skill-invocation').content[0].text, /BODY new-skill/)
   assert.equal(env.stateFor(agent).snapshot.capabilities.some(item => item.id === 'skills.new-skill'), false)
   await env.refresh(agent, [], agent.signal)
+  assert.equal(env.stateFor(agent).snapshot.capabilities.some(item => item.id === 'skills.new-skill'), true)
   const opened = await invoke()
-  assert.equal(bodyReads, 1)
+  assert.equal(bodyReads, 2)
   assert.match(opened.messages.find(message => message.source.kind === 'skill-invocation').content[0].text, /BODY new-skill/)
+})
+
+test('Host tools added after the plan froze stay declared and callable until refresh', async t => {
+  const ctx = new Context(); t.after(() => ctx.fiber.dispose())
+  new SystemPrompt(ctx, { includeHarnessIdentity: false, includeRuntimeContext: false })
+  new ToolRuntime(ctx, { mode: 'native' })
+  const tool = name => defineTool({ name, description: name, parameters: {},
+    output: { schema: { type: 'string' }, render: () => [] }, execute: async () => name })
+  ctx.effect(() => ctx.tools.register(tool('probe')))
+  const agent = agentFor(Session.create('live-tool-addition'))
+  const env = createCapabilityEnvironment({ ctx, config: config(),
+    toolSchemasForAgent: target => toolSdkSchemas(ctx.tools, target) })
+  t.after(() => env.dispose())
+  await acceptPreparation(env, agent, [])
+  ctx.effect(() => ctx.tools.register(tool('added')))
+  await env.prepare(agent, [])
+  const state = env.stateFor(agent)
+  assert.equal(state.snapshot.capabilities.some(item => item.id === 'tools.added'), false,
+    'the live addition stays outside the frozen plan until an explicit refresh')
+  assert.deepEqual(env.projectMembers(agent, ['probe', 'added']), ['probe', 'added'])
+  assert.deepEqual(env.visibleSchemas(agent, [schema('probe'), schema('added')]).map(item => item.name), ['probe', 'added'])
+  assert.match(env.sdk(agent, 'NATIVE SDK'), /added/)
+  assert.equal(env.adaptFunction(agent, 'added', () => 'ok')(), 'ok')
+})
+
+test('an explicit availability rule keeps a late Host tool closed across declarations and dispatch', async t => {
+  const ctx = new Context(); t.after(() => ctx.fiber.dispose())
+  new SystemPrompt(ctx, { includeHarnessIdentity: false, includeRuntimeContext: false })
+  new ToolRuntime(ctx, { mode: 'native' })
+  const tool = name => defineTool({ name, description: name, parameters: {},
+    output: { schema: { type: 'string' }, render: () => [] }, execute: async () => name })
+  ctx.effect(() => ctx.tools.register(tool('kept')))
+  const agent = agentFor(Session.create('late-closed-tool'))
+  const env = createCapabilityEnvironment({ ctx, config: config({ 'tools.closed-later': 'closed' }),
+    toolSchemasForAgent: target => toolSdkSchemas(ctx.tools, target) })
+  t.after(() => env.dispose())
+  await acceptPreparation(env, agent, [])
+  ctx.effect(() => ctx.tools.register(tool('closed-later')))
+  await env.prepare(agent, [])
+  assert.deepEqual(env.projectMembers(agent, ['kept', 'closed-later']), ['kept'])
+  assert.deepEqual(env.visibleSchemas(agent, [schema('kept'), schema('closed-later')]).map(item => item.name), ['kept'])
+  assert.throws(() => env.adaptFunction(agent, 'closed-later', () => 'ok')(), /closed-later/)
 })
 
 async function acceptPreparation(env, agent, sections) {
@@ -1149,12 +1233,33 @@ test('settings inventory integrates tools Skills and joint MCP resources and tem
   assert.match(resources[0].contract, /tools\.list_mcp_resources/)
   assert.match(resources[0].contract, /tools\.list_mcp_resource_templates/)
   assert.match(resources[0].contract, /tools\.read_mcp_resource/)
+  assert.match(resources[0].description, /registered resource layer/)
+  assert.doesNotMatch(resources[0].description, /resources and templates from/)
+  assert.equal(env.metadata(agent).find(entry => entry.namespace === 'mcp').members
+    .find(member => member.name === 'docs').description, resources[0].description)
   assert.deepEqual(catalog.find(entry => entry.id === 'tools.mcp__docs__search').source, { kind: 'mcp', server: 'docs' })
   assert.deepEqual(catalog.find(entry => entry.id === 'tools.read').source, { kind: 'host' })
   assert.equal(JSON.stringify(state.snapshot), frozen)
   assert.equal(Object.hasOwn(state.snapshot.capabilities.find(entry => entry.id === 'skills.image-design'), 'source'), false)
   assert.equal(bodies, 0)
   assert.deepEqual(agent.session.snapshotEvents(), [])
+})
+
+test('capability contracts keep the Host SDK member shape for valid and exotic names', async t => {
+  const agent = agentFor(Session.create('sdk-member-shape'))
+  const schemas = [schema('mcp__docker__firecrawl_scrape'), { ...schema('exotic-name'), description: 'Exotic owner contract.' }]
+  const env = createCapabilityEnvironment({ ctx: { systemPrompt: { assemble: async () => ({ sections: [] }) } },
+    config: config({ 'tools.mcp__docker__firecrawl_scrape': 'full', 'tools.exotic-name': 'full' }),
+    toolSchemasForAgent: () => schemas })
+  t.after(() => env.dispose())
+  const state = await env.prepare(agent, [])
+  const contract = id => state.snapshot.capabilities.find(item => item.id === id).contract
+  assert.match(contract('tools.mcp__docker__firecrawl_scrape'), /tools\.mcp__docker__firecrawl_scrape\(args: /)
+  assert.doesNotMatch(contract('tools.mcp__docker__firecrawl_scrape'), /tools\[/)
+  assert.match(contract('tools.exotic-name'), /tools\["exotic-name"\]\(args: /)
+  const hostSdk = renderToolsSdk(schemas)
+  assert.match(hostSdk, /\n  mcp__docker__firecrawl_scrape: /)
+  assert.match(hostSdk, /\n  "exotic-name": /)
 })
 
 
@@ -1386,11 +1491,14 @@ test('disposing Skill providers contracts discovery and shared loading without r
   assert.equal(await retained({ name: 'probe' }), 'probe')
   const removeNew = register('new-skill')
   await acceptPreparation(env, agent, [])
-  assert.deepEqual(env.metadata(agent)[0].members.map(item => item.name), ['probe'])
+  assert.deepEqual(env.metadata(agent)[0].members.map(item => item.name), ['probe', 'new-skill'])
+  assert.equal(env.stateFor(agent).snapshot.capabilities.some(item => item.id === 'skills.new-skill'), false,
+    'the live addition stays outside the frozen plan until an explicit refresh')
   agent.runMaintenance = operation => operation(agent.signal)
   ctx.systemPrompt = { assemble: async () => ({ sections: [] }) }
   await env.refresh(agent)
   assert.deepEqual(env.metadata(agent)[0].members.map(item => item.name).sort(), ['new-skill', 'probe'])
+  assert.equal(env.stateFor(agent).snapshot.capabilities.some(item => item.id === 'skills.new-skill'), true)
   await removeRestored()
   await removeNew()
 })
@@ -1627,7 +1735,8 @@ test('disposing an MCP resource provider removes discovery, selectors and recove
   remove()
   ctx.effect(() => ctx.mcpResources.register('new-server', provider))
   await acceptPreparation(env, agent, (await assemble()).sections)
-  assert.deepEqual(env.metadata(agent).find(entry => entry.namespace === 'mcp').members.map(member => member.name), ['kept'])
+  assert.deepEqual(env.metadata(agent).find(entry => entry.namespace === 'mcp').members.map(member => member.name),
+    ['kept', 'new-server'])
   assert.throws(() => env.adaptFunction(agent, 'read_mcp_resource', () => 'unexpected')({ server: 'probe', uri: 'probe://item' }))
   const decision = await env.preStep({ agent, signal: agent.signal }, async () => ({ kind: 'enter', messages: [] }))
   assert.equal(decision.messages.some(message => message.source?.form === 'capability-descriptions'
@@ -1718,6 +1827,33 @@ test('composed availability controls retain host SDK and shared instructions whi
   assert.deepEqual(cold.stateFor(coldAgent).snapshot, env.stateFor(agent).snapshot)
   assert.equal(cold.stateFor(coldAgent).snapshot.settings.previewEnabled, false)
   assert.equal(cold.describe(coldAgent).pendingRefresh, true)
+})
+
+test('a managed SDK render declares the edit transport and never the direct transport', async t => {
+  const policy = JSON.parse(CONFIG_DEFAULTS.capabilityPolicy)
+  policy.items['tools.probe'] = { availability: 'closed' }
+  const hostSections = [{ name: 'tools:sdk', text: 'native sdk' }]
+  const schemas = ['run_code', 'edit_run_code', 'probe', 'other'].map(schema)
+  const agent = agentFor(Session.create('managed-sdk-transport'))
+  agent.runMaintenance = operation => operation(agent.signal)
+  const ctx = { systemPrompt: { assemble: async () => ({ sections: hostSections }) } }
+  const env = createCapabilityEnvironment({ ctx, config: composedConfig(policy), toolSchemasForAgent: () => schemas })
+  t.after(() => env.dispose())
+  await acceptPreparation(env, agent, hostSections)
+  const rendered = env.sdk(agent, 'native sdk')
+  assert.notEqual(rendered, 'native sdk')
+  assert.match(rendered, /\n  edit_run_code: /)
+  assert.match(rendered, /\n  other: /)
+  assert.doesNotMatch(rendered, /\n  probe: /)
+  assert.doesNotMatch(rendered, /\n  run_code: /)
+  // A fully Host-declared surface keeps the native render, which already
+  // declares the same transport member.
+  const open = createCapabilityEnvironment({ ctx, config: composedConfig(null), toolSchemasForAgent: () => schemas })
+  t.after(() => open.dispose())
+  const openAgent = agentFor(Session.create('managed-sdk-transport-open'))
+  openAgent.runMaintenance = operation => operation(openAgent.signal)
+  await acceptPreparation(open, openAgent, hostSections)
+  assert.equal(open.sdk(openAgent, 'native sdk'), 'native sdk')
 })
 
 for (const contextEnabled of [undefined, true, false]) for (const recoveryEnabled of [false, true]) test(`composed description group=${contextEnabled} recovery=${recoveryEnabled} changes only optional restoration`, async t => {
@@ -1867,7 +2003,9 @@ test('an incomplete Skill observation keeps only the proved frozen Skills and do
     && item.source.snapshot.changes.some(change => change.id.startsWith('skills.'))), false)
   complete = true; names = ['closed', 'kept', 'unproved']; providerControl.invalidate()
   await env.prepare(agent, [])
-  assert.deepEqual(env.metadata(agent)[0].members.map(item => item.name), ['kept'])
+  assert.deepEqual(env.metadata(agent)[0].members.map(item => item.name), ['kept', 'unproved'])
+  assert.equal(env.stateFor(agent).snapshot.capabilities.some(item => item.id === 'skills.unproved'), false,
+    'a complete addition stays declared while the frozen plan does not allocate it')
   assert.throws(() => env.validateSupply(agent, 'skill', { name: 'removed' }), /unknown or no longer available/)
 })
 

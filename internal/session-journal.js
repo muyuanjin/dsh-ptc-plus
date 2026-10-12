@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from 'node:util'
-import { isAbsolute } from 'node:path'
+import { posix, win32 } from 'node:path'
 import { decodeValue, encodeValue, normalizeValueWire } from './value-wire.js'
 import { normalizeDiagnostic } from './diagnostic.js'
 import { assertOwnFields, isRecord } from './record-utils.js'
@@ -339,8 +339,19 @@ function migrateJournal(value, resolveLegacyConfirm) {
   }
 }
 
+/**
+ * A recorded execution directory belongs to the execution world that produced
+ * the journal, not to the platform reading it. Judge both absolute spellings so
+ * a Windows Host journal stays valid evidence inside a POSIX audit checkout
+ * (and the reverse), and never rewrite the recorded bytes.
+ */
+function isRecordedExecutionDirectory(value) {
+  return typeof value === 'string' && value.length > 0
+    && (posix.isAbsolute(value) || win32.isAbsolute(value))
+}
+
 function normalizeExecutionCwd(value) {
-  if (value !== null && (typeof value !== 'string' || !isAbsolute(value))) {
+  if (value !== null && !isRecordedExecutionDirectory(value)) {
     throw new Error('invalid dsh-ptc-plus journal execution directory')
   }
   return value

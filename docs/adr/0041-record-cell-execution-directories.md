@@ -30,7 +30,12 @@ Stable Node wrappers read the worker execution owner's current directory at
 the operation. Relative filesystem and path operations, `process.cwd()` and
 new child processes follow it; explicit paths/options and already-created
 processes retain their own semantics. An immutable `process.cwd` function can
-report successive recorded directories without replacing its descriptor.
+report successive recorded directories without replacing its descriptor. A
+confirmed in-cell `tools.working_directory` result is adopted for the remainder
+of that cell, so the cell's relative operations and the Host tools, which
+resolve at call time, share one directory; the journal records the call and its
+result as the transition evidence while `executionCwd` remains the cell's
+starting directory.
 
 Each cell's static adapter, dynamic import environment, synthetic `import.meta`
 and provided `require` capture that cell's module source base. Retained module
@@ -51,7 +56,10 @@ Usage statistics retain the original project as their workspace scope.
 `test/plugin-durability-recovery.test.js` compares two directories with same-name
 files/modules, escaped imports, eval imports, saved require, new child
 computations and continuous bindings; a separate cold replay uses a third
-current directory. `test/session-journal.test.js` verifies closed predecessor
+current directory. The same file verifies that one confirmed in-cell directory
+change rebases relative reads while imports keep the starting directory, that a
+failed change does not rebase, and that cold replay settles the recorded
+transition identically. `test/session-journal.test.js` verifies closed predecessor
 migration and malformed/missing v11 rejection. Capability tests distinguish
 current Skill inventory, frozen plans, explicit refresh and project statistics.
 These focused tests do not establish packed Host or Windows compatibility.

@@ -2145,6 +2145,29 @@ test('cold capability restoration keeps accepted Skill withdrawals during incomp
   assert.equal(resumed.kind, 'enter')
 })
 
+test('cold capability restoration retains an accepted Skill contract update in the recorded inventory', async t => {
+  let description = 'Algebra v1'
+  let complete = true
+  const ctx = { skills: { snapshot: async () => ({ complete, skills: complete ? [{ name: 'algebra', description,
+    invocation: { modelInvocable: true, userInvocable: true } }] : [] }) } }
+  const agent = agentFor(Session.create('cold-skill-contract-update'))
+  const make = () => createCapabilityEnvironment({ ctx, config: config(), toolSchemasForAgent: () => [schema('skill')] })
+  const env = make(); t.after(() => env.dispose())
+  await acceptPreparation(env, agent, [])
+  description = 'Algebra v2'
+  const decision = await env.preStep({ agent, signal: agent.signal }, async () => ({ kind: 'enter', messages: [] }))
+  const update = decision.messages.find(message => message.source?.form === 'capability-contracts')
+  const change = update.source.snapshot.changes.find(item => item.id === 'skills.algebra')
+  assert.equal(change.capability.category, 'skill')
+  assert.equal(change.capability.description, 'Algebra v2')
+  agent.session.append('user/message', update, { surfaceOp: 'append' })
+  complete = false
+  const coldAgent = agentFor(Session.create(agent.session.id, JSON.parse(JSON.stringify(agent.session.snapshotEvents())), agent.session.header))
+  const cold = make(); t.after(() => cold.dispose())
+  await cold.prepare(coldAgent, [])
+  assert.equal(cold.stateFor(coldAgent).liveCapabilities.get('skills.algebra').description, 'Algebra v2')
+})
+
 test('initial and refreshed capability plans require a complete Skill observation without replacing a proved plan', async t => {
   let complete = false
   const agent = agentFor(Session.create('incomplete-initial-and-refresh'))

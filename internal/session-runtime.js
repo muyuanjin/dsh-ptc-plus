@@ -683,6 +683,11 @@ function replayBindingNamespaces(namespaces, journal, limits, emptyArgsWire) {
     const functions = { ...namespace.functions }
     const emptyObjectMembers = [...(namespace.emptyObjectMembers ?? [])]
     for (const member of missing) {
+      // The replay executor settles or rejects every host-binding call from the
+      // recorded journal, so the placeholder keeps the member visible without
+      // ever running; the throw only guards a dispatch path that would bypass
+      // recorded-value interception.
+      /* c8 ignore next -- replay interception precedes invocation */
       functions[member] = () => { throw new Error(`replay-only member ${namespace.global}.${member}`) }
       if (recorded.some(call => call.member === member && valueWiresEqual(call.args, emptyArgsWire, limits))) {
         emptyObjectMembers.push(member)

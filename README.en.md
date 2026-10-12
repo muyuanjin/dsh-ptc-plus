@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/dsh-ptc-plus-banner-en.webp" width="100%" alt="PTC Plus: Tweak it, keep computing!">
+  <img src="assets/dsh-ptc-plus-banner-v2-en.webp" width="100%" alt="PTC Plus: Tweak it, keep computing!">
 </p>
 
 <p align="center">

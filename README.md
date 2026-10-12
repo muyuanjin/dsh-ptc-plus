@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/dsh-ptc-plus-banner-zh.webp" width="100%" alt="PTC Plus：不用从头来，改一改，接着算！">
+  <img src="assets/dsh-ptc-plus-banner-v2-zh.webp" width="100%" alt="PTC Plus：不用从头来，改一改，接着算！">
 </p>
 
 <p align="center">

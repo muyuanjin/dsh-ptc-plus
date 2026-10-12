@@ -39,6 +39,15 @@ import {
 
 export const EDIT_RUN_CODE = 'edit_run_code'
 
+const TARGET_FIRST_LINE_LIMIT = 120
+
+/** Bounded identity of the cell an edit actually captured, for model-facing reasons. */
+function targetSummary(target) {
+  const line = typeof target?.source === 'string' ? target.source.split(/\r?\n/, 1)[0].trim() : ''
+  const firstLine = line.length > TARGET_FIRST_LINE_LIMIT ? `${line.slice(0, TARGET_FIRST_LINE_LIMIT)}…` : line
+  return `run_code call ${target?.callSeq}${firstLine === '' ? '' : `, first line: ${firstLine}`}`
+}
+
 function nestedEditStart(sessionLog, exec) {
   const events = sessionEvents(sessionLog)
   if (!Array.isArray(events) || typeof exec?.callId !== 'string'
@@ -188,13 +197,16 @@ export function createEditTransportOwner(ctx, {
       return { accepted: false, scheduled: false, reason: 'no run_code cell is currently eligible for safe editing' }
     }
     const edited = editRejectedCell(args, target.source)
-    if (!edited.edited) return { accepted: false, scheduled: false, reason: edited.reason }
+    if (!edited.edited) {
+      return { accepted: false, scheduled: false, reason: `${edited.reason} (edit target: ${targetSummary(target)})` }
+    }
     const expectedTargetCallSeq = args[EXPECTED_TARGET_CALL_SEQ]
     if (expectedTargetCallSeq !== undefined && expectedTargetCallSeq !== target.callSeq) {
       return {
         accepted: false,
         scheduled: false,
-        reason: `validated repair targets run_code call ${expectedTargetCallSeq}, but this edit captured call ${target.callSeq}`,
+        reason: `validated repair targets run_code call ${expectedTargetCallSeq}, but this edit captured ${targetSummary(target)}.`
+          + ' Only the most recent settled cell stays editable; if the intended cell is no longer editable, re-submit its corrected source with run_code instead.',
       }
     }
     if (typeof ctx.tools.execute !== 'function') {
@@ -207,7 +219,8 @@ export function createEditTransportOwner(ctx, {
       editClaims.set(id, claims)
     }
     if (claims.has(target.callSeq)) {
-      return { accepted: false, scheduled: false, reason: 'the current edit target already has a derived execution' }
+      return { accepted: false, scheduled: false,
+        reason: `the current edit target already has a derived execution (edit target: ${targetSummary(target)})` }
     }
     claims.set(target.callSeq, 'scheduled')
     const receipt = { accepted: true, scheduled: true, target_call_seq: target.callSeq }
@@ -219,6 +232,7 @@ export function createEditTransportOwner(ctx, {
       rootCallSeq: start.rootCallSeq,
       subCallId: exec.callId,
       targetCallSeq: target.callSeq,
+      targetDescription: targetSummary(target),
       finalized: false,
       finalizeTentative: undefined,
       finish(confirmed) {

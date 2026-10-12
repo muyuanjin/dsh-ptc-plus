@@ -198,12 +198,16 @@ export function capabilityCoverage(state, query) {
   const workspaceId = options.workspaceId === null ? null : identity(options.workspaceId, 'coverage workspace identity')
   if (state.status !== 'usable') return { status: state.status, windowSize: state.limits.windowSize, eligible: null, used: null, coverage: null }
   const window = state.windows.find(item => item.userId === userId && item.workspaceId === workspaceId && item.id === id && item.revision === revision)
-  const families = window ? state.families.filter(item => qualifies(item, window)).sort(orderSamples).slice(0, state.limits.windowSize) : []
+  // "Nothing recorded yet" and "recorded families are not currently settled"
+  // are different facts from a measured window; neither may read as a zero.
+  if (window === undefined) return { status: 'no-samples', windowSize: state.limits.windowSize, eligible: null, used: null, coverage: null }
+  const families = state.families.filter(item => qualifies(item, window)).sort(orderSamples).slice(0, state.limits.windowSize)
   // A resumed family can expose a gap behind the irreversible eviction frontier.
   // Surviving samples do not prove the recent settled window until it is full again.
-  if (window?.floor > 0 && families.length < state.limits.windowSize) {
+  if (window.floor > 0 && families.length < state.limits.windowSize) {
     return { status: 'incomplete-window', windowSize: state.limits.windowSize, eligible: null, used: null, coverage: null }
   }
+  if (families.length === 0) return { status: 'pending-settlement', windowSize: state.limits.windowSize, eligible: null, used: null, coverage: null }
   const used = families.filter(family => family.observations.some(item => item.id === id && item.revision === revision && item.used
     && (workspaceId === null || item.workspaceId === workspaceId))).length
   return { status: 'usable', windowSize: state.limits.windowSize, eligible: families.length, used, coverage: families.length ? used / families.length : null }

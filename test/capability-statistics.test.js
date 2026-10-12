@@ -52,16 +52,26 @@ test('each capability uses its own recent eligible window with no clock decay or
 
 test('active unknown and resumed families cannot manufacture negative samples', () => {
   let statistics = reduceCapabilityStatistics(state(), event('family', null, [available()], { settlement: 'active' }))
-  assert.equal(coverage(statistics).eligible, 0)
+  assert.deepEqual(coverage(statistics), { status: 'pending-settlement', windowSize: 3, eligible: null, used: null, coverage: null })
   statistics = reduceCapabilityStatistics(statistics, event('family', null, [], { settlement: 'unknown', observationRevision: 2 }))
   assert.equal(coverage(statistics).coverage, null)
   statistics = reduceCapabilityStatistics(statistics, event('family', 1, [], { observationRevision: 3 }))
   assert.equal(coverage(statistics).eligible, 1)
   statistics = reduceCapabilityStatistics(statistics, event('family', 1, [], { settlement: 'active', observationRevision: 4 }))
-  assert.equal(coverage(statistics).eligible, 0)
+  assert.deepEqual(coverage(statistics), { status: 'pending-settlement', windowSize: 3, eligible: null, used: null, coverage: null })
   statistics = reduceCapabilityStatistics(statistics, event('family', 1, [available({ useEvidence: 'host-execution-result' })], { observationRevision: 5 }))
   assert.equal(coverage(statistics).eligible, 1)
   assert.equal(coverage(statistics).used, 1)
+})
+
+test('unrecorded and unsettled windows report their evidence state instead of zero counts', () => {
+  const statistics = state()
+  assert.deepEqual(coverage(statistics), { status: 'no-samples', windowSize: 3, eligible: null, used: null, coverage: null })
+  assert.deepEqual(coverage(statistics, { userId: 'other-user' }), { status: 'no-samples', windowSize: 3, eligible: null, used: null, coverage: null })
+  const recorded = reduceCapabilityStatistics(statistics, event('family', null, [available()], { settlement: 'unknown' }))
+  assert.deepEqual(coverage(recorded), { status: 'pending-settlement', windowSize: 3, eligible: null, used: null, coverage: null })
+  const settled = reduceCapabilityStatistics(recorded, event('family', 1, [], { observationRevision: 2 }))
+  assert.deepEqual(coverage(settled), { status: 'usable', windowSize: 3, eligible: 1, used: 0, coverage: 0 })
 })
 
 test('workspace identity follows supplied exposure evidence while user-global family use stays deduplicated', () => {
@@ -70,7 +80,8 @@ test('workspace identity follows supplied exposure evidence while user-global fa
   assert.equal(coverage(statistics, { workspaceId: 'other-workspace' }).used, 1)
   assert.equal(coverage(statistics, { workspaceId: null }).eligible, 1)
   assert.equal(coverage(statistics, { workspaceId: null }).used, 1)
-  assert.equal(coverage(statistics, { userId: 'other-user', workspaceId: null }).eligible, 0)
+  assert.deepEqual(coverage(statistics, { userId: 'other-user', workspaceId: null }),
+    { status: 'no-samples', windowSize: 3, eligible: null, used: null, coverage: null })
 })
 
 test('resuming after window eviction withdraws incomplete coverage until settlement restores the window', () => {

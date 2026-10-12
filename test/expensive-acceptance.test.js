@@ -859,11 +859,20 @@ function nestedEditorEvents(archived, { includeReads = false } = {}) {
     const args = JSON.parse(event.data.arguments)
     const original = resultFor(archived, event.data.callId)
     const targetCallSeq = mappedSeqs.get(original.data.meta.dshPtcPlusEdit.targetCallSeq)
+    const targetEvent = archived.find(candidate =>
+      candidate?.seq === original.data.meta.dshPtcPlusEdit.targetCallSeq)
+    let targetFirstLine = ''
+    try {
+      const targetCode = JSON.parse(targetEvent?.data?.arguments ?? '{}').code
+      if (typeof targetCode === 'string') targetFirstLine = targetCode.split(/\r?\n/, 1)[0].trim()
+    } catch {}
+    const targetLabel = `run_code call ${targetCallSeq}${targetFirstLine === '' ? '' : `, first line: ${targetFirstLine}`}`
     const mismatch = args.expected_target_call_seq !== undefined
       && args.expected_target_call_seq !== targetCallSeq
     const receipt = mismatch
       ? { accepted: false, scheduled: false,
-          reason: `validated repair targets run_code call ${args.expected_target_call_seq}, but this edit captured call ${targetCallSeq}` }
+          reason: `validated repair targets run_code call ${args.expected_target_call_seq}, but this edit captured ${targetLabel}.`
+            + ' Only the most recent settled cell stays editable; if the intended cell is no longer editable, re-submit its corrected source with run_code instead.' }
       : { accepted: true, scheduled: true, target_call_seq: targetCallSeq }
     const rootCallSeq = nextSequence
     nextSequence += mismatch ? 4 : includeReads ? 8 : 6

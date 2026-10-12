@@ -1186,7 +1186,12 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
         || String(agent.session.id ?? agent.id) !== sessionId) {
         throw new Error('ptc-plus: capability observation target is no longer available')
       }
-      return { schema: 'ptc-capability-session-catalog/v1', management, entries }
+      const savedSettings = capabilityConfiguration(currentConfig)
+      // The saved group and management switches gate session writes in change();
+      // report them so the Client can block staged choices with the reason.
+      return { schema: 'ptc-capability-session-catalog/v1', management, entries,
+        savedSettings: { enabled: effectiveCapabilitySettings(savedSettings).enabled === true,
+          contextEnabled: savedSettings.contextEnabled !== false } }
     },
     async observeAllocation({ sessionId, configuration } = {}, signal) {
       signal?.throwIfAborted()

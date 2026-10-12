@@ -286,7 +286,6 @@ export function createCapabilitySettingsViews(React, { SearchIcon, Select, Modal
           'aria-label': t('capabilities.batch.cancel'), onClick: close }, '×')),
       h('div', { className: 'ptcPlusCapabilityBatchBody' },
         h('p', { className: 'ptcPlusDetail', role: 'status' }, t('capabilities.batch.targets', { count: operation.targets.length })),
-        h('p', { className: 'ptcPlusDetail' }, t('capabilities.batch.scope', { scope: operation.scope })),
         operation.excluded ? h('p', { className: 'ptcPlusDetail' }, t('capabilities.batch.excluded', { count: operation.excluded })) : null,
         operation.targets.length ? h('ul', { className: 'ptcPlusCapabilityBatchTargets', 'aria-label': t('capabilities.batch.targetList') },
           ...operation.targets.map(target => h('li', { key: target.id }, h('span', null, target.name), h('code', null, target.id))))
@@ -298,7 +297,8 @@ export function createCapabilitySettingsViews(React, { SearchIcon, Select, Modal
               options: ['keep', 'automatic', ...(dimension === 'availability' ? ['enabled', 'closed'] : CAPABILITY_DISCLOSURES)]
                 .map(choice => ({ value: choice, label: t(choice === 'keep' ? 'capabilities.batch.keep'
                   : choice === 'automatic' ? 'capabilities.policy.inheritRule'
-                    : choice === 'enabled' ? 'capabilities.quick.enabled' : `capabilities.${choice}`) })) })))),
+                    : choice === 'enabled' ? 'capabilities.action.enable'
+                      : choice === 'closed' ? 'capabilities.action.close' : `capabilities.${choice}`) })) })))),
         h('p', { className: 'ptcPlusDetail' }, t('capabilities.batch.effect')),
         h('p', { className: 'ptcPlusDetail' }, t('capabilities.batch.sourceClosure')),
         missing ? h('p', { className: 'ptcPlusMessage', role: 'alert' }, t('capabilities.batch.changedTargets', { count: missing })) : null,
@@ -321,6 +321,7 @@ export function createCapabilitySettingsViews(React, { SearchIcon, Select, Modal
     const [availability, setAvailability] = React.useState('all')
     const [sort, setSort] = React.useState(null)
     const [selected, setSelected] = React.useState(null)
+    const [picked, setPicked] = React.useState([])
     const [filtersOpen, setFiltersOpen] = React.useState(false)
     const [batchOperation, setBatchOperation] = React.useState(null)
     const [inheritedRulesOpen, setInheritedRulesOpen] = React.useState(false)
@@ -379,6 +380,15 @@ export function createCapabilitySettingsViews(React, { SearchIcon, Select, Modal
         : column === 'source' ? displayedSource(item)
           : column === 'availability' ? t(`capabilities.rowState.${state(item)}`)
             : t(`capabilities.${item.resolvedRule.disclosure}`))
+    const pickedIds = picked.filter(id => entries.some(item => item.id === id))
+    const pickedEntries = pickedIds.map(id => entries.find(item => item.id === id)).filter(Boolean)
+    const pickedTargets = pickedEntries.filter(item => item.availability === 'available')
+    const allVisiblePicked = visible.length > 0 && visible.every(item => pickedIds.includes(item.id))
+    const someVisiblePicked = visible.some(item => pickedIds.includes(item.id))
+    const togglePick = id => setPicked(current => current.includes(id) ? current.filter(item => item !== id) : [...current, id])
+    const toggleAllVisible = () => setPicked(current => allVisiblePicked
+      ? current.filter(id => !visible.some(item => item.id === id))
+      : [...new Set([...current, ...visible.map(item => item.id)])])
     const entry = visible.find(item => item.id === selected)
     const plan = sessionId ? plans?.find(item => item.sessionId === sessionId) : undefined
     const effective = plan?.effective.entries.find(item => item.id === entry?.id)
@@ -430,11 +440,15 @@ export function createCapabilitySettingsViews(React, { SearchIcon, Select, Modal
         h('button', { type: 'button', className: 'ptcPlusButton', 'aria-haspopup': 'dialog',
           onClick: () => setFiltersOpen(true) }, t('capabilities.filterAction')),
         h('button', { type: 'button', className: 'ptcPlusButton', 'aria-haspopup': 'dialog',
-          disabled: disabled('capabilityPolicy'), onClick: () => setBatchOperation({
-            targets: visible.filter(item => item.availability === 'available').map(item => ({ id: item.id, name: item.name })),
-            excluded: visible.filter(item => item.availability !== 'available').length,
-            scope: [...filterLabels, ...(query.trim() ? [t('capabilities.batch.search', { query: query.trim() })] : [])].join(' · ') || t('capabilities.batch.all'),
-          }) }, t('capabilities.batchSettings')),
+          'aria-label': t('capabilities.batchSettings'),
+          disabled: disabled('capabilityPolicy') || pickedTargets.length === 0,
+          onClick: () => setBatchOperation({
+            targets: pickedTargets.map(item => ({ id: item.id, name: item.name })),
+            excluded: pickedIds.length - pickedTargets.length,
+          }) }, t('capabilities.batchSettings'),
+          pickedIds.length ? h('span', { className: 'ptcPlusCapabilityBatchCount', 'aria-hidden': true,
+            title: t('capabilities.selectionCount', { count: pickedIds.length }) },
+            String(pickedIds.length)) : null),
         h('button', { type: 'button', className: 'ptcPlusButton', 'aria-haspopup': 'dialog',
           onClick: () => setInheritedRulesOpen(true) }, t('capabilities.inheritedRules'))),
       filtersOpen ? h(CapabilityDialog, { title: t('capabilities.filterAction'), onClose: () => setFiltersOpen(false), t,
@@ -468,7 +482,12 @@ export function createCapabilitySettingsViews(React, { SearchIcon, Select, Modal
           h('div', { className: 'ptcPlusCapabilityTable', role: 'table', 'aria-label': t('capabilities.management') },
             h('div', { className: 'ptcPlusCapabilityColumns', role: 'row' },
               ...CAPABILITY_SORT_COLUMNS.map(column => h('span', { key: column.key, role: 'columnheader',
-                'aria-sort': capabilitySortDirection(sort, column.key) },
+                'aria-sort': capabilitySortDirection(sort, column.key),
+                ...(column.key === 'name' ? { 'aria-label': t('capabilities.member'), className: 'ptcPlusCapabilityPickHead' } : {}) },
+                ...(column.key === 'name' ? [h('input', { type: 'checkbox', className: 'ptcPlusPick', checked: allVisiblePicked,
+                  ref: node => { if (node) node.indeterminate = someVisiblePicked && !allVisiblePicked },
+                  disabled: visible.length === 0, 'aria-label': t('capabilities.selectAllVisible'),
+                  onChange: toggleAllVisible })] : []),
                 h('button', { type: 'button', className: 'ptcPlusCapabilitySort', title: t('capabilities.sortCycle'),
                   onClick: () => setSort(current => cycleCapabilitySort(current, column.key)) },
                 t(`capabilities.${column.label}`), h('span', { 'aria-hidden': true },
@@ -476,7 +495,12 @@ export function createCapabilitySettingsViews(React, { SearchIcon, Select, Modal
             h('div', { className: 'ptcPlusCapabilityList', role: 'rowgroup' }, ...visible.map(item => h('div', { key: item.id, className: 'ptcPlusCapabilityItem', role: 'row',
               'data-selected': entry?.id === item.id, 'data-availability': item.availability,
               onClick: () => setSelected(item.id) },
-              h('div', { className: 'ptcPlusCapabilityIdentity', role: 'cell' }, h('span', { className: 'ptcPlusCapabilityName' }, item.name), h('code', null, item.id)),
+              h('div', { className: 'ptcPlusCapabilityIdentity', role: 'cell' },
+                h('input', { type: 'checkbox', className: 'ptcPlusPick', checked: pickedIds.includes(item.id),
+                  'aria-label': t('capabilities.selectForBatch', { name: item.name ?? item.id }),
+                  onClick: event => event.stopPropagation(), onChange: () => togglePick(item.id) }),
+                h('div', { className: 'ptcPlusCapabilityIdentityText' },
+                  h('span', { className: 'ptcPlusCapabilityName' }, item.name), h('code', null, item.id))),
               h('span', { className: 'ptcPlusCapabilityBadge', role: 'cell', 'data-kind': type(item) }, t(`capabilities.type.${type(item)}`)),
               h('span', { className: 'ptcPlusCapabilitySource', role: 'cell' }, displayedSource(item)),
               // The cell stays a plain cell so its empty area selects the row; only the switch and
@@ -973,9 +997,13 @@ export function createSessionCapabilityControlsView(React, { commands, Modal, Se
     const available = React.useSyncExternalStore(source.subscribe, source.getSnapshot)
     const [catalog, setCatalog] = React.useState([])
     const [management, setManagement] = React.useState('unknown')
+    const [savedSettings, setSavedSettings] = React.useState(null)
     const [loading, setLoading] = React.useState(false)
     const [error, setError] = React.useState(null)
     const [drafts, setDrafts] = React.useState(emptyDrafts)
+    const [picked, setPicked] = React.useState([])
+    const [batchOpen, setBatchOpen] = React.useState(false)
+    const [batchChoices, setBatchChoices] = React.useState({ availability: 'keep', disclosure: 'keep' })
     const [selectedId, setSelectedId] = React.useState(null)
     const [pane, setPane] = React.useState('list')
     const [query, setQuery] = React.useState('')
@@ -1009,7 +1037,10 @@ export function createSessionCapabilityControlsView(React, { commands, Modal, Se
       applying.current = false
       setCatalog([])
       setManagement('unknown')
+      setSavedSettings(null)
       setDrafts(emptyDrafts())
+      setPicked([])
+      setBatchOpen(false)
       setSelectedId(null)
       setPane('list')
       setFocusDimension(null)
@@ -1026,8 +1057,11 @@ export function createSessionCapabilityControlsView(React, { commands, Modal, Se
           throw new Error('Invalid capability catalog')
         }
         setCatalog(payload.entries)
+        setPicked(current => current.filter(id => payload.entries.some(entry => entry.id === id)))
         setManagement(['managed', 'paused', 'off', 'unknown'].includes(payload.management)
           ? payload.management : 'unknown')
+        setSavedSettings(payload.savedSettings !== null && typeof payload.savedSettings === 'object'
+          && !Array.isArray(payload.savedSettings) ? payload.savedSettings : null)
         setError(null)
         return payload.entries
       } catch (failure) {
@@ -1038,24 +1072,24 @@ export function createSessionCapabilityControlsView(React, { commands, Modal, Se
     }, [sessionId])
     React.useEffect(() => {
       if (!open || !enabled || !available) {
-        request.current?.abort(); request.current = null; setLoading(false); return
+        if (!applying.current) { request.current?.abort(); request.current = null }
+        setLoading(false)
+        return
       }
+      // An in-flight apply owns the shared catalog request and reloads it on completion.
+      if (applying.current) return
       const controller = new AbortController()
       request.current = controller
       void load(controller.signal)
       return () => { controller.abort(); if (request.current === controller) request.current = null }
     }, [open, enabled, available, load])
-    React.useEffect(() => {
-      if (!enabled || !available) {
-        request.current?.abort()
-        request.current = null
-        applying.current = false
-        setPending(false)
-      }
-    }, [enabled, available])
     const choices = drafts
     const choiceFor = entry => choices[entry.id] ?? entry.temporary ?? 'inherit'
-    const writesBlocked = management === 'paused' || management === 'off'
+    // Session writes also require the saved configuration to keep capability
+    // management and context on; a frozen managed session cannot be edited
+    // while the current settings have them off.
+    const savedBlocks = savedSettings !== null && (savedSettings.enabled === false || savedSettings.contextEnabled === false)
+    const writesBlocked = management === 'paused' || management === 'off' || savedBlocks
     const sourceKey = entry => entry.source?.kind === 'mcp' ? 'mcp:' + (entry.source.server ?? '')
       : entry.source?.kind === 'skill' ? 'skill:' + (entry.source.bucket ?? '')
         : entry.source?.kind ?? 'unknown'
@@ -1109,26 +1143,51 @@ export function createSessionCapabilityControlsView(React, { commands, Modal, Se
       ?? ['tools', 'skills', 'mcp', 'mcp_tools'].map(group => matches.find(entry => category(entry) === group)).find(Boolean)
     const staged = Object.entries(choices).flatMap(([id, choice]) => typeof choice === 'object'
       ? Object.entries(choice).map(([dimension, selection]) => [id, selection, dimension]) : [[id, choice]])
-    const chooseDimension = (id, dimension, choice) => {
-      setDrafts(current => {
-        const patch = typeof current[id] === 'object' ? { ...current[id] } : {}
-        const original = catalog.find(entry => entry.id === id)?.temporaryRule?.[dimension] ?? 'inherit'
-        if (choice === original && choice === 'inherit') delete patch[dimension]
+    const pickedRows = picked.map(id => catalog.find(entry => entry.id === id)).filter(Boolean)
+    const allMatchesPicked = matches.length > 0 && matches.every(entry => picked.includes(entry.id))
+    const someMatchesPicked = matches.some(entry => picked.includes(entry.id))
+    const togglePick = id => setPicked(current => current.includes(id) ? current.filter(item => item !== id) : [...current, id])
+    const toggleAllMatches = () => setPicked(current => allMatchesPicked
+      ? current.filter(id => !matches.some(entry => entry.id === id))
+      : [...new Set([...current, ...matches.map(entry => entry.id)])])
+    // One staging rule for single and batch edits: an item keeps one temporary
+    // patch, "inherit" removes the dimension and reselecting the stored choice
+    // never dirties the draft.
+    const stageDimension = (current, entry, dimension, choice) => {
+      const next = { ...current }
+      const patch = typeof next[entry.id] === 'object' && next[entry.id] !== null ? { ...next[entry.id] } : {}
+      const original = storedDimension(entry, dimension) ?? 'inherit'
+      const selectedChoice = patch[dimension] ?? original
+      if (choice !== selectedChoice) {
+        if (choice === original) delete patch[dimension]
         else patch[dimension] = choice
-        const next = { ...current }; if (Object.keys(patch).length) next[id] = patch; else delete next[id]; return next
-      })
+      }
+      if (Object.keys(patch).length) next[entry.id] = patch; else delete next[entry.id]
+      return next
+    }
+    const chooseDimension = (id, dimension, choice) => {
+      const entry = catalog.find(item => item.id === id)
+      if (entry) setDrafts(current => stageDimension(current, entry, dimension, choice))
     }
     const choose = (id, next) => {
       const entry = catalog.find(item => item.id === id)
       if (!entry) return
       const original = entry.temporary ?? 'inherit'
+      if (next === (choices[id] ?? original)) return
       setDrafts(current => {
         const nextChoices = { ...current }
-        if (next === original && next === 'inherit') delete nextChoices[id]
+        if (next === original) delete nextChoices[id]
         else nextChoices[id] = next
         return nextChoices
       })
     }
+    const stageBatch = (ids, selections) => setDrafts(current => ids.reduce((draft, id) => {
+      const entry = catalog.find(item => item.id === id)
+      if (!entry) return draft
+      return ['availability', 'disclosure'].reduce((next, dimension) =>
+        selections[dimension] === undefined || selections[dimension] === 'keep'
+          ? next : stageDimension(next, entry, dimension, selections[dimension]), draft)
+    }, current))
     const hasInheritanceReset = staged.some(([, selection]) => selection === 'inherit')
     const apply = async targetScope => {
       if (applying.current || !enabled || !available || writesBlocked || staged.length === 0) return
@@ -1140,58 +1199,71 @@ export function createSessionCapabilityControlsView(React, { commands, Modal, Se
       const controller = new AbortController()
       request.current?.abort()
       request.current = controller
-      let completed = 0
-      let pendingCount = 0
-      let failure = null
-      let savedOnly = null
-      for (const [id, selection, dimension] of staged) {
-        if (controller.signal.aborted) break
-        try {
-          const result = await commands.run(sessionId, `set ${targetScope} ${encodeURIComponent(id)} ${dimension ? dimension + ' ' : ''}${selection}`, controller.signal)
-          const receipt = readCapabilityCommandReceipt(result.text)
-          if (!receipt || receipt.sessionId !== sessionId || !['recorded', 'pending'].includes(receipt.state)) {
-            throw new Error(receipt ? capabilityCommandText(t, result.text) : t('capabilities.quick.unknownReceipt'))
-          }
-          if (receipt?.state === 'pending') pendingCount += 1
-          completed += 1
-        } catch (cause) {
-          failure = String(cause?.message ?? cause)
-          savedOnly = readCapabilityCommandReceipt(failure)?.state === 'saved-only'
-            ? readCapabilityCommandReceipt(failure) : null
-          break
-        }
+      // One owner releases the shared request slot and the pending state on every exit path, so a
+      // closed, superseded or failed apply cannot strand the workbench in "applying".
+      const finish = () => {
+        if (request.current === controller) request.current = null
+        applying.current = false
+        if (mounted.current) setPending(false)
       }
-      if (request.current !== controller || controller.signal.aborted || !mounted.current) return
-      const refreshed = await load(controller.signal)
-      if (request.current !== controller || controller.signal.aborted || !mounted.current) return
-      const confirmed = refreshed ? staged.slice(0, completed).filter(([id, selection, dimension]) => {
-        const entry = refreshed.find(item => item.id === id)
-        if (dimension) return entry && (targetScope === 'session'
-          ? (entry.temporaryRule?.[dimension] ?? 'inherit') === selection
-          : (entry.savedRule?.[dimension] ?? 'automatic') === selection && entry.temporaryRule?.[dimension] === undefined)
-        return entry && (targetScope === 'session' ? entry.temporary === selection
-          : entry.saved === selection && entry.temporary === 'inherit')
-      }) : []
-      setDrafts(current => {
-        const nextChoices = { ...current }
-        for (const [id, selection, dimension] of confirmed) {
-          if (savedOnly && id === staged[completed]?.[0] && dimension === staged[completed]?.[2]) continue
-          if (dimension) {
-            if (nextChoices[id]?.[dimension] !== submitted[id]?.[dimension]) continue
-            const patch = { ...nextChoices[id] }; delete patch[dimension]
-            if (Object.keys(patch).length) nextChoices[id] = patch; else delete nextChoices[id]
-          } else if (nextChoices[id] === submitted[id]) delete nextChoices[id]
+      try {
+        let completed = 0
+        let pendingCount = 0
+        let failure = null
+        let savedOnly = null
+        for (const [id, selection, dimension] of staged) {
+          if (controller.signal.aborted) break
+          try {
+            const result = await commands.run(sessionId, `set ${targetScope} ${encodeURIComponent(id)} ${dimension ? dimension + ' ' : ''}${selection}`, controller.signal)
+            const receipt = readCapabilityCommandReceipt(result.text)
+            if (!receipt || receipt.sessionId !== sessionId || !['recorded', 'pending'].includes(receipt.state)) {
+              throw new Error(receipt ? capabilityCommandText(t, result.text) : t('capabilities.quick.unknownReceipt'))
+            }
+            if (receipt?.state === 'pending') pendingCount += 1
+            completed += 1
+          } catch (cause) {
+            failure = String(cause?.message ?? cause)
+            savedOnly = readCapabilityCommandReceipt(failure)?.state === 'saved-only'
+              ? readCapabilityCommandReceipt(failure) : null
+            break
+          }
         }
-        return nextChoices
-      })
-      if (savedOnly) setStatus({ key: 'capabilities.quick.savedOnly', params: { count: completed, error: savedOnly.error ?? '' } })
-      else if (failure || !refreshed || confirmed.length < completed) setStatus({ key: 'capabilities.quick.partial',
-        params: { count: confirmed.length, error: failure ?? t('capabilities.quick.confirmationUnavailable') } })
-      else setStatus({ key: pendingCount ? 'capabilities.quick.pendingApplied' : 'capabilities.quick.applied', params: { count: completed } })
-      if (request.current === controller) { request.current = null; applying.current = false; setPending(false) }
+        if (request.current !== controller || controller.signal.aborted || !mounted.current) return
+        const refreshed = await load(controller.signal)
+        if (request.current !== controller || controller.signal.aborted || !mounted.current) return
+        const confirmed = refreshed ? staged.slice(0, completed).filter(([id, selection, dimension]) => {
+          const entry = refreshed.find(item => item.id === id)
+          if (dimension) return entry && (targetScope === 'session'
+            ? (entry.temporaryRule?.[dimension] ?? 'inherit') === selection
+            : (entry.savedRule?.[dimension] ?? 'automatic') === selection && entry.temporaryRule?.[dimension] === undefined)
+          return entry && (targetScope === 'session' ? entry.temporary === selection
+            : entry.saved === selection && entry.temporary === 'inherit')
+        }) : []
+        setDrafts(current => {
+          const nextChoices = { ...current }
+          for (const [id, selection, dimension] of confirmed) {
+            if (savedOnly && id === staged[completed]?.[0] && dimension === staged[completed]?.[2]) continue
+            if (dimension) {
+              if (nextChoices[id]?.[dimension] !== submitted[id]?.[dimension]) continue
+              const patch = { ...nextChoices[id] }; delete patch[dimension]
+              if (Object.keys(patch).length) nextChoices[id] = patch; else delete nextChoices[id]
+            } else if (nextChoices[id] === submitted[id]) delete nextChoices[id]
+          }
+          return nextChoices
+        })
+        if (savedOnly) setStatus({ key: 'capabilities.quick.savedOnly', params: { count: completed, error: savedOnly.error ?? '' } })
+        else if (failure || !refreshed || confirmed.length < completed) setStatus({ key: 'capabilities.quick.partial',
+          params: { count: confirmed.length, error: failure ?? t('capabilities.quick.confirmationUnavailable') } })
+        else setStatus({ key: pendingCount ? 'capabilities.quick.pendingApplied' : 'capabilities.quick.applied', params: { count: completed } })
+      } finally {
+        finish()
+      }
     }
     const discard = () => { setDrafts(emptyDrafts()); setStatus(null) }
     const close = () => {
+      // A confirmed apply keeps its own lifecycle: refusing the close keeps an accidental
+      // Escape or backdrop click from aborting host commands the user already submitted.
+      if (applying.current) return
       request.current?.abort()
       request.current = null
       applying.current = false
@@ -1203,35 +1275,124 @@ export function createSessionCapabilityControlsView(React, { commands, Modal, Se
     const filter = (label, value, onChange, options, disabled = false) => h('div', { className: 'ptcPlusCapabilityFilter' },
       h('span', null, label), h(Select, { label, value, onChange, disabled,
         options: options.map(([key, text]) => ({ value: key, label: text })) }))
+    const ruleLabel = (rule, empty) => capabilityRuleLabel(t, rule, empty)
+    const statusLabel = value => value && typeof value === 'object' ? ruleLabel(value) : capabilityChoiceLabel(t, value)
+    // The stored temporary value for one dimension, including the legacy scalar
+    // form where a single selection covered both dimensions.
+    const storedDimension = (entry, dimension) => {
+      const rule = entry.temporaryRule !== null && typeof entry.temporaryRule === 'object' && !Array.isArray(entry.temporaryRule)
+        ? entry.temporaryRule : undefined
+      const override = rule?.[dimension]
+      if (override !== undefined) return override
+      if (entry.temporary === 'automatic') return 'automatic'
+      if (typeof entry.temporary === 'string' && !['inherit', 'automatic', 'unknown', 'pending'].includes(entry.temporary)) {
+        return dimension === 'availability' ? (entry.temporary === 'closed' ? 'closed' : 'enabled')
+          : (CAPABILITY_DISCLOSURES.includes(entry.temporary) ? entry.temporary : undefined)
+      }
+      return undefined
+    }
+    // The value a dimension falls back to when this session keeps no temporary
+    // change; the frozen plan already resolved the saved layers.
+    const frozenDimension = (entry, dimension) => {
+      const source = entry.sourceDimensions?.[dimension]
+      if (typeof source === 'string') return source
+      const effective = entry.effectiveDimensions?.[dimension]
+      if (typeof effective === 'string' && storedDimension(entry, dimension) === undefined) return effective
+      if (dimension === 'availability') return entry.effective === 'closed' ? 'closed'
+        : ['full', 'on-demand', 'host', 'enabled'].includes(entry.effective) ? 'enabled' : undefined
+      return ['full', 'on-demand', 'host'].includes(entry.effective) ? entry.effective : undefined
+    }
+    const stateText = value => value === undefined ? t('capabilities.quick.unknown') : statusLabel(value)
+    const dimensionCurrent = (entry, dimension) => choices[entry.id]?.[dimension] ?? storedDimension(entry, dimension) ?? 'inherit'
+    const dimensionImpact = (entry, dimension) => {
+      const draft = choices[entry.id]?.[dimension]
+      const choice = draft ?? storedDimension(entry, dimension) ?? 'inherit'
+      const stagedChange = draft !== undefined
+      if (choice === 'inherit') return { state: frozenDimension(entry, dimension), origin: 'capabilities.quick.originPlan', staged: stagedChange }
+      if (choice === 'automatic') return { upper: true, staged: stagedChange }
+      return { state: choice, origin: 'capabilities.quick.originSession', staged: stagedChange }
+    }
+    const impactLine = impact => impact.upper
+      ? t(impact.staged ? 'capabilities.quick.impactUpperPending' : 'capabilities.quick.impactUpper')
+      : t(impact.staged ? 'capabilities.quick.impactPending' : 'capabilities.quick.impact',
+        { state: stateText(impact.state), source: t(impact.origin) })
+    const dimensionOptions = (entry, dimension) => {
+      const restore = stateText(frozenDimension(entry, dimension))
+      const inherit = storedDimension(entry, dimension) === undefined
+        ? t('capabilities.quick.noChange', { state: restore })
+        : t('capabilities.quick.undoTemp', { state: restore })
+      // "Let the level above decide" only differs from "no change" while the
+      // session's frozen source still carries an explicit rule for the dimension.
+      const sourceDimension = entry.sourceRule?.[dimension]
+      const distinctRule = sourceDimension !== undefined && sourceDimension !== 'automatic'
+      return ['inherit', ...(distinctRule || dimensionCurrent(entry, dimension) === 'automatic' ? ['automatic'] : []),
+        ...(dimension === 'availability' ? ['enabled', 'closed'] : CAPABILITY_DISCLOSURES)]
+        .map(choice => ({ value: choice, label: choice === 'inherit' ? inherit
+          : choice === 'automatic' ? t('capabilities.quick.upperRule')
+            : t(choice === 'enabled' ? 'capabilities.action.enable' : choice === 'closed' ? 'capabilities.action.close' : `capabilities.${choice}`) }))
+    }
+    const legacyFrozenState = entry => {
+      const stored = typeof entry.temporary === 'string' && !['inherit', 'automatic', 'unknown', 'pending'].includes(entry.temporary)
+      if (stored) return ['full', 'on-demand', 'closed'].includes(entry.sessionSourceSelection) ? entry.sessionSourceSelection : undefined
+      return ['full', 'on-demand', 'closed', 'host'].includes(entry.effective) ? entry.effective : undefined
+    }
+    const choiceCurrent = entry => choices[entry.id] ?? entry.temporary ?? 'inherit'
+    const choiceImpact = entry => {
+      const draft = choices[entry.id]
+      const choice = draft ?? entry.temporary ?? 'inherit'
+      const stagedChange = draft !== undefined
+      if (choice === 'inherit') return { state: legacyFrozenState(entry), origin: 'capabilities.quick.originPlan', staged: stagedChange }
+      if (choice === 'automatic') return { upper: true, staged: stagedChange }
+      return { state: choice, origin: 'capabilities.quick.originSession', staged: stagedChange }
+    }
     const choiceOptions = selected ? [
       'inherit', 'automatic',
       ...(selected.category === 'server' ? [] : ['full', 'on-demand']), 'closed',
-    ].map(choice => ({ value: choice, label: t(choice === 'inherit' ? 'capabilities.quick.inherit' : `capabilities.${choice}`) })) : []
-    const ruleLabel = (rule, empty) => capabilityRuleLabel(t, rule, empty)
+    ].map(choice => ({ value: choice, label: choice === 'inherit'
+      ? t(selected.temporary !== undefined && selected.temporary !== 'inherit' ? 'capabilities.quick.undoChange' : 'capabilities.quick.keepUnchanged')
+      : choice === 'automatic' ? t('capabilities.quick.upperRule')
+        : t(`capabilities.${choice}`) })) : []
     const dimensionFacts = dimensions => ['availability', 'disclosure'].map(dimension =>
       `${t(`capabilities.policy.${dimension}`)}: ${statusLabel(dimensions[dimension])} (${dimensions[`${dimension}Source`] ?? t('capabilities.quick.unknown')})`).join(' · ')
-    const statusLabel = value => value && typeof value === 'object' ? ruleLabel(value) : capabilityChoiceLabel(t, value)
+    // A dimension whose effective value comes from the session-only temporary
+    // choice is marked beside the frozen inheritance it replaces.
+    const temporaryDimension = (entry, dimension) => {
+      const rule = entry.temporaryRule !== null && typeof entry.temporaryRule === 'object' && !Array.isArray(entry.temporaryRule)
+        ? entry.temporaryRule : undefined
+      const override = rule?.[dimension]
+      if (override !== undefined && override !== 'automatic') return override
+      if (typeof entry.temporary === 'string' && !['inherit', 'automatic'].includes(entry.temporary)) {
+        return dimension === 'availability' ? (entry.temporary === 'closed' ? 'closed' : 'enabled') : entry.temporary
+      }
+      return undefined
+    }
+    const dimensionCell = (entry, dimension, value) => temporaryDimension(entry, dimension) === value
+      ? t('capabilities.quick.temporaryState', { state: statusLabel(value) }) : statusLabel(value)
     const openEditor = (entry, dimension = 'availability') => { setSelectedId(entry.id); setPane('detail'); setFocusDimension(dimension) }
     const renderRow = entry => h('div', { key: entry.id, role: 'row',
       className: 'ptcPlusSessionCapabilityRow ptcPlusCapabilityItem', 'data-capability-id': entry.id, 'data-selected': selected?.id === entry.id,
       onClick: () => openEditor(entry) },
       h('div', { role: 'cell', className: 'ptcPlusCapabilityIdentity' },
-        h('button', { type: 'button', className: 'ptcPlusSessionCapabilityName ptcPlusCapabilityName',
-          'aria-current': selected?.id === entry.id ? 'true' : undefined,
-          onClick: event => { event.stopPropagation(); openEditor(entry) } }, entry.name ?? entry.id),
-        entry.name && entry.name !== entry.id ? h('code', null, entry.id) : null),
+        h('input', { type: 'checkbox', className: 'ptcPlusPick', checked: picked.includes(entry.id), disabled: writesBlocked,
+          'aria-label': t('capabilities.selectForBatch', { name: entry.name ?? entry.id }),
+          onClick: event => event.stopPropagation(), onChange: () => togglePick(entry.id) }),
+        h('div', { className: 'ptcPlusCapabilityIdentityText' },
+          h('button', { type: 'button', className: 'ptcPlusSessionCapabilityName ptcPlusCapabilityName',
+            'aria-current': selected?.id === entry.id ? 'true' : undefined,
+            onClick: event => { event.stopPropagation(); openEditor(entry) } }, entry.name ?? entry.id),
+          entry.name && entry.name !== entry.id ? h('code', null, entry.id) : null)),
       h('span', { role: 'cell', className: 'ptcPlusCapabilityBadge', 'data-kind': type(entry) }, t(`capabilities.type.${type(entry)}`)),
       h('span', { role: 'cell', className: 'ptcPlusCapabilitySource' }, displayedSource(entry)),
       h('div', { role: 'cell', className: 'ptcPlusCapabilityAvailability', 'data-state': effectiveAvailability(entry) },
         h('button', { type: 'button', className: 'ptcPlusCapabilityContext',
           'aria-label': t('capabilities.policy.availabilityFor', { name: entry.id }),
           title: t('capabilities.quick.effective'),
-          onClick: event => { event.stopPropagation(); openEditor(entry, 'availability') } }, statusLabel(effectiveAvailability(entry)))),
+          onClick: event => { event.stopPropagation(); openEditor(entry, 'availability') } }, dimensionCell(entry, 'availability', effectiveAvailability(entry)))),
       h('div', { role: 'cell', className: 'ptcPlusCapabilityContextCell' },
         h('button', { type: 'button', className: 'ptcPlusCapabilityContext',
           'aria-label': t('capabilities.editContextFor', { name: entry.id }),
           title: t('capabilities.quick.effective'),
-          onClick: event => { event.stopPropagation(); openEditor(entry, 'disclosure') } }, statusLabel(effectiveContext(entry)))),
+          onClick: event => { event.stopPropagation(); openEditor(entry, 'disclosure') } }, dimensionCell(entry, 'disclosure', effectiveContext(entry)))),
       h('span', { role: 'cell', className: 'ptcPlusSessionCapabilityPending', 'data-changed': Object.hasOwn(choices, entry.id),
         'data-label': t('capabilities.quick.changed') },
         Object.hasOwn(choices, entry.id) ? statusLabel(choices[entry.id]) : '—'))
@@ -1240,7 +1401,7 @@ export function createSessionCapabilityControlsView(React, { commands, Modal, Se
     h('div', { className: 'ptcPlusSessionCapabilityHead' },
       h('div', null, h('h2', null, t('capabilities.quick.modalTitle')),
         h('p', null, t('capabilities.quick.sessionIdentity', { session: sessionId }))),
-      h('button', { type: 'button', className: 'ptcPlusDialogClose', 'aria-label': t('settings.close'), onClick: close }, '×')),
+      h('button', { type: 'button', className: 'ptcPlusDialogClose', 'aria-label': t('settings.close'), disabled: pending, onClick: close }, '×')),
     h('div', { className: 'ptcPlusSessionCapabilityToolbar' },
       h('label', { className: 'ptcPlusSearch' },
         h('svg', { viewBox: '0 0 24 24', width: 16, height: 16, 'aria-hidden': true },
@@ -1257,12 +1418,20 @@ export function createSessionCapabilityControlsView(React, { commands, Modal, Se
         [['all', t('capabilities.quick.allStates')], ['changed', t('capabilities.quick.changed')],
           ...['full', 'on-demand', 'closed', 'pending'].map(key => [key, statusLabel(key)])])),
     writesBlocked ? h('p', { className: 'ptcPlusCapabilityNotice', role: 'status' },
-      t(management === 'paused' ? 'capabilities.quick.sessionPaused' : 'capabilities.quick.sessionManagementOff')) : null,
+      t(management === 'paused' ? 'capabilities.quick.sessionPaused'
+        : management === 'off' ? 'capabilities.quick.sessionManagementOff'
+          : savedSettings?.contextEnabled === false ? 'capabilities.quick.savedPaused'
+            : 'capabilities.quick.savedManagementOff')) : null,
     h('div', { className: 'ptcPlusSessionCapabilityWorkspace', 'data-pane': pane },
       h('div', { className: 'ptcPlusSessionCapabilityList', role: 'table', 'aria-label': t('capabilities.quick.members'), ref: list },
         h('div', { className: 'ptcPlusSessionCapabilityColumns ptcPlusCapabilityColumns', role: 'row' },
           ...CAPABILITY_SORT_COLUMNS.map(column => h('span', { key: column.key, role: 'columnheader',
-            'aria-sort': capabilitySortDirection(sort, column.key) },
+            'aria-sort': capabilitySortDirection(sort, column.key),
+            ...(column.key === 'name' ? { 'aria-label': t('capabilities.member'), className: 'ptcPlusCapabilityPickHead' } : {}) },
+            ...(column.key === 'name' ? [h('input', { type: 'checkbox', className: 'ptcPlusPick', checked: allMatchesPicked,
+              ref: node => { if (node) node.indeterminate = someMatchesPicked && !allMatchesPicked },
+              disabled: writesBlocked || matches.length === 0, 'aria-label': t('capabilities.selectAllVisible'),
+              onChange: toggleAllMatches })] : []),
             h('button', { type: 'button', className: 'ptcPlusCapabilitySort', title: t('capabilities.sortCycle'),
               onClick: () => setSort(current => cycleCapabilitySort(current, column.key)) },
             t(`capabilities.${column.label}`), h('span', { 'aria-hidden': true },
@@ -1308,34 +1477,73 @@ export function createSessionCapabilityControlsView(React, { commands, Modal, Se
             h('ul', null, ...catalog.filter(entry => entry.id !== selected.id
               && entry.source?.kind === 'mcp' && entry.source.server === selected.source?.server)
               .map(entry => h('li', { key: entry.id }, entry.name ?? entry.id)))) : null,
-          selected.savedRule ? h(React.Fragment, null, ...['availability', 'disclosure'].map(dimension =>
-            h('div', { className: 'ptcPlusCapabilityFilter', key: dimension, 'data-capability-dimension': dimension },
+          selected.savedRule ? h(React.Fragment, null, ...['availability', 'disclosure'].map(dimension => h(React.Fragment, { key: dimension },
+            h('div', { className: 'ptcPlusCapabilityFilter', 'data-capability-dimension': dimension },
               h('span', null, t(`capabilities.policy.${dimension}`)),
               h(Select, { label: t(`capabilities.policy.${dimension}`), disabled: !enabled || !available || pending || writesBlocked,
-                value: choices[selected.id]?.[dimension] ?? selected.temporaryRule?.[dimension] ?? 'inherit',
+                value: dimensionCurrent(selected, dimension),
                 onChange: next => chooseDimension(selected.id, dimension, next),
-                options: ['inherit', 'automatic', ...(dimension === 'availability' ? ['enabled', 'closed'] : CAPABILITY_DISCLOSURES)]
-                  .map(choice => ({ value: choice, label: t(choice === 'inherit' ? 'capabilities.quick.inherit'
-                    : choice === 'automatic' ? 'capabilities.policy.inheritRule' : choice === 'enabled' ? 'capabilities.quick.enabled' : `capabilities.${choice}`) })) }))))
-            : h('div', { className: 'ptcPlusCapabilityFilter' },
-              h('span', null, t('capabilities.quick.choice')),
-              h(Select, { label: t('capabilities.quick.choice'), value: choiceFor(selected),
-                disabled: !enabled || !available || pending || writesBlocked, options: choiceOptions,
-                onChange: next => choose(selected.id, next) })),
-          choices[selected.id] === 'inherit' ? h('p', { className: 'ptcPlusDetail' },
+                options: dimensionOptions(selected, dimension) })),
+            h('p', { className: 'ptcPlusDetail ptcPlusCapabilityImpact', 'data-impact-dimension': dimension },
+              impactLine(dimensionImpact(selected, dimension))))))
+            : h(React.Fragment, null,
+              h('div', { className: 'ptcPlusCapabilityFilter' },
+                h('span', null, t('capabilities.quick.choice')),
+                h(Select, { label: t('capabilities.quick.choice'), value: choiceCurrent(selected),
+                  disabled: !enabled || !available || pending || writesBlocked, options: choiceOptions,
+                  onChange: next => choose(selected.id, next) })),
+              h('p', { className: 'ptcPlusDetail ptcPlusCapabilityImpact', 'data-impact-dimension': 'selection' },
+                impactLine(choiceImpact(selected)))),
+          (typeof choices[selected.id] === 'string' ? choices[selected.id] === 'inherit'
+            : Object.values(choices[selected.id] ?? {}).includes('inherit')) ? h('p', { className: 'ptcPlusDetail' },
             t('capabilities.quick.inheritSessionOnly')) : null) : h('p', null, t('capabilities.noMatches')))),
+    batchOpen ? h(Modal, { open: true, onClose: () => setBatchOpen(false), title: t('capabilities.batchSettings'),
+      closeLabel: t('capabilities.batch.cancel'), headless: true, className: 'ptcPlusCapabilityBatchModal' },
+      h('div', { className: 'ptcPlusCapabilityBatchHead' }, h('h2', null, t('capabilities.batchSettings')),
+        h('button', { type: 'button', className: 'ptcPlusDialogClose', 'aria-label': t('capabilities.batch.cancel'),
+          onClick: () => setBatchOpen(false) }, '\u00d7')),
+      h('div', { className: 'ptcPlusCapabilityBatchBody' },
+        h('p', { className: 'ptcPlusDetail', role: 'status' }, t('capabilities.batch.selected', { count: pickedRows.length })),
+        h('ul', { className: 'ptcPlusCapabilityBatchTargets', 'aria-label': t('capabilities.batch.targetList') },
+          ...pickedRows.map(entry => h('li', { key: entry.id }, h('span', null, entry.name ?? entry.id), h('code', null, entry.id)))),
+        h('div', { className: 'ptcPlusCapabilityBatchFields' }, ...['availability', 'disclosure'].map(dimension =>
+          h('div', { key: dimension, className: 'ptcPlusCapabilityFilter' }, h('span', null, t(`capabilities.policy.${dimension}`)),
+            h(Select, { value: batchChoices[dimension], label: t(`capabilities.batch.${dimension}`),
+              onChange: choice => setBatchChoices(current => ({ ...current, [dimension]: choice })),
+              options: ['keep', 'inherit', ...(dimension === 'availability' ? ['enabled', 'closed'] : CAPABILITY_DISCLOSURES)]
+                .map(choice => ({ value: choice, label: choice === 'keep' ? t('capabilities.batch.keep')
+                  : choice === 'inherit' ? t('capabilities.batch.sessionInherit')
+                    : choice === 'enabled' ? t('capabilities.action.enable')
+                      : choice === 'closed' ? t('capabilities.action.close') : t(`capabilities.${choice}`) })) })))),
+        h('p', { className: 'ptcPlusDetail' }, t('capabilities.batch.sessionStage'))),
+      h('div', { className: 'ptcPlusCapabilityBatchFooter' },
+        h('button', { type: 'button', className: 'ptcPlusButton', onClick: () => setBatchOpen(false) }, t('capabilities.batch.cancel')),
+        h('button', { type: 'button', className: 'ptcPlusButton', 'data-kind': 'primary',
+          disabled: pickedRows.length === 0 || !['availability', 'disclosure'].some(dimension => batchChoices[dimension] !== 'keep'),
+          onClick: () => { stageBatch(pickedRows.map(entry => entry.id), batchChoices); setBatchOpen(false) } },
+          t('capabilities.batch.stage', { count: pickedRows.length })))) : null,
     h('div', { className: 'ptcPlusSessionCapabilityFooter' },
       h('span', { role: 'status' }, pending ? t('capabilities.quick.applying') : status ? t(status.key, status.params)
         : t('capabilities.quick.changes', { count: staged.length })),
       h('button', { type: 'button', className: 'ptcPlusButton', disabled: pending || staged.length === 0, onClick: discard },
         t('capabilities.quick.discard')),
-      h('button', { type: 'button', className: 'ptcPlusButton', title: t('capabilities.quick.sessionHint'),
+      // Session-scoped temporary application stays the footer's primary action; saving global
+      // defaults is an explicit secondary choice, so no default-looking control changes global state.
+      h('button', { type: 'button', className: 'ptcPlusButton', 'data-kind': 'primary', title: t('capabilities.quick.sessionHint'),
         disabled: pending || !enabled || !available || writesBlocked || staged.length === 0, onClick: () => void apply('session') },
         t('capabilities.quick.applySession')),
-      h('button', { type: 'button', className: 'ptcPlusButton', 'data-kind': 'primary',
+      h('button', { type: 'button', className: 'ptcPlusButton',
         title: t(hasInheritanceReset ? 'capabilities.quick.inheritSessionOnly' : 'capabilities.quick.globalHint'),
         disabled: pending || !enabled || !available || writesBlocked || staged.length === 0 || hasInheritanceReset,
         onClick: () => void apply('global') },
-        t('capabilities.quick.applyGlobal'))))
+        t('capabilities.quick.applyGlobal')),
+      h('button', { type: 'button', className: 'ptcPlusButton', 'aria-haspopup': 'dialog',
+        'aria-label': t('capabilities.batchSettings'),
+        disabled: pending || writesBlocked || picked.length === 0,
+        onClick: () => { setBatchChoices({ availability: 'keep', disclosure: 'keep' }); setBatchOpen(true) } },
+        t('capabilities.batchSettings'),
+        picked.length ? h('span', { className: 'ptcPlusCapabilityBatchCount', 'aria-hidden': true,
+          title: t('capabilities.selectionCount', { count: picked.length }) },
+          String(picked.length)) : null)))
   }
 }

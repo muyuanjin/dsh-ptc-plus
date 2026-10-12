@@ -54,6 +54,7 @@ test('session catalog observation requires the same active PTC agent and returns
   const observation = await env.describeSessionCatalog({ sessionId: 'observed-session' }, agents[0].signal)
   assert.equal(observation.schema, 'ptc-capability-session-catalog/v1')
   assert.equal(observation.management, 'managed')
+  assert.deepEqual(observation.savedSettings, { enabled: true, contextEnabled: true })
   const catalog = observation.entries
   assert.deepEqual(catalog.find(entry => entry.id === 'tools.probe') && {
     saved: catalog.find(entry => entry.id === 'tools.probe').saved,
@@ -77,6 +78,25 @@ test('session catalog observation requires the same active PTC agent and returns
   agents = [agentFor(Session.create('observed-session'))]
   releaseAssembly()
   await assert.rejects(pending, /no longer available/)
+})
+
+test('session catalog reports a saved-off group or management switch that still freezes an enabled session', async t => {
+  const agents = [agentFor(Session.create('saved-off-catalog'))]
+  agents[0].runMaintenance = operation => operation(agents[0].signal)
+  const ctx = { agents: { list: () => agents }, systemPrompt: { assemble: async () => ({ sections: [] }) } }
+  const schemas = [schema('run_code'), schema('probe')]
+  const enabled = createCapabilityEnvironment({ ctx, config: config({ 'tools.probe': 'full' }), toolSchemasForAgent: () => schemas })
+  t.after(() => enabled.dispose())
+  await acceptPreparation(enabled, agents[0], [])
+  for (const overrides of [{ capabilityContextEnabled: false }, { capabilityManagementEnabled: false }]) {
+    const env = createCapabilityEnvironment({ ctx, config: { ...config({ 'tools.probe': 'full' }), ...overrides },
+      toolSchemasForAgent: () => schemas })
+    t.after(() => env.dispose())
+    const observation = await env.describeSessionCatalog({ sessionId: agents[0].session.id }, agents[0].signal)
+    assert.equal(observation.management, 'managed')
+    assert.deepEqual(observation.savedSettings, { enabled: false,
+      contextEnabled: overrides.capabilityContextEnabled !== false })
+  }
 })
 
 for (const frozenClosed of [true, false]) test(`session catalog preserves frozen ${frozenClosed ? 'closed' : 'automatic'} source after opposite global save without refresh, including cold observation`, async t => {

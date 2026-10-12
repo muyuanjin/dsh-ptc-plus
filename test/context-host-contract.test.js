@@ -30,6 +30,7 @@ import { createFixtureExecutionProvider } from './host-fixture.js'
 import { appendRunCodeCall, appendRunCodeResult } from './plugin-fixture.js'
 import * as ptcPlus from '../index.js'
 import { CapabilityStatisticsStore } from '../internal/capability-statistics-store.js'
+import { readCapabilityCommandReceipt } from '../internal/capability-command-receipt.js'
 
 const signal = () => new AbortController().signal
 const session = (id, parentSession) => Session.create(id, [], {
@@ -396,6 +397,31 @@ test('capability commands advertise refresh input and apply through the public h
   assert.match(invalid.result.text, /Use \/capabilities/)
   assert.equal(requests, 0)
   assert.equal(agent.session.deriveMessages().some(message => message.content?.some(block => block.text === '/capabilities refresh')), false)
+})
+
+for (const [config, state] of [
+  [{ capabilityContextEnabled: false, capabilityManagementEnabled: true }, 'paused'],
+  [{ capabilityContextEnabled: true, capabilityManagementEnabled: false }, 'off'],
+]) test(`a refresh under a saved-off capability group reports the ${state} state instead of an update`, async t => {
+  const { ctx } = host(t, 'ptc')
+  new CommandRuntime(ctx)
+  new AgentRegistry(ctx)
+  new SessionStore(ctx)
+  new SessionProjectionRegistry(ctx)
+  await ctx.plugin(SessionQueryEngine).await()
+  let requests = 0
+  ctx.provide('llm', { stream() { requests++; throw new Error('Human commands must not request a model') } })
+  await ctx.plugin(AgentLoop, { agents: [] }).await()
+  await ctx.plugin(ptcPlus, { userBindingsEnabled: false, cordisToolsEnabled: false, ...config,
+    capabilityStatistics: '{"enabled":false,"windowSize":10,"minimumSamples":1,"fullThreshold":0.5}' }).await()
+  const owner = await ctx.agents.create({ sessionId: `human-refresh-off-${state}`, meta: { cwd: process.cwd() },
+    agentOptions: { provider: 'fixture', model: 'fixture' } })
+  t.after(() => owner.dispose())
+  const result = await ctx.commands.execute(owner.agent, '/capabilities refresh', [], signal())
+  assert.equal(result.result.kind, 'success')
+  const receipt = readCapabilityCommandReceipt(result.result.text)
+  assert.equal(receipt.state, state)
+  assert.equal(requests, 0)
 })
 
 test('durable session lineage survives restoration without asserting that a family has ended', () => {

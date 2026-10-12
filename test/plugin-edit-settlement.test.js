@@ -189,7 +189,8 @@ test('contracts to the verified setup when outer nested-edit metadata is not pre
     })
     assert.equal(edit.result.isError, false, JSON.stringify(edit.result))
     assert.equal(edit.receipt.accepted, true)
-    assert.match(edit.raw.logs.at(-1), /edit_run_code settled; value: 2/)
+    assert.match(edit.raw.logs.at(-1), /edit_run_code settled \(target run_code call \d+/)
+    assert.match(edit.raw.logs.at(-1), /; value: 2/)
     assert.equal(derivedDispatches, 1, 'derived source executed once before outer evidence was rejected')
     const callSeq = events.find(event => event.type === 'tool/call'
       && event.data.callId === callId).seq

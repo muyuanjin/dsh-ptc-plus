@@ -587,9 +587,10 @@ export function createRuntimeBridgeOwner({
               valueText = '; value omitted from preview'
             }
           }
+          const targetDescription = pendingEdit.targetDescription ?? `run_code call ${pendingEdit.targetCallSeq}`
           const status = outcome.edited
-            ? `edit_run_code settled${outcome.error === undefined ? '' : ' with execution error'}`
-            : 'edit_run_code did not execute the accepted revision'
+            ? `edit_run_code settled${outcome.error === undefined ? '' : ' with execution error'} (target ${targetDescription})`
+            : `edit_run_code did not execute the accepted revision (target ${targetDescription})`
           const detail = [
             ...(hasRenderedContent || !Array.isArray(outcome.logs) ? [] : outcome.logs),
             ...(!hasRenderedContent && typeof outcome.error === 'string' ? [outcome.error] : []),

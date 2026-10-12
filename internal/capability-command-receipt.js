@@ -6,8 +6,10 @@ const FALLBACKS = Object.freeze({
   pending: 'Capabilities prepared; they take effect at the first accepted model step for session',
   unavailable: 'Select an active PTC session; the command did not update session',
   usage: 'Use /capabilities to inspect or /capabilities refresh to apply saved settings for session',
+  paused: 'Capabilities and context are off; the session stays with the Host capabilities for session',
+  off: 'Capability management is off; the session stays with the Host capabilities for session',
 })
-const STATES = new Set(['recorded', 'pending', 'unavailable', 'usage', 'saved-only'])
+const STATES = new Set(['recorded', 'pending', 'unavailable', 'usage', 'saved-only', 'paused', 'off'])
 
 export function capabilityCommandReceipt(state, sessionId, error, proposal) {
   if (!STATES.has(state) || typeof sessionId !== 'string' || !sessionId) throw new TypeError('invalid capability command receipt')

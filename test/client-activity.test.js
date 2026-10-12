@@ -677,6 +677,7 @@ test('preserves source, result, and lifecycle fallbacks for the replacement tool
   assert.deepEqual(derivePtcToolView(stopped), {
     state: 'stopped',
     description: 'Run code',
+    descriptionGenerated: false,
     code: 'return 1',
     output: 'AbortError: interrupted',
     ptc: false,

@@ -111,6 +111,7 @@ if (values.list) {
           const rule=entry[scope==='session'?'temporaryRule':'savedRule'];
           if(['automatic','inherit'].includes(choice))delete rule[dimension];else rule[dimension]=choice;
           if(scope==='global')delete entry.temporaryRule[dimension];
+          if(dimension&&!['automatic','inherit'].includes(choice))entry.effectiveDimensions={...entry.effectiveDimensions,[dimension]:choice};
           return {kind:'success',text:capabilityCommandReceipt('recorded',sessionId)};
         }},Modal,Select,
       inspectSessionCatalog:async(sessionId,signal)=>{
@@ -716,17 +717,57 @@ if (values.list) {
             && document.activeElement.getAttribute('aria-label') === label, SETTINGS_COPY[locale]['capabilities.policy.availability'])
           await chooseSelect(panel, SETTINGS_COPY[locale]['capabilities.policy.disclosure'], SETTINGS_COPY[locale]['capabilities.full'])
           await panel.getByRole('combobox', { name: SETTINGS_COPY[locale]['capabilities.policy.availability'] }).click()
-          await page.getByRole('option', { name: SETTINGS_COPY[locale]['capabilities.closed'] }).click()
+          await page.getByRole('option', { name: SETTINGS_COPY[locale]['capabilities.action.close'] }).click()
           await panel.getByRole('button', { name: SETTINGS_COPY[locale]['capabilities.quick.applySession'], exact: true }).click()
           await page.waitForFunction(index => window.sessionCapabilityCalls.some(call => call.input === `set session tools.probe${index} availability closed`)
             && window.sessionCapabilityCalls.some(call => call.input === `set session tools.probe${index} disclosure full`), index)
           assert.equal(await panel.getByRole('combobox', {name: SETTINGS_COPY[locale]['capabilities.policy.disclosure']}).innerText(), SETTINGS_COPY[locale]['capabilities.full'])
+          assert.equal(await panel.locator(`[data-capability-id="tools.probe${index}"] .ptcPlusCapabilityAvailability`).textContent(),
+            SETTINGS_COPY[locale]['capabilities.quick.temporaryState'].replace('{state}', SETTINGS_COPY[locale]['capabilities.closed']),
+            'a session temporary availability choice is marked in its row')
+          if (index === 0) {
+            assert.equal(await panel.locator('[data-capability-id="tools.probe1"] .ptcPlusCapabilityAvailability').textContent(),
+              SETTINGS_COPY[locale]['capabilities.quick.enabled'], 'rows without a temporary choice keep the unmarked state')
+            assert.equal(await panel.evaluate(element => element.scrollWidth > element.clientWidth + 1), false,
+              'a marked temporary state must not overflow the dialog horizontally')
+          }
         }
         if (viewport.width <= 650) {
           await panel.getByRole('button', { name: SETTINGS_COPY[locale]['capabilities.quick.backToList'] }).click()
           assert.equal(await panel.locator('[data-capability-id="tools.probe79"] .ptcPlusSessionCapabilityName')
             .evaluate(element => document.activeElement === element), true, 'Back to list returns focus to the selected capability')
         }
+        // Multi-select batch: explicit row selection stages one choice for every
+        // picked target, and nothing is submitted until the footer applies it.
+        const beforeBatchCalls = await page.evaluate(() => window.sessionCapabilityCalls.length)
+        await panel.getByLabel(SETTINGS_COPY[locale]['capabilities.selectForBatch'].replace('{name}', 'probe1'), { exact: true }).check()
+        await panel.getByLabel(SETTINGS_COPY[locale]['capabilities.selectForBatch'].replace('{name}', 'probe2'), { exact: true }).check()
+        assert.equal((await panel.getByRole('button', { name: SETTINGS_COPY[locale]['capabilities.batchSettings'], exact: true })
+          .textContent()).includes('2'), true, 'the batch button reports the selected count')
+        await panel.getByRole('button', { name: SETTINGS_COPY[locale]['capabilities.batchSettings'], exact: true }).click()
+        const sessionBatch = page.getByRole('dialog', { name: SETTINGS_COPY[locale]['capabilities.batchSettings'], exact: true })
+        await sessionBatch.waitFor()
+        assert.equal(await sessionBatch.locator('.ptcPlusCapabilityBatchTargets li').count(), 2,
+          'the batch window lists exactly the picked rows')
+        await chooseSelect(sessionBatch, SETTINGS_COPY[locale]['capabilities.batch.availability'],
+          SETTINGS_COPY[locale]['capabilities.action.close'])
+        const sessionBatchGeometry = await sessionBatch.evaluate(element => {
+          const bounds = element.getBoundingClientRect()
+          return { width: bounds.width, left: bounds.left, right: bounds.right, overflow: element.scrollWidth > element.clientWidth + 1 }
+        })
+        assert.ok(sessionBatchGeometry.width <= 480 && sessionBatchGeometry.left >= -1 && sessionBatchGeometry.right <= viewport.width + 1,
+          'session batch stays a small in-viewport surface')
+        assert.equal(sessionBatchGeometry.overflow, false, 'session batch does not overflow horizontally')
+        await sessionBatch.getByRole('button', { name: SETTINGS_COPY[locale]['capabilities.batch.stage'].replace('{count}', '2') }).click()
+        await sessionBatch.waitFor({ state: 'hidden' })
+        assert.equal(await page.evaluate(() => window.sessionCapabilityCalls.length), beforeBatchCalls,
+          'staging a batch must not run commands')
+        assert.equal(await panel.evaluate(element => ['tools.probe1', 'tools.probe2'].filter(id =>
+          element.querySelector(`[data-capability-id="${id}"] .ptcPlusSessionCapabilityPending[data-changed="true"]`)).length), 2,
+          'staging marks both picked rows as pending')
+        await panel.getByRole('button', { name: SETTINGS_COPY[locale]['capabilities.quick.discard'], exact: true }).click()
+        assert.equal(await panel.locator('[data-capability-id="tools.probe1"] .ptcPlusSessionCapabilityPending').getAttribute('data-changed'),
+          'false', 'discarding clears the staged batch')
         const probeRow = panel.locator('[data-capability-id="tools.probe79"]')
         const detailId = async () => panel.locator('.ptcPlusSessionCapabilityDetail code').evaluate(element => element.textContent)
         const backToList = async () => {
@@ -1051,6 +1092,7 @@ if (values.list) {
         await rules.getByRole('button', { name: labels['capabilities.dialogDone'], exact: true }).click()
         await rules.waitFor({ state: 'hidden' })
         const writesBeforeBatch = await page.evaluate(() => window.settingsWrites.length)
+        await workbench.getByLabel(labels['capabilities.selectAllVisible']).check()
         await workbench.getByRole('button', { name: labels['capabilities.batchSettings'], exact: true }).click()
         const batch = page.getByRole('dialog', { name: labels['capabilities.batchSettings'], exact: true })
         await batch.waitFor()

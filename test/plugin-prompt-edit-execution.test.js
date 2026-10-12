@@ -402,11 +402,12 @@ test('rejects a validated EOF repair after a newer matching cell becomes editabl
     code: `return await tools.edit_run_code(${JSON.stringify(editArgs)})`,
   })
   assert.equal(edited.result.isError, false)
-  assert.deepEqual(edited.receipt, {
-    accepted: false,
-    scheduled: false,
-    reason: `validated repair targets run_code call ${rejectedCallSeq}, but this edit captured call ${laterCallSeq}`,
-  })
+  assert.equal(edited.receipt.accepted, false)
+  assert.equal(edited.receipt.scheduled, false)
+  // The rejection names the cell the edit actually captured, so a drifted guard stays diagnosable.
+  assert.match(edited.receipt.reason,
+    new RegExp(`^validated repair targets run_code call ${rejectedCallSeq}, but this edit captured run_code call ${laterCallSeq}, first line: const marker =`))
+  assert.match(edited.receipt.reason, /Only the most recent settled cell stays editable; if the intended cell is no longer editable, re-submit its corrected source with run_code instead\.$/)
   assert.equal(derivedDispatches, 0)
   assert.equal(Object.hasOwn(edited.result.meta, POST_EDIT_KEY), false)
 })

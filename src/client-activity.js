@@ -506,6 +506,7 @@ export function derivePtcToolView(block, toolName = undefined) {
     ? block.meta[GENERATED_RUN_CODE_DESCRIPTION_KEY]
     : undefined
   const description = (explicitDescription ?? generatedDescription)?.split(/\r?\n/, 1)[0] ?? ''
+  const descriptionGenerated = explicitDescription === undefined && generatedDescription !== undefined
   const output = settled ? resultText(block) : ''
   const state = !settled ? 'running'
     : block.error?.code === 'interrupted' ? 'stopped'
@@ -514,7 +515,7 @@ export function derivePtcToolView(block, toolName = undefined) {
     ? block.meta.dshPtcPlus
     : undefined
   if (journal === undefined) {
-    return Object.freeze({ state, description, code, output, ptc: false, features: Object.freeze([]) })
+    return Object.freeze({ state, description, descriptionGenerated, code, output, ptc: false, features: Object.freeze([]) })
   }
   const rewrites = isValidRewrites(block.meta.dshPtcPlusRewrites, journal)
     ? block.meta.dshPtcPlusRewrites
@@ -542,5 +543,5 @@ export function derivePtcToolView(block, toolName = undefined) {
       : undefined,
     ...operationFeatures(journal.operations),
   ])
-  return Object.freeze({ state, description, code, output, ptc: true, features: Object.freeze(features) })
+  return Object.freeze({ state, description, descriptionGenerated, code, output, ptc: true, features: Object.freeze(features) })
 }

@@ -471,7 +471,14 @@ function installPtCRuntime(ctx, resolvedConfig, seam, toolSchemasForAgent, toolS
                 return { kind: 'error', text: receipt('unavailable') }
               }
               await capabilityEnvironment.refresh(agent, undefined, signal, commandId)
-              return { kind: 'success', text: receipt(capabilityEnvironment.describe(agent).publication === 'pending' ? 'pending' : 'recorded') }
+              // A refresh always republishes the saved configuration; when that
+              // configuration has capability management or context off, report
+              // the off state instead of claiming an updated environment.
+              const described = capabilityEnvironment.describe(agent)
+              const state = described.effective?.enabled !== true
+                ? described.sourceSettings?.contextEnabled === false ? 'paused' : 'off'
+                : described.publication === 'pending' ? 'pending' : 'recorded'
+              return { kind: 'success', text: receipt(state) }
             }
             return { kind: 'success', text: JSON.stringify(capabilityEnvironment.describe(agent), null, 2) }
           } }), 'ptc-plus capability command')

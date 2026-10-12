@@ -33,11 +33,16 @@ export function createPtcToolView(React, deps) {
       if (expandable) setOpen(current => !current)
     }
     const summaryText = summary === '' ? null : summary
+    // An auto-filled summary stays visually identical but declares its provenance in the DOM
+    // and on hover, so readers can tell who wrote it without changing the model-facing result.
+    const generatedSummary = view.descriptionGenerated && outputSummary === ''
     const summaryLine = stateText === null && summaryText === null ? null
       : h('div', { className: 'ptcPlusToolSummaryLine', 'data-state': view.state, role: 'status' },
         stateText === null ? null : h('span', { className: 'ptcPlusToolState' }, stateText),
         summaryText === null ? null : h('span', { className: 'ptcPlusToolSep', 'aria-hidden': true }),
-        summaryText === null ? null : h('span', { className: 'ptcPlusToolDescription' }, summaryText))
+        summaryText === null ? null : h('span', { className: 'ptcPlusToolDescription',
+          'data-generated': generatedSummary ? 'true' : undefined,
+          title: generatedSummary ? t('tool.descriptionGenerated') : undefined }, summaryText))
     const renderBody = (withInspect) => h('div', { className: 'ptcPlusToolBody' },
       view.code === '' ? null : h('div', { className: 'ptcPlusToolSection' },
         h('span', { className: 'ptcPlusToolSectionLabel' }, t('tool.source')),
@@ -74,7 +79,9 @@ export function createPtcToolView(React, deps) {
           t(toolName === 'edit_run_code' ? 'tool.editPreview' : 'tool.preview')),
         h('span', { className: 'ptcPlusToolHoverState' }, t(stateKey))),
       h('div', { className: 'ptcPlusToolHoverContent' },
-        view.description === '' ? null : h('div', { className: 'ptcPlusToolHoverDescription' }, view.description),
+        view.description === '' ? null : h('div', { className: 'ptcPlusToolHoverDescription',
+          'data-generated': view.descriptionGenerated ? 'true' : undefined,
+          title: view.descriptionGenerated ? t('tool.descriptionGenerated') : undefined }, view.description),
         view.code === '' ? null : h('div', { className: 'ptcPlusToolHoverSection' },
           h('span', { className: 'ptcPlusToolSectionLabel' }, `${t('tool.source')} · TypeScript`),
           isHostComponent(CodeBlock) ? h(CodeBlock, {

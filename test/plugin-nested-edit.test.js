@@ -734,8 +734,10 @@ test('a root cell accepts one edit while surrounding code continues with its old
   assert.equal(root.result.isError, false, JSON.stringify(root.result))
   const [accepted, refused, outerValue] = root.result.value
   assert.equal(accepted.accepted, true)
-  assert.deepEqual(refused, { accepted: false, scheduled: false,
-    reason: 'the current edit target already has a derived execution' })
+  assert.equal(refused.accepted, false)
+  assert.equal(refused.scheduled, false)
+  assert.match(refused.reason,
+    /^the current edit target already has a derived execution \(edit target: run_code call \d+, first line: /)
   assert.equal(outerValue, 1)
   assert.equal(derivedCalls, 1)
   assert.equal(projectedView(session).editableRun.source,
@@ -743,6 +745,30 @@ test('a root cell accepts one edit while surrounding code continues with its old
   const next = await state.runDurable(session.id, 'return onceEditValue', tools,
     { session, callId: 'once-continued' })
   assert.equal(next.value, 2)
+})
+
+test('an edit rejection names the cell it captured', async t => {
+  const session = appendOnlySession('nested-edit-target-identity')
+  session.append('turn/start', {})
+  const state = fixture()
+  t.after(() => state.dispose())
+  const agent = ptcAgent(session.id, session)
+  const signal = new AbortController().signal
+  await state.assemble(
+    { sections: [], contexts: [], variables: {}, tools: [state.runCodeDefinition] },
+    { agent, scope: agent, signal },
+  )
+  await state.runDurable(session.id, 'const doubled = 1; const doubledAgain = 1; return 1', {},
+    { session, callId: 'identity-setup' })
+  const root = await runNestedEditCell(state, { session, agent, signal, callId: 'identity-edit-root',
+    code: 'return await tools.edit_run_code({ edits: [{ old_string: "= 1", new_string: "= 2" }] })',
+  })
+  assert.equal(root.result.isError, false)
+  assert.equal(root.receipt.accepted, false)
+  assert.equal(root.receipt.scheduled, false)
+  // The match failure alone cannot say which cell was edited; the bounded target identity can.
+  assert.match(root.receipt.reason,
+    /^edits\[0\]\.old_string occurs more than once in the target cell \(edit target: run_code call \d+, first line: const doubled = 1; const doubledAgain = 1; return 1\)$/)
 })
 
 test('edit scheduling releases claims after refusal, invalid root and cancellation during log read', async t => {

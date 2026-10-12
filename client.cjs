@@ -10721,9 +10721,24 @@ function createSessionCapabilityControlsView(React32, { commands, Modal, Select:
           ]
         )
       ),
+      // A blocked workbench states why writes are off and how to restore them; the banner styling
+      // keeps that condition from reading as an incidental list message.
       writesBlocked ? h(
         "p",
-        { className: "ptcPlusCapabilityNotice", role: "status" },
+        { className: "ptcPlusCapabilityNotice ptcPlusCapabilityBlocked", role: "status" },
+        h(
+          "svg",
+          {
+            className: "ptcPlusCapabilityBlockedIcon",
+            viewBox: "0 0 16 16",
+            width: 14,
+            height: 14,
+            "aria-hidden": true,
+            fill: "none"
+          },
+          h("path", { d: "M8 2.3 14.7 13.5H1.3L8 2.3Z", stroke: "currentColor", strokeWidth: 1.3, strokeLinejoin: "round" }),
+          h("path", { d: "M8 6.4v3M8 11.2v.7", stroke: "currentColor", strokeWidth: 1.3, strokeLinecap: "round" })
+        ),
         t2(management === "paused" ? "capabilities.quick.sessionPaused" : management === "off" ? "capabilities.quick.sessionManagementOff" : savedSettings?.contextEnabled === false ? "capabilities.quick.savedPaused" : "capabilities.quick.savedManagementOff")
       ) : null,
       h(
@@ -39562,7 +39577,8 @@ var REPL_CONSOLE_CSS = `
 @media(max-width:560px){.ptcPlusConsole{padding:14px 12px}.ptcPlusBindingsModal.ptcPlusBindingsModal{width:calc(100vw - 16px);max-height:calc(100dvh - 16px)}.ptcPlusBindingsDialog{padding:16px;max-height:calc(100dvh - 16px)}.ptcPlusObservationFilters>.ptcPlusSelectTrigger{width:105px}.ptcPlusObservationTable th,.ptcPlusObservationTable td{padding:0 6px}.ptcPlusObservationValue{gap:3px}.ptcPlusObservationState{font-size:10px}.ptcPlusEditorHead{align-items:flex-start}.ptcPlusEditorHead>.ptcPlusBindingLifecycle{margin-left:auto}.ptcPlusSourceBody .cm-editor{height:300px}}
 .ptcPlusReplIdentity{grid-column:1}.ptcPlusReplReuse{flex:none;padding:0 5px;border-radius:999px;background:var(--dsw-alias-bg-layer-2,rgba(38,49,72,.06));color:var(--dsw-alias-label-tertiary,#74777d);font:500 10px/15px system-ui,sans-serif;white-space:nowrap}
 .ptcPlusObservationReuseTotal{font-size:13px;color:var(--dsw-alias-label-tertiary)}.ptcPlusObservationReuse{color:var(--dsw-alias-label-tertiary);white-space:nowrap;font-variant-numeric:tabular-nums}
-.ptcPlusCapabilityIdentity{display:grid;grid-template-columns:auto minmax(0,1fr);align-items:start;gap:3px 8px;min-width:0}.ptcPlusCapabilityIdentityText{display:flex;flex-direction:column;gap:3px;min-width:0}.ptcPlusCapabilityPickHead{display:grid;grid-template-columns:auto minmax(0,1fr);align-items:center;gap:6px}.ptcPlusCapabilityPickHead .ptcPlusCapabilitySort{min-width:0}.ptcPlusPick{appearance:none;position:relative;flex:none;box-sizing:border-box;width:16px;height:16px;margin:0;border:1px solid var(--dsw-alias-border-l4);border-radius:4px;background:var(--dsw-alias-bg-layer-3);cursor:pointer}.ptcPlusPick:checked,.ptcPlusPick:indeterminate{border-color:var(--dsw-alias-brand-primary);background:var(--dsw-alias-brand-primary)}.ptcPlusPick:checked::after{position:absolute;left:4px;top:1px;width:5px;height:9px;border:solid var(--dsw-alias-label-primary-foreground);border-width:0 2px 2px 0;content:'';transform:rotate(45deg)}.ptcPlusPick:indeterminate::after{position:absolute;left:3px;top:6px;width:8px;height:2px;border-radius:1px;background:var(--dsw-alias-label-primary-foreground);content:''}.ptcPlusPick:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary,#4d6bfe);outline-offset:2px}.ptcPlusPick:disabled{cursor:not-allowed;opacity:.4}.ptcPlusCapabilityBatchCount{display:inline-flex;align-items:center;justify-content:center;min-width:16px;height:16px;padding:0 5px;border-radius:999px;background:var(--dsw-alias-state-business-primary,#4d6bfe);color:#fff;font-size:10px;line-height:16px}.ptcPlusSessionCapabilityDetail .ptcPlusCapabilityImpact{margin:6px 0 14px;font-size:12px;line-height:18px}
+.ptcPlusCapabilityIdentity{display:grid;grid-template-columns:auto minmax(0,1fr);align-items:center;gap:3px 8px;min-width:0}.ptcPlusCapabilityIdentityText{display:flex;flex-direction:column;gap:3px;min-width:0}.ptcPlusCapabilityPickHead{display:grid;grid-template-columns:auto minmax(0,1fr);align-items:center;gap:6px}.ptcPlusCapabilityPickHead .ptcPlusCapabilitySort{min-width:0}.ptcPlusPick{appearance:none;position:relative;flex:none;box-sizing:border-box;width:16px;height:16px;margin:0;border:1px solid var(--dsw-alias-border-l4);border-radius:4px;background:var(--dsw-alias-bg-layer-3);cursor:pointer}.ptcPlusPick:checked,.ptcPlusPick:indeterminate{border-color:var(--dsw-alias-brand-primary);background:var(--dsw-alias-brand-primary)}.ptcPlusPick:checked::after{position:absolute;left:4px;top:1px;width:5px;height:9px;border:solid var(--dsw-alias-label-primary-foreground);border-width:0 2px 2px 0;content:'';transform:rotate(45deg)}.ptcPlusPick:indeterminate::after{position:absolute;left:3px;top:6px;width:8px;height:2px;border-radius:1px;background:var(--dsw-alias-label-primary-foreground);content:''}.ptcPlusPick:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary,#4d6bfe);outline-offset:2px}.ptcPlusPick:disabled{cursor:not-allowed;opacity:.4}.ptcPlusCapabilityBatchCount{display:inline-flex;align-items:center;justify-content:center;min-width:16px;height:16px;padding:0 5px;border-radius:999px;background:var(--dsw-alias-state-business-primary,#4d6bfe);color:#fff;font-size:10px;line-height:16px}.ptcPlusCapabilityBlocked{display:flex;gap:8px;align-items:flex-start;margin:10px 24px 0;border:1px solid color-mix(in srgb,var(--dsw-alias-state-warn-primary,#a15c00) 30%,transparent);background:color-mix(in srgb,var(--dsw-alias-state-warn-primary,#a15c00) 8%,var(--dsw-alias-bg-layer-2));color:var(--dsw-alias-label-primary);font-weight:500}.ptcPlusCapabilityBlockedIcon{flex:none;margin-top:2px;color:var(--dsw-alias-state-warn-primary,#a15c00)}.ptcPlusSessionCapabilityDetail .ptcPlusCapabilityImpact{margin:6px 0 14px;font-size:12px;line-height:18px}
+@media(max-width:650px){.ptcPlusCapabilityBlocked{margin-inline:14px}}@media(max-width:650px) and (max-height:480px){.ptcPlusCapabilityBlocked{margin:4px 6px 0;font-size:11px}}
 @media(max-width:650px){.ptcPlusSessionCapabilityFooter button{font-size:11px;line-height:14px}}
 @media(max-width:650px) and (max-height:480px){.ptcPlusSessionCapabilityFooter{grid-template-columns:repeat(4,minmax(0,1fr));gap:3px;padding:3px 6px}.ptcPlusSessionCapabilityFooter [role=status]{line-height:11px}.ptcPlusSessionCapabilityFooter button{font-size:10px;line-height:12px;padding:1px 10px}}
 `;

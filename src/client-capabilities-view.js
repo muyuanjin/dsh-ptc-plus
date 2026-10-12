@@ -1417,7 +1417,13 @@ export function createSessionCapabilityControlsView(React, { commands, Modal, Se
       filter(t('capabilities.quick.state'), stateFilter, setStateFilter,
         [['all', t('capabilities.quick.allStates')], ['changed', t('capabilities.quick.changed')],
           ...['full', 'on-demand', 'closed', 'pending'].map(key => [key, statusLabel(key)])])),
-    writesBlocked ? h('p', { className: 'ptcPlusCapabilityNotice', role: 'status' },
+    // A blocked workbench states why writes are off and how to restore them; the banner styling
+    // keeps that condition from reading as an incidental list message.
+    writesBlocked ? h('p', { className: 'ptcPlusCapabilityNotice ptcPlusCapabilityBlocked', role: 'status' },
+      h('svg', { className: 'ptcPlusCapabilityBlockedIcon', viewBox: '0 0 16 16', width: 14, height: 14,
+        'aria-hidden': true, fill: 'none' },
+        h('path', { d: 'M8 2.3 14.7 13.5H1.3L8 2.3Z', stroke: 'currentColor', strokeWidth: 1.3, strokeLinejoin: 'round' }),
+        h('path', { d: 'M8 6.4v3M8 11.2v.7', stroke: 'currentColor', strokeWidth: 1.3, strokeLinecap: 'round' })),
       t(management === 'paused' ? 'capabilities.quick.sessionPaused'
         : management === 'off' ? 'capabilities.quick.sessionManagementOff'
           : savedSettings?.contextEnabled === false ? 'capabilities.quick.savedPaused'

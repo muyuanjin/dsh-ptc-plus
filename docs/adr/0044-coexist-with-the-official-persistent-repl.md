@@ -1,0 +1,35 @@
+# Coexist With The Official Persistent REPL
+
+## Problem
+
+DSH added an opt-in official Node execution mode (`executionMode: persistent-in-memory`) that retains a confined REPL per Agent, and extended the `ptcRuntime` seam with `PtcRunRequest.stateOwner`, `PtcRuntime.programFormat` and `PtcRuntime.release(owner)`. The host `run_code` consumer registers `runtime.release(agent)` at Agent disposal for every provider, passes `stateOwner` on requests, and program-format consumers (the workflow adapter, cua) wrap programs according to `programFormat`. PTC Plus owns the same seam: without a policy, its provider surface lacked the new members so Agent disposal could fail, non-session consumers could not see the format of the provider that actually executes their programs, and an explicitly enabled official mode stayed silently inert for session cells while the plugin kept owning them.
+
+## Decision
+
+`internal/execution-seam-compat.js` and `internal/execution-provider-owner.js` forward `programFormat` to the live original generation and `release(owner)` to the originals that served that owner. These describe the provider that actually performs an execution: owner-keyed retained environments and the executed source format belong to the original, which still serves non-session consumers while the plugin owns session cells, and a bounded generation that lacks the members falls back to `'function-body'` and a resolved no-op. Execution retirement does not retire cleanup: the composition retains weak owner-to-original provenance for dispatched `stateOwner` programs, so Agent cleanup through a captured adapter still reaches a surviving original after bundle removal or source replacement. Successful cleanup removes that original from the owner's pending set; failed cleanup remains available for explicit retry, with synchronous and asynchronous failures observable. An owner without recorded dispatch delegates to the live original, or receives a resolved no-op if execution is unavailable. `executionInstructions`, `sandboxMode` and `timeout` keep their existing withholding policy while PTC Plus owns session execution, because those describe the session kernel ([ADR 0028](0028-attach-to-the-host-ptc-execution-seam.md)).
+
+`officialReplPriority` (default `false`, State and recovery) selects who owns PTC session execution when the official persistent REPL is live. The decision reads the live capability — `provider.programFormat === 'repl'` — rather than a release number, and is re-evaluated on every configuration and host source change. Execution ownership is an attachment shape: `owned` installs the session runtime, `deferred` installs `internal/official-repl-priority.js`'s runtime record, which owns no execution resources and answers the attachment contract with empty contexts. Changing the shape retires the current attachment, disposing its live kernels, and installs the other shape before later cells; no committed cell mixes the two contracts. While deferred, `run_code` and its descriptors stay with the official provider and the plugin's REPL guidance, session-state semantics, recovery, editor tool, capability SDK, REPL observation and binding workbench are suspended with the attachment, while the settings card, enablement and stored global bindings stay available so the switch can be reversed.
+
+Cells executed under the official mode produce no plugin journal records. They are an unrecorded execution interval: recovery never replays them, and they do not extend plugin state as recovery evidence.
+
+## Alternatives considered
+
+**Gate on the DSH release or on reading the original row's `executionMode` configuration.** The mode is a live runtime capability and a configuration fact outside the plugin's public contract; `programFormat` is the provider-owned proof that a REPL actually retains state, and it degrades safely on older generations that lack it.
+
+**Keep owning execution unconditionally and only add the missing seam members.** That repairs disposal, but it silently ignores an explicit official mode, cannot honor a user's choice to run the official semantics, and keeps two competing REPL contracts alive for the same session surface.
+
+**Suspend execution in place inside the installed runtime.** Toggling individual owners (prompt, tool bridge, plans, projections) mixes the two execution contracts in one attachment and creates states no single owner can prove; the installation shape is the granularity the plugin already uses for language retirement.
+
+**Keep management owners (global binding workbench, capability workbench) outside the deferred attachment.** Splitting the management surface from the execution runtime is a larger refactor that would change ownership for every state, not only deferral; it remains possible future work instead of being smuggled into this decision.
+
+**Forward `release(owner)` only while delegating execution.** Non-session consumers keep running through the original provider even while PTC Plus owns session cells, so owner-keyed environments can exist in every state; a delegation-only forward would leave those environments unreleased and the registered provider contract incomplete.
+
+## Consequences
+
+Agent disposal on the current official host releases cleanly, and both the format and the owner release reach the generation that owns the environment.
+
+Leaving plugin ownership disposes its live kernels, and plugin-mode state contraction follows the existing disposal rules. Official in-memory state belongs to DSH's Agent/provider lifecycle and may remain available when priority is switched back to the official provider; the deferred attachment does not clear it. State built during an official interlude is never replayed or claimed by the plugin. After returning to plugin ownership, the session continues from plugin-verifiable evidence only.
+
+Deferred mode intentionally reduces the plugin's computation surface (no REPL guidance, session semantics, recovery, editor, capability SDK, REPL observation or binding workbench for that attachment); the setting copy and README state this so the user's choice is informed.
+
+The plugin keeps withholding `sandboxMode` while it owns execution, so deployments that require file confinement still need another PTC execution environment — unchanged by this decision, and now also visible in the workflow adapter's explicit refusal.

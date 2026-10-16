@@ -64,12 +64,32 @@ export function apply(ctx, config = {}) {
   }
   const publish = () => {
     const resolutions = new WeakMap()
+    const ownerOriginals = new WeakMap()
+    const isOwner = owner => owner !== null && (typeof owner === 'object' || typeof owner === 'function')
     const delegate = {
       get language() { return readOriginal().language },
       get isolation() { return readOriginal().isolation },
+      get programFormat() { return readOriginal().programFormat ?? 'function-body' },
       get executionInstructions() { return readOriginal().executionInstructions },
       get sandboxMode() { return readOriginal().sandboxMode },
       get timeout() { return readOriginal().timeout },
+      release(owner) {
+        const originals = isOwner(owner) ? ownerOriginals.get(owner) : undefined
+        if (originals !== undefined) {
+          return Promise.all([...originals].map(original => Promise.resolve()
+            .then(() => original.release(owner))
+            .then(() => originals.delete(original)))).then(() => undefined)
+        }
+        let original
+        try {
+          original = readOriginal()
+        } catch {
+          // No retained dispatch belongs to this owner and execution is unavailable.
+          return Promise.resolve()
+        }
+        if (typeof original.release !== 'function') return Promise.resolve()
+        return Promise.resolve(original.release.call(original, owner))
+      },
       resolve(request) {
         const original = readOriginal()
         const spec = serviceName === EXECUTION_SEAM_SERVICE ? original.resolve(request) : request
@@ -82,6 +102,11 @@ export function apply(ctx, config = {}) {
         const resolved = resolutions.get(spec)
         if (resolved?.generation?.active === false) throw new Error('ptc-plus: resolved spec belongs to an unavailable original generation')
         const original = resolved?.original ?? readOriginal()
+        if (isOwner(spec?.stateOwner) && typeof original.release === 'function') {
+          let originals = ownerOriginals.get(spec.stateOwner)
+          if (originals === undefined) ownerOriginals.set(spec.stateOwner, originals = new Set())
+          originals.add(original)
+        }
         return original.run(spec)
       },
     }

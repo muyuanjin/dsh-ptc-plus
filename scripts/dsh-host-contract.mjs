@@ -59,6 +59,14 @@ export function hostProviderConfig(dshEntry) {
   return hostRequire(dshEntry)('@deepseek-ai/dsh-llm-pi-ai').Config
 }
 
+/** Current persistence modules own cleanup through apply; earlier ones export a service class. */
+export function hostSessionPersistencePlugin(module) {
+  if (typeof module?.apply === 'function') return module
+  const plugin = module?.JsonlSessionPersistence ?? module?.default
+  if (typeof plugin === 'function') return plugin
+  throw new TypeError('The DSH session persistence module provides no public plugin entry')
+}
+
 /** PTC presentation was previously named code; the host schema owns the spelling. */
 export function ptcToolsMode(runtime = ToolRuntime) {
   for (const mode of ['ptc', 'code']) {

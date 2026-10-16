@@ -438,6 +438,7 @@ test('exports a Cordis config schema with validated runtime defaults', async () 
       autoStripExports: true,
       autoSplitRedeclarations: true,
       durableReplay: true,
+      officialReplPriority: false,
       tipsEnabled: true,
       cordisToolsEnabled: false,
       userBindingsEnabled: true,
@@ -463,7 +464,7 @@ test('exports a Cordis config schema with validated runtime defaults', async () 
     (await Config['~standard'].validate({ maxWallMs: 2_147_483_648 })).issues[0].path,
     ['maxWallMs'],
   )
-  for (const key of ['enhancedToolView', 'toolHoverPreviewEnabled', 'autoDescribeRunCode', 'cordisToolsEnabled', 'canonicalizeToolCalls', 'looseTopLevelFunctionClassRedeclarations', 'autoRewriteImports', 'autoStripExports', 'autoSplitRedeclarations', 'tipsEnabled']) {
+  for (const key of ['enhancedToolView', 'toolHoverPreviewEnabled', 'autoDescribeRunCode', 'cordisToolsEnabled', 'canonicalizeToolCalls', 'looseTopLevelFunctionClassRedeclarations', 'autoRewriteImports', 'autoStripExports', 'autoSplitRedeclarations', 'officialReplPriority', 'tipsEnabled']) {
     assert.throws(() => fixture({ [key]: 'yes' }), new RegExp(`${key} must be a boolean`))
   }
   for (const key of ['tipCooldownMessages', 'tipEscalationFailures']) {

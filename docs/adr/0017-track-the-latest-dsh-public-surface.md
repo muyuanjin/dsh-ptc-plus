@@ -26,7 +26,7 @@ Compatibility decisions have one owner per public contract and execution
 environment. `src/client-host-compat.js` owns Client preset reads and subscriptions
 and composer compatibility. UI consumers own feature eligibility and slot
 registration. `scripts/dsh-host-contract.mjs` owns selected-installation package
-resolution, tools presentation and persona field adaptation for development and
+resolution, tools presentation, persona fields and public persistence plugin selection for development and
 acceptance commands. Host runtime contracts remain in their existing focused
 owners, including `internal/session-events.js`, `internal/settings-compat.js`, and
 `internal/execution-seam-compat.js`, which owns which program-execution service the
@@ -63,7 +63,7 @@ capability, storage and observation rules independently of transport.
 
 **Pin one verified DSH release.** A pin makes one historical environment reproducible but turns normal upstream progress into an artificial incompatibility and allows the implementation to drift from the release users actually install.
 
-**Maintain a supported-version range.** A range communicates broader intent, but semver cannot prove compatibility with evolving extension contracts. Maintaining the range duplicates evidence already produced by contract and end-to-end tests while still requiring every new release to be evaluated.
+**Maintain a supported-version range.** A range communicates broader intent, but semver cannot prove compatibility with evolving extension contracts. Maintaining the range duplicates evidence already produced by contract and end-to-end tests while still requiring every new release to be evaluated. The package therefore declares `engines.dsh: "*"` for the Host-owned manifest preflight, preserving capability-based admission without a release allowlist. The packed contract suite runs the selected Host's public `evaluatePluginCompatibility` before importing plugin code; required service peers still establish package resolution.
 
 **Treat the upstream default tool projection as an immutable plugin limit.** This avoids scoped presentation work, but discards capabilities that the public registry supports and can force valid model calls through lossy aliases. Defaults describe the host's built-in product choice; public extension contracts define what a plugin may add. Invalid out-of-surface calls may still be normalized when their intended native target is provable.
 

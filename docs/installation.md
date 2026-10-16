@@ -2,6 +2,8 @@
 
 PTC Plus requires Node.js `^22.19.0 || >=24.0.0` and targets the latest available DSH release with TypeScript PTC mode. Historical interface branches are retained through capability detection, without promising a fully verified earlier Host installation; when both generations expose competing presentation evidence, the current DSH contract wins. Compatibility follows those live extension surfaces rather than a version allowlist.
 
+The package declares `engines.dsh: "*"` for DSH's plugin compatibility preflight. This keeps release-number gating open while public capability checks and packed Host contracts establish compatibility; it does not claim that every historical or future Host has been tested. Host-owned service packages remain required peers.
+
 The worker uses the Host's Node executable. Startup verifies native REPL framing, imports, syntax failures, synchronous throws, awaited rejections, and original return values. The adapter combines public eval callbacks with domain error events before REPL formatting; a source-end witness distinguishes empty completion from falsy rejection. A failed or timed-out probe reports a runtime prerequisite failure before user code executes. The engine range follows DSH; CI exercises Node 22.19, 24, and 26, without claiming that untested future releases have already passed.
 
 Install the plugin into the profile that actually runs the target DSH surface. Do not assume a profile named `default` is active.
@@ -52,7 +54,7 @@ Capabilities select behavior, never a release number. Historical fixture success
 Use this form after the selected version is available from the npm registry:
 
 ```sh
-dsh plugin --profile <profile> add dsh-ptc-plus@0.5.0
+dsh plugin --profile <profile> add dsh-ptc-plus@0.5.1
 dsh --profile <profile> --dump-config
 ```
 
@@ -89,7 +91,7 @@ pnpm dsh --profile <profile> --dump-config
 
 ```sh
 npm pack
-dsh plugin --profile <profile> add /absolute/path/to/dsh-ptc-plus-0.5.0.tgz
+dsh plugin --profile <profile> add /absolute/path/to/dsh-ptc-plus-0.5.1.tgz
 dsh --profile <profile> --dump-config
 ```
 
@@ -157,7 +159,7 @@ dsh plugin add github:muyuanjin/dsh-ptc-plus#main
 dsh --dump-config
 ```
 
-After an npm release, the package spec may instead be `dsh-ptc-plus@0.5.0`. For a local package, use its absolute tarball path. Restart DSH Desktop after installation. Linux Desktop is not a current DSH Desktop release target; use DSH CLI/Web on Linux.
+After an npm release, the package spec may instead be `dsh-ptc-plus@0.5.1`. For a local package, use its absolute tarball path. Restart DSH Desktop after installation. Linux Desktop is not a current DSH Desktop release target; use DSH CLI/Web on Linux.
 
 ## Upgrades
 

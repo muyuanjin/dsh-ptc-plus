@@ -86,6 +86,29 @@ test('binding authoring develops, compares and checks exact candidate source in 
   assertStablePrefix(host)
 })
 
+test('binding changes before the first task deliver only the final catalog and configured value', { timeout: 20000 }, async t => {
+  const host = await bindingWorkflowHost(t)
+  const configured = { id: 'initial', name: 'initialTools', scope: 'namespace', enabled: false,
+    source: 'export const value = 42', modelContext: { includeDeclaration: true, instructions: 'Use initialTools.value.' } }
+  let catalog = (await host.rpc('list')).value
+  catalog = (await host.rpc('save', { intent: 'create', originalId: null, entry: configured, expectedRevision: catalog.revision })).value
+  for (const operation of ['enable', 'disable', 'enable']) {
+    const result = await host.rpc(operation, { id: configured.id, expectedRevision: catalog.revision })
+    assert.equal(result.ok, true)
+    catalog = result.value
+  }
+  assert.equal(host.requests.length, 0)
+  assert.equal(host.events().filter(event => event.type === 'user/message').length, 0)
+  const result = await host.run('return initialTools.value')
+  assert.equal(decodeValue(result.data.meta.dshPtcPlus.completion.value), 42)
+  for (const request of host.requests) {
+    assert.equal(request.messages.some(message => message.source?.form === 'binding-toggle'), false)
+    assert.match(configuredBindingPrompt(request), /Use initialTools.value\./)
+    assert.match(configuredBindingPrompt(request), /declare const initialTools/)
+  }
+  assert.equal(host.events().filter(event => event.type === 'user/message' && readRuntimeMessage(event.data)?.form === 'catalog').length, 1)
+})
+
 test('successful activation does not repeat configured prompts or interfaces in model requests', { timeout: 20000 }, async t => {
   const host = await bindingWorkflowHost(t)
   const configured = {

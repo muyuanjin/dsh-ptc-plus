@@ -158,7 +158,7 @@ async function main() {
     await enterStep(1)
     const stablePrompt = assembly => JSON.stringify({ sections: assembly.sections, tools: assembly.tools })
     const systemText = initialAssembly.sections.map(section => section.text).join('\n\n')
-    assert.match(systemText, /runtime `enum` and namespaces are supported/)
+    assert.match(systemText, /Cells support TypeScript, top-level await, return, static import and top-level export/)
     assert.doesNotMatch(systemText, /erasable syntax only|no `enum` or namespaces/)
     assert.deepEqual(initialAssembly.tools.map(tool => tool.name), ['run_code'])
     const editorSdk = initialAssembly.sections.find(section => section.name === 'tools:sdk')?.text

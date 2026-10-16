@@ -60,6 +60,10 @@ export function createExecutionSeam(service, serviceName) {
   const provider = Object.freeze({
     get language() { requireCompatible(); return service.language },
     get isolation() { requireCompatible(); return installed === undefined ? service.isolation : 'worker-thread' },
+    // Source evaluation form belongs to the provider that actually receives
+    // the program. Program-format consumers delegate to the original provider,
+    // so this descriptor always follows the original generation.
+    get programFormat() { requireCompatible(); return service.programFormat ?? 'function-body' },
     get executionInstructions() { requireCompatible(); return installed === undefined ? service.executionInstructions ?? '' : '' },
     get sandboxMode() { requireCompatible(); return installed === undefined ? service.sandboxMode : undefined },
     get timeout() { requireCompatible(); return installed === undefined ? service.timeout : undefined },
@@ -70,6 +74,20 @@ export function createExecutionSeam(service, serviceName) {
     run(input) {
       requireCompatible()
       return installed === undefined ? upstreamRun.call(service, input) : installed.execute(input)
+    },
+    /**
+     * Release one owner's retained environment. The resources live in the
+     * original generation (the session kernel releases its state through its
+     * own lifecycle). Adapter retirement only closes execution; the original
+     * still owns cleanup for references retained by its consumers.
+     */
+    release(owner) {
+      if (typeof service.release !== 'function') return Promise.resolve()
+      try {
+        return Promise.resolve(service.release.call(service, owner))
+      } catch (error) {
+        return Promise.reject(error)
+      }
     },
     [PLUGIN_EXECUTION_SEAM]() { return seam },
   })

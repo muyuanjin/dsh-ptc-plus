@@ -37,6 +37,8 @@ dsh plugin --profile <profile> add dsh-ptc-plus
 
 Replace `<profile>` with your profile name, restart DSH, and select **PTC mode** in the session. Continuous computation, call tolerance, and global bindings are on by default. To upgrade, run `dsh plugin --profile <profile> add dsh-ptc-plus@latest` and restart that Host; see the [installation guide](docs/installation.md) for other installation methods, Desktop, the local development launcher, and troubleshooting.
 
+The plugin declares `engines.dsh: "*"` for the Host's compatibility preflight; public capability checks and packed tests against the latest official release verify compatibility.
+
 The session shows a **REPL** tab, and wide screens show a **PTC Plus** header indicator. The sparkle button beside the composer opens the global binding menu, the session capability workbench, and **PTC Plus settings**; **Plugins → Installed → dsh-ptc-plus → Configure** in the sidebar is the same configuration.
 
 ## Feature overview
@@ -149,7 +151,7 @@ The settings window and the sidebar plugin configuration page are the same confi
 | --- | --- | --- |
 | Plugin switch | PTC Plus title switch | Enable or disable PTC Plus |
 | Core workspace | REPL syntax | Allow same-name revisions or choose name protection |
-| Core workspace | State and recovery | Restart recovery, contextual tips, and their frequency |
+| Core workspace | State and recovery | Restart recovery, official REPL ownership, contextual tips, and their frequency |
 | Extensions and tolerance | Tool extensions | Global bindings and their management entry, official Cordis tool integration |
 | Extensions and tolerance | Tool call tolerance | Missing call summaries and identifiable misplaced native-tool calls |
 | Interface and resources | Interface display | Enhanced tool cards, the REPL tab, and the sparkle shortcut |
@@ -160,7 +162,11 @@ Everyday computation features are on by default, and **Cordis development tools 
 
 Capabilities and context is an experimental group, off by default. It selects availability and disclosure for Skills, tools, and MCP capabilities by category, source, or item, and it also covers Initial prompt, Prompt recovery, Output excerpts, and Usage statistics; the switch beside its title pauses the whole group while keeping every choice, and changes apply to new sessions or to a session after an explicit refresh. The sparkle menu also opens the session capability workbench, which views and adjusts the current session's capabilities by category, source, and state: edits live in one draft that you can apply to this session only or save as the global default. See the [configuration reference](docs/runtime-reference.md#configuration) for fields, defaults, and full limits.
 
+Before a new session starts, capability and global binding changes only update its initial configuration; no change notices are sent or queued. The first request uses the resulting configuration.
+
 The host execution provider must use TypeScript; changing it to another language during a reload withdraws the plugin and reports a diagnostic, and switching back re-enables it.
+
+With DSH's official `executionMode: persistent-in-memory` enabled, **Prioritize the official REPL mode** under State and recovery chooses who owns the PTC session: disabled by default, so PTC Plus owns `run_code`; enabled, the official runtime owns execution and PTC Plus leaves execution, REPL state semantics, and observation to it. The setting has no effect while the official mode is off. Ownership changes take effect immediately and leaving plugin execution disposes its in-memory environment. Official in-memory state follows DSH's Agent/provider lifecycle; changing priority does not guarantee clearing it. Official-mode calls stay outside the plugin's records, so they never count as recoverable state after switching back to the plugin.
 
 ![PTC Plus settings window](assets/ptc-plus-settings-en.png)
 

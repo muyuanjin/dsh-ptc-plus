@@ -118,6 +118,12 @@ async function exposePluginDependencies(consumer) {
 
 async function verifyConsumer(consumer, label, host) {
   const require = createRequire(join(consumer, 'package.json'))
+  const manifest = JSON.parse(await readFile(require.resolve('dsh-ptc-plus/package.json'), 'utf8'))
+  const { evaluatePluginCompatibility } = await import(pathToFileURL(require.resolve('@deepseek-ai/dsh-app-boot')).href)
+  const issue = evaluatePluginCompatibility(manifest)
+  if (issue !== undefined) {
+    throw new Error(`${label} rejected the packed plugin manifest: ${JSON.stringify(issue)}`)
+  }
   const plugin = await import(pathToFileURL(require.resolve('dsh-ptc-plus')).href)
   if (plugin.name !== 'ptc-plus' || typeof plugin.apply !== 'function') {
     throw new Error(`${label} resolved invalid dsh-ptc-plus exports`)

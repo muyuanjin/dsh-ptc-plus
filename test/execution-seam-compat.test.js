@@ -275,7 +275,7 @@ test('an installed seam gates changed source language before its asynchronous li
   assert.throws(() => seam.provider.resolve({}), /incompatible with the active/)
   assert.throws(() => seam.invokeUpstream({}), /incompatible with the active/)
   assert.throws(() => seam.runUpstream({}), /incompatible with the active/)
-  for (const property of ['language', 'isolation', 'executionInstructions', 'sandboxMode', 'timeout']) {
+  for (const property of ['language', 'isolation', 'programFormat', 'executionInstructions', 'sandboxMode', 'timeout']) {
     assert.throws(() => seam.provider[property], /incompatible with the active/)
   }
   assert.equal(executions, 0)
@@ -759,4 +759,69 @@ test('attaches without a lifecycle hook when the injected scope has none', () =>
   }
   installExecutionSeam(ctx, { services: CORE_SERVICES, attach: (scope, seam) => attached.push(seam.serviceName) })
   assert.deepEqual(attached, ['codeRuntime'])
+})
+
+// The state-owner contract belongs to the generation that retains the
+// environment: program-format consumers and owner release always forward to
+// the original provider, whether or not the plugin currently owns executions.
+test('forwards the original program format and owner release in both provider states', async () => {
+  const owners = []
+  const original = Object.freeze({
+    language: 'typescript',
+    isolation: 'process',
+    programFormat: 'repl',
+    executionInstructions: 'retained REPL',
+    resolve(request) { return { ...request, cwd: '/provider-workspace' } },
+    async run() { return { logs: [], value: 'original' } },
+    release(owner) { owners.push(owner); return Promise.resolve() },
+  })
+  const seam = createExecutionSeam(original, EXECUTION_SEAM_SERVICE)
+  assert.equal(seam.provider.programFormat, 'repl')
+  const owner = {}
+  await seam.provider.release(owner)
+  const release = seam.installExecute(() => Promise.resolve({ logs: [], value: 'plugin' }))
+  assert.equal(seam.provider.programFormat, 'repl')
+  assert.equal(seam.provider.executionInstructions, '')
+  await seam.provider.release(owner)
+  release()
+  assert.equal(seam.provider.programFormat, 'repl')
+  await seam.provider.release(owner)
+  assert.deepEqual(owners, [owner, owner, owner])
+})
+
+test('falls back without state-owner members and preserves cleanup after adapter retirement', async () => {
+  const seam = createExecutionSeam(Object.freeze(new NodeRuntimeProvider()), EXECUTION_SEAM_SERVICE)
+  assert.equal(seam.provider.programFormat, 'function-body')
+  assert.equal(await seam.provider.release({}), undefined)
+  const releases = []
+  const original = Object.freeze({
+    language: 'typescript',
+    resolve(request) { return request },
+    async run() { return { logs: [], value: 'original' } },
+    release(owner) { releases.push(owner); return Promise.resolve() },
+  })
+  const retired = createExecutionSeam(original, EXECUTION_SEAM_SERVICE)
+  retired.retire()
+  const owner = {}
+  await retired.provider.release(owner)
+  assert.deepEqual(releases, [owner])
+})
+
+test('keeps a failing owner release observable', async () => {
+  const synchronous = new Error('synchronous cleanup failed')
+  const asynchronous = new Error('asynchronous cleanup failed')
+  const throwing = createExecutionSeam(Object.freeze({
+    language: 'typescript',
+    resolve(request) { return request },
+    async run() { return { logs: [], value: 'original' } },
+    release() { throw synchronous },
+  }), EXECUTION_SEAM_SERVICE)
+  await assert.rejects(throwing.provider.release({}), synchronous)
+  const rejecting = createExecutionSeam(Object.freeze({
+    language: 'typescript',
+    resolve(request) { return request },
+    async run() { return { logs: [], value: 'original' } },
+    release() { return Promise.reject(asynchronous) },
+  }), EXECUTION_SEAM_SERVICE)
+  await assert.rejects(rejecting.provider.release({}), asynchronous)
 })

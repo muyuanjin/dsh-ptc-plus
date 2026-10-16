@@ -42,7 +42,7 @@ PTC Plus 是个人维护的社区实验插件。它把 DSH PTC 模式的顶层 `
 
 **会话能力方案**：会话开始时确定的受管能力启用配置及完整披露与按需披露分配，是该会话及其恢复后的稳定环境基线。使用统计和已保存设置的变化不自动改变已有会话，用户主动刷新后才同步最新方案，能力关闭同样遵循该生效边界。
 
-**能力方案刷新**：用户通过 `/capabilities refresh`、星光菜单或设置中明确选定会话的刷新按钮同步最新能力方案的操作。刷新同步更新模型可见的能力说明、发现入口与 REPL 环境，并向模型提供与实际生效方案一致的变更通知。
+**能力方案刷新**：用户通过 `/capabilities refresh`、星光菜单或设置中明确选定会话的刷新按钮同步最新能力方案的操作。刷新同步更新模型可见的能力说明、发现入口与 REPL 环境，并向模型提供与实际生效方案一致的变更通知；首个宿主接受步骤之前只替换初始方案，不发送或排队发送中间变更说明。
 
 **会话能力工作台**：星光菜单打开的会话级管理界面，使用只读目录观察当前会话的能力来源、已保存、临时与生效状态。仅本会话和全局保存分属明确范围；待应用选择逐项通过 DSH 正式人类命令执行，并以重新读取的状态确认结果，部分失败时保留未确认草稿。目录观察不生成命令卡片；正式命令保留实际名称、参数和结果回执，且不覆盖输入框中未发送的草稿。
 
@@ -69,7 +69,7 @@ PTC Plus 是个人维护的社区实验插件。它把 DSH PTC 模式的顶层 `
 5. shell 是解释命令文本的通用入口，不是 REPL、权限系统或普通 argv spawn 的前置条件。PTY/ConPTY 只用于交互进程；Windows、WSL 与 POSIX execution world 必须分别探查。
 6. 透明性要求 action、authority、effect、result completeness、replay 与 settlement 不被混淆；不要求暴露无决策意义的 provider 内部细节。
 7. 插件提供的默认计算状态必须与模型可知状态对齐。binding 只有同时满足“journal ancestry 可重建”和“精确 provenance 仍在生成当前调用的 DSH model-visible surface 中，或由显式选择的有界、模型可见结构化状态投影公开”才默认保留；不能仅为延长隐藏状态而默认注入该投影。append-only raw log 与 UI-only inventory 都不构成模型知识；不得解析自然语言 compaction summary 猜测 binding。只替换 result、仍保留 assistant 源码 call 的剪裁不必丢弃对应状态；provenance 被遮蔽时收缩 live/cold runtime，最差从空 REPL 继续。
-8. Global User Bindings 是默认开启的用户计算输入能力；未配置时启用，显式关闭设置和单个条目的启停状态保持有效。关闭时不得读取存储、注入值或新声明、注册管理 RPC/命令或显示管理 UI；下一次宿主允许且接受的步骤可撤销已投递的旧声明；开启时，源码派生的严格快照共同拥有冲突校验、worker 激活和 journal evidence。每个条目可用 `modelContext.includeDeclaration` 选择是否注入已有的源码派生接口（默认开启），用 `instructions` 编写独立提供给模型的提示词（默认空）；不另行编写接口。已启用条目的非空提示词和所选接口从首轮通过追加的 PTC API catalog 投递；`/binding` 保存并启用、会话中途启停、删除或编辑后，下一次宿主允许且接受的请求追加当前配置或撤销旧说明，保持 system、tool schema 与顺序不变。已提交消息和公共 ordered surface 拥有投递、去重与恢复证据，配置未变时不重复追加。该配置只描述 API 与执行时初始化契约，不证明当前值或成功激活，不为组装提示词执行源码。配置段是新消息中全局绑定提示词与接口的唯一来源；成功激活、session-local shadow 或 worker 重建不单独追加公告或再次发送接口，执行结果与诊断继续说明实际行为。历史活动段仍可识别，并在下一次允许且接受的恢复快照中撤销一次，当前说明由独立目录提供。关闭接口注入不影响独立提示词或绑定执行。失败 initializer 已发起 program call 时，整个 cell 进入 volatile，不能把缺少该 initializer 源码的成功子集用作 cold replay evidence。模型不获得存储管理、工作台候选执行或启停权限；`/binding` 可通过普通 `run_code` 在会话内做内存测试，编写测试不得修改外部文件或服务。
+8. Global User Bindings 是默认开启的用户计算输入能力；未配置时启用，显式关闭设置和单个条目的启停状态保持有效。关闭时不得读取存储、注入值或新声明、注册管理 RPC/命令或显示管理 UI；下一次宿主允许且接受的步骤可撤销已投递的旧声明；开启时，源码派生的严格快照共同拥有冲突校验、worker 激活和 journal evidence。每个条目可用 `modelContext.includeDeclaration` 选择是否注入已有的源码派生接口（默认开启），用 `instructions` 编写独立提供给模型的提示词（默认空）；不另行编写接口。首次宿主接受步骤之前的全局启停只修改初始配置，不向会话追加或排队发送启停回执。已启用条目的非空提示词和所选接口从首轮通过追加的 PTC API catalog 投递；`/binding` 保存并启用、会话中途启停、删除或编辑后，下一次宿主允许且接受的请求追加当前配置或撤销旧说明，保持 system、tool schema 与顺序不变。已提交消息和公共 ordered surface 拥有投递、去重与恢复证据，配置未变时不重复追加。该配置只描述 API 与执行时初始化契约，不证明当前值或成功激活，不为组装提示词执行源码。配置段是新消息中全局绑定提示词与接口的唯一来源；成功激活、session-local shadow 或 worker 重建不单独追加公告或再次发送接口，执行结果与诊断继续说明实际行为。历史活动段仍可识别，并在下一次允许且接受的恢复快照中撤销一次，当前说明由独立目录提供。关闭接口注入不影响独立提示词或绑定执行。失败 initializer 已发起 program call 时，整个 cell 进入 volatile，不能把缺少该 initializer 源码的成功子集用作 cold replay evidence。模型不获得存储管理、工作台候选执行或启停权限；`/binding` 可通过普通 `run_code` 在会话内做内存测试，编写测试不得修改外部文件或服务。
 
 9. Pathless preset 的包资源优先且排他地由 active Host 的公共 `pluginPackages.packageOf` service 定位；只在旧 generation 完全不提供该 service 时，才允许以 Host 的 `ctx.baseUrl` 为锚解析其历史复数 preset package。插件自身周围的 ambient Node package 不构成宿主来源证据；一旦 Host 提供 `pluginPackages`，空结果或无效结果都不能回退到旧布局。
 

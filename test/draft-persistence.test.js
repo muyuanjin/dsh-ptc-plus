@@ -7,6 +7,7 @@ import { Context } from '@deepseek-ai/cordis'
 import { Session, SessionStore } from '@deepseek-ai/dsh-session'
 import { SessionProjectionRegistry } from '@deepseek-ai/dsh-session-projection'
 import * as jsonl from '@deepseek-ai/dsh-session-persistence-jsonl'
+import { hostSessionPersistencePlugin } from '../scripts/dsh-host-contract.mjs'
 import { createToolResultMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { appendRunCodeEvents, fixture, orderedSurfaceSession } from './plugin-fixture.js'
 import { recordedSessionEvents as sessionEvents } from './session-observation-fixture.js'
@@ -70,7 +71,7 @@ test('DSH rejects the old unknown reset event while current REPL results persist
   })
   fibers.push(ctx.plugin(SessionStore))
   await fibers.at(-1).await()
-  fibers.push(ctx.plugin(jsonl.JsonlSessionPersistence ?? jsonl.default, { root, compression: 'none' }))
+  fibers.push(ctx.plugin(hostSessionPersistencePlugin(jsonl), { root, compression: 'none' }))
   await fibers.at(-1).await()
   const persistence = ctx.get('sessionPersistence')
   const handles = []
@@ -154,7 +155,7 @@ test('persisted settlement chronology rejects damaged shortcuts and preserves or
     fibers.push(ctx.plugin(plugin))
     await fibers.at(-1).await()
   }
-  fibers.push(ctx.plugin(jsonl.JsonlSessionPersistence ?? jsonl.default, { root, compression: 'none' }))
+  fibers.push(ctx.plugin(hostSessionPersistencePlugin(jsonl), { root, compression: 'none' }))
   await fibers.at(-1).await()
   const persistence = ctx.get('sessionPersistence')
   const registry = ctx.get('sessionProjections')

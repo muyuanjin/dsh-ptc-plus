@@ -4,6 +4,7 @@ import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { hostSessionPersistencePlugin } from './dsh-host-contract.mjs'
 
 async function main() {
   const consumer = process.cwd()
@@ -27,7 +28,7 @@ async function main() {
   try {
     fibers.push(ctx.plugin(SessionStore))
     await fibers.at(-1).await()
-    fibers.push(ctx.plugin(jsonl.JsonlSessionPersistence ?? jsonl.default, { root, compression: 'zstd' }))
+    fibers.push(ctx.plugin(hostSessionPersistencePlugin(jsonl), { root, compression: 'zstd' }))
     await fibers.at(-1).await()
     const persistence = ctx.get('sessionPersistence')
     const session = Session.create('argument-diagnostic-roundtrip')

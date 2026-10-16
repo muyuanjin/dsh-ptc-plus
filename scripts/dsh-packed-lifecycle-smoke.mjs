@@ -5,6 +5,7 @@ import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { hostSessionPersistencePlugin } from './dsh-host-contract.mjs'
 
 // All imports resolve from the extracted npm consumer, never the source checkout.
 const require = createRequire(join(process.cwd(), 'package.json'))
@@ -18,7 +19,7 @@ const { SessionStore } = await load('@deepseek-ai/dsh-session')
 const { SessionQueryEngine } = await load('@deepseek-ai/dsh-session-query')
 const { SessionProjectionRegistry } = await load('@deepseek-ai/dsh-session-projection')
 const { agentEvents } = await load('@deepseek-ai/dsh-agent')
-const { default: Jsonl } = await load('@deepseek-ai/dsh-session-persistence-jsonl')
+const jsonl = await load('@deepseek-ai/dsh-session-persistence-jsonl')
 const { createScope } = await load('@deepseek-ai/dsh-scope')
 const { buildForkSeed } = await load('@deepseek-ai/dsh-session/fork')
 const { createAssistantMessage, createToolResultMessage, createUserMessage } = await load('@deepseek-ai/dsh-llm')
@@ -50,7 +51,7 @@ try {
   new SystemPrompt(root, { includeHarnessIdentity: false, includeRuntimeContext: true, persona: '' })
   new ToolRuntime(root, { mode: 'ptc' })
   for (const service of [SessionStore, SessionQueryEngine, SessionProjectionRegistry]) await root.plugin(service).await()
-  await root.plugin(Jsonl, { root: join(profile, 'sessions'), compression: 'none' }).await()
+  await root.plugin(hostSessionPersistencePlugin(jsonl), { root: join(profile, 'sessions'), compression: 'none' }).await()
   await root.plugin(Loader, { baseUrl: pathToFileURL(process.cwd() + '/').href }).await()
   const originalRows = [{ id: 'fs-local', name: '@deepseek-ai/dsh-fs-local' }, ...selected]
   const rows = composeEntries([[{ insert: originalRows }], patch])

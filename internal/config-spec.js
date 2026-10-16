@@ -216,6 +216,15 @@ export const CONFIG_FIELDS = Object.freeze([
     descriptionEn: 'Rebuilds recoverable REPL state from the session journal after a worker restart.',
   },
   {
+    key: 'officialReplPriority',
+    type: 'boolean',
+    default: false,
+    label: '官方 REPL 模式优先',
+    labelEn: 'Prioritize the official REPL mode',
+    description: '检测到官方持久 REPL 模式时由官方运行时接管 PTC 会话执行；PTC Plus 让出 run_code 及其进程内会话状态语义，关闭时始终由 PTC Plus 接管。',
+    descriptionEn: 'Lets the official runtime own PTC session execution when the official persistent REPL mode is active; PTC Plus then leaves run_code and its in-process session-state semantics to DSH. Disabled keeps PTC Plus in charge.',
+  },
+  {
     key: 'tipsEnabled',
     type: 'boolean',
     default: true,
@@ -367,7 +376,7 @@ export const CONFIG_GROUPS = Object.freeze([
     key: 'recovery',
     label: '状态与恢复',
     labelEn: 'State and recovery',
-    fields: Object.freeze(['durableReplay', 'tipsEnabled', 'tipCooldownMessages', 'tipEscalationFailures']),
+    fields: Object.freeze(['durableReplay', 'officialReplPriority', 'tipsEnabled', 'tipCooldownMessages', 'tipEscalationFailures']),
   },
   {
     key: 'extensions',

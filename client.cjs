@@ -1495,6 +1495,15 @@ var CONFIG_FIELDS = Object.freeze([
     descriptionEn: "Rebuilds recoverable REPL state from the session journal after a worker restart."
   },
   {
+    key: "officialReplPriority",
+    type: "boolean",
+    default: false,
+    label: "\u5B98\u65B9 REPL \u6A21\u5F0F\u4F18\u5148",
+    labelEn: "Prioritize the official REPL mode",
+    description: "\u68C0\u6D4B\u5230\u5B98\u65B9\u6301\u4E45 REPL \u6A21\u5F0F\u65F6\u7531\u5B98\u65B9\u8FD0\u884C\u65F6\u63A5\u7BA1 PTC \u4F1A\u8BDD\u6267\u884C\uFF1BPTC Plus \u8BA9\u51FA run_code \u53CA\u5176\u8FDB\u7A0B\u5185\u4F1A\u8BDD\u72B6\u6001\u8BED\u4E49\uFF0C\u5173\u95ED\u65F6\u59CB\u7EC8\u7531 PTC Plus \u63A5\u7BA1\u3002",
+    descriptionEn: "Lets the official runtime own PTC session execution when the official persistent REPL mode is active; PTC Plus then leaves run_code and its in-process session-state semantics to DSH. Disabled keeps PTC Plus in charge."
+  },
+  {
     key: "tipsEnabled",
     type: "boolean",
     default: true,
@@ -1644,7 +1653,7 @@ var CONFIG_GROUPS = Object.freeze([
     key: "recovery",
     label: "\u72B6\u6001\u4E0E\u6062\u590D",
     labelEn: "State and recovery",
-    fields: Object.freeze(["durableReplay", "tipsEnabled", "tipCooldownMessages", "tipEscalationFailures"])
+    fields: Object.freeze(["durableReplay", "officialReplPriority", "tipsEnabled", "tipCooldownMessages", "tipEscalationFailures"])
   },
   {
     key: "extensions",

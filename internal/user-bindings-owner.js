@@ -1,5 +1,5 @@
 import { PTC_MESSAGE_SOURCE_KIND } from './message-sources.js'
-import { bindingToggleMessage, readBindingToggle } from './binding-toggle-receipt.js'
+import { bindingToggleMessage } from './binding-toggle-receipt.js'
 import { RPC_CONTRACTS } from './rpc-contract.js'
 import { randomUUID } from 'node:crypto'
 import { dirname } from 'node:path'
@@ -186,7 +186,6 @@ export function createUserBindingsOwner(ctx, options = {}) {
     valueLimits: options.valueLimits,
   }
   let disposed = false
-  const pendingConfigurationReceipts = new WeakMap()
   const codeConsole = new UserBindingConsole(currentOptions)
   const commandRegistrations = new Map()
   const sessionAgents = new Map()
@@ -387,15 +386,11 @@ export function createUserBindingsOwner(ctx, options = {}) {
     const sessions = new Set((ctx.agents?.list?.() ?? []).map(agent => agent.session).filter(Boolean))
     for (const session of sessions) {
       try {
+        // Before the first accepted step these are initial settings, not changes
+        // to an environment the model has received. The catalog owns first delivery.
+        if (session.deriveMessages()[0]?.role !== 'system') continue
         const message = createUserMessage(bindingToggleMessage(entry, next.revision))
-        // The Host alone establishes the first system head. Before that accepted
-        // boundary, keep UI configuration facts pending without waking the Agent.
-        if (session.deriveMessages()[0]?.role === 'system') session.append('user/message', message, { surfaceOp: 'append' })
-        else {
-          const pending = pendingConfigurationReceipts.get(session) ?? []
-          pending.push(message)
-          pendingConfigurationReceipts.set(session, pending)
-        }
+        session.append('user/message', message, { surfaceOp: 'append' })
       } catch (error) { reportContainedFailure('ptc-plus: binding configuration saved but its session receipt could not be appended', error) }
     }
     return next
@@ -916,23 +911,6 @@ export function createUserBindingsOwner(ctx, options = {}) {
   mountAuthoring()
 
   return Object.freeze({
-    committedEvent(session, event) {
-      if (event.type !== 'user/message' || !readBindingToggle(event.data)) return
-      const pending = pendingConfigurationReceipts.get(session)
-      if (pending) pendingConfigurationReceipts.set(session, pending.filter(message => message.id !== event.data.id))
-    },
-    async preStep(payload, next) {
-      const decision = await next()
-      if (disposed || decision?.kind !== 'enter' || payload.signal?.aborted || payload.agent?.signal?.aborted) return decision
-      const session = payload.agent?.session
-      const pending = pendingConfigurationReceipts.get(session)
-      if (!pending?.length) return decision
-      const visible = new Set(session.deriveMessages().map(message => message.id))
-      const remaining = pending.filter(message => !visible.has(message.id))
-      pendingConfigurationReceipts.set(session, remaining)
-      const proposed = new Set((decision.messages ?? []).map(message => message.id))
-      return { ...decision, messages: [...(decision.messages ?? []), ...remaining.filter(message => !proposed.has(message.id))] }
-    },
     path: store.filename,
     cwd: bindingsCwd,
     async snapshot() {

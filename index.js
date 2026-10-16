@@ -26,6 +26,7 @@ import {
 } from './internal/config-spec.js'
 import { configFieldSchema, installSettingsSectionCompat } from './internal/settings-compat.js'
 import { installExecutionSeam } from './internal/execution-seam-compat.js'
+import { createDeferredRuntime, defersToOfficialRepl } from './internal/official-repl-priority.js'
 import { valueLimitsFromConfig } from './internal/value-wire-schema.js'
 import { createReplMemoryProjection } from './internal/repl-memory-projection.js'
 import { createUserBindingDraftProjection } from './internal/user-binding-draft-projection.js'
@@ -415,8 +416,6 @@ function installPtCRuntime(ctx, resolvedConfig, seam, toolSchemasForAgent, toolS
         editTransport.ensureInstalled(agent)
       }
     }
-    disposers.push(ctx.on('agent/pre-step', (payload, next) => userBindings.preStep(payload, next)))
-    disposers.push(ctx.on('session/event', (session, event) => userBindings.committedEvent(session, event)))
     disposers.push(ctx.on('tools/post-execute', (exec, result, next) => capabilityEnvironment.postExecute(exec, result, next), { prepend: true }))
     disposers.push(ctx.on('tools/ptc-dispatch-log', (dispatch, next) => capabilityEnvironment.dispatchLog(dispatch, next), { prepend: true }))
     disposers.push(ctx.on('agent/status', payload => { if (payload?.agent) capabilityEnvironment.status(payload.agent, payload.status) }))
@@ -717,6 +716,11 @@ function applyWithExecutionSeam(ctx, resolvedConfig, seam, volatileHost, volatil
     )
     return cleanup
   }
+  // Execution ownership is a per-attachment property: `owned` installs the
+  // session runtime, `deferred` leaves run_code to the official provider.
+  const executionShape = nextConfig => (
+    defersToOfficialRepl(nextConfig, seam.provider) ? 'deferred' : 'owned'
+  )
   const startActivation = record => {
     if (record.cancelled || disposed || activating !== record) {
       record.completion.resolve({ status: 'superseded' })
@@ -727,7 +731,9 @@ function applyWithExecutionSeam(ctx, resolvedConfig, seam, volatileHost, volatil
     }
     let candidate
     try {
-      candidate = installPtCRuntime(ctx, record.config, seam, toolSchemasForAgent, toolSdkSchemasForAgent, sessionId, sessionLog, () => settingsWriter)
+      candidate = record.shape === 'deferred'
+        ? createDeferredRuntime()
+        : installPtCRuntime(ctx, record.config, seam, toolSchemasForAgent, toolSdkSchemasForAgent, sessionId, sessionLog, () => settingsWriter)
       record.runtime = candidate
     } catch (error) {
       const failedRuntime = error?.[INSTALL_CLEANUP]
@@ -772,6 +778,7 @@ function applyWithExecutionSeam(ctx, resolvedConfig, seam, volatileHost, volatil
     const record = {
       config: nextConfig,
       generation,
+      shape: executionShape(nextConfig),
       runtime: undefined,
       disposal: undefined,
       disposed: false,
@@ -821,6 +828,15 @@ function applyWithExecutionSeam(ctx, resolvedConfig, seam, volatileHost, volatil
         return beginActivation(nextConfig, generation, cleanup)
       }
       const current = committed
+      if (current.shape !== executionShape(nextConfig)) {
+        // Ownership changes are installation changes: dispose the live kernels
+        // and install the other shape, so no committed cell can mix the two
+        // execution contracts or extend state the new owner cannot see.
+        current.retiring = true
+        void disposeRuntime(current)
+        const cleanup = disposeRetainedRuntimes()
+        return beginActivation(nextConfig, generation, cleanup)
+      }
       if (!nextConfig.cordisToolsEnabled) current.runtime.cancelCordisActivation()
       return enqueueTransition(async () => {
         if (disposed || committed !== current) return { status: 'superseded' }

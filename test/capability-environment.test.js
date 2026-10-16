@@ -451,6 +451,28 @@ for (const action of ['choice', 'refresh']) test(`cancelled first-session ${acti
   assert.equal(agent.session.snapshotEvents().filter(event => event.type === 'command/done').length, 1)
 })
 
+test('pre-session capability changes replace the initial plan without refresh notifications', async t => {
+  const ctx = new Context()
+  new SystemPrompt(ctx, { includeHarnessIdentity: false, includeRuntimeContext: false })
+  const env = createCapabilityEnvironment({ ctx, config: config(), toolSchemasForAgent: () => [schema('run_code'), schema('probe')] })
+  const agent = agentFor(Session.create('initial-capability-choices'))
+  agent.runMaintenance = operation => operation(agent.signal)
+  t.after(async () => { await env.dispose(); await ctx.fiber.dispose() })
+  await env.prepare(agent, [])
+  for (const selection of ['closed', 'full', 'on-demand']) {
+    await env.change(agent, { scope: 'session', id: 'tools.probe', selection }, agent.signal)
+    assert.equal(agent.session.deriveMessages().length, 0)
+  }
+  await env.refresh(agent, undefined, agent.signal)
+  const entered = await env.preStep({ agent, signal: agent.signal }, async () => ({ kind: 'enter', messages: [] }))
+  const plans = entered.messages.filter(message => message.source?.form === 'capability-plan')
+  assert.equal(plans.length, 1)
+  assert.equal(plans[0].source.refresh, false)
+  assert.match(plans[0].content[0].text, /^PTC Plus session capability environment:/)
+  assert.doesNotMatch(plans[0].content[0].text, /refreshed|replaces the preceding/)
+  assert.equal(plans[0].source.snapshot.plan.entries.find(entry => entry.id === 'tools.probe').selection, 'on-demand')
+})
+
 test('successful first-session refresh receipts retain the refreshed source after cold restore', async t => {
   const ctx = new Context(); new CommandRuntime(ctx)
   new SystemPrompt(ctx, { includeHarnessIdentity: false, includeRuntimeContext: false })
@@ -472,6 +494,7 @@ test('successful first-session refresh receipts retain the refreshed source afte
   assert.equal(cold.describe(restored).effective.entries.find(item => item.id === 'tools.probe').selection, 'full')
   const entered = await cold.preStep({ agent: restored, signal: restored.signal }, async () => ({ kind: 'enter', messages: [] }))
   assert.equal(entered.messages[0].source.snapshot.sourceSettings.manual.overrides['tools.probe'], 'full')
+  assert.equal(entered.messages[0].source.refresh, false)
 })
 
 test('SDK output contracts use only public scoped schemas and definitions with detached JSON', async t => {

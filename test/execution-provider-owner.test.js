@@ -21,7 +21,7 @@ let sequence = 0
 
 async function loaderFixture(t, { originalEntryId = 'ptc-runtime', isolation = 'ptc-plus-original', originalConfig = {}, adapterFirst = false, adapterUrl = compositionUrl, included = false, serviceName = 'ptcRuntime' } = {}) {
   const key = `__ptcComposition${sequence++}`
-  const state = globalThis[key] = { originals: [], resolutions: [], runs: [], effects: [] }
+  const state = globalThis[key] = { originals: [], resolutions: [], runs: [], effects: [], releases: [], releasedGenerations: [] }
   const originalUrl = moduleUrl(`
     import { PtcRuntime } from ${JSON.stringify(runtimeUrl)}
     import { Service } from ${JSON.stringify(import.meta.resolve('@deepseek-ai/cordis'))}
@@ -31,10 +31,17 @@ async function loaderFixture(t, { originalEntryId = 'ptc-runtime', isolation = '
       class Original ${serviceName === 'ptcRuntime' ? 'extends PtcRuntime' : 'extends Service'} {
         language = config.language ?? 'typescript'
         isolation = 'process'
+        get programFormat() { return config.programFormat ?? 'function-body' }
         get executionInstructions() { return config.guidance ?? 'original guidance' }
         get sandboxMode() { return config.mode ?? 'workspace-write' }
         get timeout() { return config.timeout ?? { defaultMs: 1000, maxMs: 2000 } }
         constructor(ctx) { ${serviceName === 'ptcRuntime' ? 'super(ctx)' : "super(ctx, 'codeRuntime')"}; Object.freeze(this) }
+        release(owner) {
+          state.releasedGenerations.push(config.tag)
+          if (state.releaseError) throw state.releaseError
+          state.releases.push(owner)
+          return Promise.resolve()
+        }
         resolve(request) {
           state.resolutions.push(request)
           return Object.freeze({ ...request, cwd: request.cwd ?? config.cwd ?? process.cwd(),
@@ -157,11 +164,67 @@ test('actual main plugin disable/re-enable leaves delegation and frozen source i
   main.update({ ...config, enabled: true })
   await main.await()
   assert.equal(root.get('ptcRuntime').timeout, undefined)
+  const owner = {}
+  await root.get('ptcRuntime').release(owner)
+  assert.equal(state.releases.at(-1), owner)
   await main.dispose()
   const spec = root.get('ptcRuntime').resolve({ program: 'return 3', bindings: [] })
   assert.equal((await root.get('ptcRuntime').run(spec)).value, 'original')
+  await root.get('ptcRuntime').release(owner)
+  assert.equal(state.releases.filter(entry => entry === owner).length, 2)
   assert.equal(state.runs.at(-1), spec)
   for (const record of state.originals) assert.deepEqual(Object.getOwnPropertyDescriptors(record.original), record.descriptors)
+})
+
+test('composed provider forwards the original program format and owner release', async t => {
+  const { root, state } = await loaderFixture(t, { originalConfig: { tag: 'repl-mode', programFormat: 'repl' } })
+  const provider = root.get('ptcRuntime')
+  assert.equal(provider.programFormat, 'repl')
+  const owner = {}
+  await provider.release(owner)
+  assert.deepEqual(state.releases, [owner])
+})
+
+test('official REPL priority yields execution to the original provider and takes it back', async t => {
+  const { root, state } = await loaderFixture(t, {
+    originalConfig: { tag: 'official-repl', programFormat: 'repl' },
+  })
+  root.provide('agents', { list: () => [] })
+  new SystemPrompt(root, { includeHarnessIdentity: false, includeRuntimeContext: false, persona: '' })
+  new ToolRuntime(root, { mode: 'ptc' })
+  const config = { enabled: true, officialReplPriority: true, userBindingsEnabled: false, cordisToolsEnabled: false }
+  const main = root.plugin({ apply: applyMain }, config)
+  await main.await()
+  assert.equal(root.get('ptcRuntime').executionInstructions, 'original guidance')
+  assert.equal(root.get('ptcRuntime').sandboxMode, 'workspace-write')
+  assert.equal(root.get('ptcRuntime').timeout.defaultMs, 1000)
+  const spec = root.get('ptcRuntime').resolve({ program: 'return 7', bindings: [] })
+  assert.equal((await root.get('ptcRuntime').run(spec)).value, 'official-repl')
+  assert.equal(state.runs.at(-1), spec)
+  main.update({ ...config, officialReplPriority: false })
+  await main.await()
+  assert.equal(root.get('ptcRuntime').executionInstructions, '')
+  assert.equal(root.get('ptcRuntime').sandboxMode, undefined)
+  main.update(config)
+  await main.await()
+  assert.equal(root.get('ptcRuntime').executionInstructions, 'original guidance')
+  const owner = {}
+  await root.get('ptcRuntime').release(owner)
+  assert.equal(state.releases.at(-1), owner)
+  await main.dispose()
+})
+
+test('official REPL priority keeps plugin execution without an official REPL provider', async t => {
+  const { root } = await loaderFixture(t, {})
+  root.provide('agents', { list: () => [] })
+  new SystemPrompt(root, { includeHarnessIdentity: false, includeRuntimeContext: false, persona: '' })
+  new ToolRuntime(root, { mode: 'ptc' })
+  const main = root.plugin({ apply: applyMain }, {
+    enabled: true, officialReplPriority: true, userBindingsEnabled: false, cordisToolsEnabled: false,
+  })
+  await main.await()
+  assert.equal(root.get('ptcRuntime').executionInstructions, '')
+  await main.dispose()
 })
 
 test('activation validates the current original language after reload in both directions', async t => {
@@ -260,6 +323,8 @@ test('original provider reload, disable and re-enable retire the old public gene
 for (const adapterFirst of [false, true]) test(`concurrent bundle removal restores the original global slot with adapter ${adapterFirst ? 'first' : 'last'}`, async t => {
   const { root, state, originalUrl } = await loaderFixture(t, { originalConfig: { tag: 'preserved' }, adapterFirst })
   const adapter = root.get('ptcRuntime')
+  const owner = {}
+  await adapter.run(adapter.resolve({ program: 'return 0', bindings: [], stateOwner: owner }))
   await root.loader.root.update([{ id: 'ptc-runtime', name: originalUrl, config: { tag: 'preserved' } }])
   await root.loader.await()
   const original = root.get('ptcRuntime')
@@ -270,7 +335,30 @@ for (const adapterFirst of [false, true]) test(`concurrent bundle removal restor
   assert.equal(state.originals.length, 1)
   assert.throws(() => adapter.run(spec), /generation is unavailable/)
   assert.throws(() => adapter.language, /generation is unavailable/)
+  await adapter.release(owner)
+  assert.deepEqual(state.releases, [owner])
   assert.deepEqual(Object.getOwnPropertyDescriptors(state.originals[0].original), state.originals[0].descriptors)
+})
+
+test('captured cleanup retains owner provenance across source replacement and failed release', async t => {
+  const { root, state, originalEntry, originalUrl } = await loaderFixture(t, { originalConfig: { tag: 'first' } })
+  const adapter = root.get('ptcRuntime')
+  const firstOwner = {}
+  await adapter.run(adapter.resolve({ program: 'return 1', bindings: [], stateOwner: firstOwner }))
+  await originalEntry.update({ config: { tag: 'second' } })
+  await root.loader.await()
+  const secondOwner = {}
+  await adapter.run(adapter.resolve({ program: 'return 2', bindings: [], stateOwner: secondOwner }))
+  await root.loader.root.update([{ id: 'ptc-runtime', name: originalUrl, config: { tag: 'second' } }])
+  await root.loader.await()
+  state.releaseError = new Error('owner cleanup failed')
+  await assert.rejects(adapter.release(firstOwner), state.releaseError)
+  state.releaseError = undefined
+  await adapter.release(firstOwner)
+  await adapter.release(secondOwner)
+  await adapter.release({})
+  assert.deepEqual(state.releasedGenerations, ['first', 'first', 'second'])
+  assert.deepEqual(state.releases, [firstOwner, secondOwner])
 })
 
 test('removing only the owned row does not disable the isolated original or remove a later provider', async t => {

@@ -91,7 +91,7 @@ test('confirmed binding toggles publish a configuration receipt without waking o
   assert.equal(session.snapshotEvents().length, 2)
 })
 
-test('binding configuration receipts wait for first accepted step and preserve the protected system head', async t => {
+test('binding toggles before the first task leave no receipts queued for the model', async t => {
   const ctx = new Context()
   new SystemPrompt(ctx, { includeHarnessIdentity: false, includeRuntimeContext: false, personaPrefix: 'Fixture system prompt.', personaSuffix: '' })
   new ToolRuntime(ctx, { mode: 'native' }); new AgentRegistry(ctx); new SessionStore(ctx); new SessionProjectionRegistry(ctx)
@@ -106,8 +106,6 @@ test('binding configuration receipts wait for first accepted step and preserve t
   const owned = await ctx.agents.create({ sessionId: 'binding-receipt-head', meta: { cwd: process.cwd(), delegationDepth: 0 }, agentOptions: { provider: 'fixture', model: 'fixture' } })
   const target = ownerFixture(); target.ctx.agents = { list: () => [owned.agent] }
   const owner = createUserBindingsOwner(target.ctx, { enabled: true, store: fakeStore() })
-  ctx.on('agent/pre-step', (payload, next) => owner.preStep(payload, next))
-  ctx.on('session/event', (session, event) => owner.committedEvent(session, event))
   t.after(async () => { await owner.dispose(); await owned.dispose(); await ctx.fiber.dispose() })
   assert.equal((await call(target, 'enable', { id: 'x', expectedRevision: 3 })).ok, true)
   assert.equal(requests.length, 0)
@@ -120,39 +118,36 @@ test('binding configuration receipts wait for first accepted step and preserve t
   assert.equal(head.type, 'system/message')
   assert.equal(requests.length, 1)
   assert.equal(requests[0][0].role, 'system')
-  assert.equal(requests[0].filter(readBindingToggle).length, 1)
+  assert.equal(requests[0].filter(readBindingToggle).length, 0)
   assert.throws(() => agent.session.append('user/message', createUserMessage('replace system'), {
     surfaceOp: { op: 'replace', startSeq: head.seq, endSeq: head.seq }, sourceEventSeqs: [head.seq],
   }), /protected|system|node 0/)
   const before = agent.session.deriveMessages()
   assert.equal((await call(target, 'disable', { id: 'x', expectedRevision: 4 })).ok, true)
   assert.equal(agent.session.deriveMessages().length, before.length + 1)
-  assert.equal(agent.session.snapshotEvents().filter(event => readBindingToggle(event.data)).length, 2)
+  assert.equal(agent.session.snapshotEvents().filter(event => readBindingToggle(event.data)).length, 1)
 })
 
-test('binding receipt admission distinguishes pending, cancelled and committed facts after compaction', async t => {
+test('binding toggles before startup are silent and active receipts are not repeated after compaction', async t => {
   const ctx = new Context(); new SessionStore(ctx)
   const session = ctx.sessions.create('binding-receipt-compaction')
   const agent = { session, signal: new AbortController().signal }
   const target = ownerFixture(); target.ctx.agents = { list: () => [agent] }
   const owner = createUserBindingsOwner(target.ctx, { enabled: true, store: fakeStore() })
-  ctx.on('session/event', (session, event) => owner.committedEvent(session, event))
   t.after(async () => { await owner.dispose(); await ctx.fiber.dispose() })
-  assert.equal((await call(target, 'enable', { id: 'x', expectedRevision: 3 })).ok, true)
-  const refused = { kind: 'stop' }
-  assert.equal(await owner.preStep({ agent }, async () => refused), refused)
-  const controller = new AbortController(); controller.abort()
-  assert.deepEqual((await owner.preStep({ agent, signal: controller.signal }, async () => ({ kind: 'enter', messages: [] }))).messages, [])
+  for (const operation of ['enable', 'disable', 'enable']) {
+    assert.equal((await call(target, operation, { id: 'x', expectedRevision: 3 })).ok, true)
+    assert.equal(session.seq, 0)
+  }
   session.append('system/message', { turn: 1, step: 1, message: createSystemMessage('Host system') }, { surfaceOp: 'append' })
-  const proposal = await owner.preStep({ agent }, async () => ({ kind: 'enter', messages: [] }))
-  assert.equal(proposal.messages.length, 1)
-  assert.equal((await owner.preStep({ agent }, async () => ({ kind: 'enter', messages: proposal.messages }))).messages.length, 1)
-  const receipt = session.append('user/message', proposal.messages[0], { surfaceOp: 'append' })
+  assert.equal((await call(target, 'disable', { id: 'x', expectedRevision: 4 })).ok, true)
+  const receipt = session.snapshotEvents().find(event => readBindingToggle(event.data))
   session.append('user/message', createUserMessage('Compacted receipt'), {
     surfaceOp: { op: 'replace', startSeq: receipt.seq, endSeq: receipt.seq }, sourceEventSeqs: [receipt.seq],
   })
-  assert.equal((await call(target, 'disable', { id: 'x', expectedRevision: 4 })).ok, true)
-  assert.deepEqual((await owner.preStep({ agent }, async () => ({ kind: 'enter', messages: [] }))).messages, [])
+  assert.equal(session.deriveMessages().filter(readBindingToggle).length, 0)
+  assert.equal((await call(target, 'enable', { id: 'x', expectedRevision: 4 })).ok, true)
+  assert.equal(session.deriveMessages().filter(readBindingToggle).length, 1)
   assert.equal(session.snapshotEvents().filter(event => readBindingToggle(event.data)).length, 2)
 })
 

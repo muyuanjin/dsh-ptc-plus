@@ -2074,6 +2074,7 @@ test('config schema defaults expose the settings switches', async () => {
     'autoStripExports',
     'autoSplitRedeclarations',
     'durableReplay',
+    'officialReplPriority',
     'tipsEnabled',
     'computeMs',
     'maxWallMs',
@@ -2115,7 +2116,7 @@ test('config schema defaults expose the settings switches', async () => {
   )
   assert.deepEqual(
     CONFIG_GROUPS.find(group => group.key === 'recovery').fields,
-    ['durableReplay', 'tipsEnabled', 'tipCooldownMessages', 'tipEscalationFailures'],
+    ['durableReplay', 'officialReplPriority', 'tipsEnabled', 'tipCooldownMessages', 'tipEscalationFailures'],
   )
   assert.deepEqual(
     CONFIG_GROUPS.find(group => group.key === 'extensions').fields,
@@ -2129,6 +2130,7 @@ test('config schema defaults expose the settings switches', async () => {
   assert.equal(defaults.autoDescribeRunCode, true)
   assert.equal(defaults.cordisToolsEnabled, false)
   assert.equal(defaults.userBindingsEnabled, true)
+  assert.equal(defaults.officialReplPriority, false)
   const bindingsOff = resolveConfig((await Config['~standard'].validate({ userBindingsEnabled: false })).value)
   assert.equal(bindingsOff.userBindingsEnabled, false)
   assert.equal(defaults.looseTopLevelFunctionClassRedeclarations, true)

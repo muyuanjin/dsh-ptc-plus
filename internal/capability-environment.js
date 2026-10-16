@@ -707,7 +707,8 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
       const hasChoices = settings.contextEnabled !== undefined || settings.policy !== undefined || choice !== undefined || previous?.schema === 'ptc-capability-environment/v2'
       const snapshot = deepFreeze({ schema: settings.contextEnabled !== undefined ? 'ptc-capability-environment/v4' : settings.policy ? 'ptc-capability-environment/v3' : hasChoices ? 'ptc-capability-environment/v2' : 'ptc-capability-environment/v1',
         ...(hasChoices ? { sourceSettings, sessionOverrides } : {}), navigationText: NAVIGATION, settings, capabilities, ...(coverage === undefined ? {} : { coverage }), plan })
-      const message = planMessage(snapshot, id, force)
+      const initialized = sessionEvents(agent.session).some(event => event.type === 'system/message')
+      const message = planMessage(snapshot, id, force && initialized)
       agent.signal?.throwIfAborted?.()
       signal?.throwIfAborted()
       // Initialized sessions commit a refresh and its notification atomically.
@@ -716,7 +717,7 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
         hostSections: sections ?? [], expanded: new Set(), used: new Map(),
         ...(requiresCapabilityInventory(settings) ? { liveCapabilities: new Map(capabilities.map(item => [item.id, item])) } : {}) }
       restoreEvidence(agent, state)
-      if (choice?.commandId && !sessionEvents(agent.session).some(event => event.type === 'system/message')) {
+      if (choice?.commandId && !initialized) {
         state.pendingCommand = choice.commandId
         state.pendingPrevious = stateFor(agent)
       }

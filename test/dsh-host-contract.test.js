@@ -3,8 +3,19 @@ import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
-import { hostAssistantUsageEvents, hostPersonaPatch, hostToolRuntime, ptcToolsMode, readHostPersona } from '../scripts/dsh-host-contract.mjs'
+import { hostAssistantUsageEvents, hostPersonaPatch, hostSessionPersistencePlugin, hostToolRuntime, ptcToolsMode, readHostPersona } from '../scripts/dsh-host-contract.mjs'
 import { headlessConfigPatch, parseConfigDump, validateHeadlessRuntimeConfig } from '../scripts/headless-host.mjs'
+
+test('persistence registration preserves the public module lifecycle before historical service exports', () => {
+  class HistoricalPersistence {}
+  const module = { apply() {}, default: HistoricalPersistence, Config: {} }
+  assert.equal(hostSessionPersistencePlugin(module), module)
+  assert.equal(hostSessionPersistencePlugin({ default: HistoricalPersistence }), HistoricalPersistence)
+  assert.equal(hostSessionPersistencePlugin({ JsonlSessionPersistence: HistoricalPersistence }), HistoricalPersistence)
+  for (const missing of [undefined, {}, { apply: true }, { default: {} }]) {
+    assert.throws(() => hostSessionPersistencePlugin(missing), /no public plugin entry/)
+  }
+})
 
 test('compact usage inspection rejects malformed evidence and delegates to the public stream reader', async t => {
   assert.equal(hostAssistantUsageEvents({ type: 'user/message' }), undefined)

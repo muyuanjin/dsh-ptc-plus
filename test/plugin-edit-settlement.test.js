@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { AsyncLocalStorage } from 'node:async_hooks'
 import test from 'node:test'
 import { Session } from '@deepseek-ai/dsh-session'
 import { SessionRuntime } from '../internal/session-runtime.js'
@@ -11,7 +12,9 @@ import {
   runRecordedCell,
   runNestedEditCell,
 } from './plugin-fixture.js'
-import { RECOVERY_BOUNDARY_KEY } from '../internal/session-journal.js'
+import { JOURNAL_KEY, RECOVERY_BOUNDARY_KEY } from '../internal/session-journal.js'
+import { recoverJournal, visibleExecutableCallSeqs } from '../internal/session-journal-recovery.js'
+import { readSessionLog } from '../internal/session-events.js'
 import { recordedSessionEvents as sessionEvents } from './session-observation-fixture.js'
 
 test('rejects pending fixture calls whose exact source identity does not match', async (t) => {
@@ -107,6 +110,50 @@ test('records a nested editor and its derived result under the original official
   assert.equal(settled?.data.isError, false)
   assert.equal(events.findLast(event => event.type === 'tool/result')?.data.message.source.callId,
     'official-session-edit')
+})
+
+test('background roots after a derived edit read their own official Session observation', async t => {
+  const session = Session.create('derived-background-observation')
+  const state = fixture()
+  t.after(() => state.dispose())
+  const agent = ptcAgent(session.id, session)
+  session.append('turn/start', { turn: 0 })
+  await state.assemble(
+    { sections: [], contexts: [], variables: {}, tools: [state.runCodeDefinition] },
+    { agent, scope: agent, signal: new AbortController().signal },
+  )
+  await state.runDurable(session.id, 'let value = 1; return value', {},
+    { session, callId: 'derived-background-setup' })
+  let background
+  const aroundExecute = state.listeners.get('tools/execute')[0]
+  state.listeners.get('tools/execute')[0] = (exec, next) => aroundExecute(exec, async () => {
+    if (exec.name === 'run_code' && exec.parent !== undefined) background = AsyncLocalStorage.snapshot()
+    return next()
+  })
+  const edited = await runNestedEditCell(state, { session, agent, callId: 'derived-background-edit',
+    code: 'return await tools.edit_run_code({ edits: [{ old_string: "= 1", new_string: "= 2" }] })' })
+  assert.equal(edited.result.isError, false, JSON.stringify(edited.result))
+  const source = 'return ++value'
+  const continued = await background(() => state.runDurable(session.id, source, {},
+    { session, callId: 'derived-background-continued' }))
+  assert.equal(continued.isError, false, JSON.stringify(continued))
+  assert.equal(continued.value, 3)
+  assert.equal(continued.meta[JOURNAL_KEY].diagnostics.some(item => item.code === 'PTC-R002'), false)
+  const observation = await readSessionLog(session, state.ctx.sessionQuery)
+  const history = recoverJournal(observation, undefined,
+    { visibleCallSeqs: visibleExecutableCallSeqs(observation) })
+  assert.equal(history.volatileSuffix.length, 0, JSON.stringify(history))
+  assert.equal(history.nodes.at(-1).code, source)
+  assert.equal(history.nodes.at(-1).callSeq, sessionEvents(session).find(event => (
+    event.type === 'tool/call' && event.data.callId === 'derived-background-continued'
+  )).seq)
+  await state.emit('session/disposed', session)
+  const recovered = await state.runDurable(session.id, 'return value', {
+    edit_run_code() { assert.fail('cold recovery redispatched the editor') },
+  }, { session, callId: 'derived-background-recovered' })
+  assert.equal(recovered.isError, false, JSON.stringify(recovered))
+  assert.equal(recovered.value, 3)
+  assert.equal(recovered.meta[JOURNAL_KEY].diagnostics.some(item => item.code === 'PTC-R002'), false)
 })
 
 test('production edit observation cannot execute after its submission is disposed', async t => {

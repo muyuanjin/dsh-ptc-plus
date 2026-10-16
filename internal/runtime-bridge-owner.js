@@ -626,9 +626,9 @@ export function createRuntimeBridgeOwner({
     const inherited = scope.getStore()
     const ownsDerived = ownedDerivedScope(exec) !== undefined
     if ((exec.parent !== undefined && !ownsDerived) || id === undefined
-      || inherited?.submission?.sessionId === id) return operation()
+      || (inherited?.exec === exec && inherited.submission?.sessionId === id)) return operation()
     const submission = sessions.beginSubmission({ id }, exec.signal)
-    const composite = inherited?.deferredSettlement !== undefined && inherited.id === id
+    const composite = ownsDerived
       ? {
           persistedCallSeq: inherited.persistedCallSeq,
           sourceCallSeq: inherited.sourceCallSeq,
@@ -638,9 +638,11 @@ export function createRuntimeBridgeOwner({
         }
       : {}
     try {
-      // Derived edits retain their proved source under a fresh admission for
-      // the same session. Delegated agents own a fresh log and no child handoff.
-      return await scope.run({ ...composite, submission }, () => childScope.run(undefined, operation))
+      // Only reentry for this exact execution shares admission. Background
+      // continuations can inherit a settled execution's asynchronous context.
+      // Only proved derived edits retain composite source and settlement under
+      // a fresh admission; other roots own a fresh log and no child handoff.
+      return await scope.run({ ...composite, exec, submission }, () => childScope.run(undefined, operation))
     } finally {
       sessions.releaseSubmission(submission)
     }

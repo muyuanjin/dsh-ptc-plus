@@ -52,6 +52,40 @@ test('disposes a live-only kernel with its owning agent session', async (t) => {
   assert.match(continued.logs[0], /Restored the durable head and skipped 1 unreconstructable historical cell/u)
 })
 
+test('background callbacks submit fresh parent cells after a child agent stops', async t => {
+  for (const stopChild of [false, true]) await t.test(stopChild ? 'child stopped' : 'no disposal', async t => {
+    const state = fixture()
+    t.after(() => state.dispose())
+    let background
+    const started = await state.run('background-parent',
+      'let continued = 0; const parentPid = process.pid; return await tools.subagent({})', {
+        subagent() {
+          background = AsyncLocalStorage.snapshot()
+          return { subagentId: 'background-child' }
+        },
+      }, { callId: 'reused-parent-call' })
+    assert.equal(started.error, undefined)
+    assert.equal(started.value.subagentId, 'background-child')
+    await state.run('background-child', 'const childPid = process.pid')
+    await background(async () => {
+      if (stopChild) {
+        const child = { id: 'background-child', session: { id: 'background-child', parentSession: 'background-parent' } }
+        await state.emit('agent/disposed', { agent: child })
+        await state.emit('session/disposed', child.session)
+      }
+      for (const expected of [1, 2, 3]) {
+        const result = await state.run('background-parent', 'return [++continued, parentPid === process.pid]', {},
+          { callId: 'reused-parent-call' })
+        assert.equal(result.error, undefined)
+        assert.deepEqual(result.value, [expected, true])
+        assert.deepEqual(result.logs, [])
+      }
+    })
+    const child = await state.run('background-child', 'return typeof childPid')
+    assert.equal(child.value, stopChild ? 'undefined' : 'number')
+  })
+})
+
 test('missing, stale, and malformed value observations cannot change a settled cell', async t => {
   const runtime = new SessionRuntime({}, { observeSession: () => true })
   t.after(() => runtime.dispose())
@@ -310,10 +344,12 @@ test('production observation admission rejects disposed submissions and permits 
     const original = state.ctx.sessionQuery.observeSession
     let resume
     let entered
+    let background
     const suspended = new Promise(resolve => { resume = resolve })
     const reading = new Promise(resolve => { entered = resolve })
     state.ctx.sessionQuery.observeSession = async function (...args) {
       const cut = await original.call(this, ...args)
+      background = AsyncLocalStorage.snapshot()
       entered()
       await suspended
       return cut
@@ -327,7 +363,8 @@ test('production observation admission rejects disposed submissions and permits 
     await rejected
     if (lifecycle === 'session') {
       state.ctx.sessionQuery.observeSession = original
-      assert.equal((await state.run('production-agent', 'return typeof orphan', {}, { session })).value, 'undefined')
+      const continued = await background(() => state.run('production-agent', 'return typeof orphan', {}, { session }))
+      assert.equal(continued.value, 'undefined')
     }
   })
 })
@@ -351,6 +388,34 @@ test('bridge observation shares the runtime submission configuration and release
   rejectRead(new Error('reader unavailable'))
   await rejected
   owner.reconfigure({ userBindingsEnabled: false, durableReplay: false, maxOldGenerationSizeMb: 128 })
+})
+
+test('run and editor admissions distinguish exact reentry from a later execution with the same call ID', async t => {
+  for (const name of ['run_code', 'edit_run_code']) await t.test(name, async t => {
+    const service = { language: 'typescript', run: async () => ({ logs: [] }) }
+    const owner = createRuntimeBridgeOwner({
+      ctx: { tools: { get: () => ({ output: {} }) } }, seam: createExecutionSeam(service, 'codeRuntime'),
+      sessionConfig: { userBindingsEnabled: false, durableReplay: false },
+      readSessionLog: async session => session, presentationGeneration: 'background-editor-admission',
+      sessionId: agent => agent.id, toolSchemasForAgent: () => [],
+    })
+    t.after(() => owner.dispose())
+    const session = { id: 'background-editor-admission', events: [] }
+    const agent = { id: session.id, session }
+    const exec = { name, agent, callId: 'reused-call', token: Symbol('first') }
+    let background
+    await owner.withSubmission(exec, async () => {
+      await owner.withSubmission(exec, () => owner.readSubmissionLog(session))
+      // Inner reentry must not release the outer execution's admission.
+      assert.equal(await owner.readSubmissionLog(session), session)
+      background = AsyncLocalStorage.snapshot()
+    })
+    await background(async () => {
+      await assert.rejects(owner.readSubmissionLog(session), /PTC session disposed/)
+      const next = { ...exec, token: Symbol('next') }
+      assert.equal(await owner.withSubmission(next, () => owner.readSubmissionLog(session)), session)
+    })
+  })
 })
 
 test('submission ownership rejects foreign and released tokens without starting a kernel', async t => {

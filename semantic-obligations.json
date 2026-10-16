@@ -474,6 +474,7 @@
         "failed derived start publication prevents dispatch and failed settlement publication contracts future state without redispatch or fabricated completions",
         "derived parse diagnostics cannot claim a target-bound repair for the different source of the outer root cell",
         "disposal invalidates pending preparation",
+        "distinct root executions obtain fresh admissions and observations despite inherited same-session asynchronous context; only proved derived executions inherit composite source and settlement, child disposal preserves parent live bindings and cancelled preparation cannot poison later calls",
         "presentation callback dynamic selection and descriptor restoration",
         "run_code projectContent captured before dispatch installs derived content before root post-policy while the canonical result identity and metadata survive Host normalization",
         "nested projector omission yields private derived evidence only with exact continuation token and unchanged frozen canonical value identity across policy; projected metadata removal, block, error, value replacement and missing capture reject evidence without changing Host results",

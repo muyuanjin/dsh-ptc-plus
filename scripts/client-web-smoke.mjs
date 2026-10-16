@@ -1494,6 +1494,11 @@ export async function main(argv = process.argv.slice(2)) {
       if (error.name !== 'TimeoutError') throw error
     })
     if (await skipCredentials.isVisible()) await skipCredentials.click()
+    const getStarted = page.getByText(/^(Get started|开始使用)$/, { exact: true })
+    if (await getStarted.isVisible()) {
+      await page.keyboard.press('Escape')
+      await getStarted.waitFor({ state: 'hidden' })
+    }
     await verifyPackedToolTypography()
     if (values['binding-workflow']) {
       // The Remote result envelope wraps the fixture's own result, exactly as the Host
@@ -2261,14 +2266,15 @@ export async function main(argv = process.argv.slice(2)) {
       await verifyApprovalTakeover(rpc)
     }
     await page.screenshot({ path: join(evidence, 'conversation.png'), fullPage: true, animations: 'disabled' })
-    await page.getByRole('button', { name: /^(Settings|设置)$/ }).first().click()
+    const hostSettings = page.getByRole('button', { name: /^(Settings|设置)$/ }).first()
+    if (await hostSettings.isVisible()) await hostSettings.click()
     const builtInPlugins = page.getByText(/^(Built-in plugins|内置插件)$/)
     const usesSettingsDialog = await builtInPlugins.isVisible()
     if (usesSettingsDialog) {
       await page.getByRole('button', { name: /^(Close|关闭)$/ }).click()
     }
     await page.getByText(/^(Plugins|插件)$/).click()
-    if (usesSettingsDialog) {
+    if (!await page.locator('.ptcPlusCard').isVisible()) {
       await page.getByText('PTC Plus', { exact: true }).click()
       await page.getByRole('button', { name: /^(Configure|配置) PTC Plus$/ }).click()
     }

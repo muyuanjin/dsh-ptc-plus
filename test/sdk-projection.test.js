@@ -74,3 +74,23 @@ test('preserves unrecognized Host SDK text instead of deleting native members', 
   assert.equal(projectProgramSdk('native sdk'), 'native sdk')
   assert.equal(projectProgramSdk(undefined), '')
 })
+
+test('projects the cell grammar when the Host describes both required arguments in one sentence', () => {
+  const sdk = '## Writing code for run_code\n\n'
+    + '`run_code` takes two required arguments: `code`, the body of an async TypeScript function '
+    + '(erasable syntax only — no `enum` or namespaces; type annotations are advisory, the code runs type-stripped), '
+    + 'and `description`, a short summary of what the program does.\n\n'
+    + 'Native guidance stays unchanged.\n\n```ts\n'
+    + 'interface ToolArgsMap { /** erasable syntax only — no `enum` or namespaces */ native: {} }\n```'
+  assert.equal(projectProgramSdk(sdk), sdk)
+  for (const languageSemantics of ['stateful-v1', 'protected-v1']) {
+    const options = { languageSemantics }
+    const projected = projectProgramSdk(sdk, options)
+    const fence = projected.indexOf('```ts\n')
+    assert.match(projected.slice(0, fence), /`code`, a PTC Plus TypeScript cell/)
+    assert.match(projected, /and `description`, a short summary of what the program does/)
+    assert.doesNotMatch(projected.slice(0, fence), /erasable syntax only|no `enum`/)
+    assert.equal(projected.slice(fence), sdk.slice(sdk.indexOf('```ts\n')))
+    assert.equal(projectProgramSdk(projected, options), projected)
+  }
+})

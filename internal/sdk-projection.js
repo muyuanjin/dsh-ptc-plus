@@ -10,7 +10,7 @@ export function projectProgramSdk(nativeSdk, { languageSemantics = 'legacy-v1' }
   const fence = nativeSdk.indexOf(TYPESCRIPT_FENCE)
   if (fence < 0) return nativeSdk
   return nativeSdk.slice(0, fence).replace(
-    '`code` — the body of an async TypeScript function (erasable syntax only — no `enum` or namespaces; type annotations are advisory, the code runs type-stripped)',
-    '`code` — a PTC Plus TypeScript cell (runtime `enum` and namespaces are supported; type annotations are advisory)',
+    'the body of an async TypeScript function (erasable syntax only — no `enum` or namespaces; type annotations are advisory, the code runs type-stripped)',
+    'a PTC Plus TypeScript cell (runtime `enum` and namespaces are supported; type annotations are advisory)',
   ) + nativeSdk.slice(fence)
 }

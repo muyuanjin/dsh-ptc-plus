@@ -59,17 +59,24 @@ function installedVersion(root, name) {
   }
 }
 
+export function isHostServicePackageName(name) {
+  return /^@deepseek-ai\/(?:dsh(?:-[^/]+)?|cordis(?:-[^/]+)?|schemastery)$/.test(name)
+}
+
 /** Validate the actual Host service cohort, including nested copies, before reuse. */
 export async function verifyInstalledHostGraph(root, lock) {
   lock ??= await json(join(root, 'package-lock.json'))
+  const verified = []
   for (const [packagePath, entry] of Object.entries(lock.packages ?? {})) {
-    const match = /(?:^|\/)node_modules\/(@deepseek-ai\/(?:dsh(?:-[^/]+)?|cordis(?:-[^/]+)?|schemastery))$/.exec(packagePath)
-    if (!match) continue
+    const match = /(?:^|\/)node_modules\/(@[^/]+\/[^/]+)$/.exec(packagePath)
+    if (!match || !isHostServicePackageName(match[1])) continue
     const installed = await json(join(root, packagePath, 'package.json'))
     if (installed.name !== match[1] || installed.version !== entry.version) {
       throw new Error(`installed Host ${packagePath} differs from its frozen lock; run npm ci`)
     }
+    verified.push({ packagePath, name: installed.name, version: installed.version })
   }
+  return verified
 }
 
 async function verifyRoot({ installed, root = ROOT }) {

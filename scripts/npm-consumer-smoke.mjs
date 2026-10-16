@@ -5,17 +5,19 @@ import { tmpdir } from 'node:os'
 import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { parseArgs } from 'node:util'
-import { verifyInstalledHostGraph } from './dsh-dependency-baseline.mjs'
+import { isHostServicePackageName, verifyInstalledHostGraph } from './dsh-dependency-baseline.mjs'
 import { npmCliCommand } from './npm-cli.mjs'
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url))
 
-/** Select actual Host peers, rather than resolving each package's dist-tag. */
+/** Freeze the Host service cohort, including peers of the plugin's direct peers. */
 export async function consumerManifest(archive, plugin, host) {
   const lock = JSON.parse(await readFile(join(host, 'package-lock.json'), 'utf8'))
-  await verifyInstalledHostGraph(host, lock)
+  const verified = await verifyInstalledHostGraph(host, lock)
   const require = createRequire(join(host, 'package.json'))
   const dependencies = {}
+  const selected = new Set()
+  const pending = []
   for (const name of Object.keys(plugin.peerDependencies ?? {})) {
     const filename = require.resolve(`${name}/package.json`)
     const installed = JSON.parse(await readFile(filename, 'utf8'))
@@ -24,6 +26,33 @@ export async function consumerManifest(archive, plugin, host) {
       throw new Error(`Host peer ${name} is not proved by its installed frozen graph`)
     }
     dependencies[name] = installed.version
+    pending.push(filename)
+  }
+  while (pending.length > 0) {
+    const filename = pending.pop()
+    if (selected.has(filename)) continue
+    selected.add(filename)
+    const metadata = JSON.parse(await readFile(filename, 'utf8'))
+    const requireFromPeer = createRequire(filename)
+    for (const name of Object.keys({ ...metadata.dependencies, ...metadata.peerDependencies, ...metadata.optionalDependencies })) {
+      if (!isHostServicePackageName(name)) continue
+      let dependencyFile
+      try { dependencyFile = requireFromPeer.resolve(`${name}/package.json`) } catch (error) {
+        if (error.code === 'MODULE_NOT_FOUND'
+          && (Object.hasOwn(metadata.optionalDependencies ?? {}, name) || metadata.peerDependenciesMeta?.[name]?.optional)) continue
+        throw error
+      }
+      const installed = JSON.parse(await readFile(dependencyFile, 'utf8'))
+      const packagePath = relative(host, dirname(dependencyFile)).replaceAll('\\', '/')
+      if (!verified.some(entry => entry.packagePath === packagePath && entry.name === name && entry.version === installed.version)) {
+        throw new Error(`Host transitive peer ${name} is not proved by its installed frozen graph`)
+      }
+      if (dependencies[name] !== undefined && dependencies[name] !== installed.version) {
+        throw new Error(`Host consumer requires conflicting versions of ${name}`)
+      }
+      dependencies[name] = installed.version
+      pending.push(dependencyFile)
+    }
   }
   dependencies[plugin.name] = pathToFileURL(resolve(archive)).href
   return { private: true, type: 'module', dependencies }
@@ -40,6 +69,10 @@ export async function smokePackedConsumer(archive, { host = ROOT } = {}) {
     await writeFile(join(consumer, 'package.json'), JSON.stringify(manifest, null, 2) + '\n')
     const npm = npmCliCommand(['install', '--ignore-scripts', '--no-audit', '--no-fund'])
     execFileSync(npm.executable, npm.args, { cwd: consumer, stdio: 'inherit' })
+    const installedManifest = await consumerManifest(archive, plugin, consumer)
+    if (JSON.stringify(installedManifest.dependencies) !== JSON.stringify(manifest.dependencies)) {
+      throw new Error('packed consumer changed the selected frozen Host service cohort')
+    }
     execFileSync(process.execPath, ['--input-type=module', '-e', `
       import { createRequire } from 'node:module';
       const require = createRequire(process.cwd() + '/package.json');

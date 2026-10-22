@@ -79,13 +79,14 @@ class ReplayFailure extends Error {
 }
 
 /**
- * Consecutive cells that may end before they reach the runtime while the live
- * worker is kept.
+ * Fallback for `unmeasuredCellLimit`: consecutive cells that may end before
+ * they reach the runtime while the live worker is kept.
  *
  * One such cell is not evidence about the worker: the host may simply have been
- * unable to observe it. Keeping the worker beyond the second would leave a worker
- * that never becomes dispatchable in charge of every later cell, so the second one
- * drops the live worker and lets the next cell replay the proved frontier.
+ * unable to observe it. The configured limit (default two) ends the sequence, so
+ * a worker that never becomes dispatchable cannot stay in charge of every later
+ * cell; reaching it drops the live worker and lets the next cell replay the
+ * proved frontier.
  */
 const UNMEASURED_CELL_LIMIT = 2
 
@@ -193,6 +194,25 @@ class SessionKernel {
     return attempt
   }
 
+  /**
+   * Start the session worker with the bounds the kernel holds now.
+   *
+   * The worker serves later cells as well as the one that starts it, so its
+   * close rule and startup bound follow the kernel's current configuration even
+   * when the starting cell was admitted before a settings change. Calibrating
+   * the transport after ensure covers a worker that already existed.
+   */
+  async ensureWorker(maxOldGenerationSizeMb) {
+    // A live worker already took its bounds at creation and reconfigure keeps it
+    // current. The client reads this projection only when it actually starts a
+    // worker, after its scratch wait, so a settings change in that window still
+    // reaches the startup and close bounds.
+    return this.client.ensure(maxOldGenerationSizeMb, () => ({
+      reclaimBoundMs: this.config.workerReclaimMs,
+      startupProbeMs: this.config.startupProbeMs,
+    }))
+  }
+
   async prepareWorker() {
     await Promise.all([...this.reclamationAttempts])
     const failures = [...this.reclamationRecords.values()].filter(record => record.failed).map(record => record.reason)
@@ -215,6 +235,13 @@ class SessionKernel {
   reconfigure(config) {
     this.assertReconfigurationAllowed(config)
     this.config = config
+    // The close path reads the bound the transport carries, and a live worker can
+    // be dropped outside resetWorker (idle disposal, owner auto-close), so the
+    // current configuration has to reach the transport as soon as it is applied.
+    const worker = this.client.worker
+    if (worker !== undefined && Number.isSafeInteger(config.workerReclaimMs)) {
+      worker.reclaimBoundMs = config.workerReclaimMs
+    }
   }
 
   reserveWorkerConfiguration(config) {
@@ -589,7 +616,14 @@ class SessionKernel {
     this.active = undefined
     this.completeJournal(active.journal, 'noop', result)
     this.unmeasuredCells += 1
-    if (this.unmeasuredCells < UNMEASURED_CELL_LIMIT) {
+    // The cell was submitted under its own configuration snapshot, and that
+    // snapshot decides its settlement even if the setting changed while it ran.
+    const limit = Number.isSafeInteger(active.config?.unmeasuredCellLimit)
+      ? active.config.unmeasuredCellLimit
+      : Number.isSafeInteger(this.config?.unmeasuredCellLimit)
+        ? this.config.unmeasuredCellLimit
+        : UNMEASURED_CELL_LIMIT
+    if (this.unmeasuredCells < limit) {
       active.finish(result)
       return
     }
@@ -1032,7 +1066,10 @@ export class SessionRuntime {
         return completed({ logs: [], error: { kind: 'recovery', message: `cannot reconstruct REPL from session log: ${messageOf(error)}` } })
       }
       kernel = new SessionKernel({
-        config: cellConfig,
+        // The kernel owns the worker and the sessions it serves, so it takes the
+        // configuration current when the session starts; this cell's own budgets
+        // still come from the submitted snapshot passed to run().
+        config: this.config,
         history,
         cwd,
         session,

@@ -153,11 +153,11 @@ The settings window and the sidebar plugin configuration page are the same confi
 | --- | --- | --- |
 | Plugin switch | PTC Plus title switch | Enable or disable PTC Plus |
 | Core workspace | REPL syntax | Allow same-name revisions or choose name protection |
-| Core workspace | State and recovery | Restart recovery, official REPL ownership, contextual tips, and their frequency |
+| Core workspace | State and recovery | Restart recovery, official REPL ownership, contextual tips with their frequency, and the unmeasured-cell reclaim threshold |
 | Extensions and tolerance | Tool extensions | Global bindings and their management entry, official Cordis tool integration |
 | Extensions and tolerance | Tool call tolerance | Missing call summaries and identifiable misplaced native-tool calls |
 | Interface and resources | Interface display | Enhanced tool cards, the REPL tab, and the sparkle shortcut |
-| Interface and resources | Resource limits | Execution time, memory, and output budgets |
+| Interface and resources | Resource limits | Execution time, memory, output, sampling, reclamation, and startup limits |
 | Experimental | Capabilities and context | Experimental capability management (off by default), independent statistics, common baseline, individual choices, and presentation budgets |
 
 Everyday computation features are on by default, and **Cordis development tools are off by default** so they can be enabled when inspecting or developing DSH plugins; see the [integration notes](docs/adr/0020-optional-cordis-tools-in-ptc-mode.md).

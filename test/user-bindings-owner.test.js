@@ -24,6 +24,7 @@ import { createUserBindingsSnapshot } from '../internal/user-bindings.js'
 import { UserBindingsStore } from '../internal/user-bindings-store.js'
 import { decodeValue } from '../internal/value-wire.js'
 import { IsolatedOwner } from '../internal/isolated-worker.js'
+import { UserBindingConsole } from '../internal/user-binding-console.js'
 
 function injectedAgentContext(services) {
   const context = {
@@ -2311,4 +2312,64 @@ test('disabling global bindings stops pending console execution and revokes its 
   const resumed = await call(target, 'console-run', { environment, source, code: 'typeof retained' })
   assert.equal(resumed.value.reset, true)
   assert.equal(resumed.value.output, "'undefined'")
+})
+
+test('passes the configured reclamation bound to candidate helpers', async t => {
+  const starts = []
+  class TrackingOwner extends IsolatedOwner {
+    start(options) {
+      starts.push(options)
+      return super.start(options)
+    }
+  }
+  const target = ownerFixture()
+  const owner = createUserBindingsOwner(target.ctx, {
+    enabled: true,
+    store: fakeStore(),
+    cwd: process.cwd(),
+    maxWallMs: 2_000,
+    maxOutputBytes: 8_192,
+    maxOldGenerationSizeMb: 32,
+    workerReclaimMs: 1_234,
+    valueLimits: {},
+    candidateOwner: new TrackingOwner(),
+  })
+  t.after(() => owner.dispose())
+  const result = await call(target, 'run', { source: 'export const value = 1' })
+  assert.equal(result.ok, true, result.error?.message)
+  assert.equal(starts.at(-1).reclaimBoundMs, 1_234)
+})
+
+test('forwards the configured reclamation bound when reconfiguring the console owner', async t => {
+  const received = []
+  const original = UserBindingConsole.prototype.reconfigure
+  UserBindingConsole.prototype.reconfigure = function reconfigure(options) {
+    received.push(options.workerReclaimMs)
+    return original.call(this, options)
+  }
+  t.after(() => { UserBindingConsole.prototype.reconfigure = original })
+  const target = ownerFixture()
+  const owner = createUserBindingsOwner(target.ctx, {
+    enabled: true,
+    store: fakeStore(),
+    cwd: process.cwd(),
+    maxWallMs: 2_000,
+    maxOutputBytes: 8_192,
+    maxOldGenerationSizeMb: 32,
+    workerReclaimMs: 1_234,
+    valueLimits: {},
+  })
+  t.after(() => owner.dispose())
+  await owner.reconfigure({
+    userBindingsEnabled: true,
+    maxWallMs: 2_000,
+    maxOutputBytes: 8_192,
+    maxOldGenerationSizeMb: 32,
+    workerReclaimMs: 4_321,
+    maxValueNodes: 100_000,
+    maxValueEdges: 1_000_000,
+    maxValueArrayLength: 1_000_000,
+    maxValueBigIntDigits: 100_000,
+  })
+  assert.deepEqual(received, [4_321])
 })

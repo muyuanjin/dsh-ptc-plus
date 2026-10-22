@@ -217,6 +217,30 @@ test('releases only after the output pipes really ended', async () => {
   assert.equal(owner.instances.size, 0)
 })
 
+test('waits exactly the output bound the transport carries', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] })
+  const flush = () => new Promise(resolve => setImmediate(resolve))
+  const transport = new FakeTransport({ pendingOutput: true })
+  transport.reclaimBoundMs = 40
+  const owner = new IsolatedOwner({ create: () => transport })
+  const started = owner.start({})
+  const stopping = owner.stop(started.id).catch(() => {})
+  await flush()
+  t.mock.timers.tick(39)
+  await flush()
+  assert.notEqual(started.record.state, 'output-pending')
+  // The shipped five-second bound would still be waiting here, so this fact only
+  // holds when the owner reads the transport's own bound.
+  t.mock.timers.tick(1)
+  await flush()
+  assert.equal(started.record.state, 'output-pending')
+  assert.match(started.record.failure.message, /output did not end before the release deadline/)
+  await stopping
+  transport.closeOutput()
+  await flush()
+  assert.equal(owner.instances.size, 0)
+})
+
 test('dispose reports a refusal it cannot confirm', async () => {
   const transport = new FakeTransport({ refuse: true })
   const owner = new IsolatedOwner({ create: () => transport })

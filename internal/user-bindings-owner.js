@@ -111,6 +111,7 @@ function runCandidate(source, invocation, options, signal, owner) {
       workerData: { source, invocation, valueLimits: options.valueLimits, cwd: options.cwd },
       env: normalizeWorkerEnvironment(process.env),
       resourceLimits: { maxOldGenerationSizeMb: options.maxOldGenerationSizeMb },
+      reclaimBoundMs: options.workerReclaimMs,
     })
     const worker = started.transport
     const outputLimitError = () => Object.assign(
@@ -183,6 +184,7 @@ export function createUserBindingsOwner(ctx, options = {}) {
     maxWallMs: options.maxWallMs,
     maxOutputBytes: options.maxOutputBytes,
     maxOldGenerationSizeMb: options.maxOldGenerationSizeMb,
+    workerReclaimMs: options.workerReclaimMs,
     valueLimits: options.valueLimits,
   }
   let disposed = false
@@ -975,6 +977,7 @@ export function createUserBindingsOwner(ctx, options = {}) {
         maxWallMs: nextConfig.maxWallMs,
         maxOutputBytes: nextConfig.maxOutputBytes,
         maxOldGenerationSizeMb: nextConfig.maxOldGenerationSizeMb,
+        workerReclaimMs: nextConfig.workerReclaimMs,
         valueLimits: valueLimitsFromConfig(nextConfig),
       }
       if (nextEnabled === previousEnabled) {

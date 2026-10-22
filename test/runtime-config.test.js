@@ -38,6 +38,36 @@ test('owns the runtime wall-clock ceiling', () => {
   return runtime.dispose()
 })
 
+test('resolves the configured runtime bounds with the values the environment shipped', () => {
+  const defaults = resolveConfig({})
+  assert.equal(defaults.sampleBoundMs, 1_000)
+  assert.equal(defaults.unmeasuredCellLimit, 2)
+  assert.equal(defaults.workerReclaimMs, 5_000)
+  assert.equal(defaults.startupProbeMs, 5_000)
+  assert.equal(defaults.executionSeamTimeoutMs, 30_000)
+
+  const raised = resolveConfig({
+    sampleBoundMs: 2_000,
+    unmeasuredCellLimit: 3,
+    workerReclaimMs: 15_000,
+    startupProbeMs: 20_000,
+    executionSeamTimeoutMs: 60_000,
+  })
+  assert.equal(raised.sampleBoundMs, 2_000)
+  assert.equal(raised.unmeasuredCellLimit, 3)
+  assert.equal(raised.workerReclaimMs, 15_000)
+  assert.equal(raised.startupProbeMs, 20_000)
+  assert.equal(raised.executionSeamTimeoutMs, 60_000)
+
+  assert.throws(() => resolveConfig({ sampleBoundMs: 0 }), /positive safe integer/)
+  assert.throws(() => resolveConfig({ unmeasuredCellLimit: 0 }), /positive safe integer/)
+  assert.throws(() => resolveConfig({ workerReclaimMs: 999 }), /positive safe integer/)
+  assert.equal(resolveConfig({ workerReclaimMs: 1_000 }).workerReclaimMs, 1_000)
+  assert.throws(() => resolveConfig({ workerReclaimMs: MAX_TIMER_DELAY_MS + 1 }), /must not exceed/)
+  assert.throws(() => resolveConfig({ startupProbeMs: 1.5 }), /positive safe integer/)
+  assert.throws(() => resolveConfig({ executionSeamTimeoutMs: Infinity }), /positive safe integer/)
+})
+
 test('follows volatile config handles without restarting the fiber', () => {
   let enabled = true
   const config = { enabled: { get: () => enabled } }

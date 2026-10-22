@@ -304,3 +304,30 @@ export const answer = 42
   assert.match(result.error, /unowned module continuation/)
   assert.equal(result.environment, null)
 })
+
+test('passes the configured reclamation bound to console helpers', async t => {
+  const boundOptions = { ...options, workerReclaimMs: 1_234 }
+  const owner = new UserBindingConsole(boundOptions)
+  t.after(() => owner.dispose())
+  let started
+  const start = owner.owner.start.bind(owner.owner)
+  owner.owner.start = startOptions => {
+    started = startOptions
+    return start(startOptions)
+  }
+  const first = await owner.run({ source, code: '1 + 1' })
+  assert.equal(first.error, undefined, first.error)
+  assert.equal(started.reclaimBoundMs, 1_234)
+  const environment = owner.environments.get(first.environment)
+  const worker = environment.worker
+  await owner.reconfigure({ ...boundOptions, workerReclaimMs: 4_321 })
+  // A bound change needs no new helper: the same environment keeps its worker
+  // and the close path reads the new bound from that transport.
+  assert.equal(owner.environments.get(first.environment), environment)
+  assert.equal(environment.worker, worker)
+  assert.equal(worker.reclaimBoundMs, 4_321)
+  const second = await owner.run({ source, code: '2 + 2', environment: first.environment })
+  assert.equal(second.error, undefined, second.error)
+  assert.equal(second.output, '4')
+  assert.equal(second.environment, first.environment)
+})

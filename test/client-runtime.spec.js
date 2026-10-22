@@ -1360,7 +1360,7 @@ test('REPL observations and shared workbench remain separate from session execut
   expect(settingsCard.querySelector('.ptcPlusSettingsLayout')).toBeNull()
   expect(settingsCard.querySelector('[data-experimental=true] .ptcPlusGroupTitle').getAttribute('data-experimental-label')).toBe('实验性')
   const recoveryGroup = settingsCard.querySelector('[aria-labelledby="ptc-plus-settings-group-recovery"]')
-  expect(recoveryGroup.querySelectorAll('input[type=number]')).toHaveLength(2)
+  expect(recoveryGroup.querySelectorAll('input[type=number]')).toHaveLength(3)
   const managementAction = settingsCard.querySelector('.ptcPlusSettingAction')
   expect(managementAction.closest('section').getAttribute('aria-labelledby')).toBe('ptc-plus-settings-group-extensions')
   expect(managementAction.previousElementSibling.querySelector('[role=switch]').getAttribute('aria-label')).toBe('启用全局用户 Binding')

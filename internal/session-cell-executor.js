@@ -484,7 +484,7 @@ export class SessionCellExecutor {
     let worker
     try {
       await kernel.prepareWorker()
-      worker = await kernel.client.ensure(config.maxOldGenerationSizeMb)
+      worker = await kernel.ensureWorker(config.maxOldGenerationSizeMb)
     } catch (error) {
       // An admission block is the kernel's own lifecycle fact, so the kernel
       // settles the cell: it must not be read as a failure of recorded history
@@ -582,6 +582,11 @@ export class SessionCellExecutor {
         active.budgetsReady = (async () => {
           let started
           try {
+            // How long this environment may wait for an answer belongs to the
+            // cell's configuration; the transport reads its bound per request.
+            if (Number.isSafeInteger(config.sampleBoundMs) && config.sampleBoundMs > 0) {
+              worker.sampleBoundMs = config.sampleBoundMs
+            }
             started = await worker.sampleUtilization()
           } catch (error) {
             // No fresh baseline means this request cannot be measured: the

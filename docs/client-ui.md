@@ -51,6 +51,7 @@ Client 按数据、传输、注册与视图分文件，沿用既有 `createX(Rea
 | 核心工作区 | REPL 语法 | `bindingUpdates` | 默认 `stateful`；同作用域的声明与赋值更新变量、函数、类和导入。选择 `protected` 后保护新建 const/import，并检测跨 cell 重声明。两种策略均支持静态 import/export。 |
 | 核心工作区 | 状态与恢复 | `durableReplay` / `tipsEnabled` | 默认开启；控制 worker 重启后的状态恢复与失败恢复提示。 |
 | 核心工作区 | 状态与恢复 | `tipCooldownMessages` / `tipEscalationFailures` | 同类提示间隔与详细提示阈值。 |
+| 核心工作区 | 状态与恢复 | `unmeasuredCellLimit` | 连续第几个未测量 cell 触发丢弃（默认 2：第一个保留，第二个丢弃）；已证明 frontier 留给下一 cell 重放。 |
 | 扩展与容错 | 工具扩展 | `userBindingsEnabled` | 默认开启，显式关闭仍有效；开启时加载跨会话 TypeScript helper，并在开关下方显示管理按钮，同时启用全局绑定工作台与 `/binding` Agent 编写入口。 |
 | 扩展与容错 | 工具扩展 | `cordisToolsEnabled` | 默认关闭；开启后为 PTC agent 加入官方 Cordis 工具、指引与精确的 `cordis-plugin-development` companion Skill，不发布同目录 sibling。 |
 | 扩展与容错 | 调用容错 | `autoDescribeRunCode` / `canonicalizeToolCalls` | 默认开启；允许缺少外层摘要的 `run_code` 执行，并修复 schema 可唯一确认的顶层 native 工具误调用。 |
@@ -61,6 +62,8 @@ Client 按数据、传输、注册与视图分文件，沿用既有 `createX(Rea
 | 界面与资源 | 资源限制 | `computeMs` / `maxWallMs` | 单 cell event-loop active（包括同步阻塞）与总耗时预算；前者不证明 CPU 消耗。 |
 | 界面与资源 | 资源限制 | `maxOldGenerationSizeMb` / `maxNestedRunCodeDepth` | kernel worker 内存与嵌套执行深度。 |
 | 界面与资源 | 资源限制 | `maxOutputBytes` | 单 cell 日志与返回结果的合计字节上限。 |
+| 界面与资源 | 资源限制 | `sampleBoundMs` / `workerReclaimMs` | 计算基线采样等待（未观察到的采样按未测量结算；transport 报告退出/断连/无法发送时仍走 worker-exit）；worker 关闭阶段上限（默认 5000ms、最小 1000ms；exit 确认与其后的输出关闭各自以此为上界）：cell 触发的 session kernel exit 超时保留 helper 并阻止该会话后续 cell；startup、idle 或输出关闭路径的失败，以及 binding console 与 candidate 只保留实例并在释放时报告。 |
+| 界面与资源 | 资源限制 | `startupProbeMs` / `executionSeamTimeoutMs` | worker 启动探针上限；等待宿主执行入口的上限（只在插件激活或重载时读取）。 |
 | 界面与资源 | 资源限制 | `maxValueNodes` / `maxValueEdges` / `maxValueArrayLength` / `maxValueBigIntDigits` | Value Graph 与大数组、BigInt 的返回上限；数组长度限制同时约束单数组和一份 graph 的累计槽位。 |
 | 实验性 | 能力与上下文 | `capabilityManagementEnabled` | 默认关闭；开启实验性能力管理，冻结新会话的能力方案。 |
 | 实验性 | 能力与上下文 | `capabilityBaseline` / `capabilityPolicy` | 可搜索的能力列表、常用勾选、独立可用性与说明规则；默认/类别/来源/单项覆盖，分配依据及预算分别选择。 |
@@ -75,7 +78,7 @@ Client 按数据、传输、注册与视图分文件，沿用既有 `createX(Rea
 
 ## enabled 开关与正文功能标记
 
-保存设置后，Host 在 settings watch 中安装、卸载或重配置对应 owner。能力与上下文的独立职责输入用于新会话；已有会话保持冻结方案，执行 `/capabilities refresh` 后才同步说明、发现与执行成员。其他可重配置字段即时生效。已提交的 cell 固定使用提交时的配置快照，运行中的更新从随后提交的 cell 开始使用；这不会替换 session-bound REPL 或已有 binding。`maxOldGenerationSizeMb` 在活动 worker 存在时因 Node 的创建期限制而拒绝并回滚，其他可重配置字段照常交给 owner。关闭后唯一的宿主副作用是注册 settings 命名空间，
+保存设置后，Host 在 settings watch 中安装、卸载或重配置对应 owner。能力与上下文的独立职责输入用于新会话；已有会话保持冻结方案，执行 `/capabilities refresh` 后才同步说明、发现与执行成员。其他可重配置字段即时生效；`executionSeamTimeoutMs` 由激活期等待拥有，只在插件激活或重载时读取。已提交的 cell 的预算与策略固定使用提交时的配置快照，运行中的更新从随后提交的 cell 开始使用；worker 生命周期上界（`maxOldGenerationSizeMb`、`workerReclaimMs`、`startupProbeMs`）在 worker 创建或关闭时从当前配置读取；这不会替换 session-bound REPL 或已有 binding。`maxOldGenerationSizeMb` 在活动 worker 存在时因 Node 的创建期限制而拒绝并回滚，其他可重配置字段照常交给 owner。关闭后唯一的宿主副作用是注册 settings 命名空间，
 保证设置卡片仍然可读；此时只有 `enabled` 可写，其他控件被禁用。运行时重配置失败时回滚到上一次已应用值。
 
 `cordisToolsEnabled` 默认关闭并即时生效。它不切换 preset，而是把官方 Cordis 工具、owner guidance 与 `cordis-plugin-development` Skill 作为一个 agent-scoped mount 加入或移出同时暴露 `run_code`、`skill` 工具与 preset/Skill service 的 PTC agent；顶层仍只有 `run_code`，编辑器通过程序内的 `tools.edit_run_code` 调用，普通 agent 不继承。暴露面齐全但挂载失败时，启用会完整回滚；agent scope 缺少 companion surface 时只是延后，不报错也不发布。完整运行要求见 [运行时参考](runtime-reference.md)。
@@ -92,7 +95,7 @@ Client 按数据、传输、注册与视图分文件，沿用既有 `createX(Rea
 
 代码控制台直接执行当前条目的未保存源码草稿。用户可输入 `readText("./example.txt")`、声明变量或使用顶层 `await`，通过运行按钮或 Ctrl/Cmd+Enter 执行；下一条命令可继续使用临时变量。控制台通过 `console-run` 取得 Host 生成的 opaque environment handle，并以 `console-release` 释放；单次候选导出调用通过兼容的 `run` RPC 提供。控制台 worker 使用共同 root 编译与逻辑状态机制，源码草稿使用共同模块编译入口，Node REPL 承担底层求值；它不连接 Agent kernel，也不写入其 journal。模块导出可直接按名称调用，相对 import 从 binding 存储目录解析。运行、停止、重置环境、清空记录分别是独立动作；折叠不重置环境。普通语法或运行错误保留状态和此前修改，停止、超时、输出超限与 worker 故障会释放环境。执行代码具有 DSH 进程的 Node/OS 权限，这种状态隔离不构成 sandbox。
 
-首次执行才创建 worker。源码草稿改动后的下一次执行、切换条目、保存修改后的源码、离开工作台或手动重置都会清空旧环境。连续 10 分钟没有执行代码时自动释放，输入输出记录保留；下一次从当前草稿开始，绝不自动重放旧命令。Host 最多保留 4 个临时环境，每个环境一次仅执行一个命令，并沿用 `maxWallMs`、`maxOutputBytes` 和 `maxOldGenerationSizeMb`。源码与单次命令各限制 1 MiB；Client 最多保留 40 条、合计 131072 个 UTF-16 code unit 的展示记录，单条最多 65536 个，截断有明确标记。关闭全局绑定功能或插件时释放全部临时环境。
+首次执行才创建 worker。源码草稿改动后的下一次执行、切换条目、保存修改后的源码、离开工作台或手动重置都会清空旧环境。连续 10 分钟没有执行代码时自动释放，输入输出记录保留；下一次从当前草稿开始，绝不自动重放旧命令。Host 最多保留 4 个临时环境，每个环境一次仅执行一个命令，并沿用 `maxWallMs`、`maxOutputBytes`、`maxOldGenerationSizeMb` 和 `workerReclaimMs`。源码与单次命令各限制 1 MiB；Client 最多保留 40 条、合计 131072 个 UTF-16 code unit 的展示记录，单条最多 65536 个，截断有明确标记。关闭全局绑定功能或插件时释放全部临时环境。
 
 每次执行的命令与输出分开展示。输出沿用会话工具结果的灰色背景、边框和 12px 圆角，带独立标签；长结果在至多 240px 高的内容区内滚动，窄屏自动换行，错误使用错误色。设置弹窗与 REPL 页复用同一输出组件。
 

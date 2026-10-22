@@ -55,6 +55,12 @@ export class UserBindingConsole {
   async reconfigure(options) {
     // Reconfiguration releases the current environments; the owner stays usable so
     // a later run can start again.
+    if (this.options.workerReclaimMs !== options.workerReclaimMs && Number.isSafeInteger(options.workerReclaimMs)) {
+      // A bound change needs no new worker: the close path reads the transport.
+      for (const environment of this.environments.values()) {
+        environment.worker.reclaimBoundMs = options.workerReclaimMs
+      }
+    }
     if (['maxWallMs', 'maxOutputBytes', 'maxOldGenerationSizeMb'].some(key => this.options[key] !== options[key])) {
       for (const capability of [...this.environments.keys()]) this.release(capability, 'reconfigured')
       const failures = await this.owner.releaseAll()
@@ -88,6 +94,7 @@ export class UserBindingConsole {
         workerData: { source, cwd: this.options.cwd, maxOutputBytes: this.options.maxOutputBytes },
         env: normalizeWorkerEnvironment(process.env),
         resourceLimits: { maxOldGenerationSizeMb: this.options.maxOldGenerationSizeMb },
+        reclaimBoundMs: this.options.workerReclaimMs,
         protocol: 'parent-port',
       })
       const worker = started.transport

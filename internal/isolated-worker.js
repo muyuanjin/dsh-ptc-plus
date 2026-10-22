@@ -34,9 +34,17 @@ const SAMPLE_DRAIN_TURNS = 4096
  * process alive with unrelated work of its own.
  */
 const ISOLATED_RELEASE_MS = 1000
-/** Absolute bound after which an unresponsive helper is killed. */
+/**
+ * Default bound for each close stage of one helper and the transport default.
+ *
+ * Exit confirmation and the output close that follows are each bounded by it;
+ * the fixed release grace is capped so the bound still leaves a confirmation
+ * window for the kill. A transport instance carries a configurable
+ * `reclaimBoundMs`, and the close path reads that instance bound instead of
+ * this default.
+ */
 const ISOLATED_STOP_MS = 5000
-/** Bound on the helper's output pipes really ending after its process exited. */
+/** Default bound on the helper's output pipes really ending after its process exited. */
 const ISOLATED_OUTPUT_MS = 5000
 
 export function isolatedWorkerEntry(entry) {
@@ -60,7 +68,7 @@ export function isolatedWorkerEntry(entry) {
  * so a kernel that never answers is reclaimed without ending the host.
  */
 export class IsolatedWorker extends EventEmitter {
-  constructor({ helper, entry, workerData, resourceLimits, env, protocol = 'kernel' }) {
+  constructor({ helper, entry, workerData, resourceLimits, env, protocol = 'kernel', reclaimBoundMs = ISOLATED_STOP_MS }) {
     super()
     // The entry follows the worker constructor's contract: a URL or a string
     // filename. Anything else fails here, before a helper process exists.
@@ -97,6 +105,14 @@ export class IsolatedWorker extends EventEmitter {
      * for its own environment without changing the shutdown release grace.
      */
     this.sampleBoundMs = ISOLATED_SAMPLE_MS
+    /**
+     * Bound this instance's close path waits for the killed helper to be
+     * confirmed gone and for its output pipes to end.
+     *
+     * It is read when the close starts, so a transport user may widen the wait
+     * for its own platform without changing the release grace.
+     */
+    this.reclaimBoundMs = reclaimBoundMs
     this.pendingErrors = []
     this.performance = {
       /** Utilization reported by the helper, in the shape callers already use. */
@@ -367,12 +383,14 @@ export class IsolatedWorker extends EventEmitter {
 
   async #stop() {
     if (this.exited) return
-    // Both cutoffs are anchored at the moment the close starts: an acknowledgement
-    // never postpones the kill, and a kill still leaves a positive bounded window
-    // for the helper's real exit to arrive.
+    // The configured bound is this close's exit-confirmation deadline, anchored
+    // at the close start so an acknowledgement never postpones the kill. The
+    // fixed release grace is capped to leave a grace-sized confirmation window
+    // for the kill, so a bound at or just above the grace is never consumed
+    // before the kill; the output pipes then get the same bound from their exit.
     const started = Date.now()
-    const killAt = started + ISOLATED_RELEASE_MS
-    const confirmBy = started + ISOLATED_STOP_MS
+    const confirmBy = started + this.reclaimBoundMs
+    const releaseAt = started + Math.min(ISOLATED_RELEASE_MS, Math.max(0, this.reclaimBoundMs - ISOLATED_RELEASE_MS))
     const exited = this.exitedPromise
     const onReleased = message => {
       if (message?.type === 'worker-message' && message.value?.type === 'shutdown-released') this.released = true
@@ -386,7 +404,7 @@ export class IsolatedWorker extends EventEmitter {
       } catch {
         // The channel is closed; the kill path below owns the instance.
       }
-      if (!await leftWithin(this, remaining(killAt))) {
+      if (!await leftWithin(this, remaining(releaseAt))) {
         let killFailure
         if (!this.exited) {
           try {
@@ -509,7 +527,7 @@ export class IsolatedOwner {
     // synchronously finish or throw and clear the marker for a later retry.
     const settling = Promise.resolve().then(async () => {
       if (record.neverStarted !== true && record.transport !== undefined) {
-        const closed = await outputClosed(record.transport, ISOLATED_OUTPUT_MS)
+        const closed = await outputClosed(record.transport, record.transport?.reclaimBoundMs ?? ISOLATED_OUTPUT_MS)
         if (!closed) {
           // Output never drained: keep the instance and say so instead of
           // pretending the pipes ended naturally.

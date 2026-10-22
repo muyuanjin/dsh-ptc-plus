@@ -514,6 +514,7 @@ test('exports a Cordis config schema with validated runtime defaults', async () 
       autoStripExports: true,
       autoSplitRedeclarations: true,
       durableReplay: true,
+      unmeasuredCellLimit: 2,
       officialReplPriority: false,
       tipsEnabled: true,
       cordisToolsEnabled: false,
@@ -523,6 +524,10 @@ test('exports a Cordis config schema with validated runtime defaults', async () 
       maxOldGenerationSizeMb: 512,
       maxNestedRunCodeDepth: 8,
       maxOutputBytes: 64 * 1024 * 1024,
+      sampleBoundMs: 1_000,
+      workerReclaimMs: 5_000,
+      startupProbeMs: 5_000,
+      executionSeamTimeoutMs: 30_000,
       maxValueNodes: 100_000,
       maxValueEdges: 1_000_000,
       maxValueArrayLength: 1_000_000,
@@ -543,7 +548,7 @@ test('exports a Cordis config schema with validated runtime defaults', async () 
   for (const key of ['enhancedToolView', 'toolHoverPreviewEnabled', 'autoDescribeRunCode', 'cordisToolsEnabled', 'canonicalizeToolCalls', 'looseTopLevelFunctionClassRedeclarations', 'autoRewriteImports', 'autoStripExports', 'autoSplitRedeclarations', 'officialReplPriority', 'tipsEnabled']) {
     assert.throws(() => fixture({ [key]: 'yes' }), new RegExp(`${key} must be a boolean`))
   }
-  for (const key of ['tipCooldownMessages', 'tipEscalationFailures']) {
+  for (const key of ['tipCooldownMessages', 'tipEscalationFailures', 'sampleBoundMs', 'unmeasuredCellLimit', 'workerReclaimMs', 'startupProbeMs', 'executionSeamTimeoutMs']) {
     assert.throws(() => fixture({ [key]: 0 }), new RegExp(`${key} must be a positive safe integer`))
   }
 })

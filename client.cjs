@@ -1495,6 +1495,17 @@ var CONFIG_FIELDS = Object.freeze([
     descriptionEn: "Rebuilds recoverable REPL state from the session journal after a worker restart."
   },
   {
+    key: "unmeasuredCellLimit",
+    type: "integer",
+    default: 2,
+    min: 1,
+    max: Number.MAX_SAFE_INTEGER,
+    label: "\u8FDE\u7EED\u672A\u6D4B\u91CF cell \u4E22\u5F03\u9608\u503C",
+    labelEn: "Consecutive unmeasured cells before the worker is dropped",
+    description: "\u8FDE\u7EED\u7B2C\u51E0\u4E2A\u672A\u6D4B\u91CF cell \u89E6\u53D1\u4E22\u5F03 live worker\uFF08\u9ED8\u8BA4 2\uFF1A\u7B2C\u4E00\u4E2A\u4FDD\u7559\uFF0C\u7B2C\u4E8C\u4E2A\u4E22\u5F03\uFF09\uFF1B\u5DF2\u8BC1\u660E\u7684 frontier \u4FDD\u7559\u7ED9\u4E0B\u4E00 cell \u91CD\u653E\u3002",
+    descriptionEn: "The consecutive unmeasured cell that drops the live worker (default 2: the first is kept, the second drops it). The proved frontier stays replayable for the next cell."
+  },
+  {
     key: "officialReplPriority",
     type: "boolean",
     default: false,
@@ -1566,6 +1577,50 @@ var CONFIG_FIELDS = Object.freeze([
     labelEn: "Output limit per cell (bytes)",
     description: "\u9650\u5236\u5355\u4E2A cell \u7684\u65E5\u5FD7\u548C\u8FD4\u56DE\u7ED3\u679C\u7684\u5408\u8BA1\u5927\u5C0F\u3002",
     descriptionEn: "Limits the combined size of one cell's logs and returned result."
+  },
+  {
+    key: "sampleBoundMs",
+    type: "integer",
+    default: 1e3,
+    min: 1,
+    max: MAX_TIMER_DELAY_MS,
+    label: "\u8BA1\u7B97\u57FA\u7EBF\u91C7\u6837\u7B49\u5F85\u4E0A\u9650 (ms)",
+    labelEn: "Compute-baseline sample wait limit (ms)",
+    description: "\u7B49\u5F85 worker \u56DE\u7B54\u8BA1\u7B97\u57FA\u7EBF\u91C7\u6837\u7684\u4E0A\u9650\uFF1B\u5BBF\u4E3B\u5FD9\u788C\u65F6\u5148\u8BFB\u7A7A helper \u901A\u9053\u518D\u5224\u65AD\u7F3A\u5931\uFF0C\u672A\u89C2\u5BDF\u5230\u7684\u91C7\u6837\u6309\u672A\u6D4B\u91CF no-op \u7ED3\u7B97\uFF0C\u662F\u5426\u4FDD\u7559 worker \u7531 unmeasuredCellLimit \u51B3\u5B9A\uFF1Btransport \u62A5\u544A\u9000\u51FA\u3001\u65AD\u8FDE\u6216\u65E0\u6CD5\u53D1\u9001\u65F6\u4ECD\u8D70 worker-exit \u91CD\u7F6E\u3002",
+    descriptionEn: "Bounds the wait for the worker compute-baseline answer. A busy host reads the helper channel out before concluding an answer is missing; an unobserved sample settles as an unmeasured no-op and unmeasuredCellLimit decides whether the worker stays; a transport-reported exit, disconnect or unsendable request keeps the worker-exit reset route."
+  },
+  {
+    key: "workerReclaimMs",
+    type: "integer",
+    default: 5e3,
+    min: 1e3,
+    max: MAX_TIMER_DELAY_MS,
+    label: "worker \u56DE\u6536\u786E\u8BA4\u4E0A\u9650 (ms)",
+    labelEn: "Worker reclamation confirmation limit (ms)",
+    description: "\u505C\u6B62 helper \u7684\u5173\u95ED\u9636\u6BB5\u4E0A\u9650\uFF08\u81F3\u5C11 1000ms\uFF09\uFF1Bexit \u786E\u8BA4\u4E0E\u5176\u540E\u7684\u8F93\u51FA\u5173\u95ED\u5404\u81EA\u4EE5\u6B64\u4E3A\u4E0A\u754C\uFF0Crelease grace \u4F1A\u88AB\u538B\u7F29\u4EE5\u7ED9 kill \u9884\u7559\u81F3\u5C11 1000ms \u7684\u786E\u8BA4\u7A97\u53E3\u3002worker \u521B\u5EFA\u4E0E\u5173\u95ED\u65F6\u8BFB\u53D6\u5F53\u524D\u914D\u7F6E\u3002cell \u89E6\u53D1\u7684 session kernel exit \u8D85\u65F6\u4F1A\u4FDD\u7559 helper \u5E76\u5728\u4F1A\u8BDD\u91CA\u653E\u524D\u963B\u6B62\u540E\u7EED cell\uFF1Bstartup\u3001idle \u6216\u8F93\u51FA\u5173\u95ED\u8DEF\u5F84\u7684\u5931\u8D25\uFF0C\u4EE5\u53CA binding console \u4E0E candidate helper\uFF0C\u53EA\u4FDD\u7559\u5B9E\u4F8B\u5E76\u5728\u91CA\u653E\u65F6\u62A5\u544A\u3002",
+    descriptionEn: "Bounds one close stage of a stopped helper (at least 1000 ms): exit confirmation and the following output close are each bounded by it, with the release grace capped so the kill keeps at least a 1000 ms confirmation window. Read from the current configuration when a worker is created or closed. A cell-driven session-kernel exit miss retains the helper and blocks later cells until the session is released; a startup, idle or output-close miss, and the binding console and candidate helpers, only retain the instance and report it at release."
+  },
+  {
+    key: "startupProbeMs",
+    type: "integer",
+    default: 5e3,
+    min: 1,
+    max: MAX_TIMER_DELAY_MS,
+    label: "REPL \u542F\u52A8\u63A2\u9488\u4E0A\u9650 (ms)",
+    labelEn: "REPL startup probe limit (ms)",
+    description: "worker \u542F\u52A8\u65F6\u6821\u9A8C REPL \u5951\u7EA6\u7684\u7B49\u5F85\u4E0A\u9650\uFF1B\u8D85\u65F6\u6309\u542F\u52A8\u5931\u8D25\u7ED3\u7B97\uFF0C\u4E0D\u6267\u884C\u4EFB\u4F55 cell\u3002worker \u521B\u5EFA\u65F6\u8BFB\u53D6\u5F53\u524D\u914D\u7F6E\u3002",
+    descriptionEn: "Bounds the worker startup check of the REPL contract. A timeout settles as a startup failure and no cell executes. Read from the current configuration when a worker is created."
+  },
+  {
+    key: "executionSeamTimeoutMs",
+    type: "integer",
+    default: 3e4,
+    min: 1,
+    max: MAX_TIMER_DELAY_MS,
+    label: "\u7B49\u5F85\u5BBF\u4E3B\u6267\u884C\u5165\u53E3\u4E0A\u9650 (ms)",
+    labelEn: "Host execution-seam wait limit (ms)",
+    description: "\u6FC0\u6D3B\u65F6\u7B49\u5F85\u5BBF\u4E3B\u6CE8\u518C\u6267\u884C\u5165\u53E3\u7684\u4E0A\u9650\uFF1B\u8D85\u65F6\u628A\u5F53\u524D\u90E8\u7F72\u62A5\u544A\u4E3A\u4E0D\u652F\u6301\u3002\u53EA\u5728\u63D2\u4EF6\u6FC0\u6D3B\u6216\u91CD\u8F7D\u65F6\u8BFB\u53D6\uFF0C\u8FD0\u884C\u4E2D\u7684\u4FEE\u6539\u5728\u4E0B\u6B21\u6FC0\u6D3B\u751F\u6548\u3002",
+    descriptionEn: "Bounds the activation wait for the host to register its execution seam. A timeout reports the deployment as unsupported. Read only when the plugin activates or reloads; a live change applies at the next activation."
   },
   {
     key: "maxValueNodes",
@@ -1653,7 +1708,7 @@ var CONFIG_GROUPS = Object.freeze([
     key: "recovery",
     label: "\u72B6\u6001\u4E0E\u6062\u590D",
     labelEn: "State and recovery",
-    fields: Object.freeze(["durableReplay", "officialReplPriority", "tipsEnabled", "tipCooldownMessages", "tipEscalationFailures"])
+    fields: Object.freeze(["durableReplay", "unmeasuredCellLimit", "officialReplPriority", "tipsEnabled", "tipCooldownMessages", "tipEscalationFailures"])
   },
   {
     key: "extensions",
@@ -1683,6 +1738,10 @@ var CONFIG_GROUPS = Object.freeze([
       "maxOldGenerationSizeMb",
       "maxNestedRunCodeDepth",
       "maxOutputBytes",
+      "sampleBoundMs",
+      "workerReclaimMs",
+      "startupProbeMs",
+      "executionSeamTimeoutMs",
       "maxValueNodes",
       "maxValueEdges",
       "maxValueArrayLength",

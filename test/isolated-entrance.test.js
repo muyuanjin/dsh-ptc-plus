@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { getEventListeners, once } from 'node:events'
+import { tmpdir } from 'node:os'
 import { Readable } from 'node:stream'
 import test from 'node:test'
 import { IsolatedWorker, UNANSWERED_SAMPLE_CODE } from '../internal/isolated-worker.js'
@@ -625,5 +626,253 @@ test('wall timeout while request baseline sampling is pending does not dispatch'
     const kernel = sessionKernel(runtime, session)
     if (kernel !== undefined && originalPost !== undefined) kernel.client.post = originalPost
     await runtime.dispose()
+  }
+})
+
+test('waits for the sample bound the cell configuration carries', async () => {
+  const runtime = new SessionRuntime({ computeMs: 500, maxWallMs: 5_000, sampleBoundMs: 2_000 })
+  const session = 'sample-bound-config'
+  try {
+    assert.deepEqual((await runtime.runTentative(session, { program: 'return 1', bindings: [] })).result.value, 1)
+    const kernel = sessionKernel(runtime, session)
+    assert.equal(kernel.client.worker.sampleBoundMs, 2_000)
+    // The transport reads the bound per request, so a later change applies to the
+    // next cell on the same live worker instead of needing a new worker.
+    runtime.reconfigure({ sampleBoundMs: 3_000 })
+    assert.deepEqual((await runtime.runTentative(session, { program: 'return 2', bindings: [] })).result.value, 2)
+    assert.equal(kernel.client.worker.sampleBoundMs, 3_000)
+  } finally {
+    await runtime.dispose().catch(() => {})
+  }
+})
+
+test('creates the session kernel with the configuration current when it starts', async () => {
+  let releaseLog
+  const gate = new Promise(resolve => { releaseLog = resolve })
+  const runtime = new SessionRuntime(
+    { computeMs: 500, maxWallMs: 5_000, workerReclaimMs: 7_000, startupProbeMs: 5_000 },
+    { readSessionLog: async session => { await gate; return session } },
+  )
+  const session = 'kernel-created-after-reconfigure'
+  try {
+    // The cell is admitted under 7000/5000 and waits for its session log.
+    const execution = runtime.runTentative(session, { program: 'return 1', bindings: [] })
+    await new Promise(resolve => setImmediate(resolve))
+    runtime.reconfigure({
+      computeMs: 500,
+      maxWallMs: 5_000,
+      workerReclaimMs: 15_000,
+      startupProbeMs: 9_000,
+    })
+    releaseLog()
+    const settled = await execution
+    assert.deepEqual(settled.result.value, 1)
+    const kernel = sessionKernel(runtime, session)
+    // The kernel starts the worker and serves later cells, so it must hold the
+    // configuration current at creation rather than the admitted snapshot.
+    assert.equal(kernel.config.workerReclaimMs, 15_000)
+    assert.equal(kernel.client.worker.reclaimBoundMs, 15_000)
+  } finally {
+    await runtime.dispose().catch(() => {})
+  }
+})
+
+test('starts a worker with the configuration current when it is created', async () => {
+  const runtime = new SessionRuntime({
+    computeMs: 500,
+    maxWallMs: 5_000,
+    workerReclaimMs: 7_000,
+    startupProbeMs: 5_000,
+  })
+  const session = 'worker-created-after-reconfigure'
+  try {
+    // A parse-rejected cell creates the kernel without starting a worker.
+    const broken = await runtime.runTentative(session, { program: 'const =', bindings: [] })
+    assert.equal(broken.result.error.kind, 'exception')
+    const kernel = sessionKernel(runtime, session)
+    assert.equal(kernel.client.worker, undefined)
+    let releasePrepare
+    kernel.reclamationAttempts.add(new Promise(resolve => { releasePrepare = resolve }))
+    let bounds
+    const ensure = kernel.client.ensure.bind(kernel.client)
+    kernel.client.ensure = (limit, value) => {
+      bounds = typeof value === 'function' ? value() : value
+      return ensure(limit, value)
+    }
+    // This cell is admitted under 7000/5000, before the settings change; the
+    // worker it starts is reused by later cells, so it must take the current
+    // configuration rather than the admitted snapshot.
+    const execution = runtime.runTentative(session, { program: 'const kept = 1; return kept', bindings: [] })
+    await new Promise(resolve => setImmediate(resolve))
+    runtime.reconfigure({
+      computeMs: 500,
+      maxWallMs: 5_000,
+      workerReclaimMs: 15_000,
+      startupProbeMs: 9_000,
+    })
+    releasePrepare()
+    const settled = await execution
+    assert.deepEqual(settled.result.value, 1)
+    assert.deepEqual(bounds, { reclaimBoundMs: 15_000, startupProbeMs: 9_000 })
+    assert.equal(kernel.client.worker.reclaimBoundMs, 15_000)
+  } finally {
+    await runtime.dispose().catch(() => {})
+  }
+})
+
+test('starts the next worker with the close and startup bounds the configuration carries', async () => {
+  const runtime = new SessionRuntime({
+    computeMs: 500,
+    maxWallMs: 5_000,
+    startupProbeMs: 9_000,
+    workerReclaimMs: 7_000,
+  })
+  const session = 'worker-start-bounds-config'
+  try {
+    assert.deepEqual((await runtime.runTentative(session, { program: 'return 1', bindings: [] })).result.value, 1)
+    const kernel = sessionKernel(runtime, session)
+    let bounds
+    const ensure = kernel.client.ensure.bind(kernel.client)
+    kernel.client.ensure = (limit, value) => {
+      bounds = typeof value === 'function' ? value() : value
+      return ensure(limit, value)
+    }
+    // Dropping the live worker is the only path that starts another one, so the
+    // next cell must hand both configured bounds to the transport it starts.
+    await kernel.resetWorker(kernel.client.worker)
+    assert.deepEqual((await runtime.runTentative(session, { program: 'return 2', bindings: [] })).result.value, 2)
+    assert.deepEqual(bounds, { reclaimBoundMs: 7_000, startupProbeMs: 9_000 })
+  } finally {
+    await runtime.dispose().catch(() => {})
+  }
+})
+
+test('applies the reclamation bound to the live worker when the configuration changes', async () => {
+  const runtime = new SessionRuntime({ computeMs: 500, maxWallMs: 2_000, workerReclaimMs: 7_000 })
+  const session = 'reclaim-bound-config'
+  try {
+    assert.deepEqual((await runtime.runTentative(session, { program: 'return 1', bindings: [] })).result.value, 1)
+    const kernel = sessionKernel(runtime, session)
+    const worker = kernel.client.worker
+    assert.equal(worker.reclaimBoundMs, 7_000)
+    // A close that bypasses resetWorker (idle disposal, owner auto-close) reads the
+    // transport, so the change has to reach the live worker immediately.
+    runtime.reconfigure({ workerReclaimMs: 9_000 })
+    assert.equal(worker.reclaimBoundMs, 9_000)
+    await kernel.resetWorker(worker)
+    assert.equal(worker.reclaimBoundMs, 9_000)
+  } finally {
+    await runtime.dispose().catch(() => {})
+  }
+})
+
+test('settles an unmeasured cell by the configuration snapshot it was submitted with', async () => {
+  const runtime = new SessionRuntime({ computeMs: 500, maxWallMs: 5_000, unmeasuredCellLimit: 2 })
+  const session = 'unmeasured-snapshot'
+  try {
+    assert.deepEqual((await runtime.runTentative(session, { program: 'const retained = 1; return retained', bindings: [] })).result.value, 1)
+    const kernel = sessionKernel(runtime, session)
+    const worker = kernel.client.worker
+    let rejectSample
+    worker.sampleUtilization = () => new Promise((_, reject) => { rejectSample = reject })
+    const execution = runtime.runTentative(session, { program: 'return retained', bindings: [] })
+    const deadline = Date.now() + 5_000
+    while (rejectSample === undefined) {
+      if (Date.now() > deadline) assert.fail('the cell never requested its compute baseline')
+      await new Promise(resolve => setTimeout(resolve, 5))
+    }
+    // The cell was submitted under the default limit of two; a live change to one
+    // must not decide the settlement of a cell that already started.
+    runtime.reconfigure({ computeMs: 500, maxWallMs: 5_000, unmeasuredCellLimit: 1 })
+    const error = new Error('kernel helper did not answer utilization sampling before its deadline')
+    error.code = UNANSWERED_SAMPLE_CODE
+    rejectSample(error)
+    const settled = await execution
+    assert.equal(settled.result.error.kind, 'budget-unavailable')
+    assert.doesNotMatch(settled.result.error.message, /this worker was dropped/)
+    assert.equal(kernel.client.worker, worker)
+    assert.equal(kernel.unmeasuredCells, 1)
+  } finally {
+    await runtime.dispose().catch(() => {})
+  }
+})
+
+test('reclaims the worker at the unmeasured limit the configuration carries', async () => {
+  const runtime = new SessionRuntime({
+    computeMs: 500,
+    maxWallMs: 2_000,
+    unmeasuredCellLimit: 1,
+    workerReclaimMs: 6_000,
+  })
+  const session = 'sample-unreachable-config'
+  try {
+    await runtime.run(session, { program: 'const retained = 41', bindings: [] })
+    const kernel = sessionKernel(runtime, session)
+    const worker = kernel.client.worker
+    // The worker started with 6000; only the drop path can read 8000 from the
+    // configuration current at that moment.
+    runtime.reconfigure({ computeMs: 500, maxWallMs: 2_000, unmeasuredCellLimit: 1, workerReclaimMs: 8_000 })
+    kernel.client.worker.sampleUtilization = () => {
+      const error = new Error('kernel helper did not answer utilization sampling before its deadline')
+      error.code = UNANSWERED_SAMPLE_CODE
+      return Promise.reject(error)
+    }
+    const first = await runtime.runTentative(session, { program: 'return retained + 1', bindings: [] })
+    assert.equal(first.result.error.kind, 'budget-unavailable')
+    assert.match(first.result.error.message, /this worker was dropped/)
+    assert.equal(kernel.client.worker, undefined)
+    // The real drop path, not a direct kernel call, applied the configured bound.
+    assert.equal(worker.reclaimBoundMs, 8_000)
+    assert.equal(kernel.replayed, false)
+    assert.deepEqual(await runtime.run(session, { program: 'return retained + 1', bindings: [] }), {
+      logs: [],
+      value: 42,
+    })
+  } finally {
+    await runtime.dispose().catch(() => {})
+  }
+})
+
+test('starts the worker with the configuration current after the scratch wait', async () => {
+  const runtime = new SessionRuntime({
+    computeMs: 500,
+    maxWallMs: 5_000,
+    workerReclaimMs: 7_000,
+    startupProbeMs: 5_000,
+  })
+  const session = 'worker-bounds-scratch-window'
+  try {
+    const broken = await runtime.runTentative(session, { program: 'const =', bindings: [] })
+    assert.equal(broken.result.error.kind, 'exception')
+    const kernel = sessionKernel(runtime, session)
+    assert.equal(kernel.client.worker, undefined)
+    let releaseScratch
+    kernel.client.scratchReady = new Promise(resolve => { releaseScratch = resolve })
+    let started
+    const start = kernel.client.owner.start.bind(kernel.client.owner)
+    kernel.client.owner.start = options => {
+      started = options
+      return start(options)
+    }
+    // The cell is admitted under 7000/5000 and parks on the worker client's
+    // scratch wait; the settings change lands inside that macrotask gap.
+    const execution = runtime.runTentative(session, { program: 'const kept = 1; return kept', bindings: [] })
+    await new Promise(resolve => setImmediate(resolve))
+    runtime.reconfigure({
+      computeMs: 500,
+      maxWallMs: 5_000,
+      workerReclaimMs: 15_000,
+      startupProbeMs: 9_000,
+    })
+    releaseScratch(tmpdir())
+    const settled = await execution
+    assert.deepEqual(settled.result.value, 1)
+    // Both bounds are read after the scratch wait, so the worker carries the
+    // settings current when it is actually created.
+    assert.equal(started.workerData.startupProbeMs, 9_000)
+    assert.equal(started.reclaimBoundMs, 15_000)
+    assert.equal(kernel.client.worker.reclaimBoundMs, 15_000)
+  } finally {
+    await runtime.dispose().catch(() => {})
   }
 })

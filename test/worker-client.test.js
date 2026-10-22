@@ -389,3 +389,21 @@ test('scratch cleanup failure stays best effort after transport disposal', async
   client.scratchReady = Promise.reject(new Error('scratch cleanup failed'))
   await client.dispose()
 })
+
+test('starts a worker with the close and startup bounds the caller carries', async () => {
+  const client = workerClient()
+  let started
+  client.owner = {
+    start(options) {
+      started = options
+      throw new Error('captured before any helper started')
+    },
+  }
+  await assert.rejects(
+    client.ensure(64, { reclaimBoundMs: 7_000, startupProbeMs: 9_000 }),
+    /captured before any helper started/,
+  )
+  assert.equal(started.reclaimBoundMs, 7_000)
+  assert.equal(started.workerData.startupProbeMs, 9_000)
+  assert.equal(started.workerData.cwd, undefined)
+})

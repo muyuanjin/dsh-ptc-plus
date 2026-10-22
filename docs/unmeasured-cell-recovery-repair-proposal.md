@@ -27,7 +27,7 @@
 
 ### 2.1 已有能力与保留限制
 
-当前普通 cell 在 run 帧发出前无法取得计算基线时，以 `budget-unavailable` 和 `noop` journal 结算。第一次保留 live worker；连续第二次丢弃 worker，只保留可证明的恢复 frontier。transport 明确报告退出、断连或发送失败时，仍按 worker failure 回收。
+当前普通 cell 在 run 帧发出前无法取得计算基线时，以 `budget-unavailable` 和 `noop` journal 结算。默认 2 时第一次保留 live worker；连续达到 `unmeasuredCellLimit` 次丢弃 worker，只保留可证明的恢复 frontier。transport 明确报告退出、断连或发送失败时，仍按 worker failure 回收。
 
 修复前派生 edit 具有以下断点（第 4、5 项已由工作包 A 消除）：
 
@@ -196,7 +196,7 @@
 
 ### 6.1 本轮策略
 
-维持第一次未测量保留、连续第二次回收的现有行为。不能将采样超时单独描述为 worker 已死；它是自动恢复策略的触发条件，不是 OS 已证明的死亡事实。
+维持默认 2 时第一次未测量保留、连续达到 `unmeasuredCellLimit` 次回收的现有行为。不能将采样超时单独描述为 worker 已死；它是自动恢复策略的触发条件，不是 OS 已证明的死亡事实。
 
 只在现有结果和诊断中补足可证明的状态事实，不新建 UI、遥测服务或后台协调器：
 

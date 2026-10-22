@@ -98,8 +98,16 @@ test('fails observably when a killed helper never really exits', async t => {
   await flush()
   t.mock.timers.tick(1000)
   await flush()
-  t.mock.timers.tick(4000)
+  // The bound is the whole close deadline, so four more seconds confirm the kill.
+  assert.equal(current.kills, 1)
+  t.mock.timers.tick(3_999)
   await flush()
+  assert.equal(worker.reclamationFailure, undefined)
+  t.mock.timers.tick(1)
+  await flush()
+  // A longer deadline must fail here instead of leaving the file pending on an
+  // unadvanced mock timer.
+  assert.match(worker.reclamationFailure?.message ?? 'still pending', /did not exit/)
   t.mock.timers.tick(0)
   const settled = await Promise.all(outcomes)
   assert.match(settled[0], /did not exit before the close deadline/)
@@ -140,8 +148,16 @@ test('still kills the helper when the stop request cannot be sent', async t => {
   t.mock.timers.tick(1000)
   await flush()
   assert.equal(current.kills, 1)
-  t.mock.timers.tick(4000)
+  // The bound is the whole close deadline: the remaining four seconds confirm
+  // the kill, and the shipped total stays five seconds.
+  t.mock.timers.tick(3999)
   await flush()
+  assert.equal(worker.exited, false)
+  t.mock.timers.tick(1)
+  await flush()
+  // Assert the recorded failure before awaiting, so a longer close bound fails
+  // this case instead of leaving the file pending forever.
+  assert.match(worker.reclamationFailure?.message ?? 'still pending', /did not exit before the close deadline/)
   assert.match(await outcome, /did not exit before the close deadline/)
 })
 
@@ -170,10 +186,13 @@ test('reports a refused kill when the helper still does not exit', async t => {
   t.mock.timers.tick(1000)
   await flush()
   assert.equal(current.kills, 1)
-  t.mock.timers.tick(4000)
+  t.mock.timers.tick(3999)
   await flush()
+  assert.equal(worker.reclamationFailure, undefined)
+  t.mock.timers.tick(1)
+  await flush()
+  assert.match(worker.reclamationFailure?.message ?? 'still pending', /could not be killed/)
   assert.match(await outcome, /could not be killed/)
-  assert.match(worker.reclamationFailure.message, /could not be killed/)
 })
 
 test('adopts an on-demand utilization sample instead of a stale cache', async (t) => {
@@ -436,4 +455,58 @@ test('ordinary and covered workers share absolute entry identity across accepted
   for (const entry of [undefined, null, '', 42, {}]) {
     assert.throws(() => isolatedWorkerEntry(entry), /URL or a non-empty string filename/)
   }
+})
+
+test('reserves the confirmation window when the bound leaves no release grace', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] })
+  t.mock.module('node:child_process', { namedExports: { fork: () => current } })
+  current = new FakeChild({ killResult: true })
+  const { IsolatedWorker } = await import('../internal/isolated-worker.js')
+  const worker = new IsolatedWorker({
+    helper: '/helper.js', entry: 'kernel-worker.js', workerData: {}, env: {}, reclaimBoundMs: 1_000,
+  })
+  worker.emit('message', { type: 'ready' })
+  const outcome = worker.terminate().then(() => 'resolved', error => error.message)
+  await flush()
+  t.mock.timers.tick(0)
+  await flush()
+  // A bound at the release grace must not wait the grace out and then confirm a
+  // kill with no time left: the kill happens first and keeps the full window.
+  assert.equal(current.kills, 1)
+  t.mock.timers.tick(999)
+  await flush()
+  assert.equal(worker.reclamationFailure, undefined)
+  t.mock.timers.tick(1)
+  await flush()
+  // The confirmation window is exactly the configured 1000 ms; a longer deadline
+  // fails here rather than awaiting a timer this test never advances.
+  assert.match(worker.reclamationFailure?.message ?? 'still pending', /did not exit before the close deadline/)
+  assert.match(await outcome, /did not exit before the close deadline/)
+})
+
+test('waits for the close bound this transport carries instead of the default', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] })
+  t.mock.module('node:child_process', { namedExports: { fork: () => current } })
+  current = new FakeChild({ killResult: false })
+  const { IsolatedWorker } = await import('../internal/isolated-worker.js')
+  const worker = new IsolatedWorker({
+    helper: '/helper.js', entry: 'kernel-worker.js', workerData: {}, env: {}, reclaimBoundMs: 6_000,
+  })
+  worker.emit('message', { type: 'ready' })
+  const closing = worker.terminate()
+  const outcome = closing.then(() => 'resolved', error => error.message)
+  await flush()
+  t.mock.timers.tick(1_000)
+  await flush()
+  assert.equal(current.kills, 1)
+  // The default five-second bound would end the wait at 5000 ms; this transport
+  // carries six seconds, so the kill stays unconfirmed until 6000 ms.
+  t.mock.timers.tick(4_999)
+  await flush()
+  assert.equal(worker.exited, false)
+  assert.equal(worker.reclamationFailure, undefined)
+  t.mock.timers.tick(1)
+  await flush()
+  assert.match(worker.reclamationFailure?.message ?? 'still pending', /could not be killed/)
+  assert.match(await outcome, /could not be killed/)
 })

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { Context } from '@deepseek-ai/cordis'
 import { createRuntimeBridgeOwner } from '../internal/runtime-bridge-owner.js'
+import { apply } from '../index.js'
 import {
   EXECUTION_SEAM_SERVICE,
   LEGACY_EXECUTION_SEAM_SERVICE,
@@ -392,6 +393,27 @@ test('settles with a diagnostic when the deployment never registers a seam', asy
     }),
     /no host execution seam \(ptcRuntime or codeRuntime\) is registered/,
   )
+})
+
+test('apply waits for the execution-seam bound the configuration carries', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const host = seamHost()
+  const activation = apply(host.ctx, { executionSeamTimeoutMs: 20 }).then(
+    () => 'attached',
+    error => error.message,
+  )
+  // The configured 20 ms decides the wait; a shipped-default regression would
+  // still be pending here instead of rejecting.
+  t.mock.timers.tick(19)
+  assert.equal(await Promise.race([activation, Promise.resolve('pending')]), 'pending')
+  t.mock.timers.tick(1)
+  // Let the rejection propagate out of the timer turn before racing, so a settled
+  // activation is not still a pending derived promise at subscription time.
+  await new Promise(resolve => setImmediate(resolve))
+  // A shipped-default regression leaves the activation pending on a timer this
+  // test never advances; the race reports that instead of hanging the file.
+  const outcome = await Promise.race([activation, Promise.resolve('still waiting')])
+  assert.match(outcome, /no host execution seam \(ptcRuntime or codeRuntime\) is registered/)
 })
 
 test('an unbounded wait still attaches to a seam that appears later', async () => {

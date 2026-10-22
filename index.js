@@ -345,6 +345,7 @@ function installPtCRuntime(ctx, resolvedConfig, seam, toolSchemasForAgent, toolS
       maxWallMs: activeConfig.maxWallMs,
       maxOutputBytes: activeConfig.maxOutputBytes,
       maxOldGenerationSizeMb: activeConfig.maxOldGenerationSizeMb,
+      workerReclaimMs: activeConfig.workerReclaimMs,
       valueLimits: valueLimitsFromConfig(activeConfig),
     })
     capabilityEnvironment = createCapabilityEnvironment({ ctx, config: activeConfig,
@@ -626,6 +627,7 @@ export const apply = (ctx, config = {}) => {
   const resolvedConfig = resolveConfig(config)
   return installExecutionSeam(ctx, {
     services: inject,
+    attachmentTimeoutMs: resolvedConfig.executionSeamTimeoutMs,
     attach: (scope, seam) => applyWithExecutionSeam(scope, resolvedConfig, seam, ctx, config),
     reportFailure: (error, seamName) => ctx.logger?.warn?.(
       `ptc-plus: execution seam ${seamName} failed to attach`,

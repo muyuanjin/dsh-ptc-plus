@@ -114,6 +114,11 @@ const output = new PassThrough()
 output.resume()
 const evaluationScope = createPrivateAsyncLocalStorage()
 const sessionCwd = typeof workerData?.cwd === 'string' ? workerData.cwd : undefined
+/** Fallback bound for the startup conformance probe when the host config omits one. */
+const DEFAULT_STARTUP_PROBE_MS = 5000
+const startupProbeMs = Number.isSafeInteger(workerData?.startupProbeMs) && workerData.startupProbeMs > 0
+  ? workerData.startupProbeMs
+  : DEFAULT_STARTUP_PROBE_MS
 // The module source base is fixed when a cell starts; the operation directory
 // follows the Session's working directory while the cell runs, so a confirmed
 // `tools.working_directory` change rebases the rest of the cell exactly as the
@@ -1585,7 +1590,9 @@ try {
   await Promise.race([
     verifyEvaluation(),
     new Promise((_, reject) => {
-      startupTimer = setTimeout(() => reject(new Error('REPL settlement probe timed out')), 5000)
+      startupTimer = setTimeout(() => reject(new Error(
+        `REPL settlement probe timed out after ${startupProbeMs}ms`,
+      )), startupProbeMs)
     }),
   ])
   replModuleRealm = (await evaluate('({Promise,stringify:value=>`${value}`,importModule:(source,options)=>import(source,options)})')).value

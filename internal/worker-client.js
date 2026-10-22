@@ -46,7 +46,15 @@ export class WorkerClient {
     return lastLine === undefined ? undefined : lastLine.slice(0, 300)
   }
 
-  async ensure(maxOldGenerationSizeMb) {
+  /**
+   * Start the session worker once and reuse it.
+   *
+   * `bounds` carries the startup bound for a worker that does not exist yet and
+   * the close bound this worker starts with; a later close reads the bound the
+   * owning kernel sets from its current configuration. It may be a getter, which
+   * is read after the scratch wait because a settings change can land there.
+   */
+  async ensure(maxOldGenerationSizeMb, bounds = {}) {
     if (this.pendingOutputFailure !== undefined) {
       const message = this.pendingOutputFailure
       this.pendingOutputFailure = undefined
@@ -79,13 +87,21 @@ export class WorkerClient {
     /* c8 ignore next */
     if (this.worker !== undefined) return this.workerReady
     const environment = normalizeWorkerEnvironment(process.env)
+    // A settings change can land while the scratch directory is being created,
+    // so the bounds are read here rather than at the call.
+    const resolvedBounds = typeof bounds === 'function' ? bounds() : bounds
     let worker
     try {
       const started = this.owner.start({
         helper: KERNEL_HELPER,
         entry: this.workerUrl,
-        workerData: { cwd: this.cwd, compilerCache: this.compilerCache?.() },
+        workerData: {
+          cwd: this.cwd,
+          compilerCache: this.compilerCache?.(),
+          startupProbeMs: resolvedBounds.startupProbeMs,
+        },
         resourceLimits: { maxOldGenerationSizeMb: this.workerLimit },
+        reclaimBoundMs: resolvedBounds.reclaimBoundMs,
         env: {
           ...environment,
           TEMP: scratchDirectory,

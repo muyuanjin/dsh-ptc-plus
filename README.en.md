@@ -112,6 +112,8 @@ An `accepted: true, scheduled: true` receipt means the edit is scheduled: the en
 | Argument validation reports a missing `description` | Distinguish outer and nested tool arguments and provide correction guidance, saved as a complete message so session history remains loadable |
 | Code fails to parse | Identify the source position; at EOF, suggest a target-bound edit if appending one or two closing delimiters has exactly one validated correction |
 
+When an accepted edit cannot obtain a compute baseline before it runs, the receipt stays a receipt: the revision does not execute, publishes no new binding, and the outer cell keeps its own result, so a restart does not lose what that cell already saved as a durable checkpoint.
+
 The first two behaviors are on by default and can be disabled in settings. Syntax suggestions never execute on their own, and they say nothing about whether the code matches the task's intent. A volatile state cannot be saved as a durable checkpoint, but a rejected save leaves the current variables usable; restore does not undo external effects or change global binding configuration.
 
 ## Project files and tool capabilities

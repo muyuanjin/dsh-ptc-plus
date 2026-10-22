@@ -26,9 +26,10 @@ import {
 import { assertStateName, LIVE_USER_BINDINGS_REUSE_POLICY } from './session-journal.js'
 import { LIVE_USER_BINDINGS_SHADOW_POLICY, normalizeUserBindingNames } from './session-journal-schema.js'
 import { PreflightError, prepareProgram } from './compiler-service.js'
+import { UNANSWERED_SAMPLE_CODE } from './isolated-worker.js'
 import { executionPolicies } from './binding-update-policy.js'
 import { createReplMemorySnapshot } from './repl-memory-projection.js'
-import { ModuleRewriteError } from './cell-error.js'
+import { CellAdmissionBlocked, ModuleRewriteError } from './cell-error.js'
 import { mapSourcePosition } from './source-position-map.js'
 import { durabilityState, transitionDurability } from './session-state.js'
 import { dynamicBindingOrigin } from './dynamic-binding-evidence.js'
@@ -485,6 +486,10 @@ export class SessionCellExecutor {
       await kernel.prepareWorker()
       worker = await kernel.client.ensure(config.maxOldGenerationSizeMb)
     } catch (error) {
+      // An admission block is the kernel's own lifecycle fact, so the kernel
+      // settles the cell: it must not be read as a failure of recorded history
+      // or of this source.
+      if (error instanceof CellAdmissionBlocked) throw error
       const result = earlyResult('worker-exit', messageOf(error))
       kernel.completeJournal(request.journal, 'discarded', result)
       kernel.rollbackToDurable()
@@ -510,6 +515,7 @@ export class SessionCellExecutor {
       const active = {
         id,
         started: false,
+        dispatched: false,
         request: { ...request, bindings: bindings.namespaces },
         finish: resolve,
         computeTimer: undefined,
@@ -561,6 +567,16 @@ export class SessionCellExecutor {
         // cache. Work that completed before this request must not be charged to
         // the new cell, and work after the sample must remain counted.
         active.wallTimer = setTimeout(() => {
+          // A cell that never reached the runtime has executed nothing, so this
+          // failure cannot discard an earlier settlement or justify rebuilding the
+          // worker on its own; SessionRuntime owns how many such cells it keeps.
+          if (active.dispatched !== true) {
+            kernel.abandonCell(active, earlyResult(
+              'budget-unavailable',
+              `wall-clock ceiling reached (${config.maxWallMs}ms) before this cell was dispatched; no code from it ran; retry the cell or raise maxWallMs`,
+            ))
+            return
+          }
           active.resolve(earlyResult('timeout', `wall-clock ceiling reached (${config.maxWallMs}ms); split long-running work into smaller cells`), true)
         }, config.maxWallMs)
         active.budgetsReady = (async () => {
@@ -568,16 +584,35 @@ export class SessionCellExecutor {
           try {
             started = await worker.sampleUtilization()
           } catch (error) {
-            // No fresh baseline means this request cannot be measured. Use the
-            // existing worker-exit route instead of pretending the last cache
-            // sample is this request's starting point.
-            active.resolve(earlyResult('worker-exit', messageOf(error)), true)
+            // No fresh baseline means this request cannot be measured: the
+            // helper's periodic cache may predate work that already finished, so
+            // it is not a substitute start point. A helper that is still trusted
+            // has not failed, and no frame was dispatched yet, so the unmeasured
+            // cell settles without execution. Only a helper the transport reports
+            // as lost takes the worker-exit route.
+            if (safeProperty(error, 'code') === UNANSWERED_SAMPLE_CODE) {
+              kernel.abandonCell(active, earlyResult(
+                'budget-unavailable',
+                `${messageOf(error)}; this cell was not dispatched and no code from it ran; retry the cell`,
+              ))
+            } else {
+              active.resolve(earlyResult('worker-exit', messageOf(error)), true)
+            }
             return
           }
           if (active.settled) return
           active.computeTimer = setInterval(() => {
             if (active.settled) return
             if (worker.performance.eventLoopUtilization(started).active > config.computeMs) {
+              // Nothing from this cell was dispatched, so an exhausted budget
+              // measures earlier work on this worker, not this cell's source.
+              if (active.dispatched !== true) {
+                kernel.abandonCell(active, earlyResult(
+                  'budget-unavailable',
+                  `compute budget exhausted (${config.computeMs}ms event-loop active) before this cell was dispatched; no code from this cell ran; a callback from earlier work may still be blocking the worker; retry the cell or restart the session`,
+                ))
+                return
+              }
               active.resolve(earlyResult('timeout', `compute budget exhausted (${config.computeMs}ms event-loop active, including synchronous blocking); this measure does not establish CPU use or the specific cause. Use asynchronous waiting for long waits, or a DSH-owned managed job if available. This cell was discarded and the worker reset; external effects or processes may continue.`), true)
             }
           }, Math.min(100, config.computeMs))
@@ -624,6 +659,9 @@ export class SessionCellExecutor {
               ...request.bindingDescriptors.reservedNames,
             ])],
           })
+          // The run frame is with the worker now, so a later failure may have
+          // executed this cell's source and cannot settle as an unmeasured cell.
+          active.dispatched = true
         } catch (error) {
           active.resolve(earlyResult('worker-exit', messageOf(error)), true)
         }

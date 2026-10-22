@@ -14,6 +14,7 @@ import {
   liveToolCallSeq,
   migrateRecoveryBoundaryEvents,
   normalizeRecoveryBoundaries,
+  normalizeDeferredEditSettlement,
   normalizeDerivedEditResult,
   normalizeJournal,
   normalizeRewrites,
@@ -1969,6 +1970,59 @@ test('validates derived edit targets from settlements visible at dispatch', () =
   const duplicateView = projectSessionLog({ session: { events: duplicateTarget } })
   assert.equal(duplicateView.latestRun.source, 'const a = 2')
   assert.equal(duplicateView.editableRun.callSeq, 3)
+})
+
+test('proves a deferred edit whose revision never ran without granting it an execution', () => {
+  const unexecuted = meta => ({
+    ...structuredClone(meta),
+    [JOURNAL_KEY]: journal({
+      status: 'noop',
+      completion: { kind: 'throw', error: { kind: 'budget-unavailable', message: 'did not answer utilization sampling' } },
+    }),
+  })
+  const base = {
+    [JOURNAL_KEY]: journal(),
+    dshPtcPlusEdit: { targetCallSeq: 1 },
+    dshPtcPlusDerivedRun: { code: 'edited = 2', description: 'derived edit' },
+  }
+  const settlement = normalizeDeferredEditSettlement(unexecuted(base), 1)
+  assert.equal(settlement.unexecuted, true)
+  assert.equal(settlement.code, 'edited = 2')
+  assert.equal(settlement.journal.status, 'noop')
+  // The historical top-level editor relation keeps requiring an executed run.
+  assert.throws(() => normalizeDerivedEditResult(unexecuted(base), 1), /must not be noop/u)
+  // Only the unmeasured route proves that nothing ran; other failures keep the old
+  // rule, because they do not say the revision was never dispatched.
+  for (const kind of ['exception', 'abort', 'worker-exit', 'timeout']) {
+    const other = {
+      ...structuredClone(base),
+      [JOURNAL_KEY]: journal({
+        status: 'noop',
+        completion: { kind: 'throw', error: { kind, message: `${kind} happened` } },
+      }),
+    }
+    assert.throws(() => normalizeDeferredEditSettlement(other, 1), /must not be noop/u)
+    assert.throws(() => normalizeDerivedEditResult(other, 1), /must not be noop/u)
+  }
+  // The relation still needs its target and a usable revised source.
+  for (const mutate of [
+    meta => { meta.dshPtcPlusEdit.targetCallSeq = 2 },
+    meta => { meta.dshPtcPlusDerivedRun.code = 2 },
+    meta => { meta.dshPtcPlusDerivedRun.description = 2 },
+  ]) {
+    const changed = unexecuted(base)
+    mutate(changed)
+    assert.throws(() => normalizeDeferredEditSettlement(changed, 1))
+  }
+  // An unexecuted settlement cannot carry executed work, and a return completion
+  // cannot be presented as one.
+  const withCalls = unexecuted(base)
+  withCalls[JOURNAL_KEY].calls = [{ global: 'tools', member: 'observe', args: encodeValue({}),
+    ok: true, settle: 0, value: encodeValue(1) }]
+  assert.throws(() => normalizeDeferredEditSettlement(withCalls, 1), /must not contain calls or operations/u)
+  const returned = structuredClone(base)
+  returned[JOURNAL_KEY] = journal({ status: 'noop' })
+  assert.throws(() => normalizeDeferredEditSettlement(returned, 1), /must not be noop/u)
 })
 
 test('folds delayed derived edits in persisted settlement order', () => {

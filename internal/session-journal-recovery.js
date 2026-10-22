@@ -16,7 +16,7 @@ import {
 } from './session-journal-schema.js'
 import {
   isCanonicalSequence,
-  normalizeDerivedEditResult,
+  normalizeDeferredEditSettlement,
   normalizeJournal,
   normalizeRecoveryBoundaries,
   reduceStateOperations,
@@ -226,7 +226,10 @@ export function visibleExecutableCallSeqs(session) {
   const timeline = foldSessionTimeline(events)
   for (const root of timeline.calls) {
     const post = timeline.results.get(root.seq)?.postEdit
-    if (post !== undefined && calls.has(root.seq) && calls.has(post.targetCallSeq)) {
+    // A derived execution that never ran was never published as a cell the model
+    // can see, so it is not model-visible executable history.
+    if (post !== undefined && post.derived?.unexecuted !== true
+      && calls.has(root.seq) && calls.has(post.targetCallSeq)) {
       calls.add(post.executionStartSeq)
     }
   }
@@ -270,6 +273,12 @@ function settlementRun(settlement) {
   const publication = settlement.publication
   if (publication === undefined) return undefined
   const result = { data: { meta: { [REWRITES_KEY]: publication.postEditRewrites ?? publication.rewrites } } }
+  // A revision that never ran publishes no source of its own, so the settlement
+  // keeps its own call's source: the root cell stays the editable target and the
+  // unexecuted revision never becomes one.
+  if (publication.postEdit?.derived?.unexecuted === true || publication.derived?.unexecuted === true) {
+    return timelineJson(timelineRun(settlement.call, result, publication.index, publication.journal))
+  }
   if (publication.postEdit !== undefined) {
     return timelineJson(timelineDerivedRun({ seq: publication.postEdit.executionStartSeq }, result,
       publication.index, publication.postEdit.derived))
@@ -606,7 +615,7 @@ export function validateSessionTimelineState(value) {
     if (result.derived !== undefined) {
       const derived = result.derived
       if (!isRecord(derived)) return false
-      const normalized = normalizeDerivedEditResult({
+      const normalized = normalizeDeferredEditSettlement({
         [JOURNAL_KEY]: result.journal,
         [EDIT_TARGET_KEY]: { targetCallSeq: derived.targetCallSeq },
         [DERIVED_RUN_KEY]: { code: derived.code, description: derived.description },
@@ -628,7 +637,7 @@ export function validateSessionTimelineState(value) {
       && optional(result.postEdit, post => fields(post, ['startSeq', 'executionStartSeq', 'targetCallSeq', 'derived', 'rewrites'])
         && isCanonicalSequence(post.startSeq) && isCanonicalSequence(post.executionStartSeq)
         && isCanonicalSequence(post.targetCallSeq)
-        && deepEqualJson(normalizeDerivedEditResult({
+        && deepEqualJson(normalizeDeferredEditSettlement({
           [JOURNAL_KEY]: post.derived?.journal,
           [EDIT_TARGET_KEY]: { targetCallSeq: post.targetCallSeq },
           [DERIVED_RUN_KEY]: { code: post.derived?.code, description: post.derived?.description },
@@ -909,7 +918,7 @@ function normalizePostEditFact(facts, call, resultEvent, result, replayPostEdit)
   }
   let derived
   try {
-    derived = normalizeDerivedEditResult(post.meta, target?.callSeq)
+    derived = normalizeDeferredEditSettlement(post.meta, target?.callSeq)
   } catch (error) {
     return fail(error.message)
   }
@@ -1183,7 +1192,7 @@ function advanceTimelineEvent(previous, inputEvent, eventIndex, replayFact) {
         }
         try {
           if (call.data.name === 'edit_run_code') {
-            const derived = normalizeDerivedEditResult(meta, entry.editTarget?.callSeq)
+            const derived = normalizeDeferredEditSettlement(meta, entry.editTarget?.callSeq)
             normalized = {
               ...raw,
               journal: derived.journal,
@@ -1510,7 +1519,10 @@ export function recoverJournal(session, currentCallSeq, options = {}) {
       if (result.postEditError !== undefined) {
         invalidResultReasons.set(call.seq, result.postEditError)
         registerUnavailable({ seq: call.seq, reason: result.postEditError })
-      } else if (result.postEdit !== undefined) {
+      } else if (result.postEdit !== undefined && result.postEdit.derived.unexecuted !== true) {
+        // A derived execution that never ran proves no state of its own, so it is
+        // not folded as a record; the root cell's own record already carries the
+        // proof of the accepted edit.
         const postEdit = result.postEdit
         orderedRecords.push({
           call: timeline.eventFacts.find(fact => fact.event.seq === postEdit.executionStartSeq).event,

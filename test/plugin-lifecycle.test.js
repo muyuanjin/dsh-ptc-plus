@@ -181,11 +181,22 @@ test('background callbacks cannot disable readiness timeout recovery', async t =
       const next = await runtime.runTentative(session, {
         program: 'return 2', bindings: [], signal: AbortSignal.timeout(3000),
       })
-      assert.equal(next.result.error.kind, 'timeout')
+      // The cell never reached the worker, so its own bound reports an unmeasured
+      // cell: nothing ran and the live worker is kept for one such cell.
+      assert.equal(next.result.error.kind, 'budget-unavailable')
       assert.match(next.result.error.message, message)
-      assert.equal(next.settlement.journal.status, 'discarded')
-      assert.equal(workerOf(runtime, session), undefined)
+      assert.equal(next.settlement.journal.status, 'noop')
+      assert.equal(workerOf(runtime, session), worker)
       runtime.finalize(next.settlement, true)
+      // A second cell that cannot reach the worker drops the live worker while
+      // keeping the proved frontier, so the session continues from it.
+      const repeated = await runtime.runTentative(session, {
+        program: 'return 2', bindings: [], signal: AbortSignal.timeout(3000),
+      })
+      assert.equal(repeated.result.error.kind, 'budget-unavailable')
+      assert.equal(repeated.settlement.journal.status, 'noop')
+      runtime.finalize(repeated.settlement, true)
+      assert.equal(workerOf(runtime, session), undefined)
       assert.equal((await runtime.run(session, { program: 'return 3', bindings: [] })).value, 3)
       assert.notEqual(workerOf(runtime, session), worker)
     })
@@ -223,7 +234,7 @@ test('late observation completion restores budgets even when ready never arrives
   const timer = activeTimers(runtime, session).wall
   deliver(observation)
   assert.equal(activeTimers(runtime, session).wall, timer)
-  assert.equal((await pending).error.kind, 'timeout')
+  assert.equal((await pending).error.kind, 'budget-unavailable')
 })
 
 test('waiting for worker readiness remains cancellable and handles disposal and failure', async t => {

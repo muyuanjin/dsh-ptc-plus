@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict'
-import { once } from 'node:events'
+import { getEventListeners, once } from 'node:events'
 import { Readable } from 'node:stream'
 import test from 'node:test'
-import { IsolatedWorker } from '../internal/isolated-worker.js'
+import { IsolatedWorker, UNANSWERED_SAMPLE_CODE } from '../internal/isolated-worker.js'
 import { SessionRuntime } from '../internal/session-runtime.js'
 import { relayWorkerOutput } from '../internal/worker-output-relay.js'
-import { hasSessionKernel, scratchDirectoryOf, sessionKernel, workerOf } from './runtime-observation.js'
+import { activeTimers, hasSessionKernel, interceptWorkerMessages, scratchDirectoryOf, sessionKernel, workerOf } from './runtime-observation.js'
 
 function recordedReclamationFailures(kernel) {
   return [...kernel.reclamationRecords.values()]
@@ -288,6 +288,266 @@ test('fails the cell without dispatch when request baseline sampling fails', asy
   }
 })
 
+test('keeps the live worker and its bindings when a sample goes unanswered by an answering helper', async () => {
+  const runtime = new SessionRuntime({ computeMs: 500, maxWallMs: 2_000 })
+  const session = 'sample-unanswered'
+  try {
+    await runtime.run(session, { program: 'const retained = 41', bindings: [] })
+    const kernel = sessionKernel(runtime, session)
+    const worker = kernel.client.worker
+    const catalog = kernel.bindingCatalog
+    const sample = worker.sampleUtilization.bind(worker)
+    let unanswered = 1
+    worker.sampleUtilization = () => {
+      if (unanswered-- > 0) {
+        const error = new Error('kernel helper stayed alive but did not answer utilization sampling before its deadline')
+        error.code = UNANSWERED_SAMPLE_CODE
+        return Promise.reject(error)
+      }
+      return sample()
+    }
+
+    const execution = await runtime.runTentative(session, { program: 'return retained + 1', bindings: [] })
+    assert.equal(execution.result.error.kind, 'budget-unavailable')
+    assert.match(execution.result.error.message, /was not dispatched/)
+    // The cell never ran, so its journal must not claim a step that recovery
+    // could replay, and no earlier settlement may be discarded for it.
+    assert.equal(execution.settlement.journal.status, 'noop')
+    // Nothing was dispatched, so no earlier cell can have been discarded: the
+    // live worker, its replayed timeline and the binding catalog stay as they were.
+    assert.equal(kernel.client.worker, worker)
+    assert.equal(kernel.replayed, true)
+    assert.equal(kernel.bindingCatalog, catalog)
+
+    assert.deepEqual(await runtime.run(session, { program: 'return retained + 1', bindings: [] }), {
+      logs: [],
+      value: 42,
+    })
+    // A settlement that arrives for a cell the kernel already ended is not its own.
+    kernel.abandonCell({ settled: false }, { logs: [], error: { kind: 'timeout', message: 'stale settlement' } })
+    assert.equal(kernel.active, undefined)
+  } finally {
+    await runtime.dispose().catch(() => {})
+  }
+})
+
+test('keeps the worker for one unmeasured cell and drops it for the next', async () => {
+  const runtime = new SessionRuntime({ computeMs: 500, maxWallMs: 2_000 })
+  const session = 'sample-unreachable'
+  try {
+    await runtime.run(session, { program: 'const retained = 41', bindings: [] })
+    const kernel = sessionKernel(runtime, session)
+    const worker = kernel.client.worker
+    const sample = worker.sampleUtilization.bind(worker)
+    let unmeasured = 2
+    worker.sampleUtilization = () => {
+      if (unmeasured > 0) {
+        unmeasured -= 1
+        const error = new Error('kernel helper did not answer utilization sampling before its deadline')
+        error.code = UNANSWERED_SAMPLE_CODE
+        return Promise.reject(error)
+      }
+      return sample()
+    }
+
+    const first = await runtime.runTentative(session, { program: 'return retained + 1', bindings: [] })
+    assert.equal(first.result.error.kind, 'budget-unavailable')
+    assert.equal(first.settlement.journal.status, 'noop')
+    // One unmeasured cell is not evidence about the worker.
+    assert.equal(kernel.client.worker, worker)
+    assert.equal(kernel.replayed, true)
+
+    const second = await runtime.runTentative(session, { program: 'return retained + 1', bindings: [] })
+    assert.equal(second.result.error.kind, 'budget-unavailable')
+    assert.match(second.result.error.message, /this worker was dropped/)
+    assert.equal(second.settlement.journal.status, 'noop')
+    // Two consecutive unmeasured cells drop the live worker while the proved
+    // frontier stays, so the next cell replays it instead of losing it.
+    assert.equal(kernel.client.worker, undefined)
+    assert.equal(kernel.replayed, false)
+
+    // A fresh worker gets its own first chance, so the count starts over for it.
+    assert.equal(kernel.unmeasuredCells, 0)
+
+    assert.deepEqual(await runtime.run(session, { program: 'return retained + 1', bindings: [] }), {
+      logs: [],
+      value: 42,
+    })
+  } finally {
+    await runtime.dispose().catch(() => {})
+  }
+})
+
+test('a settled cell clears the consecutive unmeasured count', async () => {
+  const runtime = new SessionRuntime({ computeMs: 500, maxWallMs: 2_000 })
+  const session = 'sample-unreachable-reset'
+  try {
+    await runtime.run(session, { program: 'const retained = 7', bindings: [] })
+    const kernel = sessionKernel(runtime, session)
+    const worker = kernel.client.worker
+    const sample = worker.sampleUtilization.bind(worker)
+    const miss = () => {
+      const error = new Error('kernel helper did not answer utilization sampling before its deadline')
+      error.code = UNANSWERED_SAMPLE_CODE
+      return Promise.reject(error)
+    }
+    worker.sampleUtilization = miss
+
+    const first = await runtime.runTentative(session, { program: 'return retained', bindings: [] })
+    assert.equal(first.result.error.kind, 'budget-unavailable')
+
+    // A cell that settles normally proves the worker answers, so the count restarts.
+    worker.sampleUtilization = sample
+    assert.deepEqual((await runtime.runTentative(session, { program: 'return retained', bindings: [] })).result.value, 7)
+
+    worker.sampleUtilization = miss
+    const later = await runtime.runTentative(session, { program: 'return retained', bindings: [] })
+    assert.equal(later.result.error.kind, 'budget-unavailable')
+    assert.doesNotMatch(later.result.error.message, /this worker was dropped/)
+    assert.equal(kernel.client.worker, worker)
+    assert.equal(kernel.unmeasuredCells, 1, 'the settled cell must clear the count')
+  } finally {
+    await runtime.dispose().catch(() => {})
+  }
+})
+
+test('abandoning a started cell releases its budgets and settles it as a no-op', async () => {
+  const runtime = new SessionRuntime({ computeMs: 5_000, maxWallMs: 5_000 })
+  const session = 'abandon-budget-release'
+  let intercepted
+  let compute
+  let wall
+  try {
+    await runtime.run(session, { program: 'return 1', bindings: [] })
+    const kernel = sessionKernel(runtime, session)
+    const worker = kernel.client.worker
+    const catalog = kernel.bindingCatalog
+    // Hold the readiness handshake so the cell keeps a running compute interval
+    // and cannot settle by itself.
+    intercepted = interceptWorkerMessages(runtime, session, (message, deliver) => {
+      if (message?.type !== 'ready') deliver(message)
+    })
+    const pending = runtime.runTentative(session, { program: 'return 2', bindings: [] })
+    const deadline = Date.now() + 5_000
+    while (compute === undefined) {
+      if (Date.now() > deadline) assert.fail('the cell never started its compute budget')
+      compute = activeTimers(runtime, session)?.compute
+      wall = activeTimers(runtime, session)?.wall
+      await new Promise(resolve => setImmediate(resolve))
+    }
+    const controller = new AbortController()
+    kernel.active.request.signal = controller.signal
+    kernel.active.onAbort = () => {}
+    controller.signal.addEventListener('abort', kernel.active.onAbort, { once: true })
+    assert.equal(getEventListeners(controller.signal, 'abort').length, 1)
+    kernel.abandonCell(kernel.active, { logs: [], error: { kind: 'budget-unavailable', message: 'abandoned for the test' } })
+    const execution = await pending
+    assert.equal(execution.result.error.message, 'abandoned for the test')
+    assert.equal(execution.settlement.journal.status, 'noop')
+    assert.equal(kernel.client.worker, worker)
+    assert.equal(kernel.bindingCatalog, catalog)
+    assert.equal(kernel.replayed, true)
+    assert.equal(compute._destroyed, true, 'the abandoned cell must release its compute interval')
+    assert.equal(wall._destroyed, true, 'the abandoned cell must release its wall timer')
+    assert.equal(getEventListeners(controller.signal, 'abort').length, 0, 'the abandoned cell must release its cancellation listener')
+    assert.equal(activeTimers(runtime, session), undefined)
+  } finally {
+    // A leaked interval would otherwise keep this test process alive.
+    if (compute !== undefined) clearInterval(compute)
+    if (wall !== undefined) clearTimeout(wall)
+    if (intercepted?.restore !== undefined) intercepted.restore()
+    await runtime.dispose().catch(() => {})
+  }
+})
+
+test('reports an unchanged state for repeated failures that ran nothing', async () => {
+  const runtime = new SessionRuntime({ computeMs: 500, maxWallMs: 2_000 })
+  const session = 'noop-state-effect'
+  try {
+    await runtime.run(session, { program: 'return 1', bindings: [] })
+    let last
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const controller = new AbortController()
+      controller.abort('same failure every time')
+      last = await runtime.run(session, {
+        program: 'return 2', bindings: [], signal: controller.signal,
+      })
+    }
+    // The journal proves nothing changed, so the repeated-failure hint must not
+    // describe that state as unknown.
+    assert.equal(last.error.kind, 'abort')
+    assert.match(last.logs.join('\n'), /same error/)
+    assert.match(last.logs.join('\n'), /state: unchanged/)
+    assert.doesNotMatch(last.logs.join('\n'), /state: unknown/)
+  } finally {
+    await runtime.dispose().catch(() => {})
+  }
+})
+
+test('a discarded settlement also clears the consecutive unmeasured count', async () => {
+  // Replay is off so the worker replacement is not followed by a replay pass.
+  const runtime = new SessionRuntime({ computeMs: 500, maxWallMs: 20_000, durableReplay: false })
+  const session = 'terminate-clears-count'
+  const original = IsolatedWorker.prototype.sampleUtilization
+  const miss = () => {
+    const error = new Error('kernel helper did not answer utilization sampling before its deadline')
+    error.code = UNANSWERED_SAMPLE_CODE
+    return Promise.reject(error)
+  }
+  try {
+    IsolatedWorker.prototype.sampleUtilization = miss
+    const first = await runtime.runTentative(session, { program: 'return 1', bindings: [] })
+    assert.equal(first.result.error.kind, 'budget-unavailable')
+    const kernel = sessionKernel(runtime, session)
+    assert.equal(kernel.unmeasuredCells, 1)
+
+    // A dispatched cell that exhausts its compute budget settles with a discard.
+    IsolatedWorker.prototype.sampleUtilization = original
+    runtime.reconfigure({ computeMs: 1, maxWallMs: 20_000 })
+    const spinning = await runtime.runTentative(session, {
+      program: 'const until = Date.now() + 60; while (Date.now() < until) {}; return 1', bindings: [],
+    })
+    assert.equal(spinning.result.error.kind, 'timeout')
+    assert.equal(spinning.settlement.journal.status, 'discarded')
+    assert.equal(kernel.unmeasuredCells, 0, 'a discarded settlement clears the count')
+
+    // The replacement worker's first unmeasured cell must not be the second one.
+    IsolatedWorker.prototype.sampleUtilization = miss
+    runtime.reconfigure({ computeMs: 500, maxWallMs: 20_000 })
+    const later = await runtime.runTentative(session, { program: 'return 1', bindings: [] })
+    assert.equal(later.result.error.kind, 'budget-unavailable')
+    assert.doesNotMatch(later.result.error.message, /this worker was dropped/)
+    assert.equal(kernel.unmeasuredCells, 1)
+  } finally {
+    IsolatedWorker.prototype.sampleUtilization = original
+    await runtime.dispose().catch(() => {})
+  }
+})
+
+test('a settled cell releases its cancellation listener', async () => {
+  const runtime = new SessionRuntime({ computeMs: 5_000, maxWallMs: 5_000 })
+  const session = 'settled-listener-release'
+  const controller = new AbortController()
+  try {
+    await runtime.run(session, { program: 'return 1', bindings: [] })
+    const pending = runtime.run(session, {
+      program: 'await new Promise(resolve => setTimeout(resolve, 80)); return 2',
+      bindings: [],
+      signal: controller.signal,
+    })
+    const deadline = Date.now() + 5_000
+    while (getEventListeners(controller.signal, 'abort').length === 0) {
+      if (Date.now() > deadline) assert.fail('the cell never registered its cancellation listener')
+      await new Promise(resolve => setImmediate(resolve))
+    }
+    assert.equal(getEventListeners(controller.signal, 'abort').length, 1)
+    assert.deepEqual(await pending, { logs: [], value: 2 })
+    assert.equal(getEventListeners(controller.signal, 'abort').length, 0, 'a settled cell must release its cancellation listener')
+  } finally {
+    await runtime.dispose().catch(() => {})
+  }
+})
+
 test('aborting while request baseline sampling is pending does not dispatch', async () => {
   const runtime = new SessionRuntime({ computeMs: 500, maxWallMs: 2_000 })
   const session = 'sample-abort'
@@ -334,6 +594,8 @@ test('wall timeout while request baseline sampling is pending does not dispatch'
   try {
     await runtime.run(session, { program: 'return 1', bindings: [] })
     const kernel = sessionKernel(runtime, session)
+    const worker = kernel.client.worker
+    const catalog = kernel.bindingCatalog
     let releaseSample
     let markSampleStarted
     const sampleStarted = new Promise(resolve => { markSampleStarted = resolve })
@@ -346,11 +608,16 @@ test('wall timeout while request baseline sampling is pending does not dispatch'
     originalPost = kernel.client.post.bind(kernel.client)
     kernel.client.post = message => { posts.push(message.type); return originalPost(message) }
 
-    const pending = runtime.run(session, { program: 'return 2', bindings: [] })
-    await sampleStarted
-    const result = await pending
-    assert.equal(result.error.kind, 'timeout')
-    assert.match(result.error.message, /wall-clock ceiling/)
+    const execution = await runtime.runTentative(session, { program: 'return 2', bindings: [] })
+    // A ceiling that ends a cell before dispatch is the same unmeasured outcome as
+    // a missing baseline: nothing ran, so nothing earlier is discarded for it.
+    assert.equal(execution.result.error.kind, 'budget-unavailable')
+    assert.match(execution.result.error.message, /wall-clock ceiling/)
+    assert.match(execution.result.error.message, /before this cell was dispatched/)
+    assert.equal(execution.settlement.journal.status, 'noop')
+    assert.equal(kernel.client.worker, worker)
+    assert.equal(kernel.bindingCatalog, catalog)
+    assert.equal(kernel.replayed, true)
     releaseSample({ idle: 0, active: 999 })
     await new Promise(resolve => setImmediate(resolve))
     assert.deepEqual(posts, [])

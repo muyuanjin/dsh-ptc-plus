@@ -193,12 +193,154 @@ test('rejects a sample that the helper does not answer before its deadline', asy
   t.mock.timers.enable({ apis: ['setTimeout'] })
   t.mock.module('node:child_process', { namedExports: { fork: () => current } })
   current = new FakeChild()
-  const { IsolatedWorker } = await import('../internal/isolated-worker.js')
+  const { IsolatedWorker, ISOLATED_SAMPLE_MS, UNANSWERED_SAMPLE_CODE } =
+    await import('../internal/isolated-worker.js')
   const worker = new IsolatedWorker({ helper: '/helper.js', entry: 'kernel-worker.js', workerData: {}, env: {} })
 
-  const sample = worker.sampleUtilization()
-  t.mock.timers.tick(1000)
-  await assert.rejects(sample, /did not answer utilization sampling/)
+  const outcome = worker.sampleUtilization().then(value => ({ value }), error => ({ error }))
+  t.mock.timers.tick(ISOLATED_SAMPLE_MS)
+  await flush()
+  const { error } = await outcome
+  assert.match(error.message, /did not answer utilization sampling before its deadline/)
+  // The transport reports only the observation, so this is what the caller reads.
+  assert.equal(error.code, UNANSWERED_SAMPLE_CODE)
+  assert.equal(worker.utilizationRequests.size, 0)
+})
+
+test('adopts an answer that is already waiting when the deadline expires', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  t.mock.module('node:child_process', { namedExports: { fork: () => current } })
+  current = new FakeChild()
+  const { IsolatedWorker, ISOLATED_SAMPLE_MS } = await import('../internal/isolated-worker.js')
+  const worker = new IsolatedWorker({ helper: '/helper.js', entry: 'kernel-worker.js', workerData: {}, env: {} })
+
+  const outcome = worker.sampleUtilization().then(value => ({ value }), error => ({ error }))
+  // A blocked host runs the expired timer before it reads its IPC pipe, so the
+  // helper's answer arrives after the deadline fired but before the deferred
+  // decision could conclude that no answer exists.
+  t.mock.timers.tick(ISOLATED_SAMPLE_MS)
+  current.emit('message', { type: 'utilization-sample', id: 1, utilization: { idle: 7, active: 11 } })
+  const settled = await outcome
+  assert.deepEqual(settled.value, { idle: 7, active: 11 })
+  await flush()
+  assert.equal(worker.utilizationRequests.size, 0)
+})
+
+test('keeps reading queued helper messages while an answer may still follow them', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  t.mock.module('node:child_process', { namedExports: { fork: () => current } })
+  current = new FakeChild()
+  const { IsolatedWorker, ISOLATED_SAMPLE_MS } = await import('../internal/isolated-worker.js')
+  const worker = new IsolatedWorker({ helper: '/helper.js', entry: 'kernel-worker.js', workerData: {}, env: {} })
+
+  const outcome = worker.sampleUtilization().then(value => ({ value }), error => ({ error }))
+  t.mock.timers.tick(ISOLATED_SAMPLE_MS)
+  // The read-out starts on the turn after the deadline, so a message delivered
+  // during the following turn is what a one-turn decision would not survive.
+  await flush()
+  current.emit('message', { type: 'child-utilization', utilization: { idle: 1, active: 2 } })
+  await flush()
+  assert.equal(worker.utilizationRequests.size, 1, 'one delivered message must not conclude the sample')
+  current.emit('message', { type: 'utilization-sample', id: 1, utilization: { idle: 3, active: 5 } })
+  const settled = await outcome
+  assert.deepEqual(settled.value, { idle: 3, active: 5 })
+})
+
+test('waits for the bound this transport instance carries', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  t.mock.module('node:child_process', { namedExports: { fork: () => current } })
+  current = new FakeChild()
+  const { IsolatedWorker, ISOLATED_SAMPLE_MS } = await import('../internal/isolated-worker.js')
+  const worker = new IsolatedWorker({ helper: '/helper.js', entry: 'kernel-worker.js', workerData: {}, env: {} })
+  assert.equal(worker.sampleBoundMs, ISOLATED_SAMPLE_MS)
+  worker.sampleBoundMs = 40
+
+  const outcome = worker.sampleUtilization().then(value => ({ value }), error => ({ error }))
+  t.mock.timers.tick(39)
+  await flush()
+  assert.equal(worker.utilizationRequests.size, 1, 'the sample must still be waiting before its own bound')
+  t.mock.timers.tick(1)
+  await flush()
+  await flush()
+  // A wait bounded by another constant would still be pending after this tick,
+  // which fails here instead of leaving the sample unsettled.
+  assert.equal(worker.utilizationRequests.size, 0, 'the deadline must follow the bound this instance carries')
+  const settled = await outcome
+  assert.match(settled.error.message, /did not answer utilization sampling before its deadline/)
+})
+
+test('reports a backlog it could not read out instead of claiming no answer was written', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  t.mock.module('node:child_process', { namedExports: { fork: () => current } })
+  current = new FakeChild()
+  const { IsolatedWorker, ISOLATED_SAMPLE_MS, UNANSWERED_SAMPLE_CODE } = await import('../internal/isolated-worker.js')
+  const worker = new IsolatedWorker({ helper: '/helper.js', entry: 'kernel-worker.js', workerData: {}, env: {} })
+
+  const outcome = worker.sampleUtilization().then(value => ({ value }), error => ({ error }))
+  t.mock.timers.tick(ISOLATED_SAMPLE_MS)
+  await flush()
+  // A helper that keeps writing gives the read-out a message on every turn, so
+  // each turn continues reading until the bound ends it.
+  for (let turn = 0; turn < 4_096; turn++) {
+    current.emit('message', { type: 'child-utilization', utilization: { idle: turn, active: 0 } })
+    await flush()
+  }
+  await flush()
+  const { error } = await outcome
+  assert.match(error.message, /wrote at least 4096 messages ahead of this utilization sample/)
+  assert.equal(error.code, UNANSWERED_SAMPLE_CODE, 'a backlog sample is still an unobserved answer, not a lost worker')
+})
+
+// Scope: the message boundary. No complete answer exists when the read-out
+// concludes, and the answer arrives complete afterwards. A real IPC fragment
+// fixture would be needed to claim anything about Node's partial-frame parsing.
+test('keeps the freshest answer the helper reported after the read-out concluded', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  t.mock.module('node:child_process', { namedExports: { fork: () => current } })
+  current = new FakeChild()
+  const { IsolatedWorker, ISOLATED_SAMPLE_MS } = await import('../internal/isolated-worker.js')
+  const worker = new IsolatedWorker({ helper: '/helper.js', entry: 'kernel-worker.js', workerData: {}, env: {} })
+
+  const outcome = worker.sampleUtilization().then(value => ({ value }), error => ({ error }))
+  t.mock.timers.tick(ISOLATED_SAMPLE_MS)
+  await flush()
+  await flush()
+  const settled = await outcome
+  assert.match(settled.error.message, /did not answer utilization sampling/)
+  // The late complete answer does not settle the request that already failed; it
+  // only refreshes what the helper last reported.
+  current.emit('message', { type: 'utilization-sample', id: 1, utilization: { idle: 9, active: 13 } })
+  assert.deepEqual(worker.utilization, { idle: 9, active: 13 })
+  assert.equal(worker.utilizationRequests.size, 0)
+  assert.equal(settled.value, undefined)
+})
+
+test('does not let the answer of a concluded request settle the next one', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  t.mock.module('node:child_process', { namedExports: { fork: () => current } })
+  current = new FakeChild()
+  const { IsolatedWorker, ISOLATED_SAMPLE_MS } = await import('../internal/isolated-worker.js')
+  const worker = new IsolatedWorker({ helper: '/helper.js', entry: 'kernel-worker.js', workerData: {}, env: {} })
+
+  const first = worker.sampleUtilization().then(value => ({ value }), error => ({ error }))
+  t.mock.timers.tick(ISOLATED_SAMPLE_MS)
+  await flush()
+  await flush()
+  assert.match((await first).error.message, /did not answer utilization sampling/)
+
+  // The next request carries its own identity and its own deadline.
+  const second = worker.sampleUtilization().then(value => ({ value }), error => ({ error }))
+  let secondSettled = false
+  void second.then(() => { secondSettled = true })
+  current.emit('message', { type: 'utilization-sample', id: 1, utilization: { idle: 1, active: 2 } })
+  assert.deepEqual(worker.utilization, { idle: 1, active: 2 })
+  assert.equal(worker.utilizationRequests.size, 1, 'the new request must stay pending')
+  await flush()
+  await flush()
+  assert.equal(secondSettled, false)
+
+  current.emit('message', { type: 'utilization-sample', id: 2, utilization: { idle: 3, active: 4 } })
+  assert.deepEqual((await second).value, { idle: 3, active: 4 })
   assert.equal(worker.utilizationRequests.size, 0)
 })
 

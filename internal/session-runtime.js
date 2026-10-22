@@ -24,6 +24,7 @@ import { WorkerClient } from './worker-client.js'
 import { compilerWorkerCache } from './compiler-service.js'
 import { BindingCatalog, durabilityState, transitionDurability } from './session-state.js'
 import { SessionCellExecutor } from './session-cell-executor.js'
+import { CellAdmissionBlocked } from './cell-error.js'
 import { executionPolicies } from './binding-update-policy.js'
 import {
   createReplMemorySnapshot,
@@ -77,9 +78,33 @@ class ReplayFailure extends Error {
   }
 }
 
+/**
+ * Consecutive cells that may end before they reach the runtime while the live
+ * worker is kept.
+ *
+ * One such cell is not evidence about the worker: the host may simply have been
+ * unable to observe it. Keeping the worker beyond the second would leave a worker
+ * that never becomes dispatchable in charge of every later cell, so the second one
+ * drops the live worker and lets the next cell replay the proved frontier.
+ */
+const UNMEASURED_CELL_LIMIT = 2
+
 class ReplayCancelled extends Error {
   constructor(result) {
     super(result.error?.message ?? 'session replay cancelled')
+    this.result = result
+  }
+}
+
+/**
+ * A recorded cell whose execution could not be measured.
+ *
+ * The cell never ran, so the recorded history remains exactly as proved and the
+ * replay may be attempted again through a fresh worker.
+ */
+class ReplayUnmeasured extends Error {
+  constructor(result) {
+    super(result.error?.message ?? 'session replay could not be measured')
     this.result = result
   }
 }
@@ -99,6 +124,7 @@ class SessionKernel {
     this.durability = durabilityState()
     this.bindingCatalog = new BindingCatalog()
     this.replayed = false
+    this.unmeasuredCells = 0
     this.liveCallSeqs = new Set()
     this.recoveryNotice = history.volatileSuffix.length === 0
       ? undefined
@@ -170,7 +196,7 @@ class SessionKernel {
   async prepareWorker() {
     await Promise.all([...this.reclamationAttempts])
     const failures = [...this.reclamationRecords.values()].filter(record => record.failed).map(record => record.reason)
-    if (failures.length) throw new AggregateError(failures, 'previous computation helper reclamation failed; dispose the session before continuing')
+    if (failures.length) throw new CellAdmissionBlocked(failures)
   }
 
   valueLimits(config = this.config) {
@@ -279,7 +305,9 @@ class SessionKernel {
       ))
       if ((config.durableReplay && !this.replayed) || contractsLiveState) {
         const worker = this.client.worker
-        if (worker !== undefined) await this.client.reset(worker)
+        // A refused stop stays recorded here, so the later admission check in
+        // prepareWorker() blocks computation beside an unreclaimed helper.
+        if (worker !== undefined) await this.resetWorker(worker)
         this.rollbackToDurable()
         if (config.durableReplay) {
           this.recoveryNotice = undefined
@@ -311,16 +339,85 @@ class SessionKernel {
     }
     if (!this.replayed && config.durableReplay) {
       let skipped = 0
+      let recoveryAttempted = false
+      // A replay pass can end before the loop settles either because it was
+      // cancelled or because a recorded cell could not be measured; a front it
+      // already contracted still has to reach the model in those cases.
+      const leavingReplay = result => {
+        if (skipped === 0) return result
+        const notice = recoveryDiagnostic(skipped)
+        if (request.journal !== undefined) request.journal.diagnostics.push(notice)
+        return { ...result, logs: [...result.logs, renderDiagnostic(notice, request.program)] }
+      }
       while (!this.replayed) {
         try {
           await this.replayHistory(request, config)
           this.replayed = true
         } catch (error) {
+          // Reclamation goes through the kernel's owner so a refused stop stays
+          // recorded: prepareWorker() then blocks later computation until that
+          // failure is handled, instead of admitting it beside a live helper.
+          const retainedReasons = () => [...this.reclamationRecords.values()]
+            .filter(record => record.failed)
+            .map(record => record.reason)
           const worker = this.client.worker
-          if (worker !== undefined) await this.client.reset(worker)
+          // A refusal may predate this catch: the abandoned cell that ended the
+          // previous attempt already reset its worker, so no worker is reachable
+          // here while the failure stays recorded. A retained refusal keeps the
+          // helper until disposal, so a second attempt would record the same
+          // refusal again; the guidance below follows the retained outcome, which
+          // is also what the admission gate enforces.
+          if (worker !== undefined && retainedReasons().length === 0) await this.resetWorker(worker)
+          const reasons = retainedReasons()
+          const unreclaimed = reasons.length === 0
+            ? ''
+            : `; helper reclamation failed: ${String(reasons[0]?.message ?? reasons[0])}`
+          if (error instanceof CellAdmissionBlocked) {
+            // The replay could not start because an earlier helper was not
+            // reclaimed. That says nothing about the recorded cells, so the
+            // frontier keeps what this pass proved, including a contraction it
+            // already performed, whose notice therefore still has to be reported.
+            const blocked = { logs: [], error: { kind: 'worker-exit', message: error.message } }
+            this.completeJournal(request.journal, 'discarded', blocked)
+            return finishResult(leavingReplay(blocked))
+          }
           if (error instanceof ReplayCancelled) {
             this.completeJournal(request.journal, 'noop', error.result)
-            return finishResult(error.result)
+            return finishResult(leavingReplay(error.result))
+          }
+          // A historical cell that could not be measured never ran, so it proves
+          // nothing against the recorded frontier. The reset above left an empty
+          // worker, so the replay is retried once; a second unmeasured replay
+          // through a fresh worker still says nothing about the recorded history,
+          // which therefore stays intact for the next cell to replay again.
+          if (error instanceof ReplayUnmeasured) {
+            if (!recoveryAttempted && unreclaimed === '') {
+              recoveryAttempted = true
+              this.durability = durabilityState()
+              continue
+            }
+            this.rollbackToDurable()
+            const blocked = unreclaimed !== ''
+            // The sampled cell's own message tells the model to retry that cell and
+            // may already carry the refusal. Neither holds here: the admission gate
+            // will refuse the retry, and one refusal must not be reported twice.
+            const facts = blocked ? messageOf(error).replace('; retry the cell', '') : messageOf(error)
+            const repeated = blocked && facts.includes(unreclaimed)
+            const unmeasured = {
+              logs: error.result.logs,
+              error: {
+                kind: 'budget-unavailable',
+                // A refusal leaves later computation blocked, so the result must
+                // not promise a replay that the admission gate will refuse.
+                message: `${facts}; ${skipped === 0
+                  ? 'the recorded frontier is unchanged'
+                  : 'the recorded frontier contracted as the recovery notice reports'}, ${blocked
+                  ? 'later computation stays blocked until the session is disposed'
+                  : 'the kernel worker was reset, and the next cell replays the remaining frontier'}${repeated ? '' : unreclaimed}`,
+              },
+            }
+            this.completeJournal(request.journal, 'noop', unmeasured)
+            return finishResult(leavingReplay(unmeasured))
           }
           try {
             if (!(error instanceof ReplayFailure)) throw error
@@ -354,12 +451,28 @@ class SessionKernel {
     this.recoveryNoticeShown = this.recoveryNotice !== undefined
     this.recoveryNotice = undefined
     if (request.journal !== undefined) request.journal.diagnostics.push(...leadingDiagnostics)
-    const result = await this.cellExecutor.executeCell(request, undefined, config)
+    let result
+    try {
+      result = await this.cellExecutor.executeCell(request, undefined, config)
+    } catch (error) {
+      // The kernel refused to admit this cell because an earlier helper was not
+      // reclaimed. Nothing ran and nothing about the recorded history changed, so
+      // the cell settles on its own terms instead of blaming the source; the
+      // recovery notice prepared above is still attached below.
+      if (!(error instanceof CellAdmissionBlocked)) throw error
+      result = { logs: [], error: { kind: 'worker-exit', message: error.message } }
+      this.completeJournal(request.journal, 'discarded', result)
+    }
     if (result.error === undefined) {
       this.failures.reset()
     } else {
       const primary = request.journal?.diagnostics.find(item => item.severity === 'error')
-      const hint = this.failures.hint(result.error, primary?.stateEffect)
+      // A no-op journal is this cell's own record that nothing it could have done
+      // is in the REPL state, so a repeated-failure hint must not describe that
+      // state as unknown.
+      const stateEffect = primary?.stateEffect
+        ?? (request.journal?.status === 'noop' ? 'unchanged' : undefined)
+      const hint = this.failures.hint(result.error, stateEffect)
       if (hint !== undefined) {
         result.logs = [...result.logs, renderDiagnostic(hint, request.program)]
         if (request.journal !== undefined) request.journal.diagnostics.push(hint)
@@ -398,6 +511,9 @@ class SessionKernel {
         const completion = node.journal.completion
         if (result.error !== undefined && !['exception', 'invalid-output'].includes(result.error.kind)) {
           if (result.error.kind === 'abort') throw new ReplayCancelled(result)
+          // An unmeasured cell never ran: it disproves nothing about the recorded
+          // frontier, and the replay can be attempted again through a fresh worker.
+          if (result.error.kind === 'budget-unavailable') throw new ReplayUnmeasured(result)
           throw new Error(`cell replay infrastructure failed (${result.error.kind}): ${result.error.message}`)
         }
         if (completion.kind === 'return' && result.error !== undefined) {
@@ -410,7 +526,10 @@ class SessionKernel {
           }
         }
       } catch (error) {
-        if (error instanceof ReplayCancelled) throw error
+        // A blocked admission is not a fact about this recorded cell, so it is
+        // rethrown unchanged and never wrapped as a replay failure.
+        if (error instanceof ReplayCancelled || error instanceof ReplayUnmeasured
+          || error instanceof CellAdmissionBlocked) throw error
         throw new ReplayFailure(node, error)
       }
     }
@@ -443,14 +562,64 @@ class SessionKernel {
     this.workerObservation = undefined
     this.durability = durabilityState()
     this.replayed = false
+    // Every path that drops the live worker replaces it, so the next cell starts
+    // its own sequence of unmeasured cells on a worker that has not failed yet.
+    this.unmeasuredCells = 0
     this.bindingCatalog = new BindingCatalog()
     this.liveCallSeqs.clear()
+  }
+
+  /**
+   * Settle a cell that never reached the runtime.
+   *
+   * A cell that was never dispatched has nothing to discard, no binding to roll
+   * back and no reason to rebuild the worker, so its journal records a no-op
+   * outcome and the live worker keeps the state earlier cells proved. Consecutive
+   * such cells are the evidence that this worker does not become dispatchable:
+   * the live worker is then dropped while the proved frontier stays, and the next
+   * cell replays it. Budgets and the cancellation listener end with the cell
+   * exactly as they do on any other settlement.
+   */
+  abandonCell(active, result) {
+    if (this.active !== active) return
+    active.settled = true
+    clearInterval(active.computeTimer)
+    clearTimeout(active.wallTimer)
+    active.request.signal?.removeEventListener('abort', active.onAbort)
+    this.active = undefined
+    this.completeJournal(active.journal, 'noop', result)
+    this.unmeasuredCells += 1
+    if (this.unmeasuredCells < UNMEASURED_CELL_LIMIT) {
+      active.finish(result)
+      return
+    }
+    this.rollbackToDurable()
+    // The model has to learn that the state this worker held is gone; only the
+    // proved frontier survives for the next cell to replay.
+    result = { ...result, error: { ...result.error,
+      message: `${result.error?.message ?? 'cell could not be measured'}; this worker was dropped after consecutive unmeasured cells, so bindings outside the proved recovery frontier are no longer available` } }
+    this.completeJournal(active.journal, 'noop', result)
+    // A refused reclamation stays recorded on this kernel instead of becoming an
+    // unhandled rejection; the kernel keeps the worker until dispose.
+    void this.resetWorker(active.worker).then(record => {
+      if (record.failed) {
+        result = { ...result, error: { ...result.error,
+          message: `${result.error?.message ?? 'cell could not be measured'}; helper reclamation failed: ${String(record.reason?.message ?? record.reason)}` } }
+        if (active.journal !== undefined && active.replay === undefined) {
+          this.completeJournal(active.journal, 'noop', result)
+        }
+      }
+      active.finish(result)
+    })
   }
 
   settleCell(active, result, terminate = false) {
     /* c8 ignore next */
     if (this.active !== active) return
     active.settled = true
+    // Any cell that settles on a normal path disproves the sequence of cells that
+    // never reached the runtime, whichever way it ended.
+    this.unmeasuredCells = 0
     const { request, journal, replay, worker } = active
     clearInterval(active.computeTimer)
     clearTimeout(active.wallTimer)

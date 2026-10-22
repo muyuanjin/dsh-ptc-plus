@@ -4,6 +4,8 @@ import { registerHooks } from 'node:module'
 import { editRejectedCell } from '../internal/rejected-cell-editor.js'
 import { appendOnlySession, fixture, orderedSurfaceSession, ptcAgent, runNestedEditCell } from './plugin-fixture.js'
 import { POST_EDIT_KEY, RECOVERY_BOUNDARY_KEY } from '../internal/session-journal-schema.js'
+import { EDIT_TARGET_KEY, JOURNAL_KEY } from '../internal/session-journal.js'
+import { IsolatedWorker, UNANSWERED_SAMPLE_CODE } from '../internal/isolated-worker.js'
 import { createEditTransportOwner } from '../internal/edit-transport-owner.js'
 import { decodeValue, encodeValue } from '../internal/value-wire.js'
 import { REPL_MEMORY_META_KEY } from '../internal/repl-memory-projection.js'
@@ -17,6 +19,86 @@ function projectedView(session) {
   projection.stateSchema.parse(JSON.parse(JSON.stringify(projected)))
   return projectSessionLog({ session }, undefined, projected)
 }
+
+test('an unmeasured derived execution keeps its root provable and leaves the edit target unchanged', async t => {
+  const session = appendOnlySession('nested-edit-unmeasured-derived')
+  const state = fixture()
+  t.after(() => state.dispose())
+  const agent = ptcAgent(session.id, session)
+  const signal = new AbortController().signal
+  session.append('turn/start', {})
+  await state.assemble(
+    { sections: [], contexts: [], variables: {}, tools: [state.runCodeDefinition] },
+    { agent, scope: agent, signal },
+  )
+  const setup = await state.runDurable(session.id, 'let unmeasuredEditValue = 1; return unmeasuredEditValue', {},
+    { session, callId: 'unmeasured-setup' })
+  assert.equal(setup.value, 1)
+  const targetCallSeq = session.events.find(event => event.type === 'tool/call'
+    && event.data.callId === 'unmeasured-setup').seq
+
+  // The derived execution is the first cell after the accepted edit, so its own
+  // baseline is the one this stub refuses: the edit is accepted and never measured.
+  const original = IsolatedWorker.prototype.sampleUtilization
+  IsolatedWorker.prototype.sampleUtilization = function sampleDerived() {
+    const derivedDispatched = session.events.some(event => event.type === 'tool/ptc-dispatch-start'
+      && event.data?.name === 'run_code')
+    if (derivedDispatched) {
+      const error = new Error('kernel helper did not answer utilization sampling before its deadline')
+      error.code = UNANSWERED_SAMPLE_CODE
+      return Promise.reject(error)
+    }
+    return original.call(this)
+  }
+  const rootCode = 'return await tools.edit_run_code({ edits: [{ old_string: "= 1", new_string: "= 2" }] })'
+  try {
+    const root = await runNestedEditCell(state, {
+      session, agent, signal, callId: 'unmeasured-root', code: rootCode,
+    })
+    assert.equal(root.receipt.accepted, true)
+    // The model must read that the revision never ran, not that it failed at runtime.
+    const status = root.raw.logs.join('\n')
+    assert.match(status, /did not execute the accepted revision/u)
+    assert.doesNotMatch(status, /settled with execution error/u)
+    const post = root.result.meta[POST_EDIT_KEY]
+    // The accepted edit's own settlement is published and records that no source
+    // ran, so the root cell keeps a provable relation.
+    assert.equal(post.meta[EDIT_TARGET_KEY].targetCallSeq, targetCallSeq)
+    assert.equal(post.meta[JOURNAL_KEY].status, 'noop')
+    assert.equal(post.meta[JOURNAL_KEY].completion.error.kind, 'budget-unavailable')
+    // The revised source never executed, so it neither publishes a binding nor
+    // becomes the next editable cell.
+    const view = projectedView(session)
+    assert.equal(view.editableRun?.source, rootCode)
+    assert.notEqual(view.editableRun?.source, 'let unmeasuredEditValue = 2; return unmeasuredEditValue')
+    const inventory = root.result.meta.dshPtcPlusBindings
+    assert.ok(inventory === undefined
+      || !JSON.stringify(inventory).includes('unmeasuredEditValue = 2'))
+  } finally {
+    IsolatedWorker.prototype.sampleUtilization = original
+  }
+
+  // Cold recovery keeps the root cell and skips the unexecuted derived run.
+  const recovery = recoverJournal(session, undefined,
+    { visibleCallSeqs: visibleExecutableCallSeqs(session) })
+  assert.equal(recovery.available, true, JSON.stringify(recovery))
+  assert.equal(recovery.volatileSuffix.length, 0, JSON.stringify(recovery.volatileSuffix))
+  assert.ok(recovery.nodes.some(node => node.callSeq === targetCallSeq),
+    JSON.stringify(recovery.nodes.map(node => node.callSeq)))
+  assert.ok(recovery.nodes.every(node => node.code !== 'let unmeasuredEditValue = 2; return unmeasuredEditValue'))
+
+  // A fresh runtime on the same session log proves the same two facts: the root
+  // binding is usable and the revision never became state.
+  session.append('turn/end', {})
+  session.append('turn/start', {})
+  await state.dispose()
+  const restored = fixture()
+  t.after(() => restored.dispose())
+  const cold = await restored.runDurable(session.id, 'return unmeasuredEditValue', {
+    edit_run_code: async () => { throw new Error('cold replay redispatched an unexecuted revision') },
+  }, { session, callId: 'unmeasured-cold' })
+  assert.equal(cold.value, 1, JSON.stringify(cold))
+})
 
 test('nested edit receipt schedules a revised cell after the root worker finishes', async t => {
   const session = appendOnlySession('nested-edit-receipt')

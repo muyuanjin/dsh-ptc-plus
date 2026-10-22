@@ -6,6 +6,30 @@ import { pathToFileURL } from 'node:url'
 import { helperProcessEnvironment, isElectronHost } from './worker-environment.js'
 
 /**
+ * Bound on the wait for one on-demand utilization answer.
+ *
+ * The helper answers by reading the inner worker's counters synchronously, so
+ * this bound covers delivery rather than helper work. It is deliberately not
+ * the shutdown release grace below: how long a stopping helper may keep running
+ * must not decide how long a cell waits for its measurement.
+ */
+export const ISOLATED_SAMPLE_MS = 1000
+/**
+ * Sampling failure code for a sample whose answer this transport could not
+ * observe. The transport reports only that fact: whether the worker stays usable
+ * belongs to the caller, which alone knows how many consecutive measurements it
+ * may lose before the worker has to be replaced.
+ */
+export const UNANSWERED_SAMPLE_CODE = 'ptc-sample-unanswered'
+/**
+ * Helper messages one sample may read out before it gives up on the answer.
+ *
+ * Reading stops at the first event-loop turn that delivers nothing, so this
+ * bound only ends a backlog larger than the bound itself, where the answer
+ * cannot be reached by reading until the channel empties.
+ */
+const SAMPLE_DRAIN_TURNS = 4096
+/**
  * Fallback bound for a helper that answers the stop request and then keeps the
  * process alive with unrelated work of its own.
  */
@@ -58,6 +82,21 @@ export class IsolatedWorker extends EventEmitter {
     this.utilization = { idle: 0, active: 0 }
     this.utilizationSequence = 0
     this.utilizationRequests = new Map()
+    /**
+     * Count of messages this helper has produced.
+     *
+     * Reading a sample uses it to tell one event-loop turn that delivered
+     * something from one that delivered nothing; the count says nothing about
+     * when the helper wrote a message.
+     */
+    this.helperMessages = 0
+    /**
+     * Bound this instance waits for one utilization answer.
+     *
+     * It is read per request, so a transport user may shorten or extend the wait
+     * for its own environment without changing the shutdown release grace.
+     */
+    this.sampleBoundMs = ISOLATED_SAMPLE_MS
     this.pendingErrors = []
     this.performance = {
       /** Utilization reported by the helper, in the shape callers already use. */
@@ -124,6 +163,7 @@ export class IsolatedWorker extends EventEmitter {
       }
     })
     this.child.on('message', message => {
+      this.helperMessages += 1
       if (message?.type === 'child-error') {
         const error = new Error(message.message)
         if (message.name !== undefined) error.name = message.name
@@ -139,11 +179,14 @@ export class IsolatedWorker extends EventEmitter {
       }
       if (message?.type === 'inner-worker-exit') { this.emit('inner-worker-exit', message.code); return }
       if (message?.type === 'utilization-sample') {
+        // An answer for a request this transport already concluded is still the
+        // helper doing its work: keep the freshest value it reported.
+        this.utilization = message.utilization
         const pending = this.utilizationRequests.get(message.id)
         if (pending !== undefined) {
           this.utilizationRequests.delete(message.id)
           clearTimeout(pending.timer)
-          this.utilization = message.utilization
+          if (pending.decision !== undefined) clearImmediate(pending.decision)
           pending.resolve(message.utilization)
         }
         return
@@ -225,25 +268,81 @@ export class IsolatedWorker extends EventEmitter {
     }
     const id = ++this.utilizationSequence
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.utilizationRequests.delete(id)
-        reject(new Error('kernel helper did not answer utilization sampling before its deadline'))
-      }, ISOLATED_RELEASE_MS)
-      this.utilizationRequests.set(id, { resolve, reject, timer })
+      const pending = { resolve, reject, timer: undefined, decision: undefined }
+      pending.timer = setTimeout(() => {
+        // A blocked host runs its expired timers before it reads its IPC pipe, so
+        // the answer may be waiting unread here. Read the channel out first and
+        // only then conclude that no answer exists.
+        pending.decision = setImmediate(() => this.#readOutSample(id, pending))
+      }, this.sampleBoundMs)
+      this.utilizationRequests.set(id, pending)
       try {
         this.child.send({ type: 'sample-utilization', id })
       } catch (error) {
-        clearTimeout(timer)
+        clearTimeout(pending.timer)
         this.utilizationRequests.delete(id)
         reject(error)
       }
     })
   }
 
+  /**
+   * Read the helper's channel out before one unanswered sample is concluded.
+   *
+   * Node delivers one helper message per event-loop turn, and the answer this
+   * request waits for is written after everything the helper wrote before it, so
+   * it can sit behind queued messages. Each turn therefore either delivers the
+   * answer or another message the helper wrote; only a turn that delivers no
+   * message shows that the channel holds nothing more this read could observe.
+   *
+   * A message the parser still holds in parts is not delivered on any of those
+   * turns, so a partially received message ahead of the answer delays it past
+   * this read-out; the sample then reports no answer, which is all this
+   * transport can prove about it.
+   */
+  #readOutSample(id, pending) {
+    let delivered = this.helperMessages
+    let turns = 0
+    const turn = () => {
+      if (this.utilizationRequests.get(id) !== pending) return
+      if (turns >= SAMPLE_DRAIN_TURNS) {
+        this.utilizationRequests.delete(id)
+        pending.decision = undefined
+        pending.reject(this.#unansweredSample('backlog'))
+        return
+      }
+      if (this.helperMessages === delivered) {
+        this.utilizationRequests.delete(id)
+        pending.decision = undefined
+        pending.reject(this.#unansweredSample('silent-channel'))
+        return
+      }
+      delivered = this.helperMessages
+      turns += 1
+      pending.decision = setImmediate(turn)
+    }
+    pending.decision = setImmediate(turn)
+  }
+
+  /**
+   * Report one sample whose answer this transport could not observe.
+   *
+   * The transport states the observation only. Whether the caller keeps its
+   * worker is decided where the consecutive measurement failures are counted.
+   */
+  #unansweredSample(reason) {
+    const error = new Error(reason === 'backlog'
+      ? `kernel helper wrote at least ${SAMPLE_DRAIN_TURNS} messages ahead of this utilization sample, so its answer could not be reached before the read-out bound`
+      : 'kernel helper did not answer utilization sampling before its deadline')
+    error.code = UNANSWERED_SAMPLE_CODE
+    return error
+  }
+
   /** Fail every request that still needs the helper's utilization answer. */
   #rejectUtilizationRequests(error) {
     for (const pending of this.utilizationRequests.values()) {
       clearTimeout(pending.timer)
+      if (pending.decision !== undefined) clearImmediate(pending.decision)
       pending.reject(error)
     }
     this.utilizationRequests.clear()

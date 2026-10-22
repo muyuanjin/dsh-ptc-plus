@@ -187,6 +187,9 @@ class FakeWorker extends EventEmitter {
 test('fails closed for every worker startup and private-protocol fault', async (t) => {
   t.mock.module('../internal/isolated-worker.js', {
     namedExports: {
+      // The replaced module still has to provide every export its consumers
+      // import, including the sampling outcome its caller classifies.
+      UNANSWERED_SAMPLE_CODE: 'ptc-sample-unanswered',
       IsolatedWorker: FakeWorker,
       IsolatedOwner: class FakeOwner {
         constructor() {

@@ -156,12 +156,28 @@ test('an unstarted inspection cannot exempt background blocking from either exec
       const next = await runtime.runTentative('preview', {
         program: 'return answer', bindings: [], signal: AbortSignal.timeout(3000),
       })
-      assert.equal(next.result.error.kind, 'timeout')
+      // The cell never reached its run frame, so it settles as a no-op that ran
+      // nothing. The first such cell keeps the live worker and its bindings.
+      assert.equal(next.result.error.kind, 'budget-unavailable')
       assert.match(next.result.error.message, expected)
-      assert.equal(next.settlement.journal.status, 'discarded')
-      assert.equal(workerOf(runtime, 'preview'), undefined)
+      assert.equal(next.settlement.journal.status, 'noop')
+      assert.notEqual(workerOf(runtime, 'preview'), undefined)
       runtime.finalize(next.settlement, true)
-      assert.equal((await runtime.run('preview', { program: 'return 3', bindings: [] })).value, 3)
+      // A second consecutive cell that again never reaches its run frame is the
+      // evidence that this worker does not become dispatchable: it is dropped and
+      // the next cell replays the proved frontier on a fresh one.
+      const second = await runtime.runTentative('preview', {
+        program: 'return answer', bindings: [], signal: AbortSignal.timeout(3000),
+      })
+      assert.equal(second.result.error.kind, 'budget-unavailable')
+      assert.equal(second.settlement.journal.status, 'noop')
+      assert.equal(workerOf(runtime, 'preview'), undefined)
+      runtime.finalize(second.settlement, true)
+      // The dropped worker is replaced, and the next cell still reads the durable
+      // binding the proved frontier carries.
+      const replayed = await runtime.run('preview', { program: 'return answer', bindings: [] })
+      assert.equal(replayed.value, 42)
+      assert.ok(replayed.logs.every(line => !line.includes('PTC-R002')), JSON.stringify(replayed.logs))
       assert.notEqual(workerOf(runtime, 'preview'), worker)
     })
   }

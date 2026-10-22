@@ -7,6 +7,7 @@ import {
   REWRITES_KEY,
   isCanonicalSequence,
   liveToolCallSeq,
+  normalizeDeferredEditSettlement,
   normalizeJournal,
   normalizeRecoveryBoundaries,
   normalizeRewrites,
@@ -292,7 +293,7 @@ export function createEditTransportOwner(ctx, {
         const journalValue = isRecord(metadata) && Object.hasOwn(metadata, JOURNAL_KEY)
           ? metadata[JOURNAL_KEY] : undefined
         const journal = journalValue === undefined ? undefined : normalizeJournal(journalValue)
-        if (journal === undefined || journal.status === 'noop'
+        if (journal === undefined
           || inner.isError !== (journal.completion?.kind === 'throw' || journal.status === 'discarded')) {
           this.finish(false)
           return { outcome: unavailableDerivedResult(inner), presentation: derivedPresentation(inner) }
@@ -310,16 +311,34 @@ export function createEditTransportOwner(ctx, {
           code: edited.code,
           description: edited.description,
         }
+        const metaValue = derivedMetadata(derived)
+        let settlement
+        try {
+          settlement = normalizeDeferredEditSettlement(metaValue, target.callSeq)
+        } catch {
+          // Metadata this relation cannot prove must not reach the root result.
+          this.finish(false)
+          return { outcome: unavailableDerivedResult(inner), presentation: derivedPresentation(inner) }
+        }
+        const provenance = {
+          startSeq: start.startSeq,
+          executionStartSeq: executionStart.seq,
+          rootCallSeq: start.rootCallSeq,
+          subCallId: exec.callId,
+          meta: metaValue,
+        }
+        if (settlement.unexecuted === true) {
+          // The accepted edit is proved by a settlement that never ran. Publishing
+          // the relation keeps the root cell provable, while the outcome and the
+          // unexecuted journal keep the revision from executing, from publishing a
+          // binding and from becoming the next edit target.
+          this.finish(false)
+          return { outcome: unavailableDerivedResult(inner), presentation: derivedPresentation(inner), provenance }
+        }
         return {
           outcome: derivedEditResult(inner),
           presentation: derivedPresentation(inner),
-          provenance: {
-            startSeq: start.startSeq,
-            executionStartSeq: executionStart.seq,
-            rootCallSeq: start.rootCallSeq,
-            subCallId: exec.callId,
-            meta: derivedMetadata(derived),
-          },
+          provenance,
         }
       },
     }

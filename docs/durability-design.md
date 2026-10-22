@@ -106,7 +106,11 @@ SessionRuntime 创建 kernel 时完全忽略历史 nodes、head、checkpoints �
 求值的 cell 无论静态分类如何都记录为 `volatile`。这是已知配置态，不是运行时降级，因此不
 发送模型可见警告；system prompt 直接告知模型 binding 仅在当前进程可复用，`repl.state(list)`
 返回同一状态。未进入 evaluator 的调用仍是 `noop`，取消、超时和 worker failure 仍是
-`discarded`。关闭期间不能保存 durable named state；restore 后的下一 cell 仍被强制为 volatile。
+`discarded`；例外是无法测量而在 run 帧发出前结束的 cell（未观察到采样答复、墙钟或 compute 上限先到），
+它以 `noop` 结算，第一次保留 live worker 与既有 binding，连续第二次才丢弃 live worker 并保留可重放的
+已证明 frontier；transport 报告 helper 退出、断连或无法接收请求时仍按 worker-exit 丢弃并重置 worker，见
+[ADR 0027](adr/0027-run-the-session-kernel-in-a-killable-helper-process.md)。关闭期间不能保存
+durable named state；restore 后的下一 cell 仍被强制为 volatile。
 
 journal、diagnostic、source、cause、call、operation、completion 和 completion error 都使用封闭字段集合；未知、symbol 或非枚举自有字段会使 journal 无效。capability-call `args`/`value` 与 return completion `value` 都是封闭、规范化的 `ptc-value-graph/v1` envelope。诊断结构、source frame 依赖和稳定代码见[架构说明](architecture.md#journal-与恢复)。
 

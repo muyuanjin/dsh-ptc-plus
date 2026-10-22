@@ -3,6 +3,7 @@ import { setImmediate as nextTurn } from 'node:timers/promises'
 import test from 'node:test'
 import { prepareProgram } from '../internal/cell-analysis.js'
 import { LEGACY_LANGUAGE_SEMANTICS, STATEFUL_LANGUAGE_SEMANTICS } from '../internal/language-semantics.js'
+import { UNANSWERED_SAMPLE_CODE, IsolatedWorker } from '../internal/isolated-worker.js'
 import { PREVIOUS_USER_BINDING_TRANSFORM, moduleTransformForLanguage } from '../internal/module-transform-contract.js'
 import { JOURNAL_KEY, normalizeJournal } from '../internal/session-journal.js'
 import { SessionRuntime } from '../internal/session-runtime.js'
@@ -168,6 +169,349 @@ ${fails ? 'throw new Error("body failed")' : 'return 7'}
       assert.deepEqual(result.raw.value, ['second rejected', 'first completed'])
       assert.equal(calls, 2)
     })
+  }
+})
+
+test('records a refused reclamation of an unmeasured replay and blocks later computation', async (t) => {
+  const session = orderedSurfaceSession('replay-unmeasured-refused-reset')
+  const writer = new SessionRuntime({ legacyBindingSettings: true, durableReplay: true })
+  t.after(() => writer.dispose())
+  const recorded = await recordUserBindingCell(writer, session, 'const kept = 7; return kept')
+  assert.equal(recorded.journal.status, 'durable')
+
+  const cold = new SessionRuntime({ legacyBindingSettings: true, durableReplay: true })
+  t.after(() => cold.dispose().catch(() => {}))
+  const originalSample = IsolatedWorker.prototype.sampleUtilization
+  const originalReset = WorkerClient.prototype.reset
+  const refusal = new Error('transient platform kill refusal')
+  IsolatedWorker.prototype.sampleUtilization = () => {
+    const error = new Error('kernel helper did not answer utilization sampling before its deadline')
+    error.code = UNANSWERED_SAMPLE_CODE
+    return Promise.reject(error)
+  }
+  // The replayed cell creates its own worker, so the refusal is injected on the
+  // transport class: every container-initiated reclamation fails.
+  WorkerClient.prototype.reset = function refuseReset() {
+    return Promise.reject(refusal)
+  }
+  let kernel
+  let helper
+  try {
+    const execution = await recordUserBindingCell(cold, session, 'return kept')
+    kernel = cold.kernels.get(session.id)
+    helper = kernel.client.owner.instances.values().next().value?.transport
+    // The cell reports the refusal beside its own unmeasured result ...
+    assert.equal(execution.result.error.kind, 'budget-unavailable')
+    assert.match(execution.result.error.message, /helper reclamation failed: transient platform kill refusal/)
+    // ... and the kernel keeps it as an admission block.
+    assert.deepEqual([...kernel.reclamationRecords.values()].map(record => record.reason), [refusal])
+
+    // A second cell must not compute beside the helper that is still alive, and
+    // its diagnosis must describe the block rather than blame recorded history.
+    const historyNodes = kernel.history.nodes.length
+    const blocked = await cold.runTentative(session, { program: 'return kept', bindings: [] })
+    assert.match(blocked.result.error.message, /previous computation helper reclamation failed/)
+    assert.doesNotMatch(blocked.result.error.message, /unreconstructable/)
+    assert.equal(kernel.history.nodes.length, historyNodes, 'an admission block must not contract the frontier')
+    assert.equal(blocked.result.recoveryBoundaries, undefined)
+    assert.equal(kernel.client.owner.instances.size, 1)
+  } finally {
+    IsolatedWorker.prototype.sampleUtilization = originalSample
+    WorkerClient.prototype.reset = originalReset
+    if (helper !== undefined && !helper.exited) helper.child.kill('SIGKILL')
+    if (kernel !== undefined) kernel.reclamationRecords.clear()
+  }
+})
+
+/**
+ * Drive one cold replay whose second recorded cell fails after the first replayed,
+ * so the pass contracts once, and then hand the retry to `afterContraction`.
+ */
+async function contractOnceThenReplay(t, afterContraction, extraRequest = {}) {
+  const session = orderedSurfaceSession(`replay-contract-${Math.random().toString(36).slice(2)}`)
+  const writer = new SessionRuntime({ legacyBindingSettings: true, durableReplay: true })
+  t.after(() => writer.dispose().catch(() => {}))
+  await recordUserBindingCell(writer, session, 'const first = 1; return first')
+  await recordUserBindingCell(writer, session, 'const second = 2; return second')
+  const cold = new SessionRuntime({ legacyBindingSettings: true, durableReplay: true })
+  t.after(() => cold.dispose().catch(() => {}))
+  const original = IsolatedWorker.prototype.sampleUtilization
+  let calls = 0
+  IsolatedWorker.prototype.sampleUtilization = function sampleSecondCell() {
+    calls += 1
+    if (calls === 2) return Promise.reject(new Error('transient transport loss'))
+    if (calls >= 3) return afterContraction()
+    return original.call(this)
+  }
+  return {
+    session,
+    cold,
+    run(program, request = {}) {
+      const firstSeq = Math.max(-1, ...session.events.map(event => event.seq)) + 1
+      const recorded = []
+      const appended = appendRunCodeEvents(recorded, `cold-${firstSeq}`, program, {})
+      for (const event of recorded) {
+        event.seq += firstSeq
+        event.time += firstSeq
+        if (event.sourceEventSeqs !== undefined) {
+          event.sourceEventSeqs = event.sourceEventSeqs.map(seq => seq + firstSeq)
+        }
+      }
+      const callSeq = appended.callSeq + firstSeq
+      return cold.runTentative(
+        { id: session.id, session, persistedCallSeq: callSeq },
+        { program, bindings: [], ...extraRequest, ...request },
+      )
+    },
+    restore() {
+      IsolatedWorker.prototype.sampleUtilization = original
+    },
+  }
+}
+
+test('reports a contraction that happened before a cancelled replay pass', async (t) => {
+  const controller = new AbortController()
+  const driven = await contractOnceThenReplay(t, () => {
+    controller.abort('cancelled after the contraction')
+    const error = new Error('kernel helper did not answer utilization sampling before its deadline')
+    error.code = UNANSWERED_SAMPLE_CODE
+    return Promise.reject(error)
+  })
+  try {
+    const execution = await driven.run('return 1', { signal: controller.signal })
+    assert.equal(execution.result.error.kind, 'abort')
+    const rendered = [...execution.result.logs, execution.result.error.message].join('\n')
+    assert.equal((rendered.match(/PTC-R002/g) ?? []).length, 1,
+      'the contraction must be reported exactly once on the early return')
+    assert.deepEqual(execution.settlement.recoveryBoundaries, [{ failedCallSeq: 4, frontierCallSeq: 1 }],
+      'the contraction boundary stays recorded on the settlement')
+    assert.equal(driven.cold.kernels.get(driven.session.id).history.nodes.length, 1,
+      'the recorded frontier keeps only the replayed cell')
+  } finally {
+    driven.restore()
+  }
+})
+
+test('reports a contraction that happened before a replay stayed unmeasured twice', async (t) => {
+  const driven = await contractOnceThenReplay(t, () => {
+    const error = new Error('kernel helper did not answer utilization sampling before its deadline')
+    error.code = UNANSWERED_SAMPLE_CODE
+    return Promise.reject(error)
+  })
+  try {
+    const execution = await driven.run('return 1')
+    assert.equal(execution.result.error.kind, 'budget-unavailable')
+    assert.match(execution.result.error.message, /contracted as the recovery notice reports/)
+    const rendered = [...execution.result.logs, execution.result.error.message].join('\n')
+    assert.equal((rendered.match(/PTC-R002/g) ?? []).length, 1,
+      'the contraction must be reported exactly once on the early return')
+    assert.equal(driven.cold.kernels.get(driven.session.id).history.nodes.length, 1,
+      'a second contraction would have emptied the frontier')
+  } finally {
+    driven.restore()
+  }
+})
+
+test('reports a contraction that happened before an admission block', async (t) => {
+  const driven = await contractOnceThenReplay(t, () => {
+    const error = new Error('kernel helper did not answer utilization sampling before its deadline')
+    error.code = UNANSWERED_SAMPLE_CODE
+    return Promise.reject(error)
+  })
+  const originalReset = WorkerClient.prototype.reset
+  const refusal = new Error('transient platform kill refusal')
+  WorkerClient.prototype.reset = function refuseReset() { return Promise.reject(refusal) }
+  let kernel
+  let helper
+  t.after(async () => {
+    WorkerClient.prototype.reset = originalReset
+    if (helper !== undefined && !helper.exited) helper.child.kill('SIGKILL')
+    if (kernel !== undefined) kernel.reclamationRecords.clear()
+  })
+  try {
+    const execution = await driven.run('return 1')
+    kernel = driven.cold.kernels.get(driven.session.id)
+    helper = kernel.client.owner.instances.values().next().value?.transport
+    assert.equal(execution.result.error.kind, 'worker-exit')
+    assert.match(execution.result.error.message, /previous computation helper reclamation failed/)
+    const rendered = [...execution.result.logs, execution.result.error.message].join('\n')
+    assert.equal((rendered.match(/PTC-R002/g) ?? []).length, 1,
+      'a contraction from the same call must still be reported on the blocked cell')
+    assert.equal((rendered.match(/unreconstructable/g) ?? []).length, 1,
+      'only the contraction notice may mention unreconstructable cells')
+    assert.equal(kernel.history.nodes.length, 1,
+      'a second contraction would have emptied the frontier')
+  } finally {
+    driven.restore()
+  }
+})
+
+test('aligns its replay guidance with the admission gate when the second reclamation is refused', async (t) => {
+  const session = orderedSurfaceSession('replay-unmeasured-refused-second')
+  const writer = new SessionRuntime({ legacyBindingSettings: true, durableReplay: true })
+  t.after(() => writer.dispose().catch(() => {}))
+  await recordUserBindingCell(writer, session, 'const keptSecond = 3; return keptSecond')
+
+  const cold = new SessionRuntime({ legacyBindingSettings: true, durableReplay: true })
+  t.after(() => cold.dispose().catch(() => {}))
+  const originalSample = IsolatedWorker.prototype.sampleUtilization
+  const originalReset = WorkerClient.prototype.reset
+  const refusal = new Error('second reclamation refused')
+  IsolatedWorker.prototype.sampleUtilization = () => {
+    const error = new Error('kernel helper did not answer utilization sampling before its deadline')
+    error.code = UNANSWERED_SAMPLE_CODE
+    return Promise.reject(error)
+  }
+  // The first attempt reclaims normally; the second refusal is the one the
+  // abandoned cell records before this catch runs.
+  let resets = 0
+  WorkerClient.prototype.reset = function refuseSecondReset(worker) {
+    resets += 1
+    if (resets === 1) return originalReset.call(this, worker)
+    return Promise.reject(refusal)
+  }
+  let kernel
+  let helper
+  t.after(() => {
+    IsolatedWorker.prototype.sampleUtilization = originalSample
+    WorkerClient.prototype.reset = originalReset
+    if (helper !== undefined && !helper.exited) helper.child.kill('SIGKILL')
+    if (kernel !== undefined) kernel.reclamationRecords.clear()
+  })
+  try {
+    const execution = await recordUserBindingCell(cold, session, 'return keptSecond')
+    kernel = cold.kernels.get(session.id)
+    helper = kernel.client.owner.instances.values().next().value?.transport
+    assert.ok(resets >= 2, 'both replay attempts must have reclaimed')
+    assert.equal(execution.result.error.kind, 'budget-unavailable')
+    // The retained refusal blocks later cells, so the result must neither promise
+    // a replay nor repeat the sampled cell's retry instruction, and it reports the
+    // refusal once.
+    assert.match(execution.result.error.message, /later computation stays blocked until the session is disposed/)
+    assert.doesNotMatch(execution.result.error.message, /the next cell replays|retry the cell/)
+    assert.equal((execution.result.error.message.match(/helper reclamation failed/g) ?? []).length, 1,
+      'the refusal must appear once')
+    assert.deepEqual([...kernel.reclamationRecords.values()].map(record => record.reason), [refusal])
+
+    const blocked = await recordUserBindingCell(cold, session, 'return keptSecond')
+    assert.match(blocked.result.error.message, /previous computation helper reclamation failed/)
+  } finally {
+    // The class-level seams are restored by t.after even when an assertion fails.
+  }
+})
+
+test('does not recount a recorded contraction after a restart', async (t) => {
+  const session = orderedSurfaceSession('replay-contract-restart')
+  const writer = new SessionRuntime({ legacyBindingSettings: true, durableReplay: true })
+  t.after(() => writer.dispose().catch(() => {}))
+  await recordUserBindingCell(writer, session, 'const first = 1; return first')
+  await recordUserBindingCell(writer, session, 'const second = 2; return second')
+
+  const cold = new SessionRuntime({ legacyBindingSettings: true, durableReplay: true })
+  t.after(() => cold.dispose().catch(() => {}))
+  const original = IsolatedWorker.prototype.sampleUtilization
+  let failures = 1
+  IsolatedWorker.prototype.sampleUtilization = function failSecondReplay() {
+    if (failures > 0) {
+      failures -= 1
+      return Promise.reject(new Error('transient transport loss'))
+    }
+    return original.call(this)
+  }
+  try {
+    // The second replayed cell cannot be measured, so this pass contracts once and
+    // the settled cell records the boundary it performed.
+    const settled = await recordUserBindingCell(cold, session, 'const third = 3; return third')
+    assert.equal(settled.result.error, undefined)
+    assert.equal(settled.recoveryBoundaries?.length, 1, 'the pass must have contracted once')
+  } finally {
+    IsolatedWorker.prototype.sampleUtilization = original
+  }
+
+  // A fresh runtime on the same log replays only what was proved, so it neither
+  // contracts again nor reports the earlier contraction a second time.
+  const restarted = new SessionRuntime({ legacyBindingSettings: true, durableReplay: true })
+  t.after(() => restarted.dispose().catch(() => {}))
+  const next = await recordUserBindingCell(restarted, session, 'return third')
+  assert.equal(next.result.error, undefined, JSON.stringify(next.result))
+  assert.equal(next.result.value, 3)
+  assert.equal(next.recoveryBoundaries, undefined, 'a restart must not contract again')
+  assert.ok(next.result.logs.every(line => !line.includes('PTC-R002')), JSON.stringify(next.result.logs))
+})
+
+test('retries a replay whose compute baseline could not be sampled instead of contracting history', async (t) => {
+  const session = orderedSurfaceSession('replay-unmeasured')
+  const writer = new SessionRuntime({ legacyBindingSettings: true, durableReplay: true })
+  t.after(() => writer.dispose())
+  const recorded = await recordUserBindingCell(writer, session, 'const kept = 7; return kept')
+  assert.equal(recorded.result.error, undefined)
+  assert.equal(recorded.journal.status, 'durable')
+
+  // The replayed cell asks for its compute baseline before it can be replayed, and
+  // it creates its own worker, so the miss is injected on the transport class.
+  const cold = new SessionRuntime({ legacyBindingSettings: true, durableReplay: true })
+  t.after(() => cold.dispose())
+  const original = IsolatedWorker.prototype.sampleUtilization
+  let misses = 1
+  IsolatedWorker.prototype.sampleUtilization = function sampleWithOneMiss() {
+    if (misses > 0) {
+      misses -= 1
+      const error = new Error('kernel helper did not answer utilization sampling before its deadline')
+      error.code = UNANSWERED_SAMPLE_CODE
+      return Promise.reject(error)
+    }
+    return original.call(this)
+  }
+  try {
+    const execution = await recordUserBindingCell(cold, session, 'return kept')
+    assert.equal(misses, 0, 'the replay must have asked for a baseline the test could not answer')
+    // The recorded cell never ran during that attempt, so nothing was disproved:
+    // the replay is retried and the recorded binding still exists.
+    assert.equal(execution.result.error, undefined)
+    assert.equal(execution.result.value, 7)
+    assert.equal(execution.recoveryBoundaries, undefined)
+  } finally {
+    IsolatedWorker.prototype.sampleUtilization = original
+  }
+})
+
+test('keeps the recorded frontier when a replay stays unmeasured twice', async (t) => {
+  const session = orderedSurfaceSession('replay-unmeasured-twice')
+  const writer = new SessionRuntime({ legacyBindingSettings: true, durableReplay: true })
+  t.after(() => writer.dispose())
+  const recorded = await recordUserBindingCell(writer, session, 'const kept = 11; return kept')
+  assert.equal(recorded.journal.status, 'durable')
+
+  const cold = new SessionRuntime({ legacyBindingSettings: true, durableReplay: true })
+  t.after(() => cold.dispose())
+  const original = IsolatedWorker.prototype.sampleUtilization
+  let misses = 2
+  IsolatedWorker.prototype.sampleUtilization = function sampleWithTwoMisses() {
+    if (misses > 0) {
+      misses -= 1
+      const error = new Error('kernel helper did not answer utilization sampling before its deadline')
+      error.code = UNANSWERED_SAMPLE_CODE
+      return Promise.reject(error)
+    }
+    return original.call(this)
+  }
+  try {
+    const blocked = await recordUserBindingCell(cold, session, 'return kept')
+    assert.equal(misses, 0, 'both replay attempts must have missed their baseline')
+    // Both attempts were unmeasured, so the current cell is not executed and says
+    // the recorded frontier survives for a later replay.
+    assert.equal(blocked.result.error.kind, 'budget-unavailable')
+    assert.match(blocked.result.error.message, /recorded frontier is unchanged/)
+    assert.equal(blocked.journal.status, 'noop')
+    assert.equal(blocked.recoveryBoundaries, undefined)
+
+    // The next cell reaches the same recorded frontier and continues from it.
+    const recovered = await recordUserBindingCell(cold, session, 'return kept')
+    assert.equal(recovered.result.error, undefined)
+    assert.equal(recovered.result.value, 11)
+    assert.equal(recovered.recoveryBoundaries, undefined)
+  } finally {
+    IsolatedWorker.prototype.sampleUtilization = original
   }
 })
 

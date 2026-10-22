@@ -249,7 +249,8 @@
         "testing entry restoration uses the classified realm write boundary",
         "resolved current cell cwd reaches stable Node wrappers and new child computations without resetting continuous bindings; escaped import environments retain their module source parent",
         "terminated cells settle after helper reclamation; cleanup refusal remains observable without claiming process exit",
-        "per-cell dynamic eval and Function import resolution retains its source owner while native interfaces and live logical identities remain shared"
+        "per-cell dynamic eval and Function import resolution retains its source owner while native interfaces and live logical identities remain shared",
+        "a utilization answer the helper wrote before the host could read it is adopted after a channel read-out that survives queued messages and a blocked host, and a read-out bound ends a backlog at or above its own message count and reports only that no answer was observed"
       ],
       "entries": [
         "cell worker",
@@ -297,7 +298,8 @@
         "test/coverage/isolated-helper-coverage.test.js",
         "test/coverage/subprocess-environment-coverage.test.js",
         "test/compiler-service.test.js",
-        "test/coverage/compiler-coverage.test.js"
+        "test/coverage/compiler-coverage.test.js",
+        "test/isolated-budget-baseline.test.js"
       ],
       "dependsOn": [
         "compiler-and-callables"
@@ -352,7 +354,9 @@
         "raw execution ancestry is qualified against exact derived assistant source at the same immutable observation cut; pure message projection contracts live, cold and fork state",
         "cold REPL inventory uses the journal timeline settlement owner and optional-source-free callId pairing; actual result/image projections preserve exact assistant-source eligibility",
         "v11 exact per-cell executionCwd and v1-v10 historical directory fallback remain distinct from the new request directory",
-        "acceptance audit derivedExecutions preserves proved actual start/settle sequences, canonical completion values, error and policy evidence for inspectLog and scenario descriptors"
+        "acceptance audit derivedExecutions preserves proved actual start/settle sequences, canonical completion values, error and policy evidence for inspectLog and scenario descriptors",
+        "recovery proves an unexecuted derived settlement from the same dispatch relation, keeps the root cell and its source, folds no derived state or model-visible derived call, and leaves the root cell as the editable target",
+        "the historical top-level editor relation still requires an executed derived run, so an unmeasured settlement cannot be reused to prove any other edit"
       ],
       "entries": [
         "live settlement",
@@ -497,7 +501,9 @@
         "locale-independent capability command receipt distinguishes prepared and recorded without replaying model notifications",
         "deferred editor acceptance audit and inspectLog consume the actual derived execution completion and failure rather than the outer receipt completion",
         "optional public session lookup for REPL observation tolerates an absent service without creating a runtime",
-        "release tarball consumer installation selects the verified installed Host peer cohort without independently resolving package dist-tags"
+        "release tarball consumer installation selects the verified installed Host peer cohort without independently resolving package dist-tags",
+        "a cell that ends before its run frame because the compute baseline could not be observed, or because the wall or compute bound expired first, settles as a no-op that keeps the live worker and its bindings for the first occurrence, drops the live worker while keeping the proved frontier for the second consecutive one, and leaves a replay that could not observe a recorded cell with its frontier intact instead of contracting it, while a transport-reported worker loss keeps the worker-exit reset route, and a cell refused admission because a previous helper was not reclaimed settles as blocked without contracting the recorded frontier while later computation stays blocked",
+        "an accepted deferred edit whose revision never ran publishes its own unexecuted settlement so the root cell stays provable, while the receipt stays a receipt: no revision binding, no successful revision, and no derived source becomes the next edit target"
       ],
       "entries": [
         "run_code",
@@ -589,7 +595,9 @@
         "scripts/dsh-packed-lifecycle-smoke.mjs",
         "test/expensive-acceptance.test.js",
         "scripts/npm-consumer-smoke.mjs",
-        "test/npm-consumer-smoke.test.js"
+        "test/npm-consumer-smoke.test.js",
+        "test/isolated-entrance.test.js",
+        "test/kernel-worker-settlement.test.js"
       ],
       "dependsOn": [
         "execution-kernel",

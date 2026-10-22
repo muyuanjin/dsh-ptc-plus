@@ -419,8 +419,14 @@ export function normalizeJournal(value, options = {}) {
   })
 }
 
-/** Validate the required persisted relation that makes one edit result executable history. */
-export function normalizeDerivedEditResult(meta, expectedTargetCallSeq) {
+/**
+ * Completion error kind of a cell that never reached the runtime because it could
+ * not be measured. Such a settlement records that nothing ran, so it can prove an
+ * accepted edit's dispatch relation without proving any executed state.
+ */
+export const UNMEASURED_CELL_ERROR_KIND = 'budget-unavailable'
+
+function normalizeDerivedRelation(meta, expectedTargetCallSeq, { allowUnexecuted }) {
   if (!isCanonicalSequence(expectedTargetCallSeq)) {
     throw new Error('derived edit does not identify an eligible target call')
   }
@@ -438,19 +444,45 @@ export function normalizeDerivedEditResult(meta, expectedTargetCallSeq) {
   }
   assertOwnFields(derived, DERIVED_RUN_FIELDS, 'derived run metadata')
   const journal = normalizeJournal(meta[JOURNAL_KEY])
-  if (journal.status === 'noop') throw new Error('derived edit journal must not be noop')
+  // Only the current deferred edit relation may prove itself with a settlement
+  // that never ran, and only for the unmeasured route: a rejected source, an
+  // aborted cell or a lost helper are different facts and keep the historical
+  // rule that a derived edit journal must record an execution.
+  const unexecuted = journal.status === 'noop'
+    && journal.completion?.error?.kind === UNMEASURED_CELL_ERROR_KIND
+  if (journal.status === 'noop' && !(allowUnexecuted && unexecuted)) {
+    throw new Error('derived edit journal must not be noop')
+  }
   const recoveryBoundaries = meta[RECOVERY_BOUNDARY_KEY] === undefined
     ? undefined
     : normalizeRecoveryBoundaries(meta[RECOVERY_BOUNDARY_KEY])
   const userBindings = userBindingsForJournal(meta, journal)
-  return Object.freeze({
+  return {
     targetCallSeq: target.targetCallSeq,
     code: derived.code,
     description: derived.description,
     journal,
+    ...(unexecuted ? { unexecuted: true } : {}),
     ...(recoveryBoundaries === undefined ? {} : { recoveryBoundaries }),
     ...(userBindings === undefined ? {} : { userBindings }),
-  })
+  }
+}
+
+/** Validate the required persisted relation that makes one edit result executable history. */
+export function normalizeDerivedEditResult(meta, expectedTargetCallSeq) {
+  return Object.freeze(normalizeDerivedRelation(meta, expectedTargetCallSeq, { allowUnexecuted: false }))
+}
+
+/**
+ * Validate the relation one accepted deferred edit records for itself.
+ *
+ * The current deferred relation additionally admits a settlement that proves the
+ * revision never ran, because the root cell's own execution stays provable then.
+ * The historical top-level editor relation does not: it keeps requiring an
+ * executed derived run.
+ */
+export function normalizeDeferredEditSettlement(meta, expectedTargetCallSeq) {
+  return Object.freeze(normalizeDerivedRelation(meta, expectedTargetCallSeq, { allowUnexecuted: true }))
 }
 
 export function userBindingsForJournal(meta, journal) {
@@ -492,8 +524,8 @@ function validateUserBindingNameProviders(journal, snapshot) {
 /** Compare only the required persisted relation for one derived edit. */
 export function derivedEditResultsEqual(leftMeta, rightMeta, expectedTargetCallSeq) {
   try {
-    const left = encodeValue(normalizeDerivedEditResult(leftMeta, expectedTargetCallSeq))
-    const right = encodeValue(normalizeDerivedEditResult(rightMeta, expectedTargetCallSeq))
+    const left = encodeValue(normalizeDeferredEditSettlement(leftMeta, expectedTargetCallSeq))
+    const right = encodeValue(normalizeDeferredEditSettlement(rightMeta, expectedTargetCallSeq))
     return JSON.stringify(left) === JSON.stringify(right)
   } catch {
     return false

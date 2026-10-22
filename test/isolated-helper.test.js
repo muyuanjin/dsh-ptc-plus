@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { fork } from 'node:child_process'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
-import { IsolatedWorker } from '../internal/isolated-worker.js'
+import { ISOLATED_SAMPLE_MS, IsolatedWorker } from '../internal/isolated-worker.js'
 
 /** Resolve with the promise value or reject when the bound expires. */
 function bounded(promise, ms, message) {
@@ -67,6 +67,51 @@ test('adopts the ready handshake utilization instead of an older sample', async 
   const delta = worker.performance.eventLoopUtilization(baseline)
   assert.ok(delta.active < 20, `post-ready idle time reported ${delta.active}ms of active work`)
 
+  await worker.terminate()
+  await bounded(worker.closed, 20_000, 'helper output never closed')
+})
+
+test('adopts a real helper answer read out from behind queued messages after the deadline', async (t) => {
+  const worker = new IsolatedWorker({
+    helper: fileURLToPath(new URL('../internal/kernel-child.js', import.meta.url)),
+    entry: new URL('./fixtures/isolated-ready-busy-worker.mjs', import.meta.url).href,
+    workerData: {},
+    resourceLimits: { maxOldGenerationSizeMb: 64 },
+    env: { ...process.env, NODE_V8_COVERAGE: process.env.NODE_V8_COVERAGE ?? '' },
+  })
+  t.after(async () => {
+    if (worker.exited) return
+    try { await worker.terminate() } catch {}
+  })
+
+  const ready = await bounded(
+    new Promise((resolve, reject) => {
+      worker.once('message', resolve)
+      worker.once('error', reject)
+    }),
+    20_000,
+    'helper never became ready',
+  )
+  assert.equal(ready.type, 'ready')
+
+  // The helper writes one periodic sample every 50 ms and Node delivers one
+  // helper message per event-loop turn, so a blocked host ends up with messages
+  // queued ahead of its answer. The answer exists before the deadline; only
+  // reading the channel out reaches it.
+  const queueUntil = Date.now() + 200
+  while (Date.now() < queueUntil) {}
+  const sample = worker.sampleUtilization()
+  const busyUntil = Date.now() + ISOLATED_SAMPLE_MS + 300
+  while (Date.now() < busyUntil) {}
+  const utilization = await bounded(sample, 20_000, 'the host never adopted the helper answer it had already received')
+
+  // Only the returned answer is this request's baseline. `worker.utilization` is a
+  // cache that later periodic samples keep overwriting, so it may legitimately
+  // hold a different sample by the time this line runs.
+  assert.equal(typeof utilization.idle, 'number')
+  assert.equal(typeof utilization.active, 'number')
+  assert.ok(utilization.active > 0, 'the adopted answer must be the real helper baseline')
+  assert.ok(worker.utilization.active > 0, 'the transport keeps the latest sample it received')
   await worker.terminate()
   await bounded(worker.closed, 20_000, 'helper output never closed')
 })

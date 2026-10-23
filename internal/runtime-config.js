@@ -1,4 +1,5 @@
 import { capabilityPolicyForConfig } from './capability-policy.js'
+import { validatePromptTextDocument } from './prompt-text.js'
 import {
   CONFIG_DEFAULTS,
   CONFIG_FIELDS,
@@ -117,6 +118,7 @@ export function resolveConfig(config = {}) {
   }
   for (const field of CONFIG_FIELDS) assertField(field, resolved[field.key])
   validateCapabilityProfiles(JSON.parse(resolved.capabilityProfiles))
+  validatePromptTextDocument(resolved.promptText)
   for (const [key, array] of [['capabilityBaseline', true], ['capabilityOverrides', false]]) {
     let value
     try { value = JSON.parse(resolved[key]) } catch { throw new TypeError(`ptc-plus: ${key} must contain valid JSON`) }

@@ -1,16 +1,12 @@
 import { capabilityRule, validateCapabilityPolicy, effectiveCapabilitySettings } from './capability-policy.js'
 import { Buffer } from 'node:buffer'
+import { PLAN_CATEGORY_LINES } from './prompt-text.js'
 
 const MANAGED_CATEGORIES = new Set(['tool', 'skill', 'resource', 'resource-template', 'task'])
 const EXCLUDED_CATEGORIES = new Set(['language', 'node', 'repl', 'ptc-plus', 'global-binding'])
 const SELECTIONS = new Set(['full', 'on-demand', 'closed'])
-const CATEGORY_NAVIGATION = new Map([
-  ['tool', 'Tools: search by task or tools.<name> for parameters and results.'],
-  ['skill', 'Skills: search by task or skills.<name> for when to use and how to load instructions.'],
-  ['resource', 'MCP resources: search by server or resource purpose.'],
-  ['resource-template', 'MCP templates: search by server or resource purpose.'],
-  ['task', 'Tasks: search by the operation you need.'],
-])
+/** Category guidance defaults; the registry owns the delivered literals. */
+const CATEGORY_NAVIGATION = new Map(Object.entries(PLAN_CATEGORY_LINES))
 
 function isRecord(value) { return value !== null && typeof value === 'object' && !Array.isArray(value) }
 
@@ -121,6 +117,13 @@ function createLegacyCapabilityPlan(input) {
   const budgetBytes = integer(options.budgetBytes, 'contract budget bytes')
   const directoryBudgetBytes = integer(options.directoryBudgetBytes, 'directory budget bytes')
   const navigationText = text(options.navigationText, 'bounded discovery guidance')
+  const categoryNavigation = options.categories === undefined
+    ? CATEGORY_NAVIGATION
+    : new Map(options.categories.map(pair => {
+      if (!Array.isArray(pair) || pair.length !== 2) throw new TypeError('ptc-plus: capability categories must be [category, guidance] pairs')
+      const category = text(pair[0], `capability category ${pair[0]}`)
+      return [category, text(pair[1], `capability guidance for ${category}`)]
+    }))
   if (bytes(navigationText) > directoryBudgetBytes) throw new RangeError('ptc-plus: discovery guidance exceeds directory byte budget')
   const manual = record(options.manual ?? {}, 'manual capability settings')
   const overrides = record(manual.overrides ?? {}, 'capability overrides')
@@ -220,7 +223,7 @@ function createLegacyCapabilityPlan(input) {
   const directoryCategories = []
   const availableCategories = new Set(capabilities.filter(capability => selections.get(capability.id).selection !== 'closed')
     .map(capability => capability.category))
-  for (const [category, guidance] of CATEGORY_NAVIGATION) {
+  for (const [category, guidance] of categoryNavigation) {
     if (!availableCategories.has(category)) continue
     const proposed = `${directoryText}\n${guidance}`
     if (bytes(proposed) <= directoryBudgetBytes) {

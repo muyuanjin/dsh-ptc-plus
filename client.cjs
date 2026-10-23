@@ -1208,6 +1208,586 @@ function changeCapabilityRule(policy, id2, dimension, choice) {
   return validateCapabilityPolicy(next);
 }
 
+// internal/repl-rewrite-contract.js
+var MIXED_REDECLARATION_REWRITE = "split a mixed top-level declaration while preserving native pattern initialization";
+var FUNCTION_REDECLARATION_REWRITE = "reassigned an existing top-level function declaration for REPL continuity";
+var CLASS_REDECLARATION_REWRITE = "reassigned an existing top-level class declaration for REPL continuity";
+var LEGACY_DEFAULT_EXPORT_BINDING = "legacy-variable";
+var LIVE_DEFAULT_EXPORT_BINDING = "live-readonly";
+var LEGACY_IMPORT_EXPRESSION_BOUNDARY = "legacy";
+var LIVE_IMPORT_EXPRESSION_BOUNDARY = "statement-safe";
+var LIVE_MODULE_SEMANTICS = Object.freeze({
+  defaultExportBinding: LIVE_DEFAULT_EXPORT_BINDING,
+  importExpressionBoundary: LIVE_IMPORT_EXPRESSION_BOUNDARY
+});
+
+// internal/prompt-text.js
+var PROMPT_TEXT_SCHEMA = "ptc-prompt-text/v1";
+var PROMPT_TEXT_MAX_SLOT_BYTES = 4096;
+var PROMPT_TEXT_MAX_ANCHOR_BYTES = 16384;
+var PROMPT_TEXT_MAX_DOCUMENT_BYTES = 65536;
+var PROMPT_CHANNELS = Object.freeze(["prompt", "install", "plan", "runtime", "result"]);
+var PROMPT_SLOT_KINDS = Object.freeze(["literal", "aggregate", "projected"]);
+var PROMPT_REASON_CODES = Object.freeze([
+  "fact-derived",
+  "aggregate-frozen",
+  "protocol-exact-text",
+  "protocol-structural",
+  "shadows-host",
+  "other-owner"
+]);
+var STATE_PREFIX = "PTC Plus recovery status. Replaces earlier PTC recovery status, including PTC state in runtime-context snapshots. Global binding APIs are unchanged.";
+var PREVIOUS_STATE_PREFIX = "PTC Plus runtime recovery state. This replaces only earlier PTC state snapshots and PTC sections in historical aggregate snapshots; it does not replace the global binding API catalog, tasks, Skill instructions, tool results, or other producers.";
+var LEGACY_STATE_PREFIX = "PTC Plus current state. This replaces only earlier PTC state snapshots and PTC sections in historical aggregate snapshots; it does not replace tasks, Skill instructions, tool results, or other producers.";
+var CATALOG_PREFIX = "Global binding API reference for run_code (replaces the previous global binding reference):";
+var EMPTY_CATALOG = "No entries documented.";
+var TIP_BODY = "Inspect bounded runtime facts with {platformFacts}, then choose the executable and path in the current execution world. Use direct argv or a shell only when required; do not assume Windows, WSL, POSIX, or one shell. Do not dump process.env.";
+var TIP_BODY_PLATFORM_DETAILED = "Re-check the active execution world and the actual executable before retrying. First inspect bounded runtime facts with {platformFacts}; use the result to choose the executable and path. Use direct argv for a normal executable; use a shell only when its syntax or resolution is required. Windows, WSL, POSIX, and package shims have different paths and launch rules. Do not dump process.env.";
+var TIP_BODY_REPEATED_BINDING = "Inspect the visible cell source and results for the local name, scope, initialization, or declaration conflict. Correct that expression before continuing; capability discovery does not list session-local variables.{detail}";
+var TIP_BODY_REPEATED_BINDING_CAPABILITY = "Inspect the live request with `capabilities.tree()`, `capabilities.find()`, or `capabilities.inspect()`, then call the typed member through `tools.*`.{detail}";
+var TIP_DETAIL_BINDING = " Earlier statements may have run; use current expression evidence without assuming a failed declaration initialized its binding.";
+var TIP_DETAIL_CAPABILITY = " Do not invent hidden bindings or repeat the same failing expression.";
+var TIP_PREFIX_REPEATED_BINDING = "The same binding failure has recurred.";
+var TIP_PREFIX_PLATFORM_COMMAND = "An executable, shell, or path failed in the current execution world.";
+var PLAN_NAVIGATION = "Use capabilities.search({query}) to retrieve complete tool, Skill and MCP contracts. Unlisted capabilities remain discoverable. Skill descriptions are summaries; follow each Skill's declared invocation eligibility to load its body before following it.";
+var PLAN_CATEGORY_LINES = Object.freeze({
+  tool: "Tools: search by task or tools.<name> for parameters and results.",
+  skill: "Skills: search by task or skills.<name> for when to use and how to load instructions.",
+  resource: "MCP resources: search by server or resource purpose.",
+  "resource-template": "MCP templates: search by server or resource purpose.",
+  task: "Tasks: search by the operation you need."
+});
+var PLAN_OVERAGE = "Explicit full contracts exceed the configured budget by {overageBytes} UTF-8 bytes.";
+var RESULT_ENVELOPE = "output exceeded {maxOutputBytes} bytes; this cell was discarded and the worker reset. Only bindings in the verified recovery frontier can be restored. External effects may already have occurred and are not undone. For future cells, bound console output and return a smaller value; do not assume this cell's values remain available.";
+var GUIDANCE_OPENING = "`run_code` continues one persistent PTC REPL. Use Node.js modules in the cell; use external processes when their environment is needed. Ordinary top-level bindings remain available to later cells, so reuse them instead of resending setup code. Choose the smallest cell that answers the request and return only the value the next step needs.";
+var GUIDANCE_ERROR_RECOVERY = "After an execution error, earlier statements may have taken effect. Inspect relevant values in a short cell, then continue from them; repeat external operations only when their retry rules and current results establish safety. `edit_run_code` edits and reruns a complete cell.";
+var GUIDANCE_CELL_CONVENTIONS = "## Cell conventions\nUse `return` for an explicit result and `console` for logs. Return supported values directly, including undefined, NaN, infinities, -0 and BigInt; JSON.stringify loses distinctions or rejects BigInt. Do not mix BigInt with Number arithmetic; use a BigInt literal or convert explicitly. Keep functions, Date, Map and other unsupported values in bindings; return needed data or type observations. Native `tools.*` arguments must satisfy their own JSON schemas; PTC value transport does not widen those contracts. Keep large inspection results in bindings or reduce them to targeted excerpts: `tools.read` is bounded inspection, not a lossless whole-file reader. Relative filesystem, path and default child-process operations use the current working directory at the time they run; a successful in-cell `tools.working_directory({ cd })` applies to the rest of that cell, while cell imports and `import.meta` keep the directory the cell started in, and `process.chdir` is unavailable.";
+var GUIDANCE_CAPABILITIES = "## Available capabilities\nUse `capabilities.tree()`, `capabilities.find()`, and `capabilities.inspect()` for unfamiliar program APIs; Reserve `code.run` for isolated execution of source held as data.\nProgram API references expire when their cell ends. Reusable helpers must read the current namespace when called, for example `async function readNow(args) { return tools.read(args) }`, instead of retaining an earlier `tools` object or method. Completed-cell callbacks cannot call program APIs.";
+var GUIDANCE_EXECUTION_WORLD = "Native tool availability depends on the current DSH profile and execution world; inspect executables, shells, and paths instead of assuming Windows, WSL, POSIX, or a particular shell.";
+var RUN_CODE_TOOL_DESCRIPTION = "Evaluate the next TypeScript cell in this session-bound persistent REPL, reusing earlier top-level bindings. Use `code` for the cell and `description` for its short UI summary. Successful image-bearing subtool results are attached after the cell.";
+var RUN_CODE_CODE_DESCRIPTION = "Code for the next PTC TypeScript cell, following the selected language conventions.";
+var RUN_CODE_DESCRIPTION_DESCRIPTION = "Short active-voice summary of what this cell does, 5-10 words (shown in the UI).";
+var EDIT_RUN_CODE_DESCRIPTION = "Call this from within a run_code cell. It accepts an edit of the most recent eligible cell captured at nested dispatch and returns { accepted, scheduled, target_call_seq } when scheduled. The corrected cell runs after the current run_code cell releases its worker; its result is reported with that cell, and a successful edit becomes the next target. This reruns the entire target cell, including prior effects; use it after pre-execution rejection or when repeating those effects is safe under the called API's retry rules. Otherwise continue in a new run_code cell using retained values. A diagnostic may supply a localized correction; use it when it matches your intent and preserve its expected_target_call_seq. Send exactly one edits or regex_edits array: edits replaces unique literal fragments; regex_edits replaces a counted set of pattern matches. All ranges must be non-overlapping in the original cell. Regex replacements use JavaScript $1/$<name> captures, not \\1.";
+var USER_BINDINGS_ENTRY_LABEL = "Binding";
+function editableSlot(id2, kind, omittable, defaultText) {
+  if (!PROMPT_SLOT_KINDS.includes(kind)) throw new TypeError(`ptc-plus: unknown prompt slot kind ${kind} (${id2})`);
+  return Object.freeze({
+    id: id2,
+    kind,
+    owner: "A",
+    level: "prose",
+    reason: null,
+    omittable,
+    defaultText,
+    source: "registry-literal"
+  });
+}
+function readOnlySlot(id2, kind, reason, { source, defaultText = null, omittable = false, owner = "B" }) {
+  if (!PROMPT_SLOT_KINDS.includes(kind)) throw new TypeError(`ptc-plus: unknown prompt slot kind ${kind} (${id2})`);
+  if (!PROMPT_REASON_CODES.includes(reason)) throw new TypeError(`ptc-plus: unknown prompt reason code ${reason}`);
+  if (owner !== "B" && owner !== "C") throw new TypeError(`ptc-plus: read-only slot ${id2} must belong to B or C`);
+  return Object.freeze({
+    id: id2,
+    kind,
+    owner,
+    level: "protocol",
+    reason,
+    omittable,
+    defaultText,
+    source
+  });
+}
+function aggregateSlot(id2, items) {
+  return Object.freeze({
+    id: id2,
+    kind: "aggregate",
+    owner: "B",
+    level: "protocol",
+    reason: "aggregate-frozen",
+    omittable: false,
+    defaultText: null,
+    source: "registry-set",
+    items: Object.freeze(items)
+  });
+}
+var PROMPT_ANCHORS = Object.freeze([
+  Object.freeze({
+    id: "tools:ptc-plus-repl",
+    channel: "prompt",
+    wired: true,
+    presence: "run_code \u5DF2\u6CE8\u518C",
+    slots: Object.freeze([
+      editableSlot("guidance.opening", "literal", false, GUIDANCE_OPENING),
+      editableSlot("guidance.errorRecovery", "literal", true, GUIDANCE_ERROR_RECOVERY),
+      editableSlot("guidance.cellConventions", "literal", true, GUIDANCE_CELL_CONVENTIONS),
+      editableSlot("guidance.capabilities", "literal", true, GUIDANCE_CAPABILITIES),
+      editableSlot("guidance.executionWorld", "literal", true, GUIDANCE_EXECUTION_WORLD),
+      readOnlySlot("guidance.derivedPolicy", "projected", "fact-derived", {
+        source: "internal/binding-update-policy.js guidancePolicies()"
+      })
+    ])
+  }),
+  Object.freeze({
+    id: "tools:ptc-plus-user-binding-defaults",
+    channel: "prompt",
+    wired: true,
+    presence: "\u5168\u5C40\u7ED1\u5B9A\u542F\u7528",
+    slots: Object.freeze([
+      editableSlot("userBindings.entryLabel", "literal", false, USER_BINDINGS_ENTRY_LABEL),
+      readOnlySlot("userBindings.entryInstructions", "literal", "other-owner", {
+        owner: "C",
+        source: "internal/user-bindings.js (entry instructions supplied by the user)"
+      })
+    ])
+  }),
+  Object.freeze({
+    id: "run_code",
+    channel: "prompt",
+    wired: true,
+    presence: "\u6BCF\u6B21\u8BF7\u6C42",
+    slots: Object.freeze([
+      editableSlot("runCode.description", "literal", false, RUN_CODE_TOOL_DESCRIPTION),
+      editableSlot("runCode.codeArg", "literal", false, RUN_CODE_CODE_DESCRIPTION),
+      editableSlot("runCode.descriptionArg", "literal", false, RUN_CODE_DESCRIPTION_DESCRIPTION)
+    ])
+  }),
+  Object.freeze({
+    id: "edit_run_code",
+    channel: "install",
+    wired: true,
+    presence: "\u4E0B\u4E00\u6B21 agent \u5B89\u88C5",
+    slots: Object.freeze([
+      editableSlot("editRunCode.description", "literal", false, EDIT_RUN_CODE_DESCRIPTION)
+    ])
+  }),
+  Object.freeze({
+    id: "binding-catalog",
+    channel: "runtime",
+    wired: true,
+    presence: "\u6709\u7ED1\u5B9A\u6761\u76EE",
+    slots: Object.freeze([
+      readOnlySlot("catalog.prefix", "literal", "protocol-exact-text", { source: "registry-literal", defaultText: CATALOG_PREFIX }),
+      editableSlot("catalog.empty", "literal", false, EMPTY_CATALOG),
+      // The previous-generation empty sentence is historical wording, not delivered
+      // text: no composer emits it, and `HISTORICAL_EMPTY_CATALOGS` keeps it readable
+      // for records written by another version. It is therefore deliberately not a
+      // slot — an editable slot nobody delivers would inflate the accounting.
+      readOnlySlot("catalog.entryInstructions", "literal", "other-owner", {
+        owner: "C",
+        source: "internal/user-bindings.js (entry instructions supplied by the user)"
+      })
+    ])
+  }),
+  Object.freeze({
+    id: "tools:sdk#capability-appendix",
+    channel: "prompt",
+    wired: false,
+    presence: "\u80FD\u529B\u7BA1\u7406\u542F\u7528",
+    slots: Object.freeze([
+      readOnlySlot("capabilities.appendixProse", "literal", "shadows-host", {
+        source: "internal/direct-surface-owner.js capabilitySdk()"
+      }),
+      readOnlySlot("capabilities.declarations", "literal", "protocol-structural", {
+        source: "internal/direct-surface-owner.js capabilitySdk() declare block"
+      })
+    ])
+  }),
+  Object.freeze({
+    id: "plan.navigation",
+    channel: "plan",
+    wired: true,
+    presence: "\u65B0\u4F1A\u8BDD\u6216 /capabilities refresh",
+    slots: Object.freeze([
+      editableSlot("plan.navigationSentence", "literal", false, PLAN_NAVIGATION)
+    ])
+  }),
+  Object.freeze({
+    id: "plan.categories",
+    channel: "plan",
+    wired: true,
+    presence: "\u65B0\u4F1A\u8BDD\u6216 /capabilities refresh",
+    slots: Object.freeze([
+      aggregateSlot("plan.categories.set", Object.keys(PLAN_CATEGORY_LINES).map((category) => `plan.category.${category}`)),
+      ...Object.entries(PLAN_CATEGORY_LINES).map(([category, line]) => editableSlot(`plan.category.${category}`, "literal", false, line))
+    ])
+  }),
+  Object.freeze({
+    id: "plan.overage",
+    channel: "plan",
+    wired: true,
+    presence: "\u9884\u7B97\u8D85\u9650\u65F6",
+    slots: Object.freeze([
+      editableSlot("plan.overageSentence", "projected", false, PLAN_OVERAGE)
+    ])
+  }),
+  Object.freeze({
+    id: "runtime.recovery-snapshot",
+    channel: "runtime",
+    wired: true,
+    presence: "\u6062\u590D\u4EE3\u9645\u89E6\u53D1",
+    slots: Object.freeze([
+      readOnlySlot("recovery.snapshotPrefix", "literal", "protocol-exact-text", { source: "registry-literal", defaultText: STATE_PREFIX }),
+      readOnlySlot("recovery.previousStatePrefix", "literal", "protocol-exact-text", { source: "registry-literal", defaultText: PREVIOUS_STATE_PREFIX }),
+      readOnlySlot("recovery.legacyStatePrefix", "literal", "protocol-exact-text", { source: "registry-literal", defaultText: LEGACY_STATE_PREFIX })
+    ])
+  }),
+  Object.freeze({
+    id: "runtime.tip",
+    channel: "runtime",
+    wired: true,
+    presence: "\u89E6\u53D1\u547D\u4E2D",
+    slots: Object.freeze([
+      editableSlot("tip.body.platform", "projected", false, TIP_BODY),
+      editableSlot("tip.body.platformDetailed", "projected", false, TIP_BODY_PLATFORM_DETAILED),
+      editableSlot("tip.body.repeatedBinding", "projected", false, TIP_BODY_REPEATED_BINDING),
+      editableSlot("tip.body.repeatedBindingCapability", "projected", false, TIP_BODY_REPEATED_BINDING_CAPABILITY),
+      readOnlySlot("tip.prefix.repeatedBinding", "literal", "protocol-structural", {
+        source: "registry-literal",
+        defaultText: TIP_PREFIX_REPEATED_BINDING
+      }),
+      readOnlySlot("tip.prefix.platformCommand", "literal", "protocol-structural", {
+        source: "registry-literal",
+        defaultText: TIP_PREFIX_PLATFORM_COMMAND
+      }),
+      // The detail sentences fill the body's `{detail}` hole when a failure escalates.
+      // Escalation stays a code decision; the sentences are registered so their bytes
+      // are accounted and claimed rather than silently delivered outside the registry.
+      readOnlySlot("tip.detail.binding", "projected", "fact-derived", {
+        source: "registry-literal",
+        defaultText: TIP_DETAIL_BINDING
+      }),
+      readOnlySlot("tip.detail.capability", "projected", "fact-derived", {
+        source: "registry-literal",
+        defaultText: TIP_DETAIL_CAPABILITY
+      })
+    ])
+  }),
+  Object.freeze({
+    id: "result.rewrite-feedback",
+    channel: "result",
+    wired: true,
+    presence: "\u6539\u5199\u53D1\u751F",
+    slots: Object.freeze([
+      editableSlot("rewrite.mixed", "literal", false, MIXED_REDECLARATION_REWRITE),
+      editableSlot("rewrite.function", "literal", false, FUNCTION_REDECLARATION_REWRITE),
+      editableSlot("rewrite.class", "literal", false, CLASS_REDECLARATION_REWRITE)
+    ])
+  }),
+  Object.freeze({
+    id: "result.diagnostics-and-budget",
+    channel: "result",
+    wired: true,
+    presence: "\u5931\u8D25\u6216\u8D85\u9650",
+    slots: Object.freeze([
+      readOnlySlot("result.diagnosticsProse", "literal", "fact-derived", {
+        source: "internal/recovery-tips.js advice and budget prose"
+      }),
+      readOnlySlot("result.diagnosticsCodes", "literal", "protocol-structural", {
+        source: "internal/session-journal-schema.js PTC-* codes and help structure"
+      }),
+      // The envelope template is measured (the plugin writes every byte of it)
+      // but not writable: the recognizer reads the byte count it reports.
+      readOnlySlot("result.envelope", "projected", "fact-derived", {
+        source: "registry-literal",
+        defaultText: RESULT_ENVELOPE
+      })
+    ])
+  })
+]);
+var PROMPT_SLOTS = Object.freeze(PROMPT_ANCHORS.flatMap((anchor) => anchor.slots));
+var slotConstantName = (id2) => id2.replace(/[.:-]+(.)?/gu, (_, next) => (next ?? "").toUpperCase());
+var PROMPT_SLOT_IDS = Object.freeze(Object.fromEntries(
+  PROMPT_SLOTS.filter((slot) => slot.source === "registry-literal").map((slot) => [slotConstantName(slot.id), slot.id])
+));
+var PROMPT_ASSETS = PROMPT_SLOTS;
+var ANCHORS_BY_ID = new Map(PROMPT_ANCHORS.map((anchor) => [anchor.id, anchor]));
+var SLOTS_BY_ID = new Map(PROMPT_SLOTS.map((slot) => [slot.id, slot]));
+var ANCHOR_OF_SLOT = new Map(PROMPT_ANCHORS.flatMap((anchor) => anchor.slots.map((slot) => [slot.id, anchor.id])));
+var PROMPT_TEXT_DEFAULT = JSON.stringify({ schema: PROMPT_TEXT_SCHEMA, overrides: {} });
+var PROMPT_COMPOSER_FILES = Object.freeze([
+  "index.js",
+  "internal/direct-surface-owner.js",
+  "internal/edit-transport-owner.js",
+  "internal/capability-plan.js",
+  "internal/capability-environment.js",
+  "internal/runtime-messages.js",
+  "internal/recovery-tips.js"
+]);
+function promptSlot(id2) {
+  const slot = SLOTS_BY_ID.get(id2);
+  if (slot === void 0) throw new TypeError(`ptc-plus: unknown prompt slot ${id2}`);
+  return slot;
+}
+var byteLength = (value) => new TextEncoder().encode(value).length;
+var holeTokens = (text) => typeof text === "string" ? text.match(/\{[a-zA-Z][a-zA-Z0-9]*\}/gu) ?? [] : [];
+function effectiveBytes(slot, overrides2) {
+  const text = overrides2.has(slot.id) ? overrides2.get(slot.id) : slot.defaultText;
+  return typeof text === "string" ? byteLength(text) : 0;
+}
+function sumEffectiveBytes(overrides2) {
+  let total = 0;
+  for (const slot of PROMPT_SLOTS) total += effectiveBytes(slot, overrides2);
+  return total;
+}
+function unknownOverrideBytes(overrides2) {
+  let total = 0;
+  for (const [id2, text] of overrides2) {
+    if (SLOTS_BY_ID.has(id2)) continue;
+    total += byteLength(text);
+  }
+  return total;
+}
+function isRecord2(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+function parsePromptTextDocument(value) {
+  if (typeof value !== "string") throw new TypeError("ptc-plus: promptText must be a JSON string");
+  let parsed;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    throw new TypeError("ptc-plus: promptText must contain valid JSON");
+  }
+  if (!isRecord2(parsed) || parsed.schema !== PROMPT_TEXT_SCHEMA || !isRecord2(parsed.overrides)) {
+    throw new TypeError(`ptc-plus: promptText must be a ${PROMPT_TEXT_SCHEMA} document with an overrides object`);
+  }
+  for (const [id2, text] of Object.entries(parsed.overrides)) {
+    if (!id2.trim()) throw new TypeError("ptc-plus: promptText override ids must not be empty");
+    if (typeof text !== "string") throw new TypeError(`ptc-plus: promptText override ${id2} must be a string`);
+  }
+  return parsed;
+}
+function validatePromptTextDocument(value) {
+  const parsed = parsePromptTextDocument(value);
+  const overrides2 = /* @__PURE__ */ new Map();
+  for (const [id2, text] of Object.entries(parsed.overrides)) {
+    const slot = SLOTS_BY_ID.get(id2);
+    if (slot === void 0) {
+      overrides2.set(id2, text);
+      continue;
+    }
+    if (slot.owner !== "A") {
+      throw new TypeError(`ptc-plus: promptText slot ${id2} is read-only (${slot.reason}); its bytes belong to another owner`);
+    }
+    const bytes = byteLength(text);
+    if (bytes > PROMPT_TEXT_MAX_SLOT_BYTES) {
+      throw new TypeError(`ptc-plus: promptText slot ${id2} would deliver ${bytes} bytes, over the ${PROMPT_TEXT_MAX_SLOT_BYTES} byte slot limit`);
+    }
+    if (text.trim().length === 0 && !slot.omittable) {
+      throw new TypeError(`ptc-plus: promptText slot ${id2} must not be empty`);
+    }
+    for (const hole of holeTokens(slot.defaultText)) {
+      if (text.split(hole).length - 1 !== 1) {
+        throw new TypeError(`ptc-plus: promptText slot ${id2} must keep exactly one ${hole} placeholder`);
+      }
+    }
+    overrides2.set(id2, text);
+  }
+  for (const anchor of PROMPT_ANCHORS) {
+    let total = 0;
+    for (const slot of anchor.slots) {
+      total += effectiveBytes(slot, overrides2);
+      if (total > PROMPT_TEXT_MAX_ANCHOR_BYTES) {
+        throw new TypeError(`ptc-plus: promptText anchor ${anchor.id} would deliver ${total} bytes, over the ${PROMPT_TEXT_MAX_ANCHOR_BYTES} byte anchor limit (at slot ${slot.id})`);
+      }
+    }
+  }
+  let document2 = sumEffectiveBytes(overrides2) + unknownOverrideBytes(overrides2);
+  if (document2 > PROMPT_TEXT_MAX_DOCUMENT_BYTES) {
+    throw new TypeError(`ptc-plus: promptText would deliver ${document2} bytes, over the ${PROMPT_TEXT_MAX_DOCUMENT_BYTES} byte document limit`);
+  }
+  return parsed;
+}
+function resolvePromptText(value) {
+  const overrides2 = /* @__PURE__ */ new Map();
+  const reported = [];
+  if (value !== void 0 && typeof value !== "string") {
+    reported.push({ slotId: void 0, anchorId: void 0, reason: "invalid-document-type" });
+    return freezeResolved(overrides2, reported);
+  }
+  let parsed;
+  try {
+    parsed = parsePromptTextDocument(value ?? PROMPT_TEXT_DEFAULT);
+  } catch (error) {
+    reported.push({ slotId: void 0, anchorId: void 0, reason: error.message });
+    return freezeResolved(overrides2, reported);
+  }
+  const anchorTotals = /* @__PURE__ */ new Map();
+  let document2 = 0;
+  for (const [id2, text] of Object.entries(parsed.overrides)) {
+    const bytes = byteLength(text);
+    const slot = SLOTS_BY_ID.get(id2);
+    if (slot === void 0) {
+      document2 += bytes;
+      reported.push({ slotId: id2, anchorId: void 0, reason: "unknown-slot" });
+      continue;
+    }
+    const anchorId = ANCHOR_OF_SLOT.get(id2);
+    if (slot.owner !== "A") {
+      reported.push({ slotId: id2, anchorId, reason: "not-writable" });
+      continue;
+    }
+    if (bytes > PROMPT_TEXT_MAX_SLOT_BYTES) {
+      reported.push({ slotId: id2, anchorId, reason: "slot-exceeds-limit" });
+      continue;
+    }
+    if (text.trim().length === 0 && !slot.omittable) {
+      reported.push({ slotId: id2, anchorId, reason: "required-slot-empty" });
+      continue;
+    }
+    if (slot.kind === "projected") {
+      const holes = holeTokens(slot.defaultText ?? "");
+      const kept = holes.filter((hole) => text.includes(hole));
+      const duplicates = kept.some((hole) => text.split(hole).length - 1 > 1);
+      if (holes.length > 0 && (kept.length !== holes.length || duplicates)) {
+        reported.push({ slotId: id2, anchorId, reason: "missing-hole" });
+        continue;
+      }
+    }
+    const total = (anchorTotals.get(anchorId) ?? 0) + bytes;
+    if (total > PROMPT_TEXT_MAX_ANCHOR_BYTES) {
+      reported.push({ slotId: id2, anchorId, reason: "anchor-exceeds-limit" });
+      continue;
+    }
+    anchorTotals.set(anchorId, total);
+    overrides2.set(id2, text);
+    document2 += bytes;
+  }
+  if (document2 > PROMPT_TEXT_MAX_DOCUMENT_BYTES) {
+    reported.push({ slotId: void 0, anchorId: void 0, reason: "document-exceeds-limit" });
+    overrides2.clear();
+  }
+  enforceEffectiveCeilings(overrides2, reported);
+  return freezeResolved(overrides2, reported);
+}
+function enforceEffectiveCeilings(overrides2, reported) {
+  for (const [id2, text] of [...overrides2]) {
+    if (byteLength(text) > PROMPT_TEXT_MAX_SLOT_BYTES) {
+      reported.push({ slotId: id2, anchorId: ANCHOR_OF_SLOT.get(id2), reason: "slot-exceeds-limit" });
+      overrides2.delete(id2);
+    }
+  }
+  for (const anchor of PROMPT_ANCHORS) {
+    const overridden = anchor.slots.filter((slot) => overrides2.has(slot.id));
+    if (overridden.length === 0) continue;
+    const total = anchor.slots.reduce((sum, slot) => sum + effectiveBytes(slot, overrides2), 0);
+    if (total <= PROMPT_TEXT_MAX_ANCHOR_BYTES) continue;
+    for (const slot of overridden) {
+      reported.push({ slotId: slot.id, anchorId: anchor.id, reason: "anchor-exceeds-limit" });
+      overrides2.delete(slot.id);
+    }
+  }
+  if (sumEffectiveBytes(overrides2) + unknownOverrideBytes(overrides2) <= PROMPT_TEXT_MAX_DOCUMENT_BYTES) return;
+  for (const id2 of [...overrides2.keys()]) {
+    reported.push({ slotId: id2, anchorId: ANCHOR_OF_SLOT.get(id2), reason: "document-exceeds-limit" });
+  }
+  overrides2.clear();
+}
+function freezeResolved(overrides2, reported) {
+  const text = (id2) => {
+    const slot = promptSlot(id2);
+    if (overrides2.has(id2)) return overrides2.get(id2);
+    return slot.defaultText;
+  };
+  return Object.freeze({
+    text,
+    omitted: (id2) => overrides2.get(id2) === "",
+    overridden: (id2) => overrides2.has(id2),
+    reported: Object.freeze(reported)
+  });
+}
+function accountPromptText(resolved) {
+  const slots = [];
+  const anchors = [];
+  const owners = { A: 0, B: 0, C: 0 };
+  const counts = { pure: { A: 0, B: 0, C: 0 }, mixed: 0, total: 0 };
+  const channels = /* @__PURE__ */ new Map();
+  const slotsByOwner = { A: 0, B: 0, C: 0 };
+  const unmeasuredByOwner = { A: 0, B: 0, C: 0 };
+  const dynamicByOwner = { A: 0, B: 0, C: 0 };
+  for (const anchor of PROMPT_ANCHORS) {
+    const anchorOwners = /* @__PURE__ */ new Set();
+    let anchorBytes = 0;
+    const anchorSlots = [];
+    for (const slot of anchor.slots) {
+      const declared = resolved.text(slot.id);
+      const container = slot.kind === "aggregate";
+      const measured = !container && anchor.wired === true && typeof declared === "string";
+      const bytes = measured ? byteLength(declared) : 0;
+      const unwired = !container && !measured && anchor.wired !== true;
+      const dynamic = !container && !measured && anchor.wired === true;
+      anchorOwners.add(slot.owner);
+      owners[slot.owner] += bytes;
+      slotsByOwner[slot.owner] += 1;
+      if (unwired) unmeasuredByOwner[slot.owner] += 1;
+      if (dynamic) dynamicByOwner[slot.owner] += 1;
+      anchorBytes += bytes;
+      const row = Object.freeze({
+        slotId: slot.id,
+        anchorId: anchor.id,
+        owner: slot.owner,
+        reason: slot.reason,
+        kind: slot.kind,
+        bytes,
+        measured,
+        unwired,
+        dynamic,
+        overridden: resolved.overridden(slot.id)
+      });
+      slots.push(row);
+      anchorSlots.push(row);
+    }
+    const pure = anchorOwners.size === 1 ? [...anchorOwners][0] : void 0;
+    if (pure === void 0) counts.mixed += 1;
+    else counts.pure[pure] += 1;
+    counts.total += 1;
+    const anchorUnmeasured = anchorSlots.filter((slot) => slot.unwired).length;
+    const anchorDynamic = anchorSlots.filter((slot) => slot.dynamic).length;
+    const perChannel = channels.get(anchor.channel) ?? { anchors: 0, wired: 0, bytes: 0, unmeasuredSlots: 0, dynamicSlots: 0 };
+    perChannel.anchors += 1;
+    if (anchor.wired === true) perChannel.wired += 1;
+    perChannel.bytes += anchorBytes;
+    perChannel.unmeasuredSlots += anchorUnmeasured;
+    perChannel.dynamicSlots += anchorDynamic;
+    channels.set(anchor.channel, perChannel);
+    anchors.push(Object.freeze({
+      anchorId: anchor.id,
+      channel: anchor.channel,
+      presence: anchor.presence,
+      wired: anchor.wired === true,
+      owner: pure ?? "mixed",
+      bytes: anchorBytes,
+      unmeasuredSlots: anchorUnmeasured,
+      dynamicSlots: anchorDynamic,
+      slots: Object.freeze(anchorSlots)
+    }));
+  }
+  return Object.freeze({
+    slots: Object.freeze(slots),
+    anchors: Object.freeze(anchors),
+    owners: Object.freeze(owners),
+    channels: Object.freeze(PROMPT_CHANNELS.map((channel) => Object.freeze({
+      channel,
+      anchors: channels.get(channel)?.anchors ?? 0,
+      wired: channels.get(channel)?.wired ?? 0,
+      bytes: channels.get(channel)?.bytes ?? 0,
+      unmeasuredSlots: channels.get(channel)?.unmeasuredSlots ?? 0,
+      dynamicSlots: channels.get(channel)?.dynamicSlots ?? 0
+    }))),
+    counts: Object.freeze({
+      pure: Object.freeze(counts.pure),
+      mixed: counts.mixed,
+      total: counts.total,
+      slots: Object.freeze(slotsByOwner),
+      unmeasured: Object.freeze(unmeasuredByOwner),
+      dynamic: Object.freeze(dynamicByOwner),
+      // Flat totals so a caller never sums two maps by hand.
+      unmeasuredSlots: Object.values(unmeasuredByOwner).reduce((sum, value) => sum + value, 0),
+      dynamicSlots: Object.values(dynamicByOwner).reduce((sum, value) => sum + value, 0)
+    })
+  });
+}
+
 // internal/config-spec.js
 var MAX_TIMER_DELAY_MS = 2147483647;
 var SETTINGS_NAMESPACE = "ptc-plus";
@@ -1495,6 +2075,24 @@ var CONFIG_FIELDS = Object.freeze([
     descriptionEn: "Rebuilds recoverable REPL state from the session journal after a worker restart."
   },
   {
+    key: "capabilityPromptTextEnabled",
+    type: "boolean",
+    default: true,
+    label: "\u63D0\u793A\u6587\u672C",
+    labelEn: "Prompt text",
+    description: "\u628A\u300C\u63D0\u793A\u6587\u672C\u300D\u9875\u7B7E\u91CC\u6539\u5199\u7684\u56FA\u5B9A\u53E5\u5B50\u5E94\u7528\u5230\u6A21\u578B\u7684\u8BF7\u6C42\u3001\u5DE5\u5177\u8BF4\u660E\u3001\u80FD\u529B\u65B9\u6848\u4E0E\u63D0\u793A\uFF1B\u5173\u95ED\u540E\u8FD9\u4E9B\u6E20\u9053\u4E00\u5F8B\u56DE\u5230\u5185\u7F6E\u6587\u672C\uFF0C\u5DF2\u4FDD\u5B58\u7684\u6539\u5199\u4FDD\u7559\u4F46\u6682\u505C\u751F\u6548\u3002",
+    descriptionEn: "Applies the sentences edited in the Prompt text tab to model requests, tool descriptions, the capability plan and tips. When off, those channels use the built-in text; saved edits are kept but paused."
+  },
+  {
+    key: "promptText",
+    type: "string",
+    default: PROMPT_TEXT_DEFAULT,
+    label: "\u63D0\u793A\u6587\u672C\u8986\u76D6",
+    labelEn: "Prompt text overrides",
+    description: "\u6309\u69FD\u4F4D id \u8986\u76D6\u63D2\u4EF6\u5199\u7ED9\u6A21\u578B\u7684\u56FA\u5B9A\u63D0\u793A\u6587\u672C\uFF1B\u7A7A\u5BF9\u8C61\u8868\u793A\u4F7F\u7528\u5185\u7F6E\u6587\u672C\u3002\u8BCA\u65AD\u3001\u4FE1\u5C01\u4E0E\u7531\u914D\u7F6E\u6D3E\u751F\u7684\u7B56\u7565\u53E5\u59CB\u7EC8\u53EA\u8BFB\u3002",
+    descriptionEn: "Override the fixed prompt text the plugin writes for the model, keyed by slot id; an empty document keeps the built-in text. Diagnostics, message envelopes and configuration-derived policy sentences stay read-only."
+  },
+  {
     key: "unmeasuredCellLimit",
     type: "integer",
     default: 2,
@@ -1765,7 +2363,9 @@ var CONFIG_GROUPS = Object.freeze([
       "capabilityBudgetBytes",
       "capabilityDirectoryBytes",
       "capabilityRecoveryBytes",
-      "modelPreviewTokens"
+      "modelPreviewTokens",
+      "capabilityPromptTextEnabled",
+      "promptText"
     ])
   }
 ]);
@@ -1778,16 +2378,6 @@ var CONFIG_MODULES = Object.freeze([
 var CONFIG_DEFAULTS = Object.freeze(
   Object.fromEntries(CONFIG_FIELDS.map((field) => [field.key, field.default]))
 );
-
-// internal/repl-rewrite-contract.js
-var LEGACY_DEFAULT_EXPORT_BINDING = "legacy-variable";
-var LIVE_DEFAULT_EXPORT_BINDING = "live-readonly";
-var LEGACY_IMPORT_EXPRESSION_BOUNDARY = "legacy";
-var LIVE_IMPORT_EXPRESSION_BOUNDARY = "statement-safe";
-var LIVE_MODULE_SEMANTICS = Object.freeze({
-  defaultExportBinding: LIVE_DEFAULT_EXPORT_BINDING,
-  importExpressionBoundary: LIVE_IMPORT_EXPRESSION_BOUNDARY
-});
 
 // internal/session-journal-schema.js
 var IMPORT_BOUNDARY_JOURNAL_VERSION = 7;
@@ -1982,11 +2572,11 @@ var {
   maxStringBytes: MAX_STRING_BYTES
 } = DEFAULT_VALUE_LIMITS;
 var textEncoder = new TextEncoder();
-function isRecord2(value) {
+function isRecord3(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 function hasClosedFields(value, allowed, required = []) {
-  if (!isRecord2(value)) return false;
+  if (!isRecord3(value)) return false;
   const keys2 = Reflect.ownKeys(value);
   if (keys2.some((key) => typeof key !== "string" || !allowed.has(key) || !Object.prototype.propertyIsEnumerable.call(value, key))) return false;
   return [...required].every((key) => Object.hasOwn(value, key));
@@ -1995,7 +2585,7 @@ function hasExactFields(value, fields) {
   return hasClosedFields(value, fields, fields) && Reflect.ownKeys(value).length === fields.size;
 }
 function hasExactOrderedFields(value, fields) {
-  if (!isRecord2(value)) return false;
+  if (!isRecord3(value)) return false;
   const keys2 = Reflect.ownKeys(value);
   const ordered = [...fields];
   return keys2.length === ordered.length && keys2.every((key, index2) => key === ordered[index2] && Object.prototype.propertyIsEnumerable.call(value, key));
@@ -2010,7 +2600,7 @@ function isValidPosition(value) {
   return hasExactFields(value, POSITION_FIELDS) && Number.isSafeInteger(value.line) && value.line >= 1 && Number.isSafeInteger(value.column) && value.column >= 1;
 }
 function isValidDiagnosticCause(value, depth) {
-  if (depth > 16 || !isRecord2(value)) return false;
+  if (depth > 16 || !isRecord3(value)) return false;
   if (Object.hasOwn(value, "severity")) return isValidDiagnostic(value, depth + 1);
   return hasClosedFields(value, CAUSE_FIELDS, ["message"]) && (value.code === void 0 || isLine(value.code)) && isLine(value.message);
 }
@@ -2044,7 +2634,7 @@ function isValidValueAtom(value, state) {
   if (value === null || typeof value === "boolean") return true;
   if (typeof value === "string") return accountText(value, state);
   if (typeof value === "number") return Number.isFinite(value) && !Object.is(value, -0);
-  if (!isRecord2(value) || typeof value.tag !== "string") return false;
+  if (!isRecord3(value) || typeof value.tag !== "string") return false;
   if (value.tag === "undefined") return hasExactOrderedFields(value, VALUE_UNDEFINED_FIELDS);
   if (value.tag === "number") {
     return hasExactOrderedFields(value, VALUE_NUMBER_FIELDS) && ["nan", "infinity", "-infinity", "-0"].includes(value.value);
@@ -2072,7 +2662,7 @@ function isValidValueWire(value) {
   };
   if (!isValidValueAtom(value.root, state)) return false;
   for (const [nodeIndex, node] of value.nodes.entries()) {
-    if (!state.discovered.has(nodeIndex) || !isRecord2(node)) return false;
+    if (!state.discovered.has(nodeIndex) || !isRecord3(node)) return false;
     if (node.type === "array") {
       if (!hasExactOrderedFields(node, VALUE_ARRAY_FIELDS) || !Number.isSafeInteger(node.length) || node.length < 0 || node.length > MAX_ARRAY_LENGTH || !Array.isArray(node.entries)) return false;
       state.arraySlots += node.length;
@@ -2117,7 +2707,7 @@ function isValidModuleSemantics(value, version) {
   return hasExactFields(value, legacy ? LEGACY_MODULE_SEMANTICS_FIELDS : MODULE_SEMANTICS_FIELDS) && DEFAULT_EXPORT_BINDINGS.has(value.defaultExportBinding) && (legacy || IMPORT_EXPRESSION_BOUNDARIES.has(value.importExpressionBoundary));
 }
 function isValidCall(value) {
-  if (!isRecord2(value) || value.ok !== true && value.ok !== false) return false;
+  if (!isRecord3(value) || value.ok !== true && value.ok !== false) return false;
   const fields = value.ok ? CALL_SUCCESS_FIELDS : CALL_ERROR_FIELDS;
   if (!hasExactFields(value, fields) || typeof value.global !== "string" || typeof value.member !== "string" || !isValidValueWire(value.args) || !isSafeSequence(value.settle)) return false;
   return value.ok ? isValidValueWire(value.value) : typeof value.error === "string";
@@ -2128,7 +2718,7 @@ function isValidOperation(value) {
   return typeof value.name === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(value.name);
 }
 function isValidCompletion(value) {
-  if (!isRecord2(value) || !["return", "throw"].includes(value.kind)) return false;
+  if (!isRecord3(value) || !["return", "throw"].includes(value.kind)) return false;
   if (value.kind === "return") {
     if (!hasClosedFields(value, RETURN_FIELDS, ["kind", "hasValue"]) || typeof value.hasValue !== "boolean") return false;
     return value.hasValue ? Object.hasOwn(value, "value") && isValidValueWire(value.value) : !Object.hasOwn(value, "value");
@@ -2142,7 +2732,7 @@ function isValidConfirms(value, version) {
   return value.every(isSafeSequence);
 }
 function isReadableJournalUnchecked(value) {
-  if (!isRecord2(value) || !JOURNAL_VERSIONS.has(value.version) || !STATUSES.has(value.status)) {
+  if (!isRecord3(value) || !JOURNAL_VERSIONS.has(value.version) || !STATUSES.has(value.status)) {
     return false;
   }
   const predecessor = value.version < 4;
@@ -2212,7 +2802,7 @@ function isValidRecoveryBoundaries(value) {
 }
 function isValidEditRelation(meta2, args, journal) {
   try {
-    if (!isRecord2(meta2) || !isRecord2(args) || !isValidEditTarget(meta2.dshPtcPlusEdit) || !isValidDerivedRun(meta2.dshPtcPlusDerivedRun) || journal.status === "noop") return false;
+    if (!isRecord3(meta2) || !isRecord3(args) || !isValidEditTarget(meta2.dshPtcPlusEdit) || !isValidDerivedRun(meta2.dshPtcPlusDerivedRun) || journal.status === "noop") return false;
     if (Object.hasOwn(meta2, "dshPtcPlusRecoveryBoundaries") && !isValidRecoveryBoundaries(meta2.dshPtcPlusRecoveryBoundaries)) return false;
     return !Object.hasOwn(args, "expected_target_call_seq") || args.expected_target_call_seq === meta2.dshPtcPlusEdit.targetCallSeq;
   } catch {
@@ -2226,7 +2816,7 @@ function rawArguments(block, settled) {
 function parseArguments(raw) {
   try {
     const value = JSON.parse(raw);
-    return isRecord2(value) ? value : void 0;
+    return isRecord3(value) ? value : void 0;
   } catch {
     return void 0;
   }
@@ -2235,7 +2825,7 @@ function resultText(block) {
   if (!Array.isArray(block.content)) return "";
   try {
     const parts = block.content.map((item) => item?.type === "text" && typeof item.text === "string" ? item.text : JSON.stringify(item, null, 2));
-    if (parts.length === 0 && isRecord2(block.error)) {
+    if (parts.length === 0 && isRecord3(block.error)) {
       return [block.error.name, block.error.code].filter((value) => typeof value === "string").join(": ");
     }
     return parts.filter((value) => typeof value === "string").join("\n");
@@ -2275,17 +2865,17 @@ function isDurableRecoveryDiagnostic(diagnostic) {
   return diagnostic.code === "PTC-R002" && diagnostic.severity === "warning" && diagnostic.phase === "recover" && diagnostic.stateEffect === "rolled-back";
 }
 function derivePtcToolView(block, toolName = void 0) {
-  const settled = isRecord2(block) && block.kind === "tool-result";
-  const argsRaw = isRecord2(block) ? rawArguments(block, settled) : "";
+  const settled = isRecord3(block) && block.kind === "tool-result";
+  const argsRaw = isRecord3(block) ? rawArguments(block, settled) : "";
   const args = parseArguments(argsRaw);
   const code2 = typeof args?.code === "string" ? args.code : argsRaw;
   const explicitDescription = typeof args?.description === "string" && args.description.length > 0 ? args.description : void 0;
-  const generatedDescription = settled && isRecord2(block.meta) && typeof block.meta[GENERATED_RUN_CODE_DESCRIPTION_KEY] === "string" && block.meta[GENERATED_RUN_CODE_DESCRIPTION_KEY].length > 0 ? block.meta[GENERATED_RUN_CODE_DESCRIPTION_KEY] : void 0;
+  const generatedDescription = settled && isRecord3(block.meta) && typeof block.meta[GENERATED_RUN_CODE_DESCRIPTION_KEY] === "string" && block.meta[GENERATED_RUN_CODE_DESCRIPTION_KEY].length > 0 ? block.meta[GENERATED_RUN_CODE_DESCRIPTION_KEY] : void 0;
   const description = (explicitDescription ?? generatedDescription)?.split(/\r?\n/, 1)[0] ?? "";
   const descriptionGenerated = explicitDescription === void 0 && generatedDescription !== void 0;
   const output = settled ? resultText(block) : "";
   const state = !settled ? "running" : block.error?.code === "interrupted" ? "stopped" : block.isError === true ? "error" : "ok";
-  const journal = settled && isRecord2(block.meta) && isCountableJournal(block.meta.dshPtcPlus) ? block.meta.dshPtcPlus : void 0;
+  const journal = settled && isRecord3(block.meta) && isCountableJournal(block.meta.dshPtcPlus) ? block.meta.dshPtcPlus : void 0;
   if (journal === void 0) {
     return Object.freeze({ state, description, descriptionGenerated, code: code2, output, ptc: false, features: Object.freeze([]) });
   }
@@ -2893,6 +3483,7 @@ function resolveConfig(config2 = {}) {
   }
   for (const field of CONFIG_FIELDS) assertField(field, resolved[field.key]);
   validateCapabilityProfiles(JSON.parse(resolved.capabilityProfiles));
+  validatePromptTextDocument(resolved.promptText);
   for (const [key, array] of [["capabilityBaseline", true], ["capabilityOverrides", false]]) {
     let value;
     try {
@@ -8667,7 +9258,8 @@ function createCapabilitySettingsViews(React32, { SearchIcon, Select: Select2, M
   const responsibilityGroups = [
     { tab: "manual", keys: ["rules"] },
     { tab: "budgets", keys: ["description", "recovery", "preview"] },
-    { tab: "statistics", keys: ["statistics"] }
+    { tab: "statistics", keys: ["statistics"] },
+    { tab: "prompt", keys: ["promptText"] }
   ];
   const responsibilities = responsibilityGroups.flatMap((group) => group.keys);
   const choicesFor = (configuration, plan) => {
@@ -8684,7 +9276,10 @@ function createCapabilitySettingsViews(React32, { SearchIcon, Select: Select2, M
       enabled: configuration?.capabilityManagementEnabled ?? plan?.enabled,
       statistics,
       recoveryEnabled: configuration?.capabilityRecoveryEnabled ?? (historical ? plan.enabled : void 0),
-      previewEnabled: configuration?.modelPreviewEnabled ?? (historical ? plan.enabled : void 0)
+      previewEnabled: configuration?.modelPreviewEnabled ?? (historical ? plan.enabled : void 0),
+      // The switch is new: a stored configuration without it means "on", the
+      // documented default, while an unreadable configuration stays unknown.
+      promptTextEnabled: configuration === void 0 ? void 0 : configuration.capabilityPromptTextEnabled !== false
     };
   };
   const flagsFor = (settings) => ({
@@ -8692,7 +9287,8 @@ function createCapabilitySettingsViews(React32, { SearchIcon, Select: Select2, M
     description: settings.enabled,
     statistics: settings.statistics?.enabled,
     recovery: settings.recoveryEnabled,
-    preview: settings.previewEnabled
+    preview: settings.previewEnabled,
+    promptText: settings.promptTextEnabled
   });
   const choiceState = (retained, applied, key) => typeof retained[key] !== "boolean" ? "unknown" : retained[key] ? typeof applied[key] !== "boolean" ? "unknown" : applied[key] === false ? "paused" : "selected" : key === "rules" || key === "description" ? "host" : "unselected";
   function CombinationSummary({
@@ -8754,7 +9350,7 @@ function createCapabilitySettingsViews(React32, { SearchIcon, Select: Select2, M
               type: "button",
               className: "ptcPlusCombinationChoice",
               "data-state": state,
-              "aria-controls": key === "rules" || key === "statistics" ? `${id2}-pane-${group.tab}` : `${id2}-context-pane-${key}`,
+              "aria-controls": key === "promptText" ? `${id2}-pane-prompt` : key === "rules" || key === "statistics" ? `${id2}-pane-${group.tab}` : `${id2}-context-pane-${key}`,
               onClick: () => onNavigate(key)
             },
             h("span", null, t2(`capabilities.combination.${key}`)),
@@ -10100,6 +10696,242 @@ function createCapabilitySettingsViews(React32, { SearchIcon, Select: Select2, M
     update(tabs[next]);
     event.currentTarget.parentElement.querySelectorAll("[role=tab]")[next].focus({ preventScroll: true });
   }
+  function PromptTextSettings({ value, disabled, onChange, t: t2, id: id2 }) {
+    let document2;
+    let readError;
+    try {
+      document2 = parsePromptTextDocument(value.promptText);
+    } catch (error) {
+      readError = error.message;
+      document2 = { schema: PROMPT_TEXT_SCHEMA, overrides: {} };
+    }
+    const paused = value.capabilityPromptTextEnabled === false;
+    const blocked = paused || disabled === true || typeof disabled === "function" && disabled("promptText") === true;
+    const resolved = resolvePromptText(value.promptText);
+    const [openSlots, setOpenSlots] = React32.useState({});
+    const account = accountPromptText(resolved);
+    const write2 = (overrides2) => {
+      onChange(
+        CONFIG_FIELDS.find((field2) => field2.key === "promptText"),
+        JSON.stringify({ schema: PROMPT_TEXT_SCHEMA, overrides: overrides2 })
+      );
+    };
+    const update = (slotId, next) => {
+      const overrides2 = { ...document2.overrides };
+      if (next === void 0) delete overrides2[slotId];
+      else overrides2[slotId] = next;
+      write2(overrides2);
+    };
+    const unmeasuredSlots = account.counts.unmeasuredSlots;
+    const dynamicSlots = account.counts.dynamicSlots;
+    const unwiredAnchors = account.anchors.filter((anchor) => anchor.wired !== true);
+    const measuredBytes = account.owners.A + account.owners.B + account.owners.C;
+    const card = (key, labelKey) => {
+      const unmeasured = account.counts.unmeasured[key];
+      const dynamic = account.counts.dynamic[key];
+      const bytes = account.owners[key];
+      const projected = account.slots.some((slot) => slot.owner === key && slot.measured && slot.kind === "projected");
+      const measured = bytes > 0 ? h("span", { className: "ptcPlusDetail" }, t2("capabilities.prompt.cardBytes", { bytes })) : null;
+      return h(
+        "div",
+        { key, className: "ptcPlusCapabilityField", "data-owner": key },
+        h("span", null, t2(labelKey)),
+        measured,
+        projected ? h(
+          "span",
+          { className: "ptcPlusDetail", "data-prompt-template-bytes": "true" },
+          t2("capabilities.prompt.templateBytes")
+        ) : null,
+        unmeasured === 0 ? null : h("span", { className: "ptcPlusDetail" }, t2("capabilities.prompt.cardUnwired", { count: unmeasured })),
+        // A dynamic slot is measured at assembly, so it carries no bytes here; the
+        // card must still account for it or the owner reads as if it had nothing.
+        dynamic === 0 ? null : h("span", { className: "ptcPlusDetail" }, t2("capabilities.prompt.cardDynamic", { count: dynamic }))
+      );
+    };
+    const cards = h(
+      "div",
+      { className: "ptcPlusPromptCards" },
+      card("A", "capabilities.prompt.ownerEditable"),
+      card("B", "capabilities.prompt.ownerReadOnly"),
+      card("C", "capabilities.prompt.ownerOther"),
+      h(
+        "div",
+        { key: "mixed", className: "ptcPlusCapabilityField" },
+        h("span", null, t2("capabilities.prompt.ownerMixed")),
+        h("span", { className: "ptcPlusDetail" }, t2("capabilities.prompt.cardMixed", { count: account.counts.mixed }))
+      )
+    );
+    const totals = h("p", { className: "ptcPlusDetail" }, t2("capabilities.prompt.totals", {
+      bytes: measuredBytes,
+      anchors: account.counts.total,
+      unmeasured: unmeasuredSlots,
+      dynamic: dynamicSlots
+    }));
+    const slotLabel = (slot) => {
+      if (slot.measured) return t2("capabilities.prompt.slotBytes", { bytes: slot.bytes, owner: slot.owner });
+      if (slot.kind === "aggregate") return t2("capabilities.prompt.aggregateSlot");
+      return t2(slot.unwired === true ? "capabilities.prompt.unmeasuredSlot" : "capabilities.prompt.dynamicSlot");
+    };
+    const slotControl = (anchor, slot) => {
+      const override = Object.hasOwn(document2.overrides, slot.slotId) ? document2.overrides[slot.slotId] : void 0;
+      const asset = PROMPT_ASSETS.find((candidate) => candidate.id === slot.slotId);
+      if (asset === void 0 || slot.owner !== "A" || asset.defaultText === null) return null;
+      const current = override ?? "";
+      return h(
+        "div",
+        {
+          key: `${slot.slotId}-control`,
+          className: "ptcPlusPromptEditor",
+          "data-editor-slot": slot.slotId
+        },
+        h("textarea", {
+          id: `${id2}-prompt-${slot.slotId}`,
+          rows: 2,
+          disabled: blocked,
+          spellCheck: false,
+          placeholder: asset.defaultText,
+          "aria-label": slot.slotId,
+          value: current,
+          onChange: (event) => update(slot.slotId, event.target.value === "" ? void 0 : event.target.value)
+        }),
+        h(
+          "div",
+          { className: "ptcPlusPromptEditorFoot" },
+          h("span", { className: "ptcPlusDetail" }, t2("capabilities.prompt.bytes", {
+            used: slot.bytes,
+            max: PROMPT_TEXT_MAX_SLOT_BYTES
+          })),
+          override === "" ? h("span", { className: "ptcPlusDetail" }, t2("capabilities.prompt.omitted")) : null,
+          h("button", {
+            type: "button",
+            disabled: blocked || override === void 0,
+            onClick: () => update(slot.slotId, void 0)
+          }, t2("capabilities.prompt.reset")),
+          asset.omittable ? h("button", {
+            type: "button",
+            disabled: blocked,
+            onClick: () => update(slot.slotId, "")
+          }, t2("capabilities.prompt.omit")) : null
+        )
+      );
+    };
+    const chip = (anchor, slot) => {
+      const markers = [
+        slot.measured && slot.kind === "projected" ? h(
+          "span",
+          { key: "template", className: "ptcPlusPromptChipNote", "data-prompt-template-bytes": "true" },
+          t2("capabilities.prompt.templateBytes")
+        ) : null,
+        slot.kind === "aggregate" ? h(
+          "span",
+          { key: "aggregate", className: "ptcPlusPromptChipNote", "data-prompt-aggregate-set": "true" },
+          t2("capabilities.prompt.aggregateFrozen")
+        ) : null
+      ].filter(Boolean);
+      const shared = {
+        className: "ptcPlusPromptChip",
+        "data-slot-id": slot.slotId,
+        "data-slot-kind": slot.kind,
+        title: slot.slotId
+      };
+      if (slot.owner !== "A") {
+        return h(
+          "span",
+          { key: slot.slotId, ...shared, "data-readonly": "true" },
+          h("span", { className: "ptcPlusPromptChipLabel" }, slot.slotId),
+          h(
+            "span",
+            { className: "ptcPlusPromptChipNote" },
+            t2("capabilities.prompt.readonlyReason", { reason: slot.reason, kind: slot.kind })
+          ),
+          ...markers
+        );
+      }
+      const selected = openSlots[anchor.anchorId] === slot.slotId;
+      return h(
+        "button",
+        {
+          key: slot.slotId,
+          ...shared,
+          type: "button",
+          disabled: blocked,
+          "aria-pressed": selected,
+          onClick: () => setOpenSlots((previous) => ({ ...previous, [anchor.anchorId]: slot.slotId }))
+        },
+        h("span", { className: "ptcPlusPromptChipLabel" }, slot.slotId),
+        h("span", { className: "ptcPlusPromptChipNote" }, t2("capabilities.prompt.chipMeta", { owner: slot.owner })),
+        ...markers
+      );
+    };
+    const rows = account.anchors.map((anchor) => {
+      const editableSlots = anchor.slots.filter((slot) => slot.owner === "A" && PROMPT_ASSETS.find((candidate) => candidate.id === slot.slotId)?.defaultText !== null);
+      const selectedId = openSlots[anchor.anchorId] ?? editableSlots[0]?.slotId;
+      const selected = editableSlots.find((slot) => slot.slotId === selectedId);
+      const editor = anchor.wired !== true || editableSlots.length === 0 ? null : slotControl(anchor, selected);
+      const bytes = anchor.wired !== true ? h(
+        "span",
+        { className: "ptcPlusPromptAnchorBytes", "data-anchor-bytes": "unwired" },
+        t2("capabilities.prompt.unwiredRow", { slots: anchor.unmeasuredSlots })
+      ) : h(
+        "span",
+        { className: "ptcPlusPromptAnchorBytes", "data-anchor-bytes": String(anchor.bytes) },
+        paused ? t2("capabilities.prompt.pausedBytes", { bytes: anchor.bytes }) : t2("capabilities.prompt.cardBytes", { bytes: anchor.bytes })
+      );
+      return h(
+        "div",
+        {
+          key: anchor.anchorId,
+          className: "ptcPlusPromptAnchor",
+          "data-anchor-id": anchor.anchorId,
+          "data-wired": anchor.wired === true ? "true" : "false",
+          "data-paused": paused ? "true" : "false"
+        },
+        h(
+          "div",
+          { className: "ptcPlusPromptAnchorHead" },
+          h("code", { className: "ptcPlusPromptAnchorId", title: anchor.anchorId }, anchor.anchorId),
+          h("span", { className: "ptcPlusPromptAnchorMeta" }, t2("capabilities.prompt.anchorMeta", {
+            channel: anchor.channel,
+            presence: anchor.presence,
+            owner: anchor.owner === "mixed" ? t2("capabilities.prompt.ownerMixed") : anchor.owner
+          })),
+          bytes
+        ),
+        h("div", { className: "ptcPlusPromptChips" }, ...anchor.slots.map((slot) => chip(anchor, slot))),
+        editor
+      );
+    });
+    return h(
+      "section",
+      {
+        className: "ptcPlusPromptText",
+        "data-prompt-paused": paused ? "true" : "false"
+      },
+      h("p", null, t2("capabilities.prompt.intro")),
+      paused ? h(
+        "p",
+        { className: "ptcPlusPromptPaused", role: "status", "data-prompt-paused-notice": "true" },
+        t2("capabilities.prompt.paused")
+      ) : null,
+      readError === void 0 ? null : h("p", { className: "ptcPlusDetail" }, t2("capabilities.prompt.unreadable", { error: readError })),
+      ...resolved.reported.map((entry, index2) => h(
+        "p",
+        { key: `report-${index2}`, className: "ptcPlusDetail" },
+        t2("capabilities.prompt.reported", {
+          asset: entry.slotId ?? entry.anchorId ?? "document",
+          reason: entry.reason
+        })
+      )),
+      cards,
+      totals,
+      unwiredAnchors.length === 0 ? null : h(
+        "p",
+        { className: "ptcPlusDetail" },
+        t2("capabilities.prompt.unwiredSummary", { anchors: unwiredAnchors.length, slots: unmeasuredSlots })
+      ),
+      ...rows
+    );
+  }
   function CapabilityWorkbench({
     value,
     configurationReady,
@@ -10129,7 +10961,7 @@ function createCapabilitySettingsViews(React32, { SearchIcon, Select: Select2, M
   }) {
     const [tab, setTab] = React32.useState("manual");
     const [contextSection, setContextSection] = React32.useState("description");
-    const tabs = ["manual", "budgets", "statistics", "plans"];
+    const tabs = ["manual", "budgets", "statistics", "prompt", "plans"];
     const feedback = saving ? t2("state.syncing") : saveStatus && saveStatus.key !== "status.applied" ? t2(saveStatus.key, saveStatus.params) : t2(configurationWritable ? "capabilities.savedForNew" : "footer.readOnly");
     return h(
       "div",
@@ -10149,7 +10981,7 @@ function createCapabilitySettingsViews(React32, { SearchIcon, Select: Select2, M
         t: t2,
         id: id2,
         onNavigate: (key) => {
-          setTab(key === "rules" ? "manual" : key === "statistics" ? "statistics" : "budgets");
+          setTab(key === "rules" ? "manual" : key === "statistics" ? "statistics" : key === "promptText" ? "prompt" : "budgets");
           if (["description", "recovery", "preview"].includes(key)) setContextSection(key);
         }
       }),
@@ -10226,7 +11058,7 @@ function createCapabilitySettingsViews(React32, { SearchIcon, Select: Select2, M
           id: id2,
           section: contextSection,
           setSection: setContextSection
-        }) : h(ConfigurationProfiles, { value, plans, disabled, writable: configurationWritable, onChange, onApplyConfiguration, t: t2 })
+        }) : key === "prompt" ? tab === "prompt" ? h(PromptTextSettings, { value, disabled, onChange, t: t2, id: id2 }) : null : h(ConfigurationProfiles, { value, plans, disabled, writable: configurationWritable, onChange, onApplyConfiguration, t: t2 })
       ))
     );
   }
@@ -12494,7 +13326,7 @@ var {
   appendArray: appendArray2,
   popArray
 } = runtimeIntrinsics;
-function isRecord3(value) {
+function isRecord4(value) {
   return value !== null && typeof value === "object" && !isArray2(value);
 }
 function assertOwnFields(value, allowed, label) {
@@ -12511,7 +13343,7 @@ function assertOwnFields(value, allowed, label) {
 var FIELDS = /* @__PURE__ */ new Set(["includeDeclaration", "instructions", "enabled", "declaration"]);
 function normalizeBindingModelContext(value) {
   if (value === void 0) return void 0;
-  if (!isRecord3(value)) throw new TypeError("binding modelContext must be an object");
+  if (!isRecord4(value)) throw new TypeError("binding modelContext must be an object");
   assertOwnFields(value, FIELDS, "binding modelContext");
   const { includeDeclaration = true, instructions = "", enabled = true, declaration = "" } = value;
   if (typeof includeDeclaration !== "boolean") throw new TypeError("binding modelContext.includeDeclaration must be a boolean");
@@ -12544,7 +13376,7 @@ var MAX_COMMAND_ID_LENGTH = 256;
 var VIEW_FIELDS = /* @__PURE__ */ new Set(["phase", "capability", "commandId"]);
 var PHASES2 = /* @__PURE__ */ new Set(["idle", "pending", "ready", "failed"]);
 function normalizeCandidate(value) {
-  if (!isRecord3(value) || typeof value.requestId !== "string" || value.requestId.length === 0 || value.requestId.length > 128 || !Number.isSafeInteger(value.version) || value.version < 1 || !["new", "edit"].includes(value.mode) || !isRecord3(value.entry) || !["namespace", "top-level"].includes(value.entry.scope) || value.entry.enabled !== false || !Array.isArray(value.entry.symbols) || value.entry.symbols.some((symbol) => typeof symbol !== "string") || ["id", "name", "purpose", "source"].some((key) => typeof value.entry[key] !== "string") || value.entry.source.length === 0 || value.entry.source.length > 65536) {
+  if (!isRecord4(value) || typeof value.requestId !== "string" || value.requestId.length === 0 || value.requestId.length > 128 || !Number.isSafeInteger(value.version) || value.version < 1 || !["new", "edit"].includes(value.mode) || !isRecord4(value.entry) || !["namespace", "top-level"].includes(value.entry.scope) || value.entry.enabled !== false || !Array.isArray(value.entry.symbols) || value.entry.symbols.some((symbol) => typeof symbol !== "string") || ["id", "name", "purpose", "source"].some((key) => typeof value.entry[key] !== "string") || value.entry.source.length === 0 || value.entry.source.length > 65536) {
     throw new Error("invalid dsh-ptc-plus accepted binding candidate");
   }
   const modelContext = normalizeBindingModelContext(value.entry.modelContext);
@@ -12593,7 +13425,7 @@ function historyFields(value) {
   return value.history === void 0 ? {} : { history: normalizeHistory(value.history) };
 }
 function exactFields(value, fields) {
-  if (!isRecord3(value)) return false;
+  if (!isRecord4(value)) return false;
   const keys2 = Reflect.ownKeys(value);
   return keys2.length === fields.size && keys2.every((key) => typeof key === "string" && fields.has(key) && Object.prototype.propertyIsEnumerable.call(value, key));
 }
@@ -39471,7 +40303,27 @@ var CLIENT_CSS = `
 .ptcPlusCapabilityToolbar{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:12px 0}.ptcPlusCapabilityToolbar>.ptcPlusSearch{flex:1 1 220px;min-width:0}.ptcPlusCapabilityTypes{display:flex;flex-wrap:wrap;gap:5px}.ptcPlusCapabilityTypes button{appearance:none;padding:6px 10px;border:1px solid var(--dsw-alias-border-l2);border-radius:6px;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;text-align:center;cursor:pointer}.ptcPlusCapabilityTypes [aria-pressed=true]{border-color:transparent;background:var(--dsw-alias-state-business-primary,#4d6bfe);color:var(--dsw-alias-bg-base,#fff)}
 .ptcPlusCapabilityFilter{display:flex;flex-direction:column;min-width:0;gap:6px;font-size:12px;color:var(--dsw-alias-label-secondary)}.ptcPlusCapabilityFilter>.ptcPlusSelectTrigger{width:100%;max-width:100%;font-size:12px}.ptcPlusCapabilityFilterFields{display:flex;align-items:flex-end;flex-wrap:wrap;gap:12px;padding:12px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px}.ptcPlusCapabilityFilterFields>.ptcPlusCapabilityFilter{flex:1 1 160px}.ptcPlusCapabilityOnlyCommon{display:flex;align-items:center;gap:6px;font-size:12px}.ptcPlusCapabilityOnlyCommon input{width:16px;height:16px;margin:0}.ptcPlusCapabilityResultLine,.ptcPlusActiveFilters{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px;margin:8px 0;color:var(--dsw-alias-label-secondary);font-size:11px}.ptcPlusCapabilityLink{appearance:none;padding:4px 0;border:0;background:transparent;color:var(--dsw-alias-state-business-primary,#4d6bfe);font:inherit;font-size:12px;cursor:pointer}.ptcPlusCapabilityLink:disabled{opacity:.5;cursor:default}
 .ptcPlusCapabilityTable{min-width:0;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;overflow:hidden}.ptcPlusCapabilityColumns,.ptcPlusCapabilityItem{display:grid;grid-template-columns:minmax(140px,1.6fr) 54px minmax(65px,.75fr) minmax(92px,1fr) minmax(104px,1fr);align-items:center;gap:10px;padding:10px 12px}.ptcPlusCapabilityColumns{color:var(--dsw-alias-label-tertiary);font-size:11px;background:var(--dsw-alias-bg-layer-2)}.ptcPlusCapabilitySort{appearance:none;display:inline-flex;align-items:center;justify-content:flex-start;gap:4px;width:100%;min-height:28px;padding:3px 0;border:0;border-radius:4px;background:transparent;color:inherit;font:inherit;text-align:start;cursor:pointer}.ptcPlusCapabilitySort>span{display:inline-flex;flex:none;align-items:center;justify-content:center;width:11px;height:11px;font-size:10px;line-height:1}.ptcPlusCapabilityColumns [aria-sort=ascending],.ptcPlusCapabilityColumns [aria-sort=descending]{color:var(--dsw-alias-state-business-primary,#4d6bfe)}.ptcPlusCapabilityContextCell>.ptcPlusCapabilityContext{width:100%}.ptcPlusCapabilityList{max-height:480px;overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable}.ptcPlusCapabilityItem{border-bottom:1px solid var(--dsw-alias-border-l2)}.ptcPlusCapabilityItem:last-child{border-bottom:0}.ptcPlusCapabilityItem[data-selected=true]{background:color-mix(in srgb,var(--dsw-alias-state-business-primary,#4d6bfe) 6%,transparent)}.ptcPlusCapabilityItem:not([data-selected=true]){cursor:pointer}.ptcPlusCapabilityItem:not([data-selected=true]):hover{background:var(--dsw-alias-interactive-bg-hover)}.ptcPlusCapabilityItem>*{min-width:0}.ptcPlusCapabilityIdentity{display:flex;flex-direction:column;gap:3px;min-width:0}.ptcPlusCapabilityName{font-size:13px;overflow-wrap:anywhere}.ptcPlusCapabilityIdentity code{color:var(--dsw-alias-label-tertiary);font-size:10px;line-height:15px;overflow-wrap:anywhere}.ptcPlusCapabilitySource{color:var(--dsw-alias-label-secondary);font-size:11px;overflow-wrap:anywhere}.ptcPlusCapabilityBadge{justify-self:start;padding:2px 6px;border-radius:4px;background:color-mix(in srgb,var(--dsw-alias-state-business-primary,#4d6bfe) 8%,transparent);color:var(--dsw-alias-state-business-primary,#4d6bfe);font-size:10px;line-height:17px}.ptcPlusCapabilityBadge[data-kind=skill]{color:var(--dsw-alias-label-secondary);background:var(--dsw-alias-bg-layer-2)}.ptcPlusCapabilityAvailability{display:flex;align-items:center;gap:6px;font-size:11px}.ptcPlusCapabilityAvailability[data-state=closed],.ptcPlusCapabilityAvailability[data-state=unapplied],.ptcPlusCapabilityAvailability[data-state=source-closed],.ptcPlusCapabilityAvailability[data-state=unknown],.ptcPlusCapabilityAvailability[data-state=unavailable]{color:var(--dsw-alias-label-tertiary)}.ptcPlusCapabilityContext{appearance:none;display:flex;align-items:center;justify-content:center;gap:6px;padding:5px 2px;border:0;border-radius:5px;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:12px;text-align:center;cursor:pointer}.ptcPlusCapabilityContext{justify-content:space-between;text-align:start}.ptcPlusCapabilityContext svg{flex:none;color:var(--dsw-alias-label-tertiary)}.ptcPlusCapabilityWorkbench button:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}
-.ptcPlusCapabilityEditorFields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:14px}.ptcPlusCapabilityField{display:flex;flex-direction:column;gap:6px;min-width:0;font-size:11px;color:var(--dsw-alias-label-secondary)}.ptcPlusCapabilityField>.ptcPlusSelectTrigger{width:100%;max-width:100%}.ptcPlusCapabilitySwitchRow{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:16px}.ptcPlusCapabilitySwitchText{display:flex;flex-direction:column;gap:3px;min-width:0}.ptcPlusCapabilitySwitchLabel{font-size:13px}.ptcPlusCapabilitySwitchHint{font-size:11px;color:var(--dsw-alias-label-tertiary)}@media(max-width:520px){.ptcPlusCapabilityEditorFields{grid-template-columns:minmax(0,1fr)}}.ptcPlusCapabilityNotice{padding:10px;border-radius:6px;background:var(--dsw-alias-bg-layer-2);font-size:12px;overflow-wrap:anywhere}.ptcPlusCapabilityEditorSection{margin-top:16px;padding-top:12px;border-top:1px solid var(--dsw-alias-border-l2);min-width:0}.ptcPlusCapabilityEditorSection h5{margin:0 0 8px;font-size:11px;line-height:18px;font-weight:500;color:var(--dsw-alias-label-tertiary)}.ptcPlusCapabilityEditorSection>.ptcPlusCapabilityProse{margin:0;font-size:12px;line-height:20px;white-space:pre-wrap;overflow-wrap:anywhere}.ptcPlusCapabilityEditorSection>.ptcPlusDetail{margin:0 0 8px}.ptcPlusCapabilityEmpty{padding:20px 10px;text-align:center}
+.ptcPlusCapabilityEditorFields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:14px}
+.ptcPlusPromptText{display:flex;flex-direction:column;gap:10px;min-width:0}
+.ptcPlusPromptCards{display:flex;flex-wrap:wrap;gap:10px}
+.ptcPlusPromptCards>.ptcPlusCapabilityField{flex:1 1 150px;min-width:130px;padding:8px 10px;border:1px solid var(--dsw-alias-border-l2);border-radius:6px;background:var(--dsw-alias-bg-layer-2)}
+.ptcPlusPromptAnchor{display:flex;flex-direction:column;gap:8px;min-width:0;padding:10px 12px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px}
+.ptcPlusPromptAnchor[data-wired=false]{background:var(--dsw-alias-bg-layer-2)}
+.ptcPlusPromptAnchorHead{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 12px;min-width:0}
+.ptcPlusPromptAnchorId{font-family:var(--dsw-alias-font-mono,ui-monospace,SFMono-Regular,Menlo,Consolas,monospace);font-size:12px;line-height:18px;color:var(--dsw-alias-label-primary);overflow-wrap:anywhere}
+.ptcPlusPromptAnchorMeta{flex:1 1 220px;min-width:0;font-size:11px;line-height:18px;color:var(--dsw-alias-label-secondary);overflow-wrap:anywhere}
+.ptcPlusPromptAnchorBytes{flex:none;font-size:11px;line-height:18px;color:var(--dsw-alias-label-secondary);white-space:nowrap}
+.ptcPlusPromptChips{display:flex;flex-wrap:wrap;gap:6px;min-width:0}
+.ptcPlusPromptChip{display:inline-flex;align-items:baseline;flex-wrap:wrap;gap:2px 6px;appearance:none;max-width:100%;padding:4px 8px;border:1px solid var(--dsw-alias-border-l2);border-radius:999px;background:transparent;color:var(--dsw-alias-label-primary);font:inherit;font-size:11px;line-height:16px;text-align:start;cursor:pointer}
+.ptcPlusPromptChip[aria-pressed=true]{border-color:var(--dsw-alias-state-business-primary,#4d6bfe);color:var(--dsw-alias-state-business-primary,#4d6bfe)}
+.ptcPlusPromptChip[data-readonly=true]{cursor:default;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-secondary)}
+.ptcPlusPromptChipLabel{font-family:var(--dsw-alias-font-mono,ui-monospace,SFMono-Regular,Menlo,Consolas,monospace);overflow-wrap:anywhere}
+.ptcPlusPromptChipNote{color:var(--dsw-alias-label-tertiary);overflow-wrap:anywhere}
+.ptcPlusPromptEditor{display:flex;flex-direction:column;gap:6px;min-width:0}
+.ptcPlusPromptEditor textarea{width:100%;box-sizing:border-box;min-height:64px;resize:vertical;font-family:var(--dsw-alias-font-mono,ui-monospace,SFMono-Regular,Menlo,Consolas,monospace);font-size:12px;line-height:18px}
+.ptcPlusPromptEditorFoot{display:flex;flex-wrap:wrap;align-items:center;gap:8px;min-width:0}
+.ptcPlusPromptEditorFoot>.ptcPlusDetail{margin:0}
+.ptcPlusPromptPaused{padding:8px 10px;border-radius:6px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-state-warn-primary);font-size:12px;line-height:18px;overflow-wrap:anywhere}.ptcPlusCapabilityField{display:flex;flex-direction:column;gap:6px;min-width:0;font-size:11px;color:var(--dsw-alias-label-secondary)}.ptcPlusCapabilityField>.ptcPlusSelectTrigger{width:100%;max-width:100%}.ptcPlusCapabilitySwitchRow{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:16px}.ptcPlusCapabilitySwitchText{display:flex;flex-direction:column;gap:3px;min-width:0}.ptcPlusCapabilitySwitchLabel{font-size:13px}.ptcPlusCapabilitySwitchHint{font-size:11px;color:var(--dsw-alias-label-tertiary)}@media(max-width:520px){.ptcPlusCapabilityEditorFields{grid-template-columns:minmax(0,1fr)}}.ptcPlusCapabilityNotice{padding:10px;border-radius:6px;background:var(--dsw-alias-bg-layer-2);font-size:12px;overflow-wrap:anywhere}.ptcPlusCapabilityEditorSection{margin-top:16px;padding-top:12px;border-top:1px solid var(--dsw-alias-border-l2);min-width:0}.ptcPlusCapabilityEditorSection h5{margin:0 0 8px;font-size:11px;line-height:18px;font-weight:500;color:var(--dsw-alias-label-tertiary)}.ptcPlusCapabilityEditorSection>.ptcPlusCapabilityProse{margin:0;font-size:12px;line-height:20px;white-space:pre-wrap;overflow-wrap:anywhere}.ptcPlusCapabilityEditorSection>.ptcPlusDetail{margin:0 0 8px}.ptcPlusCapabilityEmpty{padding:20px 10px;text-align:center}
 .ptcPlusPolicyRules{padding:14px;margin:12px 0;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-layer-2)}.ptcPlusPolicyRules h4{margin:0}.ptcPlusPolicyRule{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:10px 0}.ptcPlusPolicyRule>strong{flex:1 1 100px;min-width:0;overflow-wrap:anywhere;font-size:12px}.ptcPlusPolicyRule>.ptcPlusCapabilityFilter{flex:1 1 160px}
 .ptcPlusContextLayout{display:grid;grid-template-columns:minmax(140px,27%) minmax(0,1fr);gap:20px;margin-top:16px}.ptcPlusContextNavigation{display:flex;flex-direction:column;gap:6px;padding:12px 12px 12px 0;border-right:1px solid var(--dsw-alias-border-l2)}.ptcPlusContextNavigation button{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:6px 10px;appearance:none;border:0;border-left:3px solid transparent;border-radius:4px;padding:14px 12px;background:transparent;color:var(--dsw-alias-label-primary);font:inherit;text-align:start;cursor:pointer}.ptcPlusContextNavigation [aria-selected=true]{border-left-color:var(--dsw-alias-state-business-primary,#4d6bfe);background:color-mix(in srgb,var(--dsw-alias-state-business-primary,#4d6bfe) 6%,transparent);color:var(--dsw-alias-state-business-primary,#4d6bfe)}.ptcPlusContextState{font-size:11px;line-height:18px;white-space:nowrap;color:var(--dsw-alias-label-secondary)}.ptcPlusContextState[data-enabled=true]{color:var(--dsw-alias-state-success-primary)}.ptcPlusContextState[data-paused=true]{color:var(--dsw-alias-state-warn-primary)}.ptcPlusContextSummary{flex-basis:100%;min-width:0;font-size:11px;line-height:18px;color:var(--dsw-alias-label-secondary);white-space:normal;overflow-wrap:anywhere}.ptcPlusContextContent{min-width:0;padding:12px 0}.ptcPlusContextContent h4{font-size:16px;margin:0}.ptcPlusContextContent h5{font-size:13px;line-height:20px;margin:0 0 12px}.ptcPlusContextContent>.ptcPlusCapabilityFilter{margin-top:16px}.ptcPlusPolicyAllocation{margin:18px 0}.ptcPlusAllocationChoices{display:flex;flex-wrap:wrap;gap:16px}.ptcPlusAllocationChoices label{display:flex;align-items:center;gap:8px;font-size:12px}.ptcPlusContextQuota,.ptcPlusAllocationPreview{margin:16px 0;padding:12px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px}
 .ptcPlusCapabilityWorkbench .ptcPlusButton[data-kind=primary]{background:var(--dsw-alias-state-business-primary,#4d6bfe);color:var(--dsw-alias-bg-base,#fff);border-color:transparent}.ptcPlusCapabilityWorkbench summary{cursor:pointer;line-height:22px;font-size:12px}.ptcPlusCapabilityWorkbench summary:focus-visible,.ptcPlusCapabilityWorkbench button:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary,#4d6bfe);outline-offset:2px}.ptcPlusCapabilitySessionTools{margin-top:18px;padding-top:10px;border-top:1px solid var(--dsw-alias-border-l2)}.ptcPlusCapabilityApply{display:flex;flex-wrap:wrap;align-items:flex-end;gap:10px;margin:12px 0}.ptcPlusCapabilityApply>.ptcPlusCapabilityFilter{flex:1 1 200px}.ptcPlusCapabilityRefresh{display:flex;flex-wrap:wrap;align-items:center;gap:8px;min-width:0}.ptcPlusCapabilityRefresh p{flex-basis:100%;margin:0;overflow-wrap:anywhere}.ptcPlusMenuUtilities .ptcPlusCapabilityRefresh{flex:1;align-self:stretch}.ptcPlusMenuUtilities .ptcPlusCapabilityRefresh>.ptcPlusMenuButton{width:100%}
@@ -39942,7 +40794,7 @@ function isReuseCount(value) {
   return Number.isSafeInteger(value) && value >= 0;
 }
 function exactFields2(value, fields) {
-  if (!isRecord3(value)) return false;
+  if (!isRecord4(value)) return false;
   const keys2 = Reflect.ownKeys(value);
   return keys2.length === fields.size && keys2.every((key) => typeof key === "string" && fields.has(key) && Object.prototype.propertyIsEnumerable.call(value, key));
 }
@@ -40041,6 +40893,7 @@ var CHROME_COPY = Object.freeze({
     "capabilities.combination.statistics": "\u4F7F\u7528\u7EDF\u8BA1",
     "capabilities.combination.recovery": "\u63D0\u793A\u6062\u590D",
     "capabilities.combination.preview": "\u8F93\u51FA\u8282\u9009",
+    "capabilities.combination.promptText": "\u63D0\u793A\u6587\u672C",
     "capabilities.combination.state.selected": "\u5DF2\u9009\u7528",
     "capabilities.combination.state.unselected": "\u672A\u9009\u7528",
     "capabilities.combination.state.paused": "\u5DF2\u6682\u505C",
@@ -40449,6 +41302,38 @@ var CHROME_COPY = Object.freeze({
     "capabilities.refreshAcknowledged": "DSH \u5DF2\u786E\u8BA4\u5237\u65B0\u64CD\u4F5C\u3002",
     "capabilities.settingsTabs": "\u80FD\u529B\u8BBE\u7F6E\u9875\u7B7E",
     "capabilities.tab.manual": "\u80FD\u529B\u914D\u7F6E",
+    "capabilities.tab.prompt": "\u63D0\u793A\u6587\u672C",
+    "capabilities.title.prompt": "\u6A21\u578B\u53EF\u89C1\u7684\u56FA\u5B9A\u63D0\u793A\u6587\u672C",
+    "capabilities.prompt.intro": "\u6309\u951A\u70B9\u4E0E\u69FD\u4F4D\u8986\u76D6\u63D2\u4EF6\u5199\u7ED9\u6A21\u578B\u7684\u56FA\u5B9A\u6587\u672C\uFF1B\u6BCF\u4E00\u884C\u6807\u6CE8\u6240\u5C5E\u901A\u9053\u3001\u5B58\u5728\u6761\u4EF6\u4E0E\u53EA\u8BFB\u539F\u56E0\uFF0C\u751F\u6548\u65F6\u673A\u968F\u901A\u9053\u4E0D\u540C\uFF08\u4E0B\u4E00\u6B21\u8BF7\u6C42\u3001\u65B0\u4F1A\u8BDD\u6216\u4E0B\u6B21\u89E6\u53D1\uFF09\u3002\u7F16\u8F91\u6846\u7559\u7A7A\u8868\u793A\u6062\u590D\u5185\u7F6E\u6587\u672C\uFF1B\u201C\u7701\u7565\u8BE5\u6BB5\u201D\u53EA\u5728\u53EF\u7701\u7565\u7684\u69FD\u4F4D\u4E0A\u51FA\u73B0\uFF0C\u8868\u793A\u4E0D\u6295\u9012\u90A3\u4E00\u6BB5\u3002\u534F\u8BAE\u6587\u672C\u3001\u7531\u914D\u7F6E\u6216\u8FD0\u884C\u4E8B\u5B9E\u751F\u6210\u7684\u53E5\u5B50\uFF0C\u4EE5\u53CA\u4F60\u81EA\u5DF1\u5199\u7684\u7ED1\u5B9A\u8BF4\u660E\u53EA\u8BFB\u5C55\u793A\u3002",
+    "capabilities.prompt.bytes": "{used} / {max} \u5B57\u8282",
+    "capabilities.prompt.reset": "\u6062\u590D\u5185\u7F6E",
+    "capabilities.prompt.omit": "\u7701\u7565\u8BE5\u6BB5",
+    "capabilities.prompt.omitted": "\u8BE5\u6BB5\u5DF2\u7701\u7565\uFF08\u6D3E\u751F\u7B56\u7565\u53E5\u4ECD\u4F1A\u9644\u52A0\uFF09",
+    "capabilities.prompt.unreadable": "\u5F53\u524D\u6587\u6863\u65E0\u6CD5\u89E3\u6790\uFF1A{error}\uFF1B\u9762\u677F\u6309\u5185\u7F6E\u6587\u672C\u663E\u793A\uFF0C\u4FDD\u5B58\u540E\u53EF\u6062\u590D\u3002",
+    "capabilities.prompt.reported": "{asset}\uFF1A{reason}",
+    "capabilities.prompt.ownerEditable": "\u53EF\u7F16\u8F91",
+    "capabilities.prompt.ownerReadOnly": "\u53EA\u8BFB\u7EB3\u7BA1",
+    "capabilities.prompt.ownerOther": "\u4ED6\u4EBA\u6240\u6709",
+    "capabilities.prompt.ownerMixed": "\u6DF7\u5408",
+    "capabilities.prompt.cardBytes": "{bytes} B",
+    "capabilities.prompt.cardMixed": "{count} \u4E2A\u6DF7\u5408\u951A\u70B9",
+    "capabilities.prompt.templateBytes": "\u6A21\u677F\u5B57\u8282\uFF08\u5B54\u5728\u6E32\u67D3\u65F6\u586B\u5145\uFF09",
+    "capabilities.prompt.aggregateFrozen": "\u805A\u5408\u51BB\u7ED3\uFF1A\u6761\u76EE\u6587\u672C\u53EF\u6539\uFF0C\u589E\u5220\u6761\u76EE\u4F1A\u79FB\u52A8\u76F8\u90BB\u5B57\u8282",
+    "capabilities.prompt.totals": "\u5DF2\u6D4B {bytes} B \xB7 \u5171 {anchors} \u4E2A\u951A\u70B9 \xB7 \u672A\u6D4B\u69FD {unmeasured} \xB7 \u52A8\u6001\u69FD {dynamic}",
+    "capabilities.prompt.cardDynamic": "{count} \u4E2A\u52A8\u6001\u69FD",
+    "capabilities.prompt.aggregateSlot": "\u805A\u5408\u5BB9\u5668\uFF08\u81EA\u8EAB\u65E0\u5B57\u8282\uFF09",
+    "capabilities.prompt.cardUnwired": "\u2014\uFF08{count} \u4E2A\u69FD\u672A\u63A5\u901A\uFF09",
+    "capabilities.prompt.unwiredRow": "\u901A\u9053\u672A\u63A5\u901A \xB7 {slots} \u4E2A\u69FD\u672A\u6D4B",
+    "capabilities.prompt.unwiredSummary": "{anchors} \u4E2A\u951A\u70B9\u3001{slots} \u4E2A\u69FD\u7684\u901A\u9053\u5C1A\u672A\u63A5\u901A\uFF1B\u5B83\u4EEC\u4E0D\u8BA1\u5165\u5B57\u8282\u5408\u8BA1\u3002",
+    "capabilities.prompt.dynamicSlot": "\u52A8\u6001\uFF08\u88C5\u914D\u671F\u5B9E\u6D4B\uFF0C\u65E0\u5B57\u9762\u9ED8\u8BA4\uFF09",
+    "capabilities.prompt.anchorMeta": "{channel} \xB7 {presence} \xB7 {owner}",
+    "capabilities.prompt.slotBytes": "{bytes} B \xB7 {owner} \u7C7B",
+    "capabilities.prompt.unmeasuredSlot": "\u672A\u6D4B\uFF08\u65E0\u53EF\u6838\u5BF9\u5B57\u8282\uFF09",
+    "capabilities.prompt.readonlyReason": "{reason} \xB7 {kind}",
+    "capabilities.prompt.slotSelector": "{slot}\uFF08{bytes} B\uFF09",
+    "capabilities.prompt.chipMeta": "\u69FD\u4F4D {owner}",
+    "capabilities.prompt.paused": "\u63D0\u793A\u6587\u672C\u5DF2\u6682\u505C\uFF1A\u914D\u7F6E\u91CC\u7684\u63D0\u793A\u6587\u672C\u5F00\u5173\u5173\u95ED\uFF0C\u6539\u5199\u7684\u53E5\u5B50\u4E0D\u4F1A\u8FDB\u5165\u8BF7\u6C42\u3001\u5DE5\u5177\u8BF4\u660E\u3001\u80FD\u529B\u65B9\u6848\u4E0E\u63D0\u793A\uFF1B\u5DF2\u4FDD\u5B58\u7684\u6539\u5199\u4FDD\u7559\uFF0C\u91CD\u65B0\u5F00\u542F\u540E\u751F\u6548\u3002",
+    "capabilities.prompt.pausedBytes": "{bytes} B\uFF08\u5DF2\u6682\u505C\uFF0C\u672A\u5E94\u7528\uFF09",
     "capabilities.tab.statistics": "\u4F7F\u7528\u7EDF\u8BA1",
     "capabilities.tab.budgets": "\u63D0\u793A\u8BBE\u7F6E",
     "capabilities.tab.plans": "\u914D\u7F6E\u65B9\u6848",
@@ -40672,6 +41557,7 @@ var CHROME_COPY = Object.freeze({
     "capabilities.combination.statistics": "Usage statistics",
     "capabilities.combination.recovery": "Prompt recovery",
     "capabilities.combination.preview": "Output excerpts",
+    "capabilities.combination.promptText": "Prompt text",
     "capabilities.combination.state.selected": "Selected",
     "capabilities.combination.state.unselected": "Not selected",
     "capabilities.combination.state.paused": "Paused",
@@ -41080,6 +41966,38 @@ var CHROME_COPY = Object.freeze({
     "capabilities.refreshAcknowledged": "DSH acknowledged the refresh operation.",
     "capabilities.settingsTabs": "Capability settings tabs",
     "capabilities.tab.manual": "Capability configuration",
+    "capabilities.tab.prompt": "Prompt text",
+    "capabilities.title.prompt": "Fixed prompt text the model reads",
+    "capabilities.prompt.intro": "Override the fixed text the plugin writes, per anchor and slot. Each row names its channel, presence condition and read-only reason, and when an edit takes effect depends on that channel (next request, new session, or next trigger). Clearing the editor restores the built-in text; \u201Comit this paragraph\u201D appears only on omittable slots and means the paragraph is not delivered. Protocol text, sentences generated from configuration or runtime facts, and the binding notes you wrote yourself stay read-only.",
+    "capabilities.prompt.bytes": "{used} / {max} bytes",
+    "capabilities.prompt.reset": "Use built-in",
+    "capabilities.prompt.omit": "Omit this paragraph",
+    "capabilities.prompt.omitted": "This paragraph is omitted; derived policy sentences are still appended",
+    "capabilities.prompt.unreadable": "The stored document cannot be parsed: {error}. The panel shows built-in text; saving restores it.",
+    "capabilities.prompt.reported": "{asset}: {reason}",
+    "capabilities.prompt.ownerEditable": "Editable",
+    "capabilities.prompt.ownerReadOnly": "Read-only, managed",
+    "capabilities.prompt.ownerOther": "Owned elsewhere",
+    "capabilities.prompt.ownerMixed": "Mixed",
+    "capabilities.prompt.cardBytes": "{bytes} B",
+    "capabilities.prompt.cardMixed": "{count} mixed anchor(s)",
+    "capabilities.prompt.templateBytes": "template bytes (holes filled at render time)",
+    "capabilities.prompt.aggregateFrozen": "Frozen item set: item text is editable, adding or removing an item moves neighbouring bytes",
+    "capabilities.prompt.totals": "measured {bytes} B \xB7 {anchors} anchors \xB7 unmeasured slots {unmeasured} \xB7 dynamic slots {dynamic}",
+    "capabilities.prompt.cardDynamic": "{count} dynamic slots",
+    "capabilities.prompt.aggregateSlot": "aggregate container (owns no bytes)",
+    "capabilities.prompt.cardUnwired": "\u2014 ({count} slots not connected)",
+    "capabilities.prompt.unwiredRow": "channel not connected \xB7 {slots} slots unmeasured",
+    "capabilities.prompt.unwiredSummary": "{anchors} anchors and {slots} slots have no connected channel; they are excluded from the byte total.",
+    "capabilities.prompt.dynamicSlot": "dynamic (measured at assembly; no literal default)",
+    "capabilities.prompt.anchorMeta": "{channel} \xB7 {presence} \xB7 {owner}",
+    "capabilities.prompt.slotBytes": "{bytes} B \xB7 owner {owner}",
+    "capabilities.prompt.unmeasuredSlot": "unmeasured (no bytes to reconcile)",
+    "capabilities.prompt.readonlyReason": "{reason} \xB7 {kind}",
+    "capabilities.prompt.slotSelector": "{slot} ({bytes} B)",
+    "capabilities.prompt.chipMeta": "slot {owner}",
+    "capabilities.prompt.paused": "Prompt text is paused: the prompt text switch in configuration is off, so edited sentences do not reach requests, tool descriptions, the capability plan or tips. Saved edits are kept and apply again when you turn it back on.",
+    "capabilities.prompt.pausedBytes": "{bytes} B (paused, not applied)",
     "capabilities.tab.statistics": "Usage statistics",
     "capabilities.tab.budgets": "Prompt settings",
     "capabilities.tab.plans": "Configurations",

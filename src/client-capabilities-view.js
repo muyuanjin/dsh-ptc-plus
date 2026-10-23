@@ -4,6 +4,10 @@ import { CAPABILITY_CONFIGURATION_KEYS, capabilityProfileConfiguration, validate
 import { readCapabilityCommandReceipt } from '../internal/capability-command-receipt.js'
 import { createFallbackModal } from './client-primitives.js'
 import { CAPABILITY_SORT_COLUMNS, capabilitySortDirection, cycleCapabilitySort, sortCapabilityEntries } from './client-capability-sort.js'
+import {
+  PROMPT_ASSETS, PROMPT_TEXT_MAX_SLOT_BYTES, PROMPT_TEXT_SCHEMA,
+  accountPromptText, parsePromptTextDocument, resolvePromptText,
+} from '../internal/prompt-text.js'
 
 export function capabilityCommandText(t, text) {
   if (text?.key) return t(text.key, text.params)
@@ -128,10 +132,14 @@ export function capabilityPlanReason(t, entry) {
 export function createCapabilitySettingsViews(React, { SearchIcon, Select, Modal = createFallbackModal(React) }) {
   const h = React.createElement
   const field = key => CONFIG_FIELDS.find(item => item.key === key)
+  // Each group owns one settings tab; the prompt text switch lives in the same
+  // capabilities section, so 新会话设置 must list it or a saved choice would be
+  // invisible there.
   const responsibilityGroups = [
     { tab: 'manual', keys: ['rules'] },
     { tab: 'budgets', keys: ['description', 'recovery', 'preview'] },
     { tab: 'statistics', keys: ['statistics'] },
+    { tab: 'prompt', keys: ['promptText'] },
   ]
   const responsibilities = responsibilityGroups.flatMap(group => group.keys)
   const choicesFor = (configuration, plan) => {
@@ -143,10 +151,13 @@ export function createCapabilitySettingsViews(React, { SearchIcon, Select, Modal
       enabled: configuration?.capabilityManagementEnabled ?? plan?.enabled,
       statistics,
       recoveryEnabled: configuration?.capabilityRecoveryEnabled ?? (historical ? plan.enabled : undefined),
-      previewEnabled: configuration?.modelPreviewEnabled ?? (historical ? plan.enabled : undefined) }
+      previewEnabled: configuration?.modelPreviewEnabled ?? (historical ? plan.enabled : undefined),
+      // The switch is new: a stored configuration without it means "on", the
+      // documented default, while an unreadable configuration stays unknown.
+      promptTextEnabled: configuration === undefined ? undefined : configuration.capabilityPromptTextEnabled !== false }
   }
   const flagsFor = settings => ({ rules: settings.enabled, description: settings.enabled, statistics: settings.statistics?.enabled,
-    recovery: settings.recoveryEnabled, preview: settings.previewEnabled })
+    recovery: settings.recoveryEnabled, preview: settings.previewEnabled, promptText: settings.promptTextEnabled })
   const choiceState = (retained, applied, key) => typeof retained[key] !== 'boolean' ? 'unknown'
     : retained[key] ? typeof applied[key] !== 'boolean' ? 'unknown' : applied[key] === false ? 'paused' : 'selected'
       : key === 'rules' || key === 'description' ? 'host' : 'unselected'
@@ -183,7 +194,8 @@ export function createCapabilitySettingsViews(React, { SearchIcon, Select, Modal
         h('div', { className: 'ptcPlusCombinationGroupChoices' }, ...group.keys.map(key => {
           const state = choiceState(retained, applied, key)
           return h('button', { key, type: 'button', className: 'ptcPlusCombinationChoice', 'data-state': state,
-            'aria-controls': key === 'rules' || key === 'statistics' ? `${id}-pane-${group.tab}` : `${id}-context-pane-${key}`,
+            'aria-controls': key === 'promptText' ? `${id}-pane-prompt`
+              : key === 'rules' || key === 'statistics' ? `${id}-pane-${group.tab}` : `${id}-context-pane-${key}`,
             onClick: () => onNavigate(key) }, h('span', null, t(`capabilities.combination.${key}`)),
             h('small', null, t(`capabilities.combination.state.${state}`)))
         }))))),
@@ -889,17 +901,234 @@ export function createCapabilitySettingsViews(React, { SearchIcon, Select, Modal
     event.currentTarget.parentElement.querySelectorAll('[role=tab]')[next].focus({ preventScroll: true })
   }
 
+  /**
+   * Per-asset editor for the fixed prompt text the plugin writes.
+   *
+   * One row per registered asset: the built-in sentence stays visible as the
+   * placeholder, so a user compares against it instead of a blank box. The
+   * document is written through the normal settings path, which validates it;
+   * a document the panel cannot read is reported here instead of blanking the
+   * whole workbench.
+   */
+  function PromptTextSettings({ value, disabled, onChange, t, id }) {
+    let document
+    let readError
+    try {
+      document = parsePromptTextDocument(value.promptText)
+    } catch (error) {
+      readError = error.message
+      document = { schema: PROMPT_TEXT_SCHEMA, overrides: {} }
+    }
+    // The workbench receives `disabled` as a per-field predicate, not a boolean.
+    // The feature's own pause switch is separate from the settings lock: off means
+    // every channel falls back to the built-in text while the saved document stays.
+    const paused = value.capabilityPromptTextEnabled === false
+    const blocked = paused || disabled === true
+      || (typeof disabled === 'function' && disabled('promptText') === true)
+    // The pane accounts for the saved document, which is what a save would write;
+    // when the feature is paused the notice and the per-anchor label say the bytes
+    // are not applied, so a number here can never read as a delivered byte.
+    const resolved = resolvePromptText(value.promptText)
+    const [openSlots, setOpenSlots] = React.useState({})
+    // The panel is the accounting view: cards, totals and per-anchor rows all come
+    // from accountPromptText, so a number on screen can be traced to a slot.
+    const account = accountPromptText(resolved)
+    const write = overrides => {
+      onChange(CONFIG_FIELDS.find(field => field.key === 'promptText'),
+        JSON.stringify({ schema: PROMPT_TEXT_SCHEMA, overrides }))
+    }
+    const update = (slotId, next) => {
+      const overrides = { ...document.overrides }
+      if (next === undefined) delete overrides[slotId]
+      else overrides[slotId] = next
+      write(overrides)
+    }
+    // Two slot labels, never derived from each other:
+    // - 未测槽: slots on a channel this build has not wired to the resolver yet,
+    // - 动态槽: slots on a wired anchor whose composer produces the bytes at
+    //   assembly time (policy prose, user-supplied instructions).
+    // 投递未证 stays out of this panel: only a boundary capture lane can report it.
+    const unmeasuredSlots = account.counts.unmeasuredSlots
+    const dynamicSlots = account.counts.dynamicSlots
+    const unwiredAnchors = account.anchors.filter(anchor => anchor.wired !== true)
+    const measuredBytes = account.owners.A + account.owners.B + account.owners.C
+    // A card prints the bytes this build can actually measure, and names how many
+    // of that owner's slots are still unconnected. An owner with nothing measured
+    // prints only the suffix: a bare 0 B would read as "this owner costs nothing".
+    // A card that carries projected slots also says those numbers are template
+    // bytes, because the holes are filled from runtime facts when the slot renders.
+    const card = (key, labelKey) => {
+      const unmeasured = account.counts.unmeasured[key]
+      const dynamic = account.counts.dynamic[key]
+      const bytes = account.owners[key]
+      const projected = account.slots.some(slot => slot.owner === key && slot.measured && slot.kind === 'projected')
+      const measured = bytes > 0
+        ? h('span', { className: 'ptcPlusDetail' }, t('capabilities.prompt.cardBytes', { bytes }))
+        : null
+      return h('div', { key, className: 'ptcPlusCapabilityField', 'data-owner': key },
+        h('span', null, t(labelKey)),
+        measured,
+        projected
+          ? h('span', { className: 'ptcPlusDetail', 'data-prompt-template-bytes': 'true' },
+            t('capabilities.prompt.templateBytes'))
+          : null,
+        unmeasured === 0
+          ? null
+          : h('span', { className: 'ptcPlusDetail' }, t('capabilities.prompt.cardUnwired', { count: unmeasured })),
+        // A dynamic slot is measured at assembly, so it carries no bytes here; the
+        // card must still account for it or the owner reads as if it had nothing.
+        dynamic === 0
+          ? null
+          : h('span', { className: 'ptcPlusDetail' }, t('capabilities.prompt.cardDynamic', { count: dynamic })))
+    }
+    const cards = h('div', { className: 'ptcPlusPromptCards' },
+      card('A', 'capabilities.prompt.ownerEditable'),
+      card('B', 'capabilities.prompt.ownerReadOnly'),
+      card('C', 'capabilities.prompt.ownerOther'),
+      h('div', { key: 'mixed', className: 'ptcPlusCapabilityField' },
+        h('span', null, t('capabilities.prompt.ownerMixed')),
+        h('span', { className: 'ptcPlusDetail' }, t('capabilities.prompt.cardMixed', { count: account.counts.mixed }))))
+    const totals = h('p', { className: 'ptcPlusDetail' }, t('capabilities.prompt.totals', {
+      bytes: measuredBytes,
+      anchors: account.counts.total,
+      unmeasured: unmeasuredSlots,
+      dynamic: dynamicSlots,
+    }))
+    const slotLabel = slot => {
+      if (slot.measured) return t('capabilities.prompt.slotBytes', { bytes: slot.bytes, owner: slot.owner })
+      if (slot.kind === 'aggregate') return t('capabilities.prompt.aggregateSlot')
+      return t(slot.unwired === true ? 'capabilities.prompt.unmeasuredSlot' : 'capabilities.prompt.dynamicSlot')
+    }
+    const slotControl = (anchor, slot) => {
+      const override = Object.hasOwn(document.overrides, slot.slotId) ? document.overrides[slot.slotId] : undefined
+      const asset = PROMPT_ASSETS.find(candidate => candidate.id === slot.slotId)
+      if (asset === undefined || slot.owner !== 'A' || asset.defaultText === null) return null
+      const current = override ?? ''
+      return h('div', { key: `${slot.slotId}-control`, className: 'ptcPlusPromptEditor',
+        'data-editor-slot': slot.slotId },
+        h('textarea', {
+          id: `${id}-prompt-${slot.slotId}`, rows: 2, disabled: blocked, spellCheck: false,
+          placeholder: asset.defaultText, 'aria-label': slot.slotId, value: current,
+          onChange: event => update(slot.slotId, event.target.value === '' ? undefined : event.target.value),
+        }),
+        h('div', { className: 'ptcPlusPromptEditorFoot' },
+          h('span', { className: 'ptcPlusDetail' }, t('capabilities.prompt.bytes', {
+            used: slot.bytes, max: PROMPT_TEXT_MAX_SLOT_BYTES,
+          })),
+          override === '' ? h('span', { className: 'ptcPlusDetail' }, t('capabilities.prompt.omitted')) : null,
+          h('button', { type: 'button', disabled: blocked || override === undefined,
+            onClick: () => update(slot.slotId, undefined) }, t('capabilities.prompt.reset')),
+          asset.omittable ? h('button', { type: 'button', disabled: blocked,
+            onClick: () => update(slot.slotId, '') }, t('capabilities.prompt.omit')) : null))
+    }
+    // A slot chip is the only place a slot id appears. Editable slots are buttons
+    // that open the anchor's single editor; read-only slots are inert chips that
+    // carry their reason code and slot kind instead of a full-width field.
+    const chip = (anchor, slot) => {
+      const markers = [
+        slot.measured && slot.kind === 'projected'
+          ? h('span', { key: 'template', className: 'ptcPlusPromptChipNote', 'data-prompt-template-bytes': 'true' },
+            t('capabilities.prompt.templateBytes'))
+          : null,
+        slot.kind === 'aggregate'
+          ? h('span', { key: 'aggregate', className: 'ptcPlusPromptChipNote', 'data-prompt-aggregate-set': 'true' },
+            t('capabilities.prompt.aggregateFrozen'))
+          : null,
+      ].filter(Boolean)
+      const shared = {
+        className: 'ptcPlusPromptChip',
+        'data-slot-id': slot.slotId,
+        'data-slot-kind': slot.kind,
+        title: slot.slotId,
+      }
+      if (slot.owner !== 'A') {
+        return h('span', { key: slot.slotId, ...shared, 'data-readonly': 'true' },
+          h('span', { className: 'ptcPlusPromptChipLabel' }, slot.slotId),
+          h('span', { className: 'ptcPlusPromptChipNote' },
+            t('capabilities.prompt.readonlyReason', { reason: slot.reason, kind: slot.kind })),
+          ...markers)
+      }
+      const selected = openSlots[anchor.anchorId] === slot.slotId
+      return h('button', {
+        key: slot.slotId,
+        ...shared,
+        type: 'button',
+        disabled: blocked,
+        'aria-pressed': selected,
+        onClick: () => setOpenSlots(previous => ({ ...previous, [anchor.anchorId]: slot.slotId })),
+      },
+        h('span', { className: 'ptcPlusPromptChipLabel' }, slot.slotId),
+        h('span', { className: 'ptcPlusPromptChipNote' }, t('capabilities.prompt.chipMeta', { owner: slot.owner })),
+        ...markers)
+    }
+    const rows = account.anchors.map(anchor => {
+      // One editor per anchor: the chips choose which editable slot is open, and the
+      // run_code anchor keeps its three descriptions behind one textarea.
+      const editableSlots = anchor.slots.filter(slot => slot.owner === 'A'
+        && PROMPT_ASSETS.find(candidate => candidate.id === slot.slotId)?.defaultText !== null)
+      const selectedId = openSlots[anchor.anchorId] ?? editableSlots[0]?.slotId
+      const selected = editableSlots.find(slot => slot.slotId === selectedId)
+      // An unwired anchor renders no control at all: its bytes are not delivered yet,
+      // so an editor here would promise an effect the build cannot produce.
+      const editor = anchor.wired !== true || editableSlots.length === 0 ? null : slotControl(anchor, selected)
+      const bytes = anchor.wired !== true
+        ? h('span', { className: 'ptcPlusPromptAnchorBytes', 'data-anchor-bytes': 'unwired' },
+          t('capabilities.prompt.unwiredRow', { slots: anchor.unmeasuredSlots }))
+        : h('span', { className: 'ptcPlusPromptAnchorBytes', 'data-anchor-bytes': String(anchor.bytes) },
+          paused
+            ? t('capabilities.prompt.pausedBytes', { bytes: anchor.bytes })
+            : t('capabilities.prompt.cardBytes', { bytes: anchor.bytes }))
+      // The row carries its identity and wiring so a test can assert "one row per
+      // anchor", "no control on an unwired row" and "one textarea per wired anchor"
+      // without trusting the renderer.
+      return h('div', {
+        key: anchor.anchorId,
+        className: 'ptcPlusPromptAnchor',
+        'data-anchor-id': anchor.anchorId,
+        'data-wired': anchor.wired === true ? 'true' : 'false',
+        'data-paused': paused ? 'true' : 'false',
+      },
+        h('div', { className: 'ptcPlusPromptAnchorHead' },
+          h('code', { className: 'ptcPlusPromptAnchorId', title: anchor.anchorId }, anchor.anchorId),
+          h('span', { className: 'ptcPlusPromptAnchorMeta' }, t('capabilities.prompt.anchorMeta', {
+            channel: anchor.channel, presence: anchor.presence,
+            owner: anchor.owner === 'mixed' ? t('capabilities.prompt.ownerMixed') : anchor.owner,
+          })),
+          bytes),
+        h('div', { className: 'ptcPlusPromptChips' }, ...anchor.slots.map(slot => chip(anchor, slot))),
+        editor)
+    })
+    return h('section', {
+      className: 'ptcPlusPromptText', 'data-prompt-paused': paused ? 'true' : 'false',
+    },
+      h('p', null, t('capabilities.prompt.intro')),
+      paused
+        ? h('p', { className: 'ptcPlusPromptPaused', role: 'status', 'data-prompt-paused-notice': 'true' },
+          t('capabilities.prompt.paused'))
+        : null,
+      readError === undefined ? null : h('p', { className: 'ptcPlusDetail' }, t('capabilities.prompt.unreadable', { error: readError })),
+      ...resolved.reported.map((entry, index) => h('p', { key: `report-${index}`, className: 'ptcPlusDetail' },
+        t('capabilities.prompt.reported', {
+          asset: entry.slotId ?? entry.anchorId ?? 'document', reason: entry.reason,
+        }))),
+      cards,
+      totals,
+      unwiredAnchors.length === 0 ? null : h('p', { className: 'ptcPlusDetail' },
+        t('capabilities.prompt.unwiredSummary', { anchors: unwiredAnchors.length, slots: unmeasuredSlots })),
+      ...rows)
+  }
+
   function CapabilityWorkbench({ value, configurationReady, catalog, catalogError, plans, plansError, plansPending, plansStale, disabled, onChange, onReload, t, renderField, renderPlans, renderRefresh, id, selectedSessionId, onSessionSelect,
     allocation, allocationError, allocationPending, onApplyConfiguration, configurationWritable, saving, saveStatus }) {
     const [tab, setTab] = React.useState('manual')
     const [contextSection, setContextSection] = React.useState('description')
-    const tabs = ['manual', 'budgets', 'statistics', 'plans']
+    const tabs = ['manual', 'budgets', 'statistics', 'prompt', 'plans']
     const feedback = saving ? t('state.syncing') : saveStatus && saveStatus.key !== 'status.applied' ? t(saveStatus.key, saveStatus.params)
       : t(configurationWritable ? 'capabilities.savedForNew' : 'footer.readOnly')
     return h('div', { className: 'ptcPlusCapabilityWorkbench' },
       h(CombinationSummary, { value, configurationReady, plans, plansError, plansPending, plansStale, selectedSessionId,
         feedback, onReload, renderRefresh, renderPlans, t, id, onNavigate: key => {
-          setTab(key === 'rules' ? 'manual' : key === 'statistics' ? 'statistics' : 'budgets')
+          setTab(key === 'rules' ? 'manual' : key === 'statistics' ? 'statistics' : key === 'promptText' ? 'prompt' : 'budgets')
           if (['description', 'recovery', 'preview'].includes(key)) setContextSection(key)
         } }),
       h('div', { className: 'ptcPlusCapabilityTabs', role: 'tablist', 'aria-label': t('capabilities.settingsTabs') },
@@ -926,7 +1155,10 @@ export function createCapabilitySettingsViews(React, { SearchIcon, Select, Modal
             h(AllocationEvidence, { allocation, allocationError, allocationPending, selectedSessionId, statistics: true, onReload, t }))
             : key === 'budgets' ? h(ContextSettings, { value, configurationReady, disabled, onChange, t, renderField, allocation, allocationError, allocationPending,
               selectedSessionId, onReload, renderRefresh, id, section: contextSection, setSection: setContextSection })
-              : h(ConfigurationProfiles, { value, plans, disabled, writable: configurationWritable, onChange, onApplyConfiguration, t }))))
+              // Rendered only while its tab is active: eight idle textareas in a hidden
+              // pane would change every generic textbox query in the settings card.
+              : key === 'prompt' ? (tab === 'prompt' ? h(PromptTextSettings, { value, disabled, onChange, t, id }) : null)
+                : h(ConfigurationProfiles, { value, plans, disabled, writable: configurationWritable, onChange, onApplyConfiguration, t }))))
   }
 
   return { CapabilityWorkbench }

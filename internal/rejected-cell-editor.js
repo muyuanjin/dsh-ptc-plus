@@ -1,3 +1,4 @@
+import { EDIT_RUN_CODE_DESCRIPTION } from './prompt-text.js'
 import { runInNewContext } from 'node:vm'
 
 const DEFAULT_REGEX_TIMEOUT_MS = 100
@@ -252,10 +253,10 @@ function assemble(source, replacements) {
   return changed ? { code: chunks.join('') } : { error: 'edits must change at least one matched fragment' }
 }
 
-export function editRunCodeSchema() {
+export function editRunCodeSchema(description = EDIT_RUN_CODE_DESCRIPTION) {
   return {
     name: 'edit_run_code',
-    description: 'Call this from within a run_code cell. It accepts an edit of the most recent eligible cell captured at nested dispatch and returns { accepted, scheduled, target_call_seq } when scheduled. The corrected cell runs after the current run_code cell releases its worker; its result is reported with that cell, and a successful edit becomes the next target. This reruns the entire target cell, including prior effects; use it after pre-execution rejection or when repeating those effects is safe under the called API\'s retry rules. Otherwise continue in a new run_code cell using retained values. A diagnostic may supply a localized correction; use it when it matches your intent and preserve its expected_target_call_seq. Send exactly one edits or regex_edits array: edits replaces unique literal fragments; regex_edits replaces a counted set of pattern matches. All ranges must be non-overlapping in the original cell. Regex replacements use JavaScript $1/$<name> captures, not \\1.',
+    description,
     parameters: {
       type: 'object',
       additionalProperties: false,

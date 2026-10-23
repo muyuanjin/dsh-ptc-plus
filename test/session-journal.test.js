@@ -232,7 +232,7 @@ test('timeline checkpoint admission validates typed payloads and cross-table ide
     state => { state.executableCalls.k1[1].event.data.arguments = {} },
     state => { state.executableCalls.k1[1].ambiguous = 'true' },
     state => { state.calls = [] },
-    state => { state.calls[0].data.arguments = 'return 99' },
+    state => { state.calls[0] = 99 },
     state => { state.calls.push(state.calls[0]) },
     state => { state.results.k1[1].eventIndex = -1 },
     state => { state.results.k1[1].positionSeq = 'later' },

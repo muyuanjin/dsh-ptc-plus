@@ -16,10 +16,8 @@ import {
 import { userBindingsConfiguredContext } from './user-bindings.js'
 import { BINDING_AUTHORING_SDK } from './user-binding-authoring.js'
 import { executionPolicies } from './binding-update-policy.js'
+import { PROMPT_SLOT_IDS, promptAssetText, resolvePromptTextConfig } from './prompt-text.js'
 
-const RUN_CODE_TOOL_DESCRIPTION = 'Evaluate the next TypeScript cell in this session-bound persistent REPL, reusing earlier top-level bindings. Use `code` for the cell and `description` for its short UI summary. Successful image-bearing subtool results are attached after the cell.'
-const RUN_CODE_CODE_DESCRIPTION = 'Code for the next PTC TypeScript cell, following the selected language conventions.'
-const RUN_CODE_DESCRIPTION_DESCRIPTION = 'Short active-voice summary of what this cell does, 5-10 words (shown in the UI).'
 const CODE_TRANSPORT_INSTRUCTION = '`run_code` is the only tool callable directly. Call `tools.edit_run_code` and other SDK tools from inside a program. An accepted edit runs after the current cell finishes.'
 const PTC_COLLAPSE_SECTION_NAMES = Object.freeze(['tools:ptc-only', 'tools:code-only'])
 const INVALID_TOOL_JSON_FAILURE = Object.freeze({
@@ -29,7 +27,7 @@ const INVALID_TOOL_JSON_FAILURE = Object.freeze({
 const MALFORMED_TOOL_REJECTION_ID = 'dsh-ptc-plus-malformed-tool-json'
 const MALFORMED_TOOL_REJECTION_ARGUMENTS = '{"dsh_ptc_plus_malformed_tool_json":'
 
-function adaptRunCodeSchema(tool) {
+function adaptRunCodeSchema(tool, promptText) {
   const parameters = tool.parameters
   const properties = isRecord(parameters) ? parameters.properties : undefined
   const code = isRecord(properties) ? properties.code : undefined
@@ -41,13 +39,13 @@ function adaptRunCodeSchema(tool) {
   }
   return {
     ...tool,
-    description: RUN_CODE_TOOL_DESCRIPTION,
+    description: promptAssetText(promptText, PROMPT_SLOT_IDS.runCodeDescription),
     parameters: {
       ...parameters,
       properties: {
         ...properties,
-        code: { ...code, description: RUN_CODE_CODE_DESCRIPTION },
-        description: { ...description, description: RUN_CODE_DESCRIPTION_DESCRIPTION },
+        code: { ...code, description: promptAssetText(promptText, PROMPT_SLOT_IDS.runCodeCodeArg) },
+        description: { ...description, description: promptAssetText(promptText, PROMPT_SLOT_IDS.runCodeDescriptionArg) },
       },
     },
   }
@@ -472,11 +470,13 @@ export function createDirectSurfaceOwner({
   let disposed = false
   let currentCanonicalizeToolCalls = canonicalizeToolCalls
   let currentAutoDescribeRunCode = runtimeConfig.autoDescribeRunCode
+  let currentPromptText = resolvePromptTextConfig(runtimeConfig)
   let currentLanguageSemantics = executionPolicies(runtimeConfig).languageSemantics
   const tipConfig = {
     enabled: runtimeConfig.tipsEnabled,
     cooldownMessages: runtimeConfig.tipCooldownMessages,
     escalationFailures: runtimeConfig.tipEscalationFailures,
+    get prompt() { return currentPromptText },
   }
 
   const sessionOwner = (id) => {
@@ -561,6 +561,7 @@ export function createDirectSurfaceOwner({
       currentLanguageSemantics = executionPolicies(nextConfig).languageSemantics
       currentCanonicalizeToolCalls = nextConfig.canonicalizeToolCalls
       currentAutoDescribeRunCode = nextConfig.autoDescribeRunCode
+      currentPromptText = resolvePromptTextConfig(nextConfig)
       cordisRecovery.reconfigure(nextConfig.cordisToolsEnabled)
       tipConfig.enabled = nextConfig.tipsEnabled
       tipConfig.cooldownMessages = nextConfig.tipCooldownMessages
@@ -628,10 +629,11 @@ export function createDirectSurfaceOwner({
       const userBindings = sessionPtc ? await userBindingsForAgent(agent) : undefined
       if (!isCurrent()) return assembly
       const runCode = tools.find(tool => tool?.name === RUN_CODE)
+      const promptText = currentPromptText
       let directTools = sessionPtc ? capabilityEnvironment?.visibleSchemas(agent, tools) ?? tools : tools
       if (sessionPtcProjection) {
         editTransport.ensureInstalled(agent)
-        directTools = [adaptRunCodeSchema(runCode)]
+        directTools = [adaptRunCodeSchema(runCode, promptText)]
       }
       const runtimeContexts = sessionPtc
         ? sessionRuntimeContexts(agent, tipConfig, {
@@ -641,7 +643,9 @@ export function createDirectSurfaceOwner({
           },
         })
         : { contexts: [] }
-      const bindingDefaults = userBindings === undefined ? undefined : userBindingsConfiguredContext(userBindings)
+      const bindingDefaults = userBindings === undefined ? undefined : userBindingsConfiguredContext(userBindings, {
+        entryLabel: promptAssetText(promptText, PROMPT_SLOT_IDS.userBindingsEntryLabel),
+      })
       const contexts = [
         ...runtimeContexts.contexts,
         ...(bindingDefaults === undefined ? [] : [bindingDefaults]),
@@ -684,7 +688,7 @@ export function createDirectSurfaceOwner({
         tools: sessionPtcProjection
           ? directTools
           : directTools.map(tool => tool?.name === RUN_CODE
-            ? adaptRunCodeSchema(tool)
+            ? adaptRunCodeSchema(tool, promptText)
             : tool),
         sections,
       }

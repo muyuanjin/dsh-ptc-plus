@@ -993,7 +993,7 @@ test('the plugin row seat renders both views when the page declares it first', a
   expect([...form.querySelectorAll('.ptcPlusGroupTitle')].map(title => title.textContent))
     .toEqual([ 'REPL syntax', 'State and recovery', 'Tool extensions', 'Tool call tolerance', 'Interface display', 'Resource limits', 'Capabilities and context'])
   expect(form.querySelector('.ptcPlusFooter [role=status]').textContent).toBe('Settings are saved; capability plans adopt changes in new sessions or after an explicit refresh.')
-  for (const key of CONFIG_GROUPS.flatMap(group => group.fields).filter(key => !['capabilityBaseline', 'capabilityOverrides', 'capabilityPolicy', 'capabilityStatistics', 'capabilityProfiles', 'capabilityManagementEnabled', 'capabilityRecoveryEnabled', 'modelPreviewEnabled'].includes(key))) {
+  for (const key of CONFIG_GROUPS.flatMap(group => group.fields).filter(key => !['capabilityBaseline', 'capabilityOverrides', 'capabilityPolicy', 'capabilityStatistics', 'capabilityProfiles', 'capabilityManagementEnabled', 'capabilityRecoveryEnabled', 'modelPreviewEnabled', 'promptText'].includes(key))) {
     expect(form.querySelector(`[aria-label="${SETTINGS_COPY.en[`${key}.label`]}"]`)).not.toBeNull()
   }
   const writesBeforeBatch = settings.set.mock.calls.length
@@ -7638,21 +7638,26 @@ test.each(['zh', 'en'])('combination summary navigates independent choices and r
     const summary = within(view.getByRole('region', { name: copy['capabilities.combination.saved'] }))
     const tile = key => summary.getByRole('button', { name: new RegExp(`^${copy[`capabilities.combination.${key}`]}`) })
     const state = key => tile(key).querySelector('small').textContent
-    const keys = ['rules', 'description', 'recovery', 'preview', 'statistics']
+    const keys = ['rules', 'description', 'recovery', 'preview', 'statistics', 'promptText']
     expect([...view.container.querySelectorAll('.ptcPlusCombinationChoices button > span')].map(item => item.textContent))
       .toEqual(keys.map(key => copy[`capabilities.combination.${key}`]))
-    if (locale === 'zh') expect(keys.map(key => [...copy[`capabilities.combination.${key}`]].length)).toEqual(Array(5).fill(4))
+    if (locale === 'zh') expect(keys.map(key => [...copy[`capabilities.combination.${key}`]].length)).toEqual([4, 4, 4, 4, 4, 4])
     expect([...view.container.querySelectorAll('.ptcPlusCombinationGroup')].map(group => group.querySelectorAll('button').length))
-      .toEqual([1, 3, 1])
+      .toEqual([1, 3, 1, 1])
     fireEvent.click(tile('description'))
     const initialPrompt = view.getByRole('tab', { name: copy['capabilities.context.description'], selected: true })
     expect(document.getElementById(initialPrompt.getAttribute('aria-controls')).id).toBe(tile('description').getAttribute('aria-controls'))
     expect(view.getByRole('combobox', { name: copy['capabilities.defaultDisclosure'] })).toBeTruthy()
     expect(document.getElementById(initialPrompt.getAttribute('aria-describedby').split(' ')[0]).textContent).toBe(state('description'))
     expect(updateSetting).not.toHaveBeenCalled()
-    expect(['rules', 'description', 'recovery', 'preview', 'statistics'].map(state)).toEqual([
-      ...Array(2).fill(copy['capabilities.combination.state.selected']), ...Array(3).fill(copy['capabilities.combination.state.unselected'])])
-    expect(summary.getByText(copy['capabilities.combination.rulesOnly'])).toBeTruthy()
+    expect(['rules', 'description', 'recovery', 'preview', 'statistics', 'promptText'].map(state)).toEqual([
+      ...Array(2).fill(copy['capabilities.combination.state.selected']), ...Array(3).fill(copy['capabilities.combination.state.unselected']),
+      copy['capabilities.combination.state.selected']])
+    // 提示文本 is on by default, so the summary now lists it beside the capability
+    // configuration and the initial prompt instead of claiming "rules only".
+    expect(summary.getByText(copy['capabilities.combination.selectedEffect'].replace('{features}',
+      ['rules', 'description', 'promptText'].map(key => copy[`capabilities.combination.${key}`])
+        .join(copy['capabilities.combination.separator'])))).toBeTruthy()
     fireEvent.click(tile('recovery'))
     expect(view.getByRole('tab', { name: copy['capabilities.context.recovery'], selected: true })).toBeTruthy()
     fireEvent.click(view.getByRole('switch', { name: copy['capabilities.recoveryEnabled'] }))
@@ -7683,7 +7688,10 @@ test('combination summary shows DSH defaults and permits collection and previews
     configuration: { capabilityManagementEnabled: false, capabilityPolicy: CAPABILITY_POLICY_DEFAULT } })
   try {
     const summary = within(view.getByRole('region', { name: 'New session settings' }))
-    expect(summary.getByText(SETTINGS_COPY.en['capabilities.combination.hostEffect'])).toBeTruthy()
+    // 提示文本 defaults to on, so the group is no longer wholly "stays with DSH";
+    // the summary names the one feature it applies.
+    expect(summary.getByText(SETTINGS_COPY.en['capabilities.combination.selectedEffect'].replace('{features}',
+      SETTINGS_COPY.en['capabilities.combination.promptText']))).toBeTruthy()
     fireEvent.click(summary.getByRole('button', { name: /^Usage statistics/ }))
     fireEvent.click(view.getByRole('switch', { name: 'Usage statistics' }))
     rerender(); await act(async () => {})
@@ -8168,4 +8176,133 @@ test('session capability columns cycle all five sorts across categories and pres
     expect(order()).toEqual(defaultOrder)
     expect(commands.run).not.toHaveBeenCalled()
   } finally { view.unmount() }
+})
+
+test('prompt text panel accounts for every owner, keeps unwired channels honest and edits nothing read-only', async () => {
+  const copy = SETTINGS_COPY.en
+  const promptText = JSON.stringify({ schema: 'ptc-prompt-text/v1', overrides: {} })
+  const { view, snapshot, rerender } = await capabilityWorkbenchFixture({ catalog: [], configuration: { promptText } })
+  await act(async () => { fireEvent.click(view.getByRole('tab', { name: copy['capabilities.tab.prompt'] })) })
+
+  // Four owner cards plus the totals line.
+  for (const key of ['ownerEditable', 'ownerReadOnly', 'ownerOther', 'ownerMixed']) {
+    expect(view.getAllByText(copy[`capabilities.prompt.${key}`]).length).toBeGreaterThan(0)
+  }
+  // Dropping a card would leave its label missing, and an owner whose slots are all
+  // unconnected must say so instead of printing a misleading measured 0 B.
+  expect(view.getAllByText(copy['capabilities.prompt.cardUnwired'].replace('{count}', '2')).length).toBeGreaterThan(0)
+  expect(view.getByText(copy['capabilities.prompt.ownerReadOnly']).parentElement.textContent).not.toContain('0 B ·')
+  // The totals line separates the two slot labels: 未测槽 counts slots on channels
+  // this build has not wired (2 today: the capability appendix prose and its
+  // declarations), 动态槽 counts slots on wired anchors whose composer produces the
+  // bytes at assembly time (5 today: the derived policy prose, two user-owned entry
+  // fields and the two diagnostic paragraphs).
+  // 未纳管 is gone on purpose: the captured-surface gate and the mandatory slot
+  // owner already cover it, and a counter that is structurally zero only gives
+  // false assurance.
+  const totals = view.getByText(/unmeasured slots \d+ · dynamic slots \d+/u).textContent
+  expect(totals).toContain('13 anchors')
+  expect(totals).toContain('unmeasured slots 2')
+  expect(totals).toContain('dynamic slots 5')
+  expect(totals).not.toContain('unowned')
+  // The capture state is not something the pane can observe, so it must not appear
+  // as a hardcoded claim; the totals line stops at what accounting measured.
+  expect(totals).not.toContain('delivery unproven')
+  // Every slot renders a resolved label: a template with an absent value would leave
+  // `{bytes}` on screen and read like a measurement that came out empty.
+  expect(view.container.textContent).not.toMatch(/\{[a-zA-Z]+\}/u)
+  // The 他人所有 card accounts for its dynamic slots, which carry no measured bytes.
+  const otherOwner = view.container.querySelector('[data-owner="C"]')
+  expect(otherOwner?.textContent).toContain(copy['capabilities.prompt.cardDynamic'].replace('{count}', '2'))
+
+  // A projected slot reports its template bytes, because the holes are filled from
+  // runtime facts and the delivered byte count is larger than the number shown. A
+  // literal slot carries no such marker, so the note cannot be read as decoration.
+  const templateMarkers = [...view.container.querySelectorAll('[data-slot-kind]')]
+    .filter(node => node.querySelector('[data-prompt-template-bytes]') !== null)
+  expect(templateMarkers.length).toBeGreaterThan(0)
+  for (const node of templateMarkers) expect(node.dataset.slotKind).toBe('projected')
+  const literalRows = [...view.container.querySelectorAll('[data-slot-kind="literal"]')]
+    .filter(node => node.querySelector('[data-prompt-template-bytes]') === null)
+  expect(literalRows.length).toBeGreaterThan(0)
+
+  // The frozen item set is one aggregate row: its note says member text is editable
+  // while adding or removing an item moves neighbouring bytes, and no literal row
+  // carries that note.
+  const aggregateRows = [...view.container.querySelectorAll('[data-slot-kind="aggregate"]')]
+  expect(aggregateRows.length).toBe(1)
+  expect(aggregateRows[0].querySelector('[data-prompt-aggregate-set]')?.textContent)
+    .toBe(copy['capabilities.prompt.aggregateFrozen'])
+  expect(literalRows.every(node => node.querySelector('[data-prompt-aggregate-set]') === null)).toBe(true)
+
+  // A declared anchor whose channel is not wired is listed as such, with no bytes.
+  expect(view.getAllByText(/channel not connected/u).length).toBe(1)
+  expect(view.getByText(copy['capabilities.prompt.unwiredSummary'].replace('{anchors}', '1').replace('{slots}', '2'))).toBeTruthy()
+
+  // Only wired editable anchors get an editor: one textarea per anchor that has an
+  // editable slot with a literal default (repl, run_code, edit_run_code, binding label,
+  // the three plan anchors, the tip bodies and the rewrite feedback).
+  expect(view.container.querySelectorAll('textarea').length).toBe(10)
+  // Every anchor renders a row; an unwired row carries no interactive control at
+  // all, so the panel can never promise an effect this build cannot deliver.
+  const rows = [...view.container.querySelectorAll('[data-anchor-id]')]
+  expect(rows).toHaveLength(13)
+  const unwiredRows = rows.filter(row => row.dataset.wired === 'false')
+  expect(unwiredRows).toHaveLength(1)
+  for (const row of unwiredRows) {
+    expect(row.querySelectorAll('textarea, input, button')).toHaveLength(0)
+  }
+  const unwiredRow = view.getByText('tools:sdk#capability-appendix').closest('div')
+  expect(unwiredRow.querySelector('textarea')).toBeNull()
+
+  // Structure: one compact block per anchor. Each editable anchor owns exactly one
+  // textarea, so an extra field or a duplicated editor is a visible regression.
+  for (const row of rows) {
+    const textareas = row.querySelectorAll('textarea')
+    expect(textareas.length).toBeLessThanOrEqual(1)
+    if (row.dataset.wired === 'true' && row.querySelector('[data-slot-id]') !== null) {
+      const editable = [...row.querySelectorAll('[data-slot-id]')].filter(chip => chip.tagName === 'BUTTON')
+      if (editable.length > 0) expect(textareas).toHaveLength(1)
+    }
+  }
+  // A read-only slot is a chip, never a field: it carries its reason code and kind
+  // and no textarea anywhere inside it.
+  const readOnlyChips = [...view.container.querySelectorAll('[data-readonly="true"]')]
+  expect(readOnlyChips.length).toBeGreaterThan(0)
+  for (const chip of readOnlyChips) {
+    expect(chip.tagName).toBe('SPAN')
+    expect(chip.querySelector('textarea')).toBeNull()
+  }
+  // No slot id is printed twice on the page: the chip is the only text occurrence,
+  // and every block is one header line plus one chip row.
+  const slotIds = [...new Set([...view.container.querySelectorAll('[data-slot-id]')].map(node => node.dataset.slotId))]
+  for (const slotId of slotIds) {
+    const occurrences = [...view.container.querySelectorAll('*')]
+      .filter(node => node.children.length === 0 && node.textContent === slotId)
+    expect(occurrences).toHaveLength(1)
+  }
+  for (const row of rows) {
+    expect(row.querySelectorAll('[data-anchor-id]').length).toBe(0)
+  }
+
+  // The prompt text switch is part of 新会话设置 and the pane it opens. Turning it
+  // off pauses delivery: the pane says so and every editor is disabled instead of
+  // pretending the saved sentences still apply.
+  snapshot.value.capabilityPromptTextEnabled = false
+  await act(async () => { rerender() })
+  expect(view.container.querySelector('[data-prompt-paused-notice]')?.textContent)
+    .toBe(copy['capabilities.prompt.paused'])
+  expect(view.container.querySelector('[data-prompt-paused="true"]')).not.toBeNull()
+  for (const textarea of view.container.querySelectorAll('textarea')) expect(textarea.disabled).toBe(true)
+  // Every wired anchor reports its saved bytes as paused, so the number on screen
+  // never reads like a delivered byte while the switch is off.
+  expect(view.container.textContent).toMatch(/[0-9]+ B \(paused, not applied\)/u)
+  snapshot.value.capabilityPromptTextEnabled = true
+  await act(async () => { rerender() })
+
+  // A resolver report names the slot, not the whole document.
+  snapshot.value.promptText = JSON.stringify({ schema: 'ptc-prompt-text/v1', overrides: { 'guidance.removed': 'x' } })
+  await act(async () => { rerender() })
+  expect(view.getByText(/guidance\.removed: unknown-slot/u)).toBeTruthy()
+  expect(snapshot.value.promptText).toContain('guidance.removed')
 })

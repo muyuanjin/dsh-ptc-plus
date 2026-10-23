@@ -114,6 +114,7 @@ test('validates every declared field from its CONFIG_FIELDS type and bounds', ()
         capabilityBaseline: '["tools.probe"]',
         capabilityOverrides: '{"tools.probe":"on-demand"}',
         capabilityStatistics: '{"enabled":false}',
+        promptText: CONFIG_DEFAULTS.promptText,
       }[field.key]
       assert.equal(typeof value, 'string')
       assert.equal(resolveConfig({ [field.key]: value })[field.key], value)

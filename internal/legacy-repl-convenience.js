@@ -10,6 +10,18 @@ import { applySourceEdits, createMappedTextBuilder, identitySourceMap } from './
 import { SKIP_AST_CHILDREN, walkAst } from './ast-traversal.js'
 
 /**
+ * Historical descriptions, used when a caller supplies no resolved document.
+ *
+ * They are presentation only: no recognizer compares a rewrite description, so a
+ * customized description changes what the model reads and nothing else.
+ */
+const DEFAULT_DESCRIPTIONS = Object.freeze({
+  mixed: MIXED_REDECLARATION_REWRITE,
+  function: FUNCTION_REDECLARATION_REWRITE,
+  class: CLASS_REDECLARATION_REWRITE,
+})
+
+/**
  * Optional compatibility policy for a persistent REPL. The cell language does
  * not own this policy: callers may replace it when persistence uses separate
  * lexical frames instead of one shared REPL environment.
@@ -129,6 +141,7 @@ export function rewriteReplRedeclarations({
   bindingPolicy,
   autoSplitRedeclarations,
   commitSignal,
+  rewriteDescriptions = DEFAULT_DESCRIPTIONS,
 }) {
   const redeclared = []
   const rewrites = []
@@ -184,8 +197,8 @@ export function rewriteReplRedeclarations({
           rewrites.push({
             kind: 'redeclaration',
             description: kind === 'class'
-              ? CLASS_REDECLARATION_REWRITE
-              : FUNCTION_REDECLARATION_REWRITE,
+              ? rewriteDescriptions.class
+              : rewriteDescriptions.function,
             source: statement.id.name,
           })
         }
@@ -262,7 +275,7 @@ export function rewriteReplRedeclarations({
         redeclared.push(...existing.map(collisionFor))
         rewrites.push({
           kind: 'redeclaration',
-          description: MIXED_REDECLARATION_REWRITE,
+          description: rewriteDescriptions.mixed,
           source: existing.map(binding => binding.name).join(', '),
         })
       } else if (existing.length === bindings.length && bindings.length > 0) {

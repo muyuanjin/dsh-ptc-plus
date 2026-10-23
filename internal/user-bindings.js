@@ -268,7 +268,7 @@ export function userBindingsDeclaration(snapshot) {
   return normalized.entries.map(entry => entry.declaration).join('\n\n')
 }
 
-export function userBindingsConfiguredContext(snapshot) {
+export function userBindingsConfiguredContext(snapshot, { entryLabel = 'Binding' } = {}) {
   const entries = normalizeUserBindingsSnapshot(snapshot).entries
     .filter(entry => {
       const { includeDeclaration, instructions } = bindingModelPreferences(entry.modelContext)
@@ -279,7 +279,7 @@ export function userBindingsConfiguredContext(snapshot) {
   const content = entries.map(entry => {
     const { includeDeclaration, instructions } = bindingModelPreferences(entry.modelContext)
     return [
-      `Binding: ${entry.name}`,
+      `${entryLabel}: ${entry.name}`,
       instructions,
       includeDeclaration ? `\`\`\`ts\n${entry.declaration}\n\`\`\`` : '',
     ].filter(Boolean).join('\n\n')

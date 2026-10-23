@@ -1,4 +1,5 @@
 import { CAPABILITY_POLICY_DEFAULT } from './capability-policy.js'
+import { PROMPT_TEXT_DEFAULT } from './prompt-text.js'
 
 /** Configuration fields shared by the Host schema and settings card. */
 export const MAX_TIMER_DELAY_MS = 2_147_483_647
@@ -214,6 +215,24 @@ export const CONFIG_FIELDS = Object.freeze([
     labelEn: 'Enable durable REPL recovery',
     description: 'worker 重启后从 session journal 重建可恢复的 REPL 状态。',
     descriptionEn: 'Rebuilds recoverable REPL state from the session journal after a worker restart.',
+  },
+  {
+    key: 'capabilityPromptTextEnabled',
+    type: 'boolean',
+    default: true,
+    label: '提示文本',
+    labelEn: 'Prompt text',
+    description: '把「提示文本」页签里改写的固定句子应用到模型的请求、工具说明、能力方案与提示；关闭后这些渠道一律回到内置文本，已保存的改写保留但暂停生效。',
+    descriptionEn: 'Applies the sentences edited in the Prompt text tab to model requests, tool descriptions, the capability plan and tips. When off, those channels use the built-in text; saved edits are kept but paused.',
+  },
+  {
+    key: 'promptText',
+    type: 'string',
+    default: PROMPT_TEXT_DEFAULT,
+    label: '提示文本覆盖',
+    labelEn: 'Prompt text overrides',
+    description: '按槽位 id 覆盖插件写给模型的固定提示文本；空对象表示使用内置文本。诊断、信封与由配置派生的策略句始终只读。',
+    descriptionEn: 'Override the fixed prompt text the plugin writes for the model, keyed by slot id; an empty document keeps the built-in text. Diagnostics, message envelopes and configuration-derived policy sentences stay read-only.',
   },
   {
     key: 'unmeasuredCellLimit',
@@ -473,7 +492,7 @@ export const CONFIG_GROUPS = Object.freeze([
   },
   { key: 'capabilities', label: '能力与上下文', labelEn: 'Capabilities and context',
     fields: Object.freeze(['capabilityContextEnabled', 'capabilityManagementEnabled', 'capabilityBaseline', 'capabilityOverrides',
-      'capabilityStatistics', 'capabilityPolicy', 'capabilityRecoveryEnabled', 'modelPreviewEnabled', 'capabilityProfiles', 'capabilityBudgetBytes', 'capabilityDirectoryBytes', 'capabilityRecoveryBytes', 'modelPreviewTokens']) },
+      'capabilityStatistics', 'capabilityPolicy', 'capabilityRecoveryEnabled', 'modelPreviewEnabled', 'capabilityProfiles', 'capabilityBudgetBytes', 'capabilityDirectoryBytes', 'capabilityRecoveryBytes', 'modelPreviewTokens', 'capabilityPromptTextEnabled', 'promptText']) },
 ])
 
 /** Functional modules share the same section order across every settings entry. */

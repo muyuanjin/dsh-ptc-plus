@@ -430,6 +430,7 @@
         "internal/host-rpc.js",
         "internal/message-sources.js",
         "internal/official-repl-priority.js",
+        "internal/prompt-text.js",
         "internal/rejected-cell-editor.js",
         "internal/rpc-contract.js",
         "internal/run-code-description.js",
@@ -503,7 +504,9 @@
         "optional public session lookup for REPL observation tolerates an absent service without creating a runtime",
         "release tarball consumer installation selects the verified installed Host peer cohort without independently resolving package dist-tags",
         "a cell that ends before its run frame because the compute baseline could not be observed, or because the wall or compute bound expired first, settles as a no-op that keeps the live worker and its bindings until the configured unmeasuredCellLimit consecutive such cells are reached, drops the live worker while keeping the proved frontier at that threshold, and leaves a replay that could not observe a recorded cell with its frontier intact instead of contracting it, while a transport-reported worker loss keeps the worker-exit reset route, and a cell refused admission because a previous helper was not reclaimed settles as blocked without contracting the recorded frontier while later computation stays blocked",
-        "an accepted deferred edit whose revision never ran publishes its own unexecuted settlement so the root cell stays provable, while the receipt stays a receipt: no revision binding, no successful revision, and no derived source becomes the next edit target"
+        "an accepted deferred edit whose revision never ran publishes its own unexecuted settlement so the root cell stays provable, while the receipt stays a receipt: no revision binding, no successful revision, and no derived source becomes the next edit target",
+        "an override document changes only the asset it names: the resolver is total, unknown ids stay inert, derived policy sentences, diagnostics and envelopes remain owned by code, and an empty document reproduces the built-in prompt byte for byte",
+        "the assembled request is captured against its host baseline: every added or modified section, every adapted tool schema and every injected context is claimed with its recorded bytes, and a sentence appended to a claimed block changes the capture"
       ],
       "entries": [
         "run_code",
@@ -597,7 +600,15 @@
         "scripts/npm-consumer-smoke.mjs",
         "test/npm-consumer-smoke.test.js",
         "test/isolated-entrance.test.js",
-        "test/kernel-worker-settlement.test.js"
+        "test/kernel-worker-settlement.test.js",
+        "test/prompt-text.test.js",
+        "test/prompt-surface.test.js",
+        "test/prompt-text-result.test.js",
+        "test/prompt-surface-plan.test.js",
+        "test/prompt-text-render-guards.test.js",
+        "test/prompt-text-runtime.test.js",
+        "test/prompt-text-plan.test.js",
+        "test/prompt-surface-lanes.js"
       ],
       "dependsOn": [
         "execution-kernel",

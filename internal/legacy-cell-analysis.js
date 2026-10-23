@@ -408,6 +408,7 @@ function normalizePreparationOptions({
   importNamespaces = new Set(),
   writableBindings,
   moduleSemantics = LIVE_MODULE_SEMANTICS,
+  rewriteDescriptions,
 }) {
   if (typeof bindingPolicy === 'boolean') {
     bindingPolicy = {
@@ -435,7 +436,7 @@ function normalizePreparationOptions({
     throw new TypeError('ptc-plus: module semantics must define supported default-export and import-expression rules')
   }
   return { knownBindings, bindingPolicy, reservedBindings, rewritesEnabled,
-    importBindings, importNamespaces, writableBindings, moduleSemantics }
+    importBindings, importNamespaces, writableBindings, moduleSemantics, rewriteDescriptions }
 }
 
 function parseMappedCell(moduleRewrite, program) {
@@ -522,7 +523,7 @@ function classifyPrepared({ code, sourceMap }, program, knownBindings, moduleRew
 export function prepareLegacyProgram(program, options = {}) {
   if (typeof program !== 'string') throw new TypeError('ptc-plus: program must be a string')
   const { knownBindings, bindingPolicy, reservedBindings, rewritesEnabled,
-    importBindings, importNamespaces, writableBindings, moduleSemantics } = normalizePreparationOptions(options)
+    importBindings, importNamespaces, writableBindings, moduleSemantics, rewriteDescriptions } = normalizePreparationOptions(options)
   const unavailableGeneratedNames = new Set([
     ...knownBindings, ...reservedBindings, ...importBindings.keys(), ...importNamespaces,
   ])
@@ -561,6 +562,7 @@ export function prepareLegacyProgram(program, options = {}) {
     bindingPolicy,
     autoSplitRedeclarations: rewritesEnabled.autoSplitRedeclarations,
     commitSignal,
+    rewriteDescriptions,
   })
   const { executableCode, executableSourceMap, collisions, redeclared, rewrites } = convenience
   const commitTargets = new Set(moduleRewrite.commitTargets)

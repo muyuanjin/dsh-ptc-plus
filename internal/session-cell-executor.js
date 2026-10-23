@@ -28,6 +28,7 @@ import { LIVE_USER_BINDINGS_SHADOW_POLICY, normalizeUserBindingNames } from './s
 import { PreflightError, prepareProgram } from './compiler-service.js'
 import { UNANSWERED_SAMPLE_CODE } from './isolated-worker.js'
 import { executionPolicies } from './binding-update-policy.js'
+import { resultEnvelopeText, resolvePromptTextConfig, rewriteDescriptions } from './prompt-text.js'
 import { createReplMemorySnapshot } from './repl-memory-projection.js'
 import { CellAdmissionBlocked, ModuleRewriteError } from './cell-error.js'
 import { mapSourcePosition } from './source-position-map.js'
@@ -39,7 +40,6 @@ import {
   selectUserBindingsSnapshot,
 } from './user-bindings.js'
 
-const OUTPUT_LIMIT_MESSAGE = bytes => `output exceeded ${bytes} bytes; this cell was discarded and the worker reset. Only bindings in the verified recovery frontier can be restored. External effects may already have occurred and are not undone. For future cells, bound console output and return a smaller value; do not assume this cell's values remain available.`
 
 function earlyResult(kind, message) {
   return { logs: [], error: { kind, message } }
@@ -426,6 +426,7 @@ export class SessionCellExecutor {
     const moduleDirectory = executionCwd ?? process.cwd()
     const moduleFilename = resolve(moduleDirectory, 'repl')
     const prepareCell = program => prepareProgram(program, {
+      rewriteDescriptions: rewriteDescriptions(resolvePromptTextConfig(config)),
       knownBindings: catalog.knownBindings,
       bindingPolicy,
       languageSemantics,
@@ -802,7 +803,7 @@ export class SessionCellExecutor {
     const logs = Array.isArray(message.logs) && message.logs.every(log => typeof log === 'string') ? message.logs : []
     active.resolve({
         logs: limitLogs(logs),
-        error: { kind: 'output-limit', message: OUTPUT_LIMIT_MESSAGE(active.config.maxOutputBytes) },
+        error: { kind: 'output-limit', message: resultEnvelopeText(resolvePromptTextConfig(active.config), active.config.maxOutputBytes) },
     }, true)
   }
 
@@ -894,7 +895,7 @@ export class SessionCellExecutor {
     if (bytes > active.config.maxOutputBytes) {
       active.resolve({
         logs: limitLogs(logs),
-        error: { kind: 'output-limit', message: OUTPUT_LIMIT_MESSAGE(active.config.maxOutputBytes) },
+        error: { kind: 'output-limit', message: resultEnvelopeText(resolvePromptTextConfig(active.config), active.config.maxOutputBytes) },
       }, true)
       return
     }

@@ -224,12 +224,12 @@ export function visibleExecutableCallSeqs(session) {
     if (visibleAssistantCallSeqs.has(event.seq)) calls.add(event.seq)
   }
   const timeline = foldSessionTimeline(events)
-  for (const root of timeline.calls) {
-    const post = timeline.results.get(root.seq)?.postEdit
+  for (const seq of timeline.calls) {
+    const post = timeline.results.get(seq)?.postEdit
     // A derived execution that never ran was never published as a cell the model
     // can see, so it is not model-visible executable history.
     if (post !== undefined && post.derived?.unexecuted !== true
-      && calls.has(root.seq) && calls.has(post.targetCallSeq)) {
+      && calls.has(seq) && calls.has(post.targetCallSeq)) {
       calls.add(post.executionStartSeq)
     }
   }
@@ -510,11 +510,42 @@ function timelineJson(value) {
   return deepFreeze(JSON.parse(JSON.stringify(value ?? null)))
 }
 
+/**
+ * Resolve one executable call entry from either the live table or the
+ * serialized checkpoint shape.
+ */
+function executableEntry(timeline, seq) {
+  const table = timeline.executableCalls
+  return typeof table?.get === 'function' ? table.get(seq) : table?.[`k${seq}`]?.[1]
+}
+
+/**
+ * The ordered executable call events.
+ *
+ * `calls` stores only the sequence order; the events themselves live once in
+ * `executableCalls`, so a checkpoint no longer serializes every call a second
+ * time.
+ */
+function timelineCalls(timeline) {
+  const calls = []
+  for (const seq of timeline.calls) {
+    const event = executableEntry(timeline, seq)?.event
+    if (event !== undefined) calls.push(event)
+  }
+  return calls
+}
+
 function timelineCallEvent(event) {
   return timelineJson({ seq: event.seq, type: event.type, data: {
     callId: event.data.callId, name: event.data.name,
     ...(REPL_TOOL_NAMES.has(event.data.name) ? { arguments: event.data.arguments } : {}),
   } })
+}
+
+function eventDigest(event) {
+  return createHash('sha256').update(JSON.stringify(event, (_key, value) => (
+    isRecord(value) ? Object.fromEntries(Object.keys(value).sort().map(key => [key, value[key]])) : value
+  ))).digest('hex')
 }
 
 function resultIdentity(data) {
@@ -578,7 +609,8 @@ export function validateSessionTimelineState(value) {
     'unavailableResultSeq', 'unavailableResultReason', 'pruneReplacementWindow', 'runSelectionFrontier',
     'runSelectionHistory', 'lastEventIndex', 'eventFacts']) && typeof value.openTurn === 'boolean'
     && typeof value.found === 'boolean' && isCanonicalSequence(value.scope)
-    && Array.isArray(value.calls) && value.calls.every(callEvent) && Array.isArray(value.boundaries))
+    && Array.isArray(value.calls) && value.calls.every(seq => isCanonicalSequence(seq))
+    && Array.isArray(value.boundaries))
   requireFact(value.lastEventIndex === null || isCanonicalSequence(value.lastEventIndex))
   requireFact(Array.isArray(value.runSelectionHistory))
   let boundaryScope = 0
@@ -602,9 +634,10 @@ export function validateSessionTimelineState(value) {
     && entry.event.seq === seq && REPL_TOOL_NAMES.has(entry.event.data.name))
   requireFact(value.calls.length === executable.size)
   const callSeqs = new Set()
-  for (const call of value.calls) {
-    requireFact(!callSeqs.has(call.seq) && deepEqualJson(executable.get(call.seq)?.event, call))
-    callSeqs.add(call.seq)
+  for (const seq of value.calls) {
+    // The order list may only name stored entries, and may not repeat one.
+    requireFact(!callSeqs.has(seq) && executable.has(seq))
+    callSeqs.add(seq)
   }
   const journalFacts = result => {
     if (!isRecord(result.journal)) return false
@@ -666,11 +699,16 @@ export function validateSessionTimelineState(value) {
   const claimed = table('claimedEditTargets', isCanonicalSequence, (field, seq) => trueValue(field) && executable.has(seq))
   const edits = table('editClaims', isCanonicalSequence, (seq, editSeq) => isCanonicalSequence(seq)
     && claimed.has(seq) && targets.get(editSeq)?.callSeq === seq)
-  const ordinaryObservations = table('ordinaryResultSeqs', isCanonicalSequence, (observation, seq) => fields(observation,
-    ['call', 'eventSeq', 'eventIndex']) && callEvent(observation.call) && observation.call.seq === seq
+  const ordinaryObservations = table('ordinaryResultSeqs', isCanonicalSequence, (observation, seq) =>
+    ((fields(observation, ['call', 'eventSeq', 'eventIndex']) && callEvent(observation.call) && observation.call.seq === seq
+      && value.executableCalls[`k${seq}`] === undefined)
+      || (fields(observation, ['callDigest', 'eventSeq', 'eventIndex'])
+        && typeof observation.callDigest === 'string' && /^[a-f0-9]{64}$/u.test(observation.callDigest)
+        && value.executableCalls[`k${seq}`] !== undefined
+        && eventDigest(value.executableCalls[`k${seq}`][1].event) === observation.callDigest))
     && isCanonicalSequence(observation.eventSeq) && isCanonicalSequence(observation.eventIndex)
     && value.lastEventIndex !== null && observation.eventIndex <= value.lastEventIndex
-    && (!REPL_TOOL_NAMES.has(observation.call.data.name)
+    && (observation.callDigest !== undefined || !REPL_TOOL_NAMES.has(observation.call.data.name)
       || (deepEqualJson(executable.get(seq)?.event, observation.call)
         && observation.eventIndex >= executable.get(seq).eventIndex)))
   const settlements = table('settledResultsByEventSeq', isCanonicalSequence, settlement => fields(settlement,
@@ -744,7 +782,9 @@ export function validateSessionTimelineState(value) {
     const settlement = settlements.get(observation.eventSeq)
     requireFact(settlement !== undefined
       ? settlement.ordinary && settlement.observedIndex === observation.eventIndex
-        && deepEqualJson(settlement.call, observation.call)
+        && (observation.callDigest === undefined
+          ? deepEqualJson(settlement.call, observation.call)
+          : eventDigest(settlement.call) === observation.callDigest)
       : value.runSelectionHistory.some(frontier => frontier.index === observation.eventIndex
         && frontier.reason === 'result-identity-mismatch'))
   }
@@ -752,7 +792,9 @@ export function validateSessionTimelineState(value) {
     if (!settlement.ordinary) continue
     const observation = ordinaryObservations.get(settlement.call.seq)
     requireFact(observation !== undefined && observation.eventIndex === settlement.observedIndex
-      && deepEqualJson(observation.call, settlement.call))
+      && (observation.callDigest === undefined
+        ? deepEqualJson(observation.call, settlement.call)
+        : eventDigest(settlement.call) === observation.callDigest))
   }
   const publications = [...settlements.values()].filter(settlement => settlement.publication !== undefined)
   // Dispatch targets are derived from first-observed settlements and retained
@@ -1082,7 +1124,7 @@ function advanceTimelineEvent(previous, inputEvent, eventIndex, replayFact) {
             editClaims.set(event.seq, target.callSeq)
           }
         }
-        state.calls = [...state.calls, entry.event]
+        state.calls = [...state.calls, event.seq]
         if (isCanonicalSequence(event.seq)) {
           state.executableCalls.set(event.seq, entry)
         }
@@ -1145,7 +1187,8 @@ function advanceTimelineEvent(previous, inputEvent, eventIndex, replayFact) {
         clearRunSelection('duplicate-result')
         continue
       }
-      ordinaryResultSeqs.set(callSeq, timelineJson({ call,
+      ordinaryResultSeqs.set(callSeq, timelineJson({
+        ...(state.executableCalls.get(callSeq) === undefined ? { call } : { callDigest: eventDigest(call) }),
         eventSeq: isCanonicalSequence(event.seq) ? event.seq : callSeq, eventIndex }))
     }
     if (call !== undefined && typeof callId === 'string' && call.data.callId !== callId) {
@@ -1346,7 +1389,7 @@ export function recoverJournal(session, currentCallSeq, options = {}) {
     return { nodes: [], head: undefined, checkpoints: new Map(), volatileSuffix: [], available: true }
   }
   const timeline = foldSessionTimeline(events)
-  const calls = timeline.calls.filter(call => call.seq !== currentCallSeq)
+  const calls = timelineCalls(timeline).filter(call => call.seq !== currentCallSeq)
   const { executableCalls, results, found } = timeline
   const visibleCalls = options?.visibleCallSeqs
   const appliedBoundaries = options?.[RECOVERY_BOUNDARY_EVIDENCE]

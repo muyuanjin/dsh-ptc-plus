@@ -14,6 +14,8 @@ import { PTC_MESSAGE_SOURCE_KIND } from './message-sources.js'
 import { deepFreeze } from './record-utils.js'
 import { capabilityProfileConfiguration } from './runtime-config.js'
 import { readRuntimeAvailability } from './runtime-messages.js'
+import { PLAN_CATEGORY_LINES, PLAN_NAVIGATION, PLAN_OVERAGE, PLAN_OVERAGE_HOLE,
+  PROMPT_SLOT_IDS, planCategorySlotId, resolvePromptText, resolvePromptTextConfig } from './prompt-text.js'
 
 export const CAPABILITY_PLAN_FORM = 'capability-plan'
 export const CAPABILITY_EVIDENCE_KEY = 'dshPtcPlusCapabilities'
@@ -25,6 +27,54 @@ const LEGACY_NAVIGATION = 'Use capabilities.search({query}) to retrieve complete
 const NAVIGATION = 'Use capabilities.search({query}) to retrieve complete tool, Skill and MCP contracts. Unlisted capabilities remain discoverable. Skill descriptions are summaries; follow each Skill\'s declared invocation eligibility to load its body before following it.'
 const digest = value => createHash('sha256').update(JSON.stringify(value)).digest('hex')
 const messageText = message => message?.content?.filter(block => block.type === 'text').map(block => block.text).join('\n') ?? ''
+const byteLength = value => Buffer.byteLength(value, 'utf8')
+
+/**
+ * Delivered plan-channel text, resolved from the prompt-text document.
+ *
+ * The planner must receive the same words the panel shows, so the navigation
+ * sentence, the five category lines and the overage template are read once here
+ * rather than defaulting inside the planner. `isDefault` decides whether the
+ * snapshot can keep a historical generation: only an edited channel needs the v5
+ * record, so an untouched configuration stays byte-identical to before.
+ */
+function planChannelText(config) {
+  const prompt = resolvePromptTextConfig(config)
+  const navigationSentence = prompt.text(PROMPT_SLOT_IDS.planNavigationSentence)
+  const overageSentence = prompt.text(PROMPT_SLOT_IDS.planOverageSentence)
+  const categoryLines = Object.keys(PLAN_CATEGORY_LINES)
+    .map(category => [category, prompt.text(planCategorySlotId(category))])
+  const isDefault = navigationSentence === PLAN_NAVIGATION
+    && overageSentence === PLAN_OVERAGE
+    && categoryLines.every(([category, line]) => line === PLAN_CATEGORY_LINES[category])
+  return { navigationSentence, overageSentence, categoryLines, isDefault }
+}
+
+/**
+ * Directory budget for the delivered guidance.
+ *
+ * Editing a navigation sentence changes how many bytes the directory spends before
+ * any capability entry, so the budget moves with the text: an unchanged document
+ * therefore keeps today's budget exactly, and a longer sentence does not silently
+ * shrink the catalog.
+ */
+const planDirectoryBudget = (configured, navigationSentence) => (
+  configured + byteLength(navigationSentence) - byteLength(PLAN_NAVIGATION))
+
+/**
+ * Recorded plan text; a v5 snapshot carries the words and the budget it was
+ * composed from.
+ *
+ * The budget belongs in the record because it depends on the navigation sentence:
+ * replaying it from the current default literal would let a later edit of that
+ * literal silently change what an old snapshot replays to.
+ */
+const planPromptText = (channel, directoryBudgetBytes) => ({ promptText: {
+  navigationSentence: channel.navigationSentence,
+  categoryLines: channel.categoryLines.map(([category, line]) => [category, line]),
+  overageSentence: channel.overageSentence,
+  directoryBudgetBytes,
+} })
 
 /** Saved inputs and explicit session choices are distinct; automatic cancels a saved override. */
 export function sessionCapabilitySettings(sourceSettings, sessionOverrides = {}) {
@@ -85,9 +135,19 @@ function sourcePlan(message, id) {
   const source = message?.source
   if (source?.kind !== PTC_MESSAGE_SOURCE_KIND || source.form !== CAPABILITY_PLAN_FORM || source.sessionId !== id) return undefined
   const snapshot = source.snapshot
-  const generation = ['ptc-capability-environment/v1', 'ptc-capability-environment/v2', 'ptc-capability-environment/v3', 'ptc-capability-environment/v4'].indexOf(snapshot?.schema)
+  const generation = ['ptc-capability-environment/v1', 'ptc-capability-environment/v2', 'ptc-capability-environment/v3',
+    'ptc-capability-environment/v4', 'ptc-capability-environment/v5'].indexOf(snapshot?.schema)
+  // Historical generations each had one planner generation for a given settings
+  // shape, so their plan schema is part of the record's identity. Generation 5
+  // records the plan words instead, and its plan schema follows from the recorded
+  // settings: the recomputation below proves the whole plan, which makes a separate
+  // schema guess both unnecessary and wrong (a v5 snapshot may carry context
+  // settings and therefore a v3 plan, or a closed plan and therefore a v2 one).
+  const expectedPlanSchema = generation === 2 ? 'ptc-capability-plan/v2'
+    : generation >= 3 && snapshot.settings.policy !== undefined ? 'ptc-capability-plan/v3' : 'ptc-capability-plan/v1'
   if (source.digest !== digest(snapshot) || generation < 0
-    || !Array.isArray(snapshot.capabilities) || snapshot.plan?.schema !== (generation === 3 ? 'ptc-capability-plan/v3' : generation === 2 ? 'ptc-capability-plan/v2' : 'ptc-capability-plan/v1')) {
+    || !Array.isArray(snapshot.capabilities)
+    || (generation < 4 && snapshot.plan?.schema !== expectedPlanSchema)) {
     throw new Error('damaged session capability plan')
   }
   if (generation >= 1) {
@@ -100,36 +160,117 @@ function sourcePlan(message, id) {
     }
     if (JSON.stringify(merged) !== JSON.stringify(snapshot.settings)) throw new Error('inconsistent session capability choices')
   }
-  if (generation === 3 ? typeof snapshot.settings.contextEnabled !== 'boolean' : snapshot.settings.contextEnabled !== undefined) {
+  // v4 implies a context generation; v5 only says the plan words were edited, so it
+  // may or may not carry context settings.
+  const contextGeneration = generation === 3 ? typeof snapshot.settings.contextEnabled === 'boolean'
+    : generation === 4 ? true : snapshot.settings.contextEnabled === undefined
+  if (!contextGeneration) {
     throw new Error('inconsistent capability context generation')
   }
-  if (generation === 2 || generation === 3 && snapshot.settings.policy !== undefined) {
+  if (generation === 2 || generation >= 3 && snapshot.settings.policy !== undefined) {
     if (!snapshot.settings.policy || typeof snapshot.settings.recoveryEnabled !== 'boolean'
       || typeof snapshot.settings.previewEnabled !== 'boolean') throw new Error('damaged capability policy settings')
   } else if (snapshot.settings.policy !== undefined) throw new Error('inconsistent historical capability generation')
-  if (snapshot.navigationText !== undefined && snapshot.navigationText !== NAVIGATION) throw new Error('unknown capability navigation contract')
+  // A v5 snapshot carries the plan words it was composed from; a historical
+  // generation may only claim the registry defaults it was delivered with.
+  const recorded = generation === 4 ? planRecord(snapshot) : undefined
+  if (recorded === undefined) {
+    if (snapshot.promptText !== undefined) throw new Error('inconsistent capability plan text generation')
+    if (snapshot.navigationText !== undefined && snapshot.navigationText !== NAVIGATION) throw new Error('unknown capability navigation contract')
+  } else if (snapshot.navigationText !== recorded.navigationSentence) {
+    throw new Error('damaged capability plan text')
+  }
   const expected = createCapabilityPlan({ ...snapshot.settings, capabilities: snapshot.capabilities,
     coverage: snapshot.coverage, navigationText: snapshot.navigationText ?? LEGACY_NAVIGATION,
+    ...(recorded === undefined ? {} : {
+      categories: recorded.categoryLines,
+      directoryBudgetBytes: recorded.directoryBudgetBytes,
+    }),
     configurationRevision: digest(snapshot.settings) })
-  if (JSON.stringify(expected) !== JSON.stringify(snapshot.plan)
+  if ((generation >= 4 && snapshot.plan?.schema !== expected.schema)
+    || JSON.stringify(expected) !== JSON.stringify(snapshot.plan)
     || messageText(message) !== messageText(planMessage(snapshot, id, source.refresh === true))) {
     throw new Error('inconsistent session capability plan')
   }
   return deepFreeze(structuredClone(snapshot))
 }
 
+/**
+ * Validated plan words of a v5 snapshot.
+ *
+ * Returns `undefined` only when the snapshot carries no record at all; a record that
+ * exists but cannot be replayed throws, because a half-recorded plan text would let
+ * a later replay silently deliver different words than the ones recorded here.
+ */
+function planRecord(snapshot) {
+  const record = snapshot.promptText
+  if (record === undefined || record === null) return undefined
+  const categories = record.categoryLines
+  const known = Object.keys(PLAN_CATEGORY_LINES)
+  if (typeof record.navigationSentence !== 'string' || record.navigationSentence.length === 0
+    || typeof record.overageSentence !== 'string' || record.overageSentence.split(PLAN_OVERAGE_HOLE).length !== 2
+    || !Number.isSafeInteger(record.directoryBudgetBytes) || record.directoryBudgetBytes < 0
+    || !Array.isArray(categories) || categories.length !== known.length
+    || categories.some(pair => !Array.isArray(pair) || pair.length !== 2
+      || !known.includes(pair[0]) || typeof pair[1] !== 'string' || pair[1].length === 0)
+    || new Set(categories.map(pair => pair[0])).size !== categories.length) {
+    throw new Error('damaged capability plan text')
+  }
+  return { navigationSentence: record.navigationSentence, overageSentence: record.overageSentence,
+    directoryBudgetBytes: record.directoryBudgetBytes,
+    categoryLines: categories.map(([category, line]) => [category, line]) }
+}
+
 function planMessage(snapshot, id, refresh = false) {
   const plan = snapshot.plan
+  const overage = snapshot.promptText?.overageSentence ?? PLAN_OVERAGE
   const text = plan.enabled
     ? ['PTC Plus session capability environment' + (refresh ? ' refreshed; replaces the preceding capability plan.' : ':'),
       plan.directoryText, plan.catalogText,
-      ...(plan.budgets.overageBytes ? [`Explicit full contracts exceed the configured budget by ${plan.budgets.overageBytes} UTF-8 bytes.`] : [])]
+      ...(plan.budgets.overageBytes ? [overage.replace(PLAN_OVERAGE_HOLE, String(plan.budgets.overageBytes))] : [])]
       .filter(Boolean).join('\n\n')
     : snapshot.settings.contextEnabled === false
       ? 'PTC Plus capability and context settings are paused for this session. Use the host-provided capability contracts and result presentation.'
       : 'PTC Plus capability management is off for this session. Use the host-provided capability contracts.'
   return createUserMessage({ source: { kind: PTC_MESSAGE_SOURCE_KIND, form: CAPABILITY_PLAN_FORM,
     sessionId: id, refresh, digest: digest(snapshot), snapshot }, content: [{ type: 'text', text }] })
+}
+
+/**
+ * Delivered plan text for a snapshot, without the message envelope.
+ *
+ * Replay and the surface gate both need the bytes the model reads; keeping the
+ * composition private to this module means a caller cannot assemble a different
+ * plan and call it the delivered one.
+ */
+export function capabilityPlanText(snapshot, id, refresh = false) {
+  return planMessage(snapshot, id, refresh).content[0].text
+}
+
+/**
+ * Delivered plan message for a snapshot, envelope included.
+ *
+ * What this composition can claim is consistency, not provenance: the settings merge
+ * is a fixed point of the recorded settings, the recorded plan deep-equals a
+ * recomputation from them, the delivered text equals a recomposition of that plan and
+ * the snapshots it reads are deeply frozen. It recomputes the digest, so it cannot
+ * attest that these bytes are the ones a session log once carried.
+ */
+export function capabilityPlanMessage(snapshot, id, refresh = false) {
+  return planMessage(snapshot, id, refresh)
+}
+
+/**
+ * Delivered plan text of a plan message, after the replay contract accepted it.
+ *
+ * The reader above stays a recognizer and hands out no composition state; a caller
+ * that needs the bytes the model read asks this projection instead. An unreplayable
+ * message throws, so a lane that compares bytes cannot pass by receiving `undefined`.
+ */
+export function capabilityPlanTextFromMessage(message, sessionId) {
+  if (message?.source?.form !== CAPABILITY_PLAN_FORM) return undefined
+  sourcePlan(message, sessionId)
+  return message.content[0].text
 }
 
 /** Recognize capability-owned presentation for bounded offline context accounting. */
@@ -702,11 +843,22 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
       const capabilities = requiresCapabilityInventory(settings) ? await inventory(agent, sections ?? [], settings, signal) : []
       const effective = effectiveCapabilitySettings(settings)
       const coverage = (effective.policy ? effective.enabled && effective.policy.allocation.statistics : effective.statistics?.enabled === true) ? await store?.coverage(agent, capabilities, settings.statistics) : undefined
+      const planChannel = planChannelText(currentConfig)
+      const directoryBudgetBytes = planDirectoryBudget(settings.directoryBudgetBytes, planChannel.navigationSentence)
       const plan = createCapabilityPlan({ ...settings, configurationRevision: digest(settings),
-        capabilities, coverage, navigationText: NAVIGATION })
+        capabilities, coverage, navigationText: planChannel.navigationSentence,
+        categories: planChannel.categoryLines,
+        directoryBudgetBytes })
       const hasChoices = settings.contextEnabled !== undefined || settings.policy !== undefined || choice !== undefined || previous?.schema === 'ptc-capability-environment/v2'
-      const snapshot = deepFreeze({ schema: settings.contextEnabled !== undefined ? 'ptc-capability-environment/v4' : settings.policy ? 'ptc-capability-environment/v3' : hasChoices ? 'ptc-capability-environment/v2' : 'ptc-capability-environment/v1',
-        ...(hasChoices ? { sourceSettings, sessionOverrides } : {}), navigationText: NAVIGATION, settings, capabilities, ...(coverage === undefined ? {} : { coverage }), plan })
+      // An edited plan channel needs the v5 record, and that generation requires the
+      // saved inputs and session choices it was composed from.
+      const recordsText = !planChannel.isDefault
+      const snapshot = deepFreeze({ schema: recordsText ? 'ptc-capability-environment/v5'
+        : settings.contextEnabled !== undefined ? 'ptc-capability-environment/v4' : settings.policy ? 'ptc-capability-environment/v3'
+          : hasChoices ? 'ptc-capability-environment/v2' : 'ptc-capability-environment/v1',
+        ...(hasChoices || recordsText ? { sourceSettings, sessionOverrides } : {}),
+        ...(recordsText ? planPromptText(planChannel, directoryBudgetBytes) : {}),
+        navigationText: planChannel.navigationSentence, settings, capabilities, ...(coverage === undefined ? {} : { coverage }), plan })
       const initialized = sessionEvents(agent.session).some(event => event.type === 'system/message')
       const message = planMessage(snapshot, id, force && initialized)
       agent.signal?.throwIfAborted?.()

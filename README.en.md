@@ -158,11 +158,13 @@ The settings window and the sidebar plugin configuration page are the same confi
 | Extensions and tolerance | Tool call tolerance | Missing call summaries and identifiable misplaced native-tool calls |
 | Interface and resources | Interface display | Enhanced tool cards, the REPL tab, and the sparkle shortcut |
 | Interface and resources | Resource limits | Execution time, memory, output, sampling, reclamation, and startup limits |
-| Experimental | Capabilities and context | Experimental capability management (off by default), independent statistics, common baseline, individual choices, and presentation budgets |
+| Experimental | Capabilities and context | Experimental capability management (off by default), independent statistics, common baseline, individual choices, presentation budgets, and prompt text |
 
 Everyday computation features are on by default, and **Cordis development tools are off by default** so they can be enabled when inspecting or developing DSH plugins; see the [integration notes](docs/adr/0020-optional-cordis-tools-in-ptc-mode.md).
 
 Capabilities and context is an experimental group, off by default. It selects availability and disclosure for Skills, tools, and MCP capabilities by category, source, or item, and it also covers Initial prompt, Prompt recovery, Output excerpts, and Usage statistics; the switch beside its title pauses the whole group while keeping every choice, and changes apply to new sessions or to a session after an explicit refresh. The sparkle menu also opens the session capability workbench, which views and adjusts the current session's capabilities by category, source, and state: edits live in one draft that you can apply to this session only or save as the global default. See the [configuration reference](docs/runtime-reference.md#configuration) for fields, defaults, and full limits.
+
+The **Prompt text** tab lists the fixed text the plugin writes for the model: each row names its channel, presence condition, byte count, and read-only reason, and the totals line reports measured bytes, unmeasured slots, and dynamic slots separately. Editable rows are counted per slot and saving writes the configuration; a channel that is not connected yet says so instead of reporting zero bytes as if measured; protocol text, sentences generated from configuration or runtime facts, and the binding notes you wrote yourself stay read-only.
 
 Before a new session starts, capability and global binding changes only update its initial configuration; no change notices are sent or queued. The first request uses the resulting configuration.
 

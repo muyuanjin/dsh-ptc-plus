@@ -19,6 +19,7 @@ import {
   editRunCodeSchema,
 } from './rejected-cell-editor.js'
 import { projectSessionLog } from './session-log-view.js'
+import { PROMPT_SLOT_IDS, promptAssetText } from './prompt-text.js'
 import { sessionEvents } from './session-events.js'
 import { deepEqualJson, snapshotJsonValue } from '@deepseek-ai/dsh-util-values'
 import { scopeTarget } from '@deepseek-ai/dsh-scope'
@@ -119,6 +120,7 @@ export function createEditTransportOwner(ctx, {
   sessionId,
   toolSchemasForAgent,
   readSessionLog,
+  promptText,
 }) {
   const editClaims = new Map()
   const pendingAcceptances = new Map()
@@ -138,7 +140,7 @@ export function createEditTransportOwner(ctx, {
     }
   }
 
-  const definition = editRunCodeSchema()
+  const definition = editRunCodeSchema(promptAssetText(promptText, PROMPT_SLOT_IDS.editRunCodeDescription))
   const derivedMetadata = (derived) => {
     const meta = {
       [JOURNAL_KEY]: normalizeJournal(derived.journal),

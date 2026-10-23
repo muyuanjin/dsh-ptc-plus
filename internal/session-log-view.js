@@ -118,7 +118,7 @@ function applyLogEvent(state, event, index = event?.seq,
 export function createSessionLogProjection() {
   return Object.freeze({
     key: SESSION_LOG_PROJECTION_KEY,
-    stateVersion: 9,
+    stateVersion: 10,
     stateSchema: Object.freeze({ parse(value) {
       if (!isJsonValue(value) || !isRecord(value) || !isRecord(value.timeline)
         || typeof value.timeline.openTurn !== 'boolean' || typeof value.timeline.found !== 'boolean'

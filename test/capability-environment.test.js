@@ -1,4 +1,5 @@
 import { CONFIG_DEFAULTS } from '../internal/config-spec.js'
+import { PLAN_NAVIGATION } from '../internal/prompt-text.js'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import test from 'node:test'
@@ -17,7 +18,7 @@ import { SkillRegistry } from '@deepseek-ai/dsh-skill'
 import * as skillTool from '@deepseek-ai/dsh-tool-skill'
 import { SystemPrompt } from '@deepseek-ai/dsh-system-prompt'
 import { ToolRuntime, defineTool, renderToolsSdk } from '@deepseek-ai/dsh-tools'
-import { createCapabilityEnvironment as createEnvironment, sessionCapabilitySettings } from '../internal/capability-environment.js'
+import { createCapabilityEnvironment as createEnvironment, capabilityPlanText, capabilityPlanTextFromMessage, readCapabilityContextMessage, sessionCapabilitySettings } from '../internal/capability-environment.js'
 import { capabilityInspect, capabilitySearch, toolCapabilityMetadata, toolSdkSchemas } from '../internal/program-bindings.js'
 import { appendOnlySession } from './plugin-fixture.js'
 import { runtimeAvailabilityMessage } from '../internal/runtime-messages.js'
@@ -2639,4 +2640,122 @@ test('composed temporary and global changes remove only inherited dimensions and
   const writer = { read: () => ({ value: saved, revision: 1 }), update: async patch => { saved = { ...saved, ...patch }; env.reconfigure(saved) } }
   await env.change(agent, { scope: 'global', id: 'tools.probe', selection: 'enabled', dimension: 'availability' }, agent.signal, writer)
   assert.equal(env.describe(agent).sessionOverrides['tools.probe'], undefined)
+})
+
+
+test('a custom navigation sentence and category line produce a v5 snapshot that replays byte-identically', async t => {
+  const navigation = 'Use capabilities.search({query}) before assuming a capability is missing.'
+  const categoryLine = 'Tools: index first, then tools.<name>.'
+  const agents = [agentFor(Session.create('plan-text-v5'))]
+  const ctx = { agents: { list: () => agents }, systemPrompt: { assemble: async () => ({ sections: [] }) } }
+  const env = createCapabilityEnvironment({ ctx,
+    config: { ...config({ 'tools.probe': 'full' }),
+      promptText: JSON.stringify({ schema: 'ptc-prompt-text/v1',
+        overrides: { 'plan.navigationSentence': navigation, 'plan.category.tool': categoryLine } }) },
+    toolSchemasForAgent: () => [schema('run_code'), schema('probe')] })
+  t.after(() => env.dispose())
+  const state = await acceptPreparation(env, agents[0], [])
+  const message = state.message
+  assert.equal(message.source.snapshot.schema, 'ptc-capability-environment/v5')
+  assert.equal(message.source.snapshot.promptText.navigationSentence, navigation)
+  assert.equal(message.source.snapshot.promptText.categoryLines.find(pair => pair[0] === 'tool')[1], categoryLine)
+  assert.equal(message.source.snapshot.plan.directoryText.split('\n')[0], navigation)
+  const replayed = capabilityPlanTextFromMessage(message, agents[0].id)
+  assert.equal(replayed, message.content[0].text,
+    'the environment must replay its own v5 plan message byte-identically')
+  assert.equal(replayed, capabilityPlanText(message.source.snapshot, agents[0].id),
+    'the replay must reproduce the snapshot composition, not only the delivered text')
+})
+
+test('a historical generation carrying foreign navigation text is still rejected', async t => {
+  const agents = [agentFor(Session.create('plan-text-historical'))]
+  const ctx = { agents: { list: () => agents }, systemPrompt: { assemble: async () => ({ sections: [] }) } }
+  const env = createCapabilityEnvironment({ ctx, config: config({ 'tools.probe': 'full' }),
+    toolSchemasForAgent: () => [schema('run_code'), schema('probe')] })
+  t.after(() => env.dispose())
+  const state = await acceptPreparation(env, agents[0], [])
+  assert.notEqual(state.message.source.snapshot.schema, 'ptc-capability-environment/v5')
+  const damaged = structuredClone(state.message)
+  damaged.source.snapshot.navigationText = 'Foreign guidance.'
+  assert.equal(readCapabilityContextMessage(damaged, agents[0].id), undefined,
+    'a historical generation with foreign navigation text is not replayable')
+})
+
+test('a v5 snapshot whose recorded text disagrees with navigationText is rejected', async t => {
+  const agents = [agentFor(Session.create('plan-text-damaged-v5'))]
+  const ctx = { agents: { list: () => agents }, systemPrompt: { assemble: async () => ({ sections: [] }) } }
+  const navigation = config().capabilityManagementEnabled ? 'Use capabilities.search before assuming a capability is missing.' : ''
+  const env = createCapabilityEnvironment({ ctx,
+    config: { ...config({ 'tools.probe': 'full' }),
+      promptText: JSON.stringify({ schema: 'ptc-prompt-text/v1', overrides: { 'plan.navigationSentence': navigation } }) },
+    toolSchemasForAgent: () => [schema('run_code'), schema('probe')] })
+  t.after(() => env.dispose())
+  const state = await acceptPreparation(env, agents[0], [])
+  assert.equal(state.message.source.snapshot.schema, 'ptc-capability-environment/v5')
+  const mismatch = structuredClone(state.message)
+  mismatch.source.snapshot.navigationText = 'Different guidance.'
+  assert.equal(readCapabilityContextMessage(mismatch, agents[0].id), undefined,
+    'recorded text that disagrees with navigationText is not replayable')
+  const hole = structuredClone(state.message)
+  hole.source.snapshot.promptText.overageSentence = 'No hole here.'
+  assert.equal(readCapabilityContextMessage(hole, agents[0].id), undefined,
+    'an overage sentence without exactly one hole is not replayable')
+  const noRecord = structuredClone(state.message)
+  delete noRecord.source.snapshot.promptText
+  assert.equal(readCapabilityContextMessage(noRecord, agents[0].id), undefined,
+    'a v5 snapshot without a plan record is not replayable')
+  const wrongBudget = structuredClone(state.message)
+  wrongBudget.source.snapshot.promptText.directoryBudgetBytes = 1
+  assert.equal(readCapabilityContextMessage(wrongBudget, agents[0].id), undefined,
+    'a recorded budget its plan disagrees with is not replayable')
+  const retold = structuredClone(state.message)
+  retold.content[0].text = 'Different plan text.'
+  assert.equal(readCapabilityContextMessage(retold, agents[0].id), undefined,
+    'a message whose text differs from the recomposed plan is not replayable')
+})
+
+test('a v5 snapshot carrying capability context settings replays its own plan', async t => {
+  const navigation = 'Use capabilities.search({query}) before assuming a capability is missing.'
+  const agents = [agentFor(Session.create('plan-text-v5-context'))]
+  const ctx = { agents: { list: () => agents }, systemPrompt: { assemble: async () => ({ sections: [] }) } }
+  const env = createCapabilityEnvironment({ ctx,
+    config: { ...config({ 'tools.probe': 'full' }), capabilityContextEnabled: true,
+      promptText: JSON.stringify({ schema: 'ptc-prompt-text/v1', overrides: { 'plan.navigationSentence': navigation } }) },
+    toolSchemasForAgent: () => [schema('run_code'), schema('probe')] })
+  t.after(() => env.dispose())
+  const state = await acceptPreparation(env, agents[0], [])
+  const snapshot = state.message.source.snapshot
+  assert.equal(snapshot.schema, 'ptc-capability-environment/v5')
+  assert.equal(snapshot.settings.contextEnabled, true)
+  assert.equal(snapshot.plan.schema, 'ptc-capability-plan/v3',
+    'a v5 snapshot may carry context settings, so its plan generation is the context one')
+  // The budget moves with the navigation sentence: an untouched document keeps the
+  // configured budget exactly, and a longer sentence must not silently shrink it.
+  assert.equal(snapshot.promptText.directoryBudgetBytes,
+    snapshot.settings.directoryBudgetBytes + Buffer.byteLength(navigation) - Buffer.byteLength(PLAN_NAVIGATION),
+    'the recorded budget is the configured budget plus the guidance delta')
+  assert.equal(snapshot.plan.budgets.directoryBudgetBytes, snapshot.promptText.directoryBudgetBytes,
+    'the plan must be composed with the recorded budget')
+  assert.equal(capabilityPlanTextFromMessage(state.message, agents[0].id), state.message.content[0].text,
+    'a v5 snapshot with context settings must still replay')
+})
+
+test('a v5 snapshot of a policy-managed plan replays its own plan', async t => {
+  const navigation = 'Use capabilities.search({query}) before assuming a capability is missing.'
+  const agents = [agentFor(Session.create('plan-text-v5-policy'))]
+  const ctx = { agents: { list: () => agents }, systemPrompt: { assemble: async () => ({ sections: [] }) } }
+  const env = createCapabilityEnvironment({ ctx,
+    config: { ...config({ 'tools.probe': 'closed' }),
+      capabilityPolicy: JSON.stringify(JSON.parse(CONFIG_DEFAULTS.capabilityPolicy)),
+      promptText: JSON.stringify({ schema: 'ptc-prompt-text/v1', overrides: { 'plan.navigationSentence': navigation } }) },
+    toolSchemasForAgent: () => [] })
+  t.after(() => env.dispose())
+  const state = await acceptPreparation(env, agents[0], [])
+  const snapshot = state.message.source.snapshot
+  assert.equal(snapshot.schema, 'ptc-capability-environment/v5')
+  assert.equal(snapshot.plan.schema, 'ptc-capability-plan/v2',
+    'a policy-managed v5 plan keeps the policy generation even when nothing is delivered')
+  assert.deepEqual(snapshot.plan.entries, [],
+    'a plan with no deliverable capability is the closed-plan case')
+  assert.equal(capabilityPlanTextFromMessage(state.message, agents[0].id), state.message.content[0].text)
 })

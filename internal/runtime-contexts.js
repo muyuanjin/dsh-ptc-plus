@@ -100,7 +100,7 @@ export function sessionRuntimeContexts(agent, tipConfig, options = {}) {
 }
 
 /** Project messages without treating an uncommitted proposal as delivery. */
-export function projectRuntimeMessages(view, contexts, pending = []) {
+export function projectRuntimeMessages(view, contexts, pending = [], options) {
   if (view.visibleRuntimeMessages === undefined) return []
   const sections = contexts.filter(context => PTC_STATE_NAMES.includes(context.name) && context.name !== PTC_BINDING_CATALOG)
   const catalog = contexts.find(context => context.name === PTC_BINDING_CATALOG)
@@ -114,7 +114,7 @@ export function projectRuntimeMessages(view, contexts, pending = []) {
     ?? (pendingAggregate ?? legacy?.sections)?.filter(section => PTC_STATE_NAMES.includes(section.name))
   const hadState = history.hadState
   const messages = []
-  const proposed = pending.map(readRuntimeMessage).filter(record => record !== undefined)
+  const proposed = pending.map(record => readRuntimeMessage(record)).filter(record => record !== undefined)
   const pendingState = proposed.filter(record => record.form === 'snapshot').at(-1)
   const previous = pendingState?.sections ?? retained
   if ((sections.length > 0 || (previous !== undefined && previous.length > 0) || (previous === undefined && hadState))
@@ -126,7 +126,7 @@ export function projectRuntimeMessages(view, contexts, pending = []) {
   const hadCatalog = history.hadCatalog
   if ((catalog !== undefined || previousCatalog !== undefined || hadCatalog)
     && JSON.stringify(previousCatalog?.sections) !== JSON.stringify(catalog === undefined ? [] : [catalog])) {
-    messages.push(runtimeBindingCatalogMessage(catalog))
+    messages.push(runtimeBindingCatalogMessage(catalog, options))
   }
   for (const tip of contexts.filter(context => context.name.startsWith('tools:ptc-plus-tip/'))) {
     if (proposed.some(record => record.form === 'notice' && record.name === tip.name)) continue
@@ -137,7 +137,7 @@ export function projectRuntimeMessages(view, contexts, pending = []) {
 }
 
 /** Passive message delivery follows the actual public assembly and accepted step. */
-export function createRuntimeMessageOwner(contextsForRequest, sessionLogView = projectSessionLog, activeForRequest, sessionQuery) {
+export function createRuntimeMessageOwner(contextsForRequest, sessionLogView = projectSessionLog, activeForRequest, sessionQuery, promptForRequest) {
   const requests = new WeakMap()
   const disposedAgents = new WeakSet()
   let disposed = false
@@ -162,7 +162,9 @@ export function createRuntimeMessageOwner(contextsForRequest, sessionLogView = p
       if (disposed || decision.kind !== 'enter' || payload.signal?.aborted === true
         || request?.allowed !== true || request.context.signal !== payload.signal) return decision
       const view = sessionLogView(payload.agent)
-      const messages = projectRuntimeMessages(view, contextsForRequest(request.context), decision.messages)
+      const resolved = promptForRequest === undefined ? undefined : promptForRequest(request.context)
+      const messages = projectRuntimeMessages(view, contextsForRequest(request.context), decision.messages,
+        resolved === undefined ? undefined : { prompt: resolved })
       if (activeForRequest !== undefined) {
         const log = await readSessionLog(payload.agent.session, sessionQuery, payload.signal)
         const availability = projectRuntimeAvailability([

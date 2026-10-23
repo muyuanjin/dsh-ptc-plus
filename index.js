@@ -35,6 +35,7 @@ import { createHostRpc } from './internal/host-rpc.js'
 import { RPC_CONTRACTS } from './internal/rpc-contract.js'
 import { createReplObservationInterest } from './internal/repl-observation-interest.js'
 import { guidancePolicies } from './internal/binding-update-policy.js'
+import { PROMPT_SLOT_IDS, resolvePromptTextConfig } from './internal/prompt-text.js'
 import * as dshSettings from '@deepseek-ai/dsh-settings'
 
 const INSTALL_CLEANUP = Symbol('ptc-plus install cleanup')
@@ -59,7 +60,7 @@ export const Config = Schema.object(Object.fromEntries(
  */
 export const inject = ['tools', 'systemPrompt', 'agents']
 
-function replGuidance({ bindingPolicy, rewritesEnabled, languageSemantics, durableReplay, cordisToolsEnabled }) {
+function replGuidance({ bindingPolicy, rewritesEnabled, languageSemantics, durableReplay, cordisToolsEnabled }, promptText) {
   const looseTopLevelRedeclarations = bindingPolicy.variableRedeclarations
   const looseTopLevelFunctionClassRedeclarations = bindingPolicy.functionClassRedeclarations
   const autoRewriteImports = rewritesEnabled.autoRewriteImports
@@ -92,18 +93,22 @@ function replGuidance({ bindingPolicy, rewritesEnabled, languageSemantics, durab
   const cordisRecovery = cordisToolsEnabled
     ? 'Keep large Cordis plugin source in a binding before the tool call so it can be reused after an error. A Cordis parse or validation failure can follow external effects; repeat the call only when its retry rules and current results establish that it is safe.'
     : ''
-  return `\`run_code\` continues one persistent PTC REPL. Use Node.js modules in the cell; use external processes when their environment is needed. Ordinary top-level bindings remain available to later cells, so reuse them instead of resending setup code. Choose the smallest cell that answers the request and return only the value the next step needs.
-
-After an execution error, earlier statements may have taken effect. Inspect relevant values in a short cell, then continue from them; repeat external operations only when their retry rules and current results establish safety. \`edit_run_code\` edits and reruns a complete cell.
-
-## Cell conventions
-Use \`return\` for an explicit result and \`console\` for logs. Return supported values directly, including undefined, NaN, infinities, -0 and BigInt; JSON.stringify loses distinctions or rejects BigInt. Do not mix BigInt with Number arithmetic; use a BigInt literal or convert explicitly. Keep functions, Date, Map and other unsupported values in bindings; return needed data or type observations. Native \`tools.*\` arguments must satisfy their own JSON schemas; PTC value transport does not widen those contracts. Keep large inspection results in bindings or reduce them to targeted excerpts: \`tools.read\` is bounded inspection, not a lossless whole-file reader. Relative filesystem, path and default child-process operations use the current working directory at the time they run; a successful in-cell \`tools.working_directory({ cd })\` applies to the rest of that cell, while cell imports and \`import.meta\` keep the directory the cell started in, and \`process.chdir\` is unavailable. ${cellConventions}
-
-## Available capabilities
-Use \`capabilities.tree()\`, \`capabilities.find()\`, and \`capabilities.inspect()\` for unfamiliar program APIs; Reserve \`code.run\` for isolated execution of source held as data.
-Program API references expire when their cell ends. Reusable helpers must read the current namespace when called, for example \`async function readNow(args) { return tools.read(args) }\`, instead of retaining an earlier \`tools\` object or method. Completed-cell callbacks cannot call program APIs.
-
-Native tool availability depends on the current DSH profile and execution world; inspect executables, shells, and paths instead of assuming Windows, WSL, POSIX, or a particular shell. ${recovery}${cordisToolsEnabled ? ` ${cordisRecovery}` : ''}`
+  // Each paragraph is an editable asset; a derived policy sentence is appended to
+  // the paragraph that owns it, so rewriting prose can never contradict the
+  // configuration that produced it. Omitting a paragraph keeps its derived clause.
+  const prose = id => (promptText.omitted(id) ? '' : promptText.text(id))
+  const withDerived = (id, derived) => {
+    const base = prose(id)
+    return base === '' ? derived : `${base} ${derived}`
+  }
+  const paragraphs = [
+    prose(PROMPT_SLOT_IDS.guidanceOpening),
+    prose(PROMPT_SLOT_IDS.guidanceErrorRecovery),
+    withDerived(PROMPT_SLOT_IDS.guidanceCellConventions, cellConventions),
+    prose(PROMPT_SLOT_IDS.guidanceCapabilities),
+    withDerived(PROMPT_SLOT_IDS.guidanceExecutionWorld, `${recovery}${cordisToolsEnabled ? ` ${cordisRecovery}` : ''}`),
+  ]
+  return paragraphs.filter(paragraph => paragraph.trim().length > 0).join('\n\n')
 }
 
 /** Register the session-bound REPL runtime. */
@@ -376,6 +381,7 @@ function installPtCRuntime(ctx, resolvedConfig, seam, toolSchemasForAgent, toolS
       presentationGeneration,
       sessionId,
       toolSchemasForAgent,
+      promptText: resolvePromptTextConfig(activeConfig),
     })
     directSurface = createDirectSurfaceOwner({
       sessionLogView: sessionLog.project,
@@ -395,7 +401,7 @@ function installPtCRuntime(ctx, resolvedConfig, seam, toolSchemasForAgent, toolS
       order: 98,
       text: context => {
         if (ctx.tools.get(RUN_CODE, context?.scope) === undefined) return ''
-        return replGuidance(guidancePolicies(activeConfig))
+        return replGuidance(guidancePolicies(activeConfig), resolvePromptTextConfig(activeConfig))
       },
     }))
     disposers.push(ctx.on('system-prompt/assemble', async (assembly, context, next) => {
@@ -888,9 +894,15 @@ function applyWithExecutionSeam(ctx, resolvedConfig, seam, volatileHost, volatil
   ctx.effect(() => async () => controller.dispose(), 'ptc-plus runtime lifecycle')
 
   const handbackOwners = Object.fromEntries(['sessions', 'sessionPersistence', 'sessionQuery'].map(name => [name, ctx.get(name)]))
+  // One spelling of "the current document": the same resolved configuration the
+  // reconciliation loop applies, so a delivered message and the assembled prompt can
+  // never read two different prompt-text documents. Read lazily: the settings section
+  // replaces `configSource` after activation.
+  const currentPromptText = () => resolvePromptTextConfig(configSource())
   const messageOwner = createRuntimeMessageOwner(context => (
     committed?.retiring ? [] : committed?.runtime.contextsForRequest(context) ?? []
-  ), sessionLog.project, () => committed !== undefined && committed.retiring !== true, handbackOwners.sessionQuery)
+  ), sessionLog.project, () => committed !== undefined && committed.retiring !== true, handbackOwners.sessionQuery,
+  currentPromptText)
   ctx.effect(() => ctx.systemPrompt.context({
     name: PTC_DELIVERY_CONTEXT, order: 98, text: '',
   }), 'ptc-plus dynamic message delivery witness')
@@ -907,6 +919,8 @@ function applyWithExecutionSeam(ctx, resolvedConfig, seam, volatileHost, volatil
     await handBackRuntimeSessions(ctx, handbackOwners)
   }, 'ptc-plus provider handback')
 
+  // The settings section replaces this source after activation; the prompt-text
+  // accessor above reads it lazily for exactly that reason.
   let configSource = () => resolveConfig(volatileConfig ?? resolvedConfig)
   let configurationGeneration = 0
   let configurationRollback = false

@@ -1,11 +1,22 @@
 import { PTC_STATE_NAMES, recoveryTipIdentity } from './runtime-messages.js'
+import {
+  PROMPT_SLOT_IDS, TIP_BODY, TIP_BODY_PLATFORM_DETAILED, TIP_BODY_REPEATED_BINDING,
+  TIP_BODY_REPEATED_BINDING_CAPABILITY, TIP_DETAIL_BINDING, TIP_DETAIL_CAPABILITY,
+  TIP_PREFIX_PLATFORM_COMMAND, TIP_PREFIX_REPEATED_BINDING,
+} from './prompt-text.js'
 
 const PLATFORM_CAUSE_CODES = new Set(['EACCES', 'EINVAL', 'ENOTDIR', 'ENOENT', 'UNKNOWN'])
 const TIP_CONTEXT_PREFIX = 'tools:ptc-plus-tip/'
 const PLATFORM_FACTS = '`return { platform: process.platform, arch: process.arch, node: process.version, cwd: process.cwd(), execPath: process.execPath }`'
+/**
+ * The delivered prefixes, one slot per trigger kind.
+ *
+ * Tip identity comes from the notice name, so a prefix carries no recognizer
+ * contract; both are read-only registry literals so their bytes are accounted.
+ */
 const TIP_PREFIXES = Object.freeze({
-  'repeated-binding-failure': 'The same binding failure has recurred.',
-  'platform-command-failure': 'An executable, shell, or path failed in the current execution world.',
+  'repeated-binding-failure': TIP_PREFIX_REPEATED_BINDING,
+  'platform-command-failure': TIP_PREFIX_PLATFORM_COMMAND,
 })
 
 // TODO(dsh-tips-api): replace this local provider with an adapter after dsh-tips publishes a stable facts and decision interface.
@@ -91,18 +102,46 @@ function tipCandidate(view) {
   return undefined
 }
 
-function renderTip(id, detailed, candidate = {}) {
+const TIP_BODY_SLOTS = Object.freeze({
+  platform: PROMPT_SLOT_IDS.tipBodyPlatform,
+  platformDetailed: PROMPT_SLOT_IDS.tipBodyPlatformDetailed,
+  repeatedBinding: PROMPT_SLOT_IDS.tipBodyRepeatedBinding,
+  repeatedBindingCapability: PROMPT_SLOT_IDS.tipBodyRepeatedBindingCapability,
+})
+
+const TIP_DETAIL_SLOTS = Object.freeze({
+  binding: PROMPT_SLOT_IDS.tipDetailBinding,
+  capability: PROMPT_SLOT_IDS.tipDetailCapability,
+})
+
+const TIP_PREFIX_SLOTS = Object.freeze({
+  'repeated-binding-failure': PROMPT_SLOT_IDS.tipPrefixRepeatedBinding,
+  'platform-command-failure': PROMPT_SLOT_IDS.tipPrefixPlatformCommand,
+})
+
+/**
+ * Every delivered tip body reads its own registry slot; escalation only decides
+ * whether the `{detail}` hole carries its sentence, and which of the two registered
+ * detail slots fills it. Prefix and detail slots are read-only, so a customised body
+ * cannot move tip identity or escalation.
+ */
+function renderTip(id, detailed, candidate = {}, prompt) {
+  const body = (slotId, fallback) => prompt?.text(slotId) ?? fallback
+  const prefix = body(TIP_PREFIX_SLOTS[id], TIP_PREFIXES[id])
   if (id === 'platform-command-failure') {
-    return detailed
-      ? `${TIP_PREFIXES[id]} Re-check the active execution world and the actual executable before retrying. First inspect bounded runtime facts with ${PLATFORM_FACTS}; use the result to choose the executable and path. Use direct argv for a normal executable; use a shell only when its syntax or resolution is required. Windows, WSL, POSIX, and package shims have different paths and launch rules. Do not dump process.env.`
-      : `${TIP_PREFIXES[id]} Inspect bounded runtime facts with ${PLATFORM_FACTS}, then choose the executable and path in the current execution world. Use direct argv or a shell only when required; do not assume Windows, WSL, POSIX, or one shell. Do not dump process.env.`
+    const template = detailed
+      ? body(TIP_BODY_SLOTS.platformDetailed, TIP_BODY_PLATFORM_DETAILED)
+      : body(TIP_BODY_SLOTS.platform, TIP_BODY)
+    return `${prefix} ${template.replace('{platformFacts}', PLATFORM_FACTS)}`
   }
   if (!candidate.capability) {
-    return `${TIP_PREFIXES[id]} Inspect the visible cell source and results for the local name, scope, initialization, or declaration conflict. Correct that expression before continuing; capability discovery does not list session-local variables.${detailed ? ' Earlier statements may have run; use current expression evidence without assuming a failed declaration initialized its binding.' : ''}`
+    const template = body(TIP_BODY_SLOTS.repeatedBinding, TIP_BODY_REPEATED_BINDING)
+    const detail = detailed ? body(TIP_DETAIL_SLOTS.binding, TIP_DETAIL_BINDING) : ''
+    return `${prefix} ${template.replace('{detail}', detail)}`
   }
-  return detailed
-    ? `${TIP_PREFIXES[id]} Inspect the live request with \`capabilities.tree()\`, \`capabilities.find()\`, or \`capabilities.inspect()\`, then call the typed member through \`tools.*\`. Do not invent hidden bindings or repeat the same failing expression.`
-    : `${TIP_PREFIXES[id]} Inspect the live request with \`capabilities.tree()\`, \`capabilities.find()\`, or \`capabilities.inspect()\`, then call the typed member through \`tools.*\`.`
+  const template = body(TIP_BODY_SLOTS.repeatedBindingCapability, TIP_BODY_REPEATED_BINDING_CAPABILITY)
+  const detail = detailed ? body(TIP_DETAIL_SLOTS.capability, TIP_DETAIL_CAPABILITY) : ''
+  return `${prefix} ${template.replace('{detail}', detail)}`
 }
 
 export function latestRecoveryTip(view, config) {
@@ -117,6 +156,6 @@ export function latestRecoveryTip(view, config) {
   if (!Number.isSafeInteger(ordinal)) return undefined
   return {
     name: `${TIP_CONTEXT_PREFIX}${candidate.id}/${ordinal}`,
-    text: renderTip(candidate.id, (lastTip?.unresolved ?? 0) >= config.escalationFailures, candidate),
+    text: renderTip(candidate.id, (lastTip?.unresolved ?? 0) >= config.escalationFailures, candidate, config.prompt),
   }
 }

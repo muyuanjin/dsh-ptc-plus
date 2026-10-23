@@ -1,4 +1,8 @@
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
+import {
+  CATALOG_PREFIX, EMPTY_CATALOG, LEGACY_STATE_PREFIX, PREVIOUS_EMPTY_CATALOG, PREVIOUS_STATE_PREFIX,
+  PROMPT_SLOT_IDS, PROMPT_TEXT_DEFAULT, STATE_PREFIX, resolvePromptText,
+} from './prompt-text.js'
 
 import { isPtcMessageSource, PTC_MESSAGE_SOURCE_KIND } from './message-sources.js'
 
@@ -13,16 +17,12 @@ export const PTC_STATE_NAMES = Object.freeze([
 ])
 const MAX_STATE_CODE_UNITS = 65536
 const MAX_NOTICE_CODE_UNITS = 8192
-const LEGACY_STATE_PREFIX = 'PTC Plus current state. This replaces only earlier PTC state snapshots and PTC sections in historical aggregate snapshots; it does not replace tasks, Skill instructions, tool results, or other producers.'
-const PREVIOUS_STATE_PREFIX = 'PTC Plus runtime recovery state. This replaces only earlier PTC state snapshots and PTC sections in historical aggregate snapshots; it does not replace the global binding API catalog, tasks, Skill instructions, tool results, or other producers.'
+
 const PREVIOUS_CATALOG_PREFIXES = [
   'Global binding API catalog (PTC Plus). Only a later global binding API catalog replaces this catalog. Host runtime-context snapshots and PTC recovery snapshots do not withdraw it. This describes configured APIs, not successful initialization or current runtime values.',
   'Global binding API catalog (PTC Plus). Replaces earlier binding catalogs only; remains applicable until the next binding catalog.',
 ]
-const STATE_PREFIX = 'PTC Plus recovery status. Replaces earlier PTC recovery status, including PTC state in runtime-context snapshots. Global binding APIs are unchanged.'
-const CATALOG_PREFIX = 'Global binding API reference for run_code (replaces the previous global binding reference):'
-const EMPTY_CATALOG = 'No entries documented.'
-const PREVIOUS_EMPTY_CATALOG = 'No global binding API documentation is currently configured. Earlier binding catalogs no longer apply.'
+
 const AVAILABILITY_TEXT = Object.freeze({
   active: 'PTC Plus is the current continuous-computation provider. Follow its current tool schemas and capability plan; earlier withdrawals do not restore old computation state.',
   disabled: 'PTC Plus is disabled. Earlier PTC Plus continuous-computation instructions, capability plans, discovery instructions, calling-contract disclosures and global binding references no longer describe the current runtime. Use the current Host tools and contracts. Historical computations and effects remain historical; no old PTC Plus heap has been restored. Tasks, Skill instructions, other producers and tool results are unchanged.',
@@ -56,10 +56,13 @@ export function projectRuntimeAvailability(messages, active, computationDeclared
   const last = messages.map(readRuntimeAvailability).filter(Boolean).at(-1)
   if (active) return last && last !== 'active' ? runtimeAvailabilityMessage('active') : undefined
   if (last === 'disabled' || last === 'unloaded') return undefined
-  const declared = computationDeclared || last === 'active' || messages.some(message => isPtcMessageSource(message?.source)
-    && (['capability-navigation', 'capability-descriptions', 'capability-contracts'].includes(message.source.form)
-      || message.source.form === 'capability-plan' && message.source.snapshot?.plan?.enabled === true
-      || readRuntimeMessage(message)?.form === 'catalog' && readRuntimeMessage(message).sections.length > 0))
+  const declared = computationDeclared || last === 'active' || messages.some(message => {
+    const recognized = isPtcMessageSource(message?.source) ? readRuntimeMessage(message) : undefined
+    return isPtcMessageSource(message?.source)
+      && (['capability-navigation', 'capability-descriptions', 'capability-contracts'].includes(message.source.form)
+        || message.source.form === 'capability-plan' && message.source.snapshot?.plan?.enabled === true
+        || recognized?.form === 'catalog' && recognized.sections.length > 0)
+  })
   return declared ? runtimeAvailabilityMessage('disabled') : undefined
 }
 
@@ -92,6 +95,18 @@ function stateText(sections, prefix = STATE_PREFIX) {
     : sections.map(section => section.text).join('\n\n')}`
 }
 
+/**
+ * Historical emptiness wording a recorded catalog may carry.
+ *
+ * These are code-owned constants, not the resolved document: a session record
+ * written by an older build must stay readable after today's sentence changes,
+ * and recognizing it must never depend on the user's current override.
+ */
+const HISTORICAL_EMPTY_CATALOGS = Object.freeze([EMPTY_CATALOG, PREVIOUS_EMPTY_CATALOG])
+
+/** The resolved document a producer used. Recognition never depends on its text. */
+const promptOf = prompt => prompt ?? resolvePromptText(PROMPT_TEXT_DEFAULT)
+
 /** Recognize only bounded, formed PTC records, never authoring tasks or Skills. */
 export function readRuntimeMessage(message) {
   const source = message?.source
@@ -112,7 +127,12 @@ export function readRuntimeMessage(message) {
     if (prefix === undefined) return undefined
     const body = text.slice(prefix.length + 2)
     if (body.length > 0 && body.length <= MAX_STATE_CODE_UNITS) {
-      const empty = body === (prefix === CATALOG_PREFIX ? EMPTY_CATALOG : PREVIOUS_EMPTY_CATALOG)
+      // Emptiness is a property of the record (`source.empty`), so live delivery
+      // and log replay agree even when the empty sentence is customized. Records
+      // written before that flag existed are matched against the code-owned
+      // historical wording, never against the current resolved text.
+      const empty = source.empty === true
+        || (source.empty === undefined && HISTORICAL_EMPTY_CATALOGS.includes(body))
       return { form: 'catalog', sections: stateSections(empty ? [] : [{ name: PTC_BINDING_CATALOG, text: body }]) }
     }
   } else if (source.form === 'notice' && recoveryTipIdentity(source.summary) !== undefined
@@ -123,15 +143,25 @@ export function readRuntimeMessage(message) {
 }
 
 /** One literal configuration document, independent of runtime recovery state. */
-export function runtimeBindingCatalogMessage(context) {
+export function runtimeBindingCatalogMessage(context, options) {
+  const resolved = promptOf(options?.prompt)
+  const catalogPrefix = resolved.text(PROMPT_SLOT_IDS.catalogPrefix)
+  const emptyCatalog = resolved.text(PROMPT_SLOT_IDS.catalogEmpty)
+  // The guard compares against the code-owned wording, never the resolved document:
+  // a user may customize the empty sentence, and a customized sentence that happens
+  // to equal a real catalog body must still be deliverable instead of aborting the
+  // whole step. Emptiness itself travels in `source.empty` below.
   if (context !== undefined && (context?.name !== PTC_BINDING_CATALOG
     || typeof context.text !== 'string' || context.text.length === 0
-    || context.text.length > MAX_STATE_CODE_UNITS || context.text === EMPTY_CATALOG || context.text === PREVIOUS_EMPTY_CATALOG)) {
+    || context.text.length > MAX_STATE_CODE_UNITS || context.text === EMPTY_CATALOG
+    || context.text === PREVIOUS_EMPTY_CATALOG)) {
     throw new Error('invalid PTC binding catalog')
   }
   return createUserMessage({
-    source: { kind: PTC_MESSAGE_SOURCE_KIND, form: 'catalog' },
-    content: [{ type: 'text', text: `${CATALOG_PREFIX}\n\n${context?.text ?? EMPTY_CATALOG}` }],
+    // `empty` records the fact itself, so replay recognizes an empty catalog from
+    // the record instead of comparing it against today's sentence.
+    source: { kind: PTC_MESSAGE_SOURCE_KIND, form: 'catalog', empty: context === undefined },
+    content: [{ type: 'text', text: `${catalogPrefix}\n\n${context?.text ?? emptyCatalog}` }],
   })
 }
 

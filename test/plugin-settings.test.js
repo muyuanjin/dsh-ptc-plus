@@ -2074,6 +2074,8 @@ test('config schema defaults expose the settings switches', async () => {
     'autoStripExports',
     'autoSplitRedeclarations',
     'durableReplay',
+    'capabilityPromptTextEnabled',
+    'promptText',
     'unmeasuredCellLimit',
     'officialReplPriority',
     'tipsEnabled',

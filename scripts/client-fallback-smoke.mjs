@@ -997,9 +997,9 @@ if (values.list) {
         assert.equal(await page.locator('.ptcPlusCapabilityEditorDialog').count(), 0)
         assert.equal(await page.locator('.ptcPlusCapabilityFilterFields').count(), 0)
         const combinationChoices = workbench.locator('.ptcPlusCombinationChoices button')
-        assert.equal(await combinationChoices.count(), 5)
+        assert.equal(await combinationChoices.count(), 6)
         assert.deepEqual(await combinationChoices.locator('>span').allTextContents(),
-          ['rules', 'description', 'recovery', 'preview', 'statistics'].map(key => labels[`capabilities.combination.${key}`]))
+          ['rules', 'description', 'recovery', 'preview', 'statistics', 'promptText'].map(key => labels[`capabilities.combination.${key}`]))
         for (const button of await combinationChoices.all()) {
           const alignment = await button.evaluate(element => {
             const style = getComputedStyle(element)

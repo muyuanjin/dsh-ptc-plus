@@ -259,7 +259,10 @@ test('public restore rejects malformed nested timeline evidence before advancing
   assert.equal(checkpoint.ptcPlusSessionLog.seq, 0)
   const refolded = registry.restore({}, sessionEvents(session), 0, session.header, 0)
   assert.equal(refolded.checkpoint.ptcPlusSessionLog.seq, 1)
-  assert.equal(refolded.checkpoint.ptcPlusSessionLog.val.timeline.calls[0].data.callId, 'current')
+  // `calls` keeps canonical sequence order only; the call event lives once in
+  // executableCalls, so dereference it there instead of duplicating it.
+  const [callSeq] = refolded.checkpoint.ptcPlusSessionLog.val.timeline.calls
+  assert.equal(refolded.checkpoint.ptcPlusSessionLog.val.timeline.executableCalls[`k${callSeq}`][1].event.data.callId, 'current')
   assert.deepEqual(refolded.checkpoint.ptcPlusSessionLog.val, registry.stateOf(session, 'ptcPlusSessionLog'))
 })
 

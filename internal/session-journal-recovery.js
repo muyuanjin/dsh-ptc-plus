@@ -1771,6 +1771,25 @@ function digestArgumentData(data) {
 }
 
 /**
+ * A republication clones a call event into its own settlement, so the same call can
+ * appear twice: once in `executableCalls` and once in a settlement that names its
+ * sequence. Whichever copy the retention window digests, every copy of that call must
+ * end up in the same shape, or a checkpoint would describe one call two ways. The
+ * pass is idempotent and runs on every prune, so a clone added after the window moved
+ * still lands on the retained shape — the fold and the replay both go through it.
+ */
+function digestSettlementCallCopies(tables) {
+  for (const pair of Object.values(tables.settled.table)) {
+    const [, settlement] = pair
+    if (!isRecord(settlement) || !isRecord(settlement.call)) continue
+    if (typeof settlement.call.data?.arguments !== 'string') continue
+    const retained = tables.executable.get(settlement.call.seq)
+    if (typeof retained?.event?.data?.argumentsDigest !== 'string') continue
+    tables.settled.set(pair[0], { ...settlement, call: { ...settlement.call, data: digestArgumentData(settlement.call.data) } })
+  }
+}
+
+/**
  * A journal outside the payload window keeps everything recovery reads — status,
  * operations, user binding evidence, confirms, completion and per-call metadata —
  * and replaces each call's argument wire with its digest. Byte-for-byte equality
@@ -1866,16 +1885,7 @@ function pruneRetention(state, tables) {
     if (callSeq !== undefined && tables.executable.has(callSeq)) {
       const stored = tables.executable.get(callSeq)
       tables.executable.set(callSeq, { ...stored, event: { ...stored.event, data: digestArgumentData(stored.event.data) } })
-      // A republication clones the call event into its own settlement, so every
-      // settlement that names this call must digest the same copy: admission
-      // compares each settlement's call with the retained executable entry.
-      for (const otherPair of Object.values(tables.settled.table)) {
-        const [otherKey, other] = otherPair
-        if (!isRecord(other) || other === entry.settlement) continue
-        if (Number(other.call?.seq) !== Number(callSeq)) continue
-        if (typeof other.call?.data?.arguments !== 'string') continue
-        tables.settled.set(otherKey, { ...other, call: { ...other.call, data: digestArgumentData(other.call.data) } })
-      }
+      digestSettlementCallCopies(tables)
     }
     // The result keeps every field recovery reads — status, operations, user
     // binding evidence, confirms, completion and call metadata — and loses only

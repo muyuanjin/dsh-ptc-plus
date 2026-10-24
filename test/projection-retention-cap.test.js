@@ -1,8 +1,8 @@
 // A single cell larger than the whole byte budget must not defeat the bound: the
 // window drops it and the edit path refolds it from the same log. Lower the budget
 // before the recovery module loads.
-process.env.DSH_PTC_RETENTION_RUNS = '3'
-process.env.DSH_PTC_RETENTION_BYTES = '65536'
+process.env.DSH_PTC_RETENTION_RUNS = '8'
+process.env.DSH_PTC_RETENTION_BYTES = '1048576'
 
 const { test } = await import('node:test')
 const assert = (await import('node:assert/strict')).default
@@ -28,7 +28,7 @@ function fold(events) {
 }
 
 test('a cell larger than the byte budget keeps its cluster and drops its payload', () => {
-  const payload = 'x'.repeat(131072)
+  const payload = 'x'.repeat(1572864)
   const callSeq = next()
   const resultSeq = next()
   const events = [
@@ -57,7 +57,7 @@ test('a cell larger than the byte budget keeps its cluster and drops its payload
   assert.equal(state.retentionSummary ?? null, null, 'the payload window folds no cluster')
 
   // With the payload gone the serialized checkpoint is tiny even though the cell
-  // carried 128 KB of code, twice the configured budget.
+  // carried 1.5 MiB of code, more than the configured budget.
   const size = JSON.stringify(state).length
   assert.ok(size < 4096, `checkpoint stays bounded: ${size} bytes`)
 

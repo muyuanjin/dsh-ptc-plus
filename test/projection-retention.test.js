@@ -2,8 +2,8 @@
 // and loses only its argument text: digests replace it. Folding into the interval
 // summary happens only past the configured cluster cap, so the payload window here
 // is small and the folding cases configure a small cap explicitly.
-process.env.DSH_PTC_RETENTION_RUNS = '3'
-process.env.DSH_PTC_RETENTION_BYTES = '65536'
+process.env.DSH_PTC_RETENTION_RUNS = '8'
+process.env.DSH_PTC_RETENTION_BYTES = '1048576'
 
 const { test } = await import('node:test')
 const assert = (await import('node:assert/strict')).default
@@ -79,22 +79,22 @@ const resultList = state => Object.values(state.results).map(pair => pair[1])
 test('the retention window digests old payloads and keeps every cluster', () => {
   const events = []
   const payload = 'x'.repeat(2048)
-  for (let index = 0; index < 10; index += 1) {
+  for (let index = 0; index < 12; index += 1) {
     const id = `call-${index}`
     events.push(call(`return '${payload}'`, id), result(id))
   }
   const state = fold(events)
 
   const all = settlementList(state)
-  assert.equal(all.length, 10, 'the payload window folds no cluster')
+  assert.equal(all.length, 12, 'the payload window folds no cluster')
   assert.equal(state.retentionSummary ?? null, null, 'nothing is folded below the cluster cap')
-  assert.equal(executableList(state).length, 10, 'every call entry survives')
-  assert.equal(resultList(state).length, 10, 'every normalized result survives')
+  assert.equal(executableList(state).length, 12, 'every call entry survives')
+  assert.equal(resultList(state).length, 12, 'every normalized result survives')
 
   const retained = all.filter(settlement => typeof settlement.call.data.arguments === 'string')
   const digested = all.filter(settlement => typeof settlement.call.data.argumentsDigest === 'string')
-  assert.equal(retained.length, 3, `three newest cells keep their text: ${retained.length}`)
-  assert.equal(digested.length, 7, `seven cells carry digests: ${digested.length}`)
+  assert.equal(retained.length, 8, `the newest window keeps its text: ${retained.length}`)
+  assert.equal(digested.length, 4, `the older cells carry digests: ${digested.length}`)
   for (const settlement of digested) {
     assert.match(settlement.call.data.argumentsDigest, /^[a-f0-9]{64}$/u)
     assert.ok(settlement.call.data.argumentsBytes > 2048, 'the digest records the byte length')
@@ -127,7 +127,7 @@ test('the newest run always stays inside the window so tips and edits keep worki
 
 test('a digested cluster can be refolded from the same events', () => {
   const events = []
-  for (let index = 0; index < 6; index += 1) {
+  for (let index = 0; index < 10; index += 1) {
     const id = `refold-${index}`
     events.push(call(`return 'refold-${index}'`, id), result(id))
   }
@@ -136,7 +136,7 @@ test('a digested cluster can be refolded from the same events', () => {
   assert.equal(oldest.call.data.arguments, undefined, 'the oldest cell keeps no text')
   let full
   withFullRetention(() => { full = fold(lastHistory) })
-  assert.equal(Object.keys(full.settledResultsByEventSeq).length, 6, 'the full fold keeps every cluster')
+  assert.equal(Object.keys(full.settledResultsByEventSeq).length, 10, 'the full fold keeps every cluster')
   assert.equal(typeof settlementList(full)[0].call.data.arguments, 'string', 'and its text')
   assert.equal(full.retentionSummary, null, 'a full-retention fold never compacts')
 })

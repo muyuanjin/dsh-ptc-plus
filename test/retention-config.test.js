@@ -64,13 +64,13 @@ test('out-of-range and non-integer values fall back to the default, never to unl
 }))
 
 test('configuration wins over the environment, which may only tighten it', () => withEnvironment(
-  { RUNS: '4', BYTES: '65536', CLUSTERS: '7' },
+  { RUNS: '8', BYTES: '1048576', CLUSTERS: '7' },
   () => {
     // The environment cannot widen a configured value.
     assert.deepEqual(resolveRetentionLimits({ retentionPayloadRuns: 12, retentionPayloadBytes: 262144, retentionClusters: 9 }),
-      { runs: 4, bytes: 65536, clusters: 7 })
+      { runs: 8, bytes: 1048576, clusters: 7 })
     // An absent field is filled by the environment.
-    assert.deepEqual(resolveRetentionLimits({}), { runs: 4, bytes: 65536, clusters: 7 })
+    assert.deepEqual(resolveRetentionLimits({}), { runs: 8, bytes: 1048576, clusters: 7 })
   },
 ))
 
@@ -81,9 +81,9 @@ test('a cluster cap of 0 means unlimited while a positive cap bounds the count w
 }))
 
 test('configuring retention takes effect immediately for later folds', () => {
-  const previous = configureRetention({ retentionPayloadRuns: 5, retentionPayloadBytes: 65536, retentionClusters: 3 })
+  const previous = configureRetention({ retentionPayloadRuns: 9, retentionPayloadBytes: 1048576, retentionClusters: 3 })
   try {
-    assert.deepEqual(retentionLimits(), { runs: 5, bytes: 65536, clusters: 3 })
+    assert.deepEqual(retentionLimits(), { runs: 9, bytes: 1048576, clusters: 3 })
     assert.equal(retainedClusterCount(), 3)
   } finally {
     configureRetention(previous)

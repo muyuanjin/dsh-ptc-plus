@@ -17,15 +17,15 @@ import { createHash } from 'node:crypto'
  * an unbounded checkpoint.
  */
 export const RETENTION_BOUNDS = Object.freeze({
-  runs: Object.freeze({ min: 1, max: 512 }),
-  bytes: Object.freeze({ min: 64 * 1024, max: 64 * 1024 * 1024 }),
+  runs: Object.freeze({ min: 8, max: 512 }),
+  bytes: Object.freeze({ min: 1024 * 1024, max: 64 * 1024 * 1024 }),
   // 0 is the only unlimited spelling; a cluster cap of 0 means the count window
   // never folds anything and only the payload budget bounds the checkpoint.
   clusters: Object.freeze({ min: 0, max: 50000 }),
 })
 
 export const DEFAULT_RETENTION_LIMITS = Object.freeze({
-  runs: 32,
+  runs: 16,
   bytes: 8 * 1024 * 1024,
   clusters: 5000,
 })

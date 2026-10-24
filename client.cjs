@@ -2079,8 +2079,8 @@ var CONFIG_FIELDS = Object.freeze([
   {
     key: "retentionPayloadRuns",
     type: "integer",
-    default: 32,
-    min: 1,
+    default: 16,
+    min: 8,
     max: 512,
     label: "\u4FDD\u7559\u6700\u8FD1\u5355\u5143\u683C\u6570",
     labelEn: "Retained recent cells",
@@ -2091,7 +2091,7 @@ var CONFIG_FIELDS = Object.freeze([
     key: "retentionPayloadBytes",
     type: "integer",
     default: 8388608,
-    min: 65536,
+    min: 1048576,
     max: 67108864,
     label: "\u4FDD\u7559\u8F7D\u8377\u9884\u7B97 (UTF-8 bytes)",
     labelEn: "Retained payload budget (UTF-8 bytes)",
@@ -2454,14 +2454,14 @@ var DEFAULT_EXPORT_BINDINGS = /* @__PURE__ */ new Set([
   LEGACY_DEFAULT_EXPORT_BINDING,
   LIVE_DEFAULT_EXPORT_BINDING
 ]);
-var CALL_SUCCESS_FIELDS = /* @__PURE__ */ new Set(["global", "member", "args", "ok", "value", "settle"]);
-var CALL_ERROR_FIELDS = /* @__PURE__ */ new Set(["global", "member", "args", "ok", "error", "settle"]);
+var CALL_SUCCESS_FIELDS = /* @__PURE__ */ new Set(["global", "member", "args", "argsDigest", "argsBytes", "ok", "value", "settle"]);
+var CALL_ERROR_FIELDS = /* @__PURE__ */ new Set(["global", "member", "args", "argsDigest", "argsBytes", "ok", "error", "settle"]);
 var OPERATION_FIELDS = /* @__PURE__ */ new Set(["action", "name"]);
 var RETURN_FIELDS = /* @__PURE__ */ new Set(["kind", "hasValue", "value"]);
 var THROW_FIELDS = /* @__PURE__ */ new Set(["kind", "error"]);
 var ERROR_FIELDS = /* @__PURE__ */ new Set(["kind", "message"]);
 var EDIT_TARGET_FIELDS = /* @__PURE__ */ new Set(["targetCallSeq"]);
-var DERIVED_RUN_FIELDS = /* @__PURE__ */ new Set(["code", "description"]);
+var DERIVED_RUN_FIELDS = /* @__PURE__ */ new Set(["code", "codeDigest", "codeBytes", "description"]);
 var JOURNAL_VERSIONS = /* @__PURE__ */ new Set([LEGACY_JOURNAL_VERSION, INTERMEDIATE_JOURNAL_VERSION, PREVIOUS_JOURNAL_VERSION, USER_BINDING_RELATIONLESS_JOURNAL_VERSION, FINGERPRINT_REUSE_JOURNAL_VERSION, VERSIONED_BINDING_REUSE_JOURNAL_VERSION, IMPORT_BOUNDARY_JOURNAL_VERSION, PER_NAME_USER_BINDINGS_JOURNAL_VERSION, LANGUAGE_SEMANTICS_JOURNAL_VERSION, MODULE_TRANSFORM_JOURNAL_VERSION, JOURNAL_VERSION]);
 var USER_BINDINGS_REUSE_POLICIES = /* @__PURE__ */ new Set([LEGACY_USER_BINDINGS_REUSE_POLICY, LIVE_USER_BINDINGS_REUSE_POLICY]);
 var USER_BINDINGS_SHADOW_POLICIES = /* @__PURE__ */ new Set([LEGACY_USER_BINDINGS_SHADOW_POLICY, LIVE_USER_BINDINGS_SHADOW_POLICY]);

@@ -161,3 +161,22 @@ test('the summary is proved against the log instead of certifying itself', () =>
   assert.throws(() => validateRetentionSummary(state, { ...summary, toSeq: summary.toSeq + 2 }),
     /PTC session-log projection/u)
 })
+
+test('a compacted state must carry its summary and a plain state must not', () => {
+  const events = []
+  for (let index = 0; index < 6; index += 1) {
+    const id = `guard-${index}`
+    events.push(call(`return 'guard-${index}'`, id), result(id))
+  }
+  const state = fold(events)
+  assert.equal(state.compacted, true, 'dropping a cluster marks the state compacted')
+  assert.ok(state.retentionSummary !== null, 'the summary is what survives the drop')
+  // Deleting the summary would erase the only trace of what the window dropped.
+  assert.throws(() => validateSessionTimelineState({ ...state, retentionSummary: null }),
+    /inconsistent PTC session-log projection retention summary/u)
+  const plain = fold([])
+  assert.equal(plain.compacted, false)
+  // A state that claims a summary without ever compacting is equally inconsistent.
+  assert.throws(() => validateSessionTimelineState({ ...plain, retentionSummary: state.retentionSummary }),
+    /inconsistent PTC session-log projection retention summary/u)
+})

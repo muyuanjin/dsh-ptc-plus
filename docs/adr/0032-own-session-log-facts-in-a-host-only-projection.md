@@ -28,7 +28,16 @@ The newest entry is not exempt from the cap. A single cell larger than the whole
 
 Dropping a cluster is not permanent. `withFullRetention` refolds the same session-log slice with pruning disabled, and the edit path uses it to recover a cell the window dropped, so an edit or republication that needs an old cell still succeeds while the log can supply it. Only when the log itself cannot supply the cell do consumers report `retention-pruned` with the edit or republication wording above.
 
-The window is enabled by default: 32 runs and a cumulative 8 MiB payload cap (`DSH_PTC_RETENTION_RUNS` / `DSH_PTC_RETENTION_BYTES` shrink it in tests). Measured on the synthetic session (450 cells of 40 KB): 37.5 MB unbounded, 4.28 MB with per-cell digest stubs, **2.21 MB with the cluster summary**, **2.13 MB with the per-cluster records** (the records themselves cost 13 KB); at 2000 cells the checkpoint is 2.65 MB. The remaining growth comes from the per-event facts and identity tables of retained history, not from dropped payloads, so the bound is a function of the window plus a small per-event residue. The window is still paid for three times per retained cell — the settlement, the executable call and the event fact each keep the argument text — which is the next reduction if the two-megabyte floor matters.
+The window is enabled by default: 32 runs and a cumulative 8 MiB payload cap (`DSH_PTC_RETENTION_RUNS` / `DSH_PTC_RETENTION_BYTES` shrink it in tests). Measured with `G:\Temp\measure-projection.mjs` against this tree, reading the harness's own settlement counts rather than the per-field byte sizes:
+
+| Session | Checkpoint | Retained settlements | Summary records |
+| --- | --- | --- | --- |
+| 450 cells × 20 KB | 964,069 B | 32 | 63,164 B |
+| 450 cells × 40 KB | 1,644,069 B | 32 | 63,164 B |
+| 2000 cells × 20 KB | 1,670,641 B | 32 | 300,153 B |
+| 2000 cells × 400 KB | 9,759,690 B | 20 | 301,989 B |
+
+A retained cell's argument text exists once, in the executable call; the `tool/call` event fact keeps only its digest and byte length, and the settlement keeps its own journal text. The 400 KB row shows the byte cap binding before the count does (8 MiB / 400 KB ≈ 20 retained cells), so the checkpoint is a function of the window rather than of what the session wrote. The residue that still grows with session length is not payload: the summary keeps one ~150 B record per dropped cluster and the per-event identity tables grow with the event count, which is why 2000 small cells cost more than 450.
 
 ## Consequences
 

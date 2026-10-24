@@ -242,3 +242,24 @@ test('a refolded cluster must match the record the summary kept for it', async (
   const caught = refoldEditableSettlement(history, forged)
   assert.equal(caught.mismatch, true, 'a record that disagrees with the log is reported')
 })
+
+test('retained plus dropped equals every folded settlement at any session length', () => {
+  // A checkpoint must account for every cell the session ran: the window keeps some,
+  // the summary counts the rest. A reader that only inspects the retained table would
+  // conclude the window dropped everything, which is how a measurement was misread.
+  for (const cells of [5, 50, 120]) {
+    const events = []
+    for (let index = 0; index < cells; index += 1) {
+      const id = `accounting-${index}`
+      events.push(call(`return 'value-${index}'`, id), result(id))
+    }
+    const state = fold(events)
+    const retained = settlements(state).length
+    const dropped = state.retentionSummary?.count ?? 0
+    assert.equal(retained + dropped, cells, `${cells} cells: retained ${retained} + dropped ${dropped}`)
+    assert.ok(retained <= 3, `the window keeps at most three runs: ${retained}`)
+    assert.ok(retained >= 1, 'the window keeps at least the newest run')
+    assert.equal(Object.keys(state.executableCalls).length, retained,
+      'the executable table keeps only the retained window')
+  }
+})

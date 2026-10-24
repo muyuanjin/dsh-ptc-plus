@@ -1008,6 +1008,19 @@ if (values.list) {
           assert.deepEqual(alignment, width <= 720 ? { text: 'start', items: 'center', content: 'space-between' }
             : { text: 'center', items: 'center', content: 'center' }, `${label}: combination choice alignment`)
         }
+        // Layout, not containment: at a desktop width every choice must share one row
+        // and one width. A grid that wraps 3+3 or gives one column extra space fails
+        // here even though the DOM still has six children in the same container.
+        if (width > 720) {
+          const layout = await combinationChoices.evaluateAll(buttons => buttons.map(button => {
+            const box = button.getBoundingClientRect()
+            return { top: Math.round(box.top), width: Math.round(box.width) }
+          }))
+          assert.equal(new Set(layout.map(entry => entry.top)).size, 1,
+            `${label}: combination choices share one row`)
+          assert.equal(new Set(layout.map(entry => entry.width)).size, 1,
+            `${label}: combination choices keep equal width`)
+        }
         const writesBeforeNavigation = await page.evaluate(() => window.settingsWrites.length)
         const recoveryChoice = combinationChoices.filter({ hasText: labels['capabilities.combination.recovery'] })
         await recoveryChoice.focus()

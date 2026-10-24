@@ -8324,18 +8324,24 @@ test('prompt text pane stays a table, shows the built-in sentence as its value a
   await act(async () => { fireEvent.click(view.getByRole('tab', { name: copy['capabilities.tab.prompt'] })) })
 
   // A table-like structure: one header row plus one aligned row per anchor, each with
-  // the five documented columns. A pile of chips cannot satisfy this.
+  // the six documented columns (channel, anchor, presence, bytes, reason, kind). A
+  // pile of chips cannot satisfy this.
   const table = view.container.querySelector('.ptcPlusPromptTable')
   expect(table).not.toBeNull()
   const header = table.querySelector('.ptcPlusPromptHeader')
   expect([...header.querySelectorAll('[role="columnheader"]')].map(cell => cell.textContent))
-    .toEqual(['Channel', 'Anchor', 'Presence', 'Bytes', 'Status'])
+    .toEqual(['Channel', 'Anchor', 'Presence', 'Bytes (per slot)', 'Reason code', 'Slot kind'])
   const rows = [...table.querySelectorAll('[data-anchor-id]')]
   expect(rows).toHaveLength(13)
   for (const row of rows) {
     const cells = [...row.querySelectorAll(':scope > [data-cell]')]
-    expect(cells.map(cell => cell.dataset.cell)).toEqual(['channel', 'anchor', 'presence', 'bytes', 'status', 'slots'])
+    expect(cells.map(cell => cell.dataset.cell))
+      .toEqual(['channel', 'anchor', 'presence', 'bytes', 'reason', 'kind', 'slots'])
   }
+  // The byte column carries the per-slot split when an anchor has more than one
+  // measured slot, so the split is visible without opening the editor.
+  const runCodeRow = rows.find(row => row.dataset.anchorId === 'run_code')
+  expect(runCodeRow.querySelector('[data-anchor-split]').textContent).toMatch(/\d+/u)
 
   // Editable text: the built-in sentence is the field's value, so a user can tweak the
   // shipped wording without retyping it. A placeholder here would mean the field is
@@ -8364,4 +8370,30 @@ test('prompt text pane stays a table, shows the built-in sentence as its value a
   }
   expect(view.container.textContent).toContain('host:tools:sdk')
   expect(view.container.textContent).toContain(copy['capabilities.prompt.hostUnavailable'])
+})
+
+test('prompt text pane previews pending changes with their delta and channel effect', async () => {
+  const copy = SETTINGS_COPY.en
+  const runCodeDescription = PROMPT_ASSETS.find(asset => asset.id === 'runCode.description').defaultText
+  const overridden = `${runCodeDescription} extra words`
+  const document = { schema: 'ptc-prompt-text/v1', overrides: { 'runCode.description': overridden } }
+
+  // A saved document that already differs from the built-in text must show the
+  // pending-change preview, because saving would write exactly those bytes.
+  const { view } = await capabilityWorkbenchFixture({ catalog: [], configuration: { promptText: JSON.stringify(document) } })
+  await act(async () => { fireEvent.click(view.getByRole('tab', { name: copy['capabilities.tab.prompt'] })) })
+  const preview = view.container.querySelector('[data-prompt-diff]')
+  expect(preview).not.toBeNull()
+  const row = preview.querySelector('[data-diff-anchor="run_code"]')
+  expect(row).not.toBeNull()
+  const delta = Number(row.querySelector('[data-diff-delta]').dataset.diffDelta)
+  expect(delta).toBeGreaterThan(0)
+  expect(row.textContent).toContain(copy['capabilities.prompt.effectPrompt'])
+  // 恢复内置 must be reachable from the preview, not only from the editor.
+  const reset = [...row.querySelectorAll('button')].find(button => button.textContent === copy['capabilities.prompt.reset'])
+  expect(reset).toBeDefined()
+  // Restoring the built-in text removes the pending change, so the panel must
+  // disappear instead of lingering with a stale delta.
+  await act(async () => { fireEvent.click(reset) })
+  expect(view.container.querySelector('[data-prompt-diff]')).toBeNull()
 })

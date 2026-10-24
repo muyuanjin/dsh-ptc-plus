@@ -50,10 +50,13 @@ test('a customised empty sentence never blocks delivering a real catalog body', 
   assert.equal(message.source.empty, false)
   assert.deepEqual(readRuntimeMessage(message)?.sections,
     [{ name: 'tools:ptc-plus-user-binding-defaults', text: body }])
-  // The genuinely ambiguous case stays rejected: a body equal to the built-in
-  // wording cannot be told apart from "no catalog" by any recognizer.
-  assert.throws(() => runtimeBindingCatalogMessage({ name: 'tools:ptc-plus-user-binding-defaults', text: EMPTY_CATALOG }),
-    /invalid PTC binding catalog/u)
+  // A body equal to the built-in empty wording is delivered like any other body:
+  // emptiness travels in the source record, so the wording no longer decides, and
+  // aborting here would drop the whole runtime channel for that step.
+  const ambiguous = runtimeBindingCatalogMessage({ name: 'tools:ptc-plus-user-binding-defaults', text: EMPTY_CATALOG })
+  assert.equal(ambiguous.source.empty, false)
+  assert.deepEqual(readRuntimeMessage(ambiguous)?.sections,
+    [{ name: 'tools:ptc-plus-user-binding-defaults', text: EMPTY_CATALOG }])
 })
 
 test('delivery and recognition agree, so a customised catalog is not re-delivered', () => {

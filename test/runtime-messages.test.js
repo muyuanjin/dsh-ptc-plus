@@ -694,10 +694,16 @@ test('binding catalogs use bounded literal text and preserve historical snapshot
   assert.deepEqual(readRuntimeMessage(message), { form: 'catalog', sections: [context] })
   assert.deepEqual(readRuntimeMessage(runtimeBindingCatalogMessage()), { form: 'catalog', sections: [] })
   for (const invalid of [null, { name: 'other', text: 'x' }, { name: PTC_BINDING_CATALOG },
-    { name: PTC_BINDING_CATALOG, text: '' }, { name: PTC_BINDING_CATALOG, text: 'x'.repeat(65537) },
-    { name: PTC_BINDING_CATALOG, text: 'No entries documented.' },
-    { name: PTC_BINDING_CATALOG, text: 'No global binding API documentation is currently configured. Earlier binding catalogs no longer apply.' }]) {
+    { name: PTC_BINDING_CATALOG, text: '' }, { name: PTC_BINDING_CATALOG, text: 'x'.repeat(65537) }]) {
     assert.throws(() => runtimeBindingCatalogMessage(invalid), /invalid PTC binding catalog/)
+  }
+  // A real body may equal the code-owned empty wording: emptiness travels in the
+  // source record, so that wording no longer makes a catalog undeliverable.
+  for (const text of ['No entries documented.',
+    'No global binding API documentation is currently configured. Earlier binding catalogs no longer apply.']) {
+    const delivered = runtimeBindingCatalogMessage({ name: PTC_BINDING_CATALOG, text })
+    assert.equal(delivered.source.empty, false)
+    assert.deepEqual(readRuntimeMessage(delivered)?.sections, [{ name: PTC_BINDING_CATALOG, text }])
   }
   const prefix = message.content[0].text.slice(0, -context.text.length)
   for (const text of ['unrelated catalog', prefix, prefix + 'x'.repeat(65537)]) {

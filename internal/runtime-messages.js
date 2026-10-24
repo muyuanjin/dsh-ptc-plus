@@ -147,14 +147,12 @@ export function runtimeBindingCatalogMessage(context, options) {
   const resolved = promptOf(options?.prompt)
   const catalogPrefix = resolved.text(PROMPT_SLOT_IDS.catalogPrefix)
   const emptyCatalog = resolved.text(PROMPT_SLOT_IDS.catalogEmpty)
-  // The guard compares against the code-owned wording, never the resolved document:
-  // a user may customize the empty sentence, and a customized sentence that happens
-  // to equal a real catalog body must still be deliverable instead of aborting the
-  // whole step. Emptiness itself travels in `source.empty` below.
+  // Emptiness travels in `source.empty`, so a catalog body may legitimately equal
+  // the code-owned empty wording; comparing the text would abort the whole step for
+  // a deliverable catalog. Only the shape is rejected here.
   if (context !== undefined && (context?.name !== PTC_BINDING_CATALOG
     || typeof context.text !== 'string' || context.text.length === 0
-    || context.text.length > MAX_STATE_CODE_UNITS || context.text === EMPTY_CATALOG
-    || context.text === PREVIOUS_EMPTY_CATALOG)) {
+    || context.text.length > MAX_STATE_CODE_UNITS)) {
     throw new Error('invalid PTC binding catalog')
   }
   return createUserMessage({

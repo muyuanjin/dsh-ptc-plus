@@ -679,6 +679,11 @@ export function resolvePromptText(value) {
       reported.push({ slotId: id, anchorId, reason: 'required-slot-empty' })
       continue
     }
+    // Only a projected slot is rendered through a hole: the composer substitutes
+    // `{platformFacts}`, `{detail}`, `{overageBytes}` or `{maxOutputBytes}` at
+    // delivery. A literal default may also contain braces (`plan.navigationSentence`
+    // shows `capabilities.search({query})`), but that is prose: nothing substitutes
+    // it, and requiring the token would forbid legitimate rewording.
     if (slot.kind === 'projected') {
       const holes = holeTokens(slot.defaultText ?? '')
       const kept = holes.filter(hole => text.includes(hole))

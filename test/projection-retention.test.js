@@ -199,3 +199,23 @@ test('at the supported floor a digested cluster still recovers bindings and refo
     .filter(settlement => typeof settlement.call.data.argumentsDigest !== 'string')
   assert.equal(recovered.length, 12, 'the refold restores the text for every cluster')
 })
+
+test('a checkpoint stays below a small multiple of the payload budget', () => {
+  // The budget bounds the retained payload, not the serialized checkpoint: the
+  // selected run keeps its own copies (ADR 0032). Pin the multiplier rather than a
+  // byte count, so the OOM bound stays checkable while the exact number moves.
+  const budget = Number(process.env.DSH_PTC_RETENTION_BYTES)
+  const payload = 'y'.repeat(300 * 1024)
+  const events = []
+  for (let index = 0; index < 12; index += 1) {
+    const id = `big-${index}`
+    events.push(call(`return '${payload}'`, id), result(id))
+  }
+  const state = fold(events)
+  const total = Buffer.byteLength(JSON.stringify(state), 'utf8')
+  const clusters = Object.keys(state.settledResultsByEventSeq).length
+  const allowance = clusters * 2048
+  assert.ok(total < budget * 3 + allowance,
+    `checkpoint ${total} B must stay under 3x the ${budget} B budget plus ${allowance} B of cluster metadata`)
+  assert.ok(state.hotCellDropped === false || state.hotCellDropped === true)
+})

@@ -6,11 +6,19 @@ import { createHash } from 'node:crypto'
  * The projection is a fold shortcut, not the session log. Keeping the payload of
  * every call would make a checkpoint proportional to how many bytes the session
  * wrote (issue #10: a 77 MB state that the host cloned and pretty-printed until
- * it aborted). The window is therefore bounded by default: the newest runs keep
- * their payload so tips and the current edit target stay synchronous, and every
- * older cluster is dropped into one chained summary. An entry that alone exceeds
- * the byte budget is dropped as well — the bound wins over the convenience of
- * the hot cell, and the edit path refolds that cell from the session log.
+ * it aborted). The window is therefore bounded by default: the newest clusters
+ * keep their argument text so tips and the current edit target stay synchronous,
+ * and every older cluster keeps its identity, its observations and its call
+ * record while its payload text becomes a digest. Only a cluster beyond
+ * `retentionClusters` is folded into the chained summary, and a cluster whose
+ * payload alone exceeds the byte budget keeps its identity with a digested
+ * payload — the bound wins over the convenience of the hot cell, and the edit
+ * path refolds that cell from the session log.
+ *
+ * `retentionPayloadBytes` bounds the retained payload (the settlement and
+ * executable copies). A checkpoint additionally carries the selected run's
+ * copies, so its serialized total can approach roughly twice the budget plus the
+ * per-cluster metadata; that is the shipped bound, stated in ADR 0032.
  *
  * The environment overrides may only *lower* the window for tests; a value that
  * would disable the bound is ignored so a deployment cannot silently return to

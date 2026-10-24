@@ -447,7 +447,16 @@ function normalizeDerivedRelation(meta, expectedTargetCallSeq, { allowUnexecuted
     || target.targetCallSeq !== expectedTargetCallSeq) {
     throw new Error('derived edit target does not match the eligible target call')
   }
-  if (!isRecord(derived) || typeof derived.code !== 'string' || typeof derived.description !== 'string') {
+  // A derived run outside the payload window keeps the digest of its source instead
+  // of the text. Every field except the source is kept, so the deferred-edit
+  // relation stays checkable in both shapes; the text is refolded from the log when
+  // a consumer needs it.
+  const digestedCode = isRecord(derived) && !Object.hasOwn(derived, 'code')
+  if (!isRecord(derived) || typeof derived.description !== 'string'
+    || (digestedCode
+      ? typeof derived.codeDigest !== 'string' || !/^[a-f0-9]{64}$/u.test(derived.codeDigest)
+        || !isCanonicalSequence(derived.codeBytes)
+      : typeof derived.code !== 'string')) {
     throw new Error('invalid dsh-ptc-plus derived run metadata')
   }
   assertOwnFields(derived, DERIVED_RUN_FIELDS, 'derived run metadata')
@@ -467,7 +476,9 @@ function normalizeDerivedRelation(meta, expectedTargetCallSeq, { allowUnexecuted
   const userBindings = userBindingsForJournal(meta, journal)
   return {
     targetCallSeq: target.targetCallSeq,
-    code: derived.code,
+    ...(digestedCode
+      ? { codeDigest: derived.codeDigest, codeBytes: derived.codeBytes }
+      : { code: derived.code }),
     description: derived.description,
     journal,
     ...(unexecuted ? { unexecuted: true } : {}),

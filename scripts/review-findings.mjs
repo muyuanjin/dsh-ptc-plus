@@ -1473,7 +1473,10 @@ async function main() {
 }
 
 export function verificationCommand(options = {}) {
-  return npmCliCommand(['run', 'verify'], options)
+  // The commit gate runs the semantic-evidence tier plus the static checks; the
+  // complete behavioral gate (whole backend inventory and the browser suites)
+  // stays behind `npm run verify` for CI and release preparation.
+  return npmCliCommand(['run', 'verify:check'], options)
 }
 
 function runVerification(root) {

@@ -825,13 +825,13 @@ test('reuses the invoking npm CLI across forwarded and native environments', () 
     npmExecPath: 'X:\\fixture\\runtime\\npm-cli.js',
   }), {
     executable: 'X:\\fixture\\runtime\\node.exe',
-    args: ['X:\\fixture\\runtime\\npm-cli.js', 'run', 'verify'],
+    args: ['X:\\fixture\\runtime\\npm-cli.js', 'run', 'verify:check'],
   })
   assert.deepEqual(verificationCommand({ platform: 'win32', npmExecPath: undefined }), {
-    executable: 'npm.cmd', args: ['run', 'verify'],
+    executable: 'npm.cmd', args: ['run', 'verify:check'],
   })
   assert.deepEqual(verificationCommand({ platform: 'linux', npmExecPath: undefined }), {
-    executable: 'npm', args: ['run', 'verify'],
+    executable: 'npm', args: ['run', 'verify:check'],
   })
 })
 

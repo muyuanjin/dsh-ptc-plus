@@ -4,10 +4,24 @@ import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { npmCliCommand } from './npm-cli.mjs'
 
+/**
+ * Group selection by gate:
+ * - `--check` is the commit gate: the semantic-evidence backend tier only, no
+ *   browser suites. It has to stay inside its time budget on an ordinary
+ *   developer machine.
+ * - `--ci` keeps the focused runtime contracts and the browser suites.
+ * - the default (`npm run verify`) is the complete behavioral gate: whole
+ *   backend inventory plus browser suites, for CI and release preparation.
+ */
+export function deterministicGroups({ ci = false, check = false } = {}) {
+  if (check) return ['test:backend:fast']
+  return ['test:client:visual', ci ? 'test:ci:runtime' : 'test:backend']
+}
+
 export async function runDeterministicTestGroups({
-  ci = false, parallelism = availableParallelism(), spawnProcess = spawn,
+  ci = false, check = false, parallelism = availableParallelism(), spawnProcess = spawn,
 } = {}) {
-  const groups = ['test:client:visual', ci ? 'test:ci:runtime' : 'test:backend']
+  const groups = deterministicGroups({ ci, check })
   const run = name => new Promise((resolveRun, reject) => {
     const started = performance.now()
     console.log(`Starting ${name}`)
@@ -37,8 +51,8 @@ export async function runDeterministicTestGroups({
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const arguments_ = process.argv.slice(2)
-  if (arguments_.some(value => value !== '--ci') || arguments_.length > 1) {
-    throw new Error('usage: deterministic-test-groups.mjs [--ci]')
+  if (arguments_.some(value => value !== '--ci' && value !== '--check') || arguments_.length > 1) {
+    throw new Error('usage: deterministic-test-groups.mjs [--ci|--check]')
   }
-  await runDeterministicTestGroups({ ci: arguments_[0] === '--ci' })
+  await runDeterministicTestGroups({ ci: arguments_[0] === '--ci', check: arguments_[0] === '--check' })
 }

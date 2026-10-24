@@ -409,7 +409,7 @@ function cordisAgent(disposeGate = undefined, options = {}) {
   const agent = {
     id: 'settings-cordis-agent',
     definitions,
-    session: { header: { cwd: '/workspace' }, events: [] },
+    session: { header: { cwd: process.cwd() }, events: [] },
     ctx: {
       // This fixture has no commands service; scoped injection remains pending.
       inject: serviceInjector({}, () => agent.ctx),
@@ -541,7 +541,9 @@ async function openSessionWorker(host, agent, program = 'return 1') {
     }
   })
   for (const listener of host.listeners.get('tools/result') ?? []) await listener(exec, result)
-  assert.equal(result.isError, false)
+  // Surface the runtime's own diagnostic: an isError here means the fixture
+  // worker failed to start or settle, and the message is the only evidence.
+  assert.equal(result.isError, false, JSON.stringify(result.error ?? result.content ?? result))
 }
 
 function bindingCommandAgent(options = {}) {
@@ -554,7 +556,7 @@ function bindingCommandAgent(options = {}) {
     id: 'settings-binding-agent',
     session: {
       id: 'settings-binding-session',
-      header: { cwd: '/workspace' },
+      header: { cwd: process.cwd() },
       events,
       append(type, data) { events.push({ type, data }) },
     },

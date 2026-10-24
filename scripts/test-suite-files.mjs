@@ -1,11 +1,22 @@
 import { spawn } from 'node:child_process'
-import { readdir } from 'node:fs/promises'
+import { readFile, readdir } from 'node:fs/promises'
 import { availableParallelism } from 'node:os'
 import { basename, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
 
 const projectRoot = fileURLToPath(new URL('../', import.meta.url))
+
+/**
+ * Files that observe the verification tooling itself: they spawn their own
+ * subprocesses and one of them fails by construction when run outside its
+ * harness. They belong to the complete gate, never to the fast tier.
+ */
+const FAST_TIER_EXCLUDED = new Set([
+  'test/test-suite-files.test.js',
+  'test/verification-workflow.test.js',
+  'test/deterministic-test-groups.test.js',
+])
 
 export function testConcurrency(value, parallelism = availableParallelism()) {
   // Default file fanout is half the available CPUs, capped at eight; each
@@ -49,6 +60,27 @@ export function splitBackendTestFiles(files) {
   }
 }
 
+/**
+ * Fast tier: the test files the semantic ownership graph names as evidence for
+ * at least one obligation. `npm run check` runs this tier so a commit gate stays
+ * inside its time budget; `npm run verify` keeps the complete ordinary inventory.
+ * Coverage-only paths and the verification-tooling probes are excluded: they
+ * either require instrumentation or fail by construction outside their harness.
+ */
+export async function fastTierTestFiles(root) {
+  const graph = JSON.parse(await readFile(join(root, 'semantic-obligations.json'), 'utf8'))
+  const files = new Set()
+  for (const obligation of graph.obligations ?? []) {
+    for (const entry of obligation.evidence ?? []) {
+      if (typeof entry !== 'string' || !entry.endsWith('.test.js')) continue
+      if (!entry.startsWith('test/') || entry.startsWith('test/coverage/')) continue
+      if (FAST_TIER_EXCLUDED.has(entry)) continue
+      files.add(entry)
+    }
+  }
+  return [...files].sort()
+}
+
 export function selectBackendTestFiles(files, requested = []) {
   if (requested.length === 0) return files
   const selected = new Set(requested)
@@ -65,6 +97,7 @@ export function backendArguments(arguments_) {
       file: { type: 'string', multiple: true },
       list: { type: 'boolean' },
       focus: { type: 'boolean' },
+      fast: { type: 'boolean' },
       'test-name-pattern': { type: 'string', multiple: true },
       'test-skip-pattern': { type: 'string', multiple: true },
       'test-reporter': { type: 'string', multiple: true },
@@ -80,9 +113,10 @@ export function backendArguments(arguments_) {
   }
   // Diagnostic options cannot introduce another test-file input or enable
   // coverage. Node retains ownership of the accepted option values.
-  const testArguments = tokens.filter(token => token.kind === 'option' && !['file', 'list', 'focus'].includes(token.name))
+  const testArguments = tokens.filter(token => token.kind === 'option' && !['file', 'list', 'focus', 'fast'].includes(token.name))
     .map(token => token.value === undefined ? `--${token.name}` : `--${token.name}=${token.value}`)
-  return { files: values.file ?? [], testArguments, list: values.list ?? false }
+  if (values.fast && values.file?.length) throw new Error('--fast selects the semantic-evidence tier; do not combine it with --file')
+  return { files: values.file ?? [], testArguments, list: values.list ?? false, fast: values.fast ?? false }
 }
 
 export async function runBackendTests({
@@ -90,10 +124,12 @@ export async function runBackendTests({
   concurrency = testConcurrency(process.env.DSH_PTC_TEST_CONCURRENCY),
   testArguments = [],
   files: requestedFiles = [],
+  fast = false,
 } = {}) {
   const diagnostic = backendArguments(testArguments)
   if (diagnostic.files.length > 0 || diagnostic.list) throw new Error('file selection belongs in the files option')
-  const files = selectBackendTestFiles(await backendTestFiles(root), requestedFiles)
+  const files = selectBackendTestFiles(await backendTestFiles(root),
+    fast ? await fastTierTestFiles(root) : requestedFiles)
   if (files.length === 0) throw new Error('backend test suite contains no test files')
   const started = performance.now()
   console.log(`Backend inventory: ${files.length} files; concurrency ${concurrency}`)
@@ -124,12 +160,13 @@ export async function runBackendTests({
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
-    const { files, testArguments, list } = backendArguments(process.argv.slice(2))
+    const { files, testArguments, list, fast } = backendArguments(process.argv.slice(2))
     const concurrency = testConcurrency(process.env.DSH_PTC_TEST_CONCURRENCY)
-    if (list) console.log(selectBackendTestFiles(await backendTestFiles(projectRoot), files).join('\n'))
+    if (list) console.log(selectBackendTestFiles(await backendTestFiles(projectRoot),
+      fast ? await fastTierTestFiles(projectRoot) : files).join('\n'))
     else {
-      console.log(`Backend tests: ${files.length ? 'focused files, ' : ''}file concurrency ${concurrency}`)
-      process.exitCode = await runBackendTests({ concurrency, testArguments, files })
+      console.log(`Backend tests: ${fast ? 'semantic-evidence tier, ' : files.length ? 'focused files, ' : ''}file concurrency ${concurrency}`)
+      process.exitCode = await runBackendTests({ concurrency, testArguments, files, fast })
     }
   } catch (error) {
     console.error(error.message)

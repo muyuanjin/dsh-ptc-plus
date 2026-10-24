@@ -43,9 +43,26 @@ const MODEL_VISIBLE_SURFACE_EVENTS = new Set([
   'tool/result',
 ])
 
-function sourceForRunCall(call) {
+/**
+ * Argument text for a call, resolved through its canonical owner.
+ *
+ * `executableCalls` retains the text once; a call event that still carries its
+ * own copy (the live fold, or an uncompacted checkpoint) is read directly. A
+ * compacted event and a pruned entry hold only digests, so derivations see
+ * `undefined` and must treat the run as unavailable rather than guess.
+ */
+function callArguments(call, executableCalls) {
+  if (typeof call?.data?.arguments === 'string') return call.data.arguments
+  const entry = executableCalls?.get?.(call?.seq)
+  const stored = entry?.event?.data?.arguments
+  return typeof stored === 'string' ? stored : undefined
+}
+
+function sourceForRunCall(call, executableCalls) {
+  const text = callArguments(call, executableCalls)
+  if (text === undefined) return undefined
   try {
-    const args = JSON.parse(call.data.arguments)
+    const args = JSON.parse(text)
     return isRecord(args) && typeof args.code === 'string' ? args.code : undefined
   } catch {
     return undefined
@@ -240,13 +257,16 @@ export function visibleExecutableCallSeqs(session) {
   return calls
 }
 
-function timelineRun(call, result, eventIndex, journal) {
+function timelineRun(call, result, eventIndex, journal, executableCalls) {
   let args
-  try {
-    const parsed = JSON.parse(call.data.arguments)
-    if (isRecord(parsed)) args = Object.freeze(parsed)
-  } catch {
-    // Invalid persisted arguments cannot support derived source facts.
+  const text = callArguments(call, executableCalls)
+  if (text !== undefined) {
+    try {
+      const parsed = JSON.parse(text)
+      if (isRecord(parsed)) args = Object.freeze(parsed)
+    } catch {
+      // Invalid persisted arguments cannot support derived source facts.
+    }
   }
   return Object.freeze({
     index: eventIndex,
@@ -274,7 +294,7 @@ function successfulTimelineRun(run) {
   return run?.journal?.completion?.kind === 'return' && run.journal.status !== 'noop'
 }
 
-function settlementRun(settlement) {
+function settlementRun(settlement, executableCalls) {
   // A pruned settlement no longer holds the text this run is derived from; report it
   // as unavailable instead of rebuilding a run from digests.
   if (settlement.pruned === true) return undefined
@@ -285,22 +305,23 @@ function settlementRun(settlement) {
   // keeps its own call's source: the root cell stays the editable target and the
   // unexecuted revision never becomes one.
   if (publication.postEdit?.derived?.unexecuted === true || publication.derived?.unexecuted === true) {
-    return timelineJson(timelineRun(settlement.call, result, publication.index, publication.journal))
+    return timelineJson(timelineRun(settlement.call, result, publication.index, publication.journal, executableCalls))
   }
   if (publication.postEdit !== undefined) {
     return timelineJson(timelineDerivedRun({ seq: publication.postEdit.executionStartSeq }, result,
       publication.index, publication.postEdit.derived))
   }
   return timelineJson(publication.derived === undefined
-    ? timelineRun(settlement.call, result, publication.index, publication.journal)
+    ? timelineRun(settlement.call, result, publication.index, publication.journal, executableCalls)
     : timelineDerivedRun(settlement.call, result, publication.index, publication.derived))
 }
 
-function selectSettlementRun(selected, settlement, scope, frontier) {
+function selectSettlementRun(selected, settlement, scope, frontier, executableCalls) {
   const publication = settlement.publication
   if (publication === undefined || settlement.entry.scope !== scope
     || (frontier !== null && publication.index <= frontier.index)) return selected
-  return selected === undefined || publication.index >= selected.index ? settlementRun(settlement) : selected
+  return selected === undefined || publication.index >= selected.index
+    ? settlementRun(settlement, executableCalls) : selected
 }
 
 function editTargetForSelection(run, claimedTargets) {
@@ -1101,7 +1122,7 @@ export function validateSessionTimelineState(value, logFacts) {
         dispatchEdits.delete(settlement.call.seq)
         if (settlement.publication?.derived === undefined) dispatchClaims.delete(claim)
       }
-      dispatchRun = selectSettlementRun(dispatchRun, settlement, dispatchScope, dispatchFrontier)
+      dispatchRun = selectSettlementRun(dispatchRun, settlement, dispatchScope, dispatchFrontier, executable)
     }
   }
   requireFact(claimed.size === dispatchClaims.size && [...dispatchClaims].every(seq => claimed.has(seq)))
@@ -1109,14 +1130,14 @@ export function validateSessionTimelineState(value, logFacts) {
   let selectedRun
   let lastSuccessfulRunIndex
   for (const settlement of publications) {
-    selectedRun = selectSettlementRun(selectedRun, settlement, value.scope, value.runSelectionFrontier)
-    if (successfulTimelineRun(settlementRun(settlement))) {
+    selectedRun = selectSettlementRun(selectedRun, settlement, value.scope, value.runSelectionFrontier, executable)
+    if (successfulTimelineRun(settlementRun(settlement, executable))) {
       lastSuccessfulRunIndex = Math.max(lastSuccessfulRunIndex ?? -1, settlement.publication.index)
     }
   }
   requireFact(selectedRun === undefined || publications.some(settlement =>
     settlement.entry.scope === value.scope && !settlement.entry.ambiguous
-    && settlementRun(settlement)?.callSeq === selectedRun.callSeq))
+    && settlementRun(settlement, executable)?.callSeq === selectedRun.callSeq))
   requireFact(selectedRun === undefined ? value.latestRun === undefined && value.editableRun === undefined
     : deepEqualJson(value.latestRun ?? null, selectedRun) && deepEqualJson(value.editableRun ?? null, selectedRun))
   requireFact(value.lastSuccessfulRunIndex === lastSuccessfulRunIndex
@@ -1172,7 +1193,7 @@ function dispatchPairWithinRoot(facts, call, resultEvent, startSeq) {
   return { start: starts[0], settled: settlements[0] }
 }
 
-function normalizePostEditFact(facts, call, resultEvent, result, replayPostEdit) {
+function normalizePostEditFact(facts, call, resultEvent, result, replayPostEdit, executableCalls) {
   const post = replayPostEdit === undefined ? resultEvent.data?.meta?.[POST_EDIT_KEY] : {
     startSeq: replayPostEdit.startSeq,
     executionStartSeq: replayPostEdit.executionStartSeq,
@@ -1225,7 +1246,7 @@ function normalizePostEditFact(facts, call, resultEvent, result, replayPostEdit)
   } catch (error) {
     return fail(error.message)
   }
-  if (target?.source === undefined || sourceForRunCall(call) === undefined) {
+  if (target?.source === undefined || sourceForRunCall(call, executableCalls) === undefined) {
     return fail('nested edit has no selected source')
   }
   const edit = editRejectedCell(start.data.arguments, target.source)
@@ -1528,7 +1549,7 @@ function advanceTimelineEvent(previous, inputEvent, eventIndex, replayFact) {
             }
             let postEdit
             try {
-              postEdit = normalizePostEditFact(state.eventFacts, call, event, normalized)
+              postEdit = normalizePostEditFact(state.eventFacts, call, event, normalized, undefined, state.executableCalls)
             } catch (error) {
               postEdit = { error: `unproved deferred edit: ${error.message}` }
             }
@@ -1552,7 +1573,7 @@ function advanceTimelineEvent(previous, inputEvent, eventIndex, replayFact) {
         if (replayFact.boundaries !== undefined) observation.boundaries = replayFact.boundaries
         if (replayFact.boundaryFailure !== undefined) observation.boundaryFailure = replayFact.boundaryFailure
         if (normalized.postEdit !== undefined) {
-          const checked = normalizePostEditFact(state.eventFacts, call, event, normalized, normalized.postEdit)
+          const checked = normalizePostEditFact(state.eventFacts, call, event, normalized, normalized.postEdit, state.executableCalls)
           if (checked?.error !== undefined || !deepEqualJson(checked, normalized.postEdit)) {
             throw new TypeError(`invalid PTC session-log projection deferred edit fact: ${checked?.error ?? 'derived fact changed'}`)
           }
@@ -1603,8 +1624,9 @@ function advanceTimelineEvent(previous, inputEvent, eventIndex, replayFact) {
     }
     if (entry === undefined || entry.scope !== scope) continue
     const publishRun = () => {
-      const run = settlementRun(settlement)
-      state.latestRun = selectSettlementRun(state.latestRun, settlement, scope, state.runSelectionFrontier)
+      const run = settlementRun(settlement, state.executableCalls)
+      state.latestRun = selectSettlementRun(state.latestRun, settlement, scope, state.runSelectionFrontier,
+        state.executableCalls)
       state.editableRun = state.latestRun
       if (successfulTimelineRun(run)) {
         state.lastSuccessfulRunIndex = Math.max(state.lastSuccessfulRunIndex ?? -1, run.index)

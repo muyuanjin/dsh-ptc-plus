@@ -217,6 +217,39 @@ export const CONFIG_FIELDS = Object.freeze([
     descriptionEn: 'Rebuilds recoverable REPL state from the session journal after a worker restart.',
   },
   {
+    key: 'retentionPayloadRuns',
+    type: 'integer',
+    default: 8,
+    min: 8,
+    max: 512,
+    label: '保留最近单元格数',
+    labelEn: 'Retained recent cells',
+    description: '检查点保留最近多少个单元格的参数原文。调大能直接编辑更久以前的计算，但检查点更大；更早的单元格需要从会话日志重新折叠才能编辑或重新发布。',
+    descriptionEn: 'How many recent cells keep their argument text in the checkpoint. A larger window keeps more history editable without a log read but grows the checkpoint; older cells must be refolded from the session log to be edited or republished.',
+  },
+  {
+    key: 'retentionPayloadBytes',
+    type: 'integer',
+    default: 8388608,
+    min: 1048576,
+    max: 67108864,
+    label: '保留载荷预算 (UTF-8 bytes)',
+    labelEn: 'Retained payload budget (UTF-8 bytes)',
+    description: '保留单元格参数原文的累计上限。达到上限后最旧的原文被移除，检查点体积因此与会话写入总量无关；单个超过预算的单元格也会被移除并从日志重折。',
+    descriptionEn: 'Cumulative budget for the retained argument text. Past it the oldest payload is removed, which keeps the checkpoint independent of how much the session wrote; a single cell larger than the budget is removed as well and refolded from the log.',
+  },
+  {
+    key: 'retentionClusters',
+    type: 'integer',
+    default: 5000,
+    min: 0,
+    max: 50000,
+    label: '保留单元格簇上限',
+    labelEn: 'Retained cluster limit',
+    description: '检查点保留多少个单元格簇的身份与观测，超过后最旧的簇折进区间摘要（其后续操作需要从日志重折）。填 0 表示不限制：不做按数量的折叠，只由载荷预算约束体积。',
+    descriptionEn: 'How many cell clusters keep their identity and observations in the checkpoint; older ones fold into an interval summary and need a log refold afterwards. 0 means unlimited: no count-based folding, with the payload budget as the only bound.',
+  },
+  {
     key: 'capabilityPromptTextEnabled',
     type: 'boolean',
     default: true,
@@ -492,7 +525,7 @@ export const CONFIG_GROUPS = Object.freeze([
   },
   { key: 'capabilities', label: '能力与上下文', labelEn: 'Capabilities and context',
     fields: Object.freeze(['capabilityContextEnabled', 'capabilityManagementEnabled', 'capabilityBaseline', 'capabilityOverrides',
-      'capabilityStatistics', 'capabilityPolicy', 'capabilityRecoveryEnabled', 'modelPreviewEnabled', 'capabilityProfiles', 'capabilityBudgetBytes', 'capabilityDirectoryBytes', 'capabilityRecoveryBytes', 'modelPreviewTokens', 'capabilityPromptTextEnabled', 'promptText']) },
+      'capabilityStatistics', 'capabilityPolicy', 'capabilityRecoveryEnabled', 'modelPreviewEnabled', 'capabilityProfiles', 'capabilityBudgetBytes', 'capabilityDirectoryBytes', 'capabilityRecoveryBytes', 'modelPreviewTokens', 'retentionPayloadRuns', 'retentionPayloadBytes', 'retentionClusters', 'capabilityPromptTextEnabled', 'promptText']) },
 ])
 
 /** Functional modules share the same section order across every settings entry. */

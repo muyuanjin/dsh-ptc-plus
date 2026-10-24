@@ -6,27 +6,114 @@ import { createHash } from 'node:crypto'
  * The projection is a fold shortcut, not the session log. Keeping the payload of
  * every call would make a checkpoint proportional to how many bytes the session
  * wrote (issue #10: a 77 MB state that the host cloned and pretty-printed until
- * it aborted). The window is therefore bounded by default: the newest runs keep
- * their payload so tips and the current edit target stay synchronous, and every
- * older cluster is dropped into one chained summary. An entry that alone exceeds
- * the byte budget is dropped as well — the bound wins over the convenience of
- * the hot cell, and the edit path refolds that cell from the session log.
+ * it aborted). The window is therefore bounded by default: the newest clusters
+ * keep their argument text so tips and the current edit target stay synchronous,
+ * and every older cluster keeps its identity, its observations and its call
+ * record while its payload text becomes a digest. Only a cluster beyond
+ * `retentionClusters` is folded into the chained summary, and a cluster whose
+ * payload alone exceeds the byte budget keeps its identity with a digested
+ * payload — the bound wins over the convenience of the hot cell, and the edit
+ * path refolds that cell from the session log.
+ *
+ * `retentionPayloadBytes` bounds the retained payload (the settlement and
+ * executable copies). A checkpoint additionally carries the selected run's
+ * copies, so its serialized total can approach roughly twice the budget plus the
+ * per-cluster metadata; that is the shipped bound, stated in ADR 0032.
  *
  * The environment overrides may only *lower* the window for tests; a value that
  * would disable the bound is ignored so a deployment cannot silently return to
  * an unbounded checkpoint.
  */
-const DEFAULT_MAX_RETAINED_RUNS = 32
-const DEFAULT_MAX_RETAINED_BYTES = 8 * 1024 * 1024
+export const RETENTION_BOUNDS = Object.freeze({
+  runs: Object.freeze({ min: 8, max: 512 }),
+  bytes: Object.freeze({ min: 1024 * 1024, max: 64 * 1024 * 1024 }),
+  // 0 is the only unlimited spelling; a cluster cap of 0 means the count window
+  // never folds anything and only the payload budget bounds the checkpoint.
+  clusters: Object.freeze({ min: 0, max: 50000 }),
+})
 
-function boundedOverride(raw, fallback) {
+export const DEFAULT_RETENTION_LIMITS = Object.freeze({
+  runs: 8,
+  bytes: 8 * 1024 * 1024,
+  clusters: 5000,
+})
+
+/**
+ * The environment levers exist for tests and for a deployment that wants a
+ * *smaller* window. They fill a field only when configuration leaves it absent
+ * and are clamped to the configured or default value, so no environment can
+ * widen the bound beyond what the settings say.
+ */
+const ENVIRONMENT_KEYS = Object.freeze({
+  runs: 'DSH_PTC_RETENTION_RUNS',
+  bytes: 'DSH_PTC_RETENTION_BYTES',
+  clusters: 'DSH_PTC_RETENTION_CLUSTERS',
+})
+
+function normalizeLimit(kind, raw, fallback) {
+  if (raw === undefined || raw === null || raw === '') return fallback
   const value = Number(raw)
-  if (raw === undefined || raw === null || raw === '' || !Number.isFinite(value) || value < 1) return fallback
-  return Math.min(value, fallback)
+  const { min, max } = RETENTION_BOUNDS[kind]
+  if (!Number.isFinite(value) || !Number.isInteger(value) || value < min || value > max) return fallback
+  // 0 means unlimited for clusters; every other value is clamped to the fallback
+  // so an environment lever can never widen the window past the configuration.
+  return kind === 'clusters' && value === 0 ? 0 : Math.min(value, fallback)
 }
 
-export const MAX_RETAINED_RUNS = Math.floor(boundedOverride(process.env.DSH_PTC_RETENTION_RUNS, DEFAULT_MAX_RETAINED_RUNS))
-export const MAX_RETAINED_BYTES = boundedOverride(process.env.DSH_PTC_RETENTION_BYTES, DEFAULT_MAX_RETAINED_BYTES)
+/**
+ * A configured window is honoured as written: it is the user's setting, bounded by
+ * `RETENTION_BOUNDS` only. The clamp in `normalizeLimit` exists for the environment
+ * lever, which may tighten a configured window but never widen it.
+ */
+function normalizeConfigured(kind, raw) {
+  if (raw === undefined || raw === null || raw === '') return DEFAULT_RETENTION_LIMITS[kind]
+  const value = Number(raw)
+  const { min, max } = RETENTION_BOUNDS[kind]
+  if (!Number.isFinite(value) || !Number.isInteger(value) || value < min || value > max) {
+    return DEFAULT_RETENTION_LIMITS[kind]
+  }
+  return value
+}
+
+let activeLimits = resolveRetentionLimits({})
+
+/** The limits the current fold prunes against. */
+export function retentionLimits() {
+  return activeLimits
+}
+
+/**
+ * Resolve the effective limits from plugin configuration: configuration wins,
+ * the environment fills an absent field, and anything invalid falls back to the
+ * default rather than to an unbounded checkpoint.
+ */
+export function resolveRetentionLimits(config = {}) {
+  const configured = {
+    runs: config.retentionPayloadRuns,
+    bytes: config.retentionPayloadBytes,
+    clusters: config.retentionClusters,
+  }
+  const resolved = {}
+  for (const kind of ['runs', 'bytes', 'clusters']) {
+    const base = normalizeConfigured(kind, configured[kind])
+    // The environment may only tighten the configured bound, never widen it.
+    resolved[kind] = normalizeLimit(kind, process.env[ENVIRONMENT_KEYS[kind]], base)
+  }
+  return Object.freeze(resolved)
+}
+
+/** Install the limits for the folds that follow; returns the previous ones. */
+export function configureRetention(config = {}) {
+  const previous = activeLimits
+  activeLimits = resolveRetentionLimits(config)
+  return previous
+}
+
+/** The count of clusters kept when the configuration folds by count. */
+export function retainedClusterCount(limits = activeLimits) {
+  if (limits.clusters === 0) return Number.POSITIVE_INFINITY
+  return Math.min(limits.runs, limits.clusters)
+}
 
 /** Shout when the retention window cannot hold the payload a consumer needs. */
 export const PRUNED_EDIT = '该单元格超出保留窗口，已不可编辑'

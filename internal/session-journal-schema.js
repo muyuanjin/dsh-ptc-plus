@@ -52,14 +52,14 @@ export const DEFAULT_EXPORT_BINDINGS = new Set([
   LEGACY_DEFAULT_EXPORT_BINDING,
   LIVE_DEFAULT_EXPORT_BINDING,
 ])
-export const CALL_SUCCESS_FIELDS = new Set(['global', 'member', 'args', 'ok', 'value', 'settle'])
-export const CALL_ERROR_FIELDS = new Set(['global', 'member', 'args', 'ok', 'error', 'settle'])
+export const CALL_SUCCESS_FIELDS = new Set(['global', 'member', 'args', 'argsDigest', 'argsBytes', 'ok', 'value', 'settle'])
+export const CALL_ERROR_FIELDS = new Set(['global', 'member', 'args', 'argsDigest', 'argsBytes', 'ok', 'error', 'settle'])
 export const OPERATION_FIELDS = new Set(['action', 'name'])
 export const RETURN_FIELDS = new Set(['kind', 'hasValue', 'value'])
 export const THROW_FIELDS = new Set(['kind', 'error'])
 export const ERROR_FIELDS = new Set(['kind', 'message'])
 export const EDIT_TARGET_FIELDS = new Set(['targetCallSeq'])
-export const DERIVED_RUN_FIELDS = new Set(['code', 'description'])
+export const DERIVED_RUN_FIELDS = new Set(['code', 'codeDigest', 'codeBytes', 'description'])
 
 export const JOURNAL_VERSIONS = new Set([LEGACY_JOURNAL_VERSION, INTERMEDIATE_JOURNAL_VERSION, PREVIOUS_JOURNAL_VERSION, USER_BINDING_RELATIONLESS_JOURNAL_VERSION, FINGERPRINT_REUSE_JOURNAL_VERSION, VERSIONED_BINDING_REUSE_JOURNAL_VERSION, IMPORT_BOUNDARY_JOURNAL_VERSION, PER_NAME_USER_BINDINGS_JOURNAL_VERSION, LANGUAGE_SEMANTICS_JOURNAL_VERSION, MODULE_TRANSFORM_JOURNAL_VERSION, JOURNAL_VERSION])
 export const USER_BINDINGS_REUSE_POLICIES = new Set([LEGACY_USER_BINDINGS_REUSE_POLICY, LIVE_USER_BINDINGS_REUSE_POLICY])

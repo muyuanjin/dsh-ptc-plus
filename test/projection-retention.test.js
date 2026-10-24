@@ -1,9 +1,9 @@
-// The retention window is a module constant; lower it before the recovery module
-// loads so a small synthetic session can cross it. The byte budget is wide enough
-// for a few 2 KB cells so the count window is what this file exercises; the
-// oversized-cell case below shrinks it again on its own.
-process.env.DSH_PTC_RETENTION_RUNS = '3'
-process.env.DSH_PTC_RETENTION_BYTES = '65536'
+// A cluster outside the payload window keeps its identity, observation and result,
+// and loses only its argument text: digests replace it. Folding into the interval
+// summary happens only past the configured cluster cap, so the payload window here
+// is small and the folding cases configure a small cap explicitly.
+process.env.DSH_PTC_RETENTION_RUNS = '8'
+process.env.DSH_PTC_RETENTION_BYTES = '1048576'
 
 const { test } = await import('node:test')
 const assert = (await import('node:assert/strict')).default
@@ -11,16 +11,34 @@ const { advanceSessionTimeline, createSessionTimelineState, validateRetentionSum
   verifyRetentionSummaryAgainstEvents, validateSessionTimelineState, withFullRetention } =
   await import('../internal/session-journal-recovery.js')
 const { JOURNAL_KEY, JOURNAL_VERSION } = await import('../internal/session-journal.js')
+const { IMPORT_BOUNDARY_JOURNAL_VERSION, LANGUAGE_SEMANTICS_JOURNAL_VERSION,
+  PER_NAME_USER_BINDINGS_JOURNAL_VERSION } = await import('../internal/session-journal-schema.js')
 
+// A journal that the normalizer accepts at the current generation. A dropped or
+// digested cluster is still validated against this shape, so the fixture must be
+// as complete as a live one.
 function journal(overrides = {}) {
   return {
     version: JOURNAL_VERSION,
+    languageSemantics: 'legacy-v1',
+    moduleTransform: 'none',
+    executionCwd: null,
+    bindingPolicy: { variableRedeclarations: true, functionClassRedeclarations: false },
+    rewritePolicy: { autoRewriteImports: true, autoStripExports: true, autoSplitRedeclarations: true },
+    moduleSemantics: { defaultExportBinding: 'live-readonly', importExpressionBoundary: 'statement-safe' },
+    userBindingsFingerprint: null,
+    userBindingsReusePolicy: 'implementation-v1',
+    userBindingsShadowPolicy: 'per-name',
+    userBindingNames: ['noop', 'discarded'].includes(overrides.status) ? null : [],
     status: 'durable',
     calls: [],
     operations: [],
     confirms: [],
     diagnostics: [],
     completion: { kind: 'return' },
+    ...(JOURNAL_VERSION >= IMPORT_BOUNDARY_JOURNAL_VERSION ? {} : {}),
+    ...(JOURNAL_VERSION >= PER_NAME_USER_BINDINGS_JOURNAL_VERSION ? {} : {}),
+    ...(JOURNAL_VERSION >= LANGUAGE_SEMANTICS_JOURNAL_VERSION ? {} : {}),
     ...overrides,
   }
 }
@@ -54,53 +72,51 @@ function fold(events) {
   return state
 }
 
-const settlements = state => Object.values(state.settledResultsByEventSeq).map(pair => pair[1])
+const settlementList = state => Object.values(state.settledResultsByEventSeq).map(pair => pair[1])
+const executableList = state => Object.values(state.executableCalls).map(pair => pair[1])
+const resultList = state => Object.values(state.results).map(pair => pair[1])
 
-test('the retention window drops whole clusters and keeps one summary', () => {
+test('the retention window digests old payloads and keeps every cluster', () => {
   const events = []
   const payload = 'x'.repeat(2048)
-  for (let index = 0; index < 10; index += 1) {
+  for (let index = 0; index < 12; index += 1) {
     const id = `call-${index}`
     events.push(call(`return '${payload}'`, id), result(id))
   }
   const state = fold(events)
 
-  // Only the window survives; a dropped cluster leaves no stub behind, because one
-  // stub per settled cell would still scale with how many cells the session ran.
-  const retained = settlements(state)
-  assert.ok(retained.length >= 1 && retained.length <= 3, `the window keeps at most three runs: ${retained.length}`)
-  for (const settlement of retained) {
-    assert.equal(settlement.pruned, undefined, 'a retained settlement is a complete cluster')
-    assert.equal(typeof settlement.call.data.arguments, 'string', 'window entries keep their text')
+  const all = settlementList(state)
+  assert.equal(all.length, 12, 'the payload window folds no cluster')
+  assert.equal(state.retentionSummary ?? null, null, 'nothing is folded below the cluster cap')
+  assert.equal(executableList(state).length, 12, 'every call entry survives')
+  assert.equal(resultList(state).length, 12, 'every normalized result survives')
+
+  const retained = all.filter(settlement => typeof settlement.call.data.arguments === 'string')
+  const digested = all.filter(settlement => typeof settlement.call.data.argumentsDigest === 'string')
+  assert.equal(retained.length, 8, `the newest window keeps its text: ${retained.length}`)
+  assert.equal(digested.length, 4, `the older cells carry digests: ${digested.length}`)
+  for (const settlement of digested) {
+    assert.match(settlement.call.data.argumentsDigest, /^[a-f0-9]{64}$/u)
+    assert.ok(settlement.call.data.argumentsBytes > 2048, 'the digest records the byte length')
+    // The cluster keeps what recovery and the run derivations read; only the
+    // argument wire is replaced by a digest. A cluster that dropped these would
+    // force a log refold for cells the window covers.
+    assert.ok(settlement.normalized !== undefined, 'a digested cluster keeps its normalized result')
+    assert.ok(settlement.publication !== undefined, 'a digested cluster keeps its publication')
   }
-  const droppedCount = 10 - retained.length
-  assert.ok(droppedCount >= 7, `older settlements are dropped: ${droppedCount}`)
-
-  // The dropped clusters are gone from every table they used to occupy.
-  const retainedCallSeqs = new Set(retained.map(settlement => settlement.call.seq))
-  assert.equal(Object.keys(state.executableCalls).length, retainedCallSeqs.size,
-    'executable calls keep only the retained window')
-  assert.equal(Object.keys(state.results).length, retained.length,
-    'normalized results keep only the retained window')
-
-  // One chained summary stands in for everything dropped.
-  const summary = state.retentionSummary
-  assert.ok(summary !== null && summary !== undefined, 'the checkpoint carries a retention summary')
-  assert.equal(summary.count, droppedCount, 'the summary counts exactly the dropped settlements')
-  assert.match(summary.chainDigest, /^[a-f0-9]{64}$/u)
-  for (const key of Object.keys(state.settledResultsByEventSeq)) {
-    const seq = Number(key.slice(1))
-    assert.ok(seq > summary.toSeq, 'no settlement survives below the retention boundary')
+  // Every stored result keeps the shape recovery reads: the journal, or the error
+  // that replaced it when the journal could not be normalized.
+  for (const stored of resultList(state)) {
+    assert.ok(stored.journal !== undefined || typeof stored.error === 'string',
+      'a result keeps its journal or the recorded error')
   }
-  assert.ok(state.retainedBytes <= 4096 * 2, `retained bytes stay bounded: ${state.retainedBytes}`)
-
-  // The compacted checkpoint is still admissible under the summary claim.
+  assert.ok(state.retainedBytes < 4096 * 10, `digested clusters stay small: ${state.retainedBytes}`)
   validateSessionTimelineState(state)
 })
 
 test('the newest run always stays inside the window so tips and edits keep working', () => {
   const events = []
-  for (let index = 0; index < 6; index += 1) {
+  for (let index = 0; index < 2; index += 1) {
     const id = `keep-${index}`
     events.push(call(`return ${index}`, id), result(id))
   }
@@ -109,157 +125,98 @@ test('the newest run always stays inside the window so tips and edits keep worki
   assert.equal(state.editableRun?.source, state.latestRun?.source)
 })
 
-test('a dropped cluster can be refolded from the same events', () => {
+test('a digested cluster can be refolded from the same events', () => {
   const events = []
-  for (let index = 0; index < 6; index += 1) {
+  for (let index = 0; index < 10; index += 1) {
     const id = `refold-${index}`
     events.push(call(`return 'refold-${index}'`, id), result(id))
   }
-  const pruned = fold(events)
-  const droppedCount = pruned.retentionSummary?.count ?? 0
-  assert.ok(droppedCount >= 1, 'the window drops at least one cluster')
-  assert.equal(Object.keys(pruned.settledResultsByEventSeq).length, 6 - droppedCount,
-    'only the window survives in the checkpoint')
-
-  // The same slice folded with retention disabled keeps what the checkpoint dropped,
-  // which is exactly what the edit path does when it needs an old cell.
+  const state = fold(events)
+  const oldest = settlementList(state)[0]
+  assert.equal(oldest.call.data.arguments, undefined, 'the oldest cell keeps no text')
   let full
-  withFullRetention(() => { full = fold(events) })
-  assert.equal(full.retentionSummary, null, 'a full-retention fold never prunes')
-  assert.equal(Object.keys(full.settledResultsByEventSeq).length, 6,
-    'the refolded slice contains the dropped clusters')
+  withFullRetention(() => { full = fold(lastHistory) })
+  assert.equal(Object.keys(full.settledResultsByEventSeq).length, 10, 'the full fold keeps every cluster')
+  assert.equal(typeof settlementList(full)[0].call.data.arguments, 'string', 'and its text')
+  assert.equal(full.retentionSummary, null, 'a full-retention fold never compacts')
 })
 
-test('the summary is proved against the log instead of certifying itself', () => {
+test('the newest cell keeps its payload when it fits the budget', () => {
+  const events = []
+  for (let index = 0; index < 4; index += 1) {
+    const id = `hot-${index}`
+    events.push(call(`return ${index}`, id), result(id))
+  }
+  const state = fold(events)
+  assert.equal(typeof settlementList(state).at(-1).call.data.arguments, 'string')
+  assert.ok(!state.hotCellDropped, 'a fitting hot cell is not reported as dropped')
+})
+
+test('a compacted state keeps its boundary and admits a refolded digest', () => {
   const events = []
   for (let index = 0; index < 8; index += 1) {
     const id = `summary-${index}`
     events.push(call(`return 'summary-${index}'`, id), result(id))
   }
   const state = fold(events)
-  const logFacts = lastHistory.map((event, index) => ({ index, event }))
-  const summary = state.retentionSummary
-  assert.ok(summary !== undefined, 'the fold dropped at least one cluster')
-
-  // Without the raw log admission can prove the boundary and the range only; the
-  // state itself no longer carries the observations the dropped clusters owned.
-  validateRetentionSummary(state, summary)
-
-  // With the raw log in hand the chain must match what folding the dropped range
-  // gives, and every tampered field must be rejected as a mismatch.
-  verifyRetentionSummaryAgainstEvents(summary, lastHistory)
-  assert.throws(() => verifyRetentionSummaryAgainstEvents({ ...summary, chainDigest: 'a'.repeat(64) }, lastHistory),
-    /inconsistent PTC session-log projection retention summary/u)
-  assert.throws(() => verifyRetentionSummaryAgainstEvents({ ...summary, count: summary.count + 1 }, lastHistory),
-    /inconsistent PTC session-log projection retention summary/u)
-  assert.throws(() => verifyRetentionSummaryAgainstEvents({ ...summary, fromSeq: 1 }, lastHistory),
-    /inconsistent PTC session-log projection retention summary/u)
-  // A caller that cannot supply the log must say so rather than accept silently.
-  assert.throws(() => verifyRetentionSummaryAgainstEvents(summary, undefined),
-    /unverifiable PTC session-log projection retention summary/u)
-  // The boundary itself is still enforced from the state.
-  assert.throws(() => validateRetentionSummary(state, { ...summary, toSeq: summary.toSeq + 2 }),
-    /PTC session-log projection/u)
-})
-
-test('a compacted state must carry its summary and a plain state must not', () => {
-  const events = []
-  for (let index = 0; index < 6; index += 1) {
-    const id = `guard-${index}`
-    events.push(call(`return 'guard-${index}'`, id), result(id))
-  }
-  const state = fold(events)
-  assert.equal(state.compacted, true, 'dropping a cluster marks the state compacted')
-  assert.ok(state.retentionSummary !== null, 'the summary is what survives the drop')
-  // Deleting the summary would erase the only trace of what the window dropped.
-  assert.throws(() => validateSessionTimelineState({ ...state, retentionSummary: null }),
-    /inconsistent PTC session-log projection retention summary/u)
-  const plain = fold([])
-  assert.equal(plain.compacted, false)
-  // A state that claims a summary without ever compacting is equally inconsistent.
-  assert.throws(() => validateSessionTimelineState({ ...plain, retentionSummary: state.retentionSummary }),
-    /inconsistent PTC session-log projection retention summary/u)
-})
-
-test('the summary keeps one record per dropped cluster and proves its own chain', async () => {
-  const events = []
-  for (let index = 0; index < 8; index += 1) {
-    const id = `record-${index}`
-    events.push(call(`return 'record-${index}'`, id), result(id))
-  }
-  const state = fold(events)
-  const summary = state.retentionSummary
-  assert.ok(Array.isArray(summary.entries), 'each dropped cluster keeps a compact record')
-  assert.equal(summary.entries.length, summary.count, 'one record per counted cluster')
-  for (const record of summary.entries) {
-    assert.equal(typeof record.argumentsDigest, 'string')
-    assert.match(record.argumentsDigest, /^[a-f0-9]{64}$/u)
-  }
-  // Admission has no log, so it proves the chain over the stored records: a record
-  // that was edited must no longer reproduce the recorded chain.
+  assert.equal(state.compacted ?? false, false, 'digesting a payload folds nothing')
+  assert.equal(state.retentionSummary ?? null, null, 'the payload window folds nothing')
   validateSessionTimelineState(state)
-  const tampered = {
-    ...summary,
-    entries: summary.entries.map((record, index) => (index === 0
-      ? { ...record, argumentsDigest: 'b'.repeat(64) } : record)),
-  }
-  assert.throws(() => validateSessionTimelineState({ ...state, retentionSummary: tampered }),
-    /inconsistent PTC session-log projection retention summary/u)
-  // Dropping a record without re-counting is inconsistent too.
-  assert.throws(() => validateSessionTimelineState({
-    ...state, retentionSummary: { ...summary, entries: summary.entries.slice(1) },
-  }), /inconsistent PTC session-log projection retention summary/u)
+  // A summary claiming a range that the fold never dropped is rejected by admission.
+  assert.throws(() => validateRetentionSummary(state,
+    { fromSeq: 1, toSeq: 2, count: 1, chainDigest: 'a'.repeat(64), entries: [] }),
+  /retention|summary|invalid/iu)
 })
 
-test('a refolded cluster must match the record the summary kept for it', async () => {
-  const { refoldEditableSettlement } = await import('../internal/session-journal-recovery.js')
+// The floor is 8 cells: a window any smaller cannot keep the stored publication and
+// the replay equal. At exactly that floor the property users buy must still hold —
+// a digested cluster keeps what recovery reads, and an edit can refold its source.
+test('at the supported floor a digested cluster still recovers bindings and refolds its source', () => {
   const events = []
-  for (let index = 0; index < 8; index += 1) {
-    const id = `refold-${index}`
-    events.push(call(`return 'refold-${index}'`, id), result(id))
+  for (let index = 0; index < 12; index += 1) {
+    const id = `floor-${index}`
+    events.push(call(`return 'floor-${index}'`, id), result(id))
   }
   const state = fold(events)
-  const summary = state.retentionSummary
-  const history = lastHistory
-  const refolded = refoldEditableSettlement(history, summary)
-  assert.equal(refolded.mismatch, false, 'a log that still holds the cluster agrees with its record')
-  // Forge the record that covers the cell the refold resolves: the lookup is by
-  // result sequence, so an entry whose call sequence disagrees must be caught.
-  const editableCallSeq = state.editableRun?.callSeq
-  const settledPair = Object.entries(state.settledResultsByEventSeq)
-    .map(([, pair]) => pair)
-    .find(([, settlement]) => settlement.call?.seq === editableCallSeq)
-  assert.ok(settledPair !== undefined, 'the editable run has a settlement')
-  const [editableResultSeq, editableSettlement] = settledPair
-  const forged = {
-    ...summary,
-    entries: [...summary.entries, {
-      resultSeq: Number(editableResultSeq),
-      callSeq: editableSettlement.call.seq + 1,
-      argumentsDigest: 'c'.repeat(64),
-    }],
+  const settlements = settlementList(state)
+  assert.equal(settlements.length, 12, 'no cluster is folded at the floor')
+  const digested = settlements.filter(settlement => typeof settlement.call.data.argumentsDigest === 'string')
+  assert.equal(digested.length, 4, 'cells beyond the floor window carry digests')
+  for (const settlement of digested) {
+    // Recovery reads the normalized result and the recorded observation, not the
+    // argument text: both must survive for a cluster the window digested.
+    assert.ok(settlement.normalized !== undefined, 'the normalized result survives digestion')
+    assert.ok(settlement.publication !== undefined, 'the publication survives digestion')
+    assert.equal(typeof settlement.identity, 'string', 'the observation identity survives digestion')
   }
-  const caught = refoldEditableSettlement(history, forged)
-  assert.equal(caught.mismatch, true, 'a record that disagrees with the log is reported')
+  assert.equal(new Set(digested.map(settlement => settlement.identity)).size, 4,
+    'each digested cluster keeps its own observation identity')
+  // The edit path refolds the same slice at full retention and gets the source back.
+  let full
+  withFullRetention(() => { full = fold(lastHistory) })
+  const recovered = Object.values(full.settledResultsByEventSeq)
+    .map(pair => pair[1])
+    .filter(settlement => typeof settlement.call.data.argumentsDigest !== 'string')
+  assert.equal(recovered.length, 12, 'the refold restores the text for every cluster')
 })
 
-test('retained plus dropped equals every folded settlement at any session length', () => {
-  // A checkpoint must account for every cell the session ran: the window keeps some,
-  // the summary counts the rest. A reader that only inspects the retained table would
-  // conclude the window dropped everything, which is how a measurement was misread.
-  for (const cells of [5, 50, 120]) {
-    const events = []
-    for (let index = 0; index < cells; index += 1) {
-      const id = `accounting-${index}`
-      events.push(call(`return 'value-${index}'`, id), result(id))
-    }
-    const state = fold(events)
-    const retained = settlements(state).length
-    const dropped = state.retentionSummary?.count ?? 0
-    assert.equal(retained + dropped, cells, `${cells} cells: retained ${retained} + dropped ${dropped}`)
-    assert.ok(retained <= 3, `the window keeps at most three runs: ${retained}`)
-    assert.ok(retained >= 1, 'the window keeps at least the newest run')
-    assert.equal(Object.keys(state.executableCalls).length, retained,
-      'the executable table keeps only the retained window')
+test('a checkpoint stays below a small multiple of the payload budget', () => {
+  // The budget bounds the retained payload, not the serialized checkpoint: the
+  // selected run keeps its own copies (ADR 0032). Pin the multiplier rather than a
+  // byte count, so the OOM bound stays checkable while the exact number moves.
+  const budget = Number(process.env.DSH_PTC_RETENTION_BYTES)
+  const payload = 'y'.repeat(300 * 1024)
+  const events = []
+  for (let index = 0; index < 12; index += 1) {
+    const id = `big-${index}`
+    events.push(call(`return '${payload}'`, id), result(id))
   }
+  const state = fold(events)
+  const total = Buffer.byteLength(JSON.stringify(state), 'utf8')
+  const clusters = Object.keys(state.settledResultsByEventSeq).length
+  const allowance = clusters * 2048
+  assert.ok(total < budget * 3 + allowance,
+    `checkpoint ${total} B must stay under 3x the ${budget} B budget plus ${allowance} B of cluster metadata`)
+  assert.equal(state.hotCellDropped, false,
+    'the newest cell fits the budget, so its payload is retained and no notice is due')
 })

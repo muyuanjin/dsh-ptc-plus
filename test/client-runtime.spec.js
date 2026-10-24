@@ -994,7 +994,10 @@ test('the plugin row seat renders both views when the page declares it first', a
   expect([...form.querySelectorAll('.ptcPlusGroupTitle')].map(title => title.textContent))
     .toEqual([ 'REPL syntax', 'State and recovery', 'Tool extensions', 'Tool call tolerance', 'Interface display', 'Resource limits', 'Capabilities and context'])
   expect(form.querySelector('.ptcPlusFooter [role=status]').textContent).toBe('Settings are saved; capability plans adopt changes in new sessions or after an explicit refresh.')
-  for (const key of CONFIG_GROUPS.flatMap(group => group.fields).filter(key => !['capabilityBaseline', 'capabilityOverrides', 'capabilityPolicy', 'capabilityStatistics', 'capabilityProfiles', 'capabilityManagementEnabled', 'capabilityRecoveryEnabled', 'capabilityPromptTextEnabled', 'modelPreviewEnabled', 'promptText'].includes(key))) {
+  // The retention fields are surfaced by the prompt-text pane's retention line
+  // rather than by the generic field renderer, so they are excluded here the way
+  // the other capability-group controls are.
+  for (const key of CONFIG_GROUPS.flatMap(group => group.fields).filter(key => !['capabilityBaseline', 'capabilityOverrides', 'capabilityPolicy', 'capabilityStatistics', 'capabilityProfiles', 'capabilityManagementEnabled', 'capabilityRecoveryEnabled', 'capabilityPromptTextEnabled', 'modelPreviewEnabled', 'promptText', 'retentionPayloadRuns', 'retentionPayloadBytes', 'retentionClusters'].includes(key))) {
     expect(form.querySelector(`[aria-label="${SETTINGS_COPY.en[`${key}.label`]}"]`)).not.toBeNull()
   }
   const writesBeforeBatch = settings.set.mock.calls.length

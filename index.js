@@ -20,6 +20,7 @@ import { createCordisToolsOwner } from './internal/cordis-tools-owner.js'
 import { createEditTransportOwner, EDIT_RUN_CODE } from './internal/edit-transport-owner.js'
 import { createRuntimeBridgeOwner, RUN_CODE } from './internal/runtime-bridge-owner.js'
 import { resolveConfig, watchVolatileConfig } from './internal/runtime-config.js'
+import { configureRetention } from './internal/projection-retention.js'
 import {
   CONFIG_FIELDS,
   SETTINGS_NAMESPACE,
@@ -631,6 +632,8 @@ export const apply = (ctx, config = {}) => {
   // Configuration is validated before the plugin waits for the host's seam, so
   // an unusable configuration fails at the load call rather than later.
   const resolvedConfig = resolveConfig(config)
+  // The retention window is user configuration; install it before any fold can run.
+  configureRetention(resolvedConfig)
   return installExecutionSeam(ctx, {
     services: inject,
     attachmentTimeoutMs: resolvedConfig.executionSeamTimeoutMs,
@@ -951,6 +954,7 @@ function applyWithExecutionSeam(ctx, resolvedConfig, seam, volatileHost, volatil
   }
   const reconcile = (propagateFailure = false) => {
     const current = resolveConfig(configSource())
+    configureRetention(current)
     const generation = ++configurationGeneration
     if (!current.enabled) {
       const operation = controller.uninstall()
@@ -998,6 +1002,7 @@ function applyWithExecutionSeam(ctx, resolvedConfig, seam, volatileHost, volatil
   }
   ctx.effect(() => seam.onSourceChange(() => {
     const current = resolveConfig(configSource())
+    configureRetention(current)
     if (!current.enabled) return undefined
     if (seam.language !== 'typescript') {
       const language = seam.language

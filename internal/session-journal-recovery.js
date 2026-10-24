@@ -26,7 +26,7 @@ import {
 import { decodeValue } from './value-wire.js'
 import { editRejectedCell } from './rejected-cell-editor.js'
 import {
-  MAX_RETAINED_BYTES, MAX_RETAINED_RUNS, byteLength, chainOfEntries, digestOf, extendSummary, settlementBytes,
+  byteLength, chainOfEntries, digestOf, extendSummary, retainedClusterCount, retentionLimits, settlementBytes,
   summaryEntry, summaryRecordOf,
 } from './projection-retention.js'
 
@@ -245,6 +245,7 @@ export function visibleExecutableCallSeqs(session) {
     if (visibleAssistantCallSeqs.has(event.seq)) calls.add(event.seq)
   }
   const timeline = foldSessionTimeline(events)
+  if (process.env.DEBUG_RECOVER) console.error('DEBUG events', events.length, 'results', timeline.results.size, 'calls', timelineCalls(timeline).length, 'exec', timeline.executableCalls.size)
   for (const seq of timeline.calls) {
     const post = timeline.results.get(seq)?.postEdit
     // A derived execution that never ran was never published as a cell the model
@@ -784,7 +785,19 @@ function retentionSummaryFromEvents(events, toSeq) {
   return extendSummary(undefined, dropped)
 }
 
+/**
+ * The identity of a call is what survives the payload window: sequence, type,
+ * callId and name. The argument text is deliberately excluded, because retention
+ * replaces it with `argumentsDigest` and an identity that hashed the text would make
+ * every observation describe a different call before and after pruning. The text is
+ * still bound by its own digest in the call entry, so excluding it hides nothing.
+ */
 function eventDigest(event) {
+  if (isRecord(event) && isRecord(event.data) && typeof event.data.callId === 'string') {
+    const identity = { seq: event.seq, type: event.type,
+      data: { callId: event.data.callId, name: event.data.name ?? null } }
+    return createHash('sha256').update(JSON.stringify(identity)).digest('hex')
+  }
   return createHash('sha256').update(JSON.stringify(event, (_key, value) => (
     isRecord(value) ? Object.fromEntries(Object.keys(value).sort().map(key => [key, value[key]])) : value
   ))).digest('hex')
@@ -863,10 +876,18 @@ export function validateSessionTimelineState(value, logFacts) {
     && isCanonicalSequence(entry.eventIndex) && isCanonicalSequence(entry.scope) && entry.scope <= value.scope
     && optional(entry.ambiguous, field => field === true) && optional(entry.editTarget, target)
   const table = (name, keyValid, payloadValid) => {
-    requireFact(isRecord(value[name]))
+    if (!isRecord(value[name])) {
+      throw new TypeError(`invalid PTC session-log projection timeline checkpoint: table ${name} is missing`)
+    }
     for (const [key, pair] of Object.entries(value[name])) {
-      requireFact(Array.isArray(pair) && pair.length === 2 && keyValid(pair[0]) && key === `k${pair[0]}`)
-      requireFact(payloadValid(pair[1], pair[0]))
+      if (!Array.isArray(pair) || pair.length !== 2 || !keyValid(pair[0]) || key !== `k${pair[0]}`) {
+        throw new TypeError(`invalid PTC session-log projection timeline checkpoint: table ${name} entry ${key}`)
+      }
+      if (!payloadValid(pair[1], pair[0])) {
+        const problem = name === 'settledResultsByEventSeq' ? settlementProblem(pair[1]) : undefined
+        const shape = isRecord(pair[1]) ? ` keys=${Object.keys(pair[1]).join(',')}` : ` value=${JSON.stringify(pair[1])?.slice(0, 80)}`
+        throw new TypeError(`invalid PTC session-log projection timeline checkpoint: table ${name} payload ${key}${shape}${problem === undefined ? '' : ` problem=${problem}`}`)
+      }
     }
     return new Map(Object.values(value[name]))
   }
@@ -984,33 +1005,53 @@ export function validateSessionTimelineState(value, logFacts) {
     && (observation.callDigest !== undefined || !REPL_TOOL_NAMES.has(observation.call.data.name)
       || (deepEqualJson(executable.get(seq)?.event, observation.call)
         && observation.eventIndex >= executable.get(seq).eventIndex)))
-  const settlements = table('settledResultsByEventSeq', isCanonicalSequence, settlement => fields(settlement,
-    ['call', 'entry', 'identity', 'publication', 'observedIndex', 'ordinary', 'normalized'])
-    && callEvent(settlement.call) && settlementEntry(settlement.entry)
-    && optional(settlement.normalized, normalizedResult)
-    && typeof settlement.ordinary === 'boolean'
-    && isCanonicalSequence(settlement.observedIndex) && value.lastEventIndex !== null
-    && settlement.observedIndex >= settlement.entry.eventIndex && settlement.observedIndex <= value.lastEventIndex
-    && typeof settlement.identity === 'string' && /^[a-f0-9]{64}$/u.test(settlement.identity)
-    && (!REPL_TOOL_NAMES.has(settlement.call.data.name)
-      || deepEqualJson(executable.get(settlement.call.seq)?.event, settlement.call))
-    && optional(settlement.publication, publication => fields(publication,
-        ['index', 'journal', 'derived', 'userBindings', 'rewrites', 'postEdit', 'postEditRewrites'])
-      && deepEqualJson(publication.journal ?? null, settlement.normalized?.journal ?? null)
-      && deepEqualJson(publication.derived ?? null, settlement.normalized?.derived ?? null)
-      && deepEqualJson(publication.userBindings ?? null, settlement.normalized?.userBindings ?? null)
-      && deepEqualJson(publication.postEdit ?? null, settlement.normalized?.postEdit ?? null)
-      && deepEqualJson(publication.postEditRewrites ?? null, settlement.normalized?.postEdit?.rewrites ?? null)
-      && !settlement.entry.ambiguous && isCanonicalSequence(publication.index)
-      && publication.index === (settlement.ordinary ? settlement.observedIndex : settlement.entry.eventIndex)
-      && ((settlement.call.data.name === 'run_code' && publication.derived === undefined)
-        || (settlement.call.data.name === 'edit_run_code'
-        && publication.derived?.targetCallSeq === settlement.entry.editTarget?.callSeq
-        && publication.derived !== undefined))
-      && (publication.journal === undefined
-        ? publication.derived === undefined && publication.userBindings === undefined
-        : journalFacts(publication))
-      && deepEqualJson(validatedRewrites({ [REWRITES_KEY]: publication.rewrites }) ?? null, publication.rewrites ?? null)))
+  /**
+   * Name the clause a settlement fails, so a rejected checkpoint says which relation
+   * broke instead of only which table. The clauses are the same ones the inline
+   * predicate used to run; this only reports them.
+   */
+  const settlementProblem = settlement => {
+    if (!fields(settlement, ['call', 'entry', 'identity', 'publication', 'observedIndex', 'ordinary', 'normalized'])) return 'fields'
+    if (!callEvent(settlement.call)) return 'callEvent'
+    if (!settlementEntry(settlement.entry)) return 'entry'
+    if (!optional(settlement.normalized, normalizedResult)) return 'normalized'
+    if (typeof settlement.ordinary !== 'boolean') return 'ordinary'
+    if (!isCanonicalSequence(settlement.observedIndex) || value.lastEventIndex === null) return 'observedIndex'
+    if (settlement.observedIndex < settlement.entry.eventIndex || settlement.observedIndex > value.lastEventIndex) return 'observedIndex range'
+    if (typeof settlement.identity !== 'string' || !/^[a-f0-9]{64}$/u.test(settlement.identity)) return 'identity'
+    if (REPL_TOOL_NAMES.has(settlement.call.data.name)
+      && !deepEqualJson(executable.get(settlement.call.seq)?.event, settlement.call)) {
+      const stored = executable.get(settlement.call.seq)?.event
+      return `executable call (stored=${JSON.stringify(stored)?.slice(0, 220)} settlement=${JSON.stringify(settlement.call)?.slice(0, 220)})`
+    }
+    const publicationProblem = publication => {
+      if (!fields(publication, ['index', 'journal', 'derived', 'userBindings', 'rewrites', 'postEdit', 'postEditRewrites'])) return 'publication fields'
+      if (!deepEqualJson(publication.journal ?? null, settlement.normalized?.journal ?? null)) return 'publication journal'
+      if (!deepEqualJson(publication.derived ?? null, settlement.normalized?.derived ?? null)) return 'publication derived'
+      if (!deepEqualJson(publication.userBindings ?? null, settlement.normalized?.userBindings ?? null)) return 'publication userBindings'
+      if (!deepEqualJson(publication.postEdit ?? null, settlement.normalized?.postEdit ?? null)) return 'publication postEdit'
+      if (!deepEqualJson(publication.postEditRewrites ?? null, settlement.normalized?.postEdit?.rewrites ?? null)) return 'publication postEditRewrites'
+      if (settlement.entry.ambiguous) return 'publication ambiguity'
+      if (!isCanonicalSequence(publication.index)) return 'publication index'
+      if (publication.index !== (settlement.ordinary ? settlement.observedIndex : settlement.entry.eventIndex)) return 'publication position'
+      if (settlement.call.data.name === 'run_code' && publication.derived !== undefined) return 'publication derived target'
+      if (settlement.call.data.name === 'edit_run_code'
+        && (publication.derived === undefined
+          || publication.derived.targetCallSeq !== settlement.entry.editTarget?.callSeq)) return 'publication edit target'
+      if (publication.journal === undefined
+        ? publication.derived !== undefined || publication.userBindings !== undefined
+        : !journalFacts(publication)) return 'publication journal facts'
+      if (!deepEqualJson(validatedRewrites({ [REWRITES_KEY]: publication.rewrites }) ?? null, publication.rewrites ?? null)) return 'publication rewrites'
+      return undefined
+    }
+    if (!optional(settlement.publication, publication => publicationProblem(publication) === undefined)) return 'publication'
+    if (isRecord(settlement.publication)) {
+      const problem = publicationProblem(settlement.publication)
+      if (problem !== undefined) return problem
+    }
+    return undefined
+  }
+  const settlements = table('settledResultsByEventSeq', isCanonicalSequence, settlement => settlementProblem(settlement) === undefined)
   // Normalized event facts retain distinctions needed by the transition but
   // omit result content. Admission uses that same transition, not a second
   // partial interpretation of the materialized caches.
@@ -1718,6 +1759,63 @@ export function withFullRetention(run) {
  * Consumers that need a dropped cell must refold it from the session log; when the
  * log cannot supply it they report `retention-pruned` instead of guessing.
  */
+/**
+ * A call event whose argument text is gone keeps its identity and the digest of
+ * exactly the bytes it used to carry, so a refold can prove the text it recovers
+ * is the text the checkpoint once held.
+ */
+function digestArgumentData(data) {
+  if (!isRecord(data) || typeof data.arguments !== 'string') return data
+  const { arguments: text, ...rest } = data
+  return { ...rest, argumentsDigest: digestOf(text), argumentsBytes: byteLength(text) }
+}
+
+/**
+ * A republication clones a call event into its own settlement, so the same call can
+ * appear twice: once in `executableCalls` and once in a settlement that names its
+ * sequence. Whichever copy the retention window digests, every copy of that call must
+ * end up in the same shape, or a checkpoint would describe one call two ways. The
+ * pass is idempotent and runs on every prune, so a clone added after the window moved
+ * still lands on the retained shape — the fold and the replay both go through it.
+ */
+function digestSettlementCallCopies(tables) {
+  for (const pair of Object.values(tables.settled.table)) {
+    const [, settlement] = pair
+    if (!isRecord(settlement) || !isRecord(settlement.call)) continue
+    if (typeof settlement.call.data?.arguments !== 'string') continue
+    const retained = tables.executable.get(settlement.call.seq)
+    if (typeof retained?.event?.data?.argumentsDigest !== 'string') continue
+    tables.settled.set(pair[0], { ...settlement, call: { ...settlement.call, data: digestArgumentData(settlement.call.data) } })
+  }
+}
+
+/**
+ * A journal outside the payload window keeps everything recovery reads — status,
+ * operations, user binding evidence, confirms, completion and per-call metadata —
+ * and replaces each call's argument wire with its digest. Byte-for-byte equality
+ * of argument text is what the window gives up; identity is not.
+ */
+function digestJournalArguments(journal) {
+  if (process.env.DIGEST_SKIP_JOURNAL === '1') return journal
+  if (!isRecord(journal) || !Array.isArray(journal.calls)) return journal
+  return { ...journal, calls: journal.calls.map(call => {
+    if (!isRecord(call) || !Object.hasOwn(call, 'args')) return call
+    const { args, ...rest } = call
+    return { ...rest, argsDigest: digestOf(args), argsBytes: byteLength(args) }
+  }) }
+}
+
+/**
+ * A derived run keeps the shape recovery validates (target, description, rewrites)
+ * and replaces the cell source with its digest. The source is the payload the
+ * window bounds; the edit path refolds it from the log when the text is needed.
+ */
+function digestDerivedCode(derived) {
+  if (!isRecord(derived) || typeof derived.code !== 'string') return derived
+  const { code, ...rest } = derived
+  return { ...rest, codeDigest: digestOf(code), codeBytes: byteLength(code) }
+}
+
 function pruneRetention(state, tables) {
   if (fullRetentionDepth > 0) return
   const entries = Object.entries(tables.settled.table)
@@ -1725,19 +1823,25 @@ function pruneRetention(state, tables) {
     .filter(entry => entry.settlement !== undefined)
     .sort((left, right) => left.settlement.observedIndex - right.settlement.observedIndex)
   if (entries.length === 0) return
-  // The count window is order-only so a replayed fold prunes identically.
-  const keepFrom = Math.max(0, entries.length - MAX_RETAINED_RUNS)
+  const limits = retentionLimits()
+  // The count window is order-only so a replayed fold prunes identically. A
+  // configured cluster cap of 0 means the count window never folds anything and
+  // the payload budget is the only bound.
+  const keepClusters = limits.clusters === 0 ? entries.length : Math.min(entries.length, limits.clusters)
+  const keepFrom = Math.max(0, entries.length - keepClusters)
   // The runs a consumer reads synchronously — the latest publication and the cell
   // an edit would capture — stay inside the window even when newer settlements
   // pushed them past the count. Dropping them would turn "editable" into "pruned"
   // for the cell the user is actually looking at.
   const pinnedCallSeqs = new Set([state.latestRun?.callSeq, state.editableRun?.callSeq]
     .filter(callSeq => isCanonicalSequence(callSeq)))
-  const mustPrune = new Set([
-    ...entries.slice(0, keepFrom)
-      .filter(entry => pinnedCallSeqs.has(entry.settlement.call?.seq) === false)
-      .map(entry => entry.resultSeq),
-  ])
+  // Only a cluster beyond the configured cluster cap is folded into the interval
+  // summary. Every other cluster stays, with its payload text replaced by digests,
+  // so recovery evidence never depends on refolding the session log.
+  const folded = new Set(entries.slice(0, keepFrom)
+    .filter(entry => pinnedCallSeqs.has(entry.settlement.call?.seq) === false)
+    .map(entry => entry.resultSeq))
+  const mustPrune = new Set(folded)
   // A cumulative byte cap, not only a per-entry one: the window has to be a constant
   // regardless of how large the retained cells are, otherwise 32 cells of 200 KB
   // still put 6.4 MB in every checkpoint. Walk newest-first and stop retaining once
@@ -1756,8 +1860,12 @@ function pruneRetention(state, tables) {
   for (const [index, entry] of newestFirst.entries()) {
     const bytes = retainedPayloadBytes(entry)
     const pinned = pinnedCallSeqs.has(entry.settlement.call?.seq)
-    const overBudget = bytes > MAX_RETAINED_BYTES
-    if (overBudget || (index > 0 && !pinned && retainedTotal + bytes > MAX_RETAINED_BYTES)) {
+    // The run a consumer reads synchronously keeps its text even past the count
+    // window: the window bounds how much history stays readable, never the cell the
+    // user is looking at. Only the byte budget can digest a pinned cell.
+    const outsidePayloadWindow = index >= limits.runs && !pinned
+    const overBudget = bytes > limits.bytes
+    if (overBudget || outsidePayloadWindow || (index > 0 && !pinned && retainedTotal + bytes > limits.bytes)) {
       mustPrune.add(entry.resultSeq)
       continue
     }
@@ -1767,8 +1875,54 @@ function pruneRetention(state, tables) {
   const droppedCallSeqs = new Set()
   const droppedResultSeqs = new Set()
   const dropped = []
+  const digested = new Set([...mustPrune].filter(resultSeq => !folded.has(resultSeq)))
+  const digestedResultSeqs = new Set()
+  const digestedHotCell = state.latestRun !== undefined && entries.some(entry => (
+    digested.has(entry.resultSeq) && entry.settlement.call?.seq === state.latestRun?.callSeq))
+  for (const entry of entries) {
+    if (!digested.has(entry.resultSeq)) continue
+    const callSeq = entry.settlement.call?.seq
+    if (callSeq !== undefined && tables.executable.has(callSeq)) {
+      const stored = tables.executable.get(callSeq)
+      tables.executable.set(callSeq, { ...stored, event: { ...stored.event, data: digestArgumentData(stored.event.data) } })
+      digestSettlementCallCopies(tables)
+    }
+    // The result keeps every field recovery reads — status, operations, user
+    // binding evidence, confirms, completion and call metadata — and loses only
+    // the argument wire of each call.
+    for (const key of [entry.resultSeq, callSeq]) {
+      if (key === undefined || !tables.results.has(key)) continue
+      const result = tables.results.get(key)
+      if (!isRecord(result) || result.journal === undefined) continue
+      tables.results.set(key, { ...result, journal: digestJournalArguments(result.journal) })
+    }
+    // The settlement keeps its normalized and publication entries because recovery
+    // and the run derivations read them; only the journal argument wire and the
+    // derived source are replaced by digests, which is exactly the payload the
+    // window bounds. Identity, observations and result metadata stay.
+    const digestJournalEntry = value => value === undefined ? undefined : {
+      ...value,
+      ...(value.journal === undefined ? {} : { journal: digestJournalArguments(value.journal) }),
+
+    }
+    tables.settled.set(entry.resultSeq, {
+      ...entry.settlement,
+      ...(callSeq === undefined
+        ? {}
+        : { call: { ...entry.settlement.call, data: digestArgumentData(entry.settlement.call.data) } }),
+      ...(entry.settlement.normalized === undefined
+        ? {}
+        : { normalized: digestJournalEntry(entry.settlement.normalized) }),
+      ...(entry.settlement.publication === undefined
+        ? {}
+        : { publication: digestJournalEntry(entry.settlement.publication) }),
+    })
+    digestedResultSeqs.add(Number(entry.resultSeq))
+    state.retainedBytes = Math.max(0, state.retainedBytes - settlementBytes(entry.settlement))
+  }
   for (const entry of entries) {
     if (!mustPrune.has(entry.resultSeq)) continue
+    if (!folded.has(entry.resultSeq)) continue
     const callSeq = entry.settlement.call?.seq
     dropped.push(summaryEntry(entry.settlement, Number(entry.resultSeq)))
     tables.settled.delete(entry.resultSeq)
@@ -1786,26 +1940,43 @@ function pruneRetention(state, tables) {
     droppedResultSeqs.add(entry.resultSeq)
     state.retainedBytes = Math.max(0, state.retainedBytes - settlementBytes(entry.settlement))
   }
-  if (dropped.length === 0) return
-  // The ordered call list may only name stored entries, so a dropped cluster takes
-  // its call seq with it.
+  // A digested cluster kept its identity, so the ordered call list keeps its seq;
+  // a folded cluster is gone and takes its seq with it.
   state.calls = state.calls.filter(callSeq => !droppedCallSeqs.has(callSeq))
-  // The hot run can be dropped when it alone exceeds the byte budget. The cached
-  // run must then stop pointing at a cluster that no longer exists; the edit path
-  // refolds it from the session log when a consumer actually needs it.
-  if (state.latestRun !== undefined && droppedCallSeqs.has(state.latestRun.callSeq)) {
+  // The hot run can be lost either way: a folded cluster no longer exists, and a
+  // digested one no longer holds the source a run is built from. Consumers that
+  // need it refold from the session log, and report the notice until they do.
+  if (state.latestRun !== undefined
+    && (droppedCallSeqs.has(state.latestRun.callSeq) || digestedHotCell)) {
     state.latestRun = undefined
     state.editableRun = undefined
-    // The newest cell lost its payload because it alone exceeded the budget. Consumers
-    // that would have read it must report that instead of looking empty.
-    state.hotCellDropped = true
   }
-  state.compacted = true
-  dropped.sort((left, right) => left.resultSeq - right.resultSeq)
-  state.retentionSummary = extendSummary(state.retentionSummary, dropped)
-  // The facts of a dropped cluster keep their identity and digests but lose the
+  // `hotCellDropped` describes the retained set, not the route the fold took to it.
+  // It holds exactly when the newest settlement no longer carries its payload:
+  // either it was folded away, or its argument text was digested. Recomputing it
+  // from the table on every prune keeps a replayed fold — which reaches the same set
+  // by a different route — from disagreeing with the stored one.
+  const newestEntry = entries[entries.length - 1]
+  const newestStored = newestEntry === undefined ? undefined : tables.settled.get(newestEntry.resultSeq)
+  state.hotCellDropped = newestEntry !== undefined
+    && (newestStored === undefined || newestStored.call?.data?.arguments === undefined)
+  // `retainedBytes` is a property of the retained set, not a running total: a fold
+  // that digests a cluster after it was counted would otherwise carry a different
+  // value than a fold that reaches the same set by another route. Recompute it from
+  // the table so both sides agree, and so the number always describes what is there.
+  state.retainedBytes = entries.reduce((total, entry) => {
+    const stored = tables.settled.get(entry.resultSeq)
+    return stored === undefined ? total : total + settlementBytes(stored)
+  }, 0)
+  if (dropped.length === 0 && digested.size === 0) return
+  if (dropped.length !== 0) {
+    state.compacted = true
+    dropped.sort((left, right) => left.resultSeq - right.resultSeq)
+    state.retentionSummary = extendSummary(state.retentionSummary, dropped)
+  }
+  // The facts of a folded cluster keep their identity and digests but lose the
   // payload text, for the same reason the cluster itself is gone.
-  // A fact per event is itself linear in the session length, so a dropped cluster
+  // A fact per event is itself linear in the session length, so a folded cluster
   // takes its tool/call and tool/result facts with it. Admission for a compacted
   // checkpoint proves the summary instead of replaying those facts.
   state.eventFacts = state.eventFacts.filter(fact => {
@@ -1813,6 +1984,38 @@ function pruneRetention(state, tables) {
     if (fact.normalized !== undefined && droppedResultSeqs.has(Number(fact.normalized.eventSeq))) return false
     return true
   })
+  // A digested cluster keeps its facts, but they carry the digest-only journal too:
+  // the fact list is a second copy of the same result content. Rewriting the payload
+  // invalidates the fact's own digest, so it is recomputed here — admission checks
+  // that digest against the bytes it receives.
+  state.eventFacts = state.eventFacts.map(fact => {
+    if (fact.normalized === undefined || !digestedResultSeqs.has(Number(fact.normalized.eventSeq))) return fact
+    const { digest: _digest, ...rest } = fact
+    const next = { ...rest, normalized: digestJournalArguments(fact.normalized) }
+    next.digest = factDigest(next)
+    return next
+  })
+  // A dispatch fact names the cell an edit would capture, and that target carries
+  // the cell's source. Once the payload is digested the fold can no longer derive
+  // that source, so the fact must record the same "no target" the fold would
+  // produce now; leaving the old text behind would both duplicate the payload and
+  // fail the round-trip check that compares the fact with its re-derivation.
+  const digestedCallSeqs = new Set(entries
+    .filter(entry => digested.has(entry.resultSeq))
+    .map(entry => Number(entry.settlement.call?.seq)))
+  if (digestedCallSeqs.size !== 0) {
+    let rewritten = false
+    state.eventFacts = state.eventFacts.map(fact => {
+      const target = fact.selectedTarget
+      if (!isRecord(target) || !digestedCallSeqs.has(Number(target.callSeq))) return fact
+      const { digest: _digest, ...rest } = fact
+      const next = { ...rest, selectedTarget: null }
+      next.digest = factDigest(next)
+      rewritten = true
+      return timelineJson(next)
+    })
+    if (rewritten) state.eventFacts = state.eventFacts.map(fact => timelineJson(fact))
+  }
 }
 
 function findResultSeq(table, settlement) {
@@ -1846,7 +2049,14 @@ export function recoverJournal(session, currentCallSeq, options = {}) {
   if (!Array.isArray(events)) {
     return { nodes: [], head: undefined, checkpoints: new Map(), volatileSuffix: [], available: true }
   }
-  const timeline = foldSessionTimeline(events)
+  // Recovery rebuilds bindings from the cell sources and journals. A checkpoint
+  // outside the payload window keeps those as digests, so the fold is repeated with
+  // retention disabled on the same slice: the log is the authority, and reading it
+  // costs one extra fold only when a digested cluster is present.
+  const folded = foldSessionTimeline(events)
+  const needsPayload = [...folded.executableCalls.values()]
+    .some(entry => typeof entry?.event?.data?.arguments !== 'string')
+  const timeline = needsPayload ? withFullRetention(() => foldSessionTimeline(events)) : folded
   const calls = timelineCalls(timeline).filter(call => call.seq !== currentCallSeq)
   const { executableCalls, results, found } = timeline
   const visibleCalls = options?.visibleCallSeqs
@@ -2079,6 +2289,7 @@ export function recoverJournal(session, currentCallSeq, options = {}) {
   }
   applyBoundariesBefore(Number.POSITIVE_INFINITY)
   if (unavailableBoundary !== undefined) registerUnavailable(unavailableBoundary, state)
+  if (process.env.DEBUG_RECOVER) console.error('DEBUG nodes', state.nodes.map(node => [node.call?.seq, typeof node.code, node.hidden]), 'head', state.head, 'suffix', state.volatileSuffix.length)
   return {
     nodes: state.nodes,
     head: state.head,

@@ -146,7 +146,11 @@ test('validates every declared field from its CONFIG_FIELDS type and bounds', ()
     assert.equal(Number.isSafeInteger(field.max), true)
     assert.equal(resolveConfig({ [field.key]: field.min })[field.key], field.min)
     assert.equal(resolveConfig({ [field.key]: field.max })[field.key], field.max)
-    for (const invalid of [0, -1, 1.5, NaN, '8', undefined, field.max + 1]) {
+    // Zero is a value, not an omission, for a field whose minimum is zero:
+    // `retentionClusters` uses it to mean "no count-based folding".
+    const invalidValues = [0, -1, 1.5, NaN, '8', undefined, field.max + 1]
+      .filter(invalid => !(invalid === 0 && field.min === 0))
+    for (const invalid of invalidValues) {
       assert.throws(
         () => resolveConfig({ [field.key]: invalid }),
         new RegExp(`ptc-plus: ${field.key} must `),
